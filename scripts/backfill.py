@@ -228,8 +228,17 @@ def backfill_day_tables(days: List[date], tables: List[str], force: bool) -> dic
 
 
 def backfill_index_daily(start: date, end: date) -> int:
-    """指数日线:一次拿全区间(实测 6 年一把拿完,不必分批),按日拆文件写。"""
-    total_rows = 0
+    """指数日线:一次拿全区间(实测 6 年一把拿完,不必分批)。
+
+    【坑,已修】write_table_day 是整天覆盖写,不是追加——早期版本按"指数外层
+    循环、每个指数各自把自己的全部日子写一遍"的顺序写,同一天被后一个指数的
+    写入覆盖掉前一个指数的数据,最终每天的 index_daily 文件只剩【最后处理的那
+    个指数】(北证50,而且只在北证所开业后才有数据,之前的日子会被倒数第二个
+    处理的指数即科创50覆盖)。改法:先把 5 个指数的全区间数据【拼接成一个大表】,
+    再统一按 trade_date group_by 分天写,同一天的文件天然包含当天全部指数
+    (与 daily/daily_basic 等表"一天一文件、一次性含全部代码"的约定一致)。
+    """
+    frames = []
     for code, name in INDEX_CODES.items():
         res = ts_index_daily(code, start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
         if not res.ok or res.data is None:
@@ -238,10 +247,15 @@ def backfill_index_daily(start: date, end: date) -> int:
         pldf = _pdf_to_pl(res.data)
         if pldf.is_empty():
             continue
-        for (d,), sub in pldf.group_by(["trade_date"]):
-            write_table_day("index_daily", d, sub)
-        total_rows += len(pldf)
+        frames.append(pldf)
         logger.info("index_daily %s(%s): %d 行", code, name, len(pldf))
+    if not frames:
+        return 0
+    combined = pl.concat(frames, how="vertical_relaxed")
+    total_rows = 0
+    for (d,), sub in combined.group_by(["trade_date"]):
+        write_table_day("index_daily", d, sub)
+        total_rows += len(sub)
     return total_rows
 
 
