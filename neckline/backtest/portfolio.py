@@ -6,9 +6,9 @@ T+1 铁律:A 股当日买入不可当日卖出,最早次一交易日才能卖(`c
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 @dataclass

@@ -99,6 +99,7 @@ class BacktestEngine:
                         logger.debug("订单未成交 %s %s: %s(%s)", r.order.ts_code, r.order.side, r.status, r.detail)
 
         self.last_execution_results = all_results
+        self.last_portfolio = portfolio  # 供调用方/测试查最终持仓明细(报告本身不带)
         return build_report(portfolio, equity_curve, self.initial_cash)
 
 

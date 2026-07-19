@@ -20,7 +20,7 @@ import logging
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, List, Optional, Union
+from typing import List, Optional, Union
 
 import polars as pl
 

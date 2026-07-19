@@ -7,7 +7,6 @@ from __future__ import annotations
 from datetime import date
 from typing import List
 
-import polars as pl
 import pytest
 
 from neckline.backtest import BacktestContext, BacktestEngine, Order, Strategy
@@ -74,14 +73,12 @@ class TestEngineEndToEnd:
 
         strat = BuyOnceStrategy()
         engine = BacktestEngine(strat, start=days[0], end=days[-1], initial_cash=100_000, parquet_dir=isolated_env.parquet_dir)
-        report = engine.run()
+        engine.run()
         buy_trades = [t for t in engine.last_execution_results if t.status == "filled" and t.order.side == "buy"]
         assert len(buy_trades) == 1
-        # 找到这笔成交在 portfolio 里落的 buy_date
-        pos_buy_date = report.closed_trades[0].buy_date if report.closed_trades else None
-        # 未平仓也没关系,直接查 trade_log
-        from neckline.backtest.portfolio import Portfolio  # noqa: F401  (type hint context only)
-
+        # 决策在 days[0](T 日),持仓落的 buy_date 必须是 days[1](T+1)——证明策略
+        # 决策与成交严格分离在两个不同交易日,不是"当天算当天成交"。
+        assert engine.last_portfolio.positions["600001.SH"].buy_date == days[1]
         assert engine.strategy.fired is True
 
     def test_empty_range_raises_clear_error(self, isolated_env):
