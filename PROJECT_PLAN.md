@@ -140,7 +140,7 @@ Neckline 是一套**只审计、不代下单**的 A 股短线量化决策系统�
 
 ### 3.4 LLM
 
-- **DeepSeek**(默认沿用)。`DEEPSEEK_API_KEY` 从 `.env` 读(可从 `/Users/linotsai/Lino/LinoN/backend/.env` 复制,**复制值、不复制进 tracked 文件**)。
+- **多供应商可切换(2026-07-19 用户拍板,不用 DeepSeek)**:候选 **GLM 5.2 / Kimi K3**(两家 API 均原生带联网搜索工具,正好覆盖 2.4 消息面方案)。设计约束:① `llm/` 层做**供应商抽象**(统一 chat + 工具调用 + 搜索接口,provider 实现可插拔);② key 与 provider 选择从配置读(研究期 `.env`:`LLM_PROVIDER` / `LLM_API_KEY`;**阶段 4 客户端里必须有「填 API key + 切换供应商」的设置入口**,运行时可切不重启);③ key 用户后续自填,**缺 key 时全链路优雅降级不崩**(继承 LinoN 降级链思想)。
 - 继承 LinoN 的**降级链**(缺 key / 超时 / 非 200 / 非法 JSON → 优雅降级占位,全链路不崩)与**短读超时 + 每次全新连接重试**(`_READ_TIMEOUT=12` / `_CONNECT_TIMEOUT=6` / `_MAX_ATTEMPTS=3`,治 EdgeOne CDN 偶发单连接卡死)。
 - **对话工程**:问询台的工具调用(实时取数 / 重算)沿用 LinoN v1.2.1 `/chat` 的姿势重写。
 
@@ -171,7 +171,7 @@ Neckline 是一套**只审计、不代下单**的 A 股短线量化决策系统�
 - **交易日历**(LinoN `app/calendar/`):静态兜底表(官方休市日 + 调休补班周末股市仍休)+ `trade_cal` 比对告警。**Neckline 需把日历从 2020 起补全**(回测六年)。注意包名勿与标准库 `calendar` 冲突(LinoN 坑:包内绝对导入)。
 - **实时源解析**(LinoN `app/data/realtime.py`):新浪**必带 `Referer: https://finance.sina.com.cn`**(否则 `Kinsoku jikou desu!` 无数据)、GBK 解码、volume 股→手;腾讯 GBK、volume=手、amount=万元、bid/ask「价先量后」(**与新浪相反,易写反**)。归一目标:`volume` 单位手、`amount` 单位元。
 - **盘中 VWAP 纯函数**(LinoN `app/data/intraday.py`):`VWAP = amount/(volume×100)`(元/股),不自拉价、不联网。
-- **DeepSeek 层**(LinoN `app/llm/deepseek.py`):降级链 + 短读超时重试 + `MockTransport` 可注入免联网单测。
+- **LLM 层工程姿势**(LinoN `app/llm/deepseek.py`,供应商换了但姿势保留):降级链 + 短读超时重试 + `MockTransport` 可注入免联网单测。
 - **黑名单口径**(LinoN 教训):按**板块整段正则** `^(30|688|689|8|4|920)` 挡创业板 / 科创 / 北交所,**勿枚举精确子段**(会漏新增子段);白酒用 `stock_basic.industry` 精确归类,非名称关键词。
 
 ### 3.8 铁律(全项目硬约束,build 逐条守)
@@ -187,7 +187,7 @@ Neckline 是一套**只审计、不代下单**的 A 股短线量化决策系统�
 
 ```
 Neckline/
-  .env                      # gitignored,TUSHARE_TOKEN / DEEPSEEK_API_KEY
+  .env                      # gitignored,TUSHARE_TOKEN / LLM_PROVIDER / LLM_API_KEY
   .gitignore                # 已含 data/*.db、data/parquet/
   PROJECT_PLAN.md           # 本文件,唯一权威
   requirements.txt
@@ -199,7 +199,7 @@ Neckline/
     strategy/               # 母战法信号(同码三跑道的源)、大脑版本
     report/                 # 盘后报告管线(情绪仪表盘 / 板块 / 候选评分)
     sentinel/               # 盘中四哨兵
-    llm/                    # DeepSeek 深判 / 问询台对话与工具
+    llm/                    # 供应商抽象(GLM/Kimi 可插拔)/ 深判 / 问询台对话与工具
     review/                 # 周复盘 / 违纪对账
   scripts/                  # 落地脚本、每日增量、回测 CLI、报告 CLI
   data/                     # Parquet + SQLite(gitignored)
@@ -227,7 +227,7 @@ Neckline/
 
 **目标**:全市场日线落地、日历补全、复权就位、回测框架跑通一个 dummy 策略。
 
-- **0.1 脚手架**:建 `neckline/` 包结构(§3.9)、`.venv`、`requirements.txt`(polars、pyarrow、pandas、tushare、python-dotenv、pytest;版本钉死走阿里云镜像)。`config/` 读 `.env` 的 `TUSHARE_TOKEN` / `DEEPSEEK_API_KEY` + 定义 `data/parquet/`、`data/neckline.db` 路径常量。
+- **0.1 脚手架**:建 `neckline/` 包结构(§3.9)、`.venv`、`requirements.txt`(polars、pyarrow、pandas、tushare、python-dotenv、pytest;版本钉死走阿里云镜像)。`config/` 读 `.env` 的 `TUSHARE_TOKEN` / `LLM_PROVIDER` / `LLM_API_KEY`(LLM 两项允许缺省,阶段 2 才用)+ 定义 `data/parquet/`、`data/neckline.db` 路径常量。
 - **0.2 tushare_client**:从 LinoN 搬 `TushareResult` 永不抛异常封装 + `pro_api(token)` 直传;新增全市场批量拉取函数:按 `trade_date` 拉全市场 `daily / daily_basic / adj_factor / moneyflow_dc`,以及 `index_daily`(上证 / 深成 / 创业板指等)、`stock_basic`、`namechange`(ST 状态历史,自算涨跌停幅度用)、`trade_cal`。带限频退避(600 档限频 500 次/分钟)。
 - **0.3 交易日历**:搬 LinoN `calendar` 包,用 `trade_cal` 拉 **2020-01-01 至今**全量落 SQLite;静态休市表比对告警。提供 `is_trading_day / prev_trading_day / next_trading_day / trading_days_between`。
 - **0.4 历史落地脚本**:`scripts/backfill.py` —— 全市场 2020-01-01 至今 `daily / daily_basic / adj_factor / index_daily / moneyflow_dc` 落 Parquet 按年分区(`data/parquet/<表>/year=YYYY/`);断点续跑、限频退避。`scripts/daily_update.py` —— 每交易日盘后拉当日追加(增量)。
@@ -262,7 +262,7 @@ Neckline/
 - **2.1 情绪仪表盘**:从 `limit_derived`(0.4b 自算衍生表)+ `daily` 算涨停 / 跌停家数、连板最高高度、炸板率、昨日涨停今日平均溢价 → 输出明日仓位额度(满额 / 半额 / 休息)三态。
 - **2.2 强势板块**:阶段 1 定的板块年龄因子 + 加权不圈死。
 - **2.3 候选评分管线**:同一套信号代码喂今日 → 20 只带评分,每只四件套(买点 / 止损 / 目标 / **证伪条件**,证伪条件用价量结构写死供盘中哨兵消费)。
-- **2.4 LLM 逻辑审判**:前 10 只深判(判催化持续性,**一票否决**);后 10 只给分数 + 形态标签。输出自由对话体(§2.7),降级链继承 LinoN。**信息源(2026-07-19 用户拍板)**:结构化数据(概念板块和成分 + 龙虎榜 + 板块年龄 + 价量结构,均在 600 档权限内)+ **LLM 联网搜索**(消息面/催化,TuShare 新闻接口不购)。落地注意:① **DeepSeek API 本身无联网搜索**(App 功能,API 不带,施工时复验)——审判/问询环节需带搜索工具的 API(如 Kimi / GLM 原生 web search)或独立搜索 API 喂给 DeepSeek,供应商选型入阶段 2;② **每次审判用到的搜索结果全文落库存档**(SQLite),供事后审计「当时为何否决」+ 自建历史新闻快照;③ **LLM 审判层是回测盲区**(搜索回不到历史时点、且被后见之明污染),其价值不进回测,单独用实盘事后归因考核(审判否决 vs 放行的候选,3 日收益对照,candidate_outcomes 思路)。
+- **2.4 LLM 逻辑审判**:前 10 只深判(判催化持续性,**一票否决**);后 10 只给分数 + 形态标签。输出自由对话体(§2.7),降级链继承 LinoN。**信息源(2026-07-19 用户拍板)**:结构化数据(概念板块和成分 + 龙虎榜 + 板块年龄 + 价量结构,均在 600 档权限内)+ **LLM 联网搜索**(消息面/催化,TuShare 新闻接口不购)。落地注意:① 供应商 = GLM 5.2 / Kimi K3 可切换(§3.4),两家 API 原生带联网搜索工具,直接用;② **每次审判用到的搜索结果全文落库存档**(SQLite),供事后审计「当时为何否决」+ 自建历史新闻快照;③ **LLM 审判层是回测盲区**(搜索回不到历史时点、且被后见之明污染),其价值不进回测,单独用实盘事后归因考核(审判否决 vs 放行的候选,3 日收益对照,candidate_outcomes 思路)。
 - **2.5 报告落地**:`scripts/report.py [trade_date]` 生成 markdown / HTML,含情绪仪表盘 + 仓位额度 + 强势板块 + 候选 20 四件套;落 SQLite 存档。
 - **2.6 历史回放**:报告管线能对历史任一交易日回放(复用回测数据层),验证逻辑一致性。
 
@@ -286,7 +286,7 @@ Neckline/
 
 **目标**:LLM 问询台 + 客户端落地 + 违纪对账闭环。
 
-- **4.1 问询台后端**:用户丢票 → 确定性检查(纪律核对 + 同一评分管线跑分 + 板块年龄)→ DeepSeek 带工具调用(实时取数 / 重算)自然语言回答;裁决二值(不符合 + 依据 / 初审通过进当晚海选池),**永不「现在就买」**。继承 LinoN 对话工程。
+- **4.1 问询台后端**:用户丢票 → 确定性检查(纪律核对 + 同一评分管线跑分 + 板块年龄)→ LLM(§3.4 可切换供应商)带工具调用(实时取数 / 重算 / 联网搜索)自然语言回答;裁决二值(不符合 + 依据 / 初审通过进当晚海选池),**永不「现在就买」**。继承 LinoN 对话工程。
 - **4.2 周复盘对账**:用户每周提供交割单 → 系统对账(实际成交 vs 当周报告、条件单完整性)→ 生成违纪清单 + 复盘材料;单周实现亏损 ≥ 总仓 2% 触发强制复盘材料生成。
 - **4.3 客户端载体**:按 §8 用户拍板结果实施(SwiftUI 复用 / Bark + Web / 纯 Web);遵循绿涨红跌配色。
 
