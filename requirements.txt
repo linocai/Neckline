@@ -1,0 +1,34 @@
+# Neckline 依赖钉死版本(阶段 0 · 2026-07-19)。
+# 安装:pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+# (或已配置 pip.conf 全局走阿里云镜像,见项目根 pip.conf)
+
+# —— 直接依赖(plan §3.1)——
+polars==1.42.1
+pyarrow==25.0.0
+pandas==3.0.3
+tushare==1.4.29
+python-dotenv==1.2.2
+pytest==9.1.1
+
+# —— 传递依赖(pip freeze 钉死,保证可复现)——
+beautifulsoup4==4.15.0
+bs4==0.0.2
+certifi==2026.6.17
+charset-normalizer==3.4.9
+idna==3.18
+iniconfig==2.3.0
+lxml==6.1.1
+numpy==2.4.6
+packaging==26.2
+pluggy==1.6.0
+polars-runtime-32==1.42.1
+Pygments==2.20.0
+python-dateutil==2.9.0.post0
+requests==2.34.2
+simplejson==4.1.1
+six==1.17.0
+soupsieve==2.9
+tqdm==4.69.0
+typing_extensions==4.16.0
+urllib3==2.7.0
+websocket-client==1.9.0
