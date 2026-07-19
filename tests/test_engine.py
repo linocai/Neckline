@@ -9,7 +9,7 @@ from typing import List
 
 import pytest
 
-from neckline.backtest import BacktestContext, BacktestEngine, Order, Strategy
+from neckline.backtest import BacktestContext, BacktestEngine, Broker, Order, Strategy
 from neckline.strategy.dummy import DummyStrategy
 from tests.conftest import business_days, insert_trade_cal, write_daily_fixture
 
@@ -100,3 +100,89 @@ class TestEngineEndToEnd:
         assert report.final_equity == pytest.approx(report.equity_curve["equity"][-1])
         if report.n_trades > 0:
             assert 0.0 <= report.win_rate <= 1.0
+
+
+class TestQfqIntegration:
+    """plan 0.5"回测统一用前复权价":engine 内部一次性把 [start,end] 全区间复权,
+    锚点固定在 end——同一只票前后两天的复权价必须能直接相减比较(见 engine.py
+    docstring)。无 adj_factor 数据时优雅降级为未复权价(不崩)。"""
+
+    def test_no_adj_factor_degrades_to_raw_prices(self, isolated_env):
+        days = business_days(date(2024, 1, 2), 5)
+        _seed_market(isolated_env, days)  # 只写 daily,不写 adj_factor
+        strat = DummyStrategy(n_positions=1, hold_days=2, min_price=1.0)
+        engine = BacktestEngine(strat, start=days[0], end=days[-1], initial_cash=100_000, parquet_dir=isolated_env.parquet_dir)
+        report = engine.run()  # 不应抛异常,应正常跑完
+        assert report.n_trading_days == len(days)
+
+    def test_anchor_day_adjusted_price_equals_raw_price(self, isolated_env):
+        """锚点在区间末尾:最后一天的复权价必须与原始价严格相等(前复权定义)。"""
+        days = business_days(date(2024, 1, 2), 5)
+        insert_trade_cal(isolated_env, days)
+        import neckline.calendar as cal
+
+        cal.reset_cache()
+        # 600001.SH:第 3 天(days[2])发生除权,adj_factor 从 100 跳到 120
+        raw_closes = {days[0]: 10.0, days[1]: 10.2, days[2]: 8.6, days[3]: 8.7, days[4]: 8.8}
+        adj_factors = {days[0]: 100.0, days[1]: 100.0, days[2]: 120.0, days[3]: 120.0, days[4]: 120.0}
+        for d in days:
+            c = raw_closes[d]
+            write_daily_fixture(
+                isolated_env, "daily", d,
+                [{"ts_code": "600001.SH", "open": c, "high": c, "low": c, "close": c, "pre_close": c, "vol": 1000.0}],
+            )
+            write_daily_fixture(
+                isolated_env, "adj_factor", d, [{"ts_code": "600001.SH", "adj_factor": adj_factors[d]}]
+            )
+
+        strat = DummyStrategy(n_positions=1, hold_days=10, min_price=1.0)
+        engine = BacktestEngine(strat, start=days[0], end=days[-1], initial_cash=100_000, parquet_dir=isolated_env.parquet_dir)
+        adjusted = engine._load_adjusted_daily(days[0], days[-1])
+        last_row = adjusted.filter((adjusted["ts_code"] == "600001.SH") & (adjusted["trade_date"] == days[-1]))
+        assert last_row["close"][0] == pytest.approx(raw_closes[days[-1]])
+
+        first_row = adjusted.filter((adjusted["ts_code"] == "600001.SH") & (adjusted["trade_date"] == days[0]))
+        # 除权前的价格应被向下折算(120/100 的比例),不再等于原始价
+        expected_adjusted_first = raw_closes[days[0]] * (adj_factors[days[0]] / adj_factors[days[-1]])
+        assert first_row["close"][0] == pytest.approx(expected_adjusted_first)
+        assert first_row["close"][0] != pytest.approx(raw_closes[days[0]])
+
+    def test_broker_fills_use_adjusted_price_not_raw(self, isolated_env):
+        """买入价应是复权后的开盘价,不是原始开盘价(锚点前的日子两者应不同)。"""
+        days = business_days(date(2024, 1, 2), 5)
+        insert_trade_cal(isolated_env, days)
+        import neckline.calendar as cal
+
+        cal.reset_cache()
+        raw_opens = {days[0]: 10.0, days[1]: 10.0, days[2]: 8.0, days[3]: 8.1, days[4]: 8.2}
+        adj_factors = {days[0]: 100.0, days[1]: 100.0, days[2]: 120.0, days[3]: 120.0, days[4]: 120.0}
+        for d in days:
+            o = raw_opens[d]
+            write_daily_fixture(
+                isolated_env, "daily", d,
+                [{"ts_code": "600001.SH", "open": o, "high": o, "low": o, "close": o, "pre_close": o, "vol": 1000.0}],
+            )
+            write_daily_fixture(
+                isolated_env, "adj_factor", d, [{"ts_code": "600001.SH", "adj_factor": adj_factors[d]}]
+            )
+
+        class BuyOnFirstDay(Strategy):
+            def on_day(self, context: BacktestContext) -> List[Order]:
+                if context.trade_date == days[0]:
+                    return [Order(ts_code="600001.SH", side="buy", shares=100)]
+                return []
+
+        engine = BacktestEngine(
+            BuyOnFirstDay(), start=days[0], end=days[-1], initial_cash=100_000,
+            broker=Broker(slippage_bp=0),
+            parquet_dir=isolated_env.parquet_dir,
+        )
+        engine.run()
+        buy_fill = [r for r in engine.last_execution_results if r.status == "filled"][0]
+        # 成交发生在 days[1](T+1),该日原始开盘价 10.0;但复权锚点在 days[-1]
+        # (adj_factor=120),复权后应为 10.0*(100/120)=8.333...,不是原始的 10.0
+        # (Broker 成交价四舍五入到分,断言也按同样精度比较)
+        raw_open_day1 = raw_opens[days[1]]
+        expected_qfq_open = round(raw_open_day1 * (adj_factors[days[1]] / adj_factors[days[-1]]), 2)
+        assert buy_fill.fill_price == pytest.approx(expected_qfq_open)
+        assert buy_fill.fill_price != pytest.approx(raw_open_day1)
