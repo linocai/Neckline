@@ -79,8 +79,10 @@ def _build_code_lookup(all_codes: pl.Series, stock_basic: pl.DataFrame) -> pl.Da
 
 
 def _build_calendar_ordinal(calendar_days: List[date]) -> pl.DataFrame:
-    """交易日 → 全局序号(0-based),供"上市第 N 个交易日"向量化计算用。"""
-    return pl.DataFrame({"trade_date": sorted(calendar_days)}).with_row_index("trade_ord")
+    """交易日 → 全局序号(0-based),供"上市第 N 个交易日"向量化计算用。`.unique()`
+    防御调用方传入重复日期(理论上 `load_trade_cal_days()` 不会重复,这里只是不让
+    脏输入导致 join 意外 fan-out)。"""
+    return pl.DataFrame({"trade_date": sorted(set(calendar_days))}).with_row_index("trade_ord")
 
 
 def _is_st_name(name_col: str = "name") -> pl.Expr:
@@ -102,7 +104,7 @@ def compute_limit_derived(
                窗口(如近 15 交易日)保证跨批次连板计数正确。
         stock_basic: ts_code/market/list_date(Date)。
         namechange: ts_code/name/start_date(Date)/end_date(Date,可空=沿用至今)。
-        calendar_days: 覆盖 daily 全部 trade_date 的交易日列表(神经 calendar 模块给)。
+        calendar_days: 覆盖 daily 全部 trade_date 的交易日列表(neckline.calendar 模块给)。
 
     返回:稀疏表,仅 is_limit_up / is_limit_down / is_zaban 命中行,列见模块 docstring。
     """

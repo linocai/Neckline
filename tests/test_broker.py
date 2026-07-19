@@ -176,3 +176,30 @@ class TestInsufficientCash:
         exec_slice = _exec_slice([{"ts_code": "600001.SH", "open": 10.0}])
         results = broker.execute(orders, exec_slice, _limit_slice([]), p, EXEC_DAY)
         assert results[0].status == "insufficient_cash"
+
+    def test_min_commission_floor_does_not_crash_cash_cap_path(self):
+        """回归测试(code review 发现的真 bug):现金刚好卡在"整百股价值"和"整百股
+        价值+最低佣金"之间时,旧版按近似费率反推股数会算出一个回填后 fees 实际超
+        现金的股数,直接在 Portfolio.apply_buy 里因超现金 raise ValueError 崩溃。
+        现改逐手下调法,应优雅回落到更少股数或 insufficient_cash,不崩。"""
+        broker = Broker(commission_rate=0.00025, min_commission=5.0, transfer_fee_rate=0.00001, stamp_duty_rate=0.0005, slippage_bp=0)
+        # 100 股 * 10 元 = 1000 元,真实 fees = max(0.25,5.0)+0.01 = 5.01,总成本 1005.01。
+        # 现金给 1005.00(比总成本少 1 分)——旧近似反推(费率≈0.026%)会得出 100 股
+        # "看似够付",回填精确 fees 后其实差 0.01 元,应发现不够、下调到 0 股。
+        p = Portfolio(1005.00)
+        orders = [Order(ts_code="600001.SH", side="buy", target_value=2000.0)]
+        exec_slice = _exec_slice([{"ts_code": "600001.SH", "open": 10.0}])
+        results = broker.execute(orders, exec_slice, _limit_slice([]), p, EXEC_DAY)  # 不应抛异常
+        assert results[0].status == "insufficient_cash"
+        assert p.cash == pytest.approx(1005.00)  # 未成交,现金分毫未动
+
+    def test_cash_cap_finds_largest_affordable_lot_including_fees(self):
+        broker = Broker(commission_rate=0.00025, min_commission=5.0, transfer_fee_rate=0.00001, stamp_duty_rate=0, slippage_bp=0)
+        # 200 股成本 2000+5.02=2005.02;给 2005.02 刚好够 200 股。
+        p = Portfolio(2005.02)
+        orders = [Order(ts_code="600001.SH", side="buy", target_value=100_000.0)]
+        exec_slice = _exec_slice([{"ts_code": "600001.SH", "open": 10.0}])
+        results = broker.execute(orders, exec_slice, _limit_slice([]), p, EXEC_DAY)
+        assert results[0].status == "filled"
+        assert results[0].shares == 200
+        assert p.cash == pytest.approx(0.0, abs=1e-6)

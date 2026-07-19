@@ -116,16 +116,19 @@ class Broker:
                 shares = (shares // LOT_SIZE) * LOT_SIZE
             if shares < LOT_SIZE:
                 return ExecutionResult(order, "invalid", detail="换算后不足一手(100股),订单作废")
+
+            # 现金不够时逐手(100股)下调直到成本(含费)不超现金,而不是用近似费率
+            # 一次性反推再回填——回填费率若忽略最低佣金 5 元下限,小额订单会算出
+            # "刚好够"但真实 fees(含下限)一算又超一点,炸在 Portfolio.apply_buy
+            # 的现金校验上(施工时 code review 发现,已用逐手下调法根治)。
             value = shares * fill_price
             fees = self._buy_fees(value)
-            if value + fees > portfolio.cash + 1e-6:
-                # 现金不够按可用现金反推股数(整百股),仍不够则放弃
-                affordable = portfolio.cash / (fill_price * (1 + self.commission_rate + self.transfer_fee_rate))
-                shares = int(affordable // LOT_SIZE) * LOT_SIZE
-                if shares < LOT_SIZE:
-                    return ExecutionResult(order, "insufficient_cash", detail=f"现金不足(需≈{value+fees:.2f},余{portfolio.cash:.2f})")
+            while shares >= LOT_SIZE and value + fees > portfolio.cash + 1e-6:
+                shares -= LOT_SIZE
                 value = shares * fill_price
                 fees = self._buy_fees(value)
+            if shares < LOT_SIZE:
+                return ExecutionResult(order, "insufficient_cash", detail=f"现金不足(余{portfolio.cash:.2f})")
             portfolio.apply_buy(order.ts_code, shares, fill_price, fees, trade_date, order.reason)
             return ExecutionResult(order, "filled", fill_price=fill_price, shares=shares, fees=fees)
 
