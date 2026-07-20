@@ -19,6 +19,10 @@ PyJWT==2.9.0                  # APNs token-based JWT(ES256 签名),plan 4B.5
 cryptography==44.0.0          # PyJWT ES256 的 EC 后端 + 单测临时 EC key
 h2==4.1.0                     # httpx HTTP/2 后端(APNs 网关走 HTTP/2;Neckline 已钉 httpx==0.28.1,只补 http2 后端)
 
+# —— 阶段4D 周复盘工作台(交割单解析 + 上传端点)——
+openpyxl==3.1.5               # 解析券商交割单 xlsx(neckline/review/parse.py)
+python-multipart==0.0.32      # FastAPI UploadFile(multipart/form-data)依赖
+
 # —— 传递依赖(pip freeze 钉死,保证可复现)——
 annotated-types==0.7.0        # 阶段4:pydantic
 anyio==4.14.2
@@ -28,6 +32,7 @@ certifi==2026.6.17
 cffi==2.1.0                   # 阶段4:cryptography
 charset-normalizer==3.4.9
 click==8.4.2                  # 阶段4:uvicorn
+et-xmlfile==2.0.0              # 阶段4D:openpyxl
 h11==0.16.0
 hpack==4.2.0                  # 阶段4:h2
 httpcore==1.0.9

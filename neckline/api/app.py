@@ -22,7 +22,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 
 from neckline.api import notify
 from neckline.api.deps import require_api_token_ready, require_token
@@ -44,19 +44,23 @@ from neckline.api.schemas import (
     PushSettingsOut,
     ReportOut,
     RetreatBrakeOut,
+    ReviewGetOut,
+    ReviewUploadOut,
     SettingsLLMIn,
     SettingsOut,
     SettingsPushIn,
+    SettingsReviewColMapIn,
+    WeeklyReviewOut,
 )
 from neckline.api.stores import upsert_device
 from neckline.calendar import is_trading_day, prev_trading_day
-from neckline.config import ensure_data_dirs, settings
+from neckline.config import ensure_data_dirs
 from neckline.llm.factory import get_provider
 from neckline.report import store as report_store
 from neckline.sentinel import dedup
 from neckline.sentinel import positions as pos_store
 from neckline.sentinel.intraday import is_intraday_now
-from neckline.settings_store import get_app_settings, set_llm, set_push
+from neckline.settings_store import get_app_settings, set_llm, set_push, set_review_col_map
 
 logger = logging.getLogger(__name__)
 
@@ -389,6 +393,7 @@ def get_settings() -> SettingsOut:
         llmProvider=st.llm_provider,
         llmKeySet=st.llm_key_set,
         push=PushSettingsOut(report=st.push_report, retreatBrake=st.push_retreat),
+        reviewColMap=st.review_col_map,
     )
 
 
@@ -406,10 +411,87 @@ def put_settings_push(body: SettingsPushIn) -> OkOut:
     return OkOut(ok=True)
 
 
+@app.put(f"{API_PREFIX}/settings/review-col-map", dependencies=[Depends(require_token)])
+def put_settings_review_col_map(body: SettingsReviewColMapIn) -> OkOut:
+    """周复盘交割单列映射(plan 4D.1「留 review_col_map 可覆盖以支持两家券商原始
+    格式」)。空字典 → 清空覆盖,`/review/upload` 退回内置默认列名。"""
+    set_review_col_map(body.colMap, db_path=_db())
+    return OkOut(ok=True)
+
+
 @app.post(f"{API_PREFIX}/devices", dependencies=[Depends(require_token)])
 def register_device(body: DeviceRegisterIn) -> OkOut:
     upsert_device(body.token, body.platform, db_path=_db())
     return OkOut(ok=True)
+
+
+# —— 4D 周复盘工作台(对账引擎;plan 4D.1/4D.2)——————————————————————————————
+# **同码不重写**:解析(review.parse)/ FIFO 对账(review.reconcile)/ 材料(review.material)
+# 全部复用 `neckline/review/` 领域模块,端点只做「装配 + 出入参映射」。
+
+@app.post(f"{API_PREFIX}/review/upload", dependencies=[Depends(require_token)])
+def review_upload(files: List[UploadFile] = File(...)) -> ReviewUploadOut:
+    """拖入一份或多份 xlsx 交割单 → 解析 → 对账 → 落 `reviews` 表(幂等覆盖同周)。
+    单份文件解析失败(非法工作簿)不拖垮其它文件;某一行数据有瑕疵只降级为
+    `parseWarnings`,不中断整份解析(§4D.1「解析失败逐行降级、缺列优雅提示,不崩」)。
+    """
+    from neckline.review.material import build_material_text
+    from neckline.review.parse import parse_workbook
+    from neckline.review.reconcile import run_weekly_review, weekly_review_dict
+    from neckline.review.store import save_weekly_review
+
+    app_settings = get_app_settings(db_path=_db())
+    col_map = app_settings.review_col_map or None
+
+    all_trades = []
+    parse_warnings: List[str] = []
+    sheet_formats: Dict[str, str] = {}
+    for f in files:
+        filename = f.filename or "未命名文件"
+        content = f.file.read()   # 同步端点,走底层文件对象(免 await,与全项目其它端点风格一致)
+        try:
+            result = parse_workbook(content, filename, col_map=col_map, db_path=_db())
+        except ValueError as e:
+            parse_warnings.append(f"{filename}:{e}")
+            continue
+        all_trades.extend(result.trades)
+        parse_warnings.extend(f"{filename} · {w.sheet}!row{w.row}:{w.message}" for w in result.warnings)
+        for sheet_name, fmt in result.sheet_formats.items():
+            sheet_formats[f"{filename} · {sheet_name}"] = fmt
+
+    reviews, data_warnings = run_weekly_review(all_trades, db_path=_db())
+    weeks_out: List[WeeklyReviewOut] = []
+    for review in reviews:
+        material = build_material_text(review)
+        try:
+            save_weekly_review(review, material=material, db_path=_db())
+        except Exception:  # noqa: BLE001  落库失败不应丢掉已算出的对账结果
+            logger.warning("周复盘落库失败(%s),响应仍返回本次算出的结果", review.week, exc_info=True)
+        weeks_out.append(WeeklyReviewOut(week=review.week, result=weekly_review_dict(review), material=material))
+
+    return ReviewUploadOut(
+        ok=True, weeks=weeks_out, parseWarnings=parse_warnings,
+        dataWarnings=data_warnings, sheetFormats=sheet_formats,
+    )
+
+
+@app.get(f"{API_PREFIX}/review", dependencies=[Depends(require_token)])
+def review_by_week(week: str = "") -> ReviewGetOut:
+    """读某周已存档的对账结果(历史回放;客户端务必走 makeURL 免 `?` 编码坑,同
+    `GET /report?date=` 惯例)。缺 week / 查无该周 → `found=False`(HTTP 200,
+    降级契约同 `_empty_report`,不是 404——"这周还没上传过交割单"是正常场景)。"""
+    from neckline.review.store import load_weekly_review
+
+    week = (week or "").strip()
+    if not week:
+        return ReviewGetOut(ok=True, found=False)
+    rec = load_weekly_review(week, db_path=_db())
+    if rec is None:
+        return ReviewGetOut(ok=True, found=False, week=week)
+    return ReviewGetOut(
+        ok=True, found=True, week=rec["week"], generatedAt=rec["generatedAt"],
+        result=rec["result"], material=rec.get("material") or "",
+    )
 
 
 __all__ = ["app", "VERSION", "API_PREFIX"]

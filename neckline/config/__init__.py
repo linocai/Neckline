@@ -51,6 +51,11 @@ class Settings:
     apns_bundle_id: Optional[str] = None
     apns_key_path: Optional[str] = None
     apns_use_sandbox: bool = True          # dev 直装走 sandbox 网关
+    # 总仓(§1.2「总资金约12-13万，不再入金，固定分母」;单一源,供 4D 周复盘引擎算
+    # 敞口占比/单周实现亏损占比,不在各处另抄一个数字)。默认 12 万(与
+    # `MomentumStrategy.initial_cash` 回测默认一致),`.env` 的 `TOTAL_CAPITAL`
+    # 可覆盖为用户真实总资金。
+    total_capital: float = 120000.0
     project_root: Path = PROJECT_ROOT
     data_dir: Path = DATA_DIR
     parquet_dir: Path = PARQUET_DIR
@@ -80,6 +85,15 @@ def _load_settings() -> Settings:
             return default
         return v in ("1", "true", "yes", "on")
 
+    def _float(v: Optional[str], default: float) -> float:
+        v = (v or "").strip()
+        if not v:
+            return default
+        try:
+            return float(v)
+        except ValueError:
+            return default
+
     # DB_PATH 可选覆盖(默认 data/neckline.db)。ECS 部署默认路径即 /opt/neckline/data/
     # neckline.db(相对项目根,无需设);冒烟/隔离测试可设 DB_PATH 指向临时库,不碰生产台账。
     db_override = _clean(os.environ.get("DB_PATH"))
@@ -99,6 +113,7 @@ def _load_settings() -> Settings:
         apns_bundle_id=_clean(os.environ.get("APNS_BUNDLE_ID")),
         apns_key_path=_clean(os.environ.get("APNS_KEY_PATH")),
         apns_use_sandbox=_bool(os.environ.get("APNS_USE_SANDBOX"), True),
+        total_capital=_float(os.environ.get("TOTAL_CAPITAL"), 120000.0),
     )
 
 

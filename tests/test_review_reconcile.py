@@ -1,0 +1,652 @@
+"""对账引擎单测(plan 4D.2 验收:FIFO 闭合 / 三查各分支 / 强制复盘触发线边界)。"""
+
+from __future__ import annotations
+
+from datetime import date
+
+import pytest
+
+from neckline.review.parse import RawTrade
+from neckline.review.reconcile import (
+    FORCED_REVIEW_LOSS_FRAC,
+    STOP_BREACHED,
+    STOP_KEPT,
+    STOP_NOT_APPLICABLE,
+    STOP_NOT_TRIGGERED,
+    RoundTrip,
+    build_round_trips,
+    check_cooldown,
+    check_entry_screens,
+    check_plan_and_ledger,
+    check_position_count_and_exposure,
+    check_single_cap,
+    classify_stop_discipline,
+    compute_weekly_stats,
+    is_forced_review,
+    iso_week_key,
+    run_weekly_review,
+    week_range,
+    weekly_review_dict,
+)
+
+from .conftest import (
+    business_days,
+    insert_stock_basic,
+    insert_trade_cal,
+    seed_active_rule_v1,
+    seed_synthetic_market,
+)
+
+
+def _trade(trade_date, ts_code, side, price, qty, fee=0.0, name="示例票", cash_flow=None):
+    return RawTrade(
+        trade_date=trade_date, ts_code=ts_code, name=name, side=side,
+        price=price, qty=qty, fee=fee, cash_flow=cash_flow if cash_flow is not None else 0.0,
+    )
+
+
+# ======================================================================
+#  FIFO 闭合回合
+# ======================================================================
+
+class TestBuildRoundTrips:
+    def test_simple_full_close(self):
+        trades = [
+            _trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100, fee=10.0),
+            _trade(date(2026, 7, 16), "600519.SH", "sell", 110.0, 100, fee=12.0),
+        ]
+        rts, warnings = build_round_trips(trades)
+        assert warnings == []
+        assert len(rts) == 1
+        rt = rts[0]
+        assert rt.closed and rt.buy_price == 100.0 and rt.sell_price == 110.0 and rt.qty == 100
+        assert rt.fees == pytest.approx(22.0)
+        assert rt.net_pnl == pytest.approx((110 - 100) * 100 - 22.0)
+
+    def test_partial_sells_across_two_transactions_same_lot(self):
+        trades = [
+            _trade(date(2026, 7, 14), "600519.SH", "buy", 10.0, 200, fee=20.0),
+            _trade(date(2026, 7, 15), "600519.SH", "sell", 11.0, 100, fee=5.0),
+            _trade(date(2026, 7, 16), "600519.SH", "sell", 12.0, 100, fee=6.0),
+        ]
+        rts, warnings = build_round_trips(trades)
+        assert warnings == []
+        assert len(rts) == 2
+        rt1, rt2 = rts
+        assert rt1.qty == 100 and rt1.sell_price == 11.0
+        assert rt1.fees == pytest.approx((20 / 200 + 5 / 100) * 100)   # 0.1+0.05 每股 * 100 = 15
+        assert rt2.qty == 100 and rt2.sell_price == 12.0
+        assert rt2.fees == pytest.approx((20 / 200 + 6 / 100) * 100)   # 0.1+0.06 每股 * 100 = 16
+
+    def test_fifo_order_across_two_lots(self):
+        """两笔不同价格买入,卖出应先消耗最早买入的那批(FIFO);第二笔买入 100 股
+        只被消耗 50 股,剩余 50 股应成为一笔未平仓回合(不是"凭空消失")。"""
+        trades = [
+            _trade(date(2026, 7, 10), "600519.SH", "buy", 10.0, 100, fee=0.0),
+            _trade(date(2026, 7, 12), "600519.SH", "buy", 12.0, 100, fee=0.0),
+            _trade(date(2026, 7, 14), "600519.SH", "sell", 15.0, 150, fee=0.0),
+        ]
+        rts, warnings = build_round_trips(trades)
+        assert warnings == []
+        assert len(rts) == 3
+        closed = [rt for rt in rts if rt.closed]
+        open_ = [rt for rt in rts if not rt.closed]
+        assert len(closed) == 2 and len(open_) == 1
+        assert closed[0].buy_price == 10.0 and closed[0].qty == 100   # 先消耗最早买入的 100 股
+        assert closed[1].buy_price == 12.0 and closed[1].qty == 50    # 第二笔买入被消耗 50 股
+        assert open_[0].buy_price == 12.0 and open_[0].qty == 50      # 第二笔买入剩余 50 股仍持仓
+
+    def test_oversell_produces_warning_not_crash(self):
+        trades = [
+            _trade(date(2026, 7, 14), "600519.SH", "buy", 10.0, 100, fee=0.0),
+            _trade(date(2026, 7, 16), "600519.SH", "sell", 11.0, 150, fee=0.0),
+        ]
+        rts, warnings = build_round_trips(trades)
+        assert len(rts) == 1 and rts[0].qty == 100
+        assert len(warnings) == 1
+        assert "差 50 股" in warnings[0]
+
+    def test_unmatched_buy_remains_open(self):
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 10.0, 100, fee=1.0)]
+        rts, warnings = build_round_trips(trades)
+        assert warnings == []
+        assert len(rts) == 1
+        rt = rts[0]
+        assert rt.closed is False
+        assert rt.sell_date is None and rt.sell_price is None
+        assert rt.net_pnl is None and rt.pnl_pct is None
+        assert rt.buy_amount == pytest.approx(1000.0)
+
+    def test_multiple_codes_independent(self):
+        trades = [
+            _trade(date(2026, 7, 14), "600519.SH", "buy", 10.0, 100),
+            _trade(date(2026, 7, 14), "300750.SZ", "buy", 20.0, 100),
+            _trade(date(2026, 7, 16), "600519.SH", "sell", 11.0, 100),
+        ]
+        rts, warnings = build_round_trips(trades)
+        assert warnings == []
+        by_code = {rt.ts_code: rt for rt in rts}
+        assert by_code["600519.SH"].closed is True
+        assert by_code["300750.SZ"].closed is False
+
+
+# ======================================================================
+#  止损纪律(对账三查②)
+# ======================================================================
+
+class TestStopDiscipline:
+    def _rt(self, buy=100.0, sell=94.0):
+        return RoundTrip(ts_code="600519.SH", name="贵州茅台", buy_date=date(2026, 7, 14),
+                          buy_price=buy, qty=100, fees=0.0, sell_date=date(2026, 7, 16),
+                          sell_price=sell, closed=True)
+
+    def test_breached_at_boundary(self):
+        kind, _ = classify_stop_discipline(self._rt(sell=94.0), stop_pct=0.05)   # -6% 恰好
+        assert kind == STOP_BREACHED
+
+    def test_breached_worse_than_boundary(self):
+        kind, _ = classify_stop_discipline(self._rt(sell=93.0), stop_pct=0.05)   # -7%
+        assert kind == STOP_BREACHED
+
+    def test_kept_stop_within_band(self):
+        kind, _ = classify_stop_discipline(self._rt(sell=95.5), stop_pct=0.05)   # -4.5%
+        assert kind == STOP_KEPT
+
+    def test_kept_stop_at_hi_boundary(self):
+        kind, _ = classify_stop_discipline(self._rt(sell=96.0), stop_pct=0.05)   # -4% 恰好
+        assert kind == STOP_KEPT
+
+    def test_not_triggered_shallow_loss(self):
+        kind, _ = classify_stop_discipline(self._rt(sell=98.0), stop_pct=0.05)   # -2%
+        assert kind == STOP_NOT_TRIGGERED
+
+    def test_not_triggered_profit(self):
+        kind, _ = classify_stop_discipline(self._rt(sell=103.0), stop_pct=0.05)  # +3%
+        assert kind == STOP_NOT_TRIGGERED
+
+    def test_not_applicable_when_no_stop_rule(self):
+        kind, _ = classify_stop_discipline(self._rt(sell=50.0), stop_pct=None)
+        assert kind == STOP_NOT_APPLICABLE
+
+    def test_not_applicable_when_open(self):
+        rt = RoundTrip(ts_code="600519.SH", name="x", buy_date=date(2026, 7, 14), buy_price=100.0,
+                       qty=100, fees=0.0, closed=False)
+        kind, _ = classify_stop_discipline(rt, stop_pct=0.05)
+        assert kind == STOP_NOT_APPLICABLE
+
+
+# ======================================================================
+#  章程执行(对账三查③)
+# ======================================================================
+
+class TestSingleCap:
+    def test_over_cap_flagged(self):
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 300.0, 100)]  # ¥30,000 > 2万
+        out = check_single_cap(trades, single_cap=20000.0)
+        assert len(out) == 1 and "600519.SH" in out[0]
+
+    def test_within_cap_not_flagged(self):
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100)]  # ¥10,000
+        assert check_single_cap(trades, single_cap=20000.0) == []
+
+    def test_at_boundary_not_flagged(self):
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 200.0, 100)]  # 恰好 ¥20,000
+        assert check_single_cap(trades, single_cap=20000.0) == []
+
+
+class TestPositionCountAndExposure:
+    def test_concurrent_count_exceeds(self):
+        codes = ["A", "B", "C", "D", "E", "F"]
+        rts = [
+            RoundTrip(ts_code=c, name=c, buy_date=date(2026, 7, 13), buy_price=10.0, qty=100,
+                      fees=0.0, sell_date=date(2026, 7, 17), sell_price=11.0, closed=True)
+            for c in codes
+        ]
+        out = check_position_count_and_exposure(
+            rts, week_start=date(2026, 7, 13), week_end=date(2026, 7, 17), asof=date(2026, 7, 17),
+            max_positions=5, max_exposure_frac=1.0, total_capital=1_000_000.0,
+        )
+        assert any("并发持仓最多达 6 只" in msg for msg in out)
+
+    def test_concurrent_count_within_limit(self):
+        codes = ["A", "B", "C"]
+        rts = [
+            RoundTrip(ts_code=c, name=c, buy_date=date(2026, 7, 13), buy_price=10.0, qty=100,
+                      fees=0.0, sell_date=date(2026, 7, 17), sell_price=11.0, closed=True)
+            for c in codes
+        ]
+        out = check_position_count_and_exposure(
+            rts, week_start=date(2026, 7, 13), week_end=date(2026, 7, 17), asof=date(2026, 7, 17),
+            max_positions=5, max_exposure_frac=1.0, total_capital=1_000_000.0,
+        )
+        assert out == []
+
+    def test_exposure_exceeds(self):
+        rt = RoundTrip(ts_code="A", name="A", buy_date=date(2026, 7, 13), buy_price=1000.0, qty=100,
+                       fees=0.0, sell_date=date(2026, 7, 17), sell_price=1100.0, closed=True)  # ¥100,000
+        out = check_position_count_and_exposure(
+            [rt], week_start=date(2026, 7, 13), week_end=date(2026, 7, 17), asof=date(2026, 7, 17),
+            max_positions=5, max_exposure_frac=0.6, total_capital=120000.0,   # 上限 ¥72,000
+        )
+        assert any("持仓总敞口最高达" in msg for msg in out)
+
+    def test_exposure_within_limit(self):
+        rt = RoundTrip(ts_code="A", name="A", buy_date=date(2026, 7, 13), buy_price=100.0, qty=100,
+                       fees=0.0, sell_date=date(2026, 7, 17), sell_price=110.0, closed=True)  # ¥10,000
+        out = check_position_count_and_exposure(
+            [rt], week_start=date(2026, 7, 13), week_end=date(2026, 7, 17), asof=date(2026, 7, 17),
+            max_positions=5, max_exposure_frac=0.6, total_capital=120000.0,
+        )
+        assert out == []
+
+    def test_open_round_trip_counted_through_asof(self):
+        """未平仓回合应按"数据截止日"计入敞口/并发计数(见模块 docstring 已知简化1)。"""
+        rt = RoundTrip(ts_code="A", name="A", buy_date=date(2026, 7, 13), buy_price=1000.0, qty=100,
+                       fees=0.0, closed=False)   # 未平仓,买入 ¥100,000
+        out = check_position_count_and_exposure(
+            [rt], week_start=date(2026, 7, 13), week_end=date(2026, 7, 17), asof=date(2026, 7, 17),
+            max_positions=5, max_exposure_frac=0.6, total_capital=120000.0,
+        )
+        assert any("持仓总敞口最高达" in msg for msg in out)
+
+    def test_non_overlapping_week_not_counted(self):
+        rt = RoundTrip(ts_code="A", name="A", buy_date=date(2026, 6, 1), buy_price=1000.0, qty=100,
+                       fees=0.0, sell_date=date(2026, 6, 2), sell_price=1100.0, closed=True)
+        out = check_position_count_and_exposure(
+            [rt], week_start=date(2026, 7, 13), week_end=date(2026, 7, 17), asof=date(2026, 7, 17),
+            max_positions=5, max_exposure_frac=0.6, total_capital=120000.0,
+        )
+        assert out == []
+
+
+class TestEntryScreens:
+    @pytest.fixture
+    def market(self, isolated_env):
+        dates = seed_synthetic_market(isolated_env)
+        return isolated_env, dates
+
+    def test_st_purchase_flagged(self, market):
+        settings, dates = market
+        seed_active_rule_v1(settings)
+        from neckline.strategy import brain
+        from neckline.strategy.momentum import MomentumConfig
+        cfg = MomentumConfig(**brain.get_active(db_path=settings.db_path).rule["config"])
+        buy_day = dates[25]
+        trades = [_trade(buy_day, "600002.SH", "buy", 10.0, 100, name="*ST示例乙")]
+        out = check_entry_screens(trades, cfg, parquet_dir=settings.parquet_dir)
+        assert any("ST/*ST" in msg for msg in out)
+
+    def test_high_elasticity_flagged_when_enabled(self, market):
+        settings, dates = market
+        seed_active_rule_v1(settings, {"forbid_high_elasticity": True})
+        from neckline.strategy import brain
+        from neckline.strategy.momentum import MomentumConfig
+        cfg = MomentumConfig(**brain.get_active(db_path=settings.db_path).rule["config"])
+        buy_day = dates[25]
+        trades = [_trade(buy_day, "300001.SZ", "buy", 10.0, 100, name="示例丙")]
+        out = check_entry_screens(trades, cfg, parquet_dir=settings.parquet_dir)
+        assert any("高弹题材" in msg for msg in out)
+
+    def test_high_elasticity_not_flagged_when_disabled(self, market):
+        settings, dates = market
+        seed_active_rule_v1(settings, {"forbid_high_elasticity": False})
+        from neckline.strategy import brain
+        from neckline.strategy.momentum import MomentumConfig
+        cfg = MomentumConfig(**brain.get_active(db_path=settings.db_path).rule["config"])
+        buy_day = dates[25]
+        trades = [_trade(buy_day, "300001.SZ", "buy", 10.0, 100, name="示例丙")]
+        out = check_entry_screens(trades, cfg, parquet_dir=settings.parquet_dir)
+        assert out == []
+
+    def test_green_bigdown_flagged_when_enabled(self, market):
+        settings, dates = market
+        seed_active_rule_v1(settings, {"forbid_green_bigdown": -0.005})
+        from neckline.strategy import brain
+        from neckline.strategy.momentum import MomentumConfig
+        cfg = MomentumConfig(**brain.get_active(db_path=settings.db_path).rule["config"])
+        last_day = dates[-1]   # -1% 回调日(seed_synthetic_market 设计)
+        trades = [_trade(last_day, "600001.SH", "buy", 10.0, 100, name="示例甲")]
+        out = check_entry_screens(trades, cfg, parquet_dir=settings.parquet_dir)
+        assert any("绿盘大阴线" in msg for msg in out)
+
+    def test_far_from_high_flagged_when_enabled(self, market):
+        settings, dates = market
+        seed_active_rule_v1(settings, {"forbid_far_from_high": -0.005})
+        from neckline.strategy import brain
+        from neckline.strategy.momentum import MomentumConfig
+        cfg = MomentumConfig(**brain.get_active(db_path=settings.db_path).rule["config"])
+        last_day = dates[-1]
+        trades = [_trade(last_day, "600001.SH", "buy", 10.0, 100, name="示例甲")]
+        out = check_entry_screens(trades, cfg, parquet_dir=settings.parquet_dir)
+        assert any("距 20 日高点过远" in msg for msg in out)
+
+    def test_new_stock_flagged_when_enabled(self, market):
+        settings, dates = market
+        seed_active_rule_v1(settings, {"forbid_new_days": 500})   # 样本 days_since_listing≈400~406,小于500
+        from neckline.strategy import brain
+        from neckline.strategy.momentum import MomentumConfig
+        cfg = MomentumConfig(**brain.get_active(db_path=settings.db_path).rule["config"])
+        buy_day = dates[25]
+        trades = [_trade(buy_day, "600001.SH", "buy", 10.0, 100, name="示例甲")]
+        out = check_entry_screens(trades, cfg, parquet_dir=settings.parquet_dir)
+        assert any("次新股" in msg for msg in out)
+
+    def test_clean_day_no_violations(self, market):
+        settings, dates = market
+        seed_active_rule_v1(settings, {
+            "forbid_green_bigdown": -0.03, "forbid_far_from_high": -0.15,
+            "forbid_new_days": 120, "forbid_high_elasticity": True,
+        })
+        from neckline.strategy import brain
+        from neckline.strategy.momentum import MomentumConfig
+        cfg = MomentumConfig(**brain.get_active(db_path=settings.db_path).rule["config"])
+        clean_day = dates[25]   # ret_1d=+1%, dist_from_high_20d=0,主板非ST
+        trades = [_trade(clean_day, "600001.SH", "buy", 10.0, 100, name="示例甲")]
+        out = check_entry_screens(trades, cfg, parquet_dir=settings.parquet_dir)
+        assert out == []
+
+
+class TestCooldown:
+    def test_reentry_within_cooldown_flagged(self, isolated_env):
+        d0 = date(2024, 1, 2)  # 周二
+        days = business_days(d0, 30)
+        insert_trade_cal(isolated_env, days)
+        rts = [
+            RoundTrip(ts_code="600519.SH", name="x", buy_date=days[0], buy_price=100.0, qty=100,
+                      fees=0.0, sell_date=days[2], sell_price=90.0, closed=True),  # 亏损离场
+            RoundTrip(ts_code="600519.SH", name="x", buy_date=days[3], buy_price=91.0, qty=100,
+                      fees=0.0, closed=False),   # 冷却期内重新买入
+        ]
+        out = check_cooldown(rts, cooldown_days=5)
+        assert len(out) == 1 and "冷却纪律" in out[0]
+
+    def test_reentry_after_cooldown_not_flagged(self, isolated_env):
+        d0 = date(2024, 1, 2)
+        days = business_days(d0, 30)
+        insert_trade_cal(isolated_env, days)
+        rts = [
+            RoundTrip(ts_code="600519.SH", name="x", buy_date=days[0], buy_price=100.0, qty=100,
+                      fees=0.0, sell_date=days[2], sell_price=90.0, closed=True),
+            RoundTrip(ts_code="600519.SH", name="x", buy_date=days[10], buy_price=91.0, qty=100,
+                      fees=0.0, closed=False),
+        ]
+        out = check_cooldown(rts, cooldown_days=5)
+        assert out == []
+
+    def test_zero_cooldown_is_noop(self):
+        rts = [
+            RoundTrip(ts_code="600519.SH", name="x", buy_date=date(2026, 7, 1), buy_price=100.0, qty=100,
+                      fees=0.0, sell_date=date(2026, 7, 2), sell_price=50.0, closed=True),
+            RoundTrip(ts_code="600519.SH", name="x", buy_date=date(2026, 7, 3), buy_price=51.0, qty=100,
+                      fees=0.0, closed=False),
+        ]
+        assert check_cooldown(rts, cooldown_days=0) == []
+
+    def test_profitable_exit_does_not_trigger_cooldown(self):
+        rts = [
+            RoundTrip(ts_code="600519.SH", name="x", buy_date=date(2026, 7, 1), buy_price=100.0, qty=100,
+                      fees=0.0, sell_date=date(2026, 7, 2), sell_price=150.0, closed=True),  # 盈利离场
+            RoundTrip(ts_code="600519.SH", name="x", buy_date=date(2026, 7, 3), buy_price=151.0, qty=100,
+                      fees=0.0, closed=False),
+        ]
+        assert check_cooldown(rts, cooldown_days=5) == []
+
+
+# ======================================================================
+#  周统计 + 强制复盘
+# ======================================================================
+
+class TestWeeklyStats:
+    def _rt(self, buy, sell, qty=100, fees=0.0):
+        return RoundTrip(ts_code="X", name="X", buy_date=date(2026, 7, 13), buy_price=buy, qty=qty,
+                         fees=fees, sell_date=date(2026, 7, 15), sell_price=sell, closed=True)
+
+    def test_win_rate_and_profit_factor(self):
+        rts = [self._rt(10, 12), self._rt(10, 12), self._rt(10, 8)]  # 2 赢 1 输
+        stats = compute_weekly_stats(rts, open_count=0)
+        assert stats.closed_count == 3
+        assert stats.win_rate == pytest.approx(2 / 3)
+        # gross wins = 200*2=400, gross loss=200 -> pf=2.0
+        assert stats.profit_factor == pytest.approx(2.0)
+
+    def test_all_wins_profit_factor_infinite(self):
+        rts = [self._rt(10, 12)]
+        stats = compute_weekly_stats(rts, open_count=0)
+        assert stats.profit_factor == float("inf")
+
+    def test_no_closed_trades(self):
+        stats = compute_weekly_stats([], open_count=2)
+        assert stats.closed_count == 0 and stats.open_count == 2
+        assert stats.win_rate == 0.0
+        assert stats.realized_loss == 0.0
+
+    def test_realized_loss_only_sums_losses(self):
+        """§2.1 第4条口径:只累加亏损,不被同周盈利冲抵(同 momentum.py week_loss)。"""
+        rts = [self._rt(10, 20), self._rt(10, 5)]   # 赢1000,输500
+        stats = compute_weekly_stats(rts, open_count=0)
+        assert stats.realized_loss == pytest.approx(-500.0)
+        assert stats.realized_pnl == pytest.approx(500.0)   # 净盈亏是正的,但 realized_loss 仍是 -500
+
+    def test_fees_reduce_net_pnl(self):
+        rts = [self._rt(10, 12, fees=50.0)]
+        stats = compute_weekly_stats(rts, open_count=0)
+        assert stats.gross_pnl == pytest.approx(200.0)
+        assert stats.realized_pnl == pytest.approx(150.0)
+        assert stats.total_fees == pytest.approx(50.0)
+
+
+class TestForcedReview:
+    def _stats_with_loss(self, loss: float):
+        return compute_weekly_stats(
+            [RoundTrip(ts_code="X", name="X", buy_date=date(2026, 7, 13), buy_price=100.0, qty=100,
+                      fees=0.0, sell_date=date(2026, 7, 15), sell_price=100.0 + loss / 100, closed=True)],
+            open_count=0,
+        )
+
+    def test_exactly_at_threshold_triggers(self):
+        total_capital = 120000.0
+        loss = -FORCED_REVIEW_LOSS_FRAC * total_capital   # 恰好 -2%
+        stats = self._stats_with_loss(loss)
+        assert is_forced_review(stats, total_capital) is True
+
+    def test_just_under_threshold_does_not_trigger(self):
+        total_capital = 120000.0
+        loss = -FORCED_REVIEW_LOSS_FRAC * total_capital + 50.0   # 差一点没到 2%
+        stats = self._stats_with_loss(loss)
+        assert is_forced_review(stats, total_capital) is False
+
+    def test_over_threshold_triggers(self):
+        total_capital = 120000.0
+        loss = -FORCED_REVIEW_LOSS_FRAC * total_capital - 1000.0
+        stats = self._stats_with_loss(loss)
+        assert is_forced_review(stats, total_capital) is True
+
+    def test_profit_week_never_triggers(self):
+        total_capital = 120000.0
+        stats = self._stats_with_loss(5000.0)   # 正数=盈利,realized_loss 应为 0
+        assert stats.realized_loss == 0.0
+        assert is_forced_review(stats, total_capital) is False
+
+
+class TestIsoWeek:
+    def test_key_and_range_roundtrip(self):
+        d = date(2026, 7, 16)   # 周四
+        key = iso_week_key(d)
+        start, end = week_range(key)
+        assert start.weekday() == 0 and end.weekday() == 6
+        assert start <= d <= end
+
+    def test_week_boundary_sunday_monday(self):
+        sunday = date(2026, 7, 19)
+        monday = date(2026, 7, 20)
+        assert iso_week_key(sunday) != iso_week_key(monday)
+
+
+# ======================================================================
+#  计划内/计划外 + 持仓台账对账(对账三查①,直接单测,不经 run_weekly_review)
+# ======================================================================
+
+class TestCheckPlanAndLedger:
+    def test_in_report_candidates_is_plan_in(self, isolated_env):
+        from neckline.report import store as report_store
+
+        report_store.save_report(
+            date(2026, 7, 14), strategy_version="v1", sentiment={}, sectors={},
+            candidates=[{"ts_code": "600519.SH", "rank": 1, "name": "贵州茅台"}],
+            markdown="", db_path=isolated_env.db_path,
+        )
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100)]
+        out = check_plan_and_ledger(trades, db_path=isolated_env.db_path)
+        assert out[0].plan_status == "计划内(当日报告候选)"
+
+    def test_in_inquiry_pool_is_plan_in(self, isolated_env):
+        from neckline.api.stores import add_to_inquiry_pool
+        from neckline.report import store as report_store
+
+        report_store.save_report(
+            date(2026, 7, 14), strategy_version="v1", sentiment={}, sectors={},
+            candidates=[], markdown="", db_path=isolated_env.db_path,
+        )
+        add_to_inquiry_pool(date(2026, 7, 14), "600519.SH", db_path=isolated_env.db_path)
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100)]
+        out = check_plan_and_ledger(trades, db_path=isolated_env.db_path)
+        assert out[0].plan_status == "计划内(问询台海选池)"
+
+    def test_not_in_report_or_pool_is_off_plan(self, isolated_env):
+        from neckline.report import store as report_store
+
+        report_store.save_report(
+            date(2026, 7, 14), strategy_version="v1", sentiment={}, sectors={},
+            candidates=[], markdown="", db_path=isolated_env.db_path,
+        )
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100)]
+        out = check_plan_and_ledger(trades, db_path=isolated_env.db_path)
+        assert out[0].plan_status == "计划外(未经系统候选/海选池放行的自主买入)"
+
+    def test_no_report_generated_that_day(self, isolated_env):
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100)]
+        out = check_plan_and_ledger(trades, db_path=isolated_env.db_path)
+        assert out[0].plan_status.startswith("无报告数据")
+
+    def test_ledger_matched(self, isolated_env):
+        from neckline.sentinel.positions import open_position
+
+        open_position("600519.SH", buy_price=100.0, qty=100, buy_date=date(2026, 7, 14), db_path=isolated_env.db_path)
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100)]
+        out = check_plan_and_ledger(trades, db_path=isolated_env.db_path)
+        assert out[0].ledger_status == "台账已录"
+
+    def test_ledger_price_mismatch(self, isolated_env):
+        from neckline.sentinel.positions import open_position
+
+        open_position("600519.SH", buy_price=100.0, qty=100, buy_date=date(2026, 7, 14), db_path=isolated_env.db_path)
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 150.0, 100)]   # 台账 100 vs 交割单 150,差 50%
+        out = check_plan_and_ledger(trades, db_path=isolated_env.db_path)
+        assert out[0].ledger_status.startswith("台账记录价格不符")
+
+    def test_ledger_missing(self, isolated_env):
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100)]
+        out = check_plan_and_ledger(trades, db_path=isolated_env.db_path)
+        assert out[0].ledger_status.startswith("台账缺失")
+
+    def test_amount_property(self, isolated_env):
+        trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 150.0, 100)]
+        out = check_plan_and_ledger(trades, db_path=isolated_env.db_path)
+        assert out[0].amount == pytest.approx(15000.0)
+
+
+# ======================================================================
+#  端到端:run_weekly_review()
+# ======================================================================
+
+class TestRunWeeklyReview:
+    def test_plan_and_ledger_status(self, isolated_env):
+        seed_active_rule_v1(isolated_env)
+        insert_stock_basic(isolated_env, [
+            {"ts_code": "600519.SH", "name": "贵州茅台", "market": "主板"},
+            {"ts_code": "300750.SZ", "name": "宁德时代", "market": "创业板"},
+        ])
+
+        from neckline.report import store as report_store
+        report_store.save_report(
+            date(2026, 7, 14), strategy_version="v1", sentiment={}, sectors={},
+            candidates=[{"ts_code": "600519.SH", "rank": 1, "name": "贵州茅台"}],
+            markdown="", db_path=isolated_env.db_path,
+        )
+
+        from neckline.sentinel.positions import open_position
+        open_position("600519.SH", buy_price=1500.0, qty=100, buy_date=date(2026, 7, 14),
+                      db_path=isolated_env.db_path)
+
+        trades = [
+            _trade(date(2026, 7, 14), "600519.SH", "buy", 1500.0, 100, name="贵州茅台"),   # 计划内 + 台账已录
+            _trade(date(2026, 7, 14), "300750.SZ", "buy", 200.0, 100, name="宁德时代"),    # 计划外 + 台账缺失
+            _trade(date(2026, 7, 16), "600519.SH", "sell", 1424.7, 100, name="贵州茅台"),
+        ]
+        reviews, warnings = run_weekly_review(trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        assert warnings == []
+        assert len(reviews) == 1
+        review = reviews[0]
+        by_code = {c.ts_code: c for c in review.plan_checks}
+        assert by_code["600519.SH"].plan_status.startswith("计划内")
+        assert by_code["600519.SH"].ledger_status == "台账已录"
+        assert by_code["300750.SZ"].plan_status.startswith("计划外")
+        assert by_code["300750.SZ"].ledger_status.startswith("台账缺失")
+
+    def test_stop_breach_and_single_cap_violation(self, isolated_env):
+        seed_active_rule_v1(isolated_env)  # single_cap=20000, stop_pct=0.05
+        trades = [
+            _trade(date(2026, 7, 14), "600519.SH", "buy", 300.0, 100, name="贵州茅台"),   # ¥30,000 > 2万
+            _trade(date(2026, 7, 16), "600519.SH", "sell", 280.0, 100, name="贵州茅台"),  # -6.67%,破止损
+        ]
+        reviews, _ = run_weekly_review(trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        review = reviews[0]
+        assert any("超过单笔仓位上限" in v for v in review.discipline_violations)
+        assert any("疑似未按 -5% 止损离场" in v for v in review.discipline_violations)
+        assert review.stats.closed_count == 1
+
+    def test_forced_review_triggered_end_to_end(self, isolated_env):
+        seed_active_rule_v1(isolated_env)
+        total_capital = 120000.0
+        # 单笔亏损 ¥3000(=2.5%总仓) > 2% 触发线
+        trades = [
+            _trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100, name="贵州茅台"),
+            _trade(date(2026, 7, 16), "600519.SH", "sell", 70.0, 100, name="贵州茅台"),
+        ]
+        reviews, _ = run_weekly_review(
+            trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, total_capital=total_capital,
+        )
+        review = reviews[0]
+        assert review.forced_review is True
+        assert "强制复盘" in review.forced_review_reason
+
+    def test_no_active_strategy_version_still_produces_report(self, isolated_env):
+        """无现役大脑版本时,止损/章程检查诚实跳过,但计划核对与统计仍应产出。"""
+        trades = [
+            _trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100, name="贵州茅台"),
+            _trade(date(2026, 7, 16), "600519.SH", "sell", 110.0, 100, name="贵州茅台"),
+        ]
+        reviews, warnings = run_weekly_review(trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        assert len(reviews) == 1
+        review = reviews[0]
+        assert review.stats.closed_count == 1
+        assert all(kind == STOP_NOT_APPLICABLE for _, kind, _ in review.stop_discipline)
+
+    def test_empty_trades_returns_empty(self, isolated_env):
+        reviews, warnings = run_weekly_review([], db_path=isolated_env.db_path)
+        assert reviews == [] and warnings == []
+
+    def test_weekly_review_dict_json_safe(self, isolated_env):
+        """profit_factor/profit_loss_ratio 为 inf 时,序列化应变 None(JSON 无 Infinity)。"""
+        import json
+
+        seed_active_rule_v1(isolated_env)
+        trades = [
+            _trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100, name="贵州茅台"),
+            _trade(date(2026, 7, 16), "600519.SH", "sell", 110.0, 100, name="贵州茅台"),  # 全赢 -> pf=inf
+        ]
+        reviews, _ = run_weekly_review(trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        d = weekly_review_dict(reviews[0])
+        raw = json.dumps(d)   # 不应抛异常,且不应含字面 Infinity
+        assert "Infinity" not in raw
+        assert d["stats"]["profitFactor"] is None

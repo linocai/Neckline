@@ -154,6 +154,7 @@ class SettingsOut(BaseModel):
     llmProvider: Optional[str] = None
     llmKeySet: bool = False                       # 只回布尔,绝不回 key 明文
     push: PushSettingsOut
+    reviewColMap: Dict[str, str] = Field(default_factory=dict)   # 4D 周复盘交割单列映射
 
 
 class SettingsLLMIn(BaseModel):
@@ -171,10 +172,48 @@ class DeviceRegisterIn(BaseModel):
     platform: str = "ios"
 
 
+class SettingsReviewColMapIn(BaseModel):
+    colMap: Dict[str, str] = Field(default_factory=dict)
+
+
+# —— 4D 周复盘工作台 ————————————————————————————————————————————————————
+#
+# `result` 直接透传 `neckline.review.reconcile.weekly_review_dict()` 的完整快照
+# (roundTrips/planChecks/disciplineViolations/stopDiscipline/stats/forcedReview
+# 等,camelCase,该函数本身就是 API 响应与 `reviews.result_json` 落库共用的唯一
+# 形状源)——同 `ReportOut.sentiment/sectors` 的透传惯例(schemas.py 顶部约定),
+# 不在 API 层重复声明一套嵌套 pydantic 模型去镜像领域字段(同码不重写)。
+
+class WeeklyReviewOut(BaseModel):
+    week: str
+    result: Dict[str, Any]
+    material: str = ""
+
+
+class ReviewUploadOut(BaseModel):
+    ok: bool = True
+    weeks: List[WeeklyReviewOut] = Field(default_factory=list)
+    parseWarnings: List[str] = Field(default_factory=list)   # 解析层面的问题(未知格式/反查失败/非法工作簿等)
+    dataWarnings: List[str] = Field(default_factory=list)    # FIFO 数据完整性问题(如卖出找不到匹配买入)
+    sheetFormats: Dict[str, str] = Field(default_factory=dict)
+
+
+class ReviewGetOut(BaseModel):
+    ok: bool = True
+    found: bool = False
+    week: str = ""
+    generatedAt: str = ""
+    # None(JSON null,非 `{}`)当 `found=False`——客户端据此把 `result` 解码成强类型
+    # struct 的 Optional,不必为"空字典 vs 合法结果"写一套容错回退逻辑。
+    result: Optional[Dict[str, Any]] = None
+    material: str = ""
+
+
 __all__ = [
     "OkOut", "LLMJudgmentOut", "CandidateOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_REJECT", "VERDICT_PASS",
     "PushSettingsOut", "SettingsOut", "SettingsLLMIn", "SettingsPushIn", "DeviceRegisterIn",
+    "SettingsReviewColMapIn", "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
 ]
