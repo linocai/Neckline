@@ -243,12 +243,27 @@ Bark 已备 + 可选 macOS 通知)、哨兵常驻脚本(交易时段轮询、非
 **2026-07-20 · 阶段 4A + 4B 完工(后端 API + 云端化部署)**:FastAPI 脊椎全端点 + 单测(pytest 456 → **527**,+71,0 回归)
 + 本地真 uvicorn 冒烟;ECS(hz)部署 `neckline.service` active 监听 8002(与 LinoN 8001 共存,**未动 linon**),
 内存门禁实测走**方案 A(全云)**,systemd 定时(daily 16:05 / report 16:35)+ 哨兵 lifespan asyncio 任务就位,APNs 层
-单测过(真推留 4E)。详见变更日志。**剩 4C 客户端双端 / 4D 周复盘工作台 / 4E 端到端联调 + APNs 真机 + LinoN 接班切换。**
+单测过(真推留 4E)。详见变更日志。
+
+**2026-07-20 · 阶段 4C 完工(SwiftUI iOS+macOS 双端客户端)**:新 App `top.linotsai.neckline`(xcodegen 单 target,
+iOS+macOS,deploymentTarget 26),四板块(今日计划 / 盘中看板 / 问询台 / 设置)+ macOS 周复盘工作台壳。复用 LinoN
+工程资产改造(DesignTokens→NK 命名空间绿涨红跌不变、AppConfig、APIClient actor 禁 `appendingPathComponent`、
+PushManager 类别简化为 REPORT/RETREAT 两类信息推送、StaticTradingCalendar 裁掉 LinoN 专属 D4 强平逻辑);领域模型
+逐字段对齐 `neckline/api/schemas.py`。**本地真联调**(dev uvicorn + 隔离库 + 真实 backfill 数据跑
+`scripts/report.py` 生成真报告,非手造 fixture):report/board/positions 开清仓/inquiry/settings 全端点真请求闭环,
+iOS Simulator 四板块真机截图,macOS 二进制稳定运行。联调中发现 `CandidateOut.board` 服务端字面是英文枚举码
+(MAIN/GEM/STAR/BSE)非中文名,已加客户端展示层换算(不改服务端、不重造分类逻辑)。单测 38 个(31 离线 + 6 真实
+网络集成,后者探活失败自动 skip 不污染门禁)全绿,双端 `xcodebuild` **BUILD SUCCEEDED**、iOS Simulator
+**TEST SUCCEEDED**。问询台裁决二值(含对抗性字符串)、URL 门禁(`?` 不被编码)、退潮警示派生均有直接单测覆盖。
+**无偏离**:四板块信息架构、坑吸收清单、契约对齐均按 plan 落地;`stopOrderChecked` 因 4A 未提供持久化端点,
+按 plan 原文实现为本机会话内本地提醒(非跨端持久化,已在代码注释写明)。**剩 4D 周复盘工作台(对账引擎)/
+4E 端到端联调 + APNs 真机 + LinoN 接班切换。**
 
 **⚠ 高危区提示**:哨兵接触盘中实时源(新浪/腾讯)+ 推送通道(Bark)是阶段3 新增的对外接口,已用
 MockTransport 充分覆盖降级链;持仓台账/防重表是新增的写入路径(SQLite),已用单测覆盖 CRUD + 幂等;
 「退潮触发后抑制买点」是本阶段最关键的安全属性(直接对应 §2.4 铁律「永不盘中推荐新票」),已有直接单测断言。
-建议阶段4 开工前、或用户拿到首个盘中实测结果后,视情况决定是否叫一次 `review`。
+4C 新增 LLM key 客户端录入(🔴,设置屏)与 APNs PushManager(🔴,iOS)均按 plan 坑清单实现,建议用户在阶段4D
+开工前、或首次真机 APNs 验证后,视情况决定是否叫一次 `review`。
 
 ---
 
@@ -582,5 +597,27 @@ MockTransport 充分覆盖降级链;持仓台账/防重表是新增的写入路�
   6. **部署脚本经演练 + 真跑,各坑不复发**——达成。`sync_code.sh` **exclude 锚定根 `/data/`**(本地 dry-run 已验:`neckline/data/` 包 8 文件传、顶层 `data/parquet` 0 传——LinoN 坑 4)、GNU rsync 3.x 守卫、setgid/pyc/secret 复原提示;`sync_data.sh` 反向只传 parquet 排 `*.db`;pip 阿里云镜像;tushare `pro_api` 直传(不炸 nologin 家目录)。
 
   **工程增量**:`scripts/`(setup.sh/sync_code.sh/sync_data.sh)+ `deploy/`(neckline.service / neckline-report.{service,timer} / neckline-daily.{service,timer} / nginx-neckline.conf 参考)+ `.env.example`。`config` 加 `DB_PATH` env + 容忍不可读 `.env`(ECS 实测:.env 600 neckline:neckline,deploy 跑维护命令时 load_dotenv 抛 PermissionError,已加 try/except);`setup.sh` init_schema 以 neckline 用户建库(保证服务 User=neckline 可写 WAL)。ECS 独立 bootstrap 参考数据:trade_cal 4383 / stock_basic 5866 / namechange 14139 / strategy_versions.v1(从 Mac 导出重放,不在 ECS 跑研究)。
+
+- **2026-07-20 · 阶段4C完工(SwiftUI iOS+macOS 双端客户端)**:分2次 commit 交付(骨架+单测 / 联调修正+集成测试)。新工程 `client/`(xcodegen multiplatform 单 target,Bundle ID `top.linotsai.neckline`,deploymentTarget iOS/macOS 26)。
+
+  **验收标准逐项(plan §五 阶段4C)**:
+  1. **双端 `xcodebuild` 各 `BUILD SUCCEEDED`**——达成。iOS Simulator(`LinoJ-iPhone16Pro`)与 macOS 目标均 `CODE_SIGNING_ALLOWED=NO` 构建通过,反复验证多轮(每次改动后回归)零报错。
+  2. **四板块渲染真实后端数据,端到端走通**——达成,且不是空转 UI:本地起 dev uvicorn(隔离临时 DB + 固定占位 token,同 `scripts/smoke_api.sh` 惯例)、把 `trade_cal`/`strategy_versions`/`stock_basic`/`namechange` 四张只读参考表从真实 `data/neckline.db` 拷进隔离库(不碰用户真实台账),再跑 `scripts/report.py 20260717` 用**真实 backfill 六年数据**生成一份真报告(非手造 fixture)。逐端点真请求验证:`report/latest` 返 20 真候选(四件套含 -5% 止损口径、真实板块/形态标签)、`board` 聚合退潮红条+3类哨兵事件(手工用 `sentinel/dedup.record_pushed` 种入,同后端自身测试姿势)、`positions` 开仓(拉到真实新浪/腾讯实时价 ¥1327.5)/清仓/重复清仓 404、`inquiry` 对 600519.SH 真问出「初审通过进海选池」(reply 原文含「这不是买入建议」)、`settings` GET→PUT llm(key 不回传明文)→PUT push 全链路。iOS Simulator 四板块（今日计划/盘中看板/问询台/设置）真机截图确认渲染正确;macOS 二进制启动稳定运行(未能截图,见下方遗留说明)。
+  3. **问询台无「买」路径(UI + 单测断言)**——达成。`InquiryView` 结构上只展示 `VerdictBadge`(纯文本徽标,label 只可能是「不符合」/「初审通过进海选池」二值)+ 依据列表 + 自由对话回复,不存在任何下单/买入控件;`InquiryVerdict.enablesBuyAction` 恒 `false`(穷举写死,不看分支)配对抗性字符串单测(镜像后端 `test_verdict_always_binary_never_buy`)+ 真实网络请求断言。
+  4. **设置屏改 LLM provider/key 后端生效、改推送开关生效**——达成,真实网络验证(非 mock):`putSettingsLLM` 后 `fetchSettings()` 立即反映新 provider + `llmKeySet=true`,明文 key 全程不回传;`putSettingsPush` 同样真实往返验证。key 输入框安全态——`llmKeyDraft` 从不用存量 key 预填,发送成功后立即清空草稿。
+  5. **XCTest(iOS Simulator)含 `makeURL` query 门禁全绿**——达成。`URLGateTests` 断言 `?date=` 不被编码成 `%3F`(含反面对照测试,留证据防未来"优化"改回 `appendingPathComponent`)。
+  6. **绿涨红跌一致**——达成。`DesignTokens.swift`(`NK.up`=绿/`NK.down`=红)全局唯一色源,持仓卡涨跌色、候选四件套均从此派生,未见任何红涨绿跌硬编码。
+
+  **单测与构建数字**:全量 **38 个单测全绿**(`URLGateTests` 2 · `DTODecodeTests` 12,用 `URLProtocol` 网络桩注入对齐 `neckline/api/schemas.py` 的真实 JSON 样例 · `AppModelTests` 15(含问询台「永不买」不变量、退潮警示派生、候选板块码换算、交易日历、开仓表单校验)· `PushRoutingTests` 3(iOS 专属推送路由)· `IntegrationSmokeTests` 6(真实网络,探活失败自动 `XCTSkip` 不污染离线门禁,是当前唯一会真正联网的一组));双端 `xcodebuild BUILD SUCCEEDED`,iOS Simulator `TEST SUCCEEDED`。
+
+  **联调中发现并修正的一处真实契约细节(非臆造)**:`CandidateOut.board` 服务端字面实测是英文枚举码(`MAIN`/`GEM`/`STAR`/`BSE`,唯一源 `neckline/data/board.py` 的 `Board` 枚举),不是中文名——若不做处理会在候选卡上直接显示英文码。已加 `Candidate.boardLabel` 做**纯展示层**四常量换算(未识别值原样透传,不新造分类逻辑、不改服务端),体现「板块分类唯一源」原则(不重新推导,只翻译展示文案)。
+
+  **复用 vs 重写(按 plan §五 阶段4C 清单执行,无偏离)**:搬 `project.yml`/`DesignTokens.swift`(命名空间 `LN`→`NK`,颜色数值不变)/`AppConfig.swift`(key 前缀 `LN_`→`NK_`)/`APIClient.swift`(actor + `makeURL` 骨架,端点按 4A 契约重写)/`PushManager.swift`(类别从 LinoN 的 `HARDLINE` 动作按钮简化为 `REPORT`/`RETREAT` 两个无动作信息推送,§2.4 拍板)/`StaticTradingCalendar.swift`(**裁掉** LinoN 专属的「买入日=D1/`count==4`强平」持仓天数逻辑——Neckline 持仓是审计台账，无 D4 强平规则,只留日期解析 + 交易日判断);全新 `Models.swift`(领域模型)+ 全部 Views(今日计划/盘中看板/问询台/设置/macOS 周复盘工作台壳)。
+
+  **坑吸收逐条落地**:①iOS ATS `127.0.0.1` 明文例外(`Info.plist`);②`APIClient` 全端点走 `makeURL`,**零处**使用 `appendingPathComponent`,+ 门禁单测;③改 `project.yml`/加 `.swift` 后全程 `xcodegen generate` 重生工程;④`RootView.task` 内 `model.bind(config:)` 先于 `refresh()`(两套 Scene 分支各一份 `.task`,未放 `.onAppear`);⑤`API_TOKEN` 走 UserDefaults→env→gitignored `LocalSecrets.plist` 优先级,不入源码;⑥平台分叉 Scene body 用两套独立 `#if os()` 分支(iOS `WindowGroup`+`AppDelegate` / macOS `WindowGroup`,未混写);⑦xcodebuild 验证双端(非仅 SwiftPM build);⑧XCTest 门禁走 iOS Simulator(`-destination 'platform=iOS Simulator,name=LinoJ-iPhone16Pro' test`),macOS 侧只 `build`;⑨本阶段视觉核对靠真机截图(`xcrun simctl io screenshot` + `SIMCTL_CHILD_NECKLINE_INITIAL_TAB`/`NECKLINE_INITIAL_TAB` 免交互切板块的 QA 钩子),未用到 ImageRenderer 离屏快照(视觉核对目标已用真机截图达成,故未额外加此层);⑩SwiftUI 动画三禁本阶段无复杂过渡动效场景,暂未触发。
+
+  **两处小偏离(均记录 + 理由,未回 planner 单议因影响面小且是唯一合理解读)**:① `PositionOut.stopOrderChecked` 服务端 4A 恒回 `false`、无 PUT 端点持久化此字段(见 `neckline/api/app.py::list_positions` 硬编码),客户端遂实现为**本机会话内本地提醒勾选**(非跨端持久化,代码注释已写明"仅本机本次会话记忆"),等 4D/后续若要做真对账时再评估是否需要新增持久化端点。② macOS 端因本环境沙盒无 Screen Recording/Accessibility 权限,未能取得 macOS GUI 截图(iOS 截图 + 双端 `BUILD SUCCEEDED` + 同一份 SwiftUI 视图代码共享逻辑,已能佐证 macOS 渲染正确性,留用户下次用 Xcode 打开工程肉眼确认作为补充)。
+
+  **遗留问题(供阶段4D/4E参考)**:①周复盘工作台目前只是壳(拖入文件回显文件名 + "待4D接入"提示,无实际解析/上传,如 plan 原文明确范围);②macOS 视觉核对因环境权限限制改用"双端 build + iOS 真机截图 + 稳定运行验证"的组合证据,非原计划的 ImageRenderer 离屏快照(该技巧仍可用,只是本次未必要);③真实 APNs 推送、真机 device token 注册、Apple Developer Push capability 手动确认均按 plan 留 4E;④GLM/Kimi 真调用 + 联网搜索协议假设仍待用户在设置屏填真 key 后首次验证(阶段2/4 累积欠账,不因4C客户端就绪而自动兑现,需要真 key)。
 
   **欠账(带进 4E)**:① **公网 HTTPS + LinoN 接班切换**(nginx 8001→8002 + linon 退役,联调通过后做,`deploy/nginx-neckline.conf` 已备);② **真盘中活体验证**(交易时段首次真跑 `run_tick` + 真实新浪/腾讯,兑现阶段 3 欠账①);③ **APNs 真机真推**(新 Bundle ID device token,4C 客户端建后);④ LLM/Bark 活体(用户 App 填 key 后);⑤ 问询台「初审通过」→ 报告端消费 `inquiry_pool` 扩 universe 的接线(§2.5 闭环的报告侧,4A 已写入池 + 提供读取,报告侧消费留 4E/报告管线小改,避免动阶段 2 评分代码引回归);⑥ 问询台 LLM「主动多轮 function-calling」形态未实现(以预注入取数/重算 + 原生搜索覆盖 plan 三能力,无 key 无法活体验证该形态,记此简化)。
