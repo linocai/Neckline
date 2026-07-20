@@ -143,7 +143,14 @@ def score_candidates(
     out: List[Candidate] = []
     for i, row in enumerate(top_rows, start=1):
         boards = member_map.get(row["ts_code"], [])
-        hot_names = [hot[b].name for b in boards if b in hot]
+        # 命中热门板块的展示串嵌入板块年龄 + 20日动量(§2.4 审判信息源要求"板块年龄"
+        # 本身可查,不只是"是否命中热门"这个布尔态;LLM 审判(judge.build_context_block
+        # 直接读 Candidate.hot_sectors)与 markdown 渲染共用这一份文案,不重复建字段)。
+        hot_names = [
+            f"{hot[b].name}(板块年龄{hot[b].board_age}天,20日{hot[b].ret_20d:+.1%})"
+            for b in boards
+            if b in hot
+        ]
         sector_names = [index_names.get(b, b) for b in boards]
         out.append(
             _build_candidate(

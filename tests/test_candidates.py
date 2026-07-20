@@ -105,7 +105,10 @@ class TestSectorBonus:
         out = score_candidates(panel, RULE_V1_CFG, sector_scores=sector_scores, member_map=member_map)
         assert [c.ts_code for c in out] == ["HOT", "COLD"]
         assert out[0].score == pytest.approx(100.0)
-        assert out[0].hot_sectors == ["板块甲"]
+        assert len(out[0].hot_sectors) == 1
+        assert "板块甲" in out[0].hot_sectors[0]
+        assert "板块年龄2天" in out[0].hot_sectors[0]  # 审判信息源要求板块年龄本身可查,不只是布尔态
+        assert "10.0%" in out[0].hot_sectors[0]  # 20日动量一并展示
 
     def test_multiple_hot_sectors_bonus_is_capped_not_summed(self):
         panel = _panel(_row("MULTI", dist_from_high_20d=-0.10))  # base=90
