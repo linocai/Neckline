@@ -38,6 +38,11 @@ STOP_APPROACH_BUFFER = 0.02
 # 板块跳水预警阈值:同板块可比个股平均跌幅 ≤ 此值 → 预警(**未回测,启发式**)。
 SECTOR_DIVE_RET_THRESHOLD = -0.03
 
+# 浮点容差:`buy_price`/`stop_pct` 等实数运算(如 0.08-0.02)偶发落在二进制浮点
+# 表示误差的边界上(如算出 0.05999999999999996 而非 0.06),不能让纪律判定
+# 因这类噪声漏判——所有阈值比较统一留这个量级的容差。
+_EPS = 1e-9
+
 
 @dataclass
 class HoldingAlert:
@@ -57,10 +62,10 @@ def check_stop_approach(
         return None
     drawdown = (position.buy_price - quote.price) / position.buy_price
     warn_from = max(stop_pct - buffer_pct, 0.0)
-    if drawdown < warn_from:
+    if drawdown < warn_from - _EPS:
         return None
     stop_line = position.buy_price * (1 - stop_pct)
-    if quote.price <= stop_line:
+    if quote.price <= stop_line + _EPS * position.buy_price:
         return (
             f"现价{quote.price:.2f}已跌破止损线{stop_line:.2f}(-{stop_pct:.0%}),"
             f"若券商条件单未成交请立即人工确认(系统不代下单/撤单)"
@@ -82,7 +87,7 @@ def check_take_profit(
     if peak <= position.buy_price:
         return None  # 从未浮盈过,没有"盈"可回落——止损哨兵已覆盖这种下跌
     retrace_line = peak * (1 - take_profit_retrace)
-    if quote.price <= retrace_line:
+    if quote.price <= retrace_line + _EPS * peak:
         retrace_pct = (peak - quote.price) / peak
         return (
             f"现价{quote.price:.2f}较持仓峰值{peak:.2f}回落{retrace_pct:.1%},"
