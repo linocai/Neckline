@@ -66,9 +66,20 @@ class MomentumConfig:
 
 
 class MomentumStrategy(Strategy):
-    def __init__(self, panel: pl.DataFrame, config: MomentumConfig, initial_cash: float = 120000.0) -> None:
+    def __init__(
+        self,
+        panel: pl.DataFrame,
+        config: MomentumConfig,
+        initial_cash: float = 120000.0,
+        buy_gate: Optional[set] = None,
+    ) -> None:
         self.config = config
         self.initial_cash = initial_cash
+        # 市场过滤器闸门(P1 争议项):一组「允许开新仓」的交易日。为 None 时不设闸门
+        # (全天可开仓);提供时,不在集合里的交易日只做退出、不开新仓。市场状态由外部
+        # (同一 signals.market_state_labels)算好注入——保持 §2.6 同码,不把指数状态塞进
+        # 个股面板。退出决策不受闸门影响(风控优先于择时)。
+        self._buy_gate = buy_gate
         # 预筛：选股域 + 强势 + 买点 + 禁买过滤 一次性算成布尔，按日切片(快)
         self._entry_mask = self._build_entry_mask()
         filtered = panel.filter(self._entry_mask)
@@ -147,6 +158,9 @@ class MomentumStrategy(Strategy):
                 selling.add(ts_code)
 
         # ---- 2) 买入决策(填补空位，纪律约束) ----
+        # 市场过滤器闸门(P1):不在允许日集合内 → 今日只退出不开新仓。
+        if self._buy_gate is not None and t not in self._buy_gate:
+            return orders
         held_after = set(pf.positions.keys()) - selling
         open_slots = c.max_positions - len(held_after)
         if open_slots <= 0:

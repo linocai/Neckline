@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 
 import polars as pl
 
-from neckline.backtest.engine import BacktestEngine
+from neckline.backtest.engine import BacktestEngine, load_adjusted_daily
 from neckline.backtest.portfolio import ClosedTrade, Portfolio
 from neckline.backtest.report import BacktestReport
 from neckline.strategy.features import market_state_labels
@@ -37,6 +37,7 @@ PANEL_CACHE = Path(__file__).resolve().parent / "_cache" / "panel_full.parquet"
 
 _PANEL: Optional[pl.DataFrame] = None
 _STATES: Optional[pl.DataFrame] = None
+_ADJ_CACHE: Dict[Tuple[date, date], pl.DataFrame] = {}
 
 
 def get_panel(rebuild: bool = False) -> pl.DataFrame:
@@ -55,9 +56,24 @@ def market_states() -> pl.DataFrame:
     return _STATES
 
 
+def bull_days() -> set:
+    """上证收盘 > MA20 的交易日集合(P1 市场过滤器闸门:只在此集合内开新仓)。"""
+    st = market_states()
+    return set(st.filter(pl.col("sse_above_ma"))["trade_date"].to_list())
+
+
 # ======================================================================
 #  组合级回测
 # ======================================================================
+
+def adjusted_daily_cached(start: date, end: date) -> pl.DataFrame:
+    """全区间前复权 daily(锚点=区间末尾),按 (start,end) 进程内缓存。参数网格反复回测
+    同一窗口时,复权只算一次(引擎每次重算全市场 qfq 是主要瓶颈)。"""
+    key = (start, end)
+    if key not in _ADJ_CACHE:
+        _ADJ_CACHE[key] = load_adjusted_daily(start, end)
+    return _ADJ_CACHE[key]
+
 
 def run_pf(
     cfg: MomentumConfig,
@@ -65,11 +81,17 @@ def run_pf(
     end: date,
     panel: Optional[pl.DataFrame] = None,
     initial_cash: float = INITIAL_CASH,
+    buy_gate: Optional[set] = None,
 ) -> Tuple[BacktestReport, Portfolio]:
-    """跑一次组合回测,返回 (report, portfolio)。全新 strategy 实例(勿复用状态)。"""
+    """跑一次组合回测,返回 (report, portfolio)。全新 strategy 实例(勿复用状态)。
+    注入按窗口缓存的前复权 daily(同窗口只算一次;锚点口径与引擎自算完全一致)。
+    `buy_gate`:P1 市场过滤器允许开仓日集合(None=不设闸门)。"""
     p = panel if panel is not None else get_panel()
-    strat = MomentumStrategy(p, cfg, initial_cash=initial_cash)
-    eng = BacktestEngine(strat, start, end, initial_cash=initial_cash)
+    strat = MomentumStrategy(p, cfg, initial_cash=initial_cash, buy_gate=buy_gate)
+    eng = BacktestEngine(
+        strat, start, end, initial_cash=initial_cash,
+        adjusted_daily=adjusted_daily_cached(start, end),
+    )
     rep = eng.run()
     return rep, eng.last_portfolio
 

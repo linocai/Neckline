@@ -203,6 +203,32 @@ class TestEntryMaskAndDiscipline:
         orders = s.on_day(self._ctx(s, d, Portfolio(120000.0), codes))
         assert "C0" not in [o.ts_code for o in orders if o.side == "buy"]
 
+    def test_buy_gate_blocks_new_buys_but_not_exits(self):
+        # P1 市场闸门:t 不在允许日 → 不开新仓,但退出照常
+        d = date(2024, 3, 4)
+        cfg = MomentumConfig(strength="volprice", buypoint="pullback", stop_pct=0.05, max_hold_days=99)
+        s = MomentumStrategy(self._panel_day(d), cfg, initial_cash=120000.0, buy_gate=set())  # 空集=当天禁开仓
+        pf = Portfolio(120000.0)
+        # 一个已可卖、已破位的持仓 → 应产出卖单
+        pf.positions["HELD"] = Position("HELD", 1000, 10.0, date(2024, 3, 1))
+        codes = [f"C{i}" for i in range(8)] + ["HELD"]
+        ms = pl.DataFrame({
+            "ts_code": codes, "open": [10.0] * len(codes), "high": [10.2] * len(codes),
+            "low": [9.0] * len(codes), "close": [9.0] * len(codes), "pre_close": [10.0] * len(codes),
+        })
+        ctx = BacktestContext(trade_date=d, market_slice=ms, limit_slice=pl.DataFrame(),
+                              portfolio=pf, history=lambda c, ss, e: pl.DataFrame())
+        orders = s.on_day(ctx)
+        assert [o.ts_code for o in orders if o.side == "buy"] == []      # 闸门关:无买单
+        assert "HELD" in [o.ts_code for o in orders if o.side == "sell"]  # 退出不受闸门影响
+
+    def test_buy_gate_open_day_allows_buys(self):
+        d = date(2024, 3, 4)
+        cfg = MomentumConfig(strength="volprice", buypoint="pullback")
+        s = MomentumStrategy(self._panel_day(d), cfg, initial_cash=120000.0, buy_gate={d})  # d 在允许集
+        orders = s.on_day(self._ctx(s, d, Portfolio(120000.0), [f"C{i}" for i in range(8)]))
+        assert len([o for o in orders if o.side == "buy"]) > 0
+
     def test_no_rebuy_held(self):
         d = date(2024, 3, 4)
         cfg = MomentumConfig(strength="volprice", buypoint="pullback")

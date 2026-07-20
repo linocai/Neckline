@@ -41,6 +41,27 @@ _PRICE_COLS = ("open", "high", "low", "close", "pre_close")
 _EMPTY_DAILY = pl.DataFrame()
 
 
+def load_adjusted_daily(start: date, end: date, parquet_dir: Optional[Path] = None) -> pl.DataFrame:
+    """[start,end] 全区间前复权 daily(锚点固定在 end,见模块 docstring)。
+    `adj_factor` 缺失(理论不该发生,防御性处理)→ 降级为未复权价 + 告警。
+    模块级函数:供 `BacktestEngine` 与外部预热缓存(如阶段 1 研究)同口径调用。
+    """
+    daily = scan_table_range("daily", start, end, parquet_dir=parquet_dir)
+    if daily.is_empty():
+        return daily
+    adj = scan_table_range("adj_factor", start, end, parquet_dir=parquet_dir)
+    if adj.is_empty():
+        logger.warning("adj_factor 在 [%s,%s] 区间为空,回测降级为未复权价格", start, end)
+        return daily
+    merged = daily.join(
+        adj.select(["ts_code", "trade_date", "adj_factor"]), on=["ts_code", "trade_date"], how="left"
+    )
+    adjusted = apply_qfq(merged, price_cols=_PRICE_COLS)
+    qfq_cols = [f"{c}_qfq" for c in _PRICE_COLS]
+    adjusted = adjusted.drop(list(_PRICE_COLS)).rename(dict(zip(qfq_cols, _PRICE_COLS)))
+    return adjusted
+
+
 class BacktestEngine:
     def __init__(
         self,
@@ -50,6 +71,7 @@ class BacktestEngine:
         initial_cash: float = 1_000_000.0,
         broker: Optional[Broker] = None,
         parquet_dir: Optional[Path] = None,
+        adjusted_daily: Optional[pl.DataFrame] = None,
     ) -> None:
         self.strategy = strategy
         self.start = start
@@ -57,25 +79,14 @@ class BacktestEngine:
         self.initial_cash = initial_cash
         self.broker = broker or Broker()
         self.parquet_dir = parquet_dir  # 测试注入用;None 时用 neckline.config.settings.parquet_dir
+        # 预复权缓存注入(可选):[start,end] 全区间前复权 daily 由外部一次性算好传入,
+        # 避免每次回测都重算全市场 qfq(阶段 1 参数网格反复回测同一窗口时是主要瓶颈;
+        # 报告/问询跑道也可共享同一份)。**必须与本引擎的 [start,end] 同窗**(锚点=区间
+        # 末尾,窗口不同则复权基准不同、P&L 会错),由 `load_adjusted_daily` 同口径产出。
+        self._adjusted_daily = adjusted_daily
 
     def _load_adjusted_daily(self, start: date, end: date) -> pl.DataFrame:
-        """[start,end] 全区间前复权 daily(锚点固定在 end,见模块 docstring)。
-        `adj_factor` 缺失(理论不该发生,防御性处理)→ 降级为未复权价 + 告警。
-        """
-        daily = scan_table_range("daily", start, end, parquet_dir=self.parquet_dir)
-        if daily.is_empty():
-            return daily
-        adj = scan_table_range("adj_factor", start, end, parquet_dir=self.parquet_dir)
-        if adj.is_empty():
-            logger.warning("adj_factor 在 [%s,%s] 区间为空,回测降级为未复权价格", start, end)
-            return daily
-        merged = daily.join(
-            adj.select(["ts_code", "trade_date", "adj_factor"]), on=["ts_code", "trade_date"], how="left"
-        )
-        adjusted = apply_qfq(merged, price_cols=_PRICE_COLS)
-        qfq_cols = [f"{c}_qfq" for c in _PRICE_COLS]
-        adjusted = adjusted.drop(list(_PRICE_COLS)).rename(dict(zip(qfq_cols, _PRICE_COLS)))
-        return adjusted
+        return load_adjusted_daily(start, end, parquet_dir=self.parquet_dir)
 
     def _make_history_fn(self, adjusted_daily: pl.DataFrame, as_of: date) -> Callable[[str, date, date], pl.DataFrame]:
         """`BacktestContext.history` 的实现:从已复权的整段缓存里切片,而不是重新
@@ -109,7 +120,11 @@ class BacktestEngine:
         if not trading_days:
             raise ValueError(f"[{self.start},{self.end}] 区间无交易日(检查交易日历是否已 backfill)")
 
-        adjusted_daily = self._load_adjusted_daily(trading_days[0], trading_days[-1])
+        adjusted_daily = (
+            self._adjusted_daily
+            if self._adjusted_daily is not None
+            else self._load_adjusted_daily(trading_days[0], trading_days[-1])
+        )
         by_date: Dict[date, pl.DataFrame] = {}
         if not adjusted_daily.is_empty():
             for (d,), sub in adjusted_daily.group_by(["trade_date"]):
@@ -164,4 +179,4 @@ class BacktestEngine:
         return build_report(portfolio, equity_curve, self.initial_cash)
 
 
-__all__ = ["BacktestEngine"]
+__all__ = ["BacktestEngine", "load_adjusted_daily"]

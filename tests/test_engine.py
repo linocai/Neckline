@@ -10,6 +10,7 @@ from typing import List
 import pytest
 
 from neckline.backtest import BacktestContext, BacktestEngine, Broker, Order, Strategy
+from neckline.backtest.engine import load_adjusted_daily
 from neckline.strategy.dummy import DummyStrategy
 from tests.conftest import business_days, insert_trade_cal, write_daily_fixture
 
@@ -146,6 +147,40 @@ class TestQfqIntegration:
         expected_adjusted_first = raw_closes[days[0]] * (adj_factors[days[0]] / adj_factors[days[-1]])
         assert first_row["close"][0] == pytest.approx(expected_adjusted_first)
         assert first_row["close"][0] != pytest.approx(raw_closes[days[0]])
+
+    def test_injected_adjusted_daily_matches_self_loaded(self, isolated_env):
+        """注入预复权缓存(阶段 1 网格提速用)必须与引擎自算的复权结果完全一致——
+        否则同窗口复用会引入 P&L 漂移。灌含 adj_factor 的样本,同策略跑两次:一次
+        让引擎自算、一次注入 `load_adjusted_daily` 产物,断言净值/回合逐笔相等。"""
+        days = business_days(date(2024, 1, 2), 8)
+        insert_trade_cal(isolated_env, days)
+        import neckline.calendar as cal
+
+        cal.reset_cache()
+        price = {c: 10.0 + i for i, c in enumerate(CODES)}
+        for k, d in enumerate(days):
+            rows_d, rows_a = [], []
+            for c in CODES:
+                p = price[c]
+                rows_d.append({"ts_code": c, "open": p, "high": p * 1.02, "low": p * 0.98,
+                               "close": p, "pre_close": p, "vol": 10000.0})
+                # 第 4 天起除权跳变一档,确保锚点前后复权价确实被缩放
+                rows_a.append({"ts_code": c, "adj_factor": 100.0 if k < 4 else 115.0})
+                price[c] = round(p * 1.003, 2)
+            write_daily_fixture(isolated_env, "daily", d, rows_d)
+            write_daily_fixture(isolated_env, "adj_factor", d, rows_a)
+
+        def _run(inject):
+            strat = DummyStrategy(n_positions=2, hold_days=2, min_price=1.0)
+            adj = load_adjusted_daily(days[0], days[-1], parquet_dir=isolated_env.parquet_dir) if inject else None
+            eng = BacktestEngine(strat, start=days[0], end=days[-1], initial_cash=100_000,
+                                 parquet_dir=isolated_env.parquet_dir, adjusted_daily=adj)
+            return eng.run()
+
+        a, b = _run(False), _run(True)
+        assert a.final_equity == pytest.approx(b.final_equity)
+        assert a.n_trades == b.n_trades and a.n_trades > 0
+        assert [round(t.pnl, 6) for t in a.closed_trades] == [round(t.pnl, 6) for t in b.closed_trades]
 
     def test_broker_fills_use_adjusted_price_not_raw(self, isolated_env):
         """买入价应是复权后的开盘价,不是原始开盘价(锚点前的日子两者应不同)。"""
