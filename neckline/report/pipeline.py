@@ -89,7 +89,7 @@ def build_report(
         db_path=db_path,
     )
 
-    provider = llm_provider or get_provider()
+    provider = llm_provider or get_provider(db_path=db_path)
     top_list = top_list_lookup(trade_date, parquet_dir=parquet_dir)
 
     judged: Dict[str, JudgeResult] = {}

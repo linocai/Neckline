@@ -137,6 +137,53 @@ CREATE TABLE IF NOT EXISTS sentinel_events (
     UNIQUE(trade_date, sentinel, ts_code, event_key)
 );
 CREATE INDEX IF NOT EXISTS idx_sentinel_events_trade_date ON sentinel_events(trade_date);
+
+-- 阶段4 (4A) 应用设置(单行,plan §五 阶段4 / 4A.5)。id 恒为 1(CHECK 约束保证只有一行)。
+-- llm_provider/llm_api_key:App 设置屏改的 LLM key/供应商,`get_provider()` 解析优先级
+-- DB 覆盖 → `.env` 兜底(§3.4,运行时生效不重启)。**高危区**:key 服务端存取,DB 文件 600、
+-- gitignored、rsync 永不同步覆盖(plan 不变量);GET /settings 只回 llmKeySet:bool,绝不回明文。
+-- push_report/push_retreat:APNs 两类推送开关(§2.4 拍板,默认开可关)。
+-- review_col_map:周复盘交割单列映射(JSON,4D 用)。
+CREATE TABLE IF NOT EXISTS app_settings (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    llm_provider    TEXT,
+    llm_api_key     TEXT,
+    push_report     INTEGER NOT NULL DEFAULT 1,
+    push_retreat    INTEGER NOT NULL DEFAULT 1,
+    review_col_map  TEXT NOT NULL DEFAULT '{}',
+    updated_at      TEXT
+);
+
+-- 阶段4 (4A) APNs 设备注册表(plan 4A.5 / 4B.5,复用 LinoN device_tokens 语义)。
+-- token 为 APNs device token(唯一);16:00 报告 / 退潮刹车推送时遍历本表所有设备。
+CREATE TABLE IF NOT EXISTS devices (
+    token       TEXT PRIMARY KEY,
+    platform    TEXT NOT NULL DEFAULT 'ios',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+-- 阶段4 (4A) 问询台海选池(plan §2.5 / 4A.5)。问询台裁决「初审通过进当晚海选池」→
+-- 落本表(当日),当晚 `report.py` 生成报告时把海选池的票强制纳入候选评分 universe
+-- (不改评分逻辑,只扩输入)。UNIQUE(trade_date, ts_code) 幂等,同日同票复问不重复入池。
+CREATE TABLE IF NOT EXISTS inquiry_pool (
+    trade_date  TEXT NOT NULL,           -- 'YYYYMMDD'(该票被纳入的目标交易日 = 当晚报告日)
+    ts_code     TEXT NOT NULL,
+    name        TEXT,
+    reason      TEXT,                    -- 初审通过时的一句依据(供报告/审计留痕)
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (trade_date, ts_code)
+);
+
+-- 阶段4 (4D) 周复盘对账存档(plan 4D.2,week 为 ISO 周 'YYYY-Www')。本块(4A)仅建表
+-- (幂等,forward-compat),对账逻辑与写入在 4D 落地。
+CREATE TABLE IF NOT EXISTS reviews (
+    week            TEXT PRIMARY KEY,       -- 'YYYY-Www'
+    generated_at    TEXT NOT NULL,
+    result_json     TEXT NOT NULL DEFAULT '{}',
+    material        TEXT,
+    updated_at      TEXT
+);
 """
 
 

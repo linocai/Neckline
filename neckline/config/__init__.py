@@ -37,16 +37,43 @@ class Settings:
     llm_provider: Optional[str]
     llm_api_key: Optional[str]
     bark_url: Optional[str] = None
+    # —— 阶段4 (4A/4B) 后端服务化(plan §五 阶段4)——
+    # API 鉴权:单用户共享密钥,Bearer + hmac.compare_digest,startup fail-fast len>=16。
+    api_token: Optional[str] = None
+    # APNs token-based 推送(复用 LinoN .p8 账号级密钥,§3.6);.p8 路径指向 ECS secret 落点。
+    apns_key_id: Optional[str] = None
+    apns_team_id: Optional[str] = None
+    apns_bundle_id: Optional[str] = None
+    apns_key_path: Optional[str] = None
+    apns_use_sandbox: bool = True          # dev 直装走 sandbox 网关
     project_root: Path = PROJECT_ROOT
     data_dir: Path = DATA_DIR
     parquet_dir: Path = PARQUET_DIR
     db_path: Path = DB_PATH
+
+    @property
+    def has_api_token(self) -> bool:
+        return bool(self.api_token and self.api_token.strip())
+
+    @property
+    def has_apns_config(self) -> bool:
+        """APNs 凭证四要素齐全(KeyID/TeamID/BundleID/.p8 路径)才能真推;缺一 → 优雅降级不推。"""
+        return bool(
+            self.apns_key_id and self.apns_team_id
+            and self.apns_bundle_id and self.apns_key_path
+        )
 
 
 def _load_settings() -> Settings:
     def _clean(v: Optional[str]) -> Optional[str]:
         v = (v or "").strip()
         return v or None
+
+    def _bool(v: Optional[str], default: bool) -> bool:
+        v = (v or "").strip().lower()
+        if not v:
+            return default
+        return v in ("1", "true", "yes", "on")
 
     return Settings(
         tushare_token=_clean(os.environ.get("TUSHARE_TOKEN")),
@@ -55,6 +82,12 @@ def _load_settings() -> Settings:
         # 阶段3 §3.6 推送通道:Bark 推送 URL(如 https://api.day.app/<你的key>),
         # 缺省 = None,`sentinel.channels.BarkChannel` 据此优雅降级为不推送(不崩)。
         bark_url=_clean(os.environ.get("BARK_URL")),
+        api_token=_clean(os.environ.get("API_TOKEN")),
+        apns_key_id=_clean(os.environ.get("APNS_KEY_ID")),
+        apns_team_id=_clean(os.environ.get("APNS_TEAM_ID")),
+        apns_bundle_id=_clean(os.environ.get("APNS_BUNDLE_ID")),
+        apns_key_path=_clean(os.environ.get("APNS_KEY_PATH")),
+        apns_use_sandbox=_bool(os.environ.get("APNS_USE_SANDBOX"), True),
     )
 
 

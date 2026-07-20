@@ -11,14 +11,28 @@ python-dotenv==1.2.2
 pytest==9.1.1
 httpx==0.28.1     # 阶段2 §3.4 LLM 层(GLM/Kimi 均 OpenAI 兼容 HTTP,姿势继承 LinoN deepseek.py)
 
+# —— 阶段4 (4A/4B) 后端服务化 + APNs(版本参照 LinoN 钉死,plan §五 阶段4)——
+fastapi==0.115.6
+uvicorn[standard]==0.34.0     # ECS 单 unit uvicorn;[standard] 含 uvloop/httptools/websockets/watchfiles
+pydantic==2.10.6              # fastapi 出入参 schema
+PyJWT==2.9.0                  # APNs token-based JWT(ES256 签名),plan 4B.5
+cryptography==44.0.0          # PyJWT ES256 的 EC 后端 + 单测临时 EC key
+h2==4.1.0                     # httpx HTTP/2 后端(APNs 网关走 HTTP/2;Neckline 已钉 httpx==0.28.1,只补 http2 后端)
+
 # —— 传递依赖(pip freeze 钉死,保证可复现)——
+annotated-types==0.7.0        # 阶段4:pydantic
 anyio==4.14.2
 beautifulsoup4==4.15.0
 bs4==0.0.2
 certifi==2026.6.17
+cffi==2.1.0                   # 阶段4:cryptography
 charset-normalizer==3.4.9
+click==8.4.2                  # 阶段4:uvicorn
 h11==0.16.0
+hpack==4.2.0                  # 阶段4:h2
 httpcore==1.0.9
+httptools==0.8.0             # 阶段4:uvicorn[standard]
+hyperframe==6.1.0            # 阶段4:h2
 idna==3.18
 iniconfig==2.3.0
 lxml==6.1.1
@@ -26,13 +40,20 @@ numpy==2.4.6
 packaging==26.2
 pluggy==1.6.0
 polars-runtime-32==1.42.1
+pycparser==3.0                # 阶段4:cffi
+pydantic_core==2.27.2         # 阶段4:pydantic
 Pygments==2.20.0
 python-dateutil==2.9.0.post0
+PyYAML==6.0.3                 # 阶段4:uvicorn[standard]
 requests==2.34.2
 simplejson==4.1.1
 six==1.17.0
 soupsieve==2.9
+starlette==0.41.3             # 阶段4:fastapi
 tqdm==4.69.0
 typing_extensions==4.16.0
 urllib3==2.7.0
+uvloop==0.22.1                # 阶段4:uvicorn[standard]
+watchfiles==1.2.0             # 阶段4:uvicorn[standard]
 websocket-client==1.9.0
+websockets==16.1.1            # 阶段4:uvicorn[standard]
