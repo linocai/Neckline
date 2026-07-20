@@ -27,8 +27,11 @@ RULE_V1 = dict(
     buypoint="pullback",        # P3:回调低吸弱优于突破;贴合均值回归
     forbid_green_bigdown=None,  # P4:否决(被禁那批反而更好)
     forbid_far_from_high=None,  # P5:否决(被打趴的最会反弹)
-    forbid_new_days=120,        # P6:次新温和防御(尾部,见 P6 组合级检验)
-    forbid_high_elasticity=False,  # P6:高弹不硬禁(均值更好,尾部靠仓位控)
+    forbid_new_days=None,       # P6:次新过滤组合级不改善(-13.3%→-15.4%),否决
+    forbid_high_elasticity=True,  # P6:禁高弹(=主板 only)。结构性风控选择(-5% 止损匹配 10% 涨跌幅品种、
+                                  # 契合 §2.2「易跌停高弹入黑名单」),并压住灾难尾部(含高弹的裸基线样本外 -98.6%)。
+                                  # ⚠诚实:样本内 PF 0.93→1.02 的"转正"【不复现】于样本外(0.837→0.814,反略差)=样本内过拟合,
+                                  # 不作 alpha 主张;out-of-sample 中性,保留仅为风控与设计意图,用户可平替关闭。
     stop_pct=0.05,              # 1.3/P4:-5% 最优(PF 最高、回撤最低)+ 纪律强制
     take_profit_retrace=0.05,   # P7:回落 5% 微优(PF 0.922→0.931,证据弱,待 walk-forward 复核)
     max_hold_days=5,            # P8:hold=5 最优(印证 4-7 日打平桶)
@@ -89,9 +92,14 @@ def main(commit: bool):
                            "win_rate": rep_out.win_rate, "max_dd": rep_out.max_drawdown, "n": rep_out.n_trades},
         }
         changelog = (
-            "阶段1 P1-P10 过堂:strength=none(P3 强势削edge)/pullback/-5%止损(1.3最优)/hold5(P8)/"
-            "次新120日温和防御(P6)/仓位2万·5只·敞口60%。市场过滤(P1)与次周减半(P10)为待用户拍板项,"
-            "主档暂关。诚实:日线2-5日母战法无正net edge,v1 为减损纪律版,样本外PF见 metrics。"
+            "阶段1 P1-P10 过堂定版。采纳:strength=none(P3 强势系统性削edge)/买点pullback(P3)/-5%止损"
+            "(1.3 全网格最优 PF+回撤)/hold5(P8,印证4-7日打平桶)/回落止盈5%(P7 弱证据)/主板only禁高弹"
+            "(P6 风控/结构,非alpha)/仓位2万·5只·敞口60%。否决:强势筛选/绿盘大阴线禁买(P4)/距前高禁买"
+            "(P5)/次新过滤/系统性冷却(P9 网格反证)。待用户拍板:MA20 市场过滤(P1 实时闸门双窗变差,建议不采纳)、"
+            "次周减半(P10 空效应)。诚实定性:日线2-5日母战法【无正net edge】(A股此频率均值回归),v1 是"
+            "【减损纪律版】——样本外 PF 0.814<1(仍净亏 -10.7%)但远跑赢 dummy(-65%)与裸纪律基线(-98.6%);"
+            "禁高弹样本内转正(PF 1.02)【不复现】于样本外=过拟合,不作 alpha 主张。alpha 悬而未决,留给更快情绪"
+            "信号(阶段2 情绪仪表盘)与实盘LLM审判(回测盲区)。"
         )
         rule = {"config": RULE_V1, "market_filter_default": False, "week_halving_default": False}
         v = brain.save_version("v1", rule, changelog, metrics=metrics, activate=True)
