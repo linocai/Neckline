@@ -9,3 +9,4 @@ data/parquet/
 .pytest_cache/
 scratchpad/
 *.egg-info/
+research/_cache/
