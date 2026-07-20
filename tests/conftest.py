@@ -124,6 +124,44 @@ def write_daily_fixture(
     write_table_day(table, trade_date, df, parquet_dir=settings.parquet_dir)
 
 
+def insert_stock_basic(settings: Settings, rows: List[dict]) -> None:
+    """写 `stock_basic`(SQLite)测试行,供需要股票中文名/板块/上市日的模块
+    (`report/candidates.py` 的名称解析等)使用。每行至少给 `ts_code`,其余字段有
+    合理缺省(`list_status="L"`);日期字段传 `date` 对象或 'YYYYMMDD' 字符串均可。"""
+    import sqlite3
+
+    from neckline.db import init_schema
+
+    init_schema(db_path=settings.db_path)
+    conn = sqlite3.connect(str(settings.db_path))
+    try:
+        for r in rows:
+            list_date = r.get("list_date")
+            if isinstance(list_date, date):
+                list_date = list_date.strftime("%Y%m%d")
+            delist_date = r.get("delist_date")
+            if isinstance(delist_date, date):
+                delist_date = delist_date.strftime("%Y%m%d")
+            conn.execute(
+                "INSERT OR REPLACE INTO stock_basic "
+                "(ts_code,symbol,name,industry,market,list_date,delist_date,list_status) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    r["ts_code"],
+                    r.get("symbol", r["ts_code"].split(".")[0]),
+                    r.get("name", r["ts_code"]),
+                    r.get("industry"),
+                    r.get("market", "主板"),
+                    list_date,
+                    delist_date,
+                    r.get("list_status", "L"),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def write_flat_parquet(settings: Settings, filename: str, rows: List[dict]) -> Path:
     """写一个不按年份分区的扁平 Parquet 文件到 `parquet_dir` 根下——同花顺概念板块
     三张表的落盘方式(plan 1.6/`scripts/backfill_concept.py`:`ths_index.parquet` /
@@ -141,5 +179,6 @@ __all__ = [
     "insert_trade_cal",
     "business_days",
     "write_daily_fixture",
+    "insert_stock_basic",
     "write_flat_parquet",
 ]
