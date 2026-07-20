@@ -1,5 +1,6 @@
-# Neckline 16:00 盘后报告(plan 4B.4)。oneshot 瞬态进程 —— 跑完即释放内存(对 hz 紧
-# 内存友好,不常驻 polars)。生成报告 → 落库 → --notify 触发 APNs 报告推送(受 push_report 开关)。
+# Neckline 盘后报告(plan 4B.4;方案 A 定时 16:35,排在 daily 16:05 之后——见 timer 说明)。
+# oneshot 瞬态进程 —— 跑完即释放内存(对 hz 紧内存友好,不常驻 polars)。
+# 生成报告 → 落库 → --notify 触发 APNs 报告推送(受 push_report 开关)。
 #
 # report.py 自身查 is_trading_day:非交易日(节假日)直接退出 1,timer 打 Mon-Fri 无害。
 #

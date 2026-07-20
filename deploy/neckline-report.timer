@@ -3,8 +3,11 @@
 [Unit]
 Description=Run Neckline EOD report at 16:00 on weekdays
 
+# ⚠ 排在 daily(16:05)之后:report 需要当日 EOD 数据已由 daily_update 落进 Parquet
+# (plan 原文「report 16:00 / daily 16:30」把依赖顺序写反了——report 依赖 daily 先拉数;
+# 方案 A 下改为 daily 16:05 → report 16:35。方案 B 下数据在 Mac 落好 rsync 上云,report 可提前)。
 [Timer]
-OnCalendar=Mon-Fri 16:00 Asia/Shanghai
+OnCalendar=Mon-Fri 16:35 Asia/Shanghai
 Persistent=false
 
 [Install]
