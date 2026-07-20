@@ -280,6 +280,69 @@ def seed_synthetic_market(
     return dates
 
 
+API_TEST_TOKEN = "test_token_at_least_16_chars_xyz"
+
+
+@pytest.fixture
+def api_settings(tmp_path: Path) -> Settings:
+    """带 `api_token` 的隔离 Settings(阶段4 API 测试专用;`fake_settings` 的 api_token
+    为 None,鉴权测试需要一个 len>=16 的 token)。"""
+    import dataclasses
+    data_dir = tmp_path / "data"
+    return dataclasses.replace(
+        Settings(
+            tushare_token=None, llm_provider=None, llm_api_key=None,
+            project_root=tmp_path, data_dir=data_dir,
+            parquet_dir=data_dir / "parquet", db_path=data_dir / "neckline.db",
+        ),
+        api_token=API_TEST_TOKEN,
+    )
+
+
+@pytest.fixture
+def api_env(api_settings: Settings, monkeypatch: "pytest.MonkeyPatch"):
+    """把 API 服务用到的 `settings` 名字全部换成隔离 Settings、建空 schema、关哨兵后台
+    轮询、把 app 的 DB 指向隔离库、`_QUOTES_FN` 置空(免联网)。yield 隔离 Settings。"""
+    import neckline.api.app as app_mod
+    import neckline.api.deps as deps_mod
+    import neckline.calendar.trading_calendar as tc_mod
+    import neckline.data.market_data as md_mod
+    import neckline.data.tushare_client as ts_mod
+    import neckline.push.apns as apns_mod
+    import neckline.settings_store as ss_mod
+    from neckline.db import init_schema
+
+    for mod in (deps_mod, apns_mod, tc_mod, md_mod, ts_mod):
+        monkeypatch.setattr(mod, "settings", api_settings)
+    monkeypatch.setattr(ss_mod, "_default_settings", api_settings)
+
+    api_settings.data_dir.mkdir(parents=True, exist_ok=True)
+    api_settings.parquet_dir.mkdir(parents=True, exist_ok=True)
+    init_schema(db_path=api_settings.db_path)
+    tc_mod.reset_cache()
+
+    monkeypatch.setattr(app_mod, "ENABLE_SENTINEL", False)
+    monkeypatch.setattr(app_mod, "_DB_PATH_OVERRIDE", api_settings.db_path)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {})
+    yield api_settings
+    tc_mod.reset_cache()
+
+
+@pytest.fixture
+def client(api_env: Settings):
+    """`TestClient(app)`,带隔离环境(`api_env`);测试用 `AUTH` 头带 Bearer token。"""
+    from fastapi.testclient import TestClient
+
+    import neckline.api.app as app_mod
+    with TestClient(app_mod.app) as c:
+        yield c
+
+
+@pytest.fixture
+def AUTH() -> dict:
+    return {"Authorization": f"Bearer {API_TEST_TOKEN}"}
+
+
 def write_flat_parquet(settings: Settings, filename: str, rows: List[dict]) -> Path:
     """写一个不按年份分区的扁平 Parquet 文件到 `parquet_dir` 根下——同花顺概念板块
     三张表的落盘方式(plan 1.6/`scripts/backfill_concept.py`:`ths_index.parquet` /
