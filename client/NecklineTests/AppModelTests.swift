@@ -91,6 +91,22 @@ final class AppModelTests: XCTestCase {
         }
     }
 
+    // MARK: - 候选板块码展示换算(实测服务端 board 字段是英文枚举码,非中文名)
+
+    func testCandidateBoardLabelTranslatesKnownCodes() {
+        func candidate(board: String) -> Candidate {
+            Candidate(rank: 1, code: "600001.SH", name: "甲", score: 90, board: board,
+                     buyPoint: "", stop: "", target: "", invalidation: "",
+                     formTags: [], hotSectors: [], sectorNames: [], llmJudgment: nil)
+        }
+        XCTAssertEqual(candidate(board: "MAIN").boardLabel, "主板")
+        XCTAssertEqual(candidate(board: "GEM").boardLabel, "创业板")
+        XCTAssertEqual(candidate(board: "STAR").boardLabel, "科创板")
+        XCTAssertEqual(candidate(board: "BSE").boardLabel, "北交所")
+        XCTAssertEqual(candidate(board: "UNKNOWN_FUTURE").boardLabel, "UNKNOWN_FUTURE",
+                       "未识别值原样透传,不静默瞎翻译")
+    }
+
     // MARK: - Position 派生计算(止损线由服务端下发,客户端不重算,只做展示派生)
 
     func testPositionPnlAndStopBreach() {

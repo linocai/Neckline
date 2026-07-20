@@ -222,7 +222,7 @@ private struct CandidateRow: View {
                             Text(candidate.name).font(NKFont.stockName).foregroundStyle(NK.textPrimary)
                             Text(candidate.code).font(.system(size: 11)).foregroundStyle(NK.textTertiary)
                         }
-                        Text(candidate.board).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                        Text(candidate.boardLabel).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 4) {

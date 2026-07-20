@@ -11,3 +11,15 @@ data/reports/
 scratchpad/
 *.egg-info/
 research/_cache/
+
+# —— 阶段4C 客户端(client/):Xcode / SwiftPM 产物 + 本地密钥 ——
+*.p8
+LocalSecrets.plist
+client/**/LocalSecrets.plist
+*.xcuserstate
+xcuserdata/
+DerivedData/
+client/**/build/
+*.xcworkspace/xcuserdata/
+.swiftpm/
+Package.resolved

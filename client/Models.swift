@@ -128,6 +128,20 @@ struct Candidate: Codable, Equatable, Identifiable {
     var llmJudgment: LLMJudgment?      // 仅前 10 只有(nil = 未过 LLM 审判,非降级)
 
     var id: String { code }
+
+    /// `board` 服务端字面实测是英文枚举码("MAIN"/"GEM"/"STAR"/"BSE",唯一源
+    /// `neckline/data/board.py` 的 `Board` 枚举,§3.2.7/CLAUDE.md「板块分类唯一源」),
+    /// 不是中文名。这里只做**展示层换算四个已知常量**,不改判定、不猜测新分类
+    /// (未识别值原样透传,不静默瞎翻译——万一后端枚举新增值,界面照样不崩、只是显英文)。
+    var boardLabel: String {
+        switch board {
+        case "MAIN": return "主板"
+        case "GEM": return "创业板"
+        case "STAR": return "科创板"
+        case "BSE": return "北交所"
+        default: return board
+        }
+    }
 }
 
 // MARK: - 4A.2 报告:整份报告

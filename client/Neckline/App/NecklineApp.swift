@@ -23,7 +23,16 @@ struct NecklineApp: App {
     init() {
         // model 的 clientProvider 在 RootView.task 里注入(依赖 config,坑吸收④:
         // bind(config:) 必须先于 refresh(),放 .task 而非 .onAppear)。
-        _model = State(initialValue: AppModel())
+        let m = AppModel()
+        // 纯 QA/截图辅助:`simctl launch` 可用 `SIMCTL_CHILD_NECKLINE_INITIAL_TAB=<tab>`
+        // 免交互地把 App 启动到指定板块(数值取 AppTab.rawValue,如 board/inquiry/
+        // settings/review),用于视觉核对——不影响正常用户启动路径(缺此环境变量则
+        // 按默认 .today 打开)。
+        if let raw = ProcessInfo.processInfo.environment["NECKLINE_INITIAL_TAB"],
+           let tab = AppTab(rawValue: raw) {
+            m.view = tab
+        }
+        _model = State(initialValue: m)
     }
 
     var body: some Scene {
