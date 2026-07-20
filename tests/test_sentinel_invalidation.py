@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import pytest
-
 from neckline.report.candidates import Candidate
 from neckline.sentinel.invalidation import check_invalidation
 from neckline.sentinel.quotes import Quote

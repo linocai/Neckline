@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from neckline.sentinel.holding import (
     check_sector_dive,
     check_stop_approach,

@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 
 import httpx
-import pytest
 
 from neckline.config import Settings
 from neckline.sentinel.channels import (

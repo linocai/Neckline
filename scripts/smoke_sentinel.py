@@ -87,7 +87,7 @@ def _synthesize_price(row: dict, checkpoint: Checkpoint) -> float:
 def synthesize_quote(row: dict, checkpoint: Checkpoint) -> Quote:
     """从一行真实 `daily` EOD 记录 + 检查点定义,合成一个 `Quote`。"""
     price = _synthesize_price(row, checkpoint)
-    open_, close = row["open"], row["close"]
+    open_ = row["open"]
     if checkpoint.is_final:
         high, low = row["high"], row["low"]
     else:

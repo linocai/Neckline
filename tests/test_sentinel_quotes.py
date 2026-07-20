@@ -11,10 +11,9 @@ ST 样例为合成(改名 *ST,验证板块正常股与 ST 的涨跌停幅度差�
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from neckline.sentinel import quotes as q
-from neckline.sentinel.quotes import Quote, get_quote, get_quotes, to_symbol
+from neckline.sentinel.quotes import get_quote, get_quotes, to_symbol
 
 # —— 真源样例(与 LinoN test_realtime.py 完全一致的真实报文,2026-06-18 收盘快照)——
 SINA_BODY = (

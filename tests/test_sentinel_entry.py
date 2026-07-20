@@ -67,8 +67,9 @@ class TestPullbackEntry:
         assert check_entry(c, quote, prev5_avg_vol=200000, now=_T_60MIN) is None
 
     def test_volume_below_pullback_floor_blocks(self):
+        assert ENTRY_PULLBACK_MIN_VOL_RATIO == pytest.approx(0.8)  # 锁死本测试依赖的启发式常量取值
         c = _candidate(buypoint="pullback")
-        # current_vol=30000 → ratio=30000*4/200000=0.6 < 0.8下限
+        # current_vol=30000 → ratio=30000*4/200000=0.6 < ENTRY_PULLBACK_MIN_VOL_RATIO(0.8)
         quote = _quote(price=10.2, volume=30000, pre_close=10.0, open_=10.0, amount=10.2 * 30000 * 100 * 0.95)
         assert check_entry(c, quote, prev5_avg_vol=200000, now=_T_60MIN) is None
 
