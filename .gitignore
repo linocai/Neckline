@@ -6,6 +6,7 @@ __pycache__/
 data/*.db
 data/*.db-*
 data/parquet/
+data/reports/
 .pytest_cache/
 scratchpad/
 *.egg-info/
