@@ -58,6 +58,18 @@ CREATE TABLE IF NOT EXISTS backfill_log (
     fetched_at      TEXT NOT NULL,   -- ISO8601,写入时间(断点续跑判据)
     PRIMARY KEY (table_name, trade_date)
 );
+
+-- 策略大脑版本表(plan 1.9 / §2.6「大脑带版本号 + 变更日志 + 实盘表现按版本归因」)。
+-- rule_json:该版本的规则参数(MomentumConfig 采纳值 + 市场过滤决策等)全量快照。
+-- metrics_json:定版时的样本内/外回测指标(可比性证据)。is_active:当前现役版本(唯一)。
+CREATE TABLE IF NOT EXISTS strategy_versions (
+    version         TEXT PRIMARY KEY,   -- 语义版本号,如 'v1'
+    created_at      TEXT NOT NULL,      -- ISO8601
+    rule_json       TEXT NOT NULL,      -- 规则参数快照(JSON)
+    changelog       TEXT NOT NULL,      -- 本版为何这样定(过堂结论摘要)
+    metrics_json    TEXT NOT NULL DEFAULT '{}',  -- 定版回测指标(JSON)
+    is_active       INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
