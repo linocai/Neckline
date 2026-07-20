@@ -282,6 +282,22 @@ def ts_ths_daily(index_code: str, start: str, end: str) -> TushareResult:
     return _call("ths_daily", ts_code=index_code, start_date=start, end_date=end)
 
 
+def ts_top_list(trade_date: str) -> TushareResult:
+    """龙虎榜每日明细(§3.2 可用接口,2000 积分档,600 档天然覆盖)。trade_date 'YYYYMMDD'。
+    某日无股票上榜是正常情况(不是每个交易日都有龙虎榜),返回空表不代表失败。
+
+    字段单位(2026-07-20 官方文档 https://tushare.pro/document/2?doc_id=106 +
+    网页交叉核对确认,§3.7 铁律口径表新增一行):`l_buy`/`l_sell`/`l_amount`/
+    `net_amount` 单位【万元】(与 moneyflow_dc.net_amount 同惯例,勿当元用);
+    `net_rate`/`amount_rate`/`pct_change`/`turnover_rate` 是百分比数值(如 3.2
+    即 3.2%);`close` 单位元。`amount`(当日总成交额)/`float_values`(流通市值)
+    两个字段官方文档未明确单位、本项目**不消费**这两列(继承"字段单位不确定宁可
+    不用,不猜"的教训),只取 l_buy/l_sell/net_amount/net_rate/reason 等已核实字段
+    (见 neckline/data/top_list.py)。
+    """
+    return _call("top_list", trade_date=trade_date)
+
+
 def ts_namechange_page(limit: int = 8000, offset: int = 0) -> TushareResult:
     """`namechange` 全量分页拉取(阶段 0.2 新增)。单页上限 8000(接口硬上限 1 万,
     留余量);调用方循环 offset 直到某页行数 < limit 为止(见 scripts/backfill.py
@@ -319,4 +335,5 @@ __all__ = [
     "ts_ths_index",
     "ts_ths_member",
     "ts_ths_daily",
+    "ts_top_list",
 ]

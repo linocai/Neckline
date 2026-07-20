@@ -1,4 +1,4 @@
-# Neckline 依赖钉死版本(阶段 0 · 2026-07-19)。
+# Neckline 依赖钉死版本(阶段 0 · 2026-07-19;阶段 2 · 2026-07-20 新增 httpx)。
 # 安装:pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 # (或已配置 pip.conf 全局走阿里云镜像,见项目根 pip.conf)
 
@@ -9,12 +9,16 @@ pandas==3.0.3
 tushare==1.4.29
 python-dotenv==1.2.2
 pytest==9.1.1
+httpx==0.28.1     # 阶段2 §3.4 LLM 层(GLM/Kimi 均 OpenAI 兼容 HTTP,姿势继承 LinoN deepseek.py)
 
 # —— 传递依赖(pip freeze 钉死,保证可复现)——
+anyio==4.14.2
 beautifulsoup4==4.15.0
 bs4==0.0.2
 certifi==2026.6.17
 charset-normalizer==3.4.9
+h11==0.16.0
+httpcore==1.0.9
 idna==3.18
 iniconfig==2.3.0
 lxml==6.1.1

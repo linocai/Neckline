@@ -38,6 +38,7 @@ _VALID_TABLES = {
     "moneyflow_dc",
     "index_daily",
     "limit_derived",
+    "top_list",
 }
 
 
