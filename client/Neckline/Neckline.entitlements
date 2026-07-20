@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 沙盒 APNs(dev 直装走 sandbox 网关 api.sandbox.push.apple.com,与 APNS_USE_SANDBOX=true 对应)。
+	     发布到生产网关时改为 production。仅 iOS 应用此 entitlement(见 project.yml 的 sdk 条件)。 -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

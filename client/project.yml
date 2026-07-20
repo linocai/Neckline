@@ -1,0 +1,72 @@
+name: Neckline
+options:
+  bundleIdPrefix: top.linotsai
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: HX73DFL88G
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_STRICT_CONCURRENCY: minimal
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+targets:
+  Neckline:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    deploymentTarget:
+      iOS: "26.0"
+      macOS: "26.0"
+    sources:
+      - path: Neckline
+      - path: DesignTokens.swift
+      - path: Models.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: top.linotsai.neckline
+        PRODUCT_NAME: Neckline
+        # 推送 entitlement 仅 iOS 应用(真机/模拟器);macOS 不开推送(平台分叉,同 LinoN 姿势)。
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Neckline/Neckline.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Neckline/Neckline.entitlements
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Neckline/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_PREVIEWS: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait"
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+
+  NecklineTests:
+    type: bundle.unit-test
+    supportedDestinations: [iOS, macOS]
+    deploymentTarget:
+      iOS: "26.0"
+      macOS: "26.0"
+    sources:
+      - path: NecklineTests
+    dependencies:
+      - target: Neckline
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: top.linotsai.neckline.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Neckline:
+    build:
+      targets:
+        Neckline: all
+        NecklineTests: [test]
+    test:
+      targets:
+        - NecklineTests
+    run:
+      config: Debug
