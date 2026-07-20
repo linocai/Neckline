@@ -43,8 +43,16 @@ else
 fi
 
 # 4) 建 SQLite schema(幂等)
+# ⚠ ECS 部署:.env 为 600 neckline:neckline,且 neckline.db 应由服务用户(neckline)拥有并可写。
+# 若当前是 deploy(非 neckline)且 neckline 用户存在 → 用 `sudo -u neckline` 建库(库归 neckline,
+# 服务才写得动 WAL);否则(本地开发)直接建。服务 lifespan 启动也会 init_schema(幂等兜底)。
 echo "==> 初始化 SQLite schema"
-python -c "from neckline.db import init_schema; init_schema(); print('DB schema ready')"
+if [ "$(id -un)" != "neckline" ] && id neckline >/dev/null 2>&1; then
+  echo "  (以 neckline 用户建库,保证服务可写)"
+  sudo -u neckline "${VENV_DIR}/bin/python" -c "from neckline.db import init_schema; init_schema(); print('DB schema ready (owner=neckline)')"
+else
+  python -c "from neckline.db import init_schema; init_schema(); print('DB schema ready')"
+fi
 
 echo "==> setup 完成。激活:source ${VENV_DIR}/bin/activate"
 echo "==> 冒烟:bash scripts/smoke_api.sh"

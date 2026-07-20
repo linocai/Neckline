@@ -23,8 +23,13 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 
-# override=False:已存在的环境变量(如 CI 注入)优先于 .env 文件内容。
-load_dotenv(ENV_PATH, override=False)
+# override=False:已存在的环境变量(如 systemd EnvironmentFile / CI 注入)优先于 .env 文件。
+# 容错:.env 存在但当前进程无读权限(ECS 上 .env 为 600 neckline:neckline,deploy 用户跑
+# 维护命令时读不到)→ 绝不崩;此时配置从进程环境变量取(systemd 已注入),读不到的 key 为 None。
+try:
+    load_dotenv(ENV_PATH, override=False)
+except OSError:
+    pass
 
 DATA_DIR = PROJECT_ROOT / "data"
 PARQUET_DIR = DATA_DIR / "parquet"

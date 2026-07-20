@@ -68,10 +68,12 @@ echo "[sync_code] ${RSYNC_BIN} ${ROOT_DIR}/  ->  ${DEST}"
 "${RSYNC_BIN}" "${RSYNC_OPTS[@]}" "${ROOT_DIR}/" "${DEST}/"
 
 cat <<EOF
-[sync_code] 完成。远端收尾(rsync -a 冲了 setgid,须复原;改包结构须删 stale .pyc):
+[sync_code] 完成。远端收尾(rsync -a 冲了 setgid 须复原;chown -R 会把 .env/.p8 也翻成 deploy,
+须 chown 回 neckline 否则服务 User=neckline 读不到;改包结构须删 stale .pyc):
   ssh ${USER_NAME}@${HOST} 'sudo chown -R deploy:neckline ${REMOTE_PATH} \\
     && sudo find ${REMOTE_PATH} -type d -exec chmod 2770 {} + \\
-    && sudo chmod 600 ${REMOTE_PATH}/.env ${REMOTE_PATH}/*.p8 2>/dev/null; \\
+    && sudo chown neckline:neckline ${REMOTE_PATH}/.env ${REMOTE_PATH}/*.p8 \\
+    && sudo chmod 600 ${REMOTE_PATH}/.env ${REMOTE_PATH}/*.p8; \\
     sudo find ${REMOTE_PATH}/neckline -name "*.pyc" -delete'
   # ECS Python 3.12:--delete 不清 stale __pycache__/*.pyc,改包结构后手动删(上一行已含)。
   # systemd unit / nginx conf 改动须手动 scp + daemon-reload / nginx reload(不走本脚本)。
