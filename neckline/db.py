@@ -70,6 +70,38 @@ CREATE TABLE IF NOT EXISTS strategy_versions (
     metrics_json    TEXT NOT NULL DEFAULT '{}',  -- 定版回测指标(JSON)
     is_active       INTEGER NOT NULL DEFAULT 0
 );
+
+-- 盘后报告存档(plan 2.5)。一个交易日一行(幂等覆盖,重跑报告不留重复行);
+-- *_json 是该次报告的结构化快照(情绪仪表盘/强势板块/候选20只四件套),供事后
+-- 审计与历史回放核对;markdown 是渲染产物全文。
+CREATE TABLE IF NOT EXISTS reports (
+    trade_date       TEXT PRIMARY KEY,   -- 'YYYYMMDD'
+    generated_at     TEXT NOT NULL,      -- ISO8601
+    strategy_version TEXT NOT NULL,      -- 生成本报告时用的大脑版本号(strategy_versions.version)
+    sentiment_json   TEXT NOT NULL,
+    sectors_json     TEXT NOT NULL,
+    candidates_json  TEXT NOT NULL,
+    markdown         TEXT NOT NULL
+);
+
+-- LLM 逻辑审判存档(plan 2.4)。前10只候选每只一行;search_hits_json 是该次审判
+-- 用到的联网搜索结果全文(§2.4「搜索结果全文落 SQLite 存档」,供事后审计"当时为何
+-- 否决" + 自建历史新闻快照)。degraded=1 表示「LLM 未激活」占位,不是真实判断。
+CREATE TABLE IF NOT EXISTS llm_judgments (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date       TEXT NOT NULL,
+    ts_code          TEXT NOT NULL,
+    provider         TEXT NOT NULL,
+    model            TEXT,
+    verdict          TEXT NOT NULL,      -- 通过 | 否决 | 未激活
+    narrative        TEXT NOT NULL,
+    degraded         INTEGER NOT NULL DEFAULT 0,
+    degrade_reason   TEXT,
+    search_hits_json TEXT NOT NULL DEFAULT '[]',
+    created_at       TEXT NOT NULL,
+    UNIQUE(trade_date, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_llm_judgments_trade_date ON llm_judgments(trade_date);
 """
 
 
