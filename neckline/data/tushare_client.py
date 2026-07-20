@@ -262,6 +262,26 @@ def ts_stock_basic(list_status: str) -> TushareResult:
     )
 
 
+def ts_ths_index(exchange: str = "A", type_: str = "N") -> TushareResult:
+    """同花顺板块指数列表(概念/行业/地域)。600 档可用(实测,§3.2「概念板块和成分」)。
+    type: N=概念指数 I=行业指数 R=地域 …;板块年龄因子(1.6/P2)用概念指数(type='N')。
+    返回 `ts_code`(如 883300.TI)、name、count(成分数)、list_date、type。"""
+    return _call("ths_index", exchange=exchange, type=type_)
+
+
+def ts_ths_member(index_code: str) -> TushareResult:
+    """某板块【当前】成分股(con_code=成分票代码)。**注意:该接口是时点快照,无历史
+    成分**——历史回测用当前成分做「股票→板块」映射会引入幸存者/前视偏差,1.6 板块年龄
+    的股票级联动因此受限(见 stage1_report P2 节的诚实说明)。"""
+    return _call("ths_member", ts_code=index_code)
+
+
+def ts_ths_daily(index_code: str, start: str, end: str) -> TushareResult:
+    """板块指数日线(open/high/low/close/pre_close/pct_change)。板块年龄用板块指数本身
+    (无成分映射前视问题),度量「板块启动第几天 / 板块动量」。"""
+    return _call("ths_daily", ts_code=index_code, start_date=start, end_date=end)
+
+
 def ts_namechange_page(limit: int = 8000, offset: int = 0) -> TushareResult:
     """`namechange` 全量分页拉取(阶段 0.2 新增)。单页上限 8000(接口硬上限 1 万,
     留余量);调用方循环 offset 直到某页行数 < limit 为止(见 scripts/backfill.py
@@ -296,4 +316,7 @@ __all__ = [
     "ts_trade_cal",
     "ts_stock_basic",
     "ts_namechange_page",
+    "ts_ths_index",
+    "ts_ths_member",
+    "ts_ths_daily",
 ]

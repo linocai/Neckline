@@ -13,9 +13,9 @@ from neckline.strategy import signals as S  # noqa: F401 (保留:未来禁买探
 from neckline.strategy.momentum import MomentumConfig
 from research import lab
 
-# —— 退出基线(1.3/P7/P8 结论):strength=none + pullback,-5% 止损,时间退出 hold=5,无回落止盈 ——
+# —— 退出基线(1.3/P7/P8 结论):strength=none + pullback,-5% 止损,hold=5,回落止盈 5%(P7 微优)——
 BASE = dict(strength="none", buypoint="pullback", stop_pct=0.05, max_hold_days=5,
-            take_profit_retrace=None, cooldown_days=0)
+            take_profit_retrace=0.05, cooldown_days=0)
 
 
 def cfg(**kw) -> MomentumConfig:
