@@ -124,10 +124,22 @@ def write_daily_fixture(
     write_table_day(table, trade_date, df, parquet_dir=settings.parquet_dir)
 
 
+def write_flat_parquet(settings: Settings, filename: str, rows: List[dict]) -> Path:
+    """写一个不按年份分区的扁平 Parquet 文件到 `parquet_dir` 根下——同花顺概念板块
+    三张表的落盘方式(plan 1.6/`scripts/backfill_concept.py`:`ths_index.parquet` /
+    `ths_daily.parquet` / `ths_member.parquet`,阶段2 report/sectors.py 与
+    report/candidates.py 的测试共用本 helper)。"""
+    path = settings.parquet_dir / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(rows).write_parquet(path)
+    return path
+
+
 __all__ = [
     "fake_settings",
     "isolated_env",
     "insert_trade_cal",
     "business_days",
     "write_daily_fixture",
+    "write_flat_parquet",
 ]
