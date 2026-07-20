@@ -10,7 +10,7 @@ import polars as pl
 
 from neckline.backtest.portfolio import ClosedTrade, Portfolio, Position
 from neckline.backtest.strategy import BacktestContext
-from neckline.strategy.momentum import MomentumConfig, MomentumStrategy
+from neckline.strategy.momentum import MomentumConfig, MomentumStrategy, build_entry_mask
 
 
 def _empty_strategy(cfg: MomentumConfig) -> MomentumStrategy:
@@ -134,6 +134,50 @@ class TestWeekHalving:
         prev = (t.fromordinal(t.toordinal() - 7)).isocalendar()
         s._week_loss[(prev[0], prev[1])] = -7000.0
         assert s._effective_single_cap(t) == 10000.0  # 正确命中上一 ISO 周(2023 末周)
+
+
+class TestBuildEntryMaskModuleFunction:
+    """`build_entry_mask` 是阶段2 从 `MomentumStrategy._build_entry_mask` 提炼出的
+    模块级纯函数(§2.6/§3.8 同码铁律:报告管线与回测策略须调同一份信号函数)。
+    本类锁死:① 它是纯函数,不依赖策略实例;② 它与 `MomentumStrategy` 内部实际
+    使用的口径【完全一致】(同一份表达式,不是两份「长得像」的拷贝)。"""
+
+    def _panel_day(self, d: date) -> pl.DataFrame:
+        rows = []
+        for i in range(5):
+            rows.append({
+                "ts_code": f"C{i}", "trade_date": d, "board": "MAIN", "close": 10.0,
+                "amount_ma20": 50000.0, "ma20": 9.0, "is_st": False,
+                "above_ma20_bullish": True, "vol_ratio_5": 1.5, "ret_1d": -0.005,
+                "ma10": 9.5, "dist_from_high_20d": -0.01 * i,
+            })
+        rows.append({  # ST 应被剔除
+            "ts_code": "STX", "trade_date": d, "board": "MAIN", "close": 10.0,
+            "amount_ma20": 50000.0, "ma20": 9.0, "is_st": True,
+            "above_ma20_bullish": True, "vol_ratio_5": 1.5, "ret_1d": -0.005,
+            "ma10": 9.5, "dist_from_high_20d": 0.0,
+        })
+        return pl.DataFrame(rows)
+
+    def test_pure_function_filters_without_strategy_instance(self):
+        d = date(2024, 3, 4)
+        cfg = MomentumConfig(strength="volprice", buypoint="pullback")
+        panel = self._panel_day(d)
+        selected = set(panel.filter(build_entry_mask(cfg))["ts_code"].to_list())
+        assert selected == {f"C{i}" for i in range(5)}  # ST 剔除,其余全过
+
+    def test_identical_to_strategy_internal_mask(self):
+        """`MomentumStrategy` 内部实际过滤出的候选集合,必须与直接调用
+        `build_entry_mask(同一 config)` 完全相同——防止未来有人在类内部悄悄改出
+        第二份逻辑,回测与报告管线信号漂移。"""
+        d = date(2024, 3, 4)
+        cfg = MomentumConfig(strength="none", buypoint="pullback", forbid_high_elasticity=True)
+        panel = self._panel_day(d)
+        strat = MomentumStrategy(panel, cfg, initial_cash=120000.0)
+        via_strategy = set(strat._by_date.get(d, pl.DataFrame()).get_column("ts_code").to_list()) if strat._by_date.get(d) is not None else set()
+        via_module_fn = set(panel.filter(build_entry_mask(cfg))["ts_code"].to_list())
+        assert via_strategy == via_module_fn
+        assert via_strategy == {f"C{i}" for i in range(5)}
 
 
 class TestEntryMaskAndDiscipline:

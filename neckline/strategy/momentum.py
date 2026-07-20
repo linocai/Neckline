@@ -65,6 +65,50 @@ class MomentumConfig:
                                                     # （5%=挂起项「次周单笔减半」；区别于 §2.1 已采纳的 2% 强制复盘线）
 
 
+def build_entry_mask(config: MomentumConfig) -> pl.Expr:
+    """选股域 + 强势 + 买点 + 禁买过滤 → 单一布尔表达式。
+
+    模块级纯函数(阶段 0/1 原是 `MomentumStrategy._build_entry_mask` 实例方法,阶段 2
+    提炼出来——§2.6/§3.8「同码三跑道」铁律:报告管线(`neckline/report/candidates.py`)
+    与回测策略必须调**同一份**函数选出同一批候选,不得在报告管线里另写一份信号逻辑。
+    提炼只是把 `self.config` 换成显式参数,行为完全不变。
+    """
+    from neckline.research.panel import base_universe_expr
+
+    c = config
+    mask = base_universe_expr()
+    # 强势
+    if c.strength == "limitup_gene":
+        mask = mask & S.strength_limitup_gene(c.strength_min_count)
+    elif c.strength == "ret20":
+        mask = mask & S.strength_ret_rank(c.strength_min_ret)
+    elif c.strength == "ret20_pct":
+        mask = mask & S.strength_ret_rank_pct(c.strength_min_pct)
+    elif c.strength == "volprice":
+        mask = mask & S.strength_volprice()
+    # 买点
+    if c.buypoint == "pullback":
+        mask = mask & S.buy_pullback()
+    elif c.buypoint == "breakout":
+        mask = mask & S.buy_breakout(c.breakout_vol_expand)
+    elif c.buypoint == "either":
+        mask = mask & (S.buy_pullback() | S.buy_breakout(c.breakout_vol_expand))
+    # 禁买
+    if c.forbid_green_bigdown is not None:
+        mask = mask & ~S.forbid_green_bigdown(c.forbid_green_bigdown)
+    if c.forbid_far_from_high is not None:
+        mask = mask & ~S.forbid_far_from_high(c.forbid_far_from_high)
+    if c.forbid_new_days is not None:
+        mask = mask & ~S.forbid_new_stock(c.forbid_new_days)
+    if c.forbid_high_elasticity:
+        mask = mask & ~S.forbid_high_elasticity()
+    if c.shallow_pullback is not None:
+        mask = mask & (pl.col("dist_from_high_20d") >= c.shallow_pullback)
+    if c.max_turnover is not None:
+        mask = mask & (pl.col("turnover_rate") <= c.max_turnover)
+    return mask
+
+
 class MomentumStrategy(Strategy):
     def __init__(
         self,
@@ -81,7 +125,7 @@ class MomentumStrategy(Strategy):
         # 个股面板。退出决策不受闸门影响(风控优先于择时)。
         self._buy_gate = buy_gate
         # 预筛：选股域 + 强势 + 买点 + 禁买过滤 一次性算成布尔，按日切片(快)
-        self._entry_mask = self._build_entry_mask()
+        self._entry_mask = build_entry_mask(self.config)
         filtered = panel.filter(self._entry_mask)
         self._by_date: Dict[date, pl.DataFrame] = {}
         for (d,), sub in filtered.group_by(["trade_date"]):
@@ -91,43 +135,6 @@ class MomentumStrategy(Strategy):
         self._cooldown_until: Dict[str, date] = {}   # 冷却到期日(含)
         self._week_loss: Dict[tuple, float] = {}     # (iso_year,iso_week) -> 已实现亏损累计
         self._processed_closed = 0                   # 已处理的 closed_trades 数(增量扫描)
-
-    # —— 选股域 + 信号 → 单一布尔表达式 ——
-    def _build_entry_mask(self) -> pl.Expr:
-        from neckline.research.panel import base_universe_expr
-
-        c = self.config
-        mask = base_universe_expr()
-        # 强势
-        if c.strength == "limitup_gene":
-            mask = mask & S.strength_limitup_gene(c.strength_min_count)
-        elif c.strength == "ret20":
-            mask = mask & S.strength_ret_rank(c.strength_min_ret)
-        elif c.strength == "ret20_pct":
-            mask = mask & S.strength_ret_rank_pct(c.strength_min_pct)
-        elif c.strength == "volprice":
-            mask = mask & S.strength_volprice()
-        # 买点
-        if c.buypoint == "pullback":
-            mask = mask & S.buy_pullback()
-        elif c.buypoint == "breakout":
-            mask = mask & S.buy_breakout(c.breakout_vol_expand)
-        elif c.buypoint == "either":
-            mask = mask & (S.buy_pullback() | S.buy_breakout(c.breakout_vol_expand))
-        # 禁买
-        if c.forbid_green_bigdown is not None:
-            mask = mask & ~S.forbid_green_bigdown(c.forbid_green_bigdown)
-        if c.forbid_far_from_high is not None:
-            mask = mask & ~S.forbid_far_from_high(c.forbid_far_from_high)
-        if c.forbid_new_days is not None:
-            mask = mask & ~S.forbid_new_stock(c.forbid_new_days)
-        if c.forbid_high_elasticity:
-            mask = mask & ~S.forbid_high_elasticity()
-        if c.shallow_pullback is not None:
-            mask = mask & (pl.col("dist_from_high_20d") >= c.shallow_pullback)
-        if c.max_turnover is not None:
-            mask = mask & (pl.col("turnover_rate") <= c.max_turnover)
-        return mask
 
     def on_day(self, context: BacktestContext) -> List[Order]:
         c = self.config
@@ -254,4 +261,4 @@ class MomentumStrategy(Strategy):
         return c.single_cap
 
 
-__all__ = ["MomentumConfig", "MomentumStrategy"]
+__all__ = ["MomentumConfig", "MomentumStrategy", "build_entry_mask"]
