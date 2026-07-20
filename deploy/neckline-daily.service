@@ -1,0 +1,19 @@
+# Neckline 盘后数据增量(plan 4B.4,**仅方案 A(全云)启用**)。~16:30(daily 数据稳定
+# 后)跑 daily_update.py:全市场当日 daily/basic/adj/moneyflow 拉取 + 写 Parquet + 尾窗
+# limit_derived 重算。**方案 B(Mac 落数)不启用本 unit**——数据在 Mac 跑,rsync 产物上云。
+#
+# 是否启用由 4B.1 内存门禁定(daily_update 是三项里最重的 polars 活):
+#   方案 A → enable;方案 B → 不 enable(留模板)。见 PROJECT_PLAN 4B 门禁结论。
+[Unit]
+Description=Neckline EOD daily incremental data update (Scheme A only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+ExecStart=/opt/neckline/.venv/bin/python scripts/daily_update.py
+MemoryMax=900M

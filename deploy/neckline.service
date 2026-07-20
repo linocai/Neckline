@@ -1,0 +1,30 @@
+# Neckline 主服务 systemd unit(plan 4B.3)。单 unit = FastAPI(127.0.0.1:8002)+ 盘中
+# 哨兵 asyncio 后台任务(折进 lifespan,不另起进程,照搬 LinoN 单 unit 省内存)。
+#
+# 安装(手动,rsync 不装 unit;改动后须 daemon-reload):
+#   sudo cp /opt/neckline/deploy/neckline.service /etc/systemd/system/neckline.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now neckline
+#
+# ⚠ 与 LinoN(8001)共存:绝不 stop/改 linon.service;接班切换是 4E 的事。
+[Unit]
+Description=Neckline A-share short-term trading system (FastAPI :8002 + intraday sentinel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+ExecStart=/opt/neckline/.venv/bin/uvicorn neckline.api.app:app --host 127.0.0.1 --port 8002
+Restart=on-failure
+RestartSec=5
+# —— 内存护栏(hz 仅 1.6G + 2G swap,与 lf/linon/fiscal/pg 共存)——
+# MemoryHigh 软节流(超过则回收压力,不杀进程);MemoryMax 硬上限(超则 OOM-kill 本服务,
+# 绝不波及邻居)。数值按 4B.1 实测常驻基线 + 一拍哨兵峰值 + 安全余量设定(见 PROJECT_PLAN 4B)。
+MemoryHigh=420M
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target

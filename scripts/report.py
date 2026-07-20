@@ -52,6 +52,8 @@ def main() -> int:
     parser.add_argument("--no-save", action="store_true", help="只打印,不写文件/不落库(调试用)")
     parser.add_argument("--top-total", type=int, default=TOP_N_TOTAL, help=f"候选总数(默认 {TOP_N_TOTAL})")
     parser.add_argument("--top-judged", type=int, default=TOP_N_JUDGED, help=f"过 LLM 审判的候选数(默认 {TOP_N_JUDGED})")
+    parser.add_argument("--notify", action="store_true",
+                        help="落库后触发 APNs 报告推送(受 app_settings.push_report 开关);16:00 timer 用")
     args = parser.parse_args()
 
     ensure_data_dirs()
@@ -79,6 +81,18 @@ def main() -> int:
         out_path = REPORTS_DIR / f"{trade_date.strftime('%Y%m%d')}.md"
         out_path.write_text(bundle.markdown, encoding="utf-8")
         logger.info("报告已写入 %s,并已落库 SQLite `reports`/`llm_judgments` 表。", out_path)
+
+        if args.notify:
+            # APNs 报告推送(plan 4B.5,只推两类之一;受 push_report 开关 + 无设备/无 APNs 配置
+            # 优雅跳过,绝不因推送失败让报告任务失败)。
+            try:
+                from neckline.api.notify import push_report_ready
+                outcome = push_report_ready(trade_date.strftime("%Y-%m-%d"))
+                logger.info("APNs 报告推送:sent=%d failed=%d%s",
+                            outcome.sent, outcome.failed,
+                            f" skipped={outcome.skipped_reason}" if outcome.skipped_reason else "")
+            except Exception:  # noqa: BLE001
+                logger.warning("APNs 报告推送异常(已吞,不影响报告落库)", exc_info=True)
 
     print(bundle.markdown)
     return 0

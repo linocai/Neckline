@@ -1,0 +1,22 @@
+# Neckline 16:00 盘后报告(plan 4B.4)。oneshot 瞬态进程 —— 跑完即释放内存(对 hz 紧
+# 内存友好,不常驻 polars)。生成报告 → 落库 → --notify 触发 APNs 报告推送(受 push_report 开关)。
+#
+# report.py 自身查 is_trading_day:非交易日(节假日)直接退出 1,timer 打 Mon-Fri 无害。
+#
+# 安装:
+#   sudo cp /opt/neckline/deploy/neckline-report.service /etc/systemd/system/
+#   sudo cp /opt/neckline/deploy/neckline-report.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now neckline-report.timer
+[Unit]
+Description=Neckline EOD 16:00 report (oneshot, releases memory after run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+ExecStart=/opt/neckline/.venv/bin/python scripts/report.py --notify
+MemoryMax=800M

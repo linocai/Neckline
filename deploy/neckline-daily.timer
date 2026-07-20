@@ -1,0 +1,11 @@
+# Neckline 盘后数据增量定时(plan 4B.4,**仅方案 A 启用**)。16:30 Asia/Shanghai。
+# 交易日门控在 daily_update.py 内(非交易日自退)。
+[Unit]
+Description=Run Neckline daily data update at 16:30 on weekdays (Scheme A only)
+
+[Timer]
+OnCalendar=Mon-Fri 16:30 Asia/Shanghai
+Persistent=false
+
+[Install]
+WantedBy=timers.target
