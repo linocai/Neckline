@@ -119,7 +119,7 @@ struct RootView: View {
         case .board: BoardView(model: model)
         case .inquiry: InquiryView(model: model)
         case .settings: SettingsView(model: model, config: config)
-        case .review: ReviewWorkbenchView()
+        case .review: ReviewWorkbenchView(model: model)
         }
     }
     #endif

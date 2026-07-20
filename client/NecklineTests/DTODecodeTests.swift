@@ -294,7 +294,8 @@ final class DTODecodeTests: XCTestCase {
     func testDecodeSettings() async throws {
         MockURLProtocol.handler = { _ in
             (200, jsonData("""
-            {"llmProvider": "glm", "llmKeySet": true, "push": {"report": true, "retreatBrake": false}}
+            {"llmProvider": "glm", "llmKeySet": true, "push": {"report": true, "retreatBrake": false},
+             "reviewColMap": {"手续费": "费用合计"}}
             """))
         }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
@@ -303,6 +304,7 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertTrue(s.llmKeySet)
         XCTAssertTrue(s.push.report)
         XCTAssertFalse(s.push.retreatBrake)
+        XCTAssertEqual(s.reviewColMap, ["手续费": "费用合计"])
     }
 
     func testPutSettingsLLMBodyNeverLogsButDoesSendKeyOnce() async throws {
@@ -321,6 +323,99 @@ final class DTODecodeTests: XCTestCase {
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
         let ok = try await client.putSettingsLLM(provider: .glm, apiKey: "sk-secret-abc")
         XCTAssertTrue(ok)
+    }
+
+    // MARK: - 4D 周复盘工作台(样例对照 tests/test_api_review.py::test_upload_and_get_roundtrip)
+
+    private static let sampleReviewResultJSON = """
+    {
+      "week": "2026-W29", "weekStart": "20260713", "weekEnd": "20260719",
+      "roundTrips": [
+        {"tsCode": "600519.SH", "name": "贵州茅台", "buyDate": "20260714", "buyPrice": 1500.0,
+         "qty": 100, "buyAmount": 150000.0, "fees": 30.0, "sellDate": "20260716",
+         "sellPrice": 1424.7, "closed": true, "netPnl": -7560.0, "pnlPct": -0.0502}
+      ],
+      "closedRoundTrips": [
+        {"tsCode": "600519.SH", "name": "贵州茅台", "buyDate": "20260714", "buyPrice": 1500.0,
+         "qty": 100, "buyAmount": 150000.0, "fees": 30.0, "sellDate": "20260716",
+         "sellPrice": 1424.7, "closed": true, "netPnl": -7560.0, "pnlPct": -0.0502}
+      ],
+      "planChecks": [
+        {"tsCode": "600519.SH", "name": "贵州茅台", "tradeDate": "20260714", "price": 1500.0,
+         "qty": 100, "amount": 150000.0, "planStatus": "计划外(未经系统候选/海选池放行的自主买入)",
+         "ledgerStatus": "台账缺失(未在系统持仓台账登记,止损提醒未覆盖此仓位)"}
+      ],
+      "disciplineViolations": ["600519.SH(贵州茅台)于 2026-07-14 买入金额 ¥150,000,超过单笔仓位上限 ¥20,000(§2.1 第3条)。"],
+      "stopDiscipline": [
+        {"roundTrip": {"tsCode": "600519.SH", "name": "贵州茅台", "buyDate": "20260714", "buyPrice": 1500.0,
+                       "qty": 100, "buyAmount": 150000.0, "fees": 30.0, "sellDate": "20260716",
+                       "sellPrice": 1424.7, "closed": true, "netPnl": -7560.0, "pnlPct": -0.0502},
+         "classification": "kept_stop", "note": "卖出价相对买入价 -5.0%,落在止损容差带内,止损纪律执行到位。"}
+      ],
+      "stats": {"closedCount": 1, "openCount": 0, "winRate": 0.0, "profitFactor": null, "profitLossRatio": null,
+                "totalFees": 30.0, "grossPnl": -7530.0, "realizedPnl": -7560.0, "realizedLoss": -7560.0},
+      "forcedReview": false, "forcedReviewReason": ""
+    }
+    """
+
+    func testDecodeReviewUpload() async throws {
+        let json = jsonData("""
+        {"ok": true, "weeks": [{"week": "2026-W29", "result": \(Self.sampleReviewResultJSON), "material": "本周平仓1回合…"}],
+         "parseWarnings": [], "dataWarnings": [], "sheetFormats": {"t.xlsx · 对账单": "format1"}}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let fileData = "dummy xlsx bytes".data(using: .utf8)!
+        let resp = try await client.uploadReview(files: [(filename: "交割单.xlsx", data: fileData)])
+        XCTAssertTrue(resp.ok)
+        XCTAssertEqual(resp.weeks.count, 1)
+        let week = resp.weeks[0]
+        XCTAssertEqual(week.week, "2026-W29")
+        XCTAssertEqual(week.result.roundTrips.count, 1)
+        XCTAssertEqual(week.result.roundTrips[0].tsCode, "600519.SH")
+        XCTAssertEqual(week.result.roundTrips[0].netPnl, -7560.0)
+        XCTAssertEqual(week.result.planChecks[0].isOffPlan, true)
+        XCTAssertEqual(week.result.planChecks[0].isLedgerMissing, true)
+        XCTAssertEqual(week.result.stopDiscipline[0].kind, .keptStop)
+        XCTAssertNil(week.result.stats?.profitFactor)   // JSON null → nil,不是 0
+        XCTAssertFalse(week.result.forcedReview)
+        XCTAssertFalse(week.material.isEmpty)
+
+        // 请求本身应是 multipart/form-data,且带上了文件名(不是裸 JSON POST)。
+        let req = MockURLProtocol.lastRequest
+        let contentType = req?.value(forHTTPHeaderField: "Content-Type") ?? ""
+        XCTAssertTrue(contentType.contains("multipart/form-data"))
+        let body = try XCTUnwrap(req?.httpBodyOrStream())
+        let bodyText = String(data: body, encoding: .utf8) ?? ""
+        XCTAssertTrue(bodyText.contains("交割单.xlsx"))
+        XCTAssertTrue(bodyText.contains("name=\"files\""))
+    }
+
+    func testDecodeReviewGetFound() async throws {
+        let json = jsonData("""
+        {"ok": true, "found": true, "week": "2026-W29", "generatedAt": "2026-07-20T12:00:00+00:00",
+         "result": \(Self.sampleReviewResultJSON), "material": "本周平仓1回合…"}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let resp = try await client.fetchReview(week: "2026-W29")
+        XCTAssertTrue(resp.found)
+        XCTAssertEqual(resp.result?.week, "2026-W29")
+        let reqURL = MockURLProtocol.lastRequest?.url?.absoluteString ?? ""
+        XCTAssertTrue(reqURL.contains("?week=2026-W29"))
+        XCTAssertFalse(reqURL.contains("%3F"))
+    }
+
+    /// `result` 为 JSON null(非空字典)时应解成 `nil`,不是一个字段全空的"假"结果。
+    func testDecodeReviewGetNotFound() async throws {
+        let json = jsonData("""
+        {"ok": true, "found": false, "week": "2099-W01", "generatedAt": "", "result": null, "material": ""}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let resp = try await client.fetchReview(week: "2099-W01")
+        XCTAssertFalse(resp.found)
+        XCTAssertNil(resp.result)
     }
 }
 

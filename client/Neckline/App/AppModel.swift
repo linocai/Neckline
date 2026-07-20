@@ -94,6 +94,14 @@ final class AppModel {
     var pushReportDraft: Bool = true
     var pushRetreatDraft: Bool = true
 
+    // —— 4D 周复盘工作台(拖入交割单对账;macOS 独有,§五 阶段4D)——
+    var reviewWeeks: [WeeklyReviewEntry] = []
+    var reviewSelectedWeek: String? = nil
+    var reviewParseWarnings: [String] = []
+    var reviewDataWarnings: [String] = []
+    var reviewUploading = false
+    var reviewHasUploaded = false   // 区分"从未上传过"与"上传过但没解析出交易"两种空态
+
     // —— 模态 / 录入 / toast ——
     var modal: PositionModal? = nil
     var entryForm = PositionEntryForm()
@@ -363,6 +371,45 @@ final class AppModel {
         } catch {
             showToast("保存失败:\(error.localizedDescription)", isError: true)
         }
+    }
+
+    // MARK: - 4D:周复盘工作台(对账逻辑全在后端 `neckline/review/`,本模型只装配/展示)
+
+    /// 当前展示哪一周(默认最近解析出的一周;用户可用周切换器改选)。
+    var selectedReviewEntry: WeeklyReviewEntry? {
+        if let sel = reviewSelectedWeek, let hit = reviewWeeks.first(where: { $0.week == sel }) {
+            return hit
+        }
+        return reviewWeeks.first
+    }
+
+    /// 拖入的文件(可能多份)一次性上传解析对账。`files`:(文件名,内容)对,由
+    /// View 层从 `NSItemProvider` 读出(§五 阶段4D「客户端只负责拖文件上传与展示,
+    /// 不重算任何判定」)。
+    func uploadReviewFiles(_ files: [(filename: String, data: Data)]) async {
+        guard let client = clientProvider() else {
+            showToast("未配置后端连接", isError: true); return
+        }
+        guard !files.isEmpty else { return }
+        reviewUploading = true
+        do {
+            let resp = try await client.uploadReview(files: files)
+            reviewHasUploaded = true
+            reviewWeeks = resp.weeks.sorted { $0.week > $1.week }
+            reviewSelectedWeek = reviewWeeks.first?.week
+            reviewParseWarnings = resp.parseWarnings
+            reviewDataWarnings = resp.dataWarnings
+            if reviewWeeks.isEmpty {
+                showToast("未解析出任何成交记录,请查看下方警告排查文件格式", isError: true)
+            } else {
+                showToast("对账完成 · 共 \(reviewWeeks.count) 周")
+            }
+        } catch let e as APIError {
+            showToast(e.errorDescription ?? "上传失败", isError: true)
+        } catch {
+            showToast("上传失败:\(error.localizedDescription)", isError: true)
+        }
+        reviewUploading = false
     }
 
     // MARK: - Toast

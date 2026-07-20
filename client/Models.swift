@@ -317,9 +317,138 @@ struct SettingsSnapshot: Codable, Equatable {
     var llmProvider: String?     // "glm" | "kimi" | nil(未设)
     var llmKeySet: Bool          // 只回布尔,绝不回明文(§3.4 高危区)
     var push: PushSettings
+    var reviewColMap: [String: String]      // 4D 周复盘交割单列映射(见 §五 阶段4D.1)
 
     static let empty = SettingsSnapshot(llmProvider: nil, llmKeySet: false,
-                                        push: PushSettings(report: true, retreatBrake: true))
+                                        push: PushSettings(report: true, retreatBrake: true), reviewColMap: [:])
+}
+
+// MARK: - 4D 周复盘工作台(对账三查 + 单周统计,§五 阶段4D)
+//
+// 后端 `neckline/api/schemas.py` 的 `WeeklyReviewOut.result`/`ReviewGetOut.result`
+// 在 API 层是 `Dict[str, Any]` 透传(领域形状唯一源 = `neckline/review/reconcile.py`
+// 的 `weekly_review_dict()`,同 `ReportOut.sentiment/sectors` 的透传惯例)——客户端
+// 仍按已知稳定形状声明强类型 Codable(同 `SentimentSnapshot`/`SectorSnapshot` 先例),
+// 便于渲染表格,不必满页 `[String: Any]` 手动取值。
+
+struct ReviewRoundTrip: Codable, Equatable, Identifiable {
+    var tsCode: String
+    var name: String
+    var buyDate: String
+    var buyPrice: Double
+    var qty: Int
+    var buyAmount: Double
+    var fees: Double
+    var sellDate: String?
+    var sellPrice: Double?
+    var closed: Bool
+    var netPnl: Double?
+    var pnlPct: Double?
+
+    var id: String { "\(tsCode)-\(buyDate)-\(sellDate ?? "open")-\(qty)-\(buyPrice)" }
+}
+
+struct ReviewPlanCheck: Codable, Equatable, Identifiable {
+    var tsCode: String
+    var name: String
+    var tradeDate: String
+    var price: Double
+    var qty: Int
+    var amount: Double
+    var planStatus: String
+    var ledgerStatus: String
+
+    var id: String { "\(tsCode)-\(tradeDate)-\(price)" }
+    var isOffPlan: Bool { planStatus.hasPrefix("计划外") }
+    var isLedgerMissing: Bool { ledgerStatus.hasPrefix("台账缺失") }
+    var isLedgerMismatch: Bool { ledgerStatus.hasPrefix("台账记录价格不符") }
+}
+
+/// 止损纪律分类(后端字面常量,`neckline.review.reconcile` 的四个模块常量,
+/// 唯一源不重译阈值——只做展示层四常量换算,同 `Candidate.boardLabel` 先例)。
+enum StopDisciplineKind: String, Codable {
+    case breached = "breached"
+    case keptStop = "kept_stop"
+    case notTriggered = "not_triggered"
+    case notApplicable = "not_applicable"
+
+    var label: String {
+        switch self {
+        case .breached: return "破止损未离场"
+        case .keptStop: return "止损执行到位"
+        case .notTriggered: return "未触及止损"
+        case .notApplicable: return "不适用"
+        }
+    }
+
+    var tone: NKAxisTone {
+        switch self {
+        case .breached: return .bad
+        case .keptStop: return .good
+        case .notTriggered: return .neutral
+        case .notApplicable: return .neutral
+        }
+    }
+}
+
+struct ReviewStopDisciplineEntry: Codable, Equatable, Identifiable {
+    var roundTrip: ReviewRoundTrip
+    var classification: String
+    var note: String
+
+    var id: String { roundTrip.id + classification }
+    var kind: StopDisciplineKind? { StopDisciplineKind(rawValue: classification) }
+}
+
+struct ReviewWeeklyStats: Codable, Equatable {
+    var closedCount: Int
+    var openCount: Int
+    var winRate: Double
+    var profitFactor: Double?      // nil = 本周无亏损回合(数学上的无穷,后端已转 null)
+    var profitLossRatio: Double?
+    var totalFees: Double
+    var grossPnl: Double
+    var realizedPnl: Double
+    var realizedLoss: Double       // 只累加亏损(§2.1 第4条口径),恒 <= 0
+}
+
+struct ReviewWeeklyResult: Codable, Equatable {
+    var week: String
+    var weekStart: String
+    var weekEnd: String
+    var roundTrips: [ReviewRoundTrip]
+    var closedRoundTrips: [ReviewRoundTrip]
+    var planChecks: [ReviewPlanCheck]
+    var disciplineViolations: [String]
+    var stopDiscipline: [ReviewStopDisciplineEntry]
+    var stats: ReviewWeeklyStats?
+    var forcedReview: Bool
+    var forcedReviewReason: String
+}
+
+struct WeeklyReviewEntry: Codable, Equatable, Identifiable {
+    var week: String
+    var result: ReviewWeeklyResult
+    var material: String
+
+    var id: String { week }
+}
+
+struct ReviewUploadResponse: Codable, Equatable {
+    var ok: Bool
+    var weeks: [WeeklyReviewEntry]
+    var parseWarnings: [String]
+    var dataWarnings: [String]
+    var sheetFormats: [String: String]
+}
+
+struct ReviewGetResponse: Codable, Equatable {
+    var ok: Bool
+    var found: Bool
+    var week: String
+    var generatedAt: String
+    var result: ReviewWeeklyResult?
+    var material: String
 }
 
 // MARK: - 展示用轴向着色(沿用 LinoN `AxisTone` 概念,四值穷举)

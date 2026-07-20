@@ -99,9 +99,11 @@ private struct SettingsResponse: Decodable {
     let llmProvider: String?
     let llmKeySet: Bool
     let push: PushSettings
+    let reviewColMap: [String: String]
 }
 struct SettingsLLMRequest: Encodable { let provider: String; let apiKey: String }
 struct SettingsPushRequest: Encodable { let report: Bool; let retreatBrake: Bool }
+struct SettingsReviewColMapRequest: Encodable { let colMap: [String: String] }
 
 struct DeviceRegisterRequest: Encodable { let token: String; let platform: String }
 
@@ -204,7 +206,8 @@ actor APIClient {
     func fetchSettings() async throws -> SettingsSnapshot {
         let data = try await get("/api/v1/settings")
         let r = try JSONDecoder().decode(SettingsResponse.self, from: data)
-        return SettingsSnapshot(llmProvider: r.llmProvider, llmKeySet: r.llmKeySet, push: r.push)
+        return SettingsSnapshot(llmProvider: r.llmProvider, llmKeySet: r.llmKeySet, push: r.push,
+                                reviewColMap: r.reviewColMap)
     }
 
     /// 写 LLM 供应商 + key。**key 只发一次、不回显、不落日志**(§3.4 高危区)。
@@ -222,12 +225,59 @@ actor APIClient {
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
+    /// 周复盘交割单列映射(plan 4D.1「留 review_col_map 可覆盖以支持两家券商原始格式」)。
+    @discardableResult
+    func putSettingsReviewColMap(_ colMap: [String: String]) async throws -> Bool {
+        let body = SettingsReviewColMapRequest(colMap: colMap)
+        let data = try await put("/api/v1/settings/review-col-map", body: body)
+        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
     // —— 设备注册(iOS APNs token)——
     @discardableResult
     func registerDevice(token deviceToken: String, platform: String = "ios") async throws -> Bool {
         let body = DeviceRegisterRequest(token: deviceToken, platform: platform)
         let data = try await post("/api/v1/devices", body: body)
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    // —— 4D 周复盘工作台(拖入交割单对账;macOS 独有,§五 阶段4D)——————————————————
+
+    /// 上传一份或多份 xlsx 交割单 → 解析 → 对账(可能同时落多个 ISO 周)。解析/数据
+    /// 完整性问题走 `parseWarnings`/`dataWarnings` 降级展示,不当异常抛(同后端契约)。
+    func uploadReview(files: [(filename: String, data: Data)]) async throws -> ReviewUploadResponse {
+        try ensureToken()
+        guard let url = Self.makeURL(base: baseURL, path: "/api/v1/review/upload") else {
+            throw APIError.transport("无效 URL")
+        }
+        let boundary = "NecklineBoundary-\(UUID().uuidString)"
+        var body = Data()
+        for (filename, fileData) in files {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append(
+                "Content-Disposition: form-data; name=\"files\"; filename=\"\(filename)\"\r\n"
+                    .data(using: .utf8)!
+            )
+            body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+            body.append(fileData)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.httpBody = body
+        req.timeoutInterval = 60   // 解析+对账可能稍慢(涉及面板计算),同问询台 60s 惯例
+        let data = try await send(req)
+        return try JSONDecoder().decode(ReviewUploadResponse.self, from: data)
+    }
+
+    /// 历史回放(带 query,务必走 makeURL,同 `fetchReport(date:)` 惯例)。
+    func fetchReview(week: String) async throws -> ReviewGetResponse {
+        let data = try await get("/api/v1/review?week=\(week)")
+        return try JSONDecoder().decode(ReviewGetResponse.self, from: data)
     }
 
     // MARK: - 传输层
