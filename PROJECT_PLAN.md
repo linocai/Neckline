@@ -256,14 +256,22 @@ iOS Simulator 四板块真机截图,macOS 二进制稳定运行。联调中发�
 网络集成,后者探活失败自动 skip 不污染门禁)全绿,双端 `xcodebuild` **BUILD SUCCEEDED**、iOS Simulator
 **TEST SUCCEEDED**。问询台裁决二值(含对抗性字符串)、URL 门禁(`?` 不被编码)、退潮警示派生均有直接单测覆盖。
 **无偏离**:四板块信息架构、坑吸收清单、契约对齐均按 plan 落地;`stopOrderChecked` 因 4A 未提供持久化端点,
-按 plan 原文实现为本机会话内本地提醒(非跨端持久化,已在代码注释写明)。**剩 4D 周复盘工作台(对账引擎)/
-4E 端到端联调 + APNs 真机 + LinoN 接班切换。**
+按 plan 原文实现为本机会话内本地提醒(非跨端持久化,已在代码注释写明)。
+
+**2026-07-20 · 阶段 4D 完工(周复盘工作台·对账引擎)**:新包 `neckline/review/`(parse/reconcile/material/store),
+`neckline/api/` 新增 `POST /review/upload`(multipart)/`GET /review?week=`/`PUT /settings/review-col-map` 三端点,
+macOS `ReviewWorkbenchView` 从 4C 占位壳接通真实拖入上传 + 表格化展示。全量 **pytest 527 → 621**(+94,0 回归),
+Swift 侧 **38 → 41 个单测**全绿,双端 `xcodebuild` **BUILD SUCCEEDED**。`scripts/smoke_review.sh` 用**真实
+uvicorn + 真实 openpyxl 生成的 xlsx**(非 TestClient 模拟)跑通拖入→解析→三查→强制复盘→落库→历史回放全链路。
+**本次任务范围内明确不做 4D.3 的 LLM 叙述叠加层**(任务指令原文:"禁模板腔的 LLM 部分本块不做,纯确定性输出
+即可"),`review/material.py` 只产出确定性材料。详见变更日志。**剩 4E 端到端联调 + APNs 真机 + LinoN 接班切换。**
 
 **⚠ 高危区提示**:哨兵接触盘中实时源(新浪/腾讯)+ 推送通道(Bark)是阶段3 新增的对外接口,已用
 MockTransport 充分覆盖降级链;持仓台账/防重表是新增的写入路径(SQLite),已用单测覆盖 CRUD + 幂等;
 「退潮触发后抑制买点」是本阶段最关键的安全属性(直接对应 §2.4 铁律「永不盘中推荐新票」),已有直接单测断言。
-4C 新增 LLM key 客户端录入(🔴,设置屏)与 APNs PushManager(🔴,iOS)均按 plan 坑清单实现,建议用户在阶段4D
-开工前、或首次真机 APNs 验证后,视情况决定是否叫一次 `review`。
+4C 新增 LLM key 客户端录入(🔴,设置屏)与 APNs PushManager(🔴,iOS)均按 plan 坑清单实现;4D 对账引擎涉及
+盈亏金额计算(单笔仓位/敞口/止损纪律/强制复盘阈值),plan 原文建议 builder 收尾叫一次 `review`,目前用户尚未
+明确要求,记在此处供用户决定是否在阶段4D开工后、或阶段4E之前触发一次独立复审。
 
 ---
 
@@ -621,3 +629,21 @@ MockTransport 充分覆盖降级链;持仓台账/防重表是新增的写入路�
   **遗留问题(供阶段4D/4E参考)**:①周复盘工作台目前只是壳(拖入文件回显文件名 + "待4D接入"提示,无实际解析/上传,如 plan 原文明确范围);②macOS 视觉核对因环境权限限制改用"双端 build + iOS 真机截图 + 稳定运行验证"的组合证据,非原计划的 ImageRenderer 离屏快照(该技巧仍可用,只是本次未必要);③真实 APNs 推送、真机 device token 注册、Apple Developer Push capability 手动确认均按 plan 留 4E;④GLM/Kimi 真调用 + 联网搜索协议假设仍待用户在设置屏填真 key 后首次验证(阶段2/4 累积欠账,不因4C客户端就绪而自动兑现,需要真 key)。
 
   **欠账(带进 4E)**:① **公网 HTTPS + LinoN 接班切换**(nginx 8001→8002 + linon 退役,联调通过后做,`deploy/nginx-neckline.conf` 已备);② **真盘中活体验证**(交易时段首次真跑 `run_tick` + 真实新浪/腾讯,兑现阶段 3 欠账①);③ **APNs 真机真推**(新 Bundle ID device token,4C 客户端建后);④ LLM/Bark 活体(用户 App 填 key 后);⑤ 问询台「初审通过」→ 报告端消费 `inquiry_pool` 扩 universe 的接线(§2.5 闭环的报告侧,4A 已写入池 + 提供读取,报告侧消费留 4E/报告管线小改,避免动阶段 2 评分代码引回归);⑥ 问询台 LLM「主动多轮 function-calling」形态未实现(以预注入取数/重算 + 原生搜索覆盖 plan 三能力,无 key 无法活体验证该形态,记此简化)。
+
+- **2026-07-20 · 阶段4D完工(周复盘工作台·对账引擎)**:新包 `neckline/review/`(parse/reconcile/material/store 四模块),`neckline/api/` 新增 `POST /review/upload`(multipart)/`GET /review?week=`/`PUT /settings/review-col-map` 三端点,macOS `ReviewWorkbenchView` 从 4C 占位壳接通真实上传 + 表格化展示。全量 **pytest 527 → 621**(+94,0 回归),Swift 侧 **38 → 41 个单测**全绿,双端 `xcodebuild` **BUILD SUCCEEDED**。
+
+  **验收标准逐项(plan §五 阶段4D)**:
+  1. **拖入交割单生成对账周报(对账三查 + 周统计 + 强制复盘)**——达成。两家券商格式解析(格式一无代码列,靠"证券名称"反查 ts_code + 价格反推 `(|发生金额|-费用)/数量`;格式二零宽空格 strip + 代码补交易所后缀,复用 `sentinel.quotes.to_symbol` 不另写正则)→ 按(代码,日期序)FIFO 闭合回合 → 对账三查(①实际成交 vs 当日报告候选 / 问询台海选池 / 持仓台账;②止损纪律,-5% 容差带 [-6%,-4%] 跟随现役 `stop_pct` 联动,非写死绝对值;③章程执行——单笔 ≤2 万 / ≤5 只并发 / 敞口 ≤60% / 绿盘大阴线 & 距前高 & 次新 & 高弹题材四条禁买过滤 & 同票冷却,全部读 `strategy.brain.get_active()` 现役 config,未启用的过滤项天然 no-op 不硬编)→ 单周统计(胜率/盈利因子/盈亏比/费用/净盈亏/`realized_loss` 只累加亏损,同 `momentum.py::_consume_closed_trades` 的 `week_loss` 口径)→ 强制复盘(单周实现亏损 ≥ 总仓 2%,`FORCED_REVIEW_LOSS_FRAC` 与该口径对应,非另起阈值)。`scripts/smoke_review.sh` 用**真实 uvicorn + 真实 openpyxl 生成的 xlsx**(非 TestClient 模拟)跑通全链路:单笔 ¥150,000 超 2 万仓位上限 + 敞口 125% 超 60% 两条章程违纪均正确触发、-5.02% 卖出正确分类 `kept_stop`(容差带内)、周实现亏损 ¥7,560=总仓 6.3% 正确触发强制复盘、材料生成、落库 + `GET` 历史回放读到同一份结果、`review-col-map` 设置生效——逐条真实数据核验。
+  2. **字段映射可配**——达成。`app_settings.review_col_map`(4A 已建字段,4D 首次消费)经新增 `PUT /settings/review-col-map` 端点写入,`parse_workbook` 按 `col_map` 覆盖内置默认列名(**格式判定本身也吃 col_map**——若不这样做,把判据列名也改了的券商格式会连"认出是哪种格式"都做不到,col_map 形同虚设,施工期直接测出这个坑并修正);直接单测 + API 端到端单测均覆盖"改列名后能吃通"。
+  3. **解析异常不崩**——达成。未知格式 sheet / 说明性 sheet(无"交易日期"表头)/ 未知业务名称 / 证券名称反查失败或歧义 / 成交数量或日期缺失 / 格式一反推价格所需列缺失(见下"施工期踩坑")/ 非法 xlsx 字节,均降级为 `ParseWarning`(单行 / 单 sheet 跳过)或 `parseWarnings` 返回,不抛异常中断整份 / 整批解析。
+  4. **pytest 覆盖三查各分支 + 强制复盘阈值边界**——达成,**94 个新测试**:`test_review_parse.py`(23,两格式解析 / 零宽空格 / 价格反推 / col_map / 表头探测 / 名称反查含歧义与 as-of 历史名)、`test_review_reconcile.py`(59,FIFO 闭合含跨 lot / 超卖 / 未平仓残留、止损纪律四态含边界值、单笔上限、并发持仓 / 敞口扫描线、四条禁买过滤复用 `strategy.signals` 同码验证、冷却期、周统计含"全赢→inf"与"全输→0"两个边界、强制复盘阈值恰好 / 差一点 / 超过三态、`run_weekly_review` 端到端)、`test_review_material.py`(3)、`test_api_review.py`(9,含鉴权 / 多文件合并解析 / 非法文件降级 / col_map 设置生效)。
+
+  **客户端接线(macOS,iOS 不做,照 plan)**:`ReviewWorkbenchView` 从 4C 的占位壳接通真实上传——拖入 xlsx(可一次拖多份,`NSItemProvider` 异步读取包成 `async`)→ `APIClient.uploadReview`(手写 multipart/form-data,非 JSON body,60s 超时同问询台惯例)→ 展示:强制复盘横幅 + 周统计卡 + 确定性材料段落 + 违纪清单 + 计划/台账核对行 + 回合明细行 + 止损纪律行,多周切换用 chip 选择器。**本次任务范围内不做 4D.3 的 LLM 叙述叠加层**(任务指令原文明确"禁模板腔的 LLM 部分本块不做,纯确定性输出即可"),`neckline/review/material.py` 只产出确定性材料,代码注释记录未来若要叠加 LLM 应遵循 `judge.py`/`inquiry.py` 已确立的降级链姿势。Swift 侧新增 3 个 `DTODecodeTests`(覆盖 upload/get 两端点,含 multipart 请求体断言 + `result` 为 JSON null 时正确解码为 `nil`),全量 **41 个单测全绿**,双端 `xcodebuild` **BUILD SUCCEEDED**。**macOS GUI 可视化核验受阻**:本环境 computer-use 访问请求被用户拒绝(同 4C 已记录的沙盒限制一致,非本阶段新增问题),故本阶段"确认 app 跑起来"的证据链是:①真实 uvicorn + 真实 xlsx 端到端冒烟(`scripts/smoke_review.sh`,验证的是领域逻辑本身,证据力最强)②双端 build 成功③iOS Simulator 单测全绿④新增 UI 组件在布局/组件用法上与已经过 4C 视觉验证的 `TodayPlanView`/`BoardView` 同款 `NKCard`/`NKChip` 模式一致。
+
+  **施工期踩坑(如实记录)**:格式一交割单反推价格公式 `(|发生金额|-费用)/数量` 若"手续费"对应列在表头里压根找不到(非 col_map 覆盖场景,如某券商把该列叫"费用合计"而非"费用"),最初实现会静默按 0 兜底继续算价格,产出一个看似合理实则错误的成交价(`150015/100=1500.15` 而非正确的 `1500.0`)——这是纯手工构造测试数据时才暴露的坑(现实中列名换个说法很常见),已修复为"列压根找不到"硬性跳过 + 警告,区别于"该列存在但这一行恰好留空",并补了回归单测锁死(`test_format1_missing_fee_column_skips_not_silently_zero`)。
+
+  **关键设计决策(plan 留白处的实现选择,非偏离)**:①"总仓"(§1.2「12-13 万固定分母」)新增 `config.total_capital`(默认 12 万,`.env` 的 `TOTAL_CAPITAL` 可覆盖),供敞口占比 / 强制复盘阈值计算——此前项目无此常量的单一归属地,今后其它模块如需引用也应读这里,不要各自另写字面量;②"计划内 / 计划外"判定同时核对报告候选与问询台海选池两个来源(plan 4D.2 原文只提"报告候选",但海选池当晚会被纳入报告 universe,一并核对更贴合 §2.5 闭环意图,且只会减少误判"计划外"、不会增加漏判);③持仓台账对账(plan 4D.2 原文"与...持仓台账对账"的落地):买入若在 `positions` 表有同代码同日期记录、价格 1% 容差内视为"台账已录",否则"台账缺失"(提示止损提醒未覆盖该仓位);④并发持仓 / 敞口核算范围限于本次上传数据可见区间(已知简化,模块 docstring 已注明,非漏判 bug——若某票在未上传的更早期间开仓、本次只看到中途卖出,其"占用仓位"在开仓阶段不可追溯);⑤新增 `PUT /settings/review-col-map` 端点(plan 未明确列出但补全"可配"闭环,成本低、复用既有 push/llm 端点同款模式)。
+
+  **工程增量**:`neckline/review/`(parse.py 解析 + 名称反查 / reconcile.py FIFO + 三查 + 统计 + 序列化 / material.py 确定性材料 / store.py `reviews` 表读写)、`neckline/api/app.py` 三新端点、`neckline/api/schemas.py` 新增 4D 出入参(`result` 沿用 `sentiment/sectors` 透传惯例,不重复声明嵌套模型)、`neckline/config` 新增 `total_capital`、`requirements.txt` 新增 `openpyxl`/`python-multipart`;客户端 `Models.swift` 新增 8 个 4D 领域模型、`APIClient.swift` 新增 `uploadReview`/`fetchReview`/`putSettingsReviewColMap`、`AppModel.swift` 新增周复盘状态 + 上传方法、`ReviewWorkbenchView.swift` 从占位壳改为真实接线、`RootView.swift` 传入 `model`;新增 `scripts/smoke_review.sh`(真实 uvicorn + 真实 xlsx 端到端冒烟,清理临时库/文件,不碰生产数据)。
+
+  **遗留问题(供 4E 参考)**:①4D.3 的 LLM 复盘材料叙述叠加层本次任务范围内明确不做(见上,plan 原文本就标注"可选");②周复盘工作台目前是 `review_col_map` 唯一可写入口是设置端点本身,客户端未提供编辑该映射的 UI(编辑 UI 留待用户真遇到第三种券商格式时再评估是否需要);③并发持仓/敞口扫描的"已知简化"若未来发现在多周连续上传场景下不够准确,需要评估是否要做跨周结转;④macOS 端可视化核验同 4C 一样受阻于 computer-use 访问被拒,若用户希望更强的视觉证据,可自行用 Xcode 打开工程运行 App 肉眼确认(或下次会话尝试授权 computer-use 访问)。
