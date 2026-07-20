@@ -17,6 +17,7 @@ from tests.conftest import insert_stock_basic
 from neckline.report.candidates import (
     Candidate,
     entry_plan_text,
+    entry_spec,
     invalidation_spec,
     invalidation_text,
     pattern_tags,
@@ -240,3 +241,36 @@ class TestPublicDict:
         assert d["ts_code"] == "C0"
         assert d["score"] == out[0].score
         assert d["pattern_tags"] == out[0].pattern_tags
+
+    def test_entry_spec_survives_public_dict_round_trip(self):
+        """entry_spec 是阶段3 买点哨兵消费的结构化字段,必须随 public_dict()
+        一起落 `candidates_json`(不能像 raw 一样被裁掉),且能从 dict 原样
+        重建回 Candidate(哨兵读盘后报告落库的 JSON 时用)。"""
+        out = score_candidates(_panel(_row("C0")), RULE_V1_CFG)
+        d = out[0].public_dict()
+        assert "entry_spec" in d
+        assert d["entry_spec"]["buypoint"] == "pullback"
+        rebuilt = Candidate(**d)
+        assert rebuilt.entry_spec == out[0].entry_spec
+
+
+class TestEntrySpec:
+    def test_pullback_spec_carries_ma10_and_prev_close(self):
+        cfg = MomentumConfig(buypoint="pullback", breakout_vol_expand=1.5)
+        spec = entry_spec(_row("C0", ma10=9.5, close=10.0), cfg)
+        assert spec["buypoint"] == "pullback"
+        assert spec["ma10"] == pytest.approx(9.5)
+        assert spec["prev_close"] == pytest.approx(10.0)
+
+    def test_breakout_spec_carries_platform_high_and_vol_expand(self):
+        cfg = MomentumConfig(buypoint="breakout", breakout_vol_expand=1.8)
+        spec = entry_spec(_row("C0", prev_close_max_20d=11.2), cfg)
+        assert spec["buypoint"] == "breakout"
+        assert spec["platform_high"] == pytest.approx(11.2)
+        assert spec["breakout_vol_expand"] == pytest.approx(1.8)
+
+    def test_missing_columns_degrade_to_none_not_crash(self):
+        row = {"ts_code": "C0", "close": 10.0}  # 没有 ma10/prev_close_max_20d
+        spec = entry_spec(row, MomentumConfig(buypoint="either"))
+        assert spec["ma10"] is None
+        assert spec["platform_high"] is None

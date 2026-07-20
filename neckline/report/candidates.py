@@ -56,6 +56,7 @@ class Candidate:
     target: str
     invalidation_text: str
     invalidation_spec: Dict[str, Any]
+    entry_spec: Dict[str, Any] = field(default_factory=dict)
     raw: Dict[str, Any] = field(default_factory=dict)  # 原始特征行,供 judge.py 组装上下文
 
     def public_dict(self) -> Dict[str, Any]:
@@ -219,6 +220,7 @@ def _build_candidate(
         target=target_text(cfg),
         invalidation_text=invalidation_text(spec),
         invalidation_spec=spec,
+        entry_spec=entry_spec(row, cfg),
         raw=row,
     )
 
@@ -262,6 +264,25 @@ def target_text(cfg: MomentumConfig) -> str:
         )
     parts.append(f"或持有满 {cfg.max_hold_days} 个交易日无条件离场(时间退出,母战法 2-5 日区间)")
     return ";".join(parts) + "。"
+
+
+def entry_spec(row: Dict[str, Any], cfg: MomentumConfig) -> Dict[str, Any]:
+    """买点条件(结构化,供阶段3 买点哨兵消费——§2.4「候选触达预设买点」需要一个
+    机器可判的触发条件,不能只有 `entry_plan_text` 的自然语言)。字段直接取自
+    `entry_plan_text` 已经在用的同一批列 + `cfg`,不新造任何未经使用的数字:
+        · pullback:`ma10`(站稳支撑位)、`prev_close`(报告日收盘,今日低开判定基准)。
+        · breakout:`platform_high`(前20日收盘高点,突破触发线)、
+          `breakout_vol_expand`(cfg 已定的放量倍数门槛,哨兵直接复用,不重新拍一个数)。
+    `buypoint` 记录 cfg.buypoint 本身,哨兵按此决定用哪套触发逻辑(pullback/breakout/
+    either 都可能同时具备两组字段,取决于当时 cfg;哨兵二选一都能处理)。
+    """
+    return {
+        "buypoint": cfg.buypoint,
+        "prev_close": row.get("close"),
+        "ma10": row.get("ma10"),
+        "platform_high": row.get("prev_close_max_20d"),
+        "breakout_vol_expand": cfg.breakout_vol_expand,
+    }
 
 
 def invalidation_spec() -> Dict[str, Any]:
@@ -321,6 +342,7 @@ __all__ = [
     "entry_plan_text",
     "stop_loss_text",
     "target_text",
+    "entry_spec",
     "invalidation_spec",
     "invalidation_text",
     "pattern_tags",
