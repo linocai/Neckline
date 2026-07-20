@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -57,6 +57,14 @@ class Candidate:
     invalidation_text: str
     invalidation_spec: Dict[str, Any]
     raw: Dict[str, Any] = field(default_factory=dict)  # 原始特征行,供 judge.py 组装上下文
+
+    def public_dict(self) -> Dict[str, Any]:
+        """报告落库(JSON)/展示用的精简视图,**不含**内部特征行 `raw`(那是几十列
+        的技术特征,只在生成阶段临时用来组装四件套/喂 LLM 上下文,不适合作为报告
+        存档字段——报告存档只需要"报告展示了什么",不需要内部计算细节)。"""
+        d = asdict(self)
+        d.pop("raw", None)
+        return d
 
 
 def build_candidates(

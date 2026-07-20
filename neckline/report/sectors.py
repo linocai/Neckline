@@ -58,7 +58,9 @@ def _load_board_daily(parquet_dir: Optional[Path] = None) -> pl.DataFrame:
     return pl.read_parquet(p).sort(["ts_code", "trade_date"])
 
 
-def _load_index_names(parquet_dir: Optional[Path] = None) -> Dict[str, str]:
+def load_index_names(parquet_dir: Optional[Path] = None) -> Dict[str, str]:
+    """`index_code -> 概念板块中文名`,全量(不限热榜)。`pipeline.py` 用它给候选的
+    `sector_names`(所属全部概念板块,不限当前是否"热")做展示解析。"""
     p = _ths_path("ths_index.parquet", parquet_dir)
     if not p.exists():
         return {}
@@ -122,7 +124,7 @@ def compute_sector_strength(
     )
     today = today.sort("board_ret_20d", descending=True, nulls_last=True)
 
-    names = _load_index_names(parquet_dir)
+    names = load_index_names(parquet_dir)
     out: List[SectorScore] = []
     for i, r in enumerate(today.head(top_n).iter_rows(named=True), start=1):
         out.append(
@@ -147,6 +149,7 @@ __all__ = [
     "SectorScore",
     "compute_sector_strength",
     "load_member_map",
+    "load_index_names",
     "sector_hot_lookup",
     "EARLY_AGE_BONUS",
     "EARLY_AGE_MIN_DAYS",

@@ -162,6 +162,124 @@ def insert_stock_basic(settings: Settings, rows: List[dict]) -> None:
         conn.close()
 
 
+def insert_namechange(settings: Settings, rows: List[dict]) -> None:
+    """写 `namechange`(SQLite)测试行——`features.merge_meta` 的 `is_st` 判定真正
+    依据的是这张表(按 `name` 前缀 `ST`/`*ST` + as-of 生效日判断),不是
+    `stock_basic.name`。每行至少给 `ts_code`/`name`/`start_date`。"""
+    import sqlite3
+
+    from neckline.db import init_schema
+
+    init_schema(db_path=settings.db_path)
+    conn = sqlite3.connect(str(settings.db_path))
+    try:
+        for r in rows:
+            start_date = r["start_date"]
+            if isinstance(start_date, date):
+                start_date = start_date.strftime("%Y%m%d")
+            end_date = r.get("end_date")
+            if isinstance(end_date, date):
+                end_date = end_date.strftime("%Y%m%d")
+            conn.execute(
+                "INSERT OR REPLACE INTO namechange (ts_code,name,start_date,end_date,ann_date,change_reason) "
+                "VALUES (?,?,?,?,?,?)",
+                (r["ts_code"], r["name"], start_date, end_date, r.get("ann_date"), r.get("change_reason")),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# rule v1 的精简镜像(阶段2 报告管线测试专用)——**有意不 import research/rule_v1.py
+# 的 RULE_V1**:tests/ 不应依赖 research/(纯研究脚本,可能改动/有导入期副作用),
+# 测试夹具须自包含。字段含义与真实 rule v1 完全一致(见 research/rule_v1.py 注释),
+# 只是各自独立维护,不假设两边逐字同步。
+TEST_RULE_V1_CONFIG = dict(
+    strength="none",
+    buypoint="pullback",
+    forbid_high_elasticity=True,   # 主板 only
+    stop_pct=0.05,
+    take_profit_retrace=0.05,
+    max_hold_days=5,
+    cooldown_days=0,
+    single_cap=20000.0,
+    max_positions=5,
+    max_exposure_frac=0.60,
+    week_halving=False,
+)
+
+
+def seed_active_rule_v1(settings: Settings, extra_config: dict = None) -> None:
+    """把 `TEST_RULE_V1_CONFIG` 存成大脑现役版本 `v1`(`neckline.strategy.brain`),
+    供需要"某个现役规则"才能跑的报告管线测试使用(`build_report` 无现役版本时会
+    直接拒绝生成报告)。"""
+    from neckline.strategy import brain
+
+    cfg = dict(TEST_RULE_V1_CONFIG)
+    cfg.update(extra_config or {})
+    brain.save_version(
+        "v1", {"config": cfg}, "测试夹具:镜像 rule v1(不依赖 research/)",
+        metrics={}, activate=True, db_path=settings.db_path,
+    )
+
+
+def seed_synthetic_market(
+    settings: Settings,
+    *,
+    start: date = date(2024, 1, 2),
+    n_days: int = 30,
+) -> List[date]:
+    """铺一份"看起来正常"的多票多日合成行情(daily/adj_factor/daily_basic +
+    stock_basic + namechange + trade_cal),覆盖 `base_universe_expr` 与 rule v1
+    pullback 买点的全部前置条件——供 `test_pipeline.py`/`test_report_consistency.py`
+    这类"要跑通整条 I/O 管线"的测试复用,避免各处重新手搓一遍合成行情。
+
+    返回交易日列表(升序),**最后一天即"报告日"**,固定 3 只票:
+        · "600001.SH" 主板,持续上涨后报告日小幅回调 → 应通过 rule v1(pullback)入池。
+        · "600002.SH" 主板但当前是 *ST → 应被 base_universe(`~is_st`)剔除。
+        · "300001.SZ" 创业板,价格路径与 600001.SH 相同 → 应被 rule v1 主板 only 剔除。
+    三者的存在与否(通过/剔除)本身就是"熔断线"——验证 mask 确实在筛选,不是摆设。
+    """
+    dates = business_days(start, n_days)
+    insert_trade_cal(settings, dates)
+
+    codes = ["600001.SH", "600002.SH", "300001.SZ"]
+
+    def _path(n: int) -> List[float]:
+        closes = [10.0 * (1.01 ** i) for i in range(n - 1)]
+        closes.append(closes[-1] * 0.99)  # 报告日(最后一天)小幅回调,满足 pullback 买点
+        return closes
+
+    price_paths = {c: _path(n_days) for c in codes}
+    for i, d in enumerate(dates):
+        daily_rows, adj_rows, basic_rows = [], [], []
+        for code, closes in price_paths.items():
+            c = closes[i]
+            pre = closes[i - 1] if i > 0 else c
+            daily_rows.append({
+                "ts_code": code, "open": c, "high": c, "low": c, "close": c, "pre_close": pre,
+                "vol": 100000.0, "amount": 30000.0,
+            })
+            adj_rows.append({"ts_code": code, "adj_factor": 1.0})
+            basic_rows.append({
+                "ts_code": code, "turnover_rate": 5.0, "volume_ratio": 1.0,
+                "circ_mv": 1_000_000.0, "total_mv": 1_000_000.0, "free_share": 100_000.0,
+            })
+        write_daily_fixture(settings, "daily", d, daily_rows)
+        write_daily_fixture(settings, "adj_factor", d, adj_rows)
+        write_daily_fixture(settings, "daily_basic", d, basic_rows)
+
+    insert_stock_basic(settings, [
+        {"ts_code": "600001.SH", "name": "示例甲", "market": "主板", "list_date": start - timedelta(days=365)},
+        {"ts_code": "600002.SH", "name": "*ST示例乙", "market": "主板", "list_date": start - timedelta(days=365)},
+        {"ts_code": "300001.SZ", "name": "示例丙", "market": "创业板", "list_date": start - timedelta(days=365)},
+    ])
+    insert_namechange(settings, [
+        {"ts_code": "600002.SH", "name": "*ST示例乙", "start_date": start - timedelta(days=365)},
+    ])
+    return dates
+
+
 def write_flat_parquet(settings: Settings, filename: str, rows: List[dict]) -> Path:
     """写一个不按年份分区的扁平 Parquet 文件到 `parquet_dir` 根下——同花顺概念板块
     三张表的落盘方式(plan 1.6/`scripts/backfill_concept.py`:`ths_index.parquet` /
@@ -180,5 +298,9 @@ __all__ = [
     "business_days",
     "write_daily_fixture",
     "insert_stock_basic",
+    "insert_namechange",
+    "TEST_RULE_V1_CONFIG",
+    "seed_active_rule_v1",
+    "seed_synthetic_market",
     "write_flat_parquet",
 ]

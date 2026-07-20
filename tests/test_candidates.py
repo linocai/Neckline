@@ -227,3 +227,13 @@ class TestStockNameResolution:
         panel = _panel(_row("999999.SH"))
         out = score_candidates(panel, RULE_V1_CFG, db_path=isolated_env.db_path)
         assert out[0].name == "999999.SH"
+
+
+class TestPublicDict:
+    def test_excludes_raw_feature_row(self):
+        out = score_candidates(_panel(_row("C0")), RULE_V1_CFG)
+        d = out[0].public_dict()
+        assert "raw" not in d
+        assert d["ts_code"] == "C0"
+        assert d["score"] == out[0].score
+        assert d["pattern_tags"] == out[0].pattern_tags
