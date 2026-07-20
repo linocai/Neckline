@@ -74,6 +74,38 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
     }
 
 
+def latest_report_date(db_path: Optional[Path] = None) -> Optional[str]:
+    """最新一份报告的 `trade_date`('YYYYMMDD'),供 `GET /report/latest`。库里从未
+    生成过报告 → None(HTTP 层据此返 degraded 空态,不 500)。防御性 `init_schema`
+    同 `load_report`——查一个全新库是完全正常的场景。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute("SELECT MAX(trade_date) FROM reports").fetchone()
+    return row[0] if row and row[0] else None
+
+
+def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """按 'YYYYMMDD' 字符串直接查报告(免调用方再拼 `date` 对象)。语义同 `load_report`。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown "
+            "FROM reports WHERE trade_date=?",
+            (trade_date_str,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "trade_date": row[0],
+        "generated_at": row[1],
+        "strategy_version": row[2],
+        "sentiment": json.loads(row[3]),
+        "sectors": json.loads(row[4]),
+        "candidates": json.loads(row[5]),
+        "markdown": row[6],
+    }
+
+
 def save_llm_judgment(trade_date: date, result: JudgeResult, db_path: Optional[Path] = None) -> None:
     init_schema(db_path)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -124,4 +156,7 @@ def load_llm_judgments(trade_date: date, db_path: Optional[Path] = None) -> List
     return out
 
 
-__all__ = ["save_report", "load_report", "save_llm_judgment", "load_llm_judgments"]
+__all__ = [
+    "save_report", "load_report", "load_report_by_str", "latest_report_date",
+    "save_llm_judgment", "load_llm_judgments",
+]
