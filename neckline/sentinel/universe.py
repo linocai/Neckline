@@ -166,8 +166,21 @@ def is_new_stock_exempt(meta: StockMeta, trade_date: date) -> bool:
     """该票在 `trade_date` 是否仍处于新股涨跌幅豁免窗口(见
     `neckline.data.limit_derived.resolve_exempt_days`)。`list_date` 未知 → 保守按
     "已过豁免期"处理(不放过涨跌停判定;宁可误判老股为受限,不放过真正该防的新股)。
+
+    **性能/日志噪音坑(施工中实测踩到,已修)**:A 股大量主板老股 `list_date` 在
+    2015 年之前(`neckline.calendar` 的 trade_cal DB 覆盖默认从 2015-01-01 起,
+    见 `scripts/init_calendar.py`)——若直接对每只票调用
+    `trading_days_between(list_date, trade_date)` 算精确交易日数,老股会命中
+    "查询早于DB覆盖范围"分支,退化为**逐自然日** `is_trading_day` 判断 + 每天
+    一条 warning 日志,几十年区间循环下来极慢且刷屏。**先用自然日差做廉价预筛**
+    ——超过30自然日(远大于任何板块的5交易日豁免窗口上限)必然已过豁免期,直接
+    返回 False,不进入昂贵的精确计算;只有"看起来像最近一个月内上市"的票才会
+    走精确的 `trading_days_between`(此时区间必然很小,即使意外落在DB覆盖范围
+    外,回退成本也可忽略)。
     """
-    if meta.list_date is None:
+    if meta.list_date is None or meta.list_date > trade_date:
+        return False
+    if (trade_date - meta.list_date).days > 30:
         return False
     exempt_days = resolve_exempt_days(meta.board, meta.list_date)
     days_since_listing = len(trading_days_between(meta.list_date, trade_date))
