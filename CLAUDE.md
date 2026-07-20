@@ -61,3 +61,36 @@
   见该模块头注释)。如果实盘发现这个代理样本对"退潮"不够灵敏,下一步候选方案
   是"低频率(如5分钟一次)全市场轮询"叠加,而不是把主循环频率整体提到危险
   区间——这个取舍已写进模块 docstring,改动前先看那段说明。
+
+## 阶段4C(SwiftUI 双端客户端)踩过的坑,4D/4E 续做前先看
+
+- **`CandidateOut.board` 服务端字面是英文枚举码**(`MAIN`/`GEM`/`STAR`/`BSE`,
+  唯一源 `neckline/data/board.py` 的 `Board` 枚举),不是"主板"这类中文名——
+  联调实测才发现,别凭直觉当中文串直接展示。客户端 `Models.swift` 已加
+  `Candidate.boardLabel` 做**纯展示层**四常量换算(未识别值原样透传),不要在
+  服务端另建一份中文映射、也不要客户端重新推导分类逻辑。
+- **Swift `URLProtocol` 网络桩测试(等价于 Python `httpx.MockTransport`),
+  `startLoading()` 里 `request.httpBody` 常是 nil**:URLSession 经自定义
+  URLProtocol 转发 POST/PUT 时会把 body 转成 `httpBodyStream`,断言请求体内容
+  必须两路都读(`httpBody` ?? 手动 drain `httpBodyStream`),否则会误判"请求体
+  丢了"(`NecklineTests/DTODecodeTests.swift` 的 `httpBodyOrStream()` 已处理,
+  新增校验请求体的测试直接复用这个 helper)。
+- **本地起 dev 后端做真实联调,不要从零 bootstrap**(会卡在无 `trade_cal`/无
+  现役策略版本,报"策略大脑无现役版本"):`sqlite3 ATTACH` 真实
+  `data/neckline.db`,只拷 `trade_cal`/`strategy_versions`/`stock_basic`/
+  `namechange` 四张**只读参考表**进隔离临时库,再跑 `scripts/report.py <date>`
+  就能吃真实六年 backfill 数据出一份真报告——不碰用户真实台账(`positions`/
+  `app_settings`/`devices` 等业务表留空隔离),也不必重新跑一遍日历回填或
+  `research.rule_v1 --commit`。
+- **本环境 computer-use 对 Simulator/macOS App 的点击权限可能被拒**
+  (`request_access` 返回 `denied`,与 LinoN CLAUDE.md 记的"Dock 守卫誤判"是
+  另一种表现形式,结果一样打不通)。视觉核对改走**非交互路径**:
+  `xcrun simctl io <device> screenshot` 直接截图(不需要点击权限);要切
+  Tab/板块用 `SIMCTL_CHILD_<VAR>=<val> xcrun simctl launch <device> <bundle-id>`
+  (iOS,simctl 会把 `SIMCTL_CHILD_` 前缀剥掉传进 App 进程)/macOS 直接跑
+  `<App>.app/Contents/MacOS/<App>` 二进制时在同一 shell 设同名环境变量——
+  Neckline App 侧已加 `NECKLINE_INITIAL_TAB` 这个纯 QA 钩子(`NecklineApp.init()`
+  读 `ProcessInfo.processInfo.environment` 设初始 tab,不影响正常用户路径)。
+  macOS 原生 GUI 截图(`screencapture`/`osascript` System Events)在本环境因
+  沙盒权限(Screen Recording/Accessibility 未授权)不可用,遇到同样情况直接
+  改用"iOS 截图 + 双端 `xcodebuild` BUILD SUCCEEDED"作等价证据,不必死磕。
