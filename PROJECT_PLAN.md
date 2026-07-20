@@ -240,6 +240,11 @@ Bark 已备 + 可选 macOS 通知)、哨兵常驻脚本(交易时段轮询、非
 第一版启发式阈值(量能折算 / VWAP / 退潮三阈)需实盘校正;③ GLM/Kimi 真调用未活体验证(阶段 2 遗留)+ Bark 无
 `BARK_URL` 活体(阶段 3 遗留)→ 阶段 4 用户在 App 设置屏填 LLM key 后首次真调用即验证,Bark 降为备用不阻塞。
 
+**2026-07-20 · 阶段 4A + 4B 完工(后端 API + 云端化部署)**:FastAPI 脊椎全端点 + 单测(pytest 456 → **527**,+71,0 回归)
++ 本地真 uvicorn 冒烟;ECS(hz)部署 `neckline.service` active 监听 8002(与 LinoN 8001 共存,**未动 linon**),
+内存门禁实测走**方案 A(全云)**,systemd 定时(daily 16:05 / report 16:35)+ 哨兵 lifespan asyncio 任务就位,APNs 层
+单测过(真推留 4E)。详见变更日志。**剩 4C 客户端双端 / 4D 周复盘工作台 / 4E 端到端联调 + APNs 真机 + LinoN 接班切换。**
+
 **⚠ 高危区提示**:哨兵接触盘中实时源(新浪/腾讯)+ 推送通道(Bark)是阶段3 新增的对外接口,已用
 MockTransport 充分覆盖降级链;持仓台账/防重表是新增的写入路径(SQLite),已用单测覆盖 CRUD + 幂等;
 「退潮触发后抑制买点」是本阶段最关键的安全属性(直接对应 §2.4 铁律「永不盘中推荐新票」),已有直接单测断言。
@@ -553,3 +558,29 @@ MockTransport 充分覆盖降级链;持仓台账/防重表是新增的写入路�
   **欠账(真盘中验证,如实记录)**:①**本阶段全部验证止步于单测+合成历史数据回放,没有一分钟是在真实交易时段用真实免费源(新浪/腾讯)拉过活体行情**——`scripts/sentinel.py`本身在真实系统时间(过15:00收盘)下跑过`--once`验证了"非交易时段优雅退出"这一条路径,但09:30-15:00轮询本身、真实新浪/腾讯响应格式是否与2026-06-18的样例报文一致、真实网络延迟下的批量拉价耗时,均未验证;②买点/证伪的量能折算阈值(pullback 0.8倍下限)、持仓止损预警缓冲(2个百分点)、退潮哨兵三条阈值(炸板率50%/相对飙升20pp/跌停家数5只或15%/板块跳水-3%)全部是未回测的第一版启发式,需要用户下一个交易日实测后根据真实表现校正——这些常量已全部收成命名常量并在模块头逐一标注"未回测",定点修改成本很低;③Bark推送的payload格式基于官方文档,未用真实`BARK_URL`验证过。这三类欠账均已在"当前状态"与本条目开头如实标注,不是本阶段应交付而未交付的债——是今天(2026-07-20)客观不具备交易时段这一约束下,已按用户任务指令做的最佳替代。
 
 - **2026-07-20 · 阶段 4 立项(v0.3,客户端 + 云端化 + 问询台 + 周复盘)**:用户五项拍板并入设计共识——① 客户端方案 A(SwiftUI iOS+macOS 双端 + APNs,新 App / Bundle ID `top.linotsai.neckline`,§3.5);② 后端复用 LinoN 基建上 hz ECS(nginx `ln.linotsai.top` / APNs `.p8` 账号级密钥 / 独立端口 8002 + 用户 `neckline` + `/opt/neckline`,LinoN 接班后退役,§3.6);③ 哨兵与后端跑云上,内存硬约束下数据管线分工以 4B.1 实测门禁定(方案 A 全在 ECS / 方案 B Mac 落数 rsync 产物上云,`neckline.db` 恒 ECS 权威);④ APNs 只推「16:00 报告」+「退潮刹车」两类、其余哨兵事件只进 App 盘中看板(§2.4 推翻阶段 3 默认推送);⑤ App 四板块(今日计划 / 盘中看板 / 问询台 / 设置)+ macOS 周复盘工作台(拖入交割单对账)。§五 阶段 4 填入完整施工图(4A 后端 API → 4B 云端化+部署 → 4C 客户端双端 → 4D 周复盘工作台 → 4E 端到端联调+APNs 真机),每块验收标准 + 高危区标注(鉴权/APNs/部署脚本/LLM key 存取 点名 @builder-pro);阶段 3 三类欠账(真盘中冒烟 / 阈值校正 / GLM-Kimi 与 Bark 活体)挂账进 4E 不丢;§七 Backlog 两项([拍板]客户端 / [后期决策]哨兵部署)结案,§八 补阶段 4 用户网页操作清单(新 App ID+Push / LLM key / 每周交割单)。**同码不重写铁律**:阶段 4 只加服务外壳 + 客户端 + 云端化 + 对账,不重抄领域规则。
+
+- **2026-07-20 · 阶段 4A 完工(后端 API 服务化)**:新包 `neckline/api/`(FastAPI 脊椎),分块 commit 交付,全量 **pytest 456 → 527 passed**(+71,0 回归)。**同码不重写**:报告/候选评分/四哨兵/涨跌停/板块分类全部复用阶段 0–3 现有模块,API 层只加服务外壳。
+
+  **验收标准逐项(plan 4A)**:
+  1. **本地 uvicorn 起 → curl 全端点闭环**——达成。`scripts/smoke_api.sh`(真 uvicorn + 临时库隔离)跑通:health 免鉴权 200 / 无·错 token 401 / 报告·看板 degraded 空态 / 设置 GET·PUT llm(key 不回明文)·PUT push / 持仓 open→list→close→重复 close 404 / 问询台二值裁决 / 设备注册。冒烟期真实新浪/腾讯顺带拉到 600519.SH 活体价(实时源路径真验)。
+  2. **health 200 免鉴权 / 无 token 端点 401**——达成(`test_api_auth`:health 免鉴权、全保护端点无·错 token 401、`hmac.compare_digest` 全等比对、startup fail-fast len<16 抛错)。
+  3. **报告与看板返真实阶段 2/3 数据形状**——达成。`/report/latest`·`/report?date`(历史回放)读 `reports` 表**不重算**,四件套(buyPoint/stop/target/invalidation)+ 形态标签 + 前 10 只 LLM 审判贴合;`/board` 读当日 `sentinel_events` 聚合(退潮进红条、买点·证伪·持仓进事件列表,**不进 APNs**——§2.4 拍板落点)。
+  4. **开清仓走台账**——达成,复用 `sentinel.positions`(不重写台账);派生止损线 = buy×0.95(§2.1 -5% 单一常量);重复清仓 404。
+  5. **问询台丢一票返二值裁决 + 依据、初审通过写 `inquiry_pool`**——达成。确定性纪律核对(读 `brain.get_active()` 现役规则 + `research.panel` 选股域 + `strategy.signals` 禁买预测,**同码**)+ 同码评分(`build_entry_mask`/`_base_score_expr`)+ 板块年龄 → LLM 段(原生联网搜索,预注入实时取数/重算作上下文)。**「永不买」不变量三重保险**:裁决枚举只两值(`Literal["不符合","初审通过进海选池"]`)+ system prompt guardrail + **代码级裁决**(不从 LLM 自由文本提取"买")。缺 key 优雅降级(确定性照跑,LLM 段占位)。合成三票单测:主板通过→初审通过写池 / *ST 剔除 / 创业板(高弹)剔除;LLM 显式否决翻不符合、硬性不符合不劳 LLM;LLM 疯狂喊"买"裁决仍恒二值。
+  6. **`PUT /settings/llm` 后 `get_provider()` 现读 DB 生效(key 不回传明文)**——达成(🔴)。`get_provider` 解析改 **DB 覆盖 → `.env` 兜底**(`settings_store.resolve_llm`),运行时生效不重启;`GET /settings` 只回 `llmKeySet:bool`,key 绝不回明文 / 绝不进日志 / 空 key 视为未设降级;provider 白名单 schema `Literal` + store 双校验(非法 provider 422)。
+
+  **工程增量**:`neckline/api/`(deps/schemas/app/inquiry/notify/stores 六模块)+ `neckline/push/apns.py`(复用 LinoN token-based JWT ES256/HTTP2/可注入 transport)+ `neckline/settings_store.py`(app_settings CRUD,🔴 LLM key 存取);`db.py` 新增 4 表(`app_settings` 单行/`devices`/`inquiry_pool`/`reviews`);`config` 新增 `api_token`/`apns_*` + `DB_PATH` env 覆盖 + 容忍不可读 `.env`;`llm/factory.get_provider` 改走 `resolve_llm`;`report/store` 加 `latest_report_date`/`load_report_by_str`;`sentinel/dedup` 加看板读取;`report.py` 加 `--notify`;`requirements.txt` 新增 fastapi/uvicorn[standard]/pydantic/PyJWT/cryptography/h2(版本参照 LinoN 钉死);`scripts/smoke_api.sh` 新。**新增 71 单测**覆盖鉴权/设置(key 不泄漏 + DB 覆盖)/持仓/报告/看板/问询台二值「永不买」不变量/APNs ES256 签名/notify 只两类推送。
+
+- **2026-07-20 · 阶段 4B 完工(云端化 + hz ECS 部署,方案 A)**:后端 + 哨兵上 hz 云 ECS 常驻,与 LinoN(8001)**共存,全程未动 `linon.service` 或其 nginx 站点**(硬约束)。
+
+  **验收标准逐项(plan 4B)**:
+  1. **内存门禁三项峰值实测 + 架构方案二选一写死**——达成,**定案方案 A(全云)**。实测(GNU `time -v` Max RSS + 系统级 `free -m` 采样):pip 安装峰 used 1032MB/swap 0;`report.py` 单日 **RSS 277MB / 16.8s**;`daily_update.py` 单日 **RSS 262MB / 30.6s**(含 limit_derived 尾窗 187486 行 0.5s)。两者 **peak_swap=0、min_avail≥501MB**,不把邻居(lf/fiscal/pg)压进 swap、留 ~500MB 安全余量 → 满足方案 A 判据,ECS 自跑 daily+report timer(无需回退方案 B)。**两方案共同不变量落地**:`neckline.db` 业务台账 ECS 权威,`sync_data.sh` 只推 `data/parquet/`、显式排 `*.db` 绝不覆盖;全量六年 backfill 恒在 Mac 一次性跑,ECS 只增量。
+  2. **`neckline.service` active + health 200**——达成。systemd 单 unit(User=neckline,uvicorn `127.0.0.1:8002`)active + enabled,idle RSS ~82MB;`curl 127.0.0.1:8002/api/v1/health` → `{"status":"ok"}`。**公网 HTTPS 未接**——`ln.linotsai.top` 归 LinoN(8001),切 8002 是 4E 接班动作,4B 绝不动 linon 站点(参考 nginx 配置已写入 `deploy/nginx-neckline.conf` 待 4E)。ECS 实测已用本地 curl + 真实 API_TOKEN 走通全鉴权端点(报告 20260717/20 候选、问询台 600519.SH 初审通过·300750.SZ 创业板不符合)。
+  3. **哨兵折进 lifespan asyncio 任务**——达成。`app.py` lifespan 起 `_sentinel_loop`(交易时段 60s 一拍 `run_tick`(`asyncio.to_thread` 不卡事件循环)、午休 300s、非交易时段 300s 优雅待机;退潮首次触发 → `notify.push_retreat_brake`)。测试注入 `ENABLE_SENTINEL`/`NECKLINE_ENABLE_SENTINEL=0` 关轮询。**真盘中活体验证(交易时段真跑)是 4E 欠账**(4B 部署日 19:xx 非交易时段,哨兵按设计待机)。
+  4. **16:00 报告定时 + APNs 报告推送就位**——达成(顺序修正:report 依赖 daily 先拉数,故 **daily 16:05 → report 16:35**,plan 原文「report 16:00/daily 16:30」把依赖写反,已在 timer 注释说明)。`neckline-daily.timer`(16:05 daily_update)+ `neckline-report.timer`(16:35 report.py --notify,oneshot 跑完释放内存)active + enabled,下次触发 Tue 16:05/16:35。
+  5. **APNs 层单测过(真推留 4E)**——达成。`neckline/push/apns.py` 复用 LinoN 姿势,`test_apns`(临时 EC P-256 key 验 ES256 签名 + kid/iss、无配置/缺 .p8 → None、缓存/过期重签、send_push 注入 transport 成功·失败·sandbox 网关·topic=新 Bundle ID)+ `test_notify`(**只两个推送入口**结构保证「只推两类」、开关门控、无设备/无配置跳过、单设备失败不拖累)。真机真推留 4E(无 device token)。
+  6. **部署脚本经演练 + 真跑,各坑不复发**——达成。`sync_code.sh` **exclude 锚定根 `/data/`**(本地 dry-run 已验:`neckline/data/` 包 8 文件传、顶层 `data/parquet` 0 传——LinoN 坑 4)、GNU rsync 3.x 守卫、setgid/pyc/secret 复原提示;`sync_data.sh` 反向只传 parquet 排 `*.db`;pip 阿里云镜像;tushare `pro_api` 直传(不炸 nologin 家目录)。
+
+  **工程增量**:`scripts/`(setup.sh/sync_code.sh/sync_data.sh)+ `deploy/`(neckline.service / neckline-report.{service,timer} / neckline-daily.{service,timer} / nginx-neckline.conf 参考)+ `.env.example`。`config` 加 `DB_PATH` env + 容忍不可读 `.env`(ECS 实测:.env 600 neckline:neckline,deploy 跑维护命令时 load_dotenv 抛 PermissionError,已加 try/except);`setup.sh` init_schema 以 neckline 用户建库(保证服务 User=neckline 可写 WAL)。ECS 独立 bootstrap 参考数据:trade_cal 4383 / stock_basic 5866 / namechange 14139 / strategy_versions.v1(从 Mac 导出重放,不在 ECS 跑研究)。
+
+  **欠账(带进 4E)**:① **公网 HTTPS + LinoN 接班切换**(nginx 8001→8002 + linon 退役,联调通过后做,`deploy/nginx-neckline.conf` 已备);② **真盘中活体验证**(交易时段首次真跑 `run_tick` + 真实新浪/腾讯,兑现阶段 3 欠账①);③ **APNs 真机真推**(新 Bundle ID device token,4C 客户端建后);④ LLM/Bark 活体(用户 App 填 key 后);⑤ 问询台「初审通过」→ 报告端消费 `inquiry_pool` 扩 universe 的接线(§2.5 闭环的报告侧,4A 已写入池 + 提供读取,报告侧消费留 4E/报告管线小改,避免动阶段 2 评分代码引回归);⑥ 问询台 LLM「主动多轮 function-calling」形态未实现(以预注入取数/重算 + 原生搜索覆盖 plan 三能力,无 key 无法活体验证该形态,记此简化)。
