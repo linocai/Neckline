@@ -23,7 +23,8 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import List
+from decimal import ROUND_HALF_UP, Decimal
+from typing import List, Optional, Tuple
 
 import polars as pl
 
@@ -46,6 +47,79 @@ _PCT_BP_GEM_OLD_ST = 500  # 创业板(注册制前)ST 5%(与彼时主板同机�
 # 新股涨跌幅豁免窗口(第几个交易日起恢复限制;list_date 记为第 1 天)
 _EXEMPT_DAYS_5 = 5   # 科创板 / 创业板注册制新股
 _EXEMPT_DAYS_1 = 1   # 主板 / 北交所 / 创业板审批制(旧)新股
+
+
+# —— 标量镜像(plan 阶段3 §2.4「盘中涨跌停判定用现价对涨跌停价,复用 limit_derived
+#    的幅度规则算当日涨跌停价」)——————————————————————————————————————————
+#
+# 上面 `compute_limit_derived` 是全市场向量化(polars)EOD 批算,盘中哨兵每拍只需
+# 对「关注池」(候选 + 持仓 + 昨日涨停股,数十到数百只)逐票算一次涨跌停价,不值得
+# 为几百行套一次 polars DataFrame。以下两个纯 Python 标量函数与向量化版本共用
+# 同一组常量(`GEM_REFORM_DATE`/`MAIN_ST_REFORM_DATE`/`_PCT_BP_*`/`_EXEMPT_DAYS_*`,
+# 定义于本模块顶部),分支顺序与 `compute_limit_derived` 的 `pl.when()` 链逐条对应
+# ——单测(`tests/test_limit_derived.py`)对拍两者在同一批 (board, is_st, trade_date)
+# 组合上必须给出相同结果,防止未来任一处改动导致两条路径漂移。
+
+def resolve_limit_pct(board: Board, is_st: bool, trade_date: date) -> float:
+    """单票涨跌幅比例(如 0.10 = 10%)。分支顺序与 `compute_limit_derived` 的
+    `pct_bp` `pl.when()` 链一致:STAR 恒 20%;GEM 按注册制改革日再分 ST/非 ST；
+    BSE 恒 30%；其余(MAIN)按 ST + 主板新规日分 5%/10%。"""
+    if board == Board.STAR:
+        bp = _PCT_BP_STAR
+    elif board == Board.GEM:
+        if trade_date >= GEM_REFORM_DATE:
+            bp = _PCT_BP_GEM_NEW
+        elif is_st:
+            bp = _PCT_BP_GEM_OLD_ST
+        else:
+            bp = _PCT_BP_GEM_OLD
+    elif board == Board.BSE:
+        bp = _PCT_BP_BSE
+    elif is_st and trade_date < MAIN_ST_REFORM_DATE:
+        bp = _PCT_BP_MAIN_ST
+    else:
+        bp = _PCT_BP_MAIN
+    return bp / 10000.0
+
+
+def resolve_exempt_days(board: Board, list_date: Optional[date]) -> int:
+    """新股涨跌幅豁免窗口天数(第几个交易日起恢复限制)。判据与
+    `compute_limit_derived` 的 `exempt_days` 分支一致:是否豁免 5 天看的是
+    **上市当日**是否已在注册制之后(`list_date >= GEM_REFORM_DATE`),不是
+    `trade_date`——同一只股票的豁免窗口长度终身不变。`list_date` 缺失(未知上市日)
+    时保守按 1 天处理(尽快恢复限制判定,不长期误判为"仍在豁免期")。"""
+    if board == Board.STAR:
+        return _EXEMPT_DAYS_5
+    if board == Board.GEM and list_date is not None and list_date >= GEM_REFORM_DATE:
+        return _EXEMPT_DAYS_5
+    return _EXEMPT_DAYS_1
+
+
+def _round_half_up_scalar(price: float, pct: float, sign: int) -> float:
+    """price × (1 ± pct),四舍五入到 2 位小数(`Decimal.ROUND_HALF_UP`)。与向量化
+    版本 `_round_half_up_cents` 的整数分算法等价(同为 round-half-up 到分位),
+    标量场景下用 `Decimal` 更直白,不必再套整数分技巧。"""
+    p = Decimal(str(price))
+    factor = Decimal("1") + sign * Decimal(str(pct))
+    return float((p * factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def compute_intraday_limit_prices(
+    pre_close: float, board: Board, is_st: bool, trade_date: date
+) -> Tuple[Optional[float], Optional[float]]:
+    """由 `pre_close` 算当日涨跌停价(标量,供盘中哨兵逐票用)。`pre_close<=0`
+    (停牌/无效数据)→ `(None, None)`,调用方据此跳过该票的涨跌停判定。
+
+    注意:本函数不处理新股豁免窗口(是否当前处于豁免期是「另一件事」,见
+    `resolve_exempt_days` + `neckline.calendar.trading_days_between`),调用方
+    (如退潮哨兵的市场宽度统计)若需要豁免语义,自行先判断再决定是否调用本函数。
+    """
+    if pre_close <= 0:
+        return None, None
+    pct = resolve_limit_pct(board, is_st, trade_date)
+    up = _round_half_up_scalar(pre_close, pct, +1)
+    down = _round_half_up_scalar(pre_close, pct, -1)
+    return up, down
 
 
 def _round_half_up_cents(price_cents: pl.Expr, pct_bp: pl.Expr, sign: int) -> pl.Expr:
@@ -266,4 +340,11 @@ def _empty_result() -> pl.DataFrame:
     )
 
 
-__all__ = ["compute_limit_derived", "GEM_REFORM_DATE", "MAIN_ST_REFORM_DATE"]
+__all__ = [
+    "compute_limit_derived",
+    "GEM_REFORM_DATE",
+    "MAIN_ST_REFORM_DATE",
+    "resolve_limit_pct",
+    "resolve_exempt_days",
+    "compute_intraday_limit_prices",
+]

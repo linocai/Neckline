@@ -102,6 +102,41 @@ CREATE TABLE IF NOT EXISTS llm_judgments (
     UNIQUE(trade_date, ts_code)
 );
 CREATE INDEX IF NOT EXISTS idx_llm_judgments_trade_date ON llm_judgments(trade_date);
+
+-- 持仓台账(plan 阶段3,§2.4 持仓哨兵的数据源)。极简账本,不造重界面——
+-- `scripts/positions.py` CLI 录入/清仓。一票可多次开仓(分批建仓),故不以
+-- ts_code 为主键;status='open' 的行是盘中哨兵持仓哨兵的监控对象。
+CREATE TABLE IF NOT EXISTS positions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_code         TEXT NOT NULL,
+    buy_price       REAL NOT NULL,
+    qty             INTEGER NOT NULL,        -- 股数(非"手")
+    buy_date        TEXT NOT NULL,           -- 'YYYYMMDD'
+    status          TEXT NOT NULL DEFAULT 'open',  -- open | closed
+    sell_price      REAL,
+    sell_date       TEXT,                    -- 'YYYYMMDD'
+    note            TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
+CREATE INDEX IF NOT EXISTS idx_positions_ts_code ON positions(ts_code);
+
+-- 哨兵事件防重台账(plan 阶段3工程要求「状态防重推」)。同一 (trade_date, sentinel,
+-- ts_code, event_key) 只推一次——推过即落一行,进程重启后重新扫描到同一事件时
+-- 查表命中即跳过,不会重复推当日已推事件。ts_code 对无单票语义的事件(如退潮哨兵
+-- 的市场级刹车)留空串,不用 NULL(NULL 在 UNIQUE 约束里不去重,见 SQLite 语义)。
+CREATE TABLE IF NOT EXISTS sentinel_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date      TEXT NOT NULL,           -- 'YYYYMMDD'
+    sentinel        TEXT NOT NULL,           -- entry | retreat | holding | invalidation
+    ts_code         TEXT NOT NULL DEFAULT '',
+    event_key       TEXT NOT NULL,           -- 事件去重键,如 "trigger"/"stop"/"target"/"sector_dive"
+    payload_json    TEXT NOT NULL DEFAULT '{}',
+    pushed_at       TEXT NOT NULL,
+    UNIQUE(trade_date, sentinel, ts_code, event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_sentinel_events_trade_date ON sentinel_events(trade_date);
 """
 
 

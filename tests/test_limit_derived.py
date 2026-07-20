@@ -276,3 +276,126 @@ def test_empty_daily_input_returns_empty_result():
     sb = _stock_basic([])
     out = compute_limit_derived(empty, sb, _empty_namechange(), [])
     assert len(out) == 0
+
+
+# ======================================================================
+#  标量镜像(plan 阶段3 §2.4):resolve_limit_pct / resolve_exempt_days /
+#  compute_intraday_limit_prices。供盘中哨兵逐票用,规则与上面的向量化
+#  `compute_limit_derived` 必须同源——本节除了独立算期望值外,额外对拍向量化
+#  路径(`TestScalarMatchesVectorizedPath`),防止两条路径未来漂移。
+# ======================================================================
+
+from neckline.data.board import Board  # noqa: E402
+from neckline.data.limit_derived import (  # noqa: E402
+    compute_intraday_limit_prices,
+    resolve_exempt_days,
+    resolve_limit_pct,
+)
+
+
+class TestResolveLimitPct:
+    def test_star_always_20pct(self):
+        assert resolve_limit_pct(Board.STAR, is_st=False, trade_date=date(2020, 1, 1)) == pytest.approx(0.20)
+        assert resolve_limit_pct(Board.STAR, is_st=True, trade_date=date(2026, 7, 20)) == pytest.approx(0.20)
+
+    def test_bse_always_30pct(self):
+        assert resolve_limit_pct(Board.BSE, is_st=False, trade_date=date(2020, 1, 1)) == pytest.approx(0.30)
+        assert resolve_limit_pct(Board.BSE, is_st=True, trade_date=date(2026, 7, 20)) == pytest.approx(0.30)
+
+    def test_gem_before_and_after_reform(self):
+        before = GEM_REFORM_DATE - timedelta(days=1)
+        assert resolve_limit_pct(Board.GEM, is_st=False, trade_date=before) == pytest.approx(0.10)
+        assert resolve_limit_pct(Board.GEM, is_st=False, trade_date=GEM_REFORM_DATE) == pytest.approx(0.20)
+
+    def test_gem_st_before_reform_is_5pct_after_is_20pct(self):
+        before = GEM_REFORM_DATE - timedelta(days=1)
+        assert resolve_limit_pct(Board.GEM, is_st=True, trade_date=before) == pytest.approx(0.05)
+        # 注册制后创业板 ST 不降 5%,与普通股同 20%(见模块头注释)
+        assert resolve_limit_pct(Board.GEM, is_st=True, trade_date=GEM_REFORM_DATE) == pytest.approx(0.20)
+
+    def test_main_non_st_always_10pct(self):
+        assert resolve_limit_pct(Board.MAIN, is_st=False, trade_date=date(2020, 1, 1)) == pytest.approx(0.10)
+        assert resolve_limit_pct(Board.MAIN, is_st=False, trade_date=date(2026, 7, 20)) == pytest.approx(0.10)
+
+    def test_main_st_before_and_after_reform(self):
+        before = MAIN_ST_REFORM_DATE - timedelta(days=1)
+        assert resolve_limit_pct(Board.MAIN, is_st=True, trade_date=before) == pytest.approx(0.05)
+        assert resolve_limit_pct(Board.MAIN, is_st=True, trade_date=MAIN_ST_REFORM_DATE) == pytest.approx(0.10)
+
+
+class TestResolveExemptDays:
+    def test_star_is_5_regardless_of_list_date(self):
+        assert resolve_exempt_days(Board.STAR, date(2015, 1, 1)) == 5
+
+    def test_gem_5_if_listed_after_reform_else_1(self):
+        assert resolve_exempt_days(Board.GEM, GEM_REFORM_DATE) == 5
+        assert resolve_exempt_days(Board.GEM, GEM_REFORM_DATE - timedelta(days=1)) == 1
+
+    def test_main_and_bse_always_1(self):
+        assert resolve_exempt_days(Board.MAIN, date(2015, 1, 1)) == 1
+        assert resolve_exempt_days(Board.BSE, date(2015, 1, 1)) == 1
+
+    def test_missing_list_date_defaults_conservative_1(self):
+        """上市日未知(如元数据缺失)→ 保守按 1 天处理,不长期误判为"仍在豁免期"。"""
+        assert resolve_exempt_days(Board.GEM, None) == 1
+
+
+class TestComputeIntradayLimitPrices:
+    def test_matches_independent_decimal_calc(self):
+        up, down = compute_intraday_limit_prices(10.0, Board.MAIN, is_st=False, trade_date=date(2024, 1, 2))
+        assert up == pytest.approx(_limit_price(10.0, 0.10, +1))
+        assert down == pytest.approx(_limit_price(10.0, 0.10, -1))
+
+    def test_st_star_20pct(self):
+        up, down = compute_intraday_limit_prices(50.0, Board.STAR, is_st=True, trade_date=date(2024, 1, 2))
+        assert up == pytest.approx(_limit_price(50.0, 0.20, +1))
+        assert down == pytest.approx(_limit_price(50.0, 0.20, -1))
+
+    def test_zero_or_negative_pre_close_returns_none(self):
+        assert compute_intraday_limit_prices(0.0, Board.MAIN, False, date(2024, 1, 2)) == (None, None)
+        assert compute_intraday_limit_prices(-1.0, Board.MAIN, False, date(2024, 1, 2)) == (None, None)
+
+    def test_rounding_matches_grid_of_prices(self):
+        """网格核对(缩小版,呼应 0.4b 施工期 79200 组网格核对的传统):抽样一批
+        价格,标量函数与独立 Decimal 实现必须逐分对齐,不允许浮点误判。"""
+        for cents in range(100, 100 + 50):
+            price = cents / 100.0
+            for board, is_st, pct in [
+                (Board.MAIN, False, 0.10),
+                (Board.STAR, False, 0.20),
+                (Board.BSE, False, 0.30),
+                (Board.MAIN, True, 0.05),
+            ]:
+                up, down = compute_intraday_limit_prices(price, board, is_st, date(2024, 1, 2))
+                assert up == pytest.approx(_limit_price(price, pct, +1)), (price, board, is_st)
+                assert down == pytest.approx(_limit_price(price, pct, -1)), (price, board, is_st)
+
+
+class TestScalarMatchesVectorizedPath:
+    """标量路径与向量化 `compute_limit_derived` 对拍——同一 pre_close 算出的涨跌停价
+    必须完全一致(两条路径共用同一组常量,不应漂移)。"""
+
+    @pytest.mark.parametrize(
+        "case_label,ts_code,market,board_enum,pct,trade_date",
+        [
+            ("主板", "600001.SH", "主板", Board.MAIN, 0.10, date(2024, 1, 2)),
+            ("科创板", "688001.SH", "科创板", Board.STAR, 0.20, date(2024, 1, 2)),
+            ("北交所", "920001.BJ", "北交所", Board.BSE, 0.30, date(2024, 1, 2)),
+            ("创业板(注册制后)", "300001.SZ", "创业板", Board.GEM, 0.20, date(2024, 1, 2)),
+            ("创业板(注册制前)", "300002.SZ", "创业板", Board.GEM, 0.10, date(2020, 1, 2)),
+        ],
+    )
+    def test_scalar_agrees_with_vectorized(self, case_label, ts_code, market, board_enum, pct, trade_date):
+        days = _business_days(trade_date - timedelta(days=10), 20)
+        d = next(x for x in days if x >= trade_date)
+        pre_close = 10.00
+        up_vec_expected = _limit_price(pre_close, pct, +1)
+        daily = _daily_df([_daily_row(ts_code, d, pre_close, up_vec_expected, high=up_vec_expected)])
+        # list_date 远早于 GEM 改革日,确保本用例只测「板块正常幅度」分支,不触碰新股豁免窗口。
+        sb = _stock_basic([(ts_code, market, date(2015, 1, 1))])
+        vec_out = compute_limit_derived(daily, sb, _empty_namechange(), days)
+        assert len(vec_out) == 1, case_label
+        vec_limit_up = vec_out.row(0, named=True)["limit_up_price"]
+
+        scalar_up, _ = compute_intraday_limit_prices(pre_close, board_enum, is_st=False, trade_date=d)
+        assert scalar_up == pytest.approx(vec_limit_up), case_label

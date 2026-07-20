@@ -36,6 +36,7 @@ class Settings:
     tushare_token: Optional[str]
     llm_provider: Optional[str]
     llm_api_key: Optional[str]
+    bark_url: Optional[str] = None
     project_root: Path = PROJECT_ROOT
     data_dir: Path = DATA_DIR
     parquet_dir: Path = PARQUET_DIR
@@ -51,6 +52,9 @@ def _load_settings() -> Settings:
         tushare_token=_clean(os.environ.get("TUSHARE_TOKEN")),
         llm_provider=_clean(os.environ.get("LLM_PROVIDER")),
         llm_api_key=_clean(os.environ.get("LLM_API_KEY")),
+        # 阶段3 §3.6 推送通道:Bark 推送 URL(如 https://api.day.app/<你的key>),
+        # 缺省 = None,`sentinel.channels.BarkChannel` 据此优雅降级为不推送(不崩)。
+        bark_url=_clean(os.environ.get("BARK_URL")),
     )
 
 
