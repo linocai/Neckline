@@ -321,6 +321,61 @@ distToStopPct/retraceState/todayAction,stopLine 改读现役 config)+ `GET /posi
 冒烟 `scripts/smoke_precall.py` 真数据跑通(68 只关注池 / 8 变形 / 1 证伪 / D5 命中沙河股份)。**留 v1.1-H 联调**:9:26 真机
 推达 + 看板明细、D5 临期持仓真机推达 + 持仓卡置顶(活体验收);G.3 看板中文标签(precall/d5exit 已可透传,标签在 G 补齐)。
 
+**2026-07-21 · v1.1-C/D 后端完工(本地全绿)**:C 自选池表+CRUD+体检+同花顺 txt 对账、D 问询窗口修复两块交付。
+
+**C 自选池**:新 `neckline/watchlist.py`——`watchlist` 表(`ts_code` PK,≤30 上限服务端硬校验,超限 `WatchlistFullError`→
+API 层转 422;增删只经 `add_watchlist`/`remove_watchlist`/`set_pinned` 这三个函数,报告管线/哨兵/问询台只调用只读的
+`list_watchlist`/`list_watchlist_codes`,无任何系统自动写路径,单测断言)+ 同花顺 txt 互转/对账(`parse_ths_txt` 按
+UTF-8(含BOM)→GBK 顺序尝试解码、每行只取行首6位数字兼容多种未经验证的真实变体,复用 `review.parse.normalize_ts_code`/
+`sentinel.quotes.to_symbol` 判后缀,不新写正则;`export_ths_txt`/`reconcile_ths`)。`sentinel/universe.py::load_watch_universe`
+并入自选池——去重后「持仓∪自选∪候选」全保留(优先级同级),`_load_prev_limit_up_codes` 只填剩余额度到 `breadth_cap=200`,
+超限时按「持仓>自选>候选」裁剪(单测覆盖边界);自选池里昨晚体检已触发买点的票转 `Candidate` 形状(`_build_watchlist_candidates`,
+过滤「现仍在自选池」+「未与候选重复」)供买点/证伪哨兵(`engine.py`)与盘前校准(`precall.py`)同码消费,**entry_spec/
+invalidation_spec 均是昨晚 16:35 报告生成时写死的,盘中/盘前只读不重算,不违反§2.4「不产生新决策」**。
+
+新 `neckline/report/watchlist_check.py`——自选体检:评分**同码复用** `report.candidates._base_score_expr`(在全市场面板
+上一次性算好,与候选评分数值恒等,`TestScoreSameAsCandidates` 直接证明);纪律红绿灯 = 选股域(`base_universe_expr()`
+整条复用不拆解,避免阈值漂移)+ 现役 config 启用的禁买过滤(P4/P5/P6,逐项拆开展示原因);买点触发直接用
+`momentum.build_entry_mask(cfg)` 本尊(与"今天算不算候选"同一把尺);四件套复用 `candidates.py` 已导出的公开函数一字不重写。
+**自选体检不受 entry mask 约束**(即便今日不满足买点也照样给出评分/红绿灯,这是与候选评分故意的行为差异,已有直接单测)。
+状态变化 diff(`_is_changed`,写死定义:首次出现/红绿灯翻转/买点触发翻转任一方向/形态标签集合变化)+ LLM 控成本
+(`apply_llm_review` 只对 changed∪pinned 跑 `llm.judge.judge_candidate`)——`judge_candidate` 新增可选 `system_prompt`
+参数(默认值不变,候选审判调用点零改动),自选体检传入新增的 `WATCHLIST_JUDGE_SYSTEM_PROMPT`(两套 prompt 共用同一套
+「结论:通过|否决」解析与降级链)。`reports` 表新增 `watchlist_json` 列(幂等迁移,默认 `'[]'`,老报告前向兼容);
+`report.store.load_watchlist_snapshot_before`(严格早于目标日,同日补跑不拿自己当基准)供 diff 用。`build_report` 末尾接线
++ `render.py` 新增独立「自选体检」markdown 节(不与候选混排)。API:`schemas.WatchlistCheckOut`/`WatchlistItemOut` 等 +
+`GET/POST /watchlist`、`DELETE /watchlist/{code}`、`PUT /watchlist/{code}/pin`、`POST /watchlist/reconcile-ths`(multipart
+txt)、`GET /watchlist/export-ths` 五端点(鉴权沿 `require_token`);`ReportOut` 新增 `watchlistCheck[]`(旧报告读回空数组
+不是 null)。**真实数据验证**:隔离库 ATTACH 生产 `data/neckline.db` 只读参考表(trade_cal/strategy_versions/stock_basic/
+namechange)+ 真实 Parquet backfill,加 3 只真实票跑 `2026-07-17` 真报告——贵州茅台(600519.SH)绿灯+买点触发,给出真实
+MA10=1217.11 的完整四件套;宁德时代(300750.SZ)因创业板+`forbid_high_elasticity` 正确判红灯;平安银行(000001.SZ)绿灯
+未触发。`scripts/smoke_api.sh` 扩 9 步真实 uvicorn+curl 冒烟(CRUD/pin/超限/txt reconcile 真多部分表单上传/导出/删除)全过。
+
+**D 问询窗口修复**:根因——`inquiry_pool` 旧消费判据 `trade_date(入池当日) == report_date`,16:35 报告已生成后问询通过的票
+入池当日停留在"今天",下一份该消费它的报告是明天的,`trade_date` 永远对不上、永久掉缝。修复:新列
+`consumed_report_date`(NULL=待消费,幂等迁移);`api/stores.load_pending_inquiry_codes`(`WHERE consumed_report_date IS
+NULL OR = 本报告日`)替代旧的 `load_inquiry_pool(trade_date)` 消费查询(后者保留供审计,不再参与消费匹配);
+`mark_inquiry_pool_consumed` 在 `build_report` 落库成功后调用(`save=False` 绝无此副作用)。`trade_date` 列退化为纯审计
+字段,**不再承担消费匹配职责**——`_inquiry_basis_pool_date` 的 `pool_date` 因此与 `basis_date` 解耦,直接取「今日交易日历
+口径」。单测覆盖任务点名的全部场景:跨日边界(16:35 后入池次日报告纳入)、同一票不被两份报告重复计入、报告补跑(同日
+重算)幂等重纳、空池 noop 零回归、消费后新入池票不受已消费票影响、迟迟未被消费的票跨多日查询仍待消费。
+
+**无重大偏离**,两处实现选择记录:①退潮哨兵的板块联动样本(`_hot_sector_peer_returns`)刻意不纳入自选票——plan C.2 原文
+点名「买点/证伪/持仓/盘前」四类哨兵享自选同级待遇,未点名退潮,故维持只用候选样本;②自选体检的 LLM 审判结果直接嵌入
+`WatchlistCheckItem`/`watchlist_json`(而非像候选那样另建 `llm_judgments` 表行),因为同一票同日可能既是候选又是自选,
+共用 `llm_judgments` 的 `UNIQUE(trade_date,ts_code)` 会产生互相覆盖的收窄写冲突,自包含存储更安全、隔离。
+
+全量 **pytest 682 → 796 passed**(+114,零回归);新增文件 `neckline/watchlist.py`/`neckline/report/watchlist_check.py`/
+`tests/test_watchlist.py`/`tests/test_watchlist_check.py`/`tests/test_api_watchlist.py`,修改 12 个既有模块 + 8 个既有
+测试文件(逐条见变更日志)。发现一处 4A 遗留的潜在漂移风险(`api/inquiry.py::run_deterministic_checks` 手写重复选股域
+逻辑、未核对两条禁买过滤)已记入挂起任务,非本块范围不改。
+
+**遗留给客户端 E/F/G/H 的接口契约清单(新端点/新字段,E/F/G 落地时对照)**:
+- 新端点(鉴权沿 `require_token`,契约见 `neckline/api/schemas.py`):`GET /watchlist` → `WatchlistOut{items:[WatchlistItemOut], maxSize:30}`(每项含 `check:WatchlistCheckOut|null` = 最近一份报告的体检快照,从未体检过 → null);`POST /watchlist` body `{code,name?,note?}` → `WatchlistAddOut{item}`,**满 30 返 422** `{detail:{reason:"watchlist_full"}}`;`DELETE /watchlist/{code}` → `OkOut`,不存在 404;`PUT /watchlist/{code}/pin` body `{pinned:bool}` → `OkOut`,不存在 404;`POST /watchlist/reconcile-ths`(multipart,字段名 `file`,单 txt 文件)→ `ThsReconcileOut{onlyInThs[],onlyInNeckline[],both[]}`(均 ts_code 格式,只算差集不写入,对齐由客户端调上面的 CRUD);`GET /watchlist/export-ths` → `ThsExportOut{text,count}`(text 是可直接存文件的 txt 全文)。
+- `ReportOut` 新增字段 `watchlistCheck: WatchlistCheckOut[]`(旧报告 / 空自选池 → 空数组,不是 null,客户端不必特判)。`WatchlistCheckOut` 字段:`code/name/pinned/source/hasData/close/board/score/patternTags/hotSectors/sectorNames/greenLight/disqualifiers/buyPointTriggered/buyPoint/stop/target/invalidation/invalidationSpec/entrySpec/statusChanged/llmJudgment{verdict,narrative,degraded}|null`——四件套字段命名与 `CandidateOut` 一致(`buyPoint/stop/target/invalidation`),**F.2 客户端可直接复用 `CandidateRow` 四件套布局**(plan 原文已点名)。
+- v1.1-G 待办(本块未做,按 plan 归属 G 块):`GET/PUT /settings/push` 契约扩至四字段(报告/退潮/盘前/D5)**本块未动**——`PushSettingsOut`/`SettingsPushIn` 仍是 2 字段,`app_settings.push_precall`/`push_d5exit` 列已在 v1.1-A/B 建好但未接入 settings 端点,留 G.1 原样处理,C/D 未触碰。
+- D 块(问询窗口修复)**纯后端内部修复,无任何客户端契约变化**——`POST /inquiry` 请求/响应形状不变,客户端无需改动。
+
 ---
 
 ## 五、当前版本 Plan(v1.1 · SOP 补洞:盘前校准 + 持仓生命周期 + 自选板块 + 问询修复)
@@ -833,3 +888,5 @@ distToStopPct/retraceState/todayAction,stopLine 改读现役 config)+ `GET /posi
 - **2026-07-21 · v1 上线 + 首日生产坑快修**:阶段 4 全部完工,v1 上线运行——ECS 全云(8002 / `ln.linotsai.top`)、双端 App 真机、APNs 真推通(报告 + 退潮)、**LLM=GLM 已激活**(真调用 26.3s 成功,兑现阶段 2/4 GLM 活体欠账)。首日三处生产坑快修:① TuShare 类型漂移毒化 Parquet 分区(`market_data.write_table_day` 加 `_align_to_table_schema` 按既有分区 schema cast,+2 测试);② 带搜索 LLM 读超时 25s→90s(`openai_compat.read_timeout`);③ 客户端 iOS 双标题(自画大标题限 macOS)+ 报告时间文案 16:00→16:35 + ECS 补跑 0720 缺失报告。坑详情入项目 `CLAUDE.md` §「v1 上线首日」。pytest 629→631。**遗留**:GLM `web_search` 空数组待查(见 §七挂账)。
 
 - **2026-07-21 · v1.1 立项(SOP 补洞)**:用户拍板 v1.1(2026-07-21 讨论定案,方向不得改),补 v1 实盘暴露的 SOP 四个裸奔点。设计共识同步标注拍板:**§2.3** 新增「自选体检」报告节(同码评分,LLM 只审 changed∪pinned);**§2.4** 新增「盘前校准 tick」(9:25:30 集合竞价快照纯规则判定、9:26 汇总推送,仍属执行层不产新票)+ **推送白名单扩到四类**(报告 / 退潮 / 盘前校准 / D5)+ **D5 时间退出执行器**(规则 v1 `hold=5` 此前无人触发)。**§五「当前版本 Plan(v1.1)」填入完整分块施工图**:A 盘前校准 tick(🔴)/ B 持仓生命周期 D 计数 + D5(🔴)/ C 自选池表 + CRUD + 体检 + 同花顺 txt 对账 / D 问询窗口修复(`inquiry_pool` 消费「当日」→「上次报告以来」,加 `consumed_report_date` 列)/ E 持仓卡改版 + 一键补录预填 / F 自选第五板块 UI + macOS txt 工作台 / G 设置屏四类开关 / H 部署 + 真机联调 + 活体验收,每块验收标准写死(含盘前校准 9:26 真机推达、D5 临期持仓真实触发、自选体检出现在真报告、txt 用真实同花顺导出对账四项活体验收)。高危区点名 @builder-pro(盘前校准 / D5 新推送类 APNs、哨兵进程盘中常驻改动、部署)。旧 `db.py` 新增 `watchlist` 表 + `app_settings` 两列 + `inquiry_pool` 一列(幂等迁移)。**铁律不变**:同码不重写、单一事实源(D 计数=D1 契约 / hold·止损读现役 config / 关注池 ≤200 自选并入仍守 / `write_table_day` 落盘 / LLM 90s)。§七补三项跨版本挂账(GLM search_hits / Bark 活体 / 周复盘首次真实交割单),§八补同花顺 txt 与两类新推送开关的用户操作。仓库现状:v1.1 未开工,施工图就位待 builder。
+
+- **2026-07-21 · v1.1-C/D 后端完工**:C 自选池(`neckline/watchlist.py` CRUD + THS txt 互转对账,`≤30` 硬校验、增删只经用户端点)+ 自选并入哨兵关注池(`sentinel/universe.py`,持仓/自选/候选同级保留、超限按「持仓>自选>候选」裁剪、≤200 守住)+ 自选票触发买点后享候选同级待遇(`engine.py`/`precall.py` 同码消费昨晚写死的 `entry_spec`/`invalidation_spec`)+ 新 `report/watchlist_check.py` 自选体检节(评分同码复用 `_base_score_expr`、红绿灯复用 `base_universe_expr`/`strategy.signals`、买点触发复用 `build_entry_mask`、LLM 只审 changed∪pinned 且新增 `judge_candidate(system_prompt=...)` 向后兼容扩展)+ `reports.watchlist_json`/`_shape_report` 前向兼容 + markdown 独立节 + 五个新端点。D 问询窗口修复:`inquiry_pool` 加 `consumed_report_date`(NULL=待消费),消费判据从「入池当日==报告日」改「待消费∪已被本报告日消费(幂等补跑)」,根治 16:35 后问询通过票永久掉缝的生产真洞。全量 **pytest 682 → 796**(+114,零回归)。隔离库 ATTACH 真实 `data/neckline.db` 参考表 + 真实 backfill 数据跑 `2026-07-17` 真报告验证自选体检(贵州茅台绿灯触发出真实四件套、宁德时代因创业板正确判红灯);`scripts/smoke_api.sh` 扩真实 uvicorn+curl 冒烟全过。详情/客户端契约清单见 §四。**仍挂账**:v1.1-E/F/G/H(客户端持仓卡/自选板块 UI/设置屏四开关/部署+活体验收)。

@@ -128,3 +128,36 @@
 - **GLM 顶层 `web_search` 数组可能为空但回答仍含时效信息**:搜索命中解析不到时
   `search_hits` 落库为空数组,审判归因材料会缺搜索存档——已观察到,原因待查
   (GLM 内部搜索不回传 or 响应形状变化),不影响主链路。
+
+## v1.1-C/D(自选池 + 问询窗口修复)踩过的坑,后续续做前先看
+
+- **"入池当日"(审计字段)与"该被哪份消费"(消费判据)必须解耦,不能用同一个
+  日期字段身兼两职**:`inquiry_pool` 旧写法让 `pool_date == 最近报告日`,表面看
+  合理,实际让 16:35 报告已生成后才问询通过的票的 `trade_date` 停留在"今天",
+  而下一份该消费它的报告是明天的——两个日期概念被绑死导致永久掉缝(生产真洞)。
+  修复:新增 `consumed_report_date`(NULL=待消费)作为**唯一**消费判据
+  (`neckline.api.stores.load_pending_inquiry_codes`:`WHERE consumed_report_date
+  IS NULL OR = 本报告日`),`trade_date` 退化为纯审计字段、不参与任何匹配逻辑。
+  **同类"队列表 + 目标日匹配"的设计,一律拆成「审计时间戳」+「独立消费标记」
+  两个字段,不要用一个字段的"相等"去表达"该被消费"。**
+- **`llm/judge.py::judge_candidate` 是 duck-typed 的**——只要一个对象有
+  `ts_code`/`name`/`close`/`board`/`pattern_tags`/`sector_names`/`hot_sectors`/
+  `entry_plan`/`stop_loss` 这几个属性(不要求是 `Candidate` 类型本尊),就能直接
+  喂给它审判,不必写适配器。新增了可选 `system_prompt` 参数(默认
+  `JUDGE_SYSTEM_PROMPT`,候选审判调用点零改动)——未来任何"喂一个类候选对象
+  给 LLM 审判"的新场景(如 `report/watchlist_check.py` 的自选体检),优先复用
+  `judge_candidate` + 自定义 `system_prompt`,不要另写一套调用/解析/降级逻辑。
+- **纪律红绿灯类判定,若需要"拆解成具体触发了哪条规则"展示,不能靠手写 Python
+  条件重新实现 `research/panel.py::base_universe_expr()` 这类已经 AND 成一个
+  布尔的表达式**(会产生数值漂移,`api/inquiry.py` 的 `run_deterministic_checks`
+  就是这样踩的,见挂起任务)。`report/watchlist_check.py::_discipline_checks`
+  的正确姿势:选股域四项揉成**一条**组合原因文案(不拆解、不重抄阈值),只有
+  现役 config **可配**的禁买过滤(P4/P5/P6)才逐项拆开——因为那几项本来就要
+  按 `cfg.xxx is not None`/`cfg.xxx` 分支决定是否启用,拆开展示不产生新的
+  数值维护点。
+- **同花顺 PC 端自选导出 txt 的真实编码/格式未经活体验证**(留 v1.1-H)——
+  `neckline/watchlist.py::parse_ths_txt` 按 UTF-8(含 BOM)→GBK 顺序尝试解码,
+  每行只取行首连续 6 位数字(容忍"裸代码"/"代码+后缀"/"代码+制表符+名称"等
+  未经验证前无法排除的变体),复用 `review.parse.normalize_ts_code`/
+  `sentinel.quotes.to_symbol` 判定交易所后缀,不新写正则。拿到真实同花顺导出
+  文件后,建议先跑一次 `POST /watchlist/reconcile-ths` 核对协议假设仍成立。
