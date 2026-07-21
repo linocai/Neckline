@@ -53,6 +53,9 @@ class ReportOut(BaseModel):
     sentiment: Dict[str, Any]                # SentimentDashboard 快照(含 position_quota 三态)
     sectors: List[Dict[str, Any]]            # 强势板块 + 板块年龄
     candidates: List[CandidateOut]
+    # v1.1-B.4 漏录兜底:当日买点哨兵触发过但台账无补录时的一句提示(否则空串)。
+    # **实时计算**(GET /report 每次读时按当前台账重算,用户补录后自动消失),不落库、不改评分。
+    missedEntryHint: str = ""
     degraded: bool = False
     reason: str = ""
 
@@ -92,12 +95,27 @@ class PositionOut(BaseModel):
     buyDate: str
     price: float                 # 哨兵最近一拍 / EOD 兜底;拉不到 → 0.0
     status: str
-    stopLine: float              # = buy×0.95 派生(§2.1 -5% 单一常量)
+    stopLine: float              # = buy×(1−stop_pct) 派生(读现役 config,§2.1 单一常量)
     stopOrderChecked: bool = False   # 用户自证「已挂 -5% 条件单」(真对账在 4D 周复盘)
+    # —— v1.1-B.1 持仓生命周期派生字段(服务端算好,客户端不重算日历)——————————
+    dCount: int = 1              # D 计数(买入日=D1,交易日历口径,单一源 positions.d_count)
+    maxHoldDays: int = 5         # 现役 max_hold_days(读 config,不硬编)
+    distToStopPct: Optional[float] = None   # (price−stopLine)/price;无实时价 → null
+    retraceState: Optional[Dict[str, Any]] = None   # 回落止盈状态{peak,retracePct,triggered};无价/无阈 → null
+    todayAction: str = ""        # 今日动作提示(D5离场 / 距止损 / 回落止盈已触发 等)
 
 
 class PositionsOut(BaseModel):
     holdings: List[PositionOut] = Field(default_factory=list)
+
+
+class EntrySuggestionOut(BaseModel):
+    """一键补录预填推荐(plan v1.1-B.3,只读计算,不写台账)。"""
+    ok: bool = True
+    code: str
+    price: float
+    qty: int                     # 按 single_cap 与现价取整手:floor(single_cap/price/100)*100
+    stopLine: float              # 现价×(1−stop_pct)派生(读现役 config)
 
 
 class PositionOpenIn(BaseModel):
@@ -213,6 +231,7 @@ __all__ = [
     "OkOut", "LLMJudgmentOut", "CandidateOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
+    "EntrySuggestionOut",
     "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_REJECT", "VERDICT_PASS",
     "PushSettingsOut", "SettingsOut", "SettingsLLMIn", "SettingsPushIn", "DeviceRegisterIn",
     "SettingsReviewColMapIn", "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",

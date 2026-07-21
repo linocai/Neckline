@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 
@@ -32,6 +33,7 @@ from neckline.api.schemas import (
     BoardOut,
     CandidateOut,
     DeviceRegisterIn,
+    EntrySuggestionOut,
     InquiryIn,
     InquiryOut,
     LLMJudgmentOut,
@@ -64,7 +66,7 @@ from neckline.settings_store import get_app_settings, set_llm, set_push, set_rev
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.4.0-stage4A"
+VERSION = "0.5.0-v1.1AB"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -79,6 +81,11 @@ _PROVIDER_FN: Optional[Callable[[Optional[Path]], Any]] = None       # 问询台
 _SENTINEL_POLL_SEC = 60
 _SENTINEL_LUNCH_POLL_SEC = 300
 _SENTINEL_IDLE_POLL_SEC = 300
+# v1.1-A.1:开盘前收紧轮询——9:20–9:30 段每 30s 一探,确保 9:25:30 盘前校准窗口必被命中
+# (非交易时段 5min 一探会错过 9:25:30)。盘前分支只在此窗口跑,盘中(9:30+)节奏不变。
+_SENTINEL_PREOPEN_POLL_SEC = 30
+_PREOPEN_START = time(9, 20)
+_PREOPEN_END = time(9, 30)
 
 
 def _db() -> Optional[Path]:
@@ -87,12 +94,22 @@ def _db() -> Optional[Path]:
 
 # —— 哨兵后台轮询(4B.3;折进 lifespan asyncio,单 unit 省内存)——————————————————
 
+def _is_preopen(now: datetime) -> bool:
+    """开盘前收紧轮询窗口:交易日 且 09:20 ≤ now.time() < 09:30。`is_intraday_now` 对该段
+    返 False(盘中从 9:30 起),两窗口不重叠,故用 `elif` 串接安全。"""
+    return is_trading_day(now.date()) and _PREOPEN_START <= now.time() < _PREOPEN_END
+
+
 async def _sentinel_loop(stop_event: asyncio.Event) -> None:
     """交易时段每 60s 调 `run_tick`(阻塞活 run in thread,不卡事件循环);退潮首次触发
-    → APNs 刹车推送(只推两类之一)。非交易时段优雅待机(每 5min 探一次,不空转)。"""
+    → APNs 刹车推送(白名单四类之一)。**v1.1-A**:开盘前 9:20–9:30 收紧到 30s 一探并跑
+    `run_precall_tick`(盘前校准 + D5 扫描,当日只跑一次,内部自防重),9:26 汇总 / D5 推送
+    经 `notify` 白名单入口。**现有 9:35 起 intraday 判逻辑一字不改**。非交易时段优雅待机
+    (每 5min 探一次,不空转)。"""
     from neckline.sentinel.engine import run_tick
+    from neckline.sentinel.precall import run_precall_tick
 
-    logger.info("哨兵后台轮询已挂载(单 unit lifespan asyncio)")
+    logger.info("哨兵后台轮询已挂载(单 unit lifespan asyncio;含 v1.1 盘前校准分支)")
     while not stop_event.is_set():
         now = datetime.now()
         interval = _SENTINEL_IDLE_POLL_SEC
@@ -105,9 +122,20 @@ async def _sentinel_loop(stop_event: asyncio.Event) -> None:
                     )
             except Exception:  # noqa: BLE001  单拍异常绝不能拖垮轮询
                 logger.warning("哨兵一拍异常(已吞,继续轮询)", exc_info=True)
-            t = now.time()
-            from datetime import time as _t
-            interval = _SENTINEL_LUNCH_POLL_SEC if _t(11, 30) <= t < _t(13, 0) else _SENTINEL_POLL_SEC
+            interval = _SENTINEL_LUNCH_POLL_SEC if time(11, 30) <= now.time() < time(13, 0) else _SENTINEL_POLL_SEC
+        elif _is_preopen(now):
+            try:
+                pr = await asyncio.to_thread(run_precall_tick, now, db_path=_db())
+                if pr.ran:
+                    if pr.summary_actionable > 0:
+                        await asyncio.to_thread(notify.push_precall_summary, pr.counts, db_path=_db())
+                    for ex in pr.d5_exits:
+                        await asyncio.to_thread(
+                            notify.push_d5_exit, ex.name, ex.ts_code, ex.d, db_path=_db()
+                        )
+            except Exception:  # noqa: BLE001  盘前一拍异常同样绝不能掀翻轮询主循环
+                logger.warning("盘前校准一拍异常(已吞,继续轮询)", exc_info=True)
+            interval = _SENTINEL_PREOPEN_POLL_SEC
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
@@ -178,6 +206,8 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
 
 
 def _shape_report(rep: Dict[str, Any]) -> ReportOut:
+    from neckline.report.pipeline import compute_missed_entry_hint
+
     td = rep["trade_date"]
     d = datetime.strptime(td, "%Y%m%d").date()
     judgments = {j["ts_code"]: j for j in report_store.load_llm_judgments(d, db_path=_db())}
@@ -189,6 +219,7 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
         sentiment=rep.get("sentiment", {}),
         sectors=rep.get("sectors", []),
         candidates=candidates,
+        missedEntryHint=compute_missed_entry_hint(d, db_path=_db()),   # v1.1-B.4 实时算(补录后自动消失)
     )
 
 
@@ -224,6 +255,8 @@ def report_by_date(date: str = "") -> ReportOut:
 # —— 4A.3 盘中看板 ————————————————————————————————————————————————————
 
 _SENTINEL_LABEL = {"entry": "买点", "invalidation": "证伪", "holding": "持仓"}
+# v1.1:盘前校准 / D5 两新 sentinel 类型的中文标签(G.3 客户端看板明细;未识别原样透传)。
+_SENTINEL_LABEL.update({"precall": "盘前校准", "d5exit": "D5退出"})
 
 
 @app.get(f"{API_PREFIX}/board", dependencies=[Depends(require_token)])
@@ -238,8 +271,10 @@ def board() -> BoardOut:
     events: List[BoardEventOut] = []
     asof = ""
     for e in events_raw:
-        if e["sentinel"] == "retreat":
-            continue  # 退潮进红条,不进事件列表
+        # 市场级标记(空 ts_code)不进事件列表:退潮刹车(retreat/brake)已走 retreatBrake
+        # 红条;盘前校准的当日「tick 已跑」标记(precall/tick)是内部去重锚,均非用户可见事件。
+        if not e["ts_code"]:
+            continue
         asof = e.get("pushed_at", "") or asof
         events.append(BoardEventOut(
             sentinel=_SENTINEL_LABEL.get(e["sentinel"], e["sentinel"]),
@@ -298,9 +333,59 @@ def _resolve_prices(codes: List[str]) -> Dict[str, float]:
     return out
 
 
-def _stop_line(buy_price: float) -> float:
-    """派生止损线 = 买入价 ×(1-5%)(§2.1 -5% 单一常量)。"""
-    return round(buy_price * 0.95, 2)
+def _active_config() -> Tuple[float, int, float, Optional[float]]:
+    """现役策略 config 的四个值(单一事实源 `brain.active_config`,§3.8 铁律):
+    (stop_pct, max_hold_days, single_cap, take_profit_retrace)。无现役版本(异常状态)
+    → 退回 `MomentumConfig` 字段默认(不在此另拍字面量)。"""
+    from neckline.strategy import brain
+    from neckline.strategy.momentum import MomentumConfig
+
+    fb = MomentumConfig()
+    cfg = brain.active_config(db_path=_db())
+    stop_pct = cfg.get("stop_pct") or fb.stop_pct
+    max_hold = cfg.get("max_hold_days") or fb.max_hold_days
+    single_cap = cfg.get("single_cap") or fb.single_cap
+    tpr = cfg.get("take_profit_retrace", fb.take_profit_retrace)
+    return float(stop_pct), int(max_hold), float(single_cap), (float(tpr) if tpr else None)
+
+
+def _stop_line(buy_price: float, stop_pct: float) -> float:
+    """派生止损线 = 买入价 ×(1−stop_pct)(读现役 config,§2.1 单一常量,不硬编 0.95)。"""
+    return round(buy_price * (1 - stop_pct), 2)
+
+
+def _retrace_state(
+    position: "pos_store.Position", price: float, peak_hist: float, take_profit_retrace: Optional[float]
+) -> Optional[Dict[str, Any]]:
+    """回落止盈状态(plan B.1;**复用 `holding.check_take_profit` 判定「是否触发」,不重写
+    阈值比较**)。无实时价(price≤0)→ None(算不出回落)。"""
+    if price <= 0:
+        return None
+    from neckline.sentinel.holding import check_take_profit
+    from neckline.sentinel.quotes import Quote
+
+    q = Quote(code=position.ts_code, name="", price=price, pre_close=0.0, open=0.0,
+              high=0.0, low=0.0, volume=0.0, amount=0.0, ts="", source="derived")
+    peak = max(peak_hist or 0.0, price)
+    reason = check_take_profit(position, q, peak_hist, take_profit_retrace)
+    retrace_pct = (peak - price) / peak if peak > 0 else 0.0
+    return {"peak": round(peak, 2), "retracePct": round(retrace_pct, 4), "triggered": reason is not None}
+
+
+def _today_action(
+    d_count: int, max_hold: int, dist_to_stop_pct: Optional[float], retrace_state: Optional[Dict[str, Any]]
+) -> str:
+    """今日动作提示文案(纯展示层,优先级:D5离场 > 回落止盈 > 跌破/逼近止损 > 持有中)。"""
+    if d_count >= max_hold:
+        return f"D{d_count} 时间退出日,按计划离场(时间退出是规则 v1 采纳纪律)"
+    if retrace_state and retrace_state.get("triggered"):
+        return "回落止盈已触发,按计划离场"
+    if dist_to_stop_pct is not None:
+        if dist_to_stop_pct <= 0:
+            return "现价已跌破止损线,若条件单未成交请立即人工确认(系统不代下单)"
+        if dist_to_stop_pct <= 0.02:
+            return f"距止损线 {dist_to_stop_pct:.1%},盯紧条件单"
+    return f"持有中(D{d_count}/D{max_hold})"
 
 
 @app.get(f"{API_PREFIX}/positions", dependencies=[Depends(require_token)])
@@ -309,15 +394,44 @@ def list_positions() -> PositionsOut:
     codes = [h.ts_code for h in holdings]
     names = _resolve_names(codes)
     prices = _resolve_prices(codes)
+    stop_pct, max_hold, _single_cap, tpr = _active_config()
+    today = date.today()
     out: List[PositionOut] = []
     for h in holdings:
+        price = prices.get(h.ts_code, 0.0) or 0.0
+        stop_line = _stop_line(h.buy_price, stop_pct)
+        buy = datetime.strptime(h.buy_date, "%Y%m%d").date()
+        dcount = pos_store.d_count(buy, today)
+        dist = (price - stop_line) / price if price > 0 else None
+        retrace = None
+        if price > 0:
+            from neckline.sentinel.engine import _historical_peak_close
+            peak_hist = _historical_peak_close(h, today, None)
+            retrace = _retrace_state(h, price, peak_hist, tpr)
         out.append(PositionOut(
             id=h.id, code=h.ts_code, name=names.get(h.ts_code, h.ts_code),
             buyPrice=h.buy_price, qty=h.qty, entryReason=h.note or "",
-            buyDate=h.buy_date, price=prices.get(h.ts_code, 0.0) or 0.0,
-            status=h.status, stopLine=_stop_line(h.buy_price), stopOrderChecked=False,
+            buyDate=h.buy_date, price=price,
+            status=h.status, stopLine=stop_line, stopOrderChecked=False,
+            dCount=dcount, maxHoldDays=max_hold,
+            distToStopPct=(round(dist, 4) if dist is not None else None),
+            retraceState=retrace,
+            todayAction=_today_action(dcount, max_hold, dist, retrace),
         ))
     return PositionsOut(holdings=out)
+
+
+@app.get(f"{API_PREFIX}/positions/entry-suggestion", dependencies=[Depends(require_token)])
+def entry_suggestion(code: str = "", price: float = 0.0) -> EntrySuggestionOut:
+    """一键补录预填推荐(plan v1.1-B.3,**只读计算,不写台账**)。推荐 `qty` = 按现役
+    `single_cap` 与现价取整手 `floor(single_cap/price/100)*100`(A 股 100 股/手);派生
+    `stop_line` = 现价×(1−`stop_pct`)。price≤0 → qty=0、stop_line=0(防除零)。补录/清仓
+    写入仍走既有 `POST /positions` / `POST /positions/{id}/close`(不改)。"""
+    stop_pct, _max_hold, single_cap, _tpr = _active_config()
+    if price <= 0:
+        return EntrySuggestionOut(code=code, price=price, qty=0, stopLine=0.0)
+    qty = int(math.floor(single_cap / price / 100) * 100)
+    return EntrySuggestionOut(code=code, price=price, qty=qty, stopLine=_stop_line(price, stop_pct))
 
 
 @app.post(f"{API_PREFIX}/positions", dependencies=[Depends(require_token)])
@@ -327,7 +441,8 @@ def open_position(body: PositionOpenIn) -> PositionOpenOut:
         ts_code=body.code, buy_price=body.buy_price, qty=body.qty,
         buy_date=date.today(), note=(body.entry_reason or None), db_path=_db(),
     )
-    return PositionOpenOut(ok=True, position_id=pid, stop_line=_stop_line(body.buy_price))
+    stop_pct, _mh, _sc, _tpr = _active_config()
+    return PositionOpenOut(ok=True, position_id=pid, stop_line=_stop_line(body.buy_price, stop_pct))
 
 
 @app.post(f"{API_PREFIX}/positions/{{position_id}}/close", dependencies=[Depends(require_token)])

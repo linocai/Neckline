@@ -35,9 +35,12 @@ logger = logging.getLogger(__name__)
 GATEWAY_SANDBOX = "https://api.sandbox.push.apple.com"
 GATEWAY_PROD = "https://api.push.apple.com"
 
-# 锁屏动作分类(信息类,无动作按钮;客户端 4C 注册对应 UNNotificationCategory)
-CATEGORY_REPORT = "REPORT"     # 16:00 盘后报告就绪
+# 锁屏动作分类(信息类,无动作按钮;客户端 4C 注册对应 UNNotificationCategory)。
+# v1.1 推送白名单 = 四类,各自独立 category(§2.4 拍板)。
+CATEGORY_REPORT = "REPORT"     # 16:35 盘后报告就绪
 CATEGORY_RETREAT = "RETREAT"   # 退潮红色刹车
+CATEGORY_PRECALL = "PRECALL"   # v1.1-A:9:26 盘前校准汇总
+CATEGORY_D5EXIT = "D5EXIT"     # v1.1-B:D5 时间退出
 
 # JWT 刷新窗口:Apple 接受 20–60min,留余量 ~50min 重签。
 _JWT_TTL_SEC = 50 * 60
@@ -185,7 +188,7 @@ def send_push(
 
 
 __all__ = [
-    "PushResult", "CATEGORY_REPORT", "CATEGORY_RETREAT",
+    "PushResult", "CATEGORY_REPORT", "CATEGORY_RETREAT", "CATEGORY_PRECALL", "CATEGORY_D5EXIT",
     "build_jwt", "get_jwt", "reset_jwt_cache", "build_payload", "send_push",
     "GATEWAY_SANDBOX", "GATEWAY_PROD",
 ]

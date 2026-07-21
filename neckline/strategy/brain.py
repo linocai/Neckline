@@ -84,6 +84,17 @@ def get_active(db_path: Optional[Path] = None) -> Optional[StrategyVersion]:
     return _row_to_version(row) if row else None
 
 
+def active_config(db_path: Optional[Path] = None) -> Dict:
+    """现役版本的规则参数 `config`(= `MomentumConfig` 落库值)。无现役版本 → `{}`
+    (调用方各自套用兜底,见 engine.py `_DEFAULT_STOP_PCT` / api 的 `_active_config`)。
+    **单一事实源**:任何要读 `stop_pct` / `max_hold_days` / `single_cap` /
+    `take_profit_retrace` 的代码统一走这里,不在别处抄字面量(§3.8 铁律)。"""
+    v = get_active(db_path=db_path)
+    if v is None:
+        return {}
+    return dict(v.rule.get("config", {}) or {})
+
+
 def list_versions(db_path: Optional[Path] = None) -> List[StrategyVersion]:
     with connection(db_path) as conn:
         rows = conn.execute(
@@ -93,4 +104,4 @@ def list_versions(db_path: Optional[Path] = None) -> List[StrategyVersion]:
     return [_row_to_version(r) for r in rows]
 
 
-__all__ = ["StrategyVersion", "save_version", "get_version", "get_active", "list_versions"]
+__all__ = ["StrategyVersion", "save_version", "get_version", "get_active", "active_config", "list_versions"]

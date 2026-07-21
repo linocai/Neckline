@@ -40,9 +40,20 @@ def _ok_transport(url, headers, body):
     return apns.PushResult(ok=True, status=200, reason="ok")
 
 
-def test_only_two_push_entrypoints():
-    """「只推两类」的结构保证:notify 模块只暴露两个推送入口,不给第三类事件留路径。"""
-    assert set(notify.__all__) == {"NotifyOutcome", "push_report_ready", "push_retreat_brake"}
+def test_push_whitelist_is_exactly_four():
+    """推送白名单结构守护(§2.4 v1.1 = 四类,各独立入口 + 独立 category):notify 模块
+    只暴露这四个推送入口,不给第五类事件留路径。A/B 验收②:白名单四类齐。"""
+    assert set(notify.__all__) == {
+        "NotifyOutcome", "push_report_ready", "push_retreat_brake",
+        "push_precall_summary", "push_d5_exit",
+    }
+
+
+def test_categories_are_four_distinct():
+    """四类推送各自独立的 APNs category(互不复用,客户端据此挂各自 UNNotificationCategory)。"""
+    cats = {apns.CATEGORY_REPORT, apns.CATEGORY_RETREAT, apns.CATEGORY_PRECALL, apns.CATEGORY_D5EXIT}
+    assert cats == {"REPORT", "RETREAT", "PRECALL", "D5EXIT"}
+    assert len(cats) == 4
 
 
 def test_report_push_gated_off(api_env, apns_configured):
@@ -87,6 +98,58 @@ def test_no_apns_config_skips(api_env):
     upsert_device("tok1", db_path=api_env.db_path)
     out = notify.push_report_ready("2026-07-17", db_path=api_env.db_path, transport=_ok_transport)
     assert out.skipped_reason == "no_apns_config"
+
+
+def _set_switch(db, column: str, on: bool) -> None:
+    """直接改 app_settings 的推送开关列(v1.1-G 的 4 字段设置端点尚未落地,A/B 测试
+    用最小 SQL 切换 push_precall / push_d5exit,不提前引入 G 的写入面)。"""
+    import sqlite3
+
+    from neckline.settings_store import _ensure_row
+    conn = sqlite3.connect(str(db))
+    try:
+        _ensure_row(conn)
+        conn.execute(f"UPDATE app_settings SET {column}=? WHERE id=1", (1 if on else 0,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_precall_summary_gated_off(api_env, apns_configured):
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    _set_switch(db, "push_precall", False)
+    out = notify.push_precall_summary(
+        {"gap_up": 2, "low_open": 1, "position_low_open": 0, "auction": 1},
+        db_path=db, transport=_ok_transport,
+    )
+    assert out.sent == 0 and out.skipped_reason == "push_precall_off"
+
+
+def test_precall_summary_sends_when_on(api_env, apns_configured):
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    upsert_device("tok2", db_path=db)
+    out = notify.push_precall_summary(
+        {"gap_up": 1, "low_open": 0, "position_low_open": 1, "auction": 0},
+        db_path=db, transport=_ok_transport,
+    )
+    assert out.sent == 2 and out.failed == 0   # 默认开(列默认 1)
+
+
+def test_d5_exit_gated_off(api_env, apns_configured):
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    _set_switch(db, "push_d5exit", False)
+    out = notify.push_d5_exit("贵州茅台", "600519.SH", 5, db_path=db, transport=_ok_transport)
+    assert out.sent == 0 and out.skipped_reason == "push_d5exit_off"
+
+
+def test_d5_exit_sends_when_on(api_env, apns_configured):
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    out = notify.push_d5_exit("贵州茅台", "600519.SH", 5, db_path=db, transport=_ok_transport)
+    assert out.sent == 1
 
 
 def test_partial_failure_counts(api_env, apns_configured):

@@ -144,12 +144,16 @@ CREATE INDEX IF NOT EXISTS idx_sentinel_events_trade_date ON sentinel_events(tra
 -- gitignored、rsync 永不同步覆盖(plan 不变量);GET /settings 只回 llmKeySet:bool,绝不回明文。
 -- push_report/push_retreat:APNs 两类推送开关(§2.4 拍板,默认开可关)。
 -- review_col_map:周复盘交割单列映射(JSON,4D 用)。
+-- push_precall/push_d5exit:v1.1-A/B 新增两类 APNs 推送开关(盘前校准 9:26 汇总 /
+-- D5 时间退出),默认开;老库经 `_migrate_columns` 幂等 ALTER 补列(见下)。
 CREATE TABLE IF NOT EXISTS app_settings (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     llm_provider    TEXT,
     llm_api_key     TEXT,
     push_report     INTEGER NOT NULL DEFAULT 1,
     push_retreat    INTEGER NOT NULL DEFAULT 1,
+    push_precall    INTEGER NOT NULL DEFAULT 1,
+    push_d5exit     INTEGER NOT NULL DEFAULT 1,
     review_col_map  TEXT NOT NULL DEFAULT '{}',
     updated_at      TEXT
 );
@@ -186,6 +190,26 @@ CREATE TABLE IF NOT EXISTS reviews (
 );
 """
 
+# 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库
+# 早已存在,`CREATE TABLE IF NOT EXISTS` **不会**给既有表补列——新增列必须走
+# `ALTER TABLE ... ADD COLUMN`,并用 `PRAGMA table_info` 先探测存在性做到重复跑不炸。
+# 只登记「给既有表新增可空 / 带常量默认的列」这一类无损迁移;改主键 / 改类型 /
+# 删列等破坏性动作**不走这里**(SQLite ALTER 也不支持,需另建表迁移,本项目暂无)。
+# 注:SQLite `ADD COLUMN` 的 NOT NULL 列必须带常量 DEFAULT(已满足)。
+_COLUMN_MIGRATIONS = [
+    # v1.1-A/B:两类新推送开关(默认开),老库补列即取常量默认 1。
+    ("app_settings", "push_precall", "INTEGER NOT NULL DEFAULT 1"),
+    ("app_settings", "push_d5exit", "INTEGER NOT NULL DEFAULT 1"),
+]
+
+
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    """对既有表做「缺列即补」的幂等迁移(见 `_COLUMN_MIGRATIONS` 注释)。"""
+    for table, column, ddl in _COLUMN_MIGRATIONS:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """开一条新连接(调用方负责 close,或用 `connection()` 上下文管理器)。"""
@@ -208,9 +232,11 @@ def connection(db_path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
 
 
 def init_schema(db_path: Optional[Path] = None) -> None:
-    """建表(幂等,`IF NOT EXISTS`)。backfill / init_calendar 脚本入口处调用。"""
+    """建表(幂等,`IF NOT EXISTS`)+ 既有表缺列补齐(幂等 `ALTER TABLE`,见
+    `_migrate_columns`)。backfill / init_calendar / 各 store 入口处调用。"""
     with connection(db_path) as conn:
         conn.executescript(_SCHEMA)
+        _migrate_columns(conn)
 
 
 __all__ = ["get_connection", "connection", "init_schema"]

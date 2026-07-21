@@ -15,6 +15,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from neckline.calendar import trading_days_between
 from neckline.db import connection, init_schema
 
 STATUS_OPEN = "open"
@@ -121,6 +122,37 @@ def get_position(position_id: int, db_path: Optional[Path] = None) -> Optional[P
     return _row_to_position(row) if row else None
 
 
+def count_opens_on(trade_date: date, db_path: Optional[Path] = None) -> int:
+    """`buy_date == trade_date` 的持仓记录条数(不论 open/closed)——供报告「漏录兜底」
+    (plan v1.1-B.4)判断「今日台账是否有新增开仓」。当日买当日又清仓也算「有补录」
+    (用户确实录了),故不限 status。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE buy_date=?", (_d(trade_date),)
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def d_count(buy_date: date, trade_date: date) -> int:
+    """持仓 D 计数(plan v1.1 铁律「D 计数单一源」)。**买入日 = D1**,交易日历口径
+    (市场交易日,不因个股停牌而减);唯一实现放这里,服务端算好随 `PositionOut.dCount`
+    下发,客户端不重算日历(杜绝双端漂移)。
+
+        d_count = len(trading_days_between(buy_date, trade_date))   # 闭区间交易日数
+
+    容差场景(plan B.1 明列,加单测):
+        · 周末 / 长假录入的 buy_date(非交易日):`trading_days_between` 只数区间内
+          真交易日,故从「buy_date 之后第一个交易日」起计 D1,不会把周末算进去。
+        · 停牌日:D 计数按**市场**交易日走(停牌是个股事件,不缩短市场日历),故停牌
+          期间 D 计数照常递增——与规则 v1「持有满 max_hold_days 交易日即时间退出」同口径。
+        · `trade_date < buy_date`(异常/未来买入):区间空 → 0(防御,生产不该出现)。
+
+    buy_date 均在近数交易日内,不触发 CLAUDE.md 记的 trade_cal 覆盖范围外逐自然日刷屏坑。
+    """
+    return len(trading_days_between(buy_date, trade_date))
+
+
 __all__ = [
     "Position",
     "STATUS_OPEN",
@@ -130,4 +162,6 @@ __all__ = [
     "load_open_positions",
     "load_all_positions",
     "get_position",
+    "count_opens_on",
+    "d_count",
 ]

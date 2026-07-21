@@ -46,6 +46,26 @@ class ReportBundle:
     candidates: List[Candidate]
     judged: Dict[str, JudgeResult]  # ts_code -> JudgeResult(仅前 top_n_judged 只)
     markdown: str
+    missed_entry_hint: str = ""     # v1.1-B.4 漏录兜底提示(无 → 空串)
+
+
+def compute_missed_entry_hint(trade_date: date, db_path: Optional[Path] = None) -> str:
+    """漏录兜底(plan v1.1-B.4):当日买点哨兵触发过 ≥1 次(`sentinel_events` 有
+    sentinel=`entry` 记录)但 `positions` 表当日无新增开仓 → 返回一句提示,否则空串。
+    **不改评分**,纯只读旁路。GET /report 与 build_report 共用本函数(单一源),前者
+    每次读时实时算(用户补录后自动消失)。"""
+    from neckline.sentinel.dedup import count_pushed_today
+    from neckline.sentinel.positions import count_opens_on
+
+    entry_events = count_pushed_today(trade_date, sentinel="entry", db_path=db_path)
+    if entry_events <= 0:
+        return ""
+    if count_opens_on(trade_date, db_path=db_path) > 0:
+        return ""
+    return (
+        f"今日 {entry_events} 只候选触达买点但台账无补录,"
+        f"如已买入请补录 / 未买入请确认为何未执行。"
+    )
 
 
 def build_report(
@@ -140,6 +160,7 @@ def build_report(
         candidates=candidates,
         judged=judged,
         markdown=markdown,
+        missed_entry_hint=compute_missed_entry_hint(trade_date, db_path=db_path),
     )
 
 
@@ -158,4 +179,4 @@ def _jsonable(obj: Any) -> Any:
     return obj
 
 
-__all__ = ["ReportBundle", "build_report", "TOP_N_TOTAL", "TOP_N_JUDGED"]
+__all__ = ["ReportBundle", "build_report", "compute_missed_entry_hint", "TOP_N_TOTAL", "TOP_N_JUDGED"]

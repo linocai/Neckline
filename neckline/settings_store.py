@@ -4,7 +4,9 @@
     · llm_provider / llm_api_key —— 用户在 App 填的 LLM 供应商与 key。
       `get_provider()`(`neckline.llm.factory`)解析优先级 = **DB 覆盖 → `.env` 兜底**
       (§3.4),每次调用现读、运行时生效不重启。
-    · push_report / push_retreat —— APNs 两类推送开关(§2.4,默认开可关)。
+    · push_report / push_retreat / push_precall / push_d5exit —— APNs 四类推送开关
+      (§2.4 v1.1 拍板,默认开可关)。`get_app_settings` 读全四类供 notify 查开关;
+      写入端点扩四字段(`set_push`)留 v1.1-G 设置屏,本块只加读取 + 两新列。
     · review_col_map —— 周复盘交割单列映射(4D 用,本块只建字段)。
 
 **安全铁律(逐条守)**:
@@ -43,6 +45,8 @@ class AppSettings:
     llm_key_set: bool
     push_report: bool
     push_retreat: bool
+    push_precall: bool          # v1.1-A:盘前校准 9:26 汇总推送开关(默认开)
+    push_d5exit: bool           # v1.1-B:D5 时间退出推送开关(默认开)
     review_col_map: dict
     updated_at: Optional[str]
 
@@ -69,16 +73,18 @@ def get_app_settings(db_path: Optional[Path] = None) -> AppSettings:
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
-            "SELECT llm_provider, llm_api_key, push_report, push_retreat, review_col_map, updated_at "
+            "SELECT llm_provider, llm_api_key, push_report, push_retreat, "
+            "push_precall, push_d5exit, review_col_map, updated_at "
             "FROM app_settings WHERE id=1"
         ).fetchone()
     if row is None:
         return AppSettings(
             llm_provider=None, llm_key_set=False, push_report=True,
-            push_retreat=True, review_col_map={}, updated_at=None,
+            push_retreat=True, push_precall=True, push_d5exit=True,
+            review_col_map={}, updated_at=None,
         )
     try:
-        col_map = json.loads(row[4]) if row[4] else {}
+        col_map = json.loads(row[6]) if row[6] else {}
     except (json.JSONDecodeError, TypeError):
         col_map = {}
     return AppSettings(
@@ -86,8 +92,10 @@ def get_app_settings(db_path: Optional[Path] = None) -> AppSettings:
         llm_key_set=bool(_clean(row[1])),          # 空/NULL → 未设
         push_report=bool(row[2]),
         push_retreat=bool(row[3]),
+        push_precall=bool(row[4]),
+        push_d5exit=bool(row[5]),
         review_col_map=col_map,
-        updated_at=row[5],
+        updated_at=row[7],
     )
 
 
