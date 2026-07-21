@@ -180,7 +180,7 @@ struct SettingsView: View {
 
     private var pushSection: some View {
         Section {
-            Toggle("16:00 报告就绪", isOn: $model.pushReportDraft)
+            Toggle("16:35 报告就绪", isOn: $model.pushReportDraft)
             Toggle("退潮红色刹车", isOn: $model.pushRetreatDraft)
             Button("保存推送设置") { Task { await model.savePushSettings() } }
         } header: {

@@ -87,7 +87,10 @@ struct BoardView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
+            // iOS 由 navigationTitle 渲染大标题,此处再画会双标题(实机反馈修复);macOS 无大标题才自画
+            #if os(macOS)
             Text("盘中看板").font(NKFont.largeTitle).foregroundStyle(NK.textPrimary)
+            #endif
             if !model.board.asof.isEmpty {
                 Text("最近更新 \(model.board.asof)").font(.system(size: 12)).foregroundStyle(NK.textSecondary)
             }

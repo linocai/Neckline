@@ -78,7 +78,7 @@ struct TodayPlanView: View {
             if model.report.degraded {
                 NKCard {
                     NKEmptyState(title: emptyTitle(model.report.reason),
-                                subtitle: "策略引擎已在跑,今晚 16:00 出计划后自动显示。",
+                                subtitle: "策略引擎已在跑,今晚 16:35 出计划后自动显示。",
                                 systemImage: "moon.zzz")
                 }
             } else {
@@ -104,10 +104,13 @@ struct TodayPlanView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
+            // iOS 由 navigationTitle 渲染大标题,此处再画会双标题(实机反馈修复);macOS 无大标题才自画
+            #if os(macOS)
             HStack(spacing: 8) {
                 NKLogo(size: 24)
                 Text("今日计划").font(NKFont.largeTitle).foregroundStyle(NK.textPrimary)
             }
+            #endif
             if !model.report.tradeDate.isEmpty {
                 Text("交易日 \(model.calendar.displayString(model.report.tradeDate)) · 策略版本 \(model.report.strategyVersion)")
                     .font(.system(size: 12)).foregroundStyle(NK.textSecondary)
