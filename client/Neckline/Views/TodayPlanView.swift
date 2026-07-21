@@ -75,6 +75,12 @@ struct TodayPlanView: View {
             if let warning = model.retreatWarning {
                 RetreatBrakeBanner(reason: warning)
             }
+            // v1.1-E.3:漏录兜底提示条(报告 `missedEntryHint` 有值才显示,非弹窗打扰)。
+            if !model.report.missedEntryHint.isEmpty {
+                MissedEntryHintBanner(text: model.report.missedEntryHint)
+            }
+            // v1.1-E.1:持仓区置顶到候选之上(持仓管理优先于选新票)。
+            positionsSection
             if model.report.degraded {
                 NKCard {
                     NKEmptyState(title: emptyTitle(model.report.reason),
@@ -90,7 +96,6 @@ struct TodayPlanView: View {
                 }
                 candidatesSection
             }
-            positionsSection
         }
     }
 
@@ -122,7 +127,7 @@ struct TodayPlanView: View {
         VStack(alignment: .leading, spacing: NKSpace.gap) {
             NKSectionHeader(title: "候选 \(model.report.candidates.count)", trailing: "前10只过 LLM 审判")
             ForEach(model.report.candidates) { c in
-                CandidateRow(candidate: c)
+                CandidateRow(model: model, candidate: c)
             }
         }
     }
@@ -207,11 +212,11 @@ private struct SectorChipsRow: View {
     }
 }
 
-// MARK: - 候选行(四件套展开)
+// MARK: - 候选行(四件套展开 + v1.1-E.2「已按计划买入」一键补录 + v1.1-F.3「+自选」)
 
 private struct CandidateRow: View {
+    @Bindable var model: AppModel
     let candidate: Candidate
-    @State private var expanded = false
 
     var body: some View {
         NKCard {
@@ -242,36 +247,27 @@ private struct CandidateRow: View {
                         }
                     }
                 }
-                Button { withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() } } label: {
-                    HStack {
-                        Text(expanded ? "收起四件套" : "买点 / 止损 / 目标 / 证伪条件")
-                            .font(.system(size: 12, weight: .medium))
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
+                FourPieceDisclosure(buyPoint: candidate.buyPoint, stop: candidate.stop,
+                                    target: candidate.target, invalidation: candidate.invalidation,
+                                    llmJudgment: candidate.llmJudgment)
+                Divider().overlay(NK.hairline)
+                HStack(spacing: 14) {
+                    Button {
+                        Task { await model.quickAddWatchlist(code: candidate.code, name: candidate.name) }
+                    } label: {
+                        Label("+自选", systemImage: "star").font(.system(size: 12, weight: .medium))
                     }
-                    .foregroundStyle(NK.accent)
-                }
-                .buttonStyle(.plain)
-                if expanded {
-                    VStack(alignment: .leading, spacing: 6) {
-                        fourPiece("买点", candidate.buyPoint)
-                        fourPiece("止损", candidate.stop)
-                        fourPiece("目标", candidate.target)
-                        fourPiece("证伪条件", candidate.invalidation)
-                        if let j = candidate.llmJudgment {
-                            Divider().overlay(NK.hairline)
-                            Text(j.narrative).font(.system(size: 12.5)).foregroundStyle(NK.textSecondary)
-                        }
+                    .buttonStyle(.plain).foregroundStyle(NK.textSecondary)
+                    Spacer()
+                    Button {
+                        Task { await model.openEntrySheet(fromCandidate: candidate) }
+                    } label: {
+                        Label("已按计划买入", systemImage: "checkmark.circle.fill")
+                            .font(.system(size: 12.5, weight: .semibold))
                     }
-                    .padding(.top, 2)
+                    .buttonStyle(.plain).foregroundStyle(NK.up)
                 }
             }
-        }
-    }
-
-    private func fourPiece(_ label: String, _ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
-            Text(text).font(.system(size: 12.5)).foregroundStyle(NK.textPrimary)
         }
     }
 }
@@ -288,11 +284,19 @@ private struct PositionCard: View {
     var body: some View {
         NKCard {
             VStack(alignment: .leading, spacing: 8) {
+                // v1.1-E.1:今日动作提示——D5/时间退出等高优先级动作用醒目横幅置顶展示
+                // (`todayActionTone` 纯展示层派生,文案来自服务端 `todayAction`)。
+                if position.todayActionTone == .bad {
+                    TodayActionBanner(text: position.todayAction)
+                }
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(position.name).font(NKFont.stockName).foregroundStyle(NK.textPrimary)
                             Text(position.code).font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                            // v1.1-E.1:D 计数徽标(D{dCount}/D{maxHoldDays},服务端算好,不重算日历)。
+                            NKChip(text: "D\(position.dCount)/D\(position.maxHoldDays)",
+                                  tone: position.isExitDay ? .bad : .neutral, filled: position.isExitDay)
                         }
                         Text("买入 ¥\(NKFmt.price(position.buyPrice)) × \(position.qty) · \(model.calendar.displayString(position.buyDate))")
                             .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
@@ -317,12 +321,28 @@ private struct PositionCard: View {
                     if position.hasBrokenStop {
                         NKChip(text: "已破止损线", tone: .bad, filled: true)
                     }
+                    // v1.1-E.1:距止损线(服务端下发,不重算);无实时价 → 不展示(不误显 0%)。
+                    if let dist = position.distToStopPctServer {
+                        NKChip(text: "距止损线 \(NKFmt.signedPct(dist * 100))",
+                              tone: dist <= 0 ? .bad : (dist <= 0.02 ? .warn : .neutral))
+                    }
+                    // v1.1-E.1:回落止盈状态(判定复用服务端 `check_take_profit`,客户端只展示)。
+                    if let rs = position.retraceState {
+                        NKChip(text: rs.triggered ? "回落止盈已触发"
+                                    : "峰值¥\(NKFmt.price(rs.peak)) 回落\(NKFmt.pct(rs.retracePct * 100))",
+                              tone: rs.triggered ? .bad : .neutral)
+                    }
                     Spacer()
                     Button { model.openCloseSheet(code: position.code) } label: {
                         Text("补录清仓").font(.system(size: 12, weight: .semibold))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(NK.down)
+                }
+                if position.todayActionTone != .bad && !position.todayAction.isEmpty {
+                    Text(position.todayAction)
+                        .font(.system(size: 11.5, weight: position.todayActionTone == .warn ? .semibold : .regular))
+                        .foregroundStyle(position.todayActionTone == .warn ? NK.amber : NK.textTertiary)
                 }
                 Divider().overlay(NK.hairline)
                 Button { checkedLocally.toggle() } label: {
@@ -338,6 +358,22 @@ private struct PositionCard: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+}
+
+/// D5/时间退出等最高优先级今日动作横幅(§五 v1.1-E.1「todayAction 文案最高优先醒目」)。
+/// 文案本身恒来自服务端 `todayAction`,本组件只负责视觉呈现,同 `RetreatBrakeBanner` 视觉权重。
+private struct TodayActionBanner: View {
+    let text: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.circle.fill").font(.system(size: 16, weight: .bold))
+            Text(text).font(.system(size: 13, weight: .bold)).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.alertGrad))
     }
 }
 

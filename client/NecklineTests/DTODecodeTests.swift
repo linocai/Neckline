@@ -182,6 +182,33 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(board.events[1].kind, .holding)
     }
 
+    /// v1.1-G.3:看板事件补 precall/d5exit 两新类(样例对照
+    /// test_board_labels_precall_and_d5exit_events)。
+    func testDecodeBoardPrecallAndD5ExitEvents() async throws {
+        let json = jsonData("""
+        {
+          "tradeDate": "20260721", "asof": "2026-07-21T09:26:00",
+          "retreatBrake": {"active": false, "reason": ""},
+          "events": [
+            {"sentinel": "盘前校准", "code": "600004.SH", "name": "示例丁",
+             "eventKey": "precall-600004.SH-gap_up_invalidate",
+             "verdict": "集合竞价开盘12.00高于买点参考位11.00 9.1%,今日买点已变形失效。",
+             "ts": "2026-07-21T09:25:30"},
+            {"sentinel": "D5退出", "code": "600005.SH", "name": "示例戊",
+             "eventKey": "d5exit-600005.SH-trigger",
+             "verdict": "示例戊 今日 D5 时间退出日,按计划离场。", "ts": "2026-07-21T09:25:30"}
+          ]
+        }
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let board = try await client.fetchBoard()
+        XCTAssertEqual(board.events.count, 2)
+        XCTAssertEqual(board.events[0].kind, .precall)
+        XCTAssertEqual(board.events[1].kind, .d5exit)
+        XCTAssertTrue(board.events[1].verdict.contains("D5 时间退出日"))
+    }
+
     // MARK: - 4A.4 持仓(样例对照 test_open_list_close_roundtrip)
 
     func testDecodePositions() async throws {
@@ -189,7 +216,9 @@ final class DTODecodeTests: XCTestCase {
         {"holdings": [
           {"id": 1, "code": "600519.SH", "name": "贵州茅台", "buyPrice": 1500.0, "qty": 100,
            "entryReason": "回调低吸", "buyDate": "20260716", "price": 1520.0, "status": "holding",
-           "stopLine": 1425.0, "stopOrderChecked": false}
+           "stopLine": 1425.0, "stopOrderChecked": false,
+           "dCount": 2, "maxHoldDays": 5, "distToStopPct": 0.0625, "retraceState": null,
+           "todayAction": "持有中(D2/D5)"}
         ]}
         """)
         MockURLProtocol.handler = { _ in (200, json) }
@@ -203,6 +232,14 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertTrue(p.hasLivePrice)
         XCTAssertFalse(p.hasBrokenStop)   // 1520 > 1425
         XCTAssertEqual(p.pnlAmount, (1520.0 - 1500.0) * 100, accuracy: 0.001)
+        // v1.1-B.1 生命周期派生字段(服务端下发,不重算)
+        XCTAssertEqual(p.dCount, 2)
+        XCTAssertEqual(p.maxHoldDays, 5)
+        XCTAssertEqual(p.distToStopPctServer, 0.0625)
+        XCTAssertNil(p.retraceState)
+        XCTAssertEqual(p.todayAction, "持有中(D2/D5)")
+        XCTAssertFalse(p.isExitDay)
+        XCTAssertEqual(p.todayActionTone, .neutral)
     }
 
     /// price=0(拉不到实时价)不可与"跌停 0 元"混淆——`hasLivePrice` 必须为 false。
@@ -211,7 +248,9 @@ final class DTODecodeTests: XCTestCase {
         {"holdings": [
           {"id": 2, "code": "600001.SH", "name": "甲", "buyPrice": 10.0, "qty": 100,
            "entryReason": "", "buyDate": "20260716", "price": 0.0, "status": "holding",
-           "stopLine": 9.5, "stopOrderChecked": false}
+           "stopLine": 9.5, "stopOrderChecked": false,
+           "dCount": 3, "maxHoldDays": 5, "distToStopPct": null, "retraceState": null,
+           "todayAction": "持有中(D3/D5)"}
         ]}
         """)
         MockURLProtocol.handler = { _ in (200, json) }
@@ -220,7 +259,31 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertFalse(p.hasLivePrice)
         XCTAssertFalse(p.hasBrokenStop)      // 无实时价不误判破线
         XCTAssertNil(p.distToStopPct)
+        XCTAssertNil(p.distToStopPctServer)
         XCTAssertEqual(p.pnlPct, 0)
+    }
+
+    /// v1.1-B.1/E.1:D5 时间退出日 + 回落止盈已触发的完整生命周期字段解码 + 展示层派生。
+    func testDecodePositionD5ExitDayAndRetraceTriggered() async throws {
+        let json = jsonData("""
+        {"holdings": [
+          {"id": 3, "code": "600002.SH", "name": "乙", "buyPrice": 20.0, "qty": 100,
+           "entryReason": "", "buyDate": "20260710", "price": 21.0, "status": "holding",
+           "stopLine": 19.0, "stopOrderChecked": false,
+           "dCount": 5, "maxHoldDays": 5, "distToStopPct": 0.0952,
+           "retraceState": {"peak": 23.0, "retracePct": 0.087, "triggered": true},
+           "todayAction": "D5 时间退出日,按计划离场(时间退出是规则 v1 采纳纪律)"}
+        ]}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let p = try await client.fetchPositions()[0]
+        XCTAssertEqual(p.dCount, 5)
+        XCTAssertTrue(p.isExitDay)
+        XCTAssertEqual(p.retraceState?.triggered, true)
+        XCTAssertEqual(p.retraceState?.peak, 23.0)
+        XCTAssertEqual(p.todayActionTone, .bad, "D5 时间退出日必须是最高优先醒目(bad 色调)")
+        XCTAssertTrue(p.todayAction.contains("D5"))
     }
 
     // MARK: - 4A.4 开仓请求体(snake_case 入参,对照 PositionOpenIn)
@@ -294,7 +357,8 @@ final class DTODecodeTests: XCTestCase {
     func testDecodeSettings() async throws {
         MockURLProtocol.handler = { _ in
             (200, jsonData("""
-            {"llmProvider": "glm", "llmKeySet": true, "push": {"report": true, "retreatBrake": false},
+            {"llmProvider": "glm", "llmKeySet": true,
+             "push": {"report": true, "retreatBrake": false, "precall": true, "d5exit": false},
              "reviewColMap": {"手续费": "费用合计"}}
             """))
         }
@@ -304,7 +368,28 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertTrue(s.llmKeySet)
         XCTAssertTrue(s.push.report)
         XCTAssertFalse(s.push.retreatBrake)
+        // v1.1-G.1:推送开关扩到四字段(盘前校准 / D5 时间退出)。
+        XCTAssertTrue(s.push.precall)
+        XCTAssertFalse(s.push.d5exit)
         XCTAssertEqual(s.reviewColMap, ["手续费": "费用合计"])
+    }
+
+    /// v1.1-G.1:PUT settings/push 请求体四字段一并发送(对照 test_put_push_toggles)。
+    func testPutSettingsPushSendsFourFields() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(obj?["report"] as? Bool, false)
+            XCTAssertEqual(obj?["retreatBrake"] as? Bool, true)
+            XCTAssertEqual(obj?["precall"] as? Bool, false)
+            XCTAssertEqual(obj?["d5exit"] as? Bool, true)
+            return (200, jsonData("""
+            {"ok": true}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let ok = try await client.putSettingsPush(report: false, retreatBrake: true, precall: false, d5exit: true)
+        XCTAssertTrue(ok)
     }
 
     func testPutSettingsLLMBodyNeverLogsButDoesSendKeyOnce() async throws {
@@ -323,6 +408,163 @@ final class DTODecodeTests: XCTestCase {
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
         let ok = try await client.putSettingsLLM(provider: .glm, apiKey: "sk-secret-abc")
         XCTAssertTrue(ok)
+    }
+
+    // MARK: - v1.1-B.3 一键补录预填推荐(样例对照 test_entry_suggestion_rounds_to_lots)
+
+    func testDecodeEntrySuggestion() async throws {
+        MockURLProtocol.handler = { req in
+            // code/price 走 query,须走 makeURL(同 §五 阶段4C 坑吸收②)。
+            let url = req.url?.absoluteString ?? ""
+            XCTAssertTrue(url.contains("?code=600001.SH&price=50.00"), "实际请求 URL: \(url)")
+            return (200, jsonData("""
+            {"ok": true, "code": "600001.SH", "price": 50.0, "qty": 400, "stopLine": 47.5}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let s = try await client.entrySuggestion(code: "600001.SH", price: 50.0)
+        XCTAssertEqual(s.qty, 400)
+        XCTAssertEqual(s.stopLine, 47.5)
+    }
+
+    // MARK: - v1.1-C/F 自选池(watchlist)(样例对照 tests/test_api_watchlist.py)
+
+    private static let sampleWatchlistCheckJSON = """
+    {"code": "600001.SH", "name": "示例甲", "pinned": false, "source": "manual", "hasData": true,
+     "close": 12.34, "board": "MAIN", "score": 77.7, "patternTags": ["均线多头"], "hotSectors": [],
+     "sectorNames": [], "greenLight": true, "disqualifiers": [], "buyPointTriggered": true,
+     "buyPoint": "回调低吸...", "stop": "止损...", "target": "目标...", "invalidation": "证伪...",
+     "statusChanged": true, "llmJudgment": {"verdict": "通过", "narrative": "分析...", "degraded": false}}
+    """
+
+    func testDecodeWatchlistIncludesCheckSnapshot() async throws {
+        let json = jsonData("""
+        {"items": [
+          {"code": "600001.SH", "name": "示例甲", "addedAt": "2026-07-20T10:00:00+00:00",
+           "source": "manual", "note": "", "pinned": false, "updatedAt": "2026-07-20T10:00:00+00:00",
+           "check": \(Self.sampleWatchlistCheckJSON)},
+          {"code": "000001.SZ", "name": "平安银行", "addedAt": "2026-07-21T10:00:00+00:00",
+           "source": "manual", "note": "", "pinned": true, "updatedAt": "2026-07-21T10:00:00+00:00",
+           "check": null}
+        ], "maxSize": 30}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let wl = try await client.fetchWatchlist()
+        XCTAssertEqual(wl.maxSize, 30)
+        XCTAssertEqual(wl.items.count, 2)
+        XCTAssertEqual(wl.items[0].check?.score, 77.7)
+        XCTAssertTrue(wl.items[0].check?.greenLight ?? false)
+        XCTAssertTrue(wl.items[0].check?.buyPointTriggered ?? false)
+        XCTAssertEqual(wl.items[0].check?.llmJudgment?.verdict, "通过")
+        XCTAssertNil(wl.items[1].check, "从未体检过 → nil,不是报错")
+        XCTAssertTrue(wl.items[1].pinned)
+    }
+
+    func testAddWatchlistRequestBodyAndFullResponse() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(obj?["code"] as? String, "600001.SH")
+            XCTAssertEqual(obj?["name"] as? String, "示例甲")
+            return (200, jsonData("""
+            {"ok": true, "item": {"code": "600001.SH", "name": "示例甲",
+             "addedAt": "2026-07-21T10:00:00+00:00", "source": "manual", "note": "",
+             "pinned": false, "updatedAt": "2026-07-21T10:00:00+00:00", "check": null}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let item = try await client.addWatchlist(code: "600001.SH", name: "示例甲")
+        XCTAssertEqual(item.code, "600001.SH")
+        XCTAssertFalse(item.pinned)
+    }
+
+    /// 满 30 上限 → 422,`reason` 字面 "watchlist_full"(对照 test_add_over_cap_returns_422)。
+    func testAddWatchlistFullMapsToValidationWithWatchlistFullReason() async throws {
+        MockURLProtocol.handler = { _ in
+            (422, jsonData("""
+            {"detail": {"ok": false, "reason": "watchlist_full", "message": "自选池已达上限 30 只,请先移除再添加。"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.addWatchlist(code: "999999.SH")
+            XCTFail("应抛 validation(watchlist_full)")
+        } catch APIError.validation(let reason) {
+            XCTAssertEqual(reason, "watchlist_full")
+        }
+    }
+
+    /// 删除/取消置顶不存在的代码 → 404 not_found(与 positions 的 404 not_holding 分开映射,
+    /// 对照 test_delete_nonexistent_404/test_pin_nonexistent_404)。
+    func testRemoveAndPinNonexistentWatchlistCodeMapsToNotFound() async throws {
+        MockURLProtocol.handler = { _ in
+            (404, jsonData("""
+            {"detail": {"ok": false, "reason": "not_found"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.removeWatchlist(code: "999999.SH")
+            XCTFail("应抛 notFound")
+        } catch APIError.notFound {
+            // 期望路径
+        }
+        do {
+            _ = try await client.pinWatchlist(code: "999999.SH", pinned: true)
+            XCTFail("应抛 notFound")
+        } catch APIError.notFound {
+            // 期望路径
+        }
+    }
+
+    func testPinWatchlistRequestBody() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(obj?["pinned"] as? Bool, true)
+            return (200, jsonData("""
+            {"ok": true}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let ok = try await client.pinWatchlist(code: "600001.SH", pinned: true)
+        XCTAssertTrue(ok)
+    }
+
+    /// 对照 test_reconcile_ths_endpoint_diff:同花顺侧多一只、Neckline 侧多一只、一只两边都有。
+    /// 断言 multipart 字段名是单数 `file`(**与下方 4D `uploadReview` 的 `files` 不同**,
+    /// 混淆是真实会犯的错,§五 v1.1-F.5 坑吸收)。
+    func testReconcileThsUsesSingularFileFieldAndDecodesDiff() async throws {
+        MockURLProtocol.handler = { req in
+            let contentType = req.value(forHTTPHeaderField: "Content-Type") ?? ""
+            XCTAssertTrue(contentType.contains("multipart/form-data"))
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let bodyText = String(data: body, encoding: .utf8) ?? ""
+            XCTAssertTrue(bodyText.contains("name=\"file\""), "字段名须为单数 file,非 files")
+            XCTAssertFalse(bodyText.contains("name=\"files\""))
+            XCTAssertTrue(bodyText.contains("自选股.txt"))
+            return (200, jsonData("""
+            {"ok": true, "onlyInThs": ["600000.SH"], "onlyInNeckline": ["600519.SH"], "both": ["000001.SZ"]}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let diff = try await client.reconcileThs(filename: "自选股.txt", data: "600000\n000001\n".data(using: .utf8)!)
+        XCTAssertEqual(diff.onlyInThs, ["600000.SH"])
+        XCTAssertEqual(diff.onlyInNeckline, ["600519.SH"])
+        XCTAssertEqual(diff.both, ["000001.SZ"])
+    }
+
+    func testDecodeExportThs() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"text": "600001.SH\\n000001.SZ\\n", "count": 2}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let r = try await client.exportThs()
+        XCTAssertEqual(r.count, 2)
+        XCTAssertTrue(r.text.contains("600001.SH"))
     }
 
     // MARK: - 4D 周复盘工作台(样例对照 tests/test_api_review.py::test_upload_and_get_roundtrip)

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0E357FA77DAA85CCE6481307 /* WatchlistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113AF3404301CFB32768254B /* WatchlistView.swift */; };
 		1C5F90D27ABFCDAFC61C22A4 /* SharedUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4DE7B52DFD937FA105D0D80 /* SharedUI.swift */; };
 		2B666B4E6B33EB2413EFD8C1 /* URLGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E12098656A3D01DB4B4D5843 /* URLGateTests.swift */; };
 		2D7C50E9D88B18651A9771EF /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58E32D24CA427022EEC9C9A9 /* AppConfig.swift */; };
@@ -41,6 +42,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		113AF3404301CFB32768254B /* WatchlistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchlistView.swift; sourceTree = "<group>"; };
 		2D0BBABA72F92C8117ACD41E /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4077CE80BC54331F1A0225D2 /* NecklineTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NecklineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -155,6 +157,7 @@
 				FB50F6958E9E0102B8D0841F /* ReviewWorkbenchView.swift */,
 				9D4D8B9C826C8F3E8D74BF23 /* SettingsView.swift */,
 				895AF892BD6873B812A664D3 /* TodayPlanView.swift */,
+				113AF3404301CFB32768254B /* WatchlistView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -290,6 +293,7 @@
 				1C5F90D27ABFCDAFC61C22A4 /* SharedUI.swift in Sources */,
 				A1A4C298677F524146F0AF02 /* StaticTradingCalendar.swift in Sources */,
 				CAAD011D80D904B2D1EB4614 /* TodayPlanView.swift in Sources */,
+				0E357FA77DAA85CCE6481307 /* WatchlistView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

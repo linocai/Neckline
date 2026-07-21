@@ -111,6 +111,43 @@ struct LLMJudgment: Codable, Equatable {
     var degraded: Bool
 }
 
+/// 板块英文码 → 中文展示名(唯一展示层换算源,`Candidate`/`WatchlistCheckItem` 共用
+/// 同一份映射,不各自重复一份;未识别值原样透传,不静默瞎翻译)。
+func nkBoardLabel(_ raw: String) -> String {
+    switch raw {
+    case "MAIN": return "主板"
+    case "GEM": return "创业板"
+    case "STAR": return "科创板"
+    case "BSE": return "北交所"
+    default: return raw
+    }
+}
+
+/// 买点条件(结构化,§五 v1.1-E.2「一键补录预填候选买点价」的取值来源)。字段对齐
+/// 服务端 `report/candidates.py::entry_spec`——只做「读哪个字段」的展示层选择
+/// (pullback→ma10,breakout→platformHigh),不新推导任何数字,与 `boardLabel` 同一
+/// 类展示层换算先例。`Candidate`/`WatchlistCheckItem` 同码生成,形状一致,共用本类型。
+struct EntrySpec: Codable, Equatable {
+    var buypoint: String?
+    var ma10: Double?
+    var platformHigh: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case buypoint
+        case ma10
+        case platformHigh = "platform_high"
+    }
+
+    /// 买点参考价(展示层选择,详见类型注释)。两个字段都缺失(哨兵尚未算出 / 数据缺)
+    /// → nil,UI 须留手填空位,不虚构数字。
+    var referencePrice: Double? {
+        switch buypoint {
+        case "breakout": return platformHigh ?? ma10
+        default: return ma10 ?? platformHigh
+        }
+    }
+}
+
 struct Candidate: Codable, Equatable, Identifiable {
     var rank: Int
     var code: String
@@ -126,6 +163,9 @@ struct Candidate: Codable, Equatable, Identifiable {
     var hotSectors: [String]
     var sectorNames: [String]
     var llmJudgment: LLMJudgment?      // 仅前 10 只有(nil = 未过 LLM 审判,非降级)
+    /// 买点结构化条件(§五 v1.1-E.2 一键补录预填用)。服务端字段恒是一个对象(可能
+    /// 内部字段皆缺),故用可选类型兜住任何缺失/旧报告没有这个键的情形,不崩。
+    var entrySpec: EntrySpec? = nil
 
     var id: String { code }
 
@@ -133,15 +173,7 @@ struct Candidate: Codable, Equatable, Identifiable {
     /// `neckline/data/board.py` 的 `Board` 枚举,§3.2.7/CLAUDE.md「板块分类唯一源」),
     /// 不是中文名。这里只做**展示层换算四个已知常量**,不改判定、不猜测新分类
     /// (未识别值原样透传,不静默瞎翻译——万一后端枚举新增值,界面照样不崩、只是显英文)。
-    var boardLabel: String {
-        switch board {
-        case "MAIN": return "主板"
-        case "GEM": return "创业板"
-        case "STAR": return "科创板"
-        case "BSE": return "北交所"
-        default: return board
-        }
-    }
+    var boardLabel: String { nkBoardLabel(board) }
 }
 
 // MARK: - 4A.2 报告:整份报告
@@ -155,6 +187,9 @@ struct ReportSnapshot: Codable, Equatable {
     var candidates: [Candidate]
     var degraded: Bool
     var reason: String
+    /// §五 v1.1-B.4 漏录兜底:当日买点哨兵触发过但台账无补录时的一句提示,否则空串
+    /// (服务端实时算,用户补录后自动消失;E.3 据此在今日计划顶部展示提示条)。
+    var missedEntryHint: String = ""
 
     /// 空态占位(无报告 / 拉取失败),UI 据 `degraded`+`reason` 诚实展示,不假装有数据。
     static func empty(reason: String) -> ReportSnapshot {
@@ -170,11 +205,14 @@ struct RetreatBrake: Codable, Equatable {
     var reason: String
 }
 
-/// 哨兵事件三类中文标签,后端 `_SENTINEL_LABEL` 唯一源(客户端不重译)。
+/// 哨兵事件中文标签,后端 `_SENTINEL_LABEL` 唯一源(客户端不重译)。v1.1-G.3 补
+/// `precall`/`d5exit` 两枚举(盘前校准 / D5 时间退出,标签字面见 `api/app.py::_SENTINEL_LABEL`)。
 enum SentinelKind: String, Codable {
     case entry = "买点"
     case invalidation = "证伪"
     case holding = "持仓"
+    case precall = "盘前校准"
+    case d5exit = "D5退出"
 }
 
 struct BoardEvent: Codable, Equatable, Identifiable {
@@ -201,6 +239,14 @@ struct BoardSnapshot: Codable, Equatable {
 
 // MARK: - 4A.4 持仓(审计台账,永不代下单)
 
+/// 回落止盈状态(§五 v1.1-B.1,服务端 `_retrace_state` 算好下发:峰值 / 回落幅度 /
+/// 是否触发——判定复用 `sentinel/holding.py::check_take_profit`,客户端只展示,不重算阈值)。
+struct RetraceState: Codable, Equatable {
+    var peak: Double
+    var retracePct: Double
+    var triggered: Bool
+}
+
 struct Position: Codable, Equatable, Identifiable {
     var id: Int
     var code: String
@@ -213,6 +259,21 @@ struct Position: Codable, Equatable, Identifiable {
     var status: String
     var stopLine: Double     // 服务端派生 = buy×0.95(§2.1 单一常量),客户端不重算
     var stopOrderChecked: Bool
+    // —— §五 v1.1-B.1/E.1 持仓生命周期派生字段(服务端算好,客户端不重算日历/阈值)——
+    var dCount: Int = 1              // D 计数(买入日=D1,唯一源 sentinel/positions.py::d_count)
+    var maxHoldDays: Int = 5         // 现役 max_hold_days(读 config,不硬编 5)
+    var distToStopPctServer: Double? = nil   // 服务端算好的距止损线百分比(小数,非 ×100);无实时价 → nil
+    var retraceState: RetraceState? = nil
+    var todayAction: String = ""     // 今日动作提示文案(D5离场/距止损/回落止盈已触发等,服务端定文案)
+
+    /// 显式 CodingKeys(仅因 `distToStopPctServer` 与服务端字面 `distToStopPct` 改了名——
+    /// 避免和下面既有的、语义不同的客户端计算属性 `distToStopPct` 撞名——其余字段名与
+    /// JSON 字面一致,逐一列出而非用 `.convertFromSnakeCase`,同文件头部注释的显式映射惯例)。
+    enum CodingKeys: String, CodingKey {
+        case id, code, name, buyPrice, qty, entryReason, buyDate, price, status, stopLine, stopOrderChecked
+        case dCount, maxHoldDays, retraceState, todayAction
+        case distToStopPctServer = "distToStopPct"
+    }
 
     var hasLivePrice: Bool { price > 0 }
     var pnlPct: Double {
@@ -224,6 +285,8 @@ struct Position: Codable, Equatable, Identifiable {
         return (price - buyPrice) * Double(qty)
     }
     /// 距止损线百分比(正 = 尚有缓冲,负 = 已破线);无实时价 → nil,UI 不误显 0%。
+    /// 客户端派生(与服务端 `distToStopPctServer` 算法一致,同一口径,仅百分比展示单位不同),
+    /// 保留是因为早于 B.1 已有该计算且被既有单测覆盖;新代码可直接读 `distToStopPctServer`。
     var distToStopPct: Double? {
         guard hasLivePrice, price > 0 else { return nil }
         return (price - stopLine) / price * 100
@@ -232,6 +295,23 @@ struct Position: Codable, Equatable, Identifiable {
     var hasBrokenStop: Bool {
         guard hasLivePrice else { return false }
         return price <= stopLine
+    }
+
+    // —— §五 v1.1-E.1 展示层派生(纯视觉强度选择,文案本身来自服务端 `todayAction`,
+    // 这里只按已有派生字段的优先级——D5/时间退出 > 回落止盈已触发 > 距止损——决定颜色/
+    // 是否用醒目横幅,不重新推导任何领域判定,同 `hasBrokenStop` 的展示层派生先例)。
+
+    /// 是否到了/过了持有上限交易日(D5 时间退出日,`maxHoldDays` 非硬编 5)。
+    var isExitDay: Bool { dCount >= maxHoldDays }
+
+    var todayActionTone: NKAxisTone {
+        if isExitDay { return .bad }
+        if retraceState?.triggered == true { return .bad }
+        if let d = distToStopPctServer {
+            if d <= 0 { return .bad }
+            if d <= 0.02 { return .warn }
+        }
+        return .neutral
     }
 }
 
@@ -308,9 +388,13 @@ enum LLMProviderKind: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// v1.1-G.1:推送开关扩到四类(报告 / 退潮刹车 / 盘前校准 / D5 时间退出),对齐后端
+/// `PushSettingsOut`/`SettingsPushIn` 四字段契约。
 struct PushSettings: Codable, Equatable {
     var report: Bool
     var retreatBrake: Bool
+    var precall: Bool
+    var d5exit: Bool
 }
 
 struct SettingsSnapshot: Codable, Equatable {
@@ -319,8 +403,75 @@ struct SettingsSnapshot: Codable, Equatable {
     var push: PushSettings
     var reviewColMap: [String: String]      // 4D 周复盘交割单列映射(见 §五 阶段4D.1)
 
-    static let empty = SettingsSnapshot(llmProvider: nil, llmKeySet: false,
-                                        push: PushSettings(report: true, retreatBrake: true), reviewColMap: [:])
+    static let empty = SettingsSnapshot(
+        llmProvider: nil, llmKeySet: false,
+        push: PushSettings(report: true, retreatBrake: true, precall: true, d5exit: true),
+        reviewColMap: [:]
+    )
+}
+
+// MARK: - §五 v1.1-F 自选板块(watchlist)
+//
+// 后端 `neckline/api/schemas.py::WatchlistCheckOut` 字段命名与 `CandidateOut` 四件套
+// 一致(buyPoint/stop/target/invalidation),plan 原文点名「F.2 客户端可直接复用
+// CandidateRow 四件套布局」——四件套展开区已抽成 `FourPieceDisclosure`(见
+// Components/SharedUI.swift)供 `CandidateRow` 与本节的 `WatchlistRow` 共用,不重写。
+
+struct WatchlistCheckItem: Codable, Equatable {
+    var code: String
+    var name: String
+    var pinned: Bool
+    var source: String
+    var hasData: Bool
+    var close: Double
+    var board: String
+    var score: Double?
+    var patternTags: [String]
+    var hotSectors: [String]
+    var sectorNames: [String]
+    var greenLight: Bool             // 纪律红绿灯:true=🟢可动,false=🔴禁买
+    var disqualifiers: [String]
+    var buyPointTriggered: Bool
+    var buyPoint: String
+    var stop: String
+    var target: String
+    var invalidation: String
+    var statusChanged: Bool          // 较上一份报告状态是否变化(体检 LLM 只审 changed∪pinned 的判据)
+    var llmJudgment: LLMJudgment?    // 仅 statusChanged∪pinned 才有(形状与 `CandidateOut.llmJudgment` 相同,复用同一类型)
+
+    /// 展示层换算,与 `Candidate.boardLabel` 共用同一份映射(见 `nkBoardLabel`)。
+    var boardLabel: String { nkBoardLabel(board) }
+}
+
+struct WatchlistItem: Codable, Equatable, Identifiable {
+    var code: String
+    var name: String
+    var addedAt: String
+    var source: String
+    var note: String
+    var pinned: Bool
+    var updatedAt: String
+    /// 最近一份报告的自选体检快照;从未体检过(刚加入 / 从无报告)→ nil,非报错。
+    var check: WatchlistCheckItem?
+
+    var id: String { code }
+}
+
+struct WatchlistSnapshot: Codable, Equatable {
+    var items: [WatchlistItem]
+    var maxSize: Int
+
+    static let empty = WatchlistSnapshot(items: [], maxSize: 30)
+}
+
+/// 同花顺 txt 对账差异(§五 v1.1-C.4/F.4)。三个列表均为 Neckline `ts_code` 格式
+/// (服务端已归一);对齐动作(加/删)由客户端按差异结果调 CRUD,本类型只是只读展示。
+struct ThsReconcileResult: Codable, Equatable {
+    var onlyInThs: [String]
+    var onlyInNeckline: [String]
+    var both: [String]
+
+    static let empty = ThsReconcileResult(onlyInThs: [], onlyInNeckline: [], both: [])
 }
 
 // MARK: - 4D 周复盘工作台(对账三查 + 单周统计,§五 阶段4D)

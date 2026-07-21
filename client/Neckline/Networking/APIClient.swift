@@ -4,17 +4,24 @@
 //
 //  端点契约见 `neckline/api/schemas.py` + `neckline/api/app.py`(逐字段对齐,不猜):
 //    GET  /api/v1/health                    → 免鉴权,{status,version}
-//    GET  /api/v1/report/latest             → ReportOut
+//    GET  /api/v1/report/latest             → ReportOut(含 v1.1 watchlistCheck[]/missedEntryHint)
 //    GET  /api/v1/report?date=YYYYMMDD      → ReportOut(历史回放;带 query,走 makeURL)
-//    GET  /api/v1/board                     → BoardOut
-//    GET  /api/v1/positions                 → PositionsOut{holdings}
+//    GET  /api/v1/board                     → BoardOut(v1.1 事件含 precall/d5exit 两新类)
+//    GET  /api/v1/positions                 → PositionsOut{holdings}(v1.1-B.1 生命周期字段)
+//    GET  /api/v1/positions/entry-suggestion→ EntrySuggestionOut(v1.1-B.3 一键补录预填)
 //    POST /api/v1/positions                 → {ok,position_id,stop_line}       · 422 字段
 //    POST /api/v1/positions/{id}/close      → {ok}                            · 404 not_holding
 //    POST /api/v1/inquiry                   → InquiryOut(裁决二值,§2.5)
-//    GET  /api/v1/settings                  → SettingsOut(key 只回布尔)
+//    GET  /api/v1/settings                  → SettingsOut(key 只回布尔;push 四字段 v1.1-G.1)
 //    PUT  /api/v1/settings/llm              → {ok}                            · 422 供应商非法
-//    PUT  /api/v1/settings/push             → {ok}
+//    PUT  /api/v1/settings/push             → {ok}(v1.1-G.1:report/retreatBrake/precall/d5exit)
 //    POST /api/v1/devices                   → {ok}
+//    GET  /api/v1/watchlist                 → WatchlistOut{items,maxSize}(v1.1-C/F)
+//    POST /api/v1/watchlist                 → {ok,item}                       · 422 watchlist_full
+//    DELETE /api/v1/watchlist/{code}        → {ok}                            · 404 not_found
+//    PUT  /api/v1/watchlist/{code}/pin      → {ok}                            · 404 not_found
+//    POST /api/v1/watchlist/reconcile-ths   → ThsReconcileOut(multipart,字段名 file)
+//    GET  /api/v1/watchlist/export-ths      → ThsExportOut{text,count}
 //  鉴权:Authorization: Bearer <API_TOKEN>(health 外全部)。
 //
 
@@ -24,7 +31,10 @@ import Foundation
 
 enum APIError: Error, LocalizedError, Equatable {
     case unauthorized
-    case notHolding          // 404 该持仓已清或不存在
+    case notHolding          // 404 该持仓已清或不存在(POST /positions/{id}/close)
+    // v1.1-F:404 通用「未找到」(watchlist delete/pin 代码不存在等,reason="not_found")。
+    // 与 `notHolding` 分开是因为两者文案不同,合并会让"删自选未命中"误显"持仓已清"。
+    case notFound
     case validation(String)  // 422 字段校验(含 provider 白名单)
     case server(Int, String)
     case transport(String)
@@ -34,6 +44,7 @@ enum APIError: Error, LocalizedError, Equatable {
         switch self {
         case .unauthorized:     return "鉴权失败(检查 API Token)"
         case .notHolding:       return "该持仓已清或不存在"
+        case .notFound:         return "未找到该记录(可能已被删除)"
         case .validation(let m): return "字段校验失败:\(m)"
         case .server(let c, let m): return "服务端错误 \(c):\(m)"
         case .transport(let m): return "网络错误:\(m)"
@@ -55,6 +66,9 @@ private struct ReportResponse: Decodable {
     let candidates: [Candidate]
     let degraded: Bool
     let reason: String
+    // v1.1-B.4:漏录兜底提示。`Optional` 兼容老响应/测试 fixture 没有这个键的情形
+    // (真实后端恒返回该字段,但用 Optional 更稳,缺失时按空串处理,不崩)。
+    let missedEntryHint: String?
 }
 
 private struct BoardResponse: Decodable {
@@ -102,12 +116,30 @@ private struct SettingsResponse: Decodable {
     let reviewColMap: [String: String]
 }
 struct SettingsLLMRequest: Encodable { let provider: String; let apiKey: String }
-struct SettingsPushRequest: Encodable { let report: Bool; let retreatBrake: Bool }
+/// v1.1-G.1:推送开关四字段(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)。
+struct SettingsPushRequest: Encodable { let report: Bool; let retreatBrake: Bool; let precall: Bool; let d5exit: Bool }
 struct SettingsReviewColMapRequest: Encodable { let colMap: [String: String] }
 
 struct DeviceRegisterRequest: Encodable { let token: String; let platform: String }
 
 private struct OkResponse: Decodable { let ok: Bool }
+
+// —— v1.1-C/F 自选池(watchlist)+ 同花顺 txt 对账/导出 ————————————————————————
+
+private struct WatchlistResponse: Decodable { let items: [WatchlistItem]; let maxSize: Int }
+private struct WatchlistAddResponse: Decodable { let ok: Bool; let item: WatchlistItem }
+struct WatchlistAddRequest: Encodable { let code: String; let name: String?; let note: String? }
+struct WatchlistPinRequest: Encodable { let pinned: Bool }
+private struct ThsReconcileResponse: Decodable {
+    let ok: Bool; let onlyInThs: [String]; let onlyInNeckline: [String]; let both: [String]
+}
+private struct ThsExportResponse: Decodable { let text: String; let count: Int }
+
+// —— v1.1-B.3 一键补录预填推荐 ——————————————————————————————————————————
+
+private struct EntrySuggestionResponse: Decodable {
+    let ok: Bool; let code: String; let price: Double; let qty: Int; let stopLine: Double
+}
 
 /// 无请求体 POST 占位({})。
 private struct EmptyBody: Encodable {}
@@ -155,7 +187,8 @@ actor APIClient {
         return ReportSnapshot(tradeDate: r.tradeDate, generatedAt: r.generatedAt,
                               strategyVersion: r.strategyVersion, sentiment: r.sentiment,
                               sectors: r.sectors, candidates: r.candidates,
-                              degraded: r.degraded, reason: r.reason)
+                              degraded: r.degraded, reason: r.reason,
+                              missedEntryHint: r.missedEntryHint ?? "")
     }
 
     // —— 4A.3 盘中看板 ——
@@ -190,6 +223,16 @@ actor APIClient {
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
+    /// 一键补录预填推荐(v1.1-B.3,只读计算,不写台账):按现役 `single_cap` 与
+    /// 传入价取整手推荐 `qty`,派生 `stopLine = price×(1−stop_pct)`(读现役 config)。
+    /// `code`/`price` 走 query(同 `fetchReport(date:)` 惯例,需走 `makeURL` 免 "?" 编码坑)。
+    func entrySuggestion(code: String, price: Double) async throws -> (qty: Int, stopLine: Double) {
+        let priceStr = String(format: "%.2f", price)
+        let data = try await get("/api/v1/positions/entry-suggestion?code=\(code)&price=\(priceStr)")
+        let r = try JSONDecoder().decode(EntrySuggestionResponse.self, from: data)
+        return (r.qty, r.stopLine)
+    }
+
     // —— 4A.5 问询台(§2.5:裁决二值,永不「现在就买」)——
     /// `messages` 为客户端持有的全部上下文(无状态端点,每次全量回传,继承 LinoN `/chat` 姿势)。
     func sendInquiry(code: String, messages: [ChatMessage]) async throws -> InquiryResult {
@@ -218,9 +261,10 @@ actor APIClient {
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
+    /// v1.1-G.1:推送开关四字段一并写入(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)。
     @discardableResult
-    func putSettingsPush(report: Bool, retreatBrake: Bool) async throws -> Bool {
-        let body = SettingsPushRequest(report: report, retreatBrake: retreatBrake)
+    func putSettingsPush(report: Bool, retreatBrake: Bool, precall: Bool, d5exit: Bool) async throws -> Bool {
+        let body = SettingsPushRequest(report: report, retreatBrake: retreatBrake, precall: precall, d5exit: d5exit)
         let data = try await put("/api/v1/settings/push", body: body)
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
@@ -239,6 +283,74 @@ actor APIClient {
         let body = DeviceRegisterRequest(token: deviceToken, platform: platform)
         let data = try await post("/api/v1/devices", body: body)
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    // —— v1.1-C/F 自选池(watchlist)+ 同花顺 txt 对账/导出 ——————————————————————
+    // 增删只经这几个端点(§C.1 拍板「系统代码路径绝不写入」),客户端也只在用户显式
+    // 操作(+自选/删/pin/一键对齐)时调用,不存在任何自动触发路径。
+
+    func fetchWatchlist() async throws -> WatchlistSnapshot {
+        let data = try await get("/api/v1/watchlist")
+        let r = try JSONDecoder().decode(WatchlistResponse.self, from: data)
+        return WatchlistSnapshot(items: r.items, maxSize: r.maxSize)
+    }
+
+    /// 加一只自选。满 30 上限 → 422(`APIError.validation("watchlist_full")`,调用方据此
+    /// 给出「自选池已满」提示,不是裸的「字段校验失败」)。
+    @discardableResult
+    func addWatchlist(code: String, name: String? = nil, note: String? = nil) async throws -> WatchlistItem {
+        let body = WatchlistAddRequest(code: code, name: name, note: note)
+        let data = try await post("/api/v1/watchlist", body: body)
+        return try JSONDecoder().decode(WatchlistAddResponse.self, from: data).item
+    }
+
+    @discardableResult
+    func removeWatchlist(code: String) async throws -> Bool {
+        let data = try await delete("/api/v1/watchlist/\(code)")
+        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    @discardableResult
+    func pinWatchlist(code: String, pinned: Bool) async throws -> Bool {
+        let body = WatchlistPinRequest(pinned: pinned)
+        let data = try await put("/api/v1/watchlist/\(code)/pin", body: body)
+        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    /// 同花顺 txt 对账(单文件,字段名 `file`——**注意与下方 4D `uploadReview` 的字段名
+    /// `files`〔复数〕不同**,严格对齐后端 `reconcile_ths(file: UploadFile = File(...))`)。
+    /// 只算差集、不写入(对齐动作由客户端按差异结果调上面的 CRUD)。
+    func reconcileThs(filename: String, data fileData: Data) async throws -> ThsReconcileResult {
+        try ensureToken()
+        guard let url = Self.makeURL(base: baseURL, path: "/api/v1/watchlist/reconcile-ths") else {
+            throw APIError.transport("无效 URL")
+        }
+        let boundary = "NecklineBoundary-\(UUID().uuidString)"
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!
+        )
+        body.append("Content-Type: text/plain\r\n\r\n".data(using: .utf8)!)
+        body.append(fileData)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.httpBody = body
+        req.timeoutInterval = 20
+        let data = try await send(req)
+        let r = try JSONDecoder().decode(ThsReconcileResponse.self, from: data)
+        return ThsReconcileResult(onlyInThs: r.onlyInThs, onlyInNeckline: r.onlyInNeckline, both: r.both)
+    }
+
+    /// 导出当前自选为同花顺可导入 txt(§C.4/F.4)。
+    func exportThs() async throws -> (text: String, count: Int) {
+        let data = try await get("/api/v1/watchlist/export-ths")
+        let r = try JSONDecoder().decode(ThsExportResponse.self, from: data)
+        return (r.text, r.count)
     }
 
     // —— 4D 周复盘工作台(拖入交割单对账;macOS 独有,§五 阶段4D)——————————————————
@@ -330,6 +442,19 @@ actor APIClient {
         return try await send(req)
     }
 
+    /// v1.1-F:`DELETE /watchlist/{code}` 用(无请求体)。
+    private func delete(_ path: String, timeout: TimeInterval = 12) async throws -> Data {
+        try ensureToken()
+        guard let url = Self.makeURL(base: baseURL, path: path) else {
+            throw APIError.transport("无效 URL: \(path)")
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = timeout
+        return try await send(req)
+    }
+
     private func ensureToken() throws {
         if token.trimmingCharacters(in: .whitespaces).isEmpty { throw APIError.noToken }
     }
@@ -364,6 +489,7 @@ actor APIClient {
         guard let reason = reasonString(data) else { return fallback }
         switch reason {
         case "not_holding": return .notHolding
+        case "not_found": return .notFound   // v1.1-F:watchlist delete/pin 代码不存在
         default: return fallback
         }
     }

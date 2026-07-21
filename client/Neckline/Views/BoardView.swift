@@ -122,6 +122,8 @@ private struct BoardEventRow: View {
         case .entry: return .good
         case .invalidation: return .bad
         case .holding: return .warn
+        case .precall: return .warn      // v1.1-G.3:盘前校准(变形/证伪/持仓预警混合,取中性警示色)
+        case .d5exit: return .bad        // v1.1-G.3:D5 时间退出——今日必须离场,同证伪一样醒目
         case nil: return .neutral
         }
     }

@@ -114,6 +114,14 @@ struct InquiryView: View {
             HStack {
                 VerdictBadge(verdict: v)
                 Spacer()
+                // v1.1-F.3:问询台裁决卡「+自选」——不看裁决值(增删是用户自主动作,
+                // 不受系统裁决门槛限制,即便「不符合」用户仍可选择继续盯着)。
+                Button {
+                    Task { await model.quickAddWatchlist(code: model.inquiryCode) }
+                } label: {
+                    Label("+自选", systemImage: "star").font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain).foregroundStyle(NK.textSecondary)
             }
             if !model.inquiryEvidence.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {

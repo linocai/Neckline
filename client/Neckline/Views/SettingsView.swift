@@ -2,7 +2,8 @@
 //  SettingsView.swift
 //  Neckline — 设置(§五 阶段4C.4,🔴 APNs 相关建议 @builder-pro 复审):
 //  后端地址 + API token · LLM 供应商切换 + key 填写(安全态,不回显存量 key)·
-//  推送开关(报告 / 退潮刹车)· 连接自检 · iOS 推送重注册。
+//  推送开关(v1.1-G.1 扩至四类:报告 / 退潮刹车 / 盘前校准 / D5 时间退出)·
+//  连接自检 · iOS 推送重注册。
 //
 
 import SwiftUI
@@ -182,6 +183,8 @@ struct SettingsView: View {
         Section {
             Toggle("16:35 报告就绪", isOn: $model.pushReportDraft)
             Toggle("退潮红色刹车", isOn: $model.pushRetreatDraft)
+            Toggle("9:26 盘前校准汇总", isOn: $model.pushPrecallDraft)
+            Toggle("D5 时间退出", isOn: $model.pushD5exitDraft)
             Button("保存推送设置") { Task { await model.savePushSettings() } }
         } header: {
             Text("APNs 推送")

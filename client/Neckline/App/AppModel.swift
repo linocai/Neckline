@@ -10,12 +10,15 @@ import Foundation
 import Observation
 
 enum AppTab: String, CaseIterable, Identifiable {
-    case today, board, inquiry, settings, review
+    // v1.1-F.1:自选独立第五板块(iPhone 5 tab = 今日计划/盘中看板/自选/问询台/设置,
+    // 顺序即 TabBar 顺序;review 只在 macOS 侧栏,非 iOS TabBar 成员)。
+    case today, board, watchlist, inquiry, settings, review
     var id: String { rawValue }
     var title: String {
         switch self {
         case .today: return "今日计划"
         case .board: return "盘中看板"
+        case .watchlist: return "自选"
         case .inquiry: return "问询台"
         case .settings: return "设置"
         case .review: return "周复盘工作台"
@@ -25,6 +28,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .today: return "list.bullet.clipboard"
         case .board: return "waveform.path.ecg"
+        case .watchlist: return "star.fill"
         case .inquiry: return "bubble.left.and.bubble.right"
         case .settings: return "gearshape"
         case .review: return "tray.and.arrow.down"
@@ -93,6 +97,15 @@ final class AppModel {
     var llmKeyDraft: String = ""          // 安全态:从不用存量 key 预填,只在本次填写时持有
     var pushReportDraft: Bool = true
     var pushRetreatDraft: Bool = true
+    // v1.1-G.1:推送开关扩到四类(盘前校准 / D5 时间退出)。
+    var pushPrecallDraft: Bool = true
+    var pushD5exitDraft: Bool = true
+
+    // —— v1.1-F 自选板块(watchlist)——
+    var watchlist: WatchlistSnapshot = .empty
+    var watchlistLoading = false
+    var thsReconcileResult: ThsReconcileResult? = nil
+    var thsReconcileLoading = false
 
     // —— 4D 周复盘工作台(拖入交割单对账;macOS 独有,§五 阶段4D)——
     var reviewWeeks: [WeeklyReviewEntry] = []
@@ -106,6 +119,9 @@ final class AppModel {
     var modal: PositionModal? = nil
     var entryForm = PositionEntryForm()
     var closeSellPrice = ""
+    /// v1.1-E.2:一键补录预填的止损价提示(来自 `GET /positions/entry-suggestion`,只读
+    /// 展示,不参与提交——真正的止损线以提交后服务端按实际买入价返回的为准)。
+    var entrySuggestedStopLine: Double? = nil
     var toast: Toast? = nil
 
     // —— 依赖(运行期注入)——
@@ -211,6 +227,32 @@ final class AppModel {
 
     func openEntrySheet() {
         entryForm = PositionEntryForm()
+        entrySuggestedStopLine = nil
+        modal = .open
+    }
+
+    /// v1.1-E.2:候选卡「已按计划买入」一键补录——预填 code/name(来自候选)、买入价
+    /// (候选买点参考价,来自 `Candidate.entrySpec`,取不到则留空手填)、数量(`GET
+    /// /positions/entry-suggestion` 推荐手数)、止损价提示(同端点派生,只读展示)。
+    /// 只算一次(打开时),用户仍可改价 / 改量,提交仍走既有 `POST /positions`。
+    func openEntrySheet(fromCandidate candidate: Candidate) async {
+        entryForm = PositionEntryForm()
+        entrySuggestedStopLine = nil
+        entryForm.code = candidate.code
+        entryForm.name = candidate.name
+        entryForm.reason = "已按计划买入 · \(candidate.buyPoint)"
+        if let refPrice = candidate.entrySpec?.referencePrice, refPrice > 0 {
+            entryForm.price = String(format: "%.2f", refPrice)
+            if let client = clientProvider() {
+                do {
+                    let s = try await client.entrySuggestion(code: candidate.code, price: refPrice)
+                    if s.qty > 0 { entryForm.qty = String(s.qty) }
+                    entrySuggestedStopLine = s.stopLine
+                } catch {
+                    // 拉不到推荐 → 留给用户手填,不崩、不显示编造的数字。
+                }
+            }
+        }
         modal = .open
     }
 
@@ -328,6 +370,8 @@ final class AppModel {
             self.llmProviderDraft = LLMProviderKind(rawValue: s.llmProvider ?? "") ?? .glm
             self.pushReportDraft = s.push.report
             self.pushRetreatDraft = s.push.retreatBrake
+            self.pushPrecallDraft = s.push.precall
+            self.pushD5exitDraft = s.push.d5exit
         } catch let e as APIError {
             if case .noToken = e {} else { showToast("设置拉取失败", isError: true) }
         } catch {
@@ -358,18 +402,136 @@ final class AppModel {
         }
     }
 
+    /// v1.1-G.1:推送开关四类一并写入(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)。
     func savePushSettings() async {
         guard let client = clientProvider() else {
             showToast("未配置后端连接", isError: true); return
         }
         do {
-            _ = try await client.putSettingsPush(report: pushReportDraft, retreatBrake: pushRetreatDraft)
+            _ = try await client.putSettingsPush(report: pushReportDraft, retreatBrake: pushRetreatDraft,
+                                                 precall: pushPrecallDraft, d5exit: pushD5exitDraft)
             await loadSettings()
             showToast("推送设置已保存")
         } catch let e as APIError {
             showToast(e.errorDescription ?? "保存失败", isError: true)
         } catch {
             showToast("保存失败:\(error.localizedDescription)", isError: true)
+        }
+    }
+
+    // MARK: - v1.1-F:自选板块(增删只由用户显式操作触发,本模型不含任何自动增删路径)
+
+    func loadWatchlist() async {
+        guard let client = clientProvider() else { return }
+        watchlistLoading = true
+        do {
+            watchlist = try await client.fetchWatchlist()
+        } catch let e as APIError {
+            if case .noToken = e {} else { showToast(e.errorDescription ?? "自选拉取失败", isError: true) }
+        } catch {
+            showToast("自选拉取失败", isError: true)
+        }
+        watchlistLoading = false
+    }
+
+    /// 通用「+自选」入口(候选卡 / 问询台裁决卡 / 自选板块自身「+自选」共用,plan F.3)。
+    /// 满 30 上限 → 422 → 明确提示(不是静默失败);返回是否加入成功。
+    @discardableResult
+    func quickAddWatchlist(code: String, name: String? = nil) async -> Bool {
+        let trimmedCode = code.trimmingCharacters(in: .whitespaces)
+        guard !trimmedCode.isEmpty else { return false }
+        guard let client = clientProvider() else {
+            showToast("未配置后端连接", isError: true); return false
+        }
+        do {
+            _ = try await client.addWatchlist(code: trimmedCode, name: name)
+            await loadWatchlist()
+            showToast("已加入自选")
+            return true
+        } catch APIError.validation(let reason) where reason.contains("watchlist_full") {
+            showToast("自选池已满(≤\(watchlist.maxSize) 只),请先移除再添加", isError: true)
+            return false
+        } catch let e as APIError {
+            showToast(e.errorDescription ?? "加入自选失败", isError: true)
+            return false
+        } catch {
+            showToast("加入自选失败:\(error.localizedDescription)", isError: true)
+            return false
+        }
+    }
+
+    func removeFromWatchlist(code: String) async {
+        guard let client = clientProvider() else {
+            showToast("未配置后端连接", isError: true); return
+        }
+        do {
+            _ = try await client.removeWatchlist(code: code)
+            await loadWatchlist()
+            showToast("已从自选移除")
+        } catch let e as APIError {
+            showToast(e.errorDescription ?? "移除失败", isError: true)
+        } catch {
+            showToast("移除失败:\(error.localizedDescription)", isError: true)
+        }
+    }
+
+    func toggleWatchlistPin(code: String, pinned: Bool) async {
+        guard let client = clientProvider() else { return }
+        do {
+            _ = try await client.pinWatchlist(code: code, pinned: pinned)
+            await loadWatchlist()
+        } catch let e as APIError {
+            showToast(e.errorDescription ?? "更新失败", isError: true)
+        } catch {
+            showToast("更新失败:\(error.localizedDescription)", isError: true)
+        }
+    }
+
+    // —— v1.1-F.4:macOS 同花顺 txt 对账工作台(iOS 不做,§C.4/F.4)——————————————
+
+    func reconcileThsFile(filename: String, data: Data) async {
+        guard let client = clientProvider() else {
+            showToast("未配置后端连接", isError: true); return
+        }
+        thsReconcileLoading = true
+        do {
+            thsReconcileResult = try await client.reconcileThs(filename: filename, data: data)
+        } catch let e as APIError {
+            showToast(e.errorDescription ?? "对账失败", isError: true)
+        } catch {
+            showToast("对账失败:\(error.localizedDescription)", isError: true)
+        }
+        thsReconcileLoading = false
+    }
+
+    /// 一键对齐(plan C.4「对齐动作由客户端按差异调 C.1 CRUD」,后端对账端点本身不写入)。
+    /// 逐项独立 try,单项失败(如撞上 30 只上限)不拖累其它项,结束后汇总提示 + 刷新。
+    func applyThsAlignment() async {
+        guard let client = clientProvider(), let diff = thsReconcileResult else { return }
+        var failed = 0
+        for code in diff.onlyInThs {
+            do { _ = try await client.addWatchlist(code: code) } catch { failed += 1 }
+        }
+        for code in diff.onlyInNeckline {
+            do { _ = try await client.removeWatchlist(code: code) } catch { failed += 1 }
+        }
+        await loadWatchlist()
+        thsReconcileResult = nil
+        showToast(failed == 0 ? "已按同花顺自选对齐" : "对齐完成,\(failed) 项失败(可能已达上限)", isError: failed > 0)
+    }
+
+    func exportThsText() async -> String? {
+        guard let client = clientProvider() else {
+            showToast("未配置后端连接", isError: true); return nil
+        }
+        do {
+            return try await client.exportThs().text
+        } catch let e as APIError {
+            showToast(e.errorDescription ?? "导出失败", isError: true)
+            return nil
+        } catch {
+            showToast("导出失败:\(error.localizedDescription)", isError: true)
+            return nil
         }
     }
 

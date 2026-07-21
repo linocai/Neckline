@@ -94,6 +94,52 @@ struct LLMJudgmentBadge: View {
     }
 }
 
+// MARK: - 四件套展开区(§2.2/§2.3 买点/止损/目标/证伪条件;`CandidateRow`/自选体检
+// `WatchlistRow` 共用布局,§五 v1.1-F.2「客户端可直接复用 CandidateRow 四件套布局」——
+// 两处字段命名本就对齐,抽成一个组件避免两份视图各写一份、日后走样。)
+
+struct FourPieceDisclosure: View {
+    let buyPoint: String
+    let stop: String
+    let target: String
+    let invalidation: String
+    var llmJudgment: LLMJudgment? = nil
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() } } label: {
+                HStack {
+                    Text(expanded ? "收起四件套" : "买点 / 止损 / 目标 / 证伪条件")
+                        .font(.system(size: 12, weight: .medium))
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
+                }
+                .foregroundStyle(NK.accent)
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    piece("买点", buyPoint)
+                    piece("止损", stop)
+                    piece("目标", target)
+                    piece("证伪条件", invalidation)
+                    if let j = llmJudgment {
+                        Divider().overlay(NK.hairline)
+                        Text(j.narrative).font(.system(size: 12.5)).foregroundStyle(NK.textSecondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func piece(_ label: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+            Text(text).font(.system(size: 12.5)).foregroundStyle(NK.textPrimary)
+        }
+    }
+}
+
 // MARK: - 退潮红色刹车横幅(§2.4「今日计划作废、禁开新仓」,最高优先级视觉)
 
 struct RetreatBrakeBanner: View {
@@ -114,6 +160,22 @@ struct RetreatBrakeBanner: View {
         .foregroundStyle(.white)
         .padding(14)
         .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.alertGrad))
+    }
+}
+
+// MARK: - 漏录兜底提示条(§五 v1.1-B.4/E.3:一句提示,非弹窗打扰,补录后自动消失)
+
+struct MissedEntryHintBanner: View {
+    let text: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle.fill").font(.system(size: 14, weight: .semibold))
+            Text(text).font(.system(size: 12.5)).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(NK.amber)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.amber.opacity(0.12)))
     }
 }
 

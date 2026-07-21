@@ -116,7 +116,8 @@ final class IntegrationSmokeTests: XCTestCase {
         XCTAssertFalse(result.verdict.enablesBuyAction)
     }
 
-    /// 设置真请求闭环(§4C.4,🔴):GET → PUT llm → GET(确认不回明文)→ PUT push → GET。
+    /// 设置真请求闭环(§4C.4,🔴):GET → PUT llm → GET(确认不回明文)→ PUT push(v1.1-G.1
+    /// 四字段)→ GET。
     func testSettingsRoundTripRealRequest() async throws {
         try await skipUnlessDevServerReachable()
         let client = makeClient()
@@ -126,11 +127,68 @@ final class IntegrationSmokeTests: XCTestCase {
         XCTAssertEqual(afterLLM.llmProvider, "glm")
         XCTAssertTrue(afterLLM.llmKeySet)
 
-        _ = try await client.putSettingsPush(report: true, retreatBrake: false)
+        _ = try await client.putSettingsPush(report: true, retreatBrake: false, precall: false, d5exit: true)
         let afterPush = try await client.fetchSettings()
         XCTAssertTrue(afterPush.push.report)
         XCTAssertFalse(afterPush.push.retreatBrake)
+        XCTAssertFalse(afterPush.push.precall)
+        XCTAssertTrue(afterPush.push.d5exit)
 
         _ = try await client.registerDevice(token: "integration-test-device-token")
+    }
+
+    /// 一键补录预填推荐真请求(§4C.1/v1.1-E.2「一键补录预填」的服务端支撑,plan v1.1-B.3)。
+    func testEntrySuggestionRealRequest() async throws {
+        try await skipUnlessDevServerReachable()
+        let client = makeClient()
+        let s = try await client.entrySuggestion(code: "600001.SH", price: 50.0)
+        XCTAssertEqual(s.qty, 400)          // floor(20000/50/100)*100(现役 config 兜底 single_cap=20000)
+        XCTAssertEqual(s.stopLine, 47.5, accuracy: 0.001)   // 50×(1-0.05)
+    }
+
+    /// 自选池增删真请求闭环(§v1.1-F「dev 后端联调闭环证据:自选增删」)。用独立测试代码,
+    /// 不碰手动种的演示自选。
+    func testWatchlistAddPinRemoveRoundTripRealRequest() async throws {
+        try await skipUnlessDevServerReachable()
+        let client = makeClient()
+        let code = "000004.SZ"
+
+        let added = try await client.addWatchlist(code: code, name: "IntegrationSmokeTests 真请求闭环")
+        XCTAssertEqual(added.code, code)
+        XCTAssertFalse(added.pinned)
+
+        let afterAdd = try await client.fetchWatchlist()
+        XCTAssertTrue(afterAdd.items.contains { $0.code == code })
+
+        _ = try await client.pinWatchlist(code: code, pinned: true)
+        let afterPin = try await client.fetchWatchlist()
+        XCTAssertTrue(afterPin.items.first { $0.code == code }?.pinned ?? false)
+
+        _ = try await client.removeWatchlist(code: code)
+        let afterRemove = try await client.fetchWatchlist()
+        XCTAssertFalse(afterRemove.items.contains { $0.code == code }, "移除后不应再出现在自选列表")
+
+        // 二次移除同一代码 → 404 not_found(对齐后端契约,真实网络往返验证)。
+        do {
+            _ = try await client.removeWatchlist(code: code)
+            XCTFail("重复移除应抛 notFound")
+        } catch APIError.notFound {
+            // 期望路径
+        }
+    }
+
+    /// 同花顺 txt 对账 + 导出真请求(合成 txt 字节,真实同花顺导出文件的活体验收留 v1.1-H)。
+    func testThsReconcileAndExportRealRequest() async throws {
+        try await skipUnlessDevServerReachable()
+        let client = makeClient()
+        let code = "000004.SZ"
+        _ = try? await client.removeWatchlist(code: code)   // 幂等清场,不因上一次失败的测试遗留而误判
+
+        let txt = "\(code.prefix(6))\n"
+        let diff = try await client.reconcileThs(filename: "自选股.txt", data: Data(txt.utf8))
+        XCTAssertTrue(diff.onlyInThs.contains(code), "对账端点应把 txt 里的代码归一成 Neckline ts_code 格式")
+
+        let exported = try await client.exportThs()
+        XCTAssertGreaterThanOrEqual(exported.count, 0)
     }
 }
