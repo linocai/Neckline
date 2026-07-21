@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 
+from neckline import watchlist as watchlist_store
 from neckline.api import notify
 from neckline.api.deps import require_api_token_ready, require_token
 from neckline.api.inquiry import run_inquiry
@@ -52,6 +53,15 @@ from neckline.api.schemas import (
     SettingsOut,
     SettingsPushIn,
     SettingsReviewColMapIn,
+    ThsExportOut,
+    ThsReconcileOut,
+    WatchlistAddIn,
+    WatchlistAddOut,
+    WatchlistCheckLLMOut,
+    WatchlistCheckOut,
+    WatchlistItemOut,
+    WatchlistOut,
+    WatchlistPinIn,
     WeeklyReviewOut,
 )
 from neckline.api.stores import upsert_device
@@ -66,7 +76,7 @@ from neckline.settings_store import get_app_settings, set_llm, set_push, set_rev
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.5.0-v1.1AB"
+VERSION = "0.6.0-v1.1ABCD"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -205,6 +215,43 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
     )
 
 
+def _shape_watchlist_check(d: Dict[str, Any]) -> WatchlistCheckOut:
+    """自选体检落库(或内存)快照 → 客户端契约。同 `_shape_candidate` 的透传惯例,
+    不在此重算任何领域值(评分/红绿灯/四件套全部来自
+    `neckline.report.watchlist_check.WatchlistCheckItem.public_dict()`)。"""
+    llm = None
+    jr = d.get("llm_judgment")
+    if jr:
+        llm = WatchlistCheckLLMOut(
+            verdict=jr.get("verdict", ""), narrative=jr.get("narrative", ""),
+            degraded=bool(jr.get("degraded", False)),
+        )
+    return WatchlistCheckOut(
+        code=d.get("ts_code", ""),
+        name=d.get("name", ""),
+        pinned=bool(d.get("pinned", False)),
+        source=d.get("source", "manual"),
+        hasData=bool(d.get("has_data", True)),
+        close=d.get("close", 0.0) or 0.0,
+        board=d.get("board", "MAIN"),
+        score=d.get("score"),
+        patternTags=d.get("pattern_tags", []) or [],
+        hotSectors=d.get("hot_sectors", []) or [],
+        sectorNames=d.get("sector_names", []) or [],
+        greenLight=bool(d.get("green_light", False)),
+        disqualifiers=d.get("disqualifiers", []) or [],
+        buyPointTriggered=bool(d.get("buy_point_triggered", False)),
+        buyPoint=d.get("entry_plan", ""),
+        stop=d.get("stop_loss", ""),
+        target=d.get("target", ""),
+        invalidation=d.get("invalidation_text", ""),
+        invalidationSpec=d.get("invalidation_spec", {}) or {},
+        entrySpec=d.get("entry_spec", {}) or {},
+        statusChanged=bool(d.get("status_changed", False)),
+        llmJudgment=llm,
+    )
+
+
 def _shape_report(rep: Dict[str, Any]) -> ReportOut:
     from neckline.report.pipeline import compute_missed_entry_hint
 
@@ -212,6 +259,7 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
     d = datetime.strptime(td, "%Y%m%d").date()
     judgments = {j["ts_code"]: j for j in report_store.load_llm_judgments(d, db_path=_db())}
     candidates = [_shape_candidate(c, judgments.get(c.get("ts_code", ""))) for c in rep.get("candidates", [])]
+    watchlist_check = [_shape_watchlist_check(w) for w in rep.get("watchlist", []) if isinstance(w, dict)]
     return ReportOut(
         tradeDate=td,
         generatedAt=rep.get("generated_at", ""),
@@ -219,6 +267,7 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
         sentiment=rep.get("sentiment", {}),
         sectors=rep.get("sectors", []),
         candidates=candidates,
+        watchlistCheck=watchlist_check,
         missedEntryHint=compute_missed_entry_hint(d, db_path=_db()),   # v1.1-B.4 实时算(补录后自动消失)
     )
 
@@ -460,19 +509,126 @@ def close_position(position_id: int, body: PositionCloseIn) -> OkOut:
     return OkOut(ok=True)
 
 
+# —— v1.1-C 自选池(watchlist)+ 同花顺 txt 互转/对账 ————————————————————————
+# **增删只经本节端点**(任务拍板「增删只经用户端点,系统代码路径绝不写入」)——
+# `neckline.watchlist` 的写入函数(`add_watchlist`/`remove_watchlist`/`set_pinned`)
+# 只应被这里调用,报告管线/哨兵/问询台只调用只读的 `list_watchlist*`。
+
+def _latest_watchlist_check_by_code() -> Dict[str, Dict[str, Any]]:
+    """最近一份报告的自选体检快照,按 `ts_code` 建索引(`GET /watchlist`「列表 +
+    各只体检最近快照」,plan C.1)。查无报告 / 该报告体检节为空 → 空 dict(该票
+    尚未被任何报告体检过,`check` 字段回 None,不是报错)。"""
+    td = report_store.latest_report_date(db_path=_db())
+    if not td:
+        return {}
+    rep = report_store.load_report_by_str(td, db_path=_db())
+    if rep is None:
+        return {}
+    return {w["ts_code"]: w for w in rep.get("watchlist", []) if isinstance(w, dict) and w.get("ts_code")}
+
+
+def _shape_watchlist_item(item: "watchlist_store.WatchlistItem", check_by_code: Dict[str, Dict[str, Any]]) -> WatchlistItemOut:
+    check_raw = check_by_code.get(item.ts_code)
+    return WatchlistItemOut(
+        code=item.ts_code, name=item.name, addedAt=item.added_at,
+        source=item.source, note=item.note or "", pinned=item.pinned,
+        updatedAt=item.updated_at,
+        check=_shape_watchlist_check(check_raw) if check_raw else None,
+    )
+
+
+@app.get(f"{API_PREFIX}/watchlist", dependencies=[Depends(require_token)])
+def get_watchlist() -> WatchlistOut:
+    items = watchlist_store.list_watchlist(db_path=_db())
+    check_by_code = _latest_watchlist_check_by_code()
+    return WatchlistOut(
+        items=[_shape_watchlist_item(w, check_by_code) for w in items],
+        maxSize=watchlist_store.MAX_WATCHLIST_SIZE,
+    )
+
+
+@app.post(f"{API_PREFIX}/watchlist", dependencies=[Depends(require_token)])
+def post_watchlist(body: WatchlistAddIn) -> WatchlistAddOut:
+    """加一只自选(**≤30 上限硬校验,超限 422**,任务拍板)。已存在该代码 → 幂等
+    更新 name/note,不算新增、不占额度。"""
+    try:
+        item = watchlist_store.add_watchlist(
+            body.code, name=body.name, note=body.note, db_path=_db(),
+        )
+    except watchlist_store.WatchlistFullError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"ok": False, "reason": "watchlist_full", "message": str(e)},
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"ok": False, "reason": "invalid_code", "message": str(e)},
+        )
+    return WatchlistAddOut(item=_shape_watchlist_item(item, {}))
+
+
+@app.delete(f"{API_PREFIX}/watchlist/{{code}}", dependencies=[Depends(require_token)])
+def delete_watchlist(code: str) -> OkOut:
+    ok = watchlist_store.remove_watchlist(code, db_path=_db())
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    return OkOut(ok=True)
+
+
+@app.put(f"{API_PREFIX}/watchlist/{{code}}/pin", dependencies=[Depends(require_token)])
+def put_watchlist_pin(code: str, body: WatchlistPinIn) -> OkOut:
+    ok = watchlist_store.set_pinned(code, body.pinned, db_path=_db())
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    return OkOut(ok=True)
+
+
+@app.post(f"{API_PREFIX}/watchlist/reconcile-ths", dependencies=[Depends(require_token)])
+def reconcile_ths(file: UploadFile = File(...)) -> ThsReconcileOut:
+    """同花顺自选 txt 对账(plan C.4)。拿同花顺 PC 端导出的 txt(一行一代码)与
+    Neckline 当前自选池比差集;不做任何写入(对齐动作由客户端按差异结果调上面
+    的 CRUD 端点)。"""
+    content = file.file.read()
+    ths_codes = watchlist_store.parse_ths_txt(content)
+    neckline_codes = watchlist_store.list_watchlist_codes(db_path=_db())
+    diff = watchlist_store.reconcile_ths(ths_codes, neckline_codes)
+    return ThsReconcileOut(**diff)
+
+
+@app.get(f"{API_PREFIX}/watchlist/export-ths", dependencies=[Depends(require_token)])
+def export_ths() -> ThsExportOut:
+    """导出当前自选为同花顺可导入 txt(plan C.4)。"""
+    codes = watchlist_store.list_watchlist_codes(db_path=_db())
+    return ThsExportOut(text=watchlist_store.export_ths_txt(codes), count=len(codes))
+
+
 # —— 4A.5 问询台 ————————————————————————————————————————————————————————
 
 def _inquiry_basis_pool_date() -> tuple:
-    """确定性检查的 EOD 基准日 + 海选池目标日(§2.5)。basis = 最近一份报告的交易日
+    """确定性检查的 EOD 基准日 + 入池当日(v1.1-D 问询窗口修复后语义变化)。
+
+    basis:确定性检查用的 EOD 数据基准日,不变——最近一份已生成报告的交易日
     (最可靠的"有数据日");无报告 → 日历默认(今日交易日则今日,否则上一交易日)。
-    pool_date == basis_date(海选池按数据日入池,报告为该日(重)生成时纳入)。"""
+
+    pool_date(v1.1-D 简化,**不再等于 basis**):`add_to_inquiry_pool` 的
+    `trade_date` 参数只是"这票哪天被问询入池"的审计留痕,**不再承担"该被哪份报告
+    消费"的职责**——旧写法 `pool_date == basis_date` 会让 16:35 报告已生成后才
+    问询通过的票,入池 `trade_date` 停留在"今天"(因为此时 basis 已经能读到今天
+    的报告),而下一份该消费它的报告是明天的,`trade_date` 与明天的 report_date
+    永远对不上 → 永久掉缝(生产真洞,详见 PROJECT_PLAN §五 v1.1-D.1 根因)。
+    消费改靠 `inquiry_pool.consumed_report_date` 待消费标记(`build_report` 侧,
+    `neckline.api.stores.load_pending_inquiry_codes`),故 pool_date 直接取「今日
+    交易日历口径」即可,不必再绑定 basis。"""
     lr = report_store.latest_report_date(db_path=_db())
     if lr:
-        d = datetime.strptime(lr, "%Y%m%d").date()
-        return d, d
+        basis = datetime.strptime(lr, "%Y%m%d").date()
+    else:
+        today0 = date.today()
+        basis = today0 if is_trading_day(today0) else prev_trading_day(today0)
     today = date.today()
-    d = today if is_trading_day(today) else prev_trading_day(today)
-    return d, d
+    pool_date = today if is_trading_day(today) else prev_trading_day(today)
+    return basis, pool_date
 
 
 @app.post(f"{API_PREFIX}/inquiry", dependencies=[Depends(require_token)])

@@ -46,6 +46,40 @@ class CandidateOut(BaseModel):
     llmJudgment: Optional[LLMJudgmentOut] = None              # 仅前 10 只有
 
 
+class WatchlistCheckLLMOut(BaseModel):
+    verdict: str
+    narrative: str
+    degraded: bool
+
+
+class WatchlistCheckOut(BaseModel):
+    """自选体检单只快照(plan §五 v1.1-C.3)。字段形状与 `CandidateOut` 四件套对齐
+    (buyPoint/stop/target/invalidation 命名一致),供客户端复用候选卡的四件套布局
+    (§五 v1.1-F.2「复用 CandidateRow 四件套布局」)。"""
+    code: str
+    name: str
+    pinned: bool
+    source: str
+    hasData: bool = True
+    close: float = 0.0
+    board: str = "MAIN"
+    score: Optional[float] = None
+    patternTags: List[str] = Field(default_factory=list)
+    hotSectors: List[str] = Field(default_factory=list)
+    sectorNames: List[str] = Field(default_factory=list)
+    greenLight: bool = False               # 纪律红绿灯:True=🟢可动,False=🔴禁买
+    disqualifiers: List[str] = Field(default_factory=list)
+    buyPointTriggered: bool = False
+    buyPoint: str = ""
+    stop: str = ""
+    target: str = ""
+    invalidation: str = ""
+    invalidationSpec: Dict[str, Any] = Field(default_factory=dict)
+    entrySpec: Dict[str, Any] = Field(default_factory=dict)
+    statusChanged: bool = False            # 较上一份报告状态是否变化(红绿灯翻转/买点触发翻转/形态标签变化)
+    llmJudgment: Optional[WatchlistCheckLLMOut] = None   # 仅 statusChanged∪pinned 才有
+
+
 class ReportOut(BaseModel):
     tradeDate: str
     generatedAt: str
@@ -53,6 +87,10 @@ class ReportOut(BaseModel):
     sentiment: Dict[str, Any]                # SentimentDashboard 快照(含 position_quota 三态)
     sectors: List[Dict[str, Any]]            # 强势板块 + 板块年龄
     candidates: List[CandidateOut]
+    # v1.1-C.3 自选体检(独立一节,不进候选榜)——旧报告(建这节之前生成的)读回来是
+    # 空列表,不是 None(见 `neckline.report.store._parse_watchlist_json` 与
+    # `reports.watchlist_json` 列默认值 `'[]'`),客户端前向兼容不必对 null 特判。
+    watchlistCheck: List[WatchlistCheckOut] = Field(default_factory=list)
     # v1.1-B.4 漏录兜底:当日买点哨兵触发过但台账无补录时的一句提示(否则空串)。
     # **实时计算**(GET /report 每次读时按当前台账重算,用户补录后自动消失),不落库、不改评分。
     missedEntryHint: str = ""
@@ -135,6 +173,55 @@ class PositionOpenOut(BaseModel):
 class PositionCloseIn(BaseModel):
     sell_price: float
     sell_time: Optional[str] = None      # 'YYYYMMDD' 可选,缺省=今日
+
+
+# —— v1.1-C 自选池(watchlist)————————————————————————————————————————————
+
+class WatchlistItemOut(BaseModel):
+    code: str
+    name: str
+    addedAt: str
+    source: str
+    note: str = ""
+    pinned: bool
+    updatedAt: str
+    # 最近一份报告的自选体检快照(GET /watchlist「列表 + 各只体检最近快照」,
+    # plan C.1);从未跑过报告 / 该票是刚加入还未被下一份报告体检过 → None。
+    check: Optional[WatchlistCheckOut] = None
+
+
+class WatchlistOut(BaseModel):
+    items: List[WatchlistItemOut] = Field(default_factory=list)
+    maxSize: int = 30
+
+
+class WatchlistAddIn(BaseModel):
+    code: str
+    name: Optional[str] = None
+    note: Optional[str] = None
+
+
+class WatchlistAddOut(BaseModel):
+    ok: bool = True
+    item: WatchlistItemOut
+
+
+class WatchlistPinIn(BaseModel):
+    pinned: bool
+
+
+class ThsReconcileOut(BaseModel):
+    """同花顺自选 txt 对账差异(plan C.4「差异对账端点(两边差集)」)。三个列表均
+    为 Neckline `ts_code` 格式(已归一)。"""
+    ok: bool = True
+    onlyInThs: List[str] = Field(default_factory=list)
+    onlyInNeckline: List[str] = Field(default_factory=list)
+    both: List[str] = Field(default_factory=list)
+
+
+class ThsExportOut(BaseModel):
+    text: str
+    count: int
 
 
 # —— 4A.5 问询台 + 设置 ————————————————————————————————————————————————
@@ -228,10 +315,12 @@ class ReviewGetOut(BaseModel):
 
 
 __all__ = [
-    "OkOut", "LLMJudgmentOut", "CandidateOut", "ReportOut",
+    "OkOut", "LLMJudgmentOut", "CandidateOut", "WatchlistCheckLLMOut", "WatchlistCheckOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "EntrySuggestionOut",
+    "WatchlistItemOut", "WatchlistOut", "WatchlistAddIn", "WatchlistAddOut", "WatchlistPinIn",
+    "ThsReconcileOut", "ThsExportOut",
     "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_REJECT", "VERDICT_PASS",
     "PushSettingsOut", "SettingsOut", "SettingsLLMIn", "SettingsPushIn", "DeviceRegisterIn",
     "SettingsReviewColMapIn", "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",

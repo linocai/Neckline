@@ -50,4 +50,19 @@ echo "12) close:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"sell_price":1520.0}' 
 echo "13) 重复 close → 404:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "${JSON[@]}" -d '{"sell_price":1520.0}' "$BASE/positions/$PID/close"
 echo "14) inquiry(无 key 降级,裁决二值):"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"code":"600519.SH","messages":[]}' "$BASE/inquiry"; echo
 echo "15) device register:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"token":"smoke-device","platform":"ios"}' "$BASE/devices"; echo
+
+# —— v1.1-C 自选池 + 同花顺 txt 对账/导出 ————————————————————————————————
+echo "16) watchlist add 600001.SH:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"code":"600001.SH","name":"示例甲"}' "$BASE/watchlist"; echo
+echo "17) watchlist add 000001.SZ:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"code":"000001.SZ"}' "$BASE/watchlist"; echo
+echo "18) watchlist list(应 2 只,check 均为 null——尚未跑过报告):"; curl -s "${AUTH[@]}" "$BASE/watchlist"; echo
+echo "19) watchlist pin 600001.SH:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"pinned":true}' -X PUT "$BASE/watchlist/600001.SH/pin"; echo
+echo "20) watchlist export-ths:"; curl -s "${AUTH[@]}" "$BASE/watchlist/export-ths"; echo
+echo "21) watchlist reconcile-ths(txt: 600001.SH 两边都有,600002.SH 只在同花顺):"
+printf '600001\n600002\n' > /tmp/neckline_smoke_ths_$$.txt
+curl -s "${AUTH[@]}" -F "file=@/tmp/neckline_smoke_ths_$$.txt;type=text/plain" "$BASE/watchlist/reconcile-ths"; echo
+rm -f /tmp/neckline_smoke_ths_$$.txt
+echo "22) watchlist delete 000001.SZ:"; curl -s -o /dev/null -w "  status=%{http_code}\n" -X DELETE "${AUTH[@]}" "$BASE/watchlist/000001.SZ"
+echo "23) watchlist delete 不存在代码 → 404:"; curl -s -o /dev/null -w "  status=%{http_code}\n" -X DELETE "${AUTH[@]}" "$BASE/watchlist/999999.SH"
+echo "24) watchlist list(应剩 1 只):"; curl -s "${AUTH[@]}" "$BASE/watchlist"; echo
+
 echo ">> 冒烟完成。"
