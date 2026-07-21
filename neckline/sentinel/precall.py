@@ -318,7 +318,9 @@ def run_precall_tick(
         )
 
     # —— 候选四件套 → 高开变形 / 低开证伪 / 竞价量能(三类判定)——————————————
-    for c in wu.candidates:
+    # v1.1-C.2「自选票享候选同级待遇」:候选 ∪「昨晚体检已触发买点」的自选票
+    # 一视同仁(entry_spec/invalidation_spec 均是昨晚写死,盘前只读不重算)。
+    for c in wu.candidates + wu.watchlist_candidates:
         q = quotes.get(c.ts_code)
         if q is None:
             continue  # 拉不到竞价快照 → 该票无意见,跳过(不是「无异常」)

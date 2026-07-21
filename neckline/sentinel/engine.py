@@ -214,9 +214,16 @@ def run_tick(
             )
     result.retreat_active = retreat_active
 
+    # v1.1-C.2「自选票享候选同级待遇」:买点/证伪哨兵对候选与「昨晚体检已触发
+    # 买点」的自选票一视同仁——两者的 entry_spec/invalidation_spec 都是昨晚写死
+    # 的,盘中只读不重算(§2.4 铁律)。退潮哨兵的板块联动样本(`_hot_sector_peer_
+    # returns`)刻意只用 `wu.candidates`,不纳入自选(见 `universe.py` 模块头
+    # 注释「四类哨兵」不含退潮)。
+    entry_pool = wu.candidates + wu.watchlist_candidates
+
     # —— 2) 买点哨兵(退潮生效时本拍整体跳过,不逐票判断)——————————————————
     if not retreat_active:
-        for c in wu.candidates:
+        for c in entry_pool:
             sig = check_entry(c, quotes.get(c.ts_code), prev5.get(c.ts_code, 0.0), now)
             if sig is not None:
                 result.entry_signals.append(sig)
@@ -226,7 +233,7 @@ def run_tick(
                 )
 
     # —— 3) 证伪哨兵(不受退潮抑制——"剔除勿进"任何时候都是有效信息)——————————
-    for c in wu.candidates:
+    for c in entry_pool:
         inv = check_invalidation(c, quotes.get(c.ts_code), prev5.get(c.ts_code, 0.0), now)
         if inv is not None:
             result.invalidation_signals.append(inv)

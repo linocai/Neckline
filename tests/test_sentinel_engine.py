@@ -205,7 +205,10 @@ class TestNeverRecommendsNewStocks:
     """原则守护(§2.4 铁律「盘中不产生任何新决策,永不盘中推荐新票」)的直接单测:
     即便某只【非候选】代码的行情完美满足买点哨兵的全部触发条件,只要它不在昨晚
     报告的候选列表里,就永远不会被评估、更不会出现在 entry_signals 里——买点
-    哨兵结构上只遍历 `wu.candidates`,不遍历"拉到行情的全部代码"。"""
+    哨兵结构上只遍历 `wu.candidates`(+ v1.1-C 起也含 `wu.watchlist_candidates`,
+    见 `TestWatchlistCandidateTreatedAsCandidate`——**同样是昨晚 16:35 报告生成
+    时已经算好、写死的自选体检快照,不是盘中临时决定**,不违反本铁律),不遍历
+    "拉到行情的全部代码"。"""
 
     def test_non_candidate_code_with_perfect_entry_conditions_is_never_surfaced(self, isolated_env):
         days = business_days(date(2026, 7, 1), 30)
@@ -268,3 +271,88 @@ class TestNeverRecommendsNewStocks:
         )
         entry_codes = {sig.ts_code for sig in result.entry_signals}
         assert entry_codes.issubset(candidate_codes)
+
+
+def _watchlist_check_dict(ts_code: str, **overrides) -> dict:
+    """手工构造一条自选体检快照(`WatchlistCheckItem.public_dict()` 形状),供
+    `universe._build_watchlist_candidates` 转成 `Candidate` 消费。"""
+    base = dict(
+        ts_code=ts_code, name="示例自选", pinned=False, source="manual", has_data=True,
+        close=10.0, board="MAIN", score=80.0, pattern_tags=[], hot_sectors=[], sector_names=[],
+        green_light=True, disqualifiers=[], buy_point_triggered=True,
+        entry_plan="回调低吸...", stop_loss="止损...", target="目标...", invalidation_text="证伪...",
+        invalidation_spec={"low_open_pct": -0.02, "vwap_break": True, "vol_ratio_low": 0.8, "vol_ratio_high": 3.0},
+        entry_spec={"buypoint": "pullback", "ma10": 9.5, "prev_close": 10.0, "breakout_vol_expand": 1.5},
+        status_changed=False, llm_judgment=None,
+    )
+    base.update(overrides)
+    return base
+
+
+class TestWatchlistCandidateTreatedAsCandidate:
+    """v1.1-C.2「自选票享候选同级待遇」:昨晚自选体检快照已判定触发买点的自选票,
+    盘中买点/证伪哨兵与候选一视同仁——entry_spec/invalidation_spec 都是昨晚
+    (16:35 报告生成时)写死的,盘中只读不重算,不违反§2.4「不产生新决策」。"""
+
+    def test_triggered_watchlist_code_fires_entry_signal(self, isolated_env):
+        from neckline.watchlist import add_watchlist
+
+        days = business_days(date(2026, 7, 1), 30)
+        report_day, today = days[-2], days[-1]
+        _setup_calendar_and_history(isolated_env, "600002.SH", report_day, today, vol=200000.0)
+        seed_active_rule_v1(isolated_env)
+        add_watchlist("600002.SH", db_path=isolated_env.db_path)
+        # 报告候选是空的(300001.SZ,与本票无关)——600002.SH 完全靠自选体检快照进关注池
+        store.save_report(
+            report_day, strategy_version="v1", sentiment={}, sectors=[], candidates=[],
+            markdown="# test", watchlist=[_watchlist_check_dict("600002.SH")], db_path=isolated_env.db_path,
+        )
+        insert_stock_basic(isolated_env, [{"ts_code": "600002.SH", "name": "示例自选", "market": "主板"}])
+
+        now = datetime.combine(today, time(10, 30))
+
+        def quotes_fn(codes):
+            return {
+                "600002.SH": Quote(
+                    code="600002", name="示例自选", price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
+                    volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
+                )
+            }
+
+        result = run_tick(
+            now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=quotes_fn,
+        )
+        assert {sig.ts_code for sig in result.entry_signals} == {"600002.SH"}
+
+    def test_not_triggered_watchlist_code_never_fires(self, isolated_env):
+        """自选票昨晚未触发买点(`buy_point_triggered=False`)→ 不进
+        `watchlist_candidates`,即便行情完美满足触发条件也不会被评估。"""
+        from neckline.watchlist import add_watchlist
+
+        days = business_days(date(2026, 7, 1), 30)
+        report_day, today = days[-2], days[-1]
+        _setup_calendar_and_history(isolated_env, "600002.SH", report_day, today, vol=200000.0)
+        seed_active_rule_v1(isolated_env)
+        add_watchlist("600002.SH", db_path=isolated_env.db_path)
+        store.save_report(
+            report_day, strategy_version="v1", sentiment={}, sectors=[], candidates=[],
+            markdown="# test",
+            watchlist=[_watchlist_check_dict("600002.SH", buy_point_triggered=False)],
+            db_path=isolated_env.db_path,
+        )
+        insert_stock_basic(isolated_env, [{"ts_code": "600002.SH", "name": "示例自选", "market": "主板"}])
+
+        now = datetime.combine(today, time(10, 30))
+
+        def quotes_fn(codes):
+            return {
+                "600002.SH": Quote(
+                    code="600002", name="示例自选", price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
+                    volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
+                )
+            }
+
+        result = run_tick(
+            now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=quotes_fn,
+        )
+        assert result.entry_signals == []
