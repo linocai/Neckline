@@ -2,9 +2,11 @@
 //  AppConfig.swift
 //  Neckline — 后端连接配置(baseURL + apiToken 可配)
 //
-//  dev 默认 http://127.0.0.1:8002(本地 uvicorn,与生产 hz ECS 8002 同端口,§3.6);
-//  prod 复用 LinoN 域名 ln.linotsai.top(接班切换后 nginx upstream 指向 8002,§3.6
-//  「接班切换」)——域名 `ln` 语义留痕是设计已接受的表面不符,勿"纠正"成 neckline 子域。
+//  **App 默认后端 = prod(https://ln.linotsai.top)**(2026-07-20 4E 接班切换后 nginx
+//  upstream 已指向 Neckline 8002,§3.6「接班切换」)——域名 `ln` 语义留痕是设计已接受的
+//  表面不符,勿"纠正"成 neckline 子域。
+//  dev(http://127.0.0.1:8002,本地 uvicorn)保留作可切换选项(设置屏「环境」picker /
+//  手填 baseURLOverride);两环境同端口 8002。
 //
 //  ⚠️ API_TOKEN 绝不硬编码进提交源码(plan 铁律):
 //   解析优先级 ——
@@ -43,20 +45,27 @@ final class AppConfig: ObservableObject {
     static let tokenKey = "NK_API_TOKEN"
     static let baseOverrideKey = "NK_BASE_URL_OVERRIDE"
 
+    /// 持久化后端(生产 = `.standard`;单测注入隔离 suite 保证 hermetic,不吃模拟器
+    /// 里前几次会话残留的 `NK_ENVIRONMENT`)。
+    private let defaults: UserDefaults
+
     @Published var environment: NKEnvironment {
-        didSet { UserDefaults.standard.set(environment.rawValue, forKey: Self.envKey) }
+        didSet { defaults.set(environment.rawValue, forKey: Self.envKey) }
     }
     /// 手填覆盖 baseURL(可选;空则用 environment.baseURL)
     @Published var baseURLOverride: String {
-        didSet { UserDefaults.standard.set(baseURLOverride, forKey: Self.baseOverrideKey) }
+        didSet { defaults.set(baseURLOverride, forKey: Self.baseOverrideKey) }
     }
     @Published var apiToken: String {
-        didSet { UserDefaults.standard.set(apiToken, forKey: Self.tokenKey) }
+        didSet { defaults.set(apiToken, forKey: Self.tokenKey) }
     }
 
-    init() {
-        let defaults = UserDefaults.standard
-        self.environment = NKEnvironment(rawValue: defaults.string(forKey: Self.envKey) ?? "") ?? .dev
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        // 默认后端 = prod(https://ln.linotsai.top,2026-07-20 4E 接班切换后 nginx upstream 指向
+        // Neckline 8002)。无持久化选择时用 prod;dev(本地 uvicorn 8002)仍可在设置屏「环境」
+        // picker 或手填 baseURLOverride 切换,配置能力不变。
+        self.environment = NKEnvironment(rawValue: defaults.string(forKey: Self.envKey) ?? "") ?? .prod
         self.baseURLOverride = defaults.string(forKey: Self.baseOverrideKey) ?? ""
 
         // token 解析:UserDefaults → 环境变量 → 本地 plist
