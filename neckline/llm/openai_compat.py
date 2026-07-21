@@ -29,7 +29,10 @@ logger = logging.getLogger(__name__)
 class OpenAICompatProvider(LLMProvider):
     api_url: str = ""
     connect_timeout: float = 6.0
-    read_timeout: float = 25.0
+    # 带联网搜索的审判/问询单次生成常要 30-60s+(2026-07-21 生产实测:25s 下 10 只
+    # 审判 5 只 ReadTimeout)。短读超时+重试是治「连接卡死」的,不能把正常长生成也杀掉,
+    # 故放宽到 90s;卡死场景仍由 max_attempts 全新连接重试兜住。
+    read_timeout: float = 90.0
     max_attempts: int = 3
     max_tool_rounds: int = 4
 
