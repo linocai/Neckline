@@ -310,6 +310,17 @@ Parquet 分区(某列全空日落 String 与历史 Float64 冲突,16:35 报告�
 校准 / D5)。完整施工图见 §五「当前版本 Plan(v1.1)」,分块 A–H + 每块验收 + 高危区标注(盘前校准/D5 新推送类 APNs、
 哨兵进程盘中常驻改动、部署 点名 @builder-pro)。**铁律不变**:同码不重写、单一事实源不漂移、关注池 ≤200(自选并入后仍守)。
 
+**2026-07-21 · v1.1-A/B 后端完工(本地全绿,@builder-pro)**:A 盘前校准 tick + B 持仓生命周期后端两块 🔴 高危交付。
+新 `neckline/sentinel/precall.py`(纯规则零 LLM:高开变形 / 低开证伪 / 竞价量能 / 持仓低开四判定 + D5 扫描 + `run_precall_tick`
+当日只跑一次);`api/app.py::_sentinel_loop` 加 9:20–9:30 盘前分支(30s 收紧,**intraday 逻辑一字未改**,盘前一拍异常被吞不掀
+翻主循环有单测);`sentinel/positions.d_count`(买入日=D1 交易日历口径,单一源)+ `PositionOut` 五派生字段(dCount/maxHoldDays/
+distToStopPct/retraceState/todayAction,stopLine 改读现役 config)+ `GET /positions/entry-suggestion` 预填;推送白名单
+扩四类(`apns` 加 PRECALL/D5EXIT category、`notify` 加 `push_precall_summary`/`push_d5_exit`,`__all__` 结构守护);
+`app_settings` 幂等加 `push_precall`/`push_d5exit` 两列(`db._migrate_columns`,生产 DB 副本验证 integrity ok + 重跑不炸);
+漏录兜底 `compute_missed_entry_hint`(实时算,补录后自动消失)。全量 **pytest 682 passed**(631→682,+51,零回归)。合成竞价
+冒烟 `scripts/smoke_precall.py` 真数据跑通(68 只关注池 / 8 变形 / 1 证伪 / D5 命中沙河股份)。**留 v1.1-H 联调**:9:26 真机
+推达 + 看板明细、D5 临期持仓真机推达 + 持仓卡置顶(活体验收);G.3 看板中文标签(precall/d5exit 已可透传,标签在 G 补齐)。
+
 ---
 
 ## 五、当前版本 Plan(v1.1 · SOP 补洞:盘前校准 + 持仓生命周期 + 自选板块 + 问询修复)
