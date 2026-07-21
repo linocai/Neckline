@@ -253,6 +253,8 @@ class InquiryOut(BaseModel):
 class PushSettingsOut(BaseModel):
     report: bool
     retreatBrake: bool
+    precall: bool      # v1.1-G.1:盘前校准 9:26 汇总推送开关
+    d5exit: bool       # v1.1-G.1:D5 时间退出推送开关
 
 
 class SettingsOut(BaseModel):
@@ -270,6 +272,8 @@ class SettingsLLMIn(BaseModel):
 class SettingsPushIn(BaseModel):
     report: bool
     retreatBrake: bool
+    precall: bool      # v1.1-G.1:盘前校准 9:26 汇总推送开关
+    d5exit: bool       # v1.1-G.1:D5 时间退出推送开关
 
 
 class DeviceRegisterIn(BaseModel):

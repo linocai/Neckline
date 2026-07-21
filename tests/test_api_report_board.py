@@ -119,3 +119,32 @@ def test_board_empty(client, AUTH):
     body = client.get("/api/v1/board", headers=AUTH).json()
     assert body["retreatBrake"]["active"] is False
     assert body["events"] == []
+
+
+def test_board_labels_precall_and_d5exit_events(client, AUTH, api_env):
+    """v1.1-G.3:看板中文标签覆盖新两类哨兵事件(客户端 `SentinelKind` 枚举依赖此
+    契约——`_SENTINEL_LABEL` 把 `precall`/`d5exit` 翻成中文,不是原样透传英文键)。"""
+    db = api_env.db_path
+    today = date.today()
+    dedup.record_pushed(
+        today, "precall", "600004.SH", "gap_up_invalidate",
+        payload={"body": "集合竞价开盘12.00高于买点参考位11.00 9.1%(超阈3%),今日买点已变形失效。"},
+        db_path=db,
+    )
+    dedup.record_pushed(
+        today, "d5exit", "600005.SH", "trigger",
+        payload={"body": "示例丙 今日 D5 时间退出日,按计划离场。"},
+        db_path=db,
+    )
+    # 市场级「盘前 tick 已跑」标记(空 ts_code)不应进事件列表——同退潮红条一个道理。
+    dedup.record_pushed(today, "precall", "", "tick", payload={"counts": {}}, db_path=db)
+
+    body = client.get("/api/v1/board", headers=AUTH).json()
+    sentinels = {e["sentinel"] for e in body["events"]}
+    assert sentinels == {"盘前校准", "D5退出"}
+    codes = {e["code"] for e in body["events"]}
+    assert codes == {"600004.SH", "600005.SH"}
+    precall_ev = next(e for e in body["events"] if e["sentinel"] == "盘前校准")
+    assert "买点已变形失效" in precall_ev["verdict"]
+    d5_ev = next(e for e in body["events"] if e["sentinel"] == "D5退出")
+    assert "D5 时间退出日" in d5_ev["verdict"]

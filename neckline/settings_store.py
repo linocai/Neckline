@@ -6,7 +6,7 @@
       (§3.4),每次调用现读、运行时生效不重启。
     · push_report / push_retreat / push_precall / push_d5exit —— APNs 四类推送开关
       (§2.4 v1.1 拍板,默认开可关)。`get_app_settings` 读全四类供 notify 查开关;
-      写入端点扩四字段(`set_push`)留 v1.1-G 设置屏,本块只加读取 + 两新列。
+      `set_push` 四字段写入(v1.1-G.1 设置屏接线)。
     · review_col_map —— 周复盘交割单列映射(4D 用,本块只建字段)。
 
 **安全铁律(逐条守)**:
@@ -116,14 +116,17 @@ def set_llm(provider: str, api_key: str, db_path: Optional[Path] = None) -> None
         )
 
 
-def set_push(report: bool, retreat: bool, db_path: Optional[Path] = None) -> None:
-    """写 APNs 两类推送开关(§2.4)。"""
+def set_push(
+    report: bool, retreat: bool, precall: bool, d5exit: bool, db_path: Optional[Path] = None
+) -> None:
+    """写 APNs 四类推送开关(§2.4 v1.1 拍板;v1.1-G.1 设置端点扩到四字段)。"""
     init_schema(db_path)
     with connection(db_path) as conn:
         _ensure_row(conn)
         conn.execute(
-            "UPDATE app_settings SET push_report=?, push_retreat=?, updated_at=? WHERE id=1",
-            (1 if report else 0, 1 if retreat else 0, _now()),
+            "UPDATE app_settings SET push_report=?, push_retreat=?, push_precall=?, push_d5exit=?, updated_at=? "
+            "WHERE id=1",
+            (1 if report else 0, 1 if retreat else 0, 1 if precall else 0, 1 if d5exit else 0, _now()),
         )
 
 

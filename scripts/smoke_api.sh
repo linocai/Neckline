@@ -42,7 +42,7 @@ echo "5) board(空):"; curl -s "${AUTH[@]}" "$BASE/board"; echo
 echo "6) settings(默认):"; curl -s "${AUTH[@]}" "$BASE/settings"; echo
 echo "7) PUT settings/llm(key 不回明文):"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"provider":"glm","apiKey":"sk-smoke-secret"}' -X PUT "$BASE/settings/llm"; echo
 echo "8) settings(应 llmKeySet=true 且无明文):"; curl -s "${AUTH[@]}" "$BASE/settings"; echo
-echo "9) PUT settings/push:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"report":true,"retreatBrake":false}' -X PUT "$BASE/settings/push"; echo
+echo "9) PUT settings/push(v1.1-G.1 四字段):"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"report":true,"retreatBrake":false,"precall":true,"d5exit":true}' -X PUT "$BASE/settings/push"; echo
 echo "10) open:"; OPEN=$(curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"code":"600519.SH","name":"贵州茅台","buy_price":1500.0,"qty":100,"entry_reason":"回调低吸"}' "$BASE/positions"); echo "  $OPEN"
 PID=$(echo "$OPEN" | "$PY" -c "import sys,json;print(json.load(sys.stdin)['position_id'])")
 echo "11) list:"; curl -s "${AUTH[@]}" "$BASE/positions"; echo

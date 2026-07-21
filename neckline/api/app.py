@@ -663,7 +663,10 @@ def get_settings() -> SettingsOut:
     return SettingsOut(
         llmProvider=st.llm_provider,
         llmKeySet=st.llm_key_set,
-        push=PushSettingsOut(report=st.push_report, retreatBrake=st.push_retreat),
+        push=PushSettingsOut(
+            report=st.push_report, retreatBrake=st.push_retreat,
+            precall=st.push_precall, d5exit=st.push_d5exit,
+        ),
         reviewColMap=st.review_col_map,
     )
 
@@ -678,7 +681,9 @@ def put_settings_llm(body: SettingsLLMIn) -> OkOut:
 
 @app.put(f"{API_PREFIX}/settings/push", dependencies=[Depends(require_token)])
 def put_settings_push(body: SettingsPushIn) -> OkOut:
-    set_push(body.report, body.retreatBrake, db_path=_db())
+    """写 APNs 四类推送开关(v1.1-G.1:契约扩至四字段,`app_settings.push_precall`/
+    `push_d5exit` 两列在 v1.1-A/B 已建,本端点补上写入接线)。"""
+    set_push(body.report, body.retreatBrake, body.precall, body.d5exit, db_path=_db())
     return OkOut(ok=True)
 
 

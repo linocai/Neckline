@@ -19,7 +19,7 @@ def test_settings_default(client, AUTH):
     body = r.json()
     assert body["llmProvider"] is None
     assert body["llmKeySet"] is False
-    assert body["push"] == {"report": True, "retreatBrake": True}
+    assert body["push"] == {"report": True, "retreatBrake": True, "precall": True, "d5exit": True}
 
 
 def test_put_llm_key_not_leaked_and_provider_runtime_effective(client, AUTH, api_env):
@@ -51,18 +51,27 @@ def test_put_llm_invalid_provider_422(client, AUTH):
 
 
 def test_put_push_toggles(client, AUTH):
-    r = client.put("/api/v1/settings/push", headers=AUTH, json={"report": False, "retreatBrake": True})
+    """v1.1-G.1:契约扩至四字段(报告/退潮/盘前校准/D5 退出)。"""
+    r = client.put("/api/v1/settings/push", headers=AUTH,
+                   json={"report": False, "retreatBrake": True, "precall": False, "d5exit": True})
     assert r.status_code == 200
     push = client.get("/api/v1/settings", headers=AUTH).json()["push"]
-    assert push == {"report": False, "retreatBrake": True}
+    assert push == {"report": False, "retreatBrake": True, "precall": False, "d5exit": True}
+
+
+def test_put_push_missing_field_422(client, AUTH):
+    """四字段均必填(与 report/retreatBrake 同款无默认值风格),缺字段 → 422 而非静默补默认。"""
+    r = client.put("/api/v1/settings/push", headers=AUTH, json={"report": True, "retreatBrake": True})
+    assert r.status_code == 422
 
 
 def test_put_llm_does_not_reset_push(client, AUTH):
     """set_llm 只碰 llm 列,不连带重置 push 开关(各 setter 只 UPDATE 自己的列)。"""
-    client.put("/api/v1/settings/push", headers=AUTH, json={"report": False, "retreatBrake": False})
+    client.put("/api/v1/settings/push", headers=AUTH,
+              json={"report": False, "retreatBrake": False, "precall": False, "d5exit": False})
     client.put("/api/v1/settings/llm", headers=AUTH, json={"provider": "glm", "apiKey": "k"})
     push = client.get("/api/v1/settings", headers=AUTH).json()["push"]
-    assert push == {"report": False, "retreatBrake": False}
+    assert push == {"report": False, "retreatBrake": False, "precall": False, "d5exit": False}
 
 
 def test_register_device(client, AUTH, api_env):

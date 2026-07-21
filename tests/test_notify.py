@@ -59,7 +59,7 @@ def test_categories_are_four_distinct():
 def test_report_push_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
-    set_push(report=False, retreat=True, db_path=db)
+    set_push(report=False, retreat=True, precall=True, d5exit=True, db_path=db)
     out = notify.push_report_ready("2026-07-17", db_path=db, transport=_ok_transport)
     assert out.sent == 0 and out.skipped_reason == "push_report_off"
 
@@ -68,7 +68,7 @@ def test_report_push_sends_when_on(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
     upsert_device("tok2", db_path=db)
-    set_push(report=True, retreat=True, db_path=db)
+    set_push(report=True, retreat=True, precall=True, d5exit=True, db_path=db)
     out = notify.push_report_ready("2026-07-17", db_path=db, transport=_ok_transport)
     assert out.sent == 2 and out.failed == 0
 
@@ -76,7 +76,7 @@ def test_report_push_sends_when_on(api_env, apns_configured):
 def test_retreat_push_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
-    set_push(report=True, retreat=False, db_path=db)
+    set_push(report=True, retreat=False, precall=True, d5exit=True, db_path=db)
     out = notify.push_retreat_brake("炸板率飙升", db_path=db, transport=_ok_transport)
     assert out.sent == 0 and out.skipped_reason == "push_retreat_off"
 
