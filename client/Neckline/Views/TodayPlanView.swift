@@ -420,7 +420,14 @@ struct OpenPositionSheet: View {
                 TextField("数量(股)", text: $model.entryForm.qty)
                 TextField("进场理由", text: $model.entryForm.reason)
             } footer: {
-                Text("此处只记录你已在券商完成的真实操作;止损线由服务端按 -5% 派生返回,系统不代下单。")
+                // v1.1-E.2:候选「已按计划买入」预填时的止损价提示(GET /positions/
+                // entry-suggestion 派生,仅预览——实际提交后以服务端按真实买入价返回的
+                // stopLine 为准,见提交成功后的 toast)。
+                if let stopLine = model.entrySuggestedStopLine {
+                    Text("此处只记录你已在券商完成的真实操作;预计止损价 ¥\(NKFmt.price(stopLine))(-5%,按现役配置,提交后以实际返回值为准),系统不代下单。")
+                } else {
+                    Text("此处只记录你已在券商完成的真实操作;止损线由服务端按 -5% 派生返回,系统不代下单。")
+                }
             }
         }
     }
