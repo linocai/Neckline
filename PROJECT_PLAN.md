@@ -430,6 +430,27 @@ D5/D5 徽标 + 距止损线 +12.36% + 回落止盈峰值展示;自选 tab 展示
 D5/9:26 盘前推送真机送达、txt 对账真实同花顺导出文件核对——均属 v1.1-H 活体验收
 范围,本块（E/F/G）按 plan 边界不做。
 
+**2026-07-21 · v1.1-H 服务端部署上云完成(服务端可验部分,🔴 高危 @builder-pro)**:v1.1 A–G 全量后端部署上生产 hz
+ECS(`0.4.0-stage4A` → **`0.6.0-v1.1ABCD`**),**未发生回滚**。步骤逐一验证:①**迁移前在线一致性备份**
+`data/neckline.db.bak-20260721-214141`(`sqlite3 .backup`,integrity ok,7 业务表行数与源逐表吻合);②`sync_code.sh`
+rsync(DRY_RUN 先验:仅代码传、`data/`+secrets 零触碰、零删除)+ **补装 3 个缺失依赖**(`python-multipart`/`openpyxl`/
+`et-xmlfile`,4C/4D/v1.1 引入但 4B 建 venv 时未装,阿里云镜像);③**幂等迁移四项随 `lifespan.init_schema` 重启执行**:
+`watchlist` 表新建 + `app_settings` 加 `push_precall`/`push_d5exit` + `inquiry_pool` 加 `consumed_report_date` + `reports`
+加 `watchlist_json`——迁移后 integrity ok、业务数据零丢失(positions=0/devices=1/reports=3 不变);④**服务端验收(公网真
+token,过 nginx vhost + TLS)全过**:`GET /watchlist` 空数组 200、`GET /settings` 四推送开关齐、`GET /positions`
+`{holdings:[]}`、`GET /report/latest` 老报告 `watchlistCheck=[]` 前向兼容不崩、自选 CRUD(加 600519.SH→删)往返 + 404、
+无 token 401,台账验收后回归干净;⑤**哨兵盘前分支已挂载**(out-of-band 跑活 `_sentinel_loop` 证 "含 v1.1 盘前校准分支"
+挂载 + 非交易时段 idle 待机无误触发),重启后 idle RSS ~82MB(与部署前持平,MemoryHigh=420M 余量足),`neckline.service`
+active + 两 timer(16:05/16:35)未动。**部署踩坑留痕**(已写 `hz_info.md §12`):权限复原若 blanket `chown -R deploy:neckline`
+会递归进 rsync 已排除的 `data/` 把 `neckline.db`/`parquet` 翻属主致 DB 只读——正解是复原只作用于代码路径不碰 `data/`;
+缺 multipart/xlsx 依赖会在 import 期炸服务,重启前先 preflight import。
+- **H 活体验收清单(留待用户 + 真实交易日,逐项)**:① **9:26 盘前校准真机**——下个交易日 9:25:30 哨兵盘前分支首跑 →
+  9:26 汇总 APNs 到真机 + 看板明细四判定真数据核对;② **D5 时间退出真机**——造一只 buy_date 使今日恰 D5 的真实持仓 →
+  9:2x D5 推送真机 + 持仓卡置顶;③ **自选体检出现在 16:35 真报告**——用户加真实自选票 → 当晚报告含自选体检节
+  (评分/红绿灯/四件套,LLM 只审 changed∪pinned);④ **同花顺 txt 真实对账**——用户导出真实自选 txt → macOS 工作台
+  差异 + 一键对齐 + 反向导出可被同花顺导入;⑤ **问询窗口修复实证**——16:35 后问询通过一票 → 次日 16:35 报告确实纳入
+  (跨日不再掉缝);⑥ **四类推送开关真机往返**——设置屏四 toggle 真机 PUT 生效回读一致。
+
 ---
 
 ## 五、当前版本 Plan(v1.1 · SOP 补洞:盘前校准 + 持仓生命周期 + 自选板块 + 问询修复)
@@ -944,3 +965,5 @@ D5/9:26 盘前推送真机送达、txt 对账真实同花顺导出文件核对�
 - **2026-07-21 · v1.1 立项(SOP 补洞)**:用户拍板 v1.1(2026-07-21 讨论定案,方向不得改),补 v1 实盘暴露的 SOP 四个裸奔点。设计共识同步标注拍板:**§2.3** 新增「自选体检」报告节(同码评分,LLM 只审 changed∪pinned);**§2.4** 新增「盘前校准 tick」(9:25:30 集合竞价快照纯规则判定、9:26 汇总推送,仍属执行层不产新票)+ **推送白名单扩到四类**(报告 / 退潮 / 盘前校准 / D5)+ **D5 时间退出执行器**(规则 v1 `hold=5` 此前无人触发)。**§五「当前版本 Plan(v1.1)」填入完整分块施工图**:A 盘前校准 tick(🔴)/ B 持仓生命周期 D 计数 + D5(🔴)/ C 自选池表 + CRUD + 体检 + 同花顺 txt 对账 / D 问询窗口修复(`inquiry_pool` 消费「当日」→「上次报告以来」,加 `consumed_report_date` 列)/ E 持仓卡改版 + 一键补录预填 / F 自选第五板块 UI + macOS txt 工作台 / G 设置屏四类开关 / H 部署 + 真机联调 + 活体验收,每块验收标准写死(含盘前校准 9:26 真机推达、D5 临期持仓真实触发、自选体检出现在真报告、txt 用真实同花顺导出对账四项活体验收)。高危区点名 @builder-pro(盘前校准 / D5 新推送类 APNs、哨兵进程盘中常驻改动、部署)。旧 `db.py` 新增 `watchlist` 表 + `app_settings` 两列 + `inquiry_pool` 一列(幂等迁移)。**铁律不变**:同码不重写、单一事实源(D 计数=D1 契约 / hold·止损读现役 config / 关注池 ≤200 自选并入仍守 / `write_table_day` 落盘 / LLM 90s)。§七补三项跨版本挂账(GLM search_hits / Bark 活体 / 周复盘首次真实交割单),§八补同花顺 txt 与两类新推送开关的用户操作。仓库现状:v1.1 未开工,施工图就位待 builder。
 
 - **2026-07-21 · v1.1-C/D 后端完工**:C 自选池(`neckline/watchlist.py` CRUD + THS txt 互转对账,`≤30` 硬校验、增删只经用户端点)+ 自选并入哨兵关注池(`sentinel/universe.py`,持仓/自选/候选同级保留、超限按「持仓>自选>候选」裁剪、≤200 守住)+ 自选票触发买点后享候选同级待遇(`engine.py`/`precall.py` 同码消费昨晚写死的 `entry_spec`/`invalidation_spec`)+ 新 `report/watchlist_check.py` 自选体检节(评分同码复用 `_base_score_expr`、红绿灯复用 `base_universe_expr`/`strategy.signals`、买点触发复用 `build_entry_mask`、LLM 只审 changed∪pinned 且新增 `judge_candidate(system_prompt=...)` 向后兼容扩展)+ `reports.watchlist_json`/`_shape_report` 前向兼容 + markdown 独立节 + 五个新端点。D 问询窗口修复:`inquiry_pool` 加 `consumed_report_date`(NULL=待消费),消费判据从「入池当日==报告日」改「待消费∪已被本报告日消费(幂等补跑)」,根治 16:35 后问询通过票永久掉缝的生产真洞。全量 **pytest 682 → 796**(+114,零回归)。隔离库 ATTACH 真实 `data/neckline.db` 参考表 + 真实 backfill 数据跑 `2026-07-17` 真报告验证自选体检(贵州茅台绿灯触发出真实四件套、宁德时代因创业板正确判红灯);`scripts/smoke_api.sh` 扩真实 uvicorn+curl 冒烟全过。详情/客户端契约清单见 §四。**仍挂账**:v1.1-E/F/G/H(客户端持仓卡/自选板块 UI/设置屏四开关/部署+活体验收)。
+
+- **2026-07-21 · v1.1-H 服务端部署上云(🔴 @builder-pro)**:v1.1 A–G 全量后端上生产 hz ECS(`0.4.0-stage4A` → `0.6.0-v1.1ABCD`),**未回滚**。迁移前 `sqlite3 .backup` 在线一致性备份(integrity ok/7 表行数吻合);`sync_code.sh` DRY_RUN 先验(仅代码、`data/`+secrets 零触碰、零删除)+ 补装 3 缺失依赖(`python-multipart`/`openpyxl`/`et-xmlfile`,4B 建 venv 时漏装、import 期 preflight 提前发现);幂等迁移四项随 `lifespan.init_schema` 重启执行(`watchlist` 表 + `app_settings` 两列 + `inquiry_pool` 一列 + `reports` 一列),迁移后 integrity ok、业务数据零丢失。公网真 token 服务端验收全过(watchlist 空 CRUD 往返 / 四推送开关 / positions 形状 / report/latest 前向兼容 / 401),哨兵盘前分支挂载 + idle RSS ~82MB 持平、timer 未动。踩坑留痕入 `hz_info.md §12`(权限复原勿 blanket chown 翻 `data/` 属主致 DB 只读;缺 multipart/xlsx 依赖 import 期炸服务)。**H 活体验收(9:26 盘前真机 / D5 真机 / 自选体检真报告 / txt 真实对账 / 问询跨日 / 四开关往返)留待用户 + 真实交易日,逐项列 §四。**
