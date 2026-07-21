@@ -112,3 +112,19 @@
   config/__init__.py` 的 `Settings.total_capital`(默认 12 万,`.env` 的
   `TOTAL_CAPITAL` 可覆盖)是唯一源,新代码要用到"占总仓百分比"一类计算(敞口
   占比、强制复盘阈值等)一律读这个字段,不要各自另开一个字面量。
+
+## v1 上线首日(2026-07-21)生产实战踩的坑
+
+- **TuShare 类型漂移会毒化 Parquet 分区**:某日某列全空时 pandas 落成 object → polars
+  String,写盘后与历史分区 Float64 冲突,`scan_parquet` 整表读取 SchemaError(实测
+  一天内 daily_basic 漂 5 列、moneyflow_dc 漂 12 列,16:35 报告任务直接崩)。防线在
+  落盘统一入口 `market_data.write_table_day` 的 `_align_to_table_schema`(按既有分区
+  schema cast,strict=False 空串转 null)——**任何新的落盘路径必须走 write_table_day,
+  不要自己 write_parquet**。
+- **带联网搜索的 LLM 调用不能沿用短读超时**:LinoN 时代 12-25s 短超时是治「连接卡死」
+  的(不带搜索的快聊),带搜索的审判/问询正常生成即需 30-60s+(生产实测 25s 下 10 只
+  审判 5 只 ReadTimeout;90s 后 26.3s 真调用成功)。现值 `openai_compat.read_timeout=90`;
+  卡死场景仍由 max_attempts 全新连接重试兜住,勿因个别慢调用回调短超时。
+- **GLM 顶层 `web_search` 数组可能为空但回答仍含时效信息**:搜索命中解析不到时
+  `search_hits` 落库为空数组,审判归因材料会缺搜索存档——已观察到,原因待查
+  (GLM 内部搜索不回传 or 响应形状变化),不影响主链路。
