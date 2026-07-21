@@ -181,3 +181,46 @@ class TestTopNSplit:
             top_n_judged=0, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
         )
         assert calls["n"] == 0
+
+
+class TestMissedEntryHint:
+    """漏录兜底(plan v1.1-B.4):当日买点哨兵触发过但台账无补录 → 提示;否则空串。
+    **不改评分**,纯只读旁路;GET /report 与 build_report 共用同一函数(单一源)。"""
+
+    def _record_entry(self, db, trade_date, code="600001.SH"):
+        from neckline.sentinel.dedup import record_pushed
+        record_pushed(trade_date, "entry", code, "trigger", payload={"body": "买点确认"}, db_path=db)
+
+    def test_hint_when_entry_fired_but_no_open(self, isolated_env):
+        from neckline.report.pipeline import compute_missed_entry_hint
+        td = date(2026, 7, 21)
+        db = isolated_env.db_path
+        self._record_entry(db, td)
+        hint = compute_missed_entry_hint(td, db_path=db)
+        assert hint and "1 只候选触达买点" in hint
+
+    def test_no_hint_when_position_recorded(self, isolated_env):
+        from neckline.report.pipeline import compute_missed_entry_hint
+        from neckline.sentinel.positions import open_position
+        td = date(2026, 7, 21)
+        db = isolated_env.db_path
+        self._record_entry(db, td)
+        open_position("600001.SH", 10.0, 100, td, db_path=db)   # 当日已补录
+        assert compute_missed_entry_hint(td, db_path=db) == ""
+
+    def test_no_hint_when_no_entry_events(self, isolated_env):
+        from neckline.report.pipeline import compute_missed_entry_hint
+        td = date(2026, 7, 21)
+        assert compute_missed_entry_hint(td, db_path=isolated_env.db_path) == ""
+
+    def test_build_report_bundle_carries_hint(self, isolated_env):
+        from neckline.report.pipeline import build_report
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+        # 当日买点事件触发,但无持仓补录 → bundle.missed_entry_hint 非空
+        self._record_entry(isolated_env.db_path, report_date, code="600001.SH")
+        bundle = build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert bundle.missed_entry_hint and "候选触达买点" in bundle.missed_entry_hint
