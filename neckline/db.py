@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS strategy_versions (
 -- 盘后报告存档(plan 2.5)。一个交易日一行(幂等覆盖,重跑报告不留重复行);
 -- *_json 是该次报告的结构化快照(情绪仪表盘/强势板块/候选20只四件套),供事后
 -- 审计与历史回放核对;markdown 是渲染产物全文。
+-- watchlist_json(v1.1-C.3 自选体检):`WatchlistCheckItem.public_dict()` 的 JSON
+-- 数组快照,老报告行(建表早于本列)经 `_migrate_columns` 幂等补列取默认值
+-- '[]'(前向兼容——旧报告没有这节,读回来就是空数组,不是 NULL 炸 json.loads)。
 CREATE TABLE IF NOT EXISTS reports (
     trade_date       TEXT PRIMARY KEY,   -- 'YYYYMMDD'
     generated_at     TEXT NOT NULL,      -- ISO8601
@@ -81,7 +84,8 @@ CREATE TABLE IF NOT EXISTS reports (
     sentiment_json   TEXT NOT NULL,
     sectors_json     TEXT NOT NULL,
     candidates_json  TEXT NOT NULL,
-    markdown         TEXT NOT NULL
+    markdown         TEXT NOT NULL,
+    watchlist_json   TEXT NOT NULL DEFAULT '[]'
 );
 
 -- LLM 逻辑审判存档(plan 2.4)。前10只候选每只一行;search_hits_json 是该次审判
@@ -170,13 +174,33 @@ CREATE TABLE IF NOT EXISTS devices (
 -- 阶段4 (4A) 问询台海选池(plan §2.5 / 4A.5)。问询台裁决「初审通过进当晚海选池」→
 -- 落本表(当日),当晚 `report.py` 生成报告时把海选池的票强制纳入候选评分 universe
 -- (不改评分逻辑,只扩输入)。UNIQUE(trade_date, ts_code) 幂等,同日同票复问不重复入池。
+-- consumed_report_date(v1.1-D 问询窗口修复):NULL=待消费,非 NULL=已被该交易日的
+-- 报告消费。`trade_date` 只是「入池当日」的审计留痕,消费匹配不再靠它(见
+-- `neckline.api.stores.load_pending_inquiry_codes`/`mark_inquiry_pool_consumed`
+-- 与 `neckline.report.pipeline.build_report` 的消费改法)。
 CREATE TABLE IF NOT EXISTS inquiry_pool (
-    trade_date  TEXT NOT NULL,           -- 'YYYYMMDD'(该票被纳入的目标交易日 = 当晚报告日)
+    trade_date  TEXT NOT NULL,           -- 'YYYYMMDD'(入池当日,审计用,非消费匹配键)
     ts_code     TEXT NOT NULL,
     name        TEXT,
     reason      TEXT,                    -- 初审通过时的一句依据(供报告/审计留痕)
     created_at  TEXT NOT NULL,
+    consumed_report_date TEXT,           -- 'YYYYMMDD' | NULL(NULL=待消费)
     PRIMARY KEY (trade_date, ts_code)
+);
+
+-- v1.1-C 自选池(plan §五 v1.1-C.1)。≤30 上限服务端硬校验(见 `neckline.watchlist`,
+-- 建表本身不限;超限在写入函数里拒绝),增删只经用户显式端点(系统代码路径——报告/
+-- 哨兵/问询台——绝不自动写本表,只读)。pinned=1 表示用户点名「每日必审」(v1.1-C.3
+-- LLM 只审 changed∪pinned 的判据之一);source 留痕入池来源(manual/candidate/
+-- inquiry/ths_import),纯审计,不影响任何逻辑分支。
+CREATE TABLE IF NOT EXISTS watchlist (
+    ts_code     TEXT PRIMARY KEY,
+    name        TEXT,
+    added_at    TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT 'manual',
+    note        TEXT,
+    pinned      INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL
 );
 
 -- 阶段4 (4D) 周复盘对账存档(plan 4D.2,week 为 ISO 周 'YYYY-Www')。本块(4A)仅建表
@@ -200,6 +224,11 @@ _COLUMN_MIGRATIONS = [
     # v1.1-A/B:两类新推送开关(默认开),老库补列即取常量默认 1。
     ("app_settings", "push_precall", "INTEGER NOT NULL DEFAULT 1"),
     ("app_settings", "push_d5exit", "INTEGER NOT NULL DEFAULT 1"),
+    # v1.1-C:自选体检快照(老报告行补列取默认 '[]',前向兼容,见 CREATE TABLE 注释)。
+    ("reports", "watchlist_json", "TEXT NOT NULL DEFAULT '[]'"),
+    # v1.1-D:问询窗口修复——消费标记列,可空(NULL=待消费),老库补列后既有行均为
+    # NULL,等同「历史遗留票下一次报告即可被消费」,不会丢票也不会误判已消费。
+    ("inquiry_pool", "consumed_report_date", "TEXT"),
 ]
 
 

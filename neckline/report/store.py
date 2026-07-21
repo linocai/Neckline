@@ -29,15 +29,18 @@ def save_report(
     sectors: List[Dict[str, Any]],
     candidates: List[Dict[str, Any]],
     markdown: str,
+    watchlist: Optional[List[Dict[str, Any]]] = None,
     db_path: Optional[Path] = None,
 ) -> None:
+    """`watchlist`(v1.1-C.3 自选体检快照,`WatchlistCheckItem.public_dict()` 列表):
+    默认 `None` → 落 `'[]'`(旧调用点/自选池为空时零改动落库形状)。"""
     init_schema(db_path)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with connection(db_path) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO reports "
-            "(trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "(trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, watchlist_json) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (
                 _d(trade_date),
                 now,
@@ -46,8 +49,20 @@ def save_report(
                 json.dumps(sectors, ensure_ascii=False),
                 json.dumps(candidates, ensure_ascii=False),
                 markdown,
+                json.dumps(watchlist or [], ensure_ascii=False),
             ),
         )
+
+
+def _parse_watchlist_json(raw: Optional[str]) -> List[Dict[str, Any]]:
+    """`watchlist_json` 容错解析——老报告行经 `_migrate_columns` 幂等补列后默认值
+    即 `'[]'`,但防御性再兜一层(NULL / 非法 JSON → 空列表,不炸历史回放)。"""
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
 def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
@@ -57,7 +72,7 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
-            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown "
+            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, watchlist_json "
             "FROM reports WHERE trade_date=?",
             (_d(trade_date),),
         ).fetchone()
@@ -71,6 +86,7 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
         "sectors": json.loads(row[4]),
         "candidates": json.loads(row[5]),
         "markdown": row[6],
+        "watchlist": _parse_watchlist_json(row[7]),
     }
 
 
@@ -89,7 +105,7 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
-            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown "
+            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, watchlist_json "
             "FROM reports WHERE trade_date=?",
             (trade_date_str,),
         ).fetchone()
@@ -103,7 +119,28 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
         "sectors": json.loads(row[4]),
         "candidates": json.loads(row[5]),
         "markdown": row[6],
+        "watchlist": _parse_watchlist_json(row[7]),
     }
+
+
+def load_watchlist_snapshot_before(trade_date: date, db_path: Optional[Path] = None) -> Dict[str, Dict[str, Any]]:
+    """`trade_date` **之前**(严格早于,`<`)最近一份已生成报告的自选体检快照,
+    按 `ts_code` 建索引(供 `watchlist_check.apply_llm_review` 的「状态变化」diff
+    用,§v1.1-C.3)。**用 `<` 而非「上一个交易日」**——同日补跑报告(`build_report`
+    对同一天重新生成)时,「上一份」仍应是更早交易日的快照,不能拿"即将被本次
+    覆盖的同一天旧值"当基准,否则同日重复生成会让所有票的 diff 基准变成"自己
+    生成前的自己",从而永远判定"未变化"、漏掉真实状态变化的 LLM 审视。查无 →
+    空 dict(视为「首次出现」,`_is_changed` 据此把首次出现按"已变化"处理)。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT watchlist_json FROM reports WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1",
+            (_d(trade_date),),
+        ).fetchone()
+    if row is None:
+        return {}
+    items = _parse_watchlist_json(row[0])
+    return {it["ts_code"]: it for it in items if isinstance(it, dict) and it.get("ts_code")}
 
 
 def save_llm_judgment(trade_date: date, result: JudgeResult, db_path: Optional[Path] = None) -> None:
@@ -158,5 +195,6 @@ def load_llm_judgments(trade_date: date, db_path: Optional[Path] = None) -> List
 
 __all__ = [
     "save_report", "load_report", "load_report_by_str", "latest_report_date",
+    "load_watchlist_snapshot_before",
     "save_llm_judgment", "load_llm_judgments",
 ]
