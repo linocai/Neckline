@@ -16,11 +16,12 @@ markdown 渲染(render.py)——`scripts/report.py` 的核心入口就是本模�
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from neckline import watchlist as watchlist_store
 from neckline.data.top_list import top_list_lookup
 from neckline.llm.base import LLMProvider
 from neckline.llm.factory import get_provider
@@ -30,6 +31,7 @@ from neckline.report.candidates import Candidate, build_candidates
 from neckline.report.render import render_markdown
 from neckline.report.sectors import SectorScore, compute_sector_strength, load_index_names, load_member_map
 from neckline.report.sentiment import SentimentDashboard, compute_sentiment
+from neckline.report.watchlist_check import WatchlistCheckItem, apply_llm_review, build_watchlist_check
 from neckline.strategy import brain
 
 TOP_N_TOTAL = 20
@@ -47,6 +49,7 @@ class ReportBundle:
     judged: Dict[str, JudgeResult]  # ts_code -> JudgeResult(仅前 top_n_judged 只)
     markdown: str
     missed_entry_hint: str = ""     # v1.1-B.4 漏录兜底提示(无 → 空串)
+    watchlist_check: List[WatchlistCheckItem] = field(default_factory=list)  # v1.1-C.3 自选体检(独立一节)
 
 
 def compute_missed_entry_hint(trade_date: date, db_path: Optional[Path] = None) -> str:
@@ -98,11 +101,16 @@ def build_report(
     member_map = load_member_map(parquet_dir=parquet_dir)
     index_names = load_index_names(parquet_dir=parquet_dir)
 
-    # 4E:消费问询台海选池(§2.5 闭环报告侧)——「初审通过」的票强制并入当晚候选评分
-    # universe(只扩输入,不改评分逻辑)。lazy import 沿 `review/reconcile.py` 惯例,让
-    # 报告管线不在模块加载期依赖 api 包。
-    from neckline.api.stores import load_inquiry_pool
-    inquiry_codes = [p["ts_code"] for p in load_inquiry_pool(trade_date, db_path=db_path)]
+    # 消费问询台海选池(§2.5 闭环报告侧;v1.1-D 问询窗口修复)——「初审通过」的票
+    # 强制并入当晚候选评分 universe(只扩输入,不改评分逻辑)。消费窗口从「入池当日
+    # 等于本报告日」改为「待消费(consumed_report_date IS NULL)∪ 已被本报告日消费过
+    # (幂等补跑)」,修复 16:35 报告已生成后问询通过的票永久掉缝的生产真洞(详见
+    # `neckline.api.stores.load_pending_inquiry_codes` docstring 根因说明)。lazy
+    # import 沿 `review/reconcile.py` 惯例,让报告管线不在模块加载期依赖 api 包。
+    from neckline.api.stores import load_pending_inquiry_codes, mark_inquiry_pool_consumed
+    inquiry_codes = list(dict.fromkeys(
+        p["ts_code"] for p in load_pending_inquiry_codes(trade_date, db_path=db_path)
+    ))
 
     candidates = build_candidates(
         trade_date,
@@ -128,6 +136,22 @@ def build_report(
         if save:
             store.save_llm_judgment(trade_date, result, db_path=db_path)
 
+    # v1.1-C.3 自选体检(独立一节,同码复用候选评分管线,§2.3 报告拍板/§五
+    # v1.1-C.3):不改候选评分/不进候选榜。空自选池 → `build_watchlist_check`
+    # 直接返回 []、零额外 I/O(见该函数 docstring)。LLM 只审「当日状态较上一份
+    # 报告变化的」∪「用户 pinned 的」(控成本,`apply_llm_review` 内部判定)。
+    watchlist_items = [w.to_dict() for w in watchlist_store.list_watchlist(db_path=db_path)]
+    watchlist_check = build_watchlist_check(
+        trade_date, active.rule, watchlist_items,
+        sector_scores=sector_scores, member_map=member_map, index_names=index_names,
+        parquet_dir=parquet_dir, db_path=db_path,
+    )
+    previous_watchlist_snapshot = store.load_watchlist_snapshot_before(trade_date, db_path=db_path)
+    apply_llm_review(
+        watchlist_check, previous_watchlist_snapshot,
+        provider=provider, top_list=top_list, transport=llm_transport,
+    )
+
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     markdown = render_markdown(
         trade_date=trade_date,
@@ -138,6 +162,7 @@ def build_report(
         candidates=candidates,
         judged=judged,
         top_n_judged=top_n_judged,
+        watchlist_check=watchlist_check,
     )
 
     if save:
@@ -148,8 +173,13 @@ def build_report(
             sectors=[_jsonable(s) for s in sector_scores],
             candidates=[_jsonable(c.public_dict()) for c in candidates],
             markdown=markdown,
+            watchlist=[_jsonable(w.public_dict()) for w in watchlist_check],
             db_path=db_path,
         )
+        # v1.1-D 问询窗口修复:报告落库成功后才标记消费(§根因见
+        # `load_pending_inquiry_codes`/`mark_inquiry_pool_consumed` docstring)——
+        # `save=False`(预览/单测)绝不应有这个副作用,故放在 `if save:` 内。
+        mark_inquiry_pool_consumed(trade_date, db_path=db_path)
 
     return ReportBundle(
         trade_date=trade_date,
@@ -161,6 +191,7 @@ def build_report(
         judged=judged,
         markdown=markdown,
         missed_entry_hint=compute_missed_entry_hint(trade_date, db_path=db_path),
+        watchlist_check=watchlist_check,
     )
 
 

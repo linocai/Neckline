@@ -45,9 +45,11 @@ class _StubProvider:
     def __init__(self, result: LLMResult) -> None:
         self._result = result
         self.calls = 0
+        self.captured_messages = []
 
     def chat(self, messages, *, enable_search=True, transport=None):
         self.calls += 1
+        self.captured_messages = list(messages)
         return self._result
 
 
@@ -58,6 +60,38 @@ class TestNoProviderDegradation:
         assert r.degraded is True
         assert "未激活" in r.narrative
         assert "LLM_PROVIDER" in r.degrade_reason
+
+
+class TestCustomSystemPrompt:
+    """v1.1-C.3 新增可选 `system_prompt` 参数(默认值不变,候选审判调用点零改动,
+    纯向后兼容扩展——自选体检复用本函数时传入
+    `WATCHLIST_JUDGE_SYSTEM_PROMPT`)。"""
+
+    def test_default_call_unaffected_uses_judge_system_prompt(self):
+        from neckline.llm.judge import JUDGE_SYSTEM_PROMPT
+
+        stub = _StubProvider(LLMResult(ok=True, content="分析。\n结论:通过", provider="glm", model="glm-5.2"))
+        judge_candidate(_candidate(), provider=stub)
+        assert stub.captured_messages[0].role == "system"
+        assert stub.captured_messages[0].content == JUDGE_SYSTEM_PROMPT
+
+    def test_custom_system_prompt_is_used_when_passed(self):
+        from neckline.llm.judge import JUDGE_SYSTEM_PROMPT, WATCHLIST_JUDGE_SYSTEM_PROMPT
+
+        stub = _StubProvider(LLMResult(ok=True, content="分析。\n结论:通过", provider="glm", model="glm-5.2"))
+        judge_candidate(_candidate(), provider=stub, system_prompt=WATCHLIST_JUDGE_SYSTEM_PROMPT)
+        assert stub.captured_messages[0].content == WATCHLIST_JUDGE_SYSTEM_PROMPT
+        assert stub.captured_messages[0].content != JUDGE_SYSTEM_PROMPT   # 确实是两套不同文案
+
+    def test_watchlist_prompt_still_uses_same_verdict_tag_format(self):
+        """两套 prompt 共用同一套「结论:通过|否决」解析(`_parse_verdict`),不是
+        另起一套标签格式。"""
+        from neckline.llm.judge import WATCHLIST_JUDGE_SYSTEM_PROMPT
+
+        stub = _StubProvider(LLMResult(ok=True, content="一段分析。\n结论:否决", provider="glm", model="glm-5.2"))
+        r = judge_candidate(_candidate(), provider=stub, system_prompt=WATCHLIST_JUDGE_SYSTEM_PROMPT)
+        assert r.verdict == VERDICT_VETO
+        assert "一段分析" in r.narrative
 
 
 class TestProviderFailureDegradation:

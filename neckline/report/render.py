@@ -8,12 +8,13 @@ LLM 输出,可以用 markdown 标题与表格排版,但 LLM 审判的叙述段�
 from __future__ import annotations
 
 from datetime import date
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from neckline.llm.judge import JudgeResult, VERDICT_PASS, VERDICT_VETO
 from neckline.report.candidates import Candidate
 from neckline.report.sectors import SectorScore
 from neckline.report.sentiment import SentimentDashboard
+from neckline.report.watchlist_check import WatchlistCheckItem
 
 _VERDICT_BADGE = {VERDICT_PASS: "✅ 通过", VERDICT_VETO: "🚫 否决"}
 
@@ -28,6 +29,7 @@ def render_markdown(
     candidates: List[Candidate],
     judged: Dict[str, JudgeResult],
     top_n_judged: int,
+    watchlist_check: Optional[List[WatchlistCheckItem]] = None,
 ) -> str:
     parts: List[str] = []
     parts.append(f"# Neckline 盘后报告 · {trade_date.isoformat()}")
@@ -43,6 +45,7 @@ def render_markdown(
     parts.append(_render_sentiment(sentiment))
     parts.append(_render_sectors(sectors))
     parts.append(_render_candidates(candidates, judged, top_n_judged))
+    parts.append(_render_watchlist(watchlist_check or []))
     return "\n".join(parts)
 
 
@@ -126,6 +129,55 @@ def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResul
             lines.append(f"| {c.rank} | {c.ts_code} | {c.name} | {c.score:.1f} | {tags} |")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+def _render_watchlist(items: List[WatchlistCheckItem]) -> str:
+    """自选体检节(plan §2.3 v1.1 拍板 / §五 v1.1-C.3)。**独立一节,不是候选**——
+    标题与候选节明确分开,不与候选榜混排。"""
+    lines = ["## 自选体检(用户自选池,独立于候选榜)", ""]
+    if not items:
+        lines.append("自选池为空(App「自选」板块可添加)。")
+        lines.append("")
+        return "\n".join(lines)
+
+    for it in items:
+        light = "🟢 可动" if it.green_light else "🔴 禁买"
+        badge = " · 🔔 状态变化" if it.status_changed else ""
+        pin = " · 📌 已点名" if it.pinned else ""
+        lines.append(f"#### {it.name}({it.ts_code}){badge}{pin}")
+        lines.append("")
+        if not it.has_data:
+            lines.append(f"- {it.disqualifiers[0] if it.disqualifiers else '当日无数据。'}")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+            continue
+        lines.append(
+            f"- 现价:{it.close:.2f} 元 · 展示排序分:{it.score:.1f} · 纪律红绿灯:{light}"
+            f" · 形态标签:{'、'.join(it.pattern_tags) if it.pattern_tags else '无'}"
+        )
+        if it.disqualifiers:
+            lines.append("- 禁买原因:" + ";".join(it.disqualifiers))
+        if it.hot_sectors:
+            lines.append(f"- 命中热门板块:{'、'.join(it.hot_sectors)}")
+        if it.buy_point_triggered:
+            lines.append(f"- **买点**:{it.entry_plan}")
+            lines.append(f"- **止损**:{it.stop_loss}")
+            lines.append(f"- **目标**:{it.target}")
+            lines.append(f"- **证伪条件**:{it.invalidation_text}")
+        else:
+            lines.append("- 今日未触发母战法买点(仅供关注)。")
+        lines.append("")
+        if it.llm_judgment is not None:
+            jr = it.llm_judgment
+            badge2 = _VERDICT_BADGE.get(jr["verdict"], f"⏸ {jr['verdict']}")
+            lines.append(f"**LLM 审判(状态变化 / 已点名才审):{badge2}**")
+            lines.append("")
+            lines.append(jr["narrative"])
+            lines.append("")
+        lines.append("---")
+        lines.append("")
     return "\n".join(lines)
 
 
