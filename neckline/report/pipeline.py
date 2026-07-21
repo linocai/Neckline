@@ -78,6 +78,12 @@ def build_report(
     member_map = load_member_map(parquet_dir=parquet_dir)
     index_names = load_index_names(parquet_dir=parquet_dir)
 
+    # 4E:消费问询台海选池(§2.5 闭环报告侧)——「初审通过」的票强制并入当晚候选评分
+    # universe(只扩输入,不改评分逻辑)。lazy import 沿 `review/reconcile.py` 惯例,让
+    # 报告管线不在模块加载期依赖 api 包。
+    from neckline.api.stores import load_inquiry_pool
+    inquiry_codes = [p["ts_code"] for p in load_inquiry_pool(trade_date, db_path=db_path)]
+
     candidates = build_candidates(
         trade_date,
         active.rule,
@@ -87,6 +93,7 @@ def build_report(
         top_n=top_n_total,
         parquet_dir=parquet_dir,
         db_path=db_path,
+        forced_codes=inquiry_codes,
     )
 
     provider = llm_provider or get_provider(db_path=db_path)

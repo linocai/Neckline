@@ -113,6 +113,51 @@ class TestSaveFalseDoesNotWriteStore:
         assert store.load_llm_judgments(report_date, db_path=isolated_env.db_path) == []
 
 
+class TestInquiryPoolConsumption:
+    """§2.5 闭环报告侧(4E 接线):`build_report` 消费当日 `inquiry_pool`——「初审通过」
+    的票强制并入当晚候选评分 universe(只扩输入,不改评分)。用 300001.SZ(创业板,报告
+    日 rule v1 主板 only 会剔除)作「问询台放行但报告 mask 会排除」的代理,验证它经海选
+    池被强制纳入,而未入池的 600002.SH(*ST)仍被剔除。"""
+
+    def test_inquiry_pool_ticket_forced_into_candidates(self, isolated_env, monkeypatch):
+        from neckline.api.stores import add_to_inquiry_pool
+
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        # 基线:未入池时 300001.SZ 不在候选(被主板 only mask 剔除)
+        base = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert "300001.SZ" not in [c.ts_code for c in base.candidates]
+
+        # 入海选池后重跑:300001.SZ 被强制纳入,600002.SH(*ST,未入池)仍被剔除
+        add_to_inquiry_pool(report_date, "300001.SZ", name="示例丙",
+                            reason="问询台初审通过", db_path=isolated_env.db_path)
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        codes = [c.ts_code for c in bundle.candidates]
+        assert "300001.SZ" in codes          # 海选池票强制纳入
+        assert "600001.SH" in codes          # 原本就通过的票不受影响
+        assert "600002.SH" not in codes      # 未入池的 *ST 仍剔除
+
+    def test_no_inquiry_pool_is_unchanged(self, isolated_env, monkeypatch):
+        # 空池 → 与阶段2 行为一致(零回归)
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        codes = [c.ts_code for c in bundle.candidates]
+        assert "600001.SH" in codes
+        assert "300001.SZ" not in codes and "600002.SH" not in codes
+
+
 class TestTopNSplit:
     def test_only_top_n_judged_candidates_get_llm_called(self, isolated_env, monkeypatch):
         calls = {"n": 0}

@@ -78,12 +78,16 @@ def build_candidates(
     top_n: int = 20,
     parquet_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
+    forced_codes: Optional[List[str]] = None,
 ) -> List[Candidate]:
     """报告候选管线入口。`rule` 是大脑 `StrategyVersion.rule`(含 `rule["config"]`,
     喂 `MomentumConfig(**...)`)——调用方(`pipeline.py`)负责从
     `neckline.strategy.brain.get_active()` 取。`build_research_panel(trade_date,
     trade_date, ...)` 正是 `features.py` docstring 里"喂今日"的报告跑道:内部按需
     加载前置窗口算特征,裁剪后只留 `trade_date` 这一天的全市场横截面。
+
+    `forced_codes`:问询台海选池「初审通过」的票(§2.5),强制并入候选评分 universe
+    ——见 `score_candidates` 的说明。
     """
     cfg = MomentumConfig(**rule["config"])
     panel = build_research_panel(trade_date, trade_date, with_forward=False, parquet_dir=parquet_dir)
@@ -98,6 +102,7 @@ def build_candidates(
         index_names=index_names,
         top_n=top_n,
         db_path=db_path,
+        forced_codes=forced_codes,
     )
 
 
@@ -110,13 +115,30 @@ def score_candidates(
     index_names: Optional[Dict[str, str]] = None,
     top_n: int = 20,
     db_path: Optional[Path] = None,
+    forced_codes: Optional[List[str]] = None,
 ) -> List[Candidate]:
     """给一个已算好特征的单日面板打分排序、生成四件套。与 `build_candidates` 拆开
     是为了单测能绕过整条 I/O 数据管线,直接对手工构造的 DataFrame 断言评分/四件套
     逻辑;entry mask 仍是同一份 `build_entry_mask(cfg)`(§2.6 同码,不是另一份拷贝)。
+
+    `forced_codes`(§2.5「初审通过进海选池」→ 报告侧消费,4E 接线):问询台已过
+    **确定性纪律核对**(次新/高弹/ST/板块限制)的票,强制并入评分 universe——**只扩
+    输入,不改评分逻辑**:这些票绕过 entry mask 直接从当日面板取行并入,评分/板块
+    加分/排序仍走下方同一套逻辑(不特判、不另算分),且即便评分排在 `top_n` 之外也
+    保证出现在输出里(§2.5「强制纳入」)。空/None → 行为与阶段2 完全一致,零回归。
     """
     mask = build_entry_mask(cfg)
     cands = panel.filter(mask)
+    # —— 4E:问询台海选池票强制并入(§2.5,详见 docstring)。绕过 mask,从当日面板取
+    #    其行 union 进来;去重(已过 mask 的不重复取),评分逻辑对全体一视同仁。————
+    forced = [c for c in (forced_codes or []) if c]
+    if forced:
+        present = set(cands["ts_code"].to_list())
+        extra = [c for c in forced if c not in present]
+        if extra:
+            forced_rows = panel.filter(pl.col("ts_code").is_in(extra))
+            if not forced_rows.is_empty():
+                cands = forced_rows if cands.is_empty() else pl.concat([cands, forced_rows], how="vertical")
     if cands.is_empty():
         return []
 
@@ -138,7 +160,17 @@ def score_candidates(
     cands = cands.with_columns((pl.col("_base_score") + pl.col("_bonus")).round(1).alias("_score"))
     cands = cands.sort("_score", descending=True, nulls_last=True)
 
-    top_rows = cands.head(top_n).to_dicts()
+    if forced:
+        # 强制票即便评分排在 top_n 之外也保证出现(§2.5「强制纳入」);与 head(top_n)
+        # 合并后按分重排,rank 连续(强制票行数很少,输出略超 top_n 可接受)。
+        top = cands.head(top_n)
+        missing = [c for c in forced if c not in set(top["ts_code"].to_list())]
+        if missing:
+            extra_rows = cands.filter(pl.col("ts_code").is_in(missing))
+            top = pl.concat([top, extra_rows], how="vertical").sort("_score", descending=True, nulls_last=True)
+        top_rows = top.to_dicts()
+    else:
+        top_rows = cands.head(top_n).to_dicts()
     names = _load_stock_names([r["ts_code"] for r in top_rows], db_path)
 
     out: List[Candidate] = []

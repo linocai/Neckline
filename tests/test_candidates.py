@@ -95,6 +95,68 @@ class TestScoreCandidatesFiltersAndRanks:
         assert abs(out[0].score) < 1e6
 
 
+class TestForcedInquiryPoolCodes:
+    """问询台海选池「初审通过」票强制并入评分 universe(§2.5,4E 报告侧接线)。
+    这里用 `board="GEM"`(rule v1 主板 only,恒被 entry mask 剔除)作「报告日 mask 会
+    排除的票」的代理 —— 生产中真正进海选池的票已过问询台确定性纪律核对(主板/非ST/
+    非次新/非高弹),但对 `score_candidates` 本身而言,forced 只需保证「绕过 mask 并入
+    评分」这一机制成立;是否有资格进池由问询台侧(`test_api_inquiry`)守。"""
+
+    def test_forced_code_bypasses_entry_mask(self):
+        panel = _panel(
+            _row("MAIN1"),
+            _row("GEMF", board="GEM"),  # 正常被 mask 剔除
+        )
+        # 不 forced:GEMF 被剔除
+        base = score_candidates(panel, RULE_V1_CFG)
+        assert [c.ts_code for c in base] == ["MAIN1"]
+        # forced:GEMF 绕过 mask 并入,评分照同一套逻辑
+        out = score_candidates(panel, RULE_V1_CFG, forced_codes=["GEMF"])
+        codes = [c.ts_code for c in out]
+        assert "GEMF" in codes and "MAIN1" in codes
+
+    def test_forced_code_already_passing_mask_not_double_counted(self):
+        panel = _panel(_row("MAIN1"))
+        out = score_candidates(panel, RULE_V1_CFG, forced_codes=["MAIN1"])
+        assert [c.ts_code for c in out] == ["MAIN1"]  # 恰一次,不重复
+
+    def test_forced_code_survives_top_n_cut(self):
+        # MAIN_HI 评分最高吃满 top_n=1;GEMF 评分低且在 top_n 之外,forced 保证仍出现
+        panel = _panel(
+            _row("MAIN_HI", dist_from_high_20d=-0.01),      # base≈99
+            _row("GEMF", board="GEM", dist_from_high_20d=-0.20),  # base≈80,且被 mask 剔除
+        )
+        out = score_candidates(panel, RULE_V1_CFG, top_n=1, forced_codes=["GEMF"])
+        codes = [c.ts_code for c in out]
+        assert codes == ["MAIN_HI", "GEMF"]         # 强制票挂在 top_n 之后,按分重排
+        assert out[0].rank == 1 and out[1].rank == 2  # rank 连续
+
+    def test_forced_when_nothing_passes_mask(self):
+        # mask 一个都不匹配(全 ST/GEM),但 forced 票仍应被评分并输出
+        panel = _panel(
+            _row("STONLY", is_st=True),
+            _row("GEMF", board="GEM"),
+        )
+        out = score_candidates(panel, RULE_V1_CFG, forced_codes=["GEMF"])
+        assert [c.ts_code for c in out] == ["GEMF"]
+
+    def test_forced_code_absent_from_panel_is_ignored(self):
+        panel = _panel(_row("MAIN1"))
+        out = score_candidates(panel, RULE_V1_CFG, forced_codes=["ZZZ999.SZ"])
+        assert [c.ts_code for c in out] == ["MAIN1"]  # 不在面板 → 静默忽略,不崩
+
+    def test_empty_or_none_forced_is_exact_noop(self):
+        # 回归护栏:forced=[]/None 与不传 forced 逐票一致(阶段2 评分零扰动)
+        panel = _panel(
+            _row("A", dist_from_high_20d=-0.01),
+            _row("B", dist_from_high_20d=-0.10),
+            _row("GEM1", board="GEM"),
+        )
+        baseline = [c.ts_code for c in score_candidates(panel, RULE_V1_CFG)]
+        assert [c.ts_code for c in score_candidates(panel, RULE_V1_CFG, forced_codes=[])] == baseline
+        assert [c.ts_code for c in score_candidates(panel, RULE_V1_CFG, forced_codes=None)] == baseline
+
+
 class TestSectorBonus:
     def test_hot_sector_membership_can_flip_ranking(self):
         panel = _panel(
