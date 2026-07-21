@@ -161,3 +161,19 @@
   未经验证前无法排除的变体),复用 `review.parse.normalize_ts_code`/
   `sentinel.quotes.to_symbol` 判定交易所后缀,不新写正则。拿到真实同花顺导出
   文件后,建议先跑一次 `POST /watchlist/reconcile-ths` 核对协议假设仍成立。
+
+## v1.1-E/F/G(客户端持仓生命周期 + 自选 + 推送四开关)踩过的坑,H 续做前先看
+
+- **`APIClient.swift` 的 404 错误映射此前是「单一 fallback」设计**:`send()` 对
+  所有 404 都传 `mapReason(data, fallback: .notHolding)`,`mapReason` 里任何未识别
+  的 `reason` 字符串一律落回这个 fallback——新增 watchlist 的 `DELETE`/`PUT .../pin`
+  (`reason="not_found"`)前,这意味着**任何**新 404 端点只要 reason 不是
+  `"not_holding"`,都会被客户端误显示成"该持仓已清或不存在"。已加 `APIError.notFound`
+  + `mapReason` 新 case 修掉这一处。**H 块或以后新增任何会返 404 的端点,先检查
+  `mapReason` 要不要跟进一个新 case,不要假设 fallback 会自动"猜对"文案。**
+- **服务端字段名与客户端既有计算属性撞名时,只做展示口径不同不能直接合并**:
+  `PositionOut.distToStopPct`(服务端,小数如 0.0625)与客户端 `Position` 早于
+  v1.1 就有的计算属性 `distToStopPct`(百分比如 6.25,来自 `(price-stopLine)/
+  price*100`,被既有单测锁死语义)算法等价但单位不同——新增服务端字段时用显式
+  `CodingKeys` 把解码属性改名为 `distToStopPctServer`,不要为了"用同一个名字"
+  硬改旧计算属性的既有语义(会连带改变既有单测的隐含契约)。

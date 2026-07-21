@@ -373,8 +373,62 @@ NULL OR = 本报告日`)替代旧的 `load_inquiry_pool(trade_date)` 消费查�
 **遗留给客户端 E/F/G/H 的接口契约清单(新端点/新字段,E/F/G 落地时对照)**:
 - 新端点(鉴权沿 `require_token`,契约见 `neckline/api/schemas.py`):`GET /watchlist` → `WatchlistOut{items:[WatchlistItemOut], maxSize:30}`(每项含 `check:WatchlistCheckOut|null` = 最近一份报告的体检快照,从未体检过 → null);`POST /watchlist` body `{code,name?,note?}` → `WatchlistAddOut{item}`,**满 30 返 422** `{detail:{reason:"watchlist_full"}}`;`DELETE /watchlist/{code}` → `OkOut`,不存在 404;`PUT /watchlist/{code}/pin` body `{pinned:bool}` → `OkOut`,不存在 404;`POST /watchlist/reconcile-ths`(multipart,字段名 `file`,单 txt 文件)→ `ThsReconcileOut{onlyInThs[],onlyInNeckline[],both[]}`(均 ts_code 格式,只算差集不写入,对齐由客户端调上面的 CRUD);`GET /watchlist/export-ths` → `ThsExportOut{text,count}`(text 是可直接存文件的 txt 全文)。
 - `ReportOut` 新增字段 `watchlistCheck: WatchlistCheckOut[]`(旧报告 / 空自选池 → 空数组,不是 null,客户端不必特判)。`WatchlistCheckOut` 字段:`code/name/pinned/source/hasData/close/board/score/patternTags/hotSectors/sectorNames/greenLight/disqualifiers/buyPointTriggered/buyPoint/stop/target/invalidation/invalidationSpec/entrySpec/statusChanged/llmJudgment{verdict,narrative,degraded}|null`——四件套字段命名与 `CandidateOut` 一致(`buyPoint/stop/target/invalidation`),**F.2 客户端可直接复用 `CandidateRow` 四件套布局**(plan 原文已点名)。
-- v1.1-G 待办(本块未做,按 plan 归属 G 块):`GET/PUT /settings/push` 契约扩至四字段(报告/退潮/盘前/D5)**本块未动**——`PushSettingsOut`/`SettingsPushIn` 仍是 2 字段,`app_settings.push_precall`/`push_d5exit` 列已在 v1.1-A/B 建好但未接入 settings 端点,留 G.1 原样处理,C/D 未触碰。
+- ~~v1.1-G 待办(本块未做,按 plan 归属 G 块):`GET/PUT /settings/push` 契约扩至四字段(报告/退潮/盘前/D5)**本块未动**~~ → **已在下方 E/F/G 施工中完成**(G.1)。
 - D 块(问询窗口修复)**纯后端内部修复,无任何客户端契约变化**——`POST /inquiry` 请求/响应形状不变,客户端无需改动。
+
+**2026-07-21 · v1.1-E/F/G 客户端完工(本地 + 真实 dev 后端联调全绿)**:三块客户端交付
++ G.1 一小步后端(`GET/PUT /settings/push` 契约扩至四字段,任务范围内)。
+
+**G.1(后端,先行)**:`PushSettingsOut`/`SettingsPushIn` 加 `precall`/`d5exit`;
+`settings_store.set_push` 扩签名同步写 `app_settings.push_precall`/`push_d5exit`
+两列(v1.1-A/B 已建好列,本块补写入接线);`GET/PUT /settings/push` 端点接线。补
+`test_put_push_missing_field_422` + `test_board_labels_precall_and_d5exit_events`
+(看板 `_SENTINEL_LABEL` 对 precall/d5exit 的中文标签契约,客户端 `SentinelKind`
+枚举依赖此契约,原逻辑已在 v1.1-A/B 就位,本次只补regressions测试硬化)。同步改
+`test_notify.py` 三处 `set_push` 调用点 + `smoke_api.sh` 步骤9。**pytest 796→798**。
+
+**E(持仓卡改版 + 一键补录)**:`Position` 加 `dCount`/`maxHoldDays`/
+`distToStopPctServer`(=服务端 `distToStopPct`;因与既有客户端计算属性
+`distToStopPct` 撞名,显式 `CodingKeys` 改名,两者算法等价但保留旧计算属性不动、
+不碰既有单测)/`retraceState`/`todayAction`;`isExitDay`/`todayActionTone` 展示层
+派生(优先级 D5>回落止盈已触发>距止损,只选颜色/是否醒目横幅,文案仍来自服务端)。
+今日计划持仓区置顶到候选之上;`PositionCard` 加 D 计数徽标/距止损线/回落止盈状态,
+D5 时触发顶部醒目横幅。`missedEntryHint` 有值时顶部提示条。候选卡「已按计划买入」
+→ `AppModel.openEntrySheet(fromCandidate:)`:买点参考价读新增 `Candidate.entrySpec`
+(pullback→ma10/breakout→platformHigh,展示层选择不新推导数字,同 `boardLabel`
+先例)预填价格,调 `GET /positions/entry-suggestion` 拉真实推荐 qty + 止损提示,
+缺 entrySpec 时留空手填不崩(单测覆盖两条路径)。
+
+**F(自选第五板块 + macOS txt 对账)**:`AppTab` 加 `.watchlist`,iOS 五 tab(今日
+计划/盘中看板/**自选**/问询台/设置),macOS 侧栏同步插入。新 `WatchlistView.swift`:
+列表(评分/形态标签/纪律红绿灯/买点四件套,四件套展开区抽成 `FourPieceDisclosure`
+组件与候选卡共用,不各写一份)、+自选输入框、pin/移除(**增删只经用户显式点击,
+无任何自动触发路径**);macOS 独有同花顺 txt 拖入对账区(`reconcile-ths` 展示
+仅同花顺有/仅Neckline有/两者都有三分组差异 + 一键对齐 + 导出存文件,iOS 不做)。
+候选卡 / 问询台裁决卡加「+自选」一键(`quickAddWatchlist`,满 30 时给出明确
+「自选池已满」提示而非裸「字段校验失败」)。`APIClient` 补 6 个 watchlist 方法 +
+`entrySuggestion`;新增 `delete()` 传输层 helper;`APIError` 加 `.notFound` 与既有
+`.notHolding` 分开映射(watchlist 404 `reason=not_found`,避免误显示"该持仓已清或
+不存在")。
+
+**G(设置四推送开关 + 看板中文标签)**:`PushSettings` 加 `precall`/`d5exit`,设置屏
+推送区扩 4 toggle。`PushManager` 加 `PRECALL`/`D5EXIT` category(字面对齐后端
+`apns.py`),`targetTab` 路由 PRECALL→盘中看板、D5EXIT→今日计划。`SentinelKind`
+枚举补 `.precall`(盘前校准)/`.d5exit`(D5退出),`BoardEventRow` 色调分支跟进。
+
+**验收证据**:双端 `xcodebuild` **BUILD SUCCEEDED**、iOS Simulator **TEST
+SUCCEEDED**(45→**64 执行 / 9 skip 探活 / 0 失败**)。本地隔离库(`sqlite3 ATTACH`
+真实 `data/neckline.db` 只读参考表 + 真实 Parquet backfill,同 4C/C 块姿势)起真
+dev uvicorn 做端到端联调,**非 mock**:真实自选增删/pin/txt对账/`entry-suggestion`
+请求闭环(`IntegrationSmokeTests` 新增 3 例 + 既有 6 例共 9 例全过);真实持仓造出
+D5 场景、模拟器截图核对——持仓卡顶部醒目横幅「D5 时间退出日,按计划离场」+
+D5/D5 徽标 + 距止损线 +12.36% + 回落止盈峰值展示;自选 tab 展示贵州茅台
+(600519.SH)真实体检(98.7 分、纪律绿灯、买点已触发、真实 entrySpec.ma10=1217.11);
+盘中看板展示 precall/d5exit 真实中文标签事件。**无重大偏离**:`FourPieceDisclosure`
+从 `CandidateRow` 内联代码抽成共享组件供 `WatchlistRow` 复用,是 plan「F.2 可直接
+复用 CandidateRow 四件套布局」原文的字面落实(而非另起一份重复代码)。**遗留**:
+D5/9:26 盘前推送真机送达、txt 对账真实同花顺导出文件核对——均属 v1.1-H 活体验收
+范围,本块（E/F/G）按 plan 边界不做。
 
 ---
 
