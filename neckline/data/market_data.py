@@ -64,10 +64,38 @@ def day_file_path(table: str, trade_date: DateLike, parquet_dir: Optional[Path] 
     return table_dir(table, parquet_dir) / f"year={dt.year}" / f"{dt.strftime('%Y%m%d')}.parquet"
 
 
+def _align_to_table_schema(table: str, df: pl.DataFrame, parquet_dir: Optional[Path] = None) -> pl.DataFrame:
+    """写入前把 df 各列类型对齐到该表既有分区的 schema(TuShare 类型漂移防线)。
+
+    背景(2026-07-21 生产真踩):TuShare 某日返回的 daily_basic 里 turnover_rate_f
+    全空,pandas 落成 object → polars String,写盘后与历史分区 Float64 冲突,
+    scan_parquet 整表读取直接 SchemaError,16:35 报告任务崩掉。
+    对策:落盘统一入口做 cast(strict=False,非法值转 null);表尚无分区时原样通过。
+    """
+    lf = _scan_table(table, parquet_dir)
+    if lf is None:
+        return df
+    target = lf.collect_schema()
+    casts = [
+        pl.col(name).cast(dtype, strict=False)
+        for name, dtype in target.items()
+        if name in df.columns and df.schema[name] != dtype
+    ]
+    if casts:
+        logger.warning(
+            "write_table_day(%s): 检测到 %d 列类型与既有分区不一致,已按历史 schema cast(TuShare 类型漂移)",
+            table, len(casts),
+        )
+        df = df.with_columns(casts)
+    return df
+
+
 def write_table_day(table: str, trade_date: DateLike, df: pl.DataFrame, parquet_dir: Optional[Path] = None) -> Path:
-    """写一天一表的 Parquet 文件(backfill / daily_update 落盘统一入口,幂等覆盖)。"""
+    """写一天一表的 Parquet 文件(backfill / daily_update 落盘统一入口,幂等覆盖)。
+    写入前经 `_align_to_table_schema` 对齐既有分区类型,防 TuShare 类型漂移毒化分区。"""
     path = day_file_path(table, trade_date, parquet_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    df = _align_to_table_schema(table, df, parquet_dir)
     df.write_parquet(path)
     return path
 

@@ -142,3 +142,35 @@ class TestWriteReadRoundTrip:
 
         with pytest.raises(ValueError):
             table_dir("not_a_real_table")
+
+
+class TestSchemaAlignmentOnWrite:
+    """TuShare 类型漂移防线(2026-07-21 生产真踩:turnover_rate_f 全空日落成 String)。"""
+
+    def test_string_column_cast_to_existing_float(self, tmp_path):
+        import polars as pl
+        from neckline.data.market_data import write_table_day, scan_table_range
+        from datetime import date
+        good = pl.DataFrame({
+            "ts_code": ["000001.SZ"], "trade_date": [date(2026, 7, 20)],
+            "turnover_rate_f": [1.23],
+        })
+        write_table_day("daily_basic", date(2026, 7, 20), good, parquet_dir=tmp_path)
+        drifted = pl.DataFrame({
+            "ts_code": ["000001.SZ"], "trade_date": [date(2026, 7, 21)],
+            "turnover_rate_f": ["", None, "2.5"][0:1],
+        })
+        write_table_day("daily_basic", date(2026, 7, 21), drifted, parquet_dir=tmp_path)
+        out = scan_table_range("daily_basic", date(2026, 7, 20), date(2026, 7, 21), parquet_dir=tmp_path)
+        assert out.schema["turnover_rate_f"] == pl.Float64
+        assert out.height == 2
+        assert out.sort("trade_date")["turnover_rate_f"][1] is None  # 空串 → null 而非炸
+
+    def test_first_write_no_existing_partition_passthrough(self, tmp_path):
+        import polars as pl
+        from neckline.data.market_data import write_table_day, get_market_slice
+        from datetime import date
+        df = pl.DataFrame({"ts_code": ["000001.SZ"], "trade_date": [date(2026, 7, 21)], "x": ["s"]})
+        write_table_day("daily_basic", date(2026, 7, 21), df, parquet_dir=tmp_path)
+        out = get_market_slice(date(2026, 7, 21), table="daily_basic", parquet_dir=tmp_path)
+        assert out.schema["x"] == pl.String and out.height == 1
