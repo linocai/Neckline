@@ -20,6 +20,13 @@ targets:
   Neckline:
     type: application
     supportedDestinations: [iOS, macOS]
+    # 显式声明推送能力,让 Xcode automatic signing 给自动注册的 App ID 勾上 Push
+    # (LinoN 的 App ID 是当年网页手动注册开 Push 的,新 App ID 没这一步会报
+    #  "Entitlement aps-environment not found";此声明不足以修复时走网页兜底,见 PROJECT_PLAN §8)
+    attributes:
+      SystemCapabilities:
+        com.apple.Push:
+          enabled: 1
     deploymentTarget:
       iOS: "26.0"
       macOS: "26.0"

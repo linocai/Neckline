@@ -232,6 +232,7 @@
 					88F958B3F9251F9EAA48FDE2 = {
 						DevelopmentTeam = HX73DFL88G;
 						ProvisioningStyle = Automatic;
+						SystemCapabilities = "[\"com.apple.Push\": [\"enabled\": 1]]";
 					};
 				};
 			};
