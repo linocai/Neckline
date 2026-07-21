@@ -266,6 +266,22 @@ uvicorn + 真实 openpyxl 生成的 xlsx**(非 TestClient 模拟)跑通拖入→
 **本次任务范围内明确不做 4D.3 的 LLM 叙述叠加层**(任务指令原文:"禁模板腔的 LLM 部分本块不做,纯确定性输出
 即可"),`review/material.py` 只产出确定性材料。详见变更日志。**剩 4E 端到端联调 + APNs 真机 + LinoN 接班切换。**
 
+**2026-07-20 · 阶段 4E 部分完工(LinoN 接班切换 + 收官接线)**:①**4E.3 LinoN 接班切换已执行并验证**——
+退役前 `linon.db` 在线一致性备份(`sqlite3 .backup`)归档本机 `Lino/Archive/linon_decommission_20260720/`(303104B,
+integrity ok,10 表行数清单逐表吻合,sha256 逐字节一致)→ `linon.service` stop+disable(8001 不再监听,`/opt/linon`
+目录/secrets 原地保留)→ nginx `ln.linotsai.top` upstream 8001→8002(仅改 `proxy_pass` + 加 `client_max_body_size 20m`,
+certbot-managed 块与证书路径未动,原配置带时间戳备份;`nginx -t` 过再 reload)。公网验证:health 200(Neckline
+`0.4.0-stage4A`)、鉴权端点无 token 401 / 真 token 200、邻居站点(lf/主页/fiscal/xiaoran/裸IP)全不受影响。
+②**客户端默认后端改 prod**——`AppConfig` 默认环境 `.dev`→`.prod`(`https://ln.linotsai.top`),保留环境 picker /
+`baseURLOverride` 可配置覆盖;顺手把 `AppConfig` 改为可注入 `UserDefaults`(生产恒 `.standard`,单测用隔离 suite
+hermetic,治模拟器残留 `NK_ENVIRONMENT` 串味)。双端 `xcodebuild` **BUILD SUCCEEDED**、iOS Simulator **TEST
+SUCCEEDED**(45 执行 / 6 skip 探活 / 0 失败;新增 `AppConfigDefaultTests` 4 例)。③**inquiry_pool 消费接线(4A 遗留#5)**
+——`report.build_report` 消费当日 `inquiry_pool`,问询台「初审通过」票经 `forced_codes` 强制并入候选评分 universe
+(§2.5「只扩输入,不改评分逻辑」:绕过 entry mask 从当日面板取行并入、评分排序同码一视同仁、即便排 top_n 之外也保证
+出现),空池零回归。全量 **pytest 621 → 629**(+8,0 回归)。**仍挂账(4E 未完)**:真盘中活体验证(哨兵已随
+`neckline.service` 常驻,下一交易时段自动跑,收盘后核查)、APNs 真机真推(待用户 Xcode 装机注册 device token)、
+LLM/Bark 活体(待用户 App 填 key)。详见变更日志。
+
 **⚠ 高危区提示**:哨兵接触盘中实时源(新浪/腾讯)+ 推送通道(Bark)是阶段3 新增的对外接口,已用
 MockTransport 充分覆盖降级链;持仓台账/防重表是新增的写入路径(SQLite),已用单测覆盖 CRUD + 幂等;
 「退潮触发后抑制买点」是本阶段最关键的安全属性(直接对应 §2.4 铁律「永不盘中推荐新票」),已有直接单测断言。
@@ -647,3 +663,15 @@ MockTransport 充分覆盖降级链;持仓台账/防重表是新增的写入路�
   **工程增量**:`neckline/review/`(parse.py 解析 + 名称反查 / reconcile.py FIFO + 三查 + 统计 + 序列化 / material.py 确定性材料 / store.py `reviews` 表读写)、`neckline/api/app.py` 三新端点、`neckline/api/schemas.py` 新增 4D 出入参(`result` 沿用 `sentiment/sectors` 透传惯例,不重复声明嵌套模型)、`neckline/config` 新增 `total_capital`、`requirements.txt` 新增 `openpyxl`/`python-multipart`;客户端 `Models.swift` 新增 8 个 4D 领域模型、`APIClient.swift` 新增 `uploadReview`/`fetchReview`/`putSettingsReviewColMap`、`AppModel.swift` 新增周复盘状态 + 上传方法、`ReviewWorkbenchView.swift` 从占位壳改为真实接线、`RootView.swift` 传入 `model`;新增 `scripts/smoke_review.sh`(真实 uvicorn + 真实 xlsx 端到端冒烟,清理临时库/文件,不碰生产数据)。
 
   **遗留问题(供 4E 参考)**:①4D.3 的 LLM 复盘材料叙述叠加层本次任务范围内明确不做(见上,plan 原文本就标注"可选");②周复盘工作台目前是 `review_col_map` 唯一可写入口是设置端点本身,客户端未提供编辑该映射的 UI(编辑 UI 留待用户真遇到第三种券商格式时再评估是否需要);③并发持仓/敞口扫描的"已知简化"若未来发现在多周连续上传场景下不够准确,需要评估是否要做跨周结转;④macOS 端可视化核验同 4C 一样受阻于 computer-use 访问被拒,若用户希望更强的视觉证据,可自行用 Xcode 打开工程运行 App 肉眼确认(或下次会话尝试授权 computer-use 访问)。
+
+- **2026-07-20 · 阶段 4E 部分完工(LinoN 接班切换 + 收官接线)**:兑现「用户已拍板可以接班」——LinoN 退役、Neckline 接管公网 `ln.linotsai.top`、客户端默认后端指向生产、问询台海选池闭环的报告侧接线补齐。全量 **pytest 621 → 629**(+8,0 回归),Swift **41 → 45 执行**(6 skip 探活)、双端 `xcodebuild` **BUILD SUCCEEDED** + iOS Simulator **TEST SUCCEEDED**。
+
+  **4E.3 LinoN 接班切换(🔴 高危,逐步验证)**:①**退役前备份**——ECS 上 `sqlite3 .backup`(LinoN 仍 active 时的在线一致性快照,非裸 cp)→ scp 回本机 `Lino/Archive/linon_decommission_20260720/linon.db`;三处 `PRAGMA integrity_check` 均 ok(live / 快照 / 本机),大小 303104B 一致、sha256 逐字节一致(`a020b10c…`)、10 表行数逐表吻合(candidates 764 / candidate_outcomes 762 / analysis_verdicts 8 / positions 4 / trades 4 / device_tokens 1 / screen_config 1 / memory 0 / reviews 0 / sqlite_sequence 6),另写 `MANIFEST.md` 行数清单(沿 Lino Writing v2 退役先例)。②**停 LinoN**——`systemctl stop linon && disable`(inactive+disabled,8001 不再监听),`/opt/linon` 目录 + `.env`/`.p8` 原地保留不删(彻底清理留后议)。③**nginx 切换**——按 `hz_info §7` 安全流程,先 `cp` 带时间戳备份原站点(`linon.bak.20260721-090140`),再对照现网 certbot-managed 配置**最小合并**:仅改 `proxy_pass` 8001→8002 + 加 `client_max_body_size 20m`(4D 交割单 multipart 上传);**证书路径 / certbot 托管块 / listen 行一律不动**(避免扰动 certbot 续期,`hz_info §13` 已知 certbot 问题不碰);`sudo diff` 确认只这两处变更后 `nginx -t`(仅历史遗留 warning,无 error)过 → reload。④**公网验证**——`https://ln.linotsai.top/api/v1/health` 200 且版本变 Neckline `0.4.0-stage4A`(原 LinoN `1.0.0-stage1A`)= 切换实证;鉴权端点无 token 401 / 真 `API_TOKEN`(经 sudo 从 `/opt/neckline/.env` 读、全程不回显)200 且返真报告数据;8001 无监听;邻居站点(lf ok / 主页 ok / fiscal 200 / xiaoran 200 / 裸 IP 404)全不受影响。**红线全程守住**:除 linon.service 与 nginx linon 站点外未碰 ECS 任何其它服务/配置;备份未验证前未停 LinoN;`nginx -t` 过才 reload;token/key 不进任何 tracked 文件或文档。
+
+  **4E · 客户端默认后端改 prod**:`AppConfig` 默认环境 `.dev` → `.prod`(`https://ln.linotsai.top`),保留设置屏「环境」picker + 手填 `baseURLOverride` 两条可配置覆盖路径。顺手把 `AppConfig` 改为**可注入 `UserDefaults`**(`init(defaults: UserDefaults = .standard)`,生产恒 `.standard`、didSet 也走注入实例)——起因:iOS Simulator `.standard` 残留前几次会话写的 `NK_ENVIRONMENT=dev`,`removeObject` 清不干净致新断言误红,注入隔离 suite 后 hermetic。xcodegen 重生(新测试文件自动纳入),新增 `AppConfigDefaultTests`(4 例:默认 prod / picker 切 dev / override 优先 / 选择持久化往返)。
+
+  **4E · inquiry_pool 消费接线(兑现 4A 遗留#5,§2.5 闭环报告侧)**:`report.pipeline.build_report` 生成当晚报告时 `load_inquiry_pool(trade_date)` → 把「初审通过」票 `ts_code` 作 `forced_codes` 传入 `build_candidates`/`score_candidates`。语义严格照 §2.5「只扩输入,不改评分逻辑」:强制票**绕过 entry mask** 直接从当日全市场面板取行并入(去重,已过 mask 的不重复取)、评分/板块加分/排序对全体**同码一视同仁不特判**、且即便评分排在 `top_n` 之外也**保证出现在输出**(合并后按分重排 rank 连续)。**零回归护栏**:`forced_codes` 缺省 `None`/`[]` 时行为与阶段 2 逐票一致(直接单测断言),lazy import `neckline.api.stores`(沿 `review/reconcile.py` 惯例,不让报告管线在模块加载期依赖 api 包)。新增 8 单测:`test_candidates.py::TestForcedInquiryPoolCodes`(6:绕过 mask / 不重复计 / 保证过 top_n / 空池 noop / 面板缺失忽略 / mask 全空时仍纳入)+ `test_pipeline.py::TestInquiryPoolConsumption`(2:用 `seed_synthetic_market` 的 300001.SZ〔创业板,报告日 mask 会剔〕经海选池被强制纳入、未入池的 *ST 仍剔除的端到端验证)。**未动阶段 2 任何评分代码**(`build_entry_mask`/`_base_score_expr` 一字未改)。
+
+  **工程增量**:`neckline/report/candidates.py`(`build_candidates`/`score_candidates` 加 `forced_codes` 参数 + 并入/top_n 保证逻辑)、`neckline/report/pipeline.py`(`build_report` 消费 `inquiry_pool`)、`client/Neckline/Networking/AppConfig.swift`(默认 prod + 可注入 defaults)、`client/NecklineTests/AppConfigDefaultTests.swift`(新)、`tests/test_candidates.py` + `tests/test_pipeline.py`(新测试类)。ECS 侧只动 linon.service + nginx linon 站点(接班切换),无代码部署(Neckline 已在 8002 常驻)。
+
+  **仍挂账(4E 未完,交接下次)**:① **真盘中活体验证**——哨兵已随 `neckline.service` 常驻,下一交易时段(09:30–15:00)自动跑 `run_tick`,收盘后核查真实新浪/腾讯响应格式 / 批量拉价耗时 / 四哨兵触发(兑现阶段 3 欠账①);② **APNs 真机真推**——待用户 Xcode 装机、注册新 Bundle ID `top.linotsai.neckline` 的 device token 后,验证报告就绪 + 退潮刹车两类锁屏推达(4E.2,含 §八 Apple Developer 新 App ID + Push capability 网页操作);③ **LLM(GLM/Kimi)+ Bark 活体**——待用户 App 设置屏填 key 后首次真调用验协议假设(阶段 2/3 累积欠账);④ 问询台 LLM「主动多轮 function-calling」形态仍以预注入取数/重算 + 原生搜索覆盖(无 key 无法活体验证,记此简化)。
