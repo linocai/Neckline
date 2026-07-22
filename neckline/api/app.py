@@ -76,7 +76,9 @@ from neckline.settings_store import get_app_settings, set_llm, set_push, set_rev
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.6.1-v1.1H2"
+# 系统版本规约(2026-07-22 用户定):v主.次.修 三段式,与策略版本(K 字头)双线解耦。
+# v1.1 = SOP 补洞大版本;第三段 = 其后的快修(v1.1.1 = 退潮哨兵双级制重构)。
+VERSION = "v1.1.1"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
