@@ -259,13 +259,15 @@ private struct CandidateRow: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(NK.textSecondary)
                     Spacer()
+                    // 动作按钮,不是状态——绿勾样式曾被误读为"已经买过"(实机反馈),
+                    // 改为明确的动作措辞 + 编辑图标 + 强调色。
                     Button {
                         Task { await model.openEntrySheet(fromCandidate: candidate) }
                     } label: {
-                        Label("已按计划买入", systemImage: "checkmark.circle.fill")
+                        Label("买入补录", systemImage: "square.and.pencil")
                             .font(.system(size: 12.5, weight: .semibold))
                     }
-                    .buttonStyle(.plain).foregroundStyle(NK.up)
+                    .buttonStyle(.plain).foregroundStyle(NK.accent)
                 }
             }
         }

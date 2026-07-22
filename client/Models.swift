@@ -223,7 +223,9 @@ struct BoardEvent: Codable, Equatable, Identifiable {
     var verdict: String      // 判决文案(哨兵已落库的 reason 文本,自然语言,不是模板卡)
     var ts: String
 
-    var id: String { eventKey }
+    // id 必须含 code:eventKey 是判定类型名(gap_up_invalidate 等),跨股票共用,
+    // 单用它做 ForEach 身份会 id 撞车 → 全列表渲染成第一只票的内容(实机踩过)。
+    var id: String { "\(code)|\(eventKey)|\(ts)" }
     var kind: SentinelKind? { SentinelKind(rawValue: sentinel) }
 }
 
