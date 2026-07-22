@@ -66,6 +66,7 @@ class TestK1BitIdentical:
         cfg = _k1_cfg()
         assert cfg.require_mainline_member is False
         assert cfg.take_profit_fixed is None
+        assert cfg.high_elasticity_half is False
 
     def test_default_off_does_not_reference_member_column(self, isolated_env):
         """默认关闭时 build_entry_mask 不引用 is_mainline_member——能作用在无该列的

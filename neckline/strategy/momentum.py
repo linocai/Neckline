@@ -48,9 +48,11 @@ class MomentumConfig:
     # 选股附加收紧（研究探针用；None=不启用）
     shallow_pullback: Optional[float] = None       # dist_from_high_20d >= 此值(如 -0.05)
     max_turnover: Optional[float] = None           # turnover_rate <= 此值
-    # —— K2 研究扩展（§五B B4.0/B5.1；一律默认关闭 = 与 K1 逐位相同，禁改上面既有字段语义）——
+    # —— K2 研究扩展（§五B B4.0/B5.1/B5.3；一律默认关闭 = 与 K1 逐位相同，禁改上面既有字段语义）——
     require_mainline_member: bool = False          # B4:True 时 AND 面板的 is_mainline_member 列
     take_profit_fixed: Optional[float] = None      # B5:固定止盈 +X%(如 0.15;None=不启用,K1 回落止盈不变)
+    high_elasticity_half: bool = False             # B5.3:True 时高弹票(创科北)单笔减半参与(而非黑名单剔除)
+                                                   # 仅在 forbid_high_elasticity=False 时有意义;默认 False=不改 K1 sizing
     # —— 排序（选 top-N 填仓；近零 alpha 下影响小，默认取最浅回调=最贴前高）——
     rank_by: str = "dist_from_high_20d"
     rank_desc: bool = True
@@ -203,8 +205,17 @@ class MomentumStrategy(Strategy):
         picks = cands["ts_code"].to_list()[:open_slots]
 
         single_cap = self._effective_single_cap(t)
+        # B5.3 高弹票单笔减半(默认 False 不改 K1;需要板块信息时才建查找表)
+        he_boards = set(S.HIGH_ELASTICITY_BOARDS) if c.high_elasticity_half else set()
+        board_lookup = (
+            dict(zip(cands["ts_code"].to_list(), cands["board"].to_list()))
+            if c.high_elasticity_half and "board" in cands.columns else {}
+        )
         for code in picks:
-            budget = min(single_cap, exposure_budget)
+            cap = single_cap
+            if he_boards and board_lookup.get(code) in he_boards:
+                cap = single_cap * 0.5
+            budget = min(cap, exposure_budget)
             if budget < 100 * (close_lookup.get(code) or 1e9):  # 不足一手直接跳过
                 continue
             orders.append(Order(ts_code=code, side="buy", target_value=budget, reason="母战法建仓"))
