@@ -148,3 +148,37 @@ def test_board_labels_precall_and_d5exit_events(client, AUTH, api_env):
     assert "买点已变形失效" in precall_ev["verdict"]
     d5_ev = next(e for e in body["events"] if e["sentinel"] == "D5退出")
     assert "D5 时间退出日" in d5_ev["verdict"]
+
+
+def test_board_yellow_retreat_warning_surfaces_but_brake_stays_in_red_bar(client, AUTH, api_env):
+    """v1.1-H2 双级制:退潮**黄色预警**(retreat/warn,市场级空 ts_code)是唯一进事件
+    列表的市场级事件——不走 retreatBrake 红条(active 仍 False)、verdict 带「黄色预警」
+    前缀、标签「退潮」。红色刹车(retreat/brake)仍只走红条不进列表。"""
+    db = api_env.db_path
+    today = date.today()
+    dedup.record_pushed(
+        today, "retreat", "", "warn",
+        payload={"body": "【黄色预警】热门板块可比个股平均跌幅-4.3%(样本11只),疑似主线跳水"},
+        db_path=db,
+    )
+    body = client.get("/api/v1/board", headers=AUTH).json()
+    # 黄色不是刹车 → 红条不亮
+    assert body["retreatBrake"]["active"] is False
+    # 黄色进事件列表
+    warn_ev = next(e for e in body["events"] if e["sentinel"] == "退潮")
+    assert "【黄色预警】" in warn_ev["verdict"] and "主线跳水" in warn_ev["verdict"]
+    assert warn_ev["eventKey"] == "warn"
+    assert warn_ev["code"] == ""  # 市场级,无单票
+
+
+def test_board_yellow_and_red_coexist(client, AUTH, api_env):
+    """同日先黄后红:红条亮(刹车),黄色事件仍在列表里(升级留痕,前晚→盘中叙事完整)。"""
+    db = api_env.db_path
+    today = date.today()
+    dedup.record_pushed(today, "retreat", "", "warn", payload={"body": "【黄色预警】关注池跌停6只"}, db_path=db)
+    dedup.record_pushed(today, "retreat", "", "brake", payload={"body": "关注池跌停8只;主线跳水-5%"}, db_path=db)
+    body = client.get("/api/v1/board", headers=AUTH).json()
+    assert body["retreatBrake"]["active"] is True
+    assert "跌停8只" in body["retreatBrake"]["reason"]
+    warn_ev = next(e for e in body["events"] if e["sentinel"] == "退潮")
+    assert "【黄色预警】" in warn_ev["verdict"]

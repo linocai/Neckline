@@ -192,13 +192,21 @@ def main() -> int:
                 quotes_fn=lambda codes, _q=quotes_at_cp: {c: _q[c] for c in codes if c in _q},
             )
             bs = result.breadth_snapshot
+            if result.retreat_alert:
+                retreat_state = "红色刹车"
+            elif result.retreat_warning:
+                retreat_state = "黄色预警"
+            elif result.retreat_active:
+                retreat_state = "已闩锁(更早红色)"
+            else:
+                retreat_state = "未触发"
             logger.info(
                 "%s 汇总:拉到%d/%d只行情;关注池宽度(样本%d只)涨停%d/跌停%d/炸板率%.0f%%;"
                 "退潮%s;买点信号%d个;证伪信号%d个;持仓告警%d个;本拍推送%d条(去重跳过%d条)",
                 cp.label, result.quotes_fetched, result.watched_codes,
                 bs.sample_size if bs else 0, bs.limit_up_count if bs else 0,
                 bs.limit_down_count if bs else 0, (bs.zaban_rate * 100) if bs else 0.0,
-                "已触发" if result.retreat_active else "未触发",
+                retreat_state,
                 len(result.entry_signals), len(result.invalidation_signals), len(result.holding_alerts),
                 len(result.pushed_events), result.skipped_duplicate,
             )
@@ -210,7 +218,9 @@ def main() -> int:
                 for key, reason in alert.alerts.items():
                     logger.info("  [持仓·%s] %s:%s", key, alert.ts_code, reason)
             if result.retreat_alert:
-                logger.info("  [退潮] %s", result.retreat_alert.reason_text)
+                logger.info("  [退潮·红色刹车] %s", result.retreat_alert.reason_text)
+            elif result.retreat_warning:
+                logger.info("  [退潮·黄色预警] %s", result.retreat_warning)
 
         logger.info("=== 冒烟结束 ===")
         return 0

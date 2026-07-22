@@ -1,25 +1,30 @@
-"""退潮哨兵单测(plan §2.4 第2条)。市场宽度统计(关注池代理样本,非全市场,
-见 retreat.py 模块头「设计决策说明」)+ 红色刹车判定(炸板率/跌停家数/主线板块
-跳水三条独立触发条件)。"""
+"""退潮哨兵单测(plan §2.4 第2条 + v1.1-H2 双级制重构)。分两层:
+    · `compute_breadth_snapshot` —— 关注池代理样本的涨停/跌停/炸板统计(未变)。
+    · `evaluate_retreat` —— 双级制判级纯函数,覆盖四条修法各分支:同时段对比命中/
+      缺基线静默、持续性 2 拍、早盘梯度、黄升红两条路径、重启保守。
+"""
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 
 import pytest
 
 from neckline.data.board import Board
-from neckline.report.sentiment import SentimentDashboard
 from neckline.sentinel.quotes import Quote
 from neckline.sentinel.retreat import (
-    LIMIT_DOWN_COUNT_TRIGGER,
+    COND_LIMIT_DOWN,
+    COND_SECTOR_DIVE,
+    COND_ZABAN,
     MarketBreadthSnapshot,
-    check_retreat,
     compute_breadth_snapshot,
+    evaluate_retreat,
 )
 from neckline.sentinel.universe import StockMeta
 
 D = date(2026, 7, 17)  # 阶段0/2 记录的真实大跌日,借用作测试语境(非活体数据)
+NORMAL = time(10, 30)  # 常规时段
+EARLY = time(9, 45)    # 早盘(< 10:00)加严档
 
 
 def _quote(code, price, pre_close, high=None) -> Quote:
@@ -34,13 +39,24 @@ def _meta(code, board=Board.MAIN, is_st=False, list_date=date(2015, 1, 1)) -> St
     return StockMeta(ts_code=code, name=code, board=board, is_st=is_st, list_date=list_date)
 
 
-def _sentiment(zaban_rate=0.10) -> SentimentDashboard:
-    return SentimentDashboard(
-        trade_date=D, limit_up_count=40, limit_down_count=5, zaban_count=5, zaban_rate=zaban_rate,
-        max_consec_limit_up=3, prev_limit_up_premium_avg=None, prev_limit_up_sample=0,
-        position_quota="满额", quota_reason="",
+def _snap(zaban=0, limit_up=0, limit_down=0, sample=None) -> MarketBreadthSnapshot:
+    denom = zaban + limit_up
+    rate = zaban / denom if denom else 0.0
+    return MarketBreadthSnapshot(
+        trade_date=D, sample_size=sample if sample is not None else max(denom + limit_down, 1),
+        limit_up_count=limit_up, limit_down_count=limit_down, zaban_count=zaban, zaban_rate=rate,
     )
 
+
+def _eval(snap, *, now_time=NORMAL, baseline=None, hot_avg=None, hot_n=0, prev=(), allow_red=True):
+    return evaluate_retreat(
+        snap, now_time=now_time, same_time_zaban_baseline=baseline,
+        hot_sector_avg_chg=hot_avg, hot_sector_sample=hot_n,
+        prev_tick_triggered=prev, allow_red=allow_red,
+    )
+
+
+# ————————————————————— compute_breadth_snapshot(未变) —————————————————————
 
 class TestComputeBreadthSnapshot:
     def test_counts_limit_up_down_and_zaban(self):
@@ -56,7 +72,7 @@ class TestComputeBreadthSnapshot:
         assert snap.limit_down_count == 1
         assert snap.zaban_count == 1
         assert snap.sample_size == 4
-        assert snap.zaban_rate == pytest.approx(1 / 2)  # zaban/(zaban+limit_up) = 1/(1+1)
+        assert snap.zaban_rate == pytest.approx(1 / 2)
 
     def test_missing_meta_is_skipped_not_crash(self):
         quotes = {"A": _quote("A", 11.0, 10.0), "UNKNOWN": _quote("UNKNOWN", 11.0, 10.0)}
@@ -65,8 +81,8 @@ class TestComputeBreadthSnapshot:
         assert snap.sample_size == 1
 
     def test_new_stock_exempt_is_excluded(self):
-        quotes = {"NEW": _quote("NEW", 25.0, 10.0)}  # +150%,若不豁免会被算成异常
-        meta = {"NEW": _meta("NEW", board=Board.STAR, list_date=D)}  # 上市首日
+        quotes = {"NEW": _quote("NEW", 25.0, 10.0)}
+        meta = {"NEW": _meta("NEW", board=Board.STAR, list_date=D)}
         snap = compute_breadth_snapshot(D, quotes, meta)
         assert snap.sample_size == 0
         assert snap.limit_up_count == 0
@@ -77,85 +93,116 @@ class TestComputeBreadthSnapshot:
         assert snap.zaban_rate == 0.0
 
 
-class TestCheckRetreatZabanRate:
-    def _snapshot(self, zaban, limit_up, limit_down=0, sample=None):
-        denom = zaban + limit_up
-        rate = zaban / denom if denom else 0.0
-        return MarketBreadthSnapshot(
-            trade_date=D, sample_size=sample if sample is not None else denom + limit_down,
-            limit_up_count=limit_up, limit_down_count=limit_down, zaban_count=zaban, zaban_rate=rate,
-        )
+# ————————————————————— 修法1:飙升条件改同时段对比 —————————————————————
 
-    def test_absolute_zaban_rate_triggers_with_enough_sample(self):
-        snap = self._snapshot(zaban=6, limit_up=4)  # rate=0.6>=0.5,denom=10>=5
-        alert = check_retreat(snap)
-        assert alert is not None
-        assert any("炸板率" in r for r in alert.reasons)
+class TestSameTimeSpike:
+    def test_spike_vs_same_time_baseline_triggers(self):
+        # rate=0.45(避开 0.50 绝对线),昨日同时段 0.10 → delta 0.35 ≥ 0.20
+        d = _eval(_snap(zaban=45, limit_up=55), baseline=0.10)
+        assert d.tier == "yellow"  # 单条件首次成立
+        assert d.triggered == [COND_ZABAN]
+        assert "昨日同时段" in d.reason_text and "飙升" in d.reason_text
 
-    def test_high_rate_but_tiny_sample_does_not_trigger_absolute(self):
-        snap = self._snapshot(zaban=2, limit_up=0)  # rate=1.0 但 denom=2<5(ZABAN_MIN_SAMPLE)
-        alert = check_retreat(snap)
-        assert alert is None
+    def test_no_baseline_spike_silently_disabled(self):
+        # 无昨日同时段基线(部署首日) → 飙升子判据静默失效,绝对线又没到 → 不触发
+        d = _eval(_snap(zaban=45, limit_up=55), baseline=None)
+        assert d.tier == "none"
 
-    def test_relative_spike_vs_prev_eod_triggers(self):
-        snap = self._snapshot(zaban=4, limit_up=4)  # rate=0.5,denom=8>=5,但<0.5的绝对线刚好等于0.5会走绝对分支
-        # 用 rate=0.45 避免撞绝对触发线,专测相对飙升分支
-        snap = self._snapshot(zaban=45, limit_up=55)  # rate=0.45
-        alert = check_retreat(snap, prev_eod_sentiment=_sentiment(zaban_rate=0.10))  # 差值0.35>=0.20
-        assert alert is not None
-        assert any("飙升" in r for r in alert.reasons)
+    def test_small_spike_below_delta_does_not_trigger(self):
+        # 昨日同时段 0.30,现 0.45 → delta 0.15 < 0.20
+        d = _eval(_snap(zaban=45, limit_up=55), baseline=0.30)
+        assert d.tier == "none"
 
-    def test_small_change_from_prev_eod_does_not_trigger(self):
-        snap = self._snapshot(zaban=20, limit_up=80)  # rate=0.20
-        alert = check_retreat(snap, prev_eod_sentiment=_sentiment(zaban_rate=0.10))  # 差值仅0.10<0.20
-        assert alert is None
+    def test_absolute_line_wins_over_spike_and_needs_min_sample(self):
+        # 绝对线优先:rate 0.60 ≥ 0.50 → 绝对触发(理由是"过高",不是"飙升")
+        d = _eval(_snap(zaban=6, limit_up=4), baseline=0.10)
+        assert d.triggered == [COND_ZABAN]
+        assert "过高" in d.reason_text
+        # 样本太小(denom<ZABAN_MIN_SAMPLE)即便 rate=1.0 也不判
+        assert _eval(_snap(zaban=2, limit_up=0), baseline=0.0).tier == "none"
 
 
-class TestCheckRetreatLimitDown:
-    def _snapshot(self, limit_down, sample_size):
-        return MarketBreadthSnapshot(
-            trade_date=D, sample_size=sample_size, limit_up_count=0, limit_down_count=limit_down,
-            zaban_count=0, zaban_rate=0.0,
-        )
+# ————————————————————— 修法3:早盘加严梯度 —————————————————————
 
-    def test_absolute_count_triggers(self):
-        snap = self._snapshot(limit_down=LIMIT_DOWN_COUNT_TRIGGER, sample_size=200)
-        alert = check_retreat(snap)
-        assert alert is not None
-        assert any("跌停" in r for r in alert.reasons)
+class TestEarlySessionStricter:
+    def test_zaban_abs_gradient(self):
+        # rate 0.55:常规 0.50 触发,早盘 0.65 不触发
+        snap = _snap(zaban=55, limit_up=45)
+        assert _eval(snap, now_time=NORMAL).tier != "none"
+        assert _eval(snap, now_time=EARLY).tier == "none"
 
-    def test_rate_triggers_even_with_low_absolute_count(self):
-        snap = self._snapshot(limit_down=2, sample_size=10)  # 20% > 15%阈,但绝对数2<5
-        alert = check_retreat(snap)
-        assert alert is not None
+    def test_limit_down_count_gradient(self):
+        # 跌停 6 只 / 样本 100:常规(≥5,占比 6%)触发;早盘(需 ≥8,占比阈 0.20)不触发
+        snap = _snap(limit_down=6, sample=100)
+        assert _eval(snap, now_time=NORMAL).triggered == [COND_LIMIT_DOWN]
+        assert _eval(snap, now_time=EARLY).tier == "none"
 
-    def test_below_both_thresholds_does_not_trigger(self):
-        snap = self._snapshot(limit_down=1, sample_size=100)
-        assert check_retreat(snap) is None
+    def test_spike_delta_gradient(self):
+        # rate 0.45,昨日同时段 0.20 → delta 0.25:常规(≥0.20)触发,早盘(≥0.30)不触发
+        snap = _snap(zaban=45, limit_up=55)
+        assert _eval(snap, now_time=NORMAL, baseline=0.20).triggered == [COND_ZABAN]
+        assert _eval(snap, now_time=EARLY, baseline=0.20).tier == "none"
 
-
-class TestCheckRetreatSectorDive:
-    def _flat_snapshot(self):
-        return MarketBreadthSnapshot(
-            trade_date=D, sample_size=100, limit_up_count=0, limit_down_count=0, zaban_count=0, zaban_rate=0.0,
-        )
-
-    def test_sector_dive_triggers(self):
-        alert = check_retreat(self._flat_snapshot(), hot_sector_peer_rets=[-0.05, -0.04, -0.03])
-        assert alert is not None
-        assert any("主线跳水" in r for r in alert.reasons)
-
-    def test_mild_sector_move_does_not_trigger(self):
-        assert check_retreat(self._flat_snapshot(), hot_sector_peer_rets=[-0.01, 0.01]) is None
-
-    def test_empty_peer_returns_no_data_not_triggered(self):
-        assert check_retreat(self._flat_snapshot(), hot_sector_peer_rets=[]) is None
+    def test_sector_dive_gradient(self):
+        # 平均跌幅 -3.5%:常规(≤-3%)触发,早盘(≤-4%)不触发
+        assert _eval(_snap(), hot_avg=-0.035, hot_n=3, now_time=NORMAL).triggered == [COND_SECTOR_DIVE]
+        assert _eval(_snap(), hot_avg=-0.035, hot_n=3, now_time=EARLY).tier == "none"
 
 
-class TestNoTriggerWhenHealthy:
-    def test_healthy_market_returns_none(self):
-        quotes = {f"S{i}": _quote(f"S{i}", 10.1, 10.0) for i in range(20)}
-        meta = {c: _meta(c) for c in quotes}
-        snap = compute_breadth_snapshot(D, quotes, meta)
-        alert = check_retreat(snap, prev_eod_sentiment=_sentiment(zaban_rate=0.10), hot_sector_peer_rets=[0.01, 0.02])
-        assert alert is None
+# ————————————————————— 修法4:双级制(黄 / 红两条路径)+ 修法2:持续性 —————————
+
+class TestTwoTierAndPersistence:
+    def _zaban_only(self):
+        # 只触发炸板率一族(绝对过高),跌停/跳水都不触发
+        return _snap(zaban=6, limit_up=4, limit_down=0, sample=10)
+
+    def test_single_condition_first_occurrence_is_yellow(self):
+        d = _eval(self._zaban_only(), prev=())
+        assert d.tier == "yellow"
+        assert d.triggered == [COND_ZABAN]
+        assert d.red_via == []
+
+    def test_single_condition_two_consecutive_ticks_is_red(self):
+        # 上一拍已触发同族 → 连续 2 拍 → 红
+        d = _eval(self._zaban_only(), prev=(COND_ZABAN,))
+        assert d.tier == "red"
+        assert d.red_via == [f"persist:{COND_ZABAN}"]
+
+    def test_two_distinct_conditions_same_tick_is_red(self):
+        # 炸板率 + 跌停 两个不同族同拍成立 → 直接红(无需连续)
+        snap = _snap(zaban=6, limit_up=4, limit_down=6, sample=20)
+        d = _eval(snap, prev=())
+        assert d.tier == "red"
+        assert set(d.triggered) == {COND_ZABAN, COND_LIMIT_DOWN}
+        assert "multi_condition" in d.red_via
+
+    def test_different_single_condition_next_tick_stays_yellow(self):
+        # 上一拍是跌停族,本拍是炸板族(不同族)→ 非持续、非同拍多条 → 仍黄
+        d = _eval(self._zaban_only(), prev=(COND_LIMIT_DOWN,))
+        assert d.tier == "yellow"
+
+    def test_no_condition_is_none(self):
+        assert _eval(_snap(zaban=1, limit_up=9, sample=50)).tier == "none"
+
+
+class TestRestartConservative:
+    def test_first_tick_downgrades_persistence_red_to_yellow(self):
+        snap = _snap(zaban=6, limit_up=4, limit_down=0, sample=10)
+        d = _eval(snap, prev=(COND_ZABAN,), allow_red=False)
+        assert d.tier == "yellow"
+        # red_via 仍留痕(审计:本会红,被首拍保守降级)
+        assert d.red_via == [f"persist:{COND_ZABAN}"]
+
+    def test_first_tick_downgrades_multi_condition_red_to_yellow(self):
+        snap = _snap(zaban=6, limit_up=4, limit_down=6, sample=20)
+        d = _eval(snap, prev=(), allow_red=False)
+        assert d.tier == "yellow"
+        assert "multi_condition" in d.red_via
+
+
+class TestSectorDiveNoDataHonesty:
+    def test_empty_sample_is_no_data_not_triggered(self):
+        assert _eval(_snap(), hot_avg=-0.10, hot_n=0).tier == "none"
+
+    def test_none_avg_is_no_data(self):
+        assert _eval(_snap(), hot_avg=None, hot_n=5).tier == "none"

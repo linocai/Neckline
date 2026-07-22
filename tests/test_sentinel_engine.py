@@ -15,7 +15,7 @@ from neckline.report import store
 from neckline.report.candidates import Candidate
 from neckline.sentinel.channels import PushChannel
 from neckline.sentinel.dedup import already_pushed
-from neckline.sentinel.engine import run_tick
+from neckline.sentinel.engine import reset_retreat_process_state, run_tick
 from neckline.sentinel.positions import open_position
 from neckline.sentinel.quotes import Quote
 
@@ -156,6 +156,122 @@ class TestRetreatSuppressesEntryButNotInvalidationOrHolding:
         )
         assert result.retreat_active is True
         assert result.entry_signals == []  # 本该触发买点,但退潮生效当日整体抑制
+
+
+class TestRetreatTwoTierEngineWiring:
+    """v1.1-H2 双级制在编排层的接线:黄色只落看板不推送不抑制买点;红色(≥2 条件同拍
+    或连续 2 拍)推送 + 抑制买点 + 闩锁;进程首拍红色降级为黄色(保守闸)。"""
+
+    def _crash_quotes(self, price=9.0):
+        """关注池全线暴跌:主板 pre_close=10 → down 限价 9.0。price=9.0 即跌停;
+        return=-10% 拖主线跳水。任一 codes 都给同一构造。"""
+        def fn(codes):
+            return {
+                c: Quote(
+                    code=c.split(".")[0], name=c, price=price, pre_close=10.0, open=9.6,
+                    high=9.7, low=price, volume=1000.0, amount=price * 1000 * 100, ts="", source="sina",
+                )
+                for c in codes
+            }
+        return fn
+
+    def test_first_tick_yellow_then_next_tick_red_escalation(self, isolated_env):
+        reset_retreat_process_state()
+        days = business_days(date(2026, 7, 1), 30)
+        report_day, today = days[-2], days[-1]
+        insert_trade_cal(isolated_env, days)
+        x_codes = [f"60010{i}.SH" for i in range(6)]  # 6 只 → 跌停家数 6≥5 + 主线跳水,两条件同拍
+        _save_report(isolated_env, report_day, [_candidate(c, hot_sectors=["半导体"]) for c in x_codes])
+        insert_stock_basic(isolated_env, [{"ts_code": c, "name": c, "market": "主板"} for c in x_codes])
+
+        qn = self._crash_quotes()
+
+        # —— 首拍(10:30):≥2 条件本会红,但进程首拍保守 → 只黄色,不推送、不闩锁 ——
+        cap1 = _CapturingChannel()
+        r1 = run_tick(
+            datetime.combine(today, time(10, 30)), channels=[cap1],
+            db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=qn,
+        )
+        assert r1.retreat_active is False
+        assert r1.retreat_warning is not None
+        assert r1.retreat_alert is None
+        assert not any("退潮刹车" in m[0] for m in cap1.messages)  # 黄色不推送
+        assert already_pushed(today, "retreat", "", "warn", db_path=isolated_env.db_path) is True
+        assert already_pushed(today, "retreat", "", "brake", db_path=isolated_env.db_path) is False
+
+        # —— 次拍(10:31):非首拍 + ≥2 条件同拍 → 红色刹车,推送 + 闩锁 ——
+        cap2 = _CapturingChannel()
+        r2 = run_tick(
+            datetime.combine(today, time(10, 31)), channels=[cap2],
+            db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=qn,
+        )
+        assert r2.retreat_active is True
+        assert r2.retreat_alert is not None
+        assert any("退潮刹车" in m[0] for m in cap2.messages)
+        assert already_pushed(today, "retreat", "", "brake", db_path=isolated_env.db_path) is True
+
+    def test_yellow_single_condition_does_not_suppress_entry_or_push(self, isolated_env):
+        reset_retreat_process_state()
+        days = business_days(date(2026, 7, 1), 30)
+        report_day, today = days[-2], days[-1]
+        _setup_calendar_and_history(isolated_env, "600001.SH", report_day, today, vol=200000.0)
+        y = _candidate("600001.SH")  # 会触发买点(上涨),无 hot_sectors → 不进主线样本
+        x_codes = ["600201.SH", "600202.SH", "600203.SH"]
+        xs = [_candidate(c, hot_sectors=["半导体"]) for c in x_codes]
+        _save_report(isolated_env, report_day, [y] + xs)
+        insert_stock_basic(
+            isolated_env, [{"ts_code": c, "name": c, "market": "主板"} for c in ["600001.SH"] + x_codes]
+        )
+
+        def quotes_fn(codes):
+            out = {}
+            for c in codes:
+                if c == "600001.SH":
+                    out[c] = Quote(
+                        code="600001", name="Y", price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
+                        volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
+                    )
+                else:
+                    out[c] = Quote(  # -5%:够主线跳水(≤-3%),不够跌停(>9.0)
+                        code=c.split(".")[0], name=c, price=9.5, pre_close=10.0, open=9.8, high=9.9, low=9.5,
+                        volume=1000.0, amount=9.5 * 1000 * 100, ts="", source="sina",
+                    )
+            return out
+
+        cap = _CapturingChannel()
+        r = run_tick(
+            datetime.combine(today, time(10, 30)), channels=[cap],
+            db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=quotes_fn,
+        )
+        assert r.retreat_warning is not None and "主线跳水" in r.retreat_warning
+        assert r.retreat_active is False          # 黄色不闩锁
+        assert r.retreat_alert is None
+        assert not any("退潮刹车" in m[0] for m in cap.messages)   # 黄色不推退潮刹车
+        assert "600001.SH" in {s.ts_code for s in r.entry_signals}  # 黄色不抑制买点
+        assert already_pushed(today, "retreat", "", "warn", db_path=isolated_env.db_path) is True
+        assert already_pushed(today, "retreat", "", "brake", db_path=isolated_env.db_path) is False
+
+    def test_metrics_row_recorded_each_tick_even_empty(self, isolated_env):
+        reset_retreat_process_state()
+        import sqlite3
+
+        days = business_days(date(2026, 7, 1), 10)
+        insert_trade_cal(isolated_env, days)
+        today = days[-1]
+        run_tick(
+            datetime.combine(today, time(10, 30)),
+            db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=lambda codes: {},
+        )
+        conn = sqlite3.connect(str(isolated_env.db_path))
+        try:
+            row = conn.execute(
+                "SELECT hhmm, tier, sample_size FROM retreat_metrics WHERE trade_date=?",
+                (today.strftime("%Y%m%d"),),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0] == "1030" and row[1] == "none" and row[2] == 0
 
 
 class TestHoldingSentinelReadsActiveRuleStopPct:

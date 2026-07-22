@@ -23,10 +23,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from neckline.report import store
 from neckline.report.candidates import Candidate
 from neckline.report.sectors import load_member_map
-from neckline.report.sentiment import SentimentDashboard
 from neckline.sentinel.channels import (
     LEVEL_CRITICAL,
     LEVEL_INFO,
@@ -43,10 +41,17 @@ from neckline.sentinel.invalidation import InvalidationSignal, check_invalidatio
 from neckline.sentinel.positions import Position
 from neckline.sentinel.quotes import Quote, get_quotes
 from neckline.sentinel.retreat import (
+    SAME_TIME_WINDOW_MIN,
     MarketBreadthSnapshot,
     RetreatAlert,
-    check_retreat,
+    RetreatMetrics,
     compute_breadth_snapshot,
+    evaluate_retreat,
+)
+from neckline.sentinel.retreat_store import (
+    load_prev_tick_triggered,
+    load_same_time_zaban_baseline,
+    record_retreat_metrics,
 )
 from neckline.sentinel.universe import (
     DEFAULT_BREADTH_CAP,
@@ -61,6 +66,27 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_STOP_PCT = 0.05  # 仅当大脑无现役版本(异常状态)时的兜底,不是本模块拍的值
 
+# 退潮"重启后首拍不触发红色"保守闸(修法2)。记录本进程已跑过退潮判定的交易日;
+# 某日的首拍(含进程午间重启后的首拍)`allow_red=False`——只允许黄色,不落全天
+# 闩锁的红色刹车。理由:红色是高危不可逆动作(全天禁开新仓),重启后的首拍上一拍
+# 内存态不可信,宁可延后一拍(60s)也不误闩。跨日续跑时每日首拍同样保守(当日首拍
+# 本就无"上一拍"可对,且首拍即 ≥2 条同拍属极端,延后一拍代价可忽略)。
+_RETREAT_WARMED_DATES: set = set()
+
+
+def _consume_retreat_first_tick(trade_date: date) -> bool:
+    """返回本进程内该交易日是否为**首拍**(True→本拍红色降级为黄色)。有副作用:
+    调用即把该日标记为已热身。测试可用 `reset_retreat_process_state()` 复位。"""
+    key = trade_date.strftime("%Y%m%d")
+    first = key not in _RETREAT_WARMED_DATES
+    _RETREAT_WARMED_DATES.add(key)
+    return first
+
+
+def reset_retreat_process_state() -> None:
+    """清空"已热身交易日"记忆(单测隔离用;等价于进程刚重启)。"""
+    _RETREAT_WARMED_DATES.clear()
+
 
 @dataclass
 class TickResult:
@@ -71,7 +97,8 @@ class TickResult:
     watched_codes: int = 0
     quotes_fetched: int = 0
     retreat_active: bool = False
-    retreat_alert: Optional[RetreatAlert] = None
+    retreat_alert: Optional[RetreatAlert] = None       # 仅红色刹车时非空(驱动 APNs/通道推送)
+    retreat_warning: Optional[str] = None              # 黄色预警文案(只进看板,不推送)
     breadth_snapshot: Optional[MarketBreadthSnapshot] = None
     entry_signals: List[EntrySignal] = field(default_factory=list)
     invalidation_signals: List[InvalidationSignal] = field(default_factory=list)
@@ -121,23 +148,6 @@ def _position_sector_peer_returns(
     return rets
 
 
-def _rebuild_sentiment(d: Optional[Dict[str, Any]]) -> Optional[SentimentDashboard]:
-    """从 `store.load_report` 返回的 `sentiment`(JSON 往返,`trade_date` 已被
-    `pipeline._jsonable` 转成 ISO 字符串)重建 `SentimentDashboard`。字段缺失/
-    格式异常 → None(优雅降级,退潮哨兵据此只跳过"相对昨晚飙升"这一个子判断,
-    绝对阈值判断不受影响)。"""
-    if not d:
-        return None
-    try:
-        dd = dict(d)
-        if isinstance(dd.get("trade_date"), str):
-            dd["trade_date"] = date.fromisoformat(dd["trade_date"])
-        return SentimentDashboard(**dd)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("重建昨晚情绪仪表盘失败(%s),退潮哨兵跳过相对飙升判断", e)
-        return None
-
-
 def _historical_peak_close(position: Position, trade_date: date, parquet_dir: Optional[Path]) -> float:
     """持仓自买入日至今(不含今日,今日未收盘)的收盘价峰值。用真实原始收盘价
     (非前复权)——持仓的 `buy_price` 是真实成交价,两者同锚,不引入复权系数
@@ -183,35 +193,78 @@ def run_tick(
         watched_codes=len(wu.codes), quotes_fetched=len(quotes),
     )
 
-    def _maybe_push(sentinel: str, ts_code: str, event_key: str, title: str, body: str, level: str) -> None:
+    def _maybe_push(
+        sentinel: str, ts_code: str, event_key: str, title: str, body: str, level: str,
+        payload_extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
         if already_pushed(trade_date, sentinel, ts_code, event_key, db_path=db_path):
             result.skipped_duplicate += 1
             return
         delivered = push_all(channels, title, body, level=level)
-        record_pushed(
-            trade_date, sentinel, ts_code, event_key,
-            payload={"body": body, "delivered": delivered}, db_path=db_path,
-        )
+        payload = {"body": body, "delivered": delivered}
+        if payload_extra:
+            payload.update(payload_extra)
+        record_pushed(trade_date, sentinel, ts_code, event_key, payload=payload, db_path=db_path)
         result.pushed_events.append(f"{sentinel}:{ts_code or '-'}:{event_key}")
 
-    # —— 1) 退潮哨兵(先判,决定买点哨兵是否本拍抑制)——————————————————————
-    retreat_active = already_pushed(trade_date, "retreat", "", "brake", db_path=db_path)
+    # —— 1) 退潮哨兵(先判,决定买点哨兵是否本拍抑制;双级制见 retreat.py 模块头)——
+    hhmm = now.strftime("%H%M")
     breadth_snapshot = compute_breadth_snapshot(trade_date, quotes, meta)
     result.breadth_snapshot = breadth_snapshot
-    if not retreat_active:
-        prev_report = store.load_report(wu.report_date, db_path=db_path) if wu.report_found else None
-        prev_sentiment = _rebuild_sentiment(prev_report["sentiment"]) if prev_report else None
-        hot_peer_rets = _hot_sector_peer_returns(wu.candidates, quotes)
-        alert = check_retreat(breadth_snapshot, prev_sentiment, hot_peer_rets)
-        if alert is not None:
+    hot_peer_rets = _hot_sector_peer_returns(wu.candidates, quotes)
+    hot_avg = (sum(hot_peer_rets) / len(hot_peer_rets)) if hot_peer_rets else None
+    metrics = RetreatMetrics(
+        trade_date=trade_date, hhmm=hhmm, sample_size=breadth_snapshot.sample_size,
+        limit_up_count=breadth_snapshot.limit_up_count, limit_down_count=breadth_snapshot.limit_down_count,
+        zaban_count=breadth_snapshot.zaban_count, zaban_rate=breadth_snapshot.zaban_rate,
+        hot_sector_avg_chg=hot_avg,
+    )
+
+    retreat_active = already_pushed(trade_date, "retreat", "", "brake", db_path=db_path)
+    if retreat_active:
+        # 当日已闩锁红色:仍逐拍落指标(审计连续性 / 成绩单),不再判级、不再推送。
+        record_retreat_metrics(metrics, triggered=[], tier="red_latched", red_via=[], db_path=db_path)
+    else:
+        prev_triggered = load_prev_tick_triggered(trade_date, hhmm, db_path=db_path)
+        baseline = load_same_time_zaban_baseline(
+            trade_date, hhmm, window_min=SAME_TIME_WINDOW_MIN, db_path=db_path
+        )
+        first_tick = _consume_retreat_first_tick(trade_date)
+        decision = evaluate_retreat(
+            breadth_snapshot,
+            now_time=now.time(),
+            same_time_zaban_baseline=baseline,
+            hot_sector_avg_chg=hot_avg,
+            hot_sector_sample=len(hot_peer_rets),
+            prev_tick_triggered=prev_triggered,
+            allow_red=not first_tick,
+        )
+        record_retreat_metrics(
+            metrics, triggered=decision.triggered, tier=decision.tier,
+            red_via=decision.red_via, db_path=db_path,
+        )
+        event_payload = {
+            "metrics": metrics.metric_payload(),
+            "triggered": decision.triggered,
+            "red_via": decision.red_via,
+        }
+        if decision.is_red:
             retreat_active = True
-            result.retreat_alert = alert
+            result.retreat_alert = RetreatAlert(reasons=decision.reasons)
             _maybe_push(
                 "retreat", "", "brake",
                 "退潮刹车:今日计划作废、禁开新仓",
-                alert.reason_text,
-                LEVEL_CRITICAL,
+                decision.reason_text, LEVEL_CRITICAL, payload_extra=event_payload,
             )
+        elif decision.is_yellow:
+            # 黄色预警:只落看板事件(event_key="warn",一天首次),不推送、不抑制买点。
+            result.retreat_warning = decision.reason_text
+            if not already_pushed(trade_date, "retreat", "", "warn", db_path=db_path):
+                record_pushed(
+                    trade_date, "retreat", "", "warn",
+                    payload={"body": "【黄色预警】" + decision.reason_text, **event_payload},
+                    db_path=db_path,
+                )
     result.retreat_active = retreat_active
 
     # v1.1-C.2「自选票享候选同级待遇」:买点/证伪哨兵对候选与「昨晚体检已触发

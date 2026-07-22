@@ -212,6 +212,29 @@ CREATE TABLE IF NOT EXISTS reviews (
     material        TEXT,
     updated_at      TEXT
 );
+
+-- v1.1-H2 退潮哨兵逐拍指标(§2.4 退潮双级制重构,2026-07-22 生产过敏后拍板)。
+-- 每个盘中 tick 落一行(~330 行/交易日):供①「飙升条件」对比昨日同一时刻(±5min 窗)
+-- 的炸板率(修复"早盘进行时值 vs 昨晚收盘定稿值"基数不同的结构性假信号);②「持续性
+-- 要求」读上一拍触发条件族(triggered_json)判"连续 2 拍";③未来给红色刹车算命中率
+-- 成绩单(全量指标 + 判级 + 触发路径全部留痕)。PK(trade_date,hhmm) → 同分钟重复 tick
+-- INSERT OR REPLACE 幂等覆盖(生产 60s 一拍,hhmm 天然唯一)。tier ∈ none/yellow/red/
+-- red_latched(当日已闩锁后仍逐拍记指标,审计连续性,不再判级)。
+CREATE TABLE IF NOT EXISTS retreat_metrics (
+    trade_date         TEXT NOT NULL,       -- 'YYYYMMDD'
+    hhmm               TEXT NOT NULL,       -- 'HHMM' 本 tick 时刻(24h)
+    sample_size        INTEGER NOT NULL DEFAULT 0,
+    limit_up_count     INTEGER NOT NULL DEFAULT 0,
+    limit_down_count   INTEGER NOT NULL DEFAULT 0,
+    zaban_count        INTEGER NOT NULL DEFAULT 0,
+    zaban_rate         REAL NOT NULL DEFAULT 0.0,
+    hot_sector_avg_chg REAL,                -- NULL = 本 tick 无热门板块可比样本(诚实"无数据")
+    triggered_json     TEXT NOT NULL DEFAULT '[]',  -- 本 tick 触发的条件族键(供下一拍持续性判定)
+    red_via_json       TEXT NOT NULL DEFAULT '[]',  -- 红色触发路径(multi_condition / persist:<族>),审计留痕
+    tier               TEXT NOT NULL DEFAULT 'none', -- none | yellow | red | red_latched
+    recorded_at        TEXT NOT NULL,       -- ISO8601
+    PRIMARY KEY (trade_date, hhmm)
+);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

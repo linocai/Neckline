@@ -76,7 +76,7 @@ from neckline.settings_store import get_app_settings, set_llm, set_push, set_rev
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.6.0-v1.1ABCD"
+VERSION = "0.6.1-v1.1H2"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -306,6 +306,10 @@ def report_by_date(date: str = "") -> ReportOut:
 _SENTINEL_LABEL = {"entry": "买点", "invalidation": "证伪", "holding": "持仓"}
 # v1.1:盘前校准 / D5 两新 sentinel 类型的中文标签(G.3 客户端看板明细;未识别原样透传)。
 _SENTINEL_LABEL.update({"precall": "盘前校准", "d5exit": "D5退出"})
+# v1.1-H2:退潮黄色预警(retreat/warn)进事件列表的标签(红色 retreat/brake 仍走
+# retreatBrake 红条,不进列表)。客户端 SentinelKind 无 "退潮" 枚举 → kind=nil →
+# 中性色渲染,不崩(不改客户端)。
+_SENTINEL_LABEL.update({"retreat": "退潮"})
 
 
 @app.get(f"{API_PREFIX}/board", dependencies=[Depends(require_token)])
@@ -320,15 +324,18 @@ def board() -> BoardOut:
     events: List[BoardEventOut] = []
     asof = ""
     for e in events_raw:
-        # 市场级标记(空 ts_code)不进事件列表:退潮刹车(retreat/brake)已走 retreatBrake
-        # 红条;盘前校准的当日「tick 已跑」标记(precall/tick)是内部去重锚,均非用户可见事件。
-        if not e["ts_code"]:
+        # 市场级标记(空 ts_code)默认不进事件列表:退潮红色刹车(retreat/brake)已走
+        # retreatBrake 红条;盘前校准的当日「tick 已跑」标记(precall/tick)是内部去重锚。
+        # **例外**(v1.1-H2):退潮黄色预警(retreat/warn)是唯一要进列表的市场级事件——
+        # 它不走红条(不是刹车)、只作看板提示,verdict 文案已带「黄色预警」前缀。
+        is_yellow_retreat = e["sentinel"] == "retreat" and e["event_key"] == "warn"
+        if not e["ts_code"] and not is_yellow_retreat:
             continue
         asof = e.get("pushed_at", "") or asof
         events.append(BoardEventOut(
             sentinel=_SENTINEL_LABEL.get(e["sentinel"], e["sentinel"]),
             code=e["ts_code"],
-            name=names.get(e["ts_code"], e["ts_code"]),
+            name=("市场情绪" if is_yellow_retreat else names.get(e["ts_code"], e["ts_code"])),
             eventKey=e["event_key"],
             verdict=(e.get("payload") or {}).get("body", ""),
             ts=e.get("pushed_at", ""),
