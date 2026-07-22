@@ -48,6 +48,9 @@ class MomentumConfig:
     # 选股附加收紧（研究探针用；None=不启用）
     shallow_pullback: Optional[float] = None       # dist_from_high_20d >= 此值(如 -0.05)
     max_turnover: Optional[float] = None           # turnover_rate <= 此值
+    # —— K2 研究扩展（§五B B4.0/B5.1；一律默认关闭 = 与 K1 逐位相同，禁改上面既有字段语义）——
+    require_mainline_member: bool = False          # B4:True 时 AND 面板的 is_mainline_member 列
+    take_profit_fixed: Optional[float] = None      # B5:固定止盈 +X%(如 0.15;None=不启用,K1 回落止盈不变)
     # —— 排序（选 top-N 填仓；近零 alpha 下影响小，默认取最浅回调=最贴前高）——
     rank_by: str = "dist_from_high_20d"
     rank_desc: bool = True
@@ -106,6 +109,9 @@ def build_entry_mask(config: MomentumConfig) -> pl.Expr:
         mask = mask & (pl.col("dist_from_high_20d") >= c.shallow_pullback)
     if c.max_turnover is not None:
         mask = mask & (pl.col("turnover_rate") <= c.max_turnover)
+    # K2 B4:主线成员 mask(默认 False = 不引用该列,与 K1 逐位相同;True 才 AND)
+    if c.require_mainline_member:
+        mask = mask & pl.col("is_mainline_member")
     return mask
 
 
@@ -216,6 +222,10 @@ class MomentumStrategy(Strategy):
             stop_price = pos.buy_price * (1 - c.stop_pct)
             if (cur is not None and cur <= stop_price) or (low is not None and low <= stop_price):
                 return f"止损(-{c.stop_pct:.0%})"
+        # 固定止盈(B5:+X% 落袋;默认 None=不启用,K1 回落止盈行为不变)
+        if c.take_profit_fixed is not None and cur is not None:
+            if cur >= pos.buy_price * (1 + c.take_profit_fixed):
+                return f"固定止盈(+{c.take_profit_fixed:.0%})"
         # 回落止盈
         if c.take_profit_retrace is not None and cur is not None:
             peak = self._peak_close.get(ts_code, pos.buy_price)
