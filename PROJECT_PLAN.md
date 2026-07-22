@@ -111,6 +111,7 @@ Neckline 是一套**只审计、不代下单**的 A 股短线量化决策系统�
 
 - **同一套信号代码三跑道**:喂历史 = 回测、喂今日 = 报告、喂单票 = 问询台。
 - **回测必须正确处理**:前视偏差、T+1、涨停买不进 / 跌停卖不出、停牌、复权(前复权)、滑点、手续费。
+- **版本号双线规约(2026-07-22 用户定)**:**系统版本走 `v` 字头**(v1.1、v1.2……,产品/工程升级);**策略版本走 `K` 字头整数**(K1、K2……,`strategy_versions` 表标签,回测过堂的大脑)。两线独立演进互不挂钩;现役策略 = **K1**(原名 v1,2026-07-22 双端 DB 已改名)。任何文档/报告/客户端展示的策略号一律 K 字头。
 - **策略进化带笼子**:
   - 按月 / 季调参;任何调整须过**同一道门**——回测 + walk-forward **样本外跑赢现役版本**才可上线。
   - 大脑带**版本号 + 变更日志 + 实盘表现按版本归因**。
@@ -967,3 +968,5 @@ active + 两 timer(16:05/16:35)未动。**部署踩坑留痕**(已写 `hz_info.m
 - **2026-07-21 · v1.1-C/D 后端完工**:C 自选池(`neckline/watchlist.py` CRUD + THS txt 互转对账,`≤30` 硬校验、增删只经用户端点)+ 自选并入哨兵关注池(`sentinel/universe.py`,持仓/自选/候选同级保留、超限按「持仓>自选>候选」裁剪、≤200 守住)+ 自选票触发买点后享候选同级待遇(`engine.py`/`precall.py` 同码消费昨晚写死的 `entry_spec`/`invalidation_spec`)+ 新 `report/watchlist_check.py` 自选体检节(评分同码复用 `_base_score_expr`、红绿灯复用 `base_universe_expr`/`strategy.signals`、买点触发复用 `build_entry_mask`、LLM 只审 changed∪pinned 且新增 `judge_candidate(system_prompt=...)` 向后兼容扩展)+ `reports.watchlist_json`/`_shape_report` 前向兼容 + markdown 独立节 + 五个新端点。D 问询窗口修复:`inquiry_pool` 加 `consumed_report_date`(NULL=待消费),消费判据从「入池当日==报告日」改「待消费∪已被本报告日消费(幂等补跑)」,根治 16:35 后问询通过票永久掉缝的生产真洞。全量 **pytest 682 → 796**(+114,零回归)。隔离库 ATTACH 真实 `data/neckline.db` 参考表 + 真实 backfill 数据跑 `2026-07-17` 真报告验证自选体检(贵州茅台绿灯触发出真实四件套、宁德时代因创业板正确判红灯);`scripts/smoke_api.sh` 扩真实 uvicorn+curl 冒烟全过。详情/客户端契约清单见 §四。**仍挂账**:v1.1-E/F/G/H(客户端持仓卡/自选板块 UI/设置屏四开关/部署+活体验收)。
 
 - **2026-07-21 · v1.1-H 服务端部署上云(🔴 @builder-pro)**:v1.1 A–G 全量后端上生产 hz ECS(`0.4.0-stage4A` → `0.6.0-v1.1ABCD`),**未回滚**。迁移前 `sqlite3 .backup` 在线一致性备份(integrity ok/7 表行数吻合);`sync_code.sh` DRY_RUN 先验(仅代码、`data/`+secrets 零触碰、零删除)+ 补装 3 缺失依赖(`python-multipart`/`openpyxl`/`et-xmlfile`,4B 建 venv 时漏装、import 期 preflight 提前发现);幂等迁移四项随 `lifespan.init_schema` 重启执行(`watchlist` 表 + `app_settings` 两列 + `inquiry_pool` 一列 + `reports` 一列),迁移后 integrity ok、业务数据零丢失。公网真 token 服务端验收全过(watchlist 空 CRUD 往返 / 四推送开关 / positions 形状 / report/latest 前向兼容 / 401),哨兵盘前分支挂载 + idle RSS ~82MB 持平、timer 未动。踩坑留痕入 `hz_info.md §12`(权限复原勿 blanket chown 翻 `data/` 属主致 DB 只读;缺 multipart/xlsx 依赖 import 期炸服务)。**H 活体验收(9:26 盘前真机 / D5 真机 / 自选体检真报告 / txt 真实对账 / 问询跨日 / 四开关往返)留待用户 + 真实交易日,逐项列 §四。**
+
+- **2026-07-22 · 版本号双线规约**:系统 v 字头 / 策略 K 字头解耦(用户定);现役策略 v1 改名 **K1**(本地 + ECS `strategy_versions` 双端 UPDATE,brain 按 is_active 取现役、零代码改动),db.py 注释同步。下一步:K2 策略讨论 + 回测。

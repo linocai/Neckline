@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS backfill_log (
 -- rule_json:该版本的规则参数(MomentumConfig 采纳值 + 市场过滤决策等)全量快照。
 -- metrics_json:定版时的样本内/外回测指标(可比性证据)。is_active:当前现役版本(唯一)。
 CREATE TABLE IF NOT EXISTS strategy_versions (
-    version         TEXT PRIMARY KEY,   -- 语义版本号,如 'v1'
+    version         TEXT PRIMARY KEY,   -- 策略版本号,K 字头整数(K1/K2/...;系统版本走 v 字头,两线解耦)
     created_at      TEXT NOT NULL,      -- ISO8601
     rule_json       TEXT NOT NULL,      -- 规则参数快照(JSON)
     changelog       TEXT NOT NULL,      -- 本版为何这样定(过堂结论摘要)
