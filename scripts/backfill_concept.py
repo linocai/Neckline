@@ -27,7 +27,7 @@ from neckline.config import settings, ensure_data_dirs  # noqa: E402
 from neckline.data.tushare_client import ts_ths_index, ts_ths_daily, ts_ths_member  # noqa: E402
 
 START = "20200101"
-END = "20260717"
+END = "20260722"
 
 
 def _to_pl(df) -> pl.DataFrame:
