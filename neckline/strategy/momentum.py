@@ -53,6 +53,15 @@ class MomentumConfig:
     take_profit_fixed: Optional[float] = None      # B5:固定止盈 +X%(如 0.15;None=不启用,K1 回落止盈不变)
     high_elasticity_half: bool = False             # B5.3:True 时高弹票(创科北)单笔减半参与(而非黑名单剔除)
                                                    # 仅在 forbid_high_elasticity=False 时有意义;默认 False=不改 K1 sizing
+    # —— K3 研究扩展(§五C B2 超跌买点;一律默认 None/off = 与 K1 逐位相同,禁改上面既有字段语义)——
+    # 仅当 buypoint="oversold" 时被引用;默认 buypoint="pullback" 路径绝不触及下列字段/K3 列。
+    oversold_depth_col: Optional[str] = None       # ret_1d|ret_5d|ret_10d|ret_20d|ret_5d_pct
+    oversold_depth_max: Optional[float] = None     # 深度阈值(≤触发)
+    oversold_trend: Optional[str] = None           # up|down|mid(趋势背景;None=不分趋势)
+    oversold_pullback_max: Optional[float] = None  # dist_from_high_20d ≤(回撤门槛,臂③用)
+    oversold_confirm: Optional[str] = None         # reclaim_ma5|reclaim_ma10|stabilize(启动确认,臂③)
+    oversold_confirm_vol: Optional[float] = None   # 放量确认倍数(收复类)
+    oversold_vol_max: Optional[float] = None       # 缩量上限(stabilize 用)
     # —— 排序（选 top-N 填仓；近零 alpha 下影响小，默认取最浅回调=最贴前高）——
     rank_by: str = "dist_from_high_20d"
     rank_desc: bool = True
@@ -98,6 +107,15 @@ def build_entry_mask(config: MomentumConfig) -> pl.Expr:
         mask = mask & S.buy_breakout(c.breakout_vol_expand)
     elif c.buypoint == "either":
         mask = mask & (S.buy_pullback() | S.buy_breakout(c.breakout_vol_expand))
+    elif c.buypoint == "oversold":
+        # K3 超跌买点(§五C B2)。仅此分支引用 buy_oversold 及其 K3 特征列;
+        # 默认 pullback 路径不进此分支,K1 逐位不变(护栏单测 test_k3_oversold_guardrail)。
+        mask = mask & S.buy_oversold(
+            depth_col=c.oversold_depth_col, depth_max=c.oversold_depth_max,
+            trend=c.oversold_trend, pullback_max=c.oversold_pullback_max,
+            confirm=c.oversold_confirm, confirm_vol=c.oversold_confirm_vol,
+            vol_max=c.oversold_vol_max,
+        )
     # 禁买
     if c.forbid_green_bigdown is not None:
         mask = mask & ~S.forbid_green_bigdown(c.forbid_green_bigdown)

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import List, Optional
+
 import polars as pl
 
 # 高弹题材板块（20% 涨跌幅，易跌停）——票型黑名单 P6 候选
@@ -81,6 +83,61 @@ def buy_breakout(vol_expand: float = 1.5) -> pl.Expr:
     return (pl.col("close") > pl.col("prev_close_max_20d")) & (pl.col("vol_ratio_5") >= vol_expand)
 
 
+def buy_oversold(
+    depth_col: Optional[str] = None,
+    depth_max: Optional[float] = None,
+    trend: Optional[str] = None,           # "up" | "down" | "mid"
+    pullback_max: Optional[float] = None,  # dist_from_high_20d <= pullback_max
+    confirm: Optional[str] = None,         # "reclaim_ma5" | "reclaim_ma10" | "stabilize"
+    confirm_vol: Optional[float] = None,   # 收复类:vol_ratio_5 >= confirm_vol(放量确认)
+    vol_max: Optional[float] = None,       # stabilize:vol_ratio_5 <= vol_max(缩量止跌)
+) -> pl.Expr:
+    """③ K3 超跌买点(§五C B2；`buypoint="oversold"` 分支专用，K1 pullback 路径绝不触及)。
+
+    参数化组合 = B2 四臂:
+      · 臂① 降势超卖:depth_col/depth_max(如 ret_5d≤-0.10)+ trend="down"
+      · 臂② 深跌:depth_col="ret_20d", depth_max=-0.20(trend=None 不分趋势)
+      · 臂③ 升势回撤+启动确认:trend="up" + pullback_max=-0.08 + confirm + (confirm_vol|vol_max)
+
+    引用列全部后向窗口(ret_*/close/ma5/ma10/ma250/ma250_slope_up/dist_from_high_20d/
+    vol_ratio_5/consec_down_days),无前视。趋势/企稳所需列(ma250/斜率/consec_down_days)
+    仅存在于 K3 扩展面板——本函数**只在 `buypoint="oversold"` 分支被调用**,默认 pullback
+    路径不引用这些列(K1 逐位不变,护栏单测锁死)。所有参数为 None 时退化为常真(no-op)。
+    """
+    conds: List[pl.Expr] = []
+    if depth_col is not None and depth_max is not None:
+        conds.append(pl.col(depth_col) <= depth_max)
+    if trend == "up":
+        conds.append((pl.col("close") > pl.col("ma250")) & pl.col("ma250_slope_up"))
+    elif trend == "down":
+        conds.append((pl.col("close") < pl.col("ma250")) & ~pl.col("ma250_slope_up"))
+    elif trend == "mid":  # 站上年线但年线未升(中间态)
+        conds.append((pl.col("close") > pl.col("ma250")) & ~pl.col("ma250_slope_up"))
+    if pullback_max is not None:
+        conds.append(pl.col("dist_from_high_20d") <= pullback_max)
+    if confirm == "reclaim_ma5":
+        c = (pl.col("ret_1d") > 0) & (pl.col("close") >= pl.col("ma5"))
+        if confirm_vol is not None:
+            c = c & (pl.col("vol_ratio_5") >= confirm_vol)
+        conds.append(c)
+    elif confirm == "reclaim_ma10":
+        c = (pl.col("ret_1d") > 0) & (pl.col("close") >= pl.col("ma10"))
+        if confirm_vol is not None:
+            c = c & (pl.col("vol_ratio_5") >= confirm_vol)
+        conds.append(c)
+    elif confirm == "stabilize":  # 缩量止跌企稳:今日止跌(下跌 streak 中止)+ 缩量
+        c = pl.col("consec_down_days") == 0
+        if vol_max is not None:
+            c = c & (pl.col("vol_ratio_5") <= vol_max)
+        conds.append(c)
+    if not conds:
+        return pl.lit(True)
+    expr = conds[0]
+    for cc in conds[1:]:
+        expr = expr & cc
+    return expr
+
+
 # ======================================================================
 #  3. 禁买过滤（P4/P5/P6；返回「禁买」布尔，True = 该剔除）
 # ======================================================================
@@ -121,6 +178,7 @@ __all__ = [
     "STRENGTH_DEFS",
     "buy_pullback",
     "buy_breakout",
+    "buy_oversold",
     "forbid_green_bigdown",
     "forbid_far_from_high",
     "forbid_new_stock",
