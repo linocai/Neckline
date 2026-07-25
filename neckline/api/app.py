@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 
+from neckline import breathing as breathing_store
 from neckline import decision_log as decision_log_store
 from neckline import watchlist as watchlist_store
 from neckline.api import notify
@@ -33,6 +34,9 @@ from neckline.api.inquiry import run_inquiry
 from neckline.api.schemas import (
     BoardEventOut,
     BoardOut,
+    BreathingTradeIn,
+    BreathingTradeOut,
+    BreathingTradesOut,
     CandidateOut,
     CircuitEpisodeOut,
     CircuitStateOut,
@@ -688,6 +692,64 @@ def scenario_outcome(decision_id: int, body: ScenarioOutcomeIn) -> OkOut:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"ok": False, "reason": "scenario_index_out_of_range", "message": str(e)},
         )
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    return OkOut(ok=True)
+
+
+# —— v1.2-G 呼吸试验仓台账(§2.1 第 3 条仓位分配 / plan §五 v1.2-G)——————————————
+# 底仓是普通 `positions` 行(不改其语义、本节端点绝不写 `positions`);T 仓走独立子表
+# `breathing_t_trades`,领域读写 + 派生计算全部委托 `neckline.breathing`(同 decisions
+# 一节「装配 + 出入参映射」姿势)。现价走既有 `_resolve_prices`(同 `list_positions`
+# 的取价路径,不新拉数据源);`baseCostAdj`/`edgeToPrice` 算不出时下发 null,不崩。
+
+def _shape_breathing_trade(t: "breathing_store.BreathingTrade") -> BreathingTradeOut:
+    """T 子账领域行 → 客户端契约。同 `_shape_candidate` 的透传惯例;`tPnl` 取自领域
+    层的 `t_pnl` 派生属性(单一公式源 `breathing.compute_t_pnl`)。"""
+    return BreathingTradeOut(
+        id=t.id, positionId=t.position_id, buyPrice=t.buy_price, sellPrice=t.sell_price,
+        qty=t.qty, fees=t.fees, tDate=t.t_date, tPnl=round(t.t_pnl, 2), note=t.note or "",
+    )
+
+
+@app.get(f"{API_PREFIX}/breathing/{{position_id}}/trades", dependencies=[Depends(require_token)])
+def list_breathing_trades(position_id: int) -> BreathingTradesOut:
+    """T 子账列表 + 底仓摊薄成本 / 先手距离派生(plan G.4)。底仓(`positions` 行)
+    不存在 → 404(算不出摊薄成本,同其它「引用对象不存在」端点一致的 404 语义)。"""
+    pos = pos_store.get_position(position_id, db_path=_db())
+    if pos is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    trades = breathing_store.list_trades(position_id, db_path=_db())
+    base_cost_adj = breathing_store.compute_base_cost_adj(pos.buy_price, pos.qty, trades)
+    price = _resolve_prices([pos.ts_code]).get(pos.ts_code)
+    edge = breathing_store.compute_edge_to_price(base_cost_adj, price)
+    return BreathingTradesOut(
+        items=[_shape_breathing_trade(t) for t in trades],
+        baseCostAdj=(round(base_cost_adj, 4) if base_cost_adj is not None else None),
+        edgeToPrice=(round(edge, 4) if edge is not None else None),
+    )
+
+
+@app.post(f"{API_PREFIX}/breathing/{{position_id}}/trades", dependencies=[Depends(require_token)])
+def post_breathing_trade(position_id: int, body: BreathingTradeIn) -> BreathingTradeOut:
+    """录入一次 T(plan G.4)。`fees` 客户端给多少落多少,不猜、不按费率估算(G.2)。
+    底仓不存在 → 404(不建孤儿 T 子账行)。"""
+    t_date = None
+    if body.tDate and len(body.tDate) == 8 and body.tDate.isdigit():
+        t_date = datetime.strptime(body.tDate, "%Y%m%d").date()
+    trade = breathing_store.add_trade(
+        position_id, buy_price=body.buyPrice, sell_price=body.sellPrice, qty=body.qty,
+        fees=body.fees, t_date=t_date, note=body.note, db_path=_db(),
+    )
+    if trade is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    return _shape_breathing_trade(trade)
+
+
+@app.delete(f"{API_PREFIX}/breathing/trades/{{trade_id}}", dependencies=[Depends(require_token)])
+def delete_breathing_trade(trade_id: int) -> OkOut:
+    """误录可删(plan G.4)。不存在 → 404。"""
+    ok = breathing_store.delete_trade(trade_id, db_path=_db())
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
     return OkOut(ok=True)

@@ -414,6 +414,39 @@ class ScenarioOutcomeIn(BaseModel):
     outcomes: List[ScenarioOutcomeItemIn] = Field(default_factory=list)
 
 
+# —— v1.2-G 呼吸试验仓台账(§2.1 第 3 条仓位分配 / plan §五 v1.2-G)——————————————
+#
+# 底仓是普通 `positions` 行(不改其语义);T 仓走独立子表 `breathing_t_trades`(一个
+# 底仓 → N 次 T 一对多)。打法标签唯一源 = `decision_log.playbook_tag`(v1.2-B ⑧),
+# 本节不复制第二份。`tPnl`/`baseCostAdj`/`edgeToPrice` 均为读时派生,不落库列。
+
+class BreathingTradeIn(BaseModel):
+    buyPrice: float
+    sellPrice: float
+    qty: int
+    fees: float                     # 该次 T 的实际费用,由客户端录入,服务端原样落库、不估算
+    tDate: Optional[str] = None     # 'YYYYMMDD',缺省 = 今日
+    note: Optional[str] = None
+
+
+class BreathingTradeOut(BaseModel):
+    id: int
+    positionId: int
+    buyPrice: float
+    sellPrice: float
+    qty: int
+    fees: float
+    tDate: str
+    tPnl: float                     # 派生 = (sellPrice−buyPrice)×qty−fees,不落列
+    note: str = ""
+
+
+class BreathingTradesOut(BaseModel):
+    items: List[BreathingTradeOut] = Field(default_factory=list)
+    baseCostAdj: Optional[float] = None   # 底仓摊薄成本(派生,§G.3);算不出 → null
+    edgeToPrice: Optional[float] = None   # 先手距离(派生,需现价);无实时价 → null
+
+
 # —— 4D 周复盘工作台 ————————————————————————————————————————————————————
 #
 # `result` 直接透传 `neckline.review.reconcile.weekly_review_dict()` 的完整快照
@@ -460,4 +493,5 @@ __all__ = [
     "ContingencyScenarioIn", "ContingencyScenarioOut",
     "DecisionCreateIn", "DecisionReviseIn", "DecisionOut", "DecisionsListOut", "DecisionLinkIn",
     "ScenarioOutcomeItemIn", "ScenarioOutcomeIn",
+    "BreathingTradeIn", "BreathingTradeOut", "BreathingTradesOut",
 ]
