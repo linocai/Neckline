@@ -512,17 +512,37 @@ def list_positions() -> PositionsOut:
     return PositionsOut(holdings=out, circuit=_shape_circuit(circuit_store.get_state(db_path=_db())))
 
 
+# 补录预填区间的**保守下沿因子**(下限档金额 = `single_cap` × 本值)。**纯展示层因子,
+# 住这一处**——不是领域常量:领域上的唯一事实源仍是现役 config 的 `single_cap`(违纪
+# 判定上限,§2.1 第 3 条)。改这个数只改「界面上默认给用户看的下沿档」,不改任何纪律判定。
+_ENTRY_SUGGESTION_FLOOR_FRAC = 0.5
+
+
 @app.get(f"{API_PREFIX}/positions/entry-suggestion", dependencies=[Depends(require_token)])
 def entry_suggestion(code: str = "", price: float = 0.0) -> EntrySuggestionOut:
-    """一键补录预填推荐(plan v1.1-B.3,**只读计算,不写台账**)。推荐 `qty` = 按现役
-    `single_cap` 与现价取整手 `floor(single_cap/price/100)*100`(A 股 100 股/手);派生
-    `stop_line` = 现价×(1−`stop_pct`)。price≤0 → qty=0、stop_line=0(防除零)。补录/清仓
-    写入仍走既有 `POST /positions` / `POST /positions/{id}/close`(不改)。"""
+    """一键补录预填**区间**(plan v1.2-E.5,**只读计算,不写台账**)。
+
+    v1.2 章程把 `single_cap` 的语义从「推荐值」改成「**违纪判定上限**」(§2.1 第 3 条:
+    单笔金额不定死,由用户当场在区间内自定)——故这里返两档而非一个数,**系统不替用户
+    拍板单笔金额**:`qtyHigh`/`capCeil` 对应违纪上限(**非推荐值**,客户端文案须标注),
+    `qtyLow`/`capFloor` 是保守下沿。手数按 A 股 100 股/手向下取整;派生 `stopLine` =
+    现价×(1−`stop_pct`)。price≤0 → 两档手数均 0、stopLine=0(防除零)。补录/清仓写入仍走
+    既有 `POST /positions` / `POST /positions/{id}/close`(不改)。"""
     stop_pct, _max_hold, single_cap, _tpr = _active_config()
+    cap_ceil = float(single_cap)
+    cap_floor = cap_ceil * _ENTRY_SUGGESTION_FLOOR_FRAC
     if price <= 0:
-        return EntrySuggestionOut(code=code, price=price, qty=0, stopLine=0.0)
-    qty = int(math.floor(single_cap / price / 100) * 100)
-    return EntrySuggestionOut(code=code, price=price, qty=qty, stopLine=_stop_line(price, stop_pct))
+        return EntrySuggestionOut(
+            code=code, price=price, qtyLow=0, qtyHigh=0,
+            capFloor=cap_floor, capCeil=cap_ceil, stopLine=0.0,
+        )
+    return EntrySuggestionOut(
+        code=code, price=price,
+        qtyLow=int(math.floor(cap_floor / price / 100) * 100),
+        qtyHigh=int(math.floor(cap_ceil / price / 100) * 100),
+        capFloor=cap_floor, capCeil=cap_ceil,
+        stopLine=_stop_line(price, stop_pct),
+    )
 
 
 @app.post(f"{API_PREFIX}/positions", dependencies=[Depends(require_token)])

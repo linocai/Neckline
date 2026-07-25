@@ -170,11 +170,20 @@ class PositionsOut(BaseModel):
 
 
 class EntrySuggestionOut(BaseModel):
-    """一键补录预填推荐(plan v1.1-B.3,只读计算,不写台账)。"""
+    """一键补录预填**区间**(plan v1.2-E.5 / 契约清单,只读计算,不写台账)。
+
+    v1.1-B.3 原返单个 `qty`(= 按 `single_cap` 取满的手数),v1.2 章程把 `single_cap`
+    的语义从「推荐值」改成「**违纪判定上限**」——单笔金额由用户视股价与当时想控的
+    仓位当场自定(§2.1 第 3 条)。故这里改返两档区间,**系统不替用户拍板单笔金额**:
+    上限档对应违纪线(非推荐值,客户端文案须标注),下限档是保守下沿。
+    """
     ok: bool = True
     code: str
     price: float
-    qty: int                     # 按 single_cap 与现价取整手:floor(single_cap/price/100)*100
+    qtyLow: int                  # 下限档手数:floor(capFloor/price/100)*100
+    qtyHigh: int                 # 上限档手数:floor(capCeil/price/100)*100(= 违纪上限对应手数,非推荐)
+    capFloor: float              # 下限档金额 = single_cap × 展示层因子(见 app.py)
+    capCeil: float               # 上限档金额 = single_cap(违纪判定上限,读现役 config)
     stopLine: float              # 现价×(1−stop_pct)派生(读现役 config)
 
 

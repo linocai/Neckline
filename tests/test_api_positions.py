@@ -97,20 +97,37 @@ def test_position_derived_with_live_price(client, AUTH, api_env, monkeypatch):
     assert h["retraceState"]["triggered"] is False   # 峰值 11 未回落 5%
 
 
-# —— v1.1-B.3 一键补录预填推荐 ————————————————————————————————————————
+# —— v1.2-E.5 一键补录预填**区间**(v1.1-B.3 单 qty 已被替换)——————————————
 
-def test_entry_suggestion_rounds_to_lots(client, AUTH):
-    """qty = floor(single_cap/price/100)*100(single_cap=20000 兜底默认);stopLine 读 config。"""
+def test_entry_suggestion_returns_range_not_single_qty(client, AUTH):
+    """两档手数各自向下取整;上限档 = single_cap(违纪判定上限,20000 兜底默认),
+    下限档 = single_cap × `_ENTRY_SUGGESTION_FLOOR_FRAC`;stopLine 读 config。
+    **不再返单个 `qty`**——v1.2 章程起 single_cap 是违纪上限而非推荐值,系统不替
+    用户拍板单笔金额(§2.1 第 3 条)。"""
     r = client.get("/api/v1/positions/entry-suggestion", headers=AUTH, params={"code": "600001.SH", "price": 50.0}).json()
-    assert r["qty"] == 400                # floor(20000/50/100)*100 = 400
+    assert r["qtyHigh"] == 400            # floor(20000/50/100)*100
+    assert r["qtyLow"] == 200             # floor(10000/50/100)*100
+    assert r["capCeil"] == 20000.0 and r["capFloor"] == 10000.0
     assert r["stopLine"] == 47.5          # 50×0.95
     assert r["code"] == "600001.SH" and r["price"] == 50.0
+    assert "qty" not in r                 # 旧单值字段已移除,客户端不得再依赖
+
+
+def test_entry_suggestion_floor_frac_matches_named_constant(client, AUTH):
+    """下限档金额随命名常量走,不是散落的 0.5 字面量(单一处可调,不影响纪律判定)。"""
+    from neckline.api.app import _ENTRY_SUGGESTION_FLOOR_FRAC
+    r = client.get("/api/v1/positions/entry-suggestion", headers=AUTH, params={"price": 50.0}).json()
+    assert r["capFloor"] == pytest.approx(r["capCeil"] * _ENTRY_SUGGESTION_FLOOR_FRAC)
 
 
 def test_entry_suggestion_high_price_zero_lots(client, AUTH):
-    """现价过高、单笔上限买不起一手 → qty=0(不虚报)。"""
+    """现价过高、连下限档都买不起一手 → 两档均 0(不虚报)。"""
     r = client.get("/api/v1/positions/entry-suggestion", headers=AUTH, params={"price": 1500.0}).json()
-    assert r["qty"] == 0                  # floor(20000/1500/100)=0
+    assert r["qtyHigh"] == 0 and r["qtyLow"] == 0     # floor(20000/1500/100)=0
+
+    # 上限档买得起、下限档买不起 → 只有下限档为 0,上限档如实给(不把区间硬凑成两档相等)
+    r1 = client.get("/api/v1/positions/entry-suggestion", headers=AUTH, params={"price": 150.0}).json()
+    assert r1["qtyHigh"] == 100 and r1["qtyLow"] == 0
 
     r0 = client.get("/api/v1/positions/entry-suggestion", headers=AUTH, params={"price": 0}).json()
-    assert r0["qty"] == 0 and r0["stopLine"] == 0.0   # price≤0 防除零
+    assert r0["qtyLow"] == 0 and r0["qtyHigh"] == 0 and r0["stopLine"] == 0.0   # price≤0 防除零
