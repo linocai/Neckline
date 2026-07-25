@@ -285,6 +285,104 @@ class SettingsReviewColMapIn(BaseModel):
     colMap: Dict[str, str] = Field(default_factory=dict)
 
 
+# —— v1.2-B 预注册决策日志(§2.1 第 3 条 / plan §五 v1.2-B)——————————————————
+#
+# 枚举一律**服务端码 + 客户端展示层换算**(沿 `CandidateOut.board`/`boardLabel`
+# 先例)——`thesisTags`/`playbookTag`/情景树 `action` 入参用 `Literal` 白名单
+# 校验(非法码 422,FastAPI/pydantic 自动处理,不必手写 if/else);出参 `DecisionOut`
+# 对应字段回宽松 `str`(与 `CandidateOut.board: str` 同惯例,不为已落库的历史合法值
+# 重新收紧类型)。
+
+class ContingencyScenarioIn(BaseModel):
+    """⑦应对方案·情景树单项(预注册内容)。`matched` 默认 False——真正翻转走
+    专用端点 `POST /decisions/{id}/scenario-outcome`,创建/修订时传的 `matched`
+    只是初始态(通常就是 False,不强制)。"""
+    scenario: str
+    trigger: str
+    action: Literal["BUY", "HOLD", "REDUCE", "ABANDON"]
+    matched: bool = False
+
+
+class ContingencyScenarioOut(BaseModel):
+    scenario: str
+    trigger: str
+    action: str
+    matched: bool = False
+
+
+class DecisionCreateIn(BaseModel):
+    code: str
+    name: Optional[str] = None
+    whyBuy: str
+    whyEntryPrice: str
+    targetPrice: Optional[float] = None
+    exitLow: Optional[float] = None
+    exitHigh: Optional[float] = None
+    thesisTags: List[Literal["THEME", "SENTIMENT_CYCLE", "CAPITAL_FLOW", "TECH_PATTERN", "NEWS"]] = Field(default_factory=list)
+    invalidation: str
+    contingencyScenarios: List[ContingencyScenarioIn] = Field(default_factory=list)
+    playbookTag: Literal["SWING_CHASE", "BREATHING_TRIAL"]
+    plannedPrice: Optional[float] = None
+    plannedQty: Optional[int] = None
+    # 注意:有意**不含** `createdAt` 字段——服务端生成,客户端任何同名字段值都会被
+    # pydantic 直接忽略(`DecisionCreateIn` 无此字段,压根不会解析进请求体)。
+
+
+class DecisionReviseIn(BaseModel):
+    """`POST /decisions/{id}/revise` 请求体(同八项,不含 code/name——修订不能换
+    股票,新行的 ts_code/name 继承自被修订的原行,见 `neckline.decision_log.
+    revise_decision`)。"""
+    whyBuy: str
+    whyEntryPrice: str
+    targetPrice: Optional[float] = None
+    exitLow: Optional[float] = None
+    exitHigh: Optional[float] = None
+    thesisTags: List[Literal["THEME", "SENTIMENT_CYCLE", "CAPITAL_FLOW", "TECH_PATTERN", "NEWS"]] = Field(default_factory=list)
+    invalidation: str
+    contingencyScenarios: List[ContingencyScenarioIn] = Field(default_factory=list)
+    playbookTag: Literal["SWING_CHASE", "BREATHING_TRIAL"]
+    plannedPrice: Optional[float] = None
+    plannedQty: Optional[int] = None
+
+
+class DecisionOut(BaseModel):
+    id: int
+    code: str
+    name: str
+    createdAt: str
+    whyBuy: str
+    whyEntryPrice: str
+    targetPrice: Optional[float] = None
+    exitLow: Optional[float] = None
+    exitHigh: Optional[float] = None
+    thesisTags: List[str] = Field(default_factory=list)
+    invalidation: str
+    contingencyScenarios: List[ContingencyScenarioOut] = Field(default_factory=list)
+    playbookTag: str
+    plannedPrice: Optional[float] = None
+    plannedQty: Optional[int] = None
+    status: str                              # pending | filled | cancelled | expired
+    positionId: Optional[int] = None
+    revisionOf: Optional[int] = None
+
+
+class DecisionsListOut(BaseModel):
+    items: List[DecisionOut] = Field(default_factory=list)
+
+
+class DecisionLinkIn(BaseModel):
+    positionId: int
+
+
+class ScenarioOutcomeItemIn(BaseModel):
+    index: int
+    matched: bool
+
+
+class ScenarioOutcomeIn(BaseModel):
+    outcomes: List[ScenarioOutcomeItemIn] = Field(default_factory=list)
+
+
 # —— 4D 周复盘工作台 ————————————————————————————————————————————————————
 #
 # `result` 直接透传 `neckline.review.reconcile.weekly_review_dict()` 的完整快照
@@ -328,4 +426,7 @@ __all__ = [
     "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_REJECT", "VERDICT_PASS",
     "PushSettingsOut", "SettingsOut", "SettingsLLMIn", "SettingsPushIn", "DeviceRegisterIn",
     "SettingsReviewColMapIn", "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
+    "ContingencyScenarioIn", "ContingencyScenarioOut",
+    "DecisionCreateIn", "DecisionReviseIn", "DecisionOut", "DecisionsListOut", "DecisionLinkIn",
+    "ScenarioOutcomeItemIn", "ScenarioOutcomeIn",
 ]

@@ -241,6 +241,49 @@ CREATE TABLE IF NOT EXISTS retreat_metrics (
     recorded_at        TEXT NOT NULL,       -- ISO8601
     PRIMARY KEY (trade_date, hhmm)
 );
+
+-- v1.2-B 预注册决策日志(plan §五 v1.2-B,§2.1 第 3 条人机协作配套)。下单前录八项,
+-- 时间戳先于成交防结果污染;**审计件、非下单件**——本表任何写入路径(见
+-- `neckline.decision_log`)绝无下单/撤单/拉行情副作用。
+-- created_at:**服务端生成**,任何调用方(含 API 入参)都不能覆盖,杜绝预注册时间
+-- 被伪造。八项预注册字段:why_buy①/why_entry_price②/target_price③/exit_low+
+-- exit_high④/thesis_tags⑤(枚举码 JSON 数组)/invalidation⑥/contingency_scenarios⑦
+-- (情景树 JSON 数组,每项 {scenario,trigger,action,matched};scenario/trigger/action
+-- 是不可编辑预注册内容,matched 是唯一可事后翻的结果标记,专用端点
+-- `set_scenario_outcomes` 才能碰)/playbook_tag⑧(单选枚举码)。
+-- **不可编辑口径**:①-⑥ + ⑦的 scenario/trigger/action + ⑧ 全表无任何 UPDATE 语句
+-- 触碰这些列(见 `neckline.decision_log` 模块注释逐一核对);改动只能
+-- `revise_decision` 新增一行,`revision_of` 落**链根** id(该行若自身是修订行则取其
+-- `revision_of`,否则该行本身即链根)——归因永远 `WHERE revision_of IS NULL` 取首版,
+-- 或 `WHERE revision_of=<根id>` 一步取全部修订,无需递归遍历链条。
+-- status:pending(预注册待决)/filled(成交后经 link 关联)/cancelled(用户放弃)/
+-- expired(v1.2.1-C 挂单追踪 N 日到期,本块只建列不写)。position_id:成交后经
+-- `link_decision` 回填,关联 `positions.id`(无 SQL 级 FK 约束,同本库其它表惯例)。
+CREATE TABLE IF NOT EXISTS decision_log (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_code                 TEXT NOT NULL,
+    name                    TEXT,
+    created_at              TEXT NOT NULL,       -- ISO8601,服务端生成,客户端不许传
+    why_buy                 TEXT NOT NULL,       -- ①为什么买
+    why_entry_price         TEXT NOT NULL,       -- ②为什么这个入场价
+    target_price            REAL,                -- ③目标价
+    exit_low                REAL,                -- ④离场价格区间(下沿)
+    exit_high               REAL,                -- ④离场价格区间(上沿)
+    thesis_tags             TEXT NOT NULL DEFAULT '[]',  -- ⑤论点标签,枚举码 JSON 数组
+    invalidation             TEXT NOT NULL,       -- ⑥证伪条件
+    contingency_scenarios   TEXT NOT NULL DEFAULT '[]',  -- ⑦应对方案·情景树,JSON 数组
+    playbook_tag            TEXT NOT NULL,       -- ⑧打法标签,枚举码(单选)
+    planned_price            REAL,
+    planned_qty               INTEGER,
+    status                    TEXT NOT NULL DEFAULT 'pending',  -- pending|filled|cancelled|expired
+    position_id               INTEGER,             -- 成交后回填,关联 positions.id
+    revision_of                INTEGER,             -- 修订链根 id,NULL=首版
+    updated_at                 TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_decision_log_ts_code ON decision_log(ts_code);
+CREATE INDEX IF NOT EXISTS idx_decision_log_status ON decision_log(status);
+CREATE INDEX IF NOT EXISTS idx_decision_log_revision_of ON decision_log(revision_of);
+CREATE INDEX IF NOT EXISTS idx_decision_log_created_at ON decision_log(created_at);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

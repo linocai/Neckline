@@ -65,4 +65,34 @@ echo "22) watchlist delete 000001.SZ:"; curl -s -o /dev/null -w "  status=%{http
 echo "23) watchlist delete 不存在代码 → 404:"; curl -s -o /dev/null -w "  status=%{http_code}\n" -X DELETE "${AUTH[@]}" "$BASE/watchlist/999999.SH"
 echo "24) watchlist list(应剩 1 只):"; curl -s "${AUTH[@]}" "$BASE/watchlist"; echo
 
+# —— v1.2-B 预注册决策日志(八项)————————————————————————————————————————
+echo "25) POST /decisions(八项 + 情景树 + 打法标签,附带一个荒谬 createdAt 入参验证被忽略):"
+DEC=$(curl -s "${AUTH[@]}" "${JSON[@]}" -d '{
+  "code":"600001.SH","name":"示例甲",
+  "whyBuy":"题材热+量能启动","whyEntryPrice":"回调至10日线企稳",
+  "targetPrice":12.0,"exitLow":9.0,"exitHigh":9.5,
+  "thesisTags":["THEME","CAPITAL_FLOW"],"invalidation":"跌破10日线",
+  "contingencyScenarios":[
+    {"scenario":"次日高开","trigger":"开盘涨幅>3%","action":"HOLD"},
+    {"scenario":"次日低开","trigger":"开盘跌幅>2%","action":"ABANDON"}
+  ],
+  "playbookTag":"SWING_CHASE","plannedPrice":10.0,"plannedQty":1000,
+  "createdAt":"1999-01-01T00:00:00Z"
+}' "$BASE/decisions"); echo "  $DEC"
+DID=$(echo "$DEC" | "$PY" -c "import sys,json;print(json.load(sys.stdin)['id'])")
+echo "26) 非法论点标签码 → 422:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "${JSON[@]}" -d '{"code":"600001.SH","whyBuy":"x","whyEntryPrice":"x","thesisTags":["NOT_REAL"],"invalidation":"x","contingencyScenarios":[],"playbookTag":"SWING_CHASE"}' "$BASE/decisions"
+echo "27) GET /decisions(应 1 条,createdAt 不是 1999):"; curl -s "${AUTH[@]}" "$BASE/decisions"; echo
+echo "28) POST /decisions/{id}/link:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"positionId":1}' "$BASE/decisions/$DID/link"; echo
+echo "29) POST /decisions/{id}/revise(新增行,旧行原地不变):"
+REV=$(curl -s "${AUTH[@]}" "${JSON[@]}" -d '{
+  "whyBuy":"修订后理由","whyEntryPrice":"修订后入场价理由","targetPrice":13.0,
+  "thesisTags":["NEWS"],"invalidation":"修订后证伪","contingencyScenarios":[],
+  "playbookTag":"BREATHING_TRIAL"
+}' "$BASE/decisions/$DID/revise"); echo "  $REV"
+echo "30) POST /decisions/{id}/scenario-outcome(只翻 matched):"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"outcomes":[{"index":0,"matched":true}]}' "$BASE/decisions/$DID/scenario-outcome"; echo
+echo "31) scenario-outcome index 越界 → 422:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "${JSON[@]}" -d '{"outcomes":[{"index":99,"matched":true}]}' "$BASE/decisions/$DID/scenario-outcome"
+echo "32) POST /decisions/{id}/cancel(把首版 $DID 从 filled 改判 cancelled)+ 不存在 id → 404:"; curl -s -X POST "${AUTH[@]}" "$BASE/decisions/$DID/cancel"; echo
+curl -s -o /dev/null -w "  status=%{http_code}\n" -X POST "${AUTH[@]}" "$BASE/decisions/999999/cancel"
+echo "33) GET /decisions?status=pending(首版 $DID 已 cancelled 不在内,应只剩 29) 的修订行):"; curl -s "${AUTH[@]}" "$BASE/decisions?status=pending"; echo
+
 echo ">> 冒烟完成。"

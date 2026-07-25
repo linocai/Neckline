@@ -23,8 +23,9 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 
+from neckline import decision_log as decision_log_store
 from neckline import watchlist as watchlist_store
 from neckline.api import notify
 from neckline.api.deps import require_api_token_ready, require_token
@@ -33,6 +34,12 @@ from neckline.api.schemas import (
     BoardEventOut,
     BoardOut,
     CandidateOut,
+    ContingencyScenarioOut,
+    DecisionCreateIn,
+    DecisionLinkIn,
+    DecisionOut,
+    DecisionReviseIn,
+    DecisionsListOut,
     DeviceRegisterIn,
     EntrySuggestionOut,
     InquiryIn,
@@ -49,6 +56,7 @@ from neckline.api.schemas import (
     RetreatBrakeOut,
     ReviewGetOut,
     ReviewUploadOut,
+    ScenarioOutcomeIn,
     SettingsLLMIn,
     SettingsOut,
     SettingsPushIn,
@@ -515,6 +523,118 @@ def close_position(position_id: int, body: PositionCloseIn) -> OkOut:
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"ok": False, "reason": "not_holding"},
         )
+    return OkOut(ok=True)
+
+
+# —— v1.2-B 预注册决策日志(§2.1 第 3 条 / plan §五 v1.2-B)——————————————————
+# **审计件、非下单件**(§3.8):本节端点全部只做「装配 + 出入参映射」,领域读写
+# 全部委托 `neckline.decision_log`(唯一写入通道,同 watchlist/positions 姿势),
+# 端点本身无任何下单 / 撤单 / 拉行情副作用。**八项落库后不可编辑**——本节没有
+# 任何「改八项内容」的端点;唯一的修改路径是 `revise`(新增修订行)与
+# `scenario-outcome`(只翻情景树 `matched`)。
+
+def _shape_decision(row: "decision_log_store.DecisionRow") -> DecisionOut:
+    """决策日志领域行 → 客户端契约。同 `_shape_candidate` 的透传惯例。"""
+    return DecisionOut(
+        id=row.id, code=row.ts_code, name=row.name or row.ts_code, createdAt=row.created_at,
+        whyBuy=row.why_buy, whyEntryPrice=row.why_entry_price,
+        targetPrice=row.target_price, exitLow=row.exit_low, exitHigh=row.exit_high,
+        thesisTags=list(row.thesis_tags), invalidation=row.invalidation,
+        contingencyScenarios=[
+            ContingencyScenarioOut(
+                scenario=s.get("scenario", ""), trigger=s.get("trigger", ""),
+                action=s.get("action", ""), matched=bool(s.get("matched", False)),
+            )
+            for s in row.contingency_scenarios
+        ],
+        playbookTag=row.playbook_tag, plannedPrice=row.planned_price, plannedQty=row.planned_qty,
+        status=row.status, positionId=row.position_id, revisionOf=row.revision_of,
+    )
+
+
+@app.post(f"{API_PREFIX}/decisions", dependencies=[Depends(require_token)])
+def create_decision(body: DecisionCreateIn) -> DecisionOut:
+    """预注册决策日志(八项,plan B.1/B.2)。**`created_at` 服务端生成,忽略客户端
+    任何时间戳入参**——`DecisionCreateIn` 本就无 createdAt 字段,请求体里同名字段
+    (若有)会被 pydantic 直接丢弃,不会传导到 `decision_log_store.create_decision`
+    (该函数签名同样无此形参)。"""
+    row = decision_log_store.create_decision(
+        ts_code=body.code, name=body.name, why_buy=body.whyBuy, why_entry_price=body.whyEntryPrice,
+        target_price=body.targetPrice, exit_low=body.exitLow, exit_high=body.exitHigh,
+        thesis_tags=list(body.thesisTags), invalidation=body.invalidation,
+        contingency_scenarios=[s.model_dump() for s in body.contingencyScenarios],
+        playbook_tag=body.playbookTag, planned_price=body.plannedPrice, planned_qty=body.plannedQty,
+        db_path=_db(),
+    )
+    return _shape_decision(row)
+
+
+@app.get(f"{API_PREFIX}/decisions", dependencies=[Depends(require_token)])
+def list_decisions(
+    status: str = "", code: str = "",
+    from_: str = Query(default="", alias="from"), to: str = "",
+) -> DecisionsListOut:
+    """客户端历史 + macOS 归因表(plan B.2)。默认返全部,可按 `status`/`code`/
+    `from`/`to`(created_at 日期区间,'YYYYMMDD')过滤。"""
+    rows = decision_log_store.list_decisions(
+        status=(status or None), ts_code=(code or None),
+        date_from=(from_ or None), date_to=(to or None), db_path=_db(),
+    )
+    return DecisionsListOut(items=[_shape_decision(r) for r in rows])
+
+
+@app.post(f"{API_PREFIX}/decisions/{{decision_id}}/link", dependencies=[Depends(require_token)])
+def link_decision(decision_id: int, body: DecisionLinkIn) -> OkOut:
+    """成交后一键关联(plan B.2):`status` 置 filled + `position_id` 回填。"""
+    ok = decision_log_store.link_decision(decision_id, body.positionId, db_path=_db())
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    return OkOut(ok=True)
+
+
+@app.post(f"{API_PREFIX}/decisions/{{decision_id}}/cancel", dependencies=[Depends(require_token)])
+def cancel_decision(decision_id: int) -> OkOut:
+    """用户放弃该预注册计划(plan B.2):`status` 置 cancelled。"""
+    ok = decision_log_store.cancel_decision(decision_id, db_path=_db())
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    return OkOut(ok=True)
+
+
+@app.post(f"{API_PREFIX}/decisions/{{decision_id}}/revise", dependencies=[Depends(require_token)])
+def revise_decision(decision_id: int, body: DecisionReviseIn) -> DecisionOut:
+    """新增一行修订(plan B.2「改动只新增修订行,不改旧行」)。旧行(`decision_id`)
+    原地不变;新行 `revisionOf` 指向**链根** id(见 `decision_log.revise_decision`
+    文档)。`decision_id` 不存在 → 404。"""
+    row = decision_log_store.revise_decision(
+        decision_id, why_buy=body.whyBuy, why_entry_price=body.whyEntryPrice,
+        target_price=body.targetPrice, exit_low=body.exitLow, exit_high=body.exitHigh,
+        thesis_tags=list(body.thesisTags), invalidation=body.invalidation,
+        contingency_scenarios=[s.model_dump() for s in body.contingencyScenarios],
+        playbook_tag=body.playbookTag, planned_price=body.plannedPrice, planned_qty=body.plannedQty,
+        db_path=_db(),
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    return _shape_decision(row)
+
+
+@app.post(f"{API_PREFIX}/decisions/{{decision_id}}/scenario-outcome", dependencies=[Depends(require_token)])
+def scenario_outcome(decision_id: int, body: ScenarioOutcomeIn) -> OkOut:
+    """情景树⑦结果标记专用端点(plan B.2)——**只翻 `matched`,绝不改
+    `scenario`/`trigger`/`action`**(不可编辑口径的唯一例外落点)。`decision_id`
+    不存在 → 404;`outcomes` 任一 `index` 越界 → 422。"""
+    try:
+        ok = decision_log_store.set_scenario_outcomes(
+            decision_id, [o.model_dump() for o in body.outcomes], db_path=_db(),
+        )
+    except decision_log_store.ScenarioIndexError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"ok": False, "reason": "scenario_index_out_of_range", "message": str(e)},
+        )
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
     return OkOut(ok=True)
 
 
