@@ -143,8 +143,30 @@ class PositionOut(BaseModel):
     todayAction: str = ""        # 今日动作提示(D5离场 / 距止损 / 回落止盈已触发 等)
 
 
+# —— v1.2-A2 熔断纪律状态(§2.1 第 7 条 / plan §五 v1.2-A2)——————————————————————
+#
+# 诚实边界(§2.1 第 7 条):熔断只能基于**用户已补录进台账**的成交判定——判定所依据
+# 的数据与时效随状态一起下发(`basisTradesCount`「基于台账 N 笔已补录成交」+
+# `basisWindow` 时窗 + `note`)。锁定态 = 派生(`circuit_breaker.unlocked_at IS NULL`)。
+
+class CircuitEpisodeOut(BaseModel):
+    triggerReason: str            # consecutive_stops | daily_loss(客户端展示层换算)
+    triggeredAt: str
+    triggerRefDate: str           # 'YYYYMMDD' 触发所在交易日
+    basisTradesCount: int         # 参与判定的台账已补录成交笔数(诚实边界)
+    basisWindow: str              # 判据时窗(展示口径,如 '2026-07-22' 或 '2026-07-20~2026-07-22')
+    note: str                     # 诚实边界文案(含「基于台账 N 笔已补录成交」)
+
+
+class CircuitStateOut(BaseModel):
+    locked: bool
+    episode: Optional[CircuitEpisodeOut] = None   # 锁定时带当前触发 episode;未锁定 → null
+
+
 class PositionsOut(BaseModel):
     holdings: List[PositionOut] = Field(default_factory=list)
+    # v1.2-A2:今日计划面内嵌熔断状态(处置最相关)。默认未锁定,端点按 `circuit.get_state` 填。
+    circuit: CircuitStateOut = Field(default_factory=lambda: CircuitStateOut(locked=False))
 
 
 class EntrySuggestionOut(BaseModel):
@@ -173,6 +195,13 @@ class PositionOpenOut(BaseModel):
 class PositionCloseIn(BaseModel):
     sell_price: float
     sell_time: Optional[str] = None      # 'YYYYMMDD' 可选,缺省=今日
+    # v1.2-A2 离场原因(可选,客户端清仓时选;不传 → NULL,服务端熔断评估走价格兜底判止损)。
+    # 服务端码 Literal 白名单(非法码 422);客户端展示层码换算,沿 `boardLabel` 先例。
+    # 契约字段名 `closeReason`(v1.2 客户端契约清单)——与本模型既有 snake_case 入参
+    # (sell_price/sell_time)并存,同 decisions 入参走 camelCase 的既定不一致(留痕报告)。
+    closeReason: Optional[
+        Literal["STOP_LOSS", "TAKE_PROFIT", "TIME_EXIT", "INVALIDATION", "MANUAL"]
+    ] = None
 
 
 # —— v1.1-C 自选池(watchlist)————————————————————————————————————————————
@@ -255,6 +284,7 @@ class PushSettingsOut(BaseModel):
     retreatBrake: bool
     precall: bool      # v1.1-G.1:盘前校准 9:26 汇总推送开关
     d5exit: bool       # v1.1-G.1:D5 时间退出推送开关
+    circuit: bool      # v1.2-A2:熔断提醒推送开关(第五类,默认开)
 
 
 class SettingsOut(BaseModel):
@@ -274,6 +304,7 @@ class SettingsPushIn(BaseModel):
     retreatBrake: bool
     precall: bool      # v1.1-G.1:盘前校准 9:26 汇总推送开关
     d5exit: bool       # v1.1-G.1:D5 时间退出推送开关
+    circuit: bool      # v1.2-A2:熔断提醒推送开关(第五类,默认开)——五字段均必填(缺 → 422)
 
 
 class DeviceRegisterIn(BaseModel):
@@ -420,7 +451,7 @@ __all__ = [
     "OkOut", "LLMJudgmentOut", "CandidateOut", "WatchlistCheckLLMOut", "WatchlistCheckOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
-    "EntrySuggestionOut",
+    "EntrySuggestionOut", "CircuitEpisodeOut", "CircuitStateOut",
     "WatchlistItemOut", "WatchlistOut", "WatchlistAddIn", "WatchlistAddOut", "WatchlistPinIn",
     "ThsReconcileOut", "ThsExportOut",
     "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_REJECT", "VERDICT_PASS",

@@ -40,26 +40,30 @@ def _ok_transport(url, headers, body):
     return apns.PushResult(ok=True, status=200, reason="ok")
 
 
-def test_push_whitelist_is_exactly_four():
-    """推送白名单结构守护(§2.4 v1.1 = 四类,各独立入口 + 独立 category):notify 模块
-    只暴露这四个推送入口,不给第五类事件留路径。A/B 验收②:白名单四类齐。"""
+def test_push_whitelist_is_exactly_five():
+    """推送白名单结构守护(§2.4 v1.2 = 五类,各独立入口 + 独立 category):notify 模块
+    只暴露这五个推送入口,不给第六类事件留路径。A2 验收②:白名单五类齐(v1.2-A2 扩
+    第五类熔断)。"""
     assert set(notify.__all__) == {
         "NotifyOutcome", "push_report_ready", "push_retreat_brake",
-        "push_precall_summary", "push_d5_exit",
+        "push_precall_summary", "push_d5_exit", "push_circuit_breaker",
     }
 
 
-def test_categories_are_four_distinct():
-    """四类推送各自独立的 APNs category(互不复用,客户端据此挂各自 UNNotificationCategory)。"""
-    cats = {apns.CATEGORY_REPORT, apns.CATEGORY_RETREAT, apns.CATEGORY_PRECALL, apns.CATEGORY_D5EXIT}
-    assert cats == {"REPORT", "RETREAT", "PRECALL", "D5EXIT"}
-    assert len(cats) == 4
+def test_categories_are_five_distinct():
+    """五类推送各自独立的 APNs category(互不复用,客户端据此挂各自 UNNotificationCategory)。"""
+    cats = {
+        apns.CATEGORY_REPORT, apns.CATEGORY_RETREAT, apns.CATEGORY_PRECALL,
+        apns.CATEGORY_D5EXIT, apns.CATEGORY_CIRCUIT,
+    }
+    assert cats == {"REPORT", "RETREAT", "PRECALL", "D5EXIT", "CIRCUIT"}
+    assert len(cats) == 5
 
 
 def test_report_push_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
-    set_push(report=False, retreat=True, precall=True, d5exit=True, db_path=db)
+    set_push(report=False, retreat=True, precall=True, d5exit=True, circuit=True, db_path=db)
     out = notify.push_report_ready("2026-07-17", db_path=db, transport=_ok_transport)
     assert out.sent == 0 and out.skipped_reason == "push_report_off"
 
@@ -68,7 +72,7 @@ def test_report_push_sends_when_on(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
     upsert_device("tok2", db_path=db)
-    set_push(report=True, retreat=True, precall=True, d5exit=True, db_path=db)
+    set_push(report=True, retreat=True, precall=True, d5exit=True, circuit=True, db_path=db)
     out = notify.push_report_ready("2026-07-17", db_path=db, transport=_ok_transport)
     assert out.sent == 2 and out.failed == 0
 
@@ -76,7 +80,7 @@ def test_report_push_sends_when_on(api_env, apns_configured):
 def test_retreat_push_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
-    set_push(report=True, retreat=False, precall=True, d5exit=True, db_path=db)
+    set_push(report=True, retreat=False, precall=True, d5exit=True, circuit=True, db_path=db)
     out = notify.push_retreat_brake("炸板率飙升", db_path=db, transport=_ok_transport)
     assert out.sent == 0 and out.skipped_reason == "push_retreat_off"
 
@@ -150,6 +154,32 @@ def test_d5_exit_sends_when_on(api_env, apns_configured):
     upsert_device("tok1", db_path=db)
     out = notify.push_d5_exit("贵州茅台", "600519.SH", 5, db_path=db, transport=_ok_transport)
     assert out.sent == 1
+
+
+def _fake_episode(note="连续 3 笔止损离场触发熔断(基于台账 3 笔已补录成交)。"):
+    from neckline.sentinel.circuit import CircuitEpisode
+    return CircuitEpisode(
+        id=1, triggered_at="2026-07-22T08:00:00+00:00",
+        trigger_reason="consecutive_stops", trigger_ref_date="20260722",
+        basis={"position_ids": [1, 2, 3], "window": "2026-07-22", "note": note},
+        created_at="2026-07-22T08:00:00+00:00",
+    )
+
+
+def test_circuit_push_gated_off(api_env, apns_configured):
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    _set_switch(db, "push_circuit", False)
+    out = notify.push_circuit_breaker(_fake_episode(), db_path=db, transport=_ok_transport)
+    assert out.sent == 0 and out.skipped_reason == "push_circuit_off"
+
+
+def test_circuit_push_sends_when_on(api_env, apns_configured):
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    upsert_device("tok2", db_path=db)
+    out = notify.push_circuit_breaker(_fake_episode(), db_path=db, transport=_ok_transport)
+    assert out.sent == 2 and out.failed == 0   # 默认开(push_circuit 列默认 1)
 
 
 def test_partial_failure_counts(api_env, apns_configured):

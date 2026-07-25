@@ -116,6 +116,10 @@ CREATE INDEX IF NOT EXISTS idx_llm_judgments_trade_date ON llm_judgments(trade_d
 -- 持仓台账(plan 阶段3,§2.4 持仓哨兵的数据源)。极简账本,不造重界面——
 -- `scripts/positions.py` CLI 录入/清仓。一票可多次开仓(分批建仓),故不以
 -- ts_code 为主键;status='open' 的行是盘中哨兵持仓哨兵的监控对象。
+-- close_reason(v1.2-A2 熔断纪律):离场原因枚举码(STOP_LOSS/TAKE_PROFIT/TIME_EXIT/
+-- INVALIDATION/MANUAL),客户端清仓时选(不选 → NULL)。熔断「连续 3 笔止损」判据据此
+-- 判「是否止损离场」;NULL 时才走价格近似兜底(见 `sentinel/circuit.py`)。老库经
+-- `_migrate_columns` 幂等补列(NULL 默认,历史清仓行不臆造原因)。
 CREATE TABLE IF NOT EXISTS positions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     ts_code         TEXT NOT NULL,
@@ -126,6 +130,7 @@ CREATE TABLE IF NOT EXISTS positions (
     sell_price      REAL,
     sell_date       TEXT,                    -- 'YYYYMMDD'
     note            TEXT,
+    close_reason    TEXT,                    -- v1.2-A2 离场原因枚举码 | NULL(见上方注释)
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -164,6 +169,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
     push_retreat    INTEGER NOT NULL DEFAULT 1,
     push_precall    INTEGER NOT NULL DEFAULT 1,
     push_d5exit     INTEGER NOT NULL DEFAULT 1,
+    push_circuit    INTEGER NOT NULL DEFAULT 1,   -- v1.2-A2:第五类推送(熔断提醒)开关,默认开
     review_col_map  TEXT NOT NULL DEFAULT '{}',
     updated_at      TEXT
 );
@@ -284,6 +290,33 @@ CREATE INDEX IF NOT EXISTS idx_decision_log_ts_code ON decision_log(ts_code);
 CREATE INDEX IF NOT EXISTS idx_decision_log_status ON decision_log(status);
 CREATE INDEX IF NOT EXISTS idx_decision_log_revision_of ON decision_log(revision_of);
 CREATE INDEX IF NOT EXISTS idx_decision_log_created_at ON decision_log(created_at);
+
+-- v1.2-A2 熔断纪律事件表(plan §五 v1.2-A2 / §2.1 第 7 条,🔴)。连续 3 笔止损 或
+-- 单日实现净亏 ≥4000 元 → 触发熔断(当日停开新仓、次日只减不加,完成一次强制复盘后
+-- 解锁)。**熔断是纯提醒层**——本表只做「触发/解锁事件留痕 + 派生锁定态」,绝不代
+-- 下单/撤单(§3.8);阈值 3/4000 是命名常量(住 `sentinel/circuit.py`,非
+-- strategy_versions config——政策值非回测参数,同 FORCED_REVIEW_LOSS_FRAC)。
+-- **当前是否锁定 = 派生**:存在 `unlocked_at IS NULL` 的行即锁定(照 CLAUDE.md「审计
+-- 时间戳 + 独立消费标记不用一个字段身兼两职」教训,锁/解锁各自落列);已锁定时重复
+-- 触发幂等(evaluate 前置查锁定态,不新开第二行)。
+-- trigger_reason:consecutive_stops(连续止损)/ daily_loss(单日净亏)。
+-- trigger_ref_date:触发所在交易日('YYYYMMDD',= 评估时那笔清仓的 sell_date),
+--   周复盘自动解锁按它落到哪个 ISO 周。basis_json:判据留痕(参与判定的 position_id
+--   清单 + 当日净盈亏 or 连续止损笔数 + 近似判定笔数 + 时窗),诚实边界「基于台账 N 笔
+--   已补录成交」透出用。unlocked_via:review_ack(客户端熔断复盘按钮)/ weekly_review
+--   (周复盘覆盖触发周且走强制复盘口径自动解锁)。
+CREATE TABLE IF NOT EXISTS circuit_breaker (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    triggered_at     TEXT NOT NULL,          -- ISO8601 触发时刻
+    trigger_reason   TEXT NOT NULL,          -- consecutive_stops | daily_loss
+    trigger_ref_date TEXT NOT NULL,          -- 'YYYYMMDD' 触发所在交易日
+    basis_json       TEXT NOT NULL DEFAULT '{}',  -- 判据留痕(诚实边界透出)
+    unlocked_at      TEXT,                   -- NULL=仍锁定
+    unlocked_via     TEXT,                   -- review_ack | weekly_review | NULL
+    created_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_circuit_breaker_unlocked ON circuit_breaker(unlocked_at);
+CREATE INDEX IF NOT EXISTS idx_circuit_breaker_ref_date ON circuit_breaker(trigger_ref_date);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库
@@ -306,6 +339,10 @@ _COLUMN_MIGRATIONS = [
     ("strategy_versions", "activated_at", "TEXT"),
     # v1.2-A:周复盘该周 governing 大脑版本号(按周落库,审计"这周用哪版章程判的")。
     ("reviews", "strategy_version", "TEXT"),
+    # v1.2-A2 熔断纪律:①离场原因(NULL=未标注,熔断走价格近似兜底);②第五类推送开关
+    # (默认开,与退潮刹车同级)。老库幂等补列,历史行取默认(close_reason NULL / push_circuit 1)。
+    ("positions", "close_reason", "TEXT"),
+    ("app_settings", "push_circuit", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 

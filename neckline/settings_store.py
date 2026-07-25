@@ -47,6 +47,7 @@ class AppSettings:
     push_retreat: bool
     push_precall: bool          # v1.1-A:盘前校准 9:26 汇总推送开关(默认开)
     push_d5exit: bool           # v1.1-B:D5 时间退出推送开关(默认开)
+    push_circuit: bool          # v1.2-A2:熔断提醒推送开关(第五类,默认开)
     review_col_map: dict
     updated_at: Optional[str]
 
@@ -74,17 +75,17 @@ def get_app_settings(db_path: Optional[Path] = None) -> AppSettings:
     with connection(db_path) as conn:
         row = conn.execute(
             "SELECT llm_provider, llm_api_key, push_report, push_retreat, "
-            "push_precall, push_d5exit, review_col_map, updated_at "
+            "push_precall, push_d5exit, push_circuit, review_col_map, updated_at "
             "FROM app_settings WHERE id=1"
         ).fetchone()
     if row is None:
         return AppSettings(
             llm_provider=None, llm_key_set=False, push_report=True,
-            push_retreat=True, push_precall=True, push_d5exit=True,
+            push_retreat=True, push_precall=True, push_d5exit=True, push_circuit=True,
             review_col_map={}, updated_at=None,
         )
     try:
-        col_map = json.loads(row[6]) if row[6] else {}
+        col_map = json.loads(row[7]) if row[7] else {}
     except (json.JSONDecodeError, TypeError):
         col_map = {}
     return AppSettings(
@@ -94,8 +95,9 @@ def get_app_settings(db_path: Optional[Path] = None) -> AppSettings:
         push_retreat=bool(row[3]),
         push_precall=bool(row[4]),
         push_d5exit=bool(row[5]),
+        push_circuit=bool(row[6]),
         review_col_map=col_map,
-        updated_at=row[7],
+        updated_at=row[8],
     )
 
 
@@ -117,16 +119,19 @@ def set_llm(provider: str, api_key: str, db_path: Optional[Path] = None) -> None
 
 
 def set_push(
-    report: bool, retreat: bool, precall: bool, d5exit: bool, db_path: Optional[Path] = None
+    report: bool, retreat: bool, precall: bool, d5exit: bool, circuit: bool,
+    db_path: Optional[Path] = None,
 ) -> None:
-    """写 APNs 四类推送开关(§2.4 v1.1 拍板;v1.1-G.1 设置端点扩到四字段)。"""
+    """写 APNs 五类推送开关(§2.4 v1.2 白名单;v1.2-A2 设置端点扩到五字段,第五 =
+    熔断提醒 `push_circuit`)。五字段均显式传入(无默认值,防「漏传静默重置某开关」)。"""
     init_schema(db_path)
     with connection(db_path) as conn:
         _ensure_row(conn)
         conn.execute(
-            "UPDATE app_settings SET push_report=?, push_retreat=?, push_precall=?, push_d5exit=?, updated_at=? "
-            "WHERE id=1",
-            (1 if report else 0, 1 if retreat else 0, 1 if precall else 0, 1 if d5exit else 0, _now()),
+            "UPDATE app_settings SET push_report=?, push_retreat=?, push_precall=?, push_d5exit=?, "
+            "push_circuit=?, updated_at=? WHERE id=1",
+            (1 if report else 0, 1 if retreat else 0, 1 if precall else 0, 1 if d5exit else 0,
+             1 if circuit else 0, _now()),
         )
 
 

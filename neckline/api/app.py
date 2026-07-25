@@ -34,6 +34,8 @@ from neckline.api.schemas import (
     BoardEventOut,
     BoardOut,
     CandidateOut,
+    CircuitEpisodeOut,
+    CircuitStateOut,
     ContingencyScenarioOut,
     DecisionCreateIn,
     DecisionLinkIn,
@@ -77,6 +79,7 @@ from neckline.calendar import is_trading_day, prev_trading_day
 from neckline.config import ensure_data_dirs
 from neckline.llm.factory import get_provider
 from neckline.report import store as report_store
+from neckline.sentinel import circuit as circuit_store
 from neckline.sentinel import dedup
 from neckline.sentinel import positions as pos_store
 from neckline.sentinel.intraday import is_intraday_now
@@ -454,6 +457,24 @@ def _today_action(
     return f"持有中(D{d_count}/D{max_hold})"
 
 
+def _shape_circuit(state: "circuit_store.CircuitState") -> CircuitStateOut:
+    """熔断领域状态 → 客户端契约(诚实边界字段透出)。同 `_shape_candidate` 透传惯例。"""
+    if state.episode is None:
+        return CircuitStateOut(locked=state.locked)
+    ep = state.episode
+    return CircuitStateOut(
+        locked=state.locked,
+        episode=CircuitEpisodeOut(
+            triggerReason=ep.trigger_reason,
+            triggeredAt=ep.triggered_at,
+            triggerRefDate=ep.trigger_ref_date,
+            basisTradesCount=ep.basis_trades_count,
+            basisWindow=ep.basis_window,
+            note=ep.note,
+        ),
+    )
+
+
 @app.get(f"{API_PREFIX}/positions", dependencies=[Depends(require_token)])
 def list_positions() -> PositionsOut:
     holdings = pos_store.load_open_positions(db_path=_db())
@@ -484,7 +505,7 @@ def list_positions() -> PositionsOut:
             retraceState=retrace,
             todayAction=_today_action(dcount, max_hold, dist, retrace),
         ))
-    return PositionsOut(holdings=out)
+    return PositionsOut(holdings=out, circuit=_shape_circuit(circuit_store.get_state(db_path=_db())))
 
 
 @app.get(f"{API_PREFIX}/positions/entry-suggestion", dependencies=[Depends(require_token)])
@@ -513,16 +534,50 @@ def open_position(body: PositionOpenIn) -> PositionOpenOut:
 
 @app.post(f"{API_PREFIX}/positions/{{position_id}}/close", dependencies=[Depends(require_token)])
 def close_position(position_id: int, body: PositionCloseIn) -> OkOut:
+    """清仓录入(§3.8 只记账,永不代下单/撤单)。可选 `closeReason` 落库(v1.2-A2);
+    清仓后折进熔断评估(`circuit.evaluate_after_close`)——越阈值即建触发行 + 第五类
+    APNs 推送。**熔断是纯提醒层**:评估/推送**尽力而为、异常吞掉不阻断清仓主流程**
+    (F.3),服务端**绝不因熔断拦清仓**(本就是「只减」方向)。"""
     if body.sell_time and len(body.sell_time) == 8 and body.sell_time.isdigit():
         sell_date = datetime.strptime(body.sell_time, "%Y%m%d").date()
     else:
         sell_date = date.today()
-    ok = pos_store.close_position(position_id, sell_price=body.sell_price, sell_date=sell_date, db_path=_db())
+    ok = pos_store.close_position(
+        position_id, sell_price=body.sell_price, sell_date=sell_date,
+        close_reason=body.closeReason, db_path=_db(),
+    )
     if not ok:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"ok": False, "reason": "not_holding"},
         )
+    # 熔断评估折进清仓路径(尽力而为,失败绝不阻断清仓成功响应)。
+    try:
+        episode = circuit_store.evaluate_after_close(sell_date, db_path=_db())
+        if episode is not None:
+            notify.push_circuit_breaker(episode, db_path=_db())
+    except Exception:  # noqa: BLE001  熔断评估/推送异常绝不能掀翻清仓主流程(F.3)
+        logger.warning("熔断评估/推送异常(已吞,不阻断清仓)", exc_info=True)
+    return OkOut(ok=True)
+
+
+# —— v1.2-A2 熔断纪律状态 + 解锁(§2.1 第 7 条,🔴)——————————————————————————————
+# **熔断是纯提醒层**(§3.8):本节端点只读锁定态 / 记录用户解锁 ack,**绝不代下单/
+# 撤单、绝不拦 `POST /positions`**(客户端「开新仓」入口自律灰化)。解锁本就是用户
+# 动作(读强制复盘材料后确认),故可走 API(与「大脑激活绝不暴露给客户端」不同)。
+
+@app.get(f"{API_PREFIX}/circuit", dependencies=[Depends(require_token)])
+def get_circuit() -> CircuitStateOut:
+    """权威熔断锁定态(plan A2.8;客户端今日计划面横幅/「开新仓」灰化据此)。"""
+    return _shape_circuit(circuit_store.get_state(db_path=_db()))
+
+
+@app.post(f"{API_PREFIX}/circuit/unlock", dependencies=[Depends(require_token)])
+def unlock_circuit() -> OkOut:
+    """客户端「熔断复盘」按钮解锁(plan A2.7 主路径,`unlocked_via='review_ack'`)。
+    诚实:系统不能验证用户「真的复盘了」,但强制把材料摆到面前 + 记录 ack(客户端
+    先展示确定性材料再调本端点)。无锁定态时幂等成功(已是解锁态)。"""
+    circuit_store.unlock(via=circuit_store.UNLOCK_VIA_REVIEW_ACK, db_path=_db())
     return OkOut(ok=True)
 
 
@@ -794,7 +849,7 @@ def get_settings() -> SettingsOut:
         llmKeySet=st.llm_key_set,
         push=PushSettingsOut(
             report=st.push_report, retreatBrake=st.push_retreat,
-            precall=st.push_precall, d5exit=st.push_d5exit,
+            precall=st.push_precall, d5exit=st.push_d5exit, circuit=st.push_circuit,
         ),
         reviewColMap=st.review_col_map,
     )
@@ -810,9 +865,9 @@ def put_settings_llm(body: SettingsLLMIn) -> OkOut:
 
 @app.put(f"{API_PREFIX}/settings/push", dependencies=[Depends(require_token)])
 def put_settings_push(body: SettingsPushIn) -> OkOut:
-    """写 APNs 四类推送开关(v1.1-G.1:契约扩至四字段,`app_settings.push_precall`/
-    `push_d5exit` 两列在 v1.1-A/B 已建,本端点补上写入接线)。"""
-    set_push(body.report, body.retreatBrake, body.precall, body.d5exit, db_path=_db())
+    """写 APNs 五类推送开关(v1.2-A2:契约扩至五字段,第五 = 熔断提醒
+    `app_settings.push_circuit`,默认开)。五字段均必填(缺 → 422)。"""
+    set_push(body.report, body.retreatBrake, body.precall, body.d5exit, body.circuit, db_path=_db())
     return OkOut(ok=True)
 
 
@@ -865,6 +920,15 @@ def review_upload(files: List[UploadFile] = File(...)) -> ReviewUploadOut:
             sheet_formats[f"{filename} · {sheet_name}"] = fmt
 
     reviews, data_warnings = run_weekly_review(all_trades, db_path=_db())
+
+    # v1.2-A2 自动解锁(plan A2.7 自动路径):某触发行的 trigger_ref_date 落在一个走了
+    # 强制复盘口径(forced_review=True,即 reconcile.is_forced_review 同源)的 ISO 周内 →
+    # 该行自动解锁(unlocked_via='weekly_review')。尽力而为,失败不阻断周复盘响应。
+    try:
+        circuit_store.auto_unlock_for_reviews(reviews, db_path=_db())
+    except Exception:  # noqa: BLE001
+        logger.warning("周复盘熔断自动解锁异常(已吞,不阻断周复盘)", exc_info=True)
+
     weeks_out: List[WeeklyReviewOut] = []
     for review in reviews:
         material = build_material_text(review)

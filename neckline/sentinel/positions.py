@@ -21,6 +21,19 @@ from neckline.db import connection, init_schema
 STATUS_OPEN = "open"
 STATUS_CLOSED = "closed"
 
+# 离场原因枚举码(v1.2-A2 熔断纪律,服务端码 + 客户端展示层换算,沿 `boardLabel` 先例)。
+# 唯一源在此(schemas.py 的 `PositionCloseIn.closeReason` Literal 白名单同串,pydantic
+# 约束需字面量,不能引用变量——同 decision_log 的 THESIS_TAG_CODES/schemas Literal 并存惯例)。
+CLOSE_REASON_STOP_LOSS = "STOP_LOSS"       # 止损
+CLOSE_REASON_TAKE_PROFIT = "TAKE_PROFIT"   # 回落止盈
+CLOSE_REASON_TIME_EXIT = "TIME_EXIT"       # 时间退出(D5)
+CLOSE_REASON_INVALIDATION = "INVALIDATION" # 证伪离场
+CLOSE_REASON_MANUAL = "MANUAL"             # 主动离场
+CLOSE_REASON_CODES = (
+    CLOSE_REASON_STOP_LOSS, CLOSE_REASON_TAKE_PROFIT, CLOSE_REASON_TIME_EXIT,
+    CLOSE_REASON_INVALIDATION, CLOSE_REASON_MANUAL,
+)
+
 
 @dataclass
 class Position:
@@ -33,6 +46,7 @@ class Position:
     sell_price: Optional[float]
     sell_date: Optional[str]
     note: Optional[str]
+    close_reason: Optional[str] = None   # v1.2-A2 离场原因枚举码;NULL=未标注(熔断走价格兜底)
 
 
 def _d(d: date) -> str:
@@ -47,10 +61,13 @@ def _row_to_position(row: sqlite3.Row) -> Position:
     return Position(
         id=row[0], ts_code=row[1], buy_price=row[2], qty=row[3], buy_date=row[4],
         status=row[5], sell_price=row[6], sell_date=row[7], note=row[8],
+        close_reason=row[9],
     )
 
 
-_SELECT_COLS = "id, ts_code, buy_price, qty, buy_date, status, sell_price, sell_date, note"
+# close_reason 随 v1.2-A2 加入投影(所有读入口都先 init_schema,列必然已迁移存在,故
+# 无需像 brain.py 那样做条件投影)。
+_SELECT_COLS = "id, ts_code, buy_price, qty, buy_date, status, sell_price, sell_date, note, close_reason"
 
 
 def open_position(
@@ -79,10 +96,16 @@ def close_position(
     position_id: int,
     sell_price: float,
     sell_date: date,
+    close_reason: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> bool:
     """清仓记账。找不到该 id 或已是 closed 状态 → 返回 False(不抛异常,CLI 据此
-    给用户一句清楚的提示,不是静默失败)。"""
+    给用户一句清楚的提示,不是静默失败)。
+
+    `close_reason`(v1.2-A2,可选):离场原因枚举码(`CLOSE_REASON_*`);不传 → 落库
+    NULL(熔断评估时才走价格近似兜底判止损,见 `sentinel/circuit.py`)。**用户显式
+    标注的码原样落库、信用户标注**;本函数不做码白名单校验(API 层 pydantic Literal
+    已挡非法码,CLI/内部调用方自负),也绝不代下单/撤单(§3.8,只记账)。"""
     init_schema(db_path)
     now = _now()
     with connection(db_path) as conn:
@@ -90,8 +113,8 @@ def close_position(
         if row is None or row[0] == STATUS_CLOSED:
             return False
         conn.execute(
-            "UPDATE positions SET status=?, sell_price=?, sell_date=?, updated_at=? WHERE id=?",
-            (STATUS_CLOSED, sell_price, _d(sell_date), now, position_id),
+            "UPDATE positions SET status=?, sell_price=?, sell_date=?, close_reason=?, updated_at=? WHERE id=?",
+            (STATUS_CLOSED, sell_price, _d(sell_date), close_reason, now, position_id),
         )
         return True
 
@@ -157,6 +180,12 @@ __all__ = [
     "Position",
     "STATUS_OPEN",
     "STATUS_CLOSED",
+    "CLOSE_REASON_STOP_LOSS",
+    "CLOSE_REASON_TAKE_PROFIT",
+    "CLOSE_REASON_TIME_EXIT",
+    "CLOSE_REASON_INVALIDATION",
+    "CLOSE_REASON_MANUAL",
+    "CLOSE_REASON_CODES",
     "open_position",
     "close_position",
     "load_open_positions",

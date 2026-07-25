@@ -1,11 +1,13 @@
-"""APNs 推送编排(plan 4B.5 / v1.1-A/B,🔴)。**只推四类**(§2.4 v1.1 拍板,推送
-白名单 = 四类,各自独立开关 + 独立 APNs category):
+"""APNs 推送编排(plan 4B.5 / v1.1-A/B / v1.2-A2,🔴)。**只推五类**(§2.4 v1.2 拍板,
+推送白名单 = 五类,各自独立开关 + 独立 APNs category):
     ① 16:35 盘后报告就绪 —— `push_report_ready()`,受 `app_settings.push_report` 开关。
     ② 退潮红色刹车     —— `push_retreat_brake()`,受 `app_settings.push_retreat` 开关。
     ③ 9:26 盘前校准汇总 —— `push_precall_summary()`,受 `app_settings.push_precall` 开关。
     ④ D5 时间退出      —— `push_d5_exit()`,受 `app_settings.push_d5exit` 开关。
-**买点/证伪/持仓一律不推**(只进看板)——本模块只暴露这四个入口,不给第五类事件
-留推送路径,是「白名单四类」的落点保证(单测按 `__all__` 结构性守护)。
+    ⑤ 熔断提醒        —— `push_circuit_breaker()`,受 `app_settings.push_circuit` 开关
+                          (v1.2-A2 第五类,§2.1 第 7 条;默认开、与退潮刹车同级)。
+**买点/证伪/持仓一律不推**(只进看板)——本模块只暴露这五个入口,不给第六类事件
+留推送路径,是「白名单五类」的落点保证(单测按 `__all__` 结构性守护)。
 
 每类推送:先查开关(关 → 直接跳过)→ 遍历 `devices` 表所有 token → 逐个 `apns.send_push`
 (transport 可注入,单测免真连 Apple)。任何设备失败只记日志,不拖累其它设备 / 主流程
@@ -145,10 +147,34 @@ def push_d5_exit(
     )
 
 
+def push_circuit_breaker(
+    episode: Any, *, db_path: Optional[Path] = None, transport: Optional[Any] = None,
+) -> NotifyOutcome:
+    """熔断提醒推送(受 push_circuit 开关,plan v1.2-A2.6,第五类白名单)。`episode` =
+    `neckline.sentinel.circuit.CircuitEpisode`(触发行)——文案取其 `note`(诚实边界:
+    「基于台账 N 笔已补录成交」已在 note 内),点开跳今日计划(熔断处置最相关)。
+    **熔断是纯提醒层**(§3.8):本函数只发提醒,绝不代下单/撤单。"""
+    st = get_app_settings(db_path=db_path)
+    if not st.push_circuit:
+        return NotifyOutcome(skipped_reason="push_circuit_off")
+    if not apns.settings.has_apns_config:
+        return NotifyOutcome(skipped_reason="no_apns_config")
+    note = getattr(episode, "note", "") or "触发熔断:今日停开新仓、次日只减不加,完成一次强制复盘后解锁。"
+    reason = getattr(episode, "trigger_reason", "")
+    return _fanout(
+        "熔断提醒",
+        note,
+        category=apns.CATEGORY_CIRCUIT,
+        custom={"kind": "circuit", "triggerReason": reason},
+        db_path=db_path, transport=transport,
+    )
+
+
 __all__ = [
     "NotifyOutcome",
     "push_report_ready",
     "push_retreat_brake",
     "push_precall_summary",
     "push_d5_exit",
+    "push_circuit_breaker",
 ]

@@ -60,6 +60,17 @@ class TestClosePosition:
         assert pos.status == STATUS_CLOSED
         assert pos.sell_price == pytest.approx(10.8)
         assert pos.sell_date == "20260722"
+        assert pos.close_reason is None   # v1.2-A2:未传 close_reason → NULL(熔断走价格兜底)
+
+    def test_close_reason_five_codes_round_trip(self, isolated_env):
+        """v1.2-A2 验收①:五枚举码往返落库 + 未传为 NULL。"""
+        from neckline.sentinel.positions import CLOSE_REASON_CODES
+
+        db = isolated_env.db_path
+        for i, code in enumerate(CLOSE_REASON_CODES):
+            pid = open_position("600519.SH", 10.0, 100, date(2026, 7, 20), db_path=db)
+            assert close_position(pid, 9.5, date(2026, 7, 22), close_reason=code, db_path=db) is True
+            assert get_position(pid, db_path=db).close_reason == code
 
     def test_close_unknown_id_returns_false(self, isolated_env):
         assert close_position(9999, 10.0, date(2026, 7, 22), db_path=isolated_env.db_path) is False
