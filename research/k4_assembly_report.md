@@ -222,9 +222,22 @@ TuShare、未碰 `neckline/strategy/`。
 削尾;若苛求「B 相对 A 的边际削尾」,B 近零、next_ld 甚至微升——B 的正当性来自三役单层证据 + 情报包
 信息价值,不来自联合边际。这不影响验收判定,但如实记入,不夸大 B 的联合贡献。）
 
-## §R6 落库
+## §R6 落库(已完成)
 
-（落库执行后回填:K4 版本号 / list_versions 断言结果 / 备份路径。）
+- **落库对象**:真实 `data/neckline.db`(高危区)。**落库前已备份**至
+  `research/_cache/neckline_db_backup_预组装.db`(sha 与原库一致,.gitignore 涵盖不入 git)。
+- **落库调用**:`brain.save_version("K4", rule={"config": <K1 现役逐位拷贝>, "k4_advisory": <§1 规格
+  结构化:hard_cut/avoid_flag/exec_hint/circuit_breaker/intel_order 六节>, "verdict":
+  "mechanical=pure-avoidance; alpha=human-intraday-layer(journal-adjudicated)"}, changelog=…,
+  metrics=<联合验收关键数字>, activate=False)`。
+- **落库后断言(全过)**:
+  - `list_versions()`:**K1 is_active=1(唯一现役)/ K2 is_active=0 / v1.2 is_active=0 /
+    K4 is_active=0**,恰好一个现役(=K1);
+  - **现役 K1 config 落库前后逐位不变**(dict 全等断言 True);
+  - **K4 落库 config 与 K1 现役 config 逐位一致**(dict 全等断言 True)——坐实 K4 纯 advisory、
+    不改任何现役行为(验收线 ③)。
+- **K4 版本**:`created_at=2026-07-25T06:16:11Z`,is_active=0;情报包实现归系统线,字段依据 = 本报告
+  §1/§R0 的 `k4_advisory` 结构(A 硬剔 / B 标注 / C 执行 / D 熔断 + intel_order 展示排序)。
 
 ## 复现
 
