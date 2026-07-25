@@ -62,13 +62,19 @@ CREATE TABLE IF NOT EXISTS backfill_log (
 -- 策略大脑版本表(plan 1.9 / §2.6「大脑带版本号 + 变更日志 + 实盘表现按版本归因」)。
 -- rule_json:该版本的规则参数(MomentumConfig 采纳值 + 市场过滤决策等)全量快照。
 -- metrics_json:定版时的样本内/外回测指标(可比性证据)。is_active:当前现役版本(唯一)。
+-- activated_at(v1.2-A):该版本「成为现役」的时刻(ISO8601);NULL=从未激活。周复盘
+-- 按周取「当时现役」config 判纪律靠它解析时间线(`brain.config_active_at`),防止用今天
+-- 的章程重判历史周洗白旧违纪。加列 + 一次性回填现役 K1 见下方 `_COLUMN_MIGRATIONS` /
+-- `_backfill_activated_at`。
 CREATE TABLE IF NOT EXISTS strategy_versions (
-    version         TEXT PRIMARY KEY,   -- 策略版本号,K 字头整数(K1/K2/...;系统版本走 v 字头,两线解耦)
+    version         TEXT PRIMARY KEY,   -- 策略版本号,K 字头整数(K1/K2/...);章程修订走系统 v 字头
+                                        -- (如 v1.2:config 承 K 血缘、仅改仓位字段,不占 K 命名空间)
     created_at      TEXT NOT NULL,      -- ISO8601
     rule_json       TEXT NOT NULL,      -- 规则参数快照(JSON)
     changelog       TEXT NOT NULL,      -- 本版为何这样定(过堂结论摘要)
     metrics_json    TEXT NOT NULL DEFAULT '{}',  -- 定版回测指标(JSON)
-    is_active       INTEGER NOT NULL DEFAULT 0
+    is_active       INTEGER NOT NULL DEFAULT 0,
+    activated_at    TEXT                -- ISO8601 | NULL(v1.2-A 激活时间线,见表头注释)
 );
 
 -- 盘后报告存档(plan 2.5)。一个交易日一行(幂等覆盖,重跑报告不留重复行);
@@ -252,15 +258,34 @@ _COLUMN_MIGRATIONS = [
     # v1.1-D:问询窗口修复——消费标记列,可空(NULL=待消费),老库补列后既有行均为
     # NULL,等同「历史遗留票下一次报告即可被消费」,不会丢票也不会误判已消费。
     ("inquiry_pool", "consumed_report_date", "TEXT"),
+    # v1.2-A:大脑激活时间线(历史洗白修复)。可空(NULL=从未激活);加列后一次性回填
+    # 现役 K1(见 `_backfill_activated_at`)。老库既有 is_active=1 行经回填拿到激活戳。
+    ("strategy_versions", "activated_at", "TEXT"),
+    # v1.2-A:周复盘该周 governing 大脑版本号(按周落库,审计"这周用哪版章程判的")。
+    ("reviews", "strategy_version", "TEXT"),
 ]
 
 
+def _backfill_activated_at(conn: sqlite3.Connection) -> None:
+    """v1.2-A 一次性回填(幂等):对**唯一现役且 activated_at 仍空**的版本(生产=K1)
+    以 `created_at` 作激活时间代理回填 `activated_at`。只碰 `is_active=1 AND activated_at
+    IS NULL` 的行——重跑不变(已回填的行不再命中),从未激活的版本(is_active=0)保持
+    NULL(正确)。老库无此戳会导致 `config_active_at` 落 legacy 兜底;回填后走时间线解析。
+    在 `_migrate_columns` 加列之后调用(此时 activated_at 列已存在)。"""
+    conn.execute(
+        "UPDATE strategy_versions SET activated_at = created_at "
+        "WHERE is_active = 1 AND activated_at IS NULL"
+    )
+
+
 def _migrate_columns(conn: sqlite3.Connection) -> None:
-    """对既有表做「缺列即补」的幂等迁移(见 `_COLUMN_MIGRATIONS` 注释)。"""
+    """对既有表做「缺列即补」的幂等迁移(见 `_COLUMN_MIGRATIONS` 注释)+ v1.2-A 激活戳
+    一次性回填(幂等,见 `_backfill_activated_at`)。"""
     for table, column, ddl in _COLUMN_MIGRATIONS:
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    _backfill_activated_at(conn)
 
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:

@@ -650,3 +650,78 @@ class TestRunWeeklyReview:
         raw = json.dumps(d)   # 不应抛异常,且不应含字面 Infinity
         assert "Infinity" not in raw
         assert d["stats"]["profitFactor"] is None
+
+
+# ======================================================================
+#  v1.2-A:历史洗白修复(按周取「当时现役」config)—— 命门反例 + 时间线双向
+# ======================================================================
+
+def _seed_two_charter_timeline(db_path):
+    """落 K1(single_cap=2万)+ v1.2(single_cap=4万,三仓制),造确定激活时间线:
+    K1 激活 2026-07-20、v1.2 激活 2026-08-01(现役)。返回 (k1_cfg, v12_cfg)。"""
+    from neckline.db import connection
+    from neckline.strategy import brain
+    from .conftest import TEST_RULE_V1_CONFIG
+
+    k1_cfg = dict(TEST_RULE_V1_CONFIG)                       # single_cap=20000, max_positions=5
+    v12_cfg = dict(TEST_RULE_V1_CONFIG)
+    v12_cfg.update(single_cap=40000.0, max_positions=3, max_exposure_frac=1.0)
+    brain.save_version("K1", {"config": k1_cfg}, "k1", activate=True, db_path=db_path)
+    brain.save_version("v1.2", {"config": v12_cfg, "lineage": "K1"}, "v1.2", activate=False, db_path=db_path)
+    with connection(db_path) as conn:
+        conn.execute("UPDATE strategy_versions SET activated_at=?, is_active=0 WHERE version='K1'",
+                     ("2026-07-20T00:00:00+00:00",))
+        conn.execute("UPDATE strategy_versions SET activated_at=?, is_active=1 WHERE version='v1.2'",
+                     ("2026-08-01T00:00:00+00:00",))
+    return k1_cfg, v12_cfg
+
+
+class TestHistoryWhitewashFix:
+    def test_historical_violation_survives_activation(self, isolated_env):
+        """命门反例(plan A 验收①点名):历史周一笔 3 万买入(K1 2万上限下违纪),
+        激活 v1.2(4万上限)后重跑该历史周 → **仍报违纪,不被 4 万上限洗白**。"""
+        _seed_two_charter_timeline(isolated_env.db_path)
+        # 历史周(2026-07-22 周,week_end 2026-07-26,落在 K1↔v1.2 激活之间)一笔 3 万
+        trades = [
+            _trade(date(2026, 7, 22), "600519.SH", "buy", 300.0, 100, name="贵州茅台"),   # ¥30,000 > 2万
+            _trade(date(2026, 7, 24), "600519.SH", "sell", 305.0, 100, name="贵州茅台"),
+        ]
+        reviews, _ = run_weekly_review(
+            trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        hist = next(r for r in reviews if r.week == iso_week_key(date(2026, 7, 22)))
+        assert hist.strategy_version == "K1"                 # 该周 governing = K1
+        assert any("超过单笔仓位上限" in v for v in hist.discipline_violations)  # 未被洗白
+
+    def test_post_activation_week_uses_new_cap(self, isolated_env):
+        """对照方向:激活后的周(week_end > v1.2 激活)同样一笔 3 万 → v1.2(4万)判,
+        不违纪(证明时间线解析确实按周切换 governing,不是一刀切)。"""
+        _seed_two_charter_timeline(isolated_env.db_path)
+        trades = [
+            _trade(date(2026, 8, 5), "600519.SH", "buy", 300.0, 100, name="贵州茅台"),    # ¥30,000 ≤ 4万
+            _trade(date(2026, 8, 7), "600519.SH", "sell", 305.0, 100, name="贵州茅台"),
+        ]
+        reviews, _ = run_weekly_review(
+            trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        post = next(r for r in reviews if r.week == iso_week_key(date(2026, 8, 5)))
+        assert post.strategy_version == "v1.2"
+        assert not any("超过单笔仓位上限" in v for v in post.discipline_violations)
+
+    def test_strategy_version_persisted_to_reviews(self, isolated_env):
+        """reviews.strategy_version 按周落库正确(governing 版本号写进列)。"""
+        from neckline.review.store import save_weekly_review
+        from neckline.db import connection
+
+        _seed_two_charter_timeline(isolated_env.db_path)
+        trades = [
+            _trade(date(2026, 7, 22), "600519.SH", "buy", 300.0, 100, name="贵州茅台"),
+            _trade(date(2026, 7, 24), "600519.SH", "sell", 305.0, 100, name="贵州茅台"),
+        ]
+        reviews, _ = run_weekly_review(
+            trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        hist = next(r for r in reviews if r.week == iso_week_key(date(2026, 7, 22)))
+        save_weekly_review(hist, db_path=isolated_env.db_path)
+        with connection(isolated_env.db_path) as conn:
+            row = conn.execute(
+                "SELECT strategy_version FROM reviews WHERE week=?", (hist.week,)
+            ).fetchone()
+        assert row[0] == "K1"

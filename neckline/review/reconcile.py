@@ -2,9 +2,11 @@
 + 单周统计 + 强制复盘判定,按 ISO 周(`YYYY-Www`)分桶输出 `WeeklyReview`。
 
 **同码不重写铁律(§2.6/§3.8)**:
-    · 止损/仓位纪律(-5%/2万/5只/60%)读 `neckline.strategy.brain.get_active()`
-      现役 `MomentumConfig`,不硬编字面量(项目 CLAUDE.md「钉死的领域常量单一
-      源」)。
+    · 止损/仓位纪律(止损/回落止盈/hold/单笔上限/持仓数/敞口)读大脑现役
+      `MomentumConfig`,不硬编字面量(项目 CLAUDE.md「钉死的领域常量单一源」)。
+      **v1.2-A 起按周取「当时现役」**:每 ISO 周以 `week_end` 调
+      `brain.config_active_at()` 解析该周 governing 版本(章程升级后重跑历史周不
+      洗白旧违纪),不再一次性 `get_active()` 应用到所有周。
     · 绿盘大阴线/距前高/次新/高弹题材四条禁买过滤,直接复用
       `neckline.strategy.signals` 的同名判定表达式(与回测/报告候选管线同一份
       信号定义),本模块不重新推一遍阈值比较。
@@ -512,6 +514,8 @@ class WeeklyReview:
     stats: Optional[WeeklyStats] = None
     forced_review: bool = False
     forced_review_reason: str = ""
+    strategy_version: Optional[str] = None   # 本周 governing 大脑版本号(v1.2-A:按 week_end
+                                             # 解析「当时现役」,落 reviews.strategy_version)
 
 
 def run_weekly_review(
@@ -519,8 +523,14 @@ def run_weekly_review(
     total_capital: Optional[float] = None,
 ) -> Tuple[List[WeeklyReview], List[str]]:
     """顶层入口:FIFO 闭合 → 按 ISO 周分桶 → 每周跑「对账三查」+ 统计 + 强制复盘。
-    现役规则(止损/仓位纪律/禁买过滤)读 `strategy.brain.get_active()`,无现役版本
-    时仍产出报告,只是止损纪律/禁买过滤两类检查诚实跳过(不臆造规则)。
+
+    **按周取「当时现役」config(v1.2-A 历史洗白修复)**:每个 ISO 周以 `week_end` 为
+    ref 调 `brain.config_active_at(week_end)` 解析该周 governing 的大脑版本,用它的
+    `MomentumConfig` 判止损/仓位/禁买——**不再一次性 `get_active()` 应用到所有周**。
+    否则章程升级(如 single_cap 2 万→4 万)后重跑历史周,当初超限的违纪会被今天的
+    上限凭空洗白掉。无现役版本(纯 legacy 库经兜底退回 `get_active`,仍为 None)时,
+    止损纪律/禁买过滤两类检查诚实跳过(不臆造规则)。governing 版本号落
+    `review.strategy_version`(→ `reviews.strategy_version` 审计"这周用哪版判的")。
 
     `total_capital` 显式注入(默认 None → 落 `neckline.config.settings.total_capital`)
     ——与 `db_path`/`parquet_dir` 同款风格,单测可直接传值,不必монkeypatch 全局
@@ -538,13 +548,16 @@ def run_weekly_review(
         from neckline.config import settings
         total_capital = settings.total_capital
 
-    active = brain.get_active(db_path=db_path)
-    cfg: Optional[MomentumConfig] = None
-    if active is not None:
+    def _cfg_at(ref_date: date) -> Tuple[Optional[MomentumConfig], Optional[str]]:
+        """解析 ref_date 当时 governing 版本的 (MomentumConfig, 版本号)。无 / 非法
+        config → (None, 版本号或 None):止损/章程检查据此诚实跳过。"""
+        gov = brain.config_active_at(ref_date, db_path=db_path)
+        if gov is None:
+            return None, None
         try:
-            cfg = MomentumConfig(**active.rule["config"])
+            return MomentumConfig(**gov.rule["config"]), gov.version
         except (KeyError, TypeError):
-            cfg = None
+            return None, gov.version
 
     round_trips, rt_warnings = build_round_trips(trades)
     if not round_trips:
@@ -562,17 +575,21 @@ def run_weekly_review(
         else:
             all_dates.add(iso_week_key(rt.buy_date))
 
-    # cooldown 违纪与具体周次无关(整批算一次,下面按"再次买入"落在哪周分发)——
-    # 现役 cooldown_days=0 时 `check_cooldown` 提前返回空列表,循环体不需要重算。
-    cooldown_violations = check_cooldown(round_trips, cfg.cooldown_days) if cfg is not None else []
+    # cooldown 违纪与具体周次无关(整批算一次,下面按"再次买入"落在哪周分发)——用
+    # 数据截止日 asof 当时 governing 的 cooldown_days(现役恒为 0 时 `check_cooldown`
+    # 提前返回空列表,循环体不需要重算)。
+    asof_cfg, _ = _cfg_at(asof)
+    cooldown_violations = check_cooldown(round_trips, asof_cfg.cooldown_days) if asof_cfg is not None else []
 
     reviews: List[WeeklyReview] = []
     for week in sorted(all_dates):
         w_start, w_end = week_range(week)
+        # 按周取「当时现役」config(v1.2-A):以 week_end 解析该周 governing 版本。
+        cfg, gov_version = _cfg_at(w_end)
         buy_trades_week = [t for t in trades if t.side == "buy" and w_start <= t.trade_date <= w_end]
         closed_week = [rt for rt in round_trips if rt.closed and rt.sell_date and w_start <= rt.sell_date <= w_end]
 
-        review = WeeklyReview(week=week, week_start=w_start, week_end=w_end)
+        review = WeeklyReview(week=week, week_start=w_start, week_end=w_end, strategy_version=gov_version)
         review.round_trips = round_trips
         review.closed_round_trips = closed_week
 

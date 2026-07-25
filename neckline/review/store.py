@@ -20,16 +20,21 @@ def _now() -> str:
 
 def save_weekly_review(review: WeeklyReview, material: Optional[str] = None, db_path: Optional[Path] = None) -> None:
     """幂等覆盖(`INSERT OR REPLACE`)——同一周重新上传交割单会覆盖旧对账结果,
-    不留重复行(与 `report/store.py::save_report` 同款幂等惯例)。"""
+    不留重复行(与 `report/store.py::save_report` 同款幂等惯例)。
+
+    `strategy_version`(v1.2-A):本周 governing 大脑版本号(`run_weekly_review` 按
+    week_end 解析),落库审计"这周用哪版章程判的";可空(无现役版本时为 NULL)。"""
     init_schema(db_path)
     now = _now()
     payload = json.dumps(weekly_review_dict(review), ensure_ascii=False)
     with connection(db_path) as conn:
         conn.execute(
-            "INSERT INTO reviews (week, generated_at, result_json, material, updated_at) VALUES (?,?,?,?,?) "
+            "INSERT INTO reviews (week, generated_at, result_json, material, updated_at, strategy_version) "
+            "VALUES (?,?,?,?,?,?) "
             "ON CONFLICT(week) DO UPDATE SET generated_at=excluded.generated_at, "
-            "result_json=excluded.result_json, material=excluded.material, updated_at=excluded.updated_at",
-            (review.week, now, payload, material, now),
+            "result_json=excluded.result_json, material=excluded.material, "
+            "updated_at=excluded.updated_at, strategy_version=excluded.strategy_version",
+            (review.week, now, payload, material, now, review.strategy_version),
         )
 
 
