@@ -68,6 +68,8 @@ def add_k4p_features(panel: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(
         ld1.alias("fwd_ld_next"),
         (ld1 | ld2 | ld3).alias("fwd_ld_hold3"),
+        # H3:次日是否涨停(一字涨停=飞走 → 挂低单/市价皆买不进,两口径同剔)。
+        pl.col("is_limit_up").shift(-1).over(over).fill_null(False).alias("fwd_lu_next"),
     )
     return df.sort(["trade_date", "ts_code"])
 
