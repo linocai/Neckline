@@ -19,8 +19,10 @@ T」的一对多关系,`positions` 扩列表达不了 N 笔,故落独立子表 `
 `compute_edge_to_price` 是纯函数,输入底仓 `buy_price`/`qty` + 本模块查出的 T 子账
 + 调用方另外拿到的现价(本模块**不拉行情**,现价由 `api/app.py` 走既有
 `sentinel/quotes.py:get_quotes` 路径注入,同 `PositionOut.price` 的既定姿势,不新拉
-数据源)。算不出(如无实时价、或 qty 非正)时返回 `None`,调用方据此下发 JSON
-`null`,不崩、不拿 0 冒充「无优势」。
+数据源)。`edge_to_price` 口径 = **相对自己的摊薄成本**(浮盈率读数,分母是
+`base_cost_adj` 本身,2026-07-25 用户拍板;详见 `compute_edge_to_price` docstring
+里与 `distToStopPct` 的口径区分说明)。算不出(如无实时价、或 qty/摊薄成本非正)时
+返回 `None`,调用方据此下发 JSON `null`,不崩、不拿 0 冒充「无优势」。
 
 **写入只经本模块函数(同 `sentinel/positions.py`/`decision_log.py` 姿势)**:
 `add_trade` 会先校验 `position_id` 指向的底仓存在(FK 关联,plan G.4「T 子账 CRUD +
@@ -81,13 +83,17 @@ def compute_base_cost_adj(
 
 
 def compute_edge_to_price(base_cost_adj: Optional[float], price: Optional[float]) -> Optional[float]:
-    """「先手」距离(plan G.3):现价相对摊薄成本的优势,口径同 `PositionOut.
-    distToStopPct`(相对现价的比例,`(price−基准)/price`)——现价高于摊薄成本越多,
-    数值越正。`base_cost_adj`/`price` 任一缺失(如无实时价)或 `price<=0` → `None`
-    (调用方下发 JSON null,不崩,不拿 0 冒充「无优势」)。"""
-    if base_cost_adj is None or price is None or price <= 0:
+    """「先手」距离(plan G.3,2026-07-25 用户拍板口径 = **相对自己的成本**,非相对
+    现价):`(price−base_cost_adj)/base_cost_adj`——分母是摊薄成本本身,读数即用户
+    直觉的「浮盈率」(我的先手成本比现价便宜/贵了百分之几)。**刻意不与 `PositionOut.
+    distToStopPct` 的分母取现价对齐**:那个字段回答「离止损线还有多远」,参照物是
+    当前价格;这个字段回答「我的成本优势有多大」,参照物是自己的成本——两个问题
+    不同,不强行统一口径。`base_cost_adj`/`price` 任一缺失(如无实时价)或
+    `base_cost_adj<=0`(摊薄成本非正,除数无意义)或 `price<=0` → `None`(调用方
+    下发 JSON null,不崩,不拿 0 冒充「无优势」)。"""
+    if base_cost_adj is None or price is None or base_cost_adj <= 0 or price <= 0:
         return None
-    return (price - base_cost_adj) / price
+    return (price - base_cost_adj) / base_cost_adj
 
 
 def _now() -> str:

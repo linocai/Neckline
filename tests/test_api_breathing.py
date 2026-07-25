@@ -128,8 +128,8 @@ def test_edge_to_price_computed_with_live_price(client, AUTH, monkeypatch):
 
     body = client.get(f"/api/v1/breathing/{pid}/trades", headers=AUTH).json()
     assert body["baseCostAdj"] == pytest.approx(9.8)
-    # edgeToPrice = (10.0-9.8)/10.0 = 0.02
-    assert body["edgeToPrice"] == pytest.approx(0.02)
+    # edgeToPrice 口径 = 相对自己的摊薄成本(2026-07-25 用户拍板):(10.0-9.8)/9.8
+    assert body["edgeToPrice"] == pytest.approx((10.0 - 9.8) / 9.8, abs=1e-4)
 
 
 def test_base_cost_adj_no_trades_equals_buy_price(client, AUTH):

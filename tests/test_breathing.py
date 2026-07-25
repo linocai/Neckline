@@ -85,11 +85,12 @@ class TestBaseCostAdjAndEdge:
         assert compute_base_cost_adj(buy_price=10.0, qty=None, trades=[]) is None
 
     def test_edge_to_price_positive_when_price_above_cost(self):
-        # baseCostAdj=9.5, price=10.0 → (10-9.5)/10 = 0.05
-        assert compute_edge_to_price(9.5, 10.0) == pytest.approx(0.05)
+        # 口径 = 相对自己的摊薄成本(2026-07-25 用户拍板,浮盈率读数,非相对现价):
+        # baseCostAdj=9.5, price=10.0 → (10-9.5)/9.5
+        assert compute_edge_to_price(9.5, 10.0) == pytest.approx((10.0 - 9.5) / 9.5)
 
     def test_edge_to_price_negative_when_price_below_cost(self):
-        assert compute_edge_to_price(10.3, 10.0) == pytest.approx((10.0 - 10.3) / 10.0)
+        assert compute_edge_to_price(10.3, 10.0) == pytest.approx((10.0 - 10.3) / 10.3)
 
     def test_edge_to_price_none_without_price(self):
         assert compute_edge_to_price(9.5, None) is None
@@ -100,6 +101,12 @@ class TestBaseCostAdjAndEdge:
     def test_edge_to_price_none_when_price_non_positive(self):
         assert compute_edge_to_price(9.5, 0.0) is None
         assert compute_edge_to_price(9.5, -1.0) is None
+
+    def test_edge_to_price_none_when_base_cost_non_positive(self):
+        """分母是摊薄成本本身,成本非正(除数无意义)也要防崩——不像旧口径那样
+        只需担心 price 那一侧。"""
+        assert compute_edge_to_price(0.0, 10.0) is None
+        assert compute_edge_to_price(-0.5, 10.0) is None
 
 
 class TestAddTradeFKAndPersistence:
