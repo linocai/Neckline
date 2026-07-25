@@ -8,13 +8,24 @@
 //    GET  /api/v1/report?date=YYYYMMDD      → ReportOut(历史回放;带 query,走 makeURL)
 //    GET  /api/v1/board                     → BoardOut(v1.1 事件含 precall/d5exit 两新类)
 //    GET  /api/v1/positions                 → PositionsOut{holdings}(v1.1-B.1 生命周期字段)
-//    GET  /api/v1/positions/entry-suggestion→ EntrySuggestionOut(v1.1-B.3 一键补录预填)
+//    GET  /api/v1/positions/entry-suggestion→ EntrySuggestionOut(v1.2-E.5 改区间双档)
 //    POST /api/v1/positions                 → {ok,position_id,stop_line}       · 422 字段
-//    POST /api/v1/positions/{id}/close      → {ok}                            · 404 not_holding
+//    POST /api/v1/positions/{id}/close      → {ok}(closeReason 可选,v1.2-A2)   · 404 not_holding
+//    GET  /api/v1/circuit                   → CircuitStateOut(v1.2-A2 熔断纪律状态)
+//    POST /api/v1/circuit/unlock            → {ok}
+//    POST /api/v1/decisions                 → DecisionOut(v1.2-B 预注册决策日志八项)
+//    GET  /api/v1/decisions                 → {items:[DecisionOut]}(status/code/from/to 过滤)
+//    POST /api/v1/decisions/{id}/link       → {ok}                            · 404 not_found
+//    POST /api/v1/decisions/{id}/cancel     → {ok}                            · 404 not_found
+//    POST /api/v1/decisions/{id}/revise     → DecisionOut{新id}(新增修订行,旧行原地不变)
+//    POST /api/v1/decisions/{id}/scenario-outcome → {ok}(只翻 matched)         · 404/422
+//    GET  /api/v1/breathing/{id}/trades     → {items,baseCostAdj,edgeToPrice}(v1.2-G)· 404
+//    POST /api/v1/breathing/{id}/trades     → BreathingTradeOut                · 404
+//    DELETE /api/v1/breathing/trades/{id}   → {ok}                            · 404 not_found
 //    POST /api/v1/inquiry                   → InquiryOut(裁决二值,§2.5)
-//    GET  /api/v1/settings                  → SettingsOut(key 只回布尔;push 四字段 v1.1-G.1)
+//    GET  /api/v1/settings                  → SettingsOut(key 只回布尔;push 五字段 v1.2-A2)
 //    PUT  /api/v1/settings/llm              → {ok}                            · 422 供应商非法
-//    PUT  /api/v1/settings/push             → {ok}(v1.1-G.1:report/retreatBrake/precall/d5exit)
+//    PUT  /api/v1/settings/push             → {ok}(五字段:report/retreatBrake/precall/d5exit/circuit)
 //    POST /api/v1/devices                   → {ok}
 //    GET  /api/v1/watchlist                 → WatchlistOut{items,maxSize}(v1.1-C/F)
 //    POST /api/v1/watchlist                 → {ok,item}                       · 422 watchlist_full
@@ -96,6 +107,10 @@ private struct OpenPositionResponse: Decodable {
 struct ClosePositionRequest: Encodable {
     let sell_price: Double
     let sell_time: String?   // 'YYYYMMDD';缺省服务端用今日
+    // v1.2-A2:离场原因(可选)。⚠ 契约字段名 `closeReason` 是 camelCase,与本结构体
+    // 既有 `sell_price`/`sell_time` 的 snake_case 并存——后端契约如此(见 CLAUDE.md
+    // 「v1.1-E/F/G 踩过的坑」同款留痕),不自作主张统一大小写。
+    let closeReason: String?
 }
 
 private struct ChatMessageWire: Encodable { let role: String; let content: String }
@@ -116,8 +131,11 @@ private struct SettingsResponse: Decodable {
     let reviewColMap: [String: String]
 }
 struct SettingsLLMRequest: Encodable { let provider: String; let apiKey: String }
-/// v1.1-G.1:推送开关四字段(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)。
-struct SettingsPushRequest: Encodable { let report: Bool; let retreatBrake: Bool; let precall: Bool; let d5exit: Bool }
+/// v1.1-G.1 推送开关四字段(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)+ v1.2-A2 第五字段
+/// (熔断提醒)。五字段均必填(后端 `SettingsPushIn` 无默认值,缺字段 → 422)。
+struct SettingsPushRequest: Encodable {
+    let report: Bool; let retreatBrake: Bool; let precall: Bool; let d5exit: Bool; let circuit: Bool
+}
 struct SettingsReviewColMapRequest: Encodable { let colMap: [String: String] }
 
 struct DeviceRegisterRequest: Encodable { let token: String; let platform: String }
@@ -135,14 +153,72 @@ private struct ThsReconcileResponse: Decodable {
 }
 private struct ThsExportResponse: Decodable { let text: String; let count: Int }
 
-// —— v1.1-B.3 一键补录预填推荐 ——————————————————————————————————————————
+// —— v1.2-E.5 一键补录预填推荐(区间双档,替换 v1.1 的单 `qty`)——————————————————
 
 private struct EntrySuggestionResponse: Decodable {
-    let ok: Bool; let code: String; let price: Double; let qty: Int; let stopLine: Double
+    let ok: Bool; let code: String; let price: Double
+    let qtyLow: Int; let qtyHigh: Int; let capFloor: Double; let capCeil: Double; let stopLine: Double
 }
 
 /// 无请求体 POST 占位({})。
 private struct EmptyBody: Encodable {}
+
+// —— v1.2-B 预注册决策日志(§五 v1.2-E.1;`code`/`name` 走 create,revise 请求体
+// 不含这两个字段——修订不能换股票,新行继承原行 ts_code/name,见 CLAUDE.md
+// 「decision_log 唯一写入通道」坑)——————————————————————————————————————————
+
+struct DecisionCreateRequest: Encodable {
+    let code: String
+    let name: String?
+    let whyBuy: String
+    let whyEntryPrice: String
+    let targetPrice: Double?
+    let exitLow: Double?
+    let exitHigh: Double?
+    let thesisTags: [String]
+    let invalidation: String
+    let contingencyScenarios: [ContingencyScenario]
+    let playbookTag: String
+    let plannedPrice: Double?
+    let plannedQty: Int?
+}
+
+struct DecisionReviseRequest: Encodable {
+    let whyBuy: String
+    let whyEntryPrice: String
+    let targetPrice: Double?
+    let exitLow: Double?
+    let exitHigh: Double?
+    let thesisTags: [String]
+    let invalidation: String
+    let contingencyScenarios: [ContingencyScenario]
+    let playbookTag: String
+    let plannedPrice: Double?
+    let plannedQty: Int?
+}
+
+struct DecisionLinkRequest: Encodable { let positionId: Int }
+struct ScenarioOutcomeItemRequest: Encodable { let index: Int; let matched: Bool }
+struct ScenarioOutcomeRequest: Encodable { let outcomes: [ScenarioOutcomeItemRequest] }
+
+private struct DecisionsListResponse: Decodable { let items: [DecisionLog] }
+
+// —— v1.2-G 呼吸试验仓台账(§五 v1.2-E.4)—————————————————————————————————————
+
+struct BreathingTradeRequest: Encodable {
+    let buyPrice: Double
+    let sellPrice: Double
+    let qty: Int
+    let fees: Double        // 客户端如实录入,服务端原样落库、不按费率估算
+    let tDate: String?
+    let note: String?
+}
+
+private struct BreathingTradesResponse: Decodable {
+    let items: [BreathingTrade]
+    let baseCostAdj: Double?
+    let edgeToPrice: Double?
+}
 
 // MARK: - APIClient
 
@@ -215,22 +291,144 @@ actor APIClient {
         return (r.position_id, r.stop_line)
     }
 
-    /// 清仓录入。`sellTime` 缺省 → 服务端用今日('YYYYMMDD')。
+    /// 清仓录入。`sellTime` 缺省 → 服务端用今日('YYYYMMDD')。`closeReason`(v1.2-A2)
+    /// 可选——不传 → 服务端落 NULL,熔断评估走价格兜底判止损(不由客户端二次猜)。
     @discardableResult
-    func closePosition(id: Int, sellPrice: Double, sellTime: String? = nil) async throws -> Bool {
-        let body = ClosePositionRequest(sell_price: sellPrice, sell_time: sellTime)
+    func closePosition(id: Int, sellPrice: Double, sellTime: String? = nil,
+                       closeReason: String? = nil) async throws -> Bool {
+        let body = ClosePositionRequest(sell_price: sellPrice, sell_time: sellTime, closeReason: closeReason)
         let data = try await post("/api/v1/positions/\(id)/close", body: body)
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    /// 一键补录预填推荐(v1.1-B.3,只读计算,不写台账):按现役 `single_cap` 与
-    /// 传入价取整手推荐 `qty`,派生 `stopLine = price×(1−stop_pct)`(读现役 config)。
-    /// `code`/`price` 走 query(同 `fetchReport(date:)` 惯例,需走 `makeURL` 免 "?" 编码坑)。
-    func entrySuggestion(code: String, price: Double) async throws -> (qty: Int, stopLine: Double) {
+    /// 一键补录预填推荐(v1.2-E.5 改区间双档,只读计算,不写台账):`qtyHigh`/`capCeil`
+    /// = 现役 `single_cap` 违纪判定上限对应手数/金额(**非推荐值**),`qtyLow`/`capFloor`
+    /// = 半仓保守下沿;`stopLine = price×(1−stop_pct)`(读现役 config)。客户端只展示
+    /// 两档,不替用户拍单笔金额。`code`/`price` 走 query(同 `fetchReport(date:)` 惯例,
+    /// 需走 `makeURL` 免 "?" 编码坑)。
+    func entrySuggestion(code: String, price: Double) async throws -> EntrySuggestionRange {
         let priceStr = String(format: "%.2f", price)
         let data = try await get("/api/v1/positions/entry-suggestion?code=\(code)&price=\(priceStr)")
         let r = try JSONDecoder().decode(EntrySuggestionResponse.self, from: data)
-        return (r.qty, r.stopLine)
+        return EntrySuggestionRange(code: r.code, price: r.price, qtyLow: r.qtyLow, qtyHigh: r.qtyHigh,
+                                    capFloor: r.capFloor, capCeil: r.capCeil, stopLine: r.stopLine)
+    }
+
+    // —— v1.2-A2 熔断纪律状态(§五 v1.2-E.3;纯提醒层,客户端只读锁定态 + 记录用户
+    // 解锁 ack,绝不代下单/撤单、绝不拦 `POST /positions`,§3.8)——————————————————————
+
+    /// 权威熔断锁定态。`PositionsOut.circuit` 内嵌同一形状供今日计划面直接读取
+    /// (契约清单「或」两种取法均可,这里选独立端点,避免牵动 `fetchPositions()`
+    /// 既有返回类型 / 既有单测)。
+    func getCircuit() async throws -> CircuitState {
+        let data = try await get("/api/v1/circuit")
+        return try JSONDecoder().decode(CircuitState.self, from: data)
+    }
+
+    /// 客户端「熔断复盘」按钮解锁(先展示强制复盘材料,用户确认后调用)。无锁定态时
+    /// 幂等成功。
+    @discardableResult
+    func unlockCircuit() async throws -> Bool {
+        let data = try await post("/api/v1/circuit/unlock", body: EmptyBody())
+        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    // —— v1.2-B 预注册决策日志(§五 v1.2-E.1;审计件、非下单件——本节任何方法都不
+    // 触发任何持仓写入)——————————————————————————————————————————————————————————
+
+    /// 预注册(status=pending)。`createdAt` 服务端生成,请求体本就无此字段,物理
+    /// 杜绝客户端覆盖(同 CLAUDE.md「B 块 created_at 三处防线」①)。
+    func createDecision(code: String, name: String?, whyBuy: String, whyEntryPrice: String,
+                        targetPrice: Double?, exitLow: Double?, exitHigh: Double?,
+                        thesisTags: [String], invalidation: String,
+                        contingencyScenarios: [ContingencyScenario], playbookTag: String,
+                        plannedPrice: Double?, plannedQty: Int?) async throws -> DecisionLog {
+        let body = DecisionCreateRequest(code: code, name: name, whyBuy: whyBuy, whyEntryPrice: whyEntryPrice,
+                                         targetPrice: targetPrice, exitLow: exitLow, exitHigh: exitHigh,
+                                         thesisTags: thesisTags, invalidation: invalidation,
+                                         contingencyScenarios: contingencyScenarios, playbookTag: playbookTag,
+                                         plannedPrice: plannedPrice, plannedQty: plannedQty)
+        let data = try await post("/api/v1/decisions", body: body)
+        return try JSONDecoder().decode(DecisionLog.self, from: data)
+    }
+
+    /// 客户端历史 + macOS 归因表(默认返全部,可按 `status`/`code`/`from`/`to` 过滤;
+    /// `from`/`to` 对齐服务端 `created_at` 日期区间,'YYYYMMDD')。
+    func listDecisions(status: String? = nil, code: String? = nil,
+                       from: String? = nil, to: String? = nil) async throws -> [DecisionLog] {
+        var query: [String] = []
+        if let s = status, !s.isEmpty { query.append("status=\(s)") }
+        if let c = code, !c.isEmpty { query.append("code=\(c)") }
+        if let f = from, !f.isEmpty { query.append("from=\(f)") }
+        if let t = to, !t.isEmpty { query.append("to=\(t)") }
+        let path = query.isEmpty ? "/api/v1/decisions" : "/api/v1/decisions?" + query.joined(separator: "&")
+        let data = try await get(path)
+        return try JSONDecoder().decode(DecisionsListResponse.self, from: data).items
+    }
+
+    /// 成交后一键关联:`status` 置 filled + `position_id` 回填。id 不存在 → 404 not_found。
+    @discardableResult
+    func linkDecision(id: Int, positionId: Int) async throws -> Bool {
+        let body = DecisionLinkRequest(positionId: positionId)
+        let data = try await post("/api/v1/decisions/\(id)/link", body: body)
+        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    /// 用户放弃该预注册计划:`status` 置 cancelled。id 不存在 → 404 not_found。
+    @discardableResult
+    func cancelDecision(id: Int) async throws -> Bool {
+        let data = try await post("/api/v1/decisions/\(id)/cancel", body: EmptyBody())
+        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    /// 新增一行修订(旧行原地不变,`revisionOf` 落链根 id,`status` 重置 pending、
+    /// `positionId` 重置为 nil——修订与「已成交关联」是两件事,不自动重新关联)。
+    /// `id` 不存在 → 404 not_found。
+    func reviseDecision(id: Int, whyBuy: String, whyEntryPrice: String, targetPrice: Double?,
+                        exitLow: Double?, exitHigh: Double?, thesisTags: [String], invalidation: String,
+                        contingencyScenarios: [ContingencyScenario], playbookTag: String,
+                        plannedPrice: Double?, plannedQty: Int?) async throws -> DecisionLog {
+        let body = DecisionReviseRequest(whyBuy: whyBuy, whyEntryPrice: whyEntryPrice, targetPrice: targetPrice,
+                                         exitLow: exitLow, exitHigh: exitHigh, thesisTags: thesisTags,
+                                         invalidation: invalidation, contingencyScenarios: contingencyScenarios,
+                                         playbookTag: playbookTag, plannedPrice: plannedPrice, plannedQty: plannedQty)
+        let data = try await post("/api/v1/decisions/\(id)/revise", body: body)
+        return try JSONDecoder().decode(DecisionLog.self, from: data)
+    }
+
+    /// ⑦ 情景树结果标记专用(只翻 `matched`,绝不改 `scenario`/`trigger`/`action`)。
+    /// `id` 不存在 → 404;`index` 越界 → 422(FastAPI/pydantic 走既有 `.validation` 映射)。
+    @discardableResult
+    func setScenarioOutcome(id: Int, outcomes: [(index: Int, matched: Bool)]) async throws -> Bool {
+        let body = ScenarioOutcomeRequest(outcomes: outcomes.map { ScenarioOutcomeItemRequest(index: $0.index, matched: $0.matched) })
+        let data = try await post("/api/v1/decisions/\(id)/scenario-outcome", body: body)
+        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    // —— v1.2-G 呼吸试验仓台账(§五 v1.2-E.4;写入只经这三个端点,同 positions/
+    // watchlist 姿势)—————————————————————————————————————————————————————————
+
+    /// T 子账列表 + 底仓摊薄成本 / 先手距离派生。底仓不存在 → 404 not_found。
+    func breathingTrades(positionId: Int) async throws -> BreathingLedger {
+        let data = try await get("/api/v1/breathing/\(positionId)/trades")
+        let r = try JSONDecoder().decode(BreathingTradesResponse.self, from: data)
+        return BreathingLedger(items: r.items, baseCostAdj: r.baseCostAdj, edgeToPrice: r.edgeToPrice)
+    }
+
+    /// 录入一次 T。`fees` 必填、如实录入(不替用户估费率,G.2)。底仓不存在 → 404 not_found。
+    func addBreathingTrade(positionId: Int, buyPrice: Double, sellPrice: Double, qty: Int, fees: Double,
+                           tDate: String? = nil, note: String? = nil) async throws -> BreathingTrade {
+        let body = BreathingTradeRequest(buyPrice: buyPrice, sellPrice: sellPrice, qty: qty, fees: fees,
+                                         tDate: tDate, note: note)
+        let data = try await post("/api/v1/breathing/\(positionId)/trades", body: body)
+        return try JSONDecoder().decode(BreathingTrade.self, from: data)
+    }
+
+    /// 误录可删(硬删除)。不存在 → 404 not_found(幂等安全,重复删除同样 404)。
+    @discardableResult
+    func deleteBreathingTrade(id: Int) async throws -> Bool {
+        let data = try await delete("/api/v1/breathing/trades/\(id)")
+        return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
     // —— 4A.5 问询台(§2.5:裁决二值,永不「现在就买」)——
@@ -261,10 +459,12 @@ actor APIClient {
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    /// v1.1-G.1:推送开关四字段一并写入(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)。
+    /// 推送开关五字段一并写入(报告 / 退潮刹车 / 盘前校准 / D5 时间退出 / v1.2-A2 熔断提醒)。
     @discardableResult
-    func putSettingsPush(report: Bool, retreatBrake: Bool, precall: Bool, d5exit: Bool) async throws -> Bool {
-        let body = SettingsPushRequest(report: report, retreatBrake: retreatBrake, precall: precall, d5exit: d5exit)
+    func putSettingsPush(report: Bool, retreatBrake: Bool, precall: Bool, d5exit: Bool,
+                         circuit: Bool) async throws -> Bool {
+        let body = SettingsPushRequest(report: report, retreatBrake: retreatBrake, precall: precall,
+                                       d5exit: d5exit, circuit: circuit)
         let data = try await put("/api/v1/settings/push", body: body)
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }

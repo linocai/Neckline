@@ -185,6 +185,8 @@ struct SettingsView: View {
             Toggle("退潮红色刹车", isOn: $model.pushRetreatDraft)
             Toggle("9:26 盘前校准汇总", isOn: $model.pushPrecallDraft)
             Toggle("D5 时间退出", isOn: $model.pushD5exitDraft)
+            // v1.2-A2:第五类(熔断提醒,默认开,§2.1 第 7 条)。
+            Toggle("熔断提醒", isOn: $model.pushCircuitDraft)
             Button("保存推送设置") { Task { await model.savePushSettings() } }
         } header: {
             Text("APNs 推送")

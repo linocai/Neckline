@@ -307,6 +307,43 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(r.stopLine, 1425.0)
     }
 
+    /// v1.2-A2:`closeReason` 编码进请求体(camelCase,与既有 snake_case `sell_price`/
+    /// `sell_time` 并存——契约本身如此,见 `CLAUDE.md`「PositionCloseIn 里 closeReason
+    /// 是 camelCase」坑)。用 `httpBodyOrStream()` helper 两路读请求体。
+    func testClosePositionEncodesCloseReasonAlongsideSnakeCaseFields() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(obj?["sell_price"] as? Double, 9.5)
+            XCTAssertEqual(obj?["sell_time"] as? String, "20260722")
+            XCTAssertEqual(obj?["closeReason"] as? String, "STOP_LOSS")
+            return (200, jsonData("""
+            {"ok": true}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let ok = try await client.closePosition(id: 1, sellPrice: 9.5, sellTime: "20260722", closeReason: "STOP_LOSS")
+        XCTAssertTrue(ok)
+    }
+
+    /// 不选离场原因 → 请求体里**没有** `closeReason` 键(服务端按价格兜底判止损,不由
+    /// 客户端二次猜)。⚠ 实测锁死:Swift 编译器自动合成的 `Encodable` 对 `Optional`
+    /// 属性用 `encodeIfPresent`,nil 时直接省略该键(不是显式写 `"closeReason": null`)
+    /// ——对后端 pydantic `Optional[...] = None` 字段语义等价(缺键与显式 null 均落
+    /// `None`),但断言必须对齐**实际**编码结果,不能想当然认为是显式 null。
+    func testClosePositionOmittedCloseReasonOmitsKeyFromRequestBody() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertNil(obj?["closeReason"], "不传 closeReason 时请求体不应含该键(也不能悄悄发空字符串占位)")
+            return (200, jsonData("""
+            {"ok": true}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        _ = try await client.closePosition(id: 1, sellPrice: 9.5)
+    }
+
     /// 404 not_holding 映射(对照 test_close_nonexistent_404 的 detail 形状)。
     func testCloseNonexistentMapsToNotHolding() async throws {
         MockURLProtocol.handler = { _ in
@@ -358,7 +395,7 @@ final class DTODecodeTests: XCTestCase {
         MockURLProtocol.handler = { _ in
             (200, jsonData("""
             {"llmProvider": "glm", "llmKeySet": true,
-             "push": {"report": true, "retreatBrake": false, "precall": true, "d5exit": false},
+             "push": {"report": true, "retreatBrake": false, "precall": true, "d5exit": false, "circuit": true},
              "reviewColMap": {"手续费": "费用合计"}}
             """))
         }
@@ -371,11 +408,13 @@ final class DTODecodeTests: XCTestCase {
         // v1.1-G.1:推送开关扩到四字段(盘前校准 / D5 时间退出)。
         XCTAssertTrue(s.push.precall)
         XCTAssertFalse(s.push.d5exit)
+        // v1.2-A2:第五字段(熔断提醒)。
+        XCTAssertTrue(s.push.circuit)
         XCTAssertEqual(s.reviewColMap, ["手续费": "费用合计"])
     }
 
-    /// v1.1-G.1:PUT settings/push 请求体四字段一并发送(对照 test_put_push_toggles)。
-    func testPutSettingsPushSendsFourFields() async throws {
+    /// v1.2-A2:PUT settings/push 请求体五字段一并发送(对照 test_put_push_toggles)。
+    func testPutSettingsPushSendsFiveFields() async throws {
         MockURLProtocol.handler = { req in
             let body = try XCTUnwrap(req.httpBodyOrStream())
             let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
@@ -383,12 +422,14 @@ final class DTODecodeTests: XCTestCase {
             XCTAssertEqual(obj?["retreatBrake"] as? Bool, true)
             XCTAssertEqual(obj?["precall"] as? Bool, false)
             XCTAssertEqual(obj?["d5exit"] as? Bool, true)
+            XCTAssertEqual(obj?["circuit"] as? Bool, false)
             return (200, jsonData("""
             {"ok": true}
             """))
         }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let ok = try await client.putSettingsPush(report: false, retreatBrake: true, precall: false, d5exit: true)
+        let ok = try await client.putSettingsPush(report: false, retreatBrake: true, precall: false,
+                                                   d5exit: true, circuit: false)
         XCTAssertTrue(ok)
     }
 
@@ -410,20 +451,25 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertTrue(ok)
     }
 
-    // MARK: - v1.1-B.3 一键补录预填推荐(样例对照 test_entry_suggestion_rounds_to_lots)
+    // MARK: - v1.2-E.5 一键补录预填推荐,区间双档(样例对照契约清单
+    // `EntrySuggestionOut{ok,code,price,qtyLow,qtyHigh,capFloor,capCeil,stopLine}`)
 
-    func testDecodeEntrySuggestion() async throws {
+    func testDecodeEntrySuggestionRange() async throws {
         MockURLProtocol.handler = { req in
             // code/price 走 query,须走 makeURL(同 §五 阶段4C 坑吸收②)。
             let url = req.url?.absoluteString ?? ""
             XCTAssertTrue(url.contains("?code=600001.SH&price=50.00"), "实际请求 URL: \(url)")
             return (200, jsonData("""
-            {"ok": true, "code": "600001.SH", "price": 50.0, "qty": 400, "stopLine": 47.5}
+            {"ok": true, "code": "600001.SH", "price": 50.0,
+             "qtyLow": 400, "qtyHigh": 800, "capFloor": 20000.0, "capCeil": 40000.0, "stopLine": 47.5}
             """))
         }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
         let s = try await client.entrySuggestion(code: "600001.SH", price: 50.0)
-        XCTAssertEqual(s.qty, 400)
+        XCTAssertEqual(s.qtyLow, 400)
+        XCTAssertEqual(s.qtyHigh, 800)
+        XCTAssertEqual(s.capFloor, 20000.0)
+        XCTAssertEqual(s.capCeil, 40000.0)
         XCTAssertEqual(s.stopLine, 47.5)
     }
 
@@ -658,6 +704,306 @@ final class DTODecodeTests: XCTestCase {
         let resp = try await client.fetchReview(week: "2099-W01")
         XCTAssertFalse(resp.found)
         XCTAssertNil(resp.result)
+    }
+
+    // MARK: - v1.2-B 预注册决策日志(样例对照 tests/test_api_decisions.py,§五 v1.2-E.1/E.6)
+
+    private static let sampleDecisionJSON = """
+    {"id": 1, "code": "600001.SH", "name": "示例甲", "createdAt": "2026-07-25T10:00:00+00:00",
+     "whyBuy": "题材热+量能启动,板块龙头效应明显", "whyEntryPrice": "回调至10日均线企稳,缩量企稳信号",
+     "targetPrice": 12.0, "exitLow": 9.0, "exitHigh": 9.5,
+     "thesisTags": ["THEME", "CAPITAL_FLOW"], "invalidation": "跌破10日均线且缩量转放量下杀",
+     "contingencyScenarios": [
+       {"scenario": "次日高开超预期", "trigger": "开盘涨幅>3%", "action": "HOLD", "matched": false},
+       {"scenario": "次日低开破位", "trigger": "开盘跌幅>2%", "action": "ABANDON", "matched": false}
+     ],
+     "playbookTag": "SWING_CHASE", "plannedPrice": 10.0, "plannedQty": 1000,
+     "status": "pending", "positionId": null, "revisionOf": null}
+    """
+
+    /// `createDecision` 请求体逐字段核对 + `createdAt` 绝不由客户端构造(即便
+    /// `DecisionCreateRequest` 类型上就没有这个字段,物理杜绝,同后端「三处防线」①的
+    /// 客户端镜像)。
+    func testCreateDecisionRequestBodyShapeAndCreatedAtNeverSent() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertNil(obj?["createdAt"], "请求体不应含 createdAt 字段——DecisionCreateRequest 类型上就没有")
+            XCTAssertEqual(obj?["code"] as? String, "600001.SH")
+            XCTAssertEqual(obj?["whyBuy"] as? String, "题材热+量能启动,板块龙头效应明显")
+            XCTAssertEqual(obj?["thesisTags"] as? [String], ["THEME", "CAPITAL_FLOW"])
+            XCTAssertEqual(obj?["playbookTag"] as? String, "SWING_CHASE")
+            let scenarios = obj?["contingencyScenarios"] as? [[String: Any]]
+            XCTAssertEqual(scenarios?.count, 2)
+            XCTAssertEqual(scenarios?[0]["action"] as? String, "HOLD")
+            XCTAssertEqual(scenarios?[0]["matched"] as? Bool, false)
+            return (200, jsonData(Self.sampleDecisionJSON))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let log = try await client.createDecision(
+            code: "600001.SH", name: "示例甲", whyBuy: "题材热+量能启动,板块龙头效应明显",
+            whyEntryPrice: "回调至10日均线企稳,缩量企稳信号", targetPrice: 12.0, exitLow: 9.0, exitHigh: 9.5,
+            thesisTags: ["THEME", "CAPITAL_FLOW"], invalidation: "跌破10日均线且缩量转放量下杀",
+            contingencyScenarios: [
+                ContingencyScenario(scenario: "次日高开超预期", trigger: "开盘涨幅>3%", action: "HOLD", matched: false),
+                ContingencyScenario(scenario: "次日低开破位", trigger: "开盘跌幅>2%", action: "ABANDON", matched: false),
+            ],
+            playbookTag: "SWING_CHASE", plannedPrice: 10.0, plannedQty: 1000
+        )
+        XCTAssertEqual(log.id, 1)
+        XCTAssertEqual(log.status, "pending")
+        XCTAssertNil(log.positionId)
+        XCTAssertEqual(log.contingencyScenarios.count, 2)
+        XCTAssertEqual(log.thesisTagLabels, ["题材主线", "资金流向"])
+        XCTAssertEqual(log.playbookTagLabel, "短线追击")
+        XCTAssertFalse(log.isBreathingTrial)
+    }
+
+    /// `GET /decisions` 列表 + `status`/`code` 过滤 query 拼装(不带 query 时不追加 "?")。
+    func testListDecisionsBuildsFilterQuery() async throws {
+        MockURLProtocol.handler = { req in
+            let url = req.url?.absoluteString ?? ""
+            XCTAssertTrue(url.contains("status=filled"), "实际请求 URL: \(url)")
+            XCTAssertTrue(url.contains("code=600001.SH"))
+            return (200, jsonData("""
+            {"items": [\(Self.sampleDecisionJSON)]}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let items = try await client.listDecisions(status: "filled", code: "600001.SH")
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].code, "600001.SH")
+    }
+
+    func testListDecisionsWithoutFiltersOmitsQueryString() async throws {
+        MockURLProtocol.handler = { req in
+            let url = req.url?.absoluteString ?? ""
+            XCTAssertFalse(url.contains("?"), "无过滤条件时不应追加空 '?',实际请求 URL: \(url)")
+            return (200, jsonData("""
+            {"items": []}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let items = try await client.listDecisions()
+        XCTAssertTrue(items.isEmpty)
+    }
+
+    /// `link`/`cancel` 404 not_found 映射(与 positions 的 404 not_holding 分开,复用
+    /// `APIError.mapReason` 既有 `.notFound` case,不需要新代码——只需核对映射到位)。
+    func testLinkAndCancelDecisionNonexistentMapsToNotFound() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(obj?["positionId"] as? Int, 7)
+            return (404, jsonData("""
+            {"detail": {"ok": false, "reason": "not_found"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.linkDecision(id: 999, positionId: 7)
+            XCTFail("应抛 notFound")
+        } catch APIError.notFound {}
+
+        MockURLProtocol.handler = { _ in
+            (404, jsonData("""
+            {"detail": {"ok": false, "reason": "not_found"}}
+            """))
+        }
+        do {
+            _ = try await client.cancelDecision(id: 999)
+            XCTFail("应抛 notFound")
+        } catch APIError.notFound {}
+    }
+
+    /// `revise` 请求体不含 code/name(修订不能换股票);响应是新 id + `revisionOf` 指链根。
+    func testReviseDecisionRequestOmitsCodeNameAndDecodesNewRow() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertNil(obj?["code"], "revise 请求体不应含 code——修订不能换股票")
+            XCTAssertNil(obj?["name"])
+            XCTAssertEqual(obj?["whyBuy"] as? String, "修订后的理由:资金持续净流入超预期")
+            return (200, jsonData("""
+            {"id": 2, "code": "600001.SH", "name": "示例甲", "createdAt": "2026-07-25T11:00:00+00:00",
+             "whyBuy": "修订后的理由:资金持续净流入超预期", "whyEntryPrice": "回调至10日均线企稳,缩量企稳信号",
+             "targetPrice": 13.0, "exitLow": 9.0, "exitHigh": 9.5,
+             "thesisTags": ["THEME"], "invalidation": "跌破10日均线", "contingencyScenarios": [],
+             "playbookTag": "SWING_CHASE", "plannedPrice": 10.0, "plannedQty": 1000,
+             "status": "pending", "positionId": null, "revisionOf": 1}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let revised = try await client.reviseDecision(
+            id: 1, whyBuy: "修订后的理由:资金持续净流入超预期", whyEntryPrice: "回调至10日均线企稳,缩量企稳信号",
+            targetPrice: 13.0, exitLow: 9.0, exitHigh: 9.5, thesisTags: ["THEME"], invalidation: "跌破10日均线",
+            contingencyScenarios: [], playbookTag: "SWING_CHASE", plannedPrice: 10.0, plannedQty: 1000
+        )
+        XCTAssertEqual(revised.id, 2)
+        XCTAssertEqual(revised.revisionOf, 1)
+        XCTAssertEqual(revised.status, "pending")
+    }
+
+    /// `scenario-outcome` 只翻 `matched`(请求体形状核对;是否真的只改这一列由后端单测锁死,
+    /// 客户端只需核对自己发对了请求)。
+    func testSetScenarioOutcomeRequestBodyShape() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            let outcomes = obj?["outcomes"] as? [[String: Any]]
+            XCTAssertEqual(outcomes?.count, 1)
+            XCTAssertEqual(outcomes?[0]["index"] as? Int, 0)
+            XCTAssertEqual(outcomes?[0]["matched"] as? Bool, true)
+            return (200, jsonData("""
+            {"ok": true}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let ok = try await client.setScenarioOutcome(id: 1, outcomes: [(index: 0, matched: true)])
+        XCTAssertTrue(ok)
+    }
+
+    /// `index` 越界 → 422,走既有 `.validation` 通用映射(不需要新 case)。
+    func testSetScenarioOutcomeIndexOutOfRangeMapsToValidation() async throws {
+        MockURLProtocol.handler = { _ in
+            (422, jsonData("""
+            {"detail": {"ok": false, "reason": "scenario_index_out_of_range", "message": "index 99 超出范围"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.setScenarioOutcome(id: 1, outcomes: [(index: 99, matched: true)])
+            XCTFail("应抛 validation")
+        } catch APIError.validation(let reason) {
+            XCTAssertEqual(reason, "scenario_index_out_of_range")
+        }
+    }
+
+    // MARK: - v1.2-A2 熔断纪律状态(样例对照 tests/test_api_circuit.py,§五 v1.2-E.3)
+
+    func testDecodeCircuitStateUnlocked() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"locked": false, "episode": null}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let state = try await client.getCircuit()
+        XCTAssertFalse(state.locked)
+        XCTAssertNil(state.episode)
+    }
+
+    /// 锁定态含 episode 全部诚实边界字段(basisTradesCount/note 等);
+    /// `triggerReasonLabel` 展示层换算 consecutive_stops→连续止损。
+    func testDecodeCircuitStateLockedWithEpisode() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"locked": true, "episode": {
+              "triggerReason": "consecutive_stops", "triggeredAt": "2026-07-22T15:05:00+00:00",
+              "triggerRefDate": "20260722", "basisTradesCount": 3, "basisWindow": "2026-07-20~2026-07-22",
+              "note": "基于台账 3 笔已补录成交判定连续止损触发。"
+            }}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let state = try await client.getCircuit()
+        XCTAssertTrue(state.locked)
+        XCTAssertEqual(state.episode?.triggerReasonLabel, "连续止损")
+        XCTAssertEqual(state.episode?.basisTradesCount, 3)
+        XCTAssertTrue(state.episode?.note.contains("已补录成交") ?? false)
+    }
+
+    func testUnlockCircuitDecodesOk() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"ok": true}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let ok = try await client.unlockCircuit()
+        XCTAssertTrue(ok)
+    }
+
+    // MARK: - v1.2-G 呼吸试验仓台账(样例对照 tests/test_api_breathing.py,§五 v1.2-E.4)
+
+    func testBreathingTradesRoundTripContractShape() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(obj?["buyPrice"] as? Double, 10.0)
+            XCTAssertEqual(obj?["fees"] as? Double, 20.0)
+            XCTAssertEqual(obj?["tDate"] as? String, "20260702")
+            return (200, jsonData("""
+            {"id": 1, "positionId": 5, "buyPrice": 10.0, "sellPrice": 10.3, "qty": 500, "fees": 20.0,
+             "tDate": "20260702", "tPnl": 130.0, "note": "日内回踩低吸"}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let trade = try await client.addBreathingTrade(positionId: 5, buyPrice: 10.0, sellPrice: 10.3, qty: 500,
+                                                        fees: 20.0, tDate: "20260702", note: "日内回踩低吸")
+        XCTAssertEqual(trade.id, 1)
+        XCTAssertEqual(trade.positionId, 5)
+        XCTAssertEqual(trade.tPnl, 130.0)
+        XCTAssertEqual(trade.note, "日内回踩低吸")
+    }
+
+    /// `baseCostAdj`/`edgeToPrice` 均可为 null(无 T 记录 / 无实时价)→ 客户端不崩、
+    /// 不拿 0 冒充「无优势」。
+    func testDecodeBreathingLedgerWithNullDerivedFields() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"items": [], "baseCostAdj": null, "edgeToPrice": null}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let ledger = try await client.breathingTrades(positionId: 5)
+        XCTAssertTrue(ledger.items.isEmpty)
+        XCTAssertNil(ledger.baseCostAdj)
+        XCTAssertNil(ledger.edgeToPrice)
+    }
+
+    func testDecodeBreathingLedgerWithDerivedFields() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"items": [
+              {"id": 1, "positionId": 5, "buyPrice": 10.0, "sellPrice": 10.3, "qty": 500, "fees": 20.0,
+               "tDate": "20260702", "tPnl": 130.0, "note": ""}
+            ], "baseCostAdj": 9.74, "edgeToPrice": 0.0267}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let ledger = try await client.breathingTrades(positionId: 5)
+        XCTAssertEqual(ledger.items.count, 1)
+        XCTAssertEqual(ledger.baseCostAdj, 9.74)
+        XCTAssertEqual(ledger.edgeToPrice, 0.0267)
+    }
+
+    /// 误录可删;不存在 → 404 not_found(幂等安全,复用既有 `.notFound` 映射)。
+    func testDeleteBreathingTradeNonexistentMapsToNotFound() async throws {
+        MockURLProtocol.handler = { _ in
+            (404, jsonData("""
+            {"detail": {"ok": false, "reason": "not_found"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.deleteBreathingTrade(id: 999)
+            XCTFail("应抛 notFound")
+        } catch APIError.notFound {}
+    }
+
+    /// 底仓不存在 → `GET`/`POST` 均 404 not_found。
+    func testBreathingTradesPositionNotFoundMapsToNotFound() async throws {
+        MockURLProtocol.handler = { _ in
+            (404, jsonData("""
+            {"detail": {"ok": false, "reason": "not_found"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.breathingTrades(positionId: 999)
+            XCTFail("应抛 notFound")
+        } catch APIError.notFound {}
     }
 }
 

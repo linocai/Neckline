@@ -317,6 +317,209 @@ struct Position: Codable, Equatable, Identifiable {
     }
 }
 
+// MARK: - v1.2 枚举展示层换算(服务端码 + 客户端展示层换算,沿 `nkBoardLabel` 先例;
+// 未识别码原样透传,不静默瞎翻译)。自由函数用于「解码任意历史码做展示」的场景
+// (如 `DecisionLog.thesisTags`);下面各 `CaseIterable` 枚举用于「录入表单的有限
+// 可选项 picker」场景——两者共用同一份 label 映射,不重复定义第二份中文对照表。
+
+func nkThesisTagLabel(_ raw: String) -> String {
+    switch raw {
+    case "THEME": return "题材主线"
+    case "SENTIMENT_CYCLE": return "情绪周期位"
+    case "CAPITAL_FLOW": return "资金流向"
+    case "TECH_PATTERN": return "技术形态"
+    case "NEWS": return "消息"
+    default: return raw
+    }
+}
+
+/// ⑤ 论点标签(v1.2-B,多选)。
+enum ThesisTag: String, CaseIterable, Identifiable, Hashable, Codable {
+    case theme = "THEME"
+    case sentimentCycle = "SENTIMENT_CYCLE"
+    case capitalFlow = "CAPITAL_FLOW"
+    case techPattern = "TECH_PATTERN"
+    case news = "NEWS"
+
+    var id: String { rawValue }
+    var label: String { nkThesisTagLabel(rawValue) }
+}
+
+func nkPlaybookTagLabel(_ raw: String) -> String {
+    switch raw {
+    case "SWING_CHASE": return "短线追击"
+    case "BREATHING_TRIAL": return "呼吸底仓试验"
+    default: return raw
+    }
+}
+
+/// ⑧ 打法标签(v1.2-B,单选;对应三仓 = 2 短线追击 + 1 呼吸底仓试验,§2.1 第 3 条)。
+enum PlaybookTag: String, CaseIterable, Identifiable, Hashable, Codable {
+    case swingChase = "SWING_CHASE"
+    case breathingTrial = "BREATHING_TRIAL"
+
+    var id: String { rawValue }
+    var label: String { nkPlaybookTagLabel(rawValue) }
+}
+
+func nkScenarioActionLabel(_ raw: String) -> String {
+    switch raw {
+    case "BUY": return "买入"
+    case "HOLD": return "持有"
+    case "REDUCE": return "减仓"
+    case "ABANDON": return "放弃"
+    default: return raw
+    }
+}
+
+/// ⑦ 应对方案·情景树的动作枚举(v1.2-B)。
+enum ScenarioAction: String, CaseIterable, Identifiable, Hashable, Codable {
+    case buy = "BUY", hold = "HOLD", reduce = "REDUCE", abandon = "ABANDON"
+
+    var id: String { rawValue }
+    var label: String { nkScenarioActionLabel(rawValue) }
+}
+
+func nkCloseReasonLabel(_ raw: String) -> String {
+    switch raw {
+    case "STOP_LOSS": return "止损"
+    case "TAKE_PROFIT": return "回落止盈"
+    case "TIME_EXIT": return "时间退出"
+    case "INVALIDATION": return "证伪离场"
+    case "MANUAL": return "主动离场"
+    default: return raw
+    }
+}
+
+/// 离场原因(v1.2-A2,`PositionCloseIn.closeReason`,五码;不选则服务端按价格兜底
+/// 判止损,见 CLAUDE.md「熔断兜底判据」坑)。
+enum CloseReasonCode: String, CaseIterable, Identifiable, Hashable, Codable {
+    case stopLoss = "STOP_LOSS"
+    case takeProfit = "TAKE_PROFIT"
+    case timeExit = "TIME_EXIT"
+    case invalidation = "INVALIDATION"
+    case manual = "MANUAL"
+
+    var id: String { rawValue }
+    var label: String { nkCloseReasonLabel(rawValue) }
+}
+
+// MARK: - v1.2-B 预注册决策日志(§五 v1.2-E.1;审计件、非下单件——本文件任何类型
+// 都只是展示/编解码模型,不含任何触发下单的逻辑)。
+
+/// ⑦ 应对方案·情景树单项。`Codable` 双向复用:解码 `DecisionOut.contingencyScenarios`
+/// 时用,构造 `POST /decisions`·`revise` 请求体时也用(服务端 `ContingencyScenarioIn`/
+/// `ContingencyScenarioOut` 形状一致,不必两份类型)。
+struct ContingencyScenario: Codable, Equatable {
+    var scenario: String
+    var trigger: String
+    var action: String        // BUY/HOLD/REDUCE/ABANDON,服务端码
+    var matched: Bool = false
+
+    var actionLabel: String { nkScenarioActionLabel(action) }
+}
+
+/// 对齐 `DecisionOut`(逐字段,见「v1.2 客户端契约清单」)。字段名与服务端 JSON
+/// 完全一致,直接 `Codable` 解码,不需要私有 wire DTO 中转(同 `WatchlistItem`/
+/// `BoardEvent`/`Position` 的直接解码先例)。
+struct DecisionLog: Codable, Equatable, Identifiable {
+    var id: Int
+    var code: String
+    var name: String
+    var createdAt: String
+    var whyBuy: String
+    var whyEntryPrice: String
+    var targetPrice: Double?
+    var exitLow: Double?
+    var exitHigh: Double?
+    var thesisTags: [String]
+    var invalidation: String
+    var contingencyScenarios: [ContingencyScenario]
+    var playbookTag: String
+    var plannedPrice: Double?
+    var plannedQty: Int?
+    var status: String                // pending | filled | cancelled | expired
+    var positionId: Int?
+    var revisionOf: Int?
+
+    var thesisTagLabels: [String] { thesisTags.map(nkThesisTagLabel) }
+    var playbookTagLabel: String { nkPlaybookTagLabel(playbookTag) }
+    /// 三仓 = 2 短线追击 + 1 呼吸底仓试验(§2.1 第 3 条)——呼吸台账入口露出规则
+    /// (§五 v1.2-E.4)据此判断,不新存第二份「是否呼吸仓」标记。
+    var isBreathingTrial: Bool { playbookTag == PlaybookTag.breathingTrial.rawValue }
+}
+
+// MARK: - v1.2-A2 熔断纪律状态(§五 v1.2-E.3;§2.1 第 7 条纯提醒层——客户端只展示
+// 锁定态 + 灰化「开新仓」入口,绝不假装能拦下单,判定/阈值全在服务端)。
+
+struct CircuitEpisode: Codable, Equatable {
+    var triggerReason: String     // consecutive_stops | daily_loss
+    var triggeredAt: String
+    var triggerRefDate: String
+    var basisTradesCount: Int     // 诚实边界:判定所依据的台账已补录成交笔数
+    var basisWindow: String
+    var note: String              // 服务端文案,含「基于台账 N 笔已补录成交」,客户端直接展示不改写
+
+    var triggerReasonLabel: String {
+        switch triggerReason {
+        case "consecutive_stops": return "连续止损"
+        case "daily_loss": return "单日净亏"
+        default: return triggerReason
+        }
+    }
+}
+
+struct CircuitState: Codable, Equatable {
+    var locked: Bool
+    var episode: CircuitEpisode?
+
+    static let empty = CircuitState(locked: false, episode: nil)
+}
+
+// MARK: - v1.2-G 呼吸试验仓台账(§五 v1.2-E.4)。`tPnl`/`baseCostAdj`/`edgeToPrice`
+// 均服务端派生下发,客户端不重算(§2.1/§2.5 领域四条铁律的延伸)。
+
+struct BreathingTrade: Codable, Equatable, Identifiable {
+    var id: Int
+    var positionId: Int
+    var buyPrice: Double
+    var sellPrice: Double
+    var qty: Int
+    var fees: Double
+    var tDate: String
+    var tPnl: Double
+    var note: String = ""
+}
+
+struct BreathingLedger: Codable, Equatable {
+    var items: [BreathingTrade]
+    /// 底仓摊薄成本(先手成本)。无 T 记录 / 算不出 → nil,展示「—」不崩。
+    var baseCostAdj: Double?
+    /// 「先手」距离,**相对成本口径**(2026-07-25 用户拍板,浮盈率直觉):
+    /// `(price−baseCostAdj)/baseCostAdj`——正值代表先手成本比现价低(浮盈),
+    /// 负值代表先手成本比现价高(浮亏)。文案按「先手成本比现价低/高 X%」写,
+    /// **不要**按「距现价」写(容易和 `Position.distToStopPct` 的现价分母口径混淆)。
+    var edgeToPrice: Double?
+
+    static let empty = BreathingLedger(items: [], baseCostAdj: nil, edgeToPrice: nil)
+}
+
+// MARK: - v1.1-B.3/v1.2-E.5 一键补录预填(区间双档,替换 v1.1 的单 `qty`)
+//
+// `EntrySuggestionOut` 改区间:`qtyHigh`/`capCeil` = 现役 `single_cap` 违纪判定
+// 上限对应手数/金额(**非推荐值**);`qtyLow`/`capFloor` = 半仓保守下沿。客户端只
+// 展示两档供参考,不替用户拍单笔金额(§2.1 第 3 条三仓制「单笔金额不定死」)。
+
+struct EntrySuggestionRange: Codable, Equatable {
+    var code: String
+    var price: Double
+    var qtyLow: Int
+    var qtyHigh: Int
+    var capFloor: Double
+    var capCeil: Double
+    var stopLine: Double
+}
+
 // MARK: - 4A.5 问询台
 
 enum ChatRole: String, Codable {
@@ -390,13 +593,14 @@ enum LLMProviderKind: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-/// v1.1-G.1:推送开关扩到四类(报告 / 退潮刹车 / 盘前校准 / D5 时间退出),对齐后端
-/// `PushSettingsOut`/`SettingsPushIn` 四字段契约。
+/// v1.1-G.1 推送开关四类(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)+ v1.2-A2 第五类
+/// (熔断提醒),对齐后端 `PushSettingsOut`/`SettingsPushIn` 五字段契约。
 struct PushSettings: Codable, Equatable {
     var report: Bool
     var retreatBrake: Bool
     var precall: Bool
     var d5exit: Bool
+    var circuit: Bool     // v1.2-A2:熔断提醒推送开关,默认开
 }
 
 struct SettingsSnapshot: Codable, Equatable {
@@ -407,7 +611,7 @@ struct SettingsSnapshot: Codable, Equatable {
 
     static let empty = SettingsSnapshot(
         llmProvider: nil, llmKeySet: false,
-        push: PushSettings(report: true, retreatBrake: true, precall: true, d5exit: true),
+        push: PushSettings(report: true, retreatBrake: true, precall: true, d5exit: true, circuit: true),
         reviewColMap: [:]
     )
 }

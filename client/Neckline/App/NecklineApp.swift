@@ -32,6 +32,17 @@ struct NecklineApp: App {
            let tab = AppTab(rawValue: raw) {
             m.view = tab
         }
+        // v1.2-E:同款 QA 钩子扩到弹层——`NECKLINE_INITIAL_MODAL=decisionLog|circuitReview`
+        // 免交互地把 App 启动到指定 sheet(用于本环境 computer-use 点击权限受限时的视觉
+        // 核对,见 CLAUDE.md「模拟器截图走 xrun simctl io screenshot」坑吸收)。不影响
+        // 正常用户路径(缺此环境变量则不弹层)。
+        if let modalRaw = ProcessInfo.processInfo.environment["NECKLINE_INITIAL_MODAL"] {
+            switch modalRaw {
+            case "decisionLog": m.modal = .decisionLog
+            case "circuitReview": m.modal = .circuitReview
+            default: break
+            }
+        }
         _model = State(initialValue: m)
     }
 

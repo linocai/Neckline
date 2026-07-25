@@ -52,8 +52,11 @@ struct TodayPlanView: View {
         let kind: PositionModal
         var id: String {
             switch kind {
+            case .decisionLog: return "decisionLog"
             case .open: return "open"
             case .close(let code): return "close-\(code)"
+            case .circuitReview: return "circuitReview"
+            case .breathing(let positionId): return "breathing-\(positionId)"
             }
         }
     }
@@ -61,8 +64,16 @@ struct TodayPlanView: View {
     @ViewBuilder
     private func sheetContent(_ kind: PositionModal) -> some View {
         switch kind {
+        case .decisionLog: DecisionLogSheet(model: model)
         case .open: OpenPositionSheet(model: model)
         case .close(let code): ClosePositionSheet(model: model, code: code)
+        case .circuitReview: CircuitReviewSheet(model: model)
+        case .breathing(let positionId):
+            if let p = model.position(byID: positionId) {
+                BreathingLedgerView(model: model, positionId: positionId, code: p.code, name: p.name)
+            } else {
+                NKEmptyState(title: "持仓不存在", systemImage: "exclamationmark.triangle")
+            }
         }
     }
 
@@ -72,6 +83,11 @@ struct TodayPlanView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: NKSpace.gap) {
             header
+            // v1.2-E.3:熔断横幅置顶(比退潮刹车更靠前——这是用户自身纪律被触发,
+            // §2.1 第 7 条),文案用服务端 episode.note/basisTradesCount,客户端不重算判定。
+            if model.circuit.locked {
+                CircuitLockBanner(model: model)
+            }
             if let warning = model.retreatWarning {
                 RetreatBrakeBanner(reason: warning)
             }
@@ -137,12 +153,15 @@ struct TodayPlanView: View {
             HStack {
                 NKSectionHeader(title: "持仓 \(model.positions.count)")
                 Spacer()
-                Button { model.openEntrySheet() } label: {
-                    Label("补录开仓", systemImage: "plus.circle.fill")
+                // v1.2-E.3:熔断锁定时灰化「开新仓」入口(客户端自律,服务端不拦,§3.8)。
+                Button { model.beginPositionEntryFlow() } label: {
+                    Label(model.circuit.locked ? "熔断中 · 暂停开仓" : "补录开仓",
+                          systemImage: model.circuit.locked ? "lock.fill" : "plus.circle.fill")
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(NK.accent)
+                .foregroundStyle(model.circuit.locked ? NK.textTertiary : NK.accent)
+                .disabled(model.circuit.locked)
             }
             if model.positions.isEmpty {
                 NKCard { NKEmptyState(title: "暂无持仓", systemImage: "tray") }
@@ -260,14 +279,17 @@ private struct CandidateRow: View {
                     .buttonStyle(.plain).foregroundStyle(NK.textSecondary)
                     Spacer()
                     // 动作按钮,不是状态——绿勾样式曾被误读为"已经买过"(实机反馈),
-                    // 改为明确的动作措辞 + 编辑图标 + 强调色。
+                    // 改为明确的动作措辞 + 编辑图标 + 强调色。v1.2-E.1 起先插入决策
+                    // 日志录入(建计划→录八项→成交后关联);v1.2-E.3 熔断中灰化。
                     Button {
-                        Task { await model.openEntrySheet(fromCandidate: candidate) }
+                        Task { await model.beginPositionEntryFlow(fromCandidate: candidate) }
                     } label: {
-                        Label("买入补录", systemImage: "square.and.pencil")
+                        Label(model.circuit.locked ? "熔断中" : "买入补录",
+                              systemImage: model.circuit.locked ? "lock.fill" : "square.and.pencil")
                             .font(.system(size: 12.5, weight: .semibold))
                     }
-                    .buttonStyle(.plain).foregroundStyle(NK.accent)
+                    .buttonStyle(.plain).foregroundStyle(model.circuit.locked ? NK.textTertiary : NK.accent)
+                    .disabled(model.circuit.locked)
                 }
             }
         }
@@ -358,6 +380,9 @@ private struct PositionCard: View {
                     }
                 }
                 .buttonStyle(.plain)
+                Divider().overlay(NK.hairline)
+                // v1.2-E.1/E.4:决策日志回显(含情景兑现勾选)+ 呼吸台账入口。
+                PositionDecisionSection(model: model, position: position)
             }
         }
     }
@@ -422,11 +447,11 @@ struct OpenPositionSheet: View {
                 TextField("数量(股)", text: $model.entryForm.qty)
                 TextField("进场理由", text: $model.entryForm.reason)
             } footer: {
-                // v1.1-E.2:候选「已按计划买入」预填时的止损价提示(GET /positions/
-                // entry-suggestion 派生,仅预览——实际提交后以服务端按真实买入价返回的
-                // stopLine 为准,见提交成功后的 toast)。
-                if let stopLine = model.entrySuggestedStopLine {
-                    Text("此处只记录你已在券商完成的真实操作;预计止损价 ¥\(NKFmt.price(stopLine))(-5%,按现役配置,提交后以实际返回值为准),系统不代下单。")
+                // v1.2-E.5:一键补录预填改区间双档(GET /positions/entry-suggestion,
+                // 仅预览——实际提交后以服务端按真实买入价返回的 stopLine 为准,见提交
+                // 成功后的 toast)。客户端只展示两档,不替用户拍单笔金额。
+                if let range = model.entrySuggestionRange {
+                    Text("此处只记录你已在券商完成的真实操作;参考手数区间 \(range.qtyLow)–\(range.qtyHigh) 股(¥\(NKFmt.price(range.capFloor))–¥\(NKFmt.price(range.capCeil)),上限 = 违纪判定线、非推荐值),预计止损价 ¥\(NKFmt.price(range.stopLine))(按现役配置,提交后以实际返回值为准),系统不代下单。")
                 } else {
                     Text("此处只记录你已在券商完成的真实操作;止损线由服务端按 -5% 派生返回,系统不代下单。")
                 }
@@ -447,8 +472,15 @@ struct ClosePositionSheet: View {
                     #if os(iOS)
                     .keyboardType(.decimalPad)
                     #endif
+                // v1.2-A2:离场原因 picker(可选;不选 → 服务端 NULL + 价格兜底判止损)。
+                Picker("离场原因(可选)", selection: $model.closeReasonDraft) {
+                    Text("不选(按价格兜底判定)").tag(CloseReasonCode?.none)
+                    ForEach(CloseReasonCode.allCases) { reason in
+                        Text(reason.label).tag(CloseReasonCode?.some(reason))
+                    }
+                }
             } footer: {
-                Text("卖出时间缺省为今日;此处只记录真实成交,系统不代下单。")
+                Text("卖出时间缺省为今日;此处只记录真实成交,系统不代下单。离场原因用于熔断纪律统计(§2.1 第 7 条),不选时系统按 -5% 价格近似兜底判止损。")
             }
         }
     }

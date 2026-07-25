@@ -17,12 +17,14 @@ import UIKit
 import UserNotifications
 
 /// 推送 category 标识(必须与后端 `neckline/push/apns.py` 字面一致)。v1.1 推送白名单
-/// 扩到四类:precall(9:26 盘前校准汇总)/ d5exit(D5 时间退出)。
+/// 扩到四类:precall(9:26 盘前校准汇总)/ d5exit(D5 时间退出);v1.2-A2 扩到第五类
+/// circuit(熔断提醒,§2.1 第 7 条)。
 enum NKNotificationCategory {
     static let report = "REPORT"
     static let retreat = "RETREAT"
     static let precall = "PRECALL"
     static let d5exit = "D5EXIT"
+    static let circuit = "CIRCUIT"
 }
 
 @MainActor
@@ -55,8 +57,8 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
         UNUserNotificationCenter.current().setBadgeCount(0)
     }
 
-    /// 四类信息通知均无动作按钮(点通知本体即打开 App 到对应板块,§2.4 简化;v1.1
-    /// 推送白名单扩到四类,新两类 precall/d5exit 同款「纯信息、无按钮」)。
+    /// 五类信息通知均无动作按钮(点通知本体即打开 App 到对应板块,§2.4 简化;v1.2-A2
+    /// 新增的 circuit 同款「纯信息、无按钮」)。
     private func registerCategories() {
         let report = UNNotificationCategory(identifier: NKNotificationCategory.report,
                                             actions: [], intentIdentifiers: [], options: [])
@@ -66,7 +68,9 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
                                              actions: [], intentIdentifiers: [], options: [])
         let d5exit = UNNotificationCategory(identifier: NKNotificationCategory.d5exit,
                                             actions: [], intentIdentifiers: [], options: [])
-        UNUserNotificationCenter.current().setNotificationCategories([report, retreat, precall, d5exit])
+        let circuit = UNNotificationCategory(identifier: NKNotificationCategory.circuit,
+                                             actions: [], intentIdentifiers: [], options: [])
+        UNUserNotificationCenter.current().setNotificationCategories([report, retreat, precall, d5exit, circuit])
     }
 
     /// 请求通知权限 → 注册远程通知(拿 device token)。已决定则不再弹系统对话框。
@@ -138,12 +142,14 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
 
     /// 纯路由函数(单测覆盖,不依赖 UNUserNotificationCenter 真实回调链路)。v1.1-G.2:
     /// PRECALL→盘中看板(校准明细在看板)、D5EXIT→今日计划(持仓区置顶可见 D5 卡片)。
+    /// v1.2-A2:CIRCUIT→今日计划(熔断横幅在今日计划面顶部,§五 v1.2-E.3)。
     static func targetTab(forCategory category: String) -> AppTab? {
         switch category {
         case NKNotificationCategory.report: return .today
         case NKNotificationCategory.retreat: return .board
         case NKNotificationCategory.precall: return .board
         case NKNotificationCategory.d5exit: return .today
+        case NKNotificationCategory.circuit: return .today
         default: return nil
         }
     }

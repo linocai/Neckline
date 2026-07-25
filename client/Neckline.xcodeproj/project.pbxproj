@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		08536AC66EA8D73016D8A75B /* PositionExtras.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5E6F8707B8AC21038F80089 /* PositionExtras.swift */; };
 		0E357FA77DAA85CCE6481307 /* WatchlistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113AF3404301CFB32768254B /* WatchlistView.swift */; };
 		1C5F90D27ABFCDAFC61C22A4 /* SharedUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4DE7B52DFD937FA105D0D80 /* SharedUI.swift */; };
 		2B666B4E6B33EB2413EFD8C1 /* URLGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E12098656A3D01DB4B4D5843 /* URLGateTests.swift */; };
@@ -20,6 +21,8 @@
 		8A9D9C1AF48200AC1E370EBF /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0BBABA72F92C8117ACD41E /* Models.swift */; };
 		9B003EF3A758FDFDC3FEE58E /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5673E3EE875B18B1B650342 /* DesignTokens.swift */; };
 		A1A4C298677F524146F0AF02 /* StaticTradingCalendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0AE1E9D0EC8D59A1EF69F45 /* StaticTradingCalendar.swift */; };
+		A7785C3AECB61450C089692D /* DecisionLogSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2AF18304557039554136763 /* DecisionLogSheet.swift */; };
+		AA53A795CF03234393CDF613 /* BreathingLedgerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DE7B29D77FF3E312F3F57E6 /* BreathingLedgerView.swift */; };
 		AB52CA616EFD21F6EA0C4967 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A75B75043B9190B8F306FF1D /* Assets.xcassets */; };
 		CAAD011D80D904B2D1EB4614 /* TodayPlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 895AF892BD6873B812A664D3 /* TodayPlanView.swift */; };
 		CCCBAE520CB8795277F18C90 /* PushManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7692438CB8859E874A66E3E /* PushManager.swift */; };
@@ -45,6 +48,7 @@
 		113AF3404301CFB32768254B /* WatchlistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchlistView.swift; sourceTree = "<group>"; };
 		2D0BBABA72F92C8117ACD41E /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3DE7B29D77FF3E312F3F57E6 /* BreathingLedgerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BreathingLedgerView.swift; sourceTree = "<group>"; };
 		4077CE80BC54331F1A0225D2 /* NecklineTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NecklineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		58E32D24CA427022EEC9C9A9 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		6995CFD51E96AA2443EC4E3A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -62,9 +66,11 @@
 		CA115ADDC48416F2473C5717 /* BoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardView.swift; sourceTree = "<group>"; };
 		CE386C48FF2459211CE2D690 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		D4DE7B52DFD937FA105D0D80 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
+		D5E6F8707B8AC21038F80089 /* PositionExtras.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionExtras.swift; sourceTree = "<group>"; };
 		E0AE1E9D0EC8D59A1EF69F45 /* StaticTradingCalendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StaticTradingCalendar.swift; sourceTree = "<group>"; };
 		E12098656A3D01DB4B4D5843 /* URLGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLGateTests.swift; sourceTree = "<group>"; };
 		F09D5AFF89E79AD30E6F0B1F /* IntegrationSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationSmokeTests.swift; sourceTree = "<group>"; };
+		F2AF18304557039554136763 /* DecisionLogSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionLogSheet.swift; sourceTree = "<group>"; };
 		F5673E3EE875B18B1B650342 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		FB50F6958E9E0102B8D0841F /* ReviewWorkbenchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewWorkbenchView.swift; sourceTree = "<group>"; };
 		FD3045BA6DDA89226241C3AD /* InquiryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InquiryView.swift; sourceTree = "<group>"; };
@@ -153,7 +159,10 @@
 			isa = PBXGroup;
 			children = (
 				CA115ADDC48416F2473C5717 /* BoardView.swift */,
+				3DE7B29D77FF3E312F3F57E6 /* BreathingLedgerView.swift */,
+				F2AF18304557039554136763 /* DecisionLogSheet.swift */,
 				FD3045BA6DDA89226241C3AD /* InquiryView.swift */,
+				D5E6F8707B8AC21038F80089 /* PositionExtras.swift */,
 				FB50F6958E9E0102B8D0841F /* ReviewWorkbenchView.swift */,
 				9D4D8B9C826C8F3E8D74BF23 /* SettingsView.swift */,
 				895AF892BD6873B812A664D3 /* TodayPlanView.swift */,
@@ -282,10 +291,13 @@
 				2D7C50E9D88B18651A9771EF /* AppConfig.swift in Sources */,
 				EB18B7D4374EA05AD70C0D9C /* AppModel.swift in Sources */,
 				7673436CA4D488E5D4D0189D /* BoardView.swift in Sources */,
+				AA53A795CF03234393CDF613 /* BreathingLedgerView.swift in Sources */,
+				A7785C3AECB61450C089692D /* DecisionLogSheet.swift in Sources */,
 				9B003EF3A758FDFDC3FEE58E /* DesignTokens.swift in Sources */,
 				EFF01FAD1D2D9784FFCB9DA6 /* InquiryView.swift in Sources */,
 				8A9D9C1AF48200AC1E370EBF /* Models.swift in Sources */,
 				E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */,
+				08536AC66EA8D73016D8A75B /* PositionExtras.swift in Sources */,
 				CCCBAE520CB8795277F18C90 /* PushManager.swift in Sources */,
 				350843D3F43D4290B260FEDA /* ReviewWorkbenchView.swift in Sources */,
 				D10EDFBD9EFD027DEEF58088 /* RootView.swift in Sources */,
