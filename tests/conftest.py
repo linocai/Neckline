@@ -342,6 +342,11 @@ def api_env(api_settings: Settings, monkeypatch: "pytest.MonkeyPatch"):
 
     monkeypatch.setattr(app_mod, "ENABLE_SENTINEL", False)
     monkeypatch.setattr(app_mod, "_DB_PATH_OVERRIDE", api_settings.db_path)
+    # v1.3-⑥:`GET/PUT /settings/intel-boards` 是 app.py 端点层首次直接读 parquet
+    # (`ths_index.parquet` 板块名校验)——同 `_DB_PATH_OVERRIDE` 姿势隔离,防止落到
+    # 真实项目 `data/parquet`(未设置此项时其它测试从未触发过 parquet 读取,新增本行
+    # 对既有测试零行为影响)。
+    monkeypatch.setattr(app_mod, "_PARQUET_DIR_OVERRIDE", api_settings.parquet_dir)
     monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {})
     yield api_settings
     tc_mod.reset_cache()

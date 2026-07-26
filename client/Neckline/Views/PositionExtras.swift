@@ -54,6 +54,17 @@ struct PositionDecisionSection: View {
             .buttonStyle(.plain)
             .foregroundStyle(NK.accent)
             Spacer()
+            // v1.3-②-D/⑥-D:情景树每日对照提醒入口(该持仓有关联决策的非空情景树待
+            // 每日对照——`scenarioReviewPending` 服务端算好,只做「挑出来」)。点击直接
+            // 展开决策日志详情,情景文本本身仍只读、勾选仍走既有 `setScenarioOutcome`。
+            if position.scenarioReviewPending {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) { expanded = true }
+                } label: {
+                    NKChip(text: "情景待对照", tone: .warn)
+                }
+                .buttonStyle(.plain)
+            }
             // 呼吸底仓试验主动露出台账入口(主展示区);其余打法仍可从「更多」次级菜单进入。
             if log.isBreathingTrial {
                 Button {

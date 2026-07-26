@@ -18,13 +18,16 @@ import UserNotifications
 
 /// 推送 category 标识(必须与后端 `neckline/push/apns.py` 字面一致)。v1.1 推送白名单
 /// 扩到四类:precall(9:26 盘前校准汇总)/ d5exit(D5 时间退出);v1.2-A2 扩到第五类
-/// circuit(熔断提醒,§2.1 第 7 条)。
+/// circuit(熔断提醒,§2.1 第 7 条);v1.3-②/⑥ 扩到第六类 holdingAlert(K4 持仓派发警报
+/// ——年线下涨停/放量大阳等强价量证据,**独立**于 d5exit,不复用,§2.4「用户 2026-07-26
+/// 拍板独立开关」)。
 enum NKNotificationCategory {
     static let report = "REPORT"
     static let retreat = "RETREAT"
     static let precall = "PRECALL"
     static let d5exit = "D5EXIT"
     static let circuit = "CIRCUIT"
+    static let holdingAlert = "HOLDINGALERT"
 }
 
 @MainActor
@@ -57,8 +60,8 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
         UNUserNotificationCenter.current().setBadgeCount(0)
     }
 
-    /// 五类信息通知均无动作按钮(点通知本体即打开 App 到对应板块,§2.4 简化;v1.2-A2
-    /// 新增的 circuit 同款「纯信息、无按钮」)。
+    /// 六类信息通知均无动作按钮(点通知本体即打开 App 到对应板块,§2.4 简化;v1.2-A2/
+    /// v1.3-② 新增的 circuit/holdingAlert 同款「纯信息、无按钮」)。
     private func registerCategories() {
         let report = UNNotificationCategory(identifier: NKNotificationCategory.report,
                                             actions: [], intentIdentifiers: [], options: [])
@@ -70,7 +73,11 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
                                             actions: [], intentIdentifiers: [], options: [])
         let circuit = UNNotificationCategory(identifier: NKNotificationCategory.circuit,
                                              actions: [], intentIdentifiers: [], options: [])
-        UNUserNotificationCenter.current().setNotificationCategories([report, retreat, precall, d5exit, circuit])
+        let holdingAlert = UNNotificationCategory(identifier: NKNotificationCategory.holdingAlert,
+                                                  actions: [], intentIdentifiers: [], options: [])
+        UNUserNotificationCenter.current().setNotificationCategories(
+            [report, retreat, precall, d5exit, circuit, holdingAlert]
+        )
     }
 
     /// 请求通知权限 → 注册远程通知(拿 device token)。已决定则不再弹系统对话框。
@@ -143,6 +150,7 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
     /// 纯路由函数(单测覆盖,不依赖 UNUserNotificationCenter 真实回调链路)。v1.1-G.2:
     /// PRECALL→盘中看板(校准明细在看板)、D5EXIT→今日计划(持仓区置顶可见 D5 卡片)。
     /// v1.2-A2:CIRCUIT→今日计划(熔断横幅在今日计划面顶部,§五 v1.2-E.3)。
+    /// v1.3-②/⑥:HOLDINGALERT→今日计划(K4 持仓牌强警示在持仓卡置顶,§五 v1.3-⑥-C)。
     static func targetTab(forCategory category: String) -> AppTab? {
         switch category {
         case NKNotificationCategory.report: return .today
@@ -150,6 +158,7 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
         case NKNotificationCategory.precall: return .board
         case NKNotificationCategory.d5exit: return .today
         case NKNotificationCategory.circuit: return .today
+        case NKNotificationCategory.holdingAlert: return .today
         default: return nil
         }
     }

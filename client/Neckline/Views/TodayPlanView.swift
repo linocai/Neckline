@@ -111,6 +111,9 @@ struct TodayPlanView: View {
                     SectorChipsRow(sectors: model.report.sectors)
                 }
                 candidatesSection
+                // v1.3-⑥-F:情报包(C1 复盘情报件 + C2 板块资金流 + C4 消息面),iOS/macOS
+                // 通用,不新增 tab——挂在「今日计划」候选之后(§五 v1.3-⑥ 硬约束「不新增 tab」)。
+                IntelPackageView(report: model.report)
             }
         }
     }
@@ -142,6 +145,10 @@ struct TodayPlanView: View {
     private var candidatesSection: some View {
         VStack(alignment: .leading, spacing: NKSpace.gap) {
             NKSectionHeader(title: "候选 \(model.report.candidates.count)", trailing: "前10只过 LLM 审判")
+            // v1.3-③-C3/⑥:候选语义变更(§2.3)——候选=「过完安检、值得关注的票」,非
+            // 「系统认为会涨的票」,终选权在用户。文案必须跟上,不能让人以为这是买入信号。
+            Text("过完安检、值得花注意力的票 · 终选权在你,不是系统认为会涨的票")
+                .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
             ForEach(model.report.candidates) { c in
                 CandidateRow(model: model, candidate: c)
             }
@@ -266,6 +273,16 @@ private struct CandidateRow: View {
                         }
                     }
                 }
+                // v1.3-③-C3/⑥:K4 安检标(avoid_flag 打标保留展示;hard_cut 已在服务端拦截、
+                // 不会出现在候选里)+ 情报排序理由(来源/资金流强度/题材天数/高弹/行业)。
+                if !candidate.k4Flags.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(candidate.k4Flags, id: \.self) { NKChip(text: $0, tone: .warn) }
+                        }
+                    }
+                }
+                intelRankRow(candidate.intelRank)
                 FourPieceDisclosure(buyPoint: candidate.buyPoint, stop: candidate.stop,
                                     target: candidate.target, invalidation: candidate.invalidation,
                                     llmJudgment: candidate.llmJudgment)
@@ -294,6 +311,37 @@ private struct CandidateRow: View {
             }
         }
     }
+
+    /// 情报排序理由(v1.3-③-C3/⑥):来源(常驻保底/情报竞争/问询强制)/ 板块资金流强度
+    /// (C2,拥挤情报)/ 题材持续天数 / 高弹标注 / 行业(说清"凭什么在这个板块栏")。
+    /// 全空(旧报告,`intelRank` 默认值)时不画任何东西,不是硬凑一行空 chip。
+    @ViewBuilder
+    private func intelRankRow(_ rank: IntelRank) -> some View {
+        let hasContent = !rank.source.isEmpty || rank.sectorFlow != nil || rank.themePersistDays > 0
+            || rank.highElasticity || !rank.industry.isEmpty
+        if hasContent {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    if !rank.source.isEmpty {
+                        NKChip(text: nkIntelSourceLabel(rank.source))
+                    }
+                    if let flow = rank.sectorFlow {
+                        NKChip(text: "板块资金流\(NKFmt.signedMoney(flow))万", tone: flow >= 0 ? .good : .bad)
+                    }
+                    if rank.themePersistDays > 0 {
+                        NKChip(text: "题材第\(rank.themePersistDays)天",
+                              tone: rank.themePersistDays >= 2 ? .warn : .good)
+                    }
+                    if rank.highElasticity {
+                        NKChip(text: "高弹性", tone: .warn)
+                    }
+                    if !rank.industry.isEmpty {
+                        NKChip(text: rank.industry)
+                    }
+                }
+            }
+        }
+    }
 }
 
 // MARK: - 持仓卡
@@ -305,6 +353,11 @@ private struct PositionCard: View {
     /// (`stopOrderChecked` 恒 false),此勾选仅本机本次会话记忆,不同步、不落库。
     @State private var checkedLocally = false
 
+    /// 服务端 K4 命中里「该置顶醒目」的子集(§五 v1.3-⑥-C:level=strong ∧
+    /// evidenceStrength=price_volume 才置顶——弱证据/普通级一律降级为下方 chips)。
+    private var topBillboardK4: [K4Advisory] { position.k4Advisory.filter { $0.isTopBillboard } }
+    private var listK4: [K4Advisory] { position.k4Advisory.filter { !$0.isTopBillboard } }
+
     var body: some View {
         NKCard {
             VStack(alignment: .leading, spacing: 8) {
@@ -313,14 +366,21 @@ private struct PositionCard: View {
                 if position.todayActionTone == .bad {
                     TodayActionBanner(text: position.todayAction)
                 }
+                // v1.3-②/⑥-C:K4 强警示置顶(疑似派发/换手异常等价量证据;题材类弱证据
+                // 不会出现在这里,已被 `topBillboardK4` 挡下)。
+                ForEach(topBillboardK4) { hit in
+                    K4AdvisoryBanner(hit: hit)
+                }
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(position.name).font(NKFont.stockName).foregroundStyle(NK.textPrimary)
                             Text(position.code).font(.system(size: 11)).foregroundStyle(NK.textTertiary)
-                            // v1.1-E.1:D 计数徽标(D{dCount}/D{maxHoldDays},服务端算好,不重算日历)。
-                            NKChip(text: "D\(position.dCount)/D\(position.maxHoldDays)",
-                                  tone: position.isExitDay ? .bad : .neutral, filled: position.isExitDay)
+                            // v1.3-①/⑥-A:两档 D 徽标——非浮盈 D{n}/D5,浮盈豁免 D{n}/D15
+                            // (`maxHoldDaysEffective` 服务端按 D5 净浮盈判好下发,不客户端重算)。
+                            // 到期(isExitDay)红底醒目;浮盈豁免(D15 档)绿底提示"续持中";其余中性。
+                            NKChip(text: "D\(position.dCount)/D\(position.maxHoldDaysEffective)",
+                                  tone: dBadgeTone, filled: dBadgeTone != .neutral)
                         }
                         Text("买入 ¥\(NKFmt.price(position.buyPrice)) × \(position.qty) · \(model.calendar.displayString(position.buyDate))")
                             .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
@@ -366,7 +426,31 @@ private struct PositionCard: View {
                 if position.todayActionTone != .bad && !position.todayAction.isEmpty {
                     Text(position.todayAction)
                         .font(.system(size: 11.5, weight: position.todayActionTone == .warn ? .semibold : .regular))
-                        .foregroundStyle(position.todayActionTone == .warn ? NK.amber : NK.textTertiary)
+                        .foregroundStyle(position.todayActionTone == .warn ? NK.amber
+                                        : (position.todayActionTone == .good ? NK.up : NK.textTertiary))
+                }
+                // v1.3-②/⑥-C:普通/成分参考类 K4 命中降级为 chips(题材类标「参考」,不当硬判据)。
+                if !listK4.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(listK4) { hit in
+                                NKChip(text: hit.evidenceStrength == "constituent" ? "\(hit.label) · 参考" : hit.label,
+                                      tone: hit.isStrong ? .warn : .neutral)
+                            }
+                        }
+                    }
+                }
+                // v1.3-①/⑥-B:实付费用回显(供周复盘对账用真数,不是估算)。
+                if position.buyFees != nil || position.sellFees != nil {
+                    HStack(spacing: 10) {
+                        if let bf = position.buyFees {
+                            Text("买入费 ¥\(NKFmt.price(bf))").font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                        }
+                        if let sf = position.sellFees {
+                            Text("卖出费 ¥\(NKFmt.price(sf))").font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                        }
+                        Text("实付,供周复盘对账用真数").font(.system(size: 9.5)).italic().foregroundStyle(NK.textTertiary)
+                    }
                 }
                 Divider().overlay(NK.hairline)
                 Button { checkedLocally.toggle() } label: {
@@ -386,6 +470,14 @@ private struct PositionCard: View {
             }
         }
     }
+
+    /// D 徽标色调(§五 v1.3-⑥-A):到期(离场提示,两态之一)→ 红底;浮盈豁免(D15 档,
+    /// 持有态)→ 绿底(区别于"该走了",视觉上标出"这单在赚、续持中");其余中性灰。
+    private var dBadgeTone: NKAxisTone {
+        if position.isExitDay { return .bad }
+        if position.timeExitKind == .profitExempt { return .good }
+        return .neutral
+    }
 }
 
 /// D5/时间退出等最高优先级今日动作横幅(§五 v1.1-E.1「todayAction 文案最高优先醒目」)。
@@ -396,6 +488,28 @@ private struct TodayActionBanner: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.circle.fill").font(.system(size: 16, weight: .bold))
             Text(text).font(.system(size: 13, weight: .bold)).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.alertGrad))
+    }
+}
+
+/// K4 持仓牌强警示置顶横幅(§五 v1.3-⑥-C:level=strong ∧ evidenceStrength=price_volume
+/// 才会走到这里——年线下涨停/放量大阳疑似派发、换手异常等纯价量结构证据)。文案
+/// (`label`/`evidence`)恒来自服务端 advisory 原文,本组件只负责视觉呈现。
+private struct K4AdvisoryBanner: View {
+    let hit: K4Advisory
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "flag.fill").font(.system(size: 15, weight: .bold))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(hit.label).font(.system(size: 13, weight: .bold))
+                if !hit.evidence.isEmpty {
+                    Text(hit.evidence).font(.system(size: 11.5)).opacity(0.9)
+                }
+            }
             Spacer(minLength: 0)
         }
         .foregroundStyle(.white)
@@ -446,14 +560,20 @@ struct OpenPositionSheet: View {
                 TextField("买入价", text: $model.entryForm.price)
                 TextField("数量(股)", text: $model.entryForm.qty)
                 TextField("进场理由", text: $model.entryForm.reason)
+                // v1.3-①/⑥-B:实付买入费用(UI 强制必填,服务端宽松;供 D5 净浮盈判向 +
+                // 周复盘对账用真数,不是估算)。
+                TextField("实付买入费用(必填,含佣金/过户费等)", text: $model.entryForm.buyFees)
+                    #if os(iOS)
+                    .keyboardType(.decimalPad)
+                    #endif
             } footer: {
                 // v1.2-E.5:一键补录预填改区间双档(GET /positions/entry-suggestion,
                 // 仅预览——实际提交后以服务端按真实买入价返回的 stopLine 为准,见提交
                 // 成功后的 toast)。客户端只展示两档,不替用户拍单笔金额。
                 if let range = model.entrySuggestionRange {
-                    Text("此处只记录你已在券商完成的真实操作;参考手数区间 \(range.qtyLow)–\(range.qtyHigh) 股(¥\(NKFmt.price(range.capFloor))–¥\(NKFmt.price(range.capCeil)),上限 = 违纪判定线、非推荐值),预计止损价 ¥\(NKFmt.price(range.stopLine))(按现役配置,提交后以实际返回值为准),系统不代下单。")
+                    Text("此处只记录你已在券商完成的真实操作;参考手数区间 \(range.qtyLow)–\(range.qtyHigh) 股(¥\(NKFmt.price(range.capFloor))–¥\(NKFmt.price(range.capCeil)),上限 = 违纪判定线、非推荐值),预计止损价 ¥\(NKFmt.price(range.stopLine))(按现役配置,提交后以实际返回值为准),系统不代下单。实付费用供周复盘对账用真数。")
                 } else {
-                    Text("此处只记录你已在券商完成的真实操作;止损线由服务端按 -5% 派生返回,系统不代下单。")
+                    Text("此处只记录你已在券商完成的真实操作;止损线由服务端按 -5% 派生返回,系统不代下单。实付费用供周复盘对账用真数。")
                 }
             }
         }
@@ -472,6 +592,12 @@ struct ClosePositionSheet: View {
                     #if os(iOS)
                     .keyboardType(.decimalPad)
                     #endif
+                // v1.3-①/⑥-B:实付卖出费用真数(可选,成交后回填)——周复盘对账用真数、
+                // 不用估数;留空时服务端仍能按公式估算(诚实标注为估算)。
+                TextField("实付卖出费用(可选,回填用真数)", text: $model.closeSellFees)
+                    #if os(iOS)
+                    .keyboardType(.decimalPad)
+                    #endif
                 // v1.2-A2:离场原因 picker(可选;不选 → 服务端 NULL + 价格兜底判止损)。
                 Picker("离场原因(可选)", selection: $model.closeReasonDraft) {
                     Text("不选(按价格兜底判定)").tag(CloseReasonCode?.none)
@@ -480,7 +606,7 @@ struct ClosePositionSheet: View {
                     }
                 }
             } footer: {
-                Text("卖出时间缺省为今日;此处只记录真实成交,系统不代下单。离场原因用于熔断纪律统计(§2.1 第 7 条),不选时系统按 -5% 价格近似兜底判止损。")
+                Text("卖出时间缺省为今日;此处只记录真实成交,系统不代下单。离场原因用于熔断纪律统计(§2.1 第 7 条),不选时系统按 -5% 价格近似兜底判止损。实付卖出费用供周复盘对账用真数,可成交后再补填。")
             }
         }
     }

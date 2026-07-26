@@ -27,12 +27,36 @@ class LLMJudgmentOut(BaseModel):
     degraded: bool
 
 
+class PermanentBoardStatusOut(BaseModel):
+    """五常驻板块诊断漏斗(v1.3-③-C3 `_permanent_board_status`,v1.3-⑥ 后端补齐透出)。
+    **报告级构件,非本票专属**——`build_intel_candidates` 只能经候选列表进报告快照,
+    0 保底板块自身无候选可挂,故这份完整列表挂在**每一只候选**的 `intelRank.
+    permanentBoardStatus` 上,客户端从任一候选读到即可(通常取第一只候选或去重后展示)。
+    0 只/不足 2 只时 `note` 必须说清「为什么」(行业不属主导 / 命中 K4 安检 / 被在前
+    常驻板块认领),0 只明标「宁缺毋滥、非静默空白」——守项目「『没有』和『没看』必须
+    能分开」原则,**静默空白是禁止的**。"""
+    board: str                    # 常驻板块中文名
+    surviveCount: int = 0         # 过②卫生线(流动性/次新/趋势/ST)的成员数
+    industryGatePass: int = 0     # 其中行业属本板块主导行业(过行业闸)的数量
+    industryGateBlocked: int = 0  # 过②但行业不属主导、被行业闸挡下的数量
+    hardCutBlocked: int = 0       # 过行业闸但命中 K4 hard_cut、被安检拦截的数量
+    quotaFilled: int = 0          # 实际认领的保底名额数(≤ QUOTA_PER_PERMANENT_BOARD=2)
+    note: str = ""                # 人读文案(满额简述;不足额/0 只时说清「为什么」)
+
+
 class IntelRankOut(BaseModel):
     """候选情报排序理由(v1.3-③-C3,§2.3 语义变更)。候选=「过完安检、值得关注的票」
     非「会涨的票」——客户端据此写对文案(不标「推荐买点」),展示情报维度。"""
     sectorFlow: Optional[float] = None      # 所属常驻/暴起板块最大净流入(万元,C2;无数据=None)
     themePersistDays: int = 0               # 题材持续天数(反用:1天新鲜>2-3警惕;≥4已在③剔)
     highElasticity: bool = False            # 高弹板块(GEM/STAR;生成域刻意含高弹,标注给人判)
+    # —— v1.3-⑥ 后端补齐(数据已在 v1.3-③-C3 落 `intel_rank` 字典/报告快照里就绪,
+    # 此前 pydantic 未声明这三键 → 默认丢弃,本次补字段透出;逻辑零改动)—————————————
+    source: str = ""              # quota(常驻保底)| competition(情报竞争)| forced(问询强制)。
+                                   # 旧报告(建于本字段前)读回空串——客户端未识别值原样透传不崩。
+    industry: str = ""            # 该票行业(stock_basic.industry,过行业闸后的代表行业),
+                                   # 让用户看清「凭什么在这个板块栏」;查不到/旧报告 → 空串。
+    permanentBoardStatus: List[PermanentBoardStatusOut] = Field(default_factory=list)
 
 
 class CandidateOut(BaseModel):
@@ -107,14 +131,21 @@ class NewsAlertOut(BaseModel):
 
 
 class NewsAlertScanStatusOut(BaseModel):
-    """消息面扫描状态(v1.3-③-C4,**非字面契约清单列出的字段,系本块新增的透明度
-    补充**——「没扫到」〔未激活/调用失败〕与「扫了没有」〔确认无此类消息〕必须能
-    区分,`newsAlerts` 空数组本身无法表达这个区别,故加本字段配合展示。"""
+    """消息面扫描状态(v1.3-③-C4 新增,2026-07-26 coordinator 拍板正式收进「v1.3
+    客户端契约清单」,不再是可选字段)——「没扫到」〔未激活/调用失败〕与「扫了没有」
+    〔确认无此类消息〕必须能区分,`newsAlerts` 空数组本身无法表达这个区别,故加本
+    字段配合展示。"""
     source: str             # tushare_holdertrade | llm
     scanned: bool
     reason: str = ""
     codesTotal: int = 0
     codesFailed: int = 0
+    # v1.3-⑥ 后端补齐:领域层(`report/news_alerts.py::NewsAlertScanStatus.to_public_dict()`)
+    # 早已产出 `codesSkipped`(LLM 侧墙钟预算耗尽、根本没发起调用就跳过的标的数,与
+    # `codesFailed`「调用了但失败」语义分开,两者都要展示、不能合并成一个数字),但本模型
+    # 与 `app.py::_shape_report` 此前均未透出该键——pydantic 默认丢弃未声明字段,契约清单
+    # 承诺的字段实际从未抵达客户端,本次补齐(见 app.py 对应改动)。
+    codesSkipped: int = 0
 
 
 class ReportOut(BaseModel):
@@ -411,6 +442,21 @@ class SettingsReviewColMapIn(BaseModel):
     colMap: Dict[str, str] = Field(default_factory=dict)
 
 
+# —— v1.3-⑥ 后端补齐:五常驻板块可配(`app_settings.intel_watch_boards`,列 + 存取函数
+# `settings_store.get_intel_watch_boards`/`set_intel_watch_boards` 早在 v1.3-③-C3 已就绪,
+# 本块只补 HTTP 读写端点)——————————————————————————————————————————————————
+
+class IntelWatchBoardsOut(BaseModel):
+    boards: List[str] = Field(default_factory=list)   # 板块中文名,按配置顺序(保底认领 load-bearing)
+
+
+class IntelWatchBoardsIn(BaseModel):
+    """PUT 请求体。**禁模糊匹配**——每个名字须能在 `ths_index.name` 精确匹配到,匹配不到
+    422(`reason="board_not_found"` + `unresolved` 列出具体哪些名字没匹配到,不含糊拒收)。
+    允许空列表(显式清空常驻,`set_intel_watch_boards([])` 语义,与「未配置」回退默认区分)。"""
+    boards: List[str] = Field(default_factory=list)
+
+
 # —— v1.2-B 预注册决策日志(§2.1 第 3 条 / plan §五 v1.2-B)——————————————————
 #
 # 枚举一律**服务端码 + 客户端展示层换算**(沿 `CandidateOut.board`/`boardLabel`
@@ -576,7 +622,8 @@ class ReviewGetOut(BaseModel):
 
 
 __all__ = [
-    "OkOut", "LLMJudgmentOut", "CandidateOut", "WatchlistCheckLLMOut", "WatchlistCheckOut", "ReportOut",
+    "OkOut", "LLMJudgmentOut", "PermanentBoardStatusOut", "IntelRankOut", "CandidateOut",
+    "WatchlistCheckLLMOut", "WatchlistCheckOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "EntrySuggestionOut", "CircuitEpisodeOut", "CircuitStateOut",
@@ -584,7 +631,8 @@ __all__ = [
     "ThsReconcileOut", "ThsExportOut",
     "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_REJECT", "VERDICT_PASS",
     "PushSettingsOut", "SettingsOut", "SettingsLLMIn", "SettingsPushIn", "DeviceRegisterIn",
-    "SettingsReviewColMapIn", "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
+    "SettingsReviewColMapIn", "IntelWatchBoardsOut", "IntelWatchBoardsIn",
+    "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
     "ContingencyScenarioIn", "ContingencyScenarioOut",
     "DecisionCreateIn", "DecisionReviseIn", "DecisionOut", "DecisionsListOut", "DecisionLinkIn",
     "ScenarioOutcomeItemIn", "ScenarioOutcomeIn",

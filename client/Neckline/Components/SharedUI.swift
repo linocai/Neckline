@@ -248,4 +248,7 @@ enum NKFmt {
         let sign = v > 0 ? "+" : ""
         return "\(sign)¥\(String(format: "%.2f", v))"
     }
+    /// 无符号、一位小数(v1.3-⑥「情报」板块的亿/万元量级数字,如大盘量能/板块资金流,
+    /// 不需要 `price` 的两位小数精度)。
+    static func money(_ v: Double) -> String { String(format: "%.1f", v) }
 }

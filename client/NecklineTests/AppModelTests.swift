@@ -130,10 +130,16 @@ final class AppModelTests: XCTestCase {
     // MARK: - §五 v1.1-E.1 持仓生命周期展示层派生(dCount/maxHoldDays/distToStopPct/
     // retraceState 服务端下发,todayActionTone 只按优先级选颜色/是否醒目横幅,不重推文案)
 
+    /// v1.3-①/⑥:`isExitDay` 自本版起由服务端权威 `timeExitState` 驱动(不再由客户端
+    /// 重新比较 `dCount >= maxHoldDays`)——这里直接构造 Position 时必须显式给
+    /// `timeExitState`,才能反映"服务端在这个 dCount 会怎么判"(K1 单档口径下,
+    /// `time_exit_next_day` 恰好等价于 `dCount >= maxHoldDays`,见 `sentinel/precall.py::
+    /// classify_time_exit` config 未启用分支)。
     func testPositionIsExitDayWhenDCountReachesMaxHoldDays() {
         var p = Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10.0, qty: 100,
                          entryReason: "", buyDate: "20260710", price: 10.0, status: "holding",
-                         stopLine: 9.5, stopOrderChecked: false, dCount: 5, maxHoldDays: 5)
+                         stopLine: 9.5, stopOrderChecked: false, dCount: 5, maxHoldDays: 5,
+                         maxHoldDaysEffective: 5, timeExitState: PositionTimeExitState.timeExitNextDayRaw)
         XCTAssertTrue(p.isExitDay)
         XCTAssertEqual(p.todayActionTone, .bad, "D5 时间退出必须最高优先醒目")
 
@@ -141,6 +147,44 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(p.isExitDay)
 
         p.dCount = 3
+        p.timeExitState = PositionTimeExitState.holdingRaw   // 服务端此时应判 holding,非 time_exit_next_day
+        XCTAssertFalse(p.isExitDay)
+    }
+
+    /// v1.3-①/⑥ 两档 D 徽标核心场景:`profitExempt`(浮盈豁免续持到 D15)**不是**离场提示
+    /// ——即便 `dCount` 已经 ≥ 旧单档 `maxHoldDays`(5),只要服务端判 `profit_exempt`,
+    /// `isExitDay` 必须为 false、`todayActionTone` 不得是 `.bad`(§五 v1.3-⑥-A 明文
+    /// "profit_exempt 是持有态,不要当离场提示展示")。这正是本版把 `isExitDay` 判据从
+    /// `dCount>=maxHoldDays` 迁到 `timeExitState` 的根本原因——旧口径会在这里误报。
+    func testPositionProfitExemptIsNotExitDayEvenPastOldSingleTierThreshold() {
+        let p = Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10.0, qty: 100,
+                         entryReason: "", buyDate: "20260701", price: 12.0, status: "holding",
+                         stopLine: 9.5, stopOrderChecked: false, dCount: 8, maxHoldDays: 5,
+                         maxHoldDaysEffective: 15, timeExitState: PositionTimeExitState.profitExemptRaw)
+        XCTAssertFalse(p.isExitDay, "浮盈豁免续持不是离场日,即便 dCount(8) 已过旧单档阈值(5)")
+        XCTAssertEqual(p.todayActionTone, .good, "浮盈豁免是持有态,不应染成警示红")
+        XCTAssertEqual(p.timeExitKind, .profitExempt)
+    }
+
+    /// 硬上限到期(D15)**是**离场提示——两档里唯二的"该走了"态之一(另一是非浮盈 D5)。
+    func testPositionHardCapExitIsExitDay() {
+        let p = Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10.0, qty: 100,
+                         entryReason: "", buyDate: "20260601", price: 13.0, status: "holding",
+                         stopLine: 9.5, stopOrderChecked: false, dCount: 15, maxHoldDays: 5,
+                         maxHoldDaysEffective: 15, timeExitState: PositionTimeExitState.hardCapExitRaw)
+        XCTAssertTrue(p.isExitDay)
+        XCTAssertEqual(p.todayActionTone, .bad)
+        XCTAssertEqual(p.timeExitKind, .hardCapExit)
+    }
+
+    /// 未识别 `timeExitState` 字符串兜底 `.holding`(不误报离场,同 `PositionQuota`/
+    /// `InquiryVerdict` 等既有"未识别值归中性态"先例)。
+    func testPositionUnknownTimeExitStateFallsBackToHoldingNotExitDay() {
+        let p = Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10.0, qty: 100,
+                         entryReason: "", buyDate: "20260710", price: 10.0, status: "holding",
+                         stopLine: 9.5, stopOrderChecked: false, dCount: 5, maxHoldDays: 5,
+                         timeExitState: "some_future_state")
+        XCTAssertEqual(p.timeExitKind, .holding)
         XCTAssertFalse(p.isExitDay)
     }
 
@@ -360,9 +404,17 @@ final class AppModelTests: XCTestCase {
         form.price = "1500.0"
         form.qty = "100"
         form.reason = "回调低吸"
+        // v1.3-①/⑥-B:实付买入费用 UI 强制必填(§五 v1.3-⑥-B 拍板口径),缺了仍不通过。
+        XCTAssertFalse(form.isValid, "缺实付买入费用不应通过")
+        form.buyFees = "12.5"
         XCTAssertTrue(form.isValid)
         form.price = "0"
         XCTAssertFalse(form.isValid, "买入价必须 > 0")
+        form.price = "1500.0"
+        form.buyFees = "0"
+        XCTAssertTrue(form.isValid, "费用允许为 0(如实录入,不代表未填)")
+        form.buyFees = "-1"
+        XCTAssertFalse(form.isValid, "费用不能为负")
     }
 
     // MARK: - §五 v1.2-B/E.6 枚举码→中文展示层换算(沿 `nkBoardLabel` 先例,未识别透传)
@@ -401,6 +453,42 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(nkCloseReasonLabel("MANUAL"), "主动离场")
         XCTAssertEqual(nkCloseReasonLabel("???"), "???")
         XCTAssertEqual(CloseReasonCode.allCases.count, 5)
+    }
+
+    // MARK: - §五 v1.3-⑥ 枚举码→中文展示层换算(消息面类别 / 候选情报来源,沿
+    // `nkBoardLabel` 先例,未识别值原样透传不静默瞎翻译)
+
+    func testNewsCategoryLabelMapping() {
+        XCTAssertEqual(nkNewsCategoryLabel("REDUCTION"), "减持")
+        XCTAssertEqual(nkNewsCategoryLabel("INVESTIGATION"), "立案")
+        XCTAssertEqual(nkNewsCategoryLabel("BLOWUP"), "暴雷")
+        XCTAssertEqual(nkNewsCategoryLabel("REGULATORY"), "监管")
+        XCTAssertEqual(nkNewsCategoryLabel("SOME_FUTURE_CATEGORY"), "SOME_FUTURE_CATEGORY")
+    }
+
+    func testIntelSourceLabelMapping() {
+        XCTAssertEqual(nkIntelSourceLabel("quota"), "常驻保底")
+        XCTAssertEqual(nkIntelSourceLabel("competition"), "情报竞争")
+        XCTAssertEqual(nkIntelSourceLabel("forced"), "问询强制纳入")
+        XCTAssertEqual(nkIntelSourceLabel(""), "", "旧报告空串原样透传,不冒充某个已知来源")
+    }
+
+    // MARK: - §五 v1.3-⑥-C K4 持仓牌展示层派生(`K4Advisory.isTopBillboard`)——
+    // 只有「level=strong ∧ evidenceStrength=price_volume」才置顶醒目,守 §2.4 铁律
+    // 「证伪只用价量结构」(题材类弱证据即便标了 strong 也只能降级展示)。
+
+    func testK4AdvisoryTopBillboardRequiresBothStrongAndPriceVolume() {
+        let strongPriceVolume = K4Advisory(code: "A3_belowyear_limitup", label: "年线下涨停,疑似派发",
+                                           level: "strong", evidence: "close>=limit_price", evidenceStrength: "price_volume")
+        XCTAssertTrue(strongPriceVolume.isTopBillboard)
+
+        let strongConstituent = K4Advisory(code: "A2_theme_persist_ge_4", label: "题材持续≥4天",
+                                           level: "strong", evidence: "board_age>=4", evidenceStrength: "constituent")
+        XCTAssertFalse(strongConstituent.isTopBillboard, "强证据字段是 strong 但 evidenceStrength=constituent(成分类弱证据)不得置顶")
+
+        let normalPriceVolume = K4Advisory(code: "B2_double_gold_cross", label: "双金叉",
+                                           level: "normal", evidence: "macd_cross", evidenceStrength: "price_volume")
+        XCTAssertFalse(normalPriceVolume.isTopBillboard, "normal 级别即便是价量证据也不置顶,只进列表")
     }
 
     /// 熔断触发原因展示层换算的另一分支(consecutive_stops 已在 DTODecodeTests 随
@@ -570,19 +658,25 @@ final class PushRoutingTests: XCTestCase {
     func testCircuitCategoryRoutesToToday() {
         XCTAssertEqual(PushManager.targetTab(forCategory: NKNotificationCategory.circuit), .today)
     }
+    // v1.3-②/⑥:第六类(HOLDINGALERT→今日计划,K4 持仓牌强警示在持仓卡置顶,§五 v1.3-⑥-C)。
+    func testHoldingAlertCategoryRoutesToToday() {
+        XCTAssertEqual(PushManager.targetTab(forCategory: NKNotificationCategory.holdingAlert), .today)
+    }
     func testUnknownCategoryRoutesNowhere() {
         XCTAssertNil(PushManager.targetTab(forCategory: "SOME_OTHER_CATEGORY"))
     }
     /// category 字面必须与后端 `neckline/push/apns.py` 的 `CATEGORY_PRECALL="PRECALL"`/
-    /// `CATEGORY_D5EXIT="D5EXIT"`/`CATEGORY_CIRCUIT="CIRCUIT"` 完全一致(客户端/服务端
-    /// 各自独立声明字符串,契约漂移只能靠这类断言在编译期之外兜底——同后端
-    /// `test_notify.py` 白名单五入口结构守护镜像)。
+    /// `CATEGORY_D5EXIT="D5EXIT"`/`CATEGORY_CIRCUIT="CIRCUIT"`/
+    /// `CATEGORY_HOLDING_ALERT="HOLDINGALERT"` 完全一致(客户端/服务端各自独立声明
+    /// 字符串,契约漂移只能靠这类断言在编译期之外兜底——同后端 `test_notify.py`
+    /// 白名单六入口结构守护镜像)。
     func testCategoryLiteralsMatchBackend() {
         XCTAssertEqual(NKNotificationCategory.report, "REPORT")
         XCTAssertEqual(NKNotificationCategory.retreat, "RETREAT")
         XCTAssertEqual(NKNotificationCategory.precall, "PRECALL")
         XCTAssertEqual(NKNotificationCategory.d5exit, "D5EXIT")
         XCTAssertEqual(NKNotificationCategory.circuit, "CIRCUIT")
+        XCTAssertEqual(NKNotificationCategory.holdingAlert, "HOLDINGALERT")
     }
 }
 #endif

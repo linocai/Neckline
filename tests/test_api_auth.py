@@ -12,6 +12,7 @@ PROTECTED_GET = [
     "/api/v1/board",
     "/api/v1/positions",
     "/api/v1/settings",
+    "/api/v1/settings/intel-boards",
     "/api/v1/watchlist",
     "/api/v1/watchlist/export-ths",
 ]
@@ -42,6 +43,7 @@ def test_protected_post_requires_token(client):
 def test_protected_put_requires_token(client):
     assert client.put("/api/v1/settings/push", json={"report": True, "retreatBrake": True}).status_code == 401
     assert client.put("/api/v1/settings/llm", json={"provider": "glm", "apiKey": "x"}).status_code == 401
+    assert client.put("/api/v1/settings/intel-boards", json={"boards": []}).status_code == 401
     assert client.put("/api/v1/watchlist/600001.SH/pin", json={"pinned": True}).status_code == 401
 
 

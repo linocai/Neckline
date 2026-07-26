@@ -77,6 +77,52 @@ def test_report_latest_carries_intel_and_sector_moneyflow(client, AUTH, api_env)
     assert body["sectorMoneyflow"]["topInflow"][0]["code"] == "AAA.TI"
 
 
+def test_report_latest_intel_rank_carries_source_industry_permanent_board_status(client, AUTH, api_env):
+    """v1.3-⑥ 后端补齐①:`IntelRankOut` 补 `source`/`industry`/`permanentBoardStatus` 三
+    字段——数据早在 v1.3-③-C3 落 `intel_rank` 字典/报告落库快照,此前 pydantic 未声明
+    这三键 → 默认丢弃(`CandidateOut.intelRank = IntelRankOut(**(c.get("intel_rank") or {}))`
+    静默吞掉未声明的额外键),本次补字段透出、生成逻辑零改动。"""
+    board_status = [{
+        "board": "稀土永磁", "surviveCount": 9, "industryGatePass": 1, "industryGateBlocked": 8,
+        "hardCutBlocked": 1, "quotaFilled": 0,
+        "note": "稀土永磁:保底 0 只 —— 9 只过卫生线成员中 8 只行业不属本板块主导行业、"
+                "1 只过闸但命中 K4 安检拦截,宁缺毋滥、非静默空白",
+    }]
+    c = _candidate(1, "600001.SH", "示例甲")
+    c["k4_flags"] = ["B2_double_gold_cross"]
+    c["intel_rank"] = {
+        "sectorFlow": 1234.5, "themePersistDays": 1, "highElasticity": True,
+        "source": "quota", "industry": "小金属", "permanentBoardStatus": board_status,
+    }
+    report_store.save_report(
+        date(2026, 7, 22), strategy_version="v1.3",
+        sentiment={"trade_date": "20260722"}, sectors=[], candidates=[c],
+        markdown="# 报告", db_path=api_env.db_path,
+    )
+    rank = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"][0]["intelRank"]
+    assert rank["source"] == "quota"
+    assert rank["industry"] == "小金属"
+    assert rank["sectorFlow"] == 1234.5
+    assert len(rank["permanentBoardStatus"]) == 1
+    status0 = rank["permanentBoardStatus"][0]
+    assert status0["board"] == "稀土永磁"
+    assert status0["quotaFilled"] == 0
+    assert status0["industryGateBlocked"] == 8
+    assert "宁缺毋滥" in status0["note"]
+
+
+def test_report_latest_intel_rank_defaults_when_old_snapshot(client, AUTH, api_env):
+    """旧报告(建于本三字段前,`intel_rank` 无 source/industry/permanentBoardStatus 键)
+    读回默认——`source`/`industry` 空串、`permanentBoardStatus` 空数组,前向兼容不崩、
+    不冒充"quota/competition/forced"三值之一(客户端未识别值原样透传)。"""
+    _seed_report(api_env.db_path, date(2026, 7, 17))
+    rank = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"][0]["intelRank"]
+    assert rank == {
+        "sectorFlow": None, "themePersistDays": 0, "highElasticity": False,
+        "source": "", "industry": "", "permanentBoardStatus": [],
+    }
+
+
 def test_report_latest_intel_defaults_to_empty_dict_when_not_seeded(client, AUTH, api_env):
     """旧报告行(intel/sectorMoneyflow 建列前生成,或 v1.3-③ 之前的历史报告)读回
     来是空字典,不是 null——客户端前向兼容不必对 null 特判。"""
@@ -89,15 +135,17 @@ def test_report_latest_intel_defaults_to_empty_dict_when_not_seeded(client, AUTH
 def test_report_latest_carries_news_alerts_and_scan_status(client, AUTH, api_env):
     """v1.3-③-C4 契约:`ReportOut.newsAlerts`(命中告警,独立表实时查,契约字面
     字段 code/category/summary/source + 附加 name)+ `newsAlertsScan`(扫描状态,
-    "没扫到 vs 扫了没有"透明度字段)。"""
+    "没扫到 vs 扫了没有"透明度字段,v1.3-⑥ 后端补齐 `codesSkipped` 透出——领域层
+    〔`report/news_alerts.py`〕早已产出该键,此前 `_shape_report` 未读取转发)。"""
     from neckline.report.news_alerts_store import save_news_alerts
 
     d = date(2026, 7, 17)
     _seed_report(
         api_env.db_path, d,
         news_alerts_scan=[
-            {"source": "tushare_holdertrade", "scanned": True, "reason": "", "codesTotal": 0, "codesFailed": 0},
-            {"source": "llm", "scanned": False, "reason": "未配置 LLM_PROVIDER/LLM_API_KEY", "codesTotal": 1, "codesFailed": 0},
+            {"source": "tushare_holdertrade", "scanned": True, "reason": "", "codesTotal": 0, "codesFailed": 0, "codesSkipped": 0},
+            {"source": "llm", "scanned": True, "reason": "墙钟预算耗尽,部分标的未及扫描",
+             "codesTotal": 5, "codesFailed": 1, "codesSkipped": 2},
         ],
     )
 
@@ -118,8 +166,24 @@ def test_report_latest_carries_news_alerts_and_scan_status(client, AUTH, api_env
 
     scan = {s["source"]: s for s in body["newsAlertsScan"]}
     assert scan["tushare_holdertrade"]["scanned"] is True
-    assert scan["llm"]["scanned"] is False
-    assert "LLM_PROVIDER" in scan["llm"]["reason"]
+    assert scan["tushare_holdertrade"]["codesSkipped"] == 0
+    assert scan["llm"]["scanned"] is True
+    assert "预算耗尽" in scan["llm"]["reason"]
+    # codesSkipped(墙钟预算耗尽、根本没发起调用就跳过)与 codesFailed(调用了但失败)
+    # 语义不同、两者都要透出,不能合并成一个数字。
+    assert scan["llm"]["codesFailed"] == 1
+    assert scan["llm"]["codesSkipped"] == 2
+
+
+def test_report_latest_news_alerts_scan_codes_skipped_defaults_to_zero_for_old_snapshot(client, AUTH, api_env):
+    """旧报告(建于 `codesSkipped` 字段前的 `news_alerts_scan_json` 快照,无该键)读回
+    默认 0——不冒充"预算未耗尽"以外的任何含义,只是诚实的"该信息在旧快照里不存在"。"""
+    _seed_report(
+        api_env.db_path, date(2026, 7, 17),
+        news_alerts_scan=[{"source": "llm", "scanned": True, "reason": "", "codesTotal": 3, "codesFailed": 0}],
+    )
+    scan = client.get("/api/v1/report/latest", headers=AUTH).json()["newsAlertsScan"][0]
+    assert scan["codesSkipped"] == 0
 
 
 def test_report_latest_news_alerts_default_to_empty_when_not_seeded(client, AUTH, api_env):

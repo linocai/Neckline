@@ -51,6 +51,8 @@ from neckline.api.schemas import (
     InquiryIn,
     InquiryOut,
     IntelRankOut,
+    IntelWatchBoardsIn,
+    IntelWatchBoardsOut,
     K4AdvisoryOut,
     LLMJudgmentOut,
     NewsAlertOut,
@@ -91,7 +93,14 @@ from neckline.sentinel import circuit as circuit_store
 from neckline.sentinel import dedup
 from neckline.sentinel import positions as pos_store
 from neckline.sentinel.intraday import is_intraday_now
-from neckline.settings_store import get_app_settings, set_llm, set_push, set_review_col_map
+from neckline.settings_store import (
+    get_app_settings,
+    get_intel_watch_boards,
+    set_intel_watch_boards,
+    set_llm,
+    set_push,
+    set_review_col_map,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +113,12 @@ API_PREFIX = "/api/v1"
 # startup 是否起哨兵后台轮询;可用环境变量 NECKLINE_ENABLE_SENTINEL=0 关(冒烟脚本用)。
 ENABLE_SENTINEL = os.environ.get("NECKLINE_ENABLE_SENTINEL", "1") != "0"
 _DB_PATH_OVERRIDE: Optional[Path] = None      # 隔离库(None → settings.db_path)
+# v1.3-⑥ 后端补齐:`GET/PUT /settings/intel-boards` 校验板块名需读 `ths_index.parquet`
+# (`report.sectors.load_index_names`)——这是 app.py 端点层首次直接触碰 parquet(此前
+# 全部经 `_db()` SQLite 或已由 `market_data`/`tushare_client` 模块内部处理)。同
+# `_DB_PATH_OVERRIDE` 姿势新增此注入点,供测试指向隔离 parquet 目录,不污染/依赖真实
+# 项目 `data/parquet`。
+_PARQUET_DIR_OVERRIDE: Optional[Path] = None  # 隔离 parquet 目录(None → settings.parquet_dir)
 _QUOTES_FN: Optional[Callable[[List[str]], Dict[str, Any]]] = None  # 实时拉价(None → sentinel.quotes)
 _PANEL_FN: Optional[Callable[..., Any]] = None                       # 问询台面板(None → 真 build_research_panel)
 _PROVIDER_FN: Optional[Callable[[Optional[Path]], Any]] = None       # 问询台 provider(None → get_provider)
@@ -121,6 +136,10 @@ _PREOPEN_END = time(9, 30)
 
 def _db() -> Optional[Path]:
     return _DB_PATH_OVERRIDE
+
+
+def _parquet_dir() -> Optional[Path]:
+    return _PARQUET_DIR_OVERRIDE
 
 
 # —— 哨兵后台轮询(4B.3;折进 lifespan asyncio,单 unit 省内存)——————————————————
@@ -307,6 +326,9 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
         NewsAlertScanStatusOut(
             source=s.get("source", ""), scanned=bool(s.get("scanned", False)), reason=s.get("reason", ""),
             codesTotal=s.get("codesTotal", 0), codesFailed=s.get("codesFailed", 0),
+            # v1.3-⑥ 后端补齐:领域层早产出 codesSkipped(见 news_alerts.py),此前这里
+            # 没读取 → 契约清单承诺的字段实际从未抵达客户端(schemas.py 同批已补字段声明)。
+            codesSkipped=s.get("codesSkipped", 0),
         )
         for s in rep.get("news_alerts_scan", [])
     ]
@@ -1041,6 +1063,41 @@ def put_settings_push(body: SettingsPushIn) -> OkOut:
     set_push(body.report, body.retreatBrake, body.precall, body.d5exit, body.circuit,
              body.holdingAlert, db_path=_db())
     return OkOut(ok=True)
+
+
+@app.get(f"{API_PREFIX}/settings/intel-boards", dependencies=[Depends(require_token)])
+def get_settings_intel_boards() -> IntelWatchBoardsOut:
+    """读候选情报管线「五板块常驻」名单(plan v1.3-⑥ 后端补齐②)。存取本身早在
+    v1.3-③-C3 就绪(`settings_store.get_intel_watch_boards`);本端点只补 HTTP 读路径。
+    从未配置 → 默认五板块(`DEFAULT_INTEL_WATCH_BOARDS`);用户曾显式清空 → 空列表。"""
+    return IntelWatchBoardsOut(boards=get_intel_watch_boards(db_path=_db()))
+
+
+@app.put(f"{API_PREFIX}/settings/intel-boards", dependencies=[Depends(require_token)])
+def put_settings_intel_boards(body: IntelWatchBoardsIn) -> IntelWatchBoardsOut:
+    """写「五板块常驻」名单(plan v1.3-⑥ 后端补齐②)。**禁模糊匹配**——每个名字须能在
+    `ths_index.name` 精确匹配到(同 `report.intel_candidates._resolve_watch_board_codes`
+    的精确匹配口径,不重推一遍),匹配不到 → 422 + 明确 `reason`(`board_not_found`)与
+    具体哪些名字没匹配到(`unresolved`),不静默接受用户会以为生效、实际情报管线跑起来
+    还是精确匹配失败被诚实跳过(`_resolve_watch_board_codes` 的 `unresolved` 只落
+    warning 日志,用户看不到——故端点层必须先行拦截,不能让写入端悄悄收一个错的名字)。
+    允许空列表(显式清空常驻,与「从未配置」回退默认语义不同,见 `set_intel_watch_boards`)。
+    返回写入后的最终名单(与 GET 同形状,便于客户端直接刷新展示)。"""
+    from neckline.report.sectors import load_index_names
+
+    if body.boards:
+        valid_names = set(load_index_names(parquet_dir=_parquet_dir()).values())
+        unresolved = [nm for nm in body.boards if nm not in valid_names]
+        if unresolved:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "ok": False, "reason": "board_not_found", "unresolved": unresolved,
+                    "message": f"以下板块名未能在 ths_index.name 精确匹配到(禁模糊匹配,请核对全名):{unresolved}",
+                },
+            )
+    set_intel_watch_boards(body.boards, db_path=_db())
+    return IntelWatchBoardsOut(boards=get_intel_watch_boards(db_path=_db()))
 
 
 @app.put(f"{API_PREFIX}/settings/review-col-map", dependencies=[Depends(require_token)])

@@ -148,6 +148,44 @@ struct EntrySpec: Codable, Equatable {
     }
 }
 
+/// 五常驻板块诊断漏斗(v1.3-③-C3/⑥,§2.3)。**报告级构件,非本票专属**——每只候选携带
+/// 同一份完整列表(服务端设计:0 保底板块自身无候选可挂,状态挂在所有候选的
+/// `intelRank.permanentBoardStatus` 上),客户端取任一候选(通常首只)读出展示即可。
+/// 0 只/不足 2 只时 `note` 必须说清「为什么」——守「『没有』和『没看』必须能分开」原则,
+/// **静默空白是禁止的**,UI 不得因这份列表为空就什么都不画。
+struct PermanentBoardStatus: Codable, Equatable, Identifiable {
+    var board: String
+    var surviveCount: Int
+    var industryGatePass: Int
+    var industryGateBlocked: Int
+    var hardCutBlocked: Int
+    var quotaFilled: Int
+    var note: String
+
+    var id: String { board }
+}
+
+/// 候选情报排序理由(v1.3-③-C3/⑥,§2.3 语义变更)。候选=「过完安检、值得关注的票」
+/// 非「会涨的票」——客户端据此写对文案,不标「推荐买点」,展示情报维度而非回测信号。
+struct IntelRank: Codable, Equatable {
+    var sectorFlow: Double? = nil          // 所属常驻/暴起板块最大净流入(万元,C2;无数据=nil)
+    var themePersistDays: Int = 0          // 题材持续天数(反用:1天新鲜>2-3天警惕;≥4已在③剔)
+    var highElasticity: Bool = false       // 高弹板块(GEM/STAR;生成域刻意含高弹,标注给人判)
+    var source: String = ""                // quota(常驻保底)| competition(情报竞争)| forced(问询强制);旧报告空串
+    var industry: String = ""              // 该票行业(过行业闸后的代表行业),说清「凭什么在这个板块栏」
+    var permanentBoardStatus: [PermanentBoardStatus] = []
+}
+
+/// 候选入选来源展示层换算(沿 `nkBoardLabel` 先例,未识别值原样透传)。
+func nkIntelSourceLabel(_ raw: String) -> String {
+    switch raw {
+    case "quota": return "常驻保底"
+    case "competition": return "情报竞争"
+    case "forced": return "问询强制纳入"
+    default: return raw
+    }
+}
+
 struct Candidate: Codable, Equatable, Identifiable {
     var rank: Int
     var code: String
@@ -166,6 +204,21 @@ struct Candidate: Codable, Equatable, Identifiable {
     /// 买点结构化条件(§五 v1.1-E.2 一键补录预填用)。服务端字段恒是一个对象(可能
     /// 内部字段皆缺),故用可选类型兜住任何缺失/旧报告没有这个键的情形,不崩。
     var entrySpec: EntrySpec? = nil
+    /// v1.3-③-C3/⑥:K4 avoid_flag 命中码(打标保留;hard_cut 已在服务端拦截出池、不会
+    /// 出现在候选里)+ 情报排序理由。均是**非 Optional 但要容忍缺键**的字段(真实后端
+    /// 恒会发,只有本文件里较早写的手工 JSON fixture 可能没有这两键)——Swift 合成
+    /// Decodable 对非 Optional 属性不会自动容忍缺键(即便声明了默认值,那只影响
+    /// memberwise init,不影响解码),故本类型改手写 `init(from:)` 显式 `decodeIfPresent`
+    /// 兜底,换来「旧 fixture / 旧报告快照缺这两键也不崩、直接给默认空值」。
+    var k4Flags: [String] = []
+    var intelRank: IntelRank = IntelRank()
+
+    /// 显式 `CodingKeys`(提供自定义 `init(from:)` 时不依赖合成时机是否可靠——同
+    /// `ReportResponse`/`Position` 的处理姿势)。字段名与 JSON 字面一致,逐一列出。
+    enum CodingKeys: String, CodingKey {
+        case rank, code, name, score, board, buyPoint, stop, target, invalidation
+        case formTags, hotSectors, sectorNames, llmJudgment, entrySpec, k4Flags, intelRank
+    }
 
     var id: String { code }
 
@@ -174,9 +227,193 @@ struct Candidate: Codable, Equatable, Identifiable {
     /// 不是中文名。这里只做**展示层换算四个已知常量**,不改判定、不猜测新分类
     /// (未识别值原样透传,不静默瞎翻译——万一后端枚举新增值,界面照样不崩、只是显英文)。
     var boardLabel: String { nkBoardLabel(board) }
+
+    init(rank: Int, code: String, name: String, score: Double, board: String,
+         buyPoint: String, stop: String, target: String, invalidation: String,
+         formTags: [String], hotSectors: [String], sectorNames: [String],
+         llmJudgment: LLMJudgment?, entrySpec: EntrySpec? = nil,
+         k4Flags: [String] = [], intelRank: IntelRank = IntelRank()) {
+        self.rank = rank; self.code = code; self.name = name; self.score = score; self.board = board
+        self.buyPoint = buyPoint; self.stop = stop; self.target = target; self.invalidation = invalidation
+        self.formTags = formTags; self.hotSectors = hotSectors; self.sectorNames = sectorNames
+        self.llmJudgment = llmJudgment; self.entrySpec = entrySpec
+        self.k4Flags = k4Flags; self.intelRank = intelRank
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rank = try c.decode(Int.self, forKey: .rank)
+        code = try c.decode(String.self, forKey: .code)
+        name = try c.decode(String.self, forKey: .name)
+        score = try c.decode(Double.self, forKey: .score)
+        board = try c.decode(String.self, forKey: .board)
+        buyPoint = try c.decode(String.self, forKey: .buyPoint)
+        stop = try c.decode(String.self, forKey: .stop)
+        target = try c.decode(String.self, forKey: .target)
+        invalidation = try c.decode(String.self, forKey: .invalidation)
+        formTags = try c.decode([String].self, forKey: .formTags)
+        hotSectors = try c.decode([String].self, forKey: .hotSectors)
+        sectorNames = try c.decode([String].self, forKey: .sectorNames)
+        llmJudgment = try c.decodeIfPresent(LLMJudgment.self, forKey: .llmJudgment)
+        entrySpec = try c.decodeIfPresent(EntrySpec.self, forKey: .entrySpec)
+        k4Flags = try c.decodeIfPresent([String].self, forKey: .k4Flags) ?? []
+        intelRank = try c.decodeIfPresent(IntelRank.self, forKey: .intelRank) ?? IntelRank()
+    }
 }
 
 // MARK: - 4A.2 报告:整份报告
+
+// MARK: - v1.3-③-C1 复盘情报件(ReportOut.intel;服务端 `Dict[str,Any]` 透传,§2.3)
+//
+// 后端 `report/intel.py::IntelReport.to_public_dict()` 是这份数据的唯一形状源(同
+// `sentiment`/`sectors` 的透传惯例);客户端仍按已知稳定形状声明强类型 Codable
+// (同 `ReviewWeeklyResult` 先例)。**证据强度标注**:题材/成分类字段
+// (`evidenceStrength`)依赖概念板块成分(K2「成分洞」)标「参考」;涨跌幅/涨停梯队/
+// 跌停榜/大盘量能/市值偏好/涨跌停制度偏好均为 EOD 硬数据(强证据)。
+
+struct IntelMover: Codable, Equatable, Identifiable {
+    var code: String
+    var name: String
+    var pctChg: Double
+    var close: Double
+    var id: String { code }
+}
+
+struct IntelLimitLadderRung: Codable, Equatable, Identifiable {
+    var consecDays: Int
+    var count: Int
+    var id: Int { consecDays }
+}
+
+struct IntelMarketVolume: Codable, Equatable {
+    var shAmountYi: Double
+    var szAmountYi: Double
+    var totalAmountYi: Double
+    var ma5AmountYi: Double
+    var sampleDays: Int   // <5 时样本不足,§硬要求诚实标注(UI 据此加注"样本仅 N 日")
+}
+
+struct IntelThemeLeader: Codable, Equatable, Identifiable {
+    var code: String
+    var name: String
+    var pctChg: Double
+    var isLimitUp: Bool
+    var id: String { code }
+}
+
+struct IntelThemeItem: Codable, Equatable, Identifiable {
+    var code: String
+    var name: String
+    var boardAge: Int
+    var ret20d: Double
+    var persistenceLabel: String     // 服务端已是中文文案(未站上MA20/新起1日/持续2-3日/已延续≥4日)
+    var evidenceStrength: String     // 恒 constituent(成分依赖,弱证据),同 K4Advisory 词表
+    var leaders: [IntelThemeLeader]
+    var id: String { code }
+}
+
+struct IntelBucketCount: Codable, Equatable, Identifiable {
+    var label: String
+    var count: Int
+    var pctOfTotal: Double
+    var id: String { label }
+}
+
+struct IntelSection: Codable, Equatable {
+    var tradeDate: String
+    var evidenceNote: String
+    var gainers: [IntelMover]
+    var losers: [IntelMover]
+    var limitUpLadder: [IntelLimitLadderRung]
+    var limitDown: [IntelMover]
+    var limitDownTotalCount: Int      // 跌停榜展示有截断上限,这里是真实总数(截断不撒谎)
+    var marketVolume: IntelMarketVolume?
+    var topThemes: [IntelThemeItem]
+    var themePersistenceDistribution: [String: Int]
+    var mvPreference: [IntelBucketCount]
+    var limitRegimePreference: [IntelBucketCount]
+    var excludedBoardsNote: String
+    var warnings: [String]
+
+    /// 全空 = 这份报告快照压根没有情报节(旧报告 / 尚未生成),UI 据此展示"暂无"而非
+    /// 空白卡片(§硬要求「没有 vs 没看」分开)。
+    var hasContent: Bool {
+        !(gainers.isEmpty && losers.isEmpty && limitUpLadder.isEmpty && limitDown.isEmpty
+            && marketVolume == nil && topThemes.isEmpty)
+    }
+}
+
+// MARK: - v1.3-③-C2 板块资金流(ReportOut.sectorMoneyflow)
+//
+// **定位写死(硬要求,不可当选股信号)**:拥挤情报件,STRATEGY_LAB K2 判决板块层有效
+// 但无次日领先性——展示文案不得暗示"买入依据"。
+
+struct SectorMoneyflowItem: Codable, Equatable, Identifiable {
+    var code: String
+    var name: String
+    var netInflowWan: Double     // 万元,东财 moneyflow_dc 口径
+    var memberCount: Int
+    var rank: Int
+    var evidenceStrength: String   // 恒 constituent(板块归属依赖成分快照,弱证据)
+    var id: String { code }
+}
+
+struct SectorMoneyflowSection: Codable, Equatable {
+    var tradeDate: String
+    var available: Bool
+    var unavailableReason: String   // available=false 时必读(2023-09 前无数据 / 当日缺失等)
+    var topInflow: [SectorMoneyflowItem]
+    var topOutflow: [SectorMoneyflowItem]
+    var excludedBoardsNote: String
+    var evidenceNote: String
+}
+
+// MARK: - v1.3-③-C4 消息面(ReportOut.newsAlerts + newsAlertsScan,§硬要求「没扫到 vs
+// 扫了没有必须能区分」)
+
+/// 消息面命中告警。`category` 服务端码(REDUCTION/INVESTIGATION/BLOWUP/REGULATORY),
+/// 展示层中文换算见 `nkNewsCategoryLabel`(沿 `boardLabel` 先例,未识别原样透传)。
+struct NewsAlert: Codable, Equatable, Identifiable {
+    var code: String
+    var name: String
+    var category: String
+    var summary: String
+    var source: String   // tushare_holdertrade | llm_<provider>
+
+    var id: String { "\(code)|\(category)|\(summary)" }
+    var categoryLabel: String { nkNewsCategoryLabel(category) }
+}
+
+func nkNewsCategoryLabel(_ raw: String) -> String {
+    switch raw {
+    case "REDUCTION": return "减持"
+    case "INVESTIGATION": return "立案"
+    case "BLOWUP": return "暴雷"
+    case "REGULATORY": return "监管"
+    default: return raw
+    }
+}
+
+/// 消息面扫描状态——**必须先读这个再展示 `newsAlerts`**,不能只看后者是否为空就下结论
+/// (空数组本身无法表达"这次到底扫没扫、扫没扫完")。`codesSkipped`(墙钟预算耗尽、根本
+/// 没发起调用就跳过)与 `codesFailed`(调用了但失败)语义不同,两者都要展示、不能合并。
+struct NewsAlertScanStatus: Codable, Equatable, Identifiable {
+    var source: String       // tushare_holdertrade | llm
+    var scanned: Bool
+    var reason: String = ""
+    var codesTotal: Int = 0
+    var codesFailed: Int = 0
+    var codesSkipped: Int = 0
+
+    var id: String { source }
+    var sourceLabel: String {
+        switch source {
+        case "tushare_holdertrade": return "减持(股东增减持,结构化数据)"
+        case "llm": return "立案 / 暴雷 / 监管(LLM 联网核实)"
+        default: return source
+        }
+    }
+}
 
 struct ReportSnapshot: Codable, Equatable {
     var tradeDate: String
@@ -190,6 +427,13 @@ struct ReportSnapshot: Codable, Equatable {
     /// §五 v1.1-B.4 漏录兜底:当日买点哨兵触发过但台账无补录时的一句提示,否则空串
     /// (服务端实时算,用户补录后自动消失;E.3 据此在今日计划顶部展示提示条)。
     var missedEntryHint: String = ""
+    // —— v1.3-③-C1/C2/C4「情报」板块(§五 v1.3-⑥-F)——————————————————————————————
+    /// nil = 该报告快照没有情报节(旧报告 / 降级态,后端 `intel` 落空字典 `{}`,解码
+    /// 阶段 `try?` 兜成 nil,见 `APIClient.ReportResponse`)。
+    var intel: IntelSection? = nil
+    var sectorMoneyflow: SectorMoneyflowSection? = nil
+    var newsAlerts: [NewsAlert] = []
+    var newsAlertsScan: [NewsAlertScanStatus] = []
 
     /// 空态占位(无报告 / 拉取失败),UI 据 `degraded`+`reason` 诚实展示,不假装有数据。
     static func empty(reason: String) -> ReportSnapshot {
@@ -249,6 +493,51 @@ struct RetraceState: Codable, Equatable {
     var triggered: Bool
 }
 
+/// K4 持仓牌单条命中(v1.3-② / §五 v1.3-⑥-C)。服务端 16:35 EOD 面板上对持仓票重算
+/// K4 advisory 命中,客户端只展示不重算。
+///  · `level`:strong(强警示,置顶醒目)| normal(普通警示,进列表)。
+///  · `evidenceStrength`:price_volume(价量硬数据,强证据)| constituent(概念板块成分,
+///    弱证据,标「参考」——题材持续天数依赖 `ths_member` 快照,不单独触发强警示)。
+///  · 只有「level=strong ∧ evidenceStrength=price_volume」才置顶醒目展示(疑似派发/换手
+///    异常等);其余(含 strong 但成分类证据、或 normal)一律降级为列表/chip 展示。
+struct K4Advisory: Codable, Equatable, Identifiable {
+    var code: String
+    var label: String
+    var level: String              // strong | normal
+    var evidence: String
+    var evidenceStrength: String   // price_volume | constituent
+
+    var id: String { code }
+    var isStrong: Bool { level == "strong" }
+    var isPriceVolumeEvidence: Bool { evidenceStrength == "price_volume" }
+    /// 置顶醒目的判据(§五 v1.3-⑥-C 硬约束,不是「strong 就置顶」——弱证据即便标了
+    /// strong 也只降级展示,守 §2.4 铁律「证伪只用价量结构」)。
+    var isTopBillboard: Bool { isStrong && isPriceVolumeEvidence }
+}
+
+/// v1.3-① 两档时间退出态(服务端权威判定,§2.1 第 2 条;客户端只展示,不重算净浮盈)。
+/// 未识别字符串兜底 `.holding`(不误报离场——宁可少提醒,不可错误地把未知态判成「该走了」)。
+enum PositionTimeExitState: Equatable {
+    static let timeExitNextDayRaw = "time_exit_next_day"
+    static let profitExemptRaw = "profit_exempt"
+    static let hardCapExitRaw = "hard_cap_exit"
+    static let holdingRaw = "holding"
+
+    case timeExitNextDay   // 非浮盈,次日按计划离场
+    case profitExempt      // 浮盈豁免时间退出,交回落止盈+止损管到硬上限——**持有态,非离场提示**
+    case hardCapExit       // 已达浮盈硬上限(D15),次日无条件离场
+    case holding           // 常规持有(K1 单档下恒为此值或 timeExitNextDay)
+
+    init(_ raw: String) {
+        switch raw {
+        case Self.timeExitNextDayRaw: self = .timeExitNextDay
+        case Self.profitExemptRaw: self = .profitExempt
+        case Self.hardCapExitRaw: self = .hardCapExit
+        default: self = .holding
+        }
+    }
+}
+
 struct Position: Codable, Equatable, Identifiable {
     var id: Int
     var code: String
@@ -263,18 +552,82 @@ struct Position: Codable, Equatable, Identifiable {
     var stopOrderChecked: Bool
     // —— §五 v1.1-B.1/E.1 持仓生命周期派生字段(服务端算好,客户端不重算日历/阈值)——
     var dCount: Int = 1              // D 计数(买入日=D1,唯一源 sentinel/positions.py::d_count)
-    var maxHoldDays: Int = 5         // 现役 max_hold_days(读 config,不硬编 5)
+    var maxHoldDays: Int = 5         // 现役 max_hold_days(读 config,不硬编 5);K1 单档口径,v1.3 起
+                                      // 展示改用 `maxHoldDaysEffective`(见下),本字段保留供旧逻辑/归因参考
     var distToStopPctServer: Double? = nil   // 服务端算好的距止损线百分比(小数,非 ×100);无实时价 → nil
     var retraceState: RetraceState? = nil
     var todayAction: String = ""     // 今日动作提示文案(D5离场/距止损/回落止盈已触发等,服务端定文案)
+    // —— v1.3-① 两档时间退出(服务端按 D5 净浮盈判好下发,客户端不重算)——————————————
+    var maxHoldDaysEffective: Int = 5   // 该单有效硬上限:非浮盈=maxHoldDays;浮盈豁免=硬上限(如 15)
+    var timeExitState: String = "holding"
+    // —— v1.3-① 费用回显(实付,供周复盘对账用真数;nil=未录)——————————————————————
+    var buyFees: Double? = nil
+    var sellFees: Double? = nil
+    // —— v1.3-② K4 持仓牌(服务端 16:35 EOD 重算命中;老快照/刚开仓未体检 → 空数组,
+    // 前向兼容不特判)——————————————————————————————————————————————————————————
+    var k4Advisory: [K4Advisory] = []
+    // 该持仓是否有关联决策日志(via position_id)含非空情景树待每日对照(v1.3-②-D 提醒;
+    // 勾选仍走既有 `POST /decisions/{id}/scenario-outcome`,本字段只做「挑出来」)。
+    var scenarioReviewPending: Bool = false
 
-    /// 显式 CodingKeys(仅因 `distToStopPctServer` 与服务端字面 `distToStopPct` 改了名——
-    /// 避免和下面既有的、语义不同的客户端计算属性 `distToStopPct` 撞名——其余字段名与
-    /// JSON 字面一致,逐一列出而非用 `.convertFromSnakeCase`,同文件头部注释的显式映射惯例)。
+    /// 显式 CodingKeys(`distToStopPctServer` 与服务端字面 `distToStopPct` 改了名——避免
+    /// 和下面既有的、语义不同的客户端计算属性 `distToStopPct` 撞名;其余字段名与 JSON
+    /// 字面一致)。**本类型自 v1.3-⑥ 起改手写 `init(from:)`**(见下)——`maxHoldDaysEffective`/
+    /// `timeExitState`/`k4Advisory`/`scenarioReviewPending` 等虽非 Optional 但要容忍旧
+    /// fixture/旧快照缺键(Swift 合成 Decodable 对非 Optional 属性不会自动容忍缺键,
+    /// 默认值只影响 memberwise init、不影响解码,同 `Candidate` 这一版的处理姿势)。
     enum CodingKeys: String, CodingKey {
         case id, code, name, buyPrice, qty, entryReason, buyDate, price, status, stopLine, stopOrderChecked
         case dCount, maxHoldDays, retraceState, todayAction
         case distToStopPctServer = "distToStopPct"
+        case maxHoldDaysEffective, timeExitState, buyFees, sellFees, k4Advisory, scenarioReviewPending
+    }
+
+    init(id: Int, code: String, name: String, buyPrice: Double, qty: Int, entryReason: String,
+         buyDate: String, price: Double, status: String, stopLine: Double, stopOrderChecked: Bool,
+         dCount: Int = 1, maxHoldDays: Int = 5, distToStopPctServer: Double? = nil,
+         retraceState: RetraceState? = nil, todayAction: String = "",
+         maxHoldDaysEffective: Int = 5, timeExitState: String = "holding",
+         buyFees: Double? = nil, sellFees: Double? = nil,
+         k4Advisory: [K4Advisory] = [], scenarioReviewPending: Bool = false) {
+        self.id = id; self.code = code; self.name = name; self.buyPrice = buyPrice; self.qty = qty
+        self.entryReason = entryReason; self.buyDate = buyDate; self.price = price; self.status = status
+        self.stopLine = stopLine; self.stopOrderChecked = stopOrderChecked
+        self.dCount = dCount; self.maxHoldDays = maxHoldDays; self.distToStopPctServer = distToStopPctServer
+        self.retraceState = retraceState; self.todayAction = todayAction
+        self.maxHoldDaysEffective = maxHoldDaysEffective; self.timeExitState = timeExitState
+        self.buyFees = buyFees; self.sellFees = sellFees
+        self.k4Advisory = k4Advisory; self.scenarioReviewPending = scenarioReviewPending
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        code = try c.decode(String.self, forKey: .code)
+        name = try c.decode(String.self, forKey: .name)
+        buyPrice = try c.decode(Double.self, forKey: .buyPrice)
+        qty = try c.decode(Int.self, forKey: .qty)
+        entryReason = try c.decode(String.self, forKey: .entryReason)
+        buyDate = try c.decode(String.self, forKey: .buyDate)
+        price = try c.decode(Double.self, forKey: .price)
+        status = try c.decode(String.self, forKey: .status)
+        stopLine = try c.decode(Double.self, forKey: .stopLine)
+        stopOrderChecked = try c.decode(Bool.self, forKey: .stopOrderChecked)
+        dCount = try c.decodeIfPresent(Int.self, forKey: .dCount) ?? 1
+        maxHoldDays = try c.decodeIfPresent(Int.self, forKey: .maxHoldDays) ?? 5
+        distToStopPctServer = try c.decodeIfPresent(Double.self, forKey: .distToStopPctServer)
+        retraceState = try c.decodeIfPresent(RetraceState.self, forKey: .retraceState)
+        todayAction = try c.decodeIfPresent(String.self, forKey: .todayAction) ?? ""
+        maxHoldDaysEffective = try c.decodeIfPresent(Int.self, forKey: .maxHoldDaysEffective) ?? maxHoldDays
+        // 缺键(真正的旧服务端/旧 fixture,v1.3-① 前)→ 按旧单档口径派生(dCount>=maxHoldDays
+        // 才算到期),与「服务端本该发什么」逐位一致——不是拍脑袋的"holding"兜底,而是精确
+        // 复现 v1.1 单档时间退出行为,故老 fixture 的 isExitDay 断言不必因这次改动而重写。
+        timeExitState = try c.decodeIfPresent(String.self, forKey: .timeExitState)
+            ?? (dCount >= maxHoldDays ? PositionTimeExitState.timeExitNextDayRaw : PositionTimeExitState.holdingRaw)
+        buyFees = try c.decodeIfPresent(Double.self, forKey: .buyFees)
+        sellFees = try c.decodeIfPresent(Double.self, forKey: .sellFees)
+        k4Advisory = try c.decodeIfPresent([K4Advisory].self, forKey: .k4Advisory) ?? []
+        scenarioReviewPending = try c.decodeIfPresent(Bool.self, forKey: .scenarioReviewPending) ?? false
     }
 
     var hasLivePrice: Bool { price > 0 }
@@ -299,15 +652,22 @@ struct Position: Codable, Equatable, Identifiable {
         return price <= stopLine
     }
 
-    // —— §五 v1.1-E.1 展示层派生(纯视觉强度选择,文案本身来自服务端 `todayAction`,
-    // 这里只按已有派生字段的优先级——D5/时间退出 > 回落止盈已触发 > 距止损——决定颜色/
-    // 是否用醒目横幅,不重新推导任何领域判定,同 `hasBrokenStop` 的展示层派生先例)。
+    // —— §五 v1.1-E.1/v1.3-⑥-A 展示层派生(纯视觉强度选择,文案本身来自服务端
+    // `todayAction`,这里只按服务端权威 `timeExitState` 两态选颜色/是否醒目横幅,
+    // 不重新推导任何领域判定,同 `hasBrokenStop` 的展示层派生先例)。
 
-    /// 是否到了/过了持有上限交易日(D5 时间退出日,`maxHoldDays` 非硬编 5)。
-    var isExitDay: Bool { dCount >= maxHoldDays }
+    /// 服务端两档时间退出态的展示层枚举(见 `PositionTimeExitState`)。
+    var timeExitKind: PositionTimeExitState { PositionTimeExitState(timeExitState) }
+
+    /// 是否该醒目展示为「离场/到期」(两档:非浮盈到期 `timeExitNextDay` 或浮盈硬上限到期
+    /// `hardCapExit`)。**`profitExempt` 不算**——它是持有态(交回落止盈+止损管到硬上限),
+    /// §五 v1.3-⑥-A 明文「不要当离场提示展示」,故不能再用旧口径 `dCount >= maxHoldDays`
+    /// 判定(那样会把「浮盈豁免续持到 D15」的正常单错误标红成「该走了」)。
+    var isExitDay: Bool { timeExitKind == .timeExitNextDay || timeExitKind == .hardCapExit }
 
     var todayActionTone: NKAxisTone {
         if isExitDay { return .bad }
+        if timeExitKind == .profitExempt { return .good }   // 浮盈豁免:持有态,非警示,给个正向色调
         if retraceState?.triggered == true { return .bad }
         if let d = distToStopPctServer {
             if d <= 0 { return .bad }
@@ -594,13 +954,15 @@ enum LLMProviderKind: String, CaseIterable, Identifiable, Codable {
 }
 
 /// v1.1-G.1 推送开关四类(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)+ v1.2-A2 第五类
-/// (熔断提醒),对齐后端 `PushSettingsOut`/`SettingsPushIn` 五字段契约。
+/// (熔断提醒)+ v1.3-②/⑥ 第六类(K4 持仓派发警报),对齐后端 `PushSettingsOut`/
+/// `SettingsPushIn` 六字段契约。
 struct PushSettings: Codable, Equatable {
     var report: Bool
     var retreatBrake: Bool
     var precall: Bool
     var d5exit: Bool
-    var circuit: Bool     // v1.2-A2:熔断提醒推送开关,默认开
+    var circuit: Bool         // v1.2-A2:熔断提醒推送开关,默认开
+    var holdingAlert: Bool    // v1.3-②:K4 持仓派发警报推送开关(第六类,默认开),独立于 d5exit
 }
 
 struct SettingsSnapshot: Codable, Equatable {
@@ -611,9 +973,18 @@ struct SettingsSnapshot: Codable, Equatable {
 
     static let empty = SettingsSnapshot(
         llmProvider: nil, llmKeySet: false,
-        push: PushSettings(report: true, retreatBrake: true, precall: true, d5exit: true, circuit: true),
+        push: PushSettings(report: true, retreatBrake: true, precall: true, d5exit: true,
+                           circuit: true, holdingAlert: true),
         reviewColMap: [:]
     )
+}
+
+/// v1.3-③-C3/⑥ 候选情报管线「五板块常驻」名单(`GET/PUT /settings/intel-boards`)。
+/// 板块中文名列表,按配置顺序(保底认领 load-bearing,§2.3);写入须与 `ths_index.name`
+/// 精确匹配,匹配失败服务端 422(见 `APIClient.putIntelWatchBoards`)。
+struct IntelWatchBoards: Codable, Equatable {
+    var boards: [String]
+    static let empty = IntelWatchBoards(boards: [])
 }
 
 // MARK: - §五 v1.1-F 自选板块(watchlist)

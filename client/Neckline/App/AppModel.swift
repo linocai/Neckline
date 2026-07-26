@@ -43,14 +43,18 @@ struct PositionEntryForm {
     var price = ""
     var qty = ""
     var reason = ""
+    /// v1.3-①/⑥:实付买入费用(**UI 强制必填**,服务端宽松——§五 v1.3-⑥-B 拍板口径)。
+    var buyFees = ""
 
     var buyPrice: Double? { Double(price.trimmingCharacters(in: .whitespaces)) }
     var qtyInt: Int? { Int(qty.trimmingCharacters(in: .whitespaces)) }
+    var buyFeesValue: Double? { Double(buyFees.trimmingCharacters(in: .whitespaces)) }
     var isValid: Bool {
         !code.trimmingCharacters(in: .whitespaces).isEmpty
             && (buyPrice ?? 0) > 0
             && (qtyInt ?? 0) > 0
             && !reason.trimmingCharacters(in: .whitespaces).isEmpty
+            && (buyFeesValue ?? -1) >= 0   // 必填且非负(允许 0——如实录入,不代表"不填")
     }
 }
 
@@ -200,6 +204,14 @@ final class AppModel {
     var pushD5exitDraft: Bool = true
     // v1.2-A2:第五类(熔断提醒),默认开。
     var pushCircuitDraft: Bool = true
+    // v1.3-②/⑥:第六类(K4 持仓派发警报),默认开,独立于 D5 时间退出通道。
+    var pushHoldingAlertDraft: Bool = true
+
+    // —— v1.3-③-C3/⑥ 五常驻板块可配(`GET/PUT /settings/intel-boards`)——————————————
+    var intelWatchBoards: [String] = []       // 已保存态(展示用)
+    var intelBoardsDraft: [String] = []       // 编辑中的草稿(保存前可增删,不即时生效)
+    var intelBoardDraftInput: String = ""     // 新增一个板块名的临时输入框
+    var intelWatchBoardsLoading = false
 
     // —— v1.1-F 自选板块(watchlist)——
     var watchlist: WatchlistSnapshot = .empty
@@ -239,6 +251,9 @@ final class AppModel {
     var entryForm = PositionEntryForm()
     var closeSellPrice = ""
     var closeReasonDraft: CloseReasonCode? = nil   // v1.2-A2:不选 → 服务端 NULL + 价格兜底
+    /// v1.3-①/⑥:清仓实付卖出费用真数(可选,成交后回填;不选 → 服务端 NULL,D5 净浮盈
+    /// 判向走估算公式,不影响清仓主流程)。
+    var closeSellFees = ""
     /// v1.2-E.5 改区间双档(替换 v1.1 的单 qty/单 stopLine 预填提示):来自
     /// `GET /positions/entry-suggestion`,只读展示,不参与提交——真正的止损线以
     /// 提交后服务端按实际买入价返回的为准,真正的数量由用户自己拍板。
@@ -419,6 +434,7 @@ final class AppModel {
         guard let pos = positions.first(where: { $0.code == code }) else { return }
         closeSellPrice = pos.hasLivePrice ? String(format: "%.2f", pos.price) : ""
         closeReasonDraft = nil
+        closeSellFees = ""
         modal = .close(code: code)
     }
 
@@ -439,15 +455,17 @@ final class AppModel {
         guard let client = clientProvider() else {
             showToast("未配置后端连接", isError: true); return
         }
-        guard entryForm.isValid, let price = entryForm.buyPrice, let qty = entryForm.qtyInt else {
-            showToast("请完整填写代码/价格/数量/理由", isError: true); return
+        guard entryForm.isValid, let price = entryForm.buyPrice, let qty = entryForm.qtyInt,
+              let fees = entryForm.buyFeesValue else {
+            showToast("请完整填写代码/价格/数量/理由/实付买入费用", isError: true); return
         }
         let code = entryForm.code.trimmingCharacters(in: .whitespaces)
         let name = entryForm.name.trimmingCharacters(in: .whitespaces)
         let reason = entryForm.reason.trimmingCharacters(in: .whitespaces)
         do {
             let r = try await client.openPosition(code: code, name: name.isEmpty ? nil : name,
-                                                  buyPrice: price, qty: qty, entryReason: reason)
+                                                  buyPrice: price, qty: qty, entryReason: reason,
+                                                  buyFees: fees)
             if let did = pendingDecisionId {
                 pendingDecisionId = nil
                 // 关联失败不阻断开仓成功(审计件、非下单件,§3.8);决策日志仍留在
@@ -475,8 +493,12 @@ final class AppModel {
         guard let sell = Double(closeSellPrice.trimmingCharacters(in: .whitespaces)), sell > 0 else {
             showToast("请填写有效卖出价", isError: true); return
         }
+        // v1.3-①/⑥:实付卖出费用可选(留空 → nil,服务端 NULL + D5 净浮盈判向走估算公式,
+        // 不阻断清仓;成交后再补填也可以)。
+        let sellFees = Double(closeSellFees.trimmingCharacters(in: .whitespaces))
         do {
-            _ = try await client.closePosition(id: pos.id, sellPrice: sell, closeReason: closeReasonDraft?.rawValue)
+            _ = try await client.closePosition(id: pos.id, sellPrice: sell,
+                                               closeReason: closeReasonDraft?.rawValue, sellFees: sellFees)
             dismissModal()
             await refresh()
             showToast("已录入清仓")
@@ -737,6 +759,7 @@ final class AppModel {
             self.pushPrecallDraft = s.push.precall
             self.pushD5exitDraft = s.push.d5exit
             self.pushCircuitDraft = s.push.circuit
+            self.pushHoldingAlertDraft = s.push.holdingAlert
         } catch let e as APIError {
             if case .noToken = e {} else { showToast("设置拉取失败", isError: true) }
         } catch {
@@ -767,7 +790,8 @@ final class AppModel {
         }
     }
 
-    /// 推送开关五类一并写入(报告 / 退潮刹车 / 盘前校准 / D5 时间退出 / v1.2-A2 熔断提醒)。
+    /// 推送开关六类一并写入(报告 / 退潮刹车 / 盘前校准 / D5 时间退出 / v1.2-A2 熔断提醒 /
+    /// v1.3-② K4 持仓派发警报)。
     func savePushSettings() async {
         guard let client = clientProvider() else {
             showToast("未配置后端连接", isError: true); return
@@ -775,9 +799,63 @@ final class AppModel {
         do {
             _ = try await client.putSettingsPush(report: pushReportDraft, retreatBrake: pushRetreatDraft,
                                                  precall: pushPrecallDraft, d5exit: pushD5exitDraft,
-                                                 circuit: pushCircuitDraft)
+                                                 circuit: pushCircuitDraft, holdingAlert: pushHoldingAlertDraft)
             await loadSettings()
             showToast("推送设置已保存")
+        } catch let e as APIError {
+            showToast(e.errorDescription ?? "保存失败", isError: true)
+        } catch {
+            showToast("保存失败:\(error.localizedDescription)", isError: true)
+        }
+    }
+
+    // MARK: - v1.3-③-C3/⑥:候选情报「五常驻板块」可配(§2.3;设置屏调用)——————————————
+
+    func loadIntelWatchBoards() async {
+        guard let client = clientProvider() else { return }
+        intelWatchBoardsLoading = true
+        do {
+            let r = try await client.fetchIntelWatchBoards()
+            intelWatchBoards = r.boards
+            intelBoardsDraft = r.boards
+        } catch let e as APIError {
+            if case .noToken = e {} else { showToast("常驻板块拉取失败", isError: true) }
+        } catch {
+            showToast("常驻板块拉取失败", isError: true)
+        }
+        intelWatchBoardsLoading = false
+    }
+
+    /// 草稿区加一个板块名(未保存前不生效,`saveIntelWatchBoards()` 才落库;去重,
+    /// 不接受空白输入)。
+    func addIntelBoardDraft() {
+        let name = intelBoardDraftInput.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !intelBoardsDraft.contains(name) else { return }
+        intelBoardsDraft.append(name)
+        intelBoardDraftInput = ""
+    }
+
+    func removeIntelBoardDraft(_ name: String) {
+        intelBoardsDraft.removeAll { $0 == name }
+    }
+
+    /// 保存常驻板块名单。**禁模糊匹配**——服务端逐个精确核对 `ths_index.name`,匹配不到
+    /// 明确报出具体是哪个名字(`APIError.validation("board_not_found:名字1、名字2")`,
+    /// 见 `APIClient.reasonString` 对 `unresolved` 的展开),不是笼统「字段校验失败」。
+    func saveIntelWatchBoards() async {
+        guard let client = clientProvider() else {
+            showToast("未配置后端连接", isError: true); return
+        }
+        do {
+            let r = try await client.putIntelWatchBoards(intelBoardsDraft)
+            intelWatchBoards = r.boards
+            intelBoardsDraft = r.boards
+            showToast("常驻板块已保存")
+        } catch APIError.validation(let reason) where reason.hasPrefix("board_not_found") {
+            let names = reason.split(separator: ":", maxSplits: 1).count > 1
+                ? String(reason.split(separator: ":", maxSplits: 1)[1]) : ""
+            showToast(names.isEmpty ? "以下板块名未能精确匹配,请检查全名" : "以下板块名未能精确匹配:\(names)(不支持模糊匹配)",
+                     isError: true)
         } catch let e as APIError {
             showToast(e.errorDescription ?? "保存失败", isError: true)
         } catch {

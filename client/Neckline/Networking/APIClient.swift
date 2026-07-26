@@ -23,9 +23,11 @@
 //    POST /api/v1/breathing/{id}/trades     → BreathingTradeOut                · 404
 //    DELETE /api/v1/breathing/trades/{id}   → {ok}                            · 404 not_found
 //    POST /api/v1/inquiry                   → InquiryOut(裁决二值,§2.5)
-//    GET  /api/v1/settings                  → SettingsOut(key 只回布尔;push 五字段 v1.2-A2)
+//    GET  /api/v1/settings                  → SettingsOut(key 只回布尔;push 六字段 v1.3-②)
 //    PUT  /api/v1/settings/llm              → {ok}                            · 422 供应商非法
-//    PUT  /api/v1/settings/push             → {ok}(五字段:report/retreatBrake/precall/d5exit/circuit)
+//    PUT  /api/v1/settings/push             → {ok}(六字段:report/retreatBrake/precall/d5exit/circuit/holdingAlert)
+//    GET  /api/v1/settings/intel-boards     → IntelWatchBoardsOut{boards}(v1.3-⑥,五常驻板块可配)
+//    PUT  /api/v1/settings/intel-boards     → IntelWatchBoardsOut{boards}    · 422 board_not_found(禁模糊匹配)
 //    POST /api/v1/devices                   → {ok}
 //    GET  /api/v1/watchlist                 → WatchlistOut{items,maxSize}(v1.1-C/F)
 //    POST /api/v1/watchlist                 → {ok,item}                       · 422 watchlist_full
@@ -80,6 +82,42 @@ private struct ReportResponse: Decodable {
     // v1.1-B.4:漏录兜底提示。`Optional` 兼容老响应/测试 fixture 没有这个键的情形
     // (真实后端恒返回该字段,但用 Optional 更稳,缺失时按空串处理,不崩)。
     let missedEntryHint: String?
+    // v1.3-③-C1/C2/C4「情报」板块(§五 v1.3-⑥-F)。
+    let intel: IntelSection?
+    let sectorMoneyflow: SectorMoneyflowSection?
+    let newsAlerts: [NewsAlert]?
+    let newsAlertsScan: [NewsAlertScanStatus]?
+
+    /// 显式 `CodingKeys`(提供自定义 `init(from:)` 时,编译器不总能推出合成
+    /// `CodingKeys`,显式声明避免依赖不透明的合成时机)。字段名与 JSON 字面一致,
+    /// 逐一列出。
+    enum CodingKeys: String, CodingKey {
+        case tradeDate, generatedAt, strategyVersion, sentiment, sectors, candidates
+        case degraded, reason, missedEntryHint, intel, sectorMoneyflow, newsAlerts, newsAlertsScan
+    }
+
+    /// 自定义解码(而非纯合成):`intel`/`sectorMoneyflow` 服务端**恒是对象**(旧报告/
+    /// 降级态是空对象 `{}`,不是缺键或 null)——空对象缺我方强类型要求的字段(如
+    /// `tradeDate`),标准合成解码会直接抛错,这里用 `try?` 把"形状对不上"也当"没有"
+    /// 处理,归一成 `nil`(§硬要求「没有 vs 没看」由 nil 表达"这份报告没有情报节数据",
+    /// UI 据此展示诚实空态而非崩溃)。`newsAlerts`/`newsAlertsScan` 是数组,老响应/
+    /// 老 fixture 缺键时按空数组兜底。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tradeDate = try c.decode(String.self, forKey: .tradeDate)
+        generatedAt = try c.decode(String.self, forKey: .generatedAt)
+        strategyVersion = try c.decode(String.self, forKey: .strategyVersion)
+        sentiment = try c.decodeIfPresent(SentimentSnapshot.self, forKey: .sentiment)
+        sectors = try c.decode([SectorSnapshot].self, forKey: .sectors)
+        candidates = try c.decode([Candidate].self, forKey: .candidates)
+        degraded = try c.decode(Bool.self, forKey: .degraded)
+        reason = try c.decode(String.self, forKey: .reason)
+        missedEntryHint = try c.decodeIfPresent(String.self, forKey: .missedEntryHint)
+        intel = try? c.decodeIfPresent(IntelSection.self, forKey: .intel)
+        sectorMoneyflow = try? c.decodeIfPresent(SectorMoneyflowSection.self, forKey: .sectorMoneyflow)
+        newsAlerts = try c.decodeIfPresent([NewsAlert].self, forKey: .newsAlerts)
+        newsAlertsScan = try c.decodeIfPresent([NewsAlertScanStatus].self, forKey: .newsAlertsScan)
+    }
 }
 
 private struct BoardResponse: Decodable {
@@ -97,6 +135,12 @@ struct OpenPositionRequest: Encodable {
     let buy_price: Double
     let qty: Int
     let entry_reason: String
+    // v1.3-①/⑥:补录开仓实付买入费用(camelCase,与既有 snake_case 字段并存——契约
+    // 如此,同 `ClosePositionRequest.closeReason` 惯例)。UI 层强制必填(见
+    // `PositionEntryForm.isValid`),这里仍设 Optional + 默认 nil——服务端本就宽松
+    // (`PositionOpenIn.buyFees: Optional[float] = None`),且这样不必为完全不关心
+    // 费用的既有测试调用点(如 IntegrationSmokeTests 的基础开仓闭环)逐一补参数。
+    let buyFees: Double?
 }
 private struct OpenPositionResponse: Decodable {
     let ok: Bool
@@ -111,6 +155,8 @@ struct ClosePositionRequest: Encodable {
     // 既有 `sell_price`/`sell_time` 的 snake_case 并存——后端契约如此(见 CLAUDE.md
     // 「v1.1-E/F/G 踩过的坑」同款留痕),不自作主张统一大小写。
     let closeReason: String?
+    // v1.3-①/⑥:清仓实付卖出费用真数(可选,成交后回填)——周复盘对账用真数、不用估数。
+    let sellFees: Double?
 }
 
 private struct ChatMessageWire: Encodable { let role: String; let content: String }
@@ -132,11 +178,17 @@ private struct SettingsResponse: Decodable {
 }
 struct SettingsLLMRequest: Encodable { let provider: String; let apiKey: String }
 /// v1.1-G.1 推送开关四字段(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)+ v1.2-A2 第五字段
-/// (熔断提醒)。五字段均必填(后端 `SettingsPushIn` 无默认值,缺字段 → 422)。
+/// (熔断提醒)+ v1.3-②/⑥ 第六字段(K4 持仓派发警报)。六字段均必填(后端 `SettingsPushIn`
+/// 无默认值,缺字段 → 422)。
 struct SettingsPushRequest: Encodable {
-    let report: Bool; let retreatBrake: Bool; let precall: Bool; let d5exit: Bool; let circuit: Bool
+    let report: Bool; let retreatBrake: Bool; let precall: Bool; let d5exit: Bool
+    let circuit: Bool; let holdingAlert: Bool
 }
 struct SettingsReviewColMapRequest: Encodable { let colMap: [String: String] }
+
+// —— v1.3-③-C3/⑥ 五常驻板块可配(`GET/PUT /settings/intel-boards`)——————————————————
+struct IntelWatchBoardsRequest: Encodable { let boards: [String] }
+private struct IntelWatchBoardsResponse: Decodable { let boards: [String] }
 
 struct DeviceRegisterRequest: Encodable { let token: String; let platform: String }
 
@@ -264,7 +316,9 @@ actor APIClient {
                               strategyVersion: r.strategyVersion, sentiment: r.sentiment,
                               sectors: r.sectors, candidates: r.candidates,
                               degraded: r.degraded, reason: r.reason,
-                              missedEntryHint: r.missedEntryHint ?? "")
+                              missedEntryHint: r.missedEntryHint ?? "",
+                              intel: r.intel, sectorMoneyflow: r.sectorMoneyflow,
+                              newsAlerts: r.newsAlerts ?? [], newsAlertsScan: r.newsAlertsScan ?? [])
     }
 
     // —— 4A.3 盘中看板 ——
@@ -282,10 +336,13 @@ actor APIClient {
     }
 
     /// 开仓录入(补录用户已在券商完成的真实操作)。返回 (positionId, 派生止损线)。
+    /// `buyFees`(v1.3-①/⑥):实付买入费用。UI 层(`PositionEntryForm.isValid`)强制
+    /// 必填,这里仍是 Optional + 默认 nil(服务端宽松,且不强迫不关心费用的既有调用点
+    /// 逐一改)。
     func openPosition(code: String, name: String?, buyPrice: Double, qty: Int,
-                      entryReason: String) async throws -> (positionId: Int, stopLine: Double) {
+                      entryReason: String, buyFees: Double? = nil) async throws -> (positionId: Int, stopLine: Double) {
         let body = OpenPositionRequest(code: code, name: name, buy_price: buyPrice,
-                                       qty: qty, entry_reason: entryReason)
+                                       qty: qty, entry_reason: entryReason, buyFees: buyFees)
         let data = try await post("/api/v1/positions", body: body)
         let r = try JSONDecoder().decode(OpenPositionResponse.self, from: data)
         return (r.position_id, r.stop_line)
@@ -293,10 +350,12 @@ actor APIClient {
 
     /// 清仓录入。`sellTime` 缺省 → 服务端用今日('YYYYMMDD')。`closeReason`(v1.2-A2)
     /// 可选——不传 → 服务端落 NULL,熔断评估走价格兜底判止损(不由客户端二次猜)。
+    /// `sellFees`(v1.3-①/⑥):清仓实付卖出费用真数,可选、成交后回填,周复盘对账用真数。
     @discardableResult
     func closePosition(id: Int, sellPrice: Double, sellTime: String? = nil,
-                       closeReason: String? = nil) async throws -> Bool {
-        let body = ClosePositionRequest(sell_price: sellPrice, sell_time: sellTime, closeReason: closeReason)
+                       closeReason: String? = nil, sellFees: Double? = nil) async throws -> Bool {
+        let body = ClosePositionRequest(sell_price: sellPrice, sell_time: sellTime,
+                                        closeReason: closeReason, sellFees: sellFees)
         let data = try await post("/api/v1/positions/\(id)/close", body: body)
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
@@ -459,12 +518,15 @@ actor APIClient {
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    /// 推送开关五字段一并写入(报告 / 退潮刹车 / 盘前校准 / D5 时间退出 / v1.2-A2 熔断提醒)。
+    /// 推送开关六字段一并写入(报告 / 退潮刹车 / 盘前校准 / D5 时间退出 / v1.2-A2 熔断提醒 /
+    /// v1.3-② K4 持仓派发警报)。`holdingAlert` 给默认值 `true`(六字段里最新加的一个,
+    /// 服务端本就要求六字段必填——默认值只是省得既有「不关心持仓警报开关」的调用点
+    /// 逐一改,实际请求体仍会带上这第六字段,不会让后端因缺字段 422)。
     @discardableResult
     func putSettingsPush(report: Bool, retreatBrake: Bool, precall: Bool, d5exit: Bool,
-                         circuit: Bool) async throws -> Bool {
+                         circuit: Bool, holdingAlert: Bool = true) async throws -> Bool {
         let body = SettingsPushRequest(report: report, retreatBrake: retreatBrake, precall: precall,
-                                       d5exit: d5exit, circuit: circuit)
+                                       d5exit: d5exit, circuit: circuit, holdingAlert: holdingAlert)
         let data = try await put("/api/v1/settings/push", body: body)
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
@@ -475,6 +537,25 @@ actor APIClient {
         let body = SettingsReviewColMapRequest(colMap: colMap)
         let data = try await put("/api/v1/settings/review-col-map", body: body)
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    // —— v1.3-③-C3/⑥ 五常驻板块可配 ——————————————————————————————————————————
+
+    /// 读当前常驻板块名单(从未配置 → 默认五板块;曾显式清空 → 空数组)。
+    func fetchIntelWatchBoards() async throws -> IntelWatchBoards {
+        let data = try await get("/api/v1/settings/intel-boards")
+        return IntelWatchBoards(boards: try JSONDecoder().decode(IntelWatchBoardsResponse.self, from: data).boards)
+    }
+
+    /// 写常驻板块名单。**禁模糊匹配**——每个名字须能在 `ths_index.name` 精确匹配到,匹配
+    /// 不到 → `APIError.validation("board_not_found:名字1、名字2")`(`reasonString` 对
+    /// `unresolved` 数组的展开,见传输层注释),调用方据此给出具体哪个名字没对上的提示,
+    /// 不是笼统的「字段校验失败」。返回写入后的最终名单(与 GET 同形状)。
+    @discardableResult
+    func putIntelWatchBoards(_ boards: [String]) async throws -> IntelWatchBoards {
+        let body = IntelWatchBoardsRequest(boards: boards)
+        let data = try await put("/api/v1/settings/intel-boards", body: body)
+        return IntelWatchBoards(boards: try JSONDecoder().decode(IntelWatchBoardsResponse.self, from: data).boards)
     }
 
     // —— 设备注册(iOS APNs token)——
@@ -696,7 +777,17 @@ actor APIClient {
 
     private func reasonString(_ data: Data) -> String? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        if let detail = obj["detail"] as? [String: Any], let r = detail["reason"] as? String { return r }
+        if let detail = obj["detail"] as? [String: Any], let r = detail["reason"] as? String {
+            // v1.3-⑥:`PUT /settings/intel-boards` 422 额外带 `unresolved`(具体哪些板块名
+            // 没精确匹配到)——**纯附加行为**,只在这个键存在时才拼接,不影响其它端点既有
+            // `reason` 语义(如 `watchlist_full` 无此键,原样返回不变,既有
+            // `.contains("watchlist_full")` 调用点不受影响)。拼接成
+            // "board_not_found:名字1、名字2",调用方按前缀识别 + 取冒号后的展示文案。
+            if let unresolved = detail["unresolved"] as? [String], !unresolved.isEmpty {
+                return "\(r):\(unresolved.joined(separator: "、"))"
+            }
+            return r
+        }
         if let detailStr = obj["detail"] as? String { return detailStr }
         // 422 的 detail 是数组(pydantic v2 ValidationError 形状)
         if let arr = obj["detail"] as? [[String: Any]], let first = arr.first,
