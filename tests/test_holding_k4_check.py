@@ -48,8 +48,8 @@ def _hit_row(**over):
     base = dict(
         ts_code="600001.SH", close=9.0, ma20=8.0, ma250=10.0, ma250_slope_up=False,
         is_limit_up=False, is_limit_down=False, high=9.0, low=8.5,
-        vol_above_ma20_cnt3=0, ret_1d=0.0, vol=100.0, vol_ma20=100.0, turnover_rate=3.0,
-        state4="④双空头态",
+        vol_above_ma20_cnt3=0, ret_1d=0.0, vol=100.0, vol_ma20=100.0, vol_ratio_5=1.0,
+        turnover_rate=3.0, state4="④双空头态",
     )
     base.update(over)
     df = pl.DataFrame([base])
@@ -71,13 +71,21 @@ def test_a3_belowyear_limitup():
 
 
 def test_a3b_vs_b1_year_line_gate():
-    """放量大阳形态:年线下=A3b 派发(强),年线上=B1 堆积(普通)——同形态由年线闸分级
-    (雷区地图 3-⑤:放量大阳只在年线下为负=派发)。"""
-    bigred = dict(vol_above_ma20_cnt3=2, ret_1d=0.06, vol=200.0, vol_ma20=100.0)
+    """放量大阳:年线下=A3b 派发(强,量比≥2 实测口径),年线上=B1 堆积(普通,advisory ×1.5
+    口径)——由年线闸分级(雷区地图 3-⑤:放量大阳只在年线下为负=派发)。"""
+    bigred = dict(vol_above_ma20_cnt3=2, ret_1d=0.06, vol=200.0, vol_ma20=100.0, vol_ratio_5=2.5)
     below = _hit_row(close=9.0, ma250=10.0, ma250_slope_up=False, **bigred)
     assert below["_hit_A3b"] is True and below["_hit_B1"] is False
     above = _hit_row(close=11.0, ma250=10.0, ma250_slope_up=True, **bigred)
     assert above["_hit_A3b"] is False and above["_hit_B1"] is True
+
+
+def test_a3b_volume_ratio_threshold_2x_not_1p5():
+    """A3b 贴雷区地图 3-⑤ 实测口径:量比(vol/vol_ma5)≥2 才派发;1.6× **不**触发(证明门槛按
+    2.0 走、没被 B1 的 ×1.5 兜住),2.1× 触发。强警示可信度挂在实测证据集合上,不放宽。"""
+    below = dict(close=9.0, ma250=10.0, ma250_slope_up=False, ret_1d=0.06)
+    assert _hit_row(vol_ratio_5=1.6, **below)["_hit_A3b"] is False
+    assert _hit_row(vol_ratio_5=2.1, **below)["_hit_A3b"] is True
 
 
 def test_b2_dual_golden_cross_and_b4():
@@ -90,7 +98,8 @@ def test_b2_dual_golden_cross_and_b4():
 def test_oneword_excluded_from_bigred():
     """一字涨停(high==low)排除放量大阳(不可交易),A3b/B1 均不命中。"""
     r = _hit_row(close=9.0, ma250=10.0, ma250_slope_up=False, is_limit_up=True,
-                 high=9.0, low=9.0, vol_above_ma20_cnt3=2, ret_1d=0.06, vol=200.0, vol_ma20=100.0)
+                 high=9.0, low=9.0, vol_above_ma20_cnt3=2, ret_1d=0.06, vol=200.0,
+                 vol_ma20=100.0, vol_ratio_5=2.5)
     assert r["_hit_A3b"] is False and r["_hit_B1"] is False
 
 

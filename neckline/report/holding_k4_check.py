@@ -14,7 +14,7 @@
     A1_turnover_gt_10              | turnover_rate > 10                                | pl.col("turnover_rate") > _A1_TURNOVER_HI(=10)
     A2_theme_persist_ge_4          | 行业强度(top20%中位数)连续≥4天成员                | 概念板块 board_age(sectors.py)≥ _A2_PERSIST_MIN(=4)★
     A3_belowyear_limitup           | TREND_BELOW & is_limit_up                         | _trend_below_expr() & pl.col("is_limit_up")
-    A3b_belowyear_bigvol(派发放量) | (雷区地图 3-⑤:年线下放量大阳=派发)★★             | _trend_below_expr() & _big_red_expr()
+    A3b_belowyear_bigvol(派发放量) | (雷区地图 3-⑤:年线下 ret1d≥5%×量比≥2=派发)★★     | _trend_below_expr() & _dispatch_bigred_expr()(量比 vol/vol_ma5≥2)
     B1_volume_stacking             | vol_above_ma20_cnt3≥2 & ret_1d≥5% & vol>vol_ma20×1.5 | _big_red_expr() & ~_trend_below_expr()(年线上才算普通堆积)
     B2_dual_golden_cross           | MACD多头(DIF>DEA) & KDJ多头(K>D)=双金叉态          | state4 == "①双金叉态"(_add_macd_kdj 镜像)
     B3_theme_persist_2_3           | 行业强度连续2-3天成员                              | 2 ≤ board_age ≤ 3 ★
@@ -29,10 +29,12 @@
       而非重建 industry 持续性管线,守「同码不重写」,且免在持仓管线里重算全市场行业中位数。
     ★★ A3b 是 STRATEGY_LAB Backlog「诱多做局反向哨兵」并入本需求(2026-07-26 立项)——
       年线下放量大阳(`ret1d≥5%×量比≥2`,数字口径雷区地图 3-⑤:事后 3 日 −1.04%)与年线下
-      涨停(A3)同为「派发/诱多」强价量信号。它=advisory B1 的价量形态 **gated by 年线下**:
-      plan §五 v1.3-②-B 把「放量大阳」记作 `B1_volume_stacking` 且列在强警示,与 B1 也列普通
-      警示的表面矛盾,唯一自洽解 = **年线下 → 派发(强);年线上 → 普通堆积**,由 `_trend_below_expr()`
-      闸分级(与雷区地图「放量大阳只在年线下为负」证据一致)。
+      涨停(A3)同为「派发/诱多」强价量信号。plan §五 v1.3-②-B 把「放量大阳」记作
+      `B1_volume_stacking` 且列在强警示,与 B1 也列普通警示的表面矛盾,唯一自洽解 = **年线下 → 派发
+      (强,推 APNs);年线上 → 普通堆积(只进看板)**,由 `_trend_below_expr()` 闸分级(与雷区地图
+      「放量大阳只在年线下为负」证据一致)。**⚠ A3b 的量能门槛贴雷区地图 3-⑤ 实测口径(量比≥2)、
+      不套 B1 的 cnt3 堆积条件,B1 贴 DB advisory 原文(×1.5),两者刻意分叉**——强警示要推锁屏,
+      门槛必须 = 实测证据集合、不能比证据更宽(详见 `_A3B_VOLUME_RATIO_HI` 常量注释)。
 
 **阈值单一源(§3.8,同 `sentinel/circuit.py` 常量 vs advisory `circuit_breaker` 文字先例)**:
 判据阈值 = 本模块命名常量(可执行镜像),advisory 文字 = 规格档(策略线档案)。**改阈值须
@@ -76,9 +78,19 @@ from neckline.strategy.momentum import MomentumConfig
 # —— 阈值命名常量(可执行镜像单一源;镜像 research/k4_assembly.py 判决口径,改阈值同改 DB advisory)——
 _A1_TURNOVER_HI = 10.0    # A1:换手 >10%(turnover_rate 单位为百分数,H2)
 _A2_PERSIST_MIN = 4       # A2:题材持续 ≥4 天(H6;本模块用概念板块 board_age 代理)
-_B1_UP = 0.05             # B1/A3b 放量大阳:当日涨幅 ≥5%
-_B1_MULT = 1.5            # B1/A3b 放量大阳:vol > vol_ma20×1.5
-_B1_CNT3 = 2             # B1/A3b 放量大阳:前 3 交易日放量天数 ≥2(vol_above_ma20_cnt3)
+_BIGRED_UP = 0.05         # A3b/B1 放量大阳共用:当日涨幅 ≥5%
+# ⚠ A3b(年线下派发,**强警示,推 APNs**)与 B1(年线上普通堆积,**只进看板**)的量能门槛
+# 故意分叉——**这正是「可执行镜像 vs 人读规格档」允许分叉、但分叉必须写明理由的地方**:
+#   · A3b `_A3B_VOLUME_RATIO_HI`=2.0:贴 STRATEGY_LAB 雷区地图 3-⑤ 的**实测证据口径**
+#     ——那个「年线下放量大阳事后 3 日 −1.04%」是在「ret1d≥5% × 量比(vol/vol_ma5)≥2」下测出的。
+#     强警示要推到用户锁屏,可信度挂在证据上:门槛必须 = 实测口径,不能比证据更宽(否则多报的
+#     那部分无证据支撑)。故 A3b 单用量比≥2、**不套 B1 的 cnt3 堆积条件**(证据口径里没有 cnt3)。
+#   · B1 `_B1_MULT`=1.5 / `_B1_CNT3`=2:贴 DB advisory 的 **B1_volume_stacking 原文形态**
+#     (`cnt3≥2 & vol>vol_ma20×1.5`,H1「堆积后再放量」)。B1 只进看板不推送,宽一点无害,且那是
+#     advisory 的原文。**勿把这两个阈值「统一」回同一个——分叉是刻意的,不是笔误。**
+_A3B_VOLUME_RATIO_HI = 2.0  # A3b:量比 vol/vol_ma5 ≥2(= 面板 vol_ratio_5,贴雷区地图 3-⑤ 实测口径)
+_B1_MULT = 1.5            # B1(年线上普通堆积)专用:vol > vol_ma20×1.5(DB advisory 原文形态)
+_B1_CNT3 = 2             # B1 专用:前 3 交易日放量天数 ≥2(vol_above_ma20_cnt3,advisory 原文)
 _B3_PERSIST_LO, _B3_PERSIST_HI = 2, 3   # B3:题材持续 2-3 天(认可题材=接盘侧)
 _B4_UP = 0.05             # B4:追强大红,close>ma20 & ret_1d>5%
 
@@ -168,12 +180,25 @@ def _oneword_expr() -> pl.Expr:
     return (pl.col("is_limit_up") | pl.col("is_limit_down")) & (pl.col("high") == pl.col("low"))
 
 
+def _dispatch_bigred_expr() -> pl.Expr:
+    """A3b **年线下派发放量大阳**的价量形态——**贴 STRATEGY_LAB 雷区地图 3-⑤ 的实测证据口径**
+    `ret1d≥5% × 量比(vol/vol_ma5)≥2`(那个「事后 3 日 −1.04%」正是在此口径下测出)。强警示要推
+    锁屏,门槛 = 实测证据集合:**单用量比≥2、不套 B1 的 cnt3 堆积条件**(证据口径里没有 cnt3),
+    量比用面板 `vol_ratio_5`(= vol/vol_ma5,`features.add_features` 已算)。非一字(不可交易剔除)。"""
+    return (
+        (pl.col("ret_1d") >= _BIGRED_UP)
+        & (pl.col("vol_ratio_5") >= _A3B_VOLUME_RATIO_HI)
+        & ~_oneword_expr()
+    )
+
+
 def _big_red_expr() -> pl.Expr:
-    """放量大阳价量形态(镜像 advisory B1_volume_stacking expr / k4_assembly B1_stack):
-    前 3 日放量天数≥2 & 当日涨≥5% & 量>vol_ma20×1.5 & 非一字。"""
+    """B1 **年线上普通堆积**的价量形态(镜像 advisory B1_volume_stacking 原文 / k4_assembly B1_stack):
+    前 3 日放量天数≥2 & 当日涨≥5% & 量>vol_ma20×1.5 & 非一字。**只进看板不推送**,故沿用 advisory
+    原文口径(×1.5),与 A3b 的实测口径(量比≥2)刻意分叉,见 `_A3B_VOLUME_RATIO_HI` 常量注释。"""
     return (
         (pl.col("vol_above_ma20_cnt3") >= _B1_CNT3)
-        & (pl.col("ret_1d") >= _B1_UP)
+        & (pl.col("ret_1d") >= _BIGRED_UP)
         & (pl.col("vol") > pl.col("vol_ma20") * _B1_MULT)
         & ~_oneword_expr()
     )
@@ -181,14 +206,14 @@ def _big_red_expr() -> pl.Expr:
 
 def _add_hit_columns(panel: pl.DataFrame) -> pl.DataFrame:
     """在持仓面板上加各价量类命中布尔列(题材类 A2/B3 由 board_age 另算,不在此)。
-    A3b/B1 由 `_trend_below_expr()` 闸分级:年线下放量大阳=A3b 派发(强);年线上=B1 堆积(普通)。"""
+    A3b/B1 由 `_trend_below_expr()` 闸分级:年线下放量大阳(量比≥2 实测口径)=A3b 派发(强);
+    年线上量能堆积(advisory ×1.5 原文口径)=B1(普通)。两者量能门槛刻意分叉(见常量注释)。"""
     trend_below = _trend_below_expr()
-    big_red = _big_red_expr()
     return panel.with_columns(
         (pl.col("turnover_rate") > _A1_TURNOVER_HI).fill_null(False).alias("_hit_A1"),
         (trend_below & pl.col("is_limit_up")).fill_null(False).alias("_hit_A3"),
-        (trend_below & big_red).fill_null(False).alias("_hit_A3b"),
-        (big_red & ~trend_below).fill_null(False).alias("_hit_B1"),
+        (trend_below & _dispatch_bigred_expr()).fill_null(False).alias("_hit_A3b"),
+        (_big_red_expr() & ~trend_below).fill_null(False).alias("_hit_B1"),
         (pl.col("state4") == "①双金叉态").fill_null(False).alias("_hit_B2"),
         ((pl.col("close") > pl.col("ma20")) & (pl.col("ret_1d") > _B4_UP)).fill_null(False).alias("_hit_B4"),
     )
