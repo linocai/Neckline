@@ -285,7 +285,7 @@ CREATE TABLE IF NOT EXISTS retreat_metrics (
 -- `revision_of`,否则该行本身即链根)——归因永远 `WHERE revision_of IS NULL` 取首版,
 -- 或 `WHERE revision_of=<根id>` 一步取全部修订,无需递归遍历链条。
 -- status:pending(预注册待决)/filled(成交后经 link 关联)/cancelled(用户放弃)/
--- expired(v1.2.1-C 挂单追踪 N 日到期,本块只建列不写)。position_id:成交后经
+-- expired(v1.3-④ 挂单追踪 N 交易日到期自动置,见 `report/pending_track.py`)。position_id:成交后经
 -- `link_decision` 回填,关联 `positions.id`(无 SQL 级 FK 约束,同本库其它表惯例)。
 CREATE TABLE IF NOT EXISTS decision_log (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -427,6 +427,28 @@ CREATE TABLE IF NOT EXISTS holding_eod_check (
 );
 CREATE INDEX IF NOT EXISTS idx_holding_eod_check_position ON holding_eod_check(position_id);
 CREATE INDEX IF NOT EXISTS idx_holding_eod_check_trade_date ON holding_eod_check(trade_date);
+
+-- v1.3-④ 挂单未成交追踪(plan §五 v1.3-④,原 v1.2.1-C 全文)。追踪 `decision_log`
+-- `status='pending'`(挂了没成交的计划)的后续 N=5 个交易日走势(常量
+-- `report/pending_track.py::DECISION_PENDING_TRACK_DAYS`,单一源),检验用户
+-- 「逆向选择:专接下坠、错过起飞」假设。16:35 报告管线每天对每条仍 pending 的
+-- 决策落一行(同 (decision_id, trade_date) 幂等覆盖,同日重跑不重复)。
+-- d_offset:距 `created_at`(创建当日本身不计)后第几个交易日,正常情况下 1..N;
+-- 若报告曾断跑导致一次性跳过第 N 天,如实记录【实际】offset(可能 >N)后立即令
+-- 该决策过期,不假装观测发生在第 N 天,也绝不让决策卡死在 pending(见该模块
+-- docstring `_offset`/`track_pending_decisions`)。close:当日 EOD 收盘(前复权
+-- 口径同 `strategy.features.build_research_panel`)。ret_from_plan:相对
+-- `planned_price` 的累计收益;`planned_price` 缺失(NULL)时本列亦为 NULL,不臆造。
+CREATE TABLE IF NOT EXISTS decision_pending_track (
+    decision_id     INTEGER NOT NULL,
+    trade_date      TEXT NOT NULL,          -- 'YYYYMMDD' 追踪快照日
+    d_offset        INTEGER NOT NULL,       -- 距 created_at 后第几个交易日(见表头注释)
+    close           REAL NOT NULL,
+    ret_from_plan   REAL,                   -- 相对 planned_price 的累计收益 | NULL(无 planned_price)
+    recorded_at     TEXT NOT NULL,
+    PRIMARY KEY (decision_id, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_decision_pending_track_decision ON decision_pending_track(decision_id);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

@@ -174,3 +174,97 @@ def test_inquiry_endpoint_st_rejected(client, AUTH, market, monkeypatch):
     monkeypatch.setattr(app_mod, "_inquiry_basis_pool_date", lambda: (day, day))
     body = client.post("/api/v1/inquiry", headers=AUTH, json={"code": "600002.SH", "messages": []}).json()
     assert body["verdict"] == VERDICT_REJECT
+
+
+# —— v1.3-⑤ 选股域漂移清理:同码 + 裁决等价(plan §五 v1.3-⑤ 验收)—————————————
+
+def test_disqualifiers_reuse_shared_discipline_checks(market):
+    """`run_deterministic_checks` 与 `report.watchlist_check.discipline_checks` 是
+    同一个函数(不是两份各自维护的阈值)——直接断言两者对象同一,防止未来有人在
+    问询台悄悄另起一份。"""
+    from neckline.report.watchlist_check import discipline_checks as wc_discipline_checks
+
+    assert inq.discipline_checks is wc_discipline_checks
+
+
+def test_matches_watchlist_check_same_code_same_day(market):
+    """§v1.3-⑤ 验收:问询台确定性核对与报告 `watchlist_check` 对同一票、同一日
+    同判(同码一致,disqualifiers 逐项集合相等,仅问询台额外展示「板块被排除」这
+    一行不参与本比较)。"""
+    from neckline.report.watchlist_check import build_watchlist_check
+    from neckline.strategy import brain
+
+    s, day = market
+    active = brain.get_active(db_path=s.db_path)
+    for code in ("600001.SH", "600002.SH", "300001.SZ"):
+        det = inq.run_deterministic_checks(code, day, db_path=s.db_path, parquet_dir=s.parquet_dir)
+        wc_items = build_watchlist_check(
+            day, active.rule,
+            [{"ts_code": code, "name": code, "pinned": False, "source": "manual"}],
+            parquet_dir=s.parquet_dir, db_path=s.db_path,
+        )
+        assert len(wc_items) == 1
+        wc = wc_items[0]
+        assert det.passes_discipline == wc.green_light, code
+        assert set(det.disqualifiers) == set(wc.disqualifiers), code
+
+
+def test_verdict_equivalent_to_pre_cleanup_handrolled_logic(market):
+    """§v1.3-⑤ 必须证明:清理前(问询台手写选股域五项 + P6 次新,**不含** P4/P5)
+    与清理后(`discipline_checks` 同码)在 K1 现役(P4/P5=None)下对同一批票的
+    `passes_discipline` 结果逐票相等——原因文案粒度允许变(五项→一条组合原因),
+    通过/不通过的布尔裁决不允许变。下面的 `_old_disqualified` 是清理前
+    `run_deterministic_checks` 原文手写逻辑的冻结快照(仅供本测试当历史 oracle,
+    不是第二份生产逻辑,不会被维护/不会漂移)。"""
+    from neckline.strategy import signals as S
+    from neckline.strategy.features import build_research_panel
+
+    s, day = market
+    cfg = inq._cfg_from_active(s.db_path)
+    panel = build_research_panel(day, day, with_forward=False, parquet_dir=s.parquet_dir)
+    panel = S.add_ret_rank_column(panel)
+
+    def _old_disqualified(code: str) -> bool:
+        sub = panel.filter(panel["ts_code"] == code)
+        row = sub.row(0, named=True)
+        if row.get("is_st"):
+            return True
+        board_raw = row.get("board", "MAIN")
+        if board_raw == "BSE":
+            return True
+        if cfg.forbid_high_elasticity and board_raw in ("GEM", "STAR") and board_raw != "BSE":
+            return True
+        close = row.get("close")
+        if close is not None and close < 2.0:
+            return True
+        amt = row.get("amount_ma20")
+        if amt is not None and amt < 20000:
+            return True
+        if row.get("ma20") is None:
+            return True
+        if cfg.forbid_new_days is not None:
+            dsl = row.get("days_since_listing")
+            if dsl is not None and dsl < cfg.forbid_new_days:
+                return True
+        return False
+
+    for code in ("600001.SH", "600002.SH", "300001.SZ"):
+        old_passes = not _old_disqualified(code)
+        det = inq.run_deterministic_checks(code, day, db_path=s.db_path, parquet_dir=s.parquet_dir)
+        assert det.passes_discipline == old_passes, (
+            f"{code}: 清理前 passes={old_passes},清理后 passes={det.passes_discipline}"
+        )
+
+
+def test_forbid_green_bigdown_now_reaches_inquiry_previously_ignored(api_env):
+    """§v1.3-⑤ 根因清理顺带修的真实缺口:清理前 `run_deterministic_checks` 完全
+    没实现 P4(`forbid_green_bigdown`)/P5(`forbid_far_from_high`)核对——即便现役
+    config 打开,问询台也会静默放行。`discipline_checks` 同码后,P4 现在必须能
+    拦下来。合成市场报告日全部代码 `ret_1d≈-1%`(见 `seed_synthetic_market` 收官
+    小幅回调),用阈值 -0.5% 的 config 强制命中。"""
+    dates = seed_synthetic_market(api_env)
+    seed_active_rule_v1(api_env, extra_config={"forbid_green_bigdown": -0.005})
+    day = dates[-1]
+    det = inq.run_deterministic_checks("600001.SH", day, db_path=api_env.db_path, parquet_dir=api_env.parquet_dir)
+    assert det.passes_discipline is False
+    assert any("绿盘大阴线" in d for d in det.disqualifiers)

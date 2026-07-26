@@ -34,6 +34,7 @@ from neckline.report.candidates import Candidate
 from neckline.report.intel_candidates import build_intel_candidates
 from neckline.report.intel import IntelReport, compute_intel, empty_intel_report
 from neckline.report.news_alerts import NewsAlertsReport, build_news_alerts, empty_news_alerts_report
+from neckline.report.pending_track import track_pending_decisions
 from neckline.report.render import render_markdown
 from neckline.report.sectors import SectorScore, compute_sector_strength, load_index_names, load_member_map
 from neckline.report.holding_k4_check import HoldingK4Item, build_holding_k4_check
@@ -291,6 +292,11 @@ def build_report(
         # 扫描状态已随 `store.save_report` 落 `news_alerts_scan_json`)。
         from neckline.report import news_alerts_store
         news_alerts_store.save_news_alerts(trade_date, news_alerts.items, db_path=db_path)
+        # v1.3-④ 挂单未成交追踪(同上,`save=False` 不落库、不推进 pending→expired
+        # 状态机——预览/单测不应有这个副作用)。复用本函数已建立的 EOD 面板访问层,
+        # 不新拉数据源;命中窗口内(offset≥1)的 pending 决策落一行,offset 达到
+        # DECISION_PENDING_TRACK_DAYS(=5)同批转 expired(见该模块 docstring)。
+        track_pending_decisions(trade_date, parquet_dir=parquet_dir, db_path=db_path)
 
     return ReportBundle(
         trade_date=trade_date,

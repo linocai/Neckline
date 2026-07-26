@@ -2,8 +2,21 @@
 评分管线跑分 + 板块年龄)→ LLM 自然语言回答** → 裁决二值。
 
 **同码不重写铁律**:确定性检查复用 `strategy.brain`(现役规则)+ `research.panel`
-(选股域)+ `strategy.signals`(禁买/风控预测)+ `report.candidates`(评分/板块年龄),
+(选股域)+ `strategy.signals`(禁买/风控预测)+ `report.candidates`(评分/板块年龄)+
+`report.watchlist_check.discipline_checks`(纪律红绿灯判定项,plan §五 v1.3-⑤),
 **不在本模块另写一份领域规则**。
+
+**v1.3-⑤ 选股域漂移清理**:本模块此前手写重复了一份选股域逻辑(ST/北交所/价格/
+流动性/MA20 逐条 Python 重刻,且未核对 P4/P5 两条现役可配禁买过滤——`forbid_
+green_bigdown`/`forbid_far_from_high` 此前在问询台完全不生效,即便现役 config
+打开也不会被拦下,是本次清理顺带修的一个真实缺口)。改为与 `report.watchlist_
+check.score_watchlist` 共用同一份 `discipline_checks(cfg)`:选股域四项揉成一条
+组合原因文案(`~research.panel.base_universe_expr()`,不拆解、不重抄阈值),只有
+现役 config 可配的禁买过滤(P4/P5/P6 + 高弹题材)逐项拆开——与 `build_entry_mask`
+的 if 分支一一对应,不新拍任何阈值。**展示粒度取舍如实标注**:选股域从「逐项」
+收敛为「一条组合原因」,是刻意的、与 `watchlist_check` 一致的取舍(损一点粒度换
+零阈值漂移);K1 现役(P4/P5=None)下对同一批票,裁决(`passes_discipline`)与
+清理前逐票等价,见 `tests/test_api_inquiry.py` 直接单测。
 
 **裁决二值(硬约束,§2.5:永不「现在就买」)——三重保险**:
     1. `verdict` 只可能是两个模块常量 `VERDICT_REJECT`/`VERDICT_PASS`,由**代码**据确定性
@@ -43,6 +56,7 @@ from neckline.report.sectors import (
     load_index_names,
     load_member_map,
 )
+from neckline.report.watchlist_check import discipline_checks  # 同码:纪律红绿灯,plan §五 v1.3-⑤
 from neckline.strategy import brain
 from neckline.strategy import signals as S
 from neckline.strategy.features import build_research_panel
@@ -51,7 +65,6 @@ from neckline.strategy.momentum import MomentumConfig, build_entry_mask
 logger = logging.getLogger(__name__)
 
 _BOARD_LABEL = {"MAIN": "主板", "GEM": "创业板", "STAR": "科创板", "BSE": "北交所"}
-_HIGH_ELASTICITY = ("GEM", "STAR", "BSE")
 
 
 INQUIRY_SYSTEM_PROMPT = """你是「颈线」系统的问询台审判员。用户从外部消息源看到一只股票,丢进来让你核对。
@@ -140,34 +153,18 @@ def run_deterministic_checks(
         )
         return det
 
-    row = sub.row(0, named=True)
+    # —— 硬性纪律核对(同码:与 `report.watchlist_check.score_watchlist` 共用同一份
+    # `discipline_checks(cfg)`,plan §五 v1.3-⑤——选股域四项揉成一条组合原因,只有
+    # 现役 config 可配的禁买过滤逐项拆开,不在本模块另写一份阈值,详见模块头注释)——
+    checks = discipline_checks(cfg)
+    annotated = sub.with_columns([expr.alias(col) for col, _label, expr in checks])
+    row = annotated.row(0, named=True)
     det.has_data = True
     det.close = row.get("close")
     board_raw = row.get("board", "MAIN")
     det.board = _BOARD_LABEL.get(board_raw, board_raw)
-
-    # —— 硬性纪律核对(base_universe 选股域 + 现役规则启用的禁买项;不含买点时机)——
-    dq = det.disqualifiers
-    if row.get("is_st"):
-        dq.append("ST/*ST(选股域清洗,禁买)")
-    if board_raw == Board.BSE.value:
-        dq.append("北交所(选股域排除:数据有新三板回填瑕疵 / 流动性薄)")
-    if cfg.forbid_high_elasticity and board_raw in _HIGH_ELASTICITY and board_raw != Board.BSE.value:
-        dq.append("高弹题材板块(创业板/科创板,20% 涨跌幅易跌停,现役规则风控剔除)")
-    close = row.get("close")
-    if close is not None and close < 2.0:
-        dq.append("股价 < 2 元(低价股 / 面值退市区,选股域排除)")
-    amt = row.get("amount_ma20")
-    if amt is not None and amt < 20000:
-        dq.append("20 日均额 < 2000 万元(流动性不足 / 滑点失真,选股域排除)")
-    if row.get("ma20") is None:
-        dq.append("无 MA20(上市未满 20 交易日,形态未成形)")
-    if cfg.forbid_new_days is not None:
-        dsl = row.get("days_since_listing")
-        if dsl is not None and dsl < cfg.forbid_new_days:
-            dq.append(f"次新股(上市 {int(dsl)} < {cfg.forbid_new_days} 自然日,现役规则剔除)")
-
-    det.passes_discipline = not dq
+    det.disqualifiers = [label for col, label, _expr in checks if row.get(col)]
+    det.passes_discipline = not det.disqualifiers
 
     # —— 同码买点/评分(evidence,不作硬门槛)——
     try:
@@ -195,13 +192,22 @@ def run_deterministic_checks(
     except Exception as e:  # noqa: BLE001
         logger.warning("问询台板块年龄核算异常(%s,不影响纪律核对)", e)
 
-    _build_evidence(det, cfg)
+    # 板块本身是否构成排除理由(供 evidence 的「板块:xxx(允许/被排除)」行用)——
+    # **直接语义判定,不再从 `det.disqualifiers` 文案里 grep 子串**:v1.3-⑤ 选股域
+    # 收敛成一条组合原因后,该原因文案本身固定含"北交所"字样(枚举了选股域全部
+    # 五个子项),旧的 `"北交所" in d` 子串匹配会对"仅因股价/流动性/ST 被剔除的
+    # 非北交所票"误判成"板块被排除"——用 `board_raw`/`cfg.forbid_high_elasticity`
+    # 直接算,不受组合原因文案措辞变化影响。
+    board_excluded = board_raw == Board.BSE.value or (
+        cfg.forbid_high_elasticity and board_raw in S.HIGH_ELASTICITY_BOARDS
+    )
+    _build_evidence(det, cfg, board_excluded)
     return det
 
 
-def _build_evidence(det: DeterministicResult, cfg: MomentumConfig) -> None:
+def _build_evidence(det: DeterministicResult, cfg: MomentumConfig, board_excluded: bool) -> None:
     ev = det.evidence
-    ev.append(f"板块:{det.board}" + ("(允许)" if not any("板块" in d or "北交所" in d for d in det.disqualifiers) else "(被排除)"))
+    ev.append(f"板块:{det.board}" + ("(被排除)" if board_excluded else "(允许)"))
     if det.disqualifiers:
         ev.append("硬性纪律未过:" + ";".join(det.disqualifiers))
     else:

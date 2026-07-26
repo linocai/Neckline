@@ -251,6 +251,20 @@ def cancel_decision(decision_id: int, db_path: Optional[Path] = None) -> bool:
         return cur.rowcount > 0
 
 
+def expire_decision(decision_id: int, db_path: Optional[Path] = None) -> bool:
+    """挂单追踪 N 个交易日到期仍未成交 → 自动过期(plan §五 v1.3-④,原 v1.2.1-C;
+    `report.pending_track.track_pending_decisions` 调用)。`status` 置 `expired`。
+    返回是否命中该 id(不存在 → False)。"""
+    init_schema(db_path)
+    now = _now()
+    with connection(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE decision_log SET status=?, updated_at=? WHERE id=?",
+            (STATUS_EXPIRED, now, decision_id),
+        )
+        return cur.rowcount > 0
+
+
 def revise_decision(
     decision_id: int,
     *,
@@ -340,6 +354,6 @@ __all__ = [
     "THESIS_TAG_CODES", "PLAYBOOK_TAG_CODES", "SCENARIO_ACTION_CODES",
     "ScenarioIndexError", "DecisionRow",
     "get_decision", "list_decisions",
-    "create_decision", "link_decision", "cancel_decision", "revise_decision",
+    "create_decision", "link_decision", "cancel_decision", "expire_decision", "revise_decision",
     "set_scenario_outcomes",
 ]

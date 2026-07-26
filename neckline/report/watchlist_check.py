@@ -12,11 +12,19 @@
     · 形态标签 = `report.candidates.pattern_tags`,同一份。
 
 **纪律红绿灯**(禁买规则 / 票型黑名单 / ST / 板块限制,读大脑现役 config)是
-`build_entry_mask` 的"选股域 + 禁买过滤"子句单独抽出展示(见 `_discipline_checks`
+`build_entry_mask` 的"选股域 + 禁买过滤"子句单独抽出展示(见 `discipline_checks`
 docstring)——`build_entry_mask` 本身是选股域∧强势∧买点∧¬禁买 的单一 AND 结果,
 无法从中拆出"具体是哪条规则导致不能碰这只票";本模块用同一批
 `research.panel.base_universe_expr()`/`strategy.signals.forbid_*` 谓词单独求值,
 只是**换一种组合方式展示原因**,不是重新定义任何阈值。
+
+**`discipline_checks` 是本模块与 `api/inquiry.py::run_deterministic_checks` 的
+共享单一源(plan §五 v1.3-⑤)**:问询台此前手写重复了一份选股域逻辑(ST/北交所/
+价格/流动性/MA20 逐条 Python 重刻,且当初未核对 P4/P5 两条禁买过滤),与本模块
+各自维护一份阈值、容易漂移。host 选在本模块(而非另开共享文件)——因为「正确
+姿势」本就是本模块先立的(v1.1-C.3),`api/inquiry.py` 早已从 `report.candidates`
+反向导入评分/四件套函数(同一 `report → api` 依赖方向的既有先例),此处沿用
+同一方向、不新增模块。
 
 **自选体检不改候选20评分逻辑、不进候选榜**——本模块只读大脑现役规则与当日面板,
 不接触 `report.candidates.build_candidates`/`score_candidates` 的任何状态,是独立
@@ -107,7 +115,7 @@ def _no_data_item(w: Dict[str, Any]) -> WatchlistCheckItem:
     )
 
 
-def _discipline_checks(cfg: MomentumConfig) -> List[Tuple[str, str, pl.Expr]]:
+def discipline_checks(cfg: MomentumConfig) -> List[Tuple[str, str, pl.Expr]]:
     """纪律红绿灯用到的禁买/黑名单判定项:(列名, 中文原因, 布尔表达式=True 表示
     触发该项禁买)。「选股域」四项(ST/北交所/价格/流动性/MA20 未形成)合并成一条
     展示原因(它们是 `research.panel.base_universe_expr()` 内部已经 AND 在一起的
@@ -116,7 +124,11 @@ def _discipline_checks(cfg: MomentumConfig) -> List[Tuple[str, str, pl.Expr]]:
     展示粒度也不重复刻字面量);现役 config **可配的四项禁买过滤**(P4/P5/P6)与
     `momentum.build_entry_mask` 是同一批 `strategy.signals` 谓词,按 cfg 是否启用
     逐项决定是否纳入判定,与 `build_entry_mask` 的 if 分支一一对应,不新拍任何
-    阈值。"""
+    阈值。
+
+    **公开函数(plan §五 v1.3-⑤ 提升)**:`api/inquiry.py::run_deterministic_checks`
+    与本模块 `score_watchlist` 共用同一份——两处任何时候都对同一票同一日给出相同
+    的 `passes_discipline`/disqualifiers 判定,不再各自维护一份选股域字面量。"""
     from neckline.research.panel import base_universe_expr
 
     checks: List[Tuple[str, str, pl.Expr]] = [
@@ -201,7 +213,7 @@ def score_watchlist(
     if panel.is_empty():
         return [_no_data_item(w) for w in watchlist_items]
 
-    checks = _discipline_checks(cfg)
+    checks = discipline_checks(cfg)
     annotated = panel.with_columns(
         [expr.alias(col) for col, _label, expr in checks]
         + [build_entry_mask(cfg).alias("_entry_mask"), _base_score_expr(cfg).alias("_base_score")]
@@ -338,6 +350,7 @@ def apply_llm_review(
 __all__ = [
     "WatchlistCheckItem",
     "NO_DATA_REASON",
+    "discipline_checks",
     "build_watchlist_check",
     "score_watchlist",
     "apply_llm_review",
