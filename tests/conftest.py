@@ -277,10 +277,12 @@ def seed_synthetic_market(
         write_daily_fixture(settings, "adj_factor", d, adj_rows)
         write_daily_fixture(settings, "daily_basic", d, basic_rows)
 
+    # v1.3-③-C3 行业闸:600001/600002 给同一行业「电气设备」→ 在「储能」板块内 100% 主导 → 过闸
+    # (否则无 industry 一律不通过闸,情报候选会空掉,test_pipeline 的 600001 入选断言会挂)。
     insert_stock_basic(settings, [
-        {"ts_code": "600001.SH", "name": "示例甲", "market": "主板", "list_date": start - timedelta(days=365)},
-        {"ts_code": "600002.SH", "name": "*ST示例乙", "market": "主板", "list_date": start - timedelta(days=365)},
-        {"ts_code": "300001.SZ", "name": "示例丙", "market": "创业板", "list_date": start - timedelta(days=365)},
+        {"ts_code": "600001.SH", "name": "示例甲", "market": "主板", "industry": "电气设备", "list_date": start - timedelta(days=365)},
+        {"ts_code": "600002.SH", "name": "*ST示例乙", "market": "主板", "industry": "电气设备", "list_date": start - timedelta(days=365)},
+        {"ts_code": "300001.SZ", "name": "示例丙", "market": "创业板", "industry": "电气设备", "list_date": start - timedelta(days=365)},
     ])
     insert_namechange(settings, [
         {"ts_code": "600002.SH", "name": "*ST示例乙", "start_date": start - timedelta(days=365)},

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import glob
 import logging
+from collections import Counter
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -56,7 +57,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import polars as pl
 
 from neckline.data.board import classify_by_code
-from neckline.data.market_data import table_dir
+from neckline.data.market_data import load_stock_basic, table_dir
 from neckline.report.board_pool import apply_hygiene, count_members, invert_member_map
 from neckline.report.candidates import (
     Candidate,
@@ -71,12 +72,9 @@ from neckline.report.candidates import (
     target_text,
 )
 from neckline.report.holding_k4_check import (
-    _A2_PERSIST_MIN,
-    _LOOKBACK_CALENDAR_DAYS,
     _build_holding_feature_panel,
     _evaluate_hits,
     _load_k4_evidence,
-    _theme_persist_days,
     load_k4_sections,
 )
 from neckline.report.sectors import (
@@ -122,9 +120,35 @@ _DEFAULT_SECTION = "avoid_flag"
 # 2-3=B3),此处只做「越新鲜分越高」的展示排序映射,不新增判据阈值。
 _THEME_FRESHNESS = {1: 3, 2: 2, 3: 1}
 
+# —— 行业闸(用户 2026-07-26 拍板方案二:行业当闸 + 概念当题材)———————————————————————
+# **问题**:保底/竞争把「名义上挂在该板块、但与主题无关」的票推上榜(实测:机器人概念栏
+# 给出九州通/重药控股〔医药商业〕、稀土永磁栏给出中炬高新〔厨邦酱油·食品〕)——成分归属
+# 没错(同花顺沾边挂靠,立中集团挂 30 个板块/九州通挂 25 个),错的是**板块内排序用的全是
+# 与主题无关的指标**(资金流/趋势/题材天数),当日最强题材的票就浮到不相干板块的前排。
+# **修法**:用 `stock_basic.industry`(**一票一行业,无沾边**)对每个板块自动算「主导行业集合」
+# ——个股必须**行业 ∈ 该板块主导行业集合**才能作为该板块的**代表票**(保底与竞争的板块归属
+# 都过这道闸)。**数据驱动、不手配白名单**——对当日暴起板块自动同样生效(这是选此方案的关键)。
+# 闸只作用于**板块归属/代表性**,不改卫生线、不改 K4 hard_cut/avoid_flag、不改情报排序公式本身。
+INDUSTRY_GATE_MIN_SHARE = 0.05   # 主导行业阈值 = 成员里行业占比 ≥ 此值(启发式,待实盘校准;
+                                 # 2026-07-26 真实数据验:机器人概念主导含专用机械11.4%…医药商业仅0.3%被挡,
+                                 # 稀土永磁主导含矿物制品18.5%…食品仅1.5%被挡,芯片概念主导含半导体21.1%…)。
+
 
 def _theme_freshness_score(persist_days: int) -> int:
     return _THEME_FRESHNESS.get(persist_days, 0)
+
+
+def _dominant_industries(
+    members: List[str], industry_of: Dict[str, str], min_share: float = INDUSTRY_GATE_MIN_SHARE
+) -> Set[str]:
+    """板块主导行业集合 = 成员里行业占比 ≥ `min_share` 的行业。**分母 = 全体成员**(无 industry
+    的成员计入分母、稀释占比,与 2026-07-26 真实校准数一致:机器人概念专用机械 138/1213=11.4%)。
+    空成员/无任何行业过阈 → 空集(该板块无代表票,不放宽——保守,守用户拍板)。"""
+    if not members:
+        return set()
+    counts = Counter(ind for m in members if (ind := industry_of.get(m)))
+    denom = len(members)
+    return {ind for ind, c in counts.items() if c / denom >= min_share}
 
 
 def _bulk_load_codes_table(
@@ -153,6 +177,15 @@ def _bulk_load_codes_table(
         )
         .collect()
     )
+
+
+def _load_industry_map(db_path: Optional[Path]) -> Dict[str, str]:
+    """`ts_code -> industry`(`stock_basic.industry`,一票一行业、无沾边;行业闸用)。缺表/缺列 →
+    空 dict(优雅降级:此时所有票 industry=空 → 全不通过闸 → 候选空,保守,不放宽)。"""
+    sb = load_stock_basic(db_path)
+    if sb.is_empty() or "industry" not in sb.columns:
+        return {}
+    return dict(zip(sb["ts_code"].to_list(), sb["industry"].to_list()))
 
 
 def _resolve_watch_board_codes(
@@ -224,11 +257,28 @@ def build_intel_candidates(
     all_hot = sector_hot_lookup(all_scores)
     step1_hot = {b: all_hot[b] for b in step1_boards if b in all_hot}
 
-    # —— ② 个股层:step① 板块成员 ∩ MAIN/GEM/STAR ∩ 卫生线 ∩ 非次新 ∩ 趋势向上 ————————
+    # —— 行业闸(2026-07-26 方案二):对每个 step① 板块自动算主导行业集合,个股必须行业 ∈ 该
+    #    集合才能作为该板块的代表票(gated 归属)。数据驱动、不手配白名单,当日暴起板块自动同样
+    #    生效。无 industry 的票视为不通过闸(保守,无法判主题相关性),诚实落审计日志、不静默丢。—
+    industry_of = _load_industry_map(db_path)
     inv = invert_member_map(member_map)
+    dominant_of: Dict[str, Set[str]] = {b: _dominant_industries(inv.get(b, []), industry_of) for b in step1_boards}
     member_codes: Set[str] = set()
+    gated_boards_of: Dict[str, List[str]] = {}   # code -> [该 code 过闸的 step① 板块](= 其代表的板块)
+    _blocked_no_industry: Set[str] = set()       # 因无 industry 被挡(审计用,去重)
     for b in step1_boards:
-        member_codes.update(inv.get(b, []))
+        dom = dominant_of[b]
+        for m in inv.get(b, []):
+            ind = industry_of.get(m)
+            if ind and ind in dom:
+                member_codes.add(m)
+                gated_boards_of.setdefault(m, []).append(b)
+            elif not ind:
+                _blocked_no_industry.add(m)
+    if _blocked_no_industry:
+        # 审计(同 board_pool 剔除审计落日志姿势;不静默吞):无 industry 的成员一律不通过闸。
+        logger.info("候选情报管线·行业闸:%d 只无 industry 的板块成员按不通过闸处理(保守,无法判主题相关性)",
+                    len(_blocked_no_industry))
     today = build_research_panel(trade_date, trade_date, with_forward=False, parquet_dir=parquet_dir)
     # 板块归属(MAIN/GEM/STAR/BSE)取自 today 面板(merge_meta 已算,单一源 board.classify);
     # forced 票若不在 today(极端)退 classify_by_code 前缀兜底。K4 面板(holding_k4_check
@@ -274,7 +324,11 @@ def build_intel_candidates(
     kept: List[Dict[str, Any]] = []
     for code in universe_codes:
         row = rows_by_code.get(code)
-        persist = _theme_persist_days(code, member_map, step1_hot)
+        # 板块归属**全部走行业闸后的 gated_boards_of**(= 该 code 真正代表的 step① 板块):资金流/
+        # 题材天数/保底归属/热门板块展示都只看代表的板块,不看沾边挂靠的板块(方案二核心)。
+        its_step1_boards = gated_boards_of.get(code, [])
+        its_permanent_boards = [b for b in its_step1_boards if b in permanent_set]
+        persist = max((step1_hot[b].board_age for b in its_step1_boards if b in step1_hot), default=0)
         hits = _evaluate_hits(row, persist, evidence)
         hard = [h for h in hits if sections.get(h.code, _DEFAULT_SECTION) == "hard_cut"]
         is_forced = code in forced_set
@@ -284,14 +338,12 @@ def build_intel_candidates(
             continue   # 无当日 EOD 数据(停牌/未上市)——无法出四件套候选卡,跳过
         # 保留候选的 K4 标注码:普通候选 = avoid_flag 命中;forced 票即使命中 hard_cut 也全数标注(诚实透出危险)。
         k4_flags = [h.code for h in hits]
-        boards_of_code = member_map.get(code, [])
-        its_step1_boards = [b for b in boards_of_code if b in step1_boards]
-        its_permanent_boards = [b for b in boards_of_code if b in permanent_set]
         flows = [flow_by_board[b] for b in its_step1_boards if b in flow_by_board]
         sector_flow = max(flows) if flows else None
         kept.append({
             "code": code, "row": row, "k4_flags": k4_flags,
             "board": board_by_code.get(code) or classify_by_code(code),
+            "industry": industry_of.get(code) or "",   # 出参带行业,让客户端说清「凭什么在这个板块栏」
             "sector_flow": sector_flow, "persist": persist,
             "freshness": _theme_freshness_score(persist),
             "base_score": float(row.get("_base_score") or 0.0),
@@ -399,6 +451,8 @@ def _build_intel_candidate(
         "sectorFlow": round(e["sector_flow"], 1) if e["sector_flow"] is not None else None,
         "themePersistDays": e["persist"],
         "highElasticity": board in S.HIGH_ELASTICITY_BOARDS,
+        # 行业(stock_basic.industry;一票一行业)——过行业闸后带出参,客户端据此说清「凭什么在此板块栏」。
+        "industry": e.get("industry", ""),
         # 入选来源(quota=常驻保底 / competition=情报竞争 / forced=问询强制),供 ⑥ 客户端说清
         # 「为什么在榜」。带在 intelRank 里(用户 2026-07-26 拍板「在既有 intelRank 里带来源标记」);
         # 落报告快照 JSON。⚠ 典型 API `CandidateOut.intelRank`(schemas.IntelRankOut)默认 drop
@@ -437,4 +491,5 @@ __all__ = [
     "SOURCE_QUOTA",
     "SOURCE_COMPETITION",
     "SOURCE_FORCED",
+    "INDUSTRY_GATE_MIN_SHARE",
 ]
