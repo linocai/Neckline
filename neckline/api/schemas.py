@@ -94,6 +94,29 @@ class WatchlistCheckOut(BaseModel):
     llmJudgment: Optional[WatchlistCheckLLMOut] = None   # 仅 statusChanged∪pinned 才有
 
 
+class NewsAlertOut(BaseModel):
+    """消息面命中告警(v1.3-③-C4)。契约照「v1.3 客户端契约清单」四字段
+    `{code, category, summary, source}`;`name` 为额外附加的展示便利字段(超集,
+    向后兼容,不破坏契约)。category 枚举码:REDUCTION(减持)/INVESTIGATION(立案)/
+    BLOWUP(暴雷)/REGULATORY(监管),客户端展示层换算中文,沿 `boardLabel` 先例。"""
+    code: str
+    name: str = ""
+    category: str
+    summary: str
+    source: str            # tushare_holdertrade | llm_glm | llm_kimi 等
+
+
+class NewsAlertScanStatusOut(BaseModel):
+    """消息面扫描状态(v1.3-③-C4,**非字面契约清单列出的字段,系本块新增的透明度
+    补充**——「没扫到」〔未激活/调用失败〕与「扫了没有」〔确认无此类消息〕必须能
+    区分,`newsAlerts` 空数组本身无法表达这个区别,故加本字段配合展示。"""
+    source: str             # tushare_holdertrade | llm
+    scanned: bool
+    reason: str = ""
+    codesTotal: int = 0
+    codesFailed: int = 0
+
+
 class ReportOut(BaseModel):
     tradeDate: str
     generatedAt: str
@@ -117,6 +140,13 @@ class ReportOut(BaseModel):
     # (非数组)——携带 available/unavailableReason 等元信息,供"2023-09 前无数据"
     # 这类诚实留空原因展示,不是裸榜单。
     sectorMoneyflow: Dict[str, Any] = Field(default_factory=dict)
+    # v1.3-③-C4 消息面(减持/立案/暴雷/监管,持仓+自选票扫描)——命中告警条目(契约
+    # 清单字面字段 code/category/summary/source,+ 附加 name)。旧报告(建于本字段前)
+    # 读回来是空列表(见 news_alerts_store.load_news_alerts 查无返回 []),同 watchlist
+    # 惯例前向兼容不必特判。
+    newsAlerts: List[NewsAlertOut] = Field(default_factory=list)
+    # 扫描状态(非字面契约清单,本块新增透明度字段,见 NewsAlertScanStatusOut 注释)。
+    newsAlertsScan: List[NewsAlertScanStatusOut] = Field(default_factory=list)
     degraded: bool = False
     reason: str = ""
 

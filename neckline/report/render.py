@@ -13,10 +13,15 @@ from typing import Dict, List, Optional
 from neckline.llm.judge import JudgeResult, VERDICT_PASS, VERDICT_VETO
 from neckline.report.candidates import Candidate
 from neckline.report.intel import IntelReport
+from neckline.report.news_alerts import NewsAlertsReport
 from neckline.report.sector_moneyflow import SectorMoneyflowReport
 from neckline.report.sectors import SectorScore
 from neckline.report.sentiment import SentimentDashboard
 from neckline.report.watchlist_check import WatchlistCheckItem
+
+_CATEGORY_LABEL = {
+    "REDUCTION": "减持", "INVESTIGATION": "立案", "BLOWUP": "暴雷", "REGULATORY": "监管",
+}
 
 _VERDICT_BADGE = {VERDICT_PASS: "✅ 通过", VERDICT_VETO: "🚫 否决"}
 
@@ -34,6 +39,7 @@ def render_markdown(
     watchlist_check: Optional[List[WatchlistCheckItem]] = None,
     intel: Optional[IntelReport] = None,
     sector_moneyflow: Optional[SectorMoneyflowReport] = None,
+    news_alerts: Optional[NewsAlertsReport] = None,
 ) -> str:
     parts: List[str] = []
     parts.append(f"# Neckline 盘后报告 · {trade_date.isoformat()}")
@@ -52,6 +58,7 @@ def render_markdown(
     parts.append(_render_watchlist(watchlist_check or []))
     parts.append(_render_intel(intel))
     parts.append(_render_sector_moneyflow(sector_moneyflow))
+    parts.append(_render_news_alerts(news_alerts))
     return "\n".join(parts)
 
 
@@ -358,6 +365,47 @@ def _render_sector_moneyflow(report: Optional[SectorMoneyflowReport]) -> str:
         b_cell = f"{b.name}" if b else ""
         b_val = f"{b.net_inflow_wan:+,.0f}" if b else ""
         lines.append(f"| {a_cell} | {a_val} | | {b_cell} | {b_val} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_news_alerts(report: Optional[NewsAlertsReport]) -> str:
+    """消息面节(C4,plan §五 v1.3-③-C4):持仓 + 自选票的减持/立案/暴雷/监管
+    扫描。**先亮扫描状态,再列命中**——「没扫到」(未激活/调用失败)与「扫了
+    没有」(确认无此类消息)必须能区分开(§硬要求),不能让读者把"下面没有列
+    出任何条目"直接当成"确认干净"。"""
+    lines = ["## 消息面(C4,持仓 + 自选票扫描:减持/立案/暴雷/监管)", ""]
+    if report is None:
+        lines.append("消息面节未生成。")
+        lines.append("")
+        return "\n".join(lines)
+    lines.append(f"*{report.evidence_note}*")
+    lines.append("")
+
+    for s in report.scan_statuses:
+        label = {"tushare_holdertrade": "减持(TuShare 结构化)", "llm": "立案/暴雷/监管(LLM 联网搜索)"}.get(
+            s.source, s.source
+        )
+        if not s.scanned:
+            lines.append(f"- ⚠ {label}:**本次未扫描**({s.reason or '原因未知'})——不代表确认无此类消息。")
+        elif s.reason:
+            lines.append(f"- {label}:已扫描,但 {s.reason}")
+        else:
+            extra = f"(标的数 {s.codes_total})" if s.codes_total else ""
+            lines.append(f"- {label}:已扫描{extra},以下为命中(空 = 确认无此类消息)。")
+    lines.append("")
+
+    if not report.items:
+        lines.append("扫描范围内(持仓 + 自选)未发现命中条目——请结合上方扫描状态判断是"
+                     "「确认干净」还是「本次未扫描」。")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append("| 代码 | 名称 | 类别 | 摘要 | 来源 |")
+    lines.append("|---|---|---|---|---|")
+    for it in report.items:
+        cat = _CATEGORY_LABEL.get(it.category, it.category)
+        lines.append(f"| {it.ts_code} | {it.name} | {cat} | {it.summary} | {it.source} |")
     lines.append("")
     return "\n".join(lines)
 

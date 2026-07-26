@@ -89,6 +89,12 @@ CREATE TABLE IF NOT EXISTS strategy_versions (
 -- 携带 available/unavailableReason 等元信息,不能只是裸榜单,否则"2023-09 前无
 -- 数据"这类诚实留空原因无处安放),同 watchlist_json 先例——老报告行幂等补列取
 -- 默认值 '{}',前向兼容。
+-- news_alerts_scan_json(v1.3-③-C4):`report/news_alerts.py::NewsAlertsReport.
+-- scan_statuses_public()` 的 JSON 数组快照——**只落扫描状态(没扫到/扫了没有的
+-- 元信息),不落命中告警本身**(告警条目已在独立 `news_alerts` 表,不重复存两
+-- 份)。之所以扫描状态也要随报告落一份快照(而非只活在内存 `NewsAlertsReport`
+-- 里):历史报告回放(`GET /report/{date}`)时仍需分清"当时没扫到"与"当时扫了
+-- 确认没有",不能只看 `news_alerts` 表有没有那天的行——空行两种含义都成立。
 CREATE TABLE IF NOT EXISTS reports (
     trade_date            TEXT PRIMARY KEY,   -- 'YYYYMMDD'
     generated_at          TEXT NOT NULL,      -- ISO8601
@@ -99,7 +105,8 @@ CREATE TABLE IF NOT EXISTS reports (
     markdown              TEXT NOT NULL,
     watchlist_json        TEXT NOT NULL DEFAULT '[]',
     intel_json            TEXT NOT NULL DEFAULT '{}',
-    sector_moneyflow_json TEXT NOT NULL DEFAULT '{}'
+    sector_moneyflow_json TEXT NOT NULL DEFAULT '{}',
+    news_alerts_scan_json TEXT NOT NULL DEFAULT '[]'
 );
 
 -- LLM 逻辑审判存档(plan 2.4)。前10只候选每只一行;search_hits_json 是该次审判
@@ -371,6 +378,30 @@ CREATE INDEX IF NOT EXISTS idx_breathing_t_trades_position_id ON breathing_t_tra
 -- has_strong:是否含「强价量证据」命中(= 触发第六类 APNs 派发警报的门槛,题材类弱证据不计入)。
 -- scenario_review:该持仓是否有关联决策日志(via decision_log.position_id)含非空情景树待每日
 --   对照(②-D 提醒,勾选仍走既有 scenario-outcome 端点,本表只做「挑出来」)。PK 保证幂等重跑。
+-- v1.3-③-C4 消息面告警(plan §五 v1.3-③-C4)。16:35 报告管线对**持仓 + 自选**
+-- (不是全市场)票扫描四类消息(减持/立案/暴雷/监管)→ 命中落本表一行。
+-- trade_date = **本次扫描所属报告日**(与本库其余表 trade_date 惯例一致,不是
+-- 公告/事件本身的日期,见 report/news_alerts.py 模块头「已知简化」说明)。
+-- UNIQUE(ts_code, trade_date, category) 幂等——同票同日同类不重复(同一报告日
+-- 重跑幂等覆盖为最新一次扫描结果,同 llm_judgments/holding_eod_check 惯例)。
+-- category 枚举码:REDUCTION(减持,TuShare stk_holdertrade 结构化)/
+-- INVESTIGATION(立案)/BLOWUP(暴雷)/REGULATORY(监管)(后三类 LLM 联网搜索,
+-- 见该模块 docstring 数据源侦察结论)。source 留痕来源(tushare_holdertrade /
+-- llm_<provider>)。**不存 name**(展示名读时从 stock_basic 解析,同
+-- llm_judgments 惯例不重复存,见 report/news_alerts_store.py)。
+CREATE TABLE IF NOT EXISTS news_alerts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_code     TEXT NOT NULL,
+    trade_date  TEXT NOT NULL,       -- 'YYYYMMDD' 扫描所属报告日
+    category    TEXT NOT NULL,       -- REDUCTION | INVESTIGATION | BLOWUP | REGULATORY
+    summary     TEXT NOT NULL,
+    source      TEXT NOT NULL,       -- tushare_holdertrade | llm_glm | llm_kimi 等
+    created_at  TEXT NOT NULL,
+    UNIQUE(ts_code, trade_date, category)
+);
+CREATE INDEX IF NOT EXISTS idx_news_alerts_trade_date ON news_alerts(trade_date);
+CREATE INDEX IF NOT EXISTS idx_news_alerts_ts_code ON news_alerts(ts_code);
+
 CREATE TABLE IF NOT EXISTS holding_eod_check (
     position_id         INTEGER NOT NULL,
     trade_date          TEXT NOT NULL,          -- 'YYYYMMDD' EOD 日
@@ -427,6 +458,9 @@ _COLUMN_MIGRATIONS = [
     # v1.3-③-C3:候选情报管线「五板块常驻」可配名单(可空,NULL=未配置→用
     # settings_store.DEFAULT_INTEL_WATCH_BOARDS 默认五板块;见 CREATE TABLE app_settings 注释)。
     ("app_settings", "intel_watch_boards", "TEXT"),
+    # v1.3-③-C4:消息面扫描状态快照(老报告行幂等补列取默认 '[]',前向兼容,见
+    # CREATE TABLE reports 注释)。
+    ("reports", "news_alerts_scan_json", "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 

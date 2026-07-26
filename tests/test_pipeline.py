@@ -14,10 +14,14 @@ import pytest
 
 from tests.conftest import seed_active_rule_v1, seed_synthetic_market
 
+import neckline.report.news_alerts as news_alerts_mod
 import neckline.report.pipeline as pipeline_mod
+from neckline import watchlist as watchlist_store
+from neckline.data.tushare_client import TushareResult
 from neckline.llm.judge import VERDICT_INACTIVE, VERDICT_PASS
 from neckline.llm.providers.glm import GLMProvider
 from neckline.report import store
+from neckline.sentinel import positions as pos_store
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 
@@ -423,6 +427,109 @@ class TestIntelAndSectorMoneyflowWiring:
         )
         assert "## 情报 · 复盘情报件(C1)" in bundle.markdown
         assert "## 情报 · 板块资金流(C2,拥挤参考,非选股信号)" in bundle.markdown
+
+
+class TestNewsAlertsWiring:
+    """v1.3-③-C4(消息面扫描)接入 `build_report`(硬要求④:整段异常不阻断主报告)。
+    减持/立案/暴雷/监管的评分单测在 `test_news_alerts.py`;本类只测「接线」+
+    「扫描对象=持仓∪自选」+「不阻断」+「落库」。"""
+
+    def test_bundle_carries_news_alerts_degrading_gracefully_without_token_or_key(self, isolated_env, monkeypatch):
+        """隔离环境默认无 tushare_token / LLM key → 两源均应降级为「未扫描」,但
+        报告整体必须正常生成(硬要求④常态验证)。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+        pos_store.open_position("600001.SH", 10.0, 1000, report_date, db_path=isolated_env.db_path)
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        assert bundle.news_alerts is not None
+        assert bundle.news_alerts.items == []
+        assert len(bundle.news_alerts.scan_statuses) == 2
+        assert all(s.scanned is False for s in bundle.news_alerts.scan_statuses)   # 没扫到,不是扫了没有
+
+    def test_news_alerts_exception_does_not_block_main_report(self, isolated_env, monkeypatch):
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            pipeline_mod, "build_news_alerts", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        assert "600001.SH" in [c.ts_code for c in bundle.candidates]   # 主报告未受影响
+        assert bundle.news_alerts is not None
+        assert all(not s.scanned for s in bundle.news_alerts.scan_statuses)
+
+    def test_markdown_includes_news_alerts_section_header(self, isolated_env, monkeypatch):
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        bundle = pipeline_mod.build_report(
+            dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert "## 消息面" in bundle.markdown
+
+    def test_scan_targets_are_positions_union_watchlist_deduped(self, isolated_env, monkeypatch):
+        """§硬要求「扫描对象=持仓+自选,不是全市场」——用 spy 替身直接断言
+        `build_news_alerts` 收到的 codes 集合,不依赖 TuShare/LLM 真调用。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        captured = {}
+
+        def spy(trade_date, codes, **kw):
+            captured["codes"] = set(codes)
+            return news_alerts_mod.empty_news_alerts_report(trade_date, reason="test-spy")
+
+        monkeypatch.setattr(pipeline_mod, "build_news_alerts", spy)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+        pos_store.open_position("600001.SH", 10.0, 1000, report_date, db_path=isolated_env.db_path)
+        watchlist_store.add_watchlist("600002.SH", name="*ST示例乙", db_path=isolated_env.db_path)
+
+        pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        codes_only = {c for c, _name in captured["codes"]}
+        assert codes_only == {"600001.SH", "600002.SH"}
+        assert "300001.SZ" not in codes_only   # 不是持仓也不是自选,不应被扫描
+
+    def test_save_persists_hit_items_and_scan_status_json(self, isolated_env, monkeypatch):
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+
+        def fake_holdertrade(start, end):
+            import pandas as pd
+            return TushareResult.success(pd.DataFrame([{
+                "ts_code": "600001.SH", "ann_date": end, "holder_name": "张三", "holder_type": "G",
+                "in_de": "DE", "change_vol": 10000.0, "change_ratio": 0.2,
+            }]))
+
+        monkeypatch.setattr(news_alerts_mod, "ts_stk_holdertrade", fake_holdertrade)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+        pos_store.open_position("600001.SH", 10.0, 1000, report_date, db_path=isolated_env.db_path)
+
+        pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+
+        from neckline.report.news_alerts_store import load_news_alerts
+        rows = load_news_alerts(report_date, db_path=isolated_env.db_path)
+        assert len(rows) == 1
+        assert rows[0]["ts_code"] == "600001.SH"
+        assert rows[0]["category"] == "REDUCTION"
+
+        loaded_report = store.load_report(report_date, db_path=isolated_env.db_path)
+        assert len(loaded_report["news_alerts_scan"]) == 2
+        tushare_status = next(s for s in loaded_report["news_alerts_scan"] if s["source"] == "tushare_holdertrade")
+        assert tushare_status["scanned"] is True
 
 
 class TestTopNSplit:

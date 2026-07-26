@@ -216,3 +216,66 @@ class TestWatchlistSection:
         watch = _watch_item(ts_code="600003.SH")
         md = _render(candidates=[cand], watchlist_check=[watch])
         assert md.index("## 候选") < md.index("## 自选体检")
+
+
+def _news_alerts(**overrides) -> "NewsAlertsReport":
+    from neckline.report.news_alerts import NewsAlertsReport
+
+    base = dict(trade_date=D)
+    base.update(overrides)
+    return NewsAlertsReport(**base)
+
+
+class TestNewsAlertsSection:
+    """消息面节(C4,plan §五 v1.3-③-C4)。核心断言:①「没扫到」与「扫了没有」
+    两种空态渲染成不同文案(硬要求,不许静默当成"没有公告");②命中条目正确入表;
+    ③ None(未生成)不崩。"""
+
+    def test_none_report_shows_placeholder_not_crash(self):
+        md = _render()
+        assert "## 消息面" in md
+        assert "未生成" in md
+
+    def test_unscanned_source_shows_explicit_warning_not_silent_empty(self):
+        from neckline.report.news_alerts import NewsAlertScanStatus, SOURCE_LLM_PREFIX, SOURCE_TUSHARE_HOLDERTRADE
+
+        report = _news_alerts(scan_statuses=[
+            NewsAlertScanStatus(source=SOURCE_TUSHARE_HOLDERTRADE, scanned=False, reason="TuShare stk_holdertrade 调用失败:token 缺失"),
+            NewsAlertScanStatus(source=SOURCE_LLM_PREFIX, scanned=False, reason="未配置 LLM_PROVIDER/LLM_API_KEY"),
+        ])
+        md = _render(news_alerts=report)
+        assert "本次未扫描" in md
+        assert "token 缺失" in md
+        assert "LLM_PROVIDER" in md
+
+    def test_scanned_clean_shows_confirmed_no_alerts_not_same_as_unscanned(self):
+        from neckline.report.news_alerts import NewsAlertScanStatus, SOURCE_LLM_PREFIX, SOURCE_TUSHARE_HOLDERTRADE
+
+        report = _news_alerts(scan_statuses=[
+            NewsAlertScanStatus(source=SOURCE_TUSHARE_HOLDERTRADE, scanned=True),
+            NewsAlertScanStatus(source=SOURCE_LLM_PREFIX, scanned=True, codes_total=2),
+        ])
+        md = _render(news_alerts=report)
+        # 逐源状态行的「未扫描」用 ⚠ + 粗体标出(见 render.py `**本次未扫描**`),
+        # 与本测试下方"未命中条目"的兜底提示句(纯文本提及"本次未扫描"作为
+        # 判断线索之一)刻意区分——后者不应被误判为"确实有源未扫描"。
+        assert "⚠" not in md
+        assert "**本次未扫描**" not in md
+        assert "已扫描" in md
+        assert "确认无此类消息" in md or "未发现命中条目" in md
+
+    def test_hit_items_rendered_in_table_with_category_label(self):
+        from neckline.report.news_alerts import NewsAlertItem, NewsAlertScanStatus, SOURCE_TUSHARE_HOLDERTRADE
+
+        report = _news_alerts(
+            items=[NewsAlertItem(
+                ts_code="600001.SH", name="示例甲", category="REDUCTION",
+                summary="张三(高管)减持 50,000 股", source=SOURCE_TUSHARE_HOLDERTRADE,
+            )],
+            scan_statuses=[NewsAlertScanStatus(source=SOURCE_TUSHARE_HOLDERTRADE, scanned=True)],
+        )
+        md = _render(news_alerts=report)
+        assert "600001.SH" in md
+        assert "示例甲" in md
+        assert "减持" in md   # 中文类别标签(枚举码 REDUCTION 已换算展示)
+        assert "张三" in md

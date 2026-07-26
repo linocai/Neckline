@@ -282,6 +282,21 @@ def ts_ths_daily(index_code: str, start: str, end: str) -> TushareResult:
     return _call("ths_daily", ts_code=index_code, start_date=start, end_date=end)
 
 
+def ts_stk_holdertrade(start: str, end: str) -> TushareResult:
+    """股东增减持(全市场,按公告日区间;plan §五 v1.3-③-C4「消息面扫描」减持类的
+    结构化数据源)。**2026-07-26 真实 token 活体探活确认**:所需 2000 积分,在本项目
+    600 元档(6000 积分)覆盖范围内可直接调用(**非**「单独权限」——与 `anns_d` 不同,
+    见 `neckline.report.news_alerts` 模块头的完整侦察结论)。
+
+    字段:`ann_date`(公告日 'YYYYMMDD')、`ts_code`、`holder_name`、`holder_type`
+    (G高管/P个人/C公司)、`in_de`(IN增持/DE减持,消息面扫描只取 DE)、`change_vol`
+    (变动股数)、`change_ratio`(占总股本比例 %)、`after_share`/`after_ratio`
+    (变动后持股数/占比,可能为空)、`avg_price`(成交均价,可能为空)、`total_share`。
+    单次最大 3000 行(官方文档);本项目按数日窗口调用,实测量级约 40-60 行/日,
+    远低于该上限,不分页。"""
+    return _call("stk_holdertrade", start_date=start, end_date=end)
+
+
 def ts_top_list(trade_date: str) -> TushareResult:
     """龙虎榜每日明细(§3.2 可用接口,2000 积分档,600 档天然覆盖)。trade_date 'YYYYMMDD'。
     某日无股票上榜是正常情况(不是每个交易日都有龙虎榜),返回空表不代表失败。
@@ -336,4 +351,5 @@ __all__ = [
     "ts_ths_member",
     "ts_ths_daily",
     "ts_top_list",
+    "ts_stk_holdertrade",
 ]

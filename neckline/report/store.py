@@ -32,6 +32,7 @@ def save_report(
     watchlist: Optional[List[Dict[str, Any]]] = None,
     intel: Optional[Dict[str, Any]] = None,
     sector_moneyflow: Optional[Dict[str, Any]] = None,
+    news_alerts_scan: Optional[List[Dict[str, Any]]] = None,
     db_path: Optional[Path] = None,
 ) -> None:
     """`watchlist`(v1.1-C.3 自选体检快照,`WatchlistCheckItem.public_dict()` 列表):
@@ -40,15 +41,19 @@ def save_report(
     `SectorMoneyflowReport.to_public_dict()` 的字典,均为**单个对象**而非数组——
     已是 camelCase JSON-safe 形状,`sector_moneyflow` 携带 available/
     unavailableReason 等元信息,不是裸榜单):默认 `None` → 落 `'{}'`(旧调用点零
-    改动落库形状,同 watchlist 惯例)。"""
+    改动落库形状,同 watchlist 惯例)。
+    `news_alerts_scan`(v1.3-③-C4,`NewsAlertsReport.scan_statuses_public()` 的
+    JSON 数组快照——**只是扫描状态元信息,不含命中告警本身**〔告警条目落独立
+    `news_alerts` 表,见 `report/news_alerts_store.py`〕):默认 `None` → 落
+    `'[]'`,同 watchlist 惯例。"""
     init_schema(db_path)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with connection(db_path) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO reports "
             "(trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "watchlist_json, intel_json, sector_moneyflow_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 _d(trade_date),
                 now,
@@ -60,6 +65,7 @@ def save_report(
                 json.dumps(watchlist or [], ensure_ascii=False),
                 json.dumps(intel or {}, ensure_ascii=False),
                 json.dumps(sector_moneyflow or {}, ensure_ascii=False),
+                json.dumps(news_alerts_scan or [], ensure_ascii=False),
             ),
         )
 
@@ -88,6 +94,10 @@ def _parse_sector_moneyflow_json(raw: Optional[str]) -> Dict[str, Any]:
     return _parse_json_field(raw, {})
 
 
+def _parse_news_alerts_scan_json(raw: Optional[str]) -> List[Dict[str, Any]]:
+    return _parse_json_field(raw, [])
+
+
 def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     """查某交易日的报告。查一个"从未生成过报告"的日期是完全正常的场景(如尚未
     到 16:00、当天非交易日、或报告脚本还没跑过)——防御性 `init_schema`,免得
@@ -96,7 +106,7 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
     with connection(db_path) as conn:
         row = conn.execute(
             "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "watchlist_json, intel_json, sector_moneyflow_json "
+            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json "
             "FROM reports WHERE trade_date=?",
             (_d(trade_date),),
         ).fetchone()
@@ -113,6 +123,7 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
         "watchlist": _parse_watchlist_json(row[7]),
         "intel": _parse_intel_json(row[8]),
         "sector_moneyflow": _parse_sector_moneyflow_json(row[9]),
+        "news_alerts_scan": _parse_news_alerts_scan_json(row[10]),
     }
 
 
@@ -132,7 +143,7 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
     with connection(db_path) as conn:
         row = conn.execute(
             "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "watchlist_json, intel_json, sector_moneyflow_json "
+            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json "
             "FROM reports WHERE trade_date=?",
             (trade_date_str,),
         ).fetchone()
@@ -149,6 +160,7 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
         "watchlist": _parse_watchlist_json(row[7]),
         "intel": _parse_intel_json(row[8]),
         "sector_moneyflow": _parse_sector_moneyflow_json(row[9]),
+        "news_alerts_scan": _parse_news_alerts_scan_json(row[10]),
     }
 
 

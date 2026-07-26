@@ -53,6 +53,8 @@ from neckline.api.schemas import (
     IntelRankOut,
     K4AdvisoryOut,
     LLMJudgmentOut,
+    NewsAlertOut,
+    NewsAlertScanStatusOut,
     OkOut,
     PositionCloseIn,
     PositionOpenIn,
@@ -276,7 +278,19 @@ def _shape_watchlist_check(d: Dict[str, Any]) -> WatchlistCheckOut:
     )
 
 
+def _shape_news_alert(a: Dict[str, Any], names: Dict[str, str]) -> NewsAlertOut:
+    """`news_alerts` 表行 → 客户端契约(v1.3-③-C4)。表不存 `name`(同
+    `llm_judgments` 惯例),这里从 `stock_basic` 解析补上展示便利字段。"""
+    code = a.get("ts_code", "")
+    return NewsAlertOut(
+        code=code, name=names.get(code, code),
+        category=a.get("category", ""), summary=a.get("summary", ""), source=a.get("source", ""),
+    )
+
+
 def _shape_report(rep: Dict[str, Any]) -> ReportOut:
+    from neckline.report.candidates import _load_stock_names
+    from neckline.report.news_alerts_store import load_news_alerts
     from neckline.report.pipeline import compute_missed_entry_hint
 
     td = rep["trade_date"]
@@ -284,6 +298,18 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
     judgments = {j["ts_code"]: j for j in report_store.load_llm_judgments(d, db_path=_db())}
     candidates = [_shape_candidate(c, judgments.get(c.get("ts_code", ""))) for c in rep.get("candidates", [])]
     watchlist_check = [_shape_watchlist_check(w) for w in rep.get("watchlist", []) if isinstance(w, dict)]
+    # v1.3-③-C4:命中告警条目独立表实时查(同 llm_judgments 的「live join」惯例,
+    # 不像 intel/watchlist 那样整段嵌 JSON——见 news_alerts.py 模块头设计说明)。
+    alert_rows = load_news_alerts(d, db_path=_db())
+    alert_names = _load_stock_names(list({r["ts_code"] for r in alert_rows}), _db()) if alert_rows else {}
+    news_alerts = [_shape_news_alert(a, alert_names) for a in alert_rows]
+    news_alerts_scan = [
+        NewsAlertScanStatusOut(
+            source=s.get("source", ""), scanned=bool(s.get("scanned", False)), reason=s.get("reason", ""),
+            codesTotal=s.get("codesTotal", 0), codesFailed=s.get("codesFailed", 0),
+        )
+        for s in rep.get("news_alerts_scan", [])
+    ]
     return ReportOut(
         tradeDate=td,
         generatedAt=rep.get("generated_at", ""),
@@ -295,6 +321,8 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
         missedEntryHint=compute_missed_entry_hint(d, db_path=_db()),   # v1.1-B.4 实时算(补录后自动消失)
         intel=rep.get("intel", {}),                       # v1.3-③-C1,透传落库快照(同 sentiment 惯例)
         sectorMoneyflow=rep.get("sector_moneyflow", {}),   # v1.3-③-C2,透传落库快照
+        newsAlerts=news_alerts,                            # v1.3-③-C4,独立表实时查
+        newsAlertsScan=news_alerts_scan,                    # v1.3-③-C4,透传落库快照(同 intel 惯例)
     )
 
 

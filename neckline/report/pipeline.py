@@ -33,6 +33,7 @@ from neckline.report import store
 from neckline.report.candidates import Candidate
 from neckline.report.intel_candidates import build_intel_candidates
 from neckline.report.intel import IntelReport, compute_intel, empty_intel_report
+from neckline.report.news_alerts import NewsAlertsReport, build_news_alerts, empty_news_alerts_report
 from neckline.report.render import render_markdown
 from neckline.report.sectors import SectorScore, compute_sector_strength, load_index_names, load_member_map
 from neckline.report.holding_k4_check import HoldingK4Item, build_holding_k4_check
@@ -66,6 +67,7 @@ class ReportBundle:
     holding_k4_check: List[HoldingK4Item] = field(default_factory=list)      # v1.3-② 持仓 K4 体检 + D5 净浮盈
     intel: Optional[IntelReport] = None                    # v1.3-③-C1 复盘情报件(不阻断,失败降级见 empty_intel_report)
     sector_moneyflow: Optional[SectorMoneyflowReport] = None  # v1.3-③-C2 板块资金流(拥挤情报,非选股信号)
+    news_alerts: Optional[NewsAlertsReport] = None          # v1.3-③-C4 消息面扫描(不阻断,失败降级见 empty_news_alerts_report)
 
 
 def compute_missed_entry_hint(trade_date: date, db_path: Optional[Path] = None) -> str:
@@ -218,6 +220,28 @@ def build_report(
             trade_date, reason="板块资金流(C2)计算异常(详见服务端日志),已降级留空。"
         )
 
+    # v1.3-③-C4 消息面扫描:对象 = **持仓 ∪ 自选**(去重),不是全市场(§硬要求)。
+    # 展示名优先取自选池自带的 name(用户维护/入池时已解析),持仓票另经 stock_basic
+    # 解析(`Position` 无 name 字段)。**不阻断主报告管线**(同 C1/C2 姿势,内部两个
+    # 子扫描已各自降级,这里再包一层兜底编排逻辑自身的意外)。
+    from neckline.report.candidates import _load_stock_names
+    holding_codes = [h.ts_code for h in holding_positions]
+    resolved_names = _load_stock_names(holding_codes, db_path) if holding_codes else {}
+    watchlist_name_map = {w["ts_code"]: w.get("name") for w in watchlist_items if w.get("name")}
+    alert_codes = list(dict.fromkeys(holding_codes + [w["ts_code"] for w in watchlist_items]))
+    alert_targets = [
+        (c, watchlist_name_map.get(c) or resolved_names.get(c) or c) for c in alert_codes
+    ]
+    try:
+        news_alerts = build_news_alerts(
+            trade_date, alert_targets, provider=provider, transport=llm_transport,
+        )
+    except Exception:  # noqa: BLE001 —— 消息面扫描(C4)异常不得连带主报告失败
+        logger.warning("消息面扫描(C4)计算异常,已降级为未扫描,不阻断主报告", exc_info=True)
+        news_alerts = empty_news_alerts_report(
+            trade_date, reason="消息面扫描(C4)计算异常(详见服务端日志),已降级为未扫描。"
+        )
+
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     markdown = render_markdown(
         trade_date=trade_date,
@@ -231,6 +255,7 @@ def build_report(
         watchlist_check=watchlist_check,
         intel=intel,
         sector_moneyflow=sector_moneyflow,
+        news_alerts=news_alerts,
     )
 
     if save:
@@ -244,6 +269,7 @@ def build_report(
             watchlist=[_jsonable(w.public_dict()) for w in watchlist_check],
             intel=intel.to_public_dict(),
             sector_moneyflow=sector_moneyflow.to_public_dict(),
+            news_alerts_scan=news_alerts.scan_statuses_public(),
             db_path=db_path,
         )
         # v1.1-D 问询窗口修复:报告落库成功后才标记消费(§根因见
@@ -253,6 +279,10 @@ def build_report(
         # v1.3-② 持仓 K4 体检 + D5 净浮盈落库(同 `save=False` 不落库口径,防预览/单测副作用)。
         from neckline.report import holding_store
         holding_store.save_holding_eod_checks(trade_date, holding_k4_check, db_path=db_path)
+        # v1.3-③-C4 消息面告警落库(同上,`save=False` 不落库;命中告警条目落独立表,
+        # 扫描状态已随 `store.save_report` 落 `news_alerts_scan_json`)。
+        from neckline.report import news_alerts_store
+        news_alerts_store.save_news_alerts(trade_date, news_alerts.items, db_path=db_path)
 
     return ReportBundle(
         trade_date=trade_date,
@@ -268,6 +298,7 @@ def build_report(
         holding_k4_check=holding_k4_check,
         intel=intel,
         sector_moneyflow=sector_moneyflow,
+        news_alerts=news_alerts,
     )
 
 

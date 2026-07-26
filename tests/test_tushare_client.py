@@ -90,6 +90,7 @@ class TestNoTokenGracefulDegradation:
             (ts_mod.ts_ths_member, dict(index_code="883300.TI")),
             (ts_mod.ts_ths_daily, dict(index_code="883300.TI", start="20240101", end="20240110")),
             (ts_mod.ts_top_list, dict(trade_date="20260101")),
+            (ts_mod.ts_stk_holdertrade, dict(start="20260101", end="20260110")),
         ]:
             res = fn(**kwargs)
             assert res.ok is False, f"{fn.__name__} 应在无 token 时优雅降级"

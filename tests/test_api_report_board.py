@@ -24,7 +24,7 @@ def _candidate(rank: int, code: str, name: str) -> dict:
     }
 
 
-def _seed_report(db, d: date, *, intel=None, sector_moneyflow=None):
+def _seed_report(db, d: date, *, intel=None, sector_moneyflow=None, news_alerts_scan=None):
     report_store.save_report(
         d, strategy_version="v1",
         sentiment={"trade_date": d.isoformat(), "limit_up_count": 48, "limit_down_count": 41,
@@ -32,7 +32,8 @@ def _seed_report(db, d: date, *, intel=None, sector_moneyflow=None):
                    "quota_reason": "情绪中性"},
         sectors=[{"index_code": "AI", "name": "AI", "board_age": 3, "ret_20d": 0.12, "bonus": 3.0, "rank": 1}],
         candidates=[_candidate(1, "600001.SH", "示例甲"), _candidate(2, "600002.SH", "示例乙")],
-        markdown="# 报告", intel=intel, sector_moneyflow=sector_moneyflow, db_path=db,
+        markdown="# 报告", intel=intel, sector_moneyflow=sector_moneyflow,
+        news_alerts_scan=news_alerts_scan, db_path=db,
     )
     report_store.save_llm_judgment(
         d, JudgeResult(ts_code="600001.SH", provider="glm", model="glm-5.2", verdict="通过",
@@ -83,6 +84,49 @@ def test_report_latest_intel_defaults_to_empty_dict_when_not_seeded(client, AUTH
     body = client.get("/api/v1/report/latest", headers=AUTH).json()
     assert body["intel"] == {}
     assert body["sectorMoneyflow"] == {}
+
+
+def test_report_latest_carries_news_alerts_and_scan_status(client, AUTH, api_env):
+    """v1.3-③-C4 契约:`ReportOut.newsAlerts`(命中告警,独立表实时查,契约字面
+    字段 code/category/summary/source + 附加 name)+ `newsAlertsScan`(扫描状态,
+    "没扫到 vs 扫了没有"透明度字段)。"""
+    from neckline.report.news_alerts_store import save_news_alerts
+
+    d = date(2026, 7, 17)
+    _seed_report(
+        api_env.db_path, d,
+        news_alerts_scan=[
+            {"source": "tushare_holdertrade", "scanned": True, "reason": "", "codesTotal": 0, "codesFailed": 0},
+            {"source": "llm", "scanned": False, "reason": "未配置 LLM_PROVIDER/LLM_API_KEY", "codesTotal": 1, "codesFailed": 0},
+        ],
+    )
+
+    class _Item:
+        def __init__(self, ts_code, category, summary, source):
+            self.ts_code, self.category, self.summary, self.source = ts_code, category, summary, source
+
+    save_news_alerts(d, [_Item("600001.SH", "REDUCTION", "张三减持 5万股", "tushare_holdertrade")], db_path=api_env.db_path)
+
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    assert body["tradeDate"] == "20260717"
+    assert len(body["newsAlerts"]) == 1
+    alert = body["newsAlerts"][0]
+    assert alert["code"] == "600001.SH"
+    assert alert["category"] == "REDUCTION"
+    assert alert["summary"] == "张三减持 5万股"
+    assert alert["source"] == "tushare_holdertrade"
+
+    scan = {s["source"]: s for s in body["newsAlertsScan"]}
+    assert scan["tushare_holdertrade"]["scanned"] is True
+    assert scan["llm"]["scanned"] is False
+    assert "LLM_PROVIDER" in scan["llm"]["reason"]
+
+
+def test_report_latest_news_alerts_default_to_empty_when_not_seeded(client, AUTH, api_env):
+    _seed_report(api_env.db_path, date(2026, 7, 17))
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    assert body["newsAlerts"] == []
+    assert body["newsAlertsScan"] == []
 
 
 def test_report_latest_picks_newest(client, AUTH, api_env):
