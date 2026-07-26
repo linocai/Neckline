@@ -12,7 +12,7 @@ from datetime import date, datetime, time
 import pytest
 
 import neckline.api.app as app_mod
-from neckline.sentinel.precall import D5Exit, PrecallResult
+from neckline.sentinel.precall import TIME_EXIT_NEXT_DAY, PrecallResult, TimeExit
 
 
 class _FixedNow:
@@ -48,7 +48,7 @@ def _run_one_iteration(monkeypatch, *, now, precall_result=None, precall_exc=Non
         calls["summary"] += 1
 
     def _d5_stub(name, code, d, **kw):
-        calls["d5"].append((name, code, d))
+        calls["d5"].append((name, code, d, kw.get("kind"), kw.get("two_tier")))
 
     # run_precall_tick 是循环内 `from ... import run_precall_tick` 的局部名,故 patch 源模块
     import neckline.sentinel.precall as precall_mod
@@ -73,11 +73,13 @@ def test_preopen_boundaries():
 def test_loop_calls_precall_and_pushes(monkeypatch):
     res = PrecallResult(trade_date=PREOPEN.date(), now=PREOPEN, ran=True)
     res.gap_up = ["600001.SH", "600002.SH"]        # summary_actionable = 2 > 0 → 推汇总
-    res.d5_exits = [D5Exit(position_id=1, ts_code="600900.SH", name="持仓票", d=5)]
+    res.d5_exits = [TimeExit(position_id=1, ts_code="600900.SH", name="持仓票", d=5,
+                             state=TIME_EXIT_NEXT_DAY, max_hold_effective=5, two_tier=False)]
     calls = _run_one_iteration(monkeypatch, now=PREOPEN, precall_result=res)
     assert calls["precall"] == 1
     assert calls["summary"] == 1
-    assert calls["d5"] == [("持仓票", "600900.SH", 5)]
+    # 循环把两档 state / two_tier 透传给 push_d5_exit(§五 v1.3-①-D)
+    assert calls["d5"] == [("持仓票", "600900.SH", 5, TIME_EXIT_NEXT_DAY, False)]
 
 
 def test_loop_no_summary_when_nothing_actionable(monkeypatch):

@@ -131,6 +131,8 @@ CREATE TABLE IF NOT EXISTS positions (
     sell_date       TEXT,                    -- 'YYYYMMDD'
     note            TEXT,
     close_reason    TEXT,                    -- v1.2-A2 离场原因枚举码 | NULL(见上方注释)
+    buy_fees        REAL,                    -- v1.3 补录开仓实付买入费用(佣金+过户费,不含印花税)| NULL=未录
+    sell_fees       REAL,                    -- v1.3 清仓实付卖出费用(真实发生后回填,周复盘对账用真数)| NULL
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -369,6 +371,10 @@ _COLUMN_MIGRATIONS = [
     # (默认开,与退潮刹车同级)。老库幂等补列,历史行取默认(close_reason NULL / push_circuit 1)。
     ("positions", "close_reason", "TEXT"),
     ("app_settings", "push_circuit", "INTEGER NOT NULL DEFAULT 1"),
+    # v1.3-①:补录开仓实付买入费用 + 清仓实付卖出费用(供 D5 净浮盈判向 / 周复盘对账用真数)。
+    # 均可空(NULL=未录),老库幂等补列;实盘估算见 neckline/fees.py(诚实标注估算)。
+    ("positions", "buy_fees", "REAL"),
+    ("positions", "sell_fees", "REAL"),
 ]
 
 

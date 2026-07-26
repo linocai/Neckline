@@ -26,6 +26,7 @@ from typing import Callable, Dict, List, Optional
 
 import polars as pl
 
+from neckline.backtest.broker import Broker
 from neckline.backtest.strategy import BacktestContext, Order, Strategy
 from neckline.calendar import trading_days_between
 from neckline.strategy import signals as S
@@ -68,8 +69,14 @@ class MomentumConfig:
     # —— 退出 ——
     stop_pct: Optional[float] = 0.05               # -5% 止损（None=不设止损）
     take_profit_retrace: Optional[float] = None    # 回落止盈阈值（None=不设）
-    max_hold_days: int = 3                         # 时间退出（交易日）
+    max_hold_days: int = 3                         # 时间退出（交易日）；v1.3 = 非浮盈单时间退出档
     cooldown_days: int = 0                         # 同票亏损后冷却
+    # —— v1.3 退出规则改革(§五 v1.3-①;一律默认 None/False = 与 K1 逐位相同,禁改上面字段语义)——
+    # 默认值铁律:K1/K2/K3/v1.2 落库 config 均无这两字段,加载吃默认 → 时间退出仍在
+    # max_hold_days 无条件触发 → K1 回测逐位不变(护栏 tests/test_v13_exit_guardrail)。
+    # 新分支只在 time_exit_only_if_unprofitable=True 且 max_hold_days_profit 非空时进入。
+    max_hold_days_profit: Optional[int] = None     # 浮盈单硬上限(交易日);None=不启用浮盈豁免=K1 行为
+    time_exit_only_if_unprofitable: bool = False   # 时间退出仅对非浮盈单;False=无差别时间退出=K1 行为
     # —— 仓位纪律 ——
     single_cap: float = 20000.0
     max_positions: int = 5
@@ -161,6 +168,12 @@ class MomentumStrategy(Strategy):
         self._cooldown_until: Dict[str, date] = {}   # 冷却到期日(含)
         self._week_loss: Dict[tuple, float] = {}     # (iso_year,iso_week) -> 已实现亏损累计
         self._processed_closed = 0                   # 已处理的 closed_trades 数(增量扫描)
+        # v1.3 浮盈豁免时间退出:持仓票在 D5 判净浮盈 >0 后一次性豁免续命,eff_max 从
+        # max_hold_days 抬到 max_hold_days_profit(硬上限);默认档不写此表(逐位不变)。
+        self._eff_max: Dict[str, int] = {}
+        # 卖出费估算用引擎既有 fee 模型(默认 Broker,与 research/h9_exit_reform.py §2
+        # 对拍口径一致)——**回测侧走引擎精确双边 fee,不走 neckline/fees.py 实盘估算**。
+        self._fee_broker = Broker()
 
     def on_day(self, context: BacktestContext) -> List[Order]:
         c = self.config
@@ -260,11 +273,50 @@ class MomentumStrategy(Strategy):
             peak = self._peak_close.get(ts_code, pos.buy_price)
             if peak > 0 and cur <= peak * (1 - c.take_profit_retrace):
                 return f"回落止盈(-{c.take_profit_retrace:.0%})"
-        # 时间退出
+        # 时间退出(两档,见 _time_exit_reason)
         held = len(trading_days_between(pos.buy_date, t))
-        if held >= c.max_hold_days:
+        return self._time_exit_reason(ts_code, pos, held, cur)
+
+    def _time_exit_reason(self, ts_code, pos, held: int, cur) -> Optional[str]:
+        """时间退出两档。
+
+        **默认档(K1 逐位不变)**:`time_exit_only_if_unprofitable=False` 或未设浮盈硬
+        上限 → 与 v1.3 前完全相同——held>=max_hold_days 无条件时间退出。新字段默认
+        None/False 恒走此分支,`_eff_max`/`_fee_broker` 永不被触碰(护栏单测锁死)。
+
+        **v1.3 条件档**(`time_exit_only_if_unprofitable=True` 且 `max_hold_days_profit`
+        非空):镜像 `research/h9_exit_reform.py::_sim_one` 的 V1——止损/回落已在
+        `_exit_reason` 前置分支判过,此处只管时间退出。持仓恰达 D5(held==max_hold_days)
+        时算收盘净浮盈:>0 → 一次性豁免续命(`_eff_max` 抬到硬上限,此后交回落/止损管
+        到 max_hold_days_profit 无条件退)、≤0(或停牌无价)→ 照旧时间退出。
+        """
+        c = self.config
+        # —— 默认档:K1 无条件时间退出 ——
+        if not (c.time_exit_only_if_unprofitable and c.max_hold_days_profit is not None):
+            if held >= c.max_hold_days:
+                return f"时间退出({held}日)"
+            return None
+        # —— v1.3 条件档 ——
+        if held < c.max_hold_days:
+            return None
+        eff_max = self._eff_max.get(ts_code, c.max_hold_days)
+        if eff_max == c.max_hold_days:            # 尚未豁免
+            # 仅在恰达 D5 判净浮盈(与 _sim_one 的 held==base_hold 判定同拍);未豁免则退出
+            if held == c.max_hold_days and cur is not None and self._d5_net_float(pos, cur) > 0:
+                self._eff_max[ts_code] = c.max_hold_days_profit   # 一次性豁免续命
+                return None
             return f"时间退出({held}日)"
+        # 已豁免:硬上限无条件退出
+        if held >= c.max_hold_days_profit:
+            return f"时间退出(硬上限{held}日)"
         return None
+
+    def _d5_net_float(self, pos, cur: float) -> float:
+        """D5 收盘净浮盈(扣双边费):close×shares − buy×shares − buy_fees − 估算卖出费。
+        卖出费用引擎既有 fee 模型(`Broker._sell_fees`,含最低佣金/印花税/过户费),与
+        `research/h9_exit_reform.py` §2 对拍口径逐位一致。回测侧不走 `neckline/fees.py`。"""
+        sell_fee = self._fee_broker._sell_fees(pos.shares * cur)
+        return pos.shares * (cur - pos.buy_price) - pos.buy_fees - sell_fee
 
     def _consume_closed_trades(self, pf) -> None:
         """增量扫描新平仓：亏损→设冷却；累计到 ISO 周亏损；清理峰值状态。"""
@@ -274,6 +326,7 @@ class MomentumStrategy(Strategy):
         for i in range(self._processed_closed, len(closed)):
             ct = closed[i]
             self._peak_close.pop(ct.ts_code, None)
+            self._eff_max.pop(ct.ts_code, None)   # 平仓即清豁免态,同票再买从头判 D5
             iso = ct.sell_date.isocalendar()
             key = (iso[0], iso[1])
             self._week_loss[key] = self._week_loss.get(key, 0.0) + min(ct.pnl, 0.0)

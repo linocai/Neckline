@@ -93,6 +93,14 @@ EVENT_TICK = "tick"
 # D5 时间退出:sentinel="d5exit",ts_code=持仓代码,event_key 固定(当日每票防重一次)。
 D5EXIT_EVENT_KEY = "trigger"
 
+# —— v1.3 两档时间退出状态码(§五 v1.3-①-C;= 客户端契约 `PositionOut.timeExitState`)——
+TIME_EXIT_NEXT_DAY = "time_exit_next_day"  # 非浮盈单:d≥max_hold_days 且净浮盈 ≤0 → 次日退出(推)
+PROFIT_EXEMPT = "profit_exempt"            # 浮盈单:d≥max_hold_days 且净浮盈 >0 → 续持至硬上限(不推)
+HARD_CAP_EXIT = "hard_cap_exit"            # d≥max_hold_days_profit → 硬上限无条件次日退出(推)
+HOLDING = "holding"                        # d<max_hold_days,未到时间退出判定点(不推)
+# 需盘前汇总推送的两档(profit_exempt/holding 不推 D5 执行提醒,§五 v1.3-①-D)。
+_ACTIONABLE_TIME_EXIT = (TIME_EXIT_NEXT_DAY, HARD_CAP_EXIT)
+
 
 # —— 时序判定 ————————————————————————————————————————————————————————
 
@@ -214,8 +222,9 @@ def scan_d5_exits(
     *,
     names: Optional[Dict[str, str]] = None,
 ) -> List[D5Exit]:
-    """对每只 open 持仓算 `d_count`,`== max_hold_days` → D5 时间退出(改 config 到 3
-    则 D3 触发)。`names` 供展示名(缺 → 回 code)。"""
+    """单档 D5 时间退出(v1.1 原语,保留供直接单测/兜底)。对每只 open 持仓算 `d_count`,
+    `== max_hold_days` → D5 时间退出(改 config 到 3 则 D3 触发)。`names` 供展示名(缺 →
+    回 code)。**v1.3 两档口径见 `scan_time_exits`**(禁用两档 config 时二者结果一致)。"""
     names = names or {}
     out: List[D5Exit] = []
     for p in positions:
@@ -225,6 +234,85 @@ def scan_d5_exits(
                 position_id=p.id, ts_code=p.ts_code,
                 name=names.get(p.ts_code, p.ts_code), d=max_hold_days,
             ))
+    return out
+
+
+# —— v1.3 两档时间退出(§五 v1.3-①-C,净浮盈感知)————————————————————————————
+
+@dataclass
+class TimeExit:
+    """两档时间退出条目(权威判定,`state` 决定推不推 + 客户端徽标档)。"""
+    position_id: int
+    ts_code: str
+    name: str
+    d: int                  # d_count(买入日=D1)
+    state: str              # TIME_EXIT_NEXT_DAY | PROFIT_EXEMPT | HARD_CAP_EXIT | HOLDING
+    max_hold_effective: int  # 该档有效硬上限(非浮盈=max_hold_days;浮盈/硬上限=max_hold_days_profit)
+    two_tier: bool = False   # 是否 v1.3 两档档(推送文案区分:两档非浮盈标「净浮盈 ≤0」,单档不标)
+
+
+def is_two_tier_time_exit(cfg: MomentumConfig) -> bool:
+    """是否启用 v1.3 条件时间退出档(需 config 显式开 + 设浮盈硬上限;否则退回 v1.1 单档)。"""
+    return bool(cfg.time_exit_only_if_unprofitable) and cfg.max_hold_days_profit is not None
+
+
+def classify_time_exit(
+    d: int, cfg: MomentumConfig, net_float: Optional[float] = None
+) -> tuple[str, int]:
+    """单只持仓的时间退出状态分类(纯函数,供 `scan_time_exits` 与 `PositionOut` 派生共用,
+    单一源)。返回 `(state, max_hold_effective)`。
+
+    · 默认档(未启用两档):`d≥max_hold_days` → TIME_EXIT_NEXT_DAY,否则 HOLDING(与
+      `PositionOut.todayAction` 的 `>=` 口径一致)。
+    · v1.3 两档:`d≥max_hold_days_profit` → HARD_CAP_EXIT;`d≥max_hold_days` 时按净浮盈——
+      `>0` → PROFIT_EXEMPT(续持至硬上限)、`≤0`/未知 → TIME_EXIT_NEXT_DAY;`d<max_hold_days`
+      → HOLDING。**净浮盈未知(None)保守判非浮盈**(豁免需正向证据,与 h9 V1 停牌不豁免同理)。
+    """
+    if not is_two_tier_time_exit(cfg):
+        return (TIME_EXIT_NEXT_DAY if d >= cfg.max_hold_days else HOLDING), cfg.max_hold_days
+    if d >= cfg.max_hold_days_profit:
+        return HARD_CAP_EXIT, cfg.max_hold_days_profit
+    if d >= cfg.max_hold_days:
+        if net_float is not None and net_float > 0:
+            return PROFIT_EXEMPT, cfg.max_hold_days_profit
+        return TIME_EXIT_NEXT_DAY, cfg.max_hold_days
+    return HOLDING, cfg.max_hold_days
+
+
+def scan_time_exits(
+    positions: List[Position],
+    trade_date: date,
+    cfg: MomentumConfig,
+    net_float_provider: Optional[Callable[[Position], Optional[float]]] = None,
+    *,
+    names: Optional[Dict[str, str]] = None,
+) -> List[TimeExit]:
+    """两档时间退出权威扫描(§五 v1.3-①-C)。**权威计算落 16:35 报告管线(EOD,D5 收盘
+    后)**——「第 5 日收盘净浮盈」是 EOD 量,precall 9:25:30 时 D5 收盘未出,故净浮盈由
+    `net_float_provider`(注入,读 EOD 面板 / 16:35 持久化计划)提供;None → 保守判非浮盈。
+
+    · **config 未启用两档**(`time_exit_only_if_unprofitable=False`)→ 退回单档 `d==max_hold_days`
+      = 与 v1.1 `scan_d5_exits` **完全一致**(兜底,防未激活章程时行为漂移)。
+    · **两档启用**→ 每只到判定点的持仓给三态之一(TIME_EXIT_NEXT_DAY / PROFIT_EXEMPT /
+      HARD_CAP_EXIT);HOLDING(未到 D5)不 emit。profit_exempt 也 emit(供看板/记录),但
+      **不进 D5 执行提醒推送**(调用方按 `state in _ACTIONABLE_TIME_EXIT` 过滤,§五 v1.3-①-D)。
+    """
+    names = names or {}
+    two_tier = is_two_tier_time_exit(cfg)
+    out: List[TimeExit] = []
+    for p in positions:
+        buy = datetime.strptime(p.buy_date, "%Y%m%d").date()
+        d = d_count(buy, trade_date)
+        name = names.get(p.ts_code, p.ts_code)
+        if not two_tier:
+            # 单档兜底 = v1.1 D5 行为(恰达 max_hold_days 当天,== 语义,与 scan_d5_exits 一致)
+            if d == cfg.max_hold_days:
+                out.append(TimeExit(p.id, p.ts_code, name, d, TIME_EXIT_NEXT_DAY, cfg.max_hold_days, two_tier=False))
+            continue
+        nf = net_float_provider(p) if net_float_provider is not None else None
+        state, eff = classify_time_exit(d, cfg, nf)
+        if state != HOLDING:
+            out.append(TimeExit(p.id, p.ts_code, name, d, state, eff, two_tier=True))
     return out
 
 
@@ -240,7 +328,7 @@ class PrecallResult:
     low_open: List[str] = field(default_factory=list)            # 开盘证伪候选代码
     auction: List[str] = field(default_factory=list)             # 竞价量能异常代码(附注)
     position_low_open: List[str] = field(default_factory=list)   # 持仓止损预警代码
-    d5_exits: List[D5Exit] = field(default_factory=list)         # D5 时间退出持仓
+    d5_exits: List["TimeExit"] = field(default_factory=list)     # 需推的两档时间退出(actionable)
     watched_codes: int = 0
     quotes_fetched: int = 0
 
@@ -261,12 +349,28 @@ class PrecallResult:
 
 
 def _resolve_config(db_path: Optional[Path]) -> tuple:
-    cfg = brain.active_config(db_path=db_path)
-    if not cfg:
+    """现役 config → (stop_pct, MomentumConfig)。MomentumConfig 携带 v1.3 两档时间退出字段
+    (`max_hold_days_profit`/`time_exit_only_if_unprofitable`,未激活章程时吃默认 None/False
+    → `scan_time_exits` 退回单档 = v1.1 行为)。无现役版本(异常)→ MomentumConfig 字段默认兜底。"""
+    cfg_dict = brain.active_config(db_path=db_path)
+    if not cfg_dict:
         logger.warning("策略大脑无现役版本,盘前校准止损/持有天数退回 MomentumConfig 兜底(非正常状态)")
-    stop_pct = cfg.get("stop_pct") or _FALLBACK_CFG.stop_pct
-    max_hold = cfg.get("max_hold_days") or _FALLBACK_CFG.max_hold_days
-    return float(stop_pct), int(max_hold)
+        cfg = _FALLBACK_CFG
+    else:
+        cfg = MomentumConfig(**cfg_dict)
+    stop_pct = cfg.stop_pct or _FALLBACK_CFG.stop_pct
+    return float(stop_pct), cfg
+
+
+def _time_exit_body(ex: "TimeExit") -> str:
+    """两档 D5 执行提醒看板文案(§五 v1.3-①-D;profit_exempt 不走此路径,不推)。
+    单档(K1,无条件时间退出)不写「净浮盈 ≤0」(那是两档判据,单档退出与浮亏浮盈无关);
+    两档非浮盈单才标净浮盈 ≤0。"""
+    if ex.state == HARD_CAP_EXIT:
+        return f"{ex.name} 今日 D{ex.d} 已达浮盈硬上限 D{ex.max_hold_effective},按计划离场。"
+    if ex.two_tier:
+        return f"{ex.name} 今日 D{ex.d} 时间退出日(净浮盈 ≤0),按计划离场。"
+    return f"{ex.name} 今日 D{ex.d} 时间退出日,按计划离场。"
 
 
 def run_precall_tick(
@@ -304,7 +408,7 @@ def run_precall_tick(
     quotes = fetch(wu.codes) if wu.codes else {}
     meta = load_stock_meta(wu.codes, db_path=db_path) if wu.codes else {}
     prev5 = load_prev5_avg_volume(wu.codes, trade_date, parquet_dir=parquet_dir) if wu.codes else {}
-    stop_pct, max_hold_days = _resolve_config(db_path)
+    stop_pct, cfg = _resolve_config(db_path)
 
     result.ran = True
     result.watched_codes = len(wu.codes)
@@ -348,14 +452,17 @@ def run_precall_tick(
             result.position_low_open.append(p.ts_code)
             _record("precall", p.ts_code, EVENT_POS_LOW_OPEN, pos_reason)
 
-    # —— D5 时间退出扫描(折进本进程,独立于 push_precall 开关)——————————————
-    d5 = scan_d5_exits(wu.positions, trade_date, max_hold_days, names=names)
-    for ex in d5:
-        _record(
-            "d5exit", ex.ts_code, D5EXIT_EVENT_KEY,
-            f"{ex.name} 今日 D{ex.d} 时间退出日,按计划离场。",
-        )
-    result.d5_exits = d5
+    # —— 时间退出扫描(两档,§五 v1.3-①-C;折进本进程,独立于 push_precall 开关)——————
+    # net_float_provider=None:precall 9:25:30 D5 收盘未出,净浮盈由 16:35 EOD 权威计算 +
+    # 持久化(v1.3-② 的 16:35 持仓管线接线);None → 保守判非浮盈。**未启用两档 config
+    # (现役 K1)时退回单档 == max_hold_days = v1.1 D5 行为完全一致**(net_float_provider 不被
+    # 触及)。只对 actionable 两档(time_exit_next_day / hard_cap_exit)落看板 + 推;profit_exempt
+    # 不推 D5 执行提醒(客户端徽标经 PositionOut 表达,§五 v1.3-①-D)。
+    time_exits = scan_time_exits(wu.positions, trade_date, cfg, net_float_provider=None, names=names)
+    actionable = [ex for ex in time_exits if ex.state in _ACTIONABLE_TIME_EXIT]
+    for ex in actionable:
+        _record("d5exit", ex.ts_code, D5EXIT_EVENT_KEY, _time_exit_body(ex))
+    result.d5_exits = actionable
 
     # —— 市场级「当日 tick 已跑」标记(返回前落,见函数 docstring 的幂等说明)————
     record_pushed(trade_date, "precall", "", EVENT_TICK, payload={"counts": result.counts}, db_path=db_path)
@@ -373,6 +480,14 @@ __all__ = [
     "judge_position_low_open",
     "scan_d5_exits",
     "D5Exit",
+    "TimeExit",
+    "scan_time_exits",
+    "classify_time_exit",
+    "is_two_tier_time_exit",
+    "TIME_EXIT_NEXT_DAY",
+    "PROFIT_EXEMPT",
+    "HARD_CAP_EXIT",
+    "HOLDING",
     "PrecallResult",
     "run_precall_tick",
     "EVENT_GAP_UP",

@@ -156,6 +156,53 @@ def test_d5_exit_sends_when_on(api_env, apns_configured):
     assert out.sent == 1
 
 
+def _capture_transport():
+    """记录 push body(JSON)的假 transport,供两档文案断言。"""
+    import json
+    captured = {}
+
+    def _t(url, headers, body):
+        captured["payload"] = json.loads(body)
+        return apns.PushResult(ok=True, status=200, reason="ok")
+
+    return _t, captured
+
+
+def test_d5_exit_two_tier_time_exit_body(api_env, apns_configured):
+    """两档非浮盈单:文案标「净浮盈 ≤0」;custom 带 timeExitState。"""
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    t, cap = _capture_transport()
+    out = notify.push_d5_exit("贵州茅台", "600519.SH", 5, kind="time_exit_next_day",
+                              two_tier=True, db_path=db, transport=t)
+    assert out.sent == 1
+    aps = cap["payload"]["aps"]["alert"]
+    assert "净浮盈 ≤0" in aps["body"]
+    assert cap["payload"]["timeExitState"] == "time_exit_next_day"
+
+
+def test_d5_exit_single_tier_no_netfloat_wording(api_env, apns_configured):
+    """K1 单档(two_tier=False,默认):无条件时间退出,文案不标净浮盈(单档退出与浮亏浮盈无关)。"""
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    t, cap = _capture_transport()
+    notify.push_d5_exit("贵州茅台", "600519.SH", 5, db_path=db, transport=t)
+    body = cap["payload"]["aps"]["alert"]["body"]
+    assert "净浮盈" not in body and "时间退出日" in body
+
+
+def test_d5_exit_hard_cap_body(api_env, apns_configured):
+    """浮盈硬上限单:文案标「已达浮盈硬上限 D15」。"""
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    t, cap = _capture_transport()
+    notify.push_d5_exit("贵州茅台", "600519.SH", 15, kind="hard_cap_exit",
+                        max_hold_effective=15, two_tier=True, db_path=db, transport=t)
+    body = cap["payload"]["aps"]["alert"]["body"]
+    assert "浮盈硬上限 D15" in body
+    assert cap["payload"]["timeExitState"] == "hard_cap_exit"
+
+
 def _fake_episode(note="连续 3 笔止损离场触发熔断(基于台账 3 笔已补录成交)。"):
     from neckline.sentinel.circuit import CircuitEpisode
     return CircuitEpisode(

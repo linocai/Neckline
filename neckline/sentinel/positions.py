@@ -47,6 +47,8 @@ class Position:
     sell_date: Optional[str]
     note: Optional[str]
     close_reason: Optional[str] = None   # v1.2-A2 离场原因枚举码;NULL=未标注(熔断走价格兜底)
+    buy_fees: Optional[float] = None     # v1.3 补录开仓实付买入费用(佣金+过户费);NULL=未录
+    sell_fees: Optional[float] = None    # v1.3 清仓实付卖出费用(真实回填,周复盘用真数);NULL=未录
 
 
 def _d(d: date) -> str:
@@ -61,13 +63,16 @@ def _row_to_position(row: sqlite3.Row) -> Position:
     return Position(
         id=row[0], ts_code=row[1], buy_price=row[2], qty=row[3], buy_date=row[4],
         status=row[5], sell_price=row[6], sell_date=row[7], note=row[8],
-        close_reason=row[9],
+        close_reason=row[9], buy_fees=row[10], sell_fees=row[11],
     )
 
 
-# close_reason 随 v1.2-A2 加入投影(所有读入口都先 init_schema,列必然已迁移存在,故
-# 无需像 brain.py 那样做条件投影)。
-_SELECT_COLS = "id, ts_code, buy_price, qty, buy_date, status, sell_price, sell_date, note, close_reason"
+# close_reason/buy_fees/sell_fees 随 v1.2-A2/v1.3 加入投影(所有读入口都先 init_schema,
+# 列必然已迁移存在,故无需像 brain.py 那样做条件投影)。
+_SELECT_COLS = (
+    "id, ts_code, buy_price, qty, buy_date, status, sell_price, sell_date, note, "
+    "close_reason, buy_fees, sell_fees"
+)
 
 
 def open_position(
@@ -76,18 +81,20 @@ def open_position(
     qty: int,
     buy_date: date,
     note: Optional[str] = None,
+    buy_fees: Optional[float] = None,
     db_path: Optional[Path] = None,
 ) -> int:
     """开一笔仓位记账(不校验是否符合仓位纪律——§2.1 仓位上限是系统对报告候选的
     建议约束,不是对用户实际操作的强制拦截;系统只审计、不拦人手动录入)。返回新
-    记录的 id。"""
+    记录的 id。`buy_fees`(v1.3,可选):补录开仓实付买入费用(佣金+过户费),供 D5
+    净浮盈判向反推佣金率 / 周复盘对账;不传 → NULL(估算走默认率兜底,见 fees.py)。"""
     init_schema(db_path)
     now = _now()
     with connection(db_path) as conn:
         cur = conn.execute(
-            "INSERT INTO positions (ts_code, buy_price, qty, buy_date, status, note, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (ts_code, buy_price, qty, _d(buy_date), STATUS_OPEN, note, now, now),
+            "INSERT INTO positions (ts_code, buy_price, qty, buy_date, status, note, buy_fees, "
+            "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts_code, buy_price, qty, _d(buy_date), STATUS_OPEN, note, buy_fees, now, now),
         )
         return int(cur.lastrowid)
 
@@ -97,6 +104,7 @@ def close_position(
     sell_price: float,
     sell_date: date,
     close_reason: Optional[str] = None,
+    sell_fees: Optional[float] = None,
     db_path: Optional[Path] = None,
 ) -> bool:
     """清仓记账。找不到该 id 或已是 closed 状态 → 返回 False(不抛异常,CLI 据此
@@ -105,7 +113,10 @@ def close_position(
     `close_reason`(v1.2-A2,可选):离场原因枚举码(`CLOSE_REASON_*`);不传 → 落库
     NULL(熔断评估时才走价格近似兜底判止损,见 `sentinel/circuit.py`)。**用户显式
     标注的码原样落库、信用户标注**;本函数不做码白名单校验(API 层 pydantic Literal
-    已挡非法码,CLI/内部调用方自负),也绝不代下单/撤单(§3.8,只记账)。"""
+    已挡非法码,CLI/内部调用方自负),也绝不代下单/撤单(§3.8,只记账)。
+
+    `sell_fees`(v1.3,可选):清仓实付卖出费用真数,成交后回填——**周复盘对账用真数、
+    不用估数**(D5 净浮盈判向阶段的卖出费只能估,见 fees.py;真数回填在此)。不传 → NULL。"""
     init_schema(db_path)
     now = _now()
     with connection(db_path) as conn:
@@ -113,8 +124,9 @@ def close_position(
         if row is None or row[0] == STATUS_CLOSED:
             return False
         conn.execute(
-            "UPDATE positions SET status=?, sell_price=?, sell_date=?, close_reason=?, updated_at=? WHERE id=?",
-            (STATUS_CLOSED, sell_price, _d(sell_date), close_reason, now, position_id),
+            "UPDATE positions SET status=?, sell_price=?, sell_date=?, close_reason=?, sell_fees=?, "
+            "updated_at=? WHERE id=?",
+            (STATUS_CLOSED, sell_price, _d(sell_date), close_reason, sell_fees, now, position_id),
         )
         return True
 

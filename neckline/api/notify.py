@@ -125,24 +125,43 @@ def push_precall_summary(
     )
 
 
+# v1.3 两档时间退出状态码(= `PositionOut.timeExitState` 契约 / `sentinel/precall.py` 常量,
+# 唯一源在那两处;此处按字面量引用以免 notify → precall 重耦合,与 CLOSE_REASON Literal 惯例同)。
+_KIND_TIME_EXIT = "time_exit_next_day"
+_KIND_HARD_CAP = "hard_cap_exit"
+
+
 def push_d5_exit(
     name: str, code: str, d_count: int, *,
+    kind: str = _KIND_TIME_EXIT, max_hold_effective: Optional[int] = None, two_tier: bool = False,
     db_path: Optional[Path] = None, transport: Optional[Any] = None,
 ) -> NotifyOutcome:
-    """D5 时间退出推送(受 push_d5exit 开关,plan v1.1-B.2)。`d_count` = 现役
-    `max_hold_days`(不硬编 5;改 config 到 3 则 D3 触发,文案随之)。点开跳今日计划
-    持仓区。"""
+    """时间退出推送(受 push_d5exit 开关,plan v1.1-B.2 / v1.3-①-D 两档)。`d_count` = 现役
+    `max_hold_days`(不硬编 5;改 config 则随之)。**两档文案**(§五 v1.3-①-D):
+      · `kind='hard_cap_exit'`:「D{n} 已达浮盈硬上限 D{k},按计划离场」(浮盈豁免单到 D15 硬退)。
+      · `kind='time_exit_next_day'`:非浮盈单——`two_tier=True`(v1.3 章程激活)标「净浮盈 ≤0」;
+        `two_tier=False`(K1 单档无条件时间退出)不标净浮盈(单档退出与浮亏浮盈无关,兜底 v1.1 文案)。
+    浮盈豁免单(`profit_exempt`)**不推**本函数(它没到退出,只在客户端 D 徽标转 D{n}/D{15} 档)。
+    `__all__` 仍五入口(不新增 push 函数,APNs category 仍五类)。点开跳今日计划持仓区。"""
     st = get_app_settings(db_path=db_path)
     if not st.push_d5exit:
         return NotifyOutcome(skipped_reason="push_d5exit_off")
     if not apns.settings.has_apns_config:
         return NotifyOutcome(skipped_reason="no_apns_config")
     disp = name or code
+    if kind == _KIND_HARD_CAP:
+        title = "浮盈硬上限时间退出"
+        body = f"{disp} 今日 D{d_count} 已达浮盈硬上限 D{max_hold_effective},按计划离场。"
+    elif two_tier:
+        title = "时间退出"
+        body = f"{disp} 今日 D{d_count} 时间退出日(净浮盈 ≤0),按计划离场。"
+    else:
+        title = "D5 时间退出"
+        body = f"{disp} 今日 D{d_count} 时间退出日,按计划离场(时间退出是规则 v1 采纳纪律)。"
     return _fanout(
-        "D5 时间退出",
-        f"{disp} 今日 D{d_count} 时间退出日,按计划离场(时间退出是规则 v1 采纳纪律)。",
+        title, body,
         category=apns.CATEGORY_D5EXIT,
-        custom={"kind": "d5exit", "code": code},
+        custom={"kind": "d5exit", "code": code, "timeExitState": kind},
         db_path=db_path, transport=transport,
     )
 

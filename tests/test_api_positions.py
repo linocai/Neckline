@@ -97,6 +97,91 @@ def test_position_derived_with_live_price(client, AUTH, api_env, monkeypatch):
     assert h["retraceState"]["triggered"] is False   # 峰值 11 未回落 5%
 
 
+# —— v1.3-① 两档时间退出派生 + 费用录入 —————————————————————————————————————
+
+def _buy_date_for_dcount(target: int):
+    """回推使 d_count(buy, today)==target 的买入日(交易日历口径)。"""
+    from datetime import date, timedelta
+
+    from neckline.sentinel.positions import d_count
+    today = date.today()
+    d = today
+    while d_count(d, today) < target:
+        d -= timedelta(days=1)
+    return d
+
+
+def test_position_v13_fields_default_single_tier(client, AUTH, api_env):
+    """K1 现役(单档):新持仓 dCount=1 → timeExitState=holding、maxHoldDaysEffective=maxHoldDays。"""
+    from tests.conftest import seed_active_rule_v1
+    seed_active_rule_v1(api_env)   # 无两档字段 → 单档
+    client.post("/api/v1/positions", headers=AUTH, json={"code": "600001.SH", "buy_price": 10.0, "qty": 100})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["timeExitState"] == "holding"
+    assert h["maxHoldDaysEffective"] == 5 == h["maxHoldDays"]
+    assert h["buyFees"] is None and h["sellFees"] is None
+
+
+def test_buy_fees_roundtrip(client, AUTH, api_env):
+    """POST /positions 带 buyFees → GET 回显。"""
+    from tests.conftest import seed_active_rule_v1
+    seed_active_rule_v1(api_env)
+    client.post("/api/v1/positions", headers=AUTH,
+                json={"code": "600001.SH", "buy_price": 10.0, "qty": 1000, "buyFees": 8.5})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["buyFees"] == 8.5
+
+
+def test_sell_fees_recorded_on_close(client, AUTH, api_env):
+    """清仓带 sellFees → 落库(周复盘对账用真数)。"""
+    from neckline.sentinel.positions import get_position
+    pid = client.post("/api/v1/positions", headers=AUTH,
+                      json={"code": "600001.SH", "buy_price": 10.0, "qty": 1000}).json()["position_id"]
+    assert client.post(f"/api/v1/positions/{pid}/close", headers=AUTH,
+                       json={"sell_price": 11.0, "sellFees": 12.3}).json()["ok"]
+    assert get_position(pid, db_path=api_env.db_path).sell_fees == 12.3
+
+
+def test_position_two_tier_profit_exempt(client, AUTH, api_env, monkeypatch):
+    """两档启用 + D5 浮盈 → timeExitState=profit_exempt、maxHoldDaysEffective=15(续持硬上限)。"""
+    import neckline.api.app as app_mod
+    from tests.conftest import seed_active_rule_v1
+    from neckline.sentinel.positions import open_position
+    from neckline.sentinel.quotes import Quote
+    seed_active_rule_v1(api_env, extra_config={
+        "take_profit_retrace": 0.08, "time_exit_only_if_unprofitable": True, "max_hold_days_profit": 15,
+    })
+    buy = _buy_date_for_dcount(5)
+    open_position("600001.SH", 10.0, 1000, buy, buy_fees=5.0, db_path=api_env.db_path)
+    q = Quote(code="600001.SH", name="甲", price=11.0, pre_close=10.5, open=10.5, high=11.2,
+              low=10.4, volume=1000.0, amount=1e6, ts="", source="test")
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": q})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["dCount"] == 5
+    assert h["timeExitState"] == "profit_exempt"
+    assert h["maxHoldDaysEffective"] == 15
+
+
+def test_position_two_tier_time_exit_on_loss(client, AUTH, api_env, monkeypatch):
+    """两档启用 + D5 浮亏(净浮盈 ≤0)→ timeExitState=time_exit_next_day、maxHoldDaysEffective=5。"""
+    import neckline.api.app as app_mod
+    from tests.conftest import seed_active_rule_v1
+    from neckline.sentinel.positions import open_position
+    from neckline.sentinel.quotes import Quote
+    seed_active_rule_v1(api_env, extra_config={
+        "take_profit_retrace": 0.08, "time_exit_only_if_unprofitable": True, "max_hold_days_profit": 15,
+    })
+    buy = _buy_date_for_dcount(5)
+    open_position("600001.SH", 10.0, 1000, buy, buy_fees=5.0, db_path=api_env.db_path)
+    q = Quote(code="600001.SH", name="甲", price=9.6, pre_close=9.7, open=9.7, high=9.8,
+              low=9.55, volume=1000.0, amount=1e6, ts="", source="test")
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": q})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["timeExitState"] == "time_exit_next_day"
+    assert h["maxHoldDaysEffective"] == 5
+    assert "时间退出日" in h["todayAction"]
+
+
 # —— v1.2-E.5 一键补录预填**区间**(v1.1-B.3 单 qty 已被替换)——————————————
 
 def test_entry_suggestion_returns_range_not_single_qty(client, AUTH):

@@ -137,10 +137,16 @@ class PositionOut(BaseModel):
     stopOrderChecked: bool = False   # 用户自证「已挂 -5% 条件单」(真对账在 4D 周复盘)
     # —— v1.1-B.1 持仓生命周期派生字段(服务端算好,客户端不重算日历)——————————
     dCount: int = 1              # D 计数(买入日=D1,交易日历口径,单一源 positions.d_count)
-    maxHoldDays: int = 5         # 现役 max_hold_days(读 config,不硬编)
+    maxHoldDays: int = 5         # 现役 max_hold_days(读 config,不硬编);= 非浮盈时间退出档
     distToStopPct: Optional[float] = None   # (price−stopLine)/price;无实时价 → null
     retraceState: Optional[Dict[str, Any]] = None   # 回落止盈状态{peak,retracePct,triggered};无价/无阈 → null
     todayAction: str = ""        # 今日动作提示(D5离场 / 距止损 / 回落止盈已触发 等)
+    # —— v1.3-① 两档时间退出(服务端按 D5 净浮盈判好下发,客户端不重算)——————————————
+    maxHoldDaysEffective: int = 5   # 该单有效硬上限:非浮盈=maxHoldDays;浮盈豁免=max_hold_days_profit(如 15)
+    timeExitState: str = "holding"  # time_exit_next_day | profit_exempt | hard_cap_exit | holding
+    # —— v1.3-① 费用回显(实付,供周复盘对账用真数;NULL=未录)——————————————————
+    buyFees: Optional[float] = None
+    sellFees: Optional[float] = None
 
 
 # —— v1.2-A2 熔断纪律状态(§2.1 第 7 条 / plan §五 v1.2-A2)——————————————————————
@@ -193,6 +199,10 @@ class PositionOpenIn(BaseModel):
     buy_price: float
     qty: int
     entry_reason: str = ""
+    # v1.3-①:补录开仓实付买入费用(客户端契约 camelCase,与既有 snake_case 入参并存,同
+    # closeReason 惯例)。契约上客户端补录必填;服务端宽松可选(缺省 NULL → D5 净浮盈估算
+    # 走默认佣金率兜底,不崩,见 fees.py)——不硬性拒绝历史/CLI 无费用录入。
+    buyFees: Optional[float] = None
 
 
 class PositionOpenOut(BaseModel):
@@ -211,6 +221,8 @@ class PositionCloseIn(BaseModel):
     closeReason: Optional[
         Literal["STOP_LOSS", "TAKE_PROFIT", "TIME_EXIT", "INVALIDATION", "MANUAL"]
     ] = None
+    # v1.3-①:清仓实付卖出费用真数(可选,成交后回填)——周复盘对账用真数、不用估数。
+    sellFees: Optional[float] = None
 
 
 # —— v1.1-C 自选池(watchlist)————————————————————————————————————————————

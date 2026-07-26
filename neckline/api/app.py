@@ -158,7 +158,9 @@ async def _sentinel_loop(stop_event: asyncio.Event) -> None:
                         await asyncio.to_thread(notify.push_precall_summary, pr.counts, db_path=_db())
                     for ex in pr.d5_exits:
                         await asyncio.to_thread(
-                            notify.push_d5_exit, ex.name, ex.ts_code, ex.d, db_path=_db()
+                            notify.push_d5_exit, ex.name, ex.ts_code, ex.d,
+                            kind=ex.state, max_hold_effective=ex.max_hold_effective,
+                            two_tier=ex.two_tier, db_path=_db(),
                         )
             except Exception:  # noqa: BLE001  盘前一拍异常同样绝不能掀翻轮询主循环
                 logger.warning("盘前校准一拍异常(已吞,继续轮询)", exc_info=True)
@@ -422,6 +424,16 @@ def _active_config() -> Tuple[float, int, float, Optional[float]]:
     return float(stop_pct), int(max_hold), float(single_cap), (float(tpr) if tpr else None)
 
 
+def _active_momentum_config() -> "MomentumConfig":
+    """现役 config → 完整 `MomentumConfig`(携 v1.3 两档时间退出字段);无现役版本 → 字段默认。
+    供 `PositionOut` 两档时间退出派生(`classify_time_exit`,单一源 sentinel/precall)复用。"""
+    from neckline.strategy import brain
+    from neckline.strategy.momentum import MomentumConfig
+
+    cfg = brain.active_config(db_path=_db())
+    return MomentumConfig(**cfg) if cfg else MomentumConfig()
+
+
 def _stop_line(buy_price: float, stop_pct: float) -> float:
     """派生止损线 = 买入价 ×(1−stop_pct)(读现役 config,§2.1 单一常量,不硬编 0.95)。"""
     return round(buy_price * (1 - stop_pct), 2)
@@ -446,10 +458,18 @@ def _retrace_state(
 
 
 def _today_action(
-    d_count: int, max_hold: int, dist_to_stop_pct: Optional[float], retrace_state: Optional[Dict[str, Any]]
+    d_count: int, eff_max: int, dist_to_stop_pct: Optional[float],
+    retrace_state: Optional[Dict[str, Any]], time_exit_state: str,
 ) -> str:
-    """今日动作提示文案(纯展示层,优先级:D5离场 > 回落止盈 > 跌破/逼近止损 > 持有中)。"""
-    if d_count >= max_hold:
+    """今日动作提示文案(纯展示层,优先级:时间退出 > 回落止盈 > 跌破/逼近止损 > 持有中)。
+    v1.3-① 两档:`hard_cap_exit`/`time_exit_next_day` 走离场优先;`profit_exempt` 是「豁免时间
+    退出、交回落+止损管到硬上限」的持有态(不抢离场);`holding` 常规持有。K1 单档下
+    `time_exit_state` 只会是 `time_exit_next_day`(d≥max_hold)或 `holding`,行为与 v1.3 前一致。"""
+    from neckline.sentinel.precall import HARD_CAP_EXIT, PROFIT_EXEMPT, TIME_EXIT_NEXT_DAY
+
+    if time_exit_state == HARD_CAP_EXIT:
+        return f"D{d_count} 已达浮盈硬上限 D{eff_max},按计划离场(浮盈豁免时间退出到顶)"
+    if time_exit_state == TIME_EXIT_NEXT_DAY:
         return f"D{d_count} 时间退出日,按计划离场(时间退出是规则 v1 采纳纪律)"
     if retrace_state and retrace_state.get("triggered"):
         return "回落止盈已触发,按计划离场"
@@ -458,7 +478,9 @@ def _today_action(
             return "现价已跌破止损线,若条件单未成交请立即人工确认(系统不代下单)"
         if dist_to_stop_pct <= 0.02:
             return f"距止损线 {dist_to_stop_pct:.1%},盯紧条件单"
-    return f"持有中(D{d_count}/D{max_hold})"
+    if time_exit_state == PROFIT_EXEMPT:
+        return f"浮盈豁免时间退出,交回落止盈+止损管到硬上限(D{d_count}/D{eff_max})"
+    return f"持有中(D{d_count}/D{eff_max})"
 
 
 def _shape_circuit(state: "circuit_store.CircuitState") -> CircuitStateOut:
@@ -481,11 +503,14 @@ def _shape_circuit(state: "circuit_store.CircuitState") -> CircuitStateOut:
 
 @app.get(f"{API_PREFIX}/positions", dependencies=[Depends(require_token)])
 def list_positions() -> PositionsOut:
+    from neckline.sentinel.precall import classify_time_exit
+
     holdings = pos_store.load_open_positions(db_path=_db())
     codes = [h.ts_code for h in holdings]
     names = _resolve_names(codes)
     prices = _resolve_prices(codes)
     stop_pct, max_hold, _single_cap, tpr = _active_config()
+    cfg = _active_momentum_config()
     today = date.today()
     out: List[PositionOut] = []
     for h in holdings:
@@ -499,6 +524,13 @@ def list_positions() -> PositionsOut:
             from neckline.sentinel.engine import _historical_peak_close
             peak_hist = _historical_peak_close(h, today, None)
             retrace = _retrace_state(h, price, peak_hist, tpr)
+        # v1.3-① 两档时间退出:服务端按 D5 净浮盈判好 maxHoldDaysEffective + timeExitState 下发,
+        # 客户端不重算。净浮盈用现价估(实盘估算,卖出费按 fees.py 公式;无价 → None 保守判非浮盈)。
+        net_float = None
+        if price > 0:
+            from neckline.fees import estimate_net_float
+            net_float = estimate_net_float(price, h.qty, h.buy_price, buy_fees=h.buy_fees)
+        te_state, eff_max = classify_time_exit(dcount, cfg, net_float)
         out.append(PositionOut(
             id=h.id, code=h.ts_code, name=names.get(h.ts_code, h.ts_code),
             buyPrice=h.buy_price, qty=h.qty, entryReason=h.note or "",
@@ -507,7 +539,9 @@ def list_positions() -> PositionsOut:
             dCount=dcount, maxHoldDays=max_hold,
             distToStopPct=(round(dist, 4) if dist is not None else None),
             retraceState=retrace,
-            todayAction=_today_action(dcount, max_hold, dist, retrace),
+            todayAction=_today_action(dcount, eff_max, dist, retrace, te_state),
+            maxHoldDaysEffective=eff_max, timeExitState=te_state,
+            buyFees=h.buy_fees, sellFees=h.sell_fees,
         ))
     return PositionsOut(holdings=out, circuit=_shape_circuit(circuit_store.get_state(db_path=_db())))
 
@@ -550,7 +584,8 @@ def open_position(body: PositionOpenIn) -> PositionOpenOut:
     """开仓录入(§3.8 铁律:系统永不自动下单,此处只录台账)。buy_date 取今日自然日。"""
     pid = pos_store.open_position(
         ts_code=body.code, buy_price=body.buy_price, qty=body.qty,
-        buy_date=date.today(), note=(body.entry_reason or None), db_path=_db(),
+        buy_date=date.today(), note=(body.entry_reason or None),
+        buy_fees=body.buyFees, db_path=_db(),
     )
     stop_pct, _mh, _sc, _tpr = _active_config()
     return PositionOpenOut(ok=True, position_id=pid, stop_line=_stop_line(body.buy_price, stop_pct))
@@ -568,7 +603,7 @@ def close_position(position_id: int, body: PositionCloseIn) -> OkOut:
         sell_date = date.today()
     ok = pos_store.close_position(
         position_id, sell_price=body.sell_price, sell_date=sell_date,
-        close_reason=body.closeReason, db_path=_db(),
+        close_reason=body.closeReason, sell_fees=body.sellFees, db_path=_db(),
     )
     if not ok:
         raise HTTPException(
