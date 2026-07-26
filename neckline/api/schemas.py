@@ -123,6 +123,20 @@ class BoardOut(BaseModel):
 
 # —— 4A.4 持仓 ————————————————————————————————————————————————————————
 
+class K4AdvisoryOut(BaseModel):
+    """K4 持仓牌单条命中(plan §五 v1.3-②)。服务端在 16:35 EOD 面板上对持仓票重算 K4
+    advisory 命中(读 DB `K4.k4_advisory`,polars 镜像),客户端只展示不重算。
+    · level:strong(强警示,置顶醒目)| normal(普通警示,进看板/报告卡)。
+    · evidenceStrength:price_volume(价量硬数据,强证据)| constituent(概念板块成分,弱证据,
+      标「参考」——题材持续天数依赖 ths_member 快照〔K2 成分洞〕,**不单独触发强警示 APNs**)。
+    · 第六类 APNs 派发警报只由「level=strong ∧ evidenceStrength=price_volume」命中触发。"""
+    code: str                    # advisory 码,如 A1_turnover_gt_10 / A3_belowyear_limitup
+    label: str                   # 人读文案
+    level: str                   # strong | normal
+    evidence: str                # advisory 证据口径原文(诚实透出研究依据)
+    evidenceStrength: str        # price_volume | constituent
+
+
 class PositionOut(BaseModel):
     id: int
     code: str
@@ -147,6 +161,11 @@ class PositionOut(BaseModel):
     # —— v1.3-① 费用回显(实付,供周复盘对账用真数;NULL=未录)——————————————————
     buyFees: Optional[float] = None
     sellFees: Optional[float] = None
+    # —— v1.3-② K4 持仓牌(服务端 16:35 EOD 重算命中;老快照/刚开仓未体检 → 空数组)——————
+    k4Advisory: List[K4AdvisoryOut] = Field(default_factory=list)
+    # 该持仓是否有关联决策日志(via position_id)含非空情景树待每日对照(②-D 提醒;勾选仍走
+    # 既有 POST /decisions/{id}/scenario-outcome,本字段只做「挑出来」,无新写路径)。
+    scenarioReviewPending: bool = False
 
 
 # —— v1.2-A2 熔断纪律状态(§2.1 第 7 条 / plan §五 v1.2-A2)——————————————————————
@@ -306,6 +325,7 @@ class PushSettingsOut(BaseModel):
     precall: bool      # v1.1-G.1:盘前校准 9:26 汇总推送开关
     d5exit: bool       # v1.1-G.1:D5 时间退出推送开关
     circuit: bool      # v1.2-A2:熔断提醒推送开关(第五类,默认开)
+    holdingAlert: bool # v1.3-②:K4 持仓派发警报推送开关(第六类,默认开)
 
 
 class SettingsOut(BaseModel):
@@ -325,7 +345,8 @@ class SettingsPushIn(BaseModel):
     retreatBrake: bool
     precall: bool      # v1.1-G.1:盘前校准 9:26 汇总推送开关
     d5exit: bool       # v1.1-G.1:D5 时间退出推送开关
-    circuit: bool      # v1.2-A2:熔断提醒推送开关(第五类,默认开)——五字段均必填(缺 → 422)
+    circuit: bool      # v1.2-A2:熔断提醒推送开关(第五类,默认开)
+    holdingAlert: bool # v1.3-②:K4 持仓派发警报推送开关(第六类,默认开)——六字段均必填(缺 → 422)
 
 
 class DeviceRegisterIn(BaseModel):
@@ -503,7 +524,7 @@ class ReviewGetOut(BaseModel):
 
 __all__ = [
     "OkOut", "LLMJudgmentOut", "CandidateOut", "WatchlistCheckLLMOut", "WatchlistCheckOut", "ReportOut",
-    "RetreatBrakeOut", "BoardEventOut", "BoardOut",
+    "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "EntrySuggestionOut", "CircuitEpisodeOut", "CircuitStateOut",
     "WatchlistItemOut", "WatchlistOut", "WatchlistAddIn", "WatchlistAddOut", "WatchlistPinIn",

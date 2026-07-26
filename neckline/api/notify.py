@@ -1,13 +1,17 @@
-"""APNs 推送编排(plan 4B.5 / v1.1-A/B / v1.2-A2,🔴)。**只推五类**(§2.4 v1.2 拍板,
-推送白名单 = 五类,各自独立开关 + 独立 APNs category):
+"""APNs 推送编排(plan 4B.5 / v1.1-A/B / v1.2-A2 / v1.3-②,🔴)。**只推六类**(§2.4 拍板,
+推送白名单 = 六类,各自独立开关 + 独立 APNs category):
     ① 16:35 盘后报告就绪 —— `push_report_ready()`,受 `app_settings.push_report` 开关。
     ② 退潮红色刹车     —— `push_retreat_brake()`,受 `app_settings.push_retreat` 开关。
     ③ 9:26 盘前校准汇总 —— `push_precall_summary()`,受 `app_settings.push_precall` 开关。
     ④ D5 时间退出      —— `push_d5_exit()`,受 `app_settings.push_d5exit` 开关。
     ⑤ 熔断提醒        —— `push_circuit_breaker()`,受 `app_settings.push_circuit` 开关
                           (v1.2-A2 第五类,§2.1 第 7 条;默认开、与退潮刹车同级)。
-**买点/证伪/持仓一律不推**(只进看板)——本模块只暴露这五个入口,不给第六类事件
-留推送路径,是「白名单五类」的落点保证(单测按 `__all__` 结构性守护)。
+    ⑥ K4 持仓派发警报  —— `push_holding_alert()`,受 `app_settings.push_holding_alert` 开关
+                          (v1.3-② 第六类,用户 2026-07-26 拍板独立 category + 独立开关;默认开。
+                          **只推强价量证据命中**:年线下涨停/放量大阳派发/换手>10%;题材天数=概念
+                          板块成分弱证据,只进看板不推,守 §2.4「证伪只用价量结构」)。
+**买点/证伪/普通警示一律不推**(只进看板)——本模块只暴露这六个入口,不给第七类事件
+留推送路径,是「白名单六类」的落点保证(单测按 `__all__` 结构性守护)。
 
 每类推送:先查开关(关 → 直接跳过)→ 遍历 `devices` 表所有 token → 逐个 `apns.send_push`
 (transport 可注入,单测免真连 Apple)。任何设备失败只记日志,不拖累其它设备 / 主流程
@@ -189,6 +193,35 @@ def push_circuit_breaker(
     )
 
 
+def push_holding_alert(
+    name: str, code: str, hit_labels: List[str], *,
+    db_path: Optional[Path] = None, transport: Optional[Any] = None,
+) -> NotifyOutcome:
+    """K4 持仓派发警报推送(第六类白名单,受 push_holding_alert 开关,plan §五 v1.3-②-C)。
+    每只触发**强价量证据**命中的持仓推一条(≤3 仓,逐仓推比汇总更可执行)。`hit_labels`
+    = 该持仓命中的强警示项人读文案(如「年线下涨停疑似派发」)。**只推强价量证据命中**
+    (年线下涨停/放量大阳派发/换手>10%)——题材持续天数是概念板块成分弱证据(K2 成分洞),
+    只进盘中看板不推(§2.4「证伪只用价量结构」,弱证据不触发 APNs)。
+
+    **系统永不代交易动作**(§3.8):本函数只发提醒(建议减仓/勿追),绝不代下单/撤单/改止损。
+    独立 category `HOLDINGALERT`(用户 2026-07-26 拍板不复用 D5EXIT:D5=「持有到期」、K4=「可能被
+    派发」是两回事,合并后关一个会连坐另一个)。点开跳今日计划持仓区。"""
+    st = get_app_settings(db_path=db_path)
+    if not st.push_holding_alert:
+        return NotifyOutcome(skipped_reason="push_holding_alert_off")
+    if not apns.settings.has_apns_config:
+        return NotifyOutcome(skipped_reason="no_apns_config")
+    disp = name or code
+    reason = ";".join(hit_labels) if hit_labels else "触发年线下派发信号"
+    return _fanout(
+        "持仓派发警报",
+        f"{disp} {reason}。疑似诱多做局,建议减仓/勿追(系统不代下单)。",
+        category=apns.CATEGORY_HOLDING_ALERT,
+        custom={"kind": "holding_alert", "code": code},
+        db_path=db_path, transport=transport,
+    )
+
+
 __all__ = [
     "NotifyOutcome",
     "push_report_ready",
@@ -196,4 +229,5 @@ __all__ = [
     "push_precall_summary",
     "push_d5_exit",
     "push_circuit_breaker",
+    "push_holding_alert",
 ]

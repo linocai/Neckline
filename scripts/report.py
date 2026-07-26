@@ -83,8 +83,8 @@ def main() -> int:
         logger.info("报告已写入 %s,并已落库 SQLite `reports`/`llm_judgments` 表。", out_path)
 
         if args.notify:
-            # APNs 报告推送(plan 4B.5,只推两类之一;受 push_report 开关 + 无设备/无 APNs 配置
-            # 优雅跳过,绝不因推送失败让报告任务失败)。
+            # APNs 报告推送(plan 4B.5;受 push_report 开关 + 无设备/无 APNs 配置优雅跳过,
+            # 绝不因推送失败让报告任务失败)。
             try:
                 from neckline.api.notify import push_report_ready
                 outcome = push_report_ready(trade_date.strftime("%Y-%m-%d"))
@@ -93,6 +93,22 @@ def main() -> int:
                             f" skipped={outcome.skipped_reason}" if outcome.skipped_reason else "")
             except Exception:  # noqa: BLE001
                 logger.warning("APNs 报告推送异常(已吞,不影响报告落库)", exc_info=True)
+
+            # v1.3-② K4 持仓派发警报推送(第六类,受 push_holding_alert 开关)。只推**强价量证据**
+            # 命中(年线下涨停/放量大阳派发/换手>10%);题材天数=弱证据只进看板不推(§2.4)。逐仓
+            # 一条(≤3 仓),同样优雅跳过、绝不因推送失败让报告任务失败。
+            try:
+                from neckline.api.notify import push_holding_alert
+                pushed = 0
+                for it in bundle.holding_k4_check:
+                    if not it.has_strong:
+                        continue
+                    outcome = push_holding_alert(it.name, it.ts_code, it.strong_price_volume_labels())
+                    pushed += outcome.sent
+                logger.info("APNs 持仓派发警报:强警示持仓 %d 只,sent=%d",
+                            sum(1 for it in bundle.holding_k4_check if it.has_strong), pushed)
+            except Exception:  # noqa: BLE001
+                logger.warning("APNs 持仓派发警报异常(已吞,不影响报告落库)", exc_info=True)
 
     print(bundle.markdown)
     return 0

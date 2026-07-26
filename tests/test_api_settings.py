@@ -21,6 +21,7 @@ def test_settings_default(client, AUTH):
     assert body["llmKeySet"] is False
     assert body["push"] == {
         "report": True, "retreatBrake": True, "precall": True, "d5exit": True, "circuit": True,
+        "holdingAlert": True,
     }
 
 
@@ -53,21 +54,22 @@ def test_put_llm_invalid_provider_422(client, AUTH):
 
 
 def test_put_push_toggles(client, AUTH):
-    """v1.2-A2:契约扩至五字段(报告/退潮/盘前校准/D5 退出/熔断提醒)。"""
+    """v1.3-②:契约扩至六字段(报告/退潮/盘前校准/D5 退出/熔断提醒/K4 持仓派发警报)。"""
     r = client.put("/api/v1/settings/push", headers=AUTH,
                    json={"report": False, "retreatBrake": True, "precall": False,
-                         "d5exit": True, "circuit": False})
+                         "d5exit": True, "circuit": False, "holdingAlert": False})
     assert r.status_code == 200
     push = client.get("/api/v1/settings", headers=AUTH).json()["push"]
     assert push == {"report": False, "retreatBrake": True, "precall": False,
-                    "d5exit": True, "circuit": False}
+                    "d5exit": True, "circuit": False, "holdingAlert": False}
 
 
 def test_put_push_missing_field_422(client, AUTH):
-    """五字段均必填(与 report/retreatBrake 同款无默认值风格),缺字段 → 422 而非静默补默认
-    (v1.2-A2 缺 circuit 也 422)。"""
+    """六字段均必填(与 report/retreatBrake 同款无默认值风格),缺字段 → 422 而非静默补默认
+    (v1.3-② 缺 holdingAlert 也 422)。"""
     r = client.put("/api/v1/settings/push", headers=AUTH,
-                   json={"report": True, "retreatBrake": True, "precall": True, "d5exit": True})
+                   json={"report": True, "retreatBrake": True, "precall": True,
+                         "d5exit": True, "circuit": True})
     assert r.status_code == 422
 
 
@@ -75,11 +77,11 @@ def test_put_llm_does_not_reset_push(client, AUTH):
     """set_llm 只碰 llm 列,不连带重置 push 开关(各 setter 只 UPDATE 自己的列)。"""
     client.put("/api/v1/settings/push", headers=AUTH,
               json={"report": False, "retreatBrake": False, "precall": False,
-                    "d5exit": False, "circuit": False})
+                    "d5exit": False, "circuit": False, "holdingAlert": False})
     client.put("/api/v1/settings/llm", headers=AUTH, json={"provider": "glm", "apiKey": "k"})
     push = client.get("/api/v1/settings", headers=AUTH).json()["push"]
     assert push == {"report": False, "retreatBrake": False, "precall": False,
-                    "d5exit": False, "circuit": False}
+                    "d5exit": False, "circuit": False, "holdingAlert": False}
 
 
 def test_register_device(client, AUTH, api_env):

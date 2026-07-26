@@ -149,10 +149,12 @@ def list_decisions(
     ts_code: Optional[str] = None,
     date_from: Optional[str] = None,   # 'YYYYMMDD',按 created_at 日期过滤
     date_to: Optional[str] = None,     # 'YYYYMMDD'
+    position_id: Optional[int] = None,  # v1.3-②-D:按关联持仓过滤(挑出该持仓待对照决策)
     db_path: Optional[Path] = None,
 ) -> List[DecisionRow]:
-    """`GET /decisions` 的查询(plan B.2)。默认返全部,可按 status / code / 日期
-    区间过滤;按 `created_at, id` 升序(与其它列表端点惯例一致)。"""
+    """`GET /decisions` 的查询(plan B.2 + v1.3-②-D)。默认返全部,可按 status / code / 日期
+    区间 / `position_id`(v1.3-②-D 情景树每日对照,挑出该持仓关联决策)过滤;按 `created_at, id`
+    升序(与其它列表端点惯例一致)。**只读过滤,无新写路径**。"""
     init_schema(db_path)
     clauses: List[str] = []
     params: List[Any] = []
@@ -162,6 +164,9 @@ def list_decisions(
     if ts_code:
         clauses.append("ts_code=?")
         params.append(ts_code)
+    if position_id is not None:
+        clauses.append("position_id=?")
+        params.append(position_id)
     if date_from:
         clauses.append("substr(created_at,1,10) >= ?")
         params.append(_to_iso_date(date_from))

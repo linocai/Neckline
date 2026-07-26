@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
     push_precall    INTEGER NOT NULL DEFAULT 1,
     push_d5exit     INTEGER NOT NULL DEFAULT 1,
     push_circuit    INTEGER NOT NULL DEFAULT 1,   -- v1.2-A2:第五类推送(熔断提醒)开关,默认开
+    push_holding_alert INTEGER NOT NULL DEFAULT 1, -- v1.3-②:第六类推送(K4 持仓派发警报)开关,默认开
     review_col_map  TEXT NOT NULL DEFAULT '{}',
     updated_at      TEXT
 );
@@ -345,6 +346,34 @@ CREATE TABLE IF NOT EXISTS breathing_t_trades (
     created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_breathing_t_trades_position_id ON breathing_t_trades(position_id);
+
+-- v1.3-② 持仓 K4 每日体检 + D5 净浮盈快照(plan §五 v1.3-②)。16:35 报告管线对每只 open
+-- 持仓在当日 EOD 面板上重算 K4 advisory 命中 + 算好 D5 收盘净浮盈 → 落本表一行(一持仓一
+-- 交易日一行,幂等覆盖)。两个消费方:①`GET /positions` 读最近一份快照嵌 k4Advisory[](像
+-- watchlist 读体检快照);②**次日 9:25:30 `sentinel/precall.py` 的 net_float_provider 读
+-- 最近一份 net_float**(= v1.3-① 留的 seam 接线点;没有它浮盈豁免形同虚设,见该模块注释)。
+-- net_float:D5 收盘净浮盈估算(现价EOD×qty − buy_price×qty − buy_fees实录 − 估算卖出费,
+--   见 neckline/fees.py::estimate_net_float);停牌/无 EOD 数据 → NULL(precall 侧退保守判非浮盈)。
+-- time_exit_state/max_hold_effective:16:35 权威两档时间退出分类(classify_time_exit,单一源
+--   sentinel/precall)。k4_hits_json:命中项 JSON 数组 [{code,label,level,evidence,evidenceStrength}]。
+-- has_strong:是否含「强价量证据」命中(= 触发第六类 APNs 派发警报的门槛,题材类弱证据不计入)。
+-- scenario_review:该持仓是否有关联决策日志(via decision_log.position_id)含非空情景树待每日
+--   对照(②-D 提醒,勾选仍走既有 scenario-outcome 端点,本表只做「挑出来」)。PK 保证幂等重跑。
+CREATE TABLE IF NOT EXISTS holding_eod_check (
+    position_id         INTEGER NOT NULL,
+    trade_date          TEXT NOT NULL,          -- 'YYYYMMDD' EOD 日
+    d_count             INTEGER NOT NULL DEFAULT 1,
+    net_float           REAL,                   -- D5 收盘净浮盈估算 | NULL=停牌/无数据(保守判非浮盈)
+    time_exit_state     TEXT NOT NULL DEFAULT 'holding',  -- time_exit_next_day|profit_exempt|hard_cap_exit|holding
+    max_hold_effective  INTEGER NOT NULL DEFAULT 5,
+    k4_hits_json        TEXT NOT NULL DEFAULT '[]',
+    has_strong          INTEGER NOT NULL DEFAULT 0,
+    scenario_review     INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    PRIMARY KEY (position_id, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_holding_eod_check_position ON holding_eod_check(position_id);
+CREATE INDEX IF NOT EXISTS idx_holding_eod_check_trade_date ON holding_eod_check(trade_date);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库
@@ -375,6 +404,9 @@ _COLUMN_MIGRATIONS = [
     # 均可空(NULL=未录),老库幂等补列;实盘估算见 neckline/fees.py(诚实标注估算)。
     ("positions", "buy_fees", "REAL"),
     ("positions", "sell_fees", "REAL"),
+    # v1.3-②:第六类推送开关(K4 持仓派发警报,用户 2026-07-26 拍板独立 category + 独立开关,
+    # 默认开)。老库幂等补列取常量默认 1。§2.4 推送白名单五类→六类。
+    ("app_settings", "push_holding_alert", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 

@@ -50,6 +50,7 @@ from neckline.api.schemas import (
     EntrySuggestionOut,
     InquiryIn,
     InquiryOut,
+    K4AdvisoryOut,
     LLMJudgmentOut,
     OkOut,
     PositionCloseIn,
@@ -503,6 +504,7 @@ def _shape_circuit(state: "circuit_store.CircuitState") -> CircuitStateOut:
 
 @app.get(f"{API_PREFIX}/positions", dependencies=[Depends(require_token)])
 def list_positions() -> PositionsOut:
+    from neckline.report.holding_store import load_latest_checks_by_position
     from neckline.sentinel.precall import classify_time_exit
 
     holdings = pos_store.load_open_positions(db_path=_db())
@@ -511,6 +513,9 @@ def list_positions() -> PositionsOut:
     prices = _resolve_prices(codes)
     stop_pct, max_hold, _single_cap, tpr = _active_config()
     cfg = _active_momentum_config()
+    # v1.3-② 持仓 K4 牌:读最近一份 16:35 体检快照嵌 k4Advisory[] + scenarioReviewPending
+    # (服务端算好,客户端不重算 250 日面板;刚开仓未体检 → 空数组/False)。
+    k4_snapshots = load_latest_checks_by_position(db_path=_db())
     today = date.today()
     out: List[PositionOut] = []
     for h in holdings:
@@ -531,6 +536,15 @@ def list_positions() -> PositionsOut:
             from neckline.fees import estimate_net_float
             net_float = estimate_net_float(price, h.qty, h.buy_price, buy_fees=h.buy_fees)
         te_state, eff_max = classify_time_exit(dcount, cfg, net_float)
+        snap = k4_snapshots.get(h.id) or {}
+        k4_advisory = [
+            K4AdvisoryOut(
+                code=hit.get("code", ""), label=hit.get("label", ""),
+                level=hit.get("level", "normal"), evidence=hit.get("evidence", ""),
+                evidenceStrength=hit.get("evidence_strength", "price_volume"),
+            )
+            for hit in (snap.get("hits") or [])
+        ]
         out.append(PositionOut(
             id=h.id, code=h.ts_code, name=names.get(h.ts_code, h.ts_code),
             buyPrice=h.buy_price, qty=h.qty, entryReason=h.note or "",
@@ -542,6 +556,7 @@ def list_positions() -> PositionsOut:
             todayAction=_today_action(dcount, eff_max, dist, retrace, te_state),
             maxHoldDaysEffective=eff_max, timeExitState=te_state,
             buyFees=h.buy_fees, sellFees=h.sell_fees,
+            k4Advisory=k4_advisory, scenarioReviewPending=bool(snap.get("scenario_review")),
         ))
     return PositionsOut(holdings=out, circuit=_shape_circuit(circuit_store.get_state(db_path=_db())))
 
@@ -687,12 +702,15 @@ def create_decision(body: DecisionCreateIn) -> DecisionOut:
 def list_decisions(
     status: str = "", code: str = "",
     from_: str = Query(default="", alias="from"), to: str = "",
+    position_id: int = 0,
 ) -> DecisionsListOut:
     """客户端历史 + macOS 归因表(plan B.2)。默认返全部,可按 `status`/`code`/
-    `from`/`to`(created_at 日期区间,'YYYYMMDD')过滤。"""
+    `from`/`to`(created_at 日期区间,'YYYYMMDD')/`position_id`(v1.3-②-D 情景树每日对照,
+    挑出该持仓关联决策)过滤。`position_id=0`(缺省)= 不按持仓过滤(向后兼容旧调用)。"""
     rows = decision_log_store.list_decisions(
         status=(status or None), ts_code=(code or None),
-        date_from=(from_ or None), date_to=(to or None), db_path=_db(),
+        date_from=(from_ or None), date_to=(to or None),
+        position_id=(position_id or None), db_path=_db(),
     )
     return DecisionsListOut(items=[_shape_decision(r) for r in rows])
 
@@ -967,6 +985,7 @@ def get_settings() -> SettingsOut:
         push=PushSettingsOut(
             report=st.push_report, retreatBrake=st.push_retreat,
             precall=st.push_precall, d5exit=st.push_d5exit, circuit=st.push_circuit,
+            holdingAlert=st.push_holding_alert,
         ),
         reviewColMap=st.review_col_map,
     )
@@ -982,9 +1001,11 @@ def put_settings_llm(body: SettingsLLMIn) -> OkOut:
 
 @app.put(f"{API_PREFIX}/settings/push", dependencies=[Depends(require_token)])
 def put_settings_push(body: SettingsPushIn) -> OkOut:
-    """写 APNs 五类推送开关(v1.2-A2:契约扩至五字段,第五 = 熔断提醒
-    `app_settings.push_circuit`,默认开)。五字段均必填(缺 → 422)。"""
-    set_push(body.report, body.retreatBrake, body.precall, body.d5exit, body.circuit, db_path=_db())
+    """写 APNs 六类推送开关(v1.3-②:契约扩至六字段,第六 = K4 持仓派发警报
+    `app_settings.push_holding_alert`,默认开;用户 2026-07-26 拍板独立开关)。
+    六字段均必填(缺 → 422)。"""
+    set_push(body.report, body.retreatBrake, body.precall, body.d5exit, body.circuit,
+             body.holdingAlert, db_path=_db())
     return OkOut(ok=True)
 
 

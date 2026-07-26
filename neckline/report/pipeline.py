@@ -21,8 +21,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from neckline import decision_log
 from neckline import watchlist as watchlist_store
 from neckline.data.top_list import top_list_lookup
+from neckline.sentinel import positions as pos_store
 from neckline.llm.base import LLMProvider
 from neckline.llm.factory import get_provider
 from neckline.llm.judge import JudgeResult, judge_candidate
@@ -30,6 +32,7 @@ from neckline.report import store
 from neckline.report.candidates import Candidate, build_candidates
 from neckline.report.render import render_markdown
 from neckline.report.sectors import SectorScore, compute_sector_strength, load_index_names, load_member_map
+from neckline.report.holding_k4_check import HoldingK4Item, build_holding_k4_check
 from neckline.report.sentiment import SentimentDashboard, compute_sentiment
 from neckline.report.watchlist_check import WatchlistCheckItem, apply_llm_review, build_watchlist_check
 from neckline.strategy import brain
@@ -50,6 +53,7 @@ class ReportBundle:
     markdown: str
     missed_entry_hint: str = ""     # v1.1-B.4 漏录兜底提示(无 → 空串)
     watchlist_check: List[WatchlistCheckItem] = field(default_factory=list)  # v1.1-C.3 自选体检(独立一节)
+    holding_k4_check: List[HoldingK4Item] = field(default_factory=list)      # v1.3-② 持仓 K4 体检 + D5 净浮盈
 
 
 def compute_missed_entry_hint(trade_date: date, db_path: Optional[Path] = None) -> str:
@@ -69,6 +73,17 @@ def compute_missed_entry_hint(trade_date: date, db_path: Optional[Path] = None) 
         f"今日 {entry_events} 只候选触达买点但台账无补录,"
         f"如已买入请补录 / 未买入请确认为何未执行。"
     )
+
+
+def _scenario_review_position_ids(db_path: Optional[Path] = None) -> set:
+    """有非空情景树待每日对照的持仓 position_id 集合(plan §五 v1.3-②-D「把待对照的持仓/
+    决策挑出来」)。= 已成交(filled)且关联了持仓、且⑦情景树非空的决策日志的 position_id。
+    **只读挑出,勾选兑现仍走既有 `POST /decisions/{id}/scenario-outcome`**(无新写路径)。"""
+    ids: set = set()
+    for d in decision_log.list_decisions(status=decision_log.STATUS_FILLED, db_path=db_path):
+        if d.position_id is not None and d.contingency_scenarios:
+            ids.add(d.position_id)
+    return ids
 
 
 def build_report(
@@ -152,6 +167,18 @@ def build_report(
         provider=provider, top_list=top_list, transport=llm_transport,
     )
 
+    # v1.3-② 持仓 K4 每日体检 + D5 收盘净浮盈(EOD 权威计算,seam 落点):对每只 open 持仓
+    # 在当日面板重算 K4 advisory 命中(读 DB K4,polars 镜像)+ 算好 D5 净浮盈 → 落
+    # `holding_eod_check`(GET /positions 读快照嵌 k4Advisory;次日 precall 读 net_float)。
+    # 复用报告已算好的 sector_scores/member_map(题材持续天数,不重建 industry 管线)。
+    holding_positions = pos_store.load_open_positions(db_path=db_path)
+    holding_k4_check = build_holding_k4_check(
+        trade_date, active.rule, holding_positions,
+        sector_scores=sector_scores, member_map=member_map,
+        scenario_position_ids=_scenario_review_position_ids(db_path=db_path),
+        parquet_dir=parquet_dir, db_path=db_path,
+    )
+
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     markdown = render_markdown(
         trade_date=trade_date,
@@ -180,6 +207,9 @@ def build_report(
         # `load_pending_inquiry_codes`/`mark_inquiry_pool_consumed` docstring)——
         # `save=False`(预览/单测)绝不应有这个副作用,故放在 `if save:` 内。
         mark_inquiry_pool_consumed(trade_date, db_path=db_path)
+        # v1.3-② 持仓 K4 体检 + D5 净浮盈落库(同 `save=False` 不落库口径,防预览/单测副作用)。
+        from neckline.report import holding_store
+        holding_store.save_holding_eod_checks(trade_date, holding_k4_check, db_path=db_path)
 
     return ReportBundle(
         trade_date=trade_date,
@@ -192,6 +222,7 @@ def build_report(
         markdown=markdown,
         missed_entry_hint=compute_missed_entry_hint(trade_date, db_path=db_path),
         watchlist_check=watchlist_check,
+        holding_k4_check=holding_k4_check,
     )
 
 

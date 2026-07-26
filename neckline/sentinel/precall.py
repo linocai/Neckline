@@ -453,12 +453,18 @@ def run_precall_tick(
             _record("precall", p.ts_code, EVENT_POS_LOW_OPEN, pos_reason)
 
     # —— 时间退出扫描(两档,§五 v1.3-①-C;折进本进程,独立于 push_precall 开关)——————
-    # net_float_provider=None:precall 9:25:30 D5 收盘未出,净浮盈由 16:35 EOD 权威计算 +
-    # 持久化(v1.3-② 的 16:35 持仓管线接线);None → 保守判非浮盈。**未启用两档 config
-    # (现役 K1)时退回单档 == max_hold_days = v1.1 D5 行为完全一致**(net_float_provider 不被
-    # 触及)。只对 actionable 两档(time_exit_next_day / hard_cap_exit)落看板 + 推;profit_exempt
-    # 不推 D5 执行提醒(客户端徽标经 PositionOut 表达,§五 v1.3-①-D)。
-    time_exits = scan_time_exits(wu.positions, trade_date, cfg, net_float_provider=None, names=names)
+    # **v1.3-② seam 已接**:net_float_provider 读上一交易日 16:35 持久化的 D5 收盘净浮盈
+    # (`holding_store.net_float_provider`)——precall 9:25:30 时当日 D5 收盘未出,权威净浮盈
+    # 是 EOD 量,故读最近一份 EOD 快照。这修复 v1.3-① 留的「provider 恒 None → 激活后所有单子
+    # 保守判非浮盈、浮盈豁免形同虚设」的地基缺口(⑦ 章程激活前置)。查无快照(刚开仓未体检)
+    # → None 保守。**未启用两档 config(现役 K1)时 scan_time_exits 退回单档 == max_hold_days =
+    # v1.1 D5 行为完全一致**(is_two_tier_time_exit=False,provider 根本不被触及)。只对 actionable
+    # 两档(time_exit_next_day / hard_cap_exit)落看板 + 推;profit_exempt 不推 D5 执行提醒
+    # (客户端徽标经 PositionOut 表达,§五 v1.3-①-D)。
+    from neckline.report.holding_store import net_float_provider as _nf_provider
+    time_exits = scan_time_exits(
+        wu.positions, trade_date, cfg, net_float_provider=_nf_provider(db_path=db_path), names=names
+    )
     actionable = [ex for ex in time_exits if ex.state in _ACTIONABLE_TIME_EXIT]
     for ex in actionable:
         _record("d5exit", ex.ts_code, D5EXIT_EVENT_KEY, _time_exit_body(ex))
