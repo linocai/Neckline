@@ -23,3 +23,7 @@ client/**/build/
 *.xcworkspace/xcuserdata/
 .swiftpm/
 Package.resolved
+
+# 本地 dev DB 的施工期回退备份(高危块前 cp -p / sqlite3 .backup 产物)。
+# 生产回退绳在 ECS /opt/neckline/data/ 下,与此无关。
+data/*.bak-*
