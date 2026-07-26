@@ -101,6 +101,15 @@ _ALLOWED_BOARDS = ("MAIN", "GEM", "STAR")
 NON_NEW_MIN_DAYS = 120        # 非次新门槛(days_since_listing≥120,复用 signals.forbid_new_stock,同 K4 A4/base 口径)
 BREAKOUT_TOP_N = 10           # 当日暴起板块 top-N(过卫生线后按拥挤度取)
 TOP_N_CANDIDATES = 20         # 出榜候选数(交用户终选)
+QUOTA_PER_PERMANENT_BOARD = 2  # 五常驻板块每个保底名额(用户 2026-07-26 拍板:长期盯的五方向每天都有情报到手,
+                              # 不让当日最强题材簇占满整榜)。取该板块内情报排序最高的 2 只,**只从过完
+                              # ②卫生线 + ③K4 hard_cut 的池子里选**——hard_cut 命中绝不因保底被捞回,合格票不足
+                              # 2 只时有几只放几只、缺额退回公共池竞争(不许降卫生线/放宽 hard_cut)。
+
+# 候选入选来源(带入 intelRank.source,供 ⑥ 客户端说清「为什么在榜」)。
+SOURCE_QUOTA = "quota"            # 常驻板块保底入选
+SOURCE_COMPETITION = "competition"  # 情报排序竞争入选
+SOURCE_FORCED = "forced"          # 问询台海选池强制纳入(§2.5,豁免卫生线/hard_cut)
 _ALL_BOARDS_TOP_N = 1000      # 远超真实概念板块总数(394,2026-07-24 快照),拿全量排序结果(同 intel.py)
 _MONEYFLOW_ALL_TOP_N = 10 ** 9  # 拿 C2 全部板块资金流(非只 top-15),供逐候选查其板块净流入
 # DB `k4_advisory` 无归属的合成码(A3b_belowyear_bigvol,证据源=雷区地图 3-⑤)默认归属:
@@ -148,20 +157,26 @@ def _bulk_load_codes_table(
 
 def _resolve_watch_board_codes(
     index_names: Dict[str, str], db_path: Optional[Path]
-) -> Tuple[Set[str], List[str]]:
-    """五板块常驻名单(板块中文名)→ index_code 集合,**按 `ths_index.name` 精确匹配**
-    (禁关键词模糊,见模块 docstring)。返回 (解析到的 index_code 集合, 未解析到的名字列表)。
-    精确名极少数情况可能对应多个 index_code → 全取(仍是精确名,不模糊)。"""
+) -> Tuple[List[str], List[str]]:
+    """五板块常驻名单(板块中文名)→ index_code **有序列表**(按配置名单顺序,dedup),**按
+    `ths_index.name` 精确匹配**(禁关键词模糊,见模块 docstring)。返回 (解析到的 index_code
+    有序列表, 未解析到的名字列表)。**顺序 load-bearing**:保底名额分配按此顺序认领(一票同属
+    多个常驻时归**配置顺序最先轮到且仍有空额**的板块,见 `build_intel_candidates` 保底 pass)。
+    精确名极少数情况对应多个 index_code → 全取(仍精确、不模糊;各自算一个常驻板块各 2 只保底)。"""
     names = get_intel_watch_boards(db_path)
     name_to_codes: Dict[str, List[str]] = {}
     for code, nm in index_names.items():
         name_to_codes.setdefault(nm, []).append(code)
-    codes: Set[str] = set()
+    codes: List[str] = []
+    seen: Set[str] = set()
     unresolved: List[str] = []
     for nm in names:
         hit = name_to_codes.get(nm)
         if hit:
-            codes.update(hit)
+            for c in hit:
+                if c not in seen:
+                    codes.append(c)
+                    seen.add(c)
         else:
             unresolved.append(nm)
     return codes, unresolved
@@ -255,7 +270,8 @@ def build_intel_candidates(
     )
     flow_by_board = {i.index_code: i.net_inflow_wan for i in mf.top_inflow} if mf.available else {}
 
-    kept: List[Dict[str, Any]] = []   # {code, row, k4_flags, sector_flow, persist, freshness, base_score, is_forced}
+    permanent_set = set(permanent_codes)
+    kept: List[Dict[str, Any]] = []
     for code in universe_codes:
         row = rows_by_code.get(code)
         persist = _theme_persist_days(code, member_map, step1_hot)
@@ -268,7 +284,9 @@ def build_intel_candidates(
             continue   # 无当日 EOD 数据(停牌/未上市)——无法出四件套候选卡,跳过
         # 保留候选的 K4 标注码:普通候选 = avoid_flag 命中;forced 票即使命中 hard_cut 也全数标注(诚实透出危险)。
         k4_flags = [h.code for h in hits]
-        its_step1_boards = [b for b in member_map.get(code, []) if b in step1_boards]
+        boards_of_code = member_map.get(code, [])
+        its_step1_boards = [b for b in boards_of_code if b in step1_boards]
+        its_permanent_boards = [b for b in boards_of_code if b in permanent_set]
         flows = [flow_by_board[b] for b in its_step1_boards if b in flow_by_board]
         sector_flow = max(flows) if flows else None
         kept.append({
@@ -278,6 +296,10 @@ def build_intel_candidates(
             "freshness": _theme_freshness_score(persist),
             "base_score": float(row.get("_base_score") or 0.0),
             "is_forced": is_forced, "its_step1_boards": its_step1_boards,
+            "its_permanent_boards": its_permanent_boards,
+            # 保底资格 = 过完 ②卫生线(survivor)且未命中 ③K4 hard_cut。forced 豁免票即使
+            # 在 kept 里,若未过 ②/命中 hard 则**不**具保底/竞争资格(只经 forced 保证入榜)。
+            "quota_eligible": (code in survivor_codes) and (not hard),
         })
 
     if not kept:
@@ -289,16 +311,57 @@ def build_intel_candidates(
         sf = e["sector_flow"] if e["sector_flow"] is not None else float("-inf")
         return (-sf, -e["freshness"], -e["base_score"], e["code"])
 
-    kept.sort(key=_sort_key)
-    top = kept[:top_n]
-    # forced 票即使排序在 top_n 之外也保证出现(§2.5「强制纳入」)。
+    kept.sort(key=_sort_key)   # 全局情报排序(最优在前),保底/竞争两 pass 都在此序上扫
+
+    by_code = {e["code"]: e for e in kept}
+    source_of: Dict[str, str] = {}
+    selected_codes: List[str] = []
+
+    # —— ④a 保底 pass(用户 2026-07-26 拍板):每个常驻板块(**按配置顺序**)取该板块内情报排序
+    #    最高的至多 QUOTA 只,**仅从 quota_eligible 池**里选(hard_cut/未过② 绝不因保底捞回)。
+    #    归属口径:一票同属多个常驻板块时,归**配置顺序里最先轮到且仍有空额**的板块认领(claim
+    #    后不再被后续常驻或竞争重复计入),故一票只占一个保底名额。合格票不足 QUOTA → 有几只放
+    #    几只、缺额自然退回下方竞争 pass 的公共池。————————————————————————————————————
+    for pb in permanent_codes:   # 配置顺序;重复精确名对应的多 code 各算一个常驻板块
+        if len(selected_codes) >= top_n:
+            break
+        picks = 0
+        for e in kept:   # 已全局情报排序
+            if picks >= QUOTA_PER_PERMANENT_BOARD or len(selected_codes) >= top_n:
+                break
+            code = e["code"]
+            if code in source_of or not e["quota_eligible"]:
+                continue
+            if pb in e["its_permanent_boards"]:
+                source_of[code] = SOURCE_QUOTA
+                selected_codes.append(code)
+                picks += 1
+
+    # —— ④b 竞争 pass:剩余名额(top_n − 实际保底数)按情报排序从公共池(未被认领的
+    #    quota_eligible 票 = 常驻其余票 + 暴起板块票)竞争,填到 top_n。去重(source_of 已认领的跳过)。
+    for e in kept:
+        if len(selected_codes) >= top_n:
+            break
+        code = e["code"]
+        if code in source_of or not e["quota_eligible"]:
+            continue   # 非 quota_eligible(forced 豁免的 hard/未过②)不参与竞争,只走下方 forced 保证
+        source_of[code] = SOURCE_COMPETITION
+        selected_codes.append(code)
+
+    # —— ④c forced 保证(§2.5「强制纳入」,不变):forced 票若未入 → 追加(source=forced,
+    #    可略超 top_n,同既有语义;含 forced 豁免的 hard/非成员票)。————————————————————
     if forced_set:
-        present = {e["code"] for e in top}
         for e in kept:
-            if e["is_forced"] and e["code"] not in present:
-                top.append(e)
-                present.add(e["code"])
-        top.sort(key=_sort_key)
+            code = e["code"]
+            if e["is_forced"] and code not in source_of:
+                source_of[code] = SOURCE_FORCED
+                selected_codes.append(code)
+
+    # 组装:按情报排序重排(rank 反映情报强度,保底票落其自然位、由 source 标识来源),写入 source。
+    top = [by_code[c] for c in selected_codes]
+    for e in top:
+        e["source"] = source_of[e["code"]]
+    top.sort(key=_sort_key)
 
     names = _load_stock_names([e["code"] for e in top], db_path)
     out: List[Candidate] = []
@@ -336,6 +399,12 @@ def _build_intel_candidate(
         "sectorFlow": round(e["sector_flow"], 1) if e["sector_flow"] is not None else None,
         "themePersistDays": e["persist"],
         "highElasticity": board in S.HIGH_ELASTICITY_BOARDS,
+        # 入选来源(quota=常驻保底 / competition=情报竞争 / forced=问询强制),供 ⑥ 客户端说清
+        # 「为什么在榜」。带在 intelRank 里(用户 2026-07-26 拍板「在既有 intelRank 里带来源标记」);
+        # 落报告快照 JSON。⚠ 典型 API `CandidateOut.intelRank`(schemas.IntelRankOut)默认 drop
+        # 额外键,如需透出到客户端类型化字段需 ⑥ 在 IntelRankOut 补一个 `source` 字段(本块按范围
+        # 约束未碰 schemas.py——C4 并行施工中;数据已在 intel_rank/报告快照里就绪)。
+        "source": e.get("source", SOURCE_COMPETITION),
     }
     return Candidate(
         ts_code=code,
@@ -364,4 +433,8 @@ __all__ = [
     "NON_NEW_MIN_DAYS",
     "BREAKOUT_TOP_N",
     "TOP_N_CANDIDATES",
+    "QUOTA_PER_PERMANENT_BOARD",
+    "SOURCE_QUOTA",
+    "SOURCE_COMPETITION",
+    "SOURCE_FORCED",
 ]

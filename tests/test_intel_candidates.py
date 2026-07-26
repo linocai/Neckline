@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date, timedelta
 
 import polars as pl
@@ -119,6 +120,27 @@ def _seed_k4(env) -> None:
 
 def _codes(cands) -> list:
     return [c.ts_code for c in cands]
+
+
+# 五常驻板块名 → 真实 ths_index code(保底测试用;精确匹配路径)。
+_BOARD_CODE = {
+    "芯片概念": "885756.TI", "创新药": "886015.TI", "储能": "885921.TI",
+    "机器人概念": "885517.TI", "稀土永磁": "885343.TI",
+}
+
+
+def _seed_permanent(env, board_members: dict) -> None:
+    """`board_members`: {常驻板块名: [成分股code]}。铺 ths_index(名)+ ths_member(成分)。
+    某板块 code 列表为空 → ths_index 有该板块行、ths_member 无成分(测「0 合格票」缺额)。"""
+    write_flat_parquet(env, "ths_index.parquet",
+                       [{"ts_code": _BOARD_CODE[n], "name": n} for n in board_members])
+    write_flat_parquet(env, "ths_member.parquet",
+                       [{"index_code": _BOARD_CODE[n], "con_code": c}
+                        for n, codes in board_members.items() for c in codes])
+
+
+def _src(cands) -> dict:
+    return {c.ts_code: c.intel_rank["source"] for c in cands}
 
 
 # ————————————————————————————————————————————————————————————————
@@ -439,3 +461,117 @@ def test_watchlist_discipline_still_k1_while_candidates_decoupled(isolated_env):
     it = {i.ts_code: i for i in items}["300002.SZ"]
     assert it.green_light is False
     assert any("高弹" in d or "创业板" in d for d in it.disqualifiers)
+
+
+# ————————————————————————————————————————————————————————————————
+# ⑨ 常驻板块保底名额(用户 2026-07-26 拍板:每常驻板块保底 2 只)
+# ————————————————————————————————————————————————————————————————
+
+def test_quota_two_per_permanent_board_all_present_total_20(isolated_env):
+    """① 五常驻板块各有 ≥2 合格票时:每个板块保底恰 2 只(共 10 只 quota)、总数仍 20、
+    其余 10 只按情报排序竞争入选(source=competition)。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    prefixes = {"芯片概念": "6001", "创新药": "6002", "储能": "6003", "机器人概念": "6004", "稀土永磁": "6005"}
+    board_members, stocks = {}, []
+    for name, pfx in prefixes.items():
+        codes = [f"{pfx}{j:02d}.SH" for j in range(5)]   # 每板块 5 只
+        board_members[name] = codes
+        for j, c in enumerate(codes):
+            stocks.append({"code": c, "market": "主板", "closes": _rising(30, p0=10.0 + j * 0.01)})
+    _seed_market(isolated_env, dates, stocks)
+    _seed_permanent(isolated_env, board_members)
+    cands = ic.build_intel_candidates(dates[-1], _RULE,
+                                      parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    assert len(cands) == 20
+    quota = [c for c in cands if c.intel_rank["source"] == ic.SOURCE_QUOTA]
+    comp = [c for c in cands if c.intel_rank["source"] == ic.SOURCE_COMPETITION]
+    assert len(quota) == 10 and len(comp) == 10   # 5 板块 × 2 保底 + 10 竞争
+    code_to_board = {c: n for n, cs in board_members.items() for c in cs}
+    per_board = Counter(code_to_board[c.ts_code] for c in quota)
+    assert all(per_board[n] == ic.QUOTA_PER_PERMANENT_BOARD for n in board_members)   # 每板块恰 2
+
+
+def test_quota_shortfall_returns_to_common_pool_total_kept(isolated_env):
+    """② 某常驻合格票只 1 只 / 0 只时:有几只放几只、缺额退回公共池竞争、总数仍 = top_n。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    board_members = {
+        "芯片概念": ["600100.SH"],                                 # 只 1 只 → 保底 1
+        "创新药": [],                                              # 0 只(index 有、member 无)→ 保底 0
+        "储能": [f"6003{j:02d}.SH" for j in range(5)],             # 5 只 → 保底 2 + 3 退回公共池
+    }
+    stocks = [{"code": c, "market": "主板", "closes": _rising(30, p0=10.0 + j * 0.01)}
+              for cs in board_members.values() for j, c in enumerate(cs)]
+    _seed_market(isolated_env, dates, stocks)
+    _seed_permanent(isolated_env, board_members)   # 创新药 进 ths_index 但 0 成分
+    cands = ic.build_intel_candidates(dates[-1], _RULE, top_n=6,
+                                      parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    assert len(cands) == 6                                          # 缺额退回后仍填满 top_n
+    code_to_board = {c: n for n, cs in board_members.items() for c in cs}
+    quota = [c for c in cands if c.intel_rank["source"] == ic.SOURCE_QUOTA]
+    comp = [c for c in cands if c.intel_rank["source"] == ic.SOURCE_COMPETITION]
+    assert "600100.SH" in [c.ts_code for c in quota]                # 芯片仅 1 只合格 → 保底 1
+    assert sum(1 for c in quota if code_to_board[c.ts_code] == "芯片概念") == 1
+    assert all(code_to_board.get(c.ts_code) != "创新药" for c in cands)   # 创新药 0 合格 → 无候选
+    assert sum(1 for c in quota if code_to_board[c.ts_code] == "储能") == 2
+    assert len(quota) == 3 and len(comp) == 3                       # 保底 3 + 缺额退回竞争 3 = 6
+
+
+def test_hard_cut_not_rescued_by_quota(isolated_env):
+    """③ hard_cut 命中的票**绝不因保底被捞回**(保底只从过完 ②卫生线 + ③K4 hard_cut 的池选)。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    _seed_k4(isolated_env)
+    _seed_market(isolated_env, dates, [
+        {"code": "600100.SH", "market": "主板", "closes": _rising(30)},                       # 干净
+        {"code": "600101.SH", "market": "主板", "closes": _rising(30), "turnover": [5.0] * 29 + [15.0]},  # A1 hard_cut
+    ])
+    _seed_permanent(isolated_env, {"芯片概念": ["600100.SH", "600101.SH"]})
+    cands = ic.build_intel_candidates(dates[-1], _RULE,
+                                      parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    codes = _codes(cands)
+    assert "600100.SH" in codes and "600101.SH" not in codes       # hard_cut 不因保底捞回
+    assert _src(cands)["600100.SH"] == ic.SOURCE_QUOTA             # 干净票保底入选
+
+
+def test_shared_stock_takes_single_quota_slot(isolated_env):
+    """④ 一票同属两个常驻板块:只占**一个**保底名额,由配置顺序在前的板块认领,另一板块靠其余
+    成分凑满 2(不重复计数把名额吃空)。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    _seed_market(isolated_env, dates, [
+        {"code": c, "market": "主板", "closes": _rising(30)}
+        for c in ["600100.SH", "600101.SH", "600102.SH", "600200.SH", "600201.SH"]
+    ])
+    _seed_permanent(isolated_env, {
+        "芯片概念": ["600100.SH", "600101.SH", "600102.SH"],   # 配置在前:认领 600100/600101(code 序)
+        "创新药":   ["600100.SH", "600200.SH", "600201.SH"],   # 共享 600100 → 靠 600200/600201 凑满 2
+    })
+    cands = ic.build_intel_candidates(dates[-1], _RULE,
+                                      parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    codes = _codes(cands)
+    src = _src(cands)
+    assert codes.count("600100.SH") == 1                           # 无重复(只占一个名额)
+    assert src["600100.SH"] == ic.SOURCE_QUOTA                     # 由「芯片概念」(配置在前)认领
+    # 创新药靠 600200/600201 凑满 2 → 证明 600100 未被创新药重复占名额(否则 600201 不会是 quota)
+    assert src["600200.SH"] == ic.SOURCE_QUOTA
+    assert src["600201.SH"] == ic.SOURCE_QUOTA
+
+
+def test_selection_source_marked_in_intel_rank(isolated_env):
+    """⑤ 保底票在出参里**可识别来源**:`intel_rank.source` = quota / competition,每只都带标记。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    stocks = [{"code": f"6001{j:02d}.SH", "market": "主板", "closes": _rising(30, p0=10.0 + j * 0.01)}
+              for j in range(5)]
+    _seed_market(isolated_env, dates, stocks)
+    _seed_permanent(isolated_env, {"芯片概念": [s["code"] for s in stocks]})
+    cands = ic.build_intel_candidates(dates[-1], _RULE, top_n=4,
+                                      parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    assert len(cands) == 4
+    assert all("source" in c.intel_rank for c in cands)            # 每只都有来源标记
+    quota = [c for c in cands if c.intel_rank["source"] == ic.SOURCE_QUOTA]
+    comp = [c for c in cands if c.intel_rank["source"] == ic.SOURCE_COMPETITION]
+    assert len(quota) == 2 and len(comp) == 2                      # 单板块:保底 2 + 竞争 2
+    assert {c.intel_rank["source"] for c in cands} == {ic.SOURCE_QUOTA, ic.SOURCE_COMPETITION}
