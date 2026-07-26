@@ -22,6 +22,8 @@
       (省成本)。故本模块**「减持」类改用 `stk_holdertrade` 结构化数据,不用
       `anns_d`、也不用 LLM**,`in_de=='DE'` 即减持事件。这是比 plan 原文举例的
       `anns_d` 更优的方案,超出「查 anns_d」字面但同属「数据源侦察」的题中之义。
+      **已收进「v1.3 客户端契约清单」的 `newsAlertsScan` 字段**(2026-07-26
+      coordinator 复核后拍板,不算可选字段——见下方"没扫到 vs 扫了没有"节)。
     · **立案 / 暴雷 / 监管三类 —— 无任何 TuShare 接口覆盖**(逐一核实:未找到
       "立案调查"/"监管处罚"/"违规处理"专属接口;`anns_d` 本可能间接覆盖但权限
       不可用;`disclosure_date` 是财务预约披露日期,与监管处罚无关,排除)。
@@ -35,21 +37,78 @@
     ② 立案/暴雷/监管:`_scan_llm_categories`(每票一次 LLM 调用,一次问三类,
        不是三次调用——控成本/控时长,见 `llm.news_scan` 模块头);
        `provider=None`(缺 key)→ 整批直接降级「未激活」,不发起任何网络调用,
-       同 `judge.py` 姿势。
+       同 `judge.py` 姿势。**受墙钟预算约束、持仓优先于自选**,见下方专节。
 
 **"没扫到"(未激活/调用失败,未知态)vs"扫了没有"(确认无此类消息)必须能
 区分**(§硬要求,不许静默当成"没有公告")——`NewsAlertsReport.scan_statuses`
-逐源记录 `scanned: bool` + `reason`(+ LLM 源额外记 `codes_total`/`codes_failed`,
-支持"部分标的失败"的颗粒度),`items` 为空**不代表**「确认没有」,读者须先看
-`scan_statuses` 才能判断空列表的含义。`scan_statuses` 随该次报告生成落
-`reports.news_alerts_scan_json`(同 `intel_json`/`sector_moneyflow_json` 惯例,
-保证历史报告回放时仍能看到当时的扫描状态,不只是当次内存态)。
+逐源记录 `scanned: bool` + `reason`(+ LLM 源额外记 `codes_total`/`codes_failed`/
+`codes_skipped`,支持"部分标的失败"/"预算耗尽未扫"的颗粒度),`items` 为空
+**不代表**「确认没有」,读者须先看 `scan_statuses` 才能判断空列表的含义。
+`scan_statuses` 随该次报告生成落 `reports.news_alerts_scan_json`(同
+`intel_json`/`sector_moneyflow_json` 惯例,保证历史报告回放时仍能看到当时的
+扫描状态,不只是当次内存态)。**`newsAlertsScan` 已正式收进「v1.3 客户端契约
+清单」**(2026-07-26 coordinator 拍板:它是这条硬要求的落地机制,不是锦上添花
+的可选字段)。
 
-**落库**:`items`(真正命中的告警)落独立 `news_alerts` 表(`neckline.db`),
-`trade_date` = **本次扫描所属报告日**(与本库其余表 `trade_date` 惯例一致,
-不是公告事件本身的日期)。**已知简化(不做跨日按事件日去重)**:同一公告若
-连续数日仍落在扫描窗口内被再次发现,会在数日的报告里重复出现——这是刻意的
-简化(优先保证不漏报,复杂的跨日去重留后续增强,已记入完工报告)。存取见
+**LLM 侧墙钟预算 + 持仓优先(2026-07-26 coordinator 必改,生产风险)**:
+    · **背景**:持仓 + 自选最多 33 只(≤3 仓 + ≤30 自选),每票一次 LLM 调用最坏
+      耗时 = `read_timeout(90s) × max_attempts(3)` = 270s;33 只全扫最坏墙钟
+      **接近一小时**,而 16:35 报告管线里候选审判(前 10 只)+ 自选体检(变化/
+      pinned 子集)也在串行调 LLM——叠加起来足以把整份报告拖到深夜。项目在 v1
+      上线首日已被 LLM 超时咬过一次(见项目 CLAUDE.md「带联网搜索的 LLM 调用
+      不能沿用短读超时」),这里必须反过来守住「总耗时不能失控」这条线,不能让
+      同一类问题以另一种形态复发。
+    · **`_LLM_SCAN_BUDGET_SECONDS`(墙钟预算,命名常量,启发式估算,非实测,
+      待实盘校准后调整——同 §2.4 情绪仪表盘阈值"未回测,靠实盘归因迭代"的诚实
+      标注先例)**:单轮扫描的总墙钟预算,循环前记录起始时刻,**每次发起下一票
+      调用前**检查已耗时是否超预算,超了就停止扫描剩余标的(不掐断正在进行中的
+      单次调用——`scan_news_for_code` 本身是同步阻塞调用,没有可中途打断的钩子,
+      故最坏情况下最后一次调用仍可能让总耗时略超预算,可接受)。
+    · **持仓优先于自选(硬要求,写死 + 单测锁死)**:`build_news_alerts` 签名把
+      `position_codes`/`watchlist_codes` **分开传入**(不是揉成一个已去重列表
+      再指望调用方保证顺序)——内部按"先持仓、后自选"拼接 + 去重(同码优先保留
+      持仓身份),预算不够时被跳过的必然是排在后面的自选标的,不会跳过持仓。
+      **理由(持仓有真金风险,自选只是关注)**:与 §2.1 纪律"持仓优先于候选"的
+      精神一致。
+    · **串行 + 预算封顶,不做并发(理由写死,供后续如需改并发时对照)**:
+      (a) 本项目 LLM/HTTP 层(`openai_compat.py`)与整条报告管线全同步阻塞,
+      引入并发(线程/asyncio)是本模块局部的架构突变,会给一个子模块单独引入
+      新的并发安全面(`httpx.Client` 线程安全性、`MockTransport` 测试桩的并发
+      语义)而不是复用既有模式;(b) GLM/Kimi 两家供应商的真实分钟级限频未经
+      验证(不像 TuShare 有文档化的 500次/分钟,本项目对 GLM/Kimi 限频没有任何
+      实测或文档依据),并发扫描有触发限频连锁失败的未知风险;(c) 串行 + 预算
+      封顶已经完整解决"总耗时不失控"这个真实问题,不需要用增加复杂度换取"扫完
+      更多标的"这个次要目标(§硬要求原话"别把降级链搞复杂")。**如果实盘发现
+      预算内经常扫不完自选池、需要扫更多标的**,下一步应先验证供应商真实限频、
+      再评估并发,而不是本次顺手做。
+
+**减持类跨日事件去重(2026-07-26 coordinator 必改,不接受"同一简化"现状)**:
+    · **问题**:原实现 `news_alerts.trade_date` = 扫描/报告日,同一笔减持公告在
+      连续多天的扫描窗口(`_REDUCTION_LOOKBACK_DAYS`)内会被反复"发现"、每天各
+      生成一条新记录——用户会在一周内的每份报告里看到同一句话,训练用户忽略
+      这一节,等于没做。
+    · **修复**:`stk_holdertrade` 有 `ann_date`(事件/公告本身发生日),据此做
+      **跨日事件级去重**——同一 `(ts_code, event_date, event_key)` 三元组只在
+      **第一次被扫描到并落库的那份报告**里出现,此后的报告即使仍在回看窗口内
+      重新扫到同一条 TuShare 原始行,也不再重复生成 `NewsAlertItem`(见
+      `_scan_reduction` 里的 `news_alerts_store.load_seen_event_keys` 查询)。
+      `event_key` = `holder_name|change_vol|change_ratio` 的拼接(同一持股人
+      同一笔变动 = 同一事件;不同持股人 / 不同变动量 = 不同事件,各自独立记录,
+      不因为"合并展示"互相覆盖丢信息——`news_alerts` 表因此从"一票一行"改为
+      "**一事件一行**",`UNIQUE` 约束与 `event_key` 一起见 `neckline.db`)。
+    · **`event_date` 与 `trade_date` 两列并存、职责不同**(落库时都要存,不是
+      只存扫描日):`trade_date` = 首次记录该事件的报告日(审计留痕 + 同日重跑
+      幂等的判据一部分);`event_date` = 事件本身的公告日(跨日去重的判据、
+      历史回放时"这事哪天真实发生"的展示依据)——同 CLAUDE.md 记的"审计时间戳
+      + 独立消费标记不用一个字段身兼两职"教训,这里是同一原则的应用。
+    · **LLM 侧维持现状,不做跨日去重**(优先不漏报——立案/暴雷/监管这类事件本
+      身可能是持续状态,连续扫到、连续提醒未必是错误;而且 LLM 自由文本没有
+      可靠的结构化事件日,勉强瞎凑一个 `event_key` 反而可能把两个不同的事情误
+      判成同一个、错误吞掉真实的新进展)。**LLM 来源的 item 恒 `event_date=None`
+      /`event_key=""`,天然不参与去重查询**;差异已写进 `EVIDENCE_NOTE`,让
+      读者知道"这一类可能连续几天重复出现,减持类不会"。
+
+**落库**:`items` 落独立 `news_alerts` 表(`neckline.db`)。存取见
 `report/news_alerts_store.py`。
 
 **系统永不代交易动作**(§3.8):本模块只扫描/归类/展示,不触发任何下单/撤单。
@@ -58,7 +117,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass, field
+import time
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -68,6 +128,7 @@ import polars as pl
 from neckline.data.tushare_client import ts_stk_holdertrade
 from neckline.llm.base import LLMProvider
 from neckline.llm.news_scan import scan_news_for_code
+from neckline.report import news_alerts_store
 
 logger = logging.getLogger(__name__)
 
@@ -91,16 +152,22 @@ SOURCE_LLM_PREFIX = "llm"   # 实际值 f"llm_{provider_name}",如 "llm_glm"
 # 减持扫描回看窗口(自然日,非交易日——桥接长假,如国庆 7 天/春节约 7-10 天)。
 _REDUCTION_LOOKBACK_DAYS = 10
 
-# 同一 ts_code 在窗口内合并展示的减持事件条数上限(`news_alerts` 表 UNIQUE(ts_code,
-# trade_date, category) 只留一行,多笔真实事件合并进一条 summary,防止无限拉长)。
-_MAX_REDUCTION_EVENTS_IN_SUMMARY = 3
-
 _HOLDER_TYPE_LABEL: Dict[str, str] = {"G": "高管", "P": "个人股东", "C": "机构股东"}
 
+# LLM 侧扫描墙钟预算(秒;命名常量,启发式估算见模块头「LLM 侧墙钟预算」节,
+# 待实盘校准)。5 分钟量级:约等于 1-2 只标的撞到最坏超时+重试(270s/只)仍能
+# 收尾,不至于让整份 16:35 报告被消息面拖垮——这是"扫描阶段本身的止损线",
+# 不是"保证扫完所有标的"的承诺。
+LLM_SCAN_BUDGET_SECONDS = 300.0
+
 EVIDENCE_NOTE = (
-    "减持:TuShare stk_holdertrade 结构化数据(股东增减持公告口径,强证据);"
+    "减持:TuShare stk_holdertrade 结构化数据(股东增减持公告口径,强证据),"
+    "按 (股票,公告日,持股人+变动量) 事件级跨日去重——同一笔减持只在最先扫到它的"
+    "那份报告里出现一次;"
     "立案/暴雷/监管:LLM 联网搜索兜底(TuShare 600 元档无结构化接口覆盖,详见模块"
-    "docstring 数据源侦察结论),受限于搜索命中与模型解读,请以原文公告为准。"
+    "docstring 数据源侦察结论),受限于搜索命中与模型解读,请以原文公告为准,且"
+    "不做跨日去重(可能连续几天重复出现,与减持类不同)。"
+    "LLM 侧扫描受墙钟预算约束、持仓优先于自选,预算耗尽时被跳过的是自选标的。"
 )
 
 
@@ -111,6 +178,8 @@ class NewsAlertItem:
     category: str      # NewsCategory 值
     summary: str
     source: str         # tushare_holdertrade | llm_<provider>
+    event_date: Optional[str] = None   # 'YYYYMMDD' 事件本身发生日(REDUCTION=ann_date;LLM 恒 None)
+    event_key: str = ""                 # 跨日去重键(REDUCTION 类非空;LLM 类恒空串,不参与去重)
 
     def to_public_dict(self) -> Dict[str, Any]:
         return {
@@ -121,17 +190,20 @@ class NewsAlertItem:
 
 @dataclass
 class NewsAlertScanStatus:
-    """扫描来源级状态(硬要求「没扫到 vs 扫了没有必须能区分开」的落地点)。"""
+    """扫描来源级状态(硬要求「没扫到 vs 扫了没有必须能区分开」的落地点,已收进
+    「v1.3 客户端契约清单」)。"""
     source: str          # tushare_holdertrade | llm
     scanned: bool         # 是否真正执行了扫描(而非因缺 key/无 token 整体跳过)
-    reason: str = ""      # 未扫描 / 部分失败的原因;全部正常时空串
+    reason: str = ""      # 未扫描 / 部分失败 / 预算耗尽的原因;全部正常时空串
     codes_total: int = 0  # 应扫描的标的数(仅 source=llm 有意义;tushare 是区间批量调用记 0)
     codes_failed: int = 0 # 调用失败/格式解析失败的标的数(仅 source=llm)
+    codes_skipped: int = 0  # 墙钟预算耗尽、根本没发起调用就跳过的标的数(仅 source=llm)
 
     def to_public_dict(self) -> Dict[str, Any]:
         return {
             "source": self.source, "scanned": self.scanned, "reason": self.reason,
             "codesTotal": self.codes_total, "codesFailed": self.codes_failed,
+            "codesSkipped": self.codes_skipped,
         }
 
 
@@ -170,10 +242,49 @@ def empty_news_alerts_report(trade_date: date, reason: str) -> NewsAlertsReport:
     )
 
 
-# —— ① 减持(TuShare stk_holdertrade,结构化,免 LLM)——————————————————————
+def _priority_ordered_unique(
+    position_codes: Sequence[Tuple[str, str]], watchlist_codes: Sequence[Tuple[str, str]],
+) -> List[Tuple[str, str]]:
+    """持仓在前、自选在后拼接 + 去重(同码优先保留持仓那份 name)——供 LLM 侧
+    按此顺序扫描,预算耗尽时天然先保证持仓、后牺牲自选(§硬要求,见模块头)。"""
+    seen: Set[str] = set()
+    out: List[Tuple[str, str]] = []
+    for code, name in list(position_codes) + list(watchlist_codes):
+        if code in seen:
+            continue
+        seen.add(code)
+        out.append((code, name))
+    return out
+
+
+# —— ① 减持(TuShare stk_holdertrade,结构化,免 LLM,事件级跨日去重)——————————
+
+def _reduction_event_key(r: Dict[str, Any]) -> str:
+    """事件去重键的组成部分之一(另需配合 ts_code + event_date,一起在
+    `news_alerts_store.load_seen_event_keys` 里做匹配)。同一持股人同一笔变动
+    (变动股数 + 变动比例)视为同一事件;不同持股人 / 不同变动量 = 不同事件,
+    各自独立记录(§硬要求:去重不能吞掉真实发生的多笔独立事件)。"""
+    holder = r.get("holder_name") or ""
+    vol = r.get("change_vol")
+    ratio = r.get("change_ratio")
+    vol_s = f"{vol:.4f}" if isinstance(vol, (int, float)) else "NA"
+    ratio_s = f"{ratio:.4f}" if isinstance(ratio, (int, float)) else "NA"
+    return f"{holder}|{vol_s}|{ratio_s}"
+
+
+def _format_reduction_event(r: Dict[str, Any]) -> str:
+    holder = r.get("holder_name") or "未知股东"
+    htype = _HOLDER_TYPE_LABEL.get(r.get("holder_type"), r.get("holder_type") or "")
+    vol = r.get("change_vol")
+    ratio = r.get("change_ratio")
+    ann = r.get("ann_date") or ""
+    vol_txt = f"{vol:,.0f} 股" if isinstance(vol, (int, float)) else "股数未知"
+    ratio_txt = f"占总股本 {ratio:.2f}%" if isinstance(ratio, (int, float)) else "占比未知"
+    return f"{holder}({htype})减持 {vol_txt},{ratio_txt},公告日 {ann}"
+
 
 def _scan_reduction(
-    trade_date: date, codes: Set[str], names: Dict[str, str],
+    trade_date: date, codes: Set[str], names: Dict[str, str], db_path: Optional[Path],
 ) -> Tuple[List[NewsAlertItem], NewsAlertScanStatus]:
     start = trade_date - timedelta(days=_REDUCTION_LOOKBACK_DAYS)
     res = ts_stk_holdertrade(start.strftime("%Y%m%d"), trade_date.strftime("%Y%m%d"))
@@ -193,53 +304,45 @@ def _scan_reduction(
     if hits.is_empty():
         return [], NewsAlertScanStatus(source=SOURCE_TUSHARE_HOLDERTRADE, scanned=True)
 
-    # `news_alerts` 表 UNIQUE(ts_code, trade_date, category) 天然要求「同票同日同类只
-    # 一行」——**主动合并**同一 ts_code 在窗口内的多笔减持事件成一条 summary,不能任由
-    # 后写覆盖丢信息(2026-07-26 端到端真实数据验证时发现的真实必要性:①TuShare 对同一
-    # 披露会原样返回重复行〔实测 301358.SZ 同一 holder/ann_date/change_vol/change_ratio
-    # 出现两次,疑为其数据管线自身去重不彻底,非本模块解析错误〕,先按完整字段去重;
-    # ②同一票在回看窗口内可能有多个不同股东/不同日各自的真实减持,合并展示而非只保留
-    # 最后一条)。
-    seen: set = set()
-    by_code: Dict[str, List[Dict[str, Any]]] = {}
+    # 去重 TuShare 自身重复披露行(实测发现:同一笔披露可原样返回两次,见模块头
+    # 数据源侦察节),按完整字段去重,不靠事件键(事件键只取 holder+vol+ratio,
+    # 万一同一持股人同一变动量真被拆成两条不同 ann_date 的行,不该被这一步吞掉)。
+    seen_this_call: set = set()
+    candidates: List[Tuple[str, str, str, Dict[str, Any]]] = []   # (ts_code, event_date, event_key, row)
     for r in hits.iter_rows(named=True):
-        key = (r["ts_code"], r.get("holder_name"), r.get("ann_date"), r.get("change_vol"), r.get("change_ratio"))
-        if key in seen:
+        ekey = _reduction_event_key(r)
+        ann_date = str(r.get("ann_date") or "")
+        full_key = (r["ts_code"], r.get("holder_name"), ann_date, r.get("change_vol"), r.get("change_ratio"))
+        if full_key in seen_this_call:
             continue
-        seen.add(key)
-        by_code.setdefault(r["ts_code"], []).append(r)
+        seen_this_call.add(full_key)
+        candidates.append((r["ts_code"], ann_date, ekey, r))
+
+    # 跨日事件级去重(§硬要求,2026-07-26 必改2):已经在更早的报告里出现过的
+    # 事件不再重复出现——查已落库的 (ts_code, event_date, event_key) 集合,过滤掉。
+    seen_before = news_alerts_store.load_seen_event_keys(NewsCategory.REDUCTION, db_path=db_path)
 
     items: List[NewsAlertItem] = []
-    for code, rows in by_code.items():
-        parts = [_format_reduction_event(r) for r in rows[:_MAX_REDUCTION_EVENTS_IN_SUMMARY]]
-        extra = len(rows) - len(parts)
-        summary = "；".join(parts)
-        if extra > 0:
-            summary += f";另有 {extra} 笔未展示(见 TuShare 原始披露)。"
+    for ts_code, ann_date, ekey, r in candidates:
+        if (ts_code, ann_date, ekey) in seen_before:
+            continue
         items.append(NewsAlertItem(
-            ts_code=code, name=names.get(code, code), category=NewsCategory.REDUCTION,
-            summary=summary, source=SOURCE_TUSHARE_HOLDERTRADE,
+            ts_code=ts_code, name=names.get(ts_code, ts_code), category=NewsCategory.REDUCTION,
+            summary=_format_reduction_event(r), source=SOURCE_TUSHARE_HOLDERTRADE,
+            event_date=ann_date or None, event_key=ekey,
         ))
     return items, NewsAlertScanStatus(source=SOURCE_TUSHARE_HOLDERTRADE, scanned=True)
 
 
-def _format_reduction_event(r: Dict[str, Any]) -> str:
-    holder = r.get("holder_name") or "未知股东"
-    htype = _HOLDER_TYPE_LABEL.get(r.get("holder_type"), r.get("holder_type") or "")
-    vol = r.get("change_vol")
-    ratio = r.get("change_ratio")
-    ann = r.get("ann_date") or ""
-    vol_txt = f"{vol:,.0f} 股" if isinstance(vol, (int, float)) else "股数未知"
-    ratio_txt = f"占总股本 {ratio:.2f}%" if isinstance(ratio, (int, float)) else "占比未知"
-    return f"{holder}({htype})减持 {vol_txt},{ratio_txt},公告日 {ann}"
-
-
-# —— ② 立案/暴雷/监管(LLM,一次问三类)——————————————————————————————————
+# —— ② 立案/暴雷/监管(LLM,一次问三类,墙钟预算 + 持仓优先)——————————————————
 
 def _scan_llm_categories(
     codes: Sequence[Tuple[str, str]],
     *, provider: Optional[LLMProvider], transport: Optional[Any] = None,
+    budget_seconds: float = LLM_SCAN_BUDGET_SECONDS,
 ) -> Tuple[List[NewsAlertItem], NewsAlertScanStatus]:
+    """`codes` 须已按「持仓优先、自选靠后」排好序(见 `_priority_ordered_unique`,
+    由 `build_news_alerts` 负责拼接)——本函数只管按序扫描 + 预算封顶,不重排。"""
     if provider is None:
         return [], NewsAlertScanStatus(
             source=SOURCE_LLM_PREFIX, scanned=False,
@@ -251,7 +354,19 @@ def _scan_llm_categories(
 
     items: List[NewsAlertItem] = []
     failed = 0
+    skipped = 0
+    start = time.monotonic()
+    scanned_n = 0
     for ts_code, name in codes:
+        if time.monotonic() - start >= budget_seconds:
+            skipped = len(codes) - scanned_n
+            logger.warning(
+                "消息面扫描(C4)LLM 侧墙钟预算耗尽(%.0fs),跳过剩余 %d 只"
+                "(按持仓优先/自选靠后顺序,被跳过的是排序靠后的自选标的)",
+                budget_seconds, skipped,
+            )
+            break
+        scanned_n += 1
         r = scan_news_for_code(ts_code, name, provider=provider, transport=transport)
         if r.degraded:
             failed += 1
@@ -262,14 +377,21 @@ def _scan_llm_categories(
                 ts_code=ts_code, name=name, category=category, summary=summary,
                 source=f"{SOURCE_LLM_PREFIX}_{r.provider}",
             ))
-    reason = (
-        "" if failed == 0 else
-        f"{failed}/{len(codes)} 只标的 LLM 调用失败或未按格式输出,已跳过"
-        f"(不计入「确认无消息」,建议人工复核)。"
-    )
+
+    reason_parts: List[str] = []
+    if failed:
+        reason_parts.append(
+            f"{failed}/{len(codes)} 只标的 LLM 调用失败或未按格式输出,已跳过"
+            f"(不计入「确认无消息」,建议人工复核)。"
+        )
+    if skipped:
+        reason_parts.append(
+            f"墙钟预算({budget_seconds:.0f}秒)耗尽,{skipped} 只标的未及扫描"
+            f"(持仓优先已扫完,被跳过的是排序靠后的自选标的,不代表确认无消息)。"
+        )
     return items, NewsAlertScanStatus(
-        source=SOURCE_LLM_PREFIX, scanned=True, reason=reason,
-        codes_total=len(codes), codes_failed=failed,
+        source=SOURCE_LLM_PREFIX, scanned=True, reason="".join(reason_parts),
+        codes_total=len(codes), codes_failed=failed, codes_skipped=skipped,
     )
 
 
@@ -277,16 +399,25 @@ def _scan_llm_categories(
 
 def build_news_alerts(
     trade_date: date,
-    codes: Sequence[Tuple[str, str]],   # 去重后的 (ts_code, name),持仓 ∪ 自选
+    position_codes: Sequence[Tuple[str, str]],
+    watchlist_codes: Sequence[Tuple[str, str]],
     *,
     provider: Optional[LLMProvider] = None,
     transport: Optional[Any] = None,
+    db_path: Optional[Path] = None,
+    llm_budget_seconds: float = LLM_SCAN_BUDGET_SECONDS,
 ) -> NewsAlertsReport:
     """消息面扫描 I/O 入口(角色对应 `intel.compute_intel`/`sector_moneyflow.
-    compute_sector_moneyflow`)。`codes` 为空(持仓+自选均为空)→ 直接空报告,
-    零 I/O(两源均标 `scanned=True` 空操作——不是"缺 key"式的未扫描,是"没有
-    扫描对象"这个更平凡的空态)。"""
-    if not codes:
+    compute_sector_moneyflow`)。**`position_codes`/`watchlist_codes` 分开传入
+    (不是揉成一个列表)**——LLM 侧按「持仓优先、自选靠后」的顺序扫描,预算不够
+    时牺牲的必然是自选(§硬要求,见模块头「LLM 侧墙钟预算 + 持仓优先」节)。
+    两者均为空 → 直接空报告,零 I/O(两源均标 `scanned=True` 空操作——不是
+    "缺 key"式的未扫描,是"没有扫描对象"这个更平凡的空态)。
+
+    `db_path`:减持类跨日事件去重要查 `news_alerts` 表历史记录,`None` → 走
+    `settings.db_path`(生产默认);单测传隔离库路径。"""
+    ordered = _priority_ordered_unique(position_codes, watchlist_codes)
+    if not ordered:
         return NewsAlertsReport(
             trade_date=trade_date,
             scan_statuses=[
@@ -294,11 +425,13 @@ def build_news_alerts(
                 NewsAlertScanStatus(source=SOURCE_LLM_PREFIX, scanned=True, codes_total=0),
             ],
         )
-    names = {c: n for c, n in codes}
+    names = {c: n for c, n in ordered}
     code_set = set(names)
 
-    reduction_items, reduction_status = _scan_reduction(trade_date, code_set, names)
-    llm_items, llm_status = _scan_llm_categories(list(codes), provider=provider, transport=transport)
+    reduction_items, reduction_status = _scan_reduction(trade_date, code_set, names, db_path)
+    llm_items, llm_status = _scan_llm_categories(
+        ordered, provider=provider, transport=transport, budget_seconds=llm_budget_seconds,
+    )
 
     return NewsAlertsReport(
         trade_date=trade_date,
@@ -313,6 +446,7 @@ __all__ = [
     "SOURCE_TUSHARE_HOLDERTRADE",
     "SOURCE_LLM_PREFIX",
     "EVIDENCE_NOTE",
+    "LLM_SCAN_BUDGET_SECONDS",
     "NewsAlertItem",
     "NewsAlertScanStatus",
     "NewsAlertsReport",

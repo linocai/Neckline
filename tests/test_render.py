@@ -279,3 +279,20 @@ class TestNewsAlertsSection:
         assert "示例甲" in md
         assert "减持" in md   # 中文类别标签(枚举码 REDUCTION 已换算展示)
         assert "张三" in md
+
+    def test_llm_budget_exhausted_shows_skipped_count_not_silent(self):
+        """2026-07-26 必改 1:预算耗尽是"已扫描,但没扫完"——不是"没扫到"(scanned
+        仍 True),文案要如实说清跳过了几只,不能悄悄消失。"""
+        from neckline.report.news_alerts import NewsAlertScanStatus, SOURCE_LLM_PREFIX, SOURCE_TUSHARE_HOLDERTRADE
+
+        report = _news_alerts(scan_statuses=[
+            NewsAlertScanStatus(source=SOURCE_TUSHARE_HOLDERTRADE, scanned=True),
+            NewsAlertScanStatus(
+                source=SOURCE_LLM_PREFIX, scanned=True, codes_total=10, codes_skipped=6,
+                reason="墙钟预算(300秒)耗尽,6 只标的未及扫描(持仓优先已扫完,被跳过的是排序靠后的自选标的,不代表确认无消息)。",
+            ),
+        ])
+        md = _render(news_alerts=report)
+        assert "**本次未扫描**" not in md   # 不是"未激活"那种整体没扫
+        assert "预算" in md
+        assert "6 只" in md

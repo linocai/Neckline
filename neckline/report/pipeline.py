@@ -220,21 +220,29 @@ def build_report(
             trade_date, reason="板块资金流(C2)计算异常(详见服务端日志),已降级留空。"
         )
 
-    # v1.3-③-C4 消息面扫描:对象 = **持仓 ∪ 自选**(去重),不是全市场(§硬要求)。
-    # 展示名优先取自选池自带的 name(用户维护/入池时已解析),持仓票另经 stock_basic
-    # 解析(`Position` 无 name 字段)。**不阻断主报告管线**(同 C1/C2 姿势,内部两个
-    # 子扫描已各自降级,这里再包一层兜底编排逻辑自身的意外)。
+    # v1.3-③-C4 消息面扫描:对象 = **持仓 ∪ 自选**,不是全市场(§硬要求)。持仓 /
+    # 自选**分开传入**(不揉成一个列表)——`build_news_alerts` 的 LLM 侧按「持仓
+    # 优先、自选靠后」顺序扫描,墙钟预算不够时牺牲的必须是自选(2026-07-26 必改,
+    # 见 news_alerts.py 模块头)。展示名优先取自选池自带的 name(用户维护/入池时
+    # 已解析),持仓票另经 stock_basic 解析(`Position` 无 name 字段)。`db_path`
+    # 透传供减持类事件跨日去重查询(同一必改)。**不阻断主报告管线**(同 C1/C2
+    # 姿势,内部两个子扫描已各自降级,这里再包一层兜底编排逻辑自身的意外)。
     from neckline.report.candidates import _load_stock_names
-    holding_codes = [h.ts_code for h in holding_positions]
-    resolved_names = _load_stock_names(holding_codes, db_path) if holding_codes else {}
+    holding_codes = list(dict.fromkeys(h.ts_code for h in holding_positions))
+    watchlist_only_codes = list(dict.fromkeys(w["ts_code"] for w in watchlist_items))
+    all_alert_codes = list(dict.fromkeys(holding_codes + watchlist_only_codes))
+    resolved_names = _load_stock_names(all_alert_codes, db_path) if all_alert_codes else {}
     watchlist_name_map = {w["ts_code"]: w.get("name") for w in watchlist_items if w.get("name")}
-    alert_codes = list(dict.fromkeys(holding_codes + [w["ts_code"] for w in watchlist_items]))
-    alert_targets = [
-        (c, watchlist_name_map.get(c) or resolved_names.get(c) or c) for c in alert_codes
-    ]
+
+    def _alert_name(c: str) -> str:
+        return watchlist_name_map.get(c) or resolved_names.get(c) or c
+
+    position_targets = [(c, _alert_name(c)) for c in holding_codes]
+    watchlist_targets = [(c, _alert_name(c)) for c in watchlist_only_codes]
     try:
         news_alerts = build_news_alerts(
-            trade_date, alert_targets, provider=provider, transport=llm_transport,
+            trade_date, position_targets, watchlist_targets,
+            provider=provider, transport=llm_transport, db_path=db_path,
         )
     except Exception:  # noqa: BLE001 —— 消息面扫描(C4)异常不得连带主报告失败
         logger.warning("消息面扫描(C4)计算异常,已降级为未扫描,不阻断主报告", exc_info=True)

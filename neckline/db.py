@@ -380,10 +380,17 @@ CREATE INDEX IF NOT EXISTS idx_breathing_t_trades_position_id ON breathing_t_tra
 --   对照(②-D 提醒,勾选仍走既有 scenario-outcome 端点,本表只做「挑出来」)。PK 保证幂等重跑。
 -- v1.3-③-C4 消息面告警(plan §五 v1.3-③-C4)。16:35 报告管线对**持仓 + 自选**
 -- (不是全市场)票扫描四类消息(减持/立案/暴雷/监管)→ 命中落本表一行。
--- trade_date = **本次扫描所属报告日**(与本库其余表 trade_date 惯例一致,不是
--- 公告/事件本身的日期,见 report/news_alerts.py 模块头「已知简化」说明)。
--- UNIQUE(ts_code, trade_date, category) 幂等——同票同日同类不重复(同一报告日
--- 重跑幂等覆盖为最新一次扫描结果,同 llm_judgments/holding_eod_check 惯例)。
+-- trade_date = **首次记录该事件的报告日**(审计留痕 + 同日重跑幂等的判据一部分,
+-- 不是事件本身发生日)。event_date/event_key(2026-07-26 必改新增,plan §五
+-- v1.3-③-C4):事件级跨日去重——REDUCTION 类 event_date=TuShare ann_date、
+-- event_key=`holder_name|change_vol|change_ratio`,同一事件只在最先扫到它的
+-- 那份报告里落一行,此后即使仍在回看窗口内重新扫到,也不再新增行(查询见
+-- report/news_alerts_store.py::load_seen_event_keys)。LLM 来源两列恒
+-- NULL/''(不参与、也匹配不到跨日去重,维持"可能连续几天重复"的现状,见
+-- report/news_alerts.py 模块头)。UNIQUE(ts_code, trade_date, category,
+-- event_key) 幂等——同一报告日内的同一事件不重复(同日重跑幂等覆盖为最新一次
+-- 扫描结果,同 llm_judgments/holding_eod_check 惯例);**跨日**的去重不是靠这
+-- 个约束(trade_date 每天不同,约束管不到跨天),是靠上面说的应用层查询过滤。
 -- category 枚举码:REDUCTION(减持,TuShare stk_holdertrade 结构化)/
 -- INVESTIGATION(立案)/BLOWUP(暴雷)/REGULATORY(监管)(后三类 LLM 联网搜索,
 -- 见该模块 docstring 数据源侦察结论)。source 留痕来源(tushare_holdertrade /
@@ -392,15 +399,18 @@ CREATE INDEX IF NOT EXISTS idx_breathing_t_trades_position_id ON breathing_t_tra
 CREATE TABLE IF NOT EXISTS news_alerts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ts_code     TEXT NOT NULL,
-    trade_date  TEXT NOT NULL,       -- 'YYYYMMDD' 扫描所属报告日
+    trade_date  TEXT NOT NULL,       -- 'YYYYMMDD' 首次记录该事件的报告日(审计,非事件日)
+    event_date  TEXT,                -- 'YYYYMMDD' 事件本身发生日 | NULL(LLM 来源恒 NULL)
+    event_key   TEXT NOT NULL DEFAULT '',  -- 跨日去重键 | ''(LLM 来源恒空串,不参与去重)
     category    TEXT NOT NULL,       -- REDUCTION | INVESTIGATION | BLOWUP | REGULATORY
     summary     TEXT NOT NULL,
     source      TEXT NOT NULL,       -- tushare_holdertrade | llm_glm | llm_kimi 等
     created_at  TEXT NOT NULL,
-    UNIQUE(ts_code, trade_date, category)
+    UNIQUE(ts_code, trade_date, category, event_key)
 );
 CREATE INDEX IF NOT EXISTS idx_news_alerts_trade_date ON news_alerts(trade_date);
 CREATE INDEX IF NOT EXISTS idx_news_alerts_ts_code ON news_alerts(ts_code);
+CREATE INDEX IF NOT EXISTS idx_news_alerts_event ON news_alerts(category, event_date, event_key);
 
 CREATE TABLE IF NOT EXISTS holding_eod_check (
     position_id         INTEGER NOT NULL,
@@ -461,6 +471,15 @@ _COLUMN_MIGRATIONS = [
     # v1.3-③-C4:消息面扫描状态快照(老报告行幂等补列取默认 '[]',前向兼容,见
     # CREATE TABLE reports 注释)。
     ("reports", "news_alerts_scan_json", "TEXT NOT NULL DEFAULT '[]'"),
+    # v1.3-③-C4(2026-07-26 必改):事件级跨日去重两列。**⚠ 局限性如实记录**:
+    # ALTER TABLE ADD COLUMN 能给已存在的 news_alerts 表补上这两列,但 SQLite
+    # 不支持 ALTER 改 UNIQUE 约束——若某环境在本次修复前已建过 news_alerts 表
+    # (约束仍是旧的 UNIQUE(ts_code,trade_date,category)),补列后约束本身不会
+    # 跟着变新;本项目当前唯一受影响的是本地开发库这一份空表(未部署、未进生产,
+    # 已单独 cp -p 备份后删表重建,见完工报告),真实生产 ECS 从未见过 v1.3、
+    # 走「新表 CREATE TABLE IF NOT EXISTS」路径直接拿到新约束,不受此局限影响。
+    ("news_alerts", "event_date", "TEXT"),
+    ("news_alerts", "event_key", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
