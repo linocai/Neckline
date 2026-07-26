@@ -94,6 +94,15 @@ class ReportOut(BaseModel):
     # v1.1-B.4 漏录兜底:当日买点哨兵触发过但台账无补录时的一句提示(否则空串)。
     # **实时计算**(GET /report 每次读时按当前台账重算,用户补录后自动消失),不落库、不改评分。
     missedEntryHint: str = ""
+    # v1.3-③-C1 复盘情报件(涨跌幅榜/涨停梯队/跌停榜/大盘量能/最强题材/题材持续
+    # 天数/市值偏好/涨跌停制度偏好)——透传报告落库快照(`report.intel.IntelReport.
+    # to_public_dict()`,camelCase 已成形),同 sentiment/sectors 惯例不重抄一份字段定义。
+    intel: Dict[str, Any] = Field(default_factory=dict)
+    # v1.3-③-C2 板块资金流(拥挤情报,非选股信号)——同样透传
+    # `report.sector_moneyflow.SectorMoneyflowReport.to_public_dict()`。**单个对象**
+    # (非数组)——携带 available/unavailableReason 等元信息,供"2023-09 前无数据"
+    # 这类诚实留空原因展示,不是裸榜单。
+    sectorMoneyflow: Dict[str, Any] = Field(default_factory=dict)
     degraded: bool = False
     reason: str = ""
 

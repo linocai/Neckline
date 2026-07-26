@@ -116,6 +116,64 @@ class TestWatchlistJsonRoundtrip:
         assert loaded["watchlist"] == []
 
 
+class TestIntelAndSectorMoneyflowJsonRoundtrip:
+    """v1.3-③ C1/C2(`reports.intel_json`/`reports.sector_moneyflow_json`)。均为
+    **单个对象**快照(非数组),同 `watchlist_json` 前向兼容先例。"""
+
+    def test_saved_and_loaded_roundtrip(self, db):
+        store.save_report(
+            D, strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t",
+            intel={"tradeDate": "2026-03-04", "gainers": [{"code": "600001.SH"}]},
+            sector_moneyflow={"available": True, "topInflow": [{"code": "AAA.TI"}]},
+            db_path=db,
+        )
+        loaded = store.load_report(D, db_path=db)
+        assert loaded["intel"]["gainers"][0]["code"] == "600001.SH"
+        assert loaded["sector_moneyflow"]["available"] is True
+        assert loaded["sector_moneyflow"]["topInflow"][0]["code"] == "AAA.TI"
+
+    def test_defaults_to_empty_dict_when_omitted(self, db):
+        """旧调用点(未传 `intel`/`sector_moneyflow`)→ 落 `'{}'`,读回来是空字典,
+        不是 None(前向兼容,客户端不必对 null 特判)。"""
+        store.save_report(D, strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t", db_path=db)
+        loaded = store.load_report(D, db_path=db)
+        assert loaded["intel"] == {}
+        assert loaded["sector_moneyflow"] == {}
+
+    def test_load_report_by_str_also_returns_intel_and_sector_moneyflow(self, db):
+        store.save_report(
+            D, strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t",
+            intel={"gainers": []}, sector_moneyflow={"available": False}, db_path=db,
+        )
+        loaded = store.load_report_by_str("20260304", db_path=db)
+        assert loaded["intel"] == {"gainers": []}
+        assert loaded["sector_moneyflow"] == {"available": False}
+
+    def test_old_report_row_without_columns_defaults_to_empty_dict(self, db):
+        """模拟老库(建 `intel_json`/`sector_moneyflow_json` 列之前生成的报告行)——
+        `_migrate_columns` 幂等补列取默认值 '{}',读回来不炸、不是 None。"""
+        import sqlite3
+
+        from neckline.db import init_schema
+
+        conn = sqlite3.connect(str(db))
+        conn.executescript("""
+            CREATE TABLE reports (
+                trade_date TEXT PRIMARY KEY, generated_at TEXT NOT NULL, strategy_version TEXT NOT NULL,
+                sentiment_json TEXT NOT NULL, sectors_json TEXT NOT NULL, candidates_json TEXT NOT NULL,
+                markdown TEXT NOT NULL, watchlist_json TEXT NOT NULL DEFAULT '[]'
+            );
+            INSERT INTO reports VALUES ('20260304','t','v1','{}','[]','[]','# old','[]');
+        """)
+        conn.commit()
+        conn.close()
+
+        init_schema(db_path=db)   # 触发 _migrate_columns 幂等补列
+        loaded = store.load_report(D, db_path=db)
+        assert loaded["intel"] == {}
+        assert loaded["sector_moneyflow"] == {}
+
+
 class TestLoadWatchlistSnapshotBefore:
     """`load_watchlist_snapshot_before`(供 `watchlist_check.apply_llm_review` 的
     「状态变化」diff 用):严格早于目标日,不把即将被本次覆盖的同日旧值当基准。"""

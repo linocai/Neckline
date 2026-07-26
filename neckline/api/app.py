@@ -289,6 +289,8 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
         candidates=candidates,
         watchlistCheck=watchlist_check,
         missedEntryHint=compute_missed_entry_hint(d, db_path=_db()),   # v1.1-B.4 实时算(补录后自动消失)
+        intel=rep.get("intel", {}),                       # v1.3-③-C1,透传落库快照(同 sentiment 惯例)
+        sectorMoneyflow=rep.get("sector_moneyflow", {}),   # v1.3-③-C2,透传落库快照
     )
 
 

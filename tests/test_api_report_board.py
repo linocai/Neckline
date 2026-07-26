@@ -24,7 +24,7 @@ def _candidate(rank: int, code: str, name: str) -> dict:
     }
 
 
-def _seed_report(db, d: date):
+def _seed_report(db, d: date, *, intel=None, sector_moneyflow=None):
     report_store.save_report(
         d, strategy_version="v1",
         sentiment={"trade_date": d.isoformat(), "limit_up_count": 48, "limit_down_count": 41,
@@ -32,7 +32,7 @@ def _seed_report(db, d: date):
                    "quota_reason": "情绪中性"},
         sectors=[{"index_code": "AI", "name": "AI", "board_age": 3, "ret_20d": 0.12, "bonus": 3.0, "rank": 1}],
         candidates=[_candidate(1, "600001.SH", "示例甲"), _candidate(2, "600002.SH", "示例乙")],
-        markdown="# 报告", db_path=db,
+        markdown="# 报告", intel=intel, sector_moneyflow=sector_moneyflow, db_path=db,
     )
     report_store.save_llm_judgment(
         d, JudgeResult(ts_code="600001.SH", provider="glm", model="glm-5.2", verdict="通过",
@@ -60,6 +60,29 @@ def test_report_latest(client, AUTH, api_env):
     assert c0["llmJudgment"]["verdict"] == "通过"
     # 未审判候选无 llmJudgment
     assert cands[1]["llmJudgment"] is None
+
+
+def test_report_latest_carries_intel_and_sector_moneyflow(client, AUTH, api_env):
+    """v1.3-③ C1/C2 契约(`ReportOut.intel`/`sectorMoneyflow`)——透传报告落库快照,
+    同 sentiment/sectors 惯例(schemas.py 顶部约定),不在 API 层重抄字段定义。"""
+    _seed_report(
+        api_env.db_path, date(2026, 7, 17),
+        intel={"tradeDate": "2026-07-17", "gainers": [{"code": "600001.SH", "pctChg": 9.9}], "warnings": []},
+        sector_moneyflow={"available": True, "topInflow": [{"code": "AAA.TI", "netInflowWan": 1234.5}]},
+    )
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    assert body["intel"]["gainers"][0]["code"] == "600001.SH"
+    assert body["sectorMoneyflow"]["available"] is True
+    assert body["sectorMoneyflow"]["topInflow"][0]["code"] == "AAA.TI"
+
+
+def test_report_latest_intel_defaults_to_empty_dict_when_not_seeded(client, AUTH, api_env):
+    """旧报告行(intel/sectorMoneyflow 建列前生成,或 v1.3-③ 之前的历史报告)读回
+    来是空字典,不是 null——客户端前向兼容不必对 null 特判。"""
+    _seed_report(api_env.db_path, date(2026, 7, 17))
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    assert body["intel"] == {}
+    assert body["sectorMoneyflow"] == {}
 
 
 def test_report_latest_picks_newest(client, AUTH, api_env):

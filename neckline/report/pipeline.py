@@ -16,6 +16,7 @@ markdown 渲染(render.py)——`scripts/report.py` 的核心入口就是本模�
 from __future__ import annotations
 
 import dataclasses
+import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -30,12 +31,20 @@ from neckline.llm.factory import get_provider
 from neckline.llm.judge import JudgeResult, judge_candidate
 from neckline.report import store
 from neckline.report.candidates import Candidate, build_candidates
+from neckline.report.intel import IntelReport, compute_intel, empty_intel_report
 from neckline.report.render import render_markdown
 from neckline.report.sectors import SectorScore, compute_sector_strength, load_index_names, load_member_map
 from neckline.report.holding_k4_check import HoldingK4Item, build_holding_k4_check
+from neckline.report.sector_moneyflow import (
+    SectorMoneyflowReport,
+    compute_sector_moneyflow,
+    empty_sector_moneyflow_report,
+)
 from neckline.report.sentiment import SentimentDashboard, compute_sentiment
 from neckline.report.watchlist_check import WatchlistCheckItem, apply_llm_review, build_watchlist_check
 from neckline.strategy import brain
+
+logger = logging.getLogger(__name__)
 
 TOP_N_TOTAL = 20
 TOP_N_JUDGED = 10
@@ -54,6 +63,8 @@ class ReportBundle:
     missed_entry_hint: str = ""     # v1.1-B.4 漏录兜底提示(无 → 空串)
     watchlist_check: List[WatchlistCheckItem] = field(default_factory=list)  # v1.1-C.3 自选体检(独立一节)
     holding_k4_check: List[HoldingK4Item] = field(default_factory=list)      # v1.3-② 持仓 K4 体检 + D5 净浮盈
+    intel: Optional[IntelReport] = None                    # v1.3-③-C1 复盘情报件(不阻断,失败降级见 empty_intel_report)
+    sector_moneyflow: Optional[SectorMoneyflowReport] = None  # v1.3-③-C2 板块资金流(拥挤情报,非选股信号)
 
 
 def compute_missed_entry_hint(trade_date: date, db_path: Optional[Path] = None) -> str:
@@ -179,6 +190,30 @@ def build_report(
         parquet_dir=parquet_dir, db_path=db_path,
     )
 
+    # v1.3-③ 情报官 C1(复盘情报件)+ C2(板块资金流展示)。**不阻断主报告管线**
+    # (硬要求④,同 LLM 降级链思想):两模块内部已逐项 `_safe()` 降级,这里再包
+    # 一层 try/except 兜底编排逻辑自身的意外——任一整段异常都只记警告 + 落一份
+    # 「计算异常」占位,绝不让 16:35 主报告任务崩。复用报告已算好的
+    # member_map/index_names(板块成分/名称,C1/C2 均需要,不重复读 parquet)。
+    try:
+        intel = compute_intel(
+            trade_date, member_map=member_map, index_names=index_names,
+            parquet_dir=parquet_dir, db_path=db_path,
+        )
+    except Exception:  # noqa: BLE001 —— 情报节(C1)异常不得连带主报告失败
+        logger.warning("情报节(C1)计算异常,已降级为空,不阻断主报告", exc_info=True)
+        intel = empty_intel_report(trade_date, reason="情报节(C1)计算异常(详见服务端日志),已降级留空。")
+
+    try:
+        sector_moneyflow = compute_sector_moneyflow(
+            trade_date, member_map=member_map, index_names=index_names, parquet_dir=parquet_dir,
+        )
+    except Exception:  # noqa: BLE001 —— 板块资金流(C2)异常不得连带主报告失败
+        logger.warning("板块资金流(C2)计算异常,已降级为空,不阻断主报告", exc_info=True)
+        sector_moneyflow = empty_sector_moneyflow_report(
+            trade_date, reason="板块资金流(C2)计算异常(详见服务端日志),已降级留空。"
+        )
+
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     markdown = render_markdown(
         trade_date=trade_date,
@@ -190,6 +225,8 @@ def build_report(
         judged=judged,
         top_n_judged=top_n_judged,
         watchlist_check=watchlist_check,
+        intel=intel,
+        sector_moneyflow=sector_moneyflow,
     )
 
     if save:
@@ -201,6 +238,8 @@ def build_report(
             candidates=[_jsonable(c.public_dict()) for c in candidates],
             markdown=markdown,
             watchlist=[_jsonable(w.public_dict()) for w in watchlist_check],
+            intel=intel.to_public_dict(),
+            sector_moneyflow=sector_moneyflow.to_public_dict(),
             db_path=db_path,
         )
         # v1.1-D 问询窗口修复:报告落库成功后才标记消费(§根因见
@@ -223,6 +262,8 @@ def build_report(
         missed_entry_hint=compute_missed_entry_hint(trade_date, db_path=db_path),
         watchlist_check=watchlist_check,
         holding_k4_check=holding_k4_check,
+        intel=intel,
+        sector_moneyflow=sector_moneyflow,
     )
 
 

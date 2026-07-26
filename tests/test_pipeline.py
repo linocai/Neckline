@@ -352,6 +352,79 @@ class TestWatchlistCheckWiring:
         assert w2.status_changed is True         # 与上一份报告(day1)相比翻转
 
 
+class TestIntelAndSectorMoneyflowWiring:
+    """v1.3-③ C1(情报件)/C2(板块资金流)接入 `build_report`(硬要求④:任一子项
+    /整段异常都不阻断主报告)。字段本身的评分单测在 `test_intel.py`/
+    `test_sector_moneyflow.py`;本类只测「接线」+「不阻断」。"""
+
+    def test_bundle_carries_intel_and_sector_moneyflow_degrading_gracefully(self, isolated_env, monkeypatch):
+        """合成市场夹具(`seed_synthetic_market`)不含 limit_derived/index_daily/
+        moneyflow_dc/ths_* 数据源 → 情报节各子项应优雅降级为空 + 记警告,但报告
+        整体必须正常生成(不阻断,硬要求④的常态验证——不需要特意造异常)。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        assert bundle.intel is not None
+        assert bundle.intel.gainers == []          # 无 limit_derived/daily 覆盖该情报所需列,优雅降级
+        assert len(bundle.intel.warnings) > 0        # 降级留痕,不是悄无声息
+        assert bundle.sector_moneyflow is not None
+        assert bundle.sector_moneyflow.available is False   # 无 moneyflow_dc 数据
+
+        loaded = store.load_report(report_date, db_path=isolated_env.db_path)
+        assert "warnings" in loaded["intel"]
+        assert loaded["sector_moneyflow"]["available"] is False
+
+    def test_intel_exception_does_not_block_main_report(self, isolated_env, monkeypatch):
+        """情报节(C1)编排逻辑本身抛异常(非子项级降级,是 `compute_intel` 整体炸)
+        时,`build_report` 仍必须成功产出报告(硬要求④外层保险丝,见
+        `pipeline.py::build_report` 的 try/except + `empty_intel_report` 兜底)。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_mod, "compute_intel", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        assert "600001.SH" in [c.ts_code for c in bundle.candidates]   # 主报告未受影响
+        assert bundle.intel is not None
+        assert "计算异常" in bundle.intel.warnings[0]
+
+    def test_sector_moneyflow_exception_does_not_block_main_report(self, isolated_env, monkeypatch):
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            pipeline_mod, "compute_sector_moneyflow",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        assert "600001.SH" in [c.ts_code for c in bundle.candidates]   # 主报告未受影响
+        assert bundle.sector_moneyflow is not None
+        assert bundle.sector_moneyflow.available is False
+        assert "计算异常" in bundle.sector_moneyflow.unavailable_reason
+
+    def test_markdown_includes_intel_section_headers(self, isolated_env, monkeypatch):
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        bundle = pipeline_mod.build_report(
+            dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert "## 情报 · 复盘情报件(C1)" in bundle.markdown
+        assert "## 情报 · 板块资金流(C2,拥挤参考,非选股信号)" in bundle.markdown
+
+
 class TestTopNSplit:
     def test_only_top_n_judged_candidates_get_llm_called(self, isolated_env, monkeypatch):
         calls = {"n": 0}

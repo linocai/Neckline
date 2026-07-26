@@ -83,15 +83,23 @@ CREATE TABLE IF NOT EXISTS strategy_versions (
 -- watchlist_json(v1.1-C.3 自选体检):`WatchlistCheckItem.public_dict()` 的 JSON
 -- 数组快照,老报告行(建表早于本列)经 `_migrate_columns` 幂等补列取默认值
 -- '[]'(前向兼容——旧报告没有这节,读回来就是空数组,不是 NULL 炸 json.loads)。
+-- intel_json/sector_moneyflow_json(v1.3-③ C1/C2):`report/intel.py::IntelReport.
+-- to_public_dict()` / `report/sector_moneyflow.py::SectorMoneyflowReport.
+-- to_public_dict()` 的 JSON 快照(均为单个对象,非数组——`sector_moneyflow` 需要
+-- 携带 available/unavailableReason 等元信息,不能只是裸榜单,否则"2023-09 前无
+-- 数据"这类诚实留空原因无处安放),同 watchlist_json 先例——老报告行幂等补列取
+-- 默认值 '{}',前向兼容。
 CREATE TABLE IF NOT EXISTS reports (
-    trade_date       TEXT PRIMARY KEY,   -- 'YYYYMMDD'
-    generated_at     TEXT NOT NULL,      -- ISO8601
-    strategy_version TEXT NOT NULL,      -- 生成本报告时用的大脑版本号(strategy_versions.version)
-    sentiment_json   TEXT NOT NULL,
-    sectors_json     TEXT NOT NULL,
-    candidates_json  TEXT NOT NULL,
-    markdown         TEXT NOT NULL,
-    watchlist_json   TEXT NOT NULL DEFAULT '[]'
+    trade_date            TEXT PRIMARY KEY,   -- 'YYYYMMDD'
+    generated_at          TEXT NOT NULL,      -- ISO8601
+    strategy_version      TEXT NOT NULL,      -- 生成本报告时用的大脑版本号(strategy_versions.version)
+    sentiment_json        TEXT NOT NULL,
+    sectors_json          TEXT NOT NULL,
+    candidates_json       TEXT NOT NULL,
+    markdown              TEXT NOT NULL,
+    watchlist_json        TEXT NOT NULL DEFAULT '[]',
+    intel_json            TEXT NOT NULL DEFAULT '{}',
+    sector_moneyflow_json TEXT NOT NULL DEFAULT '{}'
 );
 
 -- LLM 逻辑审判存档(plan 2.4)。前10只候选每只一行;search_hits_json 是该次审判
@@ -407,6 +415,11 @@ _COLUMN_MIGRATIONS = [
     # v1.3-②:第六类推送开关(K4 持仓派发警报,用户 2026-07-26 拍板独立 category + 独立开关,
     # 默认开)。老库幂等补列取常量默认 1。§2.4 推送白名单五类→六类。
     ("app_settings", "push_holding_alert", "INTEGER NOT NULL DEFAULT 1"),
+    # v1.3-③ C1/C2:复盘情报件 + 板块资金流快照(见 CREATE TABLE reports 注释)。
+    # 老报告行(建于本列之前)幂等补列取默认值,读回来是空结构('{}' / '[]'),不是
+    # NULL 炸 json.loads——同 watchlist_json 前向兼容先例。
+    ("reports", "intel_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("reports", "sector_moneyflow_json", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 

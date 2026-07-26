@@ -30,17 +30,25 @@ def save_report(
     candidates: List[Dict[str, Any]],
     markdown: str,
     watchlist: Optional[List[Dict[str, Any]]] = None,
+    intel: Optional[Dict[str, Any]] = None,
+    sector_moneyflow: Optional[Dict[str, Any]] = None,
     db_path: Optional[Path] = None,
 ) -> None:
     """`watchlist`(v1.1-C.3 自选体检快照,`WatchlistCheckItem.public_dict()` 列表):
-    默认 `None` → 落 `'[]'`(旧调用点/自选池为空时零改动落库形状)。"""
+    默认 `None` → 落 `'[]'`(旧调用点/自选池为空时零改动落库形状)。
+    `intel`/`sector_moneyflow`(v1.3-③ C1/C2,`IntelReport.to_public_dict()` /
+    `SectorMoneyflowReport.to_public_dict()` 的字典,均为**单个对象**而非数组——
+    已是 camelCase JSON-safe 形状,`sector_moneyflow` 携带 available/
+    unavailableReason 等元信息,不是裸榜单):默认 `None` → 落 `'{}'`(旧调用点零
+    改动落库形状,同 watchlist 惯例)。"""
     init_schema(db_path)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with connection(db_path) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO reports "
-            "(trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, watchlist_json) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
+            "watchlist_json, intel_json, sector_moneyflow_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 _d(trade_date),
                 now,
@@ -50,19 +58,34 @@ def save_report(
                 json.dumps(candidates, ensure_ascii=False),
                 markdown,
                 json.dumps(watchlist or [], ensure_ascii=False),
+                json.dumps(intel or {}, ensure_ascii=False),
+                json.dumps(sector_moneyflow or {}, ensure_ascii=False),
             ),
         )
 
 
-def _parse_watchlist_json(raw: Optional[str]) -> List[Dict[str, Any]]:
-    """`watchlist_json` 容错解析——老报告行经 `_migrate_columns` 幂等补列后默认值
-    即 `'[]'`,但防御性再兜一层(NULL / 非法 JSON → 空列表,不炸历史回放)。"""
+def _parse_json_field(raw: Optional[str], default: Any) -> Any:
+    """幂等补列的 `*_json` 列容错解析——老报告行经 `_migrate_columns` 补列后取列
+    默认值('[]'/'{}'),但防御性再兜一层(NULL / 非法 JSON → 调用方给的 `default`,
+    不炸历史回放)。`watchlist_json`/`intel_json`/`sector_moneyflow_json` 三列共用。"""
     if not raw:
-        return []
+        return default
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        return []
+        return default
+
+
+def _parse_watchlist_json(raw: Optional[str]) -> List[Dict[str, Any]]:
+    return _parse_json_field(raw, [])
+
+
+def _parse_intel_json(raw: Optional[str]) -> Dict[str, Any]:
+    return _parse_json_field(raw, {})
+
+
+def _parse_sector_moneyflow_json(raw: Optional[str]) -> Dict[str, Any]:
+    return _parse_json_field(raw, {})
 
 
 def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
@@ -72,7 +95,8 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
-            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, watchlist_json "
+            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
+            "watchlist_json, intel_json, sector_moneyflow_json "
             "FROM reports WHERE trade_date=?",
             (_d(trade_date),),
         ).fetchone()
@@ -87,6 +111,8 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
         "candidates": json.loads(row[5]),
         "markdown": row[6],
         "watchlist": _parse_watchlist_json(row[7]),
+        "intel": _parse_intel_json(row[8]),
+        "sector_moneyflow": _parse_sector_moneyflow_json(row[9]),
     }
 
 
@@ -105,7 +131,8 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
-            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, watchlist_json "
+            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
+            "watchlist_json, intel_json, sector_moneyflow_json "
             "FROM reports WHERE trade_date=?",
             (trade_date_str,),
         ).fetchone()
@@ -120,6 +147,8 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
         "candidates": json.loads(row[5]),
         "markdown": row[6],
         "watchlist": _parse_watchlist_json(row[7]),
+        "intel": _parse_intel_json(row[8]),
+        "sector_moneyflow": _parse_sector_moneyflow_json(row[9]),
     }
 
 

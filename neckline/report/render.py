@@ -12,6 +12,8 @@ from typing import Dict, List, Optional
 
 from neckline.llm.judge import JudgeResult, VERDICT_PASS, VERDICT_VETO
 from neckline.report.candidates import Candidate
+from neckline.report.intel import IntelReport
+from neckline.report.sector_moneyflow import SectorMoneyflowReport
 from neckline.report.sectors import SectorScore
 from neckline.report.sentiment import SentimentDashboard
 from neckline.report.watchlist_check import WatchlistCheckItem
@@ -30,6 +32,8 @@ def render_markdown(
     judged: Dict[str, JudgeResult],
     top_n_judged: int,
     watchlist_check: Optional[List[WatchlistCheckItem]] = None,
+    intel: Optional[IntelReport] = None,
+    sector_moneyflow: Optional[SectorMoneyflowReport] = None,
 ) -> str:
     parts: List[str] = []
     parts.append(f"# Neckline 盘后报告 · {trade_date.isoformat()}")
@@ -46,6 +50,8 @@ def render_markdown(
     parts.append(_render_sectors(sectors))
     parts.append(_render_candidates(candidates, judged, top_n_judged))
     parts.append(_render_watchlist(watchlist_check or []))
+    parts.append(_render_intel(intel))
+    parts.append(_render_sector_moneyflow(sector_moneyflow))
     return "\n".join(parts)
 
 
@@ -178,6 +184,137 @@ def _render_watchlist(items: List[WatchlistCheckItem]) -> str:
             lines.append("")
         lines.append("---")
         lines.append("")
+    return "\n".join(lines)
+
+
+def _render_intel(intel: Optional[IntelReport]) -> str:
+    """情报节 C1(plan §五 v1.3-③-C1):复盘情报件——涨跌幅榜/涨停梯队/跌停榜/
+    大盘量能/最强题材/题材持续天数/市值偏好/涨跌停制度偏好。**证据强度标注**
+    (硬要求①)在小节标题里就写明强/弱,不是只藏在字段里。"""
+    lines = ["## 情报 · 复盘情报件(C1)", ""]
+    if intel is None:
+        lines.append("情报节未生成。")
+        lines.append("")
+        return "\n".join(lines)
+    lines.append(f"*{intel.evidence_note}*")
+    lines.append("")
+    if intel.warnings:
+        lines.append("⚠ " + "；".join(intel.warnings))
+        lines.append("")
+
+    lines.append("### 涨跌幅榜(EOD 硬数据)")
+    lines.append("")
+    if not intel.gainers and not intel.losers:
+        lines.append("当日无数据。")
+        lines.append("")
+    else:
+        lines.append("| 涨幅榜 | 涨跌幅 | | 跌幅榜 | 涨跌幅 |")
+        lines.append("|---|---|---|---|---|")
+        for i in range(max(len(intel.gainers), len(intel.losers))):
+            g = intel.gainers[i] if i < len(intel.gainers) else None
+            l = intel.losers[i] if i < len(intel.losers) else None
+            g_cell = f"{g.name}({g.ts_code})" if g else ""
+            g_pct = f"{g.pct_chg:+.2f}%" if g else ""
+            l_cell = f"{l.name}({l.ts_code})" if l else ""
+            l_pct = f"{l.pct_chg:+.2f}%" if l else ""
+            lines.append(f"| {g_cell} | {g_pct} | | {l_cell} | {l_pct} |")
+        lines.append("")
+
+    lines.append("### 涨停梯队 / 跌停榜(EOD 硬数据)")
+    lines.append("")
+    if intel.limit_up_ladder:
+        ladder_str = "、".join(f"{r.consec_days}连板×{r.count}只" for r in intel.limit_up_ladder)
+        lines.append(f"- 涨停梯队:{ladder_str}")
+    else:
+        lines.append("- 涨停梯队:当日无涨停股。")
+    if intel.limit_down:
+        shown = "、".join(f"{m.name}({m.ts_code}){m.pct_chg:+.2f}%" for m in intel.limit_down[:15])
+        more = f" 等,共 {intel.limit_down_total_count} 只" if intel.limit_down_total_count > 15 else ""
+        lines.append(f"- 跌停榜(前 15):{shown}{more}")
+    else:
+        lines.append("- 跌停榜:当日无跌停股。")
+    lines.append("")
+
+    lines.append("### 大盘量能(EOD 硬数据)")
+    lines.append("")
+    mv = intel.market_volume
+    if mv is None:
+        lines.append("当日 index_daily 数据缺失,已留空。")
+    else:
+        lines.append(
+            f"- 沪深两市合计成交额:{mv.total_amount_yi:,.1f} 亿元"
+            f"(上证 {mv.sh_amount_yi:,.1f} 亿 + 深证 {mv.sz_amount_yi:,.1f} 亿)"
+        )
+        lines.append(f"- 5 日均成交额:{mv.ma5_amount_yi:,.1f} 亿元(样本 {mv.sample_days} 个交易日)")
+    lines.append("")
+
+    lines.append("### 最强题材(概念板块成分依赖,弱证据,仅供参考)")
+    lines.append("")
+    if intel.excluded_boards_note:
+        lines.append(f"*{intel.excluded_boards_note}*")
+        lines.append("")
+    if not intel.top_themes:
+        lines.append("当日无题材数据。")
+        lines.append("")
+    else:
+        lines.append("| 板块 | 板块年龄 | 20日动量 | 持续性 | 核心龙头 |")
+        lines.append("|---|---|---|---|---|")
+        for t in intel.top_themes:
+            leaders = "、".join(f"{l.name}{'(涨停)' if l.is_limit_up else ''}{l.pct_chg:+.1f}%" for l in t.leaders)
+            lines.append(f"| {t.name} | {t.board_age} 天 | {t.ret_20d:+.1%} | {t.persistence_label} | {leaders or '无'} |")
+        lines.append("")
+        if intel.theme_persistence_distribution:
+            dist = "、".join(f"{k} {v} 个" for k, v in intel.theme_persistence_distribution.items())
+            lines.append(f"*题材持续天数分布:{dist}*")
+            lines.append("")
+
+    lines.append("### 市值偏好 / 涨跌停制度偏好(当日涨停股,EOD 硬数据)")
+    lines.append("")
+    if intel.mv_preference:
+        mv_str = "、".join(f"{b.label} {b.count} 只({b.pct_of_total:.0%})" for b in intel.mv_preference)
+        lines.append(f"- 市值分布:{mv_str}")
+    else:
+        lines.append("- 市值分布:当日无数据。")
+    if intel.limit_regime_preference:
+        regime_str = "、".join(f"{b.label} {b.count} 只({b.pct_of_total:.0%})" for b in intel.limit_regime_preference)
+        lines.append(f"- 涨跌停幅度分布:{regime_str}")
+    else:
+        lines.append("- 涨跌停幅度分布:当日无数据。")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_sector_moneyflow(report: Optional[SectorMoneyflowReport]) -> str:
+    """情报节 C2(plan §五 v1.3-③-C2):板块资金流展示——**拥挤情报件,非选股
+    信号**(K2 判决:板块层有效但无次日领先性)。"""
+    lines = ["## 情报 · 板块资金流(C2,拥挤参考,非选股信号)", ""]
+    if report is None or not report.available:
+        reason = report.unavailable_reason if report else "板块资金流节未生成。"
+        lines.append(reason)
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append(f"*{report.evidence_note}*")
+    lines.append("")
+    if report.excluded_boards_note:
+        lines.append(f"*{report.excluded_boards_note}*")
+        lines.append("")
+    if not report.top_inflow and not report.top_outflow:
+        lines.append("当日无板块命中 moneyflow_dc,已留空。")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append("| 净流入榜 | 净流入(万元) | | 净流出榜 | 净流入(万元) |")
+    lines.append("|---|---|---|---|---|")
+    for i in range(max(len(report.top_inflow), len(report.top_outflow))):
+        a = report.top_inflow[i] if i < len(report.top_inflow) else None
+        b = report.top_outflow[i] if i < len(report.top_outflow) else None
+        a_cell = f"{a.name}" if a else ""
+        a_val = f"{a.net_inflow_wan:+,.0f}" if a else ""
+        b_cell = f"{b.name}" if b else ""
+        b_val = f"{b.net_inflow_wan:+,.0f}" if b else ""
+        lines.append(f"| {a_cell} | {a_val} | | {b_cell} | {b_val} |")
+    lines.append("")
     return "\n".join(lines)
 
 
