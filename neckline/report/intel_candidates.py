@@ -262,16 +262,17 @@ def build_intel_candidates(
     #    生效。无 industry 的票视为不通过闸(保守,无法判主题相关性),诚实落审计日志、不静默丢。—
     industry_of = _load_industry_map(db_path)
     inv = invert_member_map(member_map)
-    dominant_of: Dict[str, Set[str]] = {b: _dominant_industries(inv.get(b, []), industry_of) for b in step1_boards}
-    member_codes: Set[str] = set()
-    gated_boards_of: Dict[str, List[str]] = {}   # code -> [该 code 过闸的 step① 板块](= 其代表的板块)
+    board_members_of: Dict[str, List[str]] = {b: inv.get(b, []) for b in step1_boards}
+    dominant_of: Dict[str, Set[str]] = {b: _dominant_industries(board_members_of[b], industry_of) for b in step1_boards}
+    gated_boards_of: Dict[str, List[str]] = {}   # code -> [该 code 过行业闸的 step① 板块](= 其代表的板块)
+    all_nominal_members: Set[str] = set()        # step① 板块全体名义成员(未过行业闸,供板块状态诊断分母)
     _blocked_no_industry: Set[str] = set()       # 因无 industry 被挡(审计用,去重)
     for b in step1_boards:
         dom = dominant_of[b]
-        for m in inv.get(b, []):
+        for m in board_members_of[b]:
+            all_nominal_members.add(m)
             ind = industry_of.get(m)
             if ind and ind in dom:
-                member_codes.add(m)
                 gated_boards_of.setdefault(m, []).append(b)
             elif not ind:
                 _blocked_no_industry.add(m)
@@ -286,16 +287,21 @@ def build_intel_candidates(
     board_by_code: Dict[str, str] = (
         dict(zip(today["ts_code"].to_list(), today["board"].to_list())) if not today.is_empty() else {}
     )
-    survivor_codes: Set[str] = set()
-    if not today.is_empty() and member_codes:
+    # ② 卫生线在**全体(未过行业闸)step① 成员**上跑一遍 → raw ② survivors(供板块状态诊断
+    # 区分「被行业闸挡」vs「被 K4 拦」,让 0 只/不足 2 只的板块能说清「为什么」——守项目一贯
+    # 「『没有』和『没看』必须能分开」原则);universe 再叠加行业闸(只留过闸的代表票)。
+    raw_survivor_codes: Set[str] = set()
+    if not today.is_empty() and all_nominal_members:
         step2 = today.filter(
-            pl.col("ts_code").is_in(list(member_codes))
+            pl.col("ts_code").is_in(list(all_nominal_members))
             & pl.col("board").is_in(list(_ALLOWED_BOARDS))
             & base_universe_expr()
             & ~S.forbid_new_stock(NON_NEW_MIN_DAYS)
             & (pl.col("close") > pl.col("ma20"))   # 趋势向上(粗代理,§② 标注)
         )
-        survivor_codes = set(step2["ts_code"].to_list())
+        raw_survivor_codes = set(step2["ts_code"].to_list())
+    # 行业闸:universe survivor = 过②卫生线 且 过 ≥1 板块行业闸(在 gated_boards_of 里)。
+    survivor_codes: Set[str] = {c for c in raw_survivor_codes if c in gated_boards_of}
 
     universe_codes = survivor_codes | forced_set
     if not universe_codes:
@@ -321,6 +327,7 @@ def build_intel_candidates(
     flow_by_board = {i.index_code: i.net_inflow_wan for i in mf.top_inflow} if mf.available else {}
 
     permanent_set = set(permanent_codes)
+    hard_cut_codes: Set[str] = set()   # 命中 K4 hard_cut 的 universe 票(板块状态诊断:被安检拦下数)
     kept: List[Dict[str, Any]] = []
     for code in universe_codes:
         row = rows_by_code.get(code)
@@ -331,6 +338,8 @@ def build_intel_candidates(
         persist = max((step1_hot[b].board_age for b in its_step1_boards if b in step1_hot), default=0)
         hits = _evaluate_hits(row, persist, evidence)
         hard = [h for h in hits if sections.get(h.code, _DEFAULT_SECTION) == "hard_cut"]
+        if hard:
+            hard_cut_codes.add(code)   # 记 hard_cut(含 forced 豁免的,用于板块状态诊断计数)
         is_forced = code in forced_set
         if hard and not is_forced:
             continue   # ③ hard_cut 命中 → 拦截出池(forced 问询票用户点名,豁免硬剔、仅打标)
@@ -368,6 +377,7 @@ def build_intel_candidates(
     by_code = {e["code"]: e for e in kept}
     source_of: Dict[str, str] = {}
     selected_codes: List[str] = []
+    quota_by_board: Dict[str, int] = {}   # 常驻 index_code -> 实际认领的保底数(板块状态诊断)
 
     # —— ④a 保底 pass(用户 2026-07-26 拍板):每个常驻板块(**按配置顺序**)取该板块内情报排序
     #    最高的至多 QUOTA 只,**仅从 quota_eligible 池**里选(hard_cut/未过② 绝不因保底捞回)。
@@ -388,6 +398,7 @@ def build_intel_candidates(
                 source_of[code] = SOURCE_QUOTA
                 selected_codes.append(code)
                 picks += 1
+        quota_by_board[pb] = picks   # 该常驻板块实际认领保底数(可能 < QUOTA,缺额退回公共池)
 
     # —— ④b 竞争 pass:剩余名额(top_n − 实际保底数)按情报排序从公共池(未被认领的
     #    quota_eligible 票 = 常驻其余票 + 暴起板块票)竞争,填到 top_n。去重(source_of 已认领的跳过)。
@@ -415,12 +426,78 @@ def build_intel_candidates(
         e["source"] = source_of[e["code"]]
     top.sort(key=_sort_key)
 
+    # —— 常驻板块状态诊断(用户 2026-07-26 拍板:0 只/不足 2 只必须带「为什么」,守项目一贯
+    #    「『没有』和『没看』必须能分开」原则,静默空白是最差表达)。每个常驻板块一条:过②卫生线
+    #    survivor 数 / 过行业闸数 / 被行业闸挡数 / 被 K4 hard_cut 拦数 / 实际保底数 + 人读文案。—————
+    board_status = _permanent_board_status(
+        permanent_codes, index_names, board_members_of, raw_survivor_codes,
+        dominant_of, industry_of, hard_cut_codes, quota_by_board,
+    )
+
     names = _load_stock_names([e["code"] for e in top], db_path)
     out: List[Candidate] = []
     for i, e in enumerate(top, start=1):
         out.append(_build_intel_candidate(e, rank=i, cfg=cfg, step1_hot=step1_hot,
-                                           member_map=member_map, index_names=index_names, names=names))
+                                           member_map=member_map, index_names=index_names,
+                                           names=names, board_status=board_status))
     return out
+
+
+def _permanent_board_status(
+    permanent_codes: List[str],
+    index_names: Dict[str, str],
+    board_members_of: Dict[str, List[str]],
+    raw_survivor_codes: Set[str],
+    dominant_of: Dict[str, Set[str]],
+    industry_of: Dict[str, str],
+    hard_cut_codes: Set[str],
+    quota_by_board: Dict[str, int],
+) -> List[Dict[str, Any]]:
+    """每个常驻板块一条状态(诊断漏斗):`surviveCount`(过②卫生线成员)/ `industryGatePass`
+    (其中行业过闸=属本板块主导行业)/ `industryGateBlocked`(行业不属主导被挡)/ `hardCutBlocked`
+    (过闸但命中 K4 hard_cut 被拦)/ `quotaFilled`(实际保底数)+ `note`(人读文案,0 只/不足 2 只
+    时说清「为什么」)。让空板块栏能区分「今天真没合格票」vs「系统坏了/被忘了」。"""
+    out: List[Dict[str, Any]] = []
+    for pb in permanent_codes:
+        name = index_names.get(pb, pb)
+        members = board_members_of.get(pb, [])
+        dom = dominant_of.get(pb, set())
+        survivors = [c for c in members if c in raw_survivor_codes]
+        gate_pass = [c for c in survivors if (industry_of.get(c) or "") in dom]
+        gate_blocked = len(survivors) - len(gate_pass)
+        hardcut = sum(1 for c in gate_pass if c in hard_cut_codes)
+        quota = quota_by_board.get(pb, 0)
+        out.append({
+            "board": name,
+            "surviveCount": len(survivors),
+            "industryGatePass": len(gate_pass),
+            "industryGateBlocked": gate_blocked,
+            "hardCutBlocked": hardcut,
+            "quotaFilled": quota,
+            "note": _board_status_note(name, len(survivors), gate_blocked, hardcut, len(gate_pass), quota),
+        })
+    return out
+
+
+def _board_status_note(name: str, n_surv: int, gate_blocked: int, hardcut: int, gate_pass: int, quota: int) -> str:
+    """板块状态人读文案。满额(≥QUOTA)简述;不足 QUOTA(含 0)时**说清「为什么」**(几只行业不属
+    主导、几只命中 K4 安检、几只被在前常驻板块认领),0 只时明标「宁缺毋滥、非静默空白」。"""
+    if quota >= QUOTA_PER_PERMANENT_BOARD:
+        return f"{name}:保底 {quota} 只(过卫生线 {n_surv} 只、过行业闸合格 {gate_pass} 只)"
+    parts: List[str] = []
+    if gate_blocked:
+        parts.append(f"{gate_blocked} 只行业不属本板块主导行业")
+    if hardcut:
+        parts.append(f"{hardcut} 只过闸但命中 K4 安检拦截")
+    eligible_left = gate_pass - hardcut - quota   # 过闸+过K4 但没拿到名额(被配置在前的常驻板块认领)
+    if eligible_left > 0:
+        parts.append(f"{eligible_left} 只已被在前常驻板块认领")
+    if n_surv == 0:
+        reason = "无成员过卫生线(流动性/次新/趋势/ST 任一未过)"
+    else:
+        reason = "、".join(parts) if parts else f"仅 {quota} 只合格代表票"
+    tail = ",宁缺毋滥、非静默空白" if quota == 0 else ""
+    return f"{name}:保底 {quota} 只 —— {n_surv} 只过卫生线成员中 {reason}{tail}"
 
 
 def _build_intel_candidate(
@@ -432,6 +509,7 @@ def _build_intel_candidate(
     member_map: Dict[str, List[str]],
     index_names: Dict[str, str],
     names: Dict[str, str],
+    board_status: Optional[List[Dict[str, Any]]] = None,
 ) -> Candidate:
     """把情报管线的一个保留候选装配成 `Candidate`(复用 candidates.py 四件套文案/形态标签/
     展示分,同码不重写)。新增 `k4_flags`(K4 命中标注码)+ `intel_rank`(情报排序理由)。"""
@@ -453,6 +531,12 @@ def _build_intel_candidate(
         "highElasticity": board in S.HIGH_ELASTICITY_BOARDS,
         # 行业(stock_basic.industry;一票一行业)——过行业闸后带出参,客户端据此说清「凭什么在此板块栏」。
         "industry": e.get("industry", ""),
+        # 常驻板块状态诊断(**报告级构件,每只候选携同一份**——build_intel_candidates 只能经候选列表
+        # 进报告快照,0 保底板块自身无候选可挂,故挂在所有候选的 intel_rank 上让客户端从任一候选读到;
+        # 每条含 survivor/过闸/被挡/被拦/保底数 + 人读文案,让 0 只/不足 2 只的板块能说清「为什么」,
+        # 守项目「『没有』和『没看』必须能分开」原则)。⚠ ⑥ 客户端块会把它连同 source/industry 一起
+        # 抽进顶层类型化字段(协调员已记,本轮范围约束不碰 schemas.py)。
+        "permanentBoardStatus": board_status or [],
         # 入选来源(quota=常驻保底 / competition=情报竞争 / forced=问询强制),供 ⑥ 客户端说清
         # 「为什么在榜」。带在 intelRank 里(用户 2026-07-26 拍板「在既有 intelRank 里带来源标记」);
         # 落报告快照 JSON。⚠ 典型 API `CandidateOut.intelRank`(schemas.IntelRankOut)默认 drop

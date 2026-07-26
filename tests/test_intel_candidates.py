@@ -669,3 +669,69 @@ def test_dominant_industries_threshold_boundary():
     dom = ic._dominant_industries(members, industry_of, min_share=ic.INDUSTRY_GATE_MIN_SHARE)
     assert "行业A" in dom          # 50/1000 = 5.0% ≥ 5% → 主导
     assert "行业B" not in dom       # 49/1000 = 4.9% < 5% → 非主导
+
+
+# ————————————————————————————————————————————————————————————————
+# ⑪ 常驻板块状态诊断(用户 2026-07-26 拍板:0 只/不足 2 只必须带「为什么」)
+# ————————————————————————————————————————————————————————————————
+
+def test_permanent_board_status_explains_empty_and_shortfall(isolated_env):
+    """0 只与不足 2 只两种情形,`intelRank.permanentBoardStatus` 的数字与实际筛选漏斗一致
+    (稀土永磁复刻 2026-07-22 真实场景:成员多数行业不属主导被行业闸挡、唯一过闸的又命中 K4
+    hard_cut → 0 只;芯片 1 clean + 1 hardcut → 不足 2 只),文案说清「为什么」不静默空白。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    _seed_k4(isolated_env)
+    # 芯片概念:600100 半导体 clean → 保底;600101 半导体 但换手15 命中 A1 hard_cut → 不足 2 只
+    # 稀土永磁:600200/600201 食品(非主导→行业闸挡);600202 矿物制品过闸 但换手15 hardcut → 0 只
+    _seed_market(isolated_env, dates, [
+        {"code": "600100.SH", "market": "主板", "closes": _rising(30), "industry": "半导体"},
+        {"code": "600101.SH", "market": "主板", "closes": _rising(30), "industry": "半导体", "turnover": [5.0] * 29 + [15.0]},
+        {"code": "600200.SH", "market": "主板", "closes": _rising(30), "industry": "食品"},
+        {"code": "600201.SH", "market": "主板", "closes": _rising(30), "industry": "食品"},
+        {"code": "600202.SH", "market": "主板", "closes": _rising(30), "industry": "矿物制品", "turnover": [5.0] * 29 + [15.0]},
+    ])
+    # 40 只矿物制品无价 diluter,把稀土的「食品」稀释到 <5%(食品 2/43=4.6%)
+    dilut = [f"6003{j:02d}.SH" for j in range(40)]
+    _seed_industry_only(isolated_env, [{"code": c, "industry": "矿物制品"} for c in dilut])
+    _seed_permanent(isolated_env, {
+        "芯片概念": ["600100.SH", "600101.SH"],
+        "稀土永磁": ["600200.SH", "600201.SH", "600202.SH"] + dilut,
+    })
+    cands = ic.build_intel_candidates(dates[-1], _RULE,
+                                      parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    assert cands, "至少 600100 应作芯片保底入选,candidates 不应空(否则状态挂不上)"
+    status = {s["board"]: s for s in cands[0].intel_rank["permanentBoardStatus"]}
+    assert set(status) == {"芯片概念", "稀土永磁"}                       # 两个已解析常驻各一条
+
+    # 芯片概念:不足 2 只(1 clean 保底 + 1 命中 K4 hard_cut)
+    xp = status["芯片概念"]
+    assert xp["surviveCount"] == 2 and xp["industryGatePass"] == 2
+    assert xp["industryGateBlocked"] == 0 and xp["hardCutBlocked"] == 1
+    assert xp["quotaFilled"] == 1
+    assert "K4 安检拦截" in xp["note"]                                  # 说清不足 2 只的原因
+
+    # 稀土永磁:0 只(2 食品行业不属主导被挡 + 1 矿物制品过闸但 hardcut)
+    rr = status["稀土永磁"]
+    assert rr["surviveCount"] == 3 and rr["industryGatePass"] == 1
+    assert rr["industryGateBlocked"] == 2 and rr["hardCutBlocked"] == 1
+    assert rr["quotaFilled"] == 0
+    assert "行业不属本板块主导行业" in rr["note"] and "K4 安检拦截" in rr["note"]
+    assert "宁缺毋滥" in rr["note"]                                     # 0 只明标非静默空白
+
+
+def test_permanent_board_status_full_board_concise_note(isolated_env):
+    """满额(2 只)板块的状态:数字齐全、文案简述(不需要「为什么」)。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    _seed_market(isolated_env, dates, [
+        {"code": f"6001{j:02d}.SH", "market": "主板", "closes": _rising(30, p0=10.0 + j * 0.01), "industry": "半导体"}
+        for j in range(4)
+    ])
+    _seed_permanent(isolated_env, {"芯片概念": [f"6001{j:02d}.SH" for j in range(4)]})
+    cands = ic.build_intel_candidates(dates[-1], _RULE,
+                                      parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    st = {s["board"]: s for s in cands[0].intel_rank["permanentBoardStatus"]}["芯片概念"]
+    assert st["surviveCount"] == 4 and st["industryGatePass"] == 4
+    assert st["industryGateBlocked"] == 0 and st["hardCutBlocked"] == 0 and st["quotaFilled"] == 2
+    assert "保底 2 只" in st["note"] and "为什么" not in st["note"]
