@@ -50,6 +50,7 @@ from neckline.api.schemas import (
     EntrySuggestionOut,
     InquiryIn,
     InquiryOut,
+    IntelRankOut,
     K4AdvisoryOut,
     LLMJudgmentOut,
     OkOut,
@@ -231,6 +232,9 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
         formTags=c.get("pattern_tags", []) or [],
         hotSectors=c.get("hot_sectors", []) or [],
         sectorNames=c.get("sector_names", []) or [],
+        # v1.3-③-C3:候选新语义字段(旧报告快照无 → 默认空,前向兼容)。
+        k4Flags=c.get("k4_flags", []) or [],
+        intelRank=IntelRankOut(**(c.get("intel_rank") or {})),
         llmJudgment=llm,
     )
 

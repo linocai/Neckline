@@ -27,6 +27,14 @@ class LLMJudgmentOut(BaseModel):
     degraded: bool
 
 
+class IntelRankOut(BaseModel):
+    """候选情报排序理由(v1.3-③-C3,§2.3 语义变更)。候选=「过完安检、值得关注的票」
+    非「会涨的票」——客户端据此写对文案(不标「推荐买点」),展示情报维度。"""
+    sectorFlow: Optional[float] = None      # 所属常驻/暴起板块最大净流入(万元,C2;无数据=None)
+    themePersistDays: int = 0               # 题材持续天数(反用:1天新鲜>2-3警惕;≥4已在③剔)
+    highElasticity: bool = False            # 高弹板块(GEM/STAR;生成域刻意含高弹,标注给人判)
+
+
 class CandidateOut(BaseModel):
     rank: int
     code: str
@@ -43,6 +51,12 @@ class CandidateOut(BaseModel):
     formTags: List[str] = Field(default_factory=list)         # 价量结构形态标签
     hotSectors: List[str] = Field(default_factory=list)       # 命中今日热门板块(含年龄)
     sectorNames: List[str] = Field(default_factory=list)
+    # v1.3-③-C3 候选语义变更:候选生成脱离 K1 entry mask,改情报筛选管线。
+    # k4Flags:K4 avoid_flag 命中码(打标保留;hard_cut 已在服务端拦截出池、不出现在榜)。
+    # intelRank:情报排序理由(资金流强度/题材天数/高弹标注)。旧报告(建于本字段前)
+    # 读回为默认空(前向兼容,同 watchlist/intel 惯例)。
+    k4Flags: List[str] = Field(default_factory=list)
+    intelRank: IntelRankOut = Field(default_factory=IntelRankOut)
     llmJudgment: Optional[LLMJudgmentOut] = None              # 仅前 10 只有
 
 

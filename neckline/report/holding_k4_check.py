@@ -63,7 +63,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 import polars as pl
 
@@ -273,6 +273,17 @@ def _add_k4_features(df: pl.DataFrame) -> pl.DataFrame:
 
 # —— 持仓面板装配(held-stocks-only,内存友好:≤3 仓,不载全市场 250 日)——————————————
 
+# 原始表区间加载器签名:`(codes, start, end, table, parquet_dir) -> pl.DataFrame`。
+# ② 持仓体检(≤3 仓)默认走 `_load_codes_table`(逐票 get_stock_history,内存友好);
+# ③ 候选情报管线(全板块数千只 universe)注入 bulk 全市场 loader(见
+# `report/intel_candidates.py::_bulk_load_codes_table`)——**两条 I/O 路径共用下方
+# `_build_holding_feature_panel` 的同一份特征/判据装配**(qfq→add_features→merge→
+# `_add_k4_features`→`_add_hit_columns`),阈值单一源(本模块命名常量),只有原始
+# 表 I/O 方式不同(plan §五 v1.3-③-C3「性能坑」二选一之(a):复用判据表达式 + 换
+# 全市场面板 I/O;两处镜像一致性由 `tests/test_intel_candidates.py` 直接对拍)。
+TableLoader = Callable[[List[str], date, date, str, Optional[Path]], "pl.DataFrame"]
+
+
 def _load_codes_table(
     codes: List[str], start: date, end: date, table: str, parquet_dir: Optional[Path]
 ) -> pl.DataFrame:
@@ -287,17 +298,26 @@ def _load_codes_table(
 
 
 def _build_holding_feature_panel(
-    codes: List[str], trade_date: date, parquet_dir: Optional[Path]
+    codes: List[str],
+    trade_date: date,
+    parquet_dir: Optional[Path],
+    *,
+    load_fn: Optional[TableLoader] = None,
 ) -> pl.DataFrame:
-    """持仓票当日 EOD 特征面板(含 K4 专属列)。**只载持仓票 ~420 自然日历史**(ma250 需
-    250 交易日),复用生产 `add_features`/`merge_limit_features`/`merge_daily_basic` +
-    本模块 `_add_k4_features`。返回仅 trade_date 当日行(每持仓票 ≤1 行);查无该日行的
-    持仓(停牌/未上市)不在返回集,调用方按缺行判 has_data=False。"""
+    """持仓/候选票当日 EOD 特征面板(含 K4 专属列)。**只载相关票 ~420 自然日历史**
+    (ma250 需 250 交易日),复用生产 `add_features`/`merge_limit_features`/
+    `merge_daily_basic` + 本模块 `_add_k4_features`。返回仅 trade_date 当日行(每票 ≤1
+    行);查无该日行的票(停牌/未上市)不在返回集,调用方按缺行判 has_data=False。
+
+    `load_fn`:原始表区间加载器(默认 `_load_codes_table` 逐票循环,② 持仓用);③ 候选
+    情报管线注入 bulk 全市场 loader(数千只 universe 逐票循环会很慢)——**特征/判据
+    装配对两者完全相同**,仅 I/O 不同(见 `TableLoader` 注释)。"""
+    loader: TableLoader = load_fn or _load_codes_table
     load_start = trade_date - timedelta(days=_LOOKBACK_CALENDAR_DAYS)
-    daily = _load_codes_table(codes, load_start, trade_date, "daily", parquet_dir)
+    daily = loader(codes, load_start, trade_date, "daily", parquet_dir)
     if daily.is_empty():
         return pl.DataFrame()
-    adj = _load_codes_table(codes, load_start, trade_date, "adj_factor", parquet_dir)
+    adj = loader(codes, load_start, trade_date, "adj_factor", parquet_dir)
     if not adj.is_empty():
         merged = daily.join(
             adj.select(["ts_code", "trade_date", "adj_factor"]), on=["ts_code", "trade_date"], how="left"
@@ -306,8 +326,8 @@ def _build_holding_feature_panel(
         qfq_cols = [f"{c}_qfq" for c in _QFQ_PRICE_COLS]
         daily = adjusted.drop(list(_QFQ_PRICE_COLS)).rename(dict(zip(qfq_cols, _QFQ_PRICE_COLS)))
     panel = add_features(daily)
-    panel = merge_limit_features(panel, _load_codes_table(codes, load_start, trade_date, "limit_derived", parquet_dir))
-    panel = merge_daily_basic(panel, _load_codes_table(codes, load_start, trade_date, "daily_basic", parquet_dir))
+    panel = merge_limit_features(panel, loader(codes, load_start, trade_date, "limit_derived", parquet_dir))
+    panel = merge_daily_basic(panel, loader(codes, load_start, trade_date, "daily_basic", parquet_dir))
     panel = _add_k4_features(panel)
     panel = _add_hit_columns(panel)
     return panel.filter(pl.col("trade_date") == trade_date)
@@ -333,6 +353,34 @@ def _load_k4_evidence(db_path: Optional[Path]) -> Dict[str, str]:
         for code, spec in (adv.get(section) or {}).items():
             if isinstance(spec, dict) and spec.get("evidence"):
                 out[code] = str(spec["evidence"])
+    return out
+
+
+def load_k4_sections(db_path: Optional[Path] = None) -> Dict[str, str]:
+    """读 DB `strategy_versions` K4 行 `k4_advisory` 的**分区归属** `{advisory 码: 'hard_cut'
+    | 'avoid_flag'}`(plan §五 v1.3-③-C3-③:hard_cut 命中→拦截出池、avoid_flag 命中→打标
+    保留)。**单一事实源 = DB**(不抄常量);K4 行缺失(隔离测试库)/ 结构异常 → 空 dict,
+    调用方对空 dict 的兜底策略见 `intel_candidates._DEFAULT_SECTION`。
+
+    ⚠ 真实 DB(2026-07-26):hard_cut={A1_turnover_gt_10, A2_theme_persist_ge_4,
+    A3_belowyear_limitup, A4_base_hygiene}、avoid_flag={B1_volume_stacking,
+    B2_dual_golden_cross, B3_theme_persist_2_3, B4_chase_strong_red}。其中 A4_base_hygiene
+    = base_universe+非次新,候选管线 ② 已前置强制满足、`_evaluate_hits` 也不产 A4 命中,
+    故 A4 在候选侧永不触发(见 intel_candidates docstring)。合成派发码 A3b_belowyear_bigvol
+    **不在 DB**(证据源=雷区地图 3-⑤),其归属由调用方按 `_DEFAULT_SECTION` 决定。"""
+    from neckline.strategy import brain
+
+    try:
+        v = brain.get_version("K4", db_path=db_path)
+    except Exception:  # noqa: BLE001  隔离库读失败不崩
+        return {}
+    if v is None:
+        return {}
+    adv = (v.rule or {}).get("k4_advisory") or {}
+    out: Dict[str, str] = {}
+    for section in ("hard_cut", "avoid_flag"):
+        for code in (adv.get(section) or {}):
+            out[str(code)] = section
     return out
 
 
@@ -458,4 +506,5 @@ __all__ = [
     "HoldingK4Hit",
     "HoldingK4Item",
     "build_holding_k4_check",
+    "load_k4_sections",
 ]

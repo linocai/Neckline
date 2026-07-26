@@ -57,6 +57,11 @@ class Candidate:
     invalidation_text: str
     invalidation_spec: Dict[str, Any]
     entry_spec: Dict[str, Any] = field(default_factory=dict)
+    # —— v1.3-③-C3 情报管线候选专属(K1 评分路径不设,取默认空;向后兼容,见
+    #    `report/intel_candidates.py`)。候选语义变更:候选=「过完安检、值得关注的票」
+    #    非「会涨的票」,终选权用户。———————————————————————————————————————————
+    k4_flags: List[str] = field(default_factory=list)   # K4 avoid_flag 命中码(打标保留;hard_cut 已在生成时拦截出池)
+    intel_rank: Dict[str, Any] = field(default_factory=dict)  # 情报排序理由:{sectorFlow, themePersistDays, highElasticity}
     raw: Dict[str, Any] = field(default_factory=dict)  # 原始特征行,供 judge.py 组装上下文
 
     def public_dict(self) -> Dict[str, Any]:

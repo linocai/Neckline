@@ -87,12 +87,46 @@ def _render_sectors(sectors: List[SectorScore]) -> str:
     return "\n".join(lines)
 
 
+def _intel_rank_line(c: Candidate) -> Optional[str]:
+    """候选情报排序理由(v1.3-③-C3;K1 老候选 `intel_rank` 空 → None 不渲染)。"""
+    ir = c.intel_rank or {}
+    if not ir:
+        return None
+    parts: List[str] = []
+    sf = ir.get("sectorFlow")
+    if sf is not None:
+        parts.append(f"板块资金净流入 {sf:+,.0f} 万元")
+    persist = ir.get("themePersistDays")
+    if persist is not None:
+        fresh = {0: "未启动", 1: "第1天(新鲜)", 2: "第2天(警惕)", 3: "第3天(警惕)"}.get(persist, f"第{persist}天")
+        parts.append(f"题材持续 {fresh}")
+    if ir.get("highElasticity"):
+        parts.append("高弹板块(GEM/STAR,20cm 易波动,自行判断)")
+    return "- 情报排序理由:" + " · ".join(parts) if parts else None
+
+
+def _k4_flag_line(c: Candidate) -> Optional[str]:
+    """K4 安检打标(avoid_flag 命中;hard_cut 命中的票已在生成时拦出池、不到这里)。"""
+    if not c.k4_flags:
+        return None
+    return "- ⚠ K4 安检标注(机器不禁、供你判断):" + "、".join(c.k4_flags)
+
+
 def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResult], top_n_judged: int) -> str:
-    lines = ["## 候选", ""]
+    # v1.3-③-C3 语义变更:候选 = 「过完安检、值得关注的票」非「会涨的票」,终选在用户
+    # (§2.3)。生成源从 K1 entry mask 退役 → 情报筛选四步管线;四件套保留但是**情报维度**,
+    # 不是买入信号(不标「推荐买点」)。
+    lines = ["## 候选(情报筛选 · 过完安检、值得关注的票,非买入信号,终选在你)", ""]
     if not candidates:
-        lines.append("今日无候选通过母战法规则筛选。")
+        lines.append("今日无候选通过情报筛选(无热门板块成员过安检,或数据缺失)。")
         lines.append("")
         return "\n".join(lines)
+    lines.append(
+        "> 候选 = 五板块常驻 + 当日暴起板块的成员里,过完卫生线/非次新/趋势向上安检、"
+        "再过 K4 避坑安检(hard_cut 已拦出池、avoid_flag 打标)的票;**不是回测选出的买入信号**,"
+        "四件套为情报维度参考,买卖与终选在你(§2.3)。"
+    )
+    lines.append("")
 
     judged_list = candidates[:top_n_judged]
     scored_only = candidates[top_n_judged:]
@@ -101,14 +135,20 @@ def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResul
     lines.append("")
     for c in judged_list:
         jr = judged.get(c.ts_code)
-        lines.append(f"#### {c.rank}. {c.name}({c.ts_code}) —— 排序分 {c.score:.1f}")
+        lines.append(f"#### {c.rank}. {c.name}({c.ts_code}) —— 展示分 {c.score:.1f}")
         lines.append("")
         lines.append(f"- 现价:{c.close:.2f} 元 · 形态标签:{'、'.join(c.pattern_tags) if c.pattern_tags else '无'}")
         if c.hot_sectors:
             lines.append(f"- 命中热门板块:{'、'.join(c.hot_sectors)}")
-        lines.append(f"- **买点**:{c.entry_plan}")
-        lines.append(f"- **止损**:{c.stop_loss}")
-        lines.append(f"- **目标**:{c.target}")
+        intel_line = _intel_rank_line(c)
+        if intel_line:
+            lines.append(intel_line)
+        k4_line = _k4_flag_line(c)
+        if k4_line:
+            lines.append(k4_line)
+        lines.append(f"- **参考买点(非推荐)**:{c.entry_plan}")
+        lines.append(f"- **参考止损**:{c.stop_loss}")
+        lines.append(f"- **参考目标**:{c.target}")
         lines.append(f"- **证伪条件**:{c.invalidation_text}")
         lines.append("")
         if jr is not None:
@@ -126,13 +166,17 @@ def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResul
         lines.append("")
 
     if scored_only:
-        lines.append(f"### 后 {len(scored_only)} 只 · 仅评分与形态标签(不耗 LLM)")
+        lines.append(f"### 后 {len(scored_only)} 只 · 仅情报排序与形态标签(不耗 LLM)")
         lines.append("")
-        lines.append("| 排名 | 代码 | 名称 | 排序分 | 形态标签 |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| 排名 | 代码 | 名称 | 展示分 | 题材天数 | 高弹 | K4标注 | 形态标签 |")
+        lines.append("|---|---|---|---|---|---|---|---|")
         for c in scored_only:
             tags = "、".join(c.pattern_tags) if c.pattern_tags else "无"
-            lines.append(f"| {c.rank} | {c.ts_code} | {c.name} | {c.score:.1f} | {tags} |")
+            ir = c.intel_rank or {}
+            persist = ir.get("themePersistDays", "-")
+            he = "是" if ir.get("highElasticity") else ""
+            k4 = "、".join(c.k4_flags) if c.k4_flags else ""
+            lines.append(f"| {c.rank} | {c.ts_code} | {c.name} | {c.score:.1f} | {persist} | {he} | {k4} | {tags} |")
         lines.append("")
 
     return "\n".join(lines)

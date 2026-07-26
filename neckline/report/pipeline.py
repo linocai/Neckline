@@ -30,7 +30,8 @@ from neckline.llm.base import LLMProvider
 from neckline.llm.factory import get_provider
 from neckline.llm.judge import JudgeResult, judge_candidate
 from neckline.report import store
-from neckline.report.candidates import Candidate, build_candidates
+from neckline.report.candidates import Candidate
+from neckline.report.intel_candidates import build_intel_candidates
 from neckline.report.intel import IntelReport, compute_intel, empty_intel_report
 from neckline.report.render import render_markdown
 from neckline.report.sectors import SectorScore, compute_sector_strength, load_index_names, load_member_map
@@ -138,10 +139,13 @@ def build_report(
         p["ts_code"] for p in load_pending_inquiry_codes(trade_date, db_path=db_path)
     ))
 
-    candidates = build_candidates(
+    # v1.3-③-C3:候选生成从 K1 entry mask 退役 → 情报筛选四步管线(需求 5,§2.3/§3.8-(b))。
+    # 候选 = 「过完安检、值得关注的票」非「会涨的票」;`build_intel_candidates` 内部自算大
+    # 板块拥挤度列表(需常驻板块 board_age,pipeline 的 top-10 sector_scores 不够大),
+    # forced_codes(问询台海选池)语义不变(§2.5 强制并入,豁免卫生线/hard_cut、仅 K4 打标)。
+    candidates = build_intel_candidates(
         trade_date,
         active.rule,
-        sector_scores=sector_scores,
         member_map=member_map,
         index_names=index_names,
         top_n=top_n_total,

@@ -239,6 +239,14 @@ def seed_synthetic_market(
         · "600002.SH" 主板但当前是 *ST → 应被 base_universe(`~is_st`)剔除。
         · "300001.SZ" 创业板,价格路径与 600001.SH 相同 → 应被 rule v1 主板 only 剔除。
     三者的存在与否(通过/剔除)本身就是"熔断线"——验证 mask 确实在筛选,不是摆设。
+
+    **v1.3-③-C3**:同时铺一个「常驻概念板块」`储能`(`ths_index`/`ths_member`,成分
+    = {600001.SH, 600002.SH})——让候选情报管线(`report/intel_candidates.py`,K1 entry
+    mask 退役后 `build_report` 的候选生成源)能识别到一个 step① 板块并从其成员里产候选。
+    刻意**不含 300001.SZ**(它不是任何 step① 板块成员 → 情报管线天然不纳入),从而
+    「问询台强制纳入」/「自选体检独立于候选」等既有断言(300001.SZ 不在候选)继续成立。
+    只铺 `ths_index`+`ths_member`(不铺 `ths_daily`)——板块常驻按名精确匹配即可入 step①,
+    板块年龄/资金流的完整链路由 `test_intel_candidates.py` 的手搓面板专测。
     """
     dates = business_days(start, n_days)
     insert_trade_cal(settings, dates)
@@ -276,6 +284,15 @@ def seed_synthetic_market(
     ])
     insert_namechange(settings, [
         {"ts_code": "600002.SH", "name": "*ST示例乙", "start_date": start - timedelta(days=365)},
+    ])
+    # v1.3-③-C3:常驻概念板块「储能」(名称即 settings_store.DEFAULT_INTEL_WATCH_BOARDS 之一,
+    # 走「五常驻按 ths_index.name 精确匹配」路径)。成分只含 600001.SH/600002.SH(不含 300001.SZ)。
+    write_flat_parquet(settings, "ths_index.parquet", [
+        {"ts_code": "885921.TI", "name": "储能"},
+    ])
+    write_flat_parquet(settings, "ths_member.parquet", [
+        {"index_code": "885921.TI", "con_code": "600001.SH"},
+        {"index_code": "885921.TI", "con_code": "600002.SH"},
     ])
     return dates
 

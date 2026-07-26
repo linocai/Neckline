@@ -36,6 +36,13 @@ from neckline.db import connection, init_schema
 # 允许的 LLM 供应商(与 `neckline.llm.factory._PROVIDERS` 单一口径,恶意/未知值一律拒收)。
 ALLOWED_PROVIDERS = ("glm", "kimi")
 
+# v1.3-③-C3 候选情报管线「五板块常驻」默认名单(用户 2026-07-26 从真实数据挑定,
+# plan §五 v1.3-③-C3-①)。**单一事实源**:DB 列 `app_settings.intel_watch_boards`
+# 为 NULL(未配置)时回退到此;存的是**板块中文名**,运行时按 `ths_index.name`
+# 精确匹配解析 ts_code(禁关键词模糊匹配——"芯片"会误命中汽车芯片/存储芯片,
+# "机器人"会误命中人形机器人;实测见 intel_candidates 模块 docstring)。
+DEFAULT_INTEL_WATCH_BOARDS = ("芯片概念", "创新药", "储能", "机器人概念", "稀土永磁")
+
 
 @dataclass
 class AppSettings:
@@ -149,6 +156,38 @@ def set_review_col_map(col_map: dict, db_path: Optional[Path] = None) -> None:
         )
 
 
+def get_intel_watch_boards(db_path: Optional[Path] = None) -> list:
+    """读候选情报管线「五板块常驻」名单(板块中文名列表,plan §五 v1.3-③-C3-①)。
+    DB 列 `intel_watch_boards` 为 NULL(从未配置)→ 返回 `DEFAULT_INTEL_WATCH_BOARDS`
+    的**默认五板块**;为 `'[]'`(用户显式清空)→ 返回空列表(无常驻,尊重显式配置,
+    不再回退默认);非法 JSON → 回退默认(诚实兜底)。**只读**,写路径留 ⑥/设置屏。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute("SELECT intel_watch_boards FROM app_settings WHERE id=1").fetchone()
+    if row is None or row[0] is None:
+        return list(DEFAULT_INTEL_WATCH_BOARDS)
+    try:
+        parsed = json.loads(row[0])
+    except (json.JSONDecodeError, TypeError):
+        return list(DEFAULT_INTEL_WATCH_BOARDS)
+    if not isinstance(parsed, list):
+        return list(DEFAULT_INTEL_WATCH_BOARDS)
+    return [str(x) for x in parsed]
+
+
+def set_intel_watch_boards(names: list, db_path: Optional[Path] = None) -> None:
+    """写「五板块常驻」名单(板块中文名列表)。空列表 → 存 `'[]'`(显式清空,
+    与 NULL「未配置」区分:后者回退默认、前者尊重空)。供 ⑥/设置屏/QA 用。"""
+    init_schema(db_path)
+    payload = json.dumps([str(x) for x in (names or [])], ensure_ascii=False)
+    with connection(db_path) as conn:
+        _ensure_row(conn)
+        conn.execute(
+            "UPDATE app_settings SET intel_watch_boards=?, updated_at=? WHERE id=1",
+            (payload, _now()),
+        )
+
+
 def resolve_llm(
     default_settings: Optional[Settings] = None, db_path: Optional[Path] = None
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -174,9 +213,12 @@ def resolve_llm(
 __all__ = [
     "AppSettings",
     "ALLOWED_PROVIDERS",
+    "DEFAULT_INTEL_WATCH_BOARDS",
     "get_app_settings",
     "set_llm",
     "set_push",
     "set_review_col_map",
+    "get_intel_watch_boards",
+    "set_intel_watch_boards",
     "resolve_llm",
 ]

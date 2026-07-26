@@ -101,12 +101,21 @@ class TestHistoricalReplayAcrossMultipleDays:
         dates = seed_synthetic_market(isolated_env)
         seed_active_rule_v1(isolated_env)
 
-        seen_candidate_sets = []
+        # v1.3-③-C3:候选生成改情报筛选管线后,候选**集合**由 step① 板块成员驱动
+        # (较 K1 pullback 更稳定,不再逐日增减);候选**选择**的日期敏感性由本文件
+        # `test_replay_is_date_sensitive_not_a_canned_answer`(build_candidates K1 直测)
+        # 覆盖。此处改验:管线按日回放、日期正确落到报告头、候选产出且其**展示分**随
+        # 行情逐日变化(600001.SH 的贴前高度=展示分 dist_from_high_20d 逐日不同)——
+        # 证明日期参数真被用,不是罐头答案。
+        seen_score_snapshots = []
         for d in (dates[20], dates[25], dates[-1]):
             bundle = pipeline_mod.build_report(d, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
             assert bundle.trade_date == d
             assert bundle.markdown.startswith(f"# Neckline 盘后报告 · {d.isoformat()}")
-            seen_candidate_sets.append(tuple(sorted(c.ts_code for c in bundle.candidates)))
+            assert "600001.SH" in [c.ts_code for c in bundle.candidates]   # 储能成分过安检,逐日入选
+            seen_score_snapshots.append(
+                tuple(sorted((c.ts_code, round(c.score, 1)) for c in bundle.candidates))
+            )
 
-        # 三个不同回放日不应全部产出完全相同的候选集合(否则说明日期参数没被真正使用)
-        assert len(set(seen_candidate_sets)) > 1
+        # 三个不同回放日的候选(代码+展示分)快照不应全同(否则说明日期参数没被真正使用)
+        assert len(set(seen_score_snapshots)) > 1

@@ -182,6 +182,10 @@ CREATE TABLE IF NOT EXISTS app_settings (
     push_circuit    INTEGER NOT NULL DEFAULT 1,   -- v1.2-A2:第五类推送(熔断提醒)开关,默认开
     push_holding_alert INTEGER NOT NULL DEFAULT 1, -- v1.3-②:第六类推送(K4 持仓派发警报)开关,默认开
     review_col_map  TEXT NOT NULL DEFAULT '{}',
+    -- v1.3-③-C3:候选情报管线「五板块常驻」可配名单(JSON 数组存**板块中文名**,
+    -- 运行时按 ths_index.name 精确匹配解析 ts_code;NULL=未配置=用
+    -- settings_store.DEFAULT_INTEL_WATCH_BOARDS,'[]'=用户显式清空=无常驻)。
+    intel_watch_boards TEXT,
     updated_at      TEXT
 );
 
@@ -420,6 +424,9 @@ _COLUMN_MIGRATIONS = [
     # NULL 炸 json.loads——同 watchlist_json 前向兼容先例。
     ("reports", "intel_json", "TEXT NOT NULL DEFAULT '{}'"),
     ("reports", "sector_moneyflow_json", "TEXT NOT NULL DEFAULT '{}'"),
+    # v1.3-③-C3:候选情报管线「五板块常驻」可配名单(可空,NULL=未配置→用
+    # settings_store.DEFAULT_INTEL_WATCH_BOARDS 默认五板块;见 CREATE TABLE app_settings 注释)。
+    ("app_settings", "intel_watch_boards", "TEXT"),
 ]
 
 

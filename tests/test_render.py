@@ -123,7 +123,7 @@ class TestCandidatesSection:
         c2 = _candidate(ts_code="600002.SH", rank=2, name="示例乙")
         jr1 = JudgeResult(ts_code="600001.SH", provider="glm", model="glm-5.2", verdict=VERDICT_PASS, narrative="x", degraded=False)
         md = _render(candidates=[c1, c2], judged={"600001.SH": jr1}, top_n_judged=1)
-        assert "仅评分与形态标签" in md
+        assert "仅情报排序与形态标签" in md   # v1.3-③-C3:候选后N只节改「情报排序」口径
         assert "600002.SH" in md
         assert "示例乙" in md
 
