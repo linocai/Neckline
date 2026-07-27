@@ -120,7 +120,8 @@ _DEFAULT_SECTION = "avoid_flag"
 # 2-3=B3),此处只做「越新鲜分越高」的展示排序映射,不新增判据阈值。
 _THEME_FRESHNESS = {1: 3, 2: 2, 3: 1}
 
-# —— 行业闸(用户 2026-07-26 拍板方案二:行业当闸 + 概念当题材)———————————————————————
+# —— 行业闸(用户 2026-07-26 拍板方案二:行业当闸 + 概念当题材;2026-07-27 审计发现 share
+#    版判据用错统计量,改判据为 lift——本节是缺陷修复,不是新功能,机制/落点不变)—————————
 # **问题**:保底/竞争把「名义上挂在该板块、但与主题无关」的票推上榜(实测:机器人概念栏
 # 给出九州通/重药控股〔医药商业〕、稀土永磁栏给出中炬高新〔厨邦酱油·食品〕)——成分归属
 # 没错(同花顺沾边挂靠,立中集团挂 30 个板块/九州通挂 25 个),错的是**板块内排序用的全是
@@ -129,26 +130,68 @@ _THEME_FRESHNESS = {1: 3, 2: 2, 3: 1}
 # ——个股必须**行业 ∈ 该板块主导行业集合**才能作为该板块的**代表票**(保底与竞争的板块归属
 # 都过这道闸)。**数据驱动、不手配白名单**——对当日暴起板块自动同样生效(这是选此方案的关键)。
 # 闸只作用于**板块归属/代表性**,不改卫生线、不改 K4 hard_cut/avoid_flag、不改情报排序公式本身。
-INDUSTRY_GATE_MIN_SHARE = 0.05   # 主导行业阈值 = 成员里行业占比 ≥ 此值(启发式,待实盘校准;
-                                 # 2026-07-26 真实数据验:机器人概念主导含专用机械11.4%…医药商业仅0.3%被挡,
-                                 # 稀土永磁主导含矿物制品18.5%…食品仅1.5%被挡,芯片概念主导含半导体21.1%…)。
+# **判据(2026-07-27 由 share 改 lift,审计发现原判据统计量用错)**:原「板内占比 ≥5%」把长尾
+# 行业整片砍掉——`stock_basic.industry` 分类有 110 个、颗粒极细,一个题材板块天然散落几十个
+# 行业,固定 5% 线误杀长尾里的真主题票(实测:储能栏挡下「新型电力」21 只〔板内2.3%/全市场
+# 0.6%〕、芯片概念栏挡下「IT设备」31 只〔板内3.4%/全市场1.5%〕、稀土永磁栏挡下「铝」2 只
+# 〔板内3.1%/全市场0.5%〕——三者板内占比虽 <5%,相对全市场都显著富集,不该被挡)。改判据为
+# **lift(富集度)= 该行业板内占比 ÷ 该行业全市场占比**(全市场分母见 `_market_industry_shares`
+# = `stock_basic` 里有 industry 的股票总数,现 5536 只),`lift ≥ INDUSTRY_GATE_MIN_LIFT` 才算
+# 主导——沾边挂靠的噪音行业(机器人概念的医药商业、稀土永磁的食品、芯片概念的汽车配件)相对
+# 全市场并不富集(lift<1),仍被正确挡下,真实数据复现见 `tests/test_intel_candidates.py` ⑩组。
+INDUSTRY_GATE_MIN_LIFT = 2.0     # 主导行业阈值 = lift ≥ 此值(启发式,待实盘校准;2026-07-22
+                                 # 真实数据验:储能/新型电力 lift4.1、芯片概念/IT设备 lift2.3、
+                                 # 稀土永磁/铝 lift5.7 均由旧闸误杀纠正为过闸;机器人概念/半导体
+                                 # lift1.1、机器人概念/医药商业 lift0.5、稀土永磁/食品 lift0.9、
+                                 # 芯片概念/汽车配件 lift0.6 仍正确挡下,五个原噪音反例无一复活)。
+_INDUSTRY_GATE_EPS = 1e-9        # lift 阈值比较容差(除法产生的浮点噪声,同 sentinel/holding.py
+                                 # `_EPS` 先例——项目里裸 >=/<= 比较派生浮点的通用坑,照此办理)。
 
 
 def _theme_freshness_score(persist_days: int) -> int:
     return _THEME_FRESHNESS.get(persist_days, 0)
 
 
+def _market_industry_shares(industry_of: Dict[str, str]) -> Dict[str, float]:
+    """全市场行业占比(lift 分母)。分母 = `stock_basic` 里**有 industry** 的股票总数(现 5536
+    只)——**无 industry 的票不计入**(它们在 `_dominant_industries`/正文闸判定里本就走「不
+    通过闸」分支,不该反过来稀释市场基准)。空 `industry_of`(缺表/缺列)→ 空 dict,与
+    `_load_industry_map` 的优雅降级一致(下游 lift 查无市场占比 → 保守不通过)。"""
+    counts = Counter(ind for ind in industry_of.values() if ind)
+    total = sum(counts.values())
+    if total == 0:
+        return {}
+    return {ind: c / total for ind, c in counts.items()}
+
+
 def _dominant_industries(
-    members: List[str], industry_of: Dict[str, str], min_share: float = INDUSTRY_GATE_MIN_SHARE
+    members: List[str],
+    industry_of: Dict[str, str],
+    market_shares: Dict[str, float],
+    min_lift: float = INDUSTRY_GATE_MIN_LIFT,
 ) -> Set[str]:
-    """板块主导行业集合 = 成员里行业占比 ≥ `min_share` 的行业。**分母 = 全体成员**(无 industry
-    的成员计入分母、稀释占比,与 2026-07-26 真实校准数一致:机器人概念专用机械 138/1213=11.4%)。
-    空成员/无任何行业过阈 → 空集(该板块无代表票,不放宽——保守,守用户拍板)。"""
+    """板块主导行业集合 = **lift**(板块内占比 ÷ 全市场占比,见 `_market_industry_shares`)
+    ≥ `min_lift` 的行业(2026-07-27 由「板内占比 ≥5%」改判据,见模块「行业闸」节:固定占比线
+    对 110 个细颗粒行业分类系统性误杀长尾主题票,lift 用全市场基准分辨「该行业在此板块是否
+    真的富集」而非只看板内绝对占比)。**板内分母 = 全体成员**(无 industry 的成员计入分母、
+    稀释板内占比,denom 口径与旧 share 版一致、未变)。**全市场分母见 `market_shares` 参数**;
+    全市场查无该行业占比 → lift 未定义,保守不通过(理论上不会发生:凡是出现在成员
+    `industry_of` 里的行业,必然也在其构建来源——同一份 `stock_basic` 全表——的 `market_shares`
+    里,除非 `market_shares` 是用不同数据源算的)。空成员/无任何行业过阈 → 空集(该板块无
+    代表票,不放宽——保守,守用户拍板)。"""
     if not members:
         return set()
     counts = Counter(ind for m in members if (ind := industry_of.get(m)))
     denom = len(members)
-    return {ind for ind, c in counts.items() if c / denom >= min_share}
+    dominant: Set[str] = set()
+    for ind, c in counts.items():
+        mkt_share = market_shares.get(ind)
+        if not mkt_share:
+            continue   # 全市场无此行业占比(异常态)→ lift 未定义,保守不通过
+        lift = (c / denom) / mkt_share
+        if lift >= min_lift - _INDUSTRY_GATE_EPS:
+            dominant.add(ind)
+    return dominant
 
 
 def _bulk_load_codes_table(
@@ -261,9 +304,12 @@ def build_intel_candidates(
     #    集合才能作为该板块的代表票(gated 归属)。数据驱动、不手配白名单,当日暴起板块自动同样
     #    生效。无 industry 的票视为不通过闸(保守,无法判主题相关性),诚实落审计日志、不静默丢。—
     industry_of = _load_industry_map(db_path)
+    market_shares = _market_industry_shares(industry_of)
     inv = invert_member_map(member_map)
     board_members_of: Dict[str, List[str]] = {b: inv.get(b, []) for b in step1_boards}
-    dominant_of: Dict[str, Set[str]] = {b: _dominant_industries(board_members_of[b], industry_of) for b in step1_boards}
+    dominant_of: Dict[str, Set[str]] = {
+        b: _dominant_industries(board_members_of[b], industry_of, market_shares) for b in step1_boards
+    }
     gated_boards_of: Dict[str, List[str]] = {}   # code -> [该 code 过行业闸的 step① 板块](= 其代表的板块)
     all_nominal_members: Set[str] = set()        # step① 板块全体名义成员(未过行业闸,供板块状态诊断分母)
     _blocked_no_industry: Set[str] = set()       # 因无 industry 被挡(审计用,去重)
@@ -575,5 +621,5 @@ __all__ = [
     "SOURCE_QUOTA",
     "SOURCE_COMPETITION",
     "SOURCE_FORCED",
-    "INDUSTRY_GATE_MIN_SHARE",
+    "INDUSTRY_GATE_MIN_LIFT",
 ]

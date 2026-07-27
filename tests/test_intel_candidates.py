@@ -54,15 +54,29 @@ def _flat_then_up(n: int, age: int, base: float = 100.0, up: float = 110.0) -> l
     return [base] * (n - age) + [up] * age
 
 
-# 默认测试行业(行业闸用):同板块成员默认同一行业 → 100% 主导 → 过闸。特定测试再按需覆盖
-# 单只 `industry` 触发/绕过行业闸。
+# 默认测试行业(行业闸用):同板块成员默认同一行业 → 板内 100%。**2026-07-27 share→lift 改造**:
+# 闸判据从「板内占比」改「lift=板内占比÷全市场占比」后,板内 100% 不再自动过闸——lift 需要
+# 全市场分母**不**恰好等于板内构成(否则 lift≡1,永远卡在阈值上,见 `_market_industry_shares`)。
+# `_seed_market` 默认自动铺一份**背景填充市场**(`_MARKET_FILLER_INDUSTRY`,与任何测试行业都
+# 不同名)兜底,让"同板块成员默认同行业"继续在 lift 下自动过闸(保留原设计意图:不测行业闸的
+# 用例不必关心行业闸)。**要精确摆布 lift 分子分母的用例**(行业闸专测/误杀回归)传
+# `market_filler=False` 关掉自动背景,自己用 `_seed_industry_only` 摆一份可控的市场。
 _DEFAULT_INDUSTRY = "半导体"
+_MARKET_FILLER_INDUSTRY = "背景填充行业"       # 与本文件任何测试行业都不同名的合成占位行业
+_MARKET_FILLER_COUNT = 200                    # 够把本文件最大板块(25 只同行业)稀释到 lift≥2(见下)
 
 
-def _seed_market(env, dates, stocks: list) -> None:
+def _seed_market(env, dates, stocks: list, *, market_filler: bool = True) -> None:
     """`stocks`: [{code, market='主板', closes, turnover=5.0(标量或逐日列表), list_offset=400,
     st=False, name?, industry?}]。写 daily/adj/daily_basic + stock_basic(+namechange)。
-    `industry` 缺省 `_DEFAULT_INDUSTRY`(行业闸:同板块成员同行业 → 主导 → 过闸);传 None 显式无行业。"""
+    `industry` 缺省 `_DEFAULT_INDUSTRY`(行业闸:同板块成员同行业);传 None 显式无行业。
+
+    `market_filler=True`(默认)**额外**铺 `_MARKET_FILLER_COUNT` 只无价「背景填充行业」股票
+    (只进 `stock_basic`,不进任何板块成员、不参与卫生线/K4)——把全市场行业分布从"等于本次
+    测试股票的构成"拉开,使 lift 分母不再与分子恒等(否则任意单一行业板块 lift≡1,永远不过
+    行业闸阈值,见模块内 `_dominant_industries`)。**行业闸专测/误杀回归用例**需要手动摆布
+    板内 vs 全市场的精确比例时传 `market_filler=False` 关闭本机制,自行用 `_seed_industry_only`
+    铺可控背景(否则本机制的 200 只会混进分母,打乱精心算好的 lift 数值)。"""
     for i, d in enumerate(dates):
         daily, adj, basic = [], [], []
         for s in stocks:
@@ -88,6 +102,9 @@ def _seed_market(env, dates, stocks: list) -> None:
                    "list_date": ld, "industry": ind})
         if s.get("st"):
             nc.append({"ts_code": s["code"], "name": name, "start_date": ld})
+    if market_filler:
+        sb.extend({"ts_code": f"9{j:05d}.SZ", "name": f"背景{j}", "industry": _MARKET_FILLER_INDUSTRY}
+                  for j in range(_MARKET_FILLER_COUNT))
     insert_stock_basic(env, sb)
     if nc:
         insert_namechange(env, nc)
@@ -153,8 +170,10 @@ def _src(cands) -> dict:
 
 
 def _seed_industry_only(env, rows: list) -> None:
-    """只写 stock_basic 行(行业),不给行情——用于「凑分母把噪音行业稀释到 <5%」的成员
-    (它们不过 ②卫生线〔无价〕、不会成为候选,只参与行业闸的主导行业集合计算)。
+    """只写 stock_basic 行(行业),不给行情——用于精确摆布 lift 的分子/分母(它们不过
+    ②卫生线〔无价〕、不会成为候选)。**两种用法**:①传给 `_seed_permanent` 当board成员 → 只
+    影响该板块的**板内**行业占比(denom=全体成员);②不传给 `_seed_permanent`(纯市场背景)
+    → 只影响 `_market_industry_shares` 的**全市场**行业占比分母,不影响任何板块的板内构成。
     `rows`: [{code, industry}]。"""
     insert_stock_basic(env, [{"ts_code": r["code"], "industry": r["industry"]} for r in rows])
 
@@ -594,23 +613,29 @@ def test_selection_source_marked_in_intel_rank(isolated_env):
 
 
 # ————————————————————————————————————————————————————————————————
-# ⑩ 行业闸(用户 2026-07-26 拍板方案二:行业当闸 + 概念当题材)——真实反例锁死
+# ⑩ 行业闸(用户 2026-07-26 拍板方案二:行业当闸 + 概念当题材;2026-07-27 审计发现「板内占比」
+#    判据统计量用错,改判据为 lift〔富集度〕——真实反例锁死 + 误杀回归,见 `_seed_market` 的
+#    `market_filler` 说明:本组用例需要精确摆布板内/全市场比例,一律传 `market_filler=False`)
 # ————————————————————————————————————————————————————————————————
 
 def test_industry_gate_blocks_medical_distribution_from_robotics(isolated_env):
-    """① 真实反例:九州通(600998.SH)/重药控股(000950.SZ)行业=医药商业,在机器人概念里占比
-    <5%(非主导)→ **不得因保底进入机器人概念栏**;③ 主导行业(专用机械)的票正常入选保底。"""
+    """① 真实反例:九州通(600998.SH)/重药控股(000950.SZ)行业=医药商业——医药商业在全市场本就
+    常见,相对全市场**并不富集**(lift<2.0)→ **不得因保底进入机器人概念栏**;③ 主导行业
+    (专用机械,全市场稀缺、板内相对富集)的票正常入选保底。"""
     dates = business_days(date(2024, 1, 2), 30)
     insert_trade_cal(isolated_env, dates)
-    reps = ["600300.SH", "600301.SH"]                                  # 专用机械(主导)有价 → 应保底
-    bad = ["600998.SH", "000950.SZ"]                                    # 医药商业 有价 → 应被行业闸挡出机器人
-    dilut = [f"6004{j:02d}.SH" for j in range(40)]                     # 40 只专用机械 无价 diluter(凑分母)
+    reps = ["600300.SH", "600301.SH"]     # 专用机械(全市场稀缺)有价 → 应保底
+    bad = ["600998.SH", "000950.SZ"]      # 医药商业 有价 → 应被行业闸挡出机器人
+    # 全市场追加 50 只「医药商业」(市场本就常见,只是不在机器人概念板内)——board_share(医药商业)
+    # =2/4=50%、market_share(医药商业)=52/54≈96.3%,lift≈0.52<2.0(不富集,挡);board_share(专用
+    # 机械)=2/4=50%、market_share(专用机械)=2/54≈3.7%(全市场稀缺),lift≈13.5≥2.0(富集,过)。
+    extra_medical = [f"6004{j:02d}.SH" for j in range(50)]
     _seed_market(isolated_env, dates,
                  [{"code": c, "market": "主板", "closes": _rising(30), "industry": "专用机械"} for c in reps]
-                 + [{"code": c, "market": "主板", "closes": _rising(30), "industry": "医药商业"} for c in bad])
-    _seed_industry_only(isolated_env, [{"code": c, "industry": "专用机械"} for c in dilut])
-    # 机器人概念成员 = 42 专用机械 + 2 医药商业 → 医药商业 2/44=4.5%<5% 被挡,专用机械 95% 主导
-    _seed_permanent(isolated_env, {"机器人概念": reps + dilut + bad})
+                 + [{"code": c, "market": "主板", "closes": _rising(30), "industry": "医药商业"} for c in bad],
+                 market_filler=False)
+    _seed_industry_only(isolated_env, [{"code": c, "industry": "医药商业"} for c in extra_medical])
+    _seed_permanent(isolated_env, {"机器人概念": reps + bad})
     cands = ic.build_intel_candidates(dates[-1], _RULE,
                                       parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
     codes = _codes(cands)
@@ -621,22 +646,68 @@ def test_industry_gate_blocks_medical_distribution_from_robotics(isolated_env):
 
 
 def test_industry_gate_blocks_food_stock_from_rare_earth(isolated_env):
-    """② 真实反例:中炬高新(食品)在稀土永磁里占比 <5% → **不得进稀土永磁栏**;矿物制品(主导)入选。"""
+    """② 真实反例:中炬高新(食品)——食品在全市场本就常见,相对全市场**并不富集**(lift<2.0)
+    → **不得进稀土永磁栏**;矿物制品(全市场稀缺、板内富集)入选。"""
     dates = business_days(date(2024, 1, 2), 30)
     insert_trade_cal(isolated_env, dates)
-    reps = ["600400.SH", "600401.SH"]                                  # 矿物制品(主导)有价
-    bad = ["600872.SH"]                                                 # 中炬高新 食品 有价
-    dilut = [f"6005{j:02d}.SH" for j in range(20)]                     # 20 只矿物制品 无价 diluter
+    reps = ["600400.SH", "600401.SH"]     # 矿物制品(全市场稀缺)有价
+    bad = ["600872.SH"]                    # 中炬高新 食品 有价
+    # 全市场追加 10 只「食品」(食品本就常见,只是不在稀土永磁板内)——board_share(矿物制品)=
+    # 2/3≈66.7%、market_share(矿物制品)≈2/13≈15.4%,lift≈4.3≥2.0(富集,过);board_share(食品)
+    # =1/3≈33.3%、market_share(食品)≈11/13≈84.6%,lift≈0.39<2.0(食品全市场更常见,不富集,挡)。
+    extra_food = [f"6005{j:02d}.SH" for j in range(10)]
     _seed_market(isolated_env, dates,
                  [{"code": c, "market": "主板", "closes": _rising(30), "industry": "矿物制品"} for c in reps]
-                 + [{"code": "600872.SH", "market": "主板", "closes": _rising(30), "industry": "食品"}])
-    _seed_industry_only(isolated_env, [{"code": c, "industry": "矿物制品"} for c in dilut])
-    # 稀土永磁成员 = 22 矿物制品 + 1 食品 → 食品 1/23=4.3%<5% 被挡
-    _seed_permanent(isolated_env, {"稀土永磁": reps + dilut + bad})
+                 + [{"code": "600872.SH", "market": "主板", "closes": _rising(30), "industry": "食品"}],
+                 market_filler=False)
+    _seed_industry_only(isolated_env, [{"code": c, "industry": "食品"} for c in extra_food])
+    _seed_permanent(isolated_env, {"稀土永磁": reps + bad})
     codes = _codes(ic.build_intel_candidates(dates[-1], _RULE,
                                              parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path))
     assert "600872.SH" not in codes                                    # 食品(厨邦酱油)被挡出稀土永磁栏
-    assert "600400.SH" in codes and "600401.SH" in codes               # 矿物制品(主导)入选
+    assert "600400.SH" in codes and "600401.SH" in codes               # 矿物制品(富集,主导)入选
+
+
+def test_industry_gate_recovers_long_tail_industry_via_lift(isolated_env):
+    """⑥ 误杀回归(2026-07-27 share→lift 修复,审计发现旧判据用错统计量):新型电力票板内占比
+    <5%(旧 share 闸会挡)但相对全市场显著富集(lift≥2.0)→ 新判据下不再被行业闸挡出储能栏
+    (复刻真实 2026-07-22 场景:储能/新型电力 板内2.3%/全市场0.6%/lift4.1,21 只曾被旧闸误杀)。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    tail = ["600700.SH", "600701.SH"]                 # 新型电力(长尾,板内少数)有价 → 应过闸入候选
+    reps = [f"6001{j:02d}.SH" for j in range(58)]     # 电气设备(板内多数,凑分母,无需有价)
+    filler = [f"700{j:03d}.SZ" for j in range(120)]   # 全市场填充(另一行业,压低新型电力全市场占比)
+    _seed_market(isolated_env, dates,
+                 [{"code": c, "market": "主板", "closes": _rising(30), "industry": "新型电力"} for c in tail],
+                 market_filler=False)
+    _seed_industry_only(isolated_env, [{"code": c, "industry": "电气设备"} for c in reps])
+    _seed_industry_only(isolated_env, [{"code": c, "industry": "填充行业"} for c in filler])
+    # 储能板内:新型电力 2/60≈3.3%(<5%,旧 share 闸会挡);全市场:2/180≈1.1%;lift≈3.0(≥2.0,新闸放行)
+    _seed_permanent(isolated_env, {"储能": tail + reps})
+    codes = _codes(ic.build_intel_candidates(dates[-1], _RULE,
+                                             parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path))
+    assert "600700.SH" in codes and "600701.SH" in codes   # 长尾富集票不再被旧 5% 板内占比线误杀
+
+
+def test_industry_gate_recovers_it_equipment_via_lift(isolated_env):
+    """⑦ 误杀回归(2026-07-27 share→lift 修复):IT设备票板内占比 <5%(旧闸会挡)但相对全市场
+    富集(lift≥2.0)→ 新判据下不再被行业闸挡出芯片概念栏(复刻真实 2026-07-22 场景:芯片概念/
+    IT设备 板内3.4%/全市场1.5%/lift2.3,31 只曾被旧闸误杀)。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    tail = ["600800.SH", "600801.SH"]                 # IT设备(长尾,板内少数)有价 → 应过闸入候选
+    reps = [f"6002{j:02d}.SH" for j in range(57)]     # 半导体(板内多数,凑分母,无需有价)
+    filler = [f"701{j:03d}.SZ" for j in range(89)]    # 全市场填充(另一行业,压低IT设备全市场占比)
+    _seed_market(isolated_env, dates,
+                 [{"code": c, "market": "主板", "closes": _rising(30), "industry": "IT设备"} for c in tail],
+                 market_filler=False)
+    _seed_industry_only(isolated_env, [{"code": c, "industry": "半导体"} for c in reps])
+    _seed_industry_only(isolated_env, [{"code": c, "industry": "填充行业"} for c in filler])
+    # 芯片概念板内:IT设备 2/59≈3.4%(<5%,旧 share 闸会挡);全市场:2/148≈1.35%;lift≈2.5(≥2.0,新闸放行)
+    _seed_permanent(isolated_env, {"芯片概念": tail + reps})
+    codes = _codes(ic.build_intel_candidates(dates[-1], _RULE,
+                                             parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path))
+    assert "600800.SH" in codes and "600801.SH" in codes   # 长尾富集票不再被旧 5% 板内占比线误杀
 
 
 def test_industry_gate_no_industry_blocked_and_audited(isolated_env, caplog):
@@ -655,20 +726,23 @@ def test_industry_gate_no_industry_blocked_and_audited(isolated_env, caplog):
     assert any("行业闸" in r.message and "无 industry" in r.message for r in caplog.records)   # 审计留痕
 
 
-def test_dominant_industries_threshold_boundary():
-    """⑤ 阈值边界:占比恰 5% **通过**、4.9% **不通过**(`_dominant_industries` 纯函数直测,免seed)。"""
-    # 1000 成员:A×50=5.0%(过)、B×49=4.9%(不过)、其余填充。
+def test_dominant_industries_lift_threshold_boundary():
+    """⑤ 阈值边界(2026-07-27 share→lift 改判据):lift 恰 2.0 **通过**、1.9 **不通过**
+    (`_dominant_industries` 纯函数直测,`market_shares` 手写死,免 seed)。"""
+    # 100 成员:A×20(板内20%)、B×19(板内19%),其余填充。全市场占比手写死 A/B 均 10%:
+    # lift(A)=20%/10%=2.0(恰过闸);lift(B)=19%/10%=1.9(恰不过)。
     members, industry_of = [], {}
-    for i in range(50):
+    for i in range(20):
         c = f"A{i}"; members.append(c); industry_of[c] = "行业A"
-    for i in range(49):
+    for i in range(19):
         c = f"B{i}"; members.append(c); industry_of[c] = "行业B"
-    for i in range(901):
+    for i in range(61):
         c = f"F{i}"; members.append(c); industry_of[c] = f"填充{i}"
-    assert len(members) == 1000
-    dom = ic._dominant_industries(members, industry_of, min_share=ic.INDUSTRY_GATE_MIN_SHARE)
-    assert "行业A" in dom          # 50/1000 = 5.0% ≥ 5% → 主导
-    assert "行业B" not in dom       # 49/1000 = 4.9% < 5% → 非主导
+    assert len(members) == 100
+    market_shares = {"行业A": 0.10, "行业B": 0.10}
+    dom = ic._dominant_industries(members, industry_of, market_shares, min_lift=ic.INDUSTRY_GATE_MIN_LIFT)
+    assert "行业A" in dom          # 20%/10% = lift 2.0 ≥ 2.0 → 主导
+    assert "行业B" not in dom       # 19%/10% = lift 1.9 < 2.0 → 非主导
 
 
 # ————————————————————————————————————————————————————————————————
@@ -677,26 +751,31 @@ def test_dominant_industries_threshold_boundary():
 
 def test_permanent_board_status_explains_empty_and_shortfall(isolated_env):
     """0 只与不足 2 只两种情形,`intelRank.permanentBoardStatus` 的数字与实际筛选漏斗一致
-    (稀土永磁复刻 2026-07-22 真实场景:成员多数行业不属主导被行业闸挡、唯一过闸的又命中 K4
-    hard_cut → 0 只;芯片 1 clean + 1 hardcut → 不足 2 只),文案说清「为什么」不静默空白。"""
+    (稀土永磁复刻 2026-07-22 真实场景:成员多数行业相对全市场并不富集〔食品全市场本就常见〕
+    被行业闸挡、唯一过闸的又命中 K4 hard_cut → 0 只;芯片 1 clean + 1 hardcut → 不足 2 只),
+    文案说清「为什么」不静默空白。"""
     dates = business_days(date(2024, 1, 2), 30)
     insert_trade_cal(isolated_env, dates)
     _seed_k4(isolated_env)
     # 芯片概念:600100 半导体 clean → 保底;600101 半导体 但换手15 命中 A1 hard_cut → 不足 2 只
-    # 稀土永磁:600200/600201 食品(非主导→行业闸挡);600202 矿物制品过闸 但换手15 hardcut → 0 只
+    # 稀土永磁:600200/600201 食品(全市场常见、不富集 → 行业闸挡);600202 矿物制品(全市场稀缺、
+    # 富集)过闸 但换手15 hardcut → 0 只
     _seed_market(isolated_env, dates, [
         {"code": "600100.SH", "market": "主板", "closes": _rising(30), "industry": "半导体"},
         {"code": "600101.SH", "market": "主板", "closes": _rising(30), "industry": "半导体", "turnover": [5.0] * 29 + [15.0]},
         {"code": "600200.SH", "market": "主板", "closes": _rising(30), "industry": "食品"},
         {"code": "600201.SH", "market": "主板", "closes": _rising(30), "industry": "食品"},
         {"code": "600202.SH", "market": "主板", "closes": _rising(30), "industry": "矿物制品", "turnover": [5.0] * 29 + [15.0]},
-    ])
-    # 40 只矿物制品无价 diluter,把稀土的「食品」稀释到 <5%(食品 2/43=4.6%)
-    dilut = [f"6003{j:02d}.SH" for j in range(40)]
-    _seed_industry_only(isolated_env, [{"code": c, "industry": "矿物制品"} for c in dilut])
+    ], market_filler=False)
+    # 全市场追加 10 只「食品」(食品本就常见,不在稀土永磁板内)——稀土永磁板内:矿物制品 1/3≈
+    # 33%、食品 2/3≈67%;全市场(含芯片概念的半导体 2 只做背景):矿物制品 1/15≈6.7%(lift≈5.0
+    # ≥2 过)、食品 12/15=80%(lift≈0.83<2 挡);芯片概念板内 100% 半导体,全市场 2/15≈13.3%,
+    # lift≈7.5≥2 过。
+    extra_food = [f"6003{j:02d}.SH" for j in range(10)]
+    _seed_industry_only(isolated_env, [{"code": c, "industry": "食品"} for c in extra_food])
     _seed_permanent(isolated_env, {
         "芯片概念": ["600100.SH", "600101.SH"],
-        "稀土永磁": ["600200.SH", "600201.SH", "600202.SH"] + dilut,
+        "稀土永磁": ["600200.SH", "600201.SH", "600202.SH"],
     })
     cands = ic.build_intel_candidates(dates[-1], _RULE,
                                       parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)

@@ -279,10 +279,18 @@ def seed_synthetic_market(
 
     # v1.3-③-C3 行业闸:600001/600002 给同一行业「电气设备」→ 在「储能」板块内 100% 主导 → 过闸
     # (否则无 industry 一律不通过闸,情报候选会空掉,test_pipeline 的 600001 入选断言会挂)。
+    # **2026-07-27 share→lift 改判据补丁**:闸判据从「板内占比」改「lift=板内占比÷全市场占比」
+    # 后,板内 100% 不再自动过闸——若全市场(=本隔离库 stock_basic 全部行)恰好也是 100% 电气
+    # 设备(此前只有这 3 只票),lift≡1 永远卡在阈值上(见 `report/intel_candidates.py::
+    # _market_industry_shares`)。补 50 只无价「背景填充」股票(只进 stock_basic,不进任何板块
+    # 成员)把全市场行业分布拉开,恢复"板内同行业默认过闸"的原设计意图(同一坑、同一修法,见
+    # `tests/test_intel_candidates.py::_seed_market` 的 `market_filler` 参数)。
     insert_stock_basic(settings, [
         {"ts_code": "600001.SH", "name": "示例甲", "market": "主板", "industry": "电气设备", "list_date": start - timedelta(days=365)},
         {"ts_code": "600002.SH", "name": "*ST示例乙", "market": "主板", "industry": "电气设备", "list_date": start - timedelta(days=365)},
         {"ts_code": "300001.SZ", "name": "示例丙", "market": "创业板", "industry": "电气设备", "list_date": start - timedelta(days=365)},
+    ] + [
+        {"ts_code": f"9{j:05d}.SZ", "name": f"背景{j}", "industry": "背景填充行业"} for j in range(50)
     ])
     insert_namechange(settings, [
         {"ts_code": "600002.SH", "name": "*ST示例乙", "start_date": start - timedelta(days=365)},
