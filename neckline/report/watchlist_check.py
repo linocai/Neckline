@@ -128,7 +128,20 @@ def discipline_checks(cfg: MomentumConfig) -> List[Tuple[str, str, pl.Expr]]:
 
     **公开函数(plan §五 v1.3-⑤ 提升)**:`api/inquiry.py::run_deterministic_checks`
     与本模块 `score_watchlist` 共用同一份——两处任何时候都对同一票同一日给出相同
-    的 `passes_discipline`/disqualifiers 判定,不再各自维护一份选股域字面量。"""
+    的判定,不再各自维护一份选股域字面量。**注意两处消费方式自 v1.3.3 起不同**:
+    本模块仍把命中项当**红灯**(`green_light=False`),问询台把同一批命中项当
+    **警告标注**(不拦人,见 `api/inquiry.py` 模块头)——同一份判定,两种展示,
+    这是刻意的。
+
+    ⚠ **拆墙(v1.3.3,用户 2026-07-27 拍板)后本函数实际还剩什么**:高弹题材那条
+    (`_dq_elastic`)由 `cfg.forbid_high_elasticity` 驱动,现役 v1.3.3 把它置 False,
+    该分支**自然不再产出**任何红灯——本函数**没有任何硬编板块限制**,拆墙不需要改
+    这里一行代码(`if cfg.forbid_high_elasticity:` 本就是唯一开关,已核对无残留硬编)。
+    保留该分支不删:v1.3 仍是合法回退目标,回退后墙需要立刻回来。于是现役 config
+    (P4/P5/P6 皆 None)下红灯**只剩真硬线**:选股域那一条组合原因(ST/退市风险 /
+    北交所〔流动性薄〕/ 股价<2 元〔面值退市区〕/ 20 日均额<2000 万〔流动性太差〕/
+    无 MA20〔次新未成形〕),外加面板查无该票时的 `NO_DATA_REASON`(停牌 / 未上市 /
+    代码有误)。**板块限制与高弹已不在红灯之列。**"""
     from neckline.research.panel import base_universe_expr
 
     checks: List[Tuple[str, str, pl.Expr]] = [
@@ -157,6 +170,8 @@ def discipline_checks(cfg: MomentumConfig) -> List[Tuple[str, str, pl.Expr]]:
             S.forbid_new_stock(cfg.forbid_new_days),
         ))
     if cfg.forbid_high_elasticity:
+        # ⚠ 现役 v1.3.3 起 `forbid_high_elasticity=False` → 本分支不再产出红灯(拆墙)。
+        # **不删该分支**:v1.3 是切换器白名单里的合法回退目标,回退后墙必须立刻回来。
         checks.append((
             "_dq_elastic",
             "高弹题材板块(创业板/科创板,20%涨跌幅易跌停,现役规则风控剔除)",

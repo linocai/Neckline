@@ -53,14 +53,23 @@ def add_to_inquiry_pool(
     trade_date: date, ts_code: str, name: Optional[str] = None,
     reason: Optional[str] = None, db_path: Optional[Path] = None,
 ) -> None:
-    """把「初审通过」的票纳入某交易日的海选池(供当晚 `report.py` 扩候选 universe,§2.5)。
-    `INSERT OR IGNORE`——同日同票复问不重复入池(UNIQUE(trade_date, ts_code) 幂等)。"""
+    """把一只票纳入某交易日的海选池(供当晚 `report.py` 扩候选 universe,§2.5)。
+    `INSERT OR IGNORE`——同日同票复入不重复(UNIQUE(trade_date, ts_code) 幂等)。
+
+    **v1.3.3 起问询台不再自动写本表**(「初审通过进海选池」退役,改由用户在客户端一键
+    加自选);本函数与消费侧(`load_pending_inquiry_codes`/`mark_inquiry_pool_consumed`)
+    **保留不动**作向后兼容——空池 noop,历史待消费行仍会被正常消费掉。
+
+    **`ts_code` 写入通道归一(v1.3.3,与 positions/decision_log 同批)**:消费侧
+    `load_pending_inquiry_codes` 的返回值会被并进候选评分 universe 去 join 行情面板
+    (TuShare 口径 `300759.SZ`),裸码 join 不上 = 强制纳入静默失效。"""
     init_schema(db_path)
+    from neckline.review.parse import normalize_ts_code
     with connection(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO inquiry_pool (trade_date, ts_code, name, reason, created_at) "
             "VALUES (?,?,?,?,?)",
-            (_d(trade_date), ts_code, name, reason, _now()),
+            (_d(trade_date), normalize_ts_code(ts_code), name, reason, _now()),
         )
 
 

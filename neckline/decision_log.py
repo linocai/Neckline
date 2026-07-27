@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from neckline.db import connection, init_schema
+from neckline.review.parse import normalize_ts_code
 
 STATUS_PENDING = "pending"
 STATUS_FILLED = "filled"
@@ -162,8 +163,10 @@ def list_decisions(
         clauses.append("status=?")
         params.append(status)
     if ts_code:
+        # 查询侧同样归一(v1.3.3):写入通道已归一成 `300759.SZ`,若查询方传裸 `300759`
+        # 这条等值过滤会一条都不命中(静默空结果)。两侧过同一个函数才对得上。
         clauses.append("ts_code=?")
-        params.append(ts_code)
+        params.append(normalize_ts_code(ts_code))
     if position_id is not None:
         clauses.append("position_id=?")
         params.append(position_id)
@@ -201,9 +204,17 @@ def create_decision(
 ) -> DecisionRow:
     """预注册一条决策日志(八项,plan B.1/B.2)。`created_at` 服务端生成——本函数
     签名本就无 `created_at` 形参,任何调用方都无法覆盖。新行 `status="pending"`、
-    `position_id=None`、`revision_of=None`(首版)。"""
+    `position_id=None`、`revision_of=None`(首版)。
+
+    **`ts_code` 在写入通道归一(v1.3.3,与 `sentinel/positions.py::open_position` 同批
+    修复)**:`POST /decisions` 透传客户端 `body.code`,裸 6 位会以裸码入库;而
+    `report/pending_track.py` 是拿 `ts_code` **直接 join 行情面板**(`pl.col("ts_code")
+    .is_in(codes)`)算挂单未成交追踪的现价 —— 裸码 join 不上就静默取不到价。归一唯一源
+    `review.parse.normalize_ts_code`。`supersede`/`amend` 的新行 `ts_code` 继承自 base 行
+    (已归一),不必重复归一。"""
     init_schema(db_path)
     now = _now()
+    ts_code = normalize_ts_code(ts_code)
     scenarios = _normalize_scenarios(contingency_scenarios or [])
     with connection(db_path) as conn:
         cur = conn.execute(

@@ -110,7 +110,12 @@ logger = logging.getLogger(__name__)
 # 对外版号直接跳 v1.3(跳过 v1.2 对外版号,见 PROJECT_PLAN §五 v1.3-⑦-A)。
 # v1.3.1(2026-07-27 快修):独立审计缺陷修复(纪律章程 + 金额判定 9 条,🔴-1「D5 判一次
 # 定格」为首)+ 行业闸判据 板内占比 → lift(富集度)。**未激活任何章程行**(is_active 仍 K1)。
-VERSION = "v1.3.1"
+# v1.3.3(2026-07-27 快修,用户拍板):**拆墙**——章程 v1.3.3 把 `forbid_high_elasticity`
+# True→False(创业板/科创板不再被纪律层禁买,周复盘/问询台/自选体检/回测四处口径统一);
+# 问询台**审判员 → 自由分析师**(硬栏杆与二值裁决退役、软护栏只留 prompt 层、海选池
+# 自动写入退役改一键加自选);`positions`/`decision_log`/`inquiry_pool` 写入通道补
+# `ts_code` 归一(生产真洞:裸 6 位入库致 EOD 持仓管线 join 不上)。
+VERSION = "v1.3.3"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -1007,38 +1012,28 @@ def export_ths() -> ThsExportOut:
 
 # —— 4A.5 问询台 ————————————————————————————————————————————————————————
 
-def _inquiry_basis_pool_date() -> tuple:
-    """确定性检查的 EOD 基准日 + 入池当日(v1.1-D 问询窗口修复后语义变化)。
+def _inquiry_basis_date() -> date:
+    """确定性材料的 EOD 基准日——最近一份已生成报告的交易日(最可靠的"有数据日");
+    无报告 → 日历默认(今日交易日则今日,否则上一交易日)。
 
-    basis:确定性检查用的 EOD 数据基准日,不变——最近一份已生成报告的交易日
-    (最可靠的"有数据日");无报告 → 日历默认(今日交易日则今日,否则上一交易日)。
-
-    pool_date(v1.1-D 简化,**不再等于 basis**):`add_to_inquiry_pool` 的
-    `trade_date` 参数只是"这票哪天被问询入池"的审计留痕,**不再承担"该被哪份报告
-    消费"的职责**——旧写法 `pool_date == basis_date` 会让 16:35 报告已生成后才
-    问询通过的票,入池 `trade_date` 停留在"今天"(因为此时 basis 已经能读到今天
-    的报告),而下一份该消费它的报告是明天的,`trade_date` 与明天的 report_date
-    永远对不上 → 永久掉缝(生产真洞,详见 PROJECT_PLAN §五 v1.1-D.1 根因)。
-    消费改靠 `inquiry_pool.consumed_report_date` 待消费标记(`build_report` 侧,
-    `neckline.api.stores.load_pending_inquiry_codes`),故 pool_date 直接取「今日
-    交易日历口径」即可,不必再绑定 basis。"""
+    **v1.3.3:原 `_inquiry_basis_pool_date()` 返回的第二个值 `pool_date` 已删除**——
+    问询台不再自动写 `inquiry_pool`(「初审通过进海选池」退役,改由用户在客户端一键加
+    自选)。`inquiry_pool` 表与报告侧消费逻辑保留不动(向后兼容,空池 noop),只是不再
+    有自动写入方,故这里也不再需要算"入池当日"。"""
     lr = report_store.latest_report_date(db_path=_db())
     if lr:
-        basis = datetime.strptime(lr, "%Y%m%d").date()
-    else:
-        today0 = date.today()
-        basis = today0 if is_trading_day(today0) else prev_trading_day(today0)
-    today = date.today()
-    pool_date = today if is_trading_day(today) else prev_trading_day(today)
-    return basis, pool_date
+        return datetime.strptime(lr, "%Y%m%d").date()
+    today0 = date.today()
+    return today0 if is_trading_day(today0) else prev_trading_day(today0)
 
 
 @app.post(f"{API_PREFIX}/inquiry", dependencies=[Depends(require_token)])
 def inquiry(body: InquiryIn) -> InquiryOut:
-    """问询台(§2.5):确定性检查(纪律 + 同码评分 + 板块年龄)→ LLM 自然语言 → 裁决二值。
-    永不产「买」(裁决枚举只两值 + system prompt guardrail + 代码级裁决)。缺 key → 确定性
-    照跑、LLM 段占位降级,不崩。"""
-    basis_date, pool_date = _inquiry_basis_pool_date()
+    """问询台(§2.5,**v1.3.3 = 自由分析师**):确定性材料(同码评分 + 硬线提示 + 板块年龄
+    + K4 安检)→ LLM 自由叙述回答用户实际问的问题。**不再有裁决、不再有拦截**——任何票
+    都给实质回答,纪律命中项降级为回答里的警告标注。软护栏「不下买卖指令」只在 prompt 层
+    (刻意不做枚举强校验/输出后处理);真正的护栏是 §3.8「系统永不下单」。缺 key → 确定性
+    材料照给、LLM 段占位降级,不崩。"""
     provider = (_PROVIDER_FN or (lambda dbp: get_provider(db_path=dbp)))(_db())
     quotes_fn = _QUOTES_FN
     if quotes_fn is None:
@@ -1047,7 +1042,7 @@ def inquiry(body: InquiryIn) -> InquiryOut:
     result = run_inquiry(
         body.code,
         [{"role": m.role, "content": m.content} for m in body.messages],
-        basis_date=basis_date, pool_date=pool_date, db_path=_db(),
+        basis_date=_inquiry_basis_date(), db_path=_db(),
         provider=provider, quotes_fn=quotes_fn, panel_fn=_PANEL_FN,
     )
     return InquiryOut(

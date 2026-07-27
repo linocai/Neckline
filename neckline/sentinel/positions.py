@@ -18,6 +18,7 @@ from typing import List, Optional
 
 from neckline.calendar import trading_days_between
 from neckline.db import connection, init_schema
+from neckline.review.parse import normalize_ts_code
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +91,21 @@ def open_position(
     """开一笔仓位记账(不校验是否符合仓位纪律——§2.1 仓位上限是系统对报告候选的
     建议约束,不是对用户实际操作的强制拦截;系统只审计、不拦人手动录入)。返回新
     记录的 id。`buy_fees`(v1.3,可选):补录开仓实付买入费用(佣金+过户费),供 D5
-    净浮盈判向反推佣金率 / 周复盘对账;不传 → NULL(估算走默认率兜底,见 fees.py)。"""
+    净浮盈判向反推佣金率 / 周复盘对账;不传 → NULL(估算走默认率兜底,见 fees.py)。
+
+    **`ts_code` 在写入通道归一(v1.3.3 修复,生产真洞)**:此前本函数把调用方给的串
+    原样落库,而 `POST /positions` 直接透传客户端 `body.code`——用户在客户端敲裸 6 位
+    (`300759`)就会以裸码入库。裸码在盘中哨兵侧无碍(`quotes.to_symbol` 自己会补前缀),
+    但 16:35 EOD 持仓管线(`report/holding_k4_check.py::build_holding_checks`)是拿
+    `ts_code` **直接 join 行情面板**(面板是 TuShare 口径 `300759.SZ`)——裸码 join 不上
+    → `has_data=False` / `close=0` / `net_float=None`,K4 派发警报永不触发、D5 判向被保守
+    锁成「非浮盈次日退出」,且**全程静默无报错**。归一放在**写入通道**(而非 API 层),
+    姿势与 `neckline/watchlist.py` 一致:CLI(`scripts/positions.py`)、API、未来任何调用方
+    都自动吃到,不必各自记得调一次。归一唯一源 `review.parse.normalize_ts_code`
+    (内部复用 `quotes.to_symbol` + `board.classify_by_code`,不新写正则)。"""
     init_schema(db_path)
     now = _now()
+    ts_code = normalize_ts_code(ts_code)
     with connection(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO positions (ts_code, buy_price, qty, buy_date, status, note, buy_fees, "

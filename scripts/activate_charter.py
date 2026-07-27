@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """章程切换器(plan §五 v1.2-A.2 / v1.3-①-E / v1.3-⑦-E staged 步骤 2,🔴 高危区:大脑激活)。
 
-**staged 生效铁律**:章程激活 = 用户清掉现有持仓 + 明确确认后,才由本脚本把 `is_active`
-从 K1 移到目标章程行。激活前(K1 现役)所有行为按 K1 现役值执行。**默认目标 = `v1.3`**
-(v1.2 合并进 v1.3 发布,对外版号跳 v1.3)。
+**staged 生效铁律**:章程激活 = 用户**无 open 持仓**(切换器闸 2 硬校验)+ 明确确认后,才由
+本脚本把 `is_active` 移到目标章程行。激活前所有行为按当时现役版本的值执行。**默认目标 =
+`v1.3.3`**(拆墙版:v1.3 逐字段相同,只 `forbid_high_elasticity` True→False;用户
+2026-07-27 拍板)。历史:K1 → `v1.3`(2026-07-27 12:01 CST 生产激活)→ `v1.3.3`。
 
 ⚠ **目标闸是白名单,不是黑名单**(2026-07-27 独立审计 🟡-2 修复):原实现只黑名单拒
 `v1.2`,审计实测 `--target K2 --confirm` 在清仓后**真能把废弃研究臂激活成现役章程**
@@ -17,19 +18,32 @@ K2,静默且全链路生效。现改为**白名单 `_ALLOWED_TARGETS`**:名单�
     1. **目标合法性(白名单)**:`--target` 必须在 `_ALLOWED_TARGETS` 内,否则硬拒 + exit 2。
     2. **前置硬校验**:`positions` 表**无 `status='open'` 行**(用户已清仓)。有 open
        持仓 → 拒绝激活 + 打印待清仓清单 + 非零退出(生效时机铁律:清仓后才切)。
+       **窄豁免见下**。
     3. **打印 old→new 逐字段 diff** + **核心值核对(凡激活必做)**:现役 config 与目标 config
        全字段对照高亮改动;再按 `_CORE_EXPECTATIONS[target]` 逐项核对(防激活到错误/未改的行)。
     4. **`--confirm` 才写库**:无 `--confirm` 只 dry-run 打印 diff、不写库;带 `--confirm`
        才 `brain.activate_version(target)`。
 
+⚠ **闸 2 的窄豁免:纯入场侧 diff(2026-07-27 用户授权,v1.3.3 拆墙)**
+闸 2 当初的理由是「别在持仓在飞的时候换**退出**规则」——持仓按 A 章程开的,中途换成 B 章程
+管退出,等于对在途仓位执行一套它从未被评估过的规则。但**若 old→new 的差异只落在入场侧**
+(改的是"哪些票可以买"),在途持仓的止损/止盈/时间退出行为**逐字段不变**,该理由不成立。
+故加一道**极窄**豁免:**当且仅当**
+    (a) diff 的字段集合 ⊆ `_ENTRY_SIDE_EXEMPT_KEYS`(目前只有 `forbid_high_elasticity`),**且**
+    (b) `_HOLD_INVARIANT_KEYS` 八项(退出四 + 仓位四)**逐字段相同**(独立正向核对,不靠 (a)
+        推导——万一将来有人草率地往白名单里加字段,这一条仍死死钉住"在途仓位行为不变")
+才允许带持仓激活。**豁免必留痕**:打印豁免理由 + diff 全文 + 未平持仓清单,并**追加写入
+审计日志文件**(`<db 同目录>/charter_activation_audit.log`,append-only);**日志写不成 →
+拒绝激活**(宁可不切,也不静默豁免)。任何不满足 (a)(b) 的情形,闸 2 行为与从前完全一致。
+
 **不做 API 端点**:策略大脑激活绝不暴露给客户端(§3.8 系统内核永不被客户端改),
 只走命令行 + 用户在 ECS 权威库手动跑(能写该库的身份,即服务 `User=neckline`:
-`sudo -u neckline .venv/bin/python scripts/activate_charter.py --target v1.3 --confirm`)。
+`sudo -u neckline .venv/bin/python scripts/activate_charter.py --target v1.3.3 --confirm`)。
 
 用法:
-    python scripts/activate_charter.py                          # dry-run:校验 + diff(默认目标 v1.3)
-    python scripts/activate_charter.py --confirm                # 校验通过 + 激活 v1.3
-    python scripts/activate_charter.py --target v1.3 --confirm  # 显式目标
+    python scripts/activate_charter.py                            # dry-run:校验 + diff(默认目标 v1.3.3)
+    python scripts/activate_charter.py --confirm                  # 校验通过 + 激活 v1.3.3
+    python scripts/activate_charter.py --target v1.3.3 --confirm  # 显式目标
     python scripts/activate_charter.py --db /path.db --confirm
 """
 
@@ -37,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -45,13 +60,15 @@ from neckline.config import settings  # noqa: E402
 from neckline.sentinel.positions import load_open_positions  # noqa: E402
 from neckline.strategy import brain  # noqa: E402
 
-_TARGET_VERSION = "v1.3"
+_TARGET_VERSION = "v1.3.3"
 
 # —— 闸 1:目标白名单(审计 🟡-2;**加版本时必须同时给它一条 `_CORE_EXPECTATIONS`**)——
 # 只有系统线 v 字头**现行**章程行可被激活。名单外一律硬拒:K 字头研究臂(K1 现役是历史
 # 既成事实,不经本脚本;K2/K3/K4 是已否决/参考档)、过时的 v1.2(回落 5%/hold=5,已被 v1.3
 # 取代,保留不删但永不激活)、以及任何 typo/复制错的串。
-_ALLOWED_TARGETS = ("v1.3",)
+# **v1.3 保留在名单内**:v1.3.3 只拆了高弹墙,若拆墙后需要紧急退回"主板 only"口径,v1.3 是
+# 唯一合法回退目标(其余字段两版逐字段相同)——回退也须走本切换器四道闸,不许手改 DB。
+_ALLOWED_TARGETS = ("v1.3", "v1.3.3")
 
 # —— 闸 3:核心值核对(**凡激活必做**,不再只对 v1.3 做)。{版本: {config 键: 期望值}} ——
 # 目的是「防激活到错误/未改的行」:即使目标在白名单里,只要它的退出/仓位核心值不是章程
@@ -66,8 +83,38 @@ _CORE_EXPECTATIONS = {
         "stop_pct": 0.05,                     # -5% 止损不变(§2.1 第 1 条)
         "single_cap": 40000.0,                # 三仓章程:违纪判定上限 4 万
         "max_positions": 3,                   # 三仓
+        "forbid_high_elasticity": True,       # v1.3 = 主板 only(墙还在;v1.3.3 才拆)
+    },
+    # v1.3.3 = v1.3 逐字段相同,**只拆高弹墙**(用户 2026-07-27 拍板)。退出/仓位七项与 v1.3
+    # 一字不差地重复在此,是刻意的:核心值核对的职责就是"防激活到未改对的行"——若 v1.3.3
+    # 行被人改坏了退出或仓位字段,这里必须拦下。**`forbid_high_elasticity` 期望值恰与 v1.3
+    # 相反**,是本版唯一的语义差,也是"激活到了正确那一行"的判据。
+    "v1.3.3": {
+        "take_profit_retrace": 0.08,
+        "max_hold_days": 5,
+        "max_hold_days_profit": 15,
+        "time_exit_only_if_unprofitable": True,
+        "stop_pct": 0.05,
+        "single_cap": 40000.0,
+        "max_positions": 3,
+        "forbid_high_elasticity": False,      # 拆墙:创业板/科创板不再被纪律层禁买
     },
 }
+# —— 闸 2 窄豁免(2026-07-27 用户授权)——————————————————————————————————————
+# (a) 允许出现在 diff 里的**入场侧**字段。入场侧 = 只影响「哪些票可以买」(entry mask /
+#     买入违纪判定),对**已持有**仓位的止损/止盈/时间退出零影响。往这里加字段前先问
+#     自己:「一笔已经在飞的仓位,会因为这个字段变了而改变它的退出行为吗?」——只要答案
+#     不是斩钉截铁的"不会",就不该加。
+_ENTRY_SIDE_EXEMPT_KEYS = frozenset({"forbid_high_elasticity"})
+
+# (b) **在途仓位行为不变量**:退出四 + 仓位四,豁免时必须逐字段相同(独立正向核对)。
+_HOLD_INVARIANT_KEYS = (
+    "stop_pct", "take_profit_retrace", "max_hold_days", "max_hold_days_profit",
+    "time_exit_only_if_unprofitable", "single_cap", "max_positions", "max_exposure_frac",
+)
+
+_AUDIT_LOG_NAME = "charter_activation_audit.log"
+
 _TOL = 1e-9
 
 
@@ -99,6 +146,52 @@ def _check_core_values(target: str, new_cfg: dict) -> int:
     return 0
 
 
+def _diff_keys(old_cfg: dict, new_cfg: dict) -> list:
+    """old→new 发生变化的 config 字段名(排序)。缺键按 `<缺>` 参与比较,故「新增/删除
+    一个字段」也算改动 —— 豁免判定绝不能对"多出来的字段"视而不见。"""
+    return sorted(
+        k for k in (set(old_cfg) | set(new_cfg))
+        if not _eq(old_cfg.get(k, "<缺>"), new_cfg.get(k, "<缺>"))
+    )
+
+
+def _exemption_verdict(old_cfg: dict, new_cfg: dict, changed: list) -> tuple:
+    """闸 2 窄豁免判定。返回 `(exempt: bool, reasons: list[str])`——`reasons` 无论准不准
+    都会被打印/存档(拒绝时说明为什么不给豁免,通过时说明凭什么给)。"""
+    reasons = []
+    outside = [k for k in changed if k not in _ENTRY_SIDE_EXEMPT_KEYS]
+    cond_a = not outside
+    if cond_a:
+        reasons.append(f"(a) diff 字段集合 {changed} ⊆ 入场侧白名单 {sorted(_ENTRY_SIDE_EXEMPT_KEYS)} ✓")
+    else:
+        reasons.append(f"(a) diff 含入场侧白名单**之外**的字段 {outside} ✗")
+
+    violated = [(k, old_cfg.get(k, "<缺>"), new_cfg.get(k, "<缺>")) for k in _HOLD_INVARIANT_KEYS
+                if not _eq(old_cfg.get(k, "<缺>"), new_cfg.get(k, "<缺>"))]
+    cond_b = not violated
+    if cond_b:
+        reasons.append(f"(b) 在途仓位行为不变量 {list(_HOLD_INVARIANT_KEYS)} 逐字段相同 ✓")
+    else:
+        reasons.append("(b) 在途仓位行为不变量被改动 ✗:" +
+                       "、".join(f"{k}({o}→{n})" for k, o, n in violated))
+    return (cond_a and cond_b), reasons
+
+
+def _write_audit(db_path: Path, lines: list) -> bool:
+    """把豁免留痕**追加**写进 `<db 同目录>/charter_activation_audit.log`。返回是否写成。
+    写不成 → 调用方拒绝激活(**不许静默豁免**:留痕是豁免成立的前提,不是锦上添花)。"""
+    path = Path(db_path).resolve().parent / _AUDIT_LOG_NAME
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        print(f"[留痕] 豁免记录已追加写入:{path}")
+        return True
+    except OSError as e:
+        print(f"错误:豁免审计日志写入失败({path}: {e})——拒绝激活。"
+              f"留痕是豁免成立的前提,绝不静默豁免。", file=sys.stderr)
+        return False
+
+
 def activate(db_path: Path, target: str, confirm: bool) -> int:
     # ---- 闸 1:目标合法性——**白名单**(审计 🟡-2:黑名单挡不住 K2/K4 等废弃研究臂)----
     if target not in _ALLOWED_TARGETS:
@@ -106,22 +199,10 @@ def activate(db_path: Path, target: str, confirm: bool) -> int:
             f"错误:拒绝激活 {target}——不在可激活白名单 {list(_ALLOWED_TARGETS)} 内。\n"
             f"      K 字头(K1/K2/K3/K4)是策略线研究臂/参考档,**永不经本脚本激活**;\n"
             f"      v1.2 是过时章程行(回落 5%/hold=5,已被 v1.3 取代,保留不删但永不激活)。\n"
-            f"      如确要激活现行章程,用 --target v1.3。",
+            f"      如确要激活现行章程,用 --target {_TARGET_VERSION}(v1.3 保留作回退目标)。",
             file=sys.stderr,
         )
         return 2
-
-    # ---- 闸 2:前置硬校验(无 open 持仓)----
-    open_positions = load_open_positions(db_path=db_path)
-    if open_positions:
-        print(
-            f"错误:仍有 {len(open_positions)} 笔 status='open' 持仓,拒绝激活 "
-            f"{target}(生效时机铁律:清仓后才切)。待清仓清单:",
-            file=sys.stderr,
-        )
-        for p in open_positions:
-            print(f"    id={p.id}  {p.ts_code}  买入 {p.buy_date} @¥{p.buy_price} × {p.qty} 股", file=sys.stderr)
-        return 1
 
     active = brain.get_active(db_path=db_path)
     tgt = brain.get_version(target, db_path=db_path)
@@ -137,18 +218,53 @@ def activate(db_path: Path, target: str, confirm: bool) -> int:
 
     old_cfg = dict(active.rule.get("config", {}) or {})
     new_cfg = dict(tgt.rule.get("config", {}) or {})
+    changed = _diff_keys(old_cfg, new_cfg)
+
+    # ---- 闸 2:前置硬校验(无 open 持仓)+ 纯入场侧 diff 窄豁免 ----
+    # ⚠ diff 必须先算好才谈得上豁免,故本闸挪到读 config 之后;**无持仓时行为与从前
+    # 逐行相同**(不进任何豁免分支、不写审计日志)。
+    open_positions = load_open_positions(db_path=db_path)
+    exempted = False
+    if open_positions:
+        exempt, reasons = _exemption_verdict(old_cfg, new_cfg, changed)
+        if not exempt:
+            print(
+                f"错误:仍有 {len(open_positions)} 笔 status='open' 持仓,拒绝激活 "
+                f"{target}(生效时机铁律:清仓后才切)。窄豁免不成立:",
+                file=sys.stderr,
+            )
+            for r in reasons:
+                print(f"    {r}", file=sys.stderr)
+            print("待清仓清单:", file=sys.stderr)
+            for p in open_positions:
+                print(f"    id={p.id}  {p.ts_code}  买入 {p.buy_date} @¥{p.buy_price} × {p.qty} 股",
+                      file=sys.stderr)
+            return 1
+        exempted = True
+        holdings = [f"    id={p.id}  {p.ts_code}  买入 {p.buy_date} @¥{p.buy_price} × {p.qty} 股"
+                    for p in open_positions]
+        banner = [
+            "=" * 78,
+            f"⚠ 闸 2 窄豁免生效:带 {len(open_positions)} 笔未平持仓激活 {active.version} → {target}",
+            "  豁免依据(纯入场侧 diff —— 改的只是「哪些票可以买」,在途仓位的止损/止盈/",
+            "  时间退出行为逐字段不变;闸 2 原始理由〔别在持仓在飞时换退出规则〕不适用):",
+            *[f"    {r}" for r in reasons],
+            f"  改动字段:{changed}",
+            "  未平持仓清单(激活后其退出行为不变):",
+            *holdings,
+            "=" * 78,
+        ]
+        for line in banner:
+            print(line)
 
     # ---- 闸 3:打印 old→new 逐字段 diff(高亮变的字段)----
-    print(f"现役 {active.version} → 目标 {target} 章程 config 逐字段 diff:")
-    all_keys = sorted(set(old_cfg) | set(new_cfg))
-    changed = []
-    for k in all_keys:
+    print(f"\n现役 {active.version} → 目标 {target} 章程 config 逐字段 diff:")
+    for k in sorted(set(old_cfg) | set(new_cfg)):
         ov, nv = old_cfg.get(k, "<缺>"), new_cfg.get(k, "<缺>")
-        if not _eq(ov, nv):
-            changed.append(k)
-            print(f"  * {k:<20} {ov} → {nv}   ← 改动")
+        if k in changed:
+            print(f"  * {k:<32} {ov} → {nv}   ← 改动")
         else:
-            print(f"    {k:<20} {ov}")
+            print(f"    {k:<32} {ov}")
     print(f"\n改动字段:{changed or '(无)'}")
     print(f"目标 {target} 内核血缘 lineage = {tgt.rule.get('lineage', '(未标注)')}")
 
@@ -160,8 +276,22 @@ def activate(db_path: Path, target: str, confirm: bool) -> int:
     # ---- 闸 4:--confirm 才写库 ----
     if not confirm:
         print(f"\n[dry-run] 未带 --confirm,不写库。现役仍为 {active.version}。")
-        print(f"确认无误后加 --confirm 激活:python scripts/activate_charter.py --confirm")
+        if exempted:
+            print("[dry-run] 上方窄豁免为**预演判定**,未写审计日志(dry-run 不留痕、也不激活)。")
+        print(f"确认无误后加 --confirm 激活:"
+              f"python scripts/activate_charter.py --target {target} --confirm")
         return 0
+
+    # ---- 豁免留痕(**写库之前**):写不成就不激活,绝不静默豁免 ----
+    if exempted:
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        audit = [
+            "",
+            f"[{stamp}] 闸 2 窄豁免激活:{active.version} → {target}(db={db_path})",
+            *[f"  {line}" for line in banner],
+        ]
+        if not _write_audit(db_path, audit):
+            return 4
 
     result = brain.activate_version(target, db_path=db_path)
     active_after = brain.get_active(db_path=db_path)
@@ -180,7 +310,7 @@ def activate(db_path: Path, target: str, confirm: bool) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="章程切换器(plan v1.3-①-E / ⑦-E,staged 步骤 2)")
+    ap = argparse.ArgumentParser(description="章程切换器(plan v1.3-①-E / ⑦-E / v1.3.3 拆墙,staged 步骤 2)")
     ap.add_argument("--db", type=Path, default=None, help="目标 SQLite 库(默认 settings.db_path)")
     ap.add_argument("--target", "--version", dest="target", default=_TARGET_VERSION,
                     help=f"要激活的版本(默认 {_TARGET_VERSION};--version 为向后兼容别名)")

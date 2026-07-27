@@ -389,16 +389,23 @@ class InquiryIn(BaseModel):
     messages: List[ChatMessageIn] = Field(default_factory=list)
 
 
-# 裁决二值(硬约束,§2.5:永不「现在就买」)——枚举只两值,是「永不买」的双保险之一。
-VERDICT_REJECT = "不符合"
-VERDICT_PASS = "初审通过进海选池"
+# —— v1.3.3:二值裁决退役 → **描述性标注**(用户 2026-07-27 拍板「问询台改自由分析师」)——
+# 旧的 `VERDICT_REJECT="不符合"` / `VERDICT_PASS="初审通过进海选池"` 已删除:问询台不再
+# 做通过/不通过的判决,也不再自动写海选池。下面两个值**不是判决**——它们既不授权也不
+# 禁止任何操作,只告诉客户端"这次回答里带没带风险提示",供徽标展示。
+VERDICT_ANALYZED = "已分析"
+VERDICT_ANALYZED_WARN = "已分析·有风险提示"
 
 
 class InquiryOut(BaseModel):
     ok: bool = True
     code: str
     reply: str                                   # 自由对话体(§2.7)
-    verdict: Literal["不符合", "初审通过进海选池"]
+    # **契约刻意不破**:字段名/字段集合一个不动,只把类型由
+    # `Literal["不符合","初审通过进海选池"]` 放宽成 `str`(v1.3.3)。已装的 macOS 客户端
+    # 对未识别取值走 `InquiryVerdict.unknown(raw)`(原样显示 + 中性色调)、且
+    # `enablesBuyAction` 恒 false 穷举写死,故不会解码失败、不会误显示成某个已知态。
+    verdict: str
     evidence: List[str] = Field(default_factory=list)
     degraded: bool = False                       # LLM 段是否走了降级占位
 
@@ -629,7 +636,7 @@ __all__ = [
     "EntrySuggestionOut", "CircuitEpisodeOut", "CircuitStateOut",
     "WatchlistItemOut", "WatchlistOut", "WatchlistAddIn", "WatchlistAddOut", "WatchlistPinIn",
     "ThsReconcileOut", "ThsExportOut",
-    "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_REJECT", "VERDICT_PASS",
+    "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_ANALYZED", "VERDICT_ANALYZED_WARN",
     "PushSettingsOut", "SettingsOut", "SettingsLLMIn", "SettingsPushIn", "DeviceRegisterIn",
     "SettingsReviewColMapIn", "IntelWatchBoardsOut", "IntelWatchBoardsIn",
     "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",

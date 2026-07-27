@@ -1,53 +1,66 @@
-"""问询台服务(plan §2.5 / 4A.5)。用户丢一票进来 → **确定性检查(纪律核对 + 同一
-评分管线跑分 + 板块年龄)→ LLM 自然语言回答** → 裁决二值。
+"""问询台服务(plan §2.5,**v1.3.3 改版:审判员 → 自由分析师**)。
 
-**同码不重写铁律**:确定性检查复用 `strategy.brain`(现役规则)+ `research.panel`
-(选股域)+ `strategy.signals`(禁买/风控预测)+ `report.candidates`(评分/板块年龄)+
-`report.watchlist_check.discipline_checks`(纪律红绿灯判定项,plan §五 v1.3-⑤),
+用户丢一票进来 → **确定性材料(同一评分管线跑分 + 纪律/硬线核对 + 板块年龄 + K4 安检)
+→ LLM 自由叙述回答用户实际问的问题**。**不再有裁决、不再有拦截。**
+
+**v1.3.3 变了什么(用户 2026-07-27 拍板,方向已定)**
+
+1. **硬栏杆全拆**。旧实现在「确定性纪律未过」时**直接终止**、不劳 LLM、返回一句
+   「按纪律不予放行」——用户实测拿创业板票(300759 康龙化成)问,只能得到一句拒绝,
+   问不出任何东西。现在:**任何票都会走完整流程、拿到实质回答**;纪律命中项降级为
+   **回答里的警告标注**,一律不拦。
+2. **二值裁决枚举退役**。`VERDICT_REJECT`/`VERDICT_PASS`(「不符合」/「初审通过进海选池」)
+   删除;`verdict` 字段**保留**(客户端契约不破,见下)但取值改成**纯描述性标注**
+   `已分析` / `已分析·有风险提示` —— 它不是判决,不授权也不禁止任何操作。
+3. **「初审通过进海选池」退役**。问询台**不再自动写 `inquiry_pool`**;想让一只票进当晚
+   报告,由用户在客户端**一键加自选**(自选池本就进当晚自选体检 + 哨兵关注池)。
+   `inquiry_pool` 表与报告侧消费逻辑(`load_pending_inquiry_codes`/
+   `mark_inquiry_pool_consumed`)**保留不动**——向后兼容,空池 noop,历史待消费行仍会被
+   正常消费掉;只是不再有自动写入方。
+4. **软护栏(用户拍板「保留但改成软形式」)**:**不下「买/卖」指令**。可以充分分析走势、
+   逻辑、风险、赔率,但不产出买卖指令。**软 = 只在 prompt 层约束**:刻意**不做**枚举
+   强校验、**不做**输出后处理拦截(旧实现那三重保险连同二值裁决一起拆了)。
+   理由(写进 prompt 也写在这里,别哪天有人"顺手加回强校验"):**LLM 的买卖判断没有
+   回测支撑,不该塞进用户的决策链;分析归系统,扣扳机归用户。** 强校验换来的是把
+   模型逼进模板腔(违背 §2.7 自由对话体),而真正的护栏本就该是"系统永不下单"这条铁律
+   (§3.8),不是在文本里 grep「买」字。
+
+**客户端契约(刻意不破)**:macOS 客户端已装 v1.3、iOS 未装。`InquiryOut` 字段集合
+**一个不增不减**(`ok/code/reply/verdict/evidence/degraded`),只把 `verdict` 的 pydantic
+类型由 `Literal["不符合","初审通过进海选池"]` **放宽成 `str`**。客户端 Swift
+`InquiryVerdict` 对未识别值走 `.unknown(raw)` 分支(原样显示 + 中性色调),且
+`enablesBuyAction` 恒 false 穷举写死、不看 verdict 分支——故已装的 App **不会解码失败、
+不会误显示成某个已知态、更不会因此冒出买入按钮**。
+
+**同码不重写铁律**:确定性材料复用 `strategy.brain`(现役规则)+ `research.panel`(选股域)
++ `strategy.signals`(禁买谓词)+ `report.candidates`(评分)+
+`report.watchlist_check.discipline_checks`(纪律判定项,与自选体检**同一个函数**)+
+`report.holding_k4_check`(K4 安检判据镜像,与持仓牌/候选情报管线同一份),
 **不在本模块另写一份领域规则**。
 
-**v1.3-⑤ 选股域漂移清理**:本模块此前手写重复了一份选股域逻辑(ST/北交所/价格/
-流动性/MA20 逐条 Python 重刻,且未核对 P4/P5 两条现役可配禁买过滤——`forbid_
-green_bigdown`/`forbid_far_from_high` 此前在问询台完全不生效,即便现役 config
-打开也不会被拦下,是本次清理顺带修的一个真实缺口)。改为与 `report.watchlist_
-check.score_watchlist` 共用同一份 `discipline_checks(cfg)`:选股域四项揉成一条
-组合原因文案(`~research.panel.base_universe_expr()`,不拆解、不重抄阈值),只有
-现役 config 可配的禁买过滤(P4/P5/P6 + 高弹题材)逐项拆开——与 `build_entry_mask`
-的 if 分支一一对应,不新拍任何阈值。**展示粒度取舍如实标注**:选股域从「逐项」
-收敛为「一条组合原因」,是刻意的、与 `watchlist_check` 一致的取舍(损一点粒度换
-零阈值漂移);K1 现役(P4/P5=None)下对同一批票,裁决(`passes_discipline`)与
-清理前逐票等价,见 `tests/test_api_inquiry.py` 直接单测。
+**拆墙后「纪律命中项」实际还剩什么**:现役 v1.3.3 把 `forbid_high_elasticity` 关掉后,
+`discipline_checks` 只剩**真硬线**——选股域一条组合原因(ST/退市风险 / 北交所 / 股价<2 元 /
+20 日均额<2000 万 / 无 MA20 即次新未成形),外加现役 config **若启用**才出现的 P4/P5/P6
+(K1 血缘下三者皆 None,不产生任何命中)。停牌/未上市/代码有误 → 查无当日行情,单列一条。
 
-**裁决二值(硬约束,§2.5:永不「现在就买」)——三重保险**:
-    1. `verdict` 只可能是两个模块常量 `VERDICT_REJECT`/`VERDICT_PASS`,由**代码**据确定性
-       检查(+ LLM 显式否决)算出,**不从 LLM 自由文本里提取"买"**。
-    2. system prompt 显式禁止产出「现在就买 / 买入建议」。
-    3. schema `verdict: Literal["不符合","初审通过进海选池"]` 再兜一层。
+**降级(缺 key)**:LLM 未激活 → 确定性材料照跑照给,LLM 段返「未激活」占位文案,
+`degraded=True`,全链路不崩,**且仍然给出实质的确定性回答**(不是一句"未激活"了事)。
 
-**降级(缺 key,§2.5「确定性检查照跑,LLM 段返未激活占位,不崩」)**:LLM 未激活 →
-裁决只由确定性纪律决定,LLM 段返「未激活」占位文案,`degraded=True`,全链路不崩。
-
-**工具调用的落地范围(诚实标注)**:plan 4A.5 提「LLM 带工具调用(实时取数 / 重算 /
-联网搜索)」。本实现把**实时取数(`sentinel.quotes`)与重算(`report.candidates` 评分 +
-板块年龄)在调用 LLM 之前跑好、作为结构化上下文注入**,LLM 段本身开启**原生联网搜索**
-(`provider.chat(enable_search=True)`,GLM/Kimi 均原生带,覆盖 §2.4 消息面)。未实现
-"LLM 主动多轮 function-calling 回调后端函数"这一形态——理由:① 无 key 无法活体验证该
-形态;② 预注入 + 原生搜索已覆盖 plan 列的三种能力(取数/重算/搜索),且可被 MockTransport
-单测覆盖、缺 key 优雅降级。此简化记入完工欠账。
+**工具调用的落地范围(诚实标注,承 4A.5)**:实时取数(`sentinel.quotes`)与重算
+(评分 + 板块年龄 + K4)在调用 LLM **之前**跑好、作为结构化上下文注入,LLM 段本身开启
+**原生联网搜索**(`provider.chat(enable_search=True)`)。未实现"LLM 主动多轮
+function-calling 回调后端函数"这一形态(无法活体验证 + 预注入已覆盖三种能力),记入欠账。
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from neckline.api.schemas import VERDICT_PASS, VERDICT_REJECT
-from neckline.api.stores import add_to_inquiry_pool
-from neckline.data.board import Board
+from neckline.api.schemas import VERDICT_ANALYZED, VERDICT_ANALYZED_WARN
 from neckline.llm.base import ChatMessage, LLMProvider
 from neckline.report.candidates import _base_score_expr  # 同码:展示排序分与报告一致
 from neckline.report.sectors import (
@@ -55,8 +68,10 @@ from neckline.report.sectors import (
     compute_sector_strength,
     load_index_names,
     load_member_map,
+    sector_hot_lookup,
 )
-from neckline.report.watchlist_check import discipline_checks  # 同码:纪律红绿灯,plan §五 v1.3-⑤
+from neckline.report.watchlist_check import discipline_checks  # 同码:纪律判定项,与自选体检共用
+from neckline.review.parse import normalize_ts_code
 from neckline.strategy import brain
 from neckline.strategy import signals as S
 from neckline.strategy.features import build_research_panel
@@ -67,38 +82,48 @@ logger = logging.getLogger(__name__)
 _BOARD_LABEL = {"MAIN": "主板", "GEM": "创业板", "STAR": "科创板", "BSE": "北交所"}
 
 
-INQUIRY_SYSTEM_PROMPT = """你是「颈线」系统的问询台审判员。用户从外部消息源看到一只股票,丢进来让你核对。
-系统只做审计、不代客下单,你的回答**绝不能包含"现在买入 / 可以买 / 建议买"这类下单建议**
-(这是硬约束,违反即为严重错误)。你能给出的结论只有两种:这只票"不符合"系统纪律(说明依据),
-或"初审通过,进当晚海选池"(意味着今晚的盘后报告会把它纳入候选评分,而不是让用户现在动手)。
+INQUIRY_SYSTEM_PROMPT = """你是一位资深 A 股分析师,和用户一对一聊一只具体的票。用户从外部消息源
+看到它,想听听你怎么看。
 
-你会先拿到系统跑好的**确定性检查结果**(纪律核对:是否 ST、是否高弹题材板块、是否满足选股域;
-若已同时满足母战法买点也会告诉你)与**板块年龄**、以及该票的价量结构。你还配有联网搜索工具,
-可查该股票近期的新闻、公告、题材催化。
+**你的定位**:分析师,不是审判员。用户问什么你答什么——问走势就谈走势(位置、结构、量能、
+关键价位),问逻辑就谈逻辑(基本面、题材、产业链位置),问风险就谈风险,问催化就说催化在哪、
+什么时候可能兑现、有没有变数。该看多就说看多的理由,该看空就说看空的理由,别和稀泥。
 
-信息边界(铁律):只能依据给定的结构化数据与联网搜索实际返回的内容判断;搜不到就明说"未搜到相关
-消息",绝不编造新闻/传闻/题材。系统选股规则是一套减损纪律系统而非高胜率信号(日线 2-5 日 A 股
-均值回归),你的角色是排查"催化是否站得住、有无明显利空",不是预测涨跌,不要暗示"这只会涨"。
+**唯一的硬约束:不下买卖指令。** 你可以把走势、逻辑、风险、赔率分析得很透,可以说
+"这个位置的赔率不算好"、"催化还没兑现"、"这里的风险在哪",但**不要产出"现在买入/建议买入/
+可以卖了/立刻清仓"这类指令**。理由不是怕你说错,而是:你的买卖判断没有回测支撑,不该塞进
+用户的决策链;**分析归你,扣扳机归用户。** 用户要的是把牌摊开,不是替他做决定。
 
-输出风格(硬约束):自由叙述,写成一段连贯的分析文字,像分析师口头点评;禁止分点列表、多维打分表、
-"技术面/资金面/消息面"固定分栏模板。
+**材料**:系统会先给你一份结构化材料——该票的价量结构、当日评分、所属板块与板块年龄、
+纪律核对命中的风险提示(如有)、K4 派发域安检命中(如有)。你还配有联网搜索,可查该股近期
+新闻、公告、题材催化。
 
-结尾格式(唯一机器可读部分):写完叙述后另起一行,只写"裁决:不符合"或"裁决:初审通过"之一
-(不要多余标点或解释,正文里不要提前出现"裁决:"以免解析冲突)。若确定性检查已判该票违反硬性
-纪律(ST/高弹题材/选股域不过),你应当尊重该结论写"裁决:不符合";否则,只有当你发现明显利空或
-催化明显站不住时才写"裁决:不符合",其余写"裁决:初审通过"。"""
+**信息边界(铁律)**:只依据给定的结构化数据与联网搜索实际返回的内容;搜不到就明说"未搜到
+相关消息",**绝不编造新闻、传闻、业绩、题材**。不确定的地方直说不确定。
+
+**风险提示的用法**:材料里若带了风险提示(ST / 退市风险 / 流动性太差 / 次新 / 停牌 /
+K4 派发域命中等),**在回答里如实提到并说明它意味着什么**——但那是提示,不是禁令,
+不要因此拒绝分析这只票,更不要把回答变成一句"不符合纪律"。
+
+**输出风格(硬约束)**:自由叙述,写成连贯的分析文字,像分析师当面跟你聊。**禁止**分点列表、
+多维打分表、"技术面/资金面/消息面"固定分栏模板、以及任何形式的结论标签行。直接说人话。"""
 
 
 @dataclass
 class DeterministicResult:
+    """喂给 LLM(和降级文案)的确定性材料。**没有任何字段表示"准不准买"**——拆墙后
+    本模块不产出通过/不通过的判定,只产出事实与提示。"""
     code: str
     basis_date: date
     has_data: bool
     name: str = ""
-    board: str = ""                     # 中文板块标签
+    board: str = ""                                           # 中文板块标签
     close: Optional[float] = None
-    disqualifiers: List[str] = field(default_factory=list)   # 硬性纪律违反项(非空 → 不符合)
-    passes_discipline: bool = False
+    # 纪律/硬线命中项(**警告标注,不拦人**)。来源 = `watchlist_check.discipline_checks`
+    # 同一个函数;拆墙后现役 config 下只剩真硬线,见模块头。
+    risk_flags: List[str] = field(default_factory=list)
+    # K4 安检命中(如「年线下涨停(派发域)」),同样只提示不拦。
+    k4_flags: List[str] = field(default_factory=list)
     passes_buypoint_today: bool = False
     score: Optional[float] = None
     sectors: List[str] = field(default_factory=list)          # 所属概念板块名
@@ -116,6 +141,43 @@ def _cfg_from_active(db_path: Optional[Path]) -> Optional[MomentumConfig]:
         return None
 
 
+def _k4_flags(
+    code: str, basis_date: date, *, db_path: Optional[Path], parquet_dir: Optional[Path],
+    member_map: Dict[str, List[str]], hot: Dict[str, SectorScore],
+) -> List[str]:
+    """该票当日的 K4 安检命中文案(**只提示不拦**,用户 2026-07-27 拍板)。
+
+    **同码**:判据镜像直接复用 `report.holding_k4_check` 的 `_build_holding_feature_panel`
+    +`_evaluate_hits`+`load_k4_sections`(与持仓牌 ② / 候选情报管线 ③ 同一份,阈值单一源;
+    跨模块引下划线函数的先例见 `report/intel_candidates.py`)。任何异常 → 空列表 + 警告日志,
+    绝不影响主流程(K4 是加分项,不是问询台的必需件)。"""
+    try:
+        from neckline.report.holding_k4_check import (
+            _build_holding_feature_panel,
+            _evaluate_hits,
+            _load_k4_evidence,
+            _theme_persist_days,
+            load_k4_sections,
+        )
+
+        panel = _build_holding_feature_panel([code], basis_date, parquet_dir)
+        row = None if panel.is_empty() else panel.to_dicts()[0]
+        hits = _evaluate_hits(row, _theme_persist_days(code, member_map, hot), _load_k4_evidence(db_path))
+        if not hits:
+            return []
+        sections = load_k4_sections(db_path)
+        out = []
+        for h in hits:
+            sec = sections.get(h.code)
+            tag = "K4 硬拦区" if sec == "hard_cut" else ("K4 标记区" if sec == "avoid_flag" else "K4")
+            strength = "价量强证据" if h.evidence_strength == "price_volume" else "成分弱证据·仅参考"
+            out.append(f"{h.label}({tag},{strength})")
+        return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning("问询台 K4 安检核算异常(%s,不影响主流程)", e)
+        return []
+
+
 def run_deterministic_checks(
     code: str,
     basis_date: date,
@@ -125,37 +187,42 @@ def run_deterministic_checks(
     sector_scores: Optional[List[SectorScore]] = None,
     panel_fn: Optional[Callable[..., Any]] = None,
 ) -> DeterministicResult:
-    """确定性纪律核对 + 同码评分 + 板块年龄(§2.5 第一步)。任何异常 → `has_data=False`
-    的保守结果(纪律不过不放行),绝不抛崩。`panel_fn`/`sector_scores` 可注入单测,免联网。"""
+    """确定性材料装配(§2.5 第一步):同码评分 + 纪律/硬线提示 + 板块年龄 + K4 安检。
+
+    任何异常 → `has_data=False` 的结果 + 一条说明性 evidence,**绝不抛崩**。注意
+    `has_data=False` 现在**不再意味着"不放行"**——它只是"这只票当日没有 EOD 行情可核",
+    LLM 段照跑(用户可能就是想问一只停牌票的后续)。`panel_fn`/`sector_scores` 可注入单测,免联网。"""
+    code = normalize_ts_code(code)      # 裸 6 位 → `300759.SZ`(面板是 TuShare 口径)
     det = DeterministicResult(code=code, basis_date=basis_date, has_data=False)
     cfg = _cfg_from_active(db_path)
     if cfg is None:
-        det.evidence.append("策略大脑无现役版本,无法核对纪律(配置缺陷)。")
+        det.evidence.append("策略大脑无现役版本,无法核对纪律(配置缺陷);以下只能做定性分析。")
         return det
 
     build_panel = panel_fn or build_research_panel
     try:
         panel = build_panel(basis_date, basis_date, with_forward=False, parquet_dir=parquet_dir)
     except Exception as e:  # noqa: BLE001
-        logger.warning("问询台确定性检查建面板失败(%s),保守判无数据", e)
-        det.evidence.append("无法加载当日行情面板,保守判定不符合。")
+        logger.warning("问询台确定性检查建面板失败(%s)", e)
+        det.evidence.append("无法加载当日行情面板,本次只能做定性分析(无价量数据)。")
         return det
 
     if panel is None or panel.is_empty():
-        det.evidence.append(f"{basis_date} 全市场面板为空(可能该日无数据),无法核对。")
+        det.evidence.append(f"{basis_date} 全市场面板为空(可能该日无数据),无价量数据可核。")
         return det
 
     panel = S.add_ret_rank_column(panel)
     sub = panel.filter(panel["ts_code"] == code)
     if sub.is_empty():
         det.evidence.append(
-            f"查无 {code} 在 {basis_date} 的行情(可能停牌 / 次新未上市 / 代码有误),无法核对纪律。"
+            f"查无 {code} 在 {basis_date} 的行情——可能停牌 / 次新未上市 / 代码有误"
+            f"(这是一条风险提示,不是拒绝分析的理由)。"
         )
+        det.risk_flags.append("当日无行情数据(停牌 / 未上市 / 代码有误)")
         return det
 
-    # —— 硬性纪律核对(同码:与 `report.watchlist_check.score_watchlist` 共用同一份
-    # `discipline_checks(cfg)`,plan §五 v1.3-⑤——选股域四项揉成一条组合原因,只有
-    # 现役 config 可配的禁买过滤逐项拆开,不在本模块另写一份阈值,详见模块头注释)——
+    # —— 纪律/硬线核对(同码:与 `report.watchlist_check.score_watchlist` 共用同一份
+    # `discipline_checks(cfg)`;拆墙后只剩真硬线,见模块头)。**命中即警告,不拦。** ——
     checks = discipline_checks(cfg)
     annotated = sub.with_columns([expr.alias(col) for col, _label, expr in checks])
     row = annotated.row(0, named=True)
@@ -163,19 +230,19 @@ def run_deterministic_checks(
     det.close = row.get("close")
     board_raw = row.get("board", "MAIN")
     det.board = _BOARD_LABEL.get(board_raw, board_raw)
-    det.disqualifiers = [label for col, label, _expr in checks if row.get(col)]
-    det.passes_discipline = not det.disqualifiers
+    det.risk_flags = [label for col, label, _expr in checks if row.get(col)]
 
-    # —— 同码买点/评分(evidence,不作硬门槛)——
+    # —— 同码买点/评分(材料,不作任何门槛)——
     try:
         mask_val = sub.select(build_entry_mask(cfg).alias("_m")).row(0)[0]
         det.passes_buypoint_today = bool(mask_val)
-        if det.passes_buypoint_today:
-            det.score = round(float(sub.select(_base_score_expr(cfg).alias("_s")).row(0)[0]), 1)
+        det.score = round(float(sub.select(_base_score_expr(cfg).alias("_s")).row(0)[0]), 1)
     except Exception as e:  # noqa: BLE001
-        logger.warning("问询台买点/评分核算异常(%s,不影响纪律核对)", e)
+        logger.warning("问询台买点/评分核算异常(%s,不影响其余材料)", e)
 
-    # —— 板块名 + 板块年龄(§2.5「板块年龄」)——
+    # —— 板块名 + 板块年龄(§2.5「板块年龄」)+ K4 安检 ——
+    member_map: Dict[str, List[str]] = {}
+    hot: Dict[str, SectorScore] = {}
     try:
         member_map = load_member_map(parquet_dir=parquet_dir)
         index_names = load_index_names(parquet_dir=parquet_dir)
@@ -184,38 +251,38 @@ def run_deterministic_checks(
         if boards:
             if sector_scores is None:
                 sector_scores = compute_sector_strength(basis_date, parquet_dir=parquet_dir)
-            hot = {s.index_code: s for s in (sector_scores or [])}
+            hot = sector_hot_lookup(sector_scores or [])
             det.hot_sectors = [
                 f"{hot[b].name}(板块年龄{hot[b].board_age}天,20日{hot[b].ret_20d:+.1%})"
                 for b in boards if b in hot
             ]
     except Exception as e:  # noqa: BLE001
-        logger.warning("问询台板块年龄核算异常(%s,不影响纪律核对)", e)
+        logger.warning("问询台板块年龄核算异常(%s,不影响其余材料)", e)
 
-    # 板块本身是否构成排除理由(供 evidence 的「板块:xxx(允许/被排除)」行用)——
-    # **直接语义判定,不再从 `det.disqualifiers` 文案里 grep 子串**:v1.3-⑤ 选股域
-    # 收敛成一条组合原因后,该原因文案本身固定含"北交所"字样(枚举了选股域全部
-    # 五个子项),旧的 `"北交所" in d` 子串匹配会对"仅因股价/流动性/ST 被剔除的
-    # 非北交所票"误判成"板块被排除"——用 `board_raw`/`cfg.forbid_high_elasticity`
-    # 直接算,不受组合原因文案措辞变化影响。
-    board_excluded = board_raw == Board.BSE.value or (
-        cfg.forbid_high_elasticity and board_raw in S.HIGH_ELASTICITY_BOARDS
+    det.k4_flags = _k4_flags(
+        code, basis_date, db_path=db_path, parquet_dir=parquet_dir,
+        member_map=member_map, hot=hot,
     )
-    _build_evidence(det, cfg, board_excluded)
+    _build_evidence(det)
     return det
 
 
-def _build_evidence(det: DeterministicResult, cfg: MomentumConfig, board_excluded: bool) -> None:
+def _build_evidence(det: DeterministicResult) -> None:
+    """`evidence` = 展示给用户的确定性事实条目(客户端在回答旁列出)。**措辞一律中性**——
+    不再有「被排除」「不予放行」这类判决腔;板块只陈述,不标允许/排除(拆墙后创业板/
+    科创板本就允许,§2.3 候选生成域也早已含它们)。"""
     ev = det.evidence
-    ev.append(f"板块:{det.board}" + ("(被排除)" if board_excluded else "(允许)"))
-    if det.disqualifiers:
-        ev.append("硬性纪律未过:" + ";".join(det.disqualifiers))
+    ev.append(f"板块:{det.board}")
+    if det.risk_flags:
+        ev.append("风险提示(仅提示,不构成禁令):" + ";".join(det.risk_flags))
     else:
-        ev.append("硬性纪律核对通过(非 ST、板块允许、满足选股域流动性/价格/形态门槛)。")
+        ev.append("未命中系统硬线(非 ST、满足选股域流动性/价格/形态门槛)。")
+    if det.k4_flags:
+        ev.append("K4 安检命中:" + "、".join(det.k4_flags))
     if det.passes_buypoint_today:
         ev.append(f"今日已同时满足母战法买点(pullback/breakout),展示排序分约 {det.score}。")
-    else:
-        ev.append("今日尚未满足母战法买点时机(不影响初审:初审通过=进当晚海选池等报告统一评分,不代表现在买)。")
+    elif det.score is not None:
+        ev.append(f"今日未走出母战法买点形态(展示排序分约 {det.score};买点是形态口径,不是买卖建议)。")
     if det.hot_sectors:
         ev.append("命中今日热门板块:" + "、".join(det.hot_sectors))
     elif det.sectors:
@@ -223,17 +290,28 @@ def _build_evidence(det: DeterministicResult, cfg: MomentumConfig, board_exclude
 
 
 def build_llm_context(det: DeterministicResult, quote: Optional[Any] = None) -> str:
-    """把确定性检查 + 实时行情组装成喂 LLM 的结构化上下文(纯文本块,不是 JSON)。"""
+    """把确定性材料 + 实时行情组装成喂 LLM 的结构化上下文(纯文本块,不是 JSON)。
+    **结尾不再要求任何裁决标签**——只交代材料边界,回答什么由用户的问题决定。"""
     lines = [
         f"股票代码:{det.code};名称:{det.name or '未知'};交易所板块:{det.board}",
-        f"确定性纪律核对:{'通过' if det.passes_discipline else '未通过'}",
     ]
-    if det.disqualifiers:
-        lines.append("硬性纪律违反项:" + ";".join(det.disqualifiers))
+    if not det.has_data:
+        lines.append("⚠ 系统没有取到该票当日 EOD 行情(可能停牌 / 未上市 / 代码有误)——"
+                     "以下无价量材料,请据搜索与常识作答,并提醒用户核对代码。")
     if det.close is not None:
         lines.append(f"最近收盘:{det.close:.2f} 元")
-    lines.append(f"今日母战法买点:{'已满足' if det.passes_buypoint_today else '未满足'}" +
-                 (f";展示排序分约 {det.score}" if det.score is not None else ""))
+    if det.risk_flags:
+        lines.append("系统风险提示(**提示,非禁令**;请在回答里如实提到并解释含义,不要因此拒答):"
+                     + ";".join(det.risk_flags))
+    else:
+        lines.append("系统硬线核对:未命中任何硬线。")
+    if det.k4_flags:
+        lines.append("K4 派发域安检命中(研究结论,价量强证据可信度高于成分弱证据):"
+                     + "、".join(det.k4_flags))
+    if det.has_data:
+        lines.append(f"母战法买点形态:{'今日已满足' if det.passes_buypoint_today else '今日未满足'}" +
+                     (f";展示排序分约 {det.score}" if det.score is not None else "") +
+                     "(形态口径,不是买卖建议)")
     if det.hot_sectors:
         lines.append("命中今日热门板块(含板块年龄):" + "、".join(det.hot_sectors))
     elif det.sectors:
@@ -245,22 +323,9 @@ def build_llm_context(det: DeterministicResult, quote: Optional[Any] = None) -> 
             lines.append(f"盘中实时(若在交易时段):现价 {quote.price:.2f},涨跌 {chg_txt}")
         except Exception:  # noqa: BLE001
             pass
-    lines.append("请结合以上确定性结果与联网搜索,判断该票近期是否有站得住的催化或明显利空,"
-                 "并按系统纪律给出「不符合」或「初审通过」的裁决(绝不给买入建议)。")
+    lines.append("请结合以上材料与联网搜索,回答用户的问题。用户没问的不必硬答,"
+                 "问了的要答透。记住:分析可以很直接,但不下买卖指令。")
     return "\n".join(lines)
-
-
-_VERDICT_RE = re.compile(r"裁决[:：]\s*(不符合|初审通过)")
-
-
-def _parse_llm_verdict(content: str) -> tuple:
-    """返回 (llm_says_reject: Optional[bool], narrative)。无标签 → (None, 原文)。"""
-    matches = list(_VERDICT_RE.finditer(content))
-    if not matches:
-        return None, content.strip()
-    last = matches[-1]
-    narrative = (content[: last.start()] + content[last.end():]).strip() or content.strip()
-    return (last.group(1) == "不符合"), narrative
 
 
 def run_inquiry(
@@ -268,7 +333,6 @@ def run_inquiry(
     messages: List[Dict[str, str]],
     *,
     basis_date: date,
-    pool_date: date,
     db_path: Optional[Path] = None,
     parquet_dir: Optional[Path] = None,
     provider: Optional[LLMProvider] = None,
@@ -277,32 +341,27 @@ def run_inquiry(
     sector_scores: Optional[List[SectorScore]] = None,
     panel_fn: Optional[Callable[..., Any]] = None,
 ) -> Dict[str, Any]:
-    """跑一次问询。返回 `{reply, verdict, evidence, degraded}`。verdict=初审通过 → 写
-    `inquiry_pool[pool_date]`(§2.5)。`provider=None` → LLM 段降级「未激活」,裁决只由确定性
-    纪律决定。任何 LLM 异常都不改写"确定性已判不符合"的硬结论。"""
+    """跑一次问询。返回 `{reply, verdict, evidence, degraded}`。
+
+    **v1.3.3:任何票都走完整流程**——不再有"纪律不过直接终止"的分支,LLM 段对所有票都跑
+    (有 provider 时)。`verdict` 只是描述性标注(有无风险提示),**不是判决**,不参与任何
+    分支决策。**不再写 `inquiry_pool`**(海选池自动写入退役,改由用户一键加自选)。
+
+    旧签名的 `pool_date` 形参已随海选池自动写入一并删除,调用方 `api/app.py` 同步改。"""
     det = run_deterministic_checks(
         code, basis_date, db_path=db_path, parquet_dir=parquet_dir,
         sector_scores=sector_scores, panel_fn=panel_fn,
     )
 
-    # —— 硬门槛:确定性纪律不过 → 直接不符合,不劳 LLM(纪律不过不放行)——
-    if not det.passes_discipline:
-        reply = _degraded_reply_reject(det)
-        # 硬性不符合也让 LLM(若有)补一段自然语言解释?为省调用 + 避免 LLM 试图翻案,
-        # 直接用确定性文案。裁决锁死不符合。
-        return {"reply": reply, "verdict": VERDICT_REJECT, "evidence": det.evidence, "degraded": provider is None}
-
-    # —— 确定性通过 → LLM 段(消息面/催化 + 自然语言)——
     degraded = False
-    llm_reject = None
     if provider is None:
         degraded = True
-        reply = _degraded_reply_pass(det)
+        reply = _degraded_reply(det)
     else:
         quote = None
         if quotes_fn is not None:
             try:
-                quote = (quotes_fn([code]) or {}).get(code)
+                quote = (quotes_fn([det.code]) or {}).get(det.code)
             except Exception as e:  # noqa: BLE001
                 logger.warning("问询台实时取数失败(%s,LLM 段不注入盘中行情)", e)
         chat_messages = [ChatMessage(role="system", content=INQUIRY_SYSTEM_PROMPT),
@@ -314,43 +373,44 @@ def run_inquiry(
         try:
             result = provider.chat(chat_messages, enable_search=True, transport=transport)
         except Exception as e:  # noqa: BLE001
-            logger.warning("问询台 LLM 调用异常(%s,降级为确定性结论)", e)
+            logger.warning("问询台 LLM 调用异常(%s,降级为确定性材料)", e)
             result = None
         if result is None or not result.ok:
             degraded = True
-            reply = _degraded_reply_pass(det)
+            reply = _degraded_reply(det)
         else:
-            llm_reject, reply = _parse_llm_verdict(result.content)
+            # **刻意不做任何后处理**:不抽标签、不 grep「买」、不改写模型原文(软护栏 =
+            # prompt 层,见模块头 4)。模型说什么原样透给用户。
+            reply = result.content.strip()
 
-    # —— 裁决合成:确定性已通过;仅 LLM 显式否决才翻成不符合 ——
-    verdict = VERDICT_REJECT if (llm_reject is True) else VERDICT_PASS
-    if verdict == VERDICT_PASS:
-        try:
-            add_to_inquiry_pool(pool_date, code, name=det.name or None,
-                                reason="问询台初审通过", db_path=db_path)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("写 inquiry_pool 失败(%s,不影响响应)", e)
+    verdict = VERDICT_ANALYZED_WARN if (det.risk_flags or det.k4_flags) else VERDICT_ANALYZED
     return {"reply": reply, "verdict": verdict, "evidence": det.evidence, "degraded": degraded}
 
 
-def _degraded_reply_reject(det: DeterministicResult) -> str:
-    parts = [f"{det.code} 未通过系统的硬性纪律核对。"]
-    if det.disqualifiers:
-        parts.append("原因:" + ";".join(det.disqualifiers) + "。")
-    parts.append("按纪律不予放行——这不是买卖建议,只是说明它不进入今晚的候选评分范围。")
-    return "".join(parts)
-
-
-def _degraded_reply_pass(det: DeterministicResult) -> str:
-    parts = [f"{det.code} 通过了系统的硬性纪律核对(非 ST、板块允许、满足选股域门槛)。"]
-    if det.passes_buypoint_today:
-        parts.append(f"今日已同时满足母战法买点,展示排序分约 {det.score}。")
+def _degraded_reply(det: DeterministicResult) -> str:
+    """缺 key / LLM 异常时的降级回答。**仍然是一段实质回答**(把确定性材料讲清楚),
+    不是一句"未激活"了事;结尾诚实标注消息面缺席。"""
+    parts = [det.code]
+    if det.board:
+        parts.append(f"({det.board})")
+    if det.close is not None:
+        parts.append(f" 最近收盘 {det.close:.2f} 元。")
     else:
-        parts.append("今日尚未走出母战法买点时机。")
+        parts.append(" 当日无 EOD 行情(可能停牌 / 未上市 / 代码有误,建议先核对代码)。")
+    if det.risk_flags:
+        parts.append("风险提示:" + ";".join(det.risk_flags) + "——这是提示,不是禁令,是否参与由你判断。")
+    elif det.has_data:
+        parts.append("系统硬线核对未命中任何一条(非 ST、满足选股域流动性/价格/形态门槛)。")
+    if det.k4_flags:
+        parts.append("K4 安检命中:" + "、".join(det.k4_flags) + "。")
+    if det.passes_buypoint_today:
+        parts.append(f"形态上今日已走出母战法买点,展示排序分约 {det.score}。")
+    elif det.score is not None:
+        parts.append(f"形态上今日未走出母战法买点,展示排序分约 {det.score}。")
     if det.hot_sectors:
         parts.append("命中今日热门板块:" + "、".join(det.hot_sectors) + "。")
-    parts.append("LLM 消息面审判未激活(未配置 LLM key),本次只做确定性纪律核对;"
-                 "按纪律初审通过,已纳入当晚海选池等报告统一评分——这不是买入建议。")
+    parts.append("LLM 消息面分析未激活(未配置 LLM key),本次只有上面这些确定性材料,"
+                 "没有新闻/公告/题材面的判断。")
     return "".join(parts)
 
 
