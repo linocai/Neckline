@@ -115,7 +115,17 @@ logger = logging.getLogger(__name__)
 # 问询台**审判员 → 自由分析师**(硬栏杆与二值裁决退役、软护栏只留 prompt 层、海选池
 # 自动写入退役改一键加自选);`positions`/`decision_log`/`inquiry_pool` 写入通道补
 # `ts_code` 归一(生产真洞:裸 6 位入库致 EOD 持仓管线 join 不上)。
-VERSION = "v1.3.3"
+# v1.3.4(2026-07-27 快修,用户拍板):**问询台联网搜索实际搜错了东西**——① 供应商推导的
+# 检索词紧跟最后一条 user 消息,而问询台最后一条是用户的代词提问(「这只票…」),身份
+# 信息在更早的材料消息里救不回来 → 搜回泛泛板块新闻,模型退回训练数据作答;② `det.name`
+# 自建库起声明了、`build_llm_context` 一直在读,**却从没赋过值**,材料首行恒「名称:未知」,
+# 中文名这个最值钱的检索词被白扔。修法 = `provider.chat()` 加**可选** `search_query`
+# (不传时 payload 逐字节不变,护栏单测锁死)+ 问询台补中文名并显式传检索词。
+# 同批加「联网搜索命中 0 条」的埋点与用户侧露出(报告脚注 / 问询 evidence / 消息面扫描
+# 状态),因为搜索静默返 0 条时模型照样写得出像样的分析——见 `llm.base.search_coverage_line`。
+# ⚠ 被证伪的排除项(别再查一遍):GLM 那份 payload 里 `enable`/`search_result` 发字符串
+# `"True"`、`count` 发 `"5"` **不是 bug**,真 key A/B 实证接口会正确解析成 bool/int。
+VERSION = "v1.3.4"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -343,6 +353,8 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
             # v1.3-⑥ 后端补齐:领域层早产出 codesSkipped(见 news_alerts.py),此前这里
             # 没读取 → 契约清单承诺的字段实际从未抵达客户端(schemas.py 同批已补字段声明)。
             codesSkipped=s.get("codesSkipped", 0),
+            # v1.3.4 同批新增(老报告快照没有这个键 → 缺省 0,前向兼容不崩)。
+            codesNoSearch=s.get("codesNoSearch", 0),
         )
         for s in rep.get("news_alerts_scan", [])
     ]
@@ -436,22 +448,14 @@ def board() -> BoardOut:
 # —— 4A.4 持仓 ————————————————————————————————————————————————————————
 
 def _resolve_names(codes: List[str]) -> Dict[str, str]:
-    """从 `stock_basic` 补股票名(看板/持仓展示用)。查不到 → 不填(调用方兜底回 code)。"""
-    codes = [c for c in dict.fromkeys(codes) if c]
-    if not codes:
-        return {}
-    try:
-        import polars as pl
+    """从 `stock_basic` 补股票名(看板/持仓展示用)。查不到 → 不填(调用方兜底回 code)。
 
-        from neckline.data.market_data import load_stock_basic
-        sb = load_stock_basic(_db())
-        if sb.is_empty():
-            return {}
-        sb = sb.filter(pl.col("ts_code").is_in(codes)).select(["ts_code", "name"])
-        return dict(zip(sb["ts_code"].to_list(), sb["name"].to_list()))
-    except Exception:  # noqa: BLE001
-        logger.warning("补股票名失败(降级为空)", exc_info=True)
-        return {}
+    v1.3.4 起实现下沉到 `data.market_data.resolve_stock_names`(唯一实现),本函数只
+    绑定本进程的 db_path——问询台也要按代码查中文名(喂 LLM 材料 + 联网检索词),
+    两处不各写一份 `load_stock_basic` + filter。"""
+    from neckline.data.market_data import resolve_stock_names
+
+    return resolve_stock_names(codes, _db())
 
 
 def _resolve_prices(codes: List[str]) -> Dict[str, float]:

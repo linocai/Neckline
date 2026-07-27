@@ -30,7 +30,11 @@ class KimiProvider(OpenAICompatProvider):
     default_model = "kimi-k3"
     api_url = "https://api.moonshot.cn/v1/chat/completions"
 
-    def _search_tools(self) -> Optional[List[Dict[str, Any]]]:
+    def _search_tools(self, search_query: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        """`search_query` 在 Kimi 侧**只能忽略,这是协议决定的、不是漏实现**:`$web_search`
+        是内置函数,检索词由模型自己在 `tool_call.function.arguments` 里给出(客户端只负责
+        原样回传),声明处没有可注入查询词的参数位。故本方法返回值与是否传 `search_query`
+        无关——恒等于 v1.3.3 的 payload。"""
         return [{"type": "builtin_function", "function": {"name": _WEB_SEARCH_TOOL_NAME}}]
 
     def _handle_tool_call(self, tool_call: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[SearchHit]]:

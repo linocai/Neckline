@@ -20,7 +20,7 @@ import logging
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 import polars as pl
 
@@ -206,6 +206,27 @@ def load_stock_basic(db_path: Optional[Path] = None) -> pl.DataFrame:
     )
 
 
+def resolve_stock_names(codes: Sequence[str], db_path: Optional[Path] = None) -> Dict[str, str]:
+    """`ts_code -> name`(`stock_basic` 当前名称)。**「按代码查中文名」的唯一实现**——
+    `api.app._resolve_names`(看板/持仓展示)与 `api.inquiry`(喂 LLM 的材料 + 联网
+    搜索查询词)都走这里,不各自写一份 `load_stock_basic` + filter。
+
+    查不到 / 任何异常 → 该 code 不出现在返回 dict 里(调用方自行兜底回 code),
+    **绝不抛**:补名字是展示与检索的增强,不该让主链路崩。"""
+    wanted = [c for c in dict.fromkeys(codes) if c]
+    if not wanted:
+        return {}
+    try:
+        sb = load_stock_basic(db_path)
+        if sb.is_empty():
+            return {}
+        sb = sb.filter(pl.col("ts_code").is_in(wanted)).select(["ts_code", "name"])
+        return {c: n for c, n in zip(sb["ts_code"].to_list(), sb["name"].to_list()) if n}
+    except Exception:  # noqa: BLE001
+        logger.warning("按 ts_code 补股票名失败(降级为空)", exc_info=True)
+        return {}
+
+
 def load_namechange(db_path: Optional[Path] = None) -> pl.DataFrame:
     conn = sqlite3.connect(str(db_path or settings.db_path))
     try:
@@ -254,6 +275,7 @@ __all__ = [
     "scan_table_range",
     "get_index_history",
     "load_stock_basic",
+    "resolve_stock_names",
     "load_namechange",
     "load_trade_cal_days",
 ]

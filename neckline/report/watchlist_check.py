@@ -359,6 +359,10 @@ def apply_llm_review(
         )
         item.llm_judgment = {
             "verdict": result.verdict, "narrative": result.narrative, "degraded": result.degraded,
+            # 搜索取证覆盖(v1.3.4):只留**条数**(命中全文不在自选体检里单独存档,候选
+            # 审判那份走 `llm_judgments.search_hits_json`)。渲染见 `report.render`;
+            # 0 条必须让用户看见,理由见 `llm.base.search_coverage_line`。
+            "search_hits": len(result.search_hits or []),
         }
 
 

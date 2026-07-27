@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Dict, List, Optional
 
+from neckline.llm.base import search_coverage_line
 from neckline.llm.judge import JudgeResult, VERDICT_PASS, VERDICT_VETO
 from neckline.report.candidates import Candidate
 from neckline.report.intel import IntelReport
@@ -163,9 +164,16 @@ def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResul
             lines.append(f"**LLM 审判({jr.provider or '未激活'}){' · ' + jr.model if jr.model else ''}:{badge}**")
             lines.append("")
             lines.append(jr.narrative)
-            if jr.search_hits:
+            if not jr.degraded:
+                # 搜索取证覆盖脚注(v1.3.4):**命中 0 条也要写出来**。搜索静默返空时
+                # 模型照样能写出一段像样的判词(退回训练数据),不写这行用户分不清
+                # 「搜过没消息」与「一条都没搜到」——20260721/22/23 三天 10/10 空命中
+                # 就是这么无声发生的。降级判词本就没调用成功,不在此列。
                 lines.append("")
-                lines.append("联网搜索来源:" + "、".join(f"[{h.title or h.link}]({h.link})" for h in jr.search_hits if h.link))
+                lines.append(f"*{search_coverage_line(len(jr.search_hits or []))}*")
+                if jr.search_hits:
+                    lines.append("")
+                    lines.append("联网搜索来源:" + "、".join(f"[{h.title or h.link}]({h.link})" for h in jr.search_hits if h.link))
         else:
             lines.append("**LLM 审判:未执行**(异常状态——前10只理应全部审判,请检查 pipeline)。")
         lines.append("")
@@ -232,6 +240,11 @@ def _render_watchlist(items: List[WatchlistCheckItem]) -> str:
             lines.append(f"**LLM 审判(状态变化 / 已点名才审):{badge2}**")
             lines.append("")
             lines.append(jr["narrative"])
+            if not jr.get("degraded"):
+                # 同候选审判的搜索取证脚注(v1.3.4);`search_hits` 是条数,不是全文
+                # (自选体检的命中全文不单独存档,见 `apply_llm_review`)。
+                lines.append("")
+                lines.append(f"*{search_coverage_line(jr.get('search_hits') or 0)}*")
             lines.append("")
         lines.append("---")
         lines.append("")

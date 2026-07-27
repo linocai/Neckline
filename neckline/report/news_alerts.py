@@ -198,12 +198,17 @@ class NewsAlertScanStatus:
     codes_total: int = 0  # 应扫描的标的数(仅 source=llm 有意义;tushare 是区间批量调用记 0)
     codes_failed: int = 0 # 调用失败/格式解析失败的标的数(仅 source=llm)
     codes_skipped: int = 0  # 墙钟预算耗尽、根本没发起调用就跳过的标的数(仅 source=llm)
+    # v1.3.4:调用成功、但联网搜索一条都没回来的标的数(仅 source=llm)。这类标的的
+    # 「未发现三类消息」是**模型凭训练数据说的**,不是搜索证实的——与 codes_failed
+    # (压根没答上来)、codes_skipped(没发起调用)同属「扫了 vs 没扫」的分辨维度,
+    # 三者语义不同不可合并。0 命中为何会静默发生见 `llm.base.search_coverage_line`。
+    codes_no_search: int = 0
 
     def to_public_dict(self) -> Dict[str, Any]:
         return {
             "source": self.source, "scanned": self.scanned, "reason": self.reason,
             "codesTotal": self.codes_total, "codesFailed": self.codes_failed,
-            "codesSkipped": self.codes_skipped,
+            "codesSkipped": self.codes_skipped, "codesNoSearch": self.codes_no_search,
         }
 
 
@@ -355,6 +360,7 @@ def _scan_llm_categories(
     items: List[NewsAlertItem] = []
     failed = 0
     skipped = 0
+    no_search = 0
     start = time.monotonic()
     scanned_n = 0
     for ts_code, name in codes:
@@ -372,6 +378,8 @@ def _scan_llm_categories(
             failed += 1
             logger.warning("消息面扫描(C4)LLM [%s %s] 降级:%s", ts_code, name, r.degrade_reason)
             continue
+        if not r.search_hits:
+            no_search += 1
         for category, summary in r.hits:
             items.append(NewsAlertItem(
                 ts_code=ts_code, name=name, category=category, summary=summary,
@@ -389,9 +397,15 @@ def _scan_llm_categories(
             f"墙钟预算({budget_seconds:.0f}秒)耗尽,{skipped} 只标的未及扫描"
             f"(持仓优先已扫完,被跳过的是排序靠后的自选标的,不代表确认无消息)。"
         )
+    if no_search:
+        reason_parts.append(
+            f"{no_search}/{len(codes)} 只标的联网搜索命中 0 条,其「未发现三类消息」"
+            f"是模型凭训练数据说的、非搜索证实(不等于确认无消息,建议人工复核)。"
+        )
     return items, NewsAlertScanStatus(
         source=SOURCE_LLM_PREFIX, scanned=True, reason="".join(reason_parts),
         codes_total=len(codes), codes_failed=failed, codes_skipped=skipped,
+        codes_no_search=no_search,
     )
 
 

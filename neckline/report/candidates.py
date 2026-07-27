@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 
 import polars as pl
 
-from neckline.data.market_data import load_stock_basic
+from neckline.data.market_data import load_stock_basic, resolve_stock_names
 from neckline.report.sectors import SectorScore, sector_hot_lookup
 from neckline.strategy import signals as S
 from neckline.strategy.features import build_research_panel
@@ -220,13 +220,9 @@ def _base_score_expr(cfg: MomentumConfig) -> pl.Expr:
 
 
 def _load_stock_names(codes: List[str], db_path: Optional[Path]) -> Dict[str, str]:
-    if not codes:
-        return {}
-    sb = load_stock_basic(db_path)
-    if sb.is_empty():
-        return {}
-    sb = sb.filter(pl.col("ts_code").is_in(codes)).select(["ts_code", "name"])
-    return dict(zip(sb["ts_code"].to_list(), sb["name"].to_list()))
+    """v1.3.4 起委托 `data.market_data.resolve_stock_names`(按代码查中文名的唯一实现),
+    本地不再各写一份 `load_stock_basic` + filter——问询台同批也要查名,三份拷贝会漂。"""
+    return resolve_stock_names(codes, db_path)
 
 
 def _build_candidate(

@@ -210,6 +210,112 @@ class TestGLMHappyPathAndSearch:
         assert result.ok
 
 
+class TestSearchQueryOptIn:
+    """v1.3.4 护栏:`search_query` 是**纯可选加法**,不传时线上行为逐字节不变。
+
+    这组测试的存在理由是一次真实误判——有人(合理地)怀疑 GLM payload 里
+    `enable`/`search_result` 发字符串 `"True"`、`count` 发 `"5"` 是类型笔误导致搜索
+    从未启动。2026-07-27 用真 key A/B 实证:**接口会正确解析字符串**(判别式是
+    `enable="False"` 字符串同样能把搜索关掉),类型不是判别式,真因是检索词里没有
+    股票身份。所以这里**锁死的是"不传 search_query 时 payload 一字不改"**,而不是
+    锁死某种类型——把那次实证的结论钉在测试里,免得后人再"顺手修"一遍。"""
+
+    # v1.3.3 线上实际发出的 web_search 参数块,逐字节基线。
+    BASELINE = {
+        "enable": "True",
+        "search_engine": "search_pro",
+        "search_result": "True",
+        "count": "5",
+    }
+
+    def test_glm_payload_byte_identical_when_search_query_absent(self):
+        p = GLMProvider(api_key="sk-xxx")
+        for tools in (p._search_tools(), p._search_tools(None), p._search_tools(""), p._search_tools("   ")):
+            assert tools == [{"type": "web_search", "web_search": dict(self.BASELINE)}]
+            # 连键的插入顺序都不许变(json.dumps 逐字节比对)
+            assert json.dumps(tools[0]["web_search"], ensure_ascii=False) == json.dumps(
+                self.BASELINE, ensure_ascii=False
+            )
+
+    def test_glm_payload_gains_only_search_query_when_provided(self):
+        ws = GLMProvider(api_key="sk-xxx")._search_tools("康龙化成(300759.SZ) 最近业绩")[0]["web_search"]
+        assert ws["search_query"] == "康龙化成(300759.SZ) 最近业绩"
+        # 其余四个字段一个不改(含取值与类型)
+        assert {k: v for k, v in ws.items() if k != "search_query"} == self.BASELINE
+
+    def test_glm_truncates_overlong_search_query(self):
+        p = GLMProvider(api_key="sk-xxx")
+        ws = p._search_tools("康" * 500)[0]["web_search"]
+        assert len(ws["search_query"]) == p.max_search_query_chars
+
+    def test_kimi_payload_unchanged_regardless_of_search_query(self):
+        """Kimi `$web_search` 是内置函数,协议上没有注入检索词的参数位——传不传都一样。"""
+        p = KimiProvider(api_key="sk-xxx")
+        assert p._search_tools("康龙化成 业绩") == p._search_tools() == [
+            {"type": "builtin_function", "function": {"name": "$web_search"}}
+        ]
+
+    def test_search_query_reaches_the_wire(self):
+        seen: Dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_openai_success_body("好的。"))
+
+        GLMProvider(api_key="sk-xxx").chat(
+            [ChatMessage(role="user", content="这只票怎么样")],
+            search_query="康龙化成(300759.SZ) 这只票怎么样",
+            transport=httpx.MockTransport(handler),
+        )
+        assert seen["tools"][0]["web_search"]["search_query"] == "康龙化成(300759.SZ) 这只票怎么样"
+
+    def test_search_query_ignored_when_search_disabled(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert "tools" not in json.loads(request.content)
+            return httpx.Response(200, json=_openai_success_body("好的。"))
+
+        r = GLMProvider(api_key="sk-xxx").chat(
+            [ChatMessage(role="user", content="hi")], enable_search=False,
+            search_query="不该出现", transport=httpx.MockTransport(handler),
+        )
+        assert r.ok
+
+
+class TestZeroHitTelemetry:
+    """v1.3.4:开了搜索却 0 命中 = 静默失效,必须留痕 + 对用户露出。"""
+
+    def test_zero_hits_logs_warning(self, caplog):
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=_openai_success_body("分析。")))
+        with caplog.at_level("WARNING"):
+            r = GLMProvider(api_key="sk-xxx").chat([ChatMessage(role="user", content="hi")], transport=transport)
+        assert r.ok and not r.search_hits
+        assert any("命中 0 条" in rec.getMessage() for rec in caplog.records)
+
+    def test_no_warning_when_hits_present(self, caplog):
+        body = _openai_success_body("分析。")
+        body["web_search"] = [{"title": "t", "link": "https://a.com"}]
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=body))
+        with caplog.at_level("WARNING"):
+            r = GLMProvider(api_key="sk-xxx").chat([ChatMessage(role="user", content="hi")], transport=transport)
+        assert r.ok and len(r.search_hits) == 1
+        assert not [rec for rec in caplog.records if "命中 0 条" in rec.getMessage()]
+
+    def test_no_warning_when_search_disabled(self, caplog):
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=_openai_success_body("分析。")))
+        with caplog.at_level("WARNING"):
+            GLMProvider(api_key="sk-xxx").chat(
+                [ChatMessage(role="user", content="hi")], enable_search=False, transport=transport,
+            )
+        assert not [rec for rec in caplog.records if "命中 0 条" in rec.getMessage()]
+
+    def test_coverage_line_distinguishes_zero_from_some(self):
+        from neckline.llm.base import search_coverage_line
+
+        assert "0 条" in search_coverage_line(0)
+        assert "不等于该标的无消息" in search_coverage_line(0)   # 「没有」≠「没看」
+        assert search_coverage_line(5) == "联网搜索:本次命中 5 条"
+
+
 class TestKimiToolCallRoundTrip:
     def test_web_search_round_trip_then_final_answer(self):
         calls: List[Dict[str, Any]] = []

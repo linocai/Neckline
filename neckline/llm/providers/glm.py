@@ -25,18 +25,35 @@ class GLMProvider(OpenAICompatProvider):
     default_model = "glm-5.2"
     api_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 
-    def _search_tools(self) -> Optional[List[Dict[str, Any]]]:
-        return [
-            {
-                "type": "web_search",
-                "web_search": {
-                    "enable": "True",
-                    "search_engine": "search_pro",
-                    "search_result": "True",
-                    "count": "5",
-                },
-            }
-        ]
+    # 检索词长度上限(防御性截断,非官方文档明确数字)。截断只影响检索词,不影响
+    # 提问本身——问题全文照样在 messages 里。
+    max_search_query_chars = 78
+
+    def _search_tools(self, search_query: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        """**`enable`/`search_result` 发字符串 `"True"`、`count` 发字符串 `"5"` 是刻意保留的,
+        不是笔误——2026-07-27 用真 key 做过 A/B 实证:GLM 会把字符串正确解析成 bool/int**
+        (判别式:`enable="False"` 字符串同样能把搜索**关掉**,说明不是"非空字符串一律
+        当 true"的糙转换)。改成布尔/整数对线上行为零差异,故不动——留着这段注释,
+        免得后人再把它当 bug 修一遍。真正让搜索失效的是别的东西,见下。
+
+        `search_query`(v1.3.4):不传时**返回与 v1.3.3 逐字节相同的 payload**(护栏单测
+        `TestSearchQueryOptIn` 锁死);传了才多一个 `search_query` 字段,显式指定检索词。
+
+        ⚠ **`search_engine` 取值传错会静默返 0 条**(`ok=True`、无任何报错,2026-07-27
+        实测 `__bogus_engine__` 即如此)。当日同一问题实测:`search_pro` 2 条 /
+        `search_std` 2 条 / `search_pro_sogou` 10 条。取值维持 `search_pro` 是用户
+        2026-07-27 的决定(一天样本不足以定,先靠 `llm.base.search_coverage_line`
+        + `openai_compat` 的 0 命中告警攒几天数据再拿数据说话)。
+        """
+        web_search: Dict[str, Any] = {
+            "enable": "True",
+            "search_engine": "search_pro",
+            "search_result": "True",
+            "count": "5",
+        }
+        if search_query and str(search_query).strip():
+            web_search["search_query"] = str(search_query).strip()[: self.max_search_query_chars]
+        return [{"type": "web_search", "web_search": web_search}]
 
     def _extract_top_level_search_hits(self, body: Dict[str, Any]) -> List[SearchHit]:
         hits: List[SearchHit] = []

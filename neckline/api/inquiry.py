@@ -61,7 +61,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from neckline.api.schemas import VERDICT_ANALYZED, VERDICT_ANALYZED_WARN
-from neckline.llm.base import ChatMessage, LLMProvider
+from neckline.data.market_data import resolve_stock_names
+from neckline.llm.base import ChatMessage, LLMProvider, search_coverage_line
 from neckline.report.candidates import _base_score_expr  # 同码:展示排序分与报告一致
 from neckline.report.sectors import (
     SectorScore,
@@ -194,6 +195,11 @@ def run_deterministic_checks(
     LLM 段照跑(用户可能就是想问一只停牌票的后续)。`panel_fn`/`sector_scores` 可注入单测,免联网。"""
     code = normalize_ts_code(code)      # 裸 6 位 → `300759.SZ`(面板是 TuShare 口径)
     det = DeterministicResult(code=code, basis_date=basis_date, has_data=False)
+    # 中文名(v1.3.4 修):`name` 字段自建库起就声明了、`build_llm_context` 也一直在读,
+    # **但从来没有任何一处赋过值** —— 喂给 LLM 的材料首行恒为「名称:未知」。后果不止是
+    # 展示难看:中文名是中文财经检索最值钱的词,没有它,联网搜索基本搜不到这只票的新闻。
+    # 放在所有 early return 之前,停牌/查无行情的票也要有名字(那种票更需要靠搜索说话)。
+    det.name = resolve_stock_names([code], db_path).get(code, "")
     cfg = _cfg_from_active(db_path)
     if cfg is None:
         det.evidence.append("策略大脑无现役版本,无法核对纪律(配置缺陷);以下只能做定性分析。")
@@ -328,6 +334,30 @@ def build_llm_context(det: DeterministicResult, quote: Optional[Any] = None) -> 
     return "\n".join(lines)
 
 
+def _build_search_query(det: DeterministicResult, messages: List[Dict[str, str]]) -> str:
+    """拼联网搜索检索词 = `「<中文名>(<代码>) <用户最后一句>」`(v1.3.4)。
+
+    **为什么非拼不可**(2026-07-27 生产实测,同一条问询台链路只换最后一句):
+      · 用户代词提问「这只票最近的业绩和公告怎么样?」→ 供应商自行推导的检索词里
+        没有任何股票身份,搜回来的是「周六,5家创业板公司发布业绩预告」这类泛泛新闻,
+        模型只能答「没有拿到 300759.SZ 的具体数据」;
+      · 同一票同一材料,只把「康龙化成(300759.SZ)」放进检索词 → 命中全变成
+        「康龙化成半年营收76亿」「华西医药康龙化成 2026Q1 点评」,回答直接给出
+        7 月 13 日那份 2026 半年度业绩预告的真实区间。
+    身份信息本来就在更早那条材料消息里,**但救不回来**——供应商的检索词紧跟最后一条
+    user 消息。所以必须显式传。
+
+    用户那句原样带上(不做意图提取):它承载了"想问什么"(业绩/走势/风险),让检索词
+    比光有股票名更贴题。长度由 provider 侧截断,这里不预截。"""
+    last_user = ""
+    for m in reversed(messages or []):
+        if m.get("role") == "user" and (m.get("content") or "").strip():
+            last_user = (m["content"] or "").strip()
+            break
+    subject = f"{det.name}({det.code})" if det.name else det.code
+    return f"{subject} {last_user}".strip()
+
+
 def run_inquiry(
     code: str,
     messages: List[Dict[str, str]],
@@ -371,7 +401,10 @@ def run_inquiry(
             if role in ("user", "assistant"):
                 chat_messages.append(ChatMessage(role=role, content=m.get("content", "")))
         try:
-            result = provider.chat(chat_messages, enable_search=True, transport=transport)
+            result = provider.chat(
+                chat_messages, enable_search=True,
+                search_query=_build_search_query(det, messages), transport=transport,
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning("问询台 LLM 调用异常(%s,降级为确定性材料)", e)
             result = None
@@ -382,6 +415,8 @@ def run_inquiry(
             # **刻意不做任何后处理**:不抽标签、不 grep「买」、不改写模型原文(软护栏 =
             # prompt 层,见模块头 4)。模型说什么原样透给用户。
             reply = result.content.strip()
+            # 搜索取证覆盖进 `evidence`(不进 `reply` —— reply 是模型原文,不掺系统文案)。
+            det.evidence.append(search_coverage_line(len(result.search_hits or [])))
 
     verdict = VERDICT_ANALYZED_WARN if (det.risk_flags or det.k4_flags) else VERDICT_ANALYZED
     return {"reply": reply, "verdict": verdict, "evidence": det.evidence, "degraded": degraded}

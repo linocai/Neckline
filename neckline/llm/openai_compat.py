@@ -44,7 +44,10 @@ class OpenAICompatProvider(LLMProvider):
     def _headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {(self.api_key or '').strip()}", "Content-Type": "application/json"}
 
-    def _search_tools(self) -> Optional[List[Dict[str, Any]]]:
+    def _search_tools(self, search_query: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        """`search_query=None` 时**必须返回与历史逐字节相同的 payload**(见
+        `tests/test_llm.py::TestSearchQueryOptIn`,那条护栏单测锁死这一点)——
+        v1.3.4 只是给需要的调用点开一个可选入口,不改另外三处的线上行为。"""
         raise NotImplementedError
 
     def _handle_tool_call(self, tool_call: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[SearchHit]]:
@@ -59,6 +62,7 @@ class OpenAICompatProvider(LLMProvider):
         messages: List[ChatMessage],
         *,
         enable_search: bool = True,
+        search_query: Optional[str] = None,
         transport: Optional[Any] = None,
     ) -> LLMResult:
         if not self.api_key:
@@ -69,7 +73,7 @@ class OpenAICompatProvider(LLMProvider):
             return LLMResult(ok=False, reason="httpx 未安装", provider=self.name, model=self.model)
 
         wire_messages: List[Dict[str, Any]] = [m.to_api() for m in messages]
-        tools = self._search_tools() if enable_search else None
+        tools = self._search_tools(search_query) if enable_search else None
         all_hits: List[SearchHit] = []
         raw_responses: List[Dict[str, Any]] = []
 
@@ -109,6 +113,16 @@ class OpenAICompatProvider(LLMProvider):
                 return LLMResult(
                     ok=False, reason="模型输出为空", provider=self.name, model=self.model,
                     raw_responses=raw_responses,
+                )
+            if enable_search and not all_hits:
+                # 埋点(v1.3.4):开了搜索却一条都没回来 = 静默失效,journalctl 里必须留痕。
+                # 2026-07-27 实测 GLM 对无法识别的 search_engine 就是这个形状(ok=True + 0 条
+                # + 不报错),生产 20260721/22/23 三天 10/10 空命中当时无人察觉。用户侧的
+                # 对应露出见 `llm.base.search_coverage_line` 的调用点。
+                logger.warning(
+                    "%s 本次调用开启了联网搜索但命中 0 条(模型可能退回训练数据作答;"
+                    "检索词=%s)——若持续出现,先查 search_engine 取值是否仍被上游认识",
+                    self.name, (search_query or "<由供应商自行推导>"),
                 )
             return LLMResult(
                 ok=True, content=content, search_hits=all_hits, provider=self.name, model=self.model,

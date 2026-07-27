@@ -36,10 +36,13 @@ class StubProvider:
     reply_body: str = "结合搜索,题材催化尚在,未见明显利空。走势上还在 20 日线附近拉锯。"
     ok: bool = True
     captured: List[ChatMessage] = field(default_factory=list)
+    captured_search_query: Any = None            # v1.3.4:问询台传下去的联网检索词
+    search_hits: List[Any] = field(default_factory=list)   # v1.3.4:回给上层的命中(条数即可)
 
-    def chat(self, messages, *, enable_search=True, transport=None) -> LLMResult:
+    def chat(self, messages, *, enable_search=True, search_query=None, transport=None) -> LLMResult:
         self.captured = list(messages)
-        return LLMResult(ok=self.ok, content=self.reply_body,
+        self.captured_search_query = search_query
+        return LLMResult(ok=self.ok, content=self.reply_body, search_hits=list(self.search_hits),
                          provider=self.name, model=self.default_model)
 
 
@@ -319,6 +322,96 @@ class TestEndpointAndContract:
         """`verdict` 类型确已由 Literal 放宽成 str(否则新取值会 500)。"""
         from neckline.api.schemas import InquiryOut
         assert InquiryOut(code="x", reply="y", verdict="任意新取值").verdict == "任意新取值"
+
+
+class TestSearchIdentityV134:
+    """v1.3.4:问询台的联网搜索此前**搜错了东西**,两个原因各锁一组断言。
+
+    生产真洞(2026-07-27 真 key 实证):供应商推导检索词时紧跟**最后一条 user 消息**,
+    而问询台最后一条是用户的代词提问(「这只票…」)——身份信息躺在更早那条材料消息里
+    也救不回来,搜回来的是泛泛板块新闻,模型只好退回训练数据答,用户看到的财报数据
+    停在两年前。叠加 `det.name` 从来没被赋过值(材料首行恒「名称:未知」),连中文名
+    这个中文财经检索最值钱的词都没有。"""
+
+    def test_name_is_populated_from_stock_basic(self, market):
+        """`det.name` 曾经声明了、被 `build_llm_context` 读了,却从没有任何一处赋值。"""
+        s, day = market
+        det = inq.run_deterministic_checks("600001.SH", day, db_path=s.db_path, parquet_dir=s.parquet_dir)
+        assert det.name == "示例甲"
+        assert "名称:示例甲" in inq.build_llm_context(det)
+        assert "名称:未知" not in inq.build_llm_context(det)
+
+    def test_name_populated_even_when_no_eod_data(self, market):
+        """停牌/查无行情的票**更**要靠搜索说话,名字必须在 early return 之前就填好。"""
+        s, day = market
+        det = inq.run_deterministic_checks("300001.SZ", day, db_path=s.db_path, parquet_dir=s.parquet_dir)
+        assert det.name == "示例丙"
+
+    def test_search_query_carries_identity_not_just_the_pronoun(self, market):
+        """核心回归:用户用代词提问时,检索词里必须仍有股票名+代码。"""
+        s, day = market
+        prov = StubProvider()
+        inq.run_inquiry(
+            "600001.SH", [{"role": "user", "content": "这只票你觉得后续走势会怎么样"}],
+            basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=prov,
+        )
+        q = prov.captured_search_query
+        assert "示例甲" in q and "600001.SH" in q          # 身份(修复前这两样都不在检索词里)
+        assert "后续走势" in q                              # 用户意图原样带上,检索词才贴题
+
+    def test_search_query_uses_last_user_turn_in_multi_turn(self, market):
+        """多轮对话取**最后一句**——供应商推导检索词就是跟着它走的。"""
+        s, day = market
+        prov = StubProvider()
+        inq.run_inquiry(
+            "600001.SH",
+            [{"role": "user", "content": "先聊聊基本面"},
+             {"role": "assistant", "content": "好的……"},
+             {"role": "user", "content": "那最近有没有利空公告"}],
+            basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=prov,
+        )
+        assert "利空公告" in prov.captured_search_query
+        assert "先聊聊基本面" not in prov.captured_search_query
+
+    def test_search_query_falls_back_to_code_when_name_unknown(self, market):
+        """查无此票(stock_basic 没有)→ 退化成只带代码,不能拼出「(600009.SH)」这种空名括号。"""
+        s, day = market
+        prov = StubProvider()
+        inq.run_inquiry(
+            "600009.SH", [{"role": "user", "content": "怎么看"}],
+            basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=prov,
+        )
+        assert prov.captured_search_query.startswith("600009.SH")
+        assert "()" not in prov.captured_search_query
+
+    def test_zero_search_hits_is_surfaced_in_evidence(self, market):
+        """0 命中必须让用户看见——否则「搜过没消息」和「一条都没搜到」在回答里长得一模一样。"""
+        s, day = market
+        prov = StubProvider(search_hits=[])
+        out = inq.run_inquiry(
+            "600001.SH", [{"role": "user", "content": "怎么看"}],
+            basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=prov,
+        )
+        assert any("命中 0 条" in e for e in out["evidence"])
+
+    def test_hit_count_is_surfaced_in_evidence(self, market):
+        s, day = market
+        prov = StubProvider(search_hits=[object(), object(), object()])
+        out = inq.run_inquiry(
+            "600001.SH", [{"role": "user", "content": "怎么看"}],
+            basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=prov,
+        )
+        assert any("命中 3 条" in e for e in out["evidence"])
+
+    def test_reply_stays_model_verbatim(self, market):
+        """取证脚注只进 `evidence`,**不许掺进 `reply`**——reply 是模型原文(§v1.3.3 软护栏)。"""
+        s, day = market
+        prov = StubProvider(search_hits=[])
+        out = inq.run_inquiry(
+            "600001.SH", [{"role": "user", "content": "怎么看"}],
+            basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=prov,
+        )
+        assert out["reply"] == prov.reply_body
 
 
 # —— 同码不重写(v1.3-⑤ 既有验收,v1.3.3 继续守)——————————————————————————

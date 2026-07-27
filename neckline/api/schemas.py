@@ -146,6 +146,11 @@ class NewsAlertScanStatusOut(BaseModel):
     # 与 `app.py::_shape_report` 此前均未透出该键——pydantic 默认丢弃未声明字段,契约清单
     # 承诺的字段实际从未抵达客户端,本次补齐(见 app.py 对应改动)。
     codesSkipped: int = 0
+    # v1.3.4:调用成功但联网搜索命中 0 条的标的数——它的「未发现三类消息」是模型凭
+    # 训练数据说的、非搜索证实。与 codesFailed/codesSkipped 同属「扫了 vs 没扫」的
+    # 分辨维度,三者不可合并。⚠ 同上条教训:新增键必须同时补 `app.py::_shape_report`,
+    # 否则 pydantic 丢弃未声明字段,后端算了也到不了客户端。
+    codesNoSearch: int = 0
 
 
 class ReportOut(BaseModel):
