@@ -153,13 +153,20 @@ def _row_to_episode(row) -> CircuitEpisode:
 
 def _active_stop_pct(db_path: Optional[Path]) -> float:
     """现役 config 的 `stop_pct`(单一事实源,§3.8 铁律,不硬编 -5%)。无现役版本 →
-    退回 `MomentumConfig` 字段默认(与 api `_active_config` 同款兜底)。"""
+    退回 `MomentumConfig` 字段默认(与 api `_active_config` 同款兜底)。
+
+    **兜底判据是「键缺失」不是「falsy」(审计 🔵-9)**:章程若**显式**设 `stop_pct=None`
+    (不设止损),不能被悄悄换回 0.05。显式 None → 返 0.0 = 价格兜底阈值退化为
+    `sell_price ≤ buy_price`,即「没有止损线可判」时不把普通小亏当止损计入熔断链
+    (保守方向:少计,不臆造)。"""
     from neckline.strategy import brain
     from neckline.strategy.momentum import MomentumConfig
 
     cfg = brain.active_config(db_path=db_path)
-    val = cfg.get("stop_pct")
-    return float(val) if val else float(MomentumConfig().stop_pct)
+    if "stop_pct" not in cfg:
+        return float(MomentumConfig().stop_pct)
+    val = cfg["stop_pct"]
+    return float(val) if val is not None else 0.0
 
 
 def _is_stop_loss_close(pos, stop_pct: float) -> bool:

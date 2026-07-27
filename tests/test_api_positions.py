@@ -142,20 +142,44 @@ def test_sell_fees_recorded_on_close(client, AUTH, api_env):
     assert get_position(pid, db_path=api_env.db_path).sell_fees == 12.3
 
 
-def test_position_two_tier_profit_exempt(client, AUTH, api_env, monkeypatch):
-    """两档启用 + D5 浮盈 → timeExitState=profit_exempt、maxHoldDaysEffective=15(续持硬上限)。"""
-    import neckline.api.app as app_mod
+# —— v1.3 两档时间退出:`GET /positions` 读**定格判向**(审计 🔴-1,用户拍板方案 A)——
+# 修复前本端点用**实时价**现算净浮盈重判(刷新一次就可能翻向,且与 16:35 EOD / precall
+# 三处数据源各不相同);现在只读 `holding_eod_check.time_exit_locked_state`。
+
+def _seed_two_tier(api_env, *, dcount: int, lock_state=None, lock_nf=None, buy_price=10.0):
+    """建一笔 d_count=dcount 的两档持仓;`lock_state` 非空则落一份带定格判向的 EOD 快照。"""
     from tests.conftest import seed_active_rule_v1
+    from neckline.report import holding_store
     from neckline.sentinel.positions import open_position
-    from neckline.sentinel.quotes import Quote
     seed_active_rule_v1(api_env, extra_config={
         "take_profit_retrace": 0.08, "time_exit_only_if_unprofitable": True, "max_hold_days_profit": 15,
     })
-    buy = _buy_date_for_dcount(5)
-    open_position("600001.SH", 10.0, 1000, buy, buy_fees=5.0, db_path=api_env.db_path)
-    q = Quote(code="600001.SH", name="甲", price=11.0, pre_close=10.5, open=10.5, high=11.2,
-              low=10.4, volume=1000.0, amount=1e6, ts="", source="test")
-    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": q})
+    buy = _buy_date_for_dcount(dcount)
+    pid = open_position("600001.SH", buy_price, 1000, buy, buy_fees=5.0, db_path=api_env.db_path)
+    if lock_state is not None:
+        class _Snap:
+            position_id, d_count, net_float = pid, dcount, lock_nf
+            time_exit_state, max_hold_effective = lock_state, (15 if lock_state == "profit_exempt" else 5)
+            has_strong = scenario_review = False
+            time_exit_locked_state, time_exit_locked_date = lock_state, buy.strftime("%Y%m%d")
+            time_exit_locked_net_float = lock_nf
+            def hits_public(self):
+                return []
+        holding_store.save_holding_eod_checks(buy, [_Snap()], db_path=api_env.db_path)
+    return pid
+
+
+def _quote(price: float):
+    from neckline.sentinel.quotes import Quote
+    return Quote(code="600001.SH", name="甲", price=price, pre_close=price, open=price,
+                 high=price, low=price, volume=1000.0, amount=1e6, ts="", source="test")
+
+
+def test_position_two_tier_profit_exempt(client, AUTH, api_env, monkeypatch):
+    """两档启用 + D5 **定格**豁免 → timeExitState=profit_exempt、maxHoldDaysEffective=15。"""
+    import neckline.api.app as app_mod
+    _seed_two_tier(api_env, dcount=5, lock_state="profit_exempt", lock_nf=920.0)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": _quote(11.0)})
     h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
     assert h["dCount"] == 5
     assert h["timeExitState"] == "profit_exempt"
@@ -163,23 +187,54 @@ def test_position_two_tier_profit_exempt(client, AUTH, api_env, monkeypatch):
 
 
 def test_position_two_tier_time_exit_on_loss(client, AUTH, api_env, monkeypatch):
-    """两档启用 + D5 浮亏(净浮盈 ≤0)→ timeExitState=time_exit_next_day、maxHoldDaysEffective=5。"""
+    """两档启用 + D5 **定格**非浮盈 → timeExitState=time_exit_next_day、maxHoldDaysEffective=5。"""
     import neckline.api.app as app_mod
-    from tests.conftest import seed_active_rule_v1
-    from neckline.sentinel.positions import open_position
-    from neckline.sentinel.quotes import Quote
-    seed_active_rule_v1(api_env, extra_config={
-        "take_profit_retrace": 0.08, "time_exit_only_if_unprofitable": True, "max_hold_days_profit": 15,
-    })
-    buy = _buy_date_for_dcount(5)
-    open_position("600001.SH", 10.0, 1000, buy, buy_fees=5.0, db_path=api_env.db_path)
-    q = Quote(code="600001.SH", name="甲", price=9.6, pre_close=9.7, open=9.7, high=9.8,
-              low=9.55, volume=1000.0, amount=1e6, ts="", source="test")
-    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": q})
+    _seed_two_tier(api_env, dcount=5, lock_state="time_exit_next_day", lock_nf=-40.0)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": _quote(9.6)})
     h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
     assert h["timeExitState"] == "time_exit_next_day"
     assert h["maxHoldDaysEffective"] == 5
     assert "时间退出日" in h["todayAction"]
+
+
+def test_position_frozen_exempt_survives_price_crash(client, AUTH, api_env, monkeypatch):
+    """审计 🔴-1 ①:D5 定格豁免的单子,D7 实时价跌回浮亏(未破止损)**不得**改推时间退出。"""
+    import neckline.api.app as app_mod
+    _seed_two_tier(api_env, dcount=7, lock_state="profit_exempt", lock_nf=920.0)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": _quote(9.7)})  # 浮亏但未破 -5%
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["dCount"] == 7
+    assert h["timeExitState"] == "profit_exempt" and h["maxHoldDaysEffective"] == 15
+    assert "浮盈豁免" in h["todayAction"]
+
+
+def test_position_frozen_exit_not_laundered_by_price_rally(client, AUTH, api_env, monkeypatch):
+    """审计 🔴-1 ②(反向漏洞,更重):D5 定格「该走」的单子,D7 实时价转浮盈**不得**改口豁免
+    ——违纪不被系统事后合法化。"""
+    import neckline.api.app as app_mod
+    _seed_two_tier(api_env, dcount=7, lock_state="time_exit_next_day", lock_nf=-40.0)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": _quote(12.0)})  # 大幅转浮盈
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["timeExitState"] == "time_exit_next_day" and h["maxHoldDaysEffective"] == 5
+    assert "按计划离场" in h["todayAction"]
+
+
+def test_position_hard_cap_still_by_dcount(client, AUTH, api_env, monkeypatch):
+    """审计 🔴-1 ③:D15 硬上限仍按 d_count 判(定格豁免挡不住硬上限)。"""
+    import neckline.api.app as app_mod
+    _seed_two_tier(api_env, dcount=15, lock_state="profit_exempt", lock_nf=920.0)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": _quote(12.0)})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["timeExitState"] == "hard_cap_exit" and h["maxHoldDaysEffective"] == 15
+
+
+def test_position_two_tier_no_snapshot_is_conservative(client, AUTH, api_env, monkeypatch):
+    """尚无定格快照(EOD 管线断跑)→ 保守判 time_exit_next_day,绝不因实时价浮盈默认豁免。"""
+    import neckline.api.app as app_mod
+    _seed_two_tier(api_env, dcount=6, lock_state=None)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": _quote(13.0)})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["timeExitState"] == "time_exit_next_day"
 
 
 # —— v1.2-E.5 一键补录预填**区间**(v1.1-B.3 单 qty 已被替换)——————————————

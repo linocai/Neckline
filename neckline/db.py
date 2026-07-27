@@ -369,12 +369,22 @@ CREATE INDEX IF NOT EXISTS idx_breathing_t_trades_position_id ON breathing_t_tra
 -- v1.3-② 持仓 K4 每日体检 + D5 净浮盈快照(plan §五 v1.3-②)。16:35 报告管线对每只 open
 -- 持仓在当日 EOD 面板上重算 K4 advisory 命中 + 算好 D5 收盘净浮盈 → 落本表一行(一持仓一
 -- 交易日一行,幂等覆盖)。两个消费方:①`GET /positions` 读最近一份快照嵌 k4Advisory[](像
--- watchlist 读体检快照);②**次日 9:25:30 `sentinel/precall.py` 的 net_float_provider 读
--- 最近一份 net_float**(= v1.3-① 留的 seam 接线点;没有它浮盈豁免形同虚设,见该模块注释)。
+-- watchlist 读体检快照);②**次日 9:25:30 `sentinel/precall.py` 读定格判向**
+-- (`time_exit_locked_state`,见下;审计 🔴-1 前是「读最近一份 net_float 重判」,已改)。
 -- net_float:D5 收盘净浮盈估算(现价EOD×qty − buy_price×qty − buy_fees实录 − 估算卖出费,
 --   见 neckline/fees.py::estimate_net_float);停牌/无 EOD 数据 → NULL(precall 侧退保守判非浮盈)。
 -- time_exit_state/max_hold_effective:16:35 权威两档时间退出分类(classify_time_exit,单一源
 --   sentinel/precall)。k4_hits_json:命中项 JSON 数组 [{code,label,level,evidence,evidenceStrength}]。
+-- time_exit_locked_state / time_exit_locked_date / time_exit_locked_net_float(v1.3 审计修复
+--   🔴-1「D5 判一次定格」,2026-07-27 用户拍板方案 A):两档时间退出的**判向定格记录**。
+--   16:35 首次遇到 d_count ≥ max_hold_days 的那一天,用**当日 EOD 收盘**净浮盈判一次向
+--   (profit_exempt | time_exit_next_day)并写进这三列,此后**逐日原样带过来**(每天的行都
+--   自描述「今天生效的判向是哪天、按多少净浮盈定格的」);三个消费点(precall / 16:35 /
+--   GET /positions)一律读定格值,**不再用当日最新净浮盈重判**。NULL = 尚未定格(d 未到判定点、
+--   或现役单档 K1 章程根本不进两档分支)。理由(勿删):①回测验证过的规则才是能守的规则——
+--   逐日重判意味着实盘执行的规则从未被回测验证(引擎 momentum.py::_time_exit_reason 就是判
+--   一次定格);②堵死「D5 判该走→用户没走→D6 转浮盈→D7 系统改口豁免」这条**违纪被事后
+--   合法化**的路。D15 硬上限(max_hold_days_profit)不受定格影响,仍按 d_count 无条件判。
 -- has_strong:是否含「强价量证据」命中(= 触发第六类 APNs 派发警报的门槛,题材类弱证据不计入)。
 -- scenario_review:该持仓是否有关联决策日志(via decision_log.position_id)含非空情景树待每日
 --   对照(②-D 提醒,勾选仍走既有 scenario-outcome 端点,本表只做「挑出来」)。PK 保证幂等重跑。
@@ -422,6 +432,9 @@ CREATE TABLE IF NOT EXISTS holding_eod_check (
     k4_hits_json        TEXT NOT NULL DEFAULT '[]',
     has_strong          INTEGER NOT NULL DEFAULT 0,
     scenario_review     INTEGER NOT NULL DEFAULT 0,
+    time_exit_locked_state      TEXT,   -- 定格判向 profit_exempt|time_exit_next_day|NULL(未定格)
+    time_exit_locked_date       TEXT,   -- 'YYYYMMDD' 定格发生日(审计:哪天判的)
+    time_exit_locked_net_float  REAL,   -- 定格所用的当日 EOD 净浮盈(审计:按多少判的)
     created_at          TEXT NOT NULL,
     PRIMARY KEY (position_id, trade_date)
 );
@@ -502,6 +515,12 @@ _COLUMN_MIGRATIONS = [
     # 走「新表 CREATE TABLE IF NOT EXISTS」路径直接拿到新约束,不受此局限影响。
     ("news_alerts", "event_date", "TEXT"),
     ("news_alerts", "event_key", "TEXT NOT NULL DEFAULT ''"),
+    # v1.3 审计修复 🔴-1(2026-07-27,用户拍板「D5 判一次定格」方案 A):两档时间退出的
+    # 判向定格三列。均可空(NULL=尚未定格,含现役单档 K1 恒不定格),老库幂等补列后既有行
+    # 全 NULL —— 等同「历史持仓还没定格过,下一次 16:35 到判定点时再定格」,不臆造历史判向。
+    ("holding_eod_check", "time_exit_locked_state", "TEXT"),
+    ("holding_eod_check", "time_exit_locked_date", "TEXT"),
+    ("holding_eod_check", "time_exit_locked_net_float", "REAL"),
 ]
 
 

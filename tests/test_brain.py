@@ -82,16 +82,45 @@ def test_save_inactive_leaves_activated_at_null(db):
 
 
 def test_inactive_overwrite_preserves_prior_activated_at(db):
-    """INSERT OR REPLACE 抹列陷阱防线:activate=False 覆盖既有已激活行,activated_at
-    不被抹成 NULL(读回旧戳原样带回)。"""
+    """INSERT OR REPLACE 抹列陷阱防线:activate=False 覆盖**已卸任**(曾激活过、现非现役)
+    的行,activated_at 不被抹成 NULL(读回旧戳原样带回,历史时间线不丢)。"""
     v1 = brain.save_version("K1", {"config": {}}, "k1", activate=True, db_path=db)
     stamp = v1.activated_at
     assert stamp is not None
-    # 再以 activate=False 覆盖 K1(如二次落库)——activated_at 应保全
+    brain.save_version("v1.3", {"config": {}, "lineage": "K1"}, "v13", activate=True, db_path=db)
+    assert brain.get_active(db_path=db).version == "v1.3"       # K1 已卸任
+    # 覆盖已卸任的 K1(如二次落库)——activated_at 应保全,is_active 仍 0
     brain.save_version("K1", {"config": {"x": 1}}, "k1改", activate=False, db_path=db)
     got = brain.get_version("K1", db_path=db)
     assert got.activated_at == stamp
-    assert got.is_active is False  # activate=False 也把它降为非现役(既有语义)
+    assert got.is_active is False
+
+
+def test_save_version_refuses_to_demote_the_active_row(db):
+    """审计 🔵-8:对**当前现役**行调 `activate=False` 会造成「全库无现役版本」→ 全线静默
+    退回 MomentumConfig 默认(hold=3、无回落止盈、单笔 2 万),极危险 → 硬拒绝。"""
+    brain.save_version("K1", {"config": {"stop_pct": 0.05}}, "k1", activate=True, db_path=db)
+    with pytest.raises(ValueError, match="全库无现役版本"):
+        brain.save_version("K1", {"config": {"stop_pct": 0.9}}, "改坏", activate=False, db_path=db)
+    # 库未被改动:现役仍 K1,参数仍是原值(拒绝发生在写之前)
+    assert brain.get_active(db_path=db).version == "K1"
+    assert brain.active_config(db_path=db) == {"stop_pct": 0.05}
+
+
+def test_save_version_allows_updating_active_row_when_staying_active(db):
+    """阳性方向:带 `activate=True` 更新现役行的参数照常放行(护栏没有把正路堵死)。"""
+    brain.save_version("K1", {"config": {"stop_pct": 0.05}}, "k1", activate=True, db_path=db)
+    brain.save_version("K1", {"config": {"stop_pct": 0.06}}, "k1改", activate=True, db_path=db)
+    assert brain.get_active(db_path=db).version == "K1"
+    assert brain.active_config(db_path=db) == {"stop_pct": 0.06}
+
+
+def test_save_version_new_inactive_row_unaffected(db):
+    """阴性方向:落一行**新的**非现役版本(charter 脚本的正常姿势)不受护栏影响。"""
+    brain.save_version("K1", {"config": {}}, "k1", activate=True, db_path=db)
+    brain.save_version("v1.3", {"config": {}, "lineage": "K1"}, "v13", activate=False, db_path=db)
+    assert brain.get_active(db_path=db).version == "K1"
+    assert brain.get_version("v1.3", db_path=db).is_active is False
 
 
 def test_activate_version_stamps_and_unique(db):

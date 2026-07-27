@@ -179,8 +179,13 @@ async def _sentinel_loop(stop_event: asyncio.Event) -> None:
             try:
                 pr = await asyncio.to_thread(run_precall_tick, now, db_path=_db())
                 if pr.ran:
-                    if pr.summary_actionable > 0:
-                        await asyncio.to_thread(notify.push_precall_summary, pr.counts, db_path=_db())
+                    # 汇总推送门槛 = `should_push_summary`(单一源在 PrecallResult):有需动作
+                    # 判定 **或** 熔断锁定中(审计 🟡-4:锁定期零判定也要发「今日只减不加」)。
+                    if pr.should_push_summary:
+                        await asyncio.to_thread(
+                            notify.push_precall_summary, pr.counts,
+                            circuit_locked=pr.circuit_locked, db_path=_db(),
+                        )
                     for ex in pr.d5_exits:
                         await asyncio.to_thread(
                             notify.push_d5_exit, ex.name, ex.ts_code, ex.d,
@@ -470,17 +475,32 @@ def _resolve_prices(codes: List[str]) -> Dict[str, float]:
 def _active_config() -> Tuple[float, int, float, Optional[float]]:
     """现役策略 config 的四个值(单一事实源 `brain.active_config`,§3.8 铁律):
     (stop_pct, max_hold_days, single_cap, take_profit_retrace)。无现役版本(异常状态)
-    → 退回 `MomentumConfig` 字段默认(不在此另拍字面量)。"""
+    → 退回 `MomentumConfig` 字段默认(不在此另拍字面量)。
+
+    **兜底判据是「键缺失」不是「falsy」(2026-07-27 审计 🔵-9)**:旧写法 `cfg.get(k) or fb.k`
+    会把章程**显式**设的 0 / None(如未来某版 `stop_pct=None` = 不设止损)悄悄换回默认
+    0.05 —— 那是「章程说不设止损、系统偷偷给你设了 5%」。现按 `k in cfg` 判存在性,显式值
+    一律照用;只有键真缺失才落 `MomentumConfig` 字段默认。`stop_pct` 若显式 None,
+    调用方(止损线/距止损)按 0.0 处理 = 不派生止损线,与「不设止损」语义一致。"""
     from neckline.strategy import brain
     from neckline.strategy.momentum import MomentumConfig
 
     fb = MomentumConfig()
     cfg = brain.active_config(db_path=_db())
-    stop_pct = cfg.get("stop_pct") or fb.stop_pct
-    max_hold = cfg.get("max_hold_days") or fb.max_hold_days
-    single_cap = cfg.get("single_cap") or fb.single_cap
-    tpr = cfg.get("take_profit_retrace", fb.take_profit_retrace)
-    return float(stop_pct), int(max_hold), float(single_cap), (float(tpr) if tpr else None)
+
+    def _pick(key, fallback):
+        return cfg[key] if key in cfg else fallback
+
+    stop_pct = _pick("stop_pct", fb.stop_pct)
+    max_hold = _pick("max_hold_days", fb.max_hold_days)
+    single_cap = _pick("single_cap", fb.single_cap)
+    tpr = _pick("take_profit_retrace", fb.take_profit_retrace)
+    return (
+        float(stop_pct if stop_pct is not None else 0.0),
+        int(max_hold),
+        float(single_cap),
+        (float(tpr) if tpr is not None else None),
+    )
 
 
 def _active_momentum_config() -> "MomentumConfig":
@@ -562,8 +582,8 @@ def _shape_circuit(state: "circuit_store.CircuitState") -> CircuitStateOut:
 
 @app.get(f"{API_PREFIX}/positions", dependencies=[Depends(require_token)])
 def list_positions() -> PositionsOut:
-    from neckline.report.holding_store import load_latest_checks_by_position
-    from neckline.sentinel.precall import classify_time_exit
+    from neckline.report.holding_store import load_latest_checks_by_position, locked_time_exit_map
+    from neckline.sentinel.precall import resolve_time_exit
 
     holdings = pos_store.load_open_positions(db_path=_db())
     codes = [h.ts_code for h in holdings]
@@ -574,6 +594,9 @@ def list_positions() -> PositionsOut:
     # v1.3-② 持仓 K4 牌:读最近一份 16:35 体检快照嵌 k4Advisory[] + scenarioReviewPending
     # (服务端算好,客户端不重算 250 日面板;刚开仓未体检 → 空数组/False)。
     k4_snapshots = load_latest_checks_by_position(db_path=_db())
+    # 定格判向:与 precall 走**同一个** store 读函数(审计 🔴-1 的主题就是「三个消费点各读
+    # 各的」,故这里刻意不图省事去读 k4 快照里那份带过来的副本)。
+    locked = locked_time_exit_map(db_path=_db())
     today = date.today()
     out: List[PositionOut] = []
     for h in holdings:
@@ -587,14 +610,14 @@ def list_positions() -> PositionsOut:
             from neckline.sentinel.engine import _historical_peak_close
             peak_hist = _historical_peak_close(h, today, None)
             retrace = _retrace_state(h, price, peak_hist, tpr)
-        # v1.3-① 两档时间退出:服务端按 D5 净浮盈判好 maxHoldDaysEffective + timeExitState 下发,
-        # 客户端不重算。净浮盈用现价估(实盘估算,卖出费按 fees.py 公式;无价 → None 保守判非浮盈)。
-        net_float = None
-        if price > 0:
-            from neckline.fees import estimate_net_float
-            net_float = estimate_net_float(price, h.qty, h.buy_price, buy_fees=h.buy_fees)
-        te_state, eff_max = classify_time_exit(dcount, cfg, net_float)
+        # v1.3-① 两档时间退出:服务端判好 maxHoldDaysEffective + timeExitState 下发,客户端不重算。
+        # **审计 🔴-1 修复(用户拍板方案 A「D5 判一次定格」)**:判向在 D5 那天由 16:35 EOD 管线
+        # 定格落库,本端点只**读定格值**交 `resolve_time_exit` 解析——**不再用实时价现算净浮盈
+        # 重判**。旧写法有两个病:①请求期用实时价 → 同一天里刷新一次就可能翻向;②与 16:35
+        # EOD close / precall 快照三处数据源各不相同。净浮盈的唯一判向口径已收敛到 EOD close
+        # (见 `report/holding_k4_check.py`)。
         snap = k4_snapshots.get(h.id) or {}
+        te_state, eff_max = resolve_time_exit(dcount, cfg, (locked.get(h.id) or {}).get("state"))
         k4_advisory = [
             K4AdvisoryOut(
                 code=hit.get("code", ""), label=hit.get("label", ""),

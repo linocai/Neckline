@@ -1,8 +1,8 @@
 """持仓 K4 每日体检(plan §五 v1.3-②,需求 7)。K4 红黄牌此前只用于**买前安检**;
 用户定案「持仓不是冷冻的」——牌须每日对**持仓票**重算并派发警示。本模块 = 16:35 EOD
 报告管线里对每只 open 持仓在当日面板上重算 K4 advisory 命中(同「自选体检
-`watchlist_check.py`」姿势,只把输入域换成持仓),并算好 **D5 收盘净浮盈**(供 v1.3-①
-留的 precall net_float_provider seam)。
+`watchlist_check.py`」姿势,只把输入域换成持仓),并算好 **D5 收盘净浮盈** + **两档时间
+退出判向的唯一定格点**(审计 🔴-1,见下)。
 
 **判据源:DB `strategy_versions` 的 K4 行 `rule_json["k4_advisory"]`(is_active=0,只读)。**
 ⚠ advisory 里的 `expr` 是**人读字符串/规格档**(如 `"turnover_rate > 10"`、`"行业强度
@@ -50,16 +50,25 @@
     · **第六类 APNs 门槛 `has_strong`** = 命中含「level=strong ∧ evidence_strength=price_volume」。
 
 **net_float(v1.3-① seam)**:D5 收盘净浮盈 = 现价(EOD 面板 close,前复权锚点在 trade_date
-故 = 当日原始收盘,见 `features.apply_qfq` docstring)×qty − buy_price×qty − buy_fees(实录) −
-估算卖出费(`fees.estimate_net_float`,买入费读 `positions.buy_fees`)。停牌/无 EOD 数据 → None
-(precall 侧退保守判非浮盈)。持久化 + precall 读取见 `neckline.report.holding_store` 与
-`sentinel/precall.py`。
+故 = 当日原始收盘,见 `features.apply_qfq` docstring)×qty − buy_price×qty − buy_fees(实录,
+缺则按默认费率估) − 估算卖出费(`fees.estimate_net_float`,买入费读 `positions.buy_fees`)。
+停牌/无 EOD 数据 → None(保守判非浮盈)。**本模块的这一处 EOD close 口径,是全系统唯一
+用于两档时间退出判向的净浮盈来源**(审计 🔴-1 前 precall/`GET /positions` 各算各的,已收敛)。
+
+**两档时间退出「D5 判一次定格」(审计 🔴-1,2026-07-27 用户拍板方案 A)**:本模块是**唯一
+定格点** —— 首次遇到某持仓 `d_count ≥ max_hold_days` 时用当日 EOD 净浮盈判一次向
+(`classify_time_exit`),写死进 `holding_eod_check.time_exit_locked_*` 三列;此后每天(含本
+模块自己)一律 `resolve_time_exit` 读定格值,**不再用当日最新净浮盈重判**。理由:①回测验证过
+的规则才是能守的规则(引擎 `momentum.py::_time_exit_reason` 就是判一次定格);②堵死「D5 判该
+走→用户没走→D6 转浮盈→D7 系统改口豁免」这条违纪被事后合法化的路。D15 硬上限仍按 d_count 判。
+持久化 + 三个消费点见 `neckline.report.holding_store` / `sentinel/precall.py` / `api/app.py`。
 
 **系统永不代交易动作**(§3.8):本模块只算命中/警示,不触发任何下单/撤单/改止损。
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -68,12 +77,20 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import polars as pl
 
 from neckline.data.adjust import apply_qfq
-from neckline.fees import estimate_net_float
+from neckline.fees import estimate_net_float_detail
 from neckline.report.sectors import SectorScore, sector_hot_lookup
 from neckline.sentinel.positions import Position, d_count
-from neckline.sentinel.precall import classify_time_exit
+from neckline.sentinel.precall import (
+    PROFIT_EXEMPT,
+    TIME_EXIT_NEXT_DAY,
+    classify_time_exit,
+    is_two_tier_time_exit,
+    resolve_time_exit,
+)
 from neckline.strategy.features import add_features, merge_daily_basic, merge_limit_features
 from neckline.strategy.momentum import MomentumConfig
+
+logger = logging.getLogger(__name__)
 
 # —— 阈值命名常量(可执行镜像单一源;镜像 research/k4_assembly.py 判决口径,改阈值同改 DB advisory)——
 _A1_TURNOVER_HI = 10.0    # A1:换手 >10%(turnover_rate 单位为百分数,H2)
@@ -153,6 +170,12 @@ class HoldingK4Item:
     net_float: Optional[float] = None
     time_exit_state: str = _HOLDING
     max_hold_effective: int = 5
+    # —— 两档时间退出「D5 判一次定格」三件(审计 🔴-1,2026-07-27 用户拍板方案 A)——
+    # 定格发生在**首次** d_count ≥ max_hold_days 的那一天(用当日 EOD 收盘净浮盈判一次),
+    # 此后每天原样带过来(每行自描述判向来源)。单档现役 K1 恒为 None(无定格概念)。
+    time_exit_locked_state: Optional[str] = None       # profit_exempt | time_exit_next_day | None
+    time_exit_locked_date: Optional[str] = None        # 'YYYYMMDD' 定格发生日
+    time_exit_locked_net_float: Optional[float] = None  # 定格所用的当日 EOD 净浮盈
     hits: List[HoldingK4Hit] = field(default_factory=list)
     has_strong: bool = False       # 含「强价量证据」命中 → 触发第六类 APNs 派发警报门槛
     scenario_review: bool = False  # 关联决策日志(via position_id)含非空情景树待每日对照
@@ -427,6 +450,42 @@ def _evaluate_hits(
     return hits
 
 
+def _resolve_time_exit_with_lock(
+    d: int,
+    cfg: MomentumConfig,
+    net_float: Optional[float],
+    prior_lock: Optional[Dict[str, Any]],
+    trade_date: date,
+) -> tuple:
+    """两档时间退出的 **16:35 权威计算**(唯一定格点,审计 🔴-1 / 用户拍板方案 A)。
+
+    返回 `(state, max_hold_effective, locked_state, locked_date, locked_net_float)`。
+
+    · **单档(现役 K1)**:直接 `classify_time_exit`(不涉净浮盈),定格三件恒 None ——
+      与审计前逐位相同(K1 行为回归护栏)。
+    · **两档 + 已有定格**(`prior_lock`,库里读回):`resolve_time_exit` 读定格值,定格三件
+      **原样带过来**(不重判、不改写;`net_float` 当日仍照算落库,那是审计/展示量)。
+    · **两档 + 尚无定格 + d ≥ max_hold_days**:**就是定格时刻** —— 用当日 EOD 收盘净浮盈
+      `classify_time_exit` 判一次,把判向 + 判定日 + 判定所用净浮盈写死。
+      ⚠ 若因 EOD 管线断跑而错过了 D5、首个 d≥5 的观测落在 D6/D7,则如实按**首个可得 EOD**
+      定格(不假装发生在 D5,同 `pending_track` overshoot 的诚实姿势)。
+      `HARD_CAP_EXIT`(d 已 ≥ 硬上限却从未定格,异常长尾)不写定格 —— 硬上限本就按 d_count
+      无条件判,不需要也不该被定格。
+    · **两档 + 尚无定格 + d < max_hold_days**:HOLDING,定格三件仍 None。
+    """
+    if not is_two_tier_time_exit(cfg):
+        state, eff = classify_time_exit(d, cfg, net_float)
+        return state, eff, None, None, None
+    if prior_lock:
+        state, eff = resolve_time_exit(d, cfg, prior_lock.get("state"))
+        return (state, eff, prior_lock.get("state"),
+                prior_lock.get("date"), prior_lock.get("net_float"))
+    state, eff = classify_time_exit(d, cfg, net_float)
+    if state in (PROFIT_EXEMPT, TIME_EXIT_NEXT_DAY):
+        return state, eff, state, trade_date.strftime("%Y%m%d"), net_float
+    return state, eff, None, None, None
+
+
 def build_holding_k4_check(
     trade_date: date,
     rule: Dict[str, Any],
@@ -459,6 +518,9 @@ def build_holding_k4_check(
     member_map = member_map or {}
     scenario_ids = scenario_position_ids or set()
     names = _resolve_names(codes, db_path)
+    # 已定格判向(审计 🔴-1):有则本次只带过来、绝不重判(读侧单一通道 holding_store)。
+    from neckline.report.holding_store import locked_time_exit_map
+    prior_locks = locked_time_exit_map(db_path=db_path)
 
     out: List[HoldingK4Item] = []
     for p in positions:
@@ -467,12 +529,23 @@ def build_holding_k4_check(
         d = d_count(buy, trade_date) if buy is not None else 0
         has_data = row is not None
         close = float(row.get("close") or 0.0) if row else 0.0
-        # D5 收盘净浮盈(扣双边费,buy_fees 实录 + 估算卖出费);无 EOD 价 → None(保守判非浮盈)。
-        net_float = (
-            estimate_net_float(close, p.qty, p.buy_price, buy_fees=p.buy_fees)
-            if close > 0 else None
+        # D5 收盘净浮盈(扣双边费,buy_fees 实录/缺则按默认费率估 + 估算卖出费);无 EOD 价 →
+        # None(保守判非浮盈)。**这是全系统唯一用于时间退出判向的净浮盈口径(EOD close)**。
+        net_float, buy_fee_estimated = (
+            estimate_net_float_detail(close, p.qty, p.buy_price, buy_fees=p.buy_fees)
+            if close > 0 else (None, False)
         )
-        state, eff = classify_time_exit(d, cfg, net_float)
+        state, eff, lock_state, lock_date, lock_nf = _resolve_time_exit_with_lock(
+            d, cfg, net_float, prior_locks.get(p.id), trade_date
+        )
+        # 审计 🔵-7:定格判向是**一次性、不可回头**的决定,若它建立在「买入费用估的」净浮盈上
+        # 必须留痕(日志显式标注),否则事后无从知道这单的判向掺了多少估算成分。
+        if buy_fee_estimated and lock_date == trade_date.strftime("%Y%m%d"):
+            logger.warning(
+                "持仓 #%s %s 于 D%s 定格时间退出判向=%s,但 buy_fees 未补录、买入费按默认费率"
+                "估算(净浮盈 %.2f 含估算成分)——如判向贴近盈亏平衡线,请补录实付买入费后复核。",
+                p.id, p.ts_code, d, lock_state, net_float if net_float is not None else float("nan"),
+            )
         persist_days = _theme_persist_days(p.ts_code, member_map, hot)
         hits = _evaluate_hits(row, persist_days, evidence)
         has_strong = any(h.level == "strong" and h.evidence_strength == "price_volume" for h in hits)
@@ -480,6 +553,8 @@ def build_holding_k4_check(
             position_id=p.id, ts_code=p.ts_code, name=names.get(p.ts_code, p.ts_code),
             has_data=has_data, d_count=d, close=close, net_float=net_float,
             time_exit_state=state, max_hold_effective=eff,
+            time_exit_locked_state=lock_state, time_exit_locked_date=lock_date,
+            time_exit_locked_net_float=lock_nf,
             hits=hits, has_strong=has_strong, scenario_review=(p.id in scenario_ids),
         ))
     return out

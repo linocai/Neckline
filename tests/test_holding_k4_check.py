@@ -4,8 +4,11 @@
 镜像表达式(年线下闸分 A3b 派发 vs B1 堆积);②证据强度标注(题材类=constituent 参考);
 ③has_strong 门槛(强价量触发、题材弱证据不触发第六类 APNs);④net_float 扣双边费 + 两档
 时间退出态;⑤DB K4 advisory 读取(evidence 来自 DB 不抄常量);⑥ma250 镜像正确;
-⑦holding_store 落库/读取 + net_float_provider seam(修复「provider 恒 None → 浮盈豁免
-形同虚设」);⑧情景树每日对照挑出(复用既有写路径,无新写端点)。
+⑦holding_store 落库/读取 + **定格判向 seam**;⑧情景树每日对照挑出(复用既有写路径,无新写端点)。
+
+**审计 🔴-1(2026-07-27 用户拍板方案 A「D5 判一次定格」)**:本模块是唯一定格点,新增
+「16:35 定格」双向锁死——①定格豁免后跌回浮亏不改判;②定格「该走」后转浮盈不被洗白;
+③D15 硬上限仍按 d_count 判;④K1 单档恒不定格(行为与审计前逐位一致)。
 """
 
 from __future__ import annotations
@@ -202,6 +205,77 @@ def test_build_no_data_position_conservative(monkeypatch):
     assert it.has_data is False and it.net_float is None and it.hits == []
 
 
+# —— 审计 🔴-1:16:35 是**唯一定格点**,「D5 判一次定格」双向锁死 ——————————————————
+
+def _run_eod(monkeypatch, db, trade_date, close, positions, rule=None):
+    """跑一次 16:35 EOD 体检并落库(合成面板注入 close),返回 items。"""
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([_panel_row("600001.SH", close=close)]))
+    items = hk.build_holding_k4_check(trade_date, rule or _RULE_V13, positions, db_path=db)
+    holding_store.save_holding_eod_checks(trade_date, items, db_path=db)
+    return items
+
+
+def test_eod_freezes_verdict_once_and_survives_later_loss(isolated_env, monkeypatch):
+    """① D5 定格豁免 → D6/D7 收盘跌回浮亏,16:35 **不得**改判成时间退出(判向 + 定格三件不变)。"""
+    db = isolated_env.db_path
+    positions = [_pos(1, "600001.SH", buy_price=10.0, qty=1000, buy_date="20260710", buy_fees=15.0)]
+    d5 = _run_eod(monkeypatch, db, date(2026, 7, 17), 11.0, positions)[0]   # d=5,收盘 11 → 浮盈
+    assert d5.time_exit_state == PROFIT_EXEMPT and d5.time_exit_locked_state == PROFIT_EXEMPT
+    assert d5.time_exit_locked_date == "20260717" and d5.time_exit_locked_net_float == d5.net_float
+    d7 = _run_eod(monkeypatch, db, date(2026, 7, 21), 9.7, positions)[0]    # 跌成浮亏(未破 -5%)
+    assert d7.net_float is not None and d7.net_float < 0                    # 当日净浮盈确实为负
+    assert d7.time_exit_state == PROFIT_EXEMPT and d7.max_hold_effective == 15
+    assert d7.time_exit_locked_date == "20260717"                           # 定格日不变,判向未重判
+
+
+def test_eod_frozen_exit_not_laundered_by_later_profit(isolated_env, monkeypatch):
+    """② D5 定格「该走」→ D6/D7 转浮盈,16:35 **不得**改口豁免(违纪不被事后合法化)。"""
+    db = isolated_env.db_path
+    positions = [_pos(1, "600001.SH", buy_price=10.0, qty=1000, buy_date="20260710", buy_fees=15.0)]
+    d5 = _run_eod(monkeypatch, db, date(2026, 7, 17), 9.8, positions)[0]    # d=5,浮亏 → 该走
+    assert d5.time_exit_state == TIME_EXIT_NEXT_DAY and d5.time_exit_locked_state == TIME_EXIT_NEXT_DAY
+    d7 = _run_eod(monkeypatch, db, date(2026, 7, 21), 12.0, positions)[0]   # 大幅转浮盈
+    assert d7.net_float is not None and d7.net_float > 0
+    assert d7.time_exit_state == TIME_EXIT_NEXT_DAY and d7.max_hold_effective == 5
+    assert d7.time_exit_locked_state == TIME_EXIT_NEXT_DAY and d7.time_exit_locked_date == "20260717"
+
+
+def test_eod_hard_cap_overrides_frozen_exempt(isolated_env, monkeypatch):
+    """③ D15 硬上限仍按 d_count 判(定格豁免挡不住硬上限;定格记录本身不被改写)。"""
+    db = isolated_env.db_path
+    positions = [_pos(1, "600001.SH", buy_price=10.0, qty=1000, buy_date="20260710", buy_fees=15.0)]
+    _run_eod(monkeypatch, db, date(2026, 7, 17), 11.0, positions)           # d=5 定格豁免
+    far = [_pos(1, "600001.SH", buy_price=10.0, qty=1000, buy_date="20260601", buy_fees=15.0)]
+    it = _run_eod(monkeypatch, db, date(2026, 7, 21), 11.0, far)[0]         # 同 position_id,d 已 ≥15
+    assert it.d_count >= 15
+    assert it.time_exit_state == HARD_CAP_EXIT and it.max_hold_effective == 15
+    assert it.time_exit_locked_state == PROFIT_EXEMPT                       # 定格记录原样保留(审计)
+
+
+def test_eod_k1_single_tier_never_freezes(isolated_env, monkeypatch):
+    """④ K1 现役(单档)行为与审计前完全一致:定格三件恒 None,状态 = classify_time_exit。"""
+    db = isolated_env.db_path
+    positions = [_pos(1, "600001.SH", buy_price=10.0, qty=1000, buy_date="20260710", buy_fees=15.0)]
+    for close in (11.0, 9.8):
+        it = _run_eod(monkeypatch, db, date(2026, 7, 17), close, positions, rule=_RULE_K1)[0]
+        cfg_k1 = MomentumConfig(**_RULE_K1["config"])
+        assert (it.time_exit_state, it.max_hold_effective) == classify_time_exit(it.d_count, cfg_k1)
+        assert it.time_exit_state == TIME_EXIT_NEXT_DAY                     # d≥5 单档无条件退出
+        assert it.time_exit_locked_state is None and it.time_exit_locked_date is None
+        assert it.time_exit_locked_net_float is None
+    assert holding_store.locked_time_exit_map(db_path=db) == {}
+
+
+def test_eod_no_freeze_before_decision_point(isolated_env, monkeypatch):
+    """d < max_hold_days(未到判定点)→ HOLDING 且不定格(定格只发生在判定点当天)。"""
+    db = isolated_env.db_path
+    positions = [_pos(1, "600001.SH", buy_price=10.0, qty=1000, buy_date="20260716", buy_fees=15.0)]
+    it = _run_eod(monkeypatch, db, date(2026, 7, 17), 11.0, positions)[0]
+    assert it.d_count < 5 and it.time_exit_state == hk._HOLDING
+    assert it.time_exit_locked_state is None
+    assert holding_store.locked_time_exit_map(db_path=db) == {}
+
+
 def test_build_scenario_review_flag(monkeypatch):
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([_panel_row("600001.SH")]))
     items = hk.build_holding_k4_check(TD, _RULE_K1, [_pos(7, "600001.SH")],
@@ -262,15 +336,19 @@ def test_ma250_mirror():
 
 
 # ————————————————————————————————————————————————————————————————
-# 6) holding_store 落库/读取 + net_float_provider seam(修复浮盈豁免)
+# 6) holding_store 落库/读取 + 定格判向 seam(审计 🔴-1「D5 判一次定格」)
 # ————————————————————————————————————————————————————————————————
 
 class _Item:
     """duck-typed HoldingK4Item(供 store 落库测试,不依赖真面板)。"""
-    def __init__(self, pid, nf, state, eff, strong, review, hits=None):
+    def __init__(self, pid, nf, state, eff, strong, review, hits=None,
+                 lock_state=None, lock_date=None, lock_nf=None):
         self.position_id, self.net_float, self.time_exit_state = pid, nf, state
         self.max_hold_effective, self.has_strong, self.scenario_review = eff, strong, review
         self.d_count, self._hits = 5, hits or []
+        self.time_exit_locked_state = lock_state
+        self.time_exit_locked_date = lock_date
+        self.time_exit_locked_net_float = lock_nf
     def hits_public(self):
         return self._hits
 
@@ -291,24 +369,37 @@ def test_holding_store_roundtrip_and_latest(isolated_env):
     assert nf_map[1] == 120.0
 
 
-def test_net_float_provider_fixes_profit_exemption(isolated_env):
-    """seam 核心:两档 config 下,provider 给出真实浮盈 net_float → profit_exempt(不再因
-    provider 恒 None 被保守判非浮盈)。这正是 v1.3-① 留、本块要接的地基缺口。"""
+def test_locked_state_provider_feeds_frozen_verdict(isolated_env):
+    """seam 核心(审计 🔴-1 后):两档 config 下 provider 给出**定格判向** → profit_exempt。"""
     db = isolated_env.db_path
     holding_store.save_holding_eod_checks(date(2026, 7, 16),
-        [_Item(1, 300.0, PROFIT_EXEMPT, 15, False, False, [])], db_path=db)
-    provider = holding_store.net_float_provider(db_path=db)
+        [_Item(1, 300.0, PROFIT_EXEMPT, 15, False, False, [],
+               lock_state=PROFIT_EXEMPT, lock_date="20260716", lock_nf=300.0)], db_path=db)
+    provider = holding_store.locked_state_provider(db_path=db)
     cfg = MomentumConfig(**_RULE_V13["config"])
     positions = [_pos(1, "600001.SH", buy_date="20260710")]  # d≥5
-    # provider 给正浮盈 → profit_exempt(非 actionable,不推 D5)
-    exits = scan_time_exits(positions, TD, cfg, net_float_provider=provider)
+    exits = scan_time_exits(positions, TD, cfg, locked_state_provider=provider)
     assert len(exits) == 1 and exits[0].state == PROFIT_EXEMPT
-    # 对照:provider=None(修复前的地基缺口)→ 保守判 time_exit_next_day(浮盈豁免形同虚设)
-    exits_none = scan_time_exits(positions, TD, cfg, net_float_provider=None)
+    # 对照:无定格 → 保守判 time_exit_next_day(豁免需正向证据)
+    exits_none = scan_time_exits(positions, TD, cfg, locked_state_provider=None)
     assert exits_none[0].state == TIME_EXIT_NEXT_DAY
 
 
-def test_net_float_provider_missing_returns_none(isolated_env):
-    """无快照(刚开仓未体检)→ provider 返 None(保守判非浮盈,不崩)。"""
-    provider = holding_store.net_float_provider(db_path=isolated_env.db_path)
+def test_locked_map_takes_earliest_freeze_row(isolated_env):
+    """定格是「判一次」:后续各日的行都把定格值带过来,`locked_time_exit_map` 取**最早**那份
+    (判向源头 + 判定日 + 判定所用净浮盈都指向定格当天,不被后续行的净浮盈覆盖)。"""
+    db = isolated_env.db_path
+    holding_store.save_holding_eod_checks(date(2026, 7, 16),
+        [_Item(1, -50.0, TIME_EXIT_NEXT_DAY, 5, False, False, [],
+               lock_state=TIME_EXIT_NEXT_DAY, lock_date="20260716", lock_nf=-50.0)], db_path=db)
+    holding_store.save_holding_eod_checks(date(2026, 7, 17),
+        [_Item(1, 900.0, TIME_EXIT_NEXT_DAY, 5, False, False, [],
+               lock_state=TIME_EXIT_NEXT_DAY, lock_date="20260716", lock_nf=-50.0)], db_path=db)
+    locked = holding_store.locked_time_exit_map(db_path=db)
+    assert locked[1] == {"state": TIME_EXIT_NEXT_DAY, "date": "20260716", "net_float": -50.0}
+
+
+def test_locked_state_provider_missing_returns_none(isolated_env):
+    """无快照(刚开仓未体检)/ 未定格 → provider 返 None(保守判非浮盈,不崩)。"""
+    provider = holding_store.locked_state_provider(db_path=isolated_env.db_path)
     assert provider(_pos(99, "600009.SH")) is None

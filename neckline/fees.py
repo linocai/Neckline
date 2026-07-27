@@ -114,21 +114,58 @@ def estimate_sell_fee(
     )
 
 
+def estimate_buy_fee(
+    buy_amount: float, buy_fees: Optional[float] = None, rates: Optional[FeeRates] = None,
+) -> tuple[float, bool]:
+    """买入侧费用:有实录 `buy_fees` → 原样返回 `(实录值, False)`;**缺失 → 按默认费率估**
+    `(佣金(含 5 元地板) + 过户费, True)`。第二个返回值 = 「这是估算吗」。
+
+    **为何不再按 0 计(2026-07-27 审计 🔵-7)**:旧写法缺 `buy_fees` 时按 0 计入,净浮盈
+    **恒偏乐观**,且方向固定是「亏单被误判浮盈 → 误豁免续持」——与纪律的保守方向相反
+    (实测偏差 ≈ 实付买入费全额,样例 +18.92 元;只在盈亏平衡带翻向,但翻的都是同一个方向)。
+    改成与卖出费**同源同法**的诚实估算:同一套费率常量、同一个最低佣金地板。买入无印花税
+    (单边只对卖出征),故此处不含印花税。"""
+    r = rates or FeeRates()
+    if buy_fees is not None:
+        return float(buy_fees), False
+    if buy_amount <= 0:
+        return 0.0, True
+    commission = max(buy_amount * r.default_comm(), r.min_comm())
+    return commission + buy_amount * r.transfer(), True
+
+
 def estimate_net_float(
     price: float, qty: int, buy_price: float,
     buy_fees: Optional[float] = None, rates: Optional[FeeRates] = None,
 ) -> float:
-    """D5 收盘净浮盈估算(扣双边费):`price×qty − buy_price×qty − buy_fees(实录) − 估算卖出费`。
-    `buy_fees` 缺失(用户未补录)→ 按 0 计入(买入费未知只影响绝对量,不臆造)、卖出费仍按
-    默认率估。这是 §五 v1.3-①-C 两档时间退出的净浮盈判据的实盘估算落点。"""
+    """D5 收盘净浮盈估算(扣双边费):`price×qty − buy_price×qty − 买入费 − 估算卖出费`。
+
+    · `buy_fees` 有实录 → 用真数;
+    · **缺失 → 按默认费率估一笔买入费扣掉**(`estimate_buy_fee`,与卖出费同源;2026-07-27
+      审计 🔵-7 修复,旧写法按 0 计导致净浮盈恒偏乐观、亏单被误判浮盈而误豁免续持);
+    · 卖出费恒为估算(D5 当天尚未卖出),真数在清仓时由 `positions.sell_fees` 回填。
+
+    **诚实标注**:本函数返回的是**估算值**(至少卖出费必为估),需要知道「买入费是真数还是
+    估数」的调用方用 `estimate_net_float_detail`。这是 §五 v1.3-①-C 两档时间退出净浮盈判据
+    的实盘估算落点。"""
+    return estimate_net_float_detail(price, qty, buy_price, buy_fees=buy_fees, rates=rates)[0]
+
+
+def estimate_net_float_detail(
+    price: float, qty: int, buy_price: float,
+    buy_fees: Optional[float] = None, rates: Optional[FeeRates] = None,
+) -> tuple[float, bool]:
+    """同 `estimate_net_float`,但返回 `(净浮盈, buy_fees_estimated)` —— 第二项标注「买入费
+    是估的吗」(审计 🔵-7 要求「在出参/日志显式标注是估算」)。卖出费恒为估算,不单独标。"""
     sell_amount = price * qty
     buy_amount = buy_price * qty
+    buy_fee, buy_estimated = estimate_buy_fee(buy_amount, buy_fees=buy_fees, rates=rates)
     est = estimate_sell_fee(sell_amount, buy_fees=buy_fees, buy_amount=buy_amount, rates=rates)
-    return sell_amount - buy_amount - (buy_fees or 0.0) - est.total
+    return sell_amount - buy_amount - buy_fee - est.total, buy_estimated
 
 
 __all__ = [
     "STAMP_DUTY_SELL", "TRANSFER_FEE", "DEFAULT_COMMISSION_RATE", "MIN_COMMISSION",
     "FeeRates", "SellFeeEstimate", "infer_commission_rate", "estimate_sell_fee",
-    "estimate_net_float",
+    "estimate_buy_fee", "estimate_net_float", "estimate_net_float_detail",
 ]

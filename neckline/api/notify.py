@@ -99,14 +99,26 @@ def push_retreat_brake(
     )
 
 
+# 熔断锁定期盘前提醒的固定措辞(= `sentinel/precall.py::CIRCUIT_LOCKED_PRECALL_NOTE`;
+# 此处按字面量引用以免 notify → sentinel 重耦合,与 `_KIND_TIME_EXIT` 同惯例,
+# 一致性由 `tests/test_notify.py` 结构性断言守护)。
+_CIRCUIT_LOCKED_NOTE = "熔断中:今日只减不加"
+
+
 def push_precall_summary(
-    counts: dict, *, db_path: Optional[Path] = None, transport: Optional[Any] = None,
+    counts: dict, *, circuit_locked: bool = False,
+    db_path: Optional[Path] = None, transport: Optional[Any] = None,
 ) -> NotifyOutcome:
     """9:26 盘前校准汇总推送(受 push_precall 开关,plan v1.1-A.4)。`counts` = 盘前
     校准四类判定的计数 dict(`gap_up` 买点变形 / `low_open` 开盘证伪 / `position_low_open`
     持仓预警 / `auction` 竞价量能异常附注)。文案汇总「N 只买点变形 / M 只开盘证伪 /
     K 只持仓预警」,点开跳盘中看板。**盘前不产新票、不推荐买入**(§2.4 铁原则),只汇总
-    「前晚计划被集合竞价作废/预警」的条数。"""
+    「前晚计划被集合竞价作废/预警」的条数。
+
+    `circuit_locked`(2026-07-27 审计 🟡-4):熔断仍锁定 → **标题与正文前置「熔断中:今日只减
+    不加」**(§2.1 第 7 条纪律的「次日」那一半)。调用方(`_sentinel_loop`)按
+    `PrecallResult.should_push_summary` 决定推不推——锁定期间即便零判定也推,不被「平静清晨
+    不轰炸」的门槛吞掉。**纯提醒层**(§3.8):本函数只发文字,绝不代下单/撤单。"""
     st = get_app_settings(db_path=db_path)
     if not st.push_precall:
         return NotifyOutcome(skipped_reason="push_precall_off")
@@ -120,11 +132,15 @@ def push_precall_summary(
     if a:
         body += f"(另 {a} 只竞价量能异常)"
     body += "。点开看板核对,前晚计划按校准结果执行。"
+    title = "盘前校准提醒"
+    if circuit_locked:
+        title = f"{_CIRCUIT_LOCKED_NOTE}(盘前提醒)"
+        body = f"{_CIRCUIT_LOCKED_NOTE}——熔断未解锁,今日禁开新仓、只许减仓。" + body
     return _fanout(
-        "盘前校准提醒",
+        title,
         body,
         category=apns.CATEGORY_PRECALL,
-        custom={"kind": "precall"},
+        custom={"kind": "precall", "circuitLocked": bool(circuit_locked)},
         db_path=db_path, transport=transport,
     )
 
@@ -146,7 +162,7 @@ def push_d5_exit(
       · `kind='time_exit_next_day'`:非浮盈单——`two_tier=True`(v1.3 章程激活)标「净浮盈 ≤0」;
         `two_tier=False`(K1 单档无条件时间退出)不标净浮盈(单档退出与浮亏浮盈无关,兜底 v1.1 文案)。
     浮盈豁免单(`profit_exempt`)**不推**本函数(它没到退出,只在客户端 D 徽标转 D{n}/D{15} 档)。
-    `__all__` 仍五入口(不新增 push 函数,APNs category 仍五类)。点开跳今日计划持仓区。"""
+    白名单 `__all__` **六入口 / APNs 六类**(v1.3-② 起,本函数不新增第七类)。点开跳今日计划持仓区。"""
     st = get_app_settings(db_path=db_path)
     if not st.push_d5exit:
         return NotifyOutcome(skipped_reason="push_d5exit_off")

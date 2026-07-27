@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from neckline.fees import (
     DEFAULT_COMMISSION_RATE,
     MIN_COMMISSION,
@@ -90,3 +92,63 @@ def test_rates_override():
 def test_zero_sell_amount_no_crash():
     est = estimate_sell_fee(0.0)
     assert est.total == 0.0
+
+
+# ————————————————————————————————————————————————————————————————
+# 审计 🔵-7:缺 buy_fees 时按默认费率估扣(不再按 0 计 → 净浮盈恒偏乐观)
+# ————————————————————————————————————————————————————————————————
+
+def test_estimate_buy_fee_uses_real_value_when_recorded():
+    """阳性方向:有实录 buy_fees → 原样用真数,标注「非估算」。"""
+    from neckline.fees import estimate_buy_fee
+    fee, estimated = estimate_buy_fee(100000.0, buy_fees=23.5)
+    assert fee == 23.5 and estimated is False
+
+
+def test_estimate_buy_fee_falls_back_to_default_rate():
+    """缺 buy_fees → 按默认佣金率(含 5 元地板)+ 过户费估,与卖出费同源;标注「估算」。"""
+    from neckline.fees import DEFAULT_COMMISSION_RATE, MIN_COMMISSION, TRANSFER_FEE, estimate_buy_fee
+    amount = 100000.0
+    fee, estimated = estimate_buy_fee(amount, buy_fees=None)
+    assert estimated is True
+    expected = max(amount * DEFAULT_COMMISSION_RATE, MIN_COMMISSION) + amount * TRANSFER_FEE
+    assert fee == pytest.approx(expected)
+    # 小额买入命中 5 元最低佣金地板
+    small, _ = estimate_buy_fee(2000.0, buy_fees=None)
+    assert small == pytest.approx(MIN_COMMISSION + 2000.0 * TRANSFER_FEE)
+
+
+def test_missing_buy_fees_no_longer_biases_optimistic():
+    """审计 🔵-7 核心:缺 buy_fees 时净浮盈**必须**比按 0 计更保守(旧口径恒偏乐观,
+    方向固定是「亏单被误判浮盈 → 误豁免续持」,与纪律保守方向相反)。"""
+    from neckline.fees import estimate_buy_fee, estimate_net_float
+    # 毛浮盈 13 元:大于估算卖出费(≈10.11),但小于「卖出费 + 估算买入费(5.1)」——
+    # 正是审计说的「盈亏平衡带」,旧口径在这里把亏单判成浮盈。
+    price, qty, buy_price = 10.013, 1000, 10.0
+    nf_missing = estimate_net_float(price, qty, buy_price, buy_fees=None)
+    # 旧口径 = 买入费按 0 计(此处显式重算一遍作对照,不改生产代码)
+    from neckline.fees import estimate_sell_fee
+    old = price * qty - buy_price * qty - 0.0 - estimate_sell_fee(
+        price * qty, buy_fees=None, buy_amount=buy_price * qty).total
+    buy_fee, _ = estimate_buy_fee(buy_price * qty, buy_fees=None)
+    assert nf_missing == pytest.approx(old - buy_fee)
+    assert nf_missing < old                     # 更保守
+    # 该样例正处于盈亏平衡带:旧口径判浮盈(→ 误豁免),新口径判非浮盈(→ 按纪律离场)
+    assert old > 0 and nf_missing < 0
+
+
+def test_recorded_buy_fees_unchanged_by_fix():
+    """阴性方向(回归):有实录 buy_fees 时,本次修复不改变任何数值。"""
+    from neckline.fees import estimate_net_float, estimate_sell_fee
+    price, qty, buy_price, bf = 10.03, 1000, 10.0, 5.0
+    expected = price * qty - buy_price * qty - bf - estimate_sell_fee(
+        price * qty, buy_fees=bf, buy_amount=buy_price * qty).total
+    assert estimate_net_float(price, qty, buy_price, buy_fees=bf) == pytest.approx(expected)
+
+
+def test_net_float_detail_flags_estimation():
+    """出参显式标注「买入费是估的吗」(审计要求:估算必须可见)。"""
+    from neckline.fees import estimate_net_float_detail
+    _, est_missing = estimate_net_float_detail(10.5, 1000, 10.0, buy_fees=None)
+    _, est_recorded = estimate_net_float_detail(10.5, 1000, 10.0, buy_fees=8.0)
+    assert est_missing is True and est_recorded is False

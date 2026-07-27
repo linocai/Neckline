@@ -4,9 +4,10 @@
 **同码不重写铁律(§2.6/§3.8)**:
     · 止损/仓位纪律(止损/回落止盈/hold/单笔上限/持仓数/敞口)读大脑现役
       `MomentumConfig`,不硬编字面量(项目 CLAUDE.md「钉死的领域常量单一源」)。
-      **v1.2-A 起按周取「当时现役」**:每 ISO 周以 `week_end` 调
-      `brain.config_active_at()` 解析该周 governing 版本(章程升级后重跑历史周不
-      洗白旧违纪),不再一次性 `get_active()` 应用到所有周。
+      **v1.2-A 起按周取「当时现役」**:每 ISO 周以 `week_start` 调
+      `brain.config_governing_for_week()` 解析该周 governing 版本(判据「激活日 <
+      week_start」= 激活当周仍按旧章程判,2026-07-27 审计 🟡-3 修复;章程升级后
+      重跑历史周不洗白旧违纪),不再一次性 `get_active()` 应用到所有周。
     · 绿盘大阴线/距前高/次新/高弹题材四条禁买过滤,直接复用
       `neckline.strategy.signals` 的同名判定表达式(与回测/报告候选管线同一份
       信号定义),本模块不重新推一遍阈值比较。
@@ -35,7 +36,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -437,6 +438,68 @@ def check_cooldown(round_trips: List[RoundTrip], cooldown_days: int) -> List[str
     return out
 
 
+_TIME_EXIT_KIND_LABEL = {
+    "time_exit_next_day": "时间退出(D5 收盘判非浮盈 → 次日退出)",
+    "hard_cap_exit": "浮盈硬上限时间退出(D15 无条件)",
+}
+
+
+def check_time_exit_discipline(
+    week_start: date, week_end: date, positions: List, due_map: Dict[int, Dict[str, str]],
+) -> List[str]:
+    """时间退出违纪审计(§2.1 第 2 条的**周线兜底**;2026-07-27 审计 🔵-9 补)。
+
+    此前 §2.1 第 2 条(止盈/时间退出)在周复盘里**完全没有兜底**——系统当晚推了「按计划
+    离场」,用户没走也无人事后记一笔。配合同批的 🔴-1「D5 判一次定格」修复(判向不再逐日
+    重判、违纪不被系统事后改口豁免),这里把「说了该走、台账显示没走」如实记成违纪。
+
+    判据(两侧数据都在本系统内,不依赖交割单):
+      · **系统说该走**:`due_map[position_id]`(= `holding_store.time_exit_due_map`,取
+        `holding_eod_check.time_exit_state` 落 actionable 两态的**最早**一天 L);
+      · **应离场日**:L 的**下一个交易日**(「次日退出」的字面含义);
+      · **台账显示没走**:该持仓 `sell_date` 晚于应离场日,或到 `week_end` 仍 `open`。
+      · **归哪一周**:应离场日所在的 ISO 周(违纪在那天成立)。
+
+    诚实边界(与熔断同款):**只能基于用户已补录进台账的成交判定**,漏录则失灵;
+    卖在应离场日**之前**不算违纪(更早离场是更严的自律,不罚)。单档现役 K1 与两档 v1.3
+    都覆盖(判据用每日记录的 `time_exit_state`,见 `time_exit_due_map` docstring)。"""
+    from neckline.calendar import next_trading_day, trading_days_between
+
+    out: List[str] = []
+    for p in positions:
+        due = due_map.get(p.id)
+        if not due:
+            continue
+        try:
+            decided = datetime.strptime(due["decision_date"], "%Y%m%d").date()
+        except (ValueError, TypeError, KeyError):
+            continue
+        must_exit_by = next_trading_day(decided)
+        if not (week_start <= must_exit_by <= week_end):
+            continue                      # 违纪(若有)不属于本周
+        sell_date = None
+        if p.sell_date:
+            try:
+                sell_date = datetime.strptime(p.sell_date, "%Y%m%d").date()
+            except (ValueError, TypeError):
+                sell_date = None
+        kind = _TIME_EXIT_KIND_LABEL.get(due.get("kind", ""), "时间退出")
+        if sell_date is None:
+            out.append(
+                f"{p.ts_code} {p.buy_date}买入:系统于 {decided.strftime('%Y-%m-%d')} 判"
+                f"{kind},应于 {must_exit_by.strftime('%Y-%m-%d')} 离场,台账截至本周末仍"
+                f"未平仓——违反 §2.1 第 2 条时间退出纪律(基于已补录台账判定)。"
+            )
+        elif sell_date > must_exit_by:
+            out.append(
+                f"{p.ts_code} {p.buy_date}买入:系统于 {decided.strftime('%Y-%m-%d')} 判"
+                f"{kind},应于 {must_exit_by.strftime('%Y-%m-%d')} 离场,台账实际卖出日"
+                f"{sell_date.strftime('%Y-%m-%d')}(晚 {len(trading_days_between(must_exit_by, sell_date)) - 1} "
+                f"个交易日)——违反 §2.1 第 2 条时间退出纪律。"
+            )
+    return out
+
+
 # ======================================================================
 #  周统计 + 强制复盘
 # ======================================================================
@@ -524,11 +587,14 @@ def run_weekly_review(
 ) -> Tuple[List[WeeklyReview], List[str]]:
     """顶层入口:FIFO 闭合 → 按 ISO 周分桶 → 每周跑「对账三查」+ 统计 + 强制复盘。
 
-    **按周取「当时现役」config(v1.2-A 历史洗白修复)**:每个 ISO 周以 `week_end` 为
-    ref 调 `brain.config_active_at(week_end)` 解析该周 governing 的大脑版本,用它的
+    **按周取「当时现役」config(v1.2-A 历史洗白修复 + 2026-07-27 审计 🟡-3)**:每个 ISO 周
+    以 `week_start` 为 ref 调 `brain.config_governing_for_week(week_start)`(判据**激活日 <
+    week_start**,即**激活当周仍按旧章程判**)解析该周 governing 的大脑版本,用它的
     `MomentumConfig` 判止损/仓位/禁买——**不再一次性 `get_active()` 应用到所有周**。
     否则章程升级(如 single_cap 2 万→4 万)后重跑历史周,当初超限的违纪会被今天的
-    上限凭空洗白掉。无现役版本(纯 legacy 库经兜底退回 `get_active`,仍为 None)时,
+    上限凭空洗白掉;旧判据(激活日 ≤ week_end)还会在周末/北京周一凌晨激活时,把**刚
+    结束那一周**整周交给新章程判(审计实测:该周违纪 1 条 → 0 条)。无现役版本(纯 legacy
+    库经兜底退回 `get_active`,仍为 None)时,
     止损纪律/禁买过滤两类检查诚实跳过(不臆造规则)。governing 版本号落
     `review.strategy_version`(→ `reviews.strategy_version` 审计"这周用哪版判的")。
 
@@ -548,10 +614,15 @@ def run_weekly_review(
         from neckline.config import settings
         total_capital = settings.total_capital
 
-    def _cfg_at(ref_date: date) -> Tuple[Optional[MomentumConfig], Optional[str]]:
-        """解析 ref_date 当时 governing 版本的 (MomentumConfig, 版本号)。无 / 非法
-        config → (None, 版本号或 None):止损/章程检查据此诚实跳过。"""
-        gov = brain.config_active_at(ref_date, db_path=db_path)
+    def _cfg_for_week(week_start: date) -> Tuple[Optional[MomentumConfig], Optional[str]]:
+        """解析某 ISO 周(以 `week_start` 标识)governing 版本的 (MomentumConfig, 版本号)。
+        无 / 非法 config → (None, 版本号或 None):止损/章程检查据此诚实跳过。
+
+        **判据「激活日 < week_start」= 激活当周仍按旧章程判**(2026-07-27 审计 🟡-3 修复,
+        用户拍板方案 (a))——旧写法用 `config_active_at(week_end)`(激活日 ≤ week_end),
+        周末/北京周一凌晨跑切换器会把**刚结束那一周**整周交给新章程判、洗白该周的违纪。
+        判据与理由的唯一源在 `brain.config_governing_for_week` docstring,此处不重述。"""
+        gov = brain.config_governing_for_week(week_start, db_path=db_path)
         if gov is None:
             return None, None
         try:
@@ -576,16 +647,46 @@ def run_weekly_review(
             all_dates.add(iso_week_key(rt.buy_date))
 
     # cooldown 违纪与具体周次无关(整批算一次,下面按"再次买入"落在哪周分发)——用
-    # 数据截止日 asof 当时 governing 的 cooldown_days(现役恒为 0 时 `check_cooldown`
-    # 提前返回空列表,循环体不需要重算)。
-    asof_cfg, _ = _cfg_at(asof)
+    # 数据截止日 asof **所在周** governing 的 cooldown_days(现役恒为 0 时 `check_cooldown`
+    # 提前返回空列表,循环体不需要重算)。同走周口径,与逐周判据一致。
+    asof_cfg, _ = _cfg_for_week(week_range(iso_week_key(asof))[0])
     cooldown_violations = check_cooldown(round_trips, asof_cfg.cooldown_days) if asof_cfg is not None else []
+
+    # 时间退出违纪审计的两侧数据(审计 🔵-9):台账全量持仓 + 系统「判该走」的最早日。
+    # 整批读一次(与 cooldown 同姿势),逐周按「应离场日落在哪周」分发。库读失败不掀翻
+    # 周复盘主流程(该项诚实跳过 = 与「无现役 config 时止损检查跳过」同款诚实降级)。
+    try:
+        from neckline.report.holding_store import time_exit_due_map
+        from neckline.sentinel.positions import load_all_positions
+
+        ledger_positions = load_all_positions(db_path=db_path)
+        time_exit_due = time_exit_due_map(db_path=db_path)
+    except Exception:  # noqa: BLE001
+        ledger_positions, time_exit_due = [], {}
+
+    # 「应离场日」所在周若**当周没有任何成交**,原来根本不会生成该周的 WeeklyReview →
+    # 违纪静默丢失(而「拿着没卖、整周没动」恰恰是时间退出违纪最典型的样子)。故把这些周
+    # 也纳入 all_dates —— 但**只纳入交割单实际覆盖区间内的周**(`[最早成交日所在周,
+    # asof 所在周]`):区间外我们没有该周的成交数据,沉默是诚实的,不能拿半份数据判违纪。
+    if time_exit_due:
+        from neckline.calendar import next_trading_day
+
+        span_lo = min(t.trade_date for t in trades)
+        for due in time_exit_due.values():
+            try:
+                decided = datetime.strptime(due["decision_date"], "%Y%m%d").date()
+            except (ValueError, TypeError, KeyError):
+                continue
+            must_exit_by = next_trading_day(decided)
+            if span_lo <= must_exit_by <= asof:
+                all_dates.add(iso_week_key(must_exit_by))
 
     reviews: List[WeeklyReview] = []
     for week in sorted(all_dates):
         w_start, w_end = week_range(week)
-        # 按周取「当时现役」config(v1.2-A):以 week_end 解析该周 governing 版本。
-        cfg, gov_version = _cfg_at(w_end)
+        # 按周取「当时现役」config(v1.2-A + 2026-07-27 审计 🟡-3):以 **week_start** 解析该周
+        # governing 版本(判据「激活日 < week_start」——激活当周仍按旧章程判,不洗白刚结束的一周)。
+        cfg, gov_version = _cfg_for_week(w_start)
         buy_trades_week = [t for t in trades if t.side == "buy" and w_start <= t.trade_date <= w_end]
         closed_week = [rt for rt in round_trips if rt.closed and rt.sell_date and w_start <= rt.sell_date <= w_end]
 
@@ -618,6 +719,12 @@ def run_weekly_review(
             review.discipline_violations += [
                 msg for msg in cooldown_violations if _cooldown_violation_in_week(msg, w_start, w_end)
             ]
+        # 时间退出违纪(§2.1 第 2 条周线兜底,审计 🔵-9)。与上面几条不同,本项**不读 cfg**
+        # ——判据是「系统当时在 `holding_eod_check` 里记了该走」这一历史事实,不是拿今天的
+        # 参数重算(同「不用今天的章程重判历史周」精神)。无现役 config 的库照样能审。
+        review.discipline_violations += check_time_exit_discipline(
+            w_start, w_end, ledger_positions, time_exit_due
+        )
 
         review.stats = compute_weekly_stats(closed_week, open_count=sum(1 for rt in round_trips if not rt.closed))
         review.forced_review = is_forced_review(review.stats, total_capital)
@@ -712,6 +819,10 @@ def weekly_review_dict(review: WeeklyReview) -> dict:
         "week": review.week,
         "weekStart": review.week_start.strftime("%Y%m%d"),
         "weekEnd": review.week_end.strftime("%Y%m%d"),
+        # 审计 🔵-9:该周 governing 章程版本号(列早已落 `reviews.strategy_version`,但 API
+        # 响应/客户端此前看不到「这周用哪版章程判的」)。无版本(纯 legacy 库)→ 空串,
+        # 客户端按「未知」展示,不臆造版本名。
+        "strategyVersion": review.strategy_version or "",
         "roundTrips": [round_trip_dict(rt) for rt in review.round_trips],
         "closedRoundTrips": [round_trip_dict(rt) for rt in review.closed_round_trips],
         "planChecks": [plan_check_dict(c) for c in review.plan_checks],
@@ -742,6 +853,7 @@ __all__ = [
     "check_position_count_and_exposure",
     "check_entry_screens",
     "check_cooldown",
+    "check_time_exit_discipline",
     "WeeklyStats",
     "compute_weekly_stats",
     "is_forced_review",

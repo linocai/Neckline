@@ -9,6 +9,7 @@ CLI(`scripts/positions.py`)录入/清仓——**故意不造重界面**,字段�
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -17,6 +18,8 @@ from typing import List, Optional
 
 from neckline.calendar import trading_days_between
 from neckline.db import connection, init_schema
+
+logger = logging.getLogger(__name__)
 
 STATUS_OPEN = "open"
 STATUS_CLOSED = "closed"
@@ -112,13 +115,27 @@ def close_position(
 
     `close_reason`(v1.2-A2,可选):离场原因枚举码(`CLOSE_REASON_*`);不传 → 落库
     NULL(熔断评估时才走价格近似兜底判止损,见 `sentinel/circuit.py`)。**用户显式
-    标注的码原样落库、信用户标注**;本函数不做码白名单校验(API 层 pydantic Literal
-    已挡非法码,CLI/内部调用方自负),也绝不代下单/撤单(§3.8,只记账)。
+    标注的合法码原样落库、信用户标注**;绝不代下单/撤单(§3.8,只记账)。
+
+    **非法码防线(2026-07-27 审计 🔵-5)**:不在 `CLOSE_REASON_CODES` 白名单里的非空码
+    (如小写 `'stop_loss'`、手工 SQL 写的自造串)**降为 NULL + 打 warning**,不原样落库。
+    根因:`circuit._is_stop_loss_close` 对**非空** `close_reason` 一律「信标注、不用价格
+    二次猜」,只认 `STOP_LOSS` —— 于是一个大小写写错的 `'stop_loss'` 会让这笔既不算止损、
+    也不走价格兜底,**熔断静默失效**(审计反例 D4 实测:三笔 −6% 卖出因此不触发)。降为
+    NULL 后回到价格近似兜底 = 保守方向(该算止损的仍被算上)。**降级而不是拒绝**:清仓
+    是「只减」方向,系统绝不因记账问题拦住用户把仓位记平(§3.8 精神)。
 
     `sell_fees`(v1.3,可选):清仓实付卖出费用真数,成交后回填——**周复盘对账用真数、
     不用估数**(D5 净浮盈判向阶段的卖出费只能估,见 fees.py;真数回填在此)。不传 → NULL。"""
     init_schema(db_path)
     now = _now()
+    if close_reason is not None and close_reason not in CLOSE_REASON_CODES:
+        logger.warning(
+            "非法 close_reason=%r(不在白名单 %s)——降为 NULL 落库,熔断评估退价格近似兜底"
+            "(position_id=%s)。合法码见 neckline.sentinel.positions.CLOSE_REASON_CODES。",
+            close_reason, list(CLOSE_REASON_CODES), position_id,
+        )
+        close_reason = None
     with connection(db_path) as conn:
         row = conn.execute("SELECT status FROM positions WHERE id=?", (position_id,)).fetchone()
         if row is None or row[0] == STATUS_CLOSED:

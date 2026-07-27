@@ -46,6 +46,7 @@ def _run_one_iteration(monkeypatch, *, now, precall_result=None, precall_exc=Non
 
     def _summary_stub(counts, **kw):
         calls["summary"] += 1
+        calls["summary_locked"] = kw.get("circuit_locked")
 
     def _d5_stub(name, code, d, **kw):
         calls["d5"].append((name, code, d, kw.get("kind"), kw.get("two_tier")))
@@ -96,6 +97,24 @@ def test_loop_skipped_precall_no_push(monkeypatch):
     calls = _run_one_iteration(monkeypatch, now=PREOPEN, precall_result=res)
     assert calls["precall"] == 1
     assert calls["summary"] == 0 and calls["d5"] == []
+
+
+def test_loop_pushes_summary_when_circuit_locked_even_with_zero_findings(monkeypatch):
+    """审计 🟡-4:熔断锁定中,**即便零判定**也要推 9:26 汇总(带「熔断中:今日只减不加」)
+    ——不被「平静清晨不轰炸」的门槛吞掉。"""
+    res = PrecallResult(trade_date=PREOPEN.date(), now=PREOPEN, ran=True, circuit_locked=True)
+    assert res.summary_actionable == 0 and res.should_push_summary is True
+    calls = _run_one_iteration(monkeypatch, now=PREOPEN, precall_result=res)
+    assert calls["summary"] == 1
+    assert calls["summary_locked"] is True
+
+
+def test_loop_no_summary_when_unlocked_and_nothing_actionable(monkeypatch):
+    """阴性方向:未锁定 + 零判定 → 仍然不推(不因本次修复变成每天轰炸)。"""
+    res = PrecallResult(trade_date=PREOPEN.date(), now=PREOPEN, ran=True, circuit_locked=False)
+    assert res.should_push_summary is False
+    calls = _run_one_iteration(monkeypatch, now=PREOPEN, precall_result=res)
+    assert calls["summary"] == 0
 
 
 def test_loop_swallows_precall_exception(monkeypatch):

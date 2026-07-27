@@ -104,6 +104,46 @@ class TestActivator:
         assert activate_charter.activate(db, "v1.2", confirm=True) == 2   # 硬拒绝
         assert brain.get_active(db_path=db).version == "K1"              # 未激活任何
 
+    @pytest.mark.parametrize("target", ["K1", "K2", "K3", "K4", "v1.2", "v1.4", "V1.3", "", "k2"])
+    def test_whitelist_rejects_everything_but_v13(self, isolated_env, target):
+        """审计 🟡-2:目标闸是**白名单**。清仓后(闸 2 天然放行)对任何非白名单目标都必须
+        非零退出且不动 `is_active`——审计员实测旧黑名单下 `--target K2 --confirm` 真能把废弃
+        研究臂激活成现役章程(exit=0、is_active 变 K2)。"""
+        db = isolated_env.db_path
+        self._prep(db)
+        # 先把 K2/K4 也落成真实存在的行(证明「行存在」也拦得住,不是靠「版本不存在」侥幸)
+        brain.save_version("K2", {"config": dict(TEST_RULE_V1_CONFIG)}, "废弃研究臂",
+                           activate=False, db_path=db)
+        brain.save_version("K4", {"config": dict(TEST_RULE_V1_CONFIG)}, "参考档",
+                           activate=False, db_path=db)
+        assert activate_charter.activate(db, target, confirm=True) != 0
+        assert brain.get_active(db_path=db).version == "K1"
+        assert [v.version for v in brain.list_versions(db_path=db) if v.is_active] == ["K1"]
+
+    def test_whitelist_allows_v13(self, isolated_env):
+        """白名单阳性方向:v1.3 仍能正常激活(闸没有把正路一起堵死)。"""
+        db = isolated_env.db_path
+        self._prep(db)
+        assert activate_charter.activate(db, "v1.3", confirm=True) == 0
+        assert brain.get_active(db_path=db).version == "v1.3"
+
+    def test_core_values_checked_for_every_activation(self, isolated_env):
+        """审计 🟡-2 后半:**凡激活必核对**核心值。此处把 v1.3 行的 single_cap 改成 K1 旧值
+        (2 万),其余退出三字段都对——旧实现只核对 retrace/退出档会放行,新实现必须拒绝。"""
+        db = isolated_env.db_path
+        _seed_k1(db)
+        bad = dict(TEST_RULE_V1_CONFIG)
+        bad.update(max_positions=3, max_exposure_frac=1.0, take_profit_retrace=0.08,
+                   time_exit_only_if_unprofitable=True, max_hold_days_profit=15)  # single_cap 仍 20000
+        brain.save_version("v1.3", {"config": bad, "lineage": "K1"}, "仓位字段未改的 v1.3",
+                           activate=False, db_path=db)
+        assert activate_charter.activate(db, "v1.3", confirm=True) == 2
+        assert brain.get_active(db_path=db).version == "K1"
+
+    def test_whitelist_and_core_expectations_stay_in_sync(self):
+        """结构性护栏:白名单里的每个版本都必须有一条核心值核对表(加白名单不许忘加核对)。"""
+        assert set(activate_charter._ALLOWED_TARGETS) <= set(activate_charter._CORE_EXPECTATIONS)
+
     def test_dry_run_no_write(self, isolated_env):
         db = isolated_env.db_path
         self._prep(db)

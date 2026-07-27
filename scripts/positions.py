@@ -4,9 +4,12 @@
 
 用法:
     python scripts/positions.py add 600519.SH 1720.00 100 20260720 [--note "低吸建仓"]
-    python scripts/positions.py close 3 1750.00 20260722
+    python scripts/positions.py close 3 1750.00 20260722 [--reason STOP_LOSS]
     python scripts/positions.py list              # 当前持仓(status=open)
     python scripts/positions.py list --all         # 含已清仓的全部历史
+
+`close` 后**自动跑一次熔断评估**(2026-07-27 审计 🔵-6:此前只挂在 API 端点,CLI 补录的
+第 3 笔止损不会当场触发熔断)——纯提醒层,只建触发行 + 发提醒,绝不代下单/撤单。
 
 不做任何仓位纪律校验(单笔上限/最多5只/总敞口)——那是系统对候选的建议约束,
 不是对用户实际操作的强制拦截;系统只审计不拦人手动录入(§3.8「系统永不自动
@@ -25,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neckline.config import ensure_data_dirs  # noqa: E402
 from neckline.sentinel.positions import (  # noqa: E402
+    CLOSE_REASON_CODES,
     Position,
     close_position,
     load_all_positions,
@@ -56,12 +60,41 @@ def cmd_add(args: argparse.Namespace) -> int:
 
 
 def cmd_close(args: argparse.Namespace) -> int:
-    ok = close_position(args.position_id, args.sell_price, _parse_date(args.sell_date))
+    sell_date = _parse_date(args.sell_date)
+    ok = close_position(args.position_id, args.sell_price, sell_date,
+                        close_reason=args.close_reason)
     if not ok:
         logger.error("清仓失败:未找到 id=%d 的持仓,或该持仓已清仓。用 `list --all` 核对。", args.position_id)
         return 1
     logger.info("已清仓记账:#%d 卖出价%.2f 卖出日%s", args.position_id, args.sell_price, args.sell_date)
+    _evaluate_circuit(sell_date)
     return 0
+
+
+def _evaluate_circuit(sell_date) -> None:
+    """清仓后折进熔断评估(2026-07-27 审计 🔵-6 补)。
+
+    此前熔断评估只挂在 API 端点 `POST /positions/{id}/close`,**用 CLI 补录的第 3 笔止损
+    不会当场触发熔断**,要等下一次 API 清仓才被尾链带出。运维/应急场景恰恰常用 CLI,
+    这条缺口现在补上——两个入口从此走同一段评估 + 推送,行为不再取决于「从哪个口子录的」。
+
+    **尽力而为、异常吞掉不阻断清仓主流程**(与 API 端点同款,plan v1.2-A2 F.3);
+    **纯提醒层**(§3.8):只建触发行 + 发提醒,绝不代下单/撤单/改止损。"""
+    try:
+        from neckline.sentinel import circuit
+
+        episode = circuit.evaluate_after_close(sell_date)
+        if episode is None:
+            return
+        logger.warning("⚠ 已触发熔断(%s):%s", episode.trigger_reason, episode.note)
+        try:
+            from neckline.api import notify
+            notify.push_circuit_breaker(episode)
+        except Exception:  # noqa: BLE001  推送失败不影响熔断已落库这一事实
+            logger.warning("熔断推送失败(已吞;触发行已落库,App 端横幅/次日盘前提醒仍会生效)",
+                           exc_info=True)
+    except Exception:  # noqa: BLE001  熔断评估异常绝不能掀翻清仓主流程
+        logger.warning("熔断评估异常(已吞,不影响清仓已记账)", exc_info=True)
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -86,10 +119,16 @@ def main() -> int:
     p_add.add_argument("--note", default=None)
     p_add.set_defaults(func=cmd_add)
 
-    p_close = sub.add_parser("close", help="清仓记账")
+    p_close = sub.add_parser("close", help="清仓记账(清仓后自动跑一次熔断评估)")
     p_close.add_argument("position_id", type=int, help="`list` 展示的 # 编号")
     p_close.add_argument("sell_price", type=float)
     p_close.add_argument("sell_date", help="YYYYMMDD")
+    # 离场原因(可选):唯一源 `positions.CLOSE_REASON_CODES`;不传 → NULL(熔断走价格近似
+    # 兜底)。argparse choices 直接吃白名单,CLI 侧不可能写出非法码(与 store 层白名单防线
+    # 互补,后者管脚本/手工 SQL 那条路)。
+    p_close.add_argument("--reason", dest="close_reason", default=None,
+                         choices=list(CLOSE_REASON_CODES),
+                         help="离场原因码(不传=未标注,熔断按卖出价近似判止损)")
     p_close.set_defaults(func=cmd_close)
 
     p_list = sub.add_parser("list", help="查看持仓")

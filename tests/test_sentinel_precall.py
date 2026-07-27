@@ -256,6 +256,56 @@ def test_run_precall_low_open_and_position_and_auction(isolated_env):
 
 
 # ————————————————————————————————————————————————————————————————
+# 3b) 熔断锁定 → 盘前强提醒(审计 🟡-4:§2.1 第 7 条「次日只减不加」的那一半)
+# ————————————————————————————————————————————————————————————————
+
+def _precall_with_circuit(isolated_env, *, locked: bool):
+    """跑一拍盘前 tick;`locked=True` 时先造一条未解锁的熔断触发行。"""
+    from neckline.db import connection
+    settings = isolated_env
+    days = business_days(date(2026, 6, 1), 30)
+    report_day, today = days[-2], days[-1]
+    seed_active_rule_v1(settings)
+    _setup(settings, report_day=report_day, today=today, candidates=[_candidate()])
+    if locked:
+        with connection(settings.db_path) as conn:
+            conn.execute(
+                "INSERT INTO circuit_breaker (triggered_at, trigger_reason, trigger_ref_date, "
+                "basis_json, unlocked_at, unlocked_via, created_at) VALUES (?,?,?,?,?,?,?)",
+                ("2026-07-20T08:00:00+00:00", "consecutive_stops", "20260720", "{}", None, None,
+                 "2026-07-20T08:00:00+00:00"),
+            )
+    now = datetime.combine(today, time(9, 25, 30))
+    # open 9.55 vs ma10 9.5 → 高开 +0.5%(未超 3% 阈)、pre_close 10.0 → 低开 -4.5%?
+    # 用 open=pre_close=9.55 令四类判定全部不触发,专测「零判定 + 熔断锁定」这一格。
+    quotes = {"600001.SH": _quote(open_=9.55, pre_close=9.55, code="600001.SH")}
+    res = run_precall_tick(now, db_path=settings.db_path,
+                           parquet_dir=settings.parquet_dir, quotes_fn=lambda codes: quotes)
+    return settings, today, res
+
+
+def test_precall_circuit_locked_forces_summary(isolated_env):
+    """锁定态 → `circuit_locked=True`、零判定也 `should_push_summary`、看板留痕已落。"""
+    settings, today, res = _precall_with_circuit(isolated_env, locked=True)
+    assert res.ran is True
+    assert res.summary_actionable == 0          # 本拍确实没有其它判定
+    assert res.circuit_locked is True
+    assert res.should_push_summary is True      # 不被「平静清晨不轰炸」门槛吞掉
+    assert already_pushed(today, "precall", "", precall.EVENT_CIRCUIT_LOCKED,
+                          db_path=settings.db_path)
+
+
+def test_precall_circuit_unlocked_no_reminder(isolated_env):
+    """阴性方向:未锁定 → 不带提醒、零判定时也不推(不制造每日噪音)。"""
+    settings, today, res = _precall_with_circuit(isolated_env, locked=False)
+    assert res.ran is True
+    assert res.circuit_locked is False
+    assert res.should_push_summary is False
+    assert not already_pushed(today, "precall", "", precall.EVENT_CIRCUIT_LOCKED,
+                              db_path=settings.db_path)
+
+
+# ————————————————————————————————————————————————————————————————
 # 4) D5 时间退出扫描:== max_hold_days 触发且读 config 非硬编
 # ————————————————————————————————————————————————————————————————
 

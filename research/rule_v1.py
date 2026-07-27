@@ -102,7 +102,10 @@ def main(commit: bool):
             "信号(阶段2 情绪仪表盘)与实盘LLM审判(回测盲区)。"
         )
         rule = {"config": RULE_V1, "market_filter_default": False, "week_halving_default": False}
-        v = brain.save_version("v1", rule, changelog, metrics=metrics, activate=True)
+        # legacy 定版脚本(阶段 1)。**activate 改 False**(2026-07-27 系统线审计 🔵-8):
+        # 重跑本脚本原会新建 `v1` 行并**直接激活**,把生产现役章程(K1 / 未来 v1.3)顶掉。
+        # 落行留档即可,激活一律走 `scripts/activate_charter.py`(带四道闸)。
+        v = brain.save_version("v1", rule, changelog, metrics=metrics, activate=False)
         print(f"\n[大脑] 已落 strategy_versions:{v.version} active={v.is_active} created={v.created_at}")
         print(f"       样本外 PF={metrics['out_sample']['pf']:.3f} 总收益={metrics['out_sample']['total_ret']:.2%}")
 

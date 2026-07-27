@@ -141,6 +141,55 @@ def test_precall_summary_sends_when_on(api_env, apns_configured):
     assert out.sent == 2 and out.failed == 0   # 默认开(列默认 1)
 
 
+def test_precall_summary_circuit_locked_prefixes_note(api_env, apns_configured):
+    """审计 🟡-4:熔断锁定 → 标题/正文前置「熔断中:今日只减不加」+ custom 带 circuitLocked。"""
+    import json
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    seen = {}
+
+    def _capture(url, headers, body):
+        seen.update(json.loads(body.decode() if isinstance(body, bytes) else body))
+        return apns.PushResult(ok=True, status=200, reason="ok")
+
+    out = notify.push_precall_summary(
+        {"gap_up": 0, "low_open": 0, "position_low_open": 0, "auction": 0},
+        circuit_locked=True, db_path=db, transport=_capture,
+    )
+    assert out.sent == 1
+    alert = seen["aps"]["alert"]
+    assert "熔断中:今日只减不加" in alert["title"]
+    assert "熔断中:今日只减不加" in alert["body"] and "只许减仓" in alert["body"]
+    assert seen["circuitLocked"] is True
+
+
+def test_precall_summary_unlocked_has_no_circuit_note(api_env, apns_configured):
+    """阴性方向:未锁定 → 文案不带熔断句(不制造误导),custom 标 False。"""
+    import json
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    seen = {}
+
+    def _capture(url, headers, body):
+        seen.update(json.loads(body.decode() if isinstance(body, bytes) else body))
+        return apns.PushResult(ok=True, status=200, reason="ok")
+
+    notify.push_precall_summary(
+        {"gap_up": 1, "low_open": 0, "position_low_open": 0, "auction": 0},
+        db_path=db, transport=_capture,
+    )
+    alert = seen["aps"]["alert"]
+    assert "熔断" not in alert["title"] and "熔断" not in alert["body"]
+    assert seen["circuitLocked"] is False
+
+
+def test_circuit_locked_note_matches_precall_constant():
+    """结构性:notify 的字面量措辞与 `sentinel/precall.CIRCUIT_LOCKED_PRECALL_NOTE` 一致
+    (两处刻意不互相 import,靠本断言防漂移——同 `_KIND_TIME_EXIT` 惯例)。"""
+    from neckline.sentinel.precall import CIRCUIT_LOCKED_PRECALL_NOTE
+    assert notify._CIRCUIT_LOCKED_NOTE == CIRCUIT_LOCKED_PRECALL_NOTE
+
+
 def test_d5_exit_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
