@@ -556,6 +556,79 @@ class TestNewsAlertsWiring:
         assert tushare_status["scanned"] is True
 
 
+class TestInfoCardSummaryWiring:
+    """v1.4-④-B 信息卡摘要接入 `build_report`(硬要求④:整段异常不阻断主报告)。
+    摘要本身的计算正确性在 `test_info_card.py` 逐项覆盖;本类只测「接线」+
+    「复用已算好的 news_alerts.items/top_list,不二次现拉」+「不阻断」+「落库」。"""
+
+    def test_candidates_carry_info_card_summary_after_build_report(self, isolated_env, monkeypatch):
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        summary = cand.info_card_summary
+        assert set(summary.keys()) == {"snapshot", "mildBand", "news", "topList"}
+        # seed_synthetic_market 铺的 turnover_rate 恒 5.0,零额外读取(直接吃 candidate.raw)。
+        assert summary["snapshot"]["turnoverRate"] == pytest.approx(5.0)
+        # 不在持仓/自选域(本测试未开仓/未加自选)→ 消息面如实标"不在扫描域"。
+        assert summary["news"]["scanned"] is False
+
+        loaded = store.load_report(report_date, db_path=isolated_env.db_path)
+        loaded_cand = next(c for c in loaded["candidates"] if c["ts_code"] == "600001.SH")
+        assert loaded_cand["info_card_summary"]["snapshot"]["turnoverRate"] == pytest.approx(5.0)
+
+    def test_info_card_summary_exception_does_not_block_main_report(self, isolated_env, monkeypatch):
+        """`attach_info_card_summaries` 整体异常(保险丝范围外的意外)时,`build_report`
+        仍必须成功产出报告——候选照出,只是这批候选当次没有信息卡摘要(维持构造时的
+        默认空 dict)。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            pipeline_mod, "attach_info_card_summaries",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        assert cand.info_card_summary == {}   # 保险丝触发,维持默认空(不是半份脏数据)
+
+    def test_reuses_already_computed_news_and_top_list_no_second_fetch(self, isolated_env, monkeypatch):
+        """`build_report` 第 192 行已算过一次 `top_list_lookup`、本次消息面扫描已产出
+        `news_alerts.items`——`attach_info_card_summaries` 必须原样复用这两份,
+        用 spy 断言传入的 `news_items`/`top_list` 非 None(不是让被调函数自己现拉)。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        captured = {}
+        real = pipeline_mod.attach_info_card_summaries
+
+        def spy(candidates, trade_date, **kw):
+            captured["news_items"] = kw.get("news_items")
+            captured["news_domain_codes"] = kw.get("news_domain_codes")
+            captured["top_list"] = kw.get("top_list")
+            return real(candidates, trade_date, **kw)
+
+        monkeypatch.setattr(pipeline_mod, "attach_info_card_summaries", spy)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+        pos_store.open_position("600001.SH", 10.0, 1000, report_date, db_path=isolated_env.db_path)
+
+        pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert captured["news_items"] is not None    # 内存态列表原样传入,不是 None(让对方现读 DB)
+        assert captured["news_domain_codes"] == {"600001.SH"}
+        assert captured["top_list"] is not None
+
+
 class TestPendingTrackWiring:
     """v1.3-④ 挂单未成交追踪接入 `build_report`(原 v1.2.1-C 全文,归 v1.3)。偏移量 /
     到期 / ret_from_plan 等字段单测在 `test_pending_track.py`;本类只测「接线」

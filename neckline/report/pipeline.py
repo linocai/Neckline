@@ -47,6 +47,7 @@ from neckline.report.sectors import (
 )
 from neckline.report.holding_k4_check import HoldingK4Item, build_holding_k4_check
 from neckline.report.industry_strength import compute_industry_strength, load_industry_map
+from neckline.report.info_card import attach_info_card_summaries
 from neckline.report.sector_moneyflow import (
     SectorMoneyflowReport,
     compute_sector_moneyflow,
@@ -281,6 +282,29 @@ def build_report(
         news_alerts = empty_news_alerts_report(
             trade_date, reason="消息面扫描(C4)计算异常(详见服务端日志),已降级为未扫描。"
         )
+
+    # v1.4-④ 信息卡摘要(不含 60 日序列,plan §五 v1.4-④-B):给当日候选原地补
+    # `Candidate.info_card_summary`,随 `candidates_json` 一并落库,供 `CandidateOut.infoCard`
+    # 列表页直接展示(免逐只再发请求)。快照/温和带零额外 I/O(直接读 `candidate.raw`/
+    # `intel_rank`,候选生成时已装配好);消息面/龙虎榜复用本函数已算好的
+    # `news_alerts.items`(内存态,此时尚未落库)与 `top_list`(第 192 行已拉取,同一份,
+    # 不二次现拉)。**不阻断主报告管线**(同 C1/C2/C4 保险丝惯例,§硬要求④/项目
+    # CLAUDE.md「核心管线对可选情报输入的调用必须包保险丝」)——异常时候选照出,只是
+    # 这批候选当次没有信息卡摘要(`info_card_summary` 维持候选构造时的默认空 dict,
+    # 客户端按"该信息暂不可用"处理,不冒充"确认无内容")。
+    try:
+        news_domain_codes = set(all_alert_codes)
+        news_items_dicts = [
+            {"ts_code": it.ts_code, "category": it.category, "summary": it.summary, "source": it.source}
+            for it in news_alerts.items
+        ]
+        attach_info_card_summaries(
+            candidates, trade_date,
+            news_items=news_items_dicts, news_domain_codes=news_domain_codes,
+            top_list=top_list, parquet_dir=parquet_dir, db_path=db_path,
+        )
+    except Exception:  # noqa: BLE001 —— 信息卡摘要异常不得连带主报告失败
+        logger.warning("信息卡摘要(v1.4-④)计算异常,候选照出,本次无摘要", exc_info=True)
 
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     markdown = render_markdown(

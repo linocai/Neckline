@@ -419,6 +419,33 @@ def load_k4_sections(db_path: Optional[Path] = None) -> Dict[str, str]:
     return out
 
 
+def describe_hits(codes: List[str], db_path: Optional[Path] = None) -> List[HoldingK4Hit]:
+    """把**已经算好**的 K4 命中码列表(如 `Candidate.k4_flags`)decorate 成完整
+    `HoldingK4Hit`(label/level/evidence/evidence_strength)——供 v1.4-④ 信息卡
+    "红黄牌:复用③已算好的 k4_flags + sections 分区 + DB evidence 文字,不重算"
+    (plan §五 v1.4-④-A-5)使用。**不重新判定命中**:命中码本身的产生仍是
+    `_evaluate_hits`(读当日 EOD 面板 + 题材持续天数)的职责,本函数只是把「已经知道
+    命中了哪些码」这件事翻译成人读文案 + 证据强度分级——纯静态元数据查找(`_HIT_META`
+    + DB evidence 文字),零 I/O 之外只有一次 `_load_k4_evidence`(读 K4 advisory 行)。
+    未知码(不在 `_HIT_META` 里)静默跳过(防御性;理论不应发生——`k4_flags` 只会含
+    本模块 `_emit` 产出过的码)。`codes` 为空 → 空列表,**不触发 `_load_k4_evidence`
+    的 DB 读取**(无事可做时不必付一次 I/O,调用方无需自己先判空)。"""
+    if not codes:
+        return []
+    evidence = _load_k4_evidence(db_path)
+    out: List[HoldingK4Hit] = []
+    for code in codes:
+        meta = _HIT_META.get(code)
+        if meta is None:
+            continue
+        label, level, strength = meta
+        ev = evidence.get(code) or _FALLBACK_EVIDENCE.get(code, "")
+        if code == "A3b_belowyear_bigvol":
+            ev = _A3B_EVIDENCE  # 非 DB advisory 码,证据源=雷区地图 3-⑤(同 `_evaluate_hits` 口径)
+        out.append(HoldingK4Hit(code=code, label=label, level=level, evidence=ev, evidence_strength=strength))
+    return out
+
+
 def _evaluate_hits(
     row: Optional[Dict[str, Any]], persist_days: int, evidence: Dict[str, str]
 ) -> List[HoldingK4Hit]:
@@ -608,4 +635,5 @@ __all__ = [
     "HoldingK4Item",
     "build_holding_k4_check",
     "load_k4_sections",
+    "describe_hits",
 ]

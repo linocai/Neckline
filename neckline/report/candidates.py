@@ -64,6 +64,14 @@ class Candidate:
     intel_rank: Dict[str, Any] = field(default_factory=dict)  # 情报排序理由:{sectorFlow(并列展示,
     # 不参与排序), themePersistDays, highElasticity, source, industry, permanentBoardStatus,
     # industryRank(排序键①)/industryPersistDays(排序键②)/yellowCardCount(排序键③,v1.4-③)}
+    # —— v1.4-④ 信息卡摘要(不含 60 日序列,plan §五 v1.4-④-B)———————————————————————
+    # `{snapshot:{...}, mildBand:bool, news:{...}, topList:{...}}`,由
+    # `neckline.report.info_card.attach_info_card_summaries` 在 `pipeline.py` 里补算
+    # (本模块/`intel_candidates.py` 不产它,构造时恒空 dict)。camelCase 键,供 API 层
+    # `InfoCardSummaryOut(**info_card_summary)` 直接构造(同 `intel_rank` 惯例)。K1
+    # 评分路径(`score_candidates`)不设,取默认空 dict——旧候选/未补算时前端按"该信息
+    # 暂不可用"处理,不冒充"确认无内容"(§3.8「没有」与「没看」必须能分开)。
+    info_card_summary: Dict[str, Any] = field(default_factory=dict)
     raw: Dict[str, Any] = field(default_factory=dict)  # 原始特征行,供 judge.py 组装上下文
 
     def public_dict(self) -> Dict[str, Any]:

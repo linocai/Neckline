@@ -48,6 +48,12 @@ from neckline.api.schemas import (
     DecisionsListOut,
     DeviceRegisterIn,
     EntrySuggestionOut,
+    InfoCardNewsItemOut,
+    InfoCardNewsOut,
+    InfoCardOut,
+    InfoCardSnapshotOut,
+    InfoCardSummaryOut,
+    InfoCardTopListOut,
     InquiryIn,
     InquiryOut,
     IntelRankOut,
@@ -268,6 +274,27 @@ def health() -> dict:
 
 # —— 4A.2 报告 ————————————————————————————————————————————————————————
 
+def _shape_info_card_summary(d: Optional[Dict[str, Any]]) -> Optional[InfoCardSummaryOut]:
+    """`Candidate.info_card_summary` 存档(v1.4-④,`info_card.InfoCardSummary.
+    to_public_dict()` 已是 camelCase)→ `InfoCardSummaryOut`。空/缺(老报告快照、或
+    该次生成时保险丝触发降级)→ `None`,客户端按"该信息暂不可用"处理,不冒充
+    "确认无内容"(同 `intel_rank` 惯例,§3.8)。"""
+    if not d:
+        return None
+    news = d.get("news") or {}
+    top_list = d.get("topList") or {}
+    return InfoCardSummaryOut(
+        snapshot=InfoCardSnapshotOut(**(d.get("snapshot") or {})),
+        mildBand=bool(d.get("mildBand", False)),
+        news=InfoCardNewsOut(
+            scanned=bool(news.get("scanned", False)),
+            items=[InfoCardNewsItemOut(**it) for it in news.get("items", []) or []],
+            unavailableReason=news.get("unavailableReason"),
+        ),
+        topList=InfoCardTopListOut(**top_list),
+    )
+
+
 def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> CandidateOut:
     """报告落库的候选 JSON 快照 → 客户端四件套契约。同码不重写:字段直接取自
     `Candidate.public_dict()` 存档,不在此重算任何领域值。"""
@@ -296,6 +323,8 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
         # v1.3-③-C3:候选新语义字段(旧报告快照无 → 默认空,前向兼容)。
         k4Flags=c.get("k4_flags", []) or [],
         intelRank=IntelRankOut(**(c.get("intel_rank") or {})),
+        # v1.4-④-B:信息卡摘要(老报告快照无该键 → None,前向兼容)。
+        infoCard=_shape_info_card_summary(c.get("info_card_summary")),
         llmJudgment=llm,
     )
 
@@ -418,6 +447,37 @@ def report_by_date(date: str = "") -> ReportOut:
     if rep is None:
         return _empty_report("no_report")
     return _shape_report(rep)
+
+
+@app.get(f"{API_PREFIX}/report/{{date}}/info-card/{{code}}", dependencies=[Depends(require_token)])
+def report_info_card(date: str, code: str) -> InfoCardOut:
+    """单只完整信息卡(plan §五 v1.4-④-B,考卷信息集与实盘情报包同构的落地端点)。
+    **服务端现算,不落库**——除 `k4_flags`(§硬要求"复用③已算好的 k4_flags,不重算")
+    原样取自当日报告存档外,其余(K 线/RS 线/行业分歧线/快照/消息面/龙虎榜/市场语境)
+    全部独立现读 parquet/DB,不依赖 `CandidateOut.infoCard` 摘要位是否算成功。
+
+    404 两个 reason(客户端 `mapReason` 须各加 case,守项目 CLAUDE.md 404 映射坑):
+    `report_not_found`(日期格式非法 / 该日从未生成过报告)、`code_not_in_report`
+    (该日报告存在,但这只票不在当日候选榜里——`code` 经 `normalize_ts_code` 归一后
+    比对,裸 6 位代码与带后缀 `ts_code` 均可)。"""
+    from neckline.report.info_card import build_info_card
+    from neckline.review.parse import normalize_ts_code
+
+    rep = report_store.load_report_by_str(date, db_path=_db()) if (len(date) == 8 and date.isdigit()) else None
+    if rep is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "report_not_found"})
+    ts_code = normalize_ts_code(code)
+    cand = next((c for c in rep.get("candidates", []) if c.get("ts_code") == ts_code), None)
+    if cand is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "code_not_in_report"})
+    trade_date = datetime.strptime(rep["trade_date"], "%Y%m%d").date()
+    card = build_info_card(
+        trade_date, ts_code,
+        k4_flags=cand.get("k4_flags", []) or [],
+        name=cand.get("name") or ts_code,
+        parquet_dir=_parquet_dir(), db_path=_db(),
+    )
+    return InfoCardOut(**card.to_public_dict())
 
 
 # —— 4A.3 盘中看板 ————————————————————————————————————————————————————

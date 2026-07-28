@@ -76,6 +76,62 @@ class IntelRankOut(BaseModel):
                                              # A3b_belowyear_bigvol)。旧报告读回默认 0。
 
 
+# —— v1.4-④ 信息卡(plan §五 v1.4-④,需求 8 第 3 点)——————————————————————————
+# 摘要位(挂 `CandidateOut.infoCard`,不含 60 日序列)先声明在这里(`CandidateOut`
+# 引用它);完整信息卡(`GET /report/{date}/info-card/{code}` 专用,含 60 日序列)
+# 的其余模型见文件末「v1.4-④ 信息卡(完整)」节,复用本节已声明的
+# `InfoCardSnapshotOut`/`InfoCardNewsOut`/`InfoCardTopListOut`,不重复定义。
+
+class InfoCardSnapshotOut(BaseModel):
+    """信息卡快照数值(plan §五 v1.4-④-A-4)。任一路缺数据 → 该字段 `null`,**不得**
+    用 `0` 冒充"有数据但为零"(§3.8)。"""
+    volRatio5: Optional[float] = None
+    turnoverRate: Optional[float] = None
+    industryRank: Optional[int] = None       # ② 行业强度当日排名(1=最强);None=未参与排名
+    industryPersistDays: int = 0
+    aboveMa250: Optional[bool] = None        # ma250 未就绪(<250交易日历史)→ null,不当"年线下"
+    distFromMa250Pct: Optional[float] = None  # 小数(非百分数),如 0.05 = 高于年线5%
+    distFromHigh20dPct: Optional[float] = None
+    consecLimitUpDays: int = 0
+
+
+class InfoCardNewsItemOut(BaseModel):
+    category: str    # REDUCTION | INVESTIGATION | BLOWUP | REGULATORY(同 NewsAlertOut.category 枚举)
+    summary: str
+    source: str
+
+
+class InfoCardNewsOut(BaseModel):
+    """消息面摘要(plan §五 v1.4-④-A-7)。**"没扫到"(不在扫描域)与"扫了没有"必须
+    能区分**(同 `NewsAlertScanStatusOut` 一贯原则)——`scanned=False` 时
+    `unavailableReason` 必有值,`items` 恒空数组(不代表"确认无消息")。"""
+    scanned: bool
+    items: List[InfoCardNewsItemOut] = Field(default_factory=list)
+    unavailableReason: Optional[str] = None
+
+
+class InfoCardTopListOut(BaseModel):
+    """龙虎榜摘要(plan §五 v1.4-④-A-8)。`lookbackDaysCovered`(近 5 个交易日里本地
+    已落盘、真能判定的天数,≤5)诚实反映"查了几天",**不为凑齐而回补历史**——
+    `lookbackDaysCovered<5` 不代表"其余天数确认未上榜",只代表"没查到那几天"。"""
+    onListToday: bool = False
+    reason: Optional[str] = None
+    netAmount: Optional[float] = None
+    netRate: Optional[float] = None
+    lookbackDaysCovered: int = 0
+    lookbackHitDays: int = 0
+
+
+class InfoCardSummaryOut(BaseModel):
+    """信息卡摘要(不含 60 日序列 / 红黄牌明细,挂 `CandidateOut.infoCard`,plan §五
+    v1.4-④-B)。红黄牌明细见完整信息卡端点——`CandidateOut` 顶层已有 `k4Flags`
+    (码列表),摘要位不重复。"""
+    snapshot: InfoCardSnapshotOut = Field(default_factory=InfoCardSnapshotOut)
+    mildBand: bool = False
+    news: InfoCardNewsOut = Field(default_factory=lambda: InfoCardNewsOut(scanned=False))
+    topList: InfoCardTopListOut = Field(default_factory=InfoCardTopListOut)
+
+
 class CandidateOut(BaseModel):
     rank: int
     code: str
@@ -98,6 +154,11 @@ class CandidateOut(BaseModel):
     # 读回为默认空(前向兼容,同 watchlist/intel 惯例)。
     k4Flags: List[str] = Field(default_factory=list)
     intelRank: IntelRankOut = Field(default_factory=IntelRankOut)
+    # v1.4-④-B:信息卡摘要(不含 60 日序列,供列表页直接展示,§二.四快照数值/温和带/
+    # 消息面/龙虎榜)。`None` = 老报告(建于本字段前)或该次生成异常降级,**不冒充
+    # "确认无内容"**——客户端按"该信息暂不可用"处理,不是"已查证为空"。完整信息卡
+    # (60日K线/RS线/行业分歧线)另走 `GET /report/{date}/info-card/{code}`。
+    infoCard: Optional[InfoCardSummaryOut] = None
     llmJudgment: Optional[LLMJudgmentOut] = None              # 仅前 10 只有
 
 
@@ -649,6 +710,77 @@ class BreathingTradesOut(BaseModel):
     edgeToPrice: Optional[float] = None   # 先手距离(派生,需现价);无实时价 → null
 
 
+# —— v1.4-④ 信息卡(完整,`GET /report/{date}/info-card/{code}` 专用)——————————————
+# 摘要位共用的 `InfoCardSnapshotOut`/`InfoCardNewsOut`/`InfoCardTopListOut` 声明在
+# `CandidateOut` 之前(见该处注释),这里只补 60 日序列 + 红黄牌明细专属的模型。
+
+class InfoCardKlineBarOut(BaseModel):
+    """一根 K 线(前复权,plan §五 v1.4-④-A-1)。`ma20`/`ma250` 早期行(历史不足窗口)
+    → `null`,不是"均线为0"。"""
+    tradeDate: str
+    open: float
+    high: float
+    low: float
+    close: float
+    vol: float
+    ma20: Optional[float] = None
+    ma250: Optional[float] = None
+
+
+class InfoCardIndexPointOut(BaseModel):
+    """RS 线 / 行业分歧线 / 大盘指数化线共用的一个点(起点归一 100)。"""
+    tradeDate: str
+    value: float
+
+
+class InfoCardK4FlagOut(BaseModel):
+    """红黄牌明细(plan §五 v1.4-④-A-5,"复用③已算好的 k4_flags,不重算")。
+    `section`:hard_cut(红牌)| avoid_flag(黄牌)——客户端展示层换算,同 `board`/
+    `NewsCategory` 惯例,服务端不存中文。"""
+    code: str
+    label: str
+    level: str               # strong | normal
+    section: str
+    evidenceStrength: str    # price_volume | constituent
+    evidence: str
+
+
+class InfoCardMarketOut(BaseModel):
+    """市场语境(报告级构件,plan §五 v1.4-④-A-9)。"""
+    indexCode: str = "000001.SH"
+    indexLine: List[InfoCardIndexPointOut] = Field(default_factory=list)
+    limitUpCount: int = 0
+    limitDownCount: int = 0
+    aboveMa20: Optional[bool] = None
+
+
+class InfoCardOut(BaseModel):
+    """完整信息卡(考卷同构九件套,plan §五 v1.4-④)。每一路数据源独立
+    `*Available`/`*UnavailableReason`——**数据不可得如实缺省,禁止硬凑**是本端点
+    的第〇原则,任何一路缺失都不得连带其余各路"看起来也不可用"。"""
+    code: str
+    name: str
+    tradeDate: str
+    klineAvailable: bool
+    kline: List[InfoCardKlineBarOut] = Field(default_factory=list)
+    klineUnavailableReason: Optional[str] = None
+    rsAvailable: bool = False
+    rsLine: List[InfoCardIndexPointOut] = Field(default_factory=list)
+    rsBenchmark: str = "000001.SH"
+    rsUnavailableReason: Optional[str] = None
+    industryDivergenceAvailable: bool = False
+    industryDivergenceLine: List[InfoCardIndexPointOut] = Field(default_factory=list)
+    industry: str = ""
+    industryDivergenceNote: str = "行业线=行业成员中位数合成,非申万官方指数"
+    industryDivergenceUnavailableReason: Optional[str] = None
+    snapshot: InfoCardSnapshotOut = Field(default_factory=InfoCardSnapshotOut)
+    k4Flags: List[InfoCardK4FlagOut] = Field(default_factory=list)
+    mildBand: bool = False
+    news: InfoCardNewsOut = Field(default_factory=lambda: InfoCardNewsOut(scanned=False))
+    topList: InfoCardTopListOut = Field(default_factory=InfoCardTopListOut)
+    market: InfoCardMarketOut = Field(default_factory=InfoCardMarketOut)
+
+
 # —— 4D 周复盘工作台 ————————————————————————————————————————————————————
 #
 # `result` 直接透传 `neckline.review.reconcile.weekly_review_dict()` 的完整快照
@@ -683,7 +815,9 @@ class ReviewGetOut(BaseModel):
 
 
 __all__ = [
-    "OkOut", "LLMJudgmentOut", "PermanentBoardStatusOut", "IntelRankOut", "CandidateOut",
+    "OkOut", "LLMJudgmentOut", "PermanentBoardStatusOut", "IntelRankOut",
+    "InfoCardSnapshotOut", "InfoCardNewsItemOut", "InfoCardNewsOut", "InfoCardTopListOut",
+    "InfoCardSummaryOut", "CandidateOut",
     "WatchlistCheckLLMOut", "WatchlistCheckOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
@@ -698,4 +832,5 @@ __all__ = [
     "DecisionCreateIn", "DecisionReviseIn", "DecisionOut", "DecisionsListOut", "DecisionLinkIn",
     "ScenarioOutcomeItemIn", "ScenarioOutcomeIn",
     "BreathingTradeIn", "BreathingTradeOut", "BreathingTradesOut",
+    "InfoCardKlineBarOut", "InfoCardIndexPointOut", "InfoCardK4FlagOut", "InfoCardMarketOut", "InfoCardOut",
 ]

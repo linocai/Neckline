@@ -58,7 +58,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import polars as pl
 
@@ -102,14 +102,18 @@ def load_industry_map(db_path: Optional[Path] = None) -> Dict[str, str]:
     return out
 
 
-def _load_ret1d_panel(end: date, parquet_dir: Optional[Path]) -> pl.DataFrame:
-    """全市场 [., end] 的 `ts_code`/`trade_date`/`ret_1d`。只选 4 列做谓词下推,免去
+def _load_ret1d_panel(end: date, parquet_dir: Optional[Path], start: Optional[date] = None) -> pl.DataFrame:
+    """全市场 [start, end] 的 `ts_code`/`trade_date`/`ret_1d`。只选 4 列做谓词下推,免去
     `build_research_panel` 全特征装配(qfq/adj_factor join/ma5-20/涨跌停/daily_basic)
-    的 I/O 与内存开销——本函数只服务"行业当日中位数 + 持续天数"这一个量,详见模块
-    docstring「无前视」节的 qfq 不变性证明。只有上界(`<=end`),不设下界:持续天数
-    的连续强度日计数要看多远历史,由"上次断裂"天然决定,人为下限窗口有截断真实
-    持续天数、把长streak 低报的风险(§3.8 宁可多算不可少算);本地实测全历史加载
-    廉价(<1s),不需要用窗口换性能。"""
+    的 I/O 与内存开销——本函数只服务"行业当日中位数"这一个量,详见模块 docstring
+    「无前视」节的 qfq 不变性证明。`start=None`(默认,`compute_industry_strength`/
+    持续天数走这条路)只有上界(`<=end`)不设下界:持续天数的连续强度日计数要看多远
+    历史,由"上次断裂"天然决定,人为下限窗口有截断真实持续天数、把长streak 低报的
+    风险(§3.8 宁可多算不可少算);本地实测全历史加载廉价(<1s),不需要用窗口换性能。
+    `start` 非空(v1.4-④ `industry_median_return_series` 的固定窗口用法,如"信息卡
+    60日行业分歧线")时额外过滤 `>=start`,避免为一个几十天的窗口也去扫全历史
+    (2020-2026,~780万行)——这条路径不需要"任意长回溯",加下界是纯粹的 I/O 节省,
+    不改变"只用 ≤end 数据"的无前视语义。"""
     from neckline.data.market_data import table_dir
 
     d = table_dir("daily", parquet_dir)
@@ -118,11 +122,10 @@ def _load_ret1d_panel(end: date, parquet_dir: Optional[Path]) -> pl.DataFrame:
     pattern = str(d / "year=*" / "*.parquet")
     if not glob.glob(pattern):
         return pl.DataFrame()
-    lf = (
-        pl.scan_parquet(pattern)
-        .select(["ts_code", "trade_date", "close", "pre_close"])
-        .filter(pl.col("trade_date") <= end)
-    )
+    lf = pl.scan_parquet(pattern).select(["ts_code", "trade_date", "close", "pre_close"])
+    lf = lf.filter(pl.col("trade_date") <= end)
+    if start is not None:
+        lf = lf.filter(pl.col("trade_date") >= start)
     df = lf.collect()
     if df.is_empty():
         return df
@@ -248,6 +251,52 @@ def stock_industry_rank(code: str, industry_of: Dict[str, str], hot: Dict[str, I
     return s.industry_rank if s is not None else None
 
 
+def industry_median_return_series(
+    industry: str,
+    start: date,
+    end: date,
+    *,
+    parquet_dir: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """给定行业在 `[start, end]` 每个交易日的成员 `ret_1d` 中位数(v1.4-④ 信息卡「行业
+    分歧线」合成用,plan §五 v1.4-④-A-3)。与 `compute_industry_strength` **同源**
+    (同一份 `load_industry_map` + 同一口径的 `ret_1d` 中位数),但**不受 `_MIN_MEMBERS`
+    排名门槛约束**——指数合成只需要"这个行业当天整体涨跌多少"这一个统计量,不需要
+    判"够不够格参与强度排名"这层资格判定,两者是同一原始统计量的不同消费场景。
+    **是否该把这只票的行业当"够格合成指数"仍由调用方在合成前用
+    `stock_industry_rank`/`compute_industry_strength` 判定**(信息卡的口径是:T0 当天
+    行业成员<5〔不达标〕→ 整条分歧线标"行业样本不足,分歧线缺省",不调用本函数);
+    本函数只负责"给定一个行业,老实吐出每天的中位数",不做该不该用的判断。
+
+    返回逐日 `[{trade_date, median_ret, member_count}]`,升序。某日该行业**零**成员有
+    `ret_1d`(如数据缺口)→ 当日不出现在返回列表里(如实反映"算不出中位数",不补 0 —
+    是否把"当日无这一行"当"当日不涨不跌"处理是调用方的合成策略,不是本函数的职责)。
+    `industry` 不在 `stock_basic.industry` 当前取值集合里 / 无价数据 → 空列表。"""
+    industry_of = load_industry_map(db_path)
+    if not industry_of or industry not in set(industry_of.values()):
+        return []
+    ret = _load_ret1d_panel(end, parquet_dir, start=start)
+    if ret.is_empty():
+        return []
+    ind_map = pl.DataFrame({"ts_code": list(industry_of.keys()), "industry": list(industry_of.values())})
+    panel = ret.join(ind_map, on="ts_code", how="inner").filter(pl.col("industry") == industry)
+    if panel.is_empty():
+        return []
+    daily = (
+        panel.filter(pl.col("ret_1d").is_not_null())
+        .group_by("trade_date")
+        .agg(pl.col("ret_1d").median().alias("median_ret"), pl.len().alias("member_count"))
+        .sort("trade_date")
+    )
+    if daily.is_empty():
+        return []
+    return [
+        {"trade_date": r["trade_date"], "median_ret": float(r["median_ret"]), "member_count": int(r["member_count"])}
+        for r in daily.iter_rows(named=True)
+    ]
+
+
 __all__ = [
     "IndustryStrength",
     "load_industry_map",
@@ -255,4 +304,5 @@ __all__ = [
     "industry_strength_lookup",
     "stock_persist_days",
     "stock_industry_rank",
+    "industry_median_return_series",
 ]

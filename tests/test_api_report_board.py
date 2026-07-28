@@ -371,3 +371,44 @@ def test_report_data_freshness_empty_for_old_snapshot(client, AUTH, api_env):
     概念」处理(契约注释已写死这条口径)。"""
     _seed_report(api_env.db_path, date(2026, 7, 24))
     assert client.get("/api/v1/report/latest", headers=AUTH).json()["dataFreshness"] == {}
+
+
+# —— v1.4-④-B `CandidateOut.infoCard`(信息卡摘要,不含 60 日序列)——————————————
+
+def test_report_candidate_carries_info_card_summary(client, AUTH, api_env):
+    """`Candidate.info_card_summary` 存档 → `CandidateOut.infoCard` 往返不丢字段。"""
+    c = _candidate(1, "600001.SH", "示例甲")
+    c["info_card_summary"] = {
+        "snapshot": {"volRatio5": 1.23, "turnoverRate": 5.6, "industryRank": 3,
+                     "industryPersistDays": 1, "aboveMa250": True, "distFromMa250Pct": 0.05,
+                     "distFromHigh20dPct": -0.02, "consecLimitUpDays": 0},
+        "mildBand": True,
+        "news": {"scanned": True, "items": [{"category": "REDUCTION", "summary": "x", "source": "tushare_holdertrade"}],
+                  "unavailableReason": None},
+        "topList": {"onListToday": False, "reason": None, "netAmount": None, "netRate": None,
+                     "lookbackDaysCovered": 4, "lookbackHitDays": 0},
+    }
+    report_store.save_report(
+        date(2026, 7, 28), strategy_version="v1.4.0",
+        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
+        markdown="# 报告", db_path=api_env.db_path,
+    )
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    info = body["candidates"][0]["infoCard"]
+    assert info["snapshot"]["industryRank"] == 3
+    assert info["snapshot"]["aboveMa250"] is True
+    assert info["mildBand"] is True
+    assert info["news"]["scanned"] is True
+    assert info["news"]["items"][0]["summary"] == "x"
+    assert info["topList"]["lookbackDaysCovered"] == 4
+    # 摘要位不含 60 日序列(键集断言,④ 验收原话)。
+    assert set(info.keys()) == {"snapshot", "mildBand", "news", "topList"}
+
+
+def test_report_candidate_info_card_none_for_old_snapshot(client, AUTH, api_env):
+    """老报告(建于本字段之前,`candidates_json` 里没有 `info_card_summary` 键)→
+    `infoCard=None`,不冒充"确认无内容"(与 `intelRank` 用默认空 dict 的处理方式
+    刻意不同——`infoCard` 整体缺失时用 `None` 更诚实,因为它没有天然的"空但合法"态)。"""
+    _seed_report(api_env.db_path, date(2026, 7, 17))
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    assert body["candidates"][0]["infoCard"] is None

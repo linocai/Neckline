@@ -163,6 +163,16 @@
   含不在 DB 的合成码如 A3b——一律不计入黄牌数)。两行代码长得像,语义故意相反,
   勿"修正"成同一种写法。
 
+## 测试隔离(v1.4-④ 定案)
+
+- **`isolated_env`/`api_env` 只重写 `market_data`/`trading_calendar`/`tushare_client`
+  三处 `settings` 绑定**,**不含 `neckline.db`**(`brain.py`/`positions.py`/
+  `watchlist.py`/`news_alerts_store.py`/`report/store.py` 等经 `neckline.db.connection`
+  访问 SQLite 的模块,用的是 `neckline/db.py` 自己另一份未被夹具重写的 `settings`)。
+  调用这些模块的函数时**必须显式传 `db_path=env.db_path`**,`db_path=None` 兜底不
+  安全——会静默读到真实项目 `data/neckline.db`(`info_card.describe_hits` 一测就踩过,
+  查回真实生产 K4 分区,断言全错但不报错、极具迷惑性)。
+
 ## 双会话架构(2026-07-25 起,冷启动必读)
 
 - **本项目双权威文件、双会话分工**:系统线(APP 建设办公室,v 字头版本)权威 =

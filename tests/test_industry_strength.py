@@ -237,3 +237,79 @@ def test_load_industry_map_filters_blank(isolated_env):
     ])
     out = ist.load_industry_map(db_path=isolated_env.db_path)
     assert out == {"600001.SH": "半导体"}
+
+
+# ————————————————————————————————————————————————————————————————
+# ⑥ industry_median_return_series(v1.4-④ 信息卡「行业分歧线」合成用)
+# ————————————————————————————————————————————————————————————————
+
+def test_industry_median_return_series_matches_manual_calc(isolated_env):
+    """与 `compute_industry_strength` 同源(同一份 `_load_ret1d_panel`/`load_industry_map`),
+    逐日中位数手算核对。"""
+    dates = business_days(date(2024, 1, 2), 3)
+    insert_trade_cal(isolated_env, dates)
+    strong = [(f"60000{i}.SH", [0.0, 0.05, 0.03]) for i in range(6)]
+    _seed_industry_market(isolated_env, dates, {"强行业": strong})
+
+    rows = ist.industry_median_return_series(
+        "强行业", dates[0], dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+    )
+    by_date = {r["trade_date"]: r for r in rows}
+    assert by_date[dates[0]]["median_ret"] == pytest.approx(0.0, abs=1e-9)
+    assert by_date[dates[1]]["median_ret"] == pytest.approx(0.05, abs=1e-9)
+    assert by_date[dates[2]]["median_ret"] == pytest.approx(0.03, abs=1e-9)
+    assert all(r["member_count"] == 6 for r in rows)
+
+
+def test_industry_median_return_series_respects_window_bounds(isolated_env):
+    """只返回 `[start, end]` 内的交易日,窗口外(哪怕数据存在)不出现——固定窗口
+    合成指数不需要"任意长回溯"(与 `compute_industry_strength`/持续天数用途不同,
+    见模块 docstring)。"""
+    dates = business_days(date(2024, 1, 2), 5)
+    insert_trade_cal(isolated_env, dates)
+    strong = [(f"60000{i}.SH", [0.0, 0.01, 0.02, 0.03, 0.04]) for i in range(6)]
+    _seed_industry_market(isolated_env, dates, {"强行业": strong})
+
+    rows = ist.industry_median_return_series(
+        "强行业", dates[1], dates[3], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+    )
+    assert sorted(r["trade_date"] for r in rows) == [dates[1], dates[2], dates[3]]
+
+
+def test_industry_median_return_series_no_min_members_gate(isolated_env):
+    """**不受 `_MIN_MEMBERS` 排名门槛约束**——`compute_industry_strength` 会把这个
+    只有 3 只成员的行业整天剔除(<5),但指数合成只需要"这个行业当天整体涨跌多少"
+    这一个统计量,应正常返回。这是与 `compute_industry_strength` 唯一的行为差异。"""
+    dates = business_days(date(2024, 1, 2), 2)
+    insert_trade_cal(isolated_env, dates)
+    thin = [(f"90000{i}.SZ", [0.0, 0.02]) for i in range(3)]
+    _seed_industry_market(isolated_env, dates, {"样本不足行业": thin})
+
+    # 对照:compute_industry_strength 确实整天不产出这个行业(<5 门槛)。
+    scores = ist.compute_industry_strength(
+        dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path
+    )
+    assert "样本不足行业" not in {s.industry for s in scores}
+
+    rows = ist.industry_median_return_series(
+        "样本不足行业", dates[0], dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+    )
+    assert len(rows) == 2
+    assert rows[-1]["median_ret"] == pytest.approx(0.02, abs=1e-9)
+    assert rows[-1]["member_count"] == 3
+
+
+def test_industry_median_return_series_unknown_industry_returns_empty(isolated_env):
+    dates = business_days(date(2024, 1, 2), 2)
+    insert_trade_cal(isolated_env, dates)
+    _seed_industry_market(isolated_env, dates, {"强行业": [("600001.SH", [0.0, 0.01])]})
+    assert ist.industry_median_return_series(
+        "查无此行业", dates[0], dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+    ) == []
+
+
+def test_industry_median_return_series_no_daily_data_returns_empty(isolated_env):
+    assert ist.industry_median_return_series(
+        "任意行业", date(2024, 1, 1), date(2024, 1, 2),
+        parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+    ) == []

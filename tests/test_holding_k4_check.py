@@ -320,6 +320,57 @@ def test_evidence_fallback_when_no_k4(isolated_env):
 
 
 # ————————————————————————————————————————————————————————————————
+# 4b) describe_hits(v1.4-④ 信息卡"复用已算好的 k4_flags,不重算"落地点)
+# ————————————————————————————————————————————————————————————————
+
+def test_describe_hits_decorates_known_codes_without_recomputation(isolated_env):
+    """给一份**已经知道**的命中码列表(不含任何 EOD 面板行/persist_days 输入),
+    应原样 decorate 出 label/level/evidence/evidence_strength——纯静态元数据查找,
+    不重新判定任何命中。"""
+    hits = hk.describe_hits(["A1_turnover_gt_10", "B3_theme_persist_2_3"], isolated_env.db_path)
+    by_code = {h.code: h for h in hits}
+    assert set(by_code) == {"A1_turnover_gt_10", "B3_theme_persist_2_3"}
+    assert by_code["A1_turnover_gt_10"].level == "strong"
+    assert by_code["A1_turnover_gt_10"].evidence_strength == "price_volume"
+    assert by_code["B3_theme_persist_2_3"].level == "normal"
+    assert by_code["B3_theme_persist_2_3"].evidence_strength == "constituent"
+
+
+def test_describe_hits_reads_db_evidence_when_available(isolated_env):
+    from neckline.strategy import brain
+    db = isolated_env.db_path
+    custom = "自定义证据ABC"
+    brain.save_version("K4", rule={"config": {}, "k4_advisory": {
+        "hard_cut": {"A1_turnover_gt_10": {"expr": "turnover_rate > 10", "evidence": custom}},
+        "avoid_flag": {},
+    }}, changelog="test K4", activate=False, db_path=db)
+    hits = hk.describe_hits(["A1_turnover_gt_10"], db)
+    assert hits[0].evidence == custom
+
+
+def test_describe_hits_falls_back_to_module_evidence_when_no_k4(isolated_env):
+    hits = hk.describe_hits(["A1_turnover_gt_10"], isolated_env.db_path)
+    assert hits[0].evidence == hk._FALLBACK_EVIDENCE["A1_turnover_gt_10"]
+
+
+def test_describe_hits_a3b_uses_dedicated_evidence_not_db_or_fallback(isolated_env):
+    """A3b 是非 DB advisory 合成码(证据源=雷区地图3-⑤),即便 K4 行落库也不应从
+    DB 的 hard_cut/avoid_flag 里读它的 evidence(DB 压根没有这个码)。"""
+    hits = hk.describe_hits(["A3b_belowyear_bigvol"], isolated_env.db_path)
+    assert hits[0].evidence == hk._A3B_EVIDENCE
+
+
+def test_describe_hits_silently_skips_unknown_codes(isolated_env):
+    """未知码(不在 `_HIT_META` 里,理论不应发生)静默跳过,不抛异常。"""
+    hits = hk.describe_hits(["A1_turnover_gt_10", "根本不存在的码"], isolated_env.db_path)
+    assert [h.code for h in hits] == ["A1_turnover_gt_10"]
+
+
+def test_describe_hits_empty_input_returns_empty():
+    assert hk.describe_hits([], None) == []
+
+
+# ————————————————————————————————————————————————————————————————
 # 5) ma250 镜像正确性(guard 年线判据地基)
 # ————————————————————————————————————————————————————————————————
 
