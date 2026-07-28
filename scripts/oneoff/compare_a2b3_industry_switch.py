@@ -157,8 +157,8 @@ def main(trade_date: Optional[date] = None) -> None:
                  f"**{ths_daily_max}**(独立进度,详见 PROJECT_PLAN §四)——"
                  f"**本次对拍统一取 {daily_max} 这一天,新旧两套口径同一天对齐比较,不存在跨日期比较失真**"
                  f"(`ths_daily` 落后不影响,因为它在 {daily_max} 这天本就已有数据,只是不如 {ths_daily_max} 新)。")
-    lines.append(f"- 本地 dev 库 `positions` 表当前为**空**(生产库另有 3 笔持仓,本次施工零生产访问,"
-                 f"不读生产库)——「当日持仓」一栏如实标注为空,不臆造。")
+    lines.append("- 本地 dev 库 `positions` 表当前为**空**(生产库另有 3 笔持仓,本次施工零生产访问,"
+                 "不读生产库)——「当日持仓」一栏如实标注为空,不臆造。")
     if cand_error:
         lines.append(f"- 「当日候选池」重算异常:{cand_error}(不影响全市场对拍主结果,以下候选池一栏从缺)。")
     lines.append("")
