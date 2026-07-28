@@ -115,12 +115,34 @@
 
 ## v1 上线首日(2026-07-21)生产实战踩的坑
 
-- **TuShare 类型漂移会毒化 Parquet 分区**:某日某列全空时 pandas 落成 object → polars
-  String,写盘后与历史分区 Float64 冲突,`scan_parquet` 整表读取 SchemaError(实测
-  一天内 daily_basic 漂 5 列、moneyflow_dc 漂 12 列,16:35 报告任务直接崩)。防线在
-  落盘统一入口 `market_data.write_table_day` 的 `_align_to_table_schema`(按既有分区
-  schema cast,strict=False 空串转 null)——**任何新的落盘路径必须走 write_table_day,
-  不要自己 write_parquet**。
+- **TuShare 类型漂移会毒化 Parquet 分区(完整结论,v1.3.5 定稿;前后崩了两次报告)**:
+  某日某列全空时 pandas 落成 object → polars String,写盘后与历史分区 Float64 冲突,
+  `scan_parquet` 整表读取 SchemaError。**任何新的落盘路径必须走 `write_table_day`,
+  不要自己 `write_parquet`。**
+  - **第一次(2026-07-21,daily_basic 漂 5 列 / moneyflow_dc 漂 12 列)**:修法 = 在
+    `_align_to_table_schema` 里「向**既有分区**的 schema cast」。对 daily_basic **有效**。
+  - **⚠ 第二次(2026-07-27,moneyflow_dc,16:35 报告当场崩、当日无报告)——上面那个修法
+    对本例不但无效,还把情况改坏了**。根因:「既有分区的 schema」实际取的是
+    `scan_parquet` glob **排序后第一个文件**的 schema,而**没人保证第一个文件是对的**。
+    `moneyflow_dc` 覆盖仅 2023-09-11 起,backfill 给 2020-01-02..2023-09-08 落了 **897 个
+    0 行空文件**(空列 → object → String),排序第一个正是它。于是 2026-07-21 起每天的
+    真数据都被"对齐"成 String,而 2023-09-11..2026-07-20 的 688 个 Float64 分区没人动 →
+    读侧整表 union 时 Float64 撞 String。此前没炸只是因为**没有任何代码路径全表读它**;
+    v1.3 的候选情报管线第一次全表读 `moneyflow_dc`,当场掀翻整份报告。
+  - **正解(v1.3.5)= 两半,缺一不可**:①**写侧**——`market_data.TABLE_FLOAT_COLS`
+    **显式声明每张表的数值列**(canonical dtype 恒 Float64),`_align_to_table_schema`
+    向**声明**看齐、不再向"第一个文件"看齐;声明未覆盖的列才退回旧兜底,**表整个没声明
+    则打 WARNING 不静默**(`_VALID_TABLES` 加新表却忘了补声明,有守门单测直接挂)。
+    ②**读侧**——写侧修好**不会让历史脏分区自愈**,必须另跑
+    `scripts/fix_moneyflow_schema.py`(逐文件 cast、幂等、不整表 scan——整表 scan 本身
+    就是坏的)。`tests/test_market_data.py::TestCanonicalSchemaAlignment` 有一条反向证伪
+    单测锁死「脏基准不得带偏新写入」。
+  - **判据一句话**:对齐这件事,要问的是「**基准可信吗**」,不是「有没有对齐」。**空分区
+    是脏基准的唯一来源**——2026-07-28 全表体检实测:只有 `moneyflow_dc` 有空分区(897 个)
+    也只有它脏,其余 6 张表空分区数为 0、首个分区与近期样本 dtype 逐列一致。
+  - **配套教训**:核心步骤内部对**可选情报输入**的调用必须包保险丝。本次崩的直接位置是
+    `intel_candidates.py` 里对 `compute_sector_moneyflow` 的调用——`pipeline.py` 的 C2
+    展示节早就包了同款降级,唯独候选管线内部这处裸奔,于是"排序少一维"升级成"当日无报告"。
 - **带联网搜索的 LLM 调用不能沿用短读超时**:LinoN 时代 12-25s 短超时是治「连接卡死」
   的(不带搜索的快聊),带搜索的审判/问询正常生成即需 30-60s+(生产实测 25s 下 10 只
   审判 5 只 ReadTimeout;90s 后 26.3s 真调用成功)。现值 `openai_compat.read_timeout=90`;

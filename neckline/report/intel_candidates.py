@@ -84,7 +84,7 @@ from neckline.report.sectors import (
     load_member_map,
     sector_hot_lookup,
 )
-from neckline.report.sector_moneyflow import compute_sector_moneyflow
+from neckline.report.sector_moneyflow import compute_sector_moneyflow, empty_sector_moneyflow_report
 from neckline.research.panel import base_universe_expr
 from neckline.settings_store import get_intel_watch_boards
 from neckline.strategy import signals as S
@@ -366,10 +366,28 @@ def build_intel_candidates(
     evidence = _load_k4_evidence(db_path)
 
     # —— ④ 情报排序输入:板块资金流(C2 全板块)————————————————————————————————
-    mf = compute_sector_moneyflow(
-        trade_date, member_map=member_map, index_names=index_names,
-        parquet_dir=parquet_dir, top_n=_MONEYFLOW_ALL_TOP_N,
-    )
+    # **保险丝(v1.3.5,2026-07-27 生产真踩后补)**:资金流只是情报**排序的一维输入**,
+    # 不是候选生成的必要条件——拿不到就少一维排序,候选照出,**绝不允许掀翻整份报告**。
+    # 2026-07-27 的 16:35 报告就是死在这一行:`moneyflow_dc` 分区 schema 分裂(历史空
+    # 分区落成 String vs 真数据 Float64)→ 全表 scan_parquet SchemaError → 整个
+    # `build_report` 崩、当日无报告。`pipeline.py` 里 C2 **展示节**那次调用早就包了同款
+    # 降级,唯独本处(核心步骤内部对可选情报输入的调用)裸奔,故补齐。
+    # **留痕不静默**:降级走 `empty_sector_moneyflow_report`(available=False + 诚实原因)
+    # + WARNING 日志;同一底层故障必然让 pipeline 的 C2 节一并降级,报告「情报 · 板块
+    # 资金流」栏会渲染出 unavailable_reason,用户看得见「本次不可用」而非静默空白。
+    try:
+        mf = compute_sector_moneyflow(
+            trade_date, member_map=member_map, index_names=index_names,
+            parquet_dir=parquet_dir, top_n=_MONEYFLOW_ALL_TOP_N,
+        )
+    except Exception:  # noqa: BLE001 —— 排序输入异常不得连带整份报告失败
+        logger.warning(
+            "候选情报管线·板块资金流(④ 排序输入)计算异常,已降级为不可用"
+            "(候选照出、情报排序少一维),不阻断报告", exc_info=True,
+        )
+        mf = empty_sector_moneyflow_report(
+            trade_date, reason="板块资金流计算异常(详见服务端日志),情报排序已降级。"
+        )
     flow_by_board = {i.index_code: i.net_inflow_wan for i in mf.top_inflow} if mf.available else {}
 
     permanent_set = set(permanent_codes)

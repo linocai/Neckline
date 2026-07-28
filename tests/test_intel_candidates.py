@@ -814,3 +814,64 @@ def test_permanent_board_status_full_board_concise_note(isolated_env):
     assert st["surviveCount"] == 4 and st["industryGatePass"] == 4
     assert st["industryGateBlocked"] == 0 and st["hardCutBlocked"] == 0 and st["quotaFilled"] == 2
     assert "保底 2 只" in st["note"] and "为什么" not in st["note"]
+
+
+# ————————————————————————————————————————————————————————————————
+# ④ 排序输入保险丝(v1.3.5;2026-07-27 生产事故:资金流一炸掀翻整份报告)
+# ————————————————————————————————————————————————————————————————
+
+def test_sector_moneyflow_failure_degrades_not_crashes(isolated_env, monkeypatch, caplog):
+    """**保险丝直接断言**:板块资金流(④ 排序输入)抛异常时,候选照出、不掀翻报告,
+    且**留痕不静默**(WARNING 日志 + 降级为 available=False)。
+
+    2026-07-27 生产真踩:`moneyflow_dc` 分区 schema 分裂 → 该调用抛 SchemaError →
+    整个 `build_report` 崩 → 当日无报告。`pipeline.py` 的 C2 展示节早有同款降级,
+    唯独候选管线内部这次裸奔。这条测试锁死补上的保险丝不被后人拆掉。
+    """
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    _seed_market(isolated_env, dates, [
+        {"code": "600001.SH", "market": "主板", "closes": _rising(30)},
+    ])
+    _seed_boards(isolated_env, [{"ts_code": "885756.TI", "name": "芯片概念"}],
+                 [{"index_code": "885756.TI", "con_code": "600001.SH"}])
+
+    def _boom(*a, **k):
+        raise pl.exceptions.SchemaError(
+            "data type mismatch for column pct_change: incoming: Float64 != target: String"
+        )
+
+    monkeypatch.setattr(ic, "compute_sector_moneyflow", _boom)
+    with caplog.at_level(logging.WARNING, logger="neckline.report.intel_candidates"):
+        cands = ic.build_intel_candidates(dates[-1], _RULE,
+                                          parquet_dir=isolated_env.parquet_dir,
+                                          db_path=isolated_env.db_path)
+
+    assert "600001.SH" in _codes(cands)          # 候选照出,报告不崩
+    assert any("板块资金流" in r.getMessage() and "降级" in r.getMessage()
+               for r in caplog.records)          # 留痕不静默
+
+
+def test_sector_moneyflow_unavailable_yields_no_flow_but_same_candidates(isolated_env, monkeypatch):
+    """降级后情报排序只是**少一维**(sectorFlow 为空),候选集合本身不因此改变——
+    证明资金流是可选输入而非候选生成的必要条件。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    _seed_market(isolated_env, dates, [
+        {"code": "600001.SH", "market": "主板", "closes": _rising(30)},
+        {"code": "600002.SH", "market": "主板", "closes": _rising(30, p0=12.0)},
+    ])
+    _seed_boards(isolated_env, [{"ts_code": "885756.TI", "name": "芯片概念"}],
+                 [{"index_code": "885756.TI", "con_code": "600001.SH"},
+                  {"index_code": "885756.TI", "con_code": "600002.SH"}])
+    _seed_moneyflow(isolated_env, dates[-1], {"600001.SH": 5000.0, "600002.SH": 100.0})
+
+    normal = set(_codes(ic.build_intel_candidates(
+        dates[-1], _RULE, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)))
+
+    monkeypatch.setattr(ic, "compute_sector_moneyflow",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("资金流挂了")))
+    degraded = set(_codes(ic.build_intel_candidates(
+        dates[-1], _RULE, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)))
+
+    assert normal == degraded and normal

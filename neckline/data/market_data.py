@@ -20,7 +20,7 @@ import logging
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import polars as pl
 
@@ -64,26 +64,103 @@ def day_file_path(table: str, trade_date: DateLike, parquet_dir: Optional[Path] 
     return table_dir(table, parquet_dir) / f"year={dt.year}" / f"{dt.strftime('%Y%m%d')}.parquet"
 
 
+# —— 各表数值列 canonical dtype 声明(单一事实源)——————————————————————————
+# 本项目所有 TuShare 数值列的 canonical dtype 统一是 Float64,故这里只声明「哪些列是
+# 数值列」,dtype 由 `CANONICAL_FLOAT` 单点给出。
+#
+# **为什么必须显式声明,而不能"向既有分区看齐"(2026-07-27 生产真踩,v1.3.5 修)**:
+# `_align_to_table_schema` 原实现拿 `_scan_table(...).collect_schema()` 当 target,而那
+# 等于「**排序后第一个分区文件**的 schema」——**没人保证第一个文件是对的**。
+# `moneyflow_dc` 的首个分区是 2020-01-02 的**空文件**(该接口 2023-09-11 才有数据,
+# backfill 给早期日期落了 897 个 0 行文件,空列经 pandas object → polars String),于是:
+#   · 2023-09-11..2026-07-20 的 688 个真数据分区是 Float64(正确);
+#   · 2026-07-21 起每天新落的真数据被"对齐"到那个脏 String 基准,一路写成 String;
+#   · 读侧 `scan_parquet` 整表 union 时 Float64 撞 String → SchemaError。
+# 后果:v1.3 新增的候选情报管线首次全表读 `moneyflow_dc`,**2026-07-27 的 16:35 报告
+# 当场崩掉、当日无报告**(见 PROJECT_PLAN §九 / CLAUDE.md 同名坑条目)。也就是说
+# 2026-07-21 那次"向既有分区看齐"的修法,对**基准本身是脏的**这一情形不但无效,还会
+# 把干净的新数据一起拖下水。
+#
+# 只列**会经 TuShare 落盘**的数值列。`limit_derived` 的布尔列 / `consec_limit_up_days`
+# (UInt32)由本项目自己算(`data/limit_derived.py`),不经 TuShare、无漂移风险,不声明。
+CANONICAL_FLOAT = pl.Float64
+
+TABLE_FLOAT_COLS: Dict[str, Tuple[str, ...]] = {
+    "daily": ("open", "high", "low", "close", "pre_close", "change", "pct_chg", "vol", "amount"),
+    "daily_basic": (
+        "close", "turnover_rate", "turnover_rate_f", "volume_ratio", "pe", "pe_ttm", "pb",
+        "ps", "ps_ttm", "dv_ratio", "dv_ttm", "total_share", "float_share", "free_share",
+        "total_mv", "circ_mv",
+    ),
+    "adj_factor": ("adj_factor",),
+    "moneyflow_dc": (
+        "pct_change", "close", "net_amount", "net_amount_rate",
+        "buy_elg_amount", "buy_elg_amount_rate", "buy_lg_amount", "buy_lg_amount_rate",
+        "buy_md_amount", "buy_md_amount_rate", "buy_sm_amount", "buy_sm_amount_rate",
+    ),
+    "index_daily": ("close", "open", "high", "low", "pre_close", "change", "pct_chg", "vol", "amount"),
+    "limit_derived": ("limit_pct", "limit_up_price", "limit_down_price"),
+    "top_list": (
+        "close", "pct_change", "turnover_rate", "amount", "l_sell", "l_buy", "l_amount",
+        "net_amount", "net_rate", "amount_rate", "float_values",
+    ),
+}
+
+
 def _align_to_table_schema(table: str, df: pl.DataFrame, parquet_dir: Optional[Path] = None) -> pl.DataFrame:
-    """写入前把 df 各列类型对齐到该表既有分区的 schema(TuShare 类型漂移防线)。
+    """写入前把 df 各列类型对齐到 **canonical 声明**(TuShare 类型漂移防线)。
 
     背景(2026-07-21 生产真踩):TuShare 某日返回的 daily_basic 里 turnover_rate_f
     全空,pandas 落成 object → polars String,写盘后与历史分区 Float64 冲突,
     scan_parquet 整表读取直接 SchemaError,16:35 报告任务崩掉。
-    对策:落盘统一入口做 cast(strict=False,非法值转 null);表尚无分区时原样通过。
+    对策:落盘统一入口做 cast(strict=False,非法值转 null)。
+
+    **v1.3.5 改口径**:对齐目标从「既有分区的第一个文件」改为 `TABLE_FLOAT_COLS` 的
+    **显式声明**——首个分区可能本身就是脏的(见该常量注释里的 2026-07-27 生产事故)。
+    声明覆盖不到的列(如 TuShare 新增列)仍沿用旧的「向既有分区看齐」兜底,但**绝不**
+    参与已声明列的判定。表未在 `TABLE_FLOAT_COLS` 里声明 → 打 WARNING 后整体退回旧
+    行为(**不静默**,提醒补声明);表尚无分区且无声明 → 原样通过。
     """
+    casts: List[pl.Expr] = []
+
+    declared = TABLE_FLOAT_COLS.get(table)
+    if declared is None:
+        logger.warning(
+            "write_table_day(%s): 该表未在 TABLE_FLOAT_COLS 声明数值列 canonical dtype,本次退回"
+            "「向既有分区看齐」的旧行为——旧行为在首个分区本身是脏的时候会把干净数据一起带偏"
+            "(2026-07-27 生产真踩)。请在 market_data.TABLE_FLOAT_COLS 补上该表声明。",
+            table,
+        )
+        declared = ()
+    else:
+        casts.extend(
+            pl.col(c).cast(CANONICAL_FLOAT, strict=False)
+            for c in declared
+            if c in df.columns and df.schema[c] != CANONICAL_FLOAT
+        )
+
+    # 声明未覆盖的列(TuShare 新增列 / 非数值列)仍向既有分区看齐:聊胜于无的兜底,
+    # 已声明列一律不走这条路径(canonical 是唯一权威,不被脏基准反悔)。
     lf = _scan_table(table, parquet_dir)
-    if lf is None:
-        return df
-    target = lf.collect_schema()
-    casts = [
-        pl.col(name).cast(dtype, strict=False)
-        for name, dtype in target.items()
-        if name in df.columns and df.schema[name] != dtype
-    ]
+    if lf is not None:
+        declared_set = set(declared)
+        try:
+            target = lf.collect_schema()
+        except Exception:  # noqa: BLE001 —— 既有分区已被毒化到连 schema 都读不出:声明仍然有效,不因兜底失败而崩
+            logger.warning(
+                "write_table_day(%s): 既有分区 schema 读取失败,未声明列本次不做对齐"
+                "(已声明列仍按 canonical 落盘)", table, exc_info=True,
+            )
+        else:
+            casts.extend(
+                pl.col(name).cast(dtype, strict=False)
+                for name, dtype in target.items()
+                if name not in declared_set and name in df.columns and df.schema[name] != dtype
+            )
+
     if casts:
         logger.warning(
-            "write_table_day(%s): 检测到 %d 列类型与既有分区不一致,已按历史 schema cast(TuShare 类型漂移)",
+            "write_table_day(%s): 检测到 %d 列类型与 canonical 声明/既有分区不一致,已 cast(TuShare 类型漂移)",
             table, len(casts),
         )
         df = df.with_columns(casts)

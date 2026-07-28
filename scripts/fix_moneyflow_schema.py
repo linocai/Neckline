@@ -43,22 +43,17 @@ import polars as pl
 
 logger = logging.getLogger("fix_moneyflow_schema")
 
+# 仓库根入 sys.path:本脚本要引用 `neckline.data.market_data` 的 canonical 声明(下面)。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from neckline.data.market_data import TABLE_FLOAT_COLS  # noqa: E402
+
 # moneyflow_dc 的 12 个数值列(canonical dtype = Float64)。非数值列
 # (trade_date=Date, ts_code/name=String)不在此列、绝不动。
-MONEYFLOW_FLOAT_COLS: List[str] = [
-    "pct_change",
-    "close",
-    "net_amount",
-    "net_amount_rate",
-    "buy_elg_amount",
-    "buy_elg_amount_rate",
-    "buy_lg_amount",
-    "buy_lg_amount_rate",
-    "buy_md_amount",
-    "buy_md_amount_rate",
-    "buy_sm_amount",
-    "buy_sm_amount_rate",
-]
+# **单一事实源 = `market_data.TABLE_FLOAT_COLS`**(v1.3.5 收口):本脚本此前自带一份
+# 同名列表,与落盘对齐防线各写一份、有漂移风险。现改为直接引用——修缮脚本与
+# `write_table_day` 的对齐口径由同一份声明驱动,不可能再各说各话。
+MONEYFLOW_FLOAT_COLS: List[str] = list(TABLE_FLOAT_COLS["moneyflow_dc"])
 
 
 def repair_float_columns(
@@ -97,8 +92,7 @@ def repair_float_columns(
 
 
 def _default_table_root() -> Path:
-    # 延迟依赖 neckline.config,让脚本核心函数在纯 mock 目录下也可单测(不碰真 settings)
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    # 延迟依赖 `settings`,让脚本核心函数在纯 mock 目录下也可单测(不碰真 settings 的路径)
     from neckline.config import settings
 
     return settings.parquet_dir / "moneyflow_dc"

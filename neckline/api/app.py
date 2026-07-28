@@ -125,7 +125,19 @@ logger = logging.getLogger(__name__)
 # 状态),因为搜索静默返 0 条时模型照样写得出像样的分析——见 `llm.base.search_coverage_line`。
 # ⚠ 被证伪的排除项(别再查一遍):GLM 那份 payload 里 `enable`/`search_result` 发字符串
 # `"True"`、`count` 发 `"5"` **不是 bug**,真 key A/B 实证接口会正确解析成 bool/int。
-VERSION = "v1.3.4"
+# v1.3.5(2026-07-28 快修,用户拍板):**2026-07-27 的 16:35 报告当场崩掉、当日无报告**
+# —— `moneyflow_dc` 分区 schema 分裂(2020-2023 的 897 个 0 行空文件落成 String,
+# 2023-09-11..2026-07-20 的 688 个真数据是 Float64)→ v1.3 新增的候选情报管线首次对该表
+# 做全表 `scan_parquet` → SchemaError → 整个 `build_report` 崩。两半修法:
+# ① **数据**:`scripts/fix_moneyflow_schema.py` 把 902 个脏分区 cast 回 Float64(生产已跑,
+#    零损失对拍全过);② **代码**:`_align_to_table_schema` 的对齐目标从「既有分区的**第一个
+#    文件**」改为 `market_data.TABLE_FLOAT_COLS` 的**显式 canonical 声明**——旧口径的致命
+#    假设是「第一个分区一定是对的」,而 moneyflow_dc 的首个分区恰恰是脏的,于是 2026-07-21
+#    起每天的真数据都被"对齐"成 String,越修越坏;③ 候选管线内部对**可选情报输入**
+#    (板块资金流)的调用补保险丝——排序少一维可以,掀翻整份报告不行。
+# ⚠ 别再走的死路:2026-07-21 那次"向既有分区看齐"的修法对 daily_basic 有效、对
+# moneyflow_dc **无效且有害**,因为它的基准本身就是脏的。判据是「基准可信吗」,不是「有没有对齐」。
+VERSION = "v1.3.5"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
