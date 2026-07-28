@@ -1,9 +1,18 @@
 # Neckline — 项目专属规范与坑(builder/reviewer 必读)
 
-> 全局规范见 `~/.claude/CLAUDE.md`;权威施工件 `PROJECT_PLAN.md`(唯一权威,产品
-> 决策/参数/验收标准/变更日志全在那)。本文件只记 Neckline **专属的工程坑**,
-> 不复述 plan 内容。数据源坑的权威原文在 `/Users/linotsai/Lino/LinoN/CLAUDE.md`
-> (前作,§3.7 明确要求吸收对应节)。
+> 全局规范见 `~/.claude/CLAUDE.md`;系统线权威 `PROJECT_PLAN.md`、策略线权威
+> `STRATEGY_LAB.md`(产品决策/参数/验收标准/变更日志全在那两份)。本文件只记
+> Neckline **专属的工程坑**:每坑只留判据 + 规则 + 指针,事故叙事全文在
+> `archive/`(总索引:`archive/变更日志_详版_20260719-20260728.md`)。数据源坑的
+> 权威原文在 `/Users/linotsai/Lino/LinoN/CLAUDE.md`(前作)。
+
+## 记录纪律(2026-07-28 立规,动文档前先读)
+
+- **变更日志一行制**:PROJECT_PLAN §九 每动作一行;事故复盘/完工验收/长记录写
+  `archive/` 独立文件,日志一行 + 链接,同一件事全文只存在一处。
+- **§四「当前状态」是快照不是账本**:每次会话交接**替换**全文,不追加;历史价值
+  内容归 §九 一行 + archive 详版。
+- **本坑清单每坑 ≤5 行**:超了就把叙事挪进 archive,这里留规则。
 
 ## 跑法
 
@@ -11,211 +20,113 @@
   (`pip.conf` 已配)。测试:`python -m pytest tests/ -q`。
 - 报告:`python scripts/report.py [YYYYMMDD]`。哨兵:`python scripts/sentinel.py
   [--once]`。持仓台账:`python scripts/positions.py {add,close,list}`。合成盘中
-  冒烟(无法活体验证时用):`python scripts/smoke_sentinel.py`。
+  冒烟:`python scripts/smoke_sentinel.py`。
+- `scripts/oneoff/` 是已执行完毕的一次性脚本(charter 落行/bootstrap/数据修缮),
+  留档审计用;现役脚本全在 `scripts/` 顶层。
 
-## 钉死的领域常量(单一事实源,禁止各处漂移——改动前先找源头,别在新文件里抄一份)
+## 钉死的领域常量(单一事实源,改动前先找源头,别在新文件里抄一份)
 
-- **-5% 止损 / 回落止盈 / 仓位纪律**:唯一源是 SQLite `strategy_versions` 表现役
-  版本(`neckline.strategy.brain.get_active().rule["config"]`),不是某个模块里
-  的字面量。哨兵(`sentinel/engine.py`)读的也是这张表,不硬编 0.05。
-- **涨跌停幅度规则**(10%/20%/5%/30%、制度分界日、新股豁免窗口):唯一源是
-  `neckline/data/limit_derived.py` 顶部常量;向量化 EOD 批算是
-  `compute_limit_derived`,盘中逐票标量镜像是 `compute_intraday_limit_prices`/
-  `resolve_limit_pct`/`resolve_exempt_days`(阶段3新增,同一组常量,单测互相
-  对拍)。**新需求要算涨跌停价,去这个模块找函数,不要重新推一遍幅度规则。**
+- **-5% 止损 / 回落止盈 / 仓位纪律**:唯一源是 SQLite `strategy_versions` 现役行
+  (`neckline.strategy.brain.get_active().rule["config"]`),不是某模块字面量;
+  哨兵读的也是这张表,不硬编 0.05。章程变更只走 `scripts/activate_charter.py` 四道闸。
+- **涨跌停幅度规则**(10%/20%/5%/30%、制度分界日、新股豁免):唯一源
+  `neckline/data/limit_derived.py` 顶部常量;EOD 批算 `compute_limit_derived`,
+  盘中标量镜像 `compute_intraday_limit_prices`/`resolve_limit_pct`/
+  `resolve_exempt_days`(单测互相对拍)。要算涨跌停价去这个模块找函数。
 - **板块分类**(主板/创业板/科创板/北交所):唯一源 `neckline/data/board.py` 的
-  `classify`/`classify_by_code`(黑名单坑教训:按板块整段正则,禁止枚举精确
-  子段,见 LinoN CLAUDE.md)。`sentinel/quotes.py:to_symbol` 的北交所前缀判断
-  复用的正是这个模块,没有另起一份 8/4/920 正则。
+  `classify`/`classify_by_code`(按板块整段正则,禁止枚举精确子段——LinoN 黑名单
+  坑教训);北交所前缀判断复用此模块,不另起 8/4/920 正则。
+- **「总仓」分母**:唯一源 `Settings.total_capital`(默认 12 万,`.env` 的
+  `TOTAL_CAPITAL` 覆盖);一切"占总仓百分比"计算读它。
 
-## 阶段3(盘中哨兵)踩过的坑,下次别再踩
+## 盘中哨兵(阶段3)
 
-- **polars `df["col"]` 在链式 `df = df.filter(...).with_columns(...)` 里会绑定
-  错对象**:`with_columns(...)` 的参数如果用 `df["col"]`(Series 索引,不是
-  `pl.col("col")` 表达式)去引用外层变量 `df`,Python 会先算好右边所有子表达式
-  再赋值——此时 `df` 还是**赋值前**(过滤前)的那个 DataFrame,行数对不上过滤后
-  的目标,会报 `ShapeError`。教训:任何 `df = df.filter(X).with_columns(Y)` 的
-  链式写法,`Y` 里一律用 `pl.col(...)` 表达式,不要用 `df["..."]`(`scripts/
-  smoke_sentinel.py` 施工期真实踩过)。
-- **`neckline.calendar.trading_days_between`/`is_trading_day` 对早于 trade_cal DB
-  覆盖范围(默认 2015-01-01 起,见 `scripts/init_calendar.py`)的查询会退化成
-  逐自然日循环 + 每天一条 warning 日志**:A 股大量主板老股 `list_date` 在
-  1990s-2000s,若不加预筛直接对每只票调用
-  `trading_days_between(list_date, trade_date)` 算"上市第几天",会在生产环境
-  里对着几十年跨度刷屏 + 显著拖慢(施工期用真实历史数据跑 `smoke_sentinel.py`
-  才暴露,单测因为用的合成短日期区间测不出来)。**已在
-  `sentinel.universe.is_new_stock_exempt` 加了「自然日差 > 30 天直接判非豁免」
-  的廉价预筛**——任何新代码要判断"是不是新股"都复用这个函数,不要重新写一个
-  不带预筛的版本。
-- **阈值比较的浮点精度**:`stop_pct - buffer_pct` 这类由两个配置值做减法算出的
-  阈值,在二进制浮点下可能不精确等于十进制直觉值(如 `0.08-0.02` 算出
-  `0.059999999999999996` 而非 `0.06`),导致"回撤恰好等于阈值"的边界情形被
-  漏判。`sentinel/holding.py` 已加 `_EPS=1e-9` 容差,任何新的纪律阈值比较
-  (止损/止盈/仓位占比等)照此办理,不要写裸的 `>=`/`<=`。
-- **Bark(`sentinel/channels.py`)与 GLM/Kimi(阶段2)同类处境**:payload 字段
-  (`title`/`body`/`group`/`level`/`sound`)基于官方文档实现,**无真实
-  `BARK_URL` 做过活体验证**。拿到真实 key 后建议先手动跑一次
-  `BarkChannel(url).send(...)`(不经 MockTransport)确认协议假设仍成立。
-- **盘中哨兵的"关注池"是候选+持仓+昨日涨停股的代理样本,不是全市场**:退潮
-  哨兵(`sentinel/retreat.py`)不轮询全市场 ~5900 只股票(免费源限流/封禁风险,
-  见该模块头注释)。如果实盘发现这个代理样本对"退潮"不够灵敏,下一步候选方案
-  是"低频率(如5分钟一次)全市场轮询"叠加,而不是把主循环频率整体提到危险
-  区间——这个取舍已写进模块 docstring,改动前先看那段说明。
+- **polars 链式赋值**:`df = df.filter(X).with_columns(Y)` 的 `Y` 里一律用
+  `pl.col(...)` 表达式,不要 `df["col"]`(右侧先求值,绑到过滤前的旧 df →
+  `ShapeError`,施工期真踩过)。
+- **"上市第几天"判定**一律复用 `sentinel.universe.is_new_stock_exempt`(带
+  「自然日差 > 30 天直接判非豁免」预筛)。裸调 `trading_days_between(list_date,…)`
+  对 1990s 老股会退化成逐自然日循环 + 刷屏 warning(trade_cal 只覆盖 2015+,见
+  `scripts/init_calendar.py`)。
+- **纪律阈值比较**一律加 `_EPS=1e-9` 容差(`sentinel/holding.py` 体例):
+  `0.08-0.02` 二进制浮点下 ≠ 0.06,裸 `>=`/`<=` 漏判边界。
+- **Bark 通道**(`sentinel/channels.py`)从未活体验证;拿到真实 `BARK_URL` 先手动
+  `BarkChannel(url).send(...)` 一次验协议。
+- **盘中"关注池"是候选+持仓+昨日涨停的代理样本,不是全市场**(免费源限流取舍)。
+  不够灵敏的备选是低频全市场轮询叠加,不是提主循环频率——取舍见
+  `sentinel/retreat.py` docstring,改前先读。
 
-## 阶段4C(SwiftUI 双端客户端)踩过的坑,4D/4E 续做前先看
+## SwiftUI 客户端(阶段4C / v1.1-E/F/G)
 
-- **`CandidateOut.board` 服务端字面是英文枚举码**(`MAIN`/`GEM`/`STAR`/`BSE`,
-  唯一源 `neckline/data/board.py` 的 `Board` 枚举),不是"主板"这类中文名——
-  联调实测才发现,别凭直觉当中文串直接展示。客户端 `Models.swift` 已加
-  `Candidate.boardLabel` 做**纯展示层**四常量换算(未识别值原样透传),不要在
-  服务端另建一份中文映射、也不要客户端重新推导分类逻辑。
-- **Swift `URLProtocol` 网络桩测试(等价于 Python `httpx.MockTransport`),
-  `startLoading()` 里 `request.httpBody` 常是 nil**:URLSession 经自定义
-  URLProtocol 转发 POST/PUT 时会把 body 转成 `httpBodyStream`,断言请求体内容
-  必须两路都读(`httpBody` ?? 手动 drain `httpBodyStream`),否则会误判"请求体
-  丢了"(`NecklineTests/DTODecodeTests.swift` 的 `httpBodyOrStream()` 已处理,
-  新增校验请求体的测试直接复用这个 helper)。
-- **本地起 dev 后端做真实联调,不要从零 bootstrap**(会卡在无 `trade_cal`/无
-  现役策略版本,报"策略大脑无现役版本"):`sqlite3 ATTACH` 真实
-  `data/neckline.db`,只拷 `trade_cal`/`strategy_versions`/`stock_basic`/
-  `namechange` 四张**只读参考表**进隔离临时库,再跑 `scripts/report.py <date>`
-  就能吃真实六年 backfill 数据出一份真报告——不碰用户真实台账(`positions`/
-  `app_settings`/`devices` 等业务表留空隔离),也不必重新跑一遍日历回填或
-  `research.rule_v1 --commit`。
-- **本环境 computer-use 对 Simulator/macOS App 的点击权限可能被拒**
-  (`request_access` 返回 `denied`,与 LinoN CLAUDE.md 记的"Dock 守卫誤判"是
-  另一种表现形式,结果一样打不通)。视觉核对改走**非交互路径**:
-  `xcrun simctl io <device> screenshot` 直接截图(不需要点击权限);要切
-  Tab/板块用 `SIMCTL_CHILD_<VAR>=<val> xcrun simctl launch <device> <bundle-id>`
-  (iOS,simctl 会把 `SIMCTL_CHILD_` 前缀剥掉传进 App 进程)/macOS 直接跑
-  `<App>.app/Contents/MacOS/<App>` 二进制时在同一 shell 设同名环境变量——
-  Neckline App 侧已加 `NECKLINE_INITIAL_TAB` 这个纯 QA 钩子(`NecklineApp.init()`
-  读 `ProcessInfo.processInfo.environment` 设初始 tab,不影响正常用户路径)。
-  macOS 原生 GUI 截图(`screencapture`/`osascript` System Events)在本环境因
-  沙盒权限(Screen Recording/Accessibility 未授权)不可用,遇到同样情况直接
-  改用"iOS 截图 + 双端 `xcodebuild` BUILD SUCCEEDED"作等价证据,不必死磕。
+- **`CandidateOut.board` 是英文枚举码**(`MAIN`/`GEM`/`STAR`/`BSE`,源
+  `neckline/data/board.py`);中文展示走客户端 `Candidate.boardLabel` 纯展示层
+  换算,不要服务端另建中文映射、也不要客户端重推分类。
+- **Swift URLProtocol 网络桩里 `request.httpBody` 常是 nil**(POST body 被转成
+  `httpBodyStream`);断言请求体复用 `DTODecodeTests.swift::httpBodyOrStream()`
+  两路都读,否则误判"请求体丢了"。
+- **本地 dev 后端联调不要从零 bootstrap**(会卡"策略大脑无现役版本"):
+  `sqlite3 ATTACH` 真实 `data/neckline.db`,只拷 `trade_cal`/`strategy_versions`/
+  `stock_basic`/`namechange` 四张只读参考表进隔离临时库,业务表留空,再跑
+  `scripts/report.py <date>` 即可吃真数据出报告。
+- **本环境 computer-use 点不动 Simulator/macOS App**(权限拒):视觉核对走
+  `xcrun simctl io <device> screenshot`(免点击权限)+ QA 钩子
+  `NECKLINE_INITIAL_TAB` 切初始 tab(iOS 用 `SIMCTL_CHILD_` 前缀传入;macOS 直接
+  跑二进制带环境变量);macOS 原生截图被沙盒挡时,拿"iOS 截图 + 双端
+  `xcodebuild` BUILD SUCCEEDED"当等价证据,不死磕。
+- **客户端 404 映射**:`APIClient.mapReason` 按 reason 逐 case + fallback;新增会
+  返 404 的端点必须检查要不要加新 case,别指望 fallback 猜对文案(watchlist
+  `not_found` 被误显示成"持仓已清"踩过)。
+- **服务端字段与客户端既有计算属性撞名**(如 `distToStopPct` 小数 vs 百分比):
+  CodingKeys 显式改名解码(`distToStopPctServer`),不改旧属性既有语义(有单测锁)。
 
-## 阶段4D(周复盘对账引擎)踩过的坑,4E 续做前先看
+## 周复盘对账(阶段4D)
 
-- **可配字段映射(`review_col_map`)必须同时驱动"格式判定"本身,不能只驱动"列
-  取值"**:`neckline/review/parse.py::_detect_format` 最初只按内置默认列名
-  (`证券代码`/`成交价格`/`证券名称`)猜格式,若用户 col_map 把这几个判据列
-  也改了名,连"这是哪种格式"都认不出来,col_map 形同虚设——判据列名同样要吃
-  `col_map` 覆盖(表头行探测锚点"交易日期"除外,那个固定不受 col_map 影响)。
-- **反推价格用到的必需列,压根找不到该列时绝不能静默按 0 兜底**:格式一
-  `成交价 = (|发生金额|-费用)/数量`,若"费用"对应列因表头措辞不同(如"费用
-  合计")而找不到,`cell(None) or 0.0` 会悄悄把它当 0,算出一个看似合理实则
-  错误的价格(施工期实测:`150015/100=1500.15` 而非正确的 `1500.0`)。任何
-  "缺列 vs 缺该行这一格数据"要分开处理:前者(`cols[...] is None`)必须
-  硬性跳过该行 + 警告,后者(列存在但这一行是 None)才允许当 0 处理。
-- **"总仓"(§1.2 固定 12-13 万分母)此前项目里没有单一归属地**——`neckline/
-  config/__init__.py` 的 `Settings.total_capital`(默认 12 万,`.env` 的
-  `TOTAL_CAPITAL` 可覆盖)是唯一源,新代码要用到"占总仓百分比"一类计算(敞口
-  占比、强制复盘阈值等)一律读这个字段,不要各自另开一个字面量。
+- **`review_col_map` 必须同时驱动"格式判定"与"列取值"**:`parse.py::_detect_format`
+  的判据列也要吃 col_map 覆盖(表头锚点「交易日期」除外),否则映射形同虚设。
+- **反推价格的必需列整列缺失必须硬跳该行 + 警告**,绝不 `or 0.0` 静默兜底;
+  「缺列」(`cols[...] is None`)与「该行这格是 None」分开处理(费用列名不匹配 →
+  价格错得看似合理,踩过)。
+- **同花顺自选导出 txt 编码/格式未活体验证**(`watchlist.py::parse_ths_txt`
+  UTF-8→GBK 兜底,行首取 6 位数字);拿到真实文件先跑一次
+  `POST /watchlist/reconcile-ths` 验协议假设。
 
-## v1 上线首日(2026-07-21)生产实战踩的坑
+## 生产实战定案(v1 上线 → v1.3.5;事故全文见 archive 详版变更日志)
 
-- **TuShare 类型漂移会毒化 Parquet 分区(完整结论,v1.3.5 定稿;前后崩了两次报告)**:
-  某日某列全空时 pandas 落成 object → polars String,写盘后与历史分区 Float64 冲突,
-  `scan_parquet` 整表读取 SchemaError。**任何新的落盘路径必须走 `write_table_day`,
-  不要自己 `write_parquet`。**
-  - **第一次(2026-07-21,daily_basic 漂 5 列 / moneyflow_dc 漂 12 列)**:修法 = 在
-    `_align_to_table_schema` 里「向**既有分区**的 schema cast」。对 daily_basic **有效**。
-  - **⚠ 第二次(2026-07-27,moneyflow_dc,16:35 报告当场崩、当日无报告)——上面那个修法
-    对本例不但无效,还把情况改坏了**。根因:「既有分区的 schema」实际取的是
-    `scan_parquet` glob **排序后第一个文件**的 schema,而**没人保证第一个文件是对的**。
-    `moneyflow_dc` 覆盖仅 2023-09-11 起,backfill 给 2020-01-02..2023-09-08 落了 **897 个
-    0 行空文件**(空列 → object → String),排序第一个正是它。于是 2026-07-21 起每天的
-    真数据都被"对齐"成 String,而 2023-09-11..2026-07-20 的 688 个 Float64 分区没人动 →
-    读侧整表 union 时 Float64 撞 String。此前没炸只是因为**没有任何代码路径全表读它**;
-    v1.3 的候选情报管线第一次全表读 `moneyflow_dc`,当场掀翻整份报告。
-  - **正解(v1.3.5)= 两半,缺一不可**:①**写侧**——`market_data.TABLE_FLOAT_COLS`
-    **显式声明每张表的数值列**(canonical dtype 恒 Float64),`_align_to_table_schema`
-    向**声明**看齐、不再向"第一个文件"看齐;声明未覆盖的列才退回旧兜底,**表整个没声明
-    则打 WARNING 不静默**(`_VALID_TABLES` 加新表却忘了补声明,有守门单测直接挂)。
-    ②**读侧**——写侧修好**不会让历史脏分区自愈**,必须另跑
-    `scripts/fix_moneyflow_schema.py`(逐文件 cast、幂等、不整表 scan——整表 scan 本身
-    就是坏的)。`tests/test_market_data.py::TestCanonicalSchemaAlignment` 有一条反向证伪
-    单测锁死「脏基准不得带偏新写入」。
-  - **判据一句话**:对齐这件事,要问的是「**基准可信吗**」,不是「有没有对齐」。**空分区
-    是脏基准的唯一来源**——2026-07-28 全表体检实测:只有 `moneyflow_dc` 有空分区(897 个)
-    也只有它脏,其余 6 张表空分区数为 0、首个分区与近期样本 dtype 逐列一致。
-  - **配套教训**:核心步骤内部对**可选情报输入**的调用必须包保险丝。本次崩的直接位置是
-    `intel_candidates.py` 里对 `compute_sector_moneyflow` 的调用——`pipeline.py` 的 C2
-    展示节早就包了同款降级,唯独候选管线内部这处裸奔,于是"排序少一维"升级成"当日无报告"。
-- **带联网搜索的 LLM 调用不能沿用短读超时**:LinoN 时代 12-25s 短超时是治「连接卡死」
-  的(不带搜索的快聊),带搜索的审判/问询正常生成即需 30-60s+(生产实测 25s 下 10 只
-  审判 5 只 ReadTimeout;90s 后 26.3s 真调用成功)。现值 `openai_compat.read_timeout=90`;
-  卡死场景仍由 max_attempts 全新连接重试兜住,勿因个别慢调用回调短超时。
-- **GLM 顶层 `web_search` 数组为空但回答仍含时效信息 —— 老账已结案(2026-07-27,
-  v1.3.4 用真 key A/B 实证)**。当年记的"原因待查"有两个真因,都不是解析问题:
-  1. **`search_engine` 取值不被上游认识 → 静默返 0 条**(`ok=True`、无任何报错,
-     实测 `__bogus_engine__` 即如此)。此时模型退回训练数据照样写出像样的分析,
-     文字上完全看不出来。生产 `llm_judgments` 20260721/22/23 三天 10/10 空命中
-     就是这么无声发生的。同一问题当日实测:`search_pro` 2 条 / `search_std` 2 条 /
-     `search_pro_sogou` **10 条** —— 引擎取值实打实影响命中量。取值维持
-     `search_pro` 是用户拍板(一天样本不足以定),靠下面的埋点攒数据再议。
-  2. **检索词里没有股票身份**(问询台专属)。GLM 推导检索词紧跟**最后一条 user
-     消息**;问询台最后一条是用户的代词提问(「这只票…」),身份躺在更早的材料
-     消息里**救不回来** → 搜回泛泛板块新闻。叠加 `det.name` 从建库起就没被赋过值
-     (材料首行恒「名称:未知」),中文名这个中文财经检索最值钱的词也被白扔。
-  **修法(v1.3.4)**:`provider.chat()` 加**可选** `search_query`(不传时 payload
-  逐字节不变,`tests/test_llm.py::TestSearchQueryOptIn` 锁死)+ 问询台补中文名
-  (`data.market_data.resolve_stock_names`,查名唯一实现)并显式传检索词;另加
-  「命中 0 条」的 WARNING 埋点与用户侧露出(`llm.base.search_coverage_line`)。
-  ⚠ **已证伪、别再查一遍的排除项**:payload 里 `enable`/`search_result` 发字符串
-  `"True"`、`count` 发 `"5"` **不是 bug**——GLM 会正确解析字符串成 bool/int
-  (判别式:`enable="False"` 字符串同样能把搜索**关掉**,故不是"非空字符串一律
-  当 true"的糙转换)。改成布尔/整数对线上零差异,已刻意保留原样。
+- **Parquet 类型漂移毒化分区(两次崩报告,v1.3.5 定稿)**:某日某列全空 →
+  pandas object → polars String,与历史 Float64 分区冲突 → `scan_parquet` 整表
+  `SchemaError`。规则四条:① 新落盘路径必须走 `write_table_day`,不自己
+  `write_parquet`;② schema 对齐向 `market_data.TABLE_FLOAT_COLS` **声明**看齐,
+  永不向"第一个文件"看齐(排序第一个可能是 backfill 落的 0 行空文件 = 脏基准;
+  **空分区是脏基准的唯一来源**,对齐要问"基准可信吗"不是"有没有对齐");
+  ③ `_VALID_TABLES` 加新表必须同步补声明(守门单测会挂);④ 写侧修好**不会让
+  历史脏分区自愈**,修数据照 `scripts/oneoff/fix_moneyflow_schema.py` 体例
+  (逐文件 cast、幂等、不整表 scan)。
+- **核心管线对可选情报输入的调用必须包保险丝**:一处裸奔就把"排序少一维"升级成
+  "当日无报告"(07-27 `intel_candidates` 调 `compute_sector_moneyflow` 真崩过)。
+- **带联网搜索的 LLM 调用不能用短读超时**:现值 `openai_compat.read_timeout=90`
+  (带搜索正常生成 30-60s+;25s 下 10 只审判 5 只 ReadTimeout);卡死场景由
+  max_attempts 全新连接重试兜住,勿因个别慢调用回调短超时。
+- **GLM 联网搜索 0 命中(已结案,v1.3.4 真 key 实证)**,两个真因:①
+  `search_engine` 取值不被上游认识会 `ok=True` **静默返 0 条**(模型退训练数据
+  作答,文字看不出);② 检索词跟**最后一条 user 消息**走,代词提问救不回来。
+  修法已上线:`provider.chat()` 可选 `search_query`(不传时 payload 逐字节不变,
+  单测锁死)+ 问询台补中文名(`resolve_stock_names` 是查名唯一实现)显式传检索词
+  + 0 命中 WARNING 埋点。⚠ **已证伪勿再查**:payload 里 bool/int 发成字符串不是
+  bug(GLM 正确解析,刻意保留原样)。
+- **timer 跑过 ≠ 任务成功**:部署/定时任务验收必须看 `Result=`/`ExecMainStatus`,
+  别只看 `systemctl list-timers` 的 LAST(07-27 报告没生成却被记成"已跑完")。
 
-## v1.1-C/D(自选池 + 问询窗口修复)踩过的坑,后续续做前先看
+## 复用与设计体例(v1.1 修洞定案)
 
-- **"入池当日"(审计字段)与"该被哪份消费"(消费判据)必须解耦,不能用同一个
-  日期字段身兼两职**:`inquiry_pool` 旧写法让 `pool_date == 最近报告日`,表面看
-  合理,实际让 16:35 报告已生成后才问询通过的票的 `trade_date` 停留在"今天",
-  而下一份该消费它的报告是明天的——两个日期概念被绑死导致永久掉缝(生产真洞)。
-  修复:新增 `consumed_report_date`(NULL=待消费)作为**唯一**消费判据
-  (`neckline.api.stores.load_pending_inquiry_codes`:`WHERE consumed_report_date
-  IS NULL OR = 本报告日`),`trade_date` 退化为纯审计字段、不参与任何匹配逻辑。
-  **同类"队列表 + 目标日匹配"的设计,一律拆成「审计时间戳」+「独立消费标记」
-  两个字段,不要用一个字段的"相等"去表达"该被消费"。**
-- **`llm/judge.py::judge_candidate` 是 duck-typed 的**——只要一个对象有
-  `ts_code`/`name`/`close`/`board`/`pattern_tags`/`sector_names`/`hot_sectors`/
-  `entry_plan`/`stop_loss` 这几个属性(不要求是 `Candidate` 类型本尊),就能直接
-  喂给它审判,不必写适配器。新增了可选 `system_prompt` 参数(默认
-  `JUDGE_SYSTEM_PROMPT`,候选审判调用点零改动)——未来任何"喂一个类候选对象
-  给 LLM 审判"的新场景(如 `report/watchlist_check.py` 的自选体检),优先复用
-  `judge_candidate` + 自定义 `system_prompt`,不要另写一套调用/解析/降级逻辑。
-- **纪律红绿灯类判定,若需要"拆解成具体触发了哪条规则"展示,不能靠手写 Python
-  条件重新实现 `research/panel.py::base_universe_expr()` 这类已经 AND 成一个
-  布尔的表达式**(会产生数值漂移,`api/inquiry.py` 的 `run_deterministic_checks`
-  就是这样踩的,见挂起任务)。`report/watchlist_check.py::_discipline_checks`
-  的正确姿势:选股域四项揉成**一条**组合原因文案(不拆解、不重抄阈值),只有
-  现役 config **可配**的禁买过滤(P4/P5/P6)才逐项拆开——因为那几项本来就要
-  按 `cfg.xxx is not None`/`cfg.xxx` 分支决定是否启用,拆开展示不产生新的
-  数值维护点。
-- **同花顺 PC 端自选导出 txt 的真实编码/格式未经活体验证**(留 v1.1-H)——
-  `neckline/watchlist.py::parse_ths_txt` 按 UTF-8(含 BOM)→GBK 顺序尝试解码,
-  每行只取行首连续 6 位数字(容忍"裸代码"/"代码+后缀"/"代码+制表符+名称"等
-  未经验证前无法排除的变体),复用 `review.parse.normalize_ts_code`/
-  `sentinel.quotes.to_symbol` 判定交易所后缀,不新写正则。拿到真实同花顺导出
-  文件后,建议先跑一次 `POST /watchlist/reconcile-ths` 核对协议假设仍成立。
-
-## v1.1-E/F/G(客户端持仓生命周期 + 自选 + 推送四开关)踩过的坑,H 续做前先看
-
-- **`APIClient.swift` 的 404 错误映射此前是「单一 fallback」设计**:`send()` 对
-  所有 404 都传 `mapReason(data, fallback: .notHolding)`,`mapReason` 里任何未识别
-  的 `reason` 字符串一律落回这个 fallback——新增 watchlist 的 `DELETE`/`PUT .../pin`
-  (`reason="not_found"`)前,这意味着**任何**新 404 端点只要 reason 不是
-  `"not_holding"`,都会被客户端误显示成"该持仓已清或不存在"。已加 `APIError.notFound`
-  + `mapReason` 新 case 修掉这一处。**H 块或以后新增任何会返 404 的端点,先检查
-  `mapReason` 要不要跟进一个新 case,不要假设 fallback 会自动"猜对"文案。**
-- **服务端字段名与客户端既有计算属性撞名时,只做展示口径不同不能直接合并**:
-  `PositionOut.distToStopPct`(服务端,小数如 0.0625)与客户端 `Position` 早于
-  v1.1 就有的计算属性 `distToStopPct`(百分比如 6.25,来自 `(price-stopLine)/
-  price*100`,被既有单测锁死语义)算法等价但单位不同——新增服务端字段时用显式
-  `CodingKeys` 把解码属性改名为 `distToStopPctServer`,不要为了"用同一个名字"
-  硬改旧计算属性的既有语义(会连带改变既有单测的隐含契约)。
+- **"队列表 + 该被哪份消费"一律拆两字段**:审计时间戳 + 独立消费标记
+  (`consumed_report_date IS NULL` 判据),不用一个日期字段的"相等"表达"该被
+  消费"(`inquiry_pool` 永久掉缝真洞)。
+- **喂"类候选对象"给 LLM 审判**一律复用 `llm/judge.py::judge_candidate`
+  (duck-typed,只要求几个属性;可选 `system_prompt`),不另写调用/解析/降级。
+- **纪律红绿灯要"拆解展示触发了哪条"时**,不许手写 Python 重抄
+  `base_universe_expr()` 已 AND 成一个布尔的表达式(数值漂移);选股域四项揉成
+  一条组合文案,只有 config 可配的 P4/P5/P6 才逐项拆
+  (`watchlist_check.py::_discipline_checks` 体例)。
 
 ## 双会话架构(2026-07-25 起,冷启动必读)
 

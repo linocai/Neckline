@@ -1,4 +1,4 @@
-"""`scripts/fix_moneyflow_schema.py` 的 mock 单测(K3 · B0.1)。
+"""`scripts/oneoff/fix_moneyflow_schema.py` 的 mock 单测(K3 · B0.1)。
 
 承阶段 0 教训「改脚本级落盘代码先补一层 mock 单测」:在临时目录里合成一批**类型漂移
 的分区文件**(部分列 String、部分 Float64,含空文件与含真数据文件),验证 `repair_
@@ -19,7 +19,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-_SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts" / "oneoff")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "oneoff"))
 
 import activate_charter  # noqa: E402
 import charter_v1_3  # noqa: E402
