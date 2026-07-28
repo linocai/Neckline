@@ -158,6 +158,19 @@ def locked_state_provider(db_path: Optional[Path] = None) -> Callable[[Any], Opt
     return lambda pos: (locked.get(getattr(pos, "id", None)) or {}).get("state")
 
 
+def data_unavailable_provider(db_path: Optional[Path] = None) -> Callable[[Any], bool]:
+    """构造 precall `scan_time_exits(data_unavailable_provider=...)` 用的 provider
+    (v1.4-①-B / §七 P0-2)。= 该持仓在**最近一份** 16:35 体检里是不是「当日无 EOD 行」。
+
+    **为什么盘前要用它**:9:26 汇总推送会把「D5 该走」推到用户锁屏,而停牌票今天根本卖不掉
+    —— 这是 P0-2 病根最尖锐的形态。查无快照(刚开仓未体检)/ 老快照未记这一位(`None`)→
+    **返回 False**(保守:维持既有推送行为,豁免需正向证据,同 `locked_state_provider` 姿势)。
+    盘前用「昨日 EOD 那一份」是当下能拿到的最好信号(当日 EOD 尚未产生);停牌通常连续,
+    误差方向是「复牌当天少推一次」,而不是「催卖一只卖不掉的票」。"""
+    snaps = load_latest_checks_by_position(db_path=db_path)
+    return lambda pos: bool((snaps.get(getattr(pos, "id", None)) or {}).get("data_unavailable") or False)
+
+
 def latest_net_float_map(db_path: Optional[Path] = None) -> Dict[int, Optional[float]]:
     """每个 position_id 的**最近一份** net_float。⚠ **审计 🔴-1 之后:纯审计/展示用,
     不再参与任何时间退出判向**(判向只认 `locked_time_exit_map` 的定格值)。NULL(停牌/
@@ -178,6 +191,7 @@ __all__ = [
     "load_latest_checks_by_position",
     "locked_time_exit_map",
     "locked_state_provider",
+    "data_unavailable_provider",
     "time_exit_due_map",
     "latest_net_float_map",
 ]

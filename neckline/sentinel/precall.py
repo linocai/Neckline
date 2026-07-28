@@ -364,6 +364,7 @@ def scan_time_exits(
     locked_state_provider: Optional[Callable[[Position], Optional[str]]] = None,
     *,
     names: Optional[Dict[str, str]] = None,
+    data_unavailable_provider: Optional[Callable[[Position], bool]] = None,
 ) -> List[TimeExit]:
     """两档时间退出扫描(§五 v1.3-①-C;9:25:30 盘前执行提醒的取数入口)。
 
@@ -379,6 +380,13 @@ def scan_time_exits(
     · **两档启用**→ 每只到判定点的持仓给三态之一(TIME_EXIT_NEXT_DAY / PROFIT_EXEMPT /
       HARD_CAP_EXIT);HOLDING(未到 D5)不 emit。profit_exempt 也 emit(供看板/记录),但
       **不进 D5 执行提醒推送**(调用方按 `state in _ACTIONABLE_TIME_EXIT` 过滤,§五 v1.3-①-D)。
+
+    · **v1.4-①-B `data_unavailable_provider`(注入,读
+      `report/holding_store.data_unavailable_provider`)** —— 那只票在最近一份 16:35 体检里
+      是不是「当日无 EOD 行」。**这条盘前路径是 P0-2 病根最尖锐的形态**:9:26 汇总推送会把
+      「D5 该走」直接推到用户锁屏,而那只票**今天根本卖不掉**。挂起态(`SUSPENDED_HOLD`)不在
+      `_ACTIONABLE_TIME_EXIT` 里,自然不推。查无快照 / 老快照没记这一位 → **按 False**
+      (保守,维持既有推送行为;豁免需正向证据)。
     """
     names = names or {}
     two_tier = is_two_tier_time_exit(cfg)
@@ -387,13 +395,15 @@ def scan_time_exits(
         buy = datetime.strptime(p.buy_date, "%Y%m%d").date()
         d = d_count(buy, trade_date)
         name = names.get(p.ts_code, p.ts_code)
+        no_data = bool(data_unavailable_provider(p)) if data_unavailable_provider is not None else False
         if not two_tier:
-            # 单档兜底 = v1.1 D5 行为(恰达 max_hold_days 当天,== 语义,与 scan_d5_exits 一致)
-            if d == cfg.max_hold_days:
+            # 单档兜底 = v1.1 D5 行为(恰达 max_hold_days 当天,== 语义,与 scan_d5_exits 一致);
+            # v1.4-①-B:该票停牌/无当日行情则同样挂起(不推),其余逐位不变。
+            if d == cfg.max_hold_days and not no_data:
                 out.append(TimeExit(p.id, p.ts_code, name, d, TIME_EXIT_NEXT_DAY, cfg.max_hold_days, two_tier=False))
             continue
         locked = locked_state_provider(p) if locked_state_provider is not None else None
-        state, eff = resolve_time_exit(d, cfg, locked)
+        state, eff = resolve_time_exit(d, cfg, locked, data_unavailable=no_data)
         if state != HOLDING:
             out.append(TimeExit(p.id, p.ts_code, name, d, state, eff, two_tier=True))
     return out
@@ -558,10 +568,16 @@ def run_precall_tick(
     # 完全一致**(is_two_tier_time_exit=False,provider 根本不被触及)。只对 actionable 两档
     # (time_exit_next_day / hard_cap_exit)落看板 + 推;profit_exempt 不推 D5 执行提醒
     # (客户端徽标经 PositionOut 表达,§五 v1.3-①-D)。
-    from neckline.report.holding_store import locked_state_provider as _locked_provider
+    from neckline.report.holding_store import (
+        data_unavailable_provider as _nodata_provider,
+        locked_state_provider as _locked_provider,
+    )
     time_exits = scan_time_exits(
         wu.positions, trade_date, cfg,
         locked_state_provider=_locked_provider(db_path=db_path), names=names,
+        # v1.4-①-B:停牌/无当日行情的持仓票判向挂起 → 不进 actionable → **不推**
+        # (9:26 汇总推送把「D5 该走」推到锁屏,而那只票今天根本卖不掉,§七 P0-2)。
+        data_unavailable_provider=_nodata_provider(db_path=db_path),
     )
     actionable = [ex for ex in time_exits if ex.state in _ACTIONABLE_TIME_EXIT]
     for ex in actionable:

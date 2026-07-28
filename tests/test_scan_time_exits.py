@@ -244,3 +244,71 @@ class TestSuspendedHold:
         from neckline.sentinel.precall import SUSPENDED_HOLD
 
         assert resolve_time_exit(5, _k1(), None, data_unavailable=True) == (SUSPENDED_HOLD, 5)
+
+
+class TestPrecallSuspendedHold:
+    """**盘前是 P0-2 病根最尖锐的形态**:9:26 汇总推送把「D5 该走」推到用户锁屏,而那只票
+    今天根本卖不掉。锁死:停牌票不进 actionable、其余票行为逐位不变。"""
+
+    def test_suspended_position_not_pushed_two_tier(self):
+        from neckline.sentinel.precall import SUSPENDED_HOLD
+
+        cfg = _v13()
+        positions = [_pos(1, "600001.SH"), _pos(2, "002036.SZ")]
+        td = _date_at_held(5)
+        exits = scan_time_exits(
+            positions, td, cfg,
+            locked_state_provider=lambda p: None,                 # 都还没定格
+            data_unavailable_provider=lambda p: p.ts_code == "002036.SZ",
+        )
+        by_code = {e.ts_code: e for e in exits}
+        assert by_code["600001.SH"].state == TIME_EXIT_NEXT_DAY   # 正常票照旧判该走
+        assert by_code["002036.SZ"].state == SUSPENDED_HOLD
+        actionable = [e.ts_code for e in exits if e.state in _ACTIONABLE_TIME_EXIT]
+        assert actionable == ["600001.SH"]                        # 停牌票**不推**
+
+    def test_suspended_position_not_pushed_single_tier(self):
+        """单档(老 config)同理:恰达 D5 的停牌票不 emit(病根一样)。"""
+        cfg = _k1()
+        positions = [_pos(1, "600001.SH"), _pos(2, "002036.SZ")]
+        exits = scan_time_exits(
+            positions, _date_at_held(5), cfg,
+            data_unavailable_provider=lambda p: p.ts_code == "002036.SZ",
+        )
+        assert [e.ts_code for e in exits] == ["600001.SH"]
+
+    def test_no_provider_is_bitwise_identical(self):
+        """不注入 provider(既有调用点)→ 与新增该参数之前逐位相同(回归护栏)。"""
+        for cfg in (_k1(), _v13()):
+            for d in (4, 5, 6, 15, 16):
+                td = _date_at_held(d)
+                base = scan_time_exits([_pos(1)], td, cfg, locked_state_provider=lambda p: None)
+                same = scan_time_exits([_pos(1)], td, cfg, locked_state_provider=lambda p: None,
+                                       data_unavailable_provider=lambda p: False)
+                assert [(e.state, e.max_hold_effective, e.d) for e in base] == \
+                       [(e.state, e.max_hold_effective, e.d) for e in same]
+
+    def test_provider_reads_latest_snapshot(self, isolated_env):
+        """`holding_store.data_unavailable_provider`:有快照读快照;无快照 / 老快照未记这一位
+        → **False**(保守,维持既有推送行为)。"""
+        from neckline.report import holding_store
+
+        class _It:
+            def __init__(self, pid, has_data):
+                self.position_id, self.has_data = pid, has_data
+                self.d_count, self.net_float = 5, None
+                self.time_exit_state, self.max_hold_effective = TIME_EXIT_NEXT_DAY, 5
+                self.has_strong = self.scenario_review = False
+                self.time_exit_locked_state = self.time_exit_locked_date = None
+                self.time_exit_locked_net_float = None
+
+            def hits_public(self):
+                return []
+
+        db = isolated_env.db_path
+        holding_store.save_holding_eod_checks(
+            date(2026, 7, 27), [_It(1, has_data=False), _It(2, has_data=True)], db_path=db)
+        provider = holding_store.data_unavailable_provider(db_path=db)
+        assert provider(_pos(1)) is True
+        assert provider(_pos(2)) is False
+        assert provider(_pos(99)) is False        # 无快照 → 保守 False
