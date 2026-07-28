@@ -222,7 +222,8 @@ final class IntegrationSmokeTests: XCTestCase {
                 ContingencyScenario(scenario: "次日高开超预期", trigger: "开盘涨幅>3%", action: "HOLD", matched: false),
                 ContingencyScenario(scenario: "次日低开破位", trigger: "开盘跌幅>2%", action: "ABANDON", matched: false),
             ],
-            playbookTag: "SWING_CHASE", plannedPrice: 10.0, plannedQty: 1000
+            playbookTag: "SWING_CHASE", plannedPrice: 10.0, plannedQty: 1000,
+            maxChasePct: 3.0
         )
         XCTAssertFalse(created.createdAt.isEmpty, "createdAt 服务端生成")
         XCTAssertEqual(created.status, "pending")
@@ -250,7 +251,8 @@ final class IntegrationSmokeTests: XCTestCase {
         let toCancel = try await client.createDecision(
             code: "600006.SH", name: nil, whyBuy: "占位", whyEntryPrice: "占位", targetPrice: nil,
             exitLow: nil, exitHigh: nil, thesisTags: [], invalidation: "占位", contingencyScenarios: [],
-            playbookTag: "SWING_CHASE", plannedPrice: nil, plannedQty: nil
+            playbookTag: "SWING_CHASE", plannedPrice: nil, plannedQty: nil,
+            maxChasePct: nil
         )
         _ = try await client.cancelDecision(id: toCancel.id)
     }

@@ -180,6 +180,32 @@ struct MissedEntryHintBanner: View {
     }
 }
 
+// MARK: - v1.4-①-C 板块数据过期告警(§七 P0-3:报告顶部醒目告警,不静默把过期数据
+// 当正常结果展示)。
+
+struct DataFreshnessBanner: View {
+    let freshness: DataFreshness
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 14, weight: .semibold))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("板块数据已过期").font(.system(size: 13, weight: .bold))
+                Text(bodyText).font(.system(size: 12)).opacity(0.9)
+                Text("「当日暴起板块」与「题材持续天数」本日不可信").font(.system(size: 11)).opacity(0.85)
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.alertGrad))
+    }
+
+    private var bodyText: String {
+        let dateText = freshness.sectorDataDate.map { "最新至 \($0)" } ?? "完全缺失"
+        return "板块数据\(dateText),落后 \(freshness.sectorLagDays) 个交易日"
+    }
+}
+
 // MARK: - Toast
 
 struct ToastView: View {

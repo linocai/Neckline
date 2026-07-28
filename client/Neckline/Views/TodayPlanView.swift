@@ -31,6 +31,10 @@ struct TodayPlanView: View {
                              set: { if $0 == nil { model.dismissModal() } })) { item in
             sheetContent(item.kind)
         }
+        .sheet(item: Binding(get: { model.infoCardRequest },
+                             set: { if $0 == nil { model.dismissInfoCard() } })) { req in
+            InfoCardPageView(model: model, request: req)
+        }
         #else
         ScrollView {
             content.padding(NKSpace.pagePad).frame(maxWidth: 860)
@@ -43,6 +47,10 @@ struct TodayPlanView: View {
         .sheet(item: Binding(get: { model.modal.map(SheetItem.init) },
                              set: { if $0 == nil { model.dismissModal() } })) { item in
             sheetContent(item.kind).frame(width: 420)
+        }
+        .sheet(item: Binding(get: { model.infoCardRequest },
+                             set: { if $0 == nil { model.dismissInfoCard() } })) { req in
+            InfoCardPageView(model: model, request: req).frame(width: 640, height: 720)
         }
         #endif
     }
@@ -95,6 +103,11 @@ struct TodayPlanView: View {
             if !model.report.missedEntryHint.isEmpty {
                 MissedEntryHintBanner(text: model.report.missedEntryHint)
             }
+            // v1.4-①-C(§七 P0-3):板块数据过期顶部醒目告警——过期时「当日暴起板块」/
+            // 「题材持续天数」本日不可信,不静默把它们当正常结果展示。
+            if let freshness = model.report.dataFreshness, freshness.stale {
+                DataFreshnessBanner(freshness: freshness)
+            }
             // v1.1-E.1:持仓区置顶到候选之上(持仓管理优先于选新票)。
             positionsSection
             if model.report.degraded {
@@ -145,9 +158,10 @@ struct TodayPlanView: View {
     private var candidatesSection: some View {
         VStack(alignment: .leading, spacing: NKSpace.gap) {
             NKSectionHeader(title: "候选 \(model.report.candidates.count)", trailing: "前10只过 LLM 审判")
-            // v1.3-③-C3/⑥:候选语义变更(§2.3)——候选=「过完安检、值得关注的票」,非
-            // 「系统认为会涨的票」,终选权在用户。文案必须跟上,不能让人以为这是买入信号。
-            Text("过完安检、值得花注意力的票 · 终选权在你,不是系统认为会涨的票")
+            // v1.3-③-C3/⑥ + v1.4-③ 语义红线(需求 8):候选=「过完安检、值得关注的票」,
+            // 非「系统认为会涨的票」;排序 = 注意力优先级,不是收益预测,排第一 ≠ 最会涨,
+            // 终选权在你。文案必须跟上,不能让人以为这是买入信号。
+            Text("过完安检、值得花注意力的票 · 排序 = 注意力优先级,不是收益预测 · 排第一 ≠ 最会涨 · 终选权在你")
                 .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
             ForEach(model.report.candidates) { c in
                 CandidateRow(model: model, candidate: c)
@@ -283,6 +297,7 @@ private struct CandidateRow: View {
                     }
                 }
                 intelRankRow(candidate.intelRank)
+                execHintsSection
                 FourPieceDisclosure(buyPoint: candidate.buyPoint, stop: candidate.stop,
                                     target: candidate.target, invalidation: candidate.invalidation,
                                     llmJudgment: candidate.llmJudgment)
@@ -292,6 +307,14 @@ private struct CandidateRow: View {
                         Task { await model.quickAddWatchlist(code: candidate.code, name: candidate.name) }
                     } label: {
                         Label("+自选", systemImage: "star").font(.system(size: 12, weight: .medium))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(NK.textSecondary)
+                    // v1.4-④-B:信息卡入口(60 日 K 线/RS 线/行业分歧线 + 快照/红黄牌/温和带/
+                    // 消息面/龙虎榜/市场语境)。候选专属,本版先只接候选。
+                    Button {
+                        model.openInfoCard(tradeDate: model.report.tradeDate, candidate: candidate)
+                    } label: {
+                        Label("信息卡", systemImage: "chart.xyaxis.line").font(.system(size: 12, weight: .medium))
                     }
                     .buttonStyle(.plain).foregroundStyle(NK.textSecondary)
                     Spacer()
@@ -312,25 +335,40 @@ private struct CandidateRow: View {
         }
     }
 
-    /// 情报排序理由(v1.3-③-C3/⑥):来源(常驻保底/情报竞争/问询强制)/ 板块资金流强度
-    /// (C2,拥挤情报)/ 题材持续天数 / 高弹标注 / 行业(说清"凭什么在这个板块栏")。
-    /// 全空(旧报告,`intelRank` 默认值)时不画任何东西,不是硬凑一行空 chip。
+    /// 情报排序理由(v1.3-③-C3/⑥ + v1.4-③ 需求 8 排序键三级):来源(常驻保底/情报竞争/
+    /// 问询强制)/ 行业排名(①)/ 行业持续天数(②)/ 黄牌数(③)/ 板块资金流(并列展示,
+    /// 不参与排序)/ 高弹标注 / 行业(说清"凭什么在这个板块栏")。全空(旧报告,
+    /// `intelRank` 默认值)时不画任何东西,不是硬凑一行空 chip。
     @ViewBuilder
     private func intelRankRow(_ rank: IntelRank) -> some View {
-        let hasContent = !rank.source.isEmpty || rank.sectorFlow != nil || rank.themePersistDays > 0
-            || rank.highElasticity || !rank.industry.isEmpty
+        let hasContent = !rank.source.isEmpty || rank.sectorFlow != nil || rank.industryPersistDays > 0
+            || rank.industryRank != nil || rank.yellowCardCount > 0 || rank.highElasticity || !rank.industry.isEmpty
         if hasContent {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     if !rank.source.isEmpty {
                         NKChip(text: nkIntelSourceLabel(rank.source))
                     }
-                    if let flow = rank.sectorFlow {
-                        NKChip(text: "板块资金流\(NKFmt.signedMoney(flow))万", tone: flow >= 0 ? .good : .bad)
+                    // 排序键①:行业强度排名。nil = 未参与排名,**不当 0**(0 会误读成"最强")。
+                    if let ir = rank.industryRank {
+                        NKChip(text: "行业排名 #\(ir)", tone: ir <= 3 ? .good : .neutral)
+                    } else if !rank.industry.isEmpty {
+                        NKChip(text: "行业未参与排名")
                     }
-                    if rank.themePersistDays > 0 {
-                        NKChip(text: "题材第\(rank.themePersistDays)天",
-                              tone: rank.themePersistDays >= 2 ? .warn : .good)
+                    // 排序键②:行业强度持续天数(升序,第1天最新鲜;H6 单调证据反用)。
+                    if rank.industryPersistDays > 0 {
+                        NKChip(text: "行业强度第\(rank.industryPersistDays)天",
+                              tone: rank.industryPersistDays >= 2 ? .warn : .good)
+                    }
+                    // 排序键③:K4 黄牌命中数(升序,无牌靠前)。「无牌靠前」只是风险优先排序,
+                    // 无牌 ≠ 会涨。
+                    if rank.yellowCardCount > 0 {
+                        NKChip(text: "黄牌×\(rank.yellowCardCount)", tone: .warn)
+                    }
+                    // v1.4-③ 起板块资金流退出排序键,只作并列展示。
+                    if let flow = rank.sectorFlow {
+                        NKChip(text: "板块资金流\(NKFmt.signedMoney(flow))万(并列参考,不参与排序)",
+                              tone: flow >= 0 ? .good : .bad)
                     }
                     if rank.highElasticity {
                         NKChip(text: "高弹性", tone: .warn)
@@ -338,6 +376,20 @@ private struct CandidateRow: View {
                     if !rank.industry.isEmpty {
                         NKChip(text: rank.industry)
                     }
+                }
+            }
+        }
+    }
+
+    /// v1.4-⑤-A:执行提示(读 DB `k4_advisory.exec_hint`)。标题统一「执行提示」,
+    /// **不叫「买入建议」**,文案原样透传 DB 文字,不改写、不加"建议"字样。
+    @ViewBuilder
+    private var execHintsSection: some View {
+        if !candidate.execHints.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("执行提示").font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+                ForEach(candidate.execHints) { hint in
+                    Text(hint.text).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
                 }
             }
         }
@@ -381,11 +433,28 @@ private struct PositionCard: View {
                             // 到期(isExitDay)红底醒目;浮盈豁免(D15 档)绿底提示"续持中";其余中性。
                             NKChip(text: "D\(position.dCount)/D\(position.maxHoldDaysEffective)",
                                   tone: dBadgeTone, filled: dBadgeTone != .neutral)
+                            // v1.4-①-B:判向挂起短标(主句在下方 todayAction 里,服务端原文
+                            // 已含「判向挂起,复牌当日再定格」的完整语义,这里只加一个显眼短
+                            // 徽标,不是替代服务端文案)。
+                            if position.timeExitKind == .suspendedHold {
+                                NKChip(text: "判向挂起 · 复牌当日重判", tone: .warn)
+                            }
                         }
                         Text("买入 ¥\(NKFmt.price(position.buyPrice)) × \(position.qty) · \(model.calendar.displayString(position.buyDate))")
                             .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
                         if !position.entryReason.isEmpty {
                             Text(position.entryReason).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                        }
+                        // v1.4-①-B(§七 P0-2):停牌/无数据显式标注——绝不静默把老价当今日价。
+                        if let stale = position.priceStale {
+                            Text("停牌/无数据 \(stale.staleDays) 个交易日,价格为 \(model.calendar.displayString(stale.lastCloseDate)) 最后成交价(\(stale.reasonLabel))")
+                                .font(.system(size: 11)).foregroundStyle(NK.amber)
+                        }
+                        // v1.4-⑥-C(§七 P1-6):定格日 ≠ D5 显式标注,只提示、不改判定逻辑,
+                        // **只在晚于 D{maxHoldDays} 时展示**。
+                        if position.timeExitLockedLateDays > 0, let lockedDay = position.timeExitLockedDay {
+                            Text("定格于 D\(lockedDay),晚于 D\(position.maxHoldDays) \(position.timeExitLockedLateDays) 天")
+                                .font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
                         }
                     }
                     Spacer()
@@ -428,6 +497,11 @@ private struct PositionCard: View {
                         .font(.system(size: 11.5, weight: position.todayActionTone == .warn ? .semibold : .regular))
                         .foregroundStyle(position.todayActionTone == .warn ? NK.amber
                                         : (position.todayActionTone == .good ? NK.up : NK.textTertiary))
+                }
+                // v1.4-①-B(§七 P0-2):K4 体检因无 EOD 行整份跳过 → 显式"今日未体检",
+                // 不静默留空(空白 = 「体检过了没问题」,两者必须能分开)。
+                if position.k4DataUnavailable == true {
+                    NKChip(text: "K4 今日未体检(停牌/无数据)", tone: .neutral)
                 }
                 // v1.3-②/⑥-C:普通/成分参考类 K4 命中降级为 chips(题材类标「参考」,不当硬判据)。
                 if !listK4.isEmpty {
@@ -472,10 +546,12 @@ private struct PositionCard: View {
     }
 
     /// D 徽标色调(§五 v1.3-⑥-A):到期(离场提示,两态之一)→ 红底;浮盈豁免(D15 档,
-    /// 持有态)→ 绿底(区别于"该走了",视觉上标出"这单在赚、续持中");其余中性灰。
+    /// 持有态)→ 绿底(区别于"该走了",视觉上标出"这单在赚、续持中");判向挂起(v1.4-
+    /// ①-B)→ 黄底(数据陈旧,提醒但非紧急);其余中性灰。
     private var dBadgeTone: NKAxisTone {
         if position.isExitDay { return .bad }
         if position.timeExitKind == .profitExempt { return .good }
+        if position.timeExitKind == .suspendedHold { return .warn }
         return .neutral
     }
 }
@@ -560,6 +636,9 @@ struct OpenPositionSheet: View {
                 TextField("买入价", text: $model.entryForm.price)
                 TextField("数量(股)", text: $model.entryForm.qty)
                 TextField("进场理由", text: $model.entryForm.reason)
+                // v1.4-①-A(§七 P0-1):真实买入日,默认今天、不可选未来(服务端还会校验
+                // 是否交易日,非交易日 400 拒绝并给出友好提示,不在客户端预判日历)。
+                DatePicker("买入日", selection: $model.entryForm.buyDate, in: ...Date(), displayedComponents: .date)
                 // v1.3-①/⑥-B:实付买入费用(UI 强制必填,服务端宽松;供 D5 净浮盈判向 +
                 // 周复盘对账用真数,不是估算)。
                 TextField("实付买入费用(必填,含佣金/过户费等)", text: $model.entryForm.buyFees)

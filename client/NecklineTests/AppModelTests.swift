@@ -333,13 +333,21 @@ final class AppModelTests: XCTestCase {
     /// (`httpBodyOrStream()` 是该文件内 `private extension`,不跨文件复用);这里只
     /// 验证 `AppModel` 的状态编排——创建成功后正确转入 `.open` 并暂存 `pendingDecisionId`。
     func testSubmitDecisionLogCreatesThenTransitionsToOpenWithPendingId() async throws {
-        MockURLProtocol.handler = { _ in
-            (200, """
+        MockURLProtocol.handler = { req in
+            // v1.4-⑤-B ⑨:请求体必须带上 maxChasePct(显式 null = 本测试勾了「不设上限」)。
+            if let body = req.httpBodyOrStream(),
+               let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                XCTAssertTrue(obj.keys.contains("maxChasePct"))
+                XCTAssertTrue(obj["maxChasePct"] is NSNull)
+            } else {
+                XCTFail("请求体应能解析")
+            }
+            return (200, """
             {"id": 42, "code": "600001.SH", "name": "甲", "createdAt": "2026-07-25T10:00:00+00:00",
              "whyBuy": "题材热", "whyEntryPrice": "回调企稳", "targetPrice": null, "exitLow": null,
              "exitHigh": null, "thesisTags": ["THEME"], "invalidation": "跌破均线",
              "contingencyScenarios": [], "playbookTag": "SWING_CHASE", "plannedPrice": 10.0,
-             "plannedQty": 1000, "status": "pending", "positionId": null, "revisionOf": null}
+             "plannedQty": 1000, "maxChasePct": null, "status": "pending", "positionId": null, "revisionOf": null}
             """.data(using: .utf8)!)
         }
         defer { MockURLProtocol.handler = nil }
@@ -354,12 +362,40 @@ final class AppModelTests: XCTestCase {
         model.decisionForm.whyBuy = "题材热"
         model.decisionForm.whyEntryPrice = "回调企稳"
         model.decisionForm.invalidation = "跌破均线"
+        model.decisionForm.maxChaseNoCap = true   // ⑨ 显式勾选「不设上限」
 
         await model.submitDecisionLog()
 
         XCTAssertEqual(model.pendingDecisionId, 42)
         XCTAssertEqual(model.modal, .open, "创建成功后应转入开仓补录表单(建计划→录八项→成交后关联)")
         XCTAssertEqual(model.entryForm.code, "600001.SH")
+    }
+
+    /// ⑨ 未做选择时 `submitDecisionLog()` 不该发出网络请求,提示信息须点名这一项。
+    func testSubmitDecisionLogBlocksWhenMaxChaseNotChosen() async throws {
+        var requestFired = false
+        MockURLProtocol.handler = { _ in
+            requestFired = true
+            return (200, "{}".data(using: .utf8)!)
+        }
+        defer { MockURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
+                               session: URLSession(configuration: config))
+        let model = AppModel(clientProvider: { client })
+        model.beginPositionEntryFlow()
+        model.decisionForm.code = "600001.SH"
+        model.decisionForm.whyBuy = "题材热"
+        model.decisionForm.whyEntryPrice = "回调企稳"
+        model.decisionForm.invalidation = "跌破均线"
+        // 故意不设 maxChasePct / maxChaseNoCap。
+
+        await model.submitDecisionLog()
+
+        XCTAssertFalse(requestFired, "⑨ 未选择时不该发请求")
+        XCTAssertNil(model.pendingDecisionId)
+        XCTAssertEqual(model.toast?.message.contains("最高追价上限"), true)
     }
 
     /// 用户在 `.open` 阶段中途放弃(dismissModal)→ 自动 cancel 该预注册计划,不留孤儿 pending 行。
@@ -424,6 +460,38 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(form.isValid, "费用允许为 0(如实录入,不代表未填)")
         form.buyFees = "-1"
         XCTAssertFalse(form.isValid, "费用不能为负")
+    }
+
+    /// v1.4-①-A(§七 P0-1):补录持仓日期选择器——`PositionEntryForm.buyDate` 默认今天,
+    /// `submitOpenPosition()` 提交时正确格式化成 'YYYYMMDD' 并透传给 `openPosition(buyDate:)`。
+    func testSubmitOpenPositionEncodesBuyDateFromForm() async throws {
+        var capturedBuyDate: String?
+        MockURLProtocol.handler = { req in
+            if let body = req.httpBodyOrStream(),
+               let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                capturedBuyDate = obj["buyDate"] as? String
+            }
+            return (200, """
+            {"ok": true, "position_id": 1, "stop_line": 9.5}
+            """.data(using: .utf8)!)
+        }
+        defer { MockURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
+                               session: URLSession(configuration: config))
+        let model = AppModel(clientProvider: { client })
+        model.entryForm.code = "600519.SH"
+        model.entryForm.price = "10.0"
+        model.entryForm.qty = "100"
+        model.entryForm.reason = "回调低吸"
+        model.entryForm.buyFees = "5.0"
+        let fixedDate = StaticTradingCalendar.shared.parseDate("20260722")!
+        model.entryForm.buyDate = fixedDate
+
+        await model.submitOpenPosition()
+
+        XCTAssertEqual(capturedBuyDate, "20260722")
     }
 
     // MARK: - §五 v1.2-B/E.6 枚举码→中文展示层换算(沿 `nkBoardLabel` 先例,未识别透传)
@@ -548,9 +616,30 @@ final class AppModelTests: XCTestCase {
         form.whyBuy = "题材热"
         form.whyEntryPrice = "回调企稳"
         form.invalidation = "跌破均线"
+        // v1.4-⑤-B ⑨:前八项填完仍不够——最高追价上限未做选择,不许提交。
+        XCTAssertFalse(form.isValid, "⑨ 未做选择(既未填数字也未勾不设上限)不该通过校验")
+        form.maxChaseNoCap = true
         XCTAssertTrue(form.isValid)
         form.code = "  "
         XCTAssertFalse(form.isValid, "代码不能只是空白")
+    }
+
+    /// ⑨ 最高追价上限二选一强制(v1.4-⑤-B,需求 2 补充,「同论点必填纪律」)——填数字
+    /// 或勾选「不设上限」,两者都不做时 `maxChaseChosen` 必须为 false。
+    func testDecisionLogFormMaxChaseChosenRequiresExplicitNumberOrNoCap() {
+        var form = DecisionLogForm()
+        XCTAssertFalse(form.maxChaseChosen)
+        form.maxChasePct = "3.0"
+        XCTAssertTrue(form.maxChaseChosen, "填了合法数字应视为已选择")
+        form.maxChasePct = ""
+        form.maxChaseNoCap = true
+        XCTAssertTrue(form.maxChaseChosen, "勾选「不设上限」应视为已选择")
+        form.maxChaseNoCap = false
+        XCTAssertFalse(form.maxChaseChosen, "两者都不做 = 未选择")
+        // 允许负值(只在低开时买)。
+        form.maxChasePct = "-1.5"
+        XCTAssertEqual(form.maxChasePctValue, -1.5)
+        XCTAssertTrue(form.maxChaseChosen)
     }
 
     /// 情景树 UI 引导 2-3 行,服务端不强制条数——只提交「情景描述+触发条件」都非空的行,
@@ -568,6 +657,10 @@ final class AppModelTests: XCTestCase {
 
     /// 修订模式预填(`beginReviseDecision` 用):从已有 `DecisionLog` 构造草稿,
     /// 枚举码正确映射回对应 case,情景树数组还原。
+    ///
+    /// v1.4-⑤-B:该行的 `maxChasePct` 是 nil——**存储层无法区分**"老行(建于本字段前)"
+    /// 与"用户当年显式选了不设上限",故预填**不自动勾选**「不设上限」,两格都留白,
+    /// 强制用户修订时重新主动选择一次(`isValid` 因而是 false,即便其余八项都完整)。
     func testDecisionLogFormInitFromDecisionLogPrefillsAllFields() {
         let log = DecisionLog(
             id: 9, code: "600001.SH", name: "甲", createdAt: "2026-07-25T10:00:00+00:00",
@@ -575,7 +668,7 @@ final class AppModelTests: XCTestCase {
             thesisTags: ["THEME", "NEWS"], invalidation: "跌破均线",
             contingencyScenarios: [ContingencyScenario(scenario: "s1", trigger: "t1", action: "BUY", matched: false)],
             playbookTag: "BREATHING_TRIAL", plannedPrice: 10.0, plannedQty: 1000,
-            status: "filled", positionId: 7, revisionOf: nil
+            status: "filled", positionId: 7, revisionOf: nil, maxChasePct: nil
         )
         let form = DecisionLogForm(from: log)
         XCTAssertEqual(form.code, "600001.SH")
@@ -589,6 +682,25 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(form.scenarios[0].scenario, "s1")
         XCTAssertEqual(form.scenarios[0].action, .buy)
         XCTAssertEqual(form.plannedQty, "1000")
+        XCTAssertEqual(form.maxChasePct, "", "老行 maxChasePct=nil 不自动预填")
+        XCTAssertFalse(form.maxChaseNoCap, "不自动预勾「不设上限」——那是替用户瞎猜当年的选择")
+        XCTAssertFalse(form.isValid, "⑨ 未重新选择前不许提交,即便其余八项都完整")
+    }
+
+    /// 修订预填:该行 `maxChasePct` 有具体数值(非 nil)时,正确回填数字框,
+    /// `maxChaseNoCap` 保持 false(与「不设上限」互斥)。
+    func testDecisionLogFormInitFromDecisionLogWithMaxChasePctPrefillsNumber() {
+        let log = DecisionLog(
+            id: 10, code: "600001.SH", name: "甲", createdAt: "2026-07-25T10:00:00+00:00",
+            whyBuy: "b", whyEntryPrice: "e", targetPrice: nil, exitLow: nil, exitHigh: nil,
+            thesisTags: [], invalidation: "i", contingencyScenarios: [],
+            playbookTag: "SWING_CHASE", plannedPrice: nil, plannedQty: nil,
+            status: "filled", positionId: 7, revisionOf: nil, maxChasePct: 2.5
+        )
+        let form = DecisionLogForm(from: log)
+        XCTAssertEqual(form.maxChasePct, "2.50")
+        XCTAssertFalse(form.maxChaseNoCap)
+        XCTAssertTrue(form.maxChaseChosen)
         XCTAssertTrue(form.isValid)
     }
 

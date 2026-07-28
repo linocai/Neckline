@@ -80,6 +80,9 @@ final class StaticTradingCalendar {
         return displayFmt.string(from: d)
     }
 
+    /// `Date` → 'YYYYMMDD'(后端字面口径,v1.4-①-A 补录持仓日期选择器用)。
+    func compactString(_ date: Date) -> String { compactFmt.string(from: date) }
+
     func isTradingDay(_ date: Date) -> Bool {
         let weekday = cal.component(.weekday, from: date)   // 1=Sun … 7=Sat
         if weekday == 1 || weekday == 7 { return false }

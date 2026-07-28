@@ -181,6 +181,9 @@ struct ReviewWorkbenchView: View {
             if r.forcedReview {
                 ForcedReviewBanner(reason: r.forcedReviewReason)
             }
+            // v1.4-⑥-A(§七 P1-4):章程切换分段——`strategyVersion` 只是"周初标签",
+            // 该周若发生过章程切换必须把分段讲清,不可再当"整周按这版判"展示。
+            CharterVersionCard(result: r)
             if let stats = r.stats { ReviewStatsCard(stats: stats, weekStart: r.weekStart, weekEnd: r.weekEnd) }
             if !entry.material.isEmpty {
                 NKCard {
@@ -274,6 +277,50 @@ private struct ForcedReviewBanner: View {
         .foregroundStyle(.white)
         .padding(14)
         .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.alertGrad))
+    }
+}
+
+// MARK: - v1.4-⑥-A 章程版本卡(§七 P1-4)。`strategyVersion` 只是"周初标签",本周若
+// 发生过章程切换,`charterSwitches` 非空时把切换时刻 + 前后版本 + 分段计数讲清楚——
+// 不可再让用户误以为"这周成交全按周初那版判"。
+
+private struct CharterVersionCard: View {
+    let result: ReviewWeeklyResult
+
+    var body: some View {
+        NKCard {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("本周章程").font(.system(size: 13, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                    Spacer()
+                    Text(result.strategyVersion.isEmpty ? "未知(旧数据)" : "\(result.strategyVersion)(周初标签)")
+                        .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                }
+                if result.charterSwitches.isEmpty {
+                    if !result.charterSegments.isEmpty {
+                        Text("本周未发生章程切换,全周按 \(result.strategyVersion) 判定 \(result.charterSegments.first?.tradeCount ?? 0) 笔")
+                            .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
+                    }
+                } else {
+                    ForEach(result.charterSwitches) { sw in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 10.5)).foregroundStyle(NK.amber)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("\(sw.at) 章程切换 \(sw.fromVersion) → \(sw.toVersion)")
+                                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                                if !sw.note.isEmpty {
+                                    Text(sw.note).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                                }
+                            }
+                        }
+                    }
+                    ForEach(result.charterSegments) { seg in
+                        Text("· \(seg.version) 判定 \(seg.tradeCount) 笔(\(seg.start ?? "周初") 起)")
+                            .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                    }
+                }
+            }
+        }
     }
 }
 

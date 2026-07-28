@@ -176,6 +176,106 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertTrue(status0.note.contains("宁缺毋滥"), "0 只时必须带「为什么」,不能静默空白")
     }
 
+    /// v1.4-③ 排序键三级原样透出(需求 8):`industryRank`(①,nil=未参与排名,**不得
+    /// 当 0**)/ `industryPersistDays`(②)/ `yellowCardCount`(③)。
+    func testDecodeIntelRankSortKeyThreeFieldsAndNilRankIsNotZero() async throws {
+        let json = jsonData("""
+        {
+          "tradeDate": "20260728", "generatedAt": "g", "strategyVersion": "v1.3.3", "sentiment": null,
+          "sectors": [],
+          "candidates": [
+            {
+              "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
+              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
+              "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
+              "intelRank": {"industryRank": 2, "industryPersistDays": 1, "yellowCardCount": 3}
+            },
+            {
+              "rank": 2, "code": "600002.SH", "name": "乙", "score": 85.0, "board": "MAIN",
+              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
+              "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
+              "intelRank": {"industryRank": null}
+            }
+          ],
+          "degraded": false, "reason": ""
+        }
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let report = try await client.fetchReportLatest()
+        XCTAssertEqual(report.candidates[0].intelRank.industryRank, 2)
+        XCTAssertEqual(report.candidates[0].intelRank.industryPersistDays, 1)
+        XCTAssertEqual(report.candidates[0].intelRank.yellowCardCount, 3)
+        // 未参与排名(成员<5/无行业)→ nil,展示层不得当 0(0 会误读成"最强")。
+        XCTAssertNil(report.candidates[1].intelRank.industryRank)
+        XCTAssertEqual(report.candidates[1].intelRank.industryPersistDays, 0, "缺键兜底 0")
+        XCTAssertEqual(report.candidates[1].intelRank.yellowCardCount, 0)
+    }
+
+    /// v1.4-④-B/⑤-A:候选携带信息卡摘要(`infoCard`)+ 执行提示(`execHints`)。
+    func testDecodeCandidateInfoCardSummaryAndExecHints() async throws {
+        let json = jsonData("""
+        {
+          "tradeDate": "20260728", "generatedAt": "g", "strategyVersion": "v1.3.3", "sentiment": null,
+          "sectors": [],
+          "candidates": [{
+            "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
+            "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
+            "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
+            "infoCard": {
+              "snapshot": {"volRatio5": 1.8, "turnoverRate": 6.2, "industryRank": 3, "industryPersistDays": 1,
+                          "aboveMa250": true, "distFromMa250Pct": 0.12, "distFromHigh20dPct": -0.03,
+                          "consecLimitUpDays": 0},
+              "mildBand": true,
+              "news": {"scanned": false, "items": [], "unavailableReason": "候选不在消息面扫描域(仅持仓+自选)"},
+              "topList": {"onListToday": false, "lookbackDaysCovered": 3, "lookbackHitDays": 0}
+            },
+            "execHints": [
+              {"code": "C2_mild_red_low_variance", "text": "低方差首选带(H5),但≈0期望、非正alpha,不构成买入理由", "source": "db"}
+            ]
+          }],
+          "degraded": false, "reason": ""
+        }
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let report = try await client.fetchReportLatest()
+        let c = report.candidates[0]
+        let card = try XCTUnwrap(c.infoCard)
+        XCTAssertEqual(card.snapshot.volRatio5, 1.8)
+        XCTAssertEqual(card.snapshot.industryRank, 3)
+        XCTAssertEqual(card.snapshot.aboveMa250, true)
+        XCTAssertTrue(card.mildBand)
+        XCTAssertFalse(card.news.scanned)
+        XCTAssertEqual(card.news.unavailableReason, "候选不在消息面扫描域(仅持仓+自选)")
+        XCTAssertEqual(card.topList.lookbackDaysCovered, 3)
+        XCTAssertEqual(c.execHints.count, 1)
+        XCTAssertEqual(c.execHints[0].code, "C2_mild_red_low_variance")
+        XCTAssertEqual(c.execHints[0].source, "db")
+    }
+
+    /// 老报告快照(建于本字段前)缺 `infoCard`/`execHints` 键 → `nil`/`[]`,不崩
+    /// (`infoCard=nil` 表示"该信息暂不可用",不冒充"确认无内容")。
+    func testDecodeCandidateOmittingV14InfoCardExecHintsDefaultsGracefully() async throws {
+        let json = jsonData("""
+        {
+          "tradeDate": "20260717", "generatedAt": "g", "strategyVersion": "v1", "sentiment": null,
+          "sectors": [],
+          "candidates": [{
+            "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
+            "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
+            "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null
+          }],
+          "degraded": false, "reason": ""
+        }
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let report = try await client.fetchReportLatest()
+        XCTAssertNil(report.candidates[0].infoCard)
+        XCTAssertEqual(report.candidates[0].execHints, [])
+    }
+
     // MARK: - v1.3-③-C1/C2/C4「情报」板块(样例对照 test_report_latest_carries_intel_and_sector_moneyflow /
     // test_report_latest_carries_news_alerts_and_scan_status)
 
@@ -273,6 +373,62 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(scan["llm"]?.codesSkipped, 2, "预算耗尽跳过与调用失败必须分开计数")
     }
 
+    /// v1.4-⑥-B:自选隔日轮扫披露(`rotationGroup`/`codesRotationDeferred`)+ v1.3.4
+    /// 命中诚实标注(`codesNoSearch`)——**四个计数各不相同,分开展示**,样例对照
+    /// `test_board_labels_precall_and_d5exit_events` 邻近的 `test_api_report_board.py`
+    /// rotation 用例。
+    func testDecodeNewsAlertScanStatusRotationAndNoSearch() async throws {
+        let json = jsonData("""
+        {
+          "tradeDate": "20260728", "generatedAt": "g", "strategyVersion": "v1.3.3", "sentiment": null,
+          "sectors": [], "candidates": [], "degraded": false, "reason": "",
+          "newsAlertsScan": [
+            {"source": "llm", "scanned": true, "reason": "", "codesTotal": 4, "codesFailed": 0,
+             "codesSkipped": 0, "codesNoSearch": 1, "rotationGroup": "A", "codesRotationDeferred": 8}
+          ]
+        }
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let report = try await client.fetchReportLatest()
+        let scan = try XCTUnwrap(report.newsAlertsScan.first)
+        XCTAssertEqual(scan.codesNoSearch, 1)
+        XCTAssertEqual(scan.rotationGroup, "A")
+        XCTAssertEqual(scan.codesRotationDeferred, 8)
+    }
+
+    /// v1.4-①-C(§七 P0-3):板块数据新鲜度。`stale=true` 时顶部告警须能读出
+    /// `sectorDataDate`/`sectorLagDays`。
+    func testDecodeReportDataFreshnessStale() async throws {
+        let json = jsonData("""
+        {
+          "tradeDate": "20260728", "generatedAt": "g", "strategyVersion": "v1.3.3", "sentiment": null,
+          "sectors": [], "candidates": [], "degraded": false, "reason": "",
+          "dataFreshness": {"sectorDataDate": "20260722", "sectorLagDays": 4, "stale": true}
+        }
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let report = try await client.fetchReportLatest()
+        let freshness = try XCTUnwrap(report.dataFreshness)
+        XCTAssertEqual(freshness.sectorDataDate, "20260722")
+        XCTAssertEqual(freshness.sectorLagDays, 4)
+        XCTAssertTrue(freshness.stale)
+    }
+
+    /// 老报告(建于本字段前)/ 空对象 `{}` → `nil`(同 `intel`/`sectorMoneyflow` 惯例),
+    /// 不当"新鲜"展示。
+    func testDecodeReportDataFreshnessAbsentOrEmptyIsNil() async throws {
+        let json = jsonData("""
+        {"tradeDate": "20260717", "generatedAt": "g", "strategyVersion": "v1", "sentiment": null,
+         "sectors": [], "candidates": [], "degraded": false, "reason": "", "dataFreshness": {}}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let report = try await client.fetchReportLatest()
+        XCTAssertNil(report.dataFreshness)
+    }
+
     /// 旧报告(建于 newsAlerts/newsAlertsScan 字段前)缺这两键 → 空数组,不崩、不误判
     /// 「确认无消息」(§硬要求,newsAlertsScan 为空时客户端不得渲染"以上为命中,已扫描过")。
     func testDecodeReportNewsAlertsDefaultToEmptyWhenAbsent() async throws {
@@ -314,6 +470,213 @@ final class DTODecodeTests: XCTestCase {
         let reqURL = MockURLProtocol.lastRequest?.url?.absoluteString ?? ""
         XCTAssertTrue(reqURL.contains("?date=20260716"), "实际请求 URL: \(reqURL)")
         XCTAssertFalse(reqURL.contains("%3F"))
+    }
+
+    // MARK: - v1.4-④-B 信息卡(样例对照 tests/test_api_info_card.py::
+    // test_info_card_happy_path_shapes_full_payload)
+
+    func testFetchInfoCardDecodesFullPayload() async throws {
+        let json = jsonData("""
+        {
+          "code": "600001.SH", "name": "示例甲", "tradeDate": "20260728",
+          "klineAvailable": true,
+          "kline": [
+            {"tradeDate": "20260727", "open": 10.0, "high": 10.5, "low": 9.8, "close": 10.25, "vol": 100000.0,
+             "ma20": 10.1, "ma250": null},
+            {"tradeDate": "20260728", "open": 10.3, "high": 10.6, "low": 10.1, "close": 10.55, "vol": 120000.0,
+             "ma20": 10.2, "ma250": 9.5}
+          ],
+          "rsAvailable": true, "rsLine": [{"tradeDate": "20260728", "value": 102.5}],
+          "rsBenchmark": "000001.SH",
+          "industryDivergenceAvailable": false, "industryDivergenceLine": [],
+          "industry": "小众行业",
+          "industryDivergenceNote": "行业线=行业成员中位数合成,非申万官方指数",
+          "industryDivergenceUnavailableReason": "行业样本不足(成员数不足,分歧线缺省)",
+          "snapshot": {"volRatio5": 1.1, "turnoverRate": 5.0, "industryRank": null, "industryPersistDays": 0,
+                      "aboveMa250": null, "distFromMa250Pct": null, "distFromHigh20dPct": -0.02,
+                      "consecLimitUpDays": 0},
+          "k4Flags": [
+            {"code": "A1_turnover_gt_10", "label": "换手率>10%(过热放量,接盘区)", "level": "strong",
+             "section": "hard_cut", "evidenceStrength": "price_volume", "evidence": "换手>10%次日跌停3.37%"}
+          ],
+          "mildBand": true,
+          "news": {"scanned": false, "items": [], "unavailableReason": "候选不在消息面扫描域(仅持仓+自选)"},
+          "topList": {"onListToday": false, "lookbackDaysCovered": 3, "lookbackHitDays": 0},
+          "market": {"indexCode": "000001.SH", "indexLine": [{"tradeDate": "20260728", "value": 101.2}],
+                    "limitUpCount": 42, "limitDownCount": 3, "aboveMa20": true}
+        }
+        """)
+        MockURLProtocol.handler = { req in
+            XCTAssertTrue((req.url?.absoluteString ?? "").contains("/report/20260728/info-card/600001.SH"))
+            return (200, json)
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let card = try await client.fetchInfoCard(date: "20260728", code: "600001.SH")
+        XCTAssertEqual(card.code, "600001.SH")
+        XCTAssertTrue(card.klineAvailable)
+        XCTAssertEqual(card.kline.count, 2)
+        XCTAssertEqual(card.kline[0].close, 10.25)
+        XCTAssertEqual(card.kline[1].ma250, 9.5)
+        XCTAssertTrue(card.rsAvailable)
+        XCTAssertEqual(card.rsLine.first?.value, 102.5)
+        XCTAssertFalse(card.industryDivergenceAvailable)
+        XCTAssertTrue((card.industryDivergenceUnavailableReason ?? "").contains("样本不足"))
+        XCTAssertEqual(card.snapshot.volRatio5, 1.1)
+        XCTAssertNil(card.snapshot.industryRank, "未参与排名不得当 0")
+        XCTAssertEqual(card.k4Flags.first?.sectionLabel, "红牌")
+        XCTAssertTrue(card.mildBand)
+        XCTAssertFalse(card.news.scanned)
+        XCTAssertEqual(card.topList.lookbackDaysCovered, 3)
+        XCTAssertEqual(card.market.limitUpCount, 42)
+        XCTAssertEqual(card.market.aboveMa20, true)
+    }
+
+    /// 404 `report_not_found`(日期非法/当天未生成过报告)→ `.reportNotFound`(逐个建
+    /// case,不吃 fallback)。
+    func testFetchInfoCardReportNotFoundMapsToDedicatedError() async throws {
+        MockURLProtocol.handler = { _ in
+            (404, jsonData("""
+            {"detail": {"ok": false, "reason": "report_not_found"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.fetchInfoCard(date: "20200101", code: "600001.SH")
+            XCTFail("应抛 reportNotFound")
+        } catch APIError.reportNotFound {}
+    }
+
+    /// 404 `code_not_in_report`(该日报告存在但这只票不在候选榜里)→ `.codeNotInReport`。
+    func testFetchInfoCardCodeNotInReportMapsToDedicatedError() async throws {
+        MockURLProtocol.handler = { _ in
+            (404, jsonData("""
+            {"detail": {"ok": false, "reason": "code_not_in_report"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.fetchInfoCard(date: "20260728", code: "999999.SH")
+            XCTFail("应抛 codeNotInReport")
+        } catch APIError.codeNotInReport {}
+    }
+
+    // MARK: - v1.4-⑦-A 挂单未成交追踪(样例对照 tests/test_api_decision_track.py)
+
+    func testDecisionTrackRoundTripWithRows() async throws {
+        let json = jsonData("""
+        {"status": "expired", "planPrice": 10.0,
+         "rows": [
+           {"tradeDate": "20260722", "dOffset": 1, "close": 10.2, "retFromPlan": 0.02},
+           {"tradeDate": "20260723", "dOffset": 2, "close": 9.9, "retFromPlan": -0.01}
+         ]}
+        """)
+        MockURLProtocol.handler = { req in
+            XCTAssertTrue((req.url?.absoluteString ?? "").contains("/decisions/42/track"))
+            return (200, json)
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let track = try await client.decisionTrack(id: 42)
+        XCTAssertEqual(track.status, "expired")
+        XCTAssertEqual(track.planPrice, 10.0)
+        XCTAssertEqual(track.rows.count, 2)
+        XCTAssertEqual(track.rows[0].dOffset, 1)
+        XCTAssertEqual(track.rows[1].retFromPlan, -0.01)
+    }
+
+    /// 决策存在但还没攒到任何追踪快照 → 合法 200 空态 `rows=[]`,不是错误(两种「空」
+    /// 分开——本测试不该抛任何 error)。
+    func testDecisionTrackEmptyRowsIsLegalNotError() async throws {
+        let json = jsonData("""
+        {"status": "pending", "planPrice": 10.0, "rows": []}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let track = try await client.decisionTrack(id: 7)
+        XCTAssertEqual(track.rows, [])
+        XCTAssertEqual(track.status, "pending")
+    }
+
+    /// `decisionId` 不存在 → 404 `not_found`(**复用既有 `.notFound` case,未新增**,
+    /// 字符串与 decisions link/cancel/revise 端点相同)。
+    func testDecisionTrackNonexistentMapsToExistingNotFoundCase() async throws {
+        MockURLProtocol.handler = { _ in
+            (404, jsonData("""
+            {"detail": {"ok": false, "reason": "not_found"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.decisionTrack(id: 999999)
+            XCTFail("应抛 notFound")
+        } catch APIError.notFound {}
+    }
+
+    // MARK: - v1.4-⑦-B 问询历史(样例对照 tests/test_api_inquiry_log.py)
+
+    func testFetchInquiriesDecodesListAndBuildsQuery() async throws {
+        let json = jsonData("""
+        {"items": [
+          {"id": 3, "createdAt": "2026-07-28T10:00:00+00:00", "code": "600001.SH", "name": "示例甲",
+           "question": "300759 康龙化成怎么样", "answer": "综合评分…", "evidence": ["硬线核对通过"],
+           "verdict": "已分析", "positionId": null, "decisionId": null}
+        ]}
+        """)
+        MockURLProtocol.handler = { req in
+            let url = req.url?.absoluteString ?? ""
+            XCTAssertTrue(url.contains("limit=10"))
+            XCTAssertTrue(url.contains("offset=0"))
+            XCTAssertTrue(url.contains("tsCode=600001.SH"))
+            return (200, json)
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let items = try await client.fetchInquiries(limit: 10, offset: 0, tsCode: "600001.SH")
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].id, 3)
+        XCTAssertEqual(items[0].question, "300759 康龙化成怎么样")
+        XCTAssertEqual(items[0].verdictBadge, .analyzed)
+    }
+
+    /// 不传 `tsCode` → 请求 URL 不含该 query 段(默认全量列表)。
+    func testFetchInquiriesWithoutTsCodeOmitsQueryParam() async throws {
+        MockURLProtocol.handler = { req in
+            let url = req.url?.absoluteString ?? ""
+            XCTAssertFalse(url.contains("tsCode="))
+            return (200, jsonData("""
+            {"items": []}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let items = try await client.fetchInquiries()
+        XCTAssertTrue(items.isEmpty)
+    }
+
+    func testFetchInquiryDetailDecodes() async throws {
+        let json = jsonData("""
+        {"id": 3, "createdAt": "2026-07-28T10:00:00+00:00", "code": "600001.SH", "name": "示例甲",
+         "question": "怎么样", "answer": "综合评分…", "evidence": [],
+         "verdict": "已分析·有风险提示", "positionId": 5, "decisionId": null}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let item = try await client.fetchInquiryDetail(id: 3)
+        XCTAssertEqual(item.answer, "综合评分…")
+        XCTAssertEqual(item.verdictBadge, .analyzedWarn)
+        XCTAssertEqual(item.positionId, 5)
+        XCTAssertNil(item.decisionId)
+    }
+
+    /// 不存在 → 404 `not_found`(复用既有 case,未新增)。
+    func testFetchInquiryDetailNonexistentMapsToExistingNotFoundCase() async throws {
+        MockURLProtocol.handler = { _ in
+            (404, jsonData("""
+            {"detail": {"ok": false, "reason": "not_found"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.fetchInquiryDetail(id: 999999)
+            XCTFail("应抛 notFound")
+        } catch APIError.notFound {}
     }
 
     // MARK: - 4A.3 盘中看板(样例对照 test_board_aggregates_events)
@@ -527,6 +890,65 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertFalse(p.scenarioReviewPending)
         XCTAssertNil(p.buyFees)
         XCTAssertNil(p.sellFees)
+        // v1.4-①-B/⑥-C:同样缺键的新字段一并兜底,不崩。
+        XCTAssertNil(p.priceStale)
+        XCTAssertNil(p.k4DataUnavailable, "老快照未记录 = 不知道,不冒充 false")
+        XCTAssertNil(p.timeExitLockedDay)
+        XCTAssertEqual(p.timeExitLockedLateDays, 0)
+        XCTAssertEqual(p.timeExitKind, .holding)
+    }
+
+    /// v1.4-①-B(§七 P0-2):停牌/无数据持仓票——`priceStale` 三字段齐备 +
+    /// `timeExitState=suspended_hold` 正确映射到 `.suspendedHold`(**不是**误落
+    /// `.holding` 兜底那条分支,虽然行为结果凑巧一致但语义不同)+ 展示层派生
+    /// (`isExitDay=false`、`todayActionTone=.warn`)。样例对照
+    /// `test_price_stale_reports_days_last_close_and_reason` /
+    /// `test_suspended_hold_state_and_action_text`。
+    func testDecodePositionPriceStaleAndSuspendedHold() async throws {
+        let json = jsonData("""
+        {"holdings": [
+          {"id": 7, "code": "002036.SZ", "name": "联创电子", "buyPrice": 7.184, "qty": 3000,
+           "entryReason": "", "buyDate": "20260716", "price": 7.05, "status": "holding",
+           "stopLine": 6.82, "stopOrderChecked": false,
+           "dCount": 6, "maxHoldDays": 5, "distToStopPct": 0.0326, "retraceState": null,
+           "todayAction": "停牌/无当日行情,时间退出判向挂起(D6 照常累计,复牌当日收盘再定格)",
+           "maxHoldDaysEffective": 5, "timeExitState": "suspended_hold",
+           "priceStale": {"staleDays": 3, "lastCloseDate": "20260722", "reason": "suspended"},
+           "k4DataUnavailable": true}
+        ]}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let p = try await client.fetchPositions()[0]
+        XCTAssertEqual(p.priceStale?.staleDays, 3)
+        XCTAssertEqual(p.priceStale?.lastCloseDate, "20260722")
+        XCTAssertEqual(p.priceStale?.reason, "suspended")
+        XCTAssertEqual(p.priceStale?.reasonLabel, "停牌")
+        XCTAssertEqual(p.timeExitKind, .suspendedHold)
+        XCTAssertFalse(p.isExitDay, "判向挂起不是离场日")
+        XCTAssertEqual(p.todayActionTone, .warn)
+        XCTAssertEqual(p.k4DataUnavailable, true)
+    }
+
+    /// v1.4-⑥-C(§七 P1-6):定格日 ≠ D5 显式标注——只在 `timeExitLockedLateDays>0`
+    /// 才有意义展示(展示层判据在 View,这里只测解码正确)。样例对照
+    /// `test_locked_day_and_late_days_when_pipeline_lagged`。
+    func testDecodePositionTimeExitLockedDayLateDays() async throws {
+        let json = jsonData("""
+        {"holdings": [
+          {"id": 8, "code": "600006.SH", "name": "己", "buyPrice": 10.0, "qty": 100,
+           "entryReason": "", "buyDate": "20260701", "price": 10.5, "status": "holding",
+           "stopLine": 9.5, "stopOrderChecked": false,
+           "dCount": 7, "maxHoldDays": 5, "distToStopPct": 0.0952, "retraceState": null,
+           "todayAction": "持有中(D7/D5)",
+           "timeExitLockedDay": 7, "timeExitLockedLateDays": 2}
+        ]}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let p = try await client.fetchPositions()[0]
+        XCTAssertEqual(p.timeExitLockedDay, 7)
+        XCTAssertEqual(p.timeExitLockedLateDays, 2)
     }
 
     // MARK: - 4A.4 开仓请求体(snake_case 入参,对照 PositionOpenIn)
@@ -1080,6 +1502,14 @@ final class DTODecodeTests: XCTestCase {
     private static let sampleReviewResultJSON = """
     {
       "week": "2026-W29", "weekStart": "20260713", "weekEnd": "20260719",
+      "strategyVersion": "v1.3.3",
+      "charterSegments": [
+        {"version": "v1.3.3", "start": null, "tradeCount": 2},
+        {"version": "v1.3.4", "start": "2026-07-16 14:36", "tradeCount": 1}
+      ],
+      "charterSwitches": [
+        {"at": "2026-07-16 14:36", "fromVersion": "v1.3.3", "toVersion": "v1.3.4", "note": "本周 2026-07-16 14:36 发生章程切换"}
+      ],
       "roundTrips": [
         {"tsCode": "600519.SH", "name": "贵州茅台", "buyDate": "20260714", "buyPrice": 1500.0,
          "qty": 100, "buyAmount": 150000.0, "fees": 30.0, "sellDate": "20260716",
@@ -1130,6 +1560,17 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertNil(week.result.stats?.profitFactor)   // JSON null → nil,不是 0
         XCTAssertFalse(week.result.forcedReview)
         XCTAssertFalse(week.material.isEmpty)
+        // v1.4-⑥-A(§七 P1-4):章程切换分段——strategyVersion 只是周初标签,该周若发生
+        // 切换须能读出分段计数 + 切换事件详情。
+        XCTAssertEqual(week.result.strategyVersion, "v1.3.3")
+        XCTAssertEqual(week.result.charterSegments.count, 2)
+        XCTAssertEqual(week.result.charterSegments[0].start, nil, "第一段 start=nil 表示自周初起")
+        XCTAssertEqual(week.result.charterSegments[0].tradeCount, 2)
+        XCTAssertEqual(week.result.charterSegments[1].version, "v1.3.4")
+        XCTAssertEqual(week.result.charterSwitches.count, 1)
+        XCTAssertEqual(week.result.charterSwitches[0].fromVersion, "v1.3.3")
+        XCTAssertEqual(week.result.charterSwitches[0].toVersion, "v1.3.4")
+        XCTAssertEqual(week.result.charterSwitches[0].at, "2026-07-16 14:36")
 
         // 请求本身应是 multipart/form-data,且带上了文件名(不是裸 JSON POST)。
         let req = MockURLProtocol.lastRequest
@@ -1168,6 +1609,29 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertNil(resp.result)
     }
 
+    /// v1.4-⑥-A 向后兼容:`reviews.result_json` 是**写入当时冻住的快照**(不像
+    /// intelRank/infoCard 那样服务端每次响应都重构),真实历史周报(建于本字段前)落库
+    /// 时压根没有 `strategyVersion`/`charterSegments`/`charterSwitches` 三键——必须
+    /// 缺键不崩,归空(§3.8「没有 vs 没看」)。
+    func testDecodeReviewResultMissingCharterFieldsDefaultsGracefully() async throws {
+        let json = jsonData("""
+        {"ok": true, "found": true, "week": "2026-W20", "generatedAt": "2026-05-20T12:00:00+00:00",
+         "result": {
+           "week": "2026-W20", "weekStart": "20260518", "weekEnd": "20260524",
+           "roundTrips": [], "closedRoundTrips": [], "planChecks": [], "disciplineViolations": [],
+           "stopDiscipline": [], "stats": null, "forcedReview": false, "forcedReviewReason": ""
+         },
+         "material": ""}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let resp = try await client.fetchReview(week: "2026-W20")
+        XCTAssertTrue(resp.found)
+        XCTAssertEqual(resp.result?.strategyVersion, "")
+        XCTAssertEqual(resp.result?.charterSegments, [])
+        XCTAssertEqual(resp.result?.charterSwitches, [])
+    }
+
     // MARK: - v1.2-B 预注册决策日志(样例对照 tests/test_api_decisions.py,§五 v1.2-E.1/E.6)
 
     private static let sampleDecisionJSON = """
@@ -1199,6 +1663,8 @@ final class DTODecodeTests: XCTestCase {
             XCTAssertEqual(scenarios?.count, 2)
             XCTAssertEqual(scenarios?[0]["action"] as? String, "HOLD")
             XCTAssertEqual(scenarios?[0]["matched"] as? Bool, false)
+            // v1.4-⑤-B ⑨:最高追价上限必须在请求体里。
+            XCTAssertEqual(obj?["maxChasePct"] as? Double, 3.0)
             return (200, jsonData(Self.sampleDecisionJSON))
         }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
@@ -1210,7 +1676,8 @@ final class DTODecodeTests: XCTestCase {
                 ContingencyScenario(scenario: "次日高开超预期", trigger: "开盘涨幅>3%", action: "HOLD", matched: false),
                 ContingencyScenario(scenario: "次日低开破位", trigger: "开盘跌幅>2%", action: "ABANDON", matched: false),
             ],
-            playbookTag: "SWING_CHASE", plannedPrice: 10.0, plannedQty: 1000
+            playbookTag: "SWING_CHASE", plannedPrice: 10.0, plannedQty: 1000,
+            maxChasePct: 3.0
         )
         XCTAssertEqual(log.id, 1)
         XCTAssertEqual(log.status, "pending")
@@ -1219,6 +1686,67 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(log.thesisTagLabels, ["题材主线", "资金流向"])
         XCTAssertEqual(log.playbookTagLabel, "短线追击")
         XCTAssertFalse(log.isBreathingTrial)
+    }
+
+    /// v1.4-⑤-B:`maxChasePct` **永远出现在请求体里**——nil 时编码成 JSON `null`,
+    /// 不是被省略(与 `buyDate`/`closeReason` 等既有"nil→省略键"字段刻意不同,守
+    /// 服务端 `model_fields_set` 的"必须显式传"纪律)。
+    func testCreateDecisionRequestAlwaysEncodesMaxChasePctKeyEvenWhenNil() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertNotNil(obj, "请求体应能正常解析")
+            XCTAssertTrue(obj?.keys.contains("maxChasePct") ?? false, "maxChasePct 键必须永远出现,即便值是 null")
+            XCTAssertTrue(obj?["maxChasePct"] is NSNull, "显式不设上限应编码成 JSON null,不是被省略")
+            return (200, jsonData(Self.sampleDecisionJSON))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        _ = try await client.createDecision(
+            code: "600001.SH", name: nil, whyBuy: "b", whyEntryPrice: "e", targetPrice: nil,
+            exitLow: nil, exitHigh: nil, thesisTags: [], invalidation: "i", contingencyScenarios: [],
+            playbookTag: "SWING_CHASE", plannedPrice: nil, plannedQty: nil,
+            maxChasePct: nil
+        )
+    }
+
+    /// 响应体里的 `maxChasePct` 正确解码回 `DecisionLog`(数值 / 负值均可)。
+    func testDecodeDecisionLogMaxChasePct() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"id": 5, "code": "600001.SH", "name": "示例甲", "createdAt": "2026-07-28T10:00:00+00:00",
+             "whyBuy": "b", "whyEntryPrice": "e", "targetPrice": null, "exitLow": null, "exitHigh": null,
+             "thesisTags": [], "invalidation": "i", "contingencyScenarios": [], "playbookTag": "SWING_CHASE",
+             "plannedPrice": null, "plannedQty": null, "maxChasePct": -1.5,
+             "status": "pending", "positionId": null, "revisionOf": null}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let log = try await client.createDecision(
+            code: "600001.SH", name: nil, whyBuy: "b", whyEntryPrice: "e", targetPrice: nil,
+            exitLow: nil, exitHigh: nil, thesisTags: [], invalidation: "i", contingencyScenarios: [],
+            playbookTag: "SWING_CHASE", plannedPrice: nil, plannedQty: nil, maxChasePct: -1.5
+        )
+        XCTAssertEqual(log.maxChasePct, -1.5, "允许负值(只在低开时买)")
+    }
+
+    /// 400 `reason=max_chase_required` → `.maxChaseRequired`(逐个建 case,不吃 fallback)。
+    func testCreateDecisionMissingMaxChaseMapsToDedicatedError() async throws {
+        MockURLProtocol.handler = { _ in
+            (400, jsonData("""
+            {"detail": {"ok": false, "reason": "max_chase_required"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.createDecision(
+                code: "600001.SH", name: nil, whyBuy: "b", whyEntryPrice: "e", targetPrice: nil,
+                exitLow: nil, exitHigh: nil, thesisTags: [], invalidation: "i", contingencyScenarios: [],
+                playbookTag: "SWING_CHASE", plannedPrice: nil, plannedQty: nil, maxChasePct: nil
+            )
+            XCTFail("应抛 maxChaseRequired")
+        } catch APIError.maxChaseRequired {
+            XCTAssertEqual(APIError.maxChaseRequired.errorDescription, "请设置「最高追价上限」(填数字,或勾选不设上限)")
+        }
     }
 
     /// `GET /decisions` 列表 + `status`/`code` 过滤 query 拼装(不带 query 时不追加 "?")。
@@ -1286,12 +1814,13 @@ final class DTODecodeTests: XCTestCase {
             XCTAssertNil(obj?["code"], "revise 请求体不应含 code——修订不能换股票")
             XCTAssertNil(obj?["name"])
             XCTAssertEqual(obj?["whyBuy"] as? String, "修订后的理由:资金持续净流入超预期")
+            XCTAssertEqual(obj?["maxChasePct"] as? Double, -0.5, "revise 同 create 纪律:maxChasePct 必须显式传")
             return (200, jsonData("""
             {"id": 2, "code": "600001.SH", "name": "示例甲", "createdAt": "2026-07-25T11:00:00+00:00",
              "whyBuy": "修订后的理由:资金持续净流入超预期", "whyEntryPrice": "回调至10日均线企稳,缩量企稳信号",
              "targetPrice": 13.0, "exitLow": 9.0, "exitHigh": 9.5,
              "thesisTags": ["THEME"], "invalidation": "跌破10日均线", "contingencyScenarios": [],
-             "playbookTag": "SWING_CHASE", "plannedPrice": 10.0, "plannedQty": 1000,
+             "playbookTag": "SWING_CHASE", "plannedPrice": 10.0, "plannedQty": 1000, "maxChasePct": -0.5,
              "status": "pending", "positionId": null, "revisionOf": 1}
             """))
         }
@@ -1299,9 +1828,11 @@ final class DTODecodeTests: XCTestCase {
         let revised = try await client.reviseDecision(
             id: 1, whyBuy: "修订后的理由:资金持续净流入超预期", whyEntryPrice: "回调至10日均线企稳,缩量企稳信号",
             targetPrice: 13.0, exitLow: 9.0, exitHigh: 9.5, thesisTags: ["THEME"], invalidation: "跌破10日均线",
-            contingencyScenarios: [], playbookTag: "SWING_CHASE", plannedPrice: 10.0, plannedQty: 1000
+            contingencyScenarios: [], playbookTag: "SWING_CHASE", plannedPrice: 10.0, plannedQty: 1000,
+            maxChasePct: -0.5
         )
         XCTAssertEqual(revised.id, 2)
+        XCTAssertEqual(revised.maxChasePct, -0.5)
         XCTAssertEqual(revised.revisionOf, 1)
         XCTAssertEqual(revised.status, "pending")
     }
@@ -1469,7 +2000,10 @@ final class DTODecodeTests: XCTestCase {
     }
 }
 
-private extension URLRequest {
+// v1.4-⑧ 起 `AppModelTests.swift` 的端到端请求体断言也要用这个 helper(同一坑),
+// 故从 `private`(仅本文件可见)放宽到默认 `internal`(NecklineTests 模块内可见,
+// 两个文件同编译单元共享一份实现,不重复定义第二份)。
+extension URLRequest {
     /// URLSession 经自定义 `URLProtocol` 转发请求时,常把 `httpBody` 内部转成
     /// `httpBodyStream`(`startLoading()` 里拿到的 `request.httpBody` 因而是 nil,
     /// 这是 URLProtocol 测试桩的已知坑,不是 APIClient 的 bug)——两路都试,谁有读谁。

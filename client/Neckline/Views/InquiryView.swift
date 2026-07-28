@@ -19,10 +19,27 @@ struct InquiryView: View {
         #if os(iOS)
         NavigationStack {
             body_.navigationTitle("问询台")
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) { historyButton }
+                }
         }
+        .sheet(isPresented: $model.showInquiryHistory) { InquiryHistoryView(model: model) }
         #else
         body_
+            .toolbar {
+                ToolbarItem { historyButton }
+            }
+            .sheet(isPresented: $model.showInquiryHistory) { InquiryHistoryView(model: model) }
         #endif
+    }
+
+    /// v1.4-⑦-B(§七 P3-13):问询历史列表入口。
+    private var historyButton: some View {
+        Button {
+            model.showInquiryHistory = true
+        } label: {
+            Label("历史", systemImage: "clock.arrow.circlepath")
+        }
     }
 
     private var body_: some View {
@@ -175,5 +192,116 @@ private struct ChatBubble: View {
             if message.role == .assistant { Spacer(minLength: 40) }
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - v1.4-⑦-B 问询历史(§七 P3-13)。**与已退役的 `inquiry_pool` 无耦合**——本节
+// 展示的是问答本身的档案记录(`inquiry_log`),不是那张已退役的历史队列表。
+
+struct InquiryHistoryView: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if model.inquiryHistoryLoading && model.inquiryHistory.isEmpty {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if model.inquiryHistory.isEmpty {
+                    NKEmptyState(title: "暂无问询记录", subtitle: "在问询台问过的票会记一行在这里。",
+                                systemImage: "clock.arrow.circlepath")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(model.inquiryHistory) { entry in
+                        NavigationLink {
+                            InquiryHistoryDetailView(entry: entry)
+                        } label: {
+                            row(entry)
+                        }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle("问询历史")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { model.showInquiryHistory = false }
+                }
+            }
+            .task { await model.loadInquiryHistory() }
+        }
+        #if os(macOS)
+        .frame(width: 420, height: 560)
+        #endif
+    }
+
+    private func row(_ entry: InquiryLogEntry) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(entry.name.isEmpty ? entry.code : entry.name).font(.system(size: 13, weight: .semibold))
+                Text(entry.code).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                Spacer()
+                VerdictBadge(verdict: entry.verdictBadge)
+            }
+            if !entry.question.isEmpty {
+                Text(entry.question).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary).lineLimit(1)
+            }
+            Text(entry.createdAt).font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+private struct InquiryHistoryDetailView: View {
+    let entry: InquiryLogEntry
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: NKSpace.gap) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.name.isEmpty ? entry.code : entry.name).font(NKFont.stockName)
+                        Text(entry.code).font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                    }
+                    Spacer()
+                    VerdictBadge(verdict: entry.verdictBadge)
+                }
+                Text(entry.createdAt).font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                if !entry.question.isEmpty {
+                    NKCard {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("问").font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+                            Text(entry.question).font(.system(size: 13)).foregroundStyle(NK.textPrimary)
+                        }
+                    }
+                }
+                NKCard {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("答").font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+                        Text(entry.answer).font(.system(size: 13)).foregroundStyle(NK.textPrimary)
+                    }
+                }
+                if !entry.evidence.isEmpty {
+                    NKCard {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("依据").font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+                            ForEach(entry.evidence, id: \.self) { e in
+                                HStack(alignment: .top, spacing: 4) {
+                                    Text("·").foregroundStyle(NK.textTertiary)
+                                    Text(e).font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(NKSpace.pagePad)
+        }
+        .navigationTitle("问询详情")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 }

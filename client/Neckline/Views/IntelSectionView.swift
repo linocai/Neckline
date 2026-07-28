@@ -280,6 +280,12 @@ struct NewsAlertsCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(s.sourceLabel).font(.system(size: 12, weight: .semibold)).foregroundStyle(NK.textPrimary)
                 Text(scanStatusText(s)).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                // v1.4-⑥-B:自选隔日轮扫披露 + v1.3.4 命中率诚实标注——**四个计数
+                // (codesFailed/codesSkipped/codesNoSearch/codesRotationDeferred)语义
+                // 各不相同,分开展示,不许合并成一个"没扫到"数字**。
+                if !rotationAndNoSearchText(s).isEmpty {
+                    Text(rotationAndNoSearchText(s)).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                }
             }
         }
     }
@@ -294,6 +300,23 @@ struct NewsAlertsCard: View {
         // 语义不同,两者都要展示、不能合并成一个数字。
         if s.codesFailed > 0 { parts.append("\(s.codesFailed) 只调用失败") }
         if s.codesSkipped > 0 { parts.append("\(s.codesSkipped) 只因预算未及扫描(持仓已优先扫完)") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// v1.4-⑥-B 自选隔日轮扫(`rotationGroup`/`codesRotationDeferred`)+ v1.3.4
+    /// 命中诚实标注(`codesNoSearch`,调用成功但联网搜索命中 0 条,结论未经搜索证实)。
+    /// 独立一行,不与上面 `scanStatusText` 的 codesFailed/codesSkipped 合并。
+    private func rotationAndNoSearchText(_ s: NewsAlertScanStatus) -> String {
+        var parts: [String] = []
+        if !s.rotationGroup.isEmpty {
+            parts.append("本次扫自选 \(s.rotationGroup) 组")
+        }
+        if s.codesRotationDeferred > 0 {
+            parts.append("\(s.codesRotationDeferred) 只自选本日轮空(隔日再扫)")
+        }
+        if s.codesNoSearch > 0 {
+            parts.append("\(s.codesNoSearch) 只搜索命中 0 条(结论未经搜索证实)")
+        }
         return parts.joined(separator: " · ")
     }
 

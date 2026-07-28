@@ -35,6 +35,7 @@ struct DecisionLogSheet: View {
                 scenarioSection
                 playbookSection
                 plannedSection
+                maxChaseSection
             }
             .formStyle(.grouped)
             .navigationTitle(isRevising ? "修订决策日志" : "决策日志预注册")
@@ -176,6 +177,43 @@ struct DecisionLogSheet: View {
                 Text("参考手数区间 \(range.qtyLow)–\(range.qtyHigh) 股(¥\(NKFmt.price(range.capFloor))–¥\(NKFmt.price(range.capCeil)),上限 4 万 = 违纪判定线、非推荐值)。系统不替你拍板单笔金额。")
             }
         }
+    }
+
+    // —— ⑨ 最高追价上限(v1.4-⑤-B,需求 2 补充)——————————————————————————————————
+    // 语义定死(考官规格 §九 同构):相对昨收百分比,开盘价 > 上限 → 放弃该票、盘中不
+    // 追补;低开照买(不设下沿)。**二选一强制**:填数字或勾选「不设上限」,两者皆无
+    // 不许提交(`DecisionLogForm.maxChaseChosen` 驱动提交按钮的 disabled 态)。
+
+    private var maxChaseSection: some View {
+        Section {
+            TextField("最高追价上限,% (相对昨收,可填负值)", text: $model.decisionForm.maxChasePct)
+                #if os(iOS)
+                .keyboardType(.numbersAndPunctuation)
+                #endif
+                .disabled(model.decisionForm.maxChaseNoCap)
+            Toggle("不设上限(无论开盘涨多高都照买,不设放弃线)", isOn: $model.decisionForm.maxChaseNoCap)
+        } header: {
+            Text("⑨ 最高追价上限(必填,二选一)")
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("开盘价超过此涨幅 → 放弃该票、盘中不追补;低开照买(不设下沿)。填数字或勾选「不设上限」二选一,两者都不做无法提交。")
+                if let hint = maxChasePriceHint {
+                    Text(hint)
+                }
+            }
+        }
+    }
+
+    /// 实时换算价格提示(纯展示便利,非契约字段)。**诚实边界**:客户端拿不到「昨收」
+    /// (前收盘价)数据,只能以用户自己填的「计划价」做近似基准——文案标明是估算,
+    /// 不冒充精确换算;计划价未填时不显示任何数字(不虚构价格)。
+    private var maxChasePriceHint: String? {
+        guard !model.decisionForm.maxChaseNoCap,
+              let pct = model.decisionForm.maxChasePctValue,
+              let base = Double(model.decisionForm.plannedPrice.trimmingCharacters(in: .whitespaces)),
+              base > 0 else { return nil }
+        let approx = base * (1 + pct / 100)
+        return "≈¥\(NKFmt.price(approx))(以计划价估算,非昨收精确换算)"
     }
 }
 

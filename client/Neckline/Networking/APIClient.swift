@@ -4,17 +4,24 @@
 //
 //  端点契约见 `neckline/api/schemas.py` + `neckline/api/app.py`(逐字段对齐,不猜):
 //    GET  /api/v1/health                    → 免鉴权,{status,version}
-//    GET  /api/v1/report/latest             → ReportOut(含 v1.1 watchlistCheck[]/missedEntryHint)
+//    GET  /api/v1/report/latest             → ReportOut(含 v1.1 watchlistCheck[]/missedEntryHint,
+//                                              v1.4-①-C dataFreshness)
 //    GET  /api/v1/report?date=YYYYMMDD      → ReportOut(历史回放;带 query,走 makeURL)
+//    GET  /api/v1/report/{date}/info-card/{code} → InfoCardOut(v1.4-④,60日K线/RS线/行业分歧线
+//                                              + 快照/红黄牌/温和带/消息面/龙虎榜/市场语境)
+//                                              · 404 report_not_found/code_not_in_report
 //    GET  /api/v1/board                     → BoardOut(v1.1 事件含 precall/d5exit 两新类)
-//    GET  /api/v1/positions                 → PositionsOut{holdings}(v1.1-B.1 生命周期字段)
+//    GET  /api/v1/positions                 → PositionsOut{holdings}(v1.1-B.1 生命周期字段,
+//                                              v1.4-①-B priceStale/suspended_hold,v1.4-⑥-C 定格标注)
 //    GET  /api/v1/positions/entry-suggestion→ EntrySuggestionOut(v1.2-E.5 改区间双档)
-//    POST /api/v1/positions                 → {ok,position_id,stop_line}       · 422 字段
+//    POST /api/v1/positions                 → {ok,position_id,stop_line}       · 400/422 字段
 //    POST /api/v1/positions/{id}/close      → {ok}(closeReason 可选,v1.2-A2)   · 404 not_holding
 //    GET  /api/v1/circuit                   → CircuitStateOut(v1.2-A2 熔断纪律状态)
 //    POST /api/v1/circuit/unlock            → {ok}
-//    POST /api/v1/decisions                 → DecisionOut(v1.2-B 预注册决策日志八项)
+//    POST /api/v1/decisions                 → DecisionOut(v1.2-B 预注册决策日志八项 +
+//                                              v1.4-⑤-B ⑨maxChasePct)        · 400 max_chase_required
 //    GET  /api/v1/decisions                 → {items:[DecisionOut]}(status/code/from/to 过滤)
+//    GET  /api/v1/decisions/{id}/track      → DecisionTrackOut(v1.4-⑦-A 挂单未成交追踪) · 404 not_found
 //    POST /api/v1/decisions/{id}/link       → {ok}                            · 404 not_found
 //    POST /api/v1/decisions/{id}/cancel     → {ok}                            · 404 not_found
 //    POST /api/v1/decisions/{id}/revise     → DecisionOut{新id}(新增修订行,旧行原地不变)
@@ -22,7 +29,9 @@
 //    GET  /api/v1/breathing/{id}/trades     → {items,baseCostAdj,edgeToPrice}(v1.2-G)· 404
 //    POST /api/v1/breathing/{id}/trades     → BreathingTradeOut                · 404
 //    DELETE /api/v1/breathing/trades/{id}   → {ok}                            · 404 not_found
-//    POST /api/v1/inquiry                   → InquiryOut(描述性标注非裁决,§2.5)
+//    POST /api/v1/inquiry                   → InquiryOut(描述性标注非裁决,§2.5,v1.4-⑦-B 带 inquiryId)
+//    GET  /api/v1/inquiries                 → {items:[InquiryLogOut]}(v1.4-⑦-B 问询历史,分页+tsCode过滤)
+//    GET  /api/v1/inquiries/{id}            → InquiryLogOut(详情)              · 404 not_found
 //    GET  /api/v1/settings                  → SettingsOut(key 只回布尔;push 六字段 v1.3-②)
 //    PUT  /api/v1/settings/llm              → {ok}                            · 422 供应商非法
 //    PUT  /api/v1/settings/push             → {ok}(六字段:report/retreatBrake/precall/d5exit/circuit/holdingAlert)
@@ -53,6 +62,13 @@ enum APIError: Error, LocalizedError, Equatable {
     // 「持仓已清」)。两者文案不同:一个是「那天不开市」,一个是「你填到未来去了」。
     case notTradingDay       // 400 buyDate 不是交易日(reason="not_trading_day")
     case futureBuyDate       // 400 buyDate 晚于今天(reason="future_buy_date")
+    // v1.4-④-B:`GET /report/{date}/info-card/{code}` 两个 404 reason(**逐个建 case,
+    // 不吃 fallback**,同 notTradingDay/futureBuyDate 守法)。
+    case reportNotFound      // 404 该日期未生成过报告(日期非法 / 当天未生成)
+    case codeNotInReport     // 404 该票不在当日候选榜里
+    // v1.4-⑤-B:`POST/revise /decisions` 的 `maxChasePct` 必须显式传(填数字或显式
+    // null),省略该键 → 400 reason="max_chase_required"。
+    case maxChaseRequired
     case validation(String)  // 422 字段校验(含 provider 白名单)
     case server(Int, String)
     case transport(String)
@@ -65,6 +81,9 @@ enum APIError: Error, LocalizedError, Equatable {
         case .notFound:         return "未找到该记录(可能已被删除)"
         case .notTradingDay:    return "买入日不是交易日,请选择实际成交的交易日"
         case .futureBuyDate:    return "买入日不能晚于今天"
+        case .reportNotFound:   return "该交易日尚无报告(日期不合法或当天报告尚未生成)"
+        case .codeNotInReport:  return "这只票不在当日候选榜里"
+        case .maxChaseRequired: return "请设置「最高追价上限」(填数字,或勾选不设上限)"
         case .validation(let m): return "字段校验失败:\(m)"
         case .server(let c, let m): return "服务端错误 \(c):\(m)"
         case .transport(let m): return "网络错误:\(m)"
@@ -94,6 +113,9 @@ private struct ReportResponse: Decodable {
     let sectorMoneyflow: SectorMoneyflowSection?
     let newsAlerts: [NewsAlert]?
     let newsAlertsScan: [NewsAlertScanStatus]?
+    // v1.4-①-C:板块数据新鲜度(§七 P0-3)。同 intel/sectorMoneyflow 惯例——服务端恒是
+    // 对象(旧报告是空字典 `{}`),`try?` 把「形状对不上」也当「没有」处理,归一成 nil。
+    let dataFreshness: DataFreshness?
 
     /// 显式 `CodingKeys`(提供自定义 `init(from:)` 时,编译器不总能推出合成
     /// `CodingKeys`,显式声明避免依赖不透明的合成时机)。字段名与 JSON 字面一致,
@@ -101,14 +123,15 @@ private struct ReportResponse: Decodable {
     enum CodingKeys: String, CodingKey {
         case tradeDate, generatedAt, strategyVersion, sentiment, sectors, candidates
         case degraded, reason, missedEntryHint, intel, sectorMoneyflow, newsAlerts, newsAlertsScan
+        case dataFreshness
     }
 
-    /// 自定义解码(而非纯合成):`intel`/`sectorMoneyflow` 服务端**恒是对象**(旧报告/
-    /// 降级态是空对象 `{}`,不是缺键或 null)——空对象缺我方强类型要求的字段(如
-    /// `tradeDate`),标准合成解码会直接抛错,这里用 `try?` 把"形状对不上"也当"没有"
-    /// 处理,归一成 `nil`(§硬要求「没有 vs 没看」由 nil 表达"这份报告没有情报节数据",
-    /// UI 据此展示诚实空态而非崩溃)。`newsAlerts`/`newsAlertsScan` 是数组,老响应/
-    /// 老 fixture 缺键时按空数组兜底。
+    /// 自定义解码(而非纯合成):`intel`/`sectorMoneyflow`/`dataFreshness` 服务端**恒是
+    /// 对象**(旧报告/降级态是空对象 `{}`,不是缺键或 null)——空对象缺我方强类型要求的
+    /// 字段(如 `tradeDate`/`sectorLagDays`),标准合成解码会直接抛错,这里用 `try?` 把
+    /// "形状对不上"也当"没有"处理,归一成 `nil`(§硬要求「没有 vs 没看」由 nil 表达
+    /// "这份报告没有该节数据",UI 据此展示诚实空态而非崩溃)。`newsAlerts`/
+    /// `newsAlertsScan` 是数组,老响应/老 fixture 缺键时按空数组兜底。
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         tradeDate = try c.decode(String.self, forKey: .tradeDate)
@@ -124,6 +147,7 @@ private struct ReportResponse: Decodable {
         sectorMoneyflow = try? c.decodeIfPresent(SectorMoneyflowSection.self, forKey: .sectorMoneyflow)
         newsAlerts = try c.decodeIfPresent([NewsAlert].self, forKey: .newsAlerts)
         newsAlertsScan = try c.decodeIfPresent([NewsAlertScanStatus].self, forKey: .newsAlertsScan)
+        dataFreshness = try? c.decodeIfPresent(DataFreshness.self, forKey: .dataFreshness)
     }
 }
 
@@ -231,6 +255,16 @@ private struct EmptyBody: Encodable {}
 // 不含这两个字段——修订不能换股票,新行继承原行 ts_code/name,见 CLAUDE.md
 // 「decision_log 唯一写入通道」坑)——————————————————————————————————————————
 
+// v1.4-⑤-B(需求 2 补充):`maxChasePct` 必须**永远出现在请求体里**(填数字或显式
+// `null`),绝不能被省略——服务端 `_extract_max_chase_pct_or_400` 用
+// `model_fields_set` 判「这个键有没有出现过」,缺键 → 400 `reason=max_chase_required`。
+// Swift 编译器合成的 `Encodable` 对 `Optional` 属性一律走 `encodeIfPresent`(nil 时
+// 整个键消失,同本文件其余 Optional 字段的既有行为)——那对这一个字段是错的,故两个
+// 请求体改手写 `encode(to:)`,只对 `maxChasePct` 用 `encode(_:forKey:)`(`Optional`
+// 类型自身的 `Encodable` conformance 在 nil 时走 `encodeNil`,故键永远存在,值为
+// 数字或 JSON null),其余字段仍是 `encodeIfPresent`(省略键)/`encode`(必填),逐位
+// 保留原有请求体形状。
+
 struct DecisionCreateRequest: Encodable {
     let code: String
     let name: String?
@@ -245,6 +279,31 @@ struct DecisionCreateRequest: Encodable {
     let playbookTag: String
     let plannedPrice: Double?
     let plannedQty: Int?
+    let maxChasePct: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case code, name, whyBuy, whyEntryPrice, targetPrice, exitLow, exitHigh
+        case thesisTags, invalidation, contingencyScenarios, playbookTag
+        case plannedPrice, plannedQty, maxChasePct
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(code, forKey: .code)
+        try c.encodeIfPresent(name, forKey: .name)
+        try c.encode(whyBuy, forKey: .whyBuy)
+        try c.encode(whyEntryPrice, forKey: .whyEntryPrice)
+        try c.encodeIfPresent(targetPrice, forKey: .targetPrice)
+        try c.encodeIfPresent(exitLow, forKey: .exitLow)
+        try c.encodeIfPresent(exitHigh, forKey: .exitHigh)
+        try c.encode(thesisTags, forKey: .thesisTags)
+        try c.encode(invalidation, forKey: .invalidation)
+        try c.encode(contingencyScenarios, forKey: .contingencyScenarios)
+        try c.encode(playbookTag, forKey: .playbookTag)
+        try c.encodeIfPresent(plannedPrice, forKey: .plannedPrice)
+        try c.encodeIfPresent(plannedQty, forKey: .plannedQty)
+        try c.encode(maxChasePct, forKey: .maxChasePct)   // 永远出现该键,nil → JSON null
+    }
 }
 
 struct DecisionReviseRequest: Encodable {
@@ -259,6 +318,29 @@ struct DecisionReviseRequest: Encodable {
     let playbookTag: String
     let plannedPrice: Double?
     let plannedQty: Int?
+    let maxChasePct: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case whyBuy, whyEntryPrice, targetPrice, exitLow, exitHigh
+        case thesisTags, invalidation, contingencyScenarios, playbookTag
+        case plannedPrice, plannedQty, maxChasePct
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(whyBuy, forKey: .whyBuy)
+        try c.encode(whyEntryPrice, forKey: .whyEntryPrice)
+        try c.encodeIfPresent(targetPrice, forKey: .targetPrice)
+        try c.encodeIfPresent(exitLow, forKey: .exitLow)
+        try c.encodeIfPresent(exitHigh, forKey: .exitHigh)
+        try c.encode(thesisTags, forKey: .thesisTags)
+        try c.encode(invalidation, forKey: .invalidation)
+        try c.encode(contingencyScenarios, forKey: .contingencyScenarios)
+        try c.encode(playbookTag, forKey: .playbookTag)
+        try c.encodeIfPresent(plannedPrice, forKey: .plannedPrice)
+        try c.encodeIfPresent(plannedQty, forKey: .plannedQty)
+        try c.encode(maxChasePct, forKey: .maxChasePct)   // 永远出现该键,nil → JSON null
+    }
 }
 
 struct DecisionLinkRequest: Encodable { let positionId: Int }
@@ -330,7 +412,21 @@ actor APIClient {
                               degraded: r.degraded, reason: r.reason,
                               missedEntryHint: r.missedEntryHint ?? "",
                               intel: r.intel, sectorMoneyflow: r.sectorMoneyflow,
-                              newsAlerts: r.newsAlerts ?? [], newsAlertsScan: r.newsAlertsScan ?? [])
+                              newsAlerts: r.newsAlerts ?? [], newsAlertsScan: r.newsAlertsScan ?? [],
+                              dataFreshness: r.dataFreshness)
+    }
+
+    /// v1.4-④-B:单只完整信息卡(60 日 K 线/RS 线/行业分歧线 + 快照 + 红黄牌 + 温和带 +
+    /// 消息面 + 龙虎榜 + 市场语境,§五 v1.4-④)。**候选专属**(本版只接候选,不接持仓/
+    /// 自选——若发现某处需要脱离候选对象单独调用本端点,先停下来核对,不要自行猜测)。
+    /// `code` 支持裸 6 位或带交易所后缀(服务端 `normalize_ts_code` 归一比对)。
+    /// 直接 `Codable` 解码 `InfoCard`(字段名与 JSON 字面一致,不需要私有 wire DTO 中转,
+    /// 同 `Position`/`WatchlistItem`/`BoardEvent` 先例)。404 两个 reason:
+    /// `report_not_found`(日期非法/当天未生成过报告)、`code_not_in_report`(该日报告
+    /// 存在但这只票不在候选榜里)——均映射到独立 `APIError` case,不吃 fallback。
+    func fetchInfoCard(date: String, code: String) async throws -> InfoCard {
+        let data = try await get("/api/v1/report/\(date)/info-card/\(code)")
+        return try JSONDecoder().decode(InfoCard.self, from: data)
     }
 
     // —— 4A.3 盘中看板 ——
@@ -413,17 +509,22 @@ actor APIClient {
     // 触发任何持仓写入)——————————————————————————————————————————————————————————
 
     /// 预注册(status=pending)。`createdAt` 服务端生成,请求体本就无此字段,物理
-    /// 杜绝客户端覆盖(同 CLAUDE.md「B 块 created_at 三处防线」①)。
+    /// 杜绝客户端覆盖(同 CLAUDE.md「B 块 created_at 三处防线」①)。`maxChasePct`
+    /// (⑨,v1.4-⑤-B)**必须显式传**(填数字或显式 `nil`=不设上限)——省略等价于
+    /// Swift 里没得选,本参数无默认值,强制每个调用点显式决定,与服务端「省略该键→
+    /// 400」的强制语义对齐。
     func createDecision(code: String, name: String?, whyBuy: String, whyEntryPrice: String,
                         targetPrice: Double?, exitLow: Double?, exitHigh: Double?,
                         thesisTags: [String], invalidation: String,
                         contingencyScenarios: [ContingencyScenario], playbookTag: String,
-                        plannedPrice: Double?, plannedQty: Int?) async throws -> DecisionLog {
+                        plannedPrice: Double?, plannedQty: Int?,
+                        maxChasePct: Double?) async throws -> DecisionLog {
         let body = DecisionCreateRequest(code: code, name: name, whyBuy: whyBuy, whyEntryPrice: whyEntryPrice,
                                          targetPrice: targetPrice, exitLow: exitLow, exitHigh: exitHigh,
                                          thesisTags: thesisTags, invalidation: invalidation,
                                          contingencyScenarios: contingencyScenarios, playbookTag: playbookTag,
-                                         plannedPrice: plannedPrice, plannedQty: plannedQty)
+                                         plannedPrice: plannedPrice, plannedQty: plannedQty,
+                                         maxChasePct: maxChasePct)
         let data = try await post("/api/v1/decisions", body: body)
         return try JSONDecoder().decode(DecisionLog.self, from: data)
     }
@@ -440,6 +541,15 @@ actor APIClient {
         let path = query.isEmpty ? "/api/v1/decisions" : "/api/v1/decisions?" + query.joined(separator: "&")
         let data = try await get(path)
         return try JSONDecoder().decode(DecisionsListResponse.self, from: data).items
+    }
+
+    /// v1.4-⑦-A:挂单未成交追踪(§七 P3-12)。`id` 不存在 → 404 not_found(既有
+    /// `case "not_found": return .notFound` 已覆盖,未新增 case);决策存在但还没攒到
+    /// 任何追踪快照 → 合法 200 空态 `rows=[]`,不是错误(两种「空」分开)。直接
+    /// `Codable` 解码 `DecisionTrack`(字段名与 JSON 字面一致)。
+    func decisionTrack(id: Int) async throws -> DecisionTrack {
+        let data = try await get("/api/v1/decisions/\(id)/track")
+        return try JSONDecoder().decode(DecisionTrack.self, from: data)
     }
 
     /// 成交后一键关联:`status` 置 filled + `position_id` 回填。id 不存在 → 404 not_found。
@@ -459,15 +569,18 @@ actor APIClient {
 
     /// 新增一行修订(旧行原地不变,`revisionOf` 落链根 id,`status` 重置 pending、
     /// `positionId` 重置为 nil——修订与「已成交关联」是两件事,不自动重新关联)。
-    /// `id` 不存在 → 404 not_found。
+    /// `id` 不存在 → 404 not_found。**`maxChasePct` 必须显式传**(同 `createDecision`
+    /// 纪律——修订等于重新预注册一整套九项内容)。
     func reviseDecision(id: Int, whyBuy: String, whyEntryPrice: String, targetPrice: Double?,
                         exitLow: Double?, exitHigh: Double?, thesisTags: [String], invalidation: String,
                         contingencyScenarios: [ContingencyScenario], playbookTag: String,
-                        plannedPrice: Double?, plannedQty: Int?) async throws -> DecisionLog {
+                        plannedPrice: Double?, plannedQty: Int?,
+                        maxChasePct: Double?) async throws -> DecisionLog {
         let body = DecisionReviseRequest(whyBuy: whyBuy, whyEntryPrice: whyEntryPrice, targetPrice: targetPrice,
                                          exitLow: exitLow, exitHigh: exitHigh, thesisTags: thesisTags,
                                          invalidation: invalidation, contingencyScenarios: contingencyScenarios,
-                                         playbookTag: playbookTag, plannedPrice: plannedPrice, plannedQty: plannedQty)
+                                         playbookTag: playbookTag, plannedPrice: plannedPrice, plannedQty: plannedQty,
+                                         maxChasePct: maxChasePct)
         let data = try await post("/api/v1/decisions/\(id)/revise", body: body)
         return try JSONDecoder().decode(DecisionLog.self, from: data)
     }
@@ -517,6 +630,25 @@ actor APIClient {
         let r = try JSONDecoder().decode(InquiryResponse.self, from: data)
         return InquiryResult(code: r.code, reply: r.reply, verdict: InquiryVerdict(r.verdict),
                              evidence: r.evidence, degraded: r.degraded)
+    }
+
+    // —— v1.4-⑦-B 问询历史(§七 P3-13;**与已退役的 `inquiry_pool` 无耦合**,本节读的
+    // 是 `inquiry_log` 档案表)——————————————————————————————————————————————————
+
+    private struct InquiryLogsListResponse: Decodable { let items: [InquiryLogEntry] }
+
+    /// 倒序分页,`tsCode` 归一后等值匹配(空/nil = 不按代码过滤)。
+    func fetchInquiries(limit: Int = 20, offset: Int = 0, tsCode: String? = nil) async throws -> [InquiryLogEntry] {
+        var query = ["limit=\(limit)", "offset=\(offset)"]
+        if let c = tsCode, !c.trimmingCharacters(in: .whitespaces).isEmpty { query.append("tsCode=\(c)") }
+        let data = try await get("/api/v1/inquiries?" + query.joined(separator: "&"))
+        return try JSONDecoder().decode(InquiryLogsListResponse.self, from: data).items
+    }
+
+    /// 详情。不存在 → 404 not_found(既有 case 覆盖,未新增)。
+    func fetchInquiryDetail(id: Int) async throws -> InquiryLogEntry {
+        let data = try await get("/api/v1/inquiries/\(id)")
+        return try JSONDecoder().decode(InquiryLogEntry.self, from: data)
     }
 
     // —— 4A.5 设置(🔴 LLM key 服务端存取)——
@@ -791,10 +923,18 @@ actor APIClient {
         guard let reason = reasonString(data) else { return fallback }
         switch reason {
         case "not_holding": return .notHolding
+        // v1.4-⑦-A:GET /decisions/{id}/track 的 not_found(decision_id 不存在)复用
+        // 本既有 case(字符串与 decisions link/cancel/revise 端点相同,未新增);
+        // v1.4-⑦-B:GET /inquiries/{id} 的 not_found 同样复用本 case。
         case "not_found": return .notFound   // v1.1-F:watchlist delete/pin 代码不存在
         // v1.4-①-A:POST /positions 的 buyDate 校验(400),两个 reason 各一 case。
         case "not_trading_day": return .notTradingDay
         case "future_buy_date": return .futureBuyDate
+        // v1.4-④-B:GET /report/{date}/info-card/{code} 的两个 404 reason。
+        case "report_not_found": return .reportNotFound
+        case "code_not_in_report": return .codeNotInReport
+        // v1.4-⑤-B:POST/revise /decisions 的 maxChasePct 未显式传(400)。
+        case "max_chase_required": return .maxChaseRequired
         default: return fallback
         }
     }

@@ -45,6 +45,11 @@ struct PositionEntryForm {
     var reason = ""
     /// v1.3-①/⑥:实付买入费用(**UI 强制必填**,服务端宽松——§五 v1.3-⑥-B 拍板口径)。
     var buyFees = ""
+    /// v1.4-①-A(§七 P0-1):真实买入日,默认今天、**不可选未来**(`OpenPositionSheet`
+    /// 的 `DatePicker` 用 `in: ...Date()` 限死上界)。提交时格式化成 'YYYYMMDD' 传给
+    /// `APIClient.openPosition(buyDate:)`;非交易日由服务端 400 拒绝,不在客户端预判
+    /// (服务端才是交易日历的唯一事实源)。
+    var buyDate: Date = Date()
 
     var buyPrice: Double? { Double(price.trimmingCharacters(in: .whitespaces)) }
     var qtyInt: Int? { Int(qty.trimmingCharacters(in: .whitespaces)) }
@@ -89,6 +94,13 @@ struct DecisionLogForm {
     var playbookTag: PlaybookTag = .swingChase   // ⑧ 打法标签(单选)
     var plannedPrice = ""
     var plannedQty = ""
+    // —— ⑨ 最高追价上限(v1.4-⑤-B,需求 2 补充)———————————————————————————————————
+    /// 相对昨收百分比数字(允许负值,如 `-1.5` = 只在低开 1.5% 以上才买)。
+    var maxChasePct = ""
+    /// 显式勾选「不设上限」——**无论开盘涨多高都照买,不设放弃线**(与
+    /// `maxChasePct` 二选一强制,同论点必填纪律:两者皆无不许提交)。勾选时数字框
+    /// 语义上被忽略(提交时以本开关为准,见 `AppModel.submitDecisionLog`)。
+    var maxChaseNoCap = false
 
     init() {}
 
@@ -111,13 +123,30 @@ struct DecisionLogForm {
         playbookTag = PlaybookTag(rawValue: log.playbookTag) ?? .swingChase
         plannedPrice = log.plannedPrice.map { String(format: "%.2f", $0) } ?? ""
         plannedQty = log.plannedQty.map { String($0) } ?? ""
+        // ⚠ 老行 `maxChasePct == nil` 有两种可能:「用户当年显式选了不设上限」或「建于
+        // 本字段前的历史行」——存储层无法区分(schemas.py 原文已记)。**不自动预勾选
+        // 「不设上限」**(那会替用户瞎猜当年的选择),两格都留白,强制用户修订时重新
+        // 主动选择一次——修订本就是「重新预注册一整套九项内容,同一份纪律」。
+        if let m = log.maxChasePct {
+            maxChasePct = String(format: "%.2f", m)
+            maxChaseNoCap = false
+        } else {
+            maxChasePct = ""
+            maxChaseNoCap = false
+        }
     }
+
+    var maxChasePctValue: Double? { Double(maxChasePct.trimmingCharacters(in: .whitespaces)) }
+    /// ⑨ 二选一强制(考官规格 §九 同构,plan §五-⑤-B「同论点必填纪律」):要么填了
+    /// 合法数字,要么显式勾选「不设上限」——两者皆无时用户尚未做出选择,不许提交。
+    var maxChaseChosen: Bool { maxChaseNoCap || maxChasePctValue != nil }
 
     var isValid: Bool {
         !code.trimmingCharacters(in: .whitespaces).isEmpty
             && !whyBuy.trimmingCharacters(in: .whitespaces).isEmpty
             && !whyEntryPrice.trimmingCharacters(in: .whitespaces).isEmpty
             && !invalidation.trimmingCharacters(in: .whitespaces).isEmpty
+            && maxChaseChosen
     }
 
     /// 只提交「情景描述 + 触发条件」都非空的行(服务端不强制条数,留白的引导行
@@ -179,6 +208,19 @@ final class AppModel {
     var positionsLoading = false
     var loadError: String? = nil
 
+    // —— v1.4-④ 信息卡(§五 v1.4-④,依需求现算;候选专属,本版先只接候选)——————————
+    /// 候选卡点进去要展示信息卡时的目标(携带整个 `Candidate`,不只是 code——
+    /// `execHints` 只在 `Candidate` 上,信息卡页复用候选对象展示,不重复请求)。
+    struct InfoCardRequest: Identifiable, Equatable {
+        let tradeDate: String
+        let candidate: Candidate
+        var id: String { "\(tradeDate)|\(candidate.code)" }
+    }
+    var infoCardRequest: InfoCardRequest? = nil
+    var infoCard: InfoCard? = nil
+    var infoCardLoading = false
+    var infoCardError: String? = nil
+
     // —— 4A.3 盘中看板 ——
     var board: BoardSnapshot = .empty
     var boardLoading = false
@@ -191,6 +233,11 @@ final class AppModel {
     var inquiryDegraded = false
     var inquiryComposer = ""
     var inquiryLoading = false
+
+    // —— v1.4-⑦-B 问询历史(§七 P3-13;与已退役的 `inquiry_pool` 无耦合)——————————————
+    var inquiryHistory: [InquiryLogEntry] = []
+    var inquiryHistoryLoading = false
+    var showInquiryHistory = false
 
     // —— 4A.5 设置 ——
     var settings: SettingsSnapshot = .empty
@@ -237,6 +284,11 @@ final class AppModel {
     var pendingDecisionId: Int? = nil
     /// 非 nil = 表单处于「修订」模式(提交调 `reviseDecision`,不触发开仓流程)。
     var revisingDecisionId: Int? = nil
+
+    // —— v1.4-⑦-A 挂单未成交追踪(§七 P3-12)。按 decisionId 缓存,持仓卡展开多张
+    // 决策日志详情时各自独立、互不冲突;`decisionTrackLoading` 用 Set 记正在加载中的 id。
+    var decisionTracks: [Int: DecisionTrack] = [:]
+    var decisionTrackLoading: Set<Int> = []
 
     // —— v1.2-A2 熔断纪律(§五 v1.2-E.3;纯提醒层,客户端只展示 + 自律灰化,§3.8)——
     var circuit: CircuitState = .empty
@@ -346,12 +398,59 @@ final class AppModel {
         }
         reportLoading = false
         positionsLoading = false
+        maybeOpenInfoCardFromQAHook()
+    }
+
+    /// 纯 QA/截图辅助(同 `NecklineApp` 的 `NECKLINE_INITIAL_TAB`/`NECKLINE_INITIAL_MODAL`
+    /// 先例):`NECKLINE_INITIAL_INFOCARD_CODE=<code>` 免交互地在报告加载后直接打开该
+    /// 候选的信息卡页(info card 需要 `Candidate` 对象,拿不到候选对象时无法用同款
+    /// 「init() 里同步设」的写法,故放在 `refresh()` 数据到位后触发)。不影响正常用户
+    /// 路径(缺此环境变量则不触发);仅在候选列表里能找到匹配 code 时才生效。
+    private func maybeOpenInfoCardFromQAHook() {
+        guard let code = ProcessInfo.processInfo.environment["NECKLINE_INITIAL_INFOCARD_CODE"],
+              !code.isEmpty, infoCardRequest == nil,
+              let candidate = report.candidates.first(where: { $0.code == code }) else { return }
+        openInfoCard(tradeDate: report.tradeDate, candidate: candidate)
     }
 
     /// 单独刷新已成交决策日志(revise / scenario-outcome 后局部更新,不必整页 refresh)。
     func loadDecisions() async {
         guard let client = clientProvider() else { return }
         do { decisions = try await client.listDecisions(status: "filled") } catch { /* 静默降级,同 board */ }
+    }
+
+    // MARK: - v1.4-④ 信息卡(依需求现算,不进 `refresh()` 常规刷新——单只完整卡含 60 日
+    // 序列,体量不小,只在用户点开候选时才请求,§五 v1.4-④-B「不落库、服务端现算」)。
+
+    /// 候选卡「查看信息卡」入口调用。携带整个 `Candidate`(而非只传 code)是刻意的
+    /// ——execHints 只在 `Candidate` 上,信息卡页复用候选对象展示「执行提示」,不为它
+    /// 单独发一次请求、也不给 `InfoCardOut` 加字段(⑤ 留的待核对假设,已核对:本版
+    /// 信息卡入口只有候选卡这一条路,假设成立)。
+    func openInfoCard(tradeDate: String, candidate: Candidate) {
+        infoCard = nil
+        infoCardError = nil
+        infoCardRequest = InfoCardRequest(tradeDate: tradeDate, candidate: candidate)
+        Task { await loadInfoCard() }
+    }
+
+    func loadInfoCard() async {
+        guard let req = infoCardRequest, let client = clientProvider() else { return }
+        infoCardLoading = true
+        do {
+            infoCard = try await client.fetchInfoCard(date: req.tradeDate, code: req.candidate.code)
+        } catch let e as APIError {
+            infoCardError = e.errorDescription ?? "信息卡加载失败"
+        } catch {
+            infoCardError = error.localizedDescription
+        }
+        infoCardLoading = false
+    }
+
+    func dismissInfoCard() {
+        infoCardRequest = nil
+        infoCard = nil
+        infoCardError = nil
+        infoCardLoading = false
     }
 
     private func fetchResult<T>(_ op: () async throws -> T) async -> Result<T, Error> {
@@ -462,10 +561,13 @@ final class AppModel {
         let code = entryForm.code.trimmingCharacters(in: .whitespaces)
         let name = entryForm.name.trimmingCharacters(in: .whitespaces)
         let reason = entryForm.reason.trimmingCharacters(in: .whitespaces)
+        // v1.4-①-A:真实买入日,始终显式传(与不传今天在服务端行为等价,但更明确);
+        // 非交易日 / 未来日由服务端 400 拒绝(交易日历唯一事实源在服务端,不在客户端预判)。
+        let buyDateStr = calendar.compactString(entryForm.buyDate)
         do {
             let r = try await client.openPosition(code: code, name: name.isEmpty ? nil : name,
                                                   buyPrice: price, qty: qty, entryReason: reason,
-                                                  buyFees: fees)
+                                                  buyFees: fees, buyDate: buyDateStr)
             if let did = pendingDecisionId {
                 pendingDecisionId = nil
                 // 关联失败不阻断开仓成功(审计件、非下单件,§3.8);决策日志仍留在
@@ -550,7 +652,10 @@ final class AppModel {
             showToast("未配置后端连接", isError: true); return
         }
         guard decisionForm.isValid else {
-            showToast("请完整填写代码 / 为什么买 / 为什么这个入场价 / 证伪条件", isError: true); return
+            let msg = decisionForm.maxChaseChosen
+                ? "请完整填写代码 / 为什么买 / 为什么这个入场价 / 证伪条件"
+                : "请完整填写代码 / 为什么买 / 为什么这个入场价 / 证伪条件 / ⑨最高追价上限(填数字或勾选不设上限)"
+            showToast(msg, isError: true); return
         }
         let tags = decisionForm.thesisTags.map(\.rawValue)
         let scenarios = decisionForm.filledScenarios.map {
@@ -563,13 +668,17 @@ final class AppModel {
         let exitHigh = Double(decisionForm.exitHigh.trimmingCharacters(in: .whitespaces))
         let plannedPrice = Double(decisionForm.plannedPrice.trimmingCharacters(in: .whitespaces))
         let plannedQty = Int(decisionForm.plannedQty.trimmingCharacters(in: .whitespaces))
+        // ⑨ 最高追价上限:勾了「不设上限」→ 显式传 nil(= JSON null);否则传数字文本框
+        // 解析出的值(表单校验 `maxChaseChosen` 已保证二者必居其一)。
+        let maxChasePct: Double? = decisionForm.maxChaseNoCap ? nil : decisionForm.maxChasePctValue
         do {
             if let did = revisingDecisionId {
                 _ = try await client.reviseDecision(
                     id: did, whyBuy: decisionForm.whyBuy, whyEntryPrice: decisionForm.whyEntryPrice,
                     targetPrice: targetPrice, exitLow: exitLow, exitHigh: exitHigh, thesisTags: tags,
                     invalidation: decisionForm.invalidation, contingencyScenarios: scenarios,
-                    playbookTag: decisionForm.playbookTag.rawValue, plannedPrice: plannedPrice, plannedQty: plannedQty
+                    playbookTag: decisionForm.playbookTag.rawValue, plannedPrice: plannedPrice, plannedQty: plannedQty,
+                    maxChasePct: maxChasePct
                 )
                 revisingDecisionId = nil
                 modal = nil
@@ -583,7 +692,8 @@ final class AppModel {
                     whyBuy: decisionForm.whyBuy, whyEntryPrice: decisionForm.whyEntryPrice,
                     targetPrice: targetPrice, exitLow: exitLow, exitHigh: exitHigh, thesisTags: tags,
                     invalidation: decisionForm.invalidation, contingencyScenarios: scenarios,
-                    playbookTag: decisionForm.playbookTag.rawValue, plannedPrice: plannedPrice, plannedQty: plannedQty
+                    playbookTag: decisionForm.playbookTag.rawValue, plannedPrice: plannedPrice, plannedQty: plannedQty,
+                    maxChasePct: maxChasePct
                 )
                 pendingDecisionId = log.id
                 entryForm.code = code
@@ -613,6 +723,21 @@ final class AppModel {
         } catch {
             showToast("更新失败:\(error.localizedDescription)", isError: true)
         }
+    }
+
+    // MARK: - v1.4-⑦-A 挂单未成交追踪(§七 P3-12;持仓卡决策日志详情区展示 N 日走势)
+
+    /// 拉一次并缓存(按 decisionId);`rows` 空数组是合法态(尚未攒到数据),不当错误。
+    func loadDecisionTrack(id: Int) async {
+        guard let client = clientProvider(), !decisionTrackLoading.contains(id) else { return }
+        decisionTrackLoading.insert(id)
+        do {
+            decisionTracks[id] = try await client.decisionTrack(id: id)
+        } catch {
+            // 静默降级(同 board/decisions 惯例)——追踪走势是持仓卡详情区的次级信息,
+            // 拉不到不该弹错打断主流程,展开区自身会按「无数据」空态展示。
+        }
+        decisionTrackLoading.remove(id)
     }
 
     // MARK: - v1.2-A2 熔断纪律(§五 v1.2-E.3;纯提醒层——本节绝不代下单 / 撤单,
@@ -743,6 +868,21 @@ final class AppModel {
             truncated.removeFirst()
         }
         return truncated
+    }
+
+    // MARK: - v1.4-⑦-B:问询历史(§七 P3-13;与已退役的 `inquiry_pool` 无耦合)
+
+    func loadInquiryHistory() async {
+        guard let client = clientProvider() else { return }
+        inquiryHistoryLoading = true
+        do {
+            inquiryHistory = try await client.fetchInquiries()
+        } catch let e as APIError {
+            if case .noToken = e {} else { showToast(e.errorDescription ?? "问询历史拉取失败", isError: true) }
+        } catch {
+            showToast("问询历史拉取失败", isError: true)
+        }
+        inquiryHistoryLoading = false
     }
 
     // MARK: - 4A.5:设置

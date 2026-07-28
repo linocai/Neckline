@@ -8,6 +8,7 @@
 //  「今日计划」这一个 View 的从属组件,只是物理上拆文件保持可读性。
 //
 
+import Charts
 import SwiftUI
 
 // MARK: - v1.2-E.1/E.4:持仓卡「决策日志」回显区 + 呼吸台账入口
@@ -100,6 +101,9 @@ struct PositionDecisionSection: View {
                     piece("离场区间", "¥\(NKFmt.price(lo)) ~ ¥\(NKFmt.price(hi))")
                 }
             }
+            // v1.4-⑤-B ⑨:最高追价上限(相对昨收百分比;nil 在老行上是"不设上限"与
+            // "历史数据"两种可能性无法区分的模糊态,统一展示"未设/不设上限")。
+            piece("⑨ 最高追价上限", log.maxChasePct.map { NKFmt.signedPct($0) } ?? "未设 / 不设上限")
             if !log.thesisTagLabels.isEmpty {
                 HStack(spacing: 4) {
                     ForEach(log.thesisTagLabels, id: \.self) { NKChip(text: $0) }
@@ -114,6 +118,8 @@ struct PositionDecisionSection: View {
                     }
                 }
             }
+            // v1.4-⑦-A(§七 P3-12):挂单未成交追踪走势。
+            DecisionTrackSection(model: model, decisionId: log.id)
         }
     }
 
@@ -151,6 +157,64 @@ private struct ScenarioOutcomeRow: View {
             }
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - v1.4-⑦-A 挂单未成交追踪(§七 P3-12)。折线 + 数值,展开时按需拉取
+// (决策日志详情区可能同时展开多张卡,各自独立缓存于 `AppModel.decisionTracks`)。
+
+private struct DecisionTrackSection: View {
+    @Bindable var model: AppModel
+    let decisionId: Int
+
+    private var track: DecisionTrack? { model.decisionTracks[decisionId] }
+    private var loading: Bool { model.decisionTrackLoading.contains(decisionId) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("挂单未成交追踪").font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+            if loading && track == nil {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("加载中…").font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                }
+            } else if let t = track {
+                if t.rows.isEmpty {
+                    Text("暂未攒到数据(刚建立 / 未到下一交易日,或已成交关联后不再追踪)")
+                        .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                } else {
+                    trackChart(t)
+                    if let last = t.rows.last {
+                        Text("最新 D+\(last.dOffset)(\(model.calendar.displayString(last.tradeDate))):¥\(NKFmt.price(last.close))"
+                             + (last.retFromPlan.map { " · 较计划价 \(NKFmt.signedPct($0 * 100))" } ?? ""))
+                            .font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                    }
+                }
+            } else {
+                Text("—").font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+            }
+        }
+        .task(id: decisionId) { await model.loadDecisionTrack(id: decisionId) }
+    }
+
+    /// 折线 + 数值即可(plan §五 v1.4-⑦-A 原文)。
+    @ViewBuilder
+    private func trackChart(_ t: DecisionTrack) -> some View {
+        Chart(t.rows) { row in
+            LineMark(x: .value("D+", row.dOffset), y: .value("收盘", row.close))
+                .foregroundStyle(NK.accent)
+            PointMark(x: .value("D+", row.dOffset), y: .value("收盘", row.close))
+                .foregroundStyle((row.retFromPlan ?? 0) >= 0 ? NK.up : NK.down)
+            if let plan = t.planPrice {
+                RuleMark(y: .value("计划价", plan))
+                    .foregroundStyle(NK.textTertiary.opacity(0.5))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+        }
+        .frame(height: 60)
+        .chartXAxis {
+            AxisMarks(values: .stride(by: 1)) { AxisValueLabel() }
+        }
     }
 }
 

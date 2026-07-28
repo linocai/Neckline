@@ -73,11 +73,22 @@
   `sqlite3 ATTACH` 真实 `data/neckline.db`,只拷 `trade_cal`/`strategy_versions`/
   `stock_basic`/`namechange` 四张只读参考表进隔离临时库,业务表留空,再跑
   `scripts/report.py <date>` 即可吃真数据出报告。
-- **本环境 computer-use 点不动 Simulator/macOS App**(权限拒):视觉核对走
-  `xcrun simctl io <device> screenshot`(免点击权限)+ QA 钩子
-  `NECKLINE_INITIAL_TAB` 切初始 tab(iOS 用 `SIMCTL_CHILD_` 前缀传入;macOS 直接
-  跑二进制带环境变量);macOS 原生截图被沙盒挡时,拿"iOS 截图 + 双端
-  `xcodebuild` BUILD SUCCEEDED"当等价证据,不死磕。
+- **本环境 computer-use 点不动 Simulator/macOS App**(权限拒,`mcp__Claude_Code_iOS_
+  Simulator__control` 的 `attach`/`tap` 同样因宿主机 `xcode-select` 未指向
+  Xcode.app 报错、需 sudo 修复非本会话可解):视觉核对走 `xcrun simctl io <device>
+  screenshot`(免点击权限)+ QA 钩子 `NECKLINE_INITIAL_TAB`/`NECKLINE_INITIAL_MODAL`
+  切初始 tab/弹层(iOS 用 `SIMCTL_CHILD_` 前缀传入 launch;env 需要 UserDefaults 的
+  项如后端环境/token 用 `xcrun simctl spawn <udid> defaults write <bundle_id>
+  <key> <value>` 提前写入);macOS 原生截图被沙盒挡时,拿"iOS 截图 + 双端
+  `xcodebuild` BUILD SUCCEEDED"当等价证据,不死磕。**页面内容纵向溢出 iPhone 视口
+  且需要看到滚动才可见的部分**(如候选卡多行 chips、长表单末尾字段):临时
+  `xcrun simctl create` 一台 iPad(`TARGETED_DEVICE_FAMILY` 含 "2" 时是原生 iPad
+  布局、非缩放兼容模式),同样点尺寸下可见内容显著更多,比试图裁剪测试数据凑
+  首屏更可靠(v1.4-⑧ 验证过);仍不够时才认截图缺口、靠单测兜底,不死磕。
+- **需要展示"报告加载完成后才能确定的内容"(如某只候选的信息卡)时**,`NecklineApp.
+  init()` 里的同步 QA 钩子够不着(数据是 `AppModel.refresh()` 异步拉的)——照
+  `NECKLINE_INITIAL_TAB` 先例另开一个 env 钩子,放在 `refresh()` 数据到位之后触发
+  (v1.4-⑧ `NECKLINE_INITIAL_INFOCARD_CODE` 先例),不要塞进 `init()`。
 - **客户端 404 映射**:`APIClient.mapReason` 按 reason 逐 case + fallback;新增会
   返 404 的端点必须检查要不要加新 case,别指望 fallback 猜对文案(watchlist
   `not_found` 被误显示成"持仓已清"踩过;**同一个 reason 字符串复用已有 case 不算
@@ -89,6 +100,19 @@
   iOS Simulator test」组合,不必强求 macOS test 绿(v1.4-⑦ 验证过)。
 - **服务端字段与客户端既有计算属性撞名**(如 `distToStopPct` 小数 vs 百分比):
   CodingKeys 显式改名解码(`distToStopPctServer`),不改旧属性既有语义(有单测锁)。
+- **Swift `Encodable` 合成对 Optional 属性一律走 `encodeIfPresent`(nil→省略键)**,
+  但契约要求"键必须永远出现、nil 时编成 JSON `null`"的字段(如 `maxChasePct`,后端
+  用 `model_fields_set` 判断"有没有传过")必须手写 `encode(to:)`、对该字段单独用
+  `container.encode(optionalValue, forKey:)`(不是 `encodeIfPresent`)——`Optional`
+  自身的 `Encodable` conformance 在 nil 时走 `encodeNil`,键因而总会出现
+  (v1.4-⑧ `DecisionCreateRequest`/`DecisionReviseRequest` 定案)。
+- **落库快照按"是否随每次响应重新拼装"分两类,决定新字段要不要手写容错解码**:
+  `intel_rank`/`info_card_summary` 这类挂在 `_shape_candidate` 上的字段,服务端每次
+  响应都用 pydantic 默认值重新构造,新字段旧数据也会补全,客户端可以偷懒用
+  `Optional`/默认值自动兜底;但 `reviews.result_json`(`review_store`)是**写入当时
+  冻住**的历史快照原样读回,不会因服务端升级而补全新键,新增字段(如
+  `charterSegments`)必须给该 DTO 手写 `init(from:)` 做 `decodeIfPresent` 兜底
+  (v1.4-⑧ `ReviewWeeklyResult` 定案)——加字段前先确认是哪一类,别套错模板。
 
 ## 周复盘对账(阶段4D)
 
