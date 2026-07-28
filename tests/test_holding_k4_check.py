@@ -20,7 +20,6 @@ import pytest
 
 from neckline.report import holding_k4_check as hk
 from neckline.report import holding_store
-from neckline.report.sectors import SectorScore, sector_hot_lookup
 from neckline.sentinel.positions import Position
 from neckline.sentinel.precall import (
     HARD_CAP_EXIT,
@@ -123,15 +122,19 @@ def test_hit_meta_levels_and_evidence_strength():
     assert meta["B3_theme_persist_2_3"][1] == "normal" and meta["B3_theme_persist_2_3"][2] == "constituent"
 
 
-def test_theme_persist_from_board_age():
-    hot = sector_hot_lookup([
-        SectorScore(index_code="883300.TI", name="芯片", board_age=5, ret_20d=0.1, bonus=0.0, rank=1),
-        SectorScore(index_code="883301.TI", name="储能", board_age=2, ret_20d=0.05, bonus=0.0, rank=2),
+def test_theme_persist_from_industry_strength():
+    """v1.4-② 起题材持续天数唯一源 = `industry_strength`(不再是 board_age 代理,见
+    `report/industry_strength.py` 与本模块头「★」)。"""
+    hot = hk.industry_strength_lookup([
+        hk.IndustryStrength(industry="半导体", median_ret=0.03, member_count=10,
+                            industry_rank=1, is_strength_day=True, persist_days=5),
+        hk.IndustryStrength(industry="食品饮料", median_ret=0.01, member_count=20,
+                            industry_rank=2, is_strength_day=False, persist_days=2),
     ])
-    mm = {"600001.SH": ["883300.TI"], "600002.SH": ["883301.TI"], "600003.SH": ["999.TI"]}
-    assert hk._theme_persist_days("600001.SH", mm, hot) == 5   # ≥4 → A2
-    assert hk._theme_persist_days("600002.SH", mm, hot) == 2   # 2-3 → B3
-    assert hk._theme_persist_days("600003.SH", mm, hot) == 0   # 不在热榜 → 0
+    industry_of = {"600001.SH": "半导体", "600002.SH": "食品饮料", "600003.SH": "冷门行业(不在热表)"}
+    assert hk.stock_persist_days("600001.SH", industry_of, hot) == 5   # ≥4 → A2
+    assert hk.stock_persist_days("600002.SH", industry_of, hot) == 2   # 2-3 → B3
+    assert hk.stock_persist_days("600003.SH", industry_of, hot) == 0   # 行业不在热表 → 0
 
 
 def test_evaluate_hits_theme_ge4_is_strong_but_constituent():
@@ -170,11 +173,13 @@ def test_build_has_strong_only_price_volume(monkeypatch):
     """强价量命中(A3)→ has_strong=True(触发第六类);仅题材≥4天(弱证据)→ has_strong=False。"""
     rows = [_panel_row("600001.SH", _hit_A3=True), _panel_row("600002.SH")]
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel(rows))
-    # 600002 命中 A2(题材≥4)但弱证据:构造热榜使其 board_age≥4
-    hot = [SectorScore(index_code="X.TI", name="题材", board_age=5, ret_20d=0.1, bonus=0.0, rank=1)]
-    mm = {"600002.SH": ["X.TI"]}
+    # 600002 命中 A2(题材≥4)但弱证据:构造行业强度热表使其所属行业 persist≥4
+    industry_scores = [hk.IndustryStrength(industry="题材行业", median_ret=0.1, member_count=10,
+                                           industry_rank=1, is_strength_day=True, persist_days=5)]
+    industry_map = {"600002.SH": "题材行业"}
     positions = [_pos(1, "600001.SH"), _pos(2, "600002.SH")]
-    items = hk.build_holding_k4_check(TD, _RULE_K1, positions, sector_scores=hot, member_map=mm)
+    items = hk.build_holding_k4_check(TD, _RULE_K1, positions,
+                                      industry_scores=industry_scores, industry_map=industry_map)
     by_code = {it.ts_code: it for it in items}
     assert by_code["600001.SH"].has_strong is True                 # A3 强价量
     assert "A3_belowyear_limitup" in {h.code for h in by_code["600001.SH"].hits}
@@ -424,10 +429,12 @@ def test_no_data_skips_whole_checkup_including_theme_hits(monkeypatch):
     """**整份体检跳过**:当日无 EOD 行时连题材类 A2/B3(不依赖价量面板)也不产出——
     「空牌 = 体检过了没问题」与「今天压根没体检」必须能分开(§3.8)。"""
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([]))
-    hot = [SectorScore(index_code="X.TI", name="题材", board_age=6, ret_20d=0.1, bonus=0.0, rank=1)]
+    industry_scores = [hk.IndustryStrength(industry="题材行业", median_ret=0.1, member_count=10,
+                                           industry_rank=1, is_strength_day=True, persist_days=6)]
+    industry_map = {"600001.SH": "题材行业"}
     items = hk.build_holding_k4_check(
         TD, _RULE_V13, [_pos(1, "600001.SH")],
-        sector_scores=hot, member_map={"600001.SH": ["X.TI"]},
+        industry_scores=industry_scores, industry_map=industry_map,
     )
     it = items[0]
     assert it.has_data is False
@@ -436,7 +443,7 @@ def test_no_data_skips_whole_checkup_including_theme_hits(monkeypatch):
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([_panel_row("600001.SH")]))
     it2 = hk.build_holding_k4_check(
         TD, _RULE_V13, [_pos(1, "600001.SH")],
-        sector_scores=hot, member_map={"600001.SH": ["X.TI"]},
+        industry_scores=industry_scores, industry_map=industry_map,
     )[0]
     assert {h.code for h in it2.hits} == {"A2_theme_persist_ge_4"}
 

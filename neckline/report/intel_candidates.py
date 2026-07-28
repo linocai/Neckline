@@ -22,10 +22,17 @@
                 阈值单一源,不写两遍)**——只是把持仓 I/O(逐票循环)换成全板块 bulk 面板
                 I/O(见「性能坑」)。合成派发码 `A3b_belowyear_bigvol`(不在 DB,证据源=雷区
                 地图 3-⑤)按 `_DEFAULT_SECTION` 归 avoid_flag(打标不拦,机器不禁;是否升级
-                为 hard_cut 留用户拍板)。
+                为 hard_cut 留用户拍板)。**题材类(A2/B3)的持续天数输入(v1.4-② 起)** = 该
+                code 代表的**行业**(`stock_basic.industry`,一票一行业)当日
+                `industry_strength.stock_persist_days`——不再用它所属概念板块的 board_age
+                最大值(v1.3-② 遗留代理,已作废,见 `report/industry_strength.py` 与
+                `holding_k4_check.py` 模块头「★」)。
     ④ 情报排序 = 板块资金流强度(C2 `sector_moneyflow`,取候选所属常驻/暴起板块的最大净
                 流入)+ 题材持续天数**反用**(`_theme_freshness_score`:1 天新鲜 > 2-3 天警惕 >
-                ≥4 天已在 ③ hard_cut〔A2〕剔)+ 高弹标注 → 出 **20 只**交用户终选。
+                ≥4 天已在 ③ hard_cut〔A2〕剔;该持续天数同 ③ 用的同一个 `industry_strength`
+                值,单一源不两算)+ 高弹标注 → 出 **20 只**交用户终选。**本排序键本身
+                (板块资金流优先)v1.4-② 尚未改**——排序键三级改版是 v1.4-③ 的范围,本块
+                只换「题材持续天数」这一个输入量的数据源,不动排序公式。
 
 **§3.8 铁律「同码」重述的落地核对**:候选生成(本模块)与回测信号**解耦**——不声称
 回测过的 alpha、输出「值得关注」非「会涨」。**纪律红绿灯(问询台 `api/inquiry.py` /
@@ -76,6 +83,12 @@ from neckline.report.holding_k4_check import (
     _evaluate_hits,
     _load_k4_evidence,
     load_k4_sections,
+)
+from neckline.report.industry_strength import (
+    IndustryStrength,
+    compute_industry_strength,
+    industry_strength_lookup,
+    stock_persist_days,
 )
 from neckline.report.sectors import (
     SectorScore,
@@ -265,6 +278,7 @@ def build_intel_candidates(
     member_map: Optional[Dict[str, List[str]]] = None,
     index_names: Optional[Dict[str, str]] = None,
     sector_scores: Optional[List[SectorScore]] = None,
+    industry_scores: Optional[List[IndustryStrength]] = None,
     top_n: int = TOP_N_CANDIDATES,
     breakout_top_n: int = BREAKOUT_TOP_N,
     parquet_dir: Optional[Path] = None,
@@ -274,9 +288,12 @@ def build_intel_candidates(
     """候选情报筛选管线入口(角色对应旧 `candidates.build_candidates`,pipeline 侧替换点)。
     `rule` = 大脑现役 `brain.get_active().rule`(cfg 读 stop_pct/max_hold_days 等,单一源;
     **仅用于四件套文案/展示分,不用于 entry mask**)。`member_map`/`index_names` 由 pipeline
-    传入(报告已加载,不重复读 parquet);`sector_scores`(大列表,拥挤度 + board_age)缺省
-    则内部 `compute_sector_strength(top_n=1000)` 自算。`forced_codes` = 问询台海选池「初审
-    通过」的票(§2.5)强制并入(用户点名,豁免 ② 卫生线与 ③ hard_cut,仅 K4 打标展示)。"""
+    传入(报告已加载,不重复读 parquet);`sector_scores`(大列表,拥挤度 + board_age,仍只用于
+    板块展示/常驻暴起判定)缺省则内部 `compute_sector_strength(top_n=1000)` 自算。
+    `industry_scores`(v1.4-② 起题材持续天数唯一源输入)缺省则内部
+    `compute_industry_strength` 自算——与 `sector_scores` 同一姿势,pipeline 已算好一份传入,
+    免报告内部候选/持仓/问询三处各自重算一遍全市场行业中位数。`forced_codes` = 问询台海选池
+    「初审通过」的票(§2.5)强制并入(用户点名,豁免 ② 卫生线与 ③ hard_cut,仅 K4 打标展示)。"""
     cfg = MomentumConfig(**rule["config"])
     member_map = member_map if member_map is not None else load_member_map(parquet_dir=parquet_dir)
     index_names = index_names if index_names is not None else load_index_names(parquet_dir=parquet_dir)
@@ -296,7 +313,9 @@ def build_intel_candidates(
     if unresolved:
         logger.warning("候选情报管线:五常驻板块名未在 ths_index 精确匹配到:%s(跳过,不模糊回退)", unresolved)
     step1_boards: Set[str] = set(permanent_codes) | set(breakout_codes)
-    # 题材持续天数/展示只看候选**所属的 step① 板块**的 board_age(不看非热板块),故 hot 限定 step① 内。
+    # 板块展示(候选卡「所属热门板块(板块年龄N天…)」文案)只看候选**所属的 step① 板块**的
+    # board_age,故 hot 限定 step① 内。**v1.4-② 起题材持续天数判据/排序输入不再读这份**
+    # (见下方 `industry_hot`),`step1_hot` 现在只服务展示文案。
     all_hot = sector_hot_lookup(all_scores)
     step1_hot = {b: all_hot[b] for b in step1_boards if b in all_hot}
 
@@ -304,6 +323,13 @@ def build_intel_candidates(
     #    集合才能作为该板块的代表票(gated 归属)。数据驱动、不手配白名单,当日暴起板块自动同样
     #    生效。无 industry 的票视为不通过闸(保守,无法判主题相关性),诚实落审计日志、不静默丢。—
     industry_of = _load_industry_map(db_path)
+    # v1.4-②:题材持续天数唯一源(A2/B3 判据 + ④ 情报排序输入共用),复用上一行已加载的
+    # `industry_of`(行业闸同一份 stock_basic.industry 映射,免二次读表)。
+    industry_hot = industry_strength_lookup(
+        industry_scores
+        if industry_scores is not None
+        else compute_industry_strength(trade_date, parquet_dir=parquet_dir, db_path=db_path)
+    )
     market_shares = _market_industry_shares(industry_of)
     inv = invert_member_map(member_map)
     board_members_of: Dict[str, List[str]] = {b: inv.get(b, []) for b in step1_boards}
@@ -396,10 +422,12 @@ def build_intel_candidates(
     for code in universe_codes:
         row = rows_by_code.get(code)
         # 板块归属**全部走行业闸后的 gated_boards_of**(= 该 code 真正代表的 step① 板块):资金流/
-        # 题材天数/保底归属/热门板块展示都只看代表的板块,不看沾边挂靠的板块(方案二核心)。
+        # 保底归属/热门板块展示都只看代表的板块,不看沾边挂靠的板块(方案二核心)。**题材持续
+        # 天数(v1.4-② 起)不再走板块代表关系**——直接是该 code 自己的 `stock_basic.industry`
+        # 当日强度持续天数(一票一行业,不需要"代表哪个板块"这层间接)。
         its_step1_boards = gated_boards_of.get(code, [])
         its_permanent_boards = [b for b in its_step1_boards if b in permanent_set]
-        persist = max((step1_hot[b].board_age for b in its_step1_boards if b in step1_hot), default=0)
+        persist = stock_persist_days(code, industry_of, industry_hot)
         hits = _evaluate_hits(row, persist, evidence)
         hard = [h for h in hits if sections.get(h.code, _DEFAULT_SECTION) == "hard_cut"]
         if hard:

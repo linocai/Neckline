@@ -38,6 +38,11 @@
   坑教训);北交所前缀判断复用此模块,不另起 8/4/920 正则。
 - **「总仓」分母**:唯一源 `Settings.total_capital`(默认 12 万,`.env` 的
   `TOTAL_CAPITAL` 覆盖);一切"占总仓百分比"计算读它。
+- **题材持续天数(A2/B3 判据,v1.4-② 定案)**:唯一源 `neckline/report/industry_strength.py`
+  的 `stock_persist_days`(`stock_basic.industry` 口径,H6 审计对象);持仓体检/候选安检/
+  问询台三处判据入口都改读它。概念板块 `board_age`(`sectors.py`)**不退役但只做板块展示**
+  (「所属热门板块」文案),**不再是任何判据的数据源**——两者是不同的量(行业一对一 vs
+  概念板块多对多),新代码别把两套搞混,也别指望 board_age 反映题材过热度。
 
 ## 盘中哨兵(阶段3)
 

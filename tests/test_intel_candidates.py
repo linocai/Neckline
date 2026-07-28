@@ -365,23 +365,61 @@ def test_permanent_boards_exact_name_match_not_fuzzy(isolated_env):
 # ⑤ 情报排序:题材天数反用 + 资金流强度
 # ————————————————————————————————————————————————————————————————
 
+def _industry_closes(daily_rets: list) -> list:
+    """日收益率脚本(长度 n,index0 值被 `_seed_market` 结构性忽略——首日 pre_close=close
+    恒 ret_1d=0)→ 收盘价路径。"""
+    out = [10.0]
+    for r in daily_rets[1:]:
+        out.append(out[-1] * (1 + r))
+    return out
+
+
 def test_theme_persistence_reversed_freshness_ranking(isolated_env):
-    """题材持续天数**反用**:两票资金流相同,所属板块 board_age=1(新鲜)的排在 board_age=3(警惕)
-    之前(`_theme_freshness_score`:1>2>3)。"""
+    """题材持续天数**反用**:行业强度持续天数=1(新鲜)的排在=3(警惕)之前
+    (`_theme_freshness_score`:1>2>3)。**v1.4-② 起持续天数唯一源 = `industry_strength`**
+    (不再是概念板块 board_age,见 `report/industry_strength.py`)——本测试因此从"直接摆布
+    板块指数 K 线"改为"摆布行业级 `ret_1d` 剧本,靠跨行业 top20% 竞争产出目标持续天数"。
+
+    4 个达标行业(各 5 只成员,同行业成员当日收益相同 → 中位数=该值,消除歧义)、
+    quantile(0.8, nearest 插值)在 n=4 下稳定选出「当日中位数最高的 2 个行业」过阈
+    (口径与量级见 `tests/test_industry_strength.py` 的算法级实测):「填充C/D」全程温和
+    上涨、从不进 top2 兜底;「新鲜行业」只在末日冲高(持续天数→1);「老行业」末 3 日抬升
+    (持续天数→3)。600001.SH/600002.SH 仍各自是「新鲜题材」/「老题材」两个**板块**的
+    唯一成员(候选依旧走既有板块漏斗入选,未改动),只换驱动"题材持续天数"这一个量的
+    底层数据源。"""
     dates = business_days(date(2024, 1, 2), 30)
     insert_trade_cal(isolated_env, dates)
     set_intel_watch_boards(["新鲜题材", "老题材"], db_path=isolated_env.db_path)
-    _seed_market(isolated_env, dates, [
-        {"code": "600001.SH", "market": "主板", "closes": _rising(30)},   # 属「新鲜题材」(age=1)
-        {"code": "600002.SH", "market": "主板", "closes": _rising(30)},   # 属「老题材」(age=3)
-    ])
+
+    n = len(dates)
+    fresh_rets = [0.005] * n
+    fresh_rets[-1] = 0.05                               # 只末日冲高 → 持续天数=1
+    old_rets = [0.005] * n
+    old_rets[-1] = old_rets[-2] = old_rets[-3] = 0.02    # 末 3 日抬升 → 持续天数=3
+    fillerC_rets = [0.008] * n                           # 全程温和最高,quiet 期兜底占 top2
+    fillerD_rets = [0.007] * n
+
+    fresh_closes = _industry_closes(fresh_rets)
+    old_closes = _industry_closes(old_rets)
+    fillerC_closes = _industry_closes(fillerC_rets)
+    fillerD_closes = _industry_closes(fillerD_rets)
+
+    stocks = [
+        {"code": "600001.SH", "market": "主板", "closes": fresh_closes, "industry": "新鲜行业"},
+        {"code": "600002.SH", "market": "主板", "closes": old_closes, "industry": "老行业"},
+    ]
+    for k in range(4):    # 凑够 _MIN_MEMBERS=5(1 只主角 + 4 只同行业陪衬,收益路径逐位相同)
+        stocks.append({"code": f"60011{k}.SH", "market": "主板", "closes": fresh_closes, "industry": "新鲜行业"})
+        stocks.append({"code": f"60021{k}.SH", "market": "主板", "closes": old_closes, "industry": "老行业"})
+    for k in range(5):
+        stocks.append({"code": f"60031{k}.SH", "market": "主板", "closes": fillerC_closes, "industry": "填充行业C"})
+        stocks.append({"code": f"60041{k}.SH", "market": "主板", "closes": fillerD_closes, "industry": "填充行业D"})
+    _seed_market(isolated_env, dates, stocks)
     _seed_boards(
         isolated_env,
         [{"ts_code": "880001.TI", "name": "新鲜题材"}, {"ts_code": "880002.TI", "name": "老题材"}],
         [{"index_code": "880001.TI", "con_code": "600001.SH"},
          {"index_code": "880002.TI", "con_code": "600002.SH"}],
-        board_daily={"880001.TI": _flat_then_up(30, age=1), "880002.TI": _flat_then_up(30, age=3)},
-        dates=dates,
     )
     cands = ic.build_intel_candidates(dates[-1], _RULE,
                                       parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)

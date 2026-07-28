@@ -17,6 +17,11 @@
   `holding_eod_check.data_unavailable`(①-B 新列)按**分区实况推导**回填到历史行。
   不补的话,上云当天的 9:25:30 盘前那一拍读到的还是旧代码写的 NULL 快照 → 停牌票照推
   「D5 时间退出」(**实测踩到**)。分区不可读的行**留 NULL 不推导**。
+- `compare_a2b3_industry_switch.py` — v1.4-②-C 硬要求:A2/B3 题材持续天数判据从概念板块
+  `board_age` 代理切到 `industry_strength` 行业强度唯一源的切换对拍,只读本地库/parquet
+  (零生产访问、零写库),产出 `archive/v1.4_A2B3口径切换对拍_<date>.md`(全市场 + 候选池
+  逐票新增/消失命中 + 数量小结 + 抽样人读说明)。可重跑(换 `[YYYYMMDD]` 参数对别的交易日
+  再对拍一次)。
 
 对应单测仍在 `tests/`(`test_charter_v13/v133.py`、`test_fix_moneyflow_schema.py`),
 sys.path 已指向本目录。

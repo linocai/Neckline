@@ -46,6 +46,7 @@ from neckline.report.sectors import (
     load_member_map,
 )
 from neckline.report.holding_k4_check import HoldingK4Item, build_holding_k4_check
+from neckline.report.industry_strength import compute_industry_strength, load_industry_map
 from neckline.report.sector_moneyflow import (
     SectorMoneyflowReport,
     compute_sector_moneyflow,
@@ -152,6 +153,12 @@ def build_report(
         )
     member_map = load_member_map(parquet_dir=parquet_dir)
     index_names = load_index_names(parquet_dir=parquet_dir)
+    # v1.4-②:行业强度单一源(A2/B3 题材持续天数判据)。持仓 K4 体检 + 候选安检两处共用
+    # 同一份(此处只算一次,同 sector_scores/member_map 既有姿势,免两处各自重算一遍全市场
+    # 行业中位数);`compute_industry_strength` 无 top_n 截断概念,天然是「全量」,不像
+    # `sector_scores` 需要区分"报告展示用的 top-10"与"候选/持仓判据用的全量"两份。
+    industry_map = load_industry_map(db_path=db_path)
+    industry_scores = compute_industry_strength(trade_date, parquet_dir=parquet_dir, db_path=db_path)
 
     # 消费问询台海选池(§2.5 闭环报告侧;v1.1-D 问询窗口修复)——「初审通过」的票
     # 强制并入当晚候选评分 universe(只扩输入,不改评分逻辑)。消费窗口从「入池当日
@@ -168,11 +175,13 @@ def build_report(
     # 候选 = 「过完安检、值得关注的票」非「会涨的票」;`build_intel_candidates` 内部自算大
     # 板块拥挤度列表(需常驻板块 board_age,pipeline 的 top-10 sector_scores 不够大),
     # forced_codes(问询台海选池)语义不变(§2.5 强制并入,豁免卫生线/hard_cut、仅 K4 打标)。
+    # `industry_scores` = v1.4-② 行业强度(A2/B3 题材持续天数判据输入,pipeline 已算好一份)。
     candidates = build_intel_candidates(
         trade_date,
         active.rule,
         member_map=member_map,
         index_names=index_names,
+        industry_scores=industry_scores,
         top_n=top_n_total,
         parquet_dir=parquet_dir,
         db_path=db_path,
@@ -210,11 +219,11 @@ def build_report(
     # v1.3-② 持仓 K4 每日体检 + D5 收盘净浮盈(EOD 权威计算,seam 落点):对每只 open 持仓
     # 在当日面板重算 K4 advisory 命中(读 DB K4,polars 镜像)+ 算好 D5 净浮盈 → 落
     # `holding_eod_check`(GET /positions 读快照嵌 k4Advisory;次日 precall 读 net_float)。
-    # 复用报告已算好的 sector_scores/member_map(题材持续天数,不重建 industry 管线)。
+    # 复用报告已算好的 industry_scores/industry_map(v1.4-② 题材持续天数唯一源,不重复算)。
     holding_positions = pos_store.load_open_positions(db_path=db_path)
     holding_k4_check = build_holding_k4_check(
         trade_date, active.rule, holding_positions,
-        sector_scores=sector_scores, member_map=member_map,
+        industry_scores=industry_scores, industry_map=industry_map,
         scenario_position_ids=_scenario_review_position_ids(db_path=db_path),
         parquet_dir=parquet_dir, db_path=db_path,
     )

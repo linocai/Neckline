@@ -116,6 +116,63 @@ def test_deterministic_unknown_code_no_data_but_still_analyzable(market):
     assert any("停牌" in f or "代码有误" in f for f in det.risk_flags)   # 降级成提示,不是拒绝
 
 
+# —— v1.4-②:K4 题材类(A2/B3)持续天数改读 industry_strength(不再是 board_age)———————
+
+def test_k4_flags_uses_industry_persist_days(api_env, monkeypatch):
+    """`_k4_flags` 的参数已从 `member_map`/`hot`(概念板块)改名为 `industry_of`/
+    `industry_hot`(行业强度)——直接验证接线正确:喂一个 persist_days=5 的行业热表,
+    A2(题材持续≥4天)命中文案应出现在 `k4_flags` 里。монkeypatch 价量面板为空,
+    只验题材类(不依赖价量面板,见 holding_k4_check 模块头)。"""
+    import polars as pl
+
+    from neckline.report import holding_k4_check as hk
+
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", lambda codes, td, pd: pl.DataFrame())
+    industry_of = {"600001.SH": "强势行业"}
+    industry_hot = inq.industry_strength_lookup([
+        inq.IndustryStrength(industry="强势行业", median_ret=0.05, member_count=10,
+                             industry_rank=1, is_strength_day=True, persist_days=5),
+    ])
+    flags = inq._k4_flags(
+        "600001.SH", __import__("datetime").date(2024, 1, 2),
+        db_path=api_env.db_path, parquet_dir=api_env.parquet_dir,
+        industry_of=industry_of, industry_hot=industry_hot,
+    )
+    assert len(flags) == 1 and "题材持续" in flags[0]
+
+
+def test_k4_flags_no_industry_no_hit(api_env, monkeypatch):
+    """票无 industry(不在 `industry_of` 里)→ `stock_persist_days` 恒 0,不误触 A2/B3。"""
+    import polars as pl
+
+    from neckline.report import holding_k4_check as hk
+
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", lambda codes, td, pd: pl.DataFrame())
+    flags = inq._k4_flags(
+        "600001.SH", __import__("datetime").date(2024, 1, 2),
+        db_path=api_env.db_path, parquet_dir=api_env.parquet_dir,
+        industry_of={}, industry_hot={},
+    )
+    assert flags == []
+
+
+def test_run_deterministic_checks_wires_industry_scores_injection(market):
+    """`run_deterministic_checks` 接受 `industry_scores` 注入(免联网/免真实全市场
+    `daily` 扫描),题材类 K4 命中经此路径也能生效——同 `sector_scores` 既有注入姿势。"""
+    s, day = market
+    industry_scores = [
+        inq.IndustryStrength(industry="电气设备", median_ret=0.05, member_count=10,
+                             industry_rank=1, is_strength_day=True, persist_days=6),
+    ]
+    det = inq.run_deterministic_checks(
+        "600001.SH", day, db_path=s.db_path, parquet_dir=s.parquet_dir,
+        industry_scores=industry_scores,
+    )
+    assert det.has_data is True
+    assert any("题材持续" in f for f in det.k4_flags)
+    assert any("K4 安检命中" in e for e in det.evidence)
+
+
 # —— 核心回归:创业板票能拿到实质回答,不被拦 ————————————————————————————
 
 class TestGemGetsSubstantiveAnswer:

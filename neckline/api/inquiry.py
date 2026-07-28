@@ -64,6 +64,13 @@ from neckline.api.schemas import VERDICT_ANALYZED, VERDICT_ANALYZED_WARN
 from neckline.data.market_data import resolve_stock_names
 from neckline.llm.base import ChatMessage, LLMProvider, search_coverage_line
 from neckline.report.candidates import _base_score_expr  # 同码:展示排序分与报告一致
+from neckline.report.industry_strength import (
+    IndustryStrength,
+    compute_industry_strength,
+    industry_strength_lookup,
+    load_industry_map,
+    stock_persist_days,
+)
 from neckline.report.sectors import (
     SectorScore,
     compute_sector_strength,
@@ -144,26 +151,28 @@ def _cfg_from_active(db_path: Optional[Path]) -> Optional[MomentumConfig]:
 
 def _k4_flags(
     code: str, basis_date: date, *, db_path: Optional[Path], parquet_dir: Optional[Path],
-    member_map: Dict[str, List[str]], hot: Dict[str, SectorScore],
+    industry_of: Dict[str, str], industry_hot: Dict[str, IndustryStrength],
 ) -> List[str]:
     """该票当日的 K4 安检命中文案(**只提示不拦**,用户 2026-07-27 拍板)。
 
     **同码**:判据镜像直接复用 `report.holding_k4_check` 的 `_build_holding_feature_panel`
     +`_evaluate_hits`+`load_k4_sections`(与持仓牌 ② / 候选情报管线 ③ 同一份,阈值单一源;
-    跨模块引下划线函数的先例见 `report/intel_candidates.py`)。任何异常 → 空列表 + 警告日志,
-    绝不影响主流程(K4 是加分项,不是问询台的必需件)。"""
+    跨模块引下划线函数的先例见 `report/intel_candidates.py`)。**题材类(A2/B3)持续天数
+    v1.4-② 起读 `industry_strength.stock_persist_days`**(`industry_of`/`industry_hot` 由
+    `run_deterministic_checks` 单独算好传入,与 `sectors`/`hot` 那份**板块展示**用的
+    `member_map`/`hot` 是两套不同数据,不要混用)。任何异常 → 空列表 + 警告日志,绝不影响
+    主流程(K4 是加分项,不是问询台的必需件)。"""
     try:
         from neckline.report.holding_k4_check import (
             _build_holding_feature_panel,
             _evaluate_hits,
             _load_k4_evidence,
-            _theme_persist_days,
             load_k4_sections,
         )
 
         panel = _build_holding_feature_panel([code], basis_date, parquet_dir)
         row = None if panel.is_empty() else panel.to_dicts()[0]
-        hits = _evaluate_hits(row, _theme_persist_days(code, member_map, hot), _load_k4_evidence(db_path))
+        hits = _evaluate_hits(row, stock_persist_days(code, industry_of, industry_hot), _load_k4_evidence(db_path))
         if not hits:
             return []
         sections = load_k4_sections(db_path)
@@ -186,13 +195,17 @@ def run_deterministic_checks(
     db_path: Optional[Path] = None,
     parquet_dir: Optional[Path] = None,
     sector_scores: Optional[List[SectorScore]] = None,
+    industry_scores: Optional[List[IndustryStrength]] = None,
     panel_fn: Optional[Callable[..., Any]] = None,
 ) -> DeterministicResult:
     """确定性材料装配(§2.5 第一步):同码评分 + 纪律/硬线提示 + 板块年龄 + K4 安检。
 
     任何异常 → `has_data=False` 的结果 + 一条说明性 evidence,**绝不抛崩**。注意
     `has_data=False` 现在**不再意味着"不放行"**——它只是"这只票当日没有 EOD 行情可核",
-    LLM 段照跑(用户可能就是想问一只停牌票的后续)。`panel_fn`/`sector_scores` 可注入单测,免联网。"""
+    LLM 段照跑(用户可能就是想问一只停牌票的后续)。`panel_fn`/`sector_scores`/
+    `industry_scores` 可注入单测,免联网。`sector_scores` 只服务板块展示文案;
+    `industry_scores`(v1.4-② 起)服务题材持续天数判据(K4 安检 A2/B3 的输入),两者是
+    独立的两套数据,互不代理。"""
     code = normalize_ts_code(code)      # 裸 6 位 → `300759.SZ`(面板是 TuShare 口径)
     det = DeterministicResult(code=code, basis_date=basis_date, has_data=False)
     # 中文名(v1.3.4 修):`name` 字段自建库起就声明了、`build_llm_context` 也一直在读,
@@ -246,7 +259,7 @@ def run_deterministic_checks(
     except Exception as e:  # noqa: BLE001
         logger.warning("问询台买点/评分核算异常(%s,不影响其余材料)", e)
 
-    # —— 板块名 + 板块年龄(§2.5「板块年龄」)+ K4 安检 ——
+    # —— 板块名 + 板块年龄(§2.5「板块年龄」,纯展示)——
     member_map: Dict[str, List[str]] = {}
     hot: Dict[str, SectorScore] = {}
     try:
@@ -265,9 +278,22 @@ def run_deterministic_checks(
     except Exception as e:  # noqa: BLE001
         logger.warning("问询台板块年龄核算异常(%s,不影响其余材料)", e)
 
+    # —— 题材持续天数(v1.4-② 起唯一源)+ K4 安检 ——:与上面板块展示是两套独立数据
+    # (概念板块=多对多展示,`stock_basic.industry`=一对一判据输入),`industry_of`/
+    # `industry_hot` 与该票是否属于任何概念板块无关(每只有 industry 的票都算)。
+    industry_of: Dict[str, str] = {}
+    industry_hot: Dict[str, IndustryStrength] = {}
+    try:
+        industry_of = load_industry_map(db_path)
+        if industry_scores is None:
+            industry_scores = compute_industry_strength(basis_date, parquet_dir=parquet_dir, db_path=db_path)
+        industry_hot = industry_strength_lookup(industry_scores or [])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("问询台行业强度核算异常(%s,不影响其余材料)", e)
+
     det.k4_flags = _k4_flags(
         code, basis_date, db_path=db_path, parquet_dir=parquet_dir,
-        member_map=member_map, hot=hot,
+        industry_of=industry_of, industry_hot=industry_hot,
     )
     _build_evidence(det)
     return det
@@ -369,6 +395,7 @@ def run_inquiry(
     quotes_fn: Optional[Callable[[List[str]], Dict[str, Any]]] = None,
     transport: Optional[Any] = None,
     sector_scores: Optional[List[SectorScore]] = None,
+    industry_scores: Optional[List[IndustryStrength]] = None,
     panel_fn: Optional[Callable[..., Any]] = None,
 ) -> Dict[str, Any]:
     """跑一次问询。返回 `{reply, verdict, evidence, degraded}`。
@@ -380,7 +407,7 @@ def run_inquiry(
     旧签名的 `pool_date` 形参已随海选池自动写入一并删除,调用方 `api/app.py` 同步改。"""
     det = run_deterministic_checks(
         code, basis_date, db_path=db_path, parquet_dir=parquet_dir,
-        sector_scores=sector_scores, panel_fn=panel_fn,
+        sector_scores=sector_scores, industry_scores=industry_scores, panel_fn=panel_fn,
     )
 
     degraded = False

@@ -12,21 +12,29 @@
     advisory 码                     | advisory expr(规格档,DB)                          | 本模块 polars 镜像(可执行)
     -------------------------------|---------------------------------------------------|------------------------------------------------
     A1_turnover_gt_10              | turnover_rate > 10                                | pl.col("turnover_rate") > _A1_TURNOVER_HI(=10)
-    A2_theme_persist_ge_4          | 行业强度(top20%中位数)连续≥4天成员                | 概念板块 board_age(sectors.py)≥ _A2_PERSIST_MIN(=4)★
+    A2_theme_persist_ge_4          | 行业强度(top20%中位数)连续≥4天成员                | industry_strength.industry_persist_days ≥ _A2_PERSIST_MIN(=4)★
     A3_belowyear_limitup           | TREND_BELOW & is_limit_up                         | _trend_below_expr() & pl.col("is_limit_up")
     A3b_belowyear_bigvol(派发放量) | (雷区地图 3-⑤:年线下 ret1d≥5%×量比≥2=派发)★★     | _trend_below_expr() & _dispatch_bigred_expr()(量比 vol/vol_ma5≥2)
     B1_volume_stacking             | vol_above_ma20_cnt3≥2 & ret_1d≥5% & vol>vol_ma20×1.5 | _big_red_expr() & ~_trend_below_expr()(年线上才算普通堆积)
     B2_dual_golden_cross           | MACD多头(DIF>DEA) & KDJ多头(K>D)=双金叉态          | state4 == "①双金叉态"(_add_macd_kdj 镜像)
-    B3_theme_persist_2_3           | 行业强度连续2-3天成员                              | 2 ≤ board_age ≤ 3 ★
+    B3_theme_persist_2_3           | 行业强度连续2-3天成员                              | 2 ≤ industry_strength.industry_persist_days ≤ 3 ★
     B4_chase_strong_red            | close>ma20 & ret_1d>5%                             | (close>ma20) & (ret_1d > _B4_UP=5%)
 
-    ★ 题材持续天数镜像口径说明:advisory A2/B3 用 `research/k4p_h6_theme.py` 的「行业
-      (stock_basic.industry top20% 中位数)连续强度日」;本模块复用报告已算好的**概念板块
-      board_age**(`report/sectors.py::_add_board_age`,= 板块指数连续站上 MA20 的交易日数,
-      经 member_map 取持仓票所属热门板块的最大值)——两者都是「题材持续天数」代理,**均依赖
-      概念/行业成分(K2 成分洞)= 弱证据**,故 A2/B3 一律标 `constituent`(参考)、**不单独
-      触发强警示 APNs**(§2.4「证伪只用价量结构」+ 用户 2026-07-26 拍板)。复用报告 board_age
-      而非重建 industry 持续性管线,守「同码不重写」,且免在持仓管线里重算全市场行业中位数。
+    ★ 题材持续天数镜像口径说明(**v1.4-② 已回归规格档,v1.3-② 的 board_age 代理到此
+      作废**):advisory A2/B3 原文是「行业(stock_basic.industry top20% 中位数)连续
+      强度日」,对齐 `research/k4p_h6_theme.py`。v1.3-② 上线时曾借用**概念板块**
+      `board_age`(`report/sectors.py::_add_board_age`,板块指数连续站上 MA20 的交易日
+      数,经 member_map 取持仓票所属热门板块的最大值)当代理——board_age 与
+      advisory/H6 审计的「行业」不是同一个量(概念板块多对多、行业一对一),v1.3-②
+      模块头当时就登记了这处刻意分叉。v1.4-②(`report/industry_strength.py`)把
+      「行业强度」做成唯一源,A2/B3 判据改读 `industry_strength.stock_persist_days`
+      (该票 `stock_basic.industry` 当日的持续强度日天数),不再绕道概念板块——理由是
+      需求 8 排序键要求「只用审计过方向的量」,H6 审计的正是行业口径,拿 board_age
+      代理当排序键输入会让排序键与它自称对齐的审计证据自相矛盾(见 `intel_candidates.py`
+      ③ 排序键消费方注释)。**证据强度分级不变**:A2/B3 仍是成分类判据(行业分类是
+      静态当前快照,回填偏差同 research 已声明,比价量硬数据弱一档但不是"未经审计"),
+      故一律仍标 `constituent`(参考)、**不单独触发强警示 APNs**(§2.4「证伪只用价量
+      结构」+ 用户 2026-07-26 拍板,这条判决不受本次换源影响)。
     ★★ A3b 是 STRATEGY_LAB Backlog「诱多做局反向哨兵」并入本需求(2026-07-26 立项)——
       年线下放量大阳(`ret1d≥5%×量比≥2`,数字口径雷区地图 3-⑤:事后 3 日 −1.04%)与年线下
       涨停(A3)同为「派发/诱多」强价量信号。plan §五 v1.3-②-B 把「放量大阳」记作
@@ -78,7 +86,7 @@ import polars as pl
 
 from neckline.data.adjust import apply_qfq
 from neckline.fees import estimate_net_float_detail
-from neckline.report.sectors import SectorScore, sector_hot_lookup
+from neckline.report.industry_strength import IndustryStrength, industry_strength_lookup, stock_persist_days
 from neckline.sentinel.positions import Position, d_count
 from neckline.sentinel.precall import (
     PROFIT_EXEMPT,
@@ -94,7 +102,7 @@ logger = logging.getLogger(__name__)
 
 # —— 阈值命名常量(可执行镜像单一源;镜像 research/k4_assembly.py 判决口径,改阈值同改 DB advisory)——
 _A1_TURNOVER_HI = 10.0    # A1:换手 >10%(turnover_rate 单位为百分数,H2)
-_A2_PERSIST_MIN = 4       # A2:题材持续 ≥4 天(H6;本模块用概念板块 board_age 代理)
+_A2_PERSIST_MIN = 4       # A2:题材持续 ≥4 天(H6;v1.4-② 起读 industry_strength,不再用 board_age 代理)
 _BIGRED_UP = 0.05         # A3b/B1 放量大阳共用:当日涨幅 ≥5%
 # ⚠ A3b(年线下派发,**强警示,推 APNs**)与 B1(年线上普通堆积,**只进看板**)的量能门槛
 # 故意分叉——**这正是「可执行镜像 vs 人读规格档」允许分叉、但分叉必须写明理由的地方**:
@@ -231,7 +239,8 @@ def _big_red_expr() -> pl.Expr:
 
 
 def _add_hit_columns(panel: pl.DataFrame) -> pl.DataFrame:
-    """在持仓面板上加各价量类命中布尔列(题材类 A2/B3 由 board_age 另算,不在此)。
+    """在持仓面板上加各价量类命中布尔列(题材类 A2/B3 由 `industry_strength.stock_persist_days`
+    另算,不在此)。
     A3b/B1 由 `_trend_below_expr()` 闸分级:年线下放量大阳(量比≥2 实测口径)=A3b 派发(强);
     年线上量能堆积(advisory ×1.5 原文口径)=B1(普通)。两者量能门槛刻意分叉(见常量注释)。"""
     trend_below = _trend_below_expr()
@@ -410,18 +419,13 @@ def load_k4_sections(db_path: Optional[Path] = None) -> Dict[str, str]:
     return out
 
 
-def _theme_persist_days(code: str, member_map: Dict[str, List[str]], hot: Dict[str, SectorScore]) -> int:
-    """持仓票的题材持续天数代理 = 其所属**热门**概念板块中 board_age 的最大值(不在热榜的
-    板块视作未持续=0)。**弱证据(概念板块成分,K2 成分洞)**,见模块头对照表 ★。"""
-    boards = member_map.get(code, [])
-    return max((hot[b].board_age for b in boards if b in hot), default=0)
-
-
 def _evaluate_hits(
     row: Optional[Dict[str, Any]], persist_days: int, evidence: Dict[str, str]
 ) -> List[HoldingK4Hit]:
     """一只持仓的 K4 命中列表。价量类(A1/A3/A3b/B1/B2/B4)读面板已算的 `_hit_*` 布尔;
-    题材类(A2/B3)由 board_age 判(弱证据)。命中项按 `_HIT_META` 附 level/evidence_strength。"""
+    题材类(A2/B3)由 `persist_days` 判(调用方经 `industry_strength.stock_persist_days`
+    算好传入,弱证据/成分类,见模块头对照表 ★)。命中项按 `_HIT_META` 附 level/
+    evidence_strength。"""
     hits: List[HoldingK4Hit] = []
 
     def _emit(code: str) -> None:
@@ -506,8 +510,8 @@ def build_holding_k4_check(
     rule: Dict[str, Any],
     positions: List[Position],
     *,
-    sector_scores: Optional[List[SectorScore]] = None,
-    member_map: Optional[Dict[str, List[str]]] = None,
+    industry_scores: Optional[List[IndustryStrength]] = None,
+    industry_map: Optional[Dict[str, str]] = None,
     scenario_position_ids: Optional[Set[int]] = None,
     parquet_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
@@ -516,8 +520,11 @@ def build_holding_k4_check(
     open 持仓在当日 EOD 面板上重算 K4 advisory 命中 + 算好 D5 收盘净浮盈 + 两档时间退出态。
 
     `rule` = 现役策略 `brain.get_active().rule`(cfg 读 stop_pct/max_hold_days/max_hold_days_profit
-    /time_exit_only_if_unprofitable,单一源)。`positions` = open 持仓列表。`sector_scores`/
-    `member_map` = 报告已算好的板块强度/成分(题材持续天数复用,不重建 industry 管线)。
+    /time_exit_only_if_unprofitable,单一源)。`positions` = open 持仓列表。`industry_scores`/
+    `industry_map` = 报告已算好的行业强度(`industry_strength.compute_industry_strength`)/
+    `stock_basic.industry` 映射(v1.4-② 起题材持续天数唯一源,均为 None 时视作"该票不参与
+    排名"= persist 恒 0,不在本函数内部自算——由调用方〔pipeline.py〕算好一次传入,同 v1.3-②
+    `sector_scores`/`member_map` 的既有姿势,避免持仓/候选/问询三处各自重算一遍全市场行业中位数)。
     `scenario_position_ids` = 有非空情景树待对照的 position_id 集合(②-D「挑出来」,勾选仍走
     既有 scenario-outcome 端点)。空持仓 → 空列表(不建面板,省 I/O)。"""
     if not positions:
@@ -529,8 +536,8 @@ def build_holding_k4_check(
         {r["ts_code"]: r for r in panel.to_dicts()} if not panel.is_empty() else {}
     )
     evidence = _load_k4_evidence(db_path)
-    hot = sector_hot_lookup(sector_scores or [])
-    member_map = member_map or {}
+    industry_hot = industry_strength_lookup(industry_scores or [])
+    industry_of = industry_map or {}
     scenario_ids = scenario_position_ids or set()
     names = _resolve_names(codes, db_path)
     # 已定格判向(审计 🔴-1):有则本次只带过来、绝不重判(读侧单一通道 holding_store)。
@@ -562,7 +569,7 @@ def build_holding_k4_check(
                 "估算(净浮盈 %.2f 含估算成分)——如判向贴近盈亏平衡线,请补录实付买入费后复核。",
                 p.id, p.ts_code, d, lock_state, net_float if net_float is not None else float("nan"),
             )
-        persist_days = _theme_persist_days(p.ts_code, member_map, hot)
+        persist_days = stock_persist_days(p.ts_code, industry_of, industry_hot)
         # v1.4-①-B:当日无 EOD 行 → **整份体检跳过**(连题材类 A2/B3 也不判),由
         # `has_data=False` 对外标 `dataUnavailable`。**不静默产出空牌** —— 空牌的语义是
         # 「体检过了没问题」,与「今天压根没体检」必须能分开(§3.8)。
