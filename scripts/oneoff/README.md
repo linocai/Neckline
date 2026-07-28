@@ -13,6 +13,10 @@
   幂等 + ts_code 防呆断言 + `.backup`/`cp -p` 双备份 + 改前改后逐行对拍 + 清
   `holding_eod_check.time_exit_locked_*` 三列让次日 16:35 按正确 D 重新定格。
   **同类「改生产台账」脚本照此体例**(默认演练,`--confirm` 才写)。
+- `backfill_holding_data_unavailable.py` — 2026-07-28 v1.4.0-p1 上云补丁:把
+  `holding_eod_check.data_unavailable`(①-B 新列)按**分区实况推导**回填到历史行。
+  不补的话,上云当天的 9:25:30 盘前那一拍读到的还是旧代码写的 NULL 快照 → 停牌票照推
+  「D5 时间退出」(**实测踩到**)。分区不可读的行**留 NULL 不推导**。
 
 对应单测仍在 `tests/`(`test_charter_v13/v133.py`、`test_fix_moneyflow_schema.py`),
 sys.path 已指向本目录。
