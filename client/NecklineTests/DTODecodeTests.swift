@@ -753,33 +753,35 @@ final class DTODecodeTests: XCTestCase {
         }
     }
 
-    // MARK: - 4A.5 问询台(样例对照 test_inquiry_endpoint;裁决二值)
+    // MARK: - 4A.5 问询台(样例对照 test_inquiry_endpoint;§2.5 描述性标注,非裁决)
 
-    func testDecodeInquiryPass() async throws {
+    func testDecodeInquiryAnalyzedWarn() async throws {
         MockURLProtocol.handler = { _ in
             (200, jsonData("""
             {"ok": true, "code": "600001.SH", "reply": "结合搜索,题材催化尚在,未见明显利空。",
-             "verdict": "初审通过进海选池", "evidence": ["主板,非ST", "板块年龄3天"], "degraded": false}
+             "verdict": "已分析·有风险提示", "evidence": ["主板,非ST", "板块年龄3天"], "degraded": false}
             """))
         }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
         let r = try await client.sendInquiry(code: "600001.SH", messages: [ChatMessage(role: .user, text: "看看这票")])
-        XCTAssertEqual(r.verdict, .pass)
-        XCTAssertEqual(r.verdict.label, "初审通过进海选池")
+        XCTAssertEqual(r.verdict, .analyzedWarn)
+        XCTAssertEqual(r.verdict.label, "已分析·有风险提示")
+        XCTAssertEqual(r.verdict.tone, .warn)   // P3-14:警示色,不再是中性色
         XCTAssertFalse(r.evidence.isEmpty)
         XCTAssertFalse(r.degraded)
     }
 
-    func testDecodeInquiryReject() async throws {
+    func testDecodeInquiryAnalyzed() async throws {
         MockURLProtocol.handler = { _ in
             (200, jsonData("""
-            {"ok": true, "code": "600002.SH", "reply": "ST 状态不符合纪律。",
-             "verdict": "不符合", "evidence": ["ST 剔除"], "degraded": false}
+            {"ok": true, "code": "600002.SH", "reply": "未命中任何硬线,形态上暂未走出买点。",
+             "verdict": "已分析", "evidence": ["未命中系统硬线"], "degraded": false}
             """))
         }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
         let r = try await client.sendInquiry(code: "600002.SH", messages: [])
-        XCTAssertEqual(r.verdict, .reject)
+        XCTAssertEqual(r.verdict, .analyzed)
+        XCTAssertEqual(r.verdict.tone, .neutral)
     }
 
     // MARK: - 4A.5 设置(样例对照 test_settings_default / test_put_llm_key_not_leaked)

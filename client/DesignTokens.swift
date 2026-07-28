@@ -25,8 +25,8 @@ extension Color {
 
 enum NK {
     // 语义色
-    static let up      = Color(hex: 0x0FA968)   // 涨 / 已进海选池 / 满额 / 盈利
-    static let down    = Color(hex: 0xE5443B)   // 跌 / 不符合 / 破线 / 退潮刹车 / 休息
+    static let up      = Color(hex: 0x0FA968)   // 涨 / 满额 / 盈利
+    static let down    = Color(hex: 0xE5443B)   // 跌 / 破线 / 退潮刹车 / 休息
     static let amber   = Color(hex: 0xE8910A)   // 半额 / 警示 / 待办
     static let accent  = Color(hex: 0x0B6BCB)   // 交互蓝 / 主按钮 / 选中
 

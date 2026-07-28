@@ -471,6 +471,43 @@ CREATE TABLE IF NOT EXISTS decision_pending_track (
     PRIMARY KEY (decision_id, trade_date)
 );
 CREATE INDEX IF NOT EXISTS idx_decision_pending_track_decision ON decision_pending_track(decision_id);
+
+-- v1.4-⑦-B 问询记录档案(plan §五 v1.4-⑦-B / §七 P3-13)。`POST /inquiry` 每问一次
+-- 落一行(答案已经算好之后落库,失败不影响当次回答——旁路写入,见
+-- `api/inquiry.py::run_inquiry` 结尾的 try/except)。**与 `inquiry_pool` 是两件事,
+-- 不要混用**:`inquiry_pool` 是 v1.3.3 已退役的历史队列表(海选票「待哪份报告消费」,
+-- 见上方该表注释),本表是问询问答本身的档案记录——**纯追加(append-only)、无
+-- "消费"语义**:每行落库即完整、终态,不等待任何下游处理,故不需要「审计时间戳 +
+-- 独立消费标记」两字段拆分那一套(那是给队列表用的模式,见 CLAUDE.md `inquiry_pool`
+-- 掉缝教训;本表天生不是队列,套用会画蛇添足)。
+-- question:本轮实际问题(messages 里最后一条非空 user 消息;messages=[] 或全是
+-- assistant 时落空串,代表"只看这只票的材料,没有具体追问")。
+-- materials_json:确定性材料快照(DeterministicResult 摘要,不含 evidence——那是
+-- 独立列,同 `InquiryOut.evidence` 一份数据两处落地不重复定义)。
+-- answer:LLM 回答原文,或降级路径 `_degraded_reply` 的文案(降级同样是"实质回答",
+-- 一并落档,不是只存成功案例)。
+-- evidence_json/search_hits_json:分别对应 `InquiryOut.evidence`(展示事实条目)与
+-- 本次联网搜索命中全文(同 `llm_judgments.search_hits_json` 惯例,供事后审计"当时
+-- 搜到了什么";降级/未触发搜索时落 '[]',不是"确认无消息"——那是两回事)。
+-- verdict:纯描述性标注(已分析/已分析·有风险提示),不是判决(§2.5 v1.3.3)。
+-- position_id/decision_id:**当前无写入方**——`POST /inquiry` 未接收这两个入参,
+-- 列存在只为未来人工关联/归因(P3-11)留口子,新行恒 NULL,不代表悬空引用。
+CREATE TABLE IF NOT EXISTS inquiry_log (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at          TEXT NOT NULL,       -- ISO8601,服务端生成
+    ts_code             TEXT NOT NULL,
+    name                TEXT,
+    question            TEXT NOT NULL DEFAULT '',
+    materials_json      TEXT NOT NULL DEFAULT '{}',
+    answer              TEXT NOT NULL,
+    evidence_json       TEXT NOT NULL DEFAULT '[]',
+    search_hits_json    TEXT NOT NULL DEFAULT '[]',
+    verdict             TEXT NOT NULL,
+    position_id         INTEGER,
+    decision_id         INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_inquiry_log_ts_code ON inquiry_log(ts_code);
+CREATE INDEX IF NOT EXISTS idx_inquiry_log_created_at ON inquiry_log(created_at);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

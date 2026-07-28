@@ -50,17 +50,25 @@
 (评分 + 板块年龄 + K4)在调用 LLM **之前**跑好、作为结构化上下文注入,LLM 段本身开启
 **原生联网搜索**(`provider.chat(enable_search=True)`)。未实现"LLM 主动多轮
 function-calling 回调后端函数"这一形态(无法活体验证 + 预注入已覆盖三种能力),记入欠账。
+
+**v1.4-⑦-B(P3-13)问询记录落库**:`run_inquiry` 结尾把本次问答旁路写进
+`inquiry_log`(`neckline.api.stores.create_inquiry_log`)——问询台此前只返回不持久化,
+无历史、无法与决策日志关联做归因。**旁路 = 落库失败绝不打断问答**(try/except 包裹,
+异常只记警告),返回结果多一个 `inquiryId`(写入失败时为 `None`)。**与 `inquiry_pool`
+是两件事,互不读写**(见该表 `neckline.db` 表头注释与本模块「初审通过进海选池退役」
+一节——`inquiry_pool` 是已退役的历史队列表,`inquiry_log` 是问答本身的档案)。
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from neckline.api.schemas import VERDICT_ANALYZED, VERDICT_ANALYZED_WARN
+from neckline.api.stores import create_inquiry_log
 from neckline.data.market_data import resolve_stock_names
 from neckline.llm.base import ChatMessage, LLMProvider, search_coverage_line
 from neckline.report.candidates import _base_score_expr  # 同码:展示排序分与报告一致
@@ -360,6 +368,18 @@ def build_llm_context(det: DeterministicResult, quote: Optional[Any] = None) -> 
     return "\n".join(lines)
 
 
+def _last_user_message(messages: List[Dict[str, str]]) -> str:
+    """本轮实际问题 = 消息列表里最后一条非空 user 消息(§2.5 客户端持有上下文,
+    多轮对话里只有这一句是"这次真正问的",更早的user/assistant 都是历史)。
+    `messages=[]` 或全是 assistant(极少见,防御性)→ 空串,代表"只看这只票的材料,
+    没有具体追问"。**两处复用**:① 联网搜索检索词拼接(`_build_search_query`);
+    ② 问询记录落库的 `question` 列(v1.4-⑦-B,同一份"这次问了什么"不重复写循环)。"""
+    for m in reversed(messages or []):
+        if m.get("role") == "user" and (m.get("content") or "").strip():
+            return (m["content"] or "").strip()
+    return ""
+
+
 def _build_search_query(det: DeterministicResult, messages: List[Dict[str, str]]) -> str:
     """拼联网搜索检索词 = `「<中文名>(<代码>) <用户最后一句>」`(v1.3.4)。
 
@@ -375,13 +395,27 @@ def _build_search_query(det: DeterministicResult, messages: List[Dict[str, str]]
 
     用户那句原样带上(不做意图提取):它承载了"想问什么"(业绩/走势/风险),让检索词
     比光有股票名更贴题。长度由 provider 侧截断,这里不预截。"""
-    last_user = ""
-    for m in reversed(messages or []):
-        if m.get("role") == "user" and (m.get("content") or "").strip():
-            last_user = (m["content"] or "").strip()
-            break
+    last_user = _last_user_message(messages)
     subject = f"{det.name}({det.code})" if det.name else det.code
     return f"{subject} {last_user}".strip()
+
+
+def _materials_snapshot(det: DeterministicResult) -> Dict[str, Any]:
+    """确定性材料快照(供 `inquiry_log.materials_json` 落档,v1.4-⑦-B)。**不含
+    `evidence`**——那是独立列(同 `InquiryOut.evidence` 一份数据两处落地,不重复
+    定义)。`basis_date` 是 `date` 对象,归一成 `'YYYYMMDD'` 字符串才能 JSON 序列化。"""
+    return {
+        "basisDate": det.basis_date.strftime("%Y%m%d"),
+        "hasData": det.has_data,
+        "board": det.board,
+        "close": det.close,
+        "riskFlags": list(det.risk_flags),
+        "k4Flags": list(det.k4_flags),
+        "passesBuypointToday": det.passes_buypoint_today,
+        "score": det.score,
+        "sectors": list(det.sectors),
+        "hotSectors": list(det.hot_sectors),
+    }
 
 
 def run_inquiry(
@@ -398,19 +432,26 @@ def run_inquiry(
     industry_scores: Optional[List[IndustryStrength]] = None,
     panel_fn: Optional[Callable[..., Any]] = None,
 ) -> Dict[str, Any]:
-    """跑一次问询。返回 `{reply, verdict, evidence, degraded}`。
+    """跑一次问询。返回 `{reply, verdict, evidence, degraded, inquiryId}`。
 
     **v1.3.3:任何票都走完整流程**——不再有"纪律不过直接终止"的分支,LLM 段对所有票都跑
     (有 provider 时)。`verdict` 只是描述性标注(有无风险提示),**不是判决**,不参与任何
     分支决策。**不再写 `inquiry_pool`**(海选池自动写入退役,改由用户一键加自选)。
 
-    旧签名的 `pool_date` 形参已随海选池自动写入一并删除,调用方 `api/app.py` 同步改。"""
+    旧签名的 `pool_date` 形参已随海选池自动写入一并删除,调用方 `api/app.py` 同步改。
+
+    **v1.4-⑦-B(P3-13)问一次落一行**:算好 `reply`/`verdict` 之后,把本次问答旁路写进
+    `inquiry_log`(`neckline.api.stores.create_inquiry_log`)。**旁路 = 落库失败绝不
+    影响本次已经算好的回答**——写入包在 try/except 里,异常只记警告日志,`inquiryId`
+    退化为 `None`(不是"这次问询失败",只是"这次没能留档");`degraded` 字段语义不受
+    影响(它专指 LLM 段是否走了降级,与"档案有没有落进去"是两件独立的事)。"""
     det = run_deterministic_checks(
         code, basis_date, db_path=db_path, parquet_dir=parquet_dir,
         sector_scores=sector_scores, industry_scores=industry_scores, panel_fn=panel_fn,
     )
 
     degraded = False
+    search_hits: List[Any] = []
     if provider is None:
         degraded = True
         reply = _degraded_reply(det)
@@ -442,11 +483,31 @@ def run_inquiry(
             # **刻意不做任何后处理**:不抽标签、不 grep「买」、不改写模型原文(软护栏 =
             # prompt 层,见模块头 4)。模型说什么原样透给用户。
             reply = result.content.strip()
+            search_hits = result.search_hits or []
             # 搜索取证覆盖进 `evidence`(不进 `reply` —— reply 是模型原文,不掺系统文案)。
-            det.evidence.append(search_coverage_line(len(result.search_hits or [])))
+            det.evidence.append(search_coverage_line(len(search_hits)))
 
     verdict = VERDICT_ANALYZED_WARN if (det.risk_flags or det.k4_flags) else VERDICT_ANALYZED
-    return {"reply": reply, "verdict": verdict, "evidence": det.evidence, "degraded": degraded}
+
+    # v1.4-⑦-B:问一次落一行,旁路写入(见本函数 docstring)。**与 `inquiry_pool`
+    # 无任何耦合**(那是已退役的历史队列表,本表是问答档案,两套读写路径互不相干)。
+    inquiry_id: Optional[int] = None
+    try:
+        inquiry_id = create_inquiry_log(
+            det.code, _last_user_message(messages), reply, verdict,
+            name=(det.name or None),
+            materials=_materials_snapshot(det),
+            evidence=det.evidence,
+            search_hits=[asdict(h) for h in search_hits],
+            db_path=db_path,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("问询记录落库失败(%s,不影响本次回答)", e)
+
+    return {
+        "reply": reply, "verdict": verdict, "evidence": det.evidence,
+        "degraded": degraded, "inquiryId": inquiry_id,
+    }
 
 
 def _degraded_reply(det: DeterministicResult) -> str:

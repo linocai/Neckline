@@ -2,9 +2,10 @@
 //  InquiryView.swift
 //  Neckline — 问询台(§五 阶段4C.3):自由对话体聊天(§2.7 禁模板卡),`POST /inquiry`。
 //
-//  裁决徽标只有二值(§2.5「不符合」/「初审通过进海选池」),**本视图任何路径都不出现
-//  「买」按钮**——只展示 `VerdictBadge`(纯文本徽标)+ 依据列表 + 自由对话回复,
-//  没有任何可点击的下单/买入控件(见 NecklineTests 对该不变量的断言)。
+//  标注徽标是描述性的(§2.5「已分析」/「已分析·有风险提示」,v1.3.3 起自由分析师,
+//  **不是裁决**),**本视图任何路径都不出现「买」按钮**——只展示 `VerdictBadge`
+//  (纯文本徽标)+ 依据列表 + 自由对话回复,没有任何可点击的下单/买入控件(见
+//  NecklineTests 对该不变量的断言)。
 //
 
 import SwiftUI
@@ -114,8 +115,8 @@ struct InquiryView: View {
             HStack {
                 VerdictBadge(verdict: v)
                 Spacer()
-                // v1.1-F.3:问询台裁决卡「+自选」——不看裁决值(增删是用户自主动作,
-                // 不受系统裁决门槛限制,即便「不符合」用户仍可选择继续盯着)。
+                // v1.1-F.3:问询台标注卡「+自选」——不看标注值(增删是用户自主动作,
+                // 不受任何系统标注影响,即便「有风险提示」用户仍可选择继续盯着)。
                 Button {
                     Task { await model.quickAddWatchlist(code: model.inquiryCode) }
                 } label: {

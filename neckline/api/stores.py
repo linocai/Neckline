@@ -1,13 +1,14 @@
 """API 层业务台账存取(plan 4A.4/4A.5):`devices`(APNs 注册)+ `inquiry_pool`
-(问询台海选票)。极简 CRUD,幂等——沿本项目既有 store 姿势(`report/store.py`/
-`sentinel/dedup.py`),stdlib sqlite3 直连,不引 ORM。
+(问询台海选票)+ `inquiry_log`(v1.4-⑦-B,问询记录档案)。极简 CRUD,幂等——沿本项目
+既有 store 姿势(`report/store.py`/`sentinel/dedup.py`),stdlib sqlite3 直连,不引 ORM。
 """
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from neckline.db import connection, init_schema
 
@@ -140,8 +141,107 @@ def mark_inquiry_pool_consumed(report_date: date, db_path: Optional[Path] = None
         )
 
 
+# —— inquiry_log(问询记录档案,plan §五 v1.4-⑦-B / §七 P3-13)——————————————————
+# 纯追加式档案,**不是队列**(见 `neckline.db` CREATE TABLE inquiry_log 表头注释
+# 「与 inquiry_pool 是两件事」)——每行落库即完整终态,不需要「审计时间戳 + 独立
+# 消费标记」两字段拆分那一套(那是给队列表用的模式)。本节函数与上面 `inquiry_pool`
+# 一节**互不调用、互不读写对方的表**(单测断言见 `tests/test_api_inquiry.py`)。
+
+_INQUIRY_LOG_COLS = (
+    "id, created_at, ts_code, name, question, materials_json, answer, "
+    "evidence_json, search_hits_json, verdict, position_id, decision_id"
+)
+
+
+def create_inquiry_log(
+    ts_code: str,
+    question: str,
+    answer: str,
+    verdict: str,
+    *,
+    name: Optional[str] = None,
+    materials: Optional[Dict[str, Any]] = None,
+    evidence: Optional[List[str]] = None,
+    search_hits: Optional[List[Dict[str, Any]]] = None,
+    position_id: Optional[int] = None,
+    decision_id: Optional[int] = None,
+    db_path: Optional[Path] = None,
+) -> int:
+    """一次问询落一行(`api.inquiry.run_inquiry` 结尾的旁路写入调用,失败不影响
+    当次回答——调用方自己包 try/except,本函数不做任何"静默吞异常"的处理,写不进
+    去就如实抛出)。`ts_code` 经归一(同写入通道惯例,查询侧 `list_inquiry_logs` 的
+    `ts_code` 过滤才对得上,同 `decision_log`/`positions` 既有先例)。`position_id`/
+    `decision_id` 当前无任何调用方传值(见 `neckline.db` 表头注释),预留可空形参。
+    返回新行 id。"""
+    init_schema(db_path)
+    from neckline.review.parse import normalize_ts_code
+    now = _now()
+    with connection(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO inquiry_log (created_at, ts_code, name, question, materials_json, "
+            "answer, evidence_json, search_hits_json, verdict, position_id, decision_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                now, normalize_ts_code(ts_code), name, question,
+                json.dumps(materials or {}, ensure_ascii=False),
+                answer,
+                json.dumps(list(evidence or []), ensure_ascii=False),
+                json.dumps(list(search_hits or []), ensure_ascii=False),
+                verdict, position_id, decision_id,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def _row_to_inquiry_log(r) -> dict:
+    return {
+        "id": r[0], "createdAt": r[1], "code": r[2], "name": r[3] or "",
+        "question": r[4] or "", "materials": json.loads(r[5] or "{}"),
+        "answer": r[6], "evidence": json.loads(r[7] or "[]"),
+        "searchHits": json.loads(r[8] or "[]"), "verdict": r[9],
+        "positionId": r[10], "decisionId": r[11],
+    }
+
+
+def list_inquiry_logs(
+    limit: int = 20, offset: int = 0, ts_code: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> List[dict]:
+    """历史列表(`GET /inquiries?limit&offset&tsCode=`),按 `created_at` **倒序**
+    (最近的问询在前,聊天历史惯例;`id DESC` 作同秒并列的确定性次序兜底)。`ts_code`
+    传入先归一再等值匹配(同 `decision_log.list_decisions` 惯例——裸 6 位查询不归一
+    会静默 0 命中)。"""
+    init_schema(db_path)
+    clauses: List[str] = []
+    params: List[Any] = []
+    if ts_code:
+        from neckline.review.parse import normalize_ts_code
+        clauses.append("ts_code=?")
+        params.append(normalize_ts_code(ts_code))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.extend([limit, offset])
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT {_INQUIRY_LOG_COLS} FROM inquiry_log {where} "
+            f"ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            params,
+        ).fetchall()
+    return [_row_to_inquiry_log(r) for r in rows]
+
+
+def get_inquiry_log(inquiry_id: int, db_path: Optional[Path] = None) -> Optional[dict]:
+    """单条详情(`GET /inquiries/{id}`)。不存在 → `None`(API 层据此 404)。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(
+            f"SELECT {_INQUIRY_LOG_COLS} FROM inquiry_log WHERE id=?", (inquiry_id,),
+        ).fetchone()
+    return _row_to_inquiry_log(row) if row else None
+
+
 __all__ = [
     "upsert_device", "list_device_tokens",
     "add_to_inquiry_pool", "load_inquiry_pool",
     "load_pending_inquiry_codes", "mark_inquiry_pool_consumed",
+    "create_inquiry_log", "list_inquiry_logs", "get_inquiry_log",
 ]

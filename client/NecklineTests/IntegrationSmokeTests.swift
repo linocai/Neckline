@@ -100,18 +100,19 @@ final class IntegrationSmokeTests: XCTestCase {
         }
     }
 
-    /// 问询台真请求(§4C.3):裁决必须落在二值之一,「不符合」/「初审通过进海选池」,
+    /// 问询台真请求(§4C.3,v1.3.3 起自由分析师):标注必须落在两个已知描述性标注
+    /// 之一,「已分析」/「已分析·有风险提示」(**不是裁决**,不影响任何操作),
     /// 且这是**真实**跑通了「确定性检查 + LLM 降级链」全链路(dev 环境未必配了 LLM key,
     /// 走降级占位也是本条铁律「缺 key 全链路不崩」的真实证据,而不是靠 mock 假装)。
-    func testInquiryRealRequestVerdictIsBinary() async throws {
+    func testInquiryRealRequestVerdictIsDescriptive() async throws {
         try await skipUnlessDevServerReachable()
         let client = makeClient()
         let result = try await client.sendInquiry(
             code: "600519.SH",
             messages: [ChatMessage(role: .user, text: "这票现在还能追吗?")]
         )
-        XCTAssertTrue(result.verdict == .pass || result.verdict == .reject,
-                      "真实响应裁决必须是二值之一,实际 verdict=\(result.verdict)")
+        XCTAssertTrue(result.verdict == .analyzed || result.verdict == .analyzedWarn,
+                      "真实响应应落在两个已知描述性标注之一,实际 verdict=\(result.verdict)")
         XCTAssertFalse(result.reply.isEmpty)
         XCTAssertFalse(result.verdict.enablesBuyAction)
     }

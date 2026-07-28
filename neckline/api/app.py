@@ -46,6 +46,8 @@ from neckline.api.schemas import (
     DecisionOut,
     DecisionReviseIn,
     DecisionsListOut,
+    DecisionTrackOut,
+    DecisionTrackRowOut,
     DeviceRegisterIn,
     EntrySuggestionOut,
     ExecHintOut,
@@ -56,6 +58,8 @@ from neckline.api.schemas import (
     InfoCardSummaryOut,
     InfoCardTopListOut,
     InquiryIn,
+    InquiryLogOut,
+    InquiryLogsListOut,
     InquiryOut,
     IntelRankOut,
     IntelWatchBoardsIn,
@@ -91,7 +95,7 @@ from neckline.api.schemas import (
     WatchlistPinIn,
     WeeklyReviewOut,
 )
-from neckline.api.stores import upsert_device
+from neckline.api.stores import get_inquiry_log, list_inquiry_logs, upsert_device
 from neckline.calendar import is_trading_day, prev_trading_day
 from neckline.config import ensure_data_dirs
 from neckline.llm.factory import get_provider
@@ -1030,6 +1034,35 @@ def list_decisions(
     return DecisionsListOut(items=[_shape_decision(r) for r in rows])
 
 
+@app.get(f"{API_PREFIX}/decisions/{{decision_id}}/track", dependencies=[Depends(require_token)])
+def decision_track(decision_id: int) -> DecisionTrackOut:
+    """挂单未成交追踪出口(plan §五 v1.4-⑦-A,P3-12)。领域数据自 v1.3-④ 起已在攒
+    (`report/pending_track.py::track_pending_decisions`,16:35 报告管线收尾调用),
+    本端点只是首次把它接上 API——**同码不重写**,读专用 `load_track_rows`,不重算。
+
+    **404 只有一种情形**:`decision_id` 本身不存在 → `reason="not_found"`。**决策
+    存在但还没攒到任何追踪快照**(刚创建、未到下一交易日,或已 filled/cancelled
+    从而从没进过追踪窗口)不是 404——如实返回 `rows=[]` 的空态,「没攒到数据」与
+    「没这条决策」必须能分开(§3.8)。"""
+    row = decision_log_store.get_decision(decision_id, db_path=_db())
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    from neckline.report.pending_track import load_track_rows
+
+    tracks = load_track_rows(decision_id, db_path=_db())
+    return DecisionTrackOut(
+        status=row.status,
+        planPrice=row.planned_price,
+        rows=[
+            DecisionTrackRowOut(
+                tradeDate=t["tradeDate"], dOffset=t["dOffset"],
+                close=t["close"], retFromPlan=t["retFromPlan"],
+            )
+            for t in tracks
+        ],
+    )
+
+
 @app.post(f"{API_PREFIX}/decisions/{{decision_id}}/link", dependencies=[Depends(require_token)])
 def link_decision(decision_id: int, body: DecisionLinkIn) -> OkOut:
     """成交后一键关联(plan B.2):`status` 置 filled + `position_id` 回填。"""
@@ -1264,7 +1297,8 @@ def inquiry(body: InquiryIn) -> InquiryOut:
     + K4 安检)→ LLM 自由叙述回答用户实际问的问题。**不再有裁决、不再有拦截**——任何票
     都给实质回答,纪律命中项降级为回答里的警告标注。软护栏「不下买卖指令」只在 prompt 层
     (刻意不做枚举强校验/输出后处理);真正的护栏是 §3.8「系统永不下单」。缺 key → 确定性
-    材料照给、LLM 段占位降级,不崩。"""
+    材料照给、LLM 段占位降级,不崩。**v1.4-⑦-B**:`run_inquiry` 内部旁路把本次问答落进
+    `inquiry_log`(失败不影响本次回答),`inquiryId` 原样透传(落库失败时为 `None`)。"""
     provider = (_PROVIDER_FN or (lambda dbp: get_provider(db_path=dbp)))(_db())
     quotes_fn = _QUOTES_FN
     if quotes_fn is None:
@@ -1279,7 +1313,29 @@ def inquiry(body: InquiryIn) -> InquiryOut:
     return InquiryOut(
         ok=True, code=body.code, reply=result["reply"], verdict=result["verdict"],
         evidence=result["evidence"], degraded=result["degraded"],
+        inquiryId=result.get("inquiryId"),
     )
+
+
+@app.get(f"{API_PREFIX}/inquiries", dependencies=[Depends(require_token)])
+def list_inquiries(limit: int = 20, offset: int = 0, tsCode: str = "") -> InquiryLogsListOut:
+    """问询历史列表(plan §五 v1.4-⑦-B / §七 P3-13),按最近问询在前排序。**与
+    `inquiry_pool`(已退役历史队列表)无关**——本端点读的是 `inquiry_log` 档案表。
+    `limit`/`offset` 简单分页(无 `total`,同 `DecisionsListOut`/`WatchlistOut` 等既有
+    列表端点惯例——列表页翻页读不到下一页空数组即知到底,不必服务端额外算总数)。"""
+    items = list_inquiry_logs(
+        limit=limit, offset=offset, ts_code=(tsCode or None), db_path=_db(),
+    )
+    return InquiryLogsListOut(items=[InquiryLogOut(**i) for i in items])
+
+
+@app.get(f"{API_PREFIX}/inquiries/{{inquiry_id}}", dependencies=[Depends(require_token)])
+def inquiry_detail(inquiry_id: int) -> InquiryLogOut:
+    """问询记录详情(plan §五 v1.4-⑦-B)。不存在 → 404 `reason="not_found"`。"""
+    row = get_inquiry_log(inquiry_id, db_path=_db())
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    return InquiryLogOut(**row)
 
 
 # —— 4A.5 设置 + 设备注册 ——————————————————————————————————————————————

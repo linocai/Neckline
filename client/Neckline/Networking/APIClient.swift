@@ -22,7 +22,7 @@
 //    GET  /api/v1/breathing/{id}/trades     → {items,baseCostAdj,edgeToPrice}(v1.2-G)· 404
 //    POST /api/v1/breathing/{id}/trades     → BreathingTradeOut                · 404
 //    DELETE /api/v1/breathing/trades/{id}   → {ok}                            · 404 not_found
-//    POST /api/v1/inquiry                   → InquiryOut(裁决二值,§2.5)
+//    POST /api/v1/inquiry                   → InquiryOut(描述性标注非裁决,§2.5)
 //    GET  /api/v1/settings                  → SettingsOut(key 只回布尔;push 六字段 v1.3-②)
 //    PUT  /api/v1/settings/llm              → {ok}                            · 422 供应商非法
 //    PUT  /api/v1/settings/push             → {ok}(六字段:report/retreatBrake/precall/d5exit/circuit/holdingAlert)
@@ -507,7 +507,7 @@ actor APIClient {
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    // —— 4A.5 问询台(§2.5:裁决二值,永不「现在就买」)——
+    // —— 4A.5 问询台(§2.5:描述性标注非裁决,永不「现在就买」)——
     /// `messages` 为客户端持有的全部上下文(无状态端点,每次全量回传,继承 LinoN `/chat` 姿势)。
     func sendInquiry(code: String, messages: [ChatMessage]) async throws -> InquiryResult {
         let wire = messages.map { ChatMessageWire(role: $0.role.rawValue, content: $0.text) }

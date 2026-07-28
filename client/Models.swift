@@ -892,41 +892,52 @@ struct ChatMessage: Identifiable, Equatable {
     var text: String
 }
 
-/// 裁决二值(硬约束,§2.5「永不现在就买」)——枚举穷举只两值,任何第三个字符串
-/// 归 `.unknown`(绝不静默当成某个已知态展示,便于第一时间发现契约漂移)。
+/// 问询台描述性标注(§2.5,v1.3.3 起「审判员→自由分析师」)——**不是裁决**,不授权
+/// 也不禁止任何操作,只标"这次回答里带没带风险提示"。后端 `verdict` 是宽松 `str`
+/// (非枚举),客户端只认当前两个已知值,任何第三个字符串归 `.unknown`(绝不静默
+/// 当成某个已知态展示,便于第一时间发现契约漂移)。
+///
+/// P3-14(⑦-C,2026-07-29):此前认的是 v1.3.3 已退役的二值裁决「不符合」/
+/// 「初审通过进海选池」(`rejectRaw`/`passRaw`)——那两个值后端早已不产出,只剩
+/// 单测在引用,是死码;换成当前真实会出现的两个值,顺带修掉「有风险提示」被
+/// `.unknown` 兜底成中性色调、看不出风险的展示 bug(见 `tone`)。
 enum InquiryVerdict: Equatable {
-    static let rejectRaw = "不符合"
-    static let passRaw = "初审通过进海选池"
+    static let analyzedRaw = "已分析"
+    static let analyzedWarnRaw = "已分析·有风险提示"
 
-    case reject
-    case pass
+    case analyzed
+    case analyzedWarn
     case unknown(String)
 
     init(_ raw: String) {
         switch raw {
-        case Self.rejectRaw: self = .reject
-        case Self.passRaw: self = .pass
+        case Self.analyzedRaw: self = .analyzed
+        case Self.analyzedWarnRaw: self = .analyzedWarn
         default: self = .unknown(raw)
         }
     }
 
     var label: String {
         switch self {
-        case .reject: return Self.rejectRaw
-        case .pass: return Self.passRaw
+        case .analyzed: return Self.analyzedRaw
+        case .analyzedWarn: return Self.analyzedWarnRaw
         case .unknown(let s): return s
         }
     }
 
+    /// P3-14(⑦-C):「已分析·有风险提示」此前落 `.unknown` → 中性色调,风险提示
+    /// 形同隐身;现识别为已知态并显式给**警示色**(复用既有 `NKAxisTone.warn` →
+    /// `NK.amber`,不新造色值)。「已分析」(无风险提示)维持中性——**verdict 不是
+    /// 判决**,不给它套好评色调,以免被误读成"系统认可这只票"。
     var tone: NKAxisTone {
         switch self {
-        case .reject: return .bad
-        case .pass: return .good
+        case .analyzed: return .neutral
+        case .analyzedWarn: return .warn
         case .unknown: return .neutral
         }
     }
 
-    /// 硬约束不变量(§2.5「永不现在就买」):问询台裁决**任何一种取值**都不启用
+    /// 硬约束不变量(§2.5「永不现在就买」):问询台标注**任何一种取值**都不启用
     /// 「买」类操作——UI 层只展示 `label` 徽标,从不为任何 verdict 渲染下单/买入按钮。
     /// 恒 false,穷举写死,不看 verdict 分支(见 NecklineTests 的对抗性字符串单测)。
     var enablesBuyAction: Bool { false }
@@ -1185,6 +1196,6 @@ struct ReviewGetResponse: Codable, Equatable {
 //  可脱离 UI 单测。真正的颜色映射在 `Components/SharedUI.swift`(那里把
 //  `NKAxisTone` 映射到 `NK.up/.down/.amber/.textSecondary`)。
 
-enum NKAxisTone {
+enum NKAxisTone: Equatable {
     case good, warn, bad, neutral
 }

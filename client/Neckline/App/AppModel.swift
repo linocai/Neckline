@@ -183,7 +183,7 @@ final class AppModel {
     var board: BoardSnapshot = .empty
     var boardLoading = false
 
-    // —— 4A.5 问询台(§2.5:裁决二值,任何时候都不存在「买」路径)——
+    // —— 4A.5 问询台(§2.5:描述性标注非裁决,任何时候都不存在「买」路径)——
     var inquiryCode: String = ""
     var inquiryThread: [ChatMessage] = []
     var inquiryVerdict: InquiryVerdict? = nil
@@ -699,7 +699,7 @@ final class AppModel {
         }
     }
 
-    // MARK: - 4A.5:问询台(§2.5 二值裁决;§2.7 自由对话体)
+    // MARK: - 4A.5:问询台(§2.5 自由分析师,描述性标注非裁决;§2.7 自由对话体)
 
     /// 切换问询股票代码 → 清空上下文(每票独立对话,同后端"无状态、按 code 走"语义)。
     func startInquiry(code: String) {

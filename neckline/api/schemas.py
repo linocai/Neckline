@@ -554,6 +554,38 @@ class InquiryOut(BaseModel):
     verdict: str
     evidence: List[str] = Field(default_factory=list)
     degraded: bool = False                       # LLM 段是否走了降级占位
+    # v1.4-⑦-B(P3-13):问一次落一行(`inquiry_log` 表),历史见
+    # `GET /inquiries`/`GET /inquiries/{id}`。**落库是旁路**——失败不影响本次回答,
+    # 此时为 `None`(不代表本次问询本身失败;`reply`/`verdict`/`evidence` 仍是有效
+    # 结果,`degraded` 字段专指 LLM 段是否降级,与这个字段是两件独立的事)。老客户端
+    # (v1.3 及更早)对未声明的多余字段直接忽略,不影响既有解码——契约新增字段,不是破坏。
+    inquiryId: Optional[int] = None
+
+
+# —— v1.4-⑦-B 问询记录档案(plan §五 v1.4-⑦-B / §七 P3-13)——————————————————————
+# **与 `inquiry_pool`(已退役历史队列表)是两件事**:本节是问答本身的档案记录,
+# 供 `GET /inquiries`(历史列表)/`GET /inquiries/{id}`(详情)使用。
+
+class InquiryLogOut(BaseModel):
+    """问询记录档案单条。`materials`/`searchHits` 是落库时的快照(不重算,读回来
+    就是当时喂给/搜回来的东西);`evidence`/`answer`/`verdict` 与当时 `InquiryOut`
+    返回给用户的内容一致(同一份数据,两处落地)。"""
+    id: int
+    createdAt: str
+    code: str
+    name: str = ""
+    question: str = ""
+    materials: Dict[str, Any] = Field(default_factory=dict)
+    answer: str
+    evidence: List[str] = Field(default_factory=list)
+    searchHits: List[Dict[str, Any]] = Field(default_factory=list)
+    verdict: str
+    positionId: Optional[int] = None
+    decisionId: Optional[int] = None
+
+
+class InquiryLogsListOut(BaseModel):
+    items: List[InquiryLogOut] = Field(default_factory=list)
 
 
 class PushSettingsOut(BaseModel):
@@ -709,6 +741,27 @@ class DecisionOut(BaseModel):
 
 class DecisionsListOut(BaseModel):
     items: List[DecisionOut] = Field(default_factory=list)
+
+
+# —— v1.4-⑦-A 挂单未成交追踪出口(plan §五 v1.4-⑦-A / §七 P3-12)——————————————————
+# 领域数据自 v1.3-④ 起已在攒(`report/pending_track.py::track_pending_decisions`),
+# 但此前 API 从未暴露任何端点。本节把已有数据接上 `GET /decisions/{id}/track`。
+
+class DecisionTrackRowOut(BaseModel):
+    tradeDate: str
+    dOffset: int
+    close: float
+    retFromPlan: Optional[float] = None    # None = 该决策未设 plannedPrice,不臆造
+
+
+class DecisionTrackOut(BaseModel):
+    """`GET /decisions/{id}/track` 响应。`status` = 该决策当前状态(pending/filled/
+    cancelled/expired,`decision_log` 同源,供客户端判断"为什么追踪停在这里")。
+    `rows` 按 `tradeDate` 升序,**可能为空**——该决策尚未攒到任何追踪快照(刚创建、
+    还没到下一交易日)不等于"没有这条决策",这不是 404 情形,见端点 docstring。"""
+    status: str
+    planPrice: Optional[float] = None
+    rows: List[DecisionTrackRowOut] = Field(default_factory=list)
 
 
 class DecisionLinkIn(BaseModel):

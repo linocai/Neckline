@@ -21,8 +21,8 @@ import pytest
 
 from neckline.api import inquiry as inq
 from neckline.api.schemas import VERDICT_ANALYZED, VERDICT_ANALYZED_WARN
-from neckline.api.stores import load_inquiry_pool
-from neckline.llm.base import ChatMessage, LLMResult
+from neckline.api.stores import get_inquiry_log, load_inquiry_pool
+from neckline.llm.base import ChatMessage, LLMResult, SearchHit
 from tests.conftest import seed_active_rule_v1, seed_synthetic_market
 
 _ALL_VERDICTS = (VERDICT_ANALYZED, VERDICT_ANALYZED_WARN)
@@ -366,14 +366,17 @@ class TestEndpointAndContract:
         assert body["reply"]
 
     def test_response_field_set_unchanged(self, client, AUTH, market, monkeypatch):
-        """**契约不破**:字段集合与 v1.3 逐字段相同(已装 macOS App 靠这个解码)。"""
+        """**契约只做加法,不做减法**:v1.3 那六个字段逐字段仍在(已装 macOS App 靠
+        这个解码);v1.4-⑦-B 新增 `inquiryId` 是唯一允许的差异(旧客户端对未声明的
+        多余字段直接忽略,不影响既有解码)。"""
         s, day = market
         import neckline.api.app as app_mod
         monkeypatch.setattr(app_mod, "_inquiry_basis_date", lambda: day)
         body = client.post("/api/v1/inquiry", headers=AUTH,
                            json={"code": "600001.SH", "messages": []}).json()
-        assert set(body) == {"ok", "code", "reply", "verdict", "evidence", "degraded"}
+        assert set(body) == {"ok", "code", "reply", "verdict", "evidence", "degraded", "inquiryId"}
         assert isinstance(body["verdict"], str)
+        assert isinstance(body["inquiryId"], int) and body["inquiryId"] >= 1
 
     def test_arbitrary_verdict_string_is_accepted_by_schema(self):
         """`verdict` 类型确已由 Literal 放宽成 str(否则新取值会 500)。"""
@@ -469,6 +472,101 @@ class TestSearchIdentityV134:
             basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=prov,
         )
         assert out["reply"] == prov.reply_body
+
+
+# —— v1.4-⑦-B:问询记录落库(P3-13,§七)——————————————————————————————————————
+# `POST /inquiry` 此前只返回不持久化;`run_inquiry` 结尾旁路写 `inquiry_log`,失败
+# 不影响本次回答。端点(`GET /inquiries` 列表 / `GET /inquiries/{id}` 详情)的装配
+# /分页/过滤/404 测试见 `tests/test_api_inquiry_log.py`,本节只测 `run_inquiry` 本身
+# 的落库行为。
+
+class TestInquiryLogPersistence:
+    def test_run_inquiry_writes_one_row_and_returns_id(self, market):
+        s, day = market
+        prov = StubProvider(reply_body="龙头效应还在,量能没走坏。")
+        out = inq.run_inquiry(
+            "600001.SH", [{"role": "user", "content": "怎么看走势"}],
+            basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=prov,
+        )
+        assert isinstance(out["inquiryId"], int) and out["inquiryId"] >= 1
+        row = get_inquiry_log(out["inquiryId"], db_path=s.db_path)
+        assert row is not None
+        assert row["code"] == "600001.SH"
+        assert row["question"] == "怎么看走势"
+        assert row["answer"] == out["reply"]
+        assert row["verdict"] == out["verdict"]
+        assert row["evidence"] == out["evidence"]
+        assert row["materials"]["board"] == "主板"
+        assert row["positionId"] is None and row["decisionId"] is None   # 当前无写入方,见表头注释
+
+    def test_no_coupling_with_inquiry_pool(self, market_wall_down):
+        """问一次同时验证两件事:`inquiry_log` 落了一行,`inquiry_pool`
+        (已退役历史队列表)分毫未动——两张表各自独立,不是"改了一个就顺手也写了
+        另一个"(§七 P3-13 验收「与 inquiry_pool 无耦合」)。"""
+        s, day = market_wall_down
+        out = inq.run_inquiry("300001.SZ", [], basis_date=day, db_path=s.db_path,
+                              parquet_dir=s.parquet_dir, provider=StubProvider())
+        assert out["inquiryId"] is not None
+        assert load_inquiry_pool(day, db_path=s.db_path) == []
+
+    def test_question_is_last_user_message_in_multi_turn(self, market):
+        s, day = market
+        out = inq.run_inquiry(
+            "600001.SH",
+            [{"role": "user", "content": "先聊聊基本面"},
+             {"role": "assistant", "content": "好的……"},
+             {"role": "user", "content": "那最近有没有利空公告"}],
+            basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=StubProvider(),
+        )
+        row = get_inquiry_log(out["inquiryId"], db_path=s.db_path)
+        assert row["question"] == "那最近有没有利空公告"
+
+    def test_question_empty_string_when_no_messages(self, market):
+        s, day = market
+        out = inq.run_inquiry("600001.SH", [], basis_date=day, db_path=s.db_path,
+                              parquet_dir=s.parquet_dir, provider=StubProvider())
+        row = get_inquiry_log(out["inquiryId"], db_path=s.db_path)
+        assert row["question"] == ""
+
+    def test_search_hits_full_text_archived_not_just_count(self, market):
+        """联网搜索命中全文落档(同 `llm_judgments.search_hits_json` 惯例),不是只存
+        条数——供事后审计"当时搜到了什么"。"""
+        s, day = market
+        hits = [SearchHit(title="示例甲拿下大单", link="https://example.com/a", content="正文……")]
+        prov = StubProvider(search_hits=hits)
+        out = inq.run_inquiry("600001.SH", [{"role": "user", "content": "怎么看"}],
+                              basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=prov)
+        row = get_inquiry_log(out["inquiryId"], db_path=s.db_path)
+        assert len(row["searchHits"]) == 1
+        assert row["searchHits"][0]["title"] == "示例甲拿下大单"
+        assert row["searchHits"][0]["link"] == "https://example.com/a"
+
+    def test_degraded_reply_also_gets_archived(self, market_wall_down):
+        """缺 key 的降级回答同样是"实质回答",一并落档(不是只存成功案例)。"""
+        s, day = market_wall_down
+        out = inq.run_inquiry("300001.SZ", [], basis_date=day, db_path=s.db_path,
+                              parquet_dir=s.parquet_dir, provider=None)
+        assert out["degraded"] is True
+        assert out["inquiryId"] is not None
+        row = get_inquiry_log(out["inquiryId"], db_path=s.db_path)
+        assert row["answer"] == out["reply"]
+
+    def test_persistence_failure_degrades_gracefully_without_breaking_answer(self, market, monkeypatch):
+        """落库是旁路——DB 写失败绝不能打断已经算好的回答;`degraded` 字段专指 LLM
+        段,与"档案有没有落进去"是两件独立的事(不因落库失败被带偏)。"""
+        s, day = market
+        import neckline.api.inquiry as inq_mod
+
+        def _boom(*a, **k):
+            raise RuntimeError("磁盘写满(演练)")
+
+        monkeypatch.setattr(inq_mod, "create_inquiry_log", _boom)
+        prov = StubProvider(reply_body="不受影响,回答照常。")
+        out = inq.run_inquiry("600001.SH", [], basis_date=day, db_path=s.db_path,
+                              parquet_dir=s.parquet_dir, provider=prov)
+        assert out["reply"] == "不受影响,回答照常。"
+        assert out["inquiryId"] is None
+        assert out["degraded"] is False
 
 
 # —— 同码不重写(v1.3-⑤ 既有验收,v1.3.3 继续守)——————————————————————————

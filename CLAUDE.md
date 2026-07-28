@@ -80,7 +80,13 @@
   `xcodebuild` BUILD SUCCEEDED"当等价证据,不死磕。
 - **客户端 404 映射**:`APIClient.mapReason` 按 reason 逐 case + fallback;新增会
   返 404 的端点必须检查要不要加新 case,别指望 fallback 猜对文案(watchlist
-  `not_found` 被误显示成"持仓已清"踩过)。
+  `not_found` 被误显示成"持仓已清"踩过;**同一个 reason 字符串复用已有 case 不算
+  "没加",只有新字符串才需要新 case**,v1.4-⑦-A `decisions/{id}/track` 验证过)。
+- **`NecklineTests` 只在 iOS Simulator destination 跑得动**:`-destination
+  'platform=macOS'` 下 `xcodebuild test` 报 `Could not find test host`(`TEST_HOST`
+  按 iOS bundle 布局配置,与 macOS `.app/Contents/MacOS/` 嵌套路径不符,既有工程
+  设置、与代码改动无关);`build`(非 test)双平台都能跑,验收走「双端 build +
+  iOS Simulator test」组合,不必强求 macOS test 绿(v1.4-⑦ 验证过)。
 - **服务端字段与客户端既有计算属性撞名**(如 `distToStopPct` 小数 vs 百分比):
   CodingKeys 显式改名解码(`distToStopPctServer`),不改旧属性既有语义(有单测锁)。
 

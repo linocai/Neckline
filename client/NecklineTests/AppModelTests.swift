@@ -9,14 +9,14 @@ import XCTest
 @MainActor
 final class AppModelTests: XCTestCase {
 
-    // MARK: - §2.5 硬约束:问询台裁决永不「买」
+    // MARK: - §2.5 硬约束:问询台标注永不「买」
 
-    /// 镜像后端 `test_verdict_always_binary_never_buy`(tests/test_api_inquiry.py):即便
-    /// 上游文本疯狂喊「现在就买」,客户端裁决枚举也只可能是 reject/pass/unknown 三态之一,
-    /// 且**任何一态**都不启用买入操作。
+    /// 镜像后端 `test_verdict_is_descriptive_never_a_judgement`(tests/test_api_inquiry.py):
+    /// 即便上游文本疯狂喊「现在就买」,客户端标注枚举也只可能是
+    /// analyzed/analyzedWarn/unknown 三态之一,且**任何一态**都不启用买入操作。
     func testInquiryVerdictNeverEnablesBuyAction() {
         let raws = [
-            InquiryVerdict.rejectRaw, InquiryVerdict.passRaw,
+            InquiryVerdict.analyzedRaw, InquiryVerdict.analyzedWarnRaw,
             "现在就买!马上买入!强烈建议买买买!",   // 对抗性字符串(后端同款测试用例)
             "", "买",
         ]
@@ -27,15 +27,24 @@ final class AppModelTests: XCTestCase {
     }
 
     func testInquiryVerdictKnownCasesMapExactly() {
-        XCTAssertEqual(InquiryVerdict("不符合"), .reject)
-        XCTAssertEqual(InquiryVerdict("初审通过进海选池"), .pass)
-        XCTAssertEqual(InquiryVerdict("不符合").label, "不符合")
-        XCTAssertEqual(InquiryVerdict("初审通过进海选池").label, "初审通过进海选池")
+        XCTAssertEqual(InquiryVerdict("已分析"), .analyzed)
+        XCTAssertEqual(InquiryVerdict("已分析·有风险提示"), .analyzedWarn)
+        XCTAssertEqual(InquiryVerdict("已分析").label, "已分析")
+        XCTAssertEqual(InquiryVerdict("已分析·有风险提示").label, "已分析·有风险提示")
+    }
+
+    /// P3-14(⑦-C):回归锁死这次要修的展示 bug——「有风险提示」此前无对应 case,落
+    /// `.unknown` → 中性色调,和普通「已分析」在 UI 上长得一模一样,风险提示形同
+    /// 隐身。修复后必须是**警示色**(复用既有 `NKAxisTone.warn`,不新造色值),而
+    /// 「已分析」维持中性——标注不是判决,不该给它套好评色调。
+    func testInquiryVerdictWarnGetsWarnToneAnalyzedStaysNeutral() {
+        XCTAssertEqual(InquiryVerdict("已分析·有风险提示").tone, .warn)
+        XCTAssertEqual(InquiryVerdict("已分析").tone, .neutral)
     }
 
     func testInquiryVerdictUnrecognizedStringNeverSilentlyBecomesKnownState() {
-        // 契约漂移防护:未知字符串必须落 .unknown,不能被静默当成 reject 或 pass 展示,
-        // 否则后端一改措辞、前端就可能把"未识别"误当"已通过"渲染。
+        // 契约漂移防护:未知字符串必须落 .unknown,不能被静默当成已知态展示,否则
+        // 后端一改措辞、前端就可能把"未识别"误当已知态渲染。
         let v = InquiryVerdict("某种新裁决")
         guard case .unknown(let raw) = v else {
             return XCTFail("未识别字符串应归 .unknown,实际 \(v)")

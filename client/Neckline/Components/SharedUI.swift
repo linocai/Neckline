@@ -71,7 +71,8 @@ struct QuotaBadge: View {
     }
 }
 
-/// 问询台裁决徽标(§2.5:只两值;`.unknown` 仅为契约漂移兜底展示,不代表第三态)。
+/// 问询台描述性标注徽标(§2.5:已知两值「已分析」/「已分析·有风险提示」;
+/// `.unknown` 仅为契约漂移兜底展示,不代表第三态)。
 struct VerdictBadge: View {
     let verdict: InquiryVerdict
     var body: some View {
