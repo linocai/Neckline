@@ -403,6 +403,10 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
             codesSkipped=s.get("codesSkipped", 0),
             # v1.3.4 同批新增(老报告快照没有这个键 → 缺省 0,前向兼容不崩)。
             codesNoSearch=s.get("codesNoSearch", 0),
+            # v1.4-⑥-B 自选隔日轮扫披露(同上:领域层产出后这里必须显式读,否则 pydantic
+            # 丢弃;老快照无此键 → 缺省 ""/0)。与 codesSkipped 语义不合并,见 schemas.py。
+            rotationGroup=s.get("rotationGroup", ""),
+            codesRotationDeferred=s.get("codesRotationDeferred", 0),
         )
         for s in rep.get("news_alerts_scan", [])
     ]

@@ -443,3 +443,38 @@ def test_report_candidate_exec_hints_defaults_empty_for_old_snapshot(client, AUT
     _seed_report(api_env.db_path, date(2026, 7, 17))
     body = client.get("/api/v1/report/latest", headers=AUTH).json()
     assert body["candidates"][0]["execHints"] == []
+
+
+# —— v1.4-⑥-B 自选隔日轮扫披露:领域层算了必须真的抵达客户端 ——————————————————
+#    (pydantic 丢弃未声明字段的老坑:v1.3-⑥ 的 codesSkipped、v1.3.4 的 codesNoSearch
+#     都因为只补了领域层没补 schemas/_shape_report 而"算了没送到"。)
+
+def test_report_latest_carries_rotation_disclosure(client, AUTH, api_env):
+    from datetime import date
+
+    _seed_report(
+        api_env.db_path, date(2026, 7, 17),
+        news_alerts_scan=[{
+            "source": "llm", "scanned": True, "reason": "自选隔日轮扫:本次扫的是 A 组",
+            "codesTotal": 11, "codesFailed": 0, "codesSkipped": 0, "codesNoSearch": 1,
+            "rotationGroup": "A", "codesRotationDeferred": 8,
+        }],
+    )
+    scan = client.get("/api/v1/report/latest", headers=AUTH).json()["newsAlertsScan"][0]
+    assert scan["rotationGroup"] == "A"
+    assert scan["codesRotationDeferred"] == 8
+    # 四个计数各是各的(轮空 / 预算跳过 / 失败 / 搜索 0 命中),不许合并
+    assert (scan["codesSkipped"], scan["codesFailed"], scan["codesNoSearch"]) == (0, 0, 1)
+
+
+def test_report_latest_rotation_fields_default_for_old_snapshot(client, AUTH, api_env):
+    """⑥-B 之前的老快照没有这两个键 → 缺省 ""/0,前向兼容不崩、也不冒充"扫了全部"。"""
+    from datetime import date
+
+    _seed_report(
+        api_env.db_path, date(2026, 7, 17),
+        news_alerts_scan=[{"source": "llm", "scanned": True, "reason": "", "codesTotal": 3, "codesFailed": 0}],
+    )
+    scan = client.get("/api/v1/report/latest", headers=AUTH).json()["newsAlertsScan"][0]
+    assert scan["rotationGroup"] == ""
+    assert scan["codesRotationDeferred"] == 0

@@ -241,6 +241,14 @@ class NewsAlertScanStatusOut(BaseModel):
     # 分辨维度,三者不可合并。⚠ 同上条教训:新增键必须同时补 `app.py::_shape_report`,
     # 否则 pydantic 丢弃未声明字段,后端算了也到不了客户端。
     codesNoSearch: int = 0
+    # v1.4-⑥-B 自选隔日轮扫:`rotationGroup` = 本次扫的是哪一组自选("A"/"B";持仓每日必扫、
+    # 不参与轮扫),`codesRotationDeferred` = 本日**轮空**(压根没进本次名单)的自选数。
+    # ⚠ **与 codesSkipped(进了名单但预算耗尽没发起)/ codesFailed / codesNoSearch 四者语义
+    # 各不相同,客户端不许合并成一个「没扫到」数字**。⚠ 同上两条教训:新增键必须同时补
+    # `app.py::_shape_report`,否则 pydantic 丢弃未声明字段,后端算了也到不了客户端。
+    # 老报告快照没有这两个键 → 缺省 ""/0,前向兼容不崩。
+    rotationGroup: str = ""
+    codesRotationDeferred: int = 0
 
 
 class ReportOut(BaseModel):
