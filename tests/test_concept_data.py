@@ -271,3 +271,23 @@ def test_filtered_to_nothing_counts_as_empty_not_failed(tmp_path):
         fetch=lambda td: _Res(_pdf(_day_rows("20260722", codes=("700005.TI",)))),
         parquet_dir=tmp_path)
     assert stats == {"days": 1, "rows": 0, "empty": 1, "failed": 0}
+
+
+def test_trailing_window_writes_file_once(tmp_path, monkeypatch):
+    """整个尾窗只落盘一次(每次 upsert 都要读全表 + 重写 ~21MB,逐日调用就是 5 遍)。"""
+    _seed_index(tmp_path, ["883300.TI", "885362.TI"])
+    calls = {"n": 0}
+    real = cd.upsert_ths_daily
+
+    def counted(df, parquet_dir=None):
+        calls["n"] += 1
+        return real(df, parquet_dir)
+
+    monkeypatch.setattr(cd, "upsert_ths_daily", counted)
+    days = [date(2026, 7, 21), date(2026, 7, 22), date(2026, 7, 23)]
+    stats = cd.update_ths_daily(
+        days, fetch=lambda td: _Res(_pdf(_day_rows(td))), parquet_dir=tmp_path)
+    assert calls["n"] == 1
+    assert stats["rows"] == 6
+    got = pl.read_parquet(tmp_path / cd.THS_DAILY_FILE)
+    assert sorted(set(got["trade_date"].to_list())) == days

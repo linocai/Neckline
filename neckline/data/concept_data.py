@@ -278,6 +278,7 @@ def update_ths_daily(
                        "(可能混入行业/地域指数,榜单语义会变宽)")
 
     stats = {"days": 0, "rows": 0, "empty": 0, "failed": 0}
+    frames: List[pl.DataFrame] = []
     for d in trading_days:
         stats["days"] += 1
         res = fetch(d.strftime("%Y%m%d"))
@@ -292,7 +293,12 @@ def update_ths_daily(
         if df.is_empty():
             stats["empty"] += 1
             continue
-        stats["rows"] += upsert_ths_daily(df, parquet_dir)
+        frames.append(align_ths_daily_schema(df))
+        stats["rows"] += df.height
+    # **整个尾窗只 upsert 一次**:每次 upsert 都要读全表 + 重写 ~21MB(50 万行),逐日调用
+    # 就是 5 遍;合并成一次既省 I/O,也让「替换这几天」成为单次原子替换而不是五次。
+    if frames:
+        upsert_ths_daily(pl.concat(frames, how="diagonal_relaxed"), parquet_dir)
     return stats
 
 
