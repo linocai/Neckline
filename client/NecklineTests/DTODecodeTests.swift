@@ -583,6 +583,93 @@ final class DTODecodeTests: XCTestCase {
                                           qty: 100, entryReason: "回调低吸")
     }
 
+    // MARK: v1.4-①-A 补录真实买入日(§七 P0-1)
+
+    /// 不传 `buyDate` → 请求体**不含该键**(`encodeIfPresent`),服务端取今天 —— 老客户端
+    /// 行为逐字节不变。这是 ①-A 的向后兼容红线。
+    func testOpenPositionOmitsBuyDateWhenNotProvided() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertNil(obj?["buyDate"])
+            return (200, jsonData("""
+            {"ok": true, "position_id": 10, "stop_line": 1425.0}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        _ = try await client.openPosition(code: "600519.SH", name: "贵州茅台", buyPrice: 1500.0,
+                                          qty: 100, entryReason: "回调低吸")
+    }
+
+    /// 传了就编码进请求体('YYYYMMDD')。
+    func testOpenPositionEncodesBuyDateWhenProvided() async throws {
+        MockURLProtocol.handler = { req in
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(obj?["buyDate"] as? String, "20260722")
+            return (200, jsonData("""
+            {"ok": true, "position_id": 11, "stop_line": 1425.0}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        _ = try await client.openPosition(code: "600519.SH", name: "贵州茅台", buyPrice: 1500.0,
+                                          qty: 100, entryReason: "回调低吸", buyDate: "20260722")
+    }
+
+    /// 400 + `reason=not_trading_day` → `.notTradingDay`(**逐个建 case,不吃 fallback**;
+    /// 守 CLAUDE.md「404/reason 映射」坑:watchlist `not_found` 曾被 fallback 误显成「持仓已清」)。
+    func testOpenPositionNonTradingDayMapsToDedicatedError() async throws {
+        MockURLProtocol.handler = { _ in
+            (400, jsonData("""
+            {"detail": {"ok": false, "reason": "not_trading_day"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.openPosition(code: "600519.SH", name: nil, buyPrice: 1.0, qty: 100,
+                                              entryReason: "", buyDate: "20260726")
+            XCTFail("应抛 notTradingDay")
+        } catch APIError.notTradingDay {
+            XCTAssertEqual(APIError.notTradingDay.errorDescription, "买入日不是交易日,请选择实际成交的交易日")
+        }
+    }
+
+    /// 400 + `reason=future_buy_date` → `.futureBuyDate`,文案与上一条**不同**
+    /// (「那天不开市」vs「你填到未来去了」,合并会让用户改错地方)。
+    func testOpenPositionFutureBuyDateMapsToDedicatedError() async throws {
+        MockURLProtocol.handler = { _ in
+            (400, jsonData("""
+            {"detail": {"ok": false, "reason": "future_buy_date"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.openPosition(code: "600519.SH", name: nil, buyPrice: 1.0, qty: 100,
+                                              entryReason: "", buyDate: "20991231")
+            XCTFail("应抛 futureBuyDate")
+        } catch APIError.futureBuyDate {
+            XCTAssertEqual(APIError.futureBuyDate.errorDescription, "买入日不能晚于今天")
+        }
+    }
+
+    /// 未知 400 reason → **不冒充**买入日错误,退回既有 `.server(400, …)` 语义。
+    func testUnknown400FallsBackToServerError() async throws {
+        MockURLProtocol.handler = { _ in
+            (400, jsonData("""
+            {"detail": {"ok": false, "reason": "some_future_reason"}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.openPosition(code: "600519.SH", name: nil, buyPrice: 1.0, qty: 100,
+                                              entryReason: "")
+            XCTFail("应抛 server(400,…)")
+        } catch APIError.server(let code, let msg) {
+            XCTAssertEqual(code, 400)
+            XCTAssertEqual(msg, "some_future_reason")
+        }
+    }
+
     /// v1.2-A2:`closeReason` 编码进请求体(camelCase,与既有 snake_case `sell_price`/
     /// `sell_time` 并存——契约本身如此,见 `CLAUDE.md`「PositionCloseIn 里 closeReason
     /// 是 camelCase」坑)。用 `httpBodyOrStream()` helper 两路读请求体。

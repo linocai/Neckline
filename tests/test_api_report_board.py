@@ -313,3 +313,24 @@ def test_board_yellow_and_red_coexist(client, AUTH, api_env):
     assert "跌停8只" in body["retreatBrake"]["reason"]
     warn_ev = next(e for e in body["events"] if e["sentinel"] == "退潮")
     assert "【黄色预警】" in warn_ev["verdict"]
+
+
+# —— v1.4-①-C `ReportOut.dataFreshness`(§七 P0-3)——————————————————————————
+
+def test_report_carries_data_freshness_snapshot(client, AUTH, api_env):
+    """透传落库快照(**随报告冻住**,不在读时重算——读三天前的报告该看到当时的新鲜度)。"""
+    d = date(2026, 7, 27)
+    report_store.save_report(
+        d, strategy_version="v1.3.3", sentiment={}, sectors=[], candidates=[], markdown="# 报告",
+        data_freshness={"sectorDataDate": "20260722", "sectorLagDays": 3, "stale": True},
+        db_path=api_env.db_path,
+    )
+    r = client.get("/api/v1/report/latest", headers=AUTH).json()
+    assert r["dataFreshness"] == {"sectorDataDate": "20260722", "sectorLagDays": 3, "stale": True}
+
+
+def test_report_data_freshness_empty_for_old_snapshot(client, AUTH, api_env):
+    """老报告(建于本字段之前)→ 空 dict。**空 ≠ 新鲜**,客户端按「该版本还没有新鲜度
+    概念」处理(契约注释已写死这条口径)。"""
+    _seed_report(api_env.db_path, date(2026, 7, 24))
+    assert client.get("/api/v1/report/latest", headers=AUTH).json()["dataFreshness"] == {}

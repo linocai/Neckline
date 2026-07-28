@@ -113,8 +113,31 @@
   单测锁死)+ 问询台补中文名(`resolve_stock_names` 是查名唯一实现)显式传检索词
   + 0 命中 WARNING 埋点。⚠ **已证伪勿再查**:payload 里 bool/int 发成字符串不是
   bug(GLM 正确解析,刻意保留原样)。
-- **timer 跑过 ≠ 任务成功**:部署/定时任务验收必须看 `Result=`/`ExecMainStatus`,
-  别只看 `systemctl list-timers` 的 LAST(07-27 报告没生成却被记成"已跑完")。
+- **timer 跑过 ≠ 任务成功**:部署/定时任务验收必须看 `ExecMainStatus=0` **且**
+  `ExecMainStartTimestamp` 是本次那一跑,别只看 `list-timers` 的 LAST。⚠ **`Result=`
+  也不够**(2026-07-28 实测):07-27 那次崩掉的报告在库里是
+  `Result=success` + `ExecMainStatus=1` —— `systemctl reset-failed`(或等价操作)会把
+  `Result` 抹回 success 而 `ExecMainStatus` 留着,**以 `ExecMainStatus` + 时间戳为准**。
+
+## 概念板块与停牌数据(v1.4-① 定案)
+
+- **`ths_daily.parquet` 是 `write_table_day` 铁律的唯一登记例外**:维持**扁平单文件**,
+  日更走「读全表 → 整段替换当日 → **按 `concept_data.THS_DAILY_DTYPES` 声明 cast** →
+  写 `.tmp` → `os.replace`」。理由三条见 `neckline/data/concept_data.py` 模块头;守门单测
+  `tests/test_concept_data.py::test_all_empty_column_does_not_drift_to_string`(全空列
+  dtype 不漂)+ `test_declaration_wins_over_existing_file`。**这不是笔误,别"修正"回去。**
+- **`ths_daily` 不带 `ts_code` 时返回全部同花顺板块指数**(概念 N + 行业 I + 地域 R,
+  ~2499 行/日),而本项目这张表历来**只含概念指数**(~394 行/日)。日更必须按当前
+  `ths_index` 快照过滤,否则「强势板块」top10 语义悄悄变成「强势任意板块」+ 报告显示裸
+  代码(`load_index_names` 查不到名)。周更 `ths_index` 排在日更**之前**,过滤名单才是新的。
+- **`ths_daily`/`suspend_d` 当日数据 16:20 尚未发布**(2026-07-28 实测:当日返 0 行,
+  前几日各 1800~2500 行)→ 16:05 日更**必然拿不到当天**。故 `ths_daily` 走**尾窗 5 个
+  交易日重拉**自愈(次日补上前一日),`SECTOR_DATA_STALE_MAX_LAG_DAYS=2` 的容忍度就是
+  给这一天缓冲的;板块数据**常态落后 1 个交易日**,不是故障。
+- **`suspend_d` 在 600 元档可用**(2026-07-28 真 token 探活,同 `stk_holdertrade`,
+  **不同于** `anns_d`)。日更落 `suspend_d` 分区,`data/price_stale.py` 据此把「当日无
+  EOD 行」分成 `suspended`/`data_gap`/`unknown`;**名单拉不到时如实标 unknown,不许猜成
+  停牌**——「时间退出判向挂起」这个豁免不能建立在臆测上。
 
 ## 复用与设计体例(v1.1 修洞定案)
 

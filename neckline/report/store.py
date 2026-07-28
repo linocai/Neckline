@@ -33,6 +33,7 @@ def save_report(
     intel: Optional[Dict[str, Any]] = None,
     sector_moneyflow: Optional[Dict[str, Any]] = None,
     news_alerts_scan: Optional[List[Dict[str, Any]]] = None,
+    data_freshness: Optional[Dict[str, Any]] = None,
     db_path: Optional[Path] = None,
 ) -> None:
     """`watchlist`(v1.1-C.3 自选体检快照,`WatchlistCheckItem.public_dict()` 列表):
@@ -45,15 +46,19 @@ def save_report(
     `news_alerts_scan`(v1.3-③-C4,`NewsAlertsReport.scan_statuses_public()` 的
     JSON 数组快照——**只是扫描状态元信息,不含命中告警本身**〔告警条目落独立
     `news_alerts` 表,见 `report/news_alerts_store.py`〕):默认 `None` → 落
-    `'[]'`,同 watchlist 惯例。"""
+    `'[]'`,同 watchlist 惯例。
+    `data_freshness`(v1.4-①-C,`SectorDataFreshness.to_public_dict()`:
+    `{sectorDataDate, sectorLagDays, stale}`):板块数据相对本报告日落后几个交易日 ——
+    **随报告一起冻住**,不在读时重算(读一份三天前的报告时,该看到的是**当时**的新鲜度,
+    不是今天的)。默认 `None` → 落 `'{}'`,同 intel 惯例。"""
     init_schema(db_path)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with connection(db_path) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO reports "
             "(trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json, data_freshness_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 _d(trade_date),
                 now,
@@ -66,6 +71,7 @@ def save_report(
                 json.dumps(intel or {}, ensure_ascii=False),
                 json.dumps(sector_moneyflow or {}, ensure_ascii=False),
                 json.dumps(news_alerts_scan or [], ensure_ascii=False),
+                json.dumps(data_freshness or {}, ensure_ascii=False),
             ),
         )
 
@@ -106,8 +112,8 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
     with connection(db_path) as conn:
         row = conn.execute(
             "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json "
-            "FROM reports WHERE trade_date=?",
+            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json, "
+            "data_freshness_json FROM reports WHERE trade_date=?",
             (_d(trade_date),),
         ).fetchone()
     if row is None:
@@ -124,6 +130,9 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
         "intel": _parse_intel_json(row[8]),
         "sector_moneyflow": _parse_sector_moneyflow_json(row[9]),
         "news_alerts_scan": _parse_news_alerts_scan_json(row[10]),
+        # v1.4-①-C:老报告行(建于本列之前)补列后取默认 '{}' → 读回空 dict,
+        # 客户端按「空 = 该版本还没有新鲜度概念」处理,不是「新鲜」。
+        "data_freshness": _parse_json_field(row[11], {}),
     }
 
 
@@ -143,8 +152,8 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
     with connection(db_path) as conn:
         row = conn.execute(
             "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json "
-            "FROM reports WHERE trade_date=?",
+            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json, "
+            "data_freshness_json FROM reports WHERE trade_date=?",
             (trade_date_str,),
         ).fetchone()
     if row is None:
@@ -161,6 +170,9 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
         "intel": _parse_intel_json(row[8]),
         "sector_moneyflow": _parse_sector_moneyflow_json(row[9]),
         "news_alerts_scan": _parse_news_alerts_scan_json(row[10]),
+        # v1.4-①-C:老报告行(建于本列之前)补列后取默认 '{}' → 读回空 dict,
+        # 客户端按「空 = 该版本还没有新鲜度概念」处理,不是「新鲜」。
+        "data_freshness": _parse_json_field(row[11], {}),
     }
 
 

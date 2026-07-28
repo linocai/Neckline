@@ -54,8 +54,8 @@ def save_holding_eod_checks(trade_date: date, items: List[Any], db_path: Optiona
                 "INSERT OR REPLACE INTO holding_eod_check "
                 "(position_id, trade_date, d_count, net_float, time_exit_state, max_hold_effective, "
                 "k4_hits_json, has_strong, scenario_review, time_exit_locked_state, "
-                "time_exit_locked_date, time_exit_locked_net_float, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "time_exit_locked_date, time_exit_locked_net_float, data_unavailable, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     it.position_id, td, it.d_count, it.net_float, it.time_exit_state,
                     it.max_hold_effective, json.dumps(it.hits_public(), ensure_ascii=False),
@@ -63,6 +63,9 @@ def save_holding_eod_checks(trade_date: date, items: List[Any], db_path: Optiona
                     getattr(it, "time_exit_locked_state", None),
                     getattr(it, "time_exit_locked_date", None),
                     getattr(it, "time_exit_locked_net_float", None),
+                    # v1.4-①-B:当日无 EOD 行 → 整份体检被跳过,这一位必须落库(否则
+                    # `GET /positions` 读快照时分不清「空牌」是没命中还是没体检)。
+                    0 if getattr(it, "has_data", True) else 1,
                     now,
                 ),
             )
@@ -88,8 +91,8 @@ def load_latest_checks_by_position(db_path: Optional[Path] = None) -> Dict[int, 
         rows = conn.execute(
             "SELECT position_id, trade_date, d_count, net_float, time_exit_state, "
             "max_hold_effective, k4_hits_json, has_strong, scenario_review, "
-            "time_exit_locked_state, time_exit_locked_date, time_exit_locked_net_float "
-            "FROM holding_eod_check ORDER BY position_id, trade_date"
+            "time_exit_locked_state, time_exit_locked_date, time_exit_locked_net_float, "
+            "data_unavailable FROM holding_eod_check ORDER BY position_id, trade_date"
         ).fetchall()
     out: Dict[int, Dict[str, Any]] = {}
     for r in rows:  # 按 trade_date 升序遍历,同 position 后者覆盖 → 最终留最大 trade_date 那份
@@ -99,6 +102,9 @@ def load_latest_checks_by_position(db_path: Optional[Path] = None) -> Dict[int, 
             "hits": _parse_hits(r[6]), "has_strong": bool(r[7]), "scenario_review": bool(r[8]),
             "time_exit_locked_state": r[9], "time_exit_locked_date": r[10],
             "time_exit_locked_net_float": r[11],
+            # v1.4-①-B:`None` = 老快照未记录这一位(**不是** False)——「不知道」与
+            # 「体检过了」不可混同,调用方按 None 透出 null,不猜。
+            "data_unavailable": (None if r[12] is None else bool(r[12])),
         }
     return out
 

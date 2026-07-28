@@ -383,6 +383,7 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
         sectorMoneyflow=rep.get("sector_moneyflow", {}),   # v1.3-③-C2,透传落库快照
         newsAlerts=news_alerts,                            # v1.3-③-C4,独立表实时查
         newsAlertsScan=news_alerts_scan,                    # v1.3-③-C4,透传落库快照(同 intel 惯例)
+        dataFreshness=rep.get("data_freshness", {}),        # v1.4-①-C,透传落库快照(不读时重算)
     )
 
 
@@ -495,6 +496,23 @@ def _resolve_prices(codes: List[str]) -> Dict[str, float]:
     return out
 
 
+def _resolve_price_stale(codes: List[str]) -> Dict[str, Any]:
+    """持仓票的价格陈旧度(v1.4-①-B / §七 P0-2)。`{ts_code: PriceStale}`,**只含当日
+    无 EOD 行的票**。领域实现在 `data/price_stale.py`(只读 parquet + 日历,不联网)。
+
+    整体 try 兜底:陈旧度是**附加诚实标注**,它自己出问题绝不能掀翻持仓列表(持仓卡是
+    每日最常看的一屏)。降级后表现 = 与 v1.4 之前一致(不带 priceStale、判向不挂起)。"""
+    if not codes:
+        return {}
+    try:
+        from neckline.data.price_stale import resolve_price_stale
+
+        return resolve_price_stale(codes, date.today(), parquet_dir=_parquet_dir())
+    except Exception:  # noqa: BLE001
+        logger.warning("持仓价格陈旧度判定异常(已降级为空,不阻断持仓列表)", exc_info=True)
+        return {}
+
+
 def _active_config() -> Tuple[float, int, float, Optional[float]]:
     """现役策略 config 的四个值(单一事实源 `brain.active_config`,§3.8 铁律):
     (stop_pct, max_hold_days, single_cap, take_profit_retrace)。无现役版本(异常状态)
@@ -566,9 +584,16 @@ def _today_action(
     """今日动作提示文案(纯展示层,优先级:时间退出 > 回落止盈 > 跌破/逼近止损 > 持有中)。
     v1.3-① 两档:`hard_cap_exit`/`time_exit_next_day` 走离场优先;`profit_exempt` 是「豁免时间
     退出、交回落+止损管到硬上限」的持有态(不抢离场);`holding` 常规持有。K1 单档下
-    `time_exit_state` 只会是 `time_exit_next_day`(d≥max_hold)或 `holding`,行为与 v1.3 前一致。"""
-    from neckline.sentinel.precall import HARD_CAP_EXIT, PROFIT_EXEMPT, TIME_EXIT_NEXT_DAY
+    `time_exit_state` 只会是 `time_exit_next_day`(d≥max_hold)或 `holding`,行为与 v1.3 前一致。
 
+    **v1.4-①-B `suspended_hold`**:当日无 EOD 行且尚未定格 → 判向挂起。文案**最优先**
+    (它就是为了盖掉那句「按计划离场」——催用户去卖一只卖不掉的票正是 P0-2 的病根),
+    且必须说清「D 计数照走、判向挂着、复牌当日再定」。"""
+    from neckline.sentinel.precall import HARD_CAP_EXIT, PROFIT_EXEMPT, SUSPENDED_HOLD, TIME_EXIT_NEXT_DAY
+
+    if time_exit_state == SUSPENDED_HOLD:
+        return (f"停牌/无当日行情,时间退出判向挂起(D{d_count} 照常累计,"
+                f"复牌当日收盘再定格)")
     if time_exit_state == HARD_CAP_EXIT:
         return f"D{d_count} 已达浮盈硬上限 D{eff_max},按计划离场(浮盈豁免时间退出到顶)"
     if time_exit_state == TIME_EXIT_NEXT_DAY:
@@ -620,6 +645,10 @@ def list_positions() -> PositionsOut:
     # 定格判向:与 precall 走**同一个** store 读函数(审计 🔴-1 的主题就是「三个消费点各读
     # 各的」,故这里刻意不图省事去读 k4 快照里那份带过来的副本)。
     locked = locked_time_exit_map(db_path=_db())
+    # v1.4-①-B(§七 P0-2):持仓票当日无 EOD 行 → 陈旧度 + 原因(停牌 / 数据缺口 / 不知道)。
+    # 只读 parquet + 日历,不联网(请求期不能挂网络);整体异常一律降级为「没有陈旧票」,
+    # **绝不掀翻持仓列表**(持仓卡是每日最常看的一屏)。
+    stale_map = _resolve_price_stale(codes)
     today = date.today()
     out: List[PositionOut] = []
     for h in holdings:
@@ -640,7 +669,14 @@ def list_positions() -> PositionsOut:
         # EOD close / precall 快照三处数据源各不相同。净浮盈的唯一判向口径已收敛到 EOD close
         # (见 `report/holding_k4_check.py`)。
         snap = k4_snapshots.get(h.id) or {}
-        te_state, eff_max = resolve_time_exit(dcount, cfg, (locked.get(h.id) or {}).get("state"))
+        stale = stale_map.get(h.ts_code)
+        # v1.4-①-B:`data_unavailable` 只在**判定点且尚未定格**时把判向改成 `suspended_hold`
+        # (见 `resolve_time_exit`);其余分支逐位不变。判据用**当日无 EOD 行**这一位,
+        # 与 16:35 管线的 `has_data` 同义(两处各自就近取数,不互相依赖对方的快照)。
+        te_state, eff_max = resolve_time_exit(
+            dcount, cfg, (locked.get(h.id) or {}).get("state"),
+            data_unavailable=stale is not None,
+        )
         k4_advisory = [
             K4AdvisoryOut(
                 code=hit.get("code", ""), label=hit.get("label", ""),
@@ -660,6 +696,8 @@ def list_positions() -> PositionsOut:
             todayAction=_today_action(dcount, eff_max, dist, retrace, te_state),
             maxHoldDaysEffective=eff_max, timeExitState=te_state,
             buyFees=h.buy_fees, sellFees=h.sell_fees,
+            priceStale=(stale.to_public_dict() if stale is not None else None),
+            k4DataUnavailable=snap.get("data_unavailable"),   # None=老快照未记录,如实透 null
             k4Advisory=k4_advisory, scenarioReviewPending=bool(snap.get("scenario_review")),
         ))
     return PositionsOut(holdings=out, circuit=_shape_circuit(circuit_store.get_state(db_path=_db())))
@@ -698,12 +736,61 @@ def entry_suggestion(code: str = "", price: float = 0.0) -> EntrySuggestionOut:
     )
 
 
+# v1.4-①-A 两个新 400 reason 码(**客户端 `APIClient.mapReason` 必须逐个加 case**,守项目
+# CLAUDE.md「404/reason 映射」坑:别指望 fallback 猜对文案)。
+REASON_NOT_TRADING_DAY = "not_trading_day"
+REASON_FUTURE_BUY_DATE = "future_buy_date"
+
+
+def _parse_buy_date_or_400(raw: Optional[str]) -> date:
+    """`PositionOpenIn.buyDate` → `date`。**None/空串 = 未指定 → 今天**(与 v1.4 之前
+    `buy_date=date.today()` 写死的行为逐位一致,老客户端零感知)。
+
+    校验顺序刻意是「格式 → 未来日 → 交易日」:未来日先判,是因为「明天」很可能同时也是
+    交易日,若先判交易日会把未来日误报成 `not_trading_day`(reason 说谎)。格式非法不静默
+    退回今天 —— 「没给」与「给错了」必须能分开(§3.8 铁律)。"""
+    if raw is None or not str(raw).strip():
+        return date.today()
+    s = str(raw).strip()
+    try:
+        parsed = datetime.strptime(s, "%Y%m%d").date()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"ok": False, "reason": REASON_NOT_TRADING_DAY},
+        ) from None
+    if parsed > date.today():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"ok": False, "reason": REASON_FUTURE_BUY_DATE},
+        )
+    from neckline.calendar import is_trading_day
+    if not is_trading_day(parsed):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"ok": False, "reason": REASON_NOT_TRADING_DAY},
+        )
+    return parsed
+
+
 @app.post(f"{API_PREFIX}/positions", dependencies=[Depends(require_token)])
 def open_position(body: PositionOpenIn) -> PositionOpenOut:
-    """开仓录入(§3.8 铁律:系统永不自动下单,此处只录台账)。buy_date 取今日自然日。"""
+    """开仓录入(§3.8 铁律:系统永不自动下单,此处只录台账)。
+
+    **v1.4-①-A(§七 P0-1)**:`buyDate`(可选 'YYYYMMDD')= 真实成交日,**缺省仍取今天**
+    (老客户端不传时与 v1.4 之前逐位一致)。补录历史成交时买入日被盖成补录当天 → D 计数 /
+    两档时间退出判向 / 回落止盈峰值起点 / 周复盘持有天数**全部起点错**,故开这个口子。
+    校验两条,违反即 400 + reason(客户端 `APIClient.mapReason` 各有 case):
+      · 非交易日(`trade_cal` 判)→ `not_trading_day`
+      · 晚于今天 → `future_buy_date`
+    格式非法('YYYYMMDD' 之外)同样按 `not_trading_day` 拒(不静默吞成今天——「没给」和
+    「给错了」必须能分开)。写入仍走既有领域层 `sentinel/positions.py::open_position`
+    (它本就收 `buy_date`),**不重构领域层**。
+    """
+    buy_date = _parse_buy_date_or_400(body.buyDate)
     pid = pos_store.open_position(
         ts_code=body.code, buy_price=body.buy_price, qty=body.qty,
-        buy_date=date.today(), note=(body.entry_reason or None),
+        buy_date=buy_date, note=(body.entry_reason or None),
         buy_fees=body.buyFees, db_path=_db(),
     )
     stop_pct, _mh, _sc, _tpr = _active_config()

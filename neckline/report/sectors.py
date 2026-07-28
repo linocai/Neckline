@@ -36,6 +36,71 @@ EARLY_AGE_MIN_DAYS = 1
 EARLY_AGE_MAX_DAYS = 5
 DEFAULT_TOP_N = 10
 
+# —— v1.4-①-C「板块数据过期」告警(§七 P0-3)————————————————————————————————
+# 板块数据落后报告日**几个交易日**以内算可接受。超过就上报告顶部醒目告警 + `ReportOut.
+# dataFreshness.stale=True` + WARNING 日志。
+# **为什么是 2 而不是 0**:2026-07-28 实测 TuShare `ths_daily` 当日数据在 16:19 尚未发布
+# (`trade_date=20260728` 返 0 行,而前几个交易日各有 1800~2500 行),故 16:35 报告拿到的
+# 板块数据**常态就落后 1 个交易日** —— 阈值定 0 会天天误报,定 2 留一天缓冲。
+SECTOR_DATA_STALE_MAX_LAG_DAYS = 2
+# `sector_lag_days` 的哨兵值:板块数据**完全没有**(文件缺失 / 空表)。刻意不用 0
+# (0 = 「新鲜」)也不用 None(契约是 int) —— 「没有」与「没看」必须能分开(§3.8)。
+SECTOR_LAG_UNKNOWN = -1
+
+
+@dataclass
+class SectorDataFreshness:
+    """板块数据新鲜度(→ `ReportOut.dataFreshness`)。
+
+    `lag_days` = 交易日差(板块数据最新日 → 报告日);数据完全缺失时 = `SECTOR_LAG_UNKNOWN`
+    (-1)且 `stale=True`。**五常驻板块走 `ths_index` 名字静态解析,数据过期时反而看不出
+    坏了** —— 它们正是这条告警的主要保护对象。"""
+    sector_data_date: str    # 'YYYYMMDD';完全无数据 → ""
+    lag_days: int
+    stale: bool
+
+    @property
+    def unavailable(self) -> bool:
+        return self.lag_days == SECTOR_LAG_UNKNOWN
+
+    def to_public_dict(self) -> Dict[str, object]:
+        return {
+            "sectorDataDate": self.sector_data_date,
+            "sectorLagDays": self.lag_days,
+            "stale": self.stale,
+        }
+
+    def note(self) -> str:
+        """脚注文案(单一源,报告与客户端共用同一句口径)。新鲜 → 空串。"""
+        if self.unavailable:
+            return "板块数据完全缺失(`ths_daily` 无任何数据)——「当日暴起板块」与「题材持续天数」本日不可信。"
+        if self.lag_days <= 0:
+            return ""
+        s = f"板块数据最新至 {self.sector_data_date},落后 {self.lag_days} 个交易日。"
+        if self.stale:
+            s += "**已超过容忍上限,「当日暴起板块」与「题材持续天数」本日不可信。**"
+        return s
+
+
+def compute_sector_freshness(
+    report_date: date, parquet_dir: Optional[Path] = None
+) -> SectorDataFreshness:
+    """板块数据相对报告日落后几个交易日(v1.4-①-C)。取数唯一入口 =
+    `data/concept_data.max_ths_daily_date`(不在各处自己 read_parquet 求 max)。"""
+    from neckline.calendar import trading_days_between
+    from neckline.data.concept_data import max_ths_daily_date
+
+    newest = max_ths_daily_date(parquet_dir)
+    if newest is None:
+        return SectorDataFreshness("", SECTOR_LAG_UNKNOWN, True)
+    if newest >= report_date:
+        return SectorDataFreshness(newest.strftime("%Y%m%d"), 0, False)
+    # 闭区间交易日数 - 1 = 两日之间隔了几个交易日(newest 当天不算落后)。
+    lag = max(len(trading_days_between(newest, report_date)) - 1, 0)
+    return SectorDataFreshness(
+        newest.strftime("%Y%m%d"), lag, lag > SECTOR_DATA_STALE_MAX_LAG_DAYS
+    )
+
 
 @dataclass
 class SectorScore:
@@ -155,4 +220,8 @@ __all__ = [
     "EARLY_AGE_MIN_DAYS",
     "EARLY_AGE_MAX_DAYS",
     "DEFAULT_TOP_N",
+    "SECTOR_DATA_STALE_MAX_LAG_DAYS",
+    "SECTOR_LAG_UNKNOWN",
+    "SectorDataFreshness",
+    "compute_sector_freshness",
 ]

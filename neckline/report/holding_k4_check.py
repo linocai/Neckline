@@ -164,6 +164,9 @@ class HoldingK4Item:
     position_id: int
     ts_code: str
     name: str
+    # `has_data=False` = **当日无 EOD 行**(停牌 / 数据缺口)→ v1.4-①-B 起该票**整份体检跳过**
+    # (`hits` 恒空)并由本字段对外标 `dataUnavailable`。**空牌 ≠ 体检过了没问题**:「没体检」
+    # 与「体检过没命中」必须能分开(§3.8),故这一位要落库、要透到客户端。
     has_data: bool
     d_count: int
     close: float = 0.0
@@ -456,6 +459,8 @@ def _resolve_time_exit_with_lock(
     net_float: Optional[float],
     prior_lock: Optional[Dict[str, Any]],
     trade_date: date,
+    *,
+    data_unavailable: bool = False,
 ) -> tuple:
     """两档时间退出的 **16:35 权威计算**(唯一定格点,审计 🔴-1 / 用户拍板方案 A)。
 
@@ -472,7 +477,17 @@ def _resolve_time_exit_with_lock(
       `HARD_CAP_EXIT`(d 已 ≥ 硬上限却从未定格,异常长尾)不写定格 —— 硬上限本就按 d_count
       无条件判,不需要也不该被定格。
     · **两档 + 尚无定格 + d < max_hold_days**:HOLDING,定格三件仍 None。
+    · **v1.4-①-B `data_unavailable`(当日无 EOD 行,§七 P0-2)+ 尚无定格**:判向**挂起**
+      (`SUSPENDED_HOLD`),**这一天不定格** —— 停牌当日根本没有收盘价,拿不到判向所需的
+      净浮盈,硬判等于凭空定一个「一次性、不可回头」的向。**复牌当日**才用复牌当日 EOD
+      正常定格(届时若 `d_count` 已越过 `max_hold_days`,就在复牌当日定格,由 ⑥-C 标注
+      「定格于 D{n},晚于 D{5} {k} 天」)。**已有定格则定格值优先**,停牌不撤回既有判向。
+      单档(现役 K1 之外的老 config)同样走这条挂起分支——理由相同,`resolve_time_exit`
+      内已统一处理。
     """
+    if data_unavailable and not prior_lock:
+        state, eff = resolve_time_exit(d, cfg, None, data_unavailable=True)
+        return state, eff, None, None, None
     if not is_two_tier_time_exit(cfg):
         state, eff = classify_time_exit(d, cfg, net_float)
         return state, eff, None, None, None
@@ -536,7 +551,8 @@ def build_holding_k4_check(
             if close > 0 else (None, False)
         )
         state, eff, lock_state, lock_date, lock_nf = _resolve_time_exit_with_lock(
-            d, cfg, net_float, prior_locks.get(p.id), trade_date
+            d, cfg, net_float, prior_locks.get(p.id), trade_date,
+            data_unavailable=not has_data,
         )
         # 审计 🔵-7:定格判向是**一次性、不可回头**的决定,若它建立在「买入费用估的」净浮盈上
         # 必须留痕(日志显式标注),否则事后无从知道这单的判向掺了多少估算成分。
@@ -547,7 +563,10 @@ def build_holding_k4_check(
                 p.id, p.ts_code, d, lock_state, net_float if net_float is not None else float("nan"),
             )
         persist_days = _theme_persist_days(p.ts_code, member_map, hot)
-        hits = _evaluate_hits(row, persist_days, evidence)
+        # v1.4-①-B:当日无 EOD 行 → **整份体检跳过**(连题材类 A2/B3 也不判),由
+        # `has_data=False` 对外标 `dataUnavailable`。**不静默产出空牌** —— 空牌的语义是
+        # 「体检过了没问题」,与「今天压根没体检」必须能分开(§3.8)。
+        hits = _evaluate_hits(row, persist_days, evidence) if has_data else []
         has_strong = any(h.level == "strong" and h.evidence_strength == "price_volume" for h in hits)
         out.append(HoldingK4Item(
             position_id=p.id, ts_code=p.ts_code, name=names.get(p.ts_code, p.ts_code),

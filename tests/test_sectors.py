@@ -146,3 +146,68 @@ class TestMemberMapAndHotLookup:
         lut = sector_hot_lookup(scores)
         assert lut["AAA.TI"].name == "人工智能"
         assert "ZZZ.TI" not in lut
+
+
+# —— v1.4-①-C 板块数据过期告警(§七 P0-3)——————————————————————————————————
+
+class TestSectorFreshness:
+    """`compute_sector_strength` 当日无行时**返回空列表且不报错**(优雅降级)——从报告上
+    分不清「今天没行情」与「板块表根本没更新」。这组断言锁死那个开关。"""
+
+    def _seed(self, settings, dates):
+        from neckline.data.concept_data import upsert_ths_daily
+
+        upsert_ths_daily(pl.DataFrame({
+            "ts_code": ["883300.TI"] * len(dates),
+            "trade_date": [d.strftime("%Y%m%d") for d in dates],
+            "close": [100.0] * len(dates),
+        }), settings.parquet_dir)
+
+    def test_missing_file_is_unavailable_not_fresh(self, isolated_env):
+        """文件不存在 → `lagDays=-1`(哨兵值)且 `stale=True`。**绝不是 0/新鲜**。"""
+        from neckline.report.sectors import SECTOR_LAG_UNKNOWN, compute_sector_freshness
+
+        f = compute_sector_freshness(date(2026, 7, 28), isolated_env.parquet_dir)
+        assert (f.sector_data_date, f.lag_days, f.stale) == ("", SECTOR_LAG_UNKNOWN, True)
+        assert f.unavailable is True and "完全缺失" in f.note()
+
+    def test_same_day_is_fresh_with_empty_note(self, isolated_env):
+        from tests.conftest import insert_trade_cal
+        from neckline.report.sectors import compute_sector_freshness
+
+        days = business_days(date(2026, 7, 20), 5)
+        insert_trade_cal(isolated_env, days)
+        self._seed(isolated_env, days)
+        f = compute_sector_freshness(days[-1], isolated_env.parquet_dir)
+        assert (f.lag_days, f.stale, f.note()) == (0, False, "")
+
+    def test_lag_counted_in_trading_days(self, isolated_env):
+        """落后天数按**交易日**算(跨周末不该被算成 3 天)。"""
+        from tests.conftest import insert_trade_cal
+        from neckline.report.sectors import compute_sector_freshness
+
+        days = business_days(date(2026, 7, 20), 8)
+        insert_trade_cal(isolated_env, days)
+        self._seed(isolated_env, days[:5])                       # 数据到第 5 个交易日
+        f = compute_sector_freshness(days[6], isolated_env.parquet_dir)   # 报告日是第 7 个
+        assert f.lag_days == 2 and f.stale is False              # 恰在容忍上限内
+        assert "落后 2 个交易日" in f.note() and "不可信" not in f.note()
+
+    def test_beyond_tolerance_is_stale_and_says_untrustworthy(self, isolated_env):
+        from tests.conftest import insert_trade_cal
+        from neckline.report.sectors import SECTOR_DATA_STALE_MAX_LAG_DAYS, compute_sector_freshness
+
+        days = business_days(date(2026, 7, 20), 10)
+        insert_trade_cal(isolated_env, days)
+        self._seed(isolated_env, days[:5])
+        f = compute_sector_freshness(days[5 + SECTOR_DATA_STALE_MAX_LAG_DAYS], isolated_env.parquet_dir)
+        assert f.lag_days == SECTOR_DATA_STALE_MAX_LAG_DAYS + 1
+        assert f.stale is True
+        # 「当日暴起板块」与「题材持续天数」两路必须被点名说不可信
+        assert "不可信" in f.note()
+
+    def test_public_dict_contract_shape(self, isolated_env):
+        from neckline.report.sectors import compute_sector_freshness
+
+        d = compute_sector_freshness(date(2026, 7, 28), isolated_env.parquet_dir).to_public_dict()
+        assert set(d) == {"sectorDataDate", "sectorLagDays", "stale"}

@@ -701,3 +701,74 @@ class TestMissedEntryHint:
             report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
         )
         assert bundle.missed_entry_hint and "候选触达买点" in bundle.missed_entry_hint
+
+
+# —— v1.4-①-C 板块数据过期告警端到端(§七 P0-3;「造一个陈旧 ths_daily 验」)——————
+
+class TestSectorFreshnessInReport:
+    """`seed_synthetic_market` 只铺 `ths_index`/`ths_member`、**不铺 `ths_daily`**,
+    正好等价于生产 P0-3 的现状(板块表没有日更路径)——那份报告此前长这样:板块节空、
+    情报题材节空、**而报告上一个字都不提数据是旧的**。这组断言就是把那件事变得说得出口。"""
+
+    def _seed_ths_daily(self, settings, dates):
+        import polars as pl
+
+        from neckline.data.concept_data import upsert_ths_daily
+
+        upsert_ths_daily(pl.DataFrame({
+            "ts_code": ["885921.TI"] * len(dates),
+            "trade_date": [d.strftime("%Y%m%d") for d in dates],
+            "close": [100.0 + i for i in range(len(dates))],
+        }), settings.parquet_dir)
+
+    def test_stale_board_data_raises_banner_and_marks_theme_untrustworthy(self, isolated_env, monkeypatch):
+        from neckline.report.sectors import SECTOR_DATA_STALE_MAX_LAG_DAYS
+
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env, n_days=30)
+        seed_active_rule_v1(isolated_env)
+        # 造陈旧:板块数据只到报告日往前第 (容忍上限+1) 个交易日
+        lag = SECTOR_DATA_STALE_MAX_LAG_DAYS + 1
+        self._seed_ths_daily(isolated_env, dates[: len(dates) - lag])
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        assert bundle.sector_freshness.stale is True
+        assert bundle.sector_freshness.lag_days == lag
+        assert "板块数据过期告警" in bundle.markdown          # 报告**顶部**醒目告警
+        assert "本小节不可信" in bundle.markdown              # 最强题材小节被点名
+        # 落库快照可读回(随报告冻住,不在读时重算)
+        loaded = store.load_report(report_date, db_path=isolated_env.db_path)
+        assert loaded["data_freshness"] == {
+            "sectorDataDate": dates[len(dates) - lag - 1].strftime("%Y%m%d"),
+            "sectorLagDays": lag, "stale": True,
+        }
+
+    def test_fresh_board_data_has_no_banner(self, isolated_env, monkeypatch):
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env, n_days=30)
+        seed_active_rule_v1(isolated_env)
+        self._seed_ths_daily(isolated_env, dates)
+        bundle = pipeline_mod.build_report(
+            dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert bundle.sector_freshness.stale is False
+        assert "板块数据过期告警" not in bundle.markdown
+        assert "本小节不可信" not in bundle.markdown
+
+    def test_missing_ths_daily_is_reported_as_unavailable_not_silent(self, isolated_env, monkeypatch):
+        """**P0-3 的原始现场**:`ths_daily` 压根没有 → 此前板块节只说「今日无概念板块
+        数据」,读者无从判断是没行情还是没更新;现在必须明说「完全缺失 + 不可信」。"""
+        from neckline.report.sectors import SECTOR_LAG_UNKNOWN
+
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env, n_days=30)
+        seed_active_rule_v1(isolated_env)
+        bundle = pipeline_mod.build_report(
+            dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert bundle.sector_freshness.lag_days == SECTOR_LAG_UNKNOWN
+        assert bundle.sector_freshness.stale is True
+        assert "板块数据过期告警" in bundle.markdown and "完全缺失" in bundle.markdown

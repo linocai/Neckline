@@ -36,7 +36,15 @@ from neckline.report.intel import IntelReport, compute_intel, empty_intel_report
 from neckline.report.news_alerts import NewsAlertsReport, build_news_alerts, empty_news_alerts_report
 from neckline.report.pending_track import track_pending_decisions
 from neckline.report.render import render_markdown
-from neckline.report.sectors import SectorScore, compute_sector_strength, load_index_names, load_member_map
+from neckline.report.sectors import (
+    SECTOR_DATA_STALE_MAX_LAG_DAYS,
+    SectorDataFreshness,
+    SectorScore,
+    compute_sector_freshness,
+    compute_sector_strength,
+    load_index_names,
+    load_member_map,
+)
 from neckline.report.holding_k4_check import HoldingK4Item, build_holding_k4_check
 from neckline.report.sector_moneyflow import (
     SectorMoneyflowReport,
@@ -69,6 +77,9 @@ class ReportBundle:
     intel: Optional[IntelReport] = None                    # v1.3-③-C1 复盘情报件(不阻断,失败降级见 empty_intel_report)
     sector_moneyflow: Optional[SectorMoneyflowReport] = None  # v1.3-③-C2 板块资金流(拥挤情报,非选股信号)
     news_alerts: Optional[NewsAlertsReport] = None          # v1.3-③-C4 消息面扫描(不阻断,失败降级见 empty_news_alerts_report)
+    # v1.4-①-C 板块数据新鲜度(§七 P0-3):「当日暴起板块」与「题材持续天数」两路的可信度
+    # 前提。**过期时必须显式标不可信,不静默降级为空**——「没有」和「没看」必须能分开。
+    sector_freshness: Optional[SectorDataFreshness] = None
 
 
 def compute_missed_entry_hint(trade_date: date, db_path: Optional[Path] = None) -> str:
@@ -128,6 +139,17 @@ def build_report(
 
     sentiment = compute_sentiment(trade_date, parquet_dir=parquet_dir)
     sector_scores = compute_sector_strength(trade_date, parquet_dir=parquet_dir)
+    # v1.4-①-C:板块数据新鲜度**独立于日更**先算(P0-3 要求「至少先加过期告警」)。
+    # `compute_sector_strength` 无当日行时返空列表且不报错(优雅降级),从报告上看不出
+    # 是「今天没行情」还是「板块表根本没更新」—— 这一行就是把两者分开的那个开关。
+    sector_freshness = compute_sector_freshness(trade_date, parquet_dir=parquet_dir)
+    if sector_freshness.stale:
+        logger.warning(
+            "板块数据过期:最新至 %s,落后 %s 个交易日(容忍上限 %s)——「当日暴起板块」与"
+            "「题材持续天数」本日不可信,报告已显式标注。",
+            sector_freshness.sector_data_date or "(无数据)", sector_freshness.lag_days,
+            SECTOR_DATA_STALE_MAX_LAG_DAYS,
+        )
     member_map = load_member_map(parquet_dir=parquet_dir)
     index_names = load_index_names(parquet_dir=parquet_dir)
 
@@ -265,6 +287,7 @@ def build_report(
         intel=intel,
         sector_moneyflow=sector_moneyflow,
         news_alerts=news_alerts,
+        sector_freshness=sector_freshness,
     )
 
     if save:
@@ -279,6 +302,7 @@ def build_report(
             intel=intel.to_public_dict(),
             sector_moneyflow=sector_moneyflow.to_public_dict(),
             news_alerts_scan=news_alerts.scan_statuses_public(),
+            data_freshness=sector_freshness.to_public_dict(),   # v1.4-①-C
             db_path=db_path,
         )
         # v1.1-D 问询窗口修复:报告落库成功后才标记消费(§根因见
@@ -313,6 +337,7 @@ def build_report(
         intel=intel,
         sector_moneyflow=sector_moneyflow,
         news_alerts=news_alerts,
+        sector_freshness=sector_freshness,
     )
 
 

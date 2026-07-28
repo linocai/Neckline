@@ -106,7 +106,14 @@ TIME_EXIT_NEXT_DAY = "time_exit_next_day"  # 非浮盈单:d≥max_hold_days 且�
 PROFIT_EXEMPT = "profit_exempt"            # 浮盈单:d≥max_hold_days 且净浮盈 >0 → 续持至硬上限(不推)
 HARD_CAP_EXIT = "hard_cap_exit"            # d≥max_hold_days_profit → 硬上限无条件次日退出(推)
 HOLDING = "holding"                        # d<max_hold_days,未到时间退出判定点(不推)
-# 需盘前汇总推送的两档(profit_exempt/holding 不推 D5 执行提醒,§五 v1.3-①-D)。
+# v1.4-①-B 第五态(§七 P0-2):**当日无 EOD 行**(停牌 / 数据缺口)且尚未定格 → 时间退出
+# **判向挂起**:不定格、不推 D5、不推硬上限。`d_count` 照常按交易日累计并展示(纪律口径是
+# 「持有交易日数」,不因停牌暂停计数),只是**判向**悬空;复牌当日 16:35 用复牌当日 EOD
+# 正常定格。**这是对既有保守兜底的定向收窄,不是放宽** —— 现状「无定格 → 保守判
+# time_exit_next_day」会催用户去卖一只**根本卖不掉**的票;其余无定格情形(EOD 管线断跑等)
+# 一字不改仍保守判 time_exit_next_day(豁免需正向证据,审计 🔴-1 结论不得回退)。
+SUSPENDED_HOLD = "suspended_hold"
+# 需盘前汇总推送的两档(profit_exempt/holding/suspended_hold 不推 D5 执行提醒,§五 v1.3-①-D)。
 _ACTIONABLE_TIME_EXIT = (TIME_EXIT_NEXT_DAY, HARD_CAP_EXIT)
 
 
@@ -296,7 +303,8 @@ def classify_time_exit(
 
 
 def resolve_time_exit(
-    d: int, cfg: MomentumConfig, locked_state: Optional[str] = None
+    d: int, cfg: MomentumConfig, locked_state: Optional[str] = None,
+    *, data_unavailable: bool = False,
 ) -> tuple[str, int]:
     """**消费点**的时间退出状态解析(单一源;precall / 16:35 / `GET /positions` 三处共用)。
 
@@ -322,7 +330,22 @@ def resolve_time_exit(
         TIME_EXIT_NEXT_DAY**(豁免需正向证据;正常生产 16:35 先于次日 9:25:30 跑,故此分支
         只在 EOD 管线当天断跑等异常下走到,诚实偏保守而非偏豁免)。
       · 两档 + `d<max_hold_days` → HOLDING。
+
+    **v1.4-①-B 第五态 `data_unavailable`(§七 P0-2,唯一新增分支)**:该持仓票**当日无 EOD
+    行**(停牌 / 数据缺口)时传 True。仅当「到判定点(`d≥max_hold_days`)且**尚无定格**」
+    才改判 `SUSPENDED_HOLD`(判向挂起,不推任何提醒);其余一律走原路径:
+      · `data_unavailable=False`(缺省)→ 本函数与 v1.4 之前**逐位相同**(K1/两档均是),
+        `EOD 管线断跑` 这类无定格情形仍保守判 TIME_EXIT_NEXT_DAY,一字不改。
+      · **已有定格 → 定格值优先,挂起不生效**:判向是在有真数据的那天一次性做出的决定
+        (审计 🔴-1),停牌不能事后把它撤回 —— 否则「D5 判该走 → 用户没走 → 停牌 → 系统
+        改口」又是一条违纪被事后合法化的路。
+      · `d<max_hold_days` → 仍 HOLDING(压根还没到判定点,无需挂起)。
     """
+    if data_unavailable and locked_state is None and d >= cfg.max_hold_days:
+        two_tier = is_two_tier_time_exit(cfg)
+        eff = (cfg.max_hold_days_profit
+               if two_tier and d >= cfg.max_hold_days_profit else cfg.max_hold_days)
+        return SUSPENDED_HOLD, eff
     if not is_two_tier_time_exit(cfg):
         return (TIME_EXIT_NEXT_DAY if d >= cfg.max_hold_days else HOLDING), cfg.max_hold_days
     if d >= cfg.max_hold_days_profit:
@@ -586,6 +609,7 @@ __all__ = [
     "PROFIT_EXEMPT",
     "HARD_CAP_EXIT",
     "HOLDING",
+    "SUSPENDED_HOLD",
     "PrecallResult",
     "run_precall_tick",
     "EVENT_GAP_UP",

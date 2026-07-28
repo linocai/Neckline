@@ -48,6 +48,11 @@ enum APIError: Error, LocalizedError, Equatable {
     // v1.1-F:404 通用「未找到」(watchlist delete/pin 代码不存在等,reason="not_found")。
     // 与 `notHolding` 分开是因为两者文案不同,合并会让"删自选未命中"误显"持仓已清"。
     case notFound
+    // v1.4-①-A:补录买入日的两个 400 reason。**逐个建 case,不吃 fallback**——守项目
+    // CLAUDE.md「404/reason 映射」坑(watchlist `not_found` 曾被 fallback 误显成
+    // 「持仓已清」)。两者文案不同:一个是「那天不开市」,一个是「你填到未来去了」。
+    case notTradingDay       // 400 buyDate 不是交易日(reason="not_trading_day")
+    case futureBuyDate       // 400 buyDate 晚于今天(reason="future_buy_date")
     case validation(String)  // 422 字段校验(含 provider 白名单)
     case server(Int, String)
     case transport(String)
@@ -58,6 +63,8 @@ enum APIError: Error, LocalizedError, Equatable {
         case .unauthorized:     return "鉴权失败(检查 API Token)"
         case .notHolding:       return "该持仓已清或不存在"
         case .notFound:         return "未找到该记录(可能已被删除)"
+        case .notTradingDay:    return "买入日不是交易日,请选择实际成交的交易日"
+        case .futureBuyDate:    return "买入日不能晚于今天"
         case .validation(let m): return "字段校验失败:\(m)"
         case .server(let c, let m): return "服务端错误 \(c):\(m)"
         case .transport(let m): return "网络错误:\(m)"
@@ -141,6 +148,11 @@ struct OpenPositionRequest: Encodable {
     // (`PositionOpenIn.buyFees: Optional[float] = None`),且这样不必为完全不关心
     // 费用的既有测试调用点(如 IntegrationSmokeTests 的基础开仓闭环)逐一补参数。
     let buyFees: Double?
+    // v1.4-①-A(§七 P0-1):真实买入日 'YYYYMMDD'。Optional + 默认 nil —— Swift 合成的
+    // Encodable 对 Optional 走 `encodeIfPresent`,**nil 时该键根本不出现在 JSON 里**,
+    // 故不传时请求体与 v1.4 之前逐字节相同(服务端此时取今天,行为不变)。
+    // 日期选择器 UI 归第 ⑧ 块;本块只把传输层的口子开好 + 400 reason 映射到位。
+    let buyDate: String?
 }
 private struct OpenPositionResponse: Decodable {
     let ok: Bool
@@ -339,10 +351,15 @@ actor APIClient {
     /// `buyFees`(v1.3-①/⑥):实付买入费用。UI 层(`PositionEntryForm.isValid`)强制
     /// 必填,这里仍是 Optional + 默认 nil(服务端宽松,且不强迫不关心费用的既有调用点
     /// 逐一改)。
+    /// `buyDate`(v1.4-①-A):真实买入日 'YYYYMMDD',**不传 → 服务端取今天**(与 v1.4
+    /// 之前逐位一致)。服务端校验非交易日 / 未来日 → 400 + reason,分别映射到
+    /// `.notTradingDay` / `.futureBuyDate`(见 `mapReason`)。
     func openPosition(code: String, name: String?, buyPrice: Double, qty: Int,
-                      entryReason: String, buyFees: Double? = nil) async throws -> (positionId: Int, stopLine: Double) {
+                      entryReason: String, buyFees: Double? = nil,
+                      buyDate: String? = nil) async throws -> (positionId: Int, stopLine: Double) {
         let body = OpenPositionRequest(code: code, name: name, buy_price: buyPrice,
-                                       qty: qty, entry_reason: entryReason, buyFees: buyFees)
+                                       qty: qty, entry_reason: entryReason, buyFees: buyFees,
+                                       buyDate: buyDate)
         let data = try await post("/api/v1/positions", body: body)
         let r = try JSONDecoder().decode(OpenPositionResponse.self, from: data)
         return (r.position_id, r.stop_line)
@@ -756,6 +773,10 @@ actor APIClient {
             return data
         case 401:
             throw APIError.unauthorized
+        // v1.4-①-A:400 走 reason 映射(`POST /positions` 的 buyDate 校验)。fallback 保持
+        // 既有 `.server(400, …)` 语义 —— 未知 400 reason 不冒充成买入日错误。
+        case 400:
+            throw mapReason(data, fallback: .server(400, reasonString(data) ?? "请求不合法"))
         case 404:
             throw mapReason(data, fallback: .notHolding)
         case 422:
@@ -771,6 +792,9 @@ actor APIClient {
         switch reason {
         case "not_holding": return .notHolding
         case "not_found": return .notFound   // v1.1-F:watchlist delete/pin 代码不存在
+        // v1.4-①-A:POST /positions 的 buyDate 校验(400),两个 reason 各一 case。
+        case "not_trading_day": return .notTradingDay
+        case "future_buy_date": return .futureBuyDate
         default: return fallback
         }
     }

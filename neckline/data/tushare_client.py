@@ -238,6 +238,21 @@ def ts_moneyflow_dc_all(trade_date: str) -> TushareResult:
     return _call("moneyflow_dc", trade_date=trade_date)
 
 
+def ts_suspend_d_all(trade_date: str) -> TushareResult:
+    """全市场当日**停牌**名单(plan §五 v1.4-①-B / §七 P0-2)。
+
+    **2026-07-28 真 token 活体探活确认可用**(照 v1.3-③-C4 `anns_d` 探活的做法,结论写档):
+    600 元档直接可调,`suspend_type='S'`(停牌;'R'=复牌)。当日实测 9 只、`002036.SZ`
+    自 20260723 起连续在榜 —— 即该票是**真停牌**、不是数据源缺口(§七 P0-2 诊断结论)。
+
+    字段:`ts_code`、`trade_date`、`suspend_timing`(盘中停牌时段,全天停牌为 None)、
+    `suspend_type`。本项目只用「当日是否在停牌名单里」这一位信息,给持仓 `priceStale.reason`
+    定标签(`suspended` vs `data_gap`)。拉不到 → 调用方降级成 `unknown`,**不崩、也不假装
+    知道**(§3.8「没有」与「没看」必须能分开)。
+    """
+    return _call("suspend_d", trade_date=trade_date, suspend_type="S")
+
+
 def ts_index_daily(ts_code: str, start: str, end: str) -> TushareResult:
     """单指数区间日线(上证/深成/创业板指等)。实测支持一次拿 6 年区间,不必分批。"""
     return _call("index_daily", ts_code=ts_code, start_date=start, end_date=end)

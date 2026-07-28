@@ -183,3 +183,64 @@ class TestScanTimeExits:
     def test_names_resolve(self):
         te = scan_time_exits([_pos()], _date_at_held(5), _k1(), names={"600001.SH": "示例股"})
         assert te[0].name == "示例股"
+
+
+# —— v1.4-①-B 第五态 suspended_hold(§七 P0-2;停牌/无当日 EOD 行 → 判向挂起)————————
+
+class TestSuspendedHold:
+    """**这是对既有保守兜底的定向收窄,不是放宽** —— 只对「当日无 EOD 行」这一情形改判
+    挂起;其余无定格情形(EOD 管线断跑等)一字不改仍保守判 time_exit_next_day。"""
+
+    def test_default_arg_is_bitwise_identical(self):
+        """**回归护栏(最要紧的一条)**:不传 `data_unavailable` 时,两档 / 单档 / 各种
+        定格串下的返回值与新增该参数之前逐位相同——本块只加一条分支,不动老路径。"""
+        from neckline.sentinel.precall import SUSPENDED_HOLD
+
+        for cfg in (_k1(), _v13()):
+            for lock in (None, PROFIT_EXEMPT, TIME_EXIT_NEXT_DAY):
+                for d in range(0, 20):
+                    got = resolve_time_exit(d, cfg, lock)
+                    assert got == resolve_time_exit(d, cfg, lock, data_unavailable=False)
+                    assert got[0] != SUSPENDED_HOLD
+
+    def test_suspended_at_judgement_point_hangs_instead_of_pushing_exit(self):
+        """两档 + 到判定点 + 无定格 + 当日无 EOD 行 → 挂起(不再催用户去卖一只卖不掉的票)。"""
+        from neckline.sentinel.precall import SUSPENDED_HOLD
+
+        cfg = _v13()
+        assert resolve_time_exit(5, cfg, None, data_unavailable=True) == (SUSPENDED_HOLD, 5)
+        assert resolve_time_exit(9, cfg, None, data_unavailable=True) == (SUSPENDED_HOLD, 5)
+        # 对照:同样无定格,但当日**有** EOD 行(只是管线判不出浮盈)→ 仍保守判该走
+        assert resolve_time_exit(5, cfg, None) == (TIME_EXIT_NEXT_DAY, 5)
+
+    def test_suspended_before_judgement_point_is_plain_holding(self):
+        """还没到判定点就停牌 → 仍是 HOLDING(没到判定点,谈不上挂起)。"""
+        assert resolve_time_exit(3, _v13(), None, data_unavailable=True) == (HOLDING, 5)
+        assert resolve_time_exit(3, _k1(), None, data_unavailable=True) == (HOLDING, 5)
+
+    def test_existing_lock_wins_over_suspension(self):
+        """**已有定格 → 定格值优先,停牌不撤回既有判向**:判向是在有真数据那天一次性做出的
+        决定(审计 🔴-1),否则「D5 判该走 → 用户没走 → 停牌 → 系统改口」又是一条违纪被
+        事后合法化的路。"""
+        cfg = _v13()
+        assert resolve_time_exit(6, cfg, TIME_EXIT_NEXT_DAY, data_unavailable=True) == (TIME_EXIT_NEXT_DAY, 5)
+        assert resolve_time_exit(6, cfg, PROFIT_EXEMPT, data_unavailable=True) == (PROFIT_EXEMPT, 15)
+
+    def test_hard_cap_also_hangs_when_no_data_and_never_locked(self):
+        """硬上限提醒同样挂起(plan 明写「不推 D5/硬上限提醒」);eff 仍按 d 已到的档给,
+        免得客户端显示成 D18/D5 这种自相矛盾的文案。"""
+        from neckline.sentinel.precall import SUSPENDED_HOLD
+
+        assert resolve_time_exit(18, _v13(), None, data_unavailable=True) == (SUSPENDED_HOLD, 15)
+
+    def test_suspended_hold_is_not_actionable(self):
+        """挂起态绝不进 D5 执行提醒推送白名单(不推 = 契约级保证,不是调用点自觉)。"""
+        from neckline.sentinel.precall import SUSPENDED_HOLD
+
+        assert SUSPENDED_HOLD not in _ACTIONABLE_TIME_EXIT
+
+    def test_single_tier_also_hangs(self):
+        """单档老 config 同理挂起(病根一样:催用户卖一只停牌票)。"""
+        from neckline.sentinel.precall import SUSPENDED_HOLD
+
+        assert resolve_time_exit(5, _k1(), None, data_unavailable=True) == (SUSPENDED_HOLD, 5)

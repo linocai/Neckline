@@ -271,3 +271,273 @@ def test_entry_suggestion_high_price_zero_lots(client, AUTH):
 
     r0 = client.get("/api/v1/positions/entry-suggestion", headers=AUTH, params={"price": 0}).json()
     assert r0["qtyLow"] == 0 and r0["qtyHigh"] == 0 and r0["stopLine"] == 0.0   # price≤0 防除零
+
+
+# —— v1.4-①-A 补录真实买入日(§七 P0-1,🔴 碰持仓判定)——————————————————————
+
+def _seed_cal_around_today(api_env):
+    """在隔离库铺一段稠密 trade_cal:今天 ± 10 个自然日,其中**工作日 = 交易日**。
+    刻意含今天(默认路径要走得通)与至少一个非交易日(周末)。"""
+    from datetime import date, timedelta
+
+    from tests.conftest import insert_trade_cal
+
+    today = date.today()
+    days = [today + timedelta(days=i) for i in range(-10, 11)]
+    insert_trade_cal(api_env, [d for d in days if d.weekday() < 5],
+                     range_start=days[0], range_end=days[-1])
+    return today
+
+
+def _recent_trading_day(today, back: int = 1):
+    """今天往前数第 `back` 个工作日(与 `_seed_cal_around_today` 的口径一致)。"""
+    from datetime import timedelta
+
+    d, seen = today, 0
+    while seen < back:
+        d -= timedelta(days=1)
+        if d.weekday() < 5:
+            seen += 1
+    return d
+
+
+def test_buy_date_omitted_defaults_to_today(client, AUTH, api_env):
+    """**老客户端不传 buyDate → 行为与 v1.4 之前逐位一致**(buy_date=今天)。
+    这是 ①-A 的向后兼容红线,先锁死它再谈新能力。"""
+    from datetime import date
+
+    _seed_cal_around_today(api_env)
+    client.post("/api/v1/positions", headers=AUTH,
+                json={"code": "600001.SH", "buy_price": 10.0, "qty": 100})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["buyDate"] == date.today().strftime("%Y%m%d")
+
+
+def test_buy_date_historical_trading_day_written_through(client, AUTH, api_env):
+    """传历史交易日 → 原样落库,且 dCount 按真实买入日算(≥2,不是刚开仓的 1)。"""
+    today = _seed_cal_around_today(api_env)
+    target = _recent_trading_day(today, back=3)
+
+    client.post("/api/v1/positions", headers=AUTH, json={
+        "code": "600001.SH", "buy_price": 10.0, "qty": 100,
+        "buyDate": target.strftime("%Y%m%d"),
+    })
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["buyDate"] == target.strftime("%Y%m%d")
+    # D 计数是本条 P0 的核心受益者:买入日对了,D 才对(闭区间交易日数 = 4)。
+    assert h["dCount"] == 4
+
+
+def test_buy_date_non_trading_day_400_not_trading_day(client, AUTH, api_env):
+    """非交易日(周末)→ 400 + reason=not_trading_day,**且一笔都不落库**。"""
+    from datetime import timedelta
+
+    today = _seed_cal_around_today(api_env)
+    weekend = today - timedelta(days=1)
+    while weekend.weekday() < 5:          # 往回找最近的周末日(必在铺好的日历窗口内)
+        weekend -= timedelta(days=1)
+
+    r = client.post("/api/v1/positions", headers=AUTH, json={
+        "code": "600001.SH", "buy_price": 10.0, "qty": 100,
+        "buyDate": weekend.strftime("%Y%m%d"),
+    })
+    assert r.status_code == 400
+    assert r.json()["detail"]["reason"] == "not_trading_day"
+    assert client.get("/api/v1/positions", headers=AUTH).json()["holdings"] == []
+
+
+def test_buy_date_future_400_future_buy_date(client, AUTH, api_env):
+    """未来日 → 400 + reason=future_buy_date。**即便那天也是交易日**——校验顺序必须
+    「先判未来、再判交易日」,否则 reason 会说谎(明天多半正好是交易日)。"""
+    from datetime import timedelta
+
+    today = _seed_cal_around_today(api_env)
+    future = today + timedelta(days=1)
+    while future.weekday() >= 5:          # 取一个确实是交易日的未来日
+        future += timedelta(days=1)
+
+    r = client.post("/api/v1/positions", headers=AUTH, json={
+        "code": "600001.SH", "buy_price": 10.0, "qty": 100,
+        "buyDate": future.strftime("%Y%m%d"),
+    })
+    assert r.status_code == 400
+    assert r.json()["detail"]["reason"] == "future_buy_date"
+    assert client.get("/api/v1/positions", headers=AUTH).json()["holdings"] == []
+
+
+def test_buy_date_malformed_400_not_silently_today(client, AUTH, api_env):
+    """格式非法 → 400(**不静默吞成今天**):「没给」与「给错了」必须能分开(§3.8)。"""
+    _seed_cal_around_today(api_env)
+    for bad in ("2026-07-22", "20260732", "abc", "202607"):
+        r = client.post("/api/v1/positions", headers=AUTH, json={
+            "code": "600001.SH", "buy_price": 10.0, "qty": 100, "buyDate": bad,
+        })
+        assert r.status_code == 400, bad
+        assert r.json()["detail"]["reason"] == "not_trading_day", bad
+    assert client.get("/api/v1/positions", headers=AUTH).json()["holdings"] == []
+
+
+def test_buy_date_empty_string_treated_as_omitted(client, AUTH, api_env):
+    """空串 = 没填(客户端表单常见形态)→ 走缺省今天,不报 400。"""
+    from datetime import date
+
+    _seed_cal_around_today(api_env)
+    r = client.post("/api/v1/positions", headers=AUTH, json={
+        "code": "600001.SH", "buy_price": 10.0, "qty": 100, "buyDate": "",
+    })
+    assert r.status_code == 200
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["buyDate"] == date.today().strftime("%Y%m%d")
+
+
+def test_buy_date_reason_codes_are_named_constants(client, AUTH):
+    """两个 reason 字面量住命名常量(客户端 mapReason 的 case 与之对齐,不各写一份)。"""
+    from neckline.api.app import REASON_FUTURE_BUY_DATE, REASON_NOT_TRADING_DAY
+
+    assert REASON_NOT_TRADING_DAY == "not_trading_day"
+    assert REASON_FUTURE_BUY_DATE == "future_buy_date"
+
+
+# —— v1.4-①-B 停牌 / 无当日 EOD 行的持仓票在 GET /positions 的显式标注(§七 P0-2)————
+
+def _seed_market_with_gap(api_env, *, gap_days: int = 3, suspend_list=("002036.SZ",)):
+    """铺 10 个交易日全市场行情:`600001.SH` 全程有行,`002036.SZ` 最后 `gap_days` 天缺行。
+    `suspend_list` = 最后一天落盘的停牌名单(`None` = 该表压根没落盘 → reason 应为 unknown;
+    空/不含该票 = 落了但它不在名单里 → reason 应为 data_gap)。返回交易日列表。"""
+    from datetime import date
+
+    import polars as pl
+
+    from neckline.data.market_data import write_table_day
+    from tests.conftest import business_days, insert_trade_cal, write_daily_fixture
+
+    days = business_days(date(2026, 7, 6), 10)
+    insert_trade_cal(api_env, days)
+    for i, d in enumerate(days):
+        rows = [{"ts_code": "600001.SH", "close": 10.0, "open": 10.0, "high": 10.0,
+                 "low": 10.0, "pre_close": 10.0, "vol": 1.0, "amount": 1.0}]
+        if i < len(days) - gap_days:
+            rows.append({"ts_code": "002036.SZ", "close": 7.2, "open": 7.2, "high": 7.2,
+                         "low": 7.2, "pre_close": 7.2, "vol": 1.0, "amount": 1.0})
+        write_daily_fixture(api_env, "daily", d, rows)
+    if suspend_list is not None:
+        codes = list(suspend_list) or ["999999.SZ"]   # 名单落了盘,但不含被测票
+        write_table_day("suspend_d", days[-1], pl.DataFrame({
+            "ts_code": codes, "trade_date": [days[-1]] * len(codes),
+            "suspend_type": ["S"] * len(codes),
+        }), parquet_dir=api_env.parquet_dir)
+    return days
+
+
+def test_price_stale_absent_for_fresh_position(client, AUTH, api_env, monkeypatch):
+    """当日有 EOD 行的正常票 → `priceStale` 为 null(正常票不背这个字段的负担)。"""
+    import neckline.api.app as app_mod
+
+    days = _seed_market_with_gap(api_env)
+    monkeypatch.setattr(app_mod, "_resolve_price_stale",
+                        lambda codes: _real_stale(api_env, codes, days[-1]))
+    client.post("/api/v1/positions", headers=AUTH,
+                json={"code": "600001.SH", "buy_price": 10.0, "qty": 100})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["priceStale"] is None
+
+
+def _real_stale(api_env, codes, as_of):
+    """把「今天」钉到合成行情的最后一个交易日(测试里 date.today() 不在合成窗口内)。"""
+    from neckline.data.price_stale import resolve_price_stale
+
+    return resolve_price_stale(codes, as_of, api_env.parquet_dir)
+
+
+def test_price_stale_reports_days_last_close_and_reason(client, AUTH, api_env, monkeypatch):
+    """停牌票 → 三字段齐备且 reason=suspended(**绝不静默把老价当今日价**)。"""
+    import neckline.api.app as app_mod
+
+    days = _seed_market_with_gap(api_env, gap_days=3)
+    monkeypatch.setattr(app_mod, "_resolve_price_stale",
+                        lambda codes: _real_stale(api_env, codes, days[-1]))
+    client.post("/api/v1/positions", headers=AUTH,
+                json={"code": "002036.SZ", "buy_price": 7.184, "qty": 3000})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["priceStale"] == {
+        "staleDays": 3,
+        "lastCloseDate": days[-4].strftime("%Y%m%d"),
+        "reason": "suspended",
+    }
+
+
+def test_price_stale_reason_data_gap_vs_unknown(client, AUTH, api_env, monkeypatch):
+    """缺行但**不在**停牌名单 → data_gap;名单**压根没落盘** → unknown。两者不可混同
+    (「没有」与「没看」必须能分开,§3.8)。"""
+    import neckline.api.app as app_mod
+
+    days = _seed_market_with_gap(api_env, gap_days=2, suspend_list=[])
+    monkeypatch.setattr(app_mod, "_resolve_price_stale",
+                        lambda codes: _real_stale(api_env, codes, days[-1]))
+    client.post("/api/v1/positions", headers=AUTH,
+                json={"code": "002036.SZ", "buy_price": 7.184, "qty": 3000})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["priceStale"]["reason"] == "data_gap"
+
+    (api_env.parquet_dir / "suspend_d").rename(api_env.parquet_dir / "suspend_d_off")
+    h2 = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h2["priceStale"]["reason"] == "unknown"
+
+
+def test_suspended_hold_state_and_action_text(client, AUTH, api_env, monkeypatch):
+    """到判定点 + 无定格 + 当日无 EOD 行 → timeExitState=suspended_hold,
+    `todayAction` 说的是「判向挂起」而不是「按计划离场」(P0-2 的病根就是那句离场)。"""
+    import neckline.api.app as app_mod
+    from neckline.data.price_stale import PriceStale
+    from tests.conftest import seed_active_rule_v1
+
+    seed_active_rule_v1(api_env, {"time_exit_only_if_unprofitable": True, "max_hold_days_profit": 15})
+    today = _seed_cal_around_today(api_env)
+    monkeypatch.setattr(app_mod, "_resolve_price_stale", lambda codes: {
+        "002036.SZ": PriceStale(stale_days=4, last_close_date="20260722", reason="suspended"),
+    })
+    # 买入日往前推 6 个交易日 → dCount ≥ 5(到判定点)
+    client.post("/api/v1/positions", headers=AUTH, json={
+        "code": "002036.SZ", "buy_price": 7.184, "qty": 3000,
+        "buyDate": _recent_trading_day(today, back=6).strftime("%Y%m%d"),
+    })
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["dCount"] >= 5                    # D 计数照常累计并展示
+    assert h["timeExitState"] == "suspended_hold"
+    assert "挂起" in h["todayAction"] and "离场" not in h["todayAction"]
+
+
+def test_k4_data_unavailable_null_when_no_snapshot(client, AUTH, api_env):
+    """刚开仓未体检 → k4DataUnavailable 为 null(没有快照 = 不知道,不冒充 false)。"""
+    _seed_cal_around_today(api_env)
+    client.post("/api/v1/positions", headers=AUTH,
+                json={"code": "600001.SH", "buy_price": 10.0, "qty": 100})
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["k4DataUnavailable"] is None
+
+
+def test_k4_data_unavailable_true_from_snapshot(client, AUTH, api_env):
+    """16:35 体检记了「当日无 EOD 行」→ 客户端拿到 true(空 k4Advisory 不再等于「没问题」)。"""
+    from datetime import date
+
+    from neckline.report import holding_store
+
+    _seed_cal_around_today(api_env)
+    pid = client.post("/api/v1/positions", headers=AUTH, json={
+        "code": "002036.SZ", "buy_price": 7.184, "qty": 3000,
+    }).json()["position_id"]
+
+    class _It:
+        position_id, d_count, net_float = pid, 5, None
+        time_exit_state, max_hold_effective = "suspended_hold", 5
+        has_strong = scenario_review = False
+        has_data = False
+        time_exit_locked_state = time_exit_locked_date = time_exit_locked_net_float = None
+
+        def hits_public(self):
+            return []
+
+    holding_store.save_holding_eod_checks(date.today(), [_It()], db_path=api_env.db_path)
+    h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
+    assert h["k4DataUnavailable"] is True
+    assert h["k4Advisory"] == []

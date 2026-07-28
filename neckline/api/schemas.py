@@ -183,6 +183,14 @@ class ReportOut(BaseModel):
     newsAlerts: List[NewsAlertOut] = Field(default_factory=list)
     # 扫描状态(非字面契约清单,本块新增透明度字段,见 NewsAlertScanStatusOut 注释)。
     newsAlertsScan: List[NewsAlertScanStatusOut] = Field(default_factory=list)
+    # v1.4-①-C 板块数据新鲜度(§七 P0-3):`{sectorDataDate:'YYYYMMDD', sectorLagDays:int,
+    # stale:bool}`,透传落库快照(**随报告冻住**——读三天前的报告该看到当时的新鲜度)。
+    # `sectorLagDays=-1` = 板块数据完全缺失(哨兵值,见 `report/sectors.py::
+    # SECTOR_LAG_UNKNOWN`;刻意不用 0,0 是「新鲜」)。**空 dict = 老报告**(建于本字段
+    # 之前),客户端按「该版本还没有新鲜度概念」处理,不得当成「新鲜」。
+    # ⚠ `stale=True` 时「当日暴起板块」与「题材持续天数」**本日不可信**,客户端须显式
+    # 标注,不静默把它们当正常结果展示。
+    dataFreshness: Dict[str, Any] = Field(default_factory=dict)
     degraded: bool = False
     reason: str = ""
 
@@ -246,10 +254,23 @@ class PositionOut(BaseModel):
     todayAction: str = ""        # 今日动作提示(D5离场 / 距止损 / 回落止盈已触发 等)
     # —— v1.3-① 两档时间退出(服务端按 D5 净浮盈判好下发,客户端不重算)——————————————
     maxHoldDaysEffective: int = 5   # 该单有效硬上限:非浮盈=maxHoldDays;浮盈豁免=max_hold_days_profit(如 15)
-    timeExitState: str = "holding"  # time_exit_next_day | profit_exempt | hard_cap_exit | holding
+    # v1.4-①-B 起多一个第五态 `suspended_hold`(当日无 EOD 行 且 尚未定格 → 判向挂起,
+    # 不推 D5 / 不推硬上限;`dCount` 照常累计展示)。客户端展示层须为它加一档文案。
+    timeExitState: str = "holding"  # time_exit_next_day | profit_exempt | hard_cap_exit | holding | suspended_hold
     # —— v1.3-① 费用回显(实付,供周复盘对账用真数;NULL=未录)——————————————————
     buyFees: Optional[float] = None
     sellFees: Optional[float] = None
+    # —— v1.4-①-B 停牌 / 无行情持仓票的显式标注(§七 P0-2)————————————————————————
+    # `priceStale`:当日**无 EOD 行**时给出「陈旧几个交易日 / 最后成交日 / 为什么」三件
+    # (`{staleDays:int, lastCloseDate:'YYYYMMDD', reason:'suspended'|'data_gap'|'unknown'}`,
+    # 领域源 `data/price_stale.py`)。**当日有行 → null**(正常票不背这个字段的负担)。
+    # 客户端持仓卡文案:「停牌/无数据 {staleDays} 个交易日,价格为 {lastCloseDate} 最后成交价」。
+    # ⚠ **绝不静默把老价当今日价** —— 这个字段就是那句「静默」的解药。
+    priceStale: Optional[Dict[str, Any]] = None
+    # `k4DataUnavailable`:当日 K4 体检是否因无 EOD 行被**整份跳过**。**三值**:
+    # true=没体检 / false=体检过了(空 `k4Advisory` 才等于「体检过没问题」)/ **null=老快照
+    # 未记录**(建于本字段之前的行,如实说不知道,不冒充 false)。
+    k4DataUnavailable: Optional[bool] = None
     # —— v1.3-② K4 持仓牌(服务端 16:35 EOD 重算命中;老快照/刚开仓未体检 → 空数组)——————
     k4Advisory: List[K4AdvisoryOut] = Field(default_factory=list)
     # 该持仓是否有关联决策日志(via position_id)含非空情景树待每日对照(②-D 提醒;勾选仍走
@@ -311,6 +332,17 @@ class PositionOpenIn(BaseModel):
     # closeReason 惯例)。契约上客户端补录必填;服务端宽松可选(缺省 NULL → D5 净浮盈估算
     # 走默认佣金率兜底,不崩,见 fees.py)——不硬性拒绝历史/CLI 无费用录入。
     buyFees: Optional[float] = None
+    # v1.4-①-A(§七 P0-1):真实买入日 'YYYYMMDD'。**缺省 = 今天**,与 v1.4 之前
+    # `buy_date=date.today()` 写死的行为**逐位一致**——老客户端不传时行为不变。
+    # 校验两条(违反 → 400 + reason,见 `app.py::open_position`):
+    #   · 不是 `trade_cal` 里的交易日 → `not_trading_day`
+    #   · 晚于今天(未来日)→ `future_buy_date`
+    # ⚠ 为什么必须能指定:D 计数 / 时间退出 D5-D15 判向 / 回落止盈峰值追踪起点 /
+    # 周复盘持有天数 / 按打法归因的持有周期,**全部以买入日为起点**——补录历史成交
+    # 时若被盖成补录当天,以上全错(2026-07-27 真踩,3 笔历史持仓被盖成当天)。
+    # 领域层 `sentinel/positions.py::open_position` 与 CLI `scripts/positions.py add`
+    # 本来就收 `buy_date`,缺口只在本 HTTP 契约 + 客户端。
+    buyDate: Optional[str] = None
 
 
 class PositionOpenOut(BaseModel):

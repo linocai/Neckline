@@ -16,7 +16,7 @@ from neckline.report.candidates import Candidate
 from neckline.report.intel import IntelReport
 from neckline.report.news_alerts import NewsAlertsReport
 from neckline.report.sector_moneyflow import SectorMoneyflowReport
-from neckline.report.sectors import SectorScore
+from neckline.report.sectors import SectorDataFreshness, SectorScore
 from neckline.report.sentiment import SentimentDashboard
 from neckline.report.watchlist_check import WatchlistCheckItem
 
@@ -41,6 +41,7 @@ def render_markdown(
     intel: Optional[IntelReport] = None,
     sector_moneyflow: Optional[SectorMoneyflowReport] = None,
     news_alerts: Optional[NewsAlertsReport] = None,
+    sector_freshness: Optional[SectorDataFreshness] = None,
 ) -> str:
     parts: List[str] = []
     parts.append(f"# Neckline 盘后报告 · {trade_date.isoformat()}")
@@ -52,12 +53,18 @@ def render_markdown(
         "本报告的候选排序与评分只是展示排序,不构成收益预测,买卖决策请以纪律章程为准。"
     )
     parts.append("")
+    # v1.4-①-C:板块数据过期 → **报告顶部醒目告警**(§七 P0-3)。放在这里而不是塞进
+    # 板块节里,是因为受影响的是「当日暴起板块」候选路 + 题材持续天数 + 五常驻板块解析
+    # 三处,读者需要在看任何板块相关结论**之前**先知道底下的数据是旧的。
+    if sector_freshness is not None and sector_freshness.stale:
+        parts.append(f"> 🚨 **板块数据过期告警**:{sector_freshness.note()}")
+        parts.append("")
 
     parts.append(_render_sentiment(sentiment))
-    parts.append(_render_sectors(sectors))
+    parts.append(_render_sectors(sectors, sector_freshness))
     parts.append(_render_candidates(candidates, judged, top_n_judged))
     parts.append(_render_watchlist(watchlist_check or []))
-    parts.append(_render_intel(intel))
+    parts.append(_render_intel(intel, sector_freshness))
     parts.append(_render_sector_moneyflow(sector_moneyflow))
     parts.append(_render_news_alerts(news_alerts))
     return "\n".join(parts)
@@ -76,10 +83,17 @@ def _render_sentiment(s: SentimentDashboard) -> str:
     return "\n".join(lines)
 
 
-def _render_sectors(sectors: List[SectorScore]) -> str:
+def _render_sectors(sectors: List[SectorScore],
+                    freshness: Optional[SectorDataFreshness] = None) -> str:
     lines = ["## 强势板块(软加权展示,不圈死选股)", ""]
+    # v1.4-①-C:数据新鲜度脚注(lag>0 就说,不必等到 stale)——「今日无板块数据」这句话
+    # 此前既可能是「今天真没行情」也可能是「板块表根本没更新」,两者必须能分开(§3.8)。
+    note = freshness.note() if freshness is not None else ""
     if not sectors:
         lines.append("今日无概念板块数据(`ths_daily.parquet` 缺失或未覆盖该日)。")
+        if note:
+            lines.append("")
+            lines.append(f"*{note}*")
         lines.append("")
         return "\n".join(lines)
     lines.append("| 排名 | 板块 | 20日动量 | 板块年龄(连续站上MA20天数) | 报告层加分 |")
@@ -91,6 +105,9 @@ def _render_sectors(sectors: List[SectorScore]) -> str:
         "*板块只加分不圈死——全市场强势形态票均可入池;年龄加分只对启动 1-5 天的板块生效"
         "(阶段1研究:此信号弱,报告层软加权,不进硬评分门槛,见 `research/stage1_report.md` P2 节)。*"
     )
+    if note:
+        lines.append("")
+        lines.append(f"*{note}*")
     lines.append("")
     return "\n".join(lines)
 
@@ -251,7 +268,8 @@ def _render_watchlist(items: List[WatchlistCheckItem]) -> str:
     return "\n".join(lines)
 
 
-def _render_intel(intel: Optional[IntelReport]) -> str:
+def _render_intel(intel: Optional[IntelReport],
+                  freshness: Optional[SectorDataFreshness] = None) -> str:
     """情报节 C1(plan §五 v1.3-③-C1):复盘情报件——涨跌幅榜/涨停梯队/跌停榜/
     大盘量能/最强题材/题材持续天数/市值偏好/涨跌停制度偏好。**证据强度标注**
     (硬要求①)在小节标题里就写明强/弱,不是只藏在字段里。"""
@@ -314,6 +332,11 @@ def _render_intel(intel: Optional[IntelReport]) -> str:
 
     lines.append("### 最强题材(概念板块成分依赖,弱证据,仅供参考)")
     lines.append("")
+    # v1.4-①-C:题材榜与题材持续天数直接建在 `ths_daily` 上 —— 板块数据过期时它们
+    # **必须被显式标不可信**,而不是静默降级成一张看起来正常的旧榜单(§七 P0-3)。
+    if freshness is not None and (freshness.stale or freshness.unavailable):
+        lines.append(f"> ⚠️ **本小节不可信**:{freshness.note()}")
+        lines.append("")
     if intel.excluded_boards_note:
         lines.append(f"*{intel.excluded_boards_note}*")
         lines.append("")

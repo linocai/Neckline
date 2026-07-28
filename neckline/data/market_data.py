@@ -39,6 +39,10 @@ _VALID_TABLES = {
     "index_daily",
     "limit_derived",
     "top_list",
+    # v1.4-①-B(§七 P0-2):当日停牌名单(TuShare `suspend_d`,600 元档实测可用)。用于把
+    # 「持仓票当日无 EOD 行」区分成 `suspended`(真停牌)vs `data_gap`(数据源缺口)——
+    # 「没有」与「没看」必须能分开(§3.8),不许一律标 unknown 糊过去。
+    "suspend_d",
 }
 
 
@@ -104,6 +108,10 @@ TABLE_FLOAT_COLS: Dict[str, Tuple[str, ...]] = {
         "close", "pct_change", "turnover_rate", "amount", "l_sell", "l_buy", "l_amount",
         "net_amount", "net_rate", "amount_rate", "float_values",
     ),
+    # v1.4-①-B:`suspend_d` 返回 ts_code / trade_date / suspend_timing / suspend_type,
+    # **一个数值列都没有** → 空元组。空元组 ≠ 未声明:未声明会退回「向既有分区看齐」的
+    # 旧行为并打 WARNING(脏基准风险),显式声明空元组才是「这张表确实没有数值列」。
+    "suspend_d": (),
 }
 
 

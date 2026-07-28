@@ -3,19 +3,32 @@
 (默认今天,可传参指定其它交易日)+ 尾部窗口重算 limit_derived(连板计数跨批次
 边界需要窗口,见 backfill.run_limit_derived 的 30 自然日缓冲说明)。
 
+**v1.4-①-C 新增两项(§七 P0-3 / P0-2)**:
+  · **概念板块日更**(`ths_daily` 尾窗重拉 + `ths_index`/`ths_member` 周更)—— 此前三表
+    只有一次性 backfill,压根不在日更清单里,导致「当日暴起板块」那一路候选长期失效
+    (且因为降级得安静,从报告上看不出坏了)。落盘细节与 `write_table_day` 铁律的**唯一
+    登记例外**见 `neckline/data/concept_data.py` 模块头。
+  · **当日停牌名单**(`suspend_d`)—— 给持仓票「当日无 EOD 行」的 reason 定标签
+    (`suspended` vs `data_gap`),见 `neckline/data/price_stale.py`。
+  两项都**尽力而为**:失败只记 WARNING,绝不让主增量(daily/basic/adj/moneyflow)失败,
+  也绝不改变退出码(它们是增强项,不是 EOD 主链路)。
+
+新增配额消耗(与 §七 P4-20 一起算账,部署块 ⑨-E 复核):`ths_daily` 5 次/日(尾窗)、
+`suspend_d` 1 次/日、`ths_index`+`ths_member` ~400 次/周。
+
 用法:
     python scripts/daily_update.py                # 今天(若非交易日则报错退出)
     python scripts/daily_update.py 20260717        # 指定某交易日补更新
-
-建议 16:00 后(A 股盘后数据稳定,§2.3)用 cron / launchd 定时跑。
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
+
+import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -30,6 +43,66 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("daily_update")
 
 LIMIT_DERIVED_TRAILING_DAYS = 15  # 尾部重算窗口(交易日),覆盖连板计数跨批次边界
+
+
+def update_concept_boards(target: date) -> None:
+    """v1.4-①-C:概念板块日更(`ths_daily` 尾窗)+ 周更(`ths_index`/`ths_member`)。
+    **尽力而为**——任何异常只记 WARNING,不影响主增量与退出码。"""
+    from neckline.calendar import trading_days_between
+    from neckline.data.concept_data import (
+        THS_DAILY_TRAILING_DAYS,
+        max_ths_daily_date,
+        update_ths_daily,
+        update_ths_snapshots,
+    )
+
+    # 周更放在日更**之前**:`update_ths_daily` 要按 `ths_index` 快照过滤成概念板块
+    # (见该函数 docstring 的 ⚠),先刷新快照能让当周新增板块当天就被纳入。
+    try:
+        done = update_ths_snapshots(target)
+        logger.info("[ths_index/ths_member] 周更:%s", done)
+    except Exception:  # noqa: BLE001
+        logger.warning("[ths_index/ths_member] 周更异常(已吞,旧快照原样保留)", exc_info=True)
+
+    try:
+        window = trading_days_between(target - timedelta(days=30), target)[-THS_DAILY_TRAILING_DAYS:]
+        stats = update_ths_daily(window)
+        logger.info(
+            "[ths_daily] 尾窗 %d 个交易日:写入 %d 行、当日尚未发布 %d 天、拉取失败 %d 天",
+            stats["days"], stats["rows"], stats["empty"], stats["failed"],
+        )
+        newest = max_ths_daily_date()
+        if newest is None:
+            logger.warning("[ths_daily] 落盘后仍无任何数据 —— 板块相关情报本日不可信")
+        elif newest < target:
+            lag = max(len(trading_days_between(newest, target)) - 1, 0)
+            logger.info("[ths_daily] 最新至 %s(落后报告日 %d 个交易日)", newest, lag)
+    except Exception:  # noqa: BLE001
+        logger.warning("[ths_daily] 日更异常(已吞,不阻断主增量)", exc_info=True)
+
+
+def update_suspend_list(target: date) -> None:
+    """v1.4-①-B:当日全市场停牌名单落盘(`suspend_d`,走 `write_table_day` 铁律路径)。
+    **尽力而为**——拉不到就不落盘,`price_stale` 读不到该分区时 reason 如实降级为
+    `unknown`(不猜成 suspended)。"""
+    from neckline.data.market_data import write_table_day
+    from neckline.data.tushare_client import ts_suspend_d_all
+
+    try:
+        res = ts_suspend_d_all(target.strftime("%Y%m%d"))
+        if not res.ok or res.data is None:
+            logger.warning("[suspend_d] 拉取失败:%s(不落盘,reason 将降级为 unknown)", res.reason)
+            return
+        # 当日零停牌是**正常且有信息量**的结果(「今天没人停牌」≠「今天没查」),照样落盘。
+        # 空表也要给显式 dtype —— 全 Null dtype 列会成为下一次 `_align_to_table_schema`
+        # 的脏基准(v1.3.5 事故的同一条链:空分区是脏基准的唯一来源)。
+        df = backfill._pdf_to_pl(res.data) if len(res.data) else pl.DataFrame(
+            schema={"ts_code": pl.String, "trade_date": pl.Date, "suspend_type": pl.String}
+        )
+        write_table_day("suspend_d", target, df)
+        logger.info("[suspend_d] %s 停牌 %d 只", target, df.height)
+    except Exception:  # noqa: BLE001
+        logger.warning("[suspend_d] 日更异常(已吞,不阻断主增量)", exc_info=True)
 
 
 def main() -> int:
@@ -62,6 +135,11 @@ def main() -> int:
     all_days = trading_days_between(date(target.year - 1, 1, 1), target)
     window_start = all_days[-LIMIT_DERIVED_TRAILING_DAYS] if len(all_days) >= LIMIT_DERIVED_TRAILING_DAYS else all_days[0]
     backfill.run_limit_derived(window_start, target)
+
+    # v1.4-①-B/①-C 增强项(尽力而为,失败不改退出码;放在主增量之后,免得它们的失败
+    # 影响 EOD 主链路的落盘时序)。
+    update_suspend_list(target)
+    update_concept_boards(target)
 
     logger.info("增量更新完成:%s", target)
     return 0

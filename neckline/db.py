@@ -521,6 +521,15 @@ _COLUMN_MIGRATIONS = [
     ("holding_eod_check", "time_exit_locked_state", "TEXT"),
     ("holding_eod_check", "time_exit_locked_date", "TEXT"),
     ("holding_eod_check", "time_exit_locked_net_float", "REAL"),
+    # v1.4-①-B(§七 P0-2):当日体检是否因**无 EOD 行**(停牌/数据缺口)被整份跳过。
+    # **可空且不给默认值**:老行(建于本列之前)是 NULL = 「当时没记这一位,不知道」——
+    # 刻意不用 `DEFAULT 0` 把历史行一律说成「体检过了」(空牌 = 体检过没问题 vs 没体检,
+    # 必须能分开,§3.8)。1=跳过体检,0=正常体检过。
+    ("holding_eod_check", "data_unavailable", "INTEGER"),
+    # v1.4-①-C(§七 P0-3):板块数据新鲜度快照(`{sectorDataDate,sectorLagDays,stale}`)。
+    # **随报告冻住**,不在读时重算——读三天前的报告该看到当时的新鲜度,不是今天的。
+    # 老报告行幂等补列取默认 '{}'(= 该版本还没有新鲜度概念,**不是**「新鲜」)。
+    ("reports", "data_freshness_json", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 

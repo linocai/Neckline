@@ -403,3 +403,90 @@ def test_locked_state_provider_missing_returns_none(isolated_env):
     """无快照(刚开仓未体检)/ 未定格 → provider 返 None(保守判非浮盈,不崩)。"""
     provider = holding_store.locked_state_provider(db_path=isolated_env.db_path)
     assert provider(_pos(99, "600009.SH")) is None
+
+
+# —— v1.4-①-B 停牌 / 无当日 EOD 行的持仓票(§七 P0-2)——————————————————————————
+
+def test_no_data_hangs_time_exit_instead_of_pushing(monkeypatch):
+    """到判定点(D≥5)但当日无 EOD 行且从未定格 → 判向挂起 `suspended_hold`,
+    **且这一天不写定格**(停牌当天根本没有收盘价,硬判等于凭空定一个不可回头的向)。"""
+    from neckline.sentinel.precall import SUSPENDED_HOLD
+
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([]))
+    items = hk.build_holding_k4_check(TD, _RULE_V13, [_pos(1, "600001.SH", buy_date="20260710")])
+    it = items[0]
+    assert it.d_count >= 5                       # D 计数照常累计(纪律口径是「持有交易日数」)
+    assert it.time_exit_state == SUSPENDED_HOLD
+    assert (it.time_exit_locked_state, it.time_exit_locked_date, it.time_exit_locked_net_float) == (None, None, None)
+
+
+def test_no_data_skips_whole_checkup_including_theme_hits(monkeypatch):
+    """**整份体检跳过**:当日无 EOD 行时连题材类 A2/B3(不依赖价量面板)也不产出——
+    「空牌 = 体检过了没问题」与「今天压根没体检」必须能分开(§3.8)。"""
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([]))
+    hot = [SectorScore(index_code="X.TI", name="题材", board_age=6, ret_20d=0.1, bonus=0.0, rank=1)]
+    items = hk.build_holding_k4_check(
+        TD, _RULE_V13, [_pos(1, "600001.SH")],
+        sector_scores=hot, member_map={"600001.SH": ["X.TI"]},
+    )
+    it = items[0]
+    assert it.has_data is False
+    assert it.hits == [] and it.has_strong is False
+    # 对照:同样的题材条件,有 EOD 行时 A2 是会命中的(证明上面的空不是因为条件不成立)
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([_panel_row("600001.SH")]))
+    it2 = hk.build_holding_k4_check(
+        TD, _RULE_V13, [_pos(1, "600001.SH")],
+        sector_scores=hot, member_map={"600001.SH": ["X.TI"]},
+    )[0]
+    assert {h.code for h in it2.hits} == {"A2_theme_persist_ge_4"}
+
+
+def test_existing_lock_survives_suspension(monkeypatch, isolated_env):
+    """停牌**不撤回**已有定格(审计 🔴-1:判向在有真数据那天一次性做出,不得事后改口)。"""
+    db = isolated_env.db_path
+    positions = [_pos(1, "600001.SH", buy_price=10.0, qty=1000, buy_date="20260710")]
+    # D5 当天有数据 → 浮盈豁免定格
+    _run_eod(monkeypatch, db, TD, close=11.0, positions=positions)
+    assert holding_store.locked_time_exit_map(db_path=db)[1]["state"] == PROFIT_EXEMPT
+    # 次日停牌(面板空)→ 判向仍是定格值,不挂起
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([]))
+    it = hk.build_holding_k4_check(date(2026, 7, 18), _RULE_V13, positions, db_path=db)[0]
+    assert it.has_data is False
+    assert it.time_exit_state == PROFIT_EXEMPT and it.time_exit_locked_date == TD.strftime("%Y%m%d")
+
+
+def test_resume_day_locks_normally(monkeypatch, isolated_env):
+    """复牌当日用**复牌当日 EOD** 正常定格(挂起只是把判向推迟,不是永久豁免)。"""
+    from neckline.sentinel.precall import SUSPENDED_HOLD
+
+    db = isolated_env.db_path
+    positions = [_pos(1, "600001.SH", buy_price=10.0, qty=1000, buy_date="20260710")]
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([]))
+    it0 = hk.build_holding_k4_check(TD, _RULE_V13, positions, db_path=db)[0]
+    holding_store.save_holding_eod_checks(TD, [it0], db_path=db)
+    assert it0.time_exit_state == SUSPENDED_HOLD
+    assert holding_store.locked_time_exit_map(db_path=db) == {}      # 挂起期不落定格
+
+    resume = date(2026, 7, 20)
+    it1 = _run_eod(monkeypatch, db, resume, close=9.0, positions=positions)[0]   # 复牌当日浮亏
+    assert it1.time_exit_state == TIME_EXIT_NEXT_DAY
+    assert it1.time_exit_locked_date == resume.strftime("%Y%m%d")    # 定格发生在复牌当日
+
+
+def test_data_unavailable_persisted_and_legacy_row_is_null(isolated_env):
+    """`data_unavailable` 落库并读回;**老行(未写该列)读回 None 而非 False**
+    ——「不知道」不许冒充「体检过了」。"""
+    import sqlite3
+
+    db = isolated_env.db_path
+    holding_store.save_holding_eod_checks(
+        date(2026, 7, 16), [_Item(1, None, TIME_EXIT_NEXT_DAY, 5, False, False, [])], db_path=db)
+    assert holding_store.load_latest_checks_by_position(db_path=db)[1]["data_unavailable"] is False
+
+    conn = sqlite3.connect(str(db))
+    try:                                     # 模拟建于本列之前的老行
+        conn.execute("UPDATE holding_eod_check SET data_unavailable=NULL WHERE position_id=1")
+        conn.commit()
+    finally:
+        conn.close()
+    assert holding_store.load_latest_checks_by_position(db_path=db)[1]["data_unavailable"] is None
