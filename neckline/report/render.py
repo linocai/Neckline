@@ -113,18 +113,28 @@ def _render_sectors(sectors: List[SectorScore],
 
 
 def _intel_rank_line(c: Candidate) -> Optional[str]:
-    """候选情报排序理由(v1.3-③-C3;K1 老候选 `intel_rank` 空 → None 不渲染)。"""
+    """候选情报排序理由(v1.4-③ 起三级键:行业强度排名 → 题材持续天数 → K4 黄牌数,依次
+    优先;`sectorFlow` 降为并列展示,不再是排序依据,见需求 8)。K1/v1.3 老报告 `intel_rank`
+    空 → None 不渲染;**旧报告没有三新键时按缺键处理**(不拿 `.get()` 的 None 默认值冒充
+    "确实未参与排名"——旧报告压根没算过这件事,两者语义不同,不能混为一谈)。"""
     ir = c.intel_rank or {}
     if not ir:
         return None
     parts: List[str] = []
-    sf = ir.get("sectorFlow")
-    if sf is not None:
-        parts.append(f"板块资金净流入 {sf:+,.0f} 万元")
-    persist = ir.get("themePersistDays")
+    has_new_keys = "industryRank" in ir   # 三新键同批加,判其一即可(见 ③-E 契约)
+    if has_new_keys:
+        rank = ir.get("industryRank")
+        parts.append(f"行业强度排名第{rank}" if rank is not None else "行业强度未参与排名(无行业/成员<5)")
+    persist = ir.get("industryPersistDays") if has_new_keys else ir.get("themePersistDays")
     if persist is not None:
         fresh = {0: "未启动", 1: "第1天(新鲜)", 2: "第2天(警惕)", 3: "第3天(警惕)"}.get(persist, f"第{persist}天")
         parts.append(f"题材持续 {fresh}")
+    if has_new_keys:
+        parts.append(f"K4 黄牌 {ir.get('yellowCardCount', 0)} 个")
+    sf = ir.get("sectorFlow")
+    if sf is not None:
+        tail = "(并列展示,不参与排序)" if has_new_keys else ""
+        parts.append(f"板块资金净流入 {sf:+,.0f} 万元{tail}")
     if ir.get("highElasticity"):
         parts.append("高弹板块(GEM/STAR,20cm 易波动,自行判断)")
     return "- 情报排序理由:" + " · ".join(parts) if parts else None
@@ -140,8 +150,9 @@ def _k4_flag_line(c: Candidate) -> Optional[str]:
 def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResult], top_n_judged: int) -> str:
     # v1.3-③-C3 语义变更:候选 = 「过完安检、值得关注的票」非「会涨的票」,终选在用户
     # (§2.3)。生成源从 K1 entry mask 退役 → 情报筛选四步管线;四件套保留但是**情报维度**,
-    # 不是买入信号(不标「推荐买点」)。
-    lines = ["## 候选(情报筛选 · 过完安检、值得关注的票,非买入信号,终选在你)", ""]
+    # 不是买入信号(不标「推荐买点」)。v1.4-③(需求 8)起排序键改三级(行业强度排名 →
+    # 题材持续天数 → K4 黄牌数),语义红线文案扩到本节(§五 v1.4「语义红线」)。
+    lines = ["## 候选(情报筛选 · 过完安检、值得花注意力的票,非买入信号,终选在你)", ""]
     if not candidates:
         lines.append("今日无候选通过情报筛选(无热门板块成员过安检,或数据缺失)。")
         lines.append("")
@@ -150,6 +161,12 @@ def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResul
         "> 候选 = 五板块常驻 + 当日暴起板块的成员里,过完卫生线/非次新/趋势向上安检、"
         "再过 K4 避坑安检(hard_cut 已拦出池、avoid_flag 打标)的票;**不是回测选出的买入信号**,"
         "四件套为情报维度参考,买卖与终选在你(§2.3)。"
+    )
+    lines.append(
+        "> **排序 = 注意力优先级,不是收益预测;排第一 ≠ 最会涨;终选权在你。**"
+        "排序依次看行业强度排名(K2 拥挤探测器)→ 题材持续天数(越新鲜越靠前,H6 证据)→ "
+        "K4 黄牌数(越少越靠前,风险优先非收益优先);板块资金流强度只作并列展示,不参与排序"
+        "(需求 8)。"
     )
     lines.append("")
 
@@ -200,15 +217,21 @@ def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResul
     if scored_only:
         lines.append(f"### 后 {len(scored_only)} 只 · 仅情报排序与形态标签(不耗 LLM)")
         lines.append("")
-        lines.append("| 排名 | 代码 | 名称 | 展示分 | 题材天数 | 高弹 | K4标注 | 形态标签 |")
-        lines.append("|---|---|---|---|---|---|---|---|")
+        # v1.4-③(需求 8):表格列补「行业排名」「黄牌数」两列(排序键①③),让排序依据在
+        # 紧凑表格里也能一眼看到,不必逐只翻详情。「题材天数」沿用旧列名(=排序键②同一个量)。
+        lines.append("| 排名 | 代码 | 名称 | 展示分 | 行业排名 | 题材天数 | 黄牌数 | 高弹 | K4标注 | 形态标签 |")
+        lines.append("|---|---|---|---|---|---|---|---|---|---|")
         for c in scored_only:
             tags = "、".join(c.pattern_tags) if c.pattern_tags else "无"
             ir = c.intel_rank or {}
-            persist = ir.get("themePersistDays", "-")
+            irank = ir.get("industryRank")
+            irank_disp = irank if irank is not None else "-"
+            persist = ir.get("industryPersistDays", ir.get("themePersistDays", "-"))
+            yellow = ir.get("yellowCardCount", "-")
             he = "是" if ir.get("highElasticity") else ""
             k4 = "、".join(c.k4_flags) if c.k4_flags else ""
-            lines.append(f"| {c.rank} | {c.ts_code} | {c.name} | {c.score:.1f} | {persist} | {he} | {k4} | {tags} |")
+            lines.append(f"| {c.rank} | {c.ts_code} | {c.name} | {c.score:.1f} | {irank_disp} | "
+                        f"{persist} | {yellow} | {he} | {k4} | {tags} |")
         lines.append("")
 
     return "\n".join(lines)

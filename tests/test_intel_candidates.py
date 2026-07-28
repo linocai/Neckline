@@ -375,10 +375,20 @@ def _industry_closes(daily_rets: list) -> list:
 
 
 def test_theme_persistence_reversed_freshness_ranking(isolated_env):
-    """题材持续天数**反用**:行业强度持续天数=1(新鲜)的排在=3(警惕)之前
-    (`_theme_freshness_score`:1>2>3)。**v1.4-② 起持续天数唯一源 = `industry_strength`**
-    (不再是概念板块 board_age,见 `report/industry_strength.py`)——本测试因此从"直接摆布
-    板块指数 K 线"改为"摆布行业级 `ret_1d` 剧本,靠跨行业 top20% 竞争产出目标持续天数"。
+    """题材持续天数**反用**:行业强度持续天数=1(新鲜)的排在=3(警惕)之前。**v1.4-② 起
+    持续天数唯一源 = `industry_strength`**(不再是概念板块 board_age,见
+    `report/industry_strength.py`)——本测试因此从"直接摆布板块指数 K 线"改为"摆布行业级
+    `ret_1d` 剧本,靠跨行业 top20% 竞争产出目标持续天数"。
+
+    **v1.4-③ 排序键改版后的定位**:本用例构造下「新鲜行业」末日冲高恰好也拿到当日
+    中位数最高(→ `industryRank`=1),「老行业」次之(→ `industryRank`=2)——**新排序键①
+    (行业强度排名)本身已经把 600001 排到 600002 之前**,不需要单独依赖排序键②(持续
+    天数升序)来分出胜负,故本用例的 `order.index` 断言现由 rank(键①)驱动,不再单独
+    隔离验证键②。**三级键各自独立生效的隔离证明见
+    `test_sort_key_three_level_priority`(纯函数单测,手工构造 rank 相同只 persist 不同的
+    样本)**——那个测试才是「排序键②在①并列时才生效」的严格证据。本用例继续作为
+    `industry_strength → intel_rank.{themePersistDays,industryPersistDays,industryRank}`
+    的端到端接线证明。
 
     4 个达标行业(各 5 只成员,同行业成员当日收益相同 → 中位数=该值,消除歧义)、
     quantile(0.8, nearest 插值)在 n=4 下稳定选出「当日中位数最高的 2 个行业」过阈
@@ -426,33 +436,199 @@ def test_theme_persistence_reversed_freshness_ranking(isolated_env):
     by_code = {c.ts_code: c for c in cands}
     assert by_code["600001.SH"].intel_rank["themePersistDays"] == 1
     assert by_code["600002.SH"].intel_rank["themePersistDays"] == 3
+    # v1.4-③ 新字段:industryPersistDays 与 themePersistDays 同值同源;industryRank 按当日
+    # 中位数排名(新鲜行业末日冲高最高 → 排名 1;老行业次之 → 排名 2);yellowCardCount 无
+    # K4 seed → 0(无 DB 行时不计黄牌,见 `test_yellow_card_count_zero_when_k4_db_missing`)。
+    assert by_code["600001.SH"].intel_rank["industryPersistDays"] == 1
+    assert by_code["600002.SH"].intel_rank["industryPersistDays"] == 3
+    assert by_code["600001.SH"].intel_rank["industryRank"] == 1
+    assert by_code["600002.SH"].intel_rank["industryRank"] == 2
+    assert by_code["600001.SH"].intel_rank["yellowCardCount"] == 0
+    assert by_code["600002.SH"].intel_rank["yellowCardCount"] == 0
     order = _codes(cands)
-    assert order.index("600001.SH") < order.index("600002.SH")   # 新鲜排前
+    assert order.index("600001.SH") < order.index("600002.SH")   # 新鲜排前(本例由排序键①行业排名驱动)
 
 
-def test_sector_moneyflow_strength_ranking(isolated_env):
-    """资金流强度排序(一级键):所属板块净流入更高的票排前(题材天数相同)。"""
+def test_sector_flow_displayed_but_no_longer_drives_order(isolated_env):
+    """③-B:板块资金流强度**退出排序键、只作并列展示**(需求 8)。构造资金流与行业强度
+    **反着摆**的场景——「强行业」末日冲高最高(→ `industryRank`=1)但资金流故意给得很小,
+    「弱行业」次高(→ `industryRank`=2)但资金流故意给得很大。v1.3 起的旧键(资金流优先)
+    会让弱行业票排前;v1.4-③ 新键(行业强度排名优先)让强行业票排前——这就是本用例要
+    证的事。同时断言 `intelRank.sectorFlow` 仍正确带出两只的真实净流入值(数据没丢,
+    只是不再驱动顺序)。"""
     dates = business_days(date(2024, 1, 2), 30)
     insert_trade_cal(isolated_env, dates)
-    set_intel_watch_boards(["强流题材", "弱流题材"], db_path=isolated_env.db_path)
-    _seed_market(isolated_env, dates, [
-        {"code": "600001.SH", "market": "主板", "closes": _rising(30)},   # 强流
-        {"code": "600002.SH", "market": "主板", "closes": _rising(30)},   # 弱流
-    ])
+    set_intel_watch_boards(["强势板块", "弱势板块"], db_path=isolated_env.db_path)
+
+    n = len(dates)
+    strong_rets = [0.005] * n
+    strong_rets[-1] = 0.05     # 末日大涨 → 当日中位数最高 → industryRank=1
+    weak_rets = [0.005] * n
+    weak_rets[-1] = 0.01       # 末日小涨 → industryRank=2
+
+    strong_closes = _industry_closes(strong_rets)
+    weak_closes = _industry_closes(weak_rets)
+
+    stocks = [
+        {"code": "600001.SH", "market": "主板", "closes": strong_closes, "industry": "强行业"},
+        {"code": "600002.SH", "market": "主板", "closes": weak_closes, "industry": "弱行业"},
+    ]
+    for k in range(4):    # 凑够 _MIN_MEMBERS=5
+        stocks.append({"code": f"60011{k}.SH", "market": "主板", "closes": strong_closes, "industry": "强行业"})
+        stocks.append({"code": f"60021{k}.SH", "market": "主板", "closes": weak_closes, "industry": "弱行业"})
+    _seed_market(isolated_env, dates, stocks)
     _seed_boards(
         isolated_env,
-        [{"ts_code": "880001.TI", "name": "强流题材"}, {"ts_code": "880002.TI", "name": "弱流题材"}],
+        [{"ts_code": "880001.TI", "name": "强势板块"}, {"ts_code": "880002.TI", "name": "弱势板块"}],
         [{"index_code": "880001.TI", "con_code": "600001.SH"},
          {"index_code": "880002.TI", "con_code": "600002.SH"}],
     )
-    _seed_moneyflow(isolated_env, dates[-1], {"600001.SH": 5000.0, "600002.SH": 100.0})
+    # 资金流反着摆:行业强度更弱的票资金流反而更大——若排序仍受资金流驱动会让它排前,
+    # 从而证伪新键;新键下应仍由行业强度排名(600001 更强)驱动,600001 排前。
+    _seed_moneyflow(isolated_env, dates[-1], {"600001.SH": 100.0, "600002.SH": 5000.0})
     cands = ic.build_intel_candidates(dates[-1], _RULE,
                                       parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
     by_code = {c.ts_code: c for c in cands}
-    assert by_code["600001.SH"].intel_rank["sectorFlow"] == 5000.0
-    assert by_code["600002.SH"].intel_rank["sectorFlow"] == 100.0
+    # sectorFlow 仍正确带出(并列展示),数值不受排序键改版影响。
+    assert by_code["600001.SH"].intel_rank["sectorFlow"] == 100.0
+    assert by_code["600002.SH"].intel_rank["sectorFlow"] == 5000.0
+    assert by_code["600001.SH"].intel_rank["industryRank"] == 1
+    assert by_code["600002.SH"].intel_rank["industryRank"] == 2
     order = _codes(cands)
-    assert order.index("600001.SH") < order.index("600002.SH")   # 资金流强排前
+    assert order.index("600001.SH") < order.index("600002.SH")   # 行业排名驱动,资金流小的仍排前
+
+
+# ————————————————————————————————————————————————————————————————
+# ⑤b `_sort_key` 纯函数单测(v1.4-③-A/C:三级优先级 + 无行业排最后 + 白名单纪律)
+# ————————————————————————————————————————————————————————————————
+
+class _KeyTrackingDict(dict):
+    """记录 `__getitem__` 实际访问过哪些键的 dict 子类,供白名单单测直接验证
+    `_sort_key` **运行期**只碰声明的键(比静态文本搜索更可靠——真的跑一遍取值)。"""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.accessed: set = set()
+
+    def __getitem__(self, key):
+        self.accessed.add(key)
+        return super().__getitem__(key)
+
+
+def _entry(code, industry_rank, industry_persist_days, yellow_card_count, base_score=1.0, **extra):
+    d = {
+        "code": code, "industry_rank": industry_rank,
+        "industry_persist_days": industry_persist_days,
+        "yellow_card_count": yellow_card_count, "base_score": base_score,
+    }
+    d.update(extra)
+    return d
+
+
+def test_sort_key_reads_only_whitelisted_inputs_not_sector_flow(isolated_env):
+    """③-B/③-C:`_sort_key` 只读 `_SORT_KEY_INPUTS` 白名单五键,**不读 `sector_flow`**(已
+    退为并列展示)、也不读任何其他键(row/board 等)——用可追踪访问的 dict 子类直接断言
+    运行期实际访问集合,比"搜代码里有没有出现某字符串"更可靠。"""
+    e = _KeyTrackingDict(_entry(
+        "600000.SH", industry_rank=3, industry_persist_days=2, yellow_card_count=1, base_score=10.0,
+        sector_flow=999999.0, row={"close": 10.0}, board="MAIN", k4_flags=["X"],
+    ))
+    ic._sort_key(e)
+    assert "sector_flow" not in e.accessed          # ③-B 硬要求
+    assert e.accessed <= ic._SORT_KEY_INPUTS         # ③-C 白名单:不超出这五键
+    assert e.accessed == ic._SORT_KEY_INPUTS         # 且五键确实全部被用到(非摆设)
+
+
+def test_sort_key_three_level_priority(isolated_env):
+    """③-A 三级排序键优先级:industry_rank ASC 优先于 industry_persist_days ASC 优先于
+    yellow_card_count ASC;base_score DESC / code ASC 只在前三者全部并列时才生效(确定性
+    兜底,不构成独立排序意图)。四条样本逐级只改一个维度,交叉验证优先级顺序。"""
+    entries = [
+        _entry("A", industry_rank=2, industry_persist_days=0, yellow_card_count=0, base_score=999.0),
+        # rank 更差(2>1),即便 persist/yellow/base_score 全面占优也排最后——证明 rank 优先级最高
+        _entry("B", industry_rank=1, industry_persist_days=3, yellow_card_count=5, base_score=1.0),
+        # rank 并列(=1),persist 更小(更新鲜)排前——证明 persist 优先级次于 rank
+        _entry("C", industry_rank=1, industry_persist_days=1, yellow_card_count=5, base_score=1.0),
+        # rank/persist 并列,yellow 更少排前——证明 yellow 优先级次于 persist
+        _entry("D", industry_rank=1, industry_persist_days=1, yellow_card_count=0, base_score=1.0),
+    ]
+    entries.sort(key=ic._sort_key)
+    assert [e["code"] for e in entries] == ["D", "C", "B", "A"]
+
+
+def test_sort_key_base_score_and_code_are_deterministic_tiebreak_only(isolated_env):
+    """前三级(rank/persist/yellow)全部并列时,才轮到 `base_score` DESC,再到 `code` ASC——
+    这两个不构成"第四/五维排序意图",只是同名次时的确定性兜底(plan §五 v1.4-③-A 明写)。"""
+    tied = [
+        _entry("Z", industry_rank=1, industry_persist_days=0, yellow_card_count=0, base_score=1.0),
+        _entry("A", industry_rank=1, industry_persist_days=0, yellow_card_count=0, base_score=5.0),
+        _entry("M", industry_rank=1, industry_persist_days=0, yellow_card_count=0, base_score=5.0),
+    ]
+    tied.sort(key=ic._sort_key)
+    # base_score 5.0 的两个(A/M)排在 base_score 1.0 的 Z 之前(DESC);A/M 之间按 code ASC。
+    assert [e["code"] for e in tied] == ["A", "M", "Z"]
+
+
+def test_sort_key_no_industry_rank_sorts_last_not_zero(isolated_env):
+    """无行业 / 成员<5 未参与排名(`industry_rank=None`)必须排在**所有**已排名的票之后
+    (映射 `+inf`),**即便该未排名票的其余维度全面占优、即便已排名票的排名很差(如
+    500)**——不静默当 0(0 会把无行业票错误顶到榜首,plan §五 v1.4-③-A 明写的红线)。"""
+    entries = [
+        _entry("WORST_RANKED", industry_rank=500, industry_persist_days=3, yellow_card_count=5, base_score=1.0),
+        _entry("NO_RANK", industry_rank=None, industry_persist_days=0, yellow_card_count=0, base_score=999.0),
+    ]
+    entries.sort(key=ic._sort_key)
+    assert [e["code"] for e in entries] == ["WORST_RANKED", "NO_RANK"]
+
+
+# ————————————————————————————————————————————————————————————————
+# ⑤c 黄牌数(yellow_card_count,排序键③)语义:仅数 DB avoid_flag,不数 hard_cut/合成码
+# ————————————————————————————————————————————————————————————————
+
+def test_yellow_card_count_excludes_hard_cut_hits(isolated_env):
+    """③-A:`yellowCardCount` 只数 DB **严格**登记为 `avoid_flag` 的命中,**不数 hard_cut**
+    ——用强制纳入票(forced,豁免 hard_cut 拦截、但命中全部诚实打标)同时命中 A1(hard_cut)
+    与 B4(avoid_flag)两码,断言 `k4_flags` 两码都在(打标不区分)、但 `yellowCardCount`
+    只数 1(只有 B4 计入黄牌,A1 不计入)。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    _seed_k4(isolated_env)
+    _seed_market(isolated_env, dates, [
+        {"code": "600001.SH", "market": "主板", "closes": _rising(30)},
+        # 600009:末日+6%(B4 avoid_flag:close>ma20 & ret>5%)且换手15(A1 hard_cut)同时命中
+        {"code": "600009.SH", "market": "主板", "closes": _rising(30, last=0.06),
+         "turnover": [5.0] * 29 + [15.0]},
+    ])
+    _seed_boards(isolated_env, [{"ts_code": "885756.TI", "name": "芯片概念"}],
+                 [{"index_code": "885756.TI", "con_code": "600001.SH"}])
+    cands = ic.build_intel_candidates(dates[-1], _RULE, parquet_dir=isolated_env.parquet_dir,
+                                      db_path=isolated_env.db_path, forced_codes=["600009.SH"])
+    by_code = {c.ts_code: c for c in cands}
+    assert "600009.SH" in by_code
+    flags = set(by_code["600009.SH"].k4_flags)
+    assert "A1_turnover_gt_10" in flags and "B4_chase_strong_red" in flags   # 两码都诚实打标
+    assert by_code["600009.SH"].intel_rank["yellowCardCount"] == 1          # 但只数 B4 一个黄牌
+
+
+def test_yellow_card_count_zero_when_k4_db_missing(isolated_env):
+    """③-A:隔离库无 K4 行(`load_k4_sections` 空 dict)时,即便某码按 `_DEFAULT_SECTION`
+    默认归 avoid_flag 而**不被拦截**(见 `test_k4_no_db_row_defaults_to_avoid_flag_not_
+    hard_cut`),`yellowCardCount` 仍应为 **0**——严格判据 `sections.get(code) == "avoid_flag"`
+    不接受默认值,DB 里查无此码(不论是因为整个 K4 行缺失,还是因为码本身是不在 DB 的合成码
+    如 `A3b_belowyear_bigvol`)一律不计入黄牌数(不数不在 DB 的合成码"这条纪律的同一段代码
+    路径)。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    _seed_market(isolated_env, dates, [
+        {"code": "600003.SH", "market": "主板", "closes": _rising(30, last=0.06)},   # B4 命中
+    ])
+    _seed_boards(isolated_env, [{"ts_code": "885756.TI", "name": "芯片概念"}],
+                 [{"index_code": "885756.TI", "con_code": "600003.SH"}])
+    cands = ic.build_intel_candidates(dates[-1], _RULE,
+                                      parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    by_code = {c.ts_code: c for c in cands}
+    assert "B4_chase_strong_red" in by_code["600003.SH"].k4_flags   # 仍打标(既有行为不变)
+    assert by_code["600003.SH"].intel_rank["yellowCardCount"] == 0  # 但不计黄牌(DB 无此行)
 
 
 # ————————————————————————————————————————————————————————————————

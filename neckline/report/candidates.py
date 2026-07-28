@@ -61,7 +61,9 @@ class Candidate:
     #    `report/intel_candidates.py`)。候选语义变更:候选=「过完安检、值得关注的票」
     #    非「会涨的票」,终选权用户。———————————————————————————————————————————
     k4_flags: List[str] = field(default_factory=list)   # K4 avoid_flag 命中码(打标保留;hard_cut 已在生成时拦截出池)
-    intel_rank: Dict[str, Any] = field(default_factory=dict)  # 情报排序理由:{sectorFlow, themePersistDays, highElasticity}
+    intel_rank: Dict[str, Any] = field(default_factory=dict)  # 情报排序理由:{sectorFlow(并列展示,
+    # 不参与排序), themePersistDays, highElasticity, source, industry, permanentBoardStatus,
+    # industryRank(排序键①)/industryPersistDays(排序键②)/yellowCardCount(排序键③,v1.4-③)}
     raw: Dict[str, Any] = field(default_factory=dict)  # 原始特征行,供 judge.py 组装上下文
 
     def public_dict(self) -> Dict[str, Any]:

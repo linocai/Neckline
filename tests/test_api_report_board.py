@@ -111,15 +111,52 @@ def test_report_latest_intel_rank_carries_source_industry_permanent_board_status
     assert "宁缺毋滥" in status0["note"]
 
 
+def test_report_latest_intel_rank_carries_v143_sort_key_fields(client, AUTH, api_env):
+    """v1.4-③-E:`IntelRankOut` 补 `industryRank`/`industryPersistDays`/`yellowCardCount`
+    三个新字段(需求 8 排序键三级键原样透出)——报告落库快照 → API 读回往返不丢字段,
+    `industryRank=None`(未参与排名)与 `0` 显式区分(不得混淆)。"""
+    c = _candidate(1, "600001.SH", "示例甲")
+    c["intel_rank"] = {
+        "sectorFlow": 1234.5, "themePersistDays": 2, "highElasticity": False,
+        "source": "competition", "industry": "半导体", "permanentBoardStatus": [],
+        "industryRank": 7, "industryPersistDays": 2, "yellowCardCount": 1,
+    }
+    c2 = _candidate(2, "600002.SH", "示例乙")
+    c2["intel_rank"] = {
+        "sectorFlow": None, "themePersistDays": 0, "highElasticity": False,
+        "source": "quota", "industry": "", "permanentBoardStatus": [],
+        "industryRank": None, "industryPersistDays": 0, "yellowCardCount": 0,
+    }
+    report_store.save_report(
+        date(2026, 7, 28), strategy_version="v1.4.0",
+        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c, c2],
+        markdown="# 报告", db_path=api_env.db_path,
+    )
+    cands = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"]
+    rank1 = {r["code"]: r["intelRank"] for r in cands}["600001.SH"]
+    rank2 = {r["code"]: r["intelRank"] for r in cands}["600002.SH"]
+    assert rank1["industryRank"] == 7
+    assert rank1["industryPersistDays"] == 2
+    assert rank1["yellowCardCount"] == 1
+    # 600002:industry_rank=None(未参与排名)不得读回 0(0 会被误读成"最强"),显式 None 往返。
+    assert rank2["industryRank"] is None
+    assert rank2["industryPersistDays"] == 0
+    assert rank2["yellowCardCount"] == 0
+
+
 def test_report_latest_intel_rank_defaults_when_old_snapshot(client, AUTH, api_env):
-    """旧报告(建于本三字段前,`intel_rank` 无 source/industry/permanentBoardStatus 键)
-    读回默认——`source`/`industry` 空串、`permanentBoardStatus` 空数组,前向兼容不崩、
-    不冒充"quota/competition/forced"三值之一(客户端未识别值原样透传)。"""
+    """旧报告(建于本三字段前,`intel_rank` 无 source/industry/permanentBoardStatus 键,
+    也无 v1.4-③ 的 industryRank/industryPersistDays/yellowCardCount 三键)读回默认——
+    `source`/`industry` 空串、`permanentBoardStatus` 空数组、`industryRank` None、
+    `industryPersistDays`/`yellowCardCount` 0,前向兼容不崩、不冒充"quota/competition/
+    forced"三值之一(客户端未识别值原样透传),也不把 `industryRank=None` 冒充"参与过排名
+    但查无"(旧报告压根没算过这件事)。"""
     _seed_report(api_env.db_path, date(2026, 7, 17))
     rank = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"][0]["intelRank"]
     assert rank == {
         "sectorFlow": None, "themePersistDays": 0, "highElasticity": False,
         "source": "", "industry": "", "permanentBoardStatus": [],
+        "industryRank": None, "industryPersistDays": 0, "yellowCardCount": 0,
     }
 
 

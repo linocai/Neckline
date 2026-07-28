@@ -27,12 +27,21 @@
                 `industry_strength.stock_persist_days`——不再用它所属概念板块的 board_age
                 最大值(v1.3-② 遗留代理,已作废,见 `report/industry_strength.py` 与
                 `holding_k4_check.py` 模块头「★」)。
-    ④ 情报排序 = 板块资金流强度(C2 `sector_moneyflow`,取候选所属常驻/暴起板块的最大净
-                流入)+ 题材持续天数**反用**(`_theme_freshness_score`:1 天新鲜 > 2-3 天警惕 >
-                ≥4 天已在 ③ hard_cut〔A2〕剔;该持续天数同 ③ 用的同一个 `industry_strength`
-                值,单一源不两算)+ 高弹标注 → 出 **20 只**交用户终选。**本排序键本身
-                (板块资金流优先)v1.4-② 尚未改**——排序键三级改版是 v1.4-③ 的范围,本块
-                只换「题材持续天数」这一个输入量的数据源,不动排序公式。
+    ④ 情报排序(**v1.4-③ 三级键,需求 8;取代 v1.3 起「板块资金流优先」旧公式**)= **依次**
+                ① 行业强度排名 `industry_rank`(② 的 K2 拥挤探测器,升序,1=最强;**无
+                industry / 成员<5 未参与排名 → 排最后〔+inf〕,不静默当 0**——0 会把无
+                行业票错误顶到榜首)② 行业强度持续天数 `industry_persist_days`(② 唯一源,
+                升序,第 1 天最新鲜;≥4 天已在 ③ K4 hard_cut〔A2〕剔,故实际取值
+                ∈{0,1,2,3};H6 单调证据,同 ③ 用的同一个 `industry_strength` 值,单一源
+                不两算)③ K4 黄牌数 `yellow_card_count`(仅数 DB 显式登记为 `avoid_flag`
+                分区的命中,**不数 hard_cut,也不数不在 DB 的合成码**如
+                `A3b_belowyear_bigvol`;升序,无牌靠前——**只是风险优先排序,无牌≠会涨**,
+                盲选第一期已验)。`base_score` DESC / `code` ASC 只作**确定性兜底**(保证
+                同名次可复现),不是第四/五维排序意图。**板块资金流强度(C2)自本块起从
+                排序键移除,退为 `intelRank.sectorFlow` 并列展示**;**RS 线斜率/行业分歧度
+                /龙虎榜/消息面/温和带等未经审计方向的量一律不得进排序键**(只进 ④ 信息卡
+                展示,§3.8/需求 8 语义红线,白名单 `_SORT_KEY_INPUTS` 单测锁死)→ 出
+                **20 只**交用户终选。
 
 **§3.8 铁律「同码」重述的落地核对**:候选生成(本模块)与回测信号**解耦**——不声称
 回测过的 alpha、输出「值得关注」非「会涨」。**纪律红绿灯(问询台 `api/inquiry.py` /
@@ -88,6 +97,7 @@ from neckline.report.industry_strength import (
     IndustryStrength,
     compute_industry_strength,
     industry_strength_lookup,
+    stock_industry_rank,
     stock_persist_days,
 )
 from neckline.report.sectors import (
@@ -128,10 +138,32 @@ _MONEYFLOW_ALL_TOP_N = 10 ** 9  # 拿 C2 全部板块资金流(非只 top-15),�
 # 不在 DB 之外自造硬剔判据(是否把年线下派发放量大阳升级为 hard_cut,留用户拍板,见 report ⑦)。
 _DEFAULT_SECTION = "avoid_flag"
 
-# 题材持续天数**反用**评分(plan §④:1 天新鲜 > 2-3 天警惕;≥4 天已在 ③ A2 hard_cut 剔,
-# 0 = 板块未站上 MA20/未启动=最弱)。阈值语义与 `holding_k4_check` A2/B3 同源(≥4=A2、
-# 2-3=B3),此处只做「越新鲜分越高」的展示排序映射,不新增判据阈值。
-_THEME_FRESHNESS = {1: 3, 2: 2, 3: 1}
+# —— v1.4-③ 排序键白名单(需求 8 语义红线:排序键只用审计过方向的量;单测断言 `_sort_key`
+#    只读这五个键,见 tests/test_intel_candidates.py)——————————————————————————————————
+_SORT_KEY_INPUTS = frozenset({
+    "industry_rank", "industry_persist_days", "yellow_card_count", "base_score", "code",
+})
+
+
+def _sort_key(e: Dict[str, Any]) -> tuple:
+    """情报排序键(v1.4-③,需求 8 定死,升序优先在前)——**依次**:
+    ① `industry_rank`(行业强度当日排名,1=最强;`None`=未参与排名〔无 industry/成员<5〕
+    → `+inf` 排最后,**不静默当 0**,0 会把无行业票错误顶到榜首);
+    ② `industry_persist_days`(行业强度持续天数,升序,第 1 天最新鲜,H6 单调证据;
+    ≥4 天已被 ③ K4 hard_cut〔A2〕拦出池,故实际取值 ∈{0,1,2,3}——这条自洽性**依赖 ②
+    A2/B3 已切到 `industry_strength` 同一个量**,见模块 docstring);
+    ③ `yellow_card_count`(K4 avoid_flag 命中数,升序,无牌靠前——**只是风险优先排序,
+    无牌≠会涨**,盲选第一期已验)。
+    `base_score` DESC / `code` ASC 只作**确定性兜底**(保证同名次可复现),不构成
+    第四/五维排序意图。
+
+    **只读 `_SORT_KEY_INPUTS` 白名单五键**——`sector_flow`(板块资金流,退为并列展示)、
+    RS 线斜率/行业分歧度/龙虎榜/消息面/温和带等**未经审计方向的量禁止进本函数**
+    (§3.8/需求 8 语义红线;白名单单测用可追踪访问的 dict 断言本函数运行期实际只碰
+    这五个键,见 `tests/test_intel_candidates.py`)。"""
+    rank = e["industry_rank"] if e["industry_rank"] is not None else float("inf")
+    return (rank, e["industry_persist_days"], e["yellow_card_count"], -e["base_score"], e["code"])
+
 
 # —— 行业闸(用户 2026-07-26 拍板方案二:行业当闸 + 概念当题材;2026-07-27 审计发现 share
 #    版判据用错统计量,改判据为 lift——本节是缺陷修复,不是新功能,机制/落点不变)—————————
@@ -159,10 +191,6 @@ INDUSTRY_GATE_MIN_LIFT = 2.0     # 主导行业阈值 = lift ≥ 此值(启发�
                                  # 芯片概念/汽车配件 lift0.6 仍正确挡下,五个原噪音反例无一复活)。
 _INDUSTRY_GATE_EPS = 1e-9        # lift 阈值比较容差(除法产生的浮点噪声,同 sentinel/holding.py
                                  # `_EPS` 先例——项目里裸 >=/<= 比较派生浮点的通用坑,照此办理)。
-
-
-def _theme_freshness_score(persist_days: int) -> int:
-    return _THEME_FRESHNESS.get(persist_days, 0)
 
 
 def _market_industry_shares(industry_of: Dict[str, str]) -> Dict[str, float]:
@@ -428,6 +456,10 @@ def build_intel_candidates(
         its_step1_boards = gated_boards_of.get(code, [])
         its_permanent_boards = [b for b in its_step1_boards if b in permanent_set]
         persist = stock_persist_days(code, industry_of, industry_hot)
+        # 排序键①(v1.4-③):行业强度当日排名。**None=未参与排名(无 industry/成员<5)**——
+        # 调用方(下方 `_sort_key`)须把它当"排最后"处理,不得静默当 0(0 会把无行业票错误
+        # 顶到榜首,plan §五 v1.4-③-A 明写)。
+        industry_rank = stock_industry_rank(code, industry_of, industry_hot)
         hits = _evaluate_hits(row, persist, evidence)
         hard = [h for h in hits if sections.get(h.code, _DEFAULT_SECTION) == "hard_cut"]
         if hard:
@@ -439,14 +471,24 @@ def build_intel_candidates(
             continue   # 无当日 EOD 数据(停牌/未上市)——无法出四件套候选卡,跳过
         # 保留候选的 K4 标注码:普通候选 = avoid_flag 命中;forced 票即使命中 hard_cut 也全数标注(诚实透出危险)。
         k4_flags = [h.code for h in hits]
+        # 排序键③(v1.4-③):K4 黄牌数 = `k4_flags` 里**严格**属 DB `avoid_flag` 分区的命中数。
+        # ⚠ **不用 `_DEFAULT_SECTION` 兜底**(与上面 `hard` 判定的 `.get(h.code, _DEFAULT_SECTION)`
+        # 刻意不同)——那个默认值是给"拦截判定"用的(缺 DB 行时保守不拦);这里是"排序权重"用的,
+        # 不在 DB 里明确登记为 avoid_flag 的码(hard_cut 命中、或不在 DB 的合成码如
+        # `A3b_belowyear_bigvol`)一律不计入黄牌数(plan §五 v1.4-③-A 明写"不数 hard_cut,
+        # 也不数不在 DB 的合成码")。
+        yellow_card_count = sum(1 for h in hits if sections.get(h.code) == "avoid_flag")
         flows = [flow_by_board[b] for b in its_step1_boards if b in flow_by_board]
         sector_flow = max(flows) if flows else None
         kept.append({
             "code": code, "row": row, "k4_flags": k4_flags,
             "board": board_by_code.get(code) or classify_by_code(code),
             "industry": industry_of.get(code) or "",   # 出参带行业,让客户端说清「凭什么在这个板块栏」
-            "sector_flow": sector_flow, "persist": persist,
-            "freshness": _theme_freshness_score(persist),
+            # sector_flow:v1.4-③ 起**并列展示,不进排序键**(需求 8,见下方 `_sort_key` 白名单)。
+            "sector_flow": sector_flow,
+            "industry_persist_days": persist,   # 排序键②(H6 单调证据,升序;≥4 已被③A2 hard_cut 剔)
+            "industry_rank": industry_rank,     # 排序键①(K2 拥挤探测器,升序;None=+inf 排最后)
+            "yellow_card_count": yellow_card_count,   # 排序键③(升序,无牌靠前;仅数 DB avoid_flag)
             "base_score": float(row.get("_base_score") or 0.0),
             "is_forced": is_forced, "its_step1_boards": its_step1_boards,
             "its_permanent_boards": its_permanent_boards,
@@ -457,12 +499,6 @@ def build_intel_candidates(
 
     if not kept:
         return []
-
-    # 情报排序键(降序):板块资金流强度 → 题材新鲜度(反用) → 展示分 → 代码(确定性兜底)。
-    # sector_flow=None(C2 无数据 / 该票板块无资金流)排最后(-inf)。
-    def _sort_key(e: Dict[str, Any]) -> tuple:
-        sf = e["sector_flow"] if e["sector_flow"] is not None else float("-inf")
-        return (-sf, -e["freshness"], -e["base_score"], e["code"])
 
     kept.sort(key=_sort_key)   # 全局情报排序(最优在前),保底/竞争两 pass 都在此序上扫
 
@@ -604,7 +640,8 @@ def _build_intel_candidate(
     board_status: Optional[List[Dict[str, Any]]] = None,
 ) -> Candidate:
     """把情报管线的一个保留候选装配成 `Candidate`(复用 candidates.py 四件套文案/形态标签/
-    展示分,同码不重写)。新增 `k4_flags`(K4 命中标注码)+ `intel_rank`(情报排序理由)。"""
+    展示分,同码不重写)。新增 `k4_flags`(K4 命中标注码)+ `intel_rank`(情报排序理由,
+    v1.4-③ 起含三级排序键原样透出,让客户端/信息卡说清「这票为什么排这里」)。"""
     row = e["row"]
     code = e["code"]
     close = row["close"]
@@ -618,23 +655,27 @@ def _build_intel_candidate(
     stop_price = round(close * (1 - cfg.stop_pct), 2) if cfg.stop_pct else None
     spec = invalidation_spec()
     intel_rank = {
+        # sectorFlow:v1.4-③ 起**并列展示,不参与排序**(需求 8;见 `_sort_key` 白名单)。
         "sectorFlow": round(e["sector_flow"], 1) if e["sector_flow"] is not None else None,
-        "themePersistDays": e["persist"],
+        # themePersistDays:v1.3 起既有字段名,**保留不改语义**(老客户端兼容)——值与下方新字段
+        # `industryPersistDays` 同源同值(② 唯一源),两个字段名并存是刻意的向后兼容,不是笔误。
+        "themePersistDays": e["industry_persist_days"],
         "highElasticity": board in S.HIGH_ELASTICITY_BOARDS,
         # 行业(stock_basic.industry;一票一行业)——过行业闸后带出参,客户端据此说清「凭什么在此板块栏」。
         "industry": e.get("industry", ""),
         # 常驻板块状态诊断(**报告级构件,每只候选携同一份**——build_intel_candidates 只能经候选列表
         # 进报告快照,0 保底板块自身无候选可挂,故挂在所有候选的 intel_rank 上让客户端从任一候选读到;
         # 每条含 survivor/过闸/被挡/被拦/保底数 + 人读文案,让 0 只/不足 2 只的板块能说清「为什么」,
-        # 守项目「『没有』和『没看』必须能分开」原则)。⚠ ⑥ 客户端块会把它连同 source/industry 一起
-        # 抽进顶层类型化字段(协调员已记,本轮范围约束不碰 schemas.py)。
+        # 守项目「『没有』和『没看』必须能分开」原则)。
         "permanentBoardStatus": board_status or [],
-        # 入选来源(quota=常驻保底 / competition=情报竞争 / forced=问询强制),供 ⑥ 客户端说清
+        # 入选来源(quota=常驻保底 / competition=情报竞争 / forced=问询强制),供客户端说清
         # 「为什么在榜」。带在 intelRank 里(用户 2026-07-26 拍板「在既有 intelRank 里带来源标记」);
-        # 落报告快照 JSON。⚠ 典型 API `CandidateOut.intelRank`(schemas.IntelRankOut)默认 drop
-        # 额外键,如需透出到客户端类型化字段需 ⑥ 在 IntelRankOut 补一个 `source` 字段(本块按范围
-        # 约束未碰 schemas.py——C4 并行施工中;数据已在 intel_rank/报告快照里就绪)。
+        # 落报告快照 JSON。
         "source": e.get("source", SOURCE_COMPETITION),
+        # —— v1.4-③ 新增(需求 8,③-E):排序键三级原样透出 ————————————————————————————
+        "industryRank": e["industry_rank"],           # 排序键①;None=未参与排名(无行业/成员<5)
+        "industryPersistDays": e["industry_persist_days"],  # 排序键②;与 themePersistDays 同值同源
+        "yellowCardCount": e["yellow_card_count"],     # 排序键③;仅数 DB avoid_flag,不数 hard_cut/合成码
     }
     return Candidate(
         ts_code=code,

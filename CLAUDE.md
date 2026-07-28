@@ -156,6 +156,12 @@
   `base_universe_expr()` 已 AND 成一个布尔的表达式(数值漂移);选股域四项揉成
   一条组合文案,只有 config 可配的 P4/P5/P6 才逐项拆
   (`watchlist_check.py::_discipline_checks` 体例)。
+- **同一个 `sections` dict,`.get()` 给不给默认值取决于用途,不能"统一"**
+  (`intel_candidates.py` v1.4-③):判 hard_cut 排除用
+  `.get(code, _DEFAULT_SECTION)`(缺 DB 行保守当 avoid_flag、不拦);算
+  `yellow_card_count`(排序键③)用 `.get(code)` **不给默认**(DB 未明确登记的码——
+  含不在 DB 的合成码如 A3b——一律不计入黄牌数)。两行代码长得像,语义故意相反,
+  勿"修正"成同一种写法。
 
 ## 双会话架构(2026-07-25 起,冷启动必读)
 

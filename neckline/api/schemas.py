@@ -45,10 +45,16 @@ class PermanentBoardStatusOut(BaseModel):
 
 
 class IntelRankOut(BaseModel):
-    """候选情报排序理由(v1.3-③-C3,§2.3 语义变更)。候选=「过完安检、值得关注的票」
-    非「会涨的票」——客户端据此写对文案(不标「推荐买点」),展示情报维度。"""
-    sectorFlow: Optional[float] = None      # 所属常驻/暴起板块最大净流入(万元,C2;无数据=None)
-    themePersistDays: int = 0               # 题材持续天数(反用:1天新鲜>2-3警惕;≥4已在③剔)
+    """候选情报排序理由(v1.3-③-C3,§2.3 语义变更;v1.4-③ 起补三级排序键,需求 8)。
+    候选=「过完安检、值得关注的票」非「会涨的票」——客户端据此写对文案(不标「推荐买点」),
+    展示情报维度。**排序 = 注意力优先级,不是收益预测;排第一 ≠ 最会涨,终选权在用户。**"""
+    # sectorFlow:所属常驻/暴起板块最大净流入(万元,C2;无数据=None)。⚠ **v1.4-③ 起
+    # 退为并列展示,不参与排序**(需求 8:排序键只用审计过方向的量,资金流未经方向审计;
+    # 见下方 industryRank/industryPersistDays/yellowCardCount 三个字段才是实际排序依据)。
+    sectorFlow: Optional[float] = None
+    themePersistDays: int = 0               # 题材持续天数(反用:1天新鲜>2-3警惕;≥4已在③剔)。
+                                             # 与下方 industryPersistDays 同源同值,旧字段名保留
+                                             # (老客户端兼容,§3.8「新增字段可选,既有字段语义不变」)。
     highElasticity: bool = False            # 高弹板块(GEM/STAR;生成域刻意含高弹,标注给人判)
     # —— v1.3-⑥ 后端补齐(数据已在 v1.3-③-C3 落 `intel_rank` 字典/报告快照里就绪,
     # 此前 pydantic 未声明这三键 → 默认丢弃,本次补字段透出;逻辑零改动)—————————————
@@ -57,6 +63,17 @@ class IntelRankOut(BaseModel):
     industry: str = ""            # 该票行业(stock_basic.industry,过行业闸后的代表行业),
                                    # 让用户看清「凭什么在这个板块栏」;查不到/旧报告 → 空串。
     permanentBoardStatus: List[PermanentBoardStatusOut] = Field(default_factory=list)
+    # —— v1.4-③ 新增(需求 8):排序键三级原样透出(`intel_candidates._sort_key`)————————
+    industryRank: Optional[int] = None      # 排序键①:行业强度当日排名(1=最强)。**None=未
+                                             # 参与排名(无 industry/成员<5),客户端展示时不得
+                                             # 当 0**(0 会误读成"最强";旧报告读回同样是 None,
+                                             # 与"确实未参与排名"语义上不作区分,均如实缺省)。
+    industryPersistDays: int = 0            # 排序键②:行业强度持续天数(升序,第1天最新鲜;
+                                             # 与 themePersistDays 同值同源,新字段名对齐排序键
+                                             # 命名——两个字段并存是刻意的向后兼容,不是笔误)。
+    yellowCardCount: int = 0                # 排序键③:K4 avoid_flag 命中数(升序,无牌靠前;
+                                             # 不数 hard_cut、不数不在 DB 的合成码,如
+                                             # A3b_belowyear_bigvol)。旧报告读回默认 0。
 
 
 class CandidateOut(BaseModel):
