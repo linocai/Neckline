@@ -248,200 +248,306 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-07-28 · 🔁 会话交接(系统线)。生产 `v1.3.5` / 现役章程 `v1.3.3` / 用户真实数据已在库;下一步 = v1.4 立项(「K4 打法完全替换」,用户 2026-07-28 拍板),开工前先清 §七 P0-1/2/3 三条判定正确性缺陷。**
+**2026-07-28 · 🚩 v1.4.0 已立项(施工图 = §五,待 builder)。主题 = 「K4 打法产品化」走方案 (b)(用户 2026-07-28 拍板,📌-22 就此结案)。生产 `v1.3.5` 已确认在云上 / 现役章程 `v1.3.3`(本版不动章程)/ 用户真实数据已在库。**
 
-- **章程**:现役 **`v1.3.3`** —— 三仓 4 万单笔上限 / 同时 ≤3 只 / 敞口 100% / **-5% 止损** / 回落止盈 8% / 非浮盈 **D5 次日退**、浮盈豁免至 **D15** 硬上限 / **高弹墙已拆**(`forbid_high_elasticity=False`,创业板科创板不再被纪律层禁买)。**周复盘自 2026-08-03 起才按 v1.3.3 判**,本周(07-27~08-02)仍按 K1 判 = 已知假警报(§七 P1-4)。
-- **`strategy_versions` 各行角色**:`v1.3.3` 现役唯一;`v1.3` = 切换器白名单里**唯一合法回退目标**;`K1` 曾现役(`activated_at` 必须保全,周复盘历史时间线靠它解析);`K4` = advisory 半身行(`is_active=0`,只有 `rule["k4_advisory"]` 六节被读,**不是可激活的策略**,见 §七 📌-22);`v1.2` **过时勿激活**(回落 5%)。⚠ **行数以实查为准**:§四 2026-07-27 激活条目明确记「生产只有 K1/K4/v1.2/v1.3 四行,**无 K2**」(+ v1.3.3 = 五行),而本地开发库是六行(含 K2)——要按行数判断先跑 `SELECT version,is_active FROM strategy_versions`。
-- **用户真实数据已在生产**:`positions` **3 笔 open**(2026-07-27 补录,⚠ 买入日被写成当天,§七 P0-1)、`watchlist` **16 只**、`devices` 1 台(macOS)。**再动章程必须走 `scripts/activate_charter.py` 四道闸**;持仓非空时闸 2 只对「纯入场侧 diff」开窄豁免(见 `archive/当前状态_历史账本_20260719-20260728.md`「07-27 v1.3.3」条),豁免必留痕。
-- **报告**:**20260727 已补跑**(不带 `--notify` → 零推送),是**第一份带完整 v1.3 情报节的报告**;20260721–0724 那几份仍是 K1 口径候选。⚠ 该报告的「强势板块 / 最强题材 / 当日暴起板块」为空 = 概念板块表无日更路径(§七 P0-3),不是当天没行情。
-- **客户端**:macOS 已装 **v1.3.4** 构建;**iOS 从未装过 v1.3 系列** → iOS 上盘前/熔断/派发警报推送、两档 D 徽标、费用录入与离场原因全不可用(§七 P3-15,用户自理)。
-- **⚠ 冷启动先核两件事**(本会话未活体确认):① `GET /health` 的版号是不是 `v1.3.5` —— 详版变更日志(`archive/变更日志_详版_20260719-20260728.md`)v1.3.5 条目只记了**生产数据修复 + 补跑**,**没有代码 rsync / 重启 / health 的部署留痕**,存在「数据已修、代码未上云」的可能;② 今晚 16:35 报告是否 `Result=success`(**timer 跑过 ≠ 任务成功**,这是 07-27 那次报告没生成却被记成「已跑完」的教训)。
-- **待办总入口 = §七 Backlog**(2026-07-28 已按 P0/P1/P2/P3/P4 + 📌 认知对齐重整,编号是稳定 ID)。策略假设 / K 字头版本不在本文件,权威在 `STRATEGY_LAB.md`。
+- **生产版本(今日实查,冷启动疑问①已解除)**:公网 `GET /health` 返 **`v1.3.5`** —— **代码确已上云**,此前"数据已修、代码可能未上云"的疑虑作废,勿再复查。
+- **章程**:现役 **`v1.3.3`** —— 三仓 4 万单笔上限 / 同时 ≤3 只 / 敞口 100% / **-5% 止损** / 回落止盈 8% / 非浮盈 **D5 次日退**、浮盈豁免至 **D15** 硬上限 / **高弹墙已拆**(`forbid_high_elasticity=False`)。**v1.4.0 全程不动章程**(不新建章程行、不跑切换器);周复盘自 2026-08-03 起才按 v1.3.3 判,本周(07-27~08-02)仍按 K1 判 = 已知假警报,正解归 §七 P1-4 → v1.4-⑥-A。
+- **`strategy_versions` 各行角色**:`v1.3.3` 现役唯一;`v1.3` = 切换器白名单里**唯一合法回退目标**;`K1` 曾现役(`activated_at` 必须保全,周复盘历史时间线靠它解析);`K4` = advisory 半身行(`is_active=0`,只有 `rule["k4_advisory"]` 六节被读,**不是可激活的策略**——v1.4 的"K4 产品化"是把 advisory 用足,**不是激活这行**);`v1.2` **过时勿激活**(回落 5%)。⚠ **行数以实查为准**:生产五行(K1/K4/v1.2/v1.3/v1.3.3,**无 K2**),本地开发库六行(含 K2)——先跑 `SELECT version,is_active FROM strategy_versions` 再判断。
+- **用户真实数据已在生产**:`positions` **3 笔 open**(2026-07-27 补录,⚠ 买入日被写成当天,§七 P0-1 → v1.4-①-A,**需用户先提供真实买入日**,见 §八 第 11 项)、`watchlist` **16 只**、`devices` 1 台(macOS)。**再动章程必须走 `scripts/activate_charter.py` 四道闸**;持仓非空时闸 2 只对「纯入场侧 diff」开窄豁免(见 `archive/当前状态_历史账本_20260719-20260728.md`「07-27 v1.3.3」条),豁免必留痕。
+- **生产 reports 时间线(今日实查)**:`20260723` / `20260724` = **K1 口径候选**;`20260727` = **v1.3.3 口径**(07-28 上午补跑,不带 `--notify` → **零推送**),是第一份带完整 v1.3 情报节的报告。⚠ 该报告的「强势板块 / 最强题材 / 当日暴起板块」为空 = **概念板块表无日更路径**(§七 P0-3 → v1.4-①-C),**不是当天没行情**。
+- **⏳ 唯一待验活体(下次接活先看)**:**今天(07-28)16:35 是 v1.3.5 上云后第一次自动跑报告** —— 验收看 `systemctl show neckline-report.service -p Result -p ExecMainStatus`,**必须 `Result=success` 且报告真生成**;**只看 `systemctl list-timers` 的 LAST 不算数**(07-27 报告没生成却被记成"已跑完"的教训)。
+- **客户端**:macOS 已装 **v1.3.4** 构建;**iOS 从未装过 v1.3 系列** → iOS 上盘前/熔断/派发警报推送、两档 D 徽标、费用录入与离场原因全不可用(§七 P3-15,**用户自理**)。
+- **审计欠账**:三路独立审计只完成一路(纪律与金额);情报官/候选管线、契约三方对拍两路未做(P2-9),v1.3.1/3/4/5 四个已发布版本未 review(P2-10)。**用户已定 review 后置** —— v1.4 施工完成后由用户召唤 reviewer,两条一并做掉,plan 里不排 review 施工块。
+- **待办总入口 = §七 Backlog**(P0-1…📌-22 是稳定 ID;被 v1.4.0 吸收的条目已在原地标注「→ v1.4.0 第 N 块」)。策略假设 / K 字头版本不在本文件,权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。此前的历史交接账本(v1.0 → v1.3.5 各次完工 / 激活 / 事故的当时记账)全文 → `archive/当前状态_历史账本_20260719-20260728.md`。
 
-## 五、当前版本 Plan(v1.3 = v1.2 合并发布 · 退出规则改革 + 持仓管理层 + 情报官候选管线改版 + 一次性大迁移上线)
+## 五、当前版本 Plan(v1.4.0 = K4 打法产品化〔方案 b〕· P0 地基 + 正选漏斗 + 信息卡同构 + 判定精度)
 
-> **本节顶部是 v1.3 唯一权威施工图**(v1.3 = v1.2/v1.2.1 已完工代码 + v1.3 新增,一次合并发布);每块写具体行为、build 不用猜,每块末给验收标准(含活体)。🔴 点名 @builder-pro。**v1.2 / v1.2.1 施工图全文保留在本节下方**(标「已完工待部署 / 施工图待建 · 一次并入 v1.3-⑦」),v1.3-⑦ 部署块**显式覆盖其活体验收项**。
+> **本节是 v1.4.0 唯一权威施工图**;每块写具体行为、build 不用猜,每块末给一句验收标准(含活体)。🔴 = 高危块(碰持仓判定 / 纪律判定 / 生产部署),点名 **@builder-pro**,一律**改前备份 + 活体验收**。
 
-> **关键前提(必读,决定本版全部工程边界)**:**v1.2 全部代码已完工但从未部署**——`neckline/api/app.py::VERSION` 仍是 `v1.1.1`(已核实),生产 ECS 跑的是 v1.1.1;v1.2 的 0/A/A2/B/G/E 六块 + entry-suggestion 区间补齐**均只在本地库/本地代码,生产从未见过**。**用户拍板(2026-07-25):v1.2 不单独发,与 v1.3 合并成一次部署,对外版号直接跳到 `v1.3`**(跳过 v1.2 对外版号)。因此:① 原 **v1.2-F(部署块)并入 v1.3-⑦**,一次推全部;② **累积迁移一次性执行是本版最大部署风险**(v1.3-⑦ 写死备份/验证/回退);③ §五 v1.2/v1.2.1 施工图不归档不删(F 未做),标注状态,v1.3-⑦ 覆盖其活体项。
+> **规格权威与已拍板前提(用户 2026-07-28,不得重开讨论)**:
+> 1. **v1.4 主题 = 「K4 打法产品化」= 系统线三选一里的 (b)**。规格全文 = `archive/交接_系统线升级需求_20260725.md` **需求 8**(K4 正选漏斗完整规格,2026-07-28 策略线裁定)+ 同文件 **「需求 2 补充」**(决策日志第⑨项:最高追价上限)。**(a) 激活 K4 行**(config ≡ K1,策略行为无变化)与 **(c) 等策略线新内核**(四战役 + 用户 2026-07-26 终裁底盘暂缓)**均已否决,不再列为选项**——§七 📌-22 就此结案。
+> 2. **红黄牌与 exec_hint 一律读 DB** `strategy_versions` 的 `K4` 行 `rule["k4_advisory"]` 六节,**禁止在代码里抄常量**。既有先例照旧:advisory 文字 = **规格档**(策略线档案)、模块命名常量 = **可执行镜像**(系统线),**改阈值须同改两处**,对照表写模块头(`report/holding_k4_check.py` 体例)。
+> 3. **P0 三洞并进本版第一块**,**不单出 v1.3.6**。
+> 4. **review 后置**:本版**不排 review 施工块**。施工完成后由**用户召唤 reviewer**;§七 **P2-9**(情报官/候选管线、契约三方对拍两路未做审计)与 **P2-10**(v1.3.1 / v1.3.3 / v1.3.4 / v1.3.5 四个已发布版本未 review)一并归那时一次做掉。
+> 5. **本版不动纪律章程**:`strategy_versions` 现役行仍是 **`v1.3.3`**,不新建章程行、不跑切换器。任何"顺手改个阈值"的念头一律回 planner。
 
-> **用户已拍板(不得改方向)**:
-> 1. **v1.2 + v1.3 合并发布,对外版号 v1.3**(`VERSION` v1.1.1→v1.3)。
-> 2. **扣费口径 = 补录开仓时录买入实付费用**(不估算买入费);`positions` 幂等加 `buy_fees`/`sell_fees` 两列,清仓端点录卖出实付费用(真实发生后回填,供周复盘对账用真数)。⚠ 需求 6 判据「D5 收盘扣双边费后净浮盈 ≤0」中,**D5 当天尚未卖出、卖出费未发生 → 卖出费按公式估算并诚实标注为估算**(公式见 v1.3-①-F;误差只影响「刚好在盈亏平衡线附近」的单子判向)。
-> 3. **K4 持仓牌推送口径(planner 给的默认,标注"用户可否决")**:**强警示级别才推 APNs、普通警示只进盘中看板;不新增第六类推送**——K4 强警示复用既有持仓提醒通道(`CATEGORY_D5EXIT`,APNs category 仍五类)。
-> 4. **v1.2.1-C(挂单未成交追踪)并入 v1.3-④**(它记「挂了没成交的计划后来怎么走」,**不部署就永远补不回那几周数据**——与归因不同,归因晚做只晚出结论、数据仍在);**v1.2.1-D2(问询台选股域清理)并入 v1.3-⑤**(小清理顺手做)。**v1.2.1-D(打法 × 论点归因)留 v1.3.1 后发**(需 30-50 笔样本),但它是「双打法 A/B 裁决」的**必需件、不许丢**。
-> 5. **候选池生成域刻意含高弹板块**(需求 5,用户知情拍板,止损频率代价已在策略线审计定价)。
-> 6. **章程激活仍是 staged 步骤 2**(用户清仓 + 确认后跑切换器)。
+> **⛔ 语义红线(需求 8 明写,任何一处代码 / UI / 文案违反即本版验收不过)**:
+> - **排序 = 注意力优先级,不是收益预测**;**排第一 ≠ 最会涨**;**终选权在用户**。
+> - **UI 禁「推荐买入」「建议买入」「看好」「值得买」类表述**(承 §2.3 v1.3 候选语义变更,v1.4 把它扩到**排序理由与信息卡**文案)。exec_hint 展示一律叫「执行提示」,不叫「买入建议」。
+> - **排序键只用审计过方向的量**。RS 线斜率 / 行业分歧度 / 龙虎榜 / 消息面 / 温和带等**未经审计的量只进信息卡展示,不进排序键**——这条**写进单测**(白名单式断言,见 ③ 验收)。
 
 > **分块序列(依赖一眼看清)**:
-> · **v1.3-① 退出规则章程变更(🔴 碰纪律章程)**——MomentumConfig 新字段 + K1 逐位不变护栏 + 回测引擎条件退出 + `scan_d5_exits` 两档 + notify 两档 + charter `v1.3` 行(作废过时 `v1.2` 行)+ §2.1 改写 + 风险登记 + 卖出费估算。**基础块,先行**(退出规则/config 是 ②⑥⑦ 的地基)。
-> · **v1.3-② 持仓管理层(K4 牌每日对持仓重算)**——读 DB K4 advisory;强/普通分级 + 强警示 APNs 复用既有通道 + 情景树每日对照勾选。**推送路由改动 🔴,体检 compute @builder**。
-> · **v1.3-③ 情报官**——C1 复盘情报件 + C2 板块资金流 + C3 候选四步管线改版(需求 5,§3.8 铁律重述)+ C4 晚间消息面公告扫描。@builder;与 ② 共享「读 K4 advisory」。
-> · **v1.3-④ 挂单未成交追踪**(原 v1.2.1-C 全文,归 v1.3)——@builder。
-> · **v1.3-⑤ 问询台选股域漂移清理**(原 v1.2.1-D2,归 v1.3)——@builder。
-> · **v1.3-⑥ 客户端跟进**(两档 D 徽标 + 费用录入 + K4 持仓牌 + 情景树每日勾选 + 候选新语义 + 情报包展示)——@builder,依赖 ①②③ 契约。
-> · **v1.3-⑦ 部署 + 章程激活(🔴 合并 v1.2-F)**——一次推 v1.2+v1.3 全部、VERSION→v1.3、累积迁移一次性、sync_code.sh 首验、timer/配额核查、staged 激活。@builder-pro + 用户,**最后**。
+> · **v1.4-① P0 地基(🔴)** —— ①-A 补录买入日 / ①-B 停牌票口径 / ①-C 概念板块日更 + 过期告警。**先行**;**①-C 是 ③ 板块维度的硬前置**(板块数据不日更 → 「当日暴起板块」整路为空)。
+> · **v1.4-② 行业强度单一源** —— 新 `report/industry_strength.py`;A2/B3「题材持续天数」判据回归 advisory 规格档口径 + **切换对拍报告**。**② 是 ③④ 的地基。**
+> · **v1.4-③ 正选漏斗排序键改版** —— 三级排序键 + 板块资金流退出排序键(只并列展示)+ 语义红线落文案。**依赖 ①-C、②。**
+> · **v1.4-④ 信息卡与考卷同构** —— 服务端组装 K 线 / RS 线 / 行业分歧线 / 快照 / 红黄牌 / 温和带 / 消息面 + 龙虎榜。**依赖 ②。**
+> · **v1.4-⑤ exec_hint 产品化 + 决策日志第⑨项「最高追价上限」** —— 读 DB exec_hint 四条;`decision_log` 幂等加列;归因维度 +1。
+> · **v1.4-⑥ 判定精度(🔴 ⑥-A)** —— P1-4 章程按成交时刻逐笔判 / P1-5 消息面扫描预算 / P1-6 定格日 ≠ D5 标注。
+> · **v1.4-⑦ 功能补全** —— P3-12 挂单追踪出口 / P3-13 问询记录落库 + 历史 / P3-14 客户端小瑕疵。
+> · **v1.4-⑧ 客户端跟进** —— **依赖 ①③④⑤⑥⑦ 契约**。
+> · **v1.4-⑨ 部署上云(🔴)** —— **最后**;验收守铁律「**timer 跑过 ≠ 任务成功,看 `Result=` / `ExecMainStatus`**」。
+>
+> **期间「等数据决策点」(不排施工块,不挡任何一块)**:**§七 P1-7 `search_engine` 选型** —— 2026-07-27 单日样本(`search_pro` 2 条 / `search_std` 2 条 / `search_pro_sogou` 10 条)不足以定;攒够几天后捞 `llm_judgments` 的命中分布(按日 × 按引擎)再拿数据说话。**在此之前维持 `search_pro` 不动**(用户已拍板的现值),不许在本版顺手改。
 
-> **铁律(承 §3.8 + v1.1/v1.2,builder 逐条守)**:同码不重写;**单一事实源不漂移**——止损 `stop_pct` / **回落止盈 `take_profit_retrace`(v1.3=0.08)** / **hold 两档 `max_hold_days`(非浮盈=5)+ `max_hold_days_profit`(浮盈硬上限=15)**〔**两档判向 D5 定格一次、消费点只读定格值**,见 §2.1 第 2 条 ⑤ 与 ①-C〕 / **条件时间退出开关 `time_exit_only_if_unprofitable`** / 单笔上限 `single_cap`(=4 万违纪上限)/ 最多持仓 `max_positions`(=3)/ 敞口 `max_exposure_frac`(=1.0)全读现役 `brain.get_active().rule["config"]`;**熔断阈值 3/4000 = 命名常量**(住 `sentinel/circuit.py`,非 config,不动);涨跌停读 `data/limit_derived.py`;板块分类读 `data/board.py`;总仓读 `config.total_capital`;实时价走 `sentinel/quotes.py:get_quotes`(关注池 ≤200);**落盘一律走 `data/market_data.py:write_table_day`**(勿自己 write_parquet);带联网搜索 LLM 读超时守 **90s**;LLM 缺 key 全链路优雅降级不崩;**推送仍五类不新增**(K4 强警示复用 D5EXIT category);**系统永不自动下单**;**新表/列幂等迁移 + 改 schema 前 `cp -p` 备份**;**K1 逐位不变护栏**(新 config 字段默认值必须让 K1 回测 N=1288/total_return −20.53% 逐位不变)。
-
----
-
-### v1.3-① · 退出规则章程变更(🔴 碰纪律章程 @builder-pro)
-
-**背景**:需求 6(2026-07-25 用户知情越线采纳)。替代现行「回落 5% + hold≤5 无差别时间退出」。**证据链**:`research/h9_exit_reform.md`(V0 网格 5×0.08 是唯一双改良格;V1/V3 浮盈续命全期强兑现但 2026 边际否决)+ `research/winners_anatomy.md`(大赢家 88.6% 系 hold=5 强退、时间止损封住右尾)。**新规则**:①止损 -5% **不变**;②回落止盈 5%→**8%**;③时间退出**仅对非浮盈单**(D5 收盘扣双边费后净浮盈 ≤0 → 次日退出);④**浮盈单豁免时间退出**,交回落 8% + 止损管到浪停,**硬上限 15 个交易日**。
-
-- **①-A MomentumConfig 新字段(命名 + 默认值定死,保 K1 逐位不变)**:`neckline/strategy/momentum.py::MomentumConfig` 新增**两字段**(`take_profit_retrace`/`max_hold_days`/`stop_pct` 复用不新增):
-  - `max_hold_days_profit: Optional[int] = None`——浮盈单硬上限(交易日);**默认 None = 不启用浮盈豁免 = K1 行为**。
-  - `time_exit_only_if_unprofitable: bool = False`——时间退出是否仅对非浮盈单;**默认 False = 无差别时间退出 = K1 行为**。
-  - **默认值铁律**:K1/K2/K3/`v1.2` 落库 config 均无这两字段,加载时吃默认(None/False)→ 时间退出仍在 `max_hold_days` 无条件触发 → **K1 回测逐位不变**(护栏单测锁死,同 `tests/test_k3_oversold_guardrail.py` 姿势:默认关闭字段 + K1 逐位不变)。
-- **①-B 回测引擎条件退出(退出逻辑在 `backtest/` 平仓,不在 `build_entry_mask`)**:在「held == `max_hold_days`(D5)」判定点插入条件分支——**这一处的「判一次定格」语义就是全系统口径,实盘三个消费点一律照此对齐**(2026-07-27 审计 🔴-1 定案,见 ①-C):
-  - 仅当 `time_exit_only_if_unprofitable=True` 且 `max_hold_days_profit is not None` 时:算 D5 收盘净浮盈(`close×qty − buy_price×qty − 双边费`,**双边费用引擎既有 fee 模型**,与 `research/h9_exit_reform.py` §2 对拍口径一致——那里已 1288/1288 逐位吻合)——`>0` → **豁免时间退出**,继续由回落止盈(`take_profit_retrace`)+ `-5%` 止损管理,到 held == `max_hold_days_profit`(D15 硬上限)无条件退出;`≤0` → 照旧 D6 开盘时间退出。
-  - `time_exit_only_if_unprofitable=False`(默认)→ 分支不进,`max_hold_days` 无条件时间退出 = **K1 逐位不变**。
-  - **护栏单测**:加载 K1 config 跑六年回测,断言 N=1288 / total_return −20.53% 与冻结基线逐位相等(新字段不改写历史)。
-- **①-C `scan_d5_exits` 改两档口径(`sentinel/precall.py`,实盘执行侧)——语义 = ①-B 的「D5 判一次定格」,不是「逐日重判」**(2026-07-27 用户拍板方案 A;本条与 ①-B 曾各写一套、是审计 🔴-1 的根因,现已统一):现判 `d_count == max_hold_days`(硬编单档)。改为**净浮盈感知的两档**——退出判定的**权威计算 + 唯一定格点在 16:35 报告管线(EOD,D5 收盘后)**,因为「第 5 日收盘净浮盈」是 EOD 量、precall 9:25:30 时 D5 收盘未出:
-  - **定格(只发生一次)**:16:35 首次遇到某持仓 `d_count ≥ max_hold_days` 时,用当日 EOD 收盘净浮盈判一次向 —— `>0` → `profit_exempt`(续持至 `max_hold_days_profit`)/ `≤0` 或未知 → `time_exit_next_day`;判向 + 判定日 + 判定所用净浮盈**写死进 `holding_eod_check.time_exit_locked_state/_date/_net_float`**(幂等迁移),此后每日的行原样带过来。净浮盈 = 现价(EOD 面板 close)×qty − buy_price×qty − `buy_fees`(实录,**缺则按默认费率估**,见 ①-F) − **估算卖出费**。**这是全系统唯一用于判向的净浮盈口径**(EOD close;审计前 precall 读快照、`GET /positions` 用实时价,三处各算各的)。
-  - **消费(三处,一律读定格值)**:16:35 后续各日 / 9:25:30 precall / `GET /positions` 全走 `resolve_time_exit(d, cfg, locked_state)` —— **该函数刻意不接受 `net_float` 参数**,结构上杜绝任何消费点「顺手用当日净浮盈重判一次」。`d_count ≥ max_hold_days_profit` → `hard_cap_exit`(**硬上限仍按 d_count 无条件判,是定格的唯一例外**);尚无定格(EOD 管线断跑等异常)→ 保守判 `time_exit_next_day`(豁免需正向证据,绝不默认豁免)。
-  - precall 9:25:30 tick 因此是**纯执行提醒**:读定格判向,对 `time_exit_next_day`/`hard_cap_exit` 的持仓在盘前汇总提示「今日按计划时间退出」。**当 `time_exit_only_if_unprofitable=False`(config 未启用,现役 K1)时,`scan_time_exits` 退回单档 `d_count==max_hold_days` = 与 v1.1 D5 行为完全一致、且根本不产生定格记录**(兜底,防未激活章程时行为漂移)。
-- **①-D notify D5 文案改两档(`api/notify.py::push_d5_exit`)**:非浮盈单「D{n} 时间退出日,净浮盈 ≤0,按计划离场」/ 硬上限单「D{n} 已达浮盈硬上限 {max_hold_days_profit},按计划离场」;浮盈豁免单**不推 D5 执行提醒**(它没到退出,只在客户端 D 徽标转 `D{n}/{15}` 档展示)。**`__all__` 五入口不变**(不新增 push 函数)。
-- **①-E charter `v1.3` 行(作废过时 `v1.2` 行,一次激活到位)**:
-  - ⚠ **未激活的 `v1.2` 章程行已过时**——它是照 K1 复制的 `take_profit_retrace=0.05`/`max_hold_days=5`,memo 需求 1 明确「勿按早期版本回落 5% 实现」。**作废方式**:**保留 `v1.2` 行不激活**(`is_active=0`/`activated_at=NULL` 不变,留历史留痕、**不删**——`strategy_versions` 是 append-only 归因链,删行破坏「大脑按版本归因」审计),新建 **`v1.3` 章程行**,在其 changelog 注明「取代 v1.2 章程行,勿激活 v1.2」。理由:v1.2 行从未激活、从未 govern 任何真实周,留作 inert 无害;删除破坏审计完整性。
-  - **v1.3 config = 从 DB 读 K1 config 复制**(禁手抄,同 `charter_v1_2.py` 姿势;新脚本 `scripts/oneoff/charter_v1_3.py`(已执行,随一次性脚本归档进 oneoff/)),**只改六字段**、其余逐字段 = K1:
-    - 仓位三字段(承 v1.2 三仓制):`max_positions` 5→**3** / `single_cap` 20000→**40000** / `max_exposure_frac` 0.6→**1.0**;
-    - 退出三字段(v1.3 新):`take_profit_retrace` 0.05→**0.08** / `time_exit_only_if_unprofitable`→**True** / `max_hold_days_profit`→**15**(`max_hold_days` 保持 **5** = 非浮盈时间退出档,`stop_pct` 保持 **0.05**)。
-    - `brain.save_version("v1.3", rule={"config": <复制并改六字段>, "lineage": "K1"}, changelog="内核血缘=K1 未改一字;本行=v1.2 三仓制 + v1.3 退出规则改革(回落 8% + 浮盈豁免时间退出硬上限 15 + 非浮盈 D5 退出);**取代 v1.2 章程行,勿激活 v1.2**。风险登记:回落 8% 系 H9 V0 网格观察免测采纳;浮盈豁免组合版未整体回测(最接近 H9-V3 差 724 元未过 2026 门禁);用户知情越线采纳 2026-07-25。", activate=False)`。version=**`v1.3`**(系统版号,绝不碰 K 字头);K1 行原样保留、`is_active` 仍 K1。
-  - **切换器**沿用 `scripts/activate_charter.py`(staged 语义:前置校验无 `status='open'` 持仓 + old→new diff + `--confirm` 才 `activate_version`)——**目标版本从 `v1.2` 改为 `v1.3`**(加 `--target v1.3` 或改脚本默认);历史洗白修复(`activated_at`/`config_active_at`/`reviews.strategy_version` 按周取「当时现役」)v1.2-A 步骤 1 已就位,**v1.3 复用不重写**。
-- **①-F 卖出费估算(诚实标注为估算,单一源住一处)**:新 `neckline/fees.py`(唯一源)`estimate_sell_fee(sell_amount, buy_fees, buy_amount, cfg)`:
-  - **印花税**(卖出单边):`sell_amount × STAMP_DUTY_SELL`(命名常量;**⚠ 当前统计口径 = 万5 = 0.0005**〔2023-08-28 起单边卖出减半〕,**非 planner 上级建议的千1**——政策值住此一处,若变动改此常量;**需用户确认用哪个**);
-  - **过户费**(双边):`sell_amount × TRANSFER_FEE`(=0.00001,沪深已统一);
-  - **佣金**:优先从买入实付反推 `comm_rate = max(buy_fees − buy_amount×TRANSFER_FEE, 0)/buy_amount`(⚠ 买入若命中 5 元最低佣金则反推偏高、估算偏保守——诚实标注);无 `buy_fees` → 兜底 `DEFAULT_COMMISSION_RATE`(万2.5=0.00025);`commission = max(sell_amount×comm_rate, MIN_COMMISSION=5.0)`;
-  - 费率均可由 `app_settings` fee 参数覆盖(用户在设置存一份费率;缺省 = 上述统计值)。
-  - **误差影响写死**:估算只用于 ①-C 的 D5 净浮盈判向 + 呼吸台账 `edgeToPrice`/先手成本的实时近似;**误差(几元)只在「净浮盈 ≈0 盈亏平衡线附近」翻转 time-exit vs profit-exempt 判向**,对明显盈/亏单无影响。真实卖出后 `sell_fees` 回填 → **周复盘对账一律用真数、不用估数**。回测引擎侧用引擎既有 fee 模型(双边精确),不走本估算。
-- **①-G §2.1 章程文本同步(planner 已改)**:§2.1 第 2 条按需求 6 改写 + 风险登记(见 §2.1);§五铁律 hold 两档 + 回落 8% 已同步(见本节 intro 铁律)。
-
-**① 验收**:①护栏单测——K1 config 六年回测 N=1288/−20.53% 逐位不变(新字段默认 None/False 不改写历史);②回测引擎条件退出——`time_exit_only_if_unprofitable=True`+`max_hold_days_profit=15` 下浮盈单豁免、非浮盈单 D5 退出、D15 硬上限强退,与 `research/h9_exit_reform.py` V1 口径对拍;③`scan_time_exits` 三态正确、config 未启用退回单档 = v1.1 D5 行为;④`estimate_sell_fee` 反推佣金 + 最低佣金地板 + 印花税/过户费,盈亏平衡线附近判向敏感性单测;⑤charter `v1.3` 行落库(config 承 K1 血缘只改六字段、`v1.2` 行仍不激活)、切换器目标 v1.3、洗白反例仍锁死;⑥notify 两档文案、`__all__` 五入口不变;⑦迁移 `positions.buy_fees`/`sell_fees` 生产库副本 integrity ok + 重跑不炸;⑧pytest 零回归。**⑨ staged 活体(留 ⑦/用户)**:清仓 + 确认后激活 v1.3 → entry-suggestion 按 4 万、回落止盈按 8%、D5 两档生效。**🔴 碰纪律章程,建议完工后叫一次 review(用户定)。**
+> **铁律(承 §3.8 + v1.3,builder 逐条守)**:同码不重写;**单一事实源不漂移** —— 纪律参数(`stop_pct` / `take_profit_retrace` / `max_hold_days` / `max_hold_days_profit` / `time_exit_only_if_unprofitable` / `single_cap` / `max_positions` / `max_exposure_frac`)全读现役 `brain.get_active().rule["config"]`;熔断阈值 = `sentinel/circuit.py` 命名常量;涨跌停读 `data/limit_derived.py`;板块分类读 `data/board.py`;总仓读 `config.total_capital`;**大盘基准读 `strategy/features.py::SSE_INDEX`(不另起指数常量)**;实时价走 `sentinel/quotes.py:get_quotes`(关注池 ≤200);**日分区表落盘一律走 `data/market_data.py:write_table_day`**(唯一例外见 ①-C,已显式登记 + 守门单测);带联网搜索 LLM 读超时守 **90s**;LLM 缺 key 全链路优雅降级不崩;**推送仍六类不新增**;**系统永不自动下单**;**新表/列幂等迁移 + 改 schema 前 `cp -p` 备份**;**「没有」与「没看」必须能分开**(数据不可得如实缺省 + reason,禁 `or 0.0` 静默兜底、禁空数组冒充"扫过了没命中")。
 
 ---
 
-### v1.3-② · 持仓管理层:K4 牌每日对持仓重算(推送路由 🔴 + 体检 compute @builder)
+### v1.4-① · P0 地基:补录买入日 / 停牌票口径 / 概念板块日更(🔴 @builder-pro)
 
-**背景**:需求 7。K4 红黄牌现仅买前安检;用户定案「持仓不是冷冻的」——牌须每日对**持仓票**重算并推送警示。**判据全读 DB** `strategy_versions` 的 `K4` 行(`is_active=0`)`rule_json["k4_advisory"]` 六节(`hard_cut`/`avoid_flag`/`exec_hint`/`circuit_breaker`/`intel_order`/`note`),**不抄常量**;证据口径 `research/k4_assembly_report.md` §1/§R3。
+**背景**:§七 P0-1/P0-2/P0-3 三条「影响判定正确性」的缺陷。用户拍板并进 v1.4 第一块,不单出 v1.3.6。**①-C 是 ③ 正选漏斗板块维度的硬前置**——概念板块表不日更,「当日暴起板块」那一路永远为空,排序改得再对也少一路输入。
 
-- **②-A 持仓 K4 体检(EOD,16:35 报告管线)**:新 `report/holding_k4_check.py`——对每只 open 持仓在当日 EOD 面板上重算 K4 advisory 命中(同「自选体检 `watchlist_check.py`」姿势,只把输入域换成持仓)。⚠ **advisory expr 是字符串/人读规格,非可执行**(如 `"turnover_rate > 10"`、`"行业强度(top20%中位数)连续≥4天成员"`)→ builder 写**可执行 polars 镜像**逐条对齐 advisory 语义,阈值优先从 advisory 结构读、否则镜像为模块常量并注明「advisory=规格档(策略线档案)、polars=可执行镜像(系统线),改阈值须同改两处」——**同 `sentinel/circuit.py` 常量 vs advisory `circuit_breaker` 文字的既定先例**(§七 Backlog 已立此规矩)。
-- **②-B 警示分级(强 / 普通,写死)**:
-  - **强警示(→ APNs + 看板)**:`hard_cut` 类——**年线下涨停 / 放量大阳 = 派发警报**(`A3_belowyear_limitup` / `B1_volume_stacking`,即 STRATEGY_LAB Backlog「诱多做局反向哨兵」并入本需求,数字依据雷区地图 3-⑤:年线下降势票涨停 → 3 日 −2.06%/2026 −3.43%)、**题材持续 ≥4 天**(`A2_theme_persist_ge_4`)、**换手率 >10%**(`A1_turnover_gt_10`)。
-  - **普通警示(→ 盘中看板 / 报告卡,不推 APNs)**:`avoid_flag` 类——题材持续第 2/3 天(`B3`)、双金叉态(`B2`)、量能堆积(`B1`)等标注类。
-  - **证据强度标注(守 §2.4 铁律「证伪只用价量结构」)**:换手 / 年线下涨停 / 放量大阳 = **纯价量结构(强证据)**;**题材持续天数依赖概念板块成分(K2「成分洞」)= 弱证据**,展示须标「成分类,参考」,**不作硬证伪**。
-- **②-C 强警示推送(复用既有通道,不新增第六类)**:强警示走 `CATEGORY_D5EXIT`(既有「持仓执行提醒」APNs category,语义泛化为「持仓需处置」= D5 时间退出 ∪ K4 派发警报),受既有 `push_d5exit` 开关(**或** builder 加一个 `app_settings.push_holding_alert` 开关解耦——**开关不是「推送类」,不破「五类」约束**);**notify `__all__` 仍五入口**(K4 强警示走 `push_d5_exit` 加 `kind` 参数区分文案,守住「APNs category 仍五类」)。⚠ **用户可否决**:若要 K4 强警示独立开关 / 独立 category → 升级为第六类(须用户明确批准打破「五类」)。
-- **②-D 情景树每日对照勾选(复用 v1.2-B `scenario-outcome`,不新造写路径)**:持仓期间每日(16:35 报告持仓卡 + 客户端)提醒用户对照该持仓关联决策日志(via `decision_log.position_id`)第⑦项情景树——哪个情景兑现、有没有按预案执行 → 勾 `matched` 走既有 `POST /decisions/{id}/scenario-outcome`(只翻 `matched`、情景文本只读)。**无任何新写端点**。
-- **②-E 盘中涨停派发的实时化(数据边界,诚实定范围)**:v1.3 **权威每日重算走 EOD 16:35**(数据完整、免费源可靠);「持仓票盘中突现年线下涨停」的实时检测**折进既有持仓哨兵**(intraday 用 EOD 派生的 ma250 + 实时价判「现价 ≥ 年线下涨停价」,涨跌停价读 `limit_derived.compute_intraday_limit_prices`)——**在既有持仓哨兵 intraday 判逻辑加一条价量结构分支即可,不新拉资金面源(§2.4:证伪只用价量结构)**;若 intraday 成本/复杂度超预算,**降级为纯 EOD**(memo「每日重算」EOD 已满足),盘中实时派发列为后续增强。
+#### ①-A 补录持仓可指定真实买入日(🔴 碰持仓判定,P0-1)
 
-**② 验收**:①单测——持仓 K4 体检读 DB advisory(不抄常量)、polars 镜像与 advisory 语义对齐;强/普通分级正确(年线下涨停/放量大阳/题材≥4天/换手>10% 判强、题材2-3天判普通);证据强度标注(题材类标弱证据);②强警示走 D5EXIT category APNs(开关关时跳过)、`__all__` 五入口不变;③情景树每日勾选复用 `scenario-outcome`、无新写端点、情景文本不可改;④EOD 主路径 + intraday 涨停分支(或降级 EOD)各验;⑤pytest 零回归。**🔴 推送路由改动,与 ① 同批建议 review。**
+- **契约**:`PositionOpenIn`(`api/schemas.py:304`)新增 `buyDate: Optional[str]`(`YYYYMMDD`),**缺省 = 今天**(与现行为逐位一致,老客户端不传时行为不变)。
+- **校验(400,两个新 reason)**:① 不是 `trade_cal` 里的交易日 → `reason="not_trading_day"`;② 晚于今天 → `reason="future_buy_date"`。**客户端 `APIClient.mapReason` 必须为这两个 reason 各加 case**(守项目 CLAUDE.md「404/reason 映射」坑:别指望 fallback 猜对文案)。
+- **透传**:`api/app.py::open_position`(~703 行)把 `buyDate` 解析成 `date` 后透传 —— **领域层 `sentinel/positions.py::open_position` 与 CLI `scripts/positions.py add` 本来就收 `buy_date`,缺口只在 HTTP 契约 + 客户端**,服务端改动面极小,**不许顺手重构领域层**。
+- **纠正已落库的 3 笔(需用户先提供真实买入日,见 §八 第 11 项)**:新 `scripts/oneoff/fix_position_buy_dates.py`,**幂等**:
+  1. 跑前 `sqlite3 .backup`(在线一致性备份,照 v1.1-H 姿势)+ `cp -p` 双保险;
+  2. `UPDATE positions SET buy_date=? WHERE id=?`,改前改后逐笔打印(id / ts_code / 旧值 / 新值);
+  3. **清定格**:这 3 个 `position_id` 在 `holding_eod_check` 里的 `time_exit_locked_state` / `time_exit_locked_date` / `time_exit_locked_net_float` **三列有值就清空**(买入日错 → D 计数错 → 定格判向建立在错误 D 上),让下一份 16:35 报告按正确 D 重新定格;
+  4. 跑后复查:`PRAGMA integrity_check` ok、3 笔 `buy_date` 正确、三列已清、其余行零改动(行数与 diff 逐表核对)。
+- **⚠ 为什么要紧(勿降级为小改)**:D 计数、时间退出 D5/D15 判向、回落止盈峰值追踪起点、周复盘持有天数、按打法归因的持有周期,**全部起点错**。
 
-> **② 完工纪要(2026-07-26,@builder-pro,🔴 未部署)**:需求 7 落地。**第六类推送**(用户 2026-07-26 拍板,推翻 planner「复用 D5EXIT」默认):独立 category `HOLDINGALERT` + 独立开关 `push_holding_alert`(默认开)——`notify.__all__` 五→六(新 `push_holding_alert`)、apns category 五→六、`app_settings` 幂等加 `push_holding_alert` 列、`GET/PUT /settings/push` 契约扩六字段、§2.4 推送白名单文字已改六类。**K4 判据全读 DB `K4.k4_advisory`**(evidence 文字读 DB,不抄常量;判据阈值 = `report/holding_k4_check.py` 命名常量镜像,逐条对应关系写在模块头 docstring 对照表 + 改阈值须同改两处)。**分级**:强价量(A1 换手>10 / A3 年线下涨停 / A3b 年线下放量大阳〔诱多做局反向哨兵并入〕)→ `has_strong` 触发第六类 APNs;普通(B1 堆积 / B2 双金叉 / B4 追强)只进看板;题材持续天数(A2≥4 / B3 2-3)= 概念板块 board_age 代理、**弱证据标 constituent(参考)不单独触发 APNs**。放量大阳「B1 既列强又列普通」的矛盾由**年线下闸**自洽解(年线下=A3b 派发强 / 年线上=B1 堆积普通)。**⚠ A3b 量能门槛贴雷区地图 3-⑤ 实测证据口径 = 量比(vol/vol_ma5)≥2**(那个「年线下放量大阳事后 3 日 −1.04%」正是此口径下测出;强警示推锁屏,门槛必须 = 实测集合、不能比证据更宽,故 A3b 单用量比≥2、不套 B1 的 cnt3 堆积条件);**B1 维持 DB advisory 原文 ×1.5(vol_ma20)不动**(只进看板、不推送,且是 advisory 原文形态)——两者量能阈值刻意分叉、模块头对照表 + 常量注释写明理由(可执行镜像 vs 人读规格档允许分叉、但分叉写明,防后人当笔误"修正"回去)。**② 未降级项**:②-E 盘中实时派发**降级为纯 EOD**(plan 明允「memo 每日重算 EOD 已满足,盘中实时列后续增强」),不碰 intraday 持仓哨兵。**② seam 已接**:`report/holding_k4_check.py` 在 16:35 报告管线(`build_report`)对每只 open 持仓算好 D5 收盘净浮盈(扣双边费:买入费读 `positions.buy_fees`、卖出费 `fees.estimate_sell_fee` 估算)→ 落 `holding_eod_check` 表 → **`sentinel/precall.py::scan_time_exits(net_float_provider=holding_store.net_float_provider(...))` 已接线**(次日 9:25:30 读最近一份 net_float),修复 v1.3-① 留的「provider 恒 None → 激活后浮盈豁免形同虚设」地基缺口(单测 `test_net_float_provider_fixes_profit_exemption` 锁死:同 config 下 provider 给正浮盈→profit_exempt、None→保守 time_exit)。**情景树每日对照**(②-D):复用既有 `POST /decisions/{id}/scenario-outcome`(无新写端点)+ `GET /decisions?position_id=` 只读过滤挑出待对照决策;`PositionOut` 加 `scenarioReviewPending`。**契约增量**:`PositionOut.k4Advisory[]`(服务端 16:35 算好,GET /positions 读快照嵌)+ `scenarioReviewPending` + `PushSettingsOut/SettingsPushIn.holdingAlert`。全量 pytest **1031 passed / 2 skipped**(基线 1010 + 21 新,0 回归)。**未碰**生产 ECS / STRATEGY_LAB / research/* / K1/K2/K4/v1.2/v1.3 已落章程行(`is_active` 仍 K1)/ v1.3-①③④⑤⑥⑦。改 schema 前已 `cp -p` 备份。🔴 与 ① 同批建议 review。
+#### ①-B 停牌 / 无行情持仓票的显示与判定口径(P0-2)
 
----
+- **第一步:诊断(结论必须写档)**。`002036.SZ`(联创电子)自 2026-07-23 起无行情分区、`stock_basic.list_status` 仍 `L`、用户自述"正筹划股权转让"。查:① TuShare `suspend_d` 接口在 600 元档是否可用(真 token 探活,照 v1.3-③-C4 `anns_d` 探活的做法,**结论写档**——可用/不可用都写);② 该票近 10 个交易日 `daily` 行是否整段缺失;③ 全市场当日是否还有同类票(说明是普遍现象还是个案)。**诊断只决定 `reason` 标签取值,不决定下面的口径**——口径在此定死,builder 不要等诊断再设计。
+- **第二步:口径(定死)**。持仓票**当日无 EOD 行**时:
+  - **价格**:沿用**最后有效收盘价**,并**显式标注**——`PositionOut` 新增 `priceStale: {staleDays:int, lastCloseDate:"YYYYMMDD", reason:"suspended"|"data_gap"|"unknown"}`;客户端持仓卡文案「停牌/无数据 {staleDays} 个交易日,价格为 {lastCloseDate} 最后成交价」。**绝不静默把老价当今日价**。
+  - **时间退出判定挂起**:`resolve_time_exit` 新增第五态 **`suspended_hold`(挂起)**,**只对"当日无 EOD 行"这一情形**触发 —— 不定格、不推 D5/硬上限提醒。**`d_count` 照常按交易日累计并展示**(纪律口径是"持有交易日数",不因停牌暂停计数),但**判向挂起**;复牌当日 16:35 用复牌当日 EOD 正常定格(若届时 `d_count` 已 ≥ `max_hold_days`,就在复牌当日定格,并由 ⑥-C 标注"定格于 D{n},晚于 D{5} {k} 天")。
+  - **⚠ 这是对既有保守兜底的定向收窄,不是放宽**:现状「无定格 → 保守判 `time_exit_next_day`」会**催用户去卖一只根本卖不掉的票**。本次只把「当日无 EOD 行」这一情形改为挂起,**其余无定格情形(EOD 管线断跑等)仍保守判 `time_exit_next_day`,一字不改**(豁免需正向证据,绝不默认豁免——审计 🔴-1 的结论不得回退)。
+  - **K4 每日体检**:该票当日**跳过体检并标 `dataUnavailable:true`**,不静默产出空牌(空牌 = "体检过了没问题",与"没体检"必须能分开)。
+  - **净浮盈**:无 EOD 行 → `net_float=None`(现状已如此),不用最后收盘价冒充当日价去算判向。
+- **第三步**:口径落地后,builder 在 **§2.1 第 2 条末补一句附注**(「停牌/无行情期间时间退出判向挂起、d_count 照计、复牌当日定格」),保持章程文本与实现同源。
 
-### v1.3-③ · 情报官(复盘情报件 + 板块资金流 + 候选管线改版 + 消息面扫描,@builder)
+#### ①-C 概念板块日更管线 + 「板块数据过期」显式告警(P0-3)
 
-**背景**:需求 3 + 需求 3 补充 + 需求 5 合并(①④ 两步要的正是情报件,分开做 = 同批代码写两遍)。系统重定位:机器不替选股,候选 = 「过完安检、值得花注意力的票」,终选权用户。
+- **现状**:`ths_daily` / `ths_member` / `ths_index` 只有一次性 backfill(`scripts/backfill_concept.py`,`END="20260722"` 硬编 + "已存在则跳过"),16:05 的 `scripts/daily_update.py` 只跑 `backfill.DAY_TABLES=[daily, daily_basic, adj_factor, moneyflow_dc]`(+ `index_daily` / `limit_derived`)。→ `compute_sector_strength` 当日无行 → **返回空列表且不报错**(优雅降级) → 「当日暴起板块」整路为空、`board_age` 拿不到。
+- **日更(加进 `scripts/daily_update.py`)**:
+  - **`ths_daily` 当日增量**:优先用一次 `trade_date=` 全板块调用;若接口不支持按日全量(**先侦察,结论写模块 docstring**),退回按 `ts_code` 分批(~400 次,限频退避由 `tushare_client` 内建)。**配额账与 §七 P4-20 一起算**,部署块 ⑨-E 复核。
+  - **`ths_index` / `ths_member` 低频重拉**:**每周一次**(成分变动慢),带 `snapshot_date` 元信息;**重拉前保留上一版 `.bak`,拉取失败绝不覆盖旧快照**(半份成分比旧成分更糟)。
+  - **⚠ 落盘方式 = `write_table_day` 铁律的唯一登记例外**:`ths_daily.parquet` **维持扁平单文件**(读侧 `report/sectors.py::_ths_path` / `board_pool.py` / `intel_candidates.py` 零改动),日更走「读全表 → 追加当日 → **按声明 dtype cast** → 写 `.tmp` → `os.replace` 原子替换」。dtype 声明住**一处命名常量** `THS_DAILY_DTYPES`(照 `market_data.TABLE_FLOAT_COLS` 精神,**永不向"现有文件"看齐**)。**登记理由三条**:① 单文件**不存在跨分区 schema 冲突**——`write_table_day` 铁律要防的失效模式在这里不成立;② 读侧全走扁平路径,转日分区是高回归风险的大改,收益不抵风险;③ 「声明 dtype cast + 原子替换」等价覆盖类型漂移与半写两个风险。**守门单测**:构造一列全空的当日增量,断言追加后该列 dtype 仍 = 声明值(不退化成 String)。**本例外连同守门单测一并写进项目 `CLAUDE.md`**(它正是"项目专属坑"),否则后人会当笔误"修正"回去。
+- **「板块数据过期」显式告警(独立于日更,先落这条)**:
+  - 常量 `SECTOR_DATA_STALE_MAX_LAG_DAYS = 2`(**交易日**);报告管线算 `lag = 交易日差(max(ths_daily.trade_date), report_date)`。
+  - `lag > 0` → 情报节脚注「板块数据最新至 {date},落后 {lag} 个交易日」;
+  - `lag > 2` → **报告顶部醒目告警** + `ReportOut` 新增 `dataFreshness:{sectorDataDate, sectorLagDays, stale:bool}` + WARNING 日志;
+  - **过期时「当日暴起板块」与「题材持续天数」必须显式标不可信**(文案 + 字段),**不静默降级为空**——「没有」和「没看」必须能分开(承 v1.2 起一贯原则)。
+  - **五常驻板块**走 `ths_index` 名字静态解析,数据过期时**反而看不出坏了**,是这条告警的主要保护对象。
 
-- **③-C1 复盘情报件(全 EOD 可算,折进 16:35 报告新「情报」节)**:涨幅榜 / 跌幅榜 / 涨停梯队(连板高度分布,复用情绪仪表盘)/ 跌停榜 / 大盘量能(`index_daily` 成交额 + 5 日均)/ 最强题材及其核心一二名(`report/sectors.py::compute_sector_strength` top + members 排序)/ 市值偏好(`daily_basic.total_mv` 给当日涨停股分市值桶)/ 涨跌停制度偏好(把涨停股按 `limit_derived.resolve_limit_pct` 分 10/20/30cm,看哪类受资金欢迎)/ 题材持续天数(`sectors._add_board_age` 启动第几天,区分 2-3 日持续 vs 一日游)。**证据强度标注**:题材 / 成分类字段依赖概念板块成分(K2「成分洞」)**标「参考、不作强证据」**;涨跌停 / 量能 / 榜单 = EOD 硬数据(强)。竞价 / L2 盘口无历史,不做。
-- **③-C2 板块资金流展示(`moneyflow_dc`,2023-09+)**:板块层资金净流入排序展示(拥挤情报件,**非选股信号**——K2 判决板块层有效但无次日领先性)。**落盘一律走 `write_table_day`**(v1 类型漂移防线);2023-09 前无数据的板块留空标注、不臆造。
-- **③-C3 候选池四步管线改版(需求 5,K1 entry mask 退役)**:新 `report/intel_candidates.py`(或改造 `candidates.py`——但**候选评分 `_base_score_expr` 保留供自选体检/纪律红绿灯复用,不删**):
-  - **① 板块层** = 主线识别器拥挤度 top(`compute_sector_strength`):**用户五板块常驻** + **当日暴起板块**(当日拥挤度 top-N)。
-    - **五板块常驻 = 用户 2026-07-26 从真实数据里挑定**:**芯片概念 / 创新药 / 储能 / 机器人概念 / 稀土永磁**(存 `app_settings.intel_watch_boards`,可配;builder 落地时按 `ths_index.name` 精确匹配取 `ts_code` 落库,**不要按关键词模糊匹配**——同一方向有多个近义板块,模糊匹配会选错成分)。**选型分工写死**:常驻 = 用户长期盯的**方向锚(宽标签)**;窄板块(CPO / 固态电池 / 人形机器人 / 减速器 这类)**交给「当日暴起」由雷达自己发现,不写死进常驻**(写死会挤占雷达名额)。
-    - **⚠ 板块池必须先过卫生线(2026-07-26 实测发现,用户拍板剔除)**:原始 394 个概念板块按成交额排名,**前排全是资格 / 宽基成分类标签**——融资融券(3837 只)、深股通(1875)、沪股通(1640)、沪深300 / 中证500 / 上证180 样本股、专精特新(1212)、国企改革(1468)、人民币贬值受益、中报预增……成分上千、永远霸榜,**当拥挤度信号用等于没信号**。落地:按**名称模式**(融资融券 / 股通 / 成份股 / 样本股 / 指数 / 专精特新 / 国企改革 / 预增预减 / 贬值升值 / 破净 / 送转 / 回购 / 增减持 / 摘帽 / ST / 次新 / 富时 / MSCI / 标普 / QFII / AH股 / 转债 / 参股 / 举牌 / 重组 / 壳资源 / 绩优 / 超跌 / 机构 / 北交所 / 创业板 / 科创 等)+ **成分数上限**双闸剔除,**模式清单住一处命名常量**(同 `board.py` 整段正则先例,禁各处抄)。剔除清单要可配 + 剔了什么要能审计(落日志或报告脚注),**不许静默吞掉板块**。
-    - **⚠ `ths_member` 是当前快照、无日期字段(K2「成分洞」)**:成分归属回看历史会有偏差 → 板块成分类判据**一律标弱证据、不作强判据**(与 C1 同口径)。
-  - **② 个股层** = 上述板块成员、**全板块 MAIN/GEM/STAR**(排 BSE,读 `board.py`),**只过卫生线**(非 ST + `amount_ma20≥2000万` 流动性底线 + `close≥2` + `ma20 非空`,= `base_universe_expr` 子集)+ **非次新 120**(`list_date` > 120 交易日)+ **趋势向上**(`close>ma20` 代理,标注为粗代理);**不套 K1 主板 only、不套 pullback/breakout 回调买点**(与 K1 entry mask 解耦)。
-  - **③ K4 安检** = 读 DB K4 advisory:`hard_cut` 命中 → **拦截出池**;`avoid_flag` 命中 → **打标保留**(机器不禁、情报展示给人判)。**复用 ②-A 的 polars 镜像评估器**(同一份,不写两遍)。
-  - **④ 情报排序** = 板块资金流强度(C2)+ 题材持续天数**反用**(1 天新鲜 > 2-3 天警惕 > ≥4 天已在 ③ hard_cut 剔)+ 温和带标注 → 出 **20 只**交用户终选。
-    - **⚠ 常驻板块保底名额(用户 2026-07-26 拍板,写死不自由发挥)**:纯情报排序会让当日最强题材簇占满整榜(2026-07-22 实测:20 只几乎全医药,芯片/储能/机器人/稀土一只没进),用户要五个长期方向每天都有情报到手。落地:**每个常驻板块保底 2 只**,取该板块内情报排序最高的 2 只——**只从过完 ②卫生线 + ③K4 hard_cut 的池子里选**(`hard_cut` 命中的**绝不因保底被捞回**;合格票不足 2 只时有几只放几只、缺额退回公共池,**不许为凑数降卫生线 / 放宽 hard_cut**)。**剩余名额**(20 − 实际保底数)按情报排序从全池竞争(常驻其余票 + 暴起板块票),去重、总数仍 20。**一票同属多个常驻板块只占一个保底名额**,归属口径 = **配置顺序(`intel_watch_boards` 名单顺序)里最先轮到且仍有空额的板块认领**(claim 后不再被后续常驻/竞争重复计入)。**出参可识别来源**:`intelRank.source`(`quota` 保底 / `competition` 竞争 / `forced` 问询)供 ⑥ 客户端说清「为什么在榜」。落地 `report/intel_candidates.py`(常量 `QUOTA_PER_PERMANENT_BOARD=2`)。
-    - **⚠ 行业闸:概念当题材 + 行业当闸(用户 2026-07-26 拍板方案二,写死)**:保底/竞争会把「名义上挂在该板块、但与主题无关」的票推上榜(实测:机器人概念栏给出九州通/重药控股〔医药商业〕、稀土永磁栏给出中炬高新〔厨邦酱油·食品〕;芯片概念栏给出瑞晨环保〔机械基件〕/立中集团〔汽车配件〕)——成分归属没错(同花顺沾边挂靠,立中挂 30 板块/九州通挂 25),错在**板块内排序用的全是与主题无关的指标**(资金流/趋势/题材天数),当日最强题材的票就浮到不相干板块前排,**看着像情报实为噪音、比一只不给更糟**。修法:用 `stock_basic.industry`(**一票一行业、无沾边**)对每个板块**自动**算「主导行业集合」= 该行业 **lift(富集度)= 板内占比 ÷ 全市场占比 ≥ `INDUSTRY_GATE_MIN_LIFT`(=2.0,启发式待实盘校准)**的行业(板内分母=全体成员,全市场分母=`stock_basic` 里有 industry 的股票总数);个股必须**行业 ∈ 该板块主导行业集合**才能作为该板块**代表票**(**保底与竞争的板块归属都过这道闸**)。**数据驱动、不手配白名单**——对当日暴起板块**自动同样生效**(关键:白名单覆盖不了动态发现的板块)。**无 industry 的票视为不通过闸**(保守,无法判主题相关性),落审计日志、不静默丢。**出参带 `intelRank.industry`**(让客户端说清「这只票凭什么在这个板块栏」)。闸**只作用于板块归属/代表性**,不改卫生线、不改 K4 hard_cut/avoid_flag、不改情报排序公式本身。**⚠ 2026-07-27 判据由「板内占比」改「lift」(缺陷修复,详见 §九)**:审计发现固定占比线对 110 个细颗粒行业分类系统性误杀长尾主题票(原判据挡下比例:储能53%/机器人46%/稀土42%/芯片39%,确认误杀新型电力〔储能,板内2.3%/全市场0.6%〕21只、IT设备〔芯片概念,板内3.4%/全市场1.5%〕31只、铝〔稀土永磁,板内3.1%/全市场0.5%〕2只)。真实 2026-07-22 验(lift 版):机器人概念/半导体 lift1.1、机器人概念/医药商业 lift0.5、稀土永磁/食品 lift0.9、芯片概念/汽车配件 lift0.6 仍正确挡下(原五个噪音反例无一复活);新型电力/IT设备/铝三个误杀纠正为过闸,稀土永磁当日保底从 0 只回升至 2 只(中国铝业/赤峰黄金)。落地 `report/intel_candidates.py::_dominant_industries` + `_market_industry_shares`。
-    - **⚠ 空板块/不足 2 只必须带「为什么」(用户 2026-07-26 拍板)**:常驻板块当日 0 只(或不足 2 只)时,界面静默空白 = 最差表达(用户第一反应「系统坏了?还是我这板块被忘了?」)——守项目从 v1.2 起一贯的「**『没有』和『没看』必须能分开**」原则(熔断「基于台账 N 笔已补录成交」、C4 `newsAlertsScan`「本次未扫描≠确认无消息」、C1/C2 卫生线剔除审计脚注同源)。落地:每个常驻板块在报告快照带一条状态诊断漏斗——`surviveCount`(过②卫生线成员)/ `industryGatePass`(其中行业过闸)/ `industryGateBlocked`(行业不属主导被挡)/ `hardCutBlocked`(过闸但命中 K4 hard_cut 被拦)/ `quotaFilled`(实际保底)+ `note`(人读文案,0 只/不足 2 只时说清「为什么」、0 只明标「宁缺毋滥、非静默空白」)。**通道**:`build_intel_candidates` 只能经候选列表进报告快照、0 保底板块自身无候选可挂 → 状态挂在**所有候选的 `intelRank.permanentBoardStatus`**(报告级构件、每只候选携同一份,客户端从任一候选读到;⑥ 客户端块统一抽进顶层类型化字段)。真实 2026-07-22 稀土永磁实证:「保底 0 只 —— 9 只过卫生线成员中 8 只行业不属本板块主导行业、1 只过闸但命中 K4 安检拦截,宁缺毋滥、非静默空白」。落地 `report/intel_candidates.py::_permanent_board_status`。
-  - **产品语义变更(§2.3 已同步)**:候选 = 「过完安检、值得关注的票」**非「会涨的票」**,**候选卡文案跟上**(⑥ 客户端)。**生成域刻意含高弹**(用户知情拍板)。
-  - **⚠ §3.8 铁律「同码三跑道」已重新表述(见 §3.8)**:候选生成不再走 K1 entry mask,与旧「回测/报告/问询同码」冲突——新表述 = **纪律参数单一源 + 退出规则回测/实盘同码(不变)**;候选生成**单列为「情报筛选管线」,与回测信号解耦**(它输出「值得关注」非「会涨」、不声称回测过的 alpha、故不要求同码);**问询台/自选体检的纪律红绿灯仍与报告同码**(`base_universe_expr` + config 禁买过滤,见 ⑤)。**这是本版最易自相矛盾处,builder 落地对照 §3.8 新表述核对。**
-- **③-C4 晚间消息面公告扫描(持仓 + 自选:减持/立案/暴雷/监管)**:**数据源待查**——先查 TuShare 600 元档公告接口(如 `anns_d`)的覆盖与时效;**查不到/覆盖不足 → LLM 联网搜索兜底**(复用 `openai_compat` 带搜索调用,**守 `read_timeout=90` 的坑**,见项目 CLAUDE.md「v1 上线首日」)。命中落 `news_alerts` 表(`code`/`trade_date`/`category`/`summary`/`source`/`created_at`,幂等)+ 报告「消息面」节 + 客户端展示。**缺 key 全链路优雅降级不崩**(§3.4);扫描失败/超时**不阻断主报告管线**(尽力而为)。
-  > **2026-07-26 coordinator 复核后必改两项(原文以上保留,细节以此为准)**:①**LLM 侧墙钟预算封顶 + 持仓优先于自选**——原文未写死耗时上限,`≤33 只×90s×3次重试` 最坏接近一小时会拖垮 16:35 报告(与候选审判/自选体检的 LLM 调用叠加),故加命名常量 `LLM_SCAN_BUDGET_SECONDS`(启发式 5 分钟量级,待实盘校准)、预算耗尽即停止扫描剩余标的、`newsAlertsScan` 加 `codesSkipped` 如实记录、持仓必须先于自选被扫(单测锁死顺序)。②**减持类改事件级跨日去重**——原「已知简化」(trade_date=扫描日,同一公告连续数日重复出现)被否决,`news_alerts` 表加 `event_date`(TuShare `ann_date`)+ `event_key`(`holder_name|change_vol|change_ratio`),`UNIQUE` 约束改 `(ts_code,trade_date,category,event_key)`,同一事件只在最先扫到它的报告里出现一次(`news_alerts_store.load_seen_event_keys` 跨日查询过滤)。LLM 侧维持现状不做跨日去重(无可靠事件日,优先不漏报),但需在 `EVIDENCE_NOTE`/展示文案里注明这一差异。`newsAlertsScan` 正式收进「v1.3 客户端契约清单」(不算可选字段)。详见完工条目。
-
-**③ 验收**:①C1 情报件各字段 EOD 算对(榜单/梯队/量能/市值/制度/题材天数),成分类标弱证据;②C2 板块资金流走 `write_table_day`、2023-09 前留空不臆造;③C3 四步管线——拥挤度 top + 五板块常驻、全板块 MAIN/GEM/STAR 卫生线 + 非次新 + 趋势向上、K4 hard_cut 拦/avoid_flag 标(读 DB 不抄常量、复用 ②-A 镜像)、情报排序反用题材天数、出 20 只、**不套 K1 entry mask**(单测断言候选不经 `build_entry_mask`);④§3.8 新表述对照核对(候选管线与回测解耦、纪律同码保留);⑤C4 公告扫描——TuShare 源侦察结论写档、LLM 兜底守 90s、缺 key 降级不崩、不阻断主管线;⑥迁移 `news_alerts` 表 integrity ok;⑦pytest 零回归。**端到端(隔离库真实 backfill)**:跑一天真报告出情报节 + 20 只新口径候选 + 持仓/自选消息面(缺 key 降级)。
-
----
-
-### v1.3-④ · 挂单未成交追踪(原 v1.2.1-C 全文,归 v1.3;@builder)
-
-**内容 = 原 §五 v1.2.1-C 施工图全文**(保留在下方 v1.2.1 小节,**归属改 v1.3**,此处不复制以免双源)。要点重述:追踪 `decision_log.status='pending'`(挂了没成交)的后续 N=5 交易日走势,检验用户「逆向选择:专接下坠、错过起飞」假设;`decision_pending_track` 表幂等建;折进 16:35 报告管线复用 EOD 面板**不新拉源**;第 N 日 `pending→expired`。**归 v1.3 理由(memo)**:它记「挂了没成交的计划后来怎么走」,**不部署就永远补不回那几周数据**(与归因不同——归因晚做只晚出结论、数据仍在)。
-**④ 验收 = 原 C 验收全文 + v1.3-⑦ 部署活体**(pending 逐日落 track、第 N 日 expired、复用面板不新拉源、`write_table_day` 未绕开)。
+**① 验收**:①-A `buyDate` 往返(不传=今天、传历史交易日=写入、传非交易日/未来日=400 且 reason 正确)+ 3 笔纠正脚本幂等 + 备份 + `integrity_check` ok + `time_exit_locked_*` 三列已清 + 其余行零改动;①-B `suspend_d` 探活结论写档 + `priceStale` 三字段正确 + `suspended_hold` 只在"当日无 EOD 行"触发(单测:EOD 管线断跑仍保守判 `time_exit_next_day`,逐位不变)+ K4 体检标 `dataUnavailable` + §2.1 附注已补;①-C 日更跑通(`ths_daily` 当日有行、`ths_member` 周更带备份、失败不覆盖)+ 扁平文件原子追加守门单测(全空列 dtype 不漂)+ `lag>2` 告警真出现(造一个陈旧 `ths_daily` 验)+ 例外已写进 `CLAUDE.md`;pytest 零回归。**🔴 ①-A 碰持仓判定:改生产数据前必须 `sqlite3 .backup`,改后逐笔复查。**
 
 ---
 
-### v1.3-⑤ · 问询台选股域漂移清理(原 v1.2.1-D2,归 v1.3;@builder)
+### v1.4-② · 行业强度单一源 + 「题材持续天数」判据回归规格档(@builder)
 
-**内容 = 原 §五 v1.2.1-D2 施工图全文**(保留在下方,**归属改 v1.3**)。要点:`api/inquiry.py::run_deterministic_checks` 手写重复选股域逻辑 → 复用 `research/panel.py::base_universe_expr()`(选股域揉一条不拆解)+ config 可配禁买过滤逐项拆,照 `report/watchlist_check.py::_discipline_checks` 姿势。**与 ③-C3 §3.8 新表述一致**:这条正是「纪律红绿灯同码保留」的落点(候选生成解耦、纪律核对仍同码)。
-**⑤ 验收 = 原 D2 验收全文**(问询台确定性核对与报告 `watchlist_check` 同票同日同判、K1 现役下与旧行为等价)。
+**背景**:需求 8 排序键 ① = **行业强度排名**(K2 验证的拥挤探测器)、② = **题材持续天数升序**(H6 单调证据)。这两个量目前**生产里都不存在**:①从未实现;②的可执行镜像在 `report/holding_k4_check.py` 里用的是**概念板块 `board_age`** 代理,而 advisory 规格档 A2/B3 的原文是「**行业强度(top20% 中位数)连续 N 天成员**」——两者 v1.3-② 刻意分叉并写在模块头。**需求 8 的排序键纪律是"只用审计过方向的量",而 H6 审计的正是行业口径、不是 board_age 口径** → 排序键若用 board_age 就是拿一个从未被审计的代理当排序键,自相矛盾。故本块把行业强度做成**唯一源**,A2/B3 一并回归规格档原文。
 
----
+- **②-A 新 `neckline/report/industry_strength.py`(唯一源,口径逐条对齐 `research/k4p_h6_theme.py`)**:
+  - **行业** = `stock_basic.industry`(**一票一行业、无沾边**,与 `intel_candidates` 行业闸同源);
+  - **行业当日强度** = 该行业当日成员 `ret_1d` **中位数**(over 全体有 `ret_1d` 且有 `industry` 的票,**非域限**);
+  - **成员数 < 5 的行业不参与排名**(中位数不稳),常量 `_MIN_MEMBERS = 5`;
+  - **强度排名** `industry_rank` = 当日中位数**降序名次**(1 = 最强);不参与排名的行业 → `None`;
+  - **强度日** = 当日中位数 ∈ 全行业 **top 20%**(逐日 `quantile(0.8)` 阈),常量 `_STRENGTH_QUANTILE = 0.80`;
+  - **持续天数** `industry_persist_days` = **连续强度日天数,计到当日为止,断裂重置**(非强度日 = 0);
+  - **无前视偏差**:只读 ≤T 数据(§3.8);
+  - **单测硬要求**:与 `research/k4p_h6_theme.py` 在**同一天、同一批行业**上**逐位对拍**(排名、强度日集合、持续天数三项);阈值敏感性 ±1 格(0.85/0.80/0.70)只作参数化能力,默认仍 0.80。
+- **②-B A2/B3 判据回归 advisory 规格档口径**:`report/holding_k4_check.py` 的 `A2_theme_persist_ge_4`(hard_cut)与 `B3_theme_persist_2_3`(avoid_flag)从 `board_age` 切到 `industry_strength` 的 `industry_persist_days`;**模块头对照表同步改**(把 v1.3-② 留的"★ 题材持续天数镜像口径说明"整段改写成"已回归规格档",并写明本次为何切、切于哪一版)。
+  - **`evidence_strength` 仍 `constituent`(参考),不因换源升级为 `price_volume`,仍不单独触发 APNs** —— 行业分类是**静态当前快照**(`k4p_h6_theme` 已声明回填偏差:行业变更股按当前行业回溯),比概念板块成分洞轻但仍非价量硬数据。**守 §2.4「证伪只用价量结构」不放宽。**
+- **②-C 切换对拍报告(硬要求,没出报告 = 本块不算完工)**:同一交易日、同一批标的(全市场 + 当日持仓 + 当日候选池),**两套口径各出一份 A2/B3 命中集**,逐条列出 **新增命中 / 消失命中 / 不变** 三栏 + 数量小结 + 抽样 5 例人读说明,写 `archive/v1.4_A2B3口径切换对拍_<date>.md`。**A2 是 hard_cut(会改变哪些票被拦出候选池)**,不许静默切换。
 
-### v1.3-⑥ · 客户端跟进(@builder,依赖 ①②③ 契约)
-
-> **v1.2-E 已完工的客户端不重做**(八项决策日志表单 / 熔断状态横幅 / 呼吸台账 / `closeReason` picker / entry-suggestion 区间壳均在);v1.3-⑥ 只加**增量**。
-
-- **⑥-A D 计数徽标两档口径**:持仓卡 D 徽标随净浮盈两档——非浮盈单 `D{n}/D{5}`(时间退出档)、浮盈豁免单 `D{n}/D{15}`(硬上限档);读服务端 `PositionOut` 新增 `maxHoldDaysEffective`(=5 或 15,服务端按 D5 净浮盈判好下发,客户端不重算)+ `timeExitState`(`time_exit_next_day`/`profit_exempt`/`hard_cap_exit`/`holding`)。D5 醒目横幅文案随档区分。
-- **⑥-B 费用录入**:补录开仓 sheet 加 `buyFees` 必填(实付买入费)→ `POST /positions` 带 `buyFees`;清仓 sheet 加 `sellFees` 可选(真实卖出费,成交后回填)→ `PositionCloseIn.sellFees`。文案标「实付费用,供周复盘对账用真数」。
-- **⑥-C K4 持仓牌警示展示**:持仓卡展示 K4 体检(强/普通分级色调 + 命中项文案 + 证据强度标「价量结构/成分参考」);强警示置顶醒目(派发警报「年线下涨停疑似派发,建议减仓/勿追」)。读 `PositionOut.k4Advisory[]`。强警示 APNs 复用既有持仓提醒开关(⑥-E)。
-- **⑥-D 情景树每日对照勾选入口**:持仓卡露出该持仓关联决策日志的情景树(via `position_id`),每日提醒勾选兑现项 → 复用既有 `setScenarioOutcome`(v1.2-E 已实现,只需在持仓卡加每日提醒入口,情景文本只读)。
-- **⑥-E 候选卡新语义文案**:候选列表标题/副文案从「系统认为会涨」改「过完安检、值得关注,终选在你」;候选卡展示 K4 安检标(hard_cut 已拦不出现、avoid_flag 打标展示)+ 情报排序理由(资金流强度/题材天数)+ 高弹标注。**不再把 K1 四件套买点展示为「推荐买点」**(候选不再是回测信号)——改展示情报维度。
-- **⑥-F 情报包展示**:今日计划/新「情报」板块展示 C1 复盘情报件(榜单/题材/制度偏好)+ C2 板块资金流 + C4 消息面提示。iOS/macOS 通用(macOS 大表更适合复盘情报)。
-
-**⑥ 验收**:双端 `xcodebuild BUILD SUCCEEDED` + iOS Simulator TEST;两档 D 徽标(浮盈/非浮盈截图各一)、buyFees/sellFees 录入往返、K4 持仓牌强/普通展示 + 证据强度标注、情景树每日勾选复用既有端点、候选卡新语义文案(无「推荐买点」)、情报包展示。单测覆盖 `maxHoldDaysEffective`/`timeExitState`/`buyFees`/`sellFees`/`k4Advisory` 解码 + 两档 D 徽标派生。绿涨红跌不变。
-
----
-
-### v1.3-⑦ · 部署 + 章程激活(🔴 合并 v1.2-F,@builder-pro + 用户)
-
-> **本块 = v1.2-F + v1.3 部署合并,一次推 v1.2+v1.3 全部代码 + 累积迁移。本版最大部署风险。**
-
-- **⑦-A 版号**:`app.py::VERSION` `v1.1.1` → **`v1.3`**(跳过 v1.2 对外版号,用户拍板)。
-- **⑦-B 累积迁移一次性执行(先备份、逐项验证、写死回退路径)**:
-  - **迁移前 `sqlite3 .backup` 在线一致性备份**(照 v1.1-H 姿势:`data/neckline.db.bak-v13-<date>`,integrity ok + 业务表行数逐表吻合 + 原地保留 rsync 排除)。**改 schema 前另 `cp -p` 一份**(双保险)。
-  - **迁移项(v1.2 累积 + v1.3 新增,全部 `IF NOT EXISTS`/`_migrate_columns` 幂等)**:v1.2——`decision_log` / `circuit_breaker` / `breathing_t_trades` 三表 + `positions.close_reason` + `app_settings.push_circuit` + (`strategy_versions.activated_at` K1 回填 / `reviews.strategy_version` 校验存在);v1.3——`positions.buy_fees` / `positions.sell_fees` + `decision_pending_track` 表(④)+ `news_alerts` 表(③-C4)+ `app_settings.intel_watch_boards`(五板块可配)+ (可选)`app_settings` fee 参数 / `push_holding_alert`。
-  - **逐项验证**:迁移后 `PRAGMA integrity_check` ok + **业务零丢失**(positions/devices/reports/decision_log 等行数迁移前后一致)+ `is_active` 仍 K1(未激活前)。
-  - **回退路径写死**:任一验证不过 → 停服 + 从 `.backup` 恢复 + 回滚代码到 v1.1.1 tag + `neckline.service` 起回 v1.1.1(**生产从未跑过 v1.2,回退目标就是当前 v1.1.1,干净**)。
-- **⑦-C sync_code.sh 首次真部署(v1.2-0 footgun 活体收官)**:用**已修好的 `sync_code.sh`**(v1.2-0 已修 chown/chmod 收尾 prune `data/` + 末尾只读属主自检 `exit 1`)首次真部署——验证收尾 prune 生效、部署后 `data/neckline.db` 属主仍 `neckline:neckline`、只读属主自检绿、服务 restart 无 502(销 §七 footgun 待办 + hz_info §191)。补装 v1.3 新依赖(若有)走阿里云镜像、重启前 preflight import。
-- **⑦-D 哨兵/报告 timer 影响核查 + TuShare 配额**:①哨兵 lifespan asyncio 任务重启后 idle RSS 与部署前持平(v1.3 加了持仓 K4 体检/情报件/消息面扫描,核查内存不超 MemoryHigh);②16:35 报告管线加了情报节/候选改版/持仓 K4/挂单追踪/消息面,**报告 timer oneshot 跑完仍瞬态释放**(紧内存友好);③**⚠ 顺手确认生产 16:05 增量拉数没被 TuShare 配额耗尽影响**——策略线 2026-07-25 把配额跑干过(§七 Backlog 已记),核查生产 `daily_update` 增量正常、`moneyflow_dc`/情报所需表拉全;④9:25:30 盘前 tick 加了「熔断中」提醒 + D5 两档 + K4 盘中涨停分支,盘前分支非交易时段不误触发、异常吞掉不掀翻主循环。
-- **⑦-E 章程激活 = staged 步骤 2(等用户)**:部署后 `is_active` 仍 K1、生产行为零变化;用户清仓 + 明确确认后,**在 ECS 权威库以 `sudo -u neckline .venv/bin/python scripts/activate_charter.py --target v1.3 --confirm`** 跑切换器 → `is_active` K1→**v1.3**。⚠ **绝不误激活 `v1.2` 旧行**(它是回落 5% 过时行)——切换器目标参数必须 `v1.3`,激活前 diff 打印核对 `take_profit_retrace=0.08`。**跨线**:激活后 `STRATEGY_LAB §一「现役=K1」`不准确,**用户在策略线会话同步一句**(现役 config=v1.3 章程行、内核血缘 K1)。
-- **⑦-F 运维留痕**:更新 `~/Lino/hz_info.md`(新表/列、VERSION v1.3、footgun 销账、章程 staged 现状、配额核查);变更日志记一行。
-
-**⑦ 验收(活体,逐项写死;含覆盖 v1.2 六块活体项)**:
-1. **sync_code.sh 首验**:收尾 prune 生效、`data/neckline.db` 属主仍 `neckline:neckline`、自检绿、restart 无 502。
-2. **累积迁移**:v1.2 三表 + `close_reason`/`push_circuit`/`activated_at`(K1 回填有值)/`strategy_version` + v1.3 `buy_fees`/`sell_fees`/`decision_pending_track`/`news_alerts`/`intel_watch_boards` 全建成、生产库 integrity ok、业务零丢失、回退路径演练可用。
-3. **VERSION**:公网 health 返 `v1.3`。
-4. **覆盖 v1.2 六块活体(首次上生产验)**:决策日志八项真机录入(createdAt 服务端生成)+ link/cancel/scenario-outcome;熔断真机推送(造连续 3 笔止损/单日净亏 ≤−4000 → `circuit_breaker` 落锁 + 第五类 APNs + 解锁往返);呼吸台账真机增删 + 先手距离;`close_reason` 真机写入;entry-suggestion 返区间双档;四→五推送开关回读。
-5. **覆盖 v1.3 活体**:两档 D5(浮盈豁免/非浮盈退)+ 硬上限 D15;买卖实付费用录入 + 回填;K4 持仓牌强警示真机 APNs(复用持仓提醒通道)+ 普通警示进看板;情报节 + 20 只新口径候选 + 消息面(缺 key 降级);挂单追踪逐日落库。
-6. **章程 staged 激活实证(用户)**:清仓 + 确认后跑切换器 → `is_active=v1.3`、回落 8% + 两档时间退出 + 4 万区间生效、下一份周复盘用 v1.3 判激活后周 / K1 判之前周(洗白修复实证);**未误激活 v1.2**。**⚠ 激活前确认 v1.3-② 的 16:35 net-float provider 已生效**(激活当日的前一交易日 16:35 报告已跑过、`holding_eod_check` 已有当日持仓的 net_float 快照)——否则激活后首日 precall 因无快照对该持仓 provider 返 None、保守判非浮盈,浮盈豁免当日形同虚设(次日 16:35 快照落地后自愈)。清仓后再开新仓的 staged 流程下,首笔持仓需至少一个 16:35 EOD 周期后浮盈豁免才完全生效,验收时留意这个一次性冷启动窗口。
-7. **老端点前向兼容不崩、无 token 401;哨兵 idle RSS 持平、16:05 配额正常。**
-8. **⚠ 一次性大迁移 + 碰纪律章程 + 金额判定,强烈建议完工后叫一次 review(用户定)。**
+**② 验收**:`industry_strength` 与 `research/k4p_h6_theme.py` 逐位对拍通过(排名/强度日/持续天数三项)+ 成员<5 不参与排名 + 无前视单测;A2/B3 切源后模块头对照表已改、`evidence_strength` 仍 `constituent`、**不触发 APNs 的行为逐位不变**(单测锁死);对拍报告已入 `archive/`;pytest 零回归。**⚠ 本块碰候选安检 hard_cut 判定与持仓体检展示(不碰纪律章程/金额/推送路由),改前不需要动生产库,但对拍报告是本块的活体证据。**
 
 ---
 
-### v1.3 客户端契约清单(新端点/新字段,供 v1.3-⑥ 对照;仅列 v1.2 之上的增量)
+### v1.4-③ · 正选漏斗:排序键三级 + 语义红线(@builder,依赖 ①-C、②)
 
-- **退出规则两档(①)**:`PositionOut` 新增 `maxHoldDaysEffective:int`(5 或 15,服务端按 D5 净浮盈判)、`timeExitState:码`(`time_exit_next_day`/`profit_exempt`/`hard_cap_exit`/`holding`)。客户端 D 徽标/横幅按此两档展示,不重算净浮盈。
-- **费用(用户拍板 2)**:`PositionOpenIn` 加 `buyFees:REAL`(补录开仓实付,必填);`PositionCloseIn` 加 `sellFees:REAL?`(清仓实付,可选回填)。`PositionOut` 回显 `buyFees`/`sellFees`。
-- **K4 持仓牌(②,已交付)**:`PositionOut` 内嵌 `k4Advisory:[{code, label, level(strong/normal), evidence, evidenceStrength(price_volume/constituent)}]`(读 DB advisory 命中,服务端 16:35 算好、GET /positions 读快照下发)+ `scenarioReviewPending:bool`(②-D 情景树每日对照,该持仓有关联决策的非空情景树待勾选)。强警示走**第六类独立** APNs `CATEGORY_HOLDINGALERT`(用户 2026-07-26 拍板不复用 D5EXIT)+ 独立开关 `holdingAlert` 于 `GET/PUT /settings/push`(六字段:report/retreatBrake/precall/d5exit/circuit/**holdingAlert**,均必填)。情景树勾选仍走既有 `POST /decisions/{id}/scenario-outcome`(无新写端点),挑出待对照决策走 `GET /decisions?position_id=<id>`(只读过滤,向后兼容)。**客户端注册第六个 `UNNotificationCategory`「HOLDINGALERT」**。
-- **候选新语义(③-C3)**:`CandidateOut` 语义变(不再是回测信号)——新增 `k4Flags:[码]`(avoid_flag 打标)、`intelRank:{sectorFlow, themePersistDays, highElasticity:bool}`(情报排序理由);`patternTags`/四件套字段保留但客户端**改为情报维度展示、不标「推荐买点」**。`ReportOut` 新增 `intel:{gainers, losers, limitUpLadder, limitDown, marketVolume, topThemes, mvPreference, limitRegimePreference}`(C1)+ `sectorMoneyflow[]`(C2)+ `newsAlerts:[{code, category, summary, source}]`(C4,`category` 枚举码 REDUCTION/INVESTIGATION/BLOWUP/REGULATORY,客户端展示层换算中文,沿 `boardLabel` 先例)。
-- **消息面扫描状态(③-C4,2026-07-26 coordinator 拍板正式收进本清单,不算可选字段)**:`ReportOut` 新增 `newsAlertsScan:[{source, scanned:bool, reason, codesTotal:int, codesFailed:int, codesSkipped:int}]`(`source` 取值 `tushare_holdertrade`/`llm`)——这是「没扫到 vs 扫了没有必须能区分」这条硬要求的**唯一落地机制**:`newsAlerts` 空数组本身无法表达"这次到底扫没扫、扫没扫完",客户端**必须先读 `newsAlertsScan` 再展示 `newsAlerts`**,不能只看后者是否为空就下结论。`codesSkipped`(LLM 侧墙钟预算耗尽、根本没发起调用就跳过的标的数,与 `codesFailed`「调用了但失败」语义不同,两者都要展示、不能合并成一个数字)。客户端「消息面」展示区文案建议:`scanned=false` → 醒目提示"本次未扫描";`scanned=true` 且 `codesSkipped>0` → 提示"部分标的因预算未及扫描(持仓已优先扫完)";`scanned=true` 且 `reason` 空 → 才展示"以下为命中,空=确认无消息"。
-- **情报官板块**:客户端「情报」展示区读 `ReportOut.intel`/`sectorMoneyflow`/`newsAlerts`/`newsAlertsScan`。
-- **挂单追踪(④)**:如需端点 builder 定 `GET /decisions/{id}/track` 或并入 `GET /decisions`(v1.2 客户端契约清单已占位)。
-- **周复盘归因(v1.3.1-D,后发)**:`thesisAttribution`/`playbookAttribution`/`thesisByPlaybook`/`breathingTContribution`/`noDecisionLogTrades` 随 v1.3.1 落客户端,v1.3-⑥ 不做。
+**背景**:需求 8 第 2 点。**四步管线(域 → 卫生线 → K4 安检 → 排序)结构不变**(v1.3-③-C3 已上线),本块**只改第④步排序键**与配套文案。
+
+- **③-A 排序键(定死,升序优先在前)**:`report/intel_candidates.py::_sort_key` 改为
+  ```
+  (industry_rank ASC, industry_persist_days ASC, yellow_card_count ASC, base_score DESC, code ASC)
+  ```
+  - `industry_rank` = ② 的行业强度排名(1 = 最强)。**无 `industry` / 行业不参与排名(成员<5)→ 排最后(`+inf`),不静默当 0**(当 0 会把无行业票顶到榜首);
+  - `industry_persist_days` = ② 的行业强度持续天数,**升序**(第 1 天最新鲜;H6 单调证据)。**≥4 天已被 A2 hard_cut 拦出池**,故实际取值 ∈ {0,1,2,3} —— 这条自洽**依赖 ② 已完工**(②-B 未切时 A2 拦的是 board_age≥4、排序用的是 industry persist,两者不是同一个量,自洽性不成立);
+  - `yellow_card_count` = `k4_flags` 里**属 `avoid_flag` 分区**的命中数(用 `sections` 映射过滤;**不数 hard_cut,也不数不在 DB 的合成码**)。**「无牌靠前」只是风险优先排序,无牌 ≠ 会涨**(盲选第一期已验),文案不许写成"最优质";
+  - `base_score` / `code` 仅作**确定性兜底**(保证同名次可复现),**不是第四/第五维排序意图**,注释写明。
+- **③-B 板块资金流退出排序键**:`sector_flow` **从排序键移除**(它现在是**第一排序键**,改动是实质性的),只保留 `intelRank.sectorFlow` **并列展示**(需求 8 原文:"板块资金流强度作并列展示")。**单测断言 `_sort_key` 的输入不含 `sector_flow`。**
+- **③-C 未审计量禁入排序键(纪律写进单测)**:排序键输入白名单常量 `_SORT_KEY_INPUTS = {"industry_rank","industry_persist_days","yellow_card_count","base_score","code"}` + 单测断言 `_sort_key` 只读这五个键。**RS 线斜率 / 行业分歧度 / 龙虎榜 / 消息面 / 温和带一律不得进排序键**(它们进 ④ 信息卡)。
+- **③-D 不变项(明确写出,防 builder 顺手重构)**:常驻五板块保底 **2 只**(`QUOTA_PER_PERMANENT_BOARD=2`)、行业闸 lift(`INDUSTRY_GATE_MIN_LIFT=2.0`)、`permanentBoardStatus` 五段诊断漏斗 + `note`、`intelRank.source` 三值(`quota`/`competition`/`forced`)、`forced` 问询票豁免 hard_cut 仅打标、板块池卫生线(`board_pool.py` 名称模式 + 成分数上限)、**输出仍 20 只** —— **全部语义不变**,只是它们扫描时依据的那个"全局情报序"换了。
+- **③-E 排序理由透出(契约)**:`IntelRankOut` 新增 `industryRank:int?` / `industryPersistDays:int` / `yellowCardCount:int`(让客户端说清「凭什么排这个位」);`sectorFlow` 字段保留、语义改为"并列展示,不参与排序"(schema docstring 写明)。
+- **③-F 语义红线落文案(服务端侧)**:候选列表的服务端文案位(报告 markdown/HTML `report/render.py` + 任何服务端生成的说明句)统一为「**过完安检、值得花注意力的票;排序 = 注意力优先级,不是收益预测;终选权在你**」。**全仓 grep「推荐买入 / 建议买入 / 看好 / 值得买 / 推荐买点」零命中**(含 render / schemas docstring / LLM system prompt),命中即修。
+- **③-G 同日新旧排序对照(硬要求)**:取一个真实交易日,出「旧排序 vs 新排序」的 20 只**名次对照表**(进榜/出榜/名次变化)+ 3 例人读说明,写 `archive/v1.4_排序键切换对照_<date>.md`。这是"排序换了第一维"的唯一人读证据。
+
+**③ 验收**:排序键四项按定义生效(单测:构造样本断言三级优先级 + 无行业票排最后 + 黄牌只数 `avoid_flag`)+ `_sort_key` 不含 `sector_flow`(单测)+ 排序键输入白名单单测 + ③-D 各项语义逐位不变(既有单测全绿,不许改断言迁就新序)+ `IntelRankOut` 三新字段往返 + 全仓文案 grep 零命中 + 对照表已入 `archive/`;**端到端**:隔离库跑一天真报告,出 20 只新序候选、五常驻保底仍生效、`permanentBoardStatus` 诊断仍能解释 0 只/不足 2 只;pytest 零回归。
 
 ---
 
-### 【已完工待部署 / 施工图待建 · 一次并入 v1.3-⑦ 部署】v1.2 / v1.2.1 施工图(全文保留,勿删)
+### v1.4-④ · 信息卡与考卷同构(第〇原则;@builder,依赖 ②)
 
-> **状态(2026-07-26 v1.3 立项时标注)**:**v1.2 先发六块(0/A/A2/B/G/E)代码已完工、本地全绿、但从未部署**(生产仍 v1.1.1);其活体验收随 **v1.3-⑦** 首次上生产。**v1.2.1-C/D2 施工图已写、代码待建 → 归 v1.3-④/⑤**(本次施工);**v1.2.1-D(归因)施工图已写、留 v1.3.1 后发**。以下施工图全文不改(历史留痕 + builder 落地对照),**分块编号沿用原 v1.2/v1.2.1**,归属与状态以本横幅 + §四 为准。
+**背景**:需求 8 第 3 点 + `archive/交接_考官Agent_盲选训练规格_20260726.md` **§三**。**第〇原则**:考卷信息集 = 实盘情报包信息集,**严格同构** —— 考卷给什么,实盘就该给什么(潜移默化的注意力训练)。**数据不可得如实缺省,禁硬凑**(这条比"多给一个字段"重要得多)。
 
-## 五(旧)、v1.2 + v1.2.1 施工图(已完工上线 → archive)
+- **④-A 新 `neckline/report/info_card.py`**,对当日**候选 20 只**组装信息卡(持仓票复用同一函数,本版先只接候选):
+  1. **K 线序列(60 日)**:`open/high/low/close/vol` + `ma20` / `ma250`;**前复权口径复用 `strategy/features.apply_qfq`**,不另写复权;
+  2. **RS 线(相对大盘,60 日)**:个股/大盘比值,**大盘 = `strategy/features.py::SSE_INDEX`(=`000001.SH`),复用常量不另起**;起点(T-59)归一 100;
+  3. **行业分歧线(60 日,行业真名)**:个股/**所属行业合成指数**比值,起点归一 100。**行业指数 = ② 的行业成员日收益中位数累乘合成**(与 ② 同源,**零新增 TuShare 配额**)。
+     **⚠ 口径偏差显式登记(不得省)**:考官线用**申万二级指数**(`index_member_all` + `sw_daily`),实盘侧用**成员中位数合成** —— 考官规格 §七 本就把"成员中位数合成"列为登记口径的合法实现,故**信息位同构、数据源不逐位相同**。字段与 UI 必须标注「行业线 = 行业成员中位数合成,非申万官方指数」。**申万二级接入留作后续增强**(需先解决 `index_member_all` 落库 + 配额,已挂 §七 Backlog),**本版不做**;是否让考官线改用合成口径**归策略线/考官线自己定,本版不越线**。
+  4. **快照数值**:量比(`vol/vol_ma5`)、换手率、**行业强度排名**(②)、**行业持续强势天数**(②)、年线上下 + 距年线 %、距 20 日高点 %、连板数(`limit_derived`);
+  5. **红黄牌**:复用 ③ 已算好的 `k4_flags` + `sections` 分区 + DB `evidence` 文字,**不重算**;
+  6. **温和带标注**:当日涨幅 ∈ **[2%, 3%]** → `mildBand:true`(exec_hint C2 口径)。阈值 = 模块常量 `_MILD_BAND=(0.02, 0.03)`,**advisory 文字为规格档,改阈值同改两处**;
+  7. **消息面摘要**:复用 `news_alerts`。**⚠ 现状扫描域只有持仓 + 自选,候选不在内**;**本版不扩扫描域**(P1-5 预算已耗尽,见 ⑥-B)。落地:候选若**恰好也在持仓/自选**则带上其 `news_alerts`,否则 `newsSummary=null` + `newsScanned=false` + `newsUnavailableReason="候选不在消息面扫描域(仅持仓+自选)"` —— **如实缺省,不硬凑**;
+  8. **龙虎榜摘要**:复用 `data/top_list.py::top_list_lookup(trade_date)`(**现拉现落盘,零新增管线**),给「T0 是否上榜 + `reason` + `net_amount` / `net_rate`」;近 **5** 个交易日是否上榜由**本地已落盘的日文件**判,缺哪天算哪天并如实标 `lookbackDaysCovered:int`(**不为凑齐而回补历史**,那是配额黑洞);
+  9. **市场语境**(考卷 §三.8 同构位):大盘 60 日指数化形态 + 当日涨跌停家数 + 大盘 MA20 上下 —— **复用报告已有的情绪仪表盘 / `intel` 数据,不重算**,报告级构件一份即可(不必每只票复制)。
+- **④-B 载体与体量(定死,别塞进 `ReportOut`)**:20 只 × 60 日 × (K 线 5 列 + RS + 分歧线) ≈ 万点级,塞进报告快照会让首屏拉取变重且大部分用不上。落地:
+  - **新端点 `GET /report/{date}/info-card/{code}`** —— 按需取**单只**完整信息卡(含 60 日序列),**服务端现算**(读 EOD 面板),**不落库**;
+  - **报告快照只存摘要位**:`CandidateOut` 新增 `infoCard:{snapshot:{...}, k4Flags 已有, mildBand:bool, news:{...}, topList:{...}}`(**不含 60 日序列**),供列表页直接展示、免逐只发请求;
+  - 404 时 `reason="report_not_found"` / `"code_not_in_report"`,**客户端 `mapReason` 各加 case**。
+- **④-C 缺省纪律(写进单测)**:任一路数据源抽掉 → 对应字段返 `null` + 同级 `*Available:false` / `unavailableReason`,**不得用 `0` / `[]` / 空字符串冒充"有数据但无内容"**。单测:抽掉行业数据、抽掉大盘数据、抽掉 `top_list`、抽掉 `news_alerts` 四路各验一次。
+
+**④ 验收**:单只信息卡端点返完整七位 + 市场语境;RS 线基准 = `SSE_INDEX`(单测断言复用常量,未新建);行业分歧线标注"成员中位数合成";快照七项数值与面板逐位一致;温和带 [2%,3%] 边界单测;`news`/`topList` 如实缺省(四路抽源单测)+ `lookbackDaysCovered` 诚实;`CandidateOut.infoCard` 摘要位不含 60 日序列(单测断言 payload 大小/键集);pytest 零回归。**端到端**:隔离库跑一天真报告 → 任取一只候选调信息卡端点,七位齐全或如实缺省。
+
+---
+
+### v1.4-⑤ · exec_hint 产品化 + 决策日志第⑨项「最高追价上限」(@builder)
+
+**背景**:需求 8 末段(exec_hint 产品化随本需求一并做)+ **需求 2 补充**(2026-07-28,同构原则既定同步)。
+
+#### ⑤-A exec_hint 产品化(读 DB,不抄常量)
+
+- 新 `neckline/report/exec_hint.py`。**文字一律读 DB** `k4_advisory.exec_hint` 四条(`C1_strong_market_order` / `C2_mild_red_low_variance` / `C3_low_limit_self_aware` / `C4_no_pullback_bigred_mechanical`);**命中条件的可执行镜像**住本模块命名常量 + **模块头逐条对照表**(`holding_k4_check.py` 体例),**改阈值须同改两处**。DB 读不到该节(隔离测试库)→ `_FALLBACK_HINT_TEXT` 兜底,镜像照跑不崩。
+- **触发镜像(定死)**:
+  - **C1 强票**:当日 `ret_1d ≥ 5%` **或** `is_limit_up` → 提示「强票挂低单会系统性漏掉起飞的(H3);要动手就市价/小 δ」;
+  - **C2 温和带**:`mildBand`(④-A 第 6 项,当日涨幅 ∈ [2%,3%])→ 提示「低方差首选带(H5:核心带尾部最紧);**但 ≈0 期望、非正 alpha,不构成买入理由**」;
+  - **C3 挂低单自觉**:**与 ⑤-B 联动** —— 该票有关联决策日志且 `max_chase_pct ≤ 0`(或 `planned_price < 昨收`)→ 提示「坚持挂低单 = 把样本限定在会回踩的偏弱侧,应下调预期、收紧退出(H3)」;
+  - **C4 回调大红不做**:回调态(`close > ma20`)且 `ret_1d ≥ 5%` → 提示「回调大红机械层不做(战役三:信号级 +1.69% → 组合级 −46%、2026 通杀)」。
+- **展示位**:候选卡 + 信息卡,统一标题「**执行提示**」。**⛔ 语义红线**:exec_hint 是"如果你决定动手,怎么执行更不吃亏",**不是"该不该买"**;文案不得出现"建议买入/推荐"。**exec_hint 不进排序键**(它未经方向审计)。
+- **契约**:`CandidateOut` 新增 `execHints:[{code, text, source:"db"|"fallback"}]`(`code` = advisory 码,`text` = DB 原文)。
+
+#### ⑤-B 决策日志第⑨项:最高追价上限
+
+- **语义(考官规格 §九 同构,定死)**:**相对昨收的百分比上限**;**开盘价 > 上限 → 放弃该票,盘中不追补**;**低开照买**(不设下沿)。
+- **迁移**:`decision_log` **幂等加列 `max_chase_pct REAL`**(如 `3.0` = 昨收 +3%;**允许负值** = 只在低开时买;`NULL` = 显式选择"不设上限")。
+- **⚠ 与既有 `planned_price` 不是一回事,不许合并**:`planned_price` 是"我打算挂多少价",`max_chase_pct` 是"开盘冲多高我就放弃"。两者并存,schema docstring 写明区别。
+- **契约**:`DecisionLogIn` / `DecisionLogOut` 加 `maxChasePct: Double?`。
+- **必填 + 显式不设(禁静默留空)**:客户端表单**八项 → 九项**,第⑨项**必须是主动选择** —— 要么填数字,要么勾「不设上限」(存 `NULL`)。**UI 不得允许两者都不做就提交**(与"强制论点才能提交"同一纪律)。服务端对 `POST /decisions` 校验:字段缺失 → 400 `reason="max_chase_required"`(**客户端 `mapReason` 加 case**);显式传 `null` 合法。
+- **归因维度 +1(本版只落数据,不出报表)**:P3-11(打法 × 论点双维归因)接入时按 `max_chase_pct` 分桶,与考卷的"区间贡献诊断"互相校准;`decision_pending_track`(v1.3-④ 已在攒数)可回答"若当时上限是 X 会不会成交"。**本版只保证字段落库 + 出参 + 客户端录入,归因报表仍归 §七 P3-11(v1.4+)。**
+
+**⑤ 验收**:exec_hint 四条文字读 DB(单测:改 DB 文字 → 输出跟着变;DB 缺该节 → fallback 不崩)+ 四条触发镜像各一单测 + 模块头对照表在 + 文案 grep 无"建议买入/推荐" + **exec_hint 不在排序键**(复用 ③-C 白名单单测);`max_chase_pct` 幂等迁移 + 往返(填数 / 显式 null / 缺失 400)+ 与 `planned_price` 语义分离(schema docstring + 单测各写各的);pytest 零回归。
+
+---
+
+### v1.4-⑥ · 判定精度:逐笔章程 / 扫描预算 / 定格日标注(🔴 ⑥-A @builder-pro,其余 @builder)
+
+#### ⑥-A 🔴 周复盘章程按成交时刻逐笔判(P1-4,碰纪律判定)
+
+- **现状**:`brain.config_governing_for_week(week_start)` 判据是「激活日 `<` week_start」,**整周一把抓** → 章程激活当周的交易被旧章程判(本周 2026-07-27~08-02 用户按 v1.3.3 打、周复盘按 K1 判 = 已知假警报)。
+- **修法**:新增 `brain.config_governing_at(ts)` —— 按**成交时刻**取当时现役 config(**时间轴唯一源 = `strategy_versions.activated_at`**;K1 的 `activated_at` 必须保全,历史时间线靠它解析)。`review/reconcile.py` 取 config 的入口**从「周」下沉到「笔」**。
+- **周报呈现**:该周发生过章程切换时,报告显式注明「本周 {date} {time} 发生章程切换 {old}→{new}」并**分段计数**(切换前 N 笔按 {old} 判、切换后 M 笔按 {new} 判)。
+- **⚠ 只改"用哪一版阈值判哪一笔",不改任何阈值本身。**
+- **单测**:① 构造跨激活时刻的一周成交,断言逐笔判向正确(切换前后各一笔);② **周内无切换时逐位等价于旧行为**(回归护栏);③ 交割单只有日期没有时刻时的口径 —— **定死:当日成交一律按"该日收盘时刻"取 config**(A 股 T+1、章程激活都在盘后跑,不会出现同日切换后又开仓),这条写模块 docstring。
+- **🔴 碰纪律判定**:改前 `cp -p` 备份;完工后本块**明确列入用户召唤 reviewer 时的必审项**。
+
+#### ⑥-B 消息面 LLM 扫描预算(P1-5)
+
+- **现状**:`report/news_alerts.py:161 LLM_SCAN_BUDGET_SECONDS=300.0`;3 持仓 + 16 自选 = 19 标的,2026-07-27 预算耗尽、**8 只自选未扫**(已由 `newsAlertsScan.codesSkipped` 如实披露)。自选只会越来越多。
+- **第一步:实测供应商限频(不许拍脑袋开并发)** —— 用真 key 实测 GLM 并发 2 / 3 / 4 的 429 率与稳定性(带联网搜索的调用,`read_timeout=90` 不动),**结论写档**。
+- **第二步:按实测二选一(定死,不折中)**:
+  - **① 限频允许** → 开**受控并发**:常量 `_SCAN_CONCURRENCY`(默认 **2**,可配),预算抬到 **600s**;
+  - **② 限频不允许** → **自选隔日轮扫**:持仓**每日必扫**,自选按 `ts_code` 稳定哈希分两组交替;`newsAlertsScan` 新增 `rotationGroup:str` **如实披露本次扫的是哪一组**。
+- **不变项**:**持仓优先于自选**(既有单测锁死)、`codesSkipped`(预算耗尽没发起)与 `codesFailed`(发起了但失败)**语义不合并**、`read_timeout=90` 不回调短超时(项目 CLAUDE.md 铁律)。
+- **⚠ 与 §七 P4-16 一起算账**:并发会抬报告峰值内存,`neckline-report.service MemoryMax=800M` 本就偏紧 → 部署块 **⑨-F** 复核实测峰值。
+
+#### ⑥-C 定格日 ≠ D5 显式标注(P1-6)
+
+- **现状**:EOD 管线连续断跑时,时间退出按"首个可得 EOD"定格(可能已是 D7/D8),系统如实写 `time_exit_locked_date` 但**界面不提示**。
+- **修法**:`PositionOut` 新增 `timeExitLockedDay:int?`(定格当时的 `d_count`)+ `timeExitLockedLateDays:int`(= 定格 `d_count` − `max_hold_days`,**>0 才展示**);报告持仓卡 + 客户端展示「**定格于 D{n},晚于 D{5} {k} 天**」。
+- **⛔ 只提示,不改判定逻辑** —— 定格语义是审计 🔴-1 的结论(D5 判一次定格、消费点只读定格值),**不得回退**。单测断言:加了标注后判向输出逐位不变。①-B 的 `suspended_hold` 复牌后定格也走这条标注。
+
+**⑥ 验收**:⑥-A 逐笔判单测三项(跨切换正确 / 周内无切换逐位等价 / 只有日期时按收盘时刻)+ 周报分段计数文案 + 备份;⑥-B 限频实测结论写档 + 所选方案单测(并发路:预算内扫完 19 只;轮扫路:`rotationGroup` 如实 + 持仓每日必扫)+ 语义不合并;⑥-C 两新字段 + 判向逐位不变单测;pytest 零回归。**🔴 ⑥-A 碰纪律判定,列入 review 必审项。**
+
+---
+
+### v1.4-⑦ · 功能补全:挂单追踪出口 / 问询记录落库 / 客户端瑕疵(@builder)
+
+- **⑦-A 挂单未成交追踪出口(P3-12)**:服务端 v1.3-④ 已上线、`decision_pending_track` 自 2026-07-27 起在攒数据,但 **API 未暴露任何端点**。落地 **`GET /decisions/{id}/track`** → `{status, planPrice, rows:[{tradeDate, dOffset, close, retFromPlan}]}`;决策不存在 → 404 `reason="not_found"`,**客户端 `mapReason` 必须加 case**(watchlist `not_found` 被误显示成"持仓已清"踩过)。客户端决策卡展示 N 日走势(折线 + 数值即可)。
+- **⑦-B 问询记录落库 + 历史列表(P3-13)**:`POST /inquiry` 现在**只返回不持久化**(`llm_judgments` 只由报告管线写)→ 问询台无历史、回答无法留档、无法与决策日志关联做归因。
+  - **新表 `inquiry_log`(幂等建)**:`id / created_at / ts_code / name / question / materials_json / answer / evidence_json / search_hits / verdict / position_id / decision_id`;
+  - `POST /inquiry` 落一行并在响应里回 `inquiryId`;
+  - `GET /inquiries?limit&offset&tsCode=` 列表(时间倒序)+ `GET /inquiries/{id}` 详情;
+  - **⚠ 与 `inquiry_pool` 是两件事,不许混用** —— 后者是 v1.3.3 起"不再自动写、表与消费侧保留"的历史队列表(§2.5),本表是问询记录档案。
+- **⑦-C 客户端小瑕疵(P3-14,与 ⑧ 同批做)**:① 删死码 `InquiryVerdict.rejectRaw/passRaw`(`client/Models.swift:898-899`,v1.3.3 二值裁决退役后只剩单测在引用)+ 连带改 `AppModelTests`;② 「已分析·有风险提示」显示为中性色 → 改**警示色**(用 `DesignTokens` 既有告警色,不新造色值)。
+
+**⑦ 验收**:`GET /decisions/{id}/track` 往返 + 404 reason 映射有 case;`inquiry_log` 幂等迁移 + 问一次落一行 + 列表/详情往返 + 与 `inquiry_pool` 无耦合(单测断言不写 `inquiry_pool`);死码已删且 Swift 单测全绿、警示色生效(截图);pytest 零回归。
+
+---
+
+### v1.4-⑧ · 客户端跟进(@builder,依赖 ①③④⑤⑥⑦ 契约)
+
+> 依赖上游契约,**最后于 ⑨ 之前做**。既有客户端**不重做**,只加增量。
+
+- **⑧-A 补录持仓日期选择器(①-A)**:补录 sheet 加 `DatePicker`(默认今天、**不可选未来**),`POST /positions` 带 `buyDate`;`mapReason` 加 `not_trading_day` / `future_buy_date` 两 case。
+- **⑧-B 停牌标注(①-B)**:持仓卡展示 `priceStale`(「停牌/无数据 N 个交易日,价格为 {date} 最后成交价」)+ 时间退出 `suspended_hold` 态文案(「判向挂起,复牌当日重判」);K4 体检 `dataUnavailable` 显示"今日未体检"而非空白。
+- **⑧-C 候选卡排序理由 + 语义红线(③)**:展示 `industryRank` / `industryPersistDays` / `yellowCardCount` / `sectorFlow`(标"并列参考,不参与排序")+ `source`(保底/竞争/问询)+ `industry`;列表头部固定一句定位文案「**排序 = 注意力优先级,不是收益预测;排第一 ≠ 最会涨;终选在你**」。**客户端全仓 grep「推荐买入 / 建议买入 / 看好 / 值得买 / 推荐买点」零命中。**
+- **⑧-D 信息卡页(④)**:候选卡点进去 = 信息卡页,调 `GET /report/{date}/info-card/{code}`,渲染 **① K 线(蜡烛 + 量柱 + MA20/MA250)② RS 线 ③ 行业分歧线**(三图,60 日,指数化)+ 快照七项 + 红黄牌(强/普通分级 + 证据强度标)+ 温和带标 + 消息面/龙虎榜摘要 + 市场语境。
+  - **图表实现**:优先 **Swift Charts**(iOS 16+ / macOS 13+);若当前 deployment target 更低 → 用 `Path` 手绘,**builder 侦察后二选一并在完工纪要记一行**,不要两套都写。
+  - **⛔ 数据缺省显式显示「无数据 + 原因」,不画空图、不画 0 值线**(承 ④-C)。
+  - 行业分歧线下方固定标注「行业线 = 行业成员中位数合成,非申万官方指数」。
+  - **性能**:承项目 CLAUDE.md 「SwiftUI 动画性能三禁」——图表不做阴影动画、不交叉淡化两棵含材质的大视图树。
+- **⑧-E 决策日志第⑨项(⑤-B)**:表单八项 → 九项;「最高追价上限」数字输入(相对昨收 %,实时换算成"约 {price} 元"提示)+ 「不设上限」开关;**两者都不做不许提交**;`mapReason` 加 `max_chase_required`。
+- **⑧-F exec_hint 展示(⑤-A)**:候选卡/信息卡展示「执行提示」区(读 `execHints`),文案原样透传 DB 文字,**客户端不改写、不加"建议"字样**。
+- **⑧-G 其余**:定格日晚点标注(⑥-C)、挂单追踪走势(⑦-A)、问询历史列表(⑦-B)、死码与警示色(⑦-C)。
+
+**⑧ 验收**:双端 `xcodebuild BUILD SUCCEEDED` + iOS Simulator TEST 全绿;新增字段解码单测(`buyDate` / `priceStale` / `industryRank` 三项 / `execHints` / `infoCard` / `maxChasePct` / `timeExitLockedDay`);**视觉核对走 `xcrun simctl io <device> screenshot` + QA 钩子 `NECKLINE_INITIAL_TAB`**(本环境 computer-use 点不动 Simulator/macOS App,见项目 CLAUDE.md;macOS 截图被沙盒挡时拿"iOS 截图 + 双端 BUILD SUCCEEDED"当等价证据);截图至少覆盖:候选列表(排序理由 + 定位文案)、信息卡页三图、决策日志第⑨项、停牌持仓卡;**绿涨红跌不变**;文案 grep 零命中。
+
+---
+
+### v1.4-⑨ · 部署上云(🔴 @builder-pro + 用户,**最后**)
+
+- **⑨-A 版号**:`api/app.py::VERSION` `v1.3.5` → **`v1.4.0`**。
+- **⑨-B 迁移(全部幂等 `IF NOT EXISTS` / `_migrate_columns`)**:`decision_log.max_chase_pct`(⑤-B)+ `inquiry_log` 表(⑦-B)+ 本版落地过程中新增的任何列。
+  - **迁移前**:`sqlite3 .backup` 在线一致性备份(`data/neckline.db.bak-v140-<date>`)+ **另 `cp -p` 一份**(双保险);
+  - **迁移后逐项验证**:`PRAGMA integrity_check` ok + **业务零丢失**(`positions` / `devices` / `reports` / `decision_log` / `watchlist` 等行数迁移前后逐表一致)+ **`is_active` 仍 `v1.3.3`**(本版不动章程,任何 `is_active` 变化即回退);
+  - **回退路径写死**:任一验证不过 → 停服 + 从 `.backup` 恢复 + 回滚代码到 v1.3.5 tag + `neckline.service` 起回 v1.3.5。
+- **⑨-C 代码上云**:用已修好的 `sync_code.sh`(收尾 prune `data/` + 末尾只读属主自检);部署后 `data/neckline.db` 属主仍 `neckline:neckline`、自检绿、restart 无 502;新依赖走**阿里云镜像**;重启前 preflight import。
+- **⑨-D 🔴 定时任务活体验收(铁律:timer 跑过 ≠ 任务成功)**:
+  - `systemctl show neckline-report.service -p Result -p ExecMainStatus -p ExecMainExitTimestamp` → **必须 `Result=success` / `ExecMainStatus=0`**;
+  - **必须等到一次真实的 16:35 自动跑**(不是手动 `systemctl start`),且**报告文件真的生成 + `reports` 表当日有行 + 情报节非空**;
+  - **只看 `systemctl list-timers` 的 LAST 不算验收**(07-27 报告没生成却被记成"已跑完"的教训);
+  - `neckline-daily`(16:05)同样看 `Result=`,且 `ths_daily` 当日**有行**(①-C 日更真的跑了)。
+- **⑨-E TuShare 配额复核(§七 P4-20 + ①-C 新增固定消耗)**:16:05 增量拉全(`daily`/`daily_basic`/`adj_factor`/`moneyflow_dc`/`index_daily`/`limit_derived` + **新增概念板块日更**);`ths_daily` 当日有行、`ths_member` 周更快照有效;情报节非空、`dataFreshness.stale=false`。**研究侧大批量拉取继续避开 15:00–17:00 生产窗口**(提醒用户/策略线)。
+- **⑨-F 内存复核(§七 P4-16)**:`neckline-report.service MemoryMax=800M` 对 v1.4 新管线(信息卡端点是**按需现算、不进 16:35**;⑥-B 若选并发路会抬峰值)→ **实测峰值 + `oom_kill` 计数**;必要时抬到 1G,**抬之前先算总账**(机器 1.6G,还有常驻 `neckline.service` `MemoryHigh=420M/Max=600M` 与 `neckline-daily` 900M)。哨兵 lifespan 任务重启后 idle RSS 与部署前持平。
+- **⑨-G 运维留痕**:更新 `~/hz_info.md`(VERSION v1.4.0、新表/列、概念板块日更与配额账、内存决定、①-A 生产数据纠正留痕);§九 记**一行**。
+
+**⑨ 验收(活体,逐项)**:① 公网 `GET /health` 返 `v1.4.0`;② 迁移全建成 + `integrity_check` ok + 业务零丢失 + `is_active` 仍 `v1.3.3`;③ **16:35 真实自动跑 `Result=success` 且报告真生成**(附 `systemctl show` 原文);④ 16:05 `Result=success` 且 `ths_daily` 当日有行、`dataFreshness.stale=false`;⑤ 20 只新序候选 + 信息卡端点公网可取 + exec_hint 有文字;⑥ 决策日志第⑨项真机录入往返;⑦ 老端点前向兼容不崩、无 token 401;⑧ 内存峰值实测记录在案(抬没抬 `MemoryMax` 都要写理由);⑨ `sync_code.sh` 自检绿、属主未翻。**🔴 生产部署:改前双备份、回退路径已演练可用。**
+
+---
+
+### v1.4 客户端契约清单(新端点 / 新字段,供 ⑧ 对照;仅列 v1.3 之上的增量)
+
+> v1.3 及之前的契约基线全文在 `archive/v1.3_施工图_20260728归档.md` 末节「v1.3 客户端契约清单」,查旧字段去那里。
+
+- **补录买入日(①-A)**:`PositionOpenIn` 加 `buyDate:String?`(`YYYYMMDD`,缺省今天);400 新 reason `not_trading_day` / `future_buy_date`。
+- **停牌口径(①-B)**:`PositionOut` 加 `priceStale:{staleDays:Int, lastCloseDate:String, reason:String}?`;`timeExitState` 枚举**扩一值** `suspended_hold`(客户端未识别值原样透传不崩,但本版必须加文案)。
+- **板块数据新鲜度(①-C)**:`ReportOut` 加 `dataFreshness:{sectorDataDate:String?, sectorLagDays:Int, stale:Bool}`。
+- **排序理由(③-E)**:`IntelRankOut` 加 `industryRank:Int?` / `industryPersistDays:Int` / `yellowCardCount:Int`;`sectorFlow` 语义改"并列展示、不参与排序"(字段不变)。
+- **信息卡(④-B)**:新端点 **`GET /report/{date}/info-card/{code}`**(单只完整卡,含 60 日序列);`CandidateOut` 加 `infoCard:{...}`(**摘要位,不含 60 日序列**)。404 reason `report_not_found` / `code_not_in_report`。
+- **执行提示(⑤-A)**:`CandidateOut` 加 `execHints:[{code:String, text:String, source:String}]`。
+- **决策日志第⑨项(⑤-B)**:`DecisionLogIn` / `DecisionLogOut` 加 `maxChasePct:Double?`(`null` = 显式不设上限);缺失 → 400 `reason="max_chase_required"`。
+- **定格日标注(⑥-C)**:`PositionOut` 加 `timeExitLockedDay:Int?` / `timeExitLockedLateDays:Int`。
+- **挂单追踪(⑦-A)**:新端点 `GET /decisions/{id}/track`;404 reason `not_found`。
+- **问询历史(⑦-B)**:`POST /inquiry` 响应加 `inquiryId:Int`;新端点 `GET /inquiries?limit&offset&tsCode=` / `GET /inquiries/{id}`。
+
+---
+
+## 五(旧-v1.3)、v1.3 施工图(已完工上线 → archive)
+
+> 全文已归档:`archive/v1.3_施工图_20260728归档.md`(① 退出规则章程变更 / ② 持仓管理层 K4 牌 / ③ 情报官四件 / ④ 挂单未成交追踪 / ⑤ 问询台选股域清理 / ⑥ 客户端跟进 / ⑦ 部署 + 章程激活,**含「v1.3 客户端契约清单」全文**)。
+> v1.3 → v1.3.5 全部已上云,现役章程 `v1.3.3`(见 §四 / §九)。**查 v1.4 之前的客户端字段一律去该归档文件**,本正文不复述。
+> 未随 v1.3 交付的残项:**v1.2.1-D 打法 × 论点双维归因** → §七 **P3-11**(施工图全文在 `archive/v1.2_v1.2.1_施工图_20260728归档.md`)。
+> **⚑ 交叉引用约定**:本文件 §一~§三、§七 里出现的「§五 v1.3-①…⑦」「§五 v1.2-*」「§五 v1.1-*」「§五 阶段 4*」等指针,**一律指向本节这三个存根 → 对应 `archive/` 归档文件**(正文不再复述历史施工细节)。
+
+## 五(旧-v1.2)、v1.2 + v1.2.1 施工图(已完工上线 → archive)
 
 > 全文已归档:`archive/v1.2_v1.2.1_施工图_20260728归档.md`(三仓章程 + 熔断纪律 + 决策日志八项 + 呼吸台账+ 归因闭环;除 v1.2.1-D 外全部随 v1.3-⑦ 上云)。**v1.2.1-D(打法 × 论点双维归因)未实现**,挂账 §七 P3-11,施工图全文在上述归档文件内(保留勿删)。
 
@@ -478,47 +584,49 @@ Neckline/
 
 ## 七、Backlog(按优先级分组;冷启动从 P0 往下读)
 
-> **2026-07-28 交接重整**。分组含义:**P0** 影响判定正确性(越早越好)/ **P1** 已知错判或噪音(有明确修法)/ **P2** 审计欠账 / **P3** 功能挂账 / **P4** 运维与历史局限(留档为主)/ **📌** 认知对齐(v1.4 立项必读)/ **⚫** 长期机制(不排期)/ **✅** 已了结(压缩留痕,勿再当待办)。`P0-1`…`📌-22` 是**稳定 ID**,跨会话引用请带编号。**策略假设 / K 字头版本一律不在此**,权威在 `STRATEGY_LAB.md`。
+> **2026-07-28 交接重整 + v1.4.0 立项标注**。分组含义:**P0** 影响判定正确性(越早越好)/ **P1** 已知错判或噪音(有明确修法)/ **P2** 审计欠账 / **P3** 功能挂账 / **P4** 运维与历史局限(留档为主)/ **📌** 认知对齐(v1.4 立项必读)/ **⚫** 长期机制(不排期)/ **✅** 已了结(压缩留痕,勿再当待办)。`P0-1`…`📌-22` 是**稳定 ID**,跨会话引用请带编号。**策略假设 / K 字头版本一律不在此**,权威在 `STRATEGY_LAB.md`。
+>
+> **⚑ v1.4.0 吸收标注(2026-07-28)**:被 v1.4.0 施工图吸收的条目在原地标「**→ v1.4.0 第 N 块**」,**稳定 ID 与原文一律保留不删**(施工细节以 §五 对应块为准,本节只留「这条去哪了」)。未标注的条目 = 本版不做,仍是待办。
 
-### 🔴 P0 · 影响判定正确性(建议 v1.3.6 快修,开 v1.4 前清掉)
+### 🔴 P0 · 影响判定正确性(**三条全部 → v1.4.0 第 ① 块**;用户 2026-07-28 拍板并进 v1.4,**不单出 v1.3.6**)
 
-- **[P0-1] 补录持仓无法指定真实买入日**。`api/app.py::open_position`(~703 行)写死 `buy_date=date.today()`、`PositionOpenIn`(`api/schemas.py:304`)无买入日字段 → 用户 2026-07-27 补录的 **3 笔历史持仓买入日全被盖成当天**。**为什么要紧**:D 计数、时间退出 D5/D15 判向、回落止盈峰值追踪起点、周复盘持有天数、按打法归因的持有周期,**全部起点错**。**怎么修**:① `PositionOpenIn` 加可选 `buyDate`(`YYYYMMDD`,缺省今天,校验不晚于今天);② `app.py` 透传 —— **领域层 `sentinel/positions.py::open_position` 与 CLI `scripts/positions.py add` 本来就收 `buy_date`,缺口只在 HTTP 契约 + 客户端**,改动面很小;③ 客户端补录 sheet 加日期选择器(默认今天);④ **纠正已落库的 3 笔**:需用户提供真实买入日,改前 `sqlite3 .backup`,改后复查 `holding_eod_check` 是否已按错误 D 定格(`time_exit_locked_*` 三列有值就要清掉重算)。**归 v1.3.6(🔴 高危区:碰持仓判定)。**
-- **[P0-2] `002036.SZ`(联创电子)自 2026-07-23 起无行情分区**,而 `stock_basic.list_status` 仍 `L`;用户自述该票「正筹划股权转让」。**为什么要紧**:该持仓无法定价 → 持仓卡市值/浮盈、K4 每日体检、D5 判向拿不到收盘价;`resolve_time_exit` 无定格时**按设计保守返回「明日时间退出」**,可能催用户去卖一只停牌根本卖不掉的票。**怎么修**:① 先核实是停牌还是数据源缺口(查 TuShare `suspend_d` / 直接看该票近 5 日 `daily` 行);② 定**停牌票在持仓链路的显示口径**(建议:沿用最后有效收盘价 + 明示「停牌 N 日,价格为最后成交价」,时间退出判向挂起且不推送,绝不静默按老价当今日价);③ 口径写进 §2.1 或本节。**归 v1.3.6(诊断)+ v1.4(口径落地)。**
-- **[P0-3] 概念板块表压根没有日更路径 → 「当日暴起板块」那一路候选长期失效**(不是一天的偶发)。`ths_daily`/`ths_member`/`ths_index` 只有**一次性 backfill**(`scripts/backfill_concept.py`,`END="20260722"` 硬编码 + 「已存在则跳过」),而 16:05 的 `scripts/daily_update.py` 只跑 `backfill.DAY_TABLES=[daily, daily_basic, adj_factor, moneyflow_dc]`(+`index_daily`/`limit_derived`),**概念板块表不在日更清单里**;本地实测 `ths_daily` 最大 `trade_date=2026-07-22`。**为什么要紧**:`report/sectors.py::compute_sector_strength` 当日无行 → **返回空列表且不报错**(优雅降级),于是 `intel_candidates` 第①步的「当日暴起 top-N」整路为空(07-27 那 20 只全来自五常驻 + 竞争位)、题材持续天数(`board_age`)也拿不到 → 情报排序少一维;五常驻板块因走 `ths_index` 名字静态解析,反而看不出坏了。**怎么修**:① 给日更加概念板块增量(`ths_daily` 按日追加;`ths_member` 低频重拉,~400+ 指数各一次调用,配额消耗要与 P4-20 一起算账);② **至少先加「板块数据过期 > N 天」的显式告警**,别让它继续静默降级。**归 v1.3.6(告警)+ v1.4(日更管线)。**
+- **[P0-1] 补录持仓无法指定真实买入日**。`api/app.py::open_position`(~703 行)写死 `buy_date=date.today()`、`PositionOpenIn`(`api/schemas.py:304`)无买入日字段 → 用户 2026-07-27 补录的 **3 笔历史持仓买入日全被盖成当天**。**为什么要紧**:D 计数、时间退出 D5/D15 判向、回落止盈峰值追踪起点、周复盘持有天数、按打法归因的持有周期,**全部起点错**。**怎么修**:① `PositionOpenIn` 加可选 `buyDate`(`YYYYMMDD`,缺省今天,校验不晚于今天);② `app.py` 透传 —— **领域层 `sentinel/positions.py::open_position` 与 CLI `scripts/positions.py add` 本来就收 `buy_date`,缺口只在 HTTP 契约 + 客户端**,改动面很小;③ 客户端补录 sheet 加日期选择器(默认今天);④ **纠正已落库的 3 笔**:需用户提供真实买入日,改前 `sqlite3 .backup`,改后复查 `holding_eod_check` 是否已按错误 D 定格(`time_exit_locked_*` 三列有值就要清掉重算)。~~归 v1.3.6~~ → **v1.4.0 第 ① 块(①-A)**,🔴 高危区:碰持仓判定。⚠ 纠正 3 笔**需用户先提供真实买入日**(§八 第 11 项)。
+- **[P0-2] `002036.SZ`(联创电子)自 2026-07-23 起无行情分区**,而 `stock_basic.list_status` 仍 `L`;用户自述该票「正筹划股权转让」。**为什么要紧**:该持仓无法定价 → 持仓卡市值/浮盈、K4 每日体检、D5 判向拿不到收盘价;`resolve_time_exit` 无定格时**按设计保守返回「明日时间退出」**,可能催用户去卖一只停牌根本卖不掉的票。**怎么修**:① 先核实是停牌还是数据源缺口(查 TuShare `suspend_d` / 直接看该票近 5 日 `daily` 行);② 定**停牌票在持仓链路的显示口径**(建议:沿用最后有效收盘价 + 明示「停牌 N 日,价格为最后成交价」,时间退出判向挂起且不推送,绝不静默按老价当今日价);③ 口径写进 §2.1 或本节。~~归 v1.3.6 + v1.4~~ → **v1.4.0 第 ① 块(①-B)**,诊断与口径一起落(口径已在 §五 定死,诊断只决定 `reason` 标签取值)。
+- **[P0-3] 概念板块表压根没有日更路径 → 「当日暴起板块」那一路候选长期失效**(不是一天的偶发)。`ths_daily`/`ths_member`/`ths_index` 只有**一次性 backfill**(`scripts/backfill_concept.py`,`END="20260722"` 硬编码 + 「已存在则跳过」),而 16:05 的 `scripts/daily_update.py` 只跑 `backfill.DAY_TABLES=[daily, daily_basic, adj_factor, moneyflow_dc]`(+`index_daily`/`limit_derived`),**概念板块表不在日更清单里**;本地实测 `ths_daily` 最大 `trade_date=2026-07-22`。**为什么要紧**:`report/sectors.py::compute_sector_strength` 当日无行 → **返回空列表且不报错**(优雅降级),于是 `intel_candidates` 第①步的「当日暴起 top-N」整路为空(07-27 那 20 只全来自五常驻 + 竞争位)、题材持续天数(`board_age`)也拿不到 → 情报排序少一维;五常驻板块因走 `ths_index` 名字静态解析,反而看不出坏了。**怎么修**:① 给日更加概念板块增量(`ths_daily` 按日追加;`ths_member` 低频重拉,~400+ 指数各一次调用,配额消耗要与 P4-20 一起算账);② **至少先加「板块数据过期 > N 天」的显式告警**,别让它继续静默降级。~~归 v1.3.6 + v1.4~~ → **v1.4.0 第 ① 块(①-C)**,日更管线 + 过期告警一起做。**它是需求 8 板块维度的硬前置**;新增配额消耗与 P4-20 一起算账、部署块 ⑨-E 复核。
 
 ### 🟡 P1 · 已知错判 / 噪音(有明确修法)
 
-- **[P1-4] 周复盘按「周」粒度取 governing 章程,激活当周的交易被旧章程判**。`brain.config_governing_for_week(week_start)` 判据是「激活日 `<` week_start」,整周一把抓。**后果**:本周(2026-07-27~08-02)用户按 v1.3.3 三仓 4 万打,周复盘仍按 K1 判 → 单笔 >2 万、买创业板会被**误标违纪**(**已知假警报,用户已接受本周噪音,不为一周的显示问题动纪律时间线**)。**正解**:改成**按成交时间戳逐笔判**(成交时刻早于激活时刻按旧章程、之后按新),`review/reconcile.py` 取 config 的入口从「周」下沉到「笔」,报告里注明该周发生过章程切换并分段计数。**归 v1.4(🔴 碰纪律判定,不快修)。**
-- **[P1-5] 消息面 LLM 扫描 300s 墙钟预算不够**。`report/news_alerts.py:161 LLM_SCAN_BUDGET_SECONDS=300.0`;3 持仓 + 16 自选 = 19 标的,2026-07-27 那次预算耗尽、**8 只自选未扫**(已由 `newsAlertsScan.codesSkipped` 如实披露,没有静默)。自选只会越来越多。**怎么修(三选一)**:抬预算(报告是 oneshot,但要顾 `MemoryMax` 与整体时长,见 P4-16)/ 并发(**先验 GLM 供应商限频,别拍脑袋开并发**)/ 分批轮扫(持仓优先已实现,自选可隔日轮)。**归 v1.4。**
-- **[P1-6] 「定格日 ≠ D5」无标注**。EOD 管线连续断跑时,时间退出按「首个可得 EOD」定格(可能已是 D7/D8),系统如实写 `time_exit_locked_date` 但界面不提示。**怎么修**:`PositionOut` + 报告持仓卡显式标注「定格于 D{n},晚于 D{max_hold_days} {k} 天」,**只提示、不改判定逻辑**(定格语义是审计修复 🔴-1 的结论,不得回退)。**归 v1.4。**
-- **[P1-7] `search_engine` 选型待数据定**。2026-07-27 实测 `search_pro` 2 条 / `search_std` 2 条 / `search_pro_sogou` 10 条(**单日样本,不足以定**);当前维持 `search_pro`(用户拍板),命中数埋点已随 v1.3.4 上线。**怎么修**:攒几天后捞 `llm_judgments` 的命中分布(按日 × 按引擎)再定,拿数据说话。**归 v1.4 前决策(等数据)。**
+- **[P1-4] 周复盘按「周」粒度取 governing 章程,激活当周的交易被旧章程判**。`brain.config_governing_for_week(week_start)` 判据是「激活日 `<` week_start」,整周一把抓。**后果**:本周(2026-07-27~08-02)用户按 v1.3.3 三仓 4 万打,周复盘仍按 K1 判 → 单笔 >2 万、买创业板会被**误标违纪**(**已知假警报,用户已接受本周噪音,不为一周的显示问题动纪律时间线**)。**正解**:改成**按成交时间戳逐笔判**(成交时刻早于激活时刻按旧章程、之后按新),`review/reconcile.py` 取 config 的入口从「周」下沉到「笔」,报告里注明该周发生过章程切换并分段计数。→ **v1.4.0 第 ⑥ 块(⑥-A)**,🔴 碰纪律判定,列入 review 必审项。
+- **[P1-5] 消息面 LLM 扫描 300s 墙钟预算不够**。`report/news_alerts.py:161 LLM_SCAN_BUDGET_SECONDS=300.0`;3 持仓 + 16 自选 = 19 标的,2026-07-27 那次预算耗尽、**8 只自选未扫**(已由 `newsAlertsScan.codesSkipped` 如实披露,没有静默)。自选只会越来越多。**怎么修(三选一)**:抬预算(报告是 oneshot,但要顾 `MemoryMax` 与整体时长,见 P4-16)/ 并发(**先验 GLM 供应商限频,别拍脑袋开并发**)/ 分批轮扫(持仓优先已实现,自选可隔日轮)。→ **v1.4.0 第 ⑥ 块(⑥-B)**:先实测供应商限频,再按实测**二选一**(受控并发 or 自选隔日轮扫),不折中。
+- **[P1-6] 「定格日 ≠ D5」无标注**。EOD 管线连续断跑时,时间退出按「首个可得 EOD」定格(可能已是 D7/D8),系统如实写 `time_exit_locked_date` 但界面不提示。**怎么修**:`PositionOut` + 报告持仓卡显式标注「定格于 D{n},晚于 D{max_hold_days} {k} 天」,**只提示、不改判定逻辑**(定格语义是审计修复 🔴-1 的结论,不得回退)。→ **v1.4.0 第 ⑥ 块(⑥-C)**。
+- **[P1-7] `search_engine` 选型待数据定**。2026-07-27 实测 `search_pro` 2 条 / `search_std` 2 条 / `search_pro_sogou` 10 条(**单日样本,不足以定**);当前维持 `search_pro`(用户拍板),命中数埋点已随 v1.3.4 上线。**怎么修**:攒几天后捞 `llm_judgments` 的命中分布(按日 × 按引擎)再定,拿数据说话。→ **v1.4.0 期间「等数据决策点」,不排施工块**(§五 分块序列末已记);在此之前**维持 `search_pro` 不动**,不许在 v1.4 顺手改。
 - **[P1-8] 启发式阈值待实盘校准**:`intel_candidates.py` 的 `INDUSTRY_GATE_MIN_LIFT=2.0` / `QUOTA_PER_PERMANENT_BOARD=2`、熔断的 3 笔连亏与单日 −4000 元、盘前校准各阈值 —— 全是启发式,零实盘样本。**怎么修**:攒 1–2 个月实盘 + 周复盘数据后**一次性回看这一组**(哪个挡多了 / 放多了),不要逐个单独拍。**归 v1.4+。**
 
 ### 🟠 P2 · 审计欠账(最该补的一块)
 
-- **[P2-9] 三路独立审计只完成一路**。已完成:**纪律与金额**(2026-07-27,报告 `archive/REVIEW_REPORT_v1.3_章程金额审计_20260727.md`,抓到 4 条主缺陷 🔴-1/🟡-2/🟡-3/🟡-4 + 5 条小修,全部已修并随 v1.3.1 上云)。**未做的两路**:① **情报官 / 候选管线** —— K4 安检实现与 DB `k4_advisory` 六节**逐条对拍**(`hard_cut` 真拦、`avoid_flag` 只打标)、四处「诚实字段」是否真透到客户端(`newsAlertsScan.codesSkipped/codesFailed`、搜索 0 命中脚注、板块资金流 `unavailableReason`、行业闸被挡票的审计留痕);② **契约 / 客户端 / 迁移三方对拍** —— `api/schemas.py` 声明 → `app.py` 转发 → Swift 解码 **逐字段走一遍**,该版**已两次出现「领域层算了、序列化层漏了」的漏字段**,这是复发型缺陷。**归 v1.4 前各叫一次 reviewer(review 默认不跑,需用户明确说)。**
-- **[P2-10] 已发布版本未 review**:`v1.3.1`(审计修复 + 行业闸 lift + 首次带迁移的部署)/ `v1.3.3`(拆墙 + 问询台改自由分析师 + `ts_code` 归一 + **章程二次激活** + **切换器闸 2 窄豁免**)/ `v1.3.4`(provider 层 `search_query`,四处 LLM 调用共用)/ `v1.3.5`(**生产数据迁移:902 个 parquet 分区 cast** + canonical schema 声明 + 候选管线保险丝)。含高危面:**生产数据迁移、给护栏开的豁免口子、章程两次激活、共用 provider 层改动**。⚠ **`v1.3.2` 在 §四/§九/git log 里都没有记录 = 跳号,不是漏记**,别去找。**归 v1.4 前(用户定是否叫 review)。**
+- **[P2-9] 三路独立审计只完成一路**。已完成:**纪律与金额**(2026-07-27,报告 `archive/REVIEW_REPORT_v1.3_章程金额审计_20260727.md`,抓到 4 条主缺陷 🔴-1/🟡-2/🟡-3/🟡-4 + 5 条小修,全部已修并随 v1.3.1 上云)。**未做的两路**:① **情报官 / 候选管线** —— K4 安检实现与 DB `k4_advisory` 六节**逐条对拍**(`hard_cut` 真拦、`avoid_flag` 只打标)、四处「诚实字段」是否真透到客户端(`newsAlertsScan.codesSkipped/codesFailed`、搜索 0 命中脚注、板块资金流 `unavailableReason`、行业闸被挡票的审计留痕);② **契约 / 客户端 / 迁移三方对拍** —— `api/schemas.py` 声明 → `app.py` 转发 → Swift 解码 **逐字段走一遍**,该版**已两次出现「领域层算了、序列化层漏了」的漏字段**,这是复发型缺陷。→ **v1.4.0 施工完成后**由用户召唤 reviewer 一并做掉(用户 2026-07-28 定 **review 后置**,plan 里不排 review 施工块)。⚠ v1.4 的 **②-C / ③-G 两份对拍报告**是这次审计的现成输入。
+- **[P2-10] 已发布版本未 review**:`v1.3.1`(审计修复 + 行业闸 lift + 首次带迁移的部署)/ `v1.3.3`(拆墙 + 问询台改自由分析师 + `ts_code` 归一 + **章程二次激活** + **切换器闸 2 窄豁免**)/ `v1.3.4`(provider 层 `search_query`,四处 LLM 调用共用)/ `v1.3.5`(**生产数据迁移:902 个 parquet 分区 cast** + canonical schema 声明 + 候选管线保险丝)。含高危面:**生产数据迁移、给护栏开的豁免口子、章程两次激活、共用 provider 层改动**。⚠ **`v1.3.2` 在 §四/§九/git log 里都没有记录 = 跳号,不是漏记**,别去找。→ **与 P2-9 同批**,v1.4.0 施工完成后由用户召唤 reviewer(review 后置,已拍板)。
 
 ### 🔵 P3 · 功能挂账
 
-- **[P3-11] 打法 × 论点双维归因(原 v1.2.1-D)**。施工图全文在 `archive/v1.2_v1.2.1_施工图_20260728归档.md` 的 v1.2.1-D 节:决策日志 via `position_id` 与 FIFO RoundTrip 按 `(ts_code, buy_date)` 邻近匹配,按论点 / 打法 / 交叉三维聚合胜率盈亏比 + 呼吸 T 净贡献 + 「无决策日志开仓 N 笔」纪律项。**为什么要紧**:「短线追击 vs 呼吸试验」双打法 A/B 裁决的**唯一归因载体**;需 30–50 笔样本才有意义。⚠ 依赖 P0-1 修好(买入日错 → 归因的持有周期全错)。**归 v1.4+。**
-- **[P3-12] 挂单未成交追踪没有出口**。服务端 v1.3-④ 已上线、`decision_pending_track` 自 2026-07-27 起在攒数据,但 **API 未暴露任何端点**(`app.py` 全仓无 `pending_track` 命中),客户端自然无处可看。**怎么修**:定端点(`GET /decisions/{id}/track` 或并入 `GET /decisions`,§五「v1.3 客户端契约清单」已占位)+ 客户端决策卡展示 N 日走势。**归 v1.4。**
-- **[P3-13] 问询记录不落库**。`POST /inquiry` 只返回不持久化(`llm_judgments` 只由报告管线写),问询台无历史、回答无法留档、无法与决策日志关联做归因(用户 2026-07-27 提过)。**怎么修**:新建会话表(问题 / 材料 / 回答 / `evidence` / `search_hits` / 时间戳 / 可选 `ts_code`、`position_id`),客户端加历史列表。**归 v1.4。**
-- **[P3-14] 客户端 Swift 小瑕疵(等 iOS 装机一起做)**:① `InquiryVerdict.rejectRaw/passRaw`(`client/Models.swift:898-899`)自 v1.3.3 二值裁决退役后**已成死码**(只剩单测在引用),清理时连带改 `AppModelTests`;② 「已分析·有风险提示」显示为中性色,应为**警示色**。**归 v1.4 客户端块。**
+- **[P3-11] 打法 × 论点双维归因(原 v1.2.1-D)**。施工图全文在 `archive/v1.2_v1.2.1_施工图_20260728归档.md` 的 v1.2.1-D 节:决策日志 via `position_id` 与 FIFO RoundTrip 按 `(ts_code, buy_date)` 邻近匹配,按论点 / 打法 / 交叉三维聚合胜率盈亏比 + 呼吸 T 净贡献 + 「无决策日志开仓 N 笔」纪律项。**为什么要紧**:「短线追击 vs 呼吸试验」双打法 A/B 裁决的**唯一归因载体**;需 30–50 笔样本才有意义。⚠ 依赖 P0-1 修好(买入日错 → 归因的持有周期全错;P0-1 → v1.4.0 ①-A)。**归因维度自 v1.4.0 ⑤-B 起 +1**(`decision_log.max_chase_pct` 最高追价上限;v1.4 只落数据不出报表)。**本条仍归 v1.4+**(需 30–50 笔样本)。
+- **[P3-12] 挂单未成交追踪没有出口**。服务端 v1.3-④ 已上线、`decision_pending_track` 自 2026-07-27 起在攒数据,但 **API 未暴露任何端点**(`app.py` 全仓无 `pending_track` 命中),客户端自然无处可看。**怎么修**:定端点(`GET /decisions/{id}/track` 或并入 `GET /decisions`,§五「v1.3 客户端契约清单」已占位)+ 客户端决策卡展示 N 日走势。→ **v1.4.0 第 ⑦ 块(⑦-A)**,端点定为 `GET /decisions/{id}/track`,404 reason `not_found` 客户端必须加 case。
+- **[P3-13] 问询记录不落库**。`POST /inquiry` 只返回不持久化(`llm_judgments` 只由报告管线写),问询台无历史、回答无法留档、无法与决策日志关联做归因(用户 2026-07-27 提过)。**怎么修**:新建会话表(问题 / 材料 / 回答 / `evidence` / `search_hits` / 时间戳 / 可选 `ts_code`、`position_id`),客户端加历史列表。→ **v1.4.0 第 ⑦ 块(⑦-B)**,表名定为 `inquiry_log`(**与 `inquiry_pool` 是两件事,不许混用**)。
+- **[P3-14] 客户端 Swift 小瑕疵(等 iOS 装机一起做)**:① `InquiryVerdict.rejectRaw/passRaw`(`client/Models.swift:898-899`)自 v1.3.3 二值裁决退役后**已成死码**(只剩单测在引用),清理时连带改 `AppModelTests`;② 「已分析·有风险提示」显示为中性色,应为**警示色**。→ **v1.4.0 第 ⑦ 块(⑦-C)**,与第 ⑧ 块客户端同批做(不必等 iOS 装机)。
 - **[P3-15] iOS 装机(用户自理)**。未装 → iOS 上**盘前 / 熔断 / 派发警报推送、两档 D 徽标、费用录入与离场原因(熔断判定的输入)全部不可用**;macOS 现装的是 v1.3.4 构建。**归 用户操作(见 §八 精神,非网页操作)。**
 
 ### ⚪ P4 · 运维 / 历史局限(留档为主)
 
-- **[P4-16] `neckline-report.service` 的 `MemoryMax=800M` 对 v1.3 新管线偏紧**(`deploy/neckline-report.service:23`)。2026-07-27 补跑时峰值顶满、5206 次页缓存回收,**`oom_kill=0`** —— 撞的是页缓存不是真内存,没崩。**怎么修**:v1.4 部署时视情抬到 1G,抬之前先算总账(机器仅 1.6G,还有常驻 `neckline.service` 的 `MemoryHigh=420M/Max=600M` 与 `neckline-daily` 的 900M)。
+- **[P4-16] `neckline-report.service` 的 `MemoryMax=800M` 对 v1.3 新管线偏紧**(`deploy/neckline-report.service:23`)。2026-07-27 补跑时峰值顶满、5206 次页缓存回收,**`oom_kill=0`** —— 撞的是页缓存不是真内存,没崩。**怎么修**:v1.4 部署时视情抬到 1G,抬之前先算总账(机器仅 1.6G,还有常驻 `neckline.service` 的 `MemoryHigh=420M/Max=600M` 与 `neckline-daily` 的 900M)。→ **v1.4.0 第 ⑨ 块(⑨-F)** 实测峰值后定(⑥-B 若选并发路会抬峰值);抬没抬都要写理由。
 - **[P4-17] 历史局限:早期审判的消息面无搜索支撑(不补跑,如实留档)**。生产 `llm_judgments` **20260721/22/23 三天 10/10 空命中** → 那 **25 条非降级审判结论的消息面部分实质是模型凭训练数据作答**;20260717/0720 为 10/10 `degraded`(当时无 key);20260721 另有 5 条因 25s ReadTimeout 降级。**20260724 起命中恢复满额,自那天起的审判才算有搜索支撑**——事后审计「当时为何否决」必须先看这条时间线。**并入原「GLM 顶层 `web_search` 空数组待查」**:真因仍未完全解释(逐字节相同的 payload 两天行为相反 = 供应商侧漂移),v1.3.4 的 0 命中埋点 + 四处露出已上线,可持续观察,不主动追。
 - **[P4-18] Bark 通道从未活体验证**(payload 依官方文档实现,无真实 `BARK_URL`)。APNs 为主推通道,**不阻塞**;真要用,先手动跑一次 `BarkChannel(url).send(...)` 验协议。
 - **[P4-19] 周复盘从未跑过用户真实券商交割单**。4D 对账引擎只用合成 xlsx 冒烟过;**2026-08-02 那个周末是第一次**,可能暴露两家券商原始格式的解析问题(`review_col_map` 可配映射 + `_detect_format` 的坑见项目 `CLAUDE.md` 阶段 4D 节)。首跑时留意「缺列 vs 缺该格」的区分是否真生效。
-- **[P4-20] TuShare 600 元档配额跨线共享,可被跑干**。策略线 2026-07-25 曾把配额耗尽 → 生产 16:05 增量可能拉不全 → 16:35 报告 / 情报件缺数。**缓解**:研究侧大批量拉取避开 15:00–17:00 生产增量窗口,长期考虑研究独立 token。**⚠ P0-3 若加概念板块日更会新增一笔固定消耗,一并算账。**
-- **[P4-21] 工作区遗留未提交**:`client/Neckline.xcodeproj/project.pbxproj`(Xcode 自动改的 `MARKETING_VERSION`)。下次客户端施工时一并处理,别单独开提交。
+- **[P4-20] TuShare 600 元档配额跨线共享,可被跑干**。策略线 2026-07-25 曾把配额耗尽 → 生产 16:05 增量可能拉不全 → 16:35 报告 / 情报件缺数。**缓解**:研究侧大批量拉取避开 15:00–17:00 生产增量窗口,长期考虑研究独立 token。**⚠ P0-3 若加概念板块日更会新增一笔固定消耗,一并算账。** → 该日更已定于 **v1.4.0 ①-C**,配额账在 **⑨-E** 复核。
+- **[P4-21] 工作区遗留未提交**:`client/Neckline.xcodeproj/project.pbxproj`(Xcode 自动改的 `MARKETING_VERSION`)。→ **v1.4.0 第 ⑧ 块**客户端施工时一并处理,别单独开提交。
 
-### 📌 认知对齐(v1.4 立项前必读,不许凭字面推断)
+### 📌 认知对齐(不许凭字面推断)
 
-- **[📌-22] 「K4 作为现行策略」存在理解差,已被用户拍板推后**。用户 2026-07-27 说「K4 是肯定要放到我们的库里去运行的」,**系统线理解为**「把 K4 行 bootstrap 到生产、让 `hard_cut` 真的拦票」(已完成,advisory 在候选安检 + 持仓体检两处生效);**用户本意是让 K4 成为运行中的打法**。**用户 2026-07-28 拍板:v1.4 再完全替换。** **K4 行现状(事实)**:`is_active=0`;`rule["config"]` **逐字段拷自 K1,没有新策略内核**;全部价值在 `rule["k4_advisory"]` 六节(`hard_cut`/`avoid_flag`/`exec_hint`/`circuit_breaker`/`intel_order`/`note`)。**v1.4 立项第一步 = 先厘清「K4 打法」到底指什么**:(a) 激活 K4 行(≈ 激活一份 K1 config,策略行为无变化)?(b) 把 advisory 的 `exec_hint` 也产品化成执行提示?(c) 由策略线另出 K5/K6 新内核?**当面问用户,不要从字面推断。**
+- **[📌-22] ✅ 已裁决(2026-07-28,用户拍板选 (b))→ v1.4.0 全版**。~~「K4 打法」到底指什么,当面问用户~~ → **已问已定**:三选一里 **(b) 把 K4 advisory 产品化**(正选漏斗排序键 + 信息卡 + `exec_hint` 执行提示);**(a) 激活 K4 行**(`rule["config"]` 逐字段拷自 K1,激活 ≈ 激活一份 K1,策略行为无变化)与 **(c) 等策略线新内核**(四战役 + 用户 2026-07-26 终裁底盘暂缓)**均已否决,不再列为选项**。规格权威 = `archive/交接_系统线升级需求_20260725.md` **需求 8**(2026-07-28 策略线裁定)。**K4 行现状(事实,勿再误读)**:`is_active=0`、**永不激活**;全部价值在 `rule["k4_advisory"]` 六节(`hard_cut`/`avoid_flag`/`exec_hint`/`circuit_breaker`/`intel_order`/`note`),v1.4 是**把这六节用足**,不是激活这一行。**保留本条只为防止后人重开这个问题。**
 
 ### ⚫ 长期机制(常态运行,不排期)
 
@@ -533,7 +641,7 @@ Neckline/
 - ✅ **盘前情报包(需求 3)** → v1.3-③ C1/C2/C4 完工上线(复盘情报件 / 板块资金流 / 消息面扫描;`anns_d` 无权限 → 减持走结构化 `stk_holdertrade`,其余三类走 LLM 联网搜索)。
 - ✅ **候选池生成管线改版(需求 5,K1 entry mask 退役)** → v1.3-③-C3 完工上线(四步管线:板块层 → 个股卫生线 → K4 安检 → 情报排序;候选语义改「过完安检、值得花注意力」)。
 - ✅ **问询台选股域漂移** → v1.3-⑤ 完工(复用 `report/watchlist_check.py::discipline_checks`,顺带补上 P4/P5 在问询台从未实现的真实缺口)。
-- ✅ **反向证伪哨兵新条件(K3-B2 副产品:年线下涨停/放量大阳 = 派发)** → 已并入 v1.3-② 持仓管理层作强警示条件。
+- ✅ **反向证伪哨兵新条件(K3-B2 副产品:年线下涨停/放量大阳 = 派发)** → 已并入 v1.3-② 持仓管理层作强警示条件。**⚠ 与 `STRATEGY_LAB.md` §五「[转系统线] 诱多做局反向哨兵」是同一件事**(2026-07-28 planner 逐码核对确认:该条要的「年线下突现放量大阳/涨停 = 疑似派发」= 已上线的 `A3_belowyear_limitup` + `A3b_belowyear_bigvol`〔量比≥2,雷区地图 3-⑤ 口径〕,住 `report/holding_k4_check.py`,持仓侧触发第六类 APNs、候选侧经 `intel_candidates` 安检、问询台复用同一份镜像)——**只补引用,不重复立项**。**残留半边(如实登记,不单独立项)**:自选池侧未覆盖 —— `report/watchlist_check.py` / `WatchlistCheckOut` 里没有任何 K4 判据,故自选票不会得到派发警示。**处置**:留档观察;若日后有块动 `watchlist_check.py`,顺带复用同一份镜像补上即可,**不为它单开版本**。
 - ✅ **K2 / K3 策略研究** → 中心命题均被否决并归档;权威全文与判决在 `STRATEGY_LAB.md`(策略线),施工图全文在 `archive/`。
 
 ---
@@ -556,6 +664,8 @@ Neckline/
 8. **(接班,阶段 4 部署上线后)确认 LinoN 退役**:Neckline 联调通过、`ln.linotsai.top` 切到 Neckline 后,LinoN 停用退役——旧交易记录 `linon.db` 是否归档下载由用户定(`hz_info.md §13` 挂账)。
 9. **(v1.1,按需)提供同花顺自选 txt**:自选池与同花顺 PC 端对账 = 用户在**同花顺 PC 端手动导出自选 txt 文件**(无官方 API,拒绝模拟登录 = 账号风险)→ 拖进 macOS App 自选工作台做差异对账 + 一键对齐;反向可从 App 导出 Neckline 自选为同花顺可导入 txt。**非每日必办,按需对账时才做**(§五 v1.1-C.4 / v1.1-F.4)。
 10. **(v1.1)设置屏开新增两类推送开关**:盘前校准(9:26 汇总)、D5 时间退出——App 设置屏可各自开 / 关(默认开),无网页操作。
+11. **🔴(v1.4.0,挡 ①-A 收尾)提供 3 笔在持仓票的真实买入日**。生产 `positions` 里 3 笔 `open` 持仓是 2026-07-27 补录的,买入日**被写成了补录当天**(§七 P0-1)。请按票给出**真实成交日期**(格式 `YYYYMMDD`,须是交易日),例:`002036.SZ = 20260716`。**为什么非你不可**:系统没有任何数据能反推真实买入日(交割单要到周复盘才进系统),而 D 计数 / 时间退出 D5-D15 判向 / 回落止盈峰值起点 / 持有天数归因**全部以它为起点**。收到后由 builder 走 `scripts/oneoff/fix_position_buy_dates.py`(先 `sqlite3 .backup`,改完清 `holding_eod_check.time_exit_locked_*` 三列让次日 16:35 重新定格)。**无网页操作,发数字即可。**
+12. **(v1.4.0,用户自理,不挡任何块)iOS 装机**。iOS 从未装过 v1.3 系列构建 → 盘前校准 / 熔断 / K4 派发警报三类推送、两档 D 徽标、费用录入与离场原因在 iPhone 上全不可用(§七 P3-15)。v1.4.0 的信息卡页、候选排序理由、决策日志第⑨项同样只在装了新构建的设备上可见。**Xcode 直连真机安装,无网页操作**;§八 第 5 项的 App ID + Push 能力若尚未在 Apple Developer 网页勾选,装机前先办掉。
 
 ---
 
@@ -563,6 +673,7 @@ Neckline/
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-07-28 · **v1.4.0 立项**(施工图九块就位待 builder)· K4 打法产品化〔方案 b〕= P0 三洞地基 + 行业强度单一源 + 正选漏斗排序键 + 信息卡考卷同构 + exec_hint 与追价上限 + 判定精度 + 功能补全 + 双端 + 部署;v1.3 施工图归档 `archive/v1.3_施工图_20260728归档.md`(@planner,只改文档,零代码改动)
 - 2026-07-28 · 档案室搬家:PLAN 瘦身(§四快照制 / §五旧+§五附归档 / §九一行制)+ CLAUDE.md 修剪 + scripts/oneoff 归位 + 记录纪律立规(纯文档与文件移动,零代码逻辑改动)
 - 2026-07-28 · 会话交接:§七 Backlog 重整 + §四 交接条目(@planner,只改本文件,零代码改动)
 - 2026-07-28 · v1.3.5 报告管线抗毁快修 + 2026-07-27 报告补跑(@builder-pro + 用户授权,未回滚)
