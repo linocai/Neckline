@@ -270,23 +270,32 @@ CREATE TABLE IF NOT EXISTS retreat_metrics (
     PRIMARY KEY (trade_date, hhmm)
 );
 
--- v1.2-B 预注册决策日志(plan §五 v1.2-B,§2.1 第 3 条人机协作配套)。下单前录八项,
--- 时间戳先于成交防结果污染;**审计件、非下单件**——本表任何写入路径(见
--- `neckline.decision_log`)绝无下单/撤单/拉行情副作用。
+-- v1.2-B 预注册决策日志(plan §五 v1.2-B,§2.1 第 3 条人机协作配套)。下单前录八项
+-- (v1.4-⑤-B 起加第⑨项,见下),时间戳先于成交防结果污染;**审计件、非下单件**——
+-- 本表任何写入路径(见 `neckline.decision_log`)绝无下单/撤单/拉行情副作用。
 -- created_at:**服务端生成**,任何调用方(含 API 入参)都不能覆盖,杜绝预注册时间
 -- 被伪造。八项预注册字段:why_buy①/why_entry_price②/target_price③/exit_low+
 -- exit_high④/thesis_tags⑤(枚举码 JSON 数组)/invalidation⑥/contingency_scenarios⑦
 -- (情景树 JSON 数组,每项 {scenario,trigger,action,matched};scenario/trigger/action
 -- 是不可编辑预注册内容,matched 是唯一可事后翻的结果标记,专用端点
 -- `set_scenario_outcomes` 才能碰)/playbook_tag⑧(单选枚举码)。
--- **不可编辑口径**:①-⑥ + ⑦的 scenario/trigger/action + ⑧ 全表无任何 UPDATE 语句
--- 触碰这些列(见 `neckline.decision_log` 模块注释逐一核对);改动只能
--- `revise_decision` 新增一行,`revision_of` 落**链根** id(该行若自身是修订行则取其
--- `revision_of`,否则该行本身即链根)——归因永远 `WHERE revision_of IS NULL` 取首版,
--- 或 `WHERE revision_of=<根id>` 一步取全部修订,无需递归遍历链条。
+-- **不可编辑口径**:①-⑥ + ⑦的 scenario/trigger/action + ⑧ + ⑨(max_chase_pct)全表
+-- 无任何 UPDATE 语句触碰这些列(见 `neckline.decision_log` 模块注释逐一核对);改动
+-- 只能 `revise_decision` 新增一行,`revision_of` 落**链根** id(该行若自身是修订行则
+-- 取其 `revision_of`,否则该行本身即链根)——归因永远 `WHERE revision_of IS NULL`
+-- 取首版,或 `WHERE revision_of=<根id>` 一步取全部修订,无需递归遍历链条。
 -- status:pending(预注册待决)/filled(成交后经 link 关联)/cancelled(用户放弃)/
 -- expired(v1.3-④ 挂单追踪 N 交易日到期自动置,见 `report/pending_track.py`)。position_id:成交后经
 -- `link_decision` 回填,关联 `positions.id`(无 SQL 级 FK 约束,同本库其它表惯例)。
+-- planned_price/planned_qty:"我打算挂多少价/多少股"(v1.2-B 起既有,一直可选)。
+-- max_chase_pct(v1.4-⑤-B,需求 2 补充,⑨,幂等迁移列见 `_COLUMN_MIGRATIONS`,**不在
+-- 本 CREATE TABLE 里**——同本库既有惯例,新增列一律只登记进 `_COLUMN_MIGRATIONS`,
+-- 靠 `_migrate_columns` 幂等 `ALTER TABLE` 补齐,新库/老库同一条路径):"开盘冲多高
+-- 我就放弃、盘中不追补"——**与 planned_price 是两件事,不许合并**,相对昨收百分比
+-- (如 3.0=+3%,不是小数 0.03),允许负值(只在低开时买),NULL=用户显式选择"不设
+-- 上限"。API 层要求**必须显式传该键**(即便值是 null)才能创建/修订决策日志——见
+-- `api/app.py::_extract_max_chase_pct_or_400`;本表/领域层 `neckline.decision_log`
+-- 对 Python 直调方(CLI/单测)保留 `None` 默认,不强制,前向兼容既有调用点。
 CREATE TABLE IF NOT EXISTS decision_log (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     ts_code                 TEXT NOT NULL,
@@ -530,6 +539,12 @@ _COLUMN_MIGRATIONS = [
     # **随报告冻住**,不在读时重算——读三天前的报告该看到当时的新鲜度,不是今天的。
     # 老报告行幂等补列取默认 '{}'(= 该版本还没有新鲜度概念,**不是**「新鲜」)。
     ("reports", "data_freshness_json", "TEXT NOT NULL DEFAULT '{}'"),
+    # v1.4-⑤-B(需求 2 补充):决策日志第⑨项「最高追价上限」,相对昨收百分比(如
+    # 3.0=+3%,允许负值)。**可空、不给默认值**——老行(建于本列之前)是 NULL,与"用户
+    # 显式选择不设上限"在存储层无法区分(两者都是 NULL),但那是历史行的固有模糊,不
+    # 影响新行起的强制语义(API 层要求新建/修订时必须显式传该键,见
+    # `api/app.py::_extract_max_chase_pct_or_400`)。见 CREATE TABLE decision_log 注释。
+    ("decision_log", "max_chase_pct", "REAL"),
 ]
 
 

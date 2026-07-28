@@ -539,6 +539,25 @@ def test_sort_key_reads_only_whitelisted_inputs_not_sector_flow(isolated_env):
     assert e.accessed == ic._SORT_KEY_INPUTS         # 且五键确实全部被用到(非摆设)
 
 
+def test_sort_key_does_not_read_exec_hint_related_inputs(isolated_env):
+    """v1.4-⑤ exec_hint 产品化交接要求的锁:exec_hint 相关量(温和带/执行提示本身/
+    追价上限/计划挂单价——它们未经方向审计,只进候选卡/信息卡展示,见
+    `report/exec_hint.py` 模块头)即便出现在同一个 entry 结构里,也绝不能被
+    `_sort_key` 读取。复用 ③-C 白名单单测模式(`_KeyTrackingDict`/`_entry`),只是
+    这次额外摆上 exec_hint 相关的 extra 键。"""
+    e = _KeyTrackingDict(_entry(
+        "600000.SH", industry_rank=2, industry_persist_days=1, yellow_card_count=0, base_score=5.0,
+        mild_band=True, exec_hints=[{"code": "C1_strong_market_order", "text": "x", "source": "db"}],
+        max_chase_pct=-1.0, planned_price=9.0,
+    ))
+    ic._sort_key(e)
+    assert "mild_band" not in e.accessed
+    assert "exec_hints" not in e.accessed
+    assert "max_chase_pct" not in e.accessed
+    assert "planned_price" not in e.accessed
+    assert e.accessed == ic._SORT_KEY_INPUTS   # 仍然只读白名单五键,一个不多一个不少
+
+
 def test_sort_key_three_level_priority(isolated_env):
     """③-A 三级排序键优先级:industry_rank ASC 优先于 industry_persist_days ASC 优先于
     yellow_card_count ASC;base_score DESC / code ASC 只在前三者全部并列时才生效(确定性

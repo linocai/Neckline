@@ -1,20 +1,31 @@
 """预注册决策日志(plan §五 v1.2-B,§2.1 第 3 条人机协作配套)存取 + CRUD。
 
 下单前录八项(为什么买 / 为什么这个入场价 / 目标价 / 离场价格区间 / 论点标签 /
-证伪条件 / 应对方案·情景树 / 打法标签),时间戳先于成交防结果污染。**审计件、
-非下单件**——本模块任何函数都不触发下单 / 撤单 / 拉行情,只做记账(§3.8 铁律,
-同 `neckline.sentinel.positions`/`neckline.watchlist` 姿势)。
+证伪条件 / 应对方案·情景树 / 打法标签),**v1.4-⑤-B(需求 2 补充)起加第⑨项「最高
+追价上限」`max_chase_pct`**(相对昨收百分比,如 `3.0`=+3%;允许负值=只在低开时买;
+`None`=显式选择"不设上限")。时间戳先于成交防结果污染。**审计件、非下单件**——
+本模块任何函数都不触发下单 / 撤单 / 拉行情,只做记账(§3.8 铁律,同
+`neckline.sentinel.positions`/`neckline.watchlist` 姿势)。
 
 **不可编辑口径(核心不变量,逐条对应表结构注释)**:
     · ①-⑥(`why_buy`/`why_entry_price`/`target_price`/`exit_low`/`exit_high`/
       `thesis_tags`/`invalidation`)+ ⑦ 情景树的 `scenario`/`trigger`/`action` +
-      ⑧(`playbook_tag`)—— 本模块**无任何 UPDATE 语句触碰这些列**。改动只能走
-      `revise_decision` 新增一行(`revision_of` 落链根 id),旧行原地不变。
+      ⑧(`playbook_tag`)+ ⑨(`max_chase_pct`)—— 本模块**无任何 UPDATE 语句触碰
+      这些列**。改动只能走 `revise_decision` 新增一行(`revision_of` 落链根 id),
+      旧行原地不变。
     · 唯一例外 = ⑦ 情景树的 `matched`(事后结果标记,非预注册内容)——只能经
       `set_scenario_outcomes` 翻,该函数的 UPDATE 只碰 `contingency_scenarios` +
       `updated_at` 两列,绝不改 `scenario`/`trigger`/`action`。
-    · `status`/`position_id` 是审计结果关联字段(非八项之一),`link_decision`/
+    · `status`/`position_id` 是审计结果关联字段(非九项之一),`link_decision`/
       `cancel_decision` 可以改它们。
+
+**⑨ `max_chase_pct` 与 `planned_price` 语义分离(v1.4-⑤-B,不许合并)**:
+`planned_price` 是"我打算挂多少价"(v1.2-B 起既有,一直可选,无强制语义);
+`max_chase_pct` 是"开盘冲多高我就放弃该票、盘中不追补"(v1.4-⑤-B 新增)——两者
+描述交易计划里两个不同的决策点(挂单价 vs 追价上限),**并存不互相推导**,一个
+有值不代表另一个也该有值。本模块层面(领域函数默认 `None`,不强制、不校验两者
+关系)与 HTTP 层面(`api/app.py`/`api/schemas.py` 的必填校验只管 `max_chase_pct`
+键是否显式传,不管 `planned_price`)各自独立处理,不做任何交叉推断/覆盖。
 
 **`created_at` 服务端生成**:本模块所有创建函数(`create_decision`/
 `revise_decision`)签名里根本没有 `created_at` 形参——杜绝调用方(含 API 入参)
@@ -52,7 +63,8 @@ SCENARIO_ACTION_CODES = ("BUY", "HOLD", "REDUCE", "ABANDON")
 _SELECT_COLS = (
     "id, ts_code, name, created_at, why_buy, why_entry_price, target_price, "
     "exit_low, exit_high, thesis_tags, invalidation, contingency_scenarios, "
-    "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at"
+    "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at, "
+    "max_chase_pct"
 )
 
 
@@ -82,6 +94,10 @@ class DecisionRow:
     position_id: Optional[int] = None
     revision_of: Optional[int] = None
     updated_at: str = ""
+    # v1.4-⑤-B(需求 2 补充):⑨最高追价上限,相对昨收百分比(如 3.0=+3%);允许负值
+    # (只在低开时买);None=显式选择"不设上限"或(老行)建于本字段前——两种情况在
+    # 存储层无法区分,见 `db.py` CREATE TABLE decision_log 注释。
+    max_chase_pct: Optional[float] = None
 
 
 def _now() -> str:
@@ -131,6 +147,7 @@ def _row_to_decision(row) -> DecisionRow:
         contingency_scenarios=_loads(row[11], []),
         playbook_tag=row[12], planned_price=row[13], planned_qty=row[14],
         status=row[15], position_id=row[16], revision_of=row[17], updated_at=row[18],
+        max_chase_pct=row[19],
     )
 
 
@@ -200,11 +217,17 @@ def create_decision(
     exit_high: Optional[float] = None,
     planned_price: Optional[float] = None,
     planned_qty: Optional[int] = None,
+    max_chase_pct: Optional[float] = None,
     db_path: Optional[Path] = None,
 ) -> DecisionRow:
-    """预注册一条决策日志(八项,plan B.1/B.2)。`created_at` 服务端生成——本函数
-    签名本就无 `created_at` 形参,任何调用方都无法覆盖。新行 `status="pending"`、
+    """预注册一条决策日志(九项,plan B.1/B.2 + v1.4-⑤-B)。`created_at` 服务端生成——
+    本函数签名本就无 `created_at` 形参,任何调用方都无法覆盖。新行 `status="pending"`、
     `position_id=None`、`revision_of=None`(首版)。
+
+    `max_chase_pct`(⑨,v1.4-⑤-B):**本层默认 `None`,不强制、不校验**——"必须显式
+    选择"的纪律是 HTTP 契约层面的要求(`api/app.py::_extract_max_chase_pct_or_400`
+    探测 JSON 请求体是否显式带这个键),不是本函数的职责,CLI/单测等直调方照旧可以
+    不传(等同"未设上限",与"显式选择不设上限"在本层无法也无需区分)。
 
     **`ts_code` 在写入通道归一(v1.3.3,与 `sentinel/positions.py::open_position` 同批
     修复)**:`POST /decisions` 透传客户端 `body.code`,裸 6 位会以裸码入库;而
@@ -221,13 +244,14 @@ def create_decision(
             "INSERT INTO decision_log ("
             "ts_code, name, created_at, why_buy, why_entry_price, target_price, "
             "exit_low, exit_high, thesis_tags, invalidation, contingency_scenarios, "
-            "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at, "
+            "max_chase_pct"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ts_code, name, now, why_buy, why_entry_price, target_price,
                 exit_low, exit_high, json.dumps(list(thesis_tags), ensure_ascii=False), invalidation,
                 json.dumps(scenarios, ensure_ascii=False), playbook_tag, planned_price, planned_qty,
-                STATUS_PENDING, None, None, now,
+                STATUS_PENDING, None, None, now, max_chase_pct,
             ),
         )
         new_id = int(cur.lastrowid)
@@ -290,12 +314,15 @@ def revise_decision(
     exit_high: Optional[float] = None,
     planned_price: Optional[float] = None,
     planned_qty: Optional[int] = None,
+    max_chase_pct: Optional[float] = None,
     db_path: Optional[Path] = None,
 ) -> Optional[DecisionRow]:
-    """新增一行修订(plan B.2「改动只新增修订行,不改旧行」)。`decision_id` 对应的
-    旧行**原地不变**(本函数无任何 UPDATE 作用于它);新行 `ts_code`/`name` 继承自
-    `decision_id` 行(修订不能换股票),`revision_of` = **链根** id(见模块头注释),
-    `status` 重置为 `pending`。`decision_id` 不存在 → None(API 层据此 404)。"""
+    """新增一行修订(plan B.2「改动只新增修订行,不改旧行」,v1.4-⑤-B 起九项全量
+    重录)。`decision_id` 对应的旧行**原地不变**(本函数无任何 UPDATE 作用于它);
+    新行 `ts_code`/`name` 继承自 `decision_id` 行(修订不能换股票),`revision_of` =
+    **链根** id(见模块头注释),`status` 重置为 `pending`。`max_chase_pct` 同
+    `create_decision`:本层默认 `None`,"必须显式选择"是 HTTP 契约层职责,不在此
+    校验。`decision_id` 不存在 → None(API 层据此 404)。"""
     base = get_decision(decision_id, db_path=db_path)
     if base is None:
         return None
@@ -307,13 +334,14 @@ def revise_decision(
             "INSERT INTO decision_log ("
             "ts_code, name, created_at, why_buy, why_entry_price, target_price, "
             "exit_low, exit_high, thesis_tags, invalidation, contingency_scenarios, "
-            "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at, "
+            "max_chase_pct"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 base.ts_code, base.name, now, why_buy, why_entry_price, target_price,
                 exit_low, exit_high, json.dumps(list(thesis_tags), ensure_ascii=False), invalidation,
                 json.dumps(scenarios, ensure_ascii=False), playbook_tag, planned_price, planned_qty,
-                STATUS_PENDING, None, root_id, now,
+                STATUS_PENDING, None, root_id, now, max_chase_pct,
             ),
         )
         new_id = int(cur.lastrowid)

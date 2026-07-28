@@ -173,6 +173,18 @@
   安全——会静默读到真实项目 `data/neckline.db`(`info_card.describe_hits` 一测就踩过,
   查回真实生产 K4 分区,断言全错但不报错、极具迷惑性)。
 
+## 决策日志「必填但可 null」+ 报告时点查表防前视(v1.4-⑤ 定案)
+
+- **pydantic v2 区分「键缺失」vs「显式 null」用 `body.model_fields_set`**,不要用
+  `body.field is None` 判——两者在默认值机制下无法区分。落地见
+  `decision_log.max_chase_pct`:`api/app.py::_extract_max_chase_pct_or_400` 查
+  `"maxChasePct" not in body.model_fields_set` 才 400,显式传 `null` 放行。
+- **报告生成期(`pipeline.py::build_report`)里查任何非 EOD 面板的表**(如
+  `decision_log`)**都要按 `trade_date` 截断**(`list_decisions(date_to=...)`),
+  否则历史回放会读到该历史日之后才写入的数据,是真前视偏差不是展示层细节——
+  `exec_hint._latest_decision` 是反例修复过的正确姿势,新增类似"查某表找关联记录"
+  的 attach 函数照此办理。
+
 ## 双会话架构(2026-07-25 起,冷启动必读)
 
 - **本项目双权威文件、双会话分工**:系统线(APP 建设办公室,v 字头版本)权威 =

@@ -47,6 +47,7 @@ from neckline.report.sectors import (
 )
 from neckline.report.holding_k4_check import HoldingK4Item, build_holding_k4_check
 from neckline.report.industry_strength import compute_industry_strength, load_industry_map
+from neckline.report.exec_hint import attach_exec_hints
 from neckline.report.info_card import attach_info_card_summaries
 from neckline.report.sector_moneyflow import (
     SectorMoneyflowReport,
@@ -305,6 +306,16 @@ def build_report(
         )
     except Exception:  # noqa: BLE001 —— 信息卡摘要异常不得连带主报告失败
         logger.warning("信息卡摘要(v1.4-④)计算异常,候选照出,本次无摘要", exc_info=True)
+
+    # v1.4-⑤-A 执行提示(exec_hint,需求 8 末段):给当日候选原地补 `Candidate.exec_hints`。
+    # 零额外 parquet 读取(C1/C2/C4 直接读 `candidate.raw`,C3 按 ts_code 点查
+    # `decision_log`)。**不阻断主报告管线**(同 C1/C2/C4/信息卡摘要保险丝惯例,§硬要求④/
+    # 项目 CLAUDE.md「核心管线对可选情报输入的调用必须包保险丝」)——异常时候选照出,只是
+    # 这批候选当次没有执行提示(`exec_hints` 维持候选构造时的默认空列表)。
+    try:
+        attach_exec_hints(candidates, trade_date, db_path=db_path)
+    except Exception:  # noqa: BLE001 —— 执行提示异常不得连带主报告失败
+        logger.warning("执行提示(v1.4-⑤-A)计算异常,候选照出,本次无执行提示", exc_info=True)
 
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     markdown = render_markdown(

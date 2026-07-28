@@ -412,3 +412,34 @@ def test_report_candidate_info_card_none_for_old_snapshot(client, AUTH, api_env)
     _seed_report(api_env.db_path, date(2026, 7, 17))
     body = client.get("/api/v1/report/latest", headers=AUTH).json()
     assert body["candidates"][0]["infoCard"] is None
+
+
+# —— v1.4-⑤-A `CandidateOut.execHints`(执行提示)——————————————————————————————
+
+def test_report_candidate_carries_exec_hints(client, AUTH, api_env):
+    """`Candidate.exec_hints` 存档 → `CandidateOut.execHints` 往返不丢字段,多条
+    保序。"""
+    c = _candidate(1, "600001.SH", "示例甲")
+    c["exec_hints"] = [
+        {"code": "C1_strong_market_order", "text": "强票挂低单会漏掉起飞的", "source": "db"},
+        {"code": "C4_no_pullback_bigred_mechanical", "text": "回调大红机械层不做", "source": "fallback"},
+    ]
+    report_store.save_report(
+        date(2026, 7, 28), strategy_version="v1.4.0",
+        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
+        markdown="# 报告", db_path=api_env.db_path,
+    )
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    hints = body["candidates"][0]["execHints"]
+    assert len(hints) == 2
+    assert hints[0] == {"code": "C1_strong_market_order", "text": "强票挂低单会漏掉起飞的", "source": "db"}
+    assert hints[1]["source"] == "fallback"
+
+
+def test_report_candidate_exec_hints_defaults_empty_for_old_snapshot(client, AUTH, api_env):
+    """老报告(`candidates_json` 里没有 `exec_hints` 键)→ `execHints=[]`(空列表是
+    "无命中"的天然合法态,与 `infoCard` 用 `None` 的理由不同——同 `k4Flags`/
+    `intelRank` 的"缺键即默认空"惯例,不是"确认查过没数据"意义上的空)。"""
+    _seed_report(api_env.db_path, date(2026, 7, 17))
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    assert body["candidates"][0]["execHints"] == []

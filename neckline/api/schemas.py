@@ -132,6 +132,15 @@ class InfoCardSummaryOut(BaseModel):
     topList: InfoCardTopListOut = Field(default_factory=InfoCardTopListOut)
 
 
+class ExecHintOut(BaseModel):
+    """执行提示单条(plan §五 v1.4-⑤-A,需求 8 末段)。**语义红线**:回答"如果你决定
+    动手,怎么执行更不吃亏",不是"该不该买"——`text` 原样透传 DB `k4_advisory.exec_hint`
+    文字(或缺读时的模块兜底),客户端不改写、不加"建议"字样。"""
+    code: str              # advisory 码(C1_strong_market_order 等四选一)
+    text: str              # 展示文字(DB 原文 或 缺读兜底)
+    source: str            # db | fallback ——文字来源,供诚实展示
+
+
 class CandidateOut(BaseModel):
     rank: int
     code: str
@@ -159,6 +168,9 @@ class CandidateOut(BaseModel):
     # "确认无内容"**——客户端按"该信息暂不可用"处理,不是"已查证为空"。完整信息卡
     # (60日K线/RS线/行业分歧线)另走 `GET /report/{date}/info-card/{code}`。
     infoCard: Optional[InfoCardSummaryOut] = None
+    # v1.4-⑤-A:执行提示(读 DB `k4_advisory.exec_hint`,展示标题统一「执行提示」,不叫
+    # 「买入建议」)。0~4 条,老报告快照(建于本字段前)读回默认空列表(前向兼容)。
+    execHints: List[ExecHintOut] = Field(default_factory=list)
     llmJudgment: Optional[LLMJudgmentOut] = None              # 仅前 10 只有
 
 
@@ -618,14 +630,25 @@ class DecisionCreateIn(BaseModel):
     playbookTag: Literal["SWING_CHASE", "BREATHING_TRIAL"]
     plannedPrice: Optional[float] = None
     plannedQty: Optional[int] = None
+    # v1.4-⑤-B(需求 2 补充,决策日志第⑨项「最高追价上限」):相对昨收百分比,如
+    # `3.0` = 昨收+3%(**不是小数 0.03**,与 `dist_from_ma250_pct` 等字段的小数惯例不同,
+    # 照 plan 原文口径)。允许负值 = 只在低开时买;`null` = 显式选择"不设上限"。
+    # **⚠ 必须显式传(即便是 null)**——省略该 JSON 键 → `app.py::create_decision` 用
+    # `model_fields_set` 探测键是否存在,缺失时 400 `reason="max_chase_required"`;
+    # 显式 `null` 合法(pydantic 默认值与"未传"在 `model_fields_set` 层面可区分)。
+    # **⚠ 与 `plannedPrice` 不是一回事,不许合并**:`plannedPrice` 是"我打算挂多少价",
+    # `maxChasePct` 是"开盘冲多高我就放弃、盘中不追补"——两者并存,各自独立取值,见
+    # `neckline.decision_log` 模块 docstring「与 planned_price 语义分离」。
+    maxChasePct: Optional[float] = None
     # 注意:有意**不含** `createdAt` 字段——服务端生成,客户端任何同名字段值都会被
     # pydantic 直接忽略(`DecisionCreateIn` 无此字段,压根不会解析进请求体)。
 
 
 class DecisionReviseIn(BaseModel):
-    """`POST /decisions/{id}/revise` 请求体(同八项,不含 code/name——修订不能换
+    """`POST /decisions/{id}/revise` 请求体(同九项,不含 code/name——修订不能换
     股票,新行的 ts_code/name 继承自被修订的原行,见 `neckline.decision_log.
-    revise_decision`)。"""
+    revise_decision`)。`maxChasePct` 必填语义(显式传/可 null,缺键 400)与
+    `DecisionCreateIn` 相同——修订等于重新预注册一整套九项内容,同一份纪律。"""
     whyBuy: str
     whyEntryPrice: str
     targetPrice: Optional[float] = None
@@ -637,6 +660,7 @@ class DecisionReviseIn(BaseModel):
     playbookTag: Literal["SWING_CHASE", "BREATHING_TRIAL"]
     plannedPrice: Optional[float] = None
     plannedQty: Optional[int] = None
+    maxChasePct: Optional[float] = None
 
 
 class DecisionOut(BaseModel):
@@ -655,6 +679,10 @@ class DecisionOut(BaseModel):
     playbookTag: str
     plannedPrice: Optional[float] = None
     plannedQty: Optional[int] = None
+    # v1.4-⑤-B:最高追价上限(相对昨收百分比,如 3.0=+3%)。老行(建于本字段前)读回
+    # `None`——与"用户显式选择不设上限"在存储层无法区分(两者都是 SQL NULL),这是
+    # 迁移引入新必填字段时不可避免的历史模糊,不影响新行起的强制语义。
+    maxChasePct: Optional[float] = None
     status: str                              # pending | filled | cancelled | expired
     positionId: Optional[int] = None
     revisionOf: Optional[int] = None
@@ -817,7 +845,7 @@ class ReviewGetOut(BaseModel):
 __all__ = [
     "OkOut", "LLMJudgmentOut", "PermanentBoardStatusOut", "IntelRankOut",
     "InfoCardSnapshotOut", "InfoCardNewsItemOut", "InfoCardNewsOut", "InfoCardTopListOut",
-    "InfoCardSummaryOut", "CandidateOut",
+    "InfoCardSummaryOut", "ExecHintOut", "CandidateOut",
     "WatchlistCheckLLMOut", "WatchlistCheckOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",

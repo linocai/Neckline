@@ -629,6 +629,75 @@ class TestInfoCardSummaryWiring:
         assert captured["top_list"] is not None
 
 
+class TestExecHintWiring:
+    """v1.4-⑤-A 执行提示接入 `build_report`(硬要求④:整段异常不阻断主报告)。触发
+    条件正确性在 `test_exec_hint.py` 逐项覆盖(纯函数直调,不依赖完整管线);本类只
+    测「接线」+「不阻断」+「落库」。"""
+
+    def test_candidates_carry_exec_hints_field_after_build_report(self, isolated_env, monkeypatch):
+        """默认合成行情(600001.SH 报告日小幅回调 ret_1d≈-1%)不触发任何 exec_hint
+        码——本测试断言的是"字段存在且正确落库为空列表",不是某条具体命中(命中
+        正确性归 test_exec_hint.py)。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        assert cand.exec_hints == []
+
+        loaded = store.load_report(report_date, db_path=isolated_env.db_path)
+        loaded_cand = next(c for c in loaded["candidates"] if c["ts_code"] == "600001.SH")
+        assert loaded_cand["exec_hints"] == []
+
+    def test_exec_hint_exception_does_not_block_main_report(self, isolated_env, monkeypatch):
+        """`attach_exec_hints` 整体异常(保险丝范围外的意外)时,`build_report` 仍必须
+        成功产出报告——候选照出,只是这批候选当次没有执行提示(维持构造时的默认空
+        列表)。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            pipeline_mod, "attach_exec_hints",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        assert cand.exec_hints == []   # 保险丝触发,维持默认空(不是半份脏数据)
+
+    def test_attach_exec_hints_called_with_db_path(self, isolated_env, monkeypatch):
+        """spy 断言 `build_report` 确实调用了 `attach_exec_hints`(而不是被 import
+        遗漏/静默跳过)且携带正确的 `db_path`(C3 需要按 `db_path` 查 decision_log)。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        captured = {}
+        real = pipeline_mod.attach_exec_hints
+
+        def spy(candidates, trade_date, **kw):
+            captured["called"] = True
+            captured["db_path"] = kw.get("db_path")
+            captured["n_candidates"] = len(candidates)
+            return real(candidates, trade_date, **kw)
+
+        monkeypatch.setattr(pipeline_mod, "attach_exec_hints", spy)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert captured.get("called") is True
+        assert captured.get("db_path") == isolated_env.db_path
+        assert captured.get("n_candidates", 0) > 0
+
+
 class TestPendingTrackWiring:
     """v1.3-④ 挂单未成交追踪接入 `build_report`(原 v1.2.1-C 全文,归 v1.3)。偏移量 /
     到期 / ret_from_plan 等字段单测在 `test_pending_track.py`;本类只测「接线」

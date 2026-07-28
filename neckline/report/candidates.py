@@ -72,6 +72,12 @@ class Candidate:
     # 评分路径(`score_candidates`)不设,取默认空 dict——旧候选/未补算时前端按"该信息
     # 暂不可用"处理,不冒充"确认无内容"(§3.8「没有」与「没看」必须能分开)。
     info_card_summary: Dict[str, Any] = field(default_factory=dict)
+    # —— v1.4-⑤-A 执行提示(plan §五 v1.4-⑤-A,需求 8 末段)—————————————————————————
+    # `[{code, text, source:"db"|"fallback"}]`,由 `neckline.report.exec_hint.attach_exec_hints`
+    # 在 `pipeline.py` 里补算(本模块/`intel_candidates.py` 不产它,构造时恒空列表)。
+    # **不进排序键**(见 `intel_candidates._SORT_KEY_INPUTS` 白名单单测)——它是"怎么买
+    # 更不吃亏"的执行提示,不是"该不该买"的方向判断,未经方向审计。
+    exec_hints: List[Dict[str, Any]] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)  # 原始特征行,供 judge.py 组装上下文
 
     def public_dict(self) -> Dict[str, Any]:

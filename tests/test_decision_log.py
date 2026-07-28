@@ -1,9 +1,11 @@
-"""预注册决策日志(八项)存取层单测(plan §五 v1.2-B 验收)。
+"""预注册决策日志(八项 + v1.4-⑤-B 第⑨项)存取层单测(plan §五 v1.2-B 验收)。
 
 覆盖:`created_at` 服务端生成(签名无此形参,物理上不可能被调用方覆盖)、八项
 无 UPDATE 路径(revise 新增行 + 首版原地不变 + revision_of 落链根)、
 scenario-outcome 只翻 matched 不动情景文本、index 越界报错、not-found 语义、
-list 过滤。
+list 过滤;⑨`max_chase_pct`(领域层默认 `None`,不强制——「必须显式选择」是
+`api/app.py` HTTP 契约层职责,不在本层,见 `tests/test_api_decisions.py`)往返 +
+不被 link/cancel/scenario-outcome 触碰 + revise 携带。
 """
 
 from __future__ import annotations
@@ -229,6 +231,52 @@ class TestScenarioOutcome:
         row = _make(isolated_env.db_path, contingency_scenarios=[])
         with pytest.raises(ScenarioIndexError):
             set_scenario_outcomes(row.id, [{"index": 0, "matched": True}], db_path=isolated_env.db_path)
+
+
+class TestMaxChasePct:
+    """v1.4-⑤-B(需求 2 补充)⑨最高追价上限,领域层往返 + 不可编辑 + revise 携带。"""
+
+    def test_defaults_to_none_when_not_passed(self, isolated_env):
+        """领域层未强制——Python 直调方(CLI/其它调用点)不传时默认 `None`,不报错
+        (「必须显式选择」是 HTTP 层职责,见 `test_api_decisions.py`)。"""
+        row = _make(isolated_env.db_path)
+        assert row.max_chase_pct is None
+
+    def test_positive_and_negative_values_round_trip(self, isolated_env):
+        row = _make(isolated_env.db_path, max_chase_pct=3.0)
+        assert row.max_chase_pct == 3.0
+        row2 = _make(isolated_env.db_path, ts_code="600002.SH", max_chase_pct=-1.5)
+        assert row2.max_chase_pct == -1.5
+
+    def test_link_cancel_do_not_touch_max_chase_pct(self, isolated_env):
+        row = _make(isolated_env.db_path, max_chase_pct=2.0)
+        link_decision(row.id, position_id=42, db_path=isolated_env.db_path)
+        after = get_decision(row.id, db_path=isolated_env.db_path)
+        assert after.max_chase_pct == 2.0
+
+    def test_scenario_outcome_does_not_touch_max_chase_pct(self, isolated_env):
+        row = _make(isolated_env.db_path, max_chase_pct=2.0)
+        set_scenario_outcomes(row.id, [{"index": 0, "matched": True}], db_path=isolated_env.db_path)
+        after = get_decision(row.id, db_path=isolated_env.db_path)
+        assert after.max_chase_pct == 2.0
+
+    def test_revise_carries_new_max_chase_pct_original_untouched(self, isolated_env):
+        base = _make(isolated_env.db_path, max_chase_pct=3.0)
+        rev = revise_decision(
+            base.id, why_buy="x", why_entry_price="x", invalidation="x",
+            thesis_tags=[], playbook_tag="SWING_CHASE", max_chase_pct=-0.5,
+            db_path=isolated_env.db_path,
+        )
+        assert rev.max_chase_pct == -0.5
+        original = get_decision(base.id, db_path=isolated_env.db_path)
+        assert original.max_chase_pct == 3.0   # 首版原地不变
+
+    def test_independent_of_planned_price(self, isolated_env):
+        """⑨与 planned_price 语义分离:一个有值不影响另一个,任意组合都合法。"""
+        row = _make(isolated_env.db_path, planned_price=None, max_chase_pct=1.0)
+        assert row.planned_price is None and row.max_chase_pct == 1.0
+        row2 = _make(isolated_env.db_path, ts_code="600002.SH", planned_price=9.0, max_chase_pct=None)
+        assert row2.planned_price == 9.0 and row2.max_chase_pct is None
 
 
 class TestListFilters:

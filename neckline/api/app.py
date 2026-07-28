@@ -48,6 +48,7 @@ from neckline.api.schemas import (
     DecisionsListOut,
     DeviceRegisterIn,
     EntrySuggestionOut,
+    ExecHintOut,
     InfoCardNewsItemOut,
     InfoCardNewsOut,
     InfoCardOut,
@@ -325,6 +326,8 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
         intelRank=IntelRankOut(**(c.get("intel_rank") or {})),
         # v1.4-④-B:信息卡摘要(老报告快照无该键 → None,前向兼容)。
         infoCard=_shape_info_card_summary(c.get("info_card_summary")),
+        # v1.4-⑤-A:执行提示(老报告快照无该键 → 默认空列表,前向兼容)。
+        execHints=[ExecHintOut(**h) for h in (c.get("exec_hints") or [])],
         llmJudgment=llm,
     )
 
@@ -932,22 +935,50 @@ def _shape_decision(row: "decision_log_store.DecisionRow") -> DecisionOut:
             for s in row.contingency_scenarios
         ],
         playbookTag=row.playbook_tag, plannedPrice=row.planned_price, plannedQty=row.planned_qty,
+        maxChasePct=row.max_chase_pct,
         status=row.status, positionId=row.position_id, revisionOf=row.revision_of,
     )
 
 
+# v1.4-⑤-B(需求 2 补充)决策日志第⑨项「最高追价上限」400 reason(**客户端 `mapReason`
+# 必须加 case**,守项目 CLAUDE.md「404/reason 映射」坑)。
+REASON_MAX_CHASE_REQUIRED = "max_chase_required"
+
+
+def _extract_max_chase_pct_or_400(body: "DecisionCreateIn | DecisionReviseIn") -> Optional[float]:
+    """`maxChasePct`(⑨)必须是**主动选择**——要么填数字,要么显式传 `null`(=不设
+    上限)。**省略该 JSON 键**(客户端表单没让用户做选择/老写法)→ 400
+    `reason=max_chase_required`;显式传 `null` 合法,原样放行。
+
+    **用 `model_fields_set` 区分"缺键" vs "显式 null"**:pydantic v2 的
+    `BaseModel.model_fields_set` 是请求体里**实际出现过**的字段名集合——`maxChasePct`
+    字段本身声明了默认值 `None`(供 Python 直调方/旧版契约友好),若只看
+    `body.maxChasePct is None` 无法分辨"用户主动选了不设上限"与"这个键压根没出现在
+    请求体里",必须查 `model_fields_set`(FastAPI 用请求体 JSON 构造该模型时会如实
+    记录哪些键被传入,与字段默认值机制完全独立)。"""
+    if "maxChasePct" not in body.model_fields_set:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"ok": False, "reason": REASON_MAX_CHASE_REQUIRED},
+        )
+    return body.maxChasePct
+
+
 @app.post(f"{API_PREFIX}/decisions", dependencies=[Depends(require_token)])
 def create_decision(body: DecisionCreateIn) -> DecisionOut:
-    """预注册决策日志(八项,plan B.1/B.2)。**`created_at` 服务端生成,忽略客户端
-    任何时间戳入参**——`DecisionCreateIn` 本就无 createdAt 字段,请求体里同名字段
-    (若有)会被 pydantic 直接丢弃,不会传导到 `decision_log_store.create_decision`
-    (该函数签名同样无此形参)。"""
+    """预注册决策日志(九项,plan B.1/B.2 + v1.4-⑤-B)。**`created_at` 服务端生成,
+    忽略客户端任何时间戳入参**——`DecisionCreateIn` 本就无 createdAt 字段,请求体里
+    同名字段(若有)会被 pydantic 直接丢弃,不会传导到 `decision_log_store.create_decision`
+    (该函数签名同样无此形参)。**`maxChasePct`(⑨)必须显式传**(填数字或显式
+    `null`),缺键 → 400,见 `_extract_max_chase_pct_or_400`。"""
+    max_chase_pct = _extract_max_chase_pct_or_400(body)
     row = decision_log_store.create_decision(
         ts_code=body.code, name=body.name, why_buy=body.whyBuy, why_entry_price=body.whyEntryPrice,
         target_price=body.targetPrice, exit_low=body.exitLow, exit_high=body.exitHigh,
         thesis_tags=list(body.thesisTags), invalidation=body.invalidation,
         contingency_scenarios=[s.model_dump() for s in body.contingencyScenarios],
         playbook_tag=body.playbookTag, planned_price=body.plannedPrice, planned_qty=body.plannedQty,
+        max_chase_pct=max_chase_pct,
         db_path=_db(),
     )
     return _shape_decision(row)
@@ -990,15 +1021,19 @@ def cancel_decision(decision_id: int) -> OkOut:
 
 @app.post(f"{API_PREFIX}/decisions/{{decision_id}}/revise", dependencies=[Depends(require_token)])
 def revise_decision(decision_id: int, body: DecisionReviseIn) -> DecisionOut:
-    """新增一行修订(plan B.2「改动只新增修订行,不改旧行」)。旧行(`decision_id`)
-    原地不变;新行 `revisionOf` 指向**链根** id(见 `decision_log.revise_decision`
-    文档)。`decision_id` 不存在 → 404。"""
+    """新增一行修订(plan B.2「改动只新增修订行,不改旧行」,v1.4-⑤-B 起九项全量
+    重录)。旧行(`decision_id`)原地不变;新行 `revisionOf` 指向**链根** id(见
+    `decision_log.revise_decision` 文档)。修订等于重新预注册一整套九项内容,同一份
+    「`maxChasePct` 必须显式传」纪律适用(缺键 → 400,同 `create_decision`)。
+    `decision_id` 不存在 → 404。"""
+    max_chase_pct = _extract_max_chase_pct_or_400(body)
     row = decision_log_store.revise_decision(
         decision_id, why_buy=body.whyBuy, why_entry_price=body.whyEntryPrice,
         target_price=body.targetPrice, exit_low=body.exitLow, exit_high=body.exitHigh,
         thesis_tags=list(body.thesisTags), invalidation=body.invalidation,
         contingency_scenarios=[s.model_dump() for s in body.contingencyScenarios],
         playbook_tag=body.playbookTag, planned_price=body.plannedPrice, planned_qty=body.plannedQty,
+        max_chase_pct=max_chase_pct,
         db_path=_db(),
     )
     if row is None:
