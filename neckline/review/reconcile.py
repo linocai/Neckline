@@ -414,7 +414,11 @@ def _collapse_code_intervals(round_trips: List[RoundTrip], asof: date) -> List[T
 def check_position_count_and_exposure(
     round_trips: List[RoundTrip], *, week_start: date, week_end: date, asof: date,
     max_positions: int, max_exposure_frac: float, total_capital: float,
+    window_label: str = "本周",
 ) -> List[str]:
+    """`window_label`(v1.4-⑥-A):违纪文案里的窗口自称。**缺省「本周」= ⑥-A 之前的原文,
+    逐位不变**;只有当该周发生过章程切换、本函数被按日段分多次调用时,调用方才传一个
+    带日期与版本号的段标签 —— 否则两段各报一条「本周…」会被误读成重复条目。"""
     out = []
     code_intervals = _collapse_code_intervals(round_trips, asof)
     peak_count, peak_count_date = _sweep_max_in_window(
@@ -422,7 +426,7 @@ def check_position_count_and_exposure(
     )
     if peak_count > max_positions + _EPS:
         out.append(
-            f"本周并发持仓最多达 {int(round(peak_count))} 只(约 {peak_count_date}),"
+            f"{window_label}并发持仓最多达 {int(round(peak_count))} 只(约 {peak_count_date}),"
             f"超过最多持 {max_positions} 只的仓位纪律(§2.1 第3条)。"
         )
 
@@ -431,7 +435,7 @@ def check_position_count_and_exposure(
     exposure_cap = max_exposure_frac * total_capital
     if peak_exposure > exposure_cap + _EPS:
         out.append(
-            f"本周持仓总敞口最高达 ¥{peak_exposure:,.0f}(约 {peak_exposure_date},"
+            f"{window_label}持仓总敞口最高达 ¥{peak_exposure:,.0f}(约 {peak_exposure_date},"
             f"占总仓 {peak_exposure / total_capital:.1%}),超过敞口上限 "
             f"{max_exposure_frac:.0%}(¥{exposure_cap:,.0f},§2.1 第3条)。"
         )
@@ -954,15 +958,22 @@ def run_weekly_review(
             if grp_cfg is not None:
                 review.discipline_violations += check_single_cap(grp, grp_cfg.single_cap)
         # ③ 并发持仓数 / 敞口:**日粒度**,按「该日收盘时刻现役的章程」把本周切成日段,
-        #    每段各自求峰值、各自比该段的 cap(见模块头「逐笔取章程」节)。
-        for run_lo, run_hi, _run_ver in _charter_day_runs(w_start, w_end, _version_at):
+        #    每段各自求峰值、各自比该段的 cap(见模块头「逐笔取章程」节)。只有一段时
+        #    窗口自称仍是「本周」= 与 ⑥-A 之前逐位一致;多段时各自带段标签,免得两条
+        #    「本周…」看起来像重复条目。
+        day_runs = _charter_day_runs(w_start, w_end, _version_at)
+        for run_lo, run_hi, run_ver in day_runs:
             run_cfg, _ = _cfg_at(day_close_instant(run_lo))
             if run_cfg is None:
                 continue
+            label = "本周" if len(day_runs) == 1 else (
+                f"本周 {run_lo.strftime('%m-%d')}~{run_hi.strftime('%m-%d')}"
+                f"({run_ver or '未知版本'} 治下)"
+            )
             review.discipline_violations += check_position_count_and_exposure(
                 round_trips, week_start=run_lo, week_end=run_hi, asof=asof,
                 max_positions=run_cfg.max_positions, max_exposure_frac=run_cfg.max_exposure_frac,
-                total_capital=total_capital,
+                total_capital=total_capital, window_label=label,
             )
         for grp_cfg, _grp_ver, grp in buy_groups:
             if grp_cfg is not None:

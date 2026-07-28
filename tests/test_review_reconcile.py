@@ -1119,6 +1119,8 @@ class TestPerTradeCharter:
         expo = [v for v in wk.discipline_violations if "持仓总敞口最高达" in v]
         assert len(cnt) == 1 and "6 只" in cnt[0] and "最多持 5 只" in cnt[0]     # K1 段判出来的
         assert len(expo) == 1 and "60%" in expo[0]
+        # 切换周的日段违纪自带段标签(两条「本周…」会被误读成重复条目)
+        assert "K1 治下" in cnt[0] and "07-20~07-22" in cnt[0]
 
 
 class TestNoSwitchWeekBitwiseEquivalence:
