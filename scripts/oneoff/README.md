@@ -9,6 +9,10 @@
   (payload sha256 硬校验,改一字节即拒跑)。
 - `fix_moneyflow_schema.py` — 2026-07-28 生产 `moneyflow_dc` 902 个脏分区修缮
   (逐文件 cast、幂等;同类 schema 修缮照此体例)。
+- `fix_position_buy_dates.py` — 2026-07-28 生产 3 笔持仓买入日纠正(v1.4-①-A / P0-1)。
+  幂等 + ts_code 防呆断言 + `.backup`/`cp -p` 双备份 + 改前改后逐行对拍 + 清
+  `holding_eod_check.time_exit_locked_*` 三列让次日 16:35 按正确 D 重新定格。
+  **同类「改生产台账」脚本照此体例**(默认演练,`--confirm` 才写)。
 
 对应单测仍在 `tests/`(`test_charter_v13/v133.py`、`test_fix_moneyflow_schema.py`),
 sys.path 已指向本目录。
