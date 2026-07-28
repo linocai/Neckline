@@ -347,6 +347,17 @@ class PositionOut(BaseModel):
     # v1.4-①-B 起多一个第五态 `suspended_hold`(当日无 EOD 行 且 尚未定格 → 判向挂起,
     # 不推 D5 / 不推硬上限;`dCount` 照常累计展示)。客户端展示层须为它加一档文案。
     timeExitState: str = "holding"  # time_exit_next_day | profit_exempt | hard_cap_exit | holding | suspended_hold
+    # —— v1.4-⑥-C 定格日 ≠ D5 显式标注(§七 P1-6)——————————————————————————————————
+    # `timeExitLockedDay`:**定格发生当时的 `dCount`**(= 从 buy_date 到 `time_exit_locked_date`
+    # 的交易日数)。EOD 管线连续断跑 / ①-B 停牌票复牌后定格时,它可能是 D7/D8 而不是 D5 ——
+    # 系统一直如实落库,但界面此前不提示。**null = 尚未定格**(或老快照缺 `locked_date`)。
+    # `timeExitLockedLateDays`:= `timeExitLockedDay − maxHoldDays`,**下限 0**(不晚就是 0);
+    # 客户端 **>0 才展示**「定格于 D{n},晚于 D{maxHoldDays} {k} 天」。
+    # ⛔ **只提示,不改判定逻辑**:定格语义是审计 🔴-1 的结论(D5 判一次定格、消费点只读定格
+    # 值),这两个字段是**纯派生展示位**,不参与 `timeExitState` / `maxHoldDaysEffective` 的
+    # 任何计算(有单测锁死「加了标注后判向输出逐位不变」)。
+    timeExitLockedDay: Optional[int] = None
+    timeExitLockedLateDays: int = 0
     # —— v1.3-① 费用回显(实付,供周复盘对账用真数;NULL=未录)——————————————————
     buyFees: Optional[float] = None
     sellFees: Optional[float] = None

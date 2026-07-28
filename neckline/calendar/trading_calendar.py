@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from bisect import bisect_left, bisect_right
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Set, Union
 
 from neckline.calendar.static_holidays import STATIC_CLOSED, STATIC_YEARS
@@ -37,6 +37,19 @@ DateLike = Union[date, datetime, str]
 # A 股两段交易时段(有午休)。集合竞价价格行为不同,阶段 0 不实现竞价逻辑。
 _AM = (datetime.min.time().replace(hour=9, minute=30), datetime.min.time().replace(hour=11, minute=30))
 _PM = (datetime.min.time().replace(hour=13, minute=0), datetime.min.time().replace(hour=15, minute=0))
+
+# —— 市场时区与收盘时刻(**全项目「市场时刻」单一事实源**,v1.4-⑥-A 立)——————————
+#
+# `CN_TZ`:北京时间。A 股**无夏令时**,固定 UTC+8,故直接用固定偏移 `timezone`,不引
+# `zoneinfo`(免掉 tzdata 依赖与 IANA 库版本漂移;若哪天真需要历史时区规则再换,换点
+# 只有这一处)。**用途**:把「券商交割单成交时刻(北京时间)」与「`strategy_versions.
+# activated_at`(UTC 戳)」归一到同一条时间轴上比较 —— 两者不归一就逐笔判纪律,差 8 小时
+# 的错判会直接落到「这笔按哪版章程判」上(v1.4-⑥-A 重点防的坑)。
+CN_TZ = timezone(timedelta(hours=8))
+# 收盘时刻(北京时间)。**与 `_PM` 的收盘边界是同一个事实**,故引用而不另写字面量;
+# 盘中窗口判定(`sentinel/intraday.py`)与「交割单只有日期没有时刻 → 按该日收盘时刻取
+# 章程」(`review/reconcile.py::trade_instant`)共用这一个源。
+MARKET_CLOSE_TIME = _PM[1]
 
 
 def _to_date(d: DateLike) -> date:

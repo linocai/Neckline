@@ -146,9 +146,15 @@ def test_sell_fees_recorded_on_close(client, AUTH, api_env):
 # 修复前本端点用**实时价**现算净浮盈重判(刷新一次就可能翻向,且与 16:35 EOD / precall
 # 三处数据源各不相同);现在只读 `holding_eod_check.time_exit_locked_state`。
 
-def _seed_two_tier(api_env, *, dcount: int, lock_state=None, lock_nf=None, buy_price=10.0):
-    """建一笔 d_count=dcount 的两档持仓;`lock_state` 非空则落一份带定格判向的 EOD 快照。"""
+def _seed_two_tier(api_env, *, dcount: int, lock_state=None, lock_nf=None, buy_price=10.0,
+                   lock_dcount=None):
+    """建一笔 d_count=dcount 的两档持仓;`lock_state` 非空则落一份带定格判向的 EOD 快照。
+
+    `lock_dcount`(v1.4-⑥-C):定格发生在 D 几。缺省沿用旧行为(定格日 = 买入日,
+    即 D1);传值则把 `time_exit_locked_date` 落在「买入日 + (lock_dcount−1) 个交易日」,
+    用来造「定格于 D7、晚于 D5 两天」这类断跑场景。"""
     from tests.conftest import seed_active_rule_v1
+    from neckline.calendar import trading_days_between
     from neckline.report import holding_store
     from neckline.sentinel.positions import open_position
     seed_active_rule_v1(api_env, extra_config={
@@ -157,11 +163,16 @@ def _seed_two_tier(api_env, *, dcount: int, lock_state=None, lock_nf=None, buy_p
     buy = _buy_date_for_dcount(dcount)
     pid = open_position("600001.SH", buy_price, 1000, buy, buy_fees=5.0, db_path=api_env.db_path)
     if lock_state is not None:
+        from datetime import date as _date
+        lock_day = buy
+        if lock_dcount is not None:
+            days = trading_days_between(buy, _date.today())
+            lock_day = days[min(lock_dcount, len(days)) - 1]
         class _Snap:
             position_id, d_count, net_float = pid, dcount, lock_nf
             time_exit_state, max_hold_effective = lock_state, (15 if lock_state == "profit_exempt" else 5)
             has_strong = scenario_review = False
-            time_exit_locked_state, time_exit_locked_date = lock_state, buy.strftime("%Y%m%d")
+            time_exit_locked_state, time_exit_locked_date = lock_state, lock_day.strftime("%Y%m%d")
             time_exit_locked_net_float = lock_nf
             def hits_public(self):
                 return []
@@ -541,3 +552,105 @@ def test_k4_data_unavailable_true_from_snapshot(client, AUTH, api_env):
     h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
     assert h["k4DataUnavailable"] is True
     assert h["k4Advisory"] == []
+
+
+# ======================================================================
+#  v1.4-⑥-C(§七 P1-6):定格日 ≠ D5 的显式标注
+#  ⛔ **只提示,不改判定逻辑** —— 定格语义是审计 🔴-1 的结论,不得回退。
+# ======================================================================
+
+def _holdings(client, AUTH):
+    return client.get("/api/v1/positions", headers=AUTH).json()["holdings"]
+
+
+def test_locked_day_and_late_days_when_pipeline_lagged(client, AUTH, api_env, monkeypatch):
+    """EOD 管线断跑 → 定格发生在 D7(而不是 D5):`timeExitLockedDay=7`、
+    `timeExitLockedLateDays=2`(= 7 − maxHoldDays 5)。"""
+    import neckline.api.app as app_mod
+    _seed_two_tier(api_env, dcount=8, lock_state="time_exit_next_day", lock_nf=-40.0, lock_dcount=7)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": _quote(9.6)})
+    h = _holdings(client, AUTH)[0]
+    assert h["timeExitLockedDay"] == 7
+    assert h["timeExitLockedLateDays"] == 2
+    assert h["maxHoldDays"] == 5
+
+
+def test_locked_on_time_reports_zero_late_days(client, AUTH, api_env, monkeypatch):
+    """准时在 D5 定格 → lateDays=0(客户端 >0 才展示,故正常单子不背这句提示)。"""
+    import neckline.api.app as app_mod
+    _seed_two_tier(api_env, dcount=6, lock_state="profit_exempt", lock_nf=920.0, lock_dcount=5)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": _quote(11.0)})
+    h = _holdings(client, AUTH)[0]
+    assert h["timeExitLockedDay"] == 5
+    assert h["timeExitLockedLateDays"] == 0
+
+
+def test_not_locked_yet_reports_null_not_fake_today(client, AUTH, api_env, monkeypatch):
+    """尚未定格 → `timeExitLockedDay=null`(**不拿今天冒充定格日**,那会编出一个从没
+    发生过的"准时定格");`lateDays` 退 0。判向仍保守判 time_exit_next_day,一字不改。"""
+    import neckline.api.app as app_mod
+    _seed_two_tier(api_env, dcount=6, lock_state=None)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": _quote(13.0)})
+    h = _holdings(client, AUTH)[0]
+    assert h["timeExitLockedDay"] is None
+    assert h["timeExitLockedLateDays"] == 0
+    assert h["timeExitState"] == "time_exit_next_day"
+
+
+def test_fresh_position_defaults(client, AUTH, api_env):
+    """刚开仓(单档 K1、无任何快照)→ 两个字段取缺省,老客户端不传/不认也不崩。"""
+    from tests.conftest import seed_active_rule_v1
+    seed_active_rule_v1(api_env)
+    client.post("/api/v1/positions", headers=AUTH, json={
+        "code": "600001.SH", "buy_price": 10.0, "qty": 1000,
+    })
+    h = _holdings(client, AUTH)[0]
+    assert h["timeExitLockedDay"] is None and h["timeExitLockedLateDays"] == 0
+
+
+def test_annotation_does_not_change_any_verdict(client, AUTH, api_env, monkeypatch):
+    """**判向逐位不变**(⑥-C 验收):同一批场景下,加了标注之后 `timeExitState` /
+    `maxHoldDaysEffective` / `todayAction` 与 ⑥-C 之前的期望完全一致 —— 标注是纯派生
+    展示位,不参与任何判定。"""
+    import neckline.api.app as app_mod
+
+    cases = [
+        # (dcount, lock_state, lock_nf, lock_dcount, price, 期望 state, 期望 eff_max)
+        (5, "profit_exempt", 920.0, 5, 11.0, "profit_exempt", 15),
+        (7, "profit_exempt", 920.0, 7, 9.7, "profit_exempt", 15),      # 晚定格也不改判向
+        (7, "time_exit_next_day", -40.0, 7, 12.0, "time_exit_next_day", 5),
+        (15, "profit_exempt", 920.0, 9, 12.0, "hard_cap_exit", 15),    # 硬上限仍按 d_count
+    ]
+    for dcount, lock_state, nf, lock_d, price, want_state, want_eff in cases:
+        from neckline.db import connection
+        with connection(api_env.db_path) as conn:      # 每轮清干净,单笔持仓单独判
+            conn.execute("DELETE FROM positions")
+            conn.execute("DELETE FROM holding_eod_check")
+        _seed_two_tier(api_env, dcount=dcount, lock_state=lock_state, lock_nf=nf, lock_dcount=lock_d)
+        monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes, p=price: {"600001.SH": _quote(p)})
+        h = _holdings(client, AUTH)[0]
+        assert (h["timeExitState"], h["maxHoldDaysEffective"]) == (want_state, want_eff), (dcount, lock_state)
+        assert h["timeExitLockedDay"] == lock_d       # 标注如实,但没影响上面两项
+
+
+def test_suspended_hold_can_lock_late_after_resumption(client, AUTH, api_env, monkeypatch):
+    """①-B 停牌票复牌后**晚定格**是常态路径,与本标注共存:复牌当日(D8)定格 →
+    判向读定格值(不再挂起),同时标注"晚于 D5 三天"。"""
+    import neckline.api.app as app_mod
+    _seed_two_tier(api_env, dcount=8, lock_state="time_exit_next_day", lock_nf=-40.0, lock_dcount=8)
+    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {"600001.SH": _quote(9.6)})
+    h = _holdings(client, AUTH)[0]
+    assert h["timeExitState"] == "time_exit_next_day"   # 已定格 → 不是 suspended_hold
+    assert h["timeExitLockedDay"] == 8 and h["timeExitLockedLateDays"] == 3
+
+
+def test_locked_day_helper_rejects_garbage_date(api_env):
+    """定格日串坏了 / 老快照没这一格 → None(如实说不知道,不猜)。"""
+    from datetime import date as _date
+
+    from neckline.api.app import _locked_time_exit_day
+
+    buy = _date(2026, 7, 20)
+    assert _locked_time_exit_day(buy, None) is None
+    assert _locked_time_exit_day(buy, "") is None
+    assert _locked_time_exit_day(buy, "not-a-date") is None

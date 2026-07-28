@@ -31,6 +31,17 @@ def build_material_text(review: WeeklyReview) -> str:
         f"{review.week_end.strftime('%Y-%m-%d')}。"
     )
 
+    # v1.4-⑥-A:本周若发生过章程切换,**必须显式注明切换时刻并分段计数**——否则用户看到
+    # 一份混着两版阈值判出来的清单,却以为整周按 `strategy_version` 那一版判(P1-4 的病根
+    # 之一是"判据换了但没人说")。文案的唯一来源是 `CharterSwitch.note`(在 reconcile 里
+    # 连同分段计数一起算好),本模块不重新拼一遍分段口径。
+    if review.charter_switches:
+        paragraphs.append(
+            "".join(sw.note for sw in review.charter_switches)
+            + "本周的纪律判定**按成交时刻逐笔取当时现役的章程**,切换前后各按各的阈值判,"
+            "上面的违纪清单已是分段判定后的结果。"
+        )
+
     if review.forced_review:
         paragraphs.append(f"⚠ 强制复盘触发:{review.forced_review_reason}")
 

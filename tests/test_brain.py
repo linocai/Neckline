@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from neckline.calendar import CN_TZ
 from neckline.db import connection, init_schema
 from neckline.strategy import brain
 
@@ -233,3 +234,118 @@ def test_backfill_active_version_on_migration(db):
     # 幂等:再跑一次不变(不会把 K1 戳刷新成别的)
     init_schema(db)
     assert brain.get_version("K1", db_path=db).activated_at == "2026-07-20T03:07:52+00:00"
+
+
+# ======================================================================
+#  v1.4-⑥-A:时刻粒度时间线解析(config_governing_at / activations_between)
+#  —— 周复盘「按成交时刻逐笔判纪律」的基础。**时区是本节的主角**:
+#     `activated_at` 落库是 UTC 戳,成交时刻是北京时间,不归一就会差 8 小时错判。
+# ======================================================================
+
+def _two_charter_db(db: Path, v13_activated_at: str) -> None:
+    """K1(激活 2026-07-13T00:00Z)+ v1.3(按给定戳激活,现役)。"""
+    brain.save_version("K1", {"config": {"single_cap": 20000.0}}, "k1", activate=True, db_path=db)
+    brain.save_version("v1.3", {"config": {"single_cap": 40000.0}}, "v13", activate=False, db_path=db)
+    _set_activated(db, "K1", "2026-07-13T00:00:00+00:00", 0)
+    _set_activated(db, "v1.3", v13_activated_at, 1)
+
+
+def test_config_governing_at_utc_vs_beijing_not_confused(db):
+    """**时区命门**:v1.3 激活于 UTC 08:00 = **北京 16:00**(收盘之后)。同日北京 15:00
+    (收盘)的成交必须仍判 K1 —— 若把 UTC 戳当北京时间裸比(08:00 < 15:00)就会错判成
+    v1.3,正是 ⑥-A 要防的 8 小时错位。"""
+    _two_charter_db(db, "2026-07-22T08:00:00+00:00")
+    close_cn = datetime(2026, 7, 22, 15, 0, tzinfo=CN_TZ)
+    assert brain.config_governing_at(close_cn, db_path=db).version == "K1"
+    # 次日收盘 → 已在激活之后 → v1.3
+    assert brain.config_governing_at(datetime(2026, 7, 23, 15, 0, tzinfo=CN_TZ), db_path=db).version == "v1.3"
+
+
+def test_config_governing_at_same_day_switch_before_close(db):
+    """激活于 UTC 06:36(= 北京 14:36,盘中)→ 同日北京 15:00 收盘的成交判**新**章程
+    (生产 2026-07-27 v1.3.3 激活的真实时刻形态)。"""
+    _two_charter_db(db, "2026-07-27T06:36:10+00:00")
+    assert brain.config_governing_at(datetime(2026, 7, 27, 15, 0, tzinfo=CN_TZ), db_path=db).version == "v1.3"
+    # 同日更早的时刻(北京 10:00)仍在激活之前 → 旧章程
+    assert brain.config_governing_at(datetime(2026, 7, 27, 10, 0, tzinfo=CN_TZ), db_path=db).version == "K1"
+
+
+def test_config_governing_at_exact_activation_instant_counts_as_new(db):
+    """**边界定死**:成交时刻**恰好等于**激活时刻 → 算新章程(判据 `激活时刻 <= ts`)。
+    早一秒 → 旧章程。"""
+    _two_charter_db(db, "2026-07-22T07:00:00+00:00")   # = 北京 15:00
+    exact = datetime(2026, 7, 22, 15, 0, 0, tzinfo=CN_TZ)
+    assert brain.config_governing_at(exact, db_path=db).version == "v1.3"
+    assert brain.config_governing_at(exact - timedelta(seconds=1), db_path=db).version == "K1"
+
+
+def test_config_governing_at_naive_input_read_as_beijing(db):
+    """入参 naive datetime 按**北京时间**读(市场时刻口径;与 `activated_at` 的 naive
+    按 UTC 读刻意相反,两处 docstring 各自定死)。"""
+    _two_charter_db(db, "2026-07-22T08:00:00+00:00")   # = 北京 16:00
+    assert brain.config_governing_at(datetime(2026, 7, 22, 15, 0), db_path=db).version == "K1"
+    assert brain.config_governing_at(datetime(2026, 7, 22, 17, 0), db_path=db).version == "v1.3"
+
+
+def test_config_governing_at_naive_activated_at_read_as_utc(db):
+    """`activated_at` 若是**不带时区**的老串,按 **UTC** 读(唯一写入者 `_now()` 写的就是
+    UTC;当成北京时间读会把激活时刻凭空前移 8 小时)。"""
+    _two_charter_db(db, "2026-07-22T08:00:00")          # 无 tz 后缀 → 视作 UTC 08:00 = 北京 16:00
+    assert brain.config_governing_at(datetime(2026, 7, 22, 15, 0, tzinfo=CN_TZ), db_path=db).version == "K1"
+    assert brain.config_governing_at(datetime(2026, 7, 22, 17, 0, tzinfo=CN_TZ), db_path=db).version == "v1.3"
+
+
+def test_config_governing_at_date_only_activated_at(db):
+    """`activated_at` 是纯日期串 → 当日 00:00 UTC(= 北京 08:00)。"""
+    _two_charter_db(db, "2026-07-22")
+    assert brain.config_governing_at(datetime(2026, 7, 22, 7, 0, tzinfo=CN_TZ), db_path=db).version == "K1"
+    assert brain.config_governing_at(datetime(2026, 7, 22, 9, 0, tzinfo=CN_TZ), db_path=db).version == "v1.3"
+
+
+def test_config_governing_at_deep_past_and_legacy_and_empty(db):
+    """三条兜底与 `config_active_at` 同款:早于所有激活 → 最早激活版本;整表无戳 →
+    退回 get_active();空库 → None。"""
+    _two_charter_db(db, "2026-08-01T00:00:00+00:00")
+    assert brain.config_governing_at(datetime(2020, 1, 1, tzinfo=CN_TZ), db_path=db).version == "K1"
+
+    legacy = db.parent / "legacy.db"
+    init_schema(legacy)
+    with connection(legacy) as conn:
+        conn.execute(
+            "INSERT INTO strategy_versions "
+            "(version, created_at, rule_json, changelog, metrics_json, is_active, activated_at) "
+            "VALUES ('K1','2026-07-20T00:00:00+00:00','{}','k1','{}',1,NULL)",
+        )
+    assert brain.config_governing_at(datetime(2026, 8, 1, tzinfo=CN_TZ), db_path=legacy).version == "K1"
+
+    empty = db.parent / "empty.db"
+    init_schema(empty)
+    assert brain.config_governing_at(datetime(2026, 8, 1, tzinfo=CN_TZ), db_path=empty) is None
+
+
+def test_activations_between_half_open_window(db):
+    """`activations_between` 取 **[start, end)**(半开)——相邻周不会把同一次激活各算一遍。"""
+    _two_charter_db(db, "2026-07-27T06:36:10+00:00")
+    week31_lo = datetime(2026, 7, 27, 0, 0, tzinfo=CN_TZ)
+    week31_hi = datetime(2026, 8, 3, 0, 0, tzinfo=CN_TZ)
+    got = brain.activations_between(week31_lo, week31_hi, db_path=db)
+    assert [v.version for _, v in got] == ["v1.3"]
+    # 上一周窗口(07-20~07-26)不含它
+    assert brain.activations_between(
+        datetime(2026, 7, 20, tzinfo=CN_TZ), week31_lo, db_path=db,
+    ) == []
+    # 边界:激活时刻恰为窗口右端 → 不含(半开)
+    at = got[0][0].astimezone(CN_TZ)
+    assert brain.activations_between(week31_lo, at, db_path=db) == []
+    assert len(brain.activations_between(at, week31_hi, db_path=db)) == 1
+
+
+def test_activations_between_sorted_and_skips_unstamped(db):
+    """按时刻升序;从未激活过(activated_at NULL)的版本不参与。"""
+    _two_charter_db(db, "2026-07-27T06:36:10+00:00")
+    brain.save_version("K9", {"config": {}}, "never", activate=False, db_path=db)   # 无激活戳
+    got = brain.activations_between(
+        datetime(2026, 7, 1, tzinfo=CN_TZ), datetime(2026, 8, 1, tzinfo=CN_TZ), db_path=db,
+    )
+    assert [v.version for _, v in got] == ["K1", "v1.3"]
+    assert got[0][0] < got[1][0]

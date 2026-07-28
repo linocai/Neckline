@@ -35,7 +35,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, time
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -140,6 +140,31 @@ def _parse_cell_date(v: object) -> Optional[date]:
     return None
 
 
+def _parse_cell_time(v: object) -> Optional[time]:
+    """成交**时刻**(北京时间,可选)。两家已知券商格式的「交易日期」列都只到日期粒度
+    (格式一是 datetime 但时分秒为 0),故本函数绝大多数情况返回 `None` —— 那是正常的,
+    不是解析失败:`reconcile.trade_instant` 会按「该日收盘时刻」兜底(v1.4-⑥-A 定死口径)。
+
+    只在**确实带非零时刻**时才返回时刻:datetime 单元格取其 time(全零视作"只有日期",
+    返 None,免得把 00:00 当成"凌晨成交"——A 股不存在的时刻);字符串按
+    `'YYYY-MM-DD HH:MM(:SS)'` 两种格式试解。**绝不猜**:解析不出就 None。"""
+    if isinstance(v, datetime):
+        t = v.time()
+        return t if (t.hour or t.minute or t.second) else None
+    if isinstance(v, date):
+        return None
+    s = clean_str(v)
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M"):
+        try:
+            t = datetime.strptime(s, fmt).time()
+        except ValueError:
+            continue
+        return t if (t.hour or t.minute or t.second) else None
+    return None
+
+
 def _parse_cell_float(v: object) -> Optional[float]:
     if v is None:
         return None
@@ -208,6 +233,9 @@ class RawTrade:
     broker_source: str = ""     # 券商来源(如有)
     source_format: str = ""     # "format1" | "format2"
     source_ref: str = ""        # "<sheet>!row<N>",诊断用
+    # v1.4-⑥-A:成交**时刻**(北京时间),仅当交割单确实带非零时刻时非空。两家已知格式
+    # 都只到日期粒度 → 恒 None,由 `reconcile.trade_instant` 按「该日收盘时刻」兜底判章程。
+    trade_time: Optional[time] = None
 
 
 @dataclass
@@ -356,9 +384,11 @@ def _parse_row(
     else:
         return None, None, f"未知业务名称「{business}」,已跳过该行({ref})。"
 
-    trade_date = _parse_cell_date(_cell(row, cols["成交日期"]))
+    date_cell = _cell(row, cols["成交日期"])
+    trade_date = _parse_cell_date(date_cell)
     if trade_date is None:
         return None, None, f"交易日期无法解析,已跳过该行({ref})。"
+    trade_time = _parse_cell_time(date_cell)   # v1.4-⑥-A:带时刻就取,不带就 None(不猜)
 
     qty_raw = _parse_cell_float(_cell(row, cols["成交数量"]))
     if not qty_raw:
@@ -404,7 +434,7 @@ def _parse_row(
     trade = RawTrade(
         trade_date=trade_date, ts_code=code, name=name, side=side,
         price=round(price, 4), qty=qty, fee=round(fee, 2), cash_flow=cash_flow,
-        source_format=fmt, source_ref=ref,
+        source_format=fmt, source_ref=ref, trade_time=trade_time,
     )
     return trade, None, None
 

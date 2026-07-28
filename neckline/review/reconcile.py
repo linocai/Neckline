@@ -4,10 +4,9 @@
 **同码不重写铁律(§2.6/§3.8)**:
     · 止损/仓位纪律(止损/回落止盈/hold/单笔上限/持仓数/敞口)读大脑现役
       `MomentumConfig`,不硬编字面量(项目 CLAUDE.md「钉死的领域常量单一源」)。
-      **v1.2-A 起按周取「当时现役」**:每 ISO 周以 `week_start` 调
-      `brain.config_governing_for_week()` 解析该周 governing 版本(判据「激活日 <
-      week_start」= 激活当周仍按旧章程判,2026-07-27 审计 🟡-3 修复;章程升级后
-      重跑历史周不洗白旧违纪),不再一次性 `get_active()` 应用到所有周。
+      **v1.4-⑥-A 起按「成交时刻」逐笔取「当时现役」**(§七 P1-4),见下方专节;
+      v1.2-A~v1.3 的「按周一把抓」判据(`brain.config_governing_for_week`)只剩
+      `WeeklyReview.strategy_version` 这个**周标签**still 在用,不再是判据入口。
     · 绿盘大阴线/距前高/次新/高弹题材四条禁买过滤,直接复用
       `neckline.strategy.signals` 的同名判定表达式(与回测/报告候选管线同一份
       信号定义),本模块不重新推一遍阈值比较。
@@ -20,6 +19,40 @@ MomentumStrategy._consume_closed_trades` 的 `week_loss` 完全同口径——�
 docstring 明确写了"5%=挂起项『次周单笔减半』;区别于§2.1已采纳的2%强制复盘线"
 ——两个阈值(2%/5%)在语义上是同一个"单周实现亏损"公式的不同触发线,本模块的
 `FORCED_REVIEW_LOSS_FRAC=0.02` 与该 docstring 明确对应,非另起口径。
+
+**逐笔取章程(v1.4-⑥-A,§七 P1-4;🔴 碰纪律判定,改前读全本节)**:
+
+    旧病:按周一把抓 → 章程激活当周的成交被**旧章程**判(2026-07-27 激活 v1.3.3 后,
+    用户当周按「三仓 4 万」打,周复盘仍按 K1「五仓 2 万 + 禁创业板」判 → 单笔 >2 万、
+    买创业板、敞口超 60% 全被**误标违纪**)。修法 = 取 config 的入口从「周」下沉到「笔」。
+
+    **时间轴唯一源 = `strategy_versions.activated_at`**(解析器 `brain.config_governing_at`)。
+    `activated_at` 落库是 **UTC** 戳,交割单成交时刻是**北京时间** —— 归一由
+    `trade_instant()`(造 aware 北京时刻)+ `brain._activated_instant`(按 UTC 读)两处
+    合力完成,**本模块不自己 strip/加减时区**。边界语义:**成交时刻恰好等于激活时刻算
+    「新章程」**(判据 `激活时刻 <= 成交时刻`,理由见 `config_governing_at` docstring)。
+
+    **每条判据锚在「它审计的那笔成交」的时刻**(⚠ 不是统一锚在买入,也不是统一锚在周初):
+      · 单笔仓位上限 / 禁买过滤(绿盘大阴线·距前高·次新·高弹题材·ST)→ 锚**买入时刻**
+        (违纪成立于"你按当时的章程不该这么买"的那一刻);
+      · 止损纪律(破 -5% 未离场)→ 锚**卖出时刻**。理由:它审计的是**离场决策**,而盘中
+        哨兵每一拍读的都是**当时现役**的 `stop_pct`(`get_active()`)——按卖出时刻的章程
+        判,才与系统当时真的在提醒用户什么一致;按买入时刻判会拿一条用户当时根本没被
+        提醒过的线去罚人;
+      · 并发持仓数 / 敞口上限 → **日粒度时点量**:每个自然日归属「该日**收盘时刻**现役的
+        章程」,按此把周切成连续日段,每段各自求峰值、各自比该段的 cap(等价于"每一天
+        的持仓水平比该天自己的上限",不是拿一周的峰值比某一版的上限);
+      · 同票割肉冷却 → 锚**再次买入时刻**(违纪成立于再买那一刻),沿用既有"整批算一次、
+        按再买日分发到周"的姿势,只是把 `cooldown_days` 换成该日段的值。
+      · 时间退出违纪(§2.1 第 2 条周线兜底)**不读 config**,判据是历史事实,不受本次改动
+        影响(见 `check_time_exit_discipline`)。
+
+    **交割单只有日期没有时刻时**(两家已知券商格式都是这样):一律按**该日收盘时刻**
+    (`MARKET_CLOSE_TIME` 15:00 北京时间)取 config —— 定死,见 `trade_instant()`。
+
+    **周内没发生章程切换时,逐笔判据与旧的按周判据逐位等价**(回归护栏,有单测);
+    发生切换时,周报显式注明切换时刻并**分段计数**(`WeeklyReview.charter_segments` /
+    `charter_switches`,文案进 `review/material.py`)。
 
 **已知简化(诚实标注,不回避)**:
     1. 「最多持 N 只」/「敞口 ≤60%」的核算范围限于**本次上传数据可见的持仓区间**
@@ -36,12 +69,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import polars as pl
 
+from neckline.calendar import CN_TZ, MARKET_CLOSE_TIME
 from neckline.review.parse import RawTrade
 
 _EPS = 1e-9
@@ -60,6 +94,37 @@ PRICE_MATCH_TOLERANCE = 0.01
 
 
 # ======================================================================
+#  成交时刻(v1.4-⑥-A 逐笔判章程的时间轴入口)
+# ======================================================================
+
+def trade_instant(trade_date: date, trade_time: Optional[time] = None) -> datetime:
+    """把「成交日期(+ 可选时刻)」造成 **tz-aware 北京时间**时刻,供
+    `brain.config_governing_at` 逐笔取章程(v1.4-⑥-A)。
+
+    **交割单只有日期没有时刻 → 一律按「该日收盘时刻」**(`MARKET_CLOSE_TIME`,15:00
+    北京时间;plan §五-⑥-A 定死的口径)。**不许改成 00:00 或 09:30**,理由:
+      · 收盘时刻 = 当天**最晚可能的成交时刻**。取 00:00 / 09:30 会把当天所有成交推到
+        切换之前 → 章程激活当日的成交仍被旧章程判,P1-4 的病(激活当日按新章程打、
+        复盘按旧章程判 = 假警报)没修干净;
+      · **诚实边界(实测,勿照抄 plan 原文的理由)**:plan 给的理由是"章程激活都在盘后
+        跑,不会出现同日切换后又开仓"——但 2026-07-27 那次真实激活的时刻是**北京 14:36
+        (盘中)**,该前提并不总成立。故本口径真正的依据是上一条(方向与 P1-4 要修的假
+        警报一致、与用户当日实际按新章程操作的事实一致),而不是"同日不可能有切换后成交"。
+        代价写明:激活当日**激活时刻之前**的成交会被判给新章程(偏宽一天);要消除它只能
+        靠交割单带上真实成交时刻(`RawTrade.trade_time` 非空时本函数直接用真时刻,兜底不生效)。
+      · 两家已知券商格式的交割单都**只有日期**(`trade_time` 恒 None),故这条兜底就是
+        生产上的常态路径,不是边角分支。
+    """
+    return datetime.combine(trade_date, trade_time or MARKET_CLOSE_TIME, tzinfo=CN_TZ)
+
+
+def day_close_instant(d: date) -> datetime:
+    """某自然日的**收盘时刻**(北京时间 aware)。日粒度判据(并发持仓数 / 敞口 / 冷却)
+    归属哪版章程时用它当锚 —— 与 `trade_instant` 的日期兜底同一个时刻口径,不另立一套。"""
+    return trade_instant(d, None)
+
+
+# ======================================================================
 #  FIFO 闭合回合
 # ======================================================================
 
@@ -74,6 +139,19 @@ class RoundTrip:
     sell_date: Optional[date] = None
     sell_price: Optional[float] = None
     closed: bool = False
+    # v1.4-⑥-A:成交时刻(北京时间,交割单不带时刻时为 None → 按该日收盘时刻兜底)。
+    # 逐笔判章程要用,故从 `RawTrade` 原样带过来,不在回合层重新猜。
+    buy_time: Optional[time] = None
+    sell_time: Optional[time] = None
+
+    @property
+    def buy_instant(self) -> datetime:
+        return trade_instant(self.buy_date, self.buy_time)
+
+    @property
+    def sell_instant(self) -> Optional[datetime]:
+        """卖出时刻;未平仓 → None(止损纪律本就不判未平仓回合)。"""
+        return trade_instant(self.sell_date, self.sell_time) if self.sell_date else None
 
     @property
     def buy_amount(self) -> float:
@@ -94,11 +172,15 @@ class RoundTrip:
 
 
 class _Lot:
-    __slots__ = ("price", "date", "name", "qty_original", "qty_remaining", "fee_total")
+    __slots__ = ("price", "date", "time", "name", "qty_original", "qty_remaining", "fee_total")
 
-    def __init__(self, price: float, date_: date, name: str, qty: int, fee_total: float) -> None:
+    def __init__(
+        self, price: float, date_: date, name: str, qty: int, fee_total: float,
+        time_: Optional[time] = None,
+    ) -> None:
         self.price = price
         self.date = date_
+        self.time = time_          # v1.4-⑥-A:买入时刻(可空),回合层原样带出
         self.name = name
         self.qty_original = qty
         self.qty_remaining = qty
@@ -125,7 +207,9 @@ def build_round_trips(trades: List[RawTrade]) -> Tuple[List[RoundTrip], List[str
         buy_queue: List[_Lot] = []
         for tx in ordered:
             if tx.side == "buy":
-                buy_queue.append(_Lot(tx.price, tx.trade_date, tx.name, tx.qty, tx.fee))
+                buy_queue.append(
+                    _Lot(tx.price, tx.trade_date, tx.name, tx.qty, tx.fee, time_=tx.trade_time)
+                )
                 continue
             # side == "sell"
             remaining = tx.qty
@@ -139,6 +223,7 @@ def build_round_trips(trades: List[RawTrade]) -> Tuple[List[RoundTrip], List[str
                     buy_date=lot.date, buy_price=lot.price, qty=matched,
                     fees=round((buy_fee_per_share + sell_fee_per_share) * matched, 2),
                     sell_date=tx.trade_date, sell_price=tx.price, closed=True,
+                    buy_time=lot.time, sell_time=tx.trade_time,
                 ))
                 lot.qty_remaining -= matched
                 remaining -= matched
@@ -154,7 +239,7 @@ def build_round_trips(trades: List[RawTrade]) -> Tuple[List[RoundTrip], List[str
                 ts_code=code, name=lot.name, buy_date=lot.date, buy_price=lot.price,
                 qty=lot.qty_remaining,
                 fees=round((lot.fee_total / lot.qty_original) * lot.qty_remaining, 2) if lot.qty_original else 0.0,
-                closed=False,
+                closed=False, buy_time=lot.time,
             ))
 
     return round_trips, warnings
@@ -501,6 +586,120 @@ def check_time_exit_discipline(
 
 
 # ======================================================================
+#  章程分段(v1.4-⑥-A:该周发生过切换时,周报注明切换时刻并分段计数)
+# ======================================================================
+
+@dataclass
+class CharterSegment:
+    """周内一段「同一版章程治下」的区间。`start=None` = 自周初起的那一段。
+    `trade_count` = 本周落在该段内的**成交笔数**(买 + 卖各算一笔,与"逐笔判"同口径)。"""
+    version: str
+    start: Optional[datetime] = None      # 北京时间 aware;None = 周初
+    trade_count: int = 0
+
+
+@dataclass
+class CharterSwitch:
+    """周内发生的一次章程切换(= `strategy_versions` 的一次激活落在本周窗口内)。
+    `at` 一律已换算成**北京时间**(展示与序列化口径,时间轴事实源仍是 `activated_at`)。"""
+    at: datetime
+    from_version: str
+    to_version: str
+    note: str = ""
+
+
+def _week_window(w_start: date, w_end: date) -> Tuple[datetime, datetime]:
+    """周窗口 `[周一 00:00, 下周一 00:00)`(北京时间,半开)——相邻周不会把同一次激活
+    各算一遍。"""
+    lo = datetime.combine(w_start, time(0, 0), tzinfo=CN_TZ)
+    hi = datetime.combine(w_end + timedelta(days=1), time(0, 0), tzinfo=CN_TZ)
+    return lo, hi
+
+
+def build_charter_timeline(
+    w_start: date, w_end: date, week_trades: Sequence[RawTrade], base_version: str,
+    *, db_path: Optional[Path] = None,
+) -> Tuple[List[CharterSegment], List[CharterSwitch]]:
+    """本周的章程分段 + 切换清单(v1.4-⑥-A 周报呈现)。
+
+    `base_version` = 本周**周初**挂的章程版本(= `WeeklyReview.strategy_version`,由
+    `brain.config_governing_for_week` 给,**与逐笔判据用的解析器不同但相容**:周初标签
+    看「激活日 < week_start」,而周内的切换从 `brain.activations_between` 取实际激活时刻;
+    两者在所有现实时点上给出一致的分段——见模块头「逐笔取章程」节)。
+
+    **同版本再激活(回滚 / 重激活同一版)不算切换**(阈值没变,报出来只会制造噪音),
+    但它仍在时间轴上,故只是不新起一段,不是被丢掉。
+    """
+    from neckline.strategy import brain
+
+    lo, hi = _week_window(w_start, w_end)
+    segments: List[CharterSegment] = [CharterSegment(version=base_version or "", start=None)]
+    switches: List[CharterSwitch] = []
+    for inst, ver in brain.activations_between(lo, hi, db_path=db_path):
+        prev = segments[-1].version
+        if ver.version == prev:
+            continue
+        at_cn = inst.astimezone(CN_TZ)
+        segments.append(CharterSegment(version=ver.version, start=at_cn))
+        switches.append(CharterSwitch(at=at_cn, from_version=prev, to_version=ver.version))
+
+    for t in week_trades:
+        inst = trade_instant(t.trade_date, t.trade_time)
+        idx = 0
+        for i, seg in enumerate(segments):
+            if seg.start is not None and seg.start <= inst:
+                idx = i
+        segments[idx].trade_count += 1
+
+    for i, sw in enumerate(switches):
+        before = sum(s.trade_count for s in segments[: i + 1])
+        after = sum(s.trade_count for s in segments[i + 1:])
+        sw.note = (
+            f"本周 {sw.at.strftime('%Y-%m-%d %H:%M')} 发生章程切换 "
+            f"{sw.from_version or '(未知)'}→{sw.to_version}"
+            f"(切换前 {before} 笔按 {sw.from_version or '(未知)'} 判、"
+            f"切换后 {after} 笔按 {sw.to_version} 判)。"
+        )
+    return segments, switches
+
+
+def _charter_day_runs(
+    lo: date, hi: date, resolve_version: Callable[[datetime], Optional[str]],
+) -> List[Tuple[date, date, str]]:
+    """把 `[lo, hi]` 按「每个自然日**收盘时刻**现役的章程版本」切成连续日段,返回
+    `(段起日, 段止日, 版本号)`。
+
+    用于**日粒度**判据(并发持仓数 / 敞口 / 冷却):这类量不是"一笔成交",而是"某一天
+    的持仓水平",故按天归属章程、每段各自比该段自己的上限——等价于"每一天比该天自己
+    的上限",与逐笔判同精神。段内无切换时只有一段 → 与旧的整周一把抓**逐位等价**。"""
+    runs: List[Tuple[date, date, str]] = []
+    d = lo
+    while d <= hi:
+        ver = resolve_version(day_close_instant(d)) or ""
+        if runs and runs[-1][2] == ver:
+            runs[-1] = (runs[-1][0], d, ver)
+        else:
+            runs.append((d, d, ver))
+        d += timedelta(days=1)
+    return runs
+
+
+def _group_by_charter(
+    items: Sequence, instant_of: Callable, resolve: Callable,
+) -> List[Tuple[object, Optional[str], List]]:
+    """把一串成交按「其成交时刻 governing 的章程」分组(保持原顺序,连续同版本合并)。
+    返回 `[(cfg, version, [items…])]`;`cfg=None` = 该段无可用 config(判据诚实跳过)。"""
+    out: List[Tuple[object, Optional[str], List]] = []
+    for it in items:
+        cfg, ver = resolve(instant_of(it))
+        if out and out[-1][1] == ver:
+            out[-1][2].append(it)
+        else:
+            out.append((cfg, ver, [it]))
+    return out
+
+
+# ======================================================================
 #  周统计 + 强制复盘
 # ======================================================================
 
@@ -577,8 +776,13 @@ class WeeklyReview:
     stats: Optional[WeeklyStats] = None
     forced_review: bool = False
     forced_review_reason: str = ""
-    strategy_version: Optional[str] = None   # 本周 governing 大脑版本号(v1.2-A:按 week_end
-                                             # 解析「当时现役」,落 reviews.strategy_version)
+    strategy_version: Optional[str] = None   # 本周**周初**挂的大脑版本号(v1.2-A 起判据
+                                             # 「激活日 < week_start」,落 reviews.strategy_version)。
+                                             # v1.4-⑥-A 后它是**周标签**,不再是逐笔判据——
+                                             # 该周真正用过哪几版见 charter_segments。
+    # v1.4-⑥-A:本周章程分段 + 切换清单(周内无切换 → segments 只有一段、switches 为空)。
+    charter_segments: List[CharterSegment] = field(default_factory=list)
+    charter_switches: List[CharterSwitch] = field(default_factory=list)
 
 
 def run_weekly_review(
@@ -587,16 +791,17 @@ def run_weekly_review(
 ) -> Tuple[List[WeeklyReview], List[str]]:
     """顶层入口:FIFO 闭合 → 按 ISO 周分桶 → 每周跑「对账三查」+ 统计 + 强制复盘。
 
-    **按周取「当时现役」config(v1.2-A 历史洗白修复 + 2026-07-27 审计 🟡-3)**:每个 ISO 周
-    以 `week_start` 为 ref 调 `brain.config_governing_for_week(week_start)`(判据**激活日 <
-    week_start**,即**激活当周仍按旧章程判**)解析该周 governing 的大脑版本,用它的
-    `MomentumConfig` 判止损/仓位/禁买——**不再一次性 `get_active()` 应用到所有周**。
-    否则章程升级(如 single_cap 2 万→4 万)后重跑历史周,当初超限的违纪会被今天的
-    上限凭空洗白掉;旧判据(激活日 ≤ week_end)还会在周末/北京周一凌晨激活时,把**刚
-    结束那一周**整周交给新章程判(审计实测:该周违纪 1 条 → 0 条)。无现役版本(纯 legacy
-    库经兜底退回 `get_active`,仍为 None)时,
-    止损纪律/禁买过滤两类检查诚实跳过(不臆造规则)。governing 版本号落
-    `review.strategy_version`(→ `reviews.strategy_version` 审计"这周用哪版判的")。
+    **按「成交时刻」逐笔取 config(v1.4-⑥-A,§七 P1-4;判据入口的唯一版本)**:每笔成交
+    以 `trade_instant()` 造出的北京时刻调 `brain.config_governing_at(ts)` 解析**当时**
+    governing 的大脑版本,用它的 `MomentumConfig` 判该笔——**不再按周一把抓**(章程激活
+    当周的成交被旧章程判 = 已知假警报)。哪条判据锚哪个时刻(买入/卖出/该日收盘)见模块头
+    「逐笔取章程」节。历史洗白防线**依然成立且更严**:已经结束的那一周里的成交,其成交
+    时刻必然早于之后才发生的激活 → 恒按当时的旧章程判,今天的新上限洗不白它。
+
+    `WeeklyReview.strategy_version` 仍是**周标签**(`brain.config_governing_for_week`,判据
+    「激活日 < week_start」,v1.2-A/🟡-3 语义不变,落 `reviews.strategy_version`);该周真正
+    用过哪几版、几点切的,见 `charter_segments` / `charter_switches`。无现役版本(纯 legacy
+    库经兜底退回 `get_active`,仍为 None)时,止损纪律/禁买过滤两类检查诚实跳过(不臆造规则)。
 
     `total_capital` 显式注入(默认 None → 落 `neckline.config.settings.total_capital`)
     ——与 `db_path`/`parquet_dir` 同款风格,单测可直接传值,不必монkeypatch 全局
@@ -614,21 +819,34 @@ def run_weekly_review(
         from neckline.config import settings
         total_capital = settings.total_capital
 
-    def _cfg_for_week(week_start: date) -> Tuple[Optional[MomentumConfig], Optional[str]]:
-        """解析某 ISO 周(以 `week_start` 标识)governing 版本的 (MomentumConfig, 版本号)。
-        无 / 非法 config → (None, 版本号或 None):止损/章程检查据此诚实跳过。
-
-        **判据「激活日 < week_start」= 激活当周仍按旧章程判**(2026-07-27 审计 🟡-3 修复,
-        用户拍板方案 (a))——旧写法用 `config_active_at(week_end)`(激活日 ≤ week_end),
-        周末/北京周一凌晨跑切换器会把**刚结束那一周**整周交给新章程判、洗白该周的违纪。
-        判据与理由的唯一源在 `brain.config_governing_for_week` docstring,此处不重述。"""
-        gov = brain.config_governing_for_week(week_start, db_path=db_path)
+    def _to_cfg(gov) -> Tuple[Optional[MomentumConfig], Optional[str]]:
+        """`StrategyVersion` → (MomentumConfig, 版本号)。无 / 非法 config → (None, 版本号或
+        None):止损/章程检查据此诚实跳过(不臆造规则)。"""
         if gov is None:
             return None, None
         try:
             return MomentumConfig(**gov.rule["config"]), gov.version
         except (KeyError, TypeError):
             return None, gov.version
+
+    def _cfg_for_week(week_start: date) -> Tuple[Optional[MomentumConfig], Optional[str]]:
+        """本周**周标签**版本(判据「激活日 < week_start」,v1.2-A/审计 🟡-3 语义原样保留)。
+        ⚠ v1.4-⑥-A 起它**不再是判据入口**(判据走 `_cfg_at`),只做 `strategy_version` 标签
+        与章程分段的周初基线。判据与理由的唯一源在 `brain.config_governing_for_week`
+        docstring,此处不重述。"""
+        return _to_cfg(brain.config_governing_for_week(week_start, db_path=db_path))
+
+    # 逐笔/逐日解析「该时刻 governing 的 config」(v1.4-⑥-A 判据入口)。按时刻记忆化:
+    # 同一天的多笔成交、同一段里的多天,只查一次库(`config_governing_at` 每次都读全表)。
+    _cfg_at_cache: Dict[datetime, Tuple[Optional[MomentumConfig], Optional[str]]] = {}
+
+    def _cfg_at(ts: datetime) -> Tuple[Optional[MomentumConfig], Optional[str]]:
+        if ts not in _cfg_at_cache:
+            _cfg_at_cache[ts] = _to_cfg(brain.config_governing_at(ts, db_path=db_path))
+        return _cfg_at_cache[ts]
+
+    def _version_at(ts: datetime) -> Optional[str]:
+        return _cfg_at(ts)[1]
 
     round_trips, rt_warnings = build_round_trips(trades)
     if not round_trips:
@@ -646,11 +864,21 @@ def run_weekly_review(
         else:
             all_dates.add(iso_week_key(rt.buy_date))
 
-    # cooldown 违纪与具体周次无关(整批算一次,下面按"再次买入"落在哪周分发)——用
-    # 数据截止日 asof **所在周** governing 的 cooldown_days(现役恒为 0 时 `check_cooldown`
-    # 提前返回空列表,循环体不需要重算)。同走周口径,与逐周判据一致。
-    asof_cfg, _ = _cfg_for_week(week_range(iso_week_key(asof))[0])
-    cooldown_violations = check_cooldown(round_trips, asof_cfg.cooldown_days) if asof_cfg is not None else []
+    # cooldown 违纪与具体周次无关(整批算一次,下面按"再次买入"落在哪周分发)。
+    # **v1.4-⑥-A**:`cooldown_days` 改按「**再次买入那一天**现役的章程」取——把交割单覆盖
+    # 区间按日段切开(`_charter_day_runs`),每段用该段的 `cooldown_days` 整批算一次、只保留
+    # "再次买入日落在本段内"的那些违纪。区间内无章程切换时只有一段 = 与旧的一把抓逐位等价。
+    # (现役各版 `cooldown_days` 恒为 0 → `check_cooldown` 提前返回空列表,是真实的 no-op 路径。)
+    span_lo_date = min(t.trade_date for t in trades)
+    cooldown_violations: List[str] = []
+    for run_lo, run_hi, _run_ver in _charter_day_runs(span_lo_date, asof, _version_at):
+        run_cfg, _ = _cfg_at(day_close_instant(run_lo))
+        if run_cfg is None or not run_cfg.cooldown_days:
+            continue
+        cooldown_violations += [
+            msg for msg in check_cooldown(round_trips, run_cfg.cooldown_days)
+            if _cooldown_violation_in_week(msg, run_lo, run_hi)
+        ]
 
     # 时间退出违纪审计的两侧数据(审计 🔵-9):台账全量持仓 + 系统「判该走」的最早日。
     # 整批读一次(与 cooldown 同姿势),逐周按「应离场日落在哪周」分发。库读失败不掀翻
@@ -671,7 +899,7 @@ def run_weekly_review(
     if time_exit_due:
         from neckline.calendar import next_trading_day
 
-        span_lo = min(t.trade_date for t in trades)
+        span_lo = span_lo_date
         for due in time_exit_due.values():
             try:
                 decided = datetime.strptime(due["decision_date"], "%Y%m%d").date()
@@ -684,41 +912,64 @@ def run_weekly_review(
     reviews: List[WeeklyReview] = []
     for week in sorted(all_dates):
         w_start, w_end = week_range(week)
-        # 按周取「当时现役」config(v1.2-A + 2026-07-27 审计 🟡-3):以 **week_start** 解析该周
-        # governing 版本(判据「激活日 < week_start」——激活当周仍按旧章程判,不洗白刚结束的一周)。
-        cfg, gov_version = _cfg_for_week(w_start)
+        # 周标签(v1.2-A + 审计 🟡-3 判据「激活日 < week_start」,语义不变);⑥-A 之后它只是
+        # 标签与章程分段的周初基线,**不再是任何判据的取数入口**。
+        gov_version = _cfg_for_week(w_start)[1]
         buy_trades_week = [t for t in trades if t.side == "buy" and w_start <= t.trade_date <= w_end]
         closed_week = [rt for rt in round_trips if rt.closed and rt.sell_date and w_start <= rt.sell_date <= w_end]
+        trades_week = [t for t in trades if w_start <= t.trade_date <= w_end]   # 买+卖,分段计数用
 
         review = WeeklyReview(week=week, week_start=w_start, week_end=w_end, strategy_version=gov_version)
         review.round_trips = round_trips
         review.closed_round_trips = closed_week
+        review.charter_segments, review.charter_switches = build_charter_timeline(
+            w_start, w_end, trades_week, gov_version or "", db_path=db_path,
+        )
 
         review.plan_checks = check_plan_and_ledger(buy_trades_week, db_path=db_path)
 
-        if cfg is not None and cfg.stop_pct is not None:
-            for rt in closed_week:
-                kind, note = classify_stop_discipline(rt, cfg.stop_pct)
+        # ① 止损纪律:锚**卖出时刻**(审计的是离场决策,与哨兵当时按现役 stop_pct 提醒同源)。
+        for rt in closed_week:
+            sell_at = rt.sell_instant
+            rt_cfg, _ = _cfg_at(sell_at) if sell_at is not None else (None, None)
+            if rt_cfg is not None and rt_cfg.stop_pct is not None:
+                kind, note = classify_stop_discipline(rt, rt_cfg.stop_pct)
                 review.stop_discipline.append((rt, kind, note))
                 if kind == STOP_BREACHED:
                     review.discipline_violations.append(
                         f"{rt.ts_code}({rt.name}) {rt.buy_date}买入→{rt.sell_date}卖出:{note}"
                     )
-        else:
-            for rt in closed_week:
-                review.stop_discipline.append((rt, STOP_NOT_APPLICABLE, "现役规则未设固定止损,本回合不做止损纪律判定。"))
+            else:
+                review.stop_discipline.append(
+                    (rt, STOP_NOT_APPLICABLE, "现役规则未设固定止损,本回合不做止损纪律判定。")
+                )
 
-        if cfg is not None:
-            review.discipline_violations += check_single_cap(buy_trades_week, cfg.single_cap)
+        # ② 单笔仓位上限 + ④ 禁买过滤:锚**买入时刻**(按买入时刻的章程分组,组内一次调用)。
+        #    顺序刻意保持「单笔上限 → 并发/敞口 → 禁买过滤 → 冷却」与 ⑥-A 之前逐位一致
+        #    (周内无切换时只有一组/一段,违纪清单逐位等价 = 回归护栏)。
+        buy_groups = _group_by_charter(
+            buy_trades_week, lambda t: trade_instant(t.trade_date, t.trade_time), _cfg_at,
+        )
+        for grp_cfg, _grp_ver, grp in buy_groups:
+            if grp_cfg is not None:
+                review.discipline_violations += check_single_cap(grp, grp_cfg.single_cap)
+        # ③ 并发持仓数 / 敞口:**日粒度**,按「该日收盘时刻现役的章程」把本周切成日段,
+        #    每段各自求峰值、各自比该段的 cap(见模块头「逐笔取章程」节)。
+        for run_lo, run_hi, _run_ver in _charter_day_runs(w_start, w_end, _version_at):
+            run_cfg, _ = _cfg_at(day_close_instant(run_lo))
+            if run_cfg is None:
+                continue
             review.discipline_violations += check_position_count_and_exposure(
-                round_trips, week_start=w_start, week_end=w_end, asof=asof,
-                max_positions=cfg.max_positions, max_exposure_frac=cfg.max_exposure_frac,
+                round_trips, week_start=run_lo, week_end=run_hi, asof=asof,
+                max_positions=run_cfg.max_positions, max_exposure_frac=run_cfg.max_exposure_frac,
                 total_capital=total_capital,
             )
-            review.discipline_violations += check_entry_screens(buy_trades_week, cfg, parquet_dir=parquet_dir)
-            review.discipline_violations += [
-                msg for msg in cooldown_violations if _cooldown_violation_in_week(msg, w_start, w_end)
-            ]
+        for grp_cfg, _grp_ver, grp in buy_groups:
+            if grp_cfg is not None:
+                review.discipline_violations += check_entry_screens(grp, grp_cfg, parquet_dir=parquet_dir)
+        review.discipline_violations += [
+            msg for msg in cooldown_violations if _cooldown_violation_in_week(msg, w_start, w_end)
+        ]
         # 时间退出违纪(§2.1 第 2 条周线兜底,审计 🔵-9)。与上面几条不同,本项**不读 cfg**
         # ——判据是「系统当时在 `holding_eod_check` 里记了该走」这一历史事实,不是拿今天的
         # 参数重算(同「不用今天的章程重判历史周」精神)。无现役 config 的库照样能审。
@@ -822,7 +1073,28 @@ def weekly_review_dict(review: WeeklyReview) -> dict:
         # 审计 🔵-9:该周 governing 章程版本号(列早已落 `reviews.strategy_version`,但 API
         # 响应/客户端此前看不到「这周用哪版章程判的」)。无版本(纯 legacy 库)→ 空串,
         # 客户端按「未知」展示,不臆造版本名。
+        # v1.4-⑥-A:本字段是**周初标签**;该周若发生过章程切换,逐笔实际按哪版判见
+        # `charterSegments` / `charterSwitches`(客户端展示「本周发生过章程切换」时读它们,
+        # 不要拿 strategyVersion 一个标量去说"整周都按这版判")。
         "strategyVersion": review.strategy_version or "",
+        "charterSegments": [
+            {
+                "version": s.version,
+                # 段起始时刻(北京时间 'YYYY-MM-DD HH:MM');null = 自周初起的那一段。
+                "start": s.start.strftime("%Y-%m-%d %H:%M") if s.start else None,
+                "tradeCount": s.trade_count,
+            }
+            for s in review.charter_segments
+        ],
+        "charterSwitches": [
+            {
+                "at": sw.at.strftime("%Y-%m-%d %H:%M"),
+                "fromVersion": sw.from_version,
+                "toVersion": sw.to_version,
+                "note": sw.note,
+            }
+            for sw in review.charter_switches
+        ],
         "roundTrips": [round_trip_dict(rt) for rt in review.round_trips],
         "closedRoundTrips": [round_trip_dict(rt) for rt in review.closed_round_trips],
         "planChecks": [plan_check_dict(c) for c in review.plan_checks],
@@ -840,6 +1112,11 @@ def weekly_review_dict(review: WeeklyReview) -> dict:
 __all__ = [
     "STOP_TOLERANCE_PP",
     "FORCED_REVIEW_LOSS_FRAC",
+    "trade_instant",
+    "day_close_instant",
+    "CharterSegment",
+    "CharterSwitch",
+    "build_charter_timeline",
     "RoundTrip",
     "build_round_trips",
     "STOP_BREACHED",

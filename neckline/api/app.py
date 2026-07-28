@@ -677,6 +677,22 @@ def _today_action(
     return f"持有中(D{d_count}/D{eff_max})"
 
 
+def _locked_time_exit_day(buy_date: date, locked_date: Optional[str]) -> Optional[int]:
+    """定格发生当时的 D 计数(v1.4-⑥-C)。`locked_date` 是 `holding_eod_check.
+    time_exit_locked_date`('YYYYMMDD',定格发生那天)。
+
+    **未定格 / 老快照没记这一格 / 串坏了 → None**(如实说不知道,不拿今天冒充定格日
+    ——那会把一个从没发生过的"D5 准时定格"编出来)。D 计数复用 `positions.d_count`
+    单一源(买入日 = D1,交易日历口径),不在 API 层另算一份日历。"""
+    if not locked_date:
+        return None
+    try:
+        d = datetime.strptime(locked_date, "%Y%m%d").date()
+    except (ValueError, TypeError):
+        return None
+    return pos_store.d_count(buy_date, d)
+
+
 def _shape_circuit(state: "circuit_store.CircuitState") -> CircuitStateOut:
     """熔断领域状态 → 客户端契约(诚实边界字段透出)。同 `_shape_candidate` 透传惯例。"""
     if state.episode is None:
@@ -740,10 +756,18 @@ def list_positions() -> PositionsOut:
         # v1.4-①-B:`data_unavailable` 只在**判定点且尚未定格**时把判向改成 `suspended_hold`
         # (见 `resolve_time_exit`);其余分支逐位不变。判据用**当日无 EOD 行**这一位,
         # 与 16:35 管线的 `has_data` 同义(两处各自就近取数,不互相依赖对方的快照)。
+        lock = locked.get(h.id) or {}
         te_state, eff_max = resolve_time_exit(
-            dcount, cfg, (locked.get(h.id) or {}).get("state"),
+            dcount, cfg, lock.get("state"),
             data_unavailable=stale is not None,
         )
+        # v1.4-⑥-C(§七 P1-6):定格日 ≠ D5 的显式标注。**纯派生展示位,不参与上面的判向**
+        # —— 判向已在上一行由 `resolve_time_exit` 读定格值算完,这里只是把「那天是 D 几、
+        # 比 max_hold_days 晚了几天」翻出来给界面提示(EOD 管线断跑 / ①-B 停牌票复牌后定格
+        # 都会晚于 D5,系统一直如实落库但此前界面不说)。`d_count` 复用 `positions.d_count`
+        # 单一源,不在这里重算日历。
+        locked_day = _locked_time_exit_day(buy, lock.get("date"))
+        locked_late = max(0, locked_day - max_hold) if locked_day is not None else 0
         k4_advisory = [
             K4AdvisoryOut(
                 code=hit.get("code", ""), label=hit.get("label", ""),
@@ -762,6 +786,7 @@ def list_positions() -> PositionsOut:
             retraceState=retrace,
             todayAction=_today_action(dcount, eff_max, dist, retrace, te_state),
             maxHoldDaysEffective=eff_max, timeExitState=te_state,
+            timeExitLockedDay=locked_day, timeExitLockedLateDays=locked_late,
             buyFees=h.buy_fees, sellFees=h.sell_fees,
             priceStale=(stale.to_public_dict() if stale is not None else None),
             k4DataUnavailable=snap.get("data_unavailable"),   # None=老快照未记录,如实透 null

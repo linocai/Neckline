@@ -13,6 +13,18 @@ rule 是纯参数字典(可直接喂 `MomentumConfig(**rule["config"])`),不含�
 旧章程判,2026-07-27 审计 🟡-3 修复),避免用今天的章程(如 single_cap 4 万)重判历史周把
 当初超限的违纪洗白掉(见 `review/reconcile.py::run_weekly_review`)。激活 = 系统 v 字头章程
 修订也走这张表(config 承 K 血缘、仅改仓位字段),不占 K 命名空间。
+
+**v1.4-⑥-A 时刻粒度(周复盘逐笔判)**:`config_governing_at(ts)` 把时间线解析下沉到
+**时刻**,供周复盘「成交时刻早于激活时刻按旧章程、之后按新」逐笔取 config
+(§七 P1-4;`review/reconcile.py`)。三个解析器同一条时间线、三种粒度,各有其位:
+    · `config_active_at(date)` —— 日粒度时点原语(**周复盘不要直接用**,见其 docstring);
+    · `config_governing_for_week(week_start)` —— 周粒度(判据「激活日 < week_start」);
+      ⑥-A 之后周复盘的**逐笔判据**已换成 `config_governing_at`,本函数仍是「这一周整体
+      归属哪版章程」的标签口径(`WeeklyReview.strategy_version` 的语义未变);
+    · `config_governing_at(ts)` —— **时刻粒度**(判据「激活时刻 ≤ ts」,等于算新章程)。
+**时区**:`activated_at` 由本模块 `_now()` 写,恒为 **UTC** ISO8601(`+00:00`);而成交时刻
+是**北京时间**。两者必须归一到同一条时间轴再比 —— 归一规则写死在 `_activated_instant`
+与 `config_governing_at` 的 docstring 里,调用方不要自己 strip 时区凑合比。
 """
 
 from __future__ import annotations
@@ -22,7 +34,7 @@ import sqlite3
 from datetime import date, datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from neckline.db import connection, init_schema
 
@@ -68,7 +80,12 @@ def _now() -> str:
 
 def _activated_date(v: StrategyVersion) -> Optional[date]:
     """把 `activated_at`(ISO8601 时间戳或纯日期串)取到 date 粒度,供 `config_active_at`
-    按周(week_end 是 date)比较。解析不了 → None(视作无效激活戳,不参与时间线)。"""
+    按周(week_end 是 date)比较。解析不了 → None(视作无效激活戳,不参与时间线)。
+
+    ⚠ **取的是 UTC 日期**(不换北京日期)——这是 v1.2-A 起的既有语义,`config_active_at` /
+    `config_governing_for_week` 的判据与单测都建立在它之上,**不要"顺手修正"成本地日期**
+    (为什么在 `<` 判据下这不制造洗白口,见 `config_governing_for_week` 的「时区注记」)。
+    需要真正的时刻比较请用 `_activated_instant` / `config_governing_at`(v1.4-⑥-A)。"""
     if not v.activated_at:
         return None
     try:
@@ -78,6 +95,42 @@ def _activated_date(v: StrategyVersion) -> Optional[date]:
             return date.fromisoformat(v.activated_at[:10])
         except ValueError:
             return None
+
+
+def _activated_instant(v: StrategyVersion) -> Optional[datetime]:
+    """把 `activated_at` 解析成 **tz-aware 时刻**(v1.4-⑥-A 逐笔判纪律的基础)。
+
+    **时区归一(写死,不许改)**:
+      · 带时区偏移的串(生产唯一写入者 `_now()` 写的就是 `...+00:00`)→ **原样保留其时区**,
+        比较时由 Python 自行跨时区换算(aware vs aware 比较是按绝对时刻,正确)。
+      · **不带时区**的串(手工 SQL 补的、老库遗留)→ **按 UTC 解读**。理由:本表 `activated_at`
+        的**唯一写入者**是 `_now()`,它写的就是 UTC;把 naive 戳当北京时间读会凭空把激活时刻
+        往前挪 8 小时 = 拿一个从没发生过的激活时点去判纪律。**注意与 `config_governing_at`
+        的入参约定刻意相反**(那边的 naive 是"市场时刻"故按北京时间读)——两个 naive 的来源
+        不同、约定就不同,各自在 docstring 里定死,不"统一"。
+      · 纯日期串 `'YYYY-MM-DD'` → 该日 00:00 UTC。
+      · 解析不了 → `None`(视作无效激活戳,不参与时间线;与 `_activated_date` 同款诚实降级)。
+    """
+    if not v.activated_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(v.activated_at)
+    except ValueError:
+        d = _activated_date(v)
+        return datetime.combine(d, datetime.min.time(), tzinfo=timezone.utc) if d else None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _as_aware(ts: datetime) -> datetime:
+    """入参时刻归一:naive → **按北京时间**(`CN_TZ`)解读。
+
+    调用方(周复盘逐笔判)手上的 naive datetime 一律是「市场时刻」(交割单成交时刻 /
+    该日收盘时刻),不是 UTC —— 与 `_activated_instant` 对 naive 的相反约定见那边 docstring。
+    正常路径调用方应直接传 aware 时刻(`reconcile.trade_instant` 就是这么造的),本函数
+    只是防御性兜底,不鼓励依赖。"""
+    from neckline.calendar import CN_TZ
+
+    return ts if ts.tzinfo is not None else ts.replace(tzinfo=CN_TZ)
 
 
 def save_version(
@@ -232,6 +285,65 @@ def config_governing_for_week(
     return config_active_at(week_start - timedelta(days=1), db_path=db_path)
 
 
+def config_governing_at(
+    ts: datetime, db_path: Optional[Path] = None
+) -> Optional[StrategyVersion]:
+    """解析 **某一时刻** governing 的策略版本(v1.4-⑥-A「周复盘按成交时刻逐笔判」的
+    时间线解析器,§七 P1-4)。
+
+    **判据(写死,不许改)**:governing = `激活时刻 <= ts` 的**最后一个**版本。
+      · **恰好等于激活时刻的成交算「新章程」**(`<=` 而非 `<`)。定死的理由:章程在那一
+        刻已经生效,plan §五-⑥-A 原文是「成交时刻**早于**激活时刻按旧章程、之后按新」,
+        「等于」不属于「早于」;且与日粒度原语 `config_active_at`(判据「激活日 ≤ ref」)
+        同向,两个粒度的边界语义一致,不制造第二套直觉。
+      · `ts` 早于所有激活时刻 → 取**最早激活**的版本(不臆造更早的历史章程,用已知最早
+        版本判深过去;与 `config_active_at` 同款)。
+      · **整表无任何 `activated_at`**(纯 legacy 老库)→ 退回 `get_active()`(与 v1.2 之前
+        旧行为一致;同 `config_active_at` 的 legacy 兜底)。
+
+    **时区(⑥-A 重点防的坑)**:`activated_at` 是 **UTC** 戳(`_now()` 写的),而调用方
+    手上的成交时刻是**北京时间** —— 两边都归一成 aware datetime 后再比绝对时刻:
+    `activated_at` 的归一见 `_activated_instant`,入参 `ts` 的归一见 `_as_aware`
+    (naive 入参按北京时间读;正常路径请直接传 aware,别指望兜底)。**差 8 小时的错判
+    会直接落到「这笔按哪版章程判」上**,这也是本函数不复用 `_activated_date` 的原因。
+
+    ⚠ 与 `config_governing_for_week` 的分工:后者回答「这一周整体挂哪版章程的名」
+    (`WeeklyReview.strategy_version` 标签,判据「激活日 < week_start」不变);本函数回答
+    「**这一笔**该按哪版判」。周复盘的**判据入口**自 v1.4-⑥-A 起走本函数。
+    """
+    ref = _as_aware(ts)
+    stamped = [
+        (inst, v) for inst, v in
+        ((_activated_instant(v), v) for v in list_versions(db_path=db_path))
+        if inst is not None
+    ]
+    if not stamped:
+        return get_active(db_path=db_path)
+    stamped.sort(key=lambda pair: pair[0])
+    candidates = [v for inst, v in stamped if inst <= ref]
+    return candidates[-1] if candidates else stamped[0][1]
+
+
+def activations_between(
+    start: datetime, end: datetime, db_path: Optional[Path] = None
+) -> List[Tuple[datetime, StrategyVersion]]:
+    """区间 **[start, end)** 内发生的激活,按时刻升序返回 `(激活时刻, 版本)`。
+
+    供周复盘回答「本周有没有发生过章程切换、几点切的」(⑥-A 周报分段计数文案)。
+    半开区间:周窗口用 `[周一 00:00, 下周一 00:00)` 表达,相邻周不会把同一次激活各算一遍。
+    时刻归一同 `config_governing_at`(`activated_at` 按 UTC 读、入参 naive 按北京时间读),
+    **切换时刻不另处理时区**——它就是从这条时间线上取出来的那个绝对时刻。
+    """
+    lo, hi = _as_aware(start), _as_aware(end)
+    out = [
+        (inst, v) for inst, v in
+        ((_activated_instant(v), v) for v in list_versions(db_path=db_path))
+        if inst is not None and lo <= inst < hi
+    ]
+    out.sort(key=lambda pair: pair[0])
+    return out
+
+
 def active_config(db_path: Optional[Path] = None) -> Dict:
     """现役版本的规则参数 `config`(= `MomentumConfig` 落库值)。无现役版本 → `{}`
     (调用方各自套用兜底,见 engine.py `_DEFAULT_STOP_PCT` / api 的 `_active_config`)。
@@ -253,6 +365,6 @@ def list_versions(db_path: Optional[Path] = None) -> List[StrategyVersion]:
 
 __all__ = [
     "StrategyVersion", "save_version", "activate_version", "get_version",
-    "get_active", "config_active_at", "config_governing_for_week", "active_config",
-    "list_versions",
+    "get_active", "config_active_at", "config_governing_for_week", "config_governing_at",
+    "activations_between", "active_config", "list_versions",
 ]

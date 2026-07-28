@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 
 import pytest
 
@@ -806,14 +806,22 @@ class TestActivationTimingNoWhitewash:
         assert wk.strategy_version == "v1.3"
         assert not any("超过单笔仓位上限" in v for v in wk.discipline_violations)
 
-    def test_activation_week_itself_uses_old_charter(self, isolated_env):
-        """激活当周(周三激活,同周周四又买一笔 3 万)仍按旧章程 K1 判 —— 这是方案 (a)
-        的定义行为:最保守,且与 staged「清仓后才切」自洽。"""
-        _seed_activated_at(isolated_env.db_path, "2026-07-22T10:00:00+00:00")   # 周三激活
+    def test_activation_week_now_judged_per_trade(self, isolated_env):
+        """⚠ **v1.4-⑥-A 起本用例的期望被规格取代**(§七 P1-4):激活当周的成交不再整周
+        按旧章程判,而是**按成交时刻逐笔判** —— 周三北京 18:00 激活、周四买的那笔 3 万落在
+        激活**之后** → 按 v1.3(4 万)判,**不违纪**(旧行为在这里报违纪 = 用户按新章程打却
+        被误标的假警报,正是 P1-4 要修的病)。
+
+        🟡-3 的保护并未削弱,而是更严:**已经结束的那一周**里的成交,其成交时刻必然早于
+        之后才发生的激活 → 恒按旧章程判(同 class 上面四个参数化用例仍绿)。
+        `strategy_version` 是**周初标签**,语义未变,仍是 K1。"""
+        _seed_activated_at(isolated_env.db_path, "2026-07-22T10:00:00+00:00")   # 周三北京 18:00 激活
         trades = _30k_trades(date(2026, 7, 23), date(2026, 7, 24))              # 周四买、周五卖
         wk = _week_of(isolated_env, trades, date(2026, 7, 23))
-        assert wk.strategy_version == "K1"
-        assert any("超过单笔仓位上限" in v for v in wk.discipline_violations)
+        assert wk.strategy_version == "K1"                       # 周初标签口径不变
+        assert not any("超过单笔仓位上限" in v for v in wk.discipline_violations)
+        assert [s.version for s in wk.charter_segments] == ["K1", "v1.3"]
+        assert [sw.to_version for sw in wk.charter_switches] == ["v1.3"]
 
     def test_governing_resolver_boundary(self, isolated_env):
         """`config_governing_for_week` 边界:激活日 == week_start 那一周仍归旧版本
@@ -972,3 +980,278 @@ class TestTimeExitDiscipline:
         reviews, _ = run_weekly_review(trades, db_path=isolated_env.db_path,
                                        parquet_dir=isolated_env.parquet_dir)
         assert not any("时间退出纪律" in m for r in reviews for m in r.discipline_violations)
+
+
+# ======================================================================
+#  v1.4-⑥-A(§七 P1-4):周复盘章程**按成交时刻逐笔判** 🔴 碰纪律判定
+#  ⚠ 时间锚:2026-07-20 周一、07-26 周日;下一周 07-27(周一)~08-02(周日)。
+#     `activated_at` 落库是 **UTC** 戳,成交时刻是**北京时间**(UTC+8)。
+# ======================================================================
+
+def _seed_charter_pair(db_path, v13_activated_at: str, *, v13_extra: dict = None):
+    """K1(2 万上限 / 五仓 / 敞口 60% / 禁高弹,激活 2026-07-13T00:00Z)
+    + v1.3(4 万上限 / 三仓 / 敞口 100% / 不禁高弹,按给定 UTC 戳激活为现役)。"""
+    from neckline.db import connection
+    from neckline.strategy import brain
+    from .conftest import TEST_RULE_V1_CONFIG
+
+    k1 = dict(TEST_RULE_V1_CONFIG)
+    v13 = dict(TEST_RULE_V1_CONFIG)
+    v13.update(single_cap=40000.0, max_positions=3, max_exposure_frac=1.0,
+               forbid_high_elasticity=False)
+    v13.update(v13_extra or {})
+    brain.save_version("K1", {"config": k1}, "k1", activate=True, db_path=db_path)
+    brain.save_version("v1.3", {"config": v13, "lineage": "K1"}, "v1.3", activate=False, db_path=db_path)
+    with connection(db_path) as conn:
+        conn.execute("UPDATE strategy_versions SET activated_at=?, is_active=0 WHERE version='K1'",
+                     ("2026-07-13T00:00:00+00:00",))
+        conn.execute("UPDATE strategy_versions SET activated_at=?, is_active=1 WHERE version='v1.3'",
+                     (v13_activated_at,))
+
+
+class TestTradeInstant:
+    """`trade_instant`:交割单只有日期时按**该日收盘时刻**(北京时间)——⑥-A 定死口径。"""
+
+    def test_date_only_falls_back_to_market_close(self):
+        from neckline.calendar import CN_TZ, MARKET_CLOSE_TIME
+        from neckline.review.reconcile import trade_instant
+
+        ts = trade_instant(date(2026, 7, 27))
+        assert ts.time() == MARKET_CLOSE_TIME == time(15, 0)
+        assert ts.utcoffset() == CN_TZ.utcoffset(None)      # 北京时间 aware,不是 naive
+
+    def test_real_time_wins_over_fallback(self):
+        from neckline.review.reconcile import trade_instant
+
+        assert trade_instant(date(2026, 7, 27), time(10, 30)).time() == time(10, 30)
+
+    def test_day_close_instant_shares_the_same_source(self):
+        from neckline.review.reconcile import day_close_instant, trade_instant
+
+        assert day_close_instant(date(2026, 7, 27)) == trade_instant(date(2026, 7, 27))
+
+
+class TestPerTradeCharter:
+    """① 跨激活时刻的一周成交:切换前后各一笔,判向各按各的章程。"""
+
+    def test_before_and_after_activation_in_same_week(self, isolated_env):
+        # 周三北京 18:00 激活(UTC 10:00)。周二买 3 万 → K1 违纪;周四买 3 万 → v1.3 不违纪。
+        _seed_charter_pair(isolated_env.db_path, "2026-07-22T10:00:00+00:00")
+        trades = [
+            _trade(date(2026, 7, 21), "600519.SH", "buy", 300.0, 100, name="切换前"),
+            _trade(date(2026, 7, 23), "600036.SH", "buy", 300.0, 100, name="切换后"),
+        ]
+        wk = _week_of(isolated_env, trades, date(2026, 7, 21))
+        caps = [v for v in wk.discipline_violations if "超过单笔仓位上限" in v]
+        assert len(caps) == 1
+        assert "600519.SH" in caps[0] and "¥20,000" in caps[0]     # 切换前那笔按 K1 判
+        assert not any("600036.SH" in v for v in wk.discipline_violations)
+
+    def test_exact_activation_instant_counts_as_new_charter(self, isolated_env):
+        """边界定死:成交时刻**恰好等于**激活时刻 → 新章程。激活 UTC 07:00 = 北京 15:00
+        = 交割单只有日期时的兜底时刻,故当日那笔按 v1.3(4 万)判,不违纪;
+        前一天同样一笔仍按 K1 判,违纪。"""
+        _seed_charter_pair(isolated_env.db_path, "2026-07-22T07:00:00+00:00")
+        trades = [
+            _trade(date(2026, 7, 21), "600519.SH", "buy", 300.0, 100),
+            _trade(date(2026, 7, 22), "600036.SH", "buy", 300.0, 100),
+        ]
+        wk = _week_of(isolated_env, trades, date(2026, 7, 21))
+        caps = [v for v in wk.discipline_violations if "超过单笔仓位上限" in v]
+        assert len(caps) == 1 and "600519.SH" in caps[0]
+
+    def test_utc_beijing_normalization_no_8h_error(self, isolated_env):
+        """**时区命门**:激活 UTC 08:00 = **北京 16:00**(收盘之后)。同日(按收盘 15:00 兜底)
+        那笔 3 万必须仍判 K1 违纪 —— 把 UTC 戳当北京时间裸比(08:00 < 15:00)会错判成
+        v1.3、把违纪洗掉。"""
+        _seed_charter_pair(isolated_env.db_path, "2026-07-22T08:00:00+00:00")
+        trades = [_trade(date(2026, 7, 22), "600519.SH", "buy", 300.0, 100)]
+        wk = _week_of(isolated_env, trades, date(2026, 7, 22))
+        assert any("超过单笔仓位上限" in v for v in wk.discipline_violations)
+        # 次日同样一笔 → 已在激活之后 → 不违纪(证明闸没把新章程一起堵死)
+        trades2 = [_trade(date(2026, 7, 23), "600036.SH", "buy", 300.0, 100)]
+        wk2 = _week_of(isolated_env, trades2, date(2026, 7, 23))
+        assert not any("超过单笔仓位上限" in v for v in wk2.discipline_violations)
+
+    def test_intraday_activation_uses_close_fallback(self, isolated_env):
+        """③ 只有日期没有时刻 → 按该日收盘取 config。生产真实形态:激活 UTC 06:36
+        (= 北京 14:36,盘中)→ 当日成交按收盘 15:00 判 = **新**章程。"""
+        _seed_charter_pair(isolated_env.db_path, "2026-07-27T06:36:10+00:00")
+        trades = [_trade(date(2026, 7, 27), "600519.SH", "buy", 300.0, 100)]
+        wk = _week_of(isolated_env, trades, date(2026, 7, 27))
+        assert not any("超过单笔仓位上限" in v for v in wk.discipline_violations)
+
+    def test_explicit_trade_time_before_activation_still_old_charter(self, isolated_env):
+        """交割单**带真实成交时刻**时以真时刻为准(不再吃收盘兜底):同日北京 10:00 成交、
+        14:36 才激活 → 仍按旧章程 K1 判,违纪不被洗掉。"""
+        _seed_charter_pair(isolated_env.db_path, "2026-07-27T06:36:10+00:00")
+        t = _trade(date(2026, 7, 27), "600519.SH", "buy", 300.0, 100)
+        t.trade_time = time(10, 0)
+        wk = _week_of(isolated_env, [t], date(2026, 7, 27))
+        assert any("超过单笔仓位上限" in v for v in wk.discipline_violations)
+
+    def test_stop_discipline_anchored_at_sell_instant(self, isolated_env):
+        """止损纪律锚**卖出时刻**(审计的是离场决策,与哨兵按当时现役 stop_pct 提醒同源):
+        v1.3 把 stop_pct 抬到 0.10,买在旧章程下、卖在新章程下的 -6.7% 回合按**新**线判
+        → 不再算破止损。"""
+        _seed_charter_pair(isolated_env.db_path, "2026-07-22T10:00:00+00:00", v13_extra={"stop_pct": 0.10})
+        trades = [
+            _trade(date(2026, 7, 21), "600519.SH", "buy", 100.0, 100),   # 激活前买
+            _trade(date(2026, 7, 23), "600519.SH", "sell", 93.3, 100),   # 激活后卖,-6.7%
+        ]
+        wk = _week_of(isolated_env, trades, date(2026, 7, 21))
+        assert [kind for _, kind, _ in wk.stop_discipline] == [STOP_NOT_TRIGGERED]
+        assert not any("止损" in v for v in wk.discipline_violations)
+
+    def test_exposure_and_count_use_per_day_charter(self, isolated_env):
+        """并发持仓数 / 敞口是**日粒度**判据:按「该日收盘时刻现役的章程」切段判。
+        周二(K1:五仓/60%)持 6 只 ¥90,000 → 违纪;周四(v1.3:三仓/100%)只剩 2 只
+        ¥30,000 → 不违纪。若整周一把抓用 K1 判就会多报、用 v1.3 判就会漏报周二那天。"""
+        _seed_charter_pair(isolated_env.db_path, "2026-07-22T10:00:00+00:00")   # 周三北京 18:00
+        codes = ["600519.SH", "600036.SH", "601398.SH", "600030.SH", "600000.SH", "600004.SH"]
+        trades = []
+        for c in codes:
+            trades.append(_trade(date(2026, 7, 21), c, "buy", 150.0, 100))       # 各 ¥15,000
+        for c in codes[:4]:
+            trades.append(_trade(date(2026, 7, 22), c, "sell", 151.0, 100))      # 周三清掉 4 只
+        wk = _week_of(isolated_env, trades, date(2026, 7, 21))
+        cnt = [v for v in wk.discipline_violations if "并发持仓最多达" in v]
+        expo = [v for v in wk.discipline_violations if "持仓总敞口最高达" in v]
+        assert len(cnt) == 1 and "6 只" in cnt[0] and "最多持 5 只" in cnt[0]     # K1 段判出来的
+        assert len(expo) == 1 and "60%" in expo[0]
+
+
+class TestNoSwitchWeekBitwiseEquivalence:
+    """② 回归护栏:**周内无章程切换时,逐笔判据与 ⑥-A 之前的按周判据逐位等价**。
+    golden 取自改造前的实现(scratchpad 对拍脚本实测,四类违纪 + 顺序 + 文案全一致)。"""
+
+    TRADES = [
+        _trade(date(2026, 7, 20), "600519.SH", "buy", 300.0, 100),   # 3 万 > K1 2 万上限
+        _trade(date(2026, 7, 20), "600036.SH", "buy", 150.0, 100),
+        _trade(date(2026, 7, 20), "601398.SH", "buy", 150.0, 100),
+        _trade(date(2026, 7, 21), "600030.SH", "buy", 150.0, 100),
+        _trade(date(2026, 7, 21), "600000.SH", "buy", 150.0, 100),
+        _trade(date(2026, 7, 21), "600004.SH", "buy", 150.0, 100),   # 第 6 只 → 超 max_positions=5
+        _trade(date(2026, 7, 22), "600519.SH", "sell", 280.0, 100),  # -6.7% 破止损
+        _trade(date(2026, 7, 23), "600036.SH", "sell", 153.0, 100),  # +2% 未触及容差带
+    ]
+    GOLDEN = [
+        "600519.SH(示例票) 2026-07-20买入→2026-07-22卖出:卖出价相对买入价 -6.7%,"
+        "跌破止损容差带下沿(-6%),疑似未按 -5% 止损离场(§1.3 第一死因、§2.1 第1条违纪)。",
+        "600519.SH(示例票)于 2026-07-20 买入金额 ¥30,000,超过单笔仓位上限 ¥20,000(§2.1 第3条)。",
+        "本周并发持仓最多达 6 只(约 2026-07-21),超过最多持 5 只的仓位纪律(§2.1 第3条)。",
+        "本周持仓总敞口最高达 ¥105,000(约 2026-07-21,占总仓 87.5%),超过敞口上限 60%"
+        "(¥72,000,§2.1 第3条)。",
+    ]
+
+    def test_violations_bitwise_identical_to_pre_v14_behavior(self, isolated_env):
+        _seed_charter_pair(isolated_env.db_path, "2026-09-01T00:00:00+00:00")   # 激活远在本周之后
+        wk = _week_of(isolated_env, self.TRADES, date(2026, 7, 20))
+        assert wk.strategy_version == "K1"
+        assert wk.discipline_violations == self.GOLDEN            # 内容 + 顺序逐位一致
+        assert [(rt.ts_code, kind) for rt, kind, _ in wk.stop_discipline] == [
+            ("600519.SH", STOP_BREACHED), ("600036.SH", STOP_NOT_TRIGGERED),
+        ]
+        assert wk.charter_switches == []                          # 无切换
+        assert [(s.version, s.start, s.trade_count) for s in wk.charter_segments] == [
+            ("K1", None, len(self.TRADES)),
+        ]
+
+    def test_post_activation_week_also_bitwise_stable(self, isolated_env):
+        """对照方向:整周都在激活之后 → 全按新章程,4 万上限下同一笔 3 万不违纪、
+        三仓制下 6 只并发才是违纪点(证明等价性不是"两边都没判")。"""
+        _seed_charter_pair(isolated_env.db_path, "2026-07-13T12:00:00+00:00")
+        wk = _week_of(isolated_env, self.TRADES, date(2026, 7, 20))
+        assert wk.strategy_version == "v1.3"
+        assert not any("超过单笔仓位上限" in v for v in wk.discipline_violations)
+        assert any("超过最多持 3 只" in v for v in wk.discipline_violations)
+        assert wk.charter_switches == []
+
+
+class TestCharterSwitchReporting:
+    """周报呈现:注明切换时刻 + 分段计数(plan §五-⑥-A「周报呈现」)。"""
+
+    def _switch_week(self, isolated_env):
+        _seed_charter_pair(isolated_env.db_path, "2026-07-29T10:00:00+00:00")   # 周三北京 18:00
+        trades = [
+            _trade(date(2026, 7, 27), "600519.SH", "buy", 300.0, 100),   # 切换前
+            _trade(date(2026, 7, 28), "600036.SH", "buy", 300.0, 100),   # 切换前
+            _trade(date(2026, 7, 30), "601398.SH", "buy", 300.0, 100),   # 切换后
+        ]
+        return _week_of(isolated_env, trades, date(2026, 7, 27))
+
+    def test_segments_and_counts(self, isolated_env):
+        wk = self._switch_week(isolated_env)
+        assert [(s.version, s.trade_count) for s in wk.charter_segments] == [("K1", 2), ("v1.3", 1)]
+        assert wk.charter_segments[0].start is None                 # 第一段自周初起
+        assert wk.charter_segments[1].start.strftime("%Y-%m-%d %H:%M") == "2026-07-29 18:00"
+
+    def test_switch_note_text(self, isolated_env):
+        wk = self._switch_week(isolated_env)
+        assert len(wk.charter_switches) == 1
+        sw = wk.charter_switches[0]
+        assert sw.from_version == "K1" and sw.to_version == "v1.3"
+        assert sw.note == (
+            "本周 2026-07-29 18:00 发生章程切换 K1→v1.3"
+            "(切换前 2 笔按 K1 判、切换后 1 笔按 v1.3 判)。"
+        )
+
+    def test_violations_are_segmented(self, isolated_env):
+        """两笔切换前的 3 万按 K1 报违纪、切换后那笔按 v1.3 不报 —— 分段计数与判定一致。"""
+        wk = self._switch_week(isolated_env)
+        caps = [v for v in wk.discipline_violations if "超过单笔仓位上限" in v]
+        assert len(caps) == 2
+        assert all("601398.SH" not in v for v in caps)
+
+    def test_dict_and_material_expose_switch(self, isolated_env):
+        import json
+
+        wk = self._switch_week(isolated_env)
+        d = weekly_review_dict(wk)
+        json.dumps(d)   # JSON 安全(datetime 已格式化成串,不裸传对象)
+        assert d["strategyVersion"] == "K1"                       # 周初标签口径不变
+        assert [s["tradeCount"] for s in d["charterSegments"]] == [2, 1]
+        assert d["charterSegments"][0]["start"] is None
+        assert d["charterSwitches"][0]["at"] == "2026-07-29 18:00"
+        assert d["charterSwitches"][0]["fromVersion"] == "K1"
+
+        from neckline.review.material import build_material_text
+        text = build_material_text(wk)
+        assert "发生章程切换 K1→v1.3" in text and "切换前 2 笔" in text
+        assert "按成交时刻逐笔取当时现役的章程" in text
+
+    def test_no_switch_week_material_silent(self, isolated_env):
+        """无切换的周**不出**这段文案(不制造每周都在的噪音)。"""
+        from neckline.review.material import build_material_text
+
+        _seed_charter_pair(isolated_env.db_path, "2026-09-01T00:00:00+00:00")
+        trades = [_trade(date(2026, 7, 20), "600519.SH", "buy", 150.0, 100)]
+        wk = _week_of(isolated_env, trades, date(2026, 7, 20))
+        assert wk.charter_switches == []
+        assert "章程切换" not in build_material_text(wk)
+
+    def test_switch_after_all_trades_reported_with_zero_after(self, isolated_env):
+        """周六激活(本周所有成交都在切换之前)→ 仍如实注明"本周发生过切换",
+        切换后 0 笔。**不静默**:发生过就说,数是 0 就写 0。"""
+        _seed_charter_pair(isolated_env.db_path, "2026-08-01T02:00:00+00:00")   # 周六北京 10:00
+        trades = [_trade(date(2026, 7, 28), "600519.SH", "buy", 150.0, 100)]
+        wk = _week_of(isolated_env, trades, date(2026, 7, 28))
+        assert len(wk.charter_switches) == 1
+        assert "切换后 0 笔" in wk.charter_switches[0].note
+        assert [(s.version, s.trade_count) for s in wk.charter_segments] == [("K1", 1), ("v1.3", 0)]
+
+    def test_reactivating_same_version_is_not_a_switch(self, isolated_env):
+        """同版本再激活(回滚/重激活)不算切换 —— 阈值没变,报出来只是噪音。"""
+        from neckline.db import connection
+        from neckline.strategy import brain
+        from .conftest import TEST_RULE_V1_CONFIG
+
+        brain.save_version("K1", {"config": dict(TEST_RULE_V1_CONFIG)}, "k1",
+                           activate=True, db_path=isolated_env.db_path)
+        with connection(isolated_env.db_path) as conn:
+            conn.execute("UPDATE strategy_versions SET activated_at=? WHERE version='K1'",
+                         ("2026-07-29T10:00:00+00:00",))   # 唯一一版,激活戳落在本周内
+        trades = [_trade(date(2026, 7, 27), "600519.SH", "buy", 150.0, 100)]
+        wk = _week_of(isolated_env, trades, date(2026, 7, 27))
+        assert wk.charter_switches == []
+        assert [s.version for s in wk.charter_segments] == ["K1"]

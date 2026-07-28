@@ -82,6 +82,37 @@
       预算内经常扫不完自选池、需要扫更多标的**,下一步应先验证供应商真实限频、
       再评估并发,而不是本次顺手做。
 
+**自选隔日轮扫(v1.4-⑥-B,§七 P1-5)**:
+
+    · **病**:3 持仓 + 16 自选 = 19 标的,2026-07-27 那次 300s 预算耗尽、**8 只自选
+      未扫**(由 `codes_skipped` 如实披露,没有静默);自选只会越来越多。
+    · **选型与依据(诚实标注,勿当成实测结论引用)**:plan §五-⑥-B 给的是二选一
+      ——「限频允许 → 受控并发 + 预算抬到 600s」 vs 「限频不允许 → 自选隔日轮扫」,
+      并要求**先实测供应商限频再选**。**施工环境(2026-07-29)本地无任何可用 GLM
+      key**(`.env` 只有 `TUSHARE_TOKEN`,环境变量与 `app_settings.llm_api_key` 均空)
+      → **限频无法实测**。按"不许拍脑袋开并发"的原则取**保守分支 = 自选隔日轮扫**,
+      并发路**留待有 key 时实测再评估**(届时对照上面 (a)(b)(c) 三条理由逐条回答)。
+      连带取舍:**`LLM_SCAN_BUDGET_SECONDS` 维持 300s 不抬** —— 轮扫把单次待扫量
+      从 19 压到 ~11,预算已经够用;抬预算会同时抬高 16:35 报告的总墙钟与
+      `neckline-report.service MemoryMax` 的压力(§七 P4-16),没必要为一个已经
+      被轮扫解决的问题付这个账。
+    · **规则**:**持仓每日必扫**(有真金风险,绝不轮空);**自选**按 `ts_code` 的
+      **稳定哈希**(`zlib.crc32`,**不是 Python `hash()`** —— 后者带进程盐、
+      `PYTHONHASHSEED` 一变分组就漂,历史报告无法复现)分 A/B 两组,按
+      `trade_date.toordinal()` 的奇偶交替扫。**分组与日期都是纯函数**:同一天重跑
+      报告 / 历史回放,轮到的组恒定,不依赖任何库里的轮转计数器。
+    · **诚实披露**:`NewsAlertScanStatus` 新增 `rotation_group`(本次扫的是哪一组)
+      与 `codes_rotation_deferred`(本日轮空的自选数)。**`codes_rotation_deferred`
+      与 `codes_skipped`(预算耗尽没发起)、`codes_failed`(发起了但失败)、
+      `codes_no_search`(搜索 0 命中)四者语义各不相同,不许合并**——"今天轮不到"
+      与"今天没扫完"是两件事,读者据此才知道空 `items` 的含义。
+    · **减持类(TuShare)不参与轮扫**:它是一次区间批量调用、免 LLM、成本与标的数
+      无关,轮扫它只会白白降低覆盖 —— **轮扫是 LLM 侧的预算措施,不是全模块策略**。
+    · **相邻交易日跨偶数个自然日时会连续两天扫同一组**(如节假日把 Fri→Wed 拉成
+      5 天是奇数、但 Thu→Mon 之类跨 4 天是偶数)。不修:修它要么引入库里的轮转
+      状态(历史回放不可复现)、要么查交易日历(为一个"偶尔多扫一次同一组"的小事
+      引入日历依赖)。**如实披露在 `rotation_group` 里,不假装严格交替。**
+
 **减持类跨日事件去重(2026-07-26 coordinator 必改,不接受"同一简化"现状)**:
     · **问题**:原实现 `news_alerts.trade_date` = 扫描/报告日,同一笔减持公告在
       连续多天的扫描窗口(`_REDUCTION_LOOKBACK_DAYS`)内会被反复"发现"、每天各
@@ -118,6 +149,7 @@ from __future__ import annotations
 
 import logging
 import time
+import zlib
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -158,7 +190,12 @@ _HOLDER_TYPE_LABEL: Dict[str, str] = {"G": "高管", "P": "个人股东", "C": "
 # 待实盘校准)。5 分钟量级:约等于 1-2 只标的撞到最坏超时+重试(270s/只)仍能
 # 收尾,不至于让整份 16:35 报告被消息面拖垮——这是"扫描阶段本身的止损线",
 # 不是"保证扫完所有标的"的承诺。
+# **v1.4-⑥-B 维持 300s 不抬**(理由见模块头「自选隔日轮扫」节:轮扫已把单次待扫量
+# 压下来,抬预算会同时抬报告总墙钟与 MemoryMax 压力〔§七 P4-16〕)。
 LLM_SCAN_BUDGET_SECONDS = 300.0
+
+# 自选轮扫分组标签(v1.4-⑥-B)。两组,按交易日奇偶交替;取值进 `rotation_group` 如实下发。
+ROTATION_GROUPS = ("A", "B")
 
 EVIDENCE_NOTE = (
     "减持:TuShare stk_holdertrade 结构化数据(股东增减持公告口径,强证据),"
@@ -203,12 +240,19 @@ class NewsAlertScanStatus:
     # (压根没答上来)、codes_skipped(没发起调用)同属「扫了 vs 没扫」的分辨维度,
     # 三者语义不同不可合并。0 命中为何会静默发生见 `llm.base.search_coverage_line`。
     codes_no_search: int = 0
+    # v1.4-⑥-B 自选隔日轮扫(仅 source=llm):本次扫的是哪一组自选(`ROTATION_GROUPS`)
+    # + 本日**轮空**(压根不在本次名单里)的自选数。**与 codes_skipped 语义不同不可合并**:
+    # 前者是"今天轮不到它",后者是"排进名单了但预算耗尽没发起"。持仓不参与轮扫,恒被扫。
+    rotation_group: str = ""
+    codes_rotation_deferred: int = 0
 
     def to_public_dict(self) -> Dict[str, Any]:
         return {
             "source": self.source, "scanned": self.scanned, "reason": self.reason,
             "codesTotal": self.codes_total, "codesFailed": self.codes_failed,
             "codesSkipped": self.codes_skipped, "codesNoSearch": self.codes_no_search,
+            "rotationGroup": self.rotation_group,
+            "codesRotationDeferred": self.codes_rotation_deferred,
         }
 
 
@@ -245,6 +289,46 @@ def empty_news_alerts_report(trade_date: date, reason: str) -> NewsAlertsReport:
             NewsAlertScanStatus(source=SOURCE_LLM_PREFIX, scanned=False, reason=reason),
         ],
     )
+
+
+def watchlist_rotation_group(ts_code: str) -> str:
+    """某只**自选**票固定属于哪一组(v1.4-⑥-B)。**稳定哈希 `zlib.crc32`**,不是内置
+    `hash()`(带进程盐,`PYTHONHASHSEED` 一变分组就漂 → 历史报告的 `rotationGroup`
+    无法复现)。纯函数、无状态。"""
+    return ROTATION_GROUPS[zlib.crc32(ts_code.encode("utf-8")) % len(ROTATION_GROUPS)]
+
+
+def rotation_group_for_date(trade_date: date) -> str:
+    """某个报告日轮到扫哪一组自选(v1.4-⑥-B)。按 `toordinal()` 奇偶交替 —— **纯日期
+    函数**:同一天重跑 / 历史回放恒定,不依赖库里的轮转计数器(计数器会让"重跑一次
+    报告"就把轮转推进一格,历史不可复现)。相邻交易日跨偶数自然日时会连续两天同组,
+    如实披露不假装严格交替(见模块头)。"""
+    return ROTATION_GROUPS[trade_date.toordinal() % len(ROTATION_GROUPS)]
+
+
+def _rotated_llm_targets(
+    position_codes: Sequence[Tuple[str, str]], watchlist_codes: Sequence[Tuple[str, str]],
+    trade_date: date,
+) -> Tuple[List[Tuple[str, str]], str, int]:
+    """LLM 侧本次真正要扫的名单(v1.4-⑥-B)= **全部持仓** + **本日轮到那一组的自选**,
+    仍按「持仓优先、自选靠后」排序。返回 `(名单, 本日组标签, 轮空的自选数)`。
+
+    **同时是持仓的自选不参与轮转**(它在持仓侧天天被扫,轮空计数里也不算它一份——
+    否则会报出一个"其实每天都扫了"的假轮空数)。"""
+    group = rotation_group_for_date(trade_date)
+    position_set = {c for c, _ in position_codes}
+    picked: List[Tuple[str, str]] = []
+    deferred = 0
+    seen: Set[str] = set()
+    for code, name in watchlist_codes:
+        if code in position_set or code in seen:
+            continue
+        seen.add(code)
+        if watchlist_rotation_group(code) == group:
+            picked.append((code, name))
+        else:
+            deferred += 1
+    return _priority_ordered_unique(position_codes, picked), group, deferred
 
 
 def _priority_ordered_unique(
@@ -345,17 +429,27 @@ def _scan_llm_categories(
     codes: Sequence[Tuple[str, str]],
     *, provider: Optional[LLMProvider], transport: Optional[Any] = None,
     budget_seconds: float = LLM_SCAN_BUDGET_SECONDS,
+    rotation_group: str = "", rotation_deferred: int = 0,
 ) -> Tuple[List[NewsAlertItem], NewsAlertScanStatus]:
-    """`codes` 须已按「持仓优先、自选靠后」排好序(见 `_priority_ordered_unique`,
-    由 `build_news_alerts` 负责拼接)——本函数只管按序扫描 + 预算封顶,不重排。"""
+    """`codes` 须已按「持仓优先、自选靠后」排好序、且已按本日轮扫组筛过(见
+    `_rotated_llm_targets`,由 `build_news_alerts` 负责)——本函数只管按序扫描 + 预算
+    封顶,**不重排、不再筛**。`rotation_group`/`rotation_deferred` 只做如实透传披露。"""
+    rot = {"rotation_group": rotation_group, "codes_rotation_deferred": rotation_deferred}
+    rot_reason = (
+        f"自选隔日轮扫:本次扫的是 {rotation_group} 组,{rotation_deferred} 只自选本日轮空"
+        f"(明日轮到,不代表确认无消息;持仓每日必扫,不参与轮扫)。"
+        if rotation_deferred else ""
+    )
     if provider is None:
         return [], NewsAlertScanStatus(
             source=SOURCE_LLM_PREFIX, scanned=False,
             reason="未配置 LLM_PROVIDER/LLM_API_KEY(缺 key,全部跳过,未发起任何网络调用)。",
-            codes_total=len(codes),
+            codes_total=len(codes), **rot,
         )
     if not codes:
-        return [], NewsAlertScanStatus(source=SOURCE_LLM_PREFIX, scanned=True, codes_total=0)
+        return [], NewsAlertScanStatus(
+            source=SOURCE_LLM_PREFIX, scanned=True, codes_total=0, reason=rot_reason, **rot,
+        )
 
     items: List[NewsAlertItem] = []
     failed = 0
@@ -387,6 +481,8 @@ def _scan_llm_categories(
             ))
 
     reason_parts: List[str] = []
+    if rot_reason:
+        reason_parts.append(rot_reason)
     if failed:
         reason_parts.append(
             f"{failed}/{len(codes)} 只标的 LLM 调用失败或未按格式输出,已跳过"
@@ -405,7 +501,7 @@ def _scan_llm_categories(
     return items, NewsAlertScanStatus(
         source=SOURCE_LLM_PREFIX, scanned=True, reason="".join(reason_parts),
         codes_total=len(codes), codes_failed=failed, codes_skipped=skipped,
-        codes_no_search=no_search,
+        codes_no_search=no_search, **rot,
     )
 
 
@@ -428,6 +524,10 @@ def build_news_alerts(
     两者均为空 → 直接空报告,零 I/O(两源均标 `scanned=True` 空操作——不是
     "缺 key"式的未扫描,是"没有扫描对象"这个更平凡的空态)。
 
+    **v1.4-⑥-B 自选隔日轮扫**:减持类(TuShare 批量、免 LLM)仍覆盖**全量**持仓+自选;
+    LLM 侧只扫「全部持仓 + 本日轮到那组自选」(`_rotated_llm_targets`),轮空数与组标签
+    随 `newsAlertsScan` 如实下发。见模块头「自选隔日轮扫」节。
+
     `db_path`:减持类跨日事件去重要查 `news_alerts` 表历史记录,`None` → 走
     `settings.db_path`(生产默认);单测传隔离库路径。"""
     ordered = _priority_ordered_unique(position_codes, watchlist_codes)
@@ -436,15 +536,20 @@ def build_news_alerts(
             trade_date=trade_date,
             scan_statuses=[
                 NewsAlertScanStatus(source=SOURCE_TUSHARE_HOLDERTRADE, scanned=True),
-                NewsAlertScanStatus(source=SOURCE_LLM_PREFIX, scanned=True, codes_total=0),
+                NewsAlertScanStatus(source=SOURCE_LLM_PREFIX, scanned=True, codes_total=0,
+                                    rotation_group=rotation_group_for_date(trade_date)),
             ],
         )
     names = {c: n for c, n in ordered}
     code_set = set(names)
 
     reduction_items, reduction_status = _scan_reduction(trade_date, code_set, names, db_path)
+    llm_targets, rot_group, rot_deferred = _rotated_llm_targets(
+        position_codes, watchlist_codes, trade_date,
+    )
     llm_items, llm_status = _scan_llm_categories(
-        ordered, provider=provider, transport=transport, budget_seconds=llm_budget_seconds,
+        llm_targets, provider=provider, transport=transport, budget_seconds=llm_budget_seconds,
+        rotation_group=rot_group, rotation_deferred=rot_deferred,
     )
 
     return NewsAlertsReport(
@@ -461,6 +566,9 @@ __all__ = [
     "SOURCE_LLM_PREFIX",
     "EVIDENCE_NOTE",
     "LLM_SCAN_BUDGET_SECONDS",
+    "ROTATION_GROUPS",
+    "watchlist_rotation_group",
+    "rotation_group_for_date",
     "NewsAlertItem",
     "NewsAlertScanStatus",
     "NewsAlertsReport",

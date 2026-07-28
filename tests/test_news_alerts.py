@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -295,6 +295,24 @@ class TestLLMCategoriesScan:
         assert "1/2" in status.reason
 
 
+def _watchlist_in_today_group(n: int, trade_date=D, label="自选"):
+    """构造 n 只**全部落在 `trade_date` 本日轮扫组**的自选(码 → 组是稳定哈希,见
+    `watchlist_rotation_group`)。用于「预算 / 持仓优先」这类与 ⑥-B 轮扫无关的用例:
+    不这么构造的话,半数自选会因为轮空而根本不进名单,把预算断言测成别的东西
+    (轮扫本身有专门的 `TestWatchlistRotation` 锁)。"""
+    from neckline.report.news_alerts import rotation_group_for_date, watchlist_rotation_group
+
+    group = rotation_group_for_date(trade_date)
+    out = []
+    i = 0
+    while len(out) < n:
+        code = f"{600000 + i:06d}.SH"
+        if watchlist_rotation_group(code) == group:
+            out.append((code, f"{label}{len(out)}"))
+        i += 1
+    return out
+
+
 class TestLLMWallClockBudgetAndPriority:
     """2026-07-26 必改 1(生产风险):LLM 侧必须有耗时封顶,且优先扫持仓、预算不够
     时牺牲自选——都要有单测锁死,不能只是文档承诺。"""
@@ -314,7 +332,7 @@ class TestLLMWallClockBudgetAndPriority:
         calls: list = []
         monkeypatch.setattr(news_alerts_mod, "ts_stk_holdertrade", lambda s, e: TushareResult.success(pd.DataFrame()))
         provider = GLMProvider(api_key="sk-xxx")
-        watchlist = [(f"60000{i}.SH", f"票{i}") for i in range(5)]
+        watchlist = _watchlist_in_today_group(5, label="票")   # 全在本日组,排除轮扫干扰
         report = build_news_alerts(
             D, [], watchlist, provider=provider,
             transport=httpx.MockTransport(self._slow_handler(calls, delay=0.05)),
@@ -335,7 +353,7 @@ class TestLLMWallClockBudgetAndPriority:
         monkeypatch.setattr(news_alerts_mod, "ts_stk_holdertrade", lambda s, e: TushareResult.success(pd.DataFrame()))
         provider = GLMProvider(api_key="sk-xxx")
         positions = [("900001.SH", "持仓甲")]
-        watchlist = [(f"60000{i}.SH", f"自选{i}") for i in range(4)]
+        watchlist = _watchlist_in_today_group(4)               # 全在本日组,排除轮扫干扰
         report = build_news_alerts(
             D, positions, watchlist, provider=provider,
             transport=httpx.MockTransport(self._slow_handler(calls, delay=0.05)),
@@ -352,7 +370,7 @@ class TestLLMWallClockBudgetAndPriority:
         monkeypatch.setattr(news_alerts_mod, "ts_stk_holdertrade", lambda s, e: TushareResult.success(pd.DataFrame()))
         provider = GLMProvider(api_key="sk-xxx")
         report = build_news_alerts(
-            D, [("900001.SH", "持仓甲")], [("600001.SH", "自选乙")],
+            D, [("900001.SH", "持仓甲")], _watchlist_in_today_group(1, label="自选乙"),
             provider=provider, transport=httpx.MockTransport(self._slow_handler(calls, delay=0.0)),
             db_path=db, llm_budget_seconds=300.0,
         )
@@ -430,3 +448,168 @@ class TestPublicDictSafety:
         scan_pub = report.scan_statuses_public()
         assert all("items" not in s for s in scan_pub)
         assert len(scan_pub) == 2
+
+
+# ======================================================================
+#  v1.4-⑥-B(§七 P1-5):自选隔日轮扫 —— 持仓每日必扫、自选分两组交替、如实披露
+#  ⚠ 选型依据(诚实):施工环境无可用 GLM key,**限频未实测** → 按保守分支取轮扫,
+#     不开并发、不抬预算。理由全文见 `news_alerts.py` 模块头「自选隔日轮扫」节。
+# ======================================================================
+
+def _ok_handler(calls: list):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.content.decode())
+        return httpx.Response(200, json={
+            "id": "x", "model": "glm-5.2",
+            "choices": [{"finish_reason": "stop",
+                          "message": {"role": "assistant", "content": "无异常。\n结论:未发现"}}],
+        })
+    return handler
+
+
+class TestWatchlistRotation:
+    def test_group_is_stable_hash_not_process_salted(self):
+        """分组用 `zlib.crc32`,同一码在任何进程里恒定(内置 `hash()` 带盐会漂,
+        历史报告的 `rotationGroup` 就不可复现)。"""
+        import zlib
+
+        from neckline.report.news_alerts import ROTATION_GROUPS, watchlist_rotation_group
+
+        for code in ("600519.SH", "300750.SZ", "920117.BJ"):
+            assert watchlist_rotation_group(code) in ROTATION_GROUPS
+            assert watchlist_rotation_group(code) == \
+                ROTATION_GROUPS[zlib.crc32(code.encode("utf-8")) % 2]
+            assert watchlist_rotation_group(code) == watchlist_rotation_group(code)
+
+    def test_group_for_date_alternates_on_consecutive_days(self):
+        from neckline.report.news_alerts import rotation_group_for_date
+
+        d0 = date(2026, 7, 27)
+        assert rotation_group_for_date(d0) != rotation_group_for_date(d0 + timedelta(days=1))
+        assert rotation_group_for_date(d0) == rotation_group_for_date(d0 + timedelta(days=2))
+        # 纯日期函数:同一天重跑/历史回放恒定(不依赖任何库里的轮转计数器)
+        assert rotation_group_for_date(d0) == rotation_group_for_date(date(2026, 7, 27))
+
+    def test_positions_always_scanned_watchlist_rotates(self, monkeypatch, db):
+        """**持仓每日必扫**;自选只有本日组的进名单,另一组轮空(不发起调用)。"""
+        monkeypatch.setattr(news_alerts_mod, "ts_stk_holdertrade",
+                            lambda s, e: TushareResult.success(pd.DataFrame()))
+        from neckline.report.news_alerts import rotation_group_for_date, watchlist_rotation_group
+
+        watchlist = [(f"{600000 + i:06d}.SH", f"自选{i}") for i in range(12)]
+        today = rotation_group_for_date(D)
+        expect_scanned = [c for c, _ in watchlist if watchlist_rotation_group(c) == today]
+        expect_deferred = [c for c, _ in watchlist if watchlist_rotation_group(c) != today]
+        assert expect_scanned and expect_deferred          # 夹具本身要真的两组都有票
+
+        calls: list = []
+        report = build_news_alerts(
+            D, [("900001.SH", "持仓甲")], watchlist, provider=GLMProvider(api_key="sk-xxx"),
+            transport=httpx.MockTransport(_ok_handler(calls)), db_path=db,
+        )
+        status = next(s for s in report.scan_statuses if s.source == SOURCE_LLM_PREFIX)
+        assert status.rotation_group == today
+        assert status.codes_rotation_deferred == len(expect_deferred)
+        assert status.codes_total == 1 + len(expect_scanned)
+        assert any("900001" in c for c in calls)                       # 持仓被扫
+        assert all(any(c in call for call in calls) for c in expect_scanned)
+        assert all(not any(c in call for call in calls) for c in expect_deferred)
+
+    def test_next_day_scans_the_other_group(self, monkeypatch, db):
+        """次日轮到另一组 —— 两天合起来覆盖全部自选(轮扫不是永久放弃一半)。"""
+        monkeypatch.setattr(news_alerts_mod, "ts_stk_holdertrade",
+                            lambda s, e: TushareResult.success(pd.DataFrame()))
+        watchlist = [(f"{600000 + i:06d}.SH", f"自选{i}") for i in range(12)]
+        seen: set = set()
+        for d in (D, D + timedelta(days=1)):
+            calls: list = []
+            build_news_alerts(d, [], watchlist, provider=GLMProvider(api_key="sk-xxx"),
+                              transport=httpx.MockTransport(_ok_handler(calls)), db_path=db)
+            for code, _ in watchlist:
+                if any(code in c for c in calls):
+                    seen.add(code)
+        assert seen == {c for c, _ in watchlist}
+
+    def test_rotation_deferred_semantics_not_merged_with_skipped(self, monkeypatch, db):
+        """**语义不合并**(⑥-B 不变项):`codesRotationDeferred`(今天轮不到)与
+        `codesSkipped`(排进名单了但预算耗尽没发起)是两件事,各计各的。"""
+        monkeypatch.setattr(news_alerts_mod, "ts_stk_holdertrade",
+                            lambda s, e: TushareResult.success(pd.DataFrame()))
+
+        def slow(request: httpx.Request) -> httpx.Response:
+            import time as _t
+            _t.sleep(0.05)
+            return httpx.Response(200, json={
+                "id": "x", "model": "glm-5.2",
+                "choices": [{"finish_reason": "stop",
+                              "message": {"role": "assistant", "content": "无异常。\n结论:未发现"}}],
+            })
+
+        watchlist = [(f"{600000 + i:06d}.SH", f"自选{i}") for i in range(12)]
+        report = build_news_alerts(
+            D, [], watchlist, provider=GLMProvider(api_key="sk-xxx"),
+            transport=httpx.MockTransport(slow), db_path=db, llm_budget_seconds=0.08,
+        )
+        s = next(x for x in report.scan_statuses if x.source == SOURCE_LLM_PREFIX)
+        assert s.codes_rotation_deferred > 0 and s.codes_skipped > 0
+        # 轮空 + 进名单 = 自选全量;预算跳过只发生在**进了名单**的那部分里(两个维度不重叠)
+        assert s.codes_rotation_deferred + s.codes_total == len(watchlist)
+        assert s.codes_skipped <= s.codes_total
+        assert "轮空" in s.reason and "预算" in s.reason
+        d = s.to_public_dict()
+        assert d["codesRotationDeferred"] == s.codes_rotation_deferred
+        assert d["codesSkipped"] == s.codes_skipped
+        assert d["rotationGroup"] == s.rotation_group
+
+    def test_code_in_both_lists_never_counted_as_deferred(self, monkeypatch, db):
+        """同时是持仓的自选:天天扫(持仓身份),**不算轮空**——否则会报一个假的轮空数。"""
+        monkeypatch.setattr(news_alerts_mod, "ts_stk_holdertrade",
+                            lambda s, e: TushareResult.success(pd.DataFrame()))
+        from neckline.report.news_alerts import rotation_group_for_date, watchlist_rotation_group
+
+        other = next(f"{600000 + i:06d}.SH" for i in range(50)
+                     if watchlist_rotation_group(f"{600000 + i:06d}.SH") != rotation_group_for_date(D))
+        calls: list = []
+        report = build_news_alerts(
+            D, [(other, "持仓兼自选")], [(other, "自选名")],
+            provider=GLMProvider(api_key="sk-xxx"),
+            transport=httpx.MockTransport(_ok_handler(calls)), db_path=db,
+        )
+        s = next(x for x in report.scan_statuses if x.source == SOURCE_LLM_PREFIX)
+        assert s.codes_rotation_deferred == 0
+        assert len(calls) == 1 and other in calls[0]      # 照扫一次,不因"另一组"被轮空
+
+    def test_reduction_scan_covers_full_set_not_rotated(self, monkeypatch, db):
+        """减持类(TuShare 批量、免 LLM)**不参与轮扫**:轮空的自选照样能被减持扫到。"""
+        from neckline.report.news_alerts import rotation_group_for_date, watchlist_rotation_group
+
+        deferred_code = next(f"{600000 + i:06d}.SH" for i in range(50)
+                             if watchlist_rotation_group(f"{600000 + i:06d}.SH")
+                             != rotation_group_for_date(D))
+        monkeypatch.setattr(news_alerts_mod, "ts_stk_holdertrade",
+                            lambda s, e: TushareResult.success(_holdertrade_df(ts_code=deferred_code)))
+        report = build_news_alerts(
+            D, [], [(deferred_code, "轮空自选")], provider=None, db_path=db,
+        )
+        assert [i.ts_code for i in report.items] == [deferred_code]
+        assert [i.category for i in report.items] == [NewsCategory.REDUCTION]
+
+    def test_no_key_status_still_discloses_rotation(self, monkeypatch, db):
+        """缺 key 整批降级时也如实带上组标签/轮空数(不因为没扫就把披露也省了)。"""
+        monkeypatch.setattr(news_alerts_mod, "ts_stk_holdertrade",
+                            lambda s, e: TushareResult.success(pd.DataFrame()))
+        from neckline.report.news_alerts import rotation_group_for_date
+
+        watchlist = [(f"{600000 + i:06d}.SH", f"自选{i}") for i in range(12)]
+        report = build_news_alerts(D, [], watchlist, provider=None, db_path=db)
+        s = next(x for x in report.scan_statuses if x.source == SOURCE_LLM_PREFIX)
+        assert s.scanned is False
+        assert s.rotation_group == rotation_group_for_date(D)
+        assert s.codes_rotation_deferred > 0
+
+    def test_budget_constant_not_raised_by_rotation_choice(self):
+        """⑥-B 取轮扫分支 → **预算维持 300s 不抬**(抬预算会同时抬报告墙钟与
+        MemoryMax 压力,§七 P4-16;轮扫已经解决了扫不完的问题)。"""
+        from neckline.report.news_alerts import LLM_SCAN_BUDGET_SECONDS
+
+        assert LLM_SCAN_BUDGET_SECONDS == 300.0

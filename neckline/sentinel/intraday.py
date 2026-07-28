@@ -27,11 +27,13 @@ from __future__ import annotations
 from datetime import datetime, time
 from typing import Optional, Tuple
 
-from neckline.calendar import is_trading_day
+from neckline.calendar import MARKET_CLOSE_TIME, is_trading_day
 from neckline.sentinel.quotes import Quote
 
 _OPEN = time(9, 30)
-_CLOSE = time(15, 0)
+# 收盘时刻的**唯一源**在 `neckline.calendar`(v1.4-⑥-A 起周复盘逐笔判章程也要用同一个
+# 15:00,两处各写一份字面量迟早漂),本模块只做本地别名,行为逐位不变。
+_CLOSE = MARKET_CLOSE_TIME
 _NOON_START = time(11, 30)
 _NOON_END = time(13, 0)
 

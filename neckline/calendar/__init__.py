@@ -6,6 +6,8 @@
 """
 
 from neckline.calendar.trading_calendar import (
+    CN_TZ,
+    MARKET_CLOSE_TIME,
     is_trading_day,
     next_trading_day,
     prev_trading_day,
@@ -16,6 +18,8 @@ from neckline.calendar.trading_calendar import (
 )
 
 __all__ = [
+    "CN_TZ",
+    "MARKET_CLOSE_TIME",
     "is_trading_day",
     "next_trading_day",
     "prev_trading_day",

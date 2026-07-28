@@ -308,3 +308,51 @@ def test_name_index_resolves_historical_name(isolated_env):
     assert idx.resolve("平安银行", date(2020, 1, 1)) == "000001.SZ"
     assert idx.resolve("深发展A", date(2020, 1, 1)) is None   # 该名称在该日期已失效
     assert idx.resolve("不存在的名字", date(2020, 1, 1)) is None
+
+
+# —— v1.4-⑥-A:成交**时刻**(可选)——————————————————————————————————————————
+#    周复盘按成交时刻逐笔判章程,故解析层把「交易日期」单元格里**确实带的**时刻取出来;
+#    两家已知格式实际都只到日期粒度 → 恒 None,由 reconcile 按该日收盘时刻兜底。
+
+def test_trade_time_none_when_date_only(seeded_names):
+    data = _workbook_bytes({
+        "对账单": [
+            FORMAT2_HEADER,
+            [date(2026, 7, 27), "券商B", "600519", "贵州茅台", "证券买入", 1500.0, 100,
+             150000.0, 45.0, 0.0, 1.5, 0.0, -150046.5, 100000.0, 100, "A1", "CNY", "C1"],
+        ]
+    })
+    res = parse_workbook(data, db_path=seeded_names.db_path)
+    assert res.trades[0].trade_date == date(2026, 7, 27)
+    assert res.trades[0].trade_time is None          # 只有日期 → 不猜时刻
+
+
+def test_trade_time_midnight_datetime_is_not_a_time(seeded_names):
+    """datetime 单元格但时分秒全 0(格式一常见)= "只有日期",不能当成"凌晨 00:00 成交"
+    —— 那是 A 股不存在的时刻,当真会把当日成交整体推到章程切换之前。"""
+    data = _workbook_bytes({
+        "对账单": [
+            FORMAT2_HEADER,
+            [datetime(2026, 7, 27, 0, 0, 0), "券商B", "600519", "贵州茅台", "证券买入", 1500.0, 100,
+             150000.0, 45.0, 0.0, 1.5, 0.0, -150046.5, 100000.0, 100, "A1", "CNY", "C1"],
+        ]
+    })
+    res = parse_workbook(data, db_path=seeded_names.db_path)
+    assert res.trades[0].trade_time is None
+
+
+def test_trade_time_taken_when_present(seeded_names):
+    """真带时刻(datetime 单元格 / 字符串两路)→ 原样取出,逐笔判章程用真时刻。"""
+    data = _workbook_bytes({
+        "对账单": [
+            FORMAT2_HEADER,
+            [datetime(2026, 7, 27, 10, 30, 15), "券商B", "600519", "贵州茅台", "证券买入", 1500.0, 100,
+             150000.0, 45.0, 0.0, 1.5, 0.0, -150046.5, 100000.0, 100, "A1", "CNY", "C1"],
+            ["2026-07-27 14:05:00", "券商B", "600519", "贵州茅台", "证券卖出", 1520.0, 100,
+             152000.0, 45.6, 152.0, 1.5, 0.0, 151800.9, 251800.9, 0, "A1", "CNY", "C2"],
+        ]
+    })
+    res = parse_workbook(data, db_path=seeded_names.db_path)
+    from datetime import time
+    assert [t.trade_time for t in res.trades] == [time(10, 30, 15), time(14, 5)]
+    assert all(t.trade_date == date(2026, 7, 27) for t in res.trades)
