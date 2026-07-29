@@ -129,13 +129,38 @@ def _normalize_scenarios(scenarios: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 def _to_iso_date(yyyymmdd: str) -> str:
-    """'YYYYMMDD' → 'YYYY-MM-DD',供与 `created_at`(ISO8601)前 10 字符做字符串
-    范围比较(`list_decisions` 的 `from`/`to` 过滤,ISO 日期字符串天然可字典序比较)。
+    """'YYYYMMDD' → 'YYYY-MM-DD',供与 `created_at` 换算出的**北京日期**做字符串范围
+    比较(`list_decisions` 的 `from`/`to` 过滤,ISO 日期字符串天然可字典序比较)。
     非法格式原样返回(比较大概率不命中任何行,不因脏输入 500)。"""
     s = (yyyymmdd or "").strip()
     if len(s) == 8 and s.isdigit():
         return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
     return s
+
+
+def created_at_cn_date(created_at: str) -> str:
+    """`created_at`(**UTC** ISO8601,`_now()` 写的)→ **北京日期** `'YYYY-MM-DD'`。
+
+    **v1.4 review 契约线 🟡-2(时区缝)**:`from`/`to` 过滤从前直接拿 `substr(created_at,1,10)`
+    比,那是 **UTC 日期** —— 北京时间 **T+1 00:00–07:59** 创建的决策,UTC 日期还停在 T,
+    于是历史回放 T 日报告时 `exec_hint` 的 C3 会读到「T 日当时并不存在」的决策(盘前 7 点
+    预注册是完全现实的用法),把该模块自己立的**无前视偏差铁律**戳穿一个 8 小时的洞。
+    交易日的边界口径全系统只有一个:**北京时间**(`neckline.calendar.CN_TZ`,与 ⑥-A 逐笔
+    章程判定同一个源,不另立)。
+
+    naive 串(手工 SQL 补的老行)按 **UTC** 读 —— 与 `brain._parse_instant` 对 naive
+    `activated_at` 的约定同源同理由:本列的唯一写入者 `_now()` 写的就是 UTC。
+    解析不了 → 退回前 10 字符(旧行为,不因脏数据 500)。"""
+    from neckline.calendar import CN_TZ
+
+    s = (created_at or "").strip()
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return s[:10]
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(CN_TZ).strftime("%Y-%m-%d")
 
 
 def _row_to_decision(row) -> DecisionRow:
@@ -172,7 +197,14 @@ def list_decisions(
 ) -> List[DecisionRow]:
     """`GET /decisions` 的查询(plan B.2 + v1.3-②-D)。默认返全部,可按 status / code / 日期
     区间 / `position_id`(v1.3-②-D 情景树每日对照,挑出该持仓关联决策)过滤;按 `created_at, id`
-    升序(与其它列表端点惯例一致)。**只读过滤,无新写路径**。"""
+    升序(与其它列表端点惯例一致)。**只读过滤,无新写路径**。
+
+    **日期区间按北京日期比(v1.4 review 契约线 🟡-2)**:`created_at` 落库是 UTC,而
+    `from`/`to` 是**交易日**语义 —— 用 UTC 日期比会让北京 T+1 凌晨创建的决策算作 T 日
+    (`exec_hint` C3 的无前视截断因此漏 8 小时,见 `created_at_cn_date`)。故日期这两条
+    过滤挪到 Python 侧、经 `created_at_cn_date` 换算后再比;status/code/position_id 三条
+    仍走 SQL(等值,与时区无关)。`decision_log` 是人工录入的小表(百量级),取回再过滤的
+    代价可忽略,换来的是**判据口径只有一个:北京日**。"""
     init_schema(db_path)
     clauses: List[str] = []
     params: List[Any] = []
@@ -187,18 +219,21 @@ def list_decisions(
     if position_id is not None:
         clauses.append("position_id=?")
         params.append(position_id)
-    if date_from:
-        clauses.append("substr(created_at,1,10) >= ?")
-        params.append(_to_iso_date(date_from))
-    if date_to:
-        clauses.append("substr(created_at,1,10) <= ?")
-        params.append(_to_iso_date(date_to))
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with connection(db_path) as conn:
         rows = conn.execute(
             f"SELECT {_SELECT_COLS} FROM decision_log {where} ORDER BY created_at, id", params
         ).fetchall()
-    return [_row_to_decision(r) for r in rows]
+    lo = _to_iso_date(date_from) if date_from else None
+    hi = _to_iso_date(date_to) if date_to else None
+    out = [_row_to_decision(r) for r in rows]
+    if lo or hi:
+        out = [
+            d for d in out
+            if (lo is None or created_at_cn_date(d.created_at) >= lo)
+            and (hi is None or created_at_cn_date(d.created_at) <= hi)
+        ]
+    return out
 
 
 # —— 写(唯一写入通道,同 `watchlist.py`/`sentinel/positions.py` 姿势)——————————

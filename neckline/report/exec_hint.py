@@ -203,7 +203,12 @@ def _latest_decision(ts_code: str, trade_date: date, db_path: Optional[Path]) ->
     交易日的报告时,`_latest_decision` 会捞到**该历史日之后**才创建的决策日志,让
     exec_hint 用到当时根本不存在的未来信息,是货真价实的前视偏差,不是"无伤大雅的
     展示层细节"。复用既有 `list_decisions(date_to=...)`(同 `GET /decisions` 端点的
-    日期区间过滤,按 `created_at` 日期字符串比较),不重开一份日期过滤逻辑。
+    日期区间过滤),不重开一份日期过滤逻辑。
+
+    **截断口径 = 北京日(v1.4 review 契约线 🟡-2 修)**:`created_at` 落库是 UTC,从前
+    这条截断拿 UTC 日期比 —— 北京 **T+1 00:00–07:59**(盘前预注册的现实时段)创建的决策
+    UTC 日期还是 T,于是 T 日回放看得见它,铁律漏了 8 小时。换算住
+    `decision_log.created_at_cn_date`(唯一实现,与 ⑥-A 共用 `CN_TZ`)。
 
     `neckline.decision_log.list_decisions` 按 `created_at` 升序返回,取最后一项即
     "trade_date 当天或之前"里最近的一条。"""

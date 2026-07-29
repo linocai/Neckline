@@ -291,6 +291,51 @@ def test_attach_exec_hints_c3_does_not_look_ahead_past_trade_date(isolated_env, 
     assert eh.C3_LOW_LIMIT_SELF_AWARE in {h["code"] for h in cand2.exec_hints}
 
 
+def test_attach_exec_hints_c3_truncation_uses_beijing_date_not_utc(isolated_env, monkeypatch):
+    """**v1.4 review 契约线 🟡-2(时区缝)**:`created_at` 落库是 UTC,而截断日是**交易日**
+    (北京日)。北京 **T+1 00:00–07:59**(= UTC T 日 16:00–23:59)创建的决策,UTC 日期还停
+    在 T —— 从前 T 日回放看得见它,等于读到了"当时还不存在"的决策。
+
+    造法:决策创建于 UTC 2026-07-20T23:30(= **北京 07-21 07:30**,盘前预注册的现实时段)。
+      · 回放 **07-20**(北京日)→ **不可见**(这条断言在修复前是红的:UTC 日期正是 07-20);
+      · 回放 **07-21**(北京日)→ 可见(截断只挡未来,不误伤当天)。"""
+    import neckline.decision_log as dl_mod
+
+    monkeypatch.setattr(dl_mod, "_now", lambda: "2026-07-20T23:30:00+00:00")
+    create_decision(
+        ts_code="600001.SH", why_buy="x", why_entry_price="x", invalidation="x",
+        thesis_tags=[], playbook_tag="SWING_CHASE", max_chase_pct=-1.0,   # 会触发 C3
+        db_path=isolated_env.db_path,
+    )
+    cand = _candidate("600001.SH", {"ret_1d": 0.0, "pre_close": 10.0})
+    eh.attach_exec_hints([cand], date(2026, 7, 20), db_path=isolated_env.db_path)
+    assert eh.C3_LOW_LIMIT_SELF_AWARE not in {h["code"] for h in cand.exec_hints}, \
+        "北京 T+1 凌晨创建的决策在 T 日回放里可见 = 前视偏差(UTC/北京时区缝)"
+
+    cand2 = _candidate("600001.SH", {"ret_1d": 0.0, "pre_close": 10.0})
+    eh.attach_exec_hints([cand2], date(2026, 7, 21), db_path=isolated_env.db_path)
+    assert eh.C3_LOW_LIMIT_SELF_AWARE in {h["code"] for h in cand2.exec_hints}
+
+
+def test_list_decisions_date_filter_is_beijing_day(isolated_env, monkeypatch):
+    """同一条缝也在 `GET /decisions` 的 `from`/`to` 上(v1.2 起既有行为)——一并按北京日
+    过滤。UTC 23:30 = 北京次日 07:30:该行属**次日**,`to=当日` 不应命中、`from=次日` 应命中。"""
+    import neckline.decision_log as dl_mod
+
+    monkeypatch.setattr(dl_mod, "_now", lambda: "2026-07-20T23:30:00+00:00")
+    row = create_decision(
+        ts_code="600001.SH", why_buy="x", why_entry_price="x", invalidation="x",
+        thesis_tags=[], playbook_tag="SWING_CHASE", max_chase_pct=None,
+        db_path=isolated_env.db_path,
+    )
+    assert dl_mod.created_at_cn_date(row.created_at) == "2026-07-21"
+    ids = lambda **kw: [d.id for d in dl_mod.list_decisions(db_path=isolated_env.db_path, **kw)]
+    assert ids(date_to="20260720") == []
+    assert ids(date_from="20260721") == [row.id]
+    assert ids(date_from="20260721", date_to="20260721") == [row.id]
+    assert ids(date_from="20260720", date_to="20260720") == []
+
+
 def test_attach_exec_hints_multiple_candidates_independent(isolated_env):
     strong = _candidate("600001.SH", {"ret_1d": 0.06, "is_limit_up": False})
     flat = _candidate("600002.SH", {"ret_1d": 0.0, "is_limit_up": False})
