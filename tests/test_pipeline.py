@@ -6,6 +6,7 @@ LLM 审判(强制走无 provider / 强制走 mock provider 两条路径,均不�
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import date
 
@@ -18,9 +19,11 @@ import neckline.report.news_alerts as news_alerts_mod
 import neckline.report.pipeline as pipeline_mod
 from neckline import watchlist as watchlist_store
 from neckline.data.tushare_client import TushareResult
-from neckline.llm.judge import VERDICT_INACTIVE, VERDICT_PASS
+from neckline.llm.judge import VERDICT_INACTIVE, VERDICT_PASS, VERDICT_VETO
 from neckline.llm.providers.glm import GLMProvider
+from neckline.report import reference_plan_store
 from neckline.report import store
+from neckline.report.reference_plan import STATUS_OK, STATUS_VETOED
 from neckline.sentinel import positions as pos_store
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
@@ -919,3 +922,171 @@ class TestSectorFreshnessInReport:
         assert bundle.sector_freshness.lag_days == SECTOR_LAG_UNKNOWN
         assert bundle.sector_freshness.stale is True
         assert "板块数据过期告警" in bundle.markdown and "完全缺失" in bundle.markdown
+
+
+def _limits_from_request(request: httpx.Request) -> tuple:
+    """从参考件富上下文里抠出「明日涨跌停参考价」两个数字(见
+    `reference_plan._threshold_block`),供 mock handler 构造必然落在区间内的买入
+    参考区间——不手算 `seed_synthetic_market` 的收盘价路径,直接读上下文里系统已经
+    算好的数字,断言也顺带验证了富上下文确实装配了这一行。"""
+    body = json.loads(request.content)
+    user_msg = next(m["content"] for m in body["messages"] if m["role"] == "user")
+    m = re.search(r"涨停 ([\d.]+) / 跌停 ([\d.]+)", user_msg)
+    assert m, "参考件上下文里未找到涨跌停参考价一行,说明富上下文没有正确装配"
+    return float(m.group(1)), float(m.group(2))
+
+
+class TestReferencePlanWiring:
+    """v1.5-① 参考件三件套接入 `build_report`(需求 9,§2.0 第〇原则)。夹逼/状态
+    判定/json 解析的正确性在 `test_reference_plan.py` 逐项覆盖;本类只测「接线」+
+    「不阻断主报告」+「否决不移除候选(机器不禁、人可复核)」+「落库/不落库」。"""
+
+    def test_candidate_carries_ok_reference_plan_and_persists_row(self, isolated_env):
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            up, down = _limits_from_request(request)
+            captured["buy_low"] = round(down + 0.05, 2)
+            captured["buy_high"] = round(down + 0.20, 2)
+            content = (
+                "分析正文,催化站得住。\n\n结论:通过\n\n```json\n"
+                + json.dumps({
+                    "buy": {"low": captured["buy_low"], "high": captured["buy_high"], "why": "贴近支撑"},
+                    "exit": {"low": up + 1.0, "high": up + 2.0, "why": "前高压力位"},
+                    "script": "若低开则观望,符合预期则按区间执行", "veto_reason": None,
+                }, ensure_ascii=False)
+                + "\n```"
+            )
+            return httpx.Response(200, json={
+                "id": "x", "model": "glm-5.2",
+                "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+            })
+
+        provider = GLMProvider(api_key="sk-xxx")
+        bundle = pipeline_mod.build_report(
+            report_date, llm_provider=provider, llm_transport=httpx.MockTransport(handler),
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        assert cand.reference_plan is not None
+        assert cand.reference_plan["status"] == STATUS_OK
+        assert cand.reference_plan["buy"]["low"] == captured["buy_low"]
+        assert cand.reference_plan["buy"]["high"] == captured["buy_high"]
+        assert cand.reference_plan["disclaimer"]
+        # LLM 审判叙述已清掉三件套 json 围栏(§2.7,用户看到的评语不该带原始 JSON)。
+        jr = bundle.judged["600001.SH"]
+        assert "```" not in jr.narrative and '"buy"' not in jr.narrative
+        assert "催化站得住" in jr.narrative
+
+        # 落库可读回,与内存态一致。
+        row = reference_plan_store.load_reference_plan(report_date, "600001.SH", db_path=isolated_env.db_path)
+        assert row is not None
+        assert row["status"] == "ok"
+        assert row["buy_low"] == pytest.approx(captured["buy_low"])
+
+    def test_veto_verdict_keeps_candidate_in_list_with_empty_reference_items(self, isolated_env):
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            content = (
+                "该股近期有一则减持公告,催化站不住。\n\n结论:否决\n\n```json\n"
+                + json.dumps({"buy": None, "exit": None, "script": None, "veto_reason": "股东大幅减持"})
+                + "\n```"
+            )
+            return httpx.Response(200, json={
+                "id": "x", "model": "glm-5.2",
+                "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+            })
+
+        provider = GLMProvider(api_key="sk-xxx")
+        bundle = pipeline_mod.build_report(
+            report_date, llm_provider=provider, llm_transport=httpx.MockTransport(handler),
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        codes = [c.ts_code for c in bundle.candidates]
+        assert "600001.SH" in codes    # ②验收:否决不移除候选,票仍在候选列表里
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        assert cand.reference_plan["status"] == STATUS_VETOED
+        assert cand.reference_plan["buy"] is None
+        assert cand.reference_plan["exit"] is None
+        assert cand.reference_plan["script"] is None
+        assert cand.reference_plan["vetoReason"] == "股东大幅减持"
+        # 审判结论本身也照常展示(机器不禁、人可复核,§2.0 第三条)。
+        jr = bundle.judged["600001.SH"]
+        assert jr.verdict == VERDICT_VETO
+        assert "减持公告" in jr.narrative
+
+    def test_no_provider_candidate_gets_unavailable_reference_plan_not_silence(self, isolated_env, monkeypatch):
+        """LLM 未激活(本项目当前常态)时,参考件不是"什么都没有"——而是一条如实
+        标注"没看"的 `status=unavailable` 记录(①-D「这是没看,绝不能显示成没有」)。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        assert cand.reference_plan is not None
+        assert cand.reference_plan["status"] == "unavailable"
+        assert cand.reference_plan["unavailableReason"]
+        assert cand.reference_plan["buy"] is None and cand.reference_plan["exit"] is None
+
+    def test_reference_plan_exception_does_not_block_main_report(self, isolated_env, monkeypatch):
+        """参考件三件套(v1.5-①)整体异常时,`build_report` 仍必须成功产出报告——
+        候选照出、审判结论照留,只是这只候选当次没有参考件(维持默认 `None`)。"""
+        monkeypatch.setattr(
+            pipeline_mod, "judge_and_build_reference_plan",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        assert cand.reference_plan is None   # 保险丝触发,维持默认(不是半份脏数据)
+        jr = bundle.judged.get("600001.SH")
+        assert jr is not None                # 退回的普通审判仍然发生,judged 不因参考件异常缺失
+        assert reference_plan_store.load_reference_plans(report_date, db_path=isolated_env.db_path) == []
+
+    def test_save_false_does_not_write_reference_plans_table(self, isolated_env):
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            up, down = _limits_from_request(request)
+            content = (
+                "分析。\n\n结论:通过\n\n```json\n"
+                + json.dumps({
+                    "buy": {"low": round(down + 0.1, 2), "high": round(down + 0.3, 2), "why": "w"},
+                    "exit": {"low": up + 1.0, "high": up + 2.0, "why": "w2"},
+                    "script": "s", "veto_reason": None,
+                })
+                + "\n```"
+            )
+            return httpx.Response(200, json={
+                "id": "x", "model": "glm-5.2",
+                "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+            })
+
+        provider = GLMProvider(api_key="sk-xxx")
+        bundle = pipeline_mod.build_report(
+            report_date, llm_provider=provider, llm_transport=httpx.MockTransport(handler),
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        assert cand.reference_plan is not None     # 不落库不等于不产出(内存态 bundle 仍完整)
+        assert reference_plan_store.load_reference_plan(
+            report_date, "600001.SH", db_path=isolated_env.db_path
+        ) is None
+        assert reference_plan_store.load_reference_plans(report_date, db_path=isolated_env.db_path) == []

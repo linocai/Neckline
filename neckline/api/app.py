@@ -75,6 +75,9 @@ from neckline.api.schemas import (
     PositionOut,
     PositionsOut,
     PushSettingsOut,
+    ReferencePlanBuyOut,
+    ReferencePlanExitOut,
+    ReferencePlanOut,
     ReportOut,
     RetreatBrakeOut,
     ReviewGetOut,
@@ -322,6 +325,27 @@ def _shape_info_card_summary(d: Optional[Dict[str, Any]]) -> Optional[InfoCardSu
     )
 
 
+def _shape_reference_plan(d: Optional[Dict[str, Any]]) -> Optional[ReferencePlanOut]:
+    """`Candidate.reference_plan` 存档(v1.5-①,`reference_plan.ReferencePlan.
+    to_public_dict()` 已是 camelCase)→ `ReferencePlanOut`。空/缺(老报告快照、或该次
+    生成整体异常)→ `None`,客户端不冒充"确认无参考"(同 `_shape_info_card_summary`
+    姿势,§2.0 第〇原则)。"""
+    if not d:
+        return None
+    return ReferencePlanOut(
+        status=d.get("status", "unavailable"),
+        buy=ReferencePlanBuyOut(**d["buy"]) if d.get("buy") else None,
+        buyUnavailableReason=d.get("buyUnavailableReason"),
+        exit=ReferencePlanExitOut(**d["exit"]) if d.get("exit") else None,
+        exitUnavailableReason=d.get("exitUnavailableReason"),
+        script=d.get("script"),
+        vetoReason=d.get("vetoReason"),
+        unavailableReason=d.get("unavailableReason"),
+        disclaimer=d.get("disclaimer", ""),
+        degraded=bool(d.get("degraded", False)),
+    )
+
+
 def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> CandidateOut:
     """报告落库的候选 JSON 快照 → 客户端四件套契约。同码不重写:字段直接取自
     `Candidate.public_dict()` 存档,不在此重算任何领域值。"""
@@ -354,6 +378,8 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
         infoCard=_shape_info_card_summary(c.get("info_card_summary")),
         # v1.4-⑤-A:执行提示(老报告快照无该键 → 默认空列表,前向兼容)。
         execHints=[ExecHintOut(**h) for h in (c.get("exec_hints") or [])],
+        # v1.5-①-F:参考件三件套(老报告快照无该键/该键为 None → None,前向兼容)。
+        referencePlan=_shape_reference_plan(c.get("reference_plan")),
         llmJudgment=llm,
     )
 

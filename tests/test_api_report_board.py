@@ -445,6 +445,74 @@ def test_report_candidate_exec_hints_defaults_empty_for_old_snapshot(client, AUT
     assert body["candidates"][0]["execHints"] == []
 
 
+# —— v1.5-①-F `CandidateOut.referencePlan`(参考件三件套,需求 9)——————————————————
+
+def test_report_candidate_carries_reference_plan_ok_state(client, AUTH, api_env):
+    """`Candidate.reference_plan` 存档(v1.5-①,`ReferencePlan.to_public_dict()`
+    已是 camelCase)→ `CandidateOut.referencePlan` 往返不丢字段。"""
+    c = _candidate(1, "600001.SH", "示例甲")
+    c["reference_plan"] = {
+        "status": "ok",
+        "buy": {"low": 12.34, "high": 12.98, "stopPrice": 11.72, "why": "贴近支撑"},
+        "buyUnavailableReason": None,
+        "exit": {"low": 15.10, "high": 15.80, "why": "前高压力位"},
+        "exitUnavailableReason": None,
+        "script": "若集合竞价大幅低开则放弃,温和低开则观望",
+        "vetoReason": None,
+        "unavailableReason": None,
+        "disclaimer": "参考,非指令 —— 买卖与终选在你,系统不代下单;纪律以章程为准。",
+        "degraded": False,
+    }
+    report_store.save_report(
+        date(2026, 7, 28), strategy_version="v1.5.0",
+        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
+        markdown="# 报告", db_path=api_env.db_path,
+    )
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    rplan = body["candidates"][0]["referencePlan"]
+    assert rplan["status"] == "ok"
+    assert rplan["buy"]["low"] == 12.34 and rplan["buy"]["stopPrice"] == 11.72
+    assert rplan["exit"]["high"] == 15.80
+    assert rplan["script"].startswith("若集合竞价")
+    assert rplan["vetoReason"] is None
+    assert rplan["disclaimer"]
+    assert rplan["degraded"] is False
+
+
+def test_report_candidate_reference_plan_vetoed_state_has_null_buy_exit(client, AUTH, api_env):
+    """否决态:三件套全 null + vetoReason,票本身仍在候选列表里(本测试只验证
+    契约形状,候选去留断言见 test_pipeline.py)。"""
+    c = _candidate(1, "600001.SH", "示例甲")
+    c["reference_plan"] = {
+        "status": "vetoed",
+        "buy": None, "buyUnavailableReason": "本次未生成买入参考区间",
+        "exit": None, "exitUnavailableReason": "本次未生成离场参考区间",
+        "script": None, "vetoReason": "股东大幅减持", "unavailableReason": None,
+        "disclaimer": "参考,非指令 —— 买卖与终选在你,系统不代下单;纪律以章程为准。",
+        "degraded": False,
+    }
+    report_store.save_report(
+        date(2026, 7, 28), strategy_version="v1.5.0",
+        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
+        markdown="# 报告", db_path=api_env.db_path,
+    )
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    rplan = body["candidates"][0]["referencePlan"]
+    assert rplan["status"] == "vetoed"
+    assert rplan["buy"] is None and rplan["exit"] is None
+    assert rplan["vetoReason"] == "股东大幅减持"
+
+
+def test_report_candidate_reference_plan_none_for_old_snapshot(client, AUTH, api_env):
+    """老报告(建于本字段前,`candidates_json` 里没有 `reference_plan` 键)→
+    `referencePlan=None`,不冒充"确认无参考"(同 `infoCard` 的处理方式——`None` 与
+    `status="unavailable"` 刻意区分,前者是"这份报告压根没有这个概念",后者是
+    "生成过、只是没看")。"""
+    _seed_report(api_env.db_path, date(2026, 7, 17))
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    assert body["candidates"][0]["referencePlan"] is None
+
+
 # —— v1.4-⑥-B 自选隔日轮扫披露:领域层算了必须真的抵达客户端 ——————————————————
 #    (pydantic 丢弃未声明字段的老坑:v1.3-⑥ 的 codesSkipped、v1.3.4 的 codesNoSearch
 #     都因为只补了领域层没补 schemas/_shape_report 而"算了没送到"。)

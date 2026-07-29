@@ -148,16 +148,27 @@ def judge_candidate(
     top_list_row: Optional[Dict[str, Any]] = None,
     transport: Optional[Any] = None,
     system_prompt: str = JUDGE_SYSTEM_PROMPT,
+    context_block: Optional[str] = None,
 ) -> JudgeResult:
-    """审一只候选(或复用于自选体检,见 `system_prompt`)。`provider=None`(工厂在
-    无 key/无 provider 时返回 None)→ 直接走「未激活」占位,不发起任何网络调用。
+    """审一只候选(或复用于自选体检,见 `system_prompt`;或复用于参考件三件套生成,
+    见 `context_block`)。`provider=None`(工厂在无 key/无 provider 时返回 None)→
+    直接走「未激活」占位,不发起任何网络调用(**也不会计算 `context_block`——调用方
+    若要传入按需现算的上下文,自行在调用前判断 `provider is not None` 免做无用功**)。
 
     `system_prompt`(v1.1-C.3 新增,默认值不变,**候选审判调用点零改动、纯向后
     兼容扩展**):自选体检(`report.watchlist_check.apply_llm_review`)语义上不是
     "审判是否留在候选池",框定语不同,故传入
     `WATCHLIST_JUDGE_SYSTEM_PROMPT`——两套 prompt 结尾都用同一个"结论:通过|否决"
     机器可读标签,`_parse_verdict`/降级链/`JudgeResult` 结构完全共用,不重写任何
-    解析或降级逻辑。"""
+    解析或降级逻辑。
+
+    `context_block`(v1.5-①新增,默认 `None`,**默认行为零改动、纯向后兼容扩展**):
+    不传时行为与历史完全一致,内部仍调 `build_context_block(candidate, top_list_row)`
+    组装上下文;传入非空字符串时**原样**当作发给 LLM 的 user 消息内容,不再调
+    `build_context_block`。供 `report.reference_plan.py` 喂入信息卡衍生的富上下文
+    (60日K线+快照+红黄牌+阈值块),同时复用本函数的调用/解析/降级链(项目 CLAUDE.md
+    铁律「喂类候选对象给 LLM 审判一律复用 judge_candidate,不另写调用/解析/降级链」)。
+    """
     if provider is None:
         return JudgeResult(
             ts_code=candidate.ts_code, provider="none", model="", verdict=VERDICT_INACTIVE,
@@ -167,7 +178,10 @@ def judge_candidate(
 
     messages = [
         ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=build_context_block(candidate, top_list_row)),
+        ChatMessage(
+            role="user",
+            content=context_block if context_block is not None else build_context_block(candidate, top_list_row),
+        ),
     ]
     result = provider.chat(messages, enable_search=True, transport=transport)
     if not result.ok:

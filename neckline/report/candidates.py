@@ -78,6 +78,16 @@ class Candidate:
     # **不进排序键**(见 `intel_candidates._SORT_KEY_INPUTS` 白名单单测)——它是"怎么买
     # 更不吃亏"的执行提示,不是"该不该买"的方向判断,未经方向审计。
     exec_hints: List[Dict[str, Any]] = field(default_factory=list)
+    # —— v1.5-① 参考件三件套(plan §五 v1.5-①,需求 9;§2.0 第〇原则:LLM 是参考,
+    #    硬条款才是纪律)———————————————————————————————————————————————————————
+    # `report.reference_plan.ReferencePlan.to_public_dict()` 的结果,由
+    # `neckline.report.reference_plan.judge_and_build_reference_plan` 在 `pipeline.py`
+    # 里逐票补算(本模块/`intel_candidates.py` 不产它,构造时恒 `None`)。**默认 `None`
+    # 而非空 dict**——老报告快照(建于本字段前)或本次生成整体异常都读回 `None`,与
+    # `status="unavailable"`(已经装配好一条记录、只是"没看")刻意区分,不冒充"确认
+    # 无参考"(见 `CandidateOut.referencePlan` 契约注释)。**参考件不进排序键/不进
+    # 哨兵/不进推送/不改候选去留**(§2.0 第一条,①-G 三条守门单测锁死)。
+    reference_plan: Optional[Dict[str, Any]] = None
     raw: Dict[str, Any] = field(default_factory=dict)  # 原始特征行,供 judge.py 组装上下文
 
     def public_dict(self) -> Dict[str, Any]:

@@ -562,6 +562,42 @@ CREATE TABLE IF NOT EXISTS industry_strength_daily (
     PRIMARY KEY (trade_date, industry)
 );
 CREATE INDEX IF NOT EXISTS idx_industry_strength_daily_industry ON industry_strength_daily(industry, trade_date);
+
+-- v1.5-①-E 参考件三件套(需求 9,§2.0 第〇原则「参考件必须落库,将来与实际走势/
+-- 成交对拍 = LLM 参谋成绩单」)。读写单一通道 = `neckline/report/reference_plan_store.py`,
+-- 生成侧唯一实现 = `neckline/report/reference_plan.py`。**参考件不进任何机器判据**——
+-- 本表只被落库/审计/未来的对拍报表(§七 P3-11)消费,哨兵/推送/排序键/候选去留一律
+-- 不读本表(§2.0 第一条,三条守门单测锁死)。
+-- `status`:ok(通过+至少一件有效)| vetoed(否决,三件套全 null)|
+-- unavailable(LLM未激活/调用失败/JSON解析失败/本块异常,三件套全 null——"没看"不是
+-- "没有")。`buy_clamp`/`exit_clamp` 留夹逼判定留痕("没给"absent 与"给了被拦"
+-- rejected_* 分开,不许混同)。`stop_pct` 是口径指纹(产出该行时的现役止损比例,
+-- 供将来回看"这条参考件是在哪版章程下生成的")。
+CREATE TABLE IF NOT EXISTS reference_plans (
+    trade_date    TEXT NOT NULL,          -- 'YYYYMMDD'
+    ts_code       TEXT NOT NULL,
+    status        TEXT NOT NULL,          -- ok | vetoed | unavailable
+    verdict       TEXT NOT NULL,          -- 既有审判标签:通过|否决|未激活
+    close         REAL NOT NULL,          -- 当日收盘(参考件的锚,审计用)
+    limit_up      REAL,                   -- 当时算的明日涨停价(NULL=算不出)
+    limit_down    REAL,                   -- 当时算的明日跌停价
+    buy_low       REAL, buy_high  REAL,   -- NULL = 未给 / 被拦(看 buy_clamp)
+    buy_clamp     TEXT NOT NULL,          -- ok|absent|rejected_out_of_limit|rejected_malformed|rejected_no_limit
+    buy_why       TEXT,
+    stop_price    REAL,                   -- 系统算的 close×(1-stop_pct),非 LLM 产出
+    stop_pct      REAL,                   -- 产出该行时的现役 stop_pct(口径指纹)
+    exit_low      REAL, exit_high REAL,
+    exit_clamp    TEXT NOT NULL,          -- ok|absent|rejected_malformed
+    exit_why      TEXT,
+    script_text   TEXT,
+    veto_reason   TEXT,
+    provider      TEXT, model TEXT,
+    degraded      INTEGER NOT NULL DEFAULT 0,
+    degrade_reason TEXT,
+    created_at    TEXT NOT NULL,
+    PRIMARY KEY (trade_date, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_reference_plans_code ON reference_plans(ts_code, trade_date);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

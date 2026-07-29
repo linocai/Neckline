@@ -55,6 +55,8 @@ from neckline.report.industry_strength_store import (
 )
 from neckline.report.exec_hint import attach_exec_hints
 from neckline.report.info_card import attach_info_card_summaries
+from neckline.report import reference_plan_store
+from neckline.report.reference_plan import judge_and_build_reference_plan
 from neckline.report.sector_moneyflow import (
     SectorMoneyflowReport,
     compute_sector_moneyflow,
@@ -219,14 +221,37 @@ def build_report(
     provider = llm_provider or get_provider(db_path=db_path)
     top_list = top_list_lookup(trade_date, parquet_dir=parquet_dir)
 
+    # v1.5-① 参考件三件套(需求 9,§2.0 第〇原则):一次 LLM 调用同时产出「审判结论 +
+    # 三件套参考」(①-B 定死,不许拆成两次调用)——`judge_and_build_reference_plan`
+    # 内部含自身的降级链(上下文装配异常退回默认上下文继续审判 / json 解析装配异常
+    # 不影响已产出的审判结论),这里再包一层 try/except 兜底该函数自身的意外
+    # (同 C1/C2/C4/信息卡摘要姿势,§硬要求「核心管线对可选情报输入的调用必须包保险
+    # 丝」)——异常时退回不带参考件的普通审判,**绝不因参考件失败而让某只候选没有
+    # 审判结论**。`Candidate.reference_plan` 默认 `None`,只在成功产出时补上
+    # (v1.5-①-F「候选照出、reference_plan=None,不冒充确认无参考」)。
     judged: Dict[str, JudgeResult] = {}
     for c in candidates[:top_n_judged]:
-        result = judge_candidate(
-            c, provider=provider, top_list_row=top_list.get(c.ts_code), transport=llm_transport
-        )
+        top_row = top_list.get(c.ts_code)
+        try:
+            result, plan = judge_and_build_reference_plan(
+                c, trade_date, provider=provider, top_list_row=top_row, transport=llm_transport,
+                industry_scores=industry_scores, industry_map=industry_map, top_list_t0=top_list,
+                parquet_dir=parquet_dir, db_path=db_path,
+            )
+        except Exception:  # noqa: BLE001 —— 参考件三件套(v1.5-①)整体异常不得连带候选审判失败
+            logger.warning(
+                "参考件三件套(v1.5-①)整体异常(%s),候选照出、退回不带参考件的普通审判",
+                c.ts_code, exc_info=True,
+            )
+            result = judge_candidate(c, provider=provider, top_list_row=top_row, transport=llm_transport)
+            plan = None
         judged[c.ts_code] = result
         if save:
             store.save_llm_judgment(trade_date, result, db_path=db_path)
+        if plan is not None:
+            c.reference_plan = plan.to_public_dict()
+            if save:
+                reference_plan_store.save_reference_plans(trade_date, [plan], db_path=db_path)
 
     # v1.1-C.3 自选体检(独立一节,同码复用候选评分管线,§2.3 报告拍板/§五
     # v1.1-C.3):不改候选评分/不进候选榜。空自选池 → `build_watchlist_check`

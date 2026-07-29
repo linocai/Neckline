@@ -568,6 +568,25 @@ def test_sort_key_does_not_read_exec_hint_related_inputs(isolated_env):
     assert e.accessed == ic._SORT_KEY_INPUTS   # 仍然只读白名单五键,一个不多一个不少
 
 
+def test_sort_key_does_not_read_reference_plan_related_inputs(isolated_env):
+    """v1.5-①-G 守门单测(§2.0 第〇原则「参考件不进排序键」的机器判据,①验收⑧):
+    参考件三件套(买入/离场参考区间、明早证伪剧本、夹逼状态)即便出现在同一个 entry
+    结构里,也绝不能被 `_sort_key` 读取。复用 ③-C 白名单单测模式
+    (`_KeyTrackingDict`/`_entry`),只是这次额外摆上参考件相关的 extra 键。"""
+    e = _KeyTrackingDict(_entry(
+        "600000.SH", industry_rank=1, industry_persist_days=0, yellow_card_count=0, base_score=8.0,
+        reference_plan={
+            "status": "ok",
+            "buy": {"low": 12.0, "high": 12.5, "stopPrice": 11.4, "why": "w"},
+            "exit": {"low": 15.0, "high": 15.8, "why": "w2"},
+            "script": "若低开则观望", "vetoReason": None, "degraded": False,
+        },
+    ))
+    ic._sort_key(e)
+    assert "reference_plan" not in e.accessed
+    assert e.accessed == ic._SORT_KEY_INPUTS   # 仍然只读白名单五键,一个不多一个不少
+
+
 def test_sort_key_three_level_priority(isolated_env):
     """③-A 三级排序键优先级:industry_rank ASC 优先于 industry_persist_days ASC 优先于
     yellow_card_count ASC;base_score DESC / code ASC 只在前三者全部并列时才生效(确定性
