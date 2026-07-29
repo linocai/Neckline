@@ -381,6 +381,9 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
         # v1.5-①-F:参考件三件套(老报告快照无该键/该键为 None → None,前向兼容)。
         referencePlan=_shape_reference_plan(c.get("reference_plan")),
         llmJudgment=llm,
+        # v1.5-②-B:预算耗尽未发起(老报告快照无该键 → False,前向兼容;与
+        # `llmJudgment is None` 单独并存不冲突——见 CandidateOut.judgeSkipped 注释)。
+        judgeSkipped=bool(c.get("judge_skipped", False)),
     )
 
 

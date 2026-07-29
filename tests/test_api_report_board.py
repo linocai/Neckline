@@ -513,6 +513,34 @@ def test_report_candidate_reference_plan_none_for_old_snapshot(client, AUTH, api
     assert body["candidates"][0]["referencePlan"] is None
 
 
+# —— v1.5-②-B `CandidateOut.judgeSkipped`(预算耗尽标记,需求 9)——————————————————
+
+def test_report_candidate_carries_judge_skipped_true(client, AUTH, api_env):
+    """`Candidate.judge_skipped` 存档 → `CandidateOut.judgeSkipped` 往返不丢字段;
+    预算耗尽的票天然没有 `llmJudgment`(没发起调用),两个字段同批断言互不冲突。"""
+    c = _candidate(1, "600001.SH", "示例甲")
+    c["judge_skipped"] = True
+    report_store.save_report(
+        date(2026, 7, 28), strategy_version="v1.5.0",
+        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
+        markdown="# 报告", db_path=api_env.db_path,
+    )
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    assert body["candidates"][0]["judgeSkipped"] is True
+    assert body["candidates"][0]["llmJudgment"] is None
+
+
+def test_report_candidate_judge_skipped_defaults_false_for_old_snapshot(client, AUTH, api_env):
+    """老报告(建于本字段前,`candidates_json` 里没有 `judge_skipped` 键)→
+    `judgeSkipped=False`(默认值天然合法——"预算跳过"是本字段引入前不存在的第三
+    态,老报告的候选只可能是"正常审判过"或"未激活"两态之一,`False` 只是如实
+    反映这个新维度在老报告里压根不存在,不冒充"确认扫过预算判定",同 `execHints`
+    默认空列表的"缺键即默认"惯例)。"""
+    _seed_report(api_env.db_path, date(2026, 7, 17))
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    assert body["candidates"][0]["judgeSkipped"] is False
+
+
 # —— v1.4-⑥-B 自选隔日轮扫披露:领域层算了必须真的抵达客户端 ——————————————————
 #    (pydantic 丢弃未声明字段的老坑:v1.3-⑥ 的 codesSkipped、v1.3.4 的 codesNoSearch
 #     都因为只补了领域层没补 schemas/_shape_report 而"算了没送到"。)

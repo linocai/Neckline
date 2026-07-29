@@ -267,16 +267,17 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-07-29 深夜 · 生产仍 = `v1.4.1`(未动,本会话零生产访问/零部署)· macOS 已换包 1.4.1 · iOS 仍老构建 · 现役章程仍 `v1.3.3`(本会话未动)。v1.5.0 施工图见 §五,**① 已完工**,②③④⑤⑥⑦ 待做。**
+**2026-07-29 深夜 · 生产仍 = `v1.4.1`(未动,本会话零生产访问/零部署)· macOS 已换包 1.4.1 · iOS 仍老构建 · 现役章程仍 `v1.3.3`(本会话未动)。v1.5.0 施工图见 §五,**①② 已完工**,③④⑤⑥⑦ 待做。**
 
-- **v1.5-① 已完工(本会话,@builder,纯本地施工,零生产访问/零部署)**:新模块 `report/reference_plan.py`——一次 LLM 调用出「自由评语 + 既有结论标签 + 三件套 json」(复用 `llm/judge.py::judge_candidate`,新增可选 `context_block` 参数喂信息卡富上下文,**不重写调用/解析/降级链**);买入参考区间夹逼明日涨跌停(唯一底线,`board`/`is_st` 读 `sentinel.universe.load_stock_meta`,越界/格式非法/算不出涨跌停/LLM 未给四态分开记);离场参考区间只做 `0<low<=high` 格式校验、**不夹涨跌停**;止损价系统算 `close×(1−stop_pct)`,`stop_pct` 读现役 `strategy_versions` config;`status` 三态 `ok`/`vetoed`/`unavailable` 不许合并。新表 `reference_plans`(`report/reference_plan_store.py` 幂等落库,`INSERT OR REPLACE`)。契约 `Candidate.reference_plan` / `CandidateOut.referencePlan`(老四件套四键与 `entry_spec`/`invalidation_spec` **一字未动**,退役是 ③ 的活)。`pipeline.py` 判官循环改调新编排函数 `judge_and_build_reference_plan`(**`TOP_N_JUDGED` 仍 10 不变**,覆盖面扩到 20 是 ② 的活;两层降级:上下文装配异常退回默认上下文仍发起**一次**判官调用〔不二次耗费 LLM 预算〕、三件套解析/装配异常整段 `try/except` 兜底 `Candidate.reference_plan=None`+候选与审判结论照留)。**守门三条全绿**:`neckline/sentinel/` 全目录 grep 零命中 `reference_plan`/`referencePlan`(15 文件参数化测试)、`intel_candidates._SORT_KEY_INPUTS` 白名单新增一测锁死参考件字段不进排序键、`notify.__all__` 仍六类(既有测试未改断言直接过)。**测试**:Python 全量 **1779 过 + 2 skip**(基线 1710+2,净增 69:`test_reference_plan.py` 60 + `test_pipeline.py::TestReferencePlanWiring` 5 + `test_intel_candidates.py` 1 白名单测 + `test_api_report_board.py` 3 契约测);本块未动 Swift(客户端跟进是 ⑤ 的活),iOS/macOS 沿用上次基线 169 跑 156 过 13 skip(未重跑)。**规格与现实无冲突,零偏差,零 TODO 遗留**。
-- **生产现状(事实,勿再核,本会话未变)**:公网 `/health` = **`v1.4.1`**;生产库含 `industry_strength_daily`(175,120 行)/ `strategy_activation_log`(3 条 seed)/ `decision_log.max_chase_pct` / `inquiry_log`;**尚不含 `reference_plans`**(① 只落地在本地开发库,未上云,随 ⑥ 一并部署)。`MemoryMax` 维持 `report=800M` · `daily=900M` · 常驻 `High=420M/Max=600M`(理由六条见 `archive/v1.4_施工图_20260729归档.md` ⑨-F 与 §九 07-29 那两行)。
+- **v1.5-② 已完工(本会话,@builder,纯本地施工,零生产访问/零部署)**:`pipeline.py` 覆盖面 `TOP_N_JUDGED` 10→20(= `TOP_N_TOTAL`,旧「前10审/后10不耗LLM」分档随之退役);判官循环从内联代码抽成独立函数 `_judge_candidates_with_budget`(**调用机制未动**,仍是逐票一次 `judge_and_build_reference_plan`),外挂新常量 `CANDIDATE_JUDGE_BUDGET_SECONDS=1200`(独立预算,与 `news_alerts.LLM_SCAN_BUDGET_SECONDS=300` **不共享不合并**)——按 rank 升序审,每次发起下一票前查已耗时,超预算则**从当前位置到列表尾整体**标 `Candidate.judge_skipped=True` 且不再发起调用(不掐断进行中的单次调用,同 `news_alerts.py` 既有姿势)。新字段 `Candidate.judge_skipped`/`CandidateOut.judgeSkipped`(默认 `False`,与 `llmJudgment.degraded` 语义分开、`app.py::_shape_candidate` 已接、老报告快照默认 `False`)。`render.py` 补 `judge_skipped` 专属文案分支(「预算耗尽未发起,非异常状态」),与真异常态「未执行」的既有文案分开,不合并。**并发决策(②-C)**:本地三处核实均无可用 GLM/Kimi key(`.env`/环境变量/`app_settings.llm_api_key`)→ 限频无法实测 → 按「不许拍脑袋开并发」定案**串行 + 预算硬闸**(照 v1.4-⑥-B `news_alerts.py` 先例,三条理由写进 `_judge_candidates_with_budget` docstring),并发路留待有 key 时再评估,未实现任何并发脚手架代码。**时间账(②-D)**:本地实测判官循环机制自身开销(零网络延迟、预算计时+跳过记账+上下文装配+解析+夹逼)≈7–10ms/候选,对比真实单次 LLM 调用(30–70s,沿用 07-27/v1.4.1 生产实测引用,本机无 key 无法重测)可忽略不计;用等比缩小延迟验证了预算边界的确定性行为(检查在调用前、不掐断进行中调用),反推生产最坏情形下 20 只里约 17 只能审完、约 3 只被 `judgeSkipped`——**已回填 PROJECT_PLAN.md「v1.5 LLM 预算账」节**,与既有估算量级一致、无需推翻重估。**测试**:Python 全量 **1790 过 + 2 skip**(基线 1779+2,净增 11:`test_pipeline.py` 8〔`TestJudgeCandidatesWithBudget`5 + `TestCandidateJudgeBudgetWiring`3〕+ `test_render.py` 1 + `test_api_report_board.py` 2 契约测);未动 Swift。`judge_skipped`/`judgeSkipped` 全仓 grep 只出现在 5 个预期文件、`neckline/sentinel/` 零命中(未主动新增守门单测,靠既有 grep 习惯人工核对)。**规格与现实无冲突,零偏差,零 TODO 遗留**。
+- **v1.5-① 已完工(上一会话,详见 §九 07-29 一行 + 本文件历史 diff)**:参考件三件套地基(`reference_plan.py`/`reference_plan_store.py`/新表 `reference_plans`/契约 `CandidateOut.referencePlan`),不再复述,细节见 git log 与模块 docstring。
+- **生产现状(事实,勿再核,本会话未变)**:公网 `/health` = **`v1.4.1`**;生产库含 `industry_strength_daily`(175,120 行)/ `strategy_activation_log`(3 条 seed)/ `decision_log.max_chase_pct` / `inquiry_log`;**尚不含 `reference_plans`**(①②只落地在本地开发库,未上云,随 ⑥ 一并部署)。`MemoryMax` 维持 `report=800M` · `daily=900M` · 常驻 `High=420M/Max=600M`(理由六条见 `archive/v1.4_施工图_20260729归档.md` ⑨-F 与 §九 07-29 那两行)。
 - **🔴 明日(2026-07-30)16:35 首战验收 = v1.5 部署块的硬门禁**(主会话执行,不是 builder 的活):**v1.4/v1.4.1 代码的第一次 16:05 / 16:35 自动跑**。判据三项——① `ExecMainStatus=0` **且** `ExecMainStartTimestamp` 是本次那一跑(铁律:`list-timers` 的 LAST 与 `Result=` 都不可信);② **当日报告新字段真落地**(`infoCard` 摘要位 / `execHints` / `industryRank` 三级排序键 / `dataFreshness` 的行业强度三键 —— 07-29 那份快照是 p1 代码生成的,这几项还是空);③ `MemoryPeak` 不高于 07-28 基线 `838,860,800` 且 `oom_kill=0`。**这三项不过,v1.5-⑥ 不得开跑**。
-- **工作区未提交**:`client/Neckline.xcodeproj/project.pbxproj`(Xcode 自动改的 `MARKETING_VERSION 1.3.4→1.4.1` + `InfoCardView` 条目重排,① 未碰)。→ 归 **v1.5-⑤(A2 版本号治理)**一并处理,别单独开提交。
+- **工作区未提交**:`client/Neckline.xcodeproj/project.pbxproj`(Xcode 自动改的 `MARKETING_VERSION 1.3.4→1.4.1` + `InfoCardView` 条目重排,①②均未碰)。→ 归 **v1.5-⑤(A2 版本号治理)**一并处理,别单独开提交。
 - **iOS 未换包**:iPhone 上仍是旧构建 —— v1.4 的信息卡页 / 候选排序理由 / 决策日志第⑨项 / 停牌标注在 iPhone 上都还看不到。v1.5.0 **A2 明确要求 iOS 构建随本版同步产出**(构建 + 装机说明由 builder 备好,装机仍是用户动作,§八 第 12 项)。
 - **🔴 实盘状态(非系统问题,处置在用户)**:`300759.SZ`(康龙化成,20260727 买入 @39.42)07-29 `todayAction` = 「现价已跌破止损线,若条件单未成交请立即人工确认(系统不代下单)」,EOD `net_float` 三日递减(−344.9 → −869.6 → −1119.5)。现役 `stop_pct=0.05`,系统只提醒不下单。
-- **下一步 = v1.5-②(LLM 覆盖面与预算重排)**:`TOP_N_JUDGED` 10→20(= `TOP_N_TOTAL`)+ 新常量 `CANDIDATE_JUDGE_BUDGET_SECONDS=1200` 预算硬闸(按 rank 升序审、预算耗尽标 `judgeSkipped`)+ 并发按实测二选一(本地无 key,大概率走「串行+预算」,结论写档)+ 用实测数字回填「v1.5 LLM 预算账」节。③④ 与 ② 无强依赖,可穿插做。
-- **待办总入口 = §七 Backlog**(P0 空;P1-7 / P1-24 / P4-25 与 ✅ 节那条「自选池侧未覆盖 K4 派发」四条被 v1.5-④ 吸收;P1-8 / P4-19 / P3-11 仍挂账,P3-11 本轮①新增「参考件对拍」一维,仍未出报表)。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
+- **下一步 = v1.5-③ 或 v1.5-④(无强依赖,可任选其一或穿插做)**:③ 是卡面改版 + 老四件套退役(键保留 + 过渡文案)+ 报告分两块(依赖①,②已完工不阻塞);④ 是存量配菜四件(A1 自选派发警示 / A3 P1-7 定案 / A4 测试卫生 / A5 回滚 SOP,无依赖)。⑤ 客户端跟进依赖①③④契约,须等③④做完再开。
+- **待办总入口 = §七 Backlog**(P0 空;P1-7 / P1-24 / P4-25 与 ✅ 节那条「自选池侧未覆盖 K4 派发」四条被 v1.5-④ 吸收;P1-8 / P4-19 / P3-11 仍挂账,P3-11 仍未出报表,本轮②未新增其维度;P4-16 报告内存账待 ⑥-E 复核,本轮②已在预算账节写明"超时先降预算/开并发,不许抬内存")。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。此前的历史交接账本(v1.0 → v1.3.5 各次完工 / 激活 / 事故的当时记账)全文 → `archive/当前状态_历史账本_20260719-20260728.md`。
 
@@ -596,27 +597,33 @@ referencePlan: {
 
 ---
 
-### v1.5 LLM 预算账(单独一节;②-D 完工时用实测回填)
+### v1.5 LLM 预算账(单独一节;②-D 已用本地实测 + 生产估算回填,⑥-E 生产实测前仍是估算)
 
 > **为什么单列**:本版把 LLM 调用量**翻倍并加长**(10 只审判 → 20 只审判 + 三件套),16:35 那一跑是**生产上唯一的长任务**,时长/内存/费用三笔账必须先摆明再施工。
 
-| 项 | v1.4.1 现状 | v1.5 估算 | 依据 |
-|---|---|---|---|
-| 候选 LLM 调用数 | 10 次/日 | **20 次/日** | ②-A |
-| 单次调用耗时(带搜索) | 30–60s | 35–70s(prompt 更长、输出更长) | 07-27 实测 + `read_timeout=90` |
-| 候选 LLM 段总耗时(串行) | ~5–10 min | **~12–23 min** | 20 × 单次 |
-| 候选 LLM 段(并发 2,若限频允许) | — | ~6–12 min | ②-C |
-| 信息卡取数(20 只) | 0(不进 16:35) | **~45–60s** | v1.4.1 生产实测 2.25–3.05s/只 |
-| 消息面扫描 | 300s 预算(隔日轮扫) | **不变** | ②-E |
-| 自选体检 LLM | 只审变化∪pinned | **不变** | ②-E |
-| 自选派发警示(④-A1) | 0 | **+数秒~数十秒**(16 只 × 420 日逐票) | ⑥-E 实测 |
-| **16:35 整跑墙钟** | **22m10s**(07-29 实测) | **~28–40 min**(串行);并发 2 时 ~24–32 min | 上面各项相加 |
-| 预算硬闸 | 无 | `CANDIDATE_JUDGE_BUDGET_SECONDS=1200` | ②-B |
+> **②-D 回填说明(2026-07-29 深夜,本地无 GLM/Kimi key,如实标注哪些是实测/哪些仍是估算)**:
+> 本地能测的只有「判官循环机制自身的墙钟开销」(预算计时 + 跳过记账 + 上下文装配 + JSON 解析 + 夹逼,**不含**真实网络延迟——本机没有可用 key,无法复现),以及该机制在给定 budget/单次延迟比值下的**跳过边界行为**是否与代码逻辑(调用前检查、不掐断进行中调用)一致。真实单次 LLM 调用耗时(30–70s 档)与信息卡 parquet 实读(2.25–3.05s/只)两项沿用 ①-A 与 07-27/v1.4.1 生产实测引用,**本会话未重新测**(本机无 key/无生产同款硬件,重测也不代表生产,见 CLAUDE.md「本地实测廉价不是生产结论」)。
 
+| 项 | v1.4.1 现状 | v1.5 估算/实测 | 依据 | 口径 |
+|---|---|---|---|---|
+| 候选 LLM 调用数 | 10 次/日 | **20 次/日** | ②-A,`TOP_N_JUDGED=TOP_N_TOTAL=20` | 代码常量(已实现) |
+| 判官循环机制自身开销(预算计时/跳过记账/上下文装配/解析/夹逼,不含网络+parquet IO) | 未量化过 | **≈7–10ms/只**(20 只合计 0.13–0.19s,MockTransport 零延迟本地实测) | 本次②-D 本地实测 | **实测**(机制上界,production 会更慢一点因为有真实 parquet IO,但仍是毫秒级) |
+| 单次调用耗时(带搜索) | 30–60s | 35–70s(prompt 更长、输出更长) | 07-27 实测 + `read_timeout=90` | 估算(沿用生产引用) |
+| 候选 LLM 段总耗时(串行) | ~5–10 min | **~12–23 min**(20×35~70s) | 20 × 单次 | 估算 |
+| 候选 LLM 段(并发) | — | **本版不开**(见下方②-C 结论) | ②-C | 已定案 |
+| 信息卡取数(20 只) | 0(不进 16:35) | **~45–60s** | v1.4.1 生产实测 2.25–3.05s/只 | 估算(沿用①-A 引用的生产实测) |
+| 消息面扫描 | 300s 预算(隔日轮扫) | **不变** | ②-E | 不变 |
+| 自选体检 LLM | 只审变化∪pinned | **不变** | ②-E | 不变 |
+| 自选派发警示(④-A1) | 0 | **+数秒~数十秒**(16 只 × 420 日逐票) | ⑥-E 实测 | 估算,待④做完 |
+| **16:35 整跑墙钟** | **22m10s**(07-29 实测) | **~28–40 min**(串行,单次调用35-70s档下 20 只均能在预算内审完);**最坏情形(单次逼近70s+)时预算 1200s 会先于第20只前触发**,详见下条 | 上面各项相加 + 预算边界 | 估算,待⑥-E 生产实测回填 |
+| 预算硬闸 | 无 | `CANDIDATE_JUDGE_BUDGET_SECONDS=1200`(与 `news_alerts.LLM_SCAN_BUDGET_SECONDS=300` 两本独立账) | ②-B | **已实现**(单测锁死) |
+
+- **预算边界的确定性行为(本次②-D 本地实测验证,不是猜测)**:判官循环是「**每次发起下一票调用前**检查已耗时,超了就把剩余候选整体标 `judgeSkipped` 且不再发起,不掐断正在进行中的单次调用」(同 `news_alerts.py` 既有姿势)。本地用等比缩小的延迟(0.3s 模拟单次调用,预算按 1200s/73.06s 的真实比值等比缩小到 4.95s)重放这一行为,实测 20 只里 **15 只完整审完、5 只被跳过**,与「`budget÷单次耗时` 向下取整、且已启动的最后一只允许跑完」的算术推算(理论 16–17 只)量级吻合(小幅偏差来自机制自身开销在小尺度延迟下的相对占比,生产上单次耗时是 30–70s 量级、机制开销的 7–10ms 相对占比 <0.1%,可忽略)。**反推生产**:若 20 只里出现多票撞上单次调用最坏区间(约 70s+),预算 1200s **理论上够审完约 16–17 只**,排名最靠后的 **约 3–4 只会被 `judgeSkipped`**——这是**设计内**的降级行为,不是 bug,`judgeSkipped` 字段就是为这一刻准备的。若单次调用普遍落在 30–50s 档(更常见的实际区间,见 07-27 实测下限),20 只可在 ~12–17 min 内**全部审完**,预算完全不会触发。
 - **时长上限从哪来**:`neckline-report.service` 是 `Type=oneshot`,**不会被 systemd 超时杀**(07-29 那次 22m10s `ExecMainStatus=0` 已实证);真正的上限是 **① 用户当晚要读得到** 与 **② 次日 09:25 盘前 tick 之前必须早就结束**。故 **预算硬闸取 1200s**,整跑目标 **≤45 min(16:35 → 17:20)**;若 ⑥-E 实测超 45 min,**先降预算/开并发,不许抬 `MemoryMax` 糊**(P0-23 的教训)。
 - **TuShare 配额增量 = 0**(信息卡走本地 parquet + 预计算表;三件套不拉任何新数据源)。
 - **LLM token 量级(费用账,不编价格)**:单次 input ≈ 2–4k tokens(60 日 K 线文本 + 快照 + 红黄牌 + 阈值块),output ≈ 0.6–1k tokens;**20 只/日 ≈ 60–100k tokens/日**,约为 v1.4 的 2.5–3 倍。用户若对费用敏感,可调的旋钮是 **①审判只数(20→N)②K 线喂多少日(60→N)**,两个都在常量里,**不许靠删信息位省钱**(违背同构第〇原则)。
-- **降级优先级(预算耗尽时牺牲谁,定死)**:①先牺牲**排名靠后的候选**(rank 降序丢),②**绝不牺牲**消息面扫描(它是持仓风险)、**绝不牺牲**报告主体(情绪/板块/候选/持仓体检照出)。
+- **降级优先级(预算耗尽时牺牲谁,定死,②已实现并单测锁死)**:①先牺牲**排名靠后的候选**(按 rank 升序审,预算耗尽后从当前位置到列表尾**整体**标 `judgeSkipped`,不是随机丢弃——见 `pipeline._judge_candidates_with_budget` 的「降级优先级」docstring 与 `TestJudgeCandidatesWithBudget::test_skips_are_always_the_ranked_tail_not_arbitrary`),②**绝不牺牲**消息面扫描(它是持仓风险)、**绝不牺牲**报告主体(情绪/板块/候选/持仓体检照出)。
+- **②-C 并发决策(定案,不折中)**:**本地无任何可用 GLM/Kimi key**(`.env`/环境变量/`app_settings.llm_api_key` 三处均已核实为空)→ 限频无法实测 → 按「不许拍脑袋开并发」取**保守分支 = 串行 + 预算硬闸**(照 v1.4-⑥-B `news_alerts.py` 先例原样办理,理由三条(a)HTTP 层全同步阻塞、引入并发是局部架构突变(b)GLM/Kimi 真实分钟级限频未经任何实测或文档验证(c)串行+预算已完整解决"总耗时不失控"的真实问题,完整推理见 `neckline/report/pipeline.py::_judge_candidates_with_budget` docstring)。**并发路留待有 key 时先实测 2/3/4 并发的 429 率与稳定性再评估**,不在本次顺手做;届时同时要重新量并发对 16:35 报告进程内存峰值的影响(§七 P4-16)。
 
 ---
 
@@ -780,6 +787,7 @@ referencePlan: {
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-07-29 深夜 · **v1.5-② LLM 覆盖面与预算重排完工**(@builder,纯本地施工,零生产访问/零部署):`pipeline.TOP_N_JUDGED` 10→20(=`TOP_N_TOTAL`,旧「前10审/后10不耗LLM」分档退役);判官循环抽成 `_judge_candidates_with_budget`(调用机制未动,仍逐票一次 `judge_and_build_reference_plan`),新常量 `CANDIDATE_JUDGE_BUDGET_SECONDS=1200`(独立预算,与 `news_alerts.LLM_SCAN_BUDGET_SECONDS=300` 不合并)——按 rank 升序审,预算耗尽从当前位置到列表尾整体标 `Candidate.judge_skipped=True` 且不再发起调用(不掐断进行中调用)。新字段 `judge_skipped`/`CandidateOut.judgeSkipped`(与 `llmJudgment.degraded` 语义分开,`app.py`/`render.py` 已接,render 新增专属文案分支不与真异常「未执行」混淆)。**并发(②-C)**:本地三处核实均无 GLM/Kimi key → 限频无法实测 → 定案**串行+预算硬闸**(照 `news_alerts.py` v1.4-⑥-B 先例,理由入 docstring),未写任何并发脚手架。**时间账(②-D)**:本地实测机制自身开销(零网络)≈7–10ms/候选,可忽略;用等比缩小延迟验证预算边界确定性行为(调用前检查、不掐断进行中调用),反推生产最坏情形 20 只约 17 只能审完、约 3 只 `judgeSkipped`;已回填 PROJECT_PLAN「v1.5 LLM 预算账」节,与既有估算量级一致。测试:Python 全量 **1790 过 + 2 skip**(基线 1779+2,净增 11:`test_pipeline.py` 8 + `test_render.py` 1 + `test_api_report_board.py` 2);未动 Swift。规格与现实无冲突,零偏差
 - 2026-07-29 深夜 · **v1.5-① 参考件三件套地基完工**(@builder,纯本地施工,零生产访问/零部署):新模块 `report/reference_plan.py`(`REFERENCE_PLAN_SYSTEM_PROMPT` 一次 LLM 调用出「自由评语+结论标签+三件套 json」,复用 `judge_candidate` 新增可选 `context_block` 参数、不改调用/解析/降级链;买入区间夹逼明日涨跌停〔唯一底线〕、离场区间只格式校验不夹涨跌停;止损价系统算 `close×(1−stop_pct)` 读现役 config;三态 `ok`/`vetoed`/`unavailable`)+ 新表 `reference_plans`(`reference_plan_store.py` 幂等落库)+ `Candidate.reference_plan`/`CandidateOut.referencePlan` 契约(老四件套四键与 `entry_spec`/`invalidation_spec` 一字未动,退役归 ③)+ `pipeline.py` 判官循环改调 `judge_and_build_reference_plan`(`TOP_N_JUDGED` 仍 10 不变,覆盖面扩到 20 是②的活;两层降级:上下文装配失败退默认上下文仍判一次、装配异常整段 try/except 兜底 `reference_plan=None`+候选照出)。守门三条全绿:`sentinel/` 全目录 grep 零命中 `reference_plan`/`referencePlan`(15 文件参数化测试)、`_SORT_KEY_INPUTS` 白名单新测锁死、`notify.__all__` 仍六类(既有测试原样过)。测试:Python 全量 **1779 过 + 2 skip**(基线 1710+2,净增 69:`test_reference_plan.py` 60 + `test_pipeline.py` 5 + `test_intel_candidates.py` 1 + `test_api_report_board.py` 3);本块未动 Swift(归⑤),iOS/macOS 沿用上次基线 169 跑 156 过 13 skip。规格与现实无冲突,零偏差
 - 2026-07-29 · **v1.5.0 立项**(施工图七块就位待 builder)· 候选参考件三件套〔LLM 参谋化〕= ① 三件套地基(生成 + 明日涨跌停夹逼 + `reference_plans` 落库)+ ② 20 只全覆盖与 LLM 预算重排 + ③ 卡面改版与老四件套退役(键保留 + 过渡文案,哨兵结构化证伪不动)+ ④ 存量配菜四件(自选派发警示 / P1-7 定案 / 测试卫生 / 回滚 SOP)+ ⑤ 双端客户端 + 版本号治理 + iOS 构建 + ⑥ 部署上云(门禁 = 07-30 v1.4 首战验收)+ ⑦ 换包(等用户指令);§2.0 新立**第〇原则**(LLM 是参考、硬条款才是纪律,参考件不触发任何机器动作)、§2.3 补需求 9 拍板块;v1.4 施工图归档 `archive/v1.4_施工图_20260729归档.md`,需求 9 入档 `archive/交接_系统线升级需求_20260725.md`(@planner,只改文档,零代码改动)
 - 2026-07-29 · 🔥 **v1.4.1 热修上云:信息卡从「总是加载失败」修到冷调 3.0s / 热调 2.25s(§七 P1-26 结案)**(@builder-pro,用户报障驱动,🔴 碰生产部署,**未回滚**)。**症状**:App 加载信息卡总是失败。**两层根因**:①服务端端点公网实测 **14.15 / 13.98 / 13.89s**,而②客户端 `APIClient.fetchInfoCard` 走 `get()` **默认 12s 超时** → **必然超时**;用户重试叠加把常驻服务顶到内存节流线(实测 3 次调用 `memory.events high` **+8945**,`MemoryCurrent` 440MB ≈ `MemoryHigh`),越试越慢。**⚠ 原诊断只对了一半**:P1-26 原文说根因是 `_load_single_code_panel` 全 glob —— 它确实全 glob,但**真正的大头是 `compute_sentiment` 一次请求做 5 次全市场横截面**,连同单票 420 日面板 2 次 + 大盘指数线 1 次 = **8 次全 glob**(每次打开 1592 个 parquet footer);所以修在 `market_data._scan_table` 这一层才对,只修 `_load_single_code_panel` 会治不好。**修法(修法①,纯 I/O、结果逐位不变)**:`_scan_table` 加 `years=` 参数,由 `get_market_slice`(单日→1 个年目录)/ `get_stock_history` / `scan_table_range`(区间→`_years_in_range` 覆盖年份)传入;`features.market_state_labels` 起点由写死 `date(2019,1,1)` 改为 `start-(ma_window*3+30)` 自然日(`rolling_mean` 是后向窗口,只需 `ma_window` 个交易日前置量,返回值照旧 filter 回 `[start,end]`)。合法性依据是**结构性**的:分区路径由 `day_file_path` 按 `trade_date.year` 生成,`year=YYYY` 里只可能有该年的行。客户端 `fetchInfoCard` 显式 `timeout: 60`(照问询台同样重的端点的既有惯例)。**公网活体验收**:`/health`=**v1.4.1**;info-card **冷调(重启后首次)3.05s**(判据 <10s)、**热调 2.33 / 2.25s**(判据 <3s)= **6.2 倍**;连打 **6 次** `memory.events high` **恒 0**(修前 3 次 +8945)、`MemoryCurrent` 440→287MB;`002036.SZ` 仍 `suspended_hold`+`priceStale{staleDays:5,suspended}` **无回归**;`/report/latest` 20260729 候选 20 只正常。**部署**:双备份 `neckline.db.{bak,cpbak}-v141-20260729-185132`(30199808 bytes,`.backup` 0.290s、`integrity=ok`)→ `sync_code.sh` DRY_RUN 先验(只传 3 个改动文件、`data/` 零触碰)→ 实传 + 收尾 prune chown + **属主自检绿** → preflight import(`VERSION=v1.4.1`)→ restart(顺带清掉节流态,`memory.events` 全部归零)。**纯代码零迁移**。**macOS 换包**:Release 构建 → **`ditto`**(非 `cp -R`)装 `/Applications`,换前旧包已 ditto 备份;已装包与新构建产物 **sha256 逐字节一致**(`15e9530f…`)且与旧包(`595b9a45…`)不同、`codesign --verify --deep --strict` rc=0。真机项按既有口径跳过。**⚠ 顺带收窄了脏分区的传染半径,已如实改写守门单测而非删断言**:v1.3.5 那条「写侧修好不会让历史脏分区自愈」现在只对**跨到脏那年**的读成立(单日/区间读不再打开无关年份),`test_dirty_first_partition_does_not_drag_new_write` 改为同时断言「同年读通过」+「跨年 `scan_table_range` 仍 SchemaError」。测试:等价单测 `TestYearPartitionPruning` 5 条(裁剪版 vs 全表版对同一份跨 3 年数据逐位相等,含缺年目录跳过);Python 全量 **1710 过 + 2 skip**(基线 1705+2,净增 5);Swift iOS Simulator **169 跑 156 过 13 skip 0 failure**、双端 `xcodebuild build` SUCCEEDED。**⚠ 留给主会话**:今日 20260729 报告快照是 **p1 代码 16:35 生成的**,故 `dataFreshness` 只有板块三键、无 ⑩-F 的行业强度三键,`infoCard`/`execHints`/`industryRank` 亦仍空 —— **明日 16:35 那份(v1.4.1 首次自动跑)才是这些新字段的首验**。

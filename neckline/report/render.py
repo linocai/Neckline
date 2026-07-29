@@ -219,8 +219,17 @@ def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResul
                 if jr.search_hits:
                     lines.append("")
                     lines.append("联网搜索来源:" + "、".join(f"[{h.title or h.link}]({h.link})" for h in jr.search_hits if h.link))
+        elif c.judge_skipped:
+            # v1.5-②-B:预算耗尽、按 rank 靠后被跳过——**如实标注,不是异常**
+            # (与下方 else 分支的"真异常"刻意区分,不合并成一句话;`judgeSkipped`
+            # 与 `degraded` 语义不同,见 `Candidate.judge_skipped` 字段注释)。
+            lines.append(
+                "**LLM 审判:本次预算耗尽未发起**"
+                "(候选 LLM 审判墙钟预算已用完,按排序靠后被跳过,不代表否决,"
+                "非异常状态)。"
+            )
         else:
-            lines.append("**LLM 审判:未执行**(异常状态——前10只理应全部审判,请检查 pipeline)。")
+            lines.append("**LLM 审判:未执行**(异常状态,请检查 pipeline)。")
         lines.append("")
         lines.append("---")
         lines.append("")

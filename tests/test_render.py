@@ -132,6 +132,15 @@ class TestCandidatesSection:
         md = _render(candidates=[c], judged={})
         assert "未执行" in md
 
+    def test_judge_skipped_shows_budget_exhausted_note_not_generic_error(self):
+        """v1.5-②-B:预算耗尽跳过是**如实标注**,不是「未执行」那种异常状态——两条
+        文案必须能分开(`test_missing_judgment_for_top_candidate_shows_explicit_warning`
+        锁死真异常分支仍显示"未执行")。"""
+        c = _candidate(judge_skipped=True)
+        md = _render(candidates=[c], judged={})
+        assert "预算耗尽未发起" in md
+        assert "未执行" not in md
+
     def test_alpha_disclaimer_present(self):
         md = _render()
         assert "不是正 alpha" in md

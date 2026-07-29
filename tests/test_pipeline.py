@@ -8,12 +8,19 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 from datetime import date
 
 import httpx
 import pytest
 
-from tests.conftest import seed_active_rule_v1, seed_synthetic_market
+from tests.conftest import (
+    business_days,
+    insert_stock_basic,
+    insert_trade_cal,
+    seed_active_rule_v1,
+    seed_synthetic_market,
+)
 
 import neckline.report.news_alerts as news_alerts_mod
 import neckline.report.pipeline as pipeline_mod
@@ -23,6 +30,7 @@ from neckline.llm.judge import VERDICT_INACTIVE, VERDICT_PASS, VERDICT_VETO
 from neckline.llm.providers.glm import GLMProvider
 from neckline.report import reference_plan_store
 from neckline.report import store
+from neckline.report.candidates import Candidate
 from neckline.report.reference_plan import STATUS_OK, STATUS_VETOED
 from neckline.sentinel import positions as pos_store
 
@@ -1090,3 +1098,271 @@ class TestReferencePlanWiring:
             report_date, "600001.SH", db_path=isolated_env.db_path
         ) is None
         assert reference_plan_store.load_reference_plans(report_date, db_path=isolated_env.db_path) == []
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  v1.5-② LLM 覆盖面与预算重排(需求 9「20只全覆盖」)
+# ══════════════════════════════════════════════════════════════════════════
+
+def _budget_candidates(n: int) -> list:
+    """手搓 n 只候选(rank 1..n 升序,同 `build_report` 传给判官循环的既有排序
+    姿势)——不经 `build_intel_candidates` 情报漏斗,专注测
+    `_judge_candidates_with_budget` 本身的预算/跳过机制(夹逼/JSON 解析细节已在
+    `test_reference_plan.py` 逐项覆盖,不在本节重复)。"""
+    return [
+        Candidate(
+            ts_code=f"{600100 + i:06d}.SH", name=f"候选{i}", close=10.0 + i, score=90.0 - i,
+            rank=i + 1, board="MAIN", pattern_tags=[], hot_sectors=[], sector_names=[],
+            entry_plan="", stop_loss="", target="", invalidation_text="", invalidation_spec={},
+        )
+        for i in range(n)
+    ]
+
+
+def _seed_budget_env(settings, n: int):
+    """最小环境(同 `test_reference_plan.py::_seed_env` 姿势):trade_cal + 每只候选
+    一行 stock_basic(非ST主板老股,供涨跌停/元数据解析走通)+ 现役规则 v1(供
+    `stop_pct` 解析)。不铺任何 parquet 行情——本节不测夹逼数值正确性,只测预算/
+    跳过机制本身。"""
+    dates = business_days(date(2024, 6, 3), n + 5)
+    insert_trade_cal(settings, dates)
+    insert_stock_basic(settings, [
+        {"ts_code": f"{600100 + i:06d}.SH", "name": f"候选{i}", "market": "主板", "list_date": date(2020, 1, 1)}
+        for i in range(n)
+    ])
+    seed_active_rule_v1(settings)
+    return dates
+
+
+def _pass_json(**overrides) -> dict:
+    base = {"buy": None, "exit": {"low": 1.0, "high": 2.0, "why": "压力位"},
+            "script": "若低开则观望,符合预期则按区间执行", "veto_reason": None}
+    base.update(overrides)
+    return base
+
+
+def _veto_json(reason: str = "消息面有硬伤") -> dict:
+    return {"buy": None, "exit": None, "script": None, "veto_reason": reason}
+
+
+def _judge_response(content: str) -> httpx.Response:
+    return httpx.Response(200, json={
+        "id": "x", "model": "glm-5.2",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+    })
+
+
+def _pass_content(json_obj: dict) -> str:
+    return "分析正文,催化站得住。\n\n结论:通过\n\n```json\n" + json.dumps(json_obj, ensure_ascii=False) + "\n```"
+
+
+def _veto_content(json_obj: dict) -> str:
+    return "分析正文,催化站不住。\n\n结论:否决\n\n```json\n" + json.dumps(json_obj, ensure_ascii=False) + "\n```"
+
+
+class TestJudgeCandidatesWithBudget:
+    """v1.5-②-B/C:`pipeline_mod._judge_candidates_with_budget`(判官循环预算/跳过
+    机制本身)。端到端接入 `build_report` 的验证见下方
+    `TestCandidateJudgeBudgetWiring`。"""
+
+    def test_ample_budget_covers_all_20_none_left_empty_handed(self, isolated_env):
+        """② 验收原话:「20 只全部有结论 + 每只或有三件套或有不买理由,断言无一只
+        两头空」。"""
+        dates = _seed_budget_env(isolated_env, 20)
+        report_date = dates[-1]
+        cands = _budget_candidates(20)
+        call_count = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            call_count["n"] += 1
+            if call_count["n"] % 2 == 0:
+                return _judge_response(_veto_content(_veto_json()))
+            return _judge_response(_pass_content(_pass_json()))
+
+        provider = GLMProvider(api_key="sk-xxx")
+        judged = pipeline_mod._judge_candidates_with_budget(
+            cands, report_date, provider=provider, top_list={},
+            industry_scores=None, industry_map=None, transport=httpx.MockTransport(handler),
+            budget_seconds=pipeline_mod.CANDIDATE_JUDGE_BUDGET_SECONDS, save=False,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        assert call_count["n"] == 20
+        assert len(judged) == 20
+        for c in cands:
+            assert c.judge_skipped is False
+            assert c.reference_plan is not None
+            rp = c.reference_plan
+            has_content = bool(rp.get("buy") or rp.get("exit") or rp.get("script") or rp.get("vetoReason"))
+            assert has_content, f"{c.ts_code} 两头空:{rp}"
+
+    def test_budget_exhausted_after_first_call_skips_rest_matches_plan_example(self, isolated_env):
+        """② 验收原话:「把预算调到 1s → 除第 1 只外全 judgeSkipped,报告照出、不崩」
+        ——本测用等价的更小数值(budget < 单次调用耗时)复现同一场景,证明**恰好
+        第 1 只完成、其余全跳过**,不是"随便跳几只"。"""
+        dates = _seed_budget_env(isolated_env, 20)
+        report_date = dates[-1]
+        cands = _budget_candidates(20)
+        calls: list = []
+
+        def slow_handler(request: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            time.sleep(0.08)   # > budget_seconds,确保第1只调用完成后预算必然已耗尽
+            return _judge_response(_pass_content(_pass_json()))
+
+        provider = GLMProvider(api_key="sk-xxx")
+        judged = pipeline_mod._judge_candidates_with_budget(
+            cands, report_date, provider=provider, top_list={},
+            industry_scores=None, industry_map=None, transport=httpx.MockTransport(slow_handler),
+            budget_seconds=0.05, save=False,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        assert len(calls) == 1                       # 只发起了这一次调用
+        assert len(judged) == 1
+        assert cands[0].ts_code in judged
+        assert cands[0].judge_skipped is False
+        for c in cands[1:]:
+            assert c.judge_skipped is True
+            assert c.ts_code not in judged            # 跳过的不进 judged 字典
+
+    def test_skips_are_always_the_ranked_tail_not_arbitrary(self, isolated_env):
+        """降级优先级(plan 定死,不折中):预算耗尽后牺牲**排名靠后**的候选,已审的
+        排名必然全部小于被跳过的排名(连续尾段,不是随机丢弃)。"""
+        dates = _seed_budget_env(isolated_env, 10)
+        report_date = dates[-1]
+        cands = _budget_candidates(10)   # rank 1..10,升序传入(同 build_report 姿势)
+
+        def slow_handler(request: httpx.Request) -> httpx.Response:
+            time.sleep(0.02)
+            return _judge_response(_pass_content(_pass_json()))
+
+        provider = GLMProvider(api_key="sk-xxx")
+        pipeline_mod._judge_candidates_with_budget(
+            cands, report_date, provider=provider, top_list={},
+            industry_scores=None, industry_map=None, transport=httpx.MockTransport(slow_handler),
+            budget_seconds=0.05, save=False,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        judged_ranks = sorted(c.rank for c in cands if not c.judge_skipped)
+        skipped_ranks = sorted(c.rank for c in cands if c.judge_skipped)
+        assert judged_ranks and skipped_ranks, "本测需要同时出现「已审」与「被跳过」两类才有意义"
+        assert max(judged_ranks) < min(skipped_ranks)
+
+    def test_judge_skipped_and_degraded_are_distinct_not_merged(self, isolated_env):
+        """② 验收原话:「judgeSkipped 与 degraded 分开,断言两个计数各自正确」——
+        `degraded`=发起了但未激活/失败(承 news_alerts `codes_failed`);
+        `judge_skipped`=预算耗尽压根没发起(承 `codes_skipped`)。两者互不覆盖。"""
+        dates = _seed_budget_env(isolated_env, 6)
+        report_date = dates[-1]
+        cands = _budget_candidates(6)
+
+        # 前3只:provider=None(LLM 未激活)→ 全部"发起了但未激活",与预算无关,
+        # 预算给到再大也不受影响(provider=None 时 `judge_candidate` 本就不发网络
+        # 调用,只是状态仍是"发起过"而非"跳过")。
+        judged_inactive = pipeline_mod._judge_candidates_with_budget(
+            cands[:3], report_date, provider=None, top_list={},
+            industry_scores=None, industry_map=None, transport=None,
+            budget_seconds=1200.0, save=False,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        assert len(judged_inactive) == 3
+        assert all(jr.degraded for jr in judged_inactive.values())
+        assert all(c.judge_skipped is False for c in cands[:3])
+
+        # 后3只:预算=0 → 连第一只都不发起(elapsed>=0 恒真),transport 若被调用则
+        # 直接断言失败,确保"零调用"不是碰巧。
+        def must_not_be_called(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("预算=0 时不应发起任何调用")
+
+        judged_skipped = pipeline_mod._judge_candidates_with_budget(
+            cands[3:], report_date, provider=GLMProvider(api_key="sk-xxx"), top_list={},
+            industry_scores=None, industry_map=None, transport=httpx.MockTransport(must_not_be_called),
+            budget_seconds=0.0, save=False,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        assert len(judged_skipped) == 0
+        assert all(c.judge_skipped for c in cands[3:])
+
+        degraded_count = sum(1 for jr in judged_inactive.values() if jr.degraded)
+        skipped_count = sum(1 for c in cands[3:] if c.judge_skipped)
+        assert degraded_count == 3 and skipped_count == 3   # 两个计数各自独立、互不覆盖
+
+    def test_save_true_persists_llm_judgments_only_for_attempted_candidates(self, isolated_env):
+        """跳过的候选不应留下任何 `llm_judgments`/`reference_plans` 落库痕迹
+        (它们压根没被"审"过,不是"审了但空")。"""
+        dates = _seed_budget_env(isolated_env, 4)
+        report_date = dates[-1]
+        cands = _budget_candidates(4)
+
+        def slow_handler(request: httpx.Request) -> httpx.Response:
+            time.sleep(0.06)
+            return _judge_response(_pass_content(_pass_json()))
+
+        provider = GLMProvider(api_key="sk-xxx")
+        pipeline_mod._judge_candidates_with_budget(
+            cands, report_date, provider=provider, top_list={},
+            industry_scores=None, industry_map=None, transport=httpx.MockTransport(slow_handler),
+            budget_seconds=0.05, save=True,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        judgments = store.load_llm_judgments(report_date, db_path=isolated_env.db_path)
+        judged_codes = {j["ts_code"] for j in judgments}
+        skipped_codes = {c.ts_code for c in cands if c.judge_skipped}
+        assert judged_codes & skipped_codes == set()   # 落库的判词与被跳过的票零交集
+        assert judged_codes, "至少应有第1只被真正审判并落库"
+
+
+class TestCandidateJudgeBudgetWiring:
+    """v1.5-②:预算/跳过机制接入 `build_report` 的端到端验证(机制本身的详细分支
+    见上方 `TestJudgeCandidatesWithBudget`,本类只测"接线正确"+"不阻断主报告")。"""
+
+    def test_top_n_judged_default_now_equals_top_n_total_20(self):
+        """②-A:「后10只不耗LLM」旧分档退役,`TOP_N_JUDGED` 现与 `TOP_N_TOTAL` 相等。"""
+        assert pipeline_mod.TOP_N_JUDGED == pipeline_mod.TOP_N_TOTAL == 20
+
+    def test_exhausted_budget_marks_the_one_real_candidate_skipped_report_still_builds(self, isolated_env):
+        """`seed_synthetic_market` 只产 1 只真实候选(600001.SH),用预算=0 逼它
+        必然被跳过——验证「报告照出、不崩」这条落到 `build_report` 整条管线上仍
+        成立(不只是抽出来的辅助函数层面)。"""
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+        provider = GLMProvider(api_key="sk-xxx")
+
+        def must_not_be_called(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("预算已耗尽,不该发起任何调用")
+
+        bundle = pipeline_mod.build_report(
+            report_date, llm_provider=provider, llm_transport=httpx.MockTransport(must_not_be_called),
+            candidate_judge_budget_seconds=0.0,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        assert cand.judge_skipped is True
+        assert "600001.SH" not in bundle.judged
+        assert cand.reference_plan is None      # 没发起调用,自然没有参考件(不是异常)
+        assert "预算耗尽未发起" in bundle.markdown
+        assert "未执行" not in bundle.markdown   # 不应误报成"异常状态"(与真异常分支区分)
+
+        # 落库/读回同样干净:候选仍在报告里,只是没有判词行。
+        row = store.load_report(report_date, db_path=isolated_env.db_path)
+        saved_cand = next(c for c in row["candidates"] if c["ts_code"] == "600001.SH")
+        assert saved_cand["judge_skipped"] is True
+
+    def test_ample_budget_default_still_judges_the_one_candidate(self, isolated_env):
+        """反向对照:预算充裕(默认值)时,唯一候选应正常被审判、不被跳过——防止
+        「exhausted 测试之所以过,是因为代码总是标 skipped」这种退化实现蒙混过关。"""
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+        provider = GLMProvider(api_key="sk-xxx")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _judge_response(_pass_content(_pass_json()))
+
+        bundle = pipeline_mod.build_report(
+            report_date, llm_provider=provider, llm_transport=httpx.MockTransport(handler),
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        cand = next(c for c in bundle.candidates if c.ts_code == "600001.SH")
+        assert cand.judge_skipped is False
+        assert "600001.SH" in bundle.judged

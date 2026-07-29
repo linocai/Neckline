@@ -88,6 +88,15 @@ class Candidate:
     # 无参考"(见 `CandidateOut.referencePlan` 契约注释)。**参考件不进排序键/不进
     # 哨兵/不进推送/不改候选去留**(§2.0 第一条,①-G 三条守门单测锁死)。
     reference_plan: Optional[Dict[str, Any]] = None
+    # —— v1.5-② LLM 覆盖面与预算重排(需求 9「20只全覆盖」,plan §五 v1.5-②-B)——————————
+    # `CANDIDATE_JUDGE_BUDGET_SECONDS` 墙钟预算耗尽时,`pipeline.py` 的判官循环按 rank
+    # 升序审、预算耗尽后**不再发起调用**的候选原地补 `judge_skipped=True`(默认 `False`,
+    # 本模块/`intel_candidates.py` 不产它,构造时恒 `False`)。**与 `JudgeResult.degraded`
+    # 语义不同、不许合并**——`judge_skipped=True` 是"没发起调用"(没审),`degraded=True`
+    # 是"发起了但失败/未激活"(审了但没看懂),两者是"没做"与"做了没结果"的区别,承
+    # `news_alerts.py` 的 `codes_skipped`/`codes_failed` 同一纪律。**不进排序键/不进
+    # 哨兵/不进推送/不改候选去留**(§2.0 第一条,同 `reference_plan` 待遇)。
+    judge_skipped: bool = False
     raw: Dict[str, Any] = field(default_factory=dict)  # 原始特征行,供 judge.py 组装上下文
 
     def public_dict(self) -> Dict[str, Any]:

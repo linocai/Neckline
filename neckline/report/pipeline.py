@@ -1,7 +1,7 @@
 """报告管线编排(plan 2.5,§2.6 历史回放的天然落地点)。串起情绪仪表盘(2.1)+
-强势板块(2.2)+ 候选评分(2.3)+ LLM 审判(2.4,前10只)+ 落库(store.py)+
-markdown 渲染(render.py)——`scripts/report.py` 的核心入口就是本模块的
-`build_report`。
+强势板块(2.2)+ 候选评分(2.3)+ LLM 审判(2.4,plan §五 v1.5-② 起 20 只全覆盖,
+预算硬闸 `CANDIDATE_JUDGE_BUDGET_SECONDS`)+ 落库(store.py)+ markdown 渲染
+(render.py)——`scripts/report.py` 的核心入口就是本模块的 `build_report`。
 
 **历史回放(§2.6)天然支持**:`build_report(trade_date, ...)` 对任意历史交易日都
 能跑(只要该日的 Parquet/SQLite 数据已落地),不需要另一套"回放专用"代码——
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -69,7 +70,20 @@ from neckline.strategy import brain
 logger = logging.getLogger(__name__)
 
 TOP_N_TOTAL = 20
-TOP_N_JUDGED = 10
+# v1.5-②-A(需求 9「20只全覆盖」):「前10只审、后10只只给分数不耗LLM」的旧分档
+# 退役——`TOP_N_JUDGED` 与 `TOP_N_TOTAL` 现在相等,每票或出三件套、或出不买理由。
+# 两个常量维持独立命名(不合并成一个)是刻意的:`top_n_judged` 仍是 `build_report`
+# 的独立可覆盖参数,历史/未来若需要重开分档(如成本吃紧要收窄覆盖面)只改这一个
+# 默认值,不必牵动 `TOP_N_TOTAL`(候选生成 universe 大小)。
+TOP_N_JUDGED = 20
+
+# v1.5-②-B(需求 9,plan §五「v1.5 LLM 预算账」):候选 LLM 审判墙钟预算,20 分钟。
+# **与 `news_alerts.LLM_SCAN_BUDGET_SECONDS`(300s)是两本独立账,不共享、不合并**
+# ——一个吃光另一个是最难查的那类故障(plan 原文)。20 只 × (信息卡取数 2.25~3.05s +
+# 带搜索LLM调用 30~70s)串行最坏情形 ≈ 1461s,略超本预算——这是**刻意的**:预算硬闸
+# 存在的意义就是在最坏情形下先止损(牺牲排名靠后的候选),不是保证 20 只都能审完。
+# 具体测算见 PROJECT_PLAN.md「v1.5 LLM 预算账」一节(②-D 已回填实测/估算数字)。
+CANDIDATE_JUDGE_BUDGET_SECONDS = 1200.0
 
 
 @dataclass
@@ -80,7 +94,11 @@ class ReportBundle:
     sentiment: SentimentDashboard
     sectors: List[SectorScore]
     candidates: List[Candidate]
-    judged: Dict[str, JudgeResult]  # ts_code -> JudgeResult(仅前 top_n_judged 只)
+    # ts_code -> JudgeResult:前 top_n_judged 只中**实际发起过调用**的那些(v1.5-②起
+    # top_n_judged 恒等于 top_n_total,即"全部候选"这个集合)。预算耗尽后被跳过、
+    # 没发起调用的候选不在这个字典里——查 `Candidate.judge_skipped` 分辨"没审"
+    # 是否属于这一种(而非本函数/pipeline 自身的其他 bug)。
+    judged: Dict[str, JudgeResult]
     markdown: str
     missed_entry_hint: str = ""     # v1.1-B.4 漏录兜底提示(无 → 空串)
     watchlist_check: List[WatchlistCheckItem] = field(default_factory=list)  # v1.1-C.3 自选体检(独立一节)
@@ -127,6 +145,89 @@ def _scenario_review_position_ids(db_path: Optional[Path] = None) -> set:
     return ids
 
 
+def _judge_candidates_with_budget(
+    candidates: List[Candidate],
+    trade_date: date,
+    *,
+    provider: Optional[LLMProvider],
+    top_list: Dict[str, dict],
+    industry_scores: Optional[List[Any]],
+    industry_map: Optional[Dict[str, str]],
+    transport: Optional[Any],
+    budget_seconds: float,
+    save: bool,
+    parquet_dir: Optional[Path],
+    db_path: Optional[Path],
+) -> Dict[str, JudgeResult]:
+    """v1.5-② 候选 LLM 审判 + 参考件三件套的**预算感知**编排(需求 9「20 只全覆盖」)。
+    `candidates` 须已按 rank 升序排好(调用方传 `candidates[:top_n_judged]`)——**按
+    rank 升序逐一发起**(①-B 的单次调用机制`judge_and_build_reference_plan`一字不动,
+    本函数只加一层墙钟预算计时 + 跳过记账)。
+
+    **降级优先级(plan §五「v1.5 LLM 预算账」定死,不折中)**:预算耗尽时先牺牲
+    **排名靠后的候选**——从耗尽的那一只起,`candidates` 尾部**全部**标
+    `judge_skipped=True` 且**不发起调用**(不是"跳过这一只、继续试下一只";预算
+    耗尽是单调的,没有理由认为下一只会更快)。**绝不牺牲已经在审的靠前候选**,
+    也绝不因为参考件/审判异常而回头重试——异常走既有的逐票 try/except 退回普通
+    审判(同 v1.5-① 姿势),预算计时不因异常处理而额外消耗。
+
+    `judge_skipped` 与 `JudgeResult.degraded` 语义不同、不许合并(承
+    `news_alerts.py` 的 `codes_skipped`/`codes_failed` 同一纪律,见
+    `Candidate.judge_skipped` 字段注释)——本函数返回的 `judged` 字典**只含
+    实际发起过调用的候选**,跳过的不在字典里,调用方从 `Candidate.judge_skipped`
+    (本函数原地在候选对象上打的标)分辨"为什么这一只没有 `judged` 条目"。
+
+    并发方案(v1.5-②-C,plan §五「不许拍脑袋开并发」,承 v1.4-⑥-B `news_alerts.py`
+    先例原样照做):**本函数是纯串行实现**,理由与 `news_alerts._scan_llm_categories`
+    完全一致(同一套 `llm/openai_compat.py` HTTP 层、GLM/Kimi 真实分钟级限频未经
+    实测)——**施工期(2026-07-29)本地无任何可用 GLM key**(`.env`/环境变量/
+    `app_settings.llm_api_key` 均空,已核实),限频无法实测,按"不许拍脑袋开并发"
+    取保守分支 = 串行 + 预算硬闸。并发路留待有 key 时先实测 2/3/4 并发的 429
+    率与稳定性再评估(届时对照 `news_alerts.py` 模块头(a)(b)(c) 三条理由逐条
+    回答),不在本次顺手做。
+
+    副作用(`save=True` 时):逐票落 `llm_judgments`/`reference_plans`;原地在
+    `candidates` 列表的 `Candidate` 对象上补 `.reference_plan`/`.judge_skipped`
+    (`build_report` 随后把这批 `Candidate` 对象整体落 `reports.candidates_json`,
+    同 v1.5-① 既有姿势,本函数不新增落库路径)。"""
+    judged: Dict[str, JudgeResult] = {}
+    budget_start = time.monotonic()
+    for i, c in enumerate(candidates):
+        if time.monotonic() - budget_start >= budget_seconds:
+            skipped_n = len(candidates) - i
+            logger.warning(
+                "候选 LLM 审判(v1.5-②)墙钟预算耗尽(预算 %.0fs),按 rank 升序审、"
+                "剩余 %d 只标记 judgeSkipped 且不再发起调用(降级优先级:牺牲排名"
+                "靠后的候选,绝不牺牲已在审的靠前候选,详见「v1.5 LLM 预算账」)",
+                budget_seconds, skipped_n,
+            )
+            for skipped_c in candidates[i:]:
+                skipped_c.judge_skipped = True
+            break
+        top_row = top_list.get(c.ts_code)
+        try:
+            result, plan = judge_and_build_reference_plan(
+                c, trade_date, provider=provider, top_list_row=top_row, transport=transport,
+                industry_scores=industry_scores, industry_map=industry_map, top_list_t0=top_list,
+                parquet_dir=parquet_dir, db_path=db_path,
+            )
+        except Exception:  # noqa: BLE001 —— 参考件三件套(v1.5-①)整体异常不得连带候选审判失败
+            logger.warning(
+                "参考件三件套(v1.5-①)整体异常(%s),候选照出、退回不带参考件的普通审判",
+                c.ts_code, exc_info=True,
+            )
+            result = judge_candidate(c, provider=provider, top_list_row=top_row, transport=transport)
+            plan = None
+        judged[c.ts_code] = result
+        if save:
+            store.save_llm_judgment(trade_date, result, db_path=db_path)
+        if plan is not None:
+            c.reference_plan = plan.to_public_dict()
+            if save:
+                reference_plan_store.save_reference_plans(trade_date, [plan], db_path=db_path)
+    return judged
+
+
 def build_report(
     trade_date: date,
     *,
@@ -134,6 +235,7 @@ def build_report(
     llm_transport: Optional[Any] = None,
     top_n_total: int = TOP_N_TOTAL,
     top_n_judged: int = TOP_N_JUDGED,
+    candidate_judge_budget_seconds: float = CANDIDATE_JUDGE_BUDGET_SECONDS,
     parquet_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
     save: bool = True,
@@ -144,6 +246,9 @@ def build_report(
     Transport);为 `None`(默认,生产用法)时从 `.env` 现读(`llm.factory.get_provider()`)
     ——本项目当前无 key,现读结果恒为 `None`,LLM 审判段落走「未激活」占位链路。
     `save=False` 供只想拿 `ReportBundle`/跑历史回放对照、不想写库的调用方(如单测)。
+    `candidate_judge_budget_seconds`(v1.5-②-B,默认 `CANDIDATE_JUDGE_BUDGET_SECONDS`
+    =1200s):候选 LLM 审判的独立墙钟预算,暴露成参数供单测把预算调小以确定性触发
+    耗尽路径(同 `news_alerts.build_news_alerts(llm_budget_seconds=...)` 先例)。
     """
     active = brain.get_active(db_path=db_path)
     if active is None:
@@ -221,37 +326,23 @@ def build_report(
     provider = llm_provider or get_provider(db_path=db_path)
     top_list = top_list_lookup(trade_date, parquet_dir=parquet_dir)
 
-    # v1.5-① 参考件三件套(需求 9,§2.0 第〇原则):一次 LLM 调用同时产出「审判结论 +
-    # 三件套参考」(①-B 定死,不许拆成两次调用)——`judge_and_build_reference_plan`
-    # 内部含自身的降级链(上下文装配异常退回默认上下文继续审判 / json 解析装配异常
-    # 不影响已产出的审判结论),这里再包一层 try/except 兜底该函数自身的意外
-    # (同 C1/C2/C4/信息卡摘要姿势,§硬要求「核心管线对可选情报输入的调用必须包保险
-    # 丝」)——异常时退回不带参考件的普通审判,**绝不因参考件失败而让某只候选没有
-    # 审判结论**。`Candidate.reference_plan` 默认 `None`,只在成功产出时补上
+    # v1.5-①+② 参考件三件套(需求 9,§2.0 第〇原则)+ 20 只全覆盖预算重排:一次 LLM
+    # 调用同时产出「审判结论 + 三件套参考」(①-B 定死,不许拆成两次调用),按 rank
+    # 升序审、受独立墙钟预算约束(②-B,`_judge_candidates_with_budget` docstring
+    # 详述降级优先级/并发决策)。`judge_and_build_reference_plan` 内部含自身的降级链
+    # (上下文装配异常退回默认上下文继续审判 / json 解析装配异常不影响已产出的审判
+    # 结论),`_judge_candidates_with_budget` 逐票再包一层 try/except 兜底该函数自身
+    # 的意外(同 C1/C2/C4/信息卡摘要姿势,§硬要求「核心管线对可选情报输入的调用必须
+    # 包保险丝」)——异常时退回不带参考件的普通审判,**绝不因参考件失败而让某只候选
+    # 没有审判结论**。`Candidate.reference_plan` 默认 `None`,只在成功产出时补上
     # (v1.5-①-F「候选照出、reference_plan=None,不冒充确认无参考」)。
-    judged: Dict[str, JudgeResult] = {}
-    for c in candidates[:top_n_judged]:
-        top_row = top_list.get(c.ts_code)
-        try:
-            result, plan = judge_and_build_reference_plan(
-                c, trade_date, provider=provider, top_list_row=top_row, transport=llm_transport,
-                industry_scores=industry_scores, industry_map=industry_map, top_list_t0=top_list,
-                parquet_dir=parquet_dir, db_path=db_path,
-            )
-        except Exception:  # noqa: BLE001 —— 参考件三件套(v1.5-①)整体异常不得连带候选审判失败
-            logger.warning(
-                "参考件三件套(v1.5-①)整体异常(%s),候选照出、退回不带参考件的普通审判",
-                c.ts_code, exc_info=True,
-            )
-            result = judge_candidate(c, provider=provider, top_list_row=top_row, transport=llm_transport)
-            plan = None
-        judged[c.ts_code] = result
-        if save:
-            store.save_llm_judgment(trade_date, result, db_path=db_path)
-        if plan is not None:
-            c.reference_plan = plan.to_public_dict()
-            if save:
-                reference_plan_store.save_reference_plans(trade_date, [plan], db_path=db_path)
+    judged = _judge_candidates_with_budget(
+        candidates[:top_n_judged], trade_date,
+        provider=provider, top_list=top_list,
+        industry_scores=industry_scores, industry_map=industry_map,
+        transport=llm_transport, budget_seconds=candidate_judge_budget_seconds,
+        save=save, parquet_dir=parquet_dir, db_path=db_path,
+    )
 
     # v1.1-C.3 自选体检(独立一节,同码复用候选评分管线,§2.3 报告拍板/§五
     # v1.1-C.3):不改候选评分/不进候选榜。空自选池 → `build_watchlist_check`
@@ -459,4 +550,7 @@ def _jsonable(obj: Any) -> Any:
     return obj
 
 
-__all__ = ["ReportBundle", "build_report", "compute_missed_entry_hint", "TOP_N_TOTAL", "TOP_N_JUDGED"]
+__all__ = [
+    "ReportBundle", "build_report", "compute_missed_entry_hint",
+    "TOP_N_TOTAL", "TOP_N_JUDGED", "CANDIDATE_JUDGE_BUDGET_SECONDS",
+]

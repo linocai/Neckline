@@ -218,7 +218,14 @@ class CandidateOut(BaseModel):
     # 整体异常,**不冒充"确认无参考"**——与 `status="unavailable"`(已装配好、只是
     # "没看")刻意区分,客户端按此判断展示哪种缺省文案。
     referencePlan: Optional[ReferencePlanOut] = None
-    llmJudgment: Optional[LLMJudgmentOut] = None              # 仅前 10 只有
+    # v1.5-②-A:20 只全覆盖(旧「仅前10只有」分档退役)——`llmJudgment` 现在 20 只
+    # 都可能有,`None` 有两种成因,靠 `judgeSkipped` 分辨是哪种:① 老报告快照
+    # (建于本字段前);② 本次生成时 v1.5-②-B 墙钟预算耗尽、这一票根本没发起调用
+    # (`judgeSkipped=true`,与「发起了但失败/未激活」的 `llmJudgment.degraded`
+    # 语义不同,不许合并成一个"没审",承 `newsAlertsScan.codesSkipped`/
+    # `codesFailed` 同一纪律)。
+    llmJudgment: Optional[LLMJudgmentOut] = None
+    judgeSkipped: bool = False
 
 
 class WatchlistCheckLLMOut(BaseModel):
