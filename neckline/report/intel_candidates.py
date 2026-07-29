@@ -91,7 +91,9 @@ from neckline.report.holding_k4_check import (
     _build_holding_feature_panel,
     _evaluate_hits,
     _load_k4_evidence,
+    load_k4_intel_order,
     load_k4_sections,
+    order_codes_for_display,
 )
 from neckline.report.industry_strength import (
     IndustryStrength,
@@ -421,6 +423,10 @@ def build_intel_candidates(
     )
     sections = load_k4_sections(db_path)
     evidence = _load_k4_evidence(db_path)
+    # 展示序(v1.4 review 契约线 🟡-1):DB `k4_advisory.intel_order` 此前零消费方。整批读
+    # 一次注入(同 sections/evidence 姿势),**只排展示,不碰判定** —— 下面的 hard_cut 拦截
+    # 与黄牌计数都与顺序无关(集合/计数),排序发生在它们之后。
+    intel_order = load_k4_intel_order(db_path)
 
     # —— ④ 情报排序输入:板块资金流(C2 全板块)————————————————————————————————
     # **保险丝(v1.3.5,2026-07-27 生产真踩后补)**:资金流只是情报**排序的一维输入**,
@@ -473,7 +479,9 @@ def build_intel_candidates(
         if row is None:
             continue   # 无当日 EOD 数据(停牌/未上市)——无法出四件套候选卡,跳过
         # 保留候选的 K4 标注码:普通候选 = avoid_flag 命中;forced 票即使命中 hard_cut 也全数标注(诚实透出危险)。
-        k4_flags = [h.code for h in hits]
+        # 顺序按 DB `intel_order` 声明的展示优先级(契约线 🟡-1);未声明的码(如合成 A3b)
+        # 保持发射序排在其后;`intel_order` 缺失 → 原样 = 现行发射序。
+        k4_flags = order_codes_for_display([h.code for h in hits], intel_order)
         # 排序键③(v1.4-③):K4 黄牌数 = `k4_flags` 里**严格**属 DB `avoid_flag` 分区的命中数。
         # ⚠ **不用 `_DEFAULT_SECTION` 兜底**(与上面 `hard` 判定的 `.get(h.code, _DEFAULT_SECTION)`
         # 刻意不同)——那个默认值是给"拦截判定"用的(缺 DB 行时保守不拦);这里是"排序权重"用的,

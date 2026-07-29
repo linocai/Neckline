@@ -80,7 +80,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
 import polars as pl
 
@@ -419,6 +419,78 @@ def load_k4_sections(db_path: Optional[Path] = None) -> Dict[str, str]:
     return out
 
 
+def load_k4_intel_order(db_path: Optional[Path] = None) -> List[str]:
+    """读 DB `strategy_versions` K4 行 `k4_advisory.intel_order` 声明的**展示优先级**,
+    归一成 advisory 码前缀序列(v1.4 review 契约线 🟡-1:该节此前零消费方)。
+
+    真实 DB 里这一节写的是**人读短标签**(`["B2双金叉","A1换手","B4追强","B3题材23",
+    "B1堆积","A3年线下涨停","A2题材≥4天"]`),不是 advisory 码 —— 故取每条的**前导码
+    前缀**(`B2` / `A1` / …)当键,与 `A1_turnover_gt_10` 这类码的 `_` 前一段精确相等
+    才算命中。**必须精确相等,不能 `startswith`**:合成码 `A3b_belowyear_bigvol` 的前缀
+    是 `A3b`,若用 `startswith("A3")` 它会悄悄占走 A3 的名次。
+
+    节缺失 / K4 行缺失 / 结构异常 / 条目不是字符串 → **空列表**,调用方据此**原样保留
+    发射序**(= v1.4 之前的现行行为)。**这是展示序,不参与任何判定**(拦截看
+    `load_k4_sections`、黄牌数看严格 `avoid_flag` 计数,两者与顺序无关)。"""
+    import re
+
+    from neckline.strategy import brain
+
+    try:
+        v = brain.get_version("K4", db_path=db_path)
+    except Exception:  # noqa: BLE001  隔离库读失败不崩
+        return []
+    if v is None:
+        return []
+    raw = ((v.rule or {}).get("k4_advisory") or {}).get("intel_order")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: List[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        m = re.match(r"^([A-Za-z]+\d+[a-z]?)", entry.strip())
+        if m and m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
+def order_codes_for_display(
+    codes: Sequence[str], intel_order: Optional[Sequence[str]] = None,
+    *, db_path: Optional[Path] = None,
+) -> List[str]:
+    """把 K4 命中码按 DB `intel_order` 声明的优先级排**展示序**(契约线 🟡-1)。
+
+    规则(定死,稳定确定性):
+      · 在 `intel_order` 里声明过的码按声明次序在前;
+      · **没声明过的码**(如不在 DB 的合成码 `A3b_belowyear_bigvol`)排在其后,
+        并**保持传入的原次序**(= `_evaluate_hits` 的发射序)—— Python 稳定排序保证;
+      · `intel_order` 为空(节缺失/老库/隔离测试库)→ **原样返回**,逐位等于现行行为。
+
+    ⚠ **纯展示**:调用方拿它排 `k4_flags` / `k4Advisory` / 信息卡红黄牌的**呈现顺序**,
+    判定(拦不拦、黄牌几张)一概不看顺序。`intel_order` 未显式传时才回库读一次。"""
+    order = list(intel_order) if intel_order is not None else load_k4_intel_order(db_path)
+    if not order:
+        return list(codes)
+    return sorted(codes, key=lambda c: _display_rank(c, order))
+
+
+def _display_rank(code: str, order: Sequence[str]) -> int:
+    token = code.split("_", 1)[0]
+    return order.index(token) if token in order else len(order)
+
+
+def sort_hits_for_display(
+    hits: Sequence[HoldingK4Hit], intel_order: Optional[Sequence[str]] = None,
+    *, db_path: Optional[Path] = None,
+) -> List[HoldingK4Hit]:
+    """`order_codes_for_display` 的 `HoldingK4Hit` 版(同一把排序键,不另写一份规则)。"""
+    order = list(intel_order) if intel_order is not None else load_k4_intel_order(db_path)
+    if not order:
+        return list(hits)
+    return sorted(hits, key=lambda h: _display_rank(h.code, order))
+
+
 def describe_hits(codes: List[str], db_path: Optional[Path] = None) -> List[HoldingK4Hit]:
     """把**已经算好**的 K4 命中码列表(如 `Candidate.k4_flags`)decorate 成完整
     `HoldingK4Hit`(label/level/evidence/evidence_strength)——供 v1.4-④ 信息卡
@@ -563,6 +635,7 @@ def build_holding_k4_check(
         {r["ts_code"]: r for r in panel.to_dicts()} if not panel.is_empty() else {}
     )
     evidence = _load_k4_evidence(db_path)
+    intel_order = load_k4_intel_order(db_path)      # 展示序,整批读一次(同 evidence 姿势)
     industry_hot = industry_strength_lookup(industry_scores or [])
     industry_of = industry_map or {}
     scenario_ids = scenario_position_ids or set()
@@ -600,7 +673,10 @@ def build_holding_k4_check(
         # v1.4-①-B:当日无 EOD 行 → **整份体检跳过**(连题材类 A2/B3 也不判),由
         # `has_data=False` 对外标 `dataUnavailable`。**不静默产出空牌** —— 空牌的语义是
         # 「体检过了没问题」,与「今天压根没体检」必须能分开(§3.8)。
-        hits = _evaluate_hits(row, persist_days, evidence) if has_data else []
+        # 展示序按 DB `intel_order`(v1.4 review 契约线 🟡-1);**判定不看顺序**:下一行的
+        # `has_strong` 是 any(...)、拦截/计数在候选侧走集合,排序前后逐位相同。
+        hits = sort_hits_for_display(
+            _evaluate_hits(row, persist_days, evidence), intel_order) if has_data else []
         has_strong = any(h.level == "strong" and h.evidence_strength == "price_volume" for h in hits)
         out.append(HoldingK4Item(
             position_id=p.id, ts_code=p.ts_code, name=names.get(p.ts_code, p.ts_code),
@@ -635,5 +711,8 @@ __all__ = [
     "HoldingK4Item",
     "build_holding_k4_check",
     "load_k4_sections",
+    "load_k4_intel_order",
+    "order_codes_for_display",
+    "sort_hits_for_display",
     "describe_hits",
 ]

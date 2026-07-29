@@ -133,9 +133,12 @@ def _seed_moneyflow(env, td, net_by_code: dict) -> None:
                         [{"ts_code": c, "net_amount": v} for c, v in net_by_code.items()])
 
 
-def _seed_k4(env) -> None:
-    """在隔离库落 K4 advisory 分区(section 归属 = 真实 DB 口径:A* hard_cut / B* avoid_flag)。"""
+def _seed_k4(env, intel_order=None) -> None:
+    """在隔离库落 K4 advisory 分区(section 归属 = 真实 DB 口径:A* hard_cut / B* avoid_flag)。
+    `intel_order` 缺省 **不落该节** —— 既有用例因此仍走「发射序」现行行为(回归护栏)。"""
+    adv_extra = {} if intel_order is None else {"intel_order": list(intel_order)}
     brain.save_version("K4", rule={"config": {}, "k4_advisory": {
+        **adv_extra,
         "hard_cut": {
             "A1_turnover_gt_10": {"expr": "turnover_rate > 10", "evidence": "换手>10% 次日跌停 3.37×"},
             "A2_theme_persist_ge_4": {"expr": "题材≥4天", "evidence": "题材≥4天过热接盘"},
@@ -634,6 +637,30 @@ def test_yellow_card_count_excludes_hard_cut_hits(isolated_env):
     flags = set(by_code["600009.SH"].k4_flags)
     assert "A1_turnover_gt_10" in flags and "B4_chase_strong_red" in flags   # 两码都诚实打标
     assert by_code["600009.SH"].intel_rank["yellowCardCount"] == 1          # 但只数 B4 一个黄牌
+
+
+def test_k4_flags_display_order_follows_db_intel_order(isolated_env):
+    """v1.4 review 契约线 🟡-1:候选卡 `k4_flags` 的**展示序**按 DB `k4_advisory.intel_order`
+    声明排(此前该节零消费方,展示序 = `_evaluate_hits` 的发射序,与 DB 声明不同)。
+
+    判据取自与 `test_yellow_card_count_excludes_hard_cut_hits` 同一只票(A1 + B4 双命中,
+    发射序恒 `[A1, B4]`),但声明把 **B4 排在 A1 之前** → 展示序必须跟着翻过来。
+    (真库那一节的形状〔人读短标签〕由 `test_holding_k4_check.py::
+    test_load_k4_intel_order_parses_real_db_shape` 按原样锁死,此处只测端到端接线。)"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    _seed_k4(isolated_env, intel_order=["B4追强", "A1换手", "B2双金叉"])
+    _seed_market(isolated_env, dates, [
+        {"code": "600009.SH", "market": "主板", "closes": _rising(30, last=0.06),
+         "turnover": [5.0] * 29 + [15.0]},
+    ])
+    _seed_boards(isolated_env, [{"ts_code": "885756.TI", "name": "芯片概念"}],
+                 [{"index_code": "885756.TI", "con_code": "600009.SH"}])
+    cands = ic.build_intel_candidates(dates[-1], _RULE, parquet_dir=isolated_env.parquet_dir,
+                                      db_path=isolated_env.db_path, forced_codes=["600009.SH"])
+    got = {c.ts_code: c for c in cands}["600009.SH"]
+    assert got.k4_flags == ["B4_chase_strong_red", "A1_turnover_gt_10"]   # 声明序,不是发射序
+    assert got.intel_rank["yellowCardCount"] == 1        # 判定不受展示序影响(仍只数 B4)
 
 
 def test_yellow_card_count_zero_when_k4_db_missing(isolated_env):

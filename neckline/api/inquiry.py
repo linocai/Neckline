@@ -180,6 +180,7 @@ def _k4_flags(
             _evaluate_hits,
             _load_k4_evidence,
             load_k4_sections,
+            sort_hits_for_display,
         )
 
         panel = _build_holding_feature_panel([code], basis_date, parquet_dir)
@@ -187,6 +188,9 @@ def _k4_flags(
         hits = _evaluate_hits(row, stock_persist_days(code, industry_of, industry_hot), _load_k4_evidence(db_path))
         if not hits:
             return []
+        # 展示序按 DB `intel_order`(契约线 🟡-1);本函数产出的是**文案列表**(纯展示),
+        # 判定侧(verdict 是否带风险提示)只看"非空",与顺序无关。
+        hits = sort_hits_for_display(hits, db_path=db_path)
         sections = load_k4_sections(db_path)
         out = []
         for h in hits:

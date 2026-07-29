@@ -371,6 +371,102 @@ def test_describe_hits_empty_input_returns_empty():
 
 
 # ————————————————————————————————————————————————————————————————
+# 4c) intel_order 展示序(v1.4 review 契约线 🟡-1:该节此前零消费方)
+#     ⚠ 全节**只排展示**,不参与任何判定;真库该节写的是人读短标签,不是 advisory 码。
+# ————————————————————————————————————————————————————————————————
+
+#: 真库(2026-07-29 `strategy_versions` K4 行)`k4_advisory.intel_order` 的**原样形状**
+#: —— 单测按真形状测,不拿理想化的 advisory 码糊弄(否则前缀解析这一层根本没被测到)。
+_REAL_INTEL_ORDER = ["B2双金叉", "A1换手", "B4追强", "B3题材23", "B1堆积", "A3年线下涨停", "A2题材≥4天"]
+
+
+def _seed_k4_with_order(db, order=None, *, drop_section=False):
+    from neckline.strategy import brain
+
+    adv = {
+        "hard_cut": {c: {"expr": "x", "evidence": "e"} for c in
+                     ("A1_turnover_gt_10", "A2_theme_persist_ge_4", "A3_belowyear_limitup")},
+        "avoid_flag": {c: {"expr": "x", "evidence": "e"} for c in
+                       ("B1_volume_stacking", "B2_dual_golden_cross",
+                        "B3_theme_persist_2_3", "B4_chase_strong_red")},
+    }
+    if not drop_section:
+        adv["intel_order"] = _REAL_INTEL_ORDER if order is None else order
+    brain.save_version("K4", rule={"config": {}, "k4_advisory": adv},
+                       changelog="test K4", activate=False, db_path=db)
+
+
+def test_load_k4_intel_order_parses_real_db_shape(isolated_env):
+    """真库那一节是人读短标签(「B2双金叉」…),取前导码前缀归一成 advisory 码键。"""
+    _seed_k4_with_order(isolated_env.db_path)
+    assert hk.load_k4_intel_order(isolated_env.db_path) == ["B2", "A1", "B4", "B3", "B1", "A3", "A2"]
+
+
+def test_order_codes_for_display_follows_db_declaration(isolated_env):
+    """展示序按 DB 声明排,不再是 `_evaluate_hits` 的发射序。"""
+    _seed_k4_with_order(isolated_env.db_path)
+    emitted = ["A1_turnover_gt_10", "A3_belowyear_limitup", "B1_volume_stacking",
+               "B2_dual_golden_cross", "B4_chase_strong_red", "A2_theme_persist_ge_4"]
+    assert hk.order_codes_for_display(emitted, db_path=isolated_env.db_path) == [
+        "B2_dual_golden_cross", "A1_turnover_gt_10", "B4_chase_strong_red",
+        "B1_volume_stacking", "A3_belowyear_limitup", "A2_theme_persist_ge_4",
+    ]
+
+
+def test_undeclared_codes_keep_emission_order_at_the_tail(isolated_env):
+    """未在 `intel_order` 里声明的码(合成 A3b 不在 DB)排在已声明码之后、保持发射序。
+    **且不许被 `A3` 的前缀吃掉**(`A3b` != `A3`,精确相等匹配)。"""
+    _seed_k4_with_order(isolated_env.db_path)
+    got = hk.order_codes_for_display(
+        ["A3b_belowyear_bigvol", "A1_turnover_gt_10", "B2_dual_golden_cross"],
+        db_path=isolated_env.db_path,
+    )
+    assert got == ["B2_dual_golden_cross", "A1_turnover_gt_10", "A3b_belowyear_bigvol"]
+
+
+def test_missing_intel_order_falls_back_to_emission_order(isolated_env):
+    """节缺失 / K4 行缺失 / 条目不是字符串 → 空声明 → **原样返回**(= 现行发射序)。"""
+    emitted = ["A1_turnover_gt_10", "B2_dual_golden_cross", "A3b_belowyear_bigvol"]
+    assert hk.load_k4_intel_order(isolated_env.db_path) == []          # 无 K4 行
+    assert hk.order_codes_for_display(emitted, db_path=isolated_env.db_path) == emitted
+    _seed_k4_with_order(isolated_env.db_path, drop_section=True)       # 有 K4 行、无该节
+    assert hk.load_k4_intel_order(isolated_env.db_path) == []
+    assert hk.order_codes_for_display(emitted, db_path=isolated_env.db_path) == emitted
+    _seed_k4_with_order(isolated_env.db_path, order=[1, None, {"a": 1}])   # 结构异常
+    assert hk.load_k4_intel_order(isolated_env.db_path) == []
+
+
+def test_display_order_is_deterministic_regardless_of_input_order(isolated_env):
+    """稳定确定性:同一组码无论以什么次序传进来,已声明部分的展示序恒定。"""
+    _seed_k4_with_order(isolated_env.db_path)
+    codes = ["A1_turnover_gt_10", "B1_volume_stacking", "B4_chase_strong_red"]
+    order = hk.load_k4_intel_order(isolated_env.db_path)
+    assert (hk.order_codes_for_display(codes, order)
+            == hk.order_codes_for_display(list(reversed(codes)), order)
+            == ["A1_turnover_gt_10", "B4_chase_strong_red", "B1_volume_stacking"])
+
+
+def test_display_order_does_not_touch_verdicts(isolated_env):
+    """**只排展示,不碰判定**:排序前后「命中集合 / hard_cut 集合 / 黄牌数 / has_strong」
+    逐一相同 —— 判定读的是集合与计数,不读顺序。"""
+    _seed_k4_with_order(isolated_env.db_path)
+    db = isolated_env.db_path
+    hits = hk._evaluate_hits(
+        _panel_row("600001.SH", _hit_A1=True, _hit_B2=True, _hit_B4=True),
+        persist_days=4, evidence=hk._load_k4_evidence(db),
+    )
+    ordered = hk.sort_hits_for_display(hits, db_path=db)
+    sections = hk.load_k4_sections(db)
+    assert [h.code for h in ordered] != [h.code for h in hits]        # 熔断线:顺序真的变了
+    assert {h.code for h in ordered} == {h.code for h in hits}
+    for group in (hits, ordered):
+        assert {h.code for h in group if sections.get(h.code) == "hard_cut"} == {
+            "A1_turnover_gt_10", "A2_theme_persist_ge_4"}
+        assert sum(1 for h in group if sections.get(h.code) == "avoid_flag") == 2
+        assert any(h.level == "strong" and h.evidence_strength == "price_volume" for h in group)
+
+
+# ————————————————————————————————————————————————————————————————
 # 5) ma250 镜像正确性(guard 年线判据地基)
 # ————————————————————————————————————————————————————————————————
 
