@@ -148,6 +148,16 @@
   单测锁死)+ 问询台补中文名(`resolve_stock_names` 是查名唯一实现)显式传检索词
   + 0 命中 WARNING 埋点。⚠ **已证伪勿再查**:payload 里 bool/int 发成字符串不是
   bug(GLM 正确解析,刻意保留原样)。
+- **「本地实测廉价」不是生产结论,全历史 parquet 扫描尤其**(2026-07-29 v1.4 ⑨ 部署翻车,
+  §七 P0-23):开发机 Mac 上 `<1s` 的 `compute_industry_strength`(扫 `daily` 全history 784 万行),
+  在生产(**2 vCPU / 1.6G RAM**)**700M cap OOM-kill、1400M cap 600s 跑不完**。规则:①**新增全表
+  `scan_parquet` 路径,上云前必须在生产机上单独计时 + 量峰值**(`systemd-run --scope -p MemoryMax=…`
+  跑隔离进程,别拿常驻服务当小白鼠);② 别用「抬 `MemoryMax`」糊算法成本问题(1400M 都不够);
+  ③ **重活别放常驻 `neckline.service`**——它与盘中哨兵同进程,`MemoryHigh` 先节流会让进程陷进回收
+  死循环(`memory.events.high` 飙升、`oom_kill=0`)= **卡死不报错**,盘中点一次就拖累哨兵。
+- **在远端 `pkill -f <pattern>` 前先确认 pattern 不匹配自己**:`pkill -f probe_industry` 会匹配到
+  正在跑它的那条 `bash -c` 命令行,自杀式掐断 SSH 会话(exit 255,2026-07-29 真踩)。用
+  `pgrep -af` 先看命中集,或按 PID 杀。
 - **timer 跑过 ≠ 任务成功**:部署/定时任务验收必须看 `ExecMainStatus=0` **且**
   `ExecMainStartTimestamp` 是本次那一跑,别只看 `list-timers` 的 LAST。⚠ **`Result=`
   也不够**(2026-07-28 实测):07-27 那次崩掉的报告在库里是
