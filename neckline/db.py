@@ -131,9 +131,11 @@ CREATE TABLE IF NOT EXISTS reports (
     news_alerts_scan_json TEXT NOT NULL DEFAULT '[]'
 );
 
--- LLM 逻辑审判存档(plan 2.4)。前10只候选每只一行;search_hits_json 是该次审判
--- 用到的联网搜索结果全文(§2.4「搜索结果全文落 SQLite 存档」,供事后审计"当时为何
--- 否决" + 自建历史新闻快照)。degraded=1 表示「LLM 未激活」占位,不是真实判断。
+-- LLM 逻辑审判存档(plan 2.4,v1.5-②起 20 只全覆盖)。实际发起过调用的候选每只
+-- 一行(预算耗尽被跳过、未发起调用的不落此表,查 candidates_json 里的
+-- judge_skipped);search_hits_json 是该次审判用到的联网搜索结果全文(§2.4「搜索
+-- 结果全文落 SQLite 存档」,供事后审计"当时为何否决" + 自建历史新闻快照)。
+-- degraded=1 表示「LLM 未激活」占位,不是真实判断。
 CREATE TABLE IF NOT EXISTS llm_judgments (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_date       TEXT NOT NULL,

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """盘后报告 CLI(plan 2.5)。串起情绪仪表盘(2.1)+ 强势板块(2.2)+ 候选评分四件套
-(2.3)+ LLM 逻辑审判(2.4,前10只;无 `.env` LLM key 时自动降级为「未激活」占位,
-不崩)-> markdown 落文件 + SQLite 存档(2.5)。
+(2.3)+ LLM 逻辑审判(2.4,v1.5-②起 20 只全覆盖;无 `.env` LLM key 时自动降级为
+「未激活」占位,不崩)-> markdown 落文件 + SQLite 存档(2.5)。
 
 用法:
     python scripts/report.py                # 最近一个已有数据的交易日
                                              # (今天若是交易日用今天,否则回退到上一交易日)
     python scripts/report.py 20260717        # 指定某交易日(含历史任意交易日回放,§2.6)
     python scripts/report.py 20260717 --no-save       # 只打印,不落库/不写文件(调试用)
-    python scripts/report.py 20260717 --top-judged 5  # 覆盖默认前10只审判(测试/调参用)
+    python scripts/report.py 20260717 --top-judged 5  # 覆盖默认全部20只审判(测试/调参用)
 
 产出:
     - markdown 打印到 stdout
