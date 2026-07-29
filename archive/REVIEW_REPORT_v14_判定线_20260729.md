@@ -81,3 +81,31 @@
 - 测试:范围内四文件 170 过;逐个读了 ⑥-A 三组(TestTradeInstant/TestPerTradeCharter/TestNoSwitchWeekBitwiseEquivalence/TestCharterSwitchReporting)与 ⑩ 全部 26 个用例的断言体,确认锁的是规格点不是实现细节。
 - 实验(3 个,均临时库/纯函数,零副作用):①回滚改写时间线反例(🟡-1 复现);②门槛穿越两路对拍(🟢-10 放行依据);③ `_resolve_targets` 向前缺口证据(🟡-2 复现)。
 - 未做(如实):全量 1677 测试未重跑(与本范围无交集部分信任 §四 快照);⑩ 生产侧判据未验(尚未执行,见前提声明);Swift 客户端侧 `charterSegments`/`dataFreshness` 解码归契约线审计员。
+
+---
+
+## 六、复核结论(2026-07-29 · 两条 🟡 的修复复审,零代码修改)
+
+> 复核对象:`b2e3673`(🟡-1 → 激活历史 append-only 事件流)与 `d6ca89b`(🟡-2 → 日更向前补洞 + 断口响亮失败)。方法同正文:读全 diff 与现役代码、逐条对我自己立的判据、重放我的原始反例、跑全量测试(**1705 过 + 2 skip**,与宣称一致)。
+
+### 主件 `b2e3673`(🟡-1)——六点逐过
+
+1. **append-only 真成立 ✅**。grep 全部生产代码(`neckline/` + `scripts/`):对 `strategy_activation_log` 只有 CREATE / SELECT / INSERT;唯一写入函数 `brain._append_activation`(只 INSERT,docstring 明言「任何 UPDATE/DELETE 都等于改写历史判定」);播种 `_seed_activation_log` 是 INSERT…SELECT。UPDATE/DELETE 仅存在于 `tests/`(`conftest.set_activation_timeline` 自我声明为测试专用重写,且解释了「重写逻辑住 tests/ 不住 brain」的理由;`test_brain.py:448` 的 DELETE 是模拟未播种老库)。既有测试对 `activated_at` 的裸 UPDATE 姿势已全部换成该夹具(grep 零残留)。
+2. **`_activation_events` 边界形态 ✅**。同时刻两事件:SQL `(activated_at, id)` + Python 稳定排序 → 后追加者胜,有单测(`test_same_instant_events_last_appended_wins`);乱序写入(后插更早戳):Python 按解析时刻重排——本复核实验补插一条 07-18 事件,07-19 判 v1.3、07-22 仍判 K1 ✓;幽灵版本事件跳过 + WARNING(`test_event_pointing_at_deleted_version_is_skipped_loudly`,并注明「该段历史由上一条事件判定」);表空/表不存在回退单戳路径逐位等价——`test_single_activation_log_equals_legacy_stamp_path` 用 9 个时刻探针 + 4 个日期探针,有表 vs `DROP TABLE` 后结果逐位相同;`test_reads_tolerate_missing_log_table` 锁四个读入口不崩(读不触发迁移的既有纪律保住)。`config_active_at` 改用 `inst.date()`,与旧 `_activated_date` 的 UTC 日期口径逐情形等价(全格式核过)。🟢 一条 nit:同一解析时刻但**文本格式不同**的戳(只可能手工混写)tie 按文本序不按 id——生产戳格式统一(`_now()` 唯一写入者),不构成风险,记录备查。
+3. **原始反例修复 + 双向端到端覆盖 ✅**。本复核原样重放正文 🟡-1 的反例(K1@07-20 / v1.3@07-25,回滚 K1):`before == after == ("K1","K1")`(修复前 after 是 v1.3/4 万 = 洗白)。端到端两个方向都有且都防了空对空:**洗白方向** `test_reactivating_the_earliest_charter_does_not_erase_its_violations`(正是我报告的形态——重激活最早版 K1,其治下 3 万违纪回滚后仍在,并显式断言违纪存在);**假警报方向** `test_rollback_reactivation_does_not_whitewash_history`(回滚 v1.3 后逐周快照逐位不变,且前置锚定「第一周有违纪、第二周没有」防两边都空);外加 `test_rollback_shows_up_as_a_new_switch_in_the_current_week`(回滚如实成为**当周**一次切换,历史周零多余切换)。`activate_version` 重激活时打 WARNING(本复核实验中真实触发)。
+4. **播种在生产形态下正确 ✅(附一条诚实边界)**。生产 `strategy_versions` 带戳行 = K1(07-20)/ v1.3 / v1.3.3(07-27 14:36),**没有任何版本在迁移前被激活过两次** → 「每版最后一戳」就是完整真历史,一次性播种无损重建时间线;`ORDER BY activated_at, version` 保证事件 id 按时间升序。幂等判据「本表为空才播」+「从未激活的版本不播」有单测(`test_seeded_from_legacy_activated_at_and_idempotent`,含重跑不灌);与 `_backfill_activated_at` 的先后顺序写死在 docstring 并在 `_migrate_columns` 里落实。诚实边界:若迁移前某版本真被激活过两次,播种只能恢复最后一次——生产无此情形,且 docstring 已写明播种是一次性迁移、不是逐对补齐(补齐反而会让手工改列注入伪事件,取舍正确)。⑨-B 迁移清单已加本表(commit 声明)。
+5. **「回滚留痕失败不拦」的取舍——认 ✅**。三条理由成立:①回滚**没有放宽任何闸**(白名单/闸2/闸3/核心值逐条照跑),留痕性质是事后审计便利,而闸 2 豁免留痕是**放宽一道闸的成立前提**——非对称有原则依据,不是随手不同,且理由写死在代码注释里;②判定层已回滚安全,拦回滚保护不了任何判定正确性;③事故现场把用户挡在错误章程上的代价大于少一条文件日志,且另有两道不依赖文件的痕(终端横幅列此前每次激活时刻 + `brain.activate_version` 的 WARNING)。测试双向锁:留痕成功时内容断言(`test_rollback_warns_and_leaves_trail`)+ 写失败仍 exit 0 且激活生效(`test_reactivation_trail_failure_does_not_block_rollback`)。
+6. **既有断言零删改 ✅**。`git show b2e3673` 中 `test_review_reconcile.py` 与 `test_brain.py` 的**被删除行里 assert 行数均为 0**(删除的 26 行全是夹具/注释);GOLDEN 硬编码串原样;范围内测试文件全绿,全量 1705 过 + 2 skip。
+- 🟢 附注(非回归,提示勿误解):事件流只版本化「**哪版何时现役**」,不版本化「该版参数当时是什么」——对现役版本 `save_version(activate=True)` 改参数仍会改写该版 `rule_json`(历史时刻解析到该版时读到的是现在的参数)。这与旧模型相同、非本次引入;「改章程走新版本名 + 四道闸」的既有纪律仍是唯一防线,别把事件流当参数快照史。
+
+### 副件 `d6ca89b`(🟡-2)——原判据逐条对
+
+- **向前补洞 ✅**:`_resolve_targets` 新增 ② 分支(严格介于 `tbl_max` 与目标日之间的交易日并入),我的原始探针原样成为回归测试(`test_resolve_targets_fills_the_gap_forward`:`[0709]/tbl=0704 → [0707,0708,0709]`,并锁既有两种形状不变)。
+- **禁止静默桥接 ✅**:命门测试 `test_refresh_fills_hole_and_streak_is_not_bridged` 的判据不是「补了几天」而是**补洞后整表与一次干净全量刷新逐位相同**——streak 一旦桥接,末段 `persist_days` 整体偏小、逐位断言先炸。这正是我要的证明形状。
+- **补不动就响亮、不许对错数报绿 ✅**:分区缺失补不动时 `refresh` 返回 `holes` + ERROR 带补算命令原文;CLI `refresh` 据此 **exit 1**(注释点名「跑过了 ≠ 补齐了,别让 systemd Result=success 骗人」——与本项目 timer 铁律同源);`daily_update` 对「落了行但有断口」单开 ERROR 分支不被 INFO 盖过;`industry_strength_status` 近 21 日有断口即 `stale=True`(**哪怕 lag=0**,`test_unfillable_hole_is_loud_and_not_reported_fresh` 逐项断言),`to_public_dict` 仍三键(⑩-F 契约不膨胀,细节由 `note()` 承担且「断口失真」与「落后」分成两句文案)。
+- **「断口只认两头有数据的中间洞」——认 ✅**:表尾未落的今天由 `lag_days` 披露(测试:lag=3 → stale,hole=0)、表头之前的远古由保险丝披露,拿边界当断口只会天天假警报;与 `verify` ①「点名区间显式断言」的分工写明并共用取数原语 `_days_present`,不是两套口径。顺带:正文 🟢-8 的陈旧注释也已改正(fixture 注释明写「并列已由确定性 tie-break 定序,互不相等只为剧本可读」)。
+- 🟢 两条保留意见(均不推翻结论):① `status` 断口回看窗口 = 21 个日历日——理论上一段 >21 天不间断强势可让更老的断口继续影响今日 streak 而不再触发 stale;实务上 streak 高频重置、refresh 侧 ERROR 不受此窗口限制、全历史体检归 `verify`,可接受,记录在案。② 直接 API 以稀疏列表调 `refresh([老日, 今日])` 且 `tbl_max` 落在两者之间时,向后延分支不填 `(tbl_max, 今日)` 段——但收尾断口检查必 ERROR + `holes` 非空 + CLI exit 1,不静默;CLI 与日更的真实入参形态(连续区间/单日)不会触发。
+
+### 复核裁定
+
+两条 🟡 **均已按我立的判据修复到位,准予销项**;两处刻意取舍(回滚留痕不拦 / 断口定义排除边界)**均认可**。新增 🟢 附注三条(J1 混格式同刻 tie / J1 参数非快照史提示 / J2 21 日窗口与稀疏入参形态)记录在案,不阻塞 ⑨。正文第四节的处置建议第 1、2 条就此关闭;第 3 条(🟢-5 跨切换禁买单测、🟢-8 陈旧注释)已随修复顺带完成(`test_forbid_high_elasticity_across_switch` + fixture 注释改正)。
