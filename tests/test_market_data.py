@@ -126,6 +126,110 @@ class TestScanTableRangeAlsoBounded:
         assert dates == [date(2024, 1, 3), date(2024, 1, 4)]
 
 
+class TestYearPartitionPruning:
+    """v1.4.1 热修(§七 **P1-26**):取数层按 `year=` 裁剪 —— **纯 I/O 优化,结果必须逐位不变**。
+
+    背景:全 glob 要打开 **1592 个 parquet footer**;开发机察觉不到,生产 2 vCPU 箱上
+    信息卡端点一次请求叠了 8 次全 glob → 实测 18~20s,客户端 12s 超时**必然失败**
+    (用户报障「信息卡总是加载失败」)。裁剪的合法性依据是结构性的:分区路径由
+    `day_file_path` 按 `trade_date.year` 生成,`year=YYYY` 目录里只可能有该年的行。
+
+    本组是那条「结果不变」的机器证明:**同一份数据,裁剪版与全表版逐位相等**。"""
+
+    def _seed_three_years(self, env):
+        """跨 3 年的多票行情(每年 2 天),让「裁剪掉 2 年」这件事真的发生。"""
+        rows_by_day = {}
+        for y in (2024, 2025, 2026):
+            for dd in (date(y, 3, 4), date(y, 3, 5)):
+                rows_by_day[dd] = [
+                    {"ts_code": c, "open": 10.0, "high": 11.0, "low": 9.0,
+                     "close": 10.0 + y % 100, "pre_close": 10.0, "vol": 1000.0, "amount": 100.0}
+                    for c in ("600001.SH", "600002.SH")
+                ]
+        for dd, rows in rows_by_day.items():
+            write_daily_fixture(env, "daily", dd, rows)
+        return sorted(rows_by_day)
+
+    def _all_years_frame(self, env, **filters):
+        """对照组:显式走**全部年份**的老路径(`years=None`),再自己过滤。"""
+        from neckline.data.market_data import _scan_table
+        import polars as pl
+
+        lf = _scan_table("daily", env.parquet_dir, years=None)
+        assert lf is not None
+        return lf, pl
+
+    def test_market_slice_matches_full_glob_bit_for_bit(self, isolated_env):
+        import polars as pl
+        from neckline.data.market_data import get_market_slice
+
+        days = self._seed_three_years(isolated_env)
+        target = date(2025, 3, 4)
+        lf, _ = self._all_years_frame(isolated_env)
+        expected = lf.filter(pl.col("trade_date") == target).collect().sort("ts_code")
+        got = get_market_slice(target, table="daily", parquet_dir=isolated_env.parquet_dir).sort("ts_code")
+        assert got.height == 2
+        assert got.equals(expected)
+        assert len(days) == 6      # 熔断线:确实有 3 年数据可被裁掉 2 年,不是空对空
+
+    def test_stock_history_matches_full_glob_bit_for_bit(self, isolated_env):
+        """区间跨 2 年(2024-03-04 ~ 2025-03-05):裁剪版应 glob 2 个年目录、丢掉 2026,
+        结果与全表版逐位相同。"""
+        import polars as pl
+        from neckline.data.market_data import get_stock_history
+
+        self._seed_three_years(isolated_env)
+        lo, hi = date(2024, 3, 4), date(2025, 3, 5)
+        lf, _ = self._all_years_frame(isolated_env)
+        expected = (
+            lf.filter((pl.col("ts_code") == "600001.SH")
+                      & (pl.col("trade_date") >= lo) & (pl.col("trade_date") <= hi))
+            .sort("trade_date").collect()
+        )
+        got = get_stock_history("600001.SH", lo, hi, parquet_dir=isolated_env.parquet_dir)
+        assert got.height == 4                              # 2024 两天 + 2025 两天
+        assert got.equals(expected)
+        assert 2026 not in {d.year for d in got["trade_date"].to_list()}
+
+    def test_scan_table_range_matches_full_glob_bit_for_bit(self, isolated_env):
+        import polars as pl
+        from neckline.data.market_data import scan_table_range
+
+        self._seed_three_years(isolated_env)
+        lo, hi = date(2025, 3, 4), date(2026, 3, 5)
+        lf, _ = self._all_years_frame(isolated_env)
+        expected = (
+            lf.filter((pl.col("trade_date") >= lo) & (pl.col("trade_date") <= hi))
+            .sort(["trade_date", "ts_code"]).collect()
+        )
+        got = scan_table_range("daily", lo, hi, parquet_dir=isolated_env.parquet_dir).sort(
+            ["trade_date", "ts_code"]
+        )
+        assert got.height == 8
+        assert got.equals(expected)
+
+    def test_years_in_range_covers_both_ends(self):
+        from neckline.data.market_data import _years_in_range
+
+        assert _years_in_range(date(2024, 12, 31), date(2025, 1, 1)) == [2024, 2025]
+        assert _years_in_range(date(2025, 6, 1), date(2025, 6, 1)) == [2025]
+        assert _years_in_range(date(2020, 1, 2), date(2026, 7, 29)) == list(range(2020, 2027))
+
+    def test_missing_year_dir_is_skipped_not_fatal(self, isolated_env):
+        """请求的年份没有目录(如尚未 backfill 的年份)→ 跳过、不报错;全部年份都没有
+        → `None` → 空 DataFrame(与老行为一致的优雅降级)。"""
+        from neckline.data.market_data import get_market_slice, get_stock_history
+
+        self._seed_three_years(isolated_env)
+        # 2019 无目录:落在区间里也只是被跳过
+        got = get_stock_history("600001.SH", date(2019, 1, 1), date(2024, 3, 5),
+                                parquet_dir=isolated_env.parquet_dir)
+        assert got.height == 2
+        # 整个区间都没有目录 → 空
+        assert get_market_slice(date(2019, 5, 6), table="daily",
+                                parquet_dir=isolated_env.parquet_dir).is_empty()
+
+
 class TestWriteReadRoundTrip:
     def test_day_file_exists_after_write(self, isolated_env):
         from neckline.data.market_data import day_file_exists
@@ -233,11 +337,22 @@ class TestCanonicalSchemaAlignment:
         assert pl.read_parquet(newp)["net_amount"][0] == 140214.98
 
         # ⑤ **如实锁死互补契约**:写侧防线只保证「今后不再产生脏分区」,**historical
-        # 脏分区不会自愈** —— 混着脏基准整表 scan 依旧 SchemaError。要让读侧恢复,
+        # 脏分区不会自愈** —— 跨年整表 scan 依旧 SchemaError。要让读侧恢复,
         # 必须另跑 `scripts/fix_moneyflow_schema.py`(其单测见 test_fix_moneyflow_schema.py)。
         # 两者是互补的两半,谁也替代不了谁;生产 2026-07-28 正是「先修数据、后修写侧」。
+        #
+        # **v1.4.1(§七 P1-26)起传染半径收窄到「同年」**:取数层按 `year=` 裁剪后,单日 /
+        # 区间读只 glob 区间覆盖到的年份,2020 那个脏分区**不再被打开**。这是按年裁剪的
+        # 副产品(**不是**脏数据被修好了)—— 只要读的区间跨到脏那年,照样炸。下面两条把
+        # 这个新边界钉死:同年读通过、跨年读仍 SchemaError。
+        assert get_market_slice(
+            date(2026, 7, 27), table="moneyflow_dc", parquet_dir=tmp_path
+        )["net_amount"][0] == 140214.98      # 只 glob year=2026,碰不到 2020 的脏分区
+        from neckline.data.market_data import scan_table_range
         with pytest.raises(pl.exceptions.SchemaError):
-            get_market_slice(date(2026, 7, 27), table="moneyflow_dc", parquet_dir=tmp_path)
+            scan_table_range(
+                "moneyflow_dc", date(2020, 1, 1), date(2026, 7, 27), parquet_dir=tmp_path
+            )                                 # 跨到脏那年 → 互补契约未被削弱,照旧炸
 
     def test_string_incoming_cast_to_canonical_even_without_partitions(self, tmp_path):
         """表**尚无任何分区**时,TuShare 漂成 String 的数值列也要按声明落成 Float64。

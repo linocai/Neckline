@@ -189,25 +189,56 @@ def day_file_exists(table: str, trade_date: DateLike, parquet_dir: Optional[Path
     return day_file_path(table, trade_date, parquet_dir).exists()
 
 
-def _scan_table(table: str, parquet_dir: Optional[Path] = None) -> Optional[pl.LazyFrame]:
-    """惰性 scan 某表全部年份分区。表目录不存在 / 无文件 → None(优雅降级,调用方
-    返回空 DataFrame 而非报错——回测早期区间某表可能尚未 backfill 完整属正常态)。
-    """
+def _years_in_range(start: date, end: date) -> List[int]:
+    """`[start, end]` 覆盖到的年份(升序)。分区布局 `year=YYYY/YYYYMMDD.parquet` 由
+    `day_file_path` **按 `trade_date.year` 生成**,故「某年目录里只可能有该年日期的行」
+    是结构性保证 —— 这就是按年裁剪合法的全部依据。"""
+    return list(range(start.year, end.year + 1))
+
+
+def _scan_table(
+    table: str, parquet_dir: Optional[Path] = None, years: Optional[Sequence[int]] = None
+) -> Optional[pl.LazyFrame]:
+    """惰性 scan 某表分区。表目录不存在 / 无文件 → None(优雅降级,调用方返回空
+    DataFrame 而非报错——回测早期区间某表可能尚未 backfill 完整属正常态)。
+
+    **`years` = 只 glob 这几年的分区(v1.4.1 热修 §七 P1-26)**。缺省 `None` = 全部年份
+    (老行为)。**这不是语义变化,是纯 I/O 裁剪**:调用方随后照旧按 `trade_date` 过滤,
+    而 `year=YYYY` 目录里结构上只可能有该年的行(见 `_years_in_range`),被跳过的年份
+    provably 一行都匹配不上。
+
+    **为什么要紧(2026-07-29 生产实测)**:全 glob 要打开 **1592 个 parquet footer**;
+    开发机 Mac 上察觉不到,生产 2 vCPU 箱上单次就要好几秒。信息卡端点一次请求里
+    `compute_sentiment` 就做 5 次单日横截面 + 单票面板 2 次 + 大盘线 1 次 = **8 次全 glob**
+    → 端点实测 18~20s,客户端 12s 超时**必然失败**(用户报障「信息卡总是加载失败」)。
+    同一条链的上一集是 §七 P0-23(全历史扫描 784 万行,700M cap 直接 OOM)。**新增任何
+    带日期范围的取数路径,都要顺手把年份传下来。**"""
     d = table_dir(table, parquet_dir)
     if not d.exists():
         return None
-    pattern = str(d / "year=*" / "*.parquet")
     import glob
 
-    if not glob.glob(pattern):
+    if years is None:
+        pattern = str(d / "year=*" / "*.parquet")
+        files = glob.glob(pattern)
+    else:
+        files = []
+        for y in years:
+            files.extend(glob.glob(str(d / f"year={int(y)}" / "*.parquet")))
+    if not files:
         return None
-    return pl.scan_parquet(pattern)
+    # 传文件列表而非 glob 模式:按年裁剪后不再是单一模式(可能跨 2 个年目录)。
+    # polars 对 list[str] 与 glob 模式的读取语义一致(union by name)。
+    return pl.scan_parquet(sorted(files))
 
 
 def get_market_slice(trade_date: DateLike, table: str = "daily", parquet_dir: Optional[Path] = None) -> pl.DataFrame:
-    """全市场某交易日横截面。只精确匹配 trade_date,结构上不可能拿到 >请求日 的数据。"""
+    """全市场某交易日横截面。只精确匹配 trade_date,结构上不可能拿到 >请求日 的数据。
+
+    v1.4.1(§七 P1-26):**只 glob 该日所在那一年**的分区(~244 个文件而非 1592 个);
+    结果逐位不变(其余年份的分区里结构上没有该日的行)。"""
     dt = _to_date(trade_date)
-    lf = _scan_table(table, parquet_dir)
+    lf = _scan_table(table, parquet_dir, years=[dt.year])
     if lf is None:
         return pl.DataFrame()
     return lf.filter(pl.col("trade_date") == dt).collect()
@@ -232,8 +263,12 @@ def get_stock_history(
                 code, ed, as_of_d,
             )
             ed = as_of_d
-    lf = _scan_table(table, parquet_dir)
-    if lf is None or sd > ed:
+    if sd > ed:
+        return pl.DataFrame()
+    # v1.4.1(§七 P1-26):只 glob 区间覆盖到的年份(信息卡单票面板是 420 自然日 =
+    # 最多 2 个年目录,而非全部 7 年 1592 个 footer)。结果逐位不变,见 `_scan_table`。
+    lf = _scan_table(table, parquet_dir, years=_years_in_range(sd, ed))
+    if lf is None:
         return pl.DataFrame()
     ts_code = to_ts_code(code)
     return (
@@ -248,7 +283,10 @@ def scan_table_range(table: str, start: DateLike, end: DateLike, parquet_dir: Op
     (如 backfill 侧的 limit_derived 连板计算)用,区别于按单票取历史的
     `get_stock_history`。同样满足"不返回 > end 的数据"。"""
     sd, ed = _to_date(start), _to_date(end)
-    lf = _scan_table(table, parquet_dir)
+    if sd > ed:
+        return pl.DataFrame()
+    # v1.4.1(§七 P1-26):同 `get_stock_history`,只 glob 区间覆盖到的年份。
+    lf = _scan_table(table, parquet_dir, years=_years_in_range(sd, ed))
     if lf is None:
         return pl.DataFrame()
     return lf.filter((pl.col("trade_date") >= sd) & (pl.col("trade_date") <= ed)).collect()

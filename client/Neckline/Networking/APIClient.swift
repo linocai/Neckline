@@ -430,8 +430,14 @@ actor APIClient {
     /// 同 `Position`/`WatchlistItem`/`BoardEvent` 先例)。404 两个 reason:
     /// `report_not_found`(日期非法/当天未生成过报告)、`code_not_in_report`(该日报告
     /// 存在但这只票不在候选榜里)——均映射到独立 `APIError` case,不吃 fallback。
+    /// **`timeout: 60`(v1.4.1 热修,§七 P1-26)** —— 本端点是全仓最重的读:一次请求要装
+    /// 60 日 K 线面板 + 大盘指数线 + 情绪仪表盘(5 次全市场横截面)+ 龙虎榜回看 + 红黄牌,
+    /// 生产 2 vCPU 箱上冷调实测以秒计。默认 12s **必然超时**(用户报障「信息卡总是加载
+    /// 失败」的直接原因),且失败会诱发用户反复重试、把常驻服务顶到内存节流线,越试越慢。
+    /// 服务端已按年裁剪分区把耗时压下来,但**客户端也不该拿一个比服务端真实耗时还短的
+    /// 超时去赌** —— 照问询台(同样重、同样 60s)的既有惯例给足预算。
     func fetchInfoCard(date: String, code: String) async throws -> InfoCard {
-        let data = try await get("/api/v1/report/\(date)/info-card/\(code)")
+        let data = try await get("/api/v1/report/\(date)/info-card/\(code)", timeout: 60)
         return try JSONDecoder().decode(InfoCard.self, from: data)
     }
 

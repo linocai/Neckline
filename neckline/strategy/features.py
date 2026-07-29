@@ -23,7 +23,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -227,8 +227,15 @@ def market_state_labels(
     MA 用后向窗口（不含未来）。返回 `trade_date / sse_close / sse_ma / sse_above_ma / year`。
     供 P1 市场过滤器与「所有结果按市场状态分层」的报告要求使用。
     """
-    # 多取 ma_window 个交易日前的数据算 MA（否则区间头部 MA 为 null）
-    idx = get_index_history(SSE_INDEX, date(2019, 1, 1), end, parquet_dir=parquet_dir)
+    # 多取 ma_window 个交易日前的数据算 MA(否则区间头部 MA 为 null)。
+    # **v1.4.1(§七 P1-26)**:起点由写死的 `date(2019,1,1)` 改为「`start` 往前留够 MA 所需
+    # 的一小段」——`rolling_mean(ma_window, min_samples=ma_window)` 是**后向窗口**,要让
+    # `start` 当天的 MA 非空,只需要 `start` 之前有 `ma_window` 个交易日,不需要整段历史。
+    # 缓冲取 `ma_window*3 + 30` 自然日(20 日 MA → 90 自然日 ≈ 60 个交易日,含长假仍绰绰
+    # 有余),**返回值逐位不变**(函数末尾照旧 filter 回 `[start, end]`),纯 I/O 裁剪:
+    # 信息卡的 60 日窗只需 1~2 个 `year=` 目录,不再整表 glob 1592 个 footer。
+    lookback_start = start - timedelta(days=ma_window * 3 + 30)
+    idx = get_index_history(SSE_INDEX, lookback_start, end, parquet_dir=parquet_dir)
     if idx.is_empty():
         return pl.DataFrame(
             schema={
