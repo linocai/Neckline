@@ -248,55 +248,22 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-07-29 · 🛑 v1.4.0 第 ⑨ 块完整部署「尝试后回滚」—— 生产仍是 `v1.4.0-p1`,现役章程仍 `v1.3.3`(未动)**。①~⑧ 代码本地全部完工且全量测试 1647 过 + 2 skip,但 ⑨ 活体验收时撞上**生产机硬阻塞**(下条),按预案回滚代码、如实留档。**v1.4.0 上云未完成,下一步不是重跑 ⑨,是先修 §七 P0-23。**
+**2026-07-29 · v1.4.0 卡在 P0-23,修法已裁定 → 新增第 ⑩ 块;review 时机改判 —— 生产仍是 `v1.4.0-p1`,现役章程仍 `v1.3.3`(未动)**。①~⑧ 代码本地全部完工(全量 1647 过 + 2 skip),⑨ 完整部署 07-29 上午尝试后**已按预案回滚**,阻塞 = §七 **P0-23**(`compute_industry_strength` 扫全历史 784 万行;生产 2 vCPU / 1.6G 上 700M cap **OOM-kill**、1400M cap **600s 跑不完**;16:35 报告主链 + 信息卡端点 + 问询台三处全中招,且端点跑在常驻服务内会把哨兵拖进内存回收死循环 = **卡死不报错**)。
 
-- **🔴 阻塞根因(新发现,已立 §七 P0-23)**:`report/industry_strength.py::compute_industry_strength` 走
-  `_load_ret1d_panel(start=None)` **扫全历史 `daily`**(生产 1591 分区 / **7,841,894 行**)。该模块 docstring
-  写着「本地实测全历史加载廉价(<1s)」——**那是开发机(Mac)的事实,生产机(2 vCPU / 1.6G RAM)不成立**:
-  700M cap 下被 **OOM-kill(exit 137)**;1400M cap 下 **600s 未跑完(exit 124)**。三个调用点因此全部不可用:
-  `pipeline.py:163`(**16:35 报告主链,`MemoryMax=800M`**)、`info_card.py:652`(新端点)、`inquiry.py:297`(问询台)。
-- **活体现象(先于定位)**:`GET /report/{date}/info-card/{code}` 公网/本地均**永不返回**(120s / 600s 两次都超时);
-  cgroup `memory.events` 的 `high` 计数飙到 **54 万次**、`oom_kill=0` —— `MemoryHigh=420M` 先行节流,进程在
-  回收死循环里挂住而**不会干脆崩掉**,故表现为「卡死」而非报错。它跑在**常驻 `neckline.service` 内(同进程还有盘中哨兵)**,
-  盘中被点一次就把哨兵拖进内存颠簸 —— 这是比「端点慢」严重得多的性质。
-- **已做且保留(回滚不撤)**:① 两处**增量幂等迁移**(`decision_log.max_chase_pct` + `inquiry_log` 表 + 2 索引)——
-  向前兼容,p1 的 `decision_log.py` 按 `_SELECT_COLS` **具名取列**(非 `SELECT *` 位置解包),多一列无感,已活体验证
-  `GET /decisions` 200;② **`ths_daily` 宽窗补拉 0720~0728 共 7 个交易日**(生产原 max=**2026-07-17**,缺口比 §四旧
-  估计的 3 天大);③ 生产库**双备份**。
-- **已做后撤销**:代码曾上云并跑通(`/health`=v1.4.0、4 个新路由注册、迁移验证全绿、①-B 停牌口径无回归),
-  发现阻塞后按预案 rsync 回 `fc55e2e`(p1 代码态)+ 重启,现 `/health`=`v1.4.0-p1`、②~⑧ 端点 404、①-B 仍在。
-- **刻意没做(各有理由,别当遗漏)**:① **`MemoryMax` 未改**——⑨-F 原设想「视情抬到 1G」,但新证据表明
-  **抬内存不是解**(1400M 都跑不完,是算法成本问题不是配额问题),且 v1.4 已回滚、当前报告管线 = 昨天那份
-  (07-28 `ExecMainStatus=0`、峰值 838860800 = 恰好顶满 800M cap),**无消费方的护栏改动不做**;
-  ② **macOS 未换包**——v1.4 客户端配 p1 服务端会**可见地坏**(信息卡按钮 404、问询历史 404、决策日志第⑨项
-  `maxChasePct` 被静默丢弃),换了是给用户装一个坏 App,故维持 07-27 那版;iOS 同理(§八 第 12 项已改)。
-- **今日两个待验项(留给主会话)**:16:05 `neckline-daily` 与 16:35 `neckline-report` 的 **`ExecMainStatus=0` + 时间戳**
-  (铁律:`list-timers` 的 LAST 与 `Result=` 都不可信)。**两者跑的都是 p1 代码 = 与昨天同一份**,ths_daily 补拉后
-  板块维度还更全(`dataFreshness` 滞后从 9 个交易日回到 1 个,在 `SECTOR_DATA_STALE_MAX_LAG_DAYS=2` 内)。
-- **09:26 盘前推送今日已正常**(09:25:45 落 28 条 precall 事件、**`d5exit` 零条** = ①-B 干跑预测的「推送清单为空」
-  真兑现,`002036.SZ` 假警报没发生)。
-- **审计欠账**(不变):P2-9 + P2-10,v1.4 真正上线后一并召唤 reviewer。
-- **待办总入口 = §七 Backlog**(新增 **P0-23** = 本次阻塞,挡 v1.4 上云)。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
-
-- **七项逐项完成**(①③④⑤⑥⑦ 契约全部接线):
-  - **①**:`OpenPositionSheet` 加 `DatePicker`(默认今天、`in: ...Date()` 禁未来);持仓卡展示 `priceStale`(「停牌/无数据 N 个交易日,价格为 X 最后成交价(原因)」)+ `suspended_hold` 态独立短标「判向挂起 · 复牌当日重判」(叠加服务端 `todayAction` 原句,tone 走 `.warn` 新分支)+ K4 `dataUnavailable=true` 显式标「今日未体检」+ 报告级 `dataFreshness` 顶部醒目横幅(`stale=true` 才现)。
-  - **③**:`IntelRank` 补 `industryRank`(nil 展示「未参与排名」,不当 0)/`industryPersistDays`/`yellowCardCount` 三级排序键 chips;`sectorFlow` 文案改「并列参考,不参与排序」;候选卡新增「信息卡」入口按钮(排序理由展示位=候选卡本身,不必再开一处)。
-  - **④**:新 `InfoCardPageView`(Swift Charts:K 线蜡烛图+MA20/MA250+成交量柱、RS 线、行业分歧线,三图均「不可用如实缺省,不画空图/0 值线」)+ 快照七项 + 红黄牌(`section` 红/黄换算)+ 温和带 + 消息面/龙虎榜 + 市场语境;`mapReason` 加 `report_not_found`/`code_not_in_report`;`CandidateOut.infoCard` 摘要位接线到列表页。
-  - **⑤**:候选卡+信息卡页展示「执行提示」(标题统一,文案原样透传 DB,零改写);决策日志表单 ⑧→⑨ 项,`maxChasePct`/`maxChaseNoCap` 二选一强制(`DecisionLogForm.maxChaseChosen` 驱动 `isValid`),`APIClient` 请求体改手写 `encode(to:)` 让 `maxChasePct` **永远出现**(nil→JSON `null`,不同于其余字段的「nil→省略键」);`mapReason` 加 `max_chase_required`。**⑤ 假设已核对**:全仓唯一信息卡入口 = 候选卡「信息卡」按钮,该处始终持有完整 `Candidate` 对象,故信息卡页复用 `Candidate.execHints` 展示,未给 `InfoCardOut`/`InfoCard`(Swift)加字段,假设成立。
-  - **⑥**:持仓卡 `timeExitLockedDay`/`timeExitLockedLateDays`(仅 `>0` 展示「定格于 D{n},晚于 D{5} {k} 天」);周复盘新增 `CharterVersionCard`(`strategyVersion` 标「周初标签」+ `charterSwitches`/`charterSegments` 切换详情与分段计数,`ReviewWeeklyResult` 因 `reviews.result_json` 是写入时冻住的历史快照而补手写容错 `init(from:)`,与 `intelRank` 类「服务端always重构」场景不同,不能只用 Optional 属性偷懒);消息面卡新增 `rotationGroup`/`codesRotationDeferred` 独立一行,**顺带补齐** `codesNoSearch` 客户端一直缺失的字段(v1.3.4 已上线但客户端从未解码,四个计数从此不合并)。
-  - **⑦**:持仓卡决策日志详情区新增 `DecisionTrackSection`(Swift Charts 折线,`rows=[]` 展示「暂未攒到数据」而非报错);问询台加「历史」入口 → `InquiryHistoryView`(列表 + 详情,`NavigationStack` 内嵌,不依赖外层导航架构)。
-  - **语义红线**:候选区头部文案改「排序 = 注意力优先级,不是收益预测 · 排第一 ≠ 最会涨 · 终选权在你」;客户端全仓 `grep "推荐买入\|建议买入\|看好\|值得买\|推荐买点"` **零命中**(含之前一处会被此 grep 误伤的元注释,已改写措辞,语义不变)。
-- **mapReason 新增 3 case**:`.reportNotFound`(`report_not_found`)/`.codeNotInReport`(`code_not_in_report`)/`.maxChaseRequired`(`max_chase_required`)。`GET /decisions/{id}/track`、`GET /inquiries/{id}` 的 404 均复用既有 `.notFound`(未新增,同 plan 字面要求)。
-- **`client/Neckline.xcodeproj/project.pbxproj` 本块一并提交**(P4-21 结案,§七 同步标 ✅):历史遗留的 `MARKETING_VERSION=1.3.4` 字面量与 `explicitFileType` 变化随 4 个新文件条目(`InfoCardView.swift`)一起提交,不再单独挂账。
-- **测试**:Python 全量 **1647 过 + 2 skip**(与基线逐位一致,本块零服务端改动)。Swift 双端 `xcodebuild build` **BUILD SUCCEEDED**(iOS Simulator + macOS);iOS Simulator `xcodebuild test` **165 跑 152 过 13 skip 0 failure**(基线 139 跑 126+13,本块新增 26 个测试,含 `httpBodyOrStream()` 由 `private` 放宽到 `internal` 供 `AppModelTests.swift` 复用同一 helper);macOS `xcodebuild test` 仍因既有 `TEST_HOST` 配置只适配 iOS 布局跑不了(与本块无关,项目历来只在 iOS Simulator 跑单测)。
-- **视觉核对(`xcrun simctl io <device> screenshot`)**:本地隔离库(ATTACH 真实 `data/neckline.db` 四张参考表 + 真实本地 parquet,`DB_PATH` 覆盖跑 `scripts/report.py 20260724` + `scripts/positions.py add` 补两笔持仓)起本地 dev uvicorn,`xcrun simctl` 装 App + 预置 `NK_ENVIRONMENT=dev`/`NK_API_TOKEN` UserDefaults,`NECKLINE_INITIAL_TAB` 切今日计划拍到**停牌持仓卡完整证据**(`002036.SZ` 显示「停牌/无数据 2 个交易日,价格为 2026-07-22 最后成交价(停牌)」+「判向挂起 · 复牌当日重判」黄色短标 + D9/D5 徽标,`688099.SH` 正常 D5 离场横幅对照)。**候选卡排序理由 + 信息卡三图**在 iPhone 视口因内容纵向溢出、本环境无可用触屏/滚动注入手段(`mcp__Claude_Code_iOS_Simulator__control` 的 `attach`/`tap` 因宿主机 `xcode-select` 未指向 Xcode.app 报错,需 sudo 修复、非本会话可解;标准 `computer-use` 对 Simulator 窗口点击同样受权限阻拦,与项目 CLAUDE.md 记录一致)——改用临时创建的 **iPad Pro 13" 模拟器**(更大点尺寸容纳更多内容)取得候选卡「行业排名/行业强度/黄牌/板块资金流(并列参考)/执行提示/信息卡入口」完整截图,并新增一枚**信息卡专用 QA 钩子** `NECKLINE_INITIAL_INFOCARD_CODE=<code>`(`AppModel.refresh()` 数据到位后触发,同 `NECKLINE_INITIAL_TAB`/`NECKLINE_INITIAL_MODAL` 先例、缺省不影响正常路径)拍到信息卡页 K 线蜡烛图(真实 OHLC+MA20/MA250+成交量)与 RS 线(基准 `000001.SH`)真实渲染;**决策日志⑨项表单因位于 `Form` 靠后位置、同一滚动限制未能截到**(表单顶部①-④节可截、已截),该项改由 `DecisionLogFormMaxChaseChosenRequiresExplicitNumberOrNoCap` 等 6 个专项单测 + 请求体编码单测兜底覆盖。全部截图存于会话 scratchpad(不入库)。
-- **⑨ 完整部署时的增量清单**(在 ⑦ 版基础上,本块新增 1 项、其余不变):① VERSION 改回 `v1.4.0`;② `ths_daily` 宽窗一次性补拉 0720/0721/0722;③ 配额账复核;④ `MemoryMax` 视情抬到 1G;⑤ 生产 `ths_daily.parquet` 落后进度需在 ⑨ 前重新核实;⑥ 迁移清单 `decision_log.max_chase_pct` + `inquiry_log` 新表(⑨-B 随其余迁移一并验证);⑦ **iOS/macOS 需装最新构建**(本块新增字段/页面只在新构建可见,§八 第 12 项已提示)。
-- **审计欠账**(不变,仍后置):P2-9 + P2-10,v1.4 施工完成后一并召唤 reviewer。
-- **待办总入口 = §七 Backlog**(P0-1…📌-22 稳定 ID,P4-21 本块已标 ✅)。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。历史细节(①~⑦ 各块完工记录、002036.SZ 假警报窗口关闭、16:35 首跑验收等)全文见 §九 一行 + `archive/`,本节不再复述。
+- **用户 2026-07-29 两项拍板(取代此前口径,不重开讨论)**:
+  1. **P0-23 修法 = 方案②「行业强度预计算落表」** —— 日更算一次落 SQLite,报告/端点/问询台只读;方案①(给 `start` 加下界窗口)因与「持续天数看多远由上次断裂决定」的设计意图冲突**否决**,方案③(只补两个交互路径)因不解 16:35 主链**否决**。落地施工图 = §五 **v1.4-⑩**(🔴 @builder-pro)。
+  2. **review 时机 = 「P0-23 修完、重新上云前」** —— 原「v1.4 上云后再召唤 reviewer」的拍板**作废**。审的范围:⑥-A(逐笔章程)+ ⑩(P0-23 修复)+ §七 **P2-9** + **P2-10** 一并一次做掉。
+- **工序链(照此走,别跳步)**:**⑩ 修复(本地施工 → 生产旁路 bootstrap + 隔离实测)→ ⑩-G 判据全绿 → 用户召唤 @reviewer(上云前审)→ review 结论处置完 → ⑨ 重跑上云 → 双端换包**。
+- **⑨ 重跑的增量清单**(07-29 那次尝试之上的更新版,原清单其余项已做掉或作废):① 本地 `VERSION` 已是 `v1.4.0`(`api/app.py:163`,回滚时未回改),⑨ 时把该文件里「本版号尚未上云」那段模块注释一并删掉;② `ths_daily` 已补到 0728,**不用再补**,只需重新核实当日进度;③ 迁移清单 = `decision_log.max_chase_pct` + `inquiry_log`(07-29 已落生产、刻意保留)+ **⑩ 新增 `industry_strength_daily`**(若 ⑩-G 旁路已建表回填,⑨-B 只验存在性 / 行数 / `verify` 三项);④ `MemoryMax` **按 ⑩-G 实测定**(⑨-F 原文「视情抬到 1G」已作废 —— 抬内存不是解);⑤ TuShare 配额账复核照旧;⑥ **iOS/macOS 双端换包**(§八 第 12 项:现在装 v1.4 客户端会可见地坏,必须等服务端真上到 v1.4.0)。
+- **07-29 那次已做且保留(勿重做)**:两处**增量幂等迁移**已在生产(`decision_log.max_chase_pct` + `inquiry_log` + 2 索引;向前兼容,p1 按 `_SELECT_COLS` 具名取列,`GET /decisions` 200 已验);**`ths_daily` 宽窗补拉 0720~0728 共 7 个交易日**(生产原 max=2026-07-17);生产库双备份 `neckline.db.{bak,cpbak}-v140-20260729-092734`。代码已 rsync 回 `fc55e2e`(p1 代码态),`/health`=`v1.4.0-p1`、②~⑧ 端点 404、①-B 停牌口径无回归。
+- **刻意没做(各有理由,别当遗漏)**:`MemoryMax` 未改(新证据表明抬内存不是解,且 v1.4 已回滚无消费方);macOS/iOS 未换包(v1.4 客户端配 p1 服务端会可见地坏:信息卡 404 / 问询历史 404 / `maxChasePct` 静默丢弃)。
+- **07-29 两次自伤已立规**:`pkill -f <pattern>` 匹配到自己的 SSH 命令行 → 已入 CLAUDE.md;探针把 2 vCPU 箱 load 推到 **65** 且发生在**交易时段** → **生产机性能探针纪律**已入 CLAUDE.md(15:00 后 · 避开 16:00–17:00 · `systemd-run --scope` 隔离 · 串行 · load>4 停手),**⑩-G 逐条守**。
+- **待验(留给主会话)**:07-29 的 16:05 `neckline-daily` 与 16:35 `neckline-report` 的 **`ExecMainStatus=0` + 时间戳**(铁律:`list-timers` 的 LAST 与 `Result=` 都不可信);跑的是 p1 代码 = 与前日同一份,`ths_daily` 补拉后板块滞后已从 9 个交易日回到 1 个(在 `SECTOR_DATA_STALE_MAX_LAG_DAYS=2` 内)。07-29 09:26 盘前推送已正常(28 条 precall、`d5exit` 零条,①-B 干跑预测兑现)。
+- **待办总入口 = §七 Backlog**(P0-23 已标「已裁定方案② → 第 ⑩ 块」)。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。①~⑧ 各块完工细节全文见 §九 一行 + `archive/`,本节不复述。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。此前的历史交接账本(v1.0 → v1.3.5 各次完工 / 激活 / 事故的当时记账)全文 → `archive/当前状态_历史账本_20260719-20260728.md`。
 
-## 五、当前版本 Plan(v1.4.0 = K4 打法产品化〔方案 b〕· P0 地基 + 正选漏斗 + 信息卡同构 + 判定精度)
+## 五、当前版本 Plan(v1.4.0 = K4 打法产品化〔方案 b〕· P0 地基 + 正选漏斗 + 信息卡同构 + 判定精度 + P0-23 修复)
 
 > **本节是 v1.4.0 唯一权威施工图**;每块写具体行为、build 不用猜,每块末给一句验收标准(含活体)。🔴 = 高危块(碰持仓判定 / 纪律判定 / 生产部署),点名 **@builder-pro**,一律**改前备份 + 活体验收**。
 
@@ -304,7 +271,7 @@ Neckline/
 > 1. **v1.4 主题 = 「K4 打法产品化」= 系统线三选一里的 (b)**。规格全文 = `archive/交接_系统线升级需求_20260725.md` **需求 8**(K4 正选漏斗完整规格,2026-07-28 策略线裁定)+ 同文件 **「需求 2 补充」**(决策日志第⑨项:最高追价上限)。**(a) 激活 K4 行**(config ≡ K1,策略行为无变化)与 **(c) 等策略线新内核**(四战役 + 用户 2026-07-26 终裁底盘暂缓)**均已否决,不再列为选项**——§七 📌-22 就此结案。
 > 2. **红黄牌与 exec_hint 一律读 DB** `strategy_versions` 的 `K4` 行 `rule["k4_advisory"]` 六节,**禁止在代码里抄常量**。既有先例照旧:advisory 文字 = **规格档**(策略线档案)、模块命名常量 = **可执行镜像**(系统线),**改阈值须同改两处**,对照表写模块头(`report/holding_k4_check.py` 体例)。
 > 3. **P0 三洞并进本版第一块**,**不单出 v1.3.6**。
-> 4. **review 后置**:本版**不排 review 施工块**。施工完成后由**用户召唤 reviewer**;§七 **P2-9**(情报官/候选管线、契约三方对拍两路未做审计)与 **P2-10**(v1.3.1 / v1.3.3 / v1.3.4 / v1.3.5 四个已发布版本未 review)一并归那时一次做掉。
+> 4. **review 时机 =「P0-23 修完、重新上云前」(用户 2026-07-29 改判,原「上云后 review」作废)**。本版仍**不排 review 施工块**(reviewer 由用户召唤,不是 builder 的活),但**门禁位置前移**:⑩ 完工 + ⑩-G 生产实测判据全绿 → **召唤 reviewer** → 结论处置完 → 才跑 ⑨ 重新上云。审的范围一次做掉:**⑥-A**(逐笔章程,🔴 碰纪律判定)+ **⑩**(P0-23 修复:新表 + 判据读侧改造)+ §七 **P2-9**(情报官/候选管线、契约三方对拍两路未做审计)+ **P2-10**(v1.3.1 / v1.3.3 / v1.3.4 / v1.3.5 四个已发布版本未 review)。**改判理由**:P0-23 是「本地验证充分、生产直接跪」的一类缺陷,它的修复动了 A2 hard_cut 判据的取数路径 —— 这种改动在上云后才审,等于拿生产当审场。
 > 5. **本版不动纪律章程**:`strategy_versions` 现役行仍是 **`v1.3.3`**,不新建章程行、不跑切换器。任何"顺手改个阈值"的念头一律回 planner。
 
 > **⛔ 语义红线(需求 8 明写,任何一处代码 / UI / 文案违反即本版验收不过)**:
@@ -321,7 +288,9 @@ Neckline/
 > · **v1.4-⑥ 判定精度(🔴 ⑥-A)** —— P1-4 章程按成交时刻逐笔判 / P1-5 消息面扫描预算 / P1-6 定格日 ≠ D5 标注。
 > · **v1.4-⑦ 功能补全** —— P3-12 挂单追踪出口 / P3-13 问询记录落库 + 历史 / P3-14 客户端小瑕疵。
 > · **v1.4-⑧ 客户端跟进** —— **依赖 ①③④⑤⑥⑦ 契约**。
-> · **v1.4-⑨ 部署上云(🔴)** —— **最后**;验收守铁律「**timer 跑过 ≠ 任务成功,看 `Result=` / `ExecMainStatus`**」。
+> · **v1.4-⑩ P0-23 修复:行业强度预计算落表(🔴)** —— 编号 ⑩ 是**立项次序**,**工序上排在 ⑨ 之前**(⑨ 已于 07-29 尝试并回滚)。行业强度日更落 SQLite,报告 / 信息卡 / 问询台三处改**只读表**;含生产旁路 bootstrap + 隔离实测。**⑨ 重跑的硬前置。**
+> · **【门禁 · 非施工块】用户召唤 @reviewer** —— ⑩ 完工 + ⑩-G 判据全绿之后、⑨ 之前;范围 ⑥-A + ⑩ + P2-9 + P2-10(见上「规格权威与已拍板前提」第 4 条)。
+> · **v1.4-⑨ 部署上云(🔴)** —— **最后**;07-29 首次尝试撞 P0-23 已回滚,**待 ⑩ + review 后重跑**;验收守铁律「**timer 跑过 ≠ 任务成功,看 `ExecMainStatus` + 时间戳**」。
 >
 > **期间「等数据决策点」(不排施工块,不挡任何一块)**:**§七 P1-7 `search_engine` 选型** —— 2026-07-27 单日样本(`search_pro` 2 条 / `search_std` 2 条 / `search_pro_sogou` 10 条)不足以定;攒够几天后捞 `llm_judgments` 的命中分布(按日 × 按引擎)再拿数据说话。**在此之前维持 `search_pro` 不动**(用户已拍板的现值),不许在本版顺手改。
 
@@ -536,10 +505,137 @@ Neckline/
 
 ---
 
+### v1.4-⑩ · P0-23 修复:行业强度预计算落表(🔴 @builder-pro,**⑨ 重跑的硬前置**)
+
+**背景与裁定**:§七 **P0-23**。v1.4-② 把 `report/industry_strength.py` 立成 A2/B3 判据与排序键① 的唯一源,但它每次调用都对 `daily` 做**全历史 `scan_parquet`**(生产 1591 分区 / 784 万行)。开发机 <1s,生产(2 vCPU / 1.6G)**700M cap OOM-kill、1400M cap 600s 跑不完**;三个调用点(16:35 报告主链 / 信息卡端点 / 问询台)全部不可用,且后两者跑在常驻 `neckline.service` 内会把盘中哨兵拖进内存回收死循环(卡死不报错)。**用户 2026-07-29 裁定选方案②「预计算落表」**:日更算一次落 SQLite,在线路径**只读表**。~~方案①(给 `start` 加下界窗口)~~ 否决 —— 与「持续天数要看多远由『上次断裂』决定、人为下限会低报长 streak」的既有设计意图冲突(§3.8 宁可多算不可少算);~~方案③(只给两个交互路径注入报告已算好的结果)~~ 否决 —— 治标,16:35 主链照旧中招。
+
+**⚠ 本块成立的关键事实(builder 先读懂再动手)**:`compute_industry_strength` 的四个产出量里,**median_ret / member_count / industry_rank / is_strength_day 全部是「当日量」**——只依赖当日那一个分区(`ret_1d = close/pre_close - 1` 同行同天;排名与 quantile 阈都是「当日达标行业之间」比)。**唯一跨日的量是 `persist_days`(连续强度日)**,而它可以用「上一评定日的 `persist_days` + 今日 `is_strength_day` 标记」一步递推。**于是「要看多远历史」这个问题根本不需要窗口来回答 —— 历史被压缩进了表里的一个整数**。这正是方案②绕开方案①设计冲突的关键:既不截断真实 streak,也不需要每天重扫 784 万行。
+
+#### ⑩-A 落表形态(定死,不留给 builder 挑)
+
+- **存 SQLite,不走 parquet**。表名 **`industry_strength_daily`**,建在 `data/neckline.db`(`neckline/db.py` 的 `_SCHEMA` 里 `CREATE TABLE IF NOT EXISTS`,新表天然幂等,**不进 `_COLUMN_MIGRATIONS`**——同 `inquiry_log` 先例)。
+- **为什么不是 parquet**(五条,写进模块头):① 体量小到不该分区(110 行/日,全历史 ~17.5 万行 ≈ 20MB),**parquet 日分区会再造 1500+ 个小文件 = 本 P0 的病根本身**;② 读模式是「按日点查 + 按行业跨日回看」,SQL 索引天生合适;③ 完全绕开 parquet schema 漂移雷区(v1.3.5 两次崩报告那条链),不必新增 `_VALID_TABLES` / `TABLE_FLOAT_COLS` 声明与守门单测;④ `PRIMARY KEY` upsert 天然幂等,比「整段替换分区」简单;⑤ 它跟着 `neckline.db` 一起被 `.backup` 备份,不另立备份纪律。
+- **DDL(照抄,勿改列名)**:
+
+  ```sql
+  CREATE TABLE IF NOT EXISTS industry_strength_daily (
+      trade_date      TEXT NOT NULL,      -- 'YYYYMMDD'(同 holding_eod_check / decision_pending_track 惯例)
+      industry        TEXT NOT NULL,      -- stock_basic.industry 原文
+      median_ret      REAL NOT NULL,      -- 当日该行业成员 ret_1d 中位数(所有行业都有,含未达标行业)
+      member_count    INTEGER NOT NULL,   -- 当日有 ret_1d 的成员数(>=1 才落行)
+      industry_rank   INTEGER,            -- NULL = 当日未参与排名(member_count < min_members)
+      is_strength_day INTEGER,            -- NULL = 当日未参与评定;0/1 = 参与了且不是/是强度日
+      persist_days    INTEGER,            -- NULL = 当日未参与评定;>=0 = 连续强度日(断裂重置)
+      quantile        REAL NOT NULL,      -- 产出该行时的 _STRENGTH_QUANTILE(口径指纹)
+      min_members     INTEGER NOT NULL,   -- 产出该行时的 _MIN_MEMBERS(口径指纹)
+      computed_at     TEXT NOT NULL,      -- ISO8601(审计:这行什么时候算的)
+      PRIMARY KEY (trade_date, industry)
+  );
+  CREATE INDEX IF NOT EXISTS idx_industry_strength_daily_industry ON industry_strength_daily(industry, trade_date);
+  ```
+
+- **三个可空列的语义定死:`NULL ≠ 0`**。`NULL` = 「当日成员数不足,没评」(**没看**);`0` = 「评了,不是强度日 / 持续 0 天」(**看了,没有**)。承 §3.8「『没有』与『没看』必须能分开」,读侧不许 `or 0` 抹平。
+- **落**全部**行业(`member_count >= 1`),不只达标行业**:同一张表要同时喂两个消费方 —— 判据侧(A2/B3 + 排序键①,只吃达标行)与 ④ 信息卡的 60 日行业中位数序列(`industry_median_return_series` 口径**本来就不受 `_MIN_MEMBERS` 约束**)。一张表覆盖两者,避免第二张表 / 第二条取数路径。
+- **`quantile` / `min_members` 两列是口径指纹**:读侧只接受与当前常量相等的行,不等 → 视同缺行(走保险丝)+ WARNING「口径已变更,请重跑 bootstrap」。**口径一改,全表必须重算**——这条把「静默混着两种口径的行」变成一次响亮的降级。
+- **体积账**(实测数据:110 个行业 / 5 个成员数<5 / 单日 `daily` 5526 行):110 × 1589 日 ≈ **17.5 万行 ≈ 20MB**;生产库 3.8MB → ~25MB,`.backup` 仍是秒级(⑩-G 记录实测耗时)。
+
+#### ⑩-B 计算侧拆分(单一源不变式:表只是缓存物化,判据实现仍只有一份)
+
+在 `neckline/report/industry_strength.py` 内把现有 `_compute_daily_table` 拆成三件,**口径一个字都不改**:
+
+1. **`_day_local_table(panel) -> pl.DataFrame`**(当日量,可吃 1 天也可吃 N 天):产出**全部** (trade_date, industry) 行的 `median_ret` / `member_count`;再在 `member_count >= _MIN_MEMBERS` 的**达标子集**上原样保留现有的 `rank(method="ordinal", descending=True).over("trade_date")` 与 `quantile(q).over("trade_date")` 两段表达式算出 `industry_rank` / `is_strength_day`,**然后 left-join 回全量行**(未达标行两列为 NULL)。**⚠ 不许用 `pl.when(...)` 掩码列直接在全量行上算 rank/quantile**(polars 对 null 的排名/分位语义容易踩坑),就用「达标子集算完再 join 回来」这条笨路。
+2. **`_attach_persist(day_local) -> pl.DataFrame`**(全量 streak,现算路径 + 对拍用):现有 sort → flip → cum_sum → cum_count 那段原样搬过来,**只在 `is_strength_day` 非空的行上做**(未评定日按「不存在」处理 = 与现实现「未达标行在 `ind_daily` 里根本没有」逐位等价,既不打断 streak 也不贡献计数),未评定行 `persist_days` 留 NULL。
+3. **`next_persist_days(prev: Optional[int], is_strength_day: Optional[bool]) -> Optional[int]`**(递推的**唯一实现**,纯函数):`is_strength_day is None → None`(且调用方须把 `prev` **原样往后传**,不清零);`True → (prev or 0) + 1`;`False → 0`。
+
+- **`compute_industry_strength` 保留但降级为「离线/对拍用」**:实现改为 `_attach_persist(_day_local_table(...))`(行为逐位不变),docstring 顶部加 🛑「**禁止在线路径调用**(P0-23:全历史 `scan_parquet` 在生产不可完成);在线一律读 `industry_strength_store`」。`industry_median_return_series` 同样保留 + 同样标注,它继续充当「表内 `median_ret` 是否算对」的**参考实现**。
+- **守门单测(两条,缺一不可)**:
+  - **禁用扫描**:grep `neckline/report/pipeline.py`、`neckline/report/info_card.py`、`neckline/report/intel_candidates.py`、`neckline/api/inquiry.py` 四个文件,断言 **不出现** `compute_industry_strength` / `industry_median_return_series`(照 ③-C `_SORT_KEY_INPUTS` 白名单单测的体例)。
+  - **三路等价**:同一份合成多日面板,①`_attach_persist(_day_local_table(panel))`、②逐日调 `next_persist_days` 递推、③`refresh_industry_strength` 落表后读回 —— 三者的 `industry_rank` / `is_strength_day` / `persist_days` **逐位相等**。这就是「表只是物化,不是第二套判据」的机器证明。
+- **既有 `tests/test_industry_strength.py::test_core_table_matches_research_bit_for_bit`(与 `research/k4p_h6_theme.py` 逐位对拍)断言一个字不许改**——它锁的是口径,重构必须让它继续绿。
+- **`ret_1d` 定义抽成一个小纯函数**(如 `_ret1d_from_daily(df)`,含 `close`/`pre_close` 非空 + `pre_close != 0` 过滤),`_load_ret1d_panel` 与 store 的按日 / 按年读取共用,**不许各写一遍**。
+- **一个必须写进 docstring 的语义差(不是 bug)**:表内历史行按**落表当时**的 `stock_basic.industry` 快照冻结,不因日后 `stock_basic` 刷新而回改;现算 `compute_industry_strength` 则一律用当前快照重算全历史。两者在 `stock_basic` 变更后会有细微差异 —— 表侧更接近「当时看到的世界」,**要重置就重跑 bootstrap(整表重算)**,不要写"自动检测行业变更并回改历史"的机灵代码。
+
+#### ⑩-C 写入路径:16:05 日更增量 + 修补 CLI
+
+- **新模块 `neckline/report/industry_strength_store.py`**(同 `holding_store.py` / `news_alerts_store.py` 体例)。依赖方向 **store → industry_strength 单向**(store 从后者 import `IndustryStrength` / 三个纯函数 / 两个常量),后者**不得反向 import store**(防循环)。
+- **`refresh_industry_strength(days, *, parquet_dir=None, db_path=None) -> dict`**:按**升序**逐日处理,每日:
+  1. **只读当日那一个分区**:`pl.read_parquet(market_data.day_file_path("daily", d, parquet_dir))`。**⚠ 不许用 `get_market_slice` / `scan_table_range` / `_scan_table`** —— 它们走 `year=*/**.parquet` 全 glob,会打开 1500+ 个 parquet footer,**正是本 P0 的病根之一**;分区文件不存在 → 跳过并计入 `missing`(非交易日 / 数据未落地是正常态,不报错);
+  2. `_ret1d_from_daily` → join `load_industry_map(db_path)` → `_day_local_table`;
+  3. 逐行业查 `prev` = 该行业**最近一条 `trade_date < d` 且 `is_strength_day IS NOT NULL`** 的 `persist_days`(一条带 `ORDER BY trade_date DESC LIMIT 1` 的 SQL,走 `(industry, trade_date)` 索引,**不扫全表**);
+  4. `next_persist_days` 递推 → `INSERT OR REPLACE`(同 `holding_store` 体例)+ `quantile` / `min_members` / `computed_at` 三列一并写;
+  5. 返回 `{"days":n, "rows":m, "missing":k}`。
+- **幂等 + 补跑规则(定死)**:同日重跑逐位相同(`prev` 查的是**严格早于 d** 的行,不受本日已有行影响,不双计)。**补算历史日 D 时若库内存在 > D 的行**,那些行的 `persist_days` 会失真 → `refresh` **自动把处理区间向后延到库内最大交易日**(每日成本 = 1 个分区,受控),并 INFO 记「因补算 {D} 顺带重算至 {X}」。**不许静默只补一天。**
+- **写库分批提交**:每处理完一天(bootstrap 时每年一批 / 每 ≤5000 行一批)提交一次,**不要一个大事务锁住库** —— 生产库同时被常驻 `neckline.service`(API + 盘中哨兵)持有(WAL 模式,读不阻塞,但长写锁会挡住其它写)。
+- **16:05 挂载点**:`scripts/daily_update.py::main()` 在 `update_suspend_list` / `update_concept_boards` **之后**加 `update_industry_strength(target)`。**尽力而为**(异常吞掉、不改退出码,同上面两位先例)**但日志级别用 ERROR**(它是判据输入,不是增强项),日志里**带上补算命令原文**(`python scripts/industry_strength.py refresh --from … --to …`)。
+- **新 CLI `scripts/industry_strength.py {refresh,verify}`**(放 `scripts/` **顶层**,不是 `oneoff/` —— 它是长期修补/自检工具,同 `positions.py` 子命令体例):
+  - `refresh [--from YYYYMMDD] [--to YYYYMMDD] [--year YYYY]`(缺省 = 今天);
+  - `verify [--from YYYYMMDD] [--to YYYYMMDD]` → 见 ⑩-D 的三项自检,有问题 exit 1 并逐条打印。
+
+#### ⑩-D bootstrap 历史回填(**定案 = 生产机分块两遍法**)
+
+- **两条候选明确否决,别再回头**:~~开发机算好带表上云~~ —— 开发机 1589 分区 vs 生产 1591,数据不同源,把「开发机数据」变成生产判据在审计上不干净,且必须精确对齐到「首个增量日的前一交易日」且中间无洞,太脆;~~从某日冷启动向前递推~~ —— 起点后头几天 `persist_days` **低报**(A2 是 hard_cut,低报 = 该拦没拦),且「哪天起才可信」没法在报告里说清。
+- **Pass 1(当日量,按年分块)**:对 `year=YYYY` 逐年,`pl.scan_parquet(str(table_dir("daily", parquet_dir) / f"year={YYYY}" / "*.parquet"))`(**只 glob 该年**,单年 ~244 分区 / ~135 万行 × 4 列)→ `_ret1d_from_daily` → join 行业 → `_day_local_table` → upsert(`persist_days` 先留 NULL)。
+- **Pass 2(streak,纯表内)**:从库里按 `(industry, trade_date)` 升序读回全量(~17.5 万行,几 MB)→ 用 `_attach_persist` 或逐日 `next_persist_days` 算出 `persist_days` → 回写。**这一遍完全不碰 parquet**,内存与年份数无关。
+- **区间** = `daily` 最早分区日(2020-01-02)到最新交易日,共 7 块(2020…2026),**可分年断点续跑**(upsert 幂等)。
+- **跑法(生产机)**:走 ⑩-G 的探针纪律 —— **收盘后(15:00 之后)且避开 16:00–17:00**,`systemd-run --scope -p MemoryMax=600M -p CPUQuota=100%` **逐年串行**,每块之间看一次 `free -m` 与 `load`。**跑前 `sqlite3 .backup` + `cp -p` 双备份**(建表 + 批量写 = 迁移级动作,守 §3.8)。
+- **⚠ 在生产机上怎么跑「还没上云的代码」**:把本地代码 rsync 到**旁路目录** `/opt/neckline-p023/`(**不动 `/opt/neckline`、不重启任何服务**),用生产 `.venv` 跑(**本块硬约束:不得引入任何新依赖**,只用已有的 polars + 标准库 sqlite3),环境指向**真实** `data/parquet`(只读)与真实 `data/neckline.db`(只**新建**这一张表、只写这一张表)。这是 07-29 那次「迁移保留 + 代码回滚」已验证过的向前兼容姿势:p1 代码永远不碰新表,多一张表对它无感。**跑完删除旁路目录**,留痕记 §九 + `~/hz_info.md`。
+- **验证判据(五条,全部在生产机上取证)**:
+  1. 每年块 **exit 0**,`systemd-run --scope` 的 cgroup **`memory.peak < 500M`**,逐块耗时记录在案(预期 < 3 分钟/年);
+  2. `scripts/industry_strength.py verify` **三项全绿**:① **交易日无洞**(表内 `trade_date` 集合 == `trade_cal` 在该区间的交易日集合);② **streak 自洽**(由 `is_strength_day` 序列重算的连续天数 == 库内 `persist_days`,逐行相等);③ **口径指纹一致**(全表 `quantile` / `min_members` 唯一且等于现行常量);
+  3. **随机 3 个交易日单日对拍**:在生产机上跑「读该日**一个**分区 → `_day_local_table`」与库内该日行**逐位一致**(`median_ret` 相对容差 1e-12,`member_count`/`industry_rank`/`is_strength_day` 逐位相等)。**注意:不能用 `compute_industry_strength` 做这个对拍**(它自己就跑不动),这也正是 ⑩-B 要把当日量拆出来的附带好处;
+  4. **`stock_basic` 快照全程未变**(bootstrap 跑前跑后:行数 + `industry` 非空数一致)——否则同一次回填里混了两份行业映射;
+  5. 跑后 `PRAGMA integrity_check` = ok + **其余业务表行数逐表未变**(只多了新表)。
+- **退路(写死,免临场拍脑袋)**:若**首块(2020)** 峰值 > 500M 或耗时 > 10 分钟 → 放弃全历史,**只回填最近 250 个交易日**;此时早于起点的历史回放按「表缺行 → 降级 + 标注」处理(⑩-E 保险丝),**不许静默按 0**;退路一旦生效,必须记进 §九 + `~/hz_info.md`,并在 §七 留一条「历史回放早于 X 日不可用」的挂账。
+
+#### ⑩-E 读侧改造(四处取数点全改读表)+ 保险丝语义
+
+- **四处改读表**(注入参数 `industry_scores=` 一律保留,pipeline 仍只读一次往下传,姿势不变):
+  - `report/pipeline.py:163`:`compute_industry_strength(...)` → `load_industry_strength(trade_date, db_path=db_path)`;
+  - `report/intel_candidates.py:356-359` 的 `else` 兜底分支;
+  - `report/info_card.py:650-653` 的 `else` 兜底分支;
+  - `api/inquiry.py:296-297`。
+- **60 日行业中位数序列(④ 信息卡分歧线)一并改读表**:`info_card._build_industry_divergence` 里的 `industry_median_return_series(...)` → `store.load_industry_median_series(industry, start, end, db_path=db_path)`(读 `median_ret` / `member_count`,**不过滤 `industry_rank IS NULL`** —— 该口径本来就不受 `_MIN_MEMBERS` 约束,这是 ⑩-A「落全部行业」的直接兑现)。窗口内某日无行仍按现状「当 0 处理、不打断整条线」(既有 docstring 已声明这是调用方策略),但**新增第三档不可用理由**:整段窗口在表里缺失 → `"行业强度数据未就绪(最新至 {X})"`,与既有「行业样本不足({industry}当日成员数不足)」**分开**,别混成一句。
+- **store 读侧 API(定死)**:
+  - `load_industry_strength(trade_date, *, db_path=None) -> List[IndustryStrength]` —— 只返回 `industry_rank IS NOT NULL` 的行(与现算返回集**逐位同集**),按 rank 升序;口径指纹不匹配 → 空 + WARNING;
+  - `load_industry_median_series(industry, start, end, *, db_path=None) -> List[Dict]` —— 逐日 `{trade_date, median_ret, member_count}` 升序;
+  - `industry_strength_status(report_date, *, db_path=None) -> IndustryStrengthFreshness(latest_date:str, lag_days:int, stale:bool)` —— `lag_days` 用交易日差;表空 → `lag_days=-1`(哨兵值,同 `sectors.SECTOR_LAG_UNKNOWN` 惯例);**`lag_days > 0` 即 `stale=True`,不给容忍度**(与 `ths_daily` 结构性落后 1 日不同:行业强度用**当日** `daily` 算,16:05 当天就该有);
+  - `verify_industry_strength(start, end, *, db_path=None) -> dict` —— ⑩-D 的三项自检,CLI 与单测共用同一实现。
+- **保险丝语义(定死,守 §3.8 与「核心管线对可选情报输入必须包保险丝」铁律)**:
+  - 表缺该报告日的行 → **不崩、也不现算自愈**;`industry_scores = []`,WARNING(**带补算命令原文**)+ 报告级披露(⑩-F)。**主链不写表**:写在 16:05、读在 16:35,职责不混;历史回放更不该顺手写表。
+  - **降级方向 = 不拦(放行)**:A2 hard_cut 不触发 —— 与 `intel_candidates` 既有「缺 DB 行 → `_DEFAULT_SECTION` 保守当 avoid_flag、不拦」同向(见项目 CLAUDE.md);排序键① 全部 `None → +inf`,序退化成 `yellow_card_count → base_score → code`,**仍确定性可复现**(单测锁:表为空时同一批候选两次跑出同一序)。
+  - **信息卡**:`snapshot.industry_rank` / `persist_days` **如实缺省**(不写 0),分歧线 `available=false` + 上面那条新 reason。
+  - **问询台**:`industry_hot = {}`,并在 `det.evidence` 补一条**「行业强度数据未就绪(最新至 {X}),题材持续天数与 A2/B3 本次不可得」**。⚠ 绝不能静默按 0 输出「未命中 A2/B3」——那是拿「没看」冒充「没有」。
+  - **`holding_k4_check` 不新增字段**:报告级披露已覆盖当日全部消费方,不给每张持仓卡再加一个 available 位(避免契约膨胀),**理由写进模块注释**免得后人当遗漏。
+- **测试夹具**:`isolated_env` / `api_env` 下,凡端到端跑 pipeline / 信息卡 / 问询台的测试,**先调 `refresh_industry_strength` 把表喂上**(conftest 加一个 helper,同 `write_day_table` 体例)。**不许改断言迁就新取数路径**;已知受影响文件:`test_pipeline.py` / `test_intel_candidates.py` / `test_info_card.py` / `test_api_info_card.py` / `test_api_inquiry.py` / `test_api_report_board.py` / `test_holding_k4_check.py` / `test_industry_strength.py`。
+
+#### ⑩-F 契约与客户端小增量
+
+- **`ReportOut.dataFreshness`(既有自由 dict,服务端加键不破 pydantic 契约)新增三键**:`industryStrengthDate: String?`(库内最新 `'YYYYMMDD'`,表空 → `null`)/ `industryStrengthLagDays: Int`(`-1` = 完全无数据,同 `sectorLagDays` 的哨兵值惯例)/ `industryStrengthStale: Bool`(`lag > 0` 即 true)。
+- **既有三键 `sectorDataDate` / `sectorLagDays` / `stale` 语义一个字不改**(`stale` 仍**只**表板块数据)。**不许把两件事揉进一个 bool** —— 板块过期与行业强度未就绪是两个独立故障,合并就分不清哪个坏了。
+- **客户端(Swift)**:`DataFreshness` 加三个 Optional 字段;顶部新鲜度横幅在 `industryStrengthStale == true` 时**多一行**:「行业强度数据未就绪(最新至 {X}):今日候选排序缺行业维度、题材持续天数不可用」。老报告快照没有这三键 → `nil` 兜底不崩 —— `dataFreshness` 属于「`_shape_report` 每次响应重新构造」那一类(**不是** `reviews.result_json` 那种写入时冻住的历史快照),故可以用 Optional 偷懒,**但要在注释里写明是哪一类**(见项目 CLAUDE.md 该条)。
+- 验收:双端 `xcodebuild build` SUCCEEDED + iOS Simulator `xcodebuild test` 全绿 + **1 条解码单测**(三键缺失 → nil / 存在 → 值)。
+
+#### ⑩-G 生产机实测复验(🔴,**新纪律:探针只许收盘后跑**)
+
+- **探针纪律(2026-07-29 立,同步写进项目 CLAUDE.md)**:生产机性能实测**只在收盘后(15:00 之后)且避开 16:00–17:00**(16:05 日更 + 16:35 报告窗口);一律 `systemd-run --scope` 隔离单进程、**串行**、不并行开多个;跑完 `pgrep -af <pattern>` 确认无残留 + `systemctl reset-failed` + 看 `load` 回落;**2 vCPU 箱 `load > 4` 立即停手**。⚠ 07-29 那次探针把 load 推到 **65** 且发生在**交易时段**,这条纪律就是那次的账。
+- **本块能在「不部署」的前提下取到的证据(⑩ 内必须拿到)**:
+  1. **bootstrap 五条判据**(⑩-D)全绿;
+  2. **日更增量**:旁路目录跑 `refresh_industry_strength([最近交易日])`,**耗时 < 60s、峰值 < 200M**,当日落 ~110 行;
+  3. **读侧代价**:`load_industry_strength(d)` **< 0.2s**;`load_industry_median_series` 60 日窗 **< 0.1s**;
+  4. **信息卡主体成本**(端点起不来就量函数):旁路跑 `build_info_card(d, code)` 单只,`systemd-run --scope -p MemoryMax=300M` 下 **exit 0、耗时 < 10s**(此前**永不返回**)。若仍 > 10s,**单独立项查 `_load_single_code_panel` 的全 glob**,不阻塞本块 —— 那是与既有 `holding_k4_check` 同一类、已在生产跑通多日的路径;
+  5. `PRAGMA integrity_check` = ok + 业务表行数逐表未变 + `.backup` 耗时记录。
+- **必须留到 ⑨ 才能验的**(⑩ 不假装验过):端点公网时延、16:05 / 16:35 **真实自动跑**的 `ExecMainStatus=0` + 峰值、常驻服务 `memory.events.high` 增量。⑨-D / ⑨-F 已挂这些判据。
+
+**⑩ 验收**:① 新表建成 + 全历史(或退路区间)回填完毕,`verify` 三项全绿 + 生产机单日对拍逐位一致;② 四个在线调用点**零** `compute_industry_strength` / `industry_median_return_series`(grep 守门单测)+ 三路等价单测绿 + `test_core_table_matches_research_bit_for_bit` **断言未改**仍绿;③ 保险丝四态(报告降级不崩且可复现 / 信息卡如实缺省 / 分歧线新 reason / 问询台 evidence 明说不可得)各有单测;④ `dataFreshness` 三键往返 + 客户端解码单测 + 双端 build/test 绿;⑤ Python 全量测试相对 1647 + 2 skip **零回归**(净增测试数写进完工记录);⑥ ⑩-G 五条实测证据(原文/数字)记进 §九 一行 + `~/hz_info.md`;⑦ 完工后把「**判据类全市场扫描一律预计算落表,在线路径只读**」写进项目 `CLAUDE.md`(一行,≤5 行纪律)。**🔴 碰生产库:改前 `sqlite3 .backup` + `cp -p` 双备份,改后 `integrity_check` + 业务表行数逐表比对;旁路目录跑完即删。**
+
+---
+
 ### v1.4-⑨ · 部署上云(🔴 @builder-pro + 用户,**最后**)
 
-- **⑨-A 版号**:`api/app.py::VERSION` `v1.3.5` → **`v1.4.0`**。
-- **⑨-B 迁移(全部幂等 `IF NOT EXISTS` / `_migrate_columns`)**:`decision_log.max_chase_pct`(⑤-B)+ `inquiry_log` 表(⑦-B)+ 本版落地过程中新增的任何列。
+> **⚠ 2026-07-29 状态更新**:本块**已尝试一次并按预案全量回滚**(阻塞 = §七 P0-23),生产现为 `v1.4.0-p1`。**重跑的前置条件有两个,缺一不可**:① **v1.4-⑩ 完工且 ⑩-G 判据全绿**;② **用户召唤的 review 已做完且结论处置完毕**(§五 前提第 4 条,用户 2026-07-29 改判为「上云前审」)。重跑时的增量清单见 §四 快照(VERSION 已是 v1.4.0 / `ths_daily` 已补到 0728 / 迁移清单加 `industry_strength_daily` / `MemoryMax` 按 ⑩-G 实测定 / 双端换包)。
+
+- **⑨-A 版号**:`api/app.py::VERSION` 本地**已是 `v1.4.0`**(07-29 那次尝试改的,回滚时未回改);本块只需删掉该文件里「🛑 本版号尚未上云」那段临时模块注释。
+- **⑨-B 迁移(全部幂等 `IF NOT EXISTS` / `_migrate_columns`)**:`decision_log.max_chase_pct`(⑤-B)+ `inquiry_log` 表(⑦-B)—— **这两项 07-29 已落生产并刻意保留**(向前兼容),本次只需**验证存在性**;+ **`industry_strength_daily` 表(⑩-A)**——若 ⑩-D 的生产旁路 bootstrap 已建表回填,本次同样只验存在性 / 行数 / `verify` 三项全绿;+ 本版落地过程中新增的任何列。
   - **迁移前**:`sqlite3 .backup` 在线一致性备份(`data/neckline.db.bak-v140-<date>`)+ **另 `cp -p` 一份**(双保险);
   - **迁移后逐项验证**:`PRAGMA integrity_check` ok + **业务零丢失**(`positions` / `devices` / `reports` / `decision_log` / `watchlist` 等行数迁移前后逐表一致)+ **`is_active` 仍 `v1.3.3`**(本版不动章程,任何 `is_active` 变化即回退);
   - **回退路径写死**:任一验证不过 → 停服 + 从 `.backup` 恢复 + 回滚代码到 v1.3.5 tag + `neckline.service` 起回 v1.3.5。
@@ -550,10 +646,10 @@ Neckline/
   - **只看 `systemctl list-timers` 的 LAST 不算验收**(07-27 报告没生成却被记成"已跑完"的教训);
   - `neckline-daily`(16:05)同样看 `Result=`,且 `ths_daily` 当日**有行**(①-C 日更真的跑了)。
 - **⑨-E TuShare 配额复核(§七 P4-20 + ①-C 新增固定消耗)**:16:05 增量拉全(`daily`/`daily_basic`/`adj_factor`/`moneyflow_dc`/`index_daily`/`limit_derived` + **新增概念板块日更**);`ths_daily` 当日有行、`ths_member` 周更快照有效;情报节非空、`dataFreshness.stale=false`。**研究侧大批量拉取继续避开 15:00–17:00 生产窗口**(提醒用户/策略线)。
-- **⑨-F 内存复核(§七 P4-16)**:`neckline-report.service MemoryMax=800M` 对 v1.4 新管线(信息卡端点是**按需现算、不进 16:35**;⑥-B 若选并发路会抬峰值)→ **实测峰值 + `oom_kill` 计数**;必要时抬到 1G,**抬之前先算总账**(机器 1.6G,还有常驻 `neckline.service` `MemoryHigh=420M/Max=600M` 与 `neckline-daily` 900M)。哨兵 lifespan 任务重启后 idle RSS 与部署前持平。
+- **⑨-F 内存复核(§七 P4-16;2026-07-29 改判)**:~~视情抬到 1G~~ **已作废** —— P0-23 证明抬内存不解算法成本(1400M 都跑不完),⑩ 已把全历史扫描从三条在线路径彻底移除。本块改为**纯实测记账**:`neckline-report.service` 实测峰值(判据:**不高于 07-28 基线 838,860,800**,即 ⑩ 不该让报告变重)+ `oom_kill` 计数 = 0;常驻 `neckline.service` 点一次信息卡端点后 `memory.events.high` **增量 < 1000**(07-29 那次是 54 万)且 RSS 回落;`neckline-daily` 新增 `refresh_industry_strength` 一步后的峰值(cap 900M 内)。**任何 `MemoryMax` 改动都要先算总账**(机器 1.6G,还有常驻 `MemoryHigh=420M/Max=600M` 与 daily 900M),**抬没抬都写理由**。哨兵 lifespan 任务重启后 idle RSS 与部署前持平。
 - **⑨-G 运维留痕**:更新 `~/hz_info.md`(VERSION v1.4.0、新表/列、概念板块日更与配额账、内存决定、①-A 生产数据纠正留痕);§九 记**一行**。
 
-**⑨ 验收(活体,逐项)**:① 公网 `GET /health` 返 `v1.4.0`;② 迁移全建成 + `integrity_check` ok + 业务零丢失 + `is_active` 仍 `v1.3.3`;③ **16:35 真实自动跑 `Result=success` 且报告真生成**(附 `systemctl show` 原文);④ 16:05 `Result=success` 且 `ths_daily` 当日有行、`dataFreshness.stale=false`;⑤ 20 只新序候选 + 信息卡端点公网可取 + exec_hint 有文字;⑥ 决策日志第⑨项真机录入往返;⑦ 老端点前向兼容不崩、无 token 401;⑧ 内存峰值实测记录在案(抬没抬 `MemoryMax` 都要写理由);⑨ `sync_code.sh` 自检绿、属主未翻。**🔴 生产部署:改前双备份、回退路径已演练可用。**
+**⑨ 验收(活体,逐项)**:① 公网 `GET /health` 返 `v1.4.0`;② 迁移全建成(含 `industry_strength_daily`)+ `integrity_check` ok + 业务零丢失 + `is_active` 仍 `v1.3.3`;③ **16:35 真实自动跑 `ExecMainStatus=0` + 时间戳是本次那一跑,且报告真生成**(附 `systemctl show` 原文;**`Result=` 会被 `reset-failed` 抹回 success,不可单独当据**);④ 16:05 同样看 `ExecMainStatus=0`,且 `ths_daily` 当日有行、**`industry_strength_daily` 当日有 ~110 行**、`dataFreshness.stale=false` **且 `industryStrengthStale=false`**;⑤ 20 只新序候选 + **信息卡端点公网可取(实测时延记录在案,此前永不返回)** + exec_hint 有文字;⑥ 决策日志第⑨项真机录入往返;⑦ 老端点前向兼容不崩、无 token 401;⑧ 内存实测按 ⑨-F 逐项记录(抬没抬 `MemoryMax` 都要写理由);⑨ `sync_code.sh` 自检绿、属主未翻。**🔴 生产部署:改前双备份、回退路径已演练可用;前置门禁(⑩ 完工 + review 做完)未过不得开跑。**
 
 ---
 
@@ -564,6 +660,7 @@ Neckline/
 - **补录买入日(①-A)**:`PositionOpenIn` 加 `buyDate:String?`(`YYYYMMDD`,缺省今天);400 新 reason `not_trading_day` / `future_buy_date`。
 - **停牌口径(①-B)**:`PositionOut` 加 `priceStale:{staleDays:Int, lastCloseDate:String, reason:String}?`;`timeExitState` 枚举**扩一值** `suspended_hold`(客户端未识别值原样透传不崩,但本版必须加文案)。
 - **板块数据新鲜度(①-C)**:`ReportOut` 加 `dataFreshness:{sectorDataDate:String?, sectorLagDays:Int, stale:Bool}`。
+- **行业强度新鲜度(⑩-F,P0-23 修复时新增)**:同一个 `dataFreshness` 再加三键 `industryStrengthDate:String?` / `industryStrengthLagDays:Int`(`-1`=完全无数据)/ `industryStrengthStale:Bool`(`lag>0` 即 true,无容忍度)。**既有 `stale` 语义不变(仍只表板块)**,两个故障不许合并成一个 bool;客户端老快照缺键 → nil 兜底不崩。
 - **排序理由(③-E)**:`IntelRankOut` 加 `industryRank:Int?` / `industryPersistDays:Int` / `yellowCardCount:Int`;`sectorFlow` 语义改"并列展示、不参与排序"(字段不变)。
 - **信息卡(④-B)**:新端点 **`GET /report/{date}/info-card/{code}`**(单只完整卡,含 60 日序列);`CandidateOut` 加 `infoCard:{...}`(**摘要位,不含 60 日序列**)。404 reason `report_not_found` / `code_not_in_report`。
 - **执行提示(⑤-A)**:`CandidateOut` 加 `execHints:[{code:String, text:String, source:String}]`。
@@ -624,9 +721,9 @@ Neckline/
 >
 > **⚑ v1.4.0 吸收标注(2026-07-28)**:被 v1.4.0 施工图吸收的条目在原地标「**→ v1.4.0 第 N 块**」,**稳定 ID 与原文一律保留不删**(施工细节以 §五 对应块为准,本节只留「这条去哪了」)。未标注的条目 = 本版不做,仍是待办。
 
-### 🔴 P0 · 影响判定正确性(P0-1/2/3 三条 → v1.4.0 第 ① 块已完工;**P0-23 是 2026-07-29 部署时新发现,当前挡着 v1.4 上云**)
+### 🔴 P0 · 影响判定正确性(P0-1/2/3 三条 → v1.4.0 第 ① 块已完工;**P0-23 = 2026-07-29 部署时新发现,挡着 v1.4 上云;修法已裁定 → 第 ⑩ 块**)
 
-- **[P0-23] 🛑 `compute_industry_strength` 扫全历史,在生产机不可完成 —— 挡住 v1.4.0 整版上云**(2026-07-29 ⑨ 部署实测,已回滚)。`report/industry_strength.py::_load_ret1d_panel(start=None)` 对 `daily` 做**全历史 `scan_parquet`**(生产 1591 分区 / **7,841,894 行**),模块 docstring 的「本地实测全历史加载廉价(<1s)」**只在开发机(Mac)成立**;生产(2 vCPU / 1.6G RAM)实测:**700M cap → OOM-kill(exit 137)**、**1400M cap → 600s 未跑完(exit 124)**。**为什么要紧**:v1.4-② 把它立成 A2/B3 判据唯一源后,三个调用点全部中招 —— ① `pipeline.py:163` 在 **16:35 报告主链**(`neckline-report.service MemoryMax=800M`,而 07-28 那份**不含**本步的报告峰值已经恰好顶满 800M)→ 上了大概率**当日无报告**;② `info_card.py:652`(新端点,实测公网/本地**永不返回**,120s 与 600s 两次都超时);③ `inquiry.py:297`(问询台)。②③ 跑在**常驻 `neckline.service` 内、与盘中哨兵同进程**,`MemoryHigh=420M` 先节流导致进程陷在回收死循环(`memory.events.high` 飙到 54 万次、`oom_kill=0`)——**表现为卡死而非崩溃**,盘中被点一次就拖累哨兵。**⚠ 抬 `MemoryMax` 不是解**(1400M 都跑不完,是算法成本不是配额),⑨-F 原文「视情抬到 1G」按此作废。**怎么修(需 planner 定,别随手挑)**:候选有 ① 给 `start` 加下界窗口——但**与「持续天数要看多远由『上次断裂』决定、人为下限会低报长 streak」的既有设计意图冲突**(§3.8 宁可多算不可少算),要先裁定这个取舍;② 把行业强度**预计算落表**(日更时算一次,报告/端点只读)——最贴合「单一事实源」且顺带解掉端点现算的性质问题;③ 只给 `info_card`/`inquiry` 两个交互路径注入报告已算好的结果(治标,不解 16:35 主链)。**修完必须在生产机上实测复验,不能只看本地。**
+- **[P0-23] 🛑 `compute_industry_strength` 扫全历史,在生产机不可完成 —— 挡住 v1.4.0 整版上云**(2026-07-29 ⑨ 部署实测,已回滚)。`report/industry_strength.py::_load_ret1d_panel(start=None)` 对 `daily` 做**全历史 `scan_parquet`**(生产 1591 分区 / **7,841,894 行**),模块 docstring 的「本地实测全历史加载廉价(<1s)」**只在开发机(Mac)成立**;生产(2 vCPU / 1.6G RAM)实测:**700M cap → OOM-kill(exit 137)**、**1400M cap → 600s 未跑完(exit 124)**。**为什么要紧**:v1.4-② 把它立成 A2/B3 判据唯一源后,三个调用点全部中招 —— ① `pipeline.py:163` 在 **16:35 报告主链**(`neckline-report.service MemoryMax=800M`,而 07-28 那份**不含**本步的报告峰值已经恰好顶满 800M)→ 上了大概率**当日无报告**;② `info_card.py:652`(新端点,实测公网/本地**永不返回**,120s 与 600s 两次都超时);③ `inquiry.py:297`(问询台)。②③ 跑在**常驻 `neckline.service` 内、与盘中哨兵同进程**,`MemoryHigh=420M` 先节流导致进程陷在回收死循环(`memory.events.high` 飙到 54 万次、`oom_kill=0`)——**表现为卡死而非崩溃**,盘中被点一次就拖累哨兵。**⚠ 抬 `MemoryMax` 不是解**(1400M 都跑不完,是算法成本不是配额),⑨-F 原文「视情抬到 1G」按此作废。**✅ 修法已裁定(用户 2026-07-29)= 方案②「预计算落表」→ 施工图 §五 v1.4-⑩**(🔴 @builder-pro,**⑨ 重跑的硬前置**):新 SQLite 表 `industry_strength_daily`(110 行/日,含未达标行业),16:05 日更增量算一天(**只读当日一个分区**),`persist_days` 用「上一评定日 streak + 今日强度日标记」递推 → **不需要任何人为窗口**;三个在线调用点 + ④ 信息卡 60 日中位数序列全部改**只读表**,缺行走保险丝(降级方向 = 不拦 + 显式披露)。~~① 给 `start` 加下界窗口~~ **否决**(与「持续天数看多远由上次断裂决定」的设计意图冲突,会低报长 streak,§3.8 宁可多算不可少算);~~③ 只给 `info_card`/`inquiry` 注入报告已算好的结果~~ **否决**(治标,16:35 主链照旧中招)。**修完必须在生产机上实测复验**(⑩-G,含新立的「探针只许收盘后跑」纪律),**且 review 前移到上云之前**(§五 前提第 4 条)。
 - **[P0-1] 补录持仓无法指定真实买入日**。`api/app.py::open_position`(~703 行)写死 `buy_date=date.today()`、`PositionOpenIn`(`api/schemas.py:304`)无买入日字段 → 用户 2026-07-27 补录的 **3 笔历史持仓买入日全被盖成当天**。**为什么要紧**:D 计数、时间退出 D5/D15 判向、回落止盈峰值追踪起点、周复盘持有天数、按打法归因的持有周期,**全部起点错**。**怎么修**:① `PositionOpenIn` 加可选 `buyDate`(`YYYYMMDD`,缺省今天,校验不晚于今天);② `app.py` 透传 —— **领域层 `sentinel/positions.py::open_position` 与 CLI `scripts/positions.py add` 本来就收 `buy_date`,缺口只在 HTTP 契约 + 客户端**,改动面很小;③ 客户端补录 sheet 加日期选择器(默认今天);④ **纠正已落库的 3 笔**:需用户提供真实买入日,改前 `sqlite3 .backup`,改后复查 `holding_eod_check` 是否已按错误 D 定格(`time_exit_locked_*` 三列有值就要清掉重算)。~~归 v1.3.6~~ → **v1.4.0 第 ① 块(①-A)**,🔴 高危区:碰持仓判定。⚠ 纠正 3 笔**需用户先提供真实买入日**(§八 第 11 项)。**✅ 2026-07-28 完工**:契约 `buyDate` + 两个 400 reason(`not_trading_day`/`future_buy_date`)+ 客户端 mapReason 两 case 已落;生产 3 笔已按用户提供的真实买入日纠正(`scripts/oneoff/fix_position_buy_dates.py`)。**客户端日期选择器 UI 归第 ⑧ 块,代码上云归第 ⑨ 块。**
 - **[P0-2] `002036.SZ`(联创电子)自 2026-07-23 起无行情分区**,而 `stock_basic.list_status` 仍 `L`;用户自述该票「正筹划股权转让」。**为什么要紧**:该持仓无法定价 → 持仓卡市值/浮盈、K4 每日体检、D5 判向拿不到收盘价;`resolve_time_exit` 无定格时**按设计保守返回「明日时间退出」**,可能催用户去卖一只停牌根本卖不掉的票。**怎么修**:① 先核实是停牌还是数据源缺口(查 TuShare `suspend_d` / 直接看该票近 5 日 `daily` 行);② 定**停牌票在持仓链路的显示口径**(建议:沿用最后有效收盘价 + 明示「停牌 N 日,价格为最后成交价」,时间退出判向挂起且不推送,绝不静默按老价当今日价);③ 口径写进 §2.1 或本节。~~归 v1.3.6 + v1.4~~ → **v1.4.0 第 ① 块(①-B)**,诊断与口径一起落(口径已在 §五 定死,诊断只决定 `reason` 标签取值)。**✅ 2026-07-28 完工**。**诊断结论(真 token 实证,勿再查)**:① `suspend_d` 在 600 元档**可用**;② `002036.SZ` 自 **20260723 起连续在停牌名单**(`suspend_type=S`)= **真停牌,不是数据源缺口**,与用户「筹划股权转让」自述一致;③ 20260728 全市场同类 **9 只**(`002828.SZ`/`300242.SZ`/`300615.SZ`/`300862.SZ`/`300955.SZ`/`300996.SZ`/`688277.SH`/`920685.BJ`)= **普遍现象非个案**。口径落地:`PositionOut.priceStale` 三字段 + 第五态 `suspended_hold` + K4 体检 `dataUnavailable` + §2.1 第 2 条附注。
 - **[P0-3] 概念板块表压根没有日更路径 → 「当日暴起板块」那一路候选长期失效**(不是一天的偶发)。`ths_daily`/`ths_member`/`ths_index` 只有**一次性 backfill**(`scripts/backfill_concept.py`,`END="20260722"` 硬编码 + 「已存在则跳过」),而 16:05 的 `scripts/daily_update.py` 只跑 `backfill.DAY_TABLES=[daily, daily_basic, adj_factor, moneyflow_dc]`(+`index_daily`/`limit_derived`),**概念板块表不在日更清单里**;本地实测 `ths_daily` 最大 `trade_date=2026-07-22`。**为什么要紧**:`report/sectors.py::compute_sector_strength` 当日无行 → **返回空列表且不报错**(优雅降级),于是 `intel_candidates` 第①步的「当日暴起 top-N」整路为空(07-27 那 20 只全来自五常驻 + 竞争位)、题材持续天数(`board_age`)也拿不到 → 情报排序少一维;五常驻板块因走 `ths_index` 名字静态解析,反而看不出坏了。**怎么修**:① 给日更加概念板块增量(`ths_daily` 按日追加;`ths_member` 低频重拉,~400+ 指数各一次调用,配额消耗要与 P4-20 一起算账);② **至少先加「板块数据过期 > N 天」的显式告警**,别让它继续静默降级。~~归 v1.3.6 + v1.4~~ → **v1.4.0 第 ① 块(①-C)**,日更管线 + 过期告警一起做。**它是需求 8 板块维度的硬前置**;新增配额消耗与 P4-20 一起算账、部署块 ⑨-E 复核。**✅ 2026-07-28 完工**:`ths_daily` **一次调用取全板块**(实测 `trade_date=` 可用,不必按 code 拉 400 次)、尾窗 5 交易日重拉自愈、按 `ths_index` 过滤成概念板块;`ths_index`/`ths_member` 周更带 `.bak` 且失败不覆盖;`SECTOR_DATA_STALE_MAX_LAG_DAYS=2` + `ReportOut.dataFreshness` + 报告顶部告警 + 最强题材小节标不可信。**新增配额 = `ths_daily` 5 次/日 + `suspend_d` 1 次/日 + `ths_index`&`ths_member` ~400 次/周**(⑨-E 复核)。
@@ -641,8 +738,8 @@ Neckline/
 
 ### 🟠 P2 · 审计欠账(最该补的一块)
 
-- **[P2-9] 三路独立审计只完成一路**。已完成:**纪律与金额**(2026-07-27,报告 `archive/REVIEW_REPORT_v1.3_章程金额审计_20260727.md`,抓到 4 条主缺陷 🔴-1/🟡-2/🟡-3/🟡-4 + 5 条小修,全部已修并随 v1.3.1 上云)。**未做的两路**:① **情报官 / 候选管线** —— K4 安检实现与 DB `k4_advisory` 六节**逐条对拍**(`hard_cut` 真拦、`avoid_flag` 只打标)、四处「诚实字段」是否真透到客户端(`newsAlertsScan.codesSkipped/codesFailed`、搜索 0 命中脚注、板块资金流 `unavailableReason`、行业闸被挡票的审计留痕);② **契约 / 客户端 / 迁移三方对拍** —— `api/schemas.py` 声明 → `app.py` 转发 → Swift 解码 **逐字段走一遍**,该版**已两次出现「领域层算了、序列化层漏了」的漏字段**,这是复发型缺陷。→ **v1.4.0 施工完成后**由用户召唤 reviewer 一并做掉(用户 2026-07-28 定 **review 后置**,plan 里不排 review 施工块)。⚠ v1.4 的 **②-C / ③-G 两份对拍报告**是这次审计的现成输入。
-- **[P2-10] 已发布版本未 review**:`v1.3.1`(审计修复 + 行业闸 lift + 首次带迁移的部署)/ `v1.3.3`(拆墙 + 问询台改自由分析师 + `ts_code` 归一 + **章程二次激活** + **切换器闸 2 窄豁免**)/ `v1.3.4`(provider 层 `search_query`,四处 LLM 调用共用)/ `v1.3.5`(**生产数据迁移:902 个 parquet 分区 cast** + canonical schema 声明 + 候选管线保险丝)。含高危面:**生产数据迁移、给护栏开的豁免口子、章程两次激活、共用 provider 层改动**。⚠ **`v1.3.2` 在 §四/§九/git log 里都没有记录 = 跳号,不是漏记**,别去找。→ **与 P2-9 同批**,v1.4.0 施工完成后由用户召唤 reviewer(review 后置,已拍板)。
+- **[P2-9] 三路独立审计只完成一路**。已完成:**纪律与金额**(2026-07-27,报告 `archive/REVIEW_REPORT_v1.3_章程金额审计_20260727.md`,抓到 4 条主缺陷 🔴-1/🟡-2/🟡-3/🟡-4 + 5 条小修,全部已修并随 v1.3.1 上云)。**未做的两路**:① **情报官 / 候选管线** —— K4 安检实现与 DB `k4_advisory` 六节**逐条对拍**(`hard_cut` 真拦、`avoid_flag` 只打标)、四处「诚实字段」是否真透到客户端(`newsAlertsScan.codesSkipped/codesFailed`、搜索 0 命中脚注、板块资金流 `unavailableReason`、行业闸被挡票的审计留痕);② **契约 / 客户端 / 迁移三方对拍** —— `api/schemas.py` 声明 → `app.py` 转发 → Swift 解码 **逐字段走一遍**,该版**已两次出现「领域层算了、序列化层漏了」的漏字段**,这是复发型缺陷。→ **改判(用户 2026-07-29)**:~~v1.4.0 施工完成后 / 上云后~~ → **在 v1.4-⑩(P0-23 修复)完工、⑩-G 生产实测判据全绿之后,重新上云(⑨)之前**由用户召唤 reviewer 一并做掉(plan 里仍不排 review 施工块)。⚠ v1.4 的 **②-C / ③-G 两份对拍报告**是这次审计的现成输入。
+- **[P2-10] 已发布版本未 review**:`v1.3.1`(审计修复 + 行业闸 lift + 首次带迁移的部署)/ `v1.3.3`(拆墙 + 问询台改自由分析师 + `ts_code` 归一 + **章程二次激活** + **切换器闸 2 窄豁免**)/ `v1.3.4`(provider 层 `search_query`,四处 LLM 调用共用)/ `v1.3.5`(**生产数据迁移:902 个 parquet 分区 cast** + canonical schema 声明 + 候选管线保险丝)。含高危面:**生产数据迁移、给护栏开的豁免口子、章程两次激活、共用 provider 层改动**。⚠ **`v1.3.2` 在 §四/§九/git log 里都没有记录 = 跳号,不是漏记**,别去找。→ **与 P2-9 同批**,时机同上(**⑩ 完工 → review → ⑨ 上云**,用户 2026-07-29 改判,原「上云后」作废);本轮 review 范围另含 **⑥-A 逐笔章程** 与 **⑩ P0-23 修复**。
 
 ### 🔵 P3 · 功能挂账
 
@@ -654,7 +751,7 @@ Neckline/
 
 ### ⚪ P4 · 运维 / 历史局限(留档为主)
 
-- **[P4-16] `neckline-report.service` 的 `MemoryMax=800M` 对 v1.3 新管线偏紧**(`deploy/neckline-report.service:23`)。2026-07-27 补跑时峰值顶满、5206 次页缓存回收,**`oom_kill=0`** —— 撞的是页缓存不是真内存,没崩。**怎么修**:v1.4 部署时视情抬到 1G,抬之前先算总账(机器仅 1.6G,还有常驻 `neckline.service` 的 `MemoryHigh=420M/Max=600M` 与 `neckline-daily` 的 900M)。→ **v1.4.0 第 ⑨ 块(⑨-F)** 实测峰值后定(⑥-B 若选并发路会抬峰值);抬没抬都要写理由。
+- **[P4-16] `neckline-report.service` 的 `MemoryMax=800M` 对 v1.3 新管线偏紧**(`deploy/neckline-report.service:23`)。2026-07-27 补跑时峰值顶满、5206 次页缓存回收,**`oom_kill=0`** —— 撞的是页缓存不是真内存,没崩。**怎么修**:~~v1.4 部署时视情抬到 1G~~ **2026-07-29 改判**:P0-23 证明抬内存不解算法成本(1400M 都跑不完),⑩ 已把全历史扫描从在线路径移除 → **⑨-F 改为纯实测记账**(判据:报告峰值不高于 07-28 基线 838,860,800、`oom_kill=0`),任何 `MemoryMax` 改动先算总账(机器仅 1.6G,还有常驻 `MemoryHigh=420M/Max=600M` 与 `neckline-daily` 900M);抬没抬都要写理由。
 - **[P4-17] 历史局限:早期审判的消息面无搜索支撑(不补跑,如实留档)**。生产 `llm_judgments` **20260721/22/23 三天 10/10 空命中** → 那 **25 条非降级审判结论的消息面部分实质是模型凭训练数据作答**;20260717/0720 为 10/10 `degraded`(当时无 key);20260721 另有 5 条因 25s ReadTimeout 降级。**20260724 起命中恢复满额,自那天起的审判才算有搜索支撑**——事后审计「当时为何否决」必须先看这条时间线。**并入原「GLM 顶层 `web_search` 空数组待查」**:真因仍未完全解释(逐字节相同的 payload 两天行为相反 = 供应商侧漂移),v1.3.4 的 0 命中埋点 + 四处露出已上线,可持续观察,不主动追。
 - **[P4-18] Bark 通道从未活体验证**(payload 依官方文档实现,无真实 `BARK_URL`)。APNs 为主推通道,**不阻塞**;真要用,先手动跑一次 `BarkChannel(url).send(...)` 验协议。
 - **[P4-19] 周复盘从未跑过用户真实券商交割单**。4D 对账引擎只用合成 xlsx 冒烟过;**2026-08-02 那个周末是第一次**,可能暴露两家券商原始格式的解析问题(`review_col_map` 可配映射 + `_detect_format` 的坑见项目 `CLAUDE.md` 阶段 4D 节)。首跑时留意「缺列 vs 缺该格」的区分是否真生效。
@@ -702,7 +799,7 @@ Neckline/
 9. **(v1.1,按需)提供同花顺自选 txt**:自选池与同花顺 PC 端对账 = 用户在**同花顺 PC 端手动导出自选 txt 文件**(无官方 API,拒绝模拟登录 = 账号风险)→ 拖进 macOS App 自选工作台做差异对账 + 一键对齐;反向可从 App 导出 Neckline 自选为同花顺可导入 txt。**非每日必办,按需对账时才做**(§五 v1.1-C.4 / v1.1-F.4)。
 10. **(v1.1)设置屏开新增两类推送开关**:盘前校准(9:26 汇总)、D5 时间退出——App 设置屏可各自开 / 关(默认开),无网页操作。
 11. **🔴(v1.4.0,挡 ①-A 收尾)提供 3 笔在持仓票的真实买入日**。生产 `positions` 里 3 笔 `open` 持仓是 2026-07-27 补录的,买入日**被写成了补录当天**(§七 P0-1)。请按票给出**真实成交日期**(格式 `YYYYMMDD`,须是交易日),例:`002036.SZ = 20260716`。**为什么非你不可**:系统没有任何数据能反推真实买入日(交割单要到周复盘才进系统),而 D 计数 / 时间退出 D5-D15 判向 / 回落止盈峰值起点 / 持有天数归因**全部以它为起点**。收到后由 builder 走 `scripts/oneoff/fix_position_buy_dates.py`(先 `sqlite3 .backup`,改完清 `holding_eod_check.time_exit_locked_*` 三列让次日 16:35 重新定格)。**无网页操作,发数字即可。**
-12. **🛑(v1.4.0,2026-07-29 更新:暂时**别**装)iOS / macOS 新构建装机**。**先决条件未满足**:v1.4.0 服务端 ⑨ 部署撞 §七 **P0-23** 已回滚,生产现为 `v1.4.0-p1`。此时装 v1.4 新构建会**可见地坏** —— 候选卡「信息卡」按钮打 404、问询台「历史」页 404、决策日志第⑨项 `maxChasePct` 被 p1 服务端静默丢弃(客户端强制你填、服务端不存)。**故 macOS 维持 2026-07-27 那版不换包,iPhone 也先别装**。P0-23 修好 + 服务端真正上到 v1.4.0 后,再一次性双端换包。(原文备查:⚠ 2026-07-28 用户更正 iOS 早已装机,~~从未装过 v1.3 系列构建~~ 作废;**真机具体版本仍待用户自查**,builder 只有模拟器权限。)⚠ **2026-07-28 用户更正:iOS 早已装机**,~~从未装过 v1.3 系列构建~~ 作废;**具体版本仍待用户在自己真机上核实**(builder 只有模拟器权限、无法代查真机装了哪个构建,核实前不要凭此条推断 iPhone 上哪些能力可用)。v1.4.0 的信息卡页、候选排序理由、决策日志第⑨项、以及 ①-B 的停牌标注,⑧ 块已在模拟器验证渲染正确,但仍只在**装了 v1.4 新构建**的设备上可见 → 第 ⑨ 块出包后需再装一次。**Xcode 直连真机安装,无网页操作**;§八 第 5 项的 App ID + Push 能力若尚未在 Apple Developer 网页勾选,装机前先办掉。
+12. **🛑(v1.4.0,2026-07-29 更新:暂时**别**装)iOS / macOS 新构建装机**。**先决条件未满足**:v1.4.0 服务端 ⑨ 部署撞 §七 **P0-23** 已回滚,生产现为 `v1.4.0-p1`。此时装 v1.4 新构建会**可见地坏** —— 候选卡「信息卡」按钮打 404、问询台「历史」页 404、决策日志第⑨项 `maxChasePct` 被 p1 服务端静默丢弃(客户端强制你填、服务端不存)。**故 macOS 维持 2026-07-27 那版不换包,iPhone 也先别装**。**换包时机 = 工序链最后一环**:⑩ 修复 → 生产实测 → review(上云前审)→ ⑨ 重跑上云 → **服务端 `/health` 真返 `v1.4.0` 之后**,再一次性双端换包。(原文备查:⚠ 2026-07-28 用户更正 iOS 早已装机,~~从未装过 v1.3 系列构建~~ 作废;**真机具体版本仍待用户自查**,builder 只有模拟器权限。)⚠ **2026-07-28 用户更正:iOS 早已装机**,~~从未装过 v1.3 系列构建~~ 作废;**具体版本仍待用户在自己真机上核实**(builder 只有模拟器权限、无法代查真机装了哪个构建,核实前不要凭此条推断 iPhone 上哪些能力可用)。v1.4.0 的信息卡页、候选排序理由、决策日志第⑨项、以及 ①-B 的停牌标注,⑧ 块已在模拟器验证渲染正确,但仍只在**装了 v1.4 新构建**的设备上可见 → 第 ⑨ 块出包后需再装一次。**Xcode 直连真机安装,无网页操作**;§八 第 5 项的 App ID + Push 能力若尚未在 Apple Developer 网页勾选,装机前先办掉。
 
 ---
 
@@ -710,6 +807,7 @@ Neckline/
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-07-29 · **P0-23 修法裁定 + review 时机改判,立第 ⑩ 块**(@planner,只改文档,零代码改动):用户拍板 ① P0-23 走**方案②「行业强度预计算落表」**(方案① 加窗口 / 方案③ 只修两个交互路径均否决)→ §五 新增 **v1.4-⑩**(🔴,七小节:SQLite 新表 `industry_strength_daily` 全规格 DDL / 计算侧拆三件保单一源 + 三路等价守门单测 / 16:05 日更增量只读当日一个分区 + 补跑自动向后延 / bootstrap 定案「生产旁路目录分块两遍法」带五条验证判据与退路 / 四处调用点改读表 + 四态保险丝语义 / `dataFreshness` 三新键与客户端小增量 / 生产隔离实测五条证据);② **review 前移到「修完 P0-23、重新上云前」**(原「上云后 review」作废),范围 = ⑥-A + ⑩ + P2-9 + P2-10。同步:§四 快照替换(新工序链 ⑩→实测→review→⑨ 重跑 + ⑨ 增量清单更新)、§七 P0-23 标已裁定 / P2-9 / P2-10 / P4-16 改时机、⑨-A/B/F 与验收改判、§八 第 12 项换包时机、CLAUDE.md 新增「生产机性能探针纪律」(15:00 后 · 避开 16:00–17:00 · `systemd-run --scope` 隔离串行 · load>4 停手)
 - 2026-07-29 · 🛑 **v1.4.0 第 ⑨ 块完整部署:尝试 → 撞硬阻塞 → 按预案回滚**(@builder-pro + 用户「现在部署」授权,🔴 高危区,**已回滚,生产仍 `v1.4.0-p1`**)。做成并保留:本地 `VERSION`→v1.4.0 + 全量 1647 过 + 2 skip;生产库 `.backup` + `cp -p` **双备份**(`neckline.db.{bak,cpbak}-v140-20260729-092734`,备份内 `integrity=ok` + 业务行数对得上);**两处增量幂等迁移**(`decision_log.max_chase_pct` REAL + `inquiry_log` 表 + 2 索引)—— 迁移后 `integrity=ok` / 10 张业务表行数与迁移前**逐表一致** / `is_active` 仍 `v1.3.3` 且 `activated_at` 未变,**回滚时刻意保留**(向前兼容,p1 按 `_SELECT_COLS` 具名取列,已验 `GET /decisions` 200);**`ths_daily` 宽窗补拉 0720~0728 共 7 个交易日**(生产原 max=**2026-07-17**,缺口比原估的 3 天大;走 ①-C 既有 `update_ths_daily`,概念过滤生效 = **392 行/日**而非不过滤的 ~2499,dtype 合声明,补拉前 `cp -p` 备份 parquet,配额 8 次)。撞上的阻塞 → **§七 P0-23**:`compute_industry_strength` 扫全历史 784 万行,生产机 700M cap OOM-kill / 1400M cap 600s 跑不完(开发机 <1s),`GET .../info-card/{code}` 实测**永不返回**且把常驻服务(与盘中哨兵同进程)拖进内存回收死循环;**16:35 报告主链也吃这一步**,上了大概率当日无报告 → 判定硬阻塞,rsync 回 `fc55e2e` + 重启,`/health`=`v1.4.0-p1`、②~⑧ 端点 404、①-B 停牌口径无回归、`integrity=ok`。**刻意没做**:`MemoryMax` 未改(新证据表明抬内存不是解,且 v1.4 已回滚无消费方)、macOS/iOS **未换包**(v1.4 客户端配 p1 服务端会可见地坏:信息卡 404 / 问询历史 404 / `maxChasePct` 静默丢弃)。⚠ **过程中两次自伤已记取**:`pkill -f probe_industry` 匹配到自己的 SSH 命令行把会话杀了;探针把 2 vCPU 箱负载推到 65(已全部清理,`load 0.42` / 无残留进程 / failed scope 已 `reset-failed`)。今日 16:05 与 16:35 的 `ExecMainStatus` 待主会话验(跑的是 p1 = 与昨天同一份代码)
 - 2026-07-29 · v1.4-⑧ 客户端跟进完工(@builder,纯本地,零生产访问/零部署):七项契约(①③④⑤⑥⑦)全部接线——①补录持仓日期选择器+停牌/`suspended_hold`/`dataFreshness` 展示;③排序理由三级 chips(`industryRank` nil≠0)+`sectorFlow`「并列参考」改文案;④新 `InfoCardPageView`(Swift Charts 三图:K线蜡烛+MA20/MA250+成交量、RS线、行业分歧线,均如实缺省不画空图)+ 快照/红黄牌/温和带/消息面/龙虎榜/市场语境;⑤执行提示展示 + 决策日志⑨项 `maxChasePct` 二选一强制(`APIClient` 请求体改手写 `encode(to:)` 令该键永远出现,nil→JSON null,与项目内其余「nil→省略键」字段刻意不同);⑥定格日晚点标注 + 周复盘 `CharterVersionCard`(`ReviewWeeklyResult` 因 `reviews.result_json` 写入时冻住历史快照而补手写容错解码)+ 消息面 `rotationGroup`/`codesRotationDeferred` 独立展示(顺带补齐客户端此前漏解码的 `codesNoSearch`);⑦决策卡新增挂单追踪走势(Swift Charts 折线)+ 问询历史列表/详情页。语义红线落地(候选区头部文案 + 全仓「推荐买入/建议买入/看好/值得买/推荐买点」grep 零命中)。`mapReason` 新增 3 case:`reportNotFound`/`codeNotInReport`/`maxChaseRequired`(`decisions/track`、`inquiries/{id}` 两处 404 复用既有 `notFound`,未新增,同 plan 字面)。⑤「候选专属信息卡入口」假设已核对成立(全仓唯一入口 = 候选卡按钮,恒持有 `Candidate` 对象,未给 `InfoCardOut` 加字段)。`pbxproj` 随本块一并提交(P4-21 结案,唯一被授权本块)。双端 `xcodebuild build` SUCCEEDED;iOS Simulator `xcodebuild test` 165 跑 152 过 13 skip 0 failure(基线 139,新增 26 测试;`httpBodyOrStream()` 由 `private` 放宽 `internal` 供跨测试文件复用同一 helper);Python 全量 1647+2 不变(本块零服务端改动)。视觉核对:本地隔离库(ATTACH 真实参考表+真实 parquet)出真报告 + 真持仓,`xcrun simctl` 截图拿到停牌持仓卡完整证据;候选卡/信息卡因 iPhone 视口纵向溢出且本环境无可用触屏注入(`Claude_Code_iOS_Simulator__control` 缺 Xcode-select 配置报错、通用 computer-use 同样点不动 Simulator),改用临时 iPad Pro 13" 模拟器(更大点尺寸)拍到候选卡排序理由+执行提示+信息卡入口完整证据,并新增 `NECKLINE_INITIAL_INFOCARD_CODE` QA 钩子(同 `NECKLINE_INITIAL_TAB` 先例)拍到信息卡 K线/RS线真实渲染;决策日志⑨项因表单靠后位置同一滚动限制未能截图,改由 6 个专项单测兜底覆盖,详见 §四
 

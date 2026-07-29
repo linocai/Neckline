@@ -155,6 +155,11 @@
   跑隔离进程,别拿常驻服务当小白鼠);② 别用「抬 `MemoryMax`」糊算法成本问题(1400M 都不够);
   ③ **重活别放常驻 `neckline.service`**——它与盘中哨兵同进程,`MemoryHigh` 先节流会让进程陷进回收
   死循环(`memory.events.high` 飙升、`oom_kill=0`)= **卡死不报错**,盘中点一次就拖累哨兵。
+- **生产机性能探针纪律**(2026-07-29 立规,2 vCPU/1.6G 箱经不起折腾):探针/压测**只在收盘后
+  15:00 之后跑,且避开 16:00–17:00**(16:05 日更 + 16:35 报告窗口);一律
+  `systemd-run --scope -p MemoryMax=… -p CPUQuota=…` 隔离单进程、**串行**,别并行开多个、
+  更别拿常驻 `neckline.service` 当小白鼠;跑完 `pgrep -af` 确认无残留 + `reset-failed` + 看 load 回落。
+  **判据:`load > 4` 立即停手**(07-29 探针在**交易时段**把 load 推到 65)。
 - **在远端 `pkill -f <pattern>` 前先确认 pattern 不匹配自己**:`pkill -f probe_industry` 会匹配到
   正在跑它的那条 `bash -c` 命令行,自杀式掐断 SSH 会话(exit 255,2026-07-29 真踩)。用
   `pgrep -af` 先看命中集,或按 PID 杀。
