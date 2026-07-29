@@ -89,6 +89,12 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     fresh = industry_strength_status(days[-1])
     logger.info("表内最新至 %s(相对 %s 落后 %d 个交易日)",
                 fresh.latest_label(), days[-1].strftime("%Y%m%d"), fresh.lag_days)
+    # v1.4 review 🟡-2:补完仍有断口 → **exit 1**(store 侧已打 ERROR 带补算命令)。
+    # 「跑过了」不等于「补齐了」:静默 exit 0 会让 systemd 的 Result=success 骗人。
+    if stats.get("holes"):
+        logger.error("补算后仍有 %d 个交易日断口 —— 退出码 1(明细见上一条 ERROR)。",
+                     len(stats["holes"]))
+        return 1
     return 0
 
 

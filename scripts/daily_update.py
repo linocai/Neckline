@@ -136,6 +136,16 @@ def update_industry_strength(target: date) -> None:
                 "今日报告的题材持续天数与 A2/B3 将走保险丝降级。补算:%s",
                 target, stats["missing"], refresh_command_hint(target, target),
             )
+        elif stats.get("holes"):
+            # v1.4 review 🟡-2:落了行 ≠ 数是对的 —— 表里还留着断口时 streak 是桥过缺口
+            # 算出来的。**这一条不许被上面那句 INFO 的绿意盖过去**,故单开 ERROR 分支。
+            logger.error(
+                "[industry_strength] %s 落 %d 行,但表内仍有 %d 个交易日**断口**(%s)——"
+                "题材持续天数可能桥过缺口失真(A2/B3 与排序行业维度受影响)。"
+                "先补齐那几天的 daily 分区再跑:%s",
+                target, stats["rows"], len(stats["holes"]), ",".join(stats["holes"][:10]),
+                refresh_command_hint(),
+            )
         else:
             logger.info("[industry_strength] %s 落 %d 行(表内最新至 %s,落后 %d 个交易日)",
                         target, stats["rows"], fresh.latest_label(), fresh.lag_days)

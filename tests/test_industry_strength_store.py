@@ -84,9 +84,11 @@ def _seed_two_industries(env, n_days: int = 12, start: date = date(2024, 1, 2)) 
     交替出现(streak 有断有续),这样「持续天数」这一维才真的被测到,不是全 0 或全递增。"""
     dates = business_days(start, n_days)
     insert_trade_cal(env, dates)
-    # 剧本刻意让**每天各行业中位数互不相等**(day 0 也给真实 `pre_close`,不留 ret≡0 的
-    # 退化开局)—— 否则 `rank(method="ordinal")` 在并列时由行编码顺序任意打散,三路等价
-    # 断言会被这个**与判据无关**的任意性打挂(模块 docstring 已声明并列由行序打散)。
+    # 剧本让**每天各行业中位数互不相等**(day 0 也给真实 `pre_close`,不留 ret≡0 的退化
+    # 开局)。⚠ **这不再是三路等价断言的前提**(review 🟢-8 陈旧注释修正,2026-07-29):
+    # 并列早已由 `_day_local_table` 的确定性 tie-break 定序(先 `median_ret` 降序、再
+    # `industry` 升序,专测 `test_rank_tie_break_is_deterministic_regardless_of_row_order`),
+    # 三路无论并不并列都一致。保留互不相等只是让剧本读起来一眼看清谁强谁弱。
     scripts = {
         "甲行业": [0.03 if (i % 3 == 0 and i < n_days - 6) else 0.001 for i in range(n_days)],
         "乙行业": [0.02 if i >= n_days - 6 else 0.002 for i in range(n_days)],    # 末 6 日连续强
@@ -104,7 +106,7 @@ def _seed_two_industries(env, n_days: int = 12, start: date = date(2024, 1, 2)) 
     for i in range(1, n_days):
         for c, ind in codes:
             closes[c].append(closes[c][-1] * (1 + scripts[ind][i]))
-    # 每个行业的 day-0 剧本收益必须互不相同,day 0 的中位数才不会并列(见上方注释)。
+    # day-0 各行业剧本收益互不相同(剧本可读性,不是等价断言的前提 —— 见上方注释)。
     assert len(set(scripts[i][0] for i in scripts)) == len(scripts)
     for i, d in enumerate(dates):
         rows = []
@@ -257,6 +259,92 @@ def test_refresh_backfilling_history_extends_forward_to_table_max(isolated_env, 
     assert "顺带重算至" in caplog.text
     after = [{k: v for k, v in r.items() if k != "computed_at"} for r in _table_rows(isolated_env.db_path)]
     assert after == baseline
+
+
+# ————————————————————————————————————————————————————————————————
+# ③b 向前补洞(v1.4 review 🟡-2):日更失败过一天以上 → 表 max 与目标日之间有缺口。
+#     不补的话 `_prev_persist` 拿洞前那天当"昨天",streak **桥过缺口**(错数),而
+#     `MAX(trade_date)` 照样是今天 → 新鲜度全绿 = 未披露的错数。
+# ————————————————————————————————————————————————————————————————
+
+def test_resolve_targets_fills_the_gap_forward(isolated_env):
+    """判定线审计的原始探针:`_resolve_targets([0709], tbl_max=0704)` 从前只返回 `[0709]`
+    (0707/0708 两个交易日的洞不进处理区间),现在必须把洞并进来。"""
+    dates = business_days(date(2024, 1, 2), 8)
+    insert_trade_cal(isolated_env, dates)
+    got = store._resolve_targets([dates[5]], dates[2].strftime("%Y%m%d"))
+    assert got == dates[3:6]                                    # 洞(3,4)+ 目标(5)
+    # 反向(补历史)与无缺口两种既有形状不受影响
+    assert store._resolve_targets([dates[5]], dates[4].strftime("%Y%m%d")) == [dates[5]]
+    assert store._resolve_targets([dates[2]], dates[4].strftime("%Y%m%d")) == dates[2:5]
+
+
+def test_refresh_fills_hole_and_streak_is_not_bridged(isolated_env, caplog):
+    """**命门**:表停在 dates[5]、只请求补 dates[8] → 自动把 dates[6..7] 一起算。
+    判据不是"补了几天",而是**整表与一次干净全量刷新逐位相同** —— streak 一旦桥过缺口,
+    末段 `persist_days` 会整体偏小,这个逐位断言先炸。"""
+    dates = _seed_two_industries(isolated_env, n_days=10)
+    store.refresh_industry_strength(dates, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    baseline = [{k: v for k, v in r.items() if k != "computed_at"} for r in _table_rows(isolated_env.db_path)]
+
+    conn = sqlite3.connect(str(isolated_env.db_path))           # 造洞:抹掉 6..9 的行,表停在 5
+    try:
+        conn.execute(f"DELETE FROM {store.TABLE} WHERE trade_date>=?", (dates[6].strftime("%Y%m%d"),))
+        conn.commit()
+    finally:
+        conn.close()
+
+    with caplog.at_level(logging.INFO, logger="neckline.report.industry_strength_store"):
+        stats = store.refresh_industry_strength(
+            [dates[8]], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path
+        )
+    assert stats["days"] == 3 and stats["holes"] == []           # 6、7、8 三天都算了,补完无洞
+    assert "缺口" in caplog.text
+    got_rows = [{k: v for k, v in r.items() if k != "computed_at"} for r in _table_rows(isolated_env.db_path)]
+    cutoff = dates[8].strftime("%Y%m%d")
+    assert {r["trade_date"] for r in got_rows} >= {d.strftime("%Y%m%d") for d in dates[6:9]}
+    assert got_rows == [r for r in baseline if r["trade_date"] <= cutoff]
+
+
+def test_unfillable_hole_is_loud_and_not_reported_fresh(isolated_env, caplog):
+    """**补不了就响亮失败**:洞那几天连 `daily` 分区都没有(补不动)→ ① `refresh` 返回
+    `holes` 且打 ERROR 带补算命令;② **新鲜度不许报绿** —— `MAX(trade_date)` 是最新日、
+    `lag_days == 0`,但 `industryStrengthStale` 必须是 `True`(错数不得冒充新鲜)。"""
+    from neckline.data.market_data import day_file_path
+
+    dates = _seed_two_industries(isolated_env, n_days=10)
+    store.refresh_industry_strength(
+        dates[:6], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    for d in (dates[6], dates[7]):                              # 分区消失 = 补不动
+        day_file_path("daily", d, isolated_env.parquet_dir).unlink()
+
+    with caplog.at_level(logging.ERROR, logger="neckline.report.industry_strength_store"):
+        stats = store.refresh_industry_strength(
+            [dates[8]], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path
+        )
+    assert stats["holes"] == [dates[6].strftime("%Y%m%d"), dates[7].strftime("%Y%m%d")]
+    assert "断口" in caplog.text and "scripts/industry_strength.py refresh" in caplog.text
+
+    fresh = store.industry_strength_status(dates[8], db_path=isolated_env.db_path)
+    assert fresh.lag_days == 0 and fresh.hole_days == 2
+    assert fresh.stale is True, "有断口却报绿 = 拿错数冒充新鲜(review 🟡-2)"
+    assert fresh.to_public_dict()["industryStrengthStale"] is True
+    assert "断口" in fresh.note()
+    # 契约不变:仍是三键,不因本修复多长出一个键(客户端已按三键解码)
+    assert set(fresh.to_public_dict()) == {
+        "industryStrengthDate", "industryStrengthLagDays", "industryStrengthStale"}
+
+
+def test_table_tail_and_head_boundaries_are_not_holes(isolated_env):
+    """**不许把边界当断口**(否则天天假警报):表尾还没落的今天 → 由 `lag_days` 如实披露;
+    表头之前的远古 → 由保险丝披露。两者都不是「两头有数据、中间断一截」。"""
+    dates = _seed_two_industries(isolated_env, n_days=8)
+    store.refresh_industry_strength(
+        dates[:5], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    fresh = store.industry_strength_status(dates[7], db_path=isolated_env.db_path)
+    assert fresh.hole_days == 0 and fresh.lag_days == 3 and fresh.stale is True   # 落后,不是断口
+    early = store.industry_strength_status(dates[0], db_path=isolated_env.db_path)
+    assert early.hole_days == 0 and early.stale is False
 
 
 # ————————————————————————————————————————————————————————————————

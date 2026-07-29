@@ -82,6 +82,39 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _days_present(conn: sqlite3.Connection, lo: date, hi: date) -> set:
+    """`[lo, hi]` 内表里**有行**的 `trade_date`(字符串集合)。`verify` ① 与断口检查共用
+    这一个取数原语,判据各自在调用处写明(两者问的不是同一个问题,见 `_coverage_holes`)。"""
+    return {
+        r[0] for r in conn.execute(
+            f"SELECT DISTINCT trade_date FROM {TABLE} WHERE trade_date>=? AND trade_date<=?",
+            (_d(lo), _d(hi)),
+        )
+    }
+
+
+def _coverage_holes(conn: sqlite3.Connection, lo: date, hi: date) -> List[str]:
+    """`[lo, hi]` 与**表内已覆盖范围**的交集里,一行都没有的交易日 = 真正的「断口」(升序)。
+
+    **为什么要跟 `verify` 的第①项分开**(v1.4 review 🟡-2):verify ① 问的是「你点名的
+    这段区间该有的交易日都在吗」(显式断言,越界也算缺);本函数问的是「表里**两头都有
+    数据**、中间却断了一截吗」—— 只有这种断口才会让 `_prev_persist` 把洞前那天当"昨天"、
+    让 streak **桥过缺口**(漏跑日是强度日 → 后续 streak 低报,A2 该拦没拦;漏跑日会断裂
+    → 高报误拦)。表尾还没落的今天、表头之前的远古,都**不是**断口:前者由新鲜度 lag
+    如实披露、后者由保险丝披露,拿它们当断口只会制造假警报。"""
+    bounds = conn.execute(f"SELECT MIN(trade_date), MAX(trade_date) FROM {TABLE}").fetchone()
+    if not bounds or bounds[0] is None:
+        return []                              # 空表:没有"两头",谈不上断口(bootstrap 领域)
+    from neckline.calendar import trading_days_between
+
+    lo = max(lo, _parse_d(bounds[0]))
+    hi = min(hi, _parse_d(bounds[1]))
+    if lo > hi:
+        return []
+    have = _days_present(conn, lo, hi)
+    return sorted({_d(x) for x in trading_days_between(lo, hi)} - have)
+
+
 def refresh_command_hint(start: Optional[date] = None, end: Optional[date] = None) -> str:
     """补算命令**原文**(单一源)。所有「表缺行」的 WARNING 都要带上它 —— 让运维看到日志
     就知道下一步敲什么,不用回头翻 plan。"""
@@ -108,11 +141,18 @@ class IndustryStrengthFreshness:
     容忍度** —— 与 `ths_daily` 结构性落后 1 日的情况不同:行业强度用**当日** `daily` 算,
     16:05 日更当天就该有。完全无数据 → `lag_days = INDUSTRY_STRENGTH_LAG_UNKNOWN`(-1)
     且 `stale=True`(同 `SectorDataFreshness` 先例:`unavailable` 一定 stale;-1 是哨兵值
-    不是「比 0 还新鲜」)。"""
+    不是「比 0 还新鲜」)。
+
+    **`hole_days`(v1.4 review 🟡-2)**:近期区间里「两头有数据、中间断一截」的交易日数。
+    **有断口即 `stale=True`,哪怕 `lag_days == 0`** —— 断口下 streak 是桥过缺口算出来的
+    **错数**,而 `MAX(trade_date)` 照样等于今天;旧实现在这里报绿 = 拿错数冒充新鲜。
+    刻意**不加第四个公开键**(⑩-F 契约就是三键,客户端已按三键解码):错数不许报绿这件事
+    由 `stale` 承担,细节由 `note()` 如实说。"""
 
     latest_date: str    # 'YYYYMMDD';完全无数据 → ""
     lag_days: int
     stale: bool
+    hole_days: int = 0
 
     @property
     def unavailable(self) -> bool:
@@ -133,37 +173,56 @@ class IndustryStrengthFreshness:
                 "行业强度数据未就绪(表内无任何数据)——今日候选排序缺行业维度、"
                 "题材持续天数与 A2/B3 本日不可得。"
             )
-        if self.lag_days <= 0:
-            return ""
-        return (
-            f"行业强度数据未就绪(最新至 {self.latest_date},落后 {self.lag_days} 个交易日)"
-            "——今日候选排序缺行业维度、题材持续天数与 A2/B3 本日不可得。"
-        )
+        if self.lag_days > 0:
+            return (
+                f"行业强度数据未就绪(最新至 {self.latest_date},落后 {self.lag_days} 个交易日)"
+                "——今日候选排序缺行业维度、题材持续天数与 A2/B3 本日不可得。"
+            )
+        if self.hole_days:
+            # 断口:数据看着"最新",但中间缺了几天 → 题材持续天数是桥过缺口算出来的,
+            # 不是"没看"而是"看到的数可能不对"。文案必须说清是哪一种,别混成同一句。
+            return (
+                f"行业强度数据有断口(最新至 {self.latest_date},近期 {self.hole_days} 个交易日"
+                "缺行)——题材持续天数可能桥过缺口失真,A2/B3 与排序行业维度请谨慎参考;"
+                f"补算:{refresh_command_hint()}"
+            )
+        return ""
 
     def latest_label(self) -> str:
         """给「最新至 {X}」类文案用的短标签(完全无数据 → 「无数据」,不留空)。"""
         return self.latest_date or "无数据"
 
 
+# 新鲜度顺带查断口的回看窗口(日历日)。**只看近期**:16:05 日更失败造出来的洞就在这
+# 几天里,而远古断口早被后续 streak 消化、也超出「今天这份报告可不可信」的问题范围。
+# 全历史断口体检是 `verify` 的活(`scripts/industry_strength.py verify`),不在读路径上跑。
+_HOLE_LOOKBACK_DAYS = 21
+
+
 def industry_strength_status(
     report_date: date, *, db_path: Optional[Path] = None
 ) -> IndustryStrengthFreshness:
-    """表内最新行业强度日相对报告日落后几个交易日(plan §五 v1.4-⑩-E)。"""
+    """表内最新行业强度日相对报告日落后几个交易日(plan §五 v1.4-⑩-E)+ 近期断口检查
+    (v1.4 review 🟡-2:**有断口不许报绿**,见 `IndustryStrengthFreshness.hole_days`)。"""
+    from datetime import timedelta
+
     from neckline.calendar import trading_days_between
 
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(f"SELECT MAX(trade_date) FROM {TABLE}").fetchone()
-    newest_s = row[0] if row else None
-    if not newest_s:
-        return IndustryStrengthFreshness("", INDUSTRY_STRENGTH_LAG_UNKNOWN, True)
-    newest = _parse_d(newest_s)
+        newest_s = row[0] if row else None
+        if not newest_s:
+            return IndustryStrengthFreshness("", INDUSTRY_STRENGTH_LAG_UNKNOWN, True)
+        newest = _parse_d(newest_s)
+        ref = min(report_date, newest)
+        holes = _coverage_holes(conn, ref - timedelta(days=_HOLE_LOOKBACK_DAYS), ref)
     if newest >= report_date:
-        return IndustryStrengthFreshness(newest_s, 0, False)
+        return IndustryStrengthFreshness(newest_s, 0, bool(holes), len(holes))
     # 闭区间交易日数 - 1 = 两日之间隔了几个交易日(newest 当天不算落后),同
     # `sectors.compute_sector_freshness` 口径。
     lag = max(len(trading_days_between(newest, report_date)) - 1, 0)
-    return IndustryStrengthFreshness(newest_s, lag, lag > 0)
+    return IndustryStrengthFreshness(newest_s, lag, lag > 0 or bool(holes), len(holes))
 
 
 # —————————————————————————————————————————————————————————————————————————————
@@ -306,19 +365,29 @@ def _load_day_panel(
 def _resolve_targets(
     days: Sequence[date], conn_days_max: Optional[str]
 ) -> List[date]:
-    """补跑规则(定死):**补算历史日 D 时若库内存在 > D 的行**,那些行的 `persist_days`
-    会失真 → 自动把处理区间**向后延到库内最大交易日**(每日成本 = 1 个分区,受控)。
-    **不许静默只补一天。**"""
+    """补跑规则(定死,**两个方向都不许静默只补一天**):
+
+      ① **向后延**:补算历史日 D 时若库内存在 > D 的行,那些行的 `persist_days` 会失真
+         → 自动把处理区间延到库内最大交易日。
+      ② **向前补洞(v1.4 review 🟡-2)**:目标日与库内最大日之间若隔着交易日(16:05 日更
+         失败过一天以上就是这个形状),把缺口那几天**并进处理区间**。不补的话
+         `_prev_persist` 会拿洞前那天当"昨天",streak 直接**桥过缺口**,而
+         `MAX(trade_date)` 照样等于今天 → 新鲜度看板全绿 = **未披露的错数**(与保险丝
+         「显式披露后不拦」的设计相反)。补不动时由 `refresh_industry_strength` 响亮报错,
+         见那边的断口检查。
+
+    每日成本 = 1 个分区,受控。"""
     targets = sorted(set(days))
     if not targets or not conn_days_max:
         return targets
     tbl_max = _parse_d(conn_days_max)
-    if tbl_max <= targets[0]:
-        return targets
     from neckline.calendar import trading_days_between
 
-    span = trading_days_between(targets[0], tbl_max)
-    return sorted(set(targets) | set(span)) if span else targets
+    if tbl_max > targets[0]:                                   # ① 向后延到库内最大日
+        span = trading_days_between(targets[0], tbl_max)
+        return sorted(set(targets) | set(span)) if span else targets
+    gap = [d for d in trading_days_between(tbl_max, targets[0]) if tbl_max < d < targets[0]]
+    return sorted(set(targets) | set(gap)) if gap else targets  # ② 向前补洞
 
 
 def refresh_industry_strength(
@@ -336,16 +405,22 @@ def refresh_industry_strength(
     `neckline.service` 持有,WAL 下读不阻塞但长写锁会挡其它写)。
 
     **幂等**:同日重跑逐位相同(`prev` 查的是严格早于当日的行,不受本日已有行影响)。
-    **补跑自动向后延**:见 `_resolve_targets`。
+    **补跑自动向后延 / 向前补洞**:见 `_resolve_targets`。
 
-    返回 `{"days": 实际处理天数, "rows": 落行数, "missing": 缺分区天数}`。"""
+    **断口硬检查(v1.4 review 🟡-2)**:跑完回查一次 `_coverage_holes` —— 若表里仍留着
+    「两头有数据、中间断一截」的交易日(补洞用的那几天连 `daily` 分区都没有,补不动),
+    打 **ERROR** + 补算命令原文,并把洞的日期列表放进返回值 `holes`;CLI 据此 **exit 1**。
+    **绝不静默桥接**:桥过去的 streak 会让 A2 该拦没拦 / 不该拦乱拦,而看板照样报绿。
+
+    返回 `{"days": 处理天数, "rows": 落行数, "missing": 缺分区天数, "holes": [洞日…]}`。"""
     init_schema(db_path)
     given_days = sorted(set(days))          # 先物化(入参可能是生成器,下面要用两次)
     with connection(db_path) as conn:
         row = conn.execute(f"SELECT MAX(trade_date) FROM {TABLE}").fetchone()
-    targets = _resolve_targets(given_days, row[0] if row else None)
+    tbl_max_s = row[0] if row else None
+    targets = _resolve_targets(given_days, tbl_max_s)
     if not targets:
-        return {"days": 0, "rows": 0, "missing": 0}
+        return {"days": 0, "rows": 0, "missing": 0, "holes": []}
 
     industry_of = load_industry_map(db_path)
     if not industry_of:
@@ -353,12 +428,16 @@ def refresh_industry_strength(
             "行业强度日更:`stock_basic.industry` 为空(无行业映射),本次不落任何行。"
             "先跑 `python scripts/backfill.py`(bootstrap_metadata)补 stock_basic。"
         )
-        return {"days": 0, "rows": 0, "missing": len(targets)}
+        return {"days": 0, "rows": 0, "missing": len(targets), "holes": []}
 
-    if [d for d in targets if d not in set(given_days)]:
+    extra = [d for d in targets if d not in set(given_days)]
+    if extra:
         logger.info(
-            "行业强度日更:因补算 %s 顺带重算至 %s(共 %d 个交易日,每日只读 1 个分区)",
-            _d(targets[0]), _d(targets[-1]), len(targets),
+            "行业强度日更:因补算 %s 顺带重算至 %s(共 %d 个交易日,其中 %d 天是自动补的"
+            "%s,每日只读 1 个分区)",
+            _d(targets[0]), _d(targets[-1]), len(targets), len(extra),
+            "缺口(表内最新 %s 与目标日之间的洞)" % tbl_max_s
+            if tbl_max_s and _parse_d(tbl_max_s) < given_days[0] else "后续日(重算失真的 streak)",
         )
 
     done = rows_written = missing = 0
@@ -389,7 +468,21 @@ def refresh_industry_strength(
             conn.executemany(_UPSERT_SQL, payload)
         done += 1
         rows_written += len(payload)
-    return {"days": done, "rows": rows_written, "missing": missing}
+
+    # —— 断口硬检查(v1.4 review 🟡-2):补完还留着洞就响亮报错,绝不静默桥接 ——
+    lo = min(_parse_d(tbl_max_s), targets[0]) if tbl_max_s else targets[0]
+    with connection(db_path) as conn:
+        holes = _coverage_holes(conn, lo, targets[-1])
+    if holes:
+        logger.error(
+            "行业强度日更:表内仍有 %d 个交易日**断口**(%s%s)—— 这些天两头都有数据、"
+            "中间没有,streak 会直接桥过去(A2 该拦没拦 / 不该拦乱拦),而 `MAX(trade_date)` "
+            "照样是最新日、新鲜度看板不会变红。多半是这几天的 `daily` 分区没落地:先补数据"
+            "再跑 `%s`。",
+            len(holes), ",".join(holes[:20]), "…" if len(holes) > 20 else "",
+            refresh_command_hint(_parse_d(holes[0]), _parse_d(holes[-1])),
+        )
+    return {"days": done, "rows": rows_written, "missing": missing, "holes": holes}
 
 
 # —————————————————————————————————————————————————————————————————————————————
@@ -566,12 +659,9 @@ def verify_industry_strength(
         hi = end or _parse_d(bounds[1])
         lo_s, hi_s = _d(lo), _d(hi)
 
-        have_days = {
-            r[0] for r in conn.execute(
-                f"SELECT DISTINCT trade_date FROM {TABLE} WHERE trade_date>=? AND trade_date<=?",
-                (lo_s, hi_s),
-            )
-        }
+        # ⚠ 本项的判据是「你点名的这段区间该有的交易日都在吗」(越界也算缺),与读路径上
+        # 的断口检查 `_coverage_holes`(只认"两头有数据、中间断一截")刻意不同,见后者注释。
+        have_days = _days_present(conn, lo, hi)
         fingerprints = conn.execute(
             f"SELECT DISTINCT quantile, min_members FROM {TABLE}"
         ).fetchall()
