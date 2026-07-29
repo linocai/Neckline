@@ -13,6 +13,9 @@ from typing import Dict, List, Optional
 from neckline.llm.base import search_coverage_line
 from neckline.llm.judge import JudgeResult, VERDICT_PASS, VERDICT_VETO
 from neckline.report.candidates import Candidate
+# v1.4-⑩-F:只借类型(`IndustryStrengthFreshness` 是纯 dataclass);本模块仍不碰任何
+# I/O —— 新鲜度由 pipeline 查好后原样传进来,render 只读它的 `stale`/`note()`。
+from neckline.report.industry_strength_store import IndustryStrengthFreshness
 from neckline.report.intel import IntelReport
 from neckline.report.news_alerts import NewsAlertsReport
 from neckline.report.sector_moneyflow import SectorMoneyflowReport
@@ -42,6 +45,7 @@ def render_markdown(
     sector_moneyflow: Optional[SectorMoneyflowReport] = None,
     news_alerts: Optional[NewsAlertsReport] = None,
     sector_freshness: Optional[SectorDataFreshness] = None,
+    industry_freshness: Optional[IndustryStrengthFreshness] = None,
 ) -> str:
     parts: List[str] = []
     parts.append(f"# Neckline 盘后报告 · {trade_date.isoformat()}")
@@ -58,6 +62,13 @@ def render_markdown(
     # 三处,读者需要在看任何板块相关结论**之前**先知道底下的数据是旧的。
     if sector_freshness is not None and sector_freshness.stale:
         parts.append(f"> 🚨 **板块数据过期告警**:{sector_freshness.note()}")
+        parts.append("")
+    # v1.4-⑩-E(§七 P0-23):行业强度预计算表缺当日行 → 同样顶部醒目告警。**与板块过期
+    # 分开两条,不合并** —— 两个独立故障(概念板块日更 vs `industry_strength_daily` 日更),
+    # 合并成一句读者就分不清哪个坏了。这也是 ⑩-E「报告级披露已覆盖当日全部消费方」那句的
+    # 兑现:持仓卡不再各加一个 available 位(避免契约膨胀)。
+    if industry_freshness is not None and industry_freshness.stale:
+        parts.append(f"> 🚨 **行业强度数据未就绪**:{industry_freshness.note()}")
         parts.append("")
 
     parts.append(_render_sentiment(sentiment))

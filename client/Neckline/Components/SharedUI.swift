@@ -183,15 +183,28 @@ struct MissedEntryHintBanner: View {
 // MARK: - v1.4-①-C 板块数据过期告警(§七 P0-3:报告顶部醒目告警,不静默把过期数据
 // 当正常结果展示)。
 
+/// 数据新鲜度告警(v1.4-①-C 板块 + v1.4-⑩-F 行业强度)。**两件独立故障各占一行**,
+/// 不合并成一句 —— 合并读者就分不清哪个坏了(服务端契约同样是两组独立键)。
 struct DataFreshnessBanner: View {
     let freshness: DataFreshness
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 14, weight: .semibold))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("板块数据已过期").font(.system(size: 13, weight: .bold))
-                Text(bodyText).font(.system(size: 12)).opacity(0.9)
-                Text("「当日暴起板块」与「题材持续天数」本日不可信").font(.system(size: 11)).opacity(0.85)
+            VStack(alignment: .leading, spacing: 6) {
+                if freshness.stale {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("板块数据已过期").font(.system(size: 13, weight: .bold))
+                        Text(sectorText).font(.system(size: 12)).opacity(0.9)
+                        Text("「当日暴起板块」与「题材持续天数」本日不可信").font(.system(size: 11)).opacity(0.85)
+                    }
+                }
+                if freshness.industryStrengthStale == true {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("行业强度数据未就绪").font(.system(size: 13, weight: .bold))
+                        Text(industryText).font(.system(size: 12)).opacity(0.9)
+                        Text("今日候选排序缺行业维度、题材持续天数不可用").font(.system(size: 11)).opacity(0.85)
+                    }
+                }
             }
             Spacer(minLength: 0)
         }
@@ -200,9 +213,19 @@ struct DataFreshnessBanner: View {
         .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.alertGrad))
     }
 
-    private var bodyText: String {
+    private var sectorText: String {
         let dateText = freshness.sectorDataDate.map { "最新至 \($0)" } ?? "完全缺失"
         return "板块数据\(dateText),落后 \(freshness.sectorLagDays) 个交易日"
+    }
+
+    /// `industryStrengthLagDays == -1` 是哨兵值(完全无数据),**不是"落后 -1 天"**,
+    /// 故单独成句;有数据时才报落后天数。
+    private var industryText: String {
+        guard let date = freshness.industryStrengthDate,
+              let lag = freshness.industryStrengthLagDays, lag >= 0 else {
+            return "行业强度数据完全缺失(预计算表无任何数据)"
+        }
+        return "行业强度数据最新至 \(date),落后 \(lag) 个交易日"
     }
 }
 

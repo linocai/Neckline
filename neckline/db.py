@@ -508,6 +508,38 @@ CREATE TABLE IF NOT EXISTS inquiry_log (
 );
 CREATE INDEX IF NOT EXISTS idx_inquiry_log_ts_code ON inquiry_log(ts_code);
 CREATE INDEX IF NOT EXISTS idx_inquiry_log_created_at ON inquiry_log(created_at);
+
+-- v1.4-⑩-A(§七 P0-23)行业强度预计算物化表。读写单一通道 =
+-- `neckline/report/industry_strength_store.py`(判据实现仍只有一份,在
+-- `report/industry_strength.py`;本表只是**缓存物化**,不是第二套判据)。
+-- **为什么存 SQLite 而不是 parquet**(五条,勿"改进"回去):①体量小到不该分区
+-- (~110 行/日,全历史 ~17.5 万行 ≈ 20MB),parquet 日分区会再造 1500+ 个小文件
+-- = P0-23 的病根本身;②读模式是「按日点查 + 按行业跨日回看」,SQL 索引天生合适;
+-- ③完全绕开 parquet schema 漂移雷区(v1.3.5 两次崩报告那条链),不必新增
+-- `_VALID_TABLES`/`TABLE_FLOAT_COLS` 声明;④`PRIMARY KEY` upsert 天然幂等;
+-- ⑤跟着 `neckline.db` 一起被 `.backup` 备份,不另立备份纪律。
+-- **三个可空列的语义定死:`NULL ≠ 0`** —— `NULL` = 「当日该行业成员数 < min_members,
+-- 没评」(**没看**);`0` = 「评了,不是强度日 / 持续 0 天」(**看了,没有**)。承 §3.8
+-- 「『没有』与『没看』必须能分开」,读侧不许 `or 0` 抹平。
+-- **落全部行业(member_count >= 1),不只达标行业**:同一张表同时喂两个消费方——判据侧
+-- (A2/B3 + 排序键①,只吃 `industry_rank IS NOT NULL` 的行)与 ④ 信息卡的 60 日行业中位数
+-- 序列(`industry_median_return_series` 口径本就不受 `_MIN_MEMBERS` 约束)。
+-- **`quantile`/`min_members` 是口径指纹**:读侧只接受与当前常量相等的行,不等 → 视同缺行
+-- (走保险丝)+ WARNING「口径已变更,请重跑 bootstrap」。口径一改,全表必须重算。
+CREATE TABLE IF NOT EXISTS industry_strength_daily (
+    trade_date      TEXT NOT NULL,      -- 'YYYYMMDD'(同 holding_eod_check / decision_pending_track 惯例)
+    industry        TEXT NOT NULL,      -- stock_basic.industry 原文
+    median_ret      REAL NOT NULL,      -- 当日该行业成员 ret_1d 中位数(所有行业都有,含未达标行业)
+    member_count    INTEGER NOT NULL,   -- 当日有 ret_1d 的成员数(>=1 才落行)
+    industry_rank   INTEGER,            -- NULL = 当日未参与排名(member_count < min_members)
+    is_strength_day INTEGER,            -- NULL = 当日未参与评定;0/1 = 参与了且不是/是强度日
+    persist_days    INTEGER,            -- NULL = 当日未参与评定;>=0 = 连续强度日(断裂重置)
+    quantile        REAL NOT NULL,      -- 产出该行时的 _STRENGTH_QUANTILE(口径指纹)
+    min_members     INTEGER NOT NULL,   -- 产出该行时的 _MIN_MEMBERS(口径指纹)
+    computed_at     TEXT NOT NULL,      -- ISO8601(审计:这行什么时候算的)
+    PRIMARY KEY (trade_date, industry)
+);
+CREATE INDEX IF NOT EXISTS idx_industry_strength_daily_industry ON industry_strength_daily(industry, trade_date);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

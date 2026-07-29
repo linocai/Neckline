@@ -46,7 +46,13 @@ from neckline.report.sectors import (
     load_member_map,
 )
 from neckline.report.holding_k4_check import HoldingK4Item, build_holding_k4_check
-from neckline.report.industry_strength import compute_industry_strength, load_industry_map
+from neckline.report.industry_strength import load_industry_map
+from neckline.report.industry_strength_store import (
+    IndustryStrengthFreshness,
+    industry_strength_status,
+    load_industry_strength,
+    refresh_command_hint,
+)
 from neckline.report.exec_hint import attach_exec_hints
 from neckline.report.info_card import attach_info_card_summaries
 from neckline.report.sector_moneyflow import (
@@ -83,6 +89,10 @@ class ReportBundle:
     # v1.4-①-C 板块数据新鲜度(§七 P0-3):「当日暴起板块」与「题材持续天数」两路的可信度
     # 前提。**过期时必须显式标不可信,不静默降级为空**——「没有」和「没看」必须能分开。
     sector_freshness: Optional[SectorDataFreshness] = None
+    # v1.4-⑩-F 行业强度数据新鲜度(§七 P0-23):与板块新鲜度是**两个独立故障**(一个是
+    # `ths_daily` 概念板块日更,一个是 `industry_strength_daily` 预计算表),不许合并成
+    # 一个 bool —— 合并就分不清哪个坏了。
+    industry_freshness: Optional[IndustryStrengthFreshness] = None
 
 
 def compute_missed_entry_hint(trade_date: date, db_path: Optional[Path] = None) -> str:
@@ -157,10 +167,26 @@ def build_report(
     index_names = load_index_names(parquet_dir=parquet_dir)
     # v1.4-②:行业强度单一源(A2/B3 题材持续天数判据)。持仓 K4 体检 + 候选安检两处共用
     # 同一份(此处只算一次,同 sector_scores/member_map 既有姿势,免两处各自重算一遍全市场
-    # 行业中位数);`compute_industry_strength` 无 top_n 截断概念,天然是「全量」,不像
-    # `sector_scores` 需要区分"报告展示用的 top-10"与"候选/持仓判据用的全量"两份。
+    # 行业中位数);行业强度无 top_n 截断概念,天然是「全量」,不像 `sector_scores` 需要
+    # 区分"报告展示用的 top-10"与"候选/持仓判据用的全量"两份。
+    #
+    # **v1.4-⑩(§七 P0-23):改为只读 `industry_strength_daily` 预计算表**,不再现算
+    # (现算要扫全历史 784 万行,生产 2 vCPU/1.6G 上 700M cap OOM-kill、1400M cap 600s
+    # 跑不完 → 当日无报告)。写在 16:05 日更、读在 16:35 报告,**职责不混:主链不写表**
+    # (历史回放更不该顺手写表)。表缺行 → 空列表 + 保险丝:**降级方向 = 不拦(放行)**
+    # —— A2 hard_cut 不触发、排序键① 全 None→+inf(序退化成 yellow_card→base_score→code,
+    # 仍确定性可复现),并由 `dataFreshness` 三键 + 报告脚注**如实披露「没看」**。
     industry_map = load_industry_map(db_path=db_path)
-    industry_scores = compute_industry_strength(trade_date, parquet_dir=parquet_dir, db_path=db_path)
+    industry_scores = load_industry_strength(trade_date, db_path=db_path)
+    industry_freshness = industry_strength_status(trade_date, db_path=db_path)
+    if industry_freshness.stale or not industry_scores:
+        logger.warning(
+            "行业强度数据未就绪(表内最新至 %s,落后 %s 个交易日,当日可用行业 %d 个)——"
+            "候选排序缺行业维度、题材持续天数与 A2/B3 本日不可得(降级方向=不拦),报告已显式标注。"
+            "补算命令:%s",
+            industry_freshness.latest_label(), industry_freshness.lag_days, len(industry_scores),
+            refresh_command_hint(trade_date, trade_date),
+        )
 
     # 消费问询台海选池(§2.5 闭环报告侧;v1.1-D 问询窗口修复)——「初审通过」的票
     # 强制并入当晚候选评分 universe(只扩输入,不改评分逻辑)。消费窗口从「入池当日
@@ -303,6 +329,7 @@ def build_report(
             candidates, trade_date,
             news_items=news_items_dicts, news_domain_codes=news_domain_codes,
             top_list=top_list, parquet_dir=parquet_dir, db_path=db_path,
+            industry_ready=bool(industry_scores),   # v1.4-⑩-E:表缺行 → 快照如实缺省,不写 0
         )
     except Exception:  # noqa: BLE001 —— 信息卡摘要异常不得连带主报告失败
         logger.warning("信息卡摘要(v1.4-④)计算异常,候选照出,本次无摘要", exc_info=True)
@@ -332,6 +359,7 @@ def build_report(
         sector_moneyflow=sector_moneyflow,
         news_alerts=news_alerts,
         sector_freshness=sector_freshness,
+        industry_freshness=industry_freshness,   # v1.4-⑩-E 报告级披露
     )
 
     if save:
@@ -346,7 +374,12 @@ def build_report(
             intel=intel.to_public_dict(),
             sector_moneyflow=sector_moneyflow.to_public_dict(),
             news_alerts_scan=news_alerts.scan_statuses_public(),
-            data_freshness=sector_freshness.to_public_dict(),   # v1.4-①-C
+            # v1.4-①-C 板块三键 + v1.4-⑩-F 行业强度三键。**两件独立故障并列存放,不合并成
+            # 一个 bool** —— 合并就分不清哪个坏了(既有 `stale` 语义一个字不改,仍只表板块)。
+            data_freshness={
+                **sector_freshness.to_public_dict(),
+                **industry_freshness.to_public_dict(),
+            },
             db_path=db_path,
         )
         # v1.1-D 问询窗口修复:报告落库成功后才标记消费(§根因见
@@ -382,6 +415,7 @@ def build_report(
         sector_moneyflow=sector_moneyflow,
         news_alerts=news_alerts,
         sector_freshness=sector_freshness,
+        industry_freshness=industry_freshness,   # v1.4-⑩-F
     )
 
 

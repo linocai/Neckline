@@ -31,6 +31,7 @@ from tests.conftest import (
     insert_namechange,
     insert_stock_basic,
     insert_trade_cal,
+    seed_industry_strength,
     write_daily_fixture,
     write_flat_parquet,
 )
@@ -66,7 +67,8 @@ _MARKET_FILLER_INDUSTRY = "背景填充行业"       # 与本文件任何测试�
 _MARKET_FILLER_COUNT = 200                    # 够把本文件最大板块(25 只同行业)稀释到 lift≥2(见下)
 
 
-def _seed_market(env, dates, stocks: list, *, market_filler: bool = True) -> None:
+def _seed_market(env, dates, stocks: list, *, market_filler: bool = True,
+                 with_industry_strength: bool = True) -> None:
     """`stocks`: [{code, market='主板', closes, turnover=5.0(标量或逐日列表), list_offset=400,
     st=False, name?, industry?}]。写 daily/adj/daily_basic + stock_basic(+namechange)。
     `industry` 缺省 `_DEFAULT_INDUSTRY`(行业闸:同板块成员同行业);传 None 显式无行业。
@@ -108,6 +110,11 @@ def _seed_market(env, dates, stocks: list, *, market_filler: bool = True) -> Non
     insert_stock_basic(env, sb)
     if nc:
         insert_namechange(env, nc)
+    # v1.4-⑩(§七 P0-23):候选情报管线在线路径**只读** `industry_strength_daily` 预计算表,
+    # 故夹具补上 16:05 日更那一步(走生产同一条写入路径)。**必须在 `insert_stock_basic`
+    # 之后**(要行业映射)。`with_industry_strength=False` 造「日更没跑」的降级场景。
+    if with_industry_strength:
+        seed_industry_strength(env, dates)
 
 
 def _seed_boards(env, index_rows: list, member_rows: list, board_daily: dict | None = None, dates=None) -> None:

@@ -416,6 +416,86 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertTrue(freshness.stale)
     }
 
+    /// v1.4-⑩-F(§七 P0-23):`dataFreshness` 新增行业强度三键。**两件独立故障并列**——
+    /// 本例板块新鲜(`stale=false`)而行业强度未就绪(`industryStrengthStale=true`),
+    /// 横幅照样要出(`needsBanner`),证明两者没被合并成一个 bool。
+    func testDecodeReportDataFreshnessIndustryStrengthKeys() async throws {
+        let json = jsonData("""
+        {
+          "tradeDate": "20260729", "generatedAt": "g", "strategyVersion": "v1.3.3", "sentiment": null,
+          "sectors": [], "candidates": [], "degraded": false, "reason": "",
+          "dataFreshness": {"sectorDataDate": "20260729", "sectorLagDays": 0, "stale": false,
+                            "industryStrengthDate": "20260728", "industryStrengthLagDays": 1,
+                            "industryStrengthStale": true}
+        }
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let report = try await client.fetchReportLatest()
+        let f = try XCTUnwrap(report.dataFreshness)
+        XCTAssertFalse(f.stale, "板块新鲜度语义一个字没改,仍只表板块")
+        XCTAssertEqual(f.industryStrengthDate, "20260728")
+        XCTAssertEqual(f.industryStrengthLagDays, 1)
+        XCTAssertEqual(f.industryStrengthStale, true)
+        XCTAssertTrue(f.needsBanner, "板块新鲜但行业强度未就绪 → 横幅仍须出现")
+    }
+
+    /// 老报告快照只有板块三键(建于 v1.4-⑩ 之前)→ 行业强度三键 `nil` 兜底不崩,
+    /// 且 `needsBanner` 不因"缺键"误报(缺键 = 该版本还没有这个概念,不是"未就绪")。
+    func testDecodeReportDataFreshnessIndustryKeysAbsentAreNilNotFalse() async throws {
+        let json = jsonData("""
+        {
+          "tradeDate": "20260717", "generatedAt": "g", "strategyVersion": "v1.3.3", "sentiment": null,
+          "sectors": [], "candidates": [], "degraded": false, "reason": "",
+          "dataFreshness": {"sectorDataDate": "20260717", "sectorLagDays": 0, "stale": false}
+        }
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let report = try await client.fetchReportLatest()
+        let f = try XCTUnwrap(report.dataFreshness)
+        XCTAssertNil(f.industryStrengthDate)
+        XCTAssertNil(f.industryStrengthLagDays)
+        XCTAssertNil(f.industryStrengthStale)
+        XCTAssertFalse(f.needsBanner)
+    }
+
+    /// v1.4-⑩-E:信息卡快照 `industryPersistDays` 的 **`null` ≠ 0**。`null` = 行业强度
+    /// 表当日无数据(「没看」),UI 显示「数据未就绪」;`0` = 评了、不是强度日(「看了,
+    /// 没有」)。两者都必须解得出来、且能区分。
+    func testDecodeInfoCardSnapshotIndustryPersistDaysNullVsZero() async throws {
+        func snapshot(_ persist: String) -> Data {
+            jsonData("""
+            {
+              "tradeDate": "20260728", "generatedAt": "g", "strategyVersion": "v1", "sentiment": null,
+              "sectors": [], "degraded": false, "reason": "",
+              "candidates": [{
+                "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
+                "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
+                "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
+                "infoCard": {
+                  "snapshot": {"volRatio5": 1.1, "turnoverRate": 5.0, "industryRank": null,
+                               "industryPersistDays": \(persist), "aboveMa250": null,
+                               "distFromMa250Pct": null, "distFromHigh20dPct": null, "consecLimitUpDays": 0},
+                  "mildBand": false,
+                  "news": {"scanned": false, "items": [], "unavailableReason": "r"},
+                  "topList": {"onListToday": false, "lookbackDaysCovered": 0, "lookbackHitDays": 0}
+                }
+              }]
+            }
+            """)
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+
+        MockURLProtocol.handler = { _ in (200, snapshot("null")) }
+        let missing = try await client.fetchReportLatest()
+        XCTAssertNil(try XCTUnwrap(missing.candidates[0].infoCard).snapshot.industryPersistDays)
+
+        MockURLProtocol.handler = { _ in (200, snapshot("0")) }
+        let zero = try await client.fetchReportLatest()
+        XCTAssertEqual(try XCTUnwrap(zero.candidates[0].infoCard).snapshot.industryPersistDays, 0)
+    }
+
     /// 老报告(建于本字段前)/ 空对象 `{}` → `nil`(同 `intel`/`sectorMoneyflow` 惯例),
     /// 不当"新鲜"展示。
     func testDecodeReportDataFreshnessAbsentOrEmptyIsNil() async throws {

@@ -74,11 +74,11 @@ from neckline.llm.base import ChatMessage, LLMProvider, search_coverage_line
 from neckline.report.candidates import _base_score_expr  # 同码:展示排序分与报告一致
 from neckline.report.industry_strength import (
     IndustryStrength,
-    compute_industry_strength,
     industry_strength_lookup,
     load_industry_map,
     stock_persist_days,
 )
+from neckline.report.industry_strength_store import industry_strength_status, load_industry_strength
 from neckline.report.sectors import (
     SectorScore,
     compute_sector_strength,
@@ -144,6 +144,10 @@ class DeterministicResult:
     score: Optional[float] = None
     sectors: List[str] = field(default_factory=list)          # 所属概念板块名
     hot_sectors: List[str] = field(default_factory=list)      # 命中今日热门(含板块年龄)
+    # v1.4-⑩-E(§七 P0-23):行业强度预计算表当日缺行时的**如实告白**(非空 = 本次
+    # 题材持续天数与 A2/B3 **没看**,不是「看了没有」)。`_build_evidence` 会把它作为
+    # 一条 evidence 输出;**绝不静默按 0 输出「未命中 A2/B3」**(§3.8)。
+    industry_strength_unavailable: str = ""
     evidence: List[str] = field(default_factory=list)
 
 
@@ -289,15 +293,30 @@ def run_deterministic_checks(
     # —— 题材持续天数(v1.4-② 起唯一源)+ K4 安检 ——:与上面板块展示是两套独立数据
     # (概念板块=多对多展示,`stock_basic.industry`=一对一判据输入),`industry_of`/
     # `industry_hot` 与该票是否属于任何概念板块无关(每只有 industry 的票都算)。
+    #
+    # **v1.4-⑩(§七 P0-23):只读 `industry_strength_daily` 预计算表**,不再现算 —— 现算
+    # 要扫全历史 784 万行,而本函数跑在**常驻 `neckline.service` 内、与盘中哨兵同进程**,
+    # `MemoryHigh` 先节流会把进程拖进内存回收死循环(**卡死不报错**),盘中被问一次就
+    # 拖累哨兵。表缺行 → `industry_hot = {}` + 下面 `_build_evidence` 明说「本次不可得」,
+    # **绝不静默按 0 输出「未命中 A2/B3」**(那是拿「没看」冒充「没有」)。
     industry_of: Dict[str, str] = {}
     industry_hot: Dict[str, IndustryStrength] = {}
     try:
         industry_of = load_industry_map(db_path)
         if industry_scores is None:
-            industry_scores = compute_industry_strength(basis_date, parquet_dir=parquet_dir, db_path=db_path)
+            industry_scores = load_industry_strength(basis_date, db_path=db_path)
         industry_hot = industry_strength_lookup(industry_scores or [])
     except Exception as e:  # noqa: BLE001
         logger.warning("问询台行业强度核算异常(%s,不影响其余材料)", e)
+    if not industry_hot:
+        try:
+            fresh = industry_strength_status(basis_date, db_path=db_path)
+            det.industry_strength_unavailable = (
+                f"行业强度数据未就绪(最新至 {fresh.latest_label()}),题材持续天数与 A2/B3 本次不可得"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("问询台行业强度新鲜度查询异常(%s,不影响其余材料)", e)
+            det.industry_strength_unavailable = "行业强度数据未就绪,题材持续天数与 A2/B3 本次不可得"
 
     det.k4_flags = _k4_flags(
         code, basis_date, db_path=db_path, parquet_dir=parquet_dir,
@@ -319,6 +338,10 @@ def _build_evidence(det: DeterministicResult) -> None:
         ev.append("未命中系统硬线(非 ST、满足选股域流动性/价格/形态门槛)。")
     if det.k4_flags:
         ev.append("K4 安检命中:" + "、".join(det.k4_flags))
+    # v1.4-⑩-E:数据不可得如实说,放在 K4 命中之后 —— 读者先看到「命中了什么」,紧接着
+    # 看到「其中题材那一维这次没看成」,不会把空缺读成「查过了、没问题」。
+    if det.industry_strength_unavailable:
+        ev.append(det.industry_strength_unavailable)
     if det.passes_buypoint_today:
         ev.append(f"今日已同时满足母战法买点(pullback/breakout),展示排序分约 {det.score}。")
     elif det.score is not None:

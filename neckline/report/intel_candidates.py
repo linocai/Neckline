@@ -95,11 +95,11 @@ from neckline.report.holding_k4_check import (
 )
 from neckline.report.industry_strength import (
     IndustryStrength,
-    compute_industry_strength,
     industry_strength_lookup,
     stock_industry_rank,
     stock_persist_days,
 )
+from neckline.report.industry_strength_store import load_industry_strength
 from neckline.report.sectors import (
     SectorScore,
     compute_sector_strength,
@@ -319,8 +319,11 @@ def build_intel_candidates(
     传入(报告已加载,不重复读 parquet);`sector_scores`(大列表,拥挤度 + board_age,仍只用于
     板块展示/常驻暴起判定)缺省则内部 `compute_sector_strength(top_n=1000)` 自算。
     `industry_scores`(v1.4-② 起题材持续天数唯一源输入)缺省则内部
-    `compute_industry_strength` 自算——与 `sector_scores` 同一姿势,pipeline 已算好一份传入,
-    免报告内部候选/持仓/问询三处各自重算一遍全市场行业中位数。`forced_codes` = 问询台海选池
+    **读 `industry_strength_daily` 预计算表**(v1.4-⑩ / §七 P0-23:此前是现算 = 全历史扫描,
+    生产跑不完)——与 `sector_scores` 同一姿势,pipeline 已读好一份传入,免报告内部候选/持仓/
+    问询三处各自再查一遍;表缺当日行 → 空列表,**降级方向 = 不拦**(A2 hard_cut 不触发、
+    排序键① 全 None→+inf,序退化成 yellow_card→base_score→code 仍确定性可复现),由报告级
+    `dataFreshness` 显式披露。`forced_codes` = 问询台海选池
     「初审通过」的票(§2.5)强制并入(用户点名,豁免 ② 卫生线与 ③ hard_cut,仅 K4 打标展示)。"""
     cfg = MomentumConfig(**rule["config"])
     member_map = member_map if member_map is not None else load_member_map(parquet_dir=parquet_dir)
@@ -356,7 +359,7 @@ def build_intel_candidates(
     industry_hot = industry_strength_lookup(
         industry_scores
         if industry_scores is not None
-        else compute_industry_strength(trade_date, parquet_dir=parquet_dir, db_path=db_path)
+        else load_industry_strength(trade_date, db_path=db_path)
     )
     market_shares = _market_industry_shares(industry_of)
     inv = invert_member_map(member_map)

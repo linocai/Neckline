@@ -103,9 +103,10 @@ struct TodayPlanView: View {
             if !model.report.missedEntryHint.isEmpty {
                 MissedEntryHintBanner(text: model.report.missedEntryHint)
             }
-            // v1.4-①-C(§七 P0-3):板块数据过期顶部醒目告警——过期时「当日暴起板块」/
-            // 「题材持续天数」本日不可信,不静默把它们当正常结果展示。
-            if let freshness = model.report.dataFreshness, freshness.stale {
+            // v1.4-①-C(§七 P0-3)板块数据过期 + v1.4-⑩-F(§七 P0-23)行业强度未就绪:
+            // 顶部醒目告警——不可信时不静默把它们当正常结果展示。**两件独立故障,任一
+            // 成立即展示,横幅内各占一行**(见 `DataFreshnessBanner`)。
+            if let freshness = model.report.dataFreshness, freshness.needsBanner {
                 DataFreshnessBanner(freshness: freshness)
             }
             // v1.1-E.1:持仓区置顶到候选之上(持仓管理优先于选新票)。

@@ -163,6 +163,15 @@
 - **在远端 `pkill -f <pattern>` 前先确认 pattern 不匹配自己**:`pkill -f probe_industry` 会匹配到
   正在跑它的那条 `bash -c` 命令行,自杀式掐断 SSH 会话(exit 255,2026-07-29 真踩)。用
   `pgrep -af` 先看命中集,或按 PID 杀。
+- **判据类全市场扫描一律预计算落表,在线路径只读**(2026-07-29 P0-23 定案):任何"扫全市场
+  多年历史"的量,若成了判据/排序输入,就必须 16:05 日更算一次落 SQLite,报告/端点/问询台
+  **只读表**;缺行走保险丝(**降级方向=不拦** + `dataFreshness` 显式披露),**不许在线现算
+  自愈**。现役实现 `report/industry_strength_store.py`(表 `industry_strength_daily`),
+  单一源仍在 `report/industry_strength.py`(表只是物化,三路等价单测锁死)。
+- **`rank(method="ordinal")` 的并列由行序打散 = 不确定性**(2026-07-29 真数据演练打出来):
+  A 股一天里收益完全相同的票成堆,110 个行业当日中位数撞车很常见;行序又随"读的是按年块
+  还是单日分区"而变 → 同一天算出两种 rank。**任何进判据/排序的 rank 必须先排定确定性
+  tie-break 再 ordinal**(体例:`_day_local_table` 按 `(median_ret 降序, industry 升序)`)。
 - **timer 跑过 ≠ 任务成功**:部署/定时任务验收必须看 `ExecMainStatus=0` **且**
   `ExecMainStartTimestamp` 是本次那一跑,别只看 `list-timers` 的 LAST。⚠ **`Result=`
   也不够**(2026-07-28 实测):07-27 那次崩掉的报告在库里是

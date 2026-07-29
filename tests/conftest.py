@@ -124,6 +124,27 @@ def write_daily_fixture(
     write_table_day(table, trade_date, df, parquet_dir=settings.parquet_dir)
 
 
+def seed_industry_strength(settings: Settings, days: List[date]) -> dict:
+    """把 `industry_strength_daily` 预计算表喂上(v1.4-⑩ / §七 P0-23)。
+
+    **凡端到端跑 pipeline / 信息卡 / 问询台的测试都要先调它** —— 这三条在线路径 v1.4-⑩
+    起**只读表**、不再现算(现算 = 全历史 `scan_parquet`,生产跑不完)。表没喂 = 保险丝
+    降级(空 `industry_scores`),那是**另一组断言**(降级不崩 + 如实披露),别拿它当
+    "取数坏了"。
+
+    走的就是生产同一条写入路径(`refresh_industry_strength`,只读当日一个分区),**不是
+    测试专用的第二套写法** —— 夹具和生产写侧共用同一份代码,夹具喂出来的表就是生产表。
+    `days` 传该测试铺过 `daily` 分区的交易日(升序;顺序无关,函数内部会排序)。
+
+    ⚠ `db_path` **必须显式传**(见 CLAUDE.md「测试隔离」条:`isolated_env` 不重写
+    `neckline.db` 的 settings 绑定,`db_path=None` 会静默落到真实项目库)。"""
+    from neckline.report.industry_strength_store import refresh_industry_strength
+
+    return refresh_industry_strength(
+        days, parquet_dir=settings.parquet_dir, db_path=settings.db_path
+    )
+
+
 def insert_stock_basic(settings: Settings, rows: List[dict]) -> None:
     """写 `stock_basic`(SQLite)测试行,供需要股票中文名/板块/上市日的模块
     (`report/candidates.py` 的名称解析等)使用。每行至少给 `ts_code`,其余字段有
@@ -228,6 +249,7 @@ def seed_synthetic_market(
     *,
     start: date = date(2024, 1, 2),
     n_days: int = 30,
+    with_industry_strength: bool = True,
 ) -> List[date]:
     """铺一份"看起来正常"的多票多日合成行情(daily/adj_factor/daily_basic +
     stock_basic + namechange + trade_cal),覆盖 `base_universe_expr` 与 rule v1
@@ -304,6 +326,15 @@ def seed_synthetic_market(
         {"index_code": "885921.TI", "con_code": "600001.SH"},
         {"index_code": "885921.TI", "con_code": "600002.SH"},
     ])
+    # v1.4-⑩(§七 P0-23):行业强度**预计算表**日更 —— 一个「看起来正常」的市场,16:05
+    # 日更该跑的都跑过了,表里该有行。**必须放在 `insert_stock_basic` 之后**(要行业映射)。
+    # 本 fixture 的 3 只有价票同属「电气设备」(3 < `_MIN_MEMBERS`=5)→ 落行但
+    # `industry_rank` 为 NULL,故 `load_industry_strength` 仍返回空列表 —— 与 v1.4-② 现算
+    # 时代的行为逐位一致(判据侧无变化),但**新鲜度是「就绪」而不是「未就绪」**,这正是
+    # 「没有(不够格)」与「没看(表空)」的分野。`with_industry_strength=False` 可造
+    # 「日更没跑」的降级场景。
+    if with_industry_strength:
+        seed_industry_strength(settings, dates)
     return dates
 
 
@@ -392,6 +423,7 @@ __all__ = [
     "insert_trade_cal",
     "business_days",
     "write_daily_fixture",
+    "seed_industry_strength",
     "insert_stock_basic",
     "insert_namechange",
     "TEST_RULE_V1_CONFIG",

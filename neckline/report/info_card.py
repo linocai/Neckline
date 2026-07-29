@@ -50,12 +50,15 @@ from neckline.report import holding_k4_check
 from neckline.report.candidates import Candidate
 from neckline.report.industry_strength import (
     IndustryStrength,
-    compute_industry_strength,
-    industry_median_return_series,
     industry_strength_lookup,
     load_industry_map,
     stock_industry_rank,
     stock_persist_days,
+)
+from neckline.report.industry_strength_store import (
+    industry_strength_status,
+    load_industry_median_series,
+    load_industry_strength,
 )
 from neckline.report.intel_candidates import _DEFAULT_SECTION
 from neckline.report.sentiment import compute_sentiment
@@ -134,7 +137,10 @@ class InfoCardSnapshot:
     vol_ratio5: Optional[float] = None            # vol/vol_ma5(量比)
     turnover_rate: Optional[float] = None          # 换手率(百分数,如 5.2 = 5.2%)
     industry_rank: Optional[int] = None            # ② 行业强度当日排名(1=最强);None=未参与排名
-    industry_persist_days: int = 0                 # ② 行业强度持续天数
+    # ② 行业强度持续天数。**`None` ≠ 0**(v1.4-⑩-E):`None` = 行业强度表当日无数据
+    # (「没看」,`industry_strength_daily` 未就绪 / 该行业当日成员数不足);`0` = 评了、
+    # 不是强度日(「看了,没有」)。客户端据此展示「不可用」而非「0 天」。
+    industry_persist_days: Optional[int] = None
     above_ma250: Optional[bool] = None             # 年线上/下;ma250 未就绪(<250交易日历史)→ None
     dist_from_ma250_pct: Optional[float] = None    # close/ma250-1(小数,非百分数)
     dist_from_high20d_pct: Optional[float] = None  # close/high_20d-1(≤0)
@@ -371,7 +377,8 @@ def _build_kline(window_panel: Optional[pl.DataFrame]) -> Tuple[List[InfoCardKli
 
 
 def _build_snapshot(
-    row: Optional[Dict[str, Any]], industry_rank: Optional[int], industry_persist_days: int,
+    row: Optional[Dict[str, Any]], industry_rank: Optional[int],
+    industry_persist_days: Optional[int],
 ) -> InfoCardSnapshot:
     """快照数值(plan §五 v1.4-④-A-4)。`row=None`(当日无 EOD 行)→ 价量类字段全
     None/0,`industryRank`/`industryPersistDays` 仍原样带(它们是独立于当日 K 线的
@@ -432,29 +439,45 @@ def _build_industry_divergence(
     window_panel: Optional[pl.DataFrame],
     window_start: date,
     trade_date: date,
-    parquet_dir: Optional[Path],
     db_path: Optional[Path],
+    industry_ready: bool = True,
 ) -> Tuple[bool, List[InfoCardIndexPoint], Optional[str]]:
     """行业分歧线(plan §五 v1.4-④-A-3):个股/**行业成员中位数合成指数**比值,起点
     归一 100。**未达标行业如实标注,不硬凑**(交接要求原话)——`industry` 空串(该股
     无 `stock_basic.industry`)或 `industry_rank is None`(② 判定"当日成员<5,不参与
-    排名",与 ③ 排序键 `industry_rank=None` 同一语义)→ 直接不可用,**不调用**
-    `industry_median_return_series`(样本不足时就不该假装能合成出一条可信的线)。"""
+    排名",与 ③ 排序键 `industry_rank=None` 同一语义)→ 直接不可用,**不调用**取数
+    (样本不足时就不该假装能合成出一条可信的线)。
+
+    **三档不可用理由,刻意分开写、不许混成一句**(v1.4-⑩-E):
+      ① 该股无行业分类(`stock_basic.industry` 缺失);
+      ② **行业样本不足**(该行业当日成员数 < `_MIN_MEMBERS`)= 「看了,不够格」;
+      ③ **行业强度数据未就绪**(`industry_strength_daily` 表当日/整窗无行)= 「**没看**」。
+    ②③ 混成一句就是拿「没看」冒充「没有」(§3.8 硬要求)。`industry_ready=False` 时优先
+    判 ③ —— 表没数据的时候 `industry_rank` 必然是 None,不先判 ③ 就会误报成 ②。"""
     if not industry:
         return False, [], "该股无行业分类(stock_basic.industry缺失)"
+    if not industry_ready:
+        fresh = industry_strength_status(trade_date, db_path=db_path)
+        return False, [], f"行业强度数据未就绪(最新至 {fresh.latest_label()})"
     if industry_rank is None:
         return False, [], f"行业样本不足({industry}当日成员数不足,分歧线缺省)"
     if window_panel is None or window_panel.is_empty():
         return False, [], "该股窗口内无K线数据,无法计算行业分歧线"
-    med = industry_median_return_series(industry, window_start, trade_date, parquet_dir=parquet_dir, db_path=db_path)
+    # v1.4-⑩-E:读预计算表(不过滤 `industry_rank IS NULL` —— 该口径本就不受 `_MIN_MEMBERS`
+    # 约束,这是 ⑩-A「落全部行业」的直接兑现),不再走 `industry_strength` 里那个走全 glob
+    # 的现算参考实现(守门单测 grep 本文件断言它的名字不出现,故此处只描述、不点名)。
+    med = load_industry_median_series(industry, window_start, trade_date, db_path=db_path)
+    if not med:
+        fresh = industry_strength_status(trade_date, db_path=db_path)
+        return False, [], f"行业强度数据未就绪(最新至 {fresh.latest_label()})"
     med_by_date = {r["trade_date"]: r["median_ret"] for r in med}
     stock_rows = window_panel.sort("trade_date").select(["trade_date", "close"]).to_dicts()
     if not stock_rows:
         return False, [], "该股窗口内无K线数据,无法计算行业分歧线"
     # 逐日累乘合成行业指数(基准 100,起点日 T-59 本身不吃当天收益——它就是"day 0")。
     # 窗口内某日行业中位数缺口(数据缺口/成员数临时跌破阈值)按 0(当日不涨不跌)处理,
-    # 不让单日缺口打断整条线——`industry_median_return_series` 已在其 docstring 声明
-    # "是否把缺口当0是调用方策略",这里就是那个策略选择。
+    # 不让单日缺口打断整条线——取数侧(`load_industry_median_series` 及其现算参考实现)
+    # 已在 docstring 声明"是否把缺口当0是调用方策略",这里就是那个策略选择。
     idx_val = 100.0
     dates: List[date] = []
     ratio: List[float] = []
@@ -647,12 +670,17 @@ def build_info_card(
     t0_row = _row_at(panel, trade_date)
 
     industry_of = industry_map if industry_map is not None else load_industry_map(db_path)
+    # v1.4-⑩(§七 P0-23):读预计算表,不再现算(现算 = 全历史扫描,本端点在生产上
+    # **永不返回**,且跑在常驻服务内会把哨兵拖进内存回收死循环)。
     industry_hot = industry_strength_lookup(
         industry_scores if industry_scores is not None
-        else compute_industry_strength(trade_date, parquet_dir=parquet_dir, db_path=db_path)
+        else load_industry_strength(trade_date, db_path=db_path)
     )
-    industry_rank = stock_industry_rank(code, industry_of, industry_hot)
-    persist_days = stock_persist_days(code, industry_of, industry_hot)
+    # 表缺当日行 → `industry_hot` 空。**这是「没看」,不是「没有」**:此时 rank/persist
+    # 一律**如实缺省(None)**,不写 0 —— 0 会被读成「评了、持续 0 天」(§3.8)。
+    industry_ready = bool(industry_hot)
+    industry_rank = stock_industry_rank(code, industry_of, industry_hot) if industry_ready else None
+    persist_days = stock_persist_days(code, industry_of, industry_hot) if industry_ready else None
     industry_name = industry_of.get(code) or ""
 
     snapshot = _build_snapshot(t0_row, industry_rank, persist_days)
@@ -665,7 +693,8 @@ def build_info_card(
     rs_available, rs_line, rs_reason = _build_rs_line(window_panel, idx_states)
     market = _build_market_context(trade_date, idx_states, parquet_dir)
     div_available, div_line, div_reason = _build_industry_divergence(
-        code, industry_name, industry_rank, window_panel, window_start, trade_date, parquet_dir, db_path,
+        code, industry_name, industry_rank, window_panel, window_start, trade_date, db_path,
+        industry_ready=industry_ready,
     )
 
     k4_details = _k4_flags_detail(k4_flags, db_path)
@@ -696,6 +725,7 @@ def attach_info_card_summaries(
     top_list: Optional[Dict[str, dict]] = None,
     parquet_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
+    industry_ready: bool = True,
 ) -> None:
     """给一批候选**原地**补 `Candidate.info_card_summary`(plan §五 v1.4-④-B「报告
     快照只存摘要位」)。`pipeline.py::build_report` 在 `candidates`/`news_alerts`/
@@ -708,13 +738,18 @@ def attach_info_card_summaries(
     `industryRank`/`industryPersistDays`,② 唯一源同一次计算的产物)取,**零额外
     parquet 读取**。`news_items`/`top_list` 由调用方传入该次报告生成时已经拿到的
     内存态数据(此时尚未落库,不能靠现读 DB/parquet 拿到)——见各自参数注释。
+
+    `industry_ready`(v1.4-⑩-E):调用方(pipeline)告知行业强度表当日**有没有数据**。
+    `False` 时快照的 `industryRank`/`industryPersistDays` 一律**如实缺省(None)**,
+    不拿排序键那份 `0` 冒充「评了、持续 0 天」—— 排序键要的是可比数值(None→+inf),
+    信息卡要的是诚实缺省,**两者刻意不同**,别"统一"。
     """
     domain = news_domain_codes or set()
     lookback = _load_lookback_top_lists(trade_date, parquet_dir=parquet_dir, t0_top_list=top_list)
     for c in candidates:
         row = c.raw or {}
-        rank = (c.intel_rank or {}).get("industryRank")
-        persist = (c.intel_rank or {}).get("industryPersistDays", 0) or 0
+        rank = (c.intel_rank or {}).get("industryRank") if industry_ready else None
+        persist = ((c.intel_rank or {}).get("industryPersistDays", 0) or 0) if industry_ready else None
         snapshot = _build_snapshot(row, rank, persist)
         mild = is_mild_band(row.get("ret_1d"))
         news = _news_summary_for_code(c.ts_code, trade_date, domain, items=news_items, db_path=db_path)

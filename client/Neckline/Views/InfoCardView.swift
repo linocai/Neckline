@@ -189,7 +189,9 @@ struct InfoCardPageView: View {
                     metric("量比(5日)", card.snapshot.volRatio5.map { String(format: "%.2f", $0) } ?? "—")
                     metric("换手率", card.snapshot.turnoverRate.map { NKFmt.pct($0) } ?? "—")
                     metric("行业强度排名", card.snapshot.industryRank.map { "#\($0)" } ?? "未参与排名")
-                    metric("行业强度持续天数", "\(card.snapshot.industryPersistDays) 天")
+                    // v1.4-⑩-E:`nil` = 行业强度表当日无数据(「没看」),显示「数据未就绪」
+                    // 而不是「0 天」(「0 天」是「看了,不是强度日」,两者不能混)。
+                    metric("行业强度持续天数", card.snapshot.industryPersistDays.map { "\($0) 天" } ?? "数据未就绪")
                     metric("年线位置", yearLineText(card.snapshot))
                     metric("距 20 日高点", card.snapshot.distFromHigh20dPct.map { NKFmt.signedPct($0 * 100) } ?? "—")
                     metric("连续涨停天数", "\(card.snapshot.consecLimitUpDays) 天")

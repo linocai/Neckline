@@ -259,7 +259,9 @@ struct InfoCardSnapshot: Codable, Equatable {
     var volRatio5: Double? = nil
     var turnoverRate: Double? = nil
     var industryRank: Int? = nil            // ② 行业强度当日排名(1=最强);nil=未参与排名,不当 0
-    var industryPersistDays: Int = 0
+    /// ② 行业强度持续天数。**`nil` ≠ 0**(v1.4-⑩-E):`nil` = 行业强度表当日无数据
+    /// (「没看」);`0` = 评了、不是强度日(「看了,没有」)。UI 据此显示「不可用」而非「0 天」。
+    var industryPersistDays: Int? = nil
     var aboveMa250: Bool? = nil             // ma250 未就绪(<250 交易日历史)→ nil,不当"年线下"
     var distFromMa250Pct: Double? = nil     // 小数(非百分数),如 0.05 = 高于年线 5%
     var distFromHigh20dPct: Double? = nil
@@ -679,13 +681,31 @@ struct NewsAlertScanStatus: Codable, Equatable, Identifiable {
     }
 }
 
-/// 板块数据新鲜度(v1.4-①-C,§七 P0-3)。`sectorLagDays=-1` = 板块数据完全缺失(哨兵值,
-/// 服务端 `report/sectors.py::SECTOR_LAG_UNKNOWN`,刻意不用 0——0 是"新鲜")。
+/// 数据新鲜度(v1.4-①-C 板块三键 + v1.4-⑩-F 行业强度三键;§七 P0-3 / P0-23)。
+/// `sectorLagDays=-1` = 板块数据完全缺失(哨兵值,服务端
+/// `report/sectors.py::SECTOR_LAG_UNKNOWN`,刻意不用 0——0 是"新鲜")。
 /// `stale=true` 时「当日暴起板块」与「题材持续天数」本日不可信,须显式标注。
+///
+/// **⚠ `stale` 只表板块数据,一个字没改**;行业强度未就绪是**另一件独立故障**,走下面
+/// 三个键。两者**不许合并成一个 bool** —— 合并就分不清哪个坏了(服务端同样并列存放)。
+///
+/// 三个行业强度键是 `Optional`:老报告快照(建于本字段前)没有这三键 → `nil` 兜底不崩。
+/// 之所以能这么偷懒:`dataFreshness` 属于「`_shape_report` 每次响应**重新构造**」那一类
+/// (**不是** `reviews.result_json` 那种写入时冻住的历史快照,后者新增字段必须手写
+/// `init(from:)` 做 `decodeIfPresent` 兜底,见项目 CLAUDE.md 该条)。
 struct DataFreshness: Codable, Equatable {
     var sectorDataDate: String?
     var sectorLagDays: Int
     var stale: Bool
+    /// 行业强度预计算表(`industry_strength_daily`)库内最新日;`nil` = 完全无数据 / 老快照缺键。
+    var industryStrengthDate: String? = nil
+    /// 落后几个交易日;`-1` = 完全无数据(哨兵值,同 `sectorLagDays` 惯例)。
+    var industryStrengthLagDays: Int? = nil
+    /// `lag > 0` 即 true(**无容忍度** —— 行业强度用当日 EOD 算,16:05 当天就该有)。
+    var industryStrengthStale: Bool? = nil
+
+    /// 顶部横幅是否该出现:板块过期**或**行业强度未就绪,任一成立即展示(两条各自成行)。
+    var needsBanner: Bool { stale || industryStrengthStale == true }
 }
 
 struct ReportSnapshot: Codable, Equatable {

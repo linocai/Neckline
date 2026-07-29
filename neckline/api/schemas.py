@@ -88,7 +88,9 @@ class InfoCardSnapshotOut(BaseModel):
     volRatio5: Optional[float] = None
     turnoverRate: Optional[float] = None
     industryRank: Optional[int] = None       # ② 行业强度当日排名(1=最强);None=未参与排名
-    industryPersistDays: int = 0
+    # v1.4-⑩-E:**`null` ≠ 0**。`null` = 行业强度表当日无数据(「没看」);`0` = 评了、
+    # 不是强度日(「看了,没有」)。客户端展示「不可用」而非「0 天」。
+    industryPersistDays: Optional[int] = None
     aboveMa250: Optional[bool] = None        # ma250 未就绪(<250交易日历史)→ null,不当"年线下"
     distFromMa250Pct: Optional[float] = None  # 小数(非百分数),如 0.05 = 高于年线5%
     distFromHigh20dPct: Optional[float] = None

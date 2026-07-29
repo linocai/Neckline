@@ -883,9 +883,14 @@ class TestSectorFreshnessInReport:
         assert "本小节不可信" in bundle.markdown              # 最强题材小节被点名
         # 落库快照可读回(随报告冻住,不在读时重算)
         loaded = store.load_report(report_date, db_path=isolated_env.db_path)
+        # v1.4-⑩-F:同一个 `dataFreshness` 里并列**两件独立故障** —— 板块数据过期(本例
+        # 造的)与行业强度未就绪(本例已由 fixture 日更喂上,故 stale=False)。
+        # **既有三键语义一个字不改**(`stale` 仍只表板块),不许合并成一个 bool。
         assert loaded["data_freshness"] == {
             "sectorDataDate": dates[len(dates) - lag - 1].strftime("%Y%m%d"),
             "sectorLagDays": lag, "stale": True,
+            "industryStrengthDate": report_date.strftime("%Y%m%d"),
+            "industryStrengthLagDays": 0, "industryStrengthStale": False,
         }
 
     def test_fresh_board_data_has_no_banner(self, isolated_env, monkeypatch):

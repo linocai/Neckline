@@ -13,6 +13,12 @@
   两项都**尽力而为**:失败只记 WARNING,绝不让主增量(daily/basic/adj/moneyflow)失败,
   也绝不改变退出码(它们是增强项,不是 EOD 主链路)。
 
+**v1.4-⑩-C 新增第三项(§七 P0-23)**:**行业强度预计算落表**(`industry_strength_daily`)
+  —— 只读当日那一个 `daily` 分区算一天,`persist_days` 递推;16:35 报告主链 / 信息卡端点 /
+  问询台三处从此**只读表**,不再各自扫全历史 784 万行(生产 2 vCPU/1.6G 上 700M cap
+  OOM-kill、1400M cap 600s 跑不完)。同样**尽力而为不改退出码,但日志用 ERROR** —— 它是
+  **判据输入**(A2 hard_cut + 排序键①)不是增强项;失败日志带补算命令原文。
+
 新增配额消耗(与 §七 P4-20 一起算账,部署块 ⑨-E 复核):`ths_daily` 5 次/日(尾窗)、
 `suspend_d` 1 次/日、`ths_index`+`ths_member` ~400 次/周。
 
@@ -105,6 +111,42 @@ def update_suspend_list(target: date) -> None:
         logger.warning("[suspend_d] 日更异常(已吞,不阻断主增量)", exc_info=True)
 
 
+def update_industry_strength(target: date) -> None:
+    """v1.4-⑩-C(§七 P0-23):行业强度预计算落表(`industry_strength_daily`)。
+
+    **只读当日那一个 `daily` 分区**算一天,`persist_days` 由「上一评定日 streak + 今日强度日
+    标记」递推 —— 16:35 报告主链 / 信息卡端点 / 问询台三处从此**只读表**,不再各自扫全历史
+    784 万行(生产 2 vCPU/1.6G 上根本跑不完)。
+
+    **尽力而为**(异常吞掉、不改退出码,同 `update_suspend_list`/`update_concept_boards`
+    两位先例)**但日志级别用 ERROR** —— 它是**判据输入**(A2 hard_cut + 排序键①),不是
+    增强项;日志带**补算命令原文**,让运维看到就知道下一步敲什么。"""
+    from neckline.report.industry_strength_store import (
+        industry_strength_status,
+        refresh_command_hint,
+        refresh_industry_strength,
+    )
+
+    try:
+        stats = refresh_industry_strength([target])
+        fresh = industry_strength_status(target)
+        if stats["rows"] == 0:
+            logger.error(
+                "[industry_strength] %s 未落任何行(缺 daily 分区 %d 天 / 无行业映射?)——"
+                "今日报告的题材持续天数与 A2/B3 将走保险丝降级。补算:%s",
+                target, stats["missing"], refresh_command_hint(target, target),
+            )
+        else:
+            logger.info("[industry_strength] %s 落 %d 行(表内最新至 %s,落后 %d 个交易日)",
+                        target, stats["rows"], fresh.latest_label(), fresh.lag_days)
+    except Exception:  # noqa: BLE001
+        logger.error(
+            "[industry_strength] 日更异常(已吞,不阻断主增量)——**判据输入缺失**,"
+            "今日报告的题材持续天数与 A2/B3 将走保险丝降级。补算:%s",
+            refresh_command_hint(target, target), exc_info=True,
+        )
+
+
 def main() -> int:
     if not settings.tushare_token:
         logger.error("TUSHARE_TOKEN 缺失(.env),无法拉取。")
@@ -140,6 +182,9 @@ def main() -> int:
     # 影响 EOD 主链路的落盘时序)。
     update_suspend_list(target)
     update_concept_boards(target)
+    # v1.4-⑩-C:排在两位增强项**之后**(它吃的是本次主增量刚落的当日 `daily` 分区,
+    # 时序上必须在 `backfill_day_tables` 之后)。
+    update_industry_strength(target)
 
     logger.info("增量更新完成:%s", target)
     return 0

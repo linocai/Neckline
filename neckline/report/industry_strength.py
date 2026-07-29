@@ -42,6 +42,25 @@ daily_basic 等)——省去无关列的 I/O 与内存(全市场多年历史只�
 (只有上界 `<=trade_date`)的前提:本地实测全历史(2020-2026,~780 万行)4 列加载 +
 全量分组/排名/分位/连续天数计算合计 < 1 秒,详见 ②-C 对拍报告。
 
+**🛑 v1.4-⑩(§七 P0-23)在线路径禁用本模块的两个 I/O 入口**:`compute_industry_strength`
+与 `industry_median_return_series` 各自对 `daily` 做 `scan_parquet`(前者**全历史**、后者
+固定窗口)。上面那句「本地实测全历史加载廉价(<1s)」**只在开发机(Mac)成立** —— 生产
+(2 vCPU / 1.6G,1591 分区 / 784 万行)实测 700M cap **OOM-kill**、1400M cap **600s 跑不完**,
+2026-07-29 挡住整版上云。修法 = **预计算落表**:16:05 日更**只读当日一个分区**算一天,
+`persist_days` 用「上一评定日 streak + 今日强度日标记」一步递推(`next_persist_days`),
+在线路径(报告主链 / 信息卡 / 问询台)一律读 `report/industry_strength_store.py`。
+本模块两个 I/O 入口**降级为离线 / 对拍用**(bootstrap、单测三路等价、「表内算得对不对」的
+参考实现),各自 docstring 顶部已复述该禁令;守门单测 grep 四个在线文件断言它们不出现。
+
+**计算侧三件套(v1.4-⑩-B 拆分,口径一个字未改)**:
+    · `_day_local_table(panel, quantile)` —— **当日量**(只依赖当天那一个分区):全部
+      (trade_date, industry) 的 `median_ret`/`member_count`,再在达标子集上算
+      `industry_rank`/`is_strength_day` 后 left-join 回全量行(未达标两列 NULL)。
+    · `_attach_persist(day_local)` —— **全量 streak**(现算路径 + 对拍用),只在
+      `is_strength_day` 非空的行上做,未评定行 `industry_persist_days` 留 NULL。
+    · `next_persist_days(prev, is_strength_day)` —— **递推的唯一实现**(纯函数),
+      store 的日更增量与 bootstrap Pass 2 都调它,不各写一遍。
+
 **A2/B3 回归规格档(v1.4-②生效)**:`report/holding_k4_check.py` 的
 `A2_theme_persist_ge_4`(hard_cut)/`B3_theme_persist_2_3`(avoid_flag)、
 `report/intel_candidates.py` 的候选安检、`api/inquiry.py` 的问询台 K4 提示,
@@ -126,13 +145,122 @@ def _load_ret1d_panel(end: date, parquet_dir: Optional[Path], start: Optional[da
     lf = lf.filter(pl.col("trade_date") <= end)
     if start is not None:
         lf = lf.filter(pl.col("trade_date") >= start)
-    df = lf.collect()
+    return _ret1d_from_daily(lf.collect())
+
+
+def _ret1d_from_daily(df: pl.DataFrame) -> pl.DataFrame:
+    """`daily` 行(需含 `close`/`pre_close`)→ 加 `ret_1d` 列的同形 DataFrame,**唯一实现**
+    (v1.4-⑩-B:`_load_ret1d_panel` 的全历史 / 固定窗口扫描,与 store 的「只读当日一个
+    分区」/「按年块」读取共用这一份口径,不许各写一遍)。过滤 `close`/`pre_close` 空值与
+    `pre_close == 0`(除零)。空入参原样返回(不造列,调用方按 `is_empty()` 判)。
+
+    `ret_1d` 用**原始**(未复权)收盘比,不走 `apply_qfq` —— 理由见模块 docstring「无前视」节
+    (qfq 对同行 `close`/`pre_close` 用同一标量缩放,比值精确抵消)。"""
     if df.is_empty():
         return df
-    df = df.filter(
+    out = df.filter(
         pl.col("close").is_not_null() & pl.col("pre_close").is_not_null() & (pl.col("pre_close") != 0)
     )
-    return df.with_columns((pl.col("close") / pl.col("pre_close") - 1).alias("ret_1d"))
+    return out.with_columns((pl.col("close") / pl.col("pre_close") - 1).alias("ret_1d"))
+
+
+def _day_local_table(panel: pl.DataFrame, quantile: float = _STRENGTH_QUANTILE) -> pl.DataFrame:
+    """**当日量**(v1.4-⑩-B 第 1 件;纯函数,无 I/O)。`panel` 需含 `trade_date`/`industry`/
+    `ret_1d`(其余列忽略)。返回**全部** (trade_date, industry) 行(`member_count >= 1`),列 =
+    trade_date/industry/median_ret/member_count/industry_rank/is_strength_day。
+
+    **这四个量全部只依赖当天那一个分区**:`ret_1d` 同行同天;排名与 quantile 阈都是「当日
+    达标行业之间」比。这正是 P0-23 修法(预计算落表 + 只读当日分区)成立的关键事实 ——
+    跨日的量只有 `persist_days` 一个,而它能一步递推(`next_persist_days`)。
+
+    未达标行业(`member_count < _MIN_MEMBERS`)的 `industry_rank`/`is_strength_day` 为
+    **NULL**(= 「没评」,不是 0;落表语义见 `neckline/db.py` 该表注释)。
+    **⚠ 实现刻意走「达标子集算完再 left-join 回全量」这条笨路**,不用 `pl.when(...)` 掩码列
+    直接在全量行上算 rank/quantile —— polars 对 null 的排名 / 分位语义容易踩坑,规格
+    (plan §五 v1.4-⑩-B)明令走这条,别"优化"。"""
+    if panel.is_empty() or "industry" not in panel.columns or "ret_1d" not in panel.columns:
+        return pl.DataFrame(schema={
+            "trade_date": pl.Date, "industry": pl.String, "median_ret": pl.Float64,
+            "member_count": pl.UInt32, "industry_rank": pl.Int64, "is_strength_day": pl.Boolean,
+        })
+    all_daily = (
+        panel.filter(pl.col("industry").is_not_null() & pl.col("ret_1d").is_not_null())
+        .group_by(["trade_date", "industry"])
+        .agg(pl.col("ret_1d").median().alias("median_ret"), pl.len().alias("member_count"))
+    )
+    eligible = all_daily.filter(pl.col("member_count") >= _MIN_MEMBERS)
+    # 强度排名:当日中位数(仅达标行业间)降序名次,1=最强。ordinal 保证严格 1..N 无并列。
+    #
+    # **⚠ 并列必须有确定性 tie-break(2026-07-29 v1.4-⑩ 生产真数据演练打出来的洞)**:
+    # 「两行业当日中位数恰好相等的概率可忽略」这句 v1.4-② 的假设**在真数据上不成立** ——
+    # A 股一天里几十只票收益完全相同(0.00%、整分钱跳动)很常见,110 个行业里当天中位数
+    # 撞车的成堆(20230803 实测撞了一串)。`rank(method="ordinal")` 对并列**按行出现顺序**
+    # 打散,而行顺序取决于**读进来的是哪一批 parquet**(按年块 glob vs 只读当日一个分区,
+    # 行序不同)→ 同一天同一份数据,bootstrap 与日更会算出**不同的 rank**,报告重跑也会
+    # 换序。故先按 `(median_ret 降序, industry 升序)` 排定,再 ordinal ——
+    # **行业名是稳定 tie-break**,与读取路径无关。三路等价 + 单日对拍单测锁死这条。
+    eligible = eligible.sort(
+        ["trade_date", "median_ret", "industry"], descending=[False, True, False]
+    ).with_columns(
+        pl.col("median_ret").rank(method="ordinal", descending=True).over("trade_date")
+        .cast(pl.Int64).alias("industry_rank")
+    )
+    # 强度日:中位数 >= 当日(仅达标行业间)quantile(q) 阈。
+    thr = pl.col("median_ret").quantile(quantile).over("trade_date")
+    eligible = eligible.with_columns(thr.alias("_thr"))
+    eligible = eligible.with_columns((pl.col("median_ret") >= pl.col("_thr")).alias("is_strength_day"))
+    return all_daily.join(
+        eligible.select(["trade_date", "industry", "industry_rank", "is_strength_day"]),
+        on=["trade_date", "industry"], how="left",
+    )
+
+
+def _attach_persist(day_local: pl.DataFrame) -> pl.DataFrame:
+    """**全量 streak**(v1.4-⑩-B 第 2 件;纯函数,无 I/O)。给 `_day_local_table` 的输出补
+    `industry_persist_days` 列:**只在 `is_strength_day` 非空的行上做**(未评定日按「不存在」
+    处理 = 与 v1.4-② 原实现「未达标行在表里根本没有」逐位等价,既不打断 streak 也不贡献
+    计数),未评定行留 **NULL**。
+
+    手法(sort → flip → cum_sum → cum_count)与 `research/k4p_h6_theme.py::industry_persistence`
+    同源,原样搬自 v1.4-② 的 `_compute_daily_table`,一个字未改。**现算路径 + 三路等价对拍用**;
+    日更增量走 `next_persist_days` 递推(两者单测逐位对拍)。"""
+    if day_local.is_empty():
+        return day_local.with_columns(pl.lit(None, dtype=pl.Int64).alias("industry_persist_days"))
+    rated = day_local.filter(pl.col("is_strength_day").is_not_null()).sort(["industry", "trade_date"])
+    if rated.is_empty():
+        return day_local.with_columns(pl.lit(None, dtype=pl.Int64).alias("industry_persist_days"))
+    flip = (pl.col("is_strength_day") != pl.col("is_strength_day").shift(1).fill_null(False)).over("industry")
+    rated = rated.with_columns(flip.cum_sum().over("industry").alias("_run_id"))
+    rated = rated.with_columns(
+        pl.when(pl.col("is_strength_day"))
+        .then(pl.col("trade_date").cum_count().over(["industry", "_run_id"]))
+        .otherwise(0)
+        .cast(pl.Int64)
+        .alias("industry_persist_days")
+    )
+    return day_local.join(
+        rated.select(["trade_date", "industry", "industry_persist_days"]),
+        on=["trade_date", "industry"], how="left",
+    )
+
+
+def next_persist_days(prev: Optional[int], is_strength_day: Optional[bool]) -> Optional[int]:
+    """连续强度日的**递推唯一实现**(v1.4-⑩-B 第 3 件;纯函数)。
+
+        · `is_strength_day is None`(当日未评定,成员数不足)→ `None`,且**调用方须把
+          `prev` 原样往后传、不清零** —— 未评定日按「不存在」处理,不打断 streak(与
+          `_attach_persist` 逐位等价,这是三路等价单测锁的东西)。
+        · `True` → `(prev or 0) + 1`(`prev=None` 即「此前从未评定过」,从 0 起算)。
+        · `False` → `0`(**评了、不是强度日**;0 与 None 语义不同,见 `neckline/db.py`)。
+
+    「要看多远历史」这个问题的答案就压在这个整数里 —— 历史 streak 被压缩成 `prev`,
+    于是日更**只读当日一个分区**即可产出跨日的量,不需要任何人为回看窗口(§七 P0-23
+    方案②绕开方案①「加下界窗口会低报长 streak」设计冲突的关键)。"""
+    if is_strength_day is None:
+        return None
+    if is_strength_day:
+        return (prev or 0) + 1
+    return 0
 
 
 def _compute_daily_table(panel: pl.DataFrame, quantile: float) -> pl.DataFrame:
@@ -143,39 +271,16 @@ def _compute_daily_table(panel: pl.DataFrame, quantile: float) -> pl.DataFrame:
 
     口径逐条对齐 `research/k4p_h6_theme.py::industry_persistence`(排名/强度日集合/
     持续天数三项单测逐位对拍,见 `tests/test_industry_strength.py`);差异见模块
-    docstring(新增 industry_rank;非强度日也保留 persist=0 行)。"""
-    ind_daily = (
-        panel.filter(pl.col("industry").is_not_null() & pl.col("ret_1d").is_not_null())
-        .group_by(["trade_date", "industry"])
-        .agg(pl.col("ret_1d").median().alias("median_ret"), pl.len().alias("member_count"))
-        .filter(pl.col("member_count") >= _MIN_MEMBERS)
-    )
-    # 强度排名:当日中位数(仅达标行业间)降序名次,1=最强。ordinal 保证严格 1..N 无并列
-    # (中位数是连续浮点值,两行业当日中位数恰好相等的概率可忽略;真撞了由行编码顺序
-    # 任意打散,不影响下游——③ 排序键还有 code 兜底)。
-    ind_daily = ind_daily.with_columns(
-        pl.col("median_ret").rank(method="ordinal", descending=True).over("trade_date")
-        .cast(pl.Int64).alias("industry_rank")
-    )
-    # 强度日:中位数 >= 当日(仅达标行业间)quantile(q) 阈。
-    thr = pl.col("median_ret").quantile(quantile).over("trade_date")
-    ind_daily = ind_daily.with_columns(thr.alias("_thr"))
-    ind_daily = ind_daily.with_columns((pl.col("median_ret") >= pl.col("_thr")).alias("is_strength_day"))
-    # 持续天数(连续强度日;断裂重置)——sort → flip cumsum → cum_count,与 research
-    # `industry_persistence` 同一手法,仅在**达标**行业的时间线上做(未达标的日子在
-    # `ind_daily` 里"不存在",不引入额外断裂,亦不贡献计数——与 research 版行为一致,
-    # 这一点极端边界情形〔行业成员数当天跌破 5〕的口径分歧见模块 docstring)。
-    ind_daily = ind_daily.sort(["industry", "trade_date"])
-    flip = (pl.col("is_strength_day") != pl.col("is_strength_day").shift(1).fill_null(False)).over("industry")
-    ind_daily = ind_daily.with_columns(flip.cum_sum().over("industry").alias("_run_id"))
-    ind_daily = ind_daily.with_columns(
-        pl.when(pl.col("is_strength_day"))
-        .then(pl.col("trade_date").cum_count().over(["industry", "_run_id"]))
-        .otherwise(0)
-        .cast(pl.Int64)
-        .alias("industry_persist_days")
-    )
-    return ind_daily.drop(["_thr", "_run_id"])
+    docstring(新增 industry_rank;非强度日也保留 persist=0 行)。
+
+    **v1.4-⑩-B 起本函数 = `_attach_persist(_day_local_table(...))` 的达标子集**(行为逐位
+    不变,`test_core_table_matches_research_bit_for_bit` 是它的机器证明)。保留它的理由:
+    它是「达标行业视角」的口径锚点,既有对拍单测直接打在这一层。"""
+    full = _attach_persist(_day_local_table(panel, quantile))
+    return full.filter(pl.col("industry_rank").is_not_null()).select(
+        ["trade_date", "industry", "median_ret", "member_count",
+         "industry_rank", "is_strength_day", "industry_persist_days"]
+    ).sort(["industry", "trade_date"])
 
 
 def compute_industry_strength(
@@ -185,7 +290,14 @@ def compute_industry_strength(
     parquet_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
 ) -> List[IndustryStrength]:
-    """给定交易日的全行业强度/排名/持续天数(**唯一源**;口径见模块 docstring)。
+    """给定交易日的全行业强度/排名/持续天数(**口径唯一源**;口径见模块 docstring)。
+
+    🛑 **禁止在线路径调用**(§七 P0-23):本函数对 `daily` 做**全历史 `scan_parquet`**
+    (生产 1591 分区 / 784 万行),在生产机(2 vCPU / 1.6G)**跑不完**(700M cap OOM-kill、
+    1400M cap 600s 超时)。在线一律读 `report/industry_strength_store.py::load_industry_strength`;
+    本函数只留给**离线用途** —— bootstrap 回填、单测三路等价对拍、「表内算得对不对」的参考
+    实现。守门单测 grep `pipeline.py`/`info_card.py`/`intel_candidates.py`/`api/inquiry.py`
+    四个文件断言本函数名不出现。
 
     只返回当日成员数达 `_MIN_MEMBERS` 的行业(未达标 = 不参与排名,调用方按"查无该
     行业"处理——持续天数按 0、排名按 None,同 `sectors.py::sector_hot_lookup` 的
@@ -260,7 +372,14 @@ def industry_median_return_series(
     db_path: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     """给定行业在 `[start, end]` 每个交易日的成员 `ret_1d` 中位数(v1.4-④ 信息卡「行业
-    分歧线」合成用,plan §五 v1.4-④-A-3)。与 `compute_industry_strength` **同源**
+    分歧线」合成用,plan §五 v1.4-④-A-3)。
+
+    🛑 **禁止在线路径调用**(§七 P0-23,同 `compute_industry_strength`):本函数虽只扫固定
+    窗口,但仍走 `year=*/*.parquet` 全 glob(1500+ 个 footer)。在线一律读
+    `industry_strength_store.load_industry_median_series`;本函数保留作**参考实现**——
+    「表内 `median_ret` 是否算对」的对拍基准。
+
+    与 `compute_industry_strength` **同源**
     (同一份 `load_industry_map` + 同一口径的 `ret_1d` 中位数),但**不受 `_MIN_MEMBERS`
     排名门槛约束**——指数合成只需要"这个行业当天整体涨跌多少"这一个统计量,不需要
     判"够不够格参与强度排名"这层资格判定,两者是同一原始统计量的不同消费场景。
@@ -300,6 +419,7 @@ def industry_median_return_series(
 __all__ = [
     "IndustryStrength",
     "load_industry_map",
+    "next_persist_days",
     "compute_industry_strength",
     "industry_strength_lookup",
     "stock_persist_days",

@@ -24,6 +24,7 @@ from tests.conftest import (
     business_days,
     insert_stock_basic,
     insert_trade_cal,
+    seed_industry_strength,
     write_daily_fixture,
 )
 
@@ -142,20 +143,36 @@ def test_build_rs_line_unavailable_when_no_overlap():
 
 def test_build_industry_divergence_unavailable_no_industry():
     available, line, reason = ic._build_industry_divergence(
-        "600001.SH", "", None, pl.DataFrame(), date(2024, 1, 1), date(2024, 1, 2), None, None,
+        "600001.SH", "", None, pl.DataFrame(), date(2024, 1, 1), date(2024, 1, 2), None,
     )
     assert available is False and line == [] and "无行业分类" in reason
 
 
 def test_build_industry_divergence_unavailable_not_qualifying():
     """② 判定"当日成员<5,不参与排名"(industry_rank=None)→ 分歧线如实标不可得,
-    不调用 `industry_median_return_series` 硬凑(样本不足时不该假装能合成出线)。"""
+    不调用现算参考实现硬凑(样本不足时不该假装能合成出线)。
+
+    v1.4-⑩-E:`industry_ready=True` 表示行业强度表**当日有数据**(看了),此时
+    `industry_rank=None` 才是真正的「样本不足」;表整个没数据(没看)是另一档理由,
+    见 `test_build_industry_divergence_unavailable_when_table_not_ready`。"""
     available, line, reason = ic._build_industry_divergence(
         "600001.SH", "小众行业", None, pl.DataFrame({"trade_date": [date(2024, 1, 1)], "close": [10.0]}),
-        date(2024, 1, 1), date(2024, 1, 2), None, None,
+        date(2024, 1, 1), date(2024, 1, 2), None, industry_ready=True,
     )
     assert available is False and line == []
     assert "样本不足" in reason and "小众行业" in reason
+
+
+def test_build_industry_divergence_unavailable_when_table_not_ready(isolated_env):
+    """v1.4-⑩-E 新增第三档理由:行业强度表当日**整段缺失**(「没看」)→ 文案必须与
+    「行业样本不足」(「看了,不够格」)**分开**,不许混成一句(§3.8)。"""
+    available, line, reason = ic._build_industry_divergence(
+        "600001.SH", "某行业", None, pl.DataFrame({"trade_date": [date(2024, 1, 1)], "close": [10.0]}),
+        date(2024, 1, 1), date(2024, 1, 2), isolated_env.db_path, industry_ready=False,
+    )
+    assert available is False and line == []
+    assert "行业强度数据未就绪" in reason
+    assert "样本不足" not in reason
 
 
 def test_top_list_summary_covered_and_hits():
@@ -272,6 +289,9 @@ def _seed(env) -> List[date]:
         {"ts_code": "700001.SZ", "name": "示例己", "industry": "小众行业", "list_date": dates[0] - timedelta(days=800)},
         {"ts_code": "700002.SZ", "name": "示例庚", "industry": None, "list_date": dates[0] - timedelta(days=800)},
     ] + [{"ts_code": f"9{j:05d}.SZ", "name": f"背景{j}", "industry": "背景填充行业"} for j in range(50)])
+    # v1.4-⑩(§七 P0-23):信息卡在线路径**只读** `industry_strength_daily` 预计算表,
+    # 故夹具要把 16:05 日更那一步补上(走生产同一条写入路径,不是测试专用第二套写法)。
+    seed_industry_strength(env, dates)
     return dates
 
 

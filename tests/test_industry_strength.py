@@ -90,6 +90,30 @@ def test_rank_forms_1_to_n_each_day():
         assert sorted(day["industry_rank"].to_list()) == list(range(1, day.height + 1))
 
 
+def test_rank_tie_break_is_deterministic_regardless_of_row_order():
+    """**并列名次必须与"数据以什么行顺序读进来"无关**(2026-07-29 v1.4-⑩ 生产真数据演练
+    打出来的洞,20230803 当天 110 个行业里中位数撞了一串)。
+
+    根因:A 股一天里收益完全相同的票成堆,行业当日中位数并列很常见;
+    `rank(method="ordinal")` 对并列按**行出现顺序**打散,而行顺序取决于读的是「按年块
+    glob」还是「只读当日一个分区」→ 同一天同一份数据,bootstrap 与日更会算出不同 rank,
+    报告重跑也会换序。修法 = 先按 `(median_ret 降序, industry 升序)` 排定再 ordinal。
+
+    本用例把同一份数据正序 / 逆序各喂一遍,断言 rank 逐位相同。"""
+    rows = [
+        {"trade_date": date(2024, 1, 2), "industry": ind, "ret_1d": ret}
+        for ind, ret in [("甲行业", 0.02), ("乙行业", 0.02), ("丙行业", 0.02), ("丁行业", 0.01)]
+        for _ in range(6)
+    ]
+    cols = ["industry", "industry_rank", "is_strength_day"]
+    forward = ist._day_local_table(pl.DataFrame(rows), 0.8).sort("industry").select(cols)
+    reverse = ist._day_local_table(pl.DataFrame(list(reversed(rows))), 0.8).sort("industry").select(cols)
+    assert forward.equals(reverse)
+    assert sorted(forward["industry_rank"].to_list()) == [1, 2, 3, 4]     # 仍是严格 1..N 无并列
+    # 熔断线:本用例确实构造出了并列(三个行业中位数完全相同),不是空对空。
+    assert forward.height == 4
+
+
 @pytest.mark.parametrize("q", [0.85, 0.80, 0.70])
 def test_quantile_sensitivity_parametrizable(q):
     """阈值敏感性 ±1 格(0.85/0.80/0.70)只作参数化能力(plan 原文,默认仍 0.80);
