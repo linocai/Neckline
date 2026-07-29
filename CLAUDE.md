@@ -113,6 +113,12 @@
   冻住**的历史快照原样读回,不会因服务端升级而补全新键,新增字段(如
   `charterSegments`)必须给该 DTO 手写 `init(from:)` 做 `decodeIfPresent` 兜底
   (v1.4-⑧ `ReviewWeeklyResult` 定案)——加字段前先确认是哪一类,别套错模板。
+- **服务端删/停发任何键之前,先查已装客户端是不是硬解码**:`Models.swift` 里手写
+  `init(from:)` 的 DTO 混着 `try c.decode`(必需)与 `decodeIfPresent`(可选)两种
+  写法 —— 如 `Candidate` 的 `buyPoint`/`stop`/`target`/`invalidation` 是 `try c.decode`,
+  服务端不发 = 整份报告解不出、今日计划全空。**淘汰老字段的正确顺序**:先发一版客户端
+  把该属性改 `decodeIfPresent` + 默认值,**下一版**服务端才可删键(顺序反了就炸,
+  v1.5.0 老四件套退役据此走「键保留 + 过渡文案」)。
 
 ## 周复盘对账(阶段4D)
 
