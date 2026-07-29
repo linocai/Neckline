@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -57,14 +57,13 @@ def test_overwrite_same_version(db):
 #  v1.2-A:激活时间戳(activated_at)+ 时间线解析(config_active_at)
 # ======================================================================
 
-def _set_activated(db: Path, version: str, iso: str, is_active: int) -> None:
-    """测试专用:显式设定某版本的 activated_at / is_active(模拟一条确定的激活时间线,
-    不受 now() 抖动影响)。config_active_at 不触发 init_schema/回填,故此设定稳定。"""
-    with connection(db) as conn:
-        conn.execute(
-            "UPDATE strategy_versions SET activated_at=?, is_active=? WHERE version=?",
-            (iso, is_active, version),
-        )
+def _set_timeline(db: Path, events, *, active: str = None) -> None:
+    """造一条确定的激活时间线(不受 now() 抖动影响)。**v1.4 review 🟡-1 起时间轴事实源是
+    append-only 表 `strategy_activation_log`**,故一律走共享 helper 写那张表(只 UPDATE
+    `activated_at` 已不决定判向);实现与理由见 `conftest.set_activation_timeline`。"""
+    from .conftest import set_activation_timeline
+
+    set_activation_timeline(db, events, active=active)
 
 
 def test_save_active_stamps_activated_at(db):
@@ -153,8 +152,7 @@ def test_config_active_at_timeline(db):
     brain.save_version("K1", {"config": {"single_cap": 20000.0}}, "k1", activate=True, db_path=db)
     brain.save_version("v1.2", {"config": {"single_cap": 40000.0}}, "v12", activate=False, db_path=db)
     # 造确定时间线:K1 激活 2026-07-20,v1.2 激活 2026-08-01(现役)
-    _set_activated(db, "K1", "2026-07-20T00:00:00+00:00", 0)
-    _set_activated(db, "v1.2", "2026-08-01T00:00:00+00:00", 1)
+    _set_timeline(db, [("K1", "2026-07-20T00:00:00+00:00"), ("v1.2", "2026-08-01T00:00:00+00:00")])
 
     # 激活前深过去(早于 K1 激活)→ 取最早激活版本 K1(不臆造更早历史)
     assert brain.config_active_at(date(2026, 1, 1), db_path=db).version == "K1"
@@ -246,8 +244,7 @@ def _two_charter_db(db: Path, v13_activated_at: str) -> None:
     """K1(激活 2026-07-13T00:00Z)+ v1.3(按给定戳激活,现役)。"""
     brain.save_version("K1", {"config": {"single_cap": 20000.0}}, "k1", activate=True, db_path=db)
     brain.save_version("v1.3", {"config": {"single_cap": 40000.0}}, "v13", activate=False, db_path=db)
-    _set_activated(db, "K1", "2026-07-13T00:00:00+00:00", 0)
-    _set_activated(db, "v1.3", v13_activated_at, 1)
+    _set_timeline(db, [("K1", "2026-07-13T00:00:00+00:00"), ("v1.3", v13_activated_at)])
 
 
 def test_config_governing_at_utc_vs_beijing_not_confused(db):
@@ -349,3 +346,164 @@ def test_activations_between_sorted_and_skips_unstamped(db):
     )
     assert [v.version for _, v in got] == ["K1", "v1.3"]
     assert got[0][0] < got[1][0]
+
+
+# ======================================================================
+#  v1.4 review 🟡-1(2026-07-29):激活历史 append-only 表 `strategy_activation_log`
+#  —— 回滚 / 重激活**不得改写历史判定**。旧模型「一版一个 activated_at 戳」表达不了
+#     「被激活过两次」,回滚会把戳前移 → 回滚前那段历史整段改判 = 洗白口(判定线审计
+#     🟡-1 实测复现)。本节锁死修复后的语义。
+# ======================================================================
+
+def _log_rows(db: Path):
+    with connection(db) as conn:
+        return conn.execute(
+            "SELECT version, activated_at, via FROM strategy_activation_log ORDER BY id"
+        ).fetchall()
+
+
+class TestActivationLogAppendOnly:
+    def test_rollback_reactivation_does_not_rewrite_timeline(self, db):
+        """**命门反例(🟡-1 的复现改成回归护栏)**:K1(07-20 激活)→ v1.3(07-25 激活)后
+        **回滚重激活 K1**(今天)。回滚只在时间轴末尾追加一个事件:
+          · 07-22(K1 治下)→ 仍判 K1 —— **旧实现在这里改判 v1.3 = 违纪被 4 万上限洗白**;
+          · 07-26(v1.3 治下)→ 仍判 v1.3 —— 回滚不吞掉中间那段治权;
+          · 回滚之后 → 判 K1(回滚确实生效,不是把回滚忽略掉)。
+        周标签(`config_governing_for_week`)同样不被改写。"""
+        brain.save_version("K1", {"config": {"single_cap": 20000.0}}, "k1", activate=True, db_path=db)
+        brain.save_version("v1.3", {"config": {"single_cap": 40000.0}}, "v13", activate=False, db_path=db)
+        _set_timeline(db, [("K1", "2026-07-20T00:00:00+00:00"), ("v1.3", "2026-07-25T00:00:00+00:00")])
+
+        t_0722 = datetime(2026, 7, 22, 15, 0, tzinfo=CN_TZ)
+        t_0726 = datetime(2026, 7, 26, 15, 0, tzinfo=CN_TZ)
+        before = (brain.config_governing_at(t_0722, db_path=db).version,
+                  brain.config_governing_at(t_0726, db_path=db).version,
+                  brain.config_governing_for_week(date(2026, 7, 20), db_path=db).version,
+                  brain.config_active_at(date(2026, 7, 22), db_path=db).version)
+        assert before == ("K1", "v1.3", "K1", "K1")
+
+        brain.activate_version("K1", db_path=db)          # ← 回滚(切换器白名单内的合法路径)
+
+        after = (brain.config_governing_at(t_0722, db_path=db).version,
+                 brain.config_governing_at(t_0726, db_path=db).version,
+                 brain.config_governing_for_week(date(2026, 7, 20), db_path=db).version,
+                 brain.config_active_at(date(2026, 7, 22), db_path=db).version)
+        assert after == before, "回滚重激活改写了历史判定 = 洗白口复活"
+        # 回滚本身生效:此刻之后按 K1 判
+        assert brain.config_governing_at(
+            datetime.now(timezone.utc) + timedelta(hours=1), db_path=db).version == "K1"
+
+    def test_reactivation_appends_never_updates(self, db):
+        """append-only 不变式:重激活**追加**一行,既有行原样不动(行数只增不减,
+        第一条事件的 (version, at) 逐字节不变)。"""
+        brain.save_version("K1", {"config": {}}, "k1", activate=True, db_path=db)
+        brain.save_version("v1.3", {"config": {}}, "v13", activate=False, db_path=db)
+        first = _log_rows(db)
+        assert [r[0] for r in first] == ["K1"] and first[0][2] == "save_version"
+
+        brain.activate_version("v1.3", db_path=db)
+        brain.activate_version("K1", db_path=db)          # 回滚
+        rows = _log_rows(db)
+        assert [r[0] for r in rows] == ["K1", "v1.3", "K1"]
+        assert rows[0] == first[0]                        # 第一条事件一字未改
+        assert [r[2] for r in rows[1:]] == ["activate_version", "activate_version"]
+        # 兼容列 = 该版**最后一次**激活(不变式),而历史仍在表里
+        assert brain.get_version("K1", db_path=db).activated_at == rows[2][1]
+
+    def test_multi_activation_timeline_resolves_each_segment(self, db):
+        """K1 → v1.3.3 → 回退 v1.3 三段治权,逐段解析各归各的(一个版本出现两次也不串)。"""
+        for name, cap in (("K1", 20000.0), ("v1.3", 40000.0), ("v1.3.3", 40000.0)):
+            brain.save_version(name, {"config": {"single_cap": cap}}, name, activate=False, db_path=db)
+        _set_timeline(db, [
+            ("K1", "2026-07-13T00:00:00+00:00"),
+            ("v1.3.3", "2026-07-20T02:00:00+00:00"),
+            ("v1.3", "2026-07-27T02:00:00+00:00"),        # 回退目标(白名单里唯一合法的那个)
+        ])
+        at = lambda d: brain.config_governing_at(datetime(2026, 7, d, 15, 0, tzinfo=CN_TZ), db_path=db).version
+        assert (at(14), at(21), at(28)) == ("K1", "v1.3.3", "v1.3")
+        assert [v for _, v in brain.activation_history(db_path=db)] == ["K1", "v1.3.3", "v1.3"]
+
+    def test_same_instant_events_last_appended_wins(self, db):
+        """同一时刻的两条事件按追加顺序(id)定序 —— `candidates[-1]` 取到后追加的那条。"""
+        brain.save_version("K1", {"config": {}}, "k1", activate=False, db_path=db)
+        brain.save_version("v1.3", {"config": {}}, "v13", activate=False, db_path=db)
+        _set_timeline(db, [("K1", "2026-07-20T00:00:00+00:00"), ("v1.3", "2026-07-20T00:00:00+00:00")])
+        assert brain.config_governing_at(
+            datetime(2026, 7, 20, 15, 0, tzinfo=CN_TZ), db_path=db).version == "v1.3"
+
+
+class TestActivationLogMigration:
+    def test_seeded_from_legacy_activated_at_and_idempotent(self, db):
+        """老库播种(幂等):`strategy_versions.activated_at` 的单戳时间线经 `init_schema`
+        一次性搬进历史表;**重跑不重复播种**(否则每次 init_schema 都会往历史里灌重复事件)。"""
+        init_schema(db)
+        with connection(db) as conn:
+            conn.execute(
+                "INSERT INTO strategy_versions "
+                "(version, created_at, rule_json, changelog, metrics_json, is_active, activated_at) "
+                "VALUES ('K1','2026-07-13T00:00:00+00:00','{}','k1','{}',0,'2026-07-13T00:00:00+00:00'),"
+                "       ('v1.3','2026-07-25T00:00:00+00:00','{}','v13','{}',1,'2026-07-25T00:00:00+00:00'),"
+                "       ('K9','2026-07-26T00:00:00+00:00','{}','k9','{}',0,NULL)",
+            )
+            conn.execute("DELETE FROM strategy_activation_log")   # 模拟"本表还没播过种"的老库
+        init_schema(db)
+        rows = _log_rows(db)
+        assert [(r[0], r[2]) for r in rows] == [("K1", "seed"), ("v1.3", "seed")]  # 未激活过的 K9 不播
+        init_schema(db)
+        assert _log_rows(db) == rows                              # 幂等:重跑不再灌
+
+    def test_single_activation_log_equals_legacy_stamp_path(self, db):
+        """**等价护栏**:单次激活场景下,「读历史表」与「读 activated_at 单戳」两条路径
+        逐位同物 —— 播种前后、有表无表,判向不得有任何差别(⑥-A 既有 golden 靠这条不塌)。"""
+        brain.save_version("K1", {"config": {}}, "k1", activate=True, db_path=db)
+        brain.save_version("v1.3", {"config": {}}, "v13", activate=False, db_path=db)
+        _set_timeline(db, [("K1", "2026-07-13T00:00:00+00:00"), ("v1.3", "2026-07-22T08:00:00+00:00")])
+        probes = [datetime(2026, 7, d, h, 0, tzinfo=CN_TZ) for d in (13, 22, 23) for h in (7, 15, 17)]
+        with_log = [brain.config_governing_at(p, db_path=db).version for p in probes]
+        days = [date(2026, 7, d) for d in (12, 13, 22, 23)]
+        with_log_days = [brain.config_active_at(d, db_path=db).version for d in days]
+
+        with connection(db) as conn:                 # 抹掉历史表 → 回退单戳路径
+            conn.execute("DROP TABLE strategy_activation_log")
+        assert [brain.config_governing_at(p, db_path=db).version for p in probes] == with_log
+        assert [brain.config_active_at(d, db_path=db).version for d in days] == with_log_days
+
+    def test_reads_tolerate_missing_log_table(self, db):
+        """读入口**不触发迁移**(既有纪律),故必须容忍历史表不存在的老库:裸 SELECT 会炸
+        `no such table`。造一张只有 strategy_versions 的库,四个读入口全部不崩。"""
+        with connection(db) as conn:
+            conn.execute(
+                "CREATE TABLE strategy_versions ("
+                "version TEXT PRIMARY KEY, created_at TEXT NOT NULL, rule_json TEXT NOT NULL, "
+                "changelog TEXT NOT NULL, metrics_json TEXT NOT NULL DEFAULT '{}', "
+                "is_active INTEGER NOT NULL DEFAULT 0, activated_at TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO strategy_versions VALUES "
+                "('K1','2026-07-13T00:00:00+00:00',?,'k1','{}',1,'2026-07-13T00:00:00+00:00')",
+                (json.dumps({"config": {"single_cap": 20000.0}}),),
+            )
+        ts = datetime(2026, 7, 22, 15, 0, tzinfo=CN_TZ)
+        assert brain.config_governing_at(ts, db_path=db).version == "K1"
+        assert brain.config_active_at(date(2026, 7, 22), db_path=db).version == "K1"
+        assert brain.config_governing_for_week(date(2026, 7, 20), db_path=db).version == "K1"
+        assert [v for _, v in brain.activation_history(db_path=db)] == ["K1"]
+
+    def test_event_pointing_at_deleted_version_is_skipped_loudly(self, db):
+        """诚实降级:事件指向已不存在的版本行 → 跳过 + WARNING(不静默少判一段历史)。"""
+        import logging
+
+        brain.save_version("K1", {"config": {}}, "k1", activate=True, db_path=db)
+        _set_timeline(db, [("K1", "2026-07-13T00:00:00+00:00"), ("幽灵版", "2026-07-25T00:00:00+00:00")],
+                      active="K1")
+        logger = logging.getLogger("neckline.strategy.brain")
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        logger.addHandler(handler)
+        try:
+            got = brain.config_governing_at(datetime(2026, 8, 1, tzinfo=CN_TZ), db_path=db)
+        finally:
+            logger.removeHandler(handler)
+        assert got.version == "K1"
+        assert any("幽灵版" in r.getMessage() for r in records)

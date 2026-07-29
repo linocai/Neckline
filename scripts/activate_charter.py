@@ -177,6 +177,27 @@ def _exemption_verdict(old_cfg: dict, new_cfg: dict, changed: list) -> tuple:
     return (cond_a and cond_b), reasons
 
 
+def _reactivation_banner(db_path: Path, target: str) -> list:
+    """目标此前被激活过 → 生成「重激活/回滚」告警横幅(v1.4 review 🟡-1 的 belt-and-braces)。
+    从未激活过 → 返回空列表(正常首次激活不加噪音)。
+
+    **判定层已经不怕回滚了**(激活历史改成 append-only 事件流 `strategy_activation_log`,
+    历史周判定逐位不变,见 `brain.activate_version`);本横幅是给**人**看的第二道:回滚是
+    事故动作,该在终端和审计日志里都留一条,而不是悄悄切回去。"""
+    history = [(inst, ver) for inst, ver in brain.activation_history(db_path=db_path) if ver == target]
+    if not history:
+        return []
+    return [
+        "=" * 78,
+        f"⚠ 重激活 / 回滚:{target} 此前已现役过 {len(history)} 次",
+        *[f"    第 {i} 次:{inst.isoformat()}" for i, (inst, _) in enumerate(history, 1)],
+        "  历史判定**不受影响**:激活历史是 append-only 事件流,本次激活只在时间轴末尾追加",
+        "  一条事件,回滚之前每一段治权的逐笔纪律判定逐位不变(v1.4 review 🟡-1 修复)。",
+        "  但请照旧记账:§九 一行 + STRATEGY_LAB 现役标注 + ~/hz_info.md(若动的是生产库)。",
+        "=" * 78,
+    ]
+
+
 def _write_audit(db_path: Path, lines: list) -> bool:
     """把豁免留痕**追加**写进 `<db 同目录>/charter_activation_audit.log`。返回是否写成。
     写不成 → 调用方拒绝激活(**不许静默豁免**:留痕是豁免成立的前提,不是锦上添花)。"""
@@ -273,11 +294,18 @@ def activate(db_path: Path, target: str, confirm: bool) -> int:
     if rc:
         return rc
 
+    # ---- 重激活 / 回滚告警(v1.4 review 🟡-1;不是闸,不拦,只是把事说清楚)----
+    reactivation = _reactivation_banner(db_path, target)
+    for line in reactivation:
+        print(line)
+
     # ---- 闸 4:--confirm 才写库 ----
     if not confirm:
         print(f"\n[dry-run] 未带 --confirm,不写库。现役仍为 {active.version}。")
         if exempted:
             print("[dry-run] 上方窄豁免为**预演判定**,未写审计日志(dry-run 不留痕、也不激活)。")
+        if reactivation:
+            print("[dry-run] 上方重激活告警同为预演,未写审计日志。")
         print(f"确认无误后加 --confirm 激活:"
               f"python scripts/activate_charter.py --target {target} --confirm")
         return 0
@@ -292,6 +320,21 @@ def activate(db_path: Path, target: str, confirm: bool) -> int:
         ]
         if not _write_audit(db_path, audit):
             return 4
+
+    # ---- 重激活留痕:**写不成只告警、不拦激活**(与豁免留痕刻意不同,理由写死在这)----
+    # 豁免留痕是**放宽了一道闸**的前提条件,没留痕 = 没资格豁免,故失败即拒绝;
+    # 重激活**没有放宽任何闸**(四道闸逐条照跑),它的留痕是事后审计的便利,而回滚往往
+    # 发生在事故现场 —— 因为日志文件写不进去就把用户挡在错误章程上,是拿纪律换事故。
+    # 另有两道痕不依赖文件:终端横幅 + `brain.activate_version` 的 WARNING 日志。
+    if reactivation:
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if not _write_audit(db_path, [
+            "",
+            f"[{stamp}] 重激活 / 回滚:{active.version} → {target}(db={db_path})",
+            *[f"  {line}" for line in reactivation],
+        ]):
+            print("警告:重激活留痕写入失败 —— **不拦激活**(见脚本内注释),"
+                  "但请手动把本次回滚记进 §九。", file=sys.stderr)
 
     result = brain.activate_version(target, db_path=db_path)
     active_after = brain.get_active(db_path=db_path)

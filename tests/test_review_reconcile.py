@@ -659,20 +659,17 @@ class TestRunWeeklyReview:
 def _seed_two_charter_timeline(db_path):
     """落 K1(single_cap=2万)+ v1.2(single_cap=4万,三仓制),造确定激活时间线:
     K1 激活 2026-07-20、v1.2 激活 2026-08-01(现役)。返回 (k1_cfg, v12_cfg)。"""
-    from neckline.db import connection
     from neckline.strategy import brain
-    from .conftest import TEST_RULE_V1_CONFIG
+    from .conftest import TEST_RULE_V1_CONFIG, set_activation_timeline
 
     k1_cfg = dict(TEST_RULE_V1_CONFIG)                       # single_cap=20000, max_positions=5
     v12_cfg = dict(TEST_RULE_V1_CONFIG)
     v12_cfg.update(single_cap=40000.0, max_positions=3, max_exposure_frac=1.0)
     brain.save_version("K1", {"config": k1_cfg}, "k1", activate=True, db_path=db_path)
     brain.save_version("v1.2", {"config": v12_cfg, "lineage": "K1"}, "v1.2", activate=False, db_path=db_path)
-    with connection(db_path) as conn:
-        conn.execute("UPDATE strategy_versions SET activated_at=?, is_active=0 WHERE version='K1'",
-                     ("2026-07-20T00:00:00+00:00",))
-        conn.execute("UPDATE strategy_versions SET activated_at=?, is_active=1 WHERE version='v1.2'",
-                     ("2026-08-01T00:00:00+00:00",))
+    set_activation_timeline(
+        db_path, [("K1", "2026-07-20T00:00:00+00:00"), ("v1.2", "2026-08-01T00:00:00+00:00")],
+    )
     return k1_cfg, v12_cfg
 
 
@@ -748,20 +745,17 @@ class TestHistoryWhitewashFix:
 
 def _seed_activated_at(db_path, activated_at: str):
     """K1(2 万上限,激活 2026-07-13)+ v1.3(4 万上限)按给定时间戳激活为现役。"""
-    from neckline.db import connection
     from neckline.strategy import brain
-    from .conftest import TEST_RULE_V1_CONFIG
+    from .conftest import TEST_RULE_V1_CONFIG, set_activation_timeline
 
     k1 = dict(TEST_RULE_V1_CONFIG)
     v13 = dict(TEST_RULE_V1_CONFIG)
     v13.update(single_cap=40000.0, max_positions=3, max_exposure_frac=1.0)
     brain.save_version("K1", {"config": k1}, "k1", activate=True, db_path=db_path)
     brain.save_version("v1.3", {"config": v13, "lineage": "K1"}, "v1.3", activate=False, db_path=db_path)
-    with connection(db_path) as conn:
-        conn.execute("UPDATE strategy_versions SET activated_at=?, is_active=0 WHERE version='K1'",
-                     ("2026-07-13T00:00:00+00:00",))
-        conn.execute("UPDATE strategy_versions SET activated_at=?, is_active=1 WHERE version='v1.3'",
-                     (activated_at,))
+    set_activation_timeline(
+        db_path, [("K1", "2026-07-13T00:00:00+00:00"), ("v1.3", activated_at)],
+    )
 
 
 def _week_of(isolated_env, trades, day: date):
@@ -991,9 +985,8 @@ class TestTimeExitDiscipline:
 def _seed_charter_pair(db_path, v13_activated_at: str, *, v13_extra: dict = None):
     """K1(2 万上限 / 五仓 / 敞口 60% / 禁高弹,激活 2026-07-13T00:00Z)
     + v1.3(4 万上限 / 三仓 / 敞口 100% / 不禁高弹,按给定 UTC 戳激活为现役)。"""
-    from neckline.db import connection
     from neckline.strategy import brain
-    from .conftest import TEST_RULE_V1_CONFIG
+    from .conftest import TEST_RULE_V1_CONFIG, set_activation_timeline
 
     k1 = dict(TEST_RULE_V1_CONFIG)
     v13 = dict(TEST_RULE_V1_CONFIG)
@@ -1002,11 +995,9 @@ def _seed_charter_pair(db_path, v13_activated_at: str, *, v13_extra: dict = None
     v13.update(v13_extra or {})
     brain.save_version("K1", {"config": k1}, "k1", activate=True, db_path=db_path)
     brain.save_version("v1.3", {"config": v13, "lineage": "K1"}, "v1.3", activate=False, db_path=db_path)
-    with connection(db_path) as conn:
-        conn.execute("UPDATE strategy_versions SET activated_at=?, is_active=0 WHERE version='K1'",
-                     ("2026-07-13T00:00:00+00:00",))
-        conn.execute("UPDATE strategy_versions SET activated_at=?, is_active=1 WHERE version='v1.3'",
-                     (v13_activated_at,))
+    set_activation_timeline(
+        db_path, [("K1", "2026-07-13T00:00:00+00:00"), ("v1.3", v13_activated_at)],
+    )
 
 
 class TestTradeInstant:
@@ -1102,6 +1093,35 @@ class TestPerTradeCharter:
         wk = _week_of(isolated_env, trades, date(2026, 7, 21))
         assert [kind for _, kind, _ in wk.stop_discipline] == [STOP_NOT_TRIGGERED]
         assert not any("止损" in v for v in wk.discipline_violations)
+
+    def test_forbid_high_elasticity_across_switch(self, isolated_env):
+        """**禁买过滤跨切换**(判定线审计 🟢-5 点名的测试缺口;`forbid_high_elasticity` 正是
+        生产上真切换过的那个字段:K1 禁创业板 → v1.3.3 拆墙,「激活当日买创业板被误标」就是
+        P1-4 的原型假警报)。同一只创业板票:激活**前**买 → 报违纪;激活**后**买 → 不报。"""
+        from neckline.strategy import brain
+        from .conftest import TEST_RULE_V1_CONFIG, seed_synthetic_market, set_activation_timeline
+
+        dates = seed_synthetic_market(isolated_env)      # 合成行情在 2024-01,故时间线也造在那一带
+        before_day, after_day = dates[24], dates[26]
+        k1 = dict(TEST_RULE_V1_CONFIG)                                   # forbid_high_elasticity=True
+        v13 = dict(TEST_RULE_V1_CONFIG, forbid_high_elasticity=False)    # 拆墙版
+        brain.save_version("K1", {"config": k1}, "k1", activate=True, db_path=isolated_env.db_path)
+        brain.save_version("v1.3", {"config": v13, "lineage": "K1"}, "v1.3",
+                           activate=False, db_path=isolated_env.db_path)
+        # 切换 = dates[25] 北京 16:00(收盘后)→ before_day 归 K1(禁高弹)、after_day 归 v1.3(拆墙)
+        set_activation_timeline(isolated_env.db_path, [
+            ("K1", "2023-12-01T00:00:00+00:00"),
+            ("v1.3", f"{dates[25].isoformat()}T08:00:00+00:00"),
+        ])
+        trades = [
+            _trade(before_day, "300001.SZ", "buy", 10.0, 100, name="示例丙"),
+            _trade(after_day, "300001.SZ", "buy", 10.0, 100, name="示例丙"),
+        ]
+        reviews, _ = run_weekly_review(
+            trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        hits = [v for r in reviews for v in r.discipline_violations if "高弹题材" in v]
+        assert len(hits) == 1, hits
+        assert str(before_day) in hits[0] and str(after_day) not in hits[0]
 
     def test_exposure_and_count_use_per_day_charter(self, isolated_env):
         """并发持仓数 / 敞口是**日粒度**判据:按「该日收盘时刻现役的章程」切段判。
@@ -1244,16 +1264,108 @@ class TestCharterSwitchReporting:
 
     def test_reactivating_same_version_is_not_a_switch(self, isolated_env):
         """同版本再激活(回滚/重激活)不算切换 —— 阈值没变,报出来只是噪音。"""
-        from neckline.db import connection
         from neckline.strategy import brain
-        from .conftest import TEST_RULE_V1_CONFIG
+        from .conftest import TEST_RULE_V1_CONFIG, set_activation_timeline
 
         brain.save_version("K1", {"config": dict(TEST_RULE_V1_CONFIG)}, "k1",
                            activate=True, db_path=isolated_env.db_path)
-        with connection(isolated_env.db_path) as conn:
-            conn.execute("UPDATE strategy_versions SET activated_at=? WHERE version='K1'",
-                         ("2026-07-29T10:00:00+00:00",))   # 唯一一版,激活戳落在本周内
+        # 唯一一版,激活戳落在本周内
+        set_activation_timeline(isolated_env.db_path, [("K1", "2026-07-29T10:00:00+00:00")])
         trades = [_trade(date(2026, 7, 27), "600519.SH", "buy", 150.0, 100)]
         wk = _week_of(isolated_env, trades, date(2026, 7, 27))
         assert wk.charter_switches == []
         assert [s.version for s in wk.charter_segments] == ["K1"]
+
+
+# ======================================================================
+#  v1.4 review 🟡-1(2026-07-29):**回滚 / 重激活不得改写历史周的判定**
+#  —— 时间轴事实源改 append-only 事件流(`strategy_activation_log`)后的端到端护栏。
+#     `reviews` 是幂等覆盖表,重传交割单即重算 —— 若回滚能改判,整段历史会**静默**翻案。
+# ======================================================================
+
+def _seed_production_shaped_timeline(db_path):
+    """复刻生产真实形态:K1(2 万上限)→ v1.3(4 万)→ v1.3.3(4 万,拆墙),
+    v1.3 **曾经现役过**(生产 2026-07-27 12:01 → 14:36 那一段),故它是「回退目标里
+    带着旧激活戳的那种」—— 正是旧单戳模型会踩塌的形状。"""
+    from neckline.strategy import brain
+    from .conftest import TEST_RULE_V1_CONFIG, set_activation_timeline
+
+    k1 = dict(TEST_RULE_V1_CONFIG)
+    v13 = dict(TEST_RULE_V1_CONFIG, single_cap=40000.0, max_positions=3, max_exposure_frac=1.0)
+    v133 = dict(v13, forbid_high_elasticity=False)
+    brain.save_version("K1", {"config": k1}, "k1", activate=True, db_path=db_path)
+    brain.save_version("v1.3", {"config": v13, "lineage": "K1"}, "v1.3", activate=False, db_path=db_path)
+    brain.save_version("v1.3.3", {"config": v133, "lineage": "K1"}, "v1.3.3", activate=False, db_path=db_path)
+    set_activation_timeline(db_path, [
+        ("K1",     "2026-07-13T00:00:00+00:00"),
+        ("v1.3",   "2026-07-20T02:00:00+00:00"),   # 周一北京 10:00
+        ("v1.3.3", "2026-07-24T06:36:00+00:00"),   # 周五北京 14:36(生产真实时刻形态)
+    ])
+
+
+class TestRollbackDoesNotWhitewashHistory:
+    """审计 🟡-1 的复现改成回归护栏(端到端:交割单 → 周复盘违纪清单)。"""
+
+    TRADES = [
+        _trade(date(2026, 7, 14), "600519.SH", "buy", 300.0, 100, name="K1治下"),    # ¥30,000 > 2 万 → 违纪
+        _trade(date(2026, 7, 21), "600036.SH", "buy", 300.0, 100, name="v1.3治下"),  # ¥30,000 ≤ 4 万 → 不违纪
+    ]
+
+    def _snapshot(self, isolated_env):
+        reviews, _ = run_weekly_review(
+            self.TRADES, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        return [(r.week, r.strategy_version, list(r.discipline_violations)) for r in reviews]
+
+    def test_rollback_reactivation_does_not_whitewash_history(self, isolated_env):
+        """**命门**:回滚到 v1.3(它此前现役过)后,重跑同一份交割单 → 每一周的
+        `strategy_version` 标签与违纪清单**逐位不变**。
+
+        旧单戳模型在这里两头错:v1.3 的戳被前移到回滚时刻 → ① 07-21 那笔本该由 v1.3
+        (4 万)判的落回 K1(2 万)→ **凭空多一条假警报**;② 反方向同理,后来激活的宽上限
+        会把更早的违纪抹掉(审计实测形态)。事件流下,回滚只是时间轴末尾多一条事件。"""
+        _seed_production_shaped_timeline(isolated_env.db_path)
+        before = self._snapshot(isolated_env)
+        # 前置事实锚定:第一周报违纪、第二周不报(否则下面的"逐位不变"可能是两边都空)
+        assert any("超过单笔仓位上限" in v for _, _, vs in before[:1] for v in vs)
+        assert not any("超过单笔仓位上限" in v for _, _, vs in before[1:] for v in vs)
+
+        from neckline.strategy import brain
+        brain.activate_version("v1.3", db_path=isolated_env.db_path)   # ← 事故回退(白名单唯一合法目标)
+
+        assert self._snapshot(isolated_env) == before
+        assert brain.get_active(db_path=isolated_env.db_path).version == "v1.3"   # 回退确实生效
+
+    def test_reactivating_the_earliest_charter_does_not_erase_its_violations(self, isolated_env):
+        """审计 🟡-1 报告里那条**洗白方向**的原样复刻:重激活时间线上**最早**那一版(K1)。
+        旧模型把 K1 的戳挪到今天 → 07-14 那笔落进「早于所有激活 → 取最早激活版本」兜底,
+        而此时最早的成了 v1.3(4 万)→ **K1 治下的 3 万违纪凭空消失**。事件流下不动如山。
+
+        (`activate_charter.py` 的白名单不允许把 K1 当目标,但 `brain.activate_version` 是
+        大脑层 API、历史上 K1 就是这么现役的 —— 判定层的正确性不该依赖上层脚本的白名单。)"""
+        from neckline.strategy import brain
+
+        _seed_production_shaped_timeline(isolated_env.db_path)
+        before = self._snapshot(isolated_env)
+        brain.activate_version("K1", db_path=isolated_env.db_path)
+        after = self._snapshot(isolated_env)
+        assert after == before
+        assert any("超过单笔仓位上限" in v for _, _, vs in after[:1] for v in vs), "K1 治下的违纪被洗白"
+
+    def test_rollback_shows_up_as_a_new_switch_in_the_current_week(self, isolated_env):
+        """回滚不是"没发生":它作为**本周的一次章程切换**如实出现在当周周报里
+        (v1.3.3 → v1.3),历史周则一条切换都不多出来。"""
+        from datetime import datetime
+
+        from neckline.calendar import CN_TZ
+        from neckline.strategy import brain
+
+        _seed_production_shaped_timeline(isolated_env.db_path)
+        brain.activate_version("v1.3", db_path=isolated_env.db_path)
+        today = datetime.now(CN_TZ).date()
+        trades = self.TRADES + [_trade(today, "601398.SH", "buy", 100.0, 100, name="回滚当周")]
+        reviews, _ = run_weekly_review(
+            trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        cur = next(r for r in reviews if r.week == iso_week_key(today))
+        assert [(sw.from_version, sw.to_version) for sw in cur.charter_switches] == [("v1.3.3", "v1.3")]
+        hist = next(r for r in reviews if r.week == iso_week_key(date(2026, 7, 14)))
+        assert hist.charter_switches == []

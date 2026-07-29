@@ -26,9 +26,11 @@ docstring 明确写了"5%=挂起项『次周单笔减半』;区别于§2.1已采
     用户当周按「三仓 4 万」打,周复盘仍按 K1「五仓 2 万 + 禁创业板」判 → 单笔 >2 万、
     买创业板、敞口超 60% 全被**误标违纪**)。修法 = 取 config 的入口从「周」下沉到「笔」。
 
-    **时间轴唯一源 = `strategy_versions.activated_at`**(解析器 `brain.config_governing_at`)。
-    `activated_at` 落库是 **UTC** 戳,交割单成交时刻是**北京时间** —— 归一由
-    `trade_instant()`(造 aware 北京时刻)+ `brain._activated_instant`(按 UTC 读)两处
+    **时间轴唯一源 = append-only 的 `strategy_activation_log`**(解析器
+    `brain.config_governing_at`;v1.4 review 🟡-1 之前是 `strategy_versions.activated_at`
+    单戳,回滚重激活会把历史整段改判 —— 现已改成事件流,老库仍按单戳兜底,两者在单次激活
+    下逐位等价)。激活戳落库是 **UTC**,交割单成交时刻是**北京时间** —— 归一由
+    `trade_instant()`(造 aware 北京时刻)+ `brain._parse_instant`(按 UTC 读)两处
     合力完成,**本模块不自己 strip/加减时区**。边界语义:**成交时刻恰好等于激活时刻算
     「新章程」**(判据 `激活时刻 <= 成交时刻`,理由见 `config_governing_at` docstring)。
 
@@ -605,7 +607,8 @@ class CharterSegment:
 @dataclass
 class CharterSwitch:
     """周内发生的一次章程切换(= `strategy_versions` 的一次激活落在本周窗口内)。
-    `at` 一律已换算成**北京时间**(展示与序列化口径,时间轴事实源仍是 `activated_at`)。"""
+    `at` 一律已换算成**北京时间**(展示与序列化口径;时间轴事实源是激活事件流,见
+    `brain._activation_events`)。"""
     at: datetime
     from_version: str
     to_version: str
@@ -632,7 +635,8 @@ def build_charter_timeline(
     两者在所有现实时点上给出一致的分段——见模块头「逐笔取章程」节)。
 
     **同版本再激活(回滚 / 重激活同一版)不算切换**(阈值没变,报出来只会制造噪音),
-    但它仍在时间轴上,故只是不新起一段,不是被丢掉。
+    但它仍在时间轴上,故只是不新起一段,不是被丢掉。**切回上一版**(如 v1.3.3 → v1.3)
+    阈值真的变了,照常报一次切换(v1.4 review 🟡-1 起事件流表达得了这种形状)。
     """
     from neckline.strategy import brain
 

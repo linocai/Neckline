@@ -195,6 +195,42 @@ class TestActivator133:
         act = brain.get_active(db_path=db)
         assert act.version == "v1.3" and act.rule["config"]["forbid_high_elasticity"] is True
 
+    def test_first_activation_prints_no_reactivation_warning(self, isolated_env, capsys):
+        """首次激活不打重激活告警(别把正常路径变成天天见的噪音)。"""
+        db = isolated_env.db_path
+        self._prep(db)
+        assert activate_charter.activate(db, "v1.3.3", confirm=True) == 0
+        assert "重激活 / 回滚" not in capsys.readouterr().out
+
+    def test_rollback_warns_and_leaves_trail(self, isolated_env, capsys):
+        """v1.4 review 🟡-1 belt-and-braces:回退到**曾经现役过**的版本 → 终端打重激活告警
+        (含此前每次激活的时刻)+ 审计日志留痕。判定层已不怕回滚,这道是给人看的。"""
+        db = isolated_env.db_path
+        self._prep(db)
+        assert activate_charter.activate(db, "v1.3.3", confirm=True) == 0   # v1.3.3 首次
+        brain.activate_version("v1.3", db_path=db)                          # v1.3 曾现役
+        activate_charter.activate(db, "v1.3.3", confirm=True)
+        capsys.readouterr()
+        assert activate_charter.activate(db, "v1.3", confirm=True) == 0     # ← 回退
+        out = capsys.readouterr().out
+        assert "重激活 / 回滚:v1.3 此前已现役过 1 次" in out
+        assert "历史判定**不受影响**" in out
+        log = (Path(db).resolve().parent / activate_charter._AUDIT_LOG_NAME).read_text(encoding="utf-8")
+        assert "重激活 / 回滚:v1.3.3 → v1.3" in log
+        assert brain.get_active(db_path=db).version == "v1.3"
+
+    def test_reactivation_trail_failure_does_not_block_rollback(self, isolated_env, monkeypatch):
+        """留痕写不成时**不拦回滚**(与闸 2 豁免留痕刻意相反:回滚没放宽任何闸,而它往往
+        发生在事故现场——拿日志文件写不进去把用户挡在错误章程上,是拿纪律换事故)。"""
+        db = isolated_env.db_path
+        self._prep(db)
+        assert activate_charter.activate(db, "v1.3.3", confirm=True) == 0
+        brain.activate_version("v1.3", db_path=db)
+        activate_charter.activate(db, "v1.3.3", confirm=True)
+        monkeypatch.setattr(activate_charter, "_write_audit", lambda *_a, **_k: False)
+        assert activate_charter.activate(db, "v1.3", confirm=True) == 0
+        assert brain.get_active(db_path=db).version == "v1.3"
+
     @pytest.mark.parametrize("target", ["K1", "K2", "K4", "v1.2", "v1.3.4", "V1.3.3", "v133", ""])
     def test_whitelist_still_rejects_everything_else(self, isolated_env, target):
         db = isolated_env.db_path

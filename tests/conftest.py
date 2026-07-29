@@ -244,6 +244,48 @@ def seed_active_rule_v1(settings: Settings, extra_config: dict = None) -> None:
     )
 
 
+def set_activation_timeline(db_path, events, *, active: str = None) -> None:
+    """测试专用:把「章程激活历史」**重写**成一条确定的时间线(不受 `now()` 抖动影响)。
+
+    ⚠ v1.4 review 🟡-1 之后,纪律判定的时间轴事实源 = **append-only 表**
+    `strategy_activation_log`(`brain._activation_events`),`strategy_versions.activated_at`
+    降级为兼容/展示列。**故造历史时间线必须写这张表** —— 只 UPDATE `activated_at`(v1.4
+    之前的老姿势)已经不再决定判向,会造出"库里写着一套、判定按另一套"的假夹具。
+
+    本 helper 一次性 `DELETE + INSERT` 该表:测试要的是「假装历史长这样」,不是生产语义;
+    **生产侧永远只经 `brain.save_version/activate_version` 追加,不删不改**(这也是为什么
+    重写逻辑住在 tests/ 而不是 brain 里 —— 生产代码里根本不该存在改写历史的函数)。
+
+    `events` = `[(版本号, 激活戳 ISO), ...]`,按发生先后给;同一版本可以出现多次(回滚)。
+    同步刷新每个版本的 `activated_at` = 它**最后一次**激活的戳(与生产不变式一致),并把
+    `is_active` 置到 `active`(缺省 = 最后一个事件的版本)。
+    """
+    from neckline.db import connection, init_schema
+
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        conn.execute("DELETE FROM strategy_activation_log")
+        for version, stamp in events:
+            conn.execute(
+                "INSERT INTO strategy_activation_log (version, activated_at, via, note) "
+                "VALUES (?,?,'test','tests.conftest.set_activation_timeline')",
+                (version, stamp),
+            )
+        last_stamp = {}
+        for version, stamp in events:
+            last_stamp[version] = stamp
+        for version, stamp in last_stamp.items():
+            conn.execute(
+                "UPDATE strategy_versions SET activated_at=? WHERE version=?", (stamp, version)
+            )
+        winner = active if active is not None else (events[-1][0] if events else None)
+        if winner is not None:
+            conn.execute(
+                "UPDATE strategy_versions SET is_active = CASE WHEN version=? THEN 1 ELSE 0 END",
+                (winner,),
+            )
+
+
 def seed_synthetic_market(
     settings: Settings,
     *,
@@ -428,6 +470,7 @@ __all__ = [
     "insert_namechange",
     "TEST_RULE_V1_CONFIG",
     "seed_active_rule_v1",
+    "set_activation_timeline",
     "seed_synthetic_market",
     "write_flat_parquet",
 ]

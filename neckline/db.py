@@ -62,10 +62,11 @@ CREATE TABLE IF NOT EXISTS backfill_log (
 -- 策略大脑版本表(plan 1.9 / §2.6「大脑带版本号 + 变更日志 + 实盘表现按版本归因」)。
 -- rule_json:该版本的规则参数(MomentumConfig 采纳值 + 市场过滤决策等)全量快照。
 -- metrics_json:定版时的样本内/外回测指标(可比性证据)。is_active:当前现役版本(唯一)。
--- activated_at(v1.2-A):该版本「成为现役」的时刻(ISO8601);NULL=从未激活。周复盘
--- 按周取「当时现役」config 判纪律靠它解析时间线(`brain.config_active_at`),防止用今天
--- 的章程重判历史周洗白旧违纪。加列 + 一次性回填现役 K1 见下方 `_COLUMN_MIGRATIONS` /
--- `_backfill_activated_at`。
+-- activated_at(v1.2-A):该版本**最后一次**「成为现役」的时刻(ISO8601);NULL=从未激活。
+-- ⚠ **v1.4 review 🟡-1 起它不再是时间线事实源**(一个版本只能存一个戳,表达不了「被激活过
+-- 两次」;回滚重激活会把旧戳前移 = 静默改判历史周)。事实源已改为 append-only 的
+-- `strategy_activation_log`(见下表);本列**保留**作兼容/展示位(「现役是什么时候上任的」),
+-- 仍由 `brain.save_version/activate_version` 同步刷新,历史表缺失的老库靠它兜底解析。
 CREATE TABLE IF NOT EXISTS strategy_versions (
     version         TEXT PRIMARY KEY,   -- 策略版本号,K 字头整数(K1/K2/...);章程修订走系统 v 字头
                                         -- (如 v1.2:config 承 K 血缘、仅改仓位字段,不占 K 命名空间)
@@ -74,8 +75,29 @@ CREATE TABLE IF NOT EXISTS strategy_versions (
     changelog       TEXT NOT NULL,      -- 本版为何这样定(过堂结论摘要)
     metrics_json    TEXT NOT NULL DEFAULT '{}',  -- 定版回测指标(JSON)
     is_active       INTEGER NOT NULL DEFAULT 0,
-    activated_at    TEXT                -- ISO8601 | NULL(v1.2-A 激活时间线,见表头注释)
+    activated_at    TEXT                -- ISO8601 | NULL(v1.2-A 遗留单戳,见表头注释)
 );
+
+-- 章程**激活历史**(v1.4 review 🟡-1 修复,2026-07-29):纪律判定时间轴的**唯一事实源**。
+-- **append-only,只增不改不删** —— `brain.activate_version` / `save_version(activate=True)`
+-- 每激活一次**追加**一行,永不 UPDATE/DELETE 既有行。
+-- **为什么必须是事件流**:旧模型「一个版本一个 activated_at 戳」表达不了同一版本被激活两次。
+-- `scripts/activate_charter.py` 的白名单**明确保留 v1.3 作唯一合法回退目标**,即回滚是设计内
+-- 路径;一旦回滚,旧模型会把该版本的戳前移到回滚时刻 → 回滚之前那段历史落进「早于所有激活」
+-- 兜底 → `reviews` 是幂等覆盖表,重传交割单即整段改判 = 2026-07-27 审计 🟡-3 封掉的洗白口经
+-- 回退路径复活(判定线审计已用临时库实测复现:07-22 的 3 万违纪在回滚后凭空消失)。
+-- 事件流下,「07-22 那一刻现役的是谁」由**当时那条事件**回答,后来发生什么都改不了它。
+-- **老库(本表不存在或为空)**:解析器回退读 `strategy_versions.activated_at` 单戳 =
+-- 与 v1.4 之前逐位一致的旧行为(见 `brain._activation_events`);首次 `init_schema` 会用
+-- 该列**幂等播种**本表(见 `_seed_activation_log`),播种后即由本表接管。
+CREATE TABLE IF NOT EXISTS strategy_activation_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    version         TEXT NOT NULL,      -- strategy_versions.version(不设外键:历史事件不该被版本行的存废牵连)
+    activated_at    TEXT NOT NULL,      -- ISO8601;生产唯一写入者 brain._now() → 恒 UTC(+00:00)
+    via             TEXT NOT NULL DEFAULT '',   -- 'activate_version' | 'save_version' | 'seed' | 测试注入
+    note            TEXT NOT NULL DEFAULT ''    -- 审计备注(如「重激活/回滚」「从 activated_at 播种」)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_activation_log_at ON strategy_activation_log(activated_at, id);
 
 -- 盘后报告存档(plan 2.5)。一个交易日一行(幂等覆盖,重跑报告不留重复行);
 -- *_json 是该次报告的结构化快照(情绪仪表盘/强势板块/候选20只四件套),供事后
@@ -629,14 +651,40 @@ def _backfill_activated_at(conn: sqlite3.Connection) -> None:
     )
 
 
+def _seed_activation_log(conn: sqlite3.Connection) -> None:
+    """v1.4 review 🟡-1 一次性播种(幂等):把老库 `strategy_versions.activated_at` 里那条
+    「每版最后一次激活」的单戳时间线,搬进 append-only 的 `strategy_activation_log`。
+
+    **判据 = 本表为空才播种**(不是「逐 (version, at) 对补齐」):播种是一次性的迁移动作,
+    之后本表由 `brain` 的激活入口独占追加。若改成每次 init_schema 都拿 `activated_at` 去补,
+    那么任何一次手工 SQL 改列都会凭空往历史里注入事件 —— append-only 的价值恰恰在于
+    「事件只由激活动作产生」。空库(strategy_versions 无带戳行)播 0 行,本表继续为空,
+    下次 init_schema 再试也仍是 no-op(便宜:一次 EXISTS + 一次 INSERT…SELECT)。
+
+    顺序:必须在 `_backfill_activated_at` **之后**调 —— 生产 K1 的戳是那一步回填出来的,
+    先播种会把 K1 漏掉(它当时还是 NULL)。"""
+    seeded = conn.execute("SELECT 1 FROM strategy_activation_log LIMIT 1").fetchone()
+    if seeded is not None:
+        return
+    conn.execute(
+        "INSERT INTO strategy_activation_log (version, activated_at, via, note) "
+        "SELECT version, activated_at, 'seed', "
+        "       '从 strategy_versions.activated_at 播种(v1.4 review 🟡-1 迁移)' "
+        "FROM strategy_versions WHERE activated_at IS NOT NULL "
+        "ORDER BY activated_at, version"
+    )
+
+
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     """对既有表做「缺列即补」的幂等迁移(见 `_COLUMN_MIGRATIONS` 注释)+ v1.2-A 激活戳
-    一次性回填(幂等,见 `_backfill_activated_at`)。"""
+    一次性回填(幂等,见 `_backfill_activated_at`)+ v1.4 激活历史播种(幂等,见
+    `_seed_activation_log`)。"""
     for table, column, ddl in _COLUMN_MIGRATIONS:
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     _backfill_activated_at(conn)
+    _seed_activation_log(conn)
 
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:

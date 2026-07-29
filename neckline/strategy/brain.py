@@ -22,14 +22,26 @@ rule 是纯参数字典(可直接喂 `MomentumConfig(**rule["config"])`),不含�
       ⑥-A 之后周复盘的**逐笔判据**已换成 `config_governing_at`,本函数仍是「这一周整体
       归属哪版章程」的标签口径(`WeeklyReview.strategy_version` 的语义未变);
     · `config_governing_at(ts)` —— **时刻粒度**(判据「激活时刻 ≤ ts」,等于算新章程)。
-**时区**:`activated_at` 由本模块 `_now()` 写,恒为 **UTC** ISO8601(`+00:00`);而成交时刻
-是**北京时间**。两者必须归一到同一条时间轴再比 —— 归一规则写死在 `_activated_instant`
-与 `config_governing_at` 的 docstring 里,调用方不要自己 strip 时区凑合比。
+
+**v1.4 review 🟡-1 修复(2026-07-29):时间线事实源 = append-only 事件流**。三个解析器
+统一读 `_activation_events()`,它优先取 `strategy_activation_log`(每激活一次追加一行,
+**永不改写**),表缺失/为空的老库才回退读 `strategy_versions.activated_at` 单戳(与 v1.4
+之前逐位一致)。**为什么非改不可**:单戳模型表达不了「同一版本被激活两次」,而回滚重激活
+(切换器白名单保留 v1.3 作唯一合法回退目标)会把该版本的戳前移 → 回滚之前那段历史全部
+落进「早于所有激活」兜底 → 历史周的违纪被今天的新上限**静默洗白**(判定线审计实测复现)。
+事件流下,「某时刻现役的是谁」由当时那条事件回答,之后再激活多少次都改不了它。
+`activated_at` 列**保留**(展示「现役何时上任」+ 老库兜底 + 播种源),但**不再是判据源**。
+
+**时区**:`activated_at` / 事件流的 `activated_at` 均由本模块 `_now()` 写,恒为 **UTC**
+ISO8601(`+00:00`);而成交时刻是**北京时间**。两者必须归一到同一条时间轴再比 —— 归一规则
+写死在 `_parse_instant` 与 `config_governing_at` 的 docstring 里,调用方不要自己 strip
+时区凑合比。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import date, datetime, timezone
 from dataclasses import dataclass
@@ -37,6 +49,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from neckline.db import connection, init_schema
+
+logger = logging.getLogger(__name__)
 
 _BASE_COLS = "version, created_at, rule_json, changelog, metrics_json, is_active"
 
@@ -78,47 +92,145 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _activated_date(v: StrategyVersion) -> Optional[date]:
-    """把 `activated_at`(ISO8601 时间戳或纯日期串)取到 date 粒度,供 `config_active_at`
-    按周(week_end 是 date)比较。解析不了 → None(视作无效激活戳,不参与时间线)。
+def _parse_date(stamp: Optional[str]) -> Optional[date]:
+    """把激活戳(ISO8601 时间戳或纯日期串)取到 date 粒度。解析不了 → None(视作无效
+    激活戳,不参与时间线)。
 
-    ⚠ **取的是 UTC 日期**(不换北京日期)——这是 v1.2-A 起的既有语义,`config_active_at` /
-    `config_governing_for_week` 的判据与单测都建立在它之上,**不要"顺手修正"成本地日期**
-    (为什么在 `<` 判据下这不制造洗白口,见 `config_governing_for_week` 的「时区注记」)。
-    需要真正的时刻比较请用 `_activated_instant` / `config_governing_at`(v1.4-⑥-A)。"""
-    if not v.activated_at:
+    ⚠ **取的是戳自带时区下的日期**(不 `astimezone` 换算)——生产戳恒 UTC,故这就是 v1.2-A
+    起的「UTC 日期」既有语义,`config_active_at` / `config_governing_for_week` 的判据与单测
+    都建立在它之上,**不要"顺手修正"成本地日期**(为什么在 `<` 判据下这不制造洗白口,见
+    `config_governing_for_week` 的「时区注记」)。需要真正的时刻比较请用 `_parse_instant` /
+    `config_governing_at`(v1.4-⑥-A)。"""
+    if not stamp:
         return None
     try:
-        return datetime.fromisoformat(v.activated_at).date()
+        return datetime.fromisoformat(stamp).date()
     except ValueError:
         try:
-            return date.fromisoformat(v.activated_at[:10])
+            return date.fromisoformat(stamp[:10])
         except ValueError:
             return None
 
 
-def _activated_instant(v: StrategyVersion) -> Optional[datetime]:
-    """把 `activated_at` 解析成 **tz-aware 时刻**(v1.4-⑥-A 逐笔判纪律的基础)。
+def _parse_instant(stamp: Optional[str]) -> Optional[datetime]:
+    """把激活戳解析成 **tz-aware 时刻**(v1.4-⑥-A 逐笔判纪律的基础)。
 
     **时区归一(写死,不许改)**:
       · 带时区偏移的串(生产唯一写入者 `_now()` 写的就是 `...+00:00`)→ **原样保留其时区**,
         比较时由 Python 自行跨时区换算(aware vs aware 比较是按绝对时刻,正确)。
-      · **不带时区**的串(手工 SQL 补的、老库遗留)→ **按 UTC 解读**。理由:本表 `activated_at`
-        的**唯一写入者**是 `_now()`,它写的就是 UTC;把 naive 戳当北京时间读会凭空把激活时刻
+      · **不带时区**的串(手工 SQL 补的、老库遗留)→ **按 UTC 解读**。理由:激活戳的
+        **唯一写入者**是 `_now()`,它写的就是 UTC;把 naive 戳当北京时间读会凭空把激活时刻
         往前挪 8 小时 = 拿一个从没发生过的激活时点去判纪律。**注意与 `config_governing_at`
         的入参约定刻意相反**(那边的 naive 是"市场时刻"故按北京时间读)——两个 naive 的来源
         不同、约定就不同,各自在 docstring 里定死,不"统一"。
       · 纯日期串 `'YYYY-MM-DD'` → 该日 00:00 UTC。
-      · 解析不了 → `None`(视作无效激活戳,不参与时间线;与 `_activated_date` 同款诚实降级)。
-    """
-    if not v.activated_at:
+      · 解析不了 → `None`(视作无效激活戳,不参与时间线;与 `_parse_date` 同款诚实降级)。
+
+    **`_parse_instant(s).date() == _parse_date(s)` 恒成立**(两条路都不做 `astimezone`),
+    ⑥-A 的日粒度判据据此可以直接从事件流的时刻上取日期,不必回头再读一次 `activated_at`
+    —— 「事件流与旧单戳在单次激活下逐位等价」这条回归护栏靠的就是这个恒等式。"""
+    if not stamp:
         return None
     try:
-        dt = datetime.fromisoformat(v.activated_at)
+        dt = datetime.fromisoformat(stamp)
     except ValueError:
-        d = _activated_date(v)
+        d = _parse_date(stamp)
         return datetime.combine(d, datetime.min.time(), tzinfo=timezone.utc) if d else None
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _activated_instant(v: StrategyVersion) -> Optional[datetime]:
+    """`_parse_instant` 的版本行门面(老库兜底路径用:那条路的时间线就是每版一个戳)。"""
+    return _parse_instant(v.activated_at)
+
+
+def _versions_in(conn: sqlite3.Connection) -> List[StrategyVersion]:
+    """在既有连接上读全部版本(`created_at` 升序)。`list_versions` 与 `_activation_events`
+    共用同一份投影与排序,不各抄一遍 SQL。"""
+    rows = conn.execute(
+        f"SELECT {_select_cols(conn)} FROM strategy_versions ORDER BY created_at"
+    ).fetchall()
+    return [_row_to_version(r) for r in rows]
+
+
+def _activation_log_rows(conn: sqlite3.Connection) -> List[Tuple[str, str]]:
+    """读 append-only 激活历史 `(version, activated_at)`,按 `(activated_at, id)` 升序。
+    **表不存在 → 空列表**(读入口不触发迁移,必须容忍未迁移的老库,同 `_select_cols` 的
+    命门:裸 SELECT 会炸 `no such table`)。"""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='strategy_activation_log'"
+    ).fetchone()
+    if exists is None:
+        return []
+    return [
+        (r[0], r[1]) for r in conn.execute(
+            "SELECT version, activated_at FROM strategy_activation_log ORDER BY activated_at, id"
+        )
+    ]
+
+
+def _activation_events(
+    db_path: Optional[Path] = None,
+) -> List[Tuple[datetime, StrategyVersion]]:
+    """**纪律判定时间轴的唯一读入口**(v1.4 review 🟡-1):按时刻升序的 `(激活时刻, 版本)`
+    事件流。三个解析器(`config_active_at` / `config_governing_at` / `activations_between`)
+    全部只认它,不各自遍历表。
+
+    两条取数路径(**优先级写死**):
+      1. `strategy_activation_log` 有行 → 用它。一个版本可以出现多次(回滚重激活),这正是
+         本表存在的理由;历史事件不因后来的激活而改变。
+      2. 表不存在 / 表为空(未迁移的老库、隔离测试库)→ 回退「每版一个 `activated_at` 戳」
+         的 v1.2-A 时间线 = **与 v1.4 之前逐位一致的旧行为**。首次 `init_schema` 会用同一
+         批戳幂等播种历史表(`db.py::_seed_activation_log`),播种后走路径 1,**结果不变**
+         (单激活场景下两条路径同物,有等价单测锁)。
+
+    诚实降级(都不静默):事件指向已不存在的版本行 / 戳解析不出来 → 跳过该事件并打
+    WARNING(库被手工改坏才可能发生,不该悄悄少判一段历史)。
+
+    排序:按**时刻**升序,Python 稳定排序 → 同一时刻的多条事件保持 `id` 升序(后追加的
+    排在后面,`candidates[-1]` 取到的就是"最后生效的那一条"),与追加语义一致。"""
+    with connection(db_path) as conn:
+        versions = {v.version: v for v in _versions_in(conn)}
+        rows = _activation_log_rows(conn)
+
+    events: List[Tuple[datetime, StrategyVersion]] = []
+    if rows:
+        for name, stamp in rows:
+            v = versions.get(name)
+            inst = _parse_instant(stamp)
+            if v is None:
+                logger.warning(
+                    "strategy_activation_log 有指向不存在版本 %s 的激活事件(%s),已跳过"
+                    "——该段历史将由上一条事件的版本判定,请核查 strategy_versions。", name, stamp,
+                )
+                continue
+            if inst is None:
+                logger.warning(
+                    "strategy_activation_log 中版本 %s 的激活戳无法解析(%r),已跳过。", name, stamp,
+                )
+                continue
+            events.append((inst, v))
+    else:
+        events = [
+            (inst, v) for inst, v in
+            ((_activated_instant(v), v) for v in versions.values())
+            if inst is not None
+        ]
+    events.sort(key=lambda pair: pair[0])
+    return events
+
+
+def _append_activation(
+    conn: sqlite3.Connection, version: str, activated_at: str, via: str, note: str = "",
+) -> None:
+    """往 append-only 激活历史**追加**一行(v1.4 review 🟡-1)。**只有本函数写这张表**,
+    且只 INSERT —— 任何 UPDATE/DELETE 都等于改写历史判定,正是本次修复要根除的动作。
+    调用方须在同一事务里同时刷新 `strategy_versions.activated_at`(兼容列),二者取同一个
+    时间串,故「兼容列 = 该版最后一次激活」恒成立。"""
+    conn.execute(
+        "INSERT INTO strategy_activation_log (version, activated_at, via, note) VALUES (?,?,?,?)",
+        (version, activated_at, via, note),
+    )
 
 
 def _as_aware(ts: datetime) -> datetime:
@@ -156,7 +268,11 @@ def save_version(
     `MomentumConfig` 字段默认**(max_hold_days=3、无回落止盈、单笔 2 万),只留一条
     warning 日志。这是纪律层面的极危险状态(整套章程凭空换成一组从没人拍板过的默认值),
     故直接 `ValueError` 拒绝:要改现役版本的参数就带 `activate=True`(保持现役),要换
-    现役版本就走 `activate_version`。"""
+    现役版本就走 `activate_version`。
+
+    **v1.4 review 🟡-1**:`activate=True` 时除了刷 `activated_at`,还**追加**一条
+    `strategy_activation_log` 事件(同一时间串)——「这一版从此刻起现役」是一次真实的
+    激活,时间轴上必须有它,否则用本函数改现役参数会在历史里留下一段查无来源的时间。"""
     init_schema(db_path)
     created = _now()
     with connection(db_path) as conn:
@@ -181,18 +297,25 @@ def save_version(
         )
         if activate:
             conn.execute("UPDATE strategy_versions SET is_active=0 WHERE version<>?", (version,))
+            _append_activation(
+                conn, version, created, via="save_version",
+                note="save_version(activate=True)" + ("(覆盖既有行)" if prior is not None else ""),
+            )
     return get_version(version, db_path=db_path)  # type: ignore[return-value]
 
 
 def activate_version(version: str, db_path: Optional[Path] = None) -> StrategyVersion:
-    """把 `version` 设为唯一现役版本:置其 `is_active=1` + stamp `activated_at=now()`、
-    其余版本 `is_active=0`(**但保留它们的 `activated_at`** —— 那是历史激活时间线,
-    洗白修复靠它按周解析当时 governing 版本,绝不清空)。v1.2-A 切换器脚本
-    (`scripts/activate_charter.py --confirm`)的唯一激活入口;策略大脑激活不暴露给
-    客户端(§3.8 系统内核永不被客户端改)。版本不存在 → `ValueError`。
+    """把 `version` 设为唯一现役版本:**追加**一条 `strategy_activation_log` 事件 + 置其
+    `is_active=1` + 刷新兼容列 `activated_at=now()`、其余版本 `is_active=0`(**但保留它们的
+    `activated_at`**)。v1.2-A 切换器脚本(`scripts/activate_charter.py --confirm`)的唯一
+    激活入口;策略大脑激活不暴露给客户端(§3.8 系统内核永不被客户端改)。版本不存在 →
+    `ValueError`。
 
-    注:`activated_at` 每次激活都刷新为 now()(照 plan A.3 写死语义)。正常 staged 流程
-    只激活一次;若回滚重激活旧版本会把其激活戳前移(边角情形,不在本块生效路径)。"""
+    **v1.4 review 🟡-1(回滚安全)**:时间轴事实源已是**事件流**,故「回滚重激活旧版本」
+    只是在时间轴末尾**再加一个事件**,回滚之前的每一段历史(以及那段历史里的违纪)判向
+    逐位不变 —— 旧实现把该版本的单戳前移、静默改判历史周的洗白口就此关闭(有反例单测
+    `test_rollback_reactivation_does_not_whitewash_history`)。重激活仍打 WARNING:它是
+    值得在运维日志里留一行的动作(切换器 `activate_charter.py` 另有面向人的告警与留痕)。"""
     init_schema(db_path)
     now = _now()
     with connection(db_path) as conn:
@@ -201,6 +324,18 @@ def activate_version(version: str, db_path: Optional[Path] = None) -> StrategyVe
         ).fetchone()
         if row is None:
             raise ValueError(f"策略版本 {version} 不存在,无法激活(先 save_version 落库)。")
+        prior = conn.execute(
+            "SELECT COUNT(*) FROM strategy_activation_log WHERE version=?", (version,)
+        ).fetchone()[0]
+        note = "activate_version"
+        if prior:
+            note = f"重激活 / 回滚(此前已激活 {prior} 次;历史判定不受影响,本表 append-only)"
+            logger.warning(
+                "重激活章程版本 %s(此前已激活 %d 次)。激活历史 append-only,%s 之前的"
+                "历史判定逐位不变;若这是事故回退,记得同步 §九 与 STRATEGY_LAB 现役标注。",
+                version, prior, now,
+            )
+        _append_activation(conn, version, now, via="activate_version", note=note)
         conn.execute(
             "UPDATE strategy_versions SET is_active=1, activated_at=? WHERE version=?",
             (now, version),
@@ -235,22 +370,26 @@ def config_active_at(ref_date: date, db_path: Optional[Path] = None) -> Optional
     交给新章程判、洗白该周在旧章程下的违纪。本函数保留作时点原语(它自身语义是对的)。
 
     语义(写死,不许改):
-      · 取所有 `activated_at` 非空的版本,按激活日升序;
-      · governing = 激活日 <= ref_date 的最后一个;
-      · ref_date 早于所有激活日 → 取**最早激活**的版本(不臆造更早历史,用已知最早
+      · 取时间线上的**全部激活事件**(`_activation_events`,v1.4 review 🟡-1 起是
+        append-only 事件流;老库回退每版单戳),按时刻升序;
+      · governing = 激活日 <= ref_date 的最后一个事件的版本;
+      · ref_date 早于所有激活 → 取**最早那次激活**的版本(不臆造更早历史,用已知最早
         版本判深过去);
-      · **整表无任何 `activated_at`(纯 legacy 老库,如无 is_active 行的隔离测试库)
-        → 退回 `get_active()` = 与 v1.2 之前旧行为完全一致**(当前现役判全部周)。
+      · **时间线为空(纯 legacy 老库,如无 is_active 行的隔离测试库)→ 退回 `get_active()`
+        = 与 v1.2 之前旧行为完全一致**(当前现役判全部周)。
 
-    生产因一次性回填(`db.py::_backfill_activated_at`)保证现役 K1 有 `activated_at`,
-    永远走时间线解析、不落 legacy 兜底。
+    日粒度取自事件时刻的 `.date()`(不 `astimezone`,恒等于旧实现的 `_parse_date`,见
+    `_parse_instant` 末段);**同一版本被激活两次时,两次都在时间线上各自成段** —— 这正是
+    🟡-1 的修复点:回滚不再把早先那段历史改判。
+
+    生产因一次性回填(`db.py::_backfill_activated_at`)+ 播种(`_seed_activation_log`)
+    保证 K1 起的每次激活都在时间线上,永远走时间线解析、不落 legacy 兜底。
     """
-    stamped = [v for v in list_versions(db_path=db_path) if _activated_date(v) is not None]
-    if not stamped:
+    events = _activation_events(db_path=db_path)
+    if not events:
         return get_active(db_path=db_path)
-    stamped.sort(key=lambda v: _activated_date(v))  # type: ignore[arg-type,return-value]
-    candidates = [v for v in stamped if _activated_date(v) <= ref_date]  # type: ignore[operator]
-    return candidates[-1] if candidates else stamped[0]
+    candidates = [v for inst, v in events if inst.date() <= ref_date]
+    return candidates[-1] if candidates else events[0][1]
 
 
 def config_governing_for_week(
@@ -291,37 +430,36 @@ def config_governing_at(
     """解析 **某一时刻** governing 的策略版本(v1.4-⑥-A「周复盘按成交时刻逐笔判」的
     时间线解析器,§七 P1-4)。
 
-    **判据(写死,不许改)**:governing = `激活时刻 <= ts` 的**最后一个**版本。
+    **判据(写死,不许改)**:governing = 时间线上 `激活时刻 <= ts` 的**最后一个事件**的版本。
       · **恰好等于激活时刻的成交算「新章程」**(`<=` 而非 `<`)。定死的理由:章程在那一
         刻已经生效,plan §五-⑥-A 原文是「成交时刻**早于**激活时刻按旧章程、之后按新」,
         「等于」不属于「早于」;且与日粒度原语 `config_active_at`(判据「激活日 ≤ ref」)
         同向,两个粒度的边界语义一致,不制造第二套直觉。
-      · `ts` 早于所有激活时刻 → 取**最早激活**的版本(不臆造更早的历史章程,用已知最早
-        版本判深过去;与 `config_active_at` 同款)。
-      · **整表无任何 `activated_at`**(纯 legacy 老库)→ 退回 `get_active()`(与 v1.2 之前
-        旧行为一致;同 `config_active_at` 的 legacy 兜底)。
+      · `ts` 早于所有激活时刻 → 取**最早那次激活**的版本(不臆造更早的历史章程,用已知
+        最早版本判深过去;与 `config_active_at` 同款)。
+      · **时间线为空**(纯 legacy 老库)→ 退回 `get_active()`(与 v1.2 之前旧行为一致;
+        同 `config_active_at` 的 legacy 兜底)。
 
-    **时区(⑥-A 重点防的坑)**:`activated_at` 是 **UTC** 戳(`_now()` 写的),而调用方
-    手上的成交时刻是**北京时间** —— 两边都归一成 aware datetime 后再比绝对时刻:
-    `activated_at` 的归一见 `_activated_instant`,入参 `ts` 的归一见 `_as_aware`
-    (naive 入参按北京时间读;正常路径请直接传 aware,别指望兜底)。**差 8 小时的错判
-    会直接落到「这笔按哪版章程判」上**,这也是本函数不复用 `_activated_date` 的原因。
+    **回滚安全(v1.4 review 🟡-1)**:时间线取自 append-only 事件流 `_activation_events`,
+    一个版本可以有多条事件。「今天把 v1.3 回退成现役」= 时间线末尾多一条事件,**不会**改动
+    更早那些事件,故任何历史时刻的判向逐位不变(旧实现在这里会把历史整段改判 = 洗白)。
+
+    **时区(⑥-A 重点防的坑)**:激活戳是 **UTC**(`_now()` 写的),而调用方手上的成交时刻是
+    **北京时间** —— 两边都归一成 aware datetime 后再比绝对时刻:激活戳的归一见
+    `_parse_instant`,入参 `ts` 的归一见 `_as_aware`(naive 入参按北京时间读;正常路径请
+    直接传 aware,别指望兜底)。**差 8 小时的错判会直接落到「这笔按哪版章程判」上**,这也是
+    本函数比日粒度原语更严的原因。
 
     ⚠ 与 `config_governing_for_week` 的分工:后者回答「这一周整体挂哪版章程的名」
     (`WeeklyReview.strategy_version` 标签,判据「激活日 < week_start」不变);本函数回答
     「**这一笔**该按哪版判」。周复盘的**判据入口**自 v1.4-⑥-A 起走本函数。
     """
     ref = _as_aware(ts)
-    stamped = [
-        (inst, v) for inst, v in
-        ((_activated_instant(v), v) for v in list_versions(db_path=db_path))
-        if inst is not None
-    ]
-    if not stamped:
+    events = _activation_events(db_path=db_path)
+    if not events:
         return get_active(db_path=db_path)
-    stamped.sort(key=lambda pair: pair[0])
-    candidates = [v for inst, v in stamped if inst <= ref]
-    return candidates[-1] if candidates else stamped[0][1]
+    candidates = [v for inst, v in events if inst <= ref]
+    return candidates[-1] if candidates else events[0][1]
 
 
 def activations_between(
@@ -331,17 +469,15 @@ def activations_between(
 
     供周复盘回答「本周有没有发生过章程切换、几点切的」(⑥-A 周报分段计数文案)。
     半开区间:周窗口用 `[周一 00:00, 下周一 00:00)` 表达,相邻周不会把同一次激活各算一遍。
-    时刻归一同 `config_governing_at`(`activated_at` 按 UTC 读、入参 naive 按北京时间读),
+    时刻归一同 `config_governing_at`(激活戳按 UTC 读、入参 naive 按北京时间读),
     **切换时刻不另处理时区**——它就是从这条时间线上取出来的那个绝对时刻。
+
+    **v1.4 review 🟡-1**:同一版本一周内被激活两次(切走又切回)现在会**如实返回两条事件**
+    ——事件流才表达得了它。周报侧「同版本连续再激活不新起一段」的降噪由
+    `reconcile.build_charter_timeline` 负责,不在本函数悄悄合并(本函数是事实,不是呈现)。
     """
     lo, hi = _as_aware(start), _as_aware(end)
-    out = [
-        (inst, v) for inst, v in
-        ((_activated_instant(v), v) for v in list_versions(db_path=db_path))
-        if inst is not None and lo <= inst < hi
-    ]
-    out.sort(key=lambda pair: pair[0])
-    return out
+    return [(inst, v) for inst, v in _activation_events(db_path=db_path) if lo <= inst < hi]
 
 
 def active_config(db_path: Optional[Path] = None) -> Dict:
@@ -357,14 +493,18 @@ def active_config(db_path: Optional[Path] = None) -> Dict:
 
 def list_versions(db_path: Optional[Path] = None) -> List[StrategyVersion]:
     with connection(db_path) as conn:
-        rows = conn.execute(
-            f"SELECT {_select_cols(conn)} FROM strategy_versions ORDER BY created_at"
-        ).fetchall()
-    return [_row_to_version(r) for r in rows]
+        return _versions_in(conn)
+
+
+def activation_history(db_path: Optional[Path] = None) -> List[Tuple[datetime, str]]:
+    """完整激活历史 `(时刻, 版本号)`,按时刻升序(v1.4 review 🟡-1)。供切换器打印
+    「这一版此前被激活过几次、分别什么时候」与事后审计用;**判定路径不走它**
+    (判定走 `config_governing_at` / `config_active_at`,同一份 `_activation_events`)。"""
+    return [(inst, v.version) for inst, v in _activation_events(db_path=db_path)]
 
 
 __all__ = [
     "StrategyVersion", "save_version", "activate_version", "get_version",
     "get_active", "config_active_at", "config_governing_for_week", "config_governing_at",
-    "activations_between", "active_config", "list_versions",
+    "activations_between", "activation_history", "active_config", "list_versions",
 ]
