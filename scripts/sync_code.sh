@@ -87,7 +87,11 @@ RSYNC_OPTS=(-az --delete
   --exclude '/archive/'
   --exclude '/scratchpad/'
   --exclude '.venv/'
-  --exclude '.git/'
+  --exclude '.git'            # 【无尾斜杠:目录与文件都排】worktree 的 .git 是**文件**
+                              # (内容 `gitdir: …`),旧版 '.git/' 只排目录,于是从
+                              # worktree 同步时会把它当普通文件推上生产(2026-07-29 回滚
+                              # 演练真踩,生产多出一个 65B 的 /opt/neckline/.git 指向本机
+                              # 路径的死指针,次日 ⑨ 正式部署时才被 --delete 清掉)
   --exclude '__pycache__/'
   --exclude '*.pyc'
   --exclude '.pytest_cache/'
