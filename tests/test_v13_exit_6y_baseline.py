@@ -46,20 +46,24 @@ def _load():
     return lab, brain, MomentumConfig, panel
 
 
-def test_k1_six_year_backtest_bit_identical():
-    """现役 K1 config(两新字段吃默认)六年回测 = N=1288 / total_return −20.53%(冻结基线)。"""
+def test_k1_six_year_backtest_bit_identical(real_db_readonly_copy):
+    """现役 K1 config(两新字段吃默认)六年回测 = N=1288 / total_return −20.53%(冻结基线)。
+
+    §七 P4-25(v1.5-④-A4):`db_path` 显式传真库只读副本(见
+    `conftest.py::real_db_readonly_copy`)——不裸调 `brain.active_config()`,
+    避免命中 `neckline/db.py` 模块级 settings、直接读写真实开发库。"""
     lab, brain, MomentumConfig, panel = _load()
-    cfg = MomentumConfig(**brain.active_config())
+    cfg = MomentumConfig(**brain.active_config(db_path=real_db_readonly_copy))
     assert cfg.time_exit_only_if_unprofitable is False and cfg.max_hold_days_profit is None
     rep, _pf = lab.run_pf(cfg, _RUN_START, _FROZEN_END, panel=panel)
     assert rep.n_trades == 1288
     assert abs(rep.total_return - (-0.205321)) < 1e-4     # −20.53%,逐位吻合
 
 
-def test_two_tier_engine_exercises_exempt_branch():
+def test_two_tier_engine_exercises_exempt_branch(real_db_readonly_copy):
     """两档启用(回落 8% + 浮盈豁免硬上限 15)六年回测:硬上限豁免续命单确实出现(分支活着)。"""
     lab, brain, MomentumConfig, panel = _load()
-    v13 = dict(brain.active_config())
+    v13 = dict(brain.active_config(db_path=real_db_readonly_copy))
     v13.update(take_profit_retrace=0.08, time_exit_only_if_unprofitable=True, max_hold_days_profit=15)
     _rep, pf = lab.run_pf(MomentumConfig(**v13), _RUN_START, _FROZEN_END, panel=panel)
     hard_cap = sum(1 for t in pf.closed_trades if "硬上限" in t.reason)

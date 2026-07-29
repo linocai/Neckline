@@ -64,7 +64,12 @@ from neckline.report.sector_moneyflow import (
     empty_sector_moneyflow_report,
 )
 from neckline.report.sentiment import SentimentDashboard, compute_sentiment
-from neckline.report.watchlist_check import WatchlistCheckItem, apply_llm_review, build_watchlist_check
+from neckline.report.watchlist_check import (
+    WatchlistCheckItem,
+    apply_llm_review,
+    attach_dispatch_alerts,
+    build_watchlist_check,
+)
 from neckline.strategy import brain
 
 logger = logging.getLogger(__name__)
@@ -359,6 +364,16 @@ def build_report(
         watchlist_check, previous_watchlist_snapshot,
         provider=provider, top_list=top_list, transport=llm_transport,
     )
+
+    # v1.5-④-A1:自选票 K4 派发警示(§七 ✅ 节「诱多做局反向哨兵」残留半边)。复用
+    # `holding_k4_check` 同一份镜像(~16 只自选 × 420 自然日逐票取数,量级 ≈ 持仓
+    # 5 倍),**不阻断主报告管线**(同 C1/C2/C4/信息卡摘要/执行提示保险丝惯例,§硬
+    # 要求「核心管线对可选情报输入的调用必须包保险丝」)——异常时自选体检其余字段
+    # 照出,只是这批票当次没有派发警示(`dispatch_alerts` 维持构造时的默认空列表)。
+    try:
+        attach_dispatch_alerts(watchlist_check, trade_date, parquet_dir=parquet_dir, db_path=db_path)
+    except Exception:  # noqa: BLE001 —— 自选派发警示异常不得连带主报告失败
+        logger.warning("自选票 K4 派发警示(v1.5-④-A1)计算异常,自选体检其余字段照出,本次无派发警示", exc_info=True)
 
     # v1.3-② 持仓 K4 每日体检 + D5 收盘净浮盈(EOD 权威计算,seam 落点):对每只 open 持仓
     # 在当日面板重算 K4 advisory 命中(读 DB K4,polars 镜像)+ 算好 D5 净浮盈 → 落

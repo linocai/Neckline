@@ -54,6 +54,13 @@ class LLMResult:
     provider: str = ""
     model: str = ""
     raw_responses: List[Dict[str, Any]] = field(default_factory=list)
+    # v1.5-④-A3(§七 P1-7):本次调用**实际发起且成功完成**时使用的搜索引擎标识
+    # (GLM `web_search.search_engine`,见 `OpenAICompatProvider._search_engine_value`
+    # 钩子)。**只在成功路径填充**——`ok=False`(缺 key / 超时 / 非法响应等)时恒
+    # `None`,与「老行 NULL=未记录」同一套「不确定就不填」纪律,不臆造"当时用的是
+    # 哪个引擎"。无此概念的供应商(如 Kimi 的内置 `$web_search`,协议层没有可选
+    # 引擎参数)同样恒 `None`。
+    search_engine: Optional[str] = None
 
 
 def search_coverage_line(hit_count: int) -> str:

@@ -48,45 +48,49 @@ def _k1_panel_no_member_col() -> pl.DataFrame:
     ])
 
 
-def _k1_cfg() -> MomentumConfig:
-    return MomentumConfig(**brain.active_config())
+def _k1_cfg(db_path) -> MomentumConfig:
+    """§七 P4-25(v1.5-④-A4):`db_path` 显式必传(真库只读副本,见
+    `conftest.py::real_db_readonly_copy`)——不许裸调 `brain.active_config()`,
+    那会命中 `neckline/db.py` 自己的模块级 settings、直接读写真实开发库。"""
+    return MomentumConfig(**brain.active_config(db_path=db_path))
 
 
 class TestK1BitIdentical:
-    def test_k1_selection_unchanged_on_synthetic(self, isolated_env):
+    def test_k1_selection_unchanged_on_synthetic(self, isolated_env, real_db_readonly_copy):
         """K1 现役 config 在合成盘上的选股 = 仅主板回调票,一位不变。"""
         seed_active_rule_v1(isolated_env)
-        cfg = _k1_cfg()
+        cfg = _k1_cfg(real_db_readonly_copy)
         panel = _k1_panel_no_member_col()
         selected = set(panel.filter(build_entry_mask(cfg))["ts_code"].to_list())
         assert selected == {"600001.SH"}
 
-    def test_new_fields_default_off(self, isolated_env):
+    def test_new_fields_default_off(self, isolated_env, real_db_readonly_copy):
         """新增研究字段默认必须「关闭」= 与 K1 逐位相同的前提。"""
-        cfg = _k1_cfg()
+        cfg = _k1_cfg(real_db_readonly_copy)
         assert cfg.require_mainline_member is False
         assert cfg.take_profit_fixed is None
         assert cfg.high_elasticity_half is False
 
-    def test_default_off_does_not_reference_member_column(self, isolated_env):
+    def test_default_off_does_not_reference_member_column(self, isolated_env, real_db_readonly_copy):
         """默认关闭时 build_entry_mask 不引用 is_mainline_member——能作用在无该列的
         面板上不报错,且结果与 K1 一致。"""
-        cfg = _k1_cfg()
+        cfg = _k1_cfg(real_db_readonly_copy)
         assert cfg.require_mainline_member is False
         panel = _k1_panel_no_member_col()
         assert "is_mainline_member" not in panel.columns
         selected = set(panel.filter(build_entry_mask(cfg))["ts_code"].to_list())
         assert selected == {"600001.SH"}
 
-    def test_require_member_true_ands_the_column(self, isolated_env):
+    def test_require_member_true_ands_the_column(self, isolated_env, real_db_readonly_copy):
         """显式打开 require_mainline_member=True 时,才 AND is_mainline_member 列:
         主板回调票里,非成员被剔、成员保留。"""
         panel = pl.DataFrame([
             _row("600001.SH", "MAIN", member=True),   # 主板回调 + 成员 → 入选
             _row("600010.SH", "MAIN", member=False),  # 主板回调 + 非成员 → 被 mask 剔除
         ])
-        base_cfg = MomentumConfig(**{**brain.active_config(), "require_mainline_member": False})
-        on_cfg = MomentumConfig(**{**brain.active_config(), "require_mainline_member": True})
+        active = brain.active_config(db_path=real_db_readonly_copy)
+        base_cfg = MomentumConfig(**{**active, "require_mainline_member": False})
+        on_cfg = MomentumConfig(**{**active, "require_mainline_member": True})
         # 关闭:两只都在(不看成员列)
         off_sel = set(panel.filter(build_entry_mask(base_cfg))["ts_code"].to_list())
         assert off_sel == {"600001.SH", "600010.SH"}

@@ -447,6 +447,11 @@ def _render_watchlist(items: List[WatchlistCheckItem]) -> str:
             lines.append("- 禁买原因:" + ";".join(it.disqualifiers))
         if it.hot_sectors:
             lines.append(f"- 命中热门板块:{'、'.join(it.hot_sectors)}")
+        if it.dispatch_alerts:
+            # v1.5-④-A1:K4 派发警示(仅 A3/A3b 两码,均强价量证据)——打标展示给
+            # 人判,不拦不禁(第〇原则);不推 APNs(自选不是持仓)。
+            labels = "、".join(h.label for h in it.dispatch_alerts)
+            lines.append(f"- ⚠ K4 派发警示(强价量证据,仅参考不禁买):{labels}")
         if it.buy_point_triggered:
             lines.append(f"- **买点**:{it.entry_plan}")
             lines.append(f"- **止损**:{it.stop_loss}")

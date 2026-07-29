@@ -55,6 +55,51 @@ def isolated_env(fake_settings: Settings, monkeypatch: pytest.MonkeyPatch):
     tc_mod.reset_cache()
 
 
+@pytest.fixture(scope="session")
+def real_db_readonly_copy(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """§七 P4-25(v1.5-④-A4):给「刻意读真实开发库 K1 现役行」的护栏用例
+    (`test_k3_oversold_guardrail.py`/`test_k2_mainline_guardrail.py`/
+    `test_v13_exit_6y_baseline.py`)提供一份**一次性副本**的 `db_path`。
+
+    **为什么需要这个夹具**:这几个用例的意图是校验"当前真实 K1 config 在合成盘上
+    的选股结果没被新增字段污染",数据必须来自真库(不能拿 `isolated_env` 临时
+    库顶替——那样测不出"大脑真的没被后续研究改动"这件事)。但 `brain.active_config()`
+    裸调用(不传 `db_path`)会命中 `neckline/db.py` 自己的模块级 `settings.db_path`
+    ——项目 CLAUDE.md「测试隔离」条早已记载:`isolated_env`/`api_env` 只重写
+    `market_data`/`trading_calendar`/`tushare_client` 三处 `settings` 绑定,
+    **不含 `neckline.db`**——于是每次调用触发的 `init_schema()`(`active_config`→
+    `get_active`→...的连锁,`_migrate_columns` 幂等 `ALTER TABLE`)会把新表/新列
+    的幂等迁移顺手写进开发者的真实工作库(§七 P4-25 原始发现,2026-07-29 已实测
+    复现:`llm_judgments.search_engine` 这一列就是这样在本机被提前建出来的)。
+
+    本夹具用 `sqlite3` 官方 backup API(WAL 模式下比 `shutil.copy2` 更可靠,同项目
+    生产 `.backup` 既有姿势,见 CLAUDE.md「生产实战定案」节)把真库拷一份**会话级
+    临时副本**;调用方对副本传 `db_path=`——校验的仍是真库当时的 K1 行,但
+    `init_schema` 的任何副作用只落在这份用完即扔的副本上,不碰真实
+    `data/neckline.db`。**session 级作用域**:一次会话内多个用例共享同一份副本
+    (副本本身只读、不会被测试写坏,复制一次即可,不必每个用例重拷)。
+
+    真库不存在(全新 clone / CI 环境无 `data/`)→ `pytest.skip` 并给出清晰原因,
+    不伪造一个假的 K1 行去凑测试通过。"""
+    import sqlite3
+
+    from neckline.config import DB_PATH
+
+    if not DB_PATH.exists():
+        pytest.skip(f"真实开发库不存在({DB_PATH}),此护栏用例需要真库现役 K1 行,本环境无法运行。")
+    dest = tmp_path_factory.mktemp("real_db_copy") / "neckline_readonly_copy.db"
+    src_conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    try:
+        dest_conn = sqlite3.connect(str(dest))
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return dest
+
+
 def insert_trade_cal(
     settings: Settings,
     open_days: List[date],

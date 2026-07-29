@@ -390,6 +390,24 @@ class TestWatchlistSection:
         md = _render(watchlist_check=[item])
         assert "LLM 审判" not in md
 
+    def test_dispatch_alerts_rendered_as_warning_line(self):
+        """v1.5-④-A1:K4 派发警示(A3/A3b)打标展示给人判,不拦不禁(第〇原则)——
+        markdown 里必须能看到警示文案与命中标签,且不影响其余小节。"""
+        item = _watch_item(dispatch_alerts=[
+            HoldingK4Hit(code="A3_belowyear_limitup", label="年线下涨停(疑似诱多做局派发)",
+                        level="strong", evidence="年线下涨停=诱多域,2026 -3.96%、左尾肥",
+                        evidence_strength="price_volume"),
+        ])
+        md = _render(watchlist_check=[item])
+        assert "K4 派发警示" in md
+        assert "年线下涨停(疑似诱多做局派发)" in md
+        assert "仅参考不禁买" in md   # 第〇原则:LLM/K4 派发都不拦,打标给人判
+
+    def test_no_dispatch_alerts_omits_warning_line(self):
+        item = _watch_item(dispatch_alerts=[])
+        md = _render(watchlist_check=[item])
+        assert "K4 派发警示" not in md
+
     def test_watchlist_section_does_not_mix_into_candidates_section(self):
         """自选体检独立一节,不与候选榜混排。"""
         cand = _candidate(ts_code="600001.SH")

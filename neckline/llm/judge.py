@@ -99,6 +99,11 @@ class JudgeResult:
     degraded: bool
     degrade_reason: str = ""
     search_hits: List[SearchHit] = field(default_factory=list)
+    # v1.5-④-A3(§七 P1-7):透传 `LLMResult.search_engine`(只在成功路径非
+    # None,见其字段注释)。`store.save_llm_judgment` 据此落 `llm_judgments.
+    # search_engine` 列,供按日捞命中分布基线——`未激活`/调用失败两种降级路径
+    # 恒 `None`,不臆造"当时用的是哪个引擎"。
+    search_engine: Optional[str] = None
 
 
 def build_context_block(candidate: Any, top_list_row: Optional[Dict[str, Any]] = None) -> str:
@@ -197,6 +202,7 @@ def judge_candidate(
     return JudgeResult(
         ts_code=candidate.ts_code, provider=result.provider, model=result.model,
         verdict=verdict, narrative=narrative, degraded=False, search_hits=result.search_hits,
+        search_engine=result.search_engine,
     )
 
 

@@ -279,6 +279,7 @@ class TestLLMJudgmentRoundtrip:
             ts_code="600001.SH", provider="glm", model="glm-5.2", verdict=VERDICT_PASS,
             narrative="催化仍在持续。", degraded=False,
             search_hits=[SearchHit(title="标题", link="https://a.com", content="摘要", media="媒体A", publish_date="2026-07-18")],
+            search_engine="search_pro",
         )
         store.save_llm_judgment(D, result, db_path=db)
         rows = store.load_llm_judgments(D, db_path=db)
@@ -289,6 +290,7 @@ class TestLLMJudgmentRoundtrip:
         assert r["degraded"] is False
         assert r["search_hits"][0]["title"] == "标题"
         assert r["search_hits"][0]["link"] == "https://a.com"
+        assert r["search_engine"] == "search_pro"
 
     def test_degraded_judgment_stores_flag_and_reason(self, db):
         result = JudgeResult(
@@ -300,6 +302,7 @@ class TestLLMJudgmentRoundtrip:
         assert rows[0]["degraded"] is True
         assert rows[0]["degrade_reason"] == "未配置 LLM_PROVIDER/LLM_API_KEY"
         assert rows[0]["search_hits"] == []
+        assert rows[0]["search_engine"] is None   # v1.5-④-A3:未记录,不臆造
 
     def test_multiple_candidates_same_day_ordered_by_insertion(self, db):
         for code in ["600001.SH", "600002.SH", "600003.SH"]:

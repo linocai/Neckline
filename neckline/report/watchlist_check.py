@@ -36,6 +36,12 @@ LLM。复用 `llm.judge.judge_candidate`(降级链继承),只是换一套
 `WATCHLIST_JUDGE_SYSTEM_PROMPT`(候选审判"是否留在候选池"的框定语并不贴合自选票
 场景,故 `judge_candidate` 新增了可选 `system_prompt` 参数,默认值不变、不影响
 候选审判调用点——纯粹的向后兼容扩展)。
+
+**K4 派发警示(v1.5-④-A1)**:`attach_dispatch_alerts` 补齐持仓侧早已有、自选侧此前
+缺失的 K4 派发警报(§七 ✅ 节「诱多做局反向哨兵」残留半边)——复用
+`holding_k4_check._build_holding_feature_panel`/`describe_hits` 同一份镜像,只取
+`A3_belowyear_limitup`/`A3b_belowyear_bigvol` 两码(强价量证据),详见该函数
+docstring。⛔ 不推 APNs(自选不是持仓)。
 """
 
 from __future__ import annotations
@@ -60,12 +66,25 @@ from neckline.report.candidates import (
     stop_loss_text,
     target_text,
 )
+from neckline.report.holding_k4_check import HoldingK4Hit, _build_holding_feature_panel, describe_hits
 from neckline.report.sectors import SectorScore, sector_hot_lookup
 from neckline.strategy import signals as S
 from neckline.strategy.features import build_research_panel
 from neckline.strategy.momentum import MomentumConfig, build_entry_mask
 
 NO_DATA_REASON = "当日行情面板查无该票(停牌 / 未上市 / 代码有误),无法核对纪律。"
+
+# —— 自选票 K4 派发警示(v1.5-④-A1,§七 ✅ 节「诱多做局反向哨兵」残留半边结案)——————
+# 只取两个强价量证据码(A3 年线下涨停 / A3b 年线下放量大阳)——其余 K4 码(A1/A2/B1/B2/
+# B3/B4)**不在自选体检展示**,避免自选体检变成第二张 K4 牌、与持仓牌语义混淆(见
+# `discipline_checks` 之外新增的这段落 docstring)。`_hit_A3`/`_hit_A3b` 两列由
+# `holding_k4_check._build_holding_feature_panel`(内部 `_add_hit_columns`)算好,本处
+# 只读列、不重写任何 polars 表达式——与持仓侧 `holding_k4_check.py`、候选侧
+# `intel_candidates.py` 是同一份镜像。
+_DISPATCH_ALERT_ROW_COLS: Dict[str, str] = {
+    "A3_belowyear_limitup": "_hit_A3",
+    "A3b_belowyear_bigvol": "_hit_A3b",
+}
 
 
 @dataclass
@@ -99,6 +118,10 @@ class WatchlistCheckItem:
     status_changed: bool = False
     # 仅当 (status_changed ∪ pinned) 且 has_data 时才非 None(§LLM 控成本)。
     llm_judgment: Optional[Dict[str, Any]] = None
+    # v1.5-④-A1:K4 派发警示(仅 A3/A3b 两码,强价量证据)。默认空列表——由
+    # `attach_dispatch_alerts` 原地补齐;失败/未触发时保持空,不代表"没体检"
+    # (本项与 `has_data` 语义无关,`has_data=False` 的票同样是空列表)。
+    dispatch_alerts: List[HoldingK4Hit] = field(default_factory=list)
 
     def public_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -366,6 +389,53 @@ def apply_llm_review(
         }
 
 
+def attach_dispatch_alerts(
+    items: List[WatchlistCheckItem],
+    trade_date: date,
+    *,
+    parquet_dir: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+) -> None:
+    """自选票 K4 派发警示(v1.5-④-A1,§七 ✅ 节「诱多做局反向哨兵」残留半边兑现)。
+
+    **复用同一份镜像,禁另写**:调 `holding_k4_check._build_holding_feature_panel`
+    (与持仓侧 `holding_k4_check.build_holding_k4_check`、候选侧
+    `intel_candidates.build_intel_candidates` 同一个函数、同一份 `_add_hit_columns`
+    polars 表达式)算好自选码当日特征面板,读其 `_hit_A3`/`_hit_A3b` 两列(既有命中
+    判定,不重写任何表达式),命中的码再交 `describe_hits` decorate 成
+    label/evidence/evidenceStrength(与持仓牌信息卡红黄牌同一份装饰函数)。**只取
+    `A3_belowyear_limitup`/`A3b_belowyear_bigvol` 两码**——其余 K4 码(A1/A2/B1/B2/
+    B3/B4)不在自选体检展示,避免自选体检变成第二张 K4 牌、与持仓牌语义混淆。
+
+    原地(in-place)补 `item.dispatch_alerts`;不触碰其余字段,也不管 `has_data`
+    (`_build_holding_feature_panel` 对停牌/未上市票自然缺行,读不到就是没有警示,
+    与持仓侧 `has_data=False` 时"整份体检跳过"的语义不同——本项只是一个附加标记,
+    不是主评估结果)。
+
+    **⛔ 不推 APNs**(自选不是持仓,第六类推送 `HOLDINGALERT` 口径明确只对持仓;
+    新增推送须用户拍板,本版不加)。
+
+    **保险丝在调用方**:本函数自身不吞异常——`pipeline.py` 整段 `try/except`
+    包裹(失败则全体 `dispatch_alerts` 维持默认空列表 + WARNING,不阻断报告),
+    同 `attach_exec_hints`/`attach_info_card_summaries` 既有姿势(§硬要求「核心
+    管线对可选情报输入的调用必须包保险丝」)。**成本**:~16 只自选 × 420 自然日
+    逐票取数,量级 ≈ 持仓(3 只)的 5 倍(耗时计入 ⑥ 部署实测记账)。"""
+    codes = [it.ts_code for it in items]
+    if not codes:
+        return
+    panel = _build_holding_feature_panel(codes, trade_date, parquet_dir)
+    if panel.is_empty():
+        return
+    rows_by_code: Dict[str, Dict[str, Any]] = {r["ts_code"]: r for r in panel.to_dicts()}
+    for item in items:
+        row = rows_by_code.get(item.ts_code)
+        if row is None:
+            continue
+        hit_codes = [code for code, col in _DISPATCH_ALERT_ROW_COLS.items() if row.get(col)]
+        if hit_codes:
+            item.dispatch_alerts = describe_hits(hit_codes, db_path)
+
+
 __all__ = [
     "WatchlistCheckItem",
     "NO_DATA_REASON",
@@ -373,4 +443,5 @@ __all__ = [
     "build_watchlist_check",
     "score_watchlist",
     "apply_llm_review",
+    "attach_dispatch_alerts",
 ]

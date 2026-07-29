@@ -136,6 +136,55 @@ def test_old_report_without_watchlist_json_defaults_to_empty_list(client, AUTH, 
     assert rep["watchlistCheck"] == []
 
 
+def test_report_latest_watchlist_check_dispatch_alerts_roundtrip(client, AUTH, api_env):
+    """v1.5-④-A1:`WatchlistCheckOut.dispatchAlerts` 落库快照 → API 契约往返
+    (`level` 不透传,见 `DispatchAlertOut` docstring)。"""
+    report_store.save_report(
+        date(2026, 7, 20), strategy_version="v1", sentiment={}, sectors=[], candidates=[],
+        markdown="# t", db_path=api_env.db_path,
+        watchlist=[{
+            "ts_code": "600003.SH", "name": "示例丙", "pinned": False, "source": "manual", "has_data": True,
+            "close": 8.0, "board": "MAIN", "score": 50.0, "pattern_tags": [], "hot_sectors": [],
+            "sector_names": [], "green_light": True, "disqualifiers": [],
+            "buy_point_triggered": False, "entry_plan": "无", "stop_loss": "无", "target": "无",
+            "invalidation_text": "无", "invalidation_spec": {}, "entry_spec": {},
+            "status_changed": False, "llm_judgment": None,
+            "dispatch_alerts": [{
+                "code": "A3_belowyear_limitup", "label": "年线下涨停(疑似诱多做局派发)",
+                "level": "strong", "evidence": "年线下涨停=诱多域,2026 -3.96%、左尾肥",
+                "evidence_strength": "price_volume",
+            }],
+        }],
+    )
+    rep = client.get("/api/v1/report/latest", headers=AUTH).json()
+    wc = next(w for w in rep["watchlistCheck"] if w["code"] == "600003.SH")
+    assert wc["dispatchAlerts"] == [{
+        "code": "A3_belowyear_limitup", "label": "年线下涨停(疑似诱多做局派发)",
+        "evidence": "年线下涨停=诱多域,2026 -3.96%、左尾肥", "evidenceStrength": "price_volume",
+    }]
+
+
+def test_report_latest_watchlist_check_dispatch_alerts_default_empty_for_old_snapshot(client, AUTH, api_env):
+    """老报告快照(建于本字段前,无 `dispatch_alerts` 键)→ `dispatchAlerts` 默认空
+    列表,不报错(前向兼容)。"""
+    report_store.save_report(
+        date(2026, 7, 21), strategy_version="v1", sentiment={}, sectors=[], candidates=[],
+        markdown="# t", db_path=api_env.db_path,
+        watchlist=[{
+            "ts_code": "600004.SH", "name": "示例丁", "pinned": False, "source": "manual", "has_data": True,
+            "close": 8.0, "board": "MAIN", "score": 50.0, "pattern_tags": [], "hot_sectors": [],
+            "sector_names": [], "green_light": True, "disqualifiers": [],
+            "buy_point_triggered": False, "entry_plan": "无", "stop_loss": "无", "target": "无",
+            "invalidation_text": "无", "invalidation_spec": {}, "entry_spec": {},
+            "status_changed": False, "llm_judgment": None,
+            # 故意不传 dispatch_alerts 键,模拟本字段上线前的老快照。
+        }],
+    )
+    rep = client.get("/api/v1/report/latest", headers=AUTH).json()
+    wc = next(w for w in rep["watchlistCheck"] if w["code"] == "600004.SH")
+    assert wc["dispatchAlerts"] == []
+
+
 # —— 同花顺 txt 对账 / 导出(plan C.4)——————————————————————————————————————
 
 def test_reconcile_ths_endpoint_diff(client, AUTH):

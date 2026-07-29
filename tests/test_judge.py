@@ -60,6 +60,7 @@ class TestNoProviderDegradation:
         assert r.degraded is True
         assert "未激活" in r.narrative
         assert "LLM_PROVIDER" in r.degrade_reason
+        assert r.search_engine is None   # 未发起任何调用,不臆造用过哪个引擎
 
 
 class TestCustomSystemPrompt:
@@ -103,6 +104,7 @@ class TestProviderFailureDegradation:
         assert r.degraded is True
         assert "上游 500" in r.narrative
         assert r.degrade_reason == "上游 500"
+        assert r.search_engine is None   # 调用失败,不确定用过哪个引擎,不臆造
 
 
 class TestVerdictParsing:
@@ -139,6 +141,15 @@ class TestVerdictParsing:
         stub = _StubProvider(LLMResult(ok=True, content="正文\n结论:通过", search_hits=[hit], provider="glm", model="glm-5.2"))
         r = judge_candidate(_candidate(), provider=stub)
         assert r.search_hits == [hit]
+
+    def test_search_engine_propagated(self):
+        """v1.5-④-A3(§七 P1-7):`LLMResult.search_engine` 原样透传进
+        `JudgeResult.search_engine`,供 `store.save_llm_judgment` 落库。"""
+        stub = _StubProvider(LLMResult(
+            ok=True, content="正文\n结论:通过", provider="glm", model="glm-5.2", search_engine="search_pro",
+        ))
+        r = judge_candidate(_candidate(), provider=stub)
+        assert r.search_engine == "search_pro"
 
 
 class TestContextBlock:
@@ -204,3 +215,4 @@ class TestEndToEndWithRealProviderMockTransport:
         assert r.verdict == VERDICT_VETO
         assert r.degraded is False
         assert r.provider == "glm"
+        assert r.search_engine == "search_pro"   # 端到端:真 GLMProvider 走到 judge.py

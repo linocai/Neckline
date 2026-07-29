@@ -240,6 +240,19 @@ class WatchlistCheckLLMOut(BaseModel):
     degraded: bool
 
 
+class DispatchAlertOut(BaseModel):
+    """自选票 K4 派发警示(v1.5-④-A1,§七 ✅ 节「诱多做局反向哨兵」残留半边结案)。
+    复用 `holding_k4_check` 同一份镜像评估器,**只取两个强价量证据码**
+    (A3_belowyear_limitup / A3b_belowyear_bigvol,均恒 `level=strong` ∧
+    `evidenceStrength=price_volume`)——与持仓牌 `K4AdvisoryOut` 六码全量不同,这里
+    只有这两码且 level 恒定不携带信息量,契约故意省略 `level` 字段。⛔ **不推
+    APNs**(自选不是持仓,第六类推送 `HOLDINGALERT` 口径明确只对持仓)。"""
+    code: str
+    label: str
+    evidence: str
+    evidenceStrength: str        # 恒 price_volume(两码均强价量证据)
+
+
 class WatchlistCheckOut(BaseModel):
     """自选体检单只快照(plan §五 v1.1-C.3)。字段形状与 `CandidateOut` 四件套对齐
     (buyPoint/stop/target/invalidation 命名一致),供客户端复用候选卡的四件套布局
@@ -266,6 +279,8 @@ class WatchlistCheckOut(BaseModel):
     entrySpec: Dict[str, Any] = Field(default_factory=dict)
     statusChanged: bool = False            # 较上一份报告状态是否变化(红绿灯翻转/买点触发翻转/形态标签变化)
     llmJudgment: Optional[WatchlistCheckLLMOut] = None   # 仅 statusChanged∪pinned 才有
+    # v1.5-④-A1:K4 派发警示(默认空列表,老客户端忽略未知键)。
+    dispatchAlerts: List[DispatchAlertOut] = Field(default_factory=list)
 
 
 class NewsAlertOut(BaseModel):
@@ -978,7 +993,7 @@ __all__ = [
     "OkOut", "LLMJudgmentOut", "PermanentBoardStatusOut", "IntelRankOut",
     "InfoCardSnapshotOut", "InfoCardNewsItemOut", "InfoCardNewsOut", "InfoCardTopListOut",
     "InfoCardSummaryOut", "ExecHintOut", "CandidateOut",
-    "WatchlistCheckLLMOut", "WatchlistCheckOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
+    "WatchlistCheckLLMOut", "WatchlistCheckOut", "DispatchAlertOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "EntrySuggestionOut", "CircuitEpisodeOut", "CircuitStateOut",

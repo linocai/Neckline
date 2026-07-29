@@ -316,6 +316,47 @@ class TestZeroHitTelemetry:
         assert search_coverage_line(5) == "联网搜索:本次命中 5 条"
 
 
+class TestSearchEngineField:
+    """v1.5-④-A3(§七 P1-7):`LLMResult.search_engine` 只在**成功**路径填充,读
+    `GLMProvider._SEARCH_ENGINE` 单一源(与 `_search_tools` payload 里的取值同一处,
+    不重复写字面量);Kimi 没有「可选引擎」概念,恒 `None`。"""
+
+    def test_glm_success_reports_search_pro(self):
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=_openai_success_body("分析。\n结论:通过")))
+        r = GLMProvider(api_key="sk-xxx").chat([ChatMessage(role="user", content="hi")], transport=transport)
+        assert r.ok and r.search_engine == "search_pro"
+
+    def test_glm_value_reads_same_constant_as_search_tools_payload(self):
+        """不重复硬编:`_search_engine_value()` 与 `_search_tools()` 里的
+        `web_search["search_engine"]` 必须逐字节相同(同一个类常量)。"""
+        p = GLMProvider(api_key="sk-xxx")
+        payload_value = p._search_tools()[0]["web_search"]["search_engine"]
+        assert p._search_engine_value() == payload_value == "search_pro"
+
+    def test_glm_search_disabled_reports_none(self):
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=_openai_success_body("无需搜索。\n结论:通过")))
+        r = GLMProvider(api_key="sk-xxx").chat(
+            [ChatMessage(role="user", content="hi")], enable_search=False, transport=transport,
+        )
+        assert r.ok and r.search_engine is None
+
+    def test_glm_failure_path_reports_none(self):
+        transport = httpx.MockTransport(lambda r: httpx.Response(500, json={"error": "boom"}))
+        r = GLMProvider(api_key="sk-xxx").chat([ChatMessage(role="user", content="hi")], transport=transport)
+        assert not r.ok and r.search_engine is None
+
+    def test_glm_missing_key_reports_none_without_network(self):
+        r = GLMProvider(api_key=None).chat([ChatMessage(role="user", content="hi")])
+        assert not r.ok and r.search_engine is None
+
+    def test_kimi_success_reports_none_no_engine_concept(self):
+        """Kimi 内置 `$web_search` 协议层没有可选引擎参数位,恒 `None`
+        (`KimiProvider` 未覆盖 `_search_engine_value`,走基类默认值)。"""
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=_openai_success_body("分析。\n结论:通过", model="kimi-k3")))
+        r = KimiProvider(api_key="sk-xxx").chat([ChatMessage(role="user", content="hi")], transport=transport)
+        assert r.ok and r.search_engine is None
+
+
 class TestKimiToolCallRoundTrip:
     def test_web_search_round_trip_then_final_answer(self):
         calls: List[Dict[str, Any]] = []

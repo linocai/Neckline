@@ -367,6 +367,65 @@ class TestWatchlistCheckWiring:
         assert w2.status_changed is True         # 与上一份报告(day1)相比翻转
 
 
+class TestDispatchAlertsWiring:
+    """v1.5-④-A1 自选票 K4 派发警示接入 `build_report`(领域逻辑单测见
+    `test_watchlist_check.py::TestAttachDispatchAlerts`;本类只测「接线」——是否真的
+    被调用、携带正确参数、异常时不阻断主报告(保险丝惯例同 `TestExecHintWiring`)。"""
+
+    def test_attach_dispatch_alerts_called_with_db_path(self, isolated_env, monkeypatch):
+        """spy 断言 `build_report` 确实调用了 `attach_dispatch_alerts`(不是被 import
+        遗漏/静默跳过)且携带正确的 `db_path`/`parquet_dir`。"""
+        from neckline.watchlist import add_watchlist
+
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        captured = {}
+        real = pipeline_mod.attach_dispatch_alerts
+
+        def spy(items, trade_date, **kw):
+            captured["called"] = True
+            captured["db_path"] = kw.get("db_path")
+            captured["parquet_dir"] = kw.get("parquet_dir")
+            captured["n_items"] = len(items)
+            return real(items, trade_date, **kw)
+
+        monkeypatch.setattr(pipeline_mod, "attach_dispatch_alerts", spy)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        add_watchlist("600001.SH", db_path=isolated_env.db_path)
+        report_date = dates[-1]
+
+        pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert captured["called"] is True
+        assert captured["db_path"] == isolated_env.db_path
+        assert captured["parquet_dir"] == isolated_env.parquet_dir
+        assert captured["n_items"] == 1
+
+    def test_dispatch_alerts_exception_does_not_block_main_report(self, isolated_env, monkeypatch):
+        """`attach_dispatch_alerts` 整体异常(保险丝范围外的意外)时,`build_report`
+        仍必须成功产出报告——自选体检其余字段照出,只是这批票当次没有派发警示
+        (维持构造时的默认空列表)。"""
+        from neckline.watchlist import add_watchlist
+
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            pipeline_mod, "attach_dispatch_alerts",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        add_watchlist("600001.SH", db_path=isolated_env.db_path)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
+        )
+        w = next(w for w in bundle.watchlist_check if w.ts_code == "600001.SH")
+        assert w.dispatch_alerts == []   # 保险丝触发,维持默认空(不是半份脏数据)
+        assert w.green_light is not None  # 体检其余字段正常产出(不是"整体没跑")
+
+
 class TestIntelAndSectorMoneyflowWiring:
     """v1.3-③ C1(情报件)/C2(板块资金流)接入 `build_report`(硬要求④:任一子项
     /整段异常都不阻断主报告)。字段本身的评分单测在 `test_intel.py`/

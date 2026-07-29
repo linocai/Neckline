@@ -3,7 +3,11 @@
 与买点触发均直接复用 `report.candidates`/`strategy.momentum` 本尊(同码,§2.6),
 不是重新实现一份;`TestScoreSameAsCandidates` 是 C 验收标准「自选体检评分与候选
 评分同码一致」的直接证据。`apply_llm_review` 覆盖「状态变化」diff 定义与 LLM
-控成本(只审 changed∪pinned)。"""
+控成本(只审 changed∪pinned)。`TestAttachDispatchAlerts`(v1.5-④-A1)覆盖自选票
+K4 派发警示——`_build_holding_feature_panel` 用 `test_holding_k4_check.py` 同款
+`monkeypatch` 姿势打桩(免真实 parquet I/O),`TestDispatchAlertsMatchHoldingK4Check`
+是「复用同一份镜像」的直接证据:同一行喂两条管线,命中码/文案/证据强度须逐位一致。
+"""
 
 from __future__ import annotations
 
@@ -15,14 +19,18 @@ import polars as pl
 import pytest
 
 from neckline.llm.base import ChatMessage, LLMResult
+from neckline.report import holding_k4_check as hk
+from neckline.report import watchlist_check as wc
 from neckline.report.candidates import pattern_tags as candidates_pattern_tags
 from neckline.report.candidates import score_candidates
 from neckline.report.sectors import SectorScore
 from neckline.report.watchlist_check import (
     WatchlistCheckItem,
     apply_llm_review,
+    attach_dispatch_alerts,
     score_watchlist,
 )
+from neckline.sentinel.positions import Position
 from neckline.strategy.momentum import MomentumConfig
 
 D = date(2024, 3, 4)
@@ -331,3 +339,171 @@ class TestApplyLlmReviewCostControl:
         assert item.llm_judgment is not None
         assert item.llm_judgment["degraded"] is True
         assert item.llm_judgment["verdict"] == "未激活"
+
+
+# ————————————————————————————————————————————————————————————————
+# v1.5-④-A1:自选票 K4 派发警示(`attach_dispatch_alerts`)
+# ————————————————————————————————————————————————————————————————
+
+_TD = date(2026, 7, 17)
+
+
+def _stub_panel(rows):
+    """同 `test_holding_k4_check.py::_stub_panel`——打桩 `_build_holding_feature_panel`
+    的返回(免真实 parquet I/O),签名与 `_build_holding_feature_panel(codes,
+    trade_date, parquet_dir)` 一致。"""
+    def _fn(codes, trade_date, parquet_dir):
+        return pl.DataFrame(rows) if rows else pl.DataFrame()
+    return _fn
+
+
+def _panel_row(code, **hits):
+    """同 `test_holding_k4_check.py::_panel_row`——只需 `_hit_A3`/`_hit_A3b` 两列
+    (其余 `_hit_*` 列一并带默认 False,验证"只取两码"这条边界)。"""
+    r = dict(ts_code=code, close=10.5, _hit_A1=False, _hit_A3=False, _hit_A3b=False,
+             _hit_B1=False, _hit_B2=False, _hit_B4=False)
+    r.update(hits)
+    return r
+
+
+def _wc_item(ts_code: str = "600001.SH", **overrides) -> WatchlistCheckItem:
+    base = dict(ts_code=ts_code, name="示例", pinned=False, source="manual", has_data=True)
+    base.update(overrides)
+    return WatchlistCheckItem(**base)
+
+
+class TestAttachDispatchAlerts:
+    def test_a3_hit_populates_dispatch_alerts(self, isolated_env, monkeypatch):
+        rows = [_panel_row("600001.SH", _hit_A3=True)]
+        monkeypatch.setattr(wc, "_build_holding_feature_panel", _stub_panel(rows))
+        item = _wc_item("600001.SH")
+        attach_dispatch_alerts([item], _TD, db_path=isolated_env.db_path)
+        assert len(item.dispatch_alerts) == 1
+        hit = item.dispatch_alerts[0]
+        assert hit.code == "A3_belowyear_limitup"
+        assert hit.level == "strong" and hit.evidence_strength == "price_volume"
+        assert hit.label and hit.evidence   # 兜底证据文字(隔离库无 K4 行)非空
+
+    def test_a3b_hit_populates_dispatch_alerts(self, isolated_env, monkeypatch):
+        rows = [_panel_row("600002.SH", _hit_A3b=True)]
+        monkeypatch.setattr(wc, "_build_holding_feature_panel", _stub_panel(rows))
+        item = _wc_item("600002.SH")
+        attach_dispatch_alerts([item], _TD, db_path=isolated_env.db_path)
+        codes = {h.code for h in item.dispatch_alerts}
+        assert codes == {"A3b_belowyear_bigvol"}
+
+    def test_normal_ticker_stays_empty(self, isolated_env, monkeypatch):
+        """无 A3/A3b 命中 → `dispatch_alerts` 维持默认空列表(验收原文「正常票 → 空」)。"""
+        rows = [_panel_row("600003.SH")]
+        monkeypatch.setattr(wc, "_build_holding_feature_panel", _stub_panel(rows))
+        item = _wc_item("600003.SH")
+        attach_dispatch_alerts([item], _TD, db_path=isolated_env.db_path)
+        assert item.dispatch_alerts == []
+
+    def test_other_k4_codes_do_not_leak_into_dispatch_alerts(self, isolated_env, monkeypatch):
+        """`_hit_A1`/`_hit_B1`/`_hit_B2`/`_hit_B4` 即便为真也不进 `dispatch_alerts`——
+        只取两码,其余 K4 码不展示(避免自选体检变成第二张 K4 牌)。"""
+        rows = [_panel_row("600004.SH", _hit_A1=True, _hit_B1=True, _hit_B2=True, _hit_B4=True)]
+        monkeypatch.setattr(wc, "_build_holding_feature_panel", _stub_panel(rows))
+        item = _wc_item("600004.SH")
+        attach_dispatch_alerts([item], _TD, db_path=isolated_env.db_path)
+        assert item.dispatch_alerts == []
+
+    def test_both_a3_and_a3b_hit_gives_two_alerts(self, isolated_env, monkeypatch):
+        rows = [_panel_row("600005.SH", _hit_A3=True, _hit_A3b=True)]
+        monkeypatch.setattr(wc, "_build_holding_feature_panel", _stub_panel(rows))
+        item = _wc_item("600005.SH")
+        attach_dispatch_alerts([item], _TD, db_path=isolated_env.db_path)
+        assert {h.code for h in item.dispatch_alerts} == {
+            "A3_belowyear_limitup", "A3b_belowyear_bigvol",
+        }
+
+    def test_code_missing_from_panel_stays_empty_no_crash(self, isolated_env, monkeypatch):
+        """面板里没有这只票的行(停牌/未上市/查无)→ 空,不崩(不冒充命中)。"""
+        monkeypatch.setattr(wc, "_build_holding_feature_panel", _stub_panel([]))
+        item = _wc_item("600006.SH")
+        attach_dispatch_alerts([item], _TD, db_path=isolated_env.db_path)
+        assert item.dispatch_alerts == []
+
+    def test_empty_items_is_noop_no_panel_built(self, isolated_env, monkeypatch):
+        """空自选池 → 直接返回,不建面板(省一次 I/O,同 `build_watchlist_check` 姿势)。"""
+        def _boom(codes, trade_date, parquet_dir):
+            raise AssertionError("空 items 不该触发面板构建")
+        monkeypatch.setattr(wc, "_build_holding_feature_panel", _boom)
+        attach_dispatch_alerts([], _TD, db_path=isolated_env.db_path)   # 不抛异常即通过
+
+    def test_multiple_items_each_scored_independently(self, isolated_env, monkeypatch):
+        rows = [_panel_row("600001.SH", _hit_A3=True), _panel_row("600002.SH")]
+        monkeypatch.setattr(wc, "_build_holding_feature_panel", _stub_panel(rows))
+        hit_item = _wc_item("600001.SH")
+        clean_item = _wc_item("600002.SH")
+        attach_dispatch_alerts([hit_item, clean_item], _TD, db_path=isolated_env.db_path)
+        assert hit_item.dispatch_alerts and not clean_item.dispatch_alerts
+
+    def test_db_evidence_used_when_k4_row_present(self, isolated_env):
+        """`describe_hits` 读 DB `k4_advisory` 的 evidence 文字(不抄模块兜底)——
+        与 `holding_k4_check.py`/`intel_candidates.py` 同一份读取姿势。"""
+        from neckline.strategy import brain
+        custom = "自定义证据·派发迹象明显"
+        brain.save_version("K4", rule={"config": {}, "k4_advisory": {
+            "hard_cut": {"A3_belowyear_limitup": {"expr": "TREND_BELOW & is_limit_up", "evidence": custom}},
+            "avoid_flag": {},
+        }}, changelog="test K4", activate=False, db_path=isolated_env.db_path)
+
+        def _fn(codes, trade_date, parquet_dir):
+            return pl.DataFrame([_panel_row("600001.SH", _hit_A3=True)])
+        item = _wc_item("600001.SH")
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(wc, "_build_holding_feature_panel", _fn)
+            attach_dispatch_alerts([item], _TD, db_path=isolated_env.db_path)
+        assert item.dispatch_alerts[0].evidence == custom
+
+
+class TestDispatchAlertsMatchHoldingK4Check:
+    """④ 验收原文「复用同一份镜像(单测断言与 `holding_k4_check` 对同一票同一天的
+    判定逐位一致)」的直接证据:同一行喂两条管线(持仓侧 `build_holding_k4_check` /
+    自选侧 `attach_dispatch_alerts`),A3 命中的 code/label/evidence/evidenceStrength
+    须逐位相同——因为两者的命中判定都来自同一个 `_build_holding_feature_panel` +
+    `_add_hit_columns`,decorate 都走同一个 `describe_hits`/`_HIT_META`。"""
+
+    def _pos(self, code="600001.SH"):
+        return Position(id=1, ts_code=code, buy_price=10.0, qty=1000, buy_date="20260710",
+                        status="open", sell_price=None, sell_date=None, note=None, buy_fees=None)
+
+    def test_a3_hit_identical_across_holding_and_watchlist(self, isolated_env, monkeypatch):
+        code = "600001.SH"
+        row = _panel_row(code, _hit_A3=True)
+
+        monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([row]))
+        holding_items = hk.build_holding_k4_check(_TD, {"config": {"stop_pct": 0.05, "max_hold_days": 5}},
+                                                   [self._pos(code)], db_path=isolated_env.db_path)
+        holding_hit = next(h for h in holding_items[0].hits if h.code == "A3_belowyear_limitup")
+
+        monkeypatch.setattr(wc, "_build_holding_feature_panel", _stub_panel([row]))
+        item = _wc_item(code)
+        attach_dispatch_alerts([item], _TD, db_path=isolated_env.db_path)
+        watch_hit = next(h for h in item.dispatch_alerts if h.code == "A3_belowyear_limitup")
+
+        assert holding_hit.code == watch_hit.code
+        assert holding_hit.label == watch_hit.label
+        assert holding_hit.evidence == watch_hit.evidence
+        assert holding_hit.evidence_strength == watch_hit.evidence_strength
+
+    def test_a3b_hit_identical_across_holding_and_watchlist(self, isolated_env, monkeypatch):
+        code = "600002.SH"
+        row = _panel_row(code, _hit_A3b=True)
+
+        monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([row]))
+        holding_items = hk.build_holding_k4_check(_TD, {"config": {"stop_pct": 0.05, "max_hold_days": 5}},
+                                                   [self._pos(code)], db_path=isolated_env.db_path)
+        holding_hit = next(h for h in holding_items[0].hits if h.code == "A3b_belowyear_bigvol")
+
+        monkeypatch.setattr(wc, "_build_holding_feature_panel", _stub_panel([row]))
+        item = _wc_item(code)
+        attach_dispatch_alerts([item], _TD, db_path=isolated_env.db_path)
+        watch_hit = next(h for h in item.dispatch_alerts if h.code == "A3b_belowyear_bigvol")
+
+        assert holding_hit.code == watch_hit.code
+        assert holding_hit.label == watch_hit.label
+        assert holding_hit.evidence == watch_hit.evidence
+        assert holding_hit.evidence_strength == watch_hit.evidence_strength

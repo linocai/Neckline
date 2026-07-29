@@ -203,8 +203,9 @@ def save_llm_judgment(trade_date: date, result: JudgeResult, db_path: Optional[P
     with connection(db_path) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO llm_judgments "
-            "(trade_date, ts_code, provider, model, verdict, narrative, degraded, degrade_reason, search_hits_json, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "(trade_date, ts_code, provider, model, verdict, narrative, degraded, degrade_reason, "
+            "search_hits_json, search_engine, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 _d(trade_date),
                 result.ts_code,
@@ -215,6 +216,7 @@ def save_llm_judgment(trade_date: date, result: JudgeResult, db_path: Optional[P
                 1 if result.degraded else 0,
                 result.degrade_reason,
                 hits_json,
+                result.search_engine,   # v1.5-④-A3(§七 P1-7):None=未记录,不回填猜测
                 now,
             ),
         )
@@ -226,7 +228,8 @@ def load_llm_judgments(trade_date: date, db_path: Optional[Path] = None) -> List
     init_schema(db_path)
     with connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT ts_code, provider, model, verdict, narrative, degraded, degrade_reason, search_hits_json, created_at "
+            "SELECT ts_code, provider, model, verdict, narrative, degraded, degrade_reason, "
+            "search_hits_json, search_engine, created_at "
             "FROM llm_judgments WHERE trade_date=? ORDER BY id",
             (_d(trade_date),),
         ).fetchall()
@@ -241,7 +244,8 @@ def load_llm_judgments(trade_date: date, db_path: Optional[Path] = None) -> List
             "degraded": bool(r[5]),
             "degrade_reason": r[6],
             "search_hits": json.loads(r[7]),
-            "created_at": r[8],
+            "search_engine": r[8],   # None=老行未记录 / 未开搜索 / 调用未成功
+            "created_at": r[9],
         })
     return out
 

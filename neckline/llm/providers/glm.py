@@ -29,6 +29,11 @@ class GLMProvider(OpenAICompatProvider):
     # 提问本身——问题全文照样在 messages 里。
     max_search_query_chars = 78
 
+    # search_engine 取值单一源(v1.5-④-A3,§七 P1-7):`_search_tools` payload 与
+    # `_search_engine_value()`(供 `LLMResult.search_engine` 落库、按日捞命中基线)
+    # 必须读同一个类常量,禁止分别硬编两份字面量——那样两处迟早会漂移。
+    _SEARCH_ENGINE = "search_pro"
+
     def _search_tools(self, search_query: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         """**`enable`/`search_result` 发字符串 `"True"`、`count` 发字符串 `"5"` 是刻意保留的,
         不是笔误——2026-07-27 用真 key 做过 A/B 实证:GLM 会把字符串正确解析成 bool/int**
@@ -47,13 +52,18 @@ class GLMProvider(OpenAICompatProvider):
         """
         web_search: Dict[str, Any] = {
             "enable": "True",
-            "search_engine": "search_pro",
+            "search_engine": self._SEARCH_ENGINE,
             "search_result": "True",
             "count": "5",
         }
         if search_query and str(search_query).strip():
             web_search["search_query"] = str(search_query).strip()[: self.max_search_query_chars]
         return [{"type": "web_search", "web_search": web_search}]
+
+    def _search_engine_value(self) -> Optional[str]:
+        """本次调用实际发送的 `search_engine` 取值(v1.5-④-A3,§七 P1-7 定案)。
+        **读 `_SEARCH_ENGINE` 同一个类常量**(见上方定义处注释),不重复写字面量。"""
+        return self._SEARCH_ENGINE
 
     def _extract_top_level_search_hits(self, body: Dict[str, Any]) -> List[SearchHit]:
         hits: List[SearchHit] = []

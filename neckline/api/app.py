@@ -49,6 +49,7 @@ from neckline.api.schemas import (
     DecisionTrackOut,
     DecisionTrackRowOut,
     DeviceRegisterIn,
+    DispatchAlertOut,
     EntrySuggestionOut,
     ExecHintOut,
     InfoCardNewsItemOut,
@@ -438,6 +439,15 @@ def _shape_watchlist_check(d: Dict[str, Any]) -> WatchlistCheckOut:
         entrySpec=d.get("entry_spec", {}) or {},
         statusChanged=bool(d.get("status_changed", False)),
         llmJudgment=llm,
+        # v1.5-④-A1:K4 派发警示(老报告快照无该键 → 默认空列表,前向兼容)。`level`
+        # 不透传(契约故意省略,见 `DispatchAlertOut` docstring)。
+        dispatchAlerts=[
+            DispatchAlertOut(
+                code=h.get("code", ""), label=h.get("label", ""),
+                evidence=h.get("evidence", ""), evidenceStrength=h.get("evidence_strength", ""),
+            )
+            for h in (d.get("dispatch_alerts") or [])
+        ],
     )
 
 

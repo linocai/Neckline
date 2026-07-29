@@ -53,8 +53,11 @@ def _k1_panel_no_k3_cols() -> pl.DataFrame:
     ])
 
 
-def _k1_cfg() -> MomentumConfig:
-    return MomentumConfig(**brain.active_config())
+def _k1_cfg(db_path) -> MomentumConfig:
+    """§七 P4-25(v1.5-④-A4):`db_path` 显式必传(真库只读副本,见
+    `conftest.py::real_db_readonly_copy`)——不许裸调 `brain.active_config()`,
+    那会命中 `neckline/db.py` 自己的模块级 settings、直接读写真实开发库。"""
+    return MomentumConfig(**brain.active_config(db_path=db_path))
 
 
 class TestK1BitIdentical:
@@ -70,20 +73,20 @@ class TestK1BitIdentical:
         assert cfg.oversold_confirm_vol is None
         assert cfg.oversold_vol_max is None
 
-    def test_k1_selection_unchanged_on_synthetic(self, isolated_env):
+    def test_k1_selection_unchanged_on_synthetic(self, isolated_env, real_db_readonly_copy):
         """K1 现役 config 在合成盘上的选股 = 仅主板回调票,一位不变(新分支未污染)。"""
         seed_active_rule_v1(isolated_env)
-        cfg = _k1_cfg()
+        cfg = _k1_cfg(real_db_readonly_copy)
         assert cfg.buypoint == "pullback"
         panel = _k1_panel_no_k3_cols()
         selected = set(panel.filter(build_entry_mask(cfg))["ts_code"].to_list())
         assert selected == {"600001.SH"}
 
-    def test_default_pullback_does_not_reference_k3_columns(self, isolated_env):
+    def test_default_pullback_does_not_reference_k3_columns(self, isolated_env, real_db_readonly_copy):
         """默认 pullback 路径 build_entry_mask 不引用任何 K3 扩展列——能作用在无这些
         列的 K1 时代面板上不报错,且结果与 K1 一致。"""
         seed_active_rule_v1(isolated_env)
-        cfg = _k1_cfg()
+        cfg = _k1_cfg(real_db_readonly_copy)
         panel = _k1_panel_no_k3_cols()
         for c in _K3_ONLY_COLS:
             assert c not in panel.columns

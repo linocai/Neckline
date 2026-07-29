@@ -56,6 +56,15 @@ class OpenAICompatProvider(LLMProvider):
     def _extract_top_level_search_hits(self, body: Dict[str, Any]) -> List[SearchHit]:
         return []
 
+    def _search_engine_value(self) -> Optional[str]:
+        """本次调用实际使用的搜索引擎标识(v1.5-④-A3,§七 P1-7),供 `chat()` 成功
+        路径塞进 `LLMResult.search_engine`。默认 `None`(该 provider 没有"可选引擎"
+        这个概念,如 Kimi 的内置 `$web_search` 协议层没有引擎参数位)。**需要暴露
+        该值的子类(如 GLM)必须读与 `_search_tools` 相同的单一源常量**,不允许
+        另抄一份字面量——两处任何时候都不可能读到两个不同的值(见
+        `providers/glm.py::_SEARCH_ENGINE`)。"""
+        return None
+
     # —— 共享逻辑 ——————————————————————————————————————————————
     def chat(
         self,
@@ -127,6 +136,9 @@ class OpenAICompatProvider(LLMProvider):
             return LLMResult(
                 ok=True, content=content, search_hits=all_hits, provider=self.name, model=self.model,
                 raw_responses=raw_responses,
+                # 未开搜索时恒 None(没有引擎可言,不冒充"用了某个引擎");开了搜索
+                # 才读 `_search_engine_value()`(P1-7 基线捞的就是这个值)。
+                search_engine=(self._search_engine_value() if enable_search else None),
             )
 
         return LLMResult(

@@ -135,7 +135,9 @@ CREATE TABLE IF NOT EXISTS reports (
 -- 一行(预算耗尽被跳过、未发起调用的不落此表,查 candidates_json 里的
 -- judge_skipped);search_hits_json 是该次审判用到的联网搜索结果全文(§2.4「搜索
 -- 结果全文落 SQLite 存档」,供事后审计"当时为何否决" + 自建历史新闻快照)。
--- degraded=1 表示「LLM 未激活」占位,不是真实判断。
+-- degraded=1 表示「LLM 未激活」占位,不是真实判断。search_engine 列(v1.5-④-A3,
+-- §七 P1-7)由 `_migrate_columns` 幂等补列——**不在本 CREATE TABLE 里**,同
+-- decision_log.max_chase_pct 既有惯例(新增列一律只登记进 `_COLUMN_MIGRATIONS`)。
 CREATE TABLE IF NOT EXISTS llm_judgments (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_date       TEXT NOT NULL,
@@ -674,6 +676,12 @@ _COLUMN_MIGRATIONS = [
     # 影响新行起的强制语义(API 层要求新建/修订时必须显式传该键,见
     # `api/app.py::_extract_max_chase_pct_or_400`)。见 CREATE TABLE decision_log 注释。
     ("decision_log", "max_chase_pct", "REAL"),
+    # v1.5-④-A3(§七 P1-7 定案):候选审判实际使用的搜索引擎取值(GLM
+    # `web_search.search_engine`,由 provider 写入,见 `llm/providers/glm.py::
+    # _SEARCH_ENGINE` 单一源)。**可空、不回填猜测**——老行(建于本列之前)NULL=
+    # 未记录,不臆造"当时用的是 search_pro"(生产历史上虽只用过 search_pro,但
+    # 「记录」与「推断」是两回事,§3.8「没有」与「没看」必须分开的同一条纪律)。
+    ("llm_judgments", "search_engine", "TEXT"),
 ]
 
 
