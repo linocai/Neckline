@@ -58,6 +58,26 @@ final class DTODecodeTests: XCTestCase {
         super.tearDown()
     }
 
+    // MARK: - health(v1.5-⑤-E:此前 `version` 被丢弃,现改为设置屏展示,对照
+    // `neckline/api/app.py::health()` 字面响应 `{"status": "ok", "version": VERSION}`)
+
+    func testDecodeHealthReturnsOkAndVersion() async throws {
+        MockURLProtocol.handler = { _ in (200, jsonData(#"{"status": "ok", "version": "v1.5.0"}"#)) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let health = try await client.health()
+        XCTAssertTrue(health.ok)
+        XCTAssertEqual(health.version, "v1.5.0")
+    }
+
+    /// 非 200 → `(false, nil)`,不因为拿不到 version 就崩或误报 ok。
+    func testDecodeHealthNon200MapsToNotOkWithNilVersion() async throws {
+        MockURLProtocol.handler = { _ in (503, jsonData(#"{"detail": "unavailable"}"#)) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let health = try await client.health()
+        XCTAssertFalse(health.ok)
+        XCTAssertNil(health.version)
+    }
+
     // MARK: - 4A.2 报告(字段样例逐字对照 tests/test_api_report_board.py::test_report_latest)
 
     func testDecodeReportLatest() async throws {
@@ -254,8 +274,10 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(c.execHints[0].source, "db")
     }
 
-    /// 老报告快照(建于本字段前)缺 `infoCard`/`execHints` 键 → `nil`/`[]`,不崩
-    /// (`infoCard=nil` 表示"该信息暂不可用",不冒充"确认无内容")。
+    /// 老报告快照(建于本字段前)缺 `infoCard`/`execHints`/`referencePlan`/`judgeSkipped`
+    /// 键 → `nil`/`[]`/`nil`/`false`,不崩(`infoCard=nil`/`referencePlan=nil` 表示"该
+    /// 信息暂不可用",不冒充"确认无内容"——v1.5-①-F 契约「`referencePlan=nil` 不冒充
+    /// 确认无参考」同一惯例)。
     func testDecodeCandidateOmittingV14InfoCardExecHintsDefaultsGracefully() async throws {
         let json = jsonData("""
         {
@@ -274,6 +296,106 @@ final class DTODecodeTests: XCTestCase {
         let report = try await client.fetchReportLatest()
         XCTAssertNil(report.candidates[0].infoCard)
         XCTAssertEqual(report.candidates[0].execHints, [])
+        XCTAssertNil(report.candidates[0].referencePlan)
+        XCTAssertFalse(report.candidates[0].judgeSkipped)
+    }
+
+    /// v1.5-①-F/②-A(需求 9):参考件三件套 `referencePlan` 三态(ok/vetoed/unavailable)
+    /// + `judgeSkipped`(预算耗尽未发起,与 `llmJudgment` 为 nil 但语义不同,不许合并成
+    /// 一个"没审")。样例字段对照 `neckline/api/schemas.py::ReferencePlanOut`。**同时是
+    /// §五 v1.5-⑤-G「老客户端兼容回归」的机器证据一部分**:老四件套四键在本样例里同
+    /// 老服务端一样保持非空 String,用当前(未改严格性的)`Candidate.init(from:)` 解码
+    /// 不抛错,证明向后兼容硬约束成立。
+    func testDecodeCandidateReferencePlanThreeStatesAndJudgeSkipped() async throws {
+        let json = jsonData("""
+        {
+          "tradeDate": "20260730", "generatedAt": "g", "strategyVersion": "v1.3.3", "sentiment": null,
+          "sectors": [],
+          "candidates": [
+            {
+              "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
+              "buyPoint": "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。",
+              "stop": "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。",
+              "target": "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。",
+              "invalidation": "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。",
+              "formTags": [], "hotSectors": [], "sectorNames": [],
+              "llmJudgment": {"verdict": "通过", "narrative": "催化站得住。", "degraded": false},
+              "referencePlan": {
+                "status": "ok",
+                "buy": {"low": 12.30, "high": 12.98, "stopPrice": 11.68, "why": "站稳10日线,量能温和"},
+                "exit": {"low": 15.10, "high": 15.80, "why": "本轮上涨压力位"},
+                "script": "竞价掉进危险区就放弃,温和低开量能正常就观望。",
+                "disclaimer": "参考,非指令 —— 买卖与终选在你,系统不代下单;纪律以章程为准。",
+                "degraded": false
+              }
+            },
+            {
+              "rank": 2, "code": "600002.SH", "name": "乙", "score": 85.0, "board": "MAIN",
+              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
+              "formTags": [], "hotSectors": [], "sectorNames": [],
+              "llmJudgment": {"verdict": "否决", "narrative": "催化证据不足。", "degraded": false},
+              "referencePlan": {"status": "vetoed", "vetoReason": "无法验证催化真实性",
+                                "disclaimer": "参考,非指令 —— 买卖与终选在你,系统不代下单;纪律以章程为准。",
+                                "degraded": false}
+            },
+            {
+              "rank": 3, "code": "600003.SH", "name": "丙", "score": 80.0, "board": "MAIN",
+              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
+              "formTags": [], "hotSectors": [], "sectorNames": [],
+              "llmJudgment": {"verdict": "未激活", "narrative": "LLM 未配置。", "degraded": true},
+              "referencePlan": {"status": "unavailable", "unavailableReason": "LLM 未激活",
+                                "disclaimer": "参考,非指令 —— 买卖与终选在你,系统不代下单;纪律以章程为准。",
+                                "degraded": true}
+            },
+            {
+              "rank": 4, "code": "600004.SH", "name": "丁", "score": 75.0, "board": "MAIN",
+              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
+              "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
+              "judgeSkipped": true
+            }
+          ],
+          "degraded": false, "reason": ""
+        }
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let report = try await client.fetchReportLatest()
+        XCTAssertEqual(report.candidates.count, 4)
+
+        let ok = report.candidates[0]
+        XCTAssertFalse(ok.judgeSkipped)
+        let okPlan = try XCTUnwrap(ok.referencePlan)
+        XCTAssertTrue(okPlan.isOk)
+        XCTAssertEqual(okPlan.buy?.low, 12.30)
+        XCTAssertEqual(okPlan.buy?.stopPrice, 11.68)
+        XCTAssertEqual(okPlan.exit?.high, 15.80)
+        XCTAssertTrue(okPlan.script?.contains("放弃") ?? false)
+        XCTAssertFalse(okPlan.disclaimer.isEmpty)
+        // 老四件套四键仍是非空 String(向后兼容硬约束,§五 v1.5-⑤-C「本版不改它们的
+        // 解码严格性」),新 UI 不展示,但必须继续能被严格解码逻辑读到、不抛错。
+        XCTAssertFalse(ok.buyPoint.isEmpty)
+        XCTAssertFalse(ok.stop.isEmpty)
+        XCTAssertFalse(ok.target.isEmpty)
+        XCTAssertFalse(ok.invalidation.isEmpty)
+
+        let vetoed = report.candidates[1]
+        let vetoedPlan = try XCTUnwrap(vetoed.referencePlan)
+        XCTAssertTrue(vetoedPlan.isVetoed)
+        XCTAssertNil(vetoedPlan.buy)
+        XCTAssertNil(vetoedPlan.exit)
+        XCTAssertEqual(vetoedPlan.vetoReason, "无法验证催化真实性")
+
+        let unavailable = report.candidates[2]
+        let unavailablePlan = try XCTUnwrap(unavailable.referencePlan)
+        XCTAssertTrue(unavailablePlan.isUnavailable)
+        XCTAssertEqual(unavailablePlan.unavailableReason, "LLM 未激活")
+
+        // judgeSkipped=true(预算耗尽未发起)与 llmJudgment=nil 并存,referencePlan 键
+        // 干脆没给(该票压根没被送去审)——两者语义不同,不许合并成一个"没审"。
+        let skipped = report.candidates[3]
+        XCTAssertTrue(skipped.judgeSkipped)
+        XCTAssertNil(skipped.llmJudgment)
+        XCTAssertNil(skipped.referencePlan)
     }
 
     // MARK: - v1.3-③-C1/C2/C4「情报」板块(样例对照 test_report_latest_carries_intel_and_sector_moneyflow /
@@ -1492,8 +1614,43 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertTrue(wl.items[0].check?.greenLight ?? false)
         XCTAssertTrue(wl.items[0].check?.buyPointTriggered ?? false)
         XCTAssertEqual(wl.items[0].check?.llmJudgment?.verdict, "通过")
+        // v1.5-④-A1/⑤-D:`sampleWatchlistCheckJSON` 样例故意不含 `dispatchAlerts` 键
+        // (模拟老报告快照建于本字段前)——`WatchlistCheckItem` 手写 `init(from:)` 须
+        // 兜成空数组,不崩。
+        XCTAssertEqual(wl.items[0].check?.dispatchAlerts, [])
         XCTAssertNil(wl.items[1].check, "从未体检过 → nil,不是报错")
         XCTAssertTrue(wl.items[1].pinned)
+    }
+
+    /// v1.5-④-A1/⑤-D:自选票 K4 派发警示(`dispatchAlerts`)有数据时的解码。样例字段
+    /// 对照 `neckline/api/schemas.py::DispatchAlertOut`(契约故意省略 `level`,两码均恒
+    /// 强价量证据)。
+    func testDecodeWatchlistCheckDispatchAlerts() async throws {
+        let json = jsonData("""
+        {"items": [
+          {"code": "600001.SH", "name": "示例甲", "addedAt": "2026-07-20T10:00:00+00:00",
+           "source": "manual", "note": "", "pinned": false, "updatedAt": "2026-07-20T10:00:00+00:00",
+           "check": {"code": "600001.SH", "name": "示例甲", "pinned": false, "source": "manual",
+             "hasData": true, "close": 12.34, "board": "MAIN", "score": 77.7, "patternTags": [],
+             "hotSectors": [], "sectorNames": [], "greenLight": true, "disqualifiers": [],
+             "buyPointTriggered": false, "buyPoint": "", "stop": "", "target": "", "invalidation": "",
+             "statusChanged": false, "llmJudgment": null,
+             "dispatchAlerts": [
+               {"code": "A3_belowyear_limitup", "label": "年线下涨停(疑似派发)",
+                "evidence": "12-25 涨停但收于年线下方", "evidenceStrength": "price_volume"},
+               {"code": "A3b_belowyear_bigvol", "label": "年线下放量大阳(疑似派发)",
+                "evidence": "换手 12.3%,量比 3.2", "evidenceStrength": "price_volume"}
+             ]}}
+        ], "maxSize": 30}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let wl = try await client.fetchWatchlist()
+        let alerts = try XCTUnwrap(wl.items.first?.check?.dispatchAlerts)
+        XCTAssertEqual(alerts.count, 2)
+        XCTAssertEqual(alerts[0].code, "A3_belowyear_limitup")
+        XCTAssertEqual(alerts[0].evidenceStrength, "price_volume")
+        XCTAssertTrue(alerts[1].evidence.contains("换手"))
     }
 
     func testAddWatchlistRequestBodyAndFullResponse() async throws {

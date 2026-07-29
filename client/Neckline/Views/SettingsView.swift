@@ -48,6 +48,7 @@ struct SettingsView: View {
         .task {
             await model.loadSettings()
             await model.loadIntelWatchBoards()
+            await model.loadServerVersion()
         }
     }
 
@@ -273,9 +274,15 @@ struct SettingsView: View {
     }
     #endif
 
+    // v1.5-⑤-E:A2 版本号治理——设置屏诚实展示「App 版本 + 服务端版本」双版本(此前
+    // `health()` 拿到的 `version` 被丢弃,现改为展示);不一致时只提示、不拦任何功能。
     private var footerSection: some View {
         Section {
-            LabeledContent("版本", value: appVersion)
+            LabeledContent("App 版本", value: appVersion)
+            LabeledContent("服务端版本", value: model.serverVersion ?? "未知(未连通)")
+            if let note = versionMismatchNote {
+                Text(note).font(.system(size: 11.5)).foregroundStyle(NK.amber)
+            }
         }
     }
 
@@ -285,13 +292,29 @@ struct SettingsView: View {
         return "\(v) (\(b))"
     }
 
+    /// 服务端 vs App 版本号不一致时的提示文案(§五 v1.5-⑤-E「只提示,不拦任何功能」)。
+    /// 两者都源自同一个 `MARKETING_VERSION`(A2 版本号治理单一源 + 守门单测锁三处
+    /// 恒等),故去掉服务端 "v" 前缀后与 `CFBundleShortVersionString` 直接字符串比较
+    /// 即可,不需要语义化版本号解析。服务端版本未知(尚未连通)时不提示——沉默,不是
+    /// "已确认一致"。
+    private var versionMismatchNote: String? {
+        guard let server = model.serverVersion else { return nil }
+        let serverBare = server.hasPrefix("v") ? String(server.dropFirst()) : server
+        let appShort = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+        guard serverBare != appShort else { return nil }
+        return "服务端已是 v\(serverBare),当前 App 为 \(appShort),请换包"
+    }
+
     // MARK: - 自检逻辑
 
     private func runSelfCheck() async {
         check = .running
         let client = APIClient(baseURL: config.resolvedBaseURL, token: config.apiToken)
-        let healthOK = (try? await client.health()) ?? false
-        guard healthOK else {
+        let health = try? await client.health()
+        // v1.5-⑤-E:自检本就打了一发 /health,顺手把拿到的版本回填模型(比等 .task
+        // 里那次更新鲜——用户可能刚切了环境/改了 baseURL 才点的自检)。
+        if let v = health?.version { model.serverVersion = v }
+        guard health?.ok == true else {
             check = .networkError("/health 不可达 · 检查环境 / 网络")
             return
         }

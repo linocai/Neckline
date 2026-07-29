@@ -385,17 +385,21 @@ actor APIClient {
         self.session = session
     }
 
-    // —— health(免鉴权,联通性自检)——
-    func health() async throws -> Bool {
+    // —— health(免鉴权,联通性自检 + v1.5-⑤-E 服务端版本诚实展示)——
+    /// 端点本就返 `{status, version}`,此前 `version` 被丢弃(§五 v1.5-⑤-E「此前被
+    /// 丢弃」)。**返回值改元组**——`ok` 语义不变(200 且 `status=="ok"`),`version`
+    /// 独立于 `ok` 展示(即便 `ok=false` 也把拿到的 version 原样带回,由调用方判断
+    /// 用不用;拿不到/解码失败 → `nil`,不冒充"服务端无版本")。
+    func health() async throws -> (ok: Bool, version: String?) {
         guard let url = Self.makeURL(base: baseURL, path: "/api/v1/health") else {
             throw APIError.transport("无效 URL")
         }
         var req = URLRequest(url: url)
         req.timeoutInterval = 8
         let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return false }
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return (false, nil) }
         let obj = try? JSONDecoder().decode(HealthResponse.self, from: data)
-        return obj?.status == "ok"
+        return (obj?.status == "ok", obj?.version)
     }
 
     // —— 4A.2 报告 ——

@@ -16,7 +16,6 @@
 		35CBBACFC586E8AF1FB3E8BD /* DTODecodeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 911BA3F44C2149A8D313E904 /* DTODecodeTests.swift */; };
 		707C60E3C786D27F3983B924 /* IntegrationSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09D5AFF89E79AD30E6F0B1F /* IntegrationSmokeTests.swift */; };
 		730CE8D10C7BDBCA711C9342 /* IntelSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4E1C3A5DD39EEB4270411BB /* IntelSectionView.swift */; };
-		E62CDF889D364DA597F94E89 /* InfoCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44EC6CD3DA2F404E98166F0D /* InfoCardView.swift */; };
 		73C14261E278D3CA8D6AFB8E /* AppConfigDefaultTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ECA7F173C89B027705A4FC0 /* AppConfigDefaultTests.swift */; };
 		7673436CA4D488E5D4D0189D /* BoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA115ADDC48416F2473C5717 /* BoardView.swift */; };
 		7FC2D9D596F2FCACD7B2FA05 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D4D8B9C826C8F3E8D74BF23 /* SettingsView.swift */; };
@@ -30,6 +29,7 @@
 		CCCBAE520CB8795277F18C90 /* PushManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7692438CB8859E874A66E3E /* PushManager.swift */; };
 		D10EDFBD9EFD027DEEF58088 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE316F84834D593284EA3A4C /* RootView.swift */; };
 		E2DC292F96B25CA6ECFC5D6F /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88CE7120D9B217DAD934B14B /* APIClient.swift */; };
+		E62CDF889D364DA597F94E89 /* InfoCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44EC6CD3DA2F404E98166F0D /* InfoCardView.swift */; };
 		E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */; };
 		EB18B7D4374EA05AD70C0D9C /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE386C48FF2459211CE2D690 /* AppModel.swift */; };
 		EFF01FAD1D2D9784FFCB9DA6 /* InquiryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD3045BA6DDA89226241C3AD /* InquiryView.swift */; };
@@ -52,6 +52,7 @@
 		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3DE7B29D77FF3E312F3F57E6 /* BreathingLedgerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BreathingLedgerView.swift; sourceTree = "<group>"; };
 		4077CE80BC54331F1A0225D2 /* NecklineTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NecklineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		44EC6CD3DA2F404E98166F0D /* InfoCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfoCardView.swift; sourceTree = "<group>"; };
 		58E32D24CA427022EEC9C9A9 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		6995CFD51E96AA2443EC4E3A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7ECA7F173C89B027705A4FC0 /* AppConfigDefaultTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfigDefaultTests.swift; sourceTree = "<group>"; };
@@ -60,7 +61,6 @@
 		911BA3F44C2149A8D313E904 /* DTODecodeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DTODecodeTests.swift; sourceTree = "<group>"; };
 		9D4D8B9C826C8F3E8D74BF23 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A4E1C3A5DD39EEB4270411BB /* IntelSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntelSectionView.swift; sourceTree = "<group>"; };
-		44EC6CD3DA2F404E98166F0D /* InfoCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfoCardView.swift; sourceTree = "<group>"; };
 		A75B75043B9190B8F306FF1D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NecklineApp.swift; sourceTree = "<group>"; };
 		AE316F84834D593284EA3A4C /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -380,7 +380,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3.4;
+				MARKETING_VERSION = 1.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = top.linotsai.neckline;
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;
@@ -565,7 +565,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3.4;
+				MARKETING_VERSION = 1.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = top.linotsai.neckline;
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;

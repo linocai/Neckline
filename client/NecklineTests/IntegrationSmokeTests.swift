@@ -36,14 +36,17 @@ final class IntegrationSmokeTests: XCTestCase {
     /// 探活;打不通就 skip(不让"没起 dev 后端"污染常规门禁的红绿判断)。
     private func skipUnlessDevServerReachable() async throws {
         let client = makeClient()
-        let reachable = (try? await client.health()) ?? false
+        let reachable = (try? await client.health())?.ok ?? false
         try XCTSkipUnless(reachable, "dev 后端未在 127.0.0.1:8002 运行,跳过真实联调(见文件头跑法说明)")
     }
 
     func testHealthReachable() async throws {
         try await skipUnlessDevServerReachable()
-        let ok = try await makeClient().health()
-        XCTAssertTrue(ok)
+        let health = try await makeClient().health()
+        XCTAssertTrue(health.ok)
+        // v1.5-⑤-E:health 端点顺带把 version 带回,联调时冒烟一下不为空(不锁具体值,
+        // 避免测试与「本地跑的到底是哪个版本」耦合)。
+        XCTAssertNotNil(health.version)
     }
 
     /// 今日计划:GET /report/latest 真请求(§4C.1)。

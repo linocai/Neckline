@@ -246,6 +246,10 @@ final class AppModel {
     // —— 4A.5 设置 ——
     var settings: SettingsSnapshot = .empty
     var settingsLoading = false
+    /// v1.5-⑤-E:服务端版本(`GET /health` 的 `version`,免鉴权、独立于设置本身是否
+    /// 拉取成功)。`nil` = 尚未拉到(网络失败 / 老服务端不带该字段),设置屏据此展示
+    /// "服务端版本未知",不冒充"版本相同"。
+    var serverVersion: String? = nil
     var llmProviderDraft: LLMProviderKind = .glm
     var llmKeyDraft: String = ""          // 安全态:从不用存量 key 预填,只在本次填写时持有
     var pushReportDraft: Bool = true
@@ -515,7 +519,11 @@ final class AppModel {
         revisingDecisionId = nil
         entryForm.code = candidate.code
         entryForm.name = candidate.name
-        entryForm.reason = "已按计划买入 · \(candidate.buyPoint)"
+        // v1.5-①/⑤:`candidate.buyPoint` 老四件套字段自 v1.5.0 起恒为过渡文案
+        // (`LEGACY_FOURPIECE_NOTICE`,服务端 ③-B 定案),不再是真实买点描述——预填
+        // 理由改取参考买入区间的 `why`(参考件三件套 ①-F 契约),没有则留一句通用
+        // 描述,不把过渡文案塞进用户的进场理由里。
+        entryForm.reason = Self.entryReasonText(for: candidate)
         decisionForm.code = candidate.code
         decisionForm.name = candidate.name
         if let refPrice = candidate.entrySpec?.referencePrice, refPrice > 0 {
@@ -531,6 +539,17 @@ final class AppModel {
             }
         }
         modal = .decisionLog
+    }
+
+    /// 候选卡「买入补录」入口的进场理由预填(纯函数,单测覆盖)。优先用参考买入区间
+    /// 的 `why`(LLM 参考件,§2.0 第〇原则——只是预填一个可编辑文本框,用户提交前
+    /// 仍可改写,不构成"参考件触发机器动作");三态(否决/未生成/无 buy)统一退回
+    /// 通用文案,不显示过渡文案或空字符串。
+    static func entryReasonText(for candidate: Candidate) -> String {
+        guard let why = candidate.referencePlan?.buy?.why, !why.isEmpty else {
+            return "已按计划买入"
+        }
+        return "已按计划买入 · \(why)"
     }
 
     func openCloseSheet(code: String) {
@@ -892,6 +911,19 @@ final class AppModel {
     }
 
     // MARK: - 4A.5:设置
+
+    /// v1.5-⑤-E:拉服务端版本(`GET /health`,免鉴权)供设置屏「App 版本 / 服务端版本」
+    /// 双版本展示。**静默降级**(同 `loadBoard`/`loadDecisions` 惯例)——这不是主流程,
+    /// 拉不到就保持 `nil`,不弹错、不阻断设置屏其余内容。
+    func loadServerVersion() async {
+        guard let client = clientProvider() else { return }
+        do {
+            let (_, version) = try await client.health()
+            serverVersion = version
+        } catch {
+            // 拉不到就保持 nil,设置屏展示"服务端版本未知",不弹错打断。
+        }
+    }
 
     func loadSettings() async {
         guard let client = clientProvider() else { return }

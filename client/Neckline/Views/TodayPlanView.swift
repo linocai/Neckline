@@ -156,12 +156,18 @@ struct TodayPlanView: View {
         }
     }
 
+    // v1.5-⑤-A(需求 9):今日计划拆两块——① 持仓股(见 `positionsSection`,先管住手里的)
+    // / ② 候选列表(本函数,每日 20 只)。顺序不变(持仓在上,承 v1.1-E.1);情绪仪表盘 /
+    // 板块 chips / 情报包等既有构件归属不变,挂在候选块之下(见 `content`)。不新增 tab。
     private var candidatesSection: some View {
         VStack(alignment: .leading, spacing: NKSpace.gap) {
-            NKSectionHeader(title: "候选 \(model.report.candidates.count)", trailing: "前10只过 LLM 审判")
+            // v1.5-②-A:「前10只过 LLM 审判」的旧分档已退役(20 只全覆盖,每票或出参考件
+            // 或出不买理由),trailing 文案同步更新,不留过时描述。
+            NKSectionHeader(title: "② 候选列表 \(model.report.candidates.count)", trailing: "20 只全覆盖 · 或参考或说明")
             // v1.3-③-C3/⑥ + v1.4-③ 语义红线(需求 8):候选=「过完安检、值得关注的票」,
             // 非「系统认为会涨的票」;排序 = 注意力优先级,不是收益预测,排第一 ≠ 最会涨,
-            // 终选权在你。文案必须跟上,不能让人以为这是买入信号。
+            // 终选权在你。文案必须跟上,不能让人以为这是买入信号。这句同时是本块的
+            // 「一句定位文案」(v1.5-⑤-A「候选沿用既有语义红线句」)。
             Text("过完安检、值得花注意力的票 · 排序 = 注意力优先级,不是收益预测 · 排第一 ≠ 最会涨 · 终选权在你")
                 .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
             ForEach(model.report.candidates) { c in
@@ -173,7 +179,7 @@ struct TodayPlanView: View {
     private var positionsSection: some View {
         VStack(alignment: .leading, spacing: NKSpace.gap) {
             HStack {
-                NKSectionHeader(title: "持仓 \(model.positions.count)")
+                NKSectionHeader(title: "① 持仓股 \(model.positions.count)")
                 Spacer()
                 // v1.2-E.3:熔断锁定时灰化「开新仓」入口(客户端自律,服务端不拦,§3.8)。
                 Button { model.beginPositionEntryFlow() } label: {
@@ -185,6 +191,8 @@ struct TodayPlanView: View {
                 .foregroundStyle(model.circuit.locked ? NK.textTertiary : NK.accent)
                 .disabled(model.circuit.locked)
             }
+            // v1.5-⑤-A:本块「一句定位文案」——持仓管理优先于选新票(承 v1.1-E.1)。
+            Text("先管住手里的").font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
             if model.positions.isEmpty {
                 NKCard { NKEmptyState(title: "暂无持仓", systemImage: "tray") }
             } else {
@@ -277,7 +285,13 @@ private struct CandidateRow: View {
                     VStack(alignment: .trailing, spacing: 4) {
                         Text(String(format: "%.1f 分", candidate.score))
                             .font(.system(size: 13, weight: .semibold).monospacedDigit())
-                        if let j = candidate.llmJudgment { LLMJudgmentBadge(judgment: j) }
+                        if let j = candidate.llmJudgment {
+                            LLMJudgmentBadge(judgment: j)
+                        } else if candidate.judgeSkipped {
+                            // v1.5-②-B/⑤-B:预算耗尽未发起(与下方 degraded「发起了但失败」
+                            // 语义不同,不许合并成一个"没审",契约见 `Candidate.judgeSkipped`。
+                            NKChip(text: "预算耗尽未审")
+                        }
                     }
                 }
                 if !candidate.formTags.isEmpty || !candidate.hotSectors.isEmpty {
@@ -299,9 +313,12 @@ private struct CandidateRow: View {
                 }
                 intelRankRow(candidate.intelRank)
                 execHintsSection
-                FourPieceDisclosure(buyPoint: candidate.buyPoint, stop: candidate.stop,
-                                    target: candidate.target, invalidation: candidate.invalidation,
-                                    llmJudgment: candidate.llmJudgment)
+                // v1.5-①-F/⑤-B(需求 9):候选卡输出层老四件套(买点/止损/目标/证伪条件)
+                // 已由参考三件套取代——服务端仍发老四键(过渡文案,向后兼容硬约束),
+                // 但新 UI 不再展示,改展示 `ReferencePlanSection`。自选体检卡
+                // (`WatchlistView.WatchlistRow`)的四件套不受影响,仍用 `FourPieceDisclosure`。
+                ReferencePlanSection(plan: candidate.referencePlan, judgeSkipped: candidate.judgeSkipped,
+                                     llmJudgment: candidate.llmJudgment)
                 Divider().overlay(NK.hairline)
                 HStack(spacing: 14) {
                     Button {

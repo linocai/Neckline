@@ -317,6 +317,55 @@ struct ExecHint: Codable, Equatable, Identifiable {
     var id: String { code }
 }
 
+// MARK: - v1.5-①-F 参考件三件套(需求 9,§2.0 第〇原则:LLM 是参考,硬条款才是纪律)
+//
+// 挂 `Candidate.referencePlan`,服务端 `_shape_reference_plan` 每次响应从落库快照
+// **重新拼装**(同 `infoCard`/`intelRank` 惯例,非 `reviews.result_json` 那种冻结历史
+// 快照)——键缺失只发生在整个 `referencePlan` 对象层面(老报告快照/本次生成异常,
+// 由外层 `Optional` 兜住),对象内部各字段一旦存在就是 pydantic 重新构造出来的完整
+// 形状,故本组三个类型用普通 `Codable`(不写容错 `init(from:)`),同 `K4Advisory`/
+// `RetraceState` 先例。
+
+/// 买入参考区间(①-C 唯一底线:数字必须落在明日涨跌停区间内,出界不显示——出现在
+/// 这里说明已过夹逼校验)。`stopPrice` 系统算(`close×(1−stop_pct)`),不是 LLM 产出,
+/// 与买入区间同一行展示(§2.1「−5.0 是全系统单一止损常量」)。
+struct ReferencePlanBuy: Codable, Equatable {
+    var low: Double
+    var high: Double
+    var stopPrice: Double? = nil
+    var why: String = ""
+}
+
+/// 离场参考区间(本轮上涨压力位,**不受涨跌停夹逼**——压力位可能几天后才到;
+/// **明示参考、非止盈线**,回落止盈 8% 纪律独立生效、不受此区间影响)。
+struct ReferencePlanExit: Codable, Equatable {
+    var low: Double
+    var high: Double
+    var why: String = ""
+}
+
+/// 参考件三件套(①-F 契约)。`status` 三态不许合并(同 `PositionTimeExitState`
+/// 「不许合并」惯例):`ok`=通过+至少一件有效 | `vetoed`=否决,三件套全空 |
+/// `unavailable`=LLM未激活/调用失败/JSON解析失败,"没看"不是"没有"。`buy`/`exit`
+/// 为 `nil` 时对应的 `*UnavailableReason` 必有值(与 `buy`/`exit` 互斥非空,UI 不得
+/// 静默消失、须展示未展示原因)。`disclaimer` 原样透传、不改写。
+struct ReferencePlan: Codable, Equatable {
+    var status: String
+    var buy: ReferencePlanBuy? = nil
+    var buyUnavailableReason: String? = nil
+    var exit: ReferencePlanExit? = nil
+    var exitUnavailableReason: String? = nil
+    var script: String? = nil
+    var vetoReason: String? = nil
+    var unavailableReason: String? = nil
+    var disclaimer: String = ""
+    var degraded: Bool = false
+
+    var isOk: Bool { status == "ok" }
+    var isVetoed: Bool { status == "vetoed" }
+    var isUnavailable: Bool { status == "unavailable" }
+}
+
 struct Candidate: Codable, Equatable, Identifiable {
     var rank: Int
     var code: String
@@ -350,13 +399,22 @@ struct Candidate: Codable, Equatable, Identifiable {
     var infoCard: InfoCardSummary? = nil
     /// v1.4-⑤-A:执行提示(读 DB `k4_advisory.exec_hint`)。0~4 条,老报告快照读回默认空。
     var execHints: [ExecHint] = []
+    /// v1.5-①-F:参考件三件套(需求 9,§2.0 第〇原则)。`nil` = 老报告快照(建于本字段前)
+    /// 或本次生成整体异常,**不冒充"确认无参考"**——与 `status="unavailable"`(已装配好、
+    /// 只是"没看")刻意区分,展示层按此判断该走哪种缺省文案(见 `ReferencePlanSection`)。
+    var referencePlan: ReferencePlan? = nil
+    /// v1.5-②-A:20 只全覆盖起,`llmJudgment` 为 `nil` 有两种成因,靠本字段分辨——
+    /// `true` = 墙钟预算耗尽、这一票根本没发起调用(与 `llmJudgment.degraded`〔发起了
+    /// 但失败/未激活〕语义不同,**不许合并成一个"没审"**,承 `newsAlertsScan.
+    /// codesSkipped`/`codesFailed` 同一纪律);老报告快照缺键 → 默认 `false`。
+    var judgeSkipped: Bool = false
 
     /// 显式 `CodingKeys`(提供自定义 `init(from:)` 时不依赖合成时机是否可靠——同
     /// `ReportResponse`/`Position` 的处理姿势)。字段名与 JSON 字面一致,逐一列出。
     enum CodingKeys: String, CodingKey {
         case rank, code, name, score, board, buyPoint, stop, target, invalidation
         case formTags, hotSectors, sectorNames, llmJudgment, entrySpec, k4Flags, intelRank
-        case infoCard, execHints
+        case infoCard, execHints, referencePlan, judgeSkipped
     }
 
     var id: String { code }
@@ -372,13 +430,15 @@ struct Candidate: Codable, Equatable, Identifiable {
          formTags: [String], hotSectors: [String], sectorNames: [String],
          llmJudgment: LLMJudgment?, entrySpec: EntrySpec? = nil,
          k4Flags: [String] = [], intelRank: IntelRank = IntelRank(),
-         infoCard: InfoCardSummary? = nil, execHints: [ExecHint] = []) {
+         infoCard: InfoCardSummary? = nil, execHints: [ExecHint] = [],
+         referencePlan: ReferencePlan? = nil, judgeSkipped: Bool = false) {
         self.rank = rank; self.code = code; self.name = name; self.score = score; self.board = board
         self.buyPoint = buyPoint; self.stop = stop; self.target = target; self.invalidation = invalidation
         self.formTags = formTags; self.hotSectors = hotSectors; self.sectorNames = sectorNames
         self.llmJudgment = llmJudgment; self.entrySpec = entrySpec
         self.k4Flags = k4Flags; self.intelRank = intelRank
         self.infoCard = infoCard; self.execHints = execHints
+        self.referencePlan = referencePlan; self.judgeSkipped = judgeSkipped
     }
 
     init(from decoder: Decoder) throws {
@@ -401,6 +461,8 @@ struct Candidate: Codable, Equatable, Identifiable {
         intelRank = try c.decodeIfPresent(IntelRank.self, forKey: .intelRank) ?? IntelRank()
         infoCard = try c.decodeIfPresent(InfoCardSummary.self, forKey: .infoCard)
         execHints = try c.decodeIfPresent([ExecHint].self, forKey: .execHints) ?? []
+        referencePlan = try c.decodeIfPresent(ReferencePlan.self, forKey: .referencePlan)
+        judgeSkipped = try c.decodeIfPresent(Bool.self, forKey: .judgeSkipped) ?? false
     }
 }
 
@@ -1403,6 +1465,21 @@ struct IntelWatchBoards: Codable, Equatable {
 // CandidateRow 四件套布局」——四件套展开区已抽成 `FourPieceDisclosure`(见
 // Components/SharedUI.swift)供 `CandidateRow` 与本节的 `WatchlistRow` 共用,不重写。
 
+/// 自选票 K4 派发警示单条命中(v1.5-④-A1/⑤-D,§七 ✅ 节「诱多做局反向哨兵」残留
+/// 半边结案)。复用 `holding_k4_check` 同一份镜像评估器,**只取两个强价量证据码**
+/// (A3_belowyear_limitup / A3b_belowyear_bigvol,均恒强价量证据)——与持仓牌
+/// `K4Advisory` 六码全量不同,这里只有这两码且 level 恒定不携带信息量,契约故意
+/// 省略 `level` 字段(同服务端 `DispatchAlertOut` docstring)。⛔ **不推 APNs**
+/// (自选不是持仓,第六类推送 `HOLDINGALERT` 口径明确只对持仓)。
+struct DispatchAlert: Codable, Equatable, Identifiable {
+    var code: String
+    var label: String
+    var evidence: String
+    var evidenceStrength: String     // 恒 price_volume(两码均强价量证据)
+
+    var id: String { code }
+}
+
 struct WatchlistCheckItem: Codable, Equatable {
     var code: String
     var name: String
@@ -1424,9 +1501,63 @@ struct WatchlistCheckItem: Codable, Equatable {
     var invalidation: String
     var statusChanged: Bool          // 较上一份报告状态是否变化(体检 LLM 只审 changed∪pinned 的判据)
     var llmJudgment: LLMJudgment?    // 仅 statusChanged∪pinned 才有(形状与 `CandidateOut.llmJudgment` 相同,复用同一类型)
+    /// v1.5-④-A1/⑤-D:K4 派发警示(默认空列表)。
+    var dispatchAlerts: [DispatchAlert] = []
 
     /// 展示层换算,与 `Candidate.boardLabel` 共用同一份映射(见 `nkBoardLabel`)。
     var boardLabel: String { nkBoardLabel(board) }
+
+    /// 显式 `CodingKeys` + 手写 `init(from:)`(本类型历来靠合成 Decodable,v1.5-④-A1
+    /// 加 `dispatchAlerts` 这一个非 Optional-带默认值字段后改手写——Swift 合成
+    /// Decodable 对该类字段不会自动容忍缺键,同 `Candidate`/`IntelRank` 的处理姿势)。
+    /// 除新字段外,其余各字段 `decode`/`decodeIfPresent` 的取舍逐一保持与此前合成
+    /// 行为一致(仅 `score`/`llmJudgment` 本就是 `Optional`)。
+    enum CodingKeys: String, CodingKey {
+        case code, name, pinned, source, hasData, close, board, score
+        case patternTags, hotSectors, sectorNames, greenLight, disqualifiers
+        case buyPointTriggered, buyPoint, stop, target, invalidation, statusChanged, llmJudgment
+        case dispatchAlerts
+    }
+
+    init(code: String, name: String, pinned: Bool, source: String, hasData: Bool, close: Double,
+         board: String, score: Double? = nil, patternTags: [String], hotSectors: [String],
+         sectorNames: [String], greenLight: Bool, disqualifiers: [String], buyPointTriggered: Bool,
+         buyPoint: String, stop: String, target: String, invalidation: String, statusChanged: Bool,
+         llmJudgment: LLMJudgment? = nil, dispatchAlerts: [DispatchAlert] = []) {
+        self.code = code; self.name = name; self.pinned = pinned; self.source = source
+        self.hasData = hasData; self.close = close; self.board = board; self.score = score
+        self.patternTags = patternTags; self.hotSectors = hotSectors; self.sectorNames = sectorNames
+        self.greenLight = greenLight; self.disqualifiers = disqualifiers
+        self.buyPointTriggered = buyPointTriggered
+        self.buyPoint = buyPoint; self.stop = stop; self.target = target; self.invalidation = invalidation
+        self.statusChanged = statusChanged; self.llmJudgment = llmJudgment
+        self.dispatchAlerts = dispatchAlerts
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        code = try c.decode(String.self, forKey: .code)
+        name = try c.decode(String.self, forKey: .name)
+        pinned = try c.decode(Bool.self, forKey: .pinned)
+        source = try c.decode(String.self, forKey: .source)
+        hasData = try c.decode(Bool.self, forKey: .hasData)
+        close = try c.decode(Double.self, forKey: .close)
+        board = try c.decode(String.self, forKey: .board)
+        score = try c.decodeIfPresent(Double.self, forKey: .score)
+        patternTags = try c.decode([String].self, forKey: .patternTags)
+        hotSectors = try c.decode([String].self, forKey: .hotSectors)
+        sectorNames = try c.decode([String].self, forKey: .sectorNames)
+        greenLight = try c.decode(Bool.self, forKey: .greenLight)
+        disqualifiers = try c.decode([String].self, forKey: .disqualifiers)
+        buyPointTriggered = try c.decode(Bool.self, forKey: .buyPointTriggered)
+        buyPoint = try c.decode(String.self, forKey: .buyPoint)
+        stop = try c.decode(String.self, forKey: .stop)
+        target = try c.decode(String.self, forKey: .target)
+        invalidation = try c.decode(String.self, forKey: .invalidation)
+        statusChanged = try c.decode(Bool.self, forKey: .statusChanged)
+        llmJudgment = try c.decodeIfPresent(LLMJudgment.self, forKey: .llmJudgment)
+        dispatchAlerts = try c.decodeIfPresent([DispatchAlert].self, forKey: .dispatchAlerts) ?? []
+    }
 }
 
 struct WatchlistItem: Codable, Equatable, Identifiable {

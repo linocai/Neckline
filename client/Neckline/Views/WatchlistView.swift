@@ -298,6 +298,7 @@ private struct WatchlistRow: View {
                             }
                         }
                     }
+                    dispatchAlertsSection(c.dispatchAlerts)
                     if c.buyPointTriggered {
                         FourPieceDisclosure(buyPoint: c.buyPoint, stop: c.stop, target: c.target,
                                             invalidation: c.invalidation, llmJudgment: c.llmJudgment)
@@ -322,6 +323,29 @@ private struct WatchlistRow: View {
                         Label("移除", systemImage: "trash").font(.system(size: 12, weight: .semibold))
                     }
                     .buttonStyle(.plain).foregroundStyle(NK.down)
+                }
+            }
+        }
+    }
+
+    /// v1.5-④-A1/⑤-D:自选票 K4 派发警示(§七 ✅ 节「诱多做局反向哨兵」残留半边结案)。
+    /// 警示色体例照 v1.4-⑦ `.warn`(K4 持仓牌普通警示同款,不新造色值);两码均恒强
+    /// 价量证据,旁注证据强度说明,与 `evidence` 原文一并展示(服务端文案,不改写)。
+    /// ⛔ 不推 APNs——本区块只是把已落库的判定摆给人看。
+    @ViewBuilder
+    private func dispatchAlertsSection(_ alerts: [DispatchAlert]) -> some View {
+        if !alerts.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(alerts) { alert in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            NKChip(text: alert.label, tone: .warn, filled: true)
+                            Text("强价量证据").font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                        }
+                        if !alert.evidence.isEmpty {
+                            Text(alert.evidence).font(.system(size: 11)).foregroundStyle(NK.amber)
+                        }
+                    }
                 }
             }
         }

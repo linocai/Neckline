@@ -74,17 +74,28 @@
   `stock_basic`/`namechange` 四张只读参考表进隔离临时库,业务表留空,再跑
   `scripts/report.py <date>` 即可吃真数据出报告。
 - **本环境 computer-use 点不动 Simulator/macOS App**(权限拒,`mcp__Claude_Code_iOS_
-  Simulator__control` 的 `attach`/`tap` 同样因宿主机 `xcode-select` 未指向
-  Xcode.app 报错、需 sudo 修复非本会话可解):视觉核对走 `xcrun simctl io <device>
-  screenshot`(免点击权限)+ QA 钩子 `NECKLINE_INITIAL_TAB`/`NECKLINE_INITIAL_MODAL`
-  切初始 tab/弹层(iOS 用 `SIMCTL_CHILD_` 前缀传入 launch;env 需要 UserDefaults 的
-  项如后端环境/token 用 `xcrun simctl spawn <udid> defaults write <bundle_id>
-  <key> <value>` 提前写入);macOS 原生截图被沙盒挡时,拿"iOS 截图 + 双端
-  `xcodebuild` BUILD SUCCEEDED"当等价证据,不死磕。**页面内容纵向溢出 iPhone 视口
+  Simulator__control` 的 `attach`/`tap`/`swipe` 报 `Xcode is installed but not
+  selected`;⚠ **v1.5-⑤ 核实:该报错与宿主 shell 的 `xcode-select -p` 是否正确无关**
+  ——本机 Bash 里 `xcode-select -p` 已正确指向 Xcode.app,该 MCP 工具仍报同样的错
+  〔工具自身另跑一遍检查,大概率跑在不继承 shell `DEVELOPER_DIR` 的沙盒里〕,**别浪费
+  时间去修 xcode-select**,直接走下面的 `xcrun simctl` 路线):视觉核对走 `xcrun
+  simctl io <device> screenshot`(免点击权限)+ QA 钩子 `NECKLINE_INITIAL_TAB`/
+  `NECKLINE_INITIAL_MODAL` 切初始 tab/弹层(iOS 用 `SIMCTL_CHILD_` 前缀传入 launch;
+  env 需要 UserDefaults 的项如后端环境/token 用 `xcrun simctl spawn <udid> defaults
+  write <bundle_id> <key> <value>` 提前写入);macOS 原生截图被沙盒挡时,拿"iOS 截图 +
+  双端 `xcodebuild` BUILD SUCCEEDED"当等价证据,不死磕。**页面内容纵向溢出 iPhone 视口
   且需要看到滚动才可见的部分**(如候选卡多行 chips、长表单末尾字段):临时
   `xcrun simctl create` 一台 iPad(`TARGETED_DEVICE_FAMILY` 含 "2" 时是原生 iPad
   布局、非缩放兼容模式),同样点尺寸下可见内容显著更多,比试图裁剪测试数据凑
-  首屏更可靠(v1.4-⑧ 验证过);仍不够时才认截图缺口、靠单测兜底,不死磕。
+  首屏更可靠(v1.4-⑧/v1.5-⑤ 验证过;**用完 `simctl delete` 收掉临时设备**,
+  别留常驻);仍不够时才认截图缺口、靠单测兜底,不死磕。
+- **本地零 LLM key 时,LLM 参考件/K4 派发警示截图靠写库伪造,不必等真 key**:候选
+  `llmJudgment` 走独立 `llm_judgments` 表联查(**不在** `candidates_json` 内,塞
+  `llm_judgment` 键无效,改用 `report_store.save_llm_judgment(...)` 插行);
+  `reference_plan`/`dispatch_alerts` 才在 `candidates_json`/`watchlist_json`
+  内、且已是 camelCase(`to_public_dict()` 原样存档)。跑一次 `scripts/report.py`
+  生成真报告后直接 `UPDATE reports SET candidates_json=…` 改 2~3 只候选即可拼出
+  ok/vetoed/judgeSkipped 三态样例(v1.5-⑤ 验证过)。
 - **需要展示"报告加载完成后才能确定的内容"(如某只候选的信息卡)时**,`NecklineApp.
   init()` 里的同步 QA 钩子够不着(数据是 `AppModel.refresh()` 异步拉的)——照
   `NECKLINE_INITIAL_TAB` 先例另开一个 env 钩子,放在 `refresh()` 数据到位之后触发
