@@ -212,6 +212,31 @@ def test_candidates_do_not_go_through_build_entry_mask(isolated_env, monkeypatch
     assert "600001.SH" in _codes(cands)
 
 
+def test_entry_spec_and_invalidation_spec_key_sets_unchanged_by_fourpiece_retirement(isolated_env):
+    """v1.5-③-B 守门单测(plan §五 v1.5-③ 验收明写):候选卡老四件套自然语言文案
+    (`entry_plan_text`/`stop_loss_text`/`target_text`/`invalidation_text`)退役后,
+    `entry_spec`/`invalidation_spec` 两个**结构化**字段的键集必须逐位不变——它们
+    是盘中哨兵(`sentinel/entry.py`/`sentinel/invalidation.py`)与盘前校准 tick
+    (`sentinel/precall.py`)的唯一判据源,退役"卡面文案"绝不能连带动了这两个字段。
+    顺带正面断言老四件套四字段确实已退役为默认空串(候选生成路径不再调用那四个
+    文案函数,§五 v1.5-③-B)。"""
+    dates = business_days(date(2024, 1, 2), 30)
+    insert_trade_cal(isolated_env, dates)
+    _seed_market(isolated_env, dates, [
+        {"code": "600001.SH", "market": "主板", "closes": _rising(30)},
+    ])
+    _seed_boards(isolated_env, [{"ts_code": "885756.TI", "name": "芯片概念"}],
+                 [{"index_code": "885756.TI", "con_code": "600001.SH"}])
+    cands = ic.build_intel_candidates(dates[-1], _RULE,
+                                      parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    c = next(x for x in cands if x.ts_code == "600001.SH")
+    assert set(c.entry_spec.keys()) == {"buypoint", "prev_close", "ma10", "platform_high", "breakout_vol_expand"}
+    assert set(c.invalidation_spec.keys()) == {
+        "low_open_pct", "require_stay_below_prev_close", "vwap_break", "vol_ratio_low", "vol_ratio_high",
+    }
+    assert c.entry_plan == "" and c.stop_loss == "" and c.target == "" and c.invalidation_text == ""
+
+
 def test_high_elasticity_gem_star_included_against_k1_philosophy(isolated_env):
     """生成域刻意含高弹(GEM/STAR)——与 K1 `forbid_high_elasticity=True` 相反:创业板/科创板
     成分应入候选(intelRank.highElasticity=True 标注,机器不禁)。"""

@@ -346,9 +346,26 @@ def _shape_reference_plan(d: Optional[Dict[str, Any]]) -> Optional[ReferencePlan
     )
 
 
+# —— v1.5-③-B:老四件套「键保留 + 值换过渡文案」单一源(PROJECT_PLAN §五 v1.5-③-B,
+#    向后兼容硬约束的落点)——————————————————————————————————————————————————
+# 已装 v1.4.1 客户端对 `buyPoint`/`stop`/`target`/`invalidation` 四键是**硬解码**
+# (`client/Models.swift::Candidate.init(from:)` 用 `try c.decode(String.self,…)`,
+# 非 `decodeIfPresent`):服务端一旦不发这四个键就整份报告解不出、今日计划全空。
+# v1.5.0 起候选生成路径(`intel_candidates.py`)不再产出这四件套的自然语言文案
+# (`Candidate.entry_plan` 等字段恒为默认空串),故 `_shape_candidate` **不再从落库
+# 快照读取这四个字段**,一律无条件下发本常量——同一句话发四遍(四键语义已合一:
+# 「查看新版参考三件套」),不按字段各自拍不同文案(避免四句话各自维护、更难保持
+# 一致)。**老报告快照(v1.5.0 前生成,`entry_plan` 等字段是真文本)同样统一改发本
+# 通知**,不按报告新旧分叉行为——老客户端拿旧报告与新报告的体验应一致(反正它也
+# 用不了 `referencePlan`),避免"有的历史报告能看到真文案、有的看不到"这种不必要
+# 的不一致。真正删除这四个键的条件见 PROJECT_PLAN §七 P3-27(双端换包到 ≥1.5.0 后)。
+LEGACY_FOURPIECE_NOTICE = "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。"
+
+
 def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> CandidateOut:
-    """报告落库的候选 JSON 快照 → 客户端四件套契约。同码不重写:字段直接取自
-    `Candidate.public_dict()` 存档,不在此重算任何领域值。"""
+    """报告落库的候选 JSON 快照 → 客户端契约。同码不重写:字段直接取自
+    `Candidate.public_dict()` 存档,不在此重算任何领域值——**唯一例外是老四件套
+    四键**,见 `LEGACY_FOURPIECE_NOTICE` 上方注释(无条件下发过渡文案,不读快照)。"""
     llm = None
     if judgment is not None:
         llm = LLMJudgmentOut(
@@ -362,10 +379,10 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
         name=c.get("name", ""),
         score=c.get("score", 0.0),
         board=c.get("board", ""),
-        buyPoint=c.get("entry_plan", ""),
-        stop=c.get("stop_loss", ""),
-        target=c.get("target", ""),
-        invalidation=c.get("invalidation_text", ""),
+        buyPoint=LEGACY_FOURPIECE_NOTICE,
+        stop=LEGACY_FOURPIECE_NOTICE,
+        target=LEGACY_FOURPIECE_NOTICE,
+        invalidation=LEGACY_FOURPIECE_NOTICE,
         invalidationSpec=c.get("invalidation_spec", {}) or {},
         entrySpec=c.get("entry_spec", {}) or {},
         formTags=c.get("pattern_tags", []) or [],

@@ -15,6 +15,18 @@
 
 四件套(买点/止损/目标/证伪条件)照 §2.2/§2.3 设计意图输出;证伪条件用价量结构
 写死(结构化 + 自然语言两份),供阶段3 哨兵消费。
+
+**候选路径已于 v1.5.0 退役(plan §五 v1.5-③-B,需求 9)**:`entry_plan_text` /
+`stop_loss_text` / `target_text` / `invalidation_text` 四个自然语言文案函数**本体
+保留**——`report/watchlist_check.py`(自选体检)仍在消费,本版不动自选体检的
+四件套;但 `report/intel_candidates.py`(生产候选生成路径,`pipeline.py` 唯一实际
+调用者)**不再调用它们**,候选卡输出层改用 `report/reference_plan.py` 的 LLM 参考
+三件套(买入/离场参考区间 + 明早证伪剧本)。`build_candidates`/`score_candidates`
+本身(K1 时代评分路径)**同样零改动**,当前无生产调用者、只被单测直接练。
+`entry_spec`/`invalidation_spec` 两个结构化字段不受影响,一字不动——它们是盘中
+哨兵与盘前校准 tick 的唯一判据源(§三 铁律,详见 `invalidation_spec`/`entry_spec`
+docstring)。真正删除四个文案函数/`CandidateOut` 老键的条件见 PROJECT_PLAN §七
+P3-27(双端换包到 ≥1.5.0 之后)。
 """
 
 from __future__ import annotations
@@ -51,11 +63,17 @@ class Candidate:
     pattern_tags: List[str]
     hot_sectors: List[str]           # 命中的【今日热门】概念板块名(§2.2 加分来源)
     sector_names: List[str]          # 所属全部概念板块名(不限热门,供 LLM 审判上下文)
-    entry_plan: str
-    stop_loss: str
-    target: str
-    invalidation_text: str
     invalidation_spec: Dict[str, Any]
+    # —— v1.5-③-B:老四件套(K1 时代文案)候选路径已退役,四字段改带默认空串
+    # (不删字段——`sentinel/universe.candidate_from_dict` 与 `public_dict()` 往返
+    # 重建仍需要它们;`report/watchlist_check.py` 自选体检仍显式传入真文本)。字段
+    # 顺序挪到 `invalidation_spec` 之后是 dataclass 语法要求(默认值字段不能排在
+    # 无默认值字段之前);全仓库 `Candidate(...)` 构造点均用关键字传参,重排序不影响
+    # 任何调用点(已核对)。——————————————————————————————————————————————————
+    entry_plan: str = ""
+    stop_loss: str = ""
+    target: str = ""
+    invalidation_text: str = ""
     entry_spec: Dict[str, Any] = field(default_factory=dict)
     # —— v1.3-③-C3 情报管线候选专属(K1 评分路径不设,取默认空;向后兼容,见
     #    `report/intel_candidates.py`)。候选语义变更:候选=「过完安检、值得关注的票」

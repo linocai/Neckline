@@ -567,6 +567,42 @@ class TestNewsAlertsWiring:
         assert tushare_status["scanned"] is True
 
 
+class TestHoldingCheckWiring:
+    """v1.5-③-C 持仓体检节接入 `build_report`(需求 9「今日计划拆两块:持仓股 /
+    候选列表」的 markdown 落地)。判定逻辑本身(D 计数/时间退出态/K4 命中)覆盖在
+    `test_holding_k4_check.py`;渲染文案的各态覆盖在 `test_render.py::
+    TestHoldingCheckSection`;本类只测「接线到 `build_report`」+「排在候选之前」+
+    「无持仓时节仍在」这三件 `build_report` 专属的事。"""
+
+    def test_markdown_includes_holding_check_section_before_candidates(self, isolated_env, monkeypatch):
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+        pos_store.open_position("600001.SH", 10.0, 1000, report_date, db_path=isolated_env.db_path)
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert "## 持仓体检" in bundle.markdown
+        assert bundle.markdown.index("## 持仓体检") < bundle.markdown.index("## 候选")
+        assert "600001.SH" in bundle.markdown.split("## 持仓体检")[1].split("## 候选")[0]
+
+    def test_markdown_holding_section_present_when_no_positions(self, isolated_env, monkeypatch):
+        """空持仓仍要有这一节(节在 = 体检跑过了),不是省略。"""
+        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
+        dates = seed_synthetic_market(isolated_env)
+        seed_active_rule_v1(isolated_env)
+        report_date = dates[-1]
+
+        bundle = pipeline_mod.build_report(
+            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
+        )
+        assert "## 持仓体检" in bundle.markdown
+        assert "今日无持仓" in bundle.markdown
+        assert bundle.holding_k4_check == []
+
+
 class TestInfoCardSummaryWiring:
     """v1.4-④-B 信息卡摘要接入 `build_report`(硬要求④:整段异常不阻断主报告)。
     摘要本身的计算正确性在 `test_info_card.py` 逐项覆盖;本类只测「接线」+

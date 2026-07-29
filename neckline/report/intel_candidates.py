@@ -46,9 +46,12 @@
 **§3.8 铁律「同码」重述的落地核对**:候选生成(本模块)与回测信号**解耦**——不声称
 回测过的 alpha、输出「值得关注」非「会涨」。**纪律红绿灯(问询台 `api/inquiry.py` /
 自选体检 `report/watchlist_check.py`)仍与报告同码**(`base_universe_expr` + config 禁买
-过滤),本模块不碰它们。**`report/candidates.py` 的评分表达式 `_base_score_expr`、四件套
-文案、`pattern_tags` 均复用**(展示排序分/四件套/形态标签同一份,不重写);候选 `rank` 由
+过滤),本模块不碰它们。**`report/candidates.py` 的评分表达式 `_base_score_expr`、
+`pattern_tags` 均复用**(展示排序分/形态标签同一份,不重写);候选 `rank` 由
 情报排序决定、`score` = `_base_score_expr` 展示分(技术贴前高度,**非**排序键,见 §④)。
+**v1.5-③-B 起不再复用 `report/candidates.py` 的四件套文案函数**(`entry_plan_text`
+等,K1 时代模板文案)——候选卡输出层改由 `pipeline.py` 事后调用
+`report/reference_plan.py` 生成 LLM 参考三件套,见 `_build_intel_candidate` docstring。
 
 **性能坑(plan §五 v1.3-③-C3「③C1/C2 施工者点名交接」)**:`holding_k4_check` 的 K4 镜像
 原按「≤3 持仓、逐票 `get_stock_history` 循环」写(内存友好但全板块数千只会很慢)。本模块
@@ -79,13 +82,9 @@ from neckline.report.candidates import (
     Candidate,
     _base_score_expr,
     _load_stock_names,
-    entry_plan_text,
     entry_spec,
     invalidation_spec,
-    invalidation_text,
     pattern_tags,
-    stop_loss_text,
-    target_text,
 )
 from neckline.report.holding_k4_check import (
     _build_holding_feature_panel,
@@ -650,9 +649,15 @@ def _build_intel_candidate(
     names: Dict[str, str],
     board_status: Optional[List[Dict[str, Any]]] = None,
 ) -> Candidate:
-    """把情报管线的一个保留候选装配成 `Candidate`(复用 candidates.py 四件套文案/形态标签/
-    展示分,同码不重写)。新增 `k4_flags`(K4 命中标注码)+ `intel_rank`(情报排序理由,
-    v1.4-③ 起含三级排序键原样透出,让客户端/信息卡说清「这票为什么排这里」)。"""
+    """把情报管线的一个保留候选装配成 `Candidate`(复用 candidates.py 形态标签/展示分,
+    同码不重写)。新增 `k4_flags`(K4 命中标注码)+ `intel_rank`(情报排序理由,v1.4-③
+    起含三级排序键原样透出,让客户端/信息卡说清「这票为什么排这里」)。
+
+    **v1.5-③-B:不再调用老四件套文案函数**(`entry_plan_text`/`stop_loss_text`/
+    `target_text`/`invalidation_text`)——`Candidate` 对应四字段维持构造时的默认
+    空串,候选卡输出层改由 `pipeline.py` 事后补算的 `reference_plan`(LLM 参考
+    三件套)承担。`invalidation_spec`(结构化证伪条件,盘中哨兵唯一判据源)**照旧
+    生成、一字不动**——只是不再连带生成它的自然语言文案。"""
     row = e["row"]
     code = e["code"]
     close = row["close"]
@@ -663,7 +668,6 @@ def _build_intel_candidate(
         for b in boards if b in step1_hot
     ]
     sector_names = [index_names.get(b, b) for b in boards]
-    stop_price = round(close * (1 - cfg.stop_pct), 2) if cfg.stop_pct else None
     spec = invalidation_spec()
     intel_rank = {
         # sectorFlow:v1.4-③ 起**并列展示,不参与排序**(需求 8;见 `_sort_key` 白名单)。
@@ -698,10 +702,6 @@ def _build_intel_candidate(
         pattern_tags=pattern_tags(row),
         hot_sectors=hot_names,
         sector_names=sector_names,
-        entry_plan=entry_plan_text(row, cfg),
-        stop_loss=stop_loss_text(stop_price, cfg),
-        target=target_text(cfg),
-        invalidation_text=invalidation_text(spec),
         invalidation_spec=spec,
         entry_spec=entry_spec(row, cfg),
         k4_flags=e["k4_flags"],

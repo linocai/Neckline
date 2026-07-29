@@ -54,13 +54,43 @@ def test_report_latest(client, AUTH, api_env):
     assert len(cands) == 2
     c0 = cands[0]
     assert c0["code"] == "600001.SH" and c0["rank"] == 1
-    # 四件套映射
-    assert "回调低吸" in c0["buyPoint"] and "-5%" in c0["stop"]
+    # v1.5-③-B:老四件套键仍在、恒非空,但值已统一改成过渡文案(不再回读落库快照
+    # 里的 entry_plan/stop_loss 真文本)——即便种子数据里塞了"回调低吸"字样也不
+    # 该透出来,见 test_report_latest_legacy_fourpiece_keys_always_notice。
+    assert "回调低吸" not in c0["buyPoint"]
+    assert c0["buyPoint"] == c0["stop"] == c0["target"] == c0["invalidation"]
     assert c0["formTags"] == ["浅回调贴前高", "放量"]
     # 前排候选带 LLM 审判
     assert c0["llmJudgment"]["verdict"] == "通过"
     # 未审判候选无 llmJudgment
     assert cands[1]["llmJudgment"] is None
+
+
+# —— v1.5-③-B `_shape_candidate` 老四件套过渡文案(需求 9,向后兼容硬约束)————————————
+
+def test_report_latest_legacy_fourpiece_keys_always_notice(client, AUTH, api_env):
+    """已装 v1.4.1 客户端对 `buyPoint`/`stop`/`target`/`invalidation` 四键是**硬解码**
+    (`try c.decode(String.self,…)`),v1.5.0 起候选生成路径不再产出这四件套文案后,
+    服务端必须仍发非空 String——一律无条件下发 `LEGACY_FOURPIECE_NOTICE`,**不按
+    落库快照里 `entry_plan` 等字段是否有真文本分叉**(覆盖两种落库快照:①v1.5.0 起
+    的新报告,`entry_plan` 等字段恒空串;②v1.5.0 前生成的老报告,`entry_plan` 等
+    字段是真实历史文本——两者读回结果必须一致)。"""
+    from neckline.api.app import LEGACY_FOURPIECE_NOTICE
+
+    new_style = _candidate(1, "600001.SH", "示例甲")
+    new_style["entry_plan"] = new_style["stop_loss"] = new_style["target"] = ""
+    new_style["invalidation_text"] = ""
+    old_style = _candidate(2, "600002.SH", "示例乙")  # 助手默认自带 v1.5 前的真文本
+    report_store.save_report(
+        date(2026, 7, 29), strategy_version="v1.5.0",
+        sentiment={"trade_date": "20260729"}, sectors=[], candidates=[new_style, old_style],
+        markdown="# 报告", db_path=api_env.db_path,
+    )
+    cands = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"]
+    assert len(cands) == 2
+    for c in cands:
+        assert c["buyPoint"] == c["stop"] == c["target"] == c["invalidation"] == LEGACY_FOURPIECE_NOTICE
+        assert LEGACY_FOURPIECE_NOTICE != ""   # 非空是硬约束的重点,顺带断言常量本身不是空串
 
 
 def test_report_latest_carries_intel_and_sector_moneyflow(client, AUTH, api_env):

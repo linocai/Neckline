@@ -471,6 +471,7 @@ def build_report(
         judged=judged,
         top_n_judged=top_n_judged,
         watchlist_check=watchlist_check,
+        holding_k4_check=holding_k4_check,   # v1.5-③-C:持仓体检节(排在候选之前)
         intel=intel,
         sector_moneyflow=sector_moneyflow,
         news_alerts=news_alerts,

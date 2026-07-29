@@ -190,7 +190,13 @@ class CandidateOut(BaseModel):
     name: str
     score: float
     board: str
-    # 四件套(§2.2/§2.3):买点 / 止损(-5%) / 目标 / 证伪条件
+    # 老四件套(K1 时代文案,§2.2/§2.3)**v1.5.0 起已退役**:候选卡输出层改
+    # `referencePlan`(见下)。四个键仍在、类型仍是非空 `str`(向后兼容硬约束,
+    # 已装 v1.4.1 客户端对这四键硬解码,`decode(String.self,…)`),但值**恒为**
+    # `api/app.py::LEGACY_FOURPIECE_NOTICE` 过渡文案,不再是真实买点/止损/目标/
+    # 证伪条件——不读落库快照里的 `entry_plan`/`stop_loss`/`target`/
+    # `invalidation_text`(那几个字段本身已随候选生成路径退役、恒为默认空串)。
+    # 真正删键条件见 PROJECT_PLAN §七 P3-27。
     buyPoint: str
     stop: str
     target: str
