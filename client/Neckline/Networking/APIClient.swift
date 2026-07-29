@@ -204,6 +204,12 @@ private struct InquiryResponse: Decodable {
     let verdict: String
     let evidence: [String]
     let degraded: Bool
+    /// v1.4-⑦-B:本次问询落进 `inquiry_log` 档案表的行 id。**Optional 是契约语义,不是
+    /// 容错兜底**——服务端落库是旁路(失败时如实发 null,本次回答仍有效,见 schemas.py
+    /// `InquiryOut.inquiryId` 注释);老服务端(v1.3 及更早)压根没有这个键 → nil。
+    /// ⚠ v1.4 review 契约线 🟡-3:服务端 → JSON 三段都在,唯独这里从前没声明,字段被
+    /// Codable 静默丢弃 =「链路末段漏字段」的复发形态(这次漏在客户端侧)。
+    let inquiryId: Int?
 }
 
 private struct SettingsResponse: Decodable {
@@ -629,7 +635,7 @@ actor APIClient {
         let data = try await post("/api/v1/inquiry", body: body, timeout: 60)
         let r = try JSONDecoder().decode(InquiryResponse.self, from: data)
         return InquiryResult(code: r.code, reply: r.reply, verdict: InquiryVerdict(r.verdict),
-                             evidence: r.evidence, degraded: r.degraded)
+                             evidence: r.evidence, degraded: r.degraded, inquiryId: r.inquiryId)
     }
 
     // —— v1.4-⑦-B 问询历史(§七 P3-13;**与已退役的 `inquiry_pool` 无耦合**,本节读的

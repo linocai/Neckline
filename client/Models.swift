@@ -1323,6 +1323,10 @@ struct InquiryResult: Equatable {
     var verdict: InquiryVerdict
     var evidence: [String]
     var degraded: Bool
+    /// v1.4-⑦-B:本次问答在 `inquiry_log` 档案表里的行 id(→ 问询历史 `InquiryLogEntry.id`
+    /// 的关联位:问完即可跳转/高亮本次那一条)。**nil = 服务端落库失败(旁路,回答仍有效)
+    /// 或对端是没有该字段的老服务端**,不是"没问过"。默认 nil 保持既有构造点不破。
+    var inquiryId: Int? = nil
 }
 
 // MARK: - v1.4-⑦-B 问询记录档案(§五 v1.4-⑦-B,§七 P3-13)。**与 `inquiry_pool`

@@ -1286,6 +1286,31 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(r.verdict.tone, .neutral)
     }
 
+    /// v1.4 review 契约线 🟡-3:`POST /inquiry` 的 `inquiryId`(v1.4-⑦-B 契约清单登记在案)
+    /// 从前在 Swift 解码段被丢掉 —— 服务端 → JSON 三段都在,第四段漏了,问询历史关联位没料。
+    /// 三态各锁一条:有值 / 显式 null(服务端落库失败的旁路态)/ 老服务端压根没这个键。
+    func testDecodeInquiryIdPresentNullAndAbsent() async throws {
+        func send(_ json: String) async throws -> InquiryResult {
+            MockURLProtocol.handler = { _ in (200, jsonData(json)) }
+            let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
+                                   session: mockSession())
+            return try await client.sendInquiry(code: "600002.SH", messages: [])
+        }
+        let base = """
+        {"ok": true, "code": "600002.SH", "reply": "r", "verdict": "已分析",
+         "evidence": [], "degraded": false
+        """
+        let withId = try await send(base + ", \"inquiryId\": 42}")
+        let nullId = try await send(base + ", \"inquiryId\": null}")   // 落库失败 = 旁路
+        let noKey = try await send(base + "}")                         // 老服务端无此键
+        XCTAssertEqual(withId.inquiryId, 42)
+        XCTAssertNil(nullId.inquiryId)
+        XCTAssertNil(noKey.inquiryId)
+        // 落库失败不影响回答本身:reply/verdict 照常(与 degraded 是两件独立的事)
+        XCTAssertEqual(nullId.verdict, .analyzed)
+        XCTAssertFalse(nullId.degraded)
+    }
+
     // MARK: - 4A.5 设置(样例对照 test_settings_default / test_put_llm_key_not_leaked)
 
     func testDecodeSettings() async throws {

@@ -238,6 +238,10 @@ final class AppModel {
     var inquiryHistory: [InquiryLogEntry] = []
     var inquiryHistoryLoading = false
     var showInquiryHistory = false
+    /// 本次问询落进档案表的行 id(= `InquiryLogEntry.id` 的关联位,v1.4 review 契约线 🟡-3
+    /// 补齐的末段)。**nil = 服务端落库失败(旁路,回答仍有效)或对端是老服务端**,不是
+    /// 「没问过」;下一次提问前清空,免得把上一轮的 id 挂在这一轮头上。
+    var lastInquiryId: Int? = nil
 
     // —— 4A.5 设置 ——
     var settings: SettingsSnapshot = .empty
@@ -844,6 +848,7 @@ final class AppModel {
         inquiryThread.append(ChatMessage(role: .user, text: text))
         inquiryComposer = ""
         inquiryLoading = true
+        lastInquiryId = nil          // 本轮还没结果,上一轮的 id 不许留在这儿
         do {
             let payload = Self.inquiryContext(from: inquiryThread)
             let r = try await client.sendInquiry(code: inquiryCode, messages: payload)
@@ -851,6 +856,7 @@ final class AppModel {
             inquiryVerdict = r.verdict
             inquiryEvidence = r.evidence
             inquiryDegraded = r.degraded
+            lastInquiryId = r.inquiryId
         } catch let e as APIError {
             inquiryThread.append(ChatMessage(role: .assistant, text: "问询失败:\(e.errorDescription ?? "未知错误")"))
         } catch {
