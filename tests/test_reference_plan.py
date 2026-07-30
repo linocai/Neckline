@@ -55,9 +55,10 @@ class _StubProvider:
         self.calls = 0
         self.captured_messages = []
 
-    def chat(self, messages, *, enable_search=True, transport=None):
+    def chat(self, messages, *, enable_search=True, transport=None, search_query=None):
         self.calls += 1
         self.captured_messages = list(messages)
+        self.captured_search_query = search_query   # v1.5.2:审判链路显式检索词(带年份)
         return self._result
 
 
@@ -616,6 +617,39 @@ class TestBuildReferencePlanStates:
 # ————————————————————————————————————————————————————————————————
 # 一站式编排 `judge_and_build_reference_plan`(MockTransport 端到端 + 降级路径)
 # ————————————————————————————————————————————————————————————————
+
+class TestReferenceContextDateAnchor:
+    """v1.5.2(用户报障:LLM 把 2024 年研报当现行参照)——参考件上下文第一行必须是
+    日期锚,且**点名「明早」= 下一交易日**(周五生成时"明早"是下周一,不是周六)。"""
+
+    def test_anchor_is_the_first_line_and_pins_tomorrow(self, isolated_env):
+        dates = _seed_env(isolated_env)
+        block = rp.build_reference_context_block(
+            _candidate(close=12.0), dates[-2],
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        first = block.splitlines()[0]
+        assert first.startswith("今天是 ")
+        assert "下一交易日是" in first
+        assert "明早 / 次日开盘" in first
+        # 与涨跌停锚同源:锚里点名的那天 = `next_trading_day(报告日)`
+        nd = next_trading_day(dates[-2])
+        assert f"{nd.year}年{nd.month}月{nd.day}日" in first
+
+    def test_anchor_survives_into_the_llm_user_message(self, isolated_env):
+        """端到端:锚不是"算出来就算了",要真进到发给 LLM 的那条 user 消息里。"""
+        dates = _seed_env(isolated_env)
+        stub = _StubProvider(LLMResult(ok=True, content="分析。\n结论:通过", provider="glm", model="m"))
+        rp.judge_and_build_reference_plan(
+            _candidate(close=12.0), dates[-2], provider=stub, db_path=isolated_env.db_path,
+            parquet_dir=isolated_env.parquet_dir,
+        )
+        assert "今天是 " in stub.captured_messages[1].content
+
+    def test_system_prompt_carries_timeliness_rules(self):
+        from neckline.llm.prompt_context import TIMELINESS_RULES
+        assert TIMELINESS_RULES in rp.REFERENCE_PLAN_SYSTEM_PROMPT
+
 
 class TestJudgeAndBuildReferencePlanOrchestration:
     def test_no_provider_never_computes_context_returns_unavailable(self, isolated_env, monkeypatch):

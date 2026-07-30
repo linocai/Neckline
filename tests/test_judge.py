@@ -47,9 +47,10 @@ class _StubProvider:
         self.calls = 0
         self.captured_messages = []
 
-    def chat(self, messages, *, enable_search=True, transport=None):
+    def chat(self, messages, *, enable_search=True, transport=None, search_query=None):
         self.calls += 1
         self.captured_messages = list(messages)
+        self.captured_search_query = search_query   # v1.5.2:审判链路显式检索词(带年份)
         return self._result
 
 
@@ -152,6 +153,37 @@ class TestVerdictParsing:
         assert r.search_engine == "search_pro"
 
 
+class TestSearchQueryRecencyV152:
+    """v1.5.2:审判链路此前**从不显式传检索词**(供应商跟最后一条 user 消息推导),
+    现在显式传「中文名(代码) <当前年份> 最新」——身份 + 时效一次给够。"""
+
+    def test_query_carries_identity_and_current_year(self):
+        from datetime import date as _date
+
+        from neckline.llm.judge import judge_search_query
+        q = judge_search_query(_candidate())
+        assert "示例股份" in q and "600001.SH" in q
+        assert f"{_date.today().year} 最新" in q or "最新" in q   # 年份动态,不硬编
+
+    def test_query_reaches_the_provider_call(self):
+        stub = _StubProvider(LLMResult(ok=True, content="分析。\n结论:通过", provider="glm", model="m"))
+        judge_candidate(_candidate(), provider=stub)
+        assert "示例股份" in stub.captured_search_query
+        assert "最新" in stub.captured_search_query
+
+    def test_query_degrades_to_code_when_name_missing(self):
+        """查无中文名 → 只带代码,不拼出「(600001.SH)」这种空名括号(同问询台先例)。"""
+        from neckline.llm.judge import judge_search_query
+        q = judge_search_query(_candidate(name=""))
+        assert q.startswith("600001.SH ") and "(" not in q
+
+    def test_system_prompts_carry_timeliness_rules(self):
+        from neckline.llm.judge import JUDGE_SYSTEM_PROMPT, WATCHLIST_JUDGE_SYSTEM_PROMPT
+        from neckline.llm.prompt_context import TIMELINESS_RULES
+        assert TIMELINESS_RULES in JUDGE_SYSTEM_PROMPT
+        assert TIMELINESS_RULES in WATCHLIST_JUDGE_SYSTEM_PROMPT
+
+
 class TestContextBlock:
     def test_includes_top_list_row_when_present(self):
         row = {"net_amount": 700.0, "net_rate": 5.6, "reason": "日涨幅偏离值达7%"}
@@ -159,6 +191,12 @@ class TestContextBlock:
         assert "龙虎榜" in block
         assert "700.0" in block
         assert "日涨幅偏离值达7%" in block
+
+    def test_first_line_is_the_current_date_anchor(self):
+        """v1.5.2(用户报障根因:三处提示词都没告诉模型今天几号,旧研报被当现行参照)
+        ——审判上下文第一行必须是日期锚。"""
+        first = build_context_block(_candidate()).splitlines()[0]
+        assert first.startswith("今天是 ") and "下一交易日" in first
 
     def test_notes_absence_when_no_top_list_row(self):
         block = build_context_block(_candidate(), top_list_row=None)

@@ -71,6 +71,11 @@ from neckline.api.schemas import VERDICT_ANALYZED, VERDICT_ANALYZED_WARN
 from neckline.api.stores import create_inquiry_log
 from neckline.data.market_data import resolve_stock_names
 from neckline.llm.base import ChatMessage, LLMProvider, search_coverage_line
+from neckline.llm.prompt_context import (
+    TIMELINESS_RULES,
+    date_anchor_line,
+    search_subject_with_recency,
+)
 from neckline.report.candidates import _base_score_expr  # 同码:展示排序分与报告一致
 from neckline.report.industry_strength import (
     IndustryStrength,
@@ -116,6 +121,8 @@ INQUIRY_SYSTEM_PROMPT = """你是一位资深 A 股分析师,和用户一对一�
 
 **信息边界(铁律)**:只依据给定的结构化数据与联网搜索实际返回的内容;搜不到就明说"未搜到
 相关消息",**绝不编造新闻、传闻、业绩、题材**。不确定的地方直说不确定。
+
+""" + TIMELINESS_RULES + """
 
 **风险提示的用法**:材料里若带了风险提示(ST / 退市风险 / 流动性太差 / 次新 / 停牌 /
 K4 派发域命中等),**在回答里如实提到并说明它意味着什么**——但那是提示,不是禁令,
@@ -360,6 +367,10 @@ def build_llm_context(det: DeterministicResult, quote: Optional[Any] = None) -> 
     """把确定性材料 + 实时行情组装成喂 LLM 的结构化上下文(纯文本块,不是 JSON)。
     **结尾不再要求任何裁决标签**——只交代材料边界,回答什么由用户的问题决定。"""
     lines = [
+        # v1.5.2(用户报障根因):第一行永远是当前日期锚。此前三处提示词一处都没告诉模型
+        # 今天几号,于是 2024 年的研报目标价被当成现行参照讲了出来。单一实现在
+        # `llm/prompt_context.py`,问询台/审判/参考件三处共用同一份。
+        date_anchor_line(),
         f"股票代码:{det.code};名称:{det.name or '未知'};交易所板块:{det.board}",
     ]
     if not det.has_data:
@@ -421,10 +432,15 @@ def _build_search_query(det: DeterministicResult, messages: List[Dict[str, str]]
     user 消息。所以必须显式传。
 
     用户那句原样带上(不做意图提取):它承载了"想问什么"(业绩/走势/风险),让检索词
-    比光有股票名更贴题。长度由 provider 侧截断,这里不预截。"""
+    比光有股票名更贴题。长度由 provider 侧截断,这里不预截。
+
+    **v1.5.2 加时效引导词**(当前年份 + 「最新」):检索命中新旧混杂是用户报障的另一半
+    (2026-07 的问询捞回 2023/2024 的材料)。引导词**紧跟主体、不放最末** —— 放最末会被
+    GLM 的 78 字截断连同用户长问句一起切掉,详见 `prompt_context.search_subject_with_recency`。
+    **只改检索词文本,不加任何新 API 参数**(v1.3.4 案底)。"""
     last_user = _last_user_message(messages)
     subject = f"{det.name}({det.code})" if det.name else det.code
-    return f"{subject} {last_user}".strip()
+    return search_subject_with_recency(subject, last_user)
 
 
 def _materials_snapshot(det: DeterministicResult) -> Dict[str, Any]:

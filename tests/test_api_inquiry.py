@@ -419,6 +419,35 @@ class TestSearchIdentityV134:
         assert "示例甲" in q and "600001.SH" in q          # 身份(修复前这两样都不在检索词里)
         assert "后续走势" in q                              # 用户意图原样带上,检索词才贴题
 
+    def test_search_query_carries_recency_hint_ahead_of_the_question(self, market):
+        """v1.5.2(用户报障:603298 的回答把 2024 年研报当现行参照):检索词补当前年份 +
+        「最新」。**紧跟主体、不放最末** —— 放最末会被 GLM 78 字截断连同长问句切掉。"""
+        from datetime import date as _date
+
+        s, day = market
+        prov = StubProvider()
+        long_q = "这只票最近的业绩和公告怎么样," + "顺便说说产业催化会不会兑现风险在哪" * 3
+        inq.run_inquiry(
+            "600001.SH", [{"role": "user", "content": long_q}],
+            basis_date=day, db_path=s.db_path, parquet_dir=s.parquet_dir, provider=prov,
+        )
+        q = prov.captured_search_query
+        hint = f"{_date.today().year} 最新"
+        assert hint in q
+        assert q.index(hint) < q.index("这只票")            # 主体之后、用户问句之前
+        assert hint in q[:78]                                # 落在 GLM 截断窗口内
+
+    def test_llm_context_first_line_is_the_current_date_anchor(self, market):
+        """报障根因锁死:材料第一行必须告诉模型今天几号(此前一处都没有)。"""
+        s, day = market
+        det = inq.run_deterministic_checks("600001.SH", day, db_path=s.db_path, parquet_dir=s.parquet_dir)
+        first = inq.build_llm_context(det).splitlines()[0]
+        assert first.startswith("今天是 ") and "下一交易日" in first
+
+    def test_system_prompt_carries_timeliness_rules(self):
+        from neckline.llm.prompt_context import TIMELINESS_RULES
+        assert TIMELINESS_RULES in inq.INQUIRY_SYSTEM_PROMPT
+
     def test_search_query_uses_last_user_turn_in_multi_turn(self, market):
         """多轮对话取**最后一句**——供应商推导检索词就是跟着它走的。"""
         s, day = market

@@ -27,6 +27,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from neckline.llm.base import ChatMessage, LLMProvider, SearchHit
+from neckline.llm.prompt_context import (
+    TIMELINESS_RULES,
+    date_anchor_line,
+    search_subject_with_recency,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +53,8 @@ JUDGE_SYSTEM_PROMPT = """你是「颈线」系统的盘后候选逻辑审判员�
 3. 系统的选股规则本身是一套减损纪律系统而非高胜率信号(2-5 日短线,日线频率下 A 股呈均值
 回归),你的角色是排查"催化是否站得住、是否有明显利空正在发生",不是给出收益预测,不要暗示
 "这只票会涨"。
+
+""" + TIMELINESS_RULES + """
 
 输出风格(硬约束):自由叙述,写成一段连贯的分析文字,像分析师口头点评。禁止使用分点列表、
 多维打分表、"技术面/资金面/消息面"这类固定分栏模板——可以自然地把这些角度揉进叙述里,但不要
@@ -80,6 +87,8 @@ WATCHLIST_JUDGE_SYSTEM_PROMPT = """你是「颈线」系统的自选股体检审
 3. 系统的选股规则本身是一套减损纪律系统而非高胜率信号(2-5 日短线,日线频率下 A 股呈均值
 回归),你的角色是排查"催化是否站得住、是否有明显利空正在发生",不是给出收益预测,不要暗示
 "这只票会涨"。
+
+""" + TIMELINESS_RULES + """
 
 输出风格(硬约束):自由叙述,写成一段连贯的分析文字,像分析师口头点评。禁止使用分点列表、
 多维打分表、"技术面/资金面/消息面"这类固定分栏模板——可以自然地把这些角度揉进叙述里,但不要
@@ -120,6 +129,9 @@ def build_context_block(candidate: Any, top_list_row: Optional[Dict[str, Any]] =
     模板抄一份回来的概率)。`candidate` 是 `neckline.report.candidates.Candidate`,
     用 duck typing 而非强类型 import,避免循环依赖。"""
     lines = [
+        # v1.5.2:第一行永远是当前日期锚(单一实现 `llm/prompt_context.py`)——不给"现在"
+        # 模型就没有时效概念,会把两年前的研报当现行参照(2026-07-30 用户报障根因)。
+        date_anchor_line(),
         f"股票:{getattr(candidate, 'name', '')}({candidate.ts_code})",
         f"现价:{candidate.close:.2f} 元;交易所板块:{candidate.board}",
         f"价量结构标签:{'、'.join(candidate.pattern_tags) if candidate.pattern_tags else '无'}",
@@ -142,6 +154,20 @@ def build_context_block(candidate: Any, top_list_row: Optional[Dict[str, Any]] =
     lines.append(f"系统给出的止损:{candidate.stop_loss}")
     lines.append("请结合以上信息与联网搜索,判断该股票近期是否有站得住的催化,或是否存在你判断应当剔除的理由。")
     return "\n".join(lines)
+
+
+def judge_search_query(candidate: Any) -> str:
+    """审判链路的**显式检索词** = 「中文名(代码) <当前年份> 最新」(v1.5.2)。
+
+    v1.3.4 已证:不显式传时,检索词跟**最后一条 user 消息**走 —— 审判链路那条消息是一
+    大段结构化材料,供应商推导出的检索词未必带得上股票身份,更不会带时效。既然问询台
+    那边靠显式检索词把命中从"泛泛新闻"救成"这只票的真数据",审判链路同理。年份词的位置
+    与截断风险见 `prompt_context.search_subject_with_recency`。
+
+    duck-typed(只要 `ts_code`/`name`),与 `build_context_block` 同一姿势。"""
+    name = (getattr(candidate, "name", "") or "").strip()
+    code = str(getattr(candidate, "ts_code", "") or "").strip()
+    return search_subject_with_recency(f"{name}({code})" if name else code)
 
 
 _VERDICT_RE = re.compile(r"结论[:：]\s*(通过|否决)")
@@ -244,7 +270,11 @@ def judge_candidate(
             content=context_block if context_block is not None else build_context_block(candidate, top_list_row),
         ),
     ]
-    result = provider.chat(messages, enable_search=True, transport=transport)
+    result = provider.chat(
+        messages, enable_search=True, transport=transport,
+        # v1.5.2:显式检索词(带当前年份),理由见 `judge_search_query`。
+        search_query=judge_search_query(candidate),
+    )
     if not result.ok:
         return JudgeResult(
             ts_code=candidate.ts_code, provider=provider.name, model=getattr(provider, "model", ""),

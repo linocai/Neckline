@@ -261,11 +261,14 @@ class _CountingProvider:
     """可注入的假 LLM provider:记录每次调用,免联网(同 test_api_inquiry.py 的
     `StubProvider` 姿势)。"""
     calls: List[str] = field(default_factory=list)
+    search_queries: List[object] = field(default_factory=list)
     tag: str = "通过"
     ok: bool = True
 
-    def chat(self, messages: List[ChatMessage], *, enable_search: bool = True, transport=None) -> LLMResult:
+    def chat(self, messages: List[ChatMessage], *, enable_search: bool = True, transport=None,
+             search_query=None) -> LLMResult:
         self.calls.append(messages[-1].content)
+        self.search_queries.append(search_query)   # v1.5.2:审判链路显式检索词(带年份)
         return LLMResult(ok=self.ok, content=f"分析内容。\n结论:{self.tag}", provider="glm", model="glm-5.2")
 
 

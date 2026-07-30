@@ -55,6 +55,7 @@ from neckline.calendar import next_trading_day
 from neckline.data.limit_derived import compute_intraday_limit_prices
 from neckline.llm.base import LLMProvider
 from neckline.llm.judge import JudgeResult, VERDICT_VETO, judge_candidate
+from neckline.llm.prompt_context import TIMELINESS_RULES, date_anchor_line
 from neckline.report.candidates import Candidate, invalidation_text
 from neckline.report.industry_strength import IndustryStrength
 from neckline.report.info_card import build_info_card
@@ -118,6 +119,8 @@ REFERENCE_PLAN_SYSTEM_PROMPT = """你是「颈线」系统的盘后候选参谋�
 绝不允许凭猜测编造新闻、公告、传闻或题材。
 3. 系统的选股规则本身是一套减损纪律系统而非高胜率信号,你的角色是排查"催化是否站得住、是否
 有明显利空正在发生",不是给出收益预测,不要暗示"这只票会涨"。
+
+""" + TIMELINESS_RULES + """
 
 输出风格(硬约束):自由叙述,写成一段连贯的分析文字,像分析师口头点评。禁止使用分点列表、
 多维打分表、"技术面/资金面/消息面"这类固定分栏模板——可以自然地把这些角度揉进叙述里,但不要
@@ -284,6 +287,12 @@ def build_reference_context_block(
     limit_up, limit_down, _ = _resolve_next_day_limit_prices(candidate, trade_date, db_path)
 
     lines = [
+        # v1.5.2:日期锚放第一行,且**点名「明早」= 下一交易日**(`name_tomorrow=True`)——
+        # ①-C 的证伪剧本写的就是"明早开盘怎么做",不点名的话周五生成的报告里模型可能把
+        # "明早"理解成自然日的周六。`ref_date=trade_date` 使补跑历史日时锚不撒谎(如实说
+        # 今天几号 + 基准日几号),下一交易日与涨跌停锚 `_resolve_next_day_limit_prices`
+        # 同源(都是 `next_trading_day(trade_date)`)。
+        date_anchor_line(trade_date, name_tomorrow=True),
         f"股票:{card.name}({card.code});交易所板块:{candidate.board}",
         f"现价(T日收盘):{candidate.close:.2f} 元",
         "",
