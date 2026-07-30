@@ -1405,6 +1405,95 @@ class TestJudgeCandidatesWithBudget:
         assert judged_codes & skipped_codes == set()   # 落库的判词与被跳过的票零交集
         assert judged_codes, "至少应有第1只被真正审判并落库"
 
+    def test_rerun_with_exhausted_budget_clears_previous_run_rows_for_skipped(self, isolated_env):
+        """v1.5.1(契约线 review 🟡-1):第一跑审完 → 同日补跑时预算耗尽 → 被跳过那批
+        码当日的 `llm_judgments`/`reference_plans` **既有行必须被删掉**,否则 API 会对
+        同一只票同时返回「(上一跑的)审判结论」与「本次预算耗尽未发起」,两句话打架。
+        收口在写侧(不是读侧遮蔽);第一跑就审过的靠前候选照留(是本跑真结果)。"""
+        dates = _seed_budget_env(isolated_env, 4)
+        report_date = dates[-1]
+        provider = GLMProvider(api_key="sk-xxx")
+
+        # 第一跑:预算充裕,4 只全审完全落库。
+        first = _budget_candidates(4)
+        pipeline_mod._judge_candidates_with_budget(
+            first, report_date, provider=provider, top_list={},
+            industry_scores=None, industry_map=None,
+            transport=httpx.MockTransport(lambda r: _judge_response(_pass_content(_pass_json()))),
+            budget_seconds=pipeline_mod.CANDIDATE_JUDGE_BUDGET_SECONDS, save=True,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        assert {j["ts_code"] for j in store.load_llm_judgments(report_date, db_path=isolated_env.db_path)} == \
+               {c.ts_code for c in first}
+        assert len(reference_plan_store.load_reference_plans(report_date, db_path=isolated_env.db_path)) == 4
+
+        # 第二跑:同一天补跑,预算在第 1 只之后耗尽。
+        second = _budget_candidates(4)
+
+        def slow_handler(request: httpx.Request) -> httpx.Response:
+            time.sleep(0.06)
+            return _judge_response(_pass_content(_pass_json()))
+
+        pipeline_mod._judge_candidates_with_budget(
+            second, report_date, provider=provider, top_list={},
+            industry_scores=None, industry_map=None, transport=httpx.MockTransport(slow_handler),
+            budget_seconds=0.05, save=True,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        skipped = {c.ts_code for c in second if c.judge_skipped}
+        judged = {c.ts_code for c in second if not c.judge_skipped}
+        assert skipped and judged, "本测需要一部分审、一部分跳,预算判据没触发就白测了"
+
+        left_judgments = {j["ts_code"] for j in store.load_llm_judgments(report_date, db_path=isolated_env.db_path)}
+        left_plans = {p["ts_code"] for p in
+                      reference_plan_store.load_reference_plans(report_date, db_path=isolated_env.db_path)}
+        assert left_judgments & skipped == set(), "跳过的票不许留着上一跑的审判残留"
+        assert left_plans & skipped == set(), "跳过的票不许留着上一跑的参考件残留"
+        assert left_judgments == judged and left_plans == judged   # 本跑真审过的照留
+
+    def test_first_run_delete_is_idempotent_noop(self, isolated_env):
+        """首次生成(库里本来就没有这批码的行)时两个 DELETE 各删 0 行,不报错、不
+        影响本跑已审的那只——幂等纪律。"""
+        dates = _seed_budget_env(isolated_env, 3)
+        report_date = dates[-1]
+        cands = _budget_candidates(3)
+
+        def slow_handler(request: httpx.Request) -> httpx.Response:
+            time.sleep(0.06)
+            return _judge_response(_pass_content(_pass_json()))
+
+        pipeline_mod._judge_candidates_with_budget(
+            cands, report_date, provider=GLMProvider(api_key="sk-xxx"), top_list={},
+            industry_scores=None, industry_map=None, transport=httpx.MockTransport(slow_handler),
+            budget_seconds=0.05, save=True,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        judged = {c.ts_code for c in cands if not c.judge_skipped}
+        assert {j["ts_code"] for j in store.load_llm_judgments(report_date, db_path=isolated_env.db_path)} == judged
+
+    def test_save_false_never_deletes_anything(self, isolated_env):
+        """`save=False`(预览/回放)既不写也不删——第一跑的行原样留在库里。"""
+        dates = _seed_budget_env(isolated_env, 4)
+        report_date = dates[-1]
+        provider = GLMProvider(api_key="sk-xxx")
+        first = _budget_candidates(4)
+        pipeline_mod._judge_candidates_with_budget(
+            first, report_date, provider=provider, top_list={},
+            industry_scores=None, industry_map=None,
+            transport=httpx.MockTransport(lambda r: _judge_response(_pass_content(_pass_json()))),
+            budget_seconds=pipeline_mod.CANDIDATE_JUDGE_BUDGET_SECONDS, save=True,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        pipeline_mod._judge_candidates_with_budget(
+            _budget_candidates(4), report_date, provider=provider, top_list={},
+            industry_scores=None, industry_map=None,
+            transport=httpx.MockTransport(lambda r: _judge_response(_pass_content(_pass_json()))),
+            budget_seconds=0.0, save=False,
+            parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
+        )
+        assert len(store.load_llm_judgments(report_date, db_path=isolated_env.db_path)) == 4
+        assert len(reference_plan_store.load_reference_plans(report_date, db_path=isolated_env.db_path)) == 4
+
 
 class TestCandidateJudgeBudgetWiring:
     """v1.5-②:预算/跳过机制接入 `build_report` 的端到端验证(机制本身的详细分支

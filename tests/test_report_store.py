@@ -330,3 +330,28 @@ class TestLLMJudgmentRoundtrip:
 
     def test_missing_date_returns_empty_list(self, db):
         assert store.load_llm_judgments(date(2020, 1, 1), db_path=db) == []
+
+    def test_delete_named_codes_only_and_idempotent(self, db):
+        """v1.5.1(契约线 review 🟡-1 写侧收口):同日重跑 + 预算耗尽时,被跳过那批码的
+        既有审判行必须真删掉,否则 API 会同时返回「陈旧结论」与「本次未发起」。"""
+        for code in ["600001.SH", "600002.SH", "600003.SH"]:
+            store.save_llm_judgment(
+                D, JudgeResult(ts_code=code, provider="glm", model="m", verdict=VERDICT_PASS,
+                               narrative="x", degraded=False), db_path=db,
+            )
+        assert store.delete_llm_judgments(D, ["600002.SH", "600003.SH"], db_path=db) == 2
+        assert [r["ts_code"] for r in store.load_llm_judgments(D, db_path=db)] == ["600001.SH"]
+        assert store.delete_llm_judgments(D, ["600002.SH"], db_path=db) == 0      # 幂等
+        assert store.delete_llm_judgments(D, [], db_path=db) == 0                 # 空名单不建连不报错
+        assert store.delete_llm_judgments(D, ["", None], db_path=db) == 0         # 脏名单不误伤
+
+    def test_delete_does_not_touch_other_dates(self, db):
+        other = date(2026, 7, 17)
+        for d in (D, other):
+            store.save_llm_judgment(
+                d, JudgeResult(ts_code="600001.SH", provider="glm", model="m", verdict=VERDICT_PASS,
+                               narrative="x", degraded=False), db_path=db,
+            )
+        store.delete_llm_judgments(D, ["600001.SH"], db_path=db)
+        assert store.load_llm_judgments(D, db_path=db) == []
+        assert len(store.load_llm_judgments(other, db_path=db)) == 1

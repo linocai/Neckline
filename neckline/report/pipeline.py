@@ -191,10 +191,12 @@ def _judge_candidates_with_budget(
     率与稳定性再评估(届时对照 `news_alerts.py` 模块头(a)(b)(c) 三条理由逐条
     回答),不在本次顺手做。
 
-    副作用(`save=True` 时):逐票落 `llm_judgments`/`reference_plans`;原地在
-    `candidates` 列表的 `Candidate` 对象上补 `.reference_plan`/`.judge_skipped`
-    (`build_report` 随后把这批 `Candidate` 对象整体落 `reports.candidates_json`,
-    同 v1.5-① 既有姿势,本函数不新增落库路径)。"""
+    副作用(`save=True` 时):逐票落 `llm_judgments`/`reference_plans`;**预算耗尽时
+    反过来删掉被跳过那批码当日的既有行**(v1.5.1,契约线 review 🟡-1,理由见循环内
+    注释与 `store.delete_llm_judgments` docstring);原地在 `candidates` 列表的
+    `Candidate` 对象上补 `.reference_plan`/`.judge_skipped`(`build_report` 随后把这批
+    `Candidate` 对象整体落 `reports.candidates_json`,同 v1.5-① 既有姿势,本函数不新增
+    落库路径)。"""
     judged: Dict[str, JudgeResult] = {}
     budget_start = time.monotonic()
     for i, c in enumerate(candidates):
@@ -208,6 +210,16 @@ def _judge_candidates_with_budget(
             )
             for skipped_c in candidates[i:]:
                 skipped_c.judge_skipped = True
+            if save:
+                # v1.5.1(契约线 review 🟡-1):同日重跑 + 本跑预算耗尽时,**删掉**这批
+                # 码当日的既有审判/参考件行——`/report` 的 `llmJudgment` 是从
+                # `llm_judgments` 现连的,不删就会与 `judgeSkipped=true` 同时出现,
+                # 一张卡上「(上一跑的)审判结论」+「本次预算耗尽未发起」互相打脸。
+                # 收口在写侧,不在读侧遮蔽(藏真数据不是诚实)。首次生成时两个 DELETE
+                # 各删 0 行,幂等无副作用。
+                skipped_codes = [c.ts_code for c in candidates[i:]]
+                store.delete_llm_judgments(trade_date, skipped_codes, db_path=db_path)
+                reference_plan_store.delete_reference_plans(trade_date, skipped_codes, db_path=db_path)
             break
         top_row = top_list.get(c.ts_code)
         try:
