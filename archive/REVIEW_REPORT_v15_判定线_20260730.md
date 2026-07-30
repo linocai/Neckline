@@ -78,3 +78,33 @@
 ## 四、复核建议
 
 🟡-1 触碰 verdict 解析(判定线共用件),🟡-2 若走 `to_public_dict` 增键则触碰客户端契约——两条修复落地时建议主会话/契约线各复核一遍,取并集。本报告不改一行代码。
+
+---
+
+## 五、修复复核(v1.5.1,`d80f57c` / `1783090` / `3f0a5a2`;2026-07-30 部署前追加)
+
+- 方式:纯审计零改动;逐 commit 读 diff + 边角现场重跑(原始复现用例 + 新边角各一批);生产只读一条(现役 config 指纹键探查)。
+- 测试证据:本地全量 `pytest tests/ -q` → **1969 passed + 2 skipped**(44.4s),与宣称逐字吻合(1942 基线 + 11/A + 5/C + 11/B 净增 27)。
+- **总结论:三件修复全部 ✅ 放行,🟡-1 / 🟡-2 / 🟢-4 可销项;未发现新缝,无阻塞部署项。**
+
+### 主件 `d80f57c`(verdict 防劫持)
+
+- **① 注入设计 ✅ 无新缝**。核对四点:(a) 依赖方向干净——`llm/judge.py` 只收 `Callable`,不 import `report/`;围栏解析仍唯一住 `split_narrative_and_reference_json`(全仓库 grep,`narrative_splitter` 注入点仅 `reference_plan.py:720` 一处,无第二份围栏正则);(b) splitter 异常兜底真成立——`_split_off_machine_block` 捕全异常退回原文解析(单测 `test_splitter_exception_does_not_lose_the_paid_llm_call`,退化上限 = v1.5.0 老行为,不作废已付费调用),返回形状错误(body 非 str / attachment 非 dict)同样兜底(本审计现场验证:`("x", ["not-dict"])` → attachment=None;注:body 是**错误的 str** 时会被信任,极端下丢标签退化成保守否决——splitter 是仓库内唯一真实实现且自带测试,可接受,记录备查);(c) `parsed_attachment` 不落库不进契约宣称**属实**——`store.save_llm_judgment` 列清单三个 commit 均未含它(逐 diff 核对),API 侧审判从 `llm_judgments` 表读回、全仓库 `parsed_attachment` 消费点仅 `reference_plan.py` 两处,`bundle.judged` 只进 render;(d) degraded 两条短路路径不经 splitter、attachment 恒 None(代码序核对)。
+- **② 双向复现修后真正确 ✅(现场重跑我 v1.5.0 报告里的原始用例)**:通过 + script 含「结论:否决」→ verdict=**通过**、attachment.script 逐字完整、叙述无围栏无标签;否决 + veto_reason 含「结论:通过」→ verdict=**否决**。端到端两测(ok 态三件套照给 / vetoed 照否)也在。🟢-4 顺手修同步验证:截断围栏/多围栏残留均剥净,degraded 占位文案逐字节透传(专测锁死)。**一个刻意的行为变化记录备查**:标签**之前**合法出现的 ```json 围栏(模型引用示例)现在也会从叙述中剥除(旧行为=残留)——方向符合 §2.7,非缺陷。
+- **③ 反证测 ✅,但「同时锁死老路径逐字节不变」要拆开说**:`test_hijack_repro_is_real_when_splitter_not_injected` 锁的是「不注入时确实翻转」= 证明修的是真缺陷 + 不注入分支在**该输入上**保持 v1.5.0 行为;「逐字节不变」的完整凭据是三件的并集——`_parse_verdict` diff **纯 docstring**(matches[-1] 逻辑零改动,逐行核对)+ `splitter=None` 时 `_split_off_machine_block` 恒等返回 + 既有 verdict/judge 测试零改动全绿。并集成立,宣称成立。
+- **④ prompt 禁令措辞 ✅ 不致诱导回避标签**:禁令显式定界「JSON 里的 script / 两个 why / veto_reason 这几处自由文本中」,且同句重申「那是上面第一部分**专用**的机器可读标签」= 反向强化标签该在的位置,还给了替代说法(「放弃入场」等)。即便模型过度泛化漏写标签,退化方向 = 既有保守否决 + narrative 带系统提示(本报告 🟢-3),可见且不放行。且 splitter 才是真修,prompt 只是皮带加背带——禁令失效也不再能翻转 verdict。
+
+### 副件 `1783090`(同日重跑清理)
+
+- **DELETE 防呆 ✅**:作用域被参数钉死为(本跑 `trade_date`,本跑候选列表的被跳过尾段 codes),参数化 `IN` 占位、去重 + 滤空、空名单直接返 0 不建连,无日期区间/无通配删除的可能;首跑删 0 行幂等(专测);只删点名码不伤邻码、跨日不伤(store 层专测断言 600001 照留 + 次日行不动)。一个语义边角记录备查(非缺陷):**历史回放 + `save=True` + 预算耗尽**会删掉该历史日被跳过码的既有行——与「本跑没审」口径自洽,且回放 save=True 本就会 REPLACE 该日行,不是新暴露。
+- **`save=False` 不删 ✅**:DELETE 块整体在 `if save:` 内(diff 核对),`test_save_false_never_deletes_anything` 直接锁。
+- **两表非跨表事务的取舍 ✅ 认**:顺序 = 先删 `llm_judgments`(展示现连的表)后删 `reference_plans`(纯审计表);中间崩的残留窗口只污染审计侧、不污染卡面(`referencePlan` 走 `candidates_json` 快照,不读表),且下次重跑幂等补删。取舍与 docstring 写明的动机(两表口径一致防成绩单错账)相称,不值得为此引入跨表事务复杂度。
+- **与 🟢-7 的叠加 ✅ 无实质恶化**:新增两个未包 try 的写调用,但每跑至多执行一次、各为单条批量语句,同 SQLite/WAL 暴露类,面未变质。🟢-7 原判维持不升级。
+
+### `3f0a5a2`(章程标签动态化)
+
+- **指纹单一源姿势 ✅**:`_resolve_charter_pcts` 一次 `brain.active_config` 读出 `(stop_pct, take_profit_retrace)` 成对返回(两数必同一版 config,无撕裂读);`_resolve_stop_pct` 改为委托、不留第二条读取路径;`_as_ratio` 排除 bool。**键名与哨兵同源核实**:`sentinel/engine.py:306` 读的正是 `cfg.get("take_profit_retrace")`,生产现役 v1.3.3 实查返回 `0.05|0.08`(只读)——今晚新行指纹会真填上。落库列走 `_COLUMN_MIGRATIONS` 幂等补列(**这一步是对的且必要**——生产 v1.5.0 已建表,写进 CREATE TABLE 会让生产缺列、16:35 INSERT 当场崩;本复核第一优先查的就是这条,已确认按 `search_engine` 惯例登记,老行 NULL 不回填);`_COLUMNS`/INSERT/SELECT 三处同步、round-trip 有测。
+- **缺指纹退化不带数字 ✅**:`_charter_stop_label`/`_charter_retrace_label` 缺位时退「章程止损」/「纪律仍以章程的回落止盈兜底」,专测断言 `"5%" not in md and "8%" not in md`(区间与止损价数字仍在);动态测断言 −8%/12% 出现且 −5%/8% 不出现;`_ratio_pct_txt` 5.5% 不入成 6%(专测)。「无现役章程 → `stop_price=None`」既有语义顺带被守住(专测)。
+- 契约新键 `buy.stopPct` / `exit.takeProfitRetrace`(可选、老客户端忽略)与 Swift 侧属契约线复核域,本报告不重复背书;服务端侧未发现越界。
+
+**销项状态**:本报告 🟡-1 → ✅ 已修(d80f57c);🟡-2 → ✅ 已修(3f0a5a2);🟢-4 → ✅ 顺手修(d80f57c)。🟢-3/5/6/7/8 维持观察不阻塞。

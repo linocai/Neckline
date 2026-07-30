@@ -81,3 +81,37 @@
 
 - 参考件 LLM 解析、夹逼状态机语义、预算闸计时正确性、A2/B3 判据同源:判定线审计员范围,本报告只核契约形状与两端一致性。
 - iOS 真机未换包(§四 已如实登记),不构成本线缺陷。
+
+---
+
+## 四、复核(2026-07-30,v1.5.1 待部署态 `c26c2b6`;纯审计零改动)
+
+- 复核证据:Python 全量 **1969 passed + 2 skipped**(68.3s,与宣称基线逐字一致);Swift iOS Simulator **178 tests / 165 passed / 13 skipped / 0 failures,TEST SUCCEEDED**(xcresult 计数为证)。本节生产零访问(部署前无需再打)。
+
+### ✅ `1783090` —— 🟡-1 写侧收口,判据满足
+
+- **矛盾不再出现且不在读侧遮蔽**:✅。修在 `_judge_candidates_with_budget` 预算耗尽分支(`save=True` 时对被跳过那批码批量 `DELETE` 当日 `llm_judgments` + `reference_plans` 行,[`pipeline.py:213-222`]);`_shape_candidate`/`load_llm_judgments` 读侧一字未动(该 commit 未触碰 `app.py`),与本报告 🟡-1 给的修复方向逐字吻合。新函数走各自表的读写单一通道(`store.delete_llm_judgments` / `reference_plan_store.delete_reference_plans`),单条参数化 `DELETE ... IN (...)` = 单事务,名单去重滤空(`["", None]` 不误伤,有专测)。
+- **单测代表性**:✅。pipeline 层三条(第一跑审完→补跑耗尽→跳过票两表零残留、本跑真审过的照留;首跑幂等 no-op;`save=False` 既不写也不删)+ store 层两条(只删指名码、别日不受伤)——正反两向、幂等、只读路径全覆盖,且第一条断言了「skipped 与 judged 都非空」防白测。
+- 🟢 两条登记不设卡:① 删行与 `reports` 快照落库**不是原子**——补跑中途崩溃(或生成进行中的秒级窗口)会短暂出现反向组合「行已删、快照还是旧的」(老快照该票显示"审判未执行"),瞬态且与既有"重跑本就非原子"同类,16:35 单进程场景无并发读风险放大;② `1783090` 提交讯息称"新增 `delete_reference_plans`",该函数实际随 `3f0a5a2` 入库(提交切分小瑕疵,零功能影响)。
+
+### ✅ `3f0a5a2` —— 契约增量三方对拍成立
+
+- **`buy.stopPct` / `exit.takeProfitRetrace`**:schemas 声明(`Optional[float] = None`,[`schemas.py:151-175`])→ `to_public_dict` 增键(只嵌在 clamp=ok 的 `buy`/`exit` 对象里,与 `stopPrice` 同待遇,[`reference_plan.py:526-550`])→ `_shape_reference_plan` **零改动即正确透传**(`ReferencePlanBuyOut(**d["buy"])` + pydantic 字段声明;老 v1.5.0 快照缺键 → 默认 `None`,专测断言是 `None` 不是 0——"0% 止损"这种危险冒充被明确防住)→ Swift `Double? = nil`(合成 decodeIfPresent)。API 往返测(`test_report_candidate_reference_plan_carries_charter_fingerprints` + 老快照 None 断言)与 Swift 解码测各就位。
+- **两端动态标签数字一致性**:✅。`render._ratio_pct_txt`(`f"{v*100:.2f}".rstrip("0").rstrip(".")`)与 `NKFmt.ratioPct`(`%.2f` + 循环去尾零)逐字符同频:0.05→"5%"、0.055→"5.5%"(不四舍五入)、0.1→"10%"("10.00" 的小数点挡住误剥,两端同理,已人工推演 + 双端单测锁值);`null` 退化文案两端**逐字相同**(「章程止损」/「纪律仍以章程的回落止盈兜底」)。
+- **指纹来源真实**:✅(复核时专查过——字段名拍错会让功能永远静默退化)。`_resolve_charter_pcts` 读 `active_config()["take_profit_retrace"]`,键名与 `strategy/momentum.py:71`(`MomentumConfig.take_profit_retrace`)、`brain.py:487` 同源;本地库实测可跑通(K1 现役返 0.05;生产现役 v1.3.3 将返 0.08)。一次 `active_config` 取两值,不多开连接。
+- **迁移登记**:✅。`_COLUMN_MIGRATIONS` 增 `("reference_plans", "take_profit_retrace", "REAL")`([`db.py:690-695`]),CREATE TABLE **刻意不含该列**(新老库同走补列,同 `llm_judgments.search_engine` 惯例,注释已写明);部署清单三处齐:§四「🗄 迁移增量」独立一行 + 部署作业单第④步「`take_profit_retrace` 列在」+ §五 **⑧-D**(v1.5.1 归 ⑧ 块;⑥ 是 v1.5.0 的部署块,其 ⑥-B 清单如实停在 v1.5.0 两项,不算漏)。
+- **版号三方 v1.5.1**:✅(`app.py:189` / `project.yml` / pbxproj `:383`/`:568`,NecklineTests 两处 1.0.0 照旧被守门判据排除;守门测在 1969 里绿)。
+
+### ✅ 便宜项三件
+
+- **🔵-2**:展示态判定抽成纯函数 `ReferencePlanSection.displayState()`(SwiftUI body 测不了,抽出来正是为可测性),`.unknown(原始status)` 走诚实兜底文案(带原始 status 字符串 + 「不代表确认无参考,请更新 App」);单测覆盖 nil/三态/`future_state`/空串六分支。与 markdown 侧"不静默"目标对齐(markdown 未知态落 ok 分支仍渲染诚实缺省,两端策略不同但都不消失——可接受的实现差异)。
+- **🔵-4**:§四 里不存在的 `judgeSkipReason` 已随快照替换清掉(全文现仅剩 §四 描述"已清掉"动作的那一行,代码全仓本就零命中)。
+- **🔵-5**:`WatchlistCheckOut` docstring 已更正且措辞准确(「历史成因…v1.5.0 起该对齐只剩历史意义…改动它不再牵动候选卡」)。
+
+### ✅ 老客户端影响:无破坏
+
+- **v1.5.0 macOS App(现装)**:`ReferencePlanBuy/Exit` 合成 Decodable 对 JSON 里的未知键(keyed container 语义)天然忽略——新 payload 的 `stopPct`/`takeProfitRetrace` 两键被静默丢弃,解码零影响;其标签仍显旧硬编「−5%/8%」= 恰是本次换包 1.5.1 的动机,非破坏。设置屏版本不一致提示(v1.5.0 已有)会如实提示「服务端已是 v1.5.1,请换包」。
+- **v1.4.1 iPhone(未换包)**:整个 `referencePlan` 本就不在其解码集,四个老键仍恒非空过渡文案,零影响。
+- 顺带核过 `d80f57c`(判定线修复)契约面零触碰:只动 `llm/judge.py` + `report/reference_plan.py`,`parsed_attachment` 在 `neckline/api/` 与 `client/` 全仓零命中 = 「不落库不进契约」宣称属实。
+
+**复核结论:三张卡的修复全部按正解落地,契约增量三方对拍干净,15:05 部署无契约侧阻塞项。**部署后照作业单以 `/health = v1.5.1` + `take_profit_retrace` 列在 + 老快照读取不崩三件为到位判据即可;今晚 16:35 首战四项待验清单(§四)不变。
