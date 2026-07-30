@@ -165,6 +165,12 @@
   单测锁死)+ 问询台补中文名(`resolve_stock_names` 是查名唯一实现)显式传检索词
   + 0 命中 WARNING 埋点。⚠ **已证伪勿再查**:payload 里 bool/int 发成字符串不是
   bug(GLM 正确解析,刻意保留原样)。
+- **机器可读标签后面一旦还挂内容,`_parse_verdict` 的 last-match 锚点就被架空**(v1.5.1
+  两向复现):「结论:通过|否决」取最后一个匹配,前提是标签**是输出的最后一段**;v1.5 把
+  三件套 JSON(script/why/veto_reason 全是自由中文)排在标签之后,JSON 里出现该词组就静默
+  翻转结论。规则:**凡标签后面还挂内容的调用方,必须先剥掉那段内容再解析 verdict**
+  (`judge_candidate(narrative_splitter=…)` 依赖注入,`llm/` 不反向 import `report/`);
+  prompt 的禁令只是背带,不能当安全带。
 - **「本地实测廉价」不是生产结论,全历史 parquet 扫描尤其**(2026-07-29 v1.4 ⑨ 部署翻车,
   §七 P0-23):开发机 Mac 上 `<1s` 的 `compute_industry_strength`(扫 `daily` 全history 784 万行),
   在生产(**2 vCPU / 1.6G RAM**)**700M cap OOM-kill、1400M cap 600s 跑不完**。规则:①**新增全表
@@ -221,6 +227,10 @@
 - **"队列表 + 该被哪份消费"一律拆两字段**:审计时间戳 + 独立消费标记
   (`consumed_report_date IS NULL` 判据),不用一个日期字段的"相等"表达"该被
   消费"(`inquiry_pool` 永久掉缝真洞)。
+- **"快照上的标"与"响应时现连的表"必须在写侧对齐**(v1.5.1 契约线 🟡-1):`/report` 的
+  `llmJudgment` 从 `llm_judgments` 现连、`judgeSkipped` 却来自候选快照 —— 同日重跑时两者
+  会讲相反的话。规则:标"本次没做"的同时**删掉该批码当日的既有行**(写侧收口、单事务
+  幂等),**不许在读侧遮蔽**(藏真数据不是诚实)。
 - **喂"类候选对象"给 LLM 审判**一律复用 `llm/judge.py::judge_candidate`
   (duck-typed,只要求几个属性;可选 `system_prompt`),不另写调用/解析/降级。
 - **纪律红绿灯要"拆解展示触发了哪条"时**,不许手写 Python 重抄
