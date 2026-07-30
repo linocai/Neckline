@@ -21,11 +21,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from neckline.llm.base import ChatMessage, LLMProvider, SearchHit
+
+logger = logging.getLogger(__name__)
 
 VERDICT_PASS = "通过"
 VERDICT_VETO = "否决"
@@ -104,6 +107,12 @@ class JudgeResult:
     # search_engine` 列,供按日捞命中分布基线——`未激活`/调用失败两种降级路径
     # 恒 `None`,不臆造"当时用的是哪个引擎"。
     search_engine: Optional[str] = None
+    # v1.5.1(判定线 review 🟡-1 配套):`judge_candidate(narrative_splitter=...)` 在
+    # 解析 verdict **之前**从原始输出里剥出来的机器可读附件(现役唯一使用者 =
+    # `report/reference_plan.py` 的三件套 JSON)。不传 splitter 的老路径恒 `None`。
+    # **不落库、不进任何客户端契约**(`store.save_llm_judgment` 不写这一项)——它
+    # 只是"剥都剥了,顺手交给调用方,免得再解析一遍已经被剥掉的那段文本"。
+    parsed_attachment: Optional[Dict[str, Any]] = None
 
 
 def build_context_block(candidate: Any, top_list_row: Optional[Dict[str, Any]] = None) -> str:
@@ -139,12 +148,47 @@ _VERDICT_RE = re.compile(r"结论[:：]\s*(通过|否决)")
 
 
 def _parse_verdict(content: str) -> tuple:
+    """从模型输出里取结论标签,返回 `(verdict, 去掉标签后的叙述)`。**取最后一个匹配**
+    ——两套 prompt 都要求标签写在最后一行,取 last-match 才能容忍正文里不小心提前
+    出现"结论:"字样(prompt 也明令禁止提前出现)。
+
+    ⚠ **调用前置条件(v1.5.1 判定线 review 🟡-1,踩过)**:last-match 的锚是"标签之后
+    没有别的自由文本"。v1.5 起参考件路径在标签**之后**还挂一段三件套 JSON,其中
+    `script`/`why`/`veto_reason` 是自由中文——里面出现"结论:否决"就会把真结论静默
+    翻转。**凡是标签后面还挂内容的调用方,必须先把那段内容剥掉再进本函数**(见
+    `judge_candidate(narrative_splitter=...)`)。本函数自身保持一字不改:它是候选/
+    自选两条老路径的共用件,老路径标签仍是输出的最后一段,行为逐字节不变。"""
     matches = list(_VERDICT_RE.finditer(content))
     if not matches:
         return VERDICT_VETO, content.strip() + "\n\n[系统提示:模型未按格式给出结论标签,保守按「否决」处理。]"
     last = matches[-1]
     narrative = (content[: last.start()] + content[last.end():]).strip()
     return last.group(1), (narrative or content.strip())
+
+
+def _split_off_machine_block(
+    content: str,
+    splitter: Optional[Callable[[str], Tuple[str, Optional[Dict[str, Any]]]]],
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """在解析 verdict **之前**把"标签之后挂着的机器可读附件"剥掉,返回
+    `(用于解析 verdict 的叙述, 附件)`。`splitter is None`(候选/自选两条老路径)→
+    原样返回,零行为改变。
+
+    splitter 抛异常时**退回原文继续解析**而不是让整次审判作废——LLM 调用已经付过
+    钱了,剥附件失败最多退化成 v1.5.0 的老行为(可能被劫持),不该连审判结论一起丢
+    (同 `judge_and_build_reference_plan`「一个失败不牵连另一个」的保险丝纪律)。
+    返回值形状不对(splitter 实现出错)也按同样方式兜底。"""
+    if splitter is None:
+        return content, None
+    try:
+        body, attachment = splitter(content)
+    except Exception:  # noqa: BLE001 —— 见 docstring:剥附件失败不得连累审判结论
+        logger.warning("审判输出的机器可读附件剥离失败,退回原文解析结论标签", exc_info=True)
+        return content, None
+    return (
+        body if isinstance(body, str) else content,
+        attachment if isinstance(attachment, dict) else None,
+    )
 
 
 def judge_candidate(
@@ -155,6 +199,7 @@ def judge_candidate(
     transport: Optional[Any] = None,
     system_prompt: str = JUDGE_SYSTEM_PROMPT,
     context_block: Optional[str] = None,
+    narrative_splitter: Optional[Callable[[str], Tuple[str, Optional[Dict[str, Any]]]]] = None,
 ) -> JudgeResult:
     """审一只候选(或复用于自选体检,见 `system_prompt`;或复用于参考件三件套生成,
     见 `context_block`)。`provider=None`(工厂在无 key/无 provider 时返回 None)→
@@ -174,6 +219,16 @@ def judge_candidate(
     `build_context_block`。供 `report.reference_plan.py` 喂入信息卡衍生的富上下文
     (60日K线+快照+红黄牌+阈值块),同时复用本函数的调用/解析/降级链(项目 CLAUDE.md
     铁律「喂类候选对象给 LLM 审判一律复用 judge_candidate,不另写调用/解析/降级链」)。
+
+    `narrative_splitter`(v1.5.1 新增,默认 `None`,**默认行为零改动**):当 prompt 要求
+    模型在结论标签**之后**再挂一段机器可读内容(现役唯一场景 = 参考件三件套 JSON)时,
+    由调用方注入"怎么把那段内容剥下来"的函数,签名 `(原始输出) -> (叙述, 附件 dict|None)`;
+    本函数**先剥、后解析 verdict**,剥出的附件放进 `JudgeResult.parsed_attachment`,
+    `narrative` 则是"剥净附件 + 去掉结论标签"的干净叙述。**这是判定线 review 🟡-1 的
+    修复点**:v1.5.0 把 `_parse_verdict` 直接喂给带 JSON 尾巴的原始输出,JSON 自由文本里
+    出现"结论:否决"会静默翻转真结论(双向都会)。依赖注入而非 import:`llm/` 不许反向
+    依赖 `report/`(`split_narrative_and_reference_json` 住在 `report/reference_plan.py`,
+    是围栏解析的唯一实现,不在本模块抄第二份围栏正则)。
     """
     if provider is None:
         return JudgeResult(
@@ -198,11 +253,12 @@ def judge_candidate(
             degraded=True, degrade_reason=result.reason,
         )
 
-    verdict, narrative = _parse_verdict(result.content)
+    body, attachment = _split_off_machine_block(result.content, narrative_splitter)
+    verdict, narrative = _parse_verdict(body)
     return JudgeResult(
         ts_code=candidate.ts_code, provider=result.provider, model=result.model,
         verdict=verdict, narrative=narrative, degraded=False, search_hits=result.search_hits,
-        search_engine=result.search_engine,
+        search_engine=result.search_engine, parsed_attachment=attachment,
     )
 
 

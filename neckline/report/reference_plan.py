@@ -42,7 +42,6 @@ limit_prices` 唯一算涨跌停入口。
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
 import math
@@ -153,6 +152,10 @@ REFERENCE_PLAN_SYSTEM_PROMPT = """你是「颈线」系统的盘后候选参谋�
 参考价"区间内**——超出这个区间的数字会被系统丢弃、不会展示给用户,请务必落在区间内。离场参考
 区间不受涨跌停约束(压力位可能在未来几个交易日才触及)。若某一件确实无法给出合理数字,宁可对
 应字段留 null,也不要编造。
+
+**JSON 里的 script / 两个 why / veto_reason 这几处自由文本中,禁止出现"结论:通过"或"结论:
+否决"这个词组**——那是上面第一部分专用的机器可读标签,写进 JSON 会与之冲突。需要表达同类
+意思时改写成"放弃入场""不参与""继续观望"等说法。
 """
 
 
@@ -309,6 +312,22 @@ def build_reference_context_block(
 # ======================================================================
 
 _JSON_FENCE_RE = re.compile(r"```json\s*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
+# 残留围栏清理(v1.5.1 判定线 review 🟢-4 的两个化妆缺口):① 围栏**未闭合**(输出被
+# 截断)时 `_JSON_FENCE_RE` 匹配不到、裸 JSON 也解析不动,老实现把「```json {"buy": …」
+# 半截原样摊给用户;② 多围栏时只删了最后一个,前面的残留在叙述里。两者都不影响解析
+# 结果(仍取最后一个**闭合**围栏),只违 §2.7「不把 JSON 摊给用户」的观感。
+_JSON_FENCE_UNCLOSED_RE = re.compile(r"```json\b.*\Z", re.DOTALL | re.IGNORECASE)
+_JSON_FENCE_MARK_RE = re.compile(r"```json", re.IGNORECASE)
+
+
+def _strip_residual_json_fences(text: str) -> str:
+    """把叙述里**所有** ```json 围栏(闭合的全删 + 末尾未闭合的那一截删到结尾)剥净。
+    一个围栏标记都没有时**原样返回**(不做 strip)——degraded 占位文案/无围栏输出必须
+    逐字节透传,这条由 `test_no_json_anywhere_returns_none_and_original_text_untouched`
+    锁死。"""
+    if not _JSON_FENCE_MARK_RE.search(text):
+        return text
+    return _JSON_FENCE_UNCLOSED_RE.sub("", _JSON_FENCE_RE.sub("", text)).strip()
 
 
 def _extract_last_json_fence(text: str) -> Optional[Tuple[str, int, int]]:
@@ -339,17 +358,24 @@ def _extract_bare_trailing_json(text: str) -> Optional[Tuple[Dict[str, Any], int
 
 
 def split_narrative_and_reference_json(narrative: str) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """把 `judge_candidate` 返回的 `narrative`(格式定死:自由叙述 →〔"结论:"标签已被
-    `_parse_verdict` 剥离〕→ 空行 → ```json 三件套围栏块)拆成 `(干净叙述, 解析出的
-    dict 或 None)`。取**最后一个**围栏块;无围栏时容忍"末尾裸 JSON 对象"。解析失败
-    (围栏在、内容非法 JSON;或两种形式都没找到)→ `(去除围栏后的叙述或原文, None)`
-    ——**绝不能让三件套解析失败拖累叙述本身**(项目 CLAUDE.md「解析失败→参考件为
-    null+理由字段,绝不让解析失败拖垮审判结论」)。degraded 占位文案(LLM未激活/调用
-    失败)天然无围栏也无裸 JSON,原样返回、零影响。"""
+    """把模型输出(格式定死:自由叙述 → "结论:"标签 → 空行 → ```json 三件套围栏块)
+    拆成 `(干净叙述, 解析出的 dict 或 None)`。取**最后一个**围栏块;无围栏时容忍
+    "末尾裸 JSON 对象"。解析失败(围栏在、内容非法 JSON;或两种形式都没找到)→
+    `(去除围栏后的叙述或原文, None)`——**绝不能让三件套解析失败拖累叙述本身**
+    (项目 CLAUDE.md「解析失败→参考件为 null+理由字段,绝不让解析失败拖垮审判结论」)。
+    degraded 占位文案(LLM未激活/调用失败)天然无围栏也无裸 JSON,原样返回、零影响。
+
+    **v1.5.1 起本函数在 `_parse_verdict` 之前跑**(作为
+    `judge_candidate(narrative_splitter=...)` 注入进去,判定线 review 🟡-1):入参因此是
+    **含"结论:"标签的原始输出**,返回的"干净叙述"里标签仍在、随后由 `_parse_verdict`
+    去掉。顺序不可再颠倒——先解析 verdict 会让 JSON 里的自由中文("若跌破证伪线则
+    结论:否决"这类)劫持 last-match 锚点、静默翻转结论。本函数只认围栏/裸 JSON 边界,
+    多一个标签不影响任何分支。"""
     fence = _extract_last_json_fence(narrative)
     if fence is not None:
-        raw, start, end = fence
-        cleaned = (narrative[:start] + narrative[end:]).strip()
+        raw, _start, _end = fence
+        # 🟢-4:清理时把**所有**围栏剥净(不只解析用的那一个),含未闭合的半截。
+        cleaned = _strip_residual_json_fences(narrative)
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, TypeError, ValueError):
@@ -359,9 +385,9 @@ def split_narrative_and_reference_json(narrative: str) -> Tuple[str, Optional[Di
     bare = _extract_bare_trailing_json(narrative)
     if bare is not None:
         obj, idx = bare
-        return narrative[:idx].rstrip(), obj
+        return _strip_residual_json_fences(narrative[:idx].rstrip()), obj
 
-    return narrative, None
+    return _strip_residual_json_fences(narrative), None
 
 
 # ======================================================================
@@ -622,22 +648,25 @@ def judge_and_build_reference_plan(
     """一次 LLM 调用产出「审判结论 + 参考三件套」(①-B 定死,不许拆成两次调用)的
     完整编排:① 装配参考件上下文(信息卡+哨兵阈值块,失败退回 `judge_candidate`
     默认上下文,**不阻断审判本身**);② 调 `judge_candidate`(唯一一次 LLM 调用,
-    `system_prompt` 换成 `REFERENCE_PLAN_SYSTEM_PROMPT`);③ 从叙述里剥出三件套
-    json、把叙述清干净(用户看到的评语不该带原始 JSON,§2.7);④ 夹逼 + 状态判定
-    组装 `ReferencePlan`。
+    `system_prompt` 换成 `REFERENCE_PLAN_SYSTEM_PROMPT`,并把
+    `split_narrative_and_reference_json` 作为 `narrative_splitter` 注入——**剥 json 发生在
+    解析 verdict 之前**,v1.5.1 判定线 review 🟡-1 的修复点,顺序不可颠倒);③ 三件套 json
+    与干净叙述由上一步一并带回(`JudgeResult.parsed_attachment` / `.narrative`,用户看到的
+    评语不带原始 JSON,§2.7);④ 夹逼 + 状态判定组装 `ReferencePlan`。
 
     **两个独立产出物,一个失败不牵连另一个**(核心管线对可选情报输入必须包保险丝,
     项目 CLAUDE.md 铁律):
         · 上下文装配异常 → 退回 `context_block=None`(`judge_candidate` 内部改用
           `build_context_block` 兜底),LLM 调用照常发起——**只发起一次**,不会因
           为上下文装配失败又退回去发起第二次朴素审判调用(避免重复耗费预算/时间)。
-        · json 解析/夹逼装配异常(不应发生,但按"没有保险丝的必崩"铁律兜底)→
-          `ReferencePlan` 部分为 `None`,`JudgeResult` 仍是刚才那次调用的结果
-          (若清理叙述那一步也失败,回退用**原始未清理**的 `JudgeResult`,不二次
-          调用 LLM)。
+        · json 剥离异常 → 由 `judge_candidate` 内部兜住(退回原文解析结论标签,见
+          `judge._split_off_machine_block`),审判结论照出、本次无三件套。
+        · 夹逼/状态装配异常(不应发生,但按"没有保险丝的必崩"铁律兜底)→
+          `ReferencePlan` 部分为 `None`,`JudgeResult` 仍是刚才那次调用的结果,
+          不二次调用 LLM。
 
     返回 `(JudgeResult, ReferencePlan | None)`——`JudgeResult.narrative` 已清掉三件套
-    json 围栏(除非清理步骤本身异常,那种情况下原样返回,极端边缘场景可接受)。
+    json 围栏(除非剥离步骤本身异常,那种情况下原样返回,极端边缘场景可接受)。
     `ReferencePlan is None` 表示本次没有可用的参考件(pipeline.py 层据此保持
     `Candidate.reference_plan` 默认 `None`)。**不落库**——落库由调用方在拿到非
     `None` 的 `ReferencePlan` 后自行决定要不要写(同 `save=True/False` 惯例)。
@@ -656,24 +685,22 @@ def judge_and_build_reference_plan(
             )
             context_text = None
 
-    raw_result = judge_candidate(
+    result = judge_candidate(
         candidate, provider=provider, top_list_row=top_list_row, transport=transport,
         system_prompt=REFERENCE_PLAN_SYSTEM_PROMPT, context_block=context_text,
+        narrative_splitter=split_narrative_and_reference_json,
     )
 
-    result = raw_result
     plan: Optional[ReferencePlan] = None
     try:
-        clean_narrative, parsed_json = split_narrative_and_reference_json(raw_result.narrative)
-        result = dataclasses.replace(raw_result, narrative=clean_narrative)
         plan = build_reference_plan(
-            candidate, trade_date, judge_result=result, parsed_json=parsed_json, db_path=db_path,
+            candidate, trade_date, judge_result=result,
+            parsed_json=result.parsed_attachment, db_path=db_path,
         )
-    except Exception:  # noqa: BLE001 —— 参考件解析/装配异常不得影响已产出的审判结论
+    except Exception:  # noqa: BLE001 —— 参考件装配异常不得影响已产出的审判结论
         logger.warning(
-            "参考件三件套解析/装配异常(%s),审判结论照留、本次无参考件", candidate.ts_code, exc_info=True
+            "参考件三件套装配异常(%s),审判结论照留、本次无参考件", candidate.ts_code, exc_info=True
         )
-        result = raw_result
         plan = None
 
     return result, plan

@@ -160,6 +160,174 @@ class TestSplitNarrativeAndReferenceJson:
         _, parsed = rp.split_narrative_and_reference_json(narrative)
         assert parsed == payload
 
+    def test_unclosed_fence_is_stripped_from_narrative_not_shown_raw(self):
+        """v1.5.1 判定线 review 🟢-4①:输出被截断导致围栏**未闭合**时,老实现把
+        「```json {"buy": …」半截原样摊给用户(§2.7 不许)。现在剥净;解析仍如实
+        失败(`None`),不猜半截 JSON 的意图。"""
+        narrative = '正文分析。\n\n结论:通过\n\n```json\n{"buy": {"low": 12.0, "hi'
+        cleaned, parsed = rp.split_narrative_and_reference_json(narrative)
+        assert parsed is None
+        assert "```" not in cleaned and "buy" not in cleaned
+        assert cleaned == "正文分析。\n\n结论:通过"
+
+    def test_all_fences_stripped_from_narrative_when_multiple_present(self):
+        """🟢-4②:多围栏时老实现只删最后一个,前面的残留在叙述里。解析口径不变
+        (仍取最后一个闭合围栏),但叙述必须一个围栏都不剩。"""
+        narrative = (
+            "先给一版。\n```json\n" + json.dumps({"veto_reason": "旧"}) + "\n```\n"
+            "补充说明后我改变判断。\n"
+            "```json\n" + json.dumps({"veto_reason": "新"}) + "\n```"
+        )
+        cleaned, parsed = rp.split_narrative_and_reference_json(narrative)
+        assert parsed == {"veto_reason": "新"}
+        assert "```" not in cleaned and "veto_reason" not in cleaned
+        assert "先给一版。" in cleaned and "补充说明后我改变判断。" in cleaned
+
+    def test_trailing_unclosed_fence_after_a_closed_one_also_stripped(self):
+        """闭合围栏 + 尾部又起一个未闭合围栏(模型重复输出被截断)——解析取闭合的
+        那个,两个都不许留在叙述里。"""
+        narrative = (
+            "正文。\n```json\n" + json.dumps({"script": "s"}) + "\n```\n"
+            "再补一份:\n```json\n{\"script\": \"被截断"
+        )
+        cleaned, parsed = rp.split_narrative_and_reference_json(narrative)
+        assert parsed == {"script": "s"}
+        assert "```" not in cleaned
+        assert cleaned.startswith("正文。")
+
+
+# ————————————————————————————————————————————————————————————————
+# ②′ verdict 标签不被三件套 JSON 自由文本劫持(v1.5.1,判定线 review 🟡-1)
+# ————————————————————————————————————————————————————————————————
+
+_HIJACK_PASS_CONTENT = (
+    "催化站得住,基本面无硬伤,量价结构健康。\n\n结论:通过\n\n```json\n"
+    + json.dumps({
+        "buy": {"low": 11.0, "high": 11.5, "why": "贴近支撑"},
+        "exit": {"low": 15.0, "high": 15.8, "why": "前高压力位"},
+        # ↓ 劫持源:自由中文剧本里出现了机器标签词组(prompt 已明令禁止,但模型未必守)
+        "script": "若集合竞价跌破证伪线,按结论:否决 处理,直接放弃不参与。",
+        "veto_reason": None,
+    }, ensure_ascii=False)
+    + "\n```"
+)
+
+_HIJACK_VETO_CONTENT = (
+    "近期有减持公告,催化站不住。\n\n结论:否决\n\n```json\n"
+    + json.dumps({
+        "buy": None, "exit": None, "script": None,
+        "veto_reason": "若后续公告澄清,再看是否给出结论:通过 的判断;当下不参与。",
+    }, ensure_ascii=False)
+    + "\n```"
+)
+
+
+class TestVerdictNotHijackedByReferenceJson:
+    """v1.5.1 判定线 review 🟡-1 的两向复现 + 回归线。v1.5.0 里 `_parse_verdict` 取
+    **最后一个**「结论:」匹配,而三件套 JSON 排在标签**之后**且含自由中文——JSON
+    里出现该词组就静默翻转结论(两个方向都翻)。修法:先用
+    `split_narrative_and_reference_json` 剥掉围栏,再对剥后的叙述解析 verdict。"""
+
+    def test_pass_is_not_flipped_to_veto_by_script_text(self):
+        """复现一(修前:返回 否决):真标签「通过」+ script 里含「结论:否决」。"""
+        stub = _StubProvider(LLMResult(ok=True, content=_HIJACK_PASS_CONTENT, provider="glm", model="glm-5.2"))
+        r = judge_candidate(
+            _candidate(), provider=stub,
+            narrative_splitter=rp.split_narrative_and_reference_json,
+        )
+        assert r.verdict == VERDICT_PASS
+        assert r.parsed_attachment is not None
+        assert r.parsed_attachment["script"].startswith("若集合竞价跌破证伪线")
+        assert "```" not in r.narrative and "结论:" not in r.narrative
+        assert "催化站得住" in r.narrative
+
+    def test_veto_is_not_flipped_to_pass_by_veto_reason_text(self):
+        """复现二(修前:返回 通过 + ✅ 徽章):真标签「否决」+ veto_reason 含「结论:通过」。"""
+        stub = _StubProvider(LLMResult(ok=True, content=_HIJACK_VETO_CONTENT, provider="glm", model="glm-5.2"))
+        r = judge_candidate(
+            _candidate(), provider=stub,
+            narrative_splitter=rp.split_narrative_and_reference_json,
+        )
+        assert r.verdict == VERDICT_VETO
+        assert r.parsed_attachment["veto_reason"].startswith("若后续公告澄清")
+        assert "结论:" not in r.narrative
+
+    def test_hijack_repro_is_real_when_splitter_not_injected(self):
+        """**反证**:同一份输出、不注入 splitter(= v1.5.0 的调用姿势)时确实被翻转
+        ——证明上面两测锁的是真缺陷,不是无病呻吟;同时锁死「老路径行为一字未动」
+        (候选/自选两条老路径就是这个不传 splitter 的分支)。"""
+        stub = _StubProvider(LLMResult(ok=True, content=_HIJACK_PASS_CONTENT, provider="glm", model="glm-5.2"))
+        assert judge_candidate(_candidate(), provider=stub).verdict == VERDICT_VETO
+
+    def test_old_path_without_splitter_keeps_attachment_none(self):
+        stub = _StubProvider(LLMResult(ok=True, content="正文。\n结论:通过", provider="glm", model="glm-5.2"))
+        r = judge_candidate(_candidate(), provider=stub)
+        assert r.verdict == VERDICT_PASS and r.parsed_attachment is None
+        assert r.narrative == "正文。"
+
+    def test_splitter_exception_does_not_lose_the_paid_llm_call(self):
+        """splitter 抛异常 → 退回原文解析(最多退化成 v1.5.0 老行为),**不得**让已经
+        付过钱的这次审判整个作废。"""
+        stub = _StubProvider(LLMResult(ok=True, content="正文。\n结论:通过", provider="glm", model="glm-5.2"))
+        r = judge_candidate(
+            _candidate(), provider=stub,
+            narrative_splitter=lambda _t: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        assert r.verdict == VERDICT_PASS
+        assert r.degraded is False and r.parsed_attachment is None
+
+    def test_end_to_end_pass_keeps_three_pieces_not_vetoed(self, isolated_env):
+        """端到端(真 GLMProvider + MockTransport):劫持词组在 script 里时,参考件
+        仍是 ok 态、三件套照给,不会整体被 `vetoed` 分支丢弃。"""
+        dates = _seed_env(isolated_env)
+        up, down = compute_intraday_limit_prices(12.0, Board.MAIN, False, next_trading_day(dates[-2]))
+        payload = {
+            "buy": {"low": round(down + 0.2, 2), "high": round(down + 0.5, 2), "why": "贴近支撑"},
+            "exit": {"low": 15.0, "high": 15.8, "why": "前高压力位"},
+            "script": "若集合竞价跌破证伪线,按结论:否决 处理,直接放弃不参与。",
+            "veto_reason": None,
+        }
+        content = "催化站得住。\n\n结论:通过\n\n```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={
+                "id": "x", "model": "glm-5.2",
+                "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+            })
+
+        result, plan = rp.judge_and_build_reference_plan(
+            _candidate(close=12.0), dates[-2], provider=GLMProvider(api_key="sk-xxx"),
+            transport=httpx.MockTransport(handler), db_path=isolated_env.db_path,
+        )
+        assert result.verdict == VERDICT_PASS
+        assert plan is not None and plan.status == rp.STATUS_OK
+        assert plan.buy_clamp == rp.BUY_CLAMP_OK
+        assert plan.script_text.startswith("若集合竞价跌破证伪线")
+
+    def test_end_to_end_veto_stays_vetoed(self, isolated_env):
+        dates = _seed_env(isolated_env)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={
+                "id": "x", "model": "glm-5.2",
+                "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": _HIJACK_VETO_CONTENT}}],
+            })
+
+        result, plan = rp.judge_and_build_reference_plan(
+            _candidate(close=12.0), dates[-2], provider=GLMProvider(api_key="sk-xxx"),
+            transport=httpx.MockTransport(handler), db_path=isolated_env.db_path,
+        )
+        assert result.verdict == VERDICT_VETO
+        assert plan is not None and plan.status == rp.STATUS_VETOED
+        assert plan.veto_reason.startswith("若后续公告澄清")
+
+    def test_prompt_bans_the_verdict_phrase_inside_json(self):
+        """皮带加背带(修法②):prompt 明令 JSON 三处自由文本不得出现该词组。"""
+        prompt = rp.REFERENCE_PLAN_SYSTEM_PROMPT
+        assert "禁止出现" in prompt and "这个词组" in prompt
+        ban_at = prompt.index("禁止出现")
+        assert "veto_reason" in prompt[:ban_at][-120:]      # 禁令就挂在三件套字段说明上
+
 
 # ————————————————————————————————————————————————————————————————
 # ③ 买入夹逼四态 + 离场格式校验(①-C,④验收⑤验收)
