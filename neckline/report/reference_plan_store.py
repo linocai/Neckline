@@ -22,7 +22,7 @@ from neckline.report.reference_plan import ReferencePlan
 
 _COLUMNS = (
     "trade_date", "ts_code", "status", "verdict", "close", "limit_up", "limit_down",
-    "buy_low", "buy_high", "buy_clamp", "buy_why", "stop_price", "stop_pct",
+    "buy_low", "buy_high", "buy_clamp", "buy_why", "stop_price", "stop_pct", "take_profit_retrace",
     "exit_low", "exit_high", "exit_clamp", "exit_why", "script_text", "veto_reason",
     "provider", "model", "degraded", "degrade_reason", "created_at",
 )
@@ -52,10 +52,30 @@ def save_reference_plans(trade_date: date, plans: List[ReferencePlan], db_path: 
                 (
                     td, p.ts_code, p.status, p.verdict, p.close, p.limit_up, p.limit_down,
                     p.buy_low, p.buy_high, p.buy_clamp, p.buy_why, p.stop_price, p.stop_pct,
+                    p.take_profit_retrace,
                     p.exit_low, p.exit_high, p.exit_clamp, p.exit_why, p.script_text, p.veto_reason,
                     p.provider, p.model, 1 if p.degraded else 0, p.degrade_reason, now,
                 ),
             )
+
+
+def delete_reference_plans(trade_date: date, ts_codes: List[str], db_path: Optional[Path] = None) -> int:
+    """删掉当日这批码的参考件行,返回删除行数(v1.5.1,契约线 review 🟡-1 的写侧收口,
+    与 `store.delete_llm_judgments` 成对使用——理由见那边 docstring)。本表虽只进审计/
+    对拍、不进任何展示路径,但"这一跑没审这只票"的事实必须两张表口径一致,否则将来
+    拿本表做 LLM 参谋成绩单时会把上一跑的参考件算进这一跑的账。
+
+    幂等;空名单返回 0、不建连;批量一条 DELETE = 单事务。"""
+    codes = [c for c in dict.fromkeys(ts_codes) if c]
+    if not codes:
+        return 0
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        cur = conn.execute(
+            f"DELETE FROM reference_plans WHERE trade_date=? AND ts_code IN ({','.join('?' * len(codes))})",
+            (_d(trade_date), *codes),
+        )
+        return cur.rowcount
 
 
 def _row_to_dict(row: tuple) -> Dict[str, Any]:
@@ -87,4 +107,6 @@ def load_reference_plans(trade_date: date, db_path: Optional[Path] = None) -> Li
     return [_row_to_dict(r) for r in rows]
 
 
-__all__ = ["save_reference_plans", "load_reference_plan", "load_reference_plans"]
+__all__ = [
+    "save_reference_plans", "delete_reference_plans", "load_reference_plan", "load_reference_plans",
+]

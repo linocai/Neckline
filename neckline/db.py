@@ -590,6 +590,11 @@ CREATE TABLE IF NOT EXISTS reference_plans (
     buy_why       TEXT,
     stop_price    REAL,                   -- 系统算的 close×(1-stop_pct),非 LLM 产出
     stop_pct      REAL,                   -- 产出该行时的现役 stop_pct(口径指纹)
+    -- take_profit_retrace(v1.5.1,两线 review 共同的「章程 −5%/回落止盈 8% 硬编文案」修复):
+    -- 产出该行时的现役回落止盈比例,与 stop_pct 成对的第二个口径指纹,供展示层动态生成
+    -- 标签(章程一改,数字与标签同步走)。由 `_migrate_columns` 幂等补列——**不在本
+    -- CREATE TABLE 里**,同本库既有惯例(见 llm_judgments.search_engine / decision_log.
+    -- max_chase_pct):生产 v1.5.0 已建过本表,新库老库必须走同一条补列路径。
     exit_low      REAL, exit_high REAL,
     exit_clamp    TEXT NOT NULL,          -- ok|absent|rejected_malformed
     exit_why      TEXT,
@@ -682,6 +687,12 @@ _COLUMN_MIGRATIONS = [
     # 未记录,不臆造"当时用的是 search_pro"(生产历史上虽只用过 search_pro,但
     # 「记录」与「推断」是两回事,§3.8「没有」与「没看」必须分开的同一条纪律)。
     ("llm_judgments", "search_engine", "TEXT"),
+    # v1.5.1(两线 review 共同项:「章程 −5%」「回落止盈 8%」硬编文案):产出该参考件时
+    # 的现役回落止盈比例,与既有 `stop_pct` 列成对的第二个口径指纹。**可空、不回填**
+    # ——老行(v1.5.0 生成的)NULL = 当时没记这一位,展示层据此退化成不带数字的
+    # 「章程止损/章程回落止盈」文案,不拿今天的章程去追认历史报告(同 search_engine
+    # 「记录」≠「推断」的同一条纪律)。生产 v1.5.0 已建过 reference_plans 表,故走补列。
+    ("reference_plans", "take_profit_retrace", "REAL"),
 ]
 
 

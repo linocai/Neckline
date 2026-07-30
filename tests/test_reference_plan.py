@@ -432,6 +432,60 @@ class TestResolveStopPct:
         assert rp._resolve_stop_pct(isolated_env.db_path) is None
 
 
+class TestCharterFingerprintPcts:
+    """v1.5.1(两线 review 共同项:「章程 −5%」「回落止盈 8%」硬编文案)——两个展示
+    口径指纹都读现役 config,落进 `ReferencePlan` 与公开契约,供两端动态生成标签。"""
+
+    def test_reads_both_pcts_from_active_config(self, isolated_env):
+        _seed_env(isolated_env, stop_pct=0.07)
+        seed_active_rule_v1(isolated_env, extra_config={"stop_pct": 0.07, "take_profit_retrace": 0.11})
+        assert rp._resolve_charter_pcts(isolated_env.db_path) == (
+            pytest.approx(0.07), pytest.approx(0.11),
+        )
+
+    def test_none_pair_when_no_active_version(self, isolated_env):
+        assert rp._resolve_charter_pcts(isolated_env.db_path) == (None, None)
+
+    @pytest.mark.parametrize("tpr", [0.05, 0.08])
+    def test_plan_and_public_dict_carry_the_fingerprints(self, isolated_env, tpr):
+        dates = _seed_env(isolated_env, stop_pct=0.06)
+        seed_active_rule_v1(isolated_env, extra_config={"stop_pct": 0.06, "take_profit_retrace": tpr})
+        up, down = compute_intraday_limit_prices(12.0, Board.MAIN, False, next_trading_day(dates[-2]))
+        jr = JudgeResult(ts_code="600001.SH", provider="glm", model="m", verdict=VERDICT_PASS,
+                         narrative="n", degraded=False)
+        plan = rp.build_reference_plan(
+            _candidate(close=12.0), dates[-2], judge_result=jr, db_path=isolated_env.db_path,
+            parsed_json={
+                "buy": {"low": round(down + 0.1, 2), "high": round(down + 0.4, 2), "why": "w"},
+                "exit": {"low": 15.0, "high": 15.5, "why": "w2"}, "script": "s", "veto_reason": None,
+            },
+        )
+        assert plan.stop_pct == pytest.approx(0.06)
+        assert plan.take_profit_retrace == pytest.approx(tpr)
+        d = plan.to_public_dict()
+        assert d["buy"]["stopPct"] == pytest.approx(0.06)
+        assert d["exit"]["takeProfitRetrace"] == pytest.approx(tpr)
+
+    def test_public_dict_omits_nothing_when_charter_absent(self, isolated_env):
+        """无现役章程 → 两个指纹是 `None` 而不是键消失(展示层据此退化文案;键消失
+        会让"没配置"与"老快照"在契约层混成一件事)。"""
+        dates = business_days(date(2024, 3, 1), 10)
+        insert_trade_cal(isolated_env, dates)
+        insert_stock_basic(isolated_env, [
+            {"ts_code": "600001.SH", "name": "示例甲", "market": "主板", "list_date": date(2020, 1, 1)},
+        ])
+        jr = JudgeResult(ts_code="600001.SH", provider="glm", model="m", verdict=VERDICT_PASS,
+                         narrative="n", degraded=False)
+        plan = rp.build_reference_plan(
+            _candidate(close=12.0), dates[-2], judge_result=jr, db_path=isolated_env.db_path,
+            parsed_json={"buy": None, "exit": {"low": 15.0, "high": 15.5, "why": ""},
+                         "script": "s", "veto_reason": None},
+        )
+        d = plan.to_public_dict()
+        assert "takeProfitRetrace" in d["exit"] and d["exit"]["takeProfitRetrace"] is None
+        assert plan.stop_price is None   # 没章程就不派生止损价(既有语义,顺带守住)
+
+
 # ————————————————————————————————————————————————————————————————
 # ④ `build_reference_plan` 三态(①-D)+ ⑥ stop_price 随 stop_pct 变化
 # ————————————————————————————————————————————————————————————————
@@ -737,6 +791,32 @@ class TestReferencePlanStore:
 
     def test_load_missing_returns_none_not_crash(self, isolated_env):
         assert rps.load_reference_plan(date(2024, 3, 6), "999999.SH", db_path=isolated_env.db_path) is None
+
+    def test_take_profit_retrace_column_round_trips(self, isolated_env):
+        """v1.5.1 新列(幂等补列,生产 v1.5.0 已建过本表)——写进去读回来是同一个数,
+        不给值时是 NULL 不是 0(老行语义 = 当时没记这一位)。"""
+        rps.save_reference_plans(date(2024, 3, 6), [
+            _sample_plan(ts_code="600001.SH", take_profit_retrace=0.08),
+            _sample_plan(ts_code="600002.SH"),
+        ], db_path=isolated_env.db_path)
+        rows = {r["ts_code"]: r for r in rps.load_reference_plans(date(2024, 3, 6), db_path=isolated_env.db_path)}
+        assert rows["600001.SH"]["take_profit_retrace"] == pytest.approx(0.08)
+        assert rows["600002.SH"]["take_profit_retrace"] is None
+
+    def test_delete_removes_only_the_named_codes_and_is_idempotent(self, isolated_env):
+        """v1.5.1 契约线 review 🟡-1 的写侧收口(配套 `store.delete_llm_judgments`)。"""
+        d = date(2024, 3, 6)
+        rps.save_reference_plans(d, [_sample_plan(ts_code=f"60000{i}.SH") for i in (1, 2, 3)],
+                                 db_path=isolated_env.db_path)
+        assert rps.delete_reference_plans(d, ["600002.SH", "600003.SH"], db_path=isolated_env.db_path) == 2
+        assert [r["ts_code"] for r in rps.load_reference_plans(d, db_path=isolated_env.db_path)] == ["600001.SH"]
+        assert rps.delete_reference_plans(d, ["600002.SH"], db_path=isolated_env.db_path) == 0   # 幂等
+        assert rps.delete_reference_plans(d, [], db_path=isolated_env.db_path) == 0
+        # 别的日期同码不受牵连
+        rps.save_reference_plans(date(2024, 3, 7), [_sample_plan(ts_code="600002.SH")],
+                                 db_path=isolated_env.db_path)
+        rps.delete_reference_plans(d, ["600002.SH"], db_path=isolated_env.db_path)
+        assert len(rps.load_reference_plans(date(2024, 3, 7), db_path=isolated_env.db_path)) == 1
 
 
 # ————————————————————————————————————————————————————————————————

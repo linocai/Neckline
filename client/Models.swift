@@ -329,18 +329,26 @@ struct ExecHint: Codable, Equatable, Identifiable {
 /// 买入参考区间(①-C 唯一底线:数字必须落在明日涨跌停区间内,出界不显示——出现在
 /// 这里说明已过夹逼校验)。`stopPrice` 系统算(`close×(1−stop_pct)`),不是 LLM 产出,
 /// 与买入区间同一行展示(§2.1「−5.0 是全系统单一止损常量」)。
+///
+/// `stopPct`(v1.5.1 增量键,两线 review 共同项):产出该参考件时的**现役止损比例**
+/// (小数,如 0.05)。「章程 −5%」这句标签由它**动态生成**(`NKFmt.ratioPct`),客户端
+/// 不许硬编数字;`nil`(老快照/章程未配置)时退化成不带数字的「章程止损」。
 struct ReferencePlanBuy: Codable, Equatable {
     var low: Double
     var high: Double
     var stopPrice: Double? = nil
+    var stopPct: Double? = nil
     var why: String = ""
 }
 
 /// 离场参考区间(本轮上涨压力位,**不受涨跌停夹逼**——压力位可能几天后才到;
-/// **明示参考、非止盈线**,回落止盈 8% 纪律独立生效、不受此区间影响)。
+/// **明示参考、非止盈线**,回落止盈纪律独立生效、不受此区间影响)。
+/// `takeProfitRetrace`(v1.5.1 增量键,同 `ReferencePlanBuy.stopPct` 一对):产出该参考件
+/// 时的现役回落止盈比例(小数,如 0.08),旁注文案由它动态生成,`nil` 时不带数字。
 struct ReferencePlanExit: Codable, Equatable {
     var low: Double
     var high: Double
+    var takeProfitRetrace: Double? = nil
     var why: String = ""
 }
 

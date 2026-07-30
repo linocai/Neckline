@@ -63,9 +63,9 @@ def _reference_plan(**overrides) -> dict:
     的落库快照口径)——覆盖 status=ok 的最小合法示例,测试按需 override。"""
     base = dict(
         status="ok",
-        buy={"low": 12.34, "high": 12.98, "stopPrice": 11.72, "why": "贴近支撑位"},
+        buy={"low": 12.34, "high": 12.98, "stopPrice": 11.72, "stopPct": 0.05, "why": "贴近支撑位"},
         buyUnavailableReason=None,
-        exit={"low": 15.10, "high": 15.80, "why": "前高压力位"},
+        exit={"low": 15.10, "high": 15.80, "takeProfitRetrace": 0.08, "why": "前高压力位"},
         exitUnavailableReason=None,
         script="若集合竞价大幅低开则放弃,温和低开则观望,符合预期则按区间执行。",
         vetoReason=None,
@@ -304,6 +304,37 @@ class TestReferencePlanSection:
         md = _render(candidates=[c], judged={})
         assert "预算耗尽未发起审判" in md
         assert "老报告快照" not in md
+
+    def test_charter_labels_follow_active_config_not_hardcoded(self):
+        """v1.5.1(两线 review 共同项):「章程 −5%」「回落止盈 8%」两句标签由参考件
+        落库的**章程口径指纹**动态生成——换一档章程,标签跟着换,不再是字面量。"""
+        c = _candidate(reference_plan=_reference_plan(
+            buy={"low": 12.34, "high": 12.98, "stopPrice": 11.04, "stopPct": 0.08, "why": ""},
+            exit={"low": 15.10, "high": 15.80, "takeProfitRetrace": 0.12, "why": ""},
+        ))
+        md = _render(candidates=[c])
+        assert "章程 −8%" in md and "章程 −5%" not in md
+        assert "回落止盈 12% 兜底" in md and "回落止盈 8%" not in md
+
+    def test_charter_labels_keep_fractional_percent_not_rounded(self):
+        """非整百分点不许被四舍五入成整数骗人(5.5% ≠ 6%)。"""
+        c = _candidate(reference_plan=_reference_plan(
+            buy={"low": 12.34, "high": 12.98, "stopPrice": 11.66, "stopPct": 0.055, "why": ""},
+        ))
+        assert "章程 −5.5%" in _render(candidates=[c])
+
+    def test_charter_labels_degrade_without_number_when_fingerprint_missing(self):
+        """老快照(v1.5.0 生成,没有这两个指纹键)/ 章程未配置 → 退化成**不带数字**的
+        说法,**绝不硬编 5%/8%**(§2.1 常量唯一源);区间数字本身照常展示。"""
+        c = _candidate(reference_plan=_reference_plan(
+            buy={"low": 12.34, "high": 12.98, "stopPrice": 11.72, "why": ""},
+            exit={"low": 15.10, "high": 15.80, "why": ""},
+        ))
+        md = _render(candidates=[c])
+        assert "章程止损,以实际成交价为准" in md
+        assert "纪律仍以章程的回落止盈兜底" in md
+        assert "5%" not in md and "8%" not in md
+        assert "12.34~12.98" in md and "11.72" in md
 
     def test_exit_region_never_called_take_profit_line(self):
         """语义红线(§五 v1.5「⛔ 语义红线」第三条):离场参考区间**尤其不许**被表述

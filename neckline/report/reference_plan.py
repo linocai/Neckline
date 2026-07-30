@@ -442,12 +442,23 @@ def _clamp_exit(raw_exit: Any) -> Tuple[Optional[float], Optional[float], str, O
     return round(float(low), 2), round(float(high), 2), EXIT_CLAMP_OK, _as_why(raw_exit)
 
 
+def _as_ratio(v: Any) -> Optional[float]:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _resolve_charter_pcts(db_path: Optional[Path]) -> Tuple[Optional[float], Optional[float]]:
+    """现役章程的两个展示口径指纹 `(stop_pct, take_profit_retrace)`(§2.1「唯一源 =
+    现役 `strategy_versions` config」,不硬编 0.05 / 0.08)。一次 `active_config` 读两个,
+    别为了第二个数再开一次连接。任一未配置 → 该位 `None`,展示层退化成不带数字的
+    「章程止损」/「章程回落止盈」文案(v1.5.1 两线 review 共同项),**不拿字面量补位**。"""
+    cfg = brain.active_config(db_path=db_path)
+    return _as_ratio(cfg.get("stop_pct")), _as_ratio(cfg.get("take_profit_retrace"))
+
+
 def _resolve_stop_pct(db_path: Optional[Path]) -> Optional[float]:
     """现役止损比例(§2.1「−5.0 是全系统单一常量」,唯一源 = 现役
     `strategy_versions` config,不硬编 0.05)。"""
-    cfg = brain.active_config(db_path=db_path)
-    v = cfg.get("stop_pct")
-    return float(v) if isinstance(v, (int, float)) else None
+    return _resolve_charter_pcts(db_path)[0]
 
 
 def _resolve_next_day_limit_prices(
@@ -506,22 +517,37 @@ class ReferencePlan:
     model: str
     degraded: bool                    # 本参考件自身是否失败(见模块头③,与 judge_result.degraded 不同一件事)
     degrade_reason: str = ""
+    # v1.5.1(两线 review 共同项):与 `stop_pct` 成对的第二个章程口径指纹,供展示层
+    # 动态生成「回落止盈 X%」标签。字段位置在末尾只因 dataclass 默认值规则,语义上与
+    # `stop_pct` 同类;落库列见 `reference_plan_store._COLUMNS`(挨着 stop_pct)。
+    take_profit_retrace: Optional[float] = None
 
     def to_public_dict(self) -> Dict[str, Any]:
         """①-F 客户端契约(camelCase)。`buy`/`exit` 整体对象只在各自 clamp=ok 时非
         null(`stopPrice` 嵌在 `buy` 内,买入区间被拦时一并不显示,同参考区间被拦不
-        单独展示止损数字的设计)。"""
+        单独展示止损数字的设计)。
+
+        **v1.5.1 增量两键**(两线 review 共同项:标签硬编 vs 数字跟章程走):`buy.stopPct`
+        与 `exit.takeProfitRetrace` —— 产出本行时的现役章程比例(小数,如 0.05/0.08),
+        供 markdown 与客户端**动态生成**「章程 −5%」「回落止盈 8%」这两句标签,章程一改
+        标签跟着走。`None`(老快照/章程未配置)时展示层退化成不带数字的说法,不硬编。"""
         buy = None
         buy_unavailable_reason = None
         if self.buy_clamp == BUY_CLAMP_OK:
-            buy = {"low": self.buy_low, "high": self.buy_high, "stopPrice": self.stop_price, "why": self.buy_why or ""}
+            buy = {
+                "low": self.buy_low, "high": self.buy_high, "stopPrice": self.stop_price,
+                "stopPct": self.stop_pct, "why": self.buy_why or "",
+            }
         else:
             buy_unavailable_reason = _BUY_CLAMP_REASON_TEXT.get(self.buy_clamp, self.buy_clamp)
 
         exit_ = None
         exit_unavailable_reason = None
         if self.exit_clamp == EXIT_CLAMP_OK:
-            exit_ = {"low": self.exit_low, "high": self.exit_high, "why": self.exit_why or ""}
+            exit_ = {
+                "low": self.exit_low, "high": self.exit_high,
+                "takeProfitRetrace": self.take_profit_retrace, "why": self.exit_why or "",
+            }
         else:
             exit_unavailable_reason = _EXIT_CLAMP_REASON_TEXT.get(self.exit_clamp, self.exit_clamp)
 
@@ -541,12 +567,13 @@ class ReferencePlan:
 
 def _base_fields(
     candidate: Candidate, judge_result: JudgeResult, stop_price: Optional[float], stop_pct: Optional[float],
-    limit_up: Optional[float], limit_down: Optional[float],
+    limit_up: Optional[float], limit_down: Optional[float], take_profit_retrace: Optional[float],
 ) -> Dict[str, Any]:
-    """五个状态分支共用的字段(收盘价/涨跌停/止损/审判身份),减少重复。"""
+    """五个状态分支共用的字段(收盘价/涨跌停/止损/章程口径指纹/审判身份),减少重复。"""
     return dict(
         ts_code=candidate.ts_code, verdict=judge_result.verdict, close=candidate.close,
         limit_up=limit_up, limit_down=limit_down, stop_price=stop_price, stop_pct=stop_pct,
+        take_profit_retrace=take_profit_retrace,
         provider=judge_result.provider, model=judge_result.model,
     )
 
@@ -576,11 +603,13 @@ def build_reference_plan(
           夹逼拦下,整体仍 `ok`——见 `_clamp_buy`/`_clamp_exit` 各自的 absent/
           rejected_* 细分)。
     """
-    stop_pct = _resolve_stop_pct(db_path)
+    stop_pct, take_profit_retrace = _resolve_charter_pcts(db_path)
     close = candidate.close
     stop_price = round(close * (1 - stop_pct), 2) if (stop_pct is not None and close and close > 0) else None
     limit_up, limit_down, _ = _resolve_next_day_limit_prices(candidate, trade_date, db_path)
-    base = _base_fields(candidate, judge_result, stop_price, stop_pct, limit_up, limit_down)
+    base = _base_fields(
+        candidate, judge_result, stop_price, stop_pct, limit_up, limit_down, take_profit_retrace,
+    )
 
     if judge_result.degraded:
         return ReferencePlan(

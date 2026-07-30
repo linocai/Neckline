@@ -164,13 +164,38 @@ struct ReferencePlanSection: View {
     var llmJudgment: LLMJudgment? = nil
     @State private var expanded = false
 
+    /// 展示态判定(v1.5.1)。抽成纯函数是为了让「未知 status 不静默消失」这条**可被
+    /// 单测锁死**(SwiftUI 的 body 测不了)。分支与服务端 `render.py::
+    /// _render_reference_plan` 逐位对齐。
+    enum DisplayState: Equatable {
+        case absent            // plan == nil:老快照 / 本次生成异常 / 预算耗尽未发起
+        case vetoed            // LLM 判风险大,只给不买理由
+        case unavailable       // 生成过、这次没看清楚("没看"不是"没有")
+        case ok                // 逐件展示
+        case unknown(String)   // plan != nil 但 status 不在已知三态里(🔵-2)
+    }
+
+    static func displayState(_ plan: ReferencePlan?) -> DisplayState {
+        guard let plan else { return .absent }
+        switch plan.status {
+        case "vetoed": return .vetoed
+        case "unavailable": return .unavailable
+        case "ok": return .ok
+        // v1.5.1(契约线 review 🔵-2):服务端将来加第四态、或快照损坏时,老实现整节
+        // **静默消失**——违了本类型 docstring 自己立的「UI 不得静默消失、须展示未展示
+        // 原因」。诚实兜底一条(带原始 status 字符串),与 markdown 侧同频:不假装没有。
+        default: return .unknown(plan.status)
+        }
+    }
+
     var body: some View {
         Group {
-            switch plan?.status {
-            case "vetoed": vetoedText
-            case "unavailable": unavailableText
-            case "ok": okDisclosure
-            default: if plan == nil { absentText }
+            switch Self.displayState(plan) {
+            case .absent: absentText
+            case .vetoed: vetoedText
+            case .unavailable: unavailableText
+            case .ok: okDisclosure
+            case .unknown: unknownStatusText
             }
         }
     }
@@ -191,6 +216,14 @@ struct ReferencePlanSection: View {
     private var vetoedText: some View {
         Text("参考件:LLM 判风险大,本次不给参考件;不买理由:\(Self.orFallback(plan?.vetoReason, "见下方审判叙述"))")
             .font(.system(size: 12)).foregroundStyle(NK.amber)
+    }
+
+    /// 未知 status 的诚实兜底(🔵-2):带上原始 status 字符串,与 `unavailableText` 同
+    /// 款式;不冒充"没有参考件",也不假装能展示。
+    private var unknownStatusText: some View {
+        Text("参考件:本次返回了本 App 尚不认识的状态(\(Self.orFallback(plan?.status, "空")))"
+             + ",内容未展示——不代表确认无参考,请更新 App。")
+            .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
     }
 
     private var unavailableText: some View {
@@ -227,12 +260,24 @@ struct ReferencePlanSection: View {
         }
     }
 
+    /// 章程口径标签(v1.5.1,两线 review 共同项:原来「章程 −5%」「回落止盈 8%」是
+    /// 硬编字面量,而数字跟现役 config 走——章程一改就"数字对、标签错")。两句标签一律
+    /// 由服务端下发的**口径指纹**动态生成,缺指纹时退化成不带数字的说法,**不硬编**。
+    static func stopLabel(_ buy: ReferencePlanBuy) -> String {
+        buy.stopPct.map { "章程 −\(NKFmt.ratioPct($0))" } ?? "章程止损"
+    }
+
+    static func retraceLabel(_ exit: ReferencePlanExit) -> String {
+        exit.takeProfitRetrace.map { "纪律仍以回落止盈 \(NKFmt.ratioPct($0)) 兜底" }
+            ?? "纪律仍以章程的回落止盈兜底"
+    }
+
     @ViewBuilder
     private func buyPiece(_ p: ReferencePlan) -> some View {
         if let buy = p.buy {
             piece("参考买入区间(参考,非指令)",
                   "\(NKFmt.price(buy.low))~\(NKFmt.price(buy.high));止损参考约 "
-                  + "\(buy.stopPrice.map(NKFmt.price) ?? "未知")(章程 −5%,以实际成交价为准)。"
+                  + "\(buy.stopPrice.map(NKFmt.price) ?? "未知")(\(Self.stopLabel(buy)),以实际成交价为准)。"
                   + (buy.why.isEmpty ? "" : " \(buy.why)"))
         } else {
             Text("参考买入区间:本次未展示(\(Self.orFallback(p.buyUnavailableReason, "原因未知")))。")
@@ -245,7 +290,7 @@ struct ReferencePlanSection: View {
         if let exit = p.exit {
             piece("参考离场区间(参考,非止盈线)",
                   "\(NKFmt.price(exit.low))~\(NKFmt.price(exit.high))。"
-                  + (exit.why.isEmpty ? "" : "\(exit.why) ") + "—— 纪律仍以回落止盈 8% 兜底。")
+                  + (exit.why.isEmpty ? "" : "\(exit.why) ") + "—— \(Self.retraceLabel(exit))。")
         } else {
             Text("参考离场区间:本次未展示(\(Self.orFallback(p.exitUnavailableReason, "原因未知")))。")
                 .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
@@ -418,6 +463,18 @@ struct NKLogo: View {
 enum NKFmt {
     static func price(_ v: Double) -> String { String(format: "%.2f", v) }
     static func pct(_ v: Double) -> String { String(format: "%.2f%%", v) }
+    /// **比例**(0.05)→ 展示百分数("5%");非整百分点保留小数("5.5%"),不四舍五入
+    /// 成 "6%" 骗人。章程口径指纹(止损比例 / 回落止盈比例)专用——与 `pct(_:)`
+    /// (入参已经是百分数)**不是一回事**,别混用。服务端同款实现见
+    /// `report/render.py::_ratio_pct_txt`(两端各自格式化,不下发拼好的文案)。
+    static func ratioPct(_ v: Double) -> String {
+        var s = String(format: "%.2f", v * 100)
+        if s.contains(".") {
+            while s.hasSuffix("0") { s.removeLast() }
+            if s.hasSuffix(".") { s.removeLast() }
+        }
+        return s + "%"
+    }
     static func signedPct(_ v: Double) -> String {
         let sign = v > 0 ? "+" : ""
         return "\(sign)\(String(format: "%.2f", v))%"

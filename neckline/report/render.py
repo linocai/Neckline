@@ -8,7 +8,7 @@ LLM 输出,可以用 markdown 标题与表格排版,但 LLM 审判的叙述段�
 from __future__ import annotations
 
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from neckline.llm.base import search_coverage_line
 from neckline.llm.judge import JudgeResult, VERDICT_PASS, VERDICT_VETO
@@ -253,6 +253,30 @@ def _exec_hint_line(c: Candidate) -> Optional[str]:
     return "- 执行提示(如果决定动手,怎么做更不吃亏,非买卖建议):" + "；".join(texts)
 
 
+def _ratio_pct_txt(v: float) -> str:
+    """比例(0.05)→ 展示百分数("5%");非整百分点保留小数("5.5%"),不四舍五入成
+    "6%" 骗人。章程口径指纹专用。"""
+    s = f"{v * 100:.2f}".rstrip("0").rstrip(".")
+    return f"{s}%"
+
+
+def _charter_stop_label(buy: Dict[str, Any]) -> str:
+    """止损标签(v1.5.1,两线 review 共同项:原文案硬编「章程 −5%」)。数字取参考件
+    落库时的**现役章程口径指纹** `stopPct`,章程一改标签跟着走;缺(老快照/章程未
+    配置)时退化成不带数字的说法——**绝不硬编 5%**(§2.1 常量唯一源)。"""
+    pct = buy.get("stopPct")
+    return f"章程 −{_ratio_pct_txt(pct)}" if isinstance(pct, (int, float)) else "章程止损"
+
+
+def _charter_retrace_label(exit_: Dict[str, Any]) -> str:
+    """回落止盈旁注(同上,原文案硬编「回落止盈 8%」)。语义红线不变:这是**纪律的
+    被动兜底**,与参考离场区间并存、不互相取代(§五 v1.5「⛔ 语义红线」)。"""
+    pct = exit_.get("takeProfitRetrace")
+    if isinstance(pct, (int, float)):
+        return f"纪律仍以回落止盈 {_ratio_pct_txt(pct)} 兜底"
+    return "纪律仍以章程的回落止盈兜底"
+
+
 def _render_reference_plan(c: Candidate) -> List[str]:
     """参考三件套渲染(v1.5-③-A,需求 9)——取代老四件套(买点/止损/目标/证伪条件)
     在候选卡上的位置。四态与 `reference_plan.py` ①-D 状态机逐位对应,**不许合并**
@@ -290,7 +314,7 @@ def _render_reference_plan(c: Candidate) -> List[str]:
         stop_txt = f"{buy['stopPrice']:.2f}" if buy.get("stopPrice") is not None else "未知"
         lines.append(
             f"- **参考买入区间(参考,非指令)**:{buy['low']:.2f}~{buy['high']:.2f};"
-            f"止损参考约 {stop_txt}(章程 −5%,以实际成交价为准)。{why}"
+            f"止损参考约 {stop_txt}({_charter_stop_label(buy)},以实际成交价为准)。{why}"
         )
     else:
         lines.append(f"- **参考买入区间**:本次未展示({rp.get('buyUnavailableReason') or '原因未知'})。")
@@ -299,7 +323,7 @@ def _render_reference_plan(c: Candidate) -> List[str]:
         why = f" {exit_['why']}" if exit_.get("why") else ""
         lines.append(
             f"- **参考离场区间(参考,非止盈线)**:{exit_['low']:.2f}~{exit_['high']:.2f}。"
-            f"{why} —— 纪律仍以回落止盈 8% 兜底。"
+            f"{why} —— {_charter_retrace_label(exit_)}。"
         )
     else:
         lines.append(f"- **参考离场区间**:本次未展示({rp.get('exitUnavailableReason') or '原因未知'})。")

@@ -151,18 +151,28 @@ class ExecHintOut(BaseModel):
 class ReferencePlanBuyOut(BaseModel):
     """买入参考区间(①-C 唯一底线:数字必须落在明日涨跌停区间内,出界不显示——
     出现在这里说明已经过夹逼校验)。`stopPrice` 系统算(`close×(1−stop_pct)`),
-    不是 LLM 产出,与买入区间同一行展示,§2.1「−5.0 是全系统单一止损常量」。"""
+    不是 LLM 产出,与买入区间同一行展示,§2.1「−5.0 是全系统单一止损常量」。
+
+    `stopPct`(v1.5.1 增量键,两线 review 共同项):产出该参考件时的**现役止损比例**
+    (小数,如 0.05),客户端据此**动态生成**「章程 −5%」这句标签,不许硬编数字;
+    `null`(老快照/章程未配置)时退化成不带数字的「章程止损」。老客户端忽略本键。"""
     low: float
     high: float
     stopPrice: Optional[float] = None
+    stopPct: Optional[float] = None
     why: str = ""
 
 
 class ReferencePlanExitOut(BaseModel):
     """离场参考区间(本轮上涨压力位,**不受涨跌停夹逼**——压力位可能几天后才到;
-    **明示参考、非止盈线**,回落止盈 8% 纪律独立生效、不受此区间影响)。"""
+    **明示参考、非止盈线**,回落止盈纪律独立生效、不受此区间影响)。
+
+    `takeProfitRetrace`(v1.5.1 增量键,同 `ReferencePlanBuyOut.stopPct` 一对):产出该
+    参考件时的**现役回落止盈比例**(小数,如 0.08),客户端据此动态生成「纪律仍以回落
+    止盈 8% 兜底」这句旁注;`null` 时退化成不带数字的说法。"""
     low: float
     high: float
+    takeProfitRetrace: Optional[float] = None
     why: str = ""
 
 
@@ -255,8 +265,11 @@ class DispatchAlertOut(BaseModel):
 
 class WatchlistCheckOut(BaseModel):
     """自选体检单只快照(plan §五 v1.1-C.3)。字段形状与 `CandidateOut` 四件套对齐
-    (buyPoint/stop/target/invalidation 命名一致),供客户端复用候选卡的四件套布局
-    (§五 v1.1-F.2「复用 CandidateRow 四件套布局」)。"""
+    (buyPoint/stop/target/invalidation 命名一致),历史成因是「复用候选卡的四件套布局」
+    (§五 v1.1-F.2)。**v1.5.0 起该对齐只剩历史意义**(v1.5.1 契约线 review 🔵-5 更正):
+    候选卡已换成参考三件套 `ReferencePlanOut`/客户端 `ReferencePlanSection`,四件套布局
+    (`FourPieceDisclosure`)如今**只有自选体检卡在用**——本节四个字段是自选体检自用 +
+    老客户端兼容,改动它不再牵动候选卡,别再当成"两边共享的那套布局"。"""
     code: str
     name: str
     pinned: bool

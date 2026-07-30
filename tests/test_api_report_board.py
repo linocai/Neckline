@@ -507,6 +507,33 @@ def test_report_candidate_carries_reference_plan_ok_state(client, AUTH, api_env)
     assert rplan["vetoReason"] is None
     assert rplan["disclaimer"]
     assert rplan["degraded"] is False
+    # v1.5.1 增量两键:老快照(本用例的 buy/exit 就没带这两个键)→ `None`,不是 0、
+    # 也不是键消失(客户端据此退化成不带数字的章程标签)。
+    assert rplan["buy"]["stopPct"] is None
+    assert rplan["exit"]["takeProfitRetrace"] is None
+
+
+def test_report_candidate_reference_plan_carries_charter_fingerprints(client, AUTH, api_env):
+    """v1.5.1(两线 review 共同项):章程口径指纹 `buy.stopPct` / `exit.takeProfitRetrace`
+    原样透传到契约,供客户端动态生成「章程 −5%」「回落止盈 8%」两句标签(不硬编)。"""
+    c = _candidate(1, "600001.SH", "示例甲")
+    c["reference_plan"] = {
+        "status": "ok",
+        "buy": {"low": 12.34, "high": 12.98, "stopPrice": 11.04, "stopPct": 0.08, "why": ""},
+        "buyUnavailableReason": None,
+        "exit": {"low": 15.10, "high": 15.80, "takeProfitRetrace": 0.12, "why": ""},
+        "exitUnavailableReason": None,
+        "script": "s", "vetoReason": None, "unavailableReason": None,
+        "disclaimer": "参考,非指令", "degraded": False,
+    }
+    report_store.save_report(
+        date(2026, 7, 28), strategy_version="v1.5.1",
+        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
+        markdown="# 报告", db_path=api_env.db_path,
+    )
+    rplan = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"][0]["referencePlan"]
+    assert rplan["buy"]["stopPct"] == 0.08
+    assert rplan["exit"]["takeProfitRetrace"] == 0.12
 
 
 def test_report_candidate_reference_plan_vetoed_state_has_null_buy_exit(client, AUTH, api_env):

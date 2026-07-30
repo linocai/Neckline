@@ -396,6 +396,74 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertTrue(skipped.judgeSkipped)
         XCTAssertNil(skipped.llmJudgment)
         XCTAssertNil(skipped.referencePlan)
+
+        // v1.5.1 增量两键在本样例里都没给(等价老快照)→ nil,不是 0(0 会被
+        // `ratioPct` 渲染成 "0%",等于对用户宣称"章程止损 0%",极危险)。
+        XCTAssertNil(okPlan.buy?.stopPct)
+        XCTAssertNil(okPlan.exit?.takeProfitRetrace)
+    }
+
+    /// v1.5.1(两线 review 共同项):章程口径指纹 `buy.stopPct` / `exit.takeProfitRetrace`
+    /// 解码 + 标签动态生成。样例对照 `tests/test_api_report_board.py::
+    /// test_report_candidate_reference_plan_carries_charter_fingerprints`。
+    func testDecodeReferencePlanCharterFingerprintsAndDynamicLabels() async throws {
+        let json = jsonData("""
+        {
+          "tradeDate": "20260730", "generatedAt": "g", "strategyVersion": "v1.5.1", "sentiment": null,
+          "sectors": [],
+          "candidates": [
+            {
+              "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
+              "buyPoint": "x", "stop": "x", "target": "x", "invalidation": "x",
+              "formTags": [], "hotSectors": [], "sectorNames": [],
+              "referencePlan": {
+                "status": "ok",
+                "buy": {"low": 12.30, "high": 12.98, "stopPrice": 11.32, "stopPct": 0.08, "why": ""},
+                "exit": {"low": 15.10, "high": 15.80, "takeProfitRetrace": 0.12, "why": ""},
+                "script": "s", "disclaimer": "参考,非指令", "degraded": false
+              }
+            }
+          ],
+          "degraded": false, "reason": ""
+        }
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let report = try await client.fetchReportLatest()
+        let plan = try XCTUnwrap(report.candidates[0].referencePlan)
+        XCTAssertEqual(plan.buy?.stopPct, 0.08)
+        XCTAssertEqual(plan.exit?.takeProfitRetrace, 0.12)
+        // 标签跟着指纹走,不再硬编 −5% / 8%(章程一改,数字与标签同步)。
+        XCTAssertEqual(ReferencePlanSection.stopLabel(try XCTUnwrap(plan.buy)), "章程 −8%")
+        XCTAssertEqual(ReferencePlanSection.retraceLabel(try XCTUnwrap(plan.exit)),
+                       "纪律仍以回落止盈 12% 兜底")
+    }
+
+    /// 指纹缺失(老快照 / 章程未配置)→ 退化成**不带数字**的说法,绝不硬编 5%/8%。
+    func testReferencePlanCharterLabelsDegradeWithoutNumber() {
+        XCTAssertEqual(ReferencePlanSection.stopLabel(ReferencePlanBuy(low: 1, high: 2)), "章程止损")
+        XCTAssertEqual(ReferencePlanSection.retraceLabel(ReferencePlanExit(low: 1, high: 2)),
+                       "纪律仍以章程的回落止盈兜底")
+    }
+
+    /// 比例→百分数格式化:整百分点不留 ".00",非整百分点不四舍五入成整数骗人。
+    func testRatioPctFormatting() {
+        XCTAssertEqual(NKFmt.ratioPct(0.05), "5%")
+        XCTAssertEqual(NKFmt.ratioPct(0.08), "8%")
+        XCTAssertEqual(NKFmt.ratioPct(0.055), "5.5%")
+        XCTAssertEqual(NKFmt.ratioPct(0.1), "10%")
+    }
+
+    /// v1.5.1(契约线 review 🔵-2):`plan != nil` 但 status 未知时**不许整节静默消失**
+    /// ——展示态判定必须落到 `.unknown(原始status)`,由 UI 给一条诚实兜底文案。
+    func testReferencePlanUnknownStatusIsNotSilentlyDropped() {
+        XCTAssertEqual(ReferencePlanSection.displayState(nil), .absent)
+        XCTAssertEqual(ReferencePlanSection.displayState(ReferencePlan(status: "ok")), .ok)
+        XCTAssertEqual(ReferencePlanSection.displayState(ReferencePlan(status: "vetoed")), .vetoed)
+        XCTAssertEqual(ReferencePlanSection.displayState(ReferencePlan(status: "unavailable")), .unavailable)
+        XCTAssertEqual(ReferencePlanSection.displayState(ReferencePlan(status: "future_state")),
+                       .unknown("future_state"))
+        XCTAssertEqual(ReferencePlanSection.displayState(ReferencePlan(status: "")), .unknown(""))
     }
 
     // MARK: - v1.3-③-C1/C2/C4「情报」板块(样例对照 test_report_latest_carries_intel_and_sector_moneyflow /
