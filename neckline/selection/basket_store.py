@@ -15,8 +15,10 @@
     ⑦ 【事务 2】             → basket_cards(version=1)
 
 **刻意两个事务**:⑦ 的卡生成要调 LLM,跨 LLM 调用持 SQLite 事务是错的(慢、易
-超时、锁库)。故本模块提供 `save_tier_decision()`(事务 1)与未来 ⑦ 的
-`save_basket_card()`(事务 2)两个独立入口,**不提供把四张表并成一个事务的路径**。
+超时、锁库)。故本模块提供 `save_tier_decision()`(事务 1)与 `save_basket_card()`
+/ `save_basket_cards()`(事务 2,V2-⑦ 落地)两个独立入口,**不提供把四张表并成
+一个事务的路径**。「有篮子、无卡」是**合法中间态**(事务 1 成功、⑦ 的 LLM 不可用 /
+预算耗尽 / 生成失败):不回删篮子、不抛异常,同一 D0 内可重跑补 `version=1`。
 
 **幂等与冻结(裁定定死)**:四张表一律 `INSERT OR IGNORE`,同日重跑 = no-op、
 **绝不覆盖既有行**(它们是 D0 冻结件)。⚠ 这与 v1.5 契约线 🟡-1「同日重跑要在写侧
@@ -58,6 +60,10 @@ _MEMBER_COLUMNS = (
 _TIER_HISTORY_COLUMNS = (
     "trade_date, basket_id, tier, mech_score, mech_breakdown_json, rank_in_tier, "
     "rank_mech, llm_rank_delta, llm_reason, pack_version, created_at"
+)
+_BASKET_CARD_COLUMNS = (
+    "basket_id, version, card_json, stop_pct, take_profit_retrace, charter_version, "
+    "pack_version, engine_api_version, created_at"
 )
 
 # `save_tier_history` 每条 entry 的必填键(**缺一就 fail loud**,不补默认值 ——
@@ -363,8 +369,188 @@ def save_tier_decision(
     return stats
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 【事务 2】`basket_cards`(V2-⑦ 写入,**单独一个事务**,不与事务 1 合并)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# **为什么单独一个事务**(裁定原文):⑦ 的卡生成要**调 LLM**(剧本 / 人话条款),
+# 跨 LLM 调用持 SQLite 事务是错的(慢、易超时、锁库)。故本节的入口在 LLM 调用
+# **之后**才被调用,进来时 `baskets.id` 已由事务 1 落好。
+#
+# **追加版本制**:`version=1` 是 D0 原判(冻结);D+1 的新信息写 `version=2,3…`,
+# **D0 行一字不改**。`UNIQUE(basket_id, version)` + `INSERT OR IGNORE` 使
+# 「同一 D0 内重跑补 `version=1`」天然是幂等的:没写成过就补上,已经有了就 no-op。
+
+def next_card_version(basket_id: int, *, db_path: Optional[Path] = None) -> int:
+    """该篮子**下一个可用**的卡版本号(= 现有最大 version + 1,无卡则 1)。
+
+    ⚠ **只给 D+1 追加新版本的调用方用**,不要拿它当 `save_basket_card` 的默认值 ——
+    默认自增会让「同一 D0 内重跑补 version=1」变成"每重跑一次多一版",那不是幂等
+    补写、而是把冻结件写成流水账。D0 路径请显式传 `version=1`。
+    """
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT MAX(version) FROM basket_cards WHERE basket_id=?", (int(basket_id),)
+        ).fetchone()
+    return int(row[0]) + 1 if row is not None and row[0] is not None else 1
+
+
+def _card_json_text(card_json: Any) -> str:
+    """卡正文序列化。`sort_keys=True` 是**刻意**的:冻结件要能逐字节比对(同日重跑
+    时用它判"库里那份与本次算出的是不是同一张卡"),键序不稳就没法比。已经是字符串
+    的原样透传(调用方自己序列化过的情形)。"""
+    if isinstance(card_json, str):
+        return card_json
+    return json.dumps(card_json, ensure_ascii=False, sort_keys=True)
+
+
+def save_basket_card(
+    basket_id: int,
+    card_json: Any,
+    *,
+    version: int = 1,
+    stop_pct: Optional[float] = None,
+    take_profit_retrace: Optional[float] = None,
+    charter_version: Optional[str] = None,
+    pack_version: Optional[str] = None,
+    engine_api_version: Optional[int] = None,
+    db_path: Optional[Path] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Dict[str, Any]:
+    """**事务 2**:落一张篮子卡(`basket_cards`,⑦ 唯一写的表)。
+
+    **冻结语义**:`INSERT OR IGNORE` —— 同 `(basket_id, version)` 二次写 = **拒**
+    (no-op,绝不覆盖既有行)。若本次算出的卡与库里已冻结的那份不同 → WARNING 落
+    日志 + `frozen_conflicts` 原样带出给报告层如实披露,**不静默、也不覆盖**
+    (「藏起来不是诚实」,裁定 B 条)。
+
+    `conn`:给了就复用调用方的 connection(不自开事务、不 commit),供批量落卡时把
+    多张卡并进一个事务;不给就自开自提交。签名其余部分与 fail-loud 语义与本模块
+    另两个入口一致。
+
+    返回 `{"cards_inserted", "cards_existing", "version", "frozen_conflicts"}`。
+    """
+    version_i = int(version)
+    if version_i < 1:
+        raise ValueError(f"save_basket_card:version 必须 ≥1(1 = D0 原判),实得 {version!r}")
+    text = _card_json_text(card_json)
+    now = _now()
+    row = (
+        int(basket_id), version_i, text,
+        None if stop_pct is None else float(stop_pct),
+        None if take_profit_retrace is None else float(take_profit_retrace),
+        charter_version, pack_version,
+        None if engine_api_version is None else int(engine_api_version),
+        now,
+    )
+    if conn is not None:
+        return _save_basket_card_on_conn(conn, row)
+    init_schema(db_path)
+    with connection(db_path) as own:
+        return _save_basket_card_on_conn(own, row)
+
+
+def _save_basket_card_on_conn(conn: sqlite3.Connection, row: Tuple[Any, ...]) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {
+        "cards_inserted": 0, "cards_existing": 0, "version": row[1], "frozen_conflicts": [],
+    }
+    cur = conn.execute(
+        f"INSERT OR IGNORE INTO basket_cards ({_BASKET_CARD_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?)",
+        row,
+    )
+    if cur.rowcount:
+        stats["cards_inserted"] = 1
+        return stats
+
+    stats["cards_existing"] = 1
+    logger.warning(
+        "[basket_card] basket_cards 已存在 (basket_id=%s, version=%s) 的冻结行,"
+        "幂等跳过、不覆盖既有行。", row[0], row[1],
+    )
+    frozen = conn.execute(
+        "SELECT card_json FROM basket_cards WHERE basket_id=? AND version=?", (row[0], row[1])
+    ).fetchone()
+    if frozen is not None and frozen[0] != row[2]:
+        conflict = (
+            f"basket_cards[basket_id={row[0]}/version={row[1]}] 已冻结的卡正文与本次算出的不一致,"
+            f"本次结果未采纳(冻结 {len(frozen[0])} 字节 vs 本次 {len(row[2])} 字节)"
+        )
+        stats["frozen_conflicts"].append(conflict)
+        logger.warning("[basket_card] %s", conflict)
+    return stats
+
+
+def save_basket_cards(
+    cards_by_basket_id: Mapping[int, Any],
+    *,
+    version: int = 1,
+    meta_by_basket_id: Optional[Mapping[int, Mapping[str, Any]]] = None,
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """一批卡同事务落地(**仍是事务 2**,只是一次开一个连接把这批写完 —— 与事务 1
+    仍然分开)。`meta_by_basket_id` 逐篮给口径指纹五项;缺的按 `None` 落。
+
+    ⚠ 与事务 1 的「一起成功或一起回滚」不同,本函数**不追求整批原子性**也不需要:
+    卡与卡之间没有引用关系,「有几张卡、缺几张卡」本就是合法中间态(裁定 C 条)。
+    这里合并连接纯粹是为了少开几次库。
+    """
+    stats: Dict[str, Any] = {"cards_inserted": 0, "cards_existing": 0, "frozen_conflicts": []}
+    if not cards_by_basket_id:
+        return stats
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        for basket_id, card in cards_by_basket_id.items():
+            meta = dict((meta_by_basket_id or {}).get(basket_id) or {})
+            one = save_basket_card(
+                int(basket_id), card, version=version,
+                stop_pct=meta.get("stop_pct"),
+                take_profit_retrace=meta.get("take_profit_retrace"),
+                charter_version=meta.get("charter_version"),
+                pack_version=meta.get("pack_version"),
+                engine_api_version=meta.get("engine_api_version"),
+                conn=conn,
+            )
+            stats["cards_inserted"] += one["cards_inserted"]
+            stats["cards_existing"] += one["cards_existing"]
+            stats["frozen_conflicts"].extend(one["frozen_conflicts"])
+    return stats
+
+
+def load_basket_card(
+    basket_id: int, *, version: Optional[int] = None, db_path: Optional[Path] = None
+) -> Optional[Dict[str, Any]]:
+    """读一张卡(`version=None` → **最新版本**)。无卡 → `None`,由调用方表达
+    「有篮子、无卡」这个合法中间态(契约侧 `GET /baskets/{id}/card` 返 404 +
+    reason `card_not_ready`,⑭-B 落地)。**⛔ 不许因为没卡就把篮子从报告里抹掉。**"""
+    init_schema(db_path)
+    sql = (
+        f"SELECT id, {_BASKET_CARD_COLUMNS} FROM basket_cards WHERE basket_id=?"
+        + (" AND version=?" if version is not None else "")
+        + " ORDER BY version DESC LIMIT 1"
+    )
+    args: Tuple[Any, ...] = (int(basket_id),) if version is None else (int(basket_id), int(version))
+    with connection(db_path) as conn:
+        row = conn.execute(sql, args).fetchone()
+    if row is None:
+        return None
+    keys = ["id"] + [c.strip() for c in _BASKET_CARD_COLUMNS.split(",")]
+    out = dict(zip(keys, row))
+    try:
+        out["card"] = json.loads(out["card_json"])
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("[basket_card] basket_id=%s version=%s 的 card_json 解不出,原样返回字符串",
+                       out.get("basket_id"), out.get("version"))
+        out["card"] = None
+    return out
+
+
 __all__ = [
     "save_baskets",
     "save_tier_history",
     "save_tier_decision",
+    "next_card_version",
+    "save_basket_card",
+    "save_basket_cards",
+    "load_basket_card",
 ]
