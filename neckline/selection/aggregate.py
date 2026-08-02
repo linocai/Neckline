@@ -31,10 +31,11 @@
 ——两段式的输出里根本没有"结论:通过|否决"标签,硬套那套 last-match 锚点就是给
 自己埋雷。prompt 里的格式要求只是背带,安全带是解析层 + 下面这些机械闸。
 
-**落表**:`baskets` / `basket_members`(① 已建)。⚠ **写入时机见 `save_baskets()`
-docstring** —— `baskets.tier` 是 `NOT NULL` 而 tier 由 ⑥ 定档,故本模块的写入口
-**强制要求调用方显式给出 tier**,绝不臆造;plan 的「V2 新表汇总」把这两张表的
-写入块登记在 ⑦,本模块只提供写入能力,不在 ⑤ 的编排里自动落库。
+**落表**:`baskets` / `basket_members`(① 已建)。⚠ `baskets.tier` 是 `NOT NULL`
+而 tier 由 ⑥ 定档,故写入口**强制要求调用方显式给出 tier**、绝不臆造,
+`aggregate_baskets()` 本身不落库。**写入块 2026-08-02 由 ⑦ 改判为 ⑥**,写入口
+实现随之搬进 `neckline/selection/basket_store.py`(本模块保留同名再导出,行为
+逐字节不变;详见该模块头「运行期次序」)。
 """
 
 from __future__ import annotations
@@ -52,7 +53,6 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import polars as pl
 
 from neckline.data.market_data import get_market_slice, resolve_stock_names
-from neckline.db import connection, init_schema
 from neckline.llm.base import ChatMessage, LLMProvider
 from neckline.llm.budget import LEDGER_REASON, LEDGER_SEARCH, BudgetLedger
 from neckline.llm.factory import get_provider
@@ -70,6 +70,7 @@ from neckline.scan import corr as corr_mod
 from neckline.scan import leader as leader_mod
 from neckline.scan import seeds as seeds_mod
 from neckline.scan.seeds import DriverSeed, SeedSet
+from neckline.selection import basket_store as _basket_store
 from neckline.selection import engine_api
 from neckline.selection import member_hygiene
 from neckline.selection.pack import Pack, get_active_pack, get_pack
@@ -1412,88 +1413,16 @@ def _summarize_search_stage(evidence_by_seed: Mapping[str, DriverEvidence]) -> s
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 落库(`baskets` / `basket_members`)
+# 落库(`baskets` / `basket_members`)——**实现已搬去 `basket_store.py`**
 # ══════════════════════════════════════════════════════════════════════════
+#
+# V2-⑥【planner 裁定 · 跨块】把篮子四表的写入口统一搬进
+# `neckline/selection/basket_store.py`(四张表有事务边界要管,一族表一个 store,
+# 同 `report/store.py` / `review/store.py` 既有体例)。这里保留**同名再导出**,
+# 行为逐字节不变、⑤ 的既有调用方与单测一字不动 —— 照 ⑤ 自己刚做过的
+# `llm/json_block.py` 搬迁体例。**新代码请直接 import `basket_store`。**
 
-_BASKET_COLUMNS = (
-    "trade_date, basket_key, name, driver, driver_kind, tier, pack_version, "
-    "engine_api_version, charter_version, via, evidence_status, created_at"
-)
-_MEMBER_COLUMNS = (
-    "basket_id, ts_code, role_llm, role_mech, role_conflict, reason, is_primary, created_at"
-)
-
-
-def save_baskets(
-    result: AggregateResult,
-    *,
-    tier_by_basket_key: Mapping[str, int],
-    db_path: Optional[Path] = None,
-    via: str = "auto",
-) -> Dict[str, int]:
-    """把聚合结果落 `baskets` / `basket_members`。
-
-    ⚠ **`tier_by_basket_key` 是必填、且必须覆盖每一个篮子** —— `baskets.tier` 是
-    `NOT NULL`,而 tier 由 **⑥ Tier 分层引擎**定档。本函数**绝不臆造 tier**:少一个
-    就 `ValueError` fail loud。这也是为什么 `aggregate_baskets()` **不自动调用本
-    函数** —— plan 的「V2 新表汇总」把这两张表的写入块登记在 ⑦,⑤ 只提供能力。
-
-    **幂等语义**:`UNIQUE(trade_date, basket_key)` / `UNIQUE(basket_id, ts_code)`
-    走 `INSERT OR IGNORE` —— 同日同 `basket_key` 重跑 = 幂等 no-op,**不覆盖已写入
-    的行**(冻结/追加三律:模型判断是新版本、不回写)。驱动一旦变了,`driver_slug`
-    随之变、`basket_key` 也就变了,这正是 `crc32(trade_date|driver_slug)` 的设计
-    意图,不需要"更新"这个动作。
-    """
-    missing = [b.basket_key for b in result.baskets if b.basket_key not in tier_by_basket_key]
-    if missing:
-        raise ValueError(
-            f"save_baskets:以下篮子缺 tier,拒绝落库(tier 由 ⑥ 定档,本层不臆造):{missing}"
-        )
-    bad_tier = {
-        b.basket_key: tier_by_basket_key[b.basket_key]
-        for b in result.baskets
-        if tier_by_basket_key[b.basket_key] not in (1, 2, 3)
-    }
-    if bad_tier:
-        raise ValueError(f"save_baskets:tier 只能是 1/2/3,实得 {bad_tier}")
-
-    stats = {"baskets_inserted": 0, "baskets_existing": 0, "members_inserted": 0}
-    if not result.baskets:
-        return stats
-
-    init_schema(db_path)
-    now = _now()
-    with connection(db_path) as conn:
-        for b in result.baskets:
-            cur = conn.execute(
-                f"INSERT OR IGNORE INTO baskets ({_BASKET_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    b.trade_date, b.basket_key, b.name, b.driver, b.driver_kind,
-                    int(tier_by_basket_key[b.basket_key]), b.pack_version,
-                    b.engine_api_version, b.charter_version, via, b.evidence_status, now,
-                ),
-            )
-            if cur.rowcount:
-                stats["baskets_inserted"] += 1
-            else:
-                stats["baskets_existing"] += 1
-                logger.warning(
-                    "[aggregate] baskets 已存在同日同键行(%s/%s),幂等跳过、不覆盖既有行。",
-                    b.trade_date, b.basket_key,
-                )
-            row = conn.execute(
-                "SELECT id FROM baskets WHERE trade_date=? AND basket_key=?",
-                (b.trade_date, b.basket_key),
-            ).fetchone()
-            basket_id = int(row[0])
-            for m in b.members:
-                mc = conn.execute(
-                    f"INSERT OR IGNORE INTO basket_members ({_MEMBER_COLUMNS}) VALUES (?,?,?,?,?,?,?,?)",
-                    (basket_id, m.ts_code, m.role_llm, m.role_mech, int(m.role_conflict),
-                     m.reason, int(m.is_primary), now),
-                )
-                stats["members_inserted"] += mc.rowcount or 0
-    return stats
+save_baskets = _basket_store.save_baskets
 
 
 __all__ = [

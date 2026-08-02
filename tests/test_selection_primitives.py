@@ -580,6 +580,43 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
         "每颗种子在 LLM 上下文里最多列几只成员的工程护栏(同时定义了白名单闸的"
         "白名单范围)。同样只约束上下文规模,不是「够不够格」这类阈值判据。"
     ),
+    # —— V2-⑥ Tier 分层引擎(plan §五「插槽边界」同一条:定档引擎是**引擎本体**,
+    #    进包的只有 `tier.weights` / `tier.stage_scores` 两项)——————————————
+    ("tier.py", "TIER_CAPACITY"): (
+        "T1≤2 / T2≤5 / T3≤10,plan §五 V2-⑥ 原文写死的产品规则(同 aggregate 的"
+        "MIN_MEMBERS/MAX_MEMBERS 性质:改它等于改产品定义,要走 plan 而不是换包)。"
+    ),
+    ("tier.py", "TIERS"): (
+        "三个档位的枚举本身(1/2/3),对应 `baskets.tier` 的 DDL 取值域,不是阈值。"
+    ),
+    ("tier.py", "TIER1_MIN_SCORE"): (
+        "T1 质量线。⚠ **plan 未给数,临时工程默认**(同 ⑤-c MIN_LIFT_SAMPLE_SIZE=5 的"
+        "处置姿势):没有它就无法兑现「上限非配额、允许 T1 为空、市场混沌时不许凑数」"
+        "——纯排名制下 T1 永远填满。要让它可配必须走 ③ 的包 schema 扩容 + 换包四道闸,"
+        "已登记为 Plan 疏漏交 planner 裁定,在那之前⛔不许在代码里顺手改数。"
+    ),
+    ("tier.py", "TIER2_MIN_SCORE"): "T2 质量线,同 TIER1_MIN_SCORE 那一条(同批临时默认)。",
+    ("tier.py", "NEUTRAL_DIM_SCORE"): (
+        "某一维算不出时的中性分。它是「[0,1] 归一化维度的中点」这一**度量约定**,"
+        "不是可调偏好——真正要防的是拿 0 冒充「没数据」(0 是 stage_scores 里 overheat "
+        "的真实取值,「没有」与「没看」必须分得开)。"
+    ),
+    ("tier.py", "ONE_WORD_PENALTY"): (
+        "一字板 = 当日根本买不进 → 机会可实现性折价 100%。这是「买不进的涨停不算机会」"
+        "(蓝图 4.9)这句产品定义的算术表达,不是可调阈值。"
+    ),
+    ("tier.py", "LIMIT_UP_PENALTY"): (
+        "涨停但开过板 = 盘中有过成交机会 → 折价 50%。同上,是「能不能买到」的语义刻度,"
+        "不是对涨停本身的偏好。"
+    ),
+    ("tier.py", "_EPS"): (
+        "浮点比较容差,工程不变量(同 primitives._LIFT_EPS / sentinel/holding.py `_EPS` "
+        "先例:裸 >=/<= 比较除法产生的浮点噪声是本项目通用坑),非策略参数。"
+    ),
+    ("tier.py", "MAX_BASKETS_IN_RANK_CONTEXT"): (
+        "喂给 LLM 微调段的每档篮子上限,上下文规模护栏(同 aggregate."
+        "MAX_MEMBERS_IN_CONTEXT 性质),不参与任何判据。"
+    ),
 }
 
 

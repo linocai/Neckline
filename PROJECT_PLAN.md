@@ -358,18 +358,19 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-02 · 🏗️ V2.0.0 施工中 —— V2-①/②/③/③-K7/④/④b/⑤/⑤-b/⑤-c 全部完工,⑥ 解锁可开**。21 张新表全建齐;LLM 层枚举退役、改自填制注册表 + 双 Agent 路由 + 预算三本账;选股策略包机制落地(K4-pack + K7-pack 两份包);市场扫描层三张预计算表 + 四类驱动种子落地;行业题材阶段六态状态机落地(第 21 张表);**驱动聚合层(V2 心脏)落地并补齐成员卫生线闸 + lift 最小成分数门槛**——两段式 LLM 编排 + 成员白名单闸 + 角色对拍闸 + 成员卫生线闸(两级保险丝)+ 主归属 lift(达标/不达标/全不达标三态)+ 篮子落库口。全量测试零回归。
+**2026-08-02 · 🏗️ V2.0.0 施工中 —— V2-①/②/③/③-K7/④/④b/⑤/⑤-b/⑤-c/⑥ 全部完工,⑦ 解锁可开**。21 张新表全建齐;LLM 层枚举退役、改自填制注册表 + 双 Agent 路由 + 预算三本账;选股策略包机制落地(K4-pack + K7-pack 两份包);市场扫描层三张预计算表 + 四类驱动种子落地;行业题材阶段六态状态机落地(第 21 张表);驱动聚合层(V2 心脏)落地并补齐成员卫生线闸 + lift 最小成分数门槛;**Tier 分层引擎落地 —— 五维机械分定档 + 运行期访问锁 + LLM 同档微调(跨档一律拒收)+ 三表单事务落库**。全量测试零回归。
 
-- **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;至今全部改动**纯本地代码 + 单测**,未碰任何服务器/DNS/部署,未改任何现役章程或 `strategy_versions` 行为。真实 `data/neckline.db` 里全部 V2 表**仍是 0 行**(`selection_packs` 也仍 0 行,K4-pack/K7-pack 均只落盘未激活)。
-- **V2-⑤-b / ⑤-c 完工内容**(详见 §五 V2-⑤-b 段尾「完工记录」,含**五条如实登记**):新建 `neckline/selection/member_hygiene.py`(成员卫生线闸唯一实现,两级保险丝——ST/停牌/次新/板块永远拦,ma20/amount_ma20/K4 算不出才降级不拦 + 显式披露);`aggregate.py::assign_primary()` 改写为 lift 三态(达标篮之间比 / 不达标记 `sample_too_small` 退出比较 / 全不达标确定性兜底),`MIN_LIFT_SAMPLE_SIZE` 直接 import 引用 `industry_strength._MIN_MEMBERS` 防漂移(**不登记进 `_ENGINE_CONSTANT_WHITELIST`**——它是引用不是字面量,登记反而会破坏白名单反向存在性校验,如实登记为对"同 ⑤ 既有四个常量体例"的刻意偏离)。测试新增 30 例(`test_selection_member_hygiene.py` 23 + `test_selection_aggregate.py` 7),`test_selection_aggregate.py::_run()` 补测试脚手架(自动注册现役包 + `stock_basic.list_date` 默认值,`INSERT OR IGNORE`/`WHERE ... IS NULL` 语义不覆盖既有值)——⑤-b 让 hygiene 成为强制前置,而既有 55 个测试函数里只有 3 个显式注册过 `stock_basic`,不补这层脚手架会拦光所有候选成员。`_two_basket_env` 是既有 56 例中唯一动了测试**数据**(种子成分从 3 只扩到 5 只以满足新门槛,断言逐字未改)的一处,原本示范的"小样本失真"场景改由新测试专门覆盖。`pytest tests/ -q`:**2427 passed + 2 skip + 2 fail**(2 fail 仍是同名同因既有周日时间炸弹)。
+- **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;至今全部改动**纯本地代码 + 单测**,未碰任何服务器/DNS/部署,未改任何现役章程或 `strategy_versions` 行为。真实 `data/neckline.db` 里全部 V2 表**仍是 0 行**(`selection_packs` 也仍 0 行,K4-pack/K7-pack 均只落盘未激活;⑥ 冒烟跑在 `sqlite3.backup` 出来的一次性副本上)。
+- **V2-⑥ 完工内容**(详见 §五 V2-⑥ 段尾「完工记录」,含**十条如实登记**):新建 `neckline/selection/tier.py`(五维机械分 → 定档 → LLM 同档微调,`score_and_tier()` 唯一编排入口,`use_llm` 默认 False 可完全离线)+ `neckline/selection/basket_store.py`(篮子四表唯一写入口:`save_baskets` 从 `aggregate.py` 原地搬来 + 可选 `conn=`、`aggregate.py` 同名再导出;新增 `save_tier_history` 与**事务 1** 入口 `save_tier_decision`)。五维 = 板块强度 / 驱动新鲜度(六态经现役包 `stage_scores` 映射)/ 龙头结构清晰度(簇内 RS20 倒数衰减)/ 可交易性(一字与涨停占比)/ 红黄牌密度;**任一维算不出一律取中性分 0.5 + `flags` 如实标,⛔ 永不写 0**。**运行期访问锁**:特征行里同时装着六个 LLM 产出字段,单测断言机械分 `accessed == _TIER_SCORE_INPUTS` 且与 LLM 键 `isdisjoint`。容量 T1≤2/T2≤5/T3≤10 是**上限非配额**(每档一道质量线,够格但满了向下顺延,三档全满则今日不定档)。真实数据冒烟(2026-07-24):15 个篮子 → **T1=2 / T2=5 / T3=8、溢出 0**,跨档提案被拒、档内调序生效并留痕,事务 1 落 15/22/15,重跑全 existing、0 冲突。`pytest tests/ -q`:2427 → **2516 passed + 2 skip + 2 fail**(2 fail 仍是既有周日时间炸弹);⑤ 既有 63 例一字未改仍绿。
+- **V2-⑤-b / ⑤-c 完工内容**(详见 §五 V2-⑤-b 段尾「完工记录」,含五条如实登记):新建 `neckline/selection/member_hygiene.py`(成员卫生线闸唯一实现,两级保险丝——ST/停牌/次新/板块永远拦,ma20/amount_ma20/K4 算不出才降级不拦 + 显式披露);`aggregate.py::assign_primary()` 改写为 lift 三态,`MIN_LIFT_SAMPLE_SIZE` 直接 import 引用 `industry_strength._MIN_MEMBERS` 防漂移。
 - **V2-③-K7 完工内容**(详见块内「完工记录」,含三条如实登记):`primitives.py` 白名单增第 10 个模式 `industry_stage_daily.*`;`intel_rank_priority` 新增方向声明表(`asc`/`desc` 显式区分,未登记维度 fail loud);`pack.py` 新增 `config.tier.stage_scores` 校验 + 访问器;新增 `packs/K7-pack.json`(9 原语全收录,`ENGINE_API_VERSION` 判定为纯增量、保持 1,K4-pack-v1 回滚锚逐位不变)。
-- **V2-④b 完工内容**(详见块内「完工记录」,含三条如实登记):第 21 张表 `industry_stage_daily` + `neckline/scan/stage.py::decide_stage()` 六态判据(启动/发酵/过热/分歧回调/退潮/无题材)+ `scripts/industry_stage.py` + `daily_update.py` 挂载。真实数据冒烟与研究实现对拍一致率 97.71%,残余分歧定位到"域过滤口径差异"、判定生产实现正确。
-- **V2-⑤ 完工内容**(详见块内「完工记录」,含十条如实登记):新建 `neckline/selection/aggregate.py`(`aggregate_baskets()` 唯一编排入口,永不抛异常);围栏 JSON 解析器搬到 `neckline/llm/json_block.py`。真实数据冒烟跑通并修掉两处合成测试看不见的坑。
+- **V2-④b 完工内容**(详见块内「完工记录」,含三条如实登记):第 21 张表 `industry_stage_daily` + `neckline/scan/stage.py::decide_stage()` 六态判据 + `scripts/industry_stage.py` + `daily_update.py` 挂载。
+- **V2-⑤ 完工内容**(详见块内「完工记录」,含十条如实登记):新建 `neckline/selection/aggregate.py`(`aggregate_baskets()` 唯一编排入口,永不抛异常);围栏 JSON 解析器搬到 `neckline/llm/json_block.py`。
 - **V2-④/③ 完工内容**:全新包 `neckline/scan/`(三张预计算表 + 四类驱动种子)、全新包 `neckline/selection/`(`engine_api.py`/`primitives.py`/`pack.py`)+ `scripts/activate_pack.py` + 首包 `packs/K4-pack.json`。
-- **本次三方并发窗口(①②③③-K7④④b⑤⑤-b⑤-c 全部落定)已闭合**:③-K7(`primitives.py`/`pack.py`/`packs/K7-pack.json`)、④b(`db.py`/`neckline/scan/stage.py`/`scripts/industry_stage.py`)、⑤-b/⑤-c(`aggregate.py`/`member_hygiene.py`)三条线文件面互不相交,各自 commit 已核对零冲突。
-- **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处。均未改 Plan,如与规划意图不符请澄清。
+- **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处、**⑥ 十处**。均未改 Plan,如与规划意图不符请澄清。
+- **⑥ 提请 planner 裁定的两处 Plan 缺口(不阻塞 ⑦,但越早定越好)**:① **档位质量线 `TIER1_MIN_SCORE=0.60` / `TIER2_MIN_SCORE=0.40` 是 builder 的临时工程默认** —— Plan 写了「上限非配额、允许 T1 为空、市场混沌时不许凑数(单测锁死)」,但纯排名制下 T1 永远填满、那条单测根本写不出来,故必须有一道绝对分数线;它带策略语义(多好才配叫 T1),按 ⑤-c 先例本该进包,但两份包都没有这个键、Plan 也没授权 ⑥ 扩 ③ 的包 schema。② **容量溢出的篮子今日不落库**(`baskets.tier` NOT NULL,臆造 tier 更错),留痕在 `TierResult.dropped`;若认为溢出篮也该有个档需另行裁定。
 - **仍未修复的三点既有欠账**(与各新块均无关):V2-① 的 `test_holding_k4_check.py` 未传 `db_path`(会写开发库,已 `spawn_task` 记账)、V2-② 的 `news_scan.py` 缺 `prompt_context`、`TASK_INQUIRY` 归入检索类默认路由待澄清。
-- **下一步** = **V2-⑥**(③Tier 分层引擎;依赖 ③ ③-K7 ④b ⑤ 全部就位,**现已解锁**;落库次序已由 planner 裁定——⑥ 单事务写 `baskets`+`basket_members`+`tier_history`,⑦ 只写 `basket_cards`,写入口统一搬 `neckline/selection/basket_store.py`)。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**(裁定 #3,§八 第 13/14 项);在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**,不阻塞。
+- **下一步** = **V2-⑦**(④篮子卡冻结 + ⑦-K7 成员标注件;依赖 ⑥ 已就位,**现已解锁**;⑦ **只写 `basket_cards` 一张表**,写入口 `save_basket_card()` 加进已建好的 `neckline/selection/basket_store.py`,**单独一个事务**、不与 ⑥ 合并;「有篮子无卡」是合法中间态)。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**(裁定 #3,§八 第 13/14 项);在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**,不阻塞。
 - **待办总入口 = §七 Backlog**(新增 [P3-32]:lift 门槛 5 与"小簇是否天然该输"的策略语义待 ⑨ 攒够归因样本后交策略线/用户过目)。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/v1.5_施工图_20260802归档.md` 文末附录。
@@ -1110,7 +1111,7 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 
 ---
 
-### V2-⑥ · ③Tier 分层引擎:机械分定档 + LLM 同档微调 + `tier_history`(@builder)
+### V2-⑥ · ③Tier 分层引擎:机械分定档 + LLM 同档微调 + `tier_history`(@builder)✅ 完工(2026-08-02)
 
 **目标**:把篮子候选定档 T1/T2/T3,**定档可完整复现**。
 #### ⑤-b · 成员卫生线闸(2026-08-02 planner 裁定;**⑤ 主体已完工,本子项是追加施工项**)✅ 完工(2026-08-02)
@@ -1250,6 +1251,129 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 - **复用 ⑤ 已实现的写入口**:`save_baskets(result, *, tier_by_basket_key, db_path|conn)` —— ⑥ 是它的**调用方**,把定档结果按 `basket_key` 组成 `tier_by_basket_key` 传进去。**⑥ 不自己再写一份 INSERT**(缺 tier 就 `ValueError` 的 fail-loud 语义原样保留)。
 - 写入口统一搬进新模块 `neckline/selection/basket_store.py`(`aggregate.py` 同名再导出、行为逐字节不变),`save_tier_history(...)` 也住那里。
 - **`INSERT OR IGNORE` 幂等 + 重跑不覆盖**(D0 冻结件);重跑结果与已冻结行不一致 → WARNING + 报告如实披露,**不静默**。
+
+**完工记录(2026-08-02,@builder-pro)**
+
+新建两个模块,**不碰 ⑦ 的任何东西**(`save_basket_card` 留给 ⑦ 自己加):
+
+- **`neckline/selection/tier.py`** —— 五维机械分 + 定档 + LLM 同档微调,唯一编排入口
+  `score_and_tier(result, trade_date, *, pack, db_path, parquet_dir, use_llm=False, provider, ledger)`。
+  **`use_llm` 默认 False**(纯机械、零 LLM 调用),`use_llm` 与 `provider` 刻意是两个开关
+  ——注入个桩不会意外走上 LLM 路径。
+- **`neckline/selection/basket_store.py`** —— 篮子四表唯一写入口。`save_baskets` 从
+  `aggregate.py` **原地搬来**(新增可选 `conn=`,不传时逐字节等价),`aggregate.py` 保留
+  `save_baskets = _basket_store.save_baskets` 同名再导出(单测断言"是同一个函数对象");
+  新增 `save_tier_history(...)` 与**事务 1** 入口 `save_tier_decision(...)`。
+
+**五维机械分与访问锁的落点**
+
+| 维度 | 数据源 | 聚合规则 | 算不出时 |
+|---|---|---|---|
+| `sector_strength` | `industry_strength_daily`(只读表)+ `sectors.compute_sector_strength` 概念热榜(既有在线路径) | 成员行业名次 → `1-(rank-1)/total`;两侧**取较大者**,概念只加成不减分 | 中性 + `sector_strength_missing` |
+| `driver_freshness` | ④b `industry_stage_daily.stage` → **现役包** `tier.stage_scores` | 成员各行业分值取 max | 中性 + `stage_missing`(K4-pack 无该段 → `stage_scores_absent`;码不在映射里 → `stage_unmapped`) |
+| `leader_clarity` | `BasketMemberCandidate.rs_rank`(⑤ 从 `leader_structure_daily` 解析) | `1/min(rank)` 倒数衰减(MRR 形态,无额外参数) | 中性 + `leader_clarity_missing` |
+| `tradability` | 当日 `limit_derived` + `daily` 两个分区 | 一字扣 1.0 / 涨停开过板扣 0.5,`1-加权比例` | 中性 + `tradability_missing` |
+| `card_density` | ⑤-b 带过来的 `member.k4_tag` | `1-命中数/成员数` | ⑤ 报 `k4_unavailable` → 中性 + `card_density_missing` |
+
+**中性分 = `NEUTRAL_DIM_SCORE=0.5`,任何一维算不出都走它 + `flags` 如实标,⛔ 永不写 0**
+(plan 只对 `stage_missing` 点名,这里统一到全部五维——理由同一条:0 是 `overheat` 的真实
+取值)。**访问锁**:`build_tier_row()` 产出的特征行**同时装着**五个机械维度与六个 LLM 产出
+字段(`llm_name`/`llm_driver`/`llm_why_now`/`llm_member_reasons`/`llm_roles`/
+`llm_evidence_claims`),`mech_score(row, weights)` 只许读 `_TIER_SCORE_INPUTS` 五键——单测用
+记录访问键的 dict 子类在**运行期**断言 `accessed == _TIER_SCORE_INPUTS` 且
+`isdisjoint(_LLM_PROVENANCE_KEYS)`,配一条"行里真的有 LLM 字段可读"的可证伪性断言(否则
+"没读到"只是因为压根没有)。权重 `resolve_weights(pack)` **缺维度/多出引擎不认识的维度
+双向 fail loud**,并做**归一化**(K4/K7 权重和本就为 1,是恒等变换)——归一化是让机械分恒在
+[0,1],档位线才谈得上可比。
+
+**定档与容量**:`(机械分降序, basket_key 升序)` 排定(⛔ 不靠行序,CLAUDE.md rank 确定性
+铁律)→ 每档一道**质量线**,够格才进,够格但满了**向下顺延**,三档都满 → 今日不定档
+(`capacity_overflow` 留痕、不落库,`baskets.tier` NOT NULL 不许臆造)。
+
+**LLM 同档微调闸与留痕形状**:`TASK_TIER_RANK` + 不联网 + 扣 `LEDGER_REASON`;user 消息首行
+恒 `prompt_context.date_anchor_line`,system prompt 内嵌 `TIMELINESS_RULES`。产出走
+`llm/json_block.split_narrative_and_reference_json` **先剥 JSON 再谈解析**(v1.5.1 标签劫持案),
+**不复用 `_parse_verdict`**(静态守门单测)。提案形状
+`{"adjustments":[{"basket_key","tier","rank_in_tier","reason"}]}`,六类拒收码语义不合并:
+`cross_tier`(**跨档一律整条丢弃 + WARNING**)/ `unknown_basket` / `bad_rank` / `slot_taken`
+(名次先到先得)/ `duplicate_key`(同一篮子被提两次,放行会让它占两个坑、剩余篮子填空位时
+直接崩)/ `malformed`。未被有效提案指定名次的篮子按机械序填剩余空位 → "只动一个"时其余
+相对次序不变、可复现。留痕 = `rank_mech` 与 `rank_in_tier` **两个都落库** +
+`llm_rank_delta = rank_mech − rank_in_tier`(正 = 被往前提)+ `llm_reason`。
+LLM 缺席 / 调用失败 / 预算耗尽 / 解析失败 → **机械序原样用**,`llm_stage` 五态如实 +
+`notes` 加 `tier_rank_unadjusted:{stage}`;每档只有 1 个篮子时**根本不发起调用**。
+
+**事务 1**:`save_tier_decision()` 在**同一个 `with connection()`** 里
+`INSERT baskets`(拿 id)→ `basket_members`(用 id)→ `tier_history`(用 id);回滚靠
+`connection()` 只在正常退出才 `commit()` 这一既定语义(单测 monkeypatch 让
+`_save_tier_history_on_conn` 抛错 → 三张表**库里零行**)。四表 `INSERT OR IGNORE` 冻结不覆盖;
+**重跑不一致不静默**:`frozen_conflicts` 逐条人读描述随 stats 返回 + WARNING「今日已有冻结
+篮子,本次重算结果未采纳(差异 N 处)」,由报告层披露。
+
+**本地冒烟(真实交易日 2026-07-24 + 真 parquet + LLM 全桩 + 真库只读副本)**:
+K7-pack 激活于副本 → 18 天行业强度 1980 行 / 阶段表 1980 行 / 涨停簇 490 行 / 相关 12650 行 /
+龙头结构 490 行 → **206 颗种子(截断 20 颗)→ ⑤ 出 15 个篮子**(卫生线剔 59 只,拒收 0)→
+**⑥ 定档 T1 = 2(满)/ T2 = 5(满)/ T3 = 8,溢出 0**,机械分 0.810 ~ 0.280;LLM 桩的**跨档提案被
+拒**(`cross_tier`)、档内调序**生效**(`fdef7327` 机械 #5 → 最终 #1,Δ=4,`llm_reason` 落库);
+事务 1 落 `baskets 15 / basket_members 22 / tier_history 15`,**重跑 = 全 existing、0 冲突、
+库里逐位不变**。真实 `data/neckline.db` 全部 V2 表**仍 0 行**、现役章程仍 `K1` 未动。
+
+**测试**:新增 `tests/test_selection_tier.py` **86 例**(五维各自的算得出/算不出两路 + 六态
+参数化 + 三级 tie-break 端到端〔造 RS 全并列 + 成交额并列两组数据,过 ④ 的
+`compute_leader_structure_for_day` 再喂本维〕+ 访问锁 + 容量四路 + LLM 十一路 + 事务 1 七路 +
+静态守门五条);`tests/test_selection_primitives.py::_ENGINE_CONSTANT_WHITELIST` 补登记 tier.py
+的 8 个引擎常量。`python -m pytest tests/ -q`:2427 → **2516 passed + 2 skip + 2 fail**
+(2 fail 仍是同名同因既有周日时间炸弹,与本块无关)。⑤ 的既有 63 例**一字未改、逐条仍绿**。
+
+**如实登记的设计判断(均未改 Plan,如与规划意图不符请澄清)**
+
+1. **⚠ 最要紧一条:Plan 没给「档位质量线」的数,是 builder 定的临时工程默认**
+   (`TIER1_MIN_SCORE=0.60` / `TIER2_MIN_SCORE=0.40`,T3 无下限)。**为什么必须有它**:
+   「上限非配额、允许 T1 为空、市场混沌时不许凑数 —— 单测锁死」这句话在**纯排名制下不可
+   实现**(只要当天有 ≥1 个篮子,T1 就永远填满,"T1 为空"这条单测根本写不出来)。故必须有
+   一道**绝对分数**的质量线。取值理由:五维各自归一到 [0,1]、权重归一后加权和亦在 [0,1],
+   0.5 是"整体中性"的自然基准,T1 取明显好于中性、T2 取不明显差于中性。**它带策略语义**
+   (多好才配叫 T1),按 ⑤-c 的先例本该进包交策略线校准,但 K4-pack / K7-pack 都没有这个
+   键、Plan 也没授权 ⑥ 扩包 schema(那是 ③ 的地盘 + 换包四道闸),故先做引擎常量并在
+   `_ENGINE_CONSTANT_WHITELIST` 里写明"临时默认、要可配须走包扩容"。**请 planner 裁定是否
+   转为包参数**;在那之前⛔不许在代码里顺手改数。
+2. **`leader_clarity` 的衰减函数选了倒数衰减 `1/rank`**(plan 只说"依名次衰减、衰减函数是
+   引擎常量",没给函数形态)。选它的理由:MRR 的标准形态、单调、上界 1.0、**零额外参数**
+   ——任何带底数的几何衰减都要再发明一个常量。副作用如实登记:`rank=2` 恰好等于
+   `NEUTRAL_DIM_SCORE=0.5`,即"第 2 名"与"这一维没数据"**数值上撞车**;两者靠
+   `flags` 里的 `leader_clarity_missing` 区分(与 `stage_missing` 同一机制),但如果日后要让
+   数值本身也能分开,得换衰减函数或挪中性分。
+3. **中性分统一到全部五维**(plan 只对 `driver_freshness` 的缺行点名)。理由是同一条:任何
+   一维用 0 表示"没数据"都会与该维的真实低分撞车;`flags` 是唯一可靠的区分手段。
+4. **`sector_strength` 的概念侧只加成不减分**(取行业侧与概念侧的**较大者**)。plan 只写
+   「`industry_strength_daily` + 概念板块强度」没给合成规则;取 max 的理由是"不在今日概念
+   热榜上 ≠ 弱,只是这一路没有证据"——取平均会让"没有证据"变成"扣分",正是「没有」与
+   「没看」混为一谈。概念侧走 `report/sectors.py::compute_sector_strength`,它是 v1 报告
+   **既有的在线路径**(`intel.py`/`intel_candidates.py` 都在调),不是本块新开的全历史扫描。
+5. **`tradability` 的两档扣分比例(一字 1.0 / 涨停开过板 0.5)是 builder 定的**;plan 只给了
+   语义(「一字比例与涨停占比」「买不进的涨停不算机会」)。一字 = 全扣有硬依据(当日全天
+   最低价没低于涨停价 = 物理上买不进);0.5 是"有过成交机会但不好买"的折中,**无证据支持
+   具体数值**,与档位线同属"日后可校准"那一类。
+6. **簇定义如实交代(plan 要求写明)**:`rs_rank` 来自 ④ 的 `leader_structure_daily`,其簇 =
+   `limit_cluster_daily` 的聚类簇(同日簇 + 连板簇),**与 K7 审计用的「(日,行业) 涨停家数
+   ≥3」粗簇不同构**;语义按 plan 要求保持「簇内相对强弱头名」。一票同属多簇时由 ⑤ 的
+   `_resolve_mech_role(prefer_cluster_keys=...)` 择一,⑥ 只消费其结果、不另挑簇。
+7. **`rank_mech` / `rank_in_tier` 都定义为「档内 1-based」**(DDL 只写了"最终序/机械序"未
+   言明范围)。理由:`llm_rank_delta = rank_mech − rank_in_tier` 只有同一坐标系下才有意义;
+   跨档比较本就被禁,全局序在本块无用武之地。
+8. **容量溢出的篮子今日不落库**(plan 未明说溢出怎么办)。`baskets.tier` NOT NULL,给它们
+   臆造一个 tier 才是错的;溢出留痕在 `TierResult.dropped` + `notes`,由报告层披露。⚠ 这与
+   「⛔ 不许因为没卡就把篮子从报告里抹掉」不是一回事——那条治的是"有篮子无卡",这里是
+   "今天根本没给它定档"。**若 planner 认为溢出篮也该有个档,请裁定**(可选方案:全部塞
+   T3 并放宽 T3 容量,但那会突破 plan 写死的 `T3≤10`)。
+9. **`save_basket_card()` 没写**——跨块裁定说它也住 `basket_store.py`,但那是 ⑦ 的写入口,
+   本块不越块;⑦ 直接往这个模块里加即可。
+10. **`_save_baskets_on_conn` 的日志前缀保留 `[aggregate]`**(而不是改成 `[basket_store]`)
+    ——⑤ 的既有单测 `test_replay_is_idempotent_and_does_not_overwrite` 按 message 断言
+    「幂等跳过」,前缀虽不在断言里,但"搬迁后行为逐字节不变"的承诺覆盖日志文本;改前缀
+    属于无收益的行为变更。
+
+---
 
 ### V2-⑦ · ④篮子卡冻结:`baskets` / `basket_members` / `basket_cards`(@builder)
 
@@ -1779,6 +1903,7 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-02 · 🧭 **V2-⑥ ③Tier 分层引擎完工**(@builder-pro,纯本地代码 + 单测,零服务器 / 零部署;真实 `data/neckline.db` 全程只读、全部 V2 表仍 0 行、现役章程仍 `K1` 未动):新建 `neckline/selection/tier.py`(**五维机械分**——`sector_strength`〔`industry_strength_daily` 只读表 + 概念热榜,两侧取较大者、概念只加成不减分〕/ `driver_freshness`〔④b `industry_stage_daily.stage` 经**现役包** `tier.stage_scores` 映射〕/ `leader_clarity`〔`rs_rank` 倒数衰减 `1/min(rank)`,⛔ 连板高度不进〕/ `tradability`〔一字扣 1.0、涨停开过板扣 0.5〕/ `card_density`〔⑤-b 的 `k4_tag` 命中密度〕;**任一维算不出一律中性分 0.5 + `flags` 如实标,⛔ 永不写 0** —— 0 是 `overheat` 的真实取值)+ **运行期访问锁**(特征行里刻意同装六个 LLM 产出字段,`mech_score()` 只许读 `_TIER_SCORE_INPUTS` 五键,单测断言 `accessed == 白名单` 且与 LLM 键 `isdisjoint`,并配一条"行里真有 LLM 字段可读"的可证伪性断言)+ **权重只住包里**(`resolve_weights()` 缺维度/多出未知维度**双向 fail loud**,归一化保证机械分恒在 [0,1])+ **定档**(`(机械分降序, basket_key 升序)` 确定性排定 → 每档一道质量线 → **上限非配额**,够格但满了向下顺延、三档全满则今日不定档并留痕)+ **LLM 同档微调**(`TASK_TIER_RANK`、不联网、扣 `LEDGER_REASON`;日期锚 + `TIMELINESS_RULES`;产出走 `json_block` 先剥 JSON 再解析、**不复用 `_parse_verdict`**;**跨档提案整条丢弃 + WARNING**,另五类拒收码 `unknown_basket`/`bad_rank`/`slot_taken`/`duplicate_key`/`malformed` 语义不合并;`rank_mech` 与 `rank_in_tier` 两者都落库 + `llm_rank_delta` + `llm_reason`;缺 provider / 调用失败 / 预算尽 / 解析失败 → **机械序原样用**并如实标 `tier_rank_unadjusted:{stage}`;每档只 1 个篮子时根本不发起调用)。新建 `neckline/selection/basket_store.py`(篮子四表唯一写入口:`save_baskets` 从 `aggregate.py` **原地搬来**、新增可选 `conn=`、`aggregate.py` 同名再导出**同一函数对象**,⑤ 既有 63 例一字未改仍绿;新增 `save_tier_history` 与**事务 1** 入口 `save_tier_decision` —— 三表同一 `with connection()` 内落地,单测 monkeypatch 让 tier_history 抛错验证**三张表一起回滚、库里零行**;`INSERT OR IGNORE` 冻结不覆盖,重跑不一致 → `frozen_conflicts` 逐条带出 + WARNING「本次重算结果未采纳」,不静默)。**本地冒烟**(真实交易日 2026-07-24 + 真 parquet + LLM 全桩 + 真库一次性副本):206 颗种子(截断 20)→ ⑤ 出 15 篮 → **⑥ 定档 T1=2(满)/ T2=5(满)/ T3=8、溢出 0**,机械分 0.810~0.280;跨档桩提案真被拒、档内调序真生效(机械 #5 → 最终 #1,Δ=4,理由落库),事务 1 落 `15/22/15`,重跑全 existing、0 冲突。测试:新增 `tests/test_selection_tier.py` **86 例** + `_ENGINE_CONSTANT_WHITELIST` 补登记 tier.py 8 个引擎常量,`pytest tests/ -q` 2427→**2516 passed + 2 skip + 2 fail**(2 fail 仍是同名同因既有周日时间炸弹)。**十条如实登记**详见 V2-⑥ 段尾「完工记录」,其中**两处提请 planner 裁定**:① **档位质量线 0.60/0.40 是 builder 的临时工程默认**(Plan 没给数;纯排名制下「允许 T1 为空 + 不许凑数」的单测根本写不出来,故必须有绝对分数线;它带策略语义本该进包,但两份包都无此键、Plan 也未授权 ⑥ 扩 ③ 的包 schema);② **容量溢出的篮子今日不落库**(`baskets.tier` NOT NULL,臆造 tier 更错;留痕在 `TierResult.dropped`)。下一步:**V2-⑦**(篮子卡冻结 + ⑦-K7 成员标注件;`save_basket_card()` 直接加进已建好的 `basket_store.py`、**单独一个事务**)
 - 2026-08-02 · 🏗️ **V2-⑤-b 成员卫生线闸 + V2-⑤-c lift 最小成分数门槛完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署;与 ③-K7/④b 两条并发线文件面不相交):新建 `neckline/selection/member_hygiene.py`——过滤链路挂在 `aggregate_baskets()` 内 `build_mech_context()` 之后、`presented_by_seed`(`_shortlist` 截断)之前,当日对候选成员集调用 `apply_member_hygiene()` **恰好一次**;**两级保险丝**:tier-1(`stock_hygiene` 的 `is_st`/`board` + 独立停牌/次新检查,数据源 `sentinel.universe.load_stock_meta`+`stock_basic`+`suspend_d`)算不出 **fail closed**(拒收);tier-2(`close`/`ma20`/`amount_ma20`,数据源 `build_research_panel` 单日切片;K4 分区归属复用 `report/holding_k4_check.py` 既有机械镜像 + 本模块自写 bulk 谓词下推 loader,不 import 即将随候选榜退役的 `intel_candidates.py`)算不出 **fail open**(`hygiene_unavailable`/`k4_unavailable` 分开披露)。`k4_advisory_gate` 两档语义照包:`hard_cut→exclude` 剔出,`avoid_flag→tag` 保留但标(`k4_tag_of`,新字段 `BasketMemberCandidate.k4_tag` 随成员流转供未来 ⑥/⑦ 消费)。`aggregate.py::assign_primary()` 改写为 **lift 三态**:达标篮(成分池 ≥ `MIN_LIFT_SAMPLE_SIZE`)之间正常比 `primary_reason='highest_lift'`;不达标篮 `lift=None`+`lift_reason='sample_too_small'`、完全退出比较;一票全部候选篮都不达标 → 确定性兜底 `(成分池大小降序, basket_key 升序)`、`primary_reason='fallback_no_qualified_lift'`。`MIN_LIFT_SAMPLE_SIZE` **直接 import 引用** `industry_strength._MIN_MEMBERS`(不是抄字面量,故意不登记进 `_ENGINE_CONSTANT_WHITELIST`——登记一个白名单扫描器结构上命中不到的 `Name` 引用反而会打破反向存在性校验)。测试:新增 `tests/test_selection_member_hygiene.py` **23 例** + `test_selection_aggregate.py` **7 例**(⑤-b 编排接线 3 + ⑤-c lift 三态 4);`test_selection_aggregate.py::_run()` 补测试脚手架(自动注册现役包 + 补齐 `stock_basic.list_date`,`INSERT OR IGNORE`/`WHERE...IS NULL` 语义不覆盖既有值——⑤-b 让卫生线成为强制前置,既有 55 个测试函数里只 3 个显式注册过 `stock_basic`);`_two_basket_env` 是既有 56 例里唯一动了测试**数据**(非断言)的一处(种子成分 3→5 只以满足新门槛,原本示范的"小样本失真"改由新测试专门覆盖)。`pytest tests/ -q`:**2427 passed + 2 skip + 2 fail**(2 fail 仍是同名同因既有周日时间炸弹,树内同时含 ③-K7/④b 已完工的净增,三方文件面互不相交零冲突)。**五条如实登记**(其中最要紧:①"面板行存在但字段 null"与"整行缺失"改判同等降级,原因是 `non_new_stock` 120 自然日门槛远严于 ma20 所需 20 交易日,能过前者却后者仍 null 现实代表数据缺口非"真太新";②K4 评估失败的降级哲学是 builder 类推 plan 未点名)详见 V2-⑤-b 段尾「完工记录」。下一步:**V2-⑥**(依赖的 ③/③-K7/④b/⑤ 现已全部就位,解锁可开)
 - 2026-08-02 · 🏗️ **V2-③-K7 原语与白名单跟进 + `packs/K7-pack.json` 完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署;与 ⑤-b/⑤-c 另一 builder 并行施工,文件面不相交):`neckline/selection/primitives.py` 白名单增第 10 个模式 `industry_stage_daily.*`;`intel_rank_priority` 新增 `_RANK_DIM_DIRECTIONS` 方向声明表(既有三维 `asc` 不变,新增 `industry_stage_score` 为 `desc`、`leader_rs_rank` 为 `asc`),未登记维度名 fail loud。`neckline/selection/pack.py` 新增 `config.tier.stage_scores` 可选键校验(键 ⊆ `neckline.scan.stage.STAGE_ORDER` 六码,值须数值)+ `Pack.tier_stage_scores()` 访问器。**`ENGINE_API_VERSION` 判定:保持 1(纯增量,K4-pack-v1 回滚锚逐位不变,单测锁死)**。新增 `packs/K7-pack.json`(`K7-pack-v1`,9 原语全收录、8 个与 K4-pack 逐字节相同、`intel_rank_priority.dims` 换四维排序键、`tier.weights` 证据化初值、`stage_scores` 六态英文码全覆盖;四道闸 dry-run 全绿,**只落盘不激活**,`selection_packs` 真实库仍 0 行)。**补 ③ 完工记录挂账的"换包→跟着变"测试局限的真实版本**:两处新测试改用仓库里真实 K4/K7 两份包文件驱动 `intel_rank_priority`(排序结果真的翻转)与真实 `generate_seeds()`(种子集合逐位不变,证明 K7 变更不含 scan 种子阈值)。测试:4 文件净增 24 例,`pytest tests/ -q` 2371→**2395 passed + 2 skip + 2 fail**(2 fail 仍是同名同因既有周日时间炸弹,零回归)。三处如实登记(K7-pack 收录全部 9 原语非草案 5 个/未加 schema 级 dims 枚举校验、留运行时 fail loud/新增 `tier_stage_scores()` 访问器非 Plan 逐字要求)详见 V2-③-K7 块内「完工记录」。下一步:V2-⑥(依赖 ③ ③-K7 ④b ⑤,现除 ⑤-b/⑤-c 外均已完工)
 - 2026-08-02 · 🏗️ **V2-④b 行业题材阶段六态状态机完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署;与 ⑤ 并行施工,文件面不相交):第 21 张表 `industry_stage_daily` 落 `neckline/db.py::_SCHEMA`(附加在 ①/④ 已完工段落之后,不回改);新模块 `neckline/scan/stage.py`(`decide_stage()` 六态判据唯一实现——启动/发酵/过热/分歧回调/退潮/无题材,互斥优先级从上往下,三类"缺数不猜"安全落 `none` 且 `stage_reason` 逐条区分;`persist_days` 直接读 `industry_strength_daily` 单一源不重算,近 2/5 交易日强度旗标读本表自己历史不重查源表)+ `scripts/industry_stage.py {refresh,verify,bootstrap}` + `daily_update.py` 挂 `update_industry_stage`(排 `update_industry_strength` 之后)。**两遍法未采纳**(如实登记,理由同 ④ 自己 #5 先例:本表无跨日无界递推状态)。**本地真实数据冒烟**:`industry_strength_daily` 暖启动 134 个交易日(2026-01-02~07-24,14740 行,0.69s)→ `industry_stage_daily` 同区间批算(14740 行,**1.75s**),`verify` 全区间全绿,尾窗六态分布人工核对合理。**与研究实现对拍**(`scripts/oneoff/compare_industry_stage_with_research.py`,研究面板覆盖至 07-17):排除冒烟库暖启动前 2.5 周后(2026-01-20~07-17,118 天,12390 样本)**一致率 97.71%**,`is_strength_day`/ignition/fermentation/overheat 判定**两侧零冲突**,残余 284 处分歧**全部**落在"双方都判非强度日、仅 divergence/ebb/none 三态细分不同"一类,抽样确认根因是研究脚本 `lu_cnt` 施加 `base_expr()` 域过滤、生产按 ④b-A 定义直接读 `limit_derived.is_limit_up` 不做域过滤——按 ④b-D 裁决,**生产实现判定正确**,已如实记账。测试新增 `test_scan_stage.py` 38 例,`pytest tests/ -q`:**2371 passed + 2 skip + 2 fail**(2 fail 是既有周日时间炸弹,与本块无关;当前树含 ⑤ 并发 builder 未提交在制品,已计入本次全量数;本块自身净增 38、零回归)。真实 `data/neckline.db` 全程只读、MD5/mtime 不变;`industry_strength_daily` 零改动(全仓 grep 确认零写入)。三处如实登记(grep 守门改行为验证——本表无类比 `compute_industry_strength` 的可命名封禁函数;缺行保险丝两路的"⑥ 不拦/排序键退化"消费逻辑留给 ⑥ 落地时验收,本块只交付 `load_industry_stage`/`industry_stage_status` 两个原语;读侧口径指纹校验为主动补充的一致性增强非越权)详见 V2-④b 块内「完工记录」。下一步:V2-⑥(需 ④b 与 ③-K7 就位,现均已完工)
