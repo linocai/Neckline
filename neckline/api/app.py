@@ -27,6 +27,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, st
 
 from neckline import breathing as breathing_store
 from neckline import decision_log as decision_log_store
+from neckline import user_actions
 from neckline import watchlist as watchlist_store
 from neckline.api import notify
 from neckline.api.deps import require_api_token_ready, require_token
@@ -42,9 +43,8 @@ from neckline.api.schemas import (
     CircuitStateOut,
     ContingencyScenarioOut,
     DecisionCreateIn,
-    DecisionLinkIn,
+    DecisionNoteOut,
     DecisionOut,
-    DecisionReviseIn,
     DecisionsListOut,
     DecisionTrackOut,
     DecisionTrackRowOut,
@@ -89,7 +89,6 @@ from neckline.api.schemas import (
     RetreatBrakeOut,
     ReviewGetOut,
     ReviewUploadOut,
-    ScenarioOutcomeIn,
     SettingsOut,
     SettingsProviderOut,
     SettingsPushIn,
@@ -698,6 +697,26 @@ def _resolve_prices(codes: List[str]) -> Dict[str, float]:
     return out
 
 
+def _resolve_quote_one(code: str) -> Optional[Any]:
+    """单票**完整**实时报价对象(v2.0.0 ⑩-A:供 `entry_snapshots` 捕捉涨幅/量能等)。
+
+    复用与 `_resolve_prices` 同一个可注入钩子 `_QUOTES_FN`(单测免联网、且沿用
+    既有 `test_price_injected_from_quotes` 的注入姿势,不必为快照另开一套 mock
+    机制);与 `_resolve_prices` 不同的是**不裁剪成只剩 price**,原样把 Quote
+    对象透给 `positions_entry`,由它决定要不要 / 怎么用其余字段。任何源失败 /
+    无网络 → `None`,不崩(开仓主流程不能因取不到实时价而失败)。"""
+    fetch = _QUOTES_FN
+    if fetch is None:
+        from neckline.sentinel.quotes import get_quotes
+        fetch = get_quotes
+    try:
+        quotes = fetch([code])
+    except Exception:  # noqa: BLE001
+        logger.warning("[positions] 开仓快照拉实时价失败(quote 落 None)", exc_info=True)
+        return None
+    return (quotes or {}).get(code)
+
+
 def _resolve_price_stale(codes: List[str]) -> Dict[str, Any]:
     """持仓票的价格陈旧度(v1.4-①-B / §七 P0-2)。`{ts_code: PriceStale}`,**只含当日
     无 EOD 行的票**。领域实现在 `data/price_stale.py`(只读 parquet + 日历,不联网)。
@@ -1011,30 +1030,54 @@ def open_position(body: PositionOpenIn) -> PositionOpenOut:
       · 非交易日(`trade_cal` 判)→ `not_trading_day`
       · 晚于今天 → `future_buy_date`
     格式非法('YYYYMMDD' 之外)同样按 `not_trading_day` 拒(不静默吞成今天——「没给」和
-    「给错了」必须能分开)。写入仍走既有领域层 `sentinel/positions.py::open_position`
-    (它本就收 `buy_date`),**不重构领域层**。
+    「给错了」必须能分开)。
+
+    **v2.0.0(⑩-A/B)**:写入改走 `neckline.positions_entry.record_buy`(唯一编排
+    入口,CLI `scripts/positions.py add` 共用同一份逻辑)——除落台账本身外,同时
+    冻结 `entry_snapshots`、继承 `position_plans` version=1、`user_actions` 落
+    `kind='buy'`。这些全部是**系统自动关联的增强**,任何一项失败都不影响开仓本身
+    成功(`positions_entry.record_buy` 内部已包保险丝);响应新增的
+    `sourceBasketKey`/`tier`/`role`/`planAvailable`/`planDeviationNotice` 字段纯
+    展示,老客户端忽略未知键不受影响。**实时报价只在买入日=今天时才取**(历史
+    补录若也拿"此刻"的实时价会把无关的当下行情焊进历史快照,是数据污染不是丰富)。
     """
+    from neckline import positions_entry
+
     buy_date = _parse_buy_date_or_400(body.buyDate)
-    pid = pos_store.open_position(
-        ts_code=body.code, buy_price=body.buy_price, qty=body.qty,
-        buy_date=buy_date, note=(body.entry_reason or None),
-        buy_fees=body.buyFees, db_path=_db(),
+    quote = _resolve_quote_one(body.code) if buy_date == date.today() else None
+    result = positions_entry.record_buy(
+        body.code, body.buy_price, body.qty, buy_date,
+        note=(body.entry_reason or None), buy_fees=body.buyFees,
+        quote=quote, db_path=_db(),
     )
     stop_pct, _mh, _sc, _tpr = _active_config()
-    return PositionOpenOut(ok=True, position_id=pid, stop_line=_stop_line(body.buy_price, stop_pct))
+    return PositionOpenOut(
+        ok=True, position_id=result.position_id,
+        stop_line=_stop_line(body.buy_price, stop_pct),
+        sourceBasketKey=result.source_basket_key, sourceBasketName=result.source_basket_name,
+        tier=result.tier, role=result.role,
+        planAvailable=result.plan_available, planDeviationNotice=result.plan_deviation_notice,
+    )
 
 
 @app.post(f"{API_PREFIX}/positions/{{position_id}}/close", dependencies=[Depends(require_token)])
 def close_position(position_id: int, body: PositionCloseIn) -> OkOut:
-    """清仓录入(§3.8 只记账,永不代下单/撤单)。可选 `closeReason` 落库(v1.2-A2);
-    清仓后折进熔断评估(`circuit.evaluate_after_close`)——越阈值即建触发行 + 第五类
-    APNs 推送。**熔断是纯提醒层**:评估/推送**尽力而为、异常吞掉不阻断清仓主流程**
-    (F.3),服务端**绝不因熔断拦清仓**(本就是「只减」方向)。"""
+    """清仓录入(§3.8 只记账,永不代下单/撤单)。可选 `closeReason` 落库(v1.2-A2,
+    v2.0.0 起枚举扩至九枚,见 `positions.CLOSE_REASON_CODES`);清仓后折进熔断评估
+    (`circuit.evaluate_after_close`)——越阈值即建触发行 + 第五类 APNs 推送。**熔断
+    是纯提醒层**:评估/推送**尽力而为、异常吞掉不阻断清仓主流程**(F.3),服务端
+    **绝不因熔断拦清仓**(本就是「只减」方向)。
+
+    **v2.0.0(⑩-D)**:写入改走 `neckline.positions_entry.record_sell`(同 `record_
+    buy` 姿势),清仓成功后额外落 `user_actions(kind='sell')`,该记账失败不影响
+    清仓本身成功。"""
+    from neckline import positions_entry
+
     if body.sell_time and len(body.sell_time) == 8 and body.sell_time.isdigit():
         sell_date = datetime.strptime(body.sell_time, "%Y%m%d").date()
     else:
         sell_date = date.today()
-    ok = pos_store.close_position(
+    ok = positions_entry.record_sell(
         position_id, sell_price=body.sell_price, sell_date=sell_date,
         close_reason=body.closeReason, sell_fees=body.sellFees, db_path=_db(),
     )
@@ -1074,14 +1117,19 @@ def unlock_circuit() -> OkOut:
 
 
 # —— v1.2-B 预注册决策日志(§2.1 第 3 条 / plan §五 v1.2-B)——————————————————
-# **审计件、非下单件**(§3.8):本节端点全部只做「装配 + 出入参映射」,领域读写
-# 全部委托 `neckline.decision_log`(唯一写入通道,同 watchlist/positions 姿势),
-# 端点本身无任何下单 / 撤单 / 拉行情副作用。**八项落库后不可编辑**——本节没有
-# 任何「改八项内容」的端点;唯一的修改路径是 `revise`(新增修订行)与
-# `scenario-outcome`(只翻情景树 `matched`)。
+# **v2.0.0(⑩-C)决策日志强制表单退役**:`decision_log` 表停写留档(历史行只读
+# 归因,`neckline.decision_log` 不再提供任何写函数)。本节只剩两个**只读**端点
+# (`GET /decisions` / `GET /decisions/{id}/track`,§3.8「审计件、非下单件」精神
+# 不变);`create_decision` 复用 `POST /decisions` 路径但已换血成蓝图 §2.2/§5.2
+# 的「用户可选补充」入口——不再触碰 `decision_log`,改落 `user_actions`。旧的
+# `link`/`cancel`/`revise`/`scenario-outcome` 四个端点随写入口一起下线(历史行
+# 「不可编辑」的既有铁律现在升级成「完全不可写」,这四个端点存在的唯一理由就是
+# 编辑历史行,理由消失、端点随之消失)。
 
 def _shape_decision(row: "decision_log_store.DecisionRow") -> DecisionOut:
-    """决策日志领域行 → 客户端契约。同 `_shape_candidate` 的透传惯例。"""
+    """决策日志领域行 → 客户端契约。同 `_shape_candidate` 的透传惯例。**只读侧
+    使用**(GET 装配历史行);v2.0.0 起没有任何写端点会构造 `DecisionRow` 来源于
+    新写入,所以这里出现的永远是历史数据。"""
     return DecisionOut(
         id=row.id, code=row.ts_code, name=row.name or row.ts_code, createdAt=row.created_at,
         whyBuy=row.why_buy, whyEntryPrice=row.why_entry_price,
@@ -1100,48 +1148,30 @@ def _shape_decision(row: "decision_log_store.DecisionRow") -> DecisionOut:
     )
 
 
-# v1.4-⑤-B(需求 2 补充)决策日志第⑨项「最高追价上限」400 reason(**客户端 `mapReason`
-# 必须加 case**,守项目 CLAUDE.md「404/reason 映射」坑)。
-REASON_MAX_CHASE_REQUIRED = "max_chase_required"
-
-
-def _extract_max_chase_pct_or_400(body: "DecisionCreateIn | DecisionReviseIn") -> Optional[float]:
-    """`maxChasePct`(⑨)必须是**主动选择**——要么填数字,要么显式传 `null`(=不设
-    上限)。**省略该 JSON 键**(客户端表单没让用户做选择/老写法)→ 400
-    `reason=max_chase_required`;显式传 `null` 合法,原样放行。
-
-    **用 `model_fields_set` 区分"缺键" vs "显式 null"**:pydantic v2 的
-    `BaseModel.model_fields_set` 是请求体里**实际出现过**的字段名集合——`maxChasePct`
-    字段本身声明了默认值 `None`(供 Python 直调方/旧版契约友好),若只看
-    `body.maxChasePct is None` 无法分辨"用户主动选了不设上限"与"这个键压根没出现在
-    请求体里",必须查 `model_fields_set`(FastAPI 用请求体 JSON 构造该模型时会如实
-    记录哪些键被传入,与字段默认值机制完全独立)。"""
-    if "maxChasePct" not in body.model_fields_set:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"ok": False, "reason": REASON_MAX_CHASE_REQUIRED},
-        )
-    return body.maxChasePct
-
-
 @app.post(f"{API_PREFIX}/decisions", dependencies=[Depends(require_token)])
-def create_decision(body: DecisionCreateIn) -> DecisionOut:
-    """预注册决策日志(九项,plan B.1/B.2 + v1.4-⑤-B)。**`created_at` 服务端生成,
-    忽略客户端任何时间戳入参**——`DecisionCreateIn` 本就无 createdAt 字段,请求体里
-    同名字段(若有)会被 pydantic 直接丢弃,不会传导到 `decision_log_store.create_decision`
-    (该函数签名同样无此形参)。**`maxChasePct`(⑨)必须显式传**(填数字或显式
-    `null`),缺键 → 400,见 `_extract_max_chase_pct_or_400`。"""
-    max_chase_pct = _extract_max_chase_pct_or_400(body)
-    row = decision_log_store.create_decision(
-        ts_code=body.code, name=body.name, why_buy=body.whyBuy, why_entry_price=body.whyEntryPrice,
-        target_price=body.targetPrice, exit_low=body.exitLow, exit_high=body.exitHigh,
-        thesis_tags=list(body.thesisTags), invalidation=body.invalidation,
-        contingency_scenarios=[s.model_dump() for s in body.contingencyScenarios],
-        playbook_tag=body.playbookTag, planned_price=body.plannedPrice, planned_qty=body.plannedQty,
-        max_chase_pct=max_chase_pct,
-        db_path=_db(),
-    )
-    return _shape_decision(row)
+def create_decision(body: DecisionCreateIn) -> DecisionNoteOut:
+    """用户可选补充入口(v2.0.0 起,⑩-C 退役重定义;蓝图 §2.2/§5.2)。**全部字段
+    可选**——空提交(不传 `labels`/`voiceNote`)同样 200、`recorded=[]`,这正是
+    「不传五必填 → 200 而非 400」的落点:旧版此处的九项强制表单 + `maxChasePct`
+    二选一强制校验已随 `decision_log` 写入口一起下线,不再有任何理由 400。
+
+    `labels`(蓝图 §2.2 七枚标签)与 `voiceNote`(一句可选语音说明)分别落
+    `user_actions` 的 `kind='label'`/`'voice_note'`(⑩-D),**不写 `decision_log`**
+    (grep 守门见 `tests/test_decision_log.py`)。`code`/`positionId` 只是挂载点。"""
+    recorded: List[str] = []
+    if body.labels:
+        user_actions.record(
+            "label", ts_code=(body.code or None), position_id=body.positionId,
+            payload={"labels": list(body.labels)}, db_path=_db(),
+        )
+        recorded.append("label")
+    if body.voiceNote:
+        user_actions.record(
+            "voice_note", ts_code=(body.code or None), position_id=body.positionId,
+            payload={"text": body.voiceNote}, db_path=_db(),
+        )
+        recorded.append("voice_note")
+    return DecisionNoteOut(ok=True, recorded=recorded)
 
 
 @app.get(f"{API_PREFIX}/decisions", dependencies=[Depends(require_token)])
@@ -1188,65 +1218,6 @@ def decision_track(decision_id: int) -> DecisionTrackOut:
             for t in tracks
         ],
     )
-
-
-@app.post(f"{API_PREFIX}/decisions/{{decision_id}}/link", dependencies=[Depends(require_token)])
-def link_decision(decision_id: int, body: DecisionLinkIn) -> OkOut:
-    """成交后一键关联(plan B.2):`status` 置 filled + `position_id` 回填。"""
-    ok = decision_log_store.link_decision(decision_id, body.positionId, db_path=_db())
-    if not ok:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
-    return OkOut(ok=True)
-
-
-@app.post(f"{API_PREFIX}/decisions/{{decision_id}}/cancel", dependencies=[Depends(require_token)])
-def cancel_decision(decision_id: int) -> OkOut:
-    """用户放弃该预注册计划(plan B.2):`status` 置 cancelled。"""
-    ok = decision_log_store.cancel_decision(decision_id, db_path=_db())
-    if not ok:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
-    return OkOut(ok=True)
-
-
-@app.post(f"{API_PREFIX}/decisions/{{decision_id}}/revise", dependencies=[Depends(require_token)])
-def revise_decision(decision_id: int, body: DecisionReviseIn) -> DecisionOut:
-    """新增一行修订(plan B.2「改动只新增修订行,不改旧行」,v1.4-⑤-B 起九项全量
-    重录)。旧行(`decision_id`)原地不变;新行 `revisionOf` 指向**链根** id(见
-    `decision_log.revise_decision` 文档)。修订等于重新预注册一整套九项内容,同一份
-    「`maxChasePct` 必须显式传」纪律适用(缺键 → 400,同 `create_decision`)。
-    `decision_id` 不存在 → 404。"""
-    max_chase_pct = _extract_max_chase_pct_or_400(body)
-    row = decision_log_store.revise_decision(
-        decision_id, why_buy=body.whyBuy, why_entry_price=body.whyEntryPrice,
-        target_price=body.targetPrice, exit_low=body.exitLow, exit_high=body.exitHigh,
-        thesis_tags=list(body.thesisTags), invalidation=body.invalidation,
-        contingency_scenarios=[s.model_dump() for s in body.contingencyScenarios],
-        playbook_tag=body.playbookTag, planned_price=body.plannedPrice, planned_qty=body.plannedQty,
-        max_chase_pct=max_chase_pct,
-        db_path=_db(),
-    )
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
-    return _shape_decision(row)
-
-
-@app.post(f"{API_PREFIX}/decisions/{{decision_id}}/scenario-outcome", dependencies=[Depends(require_token)])
-def scenario_outcome(decision_id: int, body: ScenarioOutcomeIn) -> OkOut:
-    """情景树⑦结果标记专用端点(plan B.2)——**只翻 `matched`,绝不改
-    `scenario`/`trigger`/`action`**(不可编辑口径的唯一例外落点)。`decision_id`
-    不存在 → 404;`outcomes` 任一 `index` 越界 → 422。"""
-    try:
-        ok = decision_log_store.set_scenario_outcomes(
-            decision_id, [o.model_dump() for o in body.outcomes], db_path=_db(),
-        )
-    except decision_log_store.ScenarioIndexError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"ok": False, "reason": "scenario_index_out_of_range", "message": str(e)},
-        )
-    if not ok:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
-    return OkOut(ok=True)
 
 
 # —— v1.2-G 呼吸试验仓台账(§2.1 第 3 条仓位分配 / plan §五 v1.2-G)——————————————
@@ -1534,9 +1505,9 @@ def create_settings_provider(body: ProviderCreateIn) -> ProviderOut:
 
 @app.put(f"{API_PREFIX}/settings/providers/{{name}}", dependencies=[Depends(require_token)])
 def update_settings_provider(name: str, body: ProviderUpdateIn) -> ProviderOut:
-    """局部更新 Provider(🔴)。未出现的字段不改(`model_fields_set` 判据,同
-    `_extract_max_chase_pct_or_400` 先例);`name` 不存在 → 404。`get_provider()`
-    下次调用即现读 DB 生效(运行时,不重启)。"""
+    """局部更新 Provider(🔴)。未出现的字段不改(pydantic v2 `model_fields_set`
+    判"键缺失 vs 显式传值"的既定体例,CLAUDE.md 定案);`name` 不存在 → 404。
+    `get_provider()` 下次调用即现读 DB 生效(运行时,不重启)。"""
     fields = body.model_fields_set
     kwargs: Dict[str, Any] = {}
     if "baseUrl" in fields:

@@ -18,18 +18,22 @@ D5 时间退出 horizon 同口径,覆盖短线 1-2 日打法的相关观察窗)�
 
 **d_offset 语义(距创建后第几个交易日,不含创建当日本身)**:决策 `created_at`
 当日或更早的 `trade_date` → offset 0,尚未到追踪窗口,本次跳过(不写行,留给
-未来某天的报告run 再算)。offset 达到或超过 N → 该行落库后**立即**把决策
-`status` 转 `expired`(未成交自动过期,追踪定格)。**自愈**:若报告管线曾断跑
-导致查询当天时 offset 一次性跳过 N(如 offset=7),仍**如实**按【实际 offset】
-落一行再过期——不假装观测发生在第 N 天,也绝不让决策永久卡在 pending(参照
-本项目「同日重跑幂等 / 不静默卡死」的既定工程纪律)。
+未来某天的报告run 再算)。offset 达到或超过 N → 该行**落最后一行后停止追踪**
+(窗口外的 offset 不再落新行,`due` 过滤见 `_DUE_OFFSET_MAX`)。
+
+**v2.0.0(⑩-C)变更 —— 不再翻转 `decision_log.status`**:`decision_log` 表
+v2.0.0 起停写留档(`neckline.decision_log` 已删除 `expire_decision` 等全部写
+函数),本函数因此**不再把到期决策的 `status` 改成 `expired`**——历史 `pending`
+行会一直读作 `pending`(如实反映"这张表不再变化"这一事实,不是伪造"它被处理
+过")。**这不是回归**:旧行为的"过期"只是一个派生状态标记,追踪本身(落
+`decision_pending_track` 行)才是这个函数的核心产出,后者不受影响;`due` 的窗口
+上界改在 Python 侧过滤(`offset > DECISION_PENDING_TRACK_DAYS` 直接跳过,不再
+落任何新行),行为上等价于"过期后不再追踪",只是不回写 `decision_log`。
 
 **只追踪当前仍 `pending` 的决策**:每次调用重新查询 `decision_log` 的
-`status='pending'` 行——一旦某条决策被 `link_decision`(成交)或
-`cancel_decision`(放弃)改走,状态不再是 pending,自然从下一次查询结果中消失,
-不需要额外的「停止追踪」逻辑;修订链(`revise_decision` 产生的新行)有自己独立
-的 `id`/`created_at`,按同一规则独立追踪,不特殊处理。
-"""
+`status='pending'` 行——v2.0.0 后不会再产生新的 `pending` 行(写入口已退役),
+故本函数实际只服务于割接前遗留的历史行,窗口耗尽后自然从"有 due 项"退化为
+"无 due 项"(`test_no_pending_decisions_is_a_noop` 覆盖的稳态)。"""
 
 from __future__ import annotations
 
@@ -87,6 +91,20 @@ def _save_track_row(
         )
 
 
+def _already_completed(decision_id: int, db_path: Optional[Path]) -> bool:
+    """该决策此前是否已被追踪到 `d_offset ≥ DECISION_PENDING_TRACK_DAYS`(达到/
+    超过追踪窗口终点)。v2.0.0 起用这个查询替代"翻 `decision_log.status=expired`"
+    作为"停止追踪"的判据——**观察得到的效果等价**(到点就不再新增追踪行),但
+    物理上不碰 `decision_log` 一个字节(该表停写留档)。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT MAX(d_offset) FROM decision_pending_track WHERE decision_id=?",
+            (decision_id,),
+        ).fetchone()
+    return row is not None and row[0] is not None and int(row[0]) >= DECISION_PENDING_TRACK_DAYS
+
+
 def load_track_rows(decision_id: int, db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
     """某条决策的全部追踪快照(按 `trade_date` 升序)。供单测核对 + 未来端点
     (§v1.3 客户端契约清单「挂单追踪」)复用,读专用、无写副作用。"""
@@ -113,11 +131,12 @@ def track_pending_decisions(
     db_path: Optional[Path] = None,
 ) -> int:
     """16:35 报告管线收尾步骤(C.3)。对每条 `status='pending'` 的决策算距
-    `created_at` 之后第几个交易日,窗口内(offset ≥ 1)落一行 `decision_pending_track`
-    (同 `(decision_id, trade_date)` 幂等覆盖,同日重跑不重复);offset 达到或超过
-    `DECISION_PENDING_TRACK_DAYS` → 该决策同批转 `expired`(见模块 docstring
-    「自愈」段)。已 `filled`/`cancelled` 的决策不追踪(不在 `status='pending'`
-    查询结果内,天然排除)。
+    `created_at` 之后第几个交易日,窗口内(offset ≥ 1 且尚未追踪到过终点)落一行
+    `decision_pending_track`(同 `(decision_id, trade_date)` 幂等覆盖,同日重跑不
+    重复);offset 达到或超过 `DECISION_PENDING_TRACK_DAYS` 的那一行落库后,该决策
+    此后不再进入 `due`(`_already_completed` 判据,v2.0.0 起替代"翻 `decision_log.
+    status=expired`",见模块 docstring)。已 `filled`/`cancelled` 的决策不追踪
+    (不在 `status='pending'` 查询结果内,天然排除)。
 
     `close` 取自 `build_research_panel(trade_date, trade_date)`(与其它报告子
     模块同一份 EOD 面板访问层,不新拉数据源);某只票当日面板查无(停牌 / 未覆盖)
@@ -131,7 +150,10 @@ def track_pending_decisions(
         return 0
 
     due = [(d, _offset(d.created_at, trade_date)) for d in pending]
-    due = [(d, offset) for d, offset in due if offset >= 1]
+    due = [
+        (d, offset) for d, offset in due
+        if offset >= 1 and not _already_completed(d.id, db_path)
+    ]
     if not due:
         return 0
 
@@ -155,8 +177,6 @@ def track_pending_decisions(
         )
         _save_track_row(d.id, trade_date, offset, close, ret_from_plan, db_path=db_path)
         written += 1
-        if offset >= DECISION_PENDING_TRACK_DAYS:
-            decision_log.expire_decision(d.id, db_path=db_path)
     return written
 
 

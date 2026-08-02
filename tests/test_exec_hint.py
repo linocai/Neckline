@@ -11,8 +11,11 @@ from __future__ import annotations
 from datetime import date
 
 import neckline.report.exec_hint as eh
-from neckline.decision_log import create_decision
 from neckline.report.candidates import Candidate
+# v2.0.0(⑩-C):`decision_log` 表停写留档,`neckline.decision_log.create_decision`
+# 已物理删除;`tests.conftest.insert_decision_log_row` 是同签名的裸 SQL fixture
+# 替身,起别名保持下面全部既有调用点逐字不变(两者关键字参数集合恰好一致)。
+from tests.conftest import insert_decision_log_row as create_decision
 
 _TODAY = date.today()   # attach_exec_hints 按 trade_date 截断 decision_log(无前视偏差,
                          # 见 exec_hint._latest_decision docstring)——测试里的决策日志
@@ -266,15 +269,16 @@ def test_attach_exec_hints_c3_uses_latest_decision_for_that_code(isolated_env):
     assert eh.C3_LOW_LIMIT_SELF_AWARE in {h["code"] for h in cand2.exec_hints}
 
 
-def test_attach_exec_hints_c3_does_not_look_ahead_past_trade_date(isolated_env, monkeypatch):
+def test_attach_exec_hints_c3_does_not_look_ahead_past_trade_date(isolated_env):
     """无前视偏差铁律(§3.8):重新生成一个**历史**交易日的报告时,不能捞到那天
-    **之后**才创建的决策日志——否则历史回放会用到当时根本不存在的未来信息。"""
-    import neckline.decision_log as dl_mod
+    **之后**才创建的决策日志——否则历史回放会用到当时根本不存在的未来信息。
 
-    monkeypatch.setattr(dl_mod, "_now", lambda: "2026-07-25T09:00:00+00:00")
+    `created_at` 直接传给 fixture(v2.0.0 起 `decision_log` 停写留档,已无
+    `_now()` 可 monkeypatch——写死时间戳的效果与打桩 `_now()` 逐位相同)。"""
     create_decision(
         ts_code="600001.SH", why_buy="x", why_entry_price="x", invalidation="x",
         thesis_tags=[], playbook_tag="SWING_CHASE", max_chase_pct=-1.0,   # 会触发 C3
+        created_at="2026-07-25T09:00:00+00:00",
         db_path=isolated_env.db_path,
     )
 
@@ -291,7 +295,7 @@ def test_attach_exec_hints_c3_does_not_look_ahead_past_trade_date(isolated_env, 
     assert eh.C3_LOW_LIMIT_SELF_AWARE in {h["code"] for h in cand2.exec_hints}
 
 
-def test_attach_exec_hints_c3_truncation_uses_beijing_date_not_utc(isolated_env, monkeypatch):
+def test_attach_exec_hints_c3_truncation_uses_beijing_date_not_utc(isolated_env):
     """**v1.4 review 契约线 🟡-2(时区缝)**:`created_at` 落库是 UTC,而截断日是**交易日**
     (北京日)。北京 **T+1 00:00–07:59**(= UTC T 日 16:00–23:59)创建的决策,UTC 日期还停
     在 T —— 从前 T 日回放看得见它,等于读到了"当时还不存在"的决策。
@@ -299,12 +303,10 @@ def test_attach_exec_hints_c3_truncation_uses_beijing_date_not_utc(isolated_env,
     造法:决策创建于 UTC 2026-07-20T23:30(= **北京 07-21 07:30**,盘前预注册的现实时段)。
       · 回放 **07-20**(北京日)→ **不可见**(这条断言在修复前是红的:UTC 日期正是 07-20);
       · 回放 **07-21**(北京日)→ 可见(截断只挡未来,不误伤当天)。"""
-    import neckline.decision_log as dl_mod
-
-    monkeypatch.setattr(dl_mod, "_now", lambda: "2026-07-20T23:30:00+00:00")
     create_decision(
         ts_code="600001.SH", why_buy="x", why_entry_price="x", invalidation="x",
         thesis_tags=[], playbook_tag="SWING_CHASE", max_chase_pct=-1.0,   # 会触发 C3
+        created_at="2026-07-20T23:30:00+00:00",
         db_path=isolated_env.db_path,
     )
     cand = _candidate("600001.SH", {"ret_1d": 0.0, "pre_close": 10.0})
@@ -317,15 +319,15 @@ def test_attach_exec_hints_c3_truncation_uses_beijing_date_not_utc(isolated_env,
     assert eh.C3_LOW_LIMIT_SELF_AWARE in {h["code"] for h in cand2.exec_hints}
 
 
-def test_list_decisions_date_filter_is_beijing_day(isolated_env, monkeypatch):
+def test_list_decisions_date_filter_is_beijing_day(isolated_env):
     """同一条缝也在 `GET /decisions` 的 `from`/`to` 上(v1.2 起既有行为)——一并按北京日
     过滤。UTC 23:30 = 北京次日 07:30:该行属**次日**,`to=当日` 不应命中、`from=次日` 应命中。"""
     import neckline.decision_log as dl_mod
 
-    monkeypatch.setattr(dl_mod, "_now", lambda: "2026-07-20T23:30:00+00:00")
     row = create_decision(
         ts_code="600001.SH", why_buy="x", why_entry_price="x", invalidation="x",
         thesis_tags=[], playbook_tag="SWING_CHASE", max_chase_pct=None,
+        created_at="2026-07-20T23:30:00+00:00",
         db_path=isolated_env.db_path,
     )
     assert dl_mod.created_at_cn_date(row.created_at) == "2026-07-21"

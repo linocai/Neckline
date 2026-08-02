@@ -504,6 +504,83 @@ def write_flat_parquet(settings: Settings, filename: str, rows: List[dict]) -> P
     return path
 
 
+def insert_decision_log_row(
+    db_path,
+    *,
+    ts_code: str,
+    why_buy: str = "",
+    why_entry_price: str = "",
+    invalidation: str = "",
+    thesis_tags=None,
+    playbook_tag: str = "SWING_CHASE",
+    contingency_scenarios=None,
+    name=None,
+    target_price=None,
+    exit_low=None,
+    exit_high=None,
+    planned_price=None,
+    planned_qty=None,
+    max_chase_pct=None,
+    status: str = "pending",
+    position_id=None,
+    revision_of=None,
+    created_at=None,
+):
+    """v2.0.0 起(PROJECT_PLAN §五 V2-⑩-C)`decision_log` 表停写留档、
+    `neckline.decision_log` 不再提供 `create_decision` 等写函数——测试仍需要历史
+    pending/filled/cancelled 行做 fixture(如 `pending_track` 的追踪对象、
+    `exec_hint` C3 的最近决策查询),直接裸 SQL 插入,不经任何已退役的应用层写口。
+
+    返回 `DecisionRow`(复用 `neckline.decision_log.get_decision` 装配),调用方
+    原有的属性访问写法(`row.id`/`row.why_buy`/...)不必改。"""
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    from neckline.db import connection, init_schema
+    from neckline.decision_log import get_decision
+
+    init_schema(db_path)
+    now = created_at or _dt.now(_tz.utc).isoformat(timespec="seconds")
+    with connection(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO decision_log ("
+            "ts_code, name, created_at, why_buy, why_entry_price, target_price, "
+            "exit_low, exit_high, thesis_tags, invalidation, contingency_scenarios, "
+            "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at, "
+            "max_chase_pct"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                ts_code, name, now, why_buy, why_entry_price, target_price,
+                exit_low, exit_high, _json.dumps(list(thesis_tags or []), ensure_ascii=False),
+                invalidation, _json.dumps(list(contingency_scenarios or []), ensure_ascii=False),
+                playbook_tag, planned_price, planned_qty, status, position_id, revision_of, now,
+                max_chase_pct,
+            ),
+        )
+        new_id = int(cur.lastrowid)
+    row = get_decision(new_id, db_path=db_path)
+    assert row is not None
+    return row
+
+
+def set_decision_status(db_path, decision_id: int, status: str, *, position_id=None) -> None:
+    """测试夹具:直接改历史行状态(模拟 v2.0.0 之前 `link_decision`/`cancel_decision`
+    的最终效果),同样绕开已退役的应用层写函数——**只测试用**,生产代码不许有第二处
+    对 `decision_log` 的 UPDATE(全仓 grep 守门,见 `tests/test_decision_log.py`)。"""
+    from datetime import datetime as _dt, timezone as _tz
+
+    from neckline.db import connection, init_schema
+
+    init_schema(db_path)
+    now = _dt.now(_tz.utc).isoformat(timespec="seconds")
+    with connection(db_path) as conn:
+        conn.execute(
+            "UPDATE decision_log SET status=?, position_id=COALESCE(?, position_id), "
+            "updated_at=? WHERE id=?",
+            (status, position_id, now, decision_id),
+        )
+
+
 __all__ = [
     "fake_settings",
     "isolated_env",
@@ -518,4 +595,6 @@ __all__ = [
     "set_activation_timeline",
     "seed_synthetic_market",
     "write_flat_parquet",
+    "insert_decision_log_row",
+    "set_decision_status",
 ]

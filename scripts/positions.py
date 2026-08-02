@@ -14,6 +14,13 @@
 不做任何仓位纪律校验(单笔上限/最多5只/总敞口)——那是系统对候选的建议约束,
 不是对用户实际操作的强制拦截;系统只审计不拦人手动录入(§3.8「系统永不自动
 下单/撤单/改止损」的同一条精神延伸到这里:也不替用户拦下单)。
+
+**v2.0.0(⑩-A/D)**:`add`/`close` 改走 `neckline.positions_entry`(与 API
+`POST /positions`/`POST /positions/{id}/close` 共用同一份编排——entry_snapshots
+冻结 / position_plans 继承 / user_actions 自动记账,CLI 与 API 两条入口行为
+逐位一致,不因调用方是谁而不同)。实时报价只在 `buy_date` 是今天时才尝试拉取
+(历史补录不该被"此刻"的行情污染快照),CLI 场景无网络也不阻断记账(best-effort,
+异常已被 `positions_entry` 内部吞掉)。
 """
 
 from __future__ import annotations
@@ -21,19 +28,18 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from neckline import positions_entry  # noqa: E402
 from neckline.config import ensure_data_dirs  # noqa: E402
 from neckline.sentinel.positions import (  # noqa: E402
     CLOSE_REASON_CODES,
     Position,
-    close_position,
     load_all_positions,
     load_open_positions,
-    open_position,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -53,16 +59,41 @@ def _fmt_row(p: Position) -> str:
     return base
 
 
+def _resolve_quote_for_cli(ts_code: str, buy_date):
+    """CLI 侧的 best-effort 实时报价(同 `api/app.py::_resolve_quote_one` 姿势,
+    但没有 `_QUOTES_FN` 注入钩子——CLI 直接调 `sentinel.quotes.get_quote`)。只在
+    买入日=今天才取(历史补录不该被"此刻"行情污染快照);任何失败(含无网络)
+    → `None`,不阻断记账。"""
+    if buy_date != date.today():
+        return None
+    try:
+        from neckline.sentinel.quotes import get_quote
+        return get_quote(ts_code)
+    except Exception:  # noqa: BLE001
+        logger.warning("CLI 开仓快照拉实时价失败(quote 落 None,不影响记账)", exc_info=True)
+        return None
+
+
 def cmd_add(args: argparse.Namespace) -> int:
-    pid = open_position(args.ts_code, args.buy_price, args.qty, _parse_date(args.buy_date), note=args.note)
-    logger.info("已开仓记账:#%d %s 买入价%.2f×%d股 买入日%s", pid, args.ts_code, args.buy_price, args.qty, args.buy_date)
+    buy_date = _parse_date(args.buy_date)
+    quote = _resolve_quote_for_cli(args.ts_code, buy_date)
+    result = positions_entry.record_buy(
+        args.ts_code, args.buy_price, args.qty, buy_date, note=args.note, quote=quote,
+    )
+    logger.info("已开仓记账:#%d %s 买入价%.2f×%d股 买入日%s", result.position_id, args.ts_code, args.buy_price, args.qty, args.buy_date)
+    if result.source_basket_key:
+        logger.info("  来源篮子:%s(%s)Tier%s 角色=%s", result.source_basket_name, result.source_basket_key, result.tier, result.role)
+    else:
+        logger.info("  独立买入(当日现役卡里未查到该票)")
+    if result.plan_deviation_notice:
+        logger.warning("  %s", result.plan_deviation_notice)
     return 0
 
 
 def cmd_close(args: argparse.Namespace) -> int:
     sell_date = _parse_date(args.sell_date)
-    ok = close_position(args.position_id, args.sell_price, sell_date,
-                        close_reason=args.close_reason)
+    ok = positions_entry.record_sell(args.position_id, args.sell_price, sell_date,
+                                      close_reason=args.close_reason)
     if not ok:
         logger.error("清仓失败:未找到 id=%d 的持仓,或该持仓已清仓。用 `list --all` 核对。", args.position_id)
         return 1

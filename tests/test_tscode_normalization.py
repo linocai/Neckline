@@ -8,9 +8,10 @@
 D5 判向被保守锁死,**全程静默无报错**。
 
 修法钉死在**写入通道**(与 `neckline/watchlist.py` 既有姿势一致),不是 API 层——这样
-CLI(`scripts/positions.py`)、API、未来任何调用方都自动吃到。本文件锁死三条写入通道
-(positions / decision_log / inquiry_pool)+ 一条查询通道(`list_decisions(ts_code=)`),
-并直接实证「裸码入库会让 EOD 持仓管线 join 不上」这个原始故障(反向证伪哨兵)。
+CLI(`scripts/positions.py`)、API、未来任何调用方都自动吃到。本文件锁死两条写入通道
+(positions / inquiry_pool)+ 一条查询通道(`list_decisions(ts_code=)`,v2.0.0 起
+`decision_log` 写入口已退役,只剩这条读通道仍归一),并直接实证「裸码入库会让
+EOD 持仓管线 join 不上」这个原始故障(反向证伪哨兵)。
 """
 
 from __future__ import annotations
@@ -20,8 +21,9 @@ from datetime import date
 import polars as pl
 import pytest
 
-from neckline.decision_log import create_decision, list_decisions
+from neckline.decision_log import list_decisions
 from neckline.sentinel import positions as pos_store
+from tests.conftest import insert_decision_log_row
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 
@@ -48,20 +50,18 @@ class TestPositionsNormalization:
 
 
 class TestDecisionLogNormalization:
-    def _create(self, db, code):
-        return create_decision(
-            ts_code=code, why_buy="x", why_entry_price="y", invalidation="z",
-            thesis_tags=["t"], playbook_tag="p", db_path=db,
-        )
-
-    def test_create_decision_normalizes(self, isolated_env):
-        row = self._create(isolated_env.db_path, _BARE)
-        assert row.ts_code == _FULL
+    """v2.0.0 起(⑩-C)`decision_log` 写入口已退役——"写入侧归一"这件事无从测起
+    (物理上不存在任何应用层写口能把裸码写进这张表)。仍然成立、仍需锁死的是
+    **查询侧**:`list_decisions(ts_code=)` 依然归一后再比对,故 fixture 直接插入
+    "已是标准形态"的历史行(模拟割接前 v1.3.3 归一写入口留下的真实历史数据),
+    验证传裸码查询依然命中。"""
 
     def test_list_decisions_filter_normalizes(self, isolated_env):
-        """写入侧归一后,查询侧传裸码也必须命中(两侧过同一个函数)。"""
         db = isolated_env.db_path
-        self._create(db, _BARE)
+        insert_decision_log_row(
+            db, ts_code=_FULL, why_buy="x", why_entry_price="y", invalidation="z",
+            thesis_tags=["t"], playbook_tag="p",
+        )
         assert [d.ts_code for d in list_decisions(ts_code=_BARE, db_path=db)] == [_FULL]
         assert [d.ts_code for d in list_decisions(ts_code=_FULL, db_path=db)] == [_FULL]
 

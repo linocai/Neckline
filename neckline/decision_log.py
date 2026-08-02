@@ -1,40 +1,23 @@
-"""预注册决策日志(plan §五 v1.2-B,§2.1 第 3 条人机协作配套)存取 + CRUD。
+"""预注册决策日志(plan §五 v1.2-B,§2.1 第 3 条人机协作配套)**只读**存取层。
 
-下单前录八项(为什么买 / 为什么这个入场价 / 目标价 / 离场价格区间 / 论点标签 /
-证伪条件 / 应对方案·情景树 / 打法标签),**v1.4-⑤-B(需求 2 补充)起加第⑨项「最高
-追价上限」`max_chase_pct`**(相对昨收百分比,如 `3.0`=+3%;允许负值=只在低开时买;
-`None`=显式选择"不设上限")。时间戳先于成交防结果污染。**审计件、非下单件**——
-本模块任何函数都不触发下单 / 撤单 / 拉行情,只做记账(§3.8 铁律,同
-`neckline.sentinel.positions`/`neckline.watchlist` 姿势)。
+**v2.0.0 起停写留档(PROJECT_PLAN §五 V2-⑩-C 决策日志强制表单退役)**:`decision_log`
+表的 DDL 保留(`neckline/db.py`,注释标「v2.0.0 起停写」),历史行供归因只读;本
+模块**不再提供任何写函数**——`create_decision`/`link_decision`/`cancel_decision`/
+`expire_decision`/`revise_decision`/`set_scenario_outcomes` 连同它们的不可编辑
+口径注释一并删除,**不是注释掉,是物理删除**(全仓 grep 守门断言零写入,见
+`tests/test_decision_log.py`)。「预注册买入前的强制表单」被「开仓自动快照
+(`entry_snapshots`)+ 用户字段全部可选(落 `user_actions`)」取代,详见
+`neckline.positions_entry` 与 `api/app.py::create_decision`(v2.0.0 起复用同一
+URL 但已换血成完全不同的"用户可选补充"入口,不再碰本表)。
 
-**不可编辑口径(核心不变量,逐条对应表结构注释)**:
-    · ①-⑥(`why_buy`/`why_entry_price`/`target_price`/`exit_low`/`exit_high`/
-      `thesis_tags`/`invalidation`)+ ⑦ 情景树的 `scenario`/`trigger`/`action` +
-      ⑧(`playbook_tag`)+ ⑨(`max_chase_pct`)—— 本模块**无任何 UPDATE 语句触碰
-      这些列**。改动只能走 `revise_decision` 新增一行(`revision_of` 落链根 id),
-      旧行原地不变。
-    · 唯一例外 = ⑦ 情景树的 `matched`(事后结果标记,非预注册内容)——只能经
-      `set_scenario_outcomes` 翻,该函数的 UPDATE 只碰 `contingency_scenarios` +
-      `updated_at` 两列,绝不改 `scenario`/`trigger`/`action`。
-    · `status`/`position_id` 是审计结果关联字段(非九项之一),`link_decision`/
-      `cancel_decision` 可以改它们。
+本模块留存的只有:①`get_decision`/`list_decisions` 两个只读函数(`GET /decisions`
+/`GET /decisions/{id}/track` 的唯一数据来源);②`DecisionRow` 数据类与枚举码常量
+(供只读装配复用,历史行里这些值仍然合法);③`created_at_cn_date` 等纯函数(供
+`list_decisions` 按北京日期过滤历史行,逻辑与"是否还能写"无关)。
 
-**⑨ `max_chase_pct` 与 `planned_price` 语义分离(v1.4-⑤-B,不许合并)**:
-`planned_price` 是"我打算挂多少价"(v1.2-B 起既有,一直可选,无强制语义);
-`max_chase_pct` 是"开盘冲多高我就放弃该票、盘中不追补"(v1.4-⑤-B 新增)——两者
-描述交易计划里两个不同的决策点(挂单价 vs 追价上限),**并存不互相推导**,一个
-有值不代表另一个也该有值。本模块层面(领域函数默认 `None`,不强制、不校验两者
-关系)与 HTTP 层面(`api/app.py`/`api/schemas.py` 的必填校验只管 `max_chase_pct`
-键是否显式传,不管 `planned_price`)各自独立处理,不做任何交叉推断/覆盖。
-
-**`created_at` 服务端生成**:本模块所有创建函数(`create_decision`/
-`revise_decision`)签名里根本没有 `created_at` 形参——杜绝调用方(含 API 入参)
-伪造预注册时间戳,防结果污染(同研究铁律「预注册先行」原理)。
-
-**revision_of 落链根,不落直接父行**:`revise_decision(id, ...)` 新增行的
-`revision_of` = 「`id` 若自身已是修订行,取其 `revision_of`;否则 `id` 本身即
-链根」。整条修订链因此扁平——`WHERE revision_of=<根id>` 一步查出全部修订版本,
-`WHERE revision_of IS NULL` 一步查出全部首版,归因(v1.2.1-D)不必递归遍历链条。
+历史行的字段语义(为什么买/为什么这个入场价/……/⑨ 最高追价上限)与不可编辑口径
+的完整说明见 `archive/`(v1.2-B~v1.4-⑤-B 原始设计)与本文件 git 历史(v2.0.0 之前
+版本);本文件不再复述,避免对着一堆不存在的函数说明「它们不可编辑」。
 """
 
 from __future__ import annotations
@@ -54,6 +37,7 @@ STATUS_CANCELLED = "cancelled"
 STATUS_EXPIRED = "expired"
 
 # ⑤论点标签(服务端码,客户端展示层换算,沿 `CandidateOut.board`/`boardLabel` 先例)。
+# v2.0.0 起写入口退役,常量保留供只读装配历史行(合法值集合不变)。
 THESIS_TAG_CODES = ("THEME", "SENTIMENT_CYCLE", "CAPITAL_FLOW", "TECH_PATTERN", "NEWS")
 # ⑧打法标签(单选;三仓 = 2 短线追击 + 1 呼吸底仓试验)。
 PLAYBOOK_TAG_CODES = ("SWING_CHASE", "BREATHING_TRIAL")
@@ -66,11 +50,6 @@ _SELECT_COLS = (
     "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at, "
     "max_chase_pct"
 )
-
-
-class ScenarioIndexError(ValueError):
-    """`set_scenario_outcomes` 的 `index` 越界(超出该决策情景树数组范围)。
-    API 层据此转 422,不是 404(id 本身存在,只是 index 非法)。"""
 
 
 @dataclass
@@ -100,10 +79,6 @@ class DecisionRow:
     max_chase_pct: Optional[float] = None
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def _loads(text: Optional[str], default: Any) -> Any:
     if not text:
         return default
@@ -111,21 +86,6 @@ def _loads(text: Optional[str], default: Any) -> Any:
         return json.loads(text)
     except (json.JSONDecodeError, TypeError):
         return default
-
-
-def _normalize_scenarios(scenarios: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """情景树落库前的结构归一(防御性——API 层的 `ContingencyScenarioIn` 已保证
-    形状,这里是给直调本模块的调用方〔含单测〕兜底,缺 key 不炸)。`matched` 未传
-    → 默认 False(表头注释「事后结果标记」的默认态)。"""
-    out: List[Dict[str, Any]] = []
-    for s in scenarios:
-        out.append({
-            "scenario": s.get("scenario", ""),
-            "trigger": s.get("trigger", ""),
-            "action": s.get("action", ""),
-            "matched": bool(s.get("matched", False)),
-        })
-    return out
 
 
 def _to_iso_date(yyyymmdd: str) -> str:
@@ -139,7 +99,9 @@ def _to_iso_date(yyyymmdd: str) -> str:
 
 
 def created_at_cn_date(created_at: str) -> str:
-    """`created_at`(**UTC** ISO8601,`_now()` 写的)→ **北京日期** `'YYYY-MM-DD'`。
+    """`created_at`(**UTC** ISO8601,历史写入口〔v2.0.0 前的 `create_decision`/
+    `revise_decision`,已随写入口一并退役〕留下的既有格式)→ **北京日期**
+    `'YYYY-MM-DD'`。
 
     **v1.4 review 契约线 🟡-2(时区缝)**:`from`/`to` 过滤从前直接拿 `substr(created_at,1,10)`
     比,那是 **UTC 日期** —— 北京时间 **T+1 00:00–07:59** 创建的决策,UTC 日期还停在 T,
@@ -149,8 +111,8 @@ def created_at_cn_date(created_at: str) -> str:
     章程判定同一个源,不另立)。
 
     naive 串(手工 SQL 补的老行)按 **UTC** 读 —— 与 `brain._parse_instant` 对 naive
-    `activated_at` 的约定同源同理由:本列的唯一写入者 `_now()` 写的就是 UTC。
-    解析不了 → 退回前 10 字符(旧行为,不因脏数据 500)。"""
+    `activated_at` 的约定同源同理由:本列历史写入口写的就是 UTC。解析不了 → 退回
+    前 10 字符(旧行为,不因脏数据 500)。"""
     from neckline.calendar import CN_TZ
 
     s = (created_at or "").strip()
@@ -236,198 +198,9 @@ def list_decisions(
     return out
 
 
-# —— 写(唯一写入通道,同 `watchlist.py`/`sentinel/positions.py` 姿势)——————————
-
-def create_decision(
-    ts_code: str,
-    why_buy: str,
-    why_entry_price: str,
-    invalidation: str,
-    thesis_tags: List[str],
-    playbook_tag: str,
-    contingency_scenarios: Optional[List[Dict[str, Any]]] = None,
-    name: Optional[str] = None,
-    target_price: Optional[float] = None,
-    exit_low: Optional[float] = None,
-    exit_high: Optional[float] = None,
-    planned_price: Optional[float] = None,
-    planned_qty: Optional[int] = None,
-    max_chase_pct: Optional[float] = None,
-    db_path: Optional[Path] = None,
-) -> DecisionRow:
-    """预注册一条决策日志(九项,plan B.1/B.2 + v1.4-⑤-B)。`created_at` 服务端生成——
-    本函数签名本就无 `created_at` 形参,任何调用方都无法覆盖。新行 `status="pending"`、
-    `position_id=None`、`revision_of=None`(首版)。
-
-    `max_chase_pct`(⑨,v1.4-⑤-B):**本层默认 `None`,不强制、不校验**——"必须显式
-    选择"的纪律是 HTTP 契约层面的要求(`api/app.py::_extract_max_chase_pct_or_400`
-    探测 JSON 请求体是否显式带这个键),不是本函数的职责,CLI/单测等直调方照旧可以
-    不传(等同"未设上限",与"显式选择不设上限"在本层无法也无需区分)。
-
-    **`ts_code` 在写入通道归一(v1.3.3,与 `sentinel/positions.py::open_position` 同批
-    修复)**:`POST /decisions` 透传客户端 `body.code`,裸 6 位会以裸码入库;而
-    `report/pending_track.py` 是拿 `ts_code` **直接 join 行情面板**(`pl.col("ts_code")
-    .is_in(codes)`)算挂单未成交追踪的现价 —— 裸码 join 不上就静默取不到价。归一唯一源
-    `review.parse.normalize_ts_code`。`supersede`/`amend` 的新行 `ts_code` 继承自 base 行
-    (已归一),不必重复归一。"""
-    init_schema(db_path)
-    now = _now()
-    ts_code = normalize_ts_code(ts_code)
-    scenarios = _normalize_scenarios(contingency_scenarios or [])
-    with connection(db_path) as conn:
-        cur = conn.execute(
-            "INSERT INTO decision_log ("
-            "ts_code, name, created_at, why_buy, why_entry_price, target_price, "
-            "exit_low, exit_high, thesis_tags, invalidation, contingency_scenarios, "
-            "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at, "
-            "max_chase_pct"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                ts_code, name, now, why_buy, why_entry_price, target_price,
-                exit_low, exit_high, json.dumps(list(thesis_tags), ensure_ascii=False), invalidation,
-                json.dumps(scenarios, ensure_ascii=False), playbook_tag, planned_price, planned_qty,
-                STATUS_PENDING, None, None, now, max_chase_pct,
-            ),
-        )
-        new_id = int(cur.lastrowid)
-    row = get_decision(new_id, db_path=db_path)
-    assert row is not None  # 刚写入,必然读得到
-    return row
-
-
-def link_decision(decision_id: int, position_id: int, db_path: Optional[Path] = None) -> bool:
-    """成交后一键关联(plan B.2)。`status` 置 `filled` + `position_id` 回填。返回
-    是否命中该 id(不存在 → False,API 层据此 404)。"""
-    init_schema(db_path)
-    now = _now()
-    with connection(db_path) as conn:
-        cur = conn.execute(
-            "UPDATE decision_log SET status=?, position_id=?, updated_at=? WHERE id=?",
-            (STATUS_FILLED, position_id, now, decision_id),
-        )
-        return cur.rowcount > 0
-
-
-def cancel_decision(decision_id: int, db_path: Optional[Path] = None) -> bool:
-    """用户放弃该预注册计划(plan B.2)。`status` 置 `cancelled`。返回是否命中该 id
-    (不存在 → False,API 层据此 404)。"""
-    init_schema(db_path)
-    now = _now()
-    with connection(db_path) as conn:
-        cur = conn.execute(
-            "UPDATE decision_log SET status=?, updated_at=? WHERE id=?",
-            (STATUS_CANCELLED, now, decision_id),
-        )
-        return cur.rowcount > 0
-
-
-def expire_decision(decision_id: int, db_path: Optional[Path] = None) -> bool:
-    """挂单追踪 N 个交易日到期仍未成交 → 自动过期(plan §五 v1.3-④,原 v1.2.1-C;
-    `report.pending_track.track_pending_decisions` 调用)。`status` 置 `expired`。
-    返回是否命中该 id(不存在 → False)。"""
-    init_schema(db_path)
-    now = _now()
-    with connection(db_path) as conn:
-        cur = conn.execute(
-            "UPDATE decision_log SET status=?, updated_at=? WHERE id=?",
-            (STATUS_EXPIRED, now, decision_id),
-        )
-        return cur.rowcount > 0
-
-
-def revise_decision(
-    decision_id: int,
-    *,
-    why_buy: str,
-    why_entry_price: str,
-    invalidation: str,
-    thesis_tags: List[str],
-    playbook_tag: str,
-    contingency_scenarios: Optional[List[Dict[str, Any]]] = None,
-    target_price: Optional[float] = None,
-    exit_low: Optional[float] = None,
-    exit_high: Optional[float] = None,
-    planned_price: Optional[float] = None,
-    planned_qty: Optional[int] = None,
-    max_chase_pct: Optional[float] = None,
-    db_path: Optional[Path] = None,
-) -> Optional[DecisionRow]:
-    """新增一行修订(plan B.2「改动只新增修订行,不改旧行」,v1.4-⑤-B 起九项全量
-    重录)。`decision_id` 对应的旧行**原地不变**(本函数无任何 UPDATE 作用于它);
-    新行 `ts_code`/`name` 继承自 `decision_id` 行(修订不能换股票),`revision_of` =
-    **链根** id(见模块头注释),`status` 重置为 `pending`。`max_chase_pct` 同
-    `create_decision`:本层默认 `None`,"必须显式选择"是 HTTP 契约层职责,不在此
-    校验。`decision_id` 不存在 → None(API 层据此 404)。"""
-    base = get_decision(decision_id, db_path=db_path)
-    if base is None:
-        return None
-    root_id = base.revision_of if base.revision_of is not None else base.id
-    now = _now()
-    scenarios = _normalize_scenarios(contingency_scenarios or [])
-    with connection(db_path) as conn:
-        cur = conn.execute(
-            "INSERT INTO decision_log ("
-            "ts_code, name, created_at, why_buy, why_entry_price, target_price, "
-            "exit_low, exit_high, thesis_tags, invalidation, contingency_scenarios, "
-            "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at, "
-            "max_chase_pct"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                base.ts_code, base.name, now, why_buy, why_entry_price, target_price,
-                exit_low, exit_high, json.dumps(list(thesis_tags), ensure_ascii=False), invalidation,
-                json.dumps(scenarios, ensure_ascii=False), playbook_tag, planned_price, planned_qty,
-                STATUS_PENDING, None, root_id, now, max_chase_pct,
-            ),
-        )
-        new_id = int(cur.lastrowid)
-    row = get_decision(new_id, db_path=db_path)
-    assert row is not None
-    return row
-
-
-def set_scenario_outcomes(
-    decision_id: int,
-    outcomes: List[Dict[str, Any]],
-    db_path: Optional[Path] = None,
-) -> bool:
-    """情景树⑦结果标记专用(plan B.2「scenario-outcome 只翻 matched、绝不碰情景
-    文本」)。`outcomes` 每项 `{index, matched}`,`index` 对齐 `contingency_scenarios`
-    数组下标。**只 UPDATE `contingency_scenarios` + `updated_at` 两列**,`scenario`/
-    `trigger`/`action` 逐字不变(本函数从旧数组原样拷贝这三个 key,只替换命中项的
-    `matched`)。
-
-    返回是否命中该 id(不存在 → False,API 层据此 404)。任一 `index` 越界 →
-    `ScenarioIndexError`(API 层据此 422)——**先校验全部 index 合法,再一次性写回**
-    (不部分生效:一批 outcomes 里若有一个越界,整批都不落库)。
-    """
-    row = get_decision(decision_id, db_path=db_path)
-    if row is None:
-        return False
-    scenarios = [dict(s) for s in row.contingency_scenarios]  # 拷贝,不动原文本
-    for item in outcomes:
-        idx = item.get("index")
-        if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0 or idx >= len(scenarios):
-            raise ScenarioIndexError(
-                f"情景树下标越界:{idx!r}(该决策情景树长度 {len(scenarios)},合法范围 "
-                f"0..{len(scenarios) - 1})"
-            )
-    for item in outcomes:
-        scenarios[item["index"]]["matched"] = bool(item["matched"])
-    now = _now()
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        conn.execute(
-            "UPDATE decision_log SET contingency_scenarios=?, updated_at=? WHERE id=?",
-            (json.dumps(scenarios, ensure_ascii=False), now, decision_id),
-        )
-    return True
-
-
 __all__ = [
     "STATUS_PENDING", "STATUS_FILLED", "STATUS_CANCELLED", "STATUS_EXPIRED",
     "THESIS_TAG_CODES", "PLAYBOOK_TAG_CODES", "SCENARIO_ACTION_CODES",
-    "ScenarioIndexError", "DecisionRow",
+    "DecisionRow", "created_at_cn_date",
     "get_decision", "list_decisions",
-    "create_decision", "link_decision", "cancel_decision", "expire_decision", "revise_decision",
-    "set_scenario_outcomes",
 ]

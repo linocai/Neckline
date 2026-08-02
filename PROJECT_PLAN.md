@@ -1847,6 +1847,80 @@ K7-pack 激活于副本 → 18 天行业强度 1980 行 / 阶段表 1980 行 / �
 **依赖**:①⑦。
 **验收**:开仓只传三字段即成功且 `entry_snapshots` 有冻结行;计划继承版本化且原卡不变(单测);不传五必填 → **200 而非 400**;`decision_log` 零新增行(grep 守门);持仓侧对篮子表零写入(grep 守门);pytest 零回归。
 
+**✅ V2-⑩ 完工记录(2026-08-03,@builder,纯本地代码 + 单测,零服务器 / 零部署)**:
+
+新建 `neckline/positions_entry.py`(⑩-A/B/D 唯一编排入口,API `POST /positions`
+/`POST /positions/{id}/close` 与 CLI `scripts/positions.py add`/`close` 共用同一份
+逻辑,不各写一遍)。`record_buy()`:① 当日现役卡里查来源篮子(D0=`buy_date` 的上一
+交易日,查 `basket_members` 反查 `baskets`+`basket_cards`,查不到/篮子有卡未就绪
+两态分开如实标 `no_source_basket`/`card_not_ready`)——**全程只读 `baskets`/
+`basket_members`/`basket_cards`,零写入**(AST 守门单测断言);② `entry_snapshots`
+冻结一行(`buy_price`/`qty`/一次 best-effort 实时报价及涨幅/篮子来源与
+tier/role/k4_tag/industry_lift/EOD 预计算板块强度〔单日点查 `industry_strength_
+store`,不现算〕,每个子项独立 try/except、失败只警告落 `None`,核心两个写
+INSERT 硬保证);③ `position_plans` 落 `version=1`(继承建仓区间/最高追价/离场
+参考区间/验证与失效条件/主要风险,无来源或卡未就绪同样落一行、`available=False`
+如实标原因,不省略);④ `user_actions` 自动落 `kind='buy'`。`evaluate_entry_
+deviation()`:买入价落在卡上 `entry_zone` 之外 → 「原盈亏结构已变」提示(复用夹逼
+闸给出的区间,不另造阈值),纯展示不阻断,无区间可比 → `None`(≠ 未偏离)。
+`create_position_plan_version()` 领域函数已就绪(新版本承袭同一来源、原卡与 v1
+逐字节不变,单测锁死),HTTP 入口按 ⑭-B 既定分工留给该块。`positions.close_reason`
+枚举加四码(`SECTOR_WEAKENING`/`TARGET_ZONE_REACHED`/`ACTIVE_SWITCH`/`AD_HOC`,
+既有五码原样不动)。`decision_log` 退役:`create_decision`/`link_decision`/
+`cancel_decision`/`expire_decision`/`revise_decision`/`set_scenario_outcomes`
+连同 `ScenarioIndexError` 物理删除(模块只剩 `get_decision`/`list_decisions` 只读
++ 枚举常量),`api/app.py` 对应四个写端点(`link`/`cancel`/`revise`/
+`scenario-outcome`)一并删除、`_extract_max_chase_pct_or_400` 删除;`GET
+/decisions`/`GET /decisions/{id}/track` 逐字节不变。`report/pending_track.py`
+改用 `_already_completed()`(查 `decision_pending_track.MAX(d_offset)`)判断"该
+决策是否已追踪到窗口终点",替代原先"落最后一行后翻 `decision_log.status=
+expired`"——**追踪行为逐位不变**(含 overshoot 如实记录实际 offset 的既有行为),
+唯一差异是 `status` 不再自动翻转(该表停写留档)。新守门单测(`tests/
+test_decision_log.py::test_decision_log_table_has_zero_write_call_sites_in_
+neckline_package` + `tests/test_positions_entry.py::test_positions_entry_
+never_writes_to_basket_tables`)AST 扫描全仓 `neckline/`,零命中。
+
+**两处如实登记的设计判断(Plan 未给出精确形状,已按最贴合上下文的解读实现,均
+未改 Plan 原文)**:
+1. **`POST /decisions` 保留路径但整体换血,不是删除**——依据三点交叉印证:
+   ① Plan 原文用词是"全部下线"校验、"所有写入方删除",**未说端点本身删除**;
+   ② ⑬-5「决策日志强制表单 → ⑩-C 已下线服务端;本块删客户端 `DecisionLogSheet.
+   swift` 的必填分支」暗示客户端表单本体保留、只删必填分支,意味着它此后仍会
+   POST 到这个 URL;③ ⑭-B「删除端点」清单(`/watchlist*`/`/breathing*`/
+   `/settings/intel-boards`/`PUT /settings/llm`)**不含 `/decisions*`**。据此把
+   `POST /decisions` 换血成蓝图 §2.2/§5.2「用户可选补充」入口——`code`/
+   `positionId` 挂载点 + `labels`(七枚)+ `voiceNote`,落 `user_actions`
+   (`kind='label'`/`'voice_note'`),不碰 `decision_log`;这正是验收条款「不传
+   五必填 → 200 而非 400」的字面落点(全部字段可选,空提交合法)。响应体从
+   `DecisionOut` 换成新 `DecisionNoteOut`(`{ok, recorded:[]}`),`link`/`cancel`/
+   `revise`/`scenario-outcome` 四个端点因失去写入对象直接删除。**七枚标签码
+   (`THEME_SHIFT`/`LEADER_REACTIVATE`/`VOLUME_BREAKOUT`/`WEAK_TO_STRONG`/
+   `CORE_POSITION`/`NEWS_CATALYST`/`PURE_TAPE_READING`)是本次新拟**(蓝图给的是
+   中文短语,未给码),连同四个新 `close_reason` 码一并提请 ⑭ 契约总装核对/裁定。
+2. **`entry_snapshots` 的"机器可知一切"本轮范围收窄**:资金流(`compute_sector_
+   moneyflow` 是 EOD 报告管线专用现算,买入热路径现算属于本项目明确记取的
+   P0-23 反面教材)与竞价表现(`auction_snapshots` 依赖当天是否命中存拍窗口)
+   **未采集**,`snapshot_json.not_captured` 字段如实列出这两项、不假装齐全;
+   已采集:一次 best-effort 实时报价(价/涨幅/量/额)+ 篮子来源全量字段(含
+   K4 标签/行业 lift)+ EOD 预计算板块强度(单日点查,不现算)。
+
+**测试**:新增 `tests/test_positions_entry.py`(22 例,覆盖来源查找三态/计划继承/
+偏离提示/端到端冻结/新版本不改原卡/篮子表零写入守门/CLI 接线);`decision_log`
+退役连带改造 6 个既有文件(`test_decision_log.py` 全量重写为只读层单测+退役守门、
+`test_pending_track.py`/`test_api_decision_track.py`/`test_pipeline.py::
+TestPendingTrackWiring` 的 fixture 从 `create_decision`/`link_decision` 改走新增
+`tests.conftest.insert_decision_log_row`/`set_decision_status` 裸 SQL 夹具且
+`STATUS_EXPIRED` 断言改 `STATUS_PENDING`、`test_api_decisions.py` 全量重写为
+「可选补充入口」单测、`test_exec_hint.py`/`test_tscode_normalization.py` 的
+fixture 同步改口径)。`python -m pytest tests/ -q`:**2836 passed + 2 skipped +
+1 failed**(失败项 `test_review_reconcile.py::TestRollbackDoesNotWhitewashHistory::
+test_rollback_shows_up_as_a_new_switch_in_the_current_week` 用真实
+`datetime.now(CN_TZ)` 判"当周",本次施工窗口跨越 2026-08-02〔周日〕→08-03〔周一〕
+ISO 周边界、与 ⑩ 改动零关联——已用 `git worktree` 拉一份不含本块任何改动的
+干净 HEAD 副本复现同一断言失败,证实是既有周边界炸弹而非新回归,不修不新增)。
+**Plan 未覆盖之处均已如实登记于上方两点,如与规划意图不符请澄清**。下一步:
+V2-⑪(🔴 @builder-pro,碰推送与哨兵)。
+
 ---
 
 ### V2-⑪ · 监控 80/15/5 + 通知三级 + 自然语言临时提醒(🔴 @builder-pro,碰推送与哨兵)
@@ -2268,6 +2342,7 @@ K7-pack 激活于副本 → 18 天行业强度 1980 行 / 阶段表 1980 行 / �
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-03 · 🧾 **V2-⑩ 持仓极简台账 + 计划继承 + 决策日志强制表单退役完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署;与并行的 ④/⑨ 两条施工线文件面不相交)。新建 `neckline/positions_entry.py`(买卖三字段唯一编排入口,API/CLI 共用):entry_snapshots 冻结 + position_plans 版本继承(新版本不改原卡,单测锁死)+ 偏离提示 + user_actions 自动记账;`decision_log` 写函数物理删除,`POST /decisions` 换血为「用户可选补充」入口(落 user_actions,不再是决策日志表单);`close_reason` 枚举加四码。`python -m pytest tests/ -q`(含并行 ④/⑨ 已完工内容)最终 **2836 passed + 2 skip + 1 failed**(唯一失败是 `test_review_reconcile.py` 既有真实时钟"当周"判据,施工窗口恰跨 2026-08-02→08-03 ISO 周边界触发,用 `git worktree` 拉纯净 HEAD 复现同一失败、证实与本块无关、不修不新增)。两处如实登记(`POST /decisions` 保留路径整体换血、七枚标签码与四枚 close_reason 码系本次新拟)详见 §五 V2-⑩ 段尾「完工记录」。下一步:V2-⑪(🔴 @builder-pro,碰推送与哨兵)。
 - 2026-08-02 晚间 · 🩹 **V2-④ 定向快修:种子输出顺序确定性**(@builder,纯本地代码 + 单测,零服务器 / 零部署;只改 `neckline/scan/seeds.py` + `tests/test_scan_seeds.py` + 本节 / ④ 块补记)。根因:涨停簇 / 异动簇种子走 `frame.group_by(["cluster_key"])` 迭代直接 append,polars 不保证顺序 + 上游 SQL 未加 `ORDER BY`,⑤ 只取前 20 颗 → 同一 D0 同一库重跑产出不同篮子(⑨ 完工时实证发现的块外真洞)。修法:四类种子(不只两类被点名的)输出前一律经新增 `_sort_by_seed_key()` 按 `seed_key`(crc32 稳定业务键)升序排定。新增回归测试锁死"连跑三次逐位相同 + 顺序即 `seed_key` 升序"(临时移除排序反测确认测试真能识别回归);`scripts/smoke_basket_review.py` 跨两个独立进程双跑同一 D0,113 行输出仅 2 行预期内差异(临时目录随机后缀 + 一处审计时间戳),篮子/卡/验证/复盘全部逐字节一致。改动范围 `pytest` 686 过零失败;全量套件另受并行施工的 V2-⑩(positions/api/decision_log)与一处跨零点翻车的既有 `today()` 测试双重扰动,均核实与本次改动无耦合、未修,详见 §五 ④ 块补记。
 - 2026-08-02 · ⚖️ **V2-⑨ 盘后复盘引擎 + 评价引擎完工**(@builder-pro,纯本地代码 + 单测,零服务器 / 零部署;真实 `data/neckline.db` 全程只读、V2 表仍 0 行,冒烟跑在 `sqlite3.backup` 副本 + 真实 parquet 只读上)。**⑨-D 判分唯一源下沉**:`ReTrade`/`_sim_one`/`SLIP`/`BROKER` 自 `research/h9_exit_reform.py` **逐字搬入** `neckline/eval/exit_sim.py`,h9 改再导出、`drill.py`/`exam.py` 改直接 import(老写法 `h9.X` 一字不改仍工作);**对拍两层全绿** —— 单测内嵌搬迁前冻结源做**源码逐字**比对 + `exec` 出独立可调用体(独立 `Broker()`)在 400 条随机造数 + 三条窄分支上**行为逐字段**全等,真 K 线 `scripts/smoke_eval_exit_sim.py` 900 笔真单 × 3 组退出参数**不一致 0 笔**。新增 `score_kw_from_charter()`(章程→判分参数唯一翻译,v1.3.3 翻出来恰好等于研究侧冻结的 `SCORE_KW`)+ `fill_and_score()`(考官线 §九 竞价成交层 + 卡上 `max_chase` 上限,`score_kw` 设为**必填关键字**从调用面堵死默认值)。**⑨-A** 新建 `neckline/review/basket_review.py` 机械判九项(龙头从 D0 冻结卡认、可买性口径对齐 `fwd_buyable` 且一字单列、涨停价取卡上冻结值、成员收益走 `daily.pct_chg` 绕开除权锚坑、缺存拍 MFE/MAE 走 EOD 近似且 `mfe_at=None` 不编时刻)+ `basket_review_store.py`(**只有 INSERT OR IGNORE,无 UPDATE/DELETE 路径**,守门单测锁死)。**⑨-B** `TASK_REVIEW` + 复盘账 + 不联网,降级次序直读 `budget.DEGRADE_ORDER`(T3 简评 → T2 细节,T1 与 `NEVER_DROPPED` 不在其中),LLM 缺席机械判照出。**⑨-C/C2** 新建 `neckline/eval/{metrics,placebo,calibration}.py`:七组指标全部按 `pack_version × verification_ruleset_version` **分层**(preseed 自成一层、缺失显式占位不并层)、`not_evaluated` 不进验证率分母、买不进与前向未走完的**不进收益均值**、已选 vs 未选无数据时空值如实;两条对照臂 `crc32` 派生种子**同日两跑逐位相同**、抽 N 次取分布、小样本只报样本数不报结论(文案单测锁死);周度校准报告落 md+json,**不接报告管线**。测试 2749 → **2842 过 + 2 skip + 2 fail**(既有周日炸弹),净增 93 例。端到端冒烟 `scripts/smoke_basket_review.py`(真实 D0=2026-06-18,④→⑤→⑥→⑦→⑧→⑨→周报全链,零真实 LLM):复盘 4 篮、重跑幂等零差异,对照臂真实 −2.57% vs 随机中位 −1.95%(第 38 百分位)vs 满仓持有 −1.63%,**人工逐项核对一篮九项全部对得上**。**六条如实登记 + 一处提请裁定**详见 §五 ⑨ 段尾;其中 🔴 **块外真洞**:`scan/seeds.py` 的涨停簇/异动簇种子走 polars `group_by` 默认无序迭代,而 ⑤ 只取前 20 颗 → **同一 D0 同一库重跑会产出完全不同的篮子**(冒烟三连跑实证),违反「跨进程可复现」与「冻结件同日重跑幂等」前提,**⑨ 不越块自行修**,请排 ④ 的修正。
 - 2026-08-02 · 🩹 **V2-⑧-E 除权除息锚失效检测器完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署;与并行施工的 ⑨ 块文件面不相交,只改 `neckline/sentinel/basket_verify.py` + 顺手修一处被本子项唤醒的 `scripts/smoke_basket_verify.py` 沉睡真洞)。检测器 `pre_close ≠ 卡里冻结的 ref_close`(带 `vr.EPS`)判锚失效,命中即复用既有「两侧都不计」机制排除该成员,盘中 `Quote.pre_close` 与 EOD `daily.pre_close` 走同一个 `evaluate_specs()`;EOD 另用 `adj_factor(D+1) vs adj_factor(D0)` 交叉确认拆出 `member_ex_rights`(不报警)/`anchor_mismatch`(WARNING)/`anchor_unconfirmed`(数据缺失,自补第三态);⛔ 不做自动 rescale。真实历史除权样本冒烟(`603409.SH` 2026-06-17→06-18,`adj_factor` 1.0146→1.5265)验证检测器打响且交叉确认判对。新增 `tests/test_basket_verify_ex_rights.py` 10 例,`pytest tests/ -q` 2754→**2766 passed + 2 failed(既有周日炸弹)+ 2 skipped**,零回归;⑦ 卡形状与 `spec_version` 一字未动(守门断言)。如实登记两条(详见 §五 ⑧-E 段尾「完工记录」):① 施工期发现「无条件给每个成员加 `pre_close` 字段」会打破既有「盘中/EOD 逐位相同」单测,已改为仅在锚失效分支携带该字段;② plan 验收原文"2 只成员篮"字面场景与 `min_hit=ceil(2/2)=1` 数学上不共存,已按最贴近字面意图重新构造(⑦-b「中间地带」而非净空数据)并附反证测试。下一步:⑬/⑭ 之前的排期已履行,V2-⑨(并行中)/ ⑬ / ⑭ 按既定顺序推进。

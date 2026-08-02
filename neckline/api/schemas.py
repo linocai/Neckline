@@ -546,6 +546,29 @@ class PositionOpenOut(BaseModel):
     ok: bool = True
     position_id: int
     stop_line: float
+    # —— v2.0.0(⑩-A/B,纯展示,新增字段不影响老客户端解码)——————————————————
+    # 系统自动关联的结果:来源篮子(当日现役卡里查,查不到 → 以下三项皆 null,如实
+    # 标"独立买入",不臆造)。`role` 取 `role_mech` 优先、缺席才退 `role_llm`(同 Tier
+    # "机械优先"精神,见 `positions_entry.SourceBasketMember.role`)。
+    sourceBasketKey: Optional[str] = None
+    sourceBasketName: Optional[str] = None
+    tier: Optional[int] = None
+    role: Optional[str] = None
+    # 计划继承是否有实质内容(`False` = 无来源篮子 或 篮子有但卡未就绪,`position_
+    # plans` 仍已落 version=1 空计划行,只是这里没内容可展示)。
+    planAvailable: bool = False
+    # 「原盈亏结构已变」偏离提示(⑩-B:实际成交价与建仓观察区间明显偏离时的纯展示
+    # 提示,不质问不阻断);无从比较(无 entry_zone)→ null,不是"未偏离"。
+    planDeviationNotice: Optional[str] = None
+
+
+# v2.0.0(⑩-A):蓝图 §5.2 六枚卖出快捷标签的服务端码,唯一源在
+# `neckline.sentinel.positions.CLOSE_REASON_CODES`(pydantic Literal 需要字面量,
+# 不能引用变量,故此处手写同一份字符串——两处必须保持同步,新增码时两边一起改)。
+CloseReasonLiteral = Literal[
+    "STOP_LOSS", "TAKE_PROFIT", "TIME_EXIT", "INVALIDATION", "MANUAL",
+    "SECTOR_WEAKENING", "TARGET_ZONE_REACHED", "ACTIVE_SWITCH", "AD_HOC",
+]
 
 
 class PositionCloseIn(BaseModel):
@@ -555,9 +578,7 @@ class PositionCloseIn(BaseModel):
     # 服务端码 Literal 白名单(非法码 422);客户端展示层码换算,沿 `boardLabel` 先例。
     # 契约字段名 `closeReason`(v1.2 客户端契约清单)——与本模型既有 snake_case 入参
     # (sell_price/sell_time)并存,同 decisions 入参走 camelCase 的既定不一致(留痕报告)。
-    closeReason: Optional[
-        Literal["STOP_LOSS", "TAKE_PROFIT", "TIME_EXIT", "INVALIDATION", "MANUAL"]
-    ] = None
+    closeReason: Optional[CloseReasonLiteral] = None
     # v1.3-①:清仓实付卖出费用真数(可选,成交后回填)——周复盘对账用真数、不用估数。
     sellFees: Optional[float] = None
 
@@ -794,75 +815,56 @@ class IntelWatchBoardsIn(BaseModel):
 
 
 # —— v1.2-B 预注册决策日志(§2.1 第 3 条 / plan §五 v1.2-B)——————————————————
+# **v2.0.0(⑩-C)决策日志强制表单退役**:`decision_log` 表 v2.0.0 起停写留档
+# (历史行只读归因,`neckline.decision_log` 不再提供任何写函数,见该模块 docstring)。
+# `DecisionOut`/`DecisionsListOut`/`DecisionTrackOut` 三个**出参**形状不变(`GET
+# /decisions`/`GET /decisions/{id}/track` 保留为只读归因入口,继续装配历史行);
+# 旧的 `DecisionCreateIn`(九项强制表单)/`DecisionReviseIn`/`DecisionLinkIn`/
+# `ScenarioOutcomeIn` 连同它们对应的写端点一并退役——`decision_log` 停写之后,
+# "创建/修订/关联/翻转情景结果"这些动作物理上无处可落,不是"暂时不做"。
 #
-# 枚举一律**服务端码 + 客户端展示层换算**(沿 `CandidateOut.board`/`boardLabel`
-# 先例)——`thesisTags`/`playbookTag`/情景树 `action` 入参用 `Literal` 白名单
-# 校验(非法码 422,FastAPI/pydantic 自动处理,不必手写 if/else);出参 `DecisionOut`
-# 对应字段回宽松 `str`(与 `CandidateOut.board: str` 同惯例,不为已落库的历史合法值
-# 重新收紧类型)。
-
-class ContingencyScenarioIn(BaseModel):
-    """⑦应对方案·情景树单项(预注册内容)。`matched` 默认 False——真正翻转走
-    专用端点 `POST /decisions/{id}/scenario-outcome`,创建/修订时传的 `matched`
-    只是初始态(通常就是 False,不强制)。"""
-    scenario: str
-    trigger: str
-    action: Literal["BUY", "HOLD", "REDUCE", "ABANDON"]
-    matched: bool = False
-
+# `DecisionCreateIn` **复用同名字保留 `POST /decisions` 路径**,但语义换成蓝图
+# §2.2/§5.2「用户可选补充」入口——七枚标签 + 一句可选语音说明,写入 `user_actions`
+# (`kind='label'`/`'voice_note'`),不再写 `decision_log`。**全部字段可选**(⑩-C
+# 「不传五必填 → 200 而非 400」的落点)。标签码是本次新拟(蓝图给的是中文短语,
+# 未给码,如实登记于 PROJECT_PLAN ⑩ 完工记录待用户/⑭ 核对)。
 
 class ContingencyScenarioOut(BaseModel):
+    """历史决策日志行的情景树只读展示项(`GET /decisions` 装配用,写入口已退役)。"""
     scenario: str
     trigger: str
     action: str
     matched: bool = False
 
 
+# 蓝图 §2.2「主要补充」七枚标签的服务端码(唯一源在此;中文短语 → 码的对应关系见
+# 各码行内注释,客户端展示层换算沿 `boardLabel` 先例)。
+NoteLabelLiteral = Literal[
+    "THEME_SHIFT",        # 题材切换
+    "LEADER_REACTIVATE",  # 龙头重新激活
+    "VOLUME_BREAKOUT",    # 放量突破
+    "WEAK_TO_STRONG",     # 弱转强
+    "CORE_POSITION",      # 容量中军
+    "NEWS_CATALYST",      # 消息催化
+    "PURE_TAPE_READING",  # 纯盘口判断
+]
+
+
 class DecisionCreateIn(BaseModel):
-    code: str
-    name: Optional[str] = None
-    whyBuy: str
-    whyEntryPrice: str
-    targetPrice: Optional[float] = None
-    exitLow: Optional[float] = None
-    exitHigh: Optional[float] = None
-    thesisTags: List[Literal["THEME", "SENTIMENT_CYCLE", "CAPITAL_FLOW", "TECH_PATTERN", "NEWS"]] = Field(default_factory=list)
-    invalidation: str
-    contingencyScenarios: List[ContingencyScenarioIn] = Field(default_factory=list)
-    playbookTag: Literal["SWING_CHASE", "BREATHING_TRIAL"]
-    plannedPrice: Optional[float] = None
-    plannedQty: Optional[int] = None
-    # v1.4-⑤-B(需求 2 补充,决策日志第⑨项「最高追价上限」):相对昨收百分比,如
-    # `3.0` = 昨收+3%(**不是小数 0.03**,与 `dist_from_ma250_pct` 等字段的小数惯例不同,
-    # 照 plan 原文口径)。允许负值 = 只在低开时买;`null` = 显式选择"不设上限"。
-    # **⚠ 必须显式传(即便是 null)**——省略该 JSON 键 → `app.py::create_decision` 用
-    # `model_fields_set` 探测键是否存在,缺失时 400 `reason="max_chase_required"`;
-    # 显式 `null` 合法(pydantic 默认值与"未传"在 `model_fields_set` 层面可区分)。
-    # **⚠ 与 `plannedPrice` 不是一回事,不许合并**:`plannedPrice` 是"我打算挂多少价",
-    # `maxChasePct` 是"开盘冲多高我就放弃、盘中不追补"——两者并存,各自独立取值,见
-    # `neckline.decision_log` 模块 docstring「与 planned_price 语义分离」。
-    maxChasePct: Optional[float] = None
-    # 注意:有意**不含** `createdAt` 字段——服务端生成,客户端任何同名字段值都会被
-    # pydantic 直接忽略(`DecisionCreateIn` 无此字段,压根不会解析进请求体)。
+    """`POST /decisions`(v2.0.0 起,⑩-C 退役重定义)。全部字段可选——不再有任何
+    "强制表单":`code` 缺省 `None` 也合法(该次提交完全没有可落的内容时,端点直接
+    204/200 空提交,不 400)。"""
+    code: Optional[str] = None
+    positionId: Optional[int] = None
+    labels: List[NoteLabelLiteral] = Field(default_factory=list)
+    voiceNote: Optional[str] = None
 
 
-class DecisionReviseIn(BaseModel):
-    """`POST /decisions/{id}/revise` 请求体(同九项,不含 code/name——修订不能换
-    股票,新行的 ts_code/name 继承自被修订的原行,见 `neckline.decision_log.
-    revise_decision`)。`maxChasePct` 必填语义(显式传/可 null,缺键 400)与
-    `DecisionCreateIn` 相同——修订等于重新预注册一整套九项内容,同一份纪律。"""
-    whyBuy: str
-    whyEntryPrice: str
-    targetPrice: Optional[float] = None
-    exitLow: Optional[float] = None
-    exitHigh: Optional[float] = None
-    thesisTags: List[Literal["THEME", "SENTIMENT_CYCLE", "CAPITAL_FLOW", "TECH_PATTERN", "NEWS"]] = Field(default_factory=list)
-    invalidation: str
-    contingencyScenarios: List[ContingencyScenarioIn] = Field(default_factory=list)
-    playbookTag: Literal["SWING_CHASE", "BREATHING_TRIAL"]
-    plannedPrice: Optional[float] = None
-    plannedQty: Optional[int] = None
-    maxChasePct: Optional[float] = None
+class DecisionNoteOut(BaseModel):
+    """`POST /decisions` 响应——如实回显本次记了哪些 `user_actions` kind(`[]` =
+    没传任何标签/语音说明,合法的"空提交",不是错误)。"""
+    ok: bool = True
+    recorded: List[Literal["label", "voice_note"]] = Field(default_factory=list)
 
 
 class DecisionOut(BaseModel):
@@ -913,19 +915,6 @@ class DecisionTrackOut(BaseModel):
     status: str
     planPrice: Optional[float] = None
     rows: List[DecisionTrackRowOut] = Field(default_factory=list)
-
-
-class DecisionLinkIn(BaseModel):
-    positionId: int
-
-
-class ScenarioOutcomeItemIn(BaseModel):
-    index: int
-    matched: bool
-
-
-class ScenarioOutcomeIn(BaseModel):
-    outcomes: List[ScenarioOutcomeItemIn] = Field(default_factory=list)
 
 
 # —— v1.2-G 呼吸试验仓台账(§2.1 第 3 条仓位分配 / plan §五 v1.2-G)——————————————
@@ -1081,9 +1070,9 @@ __all__ = [
     "LLMRoutesOut", "LLMRoutesIn",
     "SettingsReviewColMapIn", "IntelWatchBoardsOut", "IntelWatchBoardsIn",
     "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
-    "ContingencyScenarioIn", "ContingencyScenarioOut",
-    "DecisionCreateIn", "DecisionReviseIn", "DecisionOut", "DecisionsListOut", "DecisionLinkIn",
-    "ScenarioOutcomeItemIn", "ScenarioOutcomeIn",
+    "ContingencyScenarioOut", "NoteLabelLiteral",
+    "DecisionCreateIn", "DecisionNoteOut", "DecisionOut", "DecisionsListOut",
+    "DecisionTrackOut", "DecisionTrackRowOut",
     "BreathingTradeIn", "BreathingTradeOut", "BreathingTradesOut",
     "InfoCardKlineBarOut", "InfoCardIndexPointOut", "InfoCardK4FlagOut", "InfoCardMarketOut", "InfoCardOut",
 ]

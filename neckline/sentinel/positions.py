@@ -33,9 +33,23 @@ CLOSE_REASON_TAKE_PROFIT = "TAKE_PROFIT"   # 回落止盈
 CLOSE_REASON_TIME_EXIT = "TIME_EXIT"       # 时间退出(D5)
 CLOSE_REASON_INVALIDATION = "INVALIDATION" # 证伪离场
 CLOSE_REASON_MANUAL = "MANUAL"             # 主动离场
+# v2.0.0(⑩-A,蓝图 §5.2 六枚快捷标签):既有五枚原样保留、只加不改。以下四枚是
+# V2 新增的用户可选卖出标签,与既有枚举语义不重叠——
+#   板块转弱 = 持仓所属板块/篮子整体走弱(不是个股止损,是环境判断);
+#   达到参考区间 = 触及篮子卡 `exit_reference`(⑦ 夹逼给出的离场参考区间),与
+#     `TAKE_PROFIT`(回落止盈,现役章程机械规则)是两个不同概念,不复用;
+#   主动切换 = 换仓到别的机会(非该票本身出问题);
+#   临时决定 = 无特定归类的即兴决定(与 `MANUAL`"主动离场"并存,给用户一个不需要
+#     归因到任何具体理由的诚实选项,呼应"表单可选化"精神,不强迫编一个理由)。
+CLOSE_REASON_SECTOR_WEAKENING = "SECTOR_WEAKENING"       # 板块转弱
+CLOSE_REASON_TARGET_ZONE_REACHED = "TARGET_ZONE_REACHED" # 达到参考区间
+CLOSE_REASON_ACTIVE_SWITCH = "ACTIVE_SWITCH"             # 主动切换
+CLOSE_REASON_AD_HOC = "AD_HOC"                           # 临时决定
 CLOSE_REASON_CODES = (
     CLOSE_REASON_STOP_LOSS, CLOSE_REASON_TAKE_PROFIT, CLOSE_REASON_TIME_EXIT,
     CLOSE_REASON_INVALIDATION, CLOSE_REASON_MANUAL,
+    CLOSE_REASON_SECTOR_WEAKENING, CLOSE_REASON_TARGET_ZONE_REACHED,
+    CLOSE_REASON_ACTIVE_SWITCH, CLOSE_REASON_AD_HOC,
 )
 
 
@@ -227,6 +241,10 @@ __all__ = [
     "CLOSE_REASON_TIME_EXIT",
     "CLOSE_REASON_INVALIDATION",
     "CLOSE_REASON_MANUAL",
+    "CLOSE_REASON_SECTOR_WEAKENING",
+    "CLOSE_REASON_TARGET_ZONE_REACHED",
+    "CLOSE_REASON_ACTIVE_SWITCH",
+    "CLOSE_REASON_AD_HOC",
     "CLOSE_REASON_CODES",
     "open_position",
     "close_position",

@@ -299,6 +299,14 @@ CREATE TABLE IF NOT EXISTS retreat_metrics (
     PRIMARY KEY (trade_date, hhmm)
 );
 
+-- ⚠ **v2.0.0 起停写留档**(PROJECT_PLAN §五 V2-⑩-C 决策日志强制表单退役):本表
+-- 自 V2.0.0 起不再有任何写入路径(`neckline.decision_log` 只保留 `get_decision`/
+-- `list_decisions` 两个只读函数),历史行(v1.2-B~v1.5.2 生产数据)供归因只读,
+-- `GET /decisions`/`GET /decisions/{id}/track` 继续读它;`POST /decisions` 复用
+-- 同一 URL 但已换血成「用户可选补充」入口(落 `user_actions`,不再碰本表)。
+-- DDL 与下面全部历史字段注释**原样保留不删**(不可编辑口径 / 链根语义 /
+-- max_chase_pct 语义等对历史行依然成立,只是不会再有新行诞生)。
+--
 -- v1.2-B 预注册决策日志(plan §五 v1.2-B,§2.1 第 3 条人机协作配套)。下单前录八项
 -- (v1.4-⑤-B 起加第⑨项,见下),时间戳先于成交防结果污染;**审计件、非下单件**——
 -- 本表任何写入路径(见 `neckline.decision_log`)绝无下单/撤单/拉行情副作用。
@@ -308,8 +316,8 @@ CREATE TABLE IF NOT EXISTS retreat_metrics (
 -- (情景树 JSON 数组,每项 {scenario,trigger,action,matched};scenario/trigger/action
 -- 是不可编辑预注册内容,matched 是唯一可事后翻的结果标记,专用端点
 -- `set_scenario_outcomes` 才能碰)/playbook_tag⑧(单选枚举码)。
--- **不可编辑口径**:①-⑥ + ⑦的 scenario/trigger/action + ⑧ + ⑨(max_chase_pct)全表
--- 无任何 UPDATE 语句触碰这些列(见 `neckline.decision_log` 模块注释逐一核对);改动
+-- **不可编辑口径(历史行,写入口已退役)**:①-⑥ + ⑦的 scenario/trigger/action +
+-- ⑧ + ⑨(max_chase_pct)在 v2.0.0 之前全表无任何 UPDATE 语句触碰这些列;改动
 -- 只能 `revise_decision` 新增一行,`revision_of` 落**链根** id(该行若自身是修订行则
 -- 取其 `revision_of`,否则该行本身即链根)——归因永远 `WHERE revision_of IS NULL`
 -- 取首版,或 `WHERE revision_of=<根id>` 一步取全部修订,无需递归遍历链条。
@@ -322,9 +330,7 @@ CREATE TABLE IF NOT EXISTS retreat_metrics (
 -- 靠 `_migrate_columns` 幂等 `ALTER TABLE` 补齐,新库/老库同一条路径):"开盘冲多高
 -- 我就放弃、盘中不追补"——**与 planned_price 是两件事,不许合并**,相对昨收百分比
 -- (如 3.0=+3%,不是小数 0.03),允许负值(只在低开时买),NULL=用户显式选择"不设
--- 上限"。API 层要求**必须显式传该键**(即便值是 null)才能创建/修订决策日志——见
--- `api/app.py::_extract_max_chase_pct_or_400`;本表/领域层 `neckline.decision_log`
--- 对 Python 直调方(CLI/单测)保留 `None` 默认,不强制,前向兼容既有调用点。
+-- 上限"(v2.0.0 之前 API 层要求必须显式传该键才能创建/修订,该校验已随写入口退役)。
 CREATE TABLE IF NOT EXISTS decision_log (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     ts_code                 TEXT NOT NULL,

@@ -851,24 +851,30 @@ class TestPendingTrackWiring:
         )
         assert called["n"] == 0
 
-    def test_end_to_end_pending_decision_tracked_across_n_days_then_expires(self, isolated_env, monkeypatch):
+    def test_end_to_end_pending_decision_tracked_across_n_days_then_stops(self, isolated_env, monkeypatch):
         """端到端(隔离库,plan §五 v1.3-④ 验收②):造一只 pending 决策 → 连跑 N 个
-        交易日 `build_report` → `decision_pending_track` 表 N 行 + 决策转 expired;
-        复用报告已建的 EOD 面板访问层,不新拉数据源(硬要求③)。"""
-        import neckline.decision_log as dl_mod
-        from neckline.decision_log import STATUS_EXPIRED, create_decision, get_decision
+        交易日 `build_report` → `decision_pending_track` 表 N 行,窗口到点后停止
+        新增追踪行;复用报告已建的 EOD 面板访问层,不新拉数据源(硬要求③)。
+
+        **v2.0.0(⑩-C)**:`decision_log` 表停写留档,fixture 改走
+        `tests.conftest.insert_decision_log_row`(裸 SQL,不再有 `create_decision`/
+        `_now()` 可 monkeypatch);到期后不再断言 `status == STATUS_EXPIRED`——该
+        写入口已删除,`status` 如实停在 fixture 给的 `pending`(见
+        `tests/test_pending_track.py` 同款变更)。"""
+        from neckline.decision_log import STATUS_PENDING, get_decision
         from neckline.report.pending_track import DECISION_PENDING_TRACK_DAYS, load_track_rows
+        from tests.conftest import insert_decision_log_row
 
         monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
         dates = seed_synthetic_market(isolated_env)
         seed_active_rule_v1(isolated_env)
 
         created_day = dates[5]
-        monkeypatch.setattr(dl_mod, "_now", lambda: f"{created_day.isoformat()}T09:00:00+00:00")
-        d = create_decision(
-            ts_code="600001.SH", why_buy="题材热", why_entry_price="回调低吸",
+        d = insert_decision_log_row(
+            isolated_env.db_path, ts_code="600001.SH", why_buy="题材热", why_entry_price="回调低吸",
             invalidation="跌破10日线", thesis_tags=["THEME"], playbook_tag="SWING_CHASE",
-            planned_price=10.0, planned_qty=1000, db_path=isolated_env.db_path,
+            planned_price=10.0, planned_qty=1000,
+            created_at=f"{created_day.isoformat()}T09:00:00+00:00",
         )
 
         track_days = dates[6:6 + DECISION_PENDING_TRACK_DAYS]
@@ -880,7 +886,7 @@ class TestPendingTrackWiring:
         rows = load_track_rows(d.id, db_path=isolated_env.db_path)
         assert len(rows) == DECISION_PENDING_TRACK_DAYS
         assert [r["dOffset"] for r in rows] == list(range(1, DECISION_PENDING_TRACK_DAYS + 1))
-        assert get_decision(d.id, db_path=isolated_env.db_path).status == STATUS_EXPIRED
+        assert get_decision(d.id, db_path=isolated_env.db_path).status == STATUS_PENDING
 
 
 class TestTopNSplit:
