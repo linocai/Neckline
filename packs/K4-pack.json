@@ -1,0 +1,43 @@
+{
+  "manifest": {
+    "pack_version": "K4-pack-v1",
+    "name": "K4 机械半身首包",
+    "date": "2026-08-02",
+    "engine_api_version": 1,
+    "evidence_ref": ["research/k4_assembly_report.md"]
+  },
+  "config": {
+    "seeds": {
+      "stock_hygiene": {
+        "close_min": 2.0,
+        "amount_ma20_min": 20000,
+        "require_ma20": true,
+        "allowed_boards": ["MAIN", "GEM", "STAR"],
+        "exclude_st": true
+      },
+      "non_new_stock": {
+        "min_days": 120
+      },
+      "k4_advisory_gate": {
+        "hard_cut_action": "exclude",
+        "avoid_flag_action": "tag"
+      },
+      "industry_dominance_gate": {
+        "min_lift": 2.0
+      },
+      "intel_rank_priority": {
+        "dims": ["industry_rank", "industry_persist_days", "yellow_card_count"]
+      }
+    },
+    "tier": {
+      "weights": {
+        "sector_strength": 0.25,
+        "driver_freshness": 0.20,
+        "leader_clarity": 0.25,
+        "tradability": 0.20,
+        "card_density": 0.10
+      },
+      "dims": ["sector_strength", "driver_freshness", "leader_clarity", "tradability", "card_density"]
+    }
+  }
+}

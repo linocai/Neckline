@@ -5,6 +5,10 @@
 (`_migrate_columns`)把新表/新列的幂等迁移悄悄写进开发者的工作库——2026-07-29 已
 实测复现:`llm_judgments.search_engine` 这一列就是这样在本机被提前建出来的。
 
+`neckline.selection.pack.get_active_pack()` 是同一种坑的 V2-③ 版本(同款
+`db_path: Optional[Path] = None → db_path or settings.db_path` 签名),2026-08-02
+起一并纳入本守门。
+
 真需要真库 K1 现役行的 guardrail 用例(K2/K3/v13 三个「刻意读真库」的护栏文件)
 须改用 `conftest.py::real_db_readonly_copy` 夹具、显式传 `db_path=`。
 
@@ -24,7 +28,7 @@ from typing import List, Tuple
 import pytest
 
 _TESTS_DIR = Path(__file__).resolve().parent
-_BANNED_BARE_CALLS = {"active_config", "get_active"}
+_BANNED_BARE_CALLS = {"active_config", "get_active", "get_active_pack"}
 
 # 确有正当理由裸调用的文件 + 理由(目前应为空——三个「刻意读真库」的护栏文件已全部
 # 改用 `real_db_readonly_copy` 显式传参,不需要例外)。加白名单前先问自己:这个
