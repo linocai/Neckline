@@ -349,8 +349,14 @@ class TestRecordSell:
 # 守门:本模块对篮子四表零写入(⑩-E 信息互通边界)
 # ══════════════════════════════════════════════════════════════════════════
 
-_POSITIONS_ENTRY_FILE = Path(__file__).resolve().parent.parent / "neckline" / "positions_entry.py"
+_NECKLINE_DIR = Path(__file__).resolve().parent.parent / "neckline"
+_NECKLINE_PY_FILES = sorted(_NECKLINE_DIR.rglob("*.py"))
+# 篮子四表(⑥⑦ 事务 1/2 的写入对象,⑩-E「持仓侧对篮子表零写入」的守门范围)。
+# 唯一合法写入口是 `neckline/selection/basket_store.py`(plan §五【跨块】裁定的
+# "篮子四表的运行期落库次序"),本守门显式排除它——其余全部 `neckline/` 源码
+# (含本模块、⑧⑨ 的哨兵/复盘模块)都不该出现对这四张表的写入调用。
 _BASKET_TABLES = ("baskets", "basket_members", "tier_history", "basket_cards")
+_LEGITIMATE_BASKET_WRITER = _NECKLINE_DIR / "selection" / "basket_store.py"
 _EXEC_METHOD_NAMES = {"execute", "executemany", "executescript"}
 _WRITE_VERBS = ("INSERT", "UPDATE", "DELETE")
 
@@ -366,13 +372,9 @@ def _sql_literal(node: ast.AST) -> Optional[str]:
     return None
 
 
-def test_positions_entry_never_writes_to_basket_tables():
-    """⑩-E 守门:`neckline/positions_entry.py` 对 `baskets`/`basket_members`/
-    `tier_history`/`basket_cards` 四张表零写入(只读——`find_source_basket_member`
-    与 `basket_store.load_basket_card` 都是 SELECT)。AST 扫描而非纯文本 grep,
-    避免被本文件大量说明性 docstring 提到的表名字面量误伤。"""
-    tree = ast.parse(_POSITIONS_ENTRY_FILE.read_text(encoding="utf-8"), filename=str(_POSITIONS_ENTRY_FILE))
-    hits: List[Tuple[int, str]] = []
+def _execute_sql_literals(path: Path) -> List[Tuple[int, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    out: List[Tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -381,14 +383,29 @@ def test_positions_entry_never_writes_to_basket_tables():
         if name not in _EXEC_METHOD_NAMES or not node.args:
             continue
         sql = _sql_literal(node.args[0])
-        if sql is None:
+        if sql is not None:
+            out.append((node.lineno, sql))
+    return out
+
+
+def test_positions_side_never_writes_to_basket_tables():
+    """⑩-E 守门(验收条款「持仓侧对篮子表零写入」的机器判据):`neckline/` 全仓
+    (排除唯一合法写入口 `selection/basket_store.py`)扫描不到任何真实 INSERT/
+    UPDATE/DELETE 调用点碰 `baskets`/`basket_members`/`tier_history`/
+    `basket_cards` 四张表——不止查本模块,选股与持仓两侧信息互通的边界（蓝图
+    §2.3/§6)要求这是个**全局**不变量,不是"我这个新文件恰好没写"的局部巧合。
+    AST 扫描而非纯文本 grep,避免被大量说明性 docstring 提到的表名字面量误伤。"""
+    hits: List[Tuple[str, int, str]] = []
+    for path in _NECKLINE_PY_FILES:
+        if path == _LEGITIMATE_BASKET_WRITER:
             continue
-        upper = sql.upper()
-        for table in _BASKET_TABLES:
-            for verb in _WRITE_VERBS:
-                if f"{verb} {table.upper()}" in upper or f"{verb} INTO {table.upper()}" in upper or f"{verb} FROM {table.upper()}" in upper:
-                    hits.append((node.lineno, sql[:80]))
-    assert not hits, f"positions_entry.py 出现对篮子表的写入调用点(应零写入):{hits}"
+        for lineno, sql in _execute_sql_literals(path):
+            upper = sql.upper()
+            for table in _BASKET_TABLES:
+                t = table.upper()
+                if f"INSERT INTO {t}" in upper or f"UPDATE {t}" in upper or f"DELETE FROM {t}" in upper:
+                    hits.append((str(path.relative_to(_NECKLINE_DIR.parent)), lineno, sql[:80]))
+    assert not hits, f"篮子表出现合法写入口之外的写入调用点(应零写入):{hits}"
 
 
 # ══════════════════════════════════════════════════════════════════════════
