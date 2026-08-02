@@ -298,3 +298,120 @@ def test_generate_seeds_is_deterministic(isolated_env):
     second = seeds.generate_seeds(D0, db_path=env.db_path, parquet_dir=env.parquet_dir)
     assert first.counts() == second.counts()
     assert [s.seed_key for s in first.all_seeds()] == [s.seed_key for s in second.all_seeds()]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑥ 2026-08-02 定向快修回归锁:四类种子在**每类多个合格项**时,顺序必须
+# 确定 —— ⑨ 完工时实证发现涨停簇/异动簇走 `frame.group_by(["cluster_key"])`
+# 迭代(polars 不保证顺序)+ 上游 SQL `SELECT` 未加 `ORDER BY`,同一 D0 同一库
+# `generate_seeds()` 同进程内连调三次,第 3 颗起 `seed_key` 就不一样。本测试
+# 用**四类各自 ≥4 个合格项**(且 DB/构造顺序刻意与 `seed_key` 升序不一致)
+# 复现"够多分组"的场景,断言:①同一天连跑三次逐位相同;②顺序恰好等于按
+# `seed_key` 升序(锁死具体 tie-break,不只是"跟自己一致")。四类**全部**覆盖,
+# 不只覆盖被点名的涨停簇/异动簇两类。
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_generate_seeds_multi_item_categories_stay_ordered_across_repeated_calls(isolated_env):
+    env = isolated_env
+    insert_trade_cal(env, [D0])
+
+    # 热点行业:5 个行业各 5 只成员、涨幅互不相同(拿到 5 个互不相同的
+    # industry_rank);关掉 require_strength_day —— 80 分位在小样本全集下只会
+    # 挑出唯一最强者,不是本测试要验证的东西(哪些行业达标由别的测试锁)。
+    industries = ["半导体", "白酒", "医药", "军工", "券商"]
+    basic_rows = []
+    price_rows = []
+    for i, ind in enumerate(industries):
+        for j in range(5):
+            code = f"6{i}{j}01.SH"
+            basic_rows.append({"ts_code": code, "industry": ind})
+            price_rows.append({
+                "ts_code": code, "open": 10, "high": 10, "low": 10,
+                "close": 10 + (i + 1) * 0.1, "pre_close": 10, "vol": 1.0, "amount": 1.0,
+            })
+    insert_stock_basic(env, basic_rows)
+    write_daily_fixture(env, "daily", D0, price_rows)
+    seed_industry_strength(env, [D0])
+
+    # 暴起概念:4 个概念指数,涨幅不同但都过默认 5% 门槛;写入顺序与 ts_code
+    # 字母序刻意不一致。
+    concept_defs = [
+        ("885104.TI", "概念丁", "710004.SH", 9.0),
+        ("885101.TI", "概念甲", "710001.SH", 6.0),
+        ("885103.TI", "概念丙", "710003.SH", 8.0),
+        ("885102.TI", "概念乙", "710002.SH", 7.0),
+    ]
+    insert_stock_basic(env, [{"ts_code": c} for _, _, c, _ in concept_defs])
+    write_flat_parquet(env, "ths_index.parquet", [{"ts_code": idx, "name": name} for idx, name, _, _ in concept_defs])
+    write_flat_parquet(env, "ths_member.parquet", [{"index_code": idx, "con_code": c} for idx, _, c, _ in concept_defs])
+    write_flat_parquet(env, "ths_daily.parquet", [
+        {"ts_code": idx, "trade_date": D0, "pct_change": pct} for idx, _, _, pct in concept_defs
+    ])
+
+    # 涨停簇:6 个簇各自不同行业锚定,`cluster_key` 手工指定且写入顺序刻意
+    # 打乱(K5→K1→K4→K2→K6→K3),排除"插入顺序恰好已经有序"这种巧合。
+    from neckline.db import connection
+
+    cluster_defs = [
+        ("K5", "行业E"), ("K1", "行业A"), ("K4", "行业D"),
+        ("K2", "行业B"), ("K6", "行业F"), ("K3", "行业C"),
+    ]
+    with connection(env.db_path) as conn:
+        for idx, (key, ind) in enumerate(cluster_defs):
+            for m in range(2):
+                code = f"8{idx}{m}001.SH"
+                conn.execute(
+                    "INSERT OR REPLACE INTO limit_cluster_daily "
+                    "(trade_date, cluster_key, ts_code, cluster_kind, cluster_size, consecutive_days, "
+                    " anchor_industry, anchor_concept, computed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (D0.strftime("%Y%m%d"), key, code, "same_day", 2, 2, ind, None, "2024-01-01T00:00:00+00:00"),
+                )
+
+    # 异动簇:6 个不同行业各 2 只量比达标(6 个 cluster_key,`seeds.py` 内部
+    # crc32 派生,顺序不受本测试控制,恰好覆盖"不知道具体键值、只看自洽"这条)。
+    anomaly_industries = ["甲行业", "乙行业", "丙行业", "丁行业", "戊行业", "己行业"]
+    anomaly_basic = []
+    anomaly_rows = []
+    for i, ind in enumerate(anomaly_industries):
+        for m in range(2):
+            code = f"9{i}{m}001.SH"
+            anomaly_basic.append({"ts_code": code, "industry": ind})
+            anomaly_rows.append({"ts_code": code, "volume_ratio": 5.0})
+    insert_stock_basic(env, anomaly_basic)
+    write_daily_fixture(env, "daily_basic", D0, anomaly_rows)
+
+    _activate(env, **{"hot_industry_seed": {"max_rank": 10, "require_strength_day": False}})
+
+    runs = []
+    for _ in range(3):
+        result = seeds.generate_seeds(D0, db_path=env.db_path, parquet_dir=env.parquet_dir)
+        assert result is not None
+        runs.append(result)
+
+    counts = runs[0].counts()
+    assert counts == {
+        seeds.HOT_INDUSTRY: 5,
+        seeds.SURGING_CONCEPT: 4,
+        seeds.LIMIT_CLUSTER: 6,
+        seeds.ANOMALY_CLUSTER: 6,
+    }, counts
+
+    categories = (seeds.HOT_INDUSTRY, seeds.SURGING_CONCEPT, seeds.LIMIT_CLUSTER, seeds.ANOMALY_CLUSTER)
+    field_of = {
+        seeds.HOT_INDUSTRY: "hot_industry",
+        seeds.SURGING_CONCEPT: "surging_concept",
+        seeds.LIMIT_CLUSTER: "limit_cluster",
+        seeds.ANOMALY_CLUSTER: "anomaly_cluster",
+    }
+    baseline_keys = {
+        kind: [s.seed_key for s in getattr(runs[0], field_of[kind])] for kind in categories
+    }
+    for kind in categories:
+        assert baseline_keys[kind] == sorted(baseline_keys[kind]), (
+            f"{kind} 未按 seed_key 升序排定:{baseline_keys[kind]}"
+        )
+    for run in runs[1:]:
+        assert run.counts() == counts
+        for kind in categories:
+            keys = [s.seed_key for s in getattr(run, field_of[kind])]
+            assert keys == baseline_keys[kind], f"{kind} 顺序在重跑间漂移:{keys} != {baseline_keys[kind]}"

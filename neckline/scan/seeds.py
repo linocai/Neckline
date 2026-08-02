@@ -26,6 +26,22 @@ loud 的对立面是"如实披露",不是"报错崩溃"也不是"造一份默认
 成分**(行业全部成员 / 概念全部成分股 / 簇内全部成员 / 异动簇内全部成员)——
 "从这批候选里选哪 1-3 只、标什么角色"是 ⑤ 驱动聚合层的职责(LLM + 机械数据
 联合判断,含白名单闸),本模块不做这一步筛选,避免抢占 ⑤ 的职责边界。
+
+**四类种子的输出顺序必须确定性(2026-08-02 定向快修,⑨ 完工时实证发现的
+块外真洞)**:`⑤` 的 `_select_seeds()` 只取 `SeedSet.all_seeds()` 前
+`MAX_SEEDS_AGGREGATED`(=20)颗,前提是"每类内部各自有序"(该函数 docstring
+原文)。涨停簇 / 异动簇最初实现按 `frame.group_by(["cluster_key"])` 迭代
+直接 append,而 **polars `group_by` 官方不保证顺序**,其上游
+`load_limit_clusters`/`cluster_members_by_anchor` 的 SQL `SELECT` 也未加
+`ORDER BY`——`maintain_order=True` 治标不治本(维持的是一个本就不确定的行序,
+"别用行序"这条不只针对 `group_by`,也针对上游查询)。实测同一 D0、同一库
+`generate_seeds()` 同进程内连调三次,第 3 颗起 `seed_key` 就不一样,连带
+哪 20 颗种子进聚合、聚出哪些篮子全部随机。**修法**:四类种子各自的输出列表在
+返回前一律经 `_sort_by_seed_key()` 按 `seed_key`(crc32 十六进制串,由行业名 /
+概念代码 / 簇 anchor 等稳定业务标识派生,`cluster.make_cluster_key` 同手法,
+跨进程无随机盐)升序排定,不依赖任何上游行序——热点行业(SQL `ORDER BY
+industry_rank`)与暴起概念(parquet 读回顺序)目前看似已经稳定,但那是"恰好
+如此"而非"契约保证",四类**全部**过一遍这一道收口,不只收被点名的两类。
 """
 
 from __future__ import annotations
@@ -265,11 +281,22 @@ def _anomaly_cluster_seeds(
 # 编排入口
 # ══════════════════════════════════════════════════════════════════════════
 
+def _sort_by_seed_key(items: List[DriverSeed]) -> Tuple[DriverSeed, ...]:
+    """四类种子各自落定顺序后再交给 ⑤(模块头「四类种子的输出顺序必须确定性」
+    节)。按 `seed_key` 升序——不用行序,也不假设调用方传入的列表已经有序。
+    `sorted()` 是稳定排序,若同一 `seed_kind` 内出现完全相同的 `seed_key`
+    (crc32 碰撞,概率级极小),会保留其原相对次序,不影响绝大多数情形下的
+    全序确定性。"""
+    return tuple(sorted(items, key=lambda s: s.seed_key))
+
+
 def generate_seeds(
     trade_date: date, *, db_path: Optional[Path] = None, parquet_dir: Optional[Path] = None
 ) -> Optional[SeedSet]:
     """当日四类驱动种子(**无现役包 → `None`**,如实披露"今日不产出种子",不
-    造一份默认包——见 `get_active_pack()` docstring 原文)。"""
+    造一份默认包——见 `get_active_pack()` docstring 原文)。四类种子各自经
+    `_sort_by_seed_key()` 落定确定性顺序(模块头节),`⑤` 截断前 `MAX_SEEDS_
+    AGGREGATED` 颗的前提"每类内部各自有序"由此保证。"""
     pack = get_active_pack(db_path)
     if pack is None:
         logger.warning(
@@ -282,10 +309,12 @@ def generate_seeds(
     return SeedSet(
         trade_date=_d(trade_date),
         pack_version=pack.pack_version,
-        hot_industry=tuple(_hot_industry_seeds(trade_date, pack, db_path=db_path)),
-        surging_concept=tuple(_surging_concept_seeds(trade_date, pack, parquet_dir=parquet_dir)),
-        limit_cluster=tuple(_limit_cluster_seeds(trade_date, pack, db_path=db_path)),
-        anomaly_cluster=tuple(_anomaly_cluster_seeds(trade_date, pack, db_path=db_path, parquet_dir=parquet_dir)),
+        hot_industry=_sort_by_seed_key(_hot_industry_seeds(trade_date, pack, db_path=db_path)),
+        surging_concept=_sort_by_seed_key(_surging_concept_seeds(trade_date, pack, parquet_dir=parquet_dir)),
+        limit_cluster=_sort_by_seed_key(_limit_cluster_seeds(trade_date, pack, db_path=db_path)),
+        anomaly_cluster=_sort_by_seed_key(
+            _anomaly_cluster_seeds(trade_date, pack, db_path=db_path, parquet_dir=parquet_dir)
+        ),
     )
 
 
