@@ -358,17 +358,13 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-02 · 📐 V2.0.0 已立项(planner 转写完成,施工未开始)**。V2 架构设计稿(2026-07-31 八项裁定 + 08-02 追加三项裁定 + §十二 选股策略包机制)已**全文转写**进本文件 §五 = **V2.0.0 详版施工图 17 块**;架构稿即刻转历史档案,自此本文件是 V2 的唯一施工权威(防双权威漂移)。
+**2026-08-02 · 🏗️ V2.0.0 施工中 —— V2-① 表与共享信息层地基已完工(@builder)**。20 张新表(18 SQLite + 2 parquet)一次到位,三律(冻结/追加/不回写)机器判据落地,全量测试零回归。
 
-- **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为** —— V2 是一次性换血 + 换机(裁定 #3/#8),不做影子系统、不分阶段过渡;v1.5.x 除生产事故快修外不再排功能。
-- **本次动作(纯文档,零代码 / 零数据库 / 零部署)**:
-  - §五 换成 V2.0.0 详版 Plan(17 块 + 1 个用户判定点);§二 新增 **§2.8 V2.0.0 语义换血总表**(篮子取代单票候选等,历史拍板一条不删);§三 新增 **§3.10 V2 技术选型增补**;§七 Backlog 逐条按 V2 处置并新挂 4 条;§八 新增 V2 用户操作四项。
-  - 归档:`archive/v1.5_施工图_20260802归档.md`(v1.5 施工图全文 ⑨ 块 + LLM 预算账 + 客户端契约清单 + **交接时的 §四 v1.5.2 收官快照全文**);`archive/V2架构设计稿_20260731_20260802立项归档.md`(架构稿原文 + 归档标注)。
-- **✅ 2026-08-02 用户验收 Plan 并追加两项拍板**(已并入 §五):
-  - **D1–D8 全部定案**(原为 planner 建议默认)。其中 **D2 = A 路定死**:新机挂新子域 **`nk.linotsai.top`**、**DNS 解析由用户自己做**(§八 第 14 项,已从「二选一」改为必办项),老机 `ln.linotsai.top` 原样服务到 ⑰ 换包完成 → **契约一次性换血、不留过渡键**;~~B 路(沿用 `ln`)~~ **已否决,plan 内不再留第二条路**(⑭-D / ⑯-G / ⑰ 三处的 B 路分支已全部收掉,只留删除线留痕)。
-  - **云上组件迁移放在尾声**:**①–⑮ 全部本地推进优先,⑯ 不与前面并行穿插**;⑯ 内的纯本地子项(systemd 单元 / nginx 模板 / 激活与 preseed 脚本 / 迁移清单)标 **📦 本地可先备料**,写好但一律不上机跑。判据与备料清单见 §五「工序时序纪律」与 ⑯ 块首。
-- **下一步** = builder 从 **V2-①** 开跑(①②③ 是地基,可连做)。**⑯ 的两条硬前置 = ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**(裁定 #3,§八 第 13/14 项);在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**,不阻塞。
-- **待办总入口 = §七 Backlog**(本次已逐条处置:吸收 / 废弃 / 保留三态标注齐)。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
+- **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;本次改动**纯本地代码 + 单测**,未碰任何服务器/DNS/部署,未改任何现役章程或 `strategy_versions` 行为。
+- **V2-① 完工内容**(详见 §五 V2-① 块内「完工记录」):`neckline/db.py::_SCHEMA` 新增 18 张 SQLite 表 + `app_settings` 两新列(`llm_default_provider`/`llm_task_routes`,走 `_COLUMN_MIGRATIONS`);`neckline/data/market_data.py` 的 `_VALID_TABLES`/`TABLE_FLOAT_COLS` 登记 `intraday_ticks`/`auction_snapshots` 两张 parquet 表;新建 `neckline/user_actions.py`(append-only 唯一实现);新守门单测 `tests/test_v2_schema_guard.py`(17 用例,五条三律判据全覆盖)。`python -m pytest tests/ -q`:2005→2023(净增 18,零回归,2 个 pre-existing 失败与本块无关——`date.today()`=2026-08-02 恰逢周日非交易日触发的既有时间炸弹)。
+- **⚠ 施工中发现一个与本块无关的既有缺陷,未修复,已 `spawn_task` 记账**:`tests/test_holding_k4_check.py` 若干用例调用 `build_holding_k4_check(...)` 未传 `db_path`,经 `holding_store.locked_time_exit_map`→`init_schema(None)` 命中 `neckline/db.py` 未被 `isolated_env` 覆盖的真实 `settings.db_path`——**该缺陷早于本次改动就存在**(git stash 验证过),只是这次因新增表/列首次在真实开发库留下可见痕迹(纯增量:新表+新列,无数据被改写/删除)。本块验收用的「前后 mtime/MD5 不变」数据来自 `DB_PATH` 环境变量重定向后的干净复测,不是默认调用——**如实记录,不影响本块验收结论**(本块新代码本身零写入真实库,已用隔离测试反复验证)。
+- **下一步** = builder 继续 **V2-②**(LLM Provider 自填制 + 双 Agent 路由 + 预算多本账)。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**(裁定 #3,§八 第 13/14 项);在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**,不阻塞。
+- **待办总入口 = §七 Backlog**。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/v1.5_施工图_20260802归档.md` 文末附录。
 
@@ -492,7 +488,7 @@ Neckline/
 
 ---
 
-### V2-① · 表与共享信息层地基(@builder)
+### V2-① · 表与共享信息层地基(@builder)✅ 完工(2026-08-02)
 
 **目标**:把 V2 全部 20 张新表 / 新分区一次建齐,并把「事实 / 用户行为 / 模型判断三类分存 + 冻结 / 追加 / 不回写三律」锁成机器判据。此后每块只写读写逻辑,不再动 DDL。
 
@@ -776,7 +772,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 **依赖**:无(第一块)。
 **验收**:上述 5 条守门单测全绿;`python -m pytest tests/ -q` 零回归;跑一次全量 pytest 前后开发库 `mtime`/MD5 不变(P4-25 的隔离夹具仍生效)。
 
----
+**完工记录(2026-08-02,@builder)**:18 张 SQLite 新表全部落 `neckline/db.py::_SCHEMA`(`CREATE TABLE IF NOT EXISTS`,天然幂等)+ `app_settings` 两新列(`llm_default_provider`/`llm_task_routes`)走 `_COLUMN_MIGRATIONS`;`intraday_ticks`/`auction_snapshots` 两张 parquet 表登记进 `neckline/data/market_data.py` 的 `_VALID_TABLES`+`TABLE_FLOAT_COLS`;新建 `neckline/user_actions.py`(`record`/`list_actions` 两函数,append-only 靠"没有第三个函数"担保)。新守门单测 `tests/test_v2_schema_guard.py`(17 个用例)覆盖 5 条三律判据:①冻结(`basket_cards`/`entry_snapshots` 撞键 `IntegrityError` + 全仓 grep 四短语,补了 plan 原文没列的 `DELETE FROM entry_snapshots` 对称项)②追加(AST 扫描 `execute`/`executemany`/`executescript` 调用点,已用合成用例验证不误伤 docstring)③不回写(直接 SQL 模拟 D+1 追加、断言 D0 篮子/卡逐字节不变)④幂等(空库 + `real_db_readonly_copy` 各跑两遍)⑤parquet 声明(两表往返 dtype + 全空列不漂 String)。全量 `pytest tests/ -q`:2005(基线,2 failed pre-existing+2001 passed+2 skipped)→2023(2 failed 同名同因+2019 passed+2 skipped),净增 18(17 新用例 + 1 条既有参数化守门测试自动多扫到本文件)、零回归。**发现一个与本块无关的既有缺陷(未修,已 `spawn_task` 记账)**:`tests/test_holding_k4_check.py` 的 `test_build_has_strong_only_price_volume` 等四个用例调用 `report/holding_k4_check.py::build_holding_k4_check(...)` 时未传 `db_path`,经 `holding_store.locked_time_exit_map(db_path=None)`→`init_schema(None)` 命中 `neckline/db.py` 自己未被 `isolated_env` 覆盖的真实 `settings.db_path`——该缺陷在改动前的原始代码上同样复现(已用 `git stash` + `DB_PATH` 环境变量重定向双重验证），只是这次因为本块新增了表/列才第一次在真实开发库 `data/neckline.db` 上留下可见痕迹(纯增量:新表+新列,无数据被改写或删除)；本块验收所用的"前后 mtime/MD5 不变"数据来自把 `DB_PATH` 重定向到 scratch 路径后的干净复测,不是默认调用。
 
 ### V2-② · LLM Provider 自填制 + 双 Agent 路由 + 预算多本账(@builder)
 
@@ -1381,6 +1377,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-02 · 🏗️ **V2-① 表与共享信息层地基完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署):20 张新表一次到位(18 SQLite 落 `neckline/db.py::_SCHEMA` + `app_settings` 两新列;2 parquet 表登记进 `market_data.py` 的 `_VALID_TABLES`/`TABLE_FLOAT_COLS`);新建 `neckline/user_actions.py`(append-only 唯一实现,靠"没有第三个函数"担保);新守门单测 `tests/test_v2_schema_guard.py`(17 用例,五条三律判据——冻结/追加/不回写/幂等/parquet 声明——全覆盖,含一处比 plan 原文更对称的补强:`DELETE FROM entry_snapshots` 冻结检查)。`pytest tests/ -q` 2005→2023(净增 18,零回归)。**副产品发现**(已 `spawn_task` 记账、未修复、不影响本块验收):`tests/test_holding_k4_check.py` 若干用例调用 `build_holding_k4_check` 未传 `db_path`,经既有代码路径命中真实 `data/neckline.db`(早于本次改动即存在的 pre-existing 缺陷,git stash 复现验证过;这次因新表新列首次留下可见痕迹,纯增量无数据损坏)——本块验收改用 `DB_PATH` 环境变量重定向复测,证明本块新代码本身零写入真实库。下一步:V2-②
 - 2026-08-02 · ✅ **V2.0.0 Plan 用户验收通过 + D1–D8 全部拍板 + 两项追加裁定入档**(@planner,只改文档,零代码改动):① **D1、D3–D8 照 planner 建议默认通过**,§五 清单表由「建议默认、可推翻」改为「**已拍板(2026-08-02 用户)**」;② **D2 = A 路定死** —— 新机挂新子域 **`nk.linotsai.top`**、**DNS 解析是用户动作**(用户原话:「我本来就要换云服务器,NK 这个域名我会直接把它解析到新的云服务器上」),老机 `ln.linotsai.top` 原样服务到 ⑰ 换包完成,**契约一次性换血不留过渡键**;**B 路(沿用 `ln`)全线删除**,⑭-D / ⑯-G / ⑰ / §七 P3-27 / §八 第 12 项五处的 B 路分支已收掉、只留删除线留痕(**不给 builder 留两条路犹豫**),同时写明「两步淘汰纪律本身仍有效,V2 只是靠换机窗口结构性绕开它」+ A 路成立的前提条件(**新机 nginx 绝不接管 `ln`**);③ **云上组件迁移置尾声** —— §五 新增「工序时序纪律」节 + ⑯ 块首改写:**①–⑮ 全部本地推进优先、⑯ 不与前面并行穿插、⑮ 完工前不碰任何服务器**,⑯ 内五项纯本地子项(三个 oneshot 单元 / nginx 模板 / `activate_pack.py`+首包 / `preseed_baskets.py` / 迁移清单)标 **📦 本地可先备料**(写好不上机跑,不拆走);§八 第 14 项由「走 A 路时才需要」改为**必办项**并加时机说明(按尾声节奏办、不必现在催)
 - 2026-08-02 · 🏗️ **V2.0.0 立项**(@planner,只改文档,零代码 / 零数据库 / 零部署)· 架构设计稿全文转写进 PROJECT_PLAN,**架构稿即刻转历史档案**(`archive/V2架构设计稿_20260731_20260802立项归档.md`),防双权威。**§五 = V2.0.0 详版施工图 17 块**:① 表与共享信息层地基(**20 张新表**一次到位 + 冻结/追加/不回写三律守门)② LLM Provider 自填制 + 双 Agent 路由 + 预算三本账 ③ 选股策略包机制(`selection_packs` + 原语白名单 + `engine_api_version` + 四道闸 + 首包 K4-pack)④ 市场扫描层三张预计算表 + 驱动种子 ⑤ 驱动聚合层(LLM + 成员白名单闸 + 角色对拍闸)⑥ Tier 分层引擎 ⑦ 篮子卡冻结 ⑧ D+1 验证(关注池改造 + 盘中存拍 + 状态机)⑨ 盘后复盘 + 评价引擎 ⑩ 极简台账 + 计划继承 + 决策日志表单退役 ⑪ 监控 80/15/5 + 通知三级 + NL 提醒 ⑫ 对账与画像 ⑬ V1 清理十三项 ⑭ 篮子日报 + 契约总装 + 三方对拍 ⑮ 客户端双端改版 ⑯ 新服务器 + 管线多段化 + 割接 + 首包激活 + Tier 预填充 ⑰ 双端换包(等用户指令)。**§二 新增 §2.8 语义换血总表**(篮子取代单票候选 / Tier 取代排序 / 三级取代六类推送 / 自动快照取代强制表单;**历史拍板一条不删**;**§2.8-C 重新表述第〇原则四锁** —— 「不进排序」精确为「不进机械分」、「不进哨兵」精确为「LLM 文本不进判据 + 关注池是注意力分配非判定」);**§三 新增 §3.10 V2 技术选型增补**;§一 新增 1.5 V2 定位。**§七 Backlog 逐条处置**:吸收 P1-5/P1-8/P3-11/P3-15/P3-27,废弃 P4-16(换机后 800M 数字作废),新挂 P3-28(归因标签稀疏)/ P3-29(检索单点)/ P4-30(初期分时残缺)/ P4-31(停写留档表清理),新立「选股策略包门禁」长期机制。**§八 新增 V2 用户操作四项**(购新机 / 子域 DNS / 填两条 Provider / 分时外源可选),第 9 项同花顺 txt 作废。**planner 补位三张表并如实登记理由**:`llm_providers`(`app_settings` 是单行表装不下注册表)、`entry_snapshots`(决策日志表单退役需要落点,`decision_log` 的 NOT NULL 列无法就地放宽)、`selection_pack_activation_log`(§12.4 要激活日志但未给表名)。v1.5 施工图全文 + v1.5.2 收官快照 → `archive/v1.5_施工图_20260802归档.md`
 - 2026-08-02 · 📐 **选股策略包机制定稿入档**(用户批准,`V2架构设计.md` 新增 §十二):声明式配置包(非代码插件)、包只管①种子规则+③Tier权重、原语白名单+`engine_api_version` 兼容校验、新表 `selection_packs`(append-only 单现役,激活复刻四道闸体例)、按包版本归因、K 字头版本、初版把现成选股代码整理成首包灌入。纯文档,零代码改动

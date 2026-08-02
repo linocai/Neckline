@@ -607,6 +607,316 @@ CREATE TABLE IF NOT EXISTS reference_plans (
     PRIMARY KEY (trade_date, ts_code)
 );
 CREATE INDEX IF NOT EXISTS idx_reference_plans_code ON reference_plans(ts_code, trade_date);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.0.0 新表(plan §五 V2-① 表与共享信息层地基,2026-08-02 立项)。18 张 SQLite 新表
+-- 一次到位(另 2 张 parquet 表 `intraday_ticks`/`auction_snapshots` 声明在
+-- `neckline/data/market_data.py`)。三类分存(§2.8-B 第 1 条):事实(EOD 预计算,
+-- corr_matrix_daily / limit_cluster_daily / leader_structure_daily)/ 用户行为
+-- (user_actions,append-only)/ 模型判断(baskets 系列 / tier_history / position_plans /
+-- profile 系列 / selection_packs 系列),互不覆盖。冻结 / 追加 / 不回写三律的机器判据见
+-- `tests/test_v2_schema_guard.py`;本节只建表,读写逻辑留给各消费块(建表块/写入块对照
+-- 见 PROJECT_PLAN §五「V2 新表汇总」)。
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- 模型判断:篮子本体(D0 冻结,plan §五 V2-①/⑦)。basket_key = crc32(trade_date|driver_slug)
+-- 十六进制串(跨进程可复现,承 §五「铁律」zlib.crc32 纪律),UNIQUE(trade_date, basket_key)
+-- 天然幂等去重。engine_api_version/charter_version/pack_version 是口径指纹(同
+-- reference_plans.stop_pct 既有惯例),供事后回看"这个篮子是在哪版引擎/章程/策略包下
+-- 生成的"。
+CREATE TABLE IF NOT EXISTS baskets (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_date         TEXT NOT NULL,              -- D0
+  basket_key         TEXT NOT NULL,              -- crc32(trade_date|driver_slug) 十六进制,跨进程可复现
+  name               TEXT NOT NULL,
+  driver             TEXT NOT NULL,              -- 共同驱动(一句话,LLM 产出)
+  driver_kind        TEXT NOT NULL,              -- theme|policy|event|commodity|overseas|rotation|limit_cluster
+  tier               INTEGER NOT NULL,           -- 1|2|3
+  pack_version       TEXT NOT NULL,              -- 现役策略包版本(归因用)
+  engine_api_version INTEGER NOT NULL,
+  charter_version    TEXT NOT NULL,              -- 生成时的现役章程(口径指纹)
+  via                TEXT NOT NULL DEFAULT 'auto',   -- auto | preseed
+  evidence_status    TEXT NOT NULL DEFAULT 'ok',     -- ok | search_unavailable | partial
+  created_at         TEXT NOT NULL,
+  UNIQUE(trade_date, basket_key)
+);
+
+-- 模型判断:篮子成员与角色(plan §五 V2-①/⑦),含机械/LLM 角色对拍分歧。role_conflict=1
+-- 时两侧判断不一致——分歧原样入卡展示,不静默采信任一方;is_primary 处理"同票多篮"场景
+-- 的主归属(行业闸 lift 最高者唯一为 1)。
+CREATE TABLE IF NOT EXISTS basket_members (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  basket_id       INTEGER NOT NULL,
+  ts_code         TEXT NOT NULL,
+  role_llm        TEXT NOT NULL,          -- leader | core | elastic
+  role_mech       TEXT,                   -- 来自 leader_structure_daily;NULL=机械侧无判定
+  role_conflict   INTEGER NOT NULL DEFAULT 0,   -- 1 = 两侧冲突,分歧入卡不静默采信
+  reason          TEXT NOT NULL,          -- 为何是这只而不是同题材其他票
+  is_primary      INTEGER NOT NULL DEFAULT 1,   -- 主归属篮(同票多篮时唯一 1)
+  created_at      TEXT NOT NULL,
+  UNIQUE(basket_id, ts_code)
+);
+
+-- 模型判断:篮子卡(plan §五 V2-①/⑦,蓝图 4.6)。**冻结表**——写入即不可改,D+1 追加
+-- 新 version 而不覆盖旧版本(version=1 恒是 D0 原判)。本表任何行一律只 INSERT,不提供
+-- 修改或抹除既有行的路径(靠"没有那个路径"担保,不靠自觉;守门单测见
+-- `tests/test_v2_schema_guard.py`——UNIQUE(basket_id, version) 撞键即报错 + 全仓文本扫描
+-- 断言看不到会改写本表既有行的语句)。stop_pct/take_profit_retrace/charter_version/
+-- pack_version/engine_api_version 是生成当时的口径指纹快照。
+CREATE TABLE IF NOT EXISTS basket_cards (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  basket_id          INTEGER NOT NULL,
+  version            INTEGER NOT NULL,          -- 1 = D0 原判;D+1 追加 2,3…
+  card_json          TEXT NOT NULL,             -- 蓝图 4.6 全项 + 结构化 spec + disclaimer
+  stop_pct           REAL,                      -- 口径指纹(生成时现役 config)
+  take_profit_retrace REAL,
+  charter_version    TEXT,
+  pack_version       TEXT,
+  engine_api_version INTEGER,
+  created_at         TEXT NOT NULL,
+  UNIQUE(basket_id, version)
+);
+
+-- 模型判断:验证状态流水(plan §五 V2-①/⑧)。**append-only**——每次盘中/EOD 观测到新
+-- 状态就追加一行,不回改早前行(状态演变本身是审计对象,"曾经 partial 后来 verified"
+-- 不该被抹去)。读侧取"最新状态"用 `ORDER BY id DESC LIMIT 1`,不是覆盖写。
+CREATE TABLE IF NOT EXISTS basket_verification (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  basket_id     INTEGER NOT NULL,
+  trade_date    TEXT NOT NULL,          -- D+1
+  observed_at   TEXT NOT NULL,          -- ISO8601 北京时间
+  state         TEXT NOT NULL,          -- verified | partial | unclear | falsified
+  source        TEXT NOT NULL,          -- intraday | eod
+  evidence_json TEXT NOT NULL DEFAULT '{}',   -- 命中了哪条结构化条件
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_basket_verif ON basket_verification(basket_id, trade_date);
+
+-- 模型判断:每日复盘(plan §五 V2-①/⑨)。机械判(mech_json)与 LLM 解释(llm_text)分列,
+-- llm_text=NULL 明确表示"未生成"(预算耗尽/降级),不拿空串冒充"生成了但没内容"
+-- (§3.8「没有」与「没看」必须分开)。UNIQUE(basket_id, review_date) 幂等覆盖同日重跑。
+CREATE TABLE IF NOT EXISTS basket_review_daily (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  basket_id     INTEGER NOT NULL,
+  review_date   TEXT NOT NULL,          -- 被复盘的那个交易日(= D+1)
+  depth         TEXT NOT NULL,          -- full(T1/T2) | brief(T3)
+  mech_json     TEXT NOT NULL,          -- 九项机械判 + 数据来源标注(存拍/EOD近似)
+  llm_text      TEXT,                   -- NULL = 未生成(预算或降级),不冒充"没内容"
+  llm_skip_reason TEXT,
+  degraded      INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL,
+  UNIQUE(basket_id, review_date)
+);
+
+-- 模型判断:Tier 定档留痕(plan §五 V2-①/⑥)。rank_mech(机械序)与 rank_in_tier(LLM
+-- 微调后最终序)两者都落库(§2.8-C 第 1 条:LLM 只能改档内序,微调理由 llm_reason 必须
+-- 留痕,不许只存最终结果、抹掉机械原始序)。UNIQUE(trade_date, basket_id) 一日一档。
+CREATE TABLE IF NOT EXISTS tier_history (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_date      TEXT NOT NULL,
+  basket_id       INTEGER NOT NULL,
+  tier            INTEGER NOT NULL,
+  mech_score      REAL NOT NULL,
+  mech_breakdown_json TEXT NOT NULL,    -- 五维分项 + 权重(来自现役包)
+  rank_in_tier    INTEGER NOT NULL,     -- 最终序
+  rank_mech       INTEGER NOT NULL,     -- 机械序(LLM 微调前)
+  llm_rank_delta  INTEGER NOT NULL DEFAULT 0,
+  llm_reason      TEXT,
+  pack_version    TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  UNIQUE(trade_date, basket_id)
+);
+
+-- 事实(EOD 预计算,plan §五 V2-①/④,P0-23 纪律:在线只读、不现算):板内/簇内滚动
+-- 20 日相关。corr=NULL 表示样本不足(禁写 0——0 是"算出来不相关",NULL 是"算不出",
+-- 两者不同)。约定 code_a < code_b 只存一遍,不重复存对称的两行。
+CREATE TABLE IF NOT EXISTS corr_matrix_daily (
+  trade_date  TEXT NOT NULL,
+  scope_key   TEXT NOT NULL,      -- 簇 or 板块的稳定键
+  code_a      TEXT NOT NULL,
+  code_b      TEXT NOT NULL,      -- 约定 code_a < code_b,不存两遍
+  window      INTEGER NOT NULL,   -- 20
+  corr        REAL,               -- NULL = 样本不足,禁写 0
+  n_obs       INTEGER NOT NULL,
+  computed_at TEXT NOT NULL,
+  PRIMARY KEY (trade_date, scope_key, code_a, code_b, window)
+);
+
+-- 事实(EOD 预计算,plan §五 V2-①/④):涨停共振簇。cluster_key 同样走 crc32 稳定键
+-- (跨进程/跨天可复现,承 §五铁律)。
+CREATE TABLE IF NOT EXISTS limit_cluster_daily (
+  trade_date       TEXT NOT NULL,
+  cluster_key      TEXT NOT NULL,   -- crc32 稳定键
+  ts_code          TEXT NOT NULL,
+  cluster_kind     TEXT NOT NULL,   -- same_day | consecutive
+  cluster_size     INTEGER NOT NULL,
+  consecutive_days INTEGER NOT NULL,
+  anchor_industry  TEXT,
+  anchor_concept   TEXT,
+  computed_at      TEXT NOT NULL,
+  PRIMARY KEY (trade_date, cluster_key, ts_code)
+);
+
+-- 事实(EOD 预计算,plan §五 V2-①/④):簇内龙头结构。rs_rank/limit_height=NULL 表示
+-- 算不出(禁写 0,同 corr 列的纪律);role_mech 是 basket_members.role_mech 的机械侧来源。
+CREATE TABLE IF NOT EXISTS leader_structure_daily (
+  trade_date   TEXT NOT NULL,
+  cluster_key  TEXT NOT NULL,
+  ts_code      TEXT NOT NULL,
+  rs_rank      INTEGER,          -- NULL = 算不出,禁写 0
+  limit_height INTEGER,
+  amount_share REAL,
+  role_mech    TEXT NOT NULL,    -- leader | core | elastic | unknown
+  computed_at  TEXT NOT NULL,
+  PRIMARY KEY (trade_date, cluster_key, ts_code)
+);
+
+-- 用户行为(plan §五 V2-①,§2.8-B 第 1 条):**唯一落点,append-only**。读写单一实现
+-- `neckline/user_actions.py`——该模块只提供 `record`(INSERT)与 `list_actions`(只读
+-- 查询),不提供任何修改或抹除既有行的函数(靠"没有那个函数"担保,不靠自觉;守门单测
+-- 见 `tests/test_v2_schema_guard.py`)。
+CREATE TABLE IF NOT EXISTS user_actions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at  TEXT NOT NULL,     -- ISO8601 北京时间
+  kind         TEXT NOT NULL,     -- view | select | buy | sell | alert | label | voice_note
+  ts_code      TEXT,
+  basket_id    INTEGER,
+  position_id  INTEGER,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_user_actions_kind_time ON user_actions(kind, occurred_at);
+
+-- 事实(plan §五 V2-①/⑩):开仓自动快照,决策日志强制表单的替代——`decision_log` 自此
+-- 停写留档(表保留,不新增行,不 DROP)。**冻结表**——一笔持仓一行(UNIQUE(position_id)),
+-- 写入即不可改(同 basket_cards 的冻结纪律,共用同一份守门单测)。
+CREATE TABLE IF NOT EXISTS entry_snapshots (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id    INTEGER NOT NULL,
+  ts_code        TEXT NOT NULL,
+  trade_date     TEXT NOT NULL,
+  basket_id      INTEGER,          -- NULL = 非篮子来源(手动补录)
+  card_version   INTEGER,
+  tier           INTEGER,
+  role           TEXT,
+  snapshot_json  TEXT NOT NULL,    -- 机器可知的一切:价量/涨幅/换手/量比/板块强度/资金流/红黄牌/竞价表现…
+  created_at     TEXT NOT NULL,
+  UNIQUE(position_id)
+);
+
+-- 模型判断(plan §五 V2-①/⑩):持仓计划,版本化——新版本(用户调整/系统重算)不改写
+-- 篮子卡原始判断(§2.8-B 第 2 条「不得因持仓盈亏回头修改原始选股结论」的落地)。
+-- version=1 恒从篮子卡继承。
+CREATE TABLE IF NOT EXISTS position_plans (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id         INTEGER NOT NULL,
+  version             INTEGER NOT NULL,   -- 1 = 从篮子卡继承
+  source_basket_id    INTEGER,
+  source_card_version INTEGER,
+  plan_json           TEXT NOT NULL,      -- 建仓区间/最高追价/离场参考/验证失效/主要风险
+  note                TEXT,
+  created_at          TEXT NOT NULL,
+  UNIQUE(position_id, version)
+);
+
+-- 用户行为(plan §五 V2-①/⑪):自然语言临时提醒。rule_json 是哨兵唯一判据(结构化,
+-- 不是 nl_text 本身——§2.8-C 第 2 条「LLM 产出的自由文本一律不进哨兵判据」的落地);
+-- nl_text 只留痕用户原话。expires_at 为 NULL 且 persist=0 时收盘自动失效。可改(用户
+-- 自己的规则,取消/编辑走用户显式操作,不受三律约束)。
+CREATE TABLE IF NOT EXISTS custom_alerts (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts_code          TEXT,               -- NULL = 大盘级
+  nl_text          TEXT NOT NULL,      -- 用户原话(留痕)
+  rule_json        TEXT NOT NULL,      -- 结构化规则(哨兵唯一判据)
+  active_from      TEXT,               -- 'HH:MM' 生效窗起
+  active_to        TEXT,
+  expires_at       TEXT,               -- NULL 且 persist=0 → 收盘自动失效
+  persist          INTEGER NOT NULL DEFAULT 0,   -- 1 = 显式长期有效
+  cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+  max_fires        INTEGER NOT NULL DEFAULT 1,
+  fired_count      INTEGER NOT NULL DEFAULT 0,
+  status           TEXT NOT NULL DEFAULT 'active',  -- active | expired | cancelled
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+
+-- 模型判断(plan §五 V2-①/⑫):偏好画像 / 能力画像,两张账分开、每期一版(不覆盖旧期,
+-- UNIQUE(as_of_date, dimension, value) 天然按期分行)。confidence 样本不足一律 low 并
+-- 标注(不静默拿低样本量冒充可信结论)。**初期不得反向影响客观 Tier**(§2.8-B 第 5 条)。
+CREATE TABLE IF NOT EXISTS profile_preference (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  as_of_date   TEXT NOT NULL,
+  dimension    TEXT NOT NULL,     -- theme | role | entry_style | tier | auction_habit
+  value        TEXT NOT NULL,
+  share        REAL NOT NULL,     -- 占比
+  sample_n     INTEGER NOT NULL,
+  window_start TEXT NOT NULL,
+  window_end   TEXT NOT NULL,
+  confidence   TEXT NOT NULL,     -- low | medium | high(样本不足一律 low 并标注)
+  computed_at  TEXT NOT NULL,
+  UNIQUE(as_of_date, dimension, value)
+);
+CREATE TABLE IF NOT EXISTS profile_capability (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  as_of_date    TEXT NOT NULL,
+  dimension     TEXT NOT NULL,
+  value         TEXT NOT NULL,
+  sample_n      INTEGER NOT NULL,
+  win_rate      REAL, profit_factor REAL, avg_mfe REAL, avg_mae REAL,
+  vs_peer_delta REAL,              -- 相对同篮未选成员
+  window_start  TEXT NOT NULL, window_end TEXT NOT NULL,
+  confidence    TEXT NOT NULL,
+  computed_at   TEXT NOT NULL,
+  UNIQUE(as_of_date, dimension, value)
+);
+
+-- 策略包(plan §五 V2-①/③,§12.1/§12.4):**声明式配置包,不是代码插件**——包里只装
+-- 参数与规则声明,执行引擎永远住系统线仓库(§12.1 定案,勿重开)。append-only + 单
+-- 现役:新包版本追加行,`is_active`/`activated_at` 像 `strategy_versions` 一样在唯一
+-- 现役行上切换——这不违反"追加"三律(三律守门单测覆盖的是 user_actions /
+-- basket_verification / selection_pack_activation_log 三张纯事件表;`selection_packs`
+-- 与 `strategy_versions` 同属"版本注册表",激活切换属正常职责,事件本身另落
+-- activation_log,同 `strategy_versions` vs `strategy_activation_log` 的既有分工)。
+CREATE TABLE IF NOT EXISTS selection_packs (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  pack_version       TEXT NOT NULL UNIQUE,
+  name               TEXT NOT NULL,
+  engine_api_version INTEGER NOT NULL,
+  manifest_json      TEXT NOT NULL,
+  config_json        TEXT NOT NULL,
+  evidence_ref       TEXT,               -- research/*.md 指针
+  is_active          INTEGER NOT NULL DEFAULT 0,
+  created_at         TEXT NOT NULL,
+  activated_at       TEXT
+);
+-- 策略包激活事件流(plan §五 V2-①/③)。**append-only 事件流**,照 `strategy_activation_log`
+-- 先例单列一表——"版本注册表"与"激活事件"分开落点,不把事件塞进版本表。
+CREATE TABLE IF NOT EXISTS selection_pack_activation_log (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  pack_version TEXT NOT NULL,
+  action       TEXT NOT NULL,      -- activate | deactivate
+  via          TEXT NOT NULL,      -- cli | seed
+  note         TEXT,
+  at           TEXT NOT NULL       -- UTC(同 brain._now() 口径)
+);
+
+-- LLM Provider 注册表(plan §五 V2-①/②,取代 GLM/Kimi 枚举,§3.10-B)。可改(用户自填/
+-- 编辑),不受三律约束。api_key 绝不出现在任何 HTTP 响应里(同 app_settings.llm_api_key
+-- 既有安全纪律,§3.4「高危区」);`app_settings` 装不下 N 个 provider(id=1 单行表
+-- CHECK 约束),注册表另落本表,**路由**留在 `app_settings` 新列(见下 `_COLUMN_MIGRATIONS`)。
+CREATE TABLE IF NOT EXISTS llm_providers (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  name           TEXT NOT NULL UNIQUE,   -- 用户自取,如 deepseek / glm
+  base_url       TEXT NOT NULL,
+  model          TEXT NOT NULL,
+  api_key        TEXT,                   -- 绝不出现在任何 HTTP 响应里
+  has_web_search INTEGER NOT NULL DEFAULT 0,
+  search_engine  TEXT,                   -- 带检索时的引擎取值(沿用 v1.5 埋点口径)
+  notes          TEXT,
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库
@@ -693,6 +1003,12 @@ _COLUMN_MIGRATIONS = [
     # 「章程止损/章程回落止盈」文案,不拿今天的章程去追认历史报告(同 search_engine
     # 「记录」≠「推断」的同一条纪律)。生产 v1.5.0 已建过 reference_plans 表,故走补列。
     ("reference_plans", "take_profit_retrace", "REAL"),
+    # V2-①(plan §五 V2-①/②,§3.10-B):LLM 双 Agent 路由。llm_default_provider 缺路由
+    # 时的兜底(`llm_providers.name`);llm_task_routes 是「任务 → provider name」JSON 映射
+    # (`app_settings.llm_task_routes`,非 NULL 默认 '{}' = 未配任何任务级路由,全部退回
+    # 默认 provider)。**本块只建列**,读写解析逻辑留给 V2-②(`neckline/llm/` 路由层)。
+    ("app_settings", "llm_default_provider", "TEXT"),
+    ("app_settings", "llm_task_routes", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 

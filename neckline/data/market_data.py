@@ -43,6 +43,12 @@ _VALID_TABLES = {
     # 「持仓票当日无 EOD 行」区分成 `suspended`(真停牌)vs `data_gap`(数据源缺口)——
     # 「没有」与「没看」必须能分开(§3.8),不许一律标 unknown 糊过去。
     "suspend_d",
+    # V2-①(plan §五 V2-①,§3.10-A):盘中存拍两张事实表——「只增不改的高频事实」,
+    # 走 `write_table_day` 铁律按日分区,不进 SQLite(SQLite 装不下 关注池 200 只 ×
+    # 240 分钟/日的量级)。落盘时机 = D4 拍板「内存累计 + 15:05 收盘后一次性落盘」,
+    # 写入逻辑留给 V2-⑧;本块只声明表名与数值列 canonical dtype。
+    "intraday_ticks",
+    "auction_snapshots",
 }
 
 
@@ -112,6 +118,12 @@ TABLE_FLOAT_COLS: Dict[str, Tuple[str, ...]] = {
     # **一个数值列都没有** → 空元组。空元组 ≠ 未声明:未声明会退回「向既有分区看齐」的
     # 旧行为并打 WARNING(脏基准风险),显式声明空元组才是「这张表确实没有数值列」。
     "suspend_d": (),
+    # V2-①(plan §五 V2-①,§3.10-A):盘中存拍两张事实表的数值列声明(表结构见
+    # PROJECT_PLAN §五 V2-① 「parquet 两表」)。volume/amount 口径同 `daily` 既有惯例
+    # (手 / 元);cum_volume/cum_amount 是当日累计量,同样声明 Float64(与本项目其它
+    # "计数类"列——如 `daily.vol`——统一走 CANONICAL_FLOAT 的既有口径一致,不特殊化)。
+    "intraday_ticks": ("price", "volume", "amount", "cum_volume", "cum_amount"),
+    "auction_snapshots": ("auction_price", "auction_volume", "auction_amount", "pre_close", "gap_pct"),
 }
 
 
