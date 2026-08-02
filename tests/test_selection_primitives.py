@@ -58,9 +58,12 @@ def test_is_allowed_feature_rejects_non_whitelisted(feature: str):
 
 
 def test_allowed_features_pattern_count_matches_plan():
-    """plan §五 V2-③ 原文逐字给了 8 个模式——本测试锁死数量,防止有人"顺手"
-    多加/少加一个模式而没人注意到(改动这个集合是真正的架构决策,不该悄悄发生)。"""
-    assert len(prim._ALLOWED_FEATURES) == 8
+    """plan §五 V2-③ 原文逐字给了 8 个模式,V2-④ 新增 `ths_daily.*` 第 9 个
+    (`surging_concept_seed` 原语需要读概念板块日线,见 `primitives.py` 模块头
+    「V2-④ 新增 4 个原语」节)。本测试锁死数量,防止有人"顺手"多加/少加一个
+    模式而没人注意到(改动这个集合是真正的架构决策,不该悄悄发生)。"""
+    assert len(prim._ALLOWED_FEATURES) == 9
+    assert "ths_daily.*" in prim._ALLOWED_FEATURES
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -126,9 +129,14 @@ def test_primitive_run_dispatches_to_impl_with_merged_params():
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_registry_contains_exactly_the_five_first_pack_primitives():
+    """V2-③ 首包 5 原语 + V2-④ 市场扫描层新增 4 原语(见 `primitives.py` 模块头
+    「V2-④ 新增 4 个原语」节),共 9 个,不多不少(改动这个集合同样是架构决策,
+    见上一测试同款纪律)。"""
     assert set(prim.PRIMITIVES) == {
         "stock_hygiene", "non_new_stock", "k4_advisory_gate",
         "industry_dominance_gate", "intel_rank_priority",
+        "hot_industry_seed", "surging_concept_seed",
+        "limit_cluster_seed", "anomaly_cluster_seed",
     }
 
 
@@ -364,6 +372,94 @@ def test_intel_rank_priority_dims_param_changes_outcome():
     )
     assert [e["code"] for e in by_rank_first] == ["B", "A"]
     assert [e["code"] for e in by_card_first] == ["A", "B"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2-④ 新增 4 个原语:行为正确性 + 运行期访问锁(不读 LLM 产出字段)
+# ══════════════════════════════════════════════════════════════════════════
+
+# —— hot_industry_seed ——————————————————————————————————————————————————
+
+@pytest.mark.parametrize("rank,is_strength,max_rank,require_strength,expected", [
+    (5, True, 10, True, True),
+    (15, True, 10, True, False),      # 超出 max_rank
+    (10, True, 10, True, True),       # 边界:<= 判定
+    (5, False, 10, True, False),      # 不是强度日且要求强度日
+    (5, False, 10, False, True),      # 换参数放宽 require_strength_day → 通过
+    (None, True, 10, True, False),    # 未评级(成员不足)保守不通过
+])
+def test_hot_industry_seed_behavior(rank, is_strength, max_rank, require_strength, expected):
+    row = _poisoned_row(industry_rank=rank, is_strength_day=is_strength)
+    result = prim.PRIMITIVES["hot_industry_seed"].run(
+        row, {"max_rank": max_rank, "require_strength_day": require_strength}
+    )
+    assert result is expected
+    assert row.accessed.isdisjoint(_POISON_KEYS)
+
+
+# —— surging_concept_seed ———————————————————————————————————————————————
+
+@pytest.mark.parametrize("pct_change,min_pct_change,expected", [
+    (8.0, 5.0, True),
+    (2.0, 5.0, False),
+    (5.0, 5.0, True),               # 边界:EPS 容差下 >= 通过
+    (5.0 - 1e-10, 5.0, True),       # 浮点噪声容差内仍判通过
+    (None, 5.0, False),
+])
+def test_surging_concept_seed_behavior(pct_change, min_pct_change, expected):
+    row = _poisoned_row(pct_change=pct_change)
+    assert prim.PRIMITIVES["surging_concept_seed"].run(row, {"min_pct_change": min_pct_change}) is expected
+    assert row.accessed.isdisjoint(_POISON_KEYS)
+
+
+def test_surging_concept_seed_does_not_read_retired_board_age():
+    """"暴起"读的是当日单日涨幅,不是 `board_age`(概念板块年龄——已退役为
+    展示专用,不再是任何判据的数据源,见项目 CLAUDE.md)。即便 row 里混进一个
+    `board_age` 键,原语也不该访问它。"""
+    row = _KeyTrackingDict(pct_change=9.0, board_age=999)
+    assert prim.PRIMITIVES["surging_concept_seed"].run(row) is True
+    assert "board_age" not in row.accessed
+
+
+# —— limit_cluster_seed —————————————————————————————————————————————————
+
+@pytest.mark.parametrize("size,days,min_size,min_days,expected", [
+    (3, 1, 2, 2, True),        # 广度达标(size),持续性不够也通过(任一满足)
+    (1, 3, 2, 2, True),        # 持续性达标(days),广度不够也通过
+    (1, 1, 2, 2, False),       # 两者都不达标
+    (None, None, 2, 2, False),  # 都缺失
+])
+def test_limit_cluster_seed_behavior(size, days, min_size, min_days, expected):
+    row = _poisoned_row(cluster_size=size, consecutive_days=days)
+    result = prim.PRIMITIVES["limit_cluster_seed"].run(
+        row, {"min_cluster_size": min_size, "min_consecutive_days": min_days}
+    )
+    assert result is expected
+    assert row.accessed.isdisjoint(_POISON_KEYS)
+
+
+# —— anomaly_cluster_seed ———————————————————————————————————————————————
+
+@pytest.mark.parametrize("volume_ratio,min_volume_ratio,expected", [
+    (4.0, 3.0, True),
+    (1.2, 3.0, False),
+    (3.0, 3.0, True),              # 边界
+    (3.0 - 1e-10, 3.0, True),      # 浮点噪声容差
+    (None, 3.0, False),
+])
+def test_anomaly_cluster_seed_behavior(volume_ratio, min_volume_ratio, expected):
+    row = _poisoned_row(volume_ratio=volume_ratio)
+    assert prim.PRIMITIVES["anomaly_cluster_seed"].run(row, {"min_volume_ratio": min_volume_ratio}) is expected
+    assert row.accessed.isdisjoint(_POISON_KEYS)
+
+
+def test_anomaly_cluster_seed_declares_but_does_not_consume_cluster_param():
+    """`min_cluster_members` 是声明给 `seeds.py` 编排层读的参数,`impl` 本身
+    不消费它——换这个参数不改变单票判断结果(证明 impl 确实没用它)。"""
+    row = dict(volume_ratio=5.0)
+    r1 = prim.PRIMITIVES["anomaly_cluster_seed"].run(row, {"min_cluster_members": 2})
+    r2 = prim.PRIMITIVES["anomaly_cluster_seed"].run(row, {"min_cluster_members": 99})
+    assert r1 is r2 is True
 
 
 # ══════════════════════════════════════════════════════════════════════════

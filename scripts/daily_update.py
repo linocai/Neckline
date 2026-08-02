@@ -157,6 +157,51 @@ def update_industry_strength(target: date) -> None:
         )
 
 
+def update_scan_layer(target: date) -> None:
+    """V2-④(plan §五 V2-④,P0-23):市场扫描层三张预计算表(`limit_cluster_daily`/
+    `corr_matrix_daily`/`leader_structure_daily`)日更增量,固定顺序
+    cluster→corr→leader(见 `neckline/scan/__init__.py`)。
+
+    **尽力而为,WARNING 级别**(同 `update_suspend_list`/`update_concept_boards`
+    两位先例,比 `update_industry_strength` 的 ERROR 级别更保守)——V2-④ 落地时
+    尚无任何在线路径消费这三张表(⑤ 驱动聚合层未建),当日零行是**合法**的
+    "今天没有涨停共振/没有够格的相关对"结果,不是判据输入缺失,不值得 ERROR
+    级别报警;真出异常(数据管线本身坏了)才升级。**依赖当日 `limit_derived`
+    与 `industry_strength_daily` 已落盘**,故排在 `run_limit_derived` 与
+    `update_industry_strength` 两者之后。"""
+    from neckline.scan import cluster, corr, leader, seeds
+
+    try:
+        c_stats = cluster.refresh_limit_clusters([target])
+        r_stats = corr.refresh_corr_matrix([target])
+        l_stats = leader.refresh_leader_structure([target])
+        logger.info(
+            "[scan_layer] %s cluster=%d行(同日簇%d/连板簇%d) corr=%d行 leader=%d行",
+            target, c_stats["rows"], c_stats["same_day_clusters"], c_stats["consecutive_clusters"],
+            r_stats["rows"], l_stats["rows"],
+        )
+        seed_set = seeds.generate_seeds(target)
+        if seed_set is None:
+            logger.warning(
+                "[scan_layer] %s 无现役策略包 —— 今日不产出驱动种子(先跑 "
+                "`python scripts/activate_pack.py --file packs/K4-pack.json --confirm`)",
+                target,
+            )
+        else:
+            counts = seed_set.counts()
+            logger.info(
+                "[scan_layer] %s 驱动种子:热点行业%d/暴起概念%d/涨停簇%d/异动簇%d(pack=%s)",
+                target, counts["hot_industry"], counts["surging_concept"],
+                counts["limit_cluster"], counts["anomaly_cluster"], seed_set.pack_version,
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[scan_layer] 日更异常(已吞,不阻断主增量)。补算:"
+            "`python scripts/scan_layer.py refresh --from %s --to %s`",
+            target.strftime("%Y%m%d"), target.strftime("%Y%m%d"), exc_info=True,
+        )
+
+
 def main() -> int:
     if not settings.tushare_token:
         logger.error("TUSHARE_TOKEN 缺失(.env),无法拉取。")
@@ -195,6 +240,9 @@ def main() -> int:
     # v1.4-⑩-C:排在两位增强项**之后**(它吃的是本次主增量刚落的当日 `daily` 分区,
     # 时序上必须在 `backfill_day_tables` 之后)。
     update_industry_strength(target)
+    # V2-④:排在最后——依赖本次刚落的 `limit_derived`(上面 `run_limit_derived`)与
+    # `industry_strength_daily`(上面 `update_industry_strength`)两者都已就绪。
+    update_scan_layer(target)
 
     logger.info("增量更新完成:%s", target)
     return 0

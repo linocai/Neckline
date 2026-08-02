@@ -27,6 +27,21 @@
       },
       "intel_rank_priority": {
         "dims": ["industry_rank", "industry_persist_days", "yellow_card_count"]
+      },
+      "hot_industry_seed": {
+        "max_rank": 10,
+        "require_strength_day": true
+      },
+      "surging_concept_seed": {
+        "min_pct_change": 5.0
+      },
+      "limit_cluster_seed": {
+        "min_cluster_size": 2,
+        "min_consecutive_days": 2
+      },
+      "anomaly_cluster_seed": {
+        "min_volume_ratio": 3.0,
+        "min_cluster_members": 2
       }
     },
     "tier": {

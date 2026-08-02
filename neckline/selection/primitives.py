@@ -52,6 +52,31 @@ SQLite 表),白名单里仍按逻辑表名处理(与 CLAUDE.md「K4 红黄牌文
       (`industry_rank` → `industry_persist_days` → `yellow_card_count`,三者原
       逻辑均为升序;原函数的确定性兜底 `base_score DESC / code ASC` 不做成可配
       参数,原样留在未来消费方的实现里,不属于"三级键"本身的语义)。
+
+**V2-④ 新增 4 个原语(市场扫描层「驱动种子」资格判断,plan §五 V2-④)**:
+`neckline/scan/seeds.py` 消费,回答"这个事实(行业/概念/簇/异动股)够不够格
+当一颗驱动种子",**不是**"这个事实存不存在"——三张事实表(`corr_matrix_daily`/
+`limit_cluster_daily`/`leader_structure_daily`)与 `industry_strength_daily`
+本身的计算不读包配置(工程常量,同 `industry_strength.py::_MIN_MEMBERS` 的既有
+分工),只有"够不够格上报为种子"这道阈值才读包。**这四个原语的参数值是本次
+新拟定的启发式起点(非回测拟合值,如实登记)**,与前 5 个"从现有代码抽现值"
+性质不同,理由见各自 docstring:
+    · `hot_industry_seed`      —— row=`industry_strength_daily` 单日单行业。
+    · `surging_concept_seed`   —— row=`ths_daily` 单日单概念指数。**新增白名单
+      模式 `ths_daily.*`**(`_ALLOWED_FEATURES` 从 8 个扩到 9 个——概念板块原始
+      日线是继续被读取的既有数据源,`ths_daily.pct_change` 与 `daily.close`/
+      `moneyflow_dc.net_amount` 同属"预计算表/EOD 原始数据"这一类,不是 LLM
+      产出,符合白名单"只放行预计算表与 EOD 面板列"的既定标准,不是破例)。
+    · `limit_cluster_seed`     —— row=`limit_cluster_daily` 单日单簇(聚合到
+      簇一级,不是簇成员一级)。
+    · `anomaly_cluster_seed`   —— row=**单票**当日 `daily_basic.volume_ratio`
+      (量比异动)。命名与其它三个"种子类型名"对齐(对应"异动簇"),但 `impl`
+      判断的是"这只票算不算异动"(逐票),**聚类**(按行业分组、凑够
+      `min_cluster_members` 只)是 `seeds.py` 的编排逻辑,不在本原语内——
+      `min_cluster_members` 因此是"声明了但 `impl` 不使用"的参数(`seeds.py`
+      直接读 `Pack.seeds_config()` 取用,`Primitive.run()` 调用路径仍会把它
+      传给 `impl` 但被忽略,同 `params_schema` 声明可以承载"给编排层看"的参数
+      这一既有设计弹性,不违反"参数必须都被 impl 消费"这类并不存在的规则)。
 """
 
 from __future__ import annotations
@@ -60,10 +85,15 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-# —— 特征白名单(plan §五 V2-③ 原文逐字照抄的 8 个模式)—————————————————————
+# —— 特征白名单(plan §五 V2-③ 原文逐字照抄的 8 个模式 + V2-④ 新增 1 个)——————
 # **模块级常量,不是策略参数**:这是"引擎允许原语引用哪些表"的不变量,不随包变化
 # ——它由本文件自己列出并在 `tests/test_selection_primitives.py` 的模块级数值
 # 字面量白名单扫描测试里显式登记(见该文件 `_ENGINE_CONSTANT_WHITELIST`)。
+#
+# `ths_daily.*`(V2-④ 新增,原 8 个之外):概念板块原始日线(`data/concept_data.py`
+# 日更自愈),供 `surging_concept_seed` 原语判断"哪个概念今天暴起"。它与
+# `daily`/`moneyflow_dc` 同属"预计算表 / EOD 原始数据"这一类,不是 LLM 产出,
+# 符合白名单既定标准(见模块头「V2-④ 新增 4 个原语」节)。
 _ALLOWED_FEATURES: Tuple[str, ...] = (
     "industry_strength_daily.*",
     "corr_matrix_daily.*",
@@ -73,6 +103,7 @@ _ALLOWED_FEATURES: Tuple[str, ...] = (
     "daily*",          # 故意无点号:同时覆盖 daily.* 与 daily_basic.*
     "moneyflow_dc.*",
     "k4_advisory.*",
+    "ths_daily.*",
 )
 
 _KINDS: Tuple[str, ...] = ("filter", "feature", "sort_key")
@@ -365,6 +396,106 @@ _register(Primitive(
         "dims": {"type": "array", "items": "string", "default": list(_DEFAULT_RANK_DIMS)},
     },
     impl=_intel_rank_priority,
+))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2-④ 市场扫描层「驱动种子」资格判断(4 个新原语,现值来源见模块头对应节)
+# ══════════════════════════════════════════════════════════════════════════
+
+def _hot_industry_seed(
+    row: Mapping[str, Any], *, max_rank: int = 10, require_strength_day: bool = True
+) -> bool:
+    """热点行业种子资格(row=`industry_strength_daily` 单日单行业)。`industry_rank`
+    缺失(成员数不足 `_MIN_MEMBERS`,当日未评级)→ 不通过,保守(同
+    `industry_dominance_gate` 缺值即不通过的既有纪律)。"""
+    rank = row.get("industry_rank")
+    if rank is None:
+        return False
+    if require_strength_day and not row.get("is_strength_day"):
+        return False
+    return rank <= max_rank
+
+
+def _surging_concept_seed(row: Mapping[str, Any], *, min_pct_change: float = 5.0) -> bool:
+    """暴起概念种子资格(row=`ths_daily` 单日单概念指数)。用**当日单日涨幅**
+    (`pct_change`)而非板块年龄(`board_age`)或 20 日动量——"暴起"要捕捉的是
+    "今天突然冲出来",不是"已经持续強势一段时间"这个不同的量(与
+    `report/sectors.py::board_age` 的既有分工一致:后者只做板块展示,不再是
+    任何判据的数据源,见项目 CLAUDE.md「双会话架构」节;本原语不读它)。"""
+    pct = row.get("pct_change")
+    return pct is not None and pct >= min_pct_change - _LIFT_EPS
+
+
+def _limit_cluster_seed(
+    row: Mapping[str, Any], *, min_cluster_size: int = 2, min_consecutive_days: int = 2
+) -> bool:
+    """涨停簇种子资格(row=`limit_cluster_daily` **簇一级**聚合行,不是簇成员)。
+    `cluster_size`/`consecutive_days` 满足任一门槛即通过——同日多只共振,或
+    已连续接力多天,都算"够格当种子"(两者不是同一件事:前者是"广度",后者是
+    "持续性")。事实表本身已保证 `cluster_size>=2`(`cluster.MIN_CLUSTER_SIZE`
+    工程常量,见 `neckline/scan/cluster.py`);本原语的 `min_cluster_size` 让
+    包可以把这道门槛抬得更高(如只要 >=3 只共振才算种子)。"""
+    size = row.get("cluster_size")
+    days = row.get("consecutive_days")
+    size_ok = size is not None and size >= min_cluster_size
+    days_ok = days is not None and days >= min_consecutive_days
+    return size_ok or days_ok
+
+
+def _anomaly_cluster_seed(
+    row: Mapping[str, Any], *, min_volume_ratio: float = 3.0, min_cluster_members: int = 2
+) -> bool:
+    """异动簇种子的**逐票**资格判断(row=单票当日 `daily_basic` 行)——量比
+    (`volume_ratio`,今日成交量/近 5 日均量)达到门槛即算"当日异动"。**聚类**
+    (按行业分组、凑够 `min_cluster_members` 只才算一簇)是 `neckline/scan/
+    seeds.py` 的编排逻辑,不在本原语内——`min_cluster_members` 是声明给编排层
+    读的参数,`impl` 本身不消费它(见模块头「V2-④ 新增 4 个原语」节说明)。"""
+    vr = row.get("volume_ratio")
+    return vr is not None and vr >= min_volume_ratio - _LIFT_EPS
+
+
+_register(Primitive(
+    name="hot_industry_seed",
+    kind="filter",
+    inputs=("industry_strength_daily.industry_rank", "industry_strength_daily.is_strength_day"),
+    params_schema={
+        "max_rank": {"type": "integer", "default": 10},
+        "require_strength_day": {"type": "boolean", "default": True},
+    },
+    impl=_hot_industry_seed,
+))
+
+_register(Primitive(
+    name="surging_concept_seed",
+    kind="filter",
+    inputs=("ths_daily.pct_change",),
+    params_schema={
+        "min_pct_change": {"type": "number", "default": 5.0},
+    },
+    impl=_surging_concept_seed,
+))
+
+_register(Primitive(
+    name="limit_cluster_seed",
+    kind="filter",
+    inputs=("limit_cluster_daily.cluster_size", "limit_cluster_daily.consecutive_days"),
+    params_schema={
+        "min_cluster_size": {"type": "integer", "default": 2},
+        "min_consecutive_days": {"type": "integer", "default": 2},
+    },
+    impl=_limit_cluster_seed,
+))
+
+_register(Primitive(
+    name="anomaly_cluster_seed",
+    kind="filter",
+    inputs=("daily_basic.volume_ratio",),
+    params_schema={
+        "min_volume_ratio": {"type": "number", "default": 3.0},
+        "min_cluster_members": {"type": "integer", "default": 2},
+    },
+    impl=_anomaly_cluster_seed,
 ))
 
 
