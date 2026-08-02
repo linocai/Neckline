@@ -362,13 +362,13 @@ Neckline/
 
 - **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;至今全部改动**纯本地代码 + 单测**,未碰任何服务器/DNS/部署,未改任何现役章程或 `strategy_versions` 行为。真实 `data/neckline.db` 里全部 V2 表**仍是 0 行**。
 - **V2-⑤ 完工内容**(详见 §五 V2-⑤ 块内「完工记录」,含**十条如实登记**):新建 `neckline/selection/aggregate.py`(`aggregate_baskets()` 唯一编排入口,永不抛异常);顺带把围栏 JSON 解析器从 `report/reference_plan.py` 搬到新模块 `neckline/llm/json_block.py`(行为逐字节不变、原处同名再导出)。真实数据冒烟(真库副本 + 真 parquet + LLM 全桩)跑通并打出两处合成测试看不见的坑(裸指数代码当检索词 / `daily.amount` 千元单位换算),均已修掉 + 单测锁死。`pytest tests/ -q`:2274→**2333 过 + 2 skip + 2 fail**(⑤ 自身 +57,余 2 来自并行的 ④b)。
-- **⚠ 需要 planner 裁定的两件(⑤ 提出,阻塞面在 ⑥/⑦)**:① **Plan 自相矛盾** —— 「V2 新表汇总」把 `baskets`/`basket_members` 的写入块登记在 ⑦,但 `baskets.tier` 是 `NOT NULL` 而 tier 由 ⑥ 定档、⑥ 又依赖 ⑤;连带 `tier_history.basket_id`(⑥ 写)需要 `baskets.id`(⑦ 写)形成循环。⑤ 的处置是「产出内存态 + 写入口强制要 tier、缺就 fail loud、编排不自动落库」,**⑥/⑦ 施工前需定死运行期落库次序**。② **成员卫生线无人认领** —— §2.8-C 说机械闸由 K4 advisory 与卫生线承担,但 ⑤ 块规格只列两道机械闸;现状是篮子成员可能含 ST / 次新 / 流动性差的票。⑤ 刻意不自造一个"部分版卫生线"(会多出第二个口径源)。
+- **✅ ⑤ 提的三件已由 planner 裁定并改进 Plan(2026-08-02,⑥/⑦ 解除阻塞)**:① **落库次序** → 新增【planner 裁定 · 跨块】节(排在 ⑤ 与 ⑥ 之间):**⑥ 单事务写 `baskets`+`basket_members`+`tier_history`,⑦ 只写 `basket_cards`**;写入口统一搬 `neckline/selection/basket_store.py`(⑤ 的 `save_baskets` 平移 + 同名再导出,行为逐字节不变);四表 `INSERT OR IGNORE` 冻结不覆盖;**「有篮子无卡」是合法中间态**(404 reason `card_not_ready`,不许抹掉篮子)。② **成员卫生线** → 新增 **⑤-b**:落点在「装配给 LLM 的成员清单」之前(白名单闸自动兜住),**复用 ③ 的三个原语读现役包、禁自造第二份**;保险丝拆两级(ST/停牌/次新/板块**永远拦**,`ma20`/`amount_ma20` 面板缺失才降级不拦 + 显式披露)。③ **lift 小样本失真** → 新增 **⑤-c**:最小成分数门槛 **5** 作**引擎常量**(与 `industry_strength._MIN_MEMBERS` 同源),不达标篮 `lift=None` 不参与比较、全不达标走确定性兜底;策略语义那一半登记 **§七 P3-32** 交策略线/用户过目。另顺手钉死:⑤ 疏漏 ⑦「零证据不成篮 vs 检索缺席仍出篮」的自洽读法已写进 ⑤ 篮子规则条文;`json_block.py` **不随 ⑬-3 陪葬**已登记在 ⑬-3。
 - **V2-④ 完工内容**(详见块内「完工记录」):全新包 `neckline/scan/` + `scripts/scan_layer.py` + `daily_update.py` 挂载;`primitives.py` 新增 4 原语(白名单扩至 9 模式)。施工期收到 K7 需求 1a 并已对齐,**V2-④b-0 子项因此不需重做**。
 - **V2-③ 完工内容**:全新包 `neckline/selection/`(`engine_api.py`/`primitives.py`/`pack.py`)+ `scripts/activate_pack.py` + 首包 `packs/K4-pack.json`。
 - **两个待办子块的状态**:**V2-④b**(新表 `industry_stage_daily` 五态状态机)**正在并行施工中**(另一个 builder,动 `neckline/db.py` 的 `_SCHEMA`、`neckline/scan/stage.py`、`scripts/industry_stage.py`、`scripts/daily_update.py`);**V2-③-K7**(原语与白名单跟进 + `packs/K7-pack.json`)**尚未开工**,不依赖 ④/④b,可随时开。
 - **如实登记的设计判断**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处。均未改 Plan,如与规划意图不符请澄清。
 - **仍未修复的三点既有欠账**(与各自新块均无关):V2-① 的 `test_holding_k4_check.py` 未传 `db_path`(会写开发库,已 `spawn_task` 记账)、V2-② 的 `news_scan.py` 缺 `prompt_context`、`TASK_INQUIRY` 归入检索类默认路由待澄清。
-- **下一步** = **V2-③-K7**(可立刻开),或等 ④b 完工后开 **V2-⑥**(依赖 ③ ③-K7 ④b ⑤,且需先裁定上面那条落库次序)。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**(裁定 #3,§八 第 13/14 项);在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**,不阻塞。
+- **下一步** = **V2-③-K7**(可立刻开)、**V2-⑤-b / ⑤-c**(⑤ 的两个追加子项,不依赖 ④b,可立刻开),或等 ④b 完工后开 **V2-⑥**(依赖 ③ ③-K7 ④b ⑤;落库次序已裁定,**不再阻塞**)。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**(裁定 #3,§八 第 13/14 项);在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**,不阻塞。
 - **待办总入口 = §七 Backlog**。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/v1.5_施工图_20260802归档.md` 文末附录。
@@ -430,12 +430,12 @@ Neckline/
 
 | # | 表 | 载体 | 建表块 / 写入块 | 三律 | 来源 |
 |---|---|---|---|---|---|
-| 1 | `baskets` | SQLite | ① / ⑦ | 冻结 | 架构稿 |
-| 2 | `basket_members` | SQLite | ① / ⑦ | 冻结 | 架构稿 |
-| 3 | `basket_cards` | SQLite | ① / ⑦ | 冻结 + 追加版本 | 架构稿 |
+| 1 | `baskets` | SQLite | ① / **⑥** | 冻结 | 架构稿(⚠ 写入块 2026-08-02 由 ⑦ 改判为 ⑥,见「篮子四表落库次序」) |
+| 2 | `basket_members` | SQLite | ① / **⑥** | 冻结 | 架构稿(⚠ 同上,由 ⑦ 改判为 ⑥) |
+| 3 | `basket_cards` | SQLite | ① / ⑦ | 冻结 + 追加版本 | 架构稿(⑦ **只写这一张**) |
 | 4 | `basket_verification` | SQLite | ① / ⑧ | 追加,不回写 | 架构稿 |
 | 5 | `basket_review_daily` | SQLite | ① / ⑨ | 每日一行幂等 | 架构稿 |
-| 6 | `tier_history` | SQLite | ① / ⑥ | 每日一行幂等 | 架构稿 |
+| 6 | `tier_history` | SQLite | ① / ⑥ | 每日一行幂等 | 架构稿(与 1、2 **同一事务**) |
 | 7 | `corr_matrix_daily` | SQLite | ① / ④ | EOD 预计算,在线只读 | 架构稿 |
 | 8 | `limit_cluster_daily` | SQLite | ① / ④ | 同上 | 架构稿 |
 | 9 | `leader_structure_daily` | SQLite | ① / ④ | 同上 | 架构稿 |
@@ -1029,8 +1029,14 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 2. **角色对拍闸**:LLM 标注的龙头 vs `leader_structure_daily.role_mech` 冲突 → `basket_members.role_conflict=1`,**两说并存写进卡**,**不静默采信任何一方**。
 
 **篮子规则(蓝图 4.1 / 4.2)**
-- 1–3 只 / 篮;必须说明共同驱动与「为何是这几只而不是同题材其他票」;**仅历史相关性不足以成篮** —— 机械判据:`driver` 文本为空 或 证据链条目为 0 → **不成篮**(相关性只作辅助证据)。
-- **主归属规则**:同一票可保留多个题材标签,但 `is_primary=1` 唯一 —— 取**行业闸 lift 最高**的那篮(复用 v1.3.1 行业闸 lift 先例,防「挂靠票占位」重演)。
+- 1–3 只 / 篮;必须说明共同驱动与「为何是这几只而不是同题材其他票」。
+- **仅历史相关性不足以成篮** —— 机械判据:`driver` 文本为空 → **不成篮**(相关性只作辅助证据)。
+- **⚠「零证据不成篮」与「检索缺席仍出篮」两条的自洽读法(2026-08-02 planner 钉死,承 ⑤ 完工记录疏漏 ⑦;不这么读会直接打架)**:判据是**「本篮的每颗种子是否都真的被检索过」**,不是「证据链有没有条目」——
+  - **检索跑过、空手而归**(检索段执行了、返回 0 条)→ **不成篮**。这是「查了,没有」。
+  - **压根没搜成**(检索 provider 缺席 / 失败 / 预算耗尽)→ **篮子照出**,`evidence_status='search_unavailable'`,证据链留空**并在卡面与报告明示**。这是「没查」。
+  - **混合态**(一篮合并的多颗种子里只搜成一部分)→ **不判不成篮**,`evidence_status='partial'`。
+  - 一句话:**「没有」与「没看」必须分得开**(§五 铁律),判「不成篮」的只有前者。
+- **主归属规则**:同一票可保留多个题材标签,但 `is_primary=1` 唯一 —— 取**行业闸 lift 最高**的那篮(复用 v1.3.1 行业闸 lift 先例,防「挂靠票占位」重演)。**⚠ lift 的小样本失真与最小成分数门槛见下方 ⑤-c(2026-08-02 planner 裁定)。**
 - 不为凑数加入弱相关股票;优先覆盖不同角色(龙头 / 中军 / 弹性)但**不强制凑齐三角色**。
 
 **诚实缺省**:检索段缺席 → `evidence_status='search_unavailable'`,证据链留空并明示,**禁编造来源**;推理段缺席 → 该驱动不成篮(不拿机械数据硬凑一个"驱动")。
@@ -1073,6 +1079,74 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 ### V2-⑥ · ③Tier 分层引擎:机械分定档 + LLM 同档微调 + `tier_history`(@builder)
 
 **目标**:把篮子候选定档 T1/T2/T3,**定档可完整复现**。
+#### ⑤-b · 成员卫生线闸(2026-08-02 planner 裁定;**⑤ 主体已完工,本子项是追加施工项**)
+
+> **背景**:⑤ 完工记录疏漏 ② —— §2.8-C 第 4 条说「机械闸仍由 K4 advisory 与卫生线承担」,但 ⑤ 原规格只点名白名单闸与对拍闸,**没人认领卫生线** → 现状篮子成员可能含 ST / 次新 / 流动性差的票。⑤ builder **刻意没自造"部分版卫生线"**(防第二口径源),这个克制是对的。**planner 裁定:补在 ⑤,复用 ③ 的现成原语,不发明第二份判据。**
+
+- **落点定死 = 「装配给 LLM 看的成员清单」之前**(即 `MechContext` 构建期,`MAX_MEMBERS_IN_CONTEXT` 截断**之前**先过滤再截断)。**为什么是这里而不是事后拒收**:① LLM 压根看不到脏票,不用再造第三条拒收路径;② **既有的白名单闸自动兜住** —— 它只能从展示过的清单里选(⑤ 疏漏 ⑧ 的白名单定义正好使这条成立);③ 一次过滤、全篮复用。
+- **判据一律复用 ③ 的三个原语,读现役包参数,⛔ 禁自造第二份**:`stock_hygiene`(`close_min` / `amount_ma20_min` / `require_ma20` / `allowed_boards` / `exclude_st`)、`non_new_stock`(`min_days`)、`k4_advisory_gate`。
+- **`k4_advisory_gate` 两档语义照包,不许改**:`hard_cut_action='exclude'` → **剔出成员清单**;`avoid_flag_action='tag'` → **保留但打标**,标随成员传到 ⑦ 的成员节展示、并计入 ⑥ 的 `card_density` 维度。这正是「机器不禁、人可复核」(§2.0 第 3 条)。
+- **算力边界**:只对**候选成员集**(本日全部种子成分的并集,量级几百只)算,**不是全市场**。若原语实现形态要求全市场面板 → 允许「先算面板、再按码取子集」,但必须**当日一次装配、全篮复用**(⛔ 不许每篮各算一遍),且耗时**计入 ⑯-C 的新机实测**。
+- **保险丝拆两级(定死,别一刀切)**:
+  - **便宜的硬风险永远拦**:ST / 停牌 / 次新 / 板块不在 `allowed_boards` —— 数据源是 `sentinel/universe.load_stock_meta` + `stock_basic` + `suspend_d` 口径,便宜且必在,**算不出就是异常,该篮整体拒收并留痕**,不放行。
+  - **贵的趋势 / 流动性线算不出才降级**:`ma20` / `amount_ma20` 面板缺失 → **降级方向 = 不拦**(该项放行)+ 篮子 `notes` 与报告如实标 `hygiene_unavailable`(承 P0-23「降级=不拦 + 显式披露」定案)。**⛔ 不许静默当作"都合格"。**
+- **被剔票要留痕**:剔了谁、因为哪条原语、参数是什么 → 进 `RejectedProposal` 同族的留痕结构(与白名单闸拒收分开计数,两种"没进来"语义不同)。
+
+**⑤-b 验收**:造一只 ST 票 / 一只次新票 / 一只 `amount_ma20` 不达标票 → 三者都不出现在喂给 LLM 的成员清单里(单测);`hard_cut` 命中被剔、`avoid_flag` 命中**仍在清单里且带标**(单测两路,断言语义没混);面板缺失 → 趋势线放行 + `hygiene_unavailable` 如实标,而 ST 票**仍被拦**(单测);**交叉断言**:同一票同一天,⑤-b 的卫生线判定与 ③ 原语 `run()` 的结果**逐位相同**(禁两处口径漂移,同 v1.5 K4 双侧镜像体例);当日装配次数 = 1(单测计数,防每篮重算);pytest 零回归。
+
+#### ⑤-c · lift 主归属的最小成分数门槛(2026-08-02 planner 裁定;**追加施工项**)
+
+> **背景**:⑤ 完工记录疏漏 ③ —— 涨停簇成分常只 2–5 只,`占比 ÷ 全市场占比` 实测算出 **70~90 倍** lift,与 v1.3.1 先例(板块成员以百计)**不是一个统计量级**;后果是同票同时出现在「小簇篮」与「大概念篮」时,主归属**几乎恒落在小簇篮**。
+
+- **裁定:加最小成分数门槛,作为引擎常量(⛔ 不进包)**。
+  - **为什么不进包**:它治的是**统计有效性**(样本太小,lift 这个估计量本身就没意义),**不是策略偏好**。进包会让策略线误以为它是可调的 alpha 旋钮 —— 实际上调它只是在调「愿意接受多不可靠的估计」。
+  - **同族先例**:`report/industry_strength.py` 的 `_MIN_MEMBERS=5`(成员 <5 不参与行业排名)、K7 五态的「成员数 ≥5」—— **本门槛默认值取 5,与它们同源同值**;实现时**显式引用同一个常量或至少在 docstring 里指名同源**,防两处漂移。
+- **未达标时的行为(定死,不是"丢弃篮子")**:
+  - 成分数 < 门槛的篮子,其 lift **不参与主归属比较** —— 记 `lift=None` + `lift_reason='sample_too_small'`(**「算不出」≠「等于 0」**,承 ⑤ 既有姿势)。
+  - 主归属在**达标篮之间**按 lift 比(tie-break 仍是 lift 降序 → `basket_key` 升序,⑤ 已实现)。
+  - **一票的全部候选篮都不达标** → 退化到**确定性兜底**:按 `(成员数降序, basket_key 升序)` 取一个,标 `primary_reason='fallback_no_qualified_lift'`。**可复现、不随机、不拍脑袋。**
+  - **篮子本身不因不达标而被剔** —— 门槛只影响「主归属归谁」,不影响「成不成篮」。
+- **⚠ 策略含义部分登记为待过目,不悬空**:「门槛取 5 是否合适」「小簇篮是否天然该输给大概念篮」带策略语义。本 plan 给的是**临时工程默认**;**已登记 §七 [P3-32]** 交策略线 / 用户在有归因样本后回看(⑨ 的按包归因正好能出「主归属落在小簇 vs 大概念篮」的实际表现对照)。**在有新证据之前,按上面的默认执行,不要自行改数。**
+
+**⑤-c 验收**:3 只成分的簇篮 lift 记 `None` + reason(单测);一票跨「小簇篮 + 大概念篮」→ 主归属落在**达标的那个**(单测,正是失真场景的回归);全部候选篮都不达标 → 兜底可复现(同输入两次跑结果逐位相同)+ `primary_reason` 精确;门槛常量在 `_ENGINE_CONSTANT_WHITELIST` 里登记(同 ⑤ 既有四个常量的体例);pytest 零回归。
+
+---
+
+### 【planner 裁定 · 跨块】篮子四表的运行期落库次序(2026-08-02;**⑥⑦ 施工前必读,消除原 Plan 的循环依赖**)
+
+> **背景**:⑤ 完工记录「疏漏 ①」报了一处 Plan 自相矛盾 —— 原「V2 新表汇总」把 `baskets`/`basket_members` 的写入登记在 **⑦**,但 `baskets.tier` 是 `NOT NULL` 而 tier 由 **⑥** 定档;`tier_history.basket_id`(⑥ 写)又要 `baskets.id`(⑦ 写)→ **循环**。**planner 采纳 ⑤ 的既成处置为前提**(⑤ 产出内存态 `BasketCandidate`〔= `baskets` 一行减 `tier`〕,写入口 `save_baskets(..., tier_by_basket_key=…)` 强制要 tier、缺就 `ValueError`,`aggregate_baskets()` 不自动落库),在此把次序定死。
+
+**A. 运行期次序(定死,不许改序)**
+
+```text
+⑤ aggregate_baskets()            → 内存:BasketCandidate[] + BasketMemberCandidate[](无 tier)
+⑥ score_and_tier()               → 内存:tier / mech_score / breakdown / rank_mech / LLM 同档微调
+⑥ 落库【事务 1,单事务】          → INSERT baskets(拿 id) → basket_members(用 id) → tier_history(用 id)
+⑦ build_card()                   → LLM 生成剧本等(慢、可失败)
+⑦ 落库【事务 2】                  → INSERT basket_cards(version=1)
+```
+
+- **为什么 ⑥ 是 `baskets`/`basket_members` 的写入方**:tier 在它手里、`tier_history` 也在它手里,三张表**同一事务**落地才不会出现「有篮子没定档」或「有定档没篮子」;⑦ 只剩一张 `basket_cards`,职责干净。
+- **为什么不把四张表塞进一个事务**:⑦ 的卡生成要**调 LLM**(剧本/理由),跨 LLM 调用持 SQLite 事务是错的(慢、易超时、锁库)。**两个事务是刻意的。**
+- **写入口统一住 `neckline/selection/basket_store.py`**(新模块):把 ⑤ 已实现的 `save_baskets` **搬进来**、`aggregate.py` 保留同名再导出(**行为逐字节不变,既有单测一字不动** —— 照 ⑤ 自己刚做过的 `json_block.py` 搬迁体例),并在此新增 `save_tier_history(...)` 与 `save_basket_card(...)`。**理由**:四张表一个家,事务边界才管得住;这也是项目既有体例(`report/store.py` / `reference_plan_store.py` / `industry_strength_store.py` / `review/store.py` 都是「一族表一个 store」)。
+- **事务 1 内部允许 `save_baskets` 复用外部 connection**:给它加可选 `conn=`(给了就不自己开事务,照 `neckline/db.py::connection()` 既有体例),**签名其余部分与 fail-loud 语义一字不改**。
+
+**B. 幂等与冻结(定死)**
+
+- 四张表**一律 `INSERT OR IGNORE`**;**同日重跑 = no-op,绝不覆盖既有行**(它们是 **D0 冻结件**)。
+- ⚠ **这与 v1.5 契约线 🟡-1「同日重跑要在写侧清掉旧行」不冲突,别套错模板**:那条治的是「快照上的标」与「响应时现连的表」讲相反的话;这里四张表**同批冻结、只有一个说法**,不存在两处打架。**冻结件的正确姿势就是不覆盖。**
+- **重跑发现不一致必须留痕、不许静默**:若本次算出的 tier / 成员集与库里已冻结的行不同 → **WARNING 落日志 + 报告如实写「今日已有冻结篮子,本次重算结果未采纳(差异 N 处)」**。藏起来不是诚实。
+
+**C. 中间态是合法状态,必须能表达(不许隐藏、不许回删)**
+
+- **「有篮子、无卡」**(事务 1 成功、⑦ 失败 / LLM 不可用 / 预算耗尽):**合法**。⑦ 可在**同一 D0 内重跑补 `version=1`**(仍是 D0 原判,不违反冻结)。
+- **契约与展示层必须能表达它**:`GET /baskets/{id}/card` 在无卡时返 **404 + reason `card_not_ready`**(⑭-B 端点清单据此补一个 reason,客户端 `mapReason` 加对应 case —— CLAUDE.md 坑:新增会返 404 的端点必须检查要不要加新 case);报告的篮子节如实写「本篮卡未生成({reason})」。**⛔ 不许因为没卡就把篮子从报告里抹掉。**
+- 反向的「有卡无篮子」在本次序下**不可能发生**(卡的 `basket_id` 来自事务 1),无需处理。
+
+**D. 谁调用谁(编排归属)**
+
+- 全链路编排入口在 **⑭-A 的 `report/pipeline.py`**(⑤→⑥→⑦ 依次调用、每段包保险丝);**⑥⑦ 自身只提供纯函数 + 写入口,不互相 import、不各自开编排**。在 ⑭ 之前,⑥⑦ 各自用自己的 CLI / 单测驱动。
+
 
 **机械分五维(**K7 需求 1a/1b 已把第 2、3 维从「方向描述」升级为正式定义**,施工前采纳、免返工;维度选择与权重读现役包)**
 
@@ -1115,9 +1189,16 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 **权重校准路径**:走 ⑨ 评价引擎的周度报告;**调参 = 换包**(过 §12 四道闸 + 用户批准),**不许顺手改代码里的数**。
 
 **依赖**:③、**③-K7**、**④b**、⑤。
-**验收**:定档复现单测(同输入两次运行 → tier 与序逐位相同);跨档微调被拒(单测);T1 空态是合法输出;容量上限不被突破;`_TIER_SCORE_INPUTS` 白名单单测锁死;换包(改权重)→ 序变化且 `mech_breakdown_json` 能解释变化;**K7 追加四条** —— ① 六态各喂一条数据 → `driver_freshness` 分值等于包里 `stage_scores` 对应值(单测,禁硬编);② 阶段表缺行 → 该维取中性分 + `stage_breakdown` 标 `stage_missing`,**断言不是 0**;③ `leader_clarity` 头名度随 `rs_rank` 单调衰减 + 三级 tie-break 生效(造 RS 并列、成交额并列两组数据);④ 用 K4-pack 与 K7-pack 各跑一遍同一份输入 → **权重差异真的改变了 Tier 序**(「插槽不是空架子」在 ⑥ 层面的兑现,补上 ③ 完工记录里登记的那条测试局限);pytest 零回归。
+**验收**:定档复现单测(同输入两次运行 → tier 与序逐位相同);跨档微调被拒(单测);T1 空态是合法输出;容量上限不被突破;`_TIER_SCORE_INPUTS` 白名单单测锁死;换包(改权重)→ 序变化且 `mech_breakdown_json` 能解释变化;**K7 追加四条** —— ① 六态各喂一条数据 → `driver_freshness` 分值等于包里 `stage_scores` 对应值(单测,禁硬编);② 阶段表缺行 → 该维取中性分 + `stage_breakdown` 标 `stage_missing`,**断言不是 0**;③ `leader_clarity` 头名度随 `rs_rank` 单调衰减 + 三级 tie-break 生效(造 RS 并列、成交额并列两组数据);④ 用 K4-pack 与 K7-pack 各跑一遍同一份输入 → **权重差异真的改变了 Tier 序**(「插槽不是空架子」在 ⑥ 层面的兑现,补上 ③ 完工记录里登记的那条测试局限);**落库追加三条** —— ⑤ 三张表单事务落地(单测:故意让 `tier_history` 插入失败 → 断言 `baskets`/`basket_members` **一起回滚、库里零行**);⑥ 同日重跑 no-op 且**不覆盖**既有行(单测:改 tier 后重跑 → 库里仍是首跑的值 + WARNING 已发出);⑦ `save_baskets` 搬进 `basket_store.py` 后 **⑤ 既有 56 例逐条仍绿、一字未改**;pytest 零回归。
 
 ---
+
+**落库职责(2026-08-02 planner 裁定,详见上方【跨块】节;**这是对原 Plan 的改判,以此为准**)**
+- **⑥ 是 `baskets` / `basket_members` / `tier_history` 三张表的写入方**(原 Plan 把前两张登记在 ⑦,已改判 —— 因为 `baskets.tier` NOT NULL 而 tier 在 ⑥ 手里)。
+- **单事务**:`INSERT baskets`(拿 `id`)→ `basket_members`(用 `id`)→ `tier_history`(用 `id`)。三张一起成功或一起回滚,不留半截。
+- **复用 ⑤ 已实现的写入口**:`save_baskets(result, *, tier_by_basket_key, db_path|conn)` —— ⑥ 是它的**调用方**,把定档结果按 `basket_key` 组成 `tier_by_basket_key` 传进去。**⑥ 不自己再写一份 INSERT**(缺 tier 就 `ValueError` 的 fail-loud 语义原样保留)。
+- 写入口统一搬进新模块 `neckline/selection/basket_store.py`(`aggregate.py` 同名再导出、行为逐字节不变),`save_tier_history(...)` 也住那里。
+- **`INSERT OR IGNORE` 幂等 + 重跑不覆盖**(D0 冻结件);重跑结果与已冻结行不一致 → WARNING + 报告如实披露,**不静默**。
 
 ### V2-⑦ · ④篮子卡冻结:`baskets` / `basket_members` / `basket_cards`(@builder)
 
@@ -1138,6 +1219,11 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 
 > 来源:`archive/交接_K7_系统线需求_20260802草案.md` 需求 5(2026-08-02 用户转发,证据链 `research/k7_pre2_report.md` H12/H13)。**用户已裁定:只标注。**
 > **⛔ 四不(硬约束,守门单测)**:**不进 `_TIER_SCORE_INPUTS`**、**不进排序键 `dims` 白名单**、**不进哨兵判据**、**不改篮子 / 成员去留**。它们是**纯展示位**,落在卡的「成员、角色与比较结果」节里,**每处带「参考、非指令」标注**。
+
+**落库职责(2026-08-02 planner 裁定,详见上方【跨块】节;**这是对原 Plan 的改判,以此为准**)**
+- **⑦ 只写 `basket_cards` 一张表**(原 Plan 把 `baskets`/`basket_members` 也登记在本块,已改判给 ⑥ —— 那两张要 tier,tier 在 ⑥ 手里)。本块块名里的三张表名**保留作历史留痕**,实际写入以本条为准。
+- **⑦ 进来时 `baskets.id` 已经存在**(⑥ 的事务 1 已落),卡直接挂 `basket_id`;写入口 `save_basket_card(...)` 住 `neckline/selection/basket_store.py`,**单独一个事务**(不与 ⑥ 合并 —— 卡生成要调 LLM,跨 LLM 调用持事务是错的)。
+- **「有篮子、无卡」是合法中间态**:LLM 不可用 / 预算耗尽 / 生成失败 → **不回删篮子、不抛异常**,如实留 reason;**同一 D0 内可重跑补 `version=1`**(仍是 D0 原判)。契约侧 `GET /baskets/{id}/card` 无卡返 **404 + reason `card_not_ready`**(⑭-B 补 reason + 客户端 `mapReason` 加 case),报告如实写「本篮卡未生成({reason})」。**⛔ 不许因为没卡就把篮子从报告里抹掉。**
 
 - **落库**:标注结果进 `basket_cards.card_json.members[].tags`(冻结快照的一部分,与卡同生共死),**不新建表、不新建列**;`basket_members` 表结构不动。
 - **判据全部机械算、零 LLM**(它们是价量结构判定,不是叙述):
@@ -1294,6 +1380,7 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 **⑬-6 老四件套残键(P3-27 兑现)** → `CandidateOut.buyPoint/stop/target/invalidation` 四键 + `report/candidates.py` 的 `entry_plan_text` / `stop_loss_text` / `target_text` / `invalidation_text` 四函数**彻底删除**(自选体检是它们最后的消费方,而自选池本块删 → 无消费方)。**删除顺序纪律见 ⑭-D。**
 **⑬-7 盘前 9:26 单票高开/低开四判定** → 改为**篮子竞价剧本核对**:`sentinel/precall.py` 的判定对象由「候选」换成「T1/T2 篮子成员」,判据源换成 ⑦ 的结构化 spec;**推送仍在**(归 ⑪ 的 `kind='precall'`)。
 **⑬-8 报告 markdown 候选节 / 情报节旧布局** → 重构为篮子日报(⑭-A)。
+  - ⛔ **`neckline/llm/json_block.py` 不随之停用**(2026-08-02 登记):⑤ 施工时已把围栏 JSON 解析器(`split_narrative_and_reference_json` 及三条围栏正则)从 `report/reference_plan.py` **搬到该新模块**,`reference_plan.py` 只是同名再导出;它是**通用 LLM 输出解析件**,⑤ 的聚合层与 ⑦ 的卡生成都在用。**删 `reference_plan.py` 时只删那层再导出,别把通用件一起陪葬**(它零 import `report`,不构成 `llm/` 反向依赖;`judge_candidate(narrative_splitter=…)` 的依赖注入体例不变)。**守门单测**:⑬ 做完后断言 `neckline/llm/json_block.py` 仍在且被 ⑤/⑦ 引用。
 **⑬-9 K1 entry mask / momentum 在生产链路的全部残余** → 生产 import 清零(`strategy/momentum.py` 只留回测 / 研究线调用),grep 守门。
 **⑬-10 问询台 forced 海选池通道** → 删:`inquiry_pool` 表停写留档,`load_pending_inquiry_codes` / `mark_inquiry_pool_consumed` 及报告侧消费逻辑删除。
 **⑬-11(裁定 #9-a)自选池 + 同花顺对账 → 直接删** → `watchlist` 表停写留档;删 `neckline/watchlist.py`、`report/watchlist_check.py`、五个 `/watchlist*` 端点(含 `reconcile-ths` / `export-ths`)、客户端 `WatchlistView.swift`、报告自选体检节、哨兵关注池的自选来源(⑧-A 已改)。
@@ -1554,6 +1641,8 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 - **[P4-16] ⛔ V2 后废弃(ID 与原文保留,勿再当待办)** · **`MemoryMax=800M` 这个具体数字随换机作废** —— V2 走 100% 换新服务器(裁定 #3)+ 晚间管线多段化(三个 oneshot **各自** `MemoryMax`),老机 1.6G 总账下的所有配额推演不再适用。**接替它的是 §五 ⑯-C(新机隔离实测:每项批算单独计时 + 量峰值,达标才准进主链)与 ⑯-D(三段 oneshot 各自配额,重活不进常驻服务)**;「抬内存不解算法成本」「重活不进常驻服务」两条**教训本身继续有效**,已写进 §3.10-D 与 §五 铁律。原文如下(留痕)。
   **[P4-16 原文]** `neckline-report.service` 的 `MemoryMax=800M` 对 v1.3 新管线偏紧(`deploy/neckline-report.service:23`)。2026-07-27 补跑时峰值顶满、5206 次页缓存回收,**`oom_kill=0`** —— 撞的是页缓存不是真内存,没崩。**怎么修**:~~v1.4 部署时视情抬到 1G~~ **2026-07-29 改判**:P0-23 证明抬内存不解算法成本(1400M 都跑不完),⑩ 已把全历史扫描从在线路径移除 → **⑨-F 改为纯实测记账**(判据:报告峰值不高于 07-28 基线 838,860,800、`oom_kill=0`),任何 `MemoryMax` 改动先算总账(机器仅 1.6G,还有常驻 `MemoryHigh=420M/Max=600M` 与 `neckline-daily` 900M);抬没抬都要写理由。**2026-07-29 v1.4 定案 = 维持 800M 不改**(六条理由见 `archive/v1.4_施工图_20260729归档.md` ⑨-F)。→ **v1.5.0 第 ⑥ 块(⑥-E)继续复核**:本版把 16:35 的 LLM 段拉长约一倍(20 只审判 + 三件套 + 20 张信息卡取数),判据仍是 **`oom_kill=0`**;峰值高于基线 838,860,800 时**先算总账再谈改 `MemoryMax`**,且**超时先降预算 / 开并发,不许抬内存糊**(P0-23 教训)。
 - **[P4-17] 历史局限:早期审判的消息面无搜索支撑(不补跑,如实留档)**。生产 `llm_judgments` **20260721/22/23 三天 10/10 空命中** → 那 **25 条非降级审判结论的消息面部分实质是模型凭训练数据作答**;20260717/0720 为 10/10 `degraded`(当时无 key);20260721 另有 5 条因 25s ReadTimeout 降级。**20260724 起命中恢复满额,自那天起的审判才算有搜索支撑**——事后审计「当时为何否决」必须先看这条时间线。**并入原「GLM 顶层 `web_search` 空数组待查」**:真因仍未完全解释(逐字节相同的 payload 两天行为相反 = 供应商侧漂移),v1.3.4 的 0 命中埋点 + 四处露出已上线,可持续观察,不主动追。
+- **[P3-32] 主归属 lift 门槛与「小簇 vs 大概念」的策略语义待过目(V2-⑤ 施工中发现,2026-08-02 新挂)**。**事实**:涨停簇成分常只 2–5 只,`占比 ÷ 全市场占比` 实测 **70–90 倍** lift,与 v1.3.1 行业闸先例(板块成员以百计)不是一个统计量级 → 同票跨「小簇篮 + 大概念篮」时主归属**几乎恒落在小簇篮**。**已做的工程处置(§五 ⑤-c)**:加**最小成分数门槛 = 5** 作**引擎常量**(与 `industry_strength._MIN_MEMBERS` 同源同值),不达标的篮 `lift=None` + `lift_reason='sample_too_small'`、不参与主归属比较,全不达标时按 `(成员数降序, basket_key 升序)` 确定性兜底。**待过目的是策略语义那一半**:① 5 这个数对涨停簇合不合适;② 「小簇篮天然该输给大概念篮」这个方向本身对不对(也可能反过来 —— 小簇更聚焦)。**什么时候回看**:⑨ 评价引擎攒够样本后,它的按包归因正好能出「主归属落在小簇 vs 大概念篮」的实际表现对照;届时交**策略线 / 用户**过目。**在有新证据之前按上述默认执行,builder 不许自行改数。** **不排期。**
+
 - **[P4-25] ✅ 已结案(2026-07-30 v1.5-④-A4)** · `pytest tests/` 会写开发机的真实 `data/neckline.db`(2026-07-29 修 review 🟡-1 时实测发现,**既有行为、非本次引入**)。`tests/test_k3_oversold_guardrail.py::TestK1BitIdentical` 等 **4 个 guardrail 用例刻意读真库的 K1 行**(把 `DB_PATH` 指向临时库跑全量,这 4 个立刻红),于是它们触发的 `init_schema` 会把**新表/新列的幂等迁移顺手落到开发库上** —— 今天 `strategy_activation_log` 就是这么在本地 dev 库建好并播了 K1 那一条(内容正确,与生产 ⑨-B 将发生的是同一段代码)。**为什么记一笔**:①「跑个测试而已」不该悄悄改你的工作库,迁移出错时现场也不好复原;② 开发库被测试改过之后,再拿它当"生产形状"的对照会失真。**怎么修**:~~不急,留档为主~~ → **v1.5.0 第 ④ 块(④-A4)**:conftest 加 session 级 `real_db_readonly_copy` 夹具(真库拷一份临时副本;真库不存在则 `pytest.skip`),把 `test_k3_oversold_guardrail.py` / `test_k2_mainline_guardrail.py` / `test_v13_exit_6y_baseline.py` 里**全部无参数的 `brain.active_config()`** 改成显式 `db_path=副本`;加 grep 守门单测断言 `tests/` 下不再出现无参调用(确有例外须白名单 + 写理由)。⚠ **本版有新表**(`reference_plans`),不修这条的话「跑个测试」又会把新表顺手建到开发库上。
 
   **✅ 2026-07-30 完工**:`conftest.py::real_db_readonly_copy`(session 级,`sqlite3` 官方 backup API 拷真库只读副本,同生产 `.backup` 既有姿势;真库不存在 → `pytest.skip`)+ 三文件六处 `brain.active_config()` 裸调用全部改显式 `db_path=real_db_readonly_copy`(两个 `_k1_cfg()` 辅助函数改带 `db_path` 参数,一处 `test_require_member_true_ands_the_column` 的两次直调同改)。**守门单测**:新文件 `tests/test_db_isolation_guardrail.py`——**AST 精确匹配**(不是纯文本 grep,理由:`test_brain.py` 有 4 处描述 `brain.py` 内部退化行为的 docstring 会被纯文本 substring 误伤,AST 只看真实语法树天然不受注释/字符串字面量影响,已用正/负/docstring 三组用例验证判据本身正确)扫描全部 `tests/test_*.py`(95 个文件),断言零出现无参数 `active_config()`/`get_active()` 调用;白名单当前为空。**实测证据(而非只信任测试通过)**:改前 dev DB `mtime=23:17:43`;改后跑一次**全量** `pytest tests/ -q`(1940 过 + 2 skip)**前后 dev DB mtime/size/MD5 逐字节不变**(`fd745c6a...`)——比"表结构未变"更强的证据(证明连一次 commit 都没发生,不只是没加列)。⚠ **过程留痕(如实记录)**:A4 修复落地**之前**,本会话早些时候跑过几次未隔离的全量测试,`llm_judgments.search_engine`(④-A3 新列)确实被 K2/K3 护栏用例的 `init_schema` 副作用提前建到了 dev 库上——这正是本条要修的病征的一次现场复现,内容正确无害(幂等迁移),事后已额外显式跑一次 `init_schema()` 留痕(A4 修复生效后该调用为 no-op,dev DB 无变化)。
@@ -1649,6 +1738,7 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 - 2026-08-02 · 🏗️ **V2.0.0 立项**(@planner,只改文档,零代码 / 零数据库 / 零部署)· 架构设计稿全文转写进 PROJECT_PLAN,**架构稿即刻转历史档案**(`archive/V2架构设计稿_20260731_20260802立项归档.md`),防双权威。**§五 = V2.0.0 详版施工图 17 块**:① 表与共享信息层地基(**20 张新表**一次到位 + 冻结/追加/不回写三律守门)② LLM Provider 自填制 + 双 Agent 路由 + 预算三本账 ③ 选股策略包机制(`selection_packs` + 原语白名单 + `engine_api_version` + 四道闸 + 首包 K4-pack)④ 市场扫描层三张预计算表 + 驱动种子 ⑤ 驱动聚合层(LLM + 成员白名单闸 + 角色对拍闸)⑥ Tier 分层引擎 ⑦ 篮子卡冻结 ⑧ D+1 验证(关注池改造 + 盘中存拍 + 状态机)⑨ 盘后复盘 + 评价引擎 ⑩ 极简台账 + 计划继承 + 决策日志表单退役 ⑪ 监控 80/15/5 + 通知三级 + NL 提醒 ⑫ 对账与画像 ⑬ V1 清理十三项 ⑭ 篮子日报 + 契约总装 + 三方对拍 ⑮ 客户端双端改版 ⑯ 新服务器 + 管线多段化 + 割接 + 首包激活 + Tier 预填充 ⑰ 双端换包(等用户指令)。**§二 新增 §2.8 语义换血总表**(篮子取代单票候选 / Tier 取代排序 / 三级取代六类推送 / 自动快照取代强制表单;**历史拍板一条不删**;**§2.8-C 重新表述第〇原则四锁** —— 「不进排序」精确为「不进机械分」、「不进哨兵」精确为「LLM 文本不进判据 + 关注池是注意力分配非判定」);**§三 新增 §3.10 V2 技术选型增补**;§一 新增 1.5 V2 定位。**§七 Backlog 逐条处置**:吸收 P1-5/P1-8/P3-11/P3-15/P3-27,废弃 P4-16(换机后 800M 数字作废),新挂 P3-28(归因标签稀疏)/ P3-29(检索单点)/ P4-30(初期分时残缺)/ P4-31(停写留档表清理),新立「选股策略包门禁」长期机制。**§八 新增 V2 用户操作四项**(购新机 / 子域 DNS / 填两条 Provider / 分时外源可选),第 9 项同花顺 txt 作废。**planner 补位三张表并如实登记理由**:`llm_providers`(`app_settings` 是单行表装不下注册表)、`entry_snapshots`(决策日志表单退役需要落点,`decision_log` 的 NOT NULL 列无法就地放宽)、`selection_pack_activation_log`(§12.4 要激活日志但未给表名)。v1.5 施工图全文 + v1.5.2 收官快照 → `archive/v1.5_施工图_20260802归档.md`
 - 2026-08-02 · 📐 **选股策略包机制定稿入档**(用户批准,`V2架构设计.md` 新增 §十二):声明式配置包(非代码插件)、包只管①种子规则+③Tier权重、原语白名单+`engine_api_version` 兼容校验、新表 `selection_packs`(append-only 单现役,激活复刻四道闸体例)、按包版本归因、K 字头版本、初版把现成选股代码整理成首包灌入。纯文档,零代码改动
 - 2026-08-02 · 📋 **V2 追加裁定三项入档**(`V2架构设计.md` §〇 #9–11):① V1 清理遗留定案——自选池+同花顺对账**直接删**、呼吸台账**删**、五常驻保底删除**确认**;② V2 不设「首战核验/待验」类条目,验证归用户,施工线只交付 APP;③ 选股板块预留**可轮替策略包插槽**(策略线打包交付、系统线校验激活,机制设计讨论中)。纯文档,零代码改动
+- 2026-08-02 · ⚖️ **⑤ 提的三处 Plan 缺口 planner 裁定完毕,⑥/⑦ 解除阻塞**(@planner,只改文档,零代码 / 零数据库 / 零部署;并发窗口内未动 ④b 块正文、§四 只做增量小改)。① **落库次序自相矛盾(阻塞项)** —— 原「V2 新表汇总」把 `baskets`/`basket_members` 写入登记在 ⑦,而 `baskets.tier` NOT NULL、tier 由 ⑥ 定档、`tier_history.basket_id` 又要 `baskets.id` → 循环。**裁定**:新增【planner 裁定 · 跨块】节(排 ⑤ 与 ⑥ 之间)定死运行期次序 `⑤内存 → ⑥定档 → ⑥【事务1】baskets+basket_members+tier_history → ⑦生成卡 → ⑦【事务2】basket_cards`;**刻意两个事务**(卡生成要调 LLM,跨 LLM 持事务是错的);写入口统一搬新模块 `neckline/selection/basket_store.py`(⑤ 的 `save_baskets` 平移 + `aggregate.py` 同名再导出、既有 56 例一字不改,照 ⑤ 自己刚做过的 `json_block.py` 体例),`save_baskets` 加可选 `conn=` 以并入事务;四表一律 `INSERT OR IGNORE` **冻结不覆盖**(并写明**这与 v1.5 契约线 🟡-1「重跑要清旧行」不冲突、别套错模板** —— 那条治的是两处讲相反的话,这里同批冻结只有一个说法),重跑不一致 → WARNING + 报告如实披露;**「有篮子无卡」定为合法中间态**(⑦ 可同日重跑补 `version=1`;`GET /baskets/{id}/card` 无卡返 404 + 新 reason `card_not_ready`,⑭-B 与客户端 `mapReason` 同步;**⛔ 不许因为没卡就把篮子从报告里抹掉**);表汇总 1/2 的写入块由 ⑦ 改判为 ⑥、3 标「⑦ 只写这一张」、6 标「与 1、2 同事务」;⑥/⑦ 两块各补「落库职责」段与验收三条。② **成员卫生线无人认领** → 新增 **⑤-b**(⑤ 主体已完工,追加子项):落点定死在**「装配给 LLM 的成员清单」之前**(先过滤再按 `MAX_MEMBERS_IN_CONTEXT` 截断)—— LLM 压根看不到脏票、**既有白名单闸自动兜住**、不用造第三条拒收路径;**判据一律复用 ③ 的 `stock_hygiene`/`non_new_stock`/`k4_advisory_gate` 三原语读现役包,⛔ 禁自造第二份**(采纳 ⑤ builder 不自造"部分版卫生线"的克制);`hard_cut→exclude`/`avoid_flag→tag` 两档语义照包(标传 ⑦ 展示 + 计入 ⑥ `card_density`,即「机器不禁、人可复核」);算力只算候选成员集、当日一次装配全篮复用、耗时计入 ⑯-C;**保险丝拆两级** —— ST/停牌/次新/板块**永远拦**(数据源便宜且必在,算不出即异常、该篮拒收),`ma20`/`amount_ma20` 面板缺失才降级不拦 + 标 `hygiene_unavailable`;被剔票留痕且与白名单闸拒收**分开计数**。③ **lift 小样本失真**(涨停簇 2–5 只、实测 70–90 倍 lift,与 v1.3.1 百级成员先例不可比)→ 新增 **⑤-c**:加**最小成分数门槛 = 5** 作**引擎常量不进包**(治的是**统计有效性**不是策略偏好,进包会被误当 alpha 旋钮;与 `industry_strength._MIN_MEMBERS` / K7 五态「成员≥5」**同源同值**,实现须显式引用同一常量防漂移);不达标篮 `lift=None` + `lift_reason='sample_too_small'`(**「算不出」≠「等于 0」**)、不参与主归属比较;全不达标 → `(成员数降序, basket_key 升序)` **确定性兜底** + `primary_reason='fallback_no_qualified_lift'`;**篮子本身不因不达标被剔**;策略语义那一半(5 合不合适 / 小簇是否天然该输)**登记 §七 [P3-32]** 交策略线 / 用户在 ⑨ 攒够归因样本后过目,**在那之前 builder 不许自行改数**。另顺手钉死两条低优先级:**⑤ 疏漏 ⑦ 的自洽读法**写进 ⑤ 篮子规则条文(判据是「本篮每颗种子是否都真的被检索过」——「查了没有」→ 不成篮 / 「没查」→ 照出并明示 / 混合态 `partial` 不判不成篮,即「没有」与「没看」必须分得开);**`neckline/llm/json_block.py` 不随 ⑬-3 陪葬**已登记进 ⑬-3(它是通用件、零 import `report`,删 `reference_plan.py` 时只删那层再导出,并加守门单测)
 - 2026-08-01 · 📁 **V2 蓝图入库**(commit `c1c7187`):产品总纲 `新版本量化交易APP与选股架构.md` + 工程架构设计稿 `V2架构设计.md`(2026-07-31 八项用户裁定已定格;**未立项未施工**,立项时经 planner 转写进本文件)+ `.learnings/ERRORS.md` 错误台账;V2 施工线接管交接完成
 - 2026-07-30 · 🐛🚀 **用户报障快修 + 上云:LLM 没有「现在」的概念 → v1.5.2(⑨,@builder-pro,15:08–15:12 收盘后窗口部署,🔴 高危区,未回滚,**不换包**)**。**部署证据**:双备份 `neckline.db.{bak,cpbak}-v152-20260730-150653`(30318592B,integrity ok,0.31s);dry-run 零删除、5 个改动文件 sha256 逐个吻合、属主自检两次绿、依赖零变更;preflight `VERSION=v1.5.2`/43 路由 + 四条 prompt 均含时效纪律;15:08:57→15:08:59 重启中断 ~2s、`NRestarts=0`、error 0 条、`memory.events` 全零;公网 `/health`=**v1.5.2**;**本版零迁移**(26 表 / `reference_plans` 25 列不变)、`integrity=ok`、15 张业务表行数逐表一致、`is_active` 仍 `v1.3.3` 未变;活体——老快照读取不崩、持仓两笔 D1 无回归、info-card 2.23s、404 reason 精确、无 token 401;**⑨ 专属实地证据**:生产上装配的问询台/审判两处上下文首行均为「今天是 2026年7月30日(周四);下一交易日是 2026年7月31日(周五)。」(生产真日历解出),检索词实测带「2026 最新」。**回滚绳** = 该双备份 + `a984596`。**报障**(带截图):问询 603298 的回答把 **2024 年研报的目标价**当现行参照。**排查**:生产 `inquiry_log` 实证**联网是通的**(两次问询 search_hits 2489 / 8565 字节、含 2025-06 命中),但命中新旧混杂;**真因 = 三处 LLM 提示词一处都没注入当前日期**,模型没有"现在"的概念,2024 年研报与上月公告在它眼里一样新。**修三件(提示词层,零契约、客户端零改动)**:①**当前日期锚**——问询台/审判/参考件三处上下文**第一行**统一插「今天是 X 年 X 月 X 日(周 X);下一交易日是 …」,日期与交易日动态取(`CN_TZ` + `neckline.calendar`,零硬编),参考件那处额外**点名「明早 = 下一交易日 X」**(周五生成时"明早"是下周一)且与涨跌停锚同源,补跑历史日时如实说明基准日不撒谎,日历算不出只少一项、不抛异常;②**时效纪律**——四条 system prompt(问询台/候选审判/自选审判/参考件)嵌同一份 `TIMELINESS_RULES`(引用必须带日期 / 超半年必须明示「截至 X 的旧数据」/ **旧研报目标价只能作历史参照、不得当现行定价基准**);③**检索词时效引导**——问询台 `_build_search_query` 与**新增的**审判侧 `judge_search_query` 都补当前年份词「2026 最新」,**只改检索词文本、不加任何新 API 参数**(v1.3.4 案底:不被上游认识的参数会静默 0 命中)。**单一实现** = 新模块 `neckline/llm/prompt_context.py`,三处 import,守门单测扫全仓禁止第二份拷贝。**两处实现取舍**:①年份词**紧跟主体不放最末**(GLM `max_search_query_chars=78` 截尾会把末尾时效词连同用户长问句切掉,单测用真常量跑过截断验证);②审判链路此前**从不显式传 `search_query`**,本次改为显式传——是 v1.3.4 已验证的既有参数不是新参数,但审判侧 GLM payload 自此多一个字段(三处测试桩同步)。测试:Python **2003 过 + 2 skip**(基线 1969+2,净增 34),iOS `xcodebuild build` SUCCEEDED(Swift 源码零改动、仅版号)。版号三方联动 **v1.5.2**,**不换包**(已装 1.5.1 App 设置屏会显示版本差提示,属预期)
 - 2026-07-30 · 🚀 **v1.5.1 上云 + macOS 换包 1.5.1 完工(⑧-E,@builder-pro,用户 11:58 明示授权提前到午间休市执行,🔴 高危区,未回滚)**。**窗口** = 12:07–12:17 CST(11:30–13:00 休市内),12:07:06 restart → 12:07:08 startup complete = **中断 ~2s**,开盘前 40 分钟收工;**本轮零改动 `neckline/sentinel/`**(`git diff 510bf20..HEAD` 实查 0 文件),盘中行为不变,未碰 09:26 推送与 16:05/16:35 两 timer(下次触发 4h+ 后,`load 0.12`、无运行中 job)。**部署前双备份** `neckline.db.{bak,cpbak}-v151-20260730-115951`(各 30244864B,`.backup` integrity ok、耗时 **0.34s**)——**回滚绳** = 这对备份 + v1.5.0 代码态(`510bf20`)。**唯一迁移** `reference_plans.take_profit_retrace REAL` 由 `init_schema` 幂等补列成功,该表 **24→25 列**;`integrity_check=ok`、**14 张业务表行数迁移前后逐表一致**、**`is_active` 仍 `v1.3.3` 且 `activated_at` 未变**、`strategy_activation_log` 仍 3 行。`sync_code.sh` dry-run **零删除**、实传后属主自检**两次绿**(`data/` `2770 neckline:neckline`、`.env` 600);**生产 9 个关键文件 sha256 与本地逐个吻合**;preflight import **`VERSION=v1.5.1` / 43 路由 / 38 去重路径**(无新端点);**依赖零变更**;重启 `NRestarts=0`、journal **error/exception/traceback 0 条**、`memory.events` **全零**、idle 86→98MB;本地 + 公网 `/health` = **`v1.5.1`**。**活体**:`/report/latest` 200 读昨日快照——20 只候选老四件套四键全非空(过渡文案)、`referencePlan` 全 null、`judgeSkipped` 全 false、16 条自选 `dispatchAlerts` 非空 0 条 = **老快照兼容不崩**;info-card **2.25s / 17392B**;404 reason 逐个精确(`report_not_found`/`code_not_in_report`/`not_found`);无 token 全 401、`/health` 免鉴权 200;全部非 2xx 均来自本次 127.0.0.1 探针,App 侧全 200。**macOS 换包**:旧包先 `ditto` 备份到 `~/Lino/app_backups/`(另移一份进废纸篓,**未用 `rm -rf`**)→ **`ditto`** 装 `/Applications`,**产物与安装态可执行 sha256 逐字节一致**(`204304ab…`)、`1.5.1`、universal、签名 valid + Designated Requirement,启动无崩溃且服务端记到该 App 真实带 token 请求 5 端点全 200。**iOS 未换包**(装机是用户动作)。**⚠ 实盘状态已变(用户今晨自行处置,早于部署)**:`300759.SZ` 已 `STOP_LOSS` 清仓、`300261.SZ`/`002036.SZ` 均 `MANUAL` 清仓(三笔 `updated_at` 在 09:52–10:32,`positions` 行数部署前后恒 5);现持仓 = `601567.SH` + `600499.SH` 两笔 D1。**🔴 今晚 16:35 首战四项待验**见 §四
