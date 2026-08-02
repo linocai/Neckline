@@ -18,6 +18,7 @@ from neckline.selection import pack, primitives
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _K4_PACK_FILE = _REPO_ROOT / "packs" / "K4-pack.json"
+_K7_PACK_FILE = _REPO_ROOT / "packs" / "K7-pack.json"
 
 
 def _minimal_pack(pack_version: str = "test-pack-v1", **overrides: Any) -> Dict[str, Any]:
@@ -117,6 +118,72 @@ def test_validate_config_rejects_non_numeric_weight():
     assert any("非数值权重" in e for e in errors)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# `config.tier.stage_scores`(V2-③-K7 新增可选键,K7 需求 1b)
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_validate_config_accepts_missing_stage_scores_key():
+    """`stage_scores` 是可选键——K4-pack-v1 这类完全不写它的包必须照常通过
+    (纯增量扩容,回滚锚硬判据的前提)。"""
+    config = _minimal_pack()["config"]
+    assert "stage_scores" not in config["tier"]
+    assert pack.validate_config(config) == []
+
+
+def test_validate_config_accepts_well_formed_stage_scores():
+    config = _minimal_pack()["config"]
+    config["tier"]["stage_scores"] = {"ignition": 0.6, "fermentation": 1.0, "overheat": 0.0}
+    assert pack.validate_config(config) == []
+
+
+def test_validate_config_accepts_stage_scores_covering_all_six_codes():
+    config = _minimal_pack()["config"]
+    config["tier"]["stage_scores"] = {
+        "ignition": 0.6, "fermentation": 1.0, "overheat": 0.0,
+        "divergence": 0.4, "ebb": 0.2, "none": 0.2,
+    }
+    assert pack.validate_config(config) == []
+
+
+def test_validate_config_rejects_non_dict_stage_scores():
+    config = _minimal_pack()["config"]
+    config["tier"]["stage_scores"] = ["ignition", 0.6]
+    errors = pack.validate_config(config)
+    assert any("config.tier.stage_scores 必须是对象" in e for e in errors)
+
+
+def test_validate_config_rejects_chinese_stage_score_keys():
+    """③-K7-D 定案:中文键(交接稿草案原文)已被淘汰,配置键必须与库列值同源
+    (英文枚举码)。"""
+    config = _minimal_pack()["config"]
+    config["tier"]["stage_scores"] = {"发酵": 1.0, "启动": 0.6}
+    errors = pack.validate_config(config)
+    assert any("未知阶段码" in e and "发酵" in e and "启动" in e for e in errors)
+
+
+def test_validate_config_rejects_unknown_stage_score_key():
+    config = _minimal_pack()["config"]
+    config["tier"]["stage_scores"] = {"ignition": 0.6, "typo_stage": 0.1}
+    errors = pack.validate_config(config)
+    assert any("未知阶段码" in e and "typo_stage" in e for e in errors)
+
+
+def test_validate_config_rejects_non_numeric_stage_score_value():
+    config = _minimal_pack()["config"]
+    config["tier"]["stage_scores"] = {"ignition": "high"}
+    errors = pack.validate_config(config)
+    assert any("非数值分数" in e and "ignition" in e for e in errors)
+
+
+def test_validate_config_rejects_bool_as_stage_score_value():
+    """`isinstance(True, int)` 为 `True`——同 `primitives.py::_TYPE_CHECKERS` 的
+    既有纪律,`bool` 不该被数值校验悄悄接纳。"""
+    config = _minimal_pack()["config"]
+    config["tier"]["stage_scores"] = {"ignition": True}
+    errors = pack.validate_config(config)
+    assert any("非数值分数" in e and "ignition" in e for e in errors)
+
+
 def test_validate_pack_doc_checks_engine_api_compat_only_after_structure_passes():
     doc = _minimal_pack()
     doc["manifest"]["engine_api_version"] = 2
@@ -168,6 +235,85 @@ def test_real_k4_pack_file_is_schema_valid_and_matches_d6_d7_decisions():
     assert doc["manifest"]["engine_api_version"] == 1
     assert doc["manifest"]["evidence_ref"] == ["research/k4_assembly_report.md"]
     assert set(doc["config"]["seeds"]) == set(primitives.PRIMITIVES)   # 五个原语一个不多一个不少
+
+
+def test_k4_pack_v1_still_validates_and_activates_identically_after_k7_extension(tmp_path: Path):
+    """回滚锚硬判据(V2-③-K7 验收原文,不许含糊):K4-pack-v1 逐字节重新校验
+    仍通过,`get_active_pack()` 对它的输出逐位不变——白名单新增
+    `industry_stage_daily.*`、`intel_rank_priority.dims` 扩容、
+    `config.tier.stage_scores` 新增可选键,这三处改动对 K4-pack-v1 必须是零
+    影响的纯增量,`ENGINE_API_VERSION` 因此不 bump(仍是 1)。"""
+    doc = pack.load_pack_file(_K4_PACK_FILE)
+    assert pack.validate_pack_doc(doc) == []   # 逐字节重新校验仍通过
+
+    db_path = tmp_path / "rollback_anchor.db"
+    pack.activate_pack(doc["manifest"], doc["config"], via="seed", db_path=db_path)
+    active = pack.get_active_pack(db_path=db_path)
+
+    assert active is not None
+    assert active.pack_version == "K4-pack-v1"
+    assert active.engine_api_version == 1   # 未 bump
+    assert active.manifest == doc["manifest"]
+    assert active.config == doc["config"]
+    assert active.tier_weights() == {
+        "sector_strength": 0.25, "driver_freshness": 0.20, "leader_clarity": 0.25,
+        "tradability": 0.20, "card_density": 0.10,
+    }
+    assert active.tier_stage_scores() == {}   # K4-pack-v1 没有这一段,新访问器缺省空字典
+    assert active.seeds_config("intel_rank_priority") == {
+        "dims": ["industry_rank", "industry_persist_days", "yellow_card_count"]
+    }
+
+    # 排序键行为逐位不变:K4-pack-v1 的三个既有维度全部是 asc,与扩容前"直接
+    # 取值参与字典序比较"数值等价,排序结果不变。
+    row_a = {"industry_rank": 1, "industry_persist_days": 3, "yellow_card_count": 0}
+    row_b = {"industry_rank": 1, "industry_persist_days": 1, "yellow_card_count": 9}
+    dims_param = active.seeds_config("intel_rank_priority")
+    key_a = primitives.PRIMITIVES["intel_rank_priority"].run(row_a, dims_param)
+    key_b = primitives.PRIMITIVES["intel_rank_priority"].run(row_b, dims_param)
+    assert key_a == (1.0, 3.0, 0.0)
+    assert key_b == (1.0, 1.0, 9.0)
+    assert key_b < key_a   # persist_days 更小的排前面(asc 语义不变)
+
+
+def test_real_k7_pack_file_is_schema_valid_and_matches_plan_decisions():
+    """③-K7-E 定案:`packs/K7-pack.json`,`pack_version = "K7-pack-v1"`。本测试
+    直接读仓库里那份真实文件,防止它腐化成"能过 schema 但字段值早就漂移"的
+    僵尸文件(同 K4-pack 那条测试的既有纪律)。"""
+    doc = pack.load_pack_file(_K7_PACK_FILE)
+    assert pack.validate_pack_doc(doc) == []
+    assert doc["manifest"]["pack_version"] == "K7-pack-v1"
+    assert doc["manifest"]["engine_api_version"] == 1   # ③-K7-C 判定:纯增量,不 bump
+    assert doc["manifest"]["evidence_ref"] == [
+        "research/k7_pre_report.md", "research/k7_pre2_report.md",
+    ]
+    assert set(doc["config"]["seeds"]) == set(primitives.PRIMITIVES)   # 九个原语一个不多一个不少
+    assert doc["config"]["seeds"]["intel_rank_priority"]["dims"] == [
+        "industry_rank", "industry_stage_score", "leader_rs_rank", "yellow_card_count",
+    ]
+    assert doc["config"]["tier"]["weights"] == {   # K7 需求 2 证据化初值
+        "sector_strength": 0.30, "leader_clarity": 0.30, "driver_freshness": 0.10,
+        "tradability": 0.20, "card_density": 0.10,
+    }
+    # ③-K7-D 定案:stage_scores 键一律英文枚举码,六态全覆盖,禁中文键。
+    assert set(doc["config"]["tier"]["stage_scores"]) == {
+        "ignition", "fermentation", "overheat", "divergence", "ebb", "none",
+    }
+    assert doc["config"]["tier"]["stage_scores"]["fermentation"] == 1.0   # 需求 2:发酵态最高分
+
+
+def test_k7_pack_carries_k4_pack_hygiene_gate_and_scan_seed_params_unchanged():
+    """③-K7-E 定案:「K7 的变更集中在排序键、Tier 权重与两个新维度」——本测试
+    交叉断言 K7-pack 里**除** `intel_rank_priority`(排序键,预期不同)与
+    `tier`(权重/stage_scores,预期不同)之外的全部 8 个原语参数与 K4-pack
+    逐字节相同,防止未来有人顺手在"承 K4-pack 不变"的部分悄悄夹带改动。"""
+    k4_doc = pack.load_pack_file(_K4_PACK_FILE)
+    k7_doc = pack.load_pack_file(_K7_PACK_FILE)
+    for prim_name in set(primitives.PRIMITIVES) - {"intel_rank_priority"}:
+        assert k4_doc["config"]["seeds"][prim_name] == k7_doc["config"]["seeds"][prim_name], (
+            f"{prim_name} 的参数在 K7-pack 与 K4-pack 之间不一致,但该原语不在"
+            "「K7 变更集中在排序键/Tier 权重/stage_scores」的允许范围内"
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -324,6 +470,26 @@ def test_pack_accessors_reflect_config(tmp_path: Path):
     assert active.seeds_config("nonexistent") == {}
     assert active.tier_weights() == {"sector_strength": 1.0}
     assert active.tier_dims() == ["sector_strength"]
+    assert active.tier_stage_scores() == {}   # 未声明 stage_scores → 缺省空字典
+
+
+def test_pack_accessor_tier_stage_scores_reflects_config(tmp_path: Path):
+    """V2-③-K7 新增访问器:`config.tier.stage_scores` 声明了就原样透出
+    (与 `tier_weights`/`tier_dims` 同一套读法)。"""
+    db_path = tmp_path / "n.db"
+    doc = _minimal_pack(
+        "stage-scores-v1",
+        config={
+            "tier": {
+                "weights": {"sector_strength": 1.0},
+                "dims": ["sector_strength"],
+                "stage_scores": {"ignition": 0.6, "fermentation": 1.0},
+            },
+        },
+    )
+    pack.activate_pack(doc["manifest"], doc["config"], db_path=db_path)
+    active = pack.get_active_pack(db_path=db_path)
+    assert active.tier_stage_scores() == {"ignition": 0.6, "fermentation": 1.0}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -377,3 +543,55 @@ def test_slot_is_really_consumed_not_an_empty_shell(tmp_path: Path):
     score_loose = sum(active_loose.tier_weights()[d] * dim_scores[d] for d in active_loose.tier_dims())
     score_strict = sum(active_strict.tier_weights()[d] * dim_scores[d] for d in active_strict.tier_dims())
     assert score_loose < score_strict   # loose 包重仓 sector_strength(候选恰好弱)→ 综合分低
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2-③-K7 补的「真实版本」单测(承 V2-③ 完工记录登记的测试局限:「插槽真被
+# 消费」当时只能在原语 + 包层面用**合成**迷你包代理验证,待 ④/⑥ 落地后应在
+# 各自块内用真实种子集/Tier 序重跑——④ 已完工,`generate_seeds()` 已存在;
+# 本测试改用仓库里两份**真实**包文件 `packs/K4-pack.json`/`packs/K7-pack.json`
+# 驱动 `intel_rank_priority`,证明"排序 dims/参数确实不同"这一半不再是代理
+# 验证。「换包 → 种子集跟着变」那半已在 `tests/test_scan_seeds.py::
+# test_generate_seeds_identical_under_real_k4_and_k7_pack_files` 用同样两份
+# 真实文件验证(结论:种子生成参数按 ③-K7-E 设计保持不变,不是本测试的重复)。
+# "Tier 序" 那半留给 ⑥ 落地后用真实 Tier 引擎重跑,不在本测试范围内。
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_real_k4_pack_vs_k7_pack_intel_rank_priority_dims_and_ranking_differ(tmp_path: Path):
+    """装载并激活两份真实包文件(非合成迷你包),证明 `intel_rank_priority` 的
+    排序维度配置真的不同,且用同一份合成候选数据跑出的排序结果真的翻转——
+    不是"配置字符串不同"这种表面差异,而是"排序行为真的变了"。"""
+    db_path = tmp_path / "real_packs.db"
+    k4_doc = pack.load_pack_file(_K4_PACK_FILE)
+    k7_doc = pack.load_pack_file(_K7_PACK_FILE)
+
+    pack.activate_pack(k4_doc["manifest"], k4_doc["config"], via="seed", db_path=db_path)
+    active_k4 = pack.get_active_pack(db_path=db_path)
+    pack.activate_pack(k7_doc["manifest"], k7_doc["config"], via="seed", db_path=db_path)
+    active_k7 = pack.get_active_pack(db_path=db_path)
+
+    k4_dims_params = active_k4.seeds_config("intel_rank_priority")
+    k7_dims_params = active_k7.seeds_config("intel_rank_priority")
+    assert k4_dims_params["dims"] != k7_dims_params["dims"]   # 真实配置确实不同
+
+    # 两只候选:industry_rank 打平(第一维分不出胜负)。候选 A 的
+    # industry_persist_days 更小(K4-pack 旧单调函数把"刚启动"排更靠前)、
+    # industry_stage_score 更低;候选 B 相反——同一份数据,两份真实包应判出
+    # 相反的先后顺序。
+    candidate_a = {
+        "industry_rank": 1, "industry_persist_days": 1, "yellow_card_count": 0,
+        "industry_stage_score": 0.2, "leader_rs_rank": 3,
+    }
+    candidate_b = {
+        "industry_rank": 1, "industry_persist_days": 5, "yellow_card_count": 0,
+        "industry_stage_score": 1.0, "leader_rs_rank": 3,
+    }
+
+    prim = primitives.PRIMITIVES["intel_rank_priority"]
+    key_a_under_k4 = prim.run(candidate_a, k4_dims_params)
+    key_b_under_k4 = prim.run(candidate_b, k4_dims_params)
+    key_a_under_k7 = prim.run(candidate_a, k7_dims_params)
+    key_b_under_k7 = prim.run(candidate_b, k7_dims_params)
+
+    assert key_a_under_k4 < key_b_under_k4   # K4-pack:A 的 persist_days 更小 → A 排前面
+    assert key_b_under_k7 < key_a_under_k7   # K7-pack:B 的 stage_score 更高 → B 排前面(顺序翻转)

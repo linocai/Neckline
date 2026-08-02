@@ -17,6 +17,24 @@ get_active()` 体例)。**不做时间线解析**(不像 `brain.py` 有
 **本模块全程不 import `neckline.strategy.brain`,不碰 `strategy_versions`**
 (纪律章程与策略包两条版本线、两张表、两套激活流程,永不混用,见 plan §五
 V2-③「插槽边界」)。
+
+**V2-③-K7 新增(K7 需求 4 末条,plan §五 ③-K7-C/D):`config.tier.stage_scores`**
+——与 `weights`/`dims` 平级的新增**可选**键(行业题材五态打分映射,K7 需求 1b
+「打分映射必须做成 pack 可配参数」的落点),键必须是 `neckline.scan.stage.
+STAGE_ORDER` 六个英文枚举码之一(唯一源,本模块特意 import 它而不是抄一份
+第二份六码元组——`CandidateOut.board` 同款纪律:库列值与配置键必须同源,
+中文键已被 ③-K7-D 明令淘汰)。`neckline/scan/` 依赖 `neckline/selection/`
+(`seeds.py` 读 `pack.get_active_pack()`)是既有的正向依赖;本模块反过来读
+`neckline/scan/stage.py` 的**纯常量**(不读任何 I/O 函数)不构成循环 import
+(`neckline/scan/__init__.py` 不预先加载任何子模块,`stage.py` 自身也不
+import `neckline.selection`,已核实)。
+
+**`stage_scores` 的 `engine_api_version` 判定(定死,不许含糊)**:这是一个
+"新增可选键、旧包不受影响"的纯增量扩展——`validate_config` 对没有这个键的
+包(如 K4-pack-v1)完全不进入 `_validate_stage_scores` 分支,`is_compatible()`
+判据也毫发未动。按 plan §五 ③-K7-C 的判定规则("旧包原样重新校验仍通过、
+`get_active_pack()` 对旧包行为逐位不变 → `ENGINE_API_VERSION` 保持不变"),
+本次扩展**不 bump** `engine_api.ENGINE_API_VERSION`(仍为 1)。
 """
 
 from __future__ import annotations
@@ -30,6 +48,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from neckline.config import settings
 from neckline.db import connection, init_schema
+from neckline.scan.stage import STAGE_ORDER
 from neckline.selection import engine_api
 from neckline.selection.primitives import PRIMITIVES, validate_params
 
@@ -41,6 +60,10 @@ _PACK_COLUMNS = (
 )
 
 _EVIDENCE_REF_SEP = "; "   # `selection_packs.evidence_ref` 落库时的连接符(展示/grep 友好)
+
+# `config.tier.stage_scores` 键的合法集合(③-K7-D 定案:英文枚举码,唯一源
+# `neckline.scan.stage.STAGE_ORDER`,不在本文件复抄第二份六码元组)。
+_STAGE_CODES = frozenset(STAGE_ORDER)
 
 
 def _now() -> str:
@@ -90,10 +113,40 @@ def validate_manifest(manifest: Any) -> List[str]:
     return errors
 
 
+def _validate_stage_scores(stage_scores: Any) -> List[str]:
+    """`config.tier.stage_scores`(V2-③-K7 新增可选键,见模块头「V2-③-K7 新增」
+    节)。**可选**——K4-pack-v1 及任何不需要五态打分的包可以整段不写这个键
+    (`Pack.tier_stage_scores()` 缺省返回空字典;`driver_freshness` 维度拿不到
+    映射时怎么降级为中性分是 ⑥ 的保险丝职责,见 ④b-C,不在这里猜)。存在时只
+    校验形状:必须是对象,键必须是 `_STAGE_CODES`(`neckline.scan.stage.
+    STAGE_ORDER`)六个英文枚举码之一——中文键已被 ③-K7-D 明令淘汰(库列值与
+    配置键必须同源),值必须是数值。**不要求六态全部出现**(允许包只对部分
+    阶段给出非默认打分,缺的那态如何降级同样是消费方的职责,不是格式判断)。"""
+    if not isinstance(stage_scores, dict):
+        return ["config.tier.stage_scores 必须是对象(阶段码 → 分数)"]
+    errors: List[str] = []
+    unknown = sorted(set(stage_scores) - _STAGE_CODES)
+    if unknown:
+        errors.append(
+            f"config.tier.stage_scores 出现未知阶段码:{unknown}"
+            f"(仅允许英文枚举码 {sorted(_STAGE_CODES)}——中文键已被 ③-K7-D 淘汰,"
+            "库列值与配置键必须同源)"
+        )
+    bad_values = sorted(
+        k for k, v in stage_scores.items()
+        if k in _STAGE_CODES and (not isinstance(v, (int, float)) or isinstance(v, bool))
+    )
+    if bad_values:
+        errors.append(f"config.tier.stage_scores 存在非数值分数:{bad_values}")
+    return errors
+
+
 def validate_config(config: Any) -> List[str]:
     """config 必需两段(plan §五 V2-③「插槽边界」):`seeds`(原语名 → 参数,
     键必须是已注册原语,值按该原语 `params_schema` 校验)与 `tier`(`weights` 非空
-    对象 + `dims` 非空数组,`dims` 引用的维度必须都在 `weights` 里出现)。"""
+    对象 + `dims` 非空数组,`dims` 引用的维度必须都在 `weights` 里出现;
+    **V2-③-K7 新增**:与 `weights`/`dims` 平级的可选键 `stage_scores`,见
+    `_validate_stage_scores`)。"""
     if not isinstance(config, dict):
         return ["config 必须是 JSON 对象"]
     errors: List[str] = []
@@ -133,6 +186,9 @@ def validate_config(config: Any) -> List[str]:
             missing = [d for d in dims if d not in weights]
             if missing:
                 errors.append(f"config.tier.dims 引用了 weights 里没有的维度:{missing}")
+        stage_scores = tier.get("stage_scores")
+        if stage_scores is not None:
+            errors.extend(_validate_stage_scores(stage_scores))
     return errors
 
 
@@ -196,6 +252,13 @@ class Pack:
 
     def tier_dims(self) -> List[str]:
         return list(self.config.get("tier", {}).get("dims", []))
+
+    def tier_stage_scores(self) -> Dict[str, float]:
+        """`config.tier.stage_scores`(V2-③-K7 新增可选键:行业题材五态打分
+        映射,K4-pack-v1 没有这一段,缺省返回空字典——`driver_freshness` 缺
+        映射/缺行时怎么降级为中性分是 ⑥ 的保险丝职责,见 ④b-C,不在本访问器
+        里猜)。"""
+        return dict(self.config.get("tier", {}).get("stage_scores", {}))
 
 
 def _row_to_pack(row: Tuple[Any, ...]) -> Pack:

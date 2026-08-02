@@ -77,6 +77,32 @@ SQLite 表),白名单里仍按逻辑表名处理(与 CLAUDE.md「K4 红黄牌文
       直接读 `Pack.seeds_config()` 取用,`Primitive.run()` 调用路径仍会把它
       传给 `impl` 但被忽略,同 `params_schema` 声明可以承载"给编排层看"的参数
       这一既有设计弹性,不违反"参数必须都被 impl 消费"这类并不存在的规则)。
+
+**V2-③-K7 新增(K7 需求 4:原语/白名单/schema 跟进,plan §五 V2-③-K7)**:只加
+不改,③ 已完工的 5 个原语与 ④ 已完工的 4 个原语语义**一字不动**:
+    · 白名单新增第 10 个模式 **`industry_stage_daily.*`**(④b 产出的行业题材
+      阶段表),供 `intel_rank_priority` 新排序维度 `industry_stage_score` 与
+      未来 ⑥ 的 `driver_freshness` 维度引用。
+    · `intel_rank_priority` 的 `dims` 取值扩容到 5 个合法维度(K4-pack-v1 仍只用
+      前 3 个,行为逐位不变):既有 `industry_rank`/`industry_persist_days`/
+      `yellow_card_count` 三个 + 新增 `industry_stage_score`(K7 需求 1b,读五态
+      打分映射)/`leader_rs_rank`(K7 需求 1a,读 `leader_structure_daily.rs_rank`,
+      同时补齐"该列可被 sort_key 类原语引用"这条通路——白名单本身早已放行
+      `leader_structure_daily.*`,缺的是一个真的把它列进 `inputs`/当作 `dims`
+      取值使用的 sort_key 原语)。**每个维度的排序方向显式登记在
+      `_RANK_DIM_DIRECTIONS`,不靠"一律当同向"猜**:`industry_rank`/
+      `leader_rs_rank` 是名次(升序为优),`industry_stage_score` 是打分(降序
+      为优,分越高越优先),`yellow_card_count` 升序为优(既有语义不变)。引用了
+      未登记方向的维度名 → `_intel_rank_priority` 直接 `ValueError`(fail loud,
+      不猜方向)。缺值(任一维度算不出)→ 该维恒排 `+inf`(排最后),与方向
+      无关——"缺数"永远是"最差",不因维度改成降序而意外变成"最优"。
+    · 本次扩容对 K4-pack-v1 是**纯增量**:白名单只加不减、`intel_rank_priority`
+      默认 `dims`(`_DEFAULT_RANK_DIMS`)未变、既有 3 个维度的方向全部是 `asc`
+      (与扩容前 `row.get(d)` 直接取值再字典序比较的既有行为数值等价,只是显式
+      包了一层方向声明)——`ENGINE_API_VERSION` 因此**不变**(判定依据与
+      `config.tier.stage_scores` schema 扩展的判定合并写在
+      `neckline/selection/pack.py::_validate_stage_scores` 与 PROJECT_PLAN.md
+      V2-③-K7 完工记录,不在此重复)。
 """
 
 from __future__ import annotations
@@ -85,7 +111,8 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-# —— 特征白名单(plan §五 V2-③ 原文逐字照抄的 8 个模式 + V2-④ 新增 1 个)——————
+# —— 特征白名单(plan §五 V2-③ 原文逐字照抄的 8 个模式 + V2-④ 新增 1 个 +
+# V2-③-K7 新增 1 个,共 10 个)——————————————————————————————————————————
 # **模块级常量,不是策略参数**:这是"引擎允许原语引用哪些表"的不变量,不随包变化
 # ——它由本文件自己列出并在 `tests/test_selection_primitives.py` 的模块级数值
 # 字面量白名单扫描测试里显式登记(见该文件 `_ENGINE_CONSTANT_WHITELIST`)。
@@ -94,6 +121,11 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 # 日更自愈),供 `surging_concept_seed` 原语判断"哪个概念今天暴起"。它与
 # `daily`/`moneyflow_dc` 同属"预计算表 / EOD 原始数据"这一类,不是 LLM 产出,
 # 符合白名单既定标准(见模块头「V2-④ 新增 4 个原语」节)。
+#
+# `industry_stage_daily.*`(V2-③-K7 新增,第 10 个):④b 产出的行业题材阶段
+# 六态状态机表(EOD 预计算,在线只读),供 `intel_rank_priority` 新排序维度
+# `industry_stage_score` 与未来 ⑥ 的 `driver_freshness` 维度引用,同样是
+# "预计算表列",不是 LLM 产出(见模块头「V2-③-K7 新增」节)。
 _ALLOWED_FEATURES: Tuple[str, ...] = (
     "industry_strength_daily.*",
     "corr_matrix_daily.*",
@@ -104,6 +136,7 @@ _ALLOWED_FEATURES: Tuple[str, ...] = (
     "moneyflow_dc.*",
     "k4_advisory.*",
     "ths_daily.*",
+    "industry_stage_daily.*",
 )
 
 _KINDS: Tuple[str, ...] = ("filter", "feature", "sort_key")
@@ -322,19 +355,64 @@ def _industry_dominance_gate(row: Mapping[str, Any], *, min_lift: float = 2.0) -
 
 _DEFAULT_RANK_DIMS: Tuple[str, ...] = ("industry_rank", "industry_persist_days", "yellow_card_count")
 
+# —— K7 需求 4 / ③-K7-B:每个合法排序维度的显式方向声明(定死,不许靠"一律
+# 当同向"猜)。**登记的是 K4-pack + K7-pack 两包共用的合法维度全集**——
+# K4-pack-v1 只用前三个(全部 `asc`,与扩容前"直接取值参与字典序比较"的既有
+# 行为数值等价);K7-pack 额外引用后两个:`industry_stage_score` 是打分(K7
+# 需求 1b,分越高越优先 = `desc`),`leader_rs_rank` 是簇内 RS 名次(K7 需求
+# 1a,名次越小越优先 = `asc`,同 `industry_rank` 语义)。新增排序维度前必须先
+# 在这里登记方向,`_intel_rank_priority` 拒绝处理未登记的维度名(fail loud,
+# 不猜)。值是字符串(`"asc"`/`"desc"`),不是数值权重,故不落
+# `_ENGINE_CONSTANT_WHITELIST` 的数值字面量扫描范围。
+_RANK_DIM_DIRECTIONS: Dict[str, str] = {
+    "industry_rank": "asc",
+    "industry_persist_days": "asc",
+    "yellow_card_count": "asc",
+    "industry_stage_score": "desc",
+    "leader_rs_rank": "asc",
+}
+
 
 def _intel_rank_priority(
     row: Mapping[str, Any], *, dims: Sequence[str] = _DEFAULT_RANK_DIMS
 ) -> Tuple[float, ...]:
-    """情报排序三级键(现值 ← `intel_candidates.py::_sort_key` 的键顺序,三者
-    均升序)。`dims` 就是"权重表示"——**顺序即权重**:元组字典序比较下,第一维
-    的区分力天然压过后面所有维度之和,这是对原函数「三级优先级」最忠实的转译
-    (不发明一组会改变比较语义的数值权重)。缺值(如无 industry/成员<5 未参与
-    排名)→ `+inf` 排最后,不静默当 0(原函数同款纪律,0 会把无行业票错误顶到
-    榜首)。**不含**原函数的确定性兜底(`base_score DESC`/`code ASC`)——那是
-    "同名次时如何保证可复现"的实现细节,不是"三级键"本身要表达的排序意图,留给
-    未来消费方的实现自行补上确定性 tie-break。"""
-    return tuple(float("inf") if row.get(d) is None else row.get(d) for d in dims)
+    """情报排序键(现值 ← `intel_candidates.py::_sort_key` 的三级键顺序;
+    K4-pack-v1 仍是三者均升序。K7 需求 4 扩容后 `dims` 可以是
+    `_RANK_DIM_DIRECTIONS` 五个合法维度的任意子集/顺序)。`dims` 就是"权重
+    表示"——**顺序即权重**:元组字典序比较下,第一维的区分力天然压过后面所有
+    维度之和,这是对原函数「三级优先级」最忠实的转译(不发明一组会改变比较
+    语义的数值权重)。
+
+    **每个维度的方向必须在 `_RANK_DIM_DIRECTIONS` 登记,不按"一律升序"猜**——
+    `industry_stage_score` 是打分,分越高越优先;若仍按升序原样参与字典序
+    比较,分数低的反而会排到前面,方向恰好反了。做法:`asc` 维度原样取值参与
+    比较,`desc` 维度取负号再参与比较(字典序比较仍然是"越小越靠前"这一个
+    约定,不改变 tuple 内其余维度的比较语义,也不改变最终排序结果的可读性
+    ——只是取值前多做一步符号翻转)。引用了未登记方向的维度名 →
+    `ValueError`(fail loud,不猜方向)。
+
+    缺值(如无 industry/成员<5 未参与排名/K7 五态阶段表当日缺行)→ `+inf` 排
+    最后,**与方向无关**——不静默当 0(原函数同款纪律,0 会把无行业票错误顶到
+    榜首;对 `desc` 维度而言"当 0"更是双重错误:0 分是"过热"态的真实取值,
+    `None` 是"没数据",两者绝不可互相顶替,见 ④b-C 保险丝纪律)。**不含**原
+    函数的确定性兜底(`base_score DESC`/`code ASC`)——那是"同名次时如何保证
+    可复现"的实现细节,不是"排序键"本身要表达的排序意图,留给未来消费方的
+    实现自行补上确定性 tie-break。"""
+    out: List[float] = []
+    for d in dims:
+        direction = _RANK_DIM_DIRECTIONS.get(d)
+        if direction is None:
+            raise ValueError(
+                f"intel_rank_priority: 排序维度 {d!r} 未在 _RANK_DIM_DIRECTIONS "
+                f"登记排序方向(仅支持 {sorted(_RANK_DIM_DIRECTIONS)}),拒绝猜测"
+                "方向,fail loud。"
+            )
+        value = row.get(d)
+        if value is None:
+            out.append(float("inf"))
+            continue
+        out.append(float(value) if direction == "asc" else -float(value))
+    return tuple(out)
 
 
 _register(Primitive(
@@ -391,6 +469,8 @@ _register(Primitive(
         "industry_strength_daily.industry_rank",
         "industry_strength_daily.persist_days",
         "k4_advisory.avoid_flag",
+        "industry_stage_daily.stage",        # K7 需求 4:industry_stage_score 维度来源列
+        "leader_structure_daily.rs_rank",    # K7 需求 4:leader_rs_rank 维度来源列
     ),
     params_schema={
         "dims": {"type": "array", "items": "string", "default": list(_DEFAULT_RANK_DIMS)},

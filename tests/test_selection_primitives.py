@@ -38,6 +38,7 @@ _SELECTION_DIR = Path(__file__).resolve().parent.parent / "neckline" / "selectio
     "moneyflow_dc.net_amount",
     "k4_advisory.sections",
     "k4_advisory.avoid_flag",
+    "industry_stage_daily.stage",   # V2-③-K7 新增第 10 个模式
 ])
 def test_is_allowed_feature_accepts_whitelisted_patterns(feature: str):
     assert prim.is_allowed_feature(feature) is True
@@ -60,10 +61,13 @@ def test_is_allowed_feature_rejects_non_whitelisted(feature: str):
 def test_allowed_features_pattern_count_matches_plan():
     """plan §五 V2-③ 原文逐字给了 8 个模式,V2-④ 新增 `ths_daily.*` 第 9 个
     (`surging_concept_seed` 原语需要读概念板块日线,见 `primitives.py` 模块头
-    「V2-④ 新增 4 个原语」节)。本测试锁死数量,防止有人"顺手"多加/少加一个
-    模式而没人注意到(改动这个集合是真正的架构决策,不该悄悄发生)。"""
-    assert len(prim._ALLOWED_FEATURES) == 9
+    「V2-④ 新增 4 个原语」节),V2-③-K7 新增 `industry_stage_daily.*` 第 10 个
+    (④b 产出的行业题材阶段表,见「V2-③-K7 新增」节)。本测试锁死数量,防止有人
+    "顺手"多加/少加一个模式而没人注意到(改动这个集合是真正的架构决策,不该
+    悄悄发生)。"""
+    assert len(prim._ALLOWED_FEATURES) == 10
     assert "ths_daily.*" in prim._ALLOWED_FEATURES
+    assert "industry_stage_daily.*" in prim._ALLOWED_FEATURES
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -372,6 +376,84 @@ def test_intel_rank_priority_dims_param_changes_outcome():
     )
     assert [e["code"] for e in by_rank_first] == ["B", "A"]
     assert [e["code"] for e in by_card_first] == ["A", "B"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2-③-K7:`intel_rank_priority` 排序维度扩容(K7 需求 4)——方向声明 +
+# 新增两个维度(`industry_stage_score`/`leader_rs_rank`)+ fail loud
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_intel_rank_priority_leader_rs_rank_is_ascending():
+    """`leader_rs_rank`(K7 需求 1a,簇内 RS 名次)升序为优:名次 1 排在名次 3
+    前面——同 `industry_rank` 既有语义,不因为是"新增维度"就换个方向。同时
+    确认 `leader_structure_daily.rs_rank` 真的能被 sort_key 类原语引用(③-K7-A
+    要求的"确认"落地成这条行为单测,不只是白名单字符串匹配)。"""
+    row_best = _poisoned_row(leader_rs_rank=1)
+    row_worst = _poisoned_row(leader_rs_rank=3)
+    key_best = prim.PRIMITIVES["intel_rank_priority"].run(row_best, {"dims": ["leader_rs_rank"]})
+    key_worst = prim.PRIMITIVES["intel_rank_priority"].run(row_worst, {"dims": ["leader_rs_rank"]})
+    assert key_best < key_worst
+    assert row_best.accessed.isdisjoint(_POISON_KEYS)
+
+
+def test_intel_rank_priority_industry_stage_score_is_descending():
+    """`industry_stage_score`(K7 需求 1b,五态打分)降序为优:分高的排在分低的
+    前面。**若现实现把 dims 一律当同向(升序)处理,这条会失败**——分高的会被
+    错误排到后面,这正是 ③-K7-B 原文点名要防的坑。"""
+    row_high = _poisoned_row(industry_stage_score=1.0)
+    row_low = _poisoned_row(industry_stage_score=0.2)
+    key_high = prim.PRIMITIVES["intel_rank_priority"].run(row_high, {"dims": ["industry_stage_score"]})
+    key_low = prim.PRIMITIVES["intel_rank_priority"].run(row_low, {"dims": ["industry_stage_score"]})
+    assert key_high < key_low   # 排序键更小 → sorted() 后排前面 → 分高的真的排前面
+    assert row_high.accessed.isdisjoint(_POISON_KEYS)
+
+
+def test_intel_rank_priority_descending_dim_missing_value_still_sorts_last():
+    """缺值恒 `+inf` 排最后,**与方向无关**——即便是 `desc` 维度,"算不出"也绝
+    不能被误判成"最优"(0 分是 `overheat` 态的真实取值,`None` 是"没数据",
+    两者不可互相顶替,见 ④b-C 保险丝纪律)。"""
+    row_missing = _poisoned_row(industry_stage_score=None)
+    row_present = _poisoned_row(industry_stage_score=0.0)   # 真实的"过热"最低分
+    key_missing = prim.PRIMITIVES["intel_rank_priority"].run(row_missing, {"dims": ["industry_stage_score"]})
+    key_present = prim.PRIMITIVES["intel_rank_priority"].run(row_present, {"dims": ["industry_stage_score"]})
+    assert key_missing[0] == float("inf")
+    assert key_present < key_missing   # 哪怕是最低分 0.0,也排在"缺数"前面
+
+
+def test_intel_rank_priority_k7_pack_dims_ordering_end_to_end():
+    """用 K7-pack 排序键的真实四维顺序(`industry_rank`→`industry_stage_score`→
+    `leader_rs_rank`→`yellow_card_count`,`packs/K7-pack.json` 原样)跑一次端到
+    端排序,证明混合 asc/desc 时整体排序仍正确(不是只有单维度测试才对)。"""
+    k7_dims = ["industry_rank", "industry_stage_score", "leader_rs_rank", "yellow_card_count"]
+    entries = [
+        # A/B 同 industry_rank=1(第一维打平),靠 industry_stage_score 分高低
+        # 分胜负:分高的 B 应排 A 前面,尽管 B 的 leader_rs_rank 名次更差。
+        {"code": "A", "industry_rank": 1, "industry_stage_score": 0.2, "leader_rs_rank": 1, "yellow_card_count": 0},
+        {"code": "B", "industry_rank": 1, "industry_stage_score": 1.0, "leader_rs_rank": 5, "yellow_card_count": 0},
+        # C 的 industry_rank=2,天然排在 A/B 后面(第一维已分出胜负)。
+        {"code": "C", "industry_rank": 2, "industry_stage_score": 1.0, "leader_rs_rank": 1, "yellow_card_count": 0},
+    ]
+    ordered = sorted(entries, key=lambda e: prim.PRIMITIVES["intel_rank_priority"].run(e, {"dims": k7_dims}))
+    assert [e["code"] for e in ordered] == ["B", "A", "C"]
+
+
+def test_intel_rank_priority_unregistered_dim_raises_fail_loud():
+    """未在 `_RANK_DIM_DIRECTIONS` 登记方向的维度名 → 拒绝猜测,`ValueError`
+    (不静默当升序处理)。"""
+    with pytest.raises(ValueError, match="未在 _RANK_DIM_DIRECTIONS 登记"):
+        prim.PRIMITIVES["intel_rank_priority"].run(
+            {"totally_unknown_dim": 1}, {"dims": ["totally_unknown_dim"]}
+        )
+
+
+def test_intel_rank_priority_k4_pack_v1_dims_unaffected_by_k7_extension():
+    """回滚锚(V2-③-K7 验收硬判据):K4-pack-v1 默认三维度全部是 `asc`,行为与
+    扩容前"直接取值参与字典序比较"数值等价——`(3, 1, 0)` 这种整数元组与新实现
+    返回的浮点元组逐元素相等(Python `3 == 3.0`),排序结果也逐位不变。"""
+    row = _poisoned_row(industry_rank=3, industry_persist_days=1, yellow_card_count=0)
+    key = prim.PRIMITIVES["intel_rank_priority"].run(row, {"dims": list(prim._DEFAULT_RANK_DIMS)})
+    assert key == (3, 1, 0)
+    assert all(isinstance(v, float) for v in key)   # 内部确已转 float,只是数值相等
 
 
 # ══════════════════════════════════════════════════════════════════════════

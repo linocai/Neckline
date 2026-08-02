@@ -1,0 +1,66 @@
+{
+  "manifest": {
+    "pack_version": "K7-pack-v1",
+    "name": "K7 题材阶段×龙头结构注意力包",
+    "date": "2026-08-02",
+    "engine_api_version": 1,
+    "evidence_ref": ["research/k7_pre_report.md", "research/k7_pre2_report.md"]
+  },
+  "config": {
+    "seeds": {
+      "stock_hygiene": {
+        "close_min": 2.0,
+        "amount_ma20_min": 20000,
+        "require_ma20": true,
+        "allowed_boards": ["MAIN", "GEM", "STAR"],
+        "exclude_st": true
+      },
+      "non_new_stock": {
+        "min_days": 120
+      },
+      "k4_advisory_gate": {
+        "hard_cut_action": "exclude",
+        "avoid_flag_action": "tag"
+      },
+      "industry_dominance_gate": {
+        "min_lift": 2.0
+      },
+      "intel_rank_priority": {
+        "dims": ["industry_rank", "industry_stage_score", "leader_rs_rank", "yellow_card_count"]
+      },
+      "hot_industry_seed": {
+        "max_rank": 10,
+        "require_strength_day": true
+      },
+      "surging_concept_seed": {
+        "min_pct_change": 5.0
+      },
+      "limit_cluster_seed": {
+        "min_cluster_size": 2,
+        "min_consecutive_days": 2
+      },
+      "anomaly_cluster_seed": {
+        "min_volume_ratio": 3.0,
+        "min_cluster_members": 2
+      }
+    },
+    "tier": {
+      "weights": {
+        "sector_strength": 0.30,
+        "leader_clarity": 0.30,
+        "driver_freshness": 0.10,
+        "tradability": 0.20,
+        "card_density": 0.10
+      },
+      "dims": ["sector_strength", "driver_freshness", "leader_clarity", "tradability", "card_density"],
+      "stage_scores": {
+        "ignition": 0.6,
+        "fermentation": 1.0,
+        "overheat": 0.0,
+        "divergence": 0.4,
+        "ebb": 0.2,
+        "none": 0.2
+      }
+    }
+  }
+}

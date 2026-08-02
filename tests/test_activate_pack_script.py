@@ -23,6 +23,7 @@ from neckline.selection import pack, primitives  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _K4_PACK_FILE = _REPO_ROOT / "packs" / "K4-pack.json"
+_K7_PACK_FILE = _REPO_ROOT / "packs" / "K7-pack.json"
 
 
 def _write_pack(tmp_path: Path, filename: str, pack_version: str, **overrides: Any) -> Path:
@@ -125,6 +126,52 @@ def test_dry_run_prints_diff_without_error_for_real_k4_pack(tmp_path: Path, caps
     assert "闸 2 通过" in out
     assert "dry-run" in out
     assert "K4-pack-v1" in out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2-③-K7:`packs/K7-pack.json` 过四道闸演练(**只 dry-run,不 --confirm**——
+# ③-K7-E 明文"本子项只产出文件 + 演练通过,不激活",激活时机排在 ⑯-E)。
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_dry_run_writes_nothing_to_db_file_for_k7_pack(tmp_path: Path):
+    db_path = tmp_path / "n.db"
+    pack.get_active_pack(db_path=db_path)   # 先让 schema 就位(同 K4 那条测试体例)
+    before = _md5(db_path)
+
+    rc = activate_pack_script.run(_K7_PACK_FILE, db_path, confirm=False)
+    assert rc == 0
+    after = _md5(db_path)
+    assert before == after
+    assert pack.get_active_pack(db_path=db_path) is None   # 确实什么都没激活
+
+
+def test_dry_run_prints_diff_without_error_for_real_k7_pack(tmp_path: Path, capsys):
+    db_path = tmp_path / "n.db"
+    rc = activate_pack_script.run(_K7_PACK_FILE, db_path, confirm=False)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "闸 1 通过" in out
+    assert "闸 2 通过" in out
+    assert "dry-run" in out
+    assert "K7-pack-v1" in out
+
+
+def test_dry_run_diff_against_active_k4_pack_shows_ranking_dims_changed(tmp_path: Path, capsys):
+    """演练模式打印的 diff 必须如实指出排序键(`intel_rank_priority`)与
+    `tier.weights`/`tier.dims` 都变了——运维读日志就能一眼看到 K7-pack 到底
+    改了什么(闸 3 的既有职责,K4→K7 是本项目第一次有意义的真实换包场景)。"""
+    db_path = tmp_path / "n.db"
+    rc_activate = activate_pack_script.run(_K4_PACK_FILE, db_path, confirm=True)
+    assert rc_activate == 0
+
+    rc = activate_pack_script.run(_K7_PACK_FILE, db_path, confirm=False)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "现役 K4-pack-v1 → 目标 K7-pack-v1" in out
+    assert "intel_rank_priority" in out and "← 改动" in out
+    # dry-run 不写库:K4-pack-v1 仍是唯一现役。
+    actives = [p.pack_version for p in pack.list_packs(db_path=db_path) if p.is_active]
+    assert actives == ["K4-pack-v1"]
 
 
 # ══════════════════════════════════════════════════════════════════════════
