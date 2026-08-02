@@ -64,12 +64,15 @@ from neckline.llm.prompt_context import (
 )
 from neckline.llm.router import TASK_BASKET_REASON, TASK_DRIVER_SEARCH
 from neckline.report.industry_strength import load_industry_map
+from neckline.report.industry_strength import _MIN_MEMBERS as _INDUSTRY_STRENGTH_MIN_MEMBERS
 from neckline.report.sectors import load_index_names
 from neckline.scan import corr as corr_mod
 from neckline.scan import leader as leader_mod
 from neckline.scan import seeds as seeds_mod
 from neckline.scan.seeds import DriverSeed, SeedSet
 from neckline.selection import engine_api
+from neckline.selection import member_hygiene
+from neckline.selection.pack import Pack, get_active_pack, get_pack
 from neckline.strategy import brain
 
 logger = logging.getLogger(__name__)
@@ -113,6 +116,30 @@ MAX_SEEDS_AGGREGATED = 20
 # 实际展示给它的那份清单**里选" —— 更严、更可审计,也不会出现"它猜中了一只我们
 # 没给它看的真成员"这种无法与幻觉区分的情形。
 MAX_MEMBERS_IN_CONTEXT = 20
+
+# ⑤-c(2026-08-02 planner 裁定,§五 V2-⑤-c):主归属 lift 的最小成分数门槛。**引擎
+# 常量,不进包**——治的是统计有效性(涨停簇成分常只 2–5 只,lift 在这个样本量级下
+# 会算出 70~90 倍失真,与 v1.3.1 先例〔板块成员数以百计〕不是一个统计量级),不是
+# 策略偏好;进包会被误当成可调的 alpha 旋钮。**显式引用 `industry_strength.
+# _MIN_MEMBERS`(不是另抄一份 5)**——与它、以及 K7 五态「成员≥5」同源同值,防两处
+# 漂移。⚠ 正因为是「引用」而不是模块级数值字面量,`ast.literal_eval` 对 `Name`
+# 节点无法求值,不会被 `test_selection_primitives.py` 的裸字面量扫描器命中,因此
+# **不登记进 `_ENGINE_CONSTANT_WHITELIST`**(登记一个扫不到的键反而会让该文件的
+# 反向存在性校验 `test_engine_constant_whitelist_entries_are_still_present` 失败)
+# ——这是比"字面量 + 白名单登记"更强的防漂移手段,如实登记与 ⑤ 既有四个常量体例
+# 的这一处刻意不同。
+MIN_LIFT_SAMPLE_SIZE = _INDUSTRY_STRENGTH_MIN_MEMBERS
+
+# 「算不出」≠「等于 0」的 lift 专属原因码(⑤-c):成分数 < `MIN_LIFT_SAMPLE_SIZE`
+# 时该篮 `industry_lift` 记 `None` 并附此原因,与"该票无行业/全市场查无该行业占比"
+# 这个既有的、⑤ 原有的"算不出"路径分开——后者语义更早、不特指小样本,不套这个原因码。
+LIFT_REASON_SAMPLE_TOO_SMALL = "sample_too_small"
+
+# 主归属决定路径(⑤-c 新增字段 `primary_reason`,只标在 `is_primary=1` 的那一行):
+# 正常路径 = 在达标篮之间按 lift 比出来的;兜底路径 = 该票全部候选篮都不达标,退化
+# 到确定性兜底(成员数降序 → basket_key 升序)。
+PRIMARY_REASON_LIFT = "highest_lift"
+PRIMARY_REASON_FALLBACK = "fallback_no_qualified_lift"
 
 # 章程版本取不到时的占位(V2 红线:现役章程恒 v1.3.3,生产不会走到这里;测试用
 # 空库时会。**不写空串冒充"没有章程"**——「没有」与「没看」必须能分开)。
@@ -211,8 +238,20 @@ class BasketMemberCandidate:
     is_primary: int = 1
     industry: Optional[str] = None
     industry_lift: Optional[float] = None
+    # ⑤-c:lift 因样本不足而算不出时的原因码(`LIFT_REASON_SAMPLE_TOO_SMALL`),
+    # 「算不出」≠「等于 0」——`industry_lift is None` 本身可能因多种原因(无行业 /
+    # 全市场查无该行业 / 本条新增的样本量不足),只有最后一种才附这个原因码。
+    lift_reason: Optional[str] = None
+    # ⑤-c:只在 `is_primary=1` 的那一行上有意义,标注主归属是靠 lift 比出来的
+    # 还是走了确定性兜底(`PRIMARY_REASON_LIFT` / `PRIMARY_REASON_FALLBACK`)。
+    primary_reason: Optional[str] = None
     rs_rank: Optional[int] = None
     name: str = ""
+    # ⑤-b:K4 安检的 avoid_flag 标(hard_cut 命中已在装配阶段被剔,不会走到这里;
+    # `k4_advisory_gate` 原语的两档语义照 ③ 的包——`hard_cut→exclude`/
+    # `avoid_flag→tag`,这里落的是"tag"那一档,供未来 ⑦ 卡面展示 + ⑥ `card_density`
+    # 消费)。`None` = 未命中任何 K4 分区,或 K4 评估本次不可用(降级不拦、不打标)。
+    k4_tag: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -250,6 +289,10 @@ class AggregateResult:
     trade_date: str
     baskets: Tuple[BasketCandidate, ...] = ()
     rejected: Tuple[RejectedProposal, ...] = ()
+    # ⑤-b:卫生线剔除的候选成员留痕,与 `rejected`(机械闸拒收 LLM 提案)**分开
+    # 计数**——两种"没进来"语义不同:一个是"这只票不干净",一个是"这条 LLM 建议
+    # 不可信"。
+    hygiene_rejected: Tuple[member_hygiene.MemberRejection, ...] = ()
     evidence_by_seed: Dict[str, DriverEvidence] = field(default_factory=dict)
     search_stage: str = STAGE_NO_SEEDS
     reason_stage: str = STAGE_NO_SEEDS
@@ -360,6 +403,10 @@ class MechContext:
     mech_roles: Dict[str, List[Tuple[str, str, Optional[int]]]] = field(default_factory=dict)
     corr_by_pair: Dict[Tuple[str, str], float] = field(default_factory=dict)
     index_names: Dict[str, str] = field(default_factory=dict)
+    # ⑤-b:成员卫生线闸的 K4 avoid_flag 标(`member_hygiene.apply_member_hygiene`
+    # 算好后由 `aggregate_baskets()` 塞进来;hard_cut 命中已在装配阶段被剔,不会
+    # 出现在这里)。`_gate_proposal` 构造 `BasketMemberCandidate` 时从这里取值。
+    k4_tag_of: Dict[str, str] = field(default_factory=dict)
 
     def display(self, code: str) -> str:
         name = self.names.get(code)
@@ -989,7 +1036,7 @@ def _gate_proposal(
         members.append(BasketMemberCandidate(
             ts_code=code, role_llm=role, role_mech=role_mech, role_conflict=conflict,
             reason=reason, industry=ctx.industry_of.get(code), rs_rank=rs_rank,
-            name=ctx.names.get(code, ""),
+            name=ctx.names.get(code, ""), k4_tag=ctx.k4_tag_of.get(code),
         ))
 
     seed_kinds = [seeds_by_key[k].seed_kind for k in seed_keys]
@@ -1040,13 +1087,24 @@ def assign_primary(
     成员!)——v1.3.1 那道闸问的就是"这只票的行业在这个板块里是否真的富集",分母
     必须是板块成员集合;拿 3 个成员算占比毫无统计意义。
 
-    **确定性 tie-break**:lift 降序 → `basket_key` 升序。lift 算不出(该票无行业 /
-    全市场查无该行业占比)记 `-inf`,输给任何有数的篮 —— 但**不写 0**,`industry_lift`
-    字段仍留 `None`(「算不出」与「算出来是 0」必须分得开)。"""
+    **⑤-c(2026-08-02 planner 裁定)最小成分数门槛**:该并集(下称"篮子成分池")
+    大小 < `MIN_LIFT_SAMPLE_SIZE` 的篮子,其 lift **不参与主归属比较**——涨停簇
+    成分池常只 2–5 只,lift 在这个样本量级下会失真(实测 70~90 倍),与 v1.3.1
+    先例〔成分池以百计〕不是一个统计量级。**主归属规则因此改写为三段**:
+        ① 一票的候选篮里,**只要有 ≥1 个达标篮**,主归属只在达标篮之间按
+           lift 比(不达标篮完全不参与比较,无论其原始 lift 数值多高)。
+        ② 一票的候选篮**全部不达标** → 退化到确定性兜底:按
+           `(该篮成分池大小降序, basket_key 升序)` 取一个(可复现、不拍脑袋)。
+        ③ 篮子本身**不因不达标被剔**——门槛只影响"主归属归谁",不影响"成不成篮"。
+    **确定性 tie-break**(达标篮之间):lift 降序 → `basket_key` 升序。lift 算不出
+    (该票无行业 / 全市场查无该行业占比)记 `-inf`,输给任何有数的篮 —— 但**不写
+    0**,`industry_lift` 字段仍留 `None`(「算不出」与「算出来是 0」必须分得开;
+    这与"成分池不达标"是两种不同的"算不出"原因,`lift_reason` 只标后者)。"""
     if not baskets:
         return ()
 
-    # 每篮一张「行业 → lift」表(按其种子并集算)
+    # 每篮的成分池(其所声明种子的全部原始成分并集)与「行业 → lift」表。
+    universe_by_basket: Dict[str, List[str]] = {}
     lift_by_basket: Dict[str, Dict[str, float]] = {}
     for b in baskets:
         universe: List[str] = []
@@ -1054,9 +1112,14 @@ def assign_primary(
             seed = seeds_by_key.get(k)
             if seed is not None:
                 universe.extend(seed.member_codes)
-        lift_by_basket[b.basket_key] = industry_lift_map(
-            sorted(set(universe)), ctx.industry_of, ctx.market_shares
-        )
+        universe = sorted(set(universe))
+        universe_by_basket[b.basket_key] = universe
+        lift_by_basket[b.basket_key] = industry_lift_map(universe, ctx.industry_of, ctx.market_shares)
+
+    # ⑤-c:该篮成分池是否达标(>= MIN_LIFT_SAMPLE_SIZE)。
+    qualified_of: Dict[str, bool] = {
+        bk: len(u) >= MIN_LIFT_SAMPLE_SIZE for bk, u in universe_by_basket.items()
+    }
 
     def _lift(basket_key: str, code: str) -> Optional[float]:
         ind = ctx.industry_of.get(code)
@@ -1064,29 +1127,54 @@ def assign_primary(
             return None
         return lift_by_basket.get(basket_key, {}).get(ind)
 
-    # code -> 该票出现的全部 (lift, basket_key);lift 算不出记 -inf 参与比较,
-    # 但**落到成员行上的 `industry_lift` 仍是 `None`**(「算不出」≠「等于 0」)。
-    occurrences: Dict[str, List[Tuple[float, str]]] = {}
+    # code -> 该票出现的全部 (lift_or_None, basket_key, 该篮是否达标)。
+    occurrences: Dict[str, List[Tuple[Optional[float], str, bool]]] = {}
     for b in baskets:
+        qualified = qualified_of[b.basket_key]
         for m in b.members:
-            lift = _lift(b.basket_key, m.ts_code)
             occurrences.setdefault(m.ts_code, []).append(
-                (lift if lift is not None else _NEG_INF, b.basket_key)
+                (_lift(b.basket_key, m.ts_code), b.basket_key, qualified)
             )
+
     primary_of: Dict[str, str] = {}
+    primary_reason_of: Dict[str, str] = {}
     for code, occ in occurrences.items():
-        # lift 降序 → basket_key 升序(纯确定性,跨进程可复现)
-        primary_of[code] = sorted(occ, key=lambda t: (-t[0], t[1]))[0][1]
+        qualified_occ = [(lift, bk) for lift, bk, q in occ if q]
+        if qualified_occ:
+            # 只在达标篮之间比:lift 降序 → basket_key 升序(纯确定性)。lift 算不出
+            # 记 -inf 参与比较,不写 0。
+            chosen = sorted(
+                qualified_occ, key=lambda t: (-(t[0] if t[0] is not None else _NEG_INF), t[1])
+            )[0]
+            primary_of[code] = chosen[1]
+            primary_reason_of[code] = PRIMARY_REASON_LIFT
+        else:
+            # 全部不达标 → 确定性兜底:(该篮成分池大小降序, basket_key 升序)。
+            fallback = sorted(
+                ((len(universe_by_basket[bk]), bk) for _lift_v, bk, _q in occ),
+                key=lambda t: (-t[0], t[1]),
+            )[0]
+            primary_of[code] = fallback[1]
+            primary_reason_of[code] = PRIMARY_REASON_FALLBACK
 
     out: List[BasketCandidate] = []
     for b in baskets:
+        qualified = qualified_of[b.basket_key]
         members = tuple(
             BasketMemberCandidate(
                 ts_code=m.ts_code, role_llm=m.role_llm, role_mech=m.role_mech,
                 role_conflict=m.role_conflict, reason=m.reason,
                 is_primary=1 if primary_of.get(m.ts_code) == b.basket_key else 0,
-                industry=m.industry, industry_lift=_lift(b.basket_key, m.ts_code),
-                rs_rank=m.rs_rank, name=m.name,
+                industry=m.industry,
+                # 不达标篮:lift 不参与比较、也不展示数值(「算不出」≠「等于 0」,
+                # 承 ⑤ 既有姿势;这里"算不出"的原因是样本太小,标 `lift_reason`)。
+                industry_lift=(_lift(b.basket_key, m.ts_code) if qualified else None),
+                lift_reason=(None if qualified else LIFT_REASON_SAMPLE_TOO_SMALL),
+                primary_reason=(
+                    primary_reason_of.get(m.ts_code)
+                    if primary_of.get(m.ts_code) == b.basket_key else None
+                ),
+                rs_rank=m.rs_rank, name=m.name, k4_tag=m.k4_tag,
             )
             for m in b.members
         )
@@ -1170,10 +1258,44 @@ def aggregate_baskets(
         ledger = ledger or BudgetLedger()
         all_codes = sorted({c for s in seeds for c in s.member_codes})
         ctx = build_mech_context(trade_date, all_codes, db_path=db_path, parquet_dir=parquet_dir)
+
+        # —— ⑤-b(2026-08-02 planner 裁定):成员卫生线闸 —————————————————
+        # 落点定死在"装配给 LLM 看的成员清单"之前(`MAX_MEMBERS_IN_CONTEXT` 截断
+        # **之前**先过滤再截断)——LLM 压根看不到脏票,既有白名单闸自动兜住。对
+        # 候选成员集(`all_codes`,本日全部种子成分并集)**一次性**算好、全篮复用
+        # (⛔ 不许每篮各算一遍)。
+        pack = _resolve_pack(seed_set.pack_version, db_path)
+        if pack is None:
+            # 理论上不该发生(`seed_set` 非 None 已隐含刚刚取到过现役包);真出现
+            # 时 ⑤-b 三原语无参数可读,判据无从谈起 —— 保守拒收候选成员集全部,
+            # 与 tier-1「算不出就是异常、不放行」同一哲学,不静默放行任何票。
+            logger.error(
+                "[aggregate] %s 取不到策略包(%s)参数,⑤-b 卫生线判据无从谈起 —— "
+                "保守拒收候选成员集全部 %d 只(fail closed)。",
+                trade_date_s, seed_set.pack_version, len(all_codes),
+            )
+            notes.append("member_hygiene_pack_unavailable")
+            hygiene = member_hygiene.MemberHygieneResult()
+        else:
+            hygiene = member_hygiene.apply_member_hygiene(
+                all_codes, trade_date, pack,
+                industry_of=ctx.industry_of, close_of=ctx.close_of,
+                db_path=db_path, parquet_dir=parquet_dir,
+            )
+        ctx.k4_tag_of = hygiene.k4_tag_of
+        if hygiene.hygiene_unavailable:
+            notes.append("hygiene_unavailable")
+        if hygiene.k4_unavailable:
+            notes.append("k4_unavailable")
+
         # 显式引用模块级常量(而不是让它当默认参数在 def 时求值)——单测要能
-        # monkeypatch 它来验证「白名单 = 实际展示给 LLM 的那份清单」。
+        # monkeypatch 它来验证「白名单 = 实际展示给 LLM 的那份清单」。成员先过
+        # ⑤-b 卫生线(`hygiene.kept`)再截断,脏票没有机会挤占展示位。
         presented_by_seed = {
-            s.seed_key: _shortlist(s.member_codes, ctx, MAX_MEMBERS_IN_CONTEXT) for s in seeds
+            s.seed_key: _shortlist(
+                [c for c in s.member_codes if c in hygiene.kept], ctx, MAX_MEMBERS_IN_CONTEXT,
+            )
+            for s in seeds
         }
         seeds_by_key = {s.seed_key: s for s in seeds}
 
@@ -1200,6 +1322,7 @@ def aggregate_baskets(
             logger.warning("[aggregate] %s 推理段缺席(%s)—— 当日不成篮。", trade_date_s, reason_stage)
             return AggregateResult(
                 trade_date=trade_date_s, evidence_by_seed=evidence_by_seed,
+                hygiene_rejected=hygiene.rejected,
                 search_stage=search_stage, reason_stage=reason_stage, reason_narrative=narrative,
                 pack_version=pack_version, charter_version=charter_version, notes=tuple(notes),
             )
@@ -1224,6 +1347,7 @@ def aggregate_baskets(
         baskets = assign_primary(accepted, seeds_by_key, ctx)
         return AggregateResult(
             trade_date=trade_date_s, baskets=baskets, rejected=tuple(rejected),
+            hygiene_rejected=hygiene.rejected,
             evidence_by_seed=evidence_by_seed, search_stage=search_stage,
             reason_stage=reason_stage, reason_narrative=narrative,
             pack_version=pack_version, charter_version=charter_version, notes=tuple(notes),
@@ -1255,6 +1379,21 @@ def _resolve_charter_version(db_path: Optional[Path]) -> str:
         logger.warning("[aggregate] 读现役章程失败,口径指纹记 unknown", exc_info=True)
         return CHARTER_UNKNOWN
     return active.version if active is not None else CHARTER_UNKNOWN
+
+
+def _resolve_pack(pack_version: str, db_path: Optional[Path]) -> Optional[Pack]:
+    """⑤-b 卫生线三原语要读的包对象(`Pack.seeds_config()`)。优先取 `seed_set`
+    生成时那个**确切版本**(`get_pack`,避免与"当下现役包"因极端时序差异不一致);
+    取不到才退回"现在的现役包"(`get_active_pack`)。两条路都失败 / 抛异常 →
+    `None`,调用方按 tier-1 fail-closed 处理(不静默放行)。"""
+    try:
+        pack = get_pack(pack_version, db_path)
+        if pack is None:
+            pack = get_active_pack(db_path)
+        return pack
+    except Exception:  # noqa: BLE001
+        logger.warning("[aggregate] 取策略包(%s)失败,⑤-b 卫生线无参数可读", pack_version, exc_info=True)
+        return None
 
 
 def _summarize_search_stage(evidence_by_seed: Mapping[str, DriverEvidence]) -> str:
@@ -1367,6 +1506,10 @@ __all__ = [
     "MAX_MEMBERS",
     "MAX_SEEDS_AGGREGATED",
     "MAX_MEMBERS_IN_CONTEXT",
+    "MIN_LIFT_SAMPLE_SIZE",
+    "LIFT_REASON_SAMPLE_TOO_SMALL",
+    "PRIMARY_REASON_LIFT",
+    "PRIMARY_REASON_FALLBACK",
     "CHARTER_UNKNOWN",
     "STAGE_OK",
     "STAGE_NO_PROVIDER",

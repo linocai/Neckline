@@ -33,6 +33,7 @@ from neckline.llm.budget import LEDGER_REASON, LEDGER_REVIEW, LEDGER_SEARCH, Bud
 from neckline.scan.seeds import DriverSeed, SeedSet
 from neckline.scan import seeds as seeds_mod
 from neckline.selection import aggregate as ag
+from neckline.selection import member_hygiene as mh
 from tests.conftest import (
     insert_stock_basic,
     insert_trade_cal,
@@ -135,10 +136,100 @@ def _basket_payload(
 
 
 def _run(env, seed_set: SeedSet, *, search=None, reason=None, ledger=None, **kw) -> ag.AggregateResult:
+    _ensure_hygiene_defaults(env, seed_set)
     return ag.aggregate_baskets(
         D0, seed_set=seed_set, db_path=env.db_path, parquet_dir=env.parquet_dir,
         search_provider=search, reason_provider=reason, ledger=ledger, **kw,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑤-b 卫生线闸的测试脚手架默认值(2026-08-02 追加子项)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ⑤-b 之前,`_run()` 从不需要一个**真的注册在 DB 里**的策略包(`seed_set.
+# pack_version` 只是一个归因用的字符串);⑤-b 起 `aggregate_baskets()` 要拿这个
+# 包的 `config.seeds.{stock_hygiene,non_new_stock,k4_advisory_gate}` 参数才能跑
+# 三原语,包不存在会 fail closed(整批候选拒收)。**既有 55 个测试函数里只有 3 个
+# 显式 `insert_stock_basic`**——绝大多数根本不关心卫生线,是在测白名单闸/对拍闸/
+# 两段式降级/预算/落库这些正交的东西,不该因为没登记这张参考表就被拦光。
+#
+# 故 `_run()` 统一在真正跑编排之前**补齐两处默认值,`INSERT OR IGNORE` 语义**
+# (已有的行——含测试故意写的"脏"行,如 ST 名/无行业——一律不覆盖):
+#   ① 一个与 `seed_set.pack_version` 同名的现役包,三原语参数**照抄
+#      `packs/K4-pack.json` 的现值**(不是另拟一套"宽松测试值"——那样会让测试环境
+#      的卫生线判据与生产实际用的阈值不是同一回事)。
+#   ② 种子成分里出现过、`stock_basic` 里还没有的码,补一行"干净"默认(非 ST /
+#      主板 / 早已上市)。
+#
+# 这两处默认值本身**不会让任何码通过 ma20/amount_ma20/K4 检查而"造假通过"**——
+# 绝大多数测试根本没铺 `daily`/K4 价量历史,`member_hygiene` 对这两项的既定行为
+# 就是"面板缺失 → 降级为不拦"(不是这里额外放水);本节只解决"tier-1 便宜数据源
+# 完全没注册"这一件事。**要专门测卫生线拒收路径的测试,自己显式
+# `insert_stock_basic`/自己注册一个更严的包覆盖这两处默认。**
+_HYGIENE_TEST_PACK_CONFIG: Dict[str, Any] = {
+    "seeds": {
+        "stock_hygiene": {
+            "close_min": 2.0, "amount_ma20_min": 20000.0, "require_ma20": True,
+            "allowed_boards": ["MAIN", "GEM", "STAR"], "exclude_st": True,
+        },
+        "non_new_stock": {"min_days": 120},
+        "k4_advisory_gate": {"hard_cut_action": "exclude", "avoid_flag_action": "tag"},
+    },
+    # `config.tier` 是包 schema 必需段,本文件不测 ⑥ Tier 引擎,给一个能过校验的
+    # 最小占位即可(⑤-b/⑤-c 都不读这一段)。
+    "tier": {"weights": {"placeholder": 1.0}, "dims": ["placeholder"]},
+}
+
+
+def _ensure_test_pack(env, pack_version: str) -> None:
+    from neckline.selection import pack as pack_mod
+
+    manifest = {
+        "pack_version": pack_version, "name": "⑤-b 测试脚手架包",
+        "date": "2024-04-08", "engine_api_version": ag.engine_api.ENGINE_API_VERSION,
+        "evidence_ref": [],
+    }
+    try:
+        pack_mod.activate_pack(manifest, _HYGIENE_TEST_PACK_CONFIG, via="seed", db_path=env.db_path)
+    except ValueError:
+        pass  # 同版本已注册过内容相同的包(幂等重放),或已是唯一现役包,不是错误
+
+
+def _ensure_stock_basic_defaults(env, seed_set: SeedSet) -> None:
+    from neckline.db import init_schema
+
+    codes = sorted({c for s in seed_set.all_seeds() for c in s.member_codes})
+    if not codes:
+        return
+    init_schema(db_path=env.db_path)
+    conn = sqlite3.connect(str(env.db_path))
+    try:
+        for code in codes:
+            conn.execute(
+                "INSERT OR IGNORE INTO stock_basic "
+                "(ts_code,symbol,name,industry,market,list_date,delist_date,list_status) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (code, code.split(".")[0], code, None, "主板", "20100101", None, "L"),
+            )
+            # 既有行(含测试自己显式 `insert_stock_basic` 写的)若没给 `list_date`
+            # ——⑤-b 之前这张表从没人读这一列,既有三处 `insert_stock_basic` 调用
+            # 全部只给了 `ts_code`/`industry` 就没管它,NULL 会被 `non_new_stock`
+            # 原语判"次新"而拦下,不是那些测试的原意。补一个"早已上市"的默认值,
+            # **只在 `list_date IS NULL` 时补**,不覆盖测试已显式给出的值(要测
+            # 次新拒收路径的测试自己显式传一个贴近 D0 的 `list_date` 覆盖)。
+            conn.execute(
+                "UPDATE stock_basic SET list_date=? WHERE ts_code=? AND list_date IS NULL",
+                ("20100101", code),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _ensure_hygiene_defaults(env, seed_set: SeedSet) -> None:
+    _ensure_test_pack(env, seed_set.pack_version)
+    _ensure_stock_basic_defaults(env, seed_set)
 
 
 def _insert_leader_rows(env, rows: Sequence[Dict[str, Any]]) -> None:
@@ -219,6 +310,87 @@ class TestWhitelistGate:
         got = ag._shortlist(["600001.SH", "600002.SH", "600003.SH"], ctx, 10)
         # 成交额降序;缺成交额的 600001 排最后(-inf,**不当 0**)
         assert got == ("600003.SH", "600002.SH", "600001.SH")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ①-b(2026-08-02 planner 裁定)· 成员卫生线闸在编排层的接线
+#
+# `member_hygiene.py` 自身的原语级行为(两级保险丝各自路径、与 ③ 原语 `run()`
+# 交叉断言)见 `tests/test_selection_member_hygiene.py`;本节只测**接线是否接对**:
+# 过滤是否真的发生在截断之前、是否真的当日只装配一次、降级 notes 是否如实透出。
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestMemberHygieneWiring:
+    def test_filtering_happens_before_truncation_not_after(self, isolated_env, monkeypatch):
+        """**验收核心**:先过滤再截断,不是先截断再过滤。三只票按成交额降序本该是
+        A(最高)/B/C;A 是 ST 票。若"先截断再过滤"(旧序,BUG),`MAX_MEMBERS_
+        IN_CONTEXT=2` 会先选出 [A,B] 再筛掉 A,C 永远没机会露面;若"先过滤再截断"
+        (⑤-b 定死的正确序),A 先被卫生线剔除,剩 [B,C] 再截断到 2 只,C 应该在场。
+        用白名单闸的可观察行为反证:提案只选 C,C 在不在白名单决定它是被接受还是
+        被当"凭空冒出来的"整条拒收。"""
+        env = isolated_env
+        insert_trade_cal(env, [D0])
+        insert_stock_basic(env, [
+            {"ts_code": "600001.SH", "name": "ST吉祥", "list_date": "20100101"},  # A:最高成交额,但 ST
+            {"ts_code": "600002.SH", "list_date": "20100101"},                    # B:干净
+            {"ts_code": "600003.SH", "list_date": "20100101"},                    # C:干净,成交额最低
+        ])
+        write_daily_fixture(env, "daily", D0, [
+            {"ts_code": "600001.SH", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0,
+             "pre_close": 10.0, "vol": 1.0, "amount": 300.0, "pct_chg": 1.0},
+            {"ts_code": "600002.SH", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0,
+             "pre_close": 10.0, "vol": 1.0, "amount": 200.0, "pct_chg": 1.0},
+            {"ts_code": "600003.SH", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0,
+             "pre_close": 10.0, "vol": 1.0, "amount": 100.0, "pct_chg": 1.0},
+        ])
+        monkeypatch.setattr(ag, "MAX_MEMBERS_IN_CONTEXT", 2)
+        s = _seed("s1", members=("600001.SH", "600002.SH", "600003.SH"))
+        payload = _basket_payload(members=[
+            {"ts_code": "600003.SH", "role": "leader", "reason": "成交额最低那只"},
+        ])
+        r = _run(env, _seedset(s), search=_StubProvider(_search_reply(_EV)),
+                 reason=_StubProvider(_reason_reply([payload])))
+        assert r.rejected == ()   # C 在白名单里,提案被接受,不是 REJECT_FABRICATED_MEMBER
+        assert len(r.baskets) == 1
+        assert r.baskets[0].members[0].ts_code == "600003.SH"
+        # 顺带确认 ST 票确实被卫生线剔了(不是巧合通过)
+        assert any(x.ts_code == "600001.SH" and x.primitive == mh.REJECT_STOCK_HYGIENE
+                   for x in r.hygiene_rejected)
+
+    def test_hygiene_applied_exactly_once_per_day_not_once_per_basket(self, isolated_env, monkeypatch):
+        """当日装配次数 = 1(防每篮/每种子重算)。种子数 > 1、成分有重叠,
+        `apply_member_hygiene` 只应被调用一次。"""
+        env = isolated_env
+        insert_trade_cal(env, [D0])
+        insert_stock_basic(env, [
+            {"ts_code": "600001.SH", "list_date": "20100101"},
+            {"ts_code": "600002.SH", "list_date": "20100101"},
+        ])
+        calls: List[int] = []
+        real = mh.apply_member_hygiene
+
+        def _counting(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(mh, "apply_member_hygiene", _counting)
+        s1 = _seed("s1", members=("600001.SH",))
+        s2 = _seed("s2", kind=seeds_mod.HOT_INDUSTRY, members=("600001.SH", "600002.SH"))
+        _run(env, _seedset(s1, s2), search=_StubProvider(_search_reply(_EV)),
+             reason=_StubProvider(_reason_reply([])))
+        assert len(calls) == 1
+
+    def test_hygiene_and_k4_unavailable_notes_disclosed_when_data_absent(self, isolated_env):
+        """既没铺 `daily`/K4 价量历史 → ma20/amount_ma20/K4 三项都算不出,**降级
+        为不拦 + 如实披露**(P0-23 定案),不是静默当"都合格"。"""
+        env = isolated_env
+        insert_trade_cal(env, [D0])
+        insert_stock_basic(env, [{"ts_code": "600001.SH", "list_date": "20100101"}])
+        s = _seed("s1", members=("600001.SH",))
+        r = _run(env, _seedset(s), search=_StubProvider(_search_reply(_EV)),
+                 reason=_StubProvider(_reason_reply([_basket_payload()])))
+        assert "hygiene_unavailable" in r.notes
+        assert len(r.baskets) == 1   # 没被拦,只是标了降级
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -387,17 +559,51 @@ class TestBasketRules:
 
 def _two_basket_env(env) -> SeedSet:
     """两颗种子共用 600001.SH(半导体)。A 篮的成分里半导体高度富集(lift 高),
-    B 篮里半导体只是零头(lift 低)→ 主归属应落在 A。"""
+    B 篮里半导体只是零头(lift 低)→ 主归属应落在 A。**两篮成分池都 ≥5 只**
+    (⑤-c `MIN_LIFT_SAMPLE_SIZE` 门槛,2026-08-02 追加),都达标,比的是正常
+    lift 比较路径——门槛本身生效时"小簇 vs 大概念"的回归场景见
+    `_small_basket_vs_qualified_basket_env`(不复用/不修改本函数,两者是不同
+    的测试意图)。"""
     insert_trade_cal(env, [D0])
     insert_stock_basic(env, (
         [{"ts_code": "600001.SH", "industry": "半导体"}, {"ts_code": "600002.SH", "industry": "半导体"}]
         + [{"ts_code": f"60001{i}.SH", "industry": "白酒"} for i in range(0, 8)]
     ))
-    a = _seed("s-a", label="A题材", members=("600001.SH", "600002.SH", "600010.SH"))
+    a = _seed("s-a", label="A题材",
+              members=("600001.SH", "600002.SH", "600010.SH", "600011.SH", "600012.SH"))
     b = _seed("s-b", label="B题材", kind=seeds_mod.HOT_INDUSTRY,
               members=("600001.SH", "600011.SH", "600012.SH", "600013.SH", "600014.SH"),
               evidence={"industry_rank": 3})
     return _seedset(a, b)
+
+
+# —— ⑤-c 专用构件(直接构造 `BasketCandidate`/`MechContext`,不经 DB/LLM,
+#    同 `test_lift_tie_breaks_deterministically_by_basket_key` 既有体例)————————
+
+_SEMI_BAIJIU_INDUSTRY_OF: Dict[str, str] = {
+    "600001.SH": "半导体", "600002.SH": "半导体",
+    **{f"60001{i}.SH": "白酒" for i in range(0, 8)},
+}
+
+
+def _semi_baijiu_ctx() -> ag.MechContext:
+    """与 `_two_basket_env` 同一份行业/市场占比口径(半导体 2 只、白酒 8 只),
+    直接灌进 `MechContext`、不经 DB——⑤-c 的 `assign_primary` 单测只关心 lift
+    计算与门槛,不需要走卫生线/落库那一整套。"""
+    ctx = ag.MechContext(trade_date=D0)
+    ctx.industry_of = dict(_SEMI_BAIJIU_INDUSTRY_OF)
+    ctx.market_shares = ag.market_industry_shares(ctx.industry_of)
+    return ctx
+
+
+def _basket_stub(key: str, name: str, seed_keys: Sequence[str], member_codes: Sequence[str]) -> ag.BasketCandidate:
+    return ag.BasketCandidate(
+        trade_date=D0_S, basket_key=key, name=name, driver="d", driver_kind="theme",
+        why_now="w", seed_keys=tuple(seed_keys),
+        members=tuple(ag.BasketMemberCandidate(c, "leader", None, 0, "r") for c in member_codes),
+        evidence=(), evidence_status=ag.EVIDENCE_OK, pack_version="p",
+        engine_api_version=1, charter_version="v1.3.3",
+    )
 
 
 class TestPrimaryAttribution:
@@ -444,6 +650,82 @@ class TestPrimaryAttribution:
         assert primaries == {"0000aaaa": 1, "ffff0001": 0}
         # lift 算不出时字段仍是 None(「算不出」≠「等于 0」)
         assert all(b.members[0].industry_lift is None for b in out)
+
+    # ══════════════════════════════════════════════════════════════════
+    # ⑤-c(2026-08-02 planner 裁定)· lift 主归属的最小成分数门槛
+    # ══════════════════════════════════════════════════════════════════
+
+    def test_basket_below_min_sample_size_has_lift_none_with_sample_too_small_reason(self):
+        """3 只成分的簇篮(< `MIN_LIFT_SAMPLE_SIZE`=5)→ lift 记 `None` + 精确原因,
+        即便只有它自己一个候选、无人可比(门槛管的是"这个估计量本身有没有意义",
+        不是"输不输得过别人")。"""
+        ctx = _semi_baijiu_ctx()
+        seeds_by_key = {"s-small": _seed("s-small", members=("600001.SH", "600002.SH", "600010.SH"))}
+        basket = _basket_stub("k1", "小簇", ["s-small"], ["600001.SH"])
+        out = ag.assign_primary([basket], seeds_by_key, ctx)
+        m = out[0].members[0]
+        assert m.is_primary == 1   # 唯一候选,兜底也落它身上(篮子不因不达标被剔)
+        assert m.industry_lift is None
+        assert m.lift_reason == ag.LIFT_REASON_SAMPLE_TOO_SMALL
+        assert m.primary_reason == ag.PRIMARY_REASON_FALLBACK
+
+    def test_primary_falls_on_qualified_basket_despite_smaller_baskets_higher_raw_lift(self):
+        """**验收核心场景**:一票跨「小簇篮(不达标)+ 大概念篮(达标)」→ 主归属
+        落在达标的那个,即便小簇篮的原始 lift 数值更高——正是 ⑤ 完工记录疏漏 ③
+        报告的失真场景的回归(涨停簇成分池小 → lift 虚高 → 挂靠票占位)。"""
+        ctx = _semi_baijiu_ctx()
+        small = _seed("s-small", members=("600001.SH", "600002.SH", "600010.SH"))   # 3 只,不达标
+        big = _seed("s-big", members=("600001.SH", "600011.SH", "600012.SH", "600013.SH", "600014.SH"))  # 5 只,达标
+        seeds_by_key = {"s-small": small, "s-big": big}
+        small_basket = _basket_stub("k-small", "小簇篮", ["s-small"], ["600001.SH"])
+        big_basket = _basket_stub("k-big", "大概念篮", ["s-big"], ["600001.SH"])
+
+        # 先佐证"如果不设门槛"小簇篮的原始 lift 确实更高(证明这条回归测的正是失真,
+        # 不是随便挑的两个数)。
+        small_lift = ag.industry_lift_map(list(small.member_codes), ctx.industry_of, ctx.market_shares)
+        big_lift = ag.industry_lift_map(list(big.member_codes), ctx.industry_of, ctx.market_shares)
+        assert small_lift["半导体"] > big_lift["半导体"]
+
+        out = ag.assign_primary([small_basket, big_basket], seeds_by_key, ctx)
+        by_key = {b.basket_key: b.members[0] for b in out}
+        assert by_key["k-big"].is_primary == 1
+        assert by_key["k-small"].is_primary == 0
+        assert by_key["k-big"].primary_reason == ag.PRIMARY_REASON_LIFT
+        assert by_key["k-big"].industry_lift is not None
+        assert by_key["k-small"].industry_lift is None
+        assert by_key["k-small"].lift_reason == ag.LIFT_REASON_SAMPLE_TOO_SMALL
+
+    def test_all_candidate_baskets_unqualified_falls_back_by_universe_size_then_key(self):
+        """全部候选篮都不达标 → 确定性兜底(**成分池大小降序 → basket_key 升序**),
+        `primary_reason` 精确,且**同输入两次跑结果逐位相同**。basket_key 故意取
+        与"按成分池大小该赢的那个"相反的字典序(`zzz-large` vs `aaa-small`),证明
+        赢的是成分池更大、不是字典序更靠前。"""
+        ctx = _semi_baijiu_ctx()
+        x = _seed("s-x", members=("600001.SH", "600002.SH", "600010.SH"))   # 3 只
+        y = _seed("s-y", members=("600001.SH", "600011.SH"))                # 2 只
+        seeds_by_key = {"s-x": x, "s-y": y}
+        basket_large = _basket_stub("zzz-large", "大篮", ["s-x"], ["600001.SH"])   # 成分池 3
+        basket_small = _basket_stub("aaa-small", "小篮", ["s-y"], ["600001.SH"])   # 成分池 2
+
+        def _once():
+            return ag.assign_primary([basket_large, basket_small], seeds_by_key, ctx)
+
+        out1, out2 = _once(), _once()
+        assert out1 == out2   # 可复现(BasketCandidate/BasketMemberCandidate 是 frozen dataclass)
+
+        by_key = {b.basket_key: b.members[0] for b in out1}
+        assert by_key["zzz-large"].is_primary == 1   # 成分池 3 > 2,即便字典序更靠后
+        assert by_key["aaa-small"].is_primary == 0
+        assert by_key["zzz-large"].primary_reason == ag.PRIMARY_REASON_FALLBACK
+        assert by_key["aaa-small"].primary_reason is None   # 只标在 is_primary=1 的那一行
+        assert by_key["zzz-large"].industry_lift is None and by_key["aaa-small"].industry_lift is None
+
+    def test_min_lift_sample_size_matches_industry_strength_source(self):
+        """门槛常量必须与 `industry_strength._MIN_MEMBERS` 同源同值(⑤-c 定案)——
+        `aggregate.py` 是**直接引用**那个对象(不是另抄一份 5),这里断言的是数值
+        没有在某处漂移,不是断言"恰好都是 5"这个巧合。"""
+        from neckline.report.industry_strength import _MIN_MEMBERS
+        assert ag.MIN_LIFT_SAMPLE_SIZE == _MIN_MEMBERS
 
     def test_lift_formula_matches_v131_industry_gate_precedent(self):
         """**交叉断言**:本模块的 lift 与 v1.3.1 行业闸(`intel_candidates`)同口径。
