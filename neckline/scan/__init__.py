@@ -14,12 +14,21 @@
                      计算本身足够便宜,不需要额外物化)
     · `freshness.py` → 扫描层新鲜度(`dataFreshness.scanLayer*` 三键的计算逻辑,
                      供未来 `report/pipeline.py` 接线消费,本块只提供函数)
+    · `stage.py`   → `industry_stage_daily`(plan §五 V2-④b,K7 需求 1b;行业题材
+                     阶段六态状态机——启动/发酵/过热/分歧回调/退潮/无题材,取代
+                     `driver_freshness` 原先借用的 `stock_persist_days` 单调函数。
+                     "计算+落表读写+新鲜度+自检"一体自包含,同
+                     `report/industry_strength_store.py` 先例,不拆进
+                     `freshness.py`/`verify.py`——那两个文件的既定范围明确是三张
+                     ④ 表,不含本表)。依赖 `industry_strength_daily`(单一源,只读
+                     不改)与 `data/limit_derived.py`,**可与 cluster/corr/leader/
+                     seeds 并行**,不依赖它们。
 
-**"事实表"与"种子"的分野(勿混淆)**:三张表是**客观市场结构事实**,不读任何
-策略包配置(同 `industry_strength_daily` 的既有分工:引擎常量,不是策略参数);
-种子生成是**主观判断在哪算是"热"**,阈值一律读 `neckline.selection.pack.
-get_active_pack().config["seeds"]`,新增四个原语见 `neckline/selection/
-primitives.py`。
+**"事实表"与"种子"的分野(勿混淆)**:三张表(+ `industry_stage_daily`)是**客观
+市场结构事实**,不读任何策略包配置(同 `industry_strength_daily` 的既有分工:
+引擎常量,不是策略参数);种子生成是**主观判断在哪算是"热"**,阈值一律读
+`neckline.selection.pack.get_active_pack().config["seeds"]`,新增四个原语见
+`neckline/selection/primitives.py`。
 """
 
 from __future__ import annotations

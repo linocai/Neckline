@@ -19,6 +19,12 @@
   OOM-kill、1400M cap 600s 跑不完)。同样**尽力而为不改退出码,但日志用 ERROR** —— 它是
   **判据输入**(A2 hard_cut + 排序键①)不是增强项;失败日志带补算命令原文。
 
+**V2-④b 新增第四项(K7 需求 1b,§七 P0-23)**:**行业题材阶段六态状态机落表**
+  (`industry_stage_daily`)—— 只读 `industry_strength_daily` 当日行 + `limit_derived`
+  当日一个分区 + 本表自己过去 5 个交易日的既有行,不扫任何全历史;排在
+  `update_industry_strength` **之后**(依赖它刚写的 `persist_days`)。同样**尽力而为
+  不改退出码,但日志用 ERROR**(未来 ⑥ 的 `driver_freshness` 判据输入,非增强项)。
+
 新增配额消耗(与 §七 P4-20 一起算账,部署块 ⑨-E 复核):`ths_daily` 5 次/日(尾窗)、
 `suspend_d` 1 次/日、`ths_index`+`ths_member` ~400 次/周。
 
@@ -157,6 +163,38 @@ def update_industry_strength(target: date) -> None:
         )
 
 
+def update_industry_stage(target: date) -> None:
+    """V2-④b(plan §五 V2-④b,K7 需求 1b,§七 P0-23):行业题材阶段六态状态机预计算
+    落表(`industry_stage_daily`)—— 只读 `industry_strength_daily` 当日行 + `limit_derived`
+    当日一个分区 + 本表自己过去 5 个交易日的既有行,不扫任何全历史(见
+    `neckline/scan/stage.py` 模块 docstring)。
+
+    **尽力而为**(异常吞掉、不改退出码,同 `update_industry_strength` 先例)**但日志
+    级别用 ERROR** —— 它是未来 ⑥ `driver_freshness` 维度的判据输入,不是增强项;
+    日志带补算命令原文。**排在 `update_industry_strength` 之后**(依赖它刚写的
+    `persist_days`)。"""
+    from neckline.scan.stage import industry_stage_status, refresh_command_hint, refresh_industry_stage
+
+    try:
+        stats = refresh_industry_stage([target])
+        fresh = industry_stage_status(target)
+        if stats["rows"] == 0:
+            logger.error(
+                "[industry_stage] %s 未落任何行(industry_strength_daily 当日无行,源表本身"
+                "可能未就绪)——未来 driver_freshness 六态判据本日走保险丝降级。补算:%s",
+                target, refresh_command_hint(target, target),
+            )
+        else:
+            logger.info("[industry_stage] %s 落 %d 行(表内最新至 %s,落后 %d 个交易日)",
+                        target, stats["rows"], fresh.latest_label(), fresh.lag_days)
+    except Exception:  # noqa: BLE001
+        logger.error(
+            "[industry_stage] 日更异常(已吞,不阻断主增量)——未来 driver_freshness 判据"
+            "输入缺失。补算:%s",
+            refresh_command_hint(target, target), exc_info=True,
+        )
+
+
 def update_scan_layer(target: date) -> None:
     """V2-④(plan §五 V2-④,P0-23):市场扫描层三张预计算表(`limit_cluster_daily`/
     `corr_matrix_daily`/`leader_structure_daily`)日更增量,固定顺序
@@ -240,6 +278,10 @@ def main() -> int:
     # v1.4-⑩-C:排在两位增强项**之后**(它吃的是本次主增量刚落的当日 `daily` 分区,
     # 时序上必须在 `backfill_day_tables` 之后)。
     update_industry_strength(target)
+    # V2-④b:排在 `update_industry_strength` 之后(依赖它刚写的 `persist_days`),
+    # 在 `update_scan_layer` 之前(两者互不依赖,谁先谁后均可,这里选择紧跟着它的
+    # 唯一上游一起收尾)。
+    update_industry_stage(target)
     # V2-④:排在最后——依赖本次刚落的 `limit_derived`(上面 `run_limit_derived`)与
     # `industry_strength_daily`(上面 `update_industry_strength`)两者都已就绪。
     update_scan_layer(target)

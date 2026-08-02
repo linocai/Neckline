@@ -920,6 +920,34 @@ CREATE TABLE IF NOT EXISTS llm_providers (
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL
 );
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2-④b 追加(2026-08-02,K7 需求 1b):第 21 张新表,①/④ 均已完工提交,本表
+-- **不回头改那两块的 DDL 段**,单独作为 ④b 自己的施工内容追加在这里(同 ① 既有
+-- 体例:CREATE TABLE IF NOT EXISTS 天然幂等,新表不进 `_COLUMN_MIGRATIONS`)。
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- 事实(EOD 预计算,plan §五 V2-④b,K7 需求 1b):行业题材阶段六态状态机,取代
+-- `driver_freshness` 维度原先借用的 `stock_persist_days` 单调函数。stage 六态
+-- 英文码(ignition|fermentation|overheat|divergence|ebb|none)唯一中英映射源见
+-- `neckline/scan/stage.py::STAGE_LABELS`。persist_days 直接读自
+-- `industry_strength_daily`(单一源,本表不重算、不改动那张表);limit_up_count
+-- 读自 `data/limit_derived.py`,NULL 表示当日该表分区缺失、算不出(禁写
+-- 0——0 是"该行业当日零涨停"的真值,与"算不出"必须分开)。
+CREATE TABLE IF NOT EXISTS industry_stage_daily (
+  trade_date       TEXT NOT NULL,          -- 'YYYYMMDD'
+  industry         TEXT NOT NULL,          -- stock_basic.industry 口径
+  stage            TEXT NOT NULL,          -- ignition|fermentation|overheat|divergence|ebb|none
+  is_strength_day  INTEGER NOT NULL,       -- 0/1,留痕供复现
+  persist_days     INTEGER,                -- 读自 industry_strength_daily,NULL=该表当日无行
+  limit_up_count   INTEGER,                -- 当日该行业涨停家数,NULL=算不出(禁写 0)
+  member_count     INTEGER,                -- 参与中位数的成员数(<5 时强度日恒 0)
+  stage_reason     TEXT,                   -- 落到该态的判据留痕(可读)
+  spec_fingerprint TEXT NOT NULL,          -- 口径指纹:q/成员数下限/近N日窗口 的序列化
+  computed_at      TEXT NOT NULL,
+  PRIMARY KEY (trade_date, industry)
+);
+CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade_date);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库
