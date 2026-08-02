@@ -333,7 +333,7 @@ Neckline/
 **A. 存储与数据层**
 - 存储路线**不变**(Parquet + polars 跑行情大表 / SQLite 跑元数据与业务台账)。V2 新增 **18 张 SQLite 表 + 2 张 parquet 表**,清单与 DDL 要点在 §五 V2-① 定死。
 - **`intraday_ticks` / `auction_snapshots` 走 parquet**(按日分区,`write_table_day` 铁律),不进 SQLite:它们是「只增不改的高频事实」,量级 ≈ 关注池 200 只 × 240 分钟/日,列存 + 按日分区最合身。**必须同步进 `_VALID_TABLES` + `TABLE_FLOAT_COLS` 声明**。
-- **盘中存拍落盘时机 = 内存累计 + 15:05 一次性落盘**(§五 建议默认 D4);理由:`write_table_day` 的语义是「一日一文件整段替换」,逐分钟 append 会反复重写整日文件并拖累哨兵主循环。
+- **盘中存拍落盘时机 = 内存累计 + 15:05 一次性落盘**(§五 **D4 已拍板**);理由:`write_table_day` 的语义是「一日一文件整段替换」,逐分钟 append 会反复重写整日文件并拖累哨兵主循环。
 - **分时数据双轨**(裁定 #1):自给存拍从 V2 上线日起积累;用户外源方案落定后**走同一张表回补**(`source` 列区分),复盘引擎无感切换。
 
 **B. LLM 层**
@@ -351,7 +351,7 @@ Neckline/
 **D. 部署与运行环境(取代 §3.6 的 hz 单机方案)**
 - ~~后端 + 哨兵跑 hz 杭州云 ECS(1.6G 内存硬约束)~~ → **取代:100% 更换更强云服务器**(裁定 #3,部署前置项)。建议规格 ≥ 4 vCPU / 8 G / 100 G SSD(§五 D3,用户可推翻);属主纪律、`.env` / `.p8` / `neckline.db` 600、`sync_code.sh` / `sync_data.sh` 体例**原样复刻**。
 - **晚间管线多段化**:扫描 / 聚合+Tier+卡+报告 / 复盘+评价 拆成**三个 oneshot 服务串行**、各自 `MemoryMax`;**重活一律不进常驻 `neckline.service`**(它与盘中哨兵同进程,`MemoryHigh` 先节流 = 卡死不报错)。
-- **域名与割接(§五 D2 默认 A 路)**:新机启用**新子域**,老机 `ln.linotsai.top` 维持到用户完成双端换包 → **契约可一次性换血、不留过渡键**;若改走 B 路(沿用老域名)则老键必须走两步淘汰、换包须前移(§五 ⑭-D)。
+- **域名与割接(§五 D2 = A 路,2026-08-02 用户拍板定死)**:新机挂新子域 **`nk.linotsai.top`**(**DNS 解析由用户自己做**),老机 `ln.linotsai.top` 原样服务到用户完成 ⑰ 双端换包 → **老 App 打老机、新 App 打新机不交叉,契约一次性换血、不留过渡键**。~~沿用老域名的 B 路~~ **已否决,不是选项**(§五 ⑭-D)。
 - **P0-23 纪律平移**:所有新批算必须 **EOD 预计算落表、在线只读**,且**在新机上单独计时 + 量峰值后才准进主链**;探针只在收盘后隔离串行跑,`load > 4` 立即停手。
 
 ---
@@ -364,7 +364,10 @@ Neckline/
 - **本次动作(纯文档,零代码 / 零数据库 / 零部署)**:
   - §五 换成 V2.0.0 详版 Plan(17 块 + 1 个用户判定点);§二 新增 **§2.8 V2.0.0 语义换血总表**(篮子取代单票候选等,历史拍板一条不删);§三 新增 **§3.10 V2 技术选型增补**;§七 Backlog 逐条按 V2 处置并新挂 4 条;§八 新增 V2 用户操作四项。
   - 归档:`archive/v1.5_施工图_20260802归档.md`(v1.5 施工图全文 ⑨ 块 + LLM 预算账 + 客户端契约清单 + **交接时的 §四 v1.5.2 收官快照全文**);`archive/V2架构设计稿_20260731_20260802立项归档.md`(架构稿原文 + 归档标注)。
-- **下一步** = builder 从 **V2-①** 开跑(①②③ 是地基,可连做)。**⑯ 部署块的硬前置 = 用户先买好新云服务器**(裁定 #3,§八 第 13 项);未买之前 ①–⑮ 全部可在本地推进,不阻塞。
+- **✅ 2026-08-02 用户验收 Plan 并追加两项拍板**(已并入 §五):
+  - **D1–D8 全部定案**(原为 planner 建议默认)。其中 **D2 = A 路定死**:新机挂新子域 **`nk.linotsai.top`**、**DNS 解析由用户自己做**(§八 第 14 项,已从「二选一」改为必办项),老机 `ln.linotsai.top` 原样服务到 ⑰ 换包完成 → **契约一次性换血、不留过渡键**;~~B 路(沿用 `ln`)~~ **已否决,plan 内不再留第二条路**(⑭-D / ⑯-G / ⑰ 三处的 B 路分支已全部收掉,只留删除线留痕)。
+  - **云上组件迁移放在尾声**:**①–⑮ 全部本地推进优先,⑯ 不与前面并行穿插**;⑯ 内的纯本地子项(systemd 单元 / nginx 模板 / 激活与 preseed 脚本 / 迁移清单)标 **📦 本地可先备料**,写好但一律不上机跑。判据与备料清单见 §五「工序时序纪律」与 ⑯ 块首。
+- **下一步** = builder 从 **V2-①** 开跑(①②③ 是地基,可连做)。**⑯ 的两条硬前置 = ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**(裁定 #3,§八 第 13/14 项);在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**,不阻塞。
 - **待办总入口 = §七 Backlog**(本次已逐条处置:吸收 / 废弃 / 保留三态标注齐)。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/v1.5_施工图_20260802归档.md` 文末附录。
@@ -406,18 +409,18 @@ Neckline/
 5. **语义红线**:排序 / Tier = **注意力优先级,不是收益预测**;T1 ≠ 最会涨;终选权在用户。UI 禁「推荐买入 / 建议买入 / 看好 / 值得买」类表述;参考件每处出现都带「参考、非指令」标注;离场参考区间**不许**被表述成止盈线。
 6. **策略包不装可执行代码**(§12.1 定案,勿重开);**纪律章程不进包**(两条版本线、两张表、两套激活流程)。
 
-### 建议默认清单(planner 定的默认值,**用户可推翻**;推翻只需一句话,builder 照改)
+### D1–D8 定案清单(**2026-08-02 用户逐条拍板,施工时不得重开**;原为 planner 建议默认,现已全部转为定案)
 
-| # | 事项 | 默认取值 | 推翻的代价 |
+| # | 事项 | **已拍板取值(2026-08-02 用户)** | 定这个的理由 |
 |---|---|---|---|
-| D1 | **信息卡**(V1 清理 §8.2 唯一遗留项) | **不删,保留改造**为篮子成员详情页地基(⑬-N) | 删掉则成员详情页要另起地基,⑮ 工作量增加 |
-| D2 | **割接域名路线** | **A 路:新机启用新子域 `nk.linotsai.top`**,老机 `ln.linotsai.top` 维持到用户换包完成 → **契约可一次性换血,不留过渡键** | 选 B 路(沿用 `ln`)= 零 DNS 操作,但**老 App 会撞 V2 服务端** → ⑰ 换包必须先于割接,且老键必须走两步淘汰(⑭-D) |
-| D3 | **新机规格** | ≥ 4 vCPU / 8 G / 100 G SSD(按 ⑯-C 实测复核) | 更小则 ⑯-C 可能不达标、晚间窗口拉长 |
-| D4 | **盘中存拍落盘时机** | **内存累计 + 15:05 收盘后一次性落盘**(`write_table_day` 是「一日一文件整段替换」,逐分钟写会反复重写整日文件) | 逐分钟 append 会拖累哨兵主循环,且与 `write_table_day` 铁律冲突 |
-| D5 | **通知三级的 APNs 落法** | 三个 category `NKIMMEDIATE` / `NKIMPORTANT` / `NKDIGEST`,事件带 `kind`,**开关按 kind 配** | 按 category 配开关会连坐(V1 拆 `HOLDINGALERT` 的教训) |
-| D6 | **新表命名** | `entry_snapshots` / `llm_providers` / `selection_pack_activation_log` / `profile_preference` / `profile_capability` | 纯命名,改名成本低但要一次改齐 |
-| D7 | **首包命名与位置** | `packs/K4-pack.json`,`pack_version = "K4-pack-v1"` | 纯命名 |
-| D8 | **iPhone 信息架构** | 四板块 = **今日篮子 / 持仓 / 问询台 / 设置**(macOS 加周复盘工作台) | 加 tab 会稀释「打开就看今天做什么」 |
+| D1 | **信息卡**(V1 清理 §8.2 唯一遗留项) | ✅ **不删,保留改造**为篮子成员详情页地基(⑬-N) | 九件套现成,删了成员详情页要另起地基 |
+| D2 | **割接域名路线** | ✅ **A 路定死:新机启用新子域 `nk.linotsai.top`**(**DNS 解析由用户自己做**,§八 第 14 项),老机 `ln.linotsai.top` 维持到 ⑰ 双端换包完成 → **契约一次性换血,不留过渡键**。~~B 路(沿用 `ln`,割接时切解析)~~ **已否决,不再是选项** —— 详见 ⑭-D | 用户原话:「我本来就要换云服务器,NK 这个域名我会直接把它解析到新的云服务器上」。老 App 打老机、新 App 打新机,两者不交叉,**契约换血最干净** |
+| D3 | **新机规格** | ✅ **≥ 4 vCPU / 8 G / 100 G SSD**(按 ⑯-C 实测复核) | 老机 2 vCPU/1.6G 已被 P0-23 打爆过一次;V2 晚间管线重一个量级 |
+| D4 | **盘中存拍落盘时机** | ✅ **内存累计 + 15:05 收盘后一次性落盘** | `write_table_day` 是「一日一文件整段替换」,逐分钟 append 会反复重写整日文件并拖累哨兵主循环 |
+| D5 | **通知三级的 APNs 落法** | ✅ 三个 category `NKIMMEDIATE` / `NKIMPORTANT` / `NKDIGEST`,事件带 `kind`,**开关按 kind 配** | 按 category 配开关会连坐(V1 拆 `HOLDINGALERT` 的教训) |
+| D6 | **新表命名** | ✅ `entry_snapshots` / `llm_providers` / `selection_pack_activation_log` / `profile_preference` / `profile_capability` | 三张补位表 + 画像两表,命名一次定死,后续不再改 |
+| D7 | **首包命名与位置** | ✅ `packs/K4-pack.json`,`pack_version = "K4-pack-v1"` | 沿用 K 字头,包 = 策略线交付物形态 |
+| D8 | **iPhone 信息架构** | ✅ 四板块 = **今日篮子 / 持仓 / 问询台 / 设置**(macOS 加周复盘工作台) | 加 tab 会稀释「打开就看今天做什么」 |
 
 ### V2 新表汇总(**20 张**,DDL 要点在各块定死,建表统一在 ① 一次到位)
 
@@ -468,6 +471,11 @@ Neckline/
 交付层  ⑯ 新服务器 + 晚间管线多段化 + 迁移割接 + 首包激活 + Tier 预填充(🔴)← ①~⑮ + 用户已购机
         ⑰ 双端换包(末块,等用户指令)
 ```
+
+> ⏱ **工序时序纪律(2026-08-02 用户追加指示,写死)**:**云上组件迁移放在尾声。①–⑮ 全部本地推进优先,⑯ 的云上动作(购机验收 / 数据搬家 / 新机实测 / 割接 / 首包激活 / preseed 灌入)是尾声块,不与前面任何块并行穿插。**
+> - **判据**:在 ⑮ 完工之前,**不碰任何服务器**(新机老机都不碰)、不搬数据、不改 DNS、不部署。①–⑮ 期间的一切验证走本地隔离库 + 本地 parquet + 单测 + `xcodebuild`。
+> - **⑯ 内部允许「本地可先备料」的纯本地子项**(标注在块内,**不拆走**):`deploy/` 三个 oneshot 单元文件与 timer 的编写、nginx 站点模板、`scripts/activate_pack.py` 与 `packs/K4-pack.json`(③ 已产出)、`scripts/oneoff/preseed_baskets.py` 与其校验逻辑、迁移检查清单脚本。**写好即可,一律不在服务器上跑**,到 ⑯ 才上机执行。
+> - **用户侧的 §八 第 13/14 项(购机 + `nk` 解析)也按尾声节奏办**,不必在 ①–⑮ 期间催办;builder 在 ⑯ 开跑前问一次即可。
 
 ### 铁律(承 §3.8 + §2.0 + §2.8;builder 逐条守,每块都适用)
 
@@ -786,7 +794,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 **契约变更**
 - 新增 `GET /settings/providers`(列表,不含 key)/ `POST /settings/providers` / `PUT /settings/providers/{name}` / `DELETE /settings/providers/{name}` / `GET|PUT /settings/llm-routes`。
-- **`PUT /settings/llm` 删除**(D2 走 A 路时可直接删;若用户改选 B 路,则本端点保留一版做「写入名为 `legacy` 的 provider 行」的兼容层,下一版再删 —— 见 ⑭-D)。
+- **`PUT /settings/llm` 直接删**(D2 = A 路已拍板,老 App 打老机、不会撞到新服务端,**不做 `legacy` 兼容层**,见 ⑭-D)。
 - `GET /settings` 的 `llmProvider` / `llmKeySet` 两字段由 `providers: [{name, model, hasWebSearch, keySet, enabled}]` + `routes: {task: name}` 取代。
 
 **测试与守门**
@@ -940,7 +948,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 - 「上市第几天」一律 `is_new_stock_exempt`;polars 链式赋值右侧一律 `pl.col(...)`。
 
 **⑧-B 盘中存拍(新)**
-- 关注池分钟报价 → 内存累计;**15:05 收盘后一次性落 `intraday_ticks` 当日分区**(D4 建议默认);09:25 竞价快照 → 同样收盘后落 `auction_snapshots`。
+- 关注池分钟报价 → 内存累计;**15:05 收盘后一次性落 `intraday_ticks` 当日分区**(**D4 已拍板**);09:25 竞价快照 → 同样收盘后落 `auction_snapshots`。
 - 落盘走 `write_table_day`;失败只 WARNING、**绝不影响哨兵主循环**;当日存拍不完整 → 落一个 `capture_status`(`full` / `partial` / `missing`)供 ⑨ 如实标注。
 - **外源可插拔**(裁定 #1):用户外源方案落定后**走同一张表回补**,`source` 列区分;⑨ 复盘引擎无感切换。
 
@@ -1064,7 +1072,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
   - §八 第 9 项(用户提供同花顺自选 txt)随之**作废**。
 **⑬-12(裁定 #9-b)呼吸台账 → 删** → `breathing_t_trades` 表停写留档;删 `neckline/breathing.py`、三个 `/breathing*` 端点、客户端 `BreathingLedgerView.swift`。⚠ 连带:§七 P3-11 的「呼吸 T 净贡献」归因维**随之废弃**(已在 §七 标注)。
 **⑬-13(裁定 #9-c)五常驻板块保底删除** → 并入 ⑬-1。
-**⑬-N 信息卡:保留改造(D1 建议默认,用户可推翻)** → `report/info_card.py` 与端点 `GET /report/{date}/info-card/{code}` **保留**;改造 = 数据来源由「候选快照」换成「**篮子成员**」,并新增三块:所属篮子与共同驱动 / 本票角色(含对拍分歧)/ 与同篮其他成员的对比。它是 ⑮ 篮子成员详情页的地基。
+**⑬-N 信息卡:保留改造(**D1 已拍板 = 不删**)** → `report/info_card.py` 与端点 `GET /report/{date}/info-card/{code}` **保留**;改造 = 数据来源由「候选快照」换成「**篮子成员**」,并新增三块:所属篮子与共同驱动 / 本票角色(含对拍分歧)/ 与同篮其他成员的对比。它是 ⑮ 篮子成员详情页的地基。
 
 **明确不动(§8.3,防误删)**:数据层全部(TuShare 客户端 / parquet 落盘 / 交易日历 / 概念板块日更 / `suspend_d` 停牌口径 / `limit_derived` / `board` / 行业强度落表)、哨兵纪律分支、章程与激活历史与四道闸、逐笔章程判定、交割单对账、APNs 基础设施、`prompt_context`、参考件的夹逼 / 冻结 / 审计体例(已移交篮子卡)、**问询台主体 + `inquiry_log`**。
 
@@ -1083,17 +1091,18 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 **⑭-B API 契约总装**(`api/schemas.py` + `api/app.py`)
 - 新 DTO:`BasketOut` / `BasketCardOut` / `BasketMemberOut` / `TierOut` / `BasketVerificationOut` / `BasketReviewOut` / `PositionPlanOut` / `EntrySnapshotOut` / `CustomAlertOut` / `ProfileOut` / `ProviderOut` / `PackOut`。
-- 新端点(建议默认,可微调):`GET /baskets?date=` / `GET /baskets/{id}` / `GET /baskets/{id}/card?version=` / `GET /baskets/{id}/verification` / `GET /baskets/{id}/review?date=` / `GET /positions/{id}/plans` / `POST /positions/{id}/plans` / `GET|POST|PUT|DELETE /alerts` / `POST /alerts/parse`(NL → 结构化,返回确认卡)/ `GET /profile/preference` / `GET /profile/capability` / `GET /packs` / `GET /packs/{version}` / `GET /eval/weekly`。
-- 删除端点:`/watchlist*` ×5、`/breathing*` ×3、`/settings/intel-boards` ×2、`PUT /settings/llm`(D2-A 路)。
+- 新端点(**不属 D1–D8,是 planner 的形状建议,builder 可在保持语义前提下微调路径**):`GET /baskets?date=` / `GET /baskets/{id}` / `GET /baskets/{id}/card?version=` / `GET /baskets/{id}/verification` / `GET /baskets/{id}/review?date=` / `GET /positions/{id}/plans` / `POST /positions/{id}/plans` / `GET|POST|PUT|DELETE /alerts` / `POST /alerts/parse`(NL → 结构化,返回确认卡)/ `GET /profile/preference` / `GET /profile/capability` / `GET /packs` / `GET /packs/{version}` / `GET /eval/weekly`。
+- 删除端点:`/watchlist*` ×5、`/breathing*` ×3、`/settings/intel-boards` ×2、`PUT /settings/llm`(D2 = A 路已拍板,直接删)。
 - **404 / 400 的 `reason` 与客户端 `APIClient.mapReason` 必须互为闭包**(CLAUDE.md 坑:新增会返 404 的端点必须检查要不要加新 case;**复用已有 reason 字符串不算"没加"**)。
 
 **⑭-C 契约三方对拍(不可选,架构稿 §9.1-1)**
 - `api/schemas.py` 声明 → `api/app.py` 转发 → Swift `Models.swift` 解码,**逐字段走一遍**并出对照表存 `archive/V2_契约三方对拍_2026MMDD.md`。这是**施工块内的自查**,不等于独立 review(是否召唤 @reviewer 见下方门禁)。
 - 逐字段要标:必填 / 可选、Optional 的编码姿势(`encodeIfPresent` vs 手写 `encode(to:)` 保证键恒出现)、**是否属于「写入时冻住的历史快照」**(如 `basket_cards.card_json` / `reviews.result_json` —— 这类 DTO 必须手写 `init(from:)` 做 `decodeIfPresent` 兜底,因为服务端升级不会给老快照补键)。
 
-**⑭-D 老键淘汰排期(与 D2 绑定,写死)**
-- **D2 走 A 路(默认,新子域)**:老 App 打老机、新 App 打新机,两者不交叉 → **V2 契约一次性换血,不留过渡键**,⑬-6 的四个老键可直接删。
-- **D2 若改 B 路(沿用 `ln.linotsai.top`)**:老 App 会撞 V2 服务端 → **必须**先发一版客户端把 `buyPoint/stop/target/invalidation` 改 `decodeIfPresent` + 默认值并完成换包,**下一版**服务端才可删键(顺序反了整份报告解不出、今日计划全空);此时 ⑰ 换包**必须前移到 ⑯ 割接之前**。
+**⑭-D 老键淘汰排期(D2 已拍板 = A 路,**只有一条路,builder 不必犹豫**)**
+- **A 路(定案)**:新机挂新子域 `nk.linotsai.top`、老机 `ln.linotsai.top` 原样服务到 ⑰ 换包完成 → **老 App 打老机、新 App 打新机,两者不交叉** → **V2 契约一次性换血,不留过渡键**:⑬-6 的四个老键(`buyPoint`/`stop`/`target`/`invalidation`)与 `report/candidates.py` 四个文案函数**直接删,不做过渡文案、不发空串**;`PUT /settings/llm` 同样直接删。
+- ~~B 路(沿用 `ln.linotsai.top`,割接时切解析 → 老 App 会撞 V2 服务端 → 老键须走两步淘汰、⑰ 换包须前移)~~ → **2026-08-02 用户拍板否决,不再是选项。** 保留这行只为留痕:**「先客户端可选解码、下版服务端才删键」这条两步淘汰纪律本身仍然有效**(CLAUDE.md 铁律,V2 之后的版本照守),V2 只是**靠换机窗口结构性地绕开了它**,不是废除它。
+- ⚠ **A 路成立的前提条件(builder 必须在 ⑯-G 现场确认,不成立就停手回 planner)**:新机 nginx **只**服务 `nk.linotsai.top`,**不接管** `ln.linotsai.top` 的任何解析;老机在 ⑰ 完成前**不停机、不改代码、不改 DNS**。
 
 **依赖**:①–⑬。
 **验收**:三方对拍表逐字段齐(每字段三处一致);报告 golden 快照三态(有篮子 / 无篮子 / 某段降级);端点前后对照表齐;`mapReason` 闭包单测;pytest 零回归。
@@ -1102,7 +1111,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 ### V2-⑮ · 客户端双端改版(iOS + macOS,@builder)
 
-**信息架构(D8 建议默认)**:iPhone 四板块 = **今日篮子 / 持仓 / 问询台 / 设置**;macOS 四板块 + **周复盘工作台**(交割单上传 + 对账 + 画像 + 评价校准报告)。**不新增 tab。**
+**信息架构(**D8 已拍板**)**:iPhone 四板块 = **今日篮子 / 持仓 / 问询台 / 设置**;macOS 四板块 + **周复盘工作台**(交割单上传 + 对账 + 画像 + 评价校准报告)。**不新增 tab。**
 
 - **今日篮子**:T1/T2/T3 分段(**空档位如实显示"今日 T1 为空"**,不隐藏)→ 篮子卡(11 项,**每处参考件带「参考、非指令」标注**)→ 成员卡(角色 / 对拍分歧两说并存 / 信息卡入口)→ 验证状态实时角标(四态)。
 - **持仓**:极简录入 sheet(三字段 + 日期选择器)/ 计划继承卡(含"新建计划版本")/ **同题材合并敞口**提示 / 计划 vs 实际偏离提示(不质问)/ 通知 kind 开关入口。
@@ -1129,18 +1138,22 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 ### V2-⑯ · 新服务器 + 晚间管线多段化 + 迁移割接 + 首包激活 + Tier 预填充(🔴 @builder-pro + 用户)
 
-> **硬前置**:用户已购好新云服务器并交付访问方式(§八 第 13 项)。**未购机之前 ①–⑮ 照常推进,本块不启动。**
+> **⏱ 本块是尾声块(2026-08-02 用户追加指示,写死)——「云上组件迁移放在尾声」。**
+> - **两条硬前置,缺一不启动**:① **①–⑮ 全部完工**;② 用户已购好新云服务器并交付访问方式(§八 第 13 项)+ `nk.linotsai.top` 已解析到新机(§八 第 14 项)。
+> - **⛔ 不与前面任何块并行穿插**:在 ⑮ 完工之前 **不碰任何服务器**(新机老机都不碰)、不搬数据、不改 DNS、不部署;①–⑮ 期间的一切验证走本地隔离库 + 本地 parquet + 单测 + `xcodebuild`。
+> - **📦「本地可先备料」的纯本地子项(留在本块内、不拆走,但允许在 ①–⑮ 期间顺手写好)**:⑯-D 的三个 oneshot `deploy/*.service` + `*.timer` 单元文件、⑯-G 的 nginx 站点模板、⑯-E 的 `scripts/activate_pack.py` 与 `packs/K4-pack.json`(③ 已产出)、⑯-F 的 `scripts/oneoff/preseed_baskets.py` 与其校验逻辑、⑯-B/H 的迁移检查清单脚本。**写好即可,一律不在服务器上跑**;到本块才上机执行。
+> - 备料子项在下文各自条目里标 **📦 本地可先备料**。
 
 **⑯-A 新机准备**:规格 D3(≥4 vCPU / 8G / 100G SSD,按 ⑯-C 实测复核);Python 3.11+ venv、阿里云 PyPI 镜像;**属主纪律复刻**(nologin 用户 `neckline`、`/opt/neckline` `deploy:neckline` setgid 2770、`.env` / `.p8` / `neckline.db` 600 `neckline:neckline`);`.env` 与 `.p8` **手工拷贝、绝不入 git、rsync 永不覆盖 `data/`**。
 **⑯-B 数据搬家**:parquet 全量 + `neckline.db`(搬前 `.backup` + `cp -p` **双备份**,搬后 `PRAGMA integrity_check=ok` + 业务表行数逐表比对 + `is_active` 仍 `v1.3.3` 且 `activated_at` 未变);`sync_data.sh` / `sync_code.sh` 复用(dry-run 先验、零删除、收尾属主自检)。
 **⑯-C 性能实测(P0-23 纪律平移,硬门禁)**:④ 三张新表的 `bootstrap` 与日更增量、⑨ 复盘引擎、⑤⑥ 的 LLM 段、⑧ 存拍落盘 —— **每一项在新机上 `systemd-run --scope -p MemoryMax=… -p CPUQuota=…` 隔离单进程、串行**计时 + 量峰值,**达标才准进主链**。探针纪律照旧:只在收盘后 15:00 之后跑、避开日更与报告窗口、跑完 `pgrep -af` 确认无残留 + `reset-failed`、**`load > 4` 立即停手**;`pkill -f` 前先确认 pattern 不匹配自己。
-**⑯-D 晚间管线多段化**:三个 oneshot **串行**、各自 `MemoryMax` —— `neckline-scan.service`(④)/ `neckline-basket.service`(⑤⑥⑦ + 报告)/ `neckline-review.service`(⑨ + ⑫ 周度部分)。**重活一律不进常驻 `neckline.service`**(它与盘中哨兵同进程,`MemoryHigh` 先节流会让进程陷进回收死循环 = 卡死不报错)。`neckline-daily.service`(16:05 拉数)保留;时刻表按 ⑯-C 实测排,总窗口写进 `deploy/` 单元注释。
-**⑯-E 首包激活**:`python scripts/activate_pack.py --file packs/K4-pack.json`(先演练)→ `--confirm`;验 `selection_packs` 现役唯一 + 日志两行。
-**⑯-F Tier 预启动填充(裁定 #4)**:`scripts/oneoff/preseed_baskets.py` —— 读外部准备好的近期若干交易日篮子/Tier/卡(V2 格式)→ **过校验**(JSON Schema + 夹逼 + 成员白名单闸 + 角色对拍)→ **默认演练、`--confirm` 才写、写前双备份**;行标 `baskets.via='preseed'`。**预填数据与自转数据同表同格式**,评价引擎一视同仁打分(`via` 保证日后统计可分层)。
-**⑯-G 域名与割接(D2)**:A 路 = 新机启用新子域(nginx 站点 + certbot 证书 + 定时续期),老机 `ln.linotsai.top` 与 `linon` 遗留物**保持不动**直到用户完成 ⑰ 换包并确认,再由用户决定老机退役与数据归档;B 路见 ⑭-D。
+**⑯-D 晚间管线多段化(📦 单元文件本地可先备料)**:三个 oneshot **串行**、各自 `MemoryMax` —— `neckline-scan.service`(④)/ `neckline-basket.service`(⑤⑥⑦ + 报告)/ `neckline-review.service`(⑨ + ⑫ 周度部分)。**重活一律不进常驻 `neckline.service`**(它与盘中哨兵同进程,`MemoryHigh` 先节流会让进程陷进回收死循环 = 卡死不报错)。`neckline-daily.service`(16:05 拉数)保留;时刻表按 ⑯-C 实测排,总窗口写进 `deploy/` 单元注释。
+**⑯-E 首包激活(📦 脚本与包文件由 ③ 产出,本地已备好)**:`python scripts/activate_pack.py --file packs/K4-pack.json`(先演练)→ `--confirm`;验 `selection_packs` 现役唯一 + 日志两行。
+**⑯-F Tier 预启动填充(裁定 #4;📦 脚本与校验逻辑本地可先备料)**:`scripts/oneoff/preseed_baskets.py` —— 读外部准备好的近期若干交易日篮子/Tier/卡(V2 格式)→ **过校验**(JSON Schema + 夹逼 + 成员白名单闸 + 角色对拍)→ **默认演练、`--confirm` 才写、写前双备份**;行标 `baskets.via='preseed'`。**预填数据与自转数据同表同格式**,评价引擎一视同仁打分(`via` 保证日后统计可分层)。
+**⑯-G 域名与割接(D2 = A 路,已拍板,无备选;📦 nginx 站点模板本地可先备料)**:新机 nginx 站点**只服务 `nk.linotsai.top`** + certbot 证书 + 定时续期。**DNS 的 A 记录由用户自己解析到新机**(§八 第 14 项;builder 只在解析生效后申请证书,`dig nk.linotsai.top` 拿到新机 IP 才是可以往下走的判据)。老机 `ln.linotsai.top` 与 `linon` 遗留物**一律保持不动**(不停机、不改代码、不改解析)直到用户完成 ⑰ 换包并确认,再由用户决定老机退役与数据归档。⚠ **新机 nginx 绝不接管 `ln.linotsai.top`** —— 一旦接管,老 App 就会撞 V2 契约,A 路的前提当场破掉(⑭-D)。
 **⑯-H 部署当次必须留的证据(工程门禁,照既有体例逐项)**:双备份文件名 + 大小 + `integrity=ok` + `.backup` 耗时;`sync_code.sh` dry-run **零删除**;关键文件 **sha256 与本地逐个吻合**;preflight import(`VERSION=v2.0.0` + 路由数 + 去重路径数);迁移后 `integrity_check=ok` + **业务表行数逐表一致** + `is_active` 仍 `v1.3.3`;重启中断秒数 + `NRestarts=0` + journal error 0 条 + `memory.events` 全零 + idle RSS;公网 `/health` = **`v2.0.0`**;三个 oneshot 各自 **`ExecMainStatus=0` 且 `ExecMainStartTimestamp` 是本次那一跑**(⚠ 铁律:`list-timers` 的 LAST 与 `Result=` 都不可信);`~/hz_info.md` 同步更新(新机事实,只写非敏感)。**回滚绳** = 双备份 + 上一版代码态 git 号 + 老机仍在跑。
 
-**依赖**:①–⑮ 全部完工 + 用户已购机。
+**依赖**:①–⑮ **全部完工**(尾声块,不并行穿插)+ 用户已购机 + `nk` 已解析到新机。
 **验收**:⑯-H 逐项证据齐;首包现役唯一;preseed 行 `via='preseed'` 且格式与自转数据同构;三段 oneshot 串行跑通且各自 `ExecMainStatus=0`;公网 `/health` = `v2.0.0`。
 
 ---
@@ -1150,7 +1163,8 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 - **macOS**:旧包先 `ditto` 备份 → **`ditto`**(⛔ 禁 `cp -R`)装 `/Applications/Neckline.app`;验 `CFBundleShortVersionString=2.0.0`、universal、`codesign --verify --deep --strict` valid + Designated Requirement、产物与安装态可执行 sha256 逐字节一致。
 - **iOS**:**用户 Xcode 直连真机安装**(builder 无真机权限),步骤照 §八 第 12 项;若报 `Entitlement aps-environment not found` → 回 §八 第 5 项去 Apple Developer 网页为 `top.linotsai.neckline` 勾 Push。
 - ⛔ **builder 不得自行换包**;⑯ 完成后不自动进入本块。
-- D2 若走 B 路,本块**前移到 ⑯ 割接之前**(⑭-D)。
+- **位置定死在 ⑯ 之后**(D2 = A 路已拍板:老 App 打老机、不会撞 V2 服务端,故换包无需前移)。~~D2 若走 B 路则本块前移~~ **已否决,不适用。**
+- **换包完成并经你确认之后**,老机 `ln.linotsai.top` 才进入退役讨论(退役与 `linon.db` / `neckline.db` 老库归档由你决定,§八 第 8 项)。
 
 ---
 
@@ -1264,7 +1278,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 ### 🔵 P3 · 功能挂账
 
-- **[P3-27] → V2.0.0 第 ⑬-6 块(兑现删除)** · 候选四件套老键与老模板函数的最终删除(v1.5.0 只做退役,没做删除)(2026-07-29 v1.5.0 立项时新立)。**V2 处置**:自选体检是这四个文案函数最后的消费方,而自选池已按裁定 #9 删除 → **无消费方,四函数 + 四个 `CandidateOut` 老键随候选榜一并彻底删除**。⚠ **删除顺序纪律仍在**,由 §五 ⑭-D 承接:走 D2-A 路(新子域、老 App 打老机)时可一次性删;若改走 B 路(沿用老域名)必须先发一版客户端把这四个属性改 `decodeIfPresent` 并完成换包,**下一版**服务端才可删键。原文如下(留痕)。
+- **[P3-27] → V2.0.0 第 ⑬-6 块(兑现删除)** · 候选四件套老键与老模板函数的最终删除(v1.5.0 只做退役,没做删除)(2026-07-29 v1.5.0 立项时新立)。**V2 处置**:自选体检是这四个文案函数最后的消费方,而自选池已按裁定 #9 删除 → **无消费方,四函数 + 四个 `CandidateOut` 老键随候选榜一并彻底删除**。**2026-08-02 用户拍板 D2 = A 路**(新机新子域 `nk.linotsai.top`、老 App 继续打老机)→ **两者不交叉,可直接删,不做过渡文案**(⑭-D)。⚠ **「先客户端可选解码、下版服务端才删键」这条两步淘汰纪律本身仍然有效**(CLAUDE.md 铁律,V2 之后的版本照守),V2 只是靠换机窗口结构性地绕开它。原文如下(留痕)。
   **[P3-27 原文]**v1.5-③-B 把候选卡输出层换成参考三件套后,`CandidateOut.buyPoint/stop/target/invalidation` 四个键**仍在发**(值 = 过渡文案 `LEGACY_FOURPIECE_NOTICE`),`report/candidates.py` 的 `entry_plan_text`/`stop_loss_text`/`target_text`/`invalidation_text` 四个函数**仍在**(自选体检还在消费)。**为什么不能当场删**:已装 v1.4.1 客户端对这四个键是**硬解码**(`client/Models.swift::Candidate.init(from:)` 用 `try c.decode(String.self,…)`,非 `decodeIfPresent`),服务端一旦不发就是整份报告解不出、今日计划全空。**删除条件(两条都满足才动)**:① 双端都已换到 **≥1.5.0**(§八 第 12 项确认);② 自选体检输出层也改完(它是这四个函数最后的消费方)。**怎么删**:先把 Swift 那四个属性改 `decodeIfPresent` + 默认空并发一版,**再**在下一版服务端删键(顺序不能反)。⚠ **`entrySpec`/`invalidationSpec` 永远不在删除范围**——那是盘中哨兵与盘前校准的唯一判据源。**不排期。**
 - **[P3-11] → V2.0.0 第 ⑫ 块(形态改变,部分废弃)** · 打法 × 论点双维归因(原 v1.2.1-D)。**V2 处置**:① **「呼吸 T 净贡献」维彻底废弃**(裁定 #9:呼吸台账删,`breathing_t_trades` 停写留档);② **「论点标签」维退化**为可选标签(决策日志强制表单退役,标签改落 `user_actions`,覆盖率会下降 → 见新挂 **P3-28**);③ 归因的**新载体 = ⑫ 能力画像**(按题材 / 角色 / Tier / 入场方式分维,带样本量与置信度,并新增「是否跑赢同篮未选成员」这一 V1 拿不到的维度)。**本条不再单独排期**,以 ⑫ 为准。原文如下(留痕)。
   **[P3-11 原文]**施工图全文在 `archive/v1.2_v1.2.1_施工图_20260728归档.md` 的 v1.2.1-D 节:决策日志 via `position_id` 与 FIFO RoundTrip 按 `(ts_code, buy_date)` 邻近匹配,按论点 / 打法 / 交叉三维聚合胜率盈亏比 + 呼吸 T 净贡献 + 「无决策日志开仓 N 笔」纪律项。**为什么要紧**:「短线追击 vs 呼吸试验」双打法 A/B 裁决的**唯一归因载体**;需 30–50 笔样本才有意义。⚠ 依赖 P0-1 修好(买入日错 → 归因的持有周期全错;P0-1 → v1.4.0 ①-A)。**归因维度自 v1.4.0 ⑤-B 起 +1**(`decision_log.max_chase_pct` 最高追价上限;v1.4 只落数据不出报表),**自 v1.5.0 ①-E 起再 +1**(`reference_plans` 表 = LLM 参谋成绩单:参考买入 / 离场区间、明早剧本、夹逼结果,可与实际成交价与次日走势对拍;v1.5 同样只落数据不出报表)。**本条仍归 v1.5+**(需 30–50 笔样本)。
@@ -1338,18 +1352,22 @@ CREATE TABLE IF NOT EXISTS llm_providers (
     - **iOS 装机步骤(§五 v1.5-⑤-F 改写;builder 无真机权限,此步骤仍需你亲自操作)**:① 数据线接真机到这台 Mac,解锁并「信任这台电脑」;② Xcode 打开 `client/Neckline.xcodeproj`,顶部 scheme 选 **Neckline**,设备选择器切到你的 iPhone(不是模拟器);③ 签名走 **Automatic**(项目已配 `CODE_SIGN_STYLE: Automatic` + `DEVELOPMENT_TEAM`,无需手动选证书);④ ⌘R 直接跑;⑤ 若报 `Entitlement aps-environment not found`(推送能力未随新 App ID 自动开)→ 回 §八 第 5 项,去 Apple Developer 官网手动为 `top.linotsai.neckline` 勾选 Push Notifications 后重试。
     - **builder 侧已验证的 iOS Release 构建**(`xcodebuild -configuration Release -destination 'generic/platform=iOS' build`,`CFBundleShortVersionString=1.5.0`)是「代码在 Release 配置下能正确编译签名」这道门禁的证据,**不是拿来装机的介质**——那份产物的签名身份/描述文件与你真机直连时 Xcode 现场生成的不一定相同,**装机仍走上面①~④「Xcode 直连真机」这条路**。
     - ⚠ **现状**:iPhone 上还是 v1.4 之前的旧构建 —— v1.4 的信息卡页 / 候选排序理由 / 决策日志第⑨项 / 停牌标注、以及 v1.5 的参考三件套 / 今日计划拆两块(持仓股/候选列表) / 自选派发警示**在 iPhone 上都看不到**;macOS 已是 1.4.1。§八 第 5 项的 App ID + Push 能力若尚未在 Apple Developer 网页勾选,装机前先办掉。**换包后自检**:设置屏底部「App 版本」/「服务端版本」两行(v1.5-⑤-E 起分行展示,取代旧的单行「版本」)应一致,不一致会有一行提示「服务端已是 vX.Y.Z,当前 App 为 y.z,请换包」。**无网页操作(除非踩到上面第⑤条 `aps-environment` 报错)。**
-    - ⚠ **V2.0.0 附注**:V2 是一次性契约换血,**iPhone 上的旧构建在 V2 割接后将完全不可用**(不是"看不到新功能",是解不出数据)。V2 的换包时机 = §五 ⑰(**等你指令**,builder 不得自行换包);若 §五 D2 改走 B 路(沿用老域名),**换包必须前移到割接之前**。
+    - ⚠ **V2.0.0 附注**:V2 是一次性契约换血 —— 但 **D2 = A 路已拍板**(新机挂 `nk.linotsai.top`、老机 `ln.linotsai.top` 原样服务),所以 **V2 上云期间你手机上的旧 App 照常能用**(它还打老机);**换到 V2 需要你装一次新包**,时机 = §五 ⑰(**等你指令**,builder 不得自行换包),换完再谈老机退役。
 
 ### V2.0.0 用户操作清单(2026-08-02 立项新增;git / 部署 / 构建由 agent 自理,不列)
 
+> ⏱ **时机(2026-08-02 用户追加指示)**:**云上组件迁移放在尾声** —— 第 13、14 两项要在 §五 **⑯** 开跑之前办好即可,**不必现在就办**;①–⑮ 是纯本地施工,不依赖它们。你按自己的节奏买机 / 解析,builder 到 ⑯ 之前会先问一句。
+
 13. **🔴(V2,挡 §五 ⑯ 整块)购买新云服务器** —— **裁定 #3:100% 更换,这是部署前置项**,不办则 ⑯ 无法开始(①–⑮ 不受影响,可照常推进)。
-    - **建议规格(§五 D3,可推翻)**:**≥ 4 vCPU / 8 GB 内存 / 100 GB SSD**,Ubuntu 22.04 或 24.04 LTS,地域**杭州**(与现有 `hz` 同区,数据搬家快;也可换区,只是搬家慢一点)。**为什么要这么大**:老机 2 vCPU / 1.6 GB 已经被 P0-23 打爆过一次(全历史 parquet 扫描 700M cap OOM、1400M cap 600s 跑不完),而 V2 新增三张全市场预计算表 + 复盘引擎 + 盘中存拍,晚间管线比 v1.5 重一个量级。
+    - **规格(§五 D3,2026-08-02 已拍板)**:**≥ 4 vCPU / 8 GB 内存 / 100 GB SSD**,Ubuntu 22.04 或 24.04 LTS,地域**杭州**(与现有 `hz` 同区,数据搬家快;也可换区,只是搬家慢一点)。**为什么要这么大**:老机 2 vCPU / 1.6 GB 已经被 P0-23 打爆过一次(全历史 parquet 扫描 700M cap OOM、1400M cap 600s 跑不完),而 V2 新增三张全市场预计算表 + 复盘引擎 + 盘中存拍,晚间管线比 v1.5 重一个量级。
     - **购买页**(用现有账号即可,新开一台,**不要动老机**):`https://ecs.console.aliyun.com/`(阿里云 ECS 控制台 → 创建实例);也可选任意云厂商,只要能 SSH。
     - **办完给我什么**:公网 IP + SSH 登录方式(**口令 / 密钥都行,但绝不要贴进任何被 git 跟踪的文件** —— 直接在对话里给,builder 只写进服务器上的 `~/.ssh` 与本机 config)。
     - ⚠ **老机不要停**:`ln.linotsai.top` 上的 v1.5.2 要一直服务到你完成 ⑰ 双端换包并确认之后,才由你决定退役与数据归档。
-14. **(V2,挡 §五 ⑯-G;走默认 A 路时才需要)加一条子域 DNS 记录** —— 默认方案是**新机启用新子域**(建议 `nk.linotsai.top`),这样老 App 继续打老机、新 App 打新机,**V2 契约可以一次性换血、不必留过渡键**。
-    - **在哪办**:你域名 `linotsai.top` 的 DNS 控制台加一条 **A 记录**:主机记录 `nk` → 记录值 = 第 13 项那台新机的公网 IP,TTL 默认即可。若域名在阿里云:`https://dns.console.aliyun.com/`。证书由 builder 在新机上用 certbot 申请(无需你操作)。
-    - **不想加子域?** 那就走 **B 路**(沿用 `ln.linotsai.top`,割接时把解析 / nginx 切到新机)—— **零 DNS 操作,但代价是**:老 App 会打到 V2 服务端 → **你必须在割接当天之前完成 iOS + macOS 换包**,且服务端老键要多留一版(§五 ⑭-D)。**二选一由你定,一句话即可。**
+14. **🔴(V2,挡 §五 ⑯-G)把 `nk.linotsai.top` 解析到新机** —— **D2 = A 路已拍板(2026-08-02),这一步是必办项,不再是二选一**。你的原话已记录在案:「我本来就要换云服务器,NK 这个域名我会直接把它解析到新的云服务器上」。
+    - **在哪办**:你域名 `linotsai.top` 的 DNS 控制台加一条 **A 记录** —— 主机记录 `nk` → 记录值 = 第 13 项那台新机的公网 IP,TTL 默认即可。若域名在阿里云:`https://dns.console.aliyun.com/`。
+    - **builder 侧接手的部分**(无需你操作):解析生效后申请证书(certbot)+ 配 nginx 站点 + 定时续期;判据 = `dig nk.linotsai.top` 已返回新机 IP。
+    - ⚠ **两条边界**:① **新机 nginx 绝不接管 `ln.linotsai.top`** —— 老 App 必须继续打老机,这是「V2 契约一次性换血、不留过渡键」成立的唯一前提;② **老机的解析在 ⑰ 换包完成前一律不动**。
+    - ~~备选 B 路(沿用 `ln.linotsai.top`,割接时切解析)~~ **已否决,不再列为选项**(§五 ⑭-D)。
 15. **(V2,挡 §五 ② 的活体能力)在 App 设置屏填两条 LLM Provider** —— V2 起是**自填制**(任意 OpenAI 兼容端点),不再是「GLM / Kimi 二选一」。
     - **推理 Agent(建议 DeepSeek)**:key 在 `https://platform.deepseek.com/api_keys`;填 base_url + model + key,**「是否带联网检索」不勾**。
     - **检索 Agent(建议 GLM)**:key 在 `https://open.bigmodel.cn/usercenter/apikeys`;**「是否带联网检索」勾上**。
@@ -1363,6 +1381,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-02 · ✅ **V2.0.0 Plan 用户验收通过 + D1–D8 全部拍板 + 两项追加裁定入档**(@planner,只改文档,零代码改动):① **D1、D3–D8 照 planner 建议默认通过**,§五 清单表由「建议默认、可推翻」改为「**已拍板(2026-08-02 用户)**」;② **D2 = A 路定死** —— 新机挂新子域 **`nk.linotsai.top`**、**DNS 解析是用户动作**(用户原话:「我本来就要换云服务器,NK 这个域名我会直接把它解析到新的云服务器上」),老机 `ln.linotsai.top` 原样服务到 ⑰ 换包完成,**契约一次性换血不留过渡键**;**B 路(沿用 `ln`)全线删除**,⑭-D / ⑯-G / ⑰ / §七 P3-27 / §八 第 12 项五处的 B 路分支已收掉、只留删除线留痕(**不给 builder 留两条路犹豫**),同时写明「两步淘汰纪律本身仍有效,V2 只是靠换机窗口结构性绕开它」+ A 路成立的前提条件(**新机 nginx 绝不接管 `ln`**);③ **云上组件迁移置尾声** —— §五 新增「工序时序纪律」节 + ⑯ 块首改写:**①–⑮ 全部本地推进优先、⑯ 不与前面并行穿插、⑮ 完工前不碰任何服务器**,⑯ 内五项纯本地子项(三个 oneshot 单元 / nginx 模板 / `activate_pack.py`+首包 / `preseed_baskets.py` / 迁移清单)标 **📦 本地可先备料**(写好不上机跑,不拆走);§八 第 14 项由「走 A 路时才需要」改为**必办项**并加时机说明(按尾声节奏办、不必现在催)
 - 2026-08-02 · 🏗️ **V2.0.0 立项**(@planner,只改文档,零代码 / 零数据库 / 零部署)· 架构设计稿全文转写进 PROJECT_PLAN,**架构稿即刻转历史档案**(`archive/V2架构设计稿_20260731_20260802立项归档.md`),防双权威。**§五 = V2.0.0 详版施工图 17 块**:① 表与共享信息层地基(**20 张新表**一次到位 + 冻结/追加/不回写三律守门)② LLM Provider 自填制 + 双 Agent 路由 + 预算三本账 ③ 选股策略包机制(`selection_packs` + 原语白名单 + `engine_api_version` + 四道闸 + 首包 K4-pack)④ 市场扫描层三张预计算表 + 驱动种子 ⑤ 驱动聚合层(LLM + 成员白名单闸 + 角色对拍闸)⑥ Tier 分层引擎 ⑦ 篮子卡冻结 ⑧ D+1 验证(关注池改造 + 盘中存拍 + 状态机)⑨ 盘后复盘 + 评价引擎 ⑩ 极简台账 + 计划继承 + 决策日志表单退役 ⑪ 监控 80/15/5 + 通知三级 + NL 提醒 ⑫ 对账与画像 ⑬ V1 清理十三项 ⑭ 篮子日报 + 契约总装 + 三方对拍 ⑮ 客户端双端改版 ⑯ 新服务器 + 管线多段化 + 割接 + 首包激活 + Tier 预填充 ⑰ 双端换包(等用户指令)。**§二 新增 §2.8 语义换血总表**(篮子取代单票候选 / Tier 取代排序 / 三级取代六类推送 / 自动快照取代强制表单;**历史拍板一条不删**;**§2.8-C 重新表述第〇原则四锁** —— 「不进排序」精确为「不进机械分」、「不进哨兵」精确为「LLM 文本不进判据 + 关注池是注意力分配非判定」);**§三 新增 §3.10 V2 技术选型增补**;§一 新增 1.5 V2 定位。**§七 Backlog 逐条处置**:吸收 P1-5/P1-8/P3-11/P3-15/P3-27,废弃 P4-16(换机后 800M 数字作废),新挂 P3-28(归因标签稀疏)/ P3-29(检索单点)/ P4-30(初期分时残缺)/ P4-31(停写留档表清理),新立「选股策略包门禁」长期机制。**§八 新增 V2 用户操作四项**(购新机 / 子域 DNS / 填两条 Provider / 分时外源可选),第 9 项同花顺 txt 作废。**planner 补位三张表并如实登记理由**:`llm_providers`(`app_settings` 是单行表装不下注册表)、`entry_snapshots`(决策日志表单退役需要落点,`decision_log` 的 NOT NULL 列无法就地放宽)、`selection_pack_activation_log`(§12.4 要激活日志但未给表名)。v1.5 施工图全文 + v1.5.2 收官快照 → `archive/v1.5_施工图_20260802归档.md`
 - 2026-08-02 · 📐 **选股策略包机制定稿入档**(用户批准,`V2架构设计.md` 新增 §十二):声明式配置包(非代码插件)、包只管①种子规则+③Tier权重、原语白名单+`engine_api_version` 兼容校验、新表 `selection_packs`(append-only 单现役,激活复刻四道闸体例)、按包版本归因、K 字头版本、初版把现成选股代码整理成首包灌入。纯文档,零代码改动
 - 2026-08-02 · 📋 **V2 追加裁定三项入档**(`V2架构设计.md` §〇 #9–11):① V1 清理遗留定案——自选池+同花顺对账**直接删**、呼吸台账**删**、五常驻保底删除**确认**;② V2 不设「首战核验/待验」类条目,验证归用户,施工线只交付 APP;③ 选股板块预留**可轮替策略包插槽**(策略线打包交付、系统线校验激活,机制设计讨论中)。纯文档,零代码改动
