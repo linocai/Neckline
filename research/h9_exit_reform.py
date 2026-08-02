@@ -30,10 +30,14 @@ import polars as pl
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neckline.backtest.broker import Broker  # noqa: E402
 from neckline.backtest.portfolio import ClosedTrade  # noqa: E402
 from neckline.calendar import trading_days_between  # noqa: E402
 from neckline.data.market_data import scan_table_range  # noqa: E402
+# 判分口径唯一源(plan §五 V2-⑨-D):`_sim_one` / `ReTrade` / `SLIP` / `BROKER`
+# 已**下沉**到 `neckline/eval/exit_sim.py`(生产与研究从此吃同一份,搬迁前后逐位
+# 对拍锁死)。这里再导出,`h9.BROKER` / `h9._sim_one` / `h9.ReTrade` 的既有写法
+# (drill.py / exam.py / 本文件)一字不改地继续工作。
+from neckline.eval.exit_sim import BROKER, SLIP, ReTrade, _sim_one  # noqa: E402,F401
 from neckline.strategy import brain  # noqa: E402
 from neckline.strategy.momentum import MomentumConfig  # noqa: E402
 import lab  # noqa: E402
@@ -42,9 +46,6 @@ RUN_START = date(2021, 1, 1)          # K1 全期起点(与赢家解剖同口径
 FROZEN_END = date(2026, 7, 17)        # 三役冻结窗末端(逐位可比)
 K3_PANEL = Path(__file__).resolve().parent / "_cache" / "k3_panel.parquet"
 INITIAL = lab.INITIAL_CASH            # 12 万
-
-BROKER = Broker()
-SLIP = BROKER.slippage_bp / 10000.0
 
 # 进程内缓存
 _PANEL: Optional[pl.DataFrame] = None
@@ -107,111 +108,6 @@ def _calendar() -> Tuple[list, dict]:
         _CAL = trading_days_between(RUN_START, FROZEN_END)
         _CALIDX = {d: i for i, d in enumerate(_CAL)}
     return _CAL, _CALIDX
-
-
-# ======================================================================
-#  交易重放模拟器(复刻引擎逐日退出口径:止损→回落止盈→时间退出;决策日 close/low
-#  判定;T+1 开盘撮合含滑点;跌停卖不出/停牌顺延。V1/V2/V3 只改退出规则,入场集合
-#  固定 = K1 实际 1288 单——消融口径 clean:同一批入场、不同退出。)
-# ======================================================================
-
-@dataclass
-class ReTrade:
-    """重放后的一次回合(入场沿用原单,退出由模拟器重derive)。"""
-    src: ClosedTrade
-    sell_date: date
-    sell_price: float
-    reason: str          # stop | retrace | time | end
-    exempt: bool         # V1/V3:第5日净浮盈豁免续命
-    held_sessions: int   # 含买卖两端
-
-    @property
-    def ts_code(self) -> str:
-        return self.src.ts_code
-
-    @property
-    def buy_date(self) -> date:
-        return self.src.buy_date
-
-    @property
-    def shares(self) -> int:
-        return self.src.shares
-
-    @property
-    def sell_fees(self) -> float:
-        return BROKER._sell_fees(self.src.shares * self.sell_price)
-
-    @property
-    def pnl(self) -> float:
-        return self.src.shares * (self.sell_price - self.src.buy_price) - self.src.buy_fees - self.sell_fees
-
-    @property
-    def cost_basis(self) -> float:
-        return self.src.shares * self.src.buy_price + self.src.buy_fees
-
-    @property
-    def pnl_pct(self) -> float:
-        cb = self.cost_basis
-        return self.pnl / cb if cb else 0.0
-
-
-def _sim_one(t: ClosedTrade, pm: dict, ld: set, cal: list, cal_idx: dict, *,
-             base_hold: int = 5, retrace: float = 0.05, stop: float = 0.05,
-             v1: bool = False, v2: bool = False, v2_gate: float = 0.08,
-             v2_wide: float = 0.08, hard_cap: int = 15) -> Optional[ReTrade]:
-    p = pm.get(t.ts_code)
-    if p is None or t.buy_date not in cal_idx:
-        return None
-    k0 = cal_idx[t.buy_date]
-    buy_price = t.buy_price
-    peak = buy_price
-    eff_max = base_hold
-    exempt = False
-    pidx = p["idx"]
-    for k in range(k0, len(cal)):
-        d = cal[k]
-        j = pidx.get(d)
-        cl = p["c"][j] if j is not None else None
-        lo = p["l"][j] if j is not None else None
-        if cl is not None and cl > peak:
-            peak = cl
-        if d == t.buy_date:
-            continue                         # 买入当日 T+1 未满,不可卖
-        held = k - k0 + 1                     # == trading_days_between(buy_date, d)(全历日历连续)
-        band = retrace
-        if v2 and peak >= buy_price * (1 + v2_gate):
-            band = v2_wide                    # V2:浮盈达 +8% 后放宽回落带
-        reason: Optional[str] = None
-        if j is not None:                     # 有数据才判止损/回落(停牌日只能时间退出,同引擎)
-            stop_price = buy_price * (1 - stop)
-            if (cl is not None and cl <= stop_price) or (lo is not None and lo <= stop_price):
-                reason = "stop"
-            elif peak > 0 and cl is not None and cl <= peak * (1 - band):
-                reason = "retrace"
-        if reason is None and held >= base_hold:
-            if v1 and held == base_hold and not exempt and eff_max == base_hold:
-                if j is not None:             # 第5日净浮盈 >0(扣双边费)→ 豁免时间退出
-                    sell_fee_est = BROKER._sell_fees(t.shares * cl)
-                    net_float = t.shares * (cl - buy_price) - t.buy_fees - sell_fee_est
-                    if net_float > 0:
-                        exempt = True
-                        eff_max = hard_cap
-                if not exempt:
-                    reason = "time"
-            elif held >= eff_max:
-                reason = "time"
-        if reason:
-            nk = k + 1
-            if nk >= len(cal):                # 数据末端无法 T+1 撮合 → 末日收盘强平(记 end)
-                px = round((cl if cl is not None else buy_price) * (1 - SLIP), 2)
-                return ReTrade(t, d, px, "end", exempt, len(trading_days_between(t.buy_date, d)))
-            nd = cal[nk]
-            nj = pidx.get(nd)
-            if nj is not None and (t.ts_code, nd) not in ld:
-                px = round(p["o"][nj] * (1 - SLIP), 2)
-                return ReTrade(t, nd, px, reason, exempt, len(trading_days_between(t.buy_date, nd)))
-            continue                          # 跌停卖不出/停牌 → 顺延,次日重判(同引擎)
-    return None
 
 
 def replay(trades: Sequence[ClosedTrade], **kw) -> List[ReTrade]:

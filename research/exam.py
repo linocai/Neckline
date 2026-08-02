@@ -46,7 +46,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import drill as d1                      # 取样/信息卡/判分基建(复用,勿改勿抄)  # noqa: E402
-import h9_exit_reform as h9             # _sim_one 判分口径唯一源  # noqa: E402
+import h9_exit_reform as h9             # baseline / replay(H9 回测 runner)  # noqa: E402,F401
+# 判分口径唯一源(plan §五 V2-⑨-D 下沉):现居 `neckline/eval/exit_sim.py`,
+# 生产(⑨)与研究(exam/drill/h9)吃同一份。搬迁前后逐位对拍锁死。
+from neckline.eval.exit_sim import BROKER, _sim_one  # noqa: E402
 import k4_assembly                      # build_features / add_rule_masks  # noqa: E402
 from neckline.backtest.portfolio import ClosedTrade  # noqa: E402
 from exam_html import render_html       # 身份无关渲染层  # noqa: E402
@@ -576,7 +579,7 @@ def cmd_render(args: argparse.Namespace) -> None:
 
 
 # ======================================================================
-#  score:竞价成交层(§九)→ h9._sim_one(零改动)
+#  score:竞价成交层(§九)→ _sim_one(零改动)
 # ======================================================================
 
 def _exit_label(u: dict) -> str:
@@ -617,11 +620,11 @@ def _sim_entry(code: str, d: date, buyable: bool, pm: dict, ld: set, cal: list,
     shares = int(d1.NOTIONAL // buy_price // 100) * 100
     if shares < 100:
         shares = 100
-    buy_fees = h9.BROKER._buy_fees(shares * buy_price)
+    buy_fees = BROKER._buy_fees(shares * buy_price)
     t = ClosedTrade(ts_code=code, buy_date=t1, sell_date=t1, shares=shares,
                     buy_price=buy_price, sell_price=buy_price, buy_fees=buy_fees,
                     sell_fees=0.0, reason="")
-    rt = h9._sim_one(t, pm, ld, cal, cal_idx, **d1.SCORE_KW)
+    rt = _sim_one(t, pm, ld, cal, cal_idx, **d1.SCORE_KW)
     if rt is None:
         return {**base, "filled": True, "fill_reason": "价缺失(诚实记 0)"}
     return {"filled": True, "fill_reason": f"成交(开盘 {gap:+.2f}%)",

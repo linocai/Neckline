@@ -57,7 +57,12 @@ from neckline.research.panel import base_universe_expr  # noqa: E402
 from neckline.backtest.portfolio import ClosedTrade  # noqa: E402
 from k4p_common import base_expr, oneword_event_expr  # noqa: E402
 import k4_assembly  # build_features / add_rule_masks / 规则常量  # noqa: E402
-import h9_exit_reform as h9  # _sim_one / ReTrade / SLIP / BROKER(判分口径唯一源)  # noqa: E402
+import h9_exit_reform as h9  # baseline / replay / panel(H9 回测 runner)  # noqa: E402
+# 判分口径唯一源(plan §五 V2-⑨-D 下沉):`_sim_one` / `ReTrade` / `SLIP` / `BROKER`
+# 现居 `neckline/eval/exit_sim.py`,生产(⑨ 复盘/评价引擎)与研究(drill/exam/h9)
+# 从此吃**同一份**。搬迁前后逐位对拍锁死,见 `tests/test_eval_exit_sim.py`。
+from neckline.eval.exit_sim import BROKER, _sim_one  # noqa: E402
+from neckline.eval.exit_sim import SLIP as _SLIP  # noqa: E402
 
 # ======================================================================
 #  路径 / 常量
@@ -79,7 +84,7 @@ NOTIONAL = 40000.0       # 判分建仓名义额(pnl_pct 对名义额近乎不�
 
 # 现役纪律新规(判分参数,与 STRATEGY_LAB §六一致)
 SCORE_KW = dict(base_hold=5, retrace=0.08, stop=0.05, v1=True, hard_cap=15)
-SLIP = h9.SLIP
+SLIP = _SLIP
 
 # 行业 → 5 大类(纯匿名化展示层;未识别 → 综合类)。覆盖 stock_basic 现有 110 行业。
 INDUSTRY_MACRO: Dict[str, str] = {}
@@ -555,11 +560,11 @@ def _score_pick(code: str, d: date, buyable: bool, pm: dict, ld: set, cal: list,
     shares = int(NOTIONAL // buy_price // 100) * 100
     if shares < 100:
         shares = 100
-    buy_fees = h9.BROKER._buy_fees(shares * buy_price)
+    buy_fees = BROKER._buy_fees(shares * buy_price)
     t = ClosedTrade(ts_code=code, buy_date=t1, sell_date=t1, shares=shares,
                     buy_price=buy_price, sell_price=buy_price, buy_fees=buy_fees,
                     sell_fees=0.0, reason="")
-    rt = h9._sim_one(t, pm, ld, cal, cal_idx, **SCORE_KW)
+    rt = _sim_one(t, pm, ld, cal, cal_idx, **SCORE_KW)
     if rt is None:                       # 取不到价(极少)→ 诚实记 0
         return {"buyable": True, "ret": 0.0, "reason": "价缺失", "hold": 0,
                 "exempt": False, "exit_t": None}
@@ -740,7 +745,7 @@ def cmd_selfcheck(_args: argparse.Namespace) -> None:
             continue
         tt.buy_price = round(pm[t.ts_code]["o"][pidx[t.buy_date]] * (1 + SLIP), 2)
         tt.sell_price = tt.buy_price
-        mine = h9._sim_one(tt, pm, ld, cal, cal_idx, **SCORE_KW)
+        mine = _sim_one(tt, pm, ld, cal, cal_idx, **SCORE_KW)
         if mine is None:
             continue
         n_cmp += 1
