@@ -13,11 +13,14 @@ from typing import Any, Dict, List
 import httpx
 import pytest
 
-from neckline.config import Settings
+from neckline import settings_store
+from neckline.db import init_schema
 from neckline.llm.base import ChatMessage
 from neckline.llm.factory import get_provider
+from neckline.llm.openai_compat import OpenAICompatProvider
 from neckline.llm.providers.glm import GLMProvider
 from neckline.llm.providers.kimi import KimiProvider
+from neckline.llm.router import TASK_BASKET_REASON, TASK_DRIVER_SEARCH
 
 
 def _openai_success_body(content: str, model: str = "glm-5.2") -> Dict[str, Any]:
@@ -41,37 +44,83 @@ class TestChatMessageWireFormat:
 
 
 class TestFactory:
-    def _settings(self, provider, key) -> Settings:
-        return Settings(tushare_token=None, llm_provider=provider, llm_api_key=key)
+    """V2-②(plan §五 V2-②/§3.10-B):`_PROVIDERS` 枚举退役,`get_provider()` 改为
+    纯 DB 驱动(`llm_providers` 表自填制 + `app_settings.llm_task_routes`/
+    `llm_default_provider` 路由)。原先基于 `.env`/`Settings(llm_provider=...)`
+    的用例整批改写——V2 起不存在"单 provider 的 .env 兜底"这个概念,`settings_obj`
+    参数只为兼容既有调用方签名保留,不驱动任何解析逻辑(见 `factory.py` 模块头)。
+    """
 
-    def test_no_provider_configured_returns_none(self):
-        assert get_provider(self._settings(None, None)) is None
+    def _db(self, tmp_path):
+        db_path = tmp_path / "n.db"
+        init_schema(db_path)
+        return db_path
 
-    def test_provider_without_key_returns_none(self):
-        assert get_provider(self._settings("glm", None)) is None
+    def test_no_provider_configured_returns_none(self, tmp_path):
+        assert get_provider(db_path=self._db(tmp_path)) is None
 
-    def test_key_without_provider_name_returns_none(self):
-        assert get_provider(self._settings(None, "sk-xxx")) is None
+    def test_route_to_nonexistent_provider_name_returns_none(self, tmp_path):
+        """路由永远优先(即便指向的名字当前不存在)——不悄悄跳过到默认值,见
+        `router.resolve_task_provider_name` 文档。"""
+        db = self._db(tmp_path)
+        settings_store.set_llm_routes({"inquiry": "ghost"}, None, db_path=db)
+        assert get_provider("inquiry", db_path=db) is None
 
-    def test_unknown_provider_name_returns_none(self):
-        assert get_provider(self._settings("deepseek", "sk-xxx")) is None
+    def test_default_provider_without_key_returns_none(self, tmp_path):
+        db = self._db(tmp_path)
+        settings_store.create_provider("glm", "https://x", "glm-5.2", db_path=db)  # 未填 key
+        settings_store.set_llm_routes({}, "glm", db_path=db)
+        assert get_provider(db_path=db) is None
 
-    def test_glm_provider_selected_case_insensitive(self):
-        p = get_provider(self._settings("GLM", "sk-xxx"))
-        assert isinstance(p, GLMProvider)
-        assert p.model == "glm-5.2"
+    def test_disabled_provider_returns_none_even_with_key(self, tmp_path):
+        db = self._db(tmp_path)
+        settings_store.create_provider(
+            "glm", "https://x", "glm-5.2", api_key="sk-xxx", enabled=False, db_path=db,
+        )
+        settings_store.set_llm_routes({}, "glm", db_path=db)
+        assert get_provider(db_path=db) is None
 
-    def test_kimi_provider_selected(self):
-        p = get_provider(self._settings("kimi", "sk-yyy"))
-        assert isinstance(p, KimiProvider)
-        assert p.model == "kimi-k3"
+    def test_explicit_route_builds_generic_openai_compat_provider(self, tmp_path):
+        """自填制:任意名字(不要求是"glm"/"kimi")、任意端点都能配成可用 provider,
+        构造出来的是裸 `OpenAICompatProvider`,不是 `GLMProvider`/`KimiProvider`
+        ——这两个具体类不再是解析链路的一部分(见 `factory.py` 模块头)。"""
+        db = self._db(tmp_path)
+        settings_store.create_provider(
+            "my-custom-glm", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-5.2",
+            api_key="sk-xxx", has_web_search=True, search_engine="search_pro", db_path=db,
+        )
+        settings_store.set_llm_routes({"inquiry": "my-custom-glm"}, None, db_path=db)
+        p = get_provider("inquiry", db_path=db)
+        assert type(p) is OpenAICompatProvider  # 不是 GLMProvider/KimiProvider 子类
+        assert p.name == "my-custom-glm" and p.model == "glm-5.2"
+        assert p.has_web_search is True and p.search_engine == "search_pro"
 
-    def test_current_env_has_no_llm_key_get_provider_is_none(self):
-        """本项目现状(.env 只有 TUSHARE_TOKEN)下,真实 settings 必须解析为 None——
-        这是阶段2 铁律"全链路必须在无 key 下优雅降级跑通"的直接断言。"""
-        from neckline.config import settings as real_settings
+    def test_search_task_without_route_falls_back_to_has_web_search_provider(self, tmp_path):
+        """默认路由(§3.10-B):检索类任务缺路由 → 挑一个 has_web_search 的启用行,
+        不是无脑用 `llm_default_provider`(那一行可能是纯推理 provider)。"""
+        db = self._db(tmp_path)
+        settings_store.create_provider("deepseek", "https://api.deepseek.com/x", "deepseek-chat",
+                                        api_key="k1", db_path=db)
+        settings_store.create_provider("glm", "https://open.bigmodel.cn/x", "glm-5.2", api_key="k2",
+                                        has_web_search=True, search_engine="search_pro", db_path=db)
+        settings_store.set_llm_routes({}, "deepseek", db_path=db)
+        p = get_provider(TASK_DRIVER_SEARCH, db_path=db)
+        assert p is not None and p.name == "glm"
 
-        assert get_provider(real_settings) is None
+    def test_non_search_task_without_route_falls_back_to_default_provider(self, tmp_path):
+        db = self._db(tmp_path)
+        settings_store.create_provider("deepseek", "https://api.deepseek.com/x", "deepseek-chat",
+                                        api_key="k1", db_path=db)
+        settings_store.set_llm_routes({}, "deepseek", db_path=db)
+        p = get_provider(TASK_BASKET_REASON, db_path=db)
+        assert p is not None and p.name == "deepseek"
+
+    def test_fresh_isolated_db_has_no_configured_provider(self, tmp_path):
+        """替代 V1"真实 `.env` 现状必解析为 None"的断言:V2 起没有 `.env` 单
+        provider 兜底这个概念,`get_provider()` 完全由 DB 驱动——一份全新/空库
+        天然等价于旧断言想验证的"当前无可用 LLM"现状(§2.0/§3.8「全链路必须在
+        无 key 下优雅降级跑通」)。"""
+        assert get_provider(db_path=self._db(tmp_path)) is None
 
 
 class TestOpenAICompatSharedDegradation:
@@ -391,3 +440,69 @@ class TestKimiToolCallRoundTrip:
         assert "结论:否决" in result.content
         assert len(result.search_hits) == 1
         assert result.search_hits[0].raw == {"query": "示例股份 公告"}
+
+
+class TestGenericOpenAICompatProviderSearch:
+    """V2-②(plan §3.10-B):裸 `OpenAICompatProvider`(自填制 provider 的构造目标,
+    非 `GLMProvider`/`KimiProvider` 具体子类)的通用搜索钩子。`has_web_search=0`
+    时**一律不发 `tools`/`search_query`**(锁死,§3.10-B 铁律 + v1.3.4 案底)。"""
+
+    def _provider(self, **kwargs) -> OpenAICompatProvider:
+        kwargs.setdefault("api_key", "sk-xxx")
+        kwargs.setdefault("model", "generic-model")
+        kwargs.setdefault("name", "custom")
+        kwargs.setdefault("api_url", "https://example.invalid/chat/completions")
+        return OpenAICompatProvider(**kwargs)
+
+    def test_has_web_search_false_search_tools_returns_none(self):
+        p = self._provider(has_web_search=False)
+        assert p._search_tools() is None
+        assert p._search_tools("随便什么检索词") is None
+
+    def test_has_web_search_false_payload_never_contains_tools_or_search_query(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert "tools" not in body
+            assert "search_query" not in json.dumps(body)
+            return httpx.Response(200, json=_openai_success_body("ok", model="generic-model"))
+
+        p = self._provider(has_web_search=False)
+        r = p.chat(
+            [ChatMessage(role="user", content="hi")], search_query="不该出现",
+            transport=httpx.MockTransport(handler),
+        )
+        assert r.ok and r.search_engine is None
+
+    def test_has_web_search_true_uses_generic_web_search_tool_shape(self):
+        p = self._provider(has_web_search=True, search_engine="search_pro")
+        tools = p._search_tools("康龙化成 业绩")
+        assert tools == [{
+            "type": "web_search",
+            "web_search": {
+                "enable": "True", "search_engine": "search_pro", "search_result": "True",
+                "count": "5", "search_query": "康龙化成 业绩",
+            },
+        }]
+
+    def test_has_web_search_true_extracts_top_level_hits_same_shape_as_glm(self):
+        body = _openai_success_body("综述...", model="generic-model")
+        body["web_search"] = [{"title": "t1", "link": "https://a.com", "content": "c1"}]
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=body))
+        p = self._provider(has_web_search=True, search_engine="search_pro")
+        r = p.chat([ChatMessage(role="user", content="hi")], transport=transport)
+        assert r.ok and len(r.search_hits) == 1 and r.search_hits[0].title == "t1"
+        assert r.search_engine == "search_pro"
+
+    def test_constructor_overrides_are_optional_and_do_not_affect_glm_kimi(self):
+        """新增的四个可选构造参数(`name`/`api_url`/`has_web_search`/
+        `search_engine`)不传时,既有 `GLMProvider(api_key=...)`/
+        `KimiProvider(api_key=...)` 调用方式逐字节不变。"""
+        g = GLMProvider(api_key="sk-xxx")
+        assert g.has_web_search is False and g.search_engine is None  # 基类默认值
+        assert g._search_tools() == [{  # 但 GLM 自己的覆盖不读这两个属性,行为不变
+            "type": "web_search",
+            "web_search": {"enable": "True", "search_engine": "search_pro",
+                            "search_result": "True", "count": "5"},
+        }]
+        k = KimiProvider(api_key="sk-xxx")
+        assert k._search_tools() == [{"type": "builtin_function", "function": {"name": "$web_search"}}]

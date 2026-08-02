@@ -291,6 +291,26 @@
   `PYTHONHASHSEED` 一变分组就漂,历史报告不可复现);轮转靠**纯日期函数**
   (`toordinal()` 奇偶)而不是库里的计数器(计数器会被"重跑一次报告"推进一格)。
 
+## LLM Provider 自填制(V2-②定案,碰 `neckline/llm/` 前必读)
+
+- **`GLMProvider`/`KimiProvider` 降级为预置参考实现,不删、行为逐字节不变**:
+  `llm/factory.py::get_provider(task, ...)` 永远构造裸 `OpenAICompatProvider`
+  (按 `llm_providers` 行的 base_url/model/has_web_search/search_engine 建),
+  不再 import 这两个具体类——新代码别指望 `get_provider()` 返回它们的实例,它们
+  只服务于既有单测"要一个真实可用 provider 测试替身"这一用途。
+- **通用搜索钩子协议 = 照抄 GLM 的 `web_search` 形状**(项目唯一有文档验证过的
+  联网搜索协议),`has_web_search=0` 时 `OpenAICompatProvider._search_tools`
+  直接返回 `None`、不发 `tools`/`search_query`。Kimi 的工具调用回合协议**不可
+  泛化**——自填一个 Kimi 式端点却勾 `has_web_search=1` 会发错协议,这是登记过的
+  已知代价、不是 bug,别去"修"。
+- **"两段式流水"(检索 Agent 出证据 → 喂推理 Agent)编排逻辑不住在 `llm/` 包里**:
+  `evidence_status`(`ok|search_unavailable|partial`)是 `baskets` 表的列,单侧
+  故障的诚实披露只能在产生篮子的那一层(V2-⑤ 驱动聚合层)写;`llm/router.py`/
+  `llm/budget.py` 只提供路由与预算原语,别在这两个文件里找编排代码。
+- **`news_scan.py` 消息面扫描链路缺 `prompt_context` 日期锚**(V2-② 核实全仓
+  LLM 调用点时发现,晚于 07-30 三链路修复才引入、当时漏排查到)——已挂账未修,
+  改之前先读 `judge.py`/`api/inquiry.py` 的既有接线方式,不要另起一套。
+
 ## 双会话架构(2026-07-25 起,冷启动必读)
 
 - **本项目双权威文件、双会话分工**:系统线(APP 建设办公室,v 字头版本)权威 =

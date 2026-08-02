@@ -685,16 +685,79 @@ class PushSettingsOut(BaseModel):
     holdingAlert: bool # v1.3-②:K4 持仓派发警报推送开关(第六类,默认开)
 
 
+class SettingsProviderOut(BaseModel):
+    """`GET /settings` 内嵌的精简 Provider 视图(plan §五 V2-② 契约变更原文字段集
+    ——比专门的 `GET /settings/providers`〔`ProviderOut`〕少 `baseUrl`/
+    `searchEngine`/`notes`,只给设置屏首屏摘要够用的五个字段)。"""
+    name: str
+    model: str
+    hasWebSearch: bool
+    keySet: bool                                  # 只回布尔,绝不回 key 明文
+    enabled: bool
+
+
 class SettingsOut(BaseModel):
-    llmProvider: Optional[str] = None
-    llmKeySet: bool = False                       # 只回布尔,绝不回 key 明文
+    """V2-②起:`llmProvider`/`llmKeySet` 两字段由 `providers`/`routes` 取代
+    (plan §五 V2-②「契约变更」)。"""
+    providers: List[SettingsProviderOut] = Field(default_factory=list)
+    routes: Dict[str, str] = Field(default_factory=dict)   # {任务名: provider 名}
     push: PushSettingsOut
     reviewColMap: Dict[str, str] = Field(default_factory=dict)   # 4D 周复盘交割单列映射
 
 
-class SettingsLLMIn(BaseModel):
-    provider: Literal["glm", "kimi"]
-    apiKey: str
+# —— V2-② LLM Provider 注册表(自填制,plan §3.10-B)——————————————————————
+
+class ProviderOut(BaseModel):
+    """LLM Provider 安全视图:**绝不含 `api_key`**,只回 `keySet` 布尔。"""
+    name: str
+    baseUrl: str
+    model: str
+    hasWebSearch: bool
+    searchEngine: Optional[str] = None
+    notes: Optional[str] = None
+    enabled: bool
+    keySet: bool
+
+
+class ProvidersListOut(BaseModel):
+    items: List[ProviderOut] = Field(default_factory=list)
+
+
+class ProviderCreateIn(BaseModel):
+    """POST 请求体(新建)。`name` 已存在 → 409(须显式走 PUT 更新,防误覆盖)。"""
+    name: str = Field(min_length=1)
+    baseUrl: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    apiKey: Optional[str] = None
+    hasWebSearch: bool = False
+    searchEngine: Optional[str] = None
+    notes: Optional[str] = None
+    enabled: bool = True
+
+
+class ProviderUpdateIn(BaseModel):
+    """PUT 请求体(局部更新):未出现的字段不改(`model_fields_set` 判据,同
+    `_extract_max_chase_pct_or_400` 先例);出现且为空串的 `apiKey`/`searchEngine`/
+    `notes` 视为显式清空(同既有 `settings_store._clean()` 纪律)。"""
+    baseUrl: Optional[str] = None
+    model: Optional[str] = None
+    apiKey: Optional[str] = None
+    hasWebSearch: Optional[bool] = None
+    searchEngine: Optional[str] = None
+    notes: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class LLMRoutesOut(BaseModel):
+    routes: Dict[str, str] = Field(default_factory=dict)
+    defaultProvider: Optional[str] = None
+
+
+class LLMRoutesIn(BaseModel):
+    """PUT 请求体:全量覆盖式写(同 `SettingsPushIn` 六字段必填风格,调用方须传
+    完整状态)。`routes` 的键须落在 `neckline.llm.router.ALL_TASKS`,否则 422。"""
+    routes: Dict[str, str] = Field(default_factory=dict)
+    defaultProvider: Optional[str] = None
 
 
 class SettingsPushIn(BaseModel):
@@ -1013,7 +1076,9 @@ __all__ = [
     "WatchlistItemOut", "WatchlistOut", "WatchlistAddIn", "WatchlistAddOut", "WatchlistPinIn",
     "ThsReconcileOut", "ThsExportOut",
     "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_ANALYZED", "VERDICT_ANALYZED_WARN",
-    "PushSettingsOut", "SettingsOut", "SettingsLLMIn", "SettingsPushIn", "DeviceRegisterIn",
+    "PushSettingsOut", "SettingsOut", "SettingsProviderOut", "SettingsPushIn", "DeviceRegisterIn",
+    "ProviderOut", "ProvidersListOut", "ProviderCreateIn", "ProviderUpdateIn",
+    "LLMRoutesOut", "LLMRoutesIn",
     "SettingsReviewColMapIn", "IntelWatchBoardsOut", "IntelWatchBoardsIn",
     "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
     "ContingencyScenarioIn", "ContingencyScenarioOut",

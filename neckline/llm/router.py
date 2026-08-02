@@ -1,0 +1,107 @@
+"""任务 → Provider 路由(plan §五 V2-② / §3.10-B)。**任务常量单一源**——新增任何
+消费某个 LLM 任务的模块,一律从本文件 import 任务常量,不许各处散抄字符串字面量。
+
+默认双 Agent 分工(裁定 #2):检索类任务缺显式路由时,优先落到「带联网搜索能力
+且已启用」的 provider;其余任务缺显式路由时回退 `app_settings.llm_default_provider`
+(用户预期填一个纯推理 provider,如 DeepSeek,但本模块不强制校验这一点——自填制
+下"谁是推理 provider"是配置事实,不是代码断言)。
+
+本模块**不碰 DB / 不做 I/O**——`resolve_task_provider_name()` 是纯函数,输入已经
+是调用方(`neckline.llm.factory`)查好的 `routes`/`default_provider`/`rows`,方便
+不建库直接单测四态解析逻辑。**不 import `neckline.settings_store`**(避免与
+`settings_store.set_llm_routes` 反向 import 本模块的 `ALL_TASKS` 校验形成循环)。
+"""
+
+from __future__ import annotations
+
+from typing import Dict, Optional, Protocol, Sequence
+
+# —— 任务常量(plan §五 V2-② 原文九项,逐字对应)——————————————————————————
+TASK_DRIVER_SEARCH = "driver_search"    # 驱动证据检索(①市场扫描→②聚合层用)
+TASK_NEWS_SCAN = "news_scan"            # 消息面扫描(立案/暴雷/监管三类)
+TASK_BASKET_REASON = "basket_reason"    # 篮子逻辑与角色比较(②聚合层)
+TASK_TIER_RANK = "tier_rank"            # 同档排序理由(③Tier 分层引擎)
+TASK_SCRIPT = "script"                  # 明早证伪剧本
+TASK_REVIEW = "review"                  # 盘后复盘解释
+TASK_PROFILE = "profile"                # 画像总结
+TASK_INQUIRY = "inquiry"                # 问询台
+TASK_NL_ALERT = "nl_alert"              # 自然语言临时提醒解析
+
+ALL_TASKS = (
+    TASK_DRIVER_SEARCH,
+    TASK_NEWS_SCAN,
+    TASK_BASKET_REASON,
+    TASK_TIER_RANK,
+    TASK_SCRIPT,
+    TASK_REVIEW,
+    TASK_PROFILE,
+    TASK_INQUIRY,
+    TASK_NL_ALERT,
+)
+
+# 默认路由的「检索类」集合(plan 原文明确点名 driver_search/news_scan 两项)。
+# ⚠ builder 推断,如实标注:问询台(TASK_INQUIRY)一并收录进检索类——plan §3.10-B
+# 原文只举了两个例子、未列举问询台,但 `api/inquiry.py` 现有实现本就
+# `provider.chat(enable_search=True, ...)`(§2.5「LLM 带工具调用/联网搜索」是问询台
+# 的核心能力之一);若不把它归入检索类,配好双 provider 后问询台会默认拿到无搜索
+# 能力的推理 provider,静默丢失搜索能力——这比"没做"更隐蔽,故按行为保真原则收录。
+# 若与规划意图不符,以 planner 澄清为准,后续可从此元组摘除。
+DEFAULT_SEARCH_TASKS = (TASK_DRIVER_SEARCH, TASK_NEWS_SCAN, TASK_INQUIRY)
+
+
+class ProviderLike(Protocol):
+    """`resolve_task_provider_name` 对 `rows` 元素的最小结构化要求(鸭子类型,
+    刻意不 import `settings_store.ProviderRecord`——避免引入不必要的模块耦合)。"""
+
+    name: str
+    enabled: bool
+    has_web_search: bool
+
+
+def resolve_task_provider_name(
+    task: Optional[str],
+    *,
+    routes: Dict[str, str],
+    default_provider: Optional[str],
+    rows: Sequence[ProviderLike],
+) -> Optional[str]:
+    """决定这个任务该用哪个 provider **名字**。纯函数,不做存在性 / enabled / key
+    校验——那是 `factory.get_provider()` 的下一步(找不到该名字对应的行,或行被
+    禁用/无 key,一律在那一层判「不可用」返回 `None`)。
+
+    优先级:
+    ① **显式路由永远优先**(`routes[task]`)——即便指向的名字当前不存在/被禁用,
+       也原样返回该名字,交给调用方统一走「不可用→None」,**不在这里悄悄跳过到
+       默认值**:路由是用户显式配置,配错了要如实反映成"这个任务不可用",不能被
+       "贴心地"绕过去用别的 provider(那样用户永远发现不了自己配错了)。
+    ② 缺路由 且 `task` 属于 `DEFAULT_SEARCH_TASKS` → 挑 `rows` 中第一个
+       `enabled and has_web_search` 的 provider(调用方需保证 `rows` 是稳定序,
+       如按 `id` 升序,使这一步确定性可复现)。找不到 → 落到③。
+    ③ 回退 `default_provider`(`app_settings.llm_default_provider`)。
+    """
+    if task:
+        routed = routes.get(task)
+        if routed:
+            return routed
+    if task in DEFAULT_SEARCH_TASKS:
+        for row in rows:
+            if row.enabled and row.has_web_search:
+                return row.name
+    return default_provider
+
+
+__all__ = [
+    "TASK_DRIVER_SEARCH",
+    "TASK_NEWS_SCAN",
+    "TASK_BASKET_REASON",
+    "TASK_TIER_RANK",
+    "TASK_SCRIPT",
+    "TASK_REVIEW",
+    "TASK_PROFILE",
+    "TASK_INQUIRY",
+    "TASK_NL_ALERT",
+    "ALL_TASKS",
+    "DEFAULT_SEARCH_TASKS",
+    "ProviderLike",
+    "resolve_task_provider_name",
+]

@@ -1,6 +1,10 @@
-"""LLM 供应商抽象层(plan 2.4/§3.4)。统一 chat + 工具调用 + 联网搜索接口,
-GLM(智谱)/ Kimi(Moonshot)可插拔实现,provider 从 `.env` 的 `LLM_PROVIDER`/
-`LLM_API_KEY` 选(见 `neckline.llm.factory.get_provider`)。
+"""LLM 供应商抽象层(plan 2.4/§3.4;V2-② 起 Provider 自填制,plan §五 V2-②/
+§3.10-B)。统一 chat + 工具调用 + 联网搜索接口。**V2 起 provider 不再是 GLM/Kimi
+枚举**——`llm_providers` 表(任意 OpenAI 兼容端点自填)+ `app_settings.
+llm_task_routes`/`llm_default_provider` 任务路由,由 `neckline.llm.factory.
+get_provider(task, ...)` 解析(见该函数模块头)。`GLMProvider`/`KimiProvider`
+(`providers/glm.py`/`providers/kimi.py`)降级为预置参考实现,不再是解析链路
+的一部分,详见各自模块头。
 
 铁律:缺 provider / 缺 key / 网络异常 / 非法响应 → 优雅降级,绝不抛异常上抛到
 报告管线(`neckline.llm.judge.judge_candidate` 据此输出「LLM 未激活」占位,不假装

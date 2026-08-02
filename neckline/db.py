@@ -197,9 +197,12 @@ CREATE TABLE IF NOT EXISTS sentinel_events (
 CREATE INDEX IF NOT EXISTS idx_sentinel_events_trade_date ON sentinel_events(trade_date);
 
 -- 阶段4 (4A) 应用设置(单行,plan §五 阶段4 / 4A.5)。id 恒为 1(CHECK 约束保证只有一行)。
--- llm_provider/llm_api_key:App 设置屏改的 LLM key/供应商,`get_provider()` 解析优先级
--- DB 覆盖 → `.env` 兜底(§3.4,运行时生效不重启)。**高危区**:key 服务端存取,DB 文件 600、
--- gitignored、rsync 永不同步覆盖(plan 不变量);GET /settings 只回 llmKeySet:bool,绝不回明文。
+-- llm_provider/llm_api_key:**V1 遗留列,V2-② 起停写**(不 DROP,同项目"删表一律
+-- 停写留档"纪律的列级版本)——单 provider 时代的 `resolve_llm`/`set_llm` 已退役,
+-- 被 `llm_providers` 表(任意 OpenAI 兼容端点自填,见该 CREATE TABLE 注释)与本表
+-- 下方 `llm_task_routes`/`llm_default_provider` 两列取代,详见 `neckline/
+-- settings_store.py` 模块头。**高危区**:key 服务端存取,DB 文件 600、gitignored、
+-- rsync 永不同步覆盖(plan 不变量);`GET /settings*` 只回 `keySet: bool`,绝不回明文。
 -- push_report/push_retreat:APNs 两类推送开关(§2.4 拍板,默认开可关)。
 -- review_col_map:周复盘交割单列映射(JSON,4D 用)。
 -- push_precall/push_d5exit:v1.1-A/B 新增两类 APNs 推送开关(盘前校准 9:26 汇总 /
@@ -1003,10 +1006,13 @@ _COLUMN_MIGRATIONS = [
     # 「章程止损/章程回落止盈」文案,不拿今天的章程去追认历史报告(同 search_engine
     # 「记录」≠「推断」的同一条纪律)。生产 v1.5.0 已建过 reference_plans 表,故走补列。
     ("reference_plans", "take_profit_retrace", "REAL"),
-    # V2-①(plan §五 V2-①/②,§3.10-B):LLM 双 Agent 路由。llm_default_provider 缺路由
-    # 时的兜底(`llm_providers.name`);llm_task_routes 是「任务 → provider name」JSON 映射
-    # (`app_settings.llm_task_routes`,非 NULL 默认 '{}' = 未配任何任务级路由,全部退回
-    # 默认 provider)。**本块只建列**,读写解析逻辑留给 V2-②(`neckline/llm/` 路由层)。
+    # V2-①(建列)/V2-②(读写解析逻辑,plan §五 V2-①/②,§3.10-B):LLM 双 Agent 路由。
+    # llm_default_provider 缺路由时的兜底(`llm_providers.name`);llm_task_routes 是
+    # 「任务 → provider name」JSON 映射(`app_settings.llm_task_routes`,非 NULL 默认
+    # '{}' = 未配任何任务级路由,全部退回默认 provider)。读写见
+    # `neckline/settings_store.py::get_llm_routes`/`set_llm_routes`,解析见
+    # `neckline/llm/router.py::resolve_task_provider_name` + `neckline/llm/
+    # factory.py::get_provider`。
     ("app_settings", "llm_default_provider", "TEXT"),
     ("app_settings", "llm_task_routes", "TEXT NOT NULL DEFAULT '{}'"),
 ]

@@ -10,6 +10,17 @@ endpoint / model 名 / `web_search` 工具 schema 均于 2026-07-20 网络核实
 GLM 的联网搜索是"一轮出结果"模式:响应顶层 `web_search` 数组直接带命中网页列表
 (title/link/content/media/publish_date/refer),不像 Kimi 需要工具调用回合——
 本实现的 `_handle_tool_call` 只做防御性占位(正常情况不应被触发)。
+
+**V2-②(plan §3.10-B)起本类降级为"预置参考实现"**:`neckline.llm.factory.
+get_provider()` 不再 import 本类——自填制下任何 provider(含用户自己起名叫
+"glm" 的那一行)都由 `OpenAICompatProvider` 直接按 `llm_providers` 表字段构造。
+本类保留是因为:① 它的四个搜索钩子覆盖是本项目**唯一经过官方文档 + 真 key A/B
+实证核实过**的联网搜索协议实现,`OpenAICompatProvider` 基类的通用默认实现正是
+照它平移的,继续作为该协议的权威参照;② 大量既有单测(`test_llm.py`/
+`test_judge.py`/`test_reference_plan.py`/`test_news_alerts.py`/`test_pipeline.py`
+等)拿它当"一个真实可用 provider"的具体测试替身,行为不应因供应商枚举退役而
+改变。本类的字面量/协议细节与基类的通用默认实现是两份独立代码,互不影响、
+互不同步。
 """
 
 from __future__ import annotations
@@ -25,9 +36,8 @@ class GLMProvider(OpenAICompatProvider):
     default_model = "glm-5.2"
     api_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 
-    # 检索词长度上限(防御性截断,非官方文档明确数字)。截断只影响检索词,不影响
-    # 提问本身——问题全文照样在 messages 里。
-    max_search_query_chars = 78
+    # `max_search_query_chars` 不在此重复声明——V2-② 起该值下沉到
+    # `OpenAICompatProvider` 基类(同为 78,继承即得,见该基类注释)。
 
     # search_engine 取值单一源(v1.5-④-A3,§七 P1-7):`_search_tools` payload 与
     # `_search_engine_value()`(供 `LLMResult.search_engine` 落库、按日捞命中基线)

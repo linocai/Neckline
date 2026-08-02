@@ -12,6 +12,14 @@ Kimi 的联网搜索走标准 OpenAI 工具调用协议,但 `$web_search` 是【
 `tool_call.function.arguments` 原样当作 tool 消息的 content 回传(不需要自己
 实现搜索),再调一次 chat completions 即可拿到基于搜索结果的最终回答。本实现
 把该 arguments 原样存进 `SearchHit.raw`(§2.4「搜索结果全文落 SQLite 存档」)。
+
+**V2-②(plan §3.10-B)起本类降级为"预置参考实现"**:`neckline.llm.factory.
+get_provider()` 不再 import 本类,自填制下的通用 provider 一律走
+`OpenAICompatProvider` 的通用默认实现(该实现协议沿用 GLM 的"服务端一轮出结果"
+形状,与本类的工具调用回合协议不同——两者**不兼容**,这是本类协议本身无法被
+"自填任意端点"泛化吸收的地方,如实登记不当 bug)。本类保留纯粹是为了让既有
+单测(`test_llm.py` 等)继续有一个"内置工具调用回合"协议的具体测试替身,行为
+不受本次改动影响。
 """
 
 from __future__ import annotations

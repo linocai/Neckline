@@ -14,6 +14,17 @@ tool_calls → 原样回传 arguments → 再调一次"的协议性回合(官方
 成功"路径未做过活体验证——拿到 key 后应先跑一次真连烟雾测试(手工脚本,非
 pytest)确认协议假设仍然成立。无 key / 无 provider 路径(§2.4 铁律)已用 MockTransport
 充分覆盖,是当前唯一能验证的路径。
+
+**V2-②(plan §五 V2-②/§3.10-B)起,本类可直接实例化**:`neckline.llm.factory.
+get_provider()` 不再只经由 `GLMProvider`/`KimiProvider` 两个子类构造 provider,
+而是把 `llm_providers` 表的一行(`base_url`/`model`/`api_key`/`has_web_search`/
+`search_engine`)直接喂给本类的构造函数——"自填制"下任意 OpenAI 兼容端点都能
+配成一个可用 provider。为此,`_search_tools`/`_handle_tool_call`/
+`_extract_top_level_search_hits`/`_search_engine_value` 四个原本要求子类必须
+覆盖的钩子,在本类里各自有了一份**通用默认实现**(协议沿用 GLM 的 `web_search`
+工具形状——这是本项目目前唯一有文档验证过的联网搜索协议;`has_web_search=0`
+时这份通用实现直接不发 `tools`,见 `_search_tools`)。`GLMProvider`/`KimiProvider`
+两个子类各自完整覆盖这四个钩子,行为与 V1 逐字节不变,不受本类新增默认实现影响。
 """
 
 from __future__ import annotations
@@ -35,35 +46,112 @@ class OpenAICompatProvider(LLMProvider):
     read_timeout: float = 90.0
     max_attempts: int = 3
     max_tool_rounds: int = 4
+    # V2-②(自填制,§3.10-B):裸实例默认不带搜索能力,由构造函数按 `llm_providers`
+    # 行的 `has_web_search`/`search_engine` 两列覆盖。GLM/Kimi 子类各自完整覆盖了
+    # 四个搜索钩子,不读这两个属性,不受影响。
+    has_web_search: bool = False
+    search_engine: Optional[str] = None
+    # 检索词长度上限(防御性截断,非官方文档明确数字;原为 GLM 专属类属性,V2-②
+    # 起下沉到基类供通用 provider 共享——`GLMProvider` 不再重复声明同一个数字,
+    # 直接继承本值)。截断只影响检索词,不影响提问本身——问题全文照样在 messages 里。
+    max_search_query_chars = 78
 
-    def __init__(self, api_key: Optional[str], model: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        api_key: Optional[str],
+        model: Optional[str] = None,
+        *,
+        name: Optional[str] = None,
+        api_url: Optional[str] = None,
+        has_web_search: Optional[bool] = None,
+        search_engine: Optional[str] = None,
+    ) -> None:
+        """`name`/`api_url`/`has_web_search`/`search_engine` 均为**可选覆盖**
+        (默认 `None` = 不改类属性),故 `GLMProvider(api_key="sk-xxx")`/
+        `KimiProvider(api_key="sk-xxx")` 这类既有调用方式**逐字节不变**——只有
+        `neckline.llm.factory.get_provider()` 拿 `llm_providers` 行构造裸
+        `OpenAICompatProvider` 实例时才会用到这四个新参数。"""
         self.api_key = api_key
         self.model = model or self.default_model
+        if name is not None:
+            self.name = name
+        if api_url is not None:
+            self.api_url = api_url
+        if has_web_search is not None:
+            self.has_web_search = bool(has_web_search)
+        if search_engine is not None:
+            self.search_engine = search_engine
 
-    # —— provider 特有钩子(子类实现)——————————————————————————————
+    # —— provider 特有钩子(子类可覆盖;未覆盖时走下面的通用默认实现)———————
     def _headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {(self.api_key or '').strip()}", "Content-Type": "application/json"}
 
     def _search_tools(self, search_query: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
-        """`search_query=None` 时**必须返回与历史逐字节相同的 payload**(见
-        `tests/test_llm.py::TestSearchQueryOptIn`,那条护栏单测锁死这一点)——
-        v1.3.4 只是给需要的调用点开一个可选入口,不改另外三处的线上行为。"""
-        raise NotImplementedError
+        """通用默认实现(V2-② 新增,仅裸 `OpenAICompatProvider` 实例会走到这里;
+        `GLMProvider`/`KimiProvider` 各自整体覆盖本方法,不受影响)。
+
+        `self.has_web_search=False`(自填 provider 未勾选联网搜索)→ 直接返回
+        `None`,不发 `tools`/`search_query` 两键——**不给上游不认识的参数**
+        (§3.10-B 铁律,v1.3.4 案底:传一个不被认识的取值会 `ok=True` 静默返 0 条,
+        比报错更难查)。
+
+        `self.has_web_search=True` 时协议沿用 GLM 的 `web_search` 工具形状——这是
+        本项目目前唯一有文档验证过、真实跑通过的联网搜索协议,`llm_providers.
+        search_engine` 列的存在就是为了喂这里的 `search_engine` 键。**已知代价
+        (如实登记,不是 bug)**:真正非 GLM 协议的自填端点若也勾了
+        `has_web_search=1`,发过去的这份声明很可能不被对方识别——自填制把"这个
+        端点认不认这份协议"的判断责任交给了配置它的人;识别不了时既有降级链
+        (0 命中告警 / 非 200 / 非法 JSON)照常兜底,不会崩。
+
+        `search_query=None` 时**不改变是否发送该键之外的其余字段**(同
+        `tests/test_llm.py::TestSearchQueryOptIn` 对 GLM 锁的同一条纪律)。
+        """
+        if not self.has_web_search:
+            return None
+        web_search: Dict[str, Any] = {
+            "enable": "True",
+            "search_engine": self.search_engine,
+            "search_result": "True",
+            "count": "5",
+        }
+        if search_query and str(search_query).strip():
+            web_search["search_query"] = str(search_query).strip()[: self.max_search_query_chars]
+        return [{"type": "web_search", "web_search": web_search}]
 
     def _handle_tool_call(self, tool_call: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[SearchHit]]:
-        raise NotImplementedError
+        """通用默认实现:上面的 `_search_tools` 走的是"服务端一轮出结果"协议(同
+        GLM),理论上不会真的收到需要客户端处理的 `tool_call`;防御性占位回复,
+        避免死循环(与 `providers/glm.py::GLMProvider._handle_tool_call` 同一姿势)。"""
+        return {"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": "{}"}, None
 
     def _extract_top_level_search_hits(self, body: Dict[str, Any]) -> List[SearchHit]:
-        return []
+        """通用默认实现:解析顶层 `web_search` 数组(GLM 协议形状)。对 Kimi 这类
+        响应体里从不出现该键的 provider **零行为影响**——`body.get("web_search")`
+        恒 `None`,循环 0 次,返回 `[]`,与 V1 完全一致。"""
+        hits: List[SearchHit] = []
+        for item in body.get("web_search") or []:
+            if not isinstance(item, dict):
+                continue
+            hits.append(
+                SearchHit(
+                    title=str(item.get("title", "")),
+                    link=str(item.get("link", "")),
+                    content=str(item.get("content", "")),
+                    media=str(item.get("media", "")),
+                    publish_date=str(item.get("publish_date", "")),
+                    raw=item,
+                )
+            )
+        return hits
 
     def _search_engine_value(self) -> Optional[str]:
         """本次调用实际使用的搜索引擎标识(v1.5-④-A3,§七 P1-7),供 `chat()` 成功
-        路径塞进 `LLMResult.search_engine`。默认 `None`(该 provider 没有"可选引擎"
-        这个概念,如 Kimi 的内置 `$web_search` 协议层没有引擎参数位)。**需要暴露
-        该值的子类(如 GLM)必须读与 `_search_tools` 相同的单一源常量**,不允许
-        另抄一份字面量——两处任何时候都不可能读到两个不同的值(见
-        `providers/glm.py::_SEARCH_ENGINE`)。"""
-        return None
+        路径塞进 `LLMResult.search_engine`。通用默认实现:`self.has_web_search`
+        为假时恒 `None`(没有引擎可言,不冒充"用了某个引擎");为真时读
+        `self.search_engine`(构造时由 `llm_providers.search_engine` 列喂入)。
+        **需要暴露该值的子类(如 GLM)必须读与 `_search_tools` 相同的单一源常量**,
+        不允许另抄一份字面量(见 `providers/glm.py::_SEARCH_ENGINE`)。"""
+        return self.search_engine if self.has_web_search else None
 
     # —— 共享逻辑 ——————————————————————————————————————————————
     def chat(

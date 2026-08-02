@@ -69,12 +69,18 @@ from neckline.api.schemas import (
     LLMJudgmentOut,
     NewsAlertOut,
     NewsAlertScanStatusOut,
+    LLMRoutesIn,
+    LLMRoutesOut,
     OkOut,
     PositionCloseIn,
     PositionOpenIn,
     PositionOpenOut,
     PositionOut,
     PositionsOut,
+    ProviderCreateIn,
+    ProviderOut,
+    ProviderUpdateIn,
+    ProvidersListOut,
     PushSettingsOut,
     ReferencePlanBuyOut,
     ReferencePlanExitOut,
@@ -84,8 +90,8 @@ from neckline.api.schemas import (
     ReviewGetOut,
     ReviewUploadOut,
     ScenarioOutcomeIn,
-    SettingsLLMIn,
     SettingsOut,
+    SettingsProviderOut,
     SettingsPushIn,
     SettingsReviewColMapIn,
     ThsExportOut,
@@ -103,18 +109,24 @@ from neckline.api.stores import get_inquiry_log, list_inquiry_logs, upsert_devic
 from neckline.calendar import is_trading_day, prev_trading_day
 from neckline.config import ensure_data_dirs
 from neckline.llm.factory import get_provider
+from neckline.llm.router import TASK_INQUIRY
 from neckline.report import store as report_store
 from neckline.sentinel import circuit as circuit_store
 from neckline.sentinel import dedup
 from neckline.sentinel import positions as pos_store
 from neckline.sentinel.intraday import is_intraday_now
 from neckline.settings_store import (
+    create_provider,
+    delete_provider,
     get_app_settings,
     get_intel_watch_boards,
+    get_llm_routes,
+    list_providers_public,
     set_intel_watch_boards,
-    set_llm,
+    set_llm_routes,
     set_push,
     set_review_col_map,
+    update_provider,
 )
 
 logger = logging.getLogger(__name__)
@@ -1387,7 +1399,7 @@ def inquiry(body: InquiryIn) -> InquiryOut:
     (刻意不做枚举强校验/输出后处理);真正的护栏是 §3.8「系统永不下单」。缺 key → 确定性
     材料照给、LLM 段占位降级,不崩。**v1.4-⑦-B**:`run_inquiry` 内部旁路把本次问答落进
     `inquiry_log`(失败不影响本次回答),`inquiryId` 原样透传(落库失败时为 `None`)。"""
-    provider = (_PROVIDER_FN or (lambda dbp: get_provider(db_path=dbp)))(_db())
+    provider = (_PROVIDER_FN or (lambda dbp: get_provider(TASK_INQUIRY, db_path=dbp)))(_db())
     quotes_fn = _QUOTES_FN
     if quotes_fn is None:
         from neckline.sentinel.quotes import get_quotes
@@ -1430,11 +1442,20 @@ def inquiry_detail(inquiry_id: int) -> InquiryLogOut:
 
 @app.get(f"{API_PREFIX}/settings", dependencies=[Depends(require_token)])
 def get_settings() -> SettingsOut:
-    """读设置(不回 key 明文,只回 llmKeySet:bool)。"""
+    """读设置(不回 key 明文,只回 keySet:bool)。V2-② 起 `providers`/`routes` 取代
+    V1 的 `llmProvider`/`llmKeySet`(plan §五 V2-②「契约变更」)。"""
     st = get_app_settings(db_path=_db())
+    routes, _default_provider = get_llm_routes(db_path=_db())
+    providers = [
+        SettingsProviderOut(
+            name=p.name, model=p.model, hasWebSearch=p.has_web_search,
+            keySet=p.key_set, enabled=p.enabled,
+        )
+        for p in list_providers_public(db_path=_db())
+    ]
     return SettingsOut(
-        llmProvider=st.llm_provider,
-        llmKeySet=st.llm_key_set,
+        providers=providers,
+        routes=routes,
         push=PushSettingsOut(
             report=st.push_report, retreatBrake=st.push_retreat,
             precall=st.push_precall, d5exit=st.push_d5exit, circuit=st.push_circuit,
@@ -1444,12 +1465,99 @@ def get_settings() -> SettingsOut:
     )
 
 
-@app.put(f"{API_PREFIX}/settings/llm", dependencies=[Depends(require_token)])
-def put_settings_llm(body: SettingsLLMIn) -> OkOut:
-    """写 LLM 供应商 + key(🔴)。`get_provider()` 下次调用即现读 DB 生效(运行时,不重启)。
-    key 绝不回日志 / 绝不回响应明文;provider 白名单由 schema Literal + settings_store 双校验。"""
-    set_llm(body.provider, body.apiKey, db_path=_db())
+# —— V2-② LLM Provider 注册表(自填制,plan §3.10-B)—— `PUT /settings/llm`
+# 已删(D2=A 路已拍板,老 App 打老机不会撞到新服务端,不做 legacy 兼容层,见
+# plan §五 V2-②「契约变更」/⑭-D)。————————————————————————————————————
+
+def _provider_out(rec) -> ProviderOut:
+    return ProviderOut(
+        name=rec.name, baseUrl=rec.base_url, model=rec.model, hasWebSearch=rec.has_web_search,
+        searchEngine=rec.search_engine, notes=rec.notes, enabled=rec.enabled,
+        keySet=bool(rec.api_key),
+    )
+
+
+@app.get(f"{API_PREFIX}/settings/providers", dependencies=[Depends(require_token)])
+def list_settings_providers() -> ProvidersListOut:
+    """列出全部 Provider(不含 key 明文)。"""
+    return ProvidersListOut(items=[
+        ProviderOut(
+            name=p.name, baseUrl=p.base_url, model=p.model, hasWebSearch=p.has_web_search,
+            searchEngine=p.search_engine, notes=p.notes, enabled=p.enabled, keySet=p.key_set,
+        )
+        for p in list_providers_public(db_path=_db())
+    ])
+
+
+@app.post(f"{API_PREFIX}/settings/providers", status_code=status.HTTP_201_CREATED,
+          dependencies=[Depends(require_token)])
+def create_settings_provider(body: ProviderCreateIn) -> ProviderOut:
+    """新建 Provider(🔴,自填制:任意 OpenAI 兼容端点)。`name` 已存在 → 409。"""
+    try:
+        rec = create_provider(
+            body.name, body.baseUrl, body.model, api_key=body.apiKey,
+            has_web_search=body.hasWebSearch, search_engine=body.searchEngine,
+            notes=body.notes, enabled=body.enabled, db_path=_db(),
+        )
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                             detail={"ok": False, "reason": "already_exists"})
+    return _provider_out(rec)
+
+
+@app.put(f"{API_PREFIX}/settings/providers/{{name}}", dependencies=[Depends(require_token)])
+def update_settings_provider(name: str, body: ProviderUpdateIn) -> ProviderOut:
+    """局部更新 Provider(🔴)。未出现的字段不改(`model_fields_set` 判据,同
+    `_extract_max_chase_pct_or_400` 先例);`name` 不存在 → 404。`get_provider()`
+    下次调用即现读 DB 生效(运行时,不重启)。"""
+    fields = body.model_fields_set
+    kwargs: Dict[str, Any] = {}
+    if "baseUrl" in fields:
+        kwargs["base_url"] = body.baseUrl
+    if "model" in fields:
+        kwargs["model"] = body.model
+    if "apiKey" in fields:
+        kwargs["api_key"] = body.apiKey
+    if "hasWebSearch" in fields:
+        kwargs["has_web_search"] = body.hasWebSearch
+    if "searchEngine" in fields:
+        kwargs["search_engine"] = body.searchEngine
+    if "notes" in fields:
+        kwargs["notes"] = body.notes
+    if "enabled" in fields:
+        kwargs["enabled"] = body.enabled
+    rec = update_provider(name, db_path=_db(), **kwargs)
+    if rec is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
+    return _provider_out(rec)
+
+
+@app.delete(f"{API_PREFIX}/settings/providers/{{name}}", dependencies=[Depends(require_token)])
+def delete_settings_provider(name: str) -> OkOut:
+    """删除 Provider(🔴)。不存在 → 404。"""
+    if not delete_provider(name, db_path=_db()):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
     return OkOut(ok=True)
+
+
+@app.get(f"{API_PREFIX}/settings/llm-routes", dependencies=[Depends(require_token)])
+def get_settings_llm_routes() -> LLMRoutesOut:
+    """读任务→Provider 路由表 + 默认 Provider。"""
+    routes, default_provider = get_llm_routes(db_path=_db())
+    return LLMRoutesOut(routes=routes, defaultProvider=default_provider)
+
+
+@app.put(f"{API_PREFIX}/settings/llm-routes", dependencies=[Depends(require_token)])
+def put_settings_llm_routes(body: LLMRoutesIn) -> LLMRoutesOut:
+    """全量覆盖式写任务→Provider 路由表 + 默认 Provider(🔴,同 push 六开关必填
+    风格)。`routes` 出现不认识的任务名 → 422(`reason="invalid_task"`)。"""
+    try:
+        set_llm_routes(body.routes, body.defaultProvider, db_path=_db())
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             detail={"ok": False, "reason": "invalid_task", "message": str(e)})
+    routes, default_provider = get_llm_routes(db_path=_db())
+    return LLMRoutesOut(routes=routes, defaultProvider=default_provider)
 
 
 @app.put(f"{API_PREFIX}/settings/push", dependencies=[Depends(require_token)])
