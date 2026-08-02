@@ -60,6 +60,11 @@
         "divergence": 0.4,
         "ebb": 0.2,
         "none": 0.2
+      },
+      "quality_lines": {
+        "tier1_min": 0.60,
+        "tier2_min": 0.40,
+        "tier3_min": 0.25
       }
     }
   }

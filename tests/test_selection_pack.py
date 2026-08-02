@@ -184,6 +184,151 @@ def test_validate_config_rejects_bool_as_stage_score_value():
     assert any("非数值分数" in e and "ignition" in e for e in errors)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# `config.tier.quality_lines`(V2-⑥-b 新增可选键,档位质量线进包,2026-08-02
+# planner 裁定)
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_validate_config_accepts_missing_quality_lines_key():
+    """整段可选——K4-pack-v1(回滚锚)完全不写这个键必须照常通过。"""
+    config = _minimal_pack()["config"]
+    assert "quality_lines" not in config["tier"]
+    assert pack.validate_config(config) == []
+
+
+def test_validate_config_accepts_well_formed_quality_lines():
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.25}
+    assert pack.validate_config(config) == []
+
+
+def test_validate_config_accepts_partial_quality_lines():
+    """三键各自独立可选——同 `stage_scores` "不要求六态全部出现"同一纪律
+    (⑥-b-A schema 定死:与 weights/dims/stage_scores 平级、可选键)。"""
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier3_min": 0.25}
+    assert pack.validate_config(config) == []
+
+
+def test_validate_config_rejects_non_dict_quality_lines():
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = [0.6, 0.4, 0.25]
+    errors = pack.validate_config(config)
+    assert any("config.tier.quality_lines 必须是对象" in e for e in errors)
+
+
+def test_validate_config_rejects_unknown_quality_line_key():
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier1_min": 0.6, "tier4_min": 0.1}
+    errors = pack.validate_config(config)
+    assert any("未知键" in e and "tier4_min" in e for e in errors)
+
+
+def test_validate_config_rejects_non_numeric_quality_line_value():
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier1_min": "high"}
+    errors = pack.validate_config(config)
+    assert any("非数值分数" in e and "tier1_min" in e for e in errors)
+
+
+def test_validate_config_rejects_bool_as_quality_line_value():
+    """同 stage_scores 那条既有陷阱防线:`bool` 不该被数值校验悄悄接纳。"""
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier1_min": True}
+    errors = pack.validate_config(config)
+    assert any("非数值分数" in e and "tier1_min" in e for e in errors)
+
+
+def test_validate_config_rejects_non_monotonic_quality_lines_tier1_tier2():
+    """⑥-b-A 验收原文例句:`tier1_min < tier2_min` → fail loud。"""
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier1_min": 0.30, "tier2_min": 0.40, "tier3_min": 0.25}
+    errors = pack.validate_config(config)
+    assert any("单调" in e for e in errors)
+
+
+def test_validate_config_rejects_non_monotonic_quality_lines_tier2_tier3():
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier1_min": 0.60, "tier2_min": 0.20, "tier3_min": 0.40}
+    errors = pack.validate_config(config)
+    assert any("单调" in e for e in errors)
+
+
+def test_validate_config_rejects_non_monotonic_quality_lines_across_a_missing_middle_key():
+    """中间那一档缺省也不能蒙混过关——靠传递性比较两个"字面给出"的键
+    (`_QUALITY_LINE_ORDER` 顺序,不是相邻 DB 列)。"""
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier1_min": 0.20, "tier3_min": 0.40}   # 缺 tier2_min
+    errors = pack.validate_config(config)
+    assert any("单调" in e for e in errors)
+
+
+def test_validate_config_accepts_equal_adjacent_quality_lines():
+    """相邻两线相等不算"不单调"——只拒绝严格倒挂(⑥-b-A 例句用的是 `<`)。"""
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier1_min": 0.40, "tier2_min": 0.40, "tier3_min": 0.25}
+    assert pack.validate_config(config) == []
+
+
+def test_validate_config_does_not_require_defaults_merged_for_monotonicity():
+    """单调性只比较**字面给出**的键,不合并引擎默认值——只给一个极端的
+    `tier3_min` 且没有别的键可比时,不会被这条拒绝(即便与引擎默认组合后
+    可能"看起来"不单调,那不是本文件的职责,见 `_validate_quality_lines`
+    docstring)。"""
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier3_min": 0.99}
+    assert pack.validate_config(config) == []
+
+
+def test_pack_accessor_tier_quality_lines_reflects_config(tmp_path: Path):
+    db_path = tmp_path / "n.db"
+    doc = _minimal_pack(
+        "quality-lines-v1",
+        config={
+            "tier": {
+                "weights": {"sector_strength": 1.0},
+                "dims": ["sector_strength"],
+                "quality_lines": {"tier1_min": 0.6, "tier2_min": 0.4, "tier3_min": 0.25},
+            },
+        },
+    )
+    pack.activate_pack(doc["manifest"], doc["config"], db_path=db_path)
+    active = pack.get_active_pack(db_path=db_path)
+    assert active.tier_quality_lines() == {"tier1_min": 0.6, "tier2_min": 0.4, "tier3_min": 0.25}
+
+
+def test_pack_accessor_tier_quality_lines_defaults_to_empty_dict(tmp_path: Path):
+    db_path = tmp_path / "n.db"
+    doc = _minimal_pack("no-quality-lines-v1")
+    pack.activate_pack(doc["manifest"], doc["config"], db_path=db_path)
+    active = pack.get_active_pack(db_path=db_path)
+    assert active.tier_quality_lines() == {}
+
+
+def test_real_k4_pack_still_has_no_quality_lines_key():
+    """K4-pack-v1 是回滚锚,⑥-b 零改动——直接从"没有这个键"验证,而不是去读
+    文件 diff。"""
+    doc = pack.load_pack_file(_K4_PACK_FILE)
+    assert "quality_lines" not in doc["config"]["tier"]
+    assert pack.validate_pack_doc(doc) == []   # 重新校验仍通过
+
+
+def test_real_k7_pack_file_has_quality_lines_matching_plan_decision():
+    """⑥-b-A/⑥-b-B 裁定的三个数:0.60/0.40/0.25。"""
+    doc = pack.load_pack_file(_K7_PACK_FILE)
+    assert pack.validate_pack_doc(doc) == []
+    assert doc["config"]["tier"]["quality_lines"] == {
+        "tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.25,
+    }
+    assert doc["manifest"]["engine_api_version"] == 1   # ⑥-b-A 判定:纯增量,不 bump
+
+
+def test_engine_api_version_not_bumped_by_quality_lines_addition():
+    from neckline.selection import engine_api
+
+    assert engine_api.ENGINE_API_VERSION == 1
+
+
 def test_validate_pack_doc_checks_engine_api_compat_only_after_structure_passes():
     doc = _minimal_pack()
     doc["manifest"]["engine_api_version"] = 2

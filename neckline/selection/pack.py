@@ -35,6 +35,23 @@ import `neckline.selection`,已核实)。
 判据也毫发未动。按 plan §五 ③-K7-C 的判定规则("旧包原样重新校验仍通过、
 `get_active_pack()` 对旧包行为逐位不变 → `ENGINE_API_VERSION` 保持不变"),
 本次扩展**不 bump** `engine_api.ENGINE_API_VERSION`(仍为 1)。
+
+**V2-⑥-b 新增(2026-08-02 planner 裁定):`config.tier.quality_lines`**——与
+`weights`/`dims`/`stage_scores` 平级的新增**可选**键(档位质量线:每档一道
+机械分下限,`{tier1_min, tier2_min, tier3_min}` 三个子键也**各自独立可选**,
+同 `stage_scores` "不要求六态全部出现"同一纪律)。归属判给"包"而不是"引擎
+常量"的决定性理由是**标度耦合**:质量线与五维权重作用在**同一个标度**上,
+权重已经在包里,线留在代码里 = 换一次权重就静默改变 T1 的选择性。
+**缺键回退 vs `weights` 缺维度 fail loud,两种姿势刻意不同**:`weights` 每个
+包 schema 都必须给全,缺了就是包坏了;`quality_lines` 缺(整段缺或单键缺)
+一律回退引擎默认——因为 `K4-pack-v1` 不重发版、是 ⑯-E 的回滚锚,不给回退
+路径就等于把回滚锚作废。回退的具体数值与"引擎默认"本身住在
+`neckline/selection/tier.py`(`TIER1_MIN_SCORE`/`TIER2_MIN_SCORE`/
+`TIER3_MIN_SCORE`,`tier.resolve_quality_lines()`),**本文件不 import 它们**
+(方向相反会成环:`tier.py` 已经 `from neckline.selection.pack import Pack,
+get_active_pack`)——`_validate_quality_lines` 的单调性检查因此**只比较字面
+给出的那些键**,不合并引擎默认值再比较,见该函数 docstring。同样是纯增量
+可选键、K4-pack-v1 原样重新校验仍通过,**不 bump** `ENGINE_API_VERSION`。
 """
 
 from __future__ import annotations
@@ -64,6 +81,15 @@ _EVIDENCE_REF_SEP = "; "   # `selection_packs.evidence_ref` 落库时的连接�
 # `config.tier.stage_scores` 键的合法集合(③-K7-D 定案:英文枚举码,唯一源
 # `neckline.scan.stage.STAGE_ORDER`,不在本文件复抄第二份六码元组)。
 _STAGE_CODES = frozenset(STAGE_ORDER)
+
+# `config.tier.quality_lines` 键的合法集合(V2-⑥-b 新增可选键:档位质量线,
+# 与 `weights`/`dims`/`stage_scores` 平级)。
+_QUALITY_LINE_KEYS = frozenset({"tier1_min", "tier2_min", "tier3_min"})
+
+# 三档由严到松的固定顺序,单调性检查(`_validate_quality_lines`)按这个顺序
+# 逐对比较相邻的**字面给出**的键——不是 DB 列序也不是字典序,是"档位越高线
+# 越严"这条产品语义本身。
+_QUALITY_LINE_ORDER = ("tier1_min", "tier2_min", "tier3_min")
 
 
 def _now() -> str:
@@ -141,12 +167,58 @@ def _validate_stage_scores(stage_scores: Any) -> List[str]:
     return errors
 
 
+def _validate_quality_lines(quality_lines: Any) -> List[str]:
+    """`config.tier.quality_lines`(V2-⑥-b 新增可选键,plan §五 ⑥-b-A 裁定)。
+    **整段可选**——K4-pack-v1(回滚锚)完全不写这个键,`Pack.tier_quality_lines()`
+    缺省返回空字典,逐键回退引擎默认是 `tier.resolve_quality_lines()` 的职责,
+    不在这里猜。**三个子键也各自独立可选**(同 `_validate_stage_scores` "不要求
+    六态全部出现"同一纪律)——存在时只校验形状:必须是对象,键必须是
+    `tier1_min`/`tier2_min`/`tier3_min` 之一,值必须是数值(`bool` 视为非数值,
+    同 `_validate_stage_scores` 的既有陷阱防线)。
+
+    **单调性("档位越高线越严")只检查字面给出的那些键**,不合并引擎默认值
+    再比较——`pack.py` 不 import `tier.py` 的具体默认数字(那个方向会成环,
+    `tier.py` 已经反过来 import 本模块的 `Pack`/`get_active_pack`);K4-pack-v1
+    等价于三键全部缺省,天然满足单调性(无键可比,不会被这条拒绝)。plan
+    验收原文给的反例 `tier1_min < tier2_min` 是两键都给出的场景,本检查逐对
+    比较**相邻的**已给出键(`_QUALITY_LINE_ORDER` 顺序),靠传递性覆盖任意
+    两个给出键之间的比较(哪怕中间那一档缺省)。"""
+    if not isinstance(quality_lines, dict):
+        return ["config.tier.quality_lines 必须是对象(tier1_min/tier2_min/tier3_min → 分数)"]
+    errors: List[str] = []
+    unknown = sorted(set(quality_lines) - _QUALITY_LINE_KEYS)
+    if unknown:
+        errors.append(
+            f"config.tier.quality_lines 出现未知键:{unknown}"
+            f"(仅允许 {sorted(_QUALITY_LINE_KEYS)})"
+        )
+    bad_values = sorted(
+        k for k, v in quality_lines.items()
+        if k in _QUALITY_LINE_KEYS and (not isinstance(v, (int, float)) or isinstance(v, bool))
+    )
+    if bad_values:
+        errors.append(f"config.tier.quality_lines 存在非数值分数:{bad_values}")
+
+    present = [
+        (k, float(quality_lines[k])) for k in _QUALITY_LINE_ORDER
+        if k in quality_lines and k not in bad_values
+    ]
+    for (stricter_key, stricter_val), (looser_key, looser_val) in zip(present, present[1:]):
+        if stricter_val < looser_val:
+            errors.append(
+                f"config.tier.quality_lines 三线必须单调不增(档位越高线越严):"
+                f"{stricter_key}={stricter_val} < {looser_key}={looser_val}"
+            )
+    return errors
+
+
 def validate_config(config: Any) -> List[str]:
     """config 必需两段(plan §五 V2-③「插槽边界」):`seeds`(原语名 → 参数,
     键必须是已注册原语,值按该原语 `params_schema` 校验)与 `tier`(`weights` 非空
     对象 + `dims` 非空数组,`dims` 引用的维度必须都在 `weights` 里出现;
     **V2-③-K7 新增**:与 `weights`/`dims` 平级的可选键 `stage_scores`,见
-    `_validate_stage_scores`)。"""
+    `_validate_stage_scores`;**V2-⑥-b 新增**:同平级的可选键 `quality_lines`,
+    见 `_validate_quality_lines`)。"""
     if not isinstance(config, dict):
         return ["config 必须是 JSON 对象"]
     errors: List[str] = []
@@ -189,6 +261,9 @@ def validate_config(config: Any) -> List[str]:
         stage_scores = tier.get("stage_scores")
         if stage_scores is not None:
             errors.extend(_validate_stage_scores(stage_scores))
+        quality_lines = tier.get("quality_lines")
+        if quality_lines is not None:
+            errors.extend(_validate_quality_lines(quality_lines))
     return errors
 
 
@@ -259,6 +334,13 @@ class Pack:
         映射/缺行时怎么降级为中性分是 ⑥ 的保险丝职责,见 ④b-C,不在本访问器
         里猜)。"""
         return dict(self.config.get("tier", {}).get("stage_scores", {}))
+
+    def tier_quality_lines(self) -> Dict[str, float]:
+        """`config.tier.quality_lines`(V2-⑥-b 新增可选键:三档质量线,
+        K4-pack-v1 没有这一段〔或只给部分子键〕,缺省返回空字典——逐键回退
+        引擎默认是 ⑥ 的职责〔`tier.resolve_quality_lines()`〕,不在本访问器
+        里猜)。"""
+        return dict(self.config.get("tier", {}).get("quality_lines", {}))
 
 
 def _row_to_pack(row: Tuple[Any, ...]) -> Pack:

@@ -34,8 +34,19 @@
 「LLM 产出的任何字段不得进机械分」,不是靠注释自觉。
 
 **容量**:T1 ≤ 2 / T2 ≤ 5 / T3 ≤ 10,**全部是上限非配额**(市场混沌时不许凑数,
-允许 T1 为空)。落地 = 每档一道**质量线**(机械分下限):够不到 T1 线就进不了 T1,
-哪怕 T1 空着。
+允许**任何一档**为空——V2-⑥-b-B 纠正:「T3 无下限」曾让 `T3≤10` 变成事实上的
+配额,这正是 V1「每天硬凑 20 只候选」的病)。落地 = 每档一道**质量线**(机械分
+下限):够不到某档线就进不了那一档,哪怕那一档空着;连 T3 线都够不到 →
+**当天不进任何档**(`DROP_BELOW_QUALITY_LINE`,与容量溢出的
+`DROP_CAPACITY_OVERFLOW` 是两种不同的"没进来",不许合并,见 ⑥-b-C)。
+
+**V2-⑥-b 追加(2026-08-02 planner 裁定)**:三档质量线的**权威**从"引擎常量"
+移到"现役包" `config.tier.quality_lines`(与 `weights` 同标度,换权重会静默
+改变 T1 选择性,两个数必须住在一起才谈得上一起校准)。`TIER1_MIN_SCORE` /
+`TIER2_MIN_SCORE` / `TIER3_MIN_SCORE` 三个模块常量**降级为「包未给
+`quality_lines` 时的缺省回退值」**,不再是权威;读取一律经
+`resolve_quality_lines()`,**不直接读模块常量**(K4-pack-v1 没有这个键,回退
+到这三个数正是它作为回滚锚必须保持的行为)。
 
 **保险丝(承 P0-23「降级方向 = 不拦 + 显式披露」)**:任何一维算不出 → 取**中性分**
 并在 `mech_breakdown_json` 的 `flags` 里如实标(如 `stage_missing`),**绝不写 0**
@@ -118,16 +129,30 @@ _TIER_ROW_KEYS = _TIER_SCORE_INPUTS | _LLM_PROVENANCE_KEYS
 TIER_CAPACITY: Dict[int, int] = {1: 2, 2: 5, 3: 10}
 TIERS: Tuple[int, ...] = (1, 2, 3)
 
-# 每档的**质量线**(机械分下限)。T3 没有下限 —— 能通过 ⑤ 两道机械闸成篮的驱动,
-# 至少值得当"观察位"列出来;质量线的职责只是**防止把平庸篮子抬进 T1/T2**
-# ("市场混沌时不许凑数")。
+# 每档的**质量线**(机械分下限)。V2-⑥-b-B 纠正:T3 也有下限——没有下限时
+# `T3≤10` 是事实上的配额(只要有 ≥10 个候选就永远填满),质量线的职责是
+# **防止把平庸篮子抬进任何一档**("市场混沌时不许凑数",不是只对 T1/T2 说的)。
 #
-# ⚠ **Plan 未给数,这是临时工程默认**(同 ⑤-c `MIN_LIFT_SAMPLE_SIZE=5` 的处置
-# 姿势):五维各自归一到 [0,1]、权重归一后加权和亦在 [0,1],`0.5` 是"整体中性"
-# 的自然基准 —— T1 线取 `0.60`(明显好于中性)、T2 线取 `0.40`(不明显差于中性)。
-# **要让它可配必须走 ③ 的包 schema 扩容 + 换包四道闸**,⛔ 不许在代码里顺手改数。
+# ⚠ **以下三个数是「包未给 `config.tier.quality_lines` 时的缺省回退值」,
+# 不再是权威**(V2-⑥-b-A planner 裁定:质量线归属改判"进包",理由是它与五维
+# 权重同标度、换权重会静默改变 T1 选择性,两者必须住在一起才能一起校准)。
+# 读取一律经 `resolve_quality_lines()`,业务代码不直接读这三个模块常量。
+# **数值本身仍是临时工程默认**(同 ⑤-c `MIN_LIFT_SAMPLE_SIZE=5` 的处置姿势,
+# 未获证据支持):五维各自归一到 [0,1]、权重归一后加权和亦在 [0,1],`0.5` 是
+# "整体中性"的自然基准 —— T1 线取 `0.60`(明显好于中性)、T2 线取 `0.40`
+# (不明显差于中性)、T3 线取 `0.25`(planner 拟定:明显低于 T2 但不为零,不为
+# 零是因为零就退回"无下限=配额"的老病)。前向校准走 ⑨ 评价引擎周报 + 进化
+# 门禁(= 换包),⛔ 不许顺手改这里的数、也不许顺手改包里的数(§七 P3-33 挂账)。
 TIER1_MIN_SCORE = 0.60
 TIER2_MIN_SCORE = 0.40
+TIER3_MIN_SCORE = 0.25
+
+# `assign_tiers()` 的 `quality_lines` 形参默认值——保证既有调用方(测试与任何
+# 未来的直接调用)不传这个新参数时行为不变。三键只读不改,共享同一个字典
+# 对象是安全的。
+_DEFAULT_QUALITY_LINES: Dict[str, float] = {
+    "tier1_min": TIER1_MIN_SCORE, "tier2_min": TIER2_MIN_SCORE, "tier3_min": TIER3_MIN_SCORE,
+}
 
 # 某一维算不出时的**中性分**(⛔ 不是 0 —— 0 在 `stage_scores` 里是 `overheat`
 # 的真实取值,拿它冒充"没数据"就把「没有」和「没看」混成一件事)。取 [0,1] 的
@@ -157,6 +182,22 @@ FLAG_LEADER_MISSING = "leader_clarity_missing"         # 成员全无 rs_rank(�
 FLAG_TRADABILITY_MISSING = "tradability_missing"       # 涨跌停/行情切片读不到
 FLAG_CARD_DENSITY_MISSING = "card_density_missing"     # ⑤-b 报了 k4_unavailable
 
+# 每一维「取了中性分」对应哪个 flag(V2-⑥-b-D 新增,`neutral_filled_weight()`
+# 的唯一依据)。⚠ **只认这些 flag,不认数值** —— `leader_clarity` 的 `1/rank`
+# 在 `rank=2` 时恰好也等于 `NEUTRAL_DIM_SCORE`(真实第二名与"没数据"数值撞车,
+# 见 `_dim_leader_clarity` 与本模块设计判断②),拿数值反推"是不是中性填充"在
+# 这里会判错,只有 flag 靠得住。`driver_freshness` 有两个互斥的缺数据 flag
+# (整段缺 `stage_scores` / 当日无该行业阶段行)都算,`FLAG_STAGE_UNMAPPED`
+# **不算**——它单独出现时该维仍可能是"别的"行业算出来的真实值(见
+# `_dim_driver_freshness` docstring),不代表这一维被中性填充。
+_DIM_MISSING_FLAGS: Dict[str, frozenset] = {
+    DIM_SECTOR_STRENGTH: frozenset({FLAG_SECTOR_MISSING}),
+    DIM_DRIVER_FRESHNESS: frozenset({FLAG_STAGE_MISSING, FLAG_STAGE_SCORES_ABSENT}),
+    DIM_LEADER_CLARITY: frozenset({FLAG_LEADER_MISSING}),
+    DIM_TRADABILITY: frozenset({FLAG_TRADABILITY_MISSING}),
+    DIM_CARD_DENSITY: frozenset({FLAG_CARD_DENSITY_MISSING}),
+}
+
 # —— LLM 微调段状态(与 ⑤ 的 `STAGE_*` 同一套语义纪律:不合并)————————————
 LLM_OK = "ok"
 LLM_NO_PROVIDER = "no_provider"
@@ -173,7 +214,9 @@ REJECT_SLOT_TAKEN = "slot_taken"           # 两条提案抢同一个名次(先�
 REJECT_DUPLICATE_KEY = "duplicate_key"     # 同一个篮子被提了两次(第二条丢弃)
 REJECT_MALFORMED = "malformed"             # 形状不对
 
-DROP_CAPACITY_OVERFLOW = "capacity_overflow"   # 三档都满了 → 本篮今日不定档、不落库
+DROP_CAPACITY_OVERFLOW = "capacity_overflow"       # 分数够、位置满 → 机会多到装不下
+DROP_BELOW_QUALITY_LINE = "below_quality_line"     # 连 tier3_min 都没过 → 今天没什么好货
+# ⚠ 两者是相反的市场结论(⑥-b-C),⛔ 不许合并成一个"未入选"。
 
 TIER_RANK_SYSTEM_PROMPT = f"""你是 A 股短线交易系统里的「同档次序参谋」。
 
@@ -259,6 +302,10 @@ class TierResult:
     llm_narrative: str = ""
     pack_version: str = ""
     weights: Dict[str, float] = field(default_factory=dict)
+    # 本次定档实际用的三档质量线(`resolve_quality_lines()` 解出来的那份,已经
+    # 是"包给了就用包的、缺了就回退引擎默认"之后的最终值)——同 `weights`,
+    # 是审计快照,不是可写配置。
+    quality_lines: Dict[str, float] = field(default_factory=dict)
     notes: Tuple[str, ...] = ()
 
     @property
@@ -520,25 +567,81 @@ def resolve_weights(pack: Optional[Pack]) -> Dict[str, float]:
     return {k: float(raw[k]) / total for k in sorted(_TIER_SCORE_INPUTS)}
 
 
+def resolve_quality_lines(pack: Optional[Pack]) -> Dict[str, float]:
+    """从**现役包**读三档质量线(V2-⑥-b-A 裁定)。**逐键独立回退引擎默认**——
+    与 `resolve_weights()` 的 fail-loud 姿势刻意不同,两条理由各自写死、别去
+    "统一"成同一种:`weights` 每个包 schema 都必须给全(缺了就是包坏了),
+    `quality_lines` 缺(整段缺,或只缺其中一两个子键)一律回退
+    `TIER1_MIN_SCORE`/`TIER2_MIN_SCORE`/`TIER3_MIN_SCORE` —— 因为 `K4-pack-v1`
+    不重发版、是 ⑯-E 的回滚锚,不给回退路径就等于把回滚锚作废。
+
+    无现役包 → 抛(同 `resolve_weights`:定档必须有包,哪怕这次只是为了取
+    质量线的回退默认,也不该在没有包的情况下悄悄定档)。"""
+    if pack is None:
+        raise ValueError("Tier 定档需要现役策略包(质量线只住包里或回退引擎默认),当前无现役包")
+    raw = pack.tier_quality_lines()
+    return {
+        "tier1_min": float(raw.get("tier1_min", TIER1_MIN_SCORE)),
+        "tier2_min": float(raw.get("tier2_min", TIER2_MIN_SCORE)),
+        "tier3_min": float(raw.get("tier3_min", TIER3_MIN_SCORE)),
+    }
+
+
 def mech_score(row: Mapping[str, Any], weights: Mapping[str, float]) -> float:
     """加权机械分。**只读 `_TIER_SCORE_INPUTS` 白名单五键**(运行期访问锁单测锁死)
     —— `row` 里同时存在的 LLM 产出字段一个都不许碰(§2.8-C 第 1 条)。"""
     return sum(float(weights[dim]) * float(row[dim]) for dim in sorted(weights))
 
 
-def _eligible_tier(score: float) -> int:
-    if score >= TIER1_MIN_SCORE - _EPS:
+def neutral_filled_weight(flags: Sequence[str], weights: Mapping[str, float]) -> float:
+    """V2-⑥-b-D 新增审计字段:本篮加权和中,由**中性填充**贡献的权重合计。
+
+    **为什么要它**:一个三维缺数据的篮子,靠三个 `NEUTRAL_DIM_SCORE=0.5` 的
+    填充也可能压过 `tier1_min` —— 那就成了「因为不知道所以进 T1」。这个数字
+    让"这份机械分里有多少是猜的"变得可审计。
+
+    **只认 flags,不认数值**——`leader_clarity` 的 `1/rank` 在 `rank=2` 时恰好
+    也等于 `NEUTRAL_DIM_SCORE`(真实第二名与"没数据"数值撞车,见模块头「V2-⑥-b
+    追加」旁的设计判断②),拿数值反推"是不是中性填充"在这里会判错。每个维度
+    是否被中性填充,只看它自己专属的 flag 是否出现在 `flags` 里
+    (`_DIM_MISSING_FLAGS`,与 `build_tier_row` 里各 `_dim_*` 函数的返回路径
+    一一对应——每个 `_dim_*` 只有走"缺数据"分支才会同时"返回 `NEUTRAL_DIM_SCORE`
+    并挂上这个 flag",两者绑在一起,不会有 flag 挂了但值不是中性分的情况)。
+
+    **本子项只记录 + 披露,⛔ 先不设闸**——不凭空造一个"缺数据超过多少就降档"
+    的阈值,承裁定「先观测再立规」;要不要据此降档进 §七 P3-33,等 ⑨ 评价引擎
+    攒够样本再说。
+    """
+    flag_set = set(flags)
+    return sum(
+        float(weights[dim]) for dim, missing_flags in _DIM_MISSING_FLAGS.items()
+        if missing_flags & flag_set
+    )
+
+
+def _eligible_tier(score: float, quality_lines: Mapping[str, float]) -> Optional[int]:
+    """score 够哪一档的线,就"想要"哪一档(是否真能进去还要看容量,见
+    `assign_tiers`)。**连 T3 线都够不到 → `None`**(V2-⑥-b-B:T3 也有下限,
+    不是"只要不够 T1/T2 就自动落进 T3")。"""
+    if score >= quality_lines["tier1_min"] - _EPS:
         return 1
-    if score >= TIER2_MIN_SCORE - _EPS:
+    if score >= quality_lines["tier2_min"] - _EPS:
         return 2
-    return 3
+    if score >= quality_lines["tier3_min"] - _EPS:
+        return 3
+    return None
 
 
 def assign_tiers(
     scored: Sequence[Tuple[str, float]],
+    quality_lines: Mapping[str, float] = _DEFAULT_QUALITY_LINES,
 ) -> Tuple[Dict[str, Tuple[int, int]], List[DroppedBasket]]:
     """机械定档。输入 `[(basket_key, mech_score), ...]`,输出
     `({basket_key: (tier, rank_mech)}, dropped)`。
+
+    `quality_lines`:`{"tier1_min", "tier2_min", "tier3_min"}` 三键(默认取
+    `_DEFAULT_QUALITY_LINES` = 引擎缺省值;`score_and_tier()` 会传现役包
+    `resolve_quality_lines()` 解出来的那份)。
 
     **确定性铁律**:先按 `(机械分降序, basket_key 升序)` 排定 —— 分数并列时靠
     `basket_key`(crc32 十六进制,跨进程可复现)打破,**不靠行序**(CLAUDE.md:
@@ -546,8 +649,11 @@ def assign_tiers(
 
     **上限非配额**:每档先看质量线(`_eligible_tier`),够格才进那一档;够格但该档
     已满 → **向下顺延**到还有位子的档(不是把它挤进去,也不是丢掉);三档都满 →
-    今日不定档(`DROP_CAPACITY_OVERFLOW`,留痕由调用方披露)。**允许 T1 为空** ——
-    没有篮子够 T1 线时,T1 就是空的,不许拿 T2 的凑数。
+    今日不定档(`DROP_CAPACITY_OVERFLOW`,「分数够、位置满」)。**允许任何一档
+    为空**(V2-⑥-b-B):没有篮子够某档线时,那一档就是空的,不许拿别档凑数。
+    **连 T3 线都够不到 → 直接丢弃**(`DROP_BELOW_QUALITY_LINE`,「分数不够」),
+    连容量判断都不参与 —— 这与容量溢出是两种相反的市场结论,⛔ 不许合并
+    (V2-⑥-b-C)。
     """
     order = sorted(scored, key=lambda kv: (-kv[1], kv[0]))
     used = {t: 0 for t in TIERS}
@@ -555,7 +661,11 @@ def assign_tiers(
     out: Dict[str, Tuple[int, int]] = {}
     dropped: List[DroppedBasket] = []
     for key, score in order:
-        want = _eligible_tier(score)
+        want = _eligible_tier(score, quality_lines)
+        if want is None:
+            dropped.append(DroppedBasket(basket_key=key, reason=DROP_BELOW_QUALITY_LINE,
+                                         mech_score=score))
+            continue
         placed = False
         for t in TIERS:
             if t < want:
@@ -783,6 +893,7 @@ def score_and_tier(
     notes: List[str] = []
     pack = pack if pack is not None else get_active_pack(db_path)
     weights = resolve_weights(pack)
+    quality_lines = resolve_quality_lines(pack)
     stage_scores = pack.tier_stage_scores()
     if not stage_scores:
         notes.append(FLAG_STAGE_SCORES_ABSENT)
@@ -791,6 +902,7 @@ def score_and_tier(
     if not result.baskets:
         return TierResult(trade_date=trade_date_s, llm_stage=LLM_NOT_NEEDED,
                           pack_version=pack_version, weights=weights,
+                          quality_lines=quality_lines,
                           notes=tuple(notes + ["no_baskets"]))
 
     k4_unavailable = "k4_unavailable" in tuple(getattr(result, "notes", ()) or ())
@@ -812,18 +924,27 @@ def score_and_tier(
                 d: round(float(weights[d]) * float(row[d]), 6) for d in sorted(weights)
             },
             "flags": sorted(set(flags)),
+            # V2-⑥-b-D:中性填充贡献的权重合计——只认 flags,不认数值(见
+            # `neutral_filled_weight()` docstring 的 rank=2 撞车说明)。
+            "neutral_filled_weight": round(neutral_filled_weight(flags, weights), 6),
             "score": round(float(score), 6),
             "pack_version": pack_version,
             "engine_api_version": engine_api.ENGINE_API_VERSION,
         }
 
     score_by_key = dict(scored)
-    placement, dropped = assign_tiers(scored)
+    placement, dropped = assign_tiers(scored, quality_lines=quality_lines)
     if dropped:
-        notes.append(f"capacity_overflow:{len(dropped)}")
+        # V2-⑥-b-C:两种"没进来"是相反的市场结论,notes/日志都不许把它们揉成
+        # 一句话——逐原因码分别计数披露。
+        drop_counts: Dict[str, int] = {}
+        for d in dropped:
+            drop_counts[d.reason] = drop_counts.get(d.reason, 0) + 1
+        for reason in sorted(drop_counts):
+            notes.append(f"{reason}:{drop_counts[reason]}")
         logger.warning(
-            "[tier] %s 三档容量已满,%d 个篮子今日不定档(不落库):%s",
-            trade_date_s, len(dropped), [d.basket_key for d in dropped],
+            "[tier] %s 有 %d 个篮子今日不定档(不落库),原因分布 %s,篮子:%s",
+            trade_date_s, len(dropped), drop_counts, [d.basket_key for d in dropped],
         )
 
     mech_decisions = [
@@ -872,7 +993,8 @@ def score_and_tier(
     return TierResult(
         trade_date=trade_date_s, decisions=tuple(decisions), dropped=tuple(dropped),
         rejected_adjustments=tuple(rejected), llm_stage=llm_stage, llm_narrative=narrative,
-        pack_version=pack_version, weights=weights, notes=tuple(notes),
+        pack_version=pack_version, weights=weights, quality_lines=quality_lines,
+        notes=tuple(notes),
     )
 
 
@@ -924,6 +1046,7 @@ __all__ = [
     "TIERS",
     "TIER1_MIN_SCORE",
     "TIER2_MIN_SCORE",
+    "TIER3_MIN_SCORE",
     "NEUTRAL_DIM_SCORE",
     "LLM_OK",
     "LLM_NO_PROVIDER",
@@ -938,6 +1061,7 @@ __all__ = [
     "REJECT_DUPLICATE_KEY",
     "REJECT_MALFORMED",
     "DROP_CAPACITY_OVERFLOW",
+    "DROP_BELOW_QUALITY_LINE",
     "FLAG_SECTOR_MISSING",
     "FLAG_STAGE_MISSING",
     "FLAG_STAGE_SCORES_ABSENT",
@@ -954,7 +1078,9 @@ __all__ = [
     "build_feature_context",
     "build_tier_row",
     "resolve_weights",
+    "resolve_quality_lines",
     "mech_score",
+    "neutral_filled_weight",
     "assign_tiers",
     "build_tier_rank_context",
     "run_tier_rank",

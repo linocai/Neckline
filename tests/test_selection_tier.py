@@ -995,6 +995,223 @@ class TestFeatureContextIO:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# V2-⑥-b 追加子项(2026-08-02 planner 裁定):档位质量线进包 + T3 下限 +
+# 溢出摘要原因码拆分 + neutral_filled_weight 审计字段。见 PROJECT_PLAN.md
+# §五 V2-⑥-b。不改动以上任何一条既有测试。
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestQualityLineResolution:
+    """`resolve_quality_lines()`:逐键独立回退引擎默认,姿势刻意与
+    `resolve_weights()` 的 fail-loud 不同(⑥-b-A)。"""
+
+    def test_resolves_to_engine_defaults_when_pack_has_no_quality_lines(self):
+        """K4-pack-v1 没有 `quality_lines` 键——回滚锚必须逐位落到引擎默认。"""
+        assert ti.resolve_quality_lines(K4_PACK) == {
+            "tier1_min": ti.TIER1_MIN_SCORE,
+            "tier2_min": ti.TIER2_MIN_SCORE,
+            "tier3_min": ti.TIER3_MIN_SCORE,
+        }
+
+    def test_resolves_to_pack_values_when_present(self):
+        assert ti.resolve_quality_lines(K7_PACK) == {
+            "tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.25,
+        }
+
+    def test_partial_override_falls_back_key_by_key(self):
+        """三键各自独立回退——同 `stage_scores` "不要求六态全部出现"同一纪律,
+        不是"quality_lines 要么整段给要么整段不给"的全有全无开关。"""
+        custom = _pack_with_tier({**K7_PACK.config["tier"],
+                                  "quality_lines": {"tier3_min": 0.10}})
+        assert ti.resolve_quality_lines(custom) == {
+            "tier1_min": ti.TIER1_MIN_SCORE, "tier2_min": ti.TIER2_MIN_SCORE, "tier3_min": 0.10,
+        }
+
+    def test_no_active_pack_fails_loud(self):
+        with pytest.raises(ValueError, match="现役策略包"):
+            ti.resolve_quality_lines(None)
+
+
+class TestAssignTiersQualityLineFloor:
+    """⑥-b-B:T3 也要有下限,「上限非配额」这句话是对三档同时说的。"""
+
+    def test_all_baskets_below_t3_line_leave_every_tier_empty(self):
+        """一批分数 0.10~0.20 的篮子(全部低于默认 tier3_min=0.25)→ T3 为空,
+        而不是被塞满(⑥-b 验收原文)。"""
+        scored = [(f"k{i:02d}", round(0.10 + i * 0.01, 2)) for i in range(11)]   # 0.10..0.20
+        placement, dropped = ti.assign_tiers(scored)
+        assert placement == {}
+        assert all(sum(1 for v in placement.values() if v[0] == t) == 0 for t in ti.TIERS)
+        assert len(dropped) == 11
+        assert {d.reason for d in dropped} == {ti.DROP_BELOW_QUALITY_LINE}
+
+    def test_below_quality_line_and_capacity_overflow_are_distinct_reason_codes(self):
+        """溢出摘要两种原因码必须分得开(⑥-b-C):同一批里**同时**制造「分数够、
+        位置满」与「分数不够」两种"没进来",断言两个原因码都出现且互不覆盖
+        对方的篮子。"""
+        # 18 个够 T1 线的篮子:T1(2)+T2(5)+T3(10)=17 个坑,第 18 个分数也够但
+        # 位置满 → capacity_overflow;另外三个连 T3 线(0.25)都没过 → below_quality_line。
+        plenty = [(f"ok{i:02d}", round(0.90 - i * 0.001, 6)) for i in range(18)]
+        starved = [(f"bad{i:02d}", 0.05 + i * 0.01) for i in range(3)]
+        placement, dropped = ti.assign_tiers(plenty + starved)
+        by_reason = {d.basket_key: d.reason for d in dropped}
+        assert set(by_reason.values()) == {ti.DROP_CAPACITY_OVERFLOW, ti.DROP_BELOW_QUALITY_LINE}
+        overflow_keys = {k for k, r in by_reason.items() if r == ti.DROP_CAPACITY_OVERFLOW}
+        starved_keys = {k for k, r in by_reason.items() if r == ti.DROP_BELOW_QUALITY_LINE}
+        assert overflow_keys == {"ok17"}                       # 唯一一个"分数够、位置满"
+        assert starved_keys == {f"bad{i:02d}" for i in range(3)}
+        assert overflow_keys.isdisjoint(starved_keys)
+
+    def test_custom_quality_lines_change_eligibility(self):
+        """`assign_tiers` 吃自定义 `quality_lines`(不是只认模块默认)——验证
+        换包后三线真的跟着变,不是摆设参数。"""
+        scored = [("a", 0.30)]
+        placement_default, dropped_default = ti.assign_tiers(scored)
+        assert placement_default == {"a": (3, 1)} and dropped_default == []   # 默认 tier3_min=0.25,达标
+
+        strict = {"tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.35}
+        placement_strict, dropped_strict = ti.assign_tiers(scored, quality_lines=strict)
+        assert placement_strict == {}
+        assert {d.reason for d in dropped_strict} == {ti.DROP_BELOW_QUALITY_LINE}
+
+
+class TestScoreAndTierAllTiersEmpty:
+    def test_all_tiers_empty_is_a_legal_output(self, isolated_env):
+        """三档皆空是合法输出(⑥-b-B):篮子确实存在,只是一个都够不到(严格自定义
+        质量线拉满)——`score_and_tier` 应当如实产出「今日无篮子定档」,不抛异常、
+        不是 `no_baskets`(那是"根本没有篮子"的另一种情况)。"""
+        env = isolated_env
+        strict_pack = _pack_with_tier({
+            **K7_PACK.config["tier"],
+            "quality_lines": {"tier1_min": 0.99, "tier2_min": 0.98, "tier3_min": 0.97},
+        })
+        many = _agg([_basket(f"k{i:02d}", [_member(f"6000{i:02d}.SH")]) for i in range(5)])
+        res = ti.score_and_tier(many, D0, db_path=env.db_path,
+                                parquet_dir=env.parquet_dir, pack=strict_pack)
+        assert res.decisions == ()
+        assert res.by_tier() == {1: [], 2: [], 3: []}
+        assert len(res.dropped) == 5
+        assert {d.reason for d in res.dropped} == {ti.DROP_BELOW_QUALITY_LINE}
+        assert "no_baskets" not in res.notes
+        assert "below_quality_line:5" in res.notes
+        assert res.quality_lines == {"tier1_min": 0.99, "tier2_min": 0.98, "tier3_min": 0.97}
+
+
+class TestScoreAndTierMixedDropReasons:
+    def test_notes_report_both_reason_codes_separately_when_both_occur(self, isolated_env):
+        """`score_and_tier()` 的 `notes` 摘要也不许把两种"没进来"揉成一句话——
+        不只是 `assign_tiers` 的返回值要分得开(⑥-b-C)。"""
+        env = isolated_env
+        _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1},
+                                       {"industry": "纺织", "rank": 99}])
+        _insert_stage(env.db_path, {"半导体": stage_mod.FERMENTATION,
+                                    "纺织": stage_mod.OVERHEAT})
+        write_daily_fixture(env, "daily", D0, [
+            {"ts_code": "600999.SH", "open": 11.0, "high": 11.0, "low": 11.0, "close": 11.0,
+             "pre_close": 10.0, "amount": 1e5},
+        ])
+        write_daily_fixture(env, "limit_derived", D0, [
+            {"ts_code": "600999.SH", "board": "MAIN", "status": "limit_up", "limit_pct": 0.1,
+             "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
+             "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1},
+        ])
+        # 20 个板块最强 + 龙头头名的篮子(全部够 T1 线)→ 17 个坑,3 个 capacity_overflow。
+        strong = [
+            _basket(f"strong{i:02d}", [_member(f"6001{i:02d}.SH", industry="半导体", rs_rank=1)])
+            for i in range(20)
+        ]
+        # 板块最弱 + 一字板 + 红牌的篮子 → 连 T3 线都够不到,below_quality_line。
+        weak = _basket("k-weak", [_member("600999.SH", industry="纺织", k4_tag="A2")], name="弱")
+        res = ti.score_and_tier(_agg(strong + [weak]), D0, db_path=env.db_path,
+                                parquet_dir=env.parquet_dir, pack=K7_PACK)
+        by_reason = {d.basket_key: d.reason for d in res.dropped}
+        assert len(res.dropped) == 4
+        assert by_reason.get("k-weak") == ti.DROP_BELOW_QUALITY_LINE
+        assert sum(1 for r in by_reason.values() if r == ti.DROP_CAPACITY_OVERFLOW) == 3
+        assert "below_quality_line:1" in res.notes
+        assert "capacity_overflow:3" in res.notes
+
+
+class TestNeutralFilledWeight:
+    """`ti.neutral_filled_weight()` 纯函数(⑥-b-D):不依赖 DB/parquet,直接喂
+    flags + weights。"""
+
+    def test_zero_when_no_flags(self):
+        weights = ti.resolve_weights(K7_PACK)
+        assert ti.neutral_filled_weight([], weights) == 0.0
+
+    def test_sums_weights_of_missing_dims_only(self):
+        weights = ti.resolve_weights(K7_PACK)
+        flags = [ti.FLAG_STAGE_MISSING, ti.FLAG_LEADER_MISSING, ti.FLAG_TRADABILITY_MISSING]
+        expected = (weights[ti.DIM_DRIVER_FRESHNESS] + weights[ti.DIM_LEADER_CLARITY]
+                    + weights[ti.DIM_TRADABILITY])
+        assert ti.neutral_filled_weight(flags, weights) == pytest.approx(expected)
+
+    def test_stage_scores_absent_counts_the_same_as_stage_missing(self):
+        """`driver_freshness` 有两个不同的"缺数据"flag(整段缺 stage_scores /
+        当日无该行业阶段行),两个都必须计入——不是只认其中一个。"""
+        weights = ti.resolve_weights(K7_PACK)
+        a = ti.neutral_filled_weight([ti.FLAG_STAGE_MISSING], weights)
+        b = ti.neutral_filled_weight([ti.FLAG_STAGE_SCORES_ABSENT], weights)
+        assert a == b == pytest.approx(weights[ti.DIM_DRIVER_FRESHNESS])
+
+    def test_unrelated_flag_stage_unmapped_alone_does_not_count(self):
+        """`FLAG_STAGE_UNMAPPED` 单独出现(没有伴随 `FLAG_STAGE_MISSING`)不代表
+        这一维被中性填充——它只是说"某个行业的阶段码没打上分",该维仍可能是
+        **别的**行业算出来的真实值(见 `_dim_driver_freshness` docstring)。"""
+        weights = ti.resolve_weights(K7_PACK)
+        assert ti.neutral_filled_weight([ti.FLAG_STAGE_UNMAPPED], weights) == 0.0
+
+
+class TestNeutralFilledWeightEndToEnd:
+    """跑通 `score_and_tier` 全链路,确认字段真的落进 `breakdown`(不只是独立
+    纯函数正确,接线也要对)。"""
+
+    def test_equals_sum_of_weights_for_three_missing_dims(self, isolated_env):
+        """⑥-b-D 验收原文:三维缺数据 → 该值 = 那三维权重之和。"""
+        env = isolated_env
+        _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1}])
+        res = ti.score_and_tier(
+            _agg([_basket("k1", [_member("600001.SH", industry="半导体")])]),
+            D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+        )
+        bd = res.decisions[0].breakdown
+        # driver_freshness(没喂阶段表)/ leader_clarity(没给 rs_rank)/
+        # tradability(没喂行情切片)三维缺数据;sector_strength(插了强度表)与
+        # card_density(k4_tag=None→零命中的真实值)两维不缺。
+        assert ti.FLAG_STAGE_MISSING in bd["flags"]
+        assert ti.FLAG_LEADER_MISSING in bd["flags"]
+        assert ti.FLAG_TRADABILITY_MISSING in bd["flags"]
+        assert ti.FLAG_SECTOR_MISSING not in bd["flags"]
+        expected = (bd["weights"][ti.DIM_DRIVER_FRESHNESS] + bd["weights"][ti.DIM_LEADER_CLARITY]
+                    + bd["weights"][ti.DIM_TRADABILITY])
+        assert bd["neutral_filled_weight"] == pytest.approx(expected)
+
+    def test_rank_two_is_not_mistaken_for_missing_in_the_full_pipeline(self, isolated_env):
+        """⑥-b-D 点名的撞车:`rank=2` 真实算出 0.5,和"没数据"的中性填充 0.5
+        数值相同——`neutral_filled_weight` 必须靠 flags 分辨,不能靠数值。"""
+        env = isolated_env
+        _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1}])
+        res = ti.score_and_tier(
+            _agg([
+                _basket("k-rank2", [_member("600001.SH", industry="半导体", rs_rank=2)]),
+                _basket("k-missing", [_member("600002.SH", industry="半导体", rs_rank=None)]),
+            ]),
+            D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+        )
+        by_key = {d.basket_key: d.breakdown for d in res.decisions}
+        rank2, missing = by_key["k-rank2"], by_key["k-missing"]
+        # 两者 leader_clarity 数值上撞车(1/2 == 中性分 0.5),但语义相反。
+        assert rank2["dims"][ti.DIM_LEADER_CLARITY] == pytest.approx(0.5)
+        assert missing["dims"][ti.DIM_LEADER_CLARITY] == pytest.approx(0.5)
+        assert ti.FLAG_LEADER_MISSING not in rank2["flags"]
+        assert ti.FLAG_LEADER_MISSING in missing["flags"]
+        # 除 rs_rank 外两个篮子其余条件全部相同,neutral_filled_weight 的差异必须
+        # 恰好等于 leader_clarity 这一份权重——真实第二名不计入,真缺数据要计入。
+        w = rank2["weights"][ti.DIM_LEADER_CLARITY]
+        assert missing["neutral_filled_weight"] == pytest.approx(rank2["neutral_filled_weight"] + w)
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # ⑧ 第〇原则 / 架构守门(静态)
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -1031,13 +1248,45 @@ def test_tier_does_not_reuse_the_verdict_parser():
     assert "_parse_verdict" not in called
 
 
-@pytest.mark.parametrize("path", [_TIER_PATH, _STORE_PATH], ids=lambda p: p.name)
-def test_reads_no_discipline_thresholds(path):
-    """纪律参数(止损/回落止盈/仓位)不在本层出现 —— 定档只读策略包与预计算表,
+def test_reads_no_discipline_thresholds():
+    """纪律参数(止损/回落止盈/仓位)不在**定档层**出现 —— 定档只读策略包与预计算表,
     章程版本号只当口径指纹(§2.0:纪律只住章程)。"""
-    src = path.read_text(encoding="utf-8")
+    src = _TIER_PATH.read_text(encoding="utf-8")
     for banned in ("stop_pct", "take_profit_retrace", "active_config(", "0.05", "0.08"):
         assert banned not in src, f"Tier 层出现了纪律参数痕迹:{banned}"
+
+
+def test_store_persists_discipline_fingerprint_but_never_reads_it():
+    """`basket_store.py` 的判据 V2-⑦ 起与 `tier.py` **刻意不同**,不是放松。
+
+    原先这条把 store 和 tier 一起扫「`stop_pct` 不许出现」。⑦ 落地后 store 多了
+    `basket_cards` 的写入口,而那张表**本来就有** `stop_pct` / `take_profit_retrace`
+    两列(① 建表时定的口径指纹列,同 `reference_plans.stop_pct` 既有惯例)——列名
+    必然出现在 INSERT 语句里。真正要守的是「本层**不去读**纪律参数」:值由调用方
+    (⑦ 的 `basket_card.resolve_charter_pcts`,唯一源 = 现役 `strategy_versions`)
+    算好后原样落行,store 既不查章程、也不含任何比例字面量。"""
+    src = _STORE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(src, filename=str(_STORE_PATH))
+
+    # ① 本层不向章程要数(不 import brain、不调 active_config/get_active)
+    assert "strategy.brain" not in src and "strategy import brain" not in src
+    called = {n.func.attr for n in ast.walk(tree)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)} | \
+             {n.func.id for n in ast.walk(tree)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert called.isdisjoint({"active_config", "get_active", "resolve_charter_pcts"})
+
+    # ② 没有任何纪律比例字面量(禁硬编 0.05 / 0.08)
+    assert not [c for c in ast.walk(tree) if isinstance(c, ast.Constant)
+                and isinstance(c.value, float) and c.value in (0.05, 0.08)]
+
+    # ③ 两个指纹只以「调用方传进来的参数」形式进入本层,本层不派生
+    owners = {
+        f.name for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+        for a in list(f.args.args) + list(f.args.kwonlyargs)
+        if a.arg in ("stop_pct", "take_profit_retrace")
+    }
+    assert owners == {"save_basket_card"}, owners
 
 
 def test_limit_height_never_feeds_leader_clarity():

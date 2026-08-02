@@ -586,16 +586,34 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
         "T1≤2 / T2≤5 / T3≤10,plan §五 V2-⑥ 原文写死的产品规则(同 aggregate 的"
         "MIN_MEMBERS/MAX_MEMBERS 性质:改它等于改产品定义,要走 plan 而不是换包)。"
     ),
+    # —— V2-⑦-K7 成员标注件(判据阈值一律走**函数关键字默认值**〔见
+    #    `member_tags.evaluate_member_tags` 签名〕,故这里只剩一个浮点容差)————
+    ("member_tags.py", "_EPS"): (
+        "浮点比较容差,工程不变量(同 primitives.py `_LIFT_EPS` / sentinel/holding.py "
+        "`_EPS` 先例:裸 >=/<= 比较除法产生的浮点噪声是本项目通用坑),非策略参数。"
+        "⑦-K7 的三组真判据阈值(强势资格 / 回调带 / 企稳日 / 追入带)全部落在 "
+        "`evaluate_member_tags()` 的关键字默认值上——本测试消息自己列出的两种合规"
+        "形态之一。"
+    ),
     ("tier.py", "TIERS"): (
         "三个档位的枚举本身(1/2/3),对应 `baskets.tier` 的 DDL 取值域,不是阈值。"
     ),
     ("tier.py", "TIER1_MIN_SCORE"): (
-        "T1 质量线。⚠ **plan 未给数,临时工程默认**(同 ⑤-c MIN_LIFT_SAMPLE_SIZE=5 的"
-        "处置姿势):没有它就无法兑现「上限非配额、允许 T1 为空、市场混沌时不许凑数」"
-        "——纯排名制下 T1 永远填满。要让它可配必须走 ③ 的包 schema 扩容 + 换包四道闸,"
-        "已登记为 Plan 疏漏交 planner 裁定,在那之前⛔不许在代码里顺手改数。"
+        "T1 质量线的**缺省回退值**(V2-⑥-b planner 裁定后降级,不再是权威——"
+        "质量线的权威现在住包 `config.tier.quality_lines.tier1_min`,只有包没给"
+        "这个键时才用这个数,见 `tier.resolve_quality_lines()`;归属改判「进包」的"
+        "理由是它与五维权重同标度,换权重会静默改变 T1 选择性)。数值本身仍是 ⑥ "
+        "施工期定的临时默认(同 ⑤-c MIN_LIFT_SAMPLE_SIZE=5 的处置姿势,未获证据"
+        "支持具体取值),校准前置到 ⑨ 评价引擎周报 + 进化门禁(= 换包),§七 "
+        "P3-33 挂账,⛔ 不许在代码里顺手改数、也不许顺手改包里的数。"
     ),
-    ("tier.py", "TIER2_MIN_SCORE"): "T2 质量线,同 TIER1_MIN_SCORE 那一条(同批临时默认)。",
+    ("tier.py", "TIER2_MIN_SCORE"): "T2 质量线的缺省回退值,同 TIER1_MIN_SCORE 那一条。",
+    ("tier.py", "TIER3_MIN_SCORE"): (
+        "T3 质量线的缺省回退值(V2-⑥-b-B 新增,纠正「T3 无下限」——没有下限时 "
+        "`T3≤10` 是事实上的配额,只要有 ≥10 个候选就永远填满,正是 V1「每天硬凑 "
+        "20 只候选」那个被 V2 立项要治的病)。0.25 是 planner 拟的临时默认,与"
+        "TIER1_MIN_SCORE/TIER2_MIN_SCORE 同批待 ⑨ 校准,§七 P3-33 挂账。"
+    ),
     ("tier.py", "NEUTRAL_DIM_SCORE"): (
         "某一维算不出时的中性分。它是「[0,1] 归一化维度的中点」这一**度量约定**,"
         "不是可调偏好——真正要防的是拿 0 冒充「没数据」(0 是 stage_scores 里 overheat "
