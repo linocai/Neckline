@@ -1899,10 +1899,11 @@ never_writes_to_basket_tables`)AST 扫描全仓 `neckline/`,零命中。
    中文短语,未给码),连同四个新 `close_reason` 码一并提请 ⑭ 契约总装核对/裁定。
 2. **`entry_snapshots` 的"机器可知一切"本轮范围收窄**:资金流(`compute_sector_
    moneyflow` 是 EOD 报告管线专用现算,买入热路径现算属于本项目明确记取的
-   P0-23 反面教材)与竞价表现(`auction_snapshots` 依赖当天是否命中存拍窗口)
-   **未采集**,`snapshot_json.not_captured` 字段如实列出这两项、不假装齐全;
-   已采集:一次 best-effort 实时报价(价/涨幅/量/额)+ 篮子来源全量字段(含
-   K4 标签/行业 lift)+ EOD 预计算板块强度(单日点查,不现算)。
+   P0-23 反面教材)、竞价表现(`auction_snapshots` 依赖当天是否命中存拍窗口)、
+   换手率与量比(归一化指标,需额外拉 `daily_basic` 流通股本/历史均量基准)
+   **四项未采集**,`snapshot_json.not_captured` 字段如实列出、不假装齐全;
+   已采集:一次 best-effort 实时报价(价/涨幅/绝对量/额)+ 篮子来源全量字段
+   (含 K4 标签/行业 lift)+ EOD 预计算板块强度(单日点查,不现算)。
 
 **测试**:新增 `tests/test_positions_entry.py`(22 例,覆盖来源查找三态/计划继承/
 偏离提示/端到端冻结/新版本不改原卡/篮子表零写入守门/CLI 接线);`decision_log`

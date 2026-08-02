@@ -49,9 +49,12 @@ _EPS = 1e-9  # CLAUDE.md 纪律阈值比较容差体例(边界判定同源)
 # entry_snapshots 本轮 MVP 刻意不采集的机器可知项(如实披露,不是"没看当成没有"):
 # 竞价表现需要读当日 `auction_snapshots` 分区(⑧ 存拍产物,依赖当天是否命中 T1/T2
 # 关注池窗口才会有数据);资金流依赖 `report/sector_moneyflow.py::compute_sector_moneyflow`
-# 现算(EOD 报告管线专用、非在线廉价点查,买入热路径不适合现算,同 P0-23 纪律精神)。
-# 两项都不是"技术上做不到",是本块工期内的范围收窄,登记在完工记录里。
-SNAPSHOT_NOT_CAPTURED = ("capital_flow", "auction_performance")
+# 现算(EOD 报告管线专用、非在线廉价点查,买入热路径不适合现算,同 P0-23 纪律精神);
+# 换手率/量比是**归一化**指标(换手率=成交量/流通股本,量比=成交量/历史均量),
+# `quote` 只带 `sentinel.quotes.Quote` 原生的**绝对量**(`volume`/`amount`,单位手/元),
+# 归一化需要额外拉 `daily_basic`(流通股本/历史均量基准)——同样是买入热路径不适合
+# 现拉的重活。三项都不是"技术上做不到",是本块工期内的范围收窄,登记在完工记录里。
+SNAPSHOT_NOT_CAPTURED = ("capital_flow", "auction_performance", "turnover_rate", "volume_ratio")
 
 
 def _now() -> str:
