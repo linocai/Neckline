@@ -480,6 +480,24 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
         "intel_candidates.py `_INDUSTRY_GATE_EPS` 先例:裸 >=/<= 比较除法产生的"
         "浮点噪声是本项目通用坑),非策略参数。"
     ),
+    # —— V2-⑤ 驱动聚合层(plan §五「插槽边界」原文:「②驱动聚合的两道机械闸 =
+    #    **引擎本体,不进包**」——本节四项因此**刻意**不是包参数)——————————
+    ("aggregate.py", "MIN_MEMBERS"): (
+        "篮子成员数下限,蓝图 4.2「每个篮子允许 1—3 只股票」的产品硬规则,"
+        "不是可调阈值;插槽边界明文把驱动聚合归为引擎本体、不进包。"
+    ),
+    ("aggregate.py", "MAX_MEMBERS"): (
+        "篮子成员数上限,同上(蓝图 4.2 的 3 只)。改它等于改产品定义,"
+        "要走 plan 而不是换包。"
+    ),
+    ("aggregate.py", "MAX_SEEDS_AGGREGATED"): (
+        "一次聚合最多喂几颗种子的工程护栏(真正的 governor 是 `BudgetLedger`)。"
+        "它约束的是上下文规模与调用次数,不参与任何选股判据,故非策略参数。"
+    ),
+    ("aggregate.py", "MAX_MEMBERS_IN_CONTEXT"): (
+        "每颗种子在 LLM 上下文里最多列几只成员的工程护栏(同时定义了白名单闸的"
+        "白名单范围)。同样只约束上下文规模,不是「够不够格」这类阈值判据。"
+    ),
 }
 
 

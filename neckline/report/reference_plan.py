@@ -42,10 +42,8 @@ limit_prices` 唯一算涨跌停入口。
 
 from __future__ import annotations
 
-import json
 import logging
 import math
-import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -54,6 +52,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from neckline.calendar import next_trading_day
 from neckline.data.limit_derived import compute_intraday_limit_prices
 from neckline.llm.base import LLMProvider
+from neckline.llm.json_block import split_narrative_and_reference_json
 from neckline.llm.judge import JudgeResult, VERDICT_VETO, judge_candidate
 from neckline.llm.prompt_context import TIMELINESS_RULES, date_anchor_line
 from neckline.report.candidates import Candidate, invalidation_text
@@ -318,85 +317,11 @@ def build_reference_context_block(
 
 # ======================================================================
 #  narrative 尾部三件套 json 解析(①-B)
+#  —— 实现已搬去 `neckline/llm/json_block.py`(V2-⑤,行为逐字节不变),理由见
+#     该模块头:它是通用 LLM 输出解析件,而本模块按 plan §五 V2-⑬-3 将停用,
+#     通用件不能陪葬。本处保留同名再导出,既有调用方(`pipeline.py` 注入
+#     `judge_candidate(narrative_splitter=…)`)与既有单测逐字不改。
 # ======================================================================
-
-_JSON_FENCE_RE = re.compile(r"```json\s*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
-# 残留围栏清理(v1.5.1 判定线 review 🟢-4 的两个化妆缺口):① 围栏**未闭合**(输出被
-# 截断)时 `_JSON_FENCE_RE` 匹配不到、裸 JSON 也解析不动,老实现把「```json {"buy": …」
-# 半截原样摊给用户;② 多围栏时只删了最后一个,前面的残留在叙述里。两者都不影响解析
-# 结果(仍取最后一个**闭合**围栏),只违 §2.7「不把 JSON 摊给用户」的观感。
-_JSON_FENCE_UNCLOSED_RE = re.compile(r"```json\b.*\Z", re.DOTALL | re.IGNORECASE)
-_JSON_FENCE_MARK_RE = re.compile(r"```json", re.IGNORECASE)
-
-
-def _strip_residual_json_fences(text: str) -> str:
-    """把叙述里**所有** ```json 围栏(闭合的全删 + 末尾未闭合的那一截删到结尾)剥净。
-    一个围栏标记都没有时**原样返回**(不做 strip)——degraded 占位文案/无围栏输出必须
-    逐字节透传,这条由 `test_no_json_anywhere_returns_none_and_original_text_untouched`
-    锁死。"""
-    if not _JSON_FENCE_MARK_RE.search(text):
-        return text
-    return _JSON_FENCE_UNCLOSED_RE.sub("", _JSON_FENCE_RE.sub("", text)).strip()
-
-
-def _extract_last_json_fence(text: str) -> Optional[Tuple[str, int, int]]:
-    matches = list(_JSON_FENCE_RE.finditer(text))
-    if not matches:
-        return None
-    m = matches[-1]
-    return m.group(1), m.start(), m.end()
-
-
-def _extract_bare_trailing_json(text: str) -> Optional[Tuple[Dict[str, Any], int]]:
-    """无围栏时容忍"末尾裸 JSON 对象"(①-B)。用 `json.JSONDecoder.raw_decode` 逐个
-    候选起点(文本内每一个 `{`)去试解析,取**第一个**能让解析恰好吃到(去除尾部空白
-    后的)字符串末尾的起点——这自然就是"跨越到文本结尾的那个最外层对象",不必手写
-    括号计数器去猜嵌套边界。"""
-    stripped = text.rstrip()
-    decoder = json.JSONDecoder()
-    for idx, ch in enumerate(stripped):
-        if ch != "{":
-            continue
-        try:
-            obj, end = decoder.raw_decode(stripped, idx)
-        except json.JSONDecodeError:
-            continue
-        if end == len(stripped) and isinstance(obj, dict):
-            return obj, idx
-    return None
-
-
-def split_narrative_and_reference_json(narrative: str) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """把模型输出(格式定死:自由叙述 → "结论:"标签 → 空行 → ```json 三件套围栏块)
-    拆成 `(干净叙述, 解析出的 dict 或 None)`。取**最后一个**围栏块;无围栏时容忍
-    "末尾裸 JSON 对象"。解析失败(围栏在、内容非法 JSON;或两种形式都没找到)→
-    `(去除围栏后的叙述或原文, None)`——**绝不能让三件套解析失败拖累叙述本身**
-    (项目 CLAUDE.md「解析失败→参考件为 null+理由字段,绝不让解析失败拖垮审判结论」)。
-    degraded 占位文案(LLM未激活/调用失败)天然无围栏也无裸 JSON,原样返回、零影响。
-
-    **v1.5.1 起本函数在 `_parse_verdict` 之前跑**(作为
-    `judge_candidate(narrative_splitter=...)` 注入进去,判定线 review 🟡-1):入参因此是
-    **含"结论:"标签的原始输出**,返回的"干净叙述"里标签仍在、随后由 `_parse_verdict`
-    去掉。顺序不可再颠倒——先解析 verdict 会让 JSON 里的自由中文("若跌破证伪线则
-    结论:否决"这类)劫持 last-match 锚点、静默翻转结论。本函数只认围栏/裸 JSON 边界,
-    多一个标签不影响任何分支。"""
-    fence = _extract_last_json_fence(narrative)
-    if fence is not None:
-        raw, _start, _end = fence
-        # 🟢-4:清理时把**所有**围栏剥净(不只解析用的那一个),含未闭合的半截。
-        cleaned = _strip_residual_json_fences(narrative)
-        try:
-            parsed = json.loads(raw)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return cleaned, None
-        return cleaned, (parsed if isinstance(parsed, dict) else None)
-
-    bare = _extract_bare_trailing_json(narrative)
-    if bare is not None:
-        obj, idx = bare
-        return _strip_residual_json_fences(narrative[:idx].rstrip()), obj
-
-    return _strip_residual_json_fences(narrative), None
 
 
 # ======================================================================
