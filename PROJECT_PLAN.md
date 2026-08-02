@@ -420,9 +420,10 @@ Neckline/
 | D7 | **首包命名与位置** | ✅ `packs/K4-pack.json`,`pack_version = "K4-pack-v1"` | 沿用 K 字头,包 = 策略线交付物形态 |
 | D8 | **iPhone 信息架构** | ✅ 四板块 = **今日篮子 / 持仓 / 问询台 / 设置**(macOS 加周复盘工作台) | 加 tab 会稀释「打开就看今天做什么」 |
 
-### V2 新表汇总(**20 张**,DDL 要点在各块定死,建表统一在 ① 一次到位)
+### V2 新表汇总(**21 张**,DDL 要点在各块定死;1–20 建表统一在 ① 一次到位,**第 21 张随 ④b 追加**)
 
-> 算术:架构稿 §四 列了 **16 张**(含 2 张 parquet)+ §十二 的 `selection_packs` **1 张** + **planner 补位 3 张**(理由逐条写在下表「来源」列)。
+> 算术:架构稿 §四 列了 **16 张**(含 2 张 parquet)+ §十二 的 `selection_packs` **1 张** + **planner 补位 3 张** + **K7 需求 1b 追加 1 张**(理由逐条写在下表「来源」列)。
+> ⚠ 第 21 张(`industry_stage_daily`)是 ① 完工**之后**才立项的,DDL 落在 **④b** 块自己那里(新表 `CREATE TABLE IF NOT EXISTS` 天然幂等、**不进 `_COLUMN_MIGRATIONS`**,同 ① 的既有体例),不回头改 ① 的完工记录。
 
 | # | 表 | 载体 | 建表块 / 写入块 | 三律 | 来源 |
 |---|---|---|---|---|---|
@@ -446,6 +447,7 @@ Neckline/
 | 18 | `entry_snapshots` | SQLite | ① / ⑩ | **冻结** | **planner 补位**:§3.1「决策日志强制表单退役 → 自动快照表」需要落点,而 16 表清单里没有;`decision_log` 的 4 个 `NOT NULL` 无默认列无法就地放宽(SQLite 要重建表),故新表冻结 + `decision_log` 停写留档 |
 | 19 | `intraday_ticks` | **parquet** | ① / ⑧ | 只增不改 | 架构稿 |
 | 20 | `auction_snapshots` | **parquet** | ① / ⑧ | 只增不改 | 架构稿 |
+| 21 | `industry_stage_daily` | SQLite | **④b** / ④b | EOD 预计算,在线只读 | **K7 需求 1b**(2026-08-02 用户转发):`driver_freshness` 改行业五态状态机,需要一张按日落表的阶段表;交接稿给了「新表 or `industry_strength_daily` 加列」二选一,**planner 定为新表**,理由见 ④b |
 
 ### 分块序列(依赖一眼看清)
 
@@ -453,9 +455,12 @@ Neckline/
 地基层  ① 表与共享信息层地基
         ② LLM Provider 自填制 + 双 Agent 路由 + 预算多本账
         ③ 选股策略包机制(含首包 K4-pack)
+        ③-K7 原语与白名单跟进(K7 需求 4)             ← ③,可与 ④/④b 并行
 选股层  ④ ①市场扫描层(三张预计算表 + 驱动种子)      ← ①③
+        ④b 行业题材阶段表 industry_stage_daily(K7 需求 1b)
+             + ④ 的 rs_rank tie-break 口径追加(K7 需求 1a)  ← ①,**可与 ④ 并行**
         ⑤ ②驱动聚合层(LLM + 两道机械闸)             ← ②④
-        ⑥ ③Tier 分层引擎                             ← ③⑤
+        ⑥ ③Tier 分层引擎(K7 需求 1a/1b/2 的机械分正式定义)← ③ ③-K7 ④b ⑤
         ⑦ ④篮子卡冻结                                ← ⑥
         ⑧ ⑤-a D+1 验证:关注池改造 + 盘中存拍 + 状态机 ← ⑦
         ⑨ ⑤-b 盘后复盘引擎 + 评价引擎                 ← ⑦⑧
@@ -466,9 +471,19 @@ Neckline/
         ⑭ 篮子日报 + API 契约总装 + 三方对拍           ← ①~⑬
         ⑮ 客户端双端改版                              ← ⑭
         【门禁·非施工块】用户判定点:是否召唤 @reviewer
-交付层  ⑯ 新服务器 + 晚间管线多段化 + 迁移割接 + 首包激活 + Tier 预填充(🔴)← ①~⑮ + 用户已购机
+交付层  ⑯ 新服务器 + 晚间管线多段化 + 迁移割接 + 两步包激活 + B3 退役 + Tier 预填充(🔴)
+             ← ①~⑮ + 用户已购机
         ⑰ 双端换包(末块,等用户指令)
 ```
+
+> 📌 **K7 需求整合位置一览(2026-08-02 用户转发 `archive/交接_K7_系统线需求_20260802草案.md`,已全文整合,原稿转参考件)**:
+> 需求 **1a** leader_clarity → **⑥** 正式定义 + **④b-0** 的 `rs_rank` 三级 tie-break 口径追加;
+> 需求 **1b** driver_freshness 五态 → **⑥** 正式定义 + 新块 **④b**(`industry_stage_daily`);
+> 需求 **2** 五维权重证据化初值 → **⑥**(数值落 K7-pack,**K4-pack-v1 原样不动、不重发版**);
+> 需求 **3** B3 黄牌退役 → **⑯-I**(🔴 advisory 载体变更,与 ⑯-E 包激活同窗)+ **【门禁】** 的用户判定点;
+> 需求 **4** 原语 / 白名单 / schema 扩展 + `packs/K7-pack.json` → **③-K7**,激活时机 → **⑯-E**;
+> 需求 **5** 龙回头位与双尾警示标注件 → **⑦-K7**(篮子卡成员节)+ **⑬-N**(信息卡);
+> 需求 **6** 安慰剂对照臂 → **⑨-C**(用户「尽量都做到」,已从建议项排进正式验收)。
 
 > ⏱ **工序时序纪律(2026-08-02 用户追加指示,写死)**:**云上组件迁移放在尾声。①–⑮ 全部本地推进优先,⑯ 的云上动作(购机验收 / 数据搬家 / 新机实测 / 割接 / 首包激活 / preseed 灌入)是尾声块,不与前面任何块并行穿插。**
 > - **判据**:在 ⑮ 完工之前,**不碰任何服务器**(新机老机都不碰)、不搬数据、不改 DNS、不部署。①–⑮ 期间的一切验证走本地隔离库 + 本地 parquet + 单测 + `xcodebuild`。
@@ -853,6 +868,47 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 ---
 
+### V2-③-K7 · 原语与白名单跟进 + `packs/K7-pack.json`(K7 需求 4;@builder,**③ 主体已完工,本子项是 K7 追加施工项**)
+
+> **来源**:`archive/交接_K7_系统线需求_20260802草案.md` 需求 4(2026-08-02 用户转发)。**跨线协议照旧:原语先进引擎,包才能引用** —— 本子项是「先进引擎」那一步,K7-pack 只是它的下游产物。
+> **⛔ 边界**:本子项**只加不改**,③ 已完工的 5 个原语语义一字不动。
+> ⚠ **「K4-pack 原样不动」的准确范围(别理解过宽,否则 ④ 没法干活)**:需求 2 说的是 **Tier 五维权重的占位值**(`0.25/0.20/0.25/0.20/0.10`)**不因 K7 而改、不为此重发 K4 版本** —— 证据化初值只落 K7-pack。它**不禁止** ④ 在自己的施工里给 `packs/K4-pack.json` 补 ④ 种子原语所需的参数节(那是 ④ 本来就要做的事,与 K7 无关)。**③-K7 自身则一行都不改该文件**(基准 = ③-K7 开工时的文件状态)。
+> ⚠ 另:`selection_packs` 表当前**真实库里还是 0 行**(③ 完工记录:首包灌入留到 ⑯),所以现在改包文件不触发 `activate_pack.py` 的 append-only 完整性闸;**一旦某个版本被 `--confirm` 写进库,它的文件内容就冻了**(篡改会被闸拒),届时任何改动都必须换新版本号。
+
+**③-K7-A 白名单扩容**(`neckline/selection/primitives.py::_ALLOWED_FEATURES`)
+- 新增模式 **`industry_stage_daily.*`**(④b 产出的阶段表)。
+- **确认** `leader_structure_daily.*` 已在白名单内(③ 完工记录称八模式逐字照抄 plan,含此项)**且其 RS 排名列 `rs_rank` 可被 `sort_key` 类原语引用** —— 若现实现只允许 `filter`/`feature` 引用它,本子项补齐 `sort_key` 通路。
+- ⚠ 白名单只收**预计算表与 EOD 面板的列**;**LLM 产出字段永远不在内**(单测锁死,`_SORT_KEY_INPUTS` 体例)。
+
+**③-K7-B `intel_rank_priority` 的 `dims` 取值扩容**
+- `params_schema` 支持新 dims:**`industry_stage_score`**(读 `industry_stage_daily`)、**`leader_rs_rank`**(读 `leader_structure_daily.rs_rank`)。
+- 既有三个取值(`industry_rank` / `industry_persist_days` / `yellow_card_count`)**保留可用**(K4-pack-v1 还在引用它们,是回滚锚,不许失效)。
+- **顺序即权重**的既有语义不变(③ 完工记录:有序 `dims` 列表 = 字典序比较,不是加权和)。K7-pack 的排序键 = `["industry_rank", "industry_stage_score", "leader_rs_rank", "yellow_card_count"]`。
+- **方向必须显式声明,不许靠猜**:`industry_rank` / `leader_rs_rank` 是**名次(升序为优)**,`industry_stage_score` 是**分数(降序为优)**,`yellow_card_count` **升序为优**。现实现若把 dims 一律当同向处理 → 本子项必须把每个 dim 的方向做成原语声明的一部分(单测:同一份数据下 `industry_stage_score` 高的排前面)。
+
+**③-K7-C `tier` 节的 schema 扩展 + `engine_api_version` 判断**(需求 4 末条,**fail loud 不静默兼容**)
+- K7-pack 的 `config.tier` 需要携带**五态打分映射**(需求 1b:「打分映射必须做成 pack 可配参数」)。
+- **判定规则(定死)**:若新增字段能以**纯增量、旧包不受影响**的方式加入(即 `K4-pack-v1` 原样重新校验仍通过、`get_active_pack()` 对旧包行为逐位不变)→ **`ENGINE_API_VERSION` 保持 1**;若为容纳它必须改动既有字段的形状 / 必填性 / 语义 → **bump 到 2 并 fail loud**(旧包在新引擎上拒绝激活并给出可读原因,退出码非 0)。**两条路都要在完工记录里写明走的是哪条、依据是什么**,不许含糊。
+- **落点定死**:`config.tier.stage_scores`(与 `weights` / `dims` 平级),**新增可选键**;缺省时 `driver_freshness` 维度走「阶段表缺行」的保险丝路径(见 ④b),**不静默给 0 分**。
+
+**③-K7-D 字典键一律英文枚举码(planner 定案,与交接稿草案 JSON 的中文键**刻意不同**)**
+- 交接稿草案里 `stage_scores` 用中文键(`"发酵"` / `"启动"` …)。**改为英文枚举码**:`ignition`(启动)/ `fermentation`(发酵)/ `overheat`(过热)/ `divergence`(分歧回调)/ `ebb`(退潮)/ `none`(无题材)。
+- **理由(照项目既有纪律,不是口味)**:①`CandidateOut.board` 先例 —— **库与契约用英文枚举码、中文只做客户端展示层换算**(项目 CLAUDE.md 明文);②中文键在 JSON / SQLite / 日志 / grep 守门里易踩编码与不可见字符的坑;③`industry_stage_daily.stage` 列也用同一套码,**配置键与库列值同源**才能写交叉断言。
+- **中文名只出现在展示层**(报告 markdown / 客户端 / 卡面文案),映射表单一源住 `neckline/scan/stage.py`。
+
+**③-K7-E `packs/K7-pack.json` 落地**
+- 按交接稿附录草案落盘,**四处按引擎实际 schema 定稿**:`stage_scores` 键换英文码(③-K7-D)、`date` 填**原语落地当日**、`engine_api_version` 填 ③-K7-C 的实际结论、`evidence_ref` = `["research/k7_pre_report.md", "research/k7_pre2_report.md"]`。
+- `config.seeds` 的卫生线 / 非次新 / K4 安检 / 行业闸四项**承 K4-pack 不变**(交接稿明文:K7 的变更集中在排序键、Tier 权重与两个新维度)。
+- `config.tier.weights` = 需求 2 的证据化初值(见 ⑥);`dims` 五项照旧。
+- ⚠ **本子项只产出文件 + 演练通过,不激活**;激活排在 **⑯-E**(尾声块,守「⑮ 完工前不碰服务器」)。
+
+**测试与守门**:白名单新模式的正负例;`leader_rs_rank` 可被 sort_key 引用的用例;新 dims 的方向性单测(升序 / 降序各一);**K4-pack-v1 逐字节重新校验仍通过 + `get_active_pack()` 对它的输出逐位不变**(回滚锚不许被本子项打坏 —— 这条是硬判据);`K7-pack.json` 过四道闸演练(**零写库**,断言库文件 MD5 不变);若 bump 了 `engine_api_version`,补「旧包在新引擎上被拒 + 退出码非 0 + 原因可读」单测。
+
+**依赖**:③(已完工)。**可与 ④ / ④b 并行**(不同文件)。⚠ ③-K7-A 的 `industry_stage_daily.*` 白名单项**可以先加**(白名单是声明,不要求表已存在),但引用它的原语单测要等 ④b 的表 DDL 就位。
+**验收**:上述守门全绿;`packs/K7-pack.json` 演练 exit 0 且输出可读 diff;**③-K7 自身对 `packs/K4-pack.json` 零改动**(以本子项开工时的文件状态为基准做 diff,不是与 git HEAD 比 —— ④ 可能已合法地往里加过种子参数);**K4-pack-v1 的 Tier 五维权重仍是占位值** `0.25/0.20/0.25/0.20/0.10`(单测断言,防被 K7 初值顺手覆盖);pytest 零回归。
+
+---
+
 ### V2-④ · ①市场扫描层:三张预计算表 + 驱动种子(@builder)
 
 **目标**:16:05 数据更新后批算,产出**驱动种子集**(热点行业 / 暴起概念 / 涨停簇 / 异动簇)交 ⑤。**全部 EOD 预计算落表、在线只读**(P0-23 纪律)。
@@ -871,6 +927,77 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 **依赖**:①③。
 **验收**:三表 `bootstrap` + 单日 `refresh` + `verify` 三项自检全绿;**三路等价单测**(全量算 ≡ 逐日递推 ≡ 落表读回)在随机 3 日上逐位一致;确定性单测(同一天跑两次 `cluster_key` / `rs_rank` 逐位相同);换包 → 种子集跟着变;grep 守门:在线模块(`api/` / `report/pipeline.py` / `api/inquiry.py`)零现算入口;pytest 零回归。
+
+---
+
+### V2-④b · 行业题材阶段表 `industry_stage_daily` + `rs_rank` 口径追加(K7 需求 1b / 1a;@builder,**可与 ④ 并行**)
+
+> **来源**:`archive/交接_K7_系统线需求_20260802草案.md` 需求 1a/1b(2026-08-02 用户转发,证据链 `research/k7_pre_report.md` H10/H11)。
+> **为什么单开一块、不塞进 ④**:① **④ 正在施工中,其规格已定型,插改会返工**;② 本表的数据源(`daily` + 现役 `industry_strength_daily` + `limit_derived` 涨停家数)与 ④ 三表的**簇 / 相关口径无耦合**,可并行;③ 它有**两个消费方**(⑥ 的 `driver_freshness` + K7-pack 排序键的 `industry_stage_score`),不专属 ⑥,埋进 ⑥ 会让 ④ 的种子排序拿不到它。
+> **依赖**:①(建表体例)+ 现役 `industry_strength_daily`。**不依赖 ④**。
+
+#### ④b-0 · ④ 的 `leader_structure_daily.rs_rank` tie-break 口径追加(K7 需求 1a,**口径级要求**)
+
+- ④ 原文只给了 tie-break **体例**(`(指标降序, ts_code 升序)`);K7 需求 1a **把 `rs_rank` 的 tie-break 具体化为三级、定死**:**RS(`ret_20d`)降序 → 成交额降序 → `ts_code` 升序**。
+- **谁做**:**若 ④ 尚未完工** → 由 ④ 一并落地(它本来就在写 `leader.py`);**若 ④ 已完工** → 作为 ④b 的第一件小改动补齐。**两种情况都要有单测锁死三级键**(造两只 RS 相同的票 → 断言成交额大的在前;再造成交额也相同的 → 断言 `ts_code` 小的在前)。
+- **这不是对 ④ 的推翻,是它的具体化**:确定性 tie-break 本就是 ④ 的硬要求,K7 只是把中间那一级从「无」定成「成交额降序」(理由:成交额是簇内相对强弱的天然次序,比直接掉到 `ts_code` 字典序更有语义)。
+- ⚠ 连带:③-K7-B 的 `leader_rs_rank` 排序键读的就是这一列,口径不定死则排序键不可复现。
+
+#### ④b-A 五态状态机(定义定死,per 行业 per 交易日,**互斥,优先级从上往下**)
+
+| 码(库与配置唯一键) | 中文名(仅展示层) | 判据 |
+|---|---|---|
+| `ignition` | 启动 | 强度日 且 `persist == 1` |
+| `fermentation` | 发酵 | 强度日 且 `persist ∈ [2, 3]` |
+| `overheat` | 过热 | 强度日 且 `persist ≥ 4` |
+| `divergence` | 分歧回调 | 非强度日 且 近 **2** 个交易日内有强度日 且 当日该行业涨停家数 **≥ 1** |
+| `ebb` | 退潮 | 非强度日 且 近 **5** 个交易日内有强度日 且 当日该行业涨停家数 **= 0** |
+| `none` | 无题材 | 其余 |
+
+- **强度日定义(与现役 `industry_strength_daily` 同族口径,不另起一份)**:行业当日成员 `ret_1d` **中位数进全行业 top 20%**(`q = 0.80`),且**成员数 ≥ 5**。⚠ **`persist` 直接读 `industry_strength_daily` 的既有 `persist_days` 递推列,不重算**(单一源纪律;那张表的口径指纹与 `verify` 自检已在生产跑了几个月)。
+- **「近 N 个交易日」一律按交易日数**(`neckline.calendar`),不是自然日。
+- **当日行业涨停家数**读 `data/limit_derived.py` 口径(唯一源,禁自己乘 1.1);行业归属读 `stock_basic.industry`(与 `industry_strength_daily` 同口径,不混用概念板块 —— 项目 CLAUDE.md 明文:行业一对一 vs 概念多对多是两个量)。
+- **`persist=0` 或强度日判据缺数** → `stage = 'none'` 且 `stage_reason` 如实写原因,**不猜**。
+- **中英映射唯一源** = `neckline/scan/stage.py::STAGE_LABELS`;报告 / 客户端只读它,**禁在别处抄第二份中文表**。
+
+#### ④b-B 新表 `industry_stage_daily`(第 21 张;DDL 定死)
+
+```sql
+CREATE TABLE IF NOT EXISTS industry_stage_daily (
+  trade_date     TEXT NOT NULL,          -- 'YYYYMMDD'
+  industry       TEXT NOT NULL,          -- stock_basic.industry 口径
+  stage          TEXT NOT NULL,          -- ignition|fermentation|overheat|divergence|ebb|none
+  is_strength_day INTEGER NOT NULL,      -- 0/1,留痕供复现
+  persist_days   INTEGER,                -- 读自 industry_strength_daily,NULL=该表当日无行
+  limit_up_count INTEGER,                -- 当日该行业涨停家数,NULL=算不出(禁写 0)
+  member_count   INTEGER,                -- 参与中位数的成员数(<5 时强度日恒 0)
+  stage_reason   TEXT,                   -- 落到该态的判据留痕(可读)
+  spec_fingerprint TEXT NOT NULL,        -- 口径指纹:q/成员数下限/近N日窗口 的序列化
+  computed_at    TEXT NOT NULL,
+  PRIMARY KEY (trade_date, industry)
+);
+CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade_date);
+```
+- **为什么新表而不是给 `industry_strength_daily` 加列**(交接稿给了二选一,planner 定案):① 那张表**已在生产跑着 17.5 万行**,加列要走 `_migrate_columns` 且要**回填历史**,风险与工作量都更大;② 五态判据额外吃 `limit_derived` 的涨停家数,**与那张表的口径指纹不同源** —— 混一张表会让「口径指纹一致」这条 `verify` 自检语义模糊;③ 分表后两张表各自的 `verify` 三项自检互不牵连,缺行保险丝也能各自独立降级。
+- **落全部行业**(含 `stage='none'`),不只落有题材的 —— 同 `industry_strength_daily` 的既有取舍(缺行 ≠ 无题材,两者必须能分开)。
+
+#### ④b-C P0-23 纪律(硬要求,与 ④ 同规格)
+
+- **16:05 EOD 批算落表、在线只读**;日更增量**只读当日一个分区** + 读 `industry_strength_daily` 的当日行 + 前 5 个交易日的既有 `industry_stage_daily` 行(算「近 N 日有强度日」),**不扫全历史**。
+- 新 CLI `scripts/industry_stage.py {refresh,verify,bootstrap}`(照 `scripts/industry_strength.py` 体例:`bootstrap` 分块两遍法;`verify` 三项 = 交易日无洞 / 五态判据自洽〔强度日与 stage 不矛盾〕/ 口径指纹一致)。
+- `scripts/daily_update.py` 挂 `refresh`(尽力而为不改退出码,失败打 **ERROR** + 打印补算命令原文);**排在 `update_industry_strength` 之后**(依赖它的 `persist_days`)。
+- **新批算在新机上单独计时 + 量峰值后才准进主链**(⑯-C)。
+- **缺行保险丝(定死)**:`driver_freshness` 拿不到当日阶段 → **降级方向 = 不拦**(该维度按「中性分」处理**且在 `mech_breakdown_json` 里如实标 `stage_missing`**,**不写 0 分**——0 分是「过热」的真实取值,与「没数据」撞车);排序键 `industry_stage_score` 缺行 → 该级键退化为并列(不改变其余级次序),**并在 `dataFreshness` 新增 `industryStageDate` / `industryStageLagDays` / `industryStageStale` 三键显式披露**(与 ④ 的 `scanLayer*` 三键、既有板块三键、行业强度三键**一律不合并**)。
+
+#### ④b-D 研究参考实现的边界
+
+- 研究侧参考实现 = `research/k7p_h11_stage.py`。**生产实现归系统线重写 + 带守门单测,研究代码不直接进生产**(交接稿明文,也是本项目 research → neckline 单向依赖的既有纪律)。
+- 允许做的是:拿研究实现当**对拍基准** —— 在若干随机交易日上跑「研究实现 vs 生产实现」逐位比对(比对脚本可放 `scripts/oneoff/`,**不进生产链路**)。口径若有出入,**以本块 ④b-A 的表格为准**(它才是定义),并把差异写进完工记录。
+
+**测试与守门**:五态各一条正例 + 每条边界(`persist=1/3/4`、近 2 日 / 近 5 日窗口两端、涨停家数 0 与 1)各一条;`stage='none'` 与「表里没这一行」两种「没有」分开的单测;确定性(同日跑两次逐位相同);`verify` 三项;**三路等价**(全量 bootstrap ≡ 逐日 refresh ≡ 落表读回)在随机 3 日逐位一致;缺行保险丝两路(⑥ 不拦 + 排序键退化);grep 守门:在线模块零现算入口;`industry_strength_daily` **零改动**(本块不碰它,只读)。
+
+**依赖**:①。**可与 ④ 并行。** 是 **⑥** 与 **③-K7-B** 的前置。
+**验收**:上述守门全绿;`bootstrap` + 单日 `refresh` + `verify` 三项自检绿;与研究实现的随机 3 日对拍结论已写进完工记录(一致 / 不一致各自说明);pytest 零回归;真实 `data/neckline.db` 零写入(演练走临时库)。
 
 ---
 
@@ -902,12 +1029,37 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 **目标**:把篮子候选定档 T1/T2/T3,**定档可完整复现**。
 
-**机械分五维(初版,全部是已审计方向的量;维度选择与权重读现役包)**
-1. **板块强度**(`industry_strength_daily` + 概念板块强度,只读表);
-2. **驱动新鲜度**(`stock_persist_days` **反用** —— 天数越大越减分,承 v1.4-③ 排序键先例);
-3. **龙头结构清晰度**(`leader_structure_daily` 的头名领先度 / 角色齐整度);
-4. **可交易性**(一字比例与涨停占比 —— 买不进的涨停不算机会,承蓝图 4.9);
-5. **红黄牌密度**(`k4_advisory` 命中数;**降格为风险信息与模型特征,不等同禁买** —— 蓝图 7.2)。
+**机械分五维(**K7 需求 1a/1b 已把第 2、3 维从「方向描述」升级为正式定义**,施工前采纳、免返工;维度选择与权重读现役包)**
+
+> 来源:`archive/交接_K7_系统线需求_20260802草案.md` 需求 1a/1b/2(2026-08-02 用户转发;证据链 `research/k7_pre_report.md` H10/H11)。
+
+1. **`sector_strength` 板块强度**(`industry_strength_daily` + 概念板块强度,**只读表**);
+2. **`driver_freshness` 驱动新鲜度 = 行业五态打分(K7 需求 1b,取代 persist_days 单调函数)**
+   - 读 **④b 的 `industry_stage_daily.stage`**(六态英文码),经**现役包的 `config.tier.stage_scores`** 映射成分值。
+   - ~~`stock_persist_days` 反用(天数越大越减分)~~ **已被取代**:H11 审计判定它是**非单调**的 —— 2-3 天(发酵态)在当前 regime 是最优注意力段,而单调减分函数会把它和「启动」压成同一方向。原写法保留在此只作留痕。
+   - **打分映射必须是 pack 可配参数,不许写死在代码里**(H11 结论:**regime 敏感** —— 样本内「启动>发酵」,样本外 / 2026「发酵>启动」)。当前 regime 的**证据化初值**(落 K7-pack):`fermentation 1.0` / `ignition 0.6` / `divergence 0.4` / `ebb 0.2` / `none 0.2` / `overheat 0.0`。
+   - **前向校准走 ⑨ 评价引擎周报 + 进化门禁(= 换包),不许顺手改。**
+   - **缺行保险丝**:阶段表当日无该行业行 → 该维度取**中性分**并在 `mech_breakdown_json` 标 `stage_missing`,**绝不写 0**(0 是 `overheat` 的真实取值,与「没数据」撞车 —— 「没有」与「没看」必须分得开)。
+3. **`leader_clarity` 龙头结构清晰度 = 簇内 RS 头名度(K7 需求 1a)**
+   - 定义:成员在其**涨停簇内**按 **`ret_20d`(RS20)** 排名的**头名度** —— 头名最高分,**依名次衰减**(衰减函数是引擎常量,不进包;若日后要可配再走加原语流程)。数据源 = **`leader_structure_daily.rs_rank`**(④ 规划三列之一)。
+   - **tie-break 定死(可复现铁律)**:**RS 降序 → 成交额降序 → `ts_code` 升序**(落点在 ④b-0,本块只消费)。
+   - ⛔ **连板高度不进头名主定义**:十二格审计判定它是**双尾放大器**(涨停触达 1.5× 的同时,**次日跌停 3×**);它的用途在 **⑦-K7 的双尾标注**,不是加分项。⛔ **成交额头名审计否决,也不进**(它只在 tie-break 里当次级键)。
+   - **簇定义兼容注(不必同构,但语义要对)**:审计用的是「(日, 行业) 涨停家数 ≥3」的粗簇(阈值 3/5 双档方向全稳);④ 的 `limit_cluster_daily` 聚类簇与它**不必同构**,但 `rs_rank` 的语义必须保持**「簇内相对强弱头名」**。完工记录里写明本块用的是哪个簇。
+4. **`tradability` 可交易性**(一字比例与涨停占比 —— 买不进的涨停不算机会,承蓝图 4.9;可交易性审计:龙头组可买率显著更低);
+5. **`card_density` 红黄牌密度**(`k4_advisory` 命中数;**降格为风险信息与模型特征,不等同禁买** —— 蓝图 7.2)。
+
+**五维权重(K7 需求 2:证据化初值,由 K7-pack 携带)**
+
+| 维度 | K7-pack 初值 | 依据 |
+|---|---|---|
+| `sector_strength` | **0.30** | 行业强度方向已审计(H6 / 现役) |
+| `leader_clarity` | **0.30** | H10 十二格全正、2026 递增,两役里最稳的量 |
+| `driver_freshness` | **0.10** | H11 方向真实但 **regime 敏感** → 低配,交前向校准 |
+| `tradability` | **0.20** | 一字 / 涨停占比语义(龙头组可买率显著更低) |
+| `card_density` | **0.10** | 红黄牌密度,K4 案底 |
+
+- ⚠ **`K4-pack-v1` 的占位值 `0.25/0.20/0.25/0.20/0.10` 原样不动、不为此重发版**(需求 2 明文)—— 它是**回滚锚**,证据化初值只活在 K7-pack。
+- ⚠ **权重是包里的数,代码里不许有第二份**:⑥ 读 `get_active_pack().tier_weights`,缺维度 → fail loud(不静默补默认值)。
 
 **LLM 的权限边界(第〇原则 Tier 变体,定死)**:**只能在同档内微调排序并留痕,不得跨档**。跨档请求一律丢弃 + WARNING(守门单测);`llm_rank_delta` 与 `llm_reason` 落 `tier_history`,`rank_mech` 与最终 `rank_in_tier` **两个都存**(可复现、可归因)。
 
@@ -917,8 +1069,8 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 **权重校准路径**:走 ⑨ 评价引擎的周度报告;**调参 = 换包**(过 §12 四道闸 + 用户批准),**不许顺手改代码里的数**。
 
-**依赖**:③⑤。
-**验收**:定档复现单测(同输入两次运行 → tier 与序逐位相同);跨档微调被拒(单测);T1 空态是合法输出;容量上限不被突破;`_TIER_SCORE_INPUTS` 白名单单测锁死;换包(改权重)→ 序变化且 `mech_breakdown_json` 能解释变化;pytest 零回归。
+**依赖**:③、**③-K7**、**④b**、⑤。
+**验收**:定档复现单测(同输入两次运行 → tier 与序逐位相同);跨档微调被拒(单测);T1 空态是合法输出;容量上限不被突破;`_TIER_SCORE_INPUTS` 白名单单测锁死;换包(改权重)→ 序变化且 `mech_breakdown_json` 能解释变化;**K7 追加四条** —— ① 六态各喂一条数据 → `driver_freshness` 分值等于包里 `stage_scores` 对应值(单测,禁硬编);② 阶段表缺行 → 该维取中性分 + `stage_breakdown` 标 `stage_missing`,**断言不是 0**;③ `leader_clarity` 头名度随 `rs_rank` 单调衰减 + 三级 tie-break 生效(造 RS 并列、成交额并列两组数据);④ 用 K4-pack 与 K7-pack 各跑一遍同一份输入 → **权重差异真的改变了 Tier 序**(「插槽不是空架子」在 ⑥ 层面的兑现,补上 ③ 完工记录里登记的那条测试局限);pytest 零回归。
 
 ---
 
@@ -937,8 +1089,30 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 - **验证 / 失效条件双份**:`card_json.verification_spec` / `invalidation_spec` = **结构化,是 ⑧ 哨兵的唯一判据源**;人话剧本 = LLM 生成,**只给人看**。生成剧本时把结构化阈值喂给 LLM,使剧本与盘中自动警报**同频**(v1.5-①-A 体例)。
 - **D+1 只能追加**:`basket_cards` 追加版本制(`version=1` 是 D0 原判,冻结);新信息写 `version=2,3…`,**D0 行一字不改**。
 
+#### ⑦-K7 成员标注件:「龙回头位」+ 双尾警示族(K7 需求 5;**只标注,不进排序、不加分**)
+
+> 来源:`archive/交接_K7_系统线需求_20260802草案.md` 需求 5(2026-08-02 用户转发,证据链 `research/k7_pre2_report.md` H12/H13)。**用户已裁定:只标注。**
+> **⛔ 四不(硬约束,守门单测)**:**不进 `_TIER_SCORE_INPUTS`**、**不进排序键 `dims` 白名单**、**不进哨兵判据**、**不改篮子 / 成员去留**。它们是**纯展示位**,落在卡的「成员、角色与比较结果」节里,**每处带「参考、非指令」标注**。
+
+- **落库**:标注结果进 `basket_cards.card_json.members[].tags`(冻结快照的一部分,与卡同生共死),**不新建表、不新建列**;`basket_members` 表结构不动。
+- **判据全部机械算、零 LLM**(它们是价量结构判定,不是叙述):
+
+| 标签码 | 中文名(展示层) | 机械判据 |
+|---|---|---|
+| `pullback_leader` | 龙回头位 | **强势资格**(近 20 日涨停 **≥2** 且 `ret_20d ≥ +25%`)× **回调态**(距 20 日高 **−25% ~ −8%** 且 `close > ma20`)× **企稳日**(当日缩量 且 涨跌幅 **−3% ~ +2%**) |
+| `warn_streak_top` | 双尾警示 · 连板头名 | 簇内**连板高度第一**(`leader_structure_daily.limit_height` 头名) |
+| `warn_chase_zone` | 双尾警示 · 强势追入位 | **强势资格**(同上)且 **距 20 日高 > −3%** |
+
+- **展示文案要点(照交接稿,数字必须带来源与「参考」标注,禁写成收益承诺)**:
+  - `pullback_leader`:「机会密度约为市场的 **1.8×**,但 3 日跌停率也是市场的 **4–6×**(**双尾**);同为强势票,回调位的跌停率约为追入位的 **1/3**。—— 参考、非指令。」
+  - `warn_streak_top`:「簇内连板高度第一:涨停触达约 1.5×,**次日跌停约 3× 于后排**。—— 参考、非指令。」
+  - `warn_chase_zone`:「强势且贴着 20 日高:3 日跌停率 **15–19%**,三段样本一致。—— 参考、非指令。」
+- **不重复建标(交接稿明文)**:**过热态由 A2 红牌承接**、**年线下放量族由 A3 / B1 现有牌承接**,⑦-K7 不再造第二套。
+- **口径单一源**:`neckline/selection/member_tags.py`(判据 + 码 + 中文名 + 文案模板同一处);篮子卡与 ⑬-N 信息卡**读同一份**,禁两处各写一遍(v1.5 自选 / 持仓两侧 K4 镜像的交叉断言体例平移)。
+- **缺数据 → 不打标**(不猜):`ret_20d` / 20 日高 / `ma20` / 连板高度任一算不出 → 该标签 `absent` 且不显示,**不写 false 冒充「已判定为否」**。
+
 **依赖**:⑥。
-**验收**:卡 11 项齐全的 golden 快照单测;夹逼四态各一单测(界内通过 / 越涨停被拦 / low>high 被拦 / 算不出涨跌停被拦),被拦时该项为 `null` 且 reason 精确;止损随现役 `stop_pct` 变而变(改测试库 config → 输出跟着变);冻结单测(同 `(basket_id, version)` 二次写 → 拒);结构化阈值确实出现在喂给 LLM 的上下文里(单测);`disclaimer` 单一源;pytest 零回归。
+**验收**:卡 11 项齐全的 golden 快照单测;夹逼四态各一单测(界内通过 / 越涨停被拦 / low>high 被拦 / 算不出涨跌停被拦),被拦时该项为 `null` 且 reason 精确;止损随现役 `stop_pct` 变而变(改测试库 config → 输出跟着变);冻结单测(同 `(basket_id, version)` 二次写 → 拒);结构化阈值确实出现在喂给 LLM 的上下文里(单测);`disclaimer` 单一源;**⑦-K7 追加三条** —— ① 三个标签各一条命中 / 不命中单测 + 缺数据 `absent` 单测;② **四不守门**:grep 断言 `member_tags` 的标签码不出现在 `_TIER_SCORE_INPUTS` / 排序键 dims 白名单 / `neckline/sentinel/` 全目录,且打标前后 **Tier 序与成员去留逐位不变**(同一份数据跑两遍,一遍关标注一遍开标注);③ 文案每处带「参考、非指令」(渲染层 grep);pytest 零回归。
 
 ---
 
@@ -979,13 +1153,19 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 **⑨-C 评价引擎(新建 `neckline/eval/`)** —— 指标:Tier 单调性(T1>T2>T3)、篮子共振率 / 验证率、龙头 vs 同篮其他成员、**可交易收益**(排除不可成交的一字上涨)、用户已选 vs 未选对照、哪类驱动 / 角色 / 市场环境贡献正收益。**按 `pack_version` 归因**(§12.5:每个包自动攒出自己的成绩单,喂给策略线下一轮迭代)。周度出**校准报告**(进 ⑫ 的周复盘工作台)。
 
+- **⑨-C2 安慰剂对照臂(K7 需求 6;交接稿列为「建议项」,**用户 2026-08-02 说「尽量都做到」→ 本 plan 排为正式验收项**)**:周度校准报告新增两条对照臂,让「Tier 有效性」这个长期命题能回答**「是否稳定优于随机与不作为」**。
+  - **臂 A · 随机同规模篮子**:同一交易日,从**当日通过卫生线与安检的合法域**里随机抽出与真实篮子**同数量、同成员数**的对照篮子,走**同一套判分**(⑨-D 的 `exit_sim`,口径唯一源不另写)。**随机种子必须可复现** —— 用 `zlib.crc32(f"{trade_date}|{pack_version}|{arm}")` 派生(**禁内置 `hash()`**,带进程盐;项目 CLAUDE.md 明文),历史报告重跑逐位相同。抽 **N 次取分布**(N 是引擎常量,不进包),报告给中位数 + 分位,**不是单次抽样**(单次抽样的对照没有统计意义)。
+  - **臂 B · 满仓持有基准**:同期「不作为」基准 —— 按大盘指数(`SSE_INDEX`,与 RS 线同源)同期持有收益,回答「折腾一圈有没有跑赢躺着不动」。
+  - **诚实边界(写进报告文案)**:样本量不足时**只给样本数、不给结论**(「N=7 个交易日,尚不足以判断」),**禁在小样本上宣布优劣**;两条臂都**只进周报展示与策略线迭代输入**,**不进任何在线判据**(不改 Tier、不改排序、不进哨兵)。
+  - **归因维度对齐**:两条臂同样按 `pack_version` 分层,这样「换包有没有变好」与「比随机好多少」能放在同一张表里读。
+
 **⑨-D 判分引擎唯一源(重要,架构稿只给了原则,这里给落法)**
 - 架构稿要求「判分复用考官线成交层 + h9 退出模拟器,判分引擎唯一源不另写」;但现实是它住在 `research/h9_exit_reform.py::_sim_one`,而 **`research/` 反向 import `neckline/`**,生产不能倒过来 import 研究件。
 - **定死做法**:把 `_sim_one` 及其 `SLIP` / `BROKER` 常量**下沉**到新模块 `neckline/eval/exit_sim.py`;`research/h9_exit_reform.py` / `drill.py` / `exam.py` 三处改为 **import 它**(方向仍是 research → neckline)。**搬迁前后逐位对拍单测锁死**(拿既有 golden 用例跑,输出逐位相同才算搬完)。
 - **每日复盘只记录,不因单日失败改策略**(蓝图 4.9);改权重一律走换包。
 
 **依赖**:⑦⑧(⑫ 消费本块产出)。
-**验收**:`_sim_one` 搬迁逐位对拍绿(**这条不过就不许继续**);缺存拍时走 EOD 近似且标注(单测两路);Tier 单调性 / 共振率 / 验证率在造数上算对;`pack_version` 分层可查;T3 简评在预算耗尽时被丢且如实披露;pytest 零回归。
+**验收**:`_sim_one` 搬迁逐位对拍绿(**这条不过就不许继续**);缺存拍时走 EOD 近似且标注(单测两路);Tier 单调性 / 共振率 / 验证率在造数上算对;`pack_version` 分层可查;T3 简评在预算耗尽时被丢且如实披露;**⑨-C2 追加三条** —— ① 两条对照臂在造数上算对且**同一交易日跑两次逐位相同**(`crc32` 派生种子的可复现性单测);② 随机臂走的是**同一套 `exit_sim` 判分**(grep 守门:`neckline/eval/` 内无第二份判分实现);③ 小样本时报告出的是样本数而非结论(单测断言文案);pytest 零回归。
 
 ---
 
@@ -1077,6 +1257,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 **⑬-12(裁定 #9-b)呼吸台账 → 删** → `breathing_t_trades` 表停写留档;删 `neckline/breathing.py`、三个 `/breathing*` 端点、客户端 `BreathingLedgerView.swift`。⚠ 连带:§七 P3-11 的「呼吸 T 净贡献」归因维**随之废弃**(已在 §七 标注)。
 **⑬-13(裁定 #9-c)五常驻板块保底删除** → 并入 ⑬-1。
 **⑬-N 信息卡:保留改造(**D1 已拍板 = 不删**)** → `report/info_card.py` 与端点 `GET /report/{date}/info-card/{code}` **保留**;改造 = 数据来源由「候选快照」换成「**篮子成员**」,并新增三块:所属篮子与共同驱动 / 本票角色(含对拍分歧)/ 与同篮其他成员的对比。它是 ⑮ 篮子成员详情页的地基。
+  - **⑬-N-K7(需求 5 的第二个落点)**:信息卡新增**成员标注件**展示区 —— `pullback_leader`(龙回头位)/ `warn_streak_top`(连板头名)/ `warn_chase_zone`(强势追入位),**读 ⑦-K7 的 `neckline/selection/member_tags.py` 同一份实现与同一份文案模板,禁在信息卡侧重写判据**(交叉断言:同一票同一天,信息卡与篮子卡的标签集合逐位相同 —— v1.5 自选 / 持仓两侧 K4 镜像的交叉断言体例平移)。展示为**警示 / 中性色调的标注 chip**,**每处带「参考、非指令」**;**四不硬约束照旧**(不进排序 / 不进哨兵 / 不改去留 / 不加分)。
 
 **明确不动(§8.3,防误删)**:数据层全部(TuShare 客户端 / parquet 落盘 / 交易日历 / 概念板块日更 / `suspend_d` 停牌口径 / `limit_derived` / `board` / 行业强度落表)、哨兵纪律分支、章程与激活历史与四道闸、逐笔章程判定、交割单对账、APNs 基础设施、`prompt_context`、参考件的夹逼 / 冻结 / 审计体例(已移交篮子卡)、**问询台主体 + `inquiry_log`**。
 
@@ -1135,12 +1316,13 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 
 ### 【门禁 · 非施工块】用户判定点:是否召唤 @reviewer
 
-- 位置与范围**由用户定**,plan **不预设**。可选范围建议:**⑥⑦⑧⑪(判定线)** 与 **⑭(契约线)** 两线并行,照 v1.4 / v1.5 两线体例。
+- 位置与范围**由用户定**,plan **不预设、不自动排程**。可选范围建议:**⑥⑦⑧⑪(判定线)** 与 **⑭(契约线)** 两线并行,照 v1.4 / v1.5 两线体例。
+- **⚠ 判定点 · K7 需求 3(B3 黄牌退役,⑯-I)**:策略线交接稿**明确建议为它叫一次 review**(理由:🔴 高危 + advisory 载体变更 + 与包激活同窗执行)。**planner 照项目规矩把它记为一个用户判定点,不自动排程** —— 要不要叫、什么时候叫、范围多大,由你一句话决定。若叫,建议范围 = **⑯-I + ⑯-E 两步激活 + ⑥ 的五维定义与权重消费**(它们是同一批「策略口径换代」的三个面)。
 - ⚠ ⑭-C 的契约三方对拍是**施工块内自查**,**不等于**独立 review。
 
 ---
 
-### V2-⑯ · 新服务器 + 晚间管线多段化 + 迁移割接 + 首包激活 + Tier 预填充(🔴 @builder-pro + 用户)
+### V2-⑯ · 新服务器 + 晚间管线多段化 + 迁移割接 + 两步包激活 + B3 退役 + Tier 预填充(🔴 @builder-pro + 用户)
 
 > **⏱ 本块是尾声块(2026-08-02 用户追加指示,写死)——「云上组件迁移放在尾声」。**
 > - **两条硬前置,缺一不启动**:① **①–⑮ 全部完工**;② 用户已购好新云服务器并交付访问方式(§八 第 13 项)+ `nk.linotsai.top` 已解析到新机(§八 第 14 项)。
@@ -1152,13 +1334,37 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 **⑯-B 数据搬家**:parquet 全量 + `neckline.db`(搬前 `.backup` + `cp -p` **双备份**,搬后 `PRAGMA integrity_check=ok` + 业务表行数逐表比对 + `is_active` 仍 `v1.3.3` 且 `activated_at` 未变);`sync_data.sh` / `sync_code.sh` 复用(dry-run 先验、零删除、收尾属主自检)。
 **⑯-C 性能实测(P0-23 纪律平移,硬门禁)**:④ 三张新表的 `bootstrap` 与日更增量、⑨ 复盘引擎、⑤⑥ 的 LLM 段、⑧ 存拍落盘 —— **每一项在新机上 `systemd-run --scope -p MemoryMax=… -p CPUQuota=…` 隔离单进程、串行**计时 + 量峰值,**达标才准进主链**。探针纪律照旧:只在收盘后 15:00 之后跑、避开日更与报告窗口、跑完 `pgrep -af` 确认无残留 + `reset-failed`、**`load > 4` 立即停手**;`pkill -f` 前先确认 pattern 不匹配自己。
 **⑯-D 晚间管线多段化(📦 单元文件本地可先备料)**:三个 oneshot **串行**、各自 `MemoryMax` —— `neckline-scan.service`(④)/ `neckline-basket.service`(⑤⑥⑦ + 报告)/ `neckline-review.service`(⑨ + ⑫ 周度部分)。**重活一律不进常驻 `neckline.service`**(它与盘中哨兵同进程,`MemoryHigh` 先节流会让进程陷进回收死循环 = 卡死不报错)。`neckline-daily.service`(16:05 拉数)保留;时刻表按 ⑯-C 实测排,总窗口写进 `deploy/` 单元注释。
-**⑯-E 首包激活(📦 脚本与包文件由 ③ 产出,本地已备好)**:`python scripts/activate_pack.py --file packs/K4-pack.json`(先演练)→ `--confirm`;验 `selection_packs` 现役唯一 + 日志两行。
+**⑯-E 策略包激活 —— 两步,顺序定死(📦 脚本与两个包文件由 ③ / ③-K7 产出,本地已备好)**
+- **第 1 步:先激活 `K4-pack-v1`**(`python scripts/activate_pack.py --file packs/K4-pack.json`,先演练 → `--confirm`)。**为什么明明要用 K7 还先激活它**:① 它是**回滚锚** —— `activate_pack.py` 的回滚定义是「激活旧版本行」,库里必须**真有那一行**,否则 K7 出问题时无处可退;② 顺带在生产库上把四道闸与激活事件流走通一遍。
+- **第 2 步:再激活 `K7-pack-v1`**(同样先演练 → `--confirm`),它成为**上线现役包**。验:`selection_packs` **两行**、`is_active` **唯一在 K7-pack-v1**、`selection_pack_activation_log` **三条事件**(K4 激活 1 + K4 停用 1 + K7 激活 1,顺序为先 deactivate 旧、后 activate 新)。
+- ⚠ **两个包文件在 `--confirm` 那一刻内容就冻了**(append-only 完整性闸:同版本号内容被改会被拒)。因此**⑯-E 之前是最后的改包窗口** —— ③-K7 若还想调 K7-pack 的任何数,必须在这一步之前调完,之后只能发新版本号。
+- ⚠ **激活 ≠ 改章程**:`selection_packs` 与 `strategy_versions` 是**两条版本线、两张表、两套激活流程**;本步**不碰 `strategy_versions`、不跑 `activate_charter.py`**,现役章程恒 `v1.3.3`。
 **⑯-F Tier 预启动填充(裁定 #4;📦 脚本与校验逻辑本地可先备料)**:`scripts/oneoff/preseed_baskets.py` —— 读外部准备好的近期若干交易日篮子/Tier/卡(V2 格式)→ **过校验**(JSON Schema + 夹逼 + 成员白名单闸 + 角色对拍)→ **默认演练、`--confirm` 才写、写前双备份**;行标 `baskets.via='preseed'`。**预填数据与自转数据同表同格式**,评价引擎一视同仁打分(`via` 保证日后统计可分层)。
+- **顺序**:排在 **⑯-E 两步激活之后**(先有现役包,再灌数据)。
+- ⚠ **`baskets.pack_version` 对 preseed 行填字面量 `'preseed'`,不许填 `K7-pack-v1`**(planner 定案,K7 需求 4 「激活时机与 preseed 的关系」的回答):preseed 篮子是**人工 + LLM 在外部配的**,不是引擎按 K7 包算出来的;填成 K7-pack-v1 会**污染 §12.5 的按包归因**(⑨-C 会把人工配的成绩算到 K7 头上)。`via='preseed'` 已能分层,但**字段不许撒谎** —— 两处都标。⑨-C 的按包归因把 `'preseed'` 当**独立一档**统计。
 **⑯-G 域名与割接(D2 = A 路,已拍板,无备选;📦 nginx 站点模板本地可先备料)**:新机 nginx 站点**只服务 `nk.linotsai.top`** + certbot 证书 + 定时续期。**DNS 的 A 记录由用户自己解析到新机**(§八 第 14 项;builder 只在解析生效后申请证书,`dig nk.linotsai.top` 拿到新机 IP 才是可以往下走的判据)。老机 `ln.linotsai.top` 与 `linon` 遗留物**一律保持不动**(不停机、不改代码、不改解析)直到用户完成 ⑰ 换包并确认,再由用户决定老机退役与数据归档。⚠ **新机 nginx 绝不接管 `ln.linotsai.top`** —— 一旦接管,老 App 就会撞 V2 契约,A 路的前提当场破掉(⑭-D)。
-**⑯-H 部署当次必须留的证据(工程门禁,照既有体例逐项)**:双备份文件名 + 大小 + `integrity=ok` + `.backup` 耗时;`sync_code.sh` dry-run **零删除**;关键文件 **sha256 与本地逐个吻合**;preflight import(`VERSION=v2.0.0` + 路由数 + 去重路径数);迁移后 `integrity_check=ok` + **业务表行数逐表一致** + `is_active` 仍 `v1.3.3`;重启中断秒数 + `NRestarts=0` + journal error 0 条 + `memory.events` 全零 + idle RSS;公网 `/health` = **`v2.0.0`**;三个 oneshot 各自 **`ExecMainStatus=0` 且 `ExecMainStartTimestamp` 是本次那一跑**(⚠ 铁律:`list-timers` 的 LAST 与 `Result=` 都不可信);`~/hz_info.md` 同步更新(新机事实,只写非敏感)。**回滚绳** = 双备份 + 上一版代码态 git 号 + 老机仍在跑。
+
+**⑯-I · K4 advisory 的 B3 黄牌退役(K7 需求 3;🔴 高危;执行窗口 = 与 ⑯-E 同窗;📦 脚本 + 单测 + 演练本地可先备料)**
+
+> 来源:`archive/交接_K7_系统线需求_20260802草案.md` 需求 3(**用户已裁定:按 H11 结论办**,证据链 `research/k7_pre_report.md` H11)。
+
+- **改什么(只此一项,不扩)**:`k4_advisory` 的 **B3「题材持续 2-3 天」黄牌停用**(从 `avoid_flag` 清单里摘掉)。
+  - 理由:H11 证据下 **2-3 天(发酵态)在当前 regime 是最优注意力段**,原「被认可 = 接盘侧」的判决**主要由样本内年份驱动**。
+  - ⛔ **A2 红牌(题材持续 ≥4 天硬回避)不动** —— 过热态双尾最重,H11 再确认。
+  - ⛔ **不新设「绿牌」机制** —— 正向偏好由**排序侧**承接(K7-pack 的 `industry_stage_score` 五态序,③-K7-B),不在 advisory 里造第三种牌。
+- **🔴 但这不违反红线,先看清楚**:`k4_advisory` 住在 `strategy_versions` 的 **K4 行**,而 **K4 行 `is_active=0`、永不激活**(§七 📌-22 已定案);**现役章程是 `v1.3.3`,本项一个字节都不碰它**,也不碰任何 config 阈值。改的是「**建议载体**」不是「**纪律**」。**改完 K4 行仍 `is_active=0`、`activated_at` 不动、`strategy_activation_log` 不增行。**
+- **怎么办(留痕体例,复刻 `scripts/oneoff/bootstrap_k4.py`)**:
+  - 新一次性脚本 `scripts/oneoff/retire_k4_b3.py` + 独立 payload 文件(照 `bootstrap_k4_payload.json` 体例);**默认演练**、`--confirm` 才写、**写前 `.backup` + `cp -p` 双备份**、单事务。
+  - **写前写后各 dump 一份 `rule["k4_advisory"]` 全文**,diff 落 `archive/K4_advisory_B3退役_2026MMDD.md`(**只此一处存全文**,§九 一行 + 链接)。
+  - **幂等**:B3 已不在清单里 → 演练报「无需变更」、`--confirm` 也是 0 改动(重复执行安全)。
+- **代码侧连带(DB 是唯一源,镜像只作文案对照)**:`report/holding_k4_check.py::_HIT_META` 里的 B3 条目按既有纪律处理(**要么删、要么标停用**,builder 定,但**不许让镜像与 DB 讲不同的话**)。**守门单测**:改后跑一遍持仓体检 / 安检 → **断言 B3 不再产生任何黄牌**,且 **A2 仍照常命中**(防误伤)。
+- **执行窗口**:**与 ⑯-E 的包激活同窗**(交接稿建议,采纳)—— 排序侧的正向承接(K7-pack 现役)与建议侧的 B3 停用**同时生效**,避免出现「B3 已停但排序还没接上」或反之的中间态。
+- ⚠ **用户判定点**:交接稿建议为本项叫一次 review。**按项目规矩,review 由用户点名,plan 不自动排程** —— 见下方【门禁】节。
+
+**⑯-H 部署当次必须留的证据(工程门禁,照既有体例逐项;**刻意排在最后** —— 它是收尾动作,A→G 与 I 全部做完才收证据)**:双备份文件名 + 大小 + `integrity=ok` + `.backup` 耗时;`sync_code.sh` dry-run **零删除**;关键文件 **sha256 与本地逐个吻合**;preflight import(`VERSION=v2.0.0` + 路由数 + 去重路径数);迁移后 `integrity_check=ok` + **业务表行数逐表一致** + `is_active` 仍 `v1.3.3`;重启中断秒数 + `NRestarts=0` + journal error 0 条 + `memory.events` 全零 + idle RSS;公网 `/health` = **`v2.0.0`**;三个 oneshot 各自 **`ExecMainStatus=0` 且 `ExecMainStartTimestamp` 是本次那一跑**(⚠ 铁律:`list-timers` 的 LAST 与 `Result=` 都不可信);`~/hz_info.md` 同步更新(新机事实,只写非敏感)。**回滚绳** = 双备份 + 上一版代码态 git 号 + 老机仍在跑。
 
 **依赖**:①–⑮ **全部完工**(尾声块,不并行穿插)+ 用户已购机 + `nk` 已解析到新机。
-**验收**:⑯-H 逐项证据齐;首包现役唯一;preseed 行 `via='preseed'` 且格式与自转数据同构;三段 oneshot 串行跑通且各自 `ExecMainStatus=0`;公网 `/health` = `v2.0.0`。
+**验收**:⑯-H 逐项证据齐;**⑯-E 两步激活后 `selection_packs` 两行、现役唯一在 `K7-pack-v1`、事件流三条**;preseed 行 `via='preseed'` 且 `pack_version='preseed'`、格式与自转数据同构;**⑯-I 的 B3 退役 diff 已落 archive、K4 行仍 `is_active=0`/`activated_at` 未变/`strategy_activation_log` 未增行、B3 零黄牌且 A2 仍命中**;`strategy_versions` **现役仍 `v1.3.3`**;三段 oneshot 串行跑通且各自 `ExecMainStatus=0`;公网 `/health` = `v2.0.0`。
 
 ---
 
@@ -1185,6 +1391,9 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 - **冻结 / 追加 / 不回写三律在全部新表上有守门单测**;
 - **第〇原则四锁(§2.8-C 的 V2 表述)在全域重挂**;
 - **策略包轮替不改主链一行代码**(校验 → 入库 → 激活三步即完成换包),且选股主链从上线日起就读现役包行(**插槽不是空架子**)。
+- **(K7 追加)机械分五维每一维都可复现、可解释**:`driver_freshness` 的六态分值来自现役包 `stage_scores`(代码里无第二份)、`leader_clarity` 的名次与三级 tie-break 落表可查、缺数据一律走保险丝且**「没有」与「没看」分得开**;
+- **(K7 追加)标注件全域不越权**:`pullback_leader` / `warn_streak_top` / `warn_chase_zone` 三个标签**不进排序、不进 Tier 机械分、不进哨兵、不改去留**,打标前后同一份数据的 Tier 序与成员集合逐位不变(守门单测);
+- **(K7 追加)评价引擎能回答「是否稳定优于随机与不作为」**:周报含随机同规模篮子臂与满仓持有基准臂,种子可复现、判分复用同一套 `exit_sim`,样本不足时只报样本数不报结论。
 
 ---
 
@@ -1388,6 +1597,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
 - 2026-08-02 · 🏗️ **V2-③ 选股策略包机制完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署):全新包 `neckline/selection/`(`engine_api.py` 单一源 `ENGINE_API_VERSION=1`;`primitives.py` 特征白名单 `_ALLOWED_FEATURES`〔8 模式〕+ `Primitive` 冻结 dataclass 两道白名单锁〔构造期 `__post_init__` fail loud + 运行期 `validate_all_primitives_whitelisted()`〕+ 首包 5 个原语 `stock_hygiene`/`non_new_stock`/`k4_advisory_gate`/`industry_dominance_gate`/`intel_rank_priority`,现值分别抽自 `research/panel.py::base_universe_expr`/`intel_candidates.py` 的 `NON_NEW_MIN_DAYS`/K4 安检语义/`INDUSTRY_GATE_MIN_LIFT`/`_sort_key` 三级键顺序;`pack.py` schema 校验 + `Pack` 冻结视图〔`seeds_config`/`tier_weights`/`tier_dims`〕+ `get_active_pack()`〔按 `(db_path,pack_version)` 双键缓存,防跨库串味〕+ `activate_pack()` 单事务写)+ `scripts/activate_pack.py`(四道闸,复刻 `activate_charter.py` 体例并按包性质简化)+ 首包 `packs/K4-pack.json`(`pack_version="K4-pack-v1"`,D7 定案;`tier.weights` 五数值逐字取自 plan 格式示例本身,V2 全新概念无 V1 代码可抽)。**手工演练发现并修复一处真实顺序漏洞**:CLI"已现役→快捷退出"若跑在 append-only 内容完整性核对之前,会放过"文件被篡改但版本号未改、且恰好现役"的情形,已提前核对顺序 + 两个回归测试锁死。测试:新增 4 文件 123 例,`python -m pytest tests/ -q` 2056→**2179**(净增 123,零回归,2 个 pre-existing 失败与 V2-② 同名同因、今日核实确为周日);真实 `data/neckline.db` 全量测试前后与手工 dry-run 前后 MD5/mtime 双证不变,全程未跑 `--confirm` 碰真实库。三处设计判断如实登记(身份/分类数据不计入 inputs 白名单 / 三级键归入 seeds 非 tier / tier 权重来源如上),「插槽真被消费」因 ④⑥ 未施工改在原语+包层做代理验证,详见 V2-③ 块内「完工记录」。下一步:V2-④
 - 2026-08-02 · 🏗️ **V2-② LLM Provider 自填制 + 双 Agent 路由 + 预算多本账完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署):`_PROVIDERS`/`ALLOWED_PROVIDERS` 两处枚举退役,`llm/factory.py::get_provider(task, *, db_path, settings_obj)` 改纯 DB 驱动(`llm_providers` 自填注册表 CRUD + `app_settings.llm_task_routes`/`llm_default_provider` 路由);新建 `llm/router.py`(九任务常量 + 默认路由纯函数)、`llm/budget.py`(预算三本账互不透支 + 降级次序 T3简评→T2细节、篮子卡冻结永不丢);`OpenAICompatProvider` 改可直接实例化(通用搜索钩子照 GLM 协议平移,`has_web_search=0` 一律不发 `tools`),`GLMProvider`/`KimiProvider` 完整保留行为不变、降级为预置参考实现供既有单测续用。契约:`PUT /settings/llm` 删,新增 `GET/POST /settings/providers`、`PUT/DELETE /settings/providers/{name}`、`GET/PUT /settings/llm-routes`,`GET /settings` 换形状(`providers`/`routes` 取代 `llmProvider`/`llmKeySet`)。新测试文件 `tests/test_llm_router_budget.py`(16 例)+ `test_llm.py::TestFactory`/`test_api_settings.py` 大幅重写。`pytest tests/ -q` 2023→2056(净增 33,零回归,2 pre-existing 失败经 `git stash` 复核与本块无关),真实 `data/neckline.db` 全量跑前后 MD5/mtime 不变。三点如实记账(详见 V2-② 块内「完工记录」,未改 Plan):`news_scan.py` 缺 `prompt_context` 既有缺口、"两段式编排"判断留给 ⑤、`TASK_INQUIRY` 归入检索类默认路由是 builder 推断待澄清。下一步:V2-③
 - 2026-08-02 · 🏗️ **V2-① 表与共享信息层地基完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署):20 张新表一次到位(18 SQLite 落 `neckline/db.py::_SCHEMA` + `app_settings` 两新列;2 parquet 表登记进 `market_data.py` 的 `_VALID_TABLES`/`TABLE_FLOAT_COLS`);新建 `neckline/user_actions.py`(append-only 唯一实现,靠"没有第三个函数"担保);新守门单测 `tests/test_v2_schema_guard.py`(17 用例,五条三律判据——冻结/追加/不回写/幂等/parquet 声明——全覆盖,含一处比 plan 原文更对称的补强:`DELETE FROM entry_snapshots` 冻结检查)。`pytest tests/ -q` 2005→2023(净增 18,零回归)。**副产品发现**(已 `spawn_task` 记账、未修复、不影响本块验收):`tests/test_holding_k4_check.py` 若干用例调用 `build_holding_k4_check` 未传 `db_path`,经既有代码路径命中真实 `data/neckline.db`(早于本次改动即存在的 pre-existing 缺陷,git stash 复现验证过;这次因新表新列首次留下可见痕迹,纯增量无数据损坏)——本块验收改用 `DB_PATH` 环境变量重定向复测,证明本块新代码本身零写入真实库。下一步:V2-②
+- 2026-08-02 · 📐 **K7 系统线需求六项 + K7-pack 草案整合进 §五 施工图**(@planner,只改文档,零代码 / 零数据库 / 零部署;来源 = 用户转发的 `archive/交接_K7_系统线需求_20260802草案.md`,该稿即刻转参考件、不作第二权威;用户指示「施工时尽量全部做到」,含建议项)。**落位**:**需求 1a** `leader_clarity` = 簇内 RS20 头名度(依名次衰减,tie-break 定死 **RS 降序→成交额降序→ts_code 升序**;**连板高度与成交额头名均不进主定义**)→ **⑥** 正式定义 + 新块 **④b-0** 的 `rs_rank` 口径追加(**不改 ④ 已定型规格,④ 未完工则由 ④ 一并落、已完工则 ④b 补,两路都要单测锁三级键**);**需求 1b** `driver_freshness` = 行业五态状态机取代 `persist_days` 单调函数 → **⑥** 正式定义 + **新块 ④b**(**第 21 张表 `industry_stage_daily`**,DDL 定死、16:05 EOD 批算、在线只读、新 CLI `scripts/industry_stage.py`,P0-23 纪律与 ④ 同规格;**planner 定为新表而非给 `industry_strength_daily` 加列**,三条理由入档;**缺行保险丝取中性分 + 标 `stage_missing`,严禁写 0**——0 是「过热」的真值会撞车;**六态键一律英文码**〔`ignition`/`fermentation`/`overheat`/`divergence`/`ebb`/`none`〕,中文只做展示层,与草案 JSON 的中文键刻意不同,理由照 `CandidateOut.board` 先例;研究实现 `research/k7p_h11_stage.py` 只作对拍基准、不进生产);**需求 2** 五维权重证据化初值 0.30/0.30/0.10/0.20/0.10 → **⑥**(落 K7-pack;**K4-pack-v1 占位值原样不动、不重发版**,它是回滚锚;同时澄清「K4-pack 不动」的准确范围 = 只指 Tier 权重占位值,**不禁止 ④ 给它补自己的种子参数**);**需求 3** B3「题材持续 2-3 天」黄牌停用(A2 红牌不动、不新设绿牌)→ **新子项 ⑯-I**(🔴,一次性脚本 + payload + 默认演练 + 双备份 + 前后 diff 落 archive,**与 ⑯-E 包激活同窗**;写明**不违反红线** —— K4 行 `is_active=0` 永不激活,改的是建议载体不是纪律,现役章程恒 `v1.3.3`;镜像 `_HIT_META` 同步 + 守门单测断言 B3 零黄牌且 A2 仍命中)**+ 【门禁】新增一个用户判定点**(稿内建议叫 review,按项目规矩**由用户点名、不自动排程**);**需求 4** 原语与白名单跟进 → **新子项 ③-K7**(`_ALLOWED_FEATURES` 增 `industry_stage_daily.*`、确认 `leader_structure_daily.rs_rank` 可被 sort_key 引用、`intel_rank_priority` 支持新 dims **并显式声明每个 dim 的升/降序方向**、`config.tier.stage_scores` 落点与 `engine_api_version` **bump 判定规则定死**〔纯增量则维持 1,否则 bump 2 并 fail loud,**两路都必须在完工记录写明走的哪条**〕、`packs/K7-pack.json` 落盘但**不激活**);**需求 5** 龙回头位 + 双尾警示族 → **⑦-K7**(篮子卡成员节,判据全机械零 LLM,落 `card_json.members[].tags` 不新建表)**+ ⑬-N-K7**(信息卡,读同一份 `member_tags.py` 实现与文案,交叉断言两侧标签逐位相同);**四不硬约束**(不进排序 / 不进 Tier 机械分 / 不进哨兵 / 不改去留)+ 打标前后 Tier 序与成员集合逐位不变的守门单测;**需求 6** 安慰剂对照臂 → **⑨-C2**(从建议项**排为正式验收项**:随机同规模篮子臂〔`crc32` 派生种子可复现、抽 N 次取分布、判分复用 `exit_sim` 唯一源〕+ 满仓持有基准臂,样本不足只报样本数不报结论,**两臂只进周报不进任何在线判据**)。**planner 另定两件**:① **⑯-E 改为两步激活** —— 先 `K4-pack-v1`(**回滚锚**,库里必须真有旧行才谈得上回滚)再 `K7-pack-v1`(现役),验两行 / 现役唯一 / 事件流三条,并写明「⑯-E 之前是最后的改包窗口」(`--confirm` 后内容即冻);② **preseed 行 `pack_version` 填字面量 `'preseed'` 不许填 K7-pack-v1**(人工配的成绩不许算到包头上,防污染 §12.5 按包归因)。§五 表汇总 20→**21 张**、分块序列加 ③-K7 / ④b 并附「K7 需求落位一览」、V2 验收标准加三条
 - 2026-08-02 · ✅ **V2.0.0 Plan 用户验收通过 + D1–D8 全部拍板 + 两项追加裁定入档**(@planner,只改文档,零代码改动):① **D1、D3–D8 照 planner 建议默认通过**,§五 清单表由「建议默认、可推翻」改为「**已拍板(2026-08-02 用户)**」;② **D2 = A 路定死** —— 新机挂新子域 **`nk.linotsai.top`**、**DNS 解析是用户动作**(用户原话:「我本来就要换云服务器,NK 这个域名我会直接把它解析到新的云服务器上」),老机 `ln.linotsai.top` 原样服务到 ⑰ 换包完成,**契约一次性换血不留过渡键**;**B 路(沿用 `ln`)全线删除**,⑭-D / ⑯-G / ⑰ / §七 P3-27 / §八 第 12 项五处的 B 路分支已收掉、只留删除线留痕(**不给 builder 留两条路犹豫**),同时写明「两步淘汰纪律本身仍有效,V2 只是靠换机窗口结构性绕开它」+ A 路成立的前提条件(**新机 nginx 绝不接管 `ln`**);③ **云上组件迁移置尾声** —— §五 新增「工序时序纪律」节 + ⑯ 块首改写:**①–⑮ 全部本地推进优先、⑯ 不与前面并行穿插、⑮ 完工前不碰任何服务器**,⑯ 内五项纯本地子项(三个 oneshot 单元 / nginx 模板 / `activate_pack.py`+首包 / `preseed_baskets.py` / 迁移清单)标 **📦 本地可先备料**(写好不上机跑,不拆走);§八 第 14 项由「走 A 路时才需要」改为**必办项**并加时机说明(按尾声节奏办、不必现在催)
 - 2026-08-02 · 🏗️ **V2.0.0 立项**(@planner,只改文档,零代码 / 零数据库 / 零部署)· 架构设计稿全文转写进 PROJECT_PLAN,**架构稿即刻转历史档案**(`archive/V2架构设计稿_20260731_20260802立项归档.md`),防双权威。**§五 = V2.0.0 详版施工图 17 块**:① 表与共享信息层地基(**20 张新表**一次到位 + 冻结/追加/不回写三律守门)② LLM Provider 自填制 + 双 Agent 路由 + 预算三本账 ③ 选股策略包机制(`selection_packs` + 原语白名单 + `engine_api_version` + 四道闸 + 首包 K4-pack)④ 市场扫描层三张预计算表 + 驱动种子 ⑤ 驱动聚合层(LLM + 成员白名单闸 + 角色对拍闸)⑥ Tier 分层引擎 ⑦ 篮子卡冻结 ⑧ D+1 验证(关注池改造 + 盘中存拍 + 状态机)⑨ 盘后复盘 + 评价引擎 ⑩ 极简台账 + 计划继承 + 决策日志表单退役 ⑪ 监控 80/15/5 + 通知三级 + NL 提醒 ⑫ 对账与画像 ⑬ V1 清理十三项 ⑭ 篮子日报 + 契约总装 + 三方对拍 ⑮ 客户端双端改版 ⑯ 新服务器 + 管线多段化 + 割接 + 首包激活 + Tier 预填充 ⑰ 双端换包(等用户指令)。**§二 新增 §2.8 语义换血总表**(篮子取代单票候选 / Tier 取代排序 / 三级取代六类推送 / 自动快照取代强制表单;**历史拍板一条不删**;**§2.8-C 重新表述第〇原则四锁** —— 「不进排序」精确为「不进机械分」、「不进哨兵」精确为「LLM 文本不进判据 + 关注池是注意力分配非判定」);**§三 新增 §3.10 V2 技术选型增补**;§一 新增 1.5 V2 定位。**§七 Backlog 逐条处置**:吸收 P1-5/P1-8/P3-11/P3-15/P3-27,废弃 P4-16(换机后 800M 数字作废),新挂 P3-28(归因标签稀疏)/ P3-29(检索单点)/ P4-30(初期分时残缺)/ P4-31(停写留档表清理),新立「选股策略包门禁」长期机制。**§八 新增 V2 用户操作四项**(购新机 / 子域 DNS / 填两条 Provider / 分时外源可选),第 9 项同花顺 txt 作废。**planner 补位三张表并如实登记理由**:`llm_providers`(`app_settings` 是单行表装不下注册表)、`entry_snapshots`(决策日志表单退役需要落点,`decision_log` 的 NOT NULL 列无法就地放宽)、`selection_pack_activation_log`(§12.4 要激活日志但未给表名)。v1.5 施工图全文 + v1.5.2 收官快照 → `archive/v1.5_施工图_20260802归档.md`
 - 2026-08-02 · 📐 **选股策略包机制定稿入档**(用户批准,`V2架构设计.md` 新增 §十二):声明式配置包(非代码插件)、包只管①种子规则+③Tier权重、原语白名单+`engine_api_version` 兼容校验、新表 `selection_packs`(append-only 单现役,激活复刻四道闸体例)、按包版本归因、K 字头版本、初版把现成选股代码整理成首包灌入。纯文档,零代码改动
