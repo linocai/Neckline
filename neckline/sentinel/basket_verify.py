@@ -24,13 +24,22 @@
        **不是**终态、可以翻。
     7. **无卡不判**:如实落 `unclear` + `no_card`,⛔ 不许拿默认条件顶上。
 
-⚠ **已知口径局限(如实登记,⑧ 不擅自修)**:卡里的 D0 锚是**前复权**口径(⑤ 的
-`MechContext` 面板),而观测侧是**原始价** —— 盘中免费源只给原始价(无从复权),EOD
-`daily.close` 同样是原始价,两条路径**互相一致**(⑧-C2 第 1 条要的就是这个)。代价:
-某成员**恰在 D+1 除权除息**时,锚与观测差一个复权因子 → 可能误判破位。一天的窗口里
-这是小概率,但**不是零**;正解是让 ⑦ 在卡里额外冻一份原始价锚(⑦ 的形状变更,不在
-⑧ 授权范围),已写进 ⑧ 完工记录待 planner 裁定。⛔ 别在这里"顺手复权",那会让盘中
-与 EOD 两条路径用上不同的价,违反 ⑧-C2 第 1 条。
+⚠ **口径局限(⑧ 如实登记;⑧-E 已治,2026-08-02 planner 裁定)**:卡里的 D0 锚是
+**前复权**口径(⑤ 的 `MechContext` 面板,D0 当天 `qfq == raw`),观测侧是**原始价**
+—— 盘中免费源只给原始价(无从复权),EOD `daily.close` 同样是原始价,两条路径
+**互相一致**(⑧-C2 第 1 条要的就是这个)。代价:某成员**恰在 D+1 除权除息**时,
+锚与观测差一个复权因子 → 可能误判破位。
+
+**⑧-E 除权除息锚失效检测器**(零新数据源,盘中 / EOD 同一套判据)专治这个缺口:
+`pre_close ≠ 卡里冻结的 ref_close`(带 `vr.EPS` 容差)即判**锚已失效**——A 股除权
+除息日交易所公布的前收盘价就是除权除息参考价,这是直接、精确的信号。命中后**复用
+本模块已有的「缺数据两侧都不计」机制**(不发明新机制):该成员验证侧与失效侧都不
+计命中,`evidence_json` 标 `FLAG_ANCHOR_MISMATCH`。**⛔ 绝不做自动 rescale**——
+`pre_close` 对不上有两种成因(真除权 / 数据错),盘中分不开,自动改价会把该报警的
+故障变成静默的错误判定,宁可当天不判也不要判错。EOD 多一份交叉确认把两种成因分开:
+`adj_factor(D+1) vs adj_factor(D0)` 变了 → 真除权(`REASON_MEMBER_EX_RIGHTS`,正常
+降级不报警),没变 → 真故障(`REASON_ANCHOR_MISMATCH`,打 WARNING 该被看见)。
+⛔ 别在这里"顺手复权",那会让盘中与 EOD 两条路径用上不同的价,违反 ⑧-C2 第 1 条。
 
 ⚠ **两条语义红线(接线时最容易越界的地方)**
 
@@ -46,7 +55,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from neckline.calendar import prev_trading_day
 from neckline.selection import verification_rules as vr
@@ -64,15 +73,29 @@ REASON_NO_SPEC = "no_spec"                    # 有卡但卡里没有结构化 s
 FLAG_MEMBER_DATA_MISSING = "member_data_missing"   # 该成员当日无行情(停牌 / 数据缺口)
 FLAG_SPEC_LEVELS_MISSING = "spec_levels_missing"   # 卡里这一侧的阈值全是 null(D0 就算不出)
 
+# ⑧-E(2026-08-02 planner 裁定):除权除息锚失效检测器的原因码。检测命中(盘中 / EOD
+# 通用,由 `evaluate_specs` 打)一律先标 `FLAG_ANCHOR_MISMATCH`;EOD 独有的
+# `adj_factor` 交叉确认再把它精确拆成「真除权」/「真故障」两种,写进 evidence 里每个
+# 成员行的 `confirm` 键(盘中没有交叉确认能力,不写 `confirm`,不是漏标)。
+FLAG_ANCHOR_MISMATCH = "pre_close_anchor_mismatch"
+REASON_MEMBER_EX_RIGHTS = "member_ex_rights"        # adj_factor 变了 → 真除权,正常降级不报警
+REASON_ANCHOR_MISMATCH = "anchor_mismatch"          # adj_factor 未变 → 真故障,需要 WARNING
+REASON_ANCHOR_UNCONFIRMED = "anchor_unconfirmed"    # 两天任一缺 adj_factor 行 → confirm 不了,不猜
+
 
 @dataclass(frozen=True)
 class MemberObservation:
     """一只成员在**这一拍**的观测。`price` 就是代进 spec 里「收盘」那个位置的数
-    (盘中 = 现价,EOD = 真实收盘价 —— ⑧-C2 第 1 条);`low` 供「触及跌停」判。"""
+    (盘中 = 现价,EOD = 真实收盘价 —— ⑧-C2 第 1 条);`low` 供「触及跌停」判;
+    `pre_close`(⑧-E,盘中 = `Quote.pre_close`,EOD = `daily.pre_close`)供除权除息
+    锚失效检测——**不参与任何验证 / 失效条件判定本身**,只用来跟卡里的 `ref_close`
+    做锚有效性校验。缺省 `None` = 没有这个数据(老调用点 / 测试替身不传时安全降级为
+    "不做锚检测",不是"锚一定有效")。"""
 
     ts_code: str
     price: Optional[float] = None
     low: Optional[float] = None
+    pre_close: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +129,39 @@ def _member_rows(spec: Mapping[str, Any]) -> Dict[str, Mapping[str, Any]]:
         if isinstance(row, Mapping) and row.get("ts_code"):
             out[str(row["ts_code"])] = row
     return out
+
+
+def _num_or_none(v: Any) -> Optional[float]:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
+def _member_ref_close(
+    v_row: Optional[Mapping[str, Any]], i_row: Optional[Mapping[str, Any]]
+) -> Optional[float]:
+    """⑧-E:两份 spec 的成员行都带 `ref_close`(⑦ 冻的 D0 收盘,前复权口径;D0 当天
+    `qfq == raw`)。验证侧优先、失效侧兜底 —— 两者本应同值,任一有就够;都没有 →
+    `None`(锚本身缺失,判不了,交给下面 `_anchor_mismatch` 如实返回"没检测到不一致")。"""
+    for row in (v_row, i_row):
+        if isinstance(row, Mapping):
+            rc = _num_or_none(row.get("ref_close"))
+            if rc is not None:
+                return rc
+    return None
+
+
+def _anchor_mismatch(ref_close: Optional[float], pre_close: Optional[float]) -> bool:
+    """⑧-E 检测器(盘中 / EOD 共用):`pre_close ≠ 卡里 D0 收盘`(带 `vr.EPS` 容差)
+    即判锚已失效。**任一缺失 → 判不了,返回 `False`**(⛔「没有」不是「不匹配」,是
+    另一种「没看」——留给正常判定路径 / `FLAG_MEMBER_DATA_MISSING` 处理,不在这里
+    冒充结论)。`<= 0` 视为坏数据兜底(真实价格恒正),同样不当成"匹配"或"不匹配",
+    只是不触发检测(不把一个数据错误当成除权信号,也不当成正常)。"""
+    rc, pc = _num_or_none(ref_close), _num_or_none(pre_close)
+    if rc is None or pc is None or rc <= 0 or pc <= 0:
+        return False
+    return abs(pc - rc) > vr.EPS
 
 
 def _judge_side(
@@ -168,6 +224,7 @@ def evaluate_specs(
 
     verify_hits = invalidate_hits = observed = 0
     missing: List[str] = []
+    anchor_mismatched: List[str] = []
     detail: List[Dict[str, Any]] = []
     for code in codes:
         obs = observations.get(code)
@@ -178,9 +235,26 @@ def evaluate_specs(
             detail.append({"ts_code": code, "price": None, "low": None,
                            "verify": None, "invalidate": None, "flags": flags})
             continue
+        v_row, i_row = v_rows.get(code), i_rows.get(code)
+        # ⑧-E:锚失效检测先于任何条件判定 —— pre_close 对不上卡里的 ref_close 时,
+        # 拿观测价去跟(除权前尺度的)阈值比是错的比较,必须先排除,不许先判后知错。
+        # ⚠ `pre_close`/`ref_close` 两个键**只在这条新分支里出现**,不许顺手加进下面
+        # 「正常判定」的成员行——那会让「同一份数据两条路径判定逐位相同」这条既有
+        # 不变量被"盘中 Quote 没有 pre_close 而 EOD daily 面板有"这个跟判定结果本身
+        # 无关的差异打破(v1.5-⑧ 既有单测 `test_intraday_and_eod_paths_agree_bit_for_
+        # bit` 施工期真踩过,回滚过一次)。
+        ref_close = _member_ref_close(v_row, i_row)
+        if _anchor_mismatch(ref_close, obs.pre_close):
+            anchor_mismatched.append(code)
+            flags.append(FLAG_ANCHOR_MISMATCH)
+            detail.append({
+                "ts_code": code, "price": obs.price, "low": obs.low, "pre_close": obs.pre_close,
+                "ref_close": ref_close, "verify": None, "invalidate": None, "flags": flags,
+            })
+            continue
         observed += 1
-        v_hit, v_per = _judge_side(v_rows.get(code), require, v_cmp, obs, require_all=True)
-        i_hit, i_per = _judge_side(i_rows.get(code), any_of, i_cmp, obs, require_all=False)
+        v_hit, v_per = _judge_side(v_row, require, v_cmp, obs, require_all=True)
+        i_hit, i_per = _judge_side(i_row, any_of, i_cmp, obs, require_all=False)
         if v_hit is None and i_hit is None:
             flags.append(FLAG_SPEC_LEVELS_MISSING)
         verify_hits += 1 if v_hit else 0
@@ -207,6 +281,10 @@ def evaluate_specs(
     if missing:
         # ⛔ 「查不到」不是「失效」:如实标出来,让 ⑨ / 报告能说「这一态里有几只没数据」。
         evidence[FLAG_MEMBER_DATA_MISSING] = missing
+    if anchor_mismatched:
+        # ⑧-E:「锚失效」不是「失效」也不是「查不到」——单独一个原因码,别混进上面
+        # 那条,否则 ⑨ 分不清「数据缺口」与「除权除息误判」这两种截然不同的成因。
+        evidence[FLAG_ANCHOR_MISMATCH] = anchor_mismatched
     return BasketVerdict(
         state=state, verify_hits=verify_hits, invalidate_hits=invalidate_hits,
         min_members_hit=min_hit, member_count=member_count, observed_members=observed,
@@ -250,7 +328,9 @@ class VerificationRunResult:
 
 def _observations_from_quotes(codes: Sequence[str], quotes: Mapping[str, Any]) -> Dict[str, MemberObservation]:
     """盘中:`Quote` → 观测。**现价代进 spec 的「收盘」位**;`low` 用当日累计最低
-    (源自带),供「触及跌停」判 —— 触及即算,不要求收在跌停(⑧-C2 第 3 条)。"""
+    (源自带),供「触及跌停」判 —— 触及即算,不要求收在跌停(⑧-C2 第 3 条);
+    `pre_close`(⑧-E)取 `Quote.pre_close`,供除权除息锚失效检测(测试替身 / 老调用
+    点没有这个属性时 `getattr` 兜底 `None`,安全降级为"不做锚检测",不是"锚必有效")。"""
     out: Dict[str, MemberObservation] = {}
     for code in codes:
         q = quotes.get(code)
@@ -258,10 +338,12 @@ def _observations_from_quotes(codes: Sequence[str], quotes: Mapping[str, Any]) -
             continue
         price = getattr(q, "price", None)
         low = getattr(q, "low", None)
+        pre_close = getattr(q, "pre_close", None)
         out[code] = MemberObservation(
             ts_code=code,
             price=float(price) if isinstance(price, (int, float)) and price else None,
             low=float(low) if isinstance(low, (int, float)) and low else None,
+            pre_close=float(pre_close) if isinstance(pre_close, (int, float)) and pre_close else None,
         )
     return out
 
@@ -314,8 +396,9 @@ def run_intraday_verification(
 
 
 def _eod_observations(trade_date: date, codes: Sequence[str], parquet_dir: Optional[Path]) -> Dict[str, MemberObservation]:
-    """EOD:当日 `daily` 面板 → 观测(**真实收盘价** + 当日最低价)。当日无行 = 该成员
-    今天没有行情(停牌 / 数据缺口)→ 不进 dict,调用方按 `member_data_missing` 处理。"""
+    """EOD:当日 `daily` 面板 → 观测(**真实收盘价** + 当日最低价 + `pre_close`—— ⑧-E
+    锚失效检测用)。当日无行 = 该成员今天没有行情(停牌 / 数据缺口)→ 不进 dict,调用
+    方按 `member_data_missing` 处理。"""
     import polars as pl
 
     from neckline.data.market_data import get_market_slice
@@ -328,13 +411,78 @@ def _eod_observations(trade_date: date, codes: Sequence[str], parquet_dir: Optio
     df = df.filter(pl.col("ts_code").is_in(list(codes)))
     out: Dict[str, MemberObservation] = {}
     for row in df.iter_rows(named=True):
-        close, low = row.get("close"), row.get("low")
+        close, low, pre_close = row.get("close"), row.get("low"), row.get("pre_close")
         out[row["ts_code"]] = MemberObservation(
             ts_code=row["ts_code"],
             price=float(close) if isinstance(close, (int, float)) else None,
             low=float(low) if isinstance(low, (int, float)) else None,
+            pre_close=float(pre_close) if isinstance(pre_close, (int, float)) else None,
         )
     return out
+
+
+def _eod_adj_factor_maps(
+    d0: date, d1: date, codes: Sequence[str], parquet_dir: Optional[Path]
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """⑧-E EOD 交叉确认用:D0 与 D+1 两天的 `adj_factor`,**只查锚失效命中的那几只**
+    (不是全市场,codes 由调用方限定为已被 `FLAG_ANCHOR_MISMATCH` 标出的成员)。某天
+    某票没有行 → 对应 map 里没有那个 key(留给调用方按"查不到"处理,不许当 0 或当
+    "没变"——那是编数据,不是交叉确认)。"""
+    import polars as pl
+
+    from neckline.data.market_data import get_market_slice
+
+    def _one(day: date) -> Dict[str, float]:
+        if not codes:
+            return {}
+        df = get_market_slice(day, table="adj_factor", parquet_dir=parquet_dir)
+        if df.is_empty():
+            return {}
+        df = df.filter(pl.col("ts_code").is_in(list(codes)))
+        out: Dict[str, float] = {}
+        for row in df.iter_rows(named=True):
+            v = row.get("adj_factor")
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[row["ts_code"]] = float(v)
+        return out
+
+    return _one(d0), _one(d1)
+
+
+def _confirm_anchor_mismatches(
+    verdict: BasketVerdict, adj_d0: Mapping[str, float], adj_d1: Mapping[str, float]
+) -> None:
+    """⑧-E EOD 专属:对 `evaluate_specs()` 已经标出 `FLAG_ANCHOR_MISMATCH` 的成员,
+    用 `adj_factor(D+1) vs adj_factor(D0)` 拆分成因(原地增补 `verdict.evidence`)。
+
+    **不改 `state` / `verify_hits` / `invalidate_hits`**——两种成因在 `evaluate_specs`
+    里已经都被排除出两侧命中计数(⛔ 绝不把「锚失效」算成失效命中,真故障也不例外:
+    我们不知道它真实方向,不能因为"像是故障"就反过来算它一个失效命中);这里只决定
+    每个成员的 `confirm` 原因码,以及要不要打 WARNING。"""
+    codes = list(verdict.evidence.get(FLAG_ANCHOR_MISMATCH) or [])
+    if not codes:
+        return
+    confirm_map: Dict[str, Dict[str, Any]] = {}
+    for code in codes:
+        d0v, d1v = adj_d0.get(code), adj_d1.get(code)
+        if d0v is None or d1v is None:
+            reason = REASON_ANCHOR_UNCONFIRMED
+        elif abs(float(d1v) - float(d0v)) > vr.EPS:
+            reason = REASON_MEMBER_EX_RIGHTS
+        else:
+            reason = REASON_ANCHOR_MISMATCH
+            logger.warning(
+                "[basket_verify] ⑧-E 锚失效交叉确认为真故障(非除权):ts_code=%s "
+                "adj_factor(D0)=%s adj_factor(D+1)=%s —— pre_close 与卡里 D0 收盘不符,"
+                "但复权因子未变,请核查行情源是否有误",
+                code, d0v, d1v,
+            )
+        confirm_map[code] = {"confirm": reason, "adj_factor_d0": d0v, "adj_factor_d1": d1v}
+    for row in verdict.evidence.get("members") or []:
+        code = row.get("ts_code")
+        if code in confirm_map:
+            row.update(confirm_map[code])
+    verdict.evidence["anchor_mismatch_confirm"] = confirm_map
 
 
 def run_eod_verification(
@@ -361,10 +509,28 @@ def run_eod_verification(
     all_codes = sorted({c for r in refs for c in r.member_codes})
     obs = _eod_observations(trade_date, all_codes, parquet_dir)
     stamp = store.observed_at_now(now)
+
+    # 两遍:第一遍照常判(与盘中同一个 `evaluate_card`,⑧-E 检测器已在其中生效);
+    # 第二遍只对**判出锚失效的那几只**做 `adj_factor` 交叉确认(⑧-E EOD 专属,盘中
+    # 没有这个数据 / 也没这个必要)。不合并成一遍是为了不把"要不要查 adj_factor"
+    # 这个 EOD 专属分支糊进盘中/EOD 共用的 `evaluate_specs`,保持两条路径**同一个
+    # 检测器**这件事在代码结构上就是显然的,不必靠约定。
+    verdicts: Dict[int, BasketVerdict] = {}
+    mismatched_codes: Set[str] = set()
     for ref in refs:
         card_row = load_basket_card(ref.basket_id, db_path=db_path)
         verdict = evaluate_card((card_row or {}).get("card"),
                                 {c: obs[c] for c in ref.member_codes if c in obs})
+        verdicts[ref.basket_id] = verdict
+        mismatched_codes.update(verdict.evidence.get(FLAG_ANCHOR_MISMATCH) or [])
+
+    if mismatched_codes:
+        adj_d0, adj_d1 = _eod_adj_factor_maps(d0, trade_date, sorted(mismatched_codes), parquet_dir)
+        for verdict in verdicts.values():
+            _confirm_anchor_mismatches(verdict, adj_d0, adj_d1)
+
+    for ref in refs:
+        verdict = verdicts[ref.basket_id]
         res.evaluated += 1
         res.states[ref.basket_id] = verdict.state
         outcome = store.append_row(
@@ -383,6 +549,8 @@ __all__ = [
     "SOURCE_INTRADAY", "SOURCE_EOD",
     "REASON_NO_CARD", "REASON_NO_SPEC",
     "FLAG_MEMBER_DATA_MISSING", "FLAG_SPEC_LEVELS_MISSING",
+    "FLAG_ANCHOR_MISMATCH", "REASON_MEMBER_EX_RIGHTS",
+    "REASON_ANCHOR_MISMATCH", "REASON_ANCHOR_UNCONFIRMED",
     "evaluate_specs", "evaluate_card",
     "run_intraday_verification", "run_eod_verification",
 ]

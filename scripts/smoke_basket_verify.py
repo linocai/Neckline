@@ -125,10 +125,16 @@ def _seed_basket(db: Path, d0: date, key: str, name: str, tier: int,
     return bid
 
 
-def _quote(code: str, price: float, low: float, cum_vol: float) -> Quote:
-    return Quote(code=code.split(".")[0], name=code, price=round(price, 2), pre_close=price,
-                 open=price, high=price, low=round(low, 2), volume=cum_vol,
-                 amount=cum_vol * price * 100.0, ts="合成", source="synthetic")
+def _quote(code: str, price: float, low: float, cum_vol: float, pre_close: float) -> Quote:
+    """⚠ `pre_close` 是**当日固定值**(D0 真实收盘,不随分钟检查点变化)——⛔ 不能传
+    `price`。⑧-E 上线前 `Quote.pre_close` 未被 `basket_verify` 消费,拿移动的
+    `price` 顶替只是个无害的占位;⑧-E 之后 `basket_verify` 会拿它跟卡里的
+    `ref_close`(=真实 D0 收盘)比对锚有效性,传移动的 `price` 会让每一拍都"看起来
+    除权",把整份合成剧本打成假阳性锚失效(施工期真踩过,四态齐的剧本会被打成清一色
+    `unclear`)。"""
+    return Quote(code=code.split(".")[0], name=code, price=round(price, 2),
+                 pre_close=round(pre_close, 2), open=price, high=price, low=round(low, 2),
+                 volume=cum_vol, amount=cum_vol * price * 100.0, ts="合成", source="synthetic")
 
 
 def main() -> int:
@@ -200,7 +206,7 @@ def main() -> int:
         capture.reset_capture_state()
         capture.record_auction_snapshot(
             d1, datetime.combine(d1, time(9, 25)),
-            {c: _quote(c, px * 1.005, px * 1.005, 100.0) for c, px in picks},
+            {c: _quote(c, px * 1.005, px * 1.005, 100.0, pre_close=px) for c, px in picks},
             requested=len(picks),
         )
         for idx, (hh, mm) in enumerate(CHECKPOINTS):
@@ -208,7 +214,7 @@ def main() -> int:
             quotes = {}
             for c, base in picks:
                 p, lo = price_for(c, base, idx)
-                quotes[c] = _quote(c, p, lo, 1000.0 * (idx + 1))
+                quotes[c] = _quote(c, p, lo, 1000.0 * (idx + 1), pre_close=base)
             capture.record_intraday_tick(d1, now, quotes)
             res = bv.run_intraday_verification(d1, quotes, attempted_codes=[c for c, _ in picks],
                                                now=now, db_path=db)
