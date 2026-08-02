@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -545,6 +546,63 @@ def load_basket_card(
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 读侧:某个 D0 的篮子 + 成员(V2-⑧ D+1 验证 / 关注池要用)
+# ══════════════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class BasketRef:
+    """一个已冻结篮子的**只读引用**(⑧ 关注池与验证状态机的输入)。
+
+    ⚠ 只装「谁、哪一档、有哪些成员」—— **不装卡**(卡走 `load_basket_card`,
+    「有篮子、无卡」是合法中间态,⑧ 见到 `None` 要落 `unclear` + `no_card`,
+    ⛔ 不许拿默认条件顶上)。
+    """
+
+    basket_id: int
+    trade_date: str          # D0(YYYYMMDD)
+    basket_key: str
+    name: str
+    tier: int
+    member_codes: Tuple[str, ...]
+
+
+def load_baskets_for_date(
+    trade_date: Any,
+    *,
+    tiers: Optional[Sequence[int]] = None,
+    db_path: Optional[Path] = None,
+) -> List[BasketRef]:
+    """读某个 D0 已落库的篮子(按 `tier` 升序、`basket_key` 升序,**确定性排序**)。
+
+    `tiers=(1, 2)` → 只取 T1/T2(⑧ 关注池的口径:容量有限,盘中只盯前两档);
+    `None` → 全部(⑧ 的 EOD 那一拍要判全部篮子,EOD 面板是全市场、无拉价成本)。
+    无篮子 → 空列表(合法状态,如当日引擎没跑或今日无篮子达到定档标准)。
+    """
+    day = trade_date if isinstance(trade_date, str) else trade_date.strftime("%Y%m%d")
+    sql = "SELECT id, trade_date, basket_key, name, tier FROM baskets WHERE trade_date=?"
+    args: List[Any] = [day]
+    if tiers:
+        sql += " AND tier IN (" + ",".join("?" * len(tiers)) + ")"
+        args.extend(int(t) for t in tiers)
+    sql += " ORDER BY tier, basket_key"
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        rows = conn.execute(sql, tuple(args)).fetchall()
+        out: List[BasketRef] = []
+        for r in rows:
+            members = conn.execute(
+                "SELECT ts_code FROM basket_members WHERE basket_id=? ORDER BY ts_code",
+                (int(r[0]),),
+            ).fetchall()
+            out.append(BasketRef(
+                basket_id=int(r[0]), trade_date=str(r[1]), basket_key=str(r[2]),
+                name=str(r[3]), tier=int(r[4]),
+                member_codes=tuple(str(m[0]) for m in members),
+            ))
+    return out
+
+
 __all__ = [
     "save_baskets",
     "save_tier_history",
@@ -553,4 +611,6 @@ __all__ = [
     "save_basket_card",
     "save_basket_cards",
     "load_basket_card",
+    "BasketRef",
+    "load_baskets_for_date",
 ]

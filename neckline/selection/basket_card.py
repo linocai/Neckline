@@ -35,6 +35,11 @@ LLM 数字。**
       数字的说法,禁把「−5%」「8%」写进模板)。
     · **结构化阈值先算、再喂 LLM**:`verification_spec` / `invalidation_spec` 在调用
       LLM **之前**算好并写进上下文,使人话剧本与盘中自动警报**同频**(v1.5-①-A 体例)。
+    · **条件集与聚合规则不住在本模块**(⑦-b,2026-08-02 planner 裁定):验证 / 失效
+      条件、`min_members_hit = ceil(n/2)`、四态映射、比较语义全部**唯一定义在
+      `neckline/selection/verification_rules.py`**,本模块只把阈值**填进** spec 并
+      冻结;⑧ 哨兵读同一份规则模块 + 卡里冻结的阈值。本模块再导出 `COND_*` 只为
+      调用点少改字(同 `aggregate.py` 再导出 `save_baskets` 的体例)。
     · **v1.5.1 标签劫持案**:LLM 输出一律走 `llm/json_block.py` 先剥 JSON 再解析;
       本模块**没有**「结论:通过|否决」标签,也**不复用** `judge._parse_verdict`。
 
@@ -74,6 +79,7 @@ from neckline.llm.json_block import split_narrative_and_reference_json
 from neckline.llm.prompt_context import date_anchor_line
 from neckline.llm.router import TASK_SCRIPT
 from neckline.selection import member_tags as mt
+from neckline.selection import verification_rules as vr
 from neckline.sentinel.universe import load_stock_meta
 from neckline.strategy import brain
 
@@ -81,9 +87,13 @@ logger = logging.getLogger(__name__)
 
 # —— 卡片形状版本(冻结快照的自描述位;⑮ 客户端与 ⑧ 状态机据此判断"这张卡是哪一版
 #    形状"。**改形状必须同时改这个串**,不许悄悄换键)——————————————————————
-CARD_SPEC_VERSION = "basket_card_v1"
-VERIFY_SPEC_VERSION = "basket_verify_v1"
-INVALIDATE_SPEC_VERSION = "basket_invalidate_v1"
+# v2(⑦-b,2026-08-02):`fingerprint` 增 `verification_ruleset_version`;失效 spec 的
+# 第 ③ 条由「收盘 < MA20」单条改成复合条件(见 `verification_rules`),`members[]` 行
+# 里那一格从标量变成 `{ref_close, ma20}` 映射 —— **形状变了就 bump,这正是
+# `spec_version` 存在的意义**(条件集本身的版本另有 `VERIFICATION_RULESET_VERSION`)。
+CARD_SPEC_VERSION = "basket_card_v2"
+VERIFY_SPEC_VERSION = "basket_verify_v2"
+INVALIDATE_SPEC_VERSION = "basket_invalidate_v2"
 
 # —— 固定文案单一源(蓝图 4.6 第 11 项「客户端原样透传不改写」)————————————
 BASKET_CARD_DISCLAIMER = (
@@ -117,20 +127,21 @@ LLM_BUDGET_EXHAUSTED = "budget_exhausted"
 LLM_PARSE_FAILED = "parse_failed"
 LLM_DISABLED = "disabled"          # 调用方显式 `use_llm=False`(单测/离线冒烟)
 
-# —— 验证 / 失效结构化条件码(**⑧ 的唯一判据源**;码即契约,改名等于改契约)——
-COND_CLOSE_AT_OR_ABOVE_REF = "close_at_or_above_ref"
-COND_HOLDS_MA20 = "holds_ma20"
-COND_CLOSE_BELOW_STOP_LINE = "close_below_stop_line"
-COND_CLOSE_BELOW_MA20 = "close_below_ma20"
-COND_LIMIT_DOWN_TOUCH = "limit_down_touch"
+# —— 验证 / 失效结构化条件码与聚合规则:**唯一定义处 = `verification_rules.py`**
+#    (⑦-b 落地要求「集中到一处」),本模块只**再导出**同名常量,不另抄一份 ——
+#    照 `aggregate.py` 再导出 `save_baskets` / `json_block` 搬迁的既有体例,⑦ 的
+#    既有调用点与单测按符号名引用即可、不必改。————————————————————————————
+COND_CLOSE_AT_OR_ABOVE_REF = vr.COND_CLOSE_AT_OR_ABOVE_REF
+COND_HOLDS_MA20 = vr.COND_HOLDS_MA20
+COND_CLOSE_BELOW_STOP_LINE = vr.COND_CLOSE_BELOW_STOP_LINE
+COND_LIMIT_DOWN_TOUCH = vr.COND_LIMIT_DOWN_TOUCH
+# ⑦-b-B 修订:原 `COND_CLOSE_BELOW_MA20`(单条「收盘 < MA20」)**已退役** —— 它与
+# 验证侧的「≥MA20」互为反面,擦边跌破就判证伪。现为复合条件(< D0 收盘 **且**
+# < D0 MA20),理由见 `verification_rules` 该常量注释。
+COND_BELOW_REF_AND_MA20 = vr.COND_BELOW_REF_AND_MA20
+VERIFICATION_RULESET_VERSION = vr.VERIFICATION_RULESET_VERSION
 
-_COND_DESC: Dict[str, str] = {
-    COND_CLOSE_AT_OR_ABOVE_REF: "次日收盘 ≥ 基准日收盘(驱动被跟随)",
-    COND_HOLDS_MA20: "次日收盘 ≥ 基准日 MA20(结构未破)",
-    COND_CLOSE_BELOW_STOP_LINE: "次日收盘 ≤ 章程止损线(现役 stop_pct 算,系统算不由模型给)",
-    COND_CLOSE_BELOW_MA20: "次日收盘 < 基准日 MA20(结构破位)",
-    COND_LIMIT_DOWN_TOUCH: "次日最低价 ≤ 跌停价(触及跌停)",
-}
+_COND_DESC: Dict[str, str] = vr.COND_DESC
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -262,15 +273,9 @@ def build_member_mech(
 # ══════════════════════════════════════════════════════════════════════════
 
 def _min_members_hit(n: int) -> int:
-    """篮子级聚合门槛 = **过半(向上取整)成员命中**。
-
-    ⚠ **plan §五 V2-⑦ 未规定聚合规则,这是 builder 的临时工程默认**(同 ⑤-c
-    `MIN_LIFT_SAMPLE_SIZE=5` / ⑥ `TIER1_MIN_SCORE` 的处置姿势):`ceil(n/2)` 使
-    1 只篮 → 1、2 只篮 → 1、3 只篮 → 2。取 `ceil` 而不是「严格过半」是因为 2 只篮
-    要求两只同时命中会让"篮子被验证"几乎不可能发生,而 §2.8 的四态里本来就有
-    `partial` 承接"只对了一半"。**已如实登记给 planner 裁定,在有裁定之前照此执行。**
-    """
-    return max(1, (int(n) + 1) // 2)
+    """篮子级聚合门槛(**唯一定义在 `verification_rules.min_members_hit`**,⑦-b 裁定
+    后本函数只是本模块内的别名,行为逐位不变:`ceil(n/2)`,验证 / 失效两侧同一个数)。"""
+    return vr.min_members_hit(n)
 
 
 def build_verification_spec(
@@ -305,18 +310,15 @@ def build_verification_spec(
     n = len(members)
     return {
         "spec_version": VERIFY_SPEC_VERSION,
+        "ruleset_version": VERIFICATION_RULESET_VERSION,
         "basket_key": basket_key,
         "trade_date": trade_date.strftime("%Y%m%d"),
         "next_trade_date": next_trade_date.strftime("%Y%m%d") if next_trade_date else None,
         "member_count": n,
         "evaluable_members": evaluable,
         "min_members_hit": int(min_members_hit) if min_members_hit is not None else _min_members_hit(n),
-        "require": [COND_CLOSE_AT_OR_ABOVE_REF, COND_HOLDS_MA20],
-        "conditions": [
-            {"code": c, "scope": "member", "compare": cmp, "desc": _COND_DESC[c]}
-            for c, cmp in ((COND_CLOSE_AT_OR_ABOVE_REF, "close>=level"),
-                           (COND_HOLDS_MA20, "close>=level"))
-        ],
+        "require": list(vr.VERIFY_REQUIRE_ALL),
+        "conditions": vr.conditions_block(vr.VERIFY_REQUIRE_ALL),
         "members": members,
     }
 
@@ -345,8 +347,10 @@ def build_invalidation_spec(
             "ts_code": m.ts_code,
             "ref_close": m.close,
             COND_CLOSE_BELOW_STOP_LINE: m.stop_price,
-            COND_CLOSE_BELOW_MA20: m.ma20,
             COND_LIMIT_DOWN_TOUCH: m.limit_down,
+            # 复合条件(⑦-b-B):两个子阈值一起给,**任一为 null 则整条不判**
+            # (半条判不了就整条不判,不猜)。
+            COND_BELOW_REF_AND_MA20: {vr.LEVEL_REF_CLOSE: m.close, vr.LEVEL_MA20: m.ma20},
         }
         if m.stop_price is not None or m.ma20 is not None or m.limit_down is not None:
             evaluable += 1
@@ -354,20 +358,16 @@ def build_invalidation_spec(
     n = len(members)
     return {
         "spec_version": INVALIDATE_SPEC_VERSION,
+        "ruleset_version": VERIFICATION_RULESET_VERSION,
         "basket_key": basket_key,
         "trade_date": trade_date.strftime("%Y%m%d"),
         "next_trade_date": next_trade_date.strftime("%Y%m%d") if next_trade_date else None,
         "member_count": n,
         "evaluable_members": evaluable,
         "min_members_hit": int(min_members_hit) if min_members_hit is not None else _min_members_hit(n),
-        "any_of": [COND_CLOSE_BELOW_STOP_LINE, COND_CLOSE_BELOW_MA20, COND_LIMIT_DOWN_TOUCH],
+        "any_of": list(vr.INVALIDATE_ANY_OF),
         "stop_pct": stop_pct,
-        "conditions": [
-            {"code": c, "scope": "member", "compare": cmp, "desc": _COND_DESC[c]}
-            for c, cmp in ((COND_CLOSE_BELOW_STOP_LINE, "close<=level"),
-                           (COND_CLOSE_BELOW_MA20, "close<level"),
-                           (COND_LIMIT_DOWN_TOUCH, "low<=level"))
-        ],
+        "conditions": vr.conditions_block(vr.INVALIDATE_ANY_OF),
         "members": members,
     }
 
@@ -398,12 +398,16 @@ def spec_threshold_text(verify: Mapping[str, Any], invalidate: Mapping[str, Any]
     )
     for m in invalidate.get("members", []):
         stop = m.get(COND_CLOSE_BELOW_STOP_LINE)
-        ma = m.get(COND_CLOSE_BELOW_MA20)
+        both = m.get(COND_BELOW_REF_AND_MA20) or {}
+        ma = both.get(vr.LEVEL_MA20) if isinstance(both, Mapping) else None
+        ref = both.get(vr.LEVEL_REF_CLOSE) if isinstance(both, Mapping) else None
         down = m.get(COND_LIMIT_DOWN_TOUCH)
         lines.append(
             f"   · {m.get('ts_code')}:止损线 "
             + (f"{stop:.2f}" if isinstance(stop, (int, float)) else "(章程比例未配置,该条不判)")
-            + " / MA20 "
+            + " / 破位需**同时**低于基准收盘 "
+            + (f"{ref:.2f}" if isinstance(ref, (int, float)) else "(算不出,该条不判)")
+            + " 与 MA20 "
             + (f"{ma:.2f}" if isinstance(ma, (int, float)) else "(算不出,该条不判)")
             + " / 跌停 "
             + (f"{down:.2f}" if isinstance(down, (int, float)) else "(算不出,该条不判)")
@@ -841,6 +845,10 @@ class BasketCard:
                 "charter_version": self.charter_version,
                 "pack_version": self.pack_version,
                 "engine_api_version": self.engine_api_version,
+                # ⑦-b:验证 / 失效**条件集**的版本(**与跟形状的 `spec_version` 分开**)。
+                # ⑨ 评价引擎按它分层,才谈得上「这套条件集的验证率是多少」;没有它,
+                # 日后回看会把两套条件集的成绩混成一锅。**条件或阈值一改就 bump。**
+                "verification_ruleset_version": VERIFICATION_RULESET_VERSION,
             },
             "discipline_labels": discipline_labels(self.stop_pct, self.take_profit_retrace),
             # 降级如实披露
@@ -1140,8 +1148,9 @@ __all__ = [
     "COND_CLOSE_AT_OR_ABOVE_REF",
     "COND_HOLDS_MA20",
     "COND_CLOSE_BELOW_STOP_LINE",
-    "COND_CLOSE_BELOW_MA20",
+    "COND_BELOW_REF_AND_MA20",
     "COND_LIMIT_DOWN_TOUCH",
+    "VERIFICATION_RULESET_VERSION",
     "CARD_SYSTEM_PROMPT",
     "MemberMech",
     "MemberCardEntry",

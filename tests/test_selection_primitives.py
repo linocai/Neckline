@@ -635,6 +635,20 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
         "喂给 LLM 微调段的每档篮子上限,上下文规模护栏(同 aggregate."
         "MAX_MEMBERS_IN_CONTEXT 性质),不参与任何判据。"
     ),
+    # —— V2-⑦-b 验证 / 失效条件集(2026-08-02 planner 裁定:**引擎默认,⛔ 本版
+    #    不进包** —— §12.2 插槽边界明文把「④篮子卡冻结体例」列在「引擎本体,不进包」
+    #    一侧,要包化必须走「扩插槽边界〔用户拍板〕→ 扩 schema → 发包」三步)————
+    ("verification_rules.py", "MIN_MEMBERS_HIT_DIVISOR"): (
+        "篮子级聚合门槛 `ceil(n / MIN_MEMBERS_HIT_DIVISOR)` 的除数(= 2,即「过半、"
+        "向上取整」),验证与失效两侧同一个数。⚠ **临时默认、零审计背书** —— 没有"
+        "任何回测或事件研究支持它,是为了让四态状态机能跑起来而拟的占位值;"
+        "**要可配须先扩 §12.2 插槽边界(用户拍板)**,⛔ builder 不许自行改数、"
+        "也不许自行加包键。校准前置到 ⑨ 评价引擎攒够样本,§七 P3-34 挂账。"
+    ),
+    ("verification_rules.py", "EPS"): (
+        "浮点比较容差,工程不变量(同 primitives._LIFT_EPS / sentinel/holding.py "
+        "`_EPS` 先例:裸 >=/<= 比较价位是本项目通用坑),非策略参数。"
+    ),
 }
 
 

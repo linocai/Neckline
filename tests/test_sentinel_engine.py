@@ -390,8 +390,8 @@ class TestNeverRecommendsNewStocks:
 
 
 def _watchlist_check_dict(ts_code: str, **overrides) -> dict:
-    """手工构造一条自选体检快照(`WatchlistCheckItem.public_dict()` 形状),供
-    `universe._build_watchlist_candidates` 转成 `Candidate` 消费。"""
+    """手工构造一条自选体检快照(`WatchlistCheckItem.public_dict()` 形状)。
+    V2-⑧-A 之后它只用于**证明自选票不再被消费**(转换函数已随来源一起退役)。"""
     base = dict(
         ts_code=ts_code, name="示例自选", pinned=False, source="manual", has_data=True,
         close=10.0, board="MAIN", score=80.0, pattern_tags=[], hot_sectors=[], sector_names=[],
@@ -406,11 +406,12 @@ def _watchlist_check_dict(ts_code: str, **overrides) -> dict:
 
 
 class TestWatchlistCandidateTreatedAsCandidate:
-    """v1.1-C.2「自选票享候选同级待遇」:昨晚自选体检快照已判定触发买点的自选票,
-    盘中买点/证伪哨兵与候选一视同仁——entry_spec/invalidation_spec 都是昨晚
-    (16:35 报告生成时)写死的,盘中只读不重算,不违反§2.4「不产生新决策」。"""
+    """~~v1.1-C.2「自选票享候选同级待遇」~~ → **V2-⑧-A 起自选池不再是关注池来源**
+    (plan §五 V2-⑧-A 原文,⑬-11 复述「⑧-A 已改」)。本类因此改为**锁死退役后的
+    行为**:自选票不再进池、不再产生买点信号 —— 买点哨兵**本身一行没改**(同一份
+    `check_entry`),变的只是"关注谁"。`neckline/watchlist.py` 与表的删除归 ⑬-11。"""
 
-    def test_triggered_watchlist_code_fires_entry_signal(self, isolated_env):
+    def test_triggered_watchlist_code_no_longer_enters_pool_or_fires(self, isolated_env):
         from neckline.watchlist import add_watchlist
 
         days = business_days(date(2026, 7, 1), 30)
@@ -435,14 +436,20 @@ class TestWatchlistCandidateTreatedAsCandidate:
                 )
             }
 
+        from neckline.sentinel.universe import load_watch_universe
+
+        wu = load_watch_universe(today, db_path=isolated_env.db_path,
+                                 parquet_dir=isolated_env.parquet_dir)
+        assert "600002.SH" not in wu.codes          # 自选票不再被拉价
+        assert wu.watchlist_codes == [] and wu.watchlist_candidates == []
+
         result = run_tick(
             now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=quotes_fn,
         )
-        assert {sig.ts_code for sig in result.entry_signals} == {"600002.SH"}
+        assert result.entry_signals == []           # 行情完美也不再触发(它已不在关注池里)
 
     def test_not_triggered_watchlist_code_never_fires(self, isolated_env):
-        """自选票昨晚未触发买点(`buy_point_triggered=False`)→ 不进
-        `watchlist_candidates`,即便行情完美满足触发条件也不会被评估。"""
+        """(退役后同样成立,且理由更强:自选票根本不进池。)"""
         from neckline.watchlist import add_watchlist
 
         days = business_days(date(2026, 7, 1), 30)
@@ -472,3 +479,92 @@ class TestWatchlistCandidateTreatedAsCandidate:
             now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=quotes_fn,
         )
         assert result.entry_signals == []
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2-⑧ 两条旁路(存拍 + 篮子验证)在 `run_tick` 里的接线
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestV2Bypasses:
+    """⑧-B/⑧-C 挂在 `run_tick` 上的两条旁路。**四哨兵与熔断一行没改**,这里只验
+    「旁路真的在跑」以及「旁路炸了不影响判定」。"""
+
+    def _seed(self, isolated_env, report_day, today, code="600001.SH"):
+        from neckline.db import connection
+
+        _setup_calendar_and_history(isolated_env, code, report_day, today)
+        seed_active_rule_v1(isolated_env)
+        insert_stock_basic(isolated_env, [{"ts_code": code, "name": "示例甲", "market": "主板"}])
+        store.save_report(report_day, strategy_version="v1", sentiment={}, sectors=[],
+                          candidates=[_candidate(code).public_dict()], markdown="# t",
+                          db_path=isolated_env.db_path)
+        with connection(isolated_env.db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO baskets (trade_date, basket_key, name, driver, driver_kind, tier,"
+                " pack_version, engine_api_version, charter_version, via, evidence_status, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (report_day.strftime("%Y%m%d"), "k1", "篮甲", "驱动", "theme", 1,
+                 "K4-pack-v1", 1, "v1.3.3", "auto", "ok", "2026-08-02T00:00:00+08:00"),
+            )
+            bid = int(cur.lastrowid)
+            conn.execute(
+                "INSERT INTO basket_members (basket_id, ts_code, role_llm, role_mech,"
+                " role_conflict, reason, is_primary, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (bid, code, "core", None, 0, "理由", 1, "2026-08-02T00:00:00+08:00"),
+            )
+        from neckline.selection import basket_card as bc
+        from neckline.selection.basket_store import save_basket_card
+
+        mechs = [bc.MemberMech(ts_code=code, name=code, close=10.0, ma20=9.2,
+                               limit_up=11.0, limit_down=9.0, stop_price=9.5)]
+        save_basket_card(bid, {
+            "verification_spec": bc.build_verification_spec("k1", report_day, mechs),
+            "invalidation_spec": bc.build_invalidation_spec("k1", report_day, mechs, stop_pct=0.05),
+        }, db_path=isolated_env.db_path)
+        return bid
+
+    def _quotes_fn(self, code, price):
+        def _fn(codes):
+            return {code: Quote(code=code.split(".")[0], name="示例甲", price=price, pre_close=10.0,
+                                open=10.0, high=price, low=price, volume=1000.0, amount=1e6,
+                                ts="", source="sina")}
+        return _fn
+
+    def test_tick_feeds_capture_and_basket_verification(self, isolated_env):
+        from neckline.sentinel import basket_verify_store as bvs
+        from neckline.sentinel import capture
+
+        capture.reset_capture_state()
+        days = business_days(date(2026, 7, 1), 30)
+        report_day, today = days[-2], days[-1]
+        bid = self._seed(isolated_env, report_day, today)
+        now = datetime.combine(today, time(10, 30))
+
+        result = run_tick(now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir,
+                          quotes_fn=self._quotes_fn("600001.SH", 10.5))
+        assert result.captured_ticks == 1                       # 存拍收到这一拍(未落盘)
+        assert capture.buffered_rows(today) == 1
+        assert result.basket_states[bid] == "verified"
+        assert bvs.list_rows(bid, today, db_path=isolated_env.db_path)[0].source == "intraday"
+        capture.reset_capture_state()
+
+    def test_bypass_failure_never_breaks_the_tick(self, isolated_env, monkeypatch):
+        """存拍 / 验证任一炸掉 → 只 WARNING,**四哨兵照常出结果**(⑧-B 硬约束)。"""
+        from neckline.sentinel import basket_verify, capture
+
+        capture.reset_capture_state()
+        days = business_days(date(2026, 7, 1), 30)
+        report_day, today = days[-2], days[-1]
+        self._seed(isolated_env, report_day, today)
+        now = datetime.combine(today, time(10, 30))
+
+        def _boom(*a, **k):
+            raise RuntimeError("旁路炸了")
+
+        monkeypatch.setattr(capture, "record_intraday_tick", _boom)
+        monkeypatch.setattr(basket_verify, "run_intraday_verification", _boom)
+        result = run_tick(now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir,
+                          quotes_fn=self._quotes_fn("600001.SH", 10.5))
+        assert result.quotes_fetched == 1 and result.breadth_snapshot is not None
+        assert result.captured_ticks == 0 and result.basket_states == {}
+        capture.reset_capture_state()

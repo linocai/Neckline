@@ -249,7 +249,13 @@ async def _sentinel_loop(stop_event: asyncio.Event) -> None:
     → APNs 刹车推送(白名单四类之一)。**v1.1-A**:开盘前 9:20–9:30 收紧到 30s 一探并跑
     `run_precall_tick`(盘前校准 + D5 扫描,当日只跑一次,内部自防重),9:26 汇总 / D5 推送
     经 `notify` 白名单入口。**现有 9:35 起 intraday 判逻辑一字不改**。非交易时段优雅待机
-    (每 5min 探一次,不空转)。"""
+    (每 5min 探一次,不空转)。
+
+    **V2-⑧-B 挂了两条旁路分支**(存拍,各自独立 try/except,**不改任何轮询节奏、
+    不影响四哨兵与盘前校准的成败**):09:25–09:30 竞价快照;15:05–15:35 当日存拍一次性
+    落盘 + 记 `capture_status`。盘中每一拍的分钟报价累计在 `run_tick` 内部完成(用的就是
+    那一拍已经拉到的行情,零额外网络)。"""
+    from neckline.sentinel import capture
     from neckline.sentinel.engine import run_tick
     from neckline.sentinel.precall import run_precall_tick
 
@@ -286,7 +292,28 @@ async def _sentinel_loop(stop_event: asyncio.Event) -> None:
                         )
             except Exception:  # noqa: BLE001  盘前一拍异常同样绝不能掀翻轮询主循环
                 logger.warning("盘前校准一拍异常(已吞,继续轮询)", exc_info=True)
+            # V2-⑧-B 旁路:09:25 竞价快照(当日一次,内部自防重)。**独立 try**,
+            # 与上面盘前校准的成败互不影响。
+            if capture.is_auction_capture_window(now):
+                try:
+                    await asyncio.to_thread(
+                        capture.run_auction_capture, now.date(), now,
+                        db_path=_db(), parquet_dir=_parquet_dir(),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning("竞价快照采集异常(已吞,存拍是旁路)", exc_info=True)
             interval = _SENTINEL_PREOPEN_POLL_SEC
+        elif capture.is_flush_window(now):
+            # V2-⑧-B 旁路:15:05 之后把当日内存累计一次性落盘(D4 拍板)+ 记
+            # `capture_status`。幂等(台账在 SQLite,重启也不会重复写),窗口内多探
+            # 几次无副作用;**不改 interval**,收盘后仍是 5min 一探的待机节奏。
+            try:
+                await asyncio.to_thread(
+                    capture.flush_day, now.date(),
+                    db_path=_db(), parquet_dir=_parquet_dir(), now=now,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("盘中存拍落盘异常(已吞,存拍是旁路)", exc_info=True)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:

@@ -218,172 +218,141 @@ class TestIsNewStockExempt:
         assert is_new_stock_exempt(meta, days[-1]) is False
 
 
-class TestWatchlistMergedIntoUniverse:
-    """v1.1-C.2:自选池并入关注池,优先级与候选/持仓同级,合并后 ≤200(此处用小
-    `breadth_cap` 逼近边界)上限必须守住。"""
 
-    def test_watchlist_codes_merged_and_deduped(self, isolated_env):
-        from neckline.watchlist import add_watchlist
 
-        days = business_days(date(2026, 7, 13), 5)
-        insert_trade_cal(isolated_env, days)
-        report_day, today = days[-2], days[-1]
-        _save_report(isolated_env, report_day, [_candidate("600001.SH")])
-        add_watchlist("600002.SH", db_path=isolated_env.db_path)
-        add_watchlist("600001.SH", db_path=isolated_env.db_path)  # 与候选重复,不应出现两次
+# ══════════════════════════════════════════════════════════════════════════
+# V2-⑧-A 关注池改组:持仓 + T1/T2 篮子成员 + 相关板块指数 + 昨日涨停;自选池退役
+# ══════════════════════════════════════════════════════════════════════════
 
-        wu = load_watch_universe(today, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
-        assert set(wu.watchlist_codes) == {"600002.SH", "600001.SH"}
-        assert wu.codes.count("600001.SH") == 1
-        assert set(wu.codes) >= {"600001.SH", "600002.SH"}
+def _seed_basket(settings, d0: date, codes, *, tier: int, key: str) -> int:
+    from neckline.db import connection
 
-    def test_candidates_positions_watchlist_kept_full_before_breadth_extra(self, isolated_env):
-        """去重后「候选+持仓+自选」全保留,`_load_prev_limit_up_codes` 只填剩余
-        额度——总数不超过 `breadth_cap`,且候选/持仓/自选一个都不因代理样本被挤掉。"""
-        from neckline.watchlist import add_watchlist
-
-        days = business_days(date(2026, 7, 13), 5)
-        insert_trade_cal(isolated_env, days)
-        report_day, today = days[-2], days[-1]
-        _save_report(isolated_env, report_day, [_candidate("600001.SH")])
-        open_position("600003.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)
-        add_watchlist("600002.SH", db_path=isolated_env.db_path)
-
-        rows = [
-            {
-                "ts_code": f"70000{i}.SH", "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
-                "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
-                "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": i,
-            }
-            for i in range(5)
-        ]
-        write_daily_fixture(isolated_env, "limit_derived", report_day, rows)
-
-        wu = load_watch_universe(
-            today, breadth_cap=5, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir
+    with connection(settings.db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO baskets (trade_date, basket_key, name, driver, driver_kind, tier,"
+            " pack_version, engine_api_version, charter_version, via, evidence_status, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (d0.strftime("%Y%m%d"), key, f"篮{key}", "驱动", "theme", tier,
+             "K4-pack-v1", 1, "v1.3.3", "auto", "ok", "2026-08-02T00:00:00+08:00"),
         )
-        # 候选(1)+持仓(1)+自选(1)=3,全部保留;剩余额度2 填代理样本,总数恰为cap
-        assert len(wu.codes) == 5
-        assert {"600001.SH", "600002.SH", "600003.SH"} <= set(wu.codes)
-        assert len(wu.breadth_extra_codes) == 2
+        bid = int(cur.lastrowid)
+        for c in codes:
+            conn.execute(
+                "INSERT INTO basket_members (basket_id, ts_code, role_llm, role_mech,"
+                " role_conflict, reason, is_primary, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (bid, c, "core", None, 0, "理由", 1, "2026-08-02T00:00:00+08:00"),
+            )
+    return bid
 
-    def test_breadth_extra_empty_when_priority_codes_fill_cap(self, isolated_env):
-        """持仓+自选+候选去重后已达 `breadth_cap` → 代理样本挤占额度为 0,不报错。"""
-        from neckline.watchlist import add_watchlist
 
+class TestV2WatchPoolComposition:
+    """plan §五 V2-⑧-A 验收:**四类来源齐、去重、上限、自选池不再进**。"""
+
+    def test_four_sources_present_and_deduped(self, isolated_env):
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         report_day, today = days[-2], days[-1]
-        add_watchlist("600001.SH", db_path=isolated_env.db_path)
-        add_watchlist("600002.SH", db_path=isolated_env.db_path)
+
+        insert_stock_basic(isolated_env, [
+            {"ts_code": "600001.SH", "name": "沪主板", "market": "主板"},
+            {"ts_code": "300001.SZ", "name": "创业板", "market": "创业板"},
+            {"ts_code": "600003.SH", "name": "持仓票", "market": "主板"},
+        ])
+        _save_report(isolated_env, report_day, [_candidate("600009.SH")])
+        open_position("600003.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)
+        _seed_basket(isolated_env, report_day, ["600001.SH", "300001.SZ"], tier=1, key="k1")
+        _seed_basket(isolated_env, report_day, ["600002.SH"], tier=2, key="k2")
+        _seed_basket(isolated_env, report_day, ["600004.SH"], tier=3, key="k3")   # T3 不进盘中池
         write_daily_fixture(isolated_env, "limit_derived", report_day, [
             {"ts_code": "700001.SH", "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
              "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
              "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1},
         ])
 
-        wu = load_watch_universe(
-            today, breadth_cap=2, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir
-        )
-        assert wu.breadth_extra_codes == []
-        assert set(wu.codes) == {"600001.SH", "600002.SH"}
+        wu = load_watch_universe(today, db_path=isolated_env.db_path,
+                                 parquet_dir=isolated_env.parquet_dir)
+        # ① 持仓 ② T1/T2 篮子成员(T3 不进)③ 板块指数 ④ 昨日涨停 —— 四类齐
+        assert "600003.SH" in wu.codes
+        assert set(wu.basket_codes) == {"600001.SH", "300001.SZ", "600002.SH"}
+        assert "600004.SH" not in wu.codes
+        assert wu.index_codes == ["000001.SH", "399006.SZ"]     # 沪主板 + 创业板,确定性排序
+        assert set(wu.index_codes) <= set(wu.codes)
+        assert wu.breadth_extra_codes == ["700001.SH"]
+        # 候选(V1 残留,⑬-1 才删)仍在
+        assert "600009.SH" in wu.codes
+        # 去重:codes 无重复
+        assert len(wu.codes) == len(set(wu.codes))
+        assert [b.tier for b in wu.baskets] == [1, 2]
 
-    def test_priority_trim_order_positions_watchlist_candidates_when_over_cap(self, isolated_env):
-        """兜底裁剪(现实中 5+30+20=55 远低于200,不会触发,但函数须防御性守住):
-        `breadth_cap` 小于「持仓+自选+候选」去重后的总量时,按「持仓>自选>候选」
-        优先序截断(任务原文钉死的裁剪顺序)。"""
-        from neckline.watchlist import add_watchlist
-
-        days = business_days(date(2026, 7, 13), 5)
-        insert_trade_cal(isolated_env, days)
-        report_day, today = days[-2], days[-1]
-        _save_report(isolated_env, report_day, [_candidate("900001.SH")])   # 候选(最低优先级)
-        add_watchlist("800001.SH", db_path=isolated_env.db_path)            # 自选(中优先级)
-        open_position("700001.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)  # 持仓(最高优先级)
-
-        wu = load_watch_universe(
-            today, breadth_cap=2, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir
-        )
-        assert len(wu.codes) == 2
-        assert set(wu.codes) == {"700001.SH", "800001.SH"}   # 持仓 + 自选保留,候选被截掉
-        assert wu.breadth_extra_codes == []
-
-
-class TestWatchlistCandidatesFromCheckSnapshot:
-    """v1.1-C.2「自选票享候选同级待遇」:昨晚体检快照里已触发买点的自选票转成
-    `Candidate` 形状,供买点/证伪哨兵与盘前校准同码消费。"""
-
-    def test_triggered_watchlist_code_becomes_candidate(self, isolated_env):
+    def test_watchlist_is_no_longer_a_source(self, isolated_env):
+        """**自选池不再进关注池**(⑧-A;`watchlist` 表还在、⑬-11 才删,但本模块不读它)。"""
         from neckline.watchlist import add_watchlist
 
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         report_day, today = days[-2], days[-1]
         add_watchlist("600002.SH", db_path=isolated_env.db_path)
-        _save_report(
-            isolated_env, report_day, [_candidate("600001.SH")],
-            watchlist=[_watchlist_check_dict("600002.SH", buy_point_triggered=True)],
-        )
+        _save_report(isolated_env, report_day, [_candidate("600001.SH")],
+                     watchlist=[_watchlist_check_dict("600002.SH", buy_point_triggered=True)])
 
-        wu = load_watch_universe(today, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
-        assert [c.ts_code for c in wu.watchlist_candidates] == ["600002.SH"]
-        wc = wu.watchlist_candidates[0]
-        assert wc.entry_spec["ma10"] == pytest.approx(9.5)
-        assert wc.invalidation_spec["vol_ratio_high"] == pytest.approx(3.0)
+        wu = load_watch_universe(today, db_path=isolated_env.db_path,
+                                 parquet_dir=isolated_env.parquet_dir)
+        assert "600002.SH" not in wu.codes
+        assert wu.watchlist_codes == [] and wu.watchlist_candidates == []
 
-    def test_not_triggered_watchlist_code_excluded(self, isolated_env):
-        from neckline.watchlist import add_watchlist
+    def test_universe_module_does_not_read_watchlist_at_all(self):
+        """守门:`universe.py` 里不许再出现 `neckline.watchlist` 的 import(⑧-A)。"""
+        import ast
+        from pathlib import Path
 
+        src = (Path(__file__).resolve().parent.parent / "neckline" / "sentinel"
+               / "universe.py").read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert "watchlist" not in node.module
+            elif isinstance(node, ast.Import):
+                assert all("watchlist" not in a.name for a in node.names)
+
+    def test_cap_is_respected_and_indexes_yield_first(self, isolated_env):
+        """总量 ≤ `breadth_cap`;真要挤,先挤**没有纪律消费方**的指数(优先序:
+        持仓 > T1/T2 成员 > 候选 > 指数)。"""
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         report_day, today = days[-2], days[-1]
-        add_watchlist("600002.SH", db_path=isolated_env.db_path)
-        _save_report(
-            isolated_env, report_day, [],
-            watchlist=[_watchlist_check_dict("600002.SH", buy_point_triggered=False)],
-        )
+        insert_stock_basic(isolated_env, [{"ts_code": "600001.SH", "name": "甲", "market": "主板"}])
+        _save_report(isolated_env, report_day, [_candidate("600009.SH")])
+        open_position("600003.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)
+        _seed_basket(isolated_env, report_day, ["600001.SH"], tier=1, key="k1")
 
-        wu = load_watch_universe(today, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
-        assert wu.watchlist_candidates == []
+        wu = load_watch_universe(today, breadth_cap=3, db_path=isolated_env.db_path,
+                                 parquet_dir=isolated_env.parquet_dir)
+        assert len(wu.codes) == 3
+        assert set(wu.codes) == {"600003.SH", "600001.SH", "600009.SH"}   # 指数被挤掉
+        assert wu.index_codes == []
 
-    def test_removed_from_watchlist_no_longer_becomes_candidate(self, isolated_env):
-        """用户已把该票从自选池删除 → 即使昨晚快照判定触发,盘中也不再当候选处理
-        (不必等明天报告才生效)。"""
+    def test_no_baskets_is_a_legal_state(self, isolated_env):
+        """V2 引擎还没跑 / 今日无定档篮子 → 空篮子列表,关注池照常组装(不崩)。"""
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         report_day, today = days[-2], days[-1]
-        # 注意:本测试故意不调用 add_watchlist——模拟"曾经在自选池、现已被删除"。
-        _save_report(
-            isolated_env, report_day, [],
-            watchlist=[_watchlist_check_dict("600002.SH", buy_point_triggered=True)],
-        )
+        open_position("600003.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)
+        wu = load_watch_universe(today, db_path=isolated_env.db_path,
+                                 parquet_dir=isolated_env.parquet_dir)
+        assert wu.baskets == [] and wu.basket_codes == []
+        assert wu.codes == ["600003.SH"]
 
-        wu = load_watch_universe(today, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
-        assert wu.watchlist_candidates == []
+    def test_index_codes_do_not_pollute_retreat_breadth_sample(self, isolated_env):
+        """指数进了关注池,但**退潮宽度样本不受影响** —— `compute_breadth_snapshot`
+        对查无 `stock_basic` 元数据的代码结构上就跳过(⑧-D:纪律判定零改动)。"""
+        from neckline.sentinel.quotes import Quote
+        from neckline.sentinel.retreat import compute_breadth_snapshot
 
-    def test_triggered_code_already_a_candidate_not_duplicated(self, isolated_env):
-        """该票既是候选又是自选(且触发)→ 只在 `candidates` 出现一次,不在
-        `watchlist_candidates` 里重复构造。"""
-        from neckline.watchlist import add_watchlist
-
-        days = business_days(date(2026, 7, 13), 5)
-        insert_trade_cal(isolated_env, days)
-        report_day, today = days[-2], days[-1]
-        add_watchlist("600001.SH", db_path=isolated_env.db_path)
-        _save_report(
-            isolated_env, report_day, [_candidate("600001.SH")],
-            watchlist=[_watchlist_check_dict("600001.SH", buy_point_triggered=True)],
-        )
-
-        wu = load_watch_universe(today, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
-        assert wu.watchlist_candidates == []
-        assert [c.ts_code for c in wu.candidates] == ["600001.SH"]
-
-    def test_no_report_yields_no_watchlist_candidates(self, isolated_env):
-        from neckline.watchlist import add_watchlist
-
-        days = business_days(date(2026, 7, 13), 5)
-        insert_trade_cal(isolated_env, days)
-        add_watchlist("600002.SH", db_path=isolated_env.db_path)
-        wu = load_watch_universe(days[-1], db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
-        assert wu.watchlist_candidates == []
+        insert_stock_basic(isolated_env, [{"ts_code": "600001.SH", "name": "甲", "market": "主板"}])
+        meta = load_stock_meta(["600001.SH", "000001.SH"], db_path=isolated_env.db_path)
+        quotes = {
+            code: Quote(code=code, name=code, price=11.0, pre_close=10.0, open=10.0,
+                        high=11.0, low=10.0, volume=1.0, amount=1.0, ts="", source="sina")
+            for code in ("600001.SH", "000001.SH")
+        }
+        snap = compute_breadth_snapshot(date(2026, 7, 24), quotes, meta)
+        assert snap.sample_size == 1 and snap.limit_up_count == 1     # 指数没进分母

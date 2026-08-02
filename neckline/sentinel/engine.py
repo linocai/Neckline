@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from neckline.report.candidates import Candidate
 from neckline.report.sectors import load_member_map
+from neckline.sentinel import basket_verify, capture
 from neckline.sentinel.channels import (
     LEVEL_CRITICAL,
     LEVEL_INFO,
@@ -96,6 +97,11 @@ class TickResult:
     report_found: bool = False
     watched_codes: int = 0
     quotes_fetched: int = 0
+    # —— V2-⑧ 旁路(存拍 + 篮子验证)的观测位。**它们不参与任何纪律判定**,只是让
+    #    冒烟脚本 / 日志看得见旁路有没有在跑;任一为 0 都不影响四哨兵与熔断。————
+    captured_ticks: int = 0
+    basket_states: Dict[int, str] = field(default_factory=dict)   # basket_id -> 本拍状态
+    basket_rows_written: int = 0
     retreat_active: bool = False
     retreat_alert: Optional[RetreatAlert] = None       # 仅红色刹车时非空(驱动 APNs/通道推送)
     retreat_warning: Optional[str] = None              # 黄色预警文案(只进看板,不推送)
@@ -192,6 +198,27 @@ def run_tick(
         trade_date=trade_date, now=now, report_found=wu.report_found,
         watched_codes=len(wu.codes), quotes_fetched=len(quotes),
     )
+
+    # —— V2-⑧ 旁路 A:盘中存拍(内存累计,15:05 才落盘)——————————————————————
+    # **零额外网络**(用的就是上面这一拍已经拉到的 `quotes`),**独立 try**:存拍出任何
+    # 问题都只 WARNING,四哨兵与熔断的判定路径一行不动(⑧-B/⑧-D)。
+    try:
+        result.captured_ticks = capture.record_intraday_tick(trade_date, now, quotes)
+    except Exception:  # noqa: BLE001
+        logger.warning("盘中存拍本拍失败(已吞,不影响哨兵判定)", exc_info=True)
+
+    # —— V2-⑧ 旁路 B:篮子验证状态机(D+1 验证,判据 = ⑦ 冻结卡里的 spec)——————
+    # ⚠ 语义红线:它**只回答「D0 那份驱动假设今天成不成立」**,⛔ 不触发任何交易动作、
+    # 不进推送、不改任何持仓判定(⑦-b / ⑧-C2)。同样独立 try。
+    try:
+        vres = basket_verify.run_intraday_verification(
+            trade_date, quotes, attempted_codes=wu.codes, now=now,
+            db_path=db_path, baskets=wu.baskets,
+        )
+        result.basket_states = dict(vres.states)
+        result.basket_rows_written = vres.rows_written
+    except Exception:  # noqa: BLE001
+        logger.warning("篮子验证本拍失败(已吞,不影响哨兵判定)", exc_info=True)
 
     def _maybe_push(
         sentinel: str, ts_code: str, event_key: str, title: str, body: str, level: str,

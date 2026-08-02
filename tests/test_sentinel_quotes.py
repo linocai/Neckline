@@ -88,6 +88,23 @@ class TestToSymbol:
         assert to_symbol("sh600519") == "sh600519"
         assert to_symbol("bj920819") == "bj920819"
 
+    def test_ts_code_suffix_wins_for_indexes(self):
+        """V2-⑧-A:关注池开始装**指数**代码,前缀启发式对它们会错得很安静 ——
+        `000001.SH`(上证综指)按数字前缀会被判成 `sz000001`(平安银行),拉回来的
+        是另一个标的。后缀优先修的就是这一类。"""
+        assert to_symbol("000001.SH") == "sh000001"     # 上证综指,不是平安银行
+        assert to_symbol("000688.SH") == "sh000688"     # 科创50 指数
+        assert to_symbol("399006.SZ") == "sz399006"     # 创业板指
+        assert to_symbol("399001.SZ") == "sz399001"     # 深证成指
+        assert to_symbol("899050.BJ") == "bj899050"     # 北证50
+
+    def test_suffix_change_is_a_noop_for_every_stock_code_shape(self):
+        """阴性方向:**股票**代码带不带后缀,结果逐位相同(改动对既有路径零影响)。"""
+        for bare, suffix in [("600519", "SH"), ("603986", "SH"), ("000001", "SZ"),
+                             ("300750", "SZ"), ("688981", "SH"), ("689009", "SH"),
+                             ("920819", "BJ"), ("830799", "BJ"), ("430047", "BJ")]:
+            assert to_symbol(f"{bare}.{suffix}") == to_symbol(bare)
+
 
 class TestParseSina:
     def test_normal_quote_unit_normalization(self):

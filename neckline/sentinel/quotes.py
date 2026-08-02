@@ -82,15 +82,30 @@ class Quote:
 
 # —— 代码 → 市场前缀(sina/tencent 符号) ——————————————————————————————
 
+_SUFFIX_TO_PREFIX = {"SH": "sh", "SZ": "sz", "BJ": "bj"}
+
+
 def to_symbol(code: str) -> str:
-    """归一为带市场前缀的符号。6*→sh,0*/3*→sz,北交所(8/4/920 前缀,复用
-    `neckline.data.board.classify_by_code` 单一源判定)→bj。已带前缀原样小写。"""
+    """归一为带市场前缀的符号。**`ts_code` 自带的 `.SH/.SZ/.BJ` 后缀优先**;没有后缀
+    才退回代码前缀启发式(6*→sh,0*/3*→sz,北交所走
+    `neckline.data.board.classify_by_code` 单一源判定)。已带前缀的原样小写。
+
+    ⚠ **为什么后缀必须优先(V2-⑧-A 加指数代码时发现的真洞)**:前缀启发式对**股票**
+    永远与后缀一致(6 开头必在沪、0/3 必在深),但对**指数**会错得很安静 ——
+    `000001.SH`(上证综指)会被判成 `sz000001`(平安银行),拉回来的是**另一个标的**
+    的行情且完全看不出异常。改后对既有股票代码逐位等价(单测锁死),只修指数这一类。
+    """
     c = code.strip().lower()
     if c.startswith(("sh", "sz", "bj")):
         return c
+    raw = code.strip().upper()
     digits = re.sub(r"\D", "", c)
     if not digits:
         return c
+    if "." in raw:
+        prefix = _SUFFIX_TO_PREFIX.get(raw.rsplit(".", 1)[1])
+        if prefix:
+            return prefix + digits
     if classify_by_code(digits) == Board.BSE:
         return "bj" + digits
     return ("sh" if digits.startswith("6") else "sz") + digits

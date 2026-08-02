@@ -178,6 +178,8 @@ def test_card_json_has_all_eleven_blueprint_items():
     assert j["fingerprint"] == {
         "stop_pct": 0.05, "take_profit_retrace": 0.08, "charter_version": "v1.3.3",
         "pack_version": "K7-pack-v1", "engine_api_version": ag.engine_api.ENGINE_API_VERSION,
+        # ⑦-b:条件集版本(与跟形状的 spec_version 分开,⑨ 按它分层归因)
+        "verification_ruleset_version": bc.VERIFICATION_RULESET_VERSION,
     }
     assert j["discipline_labels"] == ["章程止损 −5.0%", "回落止盈 8.0%"]
     assert j["spec_version"] == bc.CARD_SPEC_VERSION and j["version"] == 1
@@ -426,10 +428,12 @@ def test_verification_and_invalidation_specs_are_machine_consumable():
     assert v["members"][0][bc.COND_CLOSE_AT_OR_ABOVE_REF] == 10.0
     assert v["members"][0][bc.COND_HOLDS_MA20] == 9.2
     assert v["member_count"] == 1 and v["min_members_hit"] == 1
-    assert iv["any_of"] == [bc.COND_CLOSE_BELOW_STOP_LINE, bc.COND_CLOSE_BELOW_MA20,
-                            bc.COND_LIMIT_DOWN_TOUCH]
+    # ⑦-b-B:失效第 ③ 条由「收盘 < MA20」单条改成复合条件(< D0 收盘 **且** < D0 MA20)
+    assert iv["any_of"] == [bc.COND_CLOSE_BELOW_STOP_LINE, bc.COND_LIMIT_DOWN_TOUCH,
+                            bc.COND_BELOW_REF_AND_MA20]
     assert iv["members"][0][bc.COND_CLOSE_BELOW_STOP_LINE] == 9.5
     assert iv["members"][0][bc.COND_LIMIT_DOWN_TOUCH] == 9.0
+    assert iv["members"][0][bc.COND_BELOW_REF_AND_MA20] == {"ref_close": 10.0, "ma20": 9.2}
     assert iv["stop_pct"] == 0.05
     # 每条件都带人读描述,⑧ 落地时不必反查代码
     assert all(c["desc"] and c["compare"] for c in v["conditions"] + iv["conditions"])

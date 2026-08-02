@@ -353,9 +353,10 @@ def test_run_precall_d5_exit_records_and_dedupes(isolated_env):
     assert res2.ran is False
 
 
-def test_run_precall_watchlist_triggered_code_gets_candidate_treatment(isolated_env):
-    """v1.1-C.2「自选票享候选同级待遇」在盘前校准的落点:昨晚自选体检快照已
-    判定触发买点的自选票(entry_spec 写死),与候选一视同仁参与高开变形判定。"""
+def test_run_precall_watchlist_code_no_longer_gets_candidate_treatment(isolated_env):
+    """~~v1.1-C.2「自选票享候选同级待遇」~~ → **V2-⑧-A 起自选池不再是关注池来源**,
+    盘前校准也就不再对自选票判高开变形。⚠ `precall.py` 的**判定逻辑一行没改**
+    (⑧-D),变的只是"关注谁";⑬-11 再删模块与表。"""
     from neckline.watchlist import add_watchlist
 
     settings = isolated_env
@@ -384,4 +385,5 @@ def test_run_precall_watchlist_triggered_code_gets_candidate_treatment(isolated_
     quotes = {"600002.SH": _quote(open_=10.0, pre_close=10.0, code="600002.SH")}
     res = run_precall_tick(now, db_path=settings.db_path,
                            parquet_dir=settings.parquet_dir, quotes_fn=lambda codes: quotes)
-    assert res.gap_up == ["600002.SH"]
+    assert res.gap_up == []              # 自选票已不在关注池,无判定对象
+    assert res.watched_codes == 0
