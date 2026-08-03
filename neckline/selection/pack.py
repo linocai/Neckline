@@ -57,6 +57,7 @@ get_active_pack`)——`_validate_quality_lines` 的单调性检查因此**只�
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -68,6 +69,9 @@ from neckline.db import connection, init_schema
 from neckline.scan.stage import STAGE_ORDER
 from neckline.selection import engine_api
 from neckline.selection.primitives import PRIMITIVES, validate_params
+
+logger = logging.getLogger(__name__)
+
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -395,10 +399,22 @@ def get_active_pack(db_path: Optional[Path] = None) -> Optional[Pack]:
     init_schema(db_path)
     key = _cache_key(db_path)
     with connection(db_path) as conn:
-        row = conn.execute(
+        # 取两行只为**能发现异常**(🔵 B3):库级部分唯一索引之后「两行现役」已经进不来,
+        # 但索引是 2026-08-03 才加的,老库上可能已经有历史遗留 —— 那时候静默取一行等于
+        # 让「今天用的是哪个包」看运气(包版本是 ⑤⑥ 判定输入与 ⑨ 归因的分层键)。
+        # `pack_version DESC` 是**确定性 tie-break**:同秒创建的两行不该靠行序决定胜负。
+        rows = conn.execute(
             f"SELECT {_PACK_COLUMNS} FROM selection_packs "
-            "WHERE is_active=1 ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
+            "WHERE is_active=1 ORDER BY created_at DESC, pack_version DESC LIMIT 2"
+        ).fetchall()
+    if len(rows) > 1:
+        logger.warning(
+            "[pack] selection_packs 出现 %d 行 is_active=1(只可能来自手工 SQL / 老库遗留)"
+            "—— 本次按 (created_at, pack_version) 降序取 %r,**请人工核对并把多余的行置 0**;"
+            "现役包版本是判定输入与归因分层键,含糊不得。",
+            len(rows), rows[0][0],
+        )
+    row = rows[0] if rows else None
     if row is None:
         _ACTIVE_PACK_CACHE.pop(key, None)
         return None

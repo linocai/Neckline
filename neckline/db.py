@@ -11,12 +11,15 @@ ST 状态历史(`namechange`)。回测大表(daily 等)走 Parquet,不进本库
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
 from neckline.config import settings
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trade_cal (
@@ -961,6 +964,10 @@ CREATE TABLE IF NOT EXISTS selection_packs (
   created_at         TEXT NOT NULL,
   activated_at       TEXT
 );
+-- 「任一时刻至多一个现役包」的**库级约束**见 `_POST_MIGRATION_INDEXES`(契约线审计 🔵 B3)。
+-- ⚠ 刻意**不写在这里**:`_SCHEMA` 走 `executescript` 一把梭,老库上若已存在两行
+-- is_active=1(手工 SQL 遗留),这条 CREATE 会抛 IntegrityError 并**中断整个建表脚本**
+-- —— 一个本该"防止新脏数据"的约束会把已有脏数据的库直接锁死开不了机。
 -- 策略包激活事件流(plan §五 V2-①/③)。**append-only 事件流**,照 `strategy_activation_log`
 -- 先例单列一表——"版本注册表"与"激活事件"分开落点,不把事件塞进版本表。
 CREATE TABLE IF NOT EXISTS selection_pack_activation_log (
@@ -1204,6 +1211,12 @@ _POST_MIGRATION_INDEXES = (
     # 这里写明 WHERE 是为了让"只约束给了键的那些行"这件事在 DDL 上就一目了然。
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_idempotency_key "
     "ON positions(idempotency_key) WHERE idempotency_key IS NOT NULL",
+    # 「任一时刻至多一个现役策略包」(契约线审计 🔵 B3):此前这条不变量只由
+    # `pack.activate_pack()` 的写入顺序保证(先 deactivate 旧、再 activate 新),库本身拦不住
+    # 手工 SQL 造出两行 is_active=1 —— 而 `get_active_pack` 会静默取一行,于是"今天用的是
+    # 哪个包"变成看运气的事(包版本是 ⑤⑥ 的判定输入、⑨ 的归因分层键)。
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_selection_packs_single_active "
+    "ON selection_packs(is_active) WHERE is_active = 1",
 )
 
 
@@ -1217,7 +1230,21 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     for stmt in _POST_MIGRATION_INDEXES:
-        conn.execute(stmt)
+        try:
+            conn.execute(stmt)
+        except sqlite3.IntegrityError:
+            # **已有脏数据的库不许被开机脚本锁死**:唯一索引的职责是「防止新的脏数据」,
+            # 不是「让一个已经脏了的库开不了机」——`init_schema` 被所有入口调用,在这里
+            # 硬抛等于 API / 哨兵 / 16:35 报告全线阵亡,还只给一句 "UNIQUE constraint
+            # failed"。故:吵得足够响 + 说清怎么修 + 继续跑(读侧另有告警,如
+            # `pack.get_active_pack` 遇多行现役会再吵一次)。
+            logger.warning(
+                "[db] 唯一索引建不上,说明库里**已经存在**违反该约束的历史行:%s —— "
+                "本次跳过建索引、继续启动(新的重复写入因此暂时拦不住)。"
+                "请人工核对并清理重复行后重跑一次 `init_schema`(如 selection_packs "
+                "多行 is_active=1 → 把多余的置 0;positions 幂等键重复 → 保留正确那笔)。",
+                stmt, exc_info=True,
+            )
     _backfill_activated_at(conn)
     _seed_activation_log(conn)
     _seed_push_kinds(conn)

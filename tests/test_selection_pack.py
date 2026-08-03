@@ -504,6 +504,52 @@ def test_activate_pack_switch_writes_deactivate_and_activate_events(tmp_path: Pa
     ]
 
 
+def test_db_refuses_two_active_packs(tmp_path: Path):
+    """契约线审计 🔵 B3(2026-08-03):「任一时刻至多一个现役包」**上库级约束**。
+
+    此前这条不变量只由 `activate_pack()` 的写入顺序保证,库本身拦不住手工 SQL 造出两行
+    `is_active=1`;而 `get_active_pack` 会**静默**取一行 —— 于是"今天用的是哪个包"变成
+    看运气的事,而包版本是 ⑤⑥ 的判定输入、⑨ 的归因分层键。"""
+    import sqlite3
+
+    from neckline.db import connection
+
+    db_path = tmp_path / "n.db"
+    doc_a, doc_b = _minimal_pack("dual-a"), _minimal_pack("dual-b")
+    pack.activate_pack(doc_a["manifest"], doc_a["config"], db_path=db_path)
+    pack.activate_pack(doc_b["manifest"], doc_b["config"], db_path=db_path)   # a 已被置 0
+    with pytest.raises(sqlite3.IntegrityError):
+        with connection(db_path) as conn:
+            conn.execute("UPDATE selection_packs SET is_active=1 WHERE pack_version='dual-a'")
+    # 阴性方向:非现役行想留多少留多少(部分索引只约束 is_active=1 那些行)
+    with connection(db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM selection_packs WHERE is_active=0").fetchone()[0] == 1
+
+
+def test_get_active_pack_warns_when_legacy_db_has_two_active_rows(tmp_path: Path, caplog):
+    """🔵 B3 读侧:老库(索引加入之前遗留)真出现两行现役时,**必须吵**,不许静默择一。
+    取值仍是确定性的(`created_at, pack_version` 双键降序),但沉默才是真正的问题。"""
+    import logging
+
+    from neckline.db import connection
+
+    db_path = tmp_path / "n.db"
+    doc_a, doc_b = _minimal_pack("legacy-a"), _minimal_pack("legacy-b")
+    pack.activate_pack(doc_a["manifest"], doc_a["config"], db_path=db_path)
+    pack.activate_pack(doc_b["manifest"], doc_b["config"], db_path=db_path)
+    # 模拟"索引存在之前就留下的脏数据":绕过索引直接造第二行现役
+    with connection(db_path) as conn:
+        conn.execute("DROP INDEX IF EXISTS idx_selection_packs_single_active")
+        conn.execute("UPDATE selection_packs SET is_active=1 WHERE pack_version='legacy-a'")
+    pack._ACTIVE_PACK_CACHE.clear()
+
+    with caplog.at_level(logging.WARNING):
+        active = pack.get_active_pack(db_path=db_path)
+    assert active is not None
+    assert any("is_active=1" in rec.message for rec in caplog.records), "两行现役必须告警"
+
+
 def test_activate_pack_reactivating_current_active_is_noop(tmp_path: Path):
     db_path = tmp_path / "n.db"
     doc = _minimal_pack("noop-v1")

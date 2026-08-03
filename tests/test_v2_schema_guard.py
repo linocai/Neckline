@@ -40,6 +40,45 @@ _NECKLINE_PY_FILES = sorted(_NECKLINE_DIR.rglob("*.py"))
 _SCANNED_PY_FILES = sorted(_NECKLINE_DIR.rglob("*.py")) + sorted(_SCRIPTS_DIR.rglob("*.py"))
 
 
+def test_dirty_legacy_db_does_not_brick_init_schema(tmp_path, caplog):
+    """契约线审计 🔵 B3 / 🟡 Y7 的**安全边界**:唯一索引的职责是「防止新的脏数据」,
+    不是「让一个已经脏了的库开不了机」。
+
+    `init_schema` 被所有入口调用(API / 哨兵 / 16:35 报告 / CLI),若一条 `CREATE UNIQUE
+    INDEX` 在老库上抛 IntegrityError 且没人接,整个产品直接开不了机 —— 而且只给一句
+    "UNIQUE constraint failed"。⚠ 这也是这类索引**不能写进 `_SCHEMA`** 的原因:
+    `executescript` 一把梭,中途抛异常会连带中断它后面的所有建表语句。"""
+    import logging
+
+    db_path = tmp_path / "n.db"
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        conn.execute("DROP INDEX IF EXISTS idx_selection_packs_single_active")
+        for v in ("a", "b"):        # 造两行现役(模拟索引加入之前的手工 SQL 遗留)
+            conn.execute(
+                "INSERT INTO selection_packs (pack_version, name, engine_api_version, "
+                "manifest_json, config_json, is_active, created_at) VALUES (?,?,1,'{}','{}',1,?)",
+                (v, v, _now()),
+            )
+
+    with caplog.at_level(logging.WARNING):
+        init_schema(db_path)        # ⛔ 不许抛
+    assert any("唯一索引建不上" in rec.message for rec in caplog.records), "得吵,不许静默跳过"
+
+    with connection(db_path) as conn:
+        # 脏行原样保留(⛔ 开机脚本无权替用户"清理"数据),其余表照常建好
+        assert conn.execute(
+            "SELECT COUNT(*) FROM selection_packs WHERE is_active=1").fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0] > 40
+        conn.execute("UPDATE selection_packs SET is_active=0 WHERE pack_version='a'")
+    init_schema(db_path)            # 人工清理后重跑 → 索引补上
+    with connection(db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' "
+            "AND name='idx_selection_packs_single_active'").fetchone()[0] == 1
+
+
 def test_scan_domain_covers_both_package_and_scripts():
     """扫描范围本身要被看住(同 `test_eighteen_new_tables_is_the_declared_count` 精神):
     删掉 `scripts/` 那一半、或把某个目录悄悄挪走,这条会红。"""
