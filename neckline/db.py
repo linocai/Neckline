@@ -842,15 +842,20 @@ CREATE TABLE IF NOT EXISTS leader_structure_daily (
 -- `neckline/user_actions.py`——该模块只提供 `record`(INSERT)与 `list_actions`(只读
 -- 查询),不提供任何修改或抹除既有行的函数(靠"没有那个函数"担保,不靠自觉;守门单测
 -- 见 `tests/test_v2_schema_guard.py`)。
+-- ⚠ **两列刻意不同时区**(契约线审计 🟡 Y2,2026-08-03 收口):`occurred_at` = 事件发生
+-- 时刻,走**北京时间**(市场时刻轴,`calendar.CN_TZ`);`created_at` = 落库审计戳,走
+-- **UTC**(同 `strategy_versions.activated_at` 与全仓 store 惯例)。归一在写侧收口
+-- (`user_actions.normalize_occurred_at`),**这一列里永远只有一种时区** —— 过滤与排序
+-- 都是字符串比较,混了时区就会静默筛错时段。⛔ 别"统一"这两列,各自 docstring 已定死。
 CREATE TABLE IF NOT EXISTS user_actions (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  occurred_at  TEXT NOT NULL,     -- ISO8601 北京时间
+  occurred_at  TEXT NOT NULL,     -- ISO8601 **北京时间**(+08:00,写侧归一,见上方注释)
   kind         TEXT NOT NULL,     -- view | select | buy | sell | alert | label | voice_note
   ts_code      TEXT,
   basket_id    INTEGER,
   position_id  INTEGER,
   payload_json TEXT NOT NULL DEFAULT '{}',
-  created_at   TEXT NOT NULL
+  created_at   TEXT NOT NULL     -- ISO8601 **UTC**(审计戳,与 occurred_at 不同轴,见上)
 );
 CREATE INDEX IF NOT EXISTS idx_user_actions_kind_time ON user_actions(kind, occurred_at);
 

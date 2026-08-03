@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import ast
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -295,6 +295,79 @@ def test_user_actions_record_and_list_round_trip(tmp_path):
     by_kind = user_actions.list_actions(kind="view", db_path=db_path)
     assert len(by_kind) == 1 and by_kind[0]["ts_code"] == "600001.SH"
     assert by_kind[0]["payload"] == {"page": "basket"}
+
+
+# —— 🟡 Y2(契约线审计 2026-08-03):`occurred_at` 时区口径 ————————————————————
+# 病根:DDL 注释承诺「ISO8601 北京时间」,`record()` 却默认落 UTC。⑮ 客户端按北京时间
+# 上报 `view` 事件那天,同一列里就会混进两种偏移 —— 而 `since`/`until` 与 `ORDER BY`
+# 都是**字符串比较**,时间轴当场错乱且不报错。
+
+def test_occurred_at_defaults_to_beijing_time_created_at_stays_utc(tmp_path):
+    from neckline import user_actions
+    from neckline.calendar import CN_TZ
+
+    db_path = tmp_path / "n.db"
+    init_schema(db_path)
+    rid = user_actions.record("view", db_path=db_path)
+    with connection(db_path) as conn:
+        occurred, created = conn.execute(
+            "SELECT occurred_at, created_at FROM user_actions WHERE id=?", (rid,)
+        ).fetchone()
+    assert occurred.endswith("+08:00"), f"occurred_at 必须是北京时间(DDL 承诺):{occurred}"
+    assert created.endswith("+00:00"), f"created_at 是 UTC 审计戳(全仓惯例):{created}"
+    # 同一时刻的两种写法必须真的指同一瞬间(不是把 UTC 的数字直接贴上 +08:00)
+    delta = abs((datetime.fromisoformat(occurred) - datetime.fromisoformat(created))
+                .total_seconds())
+    assert delta < 5, "两列写的是同一瞬间、只是时区不同,不该差 8 小时"
+    assert datetime.fromisoformat(occurred).utcoffset() == CN_TZ.utcoffset(None)
+
+
+def test_explicit_occurred_at_is_normalized_to_beijing(tmp_path):
+    """任何写法进来,库里只留北京时间一种 —— 归一在**写侧**收口,不靠调用方自觉。"""
+    from neckline import user_actions
+
+    db_path = tmp_path / "n.db"
+    init_schema(db_path)
+    same_instant = {
+        "utc": "2026-07-30T01:31:00+00:00",
+        "beijing": "2026-07-30T09:31:00+08:00",
+        "naive": "2026-07-30T09:31:00",          # 无时区 = 北京时间(市场时刻口径)
+        "other_zone": "2026-07-30T03:31:00+02:00",
+    }
+    for kind, raw in same_instant.items():
+        user_actions.record(kind, occurred_at=raw, db_path=db_path)
+    with connection(db_path) as conn:
+        stamps = {r[0] for r in conn.execute("SELECT occurred_at FROM user_actions")}
+    assert stamps == {"2026-07-30T09:31:00+08:00"}, f"同一瞬间必须只有一种写法:{stamps}"
+
+
+def test_bad_occurred_at_fails_loud_not_silently_stored(tmp_path):
+    """「没给」(None → 取当前北京时间)与「给错了」(ValueError)必须分得开;
+    ⛔ 不许把解析不了的串原样落库 —— 那就是往这一列里混进第二种时间轴。"""
+    from neckline import user_actions
+
+    db_path = tmp_path / "n.db"
+    init_schema(db_path)
+    for bad in ("昨天下午", "", "2026-13-45T99:99:99"):
+        with pytest.raises(ValueError):
+            user_actions.record("view", occurred_at=bad, db_path=db_path)
+    with connection(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM user_actions").fetchone()[0] == 0
+
+
+def test_since_until_are_normalized_too(tmp_path):
+    """窗口过滤走同一个归一函数:递进来一个 UTC 串不该静默筛错时段。"""
+    from neckline import user_actions
+
+    db_path = tmp_path / "n.db"
+    init_schema(db_path)
+    user_actions.record("view", occurred_at="2026-07-30T09:31:00+08:00", db_path=db_path)
+    # 北京 09:31 = UTC 01:31;拿 UTC 串当窗口边界,归一后应当仍命中
+    assert len(user_actions.list_actions(since="2026-07-30T01:00:00+00:00",
+                                         until="2026-07-30T02:00:00+00:00",
+                                         db_path=db_path)) == 1
+    assert len(user_actions.list_actions(since="2026-07-30T02:00:00+00:00",
+                                         db_path=db_path)) == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -237,5 +237,72 @@ class TestProfileStoreRoundTrip:
         assert len(role_loaded) == 1   # 覆盖而非重复
         assert role_loaded[0]["sampleN"] == 2   # 数字已更新为第二次算出的值
 
+    def test_recompute_drops_values_that_no_longer_exist(self, isolated_env):
+        """🟡 Y3(契约线审计 2026-08-03):同期重算时,**新一轮不再产出的旧 `value` 行
+        必须消失** —— 只靠 UPSERT 的话它们原样残留,当期就成了两次运行的并集:
+        某个占比已经归零的取值仍以旧 `share` 挂着,**该维度 share 合计 > 1**。"""
+        env = isolated_env
+        rows1 = [
+            pref.PreferenceRow(dimension=pc.DIM_ROLE, value="leader", share=0.5, sample_n=1,
+                               window_start="20260701", window_end="20260731",
+                               confidence=pc.CONFIDENCE_LOW),
+            pref.PreferenceRow(dimension=pc.DIM_ROLE, value="elastic", share=0.5, sample_n=1,
+                               window_start="20260701", window_end="20260731",
+                               confidence=pc.CONFIDENCE_LOW),
+        ]
+        profile_store.save_preference("20260731", rows1, db_path=env.db_path)
+
+        # 第二轮只剩 leader(elastic 那笔被撤/改标签,占比归零 → 压根不再产出这一行)
+        rows2 = [
+            pref.PreferenceRow(dimension=pc.DIM_ROLE, value="leader", share=1.0, sample_n=2,
+                               window_start="20260701", window_end="20260731",
+                               confidence=pc.CONFIDENCE_LOW),
+        ]
+        profile_store.save_preference("20260731", rows2, db_path=env.db_path)
+
+        loaded = [r for r in profile_store.load_preference("20260731", db_path=env.db_path)
+                  if r["dimension"] == pc.DIM_ROLE]
+        assert {r["value"] for r in loaded} == {"leader"}, "不再产出的取值必须消失"
+        assert sum(r["share"] for r in loaded) == pytest.approx(1.0), "share 合计不许 > 1"
+
+    def test_recompute_of_one_dimension_leaves_other_dimensions_alone(self, isolated_env):
+        """按 **dimension** 整段替换、不是按整期:只重算一个维度时不该顺手抹掉别的维度
+        的当期结果(share 是维度内归一,一致性单位就是维度)。"""
+        env = isolated_env
+        base = dict(share=1.0, sample_n=1, window_start="20260701", window_end="20260731",
+                    confidence=pc.CONFIDENCE_LOW)
+        profile_store.save_preference("20260731", [
+            pref.PreferenceRow(dimension=pc.DIM_ROLE, value="leader", **base),
+            pref.PreferenceRow(dimension=pc.DIM_TIER, value="T1", **base),
+        ], db_path=env.db_path)
+        profile_store.save_preference("20260731", [
+            pref.PreferenceRow(dimension=pc.DIM_ROLE, value="elastic", **base),
+        ], db_path=env.db_path)
+
+        loaded = profile_store.load_preference("20260731", db_path=env.db_path)
+        assert {(r["dimension"], r["value"]) for r in loaded} == {
+            (pc.DIM_ROLE, "elastic"), (pc.DIM_TIER, "T1")}
+
+    def test_empty_recompute_clears_the_period(self, isolated_env):
+        """本期一行都没算出来 = 这期就是空的,不留上一次的残影。"""
+        env = isolated_env
+        profile_store.save_preference("20260731", [
+            pref.PreferenceRow(dimension=pc.DIM_ROLE, value="leader", share=1.0, sample_n=1,
+                               window_start="20260701", window_end="20260731",
+                               confidence=pc.CONFIDENCE_LOW),
+        ], db_path=env.db_path)
+        assert profile_store.save_preference("20260731", [], db_path=env.db_path) == 0
+        assert profile_store.load_preference("20260731", db_path=env.db_path) == []
+
+    def test_other_periods_are_untouched(self, isolated_env):
+        """阴性方向:整段替换只作用于**本期**,旧期画像是历史留痕,不许被牵连。"""
+        env = isolated_env
+        base = dict(dimension=pc.DIM_ROLE, value="leader", share=1.0, sample_n=1,
+                    window_start="20260601", window_end="20260630",
+                    confidence=pc.CONFIDENCE_LOW)
+        profile_store.save_preference("20260630", [pref.PreferenceRow(**base)], db_path=env.db_path)
+        profile_store.save_preference("20260731", [], db_path=env.db_path)
+        assert len(profile_store.load_preference("20260630", db_path=env.db_path)) == 1
+
     def test_load_unknown_period_is_empty_not_error(self, isolated_env):
         assert profile_store.load_preference("20260731", db_path=isolated_env.db_path) == []
