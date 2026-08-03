@@ -24,7 +24,6 @@ from neckline.report.news_alerts import NewsAlertsReport
 from neckline.report.sector_moneyflow import SectorMoneyflowReport
 from neckline.report.sectors import SectorDataFreshness, SectorScore
 from neckline.report.sentiment import SentimentDashboard
-from neckline.report.watchlist_check import WatchlistCheckItem
 # v1.5-③-C:两档时间退出状态码单一源(§三 铁律「唯一源,不硬编字面量」)——只借
 # 字符串常量,不借任何函数(判定逻辑不在本模块重跑,`HoldingK4Item.time_exit_state`
 # 已是 pipeline 算好的定案值,render 只负责把它翻成人读文案)。
@@ -53,7 +52,6 @@ def render_markdown(
     candidates: List[Candidate],
     judged: Dict[str, JudgeResult],
     top_n_judged: int,
-    watchlist_check: Optional[List[WatchlistCheckItem]] = None,
     holding_k4_check: Optional[List[HoldingK4Item]] = None,
     intel: Optional[IntelReport] = None,
     sector_moneyflow: Optional[SectorMoneyflowReport] = None,
@@ -91,7 +89,6 @@ def render_markdown(
     # 的同一顺序;需求 9「今日计划拆两块:持仓股 / 候选列表」在 markdown 侧的落地)。
     parts.append(_render_holding_check(holding_k4_check or []))
     parts.append(_render_candidates(candidates, judged, top_n_judged))
-    parts.append(_render_watchlist(watchlist_check or []))
     parts.append(_render_intel(intel, sector_freshness))
     parts.append(_render_sector_moneyflow(sector_moneyflow))
     parts.append(_render_news_alerts(news_alerts))
@@ -439,65 +436,6 @@ def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResul
                     f"{persist} | {yellow} | {he} | {k4} | {tags} |")
     lines.append("")
 
-    return "\n".join(lines)
-
-
-def _render_watchlist(items: List[WatchlistCheckItem]) -> str:
-    """自选体检节(plan §2.3 v1.1 拍板 / §五 v1.1-C.3)。**独立一节,不是候选**——
-    标题与候选节明确分开,不与候选榜混排。"""
-    lines = ["## 自选体检(用户自选池,独立于候选榜)", ""]
-    if not items:
-        lines.append("自选池为空(App「自选」板块可添加)。")
-        lines.append("")
-        return "\n".join(lines)
-
-    for it in items:
-        light = "🟢 可动" if it.green_light else "🔴 禁买"
-        badge = " · 🔔 状态变化" if it.status_changed else ""
-        pin = " · 📌 已点名" if it.pinned else ""
-        lines.append(f"#### {it.name}({it.ts_code}){badge}{pin}")
-        lines.append("")
-        if not it.has_data:
-            lines.append(f"- {it.disqualifiers[0] if it.disqualifiers else '当日无数据。'}")
-            lines.append("")
-            lines.append("---")
-            lines.append("")
-            continue
-        lines.append(
-            f"- 现价:{it.close:.2f} 元 · 展示排序分:{it.score:.1f} · 纪律红绿灯:{light}"
-            f" · 形态标签:{'、'.join(it.pattern_tags) if it.pattern_tags else '无'}"
-        )
-        if it.disqualifiers:
-            lines.append("- 禁买原因:" + ";".join(it.disqualifiers))
-        if it.hot_sectors:
-            lines.append(f"- 命中热门板块:{'、'.join(it.hot_sectors)}")
-        if it.dispatch_alerts:
-            # v1.5-④-A1:K4 派发警示(仅 A3/A3b 两码,均强价量证据)——打标展示给
-            # 人判,不拦不禁(第〇原则);不推 APNs(自选不是持仓)。
-            labels = "、".join(h.label for h in it.dispatch_alerts)
-            lines.append(f"- ⚠ K4 派发警示(强价量证据,仅参考不禁买):{labels}")
-        if it.buy_point_triggered:
-            lines.append(f"- **买点**:{it.entry_plan}")
-            lines.append(f"- **止损**:{it.stop_loss}")
-            lines.append(f"- **目标**:{it.target}")
-            lines.append(f"- **证伪条件**:{it.invalidation_text}")
-        else:
-            lines.append("- 今日未触发母战法买点(仅供关注)。")
-        lines.append("")
-        if it.llm_judgment is not None:
-            jr = it.llm_judgment
-            badge2 = _VERDICT_BADGE.get(jr["verdict"], f"⏸ {jr['verdict']}")
-            lines.append(f"**LLM 审判(状态变化 / 已点名才审):{badge2}**")
-            lines.append("")
-            lines.append(jr["narrative"])
-            if not jr.get("degraded"):
-                # 同候选审判的搜索取证脚注(v1.3.4);`search_hits` 是条数,不是全文
-                # (自选体检的命中全文不单独存档,见 `apply_llm_review`)。
-                lines.append("")
-                lines.append(f"*{search_coverage_line(jr.get('search_hits') or 0)}*")
-            lines.append("")
-        lines.append("---")
-        lines.append("")
     return "\n".join(lines)
 
 

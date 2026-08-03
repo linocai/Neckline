@@ -165,52 +165,6 @@ final class IntegrationSmokeTests: XCTestCase {
         }
     }
 
-    /// 自选池增删真请求闭环(§v1.1-F「dev 后端联调闭环证据:自选增删」)。用独立测试代码,
-    /// 不碰手动种的演示自选。
-    func testWatchlistAddPinRemoveRoundTripRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-        let code = "000004.SZ"
-
-        let added = try await client.addWatchlist(code: code, name: "IntegrationSmokeTests 真请求闭环")
-        XCTAssertEqual(added.code, code)
-        XCTAssertFalse(added.pinned)
-
-        let afterAdd = try await client.fetchWatchlist()
-        XCTAssertTrue(afterAdd.items.contains { $0.code == code })
-
-        _ = try await client.pinWatchlist(code: code, pinned: true)
-        let afterPin = try await client.fetchWatchlist()
-        XCTAssertTrue(afterPin.items.first { $0.code == code }?.pinned ?? false)
-
-        _ = try await client.removeWatchlist(code: code)
-        let afterRemove = try await client.fetchWatchlist()
-        XCTAssertFalse(afterRemove.items.contains { $0.code == code }, "移除后不应再出现在自选列表")
-
-        // 二次移除同一代码 → 404 not_found(对齐后端契约,真实网络往返验证)。
-        do {
-            _ = try await client.removeWatchlist(code: code)
-            XCTFail("重复移除应抛 notFound")
-        } catch APIError.notFound {
-            // 期望路径
-        }
-    }
-
-    /// 同花顺 txt 对账 + 导出真请求(合成 txt 字节,真实同花顺导出文件的活体验收留 v1.1-H)。
-    func testThsReconcileAndExportRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-        let code = "000004.SZ"
-        _ = try? await client.removeWatchlist(code: code)   // 幂等清场,不因上一次失败的测试遗留而误判
-
-        let txt = "\(code.prefix(6))\n"
-        let diff = try await client.reconcileThs(filename: "自选股.txt", data: Data(txt.utf8))
-        XCTAssertTrue(diff.onlyInThs.contains(code), "对账端点应把 txt 里的代码归一成 Neckline ts_code 格式")
-
-        let exported = try await client.exportThs()
-        XCTAssertGreaterThanOrEqual(exported.count, 0)
-    }
-
     // MARK: - v1.2-B 决策日志八项:创建 → link → scenario-outcome 真请求闭环(§五 v1.2-E 验收)
 
     func testDecisionLogCreateLinkScenarioOutcomeRoundTripRealRequest() async throws {
@@ -285,40 +239,5 @@ final class IntegrationSmokeTests: XCTestCase {
         _ = try await client.closePosition(id: opened.positionId, sellPrice: 19.0, closeReason: "STOP_LOSS")
         // closeReason 不在 PositionOut 里回显(只有开放持仓列表),这里只验证带
         // closeReason 的清仓请求真实成功(未 422/500),契约形状由 mock 单测覆盖。
-    }
-
-    // MARK: - v1.2-G 呼吸试验仓台账真请求闭环(§五 v1.2-E.4)
-
-    func testBreathingLedgerAddDeleteRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-        let opened = try await client.openPosition(code: "600008.SH", name: "集成测试丙", buyPrice: 10.0,
-                                                    qty: 1000, entryReason: "IntegrationSmokeTests 呼吸台账闭环")
-
-        let before = try await client.breathingTrades(positionId: opened.positionId)
-        XCTAssertTrue(before.items.isEmpty)
-
-        let trade = try await client.addBreathingTrade(positionId: opened.positionId, buyPrice: 10.0,
-                                                        sellPrice: 10.3, qty: 500, fees: 20.0,
-                                                        tDate: nil, note: "集成测试 T")
-        XCTAssertEqual(trade.tPnl, (10.3 - 10.0) * 500 - 20.0, accuracy: 0.001)
-
-        let after = try await client.breathingTrades(positionId: opened.positionId)
-        XCTAssertEqual(after.items.count, 1)
-        XCTAssertNotNil(after.baseCostAdj, "已有 T 记录后摊薄成本应算得出")
-
-        _ = try await client.deleteBreathingTrade(id: trade.id)
-        let afterDelete = try await client.breathingTrades(positionId: opened.positionId)
-        XCTAssertTrue(afterDelete.items.isEmpty)
-
-        // 二次删除同一笔 → 404 not_found(幂等安全,对齐后端契约)。
-        do {
-            _ = try await client.deleteBreathingTrade(id: trade.id)
-            XCTFail("重复删除应抛 notFound")
-        } catch APIError.notFound {
-            // 期望路径
-        }
-
-        _ = try? await client.closePosition(id: opened.positionId, sellPrice: 10.0, closeReason: "MANUAL")
     }
 }

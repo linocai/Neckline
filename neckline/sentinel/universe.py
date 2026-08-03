@@ -10,10 +10,10 @@
 
 三处**刻意**的取舍,别当成疏漏:
 
-    · **自选池不再是来源**(⑧-A 原文,⑬-11 复述「⑧-A 已改」):`neckline.watchlist`
-      本模块**一行都不读**,`watchlist_codes`/`watchlist_candidates` 恒为空——字段
-      保留只为让 `engine.py`/`precall.py` 的 `wu.candidates + wu.watchlist_candidates`
-      一行不动(⑧-D:纪律外壳不改)。表与模块本体的删除归 ⑬-11(先建后拆)。
+    · **自选池已整链删除**(V2-⑬-11 执行完毕,裁定 #9-a):`neckline/watchlist.py`
+      与 `report/watchlist_check.py` 已物理删除、`watchlist` 表停写留档;⑧-A 留下的
+      两个恒空字段 `watchlist_codes`/`watchlist_candidates` 随之一并删除,
+      `engine.py`/`precall.py` 的 `wu.candidates + wu.watchlist_candidates` 同步改写。
     · **候选仍在**:⑬-1 还没执行,买点 / 证伪哨兵此刻仍以 `Candidate` 为对象;⑧ 只
       「加篮子、去自选」,**不顺手拆 V1**(先建后拆纪律)。
     · **「相关板块 ETF/指数」本版落地为板块基准指数**(见 `BOARD_BENCHMARK_INDEX`):
@@ -88,12 +88,6 @@ class WatchUniverse:
     baskets: List[BasketRef] = field(default_factory=list)      # D0 的 T1/T2 篮子(含成员)
     basket_codes: List[str] = field(default_factory=list)       # 上面那些篮子的成员代码(去重)
     index_codes: List[str] = field(default_factory=list)        # 相关板块基准指数(只进存拍/语境)
-    # —— 自选池:V2-⑧-A 起**不再是关注池来源**,两字段恒为空 ————————————————
-    # 保留字段而不是删掉,是为了让 `engine.py`/`precall.py` 里
-    # `wu.candidates + wu.watchlist_candidates` 那一行**一个字都不用改**(⑧-D:纪律
-    # 外壳不动)。`neckline/watchlist.py` 与 `watchlist` 表的删除归 ⑬-11(先建后拆)。
-    watchlist_codes: List[str] = field(default_factory=list)
-    watchlist_candidates: List[Candidate] = field(default_factory=list)
     codes: List[str] = field(default_factory=list)  # 去重后全部关注代码(拉价用)
 
 

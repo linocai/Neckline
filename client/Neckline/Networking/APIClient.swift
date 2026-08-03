@@ -4,7 +4,7 @@
 //
 //  端点契约见 `neckline/api/schemas.py` + `neckline/api/app.py`(逐字段对齐,不猜):
 //    GET  /api/v1/health                    → 免鉴权,{status,version}
-//    GET  /api/v1/report/latest             → ReportOut(含 v1.1 watchlistCheck[]/missedEntryHint,
+//    GET  /api/v1/report/latest             → ReportOut(含 missedEntryHint,
 //                                              v1.4-①-C dataFreshness)
 //    GET  /api/v1/report?date=YYYYMMDD      → ReportOut(历史回放;带 query,走 makeURL)
 //    GET  /api/v1/report/{date}/info-card/{code} → InfoCardOut(v1.4-④,60日K线/RS线/行业分歧线
@@ -35,12 +35,6 @@
 //    GET  /api/v1/settings/intel-boards     → IntelWatchBoardsOut{boards}(v1.3-⑥,五常驻板块可配)
 //    PUT  /api/v1/settings/intel-boards     → IntelWatchBoardsOut{boards}    · 422 board_not_found(禁模糊匹配)
 //    POST /api/v1/devices                   → {ok}
-//    GET  /api/v1/watchlist                 → WatchlistOut{items,maxSize}(v1.1-C/F)
-//    POST /api/v1/watchlist                 → {ok,item}                       · 422 watchlist_full
-//    DELETE /api/v1/watchlist/{code}        → {ok}                            · 404 not_found
-//    PUT  /api/v1/watchlist/{code}/pin      → {ok}                            · 404 not_found
-//    POST /api/v1/watchlist/reconcile-ths   → ThsReconcileOut(multipart,字段名 file)
-//    GET  /api/v1/watchlist/export-ths      → ThsExportOut{text,count}
 //  鉴权:Authorization: Bearer <API_TOKEN>(health 外全部)。
 //
 
@@ -51,11 +45,11 @@ import Foundation
 enum APIError: Error, LocalizedError, Equatable {
     case unauthorized
     case notHolding          // 404 该持仓已清或不存在(POST /positions/{id}/close)
-    // v1.1-F:404 通用「未找到」(watchlist delete/pin 代码不存在等,reason="not_found")。
+    // 404 通用「未找到」(reason="not_found";V2-⑬-11 前的 watchlist delete/pin 是它的首个用例)。
     // 与 `notHolding` 分开是因为两者文案不同,合并会让"删自选未命中"误显"持仓已清"。
     case notFound
     // v1.4-①-A:补录买入日的两个 400 reason。**逐个建 case,不吃 fallback**——守项目
-    // CLAUDE.md「404/reason 映射」坑(watchlist `not_found` 曾被 fallback 误显成
+    // CLAUDE.md「404/reason 映射」坑(自选池 `not_found` 曾被 fallback 误显成
     // 「持仓已清」)。两者文案不同:一个是「那天不开市」,一个是「你填到未来去了」。
     case notTradingDay       // 400 buyDate 不是交易日(reason="not_trading_day")
     case futureBuyDate       // 400 buyDate 晚于今天(reason="future_buy_date")
@@ -233,17 +227,6 @@ struct DeviceRegisterRequest: Encodable { let token: String; let platform: Strin
 
 private struct OkResponse: Decodable { let ok: Bool }
 
-// —— v1.1-C/F 自选池(watchlist)+ 同花顺 txt 对账/导出 ————————————————————————
-
-private struct WatchlistResponse: Decodable { let items: [WatchlistItem]; let maxSize: Int }
-private struct WatchlistAddResponse: Decodable { let ok: Bool; let item: WatchlistItem }
-struct WatchlistAddRequest: Encodable { let code: String; let name: String?; let note: String? }
-struct WatchlistPinRequest: Encodable { let pinned: Bool }
-private struct ThsReconcileResponse: Decodable {
-    let ok: Bool; let onlyInThs: [String]; let onlyInNeckline: [String]; let both: [String]
-}
-private struct ThsExportResponse: Decodable { let text: String; let count: Int }
-
 // —— v1.2-E.5 一键补录预填推荐(区间双档,替换 v1.1 的单 `qty`)——————————————————
 
 private struct EntrySuggestionResponse: Decodable {
@@ -411,7 +394,7 @@ actor APIClient {
     /// 自选——若发现某处需要脱离候选对象单独调用本端点,先停下来核对,不要自行猜测)。
     /// `code` 支持裸 6 位或带交易所后缀(服务端 `normalize_ts_code` 归一比对)。
     /// 直接 `Codable` 解码 `InfoCard`(字段名与 JSON 字面一致,不需要私有 wire DTO 中转,
-    /// 同 `Position`/`WatchlistItem`/`BoardEvent` 先例)。404 两个 reason:
+    /// 同 `Position`/`BoardEvent` 先例)。404 两个 reason:
     /// `report_not_found`(日期非法/当天未生成过报告)、`code_not_in_report`(该日报告
     /// 存在但这只票不在候选榜里)——均映射到独立 `APIError` case,不吃 fallback。
     /// **`timeout: 60`(v1.4.1 热修,§七 P1-26)** —— 本端点是全仓最重的读:一次请求要装
@@ -685,74 +668,6 @@ actor APIClient {
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    // —— v1.1-C/F 自选池(watchlist)+ 同花顺 txt 对账/导出 ——————————————————————
-    // 增删只经这几个端点(§C.1 拍板「系统代码路径绝不写入」),客户端也只在用户显式
-    // 操作(+自选/删/pin/一键对齐)时调用,不存在任何自动触发路径。
-
-    func fetchWatchlist() async throws -> WatchlistSnapshot {
-        let data = try await get("/api/v1/watchlist")
-        let r = try JSONDecoder().decode(WatchlistResponse.self, from: data)
-        return WatchlistSnapshot(items: r.items, maxSize: r.maxSize)
-    }
-
-    /// 加一只自选。满 30 上限 → 422(`APIError.validation("watchlist_full")`,调用方据此
-    /// 给出「自选池已满」提示,不是裸的「字段校验失败」)。
-    @discardableResult
-    func addWatchlist(code: String, name: String? = nil, note: String? = nil) async throws -> WatchlistItem {
-        let body = WatchlistAddRequest(code: code, name: name, note: note)
-        let data = try await post("/api/v1/watchlist", body: body)
-        return try JSONDecoder().decode(WatchlistAddResponse.self, from: data).item
-    }
-
-    @discardableResult
-    func removeWatchlist(code: String) async throws -> Bool {
-        let data = try await delete("/api/v1/watchlist/\(code)")
-        return try JSONDecoder().decode(OkResponse.self, from: data).ok
-    }
-
-    @discardableResult
-    func pinWatchlist(code: String, pinned: Bool) async throws -> Bool {
-        let body = WatchlistPinRequest(pinned: pinned)
-        let data = try await put("/api/v1/watchlist/\(code)/pin", body: body)
-        return try JSONDecoder().decode(OkResponse.self, from: data).ok
-    }
-
-    /// 同花顺 txt 对账(单文件,字段名 `file`——**注意与下方 4D `uploadReview` 的字段名
-    /// `files`〔复数〕不同**,严格对齐后端 `reconcile_ths(file: UploadFile = File(...))`)。
-    /// 只算差集、不写入(对齐动作由客户端按差异结果调上面的 CRUD)。
-    func reconcileThs(filename: String, data fileData: Data) async throws -> ThsReconcileResult {
-        try ensureToken()
-        guard let url = Self.makeURL(base: baseURL, path: "/api/v1/watchlist/reconcile-ths") else {
-            throw APIError.transport("无效 URL")
-        }
-        let boundary = "NecklineBoundary-\(UUID().uuidString)"
-        var body = Data()
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append(
-            "Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!
-        )
-        body.append("Content-Type: text/plain\r\n\r\n".data(using: .utf8)!)
-        body.append(fileData)
-        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        req.httpBody = body
-        req.timeoutInterval = 20
-        let data = try await send(req)
-        let r = try JSONDecoder().decode(ThsReconcileResponse.self, from: data)
-        return ThsReconcileResult(onlyInThs: r.onlyInThs, onlyInNeckline: r.onlyInNeckline, both: r.both)
-    }
-
-    /// 导出当前自选为同花顺可导入 txt(§C.4/F.4)。
-    func exportThs() async throws -> (text: String, count: Int) {
-        let data = try await get("/api/v1/watchlist/export-ths")
-        let r = try JSONDecoder().decode(ThsExportResponse.self, from: data)
-        return (r.text, r.count)
-    }
-
     // —— 4D 周复盘工作台(拖入交割单对账;macOS 独有,§五 阶段4D)——————————————————
 
     /// 上传一份或多份 xlsx 交割单 → 解析 → 对账(可能同时落多个 ISO 周)。解析/数据
@@ -842,7 +757,7 @@ actor APIClient {
         return try await send(req)
     }
 
-    /// v1.1-F:`DELETE /watchlist/{code}` 用(无请求体)。
+    /// 无请求体的 DELETE(`/alerts/{id}` 等用)。
     private func delete(_ path: String, timeout: TimeInterval = 12) async throws -> Data {
         try ensureToken()
         guard let url = Self.makeURL(base: baseURL, path: path) else {
@@ -896,7 +811,7 @@ actor APIClient {
         // v1.4-⑦-A:GET /decisions/{id}/track 的 not_found(decision_id 不存在)复用
         // 本既有 case(字符串与 decisions link/cancel/revise 端点相同,未新增);
         // v1.4-⑦-B:GET /inquiries/{id} 的 not_found 同样复用本 case。
-        case "not_found": return .notFound   // v1.1-F:watchlist delete/pin 代码不存在
+        case "not_found": return .notFound   // 通用「引用对象不存在」
         // v1.4-①-A:POST /positions 的 buyDate 校验(400),两个 reason 各一 case。
         case "not_trading_day": return .notTradingDay
         case "future_buy_date": return .futureBuyDate
@@ -914,8 +829,7 @@ actor APIClient {
         if let detail = obj["detail"] as? [String: Any], let r = detail["reason"] as? String {
             // v1.3-⑥:`PUT /settings/intel-boards` 422 额外带 `unresolved`(具体哪些板块名
             // 没精确匹配到)——**纯附加行为**,只在这个键存在时才拼接,不影响其它端点既有
-            // `reason` 语义(如 `watchlist_full` 无此键,原样返回不变,既有
-            // `.contains("watchlist_full")` 调用点不受影响)。拼接成
+            // `reason` 语义(无此键的 reason 原样返回不变)。拼接成
             // "board_not_found:名字1、名字2",调用方按前缀识别 + 取冒号后的展示文案。
             if let unresolved = detail["unresolved"] as? [String], !unresolved.isEmpty {
                 return "\(r):\(unresolved.joined(separator: "、"))"

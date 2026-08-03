@@ -66,56 +66,6 @@ class TestReportRoundtrip:
         assert n == 1
 
 
-class TestWatchlistJsonRoundtrip:
-    """v1.1-C.3 自选体检快照持久化(`reports.watchlist_json`)。"""
-
-    def test_watchlist_saved_and_loaded(self, db):
-        store.save_report(
-            D, strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t",
-            watchlist=[{"ts_code": "600001.SH", "green_light": True, "buy_point_triggered": False}],
-            db_path=db,
-        )
-        loaded = store.load_report(D, db_path=db)
-        assert loaded["watchlist"] == [{"ts_code": "600001.SH", "green_light": True, "buy_point_triggered": False}]
-
-    def test_watchlist_defaults_to_empty_list_when_omitted(self, db):
-        """旧调用点(未传 `watchlist`)/自选池为空 → 落 `'[]'`,读回来是空列表,
-        不是 None(前向兼容,客户端不必对 null 特判)。"""
-        store.save_report(D, strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t", db_path=db)
-        assert store.load_report(D, db_path=db)["watchlist"] == []
-
-    def test_load_report_by_str_also_returns_watchlist(self, db):
-        store.save_report(
-            D, strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t",
-            watchlist=[{"ts_code": "600002.SH"}], db_path=db,
-        )
-        loaded = store.load_report_by_str("20260304", db_path=db)
-        assert loaded["watchlist"] == [{"ts_code": "600002.SH"}]
-
-    def test_old_report_row_without_column_defaults_to_empty_list(self, db):
-        """模拟老库(建 `watchlist_json` 列之前生成的报告行)——`_migrate_columns`
-        幂等补列取默认 `'[]'`,读回来不炸、不是 None。"""
-        import sqlite3
-
-        from neckline.db import init_schema
-
-        conn = sqlite3.connect(str(db))
-        conn.executescript("""
-            CREATE TABLE reports (
-                trade_date TEXT PRIMARY KEY, generated_at TEXT NOT NULL, strategy_version TEXT NOT NULL,
-                sentiment_json TEXT NOT NULL, sectors_json TEXT NOT NULL, candidates_json TEXT NOT NULL,
-                markdown TEXT NOT NULL
-            );
-            INSERT INTO reports VALUES ('20260304','t','v1','{}','[]','[]','# old');
-        """)
-        conn.commit()
-        conn.close()
-
-        init_schema(db_path=db)   # 触发 _migrate_columns 幂等补列
-        loaded = store.load_report(D, db_path=db)
-        assert loaded["watchlist"] == []
-
-
 class TestIntelAndSectorMoneyflowJsonRoundtrip:
     """v1.3-③ C1/C2(`reports.intel_json`/`reports.sector_moneyflow_json`)。均为
     **单个对象**快照(非数组),同 `watchlist_json` 前向兼容先例。"""
@@ -230,47 +180,6 @@ class TestNewsAlertsScanJsonRoundtrip:
         init_schema(db_path=db)   # 触发 _migrate_columns 幂等补列
         loaded = store.load_report(D, db_path=db)
         assert loaded["news_alerts_scan"] == []
-
-
-class TestLoadWatchlistSnapshotBefore:
-    """`load_watchlist_snapshot_before`(供 `watchlist_check.apply_llm_review` 的
-    「状态变化」diff 用):严格早于目标日,不把即将被本次覆盖的同日旧值当基准。"""
-
-    def test_returns_most_recent_prior_report_snapshot(self, db):
-        store.save_report(
-            date(2026, 3, 1), strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t",
-            watchlist=[{"ts_code": "600001.SH", "green_light": False}], db_path=db,
-        )
-        store.save_report(
-            date(2026, 3, 3), strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t",
-            watchlist=[{"ts_code": "600001.SH", "green_light": True}], db_path=db,
-        )
-        snap = store.load_watchlist_snapshot_before(date(2026, 3, 4), db_path=db)
-        assert snap["600001.SH"]["green_light"] is True   # 取最近一份(3-3),不是更早的 3-1
-
-    def test_excludes_same_day_report_not_yet_saved_or_being_regenerated(self, db):
-        """同日补跑场景:即使 `D` 当天已经存在一份报告(即将被本次重跑覆盖),
-        查 `D` 的"上一份"也不应把 `D` 自己当基准(`<` 严格早于)。"""
-        store.save_report(
-            date(2026, 3, 3), strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t",
-            watchlist=[{"ts_code": "600001.SH", "green_light": False}], db_path=db,
-        )
-        store.save_report(
-            D, strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t",
-            watchlist=[{"ts_code": "600001.SH", "green_light": True}], db_path=db,
-        )
-        snap = store.load_watchlist_snapshot_before(D, db_path=db)
-        assert snap["600001.SH"]["green_light"] is False   # 3-3 的旧值,不是 D 自己
-
-    def test_no_prior_report_returns_empty_dict(self, db):
-        assert store.load_watchlist_snapshot_before(D, db_path=db) == {}
-
-    def test_prior_report_with_empty_watchlist_returns_empty_dict(self, db):
-        store.save_report(
-            date(2026, 3, 1), strategy_version="v1", sentiment={}, sectors=[], candidates=[], markdown="# t",
-            db_path=db,
-        )
-        assert store.load_watchlist_snapshot_before(D, db_path=db) == {}
 
 
 class TestLLMJudgmentRoundtrip:

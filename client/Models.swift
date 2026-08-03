@@ -111,7 +111,7 @@ struct LLMJudgment: Codable, Equatable {
     var degraded: Bool
 }
 
-/// 板块英文码 → 中文展示名(唯一展示层换算源,`Candidate`/`WatchlistCheckItem` 共用
+/// 板块英文码 → 中文展示名(唯一展示层换算源,`Candidate` 等共用
 /// 同一份映射,不各自重复一份;未识别值原样透传,不静默瞎翻译)。
 func nkBoardLabel(_ raw: String) -> String {
     switch raw {
@@ -126,7 +126,7 @@ func nkBoardLabel(_ raw: String) -> String {
 /// 买点条件(结构化,§五 v1.1-E.2「一键补录预填候选买点价」的取值来源)。字段对齐
 /// 服务端 `report/candidates.py::entry_spec`——只做「读哪个字段」的展示层选择
 /// (pullback→ma10,breakout→platformHigh),不新推导任何数字,与 `boardLabel` 同一
-/// 类展示层换算先例。`Candidate`/`WatchlistCheckItem` 同码生成,形状一致,共用本类型。
+/// 类展示层换算先例。
 struct EntrySpec: Codable, Equatable {
     var buypoint: String?
     var ma10: Double?
@@ -1197,7 +1197,7 @@ struct ContingencyScenario: Codable, Equatable {
 }
 
 /// 对齐 `DecisionOut`(逐字段,见「v1.2 客户端契约清单」)。字段名与服务端 JSON
-/// 完全一致,直接 `Codable` 解码,不需要私有 wire DTO 中转(同 `WatchlistItem`/
+/// 完全一致,直接 `Codable` 解码,不需要私有 wire DTO 中转(同 `Position`/
 /// `BoardEvent`/`Position` 的直接解码先例)。
 struct DecisionLog: Codable, Equatable, Identifiable {
     var id: Int
@@ -1436,139 +1436,6 @@ struct SettingsSnapshot: Codable, Equatable {
 struct IntelWatchBoards: Codable, Equatable {
     var boards: [String]
     static let empty = IntelWatchBoards(boards: [])
-}
-
-// MARK: - §五 v1.1-F 自选板块(watchlist)
-//
-// 后端 `neckline/api/schemas.py::WatchlistCheckOut` 字段命名与 `CandidateOut` 四件套
-// 一致(buyPoint/stop/target/invalidation),plan 原文点名「F.2 客户端可直接复用
-// CandidateRow 四件套布局」——四件套展开区已抽成 `FourPieceDisclosure`(见
-// Components/SharedUI.swift)供 `CandidateRow` 与本节的 `WatchlistRow` 共用,不重写。
-
-/// 自选票 K4 派发警示单条命中(v1.5-④-A1/⑤-D,§七 ✅ 节「诱多做局反向哨兵」残留
-/// 半边结案)。复用 `holding_k4_check` 同一份镜像评估器,**只取两个强价量证据码**
-/// (A3_belowyear_limitup / A3b_belowyear_bigvol,均恒强价量证据)——与持仓牌
-/// `K4Advisory` 六码全量不同,这里只有这两码且 level 恒定不携带信息量,契约故意
-/// 省略 `level` 字段(同服务端 `DispatchAlertOut` docstring)。⛔ **不推 APNs**
-/// (自选不是持仓,第六类推送 `HOLDINGALERT` 口径明确只对持仓)。
-struct DispatchAlert: Codable, Equatable, Identifiable {
-    var code: String
-    var label: String
-    var evidence: String
-    var evidenceStrength: String     // 恒 price_volume(两码均强价量证据)
-
-    var id: String { code }
-}
-
-struct WatchlistCheckItem: Codable, Equatable {
-    var code: String
-    var name: String
-    var pinned: Bool
-    var source: String
-    var hasData: Bool
-    var close: Double
-    var board: String
-    var score: Double?
-    var patternTags: [String]
-    var hotSectors: [String]
-    var sectorNames: [String]
-    var greenLight: Bool             // 纪律红绿灯:true=🟢可动,false=🔴禁买
-    var disqualifiers: [String]
-    var buyPointTriggered: Bool
-    var buyPoint: String
-    var stop: String
-    var target: String
-    var invalidation: String
-    var statusChanged: Bool          // 较上一份报告状态是否变化(体检 LLM 只审 changed∪pinned 的判据)
-    var llmJudgment: LLMJudgment?    // 仅 statusChanged∪pinned 才有(形状与 `CandidateOut.llmJudgment` 相同,复用同一类型)
-    /// v1.5-④-A1/⑤-D:K4 派发警示(默认空列表)。
-    var dispatchAlerts: [DispatchAlert] = []
-
-    /// 展示层换算,与 `Candidate.boardLabel` 共用同一份映射(见 `nkBoardLabel`)。
-    var boardLabel: String { nkBoardLabel(board) }
-
-    /// 显式 `CodingKeys` + 手写 `init(from:)`(本类型历来靠合成 Decodable,v1.5-④-A1
-    /// 加 `dispatchAlerts` 这一个非 Optional-带默认值字段后改手写——Swift 合成
-    /// Decodable 对该类字段不会自动容忍缺键,同 `Candidate`/`IntelRank` 的处理姿势)。
-    /// 除新字段外,其余各字段 `decode`/`decodeIfPresent` 的取舍逐一保持与此前合成
-    /// 行为一致(仅 `score`/`llmJudgment` 本就是 `Optional`)。
-    enum CodingKeys: String, CodingKey {
-        case code, name, pinned, source, hasData, close, board, score
-        case patternTags, hotSectors, sectorNames, greenLight, disqualifiers
-        case buyPointTriggered, buyPoint, stop, target, invalidation, statusChanged, llmJudgment
-        case dispatchAlerts
-    }
-
-    init(code: String, name: String, pinned: Bool, source: String, hasData: Bool, close: Double,
-         board: String, score: Double? = nil, patternTags: [String], hotSectors: [String],
-         sectorNames: [String], greenLight: Bool, disqualifiers: [String], buyPointTriggered: Bool,
-         buyPoint: String, stop: String, target: String, invalidation: String, statusChanged: Bool,
-         llmJudgment: LLMJudgment? = nil, dispatchAlerts: [DispatchAlert] = []) {
-        self.code = code; self.name = name; self.pinned = pinned; self.source = source
-        self.hasData = hasData; self.close = close; self.board = board; self.score = score
-        self.patternTags = patternTags; self.hotSectors = hotSectors; self.sectorNames = sectorNames
-        self.greenLight = greenLight; self.disqualifiers = disqualifiers
-        self.buyPointTriggered = buyPointTriggered
-        self.buyPoint = buyPoint; self.stop = stop; self.target = target; self.invalidation = invalidation
-        self.statusChanged = statusChanged; self.llmJudgment = llmJudgment
-        self.dispatchAlerts = dispatchAlerts
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        code = try c.decode(String.self, forKey: .code)
-        name = try c.decode(String.self, forKey: .name)
-        pinned = try c.decode(Bool.self, forKey: .pinned)
-        source = try c.decode(String.self, forKey: .source)
-        hasData = try c.decode(Bool.self, forKey: .hasData)
-        close = try c.decode(Double.self, forKey: .close)
-        board = try c.decode(String.self, forKey: .board)
-        score = try c.decodeIfPresent(Double.self, forKey: .score)
-        patternTags = try c.decode([String].self, forKey: .patternTags)
-        hotSectors = try c.decode([String].self, forKey: .hotSectors)
-        sectorNames = try c.decode([String].self, forKey: .sectorNames)
-        greenLight = try c.decode(Bool.self, forKey: .greenLight)
-        disqualifiers = try c.decode([String].self, forKey: .disqualifiers)
-        buyPointTriggered = try c.decode(Bool.self, forKey: .buyPointTriggered)
-        buyPoint = try c.decode(String.self, forKey: .buyPoint)
-        stop = try c.decode(String.self, forKey: .stop)
-        target = try c.decode(String.self, forKey: .target)
-        invalidation = try c.decode(String.self, forKey: .invalidation)
-        statusChanged = try c.decode(Bool.self, forKey: .statusChanged)
-        llmJudgment = try c.decodeIfPresent(LLMJudgment.self, forKey: .llmJudgment)
-        dispatchAlerts = try c.decodeIfPresent([DispatchAlert].self, forKey: .dispatchAlerts) ?? []
-    }
-}
-
-struct WatchlistItem: Codable, Equatable, Identifiable {
-    var code: String
-    var name: String
-    var addedAt: String
-    var source: String
-    var note: String
-    var pinned: Bool
-    var updatedAt: String
-    /// 最近一份报告的自选体检快照;从未体检过(刚加入 / 从无报告)→ nil,非报错。
-    var check: WatchlistCheckItem?
-
-    var id: String { code }
-}
-
-struct WatchlistSnapshot: Codable, Equatable {
-    var items: [WatchlistItem]
-    var maxSize: Int
-
-    static let empty = WatchlistSnapshot(items: [], maxSize: 30)
-}
-
-/// 同花顺 txt 对账差异(§五 v1.1-C.4/F.4)。三个列表均为 Neckline `ts_code` 格式
-/// (服务端已归一);对齐动作(加/删)由客户端按差异结果调 CRUD,本类型只是只读展示。
-struct ThsReconcileResult: Codable, Equatable {
-    var onlyInThs: [String]
-    var onlyInNeckline: [String]
-    var both: [String]
-
-    static let empty = ThsReconcileResult(onlyInThs: [], onlyInNeckline: [], both: [])
 }
 
 // MARK: - 4D 周复盘工作台(对账三查 + 单周统计,§五 阶段4D)

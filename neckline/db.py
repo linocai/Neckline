@@ -103,9 +103,12 @@ CREATE INDEX IF NOT EXISTS idx_strategy_activation_log_at ON strategy_activation
 -- 盘后报告存档(plan 2.5)。一个交易日一行(幂等覆盖,重跑报告不留重复行);
 -- *_json 是该次报告的结构化快照(情绪仪表盘/强势板块/候选20只四件套),供事后
 -- 审计与历史回放核对;markdown 是渲染产物全文。
--- watchlist_json(v1.1-C.3 自选体检):`WatchlistCheckItem.public_dict()` 的 JSON
--- 数组快照,老报告行(建表早于本列)经 `_migrate_columns` 幂等补列取默认值
--- '[]'(前向兼容——旧报告没有这节,读回来就是空数组,不是 NULL 炸 json.loads)。
+-- watchlist_json(v1.1-C.3 自选体检;⚠ **v2.0.0-⑬-11 起停写**,列保留不 DROP):
+-- `WatchlistCheckItem.public_dict()` 的 JSON 数组快照,老报告行(建表早于本列)经
+-- `_migrate_columns` 幂等补列取默认值 '[]'(前向兼容——旧报告没有这节,读回来就是
+-- 空数组,不是 NULL 炸 json.loads)。V2 起 `store.save_report` **不再把该列写进
+-- INSERT 列表**,新行一律吃 DDL 默认 '[]';`store._parse_watchlist_json` 只服务历史
+-- 行的归因只读(自选体检整节已删,见 `watchlist` 表头注释)。
 -- intel_json/sector_moneyflow_json(v1.3-③ C1/C2):`report/intel.py::IntelReport.
 -- to_public_dict()` / `report/sector_moneyflow.py::SectorMoneyflowReport.
 -- to_public_dict()` 的 JSON 快照(均为单个对象,非数组——`sector_moneyflow` 需要
@@ -260,6 +263,16 @@ CREATE TABLE IF NOT EXISTS inquiry_pool (
     PRIMARY KEY (trade_date, ts_code)
 );
 
+-- ⚠ **v2.0.0 起停写留档**(PROJECT_PLAN §五 V2-⑬-11,裁定 #9-a「自选池 + 同花顺对账
+-- 直接删」):本表自 V2.0.0 起**无任何读写路径** —— 领域模块 `neckline/watchlist.py`、
+-- 自选体检 `neckline/report/watchlist_check.py`、五个 `/watchlist*` 端点(含
+-- `reconcile-ths`/`export-ths`)、客户端 `WatchlistView.swift` 均已物理删除,哨兵关注池
+-- 自 ⑧-A 起已不读它。历史行(v1.1-C~v1.5.2 生产数据)只供归因审计手工查询。DDL 与下面
+-- 的历史字段注释**原样保留不删**;⚠ 注释里提到的 `neckline.watchlist` 模块已不存在。
+-- 连带:①`reports.watchlist_json` 列同步停写(列保留,见该列注释);②问询台的「+自选」
+-- 是它唯一写回主链的通道,删除后**问询台成纯分析入口**(Plan ⑬-11 已登记,非遗漏);
+-- ③ §八 第 9 项(用户提供同花顺自选 txt)作废。
+--
 -- v1.1-C 自选池(plan §五 v1.1-C.1)。≤30 上限服务端硬校验(见 `neckline.watchlist`,
 -- 建表本身不限;超限在写入函数里拒绝),增删只经用户显式端点(系统代码路径——报告/
 -- 哨兵/问询台——绝不自动写本表,只读)。pinned=1 表示用户点名「每日必审」(v1.1-C.3

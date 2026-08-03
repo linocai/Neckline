@@ -10,15 +10,15 @@ import Foundation
 import Observation
 
 enum AppTab: String, CaseIterable, Identifiable {
-    // v1.1-F.1:自选独立第五板块(iPhone 5 tab = 今日计划/盘中看板/自选/问询台/设置,
-    // 顺序即 TabBar 顺序;review 只在 macOS 侧栏,非 iOS TabBar 成员)。
-    case today, board, watchlist, inquiry, settings, review
+    // V2-⑬-11:自选 tab 随自选池整链删除(裁定 #9-a)→ iPhone 4 tab =
+    // 今日计划/盘中看板/问询台/设置,顺序即 TabBar 顺序;review 只在 macOS 侧栏。
+    // ⚠ ⑮ 会把 today 改造成「今日篮子」并重排信息架构(D8),本块只做删除。
+    case today, board, inquiry, settings, review
     var id: String { rawValue }
     var title: String {
         switch self {
         case .today: return "今日计划"
         case .board: return "盘中看板"
-        case .watchlist: return "自选"
         case .inquiry: return "问询台"
         case .settings: return "设置"
         case .review: return "周复盘工作台"
@@ -28,7 +28,6 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .today: return "list.bullet.clipboard"
         case .board: return "waveform.path.ecg"
-        case .watchlist: return "star.fill"
         case .inquiry: return "bubble.left.and.bubble.right"
         case .settings: return "gearshape"
         case .review: return "tray.and.arrow.down"
@@ -246,12 +245,6 @@ final class AppModel {
     var intelBoardsDraft: [String] = []       // 编辑中的草稿(保存前可增删,不即时生效)
     var intelBoardDraftInput: String = ""     // 新增一个板块名的临时输入框
     var intelWatchBoardsLoading = false
-
-    // —— v1.1-F 自选板块(watchlist)——
-    var watchlist: WatchlistSnapshot = .empty
-    var watchlistLoading = false
-    var thsReconcileResult: ThsReconcileResult? = nil
-    var thsReconcileLoading = false
 
     // —— 4D 周复盘工作台(拖入交割单对账;macOS 独有,§五 阶段4D)——
     var reviewWeeks: [WeeklyReviewEntry] = []
@@ -950,122 +943,6 @@ final class AppModel {
             showToast(e.errorDescription ?? "保存失败", isError: true)
         } catch {
             showToast("保存失败:\(error.localizedDescription)", isError: true)
-        }
-    }
-
-    // MARK: - v1.1-F:自选板块(增删只由用户显式操作触发,本模型不含任何自动增删路径)
-
-    func loadWatchlist() async {
-        guard let client = clientProvider() else { return }
-        watchlistLoading = true
-        do {
-            watchlist = try await client.fetchWatchlist()
-        } catch let e as APIError {
-            if case .noToken = e {} else { showToast(e.errorDescription ?? "自选拉取失败", isError: true) }
-        } catch {
-            showToast("自选拉取失败", isError: true)
-        }
-        watchlistLoading = false
-    }
-
-    /// 通用「+自选」入口(候选卡 / 问询台裁决卡 / 自选板块自身「+自选」共用,plan F.3)。
-    /// 满 30 上限 → 422 → 明确提示(不是静默失败);返回是否加入成功。
-    @discardableResult
-    func quickAddWatchlist(code: String, name: String? = nil) async -> Bool {
-        let trimmedCode = code.trimmingCharacters(in: .whitespaces)
-        guard !trimmedCode.isEmpty else { return false }
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return false
-        }
-        do {
-            _ = try await client.addWatchlist(code: trimmedCode, name: name)
-            await loadWatchlist()
-            showToast("已加入自选")
-            return true
-        } catch APIError.validation(let reason) where reason.contains("watchlist_full") {
-            showToast("自选池已满(≤\(watchlist.maxSize) 只),请先移除再添加", isError: true)
-            return false
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "加入自选失败", isError: true)
-            return false
-        } catch {
-            showToast("加入自选失败:\(error.localizedDescription)", isError: true)
-            return false
-        }
-    }
-
-    func removeFromWatchlist(code: String) async {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        do {
-            _ = try await client.removeWatchlist(code: code)
-            await loadWatchlist()
-            showToast("已从自选移除")
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "移除失败", isError: true)
-        } catch {
-            showToast("移除失败:\(error.localizedDescription)", isError: true)
-        }
-    }
-
-    func toggleWatchlistPin(code: String, pinned: Bool) async {
-        guard let client = clientProvider() else { return }
-        do {
-            _ = try await client.pinWatchlist(code: code, pinned: pinned)
-            await loadWatchlist()
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "更新失败", isError: true)
-        } catch {
-            showToast("更新失败:\(error.localizedDescription)", isError: true)
-        }
-    }
-
-    // —— v1.1-F.4:macOS 同花顺 txt 对账工作台(iOS 不做,§C.4/F.4)——————————————
-
-    func reconcileThsFile(filename: String, data: Data) async {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        thsReconcileLoading = true
-        do {
-            thsReconcileResult = try await client.reconcileThs(filename: filename, data: data)
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "对账失败", isError: true)
-        } catch {
-            showToast("对账失败:\(error.localizedDescription)", isError: true)
-        }
-        thsReconcileLoading = false
-    }
-
-    /// 一键对齐(plan C.4「对齐动作由客户端按差异调 C.1 CRUD」,后端对账端点本身不写入)。
-    /// 逐项独立 try,单项失败(如撞上 30 只上限)不拖累其它项,结束后汇总提示 + 刷新。
-    func applyThsAlignment() async {
-        guard let client = clientProvider(), let diff = thsReconcileResult else { return }
-        var failed = 0
-        for code in diff.onlyInThs {
-            do { _ = try await client.addWatchlist(code: code) } catch { failed += 1 }
-        }
-        for code in diff.onlyInNeckline {
-            do { _ = try await client.removeWatchlist(code: code) } catch { failed += 1 }
-        }
-        await loadWatchlist()
-        thsReconcileResult = nil
-        showToast(failed == 0 ? "已按同花顺自选对齐" : "对齐完成,\(failed) 项失败(可能已达上限)", isError: failed > 0)
-    }
-
-    func exportThsText() async -> String? {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return nil
-        }
-        do {
-            return try await client.exportThs().text
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "导出失败", isError: true)
-            return nil
-        } catch {
-            showToast("导出失败:\(error.localizedDescription)", isError: true)
-            return nil
         }
     }
 

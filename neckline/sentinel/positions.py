@@ -114,7 +114,7 @@ def open_position(
     `ts_code` **直接 join 行情面板**(面板是 TuShare 口径 `300759.SZ`)——裸码 join 不上
     → `has_data=False` / `close=0` / `net_float=None`,K4 派发警报永不触发、D5 判向被保守
     锁成「非浮盈次日退出」,且**全程静默无报错**。归一放在**写入通道**(而非 API 层),
-    姿势与 `neckline/watchlist.py` 一致:CLI(`scripts/positions.py`)、API、未来任何调用方
+    姿势(与已退役的 `neckline/watchlist.py` 同源):CLI(`scripts/positions.py`)、API、未来任何调用方
     都自动吃到,不必各自记得调一次。归一唯一源 `review.parse.normalize_ts_code`
     (内部复用 `quotes.to_symbol` + `board.classify_by_code`,不新写正则)。"""
     init_schema(db_path)

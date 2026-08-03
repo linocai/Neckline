@@ -15,7 +15,6 @@ from neckline.report.holding_k4_check import HoldingK4Hit, HoldingK4Item
 from neckline.report.render import render_markdown
 from neckline.report.sectors import SectorScore
 from neckline.report.sentiment import SentimentDashboard
-from neckline.report.watchlist_check import WatchlistCheckItem
 from neckline.sentinel.precall import (
     HARD_CAP_EXIT,
     HOLDING,
@@ -347,104 +346,6 @@ class TestReferencePlanSection:
         # "止盈线"描述参考离场区间("止盈线"是"非止盈线"的子串,故两个计数相等
         # 等价于"每次出现都带着这个'非'字前缀")。
         assert md.count("止盈线") == md.count("非止盈线")
-
-
-def _watch_item(**overrides) -> WatchlistCheckItem:
-    base = dict(
-        ts_code="600003.SH", name="示例丙", pinned=False, source="manual", has_data=True,
-        close=8.0, board="MAIN", score=70.0, pattern_tags=["均线多头"],
-        green_light=True, buy_point_triggered=True,
-        entry_plan="回调低吸:现价8.0...", stop_loss="参考止损价约7.6元...",
-        target="不设固定止盈线...", invalidation_text="次日低开...跌破VWAP...",
-    )
-    base.update(overrides)
-    return WatchlistCheckItem(**base)
-
-
-class TestWatchlistSection:
-    """v1.1-C.3 自选体检节(独立于候选,标题明确分开)。"""
-
-    def test_empty_watchlist_shows_placeholder(self):
-        md = _render(watchlist_check=[])
-        assert "自选体检" in md
-        assert "自选池为空" in md
-
-    def test_omitted_watchlist_defaults_to_empty_section_not_crash(self):
-        """`watchlist_check` 参数省略(旧调用点)→ 不崩,按空处理(向后兼容)。"""
-        md = _render()
-        assert "自选体检" in md
-        assert "自选池为空" in md
-
-    def test_green_light_triggered_item_shows_four_piece(self):
-        item = _watch_item()
-        md = _render(watchlist_check=[item])
-        assert "🟢 可动" in md
-        assert "示例丙" in md and "600003.SH" in md
-        assert "回调低吸:现价8.0" in md
-        assert "参考止损价约7.6元" in md
-
-    def test_red_light_item_shows_disqualifier_reason(self):
-        item = _watch_item(green_light=False, buy_point_triggered=False,
-                           disqualifiers=["ST/*ST(选股域清洗,禁买)"])
-        md = _render(watchlist_check=[item])
-        assert "🔴 禁买" in md
-        assert "ST/*ST" in md
-
-    def test_not_triggered_item_shows_no_buy_point_note(self):
-        item = _watch_item(buy_point_triggered=False, entry_plan="今日未触发母战法买点(仅供关注,非现在买入建议)。")
-        md = _render(watchlist_check=[item])
-        assert "今日未触发母战法买点" in md
-
-    def test_no_data_item_shows_reason_not_crash(self):
-        from neckline.report.watchlist_check import NO_DATA_REASON
-        item = _watch_item(has_data=False, close=0.0, score=None, disqualifiers=[NO_DATA_REASON])
-        md = _render(watchlist_check=[item])
-        assert NO_DATA_REASON in md
-
-    def test_pinned_and_status_changed_badges(self):
-        item = _watch_item(pinned=True, status_changed=True)
-        md = _render(watchlist_check=[item])
-        assert "📌 已点名" in md
-        assert "🔔 状态变化" in md
-
-    def test_llm_judgment_narrative_rendered(self):
-        item = _watch_item(status_changed=True, llm_judgment={
-            "verdict": "通过", "narrative": "一段自由叙述的分析,近期无明显利空。", "degraded": False,
-        })
-        md = _render(watchlist_check=[item])
-        assert "一段自由叙述的分析" in md
-        assert "✅ 通过" in md
-
-    def test_no_llm_judgment_omits_llm_block(self):
-        """未变化也未 pinned → 不跑 LLM,渲染层不应出现 LLM 审判段落。"""
-        item = _watch_item(llm_judgment=None)
-        md = _render(watchlist_check=[item])
-        assert "LLM 审判" not in md
-
-    def test_dispatch_alerts_rendered_as_warning_line(self):
-        """v1.5-④-A1:K4 派发警示(A3/A3b)打标展示给人判,不拦不禁(第〇原则)——
-        markdown 里必须能看到警示文案与命中标签,且不影响其余小节。"""
-        item = _watch_item(dispatch_alerts=[
-            HoldingK4Hit(code="A3_belowyear_limitup", label="年线下涨停(疑似诱多做局派发)",
-                        level="strong", evidence="年线下涨停=诱多域,2026 -3.96%、左尾肥",
-                        evidence_strength="price_volume"),
-        ])
-        md = _render(watchlist_check=[item])
-        assert "K4 派发警示" in md
-        assert "年线下涨停(疑似诱多做局派发)" in md
-        assert "仅参考不禁买" in md   # 第〇原则:LLM/K4 派发都不拦,打标给人判
-
-    def test_no_dispatch_alerts_omits_warning_line(self):
-        item = _watch_item(dispatch_alerts=[])
-        md = _render(watchlist_check=[item])
-        assert "K4 派发警示" not in md
-
-    def test_watchlist_section_does_not_mix_into_candidates_section(self):
-        """自选体检独立一节,不与候选榜混排。"""
-        cand = _candidate(ts_code="600001.SH")
-        watch = _watch_item(ts_code="600003.SH")
-        md = _render(candidates=[cand], watchlist_check=[watch])
-        assert md.index("## 候选") < md.index("## 自选体检")
 
 
 class TestHoldingCheckSection:

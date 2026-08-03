@@ -20,7 +20,7 @@ struct RootView: View {
         .preferredColorScheme(.light)
     }
 
-    // MARK: - iOS:底部 TabView(五板块——v1.1-F.1 自选独立第五 tab,不含周复盘工作台——阶段4D 明文桌面场景)
+    // MARK: - iOS:底部 TabView(四板块——V2-⑬-11 自选 tab 已删;不含周复盘工作台——桌面场景)
 
     #if os(iOS)
     private var iosShell: some View {
@@ -31,9 +31,6 @@ struct RootView: View {
             BoardView(model: model)
                 .tabItem { Label(AppTab.board.title, systemImage: AppTab.board.systemImage) }
                 .tag(AppTab.board)
-            WatchlistView(model: model)
-                .tabItem { Label(AppTab.watchlist.title, systemImage: AppTab.watchlist.systemImage) }
-                .tag(AppTab.watchlist)
             InquiryView(model: model)
                 .tabItem { Label(AppTab.inquiry.title, systemImage: AppTab.inquiry.systemImage) }
                 .tag(AppTab.inquiry)
@@ -76,7 +73,6 @@ struct RootView: View {
 
             navItem(.today)
             navItem(.board, badge: model.board.retreatBrake.active ? "!" : nil, badgeColor: NK.down)
-            navItem(.watchlist)
             navItem(.inquiry)
             navItem(.settings)
 
@@ -121,7 +117,6 @@ struct RootView: View {
         switch model.view {
         case .today: TodayPlanView(model: model)
         case .board: BoardView(model: model)
-        case .watchlist: WatchlistView(model: model)
         case .inquiry: InquiryView(model: model)
         case .settings: SettingsView(model: model, config: config)
         case .review: ReviewWorkbenchView(model: model)

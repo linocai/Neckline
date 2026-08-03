@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from neckline import decision_log
-from neckline import watchlist as watchlist_store
 from neckline.data.top_list import top_list_lookup
 from neckline.sentinel import positions as pos_store
 from neckline.llm.base import LLMProvider
@@ -64,12 +63,6 @@ from neckline.report.sector_moneyflow import (
     empty_sector_moneyflow_report,
 )
 from neckline.report.sentiment import SentimentDashboard, compute_sentiment
-from neckline.report.watchlist_check import (
-    WatchlistCheckItem,
-    apply_llm_review,
-    attach_dispatch_alerts,
-    build_watchlist_check,
-)
 from neckline.strategy import brain
 
 logger = logging.getLogger(__name__)
@@ -106,7 +99,6 @@ class ReportBundle:
     judged: Dict[str, JudgeResult]
     markdown: str
     missed_entry_hint: str = ""     # v1.1-B.4 漏录兜底提示(无 → 空串)
-    watchlist_check: List[WatchlistCheckItem] = field(default_factory=list)  # v1.1-C.3 自选体检(独立一节)
     holding_k4_check: List[HoldingK4Item] = field(default_factory=list)      # v1.3-② 持仓 K4 体检 + D5 净浮盈
     intel: Optional[IntelReport] = None                    # v1.3-③-C1 复盘情报件(不阻断,失败降级见 empty_intel_report)
     sector_moneyflow: Optional[SectorMoneyflowReport] = None  # v1.3-③-C2 板块资金流(拥挤情报,非选股信号)
@@ -361,32 +353,6 @@ def build_report(
         save=save, parquet_dir=parquet_dir, db_path=db_path,
     )
 
-    # v1.1-C.3 自选体检(独立一节,同码复用候选评分管线,§2.3 报告拍板/§五
-    # v1.1-C.3):不改候选评分/不进候选榜。空自选池 → `build_watchlist_check`
-    # 直接返回 []、零额外 I/O(见该函数 docstring)。LLM 只审「当日状态较上一份
-    # 报告变化的」∪「用户 pinned 的」(控成本,`apply_llm_review` 内部判定)。
-    watchlist_items = [w.to_dict() for w in watchlist_store.list_watchlist(db_path=db_path)]
-    watchlist_check = build_watchlist_check(
-        trade_date, active.rule, watchlist_items,
-        sector_scores=sector_scores, member_map=member_map, index_names=index_names,
-        parquet_dir=parquet_dir, db_path=db_path,
-    )
-    previous_watchlist_snapshot = store.load_watchlist_snapshot_before(trade_date, db_path=db_path)
-    apply_llm_review(
-        watchlist_check, previous_watchlist_snapshot,
-        provider=provider, top_list=top_list, transport=llm_transport,
-    )
-
-    # v1.5-④-A1:自选票 K4 派发警示(§七 ✅ 节「诱多做局反向哨兵」残留半边)。复用
-    # `holding_k4_check` 同一份镜像(~16 只自选 × 420 自然日逐票取数,量级 ≈ 持仓
-    # 5 倍),**不阻断主报告管线**(同 C1/C2/C4/信息卡摘要/执行提示保险丝惯例,§硬
-    # 要求「核心管线对可选情报输入的调用必须包保险丝」)——异常时自选体检其余字段
-    # 照出,只是这批票当次没有派发警示(`dispatch_alerts` 维持构造时的默认空列表)。
-    try:
-        attach_dispatch_alerts(watchlist_check, trade_date, parquet_dir=parquet_dir, db_path=db_path)
-    except Exception:  # noqa: BLE001 —— 自选派发警示异常不得连带主报告失败
-        logger.warning("自选票 K4 派发警示(v1.5-④-A1)计算异常,自选体检其余字段照出,本次无派发警示", exc_info=True)
-
     # v1.3-② 持仓 K4 每日体检 + D5 收盘净浮盈(EOD 权威计算,seam 落点):对每只 open 持仓
     # 在当日面板重算 K4 advisory 命中(读 DB K4,polars 镜像)+ 算好 D5 净浮盈 → 落
     # `holding_eod_check`(GET /positions 读快照嵌 k4Advisory;次日 precall 读 net_float)。
@@ -423,28 +389,20 @@ def build_report(
             trade_date, reason="板块资金流(C2)计算异常(详见服务端日志),已降级留空。"
         )
 
-    # v1.3-③-C4 消息面扫描:对象 = **持仓 ∪ 自选**,不是全市场(§硬要求)。持仓 /
-    # 自选**分开传入**(不揉成一个列表)——`build_news_alerts` 的 LLM 侧按「持仓
-    # 优先、自选靠后」顺序扫描,墙钟预算不够时牺牲的必须是自选(2026-07-26 必改,
-    # 见 news_alerts.py 模块头)。展示名优先取自选池自带的 name(用户维护/入池时
-    # 已解析),持仓票另经 stock_basic 解析(`Position` 无 name 字段)。`db_path`
-    # 透传供减持类事件跨日去重查询(同一必改)。**不阻断主报告管线**(同 C1/C2
-    # 姿势,内部两个子扫描已各自降级,这里再包一层兜底编排逻辑自身的意外)。
+    # v1.3-③-C4 消息面扫描。**V2-⑬-11 起扫描域只剩持仓**:自选池整链删除(裁定 #9-a)后
+    # 次级扫描域暂空(`secondary_targets=[]`),隔日轮扫机制因此本版恒不触发——机制本体
+    # **不拆**(⑭-A 把篮子成员接进次级域时原样复用,见 `news_alerts.py` 模块头 V2 登记)。
+    # `db_path` 透传供减持类事件跨日去重查询。**不阻断主报告管线**(同 C1/C2 姿势,
+    # 内部两个子扫描已各自降级,这里再包一层兜底编排逻辑自身的意外)。
     from neckline.report.candidates import _load_stock_names
     holding_codes = list(dict.fromkeys(h.ts_code for h in holding_positions))
-    watchlist_only_codes = list(dict.fromkeys(w["ts_code"] for w in watchlist_items))
-    all_alert_codes = list(dict.fromkeys(holding_codes + watchlist_only_codes))
+    all_alert_codes = list(holding_codes)
     resolved_names = _load_stock_names(all_alert_codes, db_path) if all_alert_codes else {}
-    watchlist_name_map = {w["ts_code"]: w.get("name") for w in watchlist_items if w.get("name")}
-
-    def _alert_name(c: str) -> str:
-        return watchlist_name_map.get(c) or resolved_names.get(c) or c
-
-    position_targets = [(c, _alert_name(c)) for c in holding_codes]
-    watchlist_targets = [(c, _alert_name(c)) for c in watchlist_only_codes]
+    position_targets = [(c, resolved_names.get(c) or c) for c in holding_codes]
+    secondary_targets: List[tuple] = []
     try:
         news_alerts = build_news_alerts(
-            trade_date, position_targets, watchlist_targets,
+            trade_date, position_targets, secondary_targets,
             provider=provider, transport=llm_transport, db_path=db_path,
         )
     except Exception:  # noqa: BLE001 —— 消息面扫描(C4)异常不得连带主报告失败
@@ -497,7 +455,6 @@ def build_report(
         candidates=candidates,
         judged=judged,
         top_n_judged=top_n_judged,
-        watchlist_check=watchlist_check,
         holding_k4_check=holding_k4_check,   # v1.5-③-C:持仓体检节(排在候选之前)
         intel=intel,
         sector_moneyflow=sector_moneyflow,
@@ -514,7 +471,6 @@ def build_report(
             sectors=[_jsonable(s) for s in sector_scores],
             candidates=[_jsonable(c.public_dict()) for c in candidates],
             markdown=markdown,
-            watchlist=[_jsonable(w.public_dict()) for w in watchlist_check],
             intel=intel.to_public_dict(),
             sector_moneyflow=sector_moneyflow.to_public_dict(),
             news_alerts_scan=news_alerts.scan_statuses_public(),
@@ -553,7 +509,6 @@ def build_report(
         judged=judged,
         markdown=markdown,
         missed_entry_hint=compute_missed_entry_hint(trade_date, db_path=db_path),
-        watchlist_check=watchlist_check,
         holding_k4_check=holding_k4_check,
         intel=intel,
         sector_moneyflow=sector_moneyflow,

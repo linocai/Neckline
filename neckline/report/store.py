@@ -29,24 +29,23 @@ def save_report(
     sectors: List[Dict[str, Any]],
     candidates: List[Dict[str, Any]],
     markdown: str,
-    watchlist: Optional[List[Dict[str, Any]]] = None,
     intel: Optional[Dict[str, Any]] = None,
     sector_moneyflow: Optional[Dict[str, Any]] = None,
     news_alerts_scan: Optional[List[Dict[str, Any]]] = None,
     data_freshness: Optional[Dict[str, Any]] = None,
     db_path: Optional[Path] = None,
 ) -> None:
-    """`watchlist`(v1.1-C.3 自选体检快照,`WatchlistCheckItem.public_dict()` 列表):
-    默认 `None` → 落 `'[]'`(旧调用点/自选池为空时零改动落库形状)。
+    """⚠ **V2-⑬-11 起 `watchlist_json` 列不再由本函数写入**(自选体检整节删除,裁定
+    #9-a):列本身**保留不 DROP**(历史行供归因只读),新行一律吃 DDL 默认值 `'[]'`。
     `intel`/`sector_moneyflow`(v1.3-③ C1/C2,`IntelReport.to_public_dict()` /
     `SectorMoneyflowReport.to_public_dict()` 的字典,均为**单个对象**而非数组——
     已是 camelCase JSON-safe 形状,`sector_moneyflow` 携带 available/
     unavailableReason 等元信息,不是裸榜单):默认 `None` → 落 `'{}'`(旧调用点零
-    改动落库形状,同 watchlist 惯例)。
+    改动落库形状)。
     `news_alerts_scan`(v1.3-③-C4,`NewsAlertsReport.scan_statuses_public()` 的
     JSON 数组快照——**只是扫描状态元信息,不含命中告警本身**〔告警条目落独立
     `news_alerts` 表,见 `report/news_alerts_store.py`〕):默认 `None` → 落
-    `'[]'`,同 watchlist 惯例。
+    `'[]'`。
     `data_freshness`(v1.4-①-C,`SectorDataFreshness.to_public_dict()`:
     `{sectorDataDate, sectorLagDays, stale}`):板块数据相对本报告日落后几个交易日 ——
     **随报告一起冻住**,不在读时重算(读一份三天前的报告时,该看到的是**当时**的新鲜度,
@@ -57,8 +56,8 @@ def save_report(
         conn.execute(
             "INSERT OR REPLACE INTO reports "
             "(trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json, data_freshness_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "intel_json, sector_moneyflow_json, news_alerts_scan_json, data_freshness_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 _d(trade_date),
                 now,
@@ -67,7 +66,6 @@ def save_report(
                 json.dumps(sectors, ensure_ascii=False),
                 json.dumps(candidates, ensure_ascii=False),
                 markdown,
-                json.dumps(watchlist or [], ensure_ascii=False),
                 json.dumps(intel or {}, ensure_ascii=False),
                 json.dumps(sector_moneyflow or {}, ensure_ascii=False),
                 json.dumps(news_alerts_scan or [], ensure_ascii=False),
@@ -89,6 +87,8 @@ def _parse_json_field(raw: Optional[str], default: Any) -> Any:
 
 
 def _parse_watchlist_json(raw: Optional[str]) -> List[Dict[str, Any]]:
+    """⚠ **V2-⑬-11 起只用于读历史行**(`watchlist_json` 已停写,列留档不 DROP)。
+    保留是为了让归因/审计能把 v1.1~v1.5.2 的自选体检快照读回来。"""
     return _parse_json_field(raw, [])
 
 
@@ -176,26 +176,6 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
     }
 
 
-def load_watchlist_snapshot_before(trade_date: date, db_path: Optional[Path] = None) -> Dict[str, Dict[str, Any]]:
-    """`trade_date` **之前**(严格早于,`<`)最近一份已生成报告的自选体检快照,
-    按 `ts_code` 建索引(供 `watchlist_check.apply_llm_review` 的「状态变化」diff
-    用,§v1.1-C.3)。**用 `<` 而非「上一个交易日」**——同日补跑报告(`build_report`
-    对同一天重新生成)时,「上一份」仍应是更早交易日的快照,不能拿"即将被本次
-    覆盖的同一天旧值"当基准,否则同日重复生成会让所有票的 diff 基准变成"自己
-    生成前的自己",从而永远判定"未变化"、漏掉真实状态变化的 LLM 审视。查无 →
-    空 dict(视为「首次出现」,`_is_changed` 据此把首次出现按"已变化"处理)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute(
-            "SELECT watchlist_json FROM reports WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1",
-            (_d(trade_date),),
-        ).fetchone()
-    if row is None:
-        return {}
-    items = _parse_watchlist_json(row[0])
-    return {it["ts_code"]: it for it in items if isinstance(it, dict) and it.get("ts_code")}
-
-
 def save_llm_judgment(trade_date: date, result: JudgeResult, db_path: Optional[Path] = None) -> None:
     init_schema(db_path)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -276,6 +256,5 @@ def load_llm_judgments(trade_date: date, db_path: Optional[Path] = None) -> List
 
 __all__ = [
     "save_report", "load_report", "load_report_by_str", "latest_report_date",
-    "load_watchlist_snapshot_before",
     "save_llm_judgment", "load_llm_judgments", "delete_llm_judgments",
 ]

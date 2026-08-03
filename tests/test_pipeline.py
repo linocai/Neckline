@@ -24,7 +24,6 @@ from tests.conftest import (
 
 import neckline.report.news_alerts as news_alerts_mod
 import neckline.report.pipeline as pipeline_mod
-from neckline import watchlist as watchlist_store
 from neckline.data.tushare_client import TushareResult
 from neckline.llm.judge import VERDICT_INACTIVE, VERDICT_PASS, VERDICT_VETO
 from neckline.llm.providers.glm import GLMProvider
@@ -305,127 +304,6 @@ class TestPendingConsumptionWindowStoreLevel:
             assert "CCCC.SZ" in pending
 
 
-class TestWatchlistCheckWiring:
-    """v1.1-C.3 自选体检接入 `build_report`(独立一节,不改候选评分/不进候选榜,
-    见 `neckline.report.watchlist_check` 的评分单测本身在 `test_watchlist_check.py`;
-    本类只测「接线」——是否真的被 `build_report` 调用、落库、回放)。"""
-
-    def test_watchlist_check_appears_in_bundle_and_report_independent_of_candidates(self, isolated_env, monkeypatch):
-        from neckline.watchlist import add_watchlist
-
-        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
-        dates = seed_synthetic_market(isolated_env)
-        seed_active_rule_v1(isolated_env)
-        report_date = dates[-1]
-        # 300001.SZ 是创业板,rule v1 主板 only → 报告候选会剔除它;自选体检不受
-        # mask 约束,仍应给出评估——证明"独立一节,不进候选榜"。
-        add_watchlist("300001.SZ", db_path=isolated_env.db_path)
-
-        bundle = pipeline_mod.build_report(
-            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
-        )
-        codes = {w.ts_code for w in bundle.watchlist_check}
-        assert codes == {"300001.SZ"}
-        assert "300001.SZ" not in [c.ts_code for c in bundle.candidates]
-
-        loaded = store.load_report(report_date, db_path=isolated_env.db_path)
-        assert loaded["watchlist"][0]["ts_code"] == "300001.SZ"
-
-    def test_empty_watchlist_yields_empty_check_list(self, isolated_env, monkeypatch):
-        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
-        dates = seed_synthetic_market(isolated_env)
-        seed_active_rule_v1(isolated_env)
-        bundle = pipeline_mod.build_report(
-            dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
-        )
-        assert bundle.watchlist_check == []
-
-    def test_status_change_diff_across_two_reports(self, isolated_env, monkeypatch):
-        """跨两份报告的真实 diff:600001.SH 在 `dates[-2]`(合成行情当日未回调,
-        pullback 不触发)与 `dates[-1]`(report_date,合成行情当日小幅回调,
-        pullback 触发)之间买点触发状态翻转 → 第二份报告应判定 `statusChanged=True`
-        (`load_watchlist_snapshot_before` 正确取到"上一份"而非本次自己)。"""
-        from neckline.watchlist import add_watchlist
-
-        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
-        dates = seed_synthetic_market(isolated_env)
-        seed_active_rule_v1(isolated_env)
-        add_watchlist("600001.SH", db_path=isolated_env.db_path)
-
-        day1, day2 = dates[-2], dates[-1]
-        b1 = pipeline_mod.build_report(
-            day1, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
-        )
-        w1 = {w.ts_code: w for w in b1.watchlist_check}["600001.SH"]
-        assert w1.buy_point_triggered is False   # day1 未回调,pullback 不触发
-
-        b2 = pipeline_mod.build_report(
-            day2, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
-        )
-        w2 = {w.ts_code: w for w in b2.watchlist_check}["600001.SH"]
-        assert w2.buy_point_triggered is True    # day2(report_date)回调,触发
-        assert w2.status_changed is True         # 与上一份报告(day1)相比翻转
-
-
-class TestDispatchAlertsWiring:
-    """v1.5-④-A1 自选票 K4 派发警示接入 `build_report`(领域逻辑单测见
-    `test_watchlist_check.py::TestAttachDispatchAlerts`;本类只测「接线」——是否真的
-    被调用、携带正确参数、异常时不阻断主报告(保险丝惯例同 `TestExecHintWiring`)。"""
-
-    def test_attach_dispatch_alerts_called_with_db_path(self, isolated_env, monkeypatch):
-        """spy 断言 `build_report` 确实调用了 `attach_dispatch_alerts`(不是被 import
-        遗漏/静默跳过)且携带正确的 `db_path`/`parquet_dir`。"""
-        from neckline.watchlist import add_watchlist
-
-        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
-        captured = {}
-        real = pipeline_mod.attach_dispatch_alerts
-
-        def spy(items, trade_date, **kw):
-            captured["called"] = True
-            captured["db_path"] = kw.get("db_path")
-            captured["parquet_dir"] = kw.get("parquet_dir")
-            captured["n_items"] = len(items)
-            return real(items, trade_date, **kw)
-
-        monkeypatch.setattr(pipeline_mod, "attach_dispatch_alerts", spy)
-        dates = seed_synthetic_market(isolated_env)
-        seed_active_rule_v1(isolated_env)
-        add_watchlist("600001.SH", db_path=isolated_env.db_path)
-        report_date = dates[-1]
-
-        pipeline_mod.build_report(
-            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
-        )
-        assert captured["called"] is True
-        assert captured["db_path"] == isolated_env.db_path
-        assert captured["parquet_dir"] == isolated_env.parquet_dir
-        assert captured["n_items"] == 1
-
-    def test_dispatch_alerts_exception_does_not_block_main_report(self, isolated_env, monkeypatch):
-        """`attach_dispatch_alerts` 整体异常(保险丝范围外的意外)时,`build_report`
-        仍必须成功产出报告——自选体检其余字段照出,只是这批票当次没有派发警示
-        (维持构造时的默认空列表)。"""
-        from neckline.watchlist import add_watchlist
-
-        monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
-        monkeypatch.setattr(
-            pipeline_mod, "attach_dispatch_alerts",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
-        )
-        dates = seed_synthetic_market(isolated_env)
-        seed_active_rule_v1(isolated_env)
-        add_watchlist("600001.SH", db_path=isolated_env.db_path)
-        report_date = dates[-1]
-
-        bundle = pipeline_mod.build_report(
-            report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
-        )
-        w = next(w for w in bundle.watchlist_check if w.ts_code == "600001.SH")
-        assert w.dispatch_alerts == []   # 保险丝触发,维持默认空(不是半份脏数据)
-        assert w.green_light is not None  # 体检其余字段正常产出(不是"整体没跑")
-
-
 class TestIntelAndSectorMoneyflowWiring:
     """v1.3-③ C1(情报件)/C2(板块资金流)接入 `build_report`(硬要求④:任一子项
     /整段异常都不阻断主报告)。字段本身的评分单测在 `test_intel.py`/
@@ -546,18 +424,20 @@ class TestNewsAlertsWiring:
         )
         assert "## 消息面" in bundle.markdown
 
-    def test_scan_targets_are_positions_and_watchlist_passed_separately(self, isolated_env, monkeypatch):
-        """§硬要求「扫描对象=持仓+自选,不是全市场」——用 spy 替身直接断言
-        `build_news_alerts` 收到的 `position_codes`/`watchlist_codes` 两个参数,
-        不依赖 TuShare/LLM 真调用。2026-07-26 必改后签名从"揉成一个列表"改为
-        "分开传入"(LLM 侧墙钟预算持仓优先于自选,靠调用方把两者分开才能保证)——
-        本测试同时锁死这一点:不能退化回合并成一个列表再传。"""
+    def test_scan_targets_are_positions_only_secondary_domain_empty(self, isolated_env, monkeypatch):
+        """§硬要求「扫描对象=有限域,不是全市场」——用 spy 替身直接断言
+        `build_news_alerts` 收到的 `position_codes`/`secondary_codes` 两个参数,
+        不依赖 TuShare/LLM 真调用。**签名"分开传入"不许退化回合并成一个列表**
+        (LLM 侧墙钟预算持仓优先,靠调用方把两者分开才能保证)。
+
+        **V2-⑬-11 起次级域恒空**:自选池整链删除(裁定 #9-a)→ 次级域暂无来源;
+        ⑭-A 把篮子成员接进来时,本测试要改成断言「篮子成员进次级域」。"""
         monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
         captured = {}
 
-        def spy(trade_date, position_codes, watchlist_codes, **kw):
+        def spy(trade_date, position_codes, secondary_codes, **kw):
             captured["position_codes"] = list(position_codes)
-            captured["watchlist_codes"] = list(watchlist_codes)
+            captured["secondary_codes"] = list(secondary_codes)
             return news_alerts_mod.empty_news_alerts_report(trade_date, reason="test-spy")
 
         monkeypatch.setattr(pipeline_mod, "build_news_alerts", spy)
@@ -565,16 +445,14 @@ class TestNewsAlertsWiring:
         seed_active_rule_v1(isolated_env)
         report_date = dates[-1]
         pos_store.open_position("600001.SH", 10.0, 1000, report_date, db_path=isolated_env.db_path)
-        watchlist_store.add_watchlist("600002.SH", name="*ST示例乙", db_path=isolated_env.db_path)
 
         pipeline_mod.build_report(
             report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
         )
         position_only = {c for c, _name in captured["position_codes"]}
-        watchlist_only = {c for c, _name in captured["watchlist_codes"]}
         assert position_only == {"600001.SH"}
-        assert watchlist_only == {"600002.SH"}
-        assert "300001.SZ" not in position_only | watchlist_only   # 不是持仓也不是自选,不应被扫描
+        assert captured["secondary_codes"] == []          # ⑬-11:自选池已删,次级域暂空
+        assert "300001.SZ" not in position_only           # 不是持仓,不应被扫描
 
     def test_db_path_threaded_through_for_cross_day_dedup(self, isolated_env, monkeypatch):
         """减持类跨日去重要查库(2026-07-26 必改 2)——`pipeline.py` 必须把
@@ -582,7 +460,7 @@ class TestNewsAlertsWiring:
         monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
         captured = {}
 
-        def spy(trade_date, position_codes, watchlist_codes, **kw):
+        def spy(trade_date, position_codes, secondary_codes, **kw):
             captured["db_path"] = kw.get("db_path")
             return news_alerts_mod.empty_news_alerts_report(trade_date, reason="test-spy")
 

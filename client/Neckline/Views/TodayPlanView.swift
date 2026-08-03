@@ -314,12 +314,6 @@ private struct CandidateRow: View {
                                      llmJudgment: candidate.llmJudgment)
                 Divider().overlay(NK.hairline)
                 HStack(spacing: 14) {
-                    Button {
-                        Task { await model.quickAddWatchlist(code: candidate.code, name: candidate.name) }
-                    } label: {
-                        Label("+自选", systemImage: "star").font(.system(size: 12, weight: .medium))
-                    }
-                    .buttonStyle(.plain).foregroundStyle(NK.textSecondary)
                     // v1.4-④-B:信息卡入口(60 日 K 线/RS 线/行业分歧线 + 快照/红黄牌/温和带/
                     // 消息面/龙虎榜/市场语境)。候选专属,本版先只接候选。
                     Button {

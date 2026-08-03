@@ -38,30 +38,12 @@ def _candidate(ts_code: str, **overrides) -> Candidate:
     return Candidate(**base)
 
 
-def _save_report(settings, trade_date: date, candidates, watchlist=None):
+def _save_report(settings, trade_date: date, candidates):
     store.save_report(
         trade_date, strategy_version="v1", sentiment={}, sectors=[],
         candidates=[c.public_dict() for c in candidates], markdown="# test",
-        watchlist=watchlist, db_path=settings.db_path,
+        db_path=settings.db_path,
     )
-
-
-def _watchlist_check_dict(ts_code: str, **overrides) -> dict:
-    """手工构造一条自选体检快照(`WatchlistCheckItem.public_dict()` 的形状),
-    免依赖 `report.watchlist_check` 跑真实评分管线——本文件只测 `universe.py`
-    的合并/裁剪/转换逻辑,不是评分逻辑本身(那是 `test_watchlist_check.py` 的
-    职责)。"""
-    base = dict(
-        ts_code=ts_code, name=ts_code, pinned=False, source="manual", has_data=True,
-        close=10.0, board="MAIN", score=80.0, pattern_tags=[], hot_sectors=[], sector_names=[],
-        green_light=True, disqualifiers=[], buy_point_triggered=True,
-        entry_plan="回调低吸...", stop_loss="止损...", target="目标...", invalidation_text="证伪...",
-        invalidation_spec={"low_open_pct": -0.02, "vol_ratio_low": 0.8, "vol_ratio_high": 3.0},
-        entry_spec={"buypoint": "pullback", "ma10": 9.5, "prev_close": 10.0},
-        status_changed=False, llm_judgment=None,
-    )
-    base.update(overrides)
-    return base
 
 
 class TestLoadWatchUniverse:
@@ -284,24 +266,11 @@ class TestV2WatchPoolComposition:
         assert len(wu.codes) == len(set(wu.codes))
         assert [b.tier for b in wu.baskets] == [1, 2]
 
-    def test_watchlist_is_no_longer_a_source(self, isolated_env):
-        """**自选池不再进关注池**(⑧-A;`watchlist` 表还在、⑬-11 才删,但本模块不读它)。"""
-        from neckline.watchlist import add_watchlist
-
-        days = business_days(date(2026, 7, 13), 5)
-        insert_trade_cal(isolated_env, days)
-        report_day, today = days[-2], days[-1]
-        add_watchlist("600002.SH", db_path=isolated_env.db_path)
-        _save_report(isolated_env, report_day, [_candidate("600001.SH")],
-                     watchlist=[_watchlist_check_dict("600002.SH", buy_point_triggered=True)])
-
-        wu = load_watch_universe(today, db_path=isolated_env.db_path,
-                                 parquet_dir=isolated_env.parquet_dir)
-        assert "600002.SH" not in wu.codes
-        assert wu.watchlist_codes == [] and wu.watchlist_candidates == []
-
     def test_universe_module_does_not_read_watchlist_at_all(self):
-        """守门:`universe.py` 里不许再出现 `neckline.watchlist` 的 import(⑧-A)。"""
+        """守门:`universe.py` 里不许再出现 `neckline.watchlist` 的 import(⑧-A 立,
+        ⑬-11 起该模块已物理删除 —— 本断言从"不许读"升级为"读也读不到",**仍然保留**:
+        它是关注池组成的锚点,防止未来有人把某个新的"自选式"来源接回来。全仓级的
+        零 import 守门另见 `tests/test_v1_retirement_guard.py`。"""
         import ast
         from pathlib import Path
 

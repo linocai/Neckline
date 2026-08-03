@@ -78,20 +78,24 @@ class TestCustomSystemPrompt:
         assert stub.captured_messages[0].content == JUDGE_SYSTEM_PROMPT
 
     def test_custom_system_prompt_is_used_when_passed(self):
-        from neckline.llm.judge import JUDGE_SYSTEM_PROMPT, WATCHLIST_JUDGE_SYSTEM_PROMPT
+        """`system_prompt` 形参本身保留(⑬-2:`judge_candidate` 是通用 LLM 调用 +
+        降级链 + verdict 解析工具)。V1 唯一的自定义 prompt(自选体检
+        `WATCHLIST_JUDGE_SYSTEM_PROMPT`)已随自选池整链删除(⑬-11),故本测试改用
+        一个临时替身 prompt,只验「传进去的确实被用了」。"""
+        from neckline.llm.judge import JUDGE_SYSTEM_PROMPT
 
+        custom = "你是一个测试用的替身审判员。\n结尾写「结论:通过」或「结论:否决」。"
         stub = _StubProvider(LLMResult(ok=True, content="分析。\n结论:通过", provider="glm", model="glm-5.2"))
-        judge_candidate(_candidate(), provider=stub, system_prompt=WATCHLIST_JUDGE_SYSTEM_PROMPT)
-        assert stub.captured_messages[0].content == WATCHLIST_JUDGE_SYSTEM_PROMPT
-        assert stub.captured_messages[0].content != JUDGE_SYSTEM_PROMPT   # 确实是两套不同文案
+        judge_candidate(_candidate(), provider=stub, system_prompt=custom)
+        assert stub.captured_messages[0].content == custom
+        assert stub.captured_messages[0].content != JUDGE_SYSTEM_PROMPT
 
-    def test_watchlist_prompt_still_uses_same_verdict_tag_format(self):
-        """两套 prompt 共用同一套「结论:通过|否决」解析(`_parse_verdict`),不是
-        另起一套标签格式。"""
-        from neckline.llm.judge import WATCHLIST_JUDGE_SYSTEM_PROMPT
-
+    def test_custom_prompt_still_uses_same_verdict_tag_format(self):
+        """自定义 prompt 与默认 prompt 共用同一套「结论:通过|否决」解析
+        (`_parse_verdict`),不是另起一套标签格式。"""
+        custom = "替身审判员。"
         stub = _StubProvider(LLMResult(ok=True, content="一段分析。\n结论:否决", provider="glm", model="glm-5.2"))
-        r = judge_candidate(_candidate(), provider=stub, system_prompt=WATCHLIST_JUDGE_SYSTEM_PROMPT)
+        r = judge_candidate(_candidate(), provider=stub, system_prompt=custom)
         assert r.verdict == VERDICT_VETO
         assert "一段分析" in r.narrative
 
@@ -178,10 +182,9 @@ class TestSearchQueryRecencyV152:
         assert q.startswith("600001.SH ") and "(" not in q
 
     def test_system_prompts_carry_timeliness_rules(self):
-        from neckline.llm.judge import JUDGE_SYSTEM_PROMPT, WATCHLIST_JUDGE_SYSTEM_PROMPT
+        from neckline.llm.judge import JUDGE_SYSTEM_PROMPT
         from neckline.llm.prompt_context import TIMELINESS_RULES
         assert TIMELINESS_RULES in JUDGE_SYSTEM_PROMPT
-        assert TIMELINESS_RULES in WATCHLIST_JUDGE_SYSTEM_PROMPT
 
 
 class TestContextBlock:

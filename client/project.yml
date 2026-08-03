@@ -38,6 +38,12 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: top.linotsai.neckline
         PRODUCT_NAME: Neckline
+        # ⚠ 与顶层 `settings.base.MARKETING_VERSION` **刻意重复一份**:守门单测
+        # `tests/test_client_version_governance.py` 的 app target 判据是「buildSettings 块内
+        # 同时含 `PRODUCT_NAME = Neckline;` 与 `MARKETING_VERSION`」——xcodegen 不把顶层 base
+        # 下放到 target 块,只写顶层,该块就没有 MARKETING_VERSION、守门直接挂。
+        # 重复值必须与顶层一致(单测同时断言两处相等,漂了会红)。
+        MARKETING_VERSION: "1.5.2"
         # 推送 entitlement 仅 iOS 应用(真机/模拟器);macOS 不开推送(平台分叉,同 LinoN 姿势)。
         "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Neckline/Neckline.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Neckline/Neckline.entitlements

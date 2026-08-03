@@ -402,7 +402,7 @@ def run_tick(
     # 的,盘中只读不重算(§2.4 铁律)。退潮哨兵的板块联动样本(`_hot_sector_peer_
     # returns`)刻意只用 `wu.candidates`,不纳入自选(见 `universe.py` 模块头
     # 注释「四类哨兵」不含退潮)。
-    entry_pool = wu.candidates + wu.watchlist_candidates
+    entry_pool = list(wu.candidates)
 
     # —— 2) 买点哨兵(退潮生效时本拍整体跳过,不逐票判断)——————————————————
     if not retreat_active:

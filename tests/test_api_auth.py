@@ -15,8 +15,6 @@ PROTECTED_GET = [
     "/api/v1/settings/intel-boards",
     "/api/v1/settings/providers",
     "/api/v1/settings/llm-routes",
-    "/api/v1/watchlist",
-    "/api/v1/watchlist/export-ths",
 ]
 
 
@@ -36,10 +34,6 @@ def test_protected_post_requires_token(client):
     assert client.post("/api/v1/devices", json={"token": "x"}).status_code == 401
     assert client.post("/api/v1/positions", json={"code": "600001.SH", "buy_price": 1.0, "qty": 100}).status_code == 401
     assert client.post("/api/v1/inquiry", json={"code": "600001.SH", "messages": []}).status_code == 401
-    assert client.post("/api/v1/watchlist", json={"code": "600001.SH"}).status_code == 401
-    assert client.post(
-        "/api/v1/watchlist/reconcile-ths", files={"file": ("a.txt", b"600001\n", "text/plain")}
-    ).status_code == 401
     # V2-②:Provider 注册表新增端点(自填制,plan §3.10-B)
     assert client.post("/api/v1/settings/providers", json={"name": "x"}).status_code == 401
 
@@ -49,11 +43,10 @@ def test_protected_put_requires_token(client):
     assert client.put("/api/v1/settings/providers/glm", json={}).status_code == 401
     assert client.put("/api/v1/settings/llm-routes", json={}).status_code == 401
     assert client.put("/api/v1/settings/intel-boards", json={"boards": []}).status_code == 401
-    assert client.put("/api/v1/watchlist/600001.SH/pin", json={"pinned": True}).status_code == 401
 
 
 def test_protected_delete_requires_token(client):
-    assert client.delete("/api/v1/watchlist/600001.SH").status_code == 401
+    assert client.delete("/api/v1/alerts/1").status_code == 401
     assert client.delete("/api/v1/settings/providers/glm").status_code == 401
 
 

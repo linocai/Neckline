@@ -105,7 +105,6 @@ class TestTimelinessRulesAreInEveryPrompt:
     @pytest.mark.parametrize("prompt_ref", [
         "neckline.api.inquiry:INQUIRY_SYSTEM_PROMPT",
         "neckline.llm.judge:JUDGE_SYSTEM_PROMPT",
-        "neckline.llm.judge:WATCHLIST_JUDGE_SYSTEM_PROMPT",
         "neckline.report.reference_plan:REFERENCE_PLAN_SYSTEM_PROMPT",
     ])
     def test_prompt_embeds_the_shared_rules_verbatim(self, prompt_ref):

@@ -456,18 +456,6 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(model.pendingDecisionId)
     }
 
-    // MARK: - §五 v1.1-F 自选体检板块码展示换算(与 Candidate 共用 `nkBoardLabel`)
-
-    func testWatchlistCheckItemBoardLabelSharesCandidateMapping() {
-        let item = WatchlistCheckItem(
-            code: "300750.SZ", name: "宁德时代", pinned: false, source: "manual", hasData: true,
-            close: 200.0, board: "GEM", score: 70.0, patternTags: [], hotSectors: [], sectorNames: [],
-            greenLight: false, disqualifiers: [], buyPointTriggered: false, buyPoint: "", stop: "",
-            target: "", invalidation: "", statusChanged: false, llmJudgment: nil
-        )
-        XCTAssertEqual(item.boardLabel, "创业板")
-    }
-
     // MARK: - 开仓表单校验
 
     func testPositionEntryFormValidation() {
@@ -730,21 +718,6 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(form.maxChaseNoCap)
         XCTAssertTrue(form.maxChaseChosen)
         XCTAssertTrue(form.isValid)
-    }
-
-    // MARK: - §五 v1.2-E.4 呼吸台账录入草稿 + 入口露出规则(`AppModel.linkedDecision`)
-
-    func testBreathingTradeFormValidationRequiresFeesNonNegative() {
-        var form = BreathingTradeForm()
-        XCTAssertFalse(form.isValid)
-        form.buyPrice = "10.0"; form.sellPrice = "10.3"; form.qty = "500"
-        XCTAssertFalse(form.isValid, "费用留空不能通过校验(不代入 0,§G.2「不替用户估费率」)")
-        form.fees = "20.0"
-        XCTAssertTrue(form.isValid)
-        form.fees = "0"
-        XCTAssertTrue(form.isValid, "费用允许为 0(如实录入,不是必须 > 0)")
-        form.fees = "-1"
-        XCTAssertFalse(form.isValid, "费用不能为负")
     }
 
     /// 入口露出规则(§五 v1.2-E.4):取该 positionId 下最新一行;无关联 → nil。

@@ -601,29 +601,29 @@ class TestInquiryLogPersistence:
 # —— 同码不重写(v1.3-⑤ 既有验收,v1.3.3 继续守)——————————————————————————
 
 def test_discipline_checks_is_the_shared_function(market):
-    """`run_deterministic_checks` 与 `report.watchlist_check.discipline_checks` 是同一个
-    函数对象(不是两份各自维护的阈值)——防止未来有人在问询台悄悄另起一份。"""
-    from neckline.report.watchlist_check import discipline_checks as wc_discipline_checks
+    """`run_deterministic_checks` 用的就是 `report.discipline_checks` 的那一个函数对象
+    (不是问询台自己另起一份阈值)——防止未来有人在这里悄悄重抄一遍选股域。
 
-    assert inq.discipline_checks is wc_discipline_checks
+    **V2-⑬-11**:该函数原住 `report/watchlist_check.py`,自选体检整节删除时**原地搬家**
+    到独立模块(不陪葬);此前那条「问询台 risk_flags ≡ 自选体检 disqualifiers」的
+    跨模块交叉断言随消费方消失而删除,单一源由本断言 + 下面的行为断言共同守住。"""
+    from neckline.report.discipline_checks import discipline_checks as dc
+
+    assert inq.discipline_checks is dc
 
 
-def test_same_flags_as_watchlist_check_same_code_same_day(market):
-    """同码一致:问询台 `risk_flags` 与自选体检 `disqualifiers` 逐项集合相等——
-    **两处消费方式不同**(体检=红灯、问询台=警告),但判定必须同源同值。"""
-    from neckline.report.watchlist_check import build_watchlist_check
-    from neckline.strategy import brain
+def test_discipline_checks_reads_base_universe_expr_not_a_handwritten_copy(market):
+    """单一源的行为判据(补上上面那条被删的交叉断言留下的缺口):选股域那一项的
+    表达式必须来自 `research.panel.base_universe_expr()` 本尊,不是在别处手写等价条件
+    (CLAUDE.md:重抄会让阈值各自维护一份、上游一改就漂)。"""
+    from neckline.report.discipline_checks import discipline_checks
+    from neckline.research.panel import base_universe_expr
+    from neckline.strategy.momentum import MomentumConfig
 
-    s, day = market
-    active = brain.get_active(db_path=s.db_path)
-    for code in ("600001.SH", "600002.SH", "300001.SZ"):
-        det = inq.run_deterministic_checks(code, day, db_path=s.db_path, parquet_dir=s.parquet_dir)
-        wc = build_watchlist_check(
-            day, active.rule,
-            [{"ts_code": code, "name": code, "pinned": False, "source": "manual"}],
-            parquet_dir=s.parquet_dir, db_path=s.db_path,
-        )[0]
-        assert set(det.risk_flags) == set(wc.disqualifiers), code
+    checks = discipline_checks(MomentumConfig())
+    cols = [c for c, _label, _expr in checks]
+    assert cols[0] == "_dq_base"
+    assert str(checks[0][2]) == str(~base_universe_expr())
 
 
 def test_configurable_forbid_filters_still_reach_inquiry(api_env):

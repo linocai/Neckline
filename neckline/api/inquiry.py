@@ -12,11 +12,12 @@
 2. **二值裁决枚举退役**。`VERDICT_REJECT`/`VERDICT_PASS`(「不符合」/「初审通过进海选池」)
    删除;`verdict` 字段**保留**(客户端契约不破,见下)但取值改成**纯描述性标注**
    `已分析` / `已分析·有风险提示` —— 它不是判决,不授权也不禁止任何操作。
-3. **「初审通过进海选池」退役**。问询台**不再自动写 `inquiry_pool`**;想让一只票进当晚
-   报告,由用户在客户端**一键加自选**(自选池本就进当晚自选体检 + 哨兵关注池)。
-   `inquiry_pool` 表与报告侧消费逻辑(`load_pending_inquiry_codes`/
-   `mark_inquiry_pool_consumed`)**保留不动**——向后兼容,空池 noop,历史待消费行仍会被
-   正常消费掉;只是不再有自动写入方。
+3. **「初审通过进海选池」退役**。问询台**不再自动写 `inquiry_pool`**。
+   ⚠ **V2-⑬-10/⑬-11 起本条的下半段也不成立了**:`inquiry_pool` 的报告侧消费逻辑
+   (`load_pending_inquiry_codes`/`mark_inquiry_pool_consumed`)已删除、表停写留档;
+   「一键加自选」这个写回通道也随自选池整链删除(裁定 #9-a)。**问询台自此是纯分析
+   入口,没有任何把一只票送进当晚主链的路径** —— 这是裁定 #9 的必然结果、不是遗漏
+   (Plan §五 ⑬-11 已登记);日后若要恢复该能力,正确做法是「加入观察篮子」。
 4. **软护栏(用户拍板「保留但改成软形式」)**:**不下「买/卖」指令**。可以充分分析走势、
    逻辑、风险、赔率,但不产出买卖指令。**软 = 只在 prompt 层约束**:刻意**不做**枚举
    强校验、**不做**输出后处理拦截(旧实现那三重保险连同二值裁决一起拆了)。
@@ -33,8 +34,9 @@
 不会误显示成某个已知态、更不会因此冒出买入按钮**。
 
 **同码不重写铁律**:确定性材料复用 `strategy.brain`(现役规则)+ `research.panel`(选股域)
-+ `strategy.signals`(禁买谓词)+ `report.candidates`(评分)+
-`report.watchlist_check.discipline_checks`(纪律判定项,与自选体检**同一个函数**)+
++ `strategy.signals`(禁买谓词)+
+`report.discipline_checks.discipline_checks`(纪律判定项**唯一实现**;V2-⑬-11 从自选
+体检原地搬家,逐字未改)+
 `report.holding_k4_check`(K4 安检判据镜像,与持仓牌/候选情报管线同一份),
 **不在本模块另写一份领域规则**。
 
@@ -91,7 +93,7 @@ from neckline.report.sectors import (
     load_member_map,
     sector_hot_lookup,
 )
-from neckline.report.watchlist_check import discipline_checks  # 同码:纪律判定项,与自选体检共用
+from neckline.report.discipline_checks import discipline_checks  # 纪律判定项唯一实现(V2-⑬-11 从自选体检搬家)
 from neckline.review.parse import normalize_ts_code
 from neckline.strategy import brain
 from neckline.strategy import signals as S
@@ -142,8 +144,8 @@ class DeterministicResult:
     name: str = ""
     board: str = ""                                           # 中文板块标签
     close: Optional[float] = None
-    # 纪律/硬线命中项(**警告标注,不拦人**)。来源 = `watchlist_check.discipline_checks`
-    # 同一个函数;拆墙后现役 config 下只剩真硬线,见模块头。
+    # 纪律/硬线命中项(**警告标注,不拦人**)。来源 = `report.discipline_checks` 唯一实现;
+    # 拆墙后现役 config 下只剩真硬线,见模块头。
     risk_flags: List[str] = field(default_factory=list)
     # K4 安检命中(如「年线下涨停(派发域)」),同样只提示不拦。
     k4_flags: List[str] = field(default_factory=list)
@@ -263,8 +265,8 @@ def run_deterministic_checks(
         det.risk_flags.append("当日无行情数据(停牌 / 未上市 / 代码有误)")
         return det
 
-    # —— 纪律/硬线核对(同码:与 `report.watchlist_check.score_watchlist` 共用同一份
-    # `discipline_checks(cfg)`;拆墙后只剩真硬线,见模块头)。**命中即警告,不拦。** ——
+    # —— 纪律/硬线核对(唯一实现 `report.discipline_checks.discipline_checks(cfg)`;
+    # 拆墙后只剩真硬线,见模块头)。**命中即警告,不拦。** ——
     checks = discipline_checks(cfg)
     annotated = sub.with_columns([expr.alias(col) for col, _label, expr in checks])
     row = annotated.row(0, named=True)

@@ -353,37 +353,3 @@ def test_run_precall_d5_exit_records_and_dedupes(isolated_env):
     assert res2.ran is False
 
 
-def test_run_precall_watchlist_code_no_longer_gets_candidate_treatment(isolated_env):
-    """~~v1.1-C.2「自选票享候选同级待遇」~~ → **V2-⑧-A 起自选池不再是关注池来源**,
-    盘前校准也就不再对自选票判高开变形。⚠ `precall.py` 的**判定逻辑一行没改**
-    (⑧-D),变的只是"关注谁";⑬-11 再删模块与表。"""
-    from neckline.watchlist import add_watchlist
-
-    settings = isolated_env
-    days = business_days(date(2026, 6, 1), 30)
-    report_day, today = days[-2], days[-1]
-    insert_trade_cal(settings, days)
-    seed_active_rule_v1(settings)
-    add_watchlist("600002.SH", db_path=settings.db_path)
-    store.save_report(
-        report_day, strategy_version="v1", sentiment={}, sectors=[], candidates=[],  # 空候选,全靠自选
-        markdown="# t", db_path=settings.db_path,
-        watchlist=[{
-            "ts_code": "600002.SH", "name": "示例自选", "pinned": False, "source": "manual", "has_data": True,
-            "close": 10.0, "board": "MAIN", "score": 80.0, "pattern_tags": [], "hot_sectors": [], "sector_names": [],
-            "green_light": True, "disqualifiers": [], "buy_point_triggered": True,
-            "entry_plan": "回调低吸...", "stop_loss": "止损...", "target": "目标...", "invalidation_text": "证伪...",
-            "invalidation_spec": {"low_open_pct": -0.02, "vwap_break": True, "vol_ratio_low": 0.8, "vol_ratio_high": 3.0},
-            "entry_spec": {"buypoint": "pullback", "ma10": 9.5, "prev_close": 10.0, "breakout_vol_expand": 1.5},
-            "status_changed": False, "llm_judgment": None,
-        }],
-    )
-    insert_stock_basic(settings, [{"ts_code": "600002.SH", "name": "示例自选"}])
-
-    now = datetime.combine(today, time(9, 25, 30))
-    # 高开变形:open=10.0 vs ma10 9.5 → +5.3%,超阈值(PRECALL_GAP_UP_INVALIDATE=3%)
-    quotes = {"600002.SH": _quote(open_=10.0, pre_close=10.0, code="600002.SH")}
-    res = run_precall_tick(now, db_path=settings.db_path,
-                           parquet_dir=settings.parquet_dir, quotes_fn=lambda codes: quotes)
-    assert res.gap_up == []              # 自选票已不在关注池,无判定对象
-    assert res.watched_codes == 0

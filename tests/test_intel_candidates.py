@@ -776,40 +776,6 @@ def test_bulk_and_percode_loaders_agree(isolated_env):
 
 
 # ————————————————————————————————————————————————————————————————
-# ⑧ 纪律红绿灯仍与报告同码(候选解耦、纪律核对不变)——§3.8 落地核对
-# ————————————————————————————————————————————————————————————————
-
-def test_watchlist_discipline_still_k1_while_candidates_decoupled(isolated_env):
-    """§3.8 新表述落地核对:候选生成解耦(GEM 入候选),但**自选体检纪律红绿灯仍与报告同码**
-    ——同一只创业板票在自选体检里被 K1 `forbid_high_elasticity` 红灯(禁买),在候选情报管线里
-    却因解耦而入选。证明「候选解耦、纪律核对仍 K1 同码」两者并存。"""
-    from neckline.report.watchlist_check import score_watchlist
-    from neckline.strategy.features import build_research_panel
-    from neckline.strategy.momentum import MomentumConfig
-
-    dates = business_days(date(2024, 1, 2), 30)
-    insert_trade_cal(isolated_env, dates)
-    _seed_market(isolated_env, dates, [
-        {"code": "300002.SZ", "market": "创业板", "closes": _rising(30, last=-0.01)},   # 末日回调(K1 pullback 触发)
-    ])
-    _seed_boards(isolated_env, [{"ts_code": "885756.TI", "name": "芯片概念"}],
-                 [{"index_code": "885756.TI", "con_code": "300002.SZ"}])
-    td = dates[-1]
-    # 候选情报管线:GEM 解耦纳入
-    cand_codes = _codes(ic.build_intel_candidates(td, _RULE,
-                                                  parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path))
-    assert "300002.SZ" in cand_codes
-    # 自选体检:同一票纪律红绿灯仍走 K1(forbid_high_elasticity)→ 红灯禁买(与报告同码,不受候选解耦影响)
-    cfg = MomentumConfig(**_RULE["config"])
-    panel = build_research_panel(td, td, with_forward=False, parquet_dir=isolated_env.parquet_dir)
-    items = score_watchlist(panel, cfg, [{"ts_code": "300002.SZ", "name": "示例", "pinned": False, "source": "manual"}],
-                            db_path=isolated_env.db_path)
-    it = {i.ts_code: i for i in items}["300002.SZ"]
-    assert it.green_light is False
-    assert any("高弹" in d or "创业板" in d for d in it.disqualifiers)
-
-
-# ————————————————————————————————————————————————————————————————
 # ⑨ 常驻板块保底名额(用户 2026-07-26 拍板:每常驻板块保底 2 只)
 # ————————————————————————————————————————————————————————————————
 

@@ -10,7 +10,7 @@
 **口径偏差显式登记**——考官线用申万二级指数,本模块用成员中位数合成,§三.7 已把
 "成员中位数合成"列为登记口径的合法实现)④ 快照数值 ⑤ 红黄牌(复用 ③ 已算好的
 `k4_flags` + `sections` 分区 + DB `evidence` 文字,不重算)⑥ 温和带标注(当日涨幅
-∈[2%,3%])⑦ 消息面摘要(复用 `news_alerts`,扫描域仅持仓+自选,候选不在内本版不
+∈[2%,3%])⑦ 消息面摘要(复用 `news_alerts`,扫描域仅持仓〔V2-⑬-11 起自选池已删〕,本版不
 扩域)⑧ 龙虎榜摘要(复用 `data.top_list`)⑨ 市场语境(复用情绪仪表盘 +
 `strategy.features.market_state_labels`,报告级构件,不逐候选重算)。
 
@@ -83,7 +83,7 @@ TOP_LIST_LOOKBACK_TRADING_DAYS = 5  # 龙虎榜"近 N 个交易日"回看窗口(
 MILD_BAND_RANGE = (0.02, 0.03)
 
 INDUSTRY_DIVERGENCE_NOTE = "行业线=行业成员中位数合成,非申万官方指数"
-NEWS_DOMAIN_UNAVAILABLE_REASON = "候选不在消息面扫描域(仅持仓+自选)"
+NEWS_DOMAIN_UNAVAILABLE_REASON = "本票不在消息面扫描域(仅持仓)"
 
 _QFQ_PRICE_COLS = ("open", "high", "low", "close", "pre_close")
 
@@ -546,8 +546,8 @@ def _news_summary_for_code(
     items: Optional[List[Dict[str, Any]]] = None,
     db_path: Optional[Path] = None,
 ) -> InfoCardNews:
-    """消息面摘要(plan §五 v1.4-④-A-7)。**扫描域仅持仓+自选,候选不在内,本版不
-    扩域**——`domain_codes` 由调用方给出(`build_info_card` 默认取当前持仓∪自选,
+    """消息面摘要(plan §五 v1.4-④-A-7)。**扫描域仅持仓(V2-⑬-11 起自选池已删),
+    本版不扩域**——`domain_codes` 由调用方给出(`build_info_card` 默认取当前持仓,
     `attach_info_card_summaries` 由 pipeline.py 传入该次报告生成时的同一份域)。
     不在域内 → 如实标 `scanned=False` + 交接要求原话的理由文案,**不臆造"扫了没有"**。
     `items=None`(未提供,独立调用场景)→ 现读 `news_alerts` 表(该日已扫描完成后
@@ -569,14 +569,14 @@ def _news_summary_for_code(
 
 def _default_news_domain(db_path: Optional[Path]) -> Set[str]:
     """`build_info_card` 独立调用(未传 `news_domain_codes`)时的缺省扫描域 = 当前
-    持仓 ∪ 当前自选(与 `pipeline.py::build_report` 传给 `build_news_alerts` 的域
-    同一构造方式)。"""
-    from neckline.sentinel.positions import load_open_positions
-    from neckline.watchlist import list_watchlist_codes
+    持仓(与 `pipeline.py::build_report` 传给 `build_news_alerts` 的域同一构造方式)。
 
-    positions = {p.ts_code for p in load_open_positions(db_path=db_path)}
-    watchlist = set(list_watchlist_codes(db_path=db_path))
-    return positions | watchlist
+    ⚠ **V2-⑬-11**:原本是「持仓 ∪ 自选」,自选池整链已按裁定 #9-a 删除 → 只剩持仓。
+    ⑭-A 把篮子成员接进 `build_news_alerts` 的次级域时,这里要同步扩(两处必须同域,
+    否则信息卡会对着一批"其实扫过"的票说"不在扫描域")。"""
+    from neckline.sentinel.positions import load_open_positions
+
+    return {p.ts_code for p in load_open_positions(db_path=db_path)}
 
 
 def _load_lookback_top_lists(
@@ -653,7 +653,7 @@ def build_info_card(
     `industry_scores`/`industry_map`/`news_items`/`news_domain_codes`/`top_list_t0`
     均为可选的"调用方已算好,别再重算一遍"注入点(同 `build_intel_candidates`/
     `build_holding_k4_check` 的既有姿势)——`None` 时各自独立现算(现读 `news_alerts`
-    表 + 现取持仓∪自选域 + 现拉 T0 龙虎榜),不依赖任何报告生成期的中间状态。
+    表 + 现取持仓域 + 现拉 T0 龙虎榜),不依赖任何报告生成期的中间状态。
     """
     if name is None:
         name = resolve_stock_names([code], db_path).get(code, code)

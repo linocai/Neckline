@@ -244,58 +244,6 @@ class CandidateOut(BaseModel):
     judgeSkipped: bool = False
 
 
-class WatchlistCheckLLMOut(BaseModel):
-    verdict: str
-    narrative: str
-    degraded: bool
-
-
-class DispatchAlertOut(BaseModel):
-    """自选票 K4 派发警示(v1.5-④-A1,§七 ✅ 节「诱多做局反向哨兵」残留半边结案)。
-    复用 `holding_k4_check` 同一份镜像评估器,**只取两个强价量证据码**
-    (A3_belowyear_limitup / A3b_belowyear_bigvol,均恒 `level=strong` ∧
-    `evidenceStrength=price_volume`)——与持仓牌 `K4AdvisoryOut` 六码全量不同,这里
-    只有这两码且 level 恒定不携带信息量,契约故意省略 `level` 字段。⛔ **不推
-    APNs**(自选不是持仓,第六类推送 `HOLDINGALERT` 口径明确只对持仓)。"""
-    code: str
-    label: str
-    evidence: str
-    evidenceStrength: str        # 恒 price_volume(两码均强价量证据)
-
-
-class WatchlistCheckOut(BaseModel):
-    """自选体检单只快照(plan §五 v1.1-C.3)。字段形状与 `CandidateOut` 四件套对齐
-    (buyPoint/stop/target/invalidation 命名一致),历史成因是「复用候选卡的四件套布局」
-    (§五 v1.1-F.2)。**v1.5.0 起该对齐只剩历史意义**(v1.5.1 契约线 review 🔵-5 更正):
-    候选卡已换成参考三件套 `ReferencePlanOut`/客户端 `ReferencePlanSection`,四件套布局
-    (`FourPieceDisclosure`)如今**只有自选体检卡在用**——本节四个字段是自选体检自用 +
-    老客户端兼容,改动它不再牵动候选卡,别再当成"两边共享的那套布局"。"""
-    code: str
-    name: str
-    pinned: bool
-    source: str
-    hasData: bool = True
-    close: float = 0.0
-    board: str = "MAIN"
-    score: Optional[float] = None
-    patternTags: List[str] = Field(default_factory=list)
-    hotSectors: List[str] = Field(default_factory=list)
-    sectorNames: List[str] = Field(default_factory=list)
-    greenLight: bool = False               # 纪律红绿灯:True=🟢可动,False=🔴禁买
-    disqualifiers: List[str] = Field(default_factory=list)
-    buyPointTriggered: bool = False
-    buyPoint: str = ""
-    stop: str = ""
-    target: str = ""
-    invalidation: str = ""
-    invalidationSpec: Dict[str, Any] = Field(default_factory=dict)
-    entrySpec: Dict[str, Any] = Field(default_factory=dict)
-    statusChanged: bool = False            # 较上一份报告状态是否变化(红绿灯翻转/买点触发翻转/形态标签变化)
-    llmJudgment: Optional[WatchlistCheckLLMOut] = None   # 仅 statusChanged∪pinned 才有
-    # v1.5-④-A1:K4 派发警示(默认空列表,老客户端忽略未知键)。
-    dispatchAlerts: List[DispatchAlertOut] = Field(default_factory=list)
-
-
 class NewsAlertOut(BaseModel):
     """消息面命中告警(v1.3-③-C4)。契约照「v1.3 客户端契约清单」四字段
     `{code, category, summary, source}`;`name` 为额外附加的展示便利字段(超集,
@@ -349,7 +297,6 @@ class ReportOut(BaseModel):
     # v1.1-C.3 自选体检(独立一节,不进候选榜)——旧报告(建这节之前生成的)读回来是
     # 空列表,不是 None(见 `neckline.report.store._parse_watchlist_json` 与
     # `reports.watchlist_json` 列默认值 `'[]'`),客户端前向兼容不必对 null 特判。
-    watchlistCheck: List[WatchlistCheckOut] = Field(default_factory=list)
     # v1.1-B.4 漏录兜底:当日买点哨兵触发过但台账无补录时的一句提示(否则空串)。
     # **实时计算**(GET /report 每次读时按当前台账重算,用户补录后自动消失),不落库、不改评分。
     missedEntryHint: str = ""
@@ -581,55 +528,6 @@ class PositionCloseIn(BaseModel):
     closeReason: Optional[CloseReasonLiteral] = None
     # v1.3-①:清仓实付卖出费用真数(可选,成交后回填)——周复盘对账用真数、不用估数。
     sellFees: Optional[float] = None
-
-
-# —— v1.1-C 自选池(watchlist)————————————————————————————————————————————
-
-class WatchlistItemOut(BaseModel):
-    code: str
-    name: str
-    addedAt: str
-    source: str
-    note: str = ""
-    pinned: bool
-    updatedAt: str
-    # 最近一份报告的自选体检快照(GET /watchlist「列表 + 各只体检最近快照」,
-    # plan C.1);从未跑过报告 / 该票是刚加入还未被下一份报告体检过 → None。
-    check: Optional[WatchlistCheckOut] = None
-
-
-class WatchlistOut(BaseModel):
-    items: List[WatchlistItemOut] = Field(default_factory=list)
-    maxSize: int = 30
-
-
-class WatchlistAddIn(BaseModel):
-    code: str
-    name: Optional[str] = None
-    note: Optional[str] = None
-
-
-class WatchlistAddOut(BaseModel):
-    ok: bool = True
-    item: WatchlistItemOut
-
-
-class WatchlistPinIn(BaseModel):
-    pinned: bool
-
-
-class ThsReconcileOut(BaseModel):
-    """同花顺自选 txt 对账差异(plan C.4「差异对账端点(两边差集)」)。三个列表均
-    为 Neckline `ts_code` 格式(已归一)。"""
-    ok: bool = True
-    onlyInThs: List[str] = Field(default_factory=list)
-    onlyInNeckline: List[str] = Field(default_factory=list)
-    both: List[str] = Field(default_factory=list)
-
-
-class ThsExportOut(BaseModel):
-    text: str
-    count: int
 
 
 # —— 4A.5 问询台 + 设置 ————————————————————————————————————————————————
@@ -1133,13 +1031,10 @@ class ReviewGetOut(BaseModel):
 __all__ = [
     "OkOut", "LLMJudgmentOut", "PermanentBoardStatusOut", "IntelRankOut",
     "InfoCardSnapshotOut", "InfoCardNewsItemOut", "InfoCardNewsOut", "InfoCardTopListOut",
-    "InfoCardSummaryOut", "ExecHintOut", "CandidateOut",
-    "WatchlistCheckLLMOut", "WatchlistCheckOut", "DispatchAlertOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
+    "InfoCardSummaryOut", "ExecHintOut", "CandidateOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "EntrySuggestionOut", "CircuitEpisodeOut", "CircuitStateOut",
-    "WatchlistItemOut", "WatchlistOut", "WatchlistAddIn", "WatchlistAddOut", "WatchlistPinIn",
-    "ThsReconcileOut", "ThsExportOut",
     "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_ANALYZED", "VERDICT_ANALYZED_WARN",
     "PushKindOut", "PushSettingsOut", "SettingsOut", "SettingsProviderOut", "SettingsPushIn", "DeviceRegisterIn",
     "ConfirmationCardOut", "CustomAlertOut", "AlertsListOut", "AlertConditionIn",

@@ -321,10 +321,8 @@ class TestNeverRecommendsNewStocks:
     """原则守护(§2.4 铁律「盘中不产生任何新决策,永不盘中推荐新票」)的直接单测:
     即便某只【非候选】代码的行情完美满足买点哨兵的全部触发条件,只要它不在昨晚
     报告的候选列表里,就永远不会被评估、更不会出现在 entry_signals 里——买点
-    哨兵结构上只遍历 `wu.candidates`(+ v1.1-C 起也含 `wu.watchlist_candidates`,
-    见 `TestWatchlistCandidateTreatedAsCandidate`——**同样是昨晚 16:35 报告生成
-    时已经算好、写死的自选体检快照,不是盘中临时决定**,不违反本铁律),不遍历
-    "拉到行情的全部代码"。"""
+    哨兵结构上只遍历 `wu.candidates`(昨晚 16:35 报告生成时已经算好、写死的快照,
+    不是盘中临时决定),不遍历"拉到行情的全部代码"。"""
 
     def test_non_candidate_code_with_perfect_entry_conditions_is_never_surfaced(self, isolated_env):
         days = business_days(date(2026, 7, 1), 30)
@@ -388,102 +386,6 @@ class TestNeverRecommendsNewStocks:
         entry_codes = {sig.ts_code for sig in result.entry_signals}
         assert entry_codes.issubset(candidate_codes)
 
-
-def _watchlist_check_dict(ts_code: str, **overrides) -> dict:
-    """手工构造一条自选体检快照(`WatchlistCheckItem.public_dict()` 形状)。
-    V2-⑧-A 之后它只用于**证明自选票不再被消费**(转换函数已随来源一起退役)。"""
-    base = dict(
-        ts_code=ts_code, name="示例自选", pinned=False, source="manual", has_data=True,
-        close=10.0, board="MAIN", score=80.0, pattern_tags=[], hot_sectors=[], sector_names=[],
-        green_light=True, disqualifiers=[], buy_point_triggered=True,
-        entry_plan="回调低吸...", stop_loss="止损...", target="目标...", invalidation_text="证伪...",
-        invalidation_spec={"low_open_pct": -0.02, "vwap_break": True, "vol_ratio_low": 0.8, "vol_ratio_high": 3.0},
-        entry_spec={"buypoint": "pullback", "ma10": 9.5, "prev_close": 10.0, "breakout_vol_expand": 1.5},
-        status_changed=False, llm_judgment=None,
-    )
-    base.update(overrides)
-    return base
-
-
-class TestWatchlistCandidateTreatedAsCandidate:
-    """~~v1.1-C.2「自选票享候选同级待遇」~~ → **V2-⑧-A 起自选池不再是关注池来源**
-    (plan §五 V2-⑧-A 原文,⑬-11 复述「⑧-A 已改」)。本类因此改为**锁死退役后的
-    行为**:自选票不再进池、不再产生买点信号 —— 买点哨兵**本身一行没改**(同一份
-    `check_entry`),变的只是"关注谁"。`neckline/watchlist.py` 与表的删除归 ⑬-11。"""
-
-    def test_triggered_watchlist_code_no_longer_enters_pool_or_fires(self, isolated_env):
-        from neckline.watchlist import add_watchlist
-
-        days = business_days(date(2026, 7, 1), 30)
-        report_day, today = days[-2], days[-1]
-        _setup_calendar_and_history(isolated_env, "600002.SH", report_day, today, vol=200000.0)
-        seed_active_rule_v1(isolated_env)
-        add_watchlist("600002.SH", db_path=isolated_env.db_path)
-        # 报告候选是空的(300001.SZ,与本票无关)——600002.SH 完全靠自选体检快照进关注池
-        store.save_report(
-            report_day, strategy_version="v1", sentiment={}, sectors=[], candidates=[],
-            markdown="# test", watchlist=[_watchlist_check_dict("600002.SH")], db_path=isolated_env.db_path,
-        )
-        insert_stock_basic(isolated_env, [{"ts_code": "600002.SH", "name": "示例自选", "market": "主板"}])
-
-        now = datetime.combine(today, time(10, 30))
-
-        def quotes_fn(codes):
-            return {
-                "600002.SH": Quote(
-                    code="600002", name="示例自选", price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
-                    volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
-                )
-            }
-
-        from neckline.sentinel.universe import load_watch_universe
-
-        wu = load_watch_universe(today, db_path=isolated_env.db_path,
-                                 parquet_dir=isolated_env.parquet_dir)
-        assert "600002.SH" not in wu.codes          # 自选票不再被拉价
-        assert wu.watchlist_codes == [] and wu.watchlist_candidates == []
-
-        result = run_tick(
-            now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=quotes_fn,
-        )
-        assert result.entry_signals == []           # 行情完美也不再触发(它已不在关注池里)
-
-    def test_not_triggered_watchlist_code_never_fires(self, isolated_env):
-        """(退役后同样成立,且理由更强:自选票根本不进池。)"""
-        from neckline.watchlist import add_watchlist
-
-        days = business_days(date(2026, 7, 1), 30)
-        report_day, today = days[-2], days[-1]
-        _setup_calendar_and_history(isolated_env, "600002.SH", report_day, today, vol=200000.0)
-        seed_active_rule_v1(isolated_env)
-        add_watchlist("600002.SH", db_path=isolated_env.db_path)
-        store.save_report(
-            report_day, strategy_version="v1", sentiment={}, sectors=[], candidates=[],
-            markdown="# test",
-            watchlist=[_watchlist_check_dict("600002.SH", buy_point_triggered=False)],
-            db_path=isolated_env.db_path,
-        )
-        insert_stock_basic(isolated_env, [{"ts_code": "600002.SH", "name": "示例自选", "market": "主板"}])
-
-        now = datetime.combine(today, time(10, 30))
-
-        def quotes_fn(codes):
-            return {
-                "600002.SH": Quote(
-                    code="600002", name="示例自选", price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
-                    volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
-                )
-            }
-
-        result = run_tick(
-            now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=quotes_fn,
-        )
-        assert result.entry_signals == []
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# V2-⑧ 两条旁路(存拍 + 篮子验证)在 `run_tick` 里的接线
-# ══════════════════════════════════════════════════════════════════════════
 
 class TestV2Bypasses:
     """⑧-B/⑧-C 挂在 `run_tick` 上的两条旁路。**四哨兵与熔断一行没改**,这里只验

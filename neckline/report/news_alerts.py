@@ -64,12 +64,15 @@
       调用前**检查已耗时是否超预算,超了就停止扫描剩余标的(不掐断正在进行中的
       单次调用——`scan_news_for_code` 本身是同步阻塞调用,没有可中途打断的钩子,
       故最坏情况下最后一次调用仍可能让总耗时略超预算,可接受)。
-    · **持仓优先于自选(硬要求,写死 + 单测锁死)**:`build_news_alerts` 签名把
-      `position_codes`/`watchlist_codes` **分开传入**(不是揉成一个已去重列表
-      再指望调用方保证顺序)——内部按"先持仓、后自选"拼接 + 去重(同码优先保留
-      持仓身份),预算不够时被跳过的必然是排在后面的自选标的,不会跳过持仓。
-      **理由(持仓有真金风险,自选只是关注)**:与 §2.1 纪律"持仓优先于候选"的
-      精神一致。
+    · **持仓优先于次级域(硬要求,写死 + 单测锁死)**:`build_news_alerts` 签名把
+      `position_codes`/`secondary_codes` **分开传入**(不是揉成一个已去重列表
+      再指望调用方保证顺序)——内部按"先持仓、后次级"拼接 + 去重(同码优先保留
+      持仓身份),预算不够时被跳过的必然是排在后面的次级标的,不会跳过持仓。
+      **理由(持仓有真金风险,次级域只是关注)**:与 §2.1 纪律"持仓优先"的精神一致。
+      ⚠ **V2-⑬-11 登记**:次级域原本 = 自选池;自选池整链已按裁定 #9-a 删除,
+      `report/pipeline.py` 现传空列表 → 本模块的隔日轮扫机制**本版恒不触发**。
+      机制与常量**刻意不拆**:⑭-A 把「篮子成员」接进次级域时原样复用(那时轮扫
+      重新有意义),现在拆了到时要重写一遍。
     · **串行 + 预算封顶,不做并发(理由写死,供后续如需改并发时对照)**:
       (a) 本项目 LLM/HTTP 层(`openai_compat.py`)与整条报告管线全同步阻塞,
       引入并发(线程/asyncio)是本模块局部的架构突变,会给一个子模块单独引入
@@ -291,15 +294,15 @@ def empty_news_alerts_report(trade_date: date, reason: str) -> NewsAlertsReport:
     )
 
 
-def watchlist_rotation_group(ts_code: str) -> str:
-    """某只**自选**票固定属于哪一组(v1.4-⑥-B)。**稳定哈希 `zlib.crc32`**,不是内置
+def secondary_rotation_group(ts_code: str) -> str:
+    """某只**次级域**票(V2-⑬-11 前 = 自选票)固定属于哪一组(v1.4-⑥-B)。**稳定哈希 `zlib.crc32`**,不是内置
     `hash()`(带进程盐,`PYTHONHASHSEED` 一变分组就漂 → 历史报告的 `rotationGroup`
     无法复现)。纯函数、无状态。"""
     return ROTATION_GROUPS[zlib.crc32(ts_code.encode("utf-8")) % len(ROTATION_GROUPS)]
 
 
 def rotation_group_for_date(trade_date: date) -> str:
-    """某个报告日轮到扫哪一组自选(v1.4-⑥-B)。按 `toordinal()` 奇偶交替 —— **纯日期
+    """某个报告日轮到扫哪一组次级域标的(v1.4-⑥-B)。按 `toordinal()` 奇偶交替 —— **纯日期
     函数**:同一天重跑 / 历史回放恒定,不依赖库里的轮转计数器(计数器会让"重跑一次
     报告"就把轮转推进一格,历史不可复现)。相邻交易日跨偶数自然日时会连续两天同组,
     如实披露不假装严格交替(见模块头)。"""
@@ -307,24 +310,24 @@ def rotation_group_for_date(trade_date: date) -> str:
 
 
 def _rotated_llm_targets(
-    position_codes: Sequence[Tuple[str, str]], watchlist_codes: Sequence[Tuple[str, str]],
+    position_codes: Sequence[Tuple[str, str]], secondary_codes: Sequence[Tuple[str, str]],
     trade_date: date,
 ) -> Tuple[List[Tuple[str, str]], str, int]:
-    """LLM 侧本次真正要扫的名单(v1.4-⑥-B)= **全部持仓** + **本日轮到那一组的自选**,
-    仍按「持仓优先、自选靠后」排序。返回 `(名单, 本日组标签, 轮空的自选数)`。
+    """LLM 侧本次真正要扫的名单(v1.4-⑥-B)= **全部持仓** + **本日轮到那一组的次级域**,
+    仍按「持仓优先、次级靠后」排序。返回 `(名单, 本日组标签, 轮空的次级标的数)`。
 
-    **同时是持仓的自选不参与轮转**(它在持仓侧天天被扫,轮空计数里也不算它一份——
+    **同时是持仓的次级标的不参与轮转**(它在持仓侧天天被扫,轮空计数里也不算它一份——
     否则会报出一个"其实每天都扫了"的假轮空数)。"""
     group = rotation_group_for_date(trade_date)
     position_set = {c for c, _ in position_codes}
     picked: List[Tuple[str, str]] = []
     deferred = 0
     seen: Set[str] = set()
-    for code, name in watchlist_codes:
+    for code, name in secondary_codes:
         if code in position_set or code in seen:
             continue
         seen.add(code)
-        if watchlist_rotation_group(code) == group:
+        if secondary_rotation_group(code) == group:
             picked.append((code, name))
         else:
             deferred += 1
@@ -332,13 +335,13 @@ def _rotated_llm_targets(
 
 
 def _priority_ordered_unique(
-    position_codes: Sequence[Tuple[str, str]], watchlist_codes: Sequence[Tuple[str, str]],
+    position_codes: Sequence[Tuple[str, str]], secondary_codes: Sequence[Tuple[str, str]],
 ) -> List[Tuple[str, str]]:
-    """持仓在前、自选在后拼接 + 去重(同码优先保留持仓那份 name)——供 LLM 侧
-    按此顺序扫描,预算耗尽时天然先保证持仓、后牺牲自选(§硬要求,见模块头)。"""
+    """持仓在前、次级域在后拼接 + 去重(同码优先保留持仓那份 name)——供 LLM 侧
+    按此顺序扫描,预算耗尽时天然先保证持仓、后牺牲次级(§硬要求,见模块头)。"""
     seen: Set[str] = set()
     out: List[Tuple[str, str]] = []
-    for code, name in list(position_codes) + list(watchlist_codes):
+    for code, name in list(position_codes) + list(secondary_codes):
         if code in seen:
             continue
         seen.add(code)
@@ -510,7 +513,7 @@ def _scan_llm_categories(
 def build_news_alerts(
     trade_date: date,
     position_codes: Sequence[Tuple[str, str]],
-    watchlist_codes: Sequence[Tuple[str, str]],
+    secondary_codes: Sequence[Tuple[str, str]],
     *,
     provider: Optional[LLMProvider] = None,
     transport: Optional[Any] = None,
@@ -518,7 +521,7 @@ def build_news_alerts(
     llm_budget_seconds: float = LLM_SCAN_BUDGET_SECONDS,
 ) -> NewsAlertsReport:
     """消息面扫描 I/O 入口(角色对应 `intel.compute_intel`/`sector_moneyflow.
-    compute_sector_moneyflow`)。**`position_codes`/`watchlist_codes` 分开传入
+    compute_sector_moneyflow`)。**`position_codes`/`secondary_codes` 分开传入
     (不是揉成一个列表)**——LLM 侧按「持仓优先、自选靠后」的顺序扫描,预算不够
     时牺牲的必然是自选(§硬要求,见模块头「LLM 侧墙钟预算 + 持仓优先」节)。
     两者均为空 → 直接空报告,零 I/O(两源均标 `scanned=True` 空操作——不是
@@ -530,7 +533,7 @@ def build_news_alerts(
 
     `db_path`:减持类跨日事件去重要查 `news_alerts` 表历史记录,`None` → 走
     `settings.db_path`(生产默认);单测传隔离库路径。"""
-    ordered = _priority_ordered_unique(position_codes, watchlist_codes)
+    ordered = _priority_ordered_unique(position_codes, secondary_codes)
     if not ordered:
         return NewsAlertsReport(
             trade_date=trade_date,
@@ -545,7 +548,7 @@ def build_news_alerts(
 
     reduction_items, reduction_status = _scan_reduction(trade_date, code_set, names, db_path)
     llm_targets, rot_group, rot_deferred = _rotated_llm_targets(
-        position_codes, watchlist_codes, trade_date,
+        position_codes, secondary_codes, trade_date,
     )
     llm_items, llm_status = _scan_llm_categories(
         llm_targets, provider=provider, transport=transport, budget_seconds=llm_budget_seconds,
@@ -567,7 +570,7 @@ __all__ = [
     "EVIDENCE_NOTE",
     "LLM_SCAN_BUDGET_SECONDS",
     "ROTATION_GROUPS",
-    "watchlist_rotation_group",
+    "secondary_rotation_group",
     "rotation_group_for_date",
     "NewsAlertItem",
     "NewsAlertScanStatus",

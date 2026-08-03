@@ -27,7 +27,6 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, st
 
 from neckline import decision_log as decision_log_store
 from neckline import user_actions
-from neckline import watchlist as watchlist_store
 from neckline.api import notify
 from neckline.api.deps import require_api_token_ready, require_token
 from neckline.api.inquiry import run_inquiry
@@ -53,7 +52,6 @@ from neckline.api.schemas import (
     DecisionTrackOut,
     DecisionTrackRowOut,
     DeviceRegisterIn,
-    DispatchAlertOut,
     EntrySuggestionOut,
     ExecHintOut,
     InfoCardNewsItemOut,
@@ -98,15 +96,6 @@ from neckline.api.schemas import (
     SettingsProviderOut,
     SettingsPushIn,
     SettingsReviewColMapIn,
-    ThsExportOut,
-    ThsReconcileOut,
-    WatchlistAddIn,
-    WatchlistAddOut,
-    WatchlistCheckLLMOut,
-    WatchlistCheckOut,
-    WatchlistItemOut,
-    WatchlistOut,
-    WatchlistPinIn,
     WeeklyReviewOut,
 )
 from neckline.api.stores import get_inquiry_log, list_inquiry_logs, upsert_device
@@ -459,52 +448,6 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
     )
 
 
-def _shape_watchlist_check(d: Dict[str, Any]) -> WatchlistCheckOut:
-    """自选体检落库(或内存)快照 → 客户端契约。同 `_shape_candidate` 的透传惯例,
-    不在此重算任何领域值(评分/红绿灯/四件套全部来自
-    `neckline.report.watchlist_check.WatchlistCheckItem.public_dict()`)。"""
-    llm = None
-    jr = d.get("llm_judgment")
-    if jr:
-        llm = WatchlistCheckLLMOut(
-            verdict=jr.get("verdict", ""), narrative=jr.get("narrative", ""),
-            degraded=bool(jr.get("degraded", False)),
-        )
-    return WatchlistCheckOut(
-        code=d.get("ts_code", ""),
-        name=d.get("name", ""),
-        pinned=bool(d.get("pinned", False)),
-        source=d.get("source", "manual"),
-        hasData=bool(d.get("has_data", True)),
-        close=d.get("close", 0.0) or 0.0,
-        board=d.get("board", "MAIN"),
-        score=d.get("score"),
-        patternTags=d.get("pattern_tags", []) or [],
-        hotSectors=d.get("hot_sectors", []) or [],
-        sectorNames=d.get("sector_names", []) or [],
-        greenLight=bool(d.get("green_light", False)),
-        disqualifiers=d.get("disqualifiers", []) or [],
-        buyPointTriggered=bool(d.get("buy_point_triggered", False)),
-        buyPoint=d.get("entry_plan", ""),
-        stop=d.get("stop_loss", ""),
-        target=d.get("target", ""),
-        invalidation=d.get("invalidation_text", ""),
-        invalidationSpec=d.get("invalidation_spec", {}) or {},
-        entrySpec=d.get("entry_spec", {}) or {},
-        statusChanged=bool(d.get("status_changed", False)),
-        llmJudgment=llm,
-        # v1.5-④-A1:K4 派发警示(老报告快照无该键 → 默认空列表,前向兼容)。`level`
-        # 不透传(契约故意省略,见 `DispatchAlertOut` docstring)。
-        dispatchAlerts=[
-            DispatchAlertOut(
-                code=h.get("code", ""), label=h.get("label", ""),
-                evidence=h.get("evidence", ""), evidenceStrength=h.get("evidence_strength", ""),
-            )
-            for h in (d.get("dispatch_alerts") or [])
-        ],
-    )
-
-
 def _shape_news_alert(a: Dict[str, Any], names: Dict[str, str]) -> NewsAlertOut:
     """`news_alerts` 表行 → 客户端契约(v1.3-③-C4)。表不存 `name`(同
     `llm_judgments` 惯例),这里从 `stock_basic` 解析补上展示便利字段。"""
@@ -524,9 +467,8 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
     d = datetime.strptime(td, "%Y%m%d").date()
     judgments = {j["ts_code"]: j for j in report_store.load_llm_judgments(d, db_path=_db())}
     candidates = [_shape_candidate(c, judgments.get(c.get("ts_code", ""))) for c in rep.get("candidates", [])]
-    watchlist_check = [_shape_watchlist_check(w) for w in rep.get("watchlist", []) if isinstance(w, dict)]
     # v1.3-③-C4:命中告警条目独立表实时查(同 llm_judgments 的「live join」惯例,
-    # 不像 intel/watchlist 那样整段嵌 JSON——见 news_alerts.py 模块头设计说明)。
+    # 不像 intel 那样整段嵌 JSON——见 news_alerts.py 模块头设计说明)。
     alert_rows = load_news_alerts(d, db_path=_db())
     alert_names = _load_stock_names(list({r["ts_code"] for r in alert_rows}), _db()) if alert_rows else {}
     news_alerts = [_shape_news_alert(a, alert_names) for a in alert_rows]
@@ -553,7 +495,6 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
         sentiment=rep.get("sentiment", {}),
         sectors=rep.get("sectors", []),
         candidates=candidates,
-        watchlistCheck=watchlist_check,
         missedEntryHint=compute_missed_entry_hint(d, db_path=_db()),   # v1.1-B.4 实时算(补录后自动消失)
         intel=rep.get("intel", {}),                       # v1.3-③-C1,透传落库快照(同 sentiment 惯例)
         sectorMoneyflow=rep.get("sector_moneyflow", {}),   # v1.3-③-C2,透传落库快照
@@ -1226,100 +1167,6 @@ def decision_track(decision_id: int) -> DecisionTrackOut:
     )
 
 
-# —— v1.1-C 自选池(watchlist)+ 同花顺 txt 互转/对账 ————————————————————————
-# **增删只经本节端点**(任务拍板「增删只经用户端点,系统代码路径绝不写入」)——
-# `neckline.watchlist` 的写入函数(`add_watchlist`/`remove_watchlist`/`set_pinned`)
-# 只应被这里调用,报告管线/哨兵/问询台只调用只读的 `list_watchlist*`。
-
-def _latest_watchlist_check_by_code() -> Dict[str, Dict[str, Any]]:
-    """最近一份报告的自选体检快照,按 `ts_code` 建索引(`GET /watchlist`「列表 +
-    各只体检最近快照」,plan C.1)。查无报告 / 该报告体检节为空 → 空 dict(该票
-    尚未被任何报告体检过,`check` 字段回 None,不是报错)。"""
-    td = report_store.latest_report_date(db_path=_db())
-    if not td:
-        return {}
-    rep = report_store.load_report_by_str(td, db_path=_db())
-    if rep is None:
-        return {}
-    return {w["ts_code"]: w for w in rep.get("watchlist", []) if isinstance(w, dict) and w.get("ts_code")}
-
-
-def _shape_watchlist_item(item: "watchlist_store.WatchlistItem", check_by_code: Dict[str, Dict[str, Any]]) -> WatchlistItemOut:
-    check_raw = check_by_code.get(item.ts_code)
-    return WatchlistItemOut(
-        code=item.ts_code, name=item.name, addedAt=item.added_at,
-        source=item.source, note=item.note or "", pinned=item.pinned,
-        updatedAt=item.updated_at,
-        check=_shape_watchlist_check(check_raw) if check_raw else None,
-    )
-
-
-@app.get(f"{API_PREFIX}/watchlist", dependencies=[Depends(require_token)])
-def get_watchlist() -> WatchlistOut:
-    items = watchlist_store.list_watchlist(db_path=_db())
-    check_by_code = _latest_watchlist_check_by_code()
-    return WatchlistOut(
-        items=[_shape_watchlist_item(w, check_by_code) for w in items],
-        maxSize=watchlist_store.MAX_WATCHLIST_SIZE,
-    )
-
-
-@app.post(f"{API_PREFIX}/watchlist", dependencies=[Depends(require_token)])
-def post_watchlist(body: WatchlistAddIn) -> WatchlistAddOut:
-    """加一只自选(**≤30 上限硬校验,超限 422**,任务拍板)。已存在该代码 → 幂等
-    更新 name/note,不算新增、不占额度。"""
-    try:
-        item = watchlist_store.add_watchlist(
-            body.code, name=body.name, note=body.note, db_path=_db(),
-        )
-    except watchlist_store.WatchlistFullError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"ok": False, "reason": "watchlist_full", "message": str(e)},
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"ok": False, "reason": "invalid_code", "message": str(e)},
-        )
-    return WatchlistAddOut(item=_shape_watchlist_item(item, {}))
-
-
-@app.delete(f"{API_PREFIX}/watchlist/{{code}}", dependencies=[Depends(require_token)])
-def delete_watchlist(code: str) -> OkOut:
-    ok = watchlist_store.remove_watchlist(code, db_path=_db())
-    if not ok:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
-    return OkOut(ok=True)
-
-
-@app.put(f"{API_PREFIX}/watchlist/{{code}}/pin", dependencies=[Depends(require_token)])
-def put_watchlist_pin(code: str, body: WatchlistPinIn) -> OkOut:
-    ok = watchlist_store.set_pinned(code, body.pinned, db_path=_db())
-    if not ok:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
-    return OkOut(ok=True)
-
-
-@app.post(f"{API_PREFIX}/watchlist/reconcile-ths", dependencies=[Depends(require_token)])
-def reconcile_ths(file: UploadFile = File(...)) -> ThsReconcileOut:
-    """同花顺自选 txt 对账(plan C.4)。拿同花顺 PC 端导出的 txt(一行一代码)与
-    Neckline 当前自选池比差集;不做任何写入(对齐动作由客户端按差异结果调上面
-    的 CRUD 端点)。"""
-    content = file.file.read()
-    ths_codes = watchlist_store.parse_ths_txt(content)
-    neckline_codes = watchlist_store.list_watchlist_codes(db_path=_db())
-    diff = watchlist_store.reconcile_ths(ths_codes, neckline_codes)
-    return ThsReconcileOut(**diff)
-
-
-@app.get(f"{API_PREFIX}/watchlist/export-ths", dependencies=[Depends(require_token)])
-def export_ths() -> ThsExportOut:
-    """导出当前自选为同花顺可导入 txt(plan C.4)。"""
-    codes = watchlist_store.list_watchlist_codes(db_path=_db())
-    return ThsExportOut(text=watchlist_store.export_ths_txt(codes), count=len(codes))
-
-
 # —— 4A.5 问询台 ————————————————————————————————————————————————————————
 
 def _inquiry_basis_date() -> date:
@@ -1367,7 +1214,7 @@ def inquiry(body: InquiryIn) -> InquiryOut:
 def list_inquiries(limit: int = 20, offset: int = 0, tsCode: str = "") -> InquiryLogsListOut:
     """问询历史列表(plan §五 v1.4-⑦-B / §七 P3-13),按最近问询在前排序。**与
     `inquiry_pool`(已退役历史队列表)无关**——本端点读的是 `inquiry_log` 档案表。
-    `limit`/`offset` 简单分页(无 `total`,同 `DecisionsListOut`/`WatchlistOut` 等既有
+    `limit`/`offset` 简单分页(无 `total`,同 `DecisionsListOut` 等既有
     列表端点惯例——列表页翻页读不到下一页空数组即知到底,不必服务端额外算总数)。"""
     items = list_inquiry_logs(
         limit=limit, offset=offset, ts_code=(tsCode or None), db_path=_db(),
