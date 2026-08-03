@@ -649,16 +649,31 @@ def _news_summary_for_code(
     return InfoCardNews(scanned=True, items=code_items, unavailable_reason=None)
 
 
-def _default_news_domain(db_path: Optional[Path]) -> Set[str]:
-    """`build_info_card` 独立调用(未传 `news_domain_codes`)时的缺省扫描域 = 当前
-    持仓(与 `pipeline.py::build_report` 传给 `build_news_alerts` 的域同一构造方式)。
+def _default_news_domain(db_path: Optional[Path], trade_date: Optional[date] = None) -> Set[str]:
+    """`build_info_card` 独立调用(未传 `news_domain_codes`)时的缺省扫描域 =
+    **当前持仓 ∪ 该日篮子成员**(与 `pipeline.py::build_report` 传给
+    `build_news_alerts` 的 `position_targets + secondary_targets` **同一个域**)。
 
-    ⚠ **V2-⑬-11**:原本是「持仓 ∪ 自选」,自选池整链已按裁定 #9-a 删除 → 只剩持仓。
-    ⑭-A 把篮子成员接进 `build_news_alerts` 的次级域时,这里要同步扩(两处必须同域,
-    否则信息卡会对着一批"其实扫过"的票说"不在扫描域")。"""
+    ⚠ **两处必须同域,这是硬约束不是巧合**:报告那侧扫的是「持仓 + 今日篮子成员」,
+    这里若只算持仓,信息卡就会对着一批**其实扫过**的票说"不在扫描域" ——「没扫到」与
+    「扫了没有」在本项目是必须能分开的两件事,而说反了比不说更糟。
+    (V2-⑬-11 删自选池后这里一度只剩持仓,⑬ 完工记录把扩域登记为「留给 ⑭-A」的欠账,
+    本函数与 `pipeline.build_report` 的次级域在 ⑭-A 同一次改动里一起扩。)
+
+    `trade_date=None`(老调用方)→ 只回持仓,行为与扩域前逐位一致。"""
     from neckline.sentinel.positions import load_open_positions
 
-    return {p.ts_code for p in load_open_positions(db_path=db_path)}
+    domain = {p.ts_code for p in load_open_positions(db_path=db_path)}
+    if trade_date is None:
+        return domain
+    try:
+        from neckline.selection.basket_store import load_baskets_for_date
+
+        for ref in load_baskets_for_date(trade_date, db_path=db_path):
+            domain.update(ref.member_codes)
+    except Exception:  # noqa: BLE001  篮子读不到不该让信息卡整张失败
+        logger.warning("[info_card] 篮子成员扫描域读取异常,本次域只含持仓", exc_info=True)
+    return domain
 
 
 def _load_lookback_top_lists(
@@ -878,7 +893,8 @@ def build_info_card(
 
     k4_details = _k4_flags_detail(k4_flags, db_path)
 
-    domain = news_domain_codes if news_domain_codes is not None else _default_news_domain(db_path)
+    domain = (news_domain_codes if news_domain_codes is not None
+              else _default_news_domain(db_path, trade_date))
     news = _news_summary_for_code(code, trade_date, domain, items=news_items, db_path=db_path)
 
     lookback = _load_lookback_top_lists(trade_date, parquet_dir=parquet_dir, t0_top_list=top_list_t0)

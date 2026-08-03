@@ -19,7 +19,10 @@ import logging
 import math
 import os
 from contextlib import asynccontextmanager
+# `date_cls` 别名:多个端点用 `date: str = ""` 作查询参数名(客户端契约),
+# 函数内会把模块级的 `date` 类型遮住 —— 别名让「今天」这种取值仍拿得到。
 from datetime import date, datetime, time
+from datetime import date as date_cls
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -39,7 +42,12 @@ from neckline.api.schemas import (
     AlertParseOut,
     AlertsListOut,
     AlertUpdateIn,
-    CandidateOut,
+    BasketCardOut,
+    BasketDailyOut,
+    BasketOut,
+    BasketReviewOut,
+    BasketsListOut,
+    BasketVerificationOut,
     CircuitEpisodeOut,
     CircuitStateOut,
     ConfirmationCardOut,
@@ -57,25 +65,30 @@ from neckline.api.schemas import (
     InfoCardNewsOut,
     InfoCardOut,
     InfoCardSnapshotOut,
-    InfoCardSummaryOut,
     InfoCardTopListOut,
     InquiryIn,
     InquiryLogOut,
     InquiryLogsListOut,
     InquiryOut,
-    IntelRankOut,
+    EntrySnapshotOut,
+    EvalWeeklyOut,
     K4AdvisoryOut,
-    LLMJudgmentOut,
     NewsAlertOut,
     NewsAlertScanStatusOut,
     LLMRoutesIn,
     LLMRoutesOut,
     OkOut,
+    PackOut,
+    PacksListOut,
     PositionCloseIn,
     PositionOpenIn,
     PositionOpenOut,
     PositionOut,
+    PositionPlanCreateIn,
+    PositionPlanOut,
+    PositionPlansOut,
     PositionsOut,
+    ProfileOut,
     ProviderCreateIn,
     ProviderOut,
     ProviderUpdateIn,
@@ -90,6 +103,7 @@ from neckline.api.schemas import (
     SettingsProviderOut,
     SettingsPushIn,
     SettingsReviewColMapIn,
+    TierOut,
     WeeklyReviewOut,
 )
 from neckline.api.stores import get_inquiry_log, list_inquiry_logs, upsert_device
@@ -340,66 +354,16 @@ def health() -> dict:
 
 # —— 4A.2 报告 ————————————————————————————————————————————————————————
 
-def _shape_info_card_summary(d: Optional[Dict[str, Any]]) -> Optional[InfoCardSummaryOut]:
-    """`Candidate.info_card_summary` 存档(v1.4-④,`info_card.InfoCardSummary.
-    to_public_dict()` 已是 camelCase)→ `InfoCardSummaryOut`。空/缺(老报告快照、或
-    该次生成时保险丝触发降级)→ `None`,客户端按"该信息暂不可用"处理,不冒充
-    "确认无内容"(同 `intel_rank` 惯例,§3.8)。"""
-    if not d:
-        return None
-    news = d.get("news") or {}
-    top_list = d.get("topList") or {}
-    return InfoCardSummaryOut(
-        snapshot=InfoCardSnapshotOut(**(d.get("snapshot") or {})),
-        mildBand=bool(d.get("mildBand", False)),
-        news=InfoCardNewsOut(
-            scanned=bool(news.get("scanned", False)),
-            items=[InfoCardNewsItemOut(**it) for it in news.get("items", []) or []],
-            unavailableReason=news.get("unavailableReason"),
-        ),
-        topList=InfoCardTopListOut(**top_list),
-    )
+def _shape_basket_daily(payload) -> BasketDailyOut:
+    """报告落库的篮子日报快照 → 客户端契约。**同码不重写**:快照已是 camelCase
+    (`report/basket_daily.py::BasketDaily.to_public_dict()`,与 `intel`/`sectorMoneyflow`
+    的透传惯例一致),这里只做 pydantic 收口。
 
+    老报告(建于 `basket_daily_json` 列之前)→ `basket_daily_from_snapshot` 给一份
+    三段全 `available=false` 的诚实占位,⛔ 不冒充「那天没有篮子」。"""
+    from neckline.report.basket_daily import basket_daily_from_snapshot
 
-def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> CandidateOut:
-    """报告落库的候选 JSON 快照 → 客户端契约。同码不重写:字段直接取自落库存档,
-    不在此重算任何领域值。
-
-    ⚠ **V2-⑬ 过渡态**:候选榜已删(⑬-1),新报告的 `candidates_json` 恒为 `[]`,
-    本函数因此只在**读历史报告**时还有输入。老四件套四键(⑬-6)、参考件三件套
-    (⑬-3)、执行提示位(⑬-4)三组键已按 D2=A 路**直接删除、不留过渡文案**。
-    `CandidateOut` 这个壳与 `ReportOut.candidates` 由 **⑭-B 契约总装**换成篮子 DTO,
-    本块不动它(⑬「删除端点」清单里没有 `/report`)。"""
-    llm = None
-    if judgment is not None:
-        llm = LLMJudgmentOut(
-            verdict=judgment.get("verdict", ""),
-            narrative=judgment.get("narrative", ""),
-            degraded=bool(judgment.get("degraded", False)),
-        )
-    return CandidateOut(
-        rank=c.get("rank", 0),
-        code=c.get("ts_code", ""),
-        name=c.get("name", ""),
-        score=c.get("score", 0.0),
-        board=c.get("board", ""),
-        invalidationSpec=c.get("invalidation_spec", {}) or {},
-        entrySpec=c.get("entry_spec", {}) or {},
-        formTags=c.get("pattern_tags", []) or [],
-        hotSectors=c.get("hot_sectors", []) or [],
-        sectorNames=c.get("sector_names", []) or [],
-        # v1.3-③-C3:候选新语义字段(旧报告快照无 → 默认空,前向兼容)。
-        k4Flags=c.get("k4_flags", []) or [],
-        intelRank=IntelRankOut(**(c.get("intel_rank") or {})),
-        # v1.4-④-B:信息卡摘要(老报告快照无该键 → None,前向兼容)。
-        infoCard=_shape_info_card_summary(c.get("info_card_summary")),
-        # v1.4-⑤-A:执行提示(老报告快照无该键 → 默认空列表,前向兼容)。
-        # v1.5-①-F:参考件三件套(老报告快照无该键/该键为 None → None,前向兼容)。
-        llmJudgment=llm,
-        # v1.5-②-B:预算耗尽未发起(老报告快照无该键 → False,前向兼容;与
-        # `llmJudgment is None` 单独并存不冲突——见 CandidateOut.judgeSkipped 注释)。
-        judgeSkipped=bool(c.get("judge_skipped", False)),
-    )
+    return BasketDailyOut(**basket_daily_from_snapshot(payload))
 
 
 def _shape_news_alert(a: Dict[str, Any], names: Dict[str, str]) -> NewsAlertOut:
@@ -419,8 +383,6 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
 
     td = rep["trade_date"]
     d = datetime.strptime(td, "%Y%m%d").date()
-    judgments = {j["ts_code"]: j for j in report_store.load_llm_judgments(d, db_path=_db())}
-    candidates = [_shape_candidate(c, judgments.get(c.get("ts_code", ""))) for c in rep.get("candidates", [])]
     # v1.3-③-C4:命中告警条目独立表实时查(同 llm_judgments 的「live join」惯例,
     # 不像 intel 那样整段嵌 JSON——见 news_alerts.py 模块头设计说明)。
     alert_rows = load_news_alerts(d, db_path=_db())
@@ -448,7 +410,8 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
         strategyVersion=rep.get("strategy_version", ""),
         sentiment=rep.get("sentiment", {}),
         sectors=rep.get("sectors", []),
-        candidates=candidates,
+        # V2-⑭-B:篮子日报三段取代已退役的 `candidates`(透传落库快照,随报告冻住)。
+        basketDaily=_shape_basket_daily(rep.get("basket_daily")),
         missedEntryHint=compute_missed_entry_hint(d, db_path=_db()),   # v1.1-B.4 实时算(补录后自动消失)
         intel=rep.get("intel", {}),                       # v1.3-③-C1,透传落库快照(同 sentiment 惯例)
         sectorMoneyflow=rep.get("sector_moneyflow", {}),   # v1.3-③-C2,透传落库快照
@@ -461,7 +424,7 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
 def _empty_report(reason: str) -> ReportOut:
     return ReportOut(
         tradeDate="", generatedAt="", strategyVersion="",
-        sentiment={}, sectors=[], candidates=[], degraded=True, reason=reason,
+        sentiment={}, sectors=[], degraded=True, reason=reason,
     )
 
 
@@ -554,6 +517,164 @@ def _member_k4_tag(ctx, ts_code: str) -> Optional[str]:
         if m.get("ts_code") == ts_code:
             return m.get("k4_tag")
     return None
+
+
+# —— V2-⑭-B 篮子端点(⑤⑥⑦⑧⑨ 的产出上 API 面)————————————————————————————
+#
+# **两个 404 reason 必须分得开(⑭-B 定死,⛔ 不许合并)**:
+#   · `basket_not_found` —— 这个篮子本身不存在(系统丢了篮子)。
+#   · `card_not_ready`   —— **篮子在,卡还没生成**(⑦ 的事务 2 独立于事务 1,合法中间态)。
+# 合并成一个就把「没有」和「没看」混了。`card_not_ready` 是**全新字符串**,客户端
+# `APIClient.mapReason` **必须加新 case**(文案方向「本篮的卡还没生成」,⛔ 不是「篮子
+# 不存在」)—— 404 的 fallback 是 `.notHolding`「持仓已清」,不加 case 就会显示成那句
+# 驴唇不对马嘴的话(v1.4 `watchlist` 的 `not_found` 已经这么踩过一次)。
+
+REASON_BASKET_NOT_FOUND = "basket_not_found"
+REASON_CARD_NOT_READY = "card_not_ready"
+
+
+def _shape_basket(ref, *, with_card: bool = True, card_version: Optional[int] = None) -> BasketOut:
+    """`BasketRef` + 冻结卡 + Tier 留痕 → 契约。**snake→camel 走
+    `basket_daily.card_to_public_dict` 这个唯一转换点**,API 层不另写一份。"""
+    from neckline.report.basket_daily import card_to_public_dict
+    from neckline.selection.basket_store import load_basket_card, load_tier_history
+
+    card_out: Optional[BasketCardOut] = None
+    version: Optional[int] = None
+    reason: Optional[str] = None
+    if with_card:
+        row = load_basket_card(ref.basket_id, version=card_version, db_path=_db())
+        payload = card_to_public_dict((row or {}).get("card")) if row else None
+        if payload is None:
+            reason = REASON_CARD_NOT_READY
+        else:
+            card_out = BasketCardOut(**payload)
+            version = (row or {}).get("version")
+    th = load_tier_history(ref.basket_id, db_path=_db())
+    return BasketOut(
+        basketId=ref.basket_id, basketKey=ref.basket_key, name=ref.name,
+        tradeDate=ref.trade_date, tier=ref.tier, memberCodes=list(ref.member_codes),
+        card=card_out, cardVersion=version, cardUnavailableReason=reason,
+        tierHistory=(TierOut(
+            basketId=ref.basket_id, tradeDate=th["trade_date"], tier=th["tier"],
+            mechScore=th["mech_score"], mechBreakdown=th["mech_breakdown"],
+            rankInTier=th["rank_in_tier"], rankMech=th["rank_mech"],
+            llmRankDelta=th["llm_rank_delta"], llmReason=th["llm_reason"],
+            packVersion=th["pack_version"],
+        ) if th else None),
+    )
+
+
+@app.get(f"{API_PREFIX}/baskets", dependencies=[Depends(require_token)])
+def list_baskets(date: str = "", tier: int = 0) -> BasketsListOut:
+    """某交易日的篮子清单(T1/T2/T3,按 tier 升序、basket_key 升序,**确定性**)。
+
+    `date` 缺省 = 最近一份报告的交易日;`tier`(1/2/3)可选过滤,`0` = 全部。
+    **空列表是合法输出**:「今日无篮子达到定档标准」(⑥-b-B)—— ⛔ 不是 404,
+    也⛔ 不许为了让界面好看而放宽任何一条质量线。日期格式非法 → 空列表 + 原 `date`
+    回显(同 `GET /report` 的降级契约,不 4xx)。"""
+    from neckline.selection.basket_store import load_baskets_for_date
+
+    day = date or (report_store.latest_report_date(db_path=_db()) or "")
+    if not (len(day) == 8 and day.isdigit()):
+        return BasketsListOut(tradeDate=date, items=[])
+    tiers = (tier,) if tier in (1, 2, 3) else None
+    refs = load_baskets_for_date(day, tiers=tiers, db_path=_db())
+    return BasketsListOut(tradeDate=day, items=[_shape_basket(r) for r in refs])
+
+
+@app.get(f"{API_PREFIX}/baskets/{{basket_id}}", dependencies=[Depends(require_token)])
+def get_basket(basket_id: int) -> BasketOut:
+    """单个篮子(含冻结卡与 Tier 留痕)。不存在 → 404 `basket_not_found`。
+
+    ⚠ **篮子在、卡没生成**不是 404:照返 200,`card=null` +
+    `cardUnavailableReason='card_not_ready'`(合法中间态,客户端据此说「卡还没生成」)。"""
+    from neckline.selection.basket_store import load_basket
+
+    ref = load_basket(basket_id, db_path=_db())
+    if ref is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": REASON_BASKET_NOT_FOUND})
+    return _shape_basket(ref)
+
+
+@app.get(f"{API_PREFIX}/baskets/{{basket_id}}/card", dependencies=[Depends(require_token)])
+def get_basket_card(basket_id: int, version: int = 0) -> BasketCardOut:
+    """一张冻结的篮子卡(⑦)。`version` 缺省 `0` = 取**最新版本**;给具体版本号则取那一版
+    (D0 原判恒 `version=1`,D+1 的新信息追加 `version=2,3…`,**D0 行一字不改**)。
+
+    **404 两个 reason,语义相反,⛔ 客户端必须各有 case**:
+      · `basket_not_found` —— 篮子本身不存在。
+      · `card_not_ready`  —— **篮子在、卡还没生成**(⑦ 事务 2 独立于事务 1)。
+        文案方向「本篮的卡还没生成」,**不是**「篮子不存在」——后者会让用户以为系统丢了篮子。
+    """
+    from neckline.report.basket_daily import card_to_public_dict
+    from neckline.selection.basket_store import load_basket, load_basket_card
+
+    if load_basket(basket_id, db_path=_db()) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": REASON_BASKET_NOT_FOUND})
+    row = load_basket_card(basket_id, version=(version or None), db_path=_db())
+    payload = card_to_public_dict((row or {}).get("card")) if row else None
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": REASON_CARD_NOT_READY})
+    return BasketCardOut(**payload)
+
+
+@app.get(f"{API_PREFIX}/baskets/{{basket_id}}/verification", dependencies=[Depends(require_token)])
+def get_basket_verification(basket_id: int, date: str = "") -> BasketVerificationOut:
+    """某篮某日的验证状态(⑧「当前状态」三路读法唯一实现,本端点只读不判)。
+
+    `date` 缺省 = 今天。**三个位分别回答不同问题,⛔ 客户端不许合并**:
+    `state` 四态 / `provisional`(盘中暂态、未收盘定论)/ `notEvaluated`(**今天还没判过**,
+    不是「判了是 unclear」)。篮子不存在 → 404 `basket_not_found`;
+    **篮子在、今天没判过**照返 200 + `notEvaluated=true`(⛔ 不是 404)。"""
+    from neckline.sentinel.basket_verify_store import current_state, list_rows
+    from neckline.selection.basket_store import load_basket
+
+    if load_basket(basket_id, db_path=_db()) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": REASON_BASKET_NOT_FOUND})
+    day = (datetime.strptime(date, "%Y%m%d").date()
+           if (len(date) == 8 and date.isdigit()) else date_cls.today())
+    st = current_state(basket_id, day, db_path=_db())
+    rows = list_rows(basket_id, day, db_path=_db())
+    return BasketVerificationOut(
+        basketId=basket_id, tradeDate=day.strftime("%Y%m%d"), state=st.state, label=st.label,
+        source=st.source, observedAt=st.observed_at, provisional=st.provisional,
+        notEvaluated=st.not_evaluated, evidence=st.evidence,
+        rows=[{"state": r.state, "source": r.source, "observedAt": r.observed_at,
+               "evidence": r.evidence} for r in rows],
+    )
+
+
+@app.get(f"{API_PREFIX}/baskets/{{basket_id}}/review", dependencies=[Depends(require_token)])
+def get_basket_review(basket_id: int, date: str = "") -> BasketReviewOut:
+    """某篮某个复盘日(D+1)的盘后复盘(⑨)。`date` 缺省 = 今天。
+
+    篮子不存在 → 404 `basket_not_found`;**篮子在、那天还没复盘**→ 404
+    `not_found`(复用既有 reason 字符串,客户端 `mapReason` 已有 case;
+    CLAUDE.md 明文:复用已有 reason 不需要新 case)。"""
+    from neckline.review.basket_review_store import load_review
+    from neckline.selection.basket_store import load_basket
+
+    ref = load_basket(basket_id, db_path=_db())
+    if ref is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": REASON_BASKET_NOT_FOUND})
+    day = date if (len(date) == 8 and date.isdigit()) else date_cls.today().strftime("%Y%m%d")
+    row = load_review(basket_id, day, db_path=_db())
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": "not_found"})
+    meta = (row.mech.get("meta") or {}) if isinstance(row.mech, dict) else {}
+    return BasketReviewOut(
+        basketId=basket_id, basketKey=ref.basket_key, name=ref.name, tier=ref.tier,
+        d0=str(meta.get("d0") or ""), reviewDate=row.review_date, depth=row.depth,
+        mech=row.mech if isinstance(row.mech, dict) else {},
+        llmText=row.llm_text, llmSkipReason=row.llm_skip_reason, degraded=bool(row.degraded),
+    )
 
 
 # —— 4A.3 盘中看板 ————————————————————————————————————————————————————
@@ -1042,6 +1163,77 @@ def close_position(position_id: int, body: PositionCloseIn) -> OkOut:
     return OkOut(ok=True)
 
 
+# —— V2-⑭-B 计划继承(`position_plans`)+ 建仓快照(`entry_snapshots`)————————
+#
+# **⑩-E 信息互通边界**:持仓侧可读篮子卡、可追加自己的计划版本,**不得回头修改
+# 对方已冻结的历史信息** —— 本节两个端点对 `baskets`/`basket_cards`/`tier_history`
+# 零写入(AST 守门单测锁死),`create_position_plan_version` 签名里根本没有相关参数。
+
+def _shape_plan(row: Dict[str, Any]) -> PositionPlanOut:
+    return PositionPlanOut(
+        id=row["id"], positionId=row["position_id"], version=row["version"],
+        sourceBasketId=row["source_basket_id"], sourceCardVersion=row["source_card_version"],
+        plan=row["plan"], note=row["note"], createdAt=row["created_at"],
+    )
+
+
+@app.get(f"{API_PREFIX}/positions/{{position_id}}/plans", dependencies=[Depends(require_token)])
+def list_plans(position_id: int) -> PositionPlansOut:
+    """某持仓的全部计划版本(升序,`version=1` 是从 D0 卡继承的原判)。
+
+    **空列表 = 这笔仓不存在或建于 ⑩ 之前**(⑩ 起开仓必落 v1,"有仓无 v1"是走不出去的
+    死局,故正常仓一定 ≥1 行)。不 404 —— 列表端点的既定降级契约。"""
+    from neckline import positions_entry
+
+    return PositionPlansOut(items=[_shape_plan(r) for r in
+                                   positions_entry.list_position_plans(position_id, db_path=_db())])
+
+
+@app.post(f"{API_PREFIX}/positions/{{position_id}}/plans",
+          status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_token)])
+def create_plan_version(position_id: int, body: PositionPlanCreateIn) -> PositionPlanOut:
+    """用户创建计划新版本(⑩-B)。**新版本不修改原始篮子卡**(单测锁死)。
+
+    ⚠ **武装态由服务端重算,请求体说了不算**(⑪-D-B 闸②):新版本里的 `exit_reference`
+    是用户改过的数字,必须拿这笔仓的**真实成交价**重过一遍闸,否则"写个新版本"就成了
+    绕开红线闸的后门。用户意图那一半(`exit_reference_muted`)承袭上一版,除非本次
+    `plan` 里显式给了该键。
+
+    该持仓无既有计划(缺 `version=1`)→ 400 `no_base_plan`(**全新 reason**,客户端
+    `mapReason` 需加 case;它不是「持仓不存在」,而是「这笔仓没有可继承的基线」)。"""
+    from neckline import positions_entry
+
+    try:
+        positions_entry.create_position_plan_version(
+            position_id, dict(body.plan or {}), note=body.note, db_path=_db(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail={"ok": False, "reason": "no_base_plan", "message": str(e)}) from None
+    latest = positions_entry.latest_position_plan(position_id, db_path=_db())
+    return _shape_plan(latest)
+
+
+@app.get(f"{API_PREFIX}/positions/{{position_id}}/entry-snapshot",
+         dependencies=[Depends(require_token)])
+def get_entry_snapshot(position_id: int) -> EntrySnapshotOut:
+    """建仓瞬间的冻结快照(⑩-A)。无快照行 → 404 `not_found`(复用既有 reason)。
+
+    ⚠ `snapshot.not_captured` 如实列出**本次没采到**的项(⑩ 范围内:资金流 / 竞价表现 /
+    换手率 / 量比四项未采集)—— ⛔ 别把"没采"读成"没有"。"""
+    from neckline import positions_entry
+
+    row = positions_entry.load_entry_snapshot(position_id, db_path=_db())
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": "not_found"})
+    return EntrySnapshotOut(
+        positionId=row["position_id"], tsCode=row["ts_code"], tradeDate=row["trade_date"],
+        basketId=row["basket_id"], cardVersion=row["card_version"], tier=row["tier"],
+        role=row["role"], snapshot=row["snapshot"], createdAt=row["created_at"],
+    )
+
+
 # —— v1.2-A2 熔断纪律状态 + 解锁(§2.1 第 7 条,🔴)——————————————————————————————
 # **熔断是纯提醒层**(§3.8):本节端点只读锁定态 / 记录用户解锁 ack,**绝不代下单/
 # 撤单、绝不拦 `POST /positions`**(客户端「开新仓」入口自律灰化)。解锁本就是用户
@@ -1417,8 +1609,18 @@ def _rule_from_conditions(conds: List[AlertConditionIn], logic: str) -> Dict[str
 
 
 @app.get(f"{API_PREFIX}/alerts", dependencies=[Depends(require_token)])
-def list_custom_alerts(status_filter: Optional[str] = None, code: Optional[str] = None) -> AlertsListOut:
-    """列临时提醒。`status_filter` ∈ active|expired|cancelled(缺省 = 全部)。
+def list_custom_alerts(
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    code: Optional[str] = None,
+) -> AlertsListOut:
+    """列临时提醒。查询参数 `status` ∈ active|expired|cancelled(缺省 = 全部)。
+
+    ⚠ **V2-⑭-B 契约修正(契约线 🔵 B7)**:此前查询参数名是 Python 形参名
+    `status_filter` 直接漏成契约键 —— 与全仓 camelCase 取向不合,且 `status` 才是
+    客户端会猜的那个名字。改用 `Query(alias="status")`:形参名仍叫 `status_filter`
+    (`status` 会遮住模块级 `fastapi.status`),对外键改成 `status`。
+    ⚠ **这是一次真的破坏性改名**,但 D2=A 路下老 App 打老机、不会撞到本服务端,
+    且 `/alerts` 五端点由 ⑪-C 新建、**至今零客户端调用方**(⑮ 才接线),现在改成本最低。
     **只读**:到期但尚未被哨兵翻状态的行照实回 `status='active'` + `expiredNow=true`,
     不在读路径偷偷改库。"""
     rows = custom_alerts.list_alerts(status=status_filter, ts_code=code, db_path=_db())
@@ -1607,6 +1809,115 @@ def review_upload(files: List[UploadFile] = File(...)) -> ReviewUploadOut:
         ok=True, weeks=weeks_out, parseWarnings=parse_warnings,
         dataWarnings=data_warnings, sheetFormats=sheet_formats,
     )
+
+
+# —— V2-⑭-B 画像 / 策略包 / 评价 ————————————————————————————————————————
+#
+# 🔴 **画像初期不得反向影响客观 Tier**(蓝图 4.4 禁令):这两个端点**只读展示**,
+# `neckline/selection/` 与 `neckline/scan/` 全目录零 `profile` 引用(守门单测锁死)。
+
+def _profile_out(as_of: str, rows: List[Dict[str, Any]]) -> ProfileOut:
+    """空 `as_of` = **该期从未算过**(不是"算出来是空的");有 `as_of` 无行 = 算过了、
+    这一期没有够样本的维度。⛔ 两者在界面上必须讲不同的话。"""
+    if not as_of:
+        return ProfileOut(asOf="", available=False,
+                          unavailableReason="该期画像尚未生成(周度批算未运行)。")
+    return ProfileOut(asOf=as_of, available=True, items=rows)
+
+
+@app.get(f"{API_PREFIX}/profile/preference", dependencies=[Depends(require_token)])
+def get_profile_preference(asOf: str = "") -> ProfileOut:
+    """偏好画像:「**喜欢什么**」(常买题材 / 角色 / 入场方式 / 常选 Tier)。
+
+    每行带 `sampleN` / `windowStart` / `windowEnd` / `confidence`。
+    ⚠ `confidence='low'`(样本不足)时客户端**必须**显式写「样本不足,不给结论」——
+    **单笔不成偏好**(⑫-B 硬要求)。`asOf` 缺省 = 最近一期。"""
+    from neckline.profile.store import latest_as_of, load_preference
+
+    day = asOf or (latest_as_of("preference", db_path=_db()) or "")
+    return _profile_out(day, load_preference(day, _db()) if day else [])
+
+
+@app.get(f"{API_PREFIX}/profile/capability", dependencies=[Depends(require_token)])
+def get_profile_capability(asOf: str = "") -> ProfileOut:
+    """能力画像:「**什么真有效**」(胜率 / 盈亏比 / 是否跑赢同篮未选股票)。
+
+    ⚠ **与偏好画像是两张账,⛔ 不合并**:一个说"你喜欢什么",一个说"你哪些选择真的
+    赚到钱" —— 合成一张就等于用喜好给能力背书。`vsPeerDelta=null` = 配对样本不足,
+    **不是"没有差异"**。`asOf` 缺省 = 最近一期。"""
+    from neckline.profile.store import latest_as_of, load_capability
+
+    day = asOf or (latest_as_of("capability", db_path=_db()) or "")
+    return _profile_out(day, load_capability(day, _db()) if day else [])
+
+
+@app.get(f"{API_PREFIX}/packs", dependencies=[Depends(require_token)])
+def list_selection_packs() -> PacksListOut:
+    """选股策略包清单(append-only + 单现役)。
+
+    ⚠ **策略包与纪律章程是两条版本线、两张表、两套激活流程,永不混用**(§五 红线 6)。
+    本端点**只读**:激活走 `scripts/activate_pack.py` 的四道闸(**绝不暴露给客户端**,
+    同「大脑激活绝不走 API」的既定纪律)。"""
+    from neckline.selection.pack import list_packs
+
+    return PacksListOut(items=[_pack_out(p) for p in list_packs(_db())])
+
+
+@app.get(f"{API_PREFIX}/packs/{{pack_version}}", dependencies=[Depends(require_token)])
+def get_selection_pack(pack_version: str) -> PackOut:
+    """单个策略包(含 manifest 与 config 全文)。不存在 → 404 `not_found`。"""
+    from neckline.selection.pack import get_pack
+
+    p = get_pack(pack_version, _db())
+    if p is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": "not_found"})
+    return _pack_out(p)
+
+
+def _pack_out(p) -> PackOut:
+    return PackOut(
+        packVersion=p.pack_version, isActive=bool(p.is_active),
+        createdAt=getattr(p, "created_at", "") or "",
+        activatedAt=getattr(p, "activated_at", None),
+        manifest=dict(getattr(p, "manifest", {}) or {}),
+        config=dict(getattr(p, "config", {}) or {}),
+    )
+
+
+@app.get(f"{API_PREFIX}/eval/weekly", dependencies=[Depends(require_token)])
+def get_eval_weekly(week: str = "") -> EvalWeeklyOut:
+    """周度评价校准报告(⑨-C,含安慰剂对照臂)。`week` = 该周任意一天 'YYYYMMDD',
+    缺省 = 本周。
+
+    ⚠ **评价是长期统计,不是单日打分**:样本窗未就绪 / 前向窗口没走完时
+    `available=false` + `unavailableReason`,⛔ 不拿半截样本给结论。
+    **现算**(读 6 张表的横截面,不写库);整段包保险丝,异常 → `available=false`
+    + 可读原因,不 500。"""
+    from neckline.eval import calibration
+
+    try:
+        anchor = (datetime.strptime(week, "%Y%m%d").date()
+                  if (len(week) == 8 and week.isdigit()) else date_cls.today())
+        start, end = calibration.week_bounds(anchor)
+        rep = calibration.build_report(start, end, db_path=_db(), parquet_dir=_parquet_dir())
+        return EvalWeeklyOut(
+            weekStart=start.strftime("%Y%m%d"), weekEnd=end.strftime("%Y%m%d"),
+            available=True, result=_jsonable_report(rep),
+            markdown=calibration.render_markdown(rep),
+        )
+    except Exception as exc:  # noqa: BLE001  评价报告是审计件,炸了如实说,不 500
+        logger.warning("[eval] 周度校准报告生成异常(已降级为不可得)", exc_info=True)
+        return EvalWeeklyOut(available=False,
+                             unavailableReason=f"周度评价报告本次生成失败:{type(exc).__name__}")
+
+
+def _jsonable_report(rep) -> Dict[str, Any]:
+    """`CalibrationReport`(dataclass)→ JSON 安全字典。同 `pipeline._jsonable` 姿势,
+    复用它以免两处各写一份递归转换(同码不重写)。"""
+    from neckline.report.pipeline import _jsonable
+
+    return _jsonable(rep)
 
 
 @app.get(f"{API_PREFIX}/review", dependencies=[Depends(require_token)])

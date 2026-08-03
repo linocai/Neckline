@@ -650,11 +650,67 @@ def load_baskets_for_date(
     return out
 
 
+def load_basket(basket_id: int, *, db_path: Optional[Path] = None) -> Optional[BasketRef]:
+    """按 id 读一个篮子(**不含卡**,同 `BasketRef` 的既定边界)。
+
+    `None` = **这个篮子不存在**(`basket_not_found`)—— 与「篮子在、卡没生成」
+    (`card_not_ready`,`load_basket_card` 返 `None`)是**两件不同的事**,
+    ⛔ 调用方不许把两者合并成一个 404 reason:前者说系统丢了篮子,后者说卡还没做完。
+    """
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        r = conn.execute(
+            "SELECT id, trade_date, basket_key, name, tier FROM baskets WHERE id=?",
+            (int(basket_id),),
+        ).fetchone()
+        if r is None:
+            return None
+        members = conn.execute(
+            "SELECT ts_code FROM basket_members WHERE basket_id=? ORDER BY ts_code",
+            (int(r[0]),),
+        ).fetchall()
+    return BasketRef(
+        basket_id=int(r[0]), trade_date=str(r[1]), basket_key=str(r[2]),
+        name=str(r[3]), tier=int(r[4]), member_codes=tuple(str(m[0]) for m in members),
+    )
+
+
+def load_tier_history(basket_id: int, *, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """读某篮的 Tier 定档留痕(`tier_history` 一行,`UNIQUE(trade_date, basket_id)`
+    使一篮一行)。`None` = 没有留痕 —— 只可能出现在事务 1 之外手工造数的库里。
+
+    键保持 **snake_case**(领域形状),转 camel 是 API 层的事。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        r = conn.execute(
+            "SELECT trade_date, tier, mech_score, mech_breakdown_json, rank_in_tier, "
+            "rank_mech, llm_rank_delta, llm_reason, pack_version, created_at "
+            "FROM tier_history WHERE basket_id=? ORDER BY trade_date DESC LIMIT 1",
+            (int(basket_id),),
+        ).fetchone()
+    if r is None:
+        return None
+    try:
+        breakdown = json.loads(r[3]) if r[3] else {}
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("[basket_store] basket_id=%s 的 mech_breakdown_json 解不出,按空 dict 读回",
+                       basket_id)
+        breakdown = {}
+    return {
+        "trade_date": str(r[0]), "tier": int(r[1]), "mech_score": r[2],
+        "mech_breakdown": breakdown, "rank_in_tier": r[4], "rank_mech": r[5],
+        "llm_rank_delta": int(r[6] or 0), "llm_reason": r[7],
+        "pack_version": r[8], "created_at": str(r[9]),
+    }
+
+
 __all__ = [
     "save_baskets",
     "save_tier_history",
     "save_tier_decision",
     "next_card_version",
+    "load_basket",
+    "load_tier_history",
     "save_basket_card",
     "save_basket_cards",
     "load_basket_card",

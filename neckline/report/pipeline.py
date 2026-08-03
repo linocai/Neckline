@@ -1,16 +1,18 @@
-"""报告管线编排(plan 2.5,§2.6 历史回放的天然落地点)。串起情绪仪表盘(2.1)+
-强势板块(2.2)+ 持仓 K4 体检 + 情报件 / 板块资金流 / 消息面 + 落库(store.py)+
-markdown 渲染(render.py)——`scripts/report.py` 的核心入口就是本模块的 `build_report`。
+"""报告管线编排(plan §五 V2-⑭-A;§2.6 历史回放的天然落地点)。
 
-⚠ **V2-⑬ 过渡态(读这个文件前先知道)**:V1 的「候选评分 + 20 只 LLM 审判 + 参考件
-三件套 + 执行提示 + 信息卡摘要」整条已按 §五 V2-⑬-1/2/3/4/6/8 删除,**而 V2 的篮子
-日报编排(扫描层 → 聚合 → Tier → 卡冻结 → 篮子日报)是 ⑭-A 的活**,不在本块范围。
-所以此刻的 `build_report` 是一份**只剩市场语境 + 持仓体检 + 情报/资金流/消息面**的
-过渡报告,`reports.candidates_json` 恒落 `[]`。**这是先建后拆的中间状态,不是退化。**
+**本模块两个入口,职责刻意分开 —— 改之前先看清楚是哪一个**
 
-**历史回放(§2.6)天然支持**:`build_report(trade_date, ...)` 对任意历史交易日都
-能跑(只要该日的 Parquet/SQLite 数据已落地),不需要另一套"回放专用"代码——
-喂历史 = 回测、喂今日 = 报告,这里的"喂哪天"只是一个参数,同一份代码路径。
+1. **`build_report(trade_date, ...)` = 只出报告的那一段**。读**已经冻在库里的**东西
+   (情绪 / 强势板块 / 持仓体检 / 情报件 / 资金流 / 消息面 / 篮子四表 / 复盘表),渲染
+   五段 markdown,落 `reports` 表 + 三张报告自己的侧表。**它不批算扫描层、不调聚合、
+   不定 Tier、不冻卡、不跑复盘** —— 那些是下面那个编排函数的事。
+   👉 这条边界是**历史回放的生命线**(§2.6「喂历史=回测、喂今日=报告」):回放一份
+   三个月前的报告**绝不能**顺手往 `baskets`/`corr_matrix_daily` 里写今天算出来的东西。
+2. **批算侧住 `neckline/report/evening.py`**(⑧ 验证拍 → ④ 扫描层 → ⑤⑥⑦ 篮子 →
+   ⑨ 复盘 → 调本模块的 `build_report` 收尾)。**⛔ 别把那条链搬回来**:本文件在
+   `tests/test_scan_layer_guardrails.py` 的**在线模块清单**里,P0-23 守门单测逐字
+   grep 禁止它出现扫描层的批算写入口名 —— 搬回来 = 为了迁就文件摆放而钝化一条被
+   生产 OOM 打出来的真防线。(那条守门连注释一起 grep,所以这里连名字都不写。)
 
 **策略大脑是唯一权威**(2026-07-20 用户拍板):大脑无现役版本时**拒绝生成报告并抛出
 清晰错误**(这是配置缺陷,不是"优雅降级"的场景)。
@@ -31,6 +33,7 @@ from neckline.sentinel import positions as pos_store
 from neckline.llm.base import LLMProvider
 from neckline.llm.factory import get_provider
 from neckline.report import store
+from neckline.report.basket_daily import BasketDaily, build_basket_daily, empty_basket_daily
 from neckline.report.intel import IntelReport, compute_intel, empty_intel_report
 from neckline.report.news_alerts import NewsAlertsReport, build_news_alerts, empty_news_alerts_report
 from neckline.report.pending_track import track_pending_decisions
@@ -58,6 +61,7 @@ from neckline.report.sector_moneyflow import (
     empty_sector_moneyflow_report,
 )
 from neckline.report.sentiment import SentimentDashboard, compute_sentiment
+from neckline.scan.freshness import ScanLayerFreshness, scan_layer_status
 from neckline.strategy import brain
 
 logger = logging.getLogger(__name__)
@@ -82,6 +86,12 @@ class ReportBundle:
     # `ths_daily` 概念板块日更,一个是 `industry_strength_daily` 预计算表),不许合并成
     # 一个 bool —— 合并就分不清哪个坏了。
     industry_freshness: Optional[IndustryStrengthFreshness] = None
+    # V2-⑭-A 市场扫描层新鲜度(V2-④ 的第三件独立故障:三张预计算表批算跑没跑)。
+    # ⑨ 的完工记录说得清楚:扫描层没跑 → 当日无种子 → 当日无篮子,而「今天没有篮子」
+    # 与「今天没看」是两回事。**同样不与上面两条合并**(那就是三合一 bool 的老病)。
+    scan_freshness: Optional[ScanLayerFreshness] = None
+    # V2-⑭-A 篮子日报三段(③ 今日篮子 / ③b 未定档 / ④ 昨日复盘)。
+    basket_daily: Optional[BasketDaily] = None
 
 
 def compute_missed_entry_hint(trade_date: date, db_path: Optional[Path] = None) -> str:
@@ -122,13 +132,22 @@ def build_report(
     parquet_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
     save: bool = True,
+    dropped_baskets: Optional[List[Any]] = None,
 ) -> ReportBundle:
-    """生成 `trade_date` 这一天的完整盘后报告。
+    """生成 `trade_date` 这一天的**篮子日报**(五段,见 `render.py` 模块头)。
+
+    ⚠ **本函数只读不算**(模块头第 1 条):篮子 / Tier / 卡 / 验证 / 复盘全部由
+    `run_evening_chain` 在各自段落里算完落库,这里只把它们读回来渲染。
 
     `llm_provider`:显式传入用于测试注入(如 `_StubProvider`/真 provider + Mock
-    Transport);为 `None`(默认,生产用法)时从 `.env` 现读(`llm.factory.get_provider()`)
-    ——本项目当前无 key,现读结果恒为 `None`,LLM 审判段落走「未激活」占位链路。
+    Transport);为 `None`(默认,生产用法)时从 `.env` 现读(`llm.factory.get_provider()`)。
     `save=False` 供只想拿 `ReportBundle`/跑历史回放对照、不想写库的调用方(如单测)。
+
+    `dropped_baskets`:⑥ 本次跑出来的 `TierResult.dropped`(③b 的数据源)。**⑥ 的溢出
+    篮不进 `baskets` 表**(`baskets.tier` NOT NULL),报告快照是它唯一的落点 —— 由
+    `run_evening_chain` 传进来。**`None` = 本次没跑 ⑥**(单出报告 / 历史回放)→ ③b 如实
+    标「本段未取得」,⛔ 不现算一遍"当时会溢出哪些"(那是拿今天的包编造昨天的结论);
+    **空列表 = 跑了、今天零溢出** → 节仍在,写「今日无未定档篮子」。
     """
     active = brain.get_active(db_path=db_path)
     if active is None:
@@ -175,6 +194,22 @@ def build_report(
             refresh_command_hint(trade_date, trade_date),
         )
 
+    # V2-⑭-A(④ 完工记录登记的「`dataFreshness.scanLayer*` 三键未接线」欠账在此兑现):
+    # 扫描层三张预计算表跑没跑。**降级方向 = 不拦**(缺行 → 无种子 → 当日无篮子是合法
+    # 输出),但必须显式披露 —— 否则「今天没有篮子」与「今天没跑扫描层」在报告上长得
+    # 一模一样。整段包保险丝:新鲜度自己出问题不许掀翻报告。
+    try:
+        scan_freshness = scan_layer_status(trade_date, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        logger.warning("扫描层新鲜度查询异常(已降级为不可得,不阻断报告)", exc_info=True)
+        scan_freshness = None
+    if scan_freshness is not None and scan_freshness.stale:
+        logger.warning(
+            "市场扫描层数据未就绪(表内最新至 %s,落后 %s 个交易日)——今日驱动种子/篮子"
+            "不可得(降级方向=不拦),报告已显式标注。",
+            scan_freshness.latest_label(), scan_freshness.lag_days,
+        )
+
     provider = llm_provider or get_provider(db_path=db_path)
 
     # v1.3-② 持仓 K4 每日体检 + D5 收盘净浮盈(EOD 权威计算,seam 落点):对每只 open 持仓
@@ -213,17 +248,34 @@ def build_report(
             trade_date, reason="板块资金流(C2)计算异常(详见服务端日志),已降级留空。"
         )
 
-    # v1.3-③-C4 消息面扫描。**V2-⑬-11 起扫描域只剩持仓**:自选池整链删除(裁定 #9-a)后
-    # 次级扫描域暂空(`secondary_targets=[]`),隔日轮扫机制因此本版恒不触发——机制本体
-    # **不拆**(⑭-A 把篮子成员接进次级域时原样复用,见 `news_alerts.py` 模块头 V2 登记)。
+    # V2-⑭-A ③③b④ 篮子日报三段(每段各自包保险丝,见 `basket_daily.py`)。**排在消息面
+    # 之前**,因为下面的次级扫描域要用篮子成员。整段再包一层兜底:装配逻辑本身的意外
+    # 也不许让当日无报告。
+    try:
+        basket_daily = build_basket_daily(
+            trade_date, dropped=dropped_baskets, db_path=db_path, parquet_dir=parquet_dir,
+        )
+    except Exception:  # noqa: BLE001 —— 篮子日报整段异常不得连带主报告失败
+        logger.warning("篮子日报(③/③b/④)装配异常,已降级为三段未取得,不阻断主报告", exc_info=True)
+        basket_daily = empty_basket_daily(
+            trade_date, "篮子日报装配异常(详见服务端日志),本次三段均未取得。"
+        )
+
+    # v1.3-③-C4 消息面扫描。**V2-⑭-A 起次级扫描域 = 今日篮子成员**(⑬-11 删掉自选池后
+    # 次级域一度恒空,机制本体刻意留着等这里接线;见 `news_alerts.py` 模块头 V2 登记)。
+    # ⚠ **两处必须同域**:`info_card._default_news_domain` 同步扩到篮子成员,否则信息卡
+    # 会对着一批"其实扫过"的票说"不在扫描域"(⑬ 完工记录点名的欠账)。
     # `db_path` 透传供减持类事件跨日去重查询。**不阻断主报告管线**(同 C1/C2 姿势,
     # 内部两个子扫描已各自降级,这里再包一层兜底编排逻辑自身的意外)。
     from neckline.data.market_data import resolve_stock_names
     holding_codes = list(dict.fromkeys(h.ts_code for h in holding_positions))
-    all_alert_codes = list(holding_codes)
+    basket_codes = [c for c in dict.fromkeys(
+        code for b in basket_daily.baskets for code in b.member_codes
+    ) if c and c not in set(holding_codes)]
+    all_alert_codes = list(holding_codes) + basket_codes
     resolved_names = resolve_stock_names(all_alert_codes, db_path) if all_alert_codes else {}
     position_targets = [(c, resolved_names.get(c) or c) for c in holding_codes]
-    secondary_targets: List[tuple] = []
+    secondary_targets: List[tuple] = [(c, resolved_names.get(c) or c) for c in basket_codes]
     try:
         news_alerts = build_news_alerts(
             trade_date, position_targets, secondary_targets,
@@ -248,6 +300,8 @@ def build_report(
         news_alerts=news_alerts,
         sector_freshness=sector_freshness,
         industry_freshness=industry_freshness,   # v1.4-⑩-E 报告级披露
+        scan_freshness=scan_freshness,           # V2-⑭-A 第三件独立故障
+        basket_daily=basket_daily,               # V2-⑭-A ③/③b/④ 三段
     )
 
     if save:
@@ -261,12 +315,16 @@ def build_report(
             intel=intel.to_public_dict(),
             sector_moneyflow=sector_moneyflow.to_public_dict(),
             news_alerts_scan=news_alerts.scan_statuses_public(),
-            # v1.4-①-C 板块三键 + v1.4-⑩-F 行业强度三键。**两件独立故障并列存放,不合并成
-            # 一个 bool** —— 合并就分不清哪个坏了(既有 `stale` 语义一个字不改,仍只表板块)。
+            # v1.4-①-C 板块三键 + v1.4-⑩-F 行业强度三键 + V2-⑭-A 扫描层三键。
+            # **三件独立故障并列存放,不合并成一个 bool** —— 合并就分不清哪个坏了
+            # (既有 `stale` 语义一个字不改,仍只表板块)。扫描层那份取不到时**该三键
+            # 整体缺席**,而不是补一份"看起来新鲜"的默认值(§3.8)。
             data_freshness={
                 **sector_freshness.to_public_dict(),
                 **industry_freshness.to_public_dict(),
+                **(scan_freshness.to_public_dict() if scan_freshness is not None else {}),
             },
+            basket_daily=basket_daily.to_public_dict(),
             db_path=db_path,
         )
         # v1.3-② 持仓 K4 体检 + D5 净浮盈落库(同 `save=False` 不落库口径,防预览/单测副作用)。
@@ -296,6 +354,8 @@ def build_report(
         news_alerts=news_alerts,
         sector_freshness=sector_freshness,
         industry_freshness=industry_freshness,   # v1.4-⑩-F
+        scan_freshness=scan_freshness,           # V2-⑭-A
+        basket_daily=basket_daily,               # V2-⑭-A
     )
 
 

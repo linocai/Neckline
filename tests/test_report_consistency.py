@@ -42,7 +42,7 @@ class TestHistoricalReplayAcrossMultipleDays:
                 d, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
             )
             assert bundle.trade_date == d
-            assert bundle.markdown.startswith(f"# Neckline 盘后报告 · {d.isoformat()}")
+            assert bundle.markdown.startswith(f"# Neckline 篮子日报 · {d.isoformat()}")
             snapshots.append(bundle.markdown)
 
         # 三个不同回放日的报告全文不应全同(否则说明日期参数没被真正使用)。

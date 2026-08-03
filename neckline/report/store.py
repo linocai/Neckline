@@ -33,6 +33,7 @@ def save_report(
     sector_moneyflow: Optional[Dict[str, Any]] = None,
     news_alerts_scan: Optional[List[Dict[str, Any]]] = None,
     data_freshness: Optional[Dict[str, Any]] = None,
+    basket_daily: Optional[Dict[str, Any]] = None,
     db_path: Optional[Path] = None,
 ) -> None:
     """⚠ **V2-⑬-11 起 `watchlist_json` 列不再由本函数写入**(自选体检整节删除,裁定
@@ -49,15 +50,19 @@ def save_report(
     `data_freshness`(v1.4-①-C,`SectorDataFreshness.to_public_dict()`:
     `{sectorDataDate, sectorLagDays, stale}`):板块数据相对本报告日落后几个交易日 ——
     **随报告一起冻住**,不在读时重算(读一份三天前的报告时,该看到的是**当时**的新鲜度,
-    不是今天的)。默认 `None` → 落 `'{}'`,同 intel 惯例。"""
+    不是今天的)。默认 `None` → 落 `'{}'`,同 intel 惯例。
+    `basket_daily`(V2-⑭-A,`report/basket_daily.py::BasketDaily.to_public_dict()`:
+    今日篮子 + ③b 未定档篮子 + 昨日篮子复盘,已是 camelCase):同上**随报告冻住**。
+    ⚠ ③b 的 `droppedBaskets` 只活在这份快照里(⑥ 的溢出篮不进 `baskets` 表),
+    不落 = 历史回放看不到那天有多少好货装不下。默认 `None` → 落 `'{}'`。"""
     init_schema(db_path)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with connection(db_path) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO reports "
             "(trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "intel_json, sector_moneyflow_json, news_alerts_scan_json, data_freshness_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "intel_json, sector_moneyflow_json, news_alerts_scan_json, data_freshness_json, basket_daily_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 _d(trade_date),
                 now,
@@ -70,6 +75,7 @@ def save_report(
                 json.dumps(sector_moneyflow or {}, ensure_ascii=False),
                 json.dumps(news_alerts_scan or [], ensure_ascii=False),
                 json.dumps(data_freshness or {}, ensure_ascii=False),
+                json.dumps(basket_daily or {}, ensure_ascii=False),
             ),
         )
 
@@ -113,7 +119,7 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
         row = conn.execute(
             "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
             "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json, "
-            "data_freshness_json FROM reports WHERE trade_date=?",
+            "data_freshness_json, basket_daily_json FROM reports WHERE trade_date=?",
             (_d(trade_date),),
         ).fetchone()
     if row is None:
@@ -133,6 +139,9 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
         # v1.4-①-C:老报告行(建于本列之前)补列后取默认 '{}' → 读回空 dict,
         # 客户端按「空 = 该版本还没有新鲜度概念」处理,不是「新鲜」。
         "data_freshness": _parse_json_field(row[11], {}),
+        # V2-⑭-A:篮子日报快照(老报告行补列后取默认 '{}' → 读回空 dict,
+        # 客户端按「该版本还没有篮子日报概念」处理,不是「今天没有篮子」)。
+        "basket_daily": _parse_json_field(row[12], {}),
     }
 
 
@@ -153,7 +162,7 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
         row = conn.execute(
             "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
             "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json, "
-            "data_freshness_json FROM reports WHERE trade_date=?",
+            "data_freshness_json, basket_daily_json FROM reports WHERE trade_date=?",
             (trade_date_str,),
         ).fetchone()
     if row is None:
@@ -173,6 +182,9 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
         # v1.4-①-C:老报告行(建于本列之前)补列后取默认 '{}' → 读回空 dict,
         # 客户端按「空 = 该版本还没有新鲜度概念」处理,不是「新鲜」。
         "data_freshness": _parse_json_field(row[11], {}),
+        # V2-⑭-A:篮子日报快照(老报告行补列后取默认 '{}' → 读回空 dict,
+        # 客户端按「该版本还没有篮子日报概念」处理,不是「今天没有篮子」)。
+        "basket_daily": _parse_json_field(row[12], {}),
     }
 
 

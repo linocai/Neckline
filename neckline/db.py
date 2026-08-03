@@ -1147,6 +1147,16 @@ _COLUMN_MIGRATIONS = [
     # = 「这一拍没记样本构成」(老行建于本列之前,**不是**「样本为空」)。见
     # `sentinel/universe.py::WatchUniverse.breadth_extra_payload()`。
     ("retreat_metrics", "breadth_extra_sample_json", "TEXT NOT NULL DEFAULT '{}'"),
+    # V2-⑭-A(plan §五 V2-⑭-A「报告重构为篮子日报」):篮子日报快照。
+    # **随报告一起冻住**(同 `intel_json`/`data_freshness_json` 既定惯例):今日篮子
+    # (T1/T2/T3,每篮一张卡)+ ③b 未定档篮子(`capacity_overflow` /
+    # `below_quality_line` 两个原因码**分开存**)+ 昨日篮子复盘。老报告行(建于本列
+    # 之前)幂等补列取默认 '{}' → 读回空 dict,客户端按「该版本还没有篮子日报概念」
+    # 处理,**不是**「今天没有篮子」——「没有」与「没看」必须能分开(§3.8)。
+    # ⚠ ③b 的 `droppedBaskets` 之所以必须落在这里:⑥ 的 `TierResult.dropped` **不进
+    # `baskets` 表**(`baskets.tier` NOT NULL,溢出篮无档可填),报告快照是它唯一的
+    # 落点;不存 = 历史回放永远看不到"那天有多少好货装不下"。
+    ("reports", "basket_daily_json", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 

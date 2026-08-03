@@ -62,7 +62,7 @@ class TestBuildReportDegradesWithoutLLM:
 
         assert bundle.strategy_version == "v1"
         assert bundle.sentiment.position_quota in ("满额", "半额", "休息")
-        assert bundle.markdown.startswith("# Neckline 盘后报告")
+        assert bundle.markdown.startswith("# Neckline 篮子日报")
 
         # 落库可读回
         loaded_report = store.load_report(report_date, db_path=isolated_env.db_path)
@@ -143,7 +143,7 @@ class TestIntelAndSectorMoneyflowWiring:
         bundle = pipeline_mod.build_report(
             report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
         )
-        assert bundle.markdown.startswith("# Neckline 盘后报告")   # 主报告未受影响
+        assert bundle.markdown.startswith("# Neckline 篮子日报")   # 主报告未受影响
         assert bundle.intel is not None
         assert "计算异常" in bundle.intel.warnings[0]
 
@@ -160,7 +160,7 @@ class TestIntelAndSectorMoneyflowWiring:
         bundle = pipeline_mod.build_report(
             report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
         )
-        assert bundle.markdown.startswith("# Neckline 盘后报告")   # 主报告未受影响
+        assert bundle.markdown.startswith("# Neckline 篮子日报")   # 主报告未受影响
         assert bundle.sector_moneyflow is not None
         assert bundle.sector_moneyflow.available is False
         assert "计算异常" in bundle.sector_moneyflow.unavailable_reason
@@ -172,8 +172,8 @@ class TestIntelAndSectorMoneyflowWiring:
         bundle = pipeline_mod.build_report(
             dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
         )
-        assert "## 情报 · 复盘情报件(C1)" in bundle.markdown
-        assert "## 情报 · 板块资金流(C2,拥挤参考,非选股信号)" in bundle.markdown
+        assert "### 情报 · 复盘情报件(C1)" in bundle.markdown
+        assert "### 情报 · 板块资金流(C2,拥挤参考,非选股信号)" in bundle.markdown
 
 
 class TestNewsAlertsWiring:
@@ -210,7 +210,7 @@ class TestNewsAlertsWiring:
         bundle = pipeline_mod.build_report(
             report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=True,
         )
-        assert bundle.markdown.startswith("# Neckline 盘后报告")   # 主报告未受影响
+        assert bundle.markdown.startswith("# Neckline 篮子日报")   # 主报告未受影响
         assert bundle.news_alerts is not None
         assert all(not s.scanned for s in bundle.news_alerts.scan_statuses)
 
@@ -221,7 +221,7 @@ class TestNewsAlertsWiring:
         bundle = pipeline_mod.build_report(
             dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
         )
-        assert "## 消息面" in bundle.markdown
+        assert "### 消息面" in bundle.markdown
 
     def test_scan_targets_are_positions_only_secondary_domain_empty(self, isolated_env, monkeypatch):
         """§硬要求「扫描对象=有限域,不是全市场」——用 spy 替身直接断言
@@ -311,8 +311,10 @@ class TestHoldingCheckWiring:
     「无持仓时节仍在」这三件 `build_report` 专属的事。"""
 
     def test_markdown_includes_holding_check_section_first(self, isolated_env, monkeypatch):
-        """「持仓管理优先于选新票」的顺序纪律不变(⑬-1 删了候选节 → 锚改到紧随其后的
-        情报节;⑭-A 重排篮子日报时锚要换成「今日篮子」那一节)。"""
+        """「持仓管理优先于选新票」的顺序纪律不变。⑭-A 五段结构落地后锚点定死为
+        **③ 今日篮子**(① 市场语境 → ② 持仓体检 → ③ 今日篮子)—— ⚠ 注意锚**不能**再用
+        「情报」:情报节自 ⑭-A 起被并进 ① 市场语境,排在持仓体检**之前**,那是 plan
+        定死的段序,不是顺序纪律被破坏。"""
         monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
         dates = seed_synthetic_market(isolated_env)
         seed_active_rule_v1(isolated_env)
@@ -322,9 +324,10 @@ class TestHoldingCheckWiring:
         bundle = pipeline_mod.build_report(
             report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
         )
-        assert "## 持仓体检" in bundle.markdown
-        assert bundle.markdown.index("## 持仓体检") < bundle.markdown.index("## 情报")
-        assert "600001.SH" in bundle.markdown.split("## 持仓体检")[1].split("## 情报")[0]
+        assert "## ② 持仓体检" in bundle.markdown
+        assert bundle.markdown.index("## ① 情绪与市场语境") < bundle.markdown.index("## ② 持仓体检")
+        assert bundle.markdown.index("## ② 持仓体检") < bundle.markdown.index("## ③ 今日篮子")
+        assert "600001.SH" in bundle.markdown.split("## ② 持仓体检")[1].split("## ③ 今日篮子")[0]
 
     def test_markdown_holding_section_present_when_no_positions(self, isolated_env, monkeypatch):
         """空持仓仍要有这一节(节在 = 体检跑过了),不是省略。"""
@@ -336,7 +339,7 @@ class TestHoldingCheckWiring:
         bundle = pipeline_mod.build_report(
             report_date, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
         )
-        assert "## 持仓体检" in bundle.markdown
+        assert "## ② 持仓体检" in bundle.markdown
         assert "今日无持仓" in bundle.markdown
         assert bundle.holding_k4_check == []
 
@@ -510,11 +513,15 @@ class TestSectorFreshnessInReport:
         # v1.4-⑩-F:同一个 `dataFreshness` 里并列**两件独立故障** —— 板块数据过期(本例
         # 造的)与行业强度未就绪(本例已由 fixture 日更喂上,故 stale=False)。
         # **既有三键语义一个字不改**(`stale` 仍只表板块),不许合并成一个 bool。
+        # V2-⑭-A:再并进**扫描层三键**(第三件独立故障)。本例的隔离库没跑过扫描层
+        # 批算 → `scanLayerDate=None` + `scanLayerLagDays=-1`(哨兵值「表内完全没有
+        # 任何行」)+ `scanLayerStale=True`。⛔ 三件故障并列,不合并成一个 bool。
         assert loaded["data_freshness"] == {
             "sectorDataDate": dates[len(dates) - lag - 1].strftime("%Y%m%d"),
             "sectorLagDays": lag, "stale": True,
             "industryStrengthDate": report_date.strftime("%Y%m%d"),
             "industryStrengthLagDays": 0, "industryStrengthStale": False,
+            "scanLayerDate": None, "scanLayerLagDays": -1, "scanLayerStale": True,
         }
 
     def test_fresh_board_data_has_no_banner(self, isolated_env, monkeypatch):

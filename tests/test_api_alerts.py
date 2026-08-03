@@ -82,11 +82,22 @@ class TestCrud:
         assert r.status_code == 404 and r.json()["detail"]["reason"] == "not_found"
 
     def test_status_filter(self, client, AUTH):
+        """⚠ **V2-⑭-B 契约修正(契约线 🔵 B7)**:查询参数名由 Python 形参名
+        `status_filter` 改为契约名 `status`(形参仍叫 `status_filter`,因为 `status`
+        会遮住模块级 `fastapi.status`)。"""
         aid = _create(client, AUTH).json()["id"]
         client.delete(f"/api/v1/alerts/{aid}", headers=AUTH)
-        assert client.get("/api/v1/alerts?status_filter=active", headers=AUTH).json()["items"] == []
-        got = client.get("/api/v1/alerts?status_filter=cancelled", headers=AUTH).json()["items"]
+        assert client.get("/api/v1/alerts?status=active", headers=AUTH).json()["items"] == []
+        got = client.get("/api/v1/alerts?status=cancelled", headers=AUTH).json()["items"]
         assert [i["id"] for i in got] == [aid]
+
+    def test_status_filter_query_key_is_camel_contract_name_not_python_param(self, client, AUTH):
+        """防复发:形参名不许再漏成契约键。老键 `status_filter` 现在只是个被忽略的
+        未知查询参数(FastAPI 不报错),故断言它**不再起过滤作用**。"""
+        aid = _create(client, AUTH).json()["id"]
+        client.delete(f"/api/v1/alerts/{aid}", headers=AUTH)
+        got = client.get("/api/v1/alerts?status_filter=active", headers=AUTH).json()["items"]
+        assert [i["id"] for i in got] == [aid], "老参数名不该再被识别成过滤条件"
 
     def test_create_records_a_user_action(self, client, AUTH, api_env):
         """⑩-D 五类用户行为之一(`alert`):建提醒是用户行为,落 append-only 台账。"""

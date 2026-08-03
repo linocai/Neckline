@@ -18,6 +18,10 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 _ONLINE_FILES = [
     "neckline/report/pipeline.py",
+    # V2-⑭-A 新增:篮子日报视图模型是 `build_report` 的**只读**装配层,同属在线路径。
+    # (⛔ **`neckline/report/evening.py` 刻意不在本清单里** —— 它就是那条 16:35 批算链,
+    # 调批算写入口是它的职责;把它加进来会让这条守门与 ⑭-A 的编排直接冲突。)
+    "neckline/report/basket_daily.py",
     "neckline/api/app.py",
     "neckline/api/deps.py",
     "neckline/api/inquiry.py",

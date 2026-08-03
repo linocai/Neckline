@@ -94,22 +94,23 @@ class TestHoldingCheckSection:
     def test_empty_holdings_shows_placeholder_not_omitted(self):
         """空持仓仍要有这一节(节在 = 体检跑过了),不能因为空列表整节消失。"""
         md = _render(holding_k4_check=[])
-        assert "## 持仓体检" in md
+        assert "## ② 持仓体检" in md
         assert "今日无持仓" in md
 
     def test_omitted_holding_check_defaults_to_empty_not_crash(self):
         """`holding_k4_check` 参数省略(旧调用点/向后兼容)→ 按空处理,不崩。"""
         md = _render()
-        assert "## 持仓体检" in md
+        assert "## ② 持仓体检" in md
         assert "今日无持仓" in md
 
     def test_holding_section_appears_before_market_context_sections(self):
-        """「持仓管理优先于选新票」的顺序不变(客户端 v1.1-E.1 镜像)。⑬-1 删了候选节,
-        原断言「持仓体检 早于 候选」改锚到**紧随其后的市场语境节**;⑭-A 重排篮子日报
-        时(② 持仓体检 → ③ 今日篮子)要把锚换成篮子节,顺序纪律本身不许动。"""
+        """「持仓管理优先于选新票」的顺序不变(客户端 v1.1-E.1 镜像)。⑭-A 五段结构
+        落地后锚点换成 **③ 今日篮子**(② 持仓体检 → ③ 今日篮子),顺序纪律本身不许动;
+        同时锁死「市场语境 ① 在持仓体检 ② 之前」这半句。"""
         item = _holding_item()
         md = _render(holding_k4_check=[item])
-        assert md.index("## 持仓体检") < md.index("## 情报")
+        assert md.index("## ① 情绪与市场语境") < md.index("## ② 持仓体检")
+        assert md.index("## ② 持仓体检") < md.index("## ③ 今日篮子")
 
     def test_holding_item_shows_code_name_dcount_state_and_net_float(self):
         item = _holding_item(
@@ -212,7 +213,7 @@ class TestNewsAlertsSection:
 
     def test_none_report_shows_placeholder_not_crash(self):
         md = _render()
-        assert "## 消息面" in md
+        assert "### 消息面" in md
         assert "未生成" in md
 
     def test_unscanned_source_shows_explicit_warning_not_silent_empty(self):
@@ -238,10 +239,14 @@ class TestNewsAlertsSection:
         # 逐源状态行的「未扫描」用 ⚠ + 粗体标出(见 render.py `**本次未扫描**`),
         # 与本测试下方"未命中条目"的兜底提示句(纯文本提及"本次未扫描"作为
         # 判断线索之一)刻意区分——后者不应被误判为"确实有源未扫描"。
-        assert "⚠" not in md
-        assert "**本次未扫描**" not in md
-        assert "已扫描" in md
-        assert "确认无此类消息" in md or "未发现命中条目" in md
+        # ⚠ **断言锚在消息面这一小节内**(⑭-A 起整份报告的其它段落会正常出现 ⚠ ——
+        # 如 ③ 今日篮子的「本段未取得」;对整份 md 断言"没有 ⚠"会把本测试变成一条
+        # 与消息面无关的脆弱断言)。
+        section = md.split("### 消息面")[1].split("## ③ 今日篮子")[0]
+        assert "⚠" not in section
+        assert "**本次未扫描**" not in section
+        assert "已扫描" in section
+        assert "确认无此类消息" in section or "未发现命中条目" in section
 
     def test_hit_items_rendered_in_table_with_category_label(self):
         from neckline.report.news_alerts import NewsAlertItem, NewsAlertScanStatus, SOURCE_TUSHARE_HOLDERTRADE

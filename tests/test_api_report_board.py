@@ -7,58 +7,43 @@ from datetime import date
 
 import pytest
 
-from neckline.llm.judge import JudgeResult
 from neckline.report import store as report_store
 from neckline.sentinel import dedup
 
 
-def _candidate(rank: int, code: str, name: str) -> dict:
-    return {
-        "ts_code": code, "name": name, "close": 10.0, "score": 88.0, "rank": rank,
-        "board": "MAIN", "pattern_tags": ["浅回调贴前高", "放量"],
-        "hot_sectors": ["AI(板块年龄3天,20日+12.0%)"], "sector_names": ["AI"],
-        "entry_plan": "回调低吸:站稳10日线", "stop_loss": "参考止损价约 9.50 元(-5%)",
-        "target": "不设固定止盈线;持有满5日无条件离场", "invalidation_text": "次日低开≤-2%且全天未翻红…",
-        "invalidation_spec": {"low_open_pct": -0.02, "vwap_break": True},
-        "entry_spec": {"buypoint": "pullback", "ma10": 9.9},
+def _basket_daily(**overrides) -> dict:
+    """一份 ⑭-A 篮子日报快照(`reports.basket_daily_json` 的形状,已是 camelCase)。"""
+    base = {
+        "tradeDate": "20260717",
+        "baskets": [{
+            "basketId": 7, "basketKey": "abc123", "name": "固态电池", "tier": 1,
+            "memberCodes": ["600001.SH"], "card": None, "cardVersion": None,
+            "cardUnavailableReason": "card_not_ready", "execHints": {},
+        }],
+        "basketsAvailable": True, "basketsUnavailableReason": None,
+        "droppedBaskets": [], "droppedBasketsAvailable": True,
+        "droppedBasketsUnavailableReason": None,
+        "reviews": [], "reviewsAvailable": True, "reviewsUnavailableReason": None,
+        "reviewD0": None, "packVersion": "K4-pack-v1", "notes": [],
     }
+    base.update(overrides)
+    return base
 
 
-def _seed_report(db, d: date, *, intel=None, sector_moneyflow=None, news_alerts_scan=None):
+def _seed_report(db, d: date, *, intel=None, sector_moneyflow=None, news_alerts_scan=None,
+                 basket_daily=None):
     report_store.save_report(
         d, strategy_version="v1",
         sentiment={"trade_date": d.isoformat(), "limit_up_count": 48, "limit_down_count": 41,
                    "zaban_rate": 0.37, "max_consec_limit_up": 3, "position_quota": "半额",
                    "quota_reason": "情绪中性"},
         sectors=[{"index_code": "AI", "name": "AI", "board_age": 3, "ret_20d": 0.12, "bonus": 3.0, "rank": 1}],
-        candidates=[_candidate(1, "600001.SH", "示例甲"), _candidate(2, "600002.SH", "示例乙")],
+        candidates=[],   # ⑬-1 候选榜已删;⑭-B 起契约面也没有 `candidates` 键了
         markdown="# 报告", intel=intel, sector_moneyflow=sector_moneyflow,
-        news_alerts_scan=news_alerts_scan, db_path=db,
+        news_alerts_scan=news_alerts_scan,
+        basket_daily=(basket_daily if basket_daily is not None else _basket_daily()),
+        db_path=db,
     )
-    _insert_llm_judgment_row(db, d, "600001.SH")
-
-
-def _insert_llm_judgment_row(db, d: date, ts_code: str) -> None:
-    """**V2-⑬-2**:`llm_judgments` 停写留档,`store.save_llm_judgment` 已物理删除;
-    `/report` 仍会 live join 该表读**历史行**,故单测改走裸 SQL 造历史行(同
-    `conftest.insert_decision_log_row`/`insert_inquiry_pool_row` 体例)。"""
-    import sqlite3
-
-    from neckline.db import init_schema
-
-    init_schema(db)
-    conn = sqlite3.connect(str(db))
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO llm_judgments "
-            "(trade_date, ts_code, provider, model, verdict, narrative, degraded, degrade_reason,"
-            " search_hits_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (d.strftime("%Y%m%d"), ts_code, "glm", "glm-5.2", "通过", "催化站得住。", 0, "",
-             "[]", "2026-07-17T08:00:00+00:00"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def test_report_latest(client, AUTH, api_env):
@@ -70,22 +55,58 @@ def test_report_latest(client, AUTH, api_env):
     assert body["strategyVersion"] == "v1"
     assert body["sentiment"]["position_quota"] == "半额"
     assert body["sectors"][0]["board_age"] == 3
-    cands = body["candidates"]
-    assert len(cands) == 2
-    c0 = cands[0]
-    assert c0["code"] == "600001.SH" and c0["rank"] == 1
-    # ⑬-6:老四件套四键已物理删除(D2=A 路,一次性换血、不留过渡文案);
-    # ⑬-3/⑬-4:`referencePlan`/`execHints` 两键同批删除。
-    for gone in ("buyPoint", "stop", "target", "invalidation", "referencePlan", "execHints"):
-        assert gone not in c0, f"{gone} 应已随 ⑬-3/4/6 从 CandidateOut 删除"
-    assert c0["formTags"] == ["浅回调贴前高", "放量"]
-    # 前排候选带 LLM 审判
-    assert c0["llmJudgment"]["verdict"] == "通过"
-    # 未审判候选无 llmJudgment
-    assert cands[1]["llmJudgment"] is None
+    # ⑭-B:候选榜整族契约已退役,取而代之的是篮子日报三段。
+    assert "candidates" not in body, "`candidates` 键应已随 ⑭-B 契约总装删除"
+    bd = body["basketDaily"]
+    assert bd["basketsAvailable"] is True and len(bd["baskets"]) == 1
+    b0 = bd["baskets"][0]
+    assert b0["basketId"] == 7 and b0["tier"] == 1 and b0["name"] == "固态电池"
+    # 有篮子无卡是**合法中间态**:`card=null` + 明确的原因码,⛔ 不是"篮子不存在"。
+    assert b0["card"] is None and b0["cardUnavailableReason"] == "card_not_ready"
+    assert bd["packVersion"] == "K4-pack-v1"
 
 
-# —— v1.5-③-B `_shape_candidate` 老四件套过渡文案(需求 9,向后兼容硬约束)————————————
+def test_report_basket_daily_empty_snapshot_is_honest_about_not_looked(client, AUTH, api_env):
+    """老报告(建于 `basket_daily_json` 列之前)→ 三段全 `available=false` + 原因,
+    ⛔ 不冒充「那天没有篮子」——「没有」与「没看」必须能分开(§3.8)。"""
+    _seed_report(api_env.db_path, date(2026, 7, 18), basket_daily={})
+    bd = client.get("/api/v1/report/latest", headers=AUTH).json()["basketDaily"]
+    assert bd["basketsAvailable"] is False
+    assert bd["basketsUnavailableReason"]
+    assert bd["droppedBasketsAvailable"] is False
+    assert bd["reviewsAvailable"] is False
+    assert bd["baskets"] == [] and bd["droppedBaskets"] == [] and bd["reviews"] == []
+
+
+def test_report_dropped_baskets_two_reason_codes_stay_separate(client, AUTH, api_env):
+    """③b 两个原因码指向**相反的市场结论**,契约面必须原样透出、⛔ 不许在服务端
+    合并成一句「未入选」(⑥-b-C)。"""
+    _seed_report(api_env.db_path, date(2026, 7, 19), basket_daily=_basket_daily(
+        droppedBaskets=[
+            {"name": "机器人", "mechScore": 0.71, "reason": "capacity_overflow"},
+            {"name": "白酒", "mechScore": 0.12, "reason": "below_quality_line"},
+        ],
+    ))
+    bd = client.get("/api/v1/report/latest", headers=AUTH).json()["basketDaily"]
+    assert bd["droppedBasketsAvailable"] is True
+    reasons = {d["reason"] for d in bd["droppedBaskets"]}
+    assert reasons == {"capacity_overflow", "below_quality_line"}
+    # ⛔ 溢出篮**没有** basketId(它没进 `baskets` 表)
+    assert all("basketId" not in d for d in bd["droppedBaskets"])
+
+
+def test_report_dropped_baskets_empty_array_needs_available_flag_to_mean_none(client, AUTH, api_env):
+    """空数组 + `available=true` = **今天真的零溢出**(算过了);
+    空数组 + `available=false` = **本次没算**。两者在契约面必须能分开。"""
+    _seed_report(api_env.db_path, date(2026, 7, 20), basket_daily=_basket_daily(
+        droppedBaskets=[], droppedBasketsAvailable=False,
+        droppedBasketsUnavailableReason="本次未运行 Tier 分层引擎。",
+    ))
+    bd = client.get("/api/v1/report/latest", headers=AUTH).json()["basketDaily"]
+    assert bd["droppedBaskets"] == [] and bd["droppedBasketsAvailable"] is False
+    assert bd["droppedBasketsUnavailableReason"]
+
+
 
 def test_report_latest_carries_intel_and_sector_moneyflow(client, AUTH, api_env):
     """v1.3-③ C1/C2 契约(`ReportOut.intel`/`sectorMoneyflow`)——透传报告落库快照,
@@ -99,100 +120,6 @@ def test_report_latest_carries_intel_and_sector_moneyflow(client, AUTH, api_env)
     assert body["intel"]["gainers"][0]["code"] == "600001.SH"
     assert body["sectorMoneyflow"]["available"] is True
     assert body["sectorMoneyflow"]["topInflow"][0]["code"] == "AAA.TI"
-
-
-def test_report_latest_intel_rank_carries_source_industry_and_sort_keys(client, AUTH, api_env):
-    """v1.3-⑥ 后端补齐①:`IntelRankOut` 补 `source`/`industry` 两字段——数据早在
-    v1.3-③-C3 落 `intel_rank` 字典/报告落库快照,此前 pydantic 未声明这些键 → 默认丢弃
-    (`CandidateOut.intelRank = IntelRankOut(**(c.get("intel_rank") or {}))` 静默吞掉未
-    声明的额外键),本次补字段透出、生成逻辑零改动。
-
-    ⚠ 同批补齐的第三个字段 `permanentBoardStatus` **已随 ⑬-1 / 契约线 🟡 Y4 退役**
-    (2026-08-03),对应断言移到 `test_report_latest_drops_retired_permanent_board_status_key`
-    ——那条现在验的是反面:老快照里存着这个键,响应里也不许再出现。"""
-    c = _candidate(1, "600001.SH", "示例甲")
-    c["k4_flags"] = ["B2_double_gold_cross"]
-    c["intel_rank"] = {
-        "sectorFlow": 1234.5, "themePersistDays": 1, "highElasticity": True,
-        "source": "quota", "industry": "小金属",
-    }
-    report_store.save_report(
-        date(2026, 7, 22), strategy_version="v1.3",
-        sentiment={"trade_date": "20260722"}, sectors=[], candidates=[c],
-        markdown="# 报告", db_path=api_env.db_path,
-    )
-    rank = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"][0]["intelRank"]
-    assert rank["source"] == "quota"
-    assert rank["industry"] == "小金属"
-    assert rank["sectorFlow"] == 1234.5
-
-
-def test_report_latest_intel_rank_carries_v143_sort_key_fields(client, AUTH, api_env):
-    """v1.4-③-E:`IntelRankOut` 补 `industryRank`/`industryPersistDays`/`yellowCardCount`
-    三个新字段(需求 8 排序键三级键原样透出)——报告落库快照 → API 读回往返不丢字段,
-    `industryRank=None`(未参与排名)与 `0` 显式区分(不得混淆)。"""
-    c = _candidate(1, "600001.SH", "示例甲")
-    c["intel_rank"] = {
-        "sectorFlow": 1234.5, "themePersistDays": 2, "highElasticity": False,
-        "source": "competition", "industry": "半导体",
-        "industryRank": 7, "industryPersistDays": 2, "yellowCardCount": 1,
-    }
-    c2 = _candidate(2, "600002.SH", "示例乙")
-    c2["intel_rank"] = {
-        "sectorFlow": None, "themePersistDays": 0, "highElasticity": False,
-        "source": "quota", "industry": "",
-        "industryRank": None, "industryPersistDays": 0, "yellowCardCount": 0,
-    }
-    report_store.save_report(
-        date(2026, 7, 28), strategy_version="v1.4.0",
-        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c, c2],
-        markdown="# 报告", db_path=api_env.db_path,
-    )
-    cands = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"]
-    rank1 = {r["code"]: r["intelRank"] for r in cands}["600001.SH"]
-    rank2 = {r["code"]: r["intelRank"] for r in cands}["600002.SH"]
-    assert rank1["industryRank"] == 7
-    assert rank1["industryPersistDays"] == 2
-    assert rank1["yellowCardCount"] == 1
-    # 600002:industry_rank=None(未参与排名)不得读回 0(0 会被误读成"最强"),显式 None 往返。
-    assert rank2["industryRank"] is None
-    assert rank2["industryPersistDays"] == 0
-    assert rank2["yellowCardCount"] == 0
-
-
-def test_report_latest_intel_rank_defaults_when_old_snapshot(client, AUTH, api_env):
-    """旧报告(建于本三字段前,`intel_rank` 无 source/industry 键,也无 v1.4-③ 的
-    industryRank/industryPersistDays/yellowCardCount 三键)读回默认——`source`/`industry`
-    空串、`industryRank` None、`industryPersistDays`/`yellowCardCount` 0,前向兼容不崩、
-    不冒充"quota/competition/forced"三值之一(客户端未识别值原样透传),也不把
-    `industryRank=None` 冒充"参与过排名但查无"(旧报告压根没算过这件事)。
-
-    ⚠ `permanentBoardStatus` **已随 ⑬-1 / 契约线 🟡 Y4 退役**(2026-08-03):不在响应里。"""
-    _seed_report(api_env.db_path, date(2026, 7, 17))
-    rank = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"][0]["intelRank"]
-    assert rank == {
-        "sectorFlow": None, "themePersistDays": 0, "highElasticity": False,
-        "source": "", "industry": "",
-        "industryRank": None, "industryPersistDays": 0, "yellowCardCount": 0,
-    }
-
-
-def test_report_latest_drops_retired_permanent_board_status_key(client, AUTH, api_env):
-    """🟡 Y4:**老快照里存着**这个键时,响应里也不许再出现(pydantic 只透出已声明字段
-    ——这条是把"DTO 删了 = 键真的停发"钉死,而不是靠"反正现在没人写这个键了")。"""
-    c = _candidate(1, "600001.SH", "示例甲")
-    c["intel_rank"] = {
-        "source": "quota", "industry": "小金属",
-        "permanentBoardStatus": [{"board": "稀土永磁", "quotaFilled": 0, "note": "老快照残留"}],
-    }
-    report_store.save_report(
-        date(2026, 7, 28), strategy_version="v1.4.0",
-        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
-        markdown="# 报告", db_path=api_env.db_path,
-    )
-    rank = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"][0]["intelRank"]
-    assert "permanentBoardStatus" not in rank
-    assert rank["source"] == "quota" and rank["industry"] == "小金属"   # 其余字段一个不丢
 
 
 def test_report_latest_intel_defaults_to_empty_dict_when_not_seeded(client, AUTH, api_env):
@@ -281,7 +208,8 @@ def test_report_by_date_historical(client, AUTH, api_env):
 def test_report_latest_empty_degraded(client, AUTH):
     body = client.get("/api/v1/report/latest", headers=AUTH).json()
     assert body["degraded"] is True and body["reason"] == "no_report"
-    assert body["candidates"] == []
+    # ⑭-B:空态也是三段全 `available=false`(⛔ 不冒充「那天没有篮子」)。
+    assert body["basketDaily"]["basketsAvailable"] is False
 
 
 def test_report_by_date_notfound_degraded(client, AUTH):
@@ -406,75 +334,6 @@ def test_report_data_freshness_empty_for_old_snapshot(client, AUTH, api_env):
     概念」处理(契约注释已写死这条口径)。"""
     _seed_report(api_env.db_path, date(2026, 7, 24))
     assert client.get("/api/v1/report/latest", headers=AUTH).json()["dataFreshness"] == {}
-
-
-# —— v1.4-④-B `CandidateOut.infoCard`(信息卡摘要,不含 60 日序列)——————————————
-
-def test_report_candidate_carries_info_card_summary(client, AUTH, api_env):
-    """`Candidate.info_card_summary` 存档 → `CandidateOut.infoCard` 往返不丢字段。"""
-    c = _candidate(1, "600001.SH", "示例甲")
-    c["info_card_summary"] = {
-        "snapshot": {"volRatio5": 1.23, "turnoverRate": 5.6, "industryRank": 3,
-                     "industryPersistDays": 1, "aboveMa250": True, "distFromMa250Pct": 0.05,
-                     "distFromHigh20dPct": -0.02, "consecLimitUpDays": 0},
-        "mildBand": True,
-        "news": {"scanned": True, "items": [{"category": "REDUCTION", "summary": "x", "source": "tushare_holdertrade"}],
-                  "unavailableReason": None},
-        "topList": {"onListToday": False, "reason": None, "netAmount": None, "netRate": None,
-                     "lookbackDaysCovered": 4, "lookbackHitDays": 0},
-    }
-    report_store.save_report(
-        date(2026, 7, 28), strategy_version="v1.4.0",
-        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
-        markdown="# 报告", db_path=api_env.db_path,
-    )
-    body = client.get("/api/v1/report/latest", headers=AUTH).json()
-    info = body["candidates"][0]["infoCard"]
-    assert info["snapshot"]["industryRank"] == 3
-    assert info["snapshot"]["aboveMa250"] is True
-    assert info["mildBand"] is True
-    assert info["news"]["scanned"] is True
-    assert info["news"]["items"][0]["summary"] == "x"
-    assert info["topList"]["lookbackDaysCovered"] == 4
-    # 摘要位不含 60 日序列(键集断言,④ 验收原话)。
-    assert set(info.keys()) == {"snapshot", "mildBand", "news", "topList"}
-
-
-def test_report_candidate_info_card_none_for_old_snapshot(client, AUTH, api_env):
-    """老报告(建于本字段之前,`candidates_json` 里没有 `info_card_summary` 键)→
-    `infoCard=None`,不冒充"确认无内容"(与 `intelRank` 用默认空 dict 的处理方式
-    刻意不同——`infoCard` 整体缺失时用 `None` 更诚实,因为它没有天然的"空但合法"态)。"""
-    _seed_report(api_env.db_path, date(2026, 7, 17))
-    body = client.get("/api/v1/report/latest", headers=AUTH).json()
-    assert body["candidates"][0]["infoCard"] is None
-
-
-# —— v1.4-⑤-A `CandidateOut.execHints`(执行提示)——————————————————————————————
-
-def test_report_candidate_carries_judge_skipped_true(client, AUTH, api_env):
-    """`Candidate.judge_skipped` 存档 → `CandidateOut.judgeSkipped` 往返不丢字段;
-    预算耗尽的票天然没有 `llmJudgment`(没发起调用),两个字段同批断言互不冲突。"""
-    c = _candidate(1, "600001.SH", "示例甲")
-    c["judge_skipped"] = True
-    report_store.save_report(
-        date(2026, 7, 28), strategy_version="v1.5.0",
-        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
-        markdown="# 报告", db_path=api_env.db_path,
-    )
-    body = client.get("/api/v1/report/latest", headers=AUTH).json()
-    assert body["candidates"][0]["judgeSkipped"] is True
-    assert body["candidates"][0]["llmJudgment"] is None
-
-
-def test_report_candidate_judge_skipped_defaults_false_for_old_snapshot(client, AUTH, api_env):
-    """老报告(建于本字段前,`candidates_json` 里没有 `judge_skipped` 键)→
-    `judgeSkipped=False`(默认值天然合法——"预算跳过"是本字段引入前不存在的第三
-    态,老报告的候选只可能是"正常审判过"或"未激活"两态之一,`False` 只是如实
-    反映这个新维度在老报告里压根不存在,不冒充"确认扫过预算判定",同 `execHints`
-    默认空列表的"缺键即默认"惯例)。"""
-    _seed_report(api_env.db_path, date(2026, 7, 17))
-    body = client.get("/api/v1/report/latest", headers=AUTH).json()
-    assert body["candidates"][0]["judgeSkipped"] is False
 
 
 # —— v1.4-⑥-B 自选隔日轮扫披露:领域层算了必须真的抵达客户端 ——————————————————

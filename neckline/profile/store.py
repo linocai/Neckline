@@ -154,4 +154,23 @@ def load_capability(as_of_date: str, db_path: Optional[Path] = None) -> List[Dic
     ]
 
 
-__all__ = ["save_preference", "load_preference", "save_capability", "load_capability"]
+_TABLE_BY_KIND = {"preference": "profile_preference", "capability": "profile_capability"}
+
+
+def latest_as_of(kind: str, *, db_path: Optional[Path] = None) -> Optional[str]:
+    """某张画像表里**最近一期**的 `as_of_date`('YYYYMMDD');一期都没有 → `None`。
+
+    `None` 是「**从未算过**」,与「算过、这一期一行都没有」(返回日期 + 空行列表)是
+    两件事 —— 调用方(⑭-B 的 `GET /profile/*`)据此给出不同的文案,⛔ 不许合并
+    (§3.8「没有」与「没看」必须能分开)。`kind` ∈ {`preference`, `capability`}。"""
+    table = _TABLE_BY_KIND.get(kind)
+    if table is None:
+        raise ValueError(f"latest_as_of: 未知 kind={kind!r},只接受 {sorted(_TABLE_BY_KIND)}")
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(f"SELECT MAX(as_of_date) FROM {table}").fetchone()
+    return row[0] if row and row[0] else None
+
+
+__all__ = ["save_preference", "load_preference", "save_capability", "load_capability",
+           "latest_as_of"]

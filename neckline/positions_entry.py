@@ -423,6 +423,34 @@ def list_position_plans(position_id: int, db_path: Optional[Path] = None) -> Lis
     return out
 
 
+def load_entry_snapshot(position_id: int, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """读某持仓的建仓冻结快照(⑩-A,`UNIQUE(position_id)` 使一仓一行)。只读,无写副作用。
+
+    `None` = **这笔仓没有快照行**(该仓建于 ⑩ 之前,或写入当时整段失败)——⛔ 不是
+    「快照是空的」;`snapshot_json.not_captured` 才是「这次采集里哪几项没采到」。
+    键保持 **snake_case**(领域形状),转 camel 是 API 层的事。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        r = conn.execute(
+            "SELECT position_id, ts_code, trade_date, basket_id, card_version, tier, role, "
+            "snapshot_json, created_at FROM entry_snapshots WHERE position_id=?",
+            (int(position_id),),
+        ).fetchone()
+    if r is None:
+        return None
+    try:
+        snapshot = json.loads(r[7]) if r[7] else {}
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("[positions_entry] position_id=%s 的 snapshot_json 解不出,按空 dict 读回",
+                       position_id)
+        snapshot = {}
+    return {
+        "position_id": int(r[0]), "ts_code": str(r[1]), "trade_date": str(r[2]),
+        "basket_id": r[3], "card_version": r[4], "tier": r[5], "role": r[6],
+        "snapshot": snapshot, "created_at": str(r[8]),
+    }
+
+
 def latest_position_plan(position_id: int, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     plans = list_position_plans(position_id, db_path=db_path)
     return plans[-1] if plans else None
@@ -827,6 +855,7 @@ __all__ = [
     "set_exit_reference_muted",
     "list_position_plans",
     "latest_position_plan",
+    "load_entry_snapshot",
     "evaluate_entry_deviation",
     "freeze_entry_snapshot",
     "record_buy",

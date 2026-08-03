@@ -139,7 +139,9 @@ def test_13_1_permanent_board_dto_and_client_card_are_gone():
 
     assert not hasattr(schemas, "PermanentBoardStatusOut")
     assert "PermanentBoardStatusOut" not in schemas.__all__
-    assert "permanentBoardStatus" not in schemas.IntelRankOut.model_fields
+    # ⑭-B 起 `IntelRankOut` 本身也退役了(整族候选契约换血),故这条从「某个键不在
+    # 那个 DTO 里」升级为「那个 DTO 压根不存在」—— 更强,不是更弱。
+    assert not hasattr(schemas, "IntelRankOut")
 
     models = (_ROOT / "client" / "Models.swift").read_text(encoding="utf-8")
     assert "struct PermanentBoardStatus" not in models
@@ -238,10 +240,16 @@ def test_13_5_decision_log_form_required_branches_gone_from_client():
 # ======================================================================
 
 def test_13_6_legacy_four_piece_keys_gone_from_contract_and_client():
-    from neckline.api.schemas import CandidateOut
+    """⚠ **V2-⑭-B 起断言升级**:整个 `CandidateOut` 连同 `ReportOut.candidates` 都
+    已退役(契约面留着 = 它还在承诺这件事),所以不再是"某四个键不在 DTO 里",
+    而是"这族 DTO 压根不存在"。"""
+    import neckline.api.schemas as schemas
 
-    for gone in ("buyPoint", "stop", "target", "invalidation"):
-        assert gone not in CandidateOut.model_fields, gone
+    for gone in ("CandidateOut", "IntelRankOut", "LLMJudgmentOut", "InfoCardSummaryOut"):
+        assert not hasattr(schemas, gone), f"{gone} 应已随 ⑭-B 契约总装退役"
+    assert "candidates" not in schemas.ReportOut.model_fields, \
+        "`ReportOut.candidates` 应已换成 `basketDaily`(⑭-B)"
+    assert "basketDaily" in schemas.ReportOut.model_fields
     swift = (_ROOT / "client" / "Models.swift").read_text(encoding="utf-8")
     cand = swift.split("struct Candidate: Codable", 1)[1].split("\n}\n", 1)[0]
     for gone in ("var buyPoint", "var stop:", "var target:", "var invalidation:"):

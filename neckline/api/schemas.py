@@ -20,13 +20,18 @@ class OkOut(BaseModel):
 
 
 # —— 4A.2 报告 ————————————————————————————————————————————————————————
-
-class LLMJudgmentOut(BaseModel):
-    verdict: str                 # 通过 | 否决 | 未激活
-    narrative: str
-    degraded: bool
-
-
+#
+# ⚠ **V2-⑭-B 契约总装:候选榜整族 DTO 已退役** —— `CandidateOut` / `IntelRankOut` /
+# `LLMJudgmentOut` / `InfoCardSummaryOut` 四个,连同 `ReportOut.candidates` 键一起删。
+# 实现层早在 ⑬-1/2/3/4/6 就删干净了,新报告的 `candidates_json` 恒 `[]` —— 契约面还留着
+# 等于**它还在承诺这件事**(同下方 `PermanentBoardStatusOut` 的处置逻辑,一模一样的病)。
+# 取而代之的是本节的**篮子族** DTO(`BasketDailyOut` / `BasketOut` / `BasketCardOut` …)。
+# **删键安全性**:D2 = A 路已拍板(新机挂 `nk` 新子域、老 App 打老机、两者不交叉),契约
+# 一次性换血、不留过渡键;况且 ⑬-6 已删掉 `Candidate` 的四个 `try c.decode` **必需**键,
+# 老客户端本就解不出 `candidates` 数组,整键删掉反而比留半截干净。
+# ⚠ 「先客户端可选解码、下版服务端才删键」这条两步淘汰纪律**本身仍然有效**(CLAUDE.md
+# 铁律,V2 之后照守),V2 只是靠换机窗口结构性地绕开了它,不是废除它。
+#
 # ⚠ **`PermanentBoardStatusOut` 已随 V2-⑬-1 退役**(契约线审计 🟡 Y4,2026-08-03 补删):
 # 五常驻板块保底(`QUOTA_PER_PERMANENT_BOARD` / `_permanent_board_status`)住在已删除的
 # `report/intel_candidates.py` 里,⑬-1 把实现层删干净了,**契约层这个 DTO 与客户端那张
@@ -37,38 +42,6 @@ class LLMJudgmentOut(BaseModel):
 # 删除安全性:客户端 `IntelRank.permanentBoardStatus` 是 `decodeIfPresent ?? []`(非
 # `try c.decode`),服务端停发不会让老 App 解不出报告 —— 这是 CLAUDE.md「删键前先查客户端
 # 是不是硬解码」那条的一次实查结论,不是想当然。
-
-
-class IntelRankOut(BaseModel):
-    """候选情报排序理由(v1.3-③-C3,§2.3 语义变更;v1.4-③ 起补三级排序键,需求 8)。
-    候选=「过完安检、值得关注的票」非「会涨的票」——客户端据此写对文案(不标「推荐买点」),
-    展示情报维度。**排序 = 注意力优先级,不是收益预测;排第一 ≠ 最会涨,终选权在用户。**"""
-    # sectorFlow:所属常驻/暴起板块最大净流入(万元,C2;无数据=None)。⚠ **v1.4-③ 起
-    # 退为并列展示,不参与排序**(需求 8:排序键只用审计过方向的量,资金流未经方向审计;
-    # 见下方 industryRank/industryPersistDays/yellowCardCount 三个字段才是实际排序依据)。
-    sectorFlow: Optional[float] = None
-    themePersistDays: int = 0               # 题材持续天数(反用:1天新鲜>2-3警惕;≥4已在③剔)。
-                                             # 与下方 industryPersistDays 同源同值,旧字段名保留
-                                             # (老客户端兼容,§3.8「新增字段可选,既有字段语义不变」)。
-    highElasticity: bool = False            # 高弹板块(GEM/STAR;生成域刻意含高弹,标注给人判)
-    # —— v1.3-⑥ 后端补齐(数据已在 v1.3-③-C3 落 `intel_rank` 字典/报告快照里就绪,
-    # 此前 pydantic 未声明这三键 → 默认丢弃,本次补字段透出;逻辑零改动)—————————————
-    source: str = ""              # quota(常驻保底)| competition(情报竞争)| forced(问询强制)。
-                                   # 旧报告(建于本字段前)读回空串——客户端未识别值原样透传不崩。
-    industry: str = ""            # 该票行业(stock_basic.industry,过行业闸后的代表行业),
-                                   # 让用户看清「凭什么在这个板块栏」;查不到/旧报告 → 空串。
-    # (`permanentBoardStatus` 已随 ⑬-1 / 🟡 Y4 删除,见本文件上方注释。)
-    # —— v1.4-③ 新增(需求 8):排序键三级原样透出(`intel_candidates._sort_key`)————————
-    industryRank: Optional[int] = None      # 排序键①:行业强度当日排名(1=最强)。**None=未
-                                             # 参与排名(无 industry/成员<5),客户端展示时不得
-                                             # 当 0**(0 会误读成"最强";旧报告读回同样是 None,
-                                             # 与"确实未参与排名"语义上不作区分,均如实缺省)。
-    industryPersistDays: int = 0            # 排序键②:行业强度持续天数(升序,第1天最新鲜;
-                                             # 与 themePersistDays 同值同源,新字段名对齐排序键
-                                             # 命名——两个字段并存是刻意的向后兼容,不是笔误)。
-    yellowCardCount: int = 0                # 排序键③:K4 avoid_flag 命中数(升序,无牌靠前;
-                                             # 不数 hard_cut、不数不在 DB 的合成码,如
-                                             # A3b_belowyear_bigvol)。旧报告读回默认 0。
 
 
 # —— v1.4-④ 信息卡(plan §五 v1.4-④,需求 8 第 3 点)——————————————————————————
@@ -119,57 +92,229 @@ class InfoCardTopListOut(BaseModel):
     lookbackHitDays: int = 0
 
 
-class InfoCardSummaryOut(BaseModel):
-    """信息卡摘要(不含 60 日序列 / 红黄牌明细,挂 `CandidateOut.infoCard`,plan §五
-    v1.4-④-B)。红黄牌明细见完整信息卡端点——`CandidateOut` 顶层已有 `k4Flags`
-    (码列表),摘要位不重复。"""
-    snapshot: InfoCardSnapshotOut = Field(default_factory=InfoCardSnapshotOut)
-    mildBand: bool = False
-    news: InfoCardNewsOut = Field(default_factory=lambda: InfoCardNewsOut(scanned=False))
-    topList: InfoCardTopListOut = Field(default_factory=InfoCardTopListOut)
+# —— V2-⑭-B 篮子族契约(⑤⑥⑦⑧⑨ 的产出在 API 面的形状)————————————————————
+#
+# **两类 DTO,判断规则写在这里,新增字段前先分清是哪一类**(CLAUDE.md「落库快照按
+# 是否随每次响应重新拼装分两类」):
+#
+#   A. **每次响应重新拼装**(`BasketOut` / `TierOut` / `BasketVerificationOut`):
+#      服务端用 pydantic 默认值重构,新字段旧数据也会补全 → 客户端可以用合成
+#      `Codable` + `Optional`/默认值兜底。
+#   B. **写入当时冻住的历史快照**(`BasketCardOut` ← `basket_cards.card_json`;
+#      `BasketReviewOut.mech` ← `basket_review_daily.mech_json`):服务端升级**永远
+#      不会**给老快照补新键 → 客户端**必须**手写 `init(from:)` 全字段 `decodeIfPresent`
+#      兜底。⛔ 用合成 `Codable` 的后果:装了新 App 的用户翻几周前的老卡 → 整张卡解不出。
+#
+# snake→camel 的**唯一转换点**是 `report/basket_daily.py::card_to_public_dict`
+# (报告快照与 `GET /baskets/{id}/card` 两条路共用),API 层不再各写一份。
 
 
-class CandidateOut(BaseModel):
-    rank: int
-    code: str
-    name: str
-    score: float
-    board: str
-    # ⚠ **V2-⑬-6 起老四件套四键(buyPoint/stop/target/invalidation)已物理删除**
-    # (§七 P3-27 兑现)。删键条件 = D2 已拍板的 A 路:新机挂新子域、老 App 打老机,
-    # 两者不交叉 → 契约一次性换血、不留过渡文案。`report/candidates.py` 的四个文案
-    # 函数(`entry_plan_text`/`stop_loss_text`/`target_text`/`invalidation_text`)
-    # 随该模块一并删除。⚠ **「先客户端可选解码、下版服务端才删键」这条两步淘汰纪律
-    # 本身仍然有效**(CLAUDE.md 铁律,V2 之后的版本照守),V2 只是靠换机窗口结构性
-    # 绕开了它,不是废除它。
+class BasketMemberOut(BaseModel):
+    """篮子卡上的一名成员(**B 类:冻结快照**)。全字段可选 —— 老卡缺键是常态。
+
+    `roleLlm` / `roleMech` 是**两说并存**的对拍结果:`roleConflict=true` 时客户端
+    **必须两个都显示**,⛔ 不许挑一个当"正确答案"(⑦ 的对拍分歧展示纪律)。
+    `entryZone` / `maxChase` / `exitReference` 三项都是**参考件**,各自带
+    `*Clamp` + `*UnavailableReason` —— 夹逼闸拒收时值是 `null` 且原因非空,
+    ⛔ 客户端不许把 `null` 显示成 0 或空白了事。
+    **`exitReference` 不是止盈线**(§2.8-C 语义红线),文案里不许这么写。"""
+
+    tsCode: str = ""
+    name: str = ""
+    roleLlm: Optional[str] = None
+    roleMech: Optional[str] = None
+    roleConflict: bool = False
+    reason: str = ""
+    isPrimary: bool = False
+    industry: Optional[str] = None
+    industryLift: Optional[float] = None
+    liftReason: Optional[str] = None
+    primaryReason: Optional[str] = None
+    rsRank: Optional[int] = None
+    k4Tag: Optional[str] = None
+    # 机械面板原样透传(⑦ `MemberMech.to_dict()`;自由结构,在 API 层再镜像一套嵌套
+    # 模型只会多一处会漂的定义 —— 同 `WeeklyReviewOut.result` 的既定透传惯例)。
+    mech: Dict[str, Any] = Field(default_factory=dict)
+    entryZone: Optional[Dict[str, Any]] = None
+    entryZoneClamp: str = ""
+    entryZoneUnavailableReason: Optional[str] = None
+    maxChase: Optional[float] = None
+    maxChaseClamp: str = ""
+    maxChaseUnavailableReason: Optional[str] = None
+    exitReference: Optional[Dict[str, Any]] = None
+    exitReferenceClamp: str = ""
+    exitReferenceUnavailableReason: Optional[str] = None
+    # ⑦-K7 标注件(**四不硬约束**:不进排序 / 不进哨兵 / 不改去留 / 不加分)。
+    # 形状与 `InfoCardMemberTagOut` 同源(`selection/member_tags.py` 唯一实现),
+    # 交叉断言锁死「同一票同一天两处标签集合逐位相同」。
+    tags: List[Dict[str, Any]] = Field(default_factory=list)
+    # 判不了的标注码 —— 与「判过没命中」是两回事,⛔ 不许合并成"没有标注"。
+    tagsAbsent: List[str] = Field(default_factory=list)
+
+
+class BasketCardOut(BaseModel):
+    """一张 D0 冻结的篮子卡(**B 类:冻结快照**,蓝图 4.6 十一项)。
+
+    `specVersion` 随形状变化而 bump;`fingerprint` 带口径指纹(章程 / 包 / 引擎 /
+    验证条件集四个版本号)—— ⑨ 的按包归因靠它分层,⛔ 别当成装饰字段丢掉。
+    `narrative` 是 LLM 叙述,**原文整段呈现**、不得拆解塞回枚举卡片(§2.7);
+    `degraded=true` = 人话半份缺席、结构化半份照出(不是"这张卡不可信")。
+    `disclaimer` 是固定文案单一源,**客户端原样透传不改写**。"""
+
+    specVersion: Optional[str] = None
+    version: Optional[int] = None
+    basketKey: str = ""
+    tradeDate: str = ""
+    nextTradeDate: Optional[str] = None
+    name: str = ""
+    driver: str = ""
+    driverKind: str = ""
+    evidence: List[Dict[str, Any]] = Field(default_factory=list)
+    # ⑤ 两段式流水的单侧故障披露:ok | search_unavailable | partial。
+    # ⛔ 不是 `ok` 时客户端必须显式标注"取证不完整",不许静默当完整证据展示。
+    evidenceStatus: str = ""
+    whyNow: str = ""
+    members: List[BasketMemberOut] = Field(default_factory=list)
+    roleConflicts: List[str] = Field(default_factory=list)
+    tier: Optional[int] = None
+    rankInTier: Optional[int] = None
+    rankMech: Optional[int] = None
+    mechScore: Optional[float] = None
+    # 五维分项 + 权重。**键是维度名**(与现役包的权重键逐字对应),故原样透传、
+    # ⛔ 不做 camel 化 —— 那会把语义标识符改名。
+    tierBreakdown: Dict[str, Any] = Field(default_factory=dict)
+    tierReason: Optional[str] = None
+    tierNote: Optional[str] = None
+    scripts: Optional[Dict[str, Any]] = None
+    scriptsUnavailableReason: Optional[str] = None
+    # 喂 ⑧ 哨兵的结构化 spec(机器半份),同样原样透传。
+    verificationSpec: Dict[str, Any] = Field(default_factory=dict)
+    verificationText: Optional[str] = None
     invalidationSpec: Dict[str, Any] = Field(default_factory=dict)
-    entrySpec: Dict[str, Any] = Field(default_factory=dict)
-    formTags: List[str] = Field(default_factory=list)         # 价量结构形态标签
-    hotSectors: List[str] = Field(default_factory=list)       # 命中今日热门板块(含年龄)
-    sectorNames: List[str] = Field(default_factory=list)
-    # v1.3-③-C3 候选语义变更:候选生成脱离 K1 entry mask,改情报筛选管线。
-    # k4Flags:K4 avoid_flag 命中码(打标保留;hard_cut 已在服务端拦截出池、不出现在榜)。
-    # intelRank:情报排序理由(资金流强度/题材天数/高弹标注)。旧报告(建于本字段前)
-    # 读回为默认空(前向兼容,同 watchlist/intel 惯例)。
-    k4Flags: List[str] = Field(default_factory=list)
-    intelRank: IntelRankOut = Field(default_factory=IntelRankOut)
-    # v1.4-④-B:信息卡摘要(不含 60 日序列,供列表页直接展示,§二.四快照数值/温和带/
-    # 消息面/龙虎榜)。`None` = 老报告(建于本字段前)或该次生成异常降级,**不冒充
-    # "确认无内容"**——客户端按"该信息暂不可用"处理,不是"已查证为空"。完整信息卡
-    # (60日K线/RS线/行业分歧线)另走 `GET /report/{date}/info-card/{code}`。
-    infoCard: Optional[InfoCardSummaryOut] = None
-    # ⚠ **V2-⑬-4 执行提示展示位已删**(`execHints`):C1–C4 四条计算保留在
-    # `report/exec_hint.py`(纯计算模块),并入篮子剧本的输入(⑦),不再单独出展示位。
-    # ⚠ **V2-⑬-3 参考件三件套展示位已删**(`referencePlan`):体例整套移交篮子卡(⑦),
-    # `reference_plans` 表停写留档。
-    # v1.5-②-A:20 只全覆盖(旧「仅前10只有」分档退役)——`llmJudgment` 现在 20 只
-    # 都可能有,`None` 有两种成因,靠 `judgeSkipped` 分辨是哪种:① 老报告快照
-    # (建于本字段前);② 本次生成时 v1.5-②-B 墙钟预算耗尽、这一票根本没发起调用
-    # (`judgeSkipped=true`,与「发起了但失败/未激活」的 `llmJudgment.degraded`
-    # 语义不同,不许合并成一个"没审",承 `newsAlertsScan.codesSkipped`/
-    # `codesFailed` 同一纪律)。
-    llmJudgment: Optional[LLMJudgmentOut] = None
-    judgeSkipped: bool = False
+    invalidationText: Optional[str] = None
+    risks: List[str] = Field(default_factory=list)
+    disclaimer: str = ""
+    fingerprint: Dict[str, Any] = Field(default_factory=dict)
+    disciplineLabels: List[str] = Field(default_factory=list)
+    narrative: str = ""
+    llmStage: str = ""
+    degraded: bool = False
+    notes: List[str] = Field(default_factory=list)
+
+
+class TierOut(BaseModel):
+    """一篮的 Tier 定档留痕(`tier_history` 一行,**A 类**)。
+
+    **Tier = 注意力优先级,不是收益预测**(§2.8-C 红线):`rankInTier` 排第一 ≠ 最会涨。
+    `rankMech` 是 LLM 微调**之前**的机械序,`llmRankDelta` 是微调位移 —— 两个都留着,
+    才谈得上「定档可完整复现」(⑥ 的验收条款)。"""
+
+    basketId: int
+    tradeDate: str = ""
+    tier: Optional[int] = None
+    mechScore: Optional[float] = None
+    mechBreakdown: Dict[str, Any] = Field(default_factory=dict)
+    rankInTier: Optional[int] = None
+    rankMech: Optional[int] = None
+    llmRankDelta: int = 0
+    llmReason: Optional[str] = None
+    packVersion: Optional[str] = None
+
+
+class BasketOut(BaseModel):
+    """一个篮子的壳(**A 类**)。`card=null` + `cardUnavailableReason='card_not_ready'`
+    = 篮子在、卡没生成(事务 1 与事务 2 分开,**合法中间态**)。
+    ⛔ 客户端不许把它显示成「篮子不存在」——那是另一回事(`basket_not_found`)。"""
+
+    basketId: int
+    basketKey: str = ""
+    name: str = ""
+    tradeDate: str = ""
+    tier: Optional[int] = None
+    memberCodes: List[str] = Field(default_factory=list)
+    card: Optional[BasketCardOut] = None
+    cardVersion: Optional[int] = None
+    cardUnavailableReason: Optional[str] = None
+    tierHistory: Optional[TierOut] = None
+
+
+class BasketsListOut(BaseModel):
+    tradeDate: str = ""
+    items: List[BasketOut] = Field(default_factory=list)
+
+
+class DroppedBasketOut(BaseModel):
+    """③b 一行(⑥-b-C)。**`reason` 两个码语义相反,⛔ 客户端不许合并成一句「未入选」**:
+    `capacity_overflow` = 分数够、位置满 →「今天机会多到装不下」;
+    `below_quality_line` = 连 T3 下限都没过 →「今天没什么好货」。
+    **没有 `basketId`** —— 它没进 `baskets` 表,给一个 id 会让人以为点得进去。"""
+
+    name: str = ""
+    mechScore: Optional[float] = None
+    reason: str = ""
+
+
+class BasketVerificationOut(BaseModel):
+    """⑧ 的「当前状态」三路读法(**A 类**)。三个位分别回答不同问题,⛔ 不许合并:
+    `state` = 四态之一(verified/partial/unclear/falsified);
+    `provisional=true` = 盘中暂态、未收盘定论;
+    `notEvaluated=true` = **今天还没判过**(不是「判了是 unclear」)。
+    `rows` 是当日全部审计行(append-only,不回写)。"""
+
+    basketId: int
+    tradeDate: str = ""
+    state: str = ""
+    label: str = ""
+    source: Optional[str] = None
+    observedAt: Optional[str] = None
+    provisional: bool = False
+    notEvaluated: bool = False
+    evidence: Optional[Dict[str, Any]] = None
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class BasketReviewOut(BaseModel):
+    """⑨ 的一篮盘后复盘(`mech` 是 **B 类冻结快照**,`llmText` 是参考件)。
+
+    `depth`:`full`(T1/T2 详复盘)| `brief`(T3 简评)。
+    `llmText=null` + `llmSkipReason` 非空 = **未生成**(预算耗尽/降级),
+    ⛔ 不拿空串冒充「生成了但没内容」。"""
+
+    basketId: int
+    basketKey: str = ""
+    name: str = ""
+    tier: Optional[int] = None
+    d0: str = ""
+    reviewDate: str = ""
+    depth: str = ""
+    mech: Dict[str, Any] = Field(default_factory=dict)
+    llmText: Optional[str] = None
+    llmSkipReason: Optional[str] = None
+    degraded: bool = False
+    verification: Optional[Dict[str, Any]] = None
+
+
+class BasketDailyOut(BaseModel):
+    """报告里的篮子日报三段(③ / ③b / ④)。**每段各自带 `*Available` +
+    `*UnavailableReason`**:空数组 + `available=true` = **今天真没有**(合法输出);
+    `available=false` = **本次没取到**。⛔ 两者在界面上必须讲不同的话。
+
+    `droppedBaskets` **默认空数组**(⑭-A 契约原文)—— 但空数组只有在
+    `droppedBasketsAvailable=true` 时才等于「今日无未定档篮子」。"""
+
+    tradeDate: str = ""
+    baskets: List[BasketOut] = Field(default_factory=list)
+    basketsAvailable: bool = False
+    basketsUnavailableReason: Optional[str] = None
+    droppedBaskets: List[DroppedBasketOut] = Field(default_factory=list)
+    droppedBasketsAvailable: bool = False
+    droppedBasketsUnavailableReason: Optional[str] = None
+    reviews: List[BasketReviewOut] = Field(default_factory=list)
+    reviewsAvailable: bool = False
+    reviewsUnavailableReason: Optional[str] = None
+    reviewD0: Optional[str] = None
+    packVersion: Optional[str] = None
+    notes: List[str] = Field(default_factory=list)
 
 
 class NewsAlertOut(BaseModel):
@@ -221,12 +366,15 @@ class ReportOut(BaseModel):
     strategyVersion: str
     sentiment: Dict[str, Any]                # SentimentDashboard 快照(含 position_quota 三态)
     sectors: List[Dict[str, Any]]            # 强势板块 + 板块年龄
-    candidates: List[CandidateOut]
-    # v1.1-C.3 自选体检(独立一节,不进候选榜)——旧报告(建这节之前生成的)读回来是
-    # 空列表,不是 None(见 `neckline.report.store._parse_watchlist_json` 与
-    # `reports.watchlist_json` 列默认值 `'[]'`),客户端前向兼容不必对 null 特判。
+    # V2-⑭-B:篮子日报三段(③ 今日篮子 / ③b 未定档 / ④ 昨日复盘),取代已退役的
+    # `candidates`。透传 `reports.basket_daily_json` 落库快照(**随报告冻住**,读三天前
+    # 的报告该看到当时的篮子,不是今天的)。老报告(建于本字段前)读回一份三段全标
+    # `available=false` 的诚实占位,⛔ 不冒充「那天没有篮子」。
+    basketDaily: BasketDailyOut = Field(default_factory=BasketDailyOut)
     # v1.1-B.4 漏录兜底:当日买点哨兵触发过但台账无补录时的一句提示(否则空串)。
     # **实时计算**(GET /report 每次读时按当前台账重算,用户补录后自动消失),不落库、不改评分。
+    # ⚠ **V2-⑬ 起买点哨兵已退役**:新数据下恒空;**历史日期回放仍会非空**(`pipeline.py`
+    # 读 `sentinel_events` 的历史 `entry` 行)—— 与 `candidates` 的历史回放语义同类。
     missedEntryHint: str = ""
     # v1.3-③-C1 复盘情报件(涨跌幅榜/涨停梯队/跌停榜/大盘量能/最强题材/题材持续
     # 天数/市值偏好/涨跌停制度偏好)——透传报告落库快照(`report.intel.IntelReport.
@@ -251,6 +399,11 @@ class ReportOut(BaseModel):
     # 之前),客户端按「该版本还没有新鲜度概念」处理,不得当成「新鲜」。
     # ⚠ `stale=True` 时「当日暴起板块」与「题材持续天数」**本日不可信**,客户端须显式
     # 标注,不静默把它们当正常结果展示。
+    # V2-⑭-A 起再加**扫描层三键**(`scanLayerDate`/`scanLayerLagDays`/`scanLayerStale`)——
+    # **三件独立故障并列,⛔ 不合并成一个 bool**:概念板块日更 / 行业强度日更 / 扫描层
+    # 批算,合并就分不清哪个坏了。扫描层没跑 → 今日无种子 → 今日无篮子,而「今天没有
+    # 篮子」与「今天没看」必须能分开。**该三键整体缺席 = 本次连新鲜度都没查到**,
+    # 不是"新鲜"。
     dataFreshness: Dict[str, Any] = Field(default_factory=dict)
     degraded: bool = False
     reason: str = ""
@@ -466,6 +619,117 @@ class PositionCloseIn(BaseModel):
     closeReason: Optional[CloseReasonLiteral] = None
     # v1.3-①:清仓实付卖出费用真数(可选,成交后回填)——周复盘对账用真数、不用估数。
     sellFees: Optional[float] = None
+
+
+# —— V2-⑭-B 计划继承(`position_plans`)+ 建仓快照(`entry_snapshots`)————————
+
+class PositionPlanOut(BaseModel):
+    """一条持仓计划版本(⑩-B)。`version=1` 恒从 D0 篮子卡继承;用户可创建
+    `version=2,3…`,**新版本不修改原始篮子卡**(单测锁死)。
+
+    `plan` **原样透传领域 `plan_json`(snake_case)** —— 同 `CustomAlertOut.rule` /
+    `WeeklyReviewOut.result` 的既定透传惯例:它是哨兵旁路 E 的判据源(`exit_reference_
+    armed` / `..._reason` / `..._note` / `..._muted` 四键**恒存在**,缺键即不武装,
+    fail-closed),在 API 层再镜像一套嵌套模型只会多一处会漂的定义。
+    ⚠ `plan.available=false` + `plan.reason` ∈ {`no_source_basket`, `card_not_ready`}
+    是**合法**结果(独立买入 / 卡未就绪),行照落、⛔ 不省略整条记录。"""
+
+    id: int
+    positionId: int
+    version: int
+    sourceBasketId: Optional[int] = None
+    sourceCardVersion: Optional[int] = None
+    plan: Dict[str, Any] = Field(default_factory=dict)
+    note: Optional[str] = None
+    createdAt: str = ""
+
+
+class PositionPlansOut(BaseModel):
+    items: List[PositionPlanOut] = Field(default_factory=list)
+
+
+class PositionPlanCreateIn(BaseModel):
+    """`POST /positions/{id}/plans`(⑩-B「用户可创建新版本」的 HTTP 入口)。
+
+    `plan` 是完整的新版本正文(snake_case,同 `PositionPlanOut.plan` 口径)。
+    ⚠ **武装态由服务端重算,客户端说了不算**(⑪-D-B 闸②):即使请求体里带了
+    `exit_reference_armed`,`create_position_plan_version` 也会拿这笔仓的真实成交价
+    重过一遍闸 —— 否则"写个新版本"就成了绕开红线闸的后门。"""
+
+    plan: Dict[str, Any] = Field(default_factory=dict)
+    note: Optional[str] = None
+
+
+class EntrySnapshotOut(BaseModel):
+    """建仓瞬间的冻结快照(⑩-A,`entry_snapshots` 一行,**B 类冻结快照**)。
+
+    `snapshot` 里的 `not_captured` 数组**如实列出本次没采到的项**(资金流 / 竞价表现 /
+    换手率 / 量比四项在 ⑩ 的范围内未采集)—— ⛔ 别把"没采"读成"没有"。"""
+
+    positionId: int
+    tsCode: str = ""
+    tradeDate: str = ""
+    basketId: Optional[int] = None
+    cardVersion: Optional[int] = None
+    tier: Optional[int] = None
+    role: Optional[str] = None
+    snapshot: Dict[str, Any] = Field(default_factory=dict)
+    createdAt: str = ""
+
+
+# —— V2-⑭-B 画像 / 策略包 / 评价(⑫ 与 ③ 的产出接上 API 面)——————————————
+
+class ProfileOut(BaseModel):
+    """偏好画像 / 能力画像(⑫-B,每期一版)。**两张账刻意分开**:偏好答「喜欢什么」、
+    能力答「什么真有效」——⛔ 不合并成一张"用户画像"。
+
+    每行必带 **样本量 / 时间范围 / 置信度**(`sampleN` / `windowStart` / `windowEnd` /
+    `confidence`);`confidence='low'` 时客户端**必须**显式写「样本不足,不给结论」,
+    ⛔ 不许把低置信度的数字当结论展示(⑫ 验收条款)。
+    `asOf` 为空 = **该期从未算过**(不是"算出来是空的")。
+
+    🔴 **初期不得反向影响客观 Tier**(蓝图 4.4 禁令):本 DTO 只服务展示,
+    `neckline/selection/` 与 `neckline/scan/` 全目录零 `profile` 引用(守门单测锁死)。"""
+
+    asOf: str = ""
+    available: bool = False
+    unavailableReason: Optional[str] = None
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class PackOut(BaseModel):
+    """一个选股策略包(⑫ `selection_packs` 一行)。
+
+    ⚠ **策略包与纪律章程是两条版本线、两张表、两套激活流程,永不混用**(§五 红线 6):
+    本 DTO **不含任何纪律参数**(`stop_pct` 等住 `strategy_versions`)。
+    `config` 原样透传(原语白名单在领域层已卡死);**包不装可执行代码**(§12.1 定案)。"""
+
+    packVersion: str
+    isActive: bool = False
+    createdAt: str = ""
+    activatedAt: Optional[str] = None
+    manifest: Dict[str, Any] = Field(default_factory=dict)
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PacksListOut(BaseModel):
+    items: List[PackOut] = Field(default_factory=list)
+
+
+class EvalWeeklyOut(BaseModel):
+    """周度评价校准报告(⑨-C;含安慰剂对照臂)。`result` 原样透传
+    `eval/calibration.py::CalibrationReport` 的字典形状(同 `WeeklyReviewOut.result`
+    透传惯例)。
+
+    ⚠ **评价是长期统计,不是单日打分**:`available=false` 时 `unavailableReason`
+    必有值(样本窗未就绪 / 前向窗口还没走完),⛔ 不许拿半截样本给结论。"""
+
+    weekStart: str = ""
+    weekEnd: str = ""
+    available: bool = False
+    unavailableReason: Optional[str] = None
+    result: Dict[str, Any] = Field(default_factory=dict)
+    markdown: str = ""
 
 
 # —— 4A.5 问询台 + 设置 ————————————————————————————————————————————————
@@ -1003,9 +1267,15 @@ class ReviewGetOut(BaseModel):
 
 
 __all__ = [
-    "OkOut", "LLMJudgmentOut", "IntelRankOut",
+    "OkOut",
     "InfoCardSnapshotOut", "InfoCardNewsItemOut", "InfoCardNewsOut", "InfoCardTopListOut",
-    "InfoCardSummaryOut", "CandidateOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
+    "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
+    # V2-⑭-B 篮子族
+    "BasketMemberOut", "BasketCardOut", "TierOut", "BasketOut", "BasketsListOut",
+    "DroppedBasketOut", "BasketVerificationOut", "BasketReviewOut", "BasketDailyOut",
+    # V2-⑭-B 计划继承 / 建仓快照 / 画像 / 策略包 / 评价
+    "PositionPlanOut", "PositionPlansOut", "PositionPlanCreateIn", "EntrySnapshotOut",
+    "ProfileOut", "PackOut", "PacksListOut", "EvalWeeklyOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "EntrySuggestionOut", "CircuitEpisodeOut", "CircuitStateOut",
