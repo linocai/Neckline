@@ -54,7 +54,9 @@
 种子集按 `(db_path, D0)` 在**进程内缓存**:①`generate_seeds` 每次要读 `daily_basic`
 当日切片 + `ths_daily` + 几张预计算表(实测 0.1~0.2s),盘中 60s 一拍逐拍重算是浪费;
 ②更要紧的是**语义**:一个纪律触发器的样本不该因为盘中换了策略包而中途改口径 ——
-当日首次派生即冻结。进程重启后会重算一次(如实登记的代价,不做跨进程持久化)。
+当日**首次成功**派生即冻结。⚠ **失败不缓存**(瞬时故障 / 尚无现役包)—— 下一拍自愈
+重试,免得一次读表抖动把这条路径钉死到收盘。进程重启后会重算一次(如实登记的代价,
+不做跨进程持久化)。
 """
 
 from __future__ import annotations
@@ -182,7 +184,12 @@ def load_mainline_seed_codes(
             reason = REASON_NO_MAINLINE_SEEDS
 
     out = (codes, counts, total, pack_version, reason)
-    _SEED_CACHE[key] = out
+    # ⚠ **只缓存成功的派生**:一次瞬时读表 / 读 parquet 失败不该让一条纪律路径
+    # 整天失效(那是"冻结"的反面 —— 冻的应该是一份算出来的样本,不是一次故障);
+    # 失败下一拍自愈重试,代价是一次 0.1~0.2s 的重算。「无现役包」同理:包是盘中
+    # 可能被激活的配置态,缓存它等于把"今天没包"钉死到收盘。
+    if reason is None:
+        _SEED_CACHE[key] = out
     return out
 
 

@@ -114,6 +114,24 @@ class TestDerive:
             mainline.derive_mainline_sample(D0, prev_limit_up_codes=["A.SH"])
         assert len(calls) == 1        # 当日冻结:只算一次(盘中 60s 一拍不重算)
 
+    def test_failures_are_not_frozen_so_the_path_self_heals(self, monkeypatch):
+        """⚠ 冻结只冻**成功**的派生:一次瞬时故障 / 尚未激活策略包,不该把这条纪律
+        路径钉死到收盘。下一拍照常重试,恢复后立刻拿到样本。"""
+        state = {"fail": True}
+        seed_set = _seed_set(hot=[["A.SH"]])
+
+        def flaky(trade_date, **kw):
+            if state["fail"]:
+                raise RuntimeError("瞬时读表失败")
+            return seed_set
+
+        monkeypatch.setattr("neckline.scan.seeds.generate_seeds", flaky)
+        assert mainline.derive_mainline_sample(
+            D0, prev_limit_up_codes=["A.SH"]).unavailable_reason == mainline.REASON_SEED_FAILED
+        state["fail"] = False
+        s = mainline.derive_mainline_sample(D0, prev_limit_up_codes=["A.SH"])
+        assert s.codes == ("A.SH",) and s.unavailable_reason is None
+
     # —— 样本不足 → 不触发 + 如实披露(四个原因码各一)————————————————
     def test_no_active_pack_is_disclosed_not_silently_empty(self, monkeypatch):
         monkeypatch.setattr("neckline.scan.seeds.generate_seeds", lambda *a, **k: None)
