@@ -268,6 +268,95 @@ class TestRecordBuyIndependent:
         assert position.buy_price == 8.88 and position.qty == 300
 
 
+class TestRecordBuyAtomicityAndIdempotency:
+    """契约线审计 🟡 Y7(2026-08-03):三段核心写入的事务性 + `POST /positions` 幂等键。"""
+
+    def test_plan_write_failure_rolls_back_the_position(self, isolated_env, calendar_days,
+                                                        monkeypatch):
+        """第三段(`position_plans` v1)炸掉 → **持仓与快照一起回滚、库里零行**。
+
+        修之前:三段各自独立提交,`open_position` 成功后任何一步抛异常 → API 返 500 而
+        **仓已落库**,客户端按 500 重试就是第二笔仓;还会留下「有仓无计划 v1」——
+        `create_position_plan_version` 见到无 v1 直接 ValueError,那是个走不出去的死局。
+        """
+        buy_date = calendar_days[1]
+
+        def _boom(*a, **kw):
+            raise sqlite3.OperationalError("模拟 position_plans 写失败")
+
+        monkeypatch.setattr(pe, "create_position_plan_v1", _boom)
+        with pytest.raises(sqlite3.OperationalError):
+            pe.record_buy("600001.SH", 10.0, 100, buy_date, db_path=isolated_env.db_path)
+
+        with connection(isolated_env.db_path) as conn:
+            counts = {
+                t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                for t in ("positions", "entry_snapshots", "position_plans")
+            }
+        assert counts == {"positions": 0, "entry_snapshots": 0, "position_plans": 0}
+
+    def test_snapshot_write_failure_rolls_back_the_position(self, isolated_env, calendar_days,
+                                                            monkeypatch):
+        """第二段炸掉同理 —— 事务边界不是"最后一步才生效"。"""
+        buy_date = calendar_days[1]
+
+        def _boom(*a, **kw):
+            raise sqlite3.OperationalError("模拟 entry_snapshots 写失败")
+
+        monkeypatch.setattr(pe, "freeze_entry_snapshot", _boom)
+        with pytest.raises(sqlite3.OperationalError):
+            pe.record_buy("600001.SH", 10.0, 100, buy_date, db_path=isolated_env.db_path)
+        assert pos_store.load_open_positions(db_path=isolated_env.db_path) == []
+
+    def test_same_idempotency_key_does_not_open_a_second_position(self, isolated_env,
+                                                                  calendar_days):
+        d0, buy_date = calendar_days[0], calendar_days[1]
+        _seed_basket(isolated_env.db_path, trade_date=d0.strftime("%Y%m%d"))
+        first = pe.record_buy("600001.SH", 10.0, 100, buy_date,
+                              db_path=isolated_env.db_path, idempotency_key="req-1")
+        second = pe.record_buy("600001.SH", 10.0, 100, buy_date,
+                               db_path=isolated_env.db_path, idempotency_key="req-1")
+
+        assert second.position_id == first.position_id
+        assert first.replayed is False and second.replayed is True
+        assert len(pos_store.load_open_positions(db_path=isolated_env.db_path)) == 1
+        with connection(isolated_env.db_path) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM entry_snapshots").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM position_plans").fetchone()[0] == 1
+        # 重放的是**开仓当时冻结**的来源,不是现查一遍
+        assert second.source_basket_key == first.source_basket_key
+        assert second.tier == first.tier and second.role == first.role
+        assert second.plan_available == first.plan_available
+
+    def test_db_level_constraint_is_the_real_guard(self, isolated_env, calendar_days):
+        """应用层那次查询只是快路径:**库级部分唯一索引**才是并发下的真闸。
+        这里直接绕过 `record_buy` 用领域层写第二行,证明库会拦。"""
+        buy_date = calendar_days[1]
+        pe.record_buy("600001.SH", 10.0, 100, buy_date,
+                      db_path=isolated_env.db_path, idempotency_key="req-9")
+        with pytest.raises(sqlite3.IntegrityError):
+            pos_store.open_position("600002.SH", 11.0, 100, buy_date,
+                                    db_path=isolated_env.db_path, idempotency_key="req-9")
+
+    def test_no_key_means_no_dedup(self, isolated_env, calendar_days):
+        """阴性方向:不传键 = 不设防(CLI / 历史补录 / 分批建仓本就该开出两笔)。
+        NULL 不参与部分唯一索引,连写两笔不冲突。"""
+        buy_date = calendar_days[1]
+        a = pe.record_buy("600001.SH", 10.0, 100, buy_date, db_path=isolated_env.db_path)
+        b = pe.record_buy("600001.SH", 10.0, 100, buy_date, db_path=isolated_env.db_path)
+        assert a.position_id != b.position_id
+        assert a.replayed is False and b.replayed is False
+        assert len(pos_store.load_open_positions(db_path=isolated_env.db_path)) == 2
+
+    def test_different_keys_open_different_positions(self, isolated_env, calendar_days):
+        buy_date = calendar_days[1]
+        a = pe.record_buy("600001.SH", 10.0, 100, buy_date,
+                          db_path=isolated_env.db_path, idempotency_key="req-a")
+        b = pe.record_buy("600001.SH", 10.0, 100, buy_date,
+                          db_path=isolated_env.db_path, idempotency_key="req-b")
+        assert a.position_id != b.position_id and b.replayed is False
+
+
 class TestCreatePositionPlanVersion:
     def test_new_version_does_not_touch_original_card_or_v1_plan(self, isolated_env, calendar_days):
         """⑩-B 验收硬要求:新版本不修改原始篮子卡(单测锁死)。"""

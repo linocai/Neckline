@@ -28,6 +28,33 @@ def test_open_list_close_roundtrip(client, AUTH):
     assert client.get("/api/v1/positions", headers=AUTH).json()["holdings"] == []
 
 
+def test_open_with_same_idempotency_key_replays_instead_of_opening_twice(client, AUTH):
+    """契约线审计 🟡 Y7(2026-08-03):`POST /positions` 幂等键。
+
+    防的是最常见的一类重复:**服务端已落库、响应没回到客户端 → 客户端重试**。开仓是
+    不可逆记账,多出来的那笔仓会让后面每一个纪律判定(持仓哨兵 / 仓位上限 / 周复盘
+    对账)都建立在错的持仓上。"""
+    body = {"code": "600519.SH", "buy_price": 1500.0, "qty": 100, "idempotencyKey": "req-42"}
+    first = client.post("/api/v1/positions", headers=AUTH, json=body).json()
+    second = client.post("/api/v1/positions", headers=AUTH, json=body).json()
+
+    assert first["ok"] is True and first["replayed"] is False
+    assert second["ok"] is True and second["replayed"] is True, "重放要如实标出来"
+    assert second["position_id"] == first["position_id"]
+    assert second["stop_line"] == first["stop_line"]
+    assert len(client.get("/api/v1/positions", headers=AUTH).json()["holdings"]) == 1
+
+
+def test_open_without_idempotency_key_is_unguarded_as_before(client, AUTH):
+    """阴性方向:不传键 = 不设防(分批建仓本就该开出两笔;老客户端零感知)。"""
+    body = {"code": "600519.SH", "buy_price": 1500.0, "qty": 100}
+    a = client.post("/api/v1/positions", headers=AUTH, json=body).json()
+    b = client.post("/api/v1/positions", headers=AUTH, json=body).json()
+    assert a["position_id"] != b["position_id"]
+    assert a["replayed"] is False and b["replayed"] is False
+    assert len(client.get("/api/v1/positions", headers=AUTH).json()["holdings"]) == 2
+
+
 def test_close_nonexistent_404(client, AUTH):
     r = client.post("/api/v1/positions/999/close", headers=AUTH, json={"sell_price": 1.0})
     assert r.status_code == 404

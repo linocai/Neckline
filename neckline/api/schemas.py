@@ -415,6 +415,12 @@ class PositionOpenIn(BaseModel):
     # 领域层 `sentinel/positions.py::open_position` 与 CLI `scripts/positions.py add`
     # 本来就收 `buy_date`,缺口只在本 HTTP 契约 + 客户端。
     buyDate: Optional[str] = None
+    # v2.0.0(契约线审计 🟡 Y7):**幂等键**。客户端为"这一次开仓意图"生成一个稳定串
+    # (UUID 即可,**重试时必须复用同一个**),服务端同键二次提交 = 重放上次结果、
+    # **不开第二笔仓**,响应 `replayed=true`。缺省 `None` = 不设防(CLI / 老客户端 /
+    # 历史补录逐字节不变)。⚠ 它防的是「服务端已落库、响应没回到客户端」这一类重试
+    # ——开仓是**不可逆记账**,重复一笔的代价是后面每一个纪律判定都建立在错的持仓上。
+    idempotencyKey: Optional[str] = None
 
 
 class PositionOpenOut(BaseModel):
@@ -435,6 +441,10 @@ class PositionOpenOut(BaseModel):
     # 「原盈亏结构已变」偏离提示(⑩-B:实际成交价与建仓观察区间明显偏离时的纯展示
     # 提示,不质问不阻断);无从比较(无 entry_zone)→ null,不是"未偏离"。
     planDeviationNotice: Optional[str] = None
+    # v2.0.0(契约线审计 🟡 Y7):`true` = 本次请求**没有开新仓**,`positionId` 指的是同一个
+    # `idempotencyKey` 之前已经开好的那笔。如实透出,别让"看起来成功了"掩盖"其实什么都没
+    # 发生";客户端据此不必重复提示"已开仓"。老客户端忽略未知键,不受影响。
+    replayed: bool = False
 
 
 # v2.0.0(⑩-A):蓝图 §5.2 六枚卖出快捷标签的服务端码,唯一源在

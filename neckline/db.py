@@ -1047,6 +1047,11 @@ _COLUMN_MIGRATIONS = [
     # 均可空(NULL=未录),老库幂等补列;实盘估算见 neckline/fees.py(诚实标注估算)。
     ("positions", "buy_fees", "REAL"),
     ("positions", "sell_fees", "REAL"),
+    # v2.0.0(契约线审计 🟡 Y7):`POST /positions` 幂等键。客户端自带(缺省 NULL = 没给),
+    # 同键二次提交 = 重放上一次的结果,**不开第二笔仓**。防重靠下面 `_POST_MIGRATION_INDEXES`
+    # 里的**部分唯一索引**(NULL 不参与去重,正是我们要的:没给键的历史/CLI 录入不受影响),
+    # 不靠应用层自觉 —— 并发同键两条请求都查不到时,库级约束是最后一道闸。
+    ("positions", "idempotency_key", "TEXT"),
     # v1.3-②:第六类推送开关(K4 持仓派发警报,用户 2026-07-26 拍板独立 category + 独立开关,
     # 默认开)。老库幂等补列取常量默认 1。§2.4 推送白名单五类→六类。
     ("app_settings", "push_holding_alert", "INTEGER NOT NULL DEFAULT 1"),
@@ -1189,14 +1194,30 @@ def _seed_activation_log(conn: sqlite3.Connection) -> None:
     )
 
 
+# **依赖迁移列的索引**(v2.0.0 起,契约线审计 🟡 Y7 引入这个小机制):`_SCHEMA` 是
+# `executescript` 一把梭,里面的 `CREATE INDEX` 在**老库**上会先于 `ALTER TABLE ADD COLUMN`
+# 执行 —— 引用迁移列的索引写进 `_SCHEMA` 会在老库上直接报 "no such column"。故这类索引
+# 一律登记到这里,由 `_migrate_columns` 在补完列**之后**建(同样 `IF NOT EXISTS` 幂等)。
+_POST_MIGRATION_INDEXES = (
+    # `POST /positions` 幂等键的库级防重。**部分索引**(`WHERE ... IS NOT NULL`):没给键的
+    # 行(CLI / 历史补录 / 老客户端)不参与去重 —— SQLite 的 UNIQUE 本来就不去重 NULL,
+    # 这里写明 WHERE 是为了让"只约束给了键的那些行"这件事在 DDL 上就一目了然。
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_idempotency_key "
+    "ON positions(idempotency_key) WHERE idempotency_key IS NOT NULL",
+)
+
+
 def _migrate_columns(conn: sqlite3.Connection) -> None:
-    """对既有表做「缺列即补」的幂等迁移(见 `_COLUMN_MIGRATIONS` 注释)+ v1.2-A 激活戳
-    一次性回填(幂等,见 `_backfill_activated_at`)+ v1.4 激活历史播种(幂等,见
-    `_seed_activation_log`)+ V2-⑪ 推送开关按 kind 播种(幂等,见 `_seed_push_kinds`)。"""
+    """对既有表做「缺列即补」的幂等迁移(见 `_COLUMN_MIGRATIONS` 注释)+ 依赖迁移列的索引
+    (`_POST_MIGRATION_INDEXES`,必须在补列之后建)+ v1.2-A 激活戳一次性回填(幂等,见
+    `_backfill_activated_at`)+ v1.4 激活历史播种(幂等,见 `_seed_activation_log`)+
+    V2-⑪ 推送开关按 kind 播种(幂等,见 `_seed_push_kinds`)。"""
     for table, column, ddl in _COLUMN_MIGRATIONS:
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    for stmt in _POST_MIGRATION_INDEXES:
+        conn.execute(stmt)
     _backfill_activated_at(conn)
     _seed_activation_log(conn)
     _seed_push_kinds(conn)

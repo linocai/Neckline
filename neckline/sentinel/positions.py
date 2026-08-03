@@ -101,6 +101,8 @@ def open_position(
     note: Optional[str] = None,
     buy_fees: Optional[float] = None,
     db_path: Optional[Path] = None,
+    conn: Optional[sqlite3.Connection] = None,
+    idempotency_key: Optional[str] = None,
 ) -> int:
     """开一笔仓位记账(不校验是否符合仓位纪律——§2.1 仓位上限是系统对报告候选的
     建议约束,不是对用户实际操作的强制拦截;系统只审计、不拦人手动录入)。返回新
@@ -116,17 +118,32 @@ def open_position(
     锁成「非浮盈次日退出」,且**全程静默无报错**。归一放在**写入通道**(而非 API 层),
     姿势(与已退役的 `neckline/watchlist.py` 同源):CLI(`scripts/positions.py`)、API、未来任何调用方
     都自动吃到,不必各自记得调一次。归一唯一源 `review.parse.normalize_ts_code`
-    (内部复用 `quotes.to_symbol` + `board.classify_by_code`,不新写正则)。"""
-    init_schema(db_path)
+    (内部复用 `quotes.to_symbol` + `board.classify_by_code`,不新写正则)。
+
+    `conn`(契约线审计 🟡 Y7,2026-08-03):给了就**复用调用方的 connection、不自己开事务
+    也不 commit**(照 `selection/basket_store` 体例),供 `positions_entry.record_buy` 把
+    「开仓 + 冻快照 + 建计划 v1」三写并进**同一个事务** —— 以前三段各自独立提交,中途抛
+    异常会留下「仓已开、快照/计划没有」的中间态,而 API 已经 500、客户端一重试就是第二笔仓。
+    不给就照旧自开自提交,**行为与本参数加入前逐字节等价**。
+
+    `idempotency_key`(🟡 Y7):非空时落 `positions.idempotency_key`,由**部分唯一索引**
+    (`idempotency_key IS NOT NULL`)在**库级**挡住重复开仓 —— 应用层先查一次只是快路径,
+    真正的守卫是这条约束(两个并发同键请求都查不到时,第二条 INSERT 会抛
+    `IntegrityError`,由调用方转成重放,见 `positions_entry.record_buy`)。"""
     now = _now()
     ts_code = normalize_ts_code(ts_code)
-    with connection(db_path) as conn:
-        cur = conn.execute(
-            "INSERT INTO positions (ts_code, buy_price, qty, buy_date, status, note, buy_fees, "
-            "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (ts_code, buy_price, qty, _d(buy_date), STATUS_OPEN, note, buy_fees, now, now),
-        )
-        return int(cur.lastrowid)
+    row = (ts_code, buy_price, qty, _d(buy_date), STATUS_OPEN, note, buy_fees,
+           idempotency_key, now, now)
+    sql = ("INSERT INTO positions (ts_code, buy_price, qty, buy_date, status, note, buy_fees, "
+           "idempotency_key, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    if conn is not None:
+        # ⚠ 复用调用方连接时**不再 `init_schema`**:那会另开一条连接、在对方事务开着的
+        # 时候去抢写锁建表(DDL 还会自己提交)。建表责任归调用方(`record_buy` 在开事务
+        # **之前**调一次)。
+        return int(conn.execute(sql, row).lastrowid)
+    init_schema(db_path)
+    with connection(db_path) as own:
+        return int(own.execute(sql, row).lastrowid)
 
 
 def close_position(

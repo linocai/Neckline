@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -217,19 +218,23 @@ def build_inherited_plan(
 def create_position_plan_v1(
     position_id: int, plan_json: Dict[str, Any], *,
     source_basket_id: Optional[int], source_card_version: Optional[int],
-    db_path: Optional[Path] = None,
+    db_path: Optional[Path] = None, conn: Optional[sqlite3.Connection] = None,
 ) -> int:
-    """开仓时自动落 `position_plans` version=1(⑩-B)。"""
-    init_schema(db_path)
+    """开仓时自动落 `position_plans` version=1(⑩-B)。
+
+    `conn`(🟡 Y7):同 `freeze_entry_snapshot` —— 给了就并进调用方的事务。这一行**必须
+    与开仓同生共死**:`create_position_plan_version` 见到无 v1 会直接 `ValueError`,
+    「有仓无 v1」是个走不出去的死局。"""
     now = _now()
-    with connection(db_path) as conn:
-        cur = conn.execute(
-            "INSERT INTO position_plans (position_id, version, source_basket_id, "
-            "source_card_version, plan_json, note, created_at) VALUES (?,1,?,?,?,?,?)",
-            (position_id, source_basket_id, source_card_version,
-             json.dumps(plan_json, ensure_ascii=False), None, now),
-        )
-        return int(cur.lastrowid)
+    sql = ("INSERT INTO position_plans (position_id, version, source_basket_id, "
+           "source_card_version, plan_json, note, created_at) VALUES (?,1,?,?,?,?,?)")
+    row = (position_id, source_basket_id, source_card_version,
+           json.dumps(plan_json, ensure_ascii=False), None, now)
+    if conn is not None:
+        return int(conn.execute(sql, row).lastrowid)
+    init_schema(db_path)
+    with connection(db_path) as own:
+        return int(own.execute(sql, row).lastrowid)
 
 
 def create_position_plan_version(
@@ -426,21 +431,25 @@ def freeze_entry_snapshot(
     position_id: int, ts_code: str, trade_date: date, snapshot: Dict[str, Any], *,
     basket_id: Optional[int], card_version: Optional[int], tier: Optional[int],
     role: Optional[str], db_path: Optional[Path] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> int:
     """冻结一行(`entry_snapshots`,**只 INSERT,永不 UPDATE/DELETE**)。`position_id`
     每次开仓都是全新自增 id,同 key 二次写击穿 `UNIQUE(position_id)` 抛
     `IntegrityError` 是**期望行为**(只可能是编程错误,不该被静默吞掉——同 `basket_
-    cards`/`entry_snapshots` 冻结三律的既定判据,见 `tests/test_v2_schema_guard.py`)。"""
-    init_schema(db_path)
+    cards`/`entry_snapshots` 冻结三律的既定判据,见 `tests/test_v2_schema_guard.py`)。
+
+    `conn`(🟡 Y7):给了就复用调用方的 connection(不自开事务、不 commit),供
+    `record_buy` 把三段核心写入并成一个事务;不给就自开自提交,行为与本参数加入前等价。"""
     now = _now()
-    with connection(db_path) as conn:
-        cur = conn.execute(
-            "INSERT INTO entry_snapshots (position_id, ts_code, trade_date, basket_id, "
-            "card_version, tier, role, snapshot_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (position_id, ts_code, _d(trade_date), basket_id, card_version, tier, role,
-             json.dumps(snapshot, ensure_ascii=False), now),
-        )
-        return int(cur.lastrowid)
+    sql = ("INSERT INTO entry_snapshots (position_id, ts_code, trade_date, basket_id, "
+           "card_version, tier, role, snapshot_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+    row = (position_id, ts_code, _d(trade_date), basket_id, card_version, tier, role,
+           json.dumps(snapshot, ensure_ascii=False), now)
+    if conn is not None:
+        return int(conn.execute(sql, row).lastrowid)
+    init_schema(db_path)
+    with connection(db_path) as own:
+        return int(own.execute(sql, row).lastrowid)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -488,12 +497,77 @@ class BuyResult:
     role: Optional[str]
     plan_available: bool
     plan_deviation_notice: Optional[str]
+    # 🟡 Y7:`True` = 这次请求**没有开新仓**,是同一个 `idempotency_key` 的重放
+    # (返回的是那笔既有仓的结果)。如实透出,别让"看起来成功了"掩盖"其实什么都没发生"。
+    replayed: bool = False
+
+
+def find_position_by_idempotency_key(
+    key: str, *, db_path: Optional[Path] = None,
+) -> Optional[int]:
+    """按幂等键查已开的仓(🟡 Y7)。查无 → `None`。空键一律当"没给"(不参与去重)。"""
+    if not key:
+        return None
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM positions WHERE idempotency_key=?", (key,)
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def replay_buy(position_id: int, *, db_path: Optional[Path] = None) -> BuyResult:
+    """把一笔**已经开好**的仓重放成 `BuyResult`(🟡 Y7 幂等重放)。
+
+    信息全部取自开仓当时**冻结**下来的两行(`entry_snapshots` + `position_plans` v1),
+    ⛔ 不重新查来源篮子、不重新拉行情 —— 重放要还原的是「那一刻记下了什么」,现在再查
+    一遍等于给同一个 position_id 编第二套来源,那才是真的说谎。查不到冻结行(理论上
+    不该发生,除非是幂等键加入之前开的老仓)→ 各项如实留空,不编。
+    """
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        snap = conn.execute(
+            "SELECT tier, role, snapshot_json FROM entry_snapshots WHERE position_id=?",
+            (position_id,),
+        ).fetchone()
+        plan_row = conn.execute(
+            "SELECT plan_json FROM position_plans WHERE position_id=? AND version=1",
+            (position_id,),
+        ).fetchone()
+    basket: Dict[str, Any] = {}
+    if snap is not None:
+        try:
+            basket = (json.loads(snap[2]) or {}).get("basket") or {}
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("[positions_entry] position_id=%s 的开仓快照解不出,重放按空来源",
+                           position_id)
+    plan_json: Dict[str, Any] = {}
+    if plan_row is not None:
+        try:
+            plan_json = json.loads(plan_row[0]) or {}
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("[positions_entry] position_id=%s 的计划 v1 解不出,重放按空计划",
+                           position_id)
+    return BuyResult(
+        position_id=position_id,
+        source_basket_key=basket.get("basket_key"),
+        source_basket_name=basket.get("basket_name"),
+        tier=(snap[0] if snap is not None else None),
+        role=(snap[1] if snap is not None else None),
+        plan_available=bool(plan_json.get("available")),
+        # ⚠ 偏离提示**不重放**:它是「这一笔成交价 vs 计划区间」的比较结论,而重放这次
+        # 请求根本没有成交。原样重算会拿新请求的价去比旧计划,像是在评价一笔并不存在的
+        # 交易;留空 = 「本次没有新的成交可评」,如实。
+        plan_deviation_notice=None,
+        replayed=True,
+    )
 
 
 def record_buy(
     ts_code: str, buy_price: float, qty: int, buy_date: date, *,
     note: Optional[str] = None, buy_fees: Optional[float] = None,
     quote: Optional[Any] = None, db_path: Optional[Path] = None,
+    idempotency_key: Optional[str] = None,
 ) -> BuyResult:
     """买入编排入口(⑩-A/B/D)。**买入本身永远成功**——来源篮子查找 / 快照子项
     是 best-effort,任何一项失败都不阻断开仓;仅 `entry_snapshots`/`position_plans`
@@ -502,8 +576,29 @@ def record_buy(
     `quote`:调用方预先解析好的实时报价(或 `None`)——本函数**不自己发起网络
     请求**,免联网依赖便于单测与 CLI/API 共用同一套注入姿势(API 侧走既有
     `_QUOTES_FN` 钩子,CLI 侧自行 best-effort 拉一次)。
+
+    **三段核心写入并进一个事务(契约线审计 🟡 Y7,2026-08-03)**:`open_position` →
+    `freeze_entry_snapshot` → `create_position_plan_v1` 以前是三条独立连接、各自提交。
+    保险丝只包了「快照内容丰富度」,**三个写入本身裸奔**:开仓成功之后任何一步抛异常 →
+    API 返 500,而**仓已经落库了**;客户端按 500 重试 = **重复开仓**。同时留下「有仓无
+    快照 / 有仓无计划 v1」的中间态,而 `create_position_plan_version` 见到无 v1 直接
+    `ValueError` —— 那是个走不出去的死局。现在三写同 `with connection(...)`:一起成功,
+    或者一起没发生(`connection()` 只在正常退出 commit,异常路径 close 即弃)。
+    `user_actions` 记账**留在事务外**维持 best-effort(它是审计流水,不该有权回滚开仓)。
+
+    `idempotency_key`(🟡 Y7):非空时同键二次调用**不开第二笔仓**,直接重放那笔既有仓的
+    结果(`BuyResult.replayed=True`)。两道闸:应用层先查(快路径)+ `positions` 上的
+    部分唯一索引(真闸,挡并发)。⛔ 不传键 = 不设防,与本参数加入前逐字节等价 ——
+    CLI 与历史补录本来就不该被幂等键约束。
     """
     code = normalize_ts_code(ts_code)
+
+    if idempotency_key:
+        existing = find_position_by_idempotency_key(idempotency_key, db_path=db_path)
+        if existing is not None:
+            logger.info("[positions_entry] 幂等键 %s 命中既有持仓 %s,重放上次结果、不开新仓",
+                        idempotency_key, existing)
+            return replay_buy(existing, db_path=db_path)
 
     source: Optional[SourceBasketMember] = None
     try:
@@ -514,22 +609,37 @@ def record_buy(
     plan_json, source_basket_id, source_card_version = build_inherited_plan(source)
     snapshot = _build_snapshot_payload(code, buy_date, buy_price, qty, source, quote, db_path)
 
-    position_id = pos_store.open_position(
-        code, buy_price, qty, buy_date, note=note, buy_fees=buy_fees, db_path=db_path,
-    )
-    freeze_entry_snapshot(
-        position_id, code, buy_date, snapshot,
-        basket_id=(source.basket_id if source else None),
-        card_version=source_card_version,
-        tier=(source.tier if source else None),
-        role=(source.role if source else None),
-        db_path=db_path,
-    )
-    create_position_plan_v1(
-        position_id, plan_json,
-        source_basket_id=source_basket_id, source_card_version=source_card_version,
-        db_path=db_path,
-    )
+    init_schema(db_path)
+    try:
+        with connection(db_path) as conn:
+            position_id = pos_store.open_position(
+                code, buy_price, qty, buy_date, note=note, buy_fees=buy_fees,
+                conn=conn, idempotency_key=idempotency_key or None,
+            )
+            freeze_entry_snapshot(
+                position_id, code, buy_date, snapshot,
+                basket_id=(source.basket_id if source else None),
+                card_version=source_card_version,
+                tier=(source.tier if source else None),
+                role=(source.role if source else None),
+                conn=conn,
+            )
+            create_position_plan_v1(
+                position_id, plan_json,
+                source_basket_id=source_basket_id, source_card_version=source_card_version,
+                conn=conn,
+            )
+    except sqlite3.IntegrityError:
+        # 并发同键:两条请求都没查到、都进来插,第二条被部分唯一索引挡下(**库级闸才是
+        # 真闸**,上面那次查询只是快路径)。此时整个事务已回滚,库里只有第一条那笔仓 ——
+        # 重放它,而不是把 IntegrityError 抛成 500 让客户端再重试一轮。
+        existing = find_position_by_idempotency_key(idempotency_key or "", db_path=db_path)
+        if existing is None:
+            raise           # 不是幂等键撞车 → 是真的写坏了,不许吞
+        logger.info("[positions_entry] 幂等键 %s 并发撞车,重放既有持仓 %s",
+                    idempotency_key, existing)
+        return replay_buy(existing, db_path=db_path)
+
     try:
         _record_buy_action(position_id, code, buy_date, buy_price, qty, source, db_path)
     except Exception:  # noqa: BLE001 —— user_actions 记账失败不影响开仓已成功这一事实

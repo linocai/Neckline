@@ -979,6 +979,12 @@ def open_position(body: PositionOpenIn) -> PositionOpenOut:
     `sourceBasketKey`/`tier`/`role`/`planAvailable`/`planDeviationNotice` 字段纯
     展示,老客户端忽略未知键不受影响。**实时报价只在买入日=今天时才取**(历史
     补录若也拿"此刻"的实时价会把无关的当下行情焊进历史快照,是数据污染不是丰富)。
+
+    **v2.0.0(契约线审计 🟡 Y7,2026-08-03)**:可选 `idempotencyKey` —— 同键二次提交
+    **不开第二笔仓**,直接重放那笔既有仓的结果并标 `replayed=true`。开仓是**不可逆
+    记账**,而「服务端已落库、响应没回到客户端 → 客户端重试」是最常见的一类重复;
+    重复一笔仓之后,持仓哨兵、仓位纪律、周复盘对账全都建立在错的持仓上。不传键 =
+    不设防(CLI / 老客户端 / 历史补录行为逐字节不变)。
     """
     from neckline import positions_entry
 
@@ -987,7 +993,7 @@ def open_position(body: PositionOpenIn) -> PositionOpenOut:
     result = positions_entry.record_buy(
         body.code, body.buy_price, body.qty, buy_date,
         note=(body.entry_reason or None), buy_fees=body.buyFees,
-        quote=quote, db_path=_db(),
+        quote=quote, db_path=_db(), idempotency_key=body.idempotencyKey,
     )
     stop_pct, _mh, _sc, _tpr = _active_config()
     return PositionOpenOut(
@@ -996,6 +1002,7 @@ def open_position(body: PositionOpenIn) -> PositionOpenOut:
         sourceBasketKey=result.source_basket_key, sourceBasketName=result.source_basket_name,
         tier=result.tier, role=result.role,
         planAvailable=result.plan_available, planDeviationNotice=result.plan_deviation_notice,
+        replayed=result.replayed,
     )
 
 
