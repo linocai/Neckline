@@ -21,6 +21,17 @@
       恰好同板块的个股均值做代理,样本可能很小甚至为空;为空时本条不判断
       (不是"板块没有跳水",是"没有可比样本"),调用方/推送文案应如实体现这一
       局限,不能让用户误以为"没预警=板块健康"。
+
+**2026-08-03 新增第四个函数 `check_exit_reference_reached`(用户拍板,plan §五
+V2-⑪-B 定向任务书,仅服务于 APNs `take_profit` kind)**:触达来源篮子卡经
+`position_plans` 继承的离场参考区间。**与上面「回落止盈」刻意不同源、不合并**
+——两者是项目明文区分的「两个不同概念」(`sentinel/positions.py`
+`CLOSE_REASON_TARGET_ZONE_REACHED` 注释原话:「达到参考区间...与 TAKE_PROFIT
+〔回落止盈,现役章程机械规则〕是两个不同概念,不复用」):回落止盈是回测验证过
+的机械纪律,继续独立驱动 console/Bark 通道、`evaluate_holding()`/`HoldingAlert`
+签名与既有三条子检查**一字不动**;本函数是 `sentinel/engine.py::run_tick` 里
+一条独立的 APNs 专属旁路(数据源查询——从 `position_plans` 取最新版本的
+`exit_reference`——在 engine.py 侧,不在本模块,本模块只做纯判定)。
 """
 
 from __future__ import annotations
@@ -107,6 +118,32 @@ def check_sector_dive(
     return None
 
 
+def check_exit_reference_reached(
+    position: Position, quote: Quote, exit_low: float, exit_high: float,
+) -> Optional[str]:
+    """触达离场参考区间(2026-08-03 用户拍板;仅服务 APNs `take_profit` kind,见
+    模块头说明——**不是**回落止盈,两者刻意不同源、不合并)。
+
+    `exit_low`/`exit_high` 由调用方从 `position_plans` 最新版本的 `plan_json.
+    exit_reference` 取(查无该持仓的计划 / 无来源篮子 / 卡未就绪 / 该票离场参考被
+    ⑦ 夹逼拒收 → 调用方直接不判、不调用本函数,**不传 0/None 冒充"没有区间"**——
+    本函数因此要求两个参数都是有效正数,不在这里做"缺失时怎么办"的决策)。
+
+    **语义**:现价进入区间下沿即算"触达"(`quote.price >= exit_low`,不要求越过
+    `exit_high`)——同 `check_take_profit`/`check_stop_approach` 单阈值触发一碰线
+    就提醒的既有姿势。**文案只中性陈述"触达",不建议卖出**(离场参考是参考、回落
+    止盈才是纪律;同 `basket_card.py` `CARD_SYSTEM_PROMPT`「不得使用止盈线/目标价/
+    建议买入」这类措辞的同一条语义红线)。"""
+    if quote.price <= 0 or exit_low <= 0 or exit_high <= 0 or exit_low > exit_high:
+        return None
+    if quote.price + _EPS < exit_low:
+        return None
+    return (
+        f"现价{quote.price:.2f}已触达来源篮子的离场参考区间"
+        f"[{exit_low:.2f}, {exit_high:.2f}](仅供参考,不是止盈信号,是否离场由您判断)"
+    )
+
+
 def evaluate_holding(
     position: Position,
     quote: Optional[Quote],
@@ -140,6 +177,7 @@ __all__ = [
     "check_stop_approach",
     "check_take_profit",
     "check_sector_dive",
+    "check_exit_reference_reached",
     "evaluate_holding",
     "STOP_APPROACH_BUFFER",
     "SECTOR_DIVE_RET_THRESHOLD",

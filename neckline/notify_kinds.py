@@ -27,24 +27,42 @@
 锁死;要加第 12 个 kind,先拿到用户拍板,再改这里 + 改守门单测。**⛔ 不许"顺手"
 加一个**——推送是唯一会主动打断用户的通道,白名单的意义全在"加不进来"。
 
-**本版 11 个 kind 的来源逐条可追溯**(⛔ 没有一个是本模块自己发明的):
+**本版 14 个 kind 的来源逐条可追溯**(⛔ 没有一个是本模块自己发明的):
 
     · 6 个来自 V1 六类白名单迁移(plan ⑪-B 逐字点名);
     · 1 个 `custom_alert` 来自 ⑪-C(NL 临时提醒);
-    · 4 个来自 ⑪-A「新增四监测」。
+    · 4 个来自 ⑪-A「新增四监测」;
+    · 3 个来自 2026-08-03 用户拍板(`stop_approach`/`take_profit`/`sector_dive`,
+      见下)。
 
-**两处刻意的缺席**(不是遗漏,完工记录已登记、等用户/planner 裁定):
+**一处仍缺席**(不是遗漏,完工记录已登记、等用户/planner 裁定):
 
     · `basket_falsified`:⑪-B 的 kind 例举里有它,但 **⑦-b / ⑧-C2 的语义红线**
       写死「篮子 `falsified` ⛔ 不触发任何交易动作、**不进推送**、不改任何持仓
       判定」,且 `tests/test_sentinel_basket_verify.py::test_verification_never_
       touches_positions_or_push_channels` 已把这条红线锁成守门单测。两份权威正面
       冲突,**本块取保守方向(不推)**:少推一条通知是可逆的,越过一条红线不是。
-    · `stop_approach` / `take_profit` / `sector_dive`:蓝图 5.5「立即通知」确实
-      点名了「逼近或触发止损」,但这三条是**持仓哨兵既有的看板事件**(现走
-      `sentinel/channels.py` 的 Bark/日志通道,从来没进过 APNs),⑪-B 的 kind
-      例举里也没有它们。给它们开 APNs = 给用户凭空多一路推送,按本模块自己那条
-      「新增 kind 须用户拍板」纪律,**本块不擅自加**。
+
+**`stop_approach` / `take_profit` / `sector_dive` 的缺席已解除(2026-08-03 用户
+拍板,plan §五 V2-⑪-B「用户拍板」段)**:蓝图 5.5「立即通知」逐字点名了「逼近或
+触发止损」「快速跳水」;这三条曾是**持仓哨兵既有的看板/Bark 事件**(`sentinel/
+channels.py`,从没进过 APNs),⑪-B 完工时按「新增 kind 须用户拍板」纪律未擅自加,
+今日由用户正式拍板补齐。**kind 串沿用 `sentinel_events.event_key` 既有字面量**
+(`stop_approach`/`take_profit`/`sector_dive`),不另拟新名——这只是命名上的巧合
+方便,**不是**"kind 必须等于 event_key"的通用规则。
+
+    ⚠ **`take_profit` 一条的触发源刻意不是** `sentinel/holding.py::check_take_
+    profit`(回落止盈,现役章程 `take_profit_retrace` 驱动的机械纪律,继续独立
+    驱动 console/Bark、一字不动)——而是**新增的** `check_exit_reference_reached`
+    (触达来源篮子卡经 `position_plans` 继承的离场参考区间)。两者是项目明文区分
+    的「两个不同概念」(见 `sentinel/positions.py`
+    `CLOSE_REASON_TARGET_ZONE_REACHED` 注释),前者是回测验证过的纪律、后者只是
+    LLM 给的参考,**不可合并、不可互相替代**。理由:老四件套 `target`/
+    `decision_log.target_price` 已停写(⑩-C)/定退役(⑬-6),若接向这两处会成为
+    永不触发的死开关;`position_plans` 是唯一仍在写入、能代表"当前现役计划"的
+    活数据源。`stop_approach`/`sector_dive` 两条则直接复用既有 `check_stop_
+    approach`/`check_sector_dive` 的既有判定与文案,同一份 `sentinel_events`
+    去重行,不二次措辞。
 """
 
 from __future__ import annotations
@@ -100,6 +118,12 @@ KIND_SECTOR_BID_FADE = "sector_bid_fade"        # ② 板块(基准指数)承接
 KIND_HOLDING_DECOUPLED = "holding_decoupled"    # ③ 持仓从跟随板块转为独立弱势
 KIND_MARKET_SHOCK = "market_shock"              # ④ 大盘突变
 
+# —— 2026-08-03 用户拍板:持仓哨兵既有三事件升级立即级(见上方模块头说明)———————
+KIND_STOP_APPROACH = "stop_approach"    # 止损逼近/触发(既有看板/Bark 事件升级)
+KIND_TAKE_PROFIT = "take_profit"        # 触达离场参考区间(position_plans 继承;
+                                         # ⚠ 不是回落止盈机械纪律,见模块头说明)
+KIND_SECTOR_DIVE = "sector_dive"        # 所属板块跳水预警(既有看板/Bark 事件升级)
+
 ALL_KINDS: Tuple[str, ...] = (
     KIND_REPORT_READY,
     KIND_RETREAT,
@@ -112,6 +136,9 @@ ALL_KINDS: Tuple[str, ...] = (
     KIND_SECTOR_BID_FADE,
     KIND_HOLDING_DECOUPLED,
     KIND_MARKET_SHOCK,
+    KIND_STOP_APPROACH,
+    KIND_TAKE_PROFIT,
+    KIND_SECTOR_DIVE,
 )
 
 # —— 分级归属(蓝图 5.5 逐条对照;每一条都在下面标了依据,⛔ 不许凭手感改)————
@@ -145,6 +172,11 @@ LEVEL_OF_KIND: Dict[str, str] = {
     KIND_MARKET_SHOCK: LEVEL_IMPORTANT,
     # 报告就绪本就是**收盘之后**那一条,盘后汇总级天生就是它的位置。
     KIND_REPORT_READY: LEVEL_DIGEST,
+    # 2026-08-03 用户拍板:蓝图 5.5「立即通知」逐字点名「逼近或触发止损」「快速
+    # 跳水」——持仓事件、直接指向用户手里的仓,三条均为立即级(不是重要不紧急)。
+    KIND_STOP_APPROACH: LEVEL_IMMEDIATE,
+    KIND_TAKE_PROFIT: LEVEL_IMMEDIATE,
+    KIND_SECTOR_DIVE: LEVEL_IMMEDIATE,
 }
 
 # 设置屏用的人读名(客户端展示层若要中文可直接用它,不必各端再抄一份映射)。
@@ -160,6 +192,9 @@ KIND_LABEL: Dict[str, str] = {
     KIND_SECTOR_BID_FADE: "板块指数承接消失",
     KIND_HOLDING_DECOUPLED: "持仓转独立弱势",
     KIND_MARKET_SHOCK: "大盘突变",
+    KIND_STOP_APPROACH: "止损逼近/触发",
+    KIND_TAKE_PROFIT: "触达离场参考区间",
+    KIND_SECTOR_DIVE: "所属板块跳水",
 }
 
 # 全部 kind 默认**开**(承 V1 六类开关「默认开可关」的既定口径)。
@@ -207,6 +242,7 @@ __all__ = [
     "KIND_CIRCUIT", "KIND_HOLDING_ALERT", "KIND_CUSTOM_ALERT",
     "KIND_BASKET_PEERS_WEAK", "KIND_SECTOR_BID_FADE", "KIND_HOLDING_DECOUPLED",
     "KIND_MARKET_SHOCK",
+    "KIND_STOP_APPROACH", "KIND_TAKE_PROFIT", "KIND_SECTOR_DIVE",
     "ALL_KINDS", "LEVEL_OF_KIND", "KIND_LABEL", "DEFAULT_ENABLED",
     "LEGACY_COLUMN_OF_KIND",
     "level_of", "category_of", "kinds_of_level",

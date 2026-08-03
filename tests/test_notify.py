@@ -49,13 +49,15 @@ def _ok_transport(url, headers, body):
 
 
 def test_push_entrypoints_are_exactly_the_declared_set():
-    """扇出路径守门(V2-⑪ 取代 V1「六类」断言):`notify.__all__` = 一条 `push_event`
-    + 八个措辞函数,**不给第十个入口留位置**。加入口 = 改这条断言 = 过一次人眼。"""
+    """扇出路径守门(V2-⑪ 取代 V1「六类」断言,2026-08-03 再加一个持仓三事件旁路
+    入口):`notify.__all__` = 一条 `push_event` + 九个措辞函数,**不给第十一个
+    入口留位置**。加入口 = 改这条断言 = 过一次人眼。"""
     assert set(notify.__all__) == {
         "NotifyOutcome", "push_event",
         "push_report_ready", "push_retreat_brake", "push_precall_summary",
         "push_d5_exit", "push_circuit_breaker", "push_holding_alert",
         "push_attention_alert", "push_custom_alert",
+        "push_holding_risk_alert",
     }
 
 
@@ -314,6 +316,107 @@ def test_holding_alert_sends_when_on(api_env, apns_configured):
     assert cap["payload"]["aps"]["category"] == apns.CATEGORY_IMPORTANT
     assert "年线下涨停" in cap["payload"]["aps"]["alert"]["body"]
     assert cap["payload"]["kind"] == "holding_alert"
+
+
+def test_holding_risk_alert_rejects_unregistered_kind(api_env, apns_configured):
+    """白名单不开后门:只接受持仓三事件 kind,别的串直接抛。"""
+    upsert_device("tok1", db_path=api_env.db_path)
+    with pytest.raises(ValueError):
+        notify.push_holding_risk_alert(
+            "holding_alert", "t", "b", db_path=api_env.db_path, transport=_ok_transport,
+        )
+
+
+def test_stop_approach_gated_off(api_env, apns_configured):
+    """2026-08-03 用户拍板:止损逼近/触发,关掉该 kind → 跳过。"""
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    _set_kind(db, notify_kinds.KIND_STOP_APPROACH, False)
+    out = notify.push_holding_risk_alert(
+        notify_kinds.KIND_STOP_APPROACH, "持仓提醒:600001.SH",
+        "现价9.60已跌破止损线9.50(-5%),若券商条件单未成交请立即人工确认(系统不代下单/撤单)",
+        code="600001.SH", db_path=db, transport=_ok_transport,
+    )
+    assert out.sent == 0 and out.skipped_reason == "kind_off:stop_approach"
+
+
+def test_stop_approach_sends_when_on(api_env, apns_configured):
+    """默认开(2026-08-03 用户拍板即默认开,非"缺键取默认开"那条通用规则)。"""
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    t, cap = _capture_transport()
+    out = notify.push_holding_risk_alert(
+        notify_kinds.KIND_STOP_APPROACH, "持仓提醒:600001.SH",
+        "现价9.60已跌破止损线9.50(-5%),若券商条件单未成交请立即人工确认(系统不代下单/撤单)",
+        code="600001.SH", db_path=db, transport=t,
+    )
+    assert out.sent == 1
+    assert cap["payload"]["kind"] == "stop_approach"
+    assert cap["payload"]["aps"]["category"] == apns.CATEGORY_IMMEDIATE   # 三条均立即级
+    body = cap["payload"]["aps"]["alert"]["body"]
+    assert "已跌破止损线" in body                # 事实原样保留,不二次措辞
+    assert "点开 APP 核对" in body                # ⑪-B 三句式补的第三句
+
+
+def test_sector_dive_gated_off(api_env, apns_configured):
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    _set_kind(db, notify_kinds.KIND_SECTOR_DIVE, False)
+    out = notify.push_holding_risk_alert(
+        notify_kinds.KIND_SECTOR_DIVE, "持仓提醒:600001.SH",
+        "所属板块内可比个股(关注池样本3只)平均跌幅-4.0%,疑似板块跳水",
+        code="600001.SH", db_path=db, transport=_ok_transport,
+    )
+    assert out.sent == 0 and out.skipped_reason == "kind_off:sector_dive"
+
+
+def test_sector_dive_sends_when_on(api_env, apns_configured):
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    t, cap = _capture_transport()
+    out = notify.push_holding_risk_alert(
+        notify_kinds.KIND_SECTOR_DIVE, "持仓提醒:600001.SH",
+        "所属板块内可比个股(关注池样本3只)平均跌幅-4.0%,疑似板块跳水",
+        code="600001.SH", db_path=db, transport=t,
+    )
+    assert out.sent == 1
+    assert cap["payload"]["kind"] == "sector_dive"
+    assert "疑似板块跳水" in cap["payload"]["aps"]["alert"]["body"]
+
+
+def test_take_profit_gated_off(api_env, apns_configured):
+    """`take_profit` 的触发源是离场参考区间触达(见 engine.py 旁路 E),**不是**
+    回落止盈——本测只管 kind 开关本身,措辞由调用方(engine.py)负责。"""
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    _set_kind(db, notify_kinds.KIND_TAKE_PROFIT, False)
+    out = notify.push_holding_risk_alert(
+        notify_kinds.KIND_TAKE_PROFIT, "离场参考提醒:600001.SH",
+        "现价13.00已触达来源篮子的离场参考区间[13.00, 15.00](仅供参考,不是止盈信号,是否离场由您判断)",
+        code="600001.SH", db_path=db, transport=_ok_transport,
+    )
+    assert out.sent == 0 and out.skipped_reason == "kind_off:take_profit"
+
+
+def test_take_profit_sends_when_on_and_payload_has_kind(api_env, apns_configured):
+    """端到端:事件文案 → `push_holding_risk_alert` → `push_event` → APNs payload
+    含 `kind`(2026-08-03 定向任务书验收点「事件→push_event→payload 含 kind」)。"""
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    t, cap = _capture_transport()
+    out = notify.push_holding_risk_alert(
+        notify_kinds.KIND_TAKE_PROFIT, "离场参考提醒:600001.SH",
+        "现价13.00已触达来源篮子的离场参考区间[13.00, 15.00](仅供参考,不是止盈信号,是否离场由您判断)",
+        code="600001.SH", db_path=db, transport=t,
+    )
+    assert out.sent == 1 and out.kind == "take_profit" and out.level == "immediate"
+    assert cap["payload"]["kind"] == "take_profit"
+    assert cap["payload"]["level"] == "immediate"
+    assert cap["payload"]["code"] == "600001.SH"
+    body = cap["payload"]["aps"]["alert"]["body"]
+    # 语义红线:不建议卖出,只中性陈述"触达"。
+    assert "建议" not in body and "该卖" not in body
+    assert "触达" in body
 
 
 def test_partial_failure_counts(api_env, apns_configured):

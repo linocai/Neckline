@@ -14,19 +14,21 @@ from neckline.api import notify
 from neckline.push import apns
 
 
-def test_kind_whitelist_is_exactly_eleven():
-    """**精确集合**断言(不是 `>=`、不是子集):11 个 kind,一个不多一个不少。
+def test_kind_whitelist_is_exactly_fourteen():
+    """**精确集合**断言(不是 `>=`、不是子集):14 个 kind,一个不多一个不少。
 
-    6 个来自 V1 六类迁移,1 个 `custom_alert`(⑪-C),4 个来自 ⑪-A 新增四监测。
-    ⚠ `basket_falsified` **刻意不在这里**:⑪-B 的例举里有它,但 ⑦-b / ⑧-C2 的语义
-    红线写死「篮子 falsified ⛔ 不进推送」,两份权威冲突时本块取保守方向,已在
-    `notify_kinds` 模块头与完工记录登记,等裁定。"""
+    6 个来自 V1 六类迁移,1 个 `custom_alert`(⑪-C),4 个来自 ⑪-A 新增四监测,
+    3 个来自 2026-08-03 用户拍板(`stop_approach`/`take_profit`/`sector_dive`,
+    持仓哨兵既有事件升级立即级)。⚠ `basket_falsified` **刻意不在这里**:⑪-B 的
+    例举里有它,但 ⑦-b / ⑧-C2 的语义红线写死「篮子 falsified ⛔ 不进推送」,两份
+    权威冲突时本块取保守方向,已在 `notify_kinds` 模块头与完工记录登记,等裁定。"""
     assert set(nk.ALL_KINDS) == {
         "report_ready", "retreat", "precall", "d5exit", "circuit", "holding_alert",
         "custom_alert",
         "basket_peers_weak", "sector_bid_fade", "holding_decoupled", "market_shock",
+        "stop_approach", "take_profit", "sector_dive",
     }
-    assert len(nk.ALL_KINDS) == len(set(nk.ALL_KINDS)) == 11
+    assert len(nk.ALL_KINDS) == len(set(nk.ALL_KINDS)) == 14
     assert "basket_falsified" not in nk.ALL_KINDS
 
 
@@ -53,6 +55,18 @@ def test_blueprint_level_assignment():
               nk.KIND_BASKET_PEERS_WEAK, nk.KIND_SECTOR_BID_FADE,
               nk.KIND_HOLDING_DECOUPLED, nk.KIND_MARKET_SHOCK):
         assert nk.level_of(k) == nk.LEVEL_IMPORTANT
+
+
+def test_holding_three_events_are_immediate():
+    """2026-08-03 用户拍板:蓝图 5.5 逐字点名「逼近或触发止损」「快速跳水」——持仓
+    哨兵既有三事件均为立即级(不是重要不紧急,不是盘后汇总)。"""
+    for k in (nk.KIND_STOP_APPROACH, nk.KIND_TAKE_PROFIT, nk.KIND_SECTOR_DIVE):
+        assert nk.level_of(k) == nk.LEVEL_IMMEDIATE
+        assert nk.category_of(k) == nk.CATEGORY_IMMEDIATE
+    # kind 串沿用 sentinel_events.event_key 既有字面量,不另拟新名。
+    assert nk.KIND_STOP_APPROACH == "stop_approach"
+    assert nk.KIND_TAKE_PROFIT == "take_profit"
+    assert nk.KIND_SECTOR_DIVE == "sector_dive"
 
 
 def test_four_new_monitors_all_present():

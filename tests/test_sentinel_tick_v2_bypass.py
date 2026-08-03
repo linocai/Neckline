@@ -1,7 +1,9 @@
-"""V2-⑪ 两条新旁路在 `run_tick` 里的接线单测(⑪-A 四监测 / ⑪-C NL 临时提醒)。
+"""V2-⑪ 两条新旁路在 `run_tick` 里的接线单测(⑪-A 四监测 / ⑪-C NL 临时提醒)+
+2026-08-03 用户拍板追加的持仓三事件 APNs 旁路(stop_approach/take_profit/
+sector_dive 升级立即级)。
 
 这份文件专测**接线**(判定逻辑分别在 `test_sentinel_attention.py` /
-`test_sentinel_custom.py`),重点是那条最贵的红线:
+`test_sentinel_custom.py` / `test_sentinel_holding.py`),重点是那条最贵的红线:
 
     **旁路炸了 ⇒ 四哨兵与熔断一行不受影响。**
 
@@ -11,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time
 
 import pytest
@@ -21,6 +24,7 @@ from neckline import custom_alerts as ca
 from neckline.db import connection
 from neckline.sentinel import attention as att
 from neckline.sentinel import custom as cu
+from neckline.sentinel import engine as sentinel_engine
 from neckline.sentinel.channels import PushChannel
 from neckline.sentinel.dedup import already_pushed, load_events_for_date
 from neckline.sentinel.engine import reset_retreat_process_state, run_tick
@@ -47,6 +51,7 @@ class _FakeNotifier:
     def __init__(self):
         self.attention = []
         self.custom = []
+        self.holding_risk = []   # 2026-08-03 用户拍板:持仓三事件旁路的记录位
 
     def push_attention_alert(self, kind, title, what_happened, **kw):
         self.attention.append({"kind": kind, "title": title, "body": what_happened, **kw})
@@ -56,6 +61,10 @@ class _FakeNotifier:
         self.custom.append({"alertId": alert_id, "subject": subject,
                             "condition": condition_text, **kw})
         return type("O", (), {"sent": 1, "skipped_reason": "", "kind": "custom_alert"})()
+
+    def push_holding_risk_alert(self, kind, title, reason, **kw):
+        self.holding_risk.append({"kind": kind, "title": title, "reason": reason, **kw})
+        return type("O", (), {"sent": 1, "skipped_reason": "", "kind": kind})()
 
 
 def _q(code, price, pre_close=10.0, high=None, volume=60000.0) -> Quote:
@@ -125,6 +134,30 @@ def _link(env, position_id: int, basket_id: int, code: str, day: date) -> None:
             "INSERT INTO entry_snapshots (position_id, ts_code, trade_date, basket_id,"
             " card_version, tier, role, snapshot_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (position_id, code, day.strftime("%Y%m%d"), basket_id, 1, 1, "core", "{}",
+             "2026-07-31T00:00:00+08:00"),
+        )
+
+
+def _seed_position_plan(env, position_id: int, *, exit_low=None, exit_high=None) -> None:
+    """落一行 `position_plans` version=1(2026-08-03 持仓风险旁路测试用)。
+    `exit_low`/`exit_high` 皆 `None` → `exit_reference` 落 `absent`(模拟"无来源篮子
+    或该票离场参考被夹逼拒收",走 `positions_entry.build_inherited_plan` 的既有
+    JSON 形状,不臆造一份新结构)。"""
+    has_ref = exit_low is not None and exit_high is not None
+    plan = {
+        "available": True, "reason": None,
+        "source_basket_key": "k1", "source_basket_name": "AI 算力", "driver": "算力扩产",
+        "entry_zone": None, "entry_zone_clamp": "absent",
+        "max_chase": None, "max_chase_clamp": "absent",
+        "exit_reference": ({"low": exit_low, "high": exit_high} if has_ref else None),
+        "exit_reference_clamp": ("ok" if has_ref else "absent"),
+        "verification_spec": None, "invalidation_spec": None, "risks": [],
+    }
+    with connection(env.db_path) as conn:
+        conn.execute(
+            "INSERT INTO position_plans (position_id, version, source_basket_id,"
+            " source_card_version, plan_json, note, created_at) VALUES (?,1,?,?,?,?,?)",
+            (position_id, None, None, json.dumps(plan, ensure_ascii=False), None,
              "2026-07-31T00:00:00+08:00"),
         )
 
@@ -245,6 +278,146 @@ class TestCustomAlertBypassWiring:
         r2 = run_tick(now, db_path=tick_env.db_path, parquet_dir=tick_env.parquet_dir,
                       quotes_fn=qf, notifier=n2)
         assert r2.custom_alert_hits == [] and n2.custom == []
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 2026-08-03 用户拍板:持仓三事件升级立即级 APNs kind 的接线
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestHoldingRiskApnsWiring:
+    def _boom_quotes(self):
+        return lambda codes: {"600001.SH": _q("600001.SH", 9.0)}   # -10%,触发 stop_approach
+
+    def test_stop_approach_fires_apns_reusing_console_wording(self, tick_env):
+        """stop_approach 复用**同一份** console 文案推 APNs(⑪-B「文案生成收敛一处」
+        ——不二次措辞,同一次 `_maybe_push` 转手调用)。"""
+        open_position("600001.SH", 10.0, 1000, tick_env.today, db_path=tick_env.db_path)
+        notifier = _FakeNotifier()
+        cap = _CapturingChannel()
+        now = datetime.combine(tick_env.today, time(10, 30))
+        r = run_tick(now, channels=[cap], db_path=tick_env.db_path,
+                     parquet_dir=tick_env.parquet_dir, quotes_fn=self._boom_quotes(),
+                     notifier=notifier)
+        assert r.holding_alerts and "stop_approach" in r.holding_alerts[0].alerts
+        assert len(notifier.holding_risk) == 1
+        hit = notifier.holding_risk[0]
+        assert hit["kind"] == "stop_approach"
+        console_title, console_body, _level = cap.messages[0]
+        assert hit["title"] == console_title            # 同一份文案,不二次措辞
+        assert hit["reason"] == console_body
+
+    def test_stop_approach_apns_shares_dedup_with_console_on_second_tick(self, tick_env):
+        """同一次 `sentinel_events` 去重(不给两条独立去重槽位)——第二拍两边都不再推,
+        判据 = `event_key`(2026-08-03 定向任务书要求②:不含价格/时间戳等每拍变量)。"""
+        open_position("600001.SH", 10.0, 1000, tick_env.today, db_path=tick_env.db_path)
+        now = datetime.combine(tick_env.today, time(10, 30))
+        qf = self._boom_quotes()
+        run_tick(now, db_path=tick_env.db_path, parquet_dir=tick_env.parquet_dir,
+                 quotes_fn=qf, notifier=_FakeNotifier())
+        n2 = _FakeNotifier()
+        r2 = run_tick(now, db_path=tick_env.db_path, parquet_dir=tick_env.parquet_dir,
+                      quotes_fn=qf, notifier=n2)
+        assert n2.holding_risk == []
+        assert r2.skipped_duplicate >= 1
+
+    def test_take_profit_retrace_does_not_fire_apns_kind(self, tick_env, monkeypatch):
+        """回落止盈(`check_take_profit`,机械纪律)继续只驱动 console/Bark ——APNs
+        的 `take_profit` kind 改由旁路 E(离场参考区间)驱动,两者刻意解耦
+        (2026-08-03 定向任务书要求①:触发源不得指向老四件套/`decision_log`,本项目
+        选择的正确指向是 `position_plans`,与回落止盈完全独立、互不牵连)。"""
+        open_position("600001.SH", 10.0, 1000, tick_env.today, db_path=tick_env.db_path)
+        from neckline.sentinel.holding import HoldingAlert
+        monkeypatch.setattr(
+            sentinel_engine, "evaluate_holding",
+            lambda position, quote, **kw: HoldingAlert(
+                position_id=position.id, ts_code=position.ts_code,
+                alerts={"take_profit": "现价11.00较持仓峰值12.00回落8.3%,已进入回落止盈区间(阈值5%)"},
+            ),
+        )
+        notifier = _FakeNotifier()
+        cap = _CapturingChannel()
+        now = datetime.combine(tick_env.today, time(10, 30))
+        r = run_tick(now, channels=[cap], db_path=tick_env.db_path,
+                     parquet_dir=tick_env.parquet_dir,
+                     quotes_fn=lambda codes: {"600001.SH": _q("600001.SH", 11.0)},
+                     notifier=notifier)
+        assert r.holding_alerts and "take_profit" in r.holding_alerts[0].alerts
+        assert any("回落止盈区间" in b for _t, b, _l in cap.messages)   # console 照常收到
+        assert notifier.holding_risk == []                              # APNs 侧空,不经这条旁路
+
+    def test_exit_reference_reached_fires_take_profit_kind(self, tick_env):
+        """离场参考区间触达(旁路 E)独立驱动 APNs `take_profit` kind ——
+        `position_plans` 是唯一触发源(2026-08-03 定向任务书要求①)。"""
+        pid = open_position("600001.SH", 10.0, 1000, tick_env.today, db_path=tick_env.db_path)
+        _seed_position_plan(tick_env, pid, exit_low=13.0, exit_high=15.0)
+        notifier = _FakeNotifier()
+        cap = _CapturingChannel()
+        now = datetime.combine(tick_env.today, time(10, 30))
+        r = run_tick(now, channels=[cap], db_path=tick_env.db_path,
+                     parquet_dir=tick_env.parquet_dir,
+                     quotes_fn=lambda codes: {"600001.SH": _q("600001.SH", 13.5)},
+                     notifier=notifier)
+        assert r.exit_reference_hits == ["600001.SH"]
+        assert len(notifier.holding_risk) == 1
+        hit = notifier.holding_risk[0]
+        assert hit["kind"] == "take_profit"
+        assert "触达" in hit["reason"] and "离场参考区间" in hit["reason"]
+        assert "建议" not in hit["reason"] and "该卖" not in hit["reason"]  # 语义红线③:不建议卖出
+        # ⛔ 不进 channels(console/Bark 继续只反映回落止盈,本旁路不混进去)
+        assert all("触达" not in b for _t, b, _l in cap.messages)
+
+    def test_no_plan_does_not_judge(self, tick_env):
+        """无 `position_plans` 行(独立买入)→ 如实不判,不编默认目标价
+        (2026-08-03 定向任务书要求①末句)。"""
+        open_position("600001.SH", 10.0, 1000, tick_env.today, db_path=tick_env.db_path)
+        notifier = _FakeNotifier()
+        now = datetime.combine(tick_env.today, time(10, 30))
+        r = run_tick(now, db_path=tick_env.db_path, parquet_dir=tick_env.parquet_dir,
+                     quotes_fn=lambda codes: {"600001.SH": _q("600001.SH", 20.0)},
+                     notifier=notifier)
+        assert r.exit_reference_hits == []
+        assert notifier.holding_risk == []
+
+    def test_plan_without_exit_reference_does_not_judge(self, tick_env):
+        """有计划行但离场参考被 ⑦ 夹逼拒收(`absent`)→ 同样不判,不臆造区间。"""
+        pid = open_position("600001.SH", 10.0, 1000, tick_env.today, db_path=tick_env.db_path)
+        _seed_position_plan(tick_env, pid, exit_low=None, exit_high=None)
+        notifier = _FakeNotifier()
+        now = datetime.combine(tick_env.today, time(10, 30))
+        r = run_tick(now, db_path=tick_env.db_path, parquet_dir=tick_env.parquet_dir,
+                     quotes_fn=lambda codes: {"600001.SH": _q("600001.SH", 20.0)},
+                     notifier=notifier)
+        assert r.exit_reference_hits == []
+        assert notifier.holding_risk == []
+
+    def test_exit_reference_dedups_on_second_tick(self, tick_env):
+        pid = open_position("600001.SH", 10.0, 1000, tick_env.today, db_path=tick_env.db_path)
+        _seed_position_plan(tick_env, pid, exit_low=13.0, exit_high=15.0)
+        now = datetime.combine(tick_env.today, time(10, 30))
+        qf = lambda codes: {"600001.SH": _q("600001.SH", 13.5)}  # noqa: E731
+        run_tick(now, db_path=tick_env.db_path, parquet_dir=tick_env.parquet_dir,
+                 quotes_fn=qf, notifier=_FakeNotifier())
+        n2 = _FakeNotifier()
+        r2 = run_tick(now, db_path=tick_env.db_path, parquet_dir=tick_env.parquet_dir,
+                      quotes_fn=qf, notifier=n2)
+        assert r2.exit_reference_hits == []
+        assert n2.holding_risk == []
+        assert r2.skipped_duplicate >= 1
+
+    def test_exit_reference_bypass_explosion_does_not_break_holding_sentinel(self, tick_env, monkeypatch):
+        """旁路 E 炸了 ⇒ 持仓哨兵一行不受影响(同文件红线纪律)。"""
+        open_position("600001.SH", 10.0, 1000, tick_env.today, db_path=tick_env.db_path)
+        monkeypatch.setattr(
+            sentinel_engine, "_load_exit_references",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("旁路炸了")),
+        )
+        cap = _CapturingChannel()
+        now = datetime.combine(tick_env.today, time(10, 30))
+        r = run_tick(now, channels=[cap], db_path=tick_env.db_path,
+                     parquet_dir=tick_env.parquet_dir, quotes_fn=self._boom_quotes(),
+                     notifier=_FakeNotifier())
+        assert r.holding_alerts and r.holding_alerts[0].alerts
+        assert r.exit_reference_hits == []
 
 
 # ══════════════════════════════════════════════════════════════════════════

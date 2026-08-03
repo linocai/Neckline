@@ -17,13 +17,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from neckline import custom_alerts as custom_alerts_store
+from neckline import notify_kinds
+from neckline.db import connection
 from neckline.report.candidates import Candidate
 from neckline.report.sectors import load_member_map
 from neckline.sentinel import attention, basket_verify, capture
@@ -38,7 +41,11 @@ from neckline.sentinel.channels import (
 )
 from neckline.sentinel.dedup import already_pushed, record_pushed
 from neckline.sentinel.entry import EntrySignal, check_entry
-from neckline.sentinel.holding import HoldingAlert, evaluate_holding
+from neckline.sentinel.holding import (
+    HoldingAlert,
+    check_exit_reference_reached,
+    evaluate_holding,
+)
 from neckline.sentinel.intraday import is_intraday_now
 from neckline.sentinel.invalidation import InvalidationSignal, check_invalidation
 from neckline.sentinel.positions import Position
@@ -111,6 +118,9 @@ class TickResult:
     merged_exposure: List[Any] = field(default_factory=list)      # attention.MergedExposureGroup
     custom_alert_hits: List[int] = field(default_factory=list)    # 命中的 custom_alerts.id
     custom_alerts_expired: List[int] = field(default_factory=list)
+    # —— 2026-08-03 用户拍板旁路(离场参考区间触达,驱动 APNs `take_profit` kind)
+    #    的观测位。同样不参与任何纪律判定;为空不影响四哨兵与熔断。———————————
+    exit_reference_hits: List[str] = field(default_factory=list)  # 命中的 ts_code
     retreat_active: bool = False
     retreat_alert: Optional[RetreatAlert] = None       # 仅红色刹车时非空(驱动 APNs/通道推送)
     retreat_warning: Optional[str] = None              # 黄色预警文案(只进看板,不推送)
@@ -180,6 +190,45 @@ def _historical_peak_close(position: Position, trade_date: date, parquet_dir: Op
     return float(hist["close"].max())
 
 
+def _load_exit_references(
+    position_ids: List[int], db_path: Optional[Path]
+) -> Dict[int, Tuple[float, float]]:
+    """`position_id -> (exit_low, exit_high)`,取 `position_plans` **最新版本**继承
+    的离场参考区间(2026-08-03 用户拍板,APNs `take_profit` kind 的触发源 ——
+    ⚠ 与 `holding.check_take_profit`〔回落止盈,机械纪律〕刻意不同源,见该函数
+    docstring)。查无计划行 / 无来源篮子 / 卡未就绪 / 该票离场参考被 ⑦ 夹逼拒收 →
+    该 position_id 缺此键(**不臆造默认区间**,同 `positions_entry.
+    evaluate_entry_deviation`"无从比较就不比较"的既有姿势)。
+
+    **只读 `position_plans` 表,不 import `positions_entry`**(同 `attention.
+    load_position_sources` 既有惯例:sentinel 层直接读表,不绕业务写入层)。按
+    `(position_id, version)` 升序取行,同一 position_id 后出现的行覆盖前面的
+    (= 取最新版本),与 `positions_entry.latest_position_plan` 语义一致。"""
+    if not position_ids:
+        return {}
+    placeholders = ",".join("?" * len(position_ids))
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT position_id, plan_json FROM position_plans "
+            f"WHERE position_id IN ({placeholders}) ORDER BY position_id, version",
+            tuple(position_ids),
+        ).fetchall()
+    out: Dict[int, Tuple[float, float]] = {}
+    for pid, plan_json in rows:
+        try:
+            plan = json.loads(plan_json) if plan_json else {}
+        except (json.JSONDecodeError, TypeError):
+            continue
+        ref = plan.get("exit_reference") if isinstance(plan, dict) else None
+        low = ref.get("low") if isinstance(ref, dict) else None
+        high = ref.get("high") if isinstance(ref, dict) else None
+        if isinstance(low, (int, float)) and isinstance(high, (int, float)):
+            out[int(pid)] = (float(low), float(high))
+        else:
+            out.pop(int(pid), None)   # 新版本没有离场参考 → 不沿用旧版本的(现役计划说了算)
+    return out
+
+
 def _default_notifier() -> Any:
     """APNs 措辞层的默认实现(**惰性 import**:`neckline.api.notify` 会拉起 API 层的
     存取模块,模块级 import 会让 `sentinel` 反向依赖 `api`;放在函数体里两边都干净,
@@ -202,9 +251,10 @@ def run_tick(
     """跑一拍。`quotes_fn` 可覆盖(默认 `sentinel.quotes.get_quotes`)——冒烟脚本
     用它注入"某历史日的合成盘中快照",不改一行编排逻辑。
 
-    `notifier`(V2-⑪)可覆盖 `neckline.api.notify`(APNs 三级措辞层)——**只服务于
-    ⑪ 的两条新旁路**(四监测 / NL 临时提醒);既有四哨兵仍走 `channels`,推送路径
-    一行未动。"""
+    `notifier`(V2-⑪,2026-08-03 起再加持仓三事件旁路)可覆盖 `neckline.api.notify`
+    (APNs 三级措辞层)——服务于 ⑪ 的两条旁路(四监测 / NL 临时提醒)+ 持仓哨兵三
+    事件升级立即级的两条旁路(`_maybe_push` 的 `apns_kind` 分支 + 离场参考区间旁路);
+    既有四哨兵**仍走 `channels`**,console/Bark 推送路径一行未动。"""
     trade_date = now.date()
     if not is_intraday_now(now):
         return TickResult(trade_date=trade_date, now=now, skipped_non_trading=True)
@@ -243,9 +293,22 @@ def run_tick(
     except Exception:  # noqa: BLE001
         logger.warning("篮子验证本拍失败(已吞,不影响哨兵判定)", exc_info=True)
 
+    # `_notify()` 提前到此处定义(原先随 V2-⑪ 两条旁路一起定义在本函数尾部)——
+    # `_maybe_push` 的 `apns_kind` 分支(2026-08-03 新增)要在"4) 持仓哨兵"那段
+    # 调用它,时间上早于文件尾部那两条旁路,闭包捕获的是**名字**、按调用时刻解析,
+    # 定义必须先于第一次调用,不能仍留在文件尾部。
+    notify_mod: Optional[Any] = notifier if notifier is not None else None
+
+    def _notify() -> Any:
+        nonlocal notify_mod
+        if notify_mod is None:
+            notify_mod = _default_notifier()
+        return notify_mod
+
     def _maybe_push(
         sentinel: str, ts_code: str, event_key: str, title: str, body: str, level: str,
         payload_extra: Optional[Dict[str, Any]] = None,
+        apns_kind: Optional[str] = None,
     ) -> None:
         if already_pushed(trade_date, sentinel, ts_code, event_key, db_path=db_path):
             result.skipped_duplicate += 1
@@ -254,6 +317,23 @@ def run_tick(
         payload = {"body": body, "delivered": delivered}
         if payload_extra:
             payload.update(payload_extra)
+        if apns_kind is not None:
+            # 2026-08-03 用户拍板旁路:stop_approach/sector_dive 复用**同一份**
+            # console 文案(title/body 原样转手)推 APNs——同一次 already_pushed/
+            # record_pushed 去重,不二次措辞、不二次去重(⛔ 不得看板一条+APNs
+            # 另一种说法)。失败只 WARNING,不影响本次 console 推送与去重记账
+            # 已经完成的事实(与 ⑪ 两条旁路的"炸了只吞"同一条纪律)。
+            try:
+                outcome = _notify().push_holding_risk_alert(
+                    apns_kind, title, body, code=ts_code, db_path=db_path,
+                )
+                payload["apnsSent"] = getattr(outcome, "sent", 0)
+                payload["apnsSkippedReason"] = getattr(outcome, "skipped_reason", "")
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[tick] 持仓风险 APNs 旁路失败(已吞,不影响看板/Bark 已完成的推送)",
+                    exc_info=True,
+                )
         record_pushed(trade_date, sentinel, ts_code, event_key, payload=payload, db_path=db_path)
         result.pushed_events.append(f"{sentinel}:{ts_code or '-'}:{event_key}")
 
@@ -359,6 +439,15 @@ def run_tick(
 
         member_map = load_member_map(parquet_dir=parquet_dir)
         _level_by_key = {"stop_approach": LEVEL_CRITICAL, "take_profit": LEVEL_INFO, "sector_dive": LEVEL_WARN}
+        # 2026-08-03 用户拍板:stop_approach/sector_dive 复用同一份 console 文案旁路
+        # 推 APNs(见 `_maybe_push` 的 `apns_kind` 分支)。⚠ `take_profit` 故意**不在
+        # 这里**——回落止盈继续只驱动 console/Bark,APNs 的 take_profit kind 改由
+        # 下面独立的「旁路 E:离场参考区间触达」驱动(见该处注释,触发源修正详情
+        # 见 `holding.check_exit_reference_reached` docstring)。
+        _apns_kind_by_key = {
+            "stop_approach": notify_kinds.KIND_STOP_APPROACH,
+            "sector_dive": notify_kinds.KIND_SECTOR_DIVE,
+        }
         for p in wu.positions:
             peak = _historical_peak_close(p, trade_date, parquet_dir)
             peer_rets = _position_sector_peer_returns(p, quotes, member_map)
@@ -372,26 +461,21 @@ def run_tick(
                     _maybe_push(
                         "holding", p.ts_code, key,
                         f"持仓提醒:{p.ts_code}", reason, _level_by_key.get(key, LEVEL_INFO),
+                        apns_kind=_apns_kind_by_key.get(key),
                     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # 以下两段是 **V2-⑪ 的旁路**(⑪-A 四监测 / ⑪-C NL 临时提醒)。
+    # 以下三段是旁路(⑪-A 四监测 / ⑪-C NL 临时提醒 / 2026-08-03 离场参考区间触达)。
     #
     #   · 各自独立 `try/except`,异常只 WARNING —— 与 ⑧ 的存拍/篮子验证同一条纪律:
     #     旁路炸了绝不许影响上面四哨兵与熔断的任何判定,也不许掀翻主循环。
     #   · **它们不读、不改任何纪律状态**:退潮闩锁、止损线、D 计数、熔断,一个都不碰。
-    #   · 推送走 APNs 三级(`notifier`,按 kind 配开关),**不进 `channels`** —— 既有
-    #     四哨兵的 Bark/日志通道保持原样,新 kind 不混进去。
+    #   · 推送走 APNs 三级(`notifier`,按 kind 配开关,`_notify()` 定义已提前到
+    #     `_maybe_push` 之前,见该处注释),**不进 `channels`** —— 既有四哨兵的
+    #     Bark/日志通道保持原样,新 kind 不混进去。
     #   · 台账仍落 `sentinel_events`(⑪-B 原文:冷却/去重/防重沿用该表),因此这些
     #     事件同样会出现在 `GET /board` 的当日事件流里。
     # ══════════════════════════════════════════════════════════════════════
-    notify_mod = notifier if notifier is not None else None
-
-    def _notify() -> Any:
-        nonlocal notify_mod
-        if notify_mod is None:
-            notify_mod = _default_notifier()
-        return notify_mod
 
     # 两条旁路共用的「持仓 → D0 来源篮子」关联(查一次,别查两遍)。
     position_sources: Dict[int, Any] = {}
@@ -470,6 +554,50 @@ def run_tick(
             result.custom_alert_hits.append(hit.alert.id)
     except Exception:  # noqa: BLE001
         logger.warning("临时提醒本拍失败(已吞,不影响哨兵判定)", exc_info=True)
+
+    # —— 旁路 E:离场参考区间触达(2026-08-03 用户拍板,APNs `take_profit` kind 的
+    #    定向任务书)—————————————————————————————————————————————————————
+    # ⚠ 与上面"4) 持仓哨兵"里 `evaluate_holding` 的「回落止盈」(`check_take_
+    # profit`,机械纪律,驱动 console/Bark)**刻意不同源、不合并**——见
+    # `sentinel/holding.py::check_exit_reference_reached` docstring。本旁路只服务
+    # APNs `take_profit` kind:独立 try/except、独立 `sentinel_events` 去重
+    # (event_key="exit_reference",与 4) 的 event_key="take_profit" 互不冲突、不
+    # 抢占彼此的去重槽位)、**不进 channels**(console/Bark 继续只反映回落止盈,
+    # 一字不动)。查无 `position_plans` / 无离场参考 → 如实不判该票这一条(不编
+    # 默认目标价)。
+    if wu.positions:
+        try:
+            exit_refs = _load_exit_references([p.id for p in wu.positions], db_path)
+            for p in wu.positions:
+                ref = exit_refs.get(p.id)
+                if ref is None:
+                    continue
+                q = quotes.get(p.ts_code)
+                if q is None:
+                    continue
+                reason = check_exit_reference_reached(p, q, ref[0], ref[1])
+                if reason is None:
+                    continue
+                if already_pushed(trade_date, "holding", p.ts_code, "exit_reference", db_path=db_path):
+                    result.skipped_duplicate += 1
+                    continue
+                outcome = _notify().push_holding_risk_alert(
+                    notify_kinds.KIND_TAKE_PROFIT, f"离场参考提醒:{p.ts_code}", reason,
+                    code=p.ts_code, db_path=db_path,
+                )
+                record_pushed(
+                    trade_date, "holding", p.ts_code, "exit_reference",
+                    payload={
+                        "kind": notify_kinds.KIND_TAKE_PROFIT, "body": reason,
+                        "exitLow": ref[0], "exitHigh": ref[1],
+                        "delivered": getattr(outcome, "sent", 0),
+                        "skippedReason": getattr(outcome, "skipped_reason", ""),
+                    },
+                    db_path=db_path,
+                )
+                result.exit_reference_hits.append(p.ts_code)
+        except Exception:  # noqa: BLE001
+            logger.warning("离场参考区间触达检查本拍失败(已吞,不影响哨兵判定)", exc_info=True)
 
     return result
 

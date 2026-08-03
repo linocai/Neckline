@@ -51,6 +51,9 @@ from neckline.notify_kinds import (
     KIND_REPORT_READY,
     KIND_RETREAT,
     KIND_SECTOR_BID_FADE,
+    KIND_SECTOR_DIVE,
+    KIND_STOP_APPROACH,
+    KIND_TAKE_PROFIT,
 )
 from neckline.push import apns
 from neckline.settings_store import push_kind_enabled
@@ -331,6 +334,41 @@ def push_custom_alert(
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 2026-08-03 用户拍板新增措辞层:持仓哨兵既有三事件升级立即级
+# ══════════════════════════════════════════════════════════════════════════
+
+def push_holding_risk_alert(
+    kind: str, title: str, reason: str, *, code: str = "",
+    db_path: Optional[Path] = None, transport: Optional[Any] = None,
+) -> NotifyOutcome:
+    """持仓哨兵三事件的 APNs 旁路(kind ∈ `stop_approach`/`take_profit`/
+    `sector_dive`,**立即**级;2026-08-03 用户定向拍板 —— ⑪-B 完工记录曾登记
+    「未开」,今日由用户拍板开闸,plan §五 V2-⑪-B 定向任务书)。
+
+    `title`/`reason` 由调用方(`sentinel/engine.py::run_tick`)原样传入,按 kind
+    分两条路:
+      · `stop_approach` / `sector_dive` —— 与看板/Bark 通道(`sentinel/channels.py
+        ::push_all`)喂的是**同一份**文案(`_maybe_push` 内部转手调用,复用同一次
+        `already_pushed`/`record_pushed` 去重),不二次措辞、不二次去重。
+      · `take_profit` —— **不是** `sentinel/holding.py::check_take_profit`
+        (回落止盈,现役章程机械纪律,继续独立驱动 console/Bark、一字不动),而是
+        `check_exit_reference_reached`(触达 `position_plans` 继承的离场参考区间)
+        ——旁路专属、独立去重。两者刻意不同源,见该函数 docstring。
+
+    本函数只补⑪-B 三句式缺的第三句「要不要打开APP」,不改事实本身(`reason` 已经
+    讲清「发生了什么 / 触碰了哪条计划」)。**系统永不代交易动作**(§3.8):即便止损
+    已跌破、即便已触达离场参考,本函数不追加任何"该卖了 / 建议减仓 / 建议止盈"式
+    表述——离场参考是参考、回落止盈才是纪律,语义红线不因走了 APNs 通道而松动。"""
+    if kind not in (KIND_STOP_APPROACH, KIND_TAKE_PROFIT, KIND_SECTOR_DIVE):
+        raise ValueError(f"push_holding_risk_alert 只接受持仓三事件 kind,收到 {kind!r}")
+    body = reason.rstrip("。") + "。" + _OPEN_APP_NOW
+    return push_event(
+        kind, title, body, custom_extra={"code": code} if code else None,
+        db_path=db_path, transport=transport,
+    )
+
+
 __all__ = [
     "NotifyOutcome",
     # 唯一扇出路径(白名单的真正落点)
@@ -345,4 +383,6 @@ __all__ = [
     # 措辞层(V2-⑪ 新增)
     "push_attention_alert",
     "push_custom_alert",
+    # 措辞层(2026-08-03 用户拍板新增)
+    "push_holding_risk_alert",
 ]
