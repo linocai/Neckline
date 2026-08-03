@@ -369,7 +369,7 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-03 · 🏗️ V2.0.0 施工中 —— V2-①→⑭ 全部完工,⑮(客户端双端改版)可开**。①–⑬ 详见各块「完工记录」。**⑭ 换血层第二块完工:报告换血成五段篮子日报 + 16:35 编排链独立成段 + API 契约总装 + 契约三方对拍** —— 报告顺序定死为 ① 情绪与市场语境 → ② 持仓体检 → ③ 今日篮子(T1/T2/T3 每篮一张卡)→ ③b 未定档篮子 → ④ 昨日篮子复盘 → ⑤ 数据新鲜度与降级披露,**每段独立保险丝**;新 `report/evening.py::run_evening_chain`(⑧ EOD 验证拍 → ④ 扫描 → ⑤⑥⑦ → ⑨ 复盘 → 报告落库,**⑧ 位置定死在拉数后扫描前**,`segments` 参数是 ⑯-D 拆三个 oneshot 的接缝);契约面 `CandidateOut` 整族 4 个 DTO + `ReportOut.candidates` 退役,换 `basketDaily`,新增 12 端点 + 12 DTO。**哨兵纪律阈值自 ⑧ 起一行未动;现役章程恒 `v1.3.3`,V2 全程未新建章程行、未跑 `activate_charter.py`**。全量测试 **2887 过 + 4 skip**(⑭ 前基线 2808 + 2;另有一条既有挂钟脆弱测试 `test_sentinel_custom.py::test_cooldown_blocks_second_hit_and_expires` 在北京时间 ~14:48 后跑必红,已用 `git worktree` 拉干净 HEAD 复现证实与施工无关)。
+**2026-08-03 · 🏗️ V2.0.0 施工中 —— V2-①→⑭ 全部完工,⑮(客户端双端改版)可开**。①–⑬ 详见各块「完工记录」。**⑭ 换血层第二块完工:报告换血成五段篮子日报 + 16:35 编排链独立成段 + API 契约总装 + 契约三方对拍** —— 报告顺序定死为 ① 情绪与市场语境 → ② 持仓体检 → ③ 今日篮子(T1/T2/T3 每篮一张卡)→ ③b 未定档篮子 → ④ 昨日篮子复盘 → ⑤ 数据新鲜度与降级披露,**每段独立保险丝**;新 `report/evening.py::run_evening_chain`(⑧ EOD 验证拍 → ④ 扫描 → ⑤⑥⑦ → ⑨ 复盘 → 报告落库,**⑧ 位置定死在拉数后扫描前**,`segments` 参数是 ⑯-D 拆三个 oneshot 的接缝);契约面 `CandidateOut` 整族 4 个 DTO + `ReportOut.candidates` 退役,换 `basketDaily`,新增 12 条路径 + 17 个 DTO。**哨兵纪律阈值自 ⑧ 起一行未动;现役章程恒 `v1.3.3`,V2 全程未新建章程行、未跑 `activate_charter.py`**。全量测试 **2887 过 + 4 skip**(⑭ 前基线 2808 + 2;另有一条既有挂钟脆弱测试 `test_sentinel_custom.py::test_cooldown_blocks_second_hit_and_expires` 在北京时间 ~14:48 后跑必红,已用 `git worktree` 拉干净 HEAD 复现证实与施工无关)。
 
 - **🟡 交回 planner 的一件(不拦 ⑮)**:**⑨ 复盘与报告落库的先后**在 Plan 两处描述不一致 —— ⑭-A 说「⑨ 复盘引擎单独一段」未明说前后,⑯-D 却把「报告」归 `neckline-basket.service`、⑨ 归 `neckline-review.service`(报告在前)。现按「**⑨ 在前**」实现,理由是报告的 ④ 节要读当日 `basket_review_daily`,排后面那一节在同一次运行里必然空;`segments` 参数让两种切法都跑得动,**改口径只需调 ⑯-D 的服务划分、不必动代码**。
 - **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;至今全部改动**纯本地代码 + 单测**,未碰任何服务器/DNS/部署。真实 `data/neckline.db` 里全部 V2 表**仍是 0 行**(冒烟一律跑在 `sqlite3.backup` 副本或纯 `tempfile` 临时库上,真实 parquet 只读;⑭ 冒烟前后真实库 MD5 双证未变)。
@@ -2551,8 +2551,11 @@ eval_exit_sim)+ `smoke_sentinel.py` 全绿;`scripts/report.py` 在隔离库副�
 
 **⑭-B API 契约总装**:`CandidateOut` / `IntelRankOut` / `LLMJudgmentOut` /
 `InfoCardSummaryOut` 四个 DTO 连同 `ReportOut.candidates` 键**整族退役**,换
-`basketDaily`;新增 12 个端点(`/baskets` ×5、`/positions/{id}/plans` ×2 +
-`entry-snapshot`、`/profile/*` ×2、`/packs` ×2、`/eval/weekly`)+ 12 个 DTO。
+`basketDaily`;新增 **12 条路径 / 13 个方法+路径对**(`/baskets` ×5、`/positions/{id}/plans` GET+POST、
+`/positions/{id}/entry-snapshot`、`/profile/*` ×2、`/packs` ×2、`/eval/weekly`)+ **17 个新 DTO**
+(⑭-B 点名的 12 个里 `CustomAlertOut`/`ProviderOut` 已由 ⑪/② 落地 → 新建 10 个,
+另加 7 个配套件:`BasketsListOut`/`DroppedBasketOut`/`BasketDailyOut`/`PositionPlansOut`/
+`PositionPlanCreateIn`/`PacksListOut`/`EvalWeeklyOut`)。
 `GET /baskets/{id}/card` 的 **404 双 reason** `basket_not_found` / `card_not_ready`
 分得开。契约线 🔵 B7 收口:`GET /alerts` 查询参数由 Python 形参名 `status_filter`
 改回契约名 `status`。⑪-C 的 `/alerts` 五端点与 `PUT /settings/push` **只对拍未重建**。
@@ -2970,7 +2973,7 @@ A 路让它们在生产上不会相遇,但 ⑰ 换包前必须真的改完。
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
-- 2026-08-03 · 🧺 **V2-⑭ 完工:报告换血成五段篮子日报 + 16:35 编排链独立成段 + API 契约总装 + 契约三方对拍**(@builder-pro,commits `0fb267c` / `3937e9d`)。报告五段顺序定死(① 市场语境 → ② 持仓体检 → ③ 今日篮子 → ③b 未定档 → ④ 昨日复盘 → ⑤ 新鲜度披露),每段独立保险丝;③b 两个原因码 `capacity_overflow` / `below_quality_line` 永不合并、零溢出时节仍在;新 `report/evening.py::run_evening_chain`(⑧ 验证拍 → ④ 扫描 → ⑤⑥⑦ → ⑨ 复盘 → 报告,⑧ 位置定死在拉数后扫描前,`segments` 是 ⑯-D 拆三个 oneshot 的接缝,**刻意不塞进 `pipeline.py`** 以免钝化 P0-23 在线模块守门);兑现三处前置块欠账(`dataFreshness.scanLayer*` 接线 / `exec_hints_for()` 接进篮子成员 / news_alerts 次级域 + `info_card` 同步扩域)。契约面 `CandidateOut` 整族 4 个 DTO + `ReportOut.candidates` 退役换 `basketDaily`,新增 12 端点 + 12 DTO,`GET /baskets/{id}/card` 404 双 reason 分得开。三方对拍表与 ⑮ 欠账清单终稿 → `archive/V2_契约三方对拍_20260803.md`;A 路前提自检清单 → `deploy/A路割接前提自检清单.md`;「客户端调用面 ⊆ 服务端路由面」等 7 条机器断言 → `tests/test_contract_crosscheck.py`(**用 `==` 不用 `<=`**,欠账是精确集合不是 allowlist)。测试 **2808 → 2887 passed + 4 skip**(零回归);真实历史日 20260724 隔离库全链冒烟五段齐、九个新鲜度键在、真实库 MD5 未变。
+- 2026-08-03 · 🧺 **V2-⑭ 完工:报告换血成五段篮子日报 + 16:35 编排链独立成段 + API 契约总装 + 契约三方对拍**(@builder-pro,commits `0fb267c` / `3937e9d`)。报告五段顺序定死(① 市场语境 → ② 持仓体检 → ③ 今日篮子 → ③b 未定档 → ④ 昨日复盘 → ⑤ 新鲜度披露),每段独立保险丝;③b 两个原因码 `capacity_overflow` / `below_quality_line` 永不合并、零溢出时节仍在;新 `report/evening.py::run_evening_chain`(⑧ 验证拍 → ④ 扫描 → ⑤⑥⑦ → ⑨ 复盘 → 报告,⑧ 位置定死在拉数后扫描前,`segments` 是 ⑯-D 拆三个 oneshot 的接缝,**刻意不塞进 `pipeline.py`** 以免钝化 P0-23 在线模块守门);兑现三处前置块欠账(`dataFreshness.scanLayer*` 接线 / `exec_hints_for()` 接进篮子成员 / news_alerts 次级域 + `info_card` 同步扩域)。契约面 `CandidateOut` 整族 4 个 DTO + `ReportOut.candidates` 退役换 `basketDaily`,新增 12 条路径 + 17 个 DTO,`GET /baskets/{id}/card` 404 双 reason 分得开。三方对拍表与 ⑮ 欠账清单终稿 → `archive/V2_契约三方对拍_20260803.md`;A 路前提自检清单 → `deploy/A路割接前提自检清单.md`;「客户端调用面 ⊆ 服务端路由面」等 7 条机器断言 → `tests/test_contract_crosscheck.py`(**用 `==` 不用 `<=`**,欠账是精确集合不是 allowlist)。测试 **2808 → 2887 passed + 4 skip**(零回归);真实历史日 20260724 隔离库全链冒烟五段齐、九个新鲜度键在、真实库 MD5 未变。
 
 - 2026-08-03 · 🩹 **判定线 🟡-N1 收口:昨日涨停截断序改判 `crc32(ts_code)` 升序(无偏 + 确定性)+ 需求量 vs 实际采纳量留痕**(@builder,commit `a8a14c3`)。核实原 `consec_limit_up_days` 降序**确实与被测量的量相关**(⑦-K7 审计:连板高度是双尾放大器,次日跌停约 3× 于同簇其余成员,而这份样本正好喂 `compute_breadth_snapshot` 算跌停数 / 炸板率),且原实现未传 `maintain_order`,并列名次连"行序"这个近似说法都不保证;改用 `mainline.crc_rank`(与主线切片姊妹样本同一套采样键)。`WatchUniverse` 新增 `breadth_extra_needed`/`breadth_extra_payload()`,`retreat_metrics` 新列 `breadth_extra_sample_json`(体例照既有 `hot_sector_sample_json`,幂等迁移)。**如实登记**:改前改后同批历史日对拍显示 zaban_rate 读数**有实质变化**(07-21→07-22 真实配额点 42.9%→33.3%,−9.52pp),追加 2026-07 全月探索性对拍(K=71 固定口径,10 个真正截断的日子)证实是**抽样噪声**(均值 −0.99pp、中位 −1.16pp、方向不系统)而非 crc32 新引入的系统性偏差,数字与完整分析详见 §五 ⑧-G 块尾追加记录,已并入 §七 [P3-37] 回看清单(71 只保底配额的抽样噪声量级是否需要专门处理,留待实盘积累后产品决策)。测试:`pytest tests/ -q` **2801 → 2808 passed + 2 skip**(净增 7,零回归)。
 
