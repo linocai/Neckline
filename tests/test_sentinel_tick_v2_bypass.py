@@ -138,19 +138,34 @@ def _link(env, position_id: int, basket_id: int, code: str, day: date) -> None:
         )
 
 
-def _seed_position_plan(env, position_id: int, *, exit_low=None, exit_high=None) -> None:
+def _seed_position_plan(
+    env, position_id: int, *, exit_low=None, exit_high=None,
+    buy_price: float = 10.0, muted: bool = False,
+) -> None:
     """落一行 `position_plans` version=1(2026-08-03 持仓风险旁路测试用)。
     `exit_low`/`exit_high` 皆 `None` → `exit_reference` 落 `absent`(模拟"无来源篮子
     或该票离场参考被夹逼拒收",走 `positions_entry.build_inherited_plan` 的既有
-    JSON 形状,不臆造一份新结构)。"""
+    JSON 形状,不臆造一份新结构)。
+
+    武装态(⑪-D-B 闸②)**调生产那支纯函数算**,不在测试里手抄一份判定——夹具与
+    生产语义漂移会让"绿的测试"变成假绿。`buy_price` 默认 10.0(与各用例开仓价一致),
+    传更高的价即可造出"离场参考低于成本 → 不武装"那一路。"""
+    from neckline import positions_entry as _pe
+
     has_ref = exit_low is not None and exit_high is not None
+    ref = {"low": exit_low, "high": exit_high} if has_ref else None
+    armed, arm_reason = _pe.evaluate_exit_reference_arming(ref, buy_price, muted=muted)
     plan = {
         "available": True, "reason": None,
         "source_basket_key": "k1", "source_basket_name": "AI 算力", "driver": "算力扩产",
         "entry_zone": None, "entry_zone_clamp": "absent",
         "max_chase": None, "max_chase_clamp": "absent",
-        "exit_reference": ({"low": exit_low, "high": exit_high} if has_ref else None),
+        "exit_reference": ref,
         "exit_reference_clamp": ("ok" if has_ref else "absent"),
+        "exit_reference_armed": armed,
+        "exit_reference_armed_reason": arm_reason,
+        "exit_reference_armed_note": _pe.exit_reference_arm_note(arm_reason),
+        "exit_reference_muted": bool(muted),
         "verification_spec": None, "invalidation_spec": None, "risks": [],
     }
     with connection(env.db_path) as conn:

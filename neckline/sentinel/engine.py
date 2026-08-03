@@ -23,13 +23,13 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from neckline import custom_alerts as custom_alerts_store
 from neckline import notify_kinds
 from neckline.db import connection
 from neckline.report.sectors import load_member_map
-from neckline.sentinel import attention, basket_verify, capture
+from neckline.sentinel import attention, basket_verify, capture, mainline
 from neckline.sentinel import custom as custom_alerts_tick
 from neckline.sentinel.channels import (
     LEVEL_CRITICAL,
@@ -136,16 +136,19 @@ def _candidate_return(quote: Optional[Quote]) -> Optional[float]:
     return quote.price / quote.pre_close - 1
 
 
-def _hot_sector_peer_returns(targets: List["WatchTarget"], quotes: Dict[str, Quote]) -> List[float]:
-    """退潮哨兵「主线板块跳水」的样本,用已经拉到的行情算盘中收益率,不额外拉价。
+def _hot_sector_peer_returns(sample_codes: Iterable[str], quotes: Dict[str, Quote]) -> List[float]:
+    """退潮哨兵「主线板块跳水」的样本收益率,用已经拉到的行情算,不额外拉价。
 
-    ⚠ **V2-⑬-1 换样本源(判定逻辑与阈值一行未改)**:V1 取「关注池里命中今日热门
-    板块标签的候选」;候选榜已删,V2 换成 **T1/T2 篮子成员全体** —— 篮子的定义
-    就是「同一个驱动串起来的一组票」、且 T1/T2 是当日注意力最高的两档,它比
-    V1 的「热门板块标签」更贴近"主线"这个词。⛔ 不新增任何阈值。"""
+    ⚠ **V2-⑧-F 换样本源(判定逻辑与 `sector_dive` 阈值一行未改)**:
+    · V1 = 「关注池里命中今日热门板块标签的**候选**」(候选机械生成);
+    · V2-⑬-1 一度换成 **T1/T2 篮子成员全体** —— 那是 LLM 挑出来的,**一个纪律
+      触发器的样本组成被 LLM 塑形**(V2 review 判定线 🟡-4);
+    · V2-⑧-F(现行)= **④ 机械种子(热点行业 / 暴起概念)的原始成分 ∩ 关注池的
+      机械成分**,派生在 `sentinel/mainline.py`(为什么不经篮子、为什么只认机械
+      进池路径,见该模块头)。本函数只负责"有报价的才算",⛔ 不新增任何阈值。"""
     rets: List[float] = []
-    for t in targets:
-        r = _candidate_return(quotes.get(t.ts_code))
+    for code in sample_codes:
+        r = _candidate_return(quotes.get(code))
         if r is not None:
             rets.append(r)
     return rets
@@ -200,6 +203,12 @@ def _load_exit_references(
     该 position_id 缺此键(**不臆造默认区间**,同 `positions_entry.
     evaluate_entry_deviation`"无从比较就不比较"的既有姿势)。
 
+    **⑪-D-B 闸② 的读侧(2026-08-03)**:只认 `plan_json.exit_reference_armed is
+    True` 的行。**缺键 = 不武装**(fail-closed,⛔ 不是"老行按老行为放行")——
+    §2.8-C-3 记名豁免的前提② 是「该数值**已过**机械 sanity 闸」,一份没有武装位的
+    计划就是**没过闸**,不是"过了但没写"。武装态的唯一产地是 `positions_entry.
+    _arm_fields`(开仓 + 计划新版本两条路径都经它),本函数只读不判。
+
     **只读 `position_plans` 表,不 import `positions_entry`**(同 `attention.
     load_position_sources` 既有惯例:sentinel 层直接读表,不绕业务写入层)。按
     `(position_id, version)` 升序取行,同一 position_id 后出现的行覆盖前面的
@@ -220,12 +229,14 @@ def _load_exit_references(
         except (json.JSONDecodeError, TypeError):
             continue
         ref = plan.get("exit_reference") if isinstance(plan, dict) else None
+        armed = plan.get("exit_reference_armed") is True if isinstance(plan, dict) else False
         low = ref.get("low") if isinstance(ref, dict) else None
         high = ref.get("high") if isinstance(ref, dict) else None
-        if isinstance(low, (int, float)) and isinstance(high, (int, float)):
+        if armed and isinstance(low, (int, float)) and isinstance(high, (int, float)):
             out[int(pid)] = (float(low), float(high))
         else:
-            out.pop(int(pid), None)   # 新版本没有离场参考 → 不沿用旧版本的(现役计划说了算)
+            # 新版本没有离场参考 / 未武装 → 不沿用旧版本的(现役计划说了算)。
+            out.pop(int(pid), None)
     return out
 
 
@@ -341,13 +352,32 @@ def run_tick(
     hhmm = now.strftime("%H%M")
     breadth_snapshot = compute_breadth_snapshot(trade_date, quotes, meta)
     result.breadth_snapshot = breadth_snapshot
-    hot_peer_rets = _hot_sector_peer_returns(wu.targets, quotes)
+    # —— V2-⑧-F:「主线板块跳水」样本 = ④ 机械种子成分 ∩ 关注池的机械成分。
+    #    ⛔ **不经篮子**(为什么、以及为什么不整池取交,见 `sentinel/mainline.py` 模块头)。
+    #    派生失败一律降级为"本拍无样本 → 该路不判"并如实落原因码,⛔ 不回退到旧的
+    #    篮子成员样本(回退等于把刚拆掉的 LLM 塑形又接回来)。
+    try:
+        mainline_sample = mainline.derive_mainline_sample(
+            wu.report_date,
+            position_codes=[p.ts_code for p in wu.positions],
+            prev_limit_up_codes=wu.breadth_extra_codes,
+            db_path=db_path, parquet_dir=parquet_dir,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("[tick] 主线跳水样本派生失败,本拍该路不判(其余退潮条件照常)",
+                       exc_info=True)
+        mainline_sample = mainline.MainlineSample(
+            unavailable_reason=mainline.REASON_SEED_FAILED)
+    hot_peer_rets = _hot_sector_peer_returns(mainline_sample.codes, quotes)
     hot_avg = (sum(hot_peer_rets) / len(hot_peer_rets)) if hot_peer_rets else None
     metrics = RetreatMetrics(
         trade_date=trade_date, hhmm=hhmm, sample_size=breadth_snapshot.sample_size,
         limit_up_count=breadth_snapshot.limit_up_count, limit_down_count=breadth_snapshot.limit_down_count,
         zaban_count=breadth_snapshot.zaban_count, zaban_rate=breadth_snapshot.zaban_rate,
         hot_sector_avg_chg=hot_avg,
+        # ⑧-F 留痕:触发与否都落样本构成(codes + 来源标签 + 样本量),让"样本没被
+        # LLM 塑形"事后可审计。`quoted` = 实际参与均值的只数(有报价的那部分)。
+        hot_sector_sample_detail={**mainline_sample.payload(), "quoted": len(hot_peer_rets)},
     )
 
     retreat_active = already_pushed(trade_date, "retreat", "", "brake", db_path=db_path)

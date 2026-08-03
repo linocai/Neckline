@@ -137,7 +137,7 @@ class TestFindSourceBasketMember:
 
 class TestBuildInheritedPlan:
     def test_no_source_is_honestly_empty(self):
-        plan, basket_id, card_version = pe.build_inherited_plan(None)
+        plan, basket_id, card_version = pe.build_inherited_plan(None, buy_price=10.0)
         assert plan["available"] is False and plan["reason"] == "no_source_basket"
         assert basket_id is None and card_version is None
         assert plan["entry_zone"] is None and plan["verification_spec"] is None
@@ -146,7 +146,7 @@ class TestBuildInheritedPlan:
         d0, buy_date = calendar_days[0], calendar_days[1]
         _seed_basket(isolated_env.db_path, trade_date=d0.strftime("%Y%m%d"), with_card=False)
         src = pe.find_source_basket_member("600001.SH", buy_date, db_path=isolated_env.db_path)
-        plan, basket_id, card_version = pe.build_inherited_plan(src)
+        plan, basket_id, card_version = pe.build_inherited_plan(src, buy_price=10.0)
         assert plan["available"] is False and plan["reason"] == "card_not_ready"
         assert basket_id == src.basket_id and card_version is None
 
@@ -154,7 +154,7 @@ class TestBuildInheritedPlan:
         d0, buy_date = calendar_days[0], calendar_days[1]
         _seed_basket(isolated_env.db_path, trade_date=d0.strftime("%Y%m%d"))
         src = pe.find_source_basket_member("600001.SH", buy_date, db_path=isolated_env.db_path)
-        plan, basket_id, card_version = pe.build_inherited_plan(src)
+        plan, basket_id, card_version = pe.build_inherited_plan(src, buy_price=10.0)
         assert plan["available"] is True
         assert plan["entry_zone"] == {"low": 9.5, "high": 10.5, "why": "示例"}
         assert plan["max_chase"] == 11.0
@@ -387,7 +387,12 @@ class TestCreatePositionPlanVersion:
         plans = pe.list_position_plans(result.position_id, db_path=isolated_env.db_path)
         assert [p["version"] for p in plans] == [1, 2]
         assert plans[0]["plan"]["entry_zone"] == {"low": 9.5, "high": 10.5, "why": "示例"}   # v1 原样不变
-        assert plans[1]["plan"] == {"available": True, "note": "用户手改计划"}
+        # ⑪-D-B 闸②:新版本由 `create_position_plan_version` 补写武装态四件套(调用方
+        # 给的正文原样保留),故这里比"正文原样 + 武装态如实"而不是整字典逐字相等。
+        assert plans[1]["plan"]["available"] is True
+        assert plans[1]["plan"]["note"] == "用户手改计划"
+        assert plans[1]["plan"]["exit_reference_armed"] is False   # 新正文里没有离场参考
+        assert plans[1]["plan"]["exit_reference_armed_reason"] == pe.ARM_REASON_NO_EXIT_REFERENCE
         assert plans[1]["note"] == "手动调整离场参考"
         assert plans[1]["source_basket_id"] == plans[0]["source_basket_id"]   # 承袭同一来源
 

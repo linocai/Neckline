@@ -79,6 +79,36 @@ def _save_report(settings, report_day: date):
     )
 
 
+def _seed_mainline_sample(settings, monkeypatch, report_day: date, codes):
+    """**V2-⑧-F**:把「主线板块跳水」的样本喂成新口径 = ④ 机械种子成分 ∩ 关注池的
+    **机械成分**(⛔ 不再是 T1/T2 篮子成员——那条路已被 🟡-4 裁掉,见
+    `sentinel/mainline.py` 模块头)。两件事都要做,缺一样样本就是空:
+
+    ① `limit_derived` 分区把这些码标成 D0 涨停 → 它们才会经 `prev_limit_up` 这条
+       **机械路**进关注池(篮子成员那条路进的池**不进样本**);
+    ② stub 掉 ④ 的种子生成(那是读五张表的重活,单测不铺全套),只留「这些码是热点
+       行业种子的原始成分」这一个事实 —— `derive_mainline_sample` 的交集/排序/来源
+       标签逻辑仍是**生产那一份**,没有被 stub 掉。
+    """
+    from neckline.scan.seeds import HOT_INDUSTRY, DriverSeed, SeedSet
+    from neckline.sentinel import mainline
+
+    write_daily_fixture(settings, "limit_derived", report_day, [
+        {"ts_code": c, "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
+         "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
+         "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1}
+        for c in codes
+    ])
+    seed_set = SeedSet(
+        trade_date=report_day.strftime("%Y%m%d"), pack_version="K4-pack-v1",
+        hot_industry=(DriverSeed(seed_key="s1", seed_kind=HOT_INDUSTRY, label="测试行业",
+                                 member_codes=tuple(codes)),),
+    )
+    monkeypatch.setattr("neckline.scan.seeds.generate_seeds",
+                        lambda *a, **k: seed_set)
+    mainline.reset_seed_cache()
+
+
 class TestSkipsOutsideTradingHours:
     def test_weekend_is_skipped_without_touching_watch_universe(self, isolated_env):
         saturday = datetime(2026, 7, 18, 10, 30)  # 周六
@@ -185,16 +215,18 @@ class TestRetreatTwoTierEngineWiring:
         assert any("退潮刹车" in m[0] for m in cap2.messages)
         assert already_pushed(today, "retreat", "", "brake", db_path=isolated_env.db_path) is True
 
-    def test_yellow_single_condition_does_not_suppress_entry_or_push(self, isolated_env):
+    def test_yellow_single_condition_does_not_suppress_entry_or_push(self, isolated_env, monkeypatch):
         reset_retreat_process_state()
         days = business_days(date(2026, 7, 1), 30)
         report_day, today = days[-2], days[-1]
         _setup_calendar_and_history(isolated_env, "600001.SH", report_day, today, vol=200000.0)
         x_codes = ["600201.SH", "600202.SH", "600203.SH"]
         _save_report(isolated_env, report_day)
-        # ⚠ V2-⑬-1:主线样本 = T1/T2 篮子成员全体(不再靠 `hot_sectors` 标签筛)。
-        # 600001.SH 是持仓票、不进篮子,故不进主线跳水样本 —— 与原用例意图一致。
+        # ⚠ V2-⑧-F:主线样本 = ④ 机械种子成分 ∩ 关注池机械成分(不再是 T1/T2 篮子成员)。
+        # 600001.SH 是持仓票、不在种子成分里,故不进主线跳水样本 —— 与原用例意图一致。
+        # 篮子仍种(关注池/证伪哨兵照旧盯它们),但**它不再是主线样本的来源**。
         _seed_basket_members(isolated_env, report_day, x_codes)
+        _seed_mainline_sample(isolated_env, monkeypatch, report_day, x_codes)
         open_position("600001.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)
         insert_stock_basic(
             isolated_env, [{"ts_code": c, "name": c, "market": "主板"} for c in ["600001.SH"] + x_codes]

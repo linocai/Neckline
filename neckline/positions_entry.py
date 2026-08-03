@@ -151,6 +151,75 @@ def find_source_basket_member(
 # 计划继承(position_plans)
 # ══════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑪-D-B 闸②:take_profit kind 的开仓武装判定
+# ══════════════════════════════════════════════════════════════════════════
+# 2026-08-03 planner 裁定(V2 review 判定线 🟡-3 收口,PROJECT_PLAN §五 ⑪-D)。
+# ⑦ 的卡生成闸(`basket_card.clamp_exit_reference`,要求 `exit_low > D0 close`)只
+# 保证「这个数在 D0 收盘之上」;买入价可以远高于 D0 收盘(次日高开追进去),继承下来
+# 的 `exit_low` 因此**仍可能 ≤ 你的成本**。此时「触达离场参考」要么开盘立刻响、要么
+# 在亏损位响,两种都是噪声 —— 故**该票的 `take_profit` kind 不武装**。
+#
+# ⛔ 边界(plan 逐字):**只是不武装那一条推送** —— 不改计划内容(`exit_reference`
+# 原样继承、照常展示)、不阻断开仓、不影响任何其他 kind。
+ARM_REASON_NO_EXIT_REFERENCE = "no_exit_reference"   # 计划里压根没有离场参考(无来源篮子 / 卡未就绪 / 被 ⑦ 夹逼拒收)
+ARM_REASON_BELOW_ENTRY_PRICE = "below_entry_price"   # 闸②:exit_low ≤ 实际成交价
+ARM_REASON_USER_MUTED = "user_muted"                 # ⑮ per-position「不提醒」开关(本块只留读写点,开关本身归 ⑮)
+
+_ARM_NOTE_TEXT: Dict[str, str] = {
+    ARM_REASON_NO_EXIT_REFERENCE: "本次没有离场参考,本票不做触达提醒",
+    ARM_REASON_BELOW_ENTRY_PRICE: "离场参考低于你的成本,本票不做触达提醒",
+    ARM_REASON_USER_MUTED: "你已关闭本票的触达提醒",
+}
+
+
+def exit_reference_arm_note(reason: Optional[str]) -> Optional[str]:
+    """未武装理由的人读文案(**单一源**,与 `basket_card.clamp_reason_text` 同体例
+    ——不由客户端/渲染层各自拍文案)。`reason is None`(已武装)→ `None`。"""
+    return None if reason is None else _ARM_NOTE_TEXT.get(reason, reason)
+
+
+def evaluate_exit_reference_arming(
+    exit_reference: Any, buy_price: Optional[float], *, muted: bool = False
+) -> Tuple[bool, Optional[str]]:
+    """⑪-D-B 闸②:这笔仓的 `take_profit` kind 该不该武装。返回 `(armed, reason)`,
+    `armed=True` 时 `reason is None`。**纯函数**(不碰 DB / 不看行情),供开仓与
+    ⑮ 的 per-position 开关共用同一套语义。
+
+    判定顺序(刻意如此):① 用户关了 → `user_muted`(用户意图优先于一切机械判定,
+    ⛔ 不因为"数字其实挺合理"就替用户重新打开);② 计划里没有离场参考 → `no_exit_
+    reference`(**「没有」与「不合格」分开落码**,项目一贯纪律);③ `exit_low ≤ 实际
+    成交价` → `below_entry_price`;④ 否则武装。
+
+    `buy_price` 缺失或非正 → 与 ③ 同样**不武装**(理由仍记 `below_entry_price`?
+    不 —— 记 `no_exit_reference` 也不对)。这里的处置:**按闸②未通过处理**,理由
+    `below_entry_price`,因为"比不出来"与"比出来不合格"对推送的后果一样(§2.8-C-3
+    前提②「该数值已过机械 sanity 闸,未过 → 不武装」——**没比过 = 没过**)。实务上
+    `buy_price` 永远来自用户提交的成交价,走不到这一支。"""
+    if muted:
+        return False, ARM_REASON_USER_MUTED
+    low = exit_reference.get("low") if isinstance(exit_reference, dict) else None
+    if not isinstance(low, (int, float)) or isinstance(low, bool) or low <= 0:
+        return False, ARM_REASON_NO_EXIT_REFERENCE
+    if not isinstance(buy_price, (int, float)) or isinstance(buy_price, bool) or buy_price <= 0:
+        return False, ARM_REASON_BELOW_ENTRY_PRICE
+    if float(low) <= float(buy_price) + _EPS:
+        return False, ARM_REASON_BELOW_ENTRY_PRICE
+    return True, None
+
+
+def _arm_fields(exit_reference: Any, buy_price: Optional[float], *, muted: bool) -> Dict[str, Any]:
+    """武装态三件套(**engine 旁路 E 读 `exit_reference_armed`,⑮ 读写
+    `exit_reference_muted`**)。三个键在 `plan_json` 里恒存在,不搞"缺键即默认"。"""
+    armed, reason = evaluate_exit_reference_arming(exit_reference, buy_price, muted=muted)
+    return {
+        "exit_reference_armed": armed,
+        "exit_reference_armed_reason": reason,
+        "exit_reference_armed_note": exit_reference_arm_note(reason),
+        "exit_reference_muted": bool(muted),
+    }
+
+
 def _member_plan_fields(member_entry: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not member_entry:
         return {
@@ -169,7 +238,7 @@ def _member_plan_fields(member_entry: Optional[Dict[str, Any]]) -> Dict[str, Any
 
 
 def build_inherited_plan(
-    source: Optional[SourceBasketMember],
+    source: Optional[SourceBasketMember], *, buy_price: Optional[float],
 ) -> Tuple[Dict[str, Any], Optional[int], Optional[int]]:
     """从来源篮子卡拼装 `position_plans.plan_json`(⑩-B 五项:建仓观察区间/最高
     追价/离场参考区间/验证与失效条件/主要风险)。返回
@@ -177,7 +246,11 @@ def build_inherited_plan(
 
     无来源篮子 或 有篮子但卡未就绪(合法中间态,同 ⑦「有篮子无卡」)→ **空计划如实
     标**(`available=False` + `reason`)——`position_plans` 仍会落 version=1 这一行,
-    不是省略整条记录。"""
+    不是省略整条记录。
+
+    `buy_price`(⑪-D-B 闸②,2026-08-03):**必填关键字**,不给默认 —— 闸②是红线闸,
+    "忘了传"等于静默把 `take_profit` kind 武装给一个没比过成交价的数字。三条空计划
+    路径同样落武装态三件套(值必为未武装 + `no_exit_reference`),**键恒存在**。"""
     if source is None:
         return (
             {
@@ -186,6 +259,7 @@ def build_inherited_plan(
                 "entry_zone": None, "entry_zone_clamp": "absent",
                 "max_chase": None, "max_chase_clamp": "absent",
                 "exit_reference": None, "exit_reference_clamp": "absent",
+                **_arm_fields(None, buy_price, muted=False),
                 "verification_spec": None, "invalidation_spec": None, "risks": [],
             },
             None, None,
@@ -199,15 +273,18 @@ def build_inherited_plan(
                 "entry_zone": None, "entry_zone_clamp": "absent",
                 "max_chase": None, "max_chase_clamp": "absent",
                 "exit_reference": None, "exit_reference_clamp": "absent",
+                **_arm_fields(None, buy_price, muted=False),
                 "verification_spec": None, "invalidation_spec": None, "risks": [],
             },
             source.basket_id, None,
         )
+    member_fields = _member_plan_fields(source.member_entry)
     plan = {
         "available": True, "reason": None,
         "source_basket_key": source.basket_key, "source_basket_name": source.basket_name,
         "driver": source.driver,
-        **_member_plan_fields(source.member_entry),
+        **member_fields,
+        **_arm_fields(member_fields.get("exit_reference"), buy_price, muted=False),
         "verification_spec": source.card.get("verification_spec"),
         "invalidation_spec": source.card.get("invalidation_spec"),
         "risks": list(source.card.get("risks") or []),
@@ -247,6 +324,11 @@ def create_position_plan_version(
     "从同一张 D0 卡出发的用户修订",不是凭空另起一份来源)。**本函数不写
     `baskets`/`basket_cards` 一字节**——签名里根本没有相关参数,物理上碰不到那两张表。
 
+    **武装态由本函数重算,不由调用方说了算(⑪-D-B 闸②)**:新版本里的 `exit_
+    reference` 是用户改过的数字,必须**重新过一遍闸②**(拿这笔仓的真实成交价比),
+    否则"写个新版本"就成了绕开红线闸的后门。用户意图那一半(`exit_reference_muted`)
+    **承袭上一版**,除非本次 `plan_json` 里显式给了该键(⑮ 的开关正是这样翻它)。
+
     HTTP 入口留给 ⑭-B(`POST /positions/{id}/plans`,见 PROJECT_PLAN §五 V2-⑭ 新
     端点清单);本函数是它将调用的领域层实现,⑩ 先把能力建好。"""
     init_schema(db_path)
@@ -256,6 +338,14 @@ def create_position_plan_version(
             "WHERE position_id=?",
             (position_id,),
         ).fetchone()
+        prev_row = conn.execute(
+            "SELECT plan_json FROM position_plans WHERE position_id=? "
+            "ORDER BY version DESC LIMIT 1",
+            (position_id,),
+        ).fetchone()
+        price_row = conn.execute(
+            "SELECT buy_price FROM positions WHERE id=?", (position_id,)
+        ).fetchone()
     if row is None or row[2] is None:
         raise ValueError(
             f"create_position_plan_version: position_id={position_id} 无既有计划"
@@ -263,6 +353,21 @@ def create_position_plan_version(
         )
     source_basket_id, source_card_version, max_version = row
     next_version = int(max_version) + 1
+
+    prev_muted = False
+    if prev_row is not None:
+        try:
+            prev_muted = bool((json.loads(prev_row[0]) or {}).get("exit_reference_muted"))
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("[positions_entry] position_id=%s 上一版计划解不出,"
+                           "本次静音位按未静音处理", position_id)
+    muted = bool(plan_json.get("exit_reference_muted", prev_muted))
+    buy_price = price_row[0] if price_row is not None else None
+    plan_json = {
+        **plan_json,
+        **_arm_fields(plan_json.get("exit_reference"), buy_price, muted=muted),
+    }
+
     now = _now()
     with connection(db_path) as conn:
         cur = conn.execute(
@@ -272,6 +377,31 @@ def create_position_plan_version(
              json.dumps(plan_json, ensure_ascii=False), note, now),
         )
         return int(cur.lastrowid)
+
+
+def set_exit_reference_muted(
+    position_id: int, muted: bool, *, db_path: Optional[Path] = None,
+) -> int:
+    """⑮ per-position「不提醒」开关的**服务端写入点**(⑪-D-D 列为 ⑮ 应做项,本块
+    只把读写点留好、不做 UI 与端点)。落法 = 在最新计划之上**追加一个新版本**
+    (`position_plans` 是版本化只增表,⛔ 不就地改历史行),武装态由
+    `create_position_plan_version` 重算。返回新版本行的 rowid。
+
+    ⚠ 只翻静音位,**不动计划正文任何一项** —— 用户说的是「这只票的这个数不靠谱,
+    别烦我」,不是「改我的计划」。"""
+    latest = latest_position_plan(position_id, db_path=db_path)
+    if latest is None:
+        raise ValueError(
+            f"set_exit_reference_muted: position_id={position_id} 无既有计划"
+            "(缺 version=1)——开仓时应已自动落一行"
+        )
+    plan = dict(latest["plan"] or {})
+    plan["exit_reference_muted"] = bool(muted)
+    return create_position_plan_version(
+        position_id, plan,
+        note=("用户关闭本票触达提醒" if muted else "用户恢复本票触达提醒"),
+        db_path=db_path,
+    )
 
 
 def list_position_plans(position_id: int, db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
@@ -606,7 +736,8 @@ def record_buy(
     except Exception:  # noqa: BLE001 —— 来源篮子查找失败不该阻断买入
         logger.warning("[positions_entry] 来源篮子查找失败,按独立买入处理", exc_info=True)
 
-    plan_json, source_basket_id, source_card_version = build_inherited_plan(source)
+    plan_json, source_basket_id, source_card_version = build_inherited_plan(
+        source, buy_price=buy_price)
     snapshot = _build_snapshot_payload(code, buy_date, buy_price, qty, source, quote, db_path)
 
     init_schema(db_path)
@@ -682,12 +813,18 @@ def record_sell(
 
 __all__ = [
     "SNAPSHOT_NOT_CAPTURED",
+    "ARM_REASON_NO_EXIT_REFERENCE",
+    "ARM_REASON_BELOW_ENTRY_PRICE",
+    "ARM_REASON_USER_MUTED",
     "SourceBasketMember",
     "BuyResult",
     "find_source_basket_member",
     "build_inherited_plan",
+    "evaluate_exit_reference_arming",
+    "exit_reference_arm_note",
     "create_position_plan_v1",
     "create_position_plan_version",
+    "set_exit_reference_muted",
     "list_position_plans",
     "latest_position_plan",
     "evaluate_entry_deviation",

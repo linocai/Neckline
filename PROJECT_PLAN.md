@@ -369,8 +369,9 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-03 · 🏗️ V2.0.0 施工中 —— V2-①→⑬ 全部完工,⑭ 起可开**。①–⑫ 详见各块「完工记录」(21 张新表 / LLM 自填制 + 双 Agent / 选股策略包 / 市场扫描层 + 行业六态 / 驱动聚合层 + Tier + 篮子卡 / D+1 验证 + 盘中存拍 / 盘后复盘 + 评价引擎 / 持仓极简台账 / 监控 80/15/5 + 通知三级 + NL 提醒 / 对账与画像)。**⑬ 换血层第一块完工:V1 十三项清理全部执行完毕(无跳过)** —— 单票候选管线整链(候选榜 / 五常驻保底 / 单票 LLM 审判 / 参考件三件套 / exec_hint 展示位 / 老四件套 / K1 entry mask)、自选池 + 同花顺对账整链、呼吸台账、问询台 forced 海选池通道全部物理删除;盘前 9:26 判定换血成**篮子竞价剧本核对**;信息卡按 D1 保留改造成**篮子成员详情页地基** + ⑬-N-K7 标注件。**哨兵纪律分支自 ⑧ 起一行未动**(⑬ 只换判定对象、不改判定逻辑与阈值);全量测试零回归。
+**2026-08-03 · 🏗️ V2.0.0 施工中 —— V2-①→⑬ 全部完工 + review 修复批次收尾 + planner 两条裁定接线(⑪-D / ⑧-F)完工,⑭ 起可开**。①–⑫ 详见各块「完工记录」(21 张新表 / LLM 自填制 + 双 Agent / 选股策略包 / 市场扫描层 + 行业六态 / 驱动聚合层 + Tier + 篮子卡 / D+1 验证 + 盘中存拍 / 盘后复盘 + 评价引擎 / 持仓极简台账 / 监控 80/15/5 + 通知三级 + NL 提醒 / 对账与画像)。**⑬ 换血层第一块完工:V1 十三项清理全部执行完毕(无跳过)** —— 单票候选管线整链、自选池 + 同花顺对账整链、呼吸台账、问询台 forced 海选池通道全部物理删除;盘前 9:26 判定换血成**篮子竞价剧本核对**;信息卡改造成**篮子成员详情页地基**。**哨兵纪律阈值自 ⑧ 起一行未动**;全量测试零回归(2784 过 + 2 skip,另有一条既有挂钟脆弱测试 `test_sentinel_custom.py::test_cooldown_blocks_second_hit_and_expires` 在北京时间 ~14:48 后跑必红,与施工无关)。
 
+- **🔴 唯一待裁定项(⑧-F 对拍打出来的,拦不住 ⑭ 但必须planner 表态)**:退潮红色刹车的「主线板块跳水」一路,**在「样本 ∩ 关注池」这个前提下近乎失效** —— 关注池的机械成分几乎全是昨日涨停股(全市场动量筛得最狠的一群),07-24 那种全市场中位 −2.86% / 89% 个股下跌的真跳水日,它们只跌 0.22%,样本读数 −0.18%,而「主线板块本身」(④ 种子全成分)是 −2.98%(已贴阈值)。**与样本是 LLM 挑的还是机械派的无关**;⑧-F 修好的是「可被 LLM 塑形」这条红线(已闭、可审计),**没有**修好「这条路能不能真的响」。⛔ builder 未擅自改阈值 / 扩池,候选方向与四天实测数字见 §五 ⑧-F 完工记录。
 - **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;至今全部改动**纯本地代码 + 单测**,未碰任何服务器/DNS/部署,未改任何现役章程或 `strategy_versions` 行为。真实 `data/neckline.db` 里全部 V2 表**仍是 0 行**(冒烟一律跑在 `sqlite3.backup` 副本或纯 `tempfile` 临时库上,真实 parquet 只读)。
 - **V2-⑬ 完工内容**(详见 §五 V2-⑬ 段尾「完工记录」,含**一处 Plan 勘误 + 三处设计判断 + 三处留给 ⑭ 的欠账**):十三项逐项处置表见该记录。**物理删除**:`report/{intel_candidates,candidates,reference_plan,reference_plan_store,watchlist_check}.py`、`neckline/{watchlist,breathing}.py`、`sentinel/entry.py`、`/watchlist*` ×5 + `/breathing*` ×3 + `/settings/intel-boards` ×2 共 10 个端点、客户端 `WatchlistView.swift`/`BreathingLedgerView.swift` 与自选 tab。**停写留档不 DROP**:`watchlist`/`breathing_t_trades`/`inquiry_pool`/`llm_judgments`/`reference_plans`(+ `decision_log` 承 ⑩)六张表 + `reports.watchlist_json`/`app_settings.intel_watch_boards` 两列,DDL 全保留并加「v2.0.0 起停写」注释。**新增**:`report/discipline_checks.py`(问询台判据源搬家)、`report/exec_hint.py::exec_hints_for()`(纯计算出口)、`sentinel/universe.py::WatchTarget`、`sentinel/precall.py::MemberScript`/`load_member_scripts()`、`report/info_card.py::build_basket_context()`/`build_member_tags()`、`tests/test_v1_retirement_guard.py`(十三项守门 27 例)。
 - **⚠ ⑬ 的一处 Plan 勘误(已按事实施工)**:⑬-1 落点表把 `report/board_pool.py` 标成「(五常驻)」是笔误 —— 它是**板块池卫生线**,V2 扫描层五处在用,**保留**并加了反向守门;真正的五常驻保底随 `intel_candidates.py` 一并消失。
@@ -379,9 +380,10 @@ Neckline/
 - **V2-⑫ 完工内容**:`review/cashflow.py` 资金流水四分类 + 新包 `neckline/profile/`(偏好/能力画像,判分复用 ⑨ 的 `exit_sim` 唯一源)。⚠ **⑭ 落地时记得**:`build_all_weekly_summaries` 与 `profile/store.py` 四个读函数目前只有 CLI/冒烟消费,`GET /profile/preference`/`GET /profile/capability` 待接;资金流水四分类摘要也未接进 `POST /review/upload` 的响应。
 - **V2-⑪ 完工内容**:`notify_kinds.py`(三级 × 11 kind 唯一源)、`custom_alerts.py`、`sentinel/attention.py`(四监测 + 合并敞口)、`sentinel/custom.py`、`llm/nl_alert.py`;`PUT|GET /settings/push` 按 kind 换血,`GET|POST|PUT|DELETE /alerts` + `POST /alerts/parse` 已落地(⑭ 只需对拍)。
 - **V2-⑩ 完工内容**:`positions_entry.py`(买卖三字段唯一编排入口);`decision_log` 停写留档,`POST /decisions` 换血为「用户可选补充」入口。
-- **V2-⑧ / ⑦-b / ⑧-E 完工内容**:`selection/verification_rules.py`(条件集 / 四态映射唯一定义处)、`sentinel/basket_verify.py`、`sentinel/capture.py`。**关注池(⑬-1 后)= 持仓 > T1/T2 篮子成员 > 板块基准指数 > 昨日涨停**,V1 候选那一类已删。
+- **V2-⑧ / ⑦-b / ⑧-E / ⑧-F 完工内容**:`selection/verification_rules.py`(条件集 / 四态映射唯一定义处)、`sentinel/basket_verify.py`、`sentinel/capture.py`、**新增 `sentinel/mainline.py`**(⑧-F 主线跳水样本派生唯一源)。**关注池(⑬-1 后)= 持仓 > T1/T2 篮子成员 > 板块基准指数 > 昨日涨停**,V1 候选那一类已删;⚠ **主线跳水样本 ≠ 关注池** —— 自 ⑧-F 起 = ④ 机械种子(热点行业 / 暴起概念)成分 ∩ **关注池的机械成分**(昨日涨停 ∪ 持仓),**只靠篮子进池的码不进样本**,`retreat_metrics.hot_sector_sample_json` 每拍留痕可审计。
+- **V2-⑪-D 完工内容**:`take_profit` kind 的两道机械 sanity 闸 —— 卡生成闸在 `basket_card.clamp_exit_reference(raw, close)`(`exit_low > D0 close`,新增 `rejected_not_above_close` / `rejected_no_close` 两个码,**仍不夹涨跌停、不加上界**),开仓武装闸在 `positions_entry.evaluate_exit_reference_arming()`(`exit_low ≤ 成交价` → 该票该 kind 不武装,⛔ 只是不武装);`position_plans.plan_json` 恒带 `exit_reference_armed` / `..._reason` / `..._note` / `..._muted` 四键,哨兵旁路 E **缺键即不武装**(fail-closed);⑮ 的 per-position 开关写入点 = `positions_entry.set_exit_reference_muted()`(只翻静音位、不动计划正文)。
 - **V2-⑦ / ⑥ / ⑤ / ④ 系列完工内容**:`selection/basket_card.py` + `member_tags.py`;`selection/tier.py` + `basket_store.py`;`selection/aggregate.py` + `member_hygiene.py`;全新包 `neckline/scan/` 与 `neckline/selection/` + `scripts/activate_pack.py` + 两个 pack。
-- **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处、⑥ 十处、⑥-b 一处、⑦ 六处、⑦-b 一处、⑧ 七处、⑧-E 两处、⑨ 六处、⑩ 两处、⑪ 九处、⑫ 九处、**⑬ 一处勘误 + 三处判断 + 三处欠账**。均未改 Plan,如与规划意图不符请澄清。
+- **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处、⑥ 十处、⑥-b 一处、⑦ 六处、⑦-b 一处、⑧ 七处、⑧-E 两处、⑨ 六处、⑩ 两处、⑪ 九处、**⑪-D 一处**(`rejected_no_close` 是 plan 两态外补的第三态)、**⑧-F 三处**(∩「关注池的机械成分」而非整池 / 不新增最小样本量阈值 / 池上限截断的残留耦合)、⑫ 九处、**⑬ 一处勘误 + 三处判断 + 三处欠账**。均未改 Plan,如与规划意图不符请澄清。
 - **仍未修复的两点既有欠账**(与各新块均无关):V2-① 的 `test_holding_k4_check.py` 未传 `db_path`(会写开发库)、V2-② 的 `news_scan.py` 缺 `prompt_context`、`TASK_INQUIRY` 归入检索类默认路由待澄清。
 - **下一步** = **V2-⑭**(篮子日报 + API 契约总装 + 三方对拍)。⚠ ⑭ 必做的三件**已被前置块登记**:① **⑧ 的 EOD 验证拍必须挂进 `build_report`**(位置定死在「拉数之后、扫描层之前」,包保险丝)—— 在 ⑭ 落地前 `basket_verification` 不会有 EOD 定论行;② `GET /baskets/{id}/card` 的 **`card_not_ready` 是全新 reason,`mapReason` 必须加新 case**;③ ⑬ 留下的三处欠账(见上)。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**;在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**。
 - ⚠ **⑮ 必接的客户端欠账**:`Models.swift::PushSettings`(六个具名布尔 → `kinds[]`)、`PushManager.PushCategory`(六个 V1 category → 三级 + 按 `kind` 路由);**⑬ 新增**:今日计划页的候选卡已被拆成只剩「码/名/分/板块/K4 牌/情报排序理由/审判徽标」的过渡形态(⑮ 换成篮子卡 11 项),信息卡的 `basket`/`tags` 三块新内容尚无 UI。D2=A 路,老 App 打老机不受影响。
@@ -1740,6 +1742,41 @@ K7-pack 激活于副本 → 18 天行业强度 1980 行 / 阶段表 1980 行 / �
 **⑧-F 依赖**:④、⑧。**排期:与 ⑧-E 同批**(都碰 ⑧ 且都在 ⑬/⑭ 之前)。
 
 
+#### ⚠ V2-⑧-F 完工记录(2026-08-03,@builder-pro;**代码已落、红线已闭,但对拍结论与 planner 预判相反,样本口径本身待 planner 再裁一次**)
+
+**落点**:新增 `neckline/sentinel/mainline.py`(样本派生唯一源,模块头写死"为什么不经篮子");`sentinel/engine.py` 的 `_hot_sector_peer_returns` 由「吃 `wu.targets`(T1/T2 篮子成员)」改成「吃一串 code」,样本由 `mainline.derive_mainline_sample()` 现给;`retreat.RetreatMetrics` 加 `hot_sector_sample_detail`(默认空 dict,老调用点不炸);`retreat_store` + `db.py` 加 `retreat_metrics.hot_sector_sample_json` 列(幂等迁移,默认 `'{}'`)。**`sector_dive` 阈值(−3% / 早盘 −4%)与 `evaluate_retreat` 判定逻辑一字未动**(守门单测锁死两个常量值)。
+
+**⚠ 与 plan 字面的一处偏差(请 planner 复核)**:plan 写「种子成分 **∩ 关注池**」,实现取的是「种子成分 ∩ **关注池的机械成分**」= `昨日涨停股 ∪ 持仓`,**只靠篮子进池的码不进样本**(它仍在关注池里、仍被别的哨兵盯)。理由:V2 的关注池**本身**含 T1/T2 篮子成员(⑧-A),而篮子成员 ⊆ 种子成分 —— 若整池取交,LLM 换一批成员就换一批样本,**⑧-F 验收里那条核心判据「换掉 LLM 的成员选择 → 样本逐位不变」当场不成立**。plan 的字面与它自己的验收判据在这一点上打架,按验收判据实现。⚠ 一只票若**同时**从机械路进池(本来就是昨日涨停)照进样本 —— 排除的是"LLM 这条路",不是"LLM 碰过的票"。
+
+**⛔ 没有新增任何最小样本量阈值**:「样本不足」= 派生不出(无现役包 / 种子生成失败 / 当日无热点行业与暴起概念种子 / 与机械池无交集,四个原因码分开落)或交集为空;既有 `hot_sector_sample > 0` 这道门槛原样保留。曾考虑加 `MIN_SAMPLE=5`(plan 有「不用小样本硬判」一句),**放弃** —— 既有单测 `test_sentinel_retreat.py` 有一条 `hot_n=3` 触发的断言,加了就得改它,与 ⑧-F-B「哨兵既有纪律单测一条断言未改」直接冲突;plan 的两条要求在这里也是自洽的(不足 = 0)。
+
+**改前 / 改后同批历史日对拍(真实 parquet 只读;隔离对拍库 = 参考四表 + K4-pack 现役 + `industry_strength_daily` 2026 全年 + `scan_layer` 7 月事实表)**。收益率用 D 日 `close/pre_close−1`(**EOD 代理一个尾盘拍**,本地无分钟线);改前样本(T1/T2 篮子成员)需 LLM 才建得出,本地无 key,**用「每颗种子取 D0 涨幅最高 1~3 只」的机械龙头代理**(与 planner 判词「LLM 挑龙头 / 中军」同向,故对"改后是否更易触发"这个结论是保守方向)。
+
+| D(盘中日) | D0 | 全市场中位 | 改前 n / 均值 / 触发 | 改后 n / 均值 / 触发 | 改后−改前 |
+|---|---|---|---|---|---|
+| 20260721 | 20260720 | +0.59% | 18 / −0.68% / 否 | 27 / **+0.94%** / 否 | +1.62pp |
+| 20260722 | 20260721 | −1.28% | 18 / −1.57% / 否 | 93 / **+1.34%** / 否 | +2.91pp |
+| 20260723 | 20260722 | +1.82% | 18 / +1.95% / 否 | 7 / **+4.98%** / 否 | +3.02pp |
+| 20260724 | 20260723 | **−2.86%**(89% 个股下跌) | 18 / −1.10% / 否 | 45 / **−0.18%** / 否 | +0.92pp |
+
+**触发次数:改前 0/4 天,改后 0/4 天(触发日差异 = 无)**。改前代理换篮子数(3/6/10/20)重跑,四天均值在 −2.04%~+2.79% 之间摆动、**一次都不触发**,结论对代理参数不敏感。
+
+**⚠ 差异方向与 planner 预判相反,按 ⑧-F-B「停手回报」办**:planner 预判「LLM 样本偏抗跌 → 机械样本更易触发」;**实测四天里改后样本一律比改前更抗跌(高 0.9~3.0pp),即改后更\*不\*容易触发**。追因一层(同一批日子的横向对照)已定位到真因,**不是 LLM 挑票的问题**:
+
+| D | 全市场中位 | 种子**全成分**(未 ∩ 池) | ∩ 昨日涨停(= 本实现) | 昨日涨停**全体** |
+|---|---|---|---|---|
+| 20260721 | +0.59% | −1.60%(210 只) | +0.94%(27) | +1.24%(55) |
+| 20260722 | −1.28% | −1.54%(1743) | +1.34%(93) | +1.54%(121) |
+| 20260723 | +1.82% | +1.89%(174) | +4.98%(7) | +4.70%(48) |
+| 20260724 | **−2.86%** | **−2.98%**(506) | **−0.18%**(45) | −0.22%(129) |
+
+**真因 = 「∩ 关注池」这一步本身**:关注池的机械成分几乎全是**昨日涨停股**,那是全市场动量筛得最狠的一群;真跳水日(07-24 中位 −2.86%)它们只跌 0.22%,**∩ 之后的样本读数(−0.18%)与"主线板块跌了多少"(种子全成分 −2.98%,已贴着 −3.0% 阈值)相差 2.8 个百分点**。换言之:**本条红色刹车路径在"样本 ∩ 关注池"这个前提下近乎失效,与样本是 LLM 挑的还是机械派的无关**;⑧-F 真正修好的是「样本可被 LLM 塑形」这条红线(已闭、可审计),**没有**修好「这条路能不能真的响」。⛔ 未擅自改阈值、未擅自扩池,**留给 planner 裁**。已量化的一个候选方向(仅供裁定参考,**未实现**):给关注池加一条**机械配额切片**(每颗种子按 `ts_code` 升序取前 K 只,K=6 时 58~144 只、放得进 200 的池),同四天读数为 −1.66% / −0.33% / +2.35% / **−2.46%**,与全市场同向、且 07-24 已进入阈值邻域 —— 但「每颗种子取几只、与昨日涨停股抢池位怎么排优先级」直接决定一个纪律触发器的读数,**是 planner 的决定,不是 builder 的**。
+
+**测试**:新增 `tests/test_sentinel_mainline.py` 17 例 —— 核心判据两条路各证一次(①`derive_mainline_sample` 签名里**根本没有**篮子入口〔结构性守门〕;②整拍级:同一天同一份 `limit_derived`、只换 D0 篮子成员 → `retreat_metrics.hot_sector_sample_json` 逐位相同)+「只靠篮子进池的码不进样本」+ 持仓进样本 + 四个不可用原因码各一 + 当日冻结(`generate_seeds` 只被调一次)+ 顺序确定性(输入乱序结果同)+ 留痕字段 + 样本不足不触发且 `hot_sector_avg_chg` 为 `None`(不是 0.0)+ 两个阈值常量守门。既有 `tests/test_sentinel_retreat.py` **一条断言未改**;`tests/test_sentinel_engine.py` 只改**夹具**(`_seed_mainline_sample` 把样本按新口径喂进去),**断言逐字未动**。`scripts/smoke_sentinel.py` 跑通(对拍库无现役包 → 该路如实"不判",其余退潮条件照常,正是设计的降级路径)。
+
+**⚠ 一处已知残留耦合(如实登记,未修)**:关注池按 `breadth_cap=200` 截断时,`昨日涨停股`拿的是"减掉持仓/篮子/指数之后的余额"—— 篮子成员多一只,涨停股名额就少一只,**极端情况下(当日涨停 > 180 只)LLM 仍能间接挪动样本的尾巴**。四天实测涨停 43~129 只,离 180 还远,故当前不触发该耦合;要彻底解耦得改池的配额规则,同样归 planner 那条裁定。
+
+
 #### ✅ V2-⑧-E 完工记录(2026-08-02,@builder)
 
 **落点**:全部改动只在 `neckline/sentinel/basket_verify.py` 一个文件(未碰 `verification_rules.py`——`vr.EPS` 已存在,直接复用,无需新增;未碰 `basket_card.py`,⑦ 的卡形状零改动)。新增 `FLAG_ANCHOR_MISMATCH`/`REASON_MEMBER_EX_RIGHTS`/`REASON_ANCHOR_MISMATCH`/`REASON_ANCHOR_UNCONFIRMED` 四个原因码常量;`MemberObservation` 加 `pre_close` 字段(默认 `None`,老调用点 / 测试替身不传时安全降级为"不做锚检测");`_member_ref_close()`(从 spec 成员行取 `ref_close`)+ `_anchor_mismatch()`(`abs(pre_close-ref_close) > vr.EPS`,任一缺失或非正返回 `False`)两个纯函数;`evaluate_specs()` 的成员循环里,锚检测排在正常条件判定**之前**,命中即 `continue`(与既有 `missing` 分支同款「两侧都不计」机制,原因码单独一个 key、不与 `member_data_missing` 混)。
@@ -2038,6 +2075,20 @@ V2-⑪(🔴 @builder-pro,碰推送与哨兵)。
 **⑪-D-D ⑮ 应做(不阻塞本裁定)**:持仓卡的计划区**显示离场参考并带一个 per-position「不提醒」开关**。理由:reviewer 指出开仓继承**无用户确认环节**,而 V2 的立项主题恰恰是**减摩擦**(⑩ 表单退役)—— 加一道前置确认与之相悖;**per-position 关闭**是代价更小的答案(全局关 `take_profit` 会连坐所有持仓,用户真正想要的是「这只票的这个数不靠谱,别烦我」)。**红线前提是 ⑪-D-B 两道闸,不是这个开关**,故列为 ⑮ 应做项。
 
 **⑪-D 验收**:`exit_low ≤ D0 close` → 卡上该项不落 + reason 精确(单测);`exit_low` 荒谬小(0.01)→ 卡生成期就被拦,**根本走不到推送**(单测,正是 reviewer 那个极端例的回归);`exit_low ≤ 成交价` → 该票 kind 不武装 + 计划卡如实标,**且其他 kind 照常武装**(单测两路);⛔ **不夹涨跌停、不加上界**(守门单测:压力位高于次日涨停仍正常落卡);豁免四条前提在 §2.8-C-3 与 ⑪-D-C **逐字一致**(人工核一次并在完工记录写明);pytest 零回归。
+
+**✅ V2-⑪-D 完工记录(2026-08-03,@builder-pro,纯本地代码 + 单测,零服务器 / 零部署)**
+
+**闸①(卡生成)落 `selection/basket_card.py::clamp_exit_reference`**:签名由 `(raw)` 改成 `(raw, close)`,`close` **必填位置参数、刻意不给默认值** —— 红线闸不留"调用方忘了传就静默关闸"的口子(与 ⑧-E `MemberObservation.pre_close` 那种"老调用点安全降级"的可选锚**刻意相反**:那是加检测,这是加闸;守门单测用 `inspect.signature` 锁死无默认值)。判定序与 `clamp_entry_zone` 同构、**五态**:`absent`(没给)→ `rejected_malformed`(数字非法 / 自相矛盾)→ `rejected_no_close`(数字合法但 D0 收盘算不出,**无从核对**)→ `rejected_not_above_close`(核对了,不高于收盘)→ `ok`。容差复用 `verification_rules.EPS`(不另立一份;**恰好等于收盘 → 拦**,压力位不能就是现价本身)。⚠ **`rejected_no_close` 是 plan 两态之外 builder 补的第三态**,如实登记:项目一贯「『没有』与『不满足』分开落码」(同 ⑧-E `anchor_unconfirmed` 先例),处置与 rejected 家族相同(不落卡)。⛔ **仍不夹涨跌停、仍不加上界**,两条各有一个守门单测(压力位 15.0 高于次日涨停 11.0 仍正常落卡;`exit_high=9,999,999` 仍 `ok`)。顺带把 `CARD_SYSTEM_PROMPT` 里那条硬约束补上「`exit_low` 必须严格高于资料给出的今日收盘价」(prompt 里本来就逐票给了收盘价)—— **prompt 是背带、闸才是安全带**,不是拿它替代闸(v1.5.1 `_parse_verdict` 那条教训)。
+
+**闸②(开仓武装)落 `positions_entry.py`**:纯函数 `evaluate_exit_reference_arming(exit_reference, buy_price, *, muted)` → `(armed, reason)`,判定序**刻意如此**:①`user_muted`(用户意图优先,⛔ 不因为"数字其实挺合理"就替用户重新打开)→ ②`no_exit_reference`(压根没有,与"不合格"分开落码)→ ③`below_entry_price`(`exit_low ≤ 成交价`,含等值边界)→ ④武装。`build_inherited_plan(source, *, buy_price)` 的 `buy_price` 同样**必填**;`plan_json` 恒带四个键 `exit_reference_armed` / `..._armed_reason` / `..._armed_note` / `..._muted`(三条空计划路径也带,**不搞"缺键即默认"**)。文案单一源 `exit_reference_arm_note()`,`below_entry_price` 的文案就是 plan 原文「离场参考低于你的成本,本票不做触达提醒」。⛔ **只是不武装**:单测锁死「不武装那笔仓的 `exit_reference` / `entry_zone` / `risks` 正文逐字不变、开仓照常成功、同一拍 `stop_approach` 照常推 APNs 而 `take_profit` 不推」。
+
+**读侧 fail-closed**:`sentinel/engine.py::_load_exit_references` 只认 `plan_json.exit_reference_armed is True`,**缺键 = 不武装**(⛔ 不是"老行按老行为放行")—— §2.8-C-3 前提② 是「该数值**已过**机械闸」,一份没有武装位的计划就是**没过闸**,不是"过了但没写"。生产 `position_plans` 当前 0 行,无迁移代价。
+
+**⑮ 的读写点已留好(开关本身不做,⑪-D-D)**:`exit_reference_muted` 是**用户意图位**、`exit_reference_armed` 是**派生态**,两者分开存;写入点 `set_exit_reference_muted(position_id, muted)` —— 在最新计划之上**追加一个新版本**(`position_plans` 是版本化只增表,⛔ 不就地改历史行),⚠ 只翻静音位、**不动计划正文任何一项**(单测锁死)。`create_position_plan_version` 顺带补上一条:新版本的武装态由它**重算**(拿这笔仓的真实成交价重过闸②)、静音位**承袭上一版**除非本次显式给键 —— 否则"写个新版本"就成了绕开红线闸的后门(单测两路)。
+
+**豁免四条前提逐字核对(⑪-D 验收要求"人工核一次并写明")**:§2.8-C-3 与 §五 ⑪-D-C 两处**已逐字比对一致** —— ①不改变任何纪律判定(止损 / 回落止盈 / 时间退出 / 仓位 / 熔断一字不动,不产生任何持仓动作);②该数值已过机械 sanity 闸(⑪-D 的两道),未过 → 该票此 kind 不武装;③纯告知型文案,禁指令词,必须点明「这是你计划里的参考位、不是止盈线,纪律仍是回落止盈」;④用户可关(per-kind 开关)。四条在代码里各有落点:①`holding.check_exit_reference_reached` 不产生任何持仓动作、旁路 E 不进 channels;②本块两道闸;③文案在 `check_exit_reference_reached` 内,措辞未改;④`notify_kinds` 的 per-kind 开关(⑮ 再加 per-position)。
+
+**测试**:新增 `tests/test_exit_reference_gates.py` 21 例(闸① 十条:低于收盘 / 等值边界 / 容差内"高一点点"仍拦 / `exit_low=0.01` 极端例回归 / 缺收盘价是独立码 / malformed 优先级 / absent 仍是 absent / 不夹涨跌停守门 / 不加上界守门 / 签名无默认值守门;闸② 十一条:纯函数五路 + 端到端六路〔武装 / 不武装但计划完好 / 老行 fail-closed / 新版本重过闸 + 静音承袭 + 取消静音复武装 / 静音不动正文 / 其他 kind 不受影响〕)。既有 `tests/test_positions_entry.py` 改 4 处**调用签名**与 1 处整字典相等断言(改成"正文原样 + 武装态如实",因为新版本现在会补写武装态四件套);`tests/test_sentinel_tick_v2_bypass.py` 的 `_seed_position_plan` 夹具改成**调生产那支纯函数**算武装态(夹具与生产语义漂移会让"绿的测试"变成假绿),**断言逐字未动**。
 
 **依赖**:⑧⑩。
 **验收**:三级 category + kind 开关往返(单测 + 契约);NL 解析 golden 单测(六类条件各一,含一条组合条件);哨兵执行单测(命中一次即冷却、收盘失效、`persist=1` 跨日存活);LLM 不可用 → 降级为手填(单测);**「永不自动交易」grep 守门**(`custom.py` 零下单调用);哨兵既有纪律单测全绿不改断言;pytest 零回归。
@@ -2658,6 +2709,8 @@ eval_exit_sim)+ `smoke_sentinel.py` 全绿;`scripts/report.py` 在隔离库副�
 ## 九、变更日志(一行制;详版全文 → `archive/变更日志_详版_20260719-20260728.md`)
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
+
+- 2026-08-03 · ⚙️ **planner 两条裁定接线完工:⑪-D `take_profit` 两道机械闸 + ⑧-F 退潮主线样本机械化**(@builder-pro,纯本地代码 + 单测,零服务器 / 零部署;真实 `data/neckline.db` 全程只读,对拍跑在 scratchpad 隔离库 + 真实 parquet 只读上)。**⑪-D 已完成、验收全绿**:闸① `basket_card.clamp_exit_reference(raw, close)` 要求 `exit_low > D0 close`(`close` 必填无默认,签名层面不给"忘了传 = 静默关闸"留口子;新增 `rejected_not_above_close` 与 builder 补的第三态 `rejected_no_close`〔「没收盘价可比」≠「比过了不合格」〕;⛔ **仍不夹涨跌停、仍不加上界**,两条各一个守门单测);闸② `positions_entry.evaluate_exit_reference_arming()` 见 `exit_low ≤ 成交价` → 该票 `take_profit` **不武装**(⛔ 只是不武装:计划正文、开仓、其他 kind 全不受影响,单测锁死);`plan_json` 恒带武装态四键,哨兵旁路 E **缺键即不武装**(fail-closed —— 没武装位 = 没过闸,不是"过了但没写");⑮ 的 per-position 开关留了写入点 `set_exit_reference_muted()`(追加新版本、只翻静音位、不动正文),`create_position_plan_version` 顺带堵死"写新版本绕开闸②"的后门;§2.8-C-3 与 ⑪-D-C 的豁免四条前提已逐字人工核对一致。**⑧-F 代码已落、红线已闭,但⚠ 对拍结论与 planner 预判相反,样本口径待再裁一次**:新增 `sentinel/mainline.py`(样本 = ④「热点行业 + 暴起概念」种子原始成分 ∩ **关注池的机械成分**〔昨日涨停 ∪ 持仓〕,**只靠篮子进池的码不进样本** —— plan 字面写的是「∩ 关注池」,但 V2 关注池本身含篮子成员,整池取交会让 ⑧-F 验收那条核心判据当场不成立,已登记为与 plan 字面的偏差);`sector_dive` 阈值一字未动(守门断言);样本构成每拍落 `retreat_metrics.hot_sector_sample_json`(新列,幂等迁移)可审计;⛔ 没有新增任何最小样本量阈值(加了就得改既有 `hot_n=3` 那条断言,与「一条断言未改」冲突)。**对拍(4 个真实历史日,含 07-24 全市场中位 −2.86% 的大跌日;改前样本用「每颗种子取 D0 涨幅最高 1~3 只」的机械龙头代理)**:触发次数 **改前 0/4、改后 0/4**,但**四天里改后样本一律比改前更抗跌(高 0.9~3.0pp)= 改后更不容易触发,方向与 planner 预判相反**。追因已定位真因**不在 LLM**:关注池的机械成分几乎全是昨日涨停股,07-24 它们只跌 0.22%,而「主线板块本身」(种子全成分)是 −2.98%(已贴阈值)—— **本条红色刹车路径在「样本 ∩ 关注池」这个前提下近乎失效**,⑧-F 修好的是「可被 LLM 塑形」这条红线,**没有**修好「这条路能不能真的响」。⛔ 未擅自改阈值 / 扩池;一个已量化的候选方向(给池加机械配额切片,K=6 时 07-24 读 −2.46%)连同四天数字写进 §五 ⑧-F 完工记录,**留给 planner 裁**。测试:全量 **2784 过 + 2 skip**(基线 2744+2,净增 40 = 新增 `tests/test_exit_reference_gates.py` 21 + `tests/test_sentinel_mainline.py` 17 + 守门参数化 2);既有 `test_sentinel_retreat.py` 一条断言未改,`test_sentinel_engine.py` 只改夹具、断言逐字未动;`scripts/smoke_sentinel.py` 跑通。另有一条既有挂钟脆弱测试(`test_sentinel_custom.py::test_cooldown_blocks_second_hit_and_expires`,北京时间 ~14:48 后跑必红)与本次施工无关
 
 - 2026-08-03 · 🛠️ **V2 两线 review 修复批次完工(契约线 🔴1+🟡5+🔵2 / 判定线 🟡3+🔵1,共 8 个 commit)**(@builder-pro,零部署;两份 review 报告已逐条销项标注 commit)。**🔴 R1 `basket_members` 冻结泄漏**:`INSERT OR IGNORE` 只冻「同一行」、冻不住「聚合长子行」,篮子行已存在时新成员码照插进冻结篮而日志正说「未采纳」→ 改为**篮子行已存在 = 该篮成员整段不写**(`1052622`)。**判定 🟡-1 验证侧静默降格**:「扔掉不可判条件再对子集取 all()」把 ⑦-b-B 的两条 AND 降格成单条 → 合成读法上收 `verification_rules.combine_side()` 取 **Kleene 三值**、新 flag `spec_levels_partial`、**bump `verify_ruleset_v2`**(`0f885b2`)。**判定 🟡-2 ⑬-7 漏 ⑧-E 除权锚**:分红季成员级假警会进 9:26 锁屏 → 复用同一检测器、标 `member_ex_rights` 不计 actionable(`47775cb`)。**判定 🟡-5 红线守门锁空靶**(`neckline.push.notify` 不存在)→ 换真实七模块 + 反向存在性断言 + 兼容 `from X import Y` 写法。**契约 🟡 Y1 守门写法盲区**:补 `OR REPLACE/IGNORE` 变体 + 扫描域扩 `scripts/`,**并修好一条从上线起就没可能命中的空转断言**(禁止串小写表名 vs `sql.upper()`,报告未列的第 4 洞,反向证伪时打出来)(`fdf604c`)。**Y2** `user_actions.occurred_at` 归一北京时间(`created_at` 仍 UTC,两列不同轴写死)、**Y3** 画像按 dimension 整段替换止住「每期 = 多次运行并集」(`040bd27`);**Y4** 五常驻僵尸 DTO 与客户端僵尸卡拆除(`d9b41a1`);**Y7** `record_buy` 三写并入单事务 + `POST /positions` 幂等键(部分唯一索引兜底,新增 `_POST_MIGRATION_INDEXES` 机制)(`50ff5b2`);**🔵 B1/B3**(`1052622`/`d61b0b8`)。**Y6 补档**:`archive/V2-⑬_删除前后对照表_20260803.md`(⑭ 三方对拍基准输入)。全量 `pytest` **2744 过 + 2 skip**(基线 2706,净增 38 条回归)+ 客户端双端 build + iOS Simulator 154 例;**未修**:契约 Y5(⑮ 硬清单)、判定 🟡-3/🟡-4(planner 已裁定另派)、🟡-6(⑯ 前定位)、其余 🔵。
 

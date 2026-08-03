@@ -25,9 +25,12 @@ LLM 数字。**
       `sentinel.universe.load_stock_meta`(唯一源,不自己判 ST 前缀 / 不自己分板块);
       `next_trading_day` 走 `neckline.calendar`。**越界不显示** + 四态分开落行
       (`rejected_out_of_limit` / `rejected_malformed` / `rejected_no_limit` / `absent`)。
-    · **离场参考只做格式合法性校验、不夹涨跌停**(压力位可能几个交易日后才到,拿明日
-      涨跌停夹它是错的)。它是 ⑩ `position_plans.plan_json`「建仓区间/最高追价/**离场
-      参考**/验证失效/主要风险」要继承的那一项,故卡上必须有。
+    · **离场参考不夹涨跌停**(压力位可能几个交易日后才到,拿明日涨跌停夹它是错的),
+      但自 ⑪-D(2026-08-03 planner 裁定)起多一道**下界语义闸**:`exit_low > D0 close`,
+      不满足落 `rejected_not_above_close`、该项不落卡 —— 这份数字经 ⑩ 继承会成为 APNs
+      `take_profit` kind 的触发位置(§2.8-C-3 记名豁免的四条前提之一就是"已过机械闸"),
+      **零发明阈值,靠的是定义**(压力位在现价之上)。它是 ⑩ `position_plans.plan_json`
+      「建仓区间/最高追价/**离场参考**/验证失效/主要风险」要继承的那一项,故卡上必须有。
     · **止损价系统算、不由 LLM 给**:`round(close × (1 − stop_pct), 2)`,`stop_pct`
       读现役章程 config(§2.1 唯一源,**禁硬编 0.05**)。
     · **口径指纹落行**:`stop_pct` / `take_profit_retrace` / `charter_version` /
@@ -106,18 +109,32 @@ CLAMP_ABSENT = "absent"
 CLAMP_REJECTED_OUT_OF_LIMIT = "rejected_out_of_limit"
 CLAMP_REJECTED_MALFORMED = "rejected_malformed"
 CLAMP_REJECTED_NO_LIMIT = "rejected_no_limit"
+# ⑪-D-B 闸①(2026-08-03 planner 裁定):离场参考**必须高于 D0 收盘**。语义驱动、
+# 零发明阈值 —— 离场参考按定义是「本轮上涨的压力位」,压力位在现价之上;
+# `exit_low ≤ D0 close` 的东西根本不是离场参考。⚠ 这**不是**给它加涨跌停夹逼
+# (⑦ 原决定不变:压力位可能几个交易日后才到),只管**下界的语义合法性**。
+CLAMP_REJECTED_NOT_ABOVE_CLOSE = "rejected_not_above_close"
+# ⑪-D 闸① 的「没有」态:D0 收盘价本身算不出 → **无从核对**,与「核对了不满足」
+# 刻意分成两个码(项目一贯的「没有 ≠ 不满足」纪律,同 ⑧-E `anchor_unconfirmed`)。
+# 处置与 rejected 家族相同(不落卡),但审计时能一眼分清是被拦还是没得比。
+# ⚠ 非 plan 逐字要求,是 builder 补的第三态,已在 ⑪-D 完工记录如实登记。
+CLAMP_REJECTED_NO_CLOSE = "rejected_no_close"
 
 _CLAMP_REASON_TEXT: Dict[str, str] = {
     CLAMP_ABSENT: "本次未生成该项",
     CLAMP_REJECTED_OUT_OF_LIMIT: "生成的数字超出次日涨跌停范围,已拦截",
     CLAMP_REJECTED_MALFORMED: "生成的数字格式不合法或自相矛盾,已拦截",
     CLAMP_REJECTED_NO_LIMIT: "无法算出次日涨跌停价,该项不显示",
+    CLAMP_REJECTED_NOT_ABOVE_CLOSE: "生成的离场参考不高于当日收盘价(压力位按定义在现价之上),已拦截",
+    CLAMP_REJECTED_NO_CLOSE: "当日收盘价算不出,无从核对该离场参考,该项不显示",
 }
 
-# 离场参考只校验格式(不夹涨跌停),复用上面三个码里的两个,语义不新造。
+# 离场参考只校验格式 + ⑪-D 闸①(不夹涨跌停),复用上面的码,语义不新造。
 EXIT_CLAMP_OK = CLAMP_OK
 EXIT_CLAMP_ABSENT = CLAMP_ABSENT
 EXIT_CLAMP_REJECTED_MALFORMED = CLAMP_REJECTED_MALFORMED
+EXIT_CLAMP_REJECTED_NOT_ABOVE_CLOSE = CLAMP_REJECTED_NOT_ABOVE_CLOSE
+EXIT_CLAMP_REJECTED_NO_CLOSE = CLAMP_REJECTED_NO_CLOSE
 
 # —— LLM 段状态(同 ⑤/⑥ 的三态精神:「没做」与「做了没结果」不合并)——————
 LLM_OK = "ok"
@@ -476,9 +493,26 @@ def clamp_max_chase(
     return round(price, 2), CLAMP_OK
 
 
-def clamp_exit_reference(raw: Any) -> Tuple[Optional[float], Optional[float], str]:
-    """离场参考**只做格式合法性校验、不夹涨跌停**(plan 明文:压力位可能几个交易日
-    后才到,拿明日涨跌停夹它是错的)。三态:`absent` → `rejected_malformed` → `ok`。"""
+def clamp_exit_reference(raw: Any, close: Optional[float]) -> Tuple[Optional[float], Optional[float], str]:
+    """离场参考的格式校验 + **⑪-D-B 闸①**(`exit_low > D0 close`)。**仍不夹涨跌停、
+    仍不加上界**(plan 明文两条:压力位可能几个交易日后才到,拿明日涨跌停夹它是错的;
+    `exit_high` 荒谬地高只会永不触发,无假推送无伤害,⛔ 别为它发明上限)。
+
+    五态,判定优先级与 `clamp_entry_zone` 同构:`absent`(压根没给)→
+    `rejected_malformed`(数字非法 / 自相矛盾)→ `rejected_no_close`(数字合法但
+    D0 收盘算不出,**无从核对**)→ `rejected_not_above_close`(核对了,不高于收盘)
+    → `ok`。
+
+    **为什么这道闸必须在这里**(⑪-D-A):这份数字经 ⑩ 开仓继承会成为 APNs
+    `take_profit` kind 的**触发位置**(§2.8-C-3 的记名豁免)——一个没有下限的 LLM
+    数字驱动立即级推送,极端例 `exit_low=0.01` 买入后第一拍即推,喂给「立即级」通道
+    的噪声比不推更糟。**这不是发明阈值,是定义**:离场参考 = 本轮上涨的压力位,
+    压力位在现价之上。
+
+    `close` 是**必填位置参数**(不给默认值):这是一道红线闸,调用方"忘了传"就等于
+    静默关闸,签名层面不留这个口子(与 ⑧-E `MemberObservation.pre_close` 那种
+    "老调用点安全降级"的可选锚**刻意相反** —— 那是加检测,这是加闸)。
+    """
     if not isinstance(raw, Mapping):
         return None, None, EXIT_CLAMP_ABSENT
     low, high = raw.get("low"), raw.get("high")
@@ -486,6 +520,12 @@ def clamp_exit_reference(raw: Any) -> Tuple[Optional[float], Optional[float], st
         return None, None, EXIT_CLAMP_ABSENT
     if not (_finite(low) and _finite(high)) or not (0 < float(low) <= float(high)):
         return None, None, EXIT_CLAMP_REJECTED_MALFORMED
+    if not _finite(close) or float(close) <= 0:
+        return None, None, EXIT_CLAMP_REJECTED_NO_CLOSE
+    # 浮点容差复用 `verification_rules.EPS`(本模块唯一的容差源,⛔ 不另立一份;
+    # 恰好等于收盘 → 拦,压力位不能就是现价本身)。
+    if float(low) <= float(close) + vr.EPS:
+        return None, None, EXIT_CLAMP_REJECTED_NOT_ABOVE_CLOSE
     return round(float(low), 2), round(float(high), 2), EXIT_CLAMP_OK
 
 
@@ -539,7 +579,9 @@ CARD_SYSTEM_PROMPT = """你是「颈线」系统的盘后篮子参谋。系统�
 · `low` / `high` / `max_chase` **必须落在资料给出的该票「次日涨跌停参考价」闭区间内**,
 超出的会被系统丢弃、不展示给用户;且必须满足 `low ≤ high ≤ max_chase`。
 · `exit_low` / `exit_high` 是本轮上涨的压力位参考,**不受涨跌停约束**(可能几个交易日后才触及),
-但它不是止盈线——回落止盈是系统纪律,独立生效、不受你的判断影响。
+但 `exit_low` **必须严格高于资料里给出的该票「今日收盘价」**——压力位按定义在现价之上,
+不高于收盘的会被系统丢弃、不展示给用户;且必须满足 `exit_low ≤ exit_high`。
+它不是止盈线——回落止盈是系统纪律,独立生效、不受你的判断影响。
 · `verification` / `invalidation` 两段人话**必须与资料里给出的机械阈值同频**,不得给出与之矛盾的
 说法;那些阈值是盘中自动判定用的,你写的是同一件事的人话版本。
 · 某一项确实无法给出合理数字时,**宁可该字段写 null,也不要编造**。
@@ -974,7 +1016,8 @@ def build_basket_card(
             zone_high=high,
         )
         ex_low, ex_high, exit_clamp = clamp_exit_reference(
-            {"low": item.get("exit_low"), "high": item.get("exit_high")} if item else None
+            {"low": item.get("exit_low"), "high": item.get("exit_high")} if item else None,
+            mech.close,      # ⑪-D-B 闸①:D0 收盘是机械锚,与 limit_up/limit_down 同源同批
         )
         tag_res = tag_batch.get(m.ts_code) if (with_tags and tag_batch is not None) else None
         out_members.append(MemberCardEntry(
@@ -1144,9 +1187,13 @@ __all__ = [
     "CLAMP_REJECTED_OUT_OF_LIMIT",
     "CLAMP_REJECTED_MALFORMED",
     "CLAMP_REJECTED_NO_LIMIT",
+    "CLAMP_REJECTED_NOT_ABOVE_CLOSE",
+    "CLAMP_REJECTED_NO_CLOSE",
     "EXIT_CLAMP_OK",
     "EXIT_CLAMP_ABSENT",
     "EXIT_CLAMP_REJECTED_MALFORMED",
+    "EXIT_CLAMP_REJECTED_NOT_ABOVE_CLOSE",
+    "EXIT_CLAMP_REJECTED_NO_CLOSE",
     "LLM_OK",
     "LLM_NO_PROVIDER",
     "LLM_CALL_FAILED",

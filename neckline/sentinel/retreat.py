@@ -68,7 +68,9 @@ ZABAN_MIN_SAMPLE = 5
 # 跌停家数触发(绝对数与占关注池比例,任一达到即触发)。
 LIMIT_DOWN_COUNT_TRIGGER = 5
 LIMIT_DOWN_RATE_TRIGGER = 0.15
-# 主线板块跳水:关注池内热门板块标签个股的平均盘中跌幅阈值。
+# 主线板块跳水:主线样本个股的平均盘中跌幅阈值。⚠ **样本来源自 V2-⑧-F 起 =
+# ④ 机械种子成分 ∩ 关注池机械成分**(派生见 `sentinel/mainline.py`),不再是 V1 的
+# 「热门板块标签个股」、也不是 V2-⑬-1 那版的「T1/T2 篮子成员」;**阈值本身一字未动**。
 SECTOR_DIVE_RET_TRIGGER = -0.03
 
 # —— 早盘(< 10:00)加严阈值(修法3,**同样未回测,启发式待实盘校准**)——————
@@ -128,7 +130,12 @@ class MarketBreadthSnapshot:
 @dataclass
 class RetreatMetrics:
     """单拍关注池宽度指标(落 `retreat_metrics` 表,供同时段对比 + 成绩单)。
-    `hot_sector_avg_chg=None` 表示本 tick 无热门板块可比样本(诚实"无数据")。"""
+    `hot_sector_avg_chg=None` 表示本 tick 无热门板块可比样本(诚实"无数据")。
+
+    `hot_sector_sample_detail`(V2-⑧-F 留痕):主线跳水样本的**构成**(codes + 逐码
+    来源标签 + 样本量 + 种子计数 + 不可用原因),由 `sentinel/mainline.py` 产出。
+    **触发与否都落**——「样本没被 LLM 塑形」这件事要事后可审计,不能靠读代码相信。
+    默认空 dict(老调用点 / 测试替身不传时不炸,如实表达"本次没记样本构成")。"""
     trade_date: date
     hhmm: str
     sample_size: int
@@ -137,6 +144,7 @@ class RetreatMetrics:
     zaban_count: int
     zaban_rate: float
     hot_sector_avg_chg: Optional[float]
+    hot_sector_sample_detail: Dict[str, object] = field(default_factory=dict)
 
     def metric_payload(self) -> Dict[str, object]:
         """落进 sentinel_events / 看板事件 payload 的全量指标快照(修法纪律:
@@ -150,6 +158,7 @@ class RetreatMetrics:
             "zaban_rate": round(self.zaban_rate, 4),
             "hot_sector_avg_chg": (round(self.hot_sector_avg_chg, 4)
                                    if self.hot_sector_avg_chg is not None else None),
+            "hot_sector_sample": dict(self.hot_sector_sample_detail),
         }
 
 
