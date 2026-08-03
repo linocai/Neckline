@@ -358,21 +358,23 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-03 · 🏗️ V2.0.0 施工中 —— V2-①→⑫ 全部完工(含 ③-K7/④b/⑤-b/⑤-c/⑥-b/⑦-K7/⑦-b/⑧-E 各追加子项),⑬ 起可开**。21 张新表全建齐;LLM 层自填制注册表 + 双 Agent 路由 + 预算三本账;选股策略包机制(K4-pack + K7-pack,均未激活);市场扫描层三张预计算表 + 四类驱动种子 + 行业题材阶段六态状态机;驱动聚合层(V2 心脏)+ Tier 分层引擎 + 篮子卡冻结;⑦-b 条件集定版 + ⑧ D+1 验证 + ⑧-E 除权除息锚失效检测;⑨ 盘后复盘 + 评价引擎(判分唯一源下沉、三重对拍全绿);⑩ 持仓极简台账 + 计划继承 + 决策日志表单退役;⑪ 监控 80/15/5 + 通知三级 + 自然语言临时提醒 —— 四监测旁路 + 同篮合并敞口、六类推送白名单换血成「三级 category × 11 kind」(开关按 kind 配、老库取值一次性播种)、NL 提醒全链(LLM 只解析 → 七项确认卡 → 确定性哨兵执行);**⑫ 对账资金流水四分类扩展(转入转出/分红/税费/交易盈亏四类互不混同)+ 偏好画像/能力画像双引擎(新包 `neckline/profile/`,判分复用 ⑨ 的 `exit_sim` 唯一源,守门单测锁死不反向影响 Tier)**。**哨兵纪律分支自 ⑧ 起一行未动**;全量测试零回归。
+**2026-08-03 · 🏗️ V2.0.0 施工中 —— V2-①→⑬ 全部完工,⑭ 起可开**。①–⑫ 详见各块「完工记录」(21 张新表 / LLM 自填制 + 双 Agent / 选股策略包 / 市场扫描层 + 行业六态 / 驱动聚合层 + Tier + 篮子卡 / D+1 验证 + 盘中存拍 / 盘后复盘 + 评价引擎 / 持仓极简台账 / 监控 80/15/5 + 通知三级 + NL 提醒 / 对账与画像)。**⑬ 换血层第一块完工:V1 十三项清理全部执行完毕(无跳过)** —— 单票候选管线整链(候选榜 / 五常驻保底 / 单票 LLM 审判 / 参考件三件套 / exec_hint 展示位 / 老四件套 / K1 entry mask)、自选池 + 同花顺对账整链、呼吸台账、问询台 forced 海选池通道全部物理删除;盘前 9:26 判定换血成**篮子竞价剧本核对**;信息卡按 D1 保留改造成**篮子成员详情页地基** + ⑬-N-K7 标注件。**哨兵纪律分支自 ⑧ 起一行未动**(⑬ 只换判定对象、不改判定逻辑与阈值);全量测试零回归。
 
-- **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;至今全部改动**纯本地代码 + 单测**,未碰任何服务器/DNS/部署,未改任何现役章程或 `strategy_versions` 行为。真实 `data/neckline.db` 里全部 V2 表**仍是 0 行**(⑥–⑪ 的冒烟一律跑在 `sqlite3.backup` 副本或纯 `tempfile` 临时库上,真实 parquet 只读)。
-- **V2-⑪ 完工内容**(详见 §五 V2-⑪ 段尾「完工记录」,含**9 处如实登记、其中 2 处 🔴 提请裁定**):新增 `neckline/notify_kinds.py`(三级 × 11 kind 唯一源,叶子模块零项目内 import)、`neckline/custom_alerts.py`(规则白名单 + 七项确认卡 + 台账)、`neckline/sentinel/attention.py`(四监测 + 合并敞口,13 个阈值登记在 `ATTENTION_DEFAULTS`,⑦-b 体例:工程默认零回测背书、不进包不进章程)、`neckline/sentinel/custom.py`(确定性执行器,三值判定 + 零下单守门)、`neckline/llm/nl_alert.py`(解析层,带日期锚 + `json_block` 剥 JSON + 降级手填表单)、`scripts/smoke_attention_alerts.py`。契约换血:`PUT|GET /settings/push` 改按 kind(`PushSettingsOut.kinds[]` 带 `level`/`label`),新增 `GET|POST|PUT|DELETE /alerts` + `POST /alerts/parse`(⑭-B 清单里的同名五个端点**已在本块落地,⑭ 只需对拍**)。`app_settings` 六个 `push_*` 列**停写留档**、取值经 `db.py::_seed_push_kinds` 幂等播种进新的 `push_kinds` JSON 列。
-- **🔴 ⑪ 留给用户/planner 的两个裁定点**:① **`basket_falsified` kind 未登记** —— ⑪-B 的 kind 例举里有它,但 ⑦-b/⑧-C2 的语义红线写死「篮子 falsified ⛔ 不进推送」且已有守门单测,本块取保守方向(不推、也不留空开关),接线只需一行白名单 + 一个调用点;② **`stop_approach`/`take_profit`/`sector_dive` 未开 APNs kind** —— 蓝图 5.5「立即通知」点名了「逼近或触发止损」,但这三条是持仓哨兵既有的**看板/Bark**事件、⑪-B kind 例举里没有,按「新增 kind 须用户拍板」纪律不擅自加。**这是目前「立即」级里最该有却没有的一条。**
-- **V2-⑫ 完工内容**(详见 §五 V2-⑫ 段尾「完工记录」,含 9 处如实登记):`review/parse.py`/`reconcile.py`/`material.py`/`store.py` 四个既有对账模块骨架逐字未改,新增 `CashFlowEvent`/四分类常量 + `ParseResult.cash_flow_events` 字段(纯增量);新模块 `review/cashflow.py` 按周聚合转入转出/分红/税费/交易盈亏,刻意不给「合计」字段。新包 `neckline/profile/`:`preference.py`(题材/角色/入场方式两口径/Tier)、`capability.py`(胜率/盈亏比/MFE·MAE 只用 `positions` 真实成交;`vs_peer_delta`/`missed_role` 复用 `eval.metrics.score_tradable` 同一套判分)、`store.py`(每期一版)。`scripts/profile.py` CLI + `scripts/smoke_profile.py` 冒烟。⚠ 施工期间同一工作树里另一并行会话(跟进 `3b1dcd7` 的 APNs kind 决策)对 `notify_kinds.py` 等文件有未提交改动、两个精确集合守门测试暂处失败中间态——**与本块零关联,未触碰**。
-- **V2-⑩ 完工内容**:`neckline/positions_entry.py`(买卖三字段唯一编排入口:`entry_snapshots` 冻结 + `position_plans` 继承 + `user_actions` 自动记账,对篮子四表零写入有 AST 守门);`decision_log` 写函数物理删除、表停写留档,`POST /decisions` 换血为「用户可选补充」入口。
-- **V2-⑧ / ⑦-b / ⑧-E 完工内容**:`selection/verification_rules.py`(条件集 / `min_members_hit=ceil(n/2)` / 四态映射的**唯一定义处**)、`sentinel/basket_verify.py`(盘中与 EOD 共用 `evaluate_specs()` + `pre_close` 锚失效检测,⛔ 不自动 rescale)、`sentinel/capture.py`(存拍 + `capture_status` 三态)。关注池 = 持仓 > T1/T2 篮子成员 > 候选(V1 残留)> 板块基准指数 > 昨日涨停,**自选池不再是来源**(留给 ⑬-11 删)。⚠ **⑪ 刻意没动关注池组成**(理由见 ⑪ 登记 3:无条件加宽基指数会挤占 `breadth_cap` 配额 → 改变退潮宽度样本)。
-- **V2-⑦ / ⑥ / ⑤ / ④ 系列完工内容**(详见各块段尾「完工记录」):`selection/basket_card.py`(卡装配 + 夹逼 + 结构化 spec,34 顶层键 / 26 成员键守门锁死;⚠ **机械数据住在 `members[].mech` 子对象里**)+ `member_tags.py`;`selection/tier.py` + `basket_store.py`(篮子四表唯一写入口);`selection/aggregate.py`(永不抛异常)+ `member_hygiene.py`;全新包 `neckline/scan/` 与 `neckline/selection/` + `scripts/activate_pack.py` + 两个 pack。
-- **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处、⑥ 十处、⑥-b 一处、⑦ 六处、⑦-b 一处、⑧ 七处、⑧-E 两处、⑨ 六处、⑩ 两处、⑪ 九处、**⑫ 九处**。均未改 Plan,如与规划意图不符请澄清。
-- ✅ **`tests/test_scan_cluster.py`/`test_scan_corr.py` 的偶发失败已结案**:2026-08-03 `a239bcc` 诊断为 `computed_at` 审计戳误入等价比较(良性测试缺陷,业务列从未分叉),已按 `test_industry_strength_store.py`/`test_scan_stage.py` 既有体例排除审计戳字段修复,不再是待办。
-- **仍未修复的三点既有欠账**(与各新块均无关):V2-① 的 `test_holding_k4_check.py` 未传 `db_path`(会写开发库)、V2-② 的 `news_scan.py` 缺 `prompt_context`、`TASK_INQUIRY` 归入检索类默认路由待澄清。
-- **下一步** = **V2-⑬**(V1 清理清单执行,先建后拆;依赖 ④⑤⑥⑦⑧⑩⑪,不必等 ⑫,但按序施工)。⑬ 是换血层第一块,顺序纪律见该块正文(①–⑫ 全部完工、V2 主链能出一份完整篮子日报之后才动);删除一律代码删干净、表停写留档不 DROP。⚠ **⑭ 落地时记得**:①`review/cashflow.py` 的 `build_all_weekly_summaries` 与 `neckline/profile/store.py` 的四个读函数目前只有 CLI(`scripts/profile.py`)与冒烟脚本消费,尚未接入任何 API 端点——⑭-B 的 `GET /profile/preference`/`GET /profile/capability` 清单已经点名,读侧直接调 `profile_store.load_preference`/`load_capability` 即可,不必重新设计;②资金流水四分类摘要目前也未接进 `POST /review/upload` 的响应,`ReviewUploadOut`/`WeeklyReviewOut` 如需展示可在 ⑭ 的契约总装里加字段,⑫ 刻意未碰 `api/schemas.py`/`api/app.py`(不越块)。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**(裁定 #3,§八 第 13/14 项);在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**。
-- ⚠ **⑮ 必接的两处客户端欠账(⑪ 换血带出)**:`client/Models.swift::PushSettings`(六个具名布尔 → `kinds[]` 清单)与 `client/Neckline/Push/PushManager.swift::PushCategory`(六个 V1 category 字面量 → 三级 `NKIMMEDIATE`/`NKIMPORTANT`/`NKDIGEST`,且**路由改按 payload 里的 `kind`** —— 三个 category 已不足以区分点开去哪儿)。D2=A 路,老 App 打老机不受影响。
-- **待办总入口 = §七 Backlog**([P3-32]:lift 门槛 5 与"小簇是否天然该输"的策略语义待 ⑨ 攒够归因样本后交策略线/用户过目)。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
+- **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;至今全部改动**纯本地代码 + 单测**,未碰任何服务器/DNS/部署,未改任何现役章程或 `strategy_versions` 行为。真实 `data/neckline.db` 里全部 V2 表**仍是 0 行**(冒烟一律跑在 `sqlite3.backup` 副本或纯 `tempfile` 临时库上,真实 parquet 只读)。
+- **V2-⑬ 完工内容**(详见 §五 V2-⑬ 段尾「完工记录」,含**一处 Plan 勘误 + 三处设计判断 + 三处留给 ⑭ 的欠账**):十三项逐项处置表见该记录。**物理删除**:`report/{intel_candidates,candidates,reference_plan,reference_plan_store,watchlist_check}.py`、`neckline/{watchlist,breathing}.py`、`sentinel/entry.py`、`/watchlist*` ×5 + `/breathing*` ×3 + `/settings/intel-boards` ×2 共 10 个端点、客户端 `WatchlistView.swift`/`BreathingLedgerView.swift` 与自选 tab。**停写留档不 DROP**:`watchlist`/`breathing_t_trades`/`inquiry_pool`/`llm_judgments`/`reference_plans`(+ `decision_log` 承 ⑩)六张表 + `reports.watchlist_json`/`app_settings.intel_watch_boards` 两列,DDL 全保留并加「v2.0.0 起停写」注释。**新增**:`report/discipline_checks.py`(问询台判据源搬家)、`report/exec_hint.py::exec_hints_for()`(纯计算出口)、`sentinel/universe.py::WatchTarget`、`sentinel/precall.py::MemberScript`/`load_member_scripts()`、`report/info_card.py::build_basket_context()`/`build_member_tags()`、`tests/test_v1_retirement_guard.py`(十三项守门 27 例)。
+- **⚠ ⑬ 的一处 Plan 勘误(已按事实施工)**:⑬-1 落点表把 `report/board_pool.py` 标成「(五常驻)」是笔误 —— 它是**板块池卫生线**,V2 扫描层五处在用,**保留**并加了反向守门;真正的五常驻保底随 `intel_candidates.py` 一并消失。
+- **⚠ ⑬ 的三处设计判断(Plan 未给规格,已如实登记)**:① **买点哨兵退役**(纯 K1 `entry_spec` 驱动,不在 ⑪-A 保留的纪律分支清单里;`missedEntryHint` 键保留但恒空,删不删归 ⑭-B);② **证伪四哨兵判定对象换 T1/T2 篮子成员、判定逻辑一行未改**(它的 spec 本就是零入参全局常量,随模块删除搬进 `sentinel/invalidation.py`);③ ⑬-8「情报节旧布局」按**拆候选侧、留情报侧**执行(C1/C2/C4 的数据源不在删除清单里,拆了会毁掉 ⑭-A「情绪与市场语境」的内容)。
+- **⚠ ⑬ 留给 ⑭ 的三处欠账**:① `news_alerts` 次级扫描域恒空(轮扫机制刻意不拆,⑭-A 接篮子成员时**必须同步扩 `info_card._default_news_domain`**,两处同域);② `exec_hints_for()` 目前无生产调用方(接线点在 ⑭-A 编排里);③ `reports.candidates_json` 恒落 `[]`、`CandidateOut` 壳与 `ReportOut.candidates` 键仍在(⑬ 的删除端点清单不含 `/report`)。
+- **V2-⑫ 完工内容**:`review/cashflow.py` 资金流水四分类 + 新包 `neckline/profile/`(偏好/能力画像,判分复用 ⑨ 的 `exit_sim` 唯一源)。⚠ **⑭ 落地时记得**:`build_all_weekly_summaries` 与 `profile/store.py` 四个读函数目前只有 CLI/冒烟消费,`GET /profile/preference`/`GET /profile/capability` 待接;资金流水四分类摘要也未接进 `POST /review/upload` 的响应。
+- **V2-⑪ 完工内容**:`notify_kinds.py`(三级 × 11 kind 唯一源)、`custom_alerts.py`、`sentinel/attention.py`(四监测 + 合并敞口)、`sentinel/custom.py`、`llm/nl_alert.py`;`PUT|GET /settings/push` 按 kind 换血,`GET|POST|PUT|DELETE /alerts` + `POST /alerts/parse` 已落地(⑭ 只需对拍)。
+- **V2-⑩ 完工内容**:`positions_entry.py`(买卖三字段唯一编排入口);`decision_log` 停写留档,`POST /decisions` 换血为「用户可选补充」入口。
+- **V2-⑧ / ⑦-b / ⑧-E 完工内容**:`selection/verification_rules.py`(条件集 / 四态映射唯一定义处)、`sentinel/basket_verify.py`、`sentinel/capture.py`。**关注池(⑬-1 后)= 持仓 > T1/T2 篮子成员 > 板块基准指数 > 昨日涨停**,V1 候选那一类已删。
+- **V2-⑦ / ⑥ / ⑤ / ④ 系列完工内容**:`selection/basket_card.py` + `member_tags.py`;`selection/tier.py` + `basket_store.py`;`selection/aggregate.py` + `member_hygiene.py`;全新包 `neckline/scan/` 与 `neckline/selection/` + `scripts/activate_pack.py` + 两个 pack。
+- **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处、⑥ 十处、⑥-b 一处、⑦ 六处、⑦-b 一处、⑧ 七处、⑧-E 两处、⑨ 六处、⑩ 两处、⑪ 九处、⑫ 九处、**⑬ 一处勘误 + 三处判断 + 三处欠账**。均未改 Plan,如与规划意图不符请澄清。
+- **仍未修复的两点既有欠账**(与各新块均无关):V2-① 的 `test_holding_k4_check.py` 未传 `db_path`(会写开发库)、V2-② 的 `news_scan.py` 缺 `prompt_context`、`TASK_INQUIRY` 归入检索类默认路由待澄清。
+- **下一步** = **V2-⑭**(篮子日报 + API 契约总装 + 三方对拍)。⚠ ⑭ 必做的三件**已被前置块登记**:① **⑧ 的 EOD 验证拍必须挂进 `build_report`**(位置定死在「拉数之后、扫描层之前」,包保险丝)—— 在 ⑭ 落地前 `basket_verification` 不会有 EOD 定论行;② `GET /baskets/{id}/card` 的 **`card_not_ready` 是全新 reason,`mapReason` 必须加新 case**;③ ⑬ 留下的三处欠账(见上)。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**;在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**。
+- ⚠ **⑮ 必接的客户端欠账**:`Models.swift::PushSettings`(六个具名布尔 → `kinds[]`)、`PushManager.PushCategory`(六个 V1 category → 三级 + 按 `kind` 路由);**⑬ 新增**:今日计划页的候选卡已被拆成只剩「码/名/分/板块/K4 牌/情报排序理由/审判徽标」的过渡形态(⑮ 换成篮子卡 11 项),信息卡的 `basket`/`tags` 三块新内容尚无 UI。D2=A 路,老 App 打老机不受影响。
+- **待办总入口 = §七 Backlog**。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/v1.5_施工图_20260802归档.md` 文末附录。
 
@@ -2134,7 +2136,7 @@ readback_are_identical` 与 `tests/test_scan_corr.py::test_bulk_vs_day_by_day_vs
 
 ---
 
-### V2-⑬ · V1 清理清单执行(先建后拆,**不许边建边拆**;@builder)
+### V2-⑬ · V1 清理清单执行(先建后拆,**不许边建边拆**;@builder-pro)✅ 完工(2026-08-03)
 
 > **顺序纪律**:①–⑫ 全部完工、V2 主链能出一份完整篮子日报之后才动本块。删除一律**代码删干净、表停写留档不 DROP**(历史归因与审计要用;`_SCHEMA` 保留 DDL 并在注释里标「v2.0.0 起停写」)。
 
@@ -2161,6 +2163,69 @@ readback_are_identical` 与 `tests/test_scan_corr.py::test_bulk_vs_day_by_day_vs
 
 **依赖**:④⑤⑥⑦⑧⑩⑪(先建后拆)。
 **验收**:十三项逐项 grep 零残余(每项一条断言);被删模块的单测**同步删除,不许留 `skip`**;停写表在跑一遍完整管线后**行数不增**(单测);报告与端点「删除前 / 删除后」对照表落 `archive/`(⑭ 的三方对拍要用);pytest 零回归。
+
+#### ✅ V2-⑬ 完工记录(2026-08-03,@builder-pro)
+
+**十三项 + ⑬-N 逐项处置(全部完成,无跳过)**
+
+| 项 | 处置 | 落点 |
+|---|---|---|
+| ⑬-1 候选榜 | ✅ 删 | `report/intel_candidates.py` + `report/candidates.py`(含 `Candidate` 数据类)物理删除;两端点 + `settings_store` 存取 + 客户端设置屏板块区全删 |
+| ⑬-2 单票审判 | ✅ 删调用路径 | `pipeline._judge_candidates_with_budget` + `store.save_llm_judgment`/`delete_llm_judgments` 删;`llm_judgments` 停写留档,`load_llm_judgments` 留;**`judge_candidate` 本体 + `narrative_splitter` 保留** |
+| ⑬-3 参考件三件套 | ✅ 删 | `reference_plan.py`/`reference_plan_store.py` 物理删除,`reference_plans` 停写留档,`CandidateOut.referencePlan` 删;**`llm/json_block.py` 未陪葬**(守门锁死 ⑤/⑦ 仍在用) |
+| ⑬-4 exec_hint 展示位 | ✅ 删展示位 | `attach_exec_hints` 删 → 新增纯计算出口 `exec_hints_for()`(四条判定逐字未改),供 ⑭ 接进篮子剧本上下文 |
+| ⑬-5 决策日志强制表单 | ✅ 删客户端必填分支 | `DecisionLogForm.isValid` 五项 → 只剩「有 code」;`maxChaseChosen` 降级为展示态;表单 header/footer 文案同步 |
+| ⑬-6 老四件套残键 | ✅ 彻底删除 | 服务端四键 + 客户端 `Candidate` 四属性 + `FourPieceDisclosure` 组件(P3-27 兑现,D2=A 路一次性换血) |
+| ⑬-7 盘前四判定 | ✅ 换血 | `precall.MemberScript` + `load_member_scripts()`:对象 = T1/T2 篮子成员,判据 = 卡里冻结的 `ref_close`/`close_below_stop_line`;阈值与 `kind='precall'` 推送一行未改 |
+| ⑬-8 报告旧布局 | ✅ 拆旧 | `_render_candidates` 等 6 个候选专属渲染件删;情绪/板块/持仓体检/情报/资金流/消息面六节留(⑭-A 才总装篮子日报) |
+| ⑬-9 K1 entry mask | ✅ 生产 import 清零 | 最后一处(问询台「母战法买点 + 展示排序分」)整段删;**`MomentumConfig` 保留**(章程 config 解析目标,红线 1) |
+| ⑬-10 海选池通道 | ✅ 删 | 写 + 两个消费函数删,`inquiry_pool` 停写留档;**`load_inquiry_pool` 保留**(周复盘「计划内(问询台海选池)」归因读历史行) |
+| ⑬-11 自选池 + 同花顺 | ✅ 整链删 | `watchlist.py`/`watchlist_check.py`/五端点/客户端 tab 全删;**`discipline_checks` 搬家**到 `report/discipline_checks.py`(问询台判据源) |
+| ⑬-12 呼吸台账 | ✅ 删 | `breathing.py`/三端点/`BreathingLedgerView.swift`;`BREATHING_TRIAL` 打法标签保留 |
+| ⑬-13 五常驻保底 | ✅ 随 ⑬-1 删 | `QUOTA_PER_PERMANENT_BOARD`/`_permanent_board_status` 随 `intel_candidates.py` 消失 |
+| ⑬-N 信息卡 | ✅ 保留改造 | 数据源 → 篮子成员;新增 `build_basket_context()` 三块 + `build_member_tags()`(⑬-N-K7);`InfoCardOut` 加 `basket`/`tags`/`tagsAbsent` |
+
+**⚠ Plan 勘误一处(已按事实施工,未改本节原文)**:⑬-1 落点表把 `report/board_pool.py`
+标成「(五常驻)」——**它不是五常驻模块**,是**板块池卫生线**(名称模式闸 + 成分数上限),
+`scan/corr.py`/`scan/cluster.py`/`scan/seeds.py`/`report/intel.py`/`report/sector_moneyflow.py`
+五处 V2 现役代码在用,删了会把扫描层打断。**故保留**,并加了反向守门单测锁死它必须还在。
+真正的五常驻保底住在 `intel_candidates.py` 里,已随该模块一并消失。
+
+**⚠ 三处 Plan 未给规格、已按最贴合上下文实现的设计判断(如与规划意图不符请澄清)**
+1. **买点哨兵(`sentinel/entry.py`)退役**。⑬-1 要求 `Candidate` 数据类退役,而买点哨兵
+   100% 由 K1 的 per-code `entry_spec`(platform_high/ma10/breakout_vol_expand)驱动;
+   V2 没有「单票买点计划」这个概念,给篮子成员现编一个买点 = 发明策略(§3.8 禁)。
+   连带删 `compute_missed_entry_hint` 的触发源(`sentinel_events` 里不再有 `entry` 行,
+   函数与 `missedEntryHint` 键**保留但恒空**,是否删键归 ⑭-B 契约总装裁定)。
+   **它不在 ⑪-A 点名保留的「现役纪律分支」清单里**(-5% 止损 / 回落止盈 / 时间退出 /
+   证伪四哨兵 / 熔断),这是判它可退役的依据。
+2. **证伪四哨兵(在 ⑪-A 保留清单里)判定对象换成 T1/T2 篮子成员,判定逻辑一行未改**。
+   之所以能一行不改地平移:它读的 `invalidation_spec` 本就是**零入参的全局常量函数**
+   (低开阈 / 量比上下限 / VWAP 开关),没有任何 per-code 依赖跟候选榜一起消失;
+   该函数与三个常量随 `report/candidates.py` 删除**搬到 `sentinel/invalidation.py`**。
+   `WatchUniverse.candidates` → `targets: List[WatchTarget]`(码 / 名 / 全局证伪 spec /
+   所属篮子);退潮「主线板块跳水」样本同步从「`hot_sectors` 命中的候选」换成
+   「T1/T2 篮子成员全体」,**阈值未动**。
+3. **⑬-8「情报节旧布局」按「拆候选侧、留情报侧」执行**。⑬-8 只说重构为篮子日报(⑭-A),
+   而情报件 C1 / 板块资金流 C2 / 消息面 C4 的**数据源都不在十三项删除清单里**;拆掉它们
+   会毁掉 ⑭-A「① 情绪与市场语境」要用的内容。故本块只删候选专属渲染件,六节留给 ⑭ 重排。
+
+**⚠ 留给 ⑭ 的三处欠账(⑬ 边界内刻意不做)**
+- `news_alerts` 的**次级扫描域恒空**(自选池删除后无来源,隔日轮扫机制刻意不拆)→
+  ⑭-A 把篮子成员接进 `build_news_alerts(secondary_codes=…)` 时原样复用;**同时**要把
+  `info_card._default_news_domain` 同步扩域(两处必须同域,否则信息卡会对着一批"其实
+  扫过"的票说"不在扫描域")。
+- `exec_hints_for()` 目前**无生产调用方** —— ⑬-4 原文「并入篮子剧本的输入(⑦ 的主要风险 /
+  剧本上下文)」的接线点在 ⑭-A 的编排里(⑦ 的卡生成不该反向 import `report/`)。
+- `reports.candidates_json` 恒落 `[]`、`CandidateOut` 壳与 `ReportOut.candidates` 键仍在
+  (⑬ 的「删除端点」清单不含 `/report`)→ ⑭-B 契约总装换成篮子 DTO。
+
+**测试**:`python -m pytest tests/ -q` **2706 passed + 2 skipped**(⑬ 前基线 3097;删
+7 个整测试文件 + 若干类/例,新增 `tests/test_v1_retirement_guard.py` 27 例守门 + ⑬-N 6 例)。
+双端 `xcodebuild` BUILD SUCCEEDED;iOS Simulator `xcodebuild test` 154 tests / 0 failures。
+六个 smoke 脚本(basket_verify / basket_review / precall / attention_alerts / profile /
+eval_exit_sim)+ `smoke_sentinel.py` 全绿;`scripts/report.py` 在隔离库副本上出得来报告
+(过渡态版式)。**真实 `data/neckline.db` 与生产服务器全程未动**。
 
 ---
 
@@ -2413,7 +2478,7 @@ readback_are_identical` 与 `tests/test_scan_corr.py::test_bulk_vs_day_by_day_vs
 
 ### 🔵 P3 · 功能挂账
 
-- **[P3-27] → V2.0.0 第 ⑬-6 块(兑现删除)** · 候选四件套老键与老模板函数的最终删除(v1.5.0 只做退役,没做删除)(2026-07-29 v1.5.0 立项时新立)。**V2 处置**:自选体检是这四个文案函数最后的消费方,而自选池已按裁定 #9 删除 → **无消费方,四函数 + 四个 `CandidateOut` 老键随候选榜一并彻底删除**。**2026-08-02 用户拍板 D2 = A 路**(新机新子域 `nk.linotsai.top`、老 App 继续打老机)→ **两者不交叉,可直接删,不做过渡文案**(⑭-D)。⚠ **「先客户端可选解码、下版服务端才删键」这条两步淘汰纪律本身仍然有效**(CLAUDE.md 铁律,V2 之后的版本照守),V2 只是靠换机窗口结构性地绕开它。原文如下(留痕)。
+- **[P3-27] ✅ 已了结(2026-08-03,V2-⑬-6 兑现删除)** · 候选四件套老键与老模板函数的最终删除(v1.5.0 只做退役,没做删除)(2026-07-29 v1.5.0 立项时新立)。**V2 处置**:自选体检是这四个文案函数最后的消费方,而自选池已按裁定 #9 删除 → **无消费方,四函数 + 四个 `CandidateOut` 老键随候选榜一并彻底删除**。**2026-08-02 用户拍板 D2 = A 路**(新机新子域 `nk.linotsai.top`、老 App 继续打老机)→ **两者不交叉,可直接删,不做过渡文案**(⑭-D)。⚠ **「先客户端可选解码、下版服务端才删键」这条两步淘汰纪律本身仍然有效**(CLAUDE.md 铁律,V2 之后的版本照守),V2 只是靠换机窗口结构性地绕开它。原文如下(留痕)。
   **[P3-27 原文]**v1.5-③-B 把候选卡输出层换成参考三件套后,`CandidateOut.buyPoint/stop/target/invalidation` 四个键**仍在发**(值 = 过渡文案 `LEGACY_FOURPIECE_NOTICE`),`report/candidates.py` 的 `entry_plan_text`/`stop_loss_text`/`target_text`/`invalidation_text` 四个函数**仍在**(自选体检还在消费)。**为什么不能当场删**:已装 v1.4.1 客户端对这四个键是**硬解码**(`client/Models.swift::Candidate.init(from:)` 用 `try c.decode(String.self,…)`,非 `decodeIfPresent`),服务端一旦不发就是整份报告解不出、今日计划全空。**删除条件(两条都满足才动)**:① 双端都已换到 **≥1.5.0**(§八 第 12 项确认);② 自选体检输出层也改完(它是这四个函数最后的消费方)。**怎么删**:先把 Swift 那四个属性改 `decodeIfPresent` + 默认空并发一版,**再**在下一版服务端删键(顺序不能反)。⚠ **`entrySpec`/`invalidationSpec` 永远不在删除范围**——那是盘中哨兵与盘前校准的唯一判据源。**不排期。**
 - **[P3-11] → V2.0.0 第 ⑫ 块(形态改变,部分废弃)** · 打法 × 论点双维归因(原 v1.2.1-D)。**V2 处置**:① **「呼吸 T 净贡献」维彻底废弃**(裁定 #9:呼吸台账删,`breathing_t_trades` 停写留档);② **「论点标签」维退化**为可选标签(决策日志强制表单退役,标签改落 `user_actions`,覆盖率会下降 → 见新挂 **P3-28**);③ 归因的**新载体 = ⑫ 能力画像**(按题材 / 角色 / Tier / 入场方式分维,带样本量与置信度,并新增「是否跑赢同篮未选成员」这一 V1 拿不到的维度)。**本条不再单独排期**,以 ⑫ 为准。原文如下(留痕)。
   **[P3-11 原文]**施工图全文在 `archive/v1.2_v1.2.1_施工图_20260728归档.md` 的 v1.2.1-D 节:决策日志 via `position_id` 与 FIFO RoundTrip 按 `(ts_code, buy_date)` 邻近匹配,按论点 / 打法 / 交叉三维聚合胜率盈亏比 + 呼吸 T 净贡献 + 「无决策日志开仓 N 笔」纪律项。**为什么要紧**:「短线追击 vs 呼吸试验」双打法 A/B 裁决的**唯一归因载体**;需 30–50 笔样本才有意义。⚠ 依赖 P0-1 修好(买入日错 → 归因的持有周期全错;P0-1 → v1.4.0 ①-A)。**归因维度自 v1.4.0 ⑤-B 起 +1**(`decision_log.max_chase_pct` 最高追价上限;v1.4 只落数据不出报表),**自 v1.5.0 ①-E 起再 +1**(`reference_plans` 表 = LLM 参谋成绩单:参考买入 / 离场区间、明早剧本、夹逼结果,可与实际成交价与次日走势对拍;v1.5 同样只落数据不出报表)。**本条仍归 v1.5+**(需 30–50 笔样本)。
@@ -2447,7 +2512,7 @@ readback_are_identical` 与 `tests/test_scan_corr.py::test_bulk_vs_day_by_day_vs
 - **[P4-20] TuShare 600 元档配额跨线共享,可被跑干**。策略线 2026-07-25 曾把配额耗尽 → 生产 16:05 增量可能拉不全 → 16:35 报告 / 情报件缺数。**缓解**:研究侧大批量拉取避开 15:00–17:00 生产增量窗口,长期考虑研究独立 token。**⚠ P0-3 若加概念板块日更会新增一笔固定消耗,一并算账。** → 该日更已定于 **v1.4.0 ①-C**,配额账在 **⑨-E** 复核。**⚠ V2 附注(算过账,如实登记)**:V2 新增的三张扫描层预计算表(④)**全部读本地 parquet,不新增任何 TuShare 调用**;盘中存拍(⑧-B)走**免费实时源**(新浪 / 腾讯),同样不吃 TuShare 配额;ETF / 指数报价亦走免费源。故 **V2 的 TuShare 配额账与 v1.4 持平**,本条继续按原口径挂着(研究侧大批量拉取仍须避开 15:00–17:00 生产窗口)。
 - **[P4-21] 工作区遗留未提交**:`client/Neckline.xcodeproj/project.pbxproj`(Xcode 自动改的 `MARKETING_VERSION`)。→ **v1.4.0 第 ⑧ 块**客户端施工时一并处理,别单独开提交。**✅ 2026-07-29 完工**:随本块 4 个新文件条目(`InfoCardView.swift`)一并提交,`MARKETING_VERSION=1.3.4` 字面量与 `explicitFileType` 变化不再单独挂账。
 - **[P4-30] V2 上线初期分时残缺(V2 立项时新挂,来源 = 架构稿 §9.1-2;历史局限,留档为主)**。盘中存拍(⑧-B)**从 V2 上线日才开始积累**,在此之前没有任何分时数据 → ⑨ 复盘引擎的 **MFE/MAE 只能用 EOD 近似**。**处置 = 如实标注,不装精确**:`basket_review_daily.mech_json.mfe_source ∈ {intraday, eod_approx}`,报告与客户端照标;**⑯-F 灌入的 preseed 篮子同理**(它们的复盘一律 `eod_approx`)。用户外源分时方案落定后走同一张表回补(裁定 #1),回补到哪天、哪天起就是 `intraday`。**不排期,不阻塞。**
-- **[P4-31] V2 停写留档表的最终清理(V2 立项时新挂)**。⑬ 的删除口径是「**代码删干净、表停写留档不 DROP**」,于是 `watchlist` / `breathing_t_trades` / `inquiry_pool` / `llm_judgments` / `reference_plans` / `decision_log` 六张表会长期以「有历史行、零新增行」的状态留在库里。**为什么这么做**:历史归因与审计要用,且 DROP 是不可逆动作。**将来要不要 DROP 的判据(不是感觉)**:① 该表最后一行的写入时间距今 > 1 年;② ⑫ 画像与 ⑨ 评价引擎已不再读它;③ 有一份独立备份。三条同时满足才谈 DROP,且必须走一次性脚本体例(默认演练、`--confirm` 才写、双备份)。**不排期。**
+- **[P4-31] V2 停写留档表的最终清理(V2 立项时新挂;⑬ 已于 2026-08-03 完工,六张表现已全部处于「有历史行、零新增行」状态,守门单测锁死)**。⑬ 的删除口径是「**代码删干净、表停写留档不 DROP**」,于是 `watchlist` / `breathing_t_trades` / `inquiry_pool` / `llm_judgments` / `reference_plans` / `decision_log` 六张表会长期以「有历史行、零新增行」的状态留在库里。**为什么这么做**:历史归因与审计要用,且 DROP 是不可逆动作。**将来要不要 DROP 的判据(不是感觉)**:① 该表最后一行的写入时间距今 > 1 年;② ⑫ 画像与 ⑨ 评价引擎已不再读它;③ 有一份独立备份。三条同时满足才谈 DROP,且必须走一次性脚本体例(默认演练、`--confirm` 才写、双备份)。**不排期。**
 
 - **[P4-35] 关注池的「相关板块 ETF」缺数据源,本版只做到板块基准指数(V2-⑧ 施工中发现,2026-08-02 新挂;留档为主)**。**事实**:⑧-A 原文写的是「相关板块 **ETF/指数**」,实际只落了**指数** —— 项目**没有 ETF 成分 / 映射数据源**(TuShare 600 元档没有;`ths_index` 是同花顺板块指数,免费实时源不认它的代码),硬编一份 ETF 清单等于凭空发明。现状 = 按成员板块取 `000001.SH`/`399001.SZ`/`399006.SZ`/`000688.SH`/`899050.BJ`(与 `scripts/backfill.py::INDEX_CODES` 同一批)。**为什么记一笔**:蓝图 5.4 的持仓监测里有「**板块 ETF 或指数是否突然失去承接**」这一条(⑪-A 的四项新增监测之一),**指数只能替代一半** —— 宽基指数反映不了「这个题材的资金还在不在」,行业 ETF 才能。**要修先得有数据源**(候选:TuShare `fund_basic`+`fund_portfolio` 档位待查 / 交易所 ETF 清单 / 用户外源)。**不排期,不阻塞**;⑪-A 落地时按现状实现并如实标注是指数不是 ETF。
 
@@ -2490,7 +2555,7 @@ readback_are_identical` 与 `tests/test_scan_corr.py::test_bulk_vs_day_by_day_vs
 6. **提供 LLM API key**(阶段 4 起,App 内办):在 App「设置」板块填 GLM 或 Kimi 的 API key + 选供应商 → `PUT /settings/llm` 落服务端 DB,运行时生效。**这是问询台 + 报告 LLM 审判 + 复盘材料的激活开关;缺 key 全链路优雅降级不崩**。填入后首次真调用即验证 GLM/Kimi 协议假设(兑现阶段 2 遗留欠账)。
 7. **(每周,阶段 4 起)提供交割单**:每周把券商交割单 xlsx 拖进 macOS App 周复盘工作台,供违纪对账 + 复盘材料生成。**首版按用户现有「整理格式」支持,字段映射可配以兼容两家券商原始格式**(§五 阶段 4D)。
 8. **(接班,阶段 4 部署上线后)确认 LinoN 退役**:Neckline 联调通过、`ln.linotsai.top` 切到 Neckline 后,LinoN 停用退役——旧交易记录 `linon.db` 是否归档下载由用户定(`hz_info.md §13` 挂账)。
-9. ~~**(v1.1,按需)提供同花顺自选 txt**~~ **⛔ V2.0.0 起作废**(裁定 #9:自选池 + 同花顺对账直接删除,§五 ⑬-11)。原文留痕:**(v1.1,按需)提供同花顺自选 txt**:自选池与同花顺 PC 端对账 = 用户在**同花顺 PC 端手动导出自选 txt 文件**(无官方 API,拒绝模拟登录 = 账号风险)→ 拖进 macOS App 自选工作台做差异对账 + 一键对齐;反向可从 App 导出 Neckline 自选为同花顺可导入 txt。**非每日必办,按需对账时才做**(§五 v1.1-C.4 / v1.1-F.4)。
+9. ~~**(v1.1,按需)提供同花顺自选 txt**~~ **⛔ V2.0.0 起作废**(裁定 #9:自选池 + 同花顺对账直接删除,§五 ⑬-11;**2026-08-03 ⑬ 完工,代码与端点已物理删除**)。原文留痕:**(v1.1,按需)提供同花顺自选 txt**:自选池与同花顺 PC 端对账 = 用户在**同花顺 PC 端手动导出自选 txt 文件**(无官方 API,拒绝模拟登录 = 账号风险)→ 拖进 macOS App 自选工作台做差异对账 + 一键对齐;反向可从 App 导出 Neckline 自选为同花顺可导入 txt。**非每日必办,按需对账时才做**(§五 v1.1-C.4 / v1.1-F.4)。
 10. **(v1.1)设置屏开新增两类推送开关**:盘前校准(9:26 汇总)、D5 时间退出——App 设置屏可各自开 / 关(默认开),无网页操作。
 11. ~~**🔴(v1.4.0,挡 ①-A 收尾)提供 3 笔在持仓票的真实买入日**~~ ✅ **已办结**(2026-07-28 用户提供、builder 已纠正落库,§七 P0-1)。原文留档:生产 `positions` 里 3 笔 `open` 持仓是 2026-07-27 补录的,买入日**被写成了补录当天**(§七 P0-1)。请按票给出**真实成交日期**(格式 `YYYYMMDD`,须是交易日),例:`002036.SZ = 20260716`。**为什么非你不可**:系统没有任何数据能反推真实买入日(交割单要到周复盘才进系统),而 D 计数 / 时间退出 D5-D15 判向 / 回落止盈峰值起点 / 持有天数归因**全部以它为起点**。收到后由 builder 走 `scripts/oneoff/fix_position_buy_dates.py`(先 `sqlite3 .backup`,改完清 `holding_eod_check.time_exit_locked_*` 三列让次日 16:35 重新定格)。**无网页操作,发数字即可。**
 12. **(v1.5.0)双端换包 —— macOS ✅ 已换包 1.5.0 / iOS ⬜ 待你自己装**。**macOS 已完成**(2026-07-30 09:46,随 v1.5-⑥ 上云一并做):Release 构建经 `ditto` 装入 `/Applications/Neckline.app`,产物与安装态可执行文件 **sha256 逐字节一致**、`CFBundleShortVersionString=1.5.0`、签名校验通过,启动后对 v1.5.0 服务端 5 个端点真实请求全 200。**iOS 仍待办**:iPhone 上还是旧构建 —— **v1.5 的参考三件套(取代老四件套)、今日计划分块、自选派发警示在 iPhone 上看不到**,且老四件套四键现在服务端只返「本版已由参考三件套取代…」过渡文案,**旧 App 上那四栏会显示这句话而不是数字**。需**你用 Xcode 直连真机装一次**(服务端已 `v1.5.0`,先决条件已满足;无网页操作)。§八 第 5 项的 App ID + Push 能力若尚未在 Apple Developer 网页勾选,装机前先办掉。**真机具体版本仍待你自查**(builder 只有模拟器权限)。
@@ -2526,6 +2591,7 @@ readback_are_identical` 与 `tests/test_scan_corr.py::test_bulk_vs_day_by_day_vs
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-03 · 🗑️ **V2-⑬ V1 清理清单十三项全部执行完毕**(@builder-pro,纯本地代码 + 单测,零服务器 / 零部署;真实 `data/neckline.db` 只读,冒烟一律跑副本 / 临时库)。**物理删除** 8 个模块(`report/{intel_candidates,candidates,reference_plan,reference_plan_store,watchlist_check}.py`、`neckline/{watchlist,breathing}.py`、`sentinel/entry.py`)+ 10 个端点(`/watchlist*`×5、`/breathing*`×3、`/settings/intel-boards`×2)+ 客户端自选 tab / 两个视图 / 老四件套与参考件三件套 UI;**六张表停写留档不 DROP**(`watchlist`/`breathing_t_trades`/`inquiry_pool`/`llm_judgments`/`reference_plans` + 承 ⑩ 的 `decision_log`)+ 两列(`reports.watchlist_json`/`app_settings.intel_watch_boards`),DDL 全留并加「v2.0.0 起停写」注释。**⑬-7 盘前判定换血**成篮子竞价剧本核对(对象 = T1/T2 篮子成员,判据 = ⑦ 冻结在卡里的 `ref_close`/`close_below_stop_line`,阈值与 `kind='precall'` 推送一行未改,⛔ 不碰 `VERIFICATION_RULESET_VERSION`);**⑬-N 信息卡按 D1 保留改造**成篮子成员详情页地基(新增所属篮子与共同驱动 / 本票角色含对拍分歧 / 同篮成员对比三块)+ **⑬-N-K7 标注件**(读 `member_tags` 同一入口,交叉断言与篮子卡逐位相同)。**守门迁移不是删除**:`discipline_checks` 搬家 `report/discipline_checks.py`(保住问询台)、`exec_hint` 出 `exec_hints_for()` 纯计算口(C3 无前视偏差 + 北京日截断两条守门原样保住)、v1.3.1 行业闸对拍改冻结参考实现、`_ONLINE_FILES`/`prompt_context` 参数表同步、新增 `tests/test_v1_retirement_guard.py` 27 例(十三项逐项 + 六张停写表零写入 + 「跑完管线行数不增」+ **反向守门**:`json_block`/`judge_candidate`/`board_pool`/问询台/`BREATHING_TRIAL`/K1 回测线必须还在)。**一处 Plan 勘误**:⑬-1 落点表把 `report/board_pool.py` 标成「五常驻」是笔误(它是板块池卫生线、V2 扫描层五处在用),**未删**并加反向守门。**三处 Plan 未给规格的设计判断**(买点哨兵退役 / 证伪四哨兵换判定对象但逻辑一行未改 / ⑬-8 拆候选侧留情报侧)+ **三处留给 ⑭ 的欠账**(次级扫描域、`exec_hints_for` 接线、`candidates_json` 契约换血)详见 §五 ⑬ 完工记录。`pytest tests/ -q`:**2706 passed + 2 skipped + 0 failed**(⑬ 前 3097;删 7 个整测试文件 + 若干类例,新增 33 例);双端 `xcodebuild` BUILD SUCCEEDED,iOS Simulator test 154/0 failures;七个 smoke 脚本全绿。
 - 2026-08-03 · 🔔 **持仓三事件(stop_approach/take_profit/sector_dive)升级立即级 APNs kind 定向任务完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署;承接用户拍板 `3b1dcd7`,与并行在途的 ⑫〔`profile/` 等,未提交〕/ 已收官的 P1-36〔`a239bcc`〕两条线文件面不相交)。`stop_approach`/`sector_dive` **复用既有 console/Bark 文案**旁路推 APNs(`_maybe_push` 新增 `apns_kind` 分支,同一次 `sentinel_events` 去重、不二次措辞;`notify_kinds.py` 三级×kind **11→14**,三条均判 `NKIMMEDIATE`,默认开且 `_seed_push_kinds`/`_decode_push_kinds` 既有"缺键取默认开"机制零改动即天然覆盖,已实测验证老库不悄悄打开用户关过的开关)。**`take_profit` 触发源改判(如实登记,请裁定)**:核实 `sentinel/holding.py::check_take_profit`(回落止盈)现读的是现役 `take_profit_retrace`,并非协调方所指的候选老四件套 `target`/`decision_log.target_price`(git blame 追溯到该函数首次提交即如此,未找到读取后者的代码路径);但协调方明确要求 `take_profit` kind 指向 `position_plans` 继承的离场参考区间,故按指示新增独立函数 `check_exit_reference_reached` + engine.py 旁路 E(独立 try/except、独立去重 event_key=`exit_reference`,**不碰**回落止盈机械纪律与其 console/Bark 通道一字)驱动该 kind,与回落止盈刻意解耦、不合并;无计划 / 无离场参考如实不判,不编默认目标价;文案守语义红线(不写"建议卖出/止盈信号",按"触达"中性表述)。测试:4 个文件净增 22 例(`test_sentinel_holding.py`+6、`test_notify_kinds.py`+1、`test_notify.py`+7、`test_sentinel_tick_v2_bypass.py`+8,含旁路炸了不影响持仓哨兵的红线用例),`pytest tests/ -q`:**3097 passed + 2 skipped + 0 failed**,零回归。db.py 零改动。
 - 2026-08-03 · 💰 **V2-⑫ 对账资金流水四分类扩展 + 偏好/能力画像双引擎完工**(@builder,纯本地代码 + 单测,零服务器 / 零部署;与并行的 ⑪-B kind 决议〔`3b1dcd7`〕/ P1-36〔`a239bcc`〕两条施工线文件面不相交)。**⑫-A**:对账引擎 `parse.py`/`reconcile.py`/`material.py`/`store.py` 四个既有模块骨架逐字未改,`parse.py` 新增 `CashFlowEvent` + 四分类常量 + `ParseResult.cash_flow_events` 纯增量字段;新模块 `review/cashflow.py` 按周聚合转入转出(拆 `transfer_in`/`out`/`net`)/分红/税费/交易盈亏(直取 `WeeklyReview.stats.realized_pnl`,不重算),**刻意不给合计字段**。**⑫-B**:新包 `neckline/profile/`——`preference.py`(题材/角色/入场方式两口径〔几何 + `user_actions.kind='label'` 用户自述〕/Tier)、`capability.py`(胜率/盈亏比/MFE·MAE 只用 `positions` 真实成交、只看已平仓;`vs_peer_delta`/`missed_role` 复用 `eval.metrics.score_tradable`/`exit_sim` 同一套判分,样本〔配对数〕不足如实 `None`)、`store.py`(每期一版)、`common.py`(`MIN_SAMPLE_N=5` 三档置信度)。`scripts/profile.py` CLI + `scripts/smoke_profile.py` 合成数据端到端冒烟(人工核对 MFE/MAE 手算逐位一致)。新增 5 个测试文件 58 例 + `test_review_parse.py` 追加 3 例,`pytest tests/ -q`:本块零回归(基线 3012+2skip → 3070+2skip+0fail);⚠ 全量套件另含**并行在途会话**对 `notify_kinds.py`/`api/notify.py`/`sentinel/{holding,engine}.py` 的未提交改动(跟进 `3b1dcd7` 三个 kind 决议,尚未完工),致两条精确集合守门测试中间态失败——**与本块零关联,未触碰、未修复**。九处如实登记(资金流水第五档 `CASH_FLOW_OTHER`/转入转出拆三数/入场方式两口径并存/题材取 `stock_basic.industry`/能力指标只用真实成交/`missed_role` 无 `vs_peer_delta`/`verdict` 不落库/未接入周复盘对账结果〔无确定性外键〕/MFE·MAE 未复权有除权失真)详见 §五 V2-⑫ 段尾「完工记录」。**附带发现**:`test_scan_cluster/corr` 偶发失败已由 P1-36(`a239bcc`)结案,§四「块外挂账」同步勘误。下一步:V2-⑬(V1 清理清单执行)。
 - 2026-08-03 · 🩹 **[P1-36] 结案:`test_scan_cluster/corr` 两条「三路等价」偶发红定向诊断**(@builder,纯测试代码,零生产代码 / 零数据库 / 零部署;与并行的 ⑫/⑪-B 文件面不相交)。诊断 = **(a) 类良性测试缺陷,明确排除 (b)**:工程复现(mock `_now()` 强制 bulk/day-by-day 两阶段返回不同墙钟值)精确重放症状后逐行 diff 证实——业务列(cluster_key/scope_key/corr/n_obs 等)永远逐位相同,唯一分叉列是秒精度审计戳 `computed_at`(两次独立调用间跨墙钟秒边界即合法不同,与业务确定性无关);`refresh_limit_clusters`/`refresh_corr_matrix` 的 bulk 与 day-by-day 逐行代码等价,从未真正分叉,⑨ 归因可比性不受影响。同一坑本项目已有两处正确先例(`test_industry_strength_store.py`、`test_scan_stage.py::_table_rows_excl_computed_at`),本次两测试建于同批却漏抄。修法:比较前 `.drop("computed_at")`,业务列仍要求逐位相同(未放宽断言、未加 flaky 重试、未改生产代码一行)。验证:目标文件连续 20 轮 100% 绿;全量 `pytest tests/ -q` 零回归。详见 §七 [P1-36] 结案记录(含 `test_scan_leader.py` 同款潜在隐患的留档不改)。
