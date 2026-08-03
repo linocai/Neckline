@@ -136,7 +136,13 @@ class RetreatMetrics:
     `hot_sector_sample_detail`(V2-⑧-F 留痕):主线跳水样本的**构成**(codes + 逐码
     来源标签 + 样本量 + 种子计数 + 不可用原因),由 `sentinel/mainline.py` 产出。
     **触发与否都落**——「样本没被 LLM 塑形」这件事要事后可审计,不能靠读代码相信。
-    默认空 dict(老调用点 / 测试替身不传时不炸,如实表达"本次没记样本构成")。"""
+    默认空 dict(老调用点 / 测试替身不传时不炸,如实表达"本次没记样本构成")。
+
+    `breadth_extra_sample_detail`(⑧-G-D 追加要求,review 判定线 🟡-N1 一并处理,
+    2026-08-03):昨日涨停宽度代理样本的**需求量 vs 实际采纳量**(`codes`/`size`/
+    `restricted_from`,形状照 `hot_sector_sample_detail` 的姊妹字段),由
+    `sentinel.universe.WatchUniverse.breadth_extra_payload()` 产出。同样**触发与否
+    都落**,默认空 dict。"""
     trade_date: date
     hhmm: str
     sample_size: int
@@ -146,6 +152,7 @@ class RetreatMetrics:
     zaban_rate: float
     hot_sector_avg_chg: Optional[float]
     hot_sector_sample_detail: Dict[str, object] = field(default_factory=dict)
+    breadth_extra_sample_detail: Dict[str, object] = field(default_factory=dict)
 
     def metric_payload(self) -> Dict[str, object]:
         """落进 sentinel_events / 看板事件 payload 的全量指标快照(修法纪律:
@@ -160,6 +167,7 @@ class RetreatMetrics:
             "hot_sector_avg_chg": (round(self.hot_sector_avg_chg, 4)
                                    if self.hot_sector_avg_chg is not None else None),
             "hot_sector_sample": dict(self.hot_sector_sample_detail),
+            "breadth_extra_sample": dict(self.breadth_extra_sample_detail),
         }
 
 

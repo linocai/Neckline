@@ -11,8 +11,10 @@ import pytest
 
 from tests.conftest import business_days, insert_stock_basic, insert_trade_cal, write_daily_fixture
 
+import neckline.sentinel.universe as universe
 from neckline.data.board import Board
 from neckline.report import store
+from neckline.sentinel import mainline
 from neckline.sentinel.positions import open_position
 from neckline.sentinel.universe import (
     is_new_stock_exempt,
@@ -85,16 +87,20 @@ class TestLoadWatchUniverse:
         assert set(wu.codes) == {"600001.SH", "600002.SH"}
 
     def test_breadth_extra_codes_from_prior_limit_up_capped(self, isolated_env):
+        """review 判定线 🟡-N1(2026-08-03,PROJECT_PLAN §五 ⑧-G-D 第②条):截断序
+        改判为 `crc32(ts_code)` 升序 —— 不再优先保留连板数高的(旧序与被测量的量
+        相关,见 `_load_prev_limit_up_codes` docstring)。"""
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         report_day, today = days[-2], days[-1]
+        codes = [f"60000{i}.SH" for i in range(3)]
         rows = [
             {
-                "ts_code": f"60000{i}.SH", "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
+                "ts_code": c, "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
                 "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
                 "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": i,
             }
-            for i in range(3)
+            for i, c in enumerate(codes)
         ]
         write_daily_fixture(isolated_env, "limit_derived", report_day, rows)
 
@@ -102,8 +108,83 @@ class TestLoadWatchUniverse:
             today, breadth_cap=2, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir
         )
         assert len(wu.breadth_extra_codes) == 2
-        # 按连板数降序,应保留最强的两只(600002/600001,不是600000)
-        assert set(wu.breadth_extra_codes) == {"600002.SH", "600001.SH"}
+        # crc32(ts_code) 升序取前 2:恰好保留 600000/600001(连板数最低的两只)、
+        # 排除连板数最高的 600002 —— 与旧行为(保留连板数最高的两只)相反,直接
+        # 证明截断不再与 `consec_limit_up_days` 相关。
+        expect = sorted(codes, key=mainline.crc_rank)[:2]
+        assert expect == ["600000.SH", "600001.SH"]  # 锁死本用例的前提,序变了要重算
+        assert wu.breadth_extra_codes == expect
+        # ⑧-G-D 追加要求:需求量(3)vs 实际采纳量(2)必须留痕,不能只看 `size`。
+        assert wu.breadth_extra_needed == 3
+        assert wu.breadth_extra_payload() == {"codes": expect, "size": 2, "restricted_from": 3}
+
+    def test_breadth_extra_needed_equals_size_when_not_restricted(self, isolated_env):
+        """需求量 ≤ 池位预算时不截断:`restricted_from` 留 `None`(⛔ 不是"截断到
+        0" —— 与 `mainline.MainlineSample` 的 `restricted_from` 语义同款)。"""
+        days = business_days(date(2026, 7, 13), 5)
+        insert_trade_cal(isolated_env, days)
+        report_day, today = days[-2], days[-1]
+        write_daily_fixture(isolated_env, "limit_derived", report_day, [
+            {"ts_code": "600001.SH", "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
+             "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
+             "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1},
+        ])
+
+        wu = load_watch_universe(today, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        assert wu.breadth_extra_needed == 1
+        assert wu.breadth_extra_codes == ["600001.SH"]
+        assert wu.breadth_extra_payload() == {"codes": ["600001.SH"], "size": 1, "restricted_from": None}
+
+
+class TestPrevLimitUpSortOrder:
+    """review 判定线 🟡-N1(2026-08-03,PROJECT_PLAN §五 ⑧-G-D 第②条同一件事):
+    `_load_prev_limit_up_codes` 的截断序 = **确定性**(不吃 parquet 行序)+ **无偏**
+    (不与 `consec_limit_up_days` 相关,该量经本项目 ⑦-K7 审计证实是双尾放大器
+    ——次日跌停约 3× 于同簇其余成员,而这份样本正好喂 `retreat.compute_breadth_
+    snapshot` 算跌停数/炸板率)。"""
+
+    @staticmethod
+    def _rows(codes, consec_by_code):
+        return [
+            {
+                "ts_code": c, "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
+                "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
+                "is_limit_down": False, "is_zaban": False,
+                "consec_limit_up_days": consec_by_code[c],
+            }
+            for c in codes
+        ]
+
+    def test_order_is_crc_rank_ascending_not_consec_descending(self, isolated_env):
+        codes = [f"6{i:05d}.SH" for i in range(40)]
+        # consec 与代码索引强相关(索引越大连板数越高):若排序仍偏向"连板高优先",
+        # 结果前几名会集中在索引大的那一段,crc32 序应当反证这一点。
+        consec = {c: i for i, c in enumerate(codes)}
+        report_day = date(2026, 7, 13)
+        write_daily_fixture(isolated_env, "limit_derived", report_day, self._rows(codes, consec))
+
+        result = universe._load_prev_limit_up_codes(report_day, parquet_dir=isolated_env.parquet_dir)
+        assert set(result) == set(codes)
+        assert result == sorted(codes, key=mainline.crc_rank)
+        # 反证:consec 降序排列的结果与 crc32 序不同(不是同一个排列)
+        assert result != sorted(codes, key=lambda c: -consec[c])
+
+    def test_two_loads_after_partition_row_shuffle_are_bit_identical(self, isolated_env):
+        """⚠ 重写分区(行序打乱,模拟数据修缮/回填)后重读,结果必须逐位相同 ——
+        crc32 只看代码字符串、不吃 parquet 行序,这正是 🟡-N1 点名的可复现性破口
+        (旧实现的并列由行序打散,重写分区会静默换一批样本)。"""
+        codes = [f"6{i:05d}.SH" for i in range(30)]
+        consec = {c: 1 for c in codes}   # 全部并列(现实中绝大多数涨停股 consec=1)
+        report_day = date(2026, 7, 13)
+
+        write_daily_fixture(isolated_env, "limit_derived", report_day, self._rows(codes, consec))
+        first = universe._load_prev_limit_up_codes(report_day, parquet_dir=isolated_env.parquet_dir)
+
+        shuffled = list(reversed(codes))     # 模拟重写分区后行序被打乱
+        write_daily_fixture(isolated_env, "limit_derived", report_day, self._rows(shuffled, consec))
+        second = universe._load_prev_limit_up_codes(report_day, parquet_dir=isolated_env.parquet_dir)
+
+        assert first == second == sorted(codes, key=mainline.crc_rank)
 
 
 class TestLoadPrev5AvgVolume:

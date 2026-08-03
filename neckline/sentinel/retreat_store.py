@@ -46,21 +46,25 @@ def record_retreat_metrics(
     """落/覆盖本 tick 的一行(PK=(trade_date,hhmm),`INSERT OR REPLACE` 幂等)。
 
     `hot_sector_sample_json`(V2-⑧-F):主线跳水样本构成的留痕,**每拍都落**(触发与否
-    都落 —— 要审计的是"样本怎么来的",不是"触发那一刻长什么样")。"""
+    都落 —— 要审计的是"样本怎么来的",不是"触发那一刻长什么样")。
+
+    `breadth_extra_sample_json`(⑧-G-D 追加要求,review 判定线 🟡-N1 一并处理,
+    2026-08-03):昨日涨停宽度代理样本的需求量 vs 实际采纳量,同样每拍都落。"""
     init_schema(db_path)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with connection(db_path) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO retreat_metrics "
             "(trade_date, hhmm, sample_size, limit_up_count, limit_down_count, zaban_count, "
-            " zaban_rate, hot_sector_avg_chg, hot_sector_sample_json, triggered_json, "
-            " red_via_json, tier, recorded_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " zaban_rate, hot_sector_avg_chg, hot_sector_sample_json, breadth_extra_sample_json, "
+            " triggered_json, red_via_json, tier, recorded_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 _d(metrics.trade_date), metrics.hhmm, metrics.sample_size,
                 metrics.limit_up_count, metrics.limit_down_count, metrics.zaban_count,
                 metrics.zaban_rate, metrics.hot_sector_avg_chg,
                 json.dumps(metrics.hot_sector_sample_detail, ensure_ascii=False),
+                json.dumps(metrics.breadth_extra_sample_detail, ensure_ascii=False),
                 json.dumps(triggered, ensure_ascii=False),
                 json.dumps(red_via, ensure_ascii=False),
                 tier, now,

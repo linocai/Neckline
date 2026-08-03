@@ -340,6 +340,12 @@ CREATE TABLE IF NOT EXISTS retreat_metrics (
     -- 种子计数 + 不可用原因)。每拍都落(触发与否都落)——「样本是机械派生、没被 LLM
     -- 塑形」这件事必须事后可审计,不能靠读代码相信。见 `sentinel/mainline.py`。
     hot_sector_sample_json TEXT NOT NULL DEFAULT '{}',
+    -- V2-⑧-G-D 追加(review 判定线 🟡-N1 一并处理,2026-08-03):昨日涨停宽度代理
+    -- 样本的**需求量 vs 实际采纳量**留痕(codes + size + restricted_from),形状照
+    -- 上面 `hot_sector_sample_json` 的姊妹字段。每拍都落,防日后审计炸板率的人把
+    -- 池配额压后的实际样本量(如 71)误当成"当天全部涨停股"。见 `sentinel/universe.
+    -- py::WatchUniverse.breadth_extra_payload()`。
+    breadth_extra_sample_json TEXT NOT NULL DEFAULT '{}',
     triggered_json     TEXT NOT NULL DEFAULT '[]',  -- 本 tick 触发的条件族键(供下一拍持续性判定)
     red_via_json       TEXT NOT NULL DEFAULT '[]',  -- 红色触发路径(multi_condition / persist:<族>),审计留痕
     tier               TEXT NOT NULL DEFAULT 'none', -- none | yellow | red | red_latched
@@ -1136,6 +1142,11 @@ _COLUMN_MIGRATIONS = [
     # 非 NULL 默认 '{}' = 「这一拍没记样本构成」(老行建于本列之前,**不是**「样本为空」
     # ——两者在读侧靠 `unavailable_reason` 有没有这个键区分)。见 `sentinel/mainline.py`。
     ("retreat_metrics", "hot_sector_sample_json", "TEXT NOT NULL DEFAULT '{}'"),
+    # V2-⑧-G-D 追加(review 判定线 🟡-N1 一并处理,2026-08-03):昨日涨停宽度代理样本
+    # 的需求量 vs 实际采纳量留痕,形状照 `hot_sector_sample_json`。非 NULL 默认 '{}'
+    # = 「这一拍没记样本构成」(老行建于本列之前,**不是**「样本为空」)。见
+    # `sentinel/universe.py::WatchUniverse.breadth_extra_payload()`。
+    ("retreat_metrics", "breadth_extra_sample_json", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 

@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
 
 from tests.conftest import business_days, insert_trade_cal
 
+from neckline.db import connection
 from neckline.sentinel.retreat import RetreatMetrics
 from neckline.sentinel.retreat_store import (
     load_prev_tick_triggered,
@@ -19,11 +21,13 @@ from neckline.sentinel.retreat_store import (
 pytestmark = pytest.mark.usefixtures("isolated_env")
 
 
-def _metrics(d: date, hhmm: str, *, zaban_rate=0.0, limit_down=0, hot=None) -> RetreatMetrics:
+def _metrics(d: date, hhmm: str, *, zaban_rate=0.0, limit_down=0, hot=None,
+             breadth_extra=None) -> RetreatMetrics:
     return RetreatMetrics(
         trade_date=d, hhmm=hhmm, sample_size=100, limit_up_count=10,
         limit_down_count=limit_down, zaban_count=int(round(zaban_rate * 10)),
         zaban_rate=zaban_rate, hot_sector_avg_chg=hot,
+        breadth_extra_sample_detail=breadth_extra or {},
     )
 
 
@@ -47,6 +51,33 @@ class TestRecordAndPrevTick:
         # 同分钟重复(如重试)→ 覆盖,不新增行、取最新触发集
         record_retreat_metrics(_metrics(d, "0945"), triggered=["zaban", "limit_down"], tier="red", red_via=["multi_condition"], db_path=isolated_env.db_path)
         assert load_prev_tick_triggered(d, "1000", db_path=isolated_env.db_path) == ["zaban", "limit_down"]
+
+    def test_breadth_extra_sample_json_round_trips(self, isolated_env):
+        """⑧-G-D 追加要求(review 判定线 🟡-N1 一并处理,2026-08-03):昨日涨停
+        宽度代理样本的『需求量 vs 实际采纳量』留痕落这一列,体例照
+        `hot_sector_sample_json`——每拍都落,不只是触发那一拍。"""
+        d = date(2026, 7, 17)
+        detail = {"codes": ["600001.SH"], "size": 1, "restricted_from": None}
+        record_retreat_metrics(_metrics(d, "0945", breadth_extra=detail),
+                               triggered=[], tier="none", red_via=[], db_path=isolated_env.db_path)
+        with connection(isolated_env.db_path) as conn:
+            row = conn.execute(
+                "SELECT breadth_extra_sample_json FROM retreat_metrics WHERE trade_date=? AND hhmm=?",
+                (d.strftime("%Y%m%d"), "0945"),
+            ).fetchone()
+        assert json.loads(row[0]) == detail
+
+    def test_breadth_extra_sample_json_defaults_to_empty_dict(self, isolated_env):
+        """老调用点 / 未传该字段时默认空 dict(如实表达"本次没记样本构成"),
+        ⛔ 不是 NULL(列声明 `NOT NULL DEFAULT '{}'`)。"""
+        d = date(2026, 7, 17)
+        record_retreat_metrics(_metrics(d, "0945"), triggered=[], tier="none", red_via=[], db_path=isolated_env.db_path)
+        with connection(isolated_env.db_path) as conn:
+            row = conn.execute(
+                "SELECT breadth_extra_sample_json FROM retreat_metrics WHERE trade_date=? AND hhmm=?",
+                (d.strftime("%Y%m%d"), "0945"),
+            ).fetchone()
+        assert json.loads(row[0]) == {}
 
 
 class TestSameTimeBaseline:

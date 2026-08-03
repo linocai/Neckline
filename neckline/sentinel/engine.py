@@ -375,6 +375,9 @@ def run_tick(
         # 与**两个口径的读数**,让"样本没被 LLM 塑形"「两口径讲不讲同一句话」都事后
         # 可审计。`quoted` = 实际参与均值的只数(有报价的那部分)。
         hot_sector_sample_detail={**mainline_sample.payload(), **hot_est.payload()},
+        # ⑧-G-D 追加要求(review 判定线 🟡-N1 一并处理):昨日涨停宽度代理样本的
+        # 需求量 vs 实际采纳量,同样触发与否都落。
+        breadth_extra_sample_detail=wu.breadth_extra_payload(),
     )
 
     retreat_active = already_pushed(trade_date, "retreat", "", "brake", db_path=db_path)

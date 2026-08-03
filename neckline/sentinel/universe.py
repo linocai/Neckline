@@ -143,9 +143,15 @@ class WatchUniverse:
     targets: List[WatchTarget]  # V2-⑬-1:证伪哨兵的判定对象 = T1/T2 篮子成员
     positions: List[Position]
     # 本拍纳入的**昨日涨停样本**(退潮宽度 / 炸板率的代理样本)。⚠ V2-⑧-G 起它是
-    # 「按连板数降序取前 N 只」的**机械结果**,不再是"扣掉别人之后剩下的"——极个别
-    # 码可能同时是持仓 / 篮子成员(`codes` 去重后只占一个池位)。
+    # 「`crc32(ts_code)` 升序取前 N 只」的**机械结果**(review 判定线 🟡-N1 改判,
+    # 2026-08-03:原「按连板数降序」与被测量的量相关,见 `_load_prev_limit_up_codes`
+    # docstring),不再是"扣掉别人之后剩下的"——极个别码可能同时是持仓 / 篮子成员
+    # (`codes` 去重后只占一个池位)。
     breadth_extra_codes: List[str]
+    # 池配额压缩前的**需求量**(D0 全部涨停股只数,截断由 `breadth_extra_codes` 体现;
+    # ⑧-G-D 追加要求的留痕,见 `breadth_extra_payload()`)。⛔ 别把 `breadth_extra_codes`
+    # 的长度(池配额压后的实际量,如 71)误当成"当天全部涨停股"。
+    breadth_extra_needed: int
     # —— V2-⑧-A 新增两类来源 ————————————————————————————————————————————
     baskets: List[BasketRef] = field(default_factory=list)      # D0 的 T1/T2 篮子(含成员)
     basket_codes: List[str] = field(default_factory=list)       # 上面那些篮子的成员代码(去重)
@@ -154,6 +160,22 @@ class WatchUniverse:
     mainline_sample: mainline.MainlineSample = field(default_factory=mainline.MainlineSample)
     mainline_codes: List[str] = field(default_factory=list)      # 切片里**新占池位**的那些码
     codes: List[str] = field(default_factory=list)  # 去重后全部关注代码(拉价用)
+
+    def breadth_extra_payload(self) -> Dict[str, Any]:
+        """昨日涨停宽度代理样本的『需求量 vs 实际采纳量』留痕(⑧-G-D 追加要求,
+        review 判定线 🟡-N1 一并处理,2026-08-03)。**形状照
+        `mainline.MainlineSample.payload()` 的姊妹字段**(`codes`/`size`/
+        `restricted_from` 同名同义)——两份纪律测量样本用同一套词汇,审计读一遍
+        就都懂。落 `retreat_metrics.breadth_extra_sample_json`(体例照既有
+        `hot_sector_sample_json`),防日后审计炸板率的人把 `size`(池配额压后的
+        实际样本量,如 71)误当成"当天全部涨停股"——`restricted_from` 非 None
+        时才是那个真实的需求量数字。"""
+        size = len(self.breadth_extra_codes)
+        return {
+            "codes": list(self.breadth_extra_codes),
+            "size": size,
+            "restricted_from": self.breadth_extra_needed if self.breadth_extra_needed > size else None,
+        }
 
 
 def load_watch_universe(
@@ -246,6 +268,7 @@ def load_watch_universe(
         targets=targets,
         positions=positions,
         breadth_extra_codes=breadth_extra,
+        breadth_extra_needed=len(limit_up_all),
         baskets=baskets,
         basket_codes=basket_codes,
         index_codes=index_codes,
@@ -331,13 +354,34 @@ def _related_index_codes(codes: List[str], *, db_path: Optional[Path]) -> List[s
 
 
 def _load_prev_limit_up_codes(report_date: date, *, parquet_dir: Optional[Path]) -> List[str]:
-    """D0 全部涨停股,按连板数降序(**不截断** —— ⑧-G 起截断由池配额统一裁,调用方
-    才知道还剩几个位;这里返回"需求"而不是"配额后的结果")。"""
+    """D0 全部涨停股,按 `crc32(ts_code)` 升序(**不截断** —— ⑧-G 起截断由池配额
+    统一裁,调用方才知道还剩几个位;这里返回"需求"而不是"配额后的结果")。
+
+    ⚠ **排序键改判(review 判定线 🟡-N1,2026-08-03,PROJECT_PLAN §五 ⑧-G-D 第②条
+    授权:「截断必须无偏——截取顺序不得与被测量的量相关」)**:原实现按
+    `consec_limit_up_days` 降序(且未传 `maintain_order`,并列名次的相对顺序连
+    "parquet 行序"这个近似说法都不保证,是 polars 排序实现的未文档化行为——比
+    "不确定性"更差,是**未定义行为**)。核实结论:**该序与被测量的量相关,不只是
+    不确定,是有偏**——本项目 ⑦-K7 审计已实证连板高度是双尾放大器:簇内连板高度
+    最高的成员,涨停触达概率约 1.5×、**次日跌停概率约 3×** 于同簇其余成员(详见
+    PROJECT_PLAN §五 ⑦-K7 完工记录;⛔ 本模块住 `sentinel/`,该发现的标注件实现
+    禁止被本目录引用,这里只借它的**统计结论**,不接它的代码),而这份样本正好
+    喂给 `retreat.compute_breadth_snapshot` 算跌停数 / 炸板率(CLAUDE.md 明载的退潮
+    判据输入)——池位不够时优先保留连板高的,等于把跌停风险系统性更高的一批
+    塞进分子,是 ⑧-F 那类有偏抽样的翻版。全仓未找到「截断优先保连板高」的注意力
+    语义依据(`report/sentiment.py::max_consec_limit_up` 是独立的全市场 EOD 扫描,
+    不消费这份顺序;本函数自 v1 阶段3引入起〔`baff9e5`〕就只服务于「退潮哨兵市场
+    宽度代理样本」这一个目的,原始提交未附带任何展示/注意力用途的说明)。
+
+    改用 `mainline.crc_rank`(全项目 crc32 排序唯一实现,不抄第二份)——与 ⑧-G-B
+    主线切片那份姊妹测量样本同一套采样键,纯采样、与连板高度 / 板块 / 涨跌停幅度
+    均无关,且跨进程跨天可复现(重写分区、行序打乱,两次加载结果逐位相同)。
+    """
     prev_limit = get_market_slice(report_date, table="limit_derived", parquet_dir=parquet_dir)
     if prev_limit.is_empty():
         return []
-    up = prev_limit.filter(pl.col("is_limit_up")).sort("consec_limit_up_days", descending=True)
-    return up["ts_code"].to_list()
+    codes = prev_limit.filter(pl.col("is_limit_up"))["ts_code"].to_list()
+    return sorted(codes, key=mainline.crc_rank)
 
 
 def load_prev5_avg_volume(

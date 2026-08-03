@@ -372,6 +372,47 @@ class TestPoolQuota:
         assert set(_ALL) <= set(wu.codes) and set(wu.mainline_codes) == set(_ALL)
 
 
+class TestBreadthExtraSampleTraceability:
+    """⑧-G-D 追加要求(review 判定线 🟡-N1 一并处理,2026-08-03):昨日涨停宽度代理
+    样本的『需求量 vs 实际采纳量』每拍落 `retreat_metrics.breadth_extra_sample_json`
+    (体例照 `hot_sector_sample_json` 的姊妹字段),防日后审计炸板率的人把池配额压后
+    的实际样本量(如 71)误当成"当天全部涨停股"。"""
+
+    def test_recorded_json_reports_needed_vs_actual_on_a_truncated_day(
+            self, isolated_env, monkeypatch):
+        basket = ["600101.SH", "600102.SH", "600103.SH"]
+        report_day, today = _stress_pool(isolated_env, monkeypatch, basket_codes=basket)
+        run_tick(datetime.combine(today, time(10, 30)), db_path=isolated_env.db_path,
+                 parquet_dir=isolated_env.parquet_dir, quotes_fn=_quotes)
+        with connection(isolated_env.db_path) as conn:
+            row = conn.execute(
+                "SELECT breadth_extra_sample_json FROM retreat_metrics WHERE trade_date=?",
+                (today.strftime("%Y%m%d"),),
+            ).fetchone()
+        recorded = json.loads(row[0])
+        # 200 只涨停的压力日,`restrict` 把它压到保底 71 —— 需求量(200)必须留痕,
+        # 不能只看 `size`(71),否则日后审计会把 71 误当成"当天全部涨停股"。
+        assert recorded["size"] == universe.PREV_LIMIT_UP_QUOTA_FLOOR == 71
+        assert recorded["restricted_from"] == _LIMIT_UP_STRESS == 200
+        assert len(recorded["codes"]) == universe.PREV_LIMIT_UP_QUOTA_FLOOR
+
+    def test_recorded_json_leaves_restricted_from_none_when_not_truncated(
+            self, isolated_env):
+        """未截断时 `restricted_from` 留 `None`(⛔ 不是"截断到 0"),与
+        `hot_sector_sample_json.restricted_from` 同款语义。"""
+        report_day, today = _prepare_day(isolated_env, codes=_ALL, with_limit_up=True)
+        run_tick(datetime.combine(today, time(10, 30)), db_path=isolated_env.db_path,
+                 parquet_dir=isolated_env.parquet_dir, quotes_fn=_quotes)
+        with connection(isolated_env.db_path) as conn:
+            row = conn.execute(
+                "SELECT breadth_extra_sample_json FROM retreat_metrics WHERE trade_date=?",
+                (today.strftime("%Y%m%d"),),
+            ).fetchone()
+        recorded = json.loads(row[0])
+        assert recorded["restricted_from"] is None
+        assert recorded["size"] == len(_ALL) == len(recorded["codes"])
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 派生本身(纯函数级;⑧-F 立的守门 + ⑧-G 口径)
 # ══════════════════════════════════════════════════════════════════════════
