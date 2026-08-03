@@ -697,13 +697,21 @@ class InquiryLogsListOut(BaseModel):
     items: List[InquiryLogOut] = Field(default_factory=list)
 
 
+class PushKindOut(BaseModel):
+    """一个通知 kind 的开关行(V2-⑪,plan §五 V2-⑪-B / D5)。`level` 是三级之一
+    (`immediate`/`important`/`digest`),客户端据此分组展示;`label` 是服务端给的
+    人读名(避免双端各抄一份中文映射,同 `boardLabel` 的反面教训)。"""
+    kind: str
+    level: str
+    label: str
+    enabled: bool
+
+
 class PushSettingsOut(BaseModel):
-    report: bool
-    retreatBrake: bool
-    precall: bool      # v1.1-G.1:盘前校准 9:26 汇总推送开关
-    d5exit: bool       # v1.1-G.1:D5 时间退出推送开关
-    circuit: bool      # v1.2-A2:熔断提醒推送开关(第五类,默认开)
-    holdingAlert: bool # v1.3-②:K4 持仓派发警报推送开关(第六类,默认开)
+    """V2-⑪ 起 = **按 kind 的开关清单**(不再是 V1 的六个具名布尔字段)。
+
+    ⚠ `kinds` 顺序 = `notify_kinds.ALL_KINDS` 顺序(确定性,客户端可直接照序渲染)。"""
+    kinds: List[PushKindOut] = Field(default_factory=list)
 
 
 class SettingsProviderOut(BaseModel):
@@ -782,12 +790,12 @@ class LLMRoutesIn(BaseModel):
 
 
 class SettingsPushIn(BaseModel):
-    report: bool
-    retreatBrake: bool
-    precall: bool      # v1.1-G.1:盘前校准 9:26 汇总推送开关
-    d5exit: bool       # v1.1-G.1:D5 时间退出推送开关
-    circuit: bool      # v1.2-A2:熔断提醒推送开关(第五类,默认开)
-    holdingAlert: bool # v1.3-②:K4 持仓派发警报推送开关(第六类,默认开)——六字段均必填(缺 → 422)
+    """PUT 请求体(V2-⑪):**全量覆盖式**写按 kind 的推送开关。
+
+    `kinds` 必须给全 `notify_kinds.ALL_KINDS` 的每一个键(缺键 / 未登记 kind → 422),
+    承 V1「六字段均必填,防漏传静默重置某开关」的同一条纪律 —— 静默忽略会让用户
+    以为自己关掉了某类通知而服务端根本没收到。"""
+    kinds: Dict[str, bool] = Field(default_factory=dict)
 
 
 class DeviceRegisterIn(BaseModel):
@@ -1021,6 +1029,107 @@ class InfoCardOut(BaseModel):
     market: InfoCardMarketOut = Field(default_factory=InfoCardMarketOut)
 
 
+# —— V2-⑪-C 自然语言临时提醒(`custom_alerts`)————————————————————————————
+#
+# 规则本体(`rule`)按 `neckline/custom_alerts.py::normalize_rule` 的形状**透传**
+# (同 `WeeklyReviewOut.result` 的透传惯例):它是哨兵的判据源、白名单在领域层已经
+# 卡死,在 API 层再镜像一套嵌套模型只会多一处会漂的定义。
+
+class ConfirmationCardOut(BaseModel):
+    """⑪-C 的**七项确认卡**。后两项是固定文案、**恒出现**(蓝图 5.6 安全要求),
+    客户端不得隐藏 —— 用户是在这张卡上同意「行情有延迟」「只通知不交易」的。"""
+    subject: str                    # ① 标的
+    condition: str                  # ② 触发条件与方向
+    activeWindow: str               # ③ 生效时间
+    notifyLimit: str                # ④ 通知次数 / 冷却
+    expiry: str                     # ⑤ 到期时间
+    quoteDelayDisclosure: str       # ⑥ 行情延迟 / 数据中断披露(必选)
+    noAutoTrade: str                # ⑦ 只通知不自动交易
+    rule: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CustomAlertOut(BaseModel):
+    id: int
+    tsCode: Optional[str] = None            # null = 大盘级
+    nlText: str = ""                        # 用户原话(留痕;哨兵不看)
+    rule: Dict[str, Any] = Field(default_factory=dict)
+    condition: str = ""                     # 由结构化规则生成的人读描述
+    activeFrom: Optional[str] = None
+    activeTo: Optional[str] = None
+    expiresAt: Optional[str] = None
+    persist: bool = False
+    cooldownSeconds: int = 0
+    maxFires: int = 1
+    firedCount: int = 0
+    status: str = "active"                  # active | expired | cancelled
+    # `status` 是**库里那一列**;`expiredNow` 是「按此刻算实际上还生不生效」——
+    # 读路径不写库(status 由哨兵那一拍翻),两者可能短暂不一致,分开给、不合并。
+    expiredNow: bool = False
+    createdAt: str = ""
+    updatedAt: str = ""
+
+
+class AlertsListOut(BaseModel):
+    items: List[CustomAlertOut] = Field(default_factory=list)
+
+
+class AlertConditionIn(BaseModel):
+    metric: str
+    op: str
+    value: float
+    ref: Optional[str] = None               # 仅 index_chg_pct 需要
+    refBasketId: Optional[int] = None       # 仅 basket_weak_ratio 可选
+
+
+class AlertCreateIn(BaseModel):
+    """建一条提醒(**用户已在确认卡上确认之后**)。手填表单走的也是这个入口 ——
+    LLM 解析只是把这些字段先替用户填好,落库路径只有一条。"""
+    tsCode: Optional[str] = None
+    nlText: str = ""
+    conditions: List[AlertConditionIn] = Field(default_factory=list)
+    logic: str = "all"
+    activeFrom: Optional[str] = None
+    activeTo: Optional[str] = None
+    expiresAt: Optional[str] = None
+    persist: bool = False
+    cooldownSeconds: int = 0
+    maxFires: int = 1
+
+
+class AlertUpdateIn(BaseModel):
+    """局部更新(未出现的字段不改,pydantic v2 `model_fields_set` 体例)。"""
+    conditions: Optional[List[AlertConditionIn]] = None
+    logic: Optional[str] = None
+    nlText: Optional[str] = None
+    activeFrom: Optional[str] = None
+    activeTo: Optional[str] = None
+    expiresAt: Optional[str] = None
+    persist: Optional[bool] = None
+    cooldownSeconds: Optional[int] = None
+    maxFires: Optional[int] = None
+    resetFired: bool = False
+
+
+class AlertParseIn(BaseModel):
+    text: str
+    tsCode: Optional[str] = None            # 客户端当前上下文里的标的(可选提示)
+
+
+class AlertParseOut(BaseModel):
+    """NL 解析结果。**永远 200**(交互式接口):失败也要把可读原因和降级表单给出去,
+    ⑪-C「LLM 不可用 → 降级为手填结构化表单,**不静默失败**」的契约落点。"""
+    ok: bool
+    action: str = "create"                  # create | query | cancel | modify
+    reason: str = "ok"
+    narrative: str = ""                     # 模型那句复述(只展示,不进判据)
+    degraded: bool = False                  # True = LLM 不可用,已给手填表单
+    manualForm: Optional[Dict[str, Any]] = None
+    confirmationCard: Optional[ConfirmationCardOut] = None
+    draft: Optional[AlertCreateIn] = None   # 用户点「确认」时原样回传给 POST /alerts
+    targetAlertId: Optional[int] = None     # cancel / modify 指认的目标
+    matches: List[CustomAlertOut] = Field(default_factory=list)  # action=query 时的命中
+
+
 # —— 4D 周复盘工作台 ————————————————————————————————————————————————————
 #
 # `result` 直接透传 `neckline.review.reconcile.weekly_review_dict()` 的完整快照
@@ -1065,7 +1174,9 @@ __all__ = [
     "WatchlistItemOut", "WatchlistOut", "WatchlistAddIn", "WatchlistAddOut", "WatchlistPinIn",
     "ThsReconcileOut", "ThsExportOut",
     "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_ANALYZED", "VERDICT_ANALYZED_WARN",
-    "PushSettingsOut", "SettingsOut", "SettingsProviderOut", "SettingsPushIn", "DeviceRegisterIn",
+    "PushKindOut", "PushSettingsOut", "SettingsOut", "SettingsProviderOut", "SettingsPushIn", "DeviceRegisterIn",
+    "ConfirmationCardOut", "CustomAlertOut", "AlertsListOut", "AlertConditionIn",
+    "AlertCreateIn", "AlertUpdateIn", "AlertParseIn", "AlertParseOut",
     "ProviderOut", "ProvidersListOut", "ProviderCreateIn", "ProviderUpdateIn",
     "LLMRoutesOut", "LLMRoutesIn",
     "SettingsReviewColMapIn", "IntelWatchBoardsOut", "IntelWatchBoardsIn",

@@ -37,11 +37,19 @@ from neckline.api.schemas import (
     BoardOut,
     BreathingTradeIn,
     BreathingTradeOut,
+    AlertConditionIn,
+    AlertCreateIn,
+    AlertParseIn,
+    AlertParseOut,
+    AlertsListOut,
+    AlertUpdateIn,
     BreathingTradesOut,
     CandidateOut,
     CircuitEpisodeOut,
     CircuitStateOut,
+    ConfirmationCardOut,
     ContingencyScenarioOut,
+    CustomAlertOut,
     DecisionCreateIn,
     DecisionNoteOut,
     DecisionOut,
@@ -81,6 +89,7 @@ from neckline.api.schemas import (
     ProviderOut,
     ProviderUpdateIn,
     ProvidersListOut,
+    PushKindOut,
     PushSettingsOut,
     ReferencePlanBuyOut,
     ReferencePlanExitOut,
@@ -105,11 +114,12 @@ from neckline.api.schemas import (
     WeeklyReviewOut,
 )
 from neckline.api.stores import get_inquiry_log, list_inquiry_logs, upsert_device
-from neckline.calendar import is_trading_day, prev_trading_day
+from neckline.calendar import CN_TZ, is_trading_day, prev_trading_day
 from neckline.config import ensure_data_dirs
 from neckline.llm.factory import get_provider
 from neckline.llm.router import TASK_INQUIRY
 from neckline.report import store as report_store
+from neckline import custom_alerts, notify_kinds
 from neckline.sentinel import circuit as circuit_store
 from neckline.sentinel import dedup
 from neckline.sentinel import positions as pos_store
@@ -123,7 +133,7 @@ from neckline.settings_store import (
     list_providers_public,
     set_intel_watch_boards,
     set_llm_routes,
-    set_push,
+    set_push_kinds,
     set_review_col_map,
     update_provider,
 )
@@ -1454,11 +1464,13 @@ def get_settings() -> SettingsOut:
     return SettingsOut(
         providers=providers,
         routes=routes,
-        push=PushSettingsOut(
-            report=st.push_report, retreatBrake=st.push_retreat,
-            precall=st.push_precall, d5exit=st.push_d5exit, circuit=st.push_circuit,
-            holdingAlert=st.push_holding_alert,
-        ),
+        push=PushSettingsOut(kinds=[
+            PushKindOut(
+                kind=k, level=notify_kinds.level_of(k),
+                label=notify_kinds.KIND_LABEL[k], enabled=st.push_kinds[k],
+            )
+            for k in notify_kinds.ALL_KINDS
+        ]),
         reviewColMap=st.review_col_map,
     )
 
@@ -1560,11 +1572,15 @@ def put_settings_llm_routes(body: LLMRoutesIn) -> LLMRoutesOut:
 
 @app.put(f"{API_PREFIX}/settings/push", dependencies=[Depends(require_token)])
 def put_settings_push(body: SettingsPushIn) -> OkOut:
-    """写 APNs 六类推送开关(v1.3-②:契约扩至六字段,第六 = K4 持仓派发警报
-    `app_settings.push_holding_alert`,默认开;用户 2026-07-26 拍板独立开关)。
-    六字段均必填(缺 → 422)。"""
-    set_push(body.report, body.retreatBrake, body.precall, body.d5exit, body.circuit,
-             body.holdingAlert, db_path=_db())
+    """写推送开关(**V2-⑪ 起按 `kind` 配**,不按三级 category 配 —— 按 category 配
+    会连坐,D5 定案)。`kinds` 必须给全 `notify_kinds.ALL_KINDS` 每一个键;缺键或
+    出现未登记 kind → 422(`reason="invalid_push_kinds"`),同 `PUT /settings/llm-routes`
+    的 `invalid_task` 体例。"""
+    try:
+        set_push_kinds(body.kinds, db_path=_db())
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             detail={"ok": False, "reason": "invalid_push_kinds", "message": str(e)})
     return OkOut(ok=True)
 
 
@@ -1615,6 +1631,174 @@ def put_settings_review_col_map(body: SettingsReviewColMapIn) -> OkOut:
 def register_device(body: DeviceRegisterIn) -> OkOut:
     upsert_device(body.token, body.platform, db_path=_db())
     return OkOut(ok=True)
+
+
+# —— V2-⑪-C 自然语言临时提醒(`custom_alerts`)————————————————————————————
+#
+# 落库路径**只有一条**(`POST /alerts`):LLM 解析(`POST /alerts/parse`)只是把表单
+# 先替用户填好并出一张确认卡,**它自己不写库**——⑪-C 原文「展示确认卡……用户确认后
+# 才落库」。手填降级走的也是 `POST /alerts`,两条入口共用同一套白名单校验。
+#
+# **删除 = 取消,不物理删行**(`DELETE /alerts/{id}` → `status='cancelled'`):台账
+# 留痕,「用户主动取消」与「到点自动失效」两种下场必须分得开。
+
+def _alert_out(a: "custom_alerts.CustomAlert", now_cn: Optional[datetime] = None) -> CustomAlertOut:
+    now_cn = now_cn or datetime.now(CN_TZ)
+    return CustomAlertOut(
+        id=a.id, tsCode=a.ts_code, nlText=a.nl_text, rule=a.rule,
+        condition=(custom_alerts.describe_rule(a.rule) if a.rule else ""),
+        activeFrom=a.active_from, activeTo=a.active_to, expiresAt=a.expires_at,
+        persist=a.persist, cooldownSeconds=a.cooldown_seconds, maxFires=a.max_fires,
+        firedCount=a.fired_count, status=a.status,
+        expiredNow=custom_alerts.is_expired_at(a, now_cn),
+        createdAt=a.created_at, updatedAt=a.updated_at,
+    )
+
+
+def _rule_from_conditions(conds: List[AlertConditionIn], logic: str) -> Dict[str, Any]:
+    out: List[Dict[str, Any]] = []
+    for c in conds:
+        item: Dict[str, Any] = {"metric": c.metric, "op": c.op, "value": c.value}
+        if c.ref is not None:
+            item["ref"] = c.ref
+        if c.refBasketId is not None:
+            item["ref_basket_id"] = c.refBasketId
+        out.append(item)
+    return {"logic": logic, "conditions": out}
+
+
+@app.get(f"{API_PREFIX}/alerts", dependencies=[Depends(require_token)])
+def list_custom_alerts(status_filter: Optional[str] = None, code: Optional[str] = None) -> AlertsListOut:
+    """列临时提醒。`status_filter` ∈ active|expired|cancelled(缺省 = 全部)。
+    **只读**:到期但尚未被哨兵翻状态的行照实回 `status='active'` + `expiredNow=true`,
+    不在读路径偷偷改库。"""
+    rows = custom_alerts.list_alerts(status=status_filter, ts_code=code, db_path=_db())
+    now_cn = datetime.now(CN_TZ)
+    return AlertsListOut(items=[_alert_out(a, now_cn) for a in rows])
+
+
+@app.post(f"{API_PREFIX}/alerts", status_code=status.HTTP_201_CREATED,
+          dependencies=[Depends(require_token)])
+def create_custom_alert(body: AlertCreateIn) -> CustomAlertOut:
+    """建一条提醒(用户已确认)。规则不合白名单 → 422 `invalid_rule`(消息可读、
+    原样展示给用户);已有一条**同标的 + 规则逐字节相同**的 active 提醒 → 409
+    `duplicate_alert`(蓝图 5.6 安全要求 1「相同提醒去重」)。"""
+    rule = _rule_from_conditions(body.conditions, body.logic)
+    try:
+        dup = custom_alerts.find_duplicate(rule, body.tsCode, db_path=_db())
+    except custom_alerts.RuleValidationError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             detail={"ok": False, "reason": "invalid_rule", "message": str(e)})
+    if dup is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                             detail={"ok": False, "reason": "duplicate_alert", "alertId": dup.id})
+    try:
+        created = custom_alerts.create_alert(
+            rule=rule, nl_text=body.nlText, ts_code=body.tsCode,
+            active_from=body.activeFrom, active_to=body.activeTo, expires_at=body.expiresAt,
+            persist=body.persist, cooldown_seconds=body.cooldownSeconds,
+            max_fires=body.maxFires, db_path=_db(),
+        )
+    except custom_alerts.RuleValidationError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             detail={"ok": False, "reason": "invalid_rule", "message": str(e)})
+    # ⑩-D 五类用户行为之一(`alert`):建提醒是用户行为,落 append-only 台账。
+    try:
+        user_actions.record(
+            "alert", ts_code=created.ts_code,
+            payload={"alertId": created.id, "rule": created.rule, "nlText": created.nl_text},
+            db_path=_db(),
+        )
+    except Exception:  # noqa: BLE001  记账失败不该让用户的提醒建不成
+        logger.warning("记录 user_actions(alert)失败,提醒本身已建立", exc_info=True)
+    return _alert_out(created)
+
+
+@app.put(f"{API_PREFIX}/alerts/{{alert_id}}", dependencies=[Depends(require_token)])
+def update_custom_alert(alert_id: int, body: AlertUpdateIn) -> CustomAlertOut:
+    """局部更新一条提醒(未出现的字段不改)。不存在 → 404 `not_found`;规则不合
+    白名单 → 422 `invalid_rule`。"""
+    fields = body.model_fields_set
+    rule = None
+    if body.conditions is not None:
+        rule = _rule_from_conditions(body.conditions, body.logic or custom_alerts.LOGIC_ALL)
+    try:
+        updated = custom_alerts.update_alert(
+            alert_id, rule=rule,
+            nl_text=body.nlText if "nlText" in fields else None,
+            active_from=body.activeFrom if "activeFrom" in fields else None,
+            active_to=body.activeTo if "activeTo" in fields else None,
+            expires_at=body.expiresAt if "expiresAt" in fields else None,
+            persist=body.persist if "persist" in fields else None,
+            cooldown_seconds=body.cooldownSeconds if "cooldownSeconds" in fields else None,
+            max_fires=body.maxFires if "maxFires" in fields else None,
+            reset_fired=body.resetFired, db_path=_db(),
+        )
+    except custom_alerts.RuleValidationError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             detail={"ok": False, "reason": "invalid_rule", "message": str(e)})
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                             detail={"ok": False, "reason": "not_found"})
+    return _alert_out(updated)
+
+
+@app.delete(f"{API_PREFIX}/alerts/{{alert_id}}", dependencies=[Depends(require_token)])
+def cancel_custom_alert(alert_id: int) -> OkOut:
+    """取消一条提醒(**改状态,不删行**)。不存在 → 404 `not_found`。"""
+    if custom_alerts.get_alert(alert_id, db_path=_db()) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                             detail={"ok": False, "reason": "not_found"})
+    custom_alerts.cancel_alert(alert_id, db_path=_db())
+    return OkOut(ok=True)
+
+
+@app.post(f"{API_PREFIX}/alerts/parse", dependencies=[Depends(require_token)])
+def parse_custom_alert(body: AlertParseIn) -> AlertParseOut:
+    """自然语言 → 结构化规则 + **七项确认卡**(⑪-C)。**本端点不写库**。
+
+    **恒返回 200**(交互式接口):LLM 不可用 → `degraded=true` + `manualForm`(手填
+    表单字段表),解析不出规则 → `ok=false` + 可读 `reason`。⛔ 不静默失败、也不
+    用 4xx 把失败包装成"客户端的错"。"""
+    from neckline.llm import nl_alert as nl
+
+    existing = [
+        {"id": a.id, "ts_code": a.ts_code, "condition": custom_alerts.describe_rule(a.rule)}
+        for a in custom_alerts.list_alerts(status=custom_alerts.STATUS_ACTIVE, db_path=_db())
+    ]
+    parsed = nl.parse_nl_alert(body.text, ts_code_hint=body.tsCode, existing=existing, db_path=_db())
+    out = AlertParseOut(
+        ok=parsed.ok, action=parsed.action, reason=parsed.reason, narrative=parsed.narrative,
+        degraded=parsed.degraded, manualForm=parsed.manual_form,
+        targetAlertId=parsed.target_alert_id,
+    )
+    if parsed.ok and parsed.action == nl.ACTION_QUERY:
+        now_cn = datetime.now(CN_TZ)
+        rows = custom_alerts.list_alerts(
+            status=custom_alerts.STATUS_ACTIVE, ts_code=parsed.ts_code, db_path=_db()
+        )
+        out.matches = [_alert_out(a, now_cn) for a in rows]
+        return out
+    card = nl.confirmation_card_for(parsed)
+    if card is not None:
+        out.confirmationCard = ConfirmationCardOut(
+            subject=card.subject, condition=card.condition, activeWindow=card.active_window,
+            notifyLimit=card.notify_limit, expiry=card.expiry,
+            quoteDelayDisclosure=card.quote_delay_disclosure, noAutoTrade=card.no_auto_trade,
+            rule=card.rule,
+        )
+        out.draft = AlertCreateIn(
+            tsCode=parsed.ts_code, nlText=body.text,
+            conditions=[AlertConditionIn(
+                metric=c["metric"], op=c["op"], value=c["value"],
+                ref=c.get("ref"), refBasketId=c.get("ref_basket_id"),
+            ) for c in (parsed.rule or {}).get("conditions", [])],
+            logic=(parsed.rule or {}).get("logic", custom_alerts.LOGIC_ALL),
+            activeFrom=parsed.active_from, activeTo=parsed.active_to,
+            expiresAt=parsed.expires_at, persist=parsed.persist,
+            cooldownSeconds=parsed.cooldown_seconds, maxFires=parsed.max_fires,
+        )
+    return out
 
 
 # —— 4D 周复盘工作台(对账引擎;plan 4D.1/4D.2)——————————————————————————————

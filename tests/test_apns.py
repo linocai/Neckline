@@ -80,9 +80,9 @@ def test_get_jwt_missing_p8_file(tmp_path, ec_key_pem, monkeypatch):
 # —— payload / send_push ——————————————————————————————————————————————
 
 def test_build_payload():
-    p = apns.build_payload("标题", "正文", category=apns.CATEGORY_RETREAT, custom={"kind": "retreat"})
+    p = apns.build_payload("标题", "正文", category=apns.CATEGORY_IMMEDIATE, custom={"kind": "retreat"})
     assert p["aps"]["alert"] == {"title": "标题", "body": "正文"}
-    assert p["aps"]["category"] == "RETREAT"
+    assert p["aps"]["category"] == "NKIMMEDIATE"    # V2-⑪:三级 category
     assert p["kind"] == "retreat"
 
 
@@ -98,7 +98,7 @@ def test_send_push_success_injected_transport(tmp_path, ec_key_pem, monkeypatch)
         captured["auth"] = headers["authorization"]
         return apns.PushResult(ok=True, status=200, reason="ok", apns_id="abc")
 
-    res = apns.send_push("devtoken123", "标题", "正文", category=apns.CATEGORY_REPORT, transport=fake_transport)
+    res = apns.send_push("devtoken123", "标题", "正文", category=apns.CATEGORY_DIGEST, transport=fake_transport)
     assert res.ok and res.status == 200
     assert captured["url"].endswith("/3/device/devtoken123")
     assert captured["topic"] == "top.linotsai.neckline"      # topic = 新 Bundle ID

@@ -2,9 +2,14 @@
 **🔴 高危区:LLM key 服务端存取**)。
 
 单行 `app_settings` 表(id 恒为 1),存 App 设置屏可改的运行配置:
+    · push_kinds —— **V2-⑪ 起的推送开关落点**:JSON `{"<kind>": 0|1}`,**按 kind 配**
+      (三级 category 只决定「怎么响」,kind 决定「响不响」;按 category 配会连坐,
+      D5 定案)。kind 取值域唯一源 `neckline/notify_kinds.py::ALL_KINDS`;缺键取
+      默认开。读 `get_push_kinds` / 写 `set_push_kinds`。
     · push_report / push_retreat / push_precall / push_d5exit / push_circuit /
-      push_holding_alert —— APNs 六类推送开关(§2.4 拍板,默认开可关)。
-      `get_app_settings` 读全六类供 notify 查开关;`set_push` 六字段写入。
+      push_holding_alert —— **V1 六类开关列,V2-⑪ 起停写留档**(不 DROP,同
+      llm_provider 的列级停写纪律)。老库取值已由 `db.py::_seed_push_kinds` 一次性
+      播种进 `push_kinds`;本模块此后**既不读也不写**这六列。
     · review_col_map —— 周复盘交割单列映射(4D 用,本块只建字段)。
     · intel_watch_boards —— 候选情报管线「五板块常驻」可配名单(v1.3-③-C3)。
     · llm_task_routes / llm_default_provider —— V2-② 任务→Provider 路由(见
@@ -49,6 +54,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # 删掉这个名字会让该夹具(几乎所有 API 测试都依赖它)在 `setattr` 那一步就
 # `AttributeError`。保留一个"被 monkeypatch 但没人读"的名字,好过牵连改一个被
 # 几十个测试文件共享的 fixture。
+from neckline import notify_kinds
 from neckline.config import settings as _default_settings  # noqa: F401
 from neckline.db import connection, init_schema
 
@@ -66,14 +72,10 @@ _UNSET = object()
 @dataclass
 class AppSettings:
     """HTTP 层安全视图(V2-② 起不再含任何 LLM 字段——Provider 注册表 + 路由改走
-    `list_providers_public`/`get_llm_routes`,`GET /settings` 组装时另外调用)。"""
+    `list_providers_public`/`get_llm_routes`,`GET /settings` 组装时另外调用;
+    V2-⑪ 起推送开关由六个 bool 字段换成 `push_kinds` 一张 kind→bool 映射)。"""
 
-    push_report: bool
-    push_retreat: bool
-    push_precall: bool          # v1.1-A:盘前校准 9:26 汇总推送开关(默认开)
-    push_d5exit: bool           # v1.1-B:D5 时间退出推送开关(默认开)
-    push_circuit: bool          # v1.2-A2:熔断提醒推送开关(第五类,默认开)
-    push_holding_alert: bool    # v1.3-②:K4 持仓派发警报推送开关(第六类,默认开)
+    push_kinds: Dict[str, bool]   # V2-⑪:全部 `ALL_KINDS` 已补齐(缺键取默认开)
     review_col_map: dict
     updated_at: Optional[str]
 
@@ -127,52 +129,85 @@ def _ensure_row(conn) -> None:
     )
 
 
-def get_app_settings(db_path: Optional[Path] = None) -> AppSettings:
-    """读安全视图(供 `GET /settings`)。从未写过 → 默认值(两开关默认开)。"""
+def _decode_push_kinds(raw: Optional[str]) -> Dict[str, bool]:
+    """`app_settings.push_kinds` 的 JSON → 补齐全部 `ALL_KINDS` 的 kind→bool。
+
+    **缺键 / NULL / 非法 JSON 一律取默认开**(`notify_kinds.DEFAULT_ENABLED`),承 V1
+    「六类默认开可关」的口径:新增 kind 上线后不需要回填老库,用户没表达过意见的
+    通道保持与 V1 相同的默认。**JSON 里出现的未登记 kind 直接丢弃**(白名单之外的
+    串不该因为躺在 DB 里就获得存在感)。"""
+    data: Dict[str, Any] = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                data = parsed
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+    return {
+        k: (bool(data[k]) if k in data else notify_kinds.DEFAULT_ENABLED)
+        for k in notify_kinds.ALL_KINDS
+    }
+
+
+def get_push_kinds(db_path: Optional[Path] = None) -> Dict[str, bool]:
+    """读按 kind 的推送开关(全部 `ALL_KINDS` 已补齐,顺序与 `ALL_KINDS` 一致)。"""
     init_schema(db_path)
     with connection(db_path) as conn:
-        row = conn.execute(
-            "SELECT push_report, push_retreat, "
-            "push_precall, push_d5exit, push_circuit, push_holding_alert, review_col_map, updated_at "
-            "FROM app_settings WHERE id=1"
-        ).fetchone()
-    if row is None:
-        return AppSettings(
-            push_report=True, push_retreat=True, push_precall=True, push_d5exit=True,
-            push_circuit=True, push_holding_alert=True, review_col_map={}, updated_at=None,
-        )
-    try:
-        col_map = json.loads(row[6]) if row[6] else {}
-    except (json.JSONDecodeError, TypeError):
-        col_map = {}
-    return AppSettings(
-        push_report=bool(row[0]),
-        push_retreat=bool(row[1]),
-        push_precall=bool(row[2]),
-        push_d5exit=bool(row[3]),
-        push_circuit=bool(row[4]),
-        push_holding_alert=bool(row[5]),
-        review_col_map=col_map,
-        updated_at=row[7],
-    )
+        row = conn.execute("SELECT push_kinds FROM app_settings WHERE id=1").fetchone()
+    return _decode_push_kinds(row[0] if row else None)
 
 
-def set_push(
-    report: bool, retreat: bool, precall: bool, d5exit: bool, circuit: bool, holding_alert: bool,
-    db_path: Optional[Path] = None,
-) -> None:
-    """写 APNs 六类推送开关(§2.4 白名单;v1.2-A2 扩第五字段熔断,v1.3-② 扩第六字段
-    K4 持仓派发警报 `push_holding_alert`)。六字段均显式传入(无默认值,防「漏传静默
-    重置某开关」)。"""
+def set_push_kinds(kinds: Dict[str, bool], db_path: Optional[Path] = None) -> None:
+    """全量覆盖式写按 kind 的推送开关(PUT 语义,同 `set_llm_routes` 体例)。
+
+    **必须给全** `ALL_KINDS` 的每一个键 —— 承 V1 `set_push`「六字段均显式传入,防
+    漏传静默重置某开关」的同一条纪律;缺键 / 出现未登记 kind 一律 `ValueError`
+    (HTTP 层映射 422,**不静默忽略**:静默忽略会让用户以为自己关掉了某类通知,
+    实际服务端根本没收到)。"""
+    unknown = sorted(set(kinds) - set(notify_kinds.ALL_KINDS))
+    if unknown:
+        raise ValueError(f"未登记的通知 kind:{unknown};合法取值见 notify_kinds.ALL_KINDS")
+    missing = [k for k in notify_kinds.ALL_KINDS if k not in kinds]
+    if missing:
+        raise ValueError(f"推送开关必须给全每一个 kind,缺:{missing}")
+    payload = {k: (1 if kinds[k] else 0) for k in notify_kinds.ALL_KINDS}
     init_schema(db_path)
     with connection(db_path) as conn:
         _ensure_row(conn)
         conn.execute(
-            "UPDATE app_settings SET push_report=?, push_retreat=?, push_precall=?, push_d5exit=?, "
-            "push_circuit=?, push_holding_alert=?, updated_at=? WHERE id=1",
-            (1 if report else 0, 1 if retreat else 0, 1 if precall else 0, 1 if d5exit else 0,
-             1 if circuit else 0, 1 if holding_alert else 0, _now()),
+            "UPDATE app_settings SET push_kinds=?, updated_at=? WHERE id=1",
+            (json.dumps(payload, ensure_ascii=False, sort_keys=True), _now()),
         )
+
+
+def push_kind_enabled(kind: str, db_path: Optional[Path] = None) -> bool:
+    """某个 kind 当前是否开着(`api/notify.py` 的闸门唯一读法)。未登记的 kind 抛
+    `ValueError`(`notify_kinds.level_of` 的同一条纪律:白名单不开后门)。"""
+    notify_kinds.level_of(kind)   # 未登记 → 抛,不给"未知 kind 静默放行/静默拦截"
+    return get_push_kinds(db_path=db_path)[kind]
+
+
+def get_app_settings(db_path: Optional[Path] = None) -> AppSettings:
+    """读安全视图(供 `GET /settings`)。从未写过 → 默认值(全部 kind 默认开)。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT push_kinds, review_col_map, updated_at FROM app_settings WHERE id=1"
+        ).fetchone()
+    if row is None:
+        return AppSettings(
+            push_kinds=_decode_push_kinds(None), review_col_map={}, updated_at=None,
+        )
+    try:
+        col_map = json.loads(row[1]) if row[1] else {}
+    except (json.JSONDecodeError, TypeError):
+        col_map = {}
+    return AppSettings(
+        push_kinds=_decode_push_kinds(row[0]),
+        review_col_map=col_map,
+        updated_at=row[2],
+    )
 
 
 def set_review_col_map(col_map: dict, db_path: Optional[Path] = None) -> None:
@@ -430,7 +465,9 @@ __all__ = [
     "ProviderPublic",
     "DEFAULT_INTEL_WATCH_BOARDS",
     "get_app_settings",
-    "set_push",
+    "get_push_kinds",
+    "set_push_kinds",
+    "push_kind_enabled",
     "set_review_col_map",
     "get_intel_watch_boards",
     "set_intel_watch_boards",

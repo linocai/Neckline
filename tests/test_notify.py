@@ -1,4 +1,11 @@
-"""4B.5 APNs 推送编排单测(plan §2.4 拍板:**只推两类** + 受开关控制 + 遍历 devices)。"""
+"""APNs 推送编排单测。**V2-⑪ 起结构 = 三级 category × N kind**(plan §五 V2-⑪-B / D5)
+—— 原「白名单六类、每类一个 category」的守门断言随之换成:
+    ① `notify.__all__` 只暴露「一条扇出路径 + 措辞层函数」;
+    ② 每个措辞函数的 kind 都落在 `notify_kinds.ALL_KINDS` 里;
+    ③ category 恒为三个之一;
+    ④ 开关按 **kind** 配(关掉一个不连坐同级的其它 kind)。
+V1 时代的行为断言(文案、两档 D5、熔断前缀、部分失败计数)**逐条保留**,只把开关的
+设法从「改 push_* 列」换成「改 push_kinds」。"""
 
 from __future__ import annotations
 
@@ -10,7 +17,8 @@ from neckline.api import notify
 from neckline.api.stores import upsert_device
 from neckline.config import Settings
 from neckline.push import apns
-from neckline.settings_store import set_push
+from neckline import notify_kinds
+from neckline.settings_store import get_push_kinds, set_push_kinds
 
 
 @pytest.fixture
@@ -40,49 +48,62 @@ def _ok_transport(url, headers, body):
     return apns.PushResult(ok=True, status=200, reason="ok")
 
 
-def test_push_whitelist_is_exactly_six():
-    """推送白名单结构守护(§2.4 = 六类,各独立入口 + 独立 category):notify 模块只暴露这
-    六个推送入口,不给第七类事件留路径。v1.3-② 验收②:白名单六类齐(v1.3-② 扩第六类 K4
-    持仓派发警报,用户 2026-07-26 拍板独立开关 + 独立 category)。"""
+def test_push_entrypoints_are_exactly_the_declared_set():
+    """扇出路径守门(V2-⑪ 取代 V1「六类」断言):`notify.__all__` = 一条 `push_event`
+    + 八个措辞函数,**不给第十个入口留位置**。加入口 = 改这条断言 = 过一次人眼。"""
     assert set(notify.__all__) == {
-        "NotifyOutcome", "push_report_ready", "push_retreat_brake",
-        "push_precall_summary", "push_d5_exit", "push_circuit_breaker", "push_holding_alert",
+        "NotifyOutcome", "push_event",
+        "push_report_ready", "push_retreat_brake", "push_precall_summary",
+        "push_d5_exit", "push_circuit_breaker", "push_holding_alert",
+        "push_attention_alert", "push_custom_alert",
     }
 
 
-def test_categories_are_six_distinct():
-    """六类推送各自独立的 APNs category(互不复用,客户端据此挂各自 UNNotificationCategory)。"""
-    cats = {
-        apns.CATEGORY_REPORT, apns.CATEGORY_RETREAT, apns.CATEGORY_PRECALL,
-        apns.CATEGORY_D5EXIT, apns.CATEGORY_CIRCUIT, apns.CATEGORY_HOLDING_ALERT,
-    }
-    assert cats == {"REPORT", "RETREAT", "PRECALL", "D5EXIT", "CIRCUIT", "HOLDINGALERT"}
-    assert len(cats) == 6
+def test_categories_are_exactly_three():
+    """三级 = 三个 APNs category(D5),**不多不少**;`push/apns.py` 只是别名,
+    与唯一源 `notify_kinds` 逐字节相同。"""
+    cats = {apns.CATEGORY_IMMEDIATE, apns.CATEGORY_IMPORTANT, apns.CATEGORY_DIGEST}
+    assert cats == {"NKIMMEDIATE", "NKIMPORTANT", "NKDIGEST"}
+    assert len(cats) == 3
+    assert apns.CATEGORY_IMMEDIATE == notify_kinds.CATEGORY_IMMEDIATE
+    assert apns.CATEGORY_IMPORTANT == notify_kinds.CATEGORY_IMPORTANT
+    assert apns.CATEGORY_DIGEST == notify_kinds.CATEGORY_DIGEST
+    # V1 的六个 category 常量已随本块删除(D2=A 路,契约一次性换血)。
+    for gone in ("CATEGORY_REPORT", "CATEGORY_RETREAT", "CATEGORY_PRECALL",
+                 "CATEGORY_D5EXIT", "CATEGORY_CIRCUIT", "CATEGORY_HOLDING_ALERT"):
+        assert not hasattr(apns, gone), f"{gone} 应已删除"
+
+
+def test_push_event_rejects_unregistered_kind(api_env, apns_configured):
+    """白名单不开后门:未登记 kind → 直接抛,**不静默变成一条真推送**。"""
+    upsert_device("tok1", db_path=api_env.db_path)
+    with pytest.raises(ValueError):
+        notify.push_event("totally_new_kind", "t", "b",
+                          db_path=api_env.db_path, transport=_ok_transport)
 
 
 def test_report_push_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
-    set_push(report=False, retreat=True, precall=True, d5exit=True, circuit=True, holding_alert=True, db_path=db)
+    _set_kind(db, notify_kinds.KIND_REPORT_READY, False)
     out = notify.push_report_ready("2026-07-17", db_path=db, transport=_ok_transport)
-    assert out.sent == 0 and out.skipped_reason == "push_report_off"
+    assert out.sent == 0 and out.skipped_reason == "kind_off:report_ready"
 
 
 def test_report_push_sends_when_on(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
     upsert_device("tok2", db_path=db)
-    set_push(report=True, retreat=True, precall=True, d5exit=True, circuit=True, holding_alert=True, db_path=db)
     out = notify.push_report_ready("2026-07-17", db_path=db, transport=_ok_transport)
-    assert out.sent == 2 and out.failed == 0
+    assert out.sent == 2 and out.failed == 0        # 全部 kind 默认开
 
 
 def test_retreat_push_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
-    set_push(report=True, retreat=False, precall=True, d5exit=True, circuit=True, holding_alert=True, db_path=db)
+    _set_kind(db, notify_kinds.KIND_RETREAT, False)
     out = notify.push_retreat_brake("炸板率飙升", db_path=db, transport=_ok_transport)
-    assert out.sent == 0 and out.skipped_reason == "push_retreat_off"
+    assert out.sent == 0 and out.skipped_reason == "kind_off:retreat"
 
 
 def test_retreat_push_sends_when_on(api_env, apns_configured):
@@ -104,30 +125,23 @@ def test_no_apns_config_skips(api_env):
     assert out.skipped_reason == "no_apns_config"
 
 
-def _set_switch(db, column: str, on: bool) -> None:
-    """直接改 app_settings 的推送开关列(v1.1-G 的 4 字段设置端点尚未落地,A/B 测试
-    用最小 SQL 切换 push_precall / push_d5exit,不提前引入 G 的写入面)。"""
-    import sqlite3
-
-    from neckline.settings_store import _ensure_row
-    conn = sqlite3.connect(str(db))
-    try:
-        _ensure_row(conn)
-        conn.execute(f"UPDATE app_settings SET {column}=? WHERE id=1", (1 if on else 0,))
-        conn.commit()
-    finally:
-        conn.close()
+def _set_kind(db, kind: str, on: bool) -> None:
+    """只翻一个 kind 的开关,其余保持现状(全量写,但基于当前值改一位——正是
+    `set_push_kinds` 要求给全的用意:不会漏传静默重置别的 kind)。"""
+    kinds = get_push_kinds(db_path=db)
+    kinds[kind] = on
+    set_push_kinds(kinds, db_path=db)
 
 
 def test_precall_summary_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
-    _set_switch(db, "push_precall", False)
+    _set_kind(db, notify_kinds.KIND_PRECALL, False)
     out = notify.push_precall_summary(
         {"gap_up": 2, "low_open": 1, "position_low_open": 0, "auction": 1},
         db_path=db, transport=_ok_transport,
     )
-    assert out.sent == 0 and out.skipped_reason == "push_precall_off"
+    assert out.sent == 0 and out.skipped_reason == "kind_off:precall"
 
 
 def test_precall_summary_sends_when_on(api_env, apns_configured):
@@ -193,9 +207,9 @@ def test_circuit_locked_note_matches_precall_constant():
 def test_d5_exit_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
-    _set_switch(db, "push_d5exit", False)
+    _set_kind(db, notify_kinds.KIND_D5EXIT, False)
     out = notify.push_d5_exit("贵州茅台", "600519.SH", 5, db_path=db, transport=_ok_transport)
-    assert out.sent == 0 and out.skipped_reason == "push_d5exit_off"
+    assert out.sent == 0 and out.skipped_reason == "kind_off:d5exit"
 
 
 def test_d5_exit_sends_when_on(api_env, apns_configured):
@@ -265,9 +279,9 @@ def _fake_episode(note="连续 3 笔止损离场触发熔断(基于台账 3 笔�
 def test_circuit_push_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
-    _set_switch(db, "push_circuit", False)
+    _set_kind(db, notify_kinds.KIND_CIRCUIT, False)
     out = notify.push_circuit_breaker(_fake_episode(), db_path=db, transport=_ok_transport)
-    assert out.sent == 0 and out.skipped_reason == "push_circuit_off"
+    assert out.sent == 0 and out.skipped_reason == "kind_off:circuit"
 
 
 def test_circuit_push_sends_when_on(api_env, apns_configured):
@@ -282,10 +296,10 @@ def test_holding_alert_gated_off(api_env, apns_configured):
     """第六类:K4 持仓派发警报,push_holding_alert 关 → 跳过。"""
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
-    _set_switch(db, "push_holding_alert", False)
+    _set_kind(db, notify_kinds.KIND_HOLDING_ALERT, False)
     out = notify.push_holding_alert("贵州茅台", "600519.SH", ["年线下涨停(疑似诱多做局派发)"],
                                     db_path=db, transport=_ok_transport)
-    assert out.sent == 0 and out.skipped_reason == "push_holding_alert_off"
+    assert out.sent == 0 and out.skipped_reason == "kind_off:holding_alert"
 
 
 def test_holding_alert_sends_when_on(api_env, apns_configured):
@@ -297,7 +311,7 @@ def test_holding_alert_sends_when_on(api_env, apns_configured):
     out = notify.push_holding_alert("贵州茅台", "600519.SH",
                                     ["年线下涨停(疑似诱多做局派发)"], db_path=db, transport=t)
     assert out.sent == 2 and out.failed == 0
-    assert cap["payload"]["aps"]["category"] == apns.CATEGORY_HOLDING_ALERT
+    assert cap["payload"]["aps"]["category"] == apns.CATEGORY_IMPORTANT
     assert "年线下涨停" in cap["payload"]["aps"]["alert"]["body"]
     assert cap["payload"]["kind"] == "holding_alert"
 

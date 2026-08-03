@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
 from neckline.config import settings
+from neckline.notify_kinds import CATEGORY_DIGEST, CATEGORY_IMMEDIATE, CATEGORY_IMPORTANT
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +36,18 @@ logger = logging.getLogger(__name__)
 GATEWAY_SANDBOX = "https://api.sandbox.push.apple.com"
 GATEWAY_PROD = "https://api.push.apple.com"
 
-# 锁屏动作分类(信息类,无动作按钮;客户端 4C 注册对应 UNNotificationCategory)。
-# v1.3 推送白名单 = 六类,各自独立 category(§2.4 拍板;v1.2-A2 扩第五类熔断,
-# v1.3-② 扩第六类 K4 持仓派发警报,用户 2026-07-26 拍板独立 category + 独立开关)。
-CATEGORY_REPORT = "REPORT"     # 16:35 盘后报告就绪
-CATEGORY_RETREAT = "RETREAT"   # 退潮红色刹车
-CATEGORY_PRECALL = "PRECALL"   # v1.1-A:9:26 盘前校准汇总
-CATEGORY_D5EXIT = "D5EXIT"     # v1.1-B:D5 时间退出
-CATEGORY_CIRCUIT = "CIRCUIT"   # v1.2-A2:熔断提醒(第五类,§2.1 第 7 条;默认开、与退潮同级)
-CATEGORY_HOLDING_ALERT = "HOLDINGALERT"  # v1.3-②:K4 持仓派发警报(第六类,强警示;年线下涨停/
-                                         # 放量大阳派发/换手>10%/题材≥4天,独立 category + 独立开关默认开)
+# 锁屏动作分类(信息类,无动作按钮;客户端注册对应 UNNotificationCategory)。
+#
+# **V2.0.0-⑪ 起 = 三级,不再是 V1 的六类**(D5 拍板):category 只决定「怎么响」,
+# 「响不响」由事件自带的 `kind` + 按 kind 配的开关决定(按 category 配会连坐)。
+# 三个字面量与全部 kind→level 归属的**唯一源是 `neckline.notify_kinds`**,本模块
+# 只做本地别名(`push/` 是最底层的传输件,不该反向 import 上层;别名保证两处永远
+# 是同一个串,`tests/test_notify_kinds.py` 有对拍断言)。
+#
+# ⚠ V1 的六个 category 常量(`REPORT`/`RETREAT`/`PRECALL`/`D5EXIT`/`CIRCUIT`/
+# `HOLDINGALERT`)**已随本块删除**——D2=A 路已拍板(新机新子域、老 App 打老机),
+# V2 契约一次性换血、不留过渡键;客户端那一侧的 category 注册在 ⑮ 一并换。
+# (三个常量的 import 见上方 import 区,此处不重复定义。)
 
 # JWT 刷新窗口:Apple 接受 20–60min,留余量 ~50min 重签。
 _JWT_TTL_SEC = 50 * 60
@@ -165,7 +168,7 @@ def _gateway() -> str:
 
 def send_push(
     device_token: str, title: str, body: str, *,
-    category: str = CATEGORY_REPORT,
+    category: str = CATEGORY_DIGEST,
     thread_id: Optional[str] = None,
     custom: Optional[Dict[str, Any]] = None,
     transport: Optional[Transport] = None,
@@ -192,8 +195,8 @@ def send_push(
 
 
 __all__ = [
-    "PushResult", "CATEGORY_REPORT", "CATEGORY_RETREAT", "CATEGORY_PRECALL", "CATEGORY_D5EXIT",
-    "CATEGORY_CIRCUIT", "CATEGORY_HOLDING_ALERT",
+    "PushResult",
+    "CATEGORY_IMMEDIATE", "CATEGORY_IMPORTANT", "CATEGORY_DIGEST",
     "build_jwt", "get_jwt", "reset_jwt_cache", "build_payload", "send_push",
     "GATEWAY_SANDBOX", "GATEWAY_PROD",
 ]

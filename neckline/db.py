@@ -10,6 +10,7 @@ ST 状态历史(`namechange`)。回测大表(daily 等)走 Parquet,不进本库
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -207,6 +208,14 @@ CREATE INDEX IF NOT EXISTS idx_sentinel_events_trade_date ON sentinel_events(tra
 -- review_col_map:周复盘交割单列映射(JSON,4D 用)。
 -- push_precall/push_d5exit:v1.1-A/B 新增两类 APNs 推送开关(盘前校准 9:26 汇总 /
 -- D5 时间退出),默认开;老库经 `_migrate_columns` 幂等 ALTER 补列(见下)。
+-- push_report/push_retreat/push_precall/push_d5exit/push_circuit/push_holding_alert:
+--   **V1 六类开关列,v2.0.0-⑪ 起停写**(不 DROP,同 llm_provider 的列级停写留档纪律)
+--   —— 通知重构成「三级 × N kind」后开关按 **kind** 配,落点换成下面的 `push_kinds`
+--   JSON 列。老库既有取值经 `_seed_push_kinds` **一次性播种**进 `push_kinds`(用户
+--   之前关掉的开关不会因为改版被悄悄打开),播种后这六列不再被读也不再被写。
+-- push_kinds(v2.0.0-⑪):JSON 对象 `{"<kind>": 0|1, ...}`,kind 取值域唯一源
+--   `neckline/notify_kinds.py::ALL_KINDS`。NULL=从未配置(全部 kind 取默认 = 开);
+--   JSON 里缺某个 kind 同样取默认开(新增 kind 上线后老库不必回填)。
 CREATE TABLE IF NOT EXISTS app_settings (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     llm_provider    TEXT,
@@ -1049,7 +1058,45 @@ _COLUMN_MIGRATIONS = [
     # factory.py::get_provider`。
     ("app_settings", "llm_default_provider", "TEXT"),
     ("app_settings", "llm_task_routes", "TEXT NOT NULL DEFAULT '{}'"),
+    # V2-⑪(plan §五 V2-⑪-B,D5):通知三级 × N kind —— 开关**按 kind 配**的落点。
+    # 可空(NULL=从未配置=全部 kind 默认开);老库既有六列取值经 `_seed_push_kinds`
+    # 一次性播种进来(见该函数),播种后 V1 六列停写留档。
+    ("app_settings", "push_kinds", "TEXT"),
 ]
+
+
+def _seed_push_kinds(conn: sqlite3.Connection) -> None:
+    """V2-⑪ 一次性播种(幂等):把 V1 六个推送开关列的**现有取值**搬进新的
+    `app_settings.push_kinds` JSON 列。
+
+    只碰 `push_kinds IS NULL` 的那一行 —— 重跑不变(已播种的行不再命中),用户之后
+    在设置屏改过的取值也不会被这里覆盖回去。
+
+    **为什么必须播种而不是"新列默认全开"**:老库里用户可能已经关掉了某一类推送
+    (如嫌 K4 派发警报吵),改版后若让新列取默认全开,等于**替用户把他关掉的通知
+    又打开了**——这是通知系统最不能犯的错。六类之外的新 kind(`custom_alert` /
+    四监测)不写进播种 JSON,由 `settings_store.get_push_kinds` 按「缺键取默认开」
+    补齐(它们是全新能力,用户从未表达过意见,默认开与 V1 惯例一致)。
+
+    在 `_migrate_columns` 加列之后调用(此时 `push_kinds` 列已存在)。"""
+    from neckline.notify_kinds import LEGACY_COLUMN_OF_KIND
+
+    row = conn.execute(
+        "SELECT push_kinds FROM app_settings WHERE id=1"
+    ).fetchone()
+    if row is None or row[0] is not None:
+        return  # 无设置行 / 已播种过 → 什么都不做
+    cols = list(LEGACY_COLUMN_OF_KIND.items())          # [(kind, column), ...] 确定性序
+    legacy = conn.execute(
+        f"SELECT {', '.join(c for _k, c in cols)} FROM app_settings WHERE id=1"
+    ).fetchone()
+    if legacy is None:
+        return
+    seeded = {kind: (1 if legacy[i] else 0) for i, (kind, _c) in enumerate(cols)}
+    conn.execute(
+        "UPDATE app_settings SET push_kinds=? WHERE id=1 AND push_kinds IS NULL",
+        (json.dumps(seeded, ensure_ascii=False, sort_keys=True),),
+    )
 
 
 def _backfill_activated_at(conn: sqlite3.Connection) -> None:
@@ -1091,13 +1138,14 @@ def _seed_activation_log(conn: sqlite3.Connection) -> None:
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     """对既有表做「缺列即补」的幂等迁移(见 `_COLUMN_MIGRATIONS` 注释)+ v1.2-A 激活戳
     一次性回填(幂等,见 `_backfill_activated_at`)+ v1.4 激活历史播种(幂等,见
-    `_seed_activation_log`)。"""
+    `_seed_activation_log`)+ V2-⑪ 推送开关按 kind 播种(幂等,见 `_seed_push_kinds`)。"""
     for table, column, ddl in _COLUMN_MIGRATIONS:
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     _backfill_activated_at(conn)
     _seed_activation_log(conn)
+    _seed_push_kinds(conn)
 
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:

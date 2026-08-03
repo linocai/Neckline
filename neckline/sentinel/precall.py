@@ -27,7 +27,7 @@ key(`(td,"precall","","tick")`)防重「当日只跑一次」——盘前收紧�
 (每条判定落 `sentinel_events`,sentinel=`precall` / `d5exit`)+ 计算待推项,返回给
 `_sentinel_loop`;真正的 APNs 汇总推送(9:26,category `PRECALL`)与 D5 推送(category
 `D5EXIT`)由循环调 `api/notify.py` 完成(受各自开关)。D5 时间退出扫描**折进本进程**
-(9:25:30 已在跑,一次唤醒同时做校准 + D5,省一次进程唤醒),且**独立于 push_precall
+(9:25:30 已在跑,一次唤醒同时做校准 + D5,省一次进程唤醒),且**独立于 kind=`precall`
 开关**(进程无条件跑扫描,各推送查各自开关)。
 
 **回退备选(写代码注释备查,优先走循环内分支照 §3.6「哨兵不另起进程」)**:若 always-on
@@ -558,7 +558,7 @@ def run_precall_tick(
             result.position_low_open.append(p.ts_code)
             _record("precall", p.ts_code, EVENT_POS_LOW_OPEN, pos_reason)
 
-    # —— 时间退出扫描(两档,§五 v1.3-①-C;折进本进程,独立于 push_precall 开关)——————
+    # —— 时间退出扫描(两档,§五 v1.3-①-C;折进本进程,独立于 kind=`precall` 开关)——————
     # **纯执行提醒,不做判向**(2026-07-27 审计 🔴-1 修复,用户拍板方案 A):判向由 16:35
     # 报告管线在 D5 当天用 EOD 收盘净浮盈**定格**落库,盘前只经
     # `holding_store.locked_state_provider` 把定格值读回来(查无定格 → None → `resolve_time_exit`

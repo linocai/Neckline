@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from neckline import settings_store
+from neckline import notify_kinds, settings_store
 from neckline.llm.factory import get_provider
 from neckline.llm.router import TASK_BASKET_REASON, TASK_DRIVER_SEARCH
 from tests.conftest import write_flat_parquet
@@ -23,10 +23,12 @@ def test_settings_default(client, AUTH):
     body = r.json()
     assert body["providers"] == []
     assert body["routes"] == {}
-    assert body["push"] == {
-        "report": True, "retreatBrake": True, "precall": True, "d5exit": True, "circuit": True,
-        "holdingAlert": True,
-    }
+    # V2-⑪:push 从「六个具名布尔」换成「按 kind 的开关清单」(三级 × N kind,D5)。
+    kinds = body["push"]["kinds"]
+    assert [k["kind"] for k in kinds] == list(notify_kinds.ALL_KINDS)
+    assert all(k["enabled"] is True for k in kinds)          # 全部默认开
+    assert {k["level"] for k in kinds} <= set(notify_kinds.LEVELS)
+    assert all(k["label"] for k in kinds)                    # 人读名服务端给,双端不各抄一份
 
 
 def test_create_provider_key_not_leaked_and_runtime_effective(client, AUTH, api_env):
@@ -122,35 +124,48 @@ def test_llm_routes_unknown_task_422(client, AUTH):
 
 
 def test_put_push_toggles(client, AUTH):
-    """v1.3-②:契约扩至六字段(报告/退潮/盘前校准/D5 退出/熔断提醒/K4 持仓派发警报)。"""
-    r = client.put("/api/v1/settings/push", headers=AUTH,
-                   json={"report": False, "retreatBrake": True, "precall": False,
-                         "d5exit": True, "circuit": False, "holdingAlert": False})
+    """V2-⑪:开关按 **kind** 配(D5)。关掉 `d5exit` 不连坐同为「重要不紧急」级的
+    `holding_alert` —— 这正是不按 category 配的理由。"""
+    kinds = {k: True for k in notify_kinds.ALL_KINDS}
+    kinds[notify_kinds.KIND_REPORT_READY] = False
+    kinds[notify_kinds.KIND_D5EXIT] = False
+    r = client.put("/api/v1/settings/push", headers=AUTH, json={"kinds": kinds})
     assert r.status_code == 200
-    push = client.get("/api/v1/settings", headers=AUTH).json()["push"]
-    assert push == {"report": False, "retreatBrake": True, "precall": False,
-                    "d5exit": True, "circuit": False, "holdingAlert": False}
+    got = {k["kind"]: k["enabled"] for k in client.get("/api/v1/settings", headers=AUTH).json()["push"]["kinds"]}
+    assert got[notify_kinds.KIND_REPORT_READY] is False
+    assert got[notify_kinds.KIND_D5EXIT] is False
+    # 同级的其它 kind 一个都没被连坐
+    assert got[notify_kinds.KIND_HOLDING_ALERT] is True
+    assert got[notify_kinds.KIND_PRECALL] is True
+    assert got[notify_kinds.KIND_MARKET_SHOCK] is True
 
 
-def test_put_push_missing_field_422(client, AUTH):
-    """六字段均必填(与 report/retreatBrake 同款无默认值风格),缺字段 → 422 而非静默补默认
-    (v1.3-② 缺 holdingAlert 也 422)。"""
-    r = client.put("/api/v1/settings/push", headers=AUTH,
-                   json={"report": True, "retreatBrake": True, "precall": True,
-                         "d5exit": True, "circuit": True})
+def test_put_push_missing_kind_422(client, AUTH):
+    """必须给全每一个 kind(承 V1「六字段必填、防漏传静默重置」的同一条纪律),
+    缺 kind → 422 而非静默补默认。"""
+    kinds = {k: True for k in notify_kinds.ALL_KINDS if k != notify_kinds.KIND_CUSTOM_ALERT}
+    r = client.put("/api/v1/settings/push", headers=AUTH, json={"kinds": kinds})
     assert r.status_code == 422
+    assert r.json()["detail"]["reason"] == "invalid_push_kinds"
+
+
+def test_put_push_unknown_kind_422(client, AUTH):
+    """未登记 kind → 422(白名单不开后门;新增 kind 须用户拍板)。"""
+    kinds = {k: True for k in notify_kinds.ALL_KINDS}
+    kinds["made_up_kind"] = True
+    r = client.put("/api/v1/settings/push", headers=AUTH, json={"kinds": kinds})
+    assert r.status_code == 422
+    assert r.json()["detail"]["reason"] == "invalid_push_kinds"
 
 
 def test_put_llm_routes_does_not_reset_push(client, AUTH):
     """`set_llm_routes` 只碰 llm_task_routes/llm_default_provider 两列,不连带重置
     push 开关(各 setter 只 UPDATE 自己的列,同 `_ensure_row` 两步式纪律)。"""
-    client.put("/api/v1/settings/push", headers=AUTH,
-              json={"report": False, "retreatBrake": False, "precall": False,
-                    "d5exit": False, "circuit": False, "holdingAlert": False})
+    all_off = {k: False for k in notify_kinds.ALL_KINDS}
+    client.put("/api/v1/settings/push", headers=AUTH, json={"kinds": all_off})
     client.put("/api/v1/settings/llm-routes", headers=AUTH, json={"routes": {}, "defaultProvider": "x"})
-    push = client.get("/api/v1/settings", headers=AUTH).json()["push"]
-    assert push == {"report": False, "retreatBrake": False, "precall": False,
-                    "d5exit": False, "circuit": False, "holdingAlert": False}
+    got = {k["kind"]: k["enabled"] for k in client.get("/api/v1/settings", headers=AUTH).json()["push"]["kinds"]}
+    assert got == all_off
 
 
 def test_get_intel_boards_default(client, AUTH):

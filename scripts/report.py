@@ -53,7 +53,7 @@ def main() -> int:
     parser.add_argument("--top-total", type=int, default=TOP_N_TOTAL, help=f"候选总数(默认 {TOP_N_TOTAL})")
     parser.add_argument("--top-judged", type=int, default=TOP_N_JUDGED, help=f"过 LLM 审判的候选数(默认 {TOP_N_JUDGED})")
     parser.add_argument("--notify", action="store_true",
-                        help="落库后触发 APNs 报告推送(受 app_settings.push_report 开关);16:00 timer 用")
+                        help="落库后触发 APNs 报告推送(受 kind=report_ready 开关);16:00 timer 用")
     args = parser.parse_args()
 
     ensure_data_dirs()
@@ -83,7 +83,7 @@ def main() -> int:
         logger.info("报告已写入 %s,并已落库 SQLite `reports`/`llm_judgments` 表。", out_path)
 
         if args.notify:
-            # APNs 报告推送(plan 4B.5;受 push_report 开关 + 无设备/无 APNs 配置优雅跳过,
+            # APNs 报告推送(plan 4B.5;受 kind=`report_ready` 开关 + 无设备/无 APNs 配置优雅跳过,
             # 绝不因推送失败让报告任务失败)。
             try:
                 from neckline.api.notify import push_report_ready
@@ -94,7 +94,7 @@ def main() -> int:
             except Exception:  # noqa: BLE001
                 logger.warning("APNs 报告推送异常(已吞,不影响报告落库)", exc_info=True)
 
-            # v1.3-② K4 持仓派发警报推送(第六类,受 push_holding_alert 开关)。只推**强价量证据**
+            # K4 持仓派发警报推送(受 kind=`holding_alert` 开关,V2-⑪ 起「重要不紧急」级)。只推**强价量证据**
             # 命中(年线下涨停/放量大阳派发/换手>10%);题材天数=弱证据只进看板不推(§2.4)。逐仓
             # 一条(≤3 仓),同样优雅跳过、绝不因推送失败让报告任务失败。
             try:

@@ -23,9 +23,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from neckline import custom_alerts as custom_alerts_store
 from neckline.report.candidates import Candidate
 from neckline.report.sectors import load_member_map
-from neckline.sentinel import basket_verify, capture
+from neckline.sentinel import attention, basket_verify, capture
+from neckline.sentinel import custom as custom_alerts_tick
 from neckline.sentinel.channels import (
     LEVEL_CRITICAL,
     LEVEL_INFO,
@@ -102,6 +104,13 @@ class TickResult:
     captured_ticks: int = 0
     basket_states: Dict[int, str] = field(default_factory=dict)   # basket_id -> 本拍状态
     basket_rows_written: int = 0
+    # —— V2-⑪ 旁路(⑪-A 四监测 / ⑪-C NL 临时提醒)的观测位。**同样不参与任何纪律
+    #    判定**;任一为空都不影响四哨兵与熔断。————————————————————————————
+    attention_alerts: List[str] = field(default_factory=list)     # "kind:scope:event_key"
+    attention_unavailable: Dict[str, str] = field(default_factory=dict)
+    merged_exposure: List[Any] = field(default_factory=list)      # attention.MergedExposureGroup
+    custom_alert_hits: List[int] = field(default_factory=list)    # 命中的 custom_alerts.id
+    custom_alerts_expired: List[int] = field(default_factory=list)
     retreat_active: bool = False
     retreat_alert: Optional[RetreatAlert] = None       # 仅红色刹车时非空(驱动 APNs/通道推送)
     retreat_warning: Optional[str] = None              # 黄色预警文案(只进看板,不推送)
@@ -171,6 +180,15 @@ def _historical_peak_close(position: Position, trade_date: date, parquet_dir: Op
     return float(hist["close"].max())
 
 
+def _default_notifier() -> Any:
+    """APNs 措辞层的默认实现(**惰性 import**:`neckline.api.notify` 会拉起 API 层的
+    存取模块,模块级 import 会让 `sentinel` 反向依赖 `api`;放在函数体里两边都干净,
+    同 `api/app.py::_sentinel_loop` 惰性 import 哨兵的既有姿势)。"""
+    from neckline.api import notify
+
+    return notify
+
+
 def run_tick(
     now: datetime,
     *,
@@ -179,9 +197,14 @@ def run_tick(
     parquet_dir: Optional[Path] = None,
     breadth_cap: int = DEFAULT_BREADTH_CAP,
     quotes_fn: Optional[Callable[[List[str]], Dict[str, Quote]]] = None,
+    notifier: Optional[Any] = None,
 ) -> TickResult:
     """跑一拍。`quotes_fn` 可覆盖(默认 `sentinel.quotes.get_quotes`)——冒烟脚本
-    用它注入"某历史日的合成盘中快照",不改一行编排逻辑。"""
+    用它注入"某历史日的合成盘中快照",不改一行编排逻辑。
+
+    `notifier`(V2-⑪)可覆盖 `neckline.api.notify`(APNs 三级措辞层)——**只服务于
+    ⑪ 的两条新旁路**(四监测 / NL 临时提醒);既有四哨兵仍走 `channels`,推送路径
+    一行未动。"""
     trade_date = now.date()
     if not is_intraday_now(now):
         return TickResult(trade_date=trade_date, now=now, skipped_non_trading=True)
@@ -350,6 +373,103 @@ def run_tick(
                         "holding", p.ts_code, key,
                         f"持仓提醒:{p.ts_code}", reason, _level_by_key.get(key, LEVEL_INFO),
                     )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 以下两段是 **V2-⑪ 的旁路**(⑪-A 四监测 / ⑪-C NL 临时提醒)。
+    #
+    #   · 各自独立 `try/except`,异常只 WARNING —— 与 ⑧ 的存拍/篮子验证同一条纪律:
+    #     旁路炸了绝不许影响上面四哨兵与熔断的任何判定,也不许掀翻主循环。
+    #   · **它们不读、不改任何纪律状态**:退潮闩锁、止损线、D 计数、熔断,一个都不碰。
+    #   · 推送走 APNs 三级(`notifier`,按 kind 配开关),**不进 `channels`** —— 既有
+    #     四哨兵的 Bark/日志通道保持原样,新 kind 不混进去。
+    #   · 台账仍落 `sentinel_events`(⑪-B 原文:冷却/去重/防重沿用该表),因此这些
+    #     事件同样会出现在 `GET /board` 的当日事件流里。
+    # ══════════════════════════════════════════════════════════════════════
+    notify_mod = notifier if notifier is not None else None
+
+    def _notify() -> Any:
+        nonlocal notify_mod
+        if notify_mod is None:
+            notify_mod = _default_notifier()
+        return notify_mod
+
+    # 两条旁路共用的「持仓 → D0 来源篮子」关联(查一次,别查两遍)。
+    position_sources: Dict[int, Any] = {}
+    if wu.positions:
+        try:
+            position_sources = attention.load_position_sources(wu.positions, db_path=db_path)
+        except Exception:  # noqa: BLE001
+            logger.warning("[tick] 查持仓来源篮子失败(两条 ⑪ 旁路按无来源处理)", exc_info=True)
+
+    # —— V2-⑪ 旁路 C:注意力四监测(⑪-A)————————————————————————————————
+    try:
+        att = attention.evaluate_attention(
+            trade_date, wu.positions, quotes, meta, sources=position_sources, db_path=db_path,
+        )
+        result.merged_exposure = list(att.merged_exposure)
+        result.attention_unavailable = dict(att.unavailable)
+        for a in att.alerts:
+            if already_pushed(trade_date, "attention", a.scope, a.event_key, db_path=db_path):
+                result.skipped_duplicate += 1
+                continue
+            outcome = _notify().push_attention_alert(
+                a.kind, a.title, a.what_happened, plan_touched=a.plan_touched,
+                code=a.scope if a.position_id is not None else "",
+                position_id=a.position_id, merged_exposure_note=a.merged_exposure_note,
+                db_path=db_path,
+            )
+            # 台账**无论推没推出去都落**(开关关掉 = 不打扰,不等于这件事没发生;
+            # 看板照样要看得见)——同 `_maybe_push` 的既有姿势。
+            record_pushed(
+                trade_date, "attention", a.scope, a.event_key,
+                payload={
+                    "kind": a.kind, "title": a.title, "body": a.what_happened,
+                    "planTouched": a.plan_touched, "mergedExposure": a.merged_exposure_note,
+                    "metrics": a.metrics, "positionId": a.position_id,
+                    "delivered": getattr(outcome, "sent", 0),
+                    "skippedReason": getattr(outcome, "skipped_reason", ""),
+                },
+                db_path=db_path,
+            )
+            result.attention_alerts.append(f"{a.kind}:{a.scope or '-'}:{a.event_key}")
+    except Exception:  # noqa: BLE001
+        logger.warning("注意力监测本拍失败(已吞,不影响哨兵判定)", exc_info=True)
+
+    # —— V2-⑪ 旁路 D:自然语言临时提醒(⑪-C,执行归确定性哨兵)——————————————
+    try:
+        member_map_for_alerts = custom_alerts_tick.build_basket_member_map(
+            position_sources, wu.positions
+        )
+        cres = custom_alerts_tick.evaluate_alerts(
+            now, quotes=quotes, positions=wu.positions, prev5_avg_volume=prev5,
+            basket_members=member_map_for_alerts, db_path=db_path,
+        )
+        result.custom_alerts_expired = list(cres.expired_ids)
+        for hit in cres.hits:
+            outcome = _notify().push_custom_alert(
+                hit.alert.id,
+                custom_alerts_tick.subject_text(hit.alert, quotes),
+                hit.condition_text,
+                code=hit.alert.ts_code or "",
+                quote_delay_note=custom_alerts_store.QUOTE_DELAY_DISCLOSURE,
+                db_path=db_path,
+            )
+            record_pushed(
+                trade_date, custom_alerts_tick.SENTINEL_NAME, hit.alert.ts_code or "",
+                hit.event_key,
+                payload={
+                    "kind": "custom_alert", "alertId": hit.alert.id,
+                    "body": hit.condition_text, "values": hit.values,
+                    "nlText": hit.alert.nl_text,
+                    "delivered": getattr(outcome, "sent", 0),
+                    "skippedReason": getattr(outcome, "skipped_reason", ""),
+                },
+                db_path=db_path,
+            )
+            custom_alerts_store.mark_fired(hit.alert.id, db_path=db_path)
+            result.custom_alert_hits.append(hit.alert.id)
+    except Exception:  # noqa: BLE001
+        logger.warning("临时提醒本拍失败(已吞,不影响哨兵判定)", exc_info=True)
 
     return result
 
