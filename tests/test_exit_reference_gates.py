@@ -291,6 +291,28 @@ class TestArmingEndToEnd:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 豁免前提③:文案本身(§2.8-C-3「缺一即豁免失效」)
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestExemptionPremiseThree:
+    def test_copy_states_it_is_a_plan_reference_not_a_take_profit_line(self):
+        """§2.8-C-3 前提③ 原文要求文案「必须点明**这是你计划里的参考位、不是止盈线,
+        纪律仍是回落止盈**」。⑪-D 接线时核对发现原文案只说到「不是止盈信号」、
+        **没说「纪律仍是回落止盈」** → 已补齐;本例把这条前提锁成机器断言,别再让它
+        因为一次措辞润色悄悄失效(前提缺一 = 这条 kind 不再被允许推送)。"""
+        from tests.test_sentinel_holding import _position, _quote   # 复用既有构造
+
+        from neckline.sentinel.holding import check_exit_reference_reached
+
+        text = check_exit_reference_reached(_position(), _quote(14.0), 13.0, 15.0)
+        assert "你计划里的参考位" in text
+        assert "不是止盈信号" in text
+        assert "纪律仍是回落止盈" in text
+        for banned in ("建议", "该卖", "推荐", "目标价"):
+            assert banned not in text
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 「不影响其他 kind」——闸② 只掐 take_profit 这一条
 # ══════════════════════════════════════════════════════════════════════════
 

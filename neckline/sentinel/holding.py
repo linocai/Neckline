@@ -133,14 +133,21 @@ def check_exit_reference_reached(
     `exit_high`)——同 `check_take_profit`/`check_stop_approach` 单阈值触发一碰线
     就提醒的既有姿势。**文案只中性陈述"触达",不建议卖出**(离场参考是参考、回落
     止盈才是纪律;同 `basket_card.py` `CARD_SYSTEM_PROMPT`「不得使用止盈线/目标价/
-    建议买入」这类措辞的同一条语义红线)。"""
+    建议买入」这类措辞的同一条语义红线)。
+
+    ⚠ **文案不是随便写的,它是 §2.8-C-3 记名豁免的前提③**(2026-08-03 ⑪-D 接线时
+    补齐):原文要求「纯告知型文案,禁指令词,**必须点明「这是你计划里的参考位、
+    不是止盈线,纪律仍是回落止盈」**」。四条前提**缺一即豁免失效** —— 也就是说,
+    改这段话之前先回去读那一节;把「纪律仍是回落止盈」这半句删掉,这条 kind 就
+    不再被允许推送了。"""
     if quote.price <= 0 or exit_low <= 0 or exit_high <= 0 or exit_low > exit_high:
         return None
     if quote.price + _EPS < exit_low:
         return None
     return (
         f"现价{quote.price:.2f}已触达来源篮子的离场参考区间"
-        f"[{exit_low:.2f}, {exit_high:.2f}](仅供参考,不是止盈信号,是否离场由您判断)"
+        f"[{exit_low:.2f}, {exit_high:.2f}]——这是你计划里的参考位、不是止盈信号,"
+        f"纪律仍是回落止盈;是否离场由您判断"
     )
 
 
