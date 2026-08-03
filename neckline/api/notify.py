@@ -168,8 +168,13 @@ def push_precall_summary(
 ) -> NotifyOutcome:
     """9:26 盘前校准汇总(kind=`precall`,**重要不紧急**级,plan v1.1-A.4)。`counts` =
     盘前校准四类判定的计数 dict(`gap_up` 买点变形 / `low_open` 开盘证伪 /
-    `position_low_open` 持仓预警 / `auction` 竞价量能异常附注)。**盘前不产新票、不
-    推荐买入**(§2.4 铁原则),只汇总「前晚计划被集合竞价作废/预警」的条数。
+    `position_low_open` 持仓预警 / `auction` 竞价量能异常附注 / `member_ex_rights`
+    疑似除权除息导致**今日核对不了**的成员数)。**盘前不产新票、不推荐买入**
+    (§2.4 铁原则),只汇总「前晚计划被集合竞价作废/预警」的条数。
+
+    `member_ex_rights`(判定线审计 🟡-2,2026-08-03)照 `auction` 的体例做附注:
+    它既不是判定也不触发推送(缺键 → 0,老调用方零感知),但**「今天没核对」必须与
+    「核对过、没异常」分得开**,否则用户会把沉默读成平安。
 
     `circuit_locked`(2026-07-27 审计 🟡-4):熔断仍锁定 → **标题与正文前置「熔断中:今日只减
     不加」**(§2.1 第 7 条纪律的「次日」那一半)。调用方(`_sentinel_loop`)按
@@ -179,9 +184,12 @@ def push_precall_summary(
     m = int(counts.get("low_open", 0))
     k = int(counts.get("position_low_open", 0))
     a = int(counts.get("auction", 0))
+    x = int(counts.get("member_ex_rights", 0))
     body = f"集合竞价校准:{n} 只买点变形、{m} 只开盘证伪、{k} 只持仓止损预警"
     if a:
         body += f"(另 {a} 只竞价量能异常)"
+    if x:
+        body += f"(另 {x} 只疑似除权除息、冻结锚失效,今日未核对)"
     body += "。前晚计划按校准结果执行," + _OPEN_APP_NOW
     title = "盘前校准提醒"
     if circuit_locked:

@@ -148,7 +148,7 @@ def _member_ref_close(
 ) -> Optional[float]:
     """⑧-E:两份 spec 的成员行都带 `ref_close`(⑦ 冻的 D0 收盘,前复权口径;D0 当天
     `qfq == raw`)。验证侧优先、失效侧兜底 —— 两者本应同值,任一有就够;都没有 →
-    `None`(锚本身缺失,判不了,交给下面 `_anchor_mismatch` 如实返回"没检测到不一致")。"""
+    `None`(锚本身缺失,判不了,交给下面 `anchor_mismatch` 如实返回"没检测到不一致")。"""
     for row in (v_row, i_row):
         if isinstance(row, Mapping):
             rc = _num_or_none(row.get("ref_close"))
@@ -157,12 +157,18 @@ def _member_ref_close(
     return None
 
 
-def _anchor_mismatch(ref_close: Optional[float], pre_close: Optional[float]) -> bool:
-    """⑧-E 检测器(盘中 / EOD 共用):`pre_close ≠ 卡里 D0 收盘`(带 `vr.EPS` 容差)
-    即判锚已失效。**任一缺失 → 判不了,返回 `False`**(⛔「没有」不是「不匹配」,是
-    另一种「没看」——留给正常判定路径 / `FLAG_MEMBER_DATA_MISSING` 处理,不在这里
-    冒充结论)。`<= 0` 视为坏数据兜底(真实价格恒正),同样不当成"匹配"或"不匹配",
-    只是不触发检测(不把一个数据错误当成除权信号,也不当成正常)。"""
+def anchor_mismatch(ref_close: Optional[float], pre_close: Optional[float]) -> bool:
+    """⑧-E 检测器(**全项目唯一一份**,盘中 / EOD / 盘前剧本核对共用):
+    `pre_close ≠ 卡里 D0 收盘`(带 `vr.EPS` 容差)即判锚已失效。**任一缺失 → 判不了,
+    返回 `False`**(⛔「没有」不是「不匹配」,是另一种「没看」——留给正常判定路径 /
+    `FLAG_MEMBER_DATA_MISSING` 处理,不在这里冒充结论)。`<= 0` 视为坏数据兜底(真实
+    价格恒正),同样不当成"匹配"或"不匹配",只是不触发检测(不把一个数据错误当成除权
+    信号,也不当成正常)。
+
+    ⚠ **公开(判定线审计 🟡-2,2026-08-03)**:⑬-7 的盘前篮子剧本核对
+    (`sentinel/precall.py`)拿同样的冻结 D0 锚跟 D+1 竞价开盘价比,漏了同一道检测 ——
+    ⑧-E 治好的错配在另一个消费方被原样重新引入。它现在 import 本函数,**不许再抄一份**
+    (抄一份 = 两处阈值/容差各自漂移,⑧-E 那场事故的复发路径)。"""
     rc, pc = _num_or_none(ref_close), _num_or_none(pre_close)
     if rc is None or pc is None or rc <= 0 or pc <= 0:
         return False
@@ -256,7 +262,7 @@ def evaluate_specs(
         # 无关的差异打破(v1.5-⑧ 既有单测 `test_intraday_and_eod_paths_agree_bit_for_
         # bit` 施工期真踩过,回滚过一次)。
         ref_close = _member_ref_close(v_row, i_row)
-        if _anchor_mismatch(ref_close, obs.pre_close):
+        if anchor_mismatch(ref_close, obs.pre_close):
             anchor_mismatched.append(code)
             flags.append(FLAG_ANCHOR_MISMATCH)
             detail.append({
@@ -577,7 +583,7 @@ __all__ = [
     "SOURCE_INTRADAY", "SOURCE_EOD",
     "REASON_NO_CARD", "REASON_NO_SPEC",
     "FLAG_MEMBER_DATA_MISSING", "FLAG_SPEC_LEVELS_MISSING", "FLAG_SPEC_LEVELS_PARTIAL",
-    "FLAG_ANCHOR_MISMATCH", "REASON_MEMBER_EX_RIGHTS",
+    "FLAG_ANCHOR_MISMATCH", "REASON_MEMBER_EX_RIGHTS", "anchor_mismatch",
     "REASON_ANCHOR_MISMATCH", "REASON_ANCHOR_UNCONFIRMED",
     "evaluate_specs", "evaluate_card",
     "run_intraday_verification", "run_eod_verification",

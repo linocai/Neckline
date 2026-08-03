@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -37,8 +38,13 @@ from neckline.sentinel.precall import (
 from neckline.sentinel.quotes import Quote
 
 
-def _quote(*, open_: float, pre_close: float = 10.0, price: float = None, volume: float = 0.0,
+def _quote(*, open_: float, pre_close: float = 9.5, price: float = None, volume: float = 0.0,
            code: str = "600001.SH") -> Quote:
+    """⚠ **`pre_close` 缺省 = `_script()` 的 `ref_close`(9.5)**,即「这只票没有除权除息」
+    这个**正常**情形。判定线审计 🟡-2 之后这不再是无所谓的占位:`pre_close ≠ 冻结锚` 就是
+    ⑧-E 的除权除息信号,盘前两类剧本核对会因此**整票跳过**。老夹具默认 10.0 而
+    `ref_close` 是 9.5 —— 等于每个用例都在演除权日,修 🟡-2 时才发现(同
+    `smoke_basket_verify._quote` 踩过的坑,那里也留了同款警告)。"""
     return Quote(
         code=code, name="示例", price=(price if price is not None else open_), pre_close=pre_close,
         open=open_, high=max(open_, pre_close), low=min(open_, pre_close),
@@ -73,10 +79,16 @@ class TestGapUpInvalidate:
         assert judge_gap_up_invalidate(_script(), _quote(open_=9.6)) is None
 
     def test_threshold_is_measured_against_the_frozen_anchor_not_pre_close(self):
-        """阈值锚在**卡里冻结的 ref_close**上,不是昨收 —— 两者不同时必须按前者判。"""
+        """阈值锚在**卡里冻结的 ref_close**上,不是昨收。
+
+        ⚠ 判定线审计 🟡-2 之后,用「昨收与冻结锚不同」来演示这件事已经不成立了 ——
+        那正是除权除息信号,两类判定会整票跳过(见 `TestFrozenAnchorStale`)。这里改用
+        **源没给昨收**(0.0 = 无此数据 → 锚检测不触发)的场景:判定仍照 `ref_close`
+        算,证明阈值锚就是冻结值。
+        """
         sc = _script(ref_close=10.0)
-        assert judge_gap_up_invalidate(sc, _quote(open_=10.4, pre_close=12.0)) is not None  # +4% > 3%
-        assert judge_gap_up_invalidate(sc, _quote(open_=10.2, pre_close=8.0)) is None       # +2% < 3%
+        assert judge_gap_up_invalidate(sc, _quote(open_=10.4, pre_close=0.0)) is not None  # +4% > 3%
+        assert judge_gap_up_invalidate(sc, _quote(open_=10.2, pre_close=0.0)) is None      # +2% < 3%
 
     def test_missing_frozen_anchor_no_judgment(self):
         """卡里没给这只票的锚 → **不判**(不拿现价现推一个阈值顶上)。"""
@@ -86,16 +98,59 @@ class TestGapUpInvalidate:
 class TestLowOpenFalsify:
     def test_open_below_frozen_stop_line_warns(self):
         # stop_line=9.7,open=9.6 → 开盘即在失效位下方
-        assert judge_low_open_falsify(_script(), _quote(open_=9.6, pre_close=10.0)) is not None
+        assert judge_low_open_falsify(_script(), _quote(open_=9.6, pre_close=9.5)) is not None
 
     def test_open_above_stop_line_ok(self):
-        assert judge_low_open_falsify(_script(), _quote(open_=9.9, pre_close=10.0)) is None
+        assert judge_low_open_falsify(_script(), _quote(open_=9.9, pre_close=9.5)) is None
 
     def test_high_open_not_falsify(self):
-        assert judge_low_open_falsify(_script(), _quote(open_=10.5, pre_close=10.0)) is None
+        assert judge_low_open_falsify(_script(), _quote(open_=10.5, pre_close=9.5)) is None
 
     def test_missing_frozen_stop_line_no_judgment(self):
-        assert judge_low_open_falsify(_script(stop_line=None), _quote(open_=1.0, pre_close=10.0)) is None
+        assert judge_low_open_falsify(_script(stop_line=None), _quote(open_=1.0, pre_close=9.5)) is None
+
+
+class TestFrozenAnchorStale:
+    """判定线审计 🟡-2(2026-08-03):⑬-7 盘前剧本核对漏了 ⑧-E 除权除息锚失效检测。
+
+    样本取 ⑧-E 完工记录里的真实那只 603409.SH:D0 收盘 31.70,D+1 除权参考价 21.07。
+    竞价开在 21 元附近 —— `open ≤ stop_line(30.12)` **必真**,原实现会产出「开盘即在
+    冻结失效位下方」的成员级假警,并直接进 9:26 盘前汇总推送。
+    """
+
+    EX_RIGHTS = dict(ref_close=31.70, stop_line=round(31.70 * 0.95, 2))   # 30.12
+
+    def test_detector_is_the_shared_one_from_stage_eight_e(self):
+        """检测器必须是 ⑧-E 那一份(同一个函数对象),不是本模块另抄的。"""
+        from neckline.sentinel import basket_verify as bv
+
+        src = (Path(precall.__file__)).read_text(encoding="utf-8")
+        assert "from neckline.sentinel.basket_verify import anchor_mismatch" in src
+        assert bv.anchor_mismatch(31.70, 21.07) is True
+        assert bv.anchor_mismatch(31.70, 31.70) is False
+
+    def test_low_open_falsify_is_skipped_on_ex_rights_day(self):
+        sc = _script(**self.EX_RIGHTS)
+        q = _quote(open_=21.05, pre_close=21.07)     # 除权参考价开盘
+        assert q.open <= sc.stop_line, "前提:不修的话这条必然触发假警"
+        assert judge_low_open_falsify(sc, q) is None
+
+    def test_gap_up_invalidate_is_skipped_on_ex_rights_day(self):
+        """反方向也一样:送股后价格砍半会让「高开」永不触发,而配股/缩股则可能反过来
+        造出假高开。锚失效时**两类都不判**,不是只挡看起来危险的那一类。"""
+        sc = _script(ref_close=10.0, stop_line=9.5)
+        assert judge_gap_up_invalidate(sc, _quote(open_=20.4, pre_close=20.0)) is None  # 缩股
+
+    def test_normal_day_still_judges(self):
+        """阴性方向:昨收与冻结锚相符(正常日)→ 判定照旧,别把检测做成一刀切。"""
+        sc = _script(**self.EX_RIGHTS)
+        assert judge_low_open_falsify(sc, _quote(open_=30.0, pre_close=31.70)) is not None
+
+    def test_missing_pre_close_does_not_mean_stale(self):
+        """源没给昨收 → **不做锚检测**(「没有」不是「不匹配」),判定照旧走冻结锚。"""
+        sc = _script(**self.EX_RIGHTS)
+        assert precall.member_anchor_stale(sc, _quote(open_=30.0, pre_close=0.0)) is False
+        assert judge_low_open_falsify(sc, _quote(open_=30.0, pre_close=0.0)) is not None
 
 
 class TestAuctionVolume:
@@ -227,7 +282,7 @@ def test_run_precall_records_and_dedupes(isolated_env):
 
     now = datetime.combine(today, time(9, 25, 30))
     # 高开偏离剧本:open=10.0 vs 冻结锚 9.5 → +5.3%
-    quotes = {"600001.SH": _quote(open_=10.0, pre_close=10.0, code="600001.SH")}
+    quotes = {"600001.SH": _quote(open_=10.0, pre_close=9.5, code="600001.SH")}
     res = run_precall_tick(now, db_path=settings.db_path,
                            parquet_dir=settings.parquet_dir, quotes_fn=lambda codes: quotes)
     assert res.ran is True
@@ -268,7 +323,7 @@ def test_run_precall_low_open_and_position_and_auction(isolated_env):
 
     now = datetime.combine(today, time(9, 26, 0))
     quotes = {
-        "600001.SH": _quote(open_=9.4, pre_close=10.0, volume=1500.0, code="600001.SH"),   # 跌破冻结失效位 9.5 + 竞价放量
+        "600001.SH": _quote(open_=9.4, pre_close=10.0, volume=1500.0, code="600001.SH"),   # 跌破冻结失效位 9.5 + 竞价放量(ref_close=10.0,昨收相符)
         "600900.SH": _quote(open_=9.3, pre_close=10.0, code="600900.SH"),                  # 持仓跌破止损线 9.5
     }
     res = run_precall_tick(now, db_path=settings.db_path,
@@ -284,6 +339,57 @@ def test_run_precall_low_open_and_position_and_auction(isolated_env):
     assert ("precall", precall.EVENT_AUCTION) in kinds
     assert ("precall", precall.EVENT_POS_LOW_OPEN) in kinds
     assert res.summary_actionable == 2   # 低开候选 + 持仓预警(竞价异常是附注,不计入)
+
+
+def test_run_precall_ex_rights_member_yields_note_not_false_alarm(isolated_env):
+    """🟡-2 端到端:成员恰在 D+1 除权除息 → **不产「开盘即失效」假警**,改落
+    `member_ex_rights` 附注;该附注不计入 `summary_actionable`(不因分红季天天推),
+    竞价量能附注照常(它比的是量,不读冻结锚)。"""
+    settings = isolated_env
+    days = business_days(date(2026, 6, 1), 30)
+    report_day, today = days[-2], days[-1]
+    seed_active_rule_v1(settings)
+    # 冻结锚 = D0 收盘 31.70 → 冻结失效位 30.12;D+1 除权参考价 21.07,竞价开 21.05
+    _setup(settings, report_day=report_day, today=today, member_codes=["600001.SH"],
+           daily_vol=10000.0, ref_close=31.70)
+
+    now = datetime.combine(today, time(9, 25, 30))
+    quotes = {"600001.SH": _quote(open_=21.05, pre_close=21.07, volume=1500.0,
+                                  code="600001.SH")}
+    res = run_precall_tick(now, db_path=settings.db_path,
+                           parquet_dir=settings.parquet_dir, quotes_fn=lambda codes: quotes)
+
+    assert res.ran is True
+    assert res.low_open == [], "除权除息不是破位 —— 这条假警正是 🟡-2 要挡的"
+    assert res.gap_up == []
+    assert res.member_ex_rights == ["600001.SH"]
+    assert res.auction == ["600001.SH"], "竞价量能不读冻结锚,不该被一并吞掉"
+    assert res.summary_actionable == 0 and res.should_push_summary is False
+    assert res.counts["member_ex_rights"] == 1
+    kinds = {(e["sentinel"], e["event_key"])
+             for e in load_events_for_date(today, db_path=settings.db_path)}
+    assert ("precall", precall.EVENT_MEMBER_EX_RIGHTS) in kinds
+    assert ("precall", precall.EVENT_LOW_OPEN) not in kinds
+    body = [e for e in load_events_for_date(today, db_path=settings.db_path)
+            if e["event_key"] == precall.EVENT_MEMBER_EX_RIGHTS][0]["payload"]["body"]
+    assert "疑似除权除息" in body
+    assert "不是「无异常」" in body, "「没核对」不能被读成「核对过没事」"
+
+
+def test_precall_summary_text_discloses_unchecked_members(monkeypatch):
+    """汇总文案如实说「另 N 只…今日未核对」——「没核对」与「核对过没异常」必须分得开。"""
+    from neckline.api import notify as nt
+
+    sent = {}
+    monkeypatch.setattr(nt, "push_event",
+                        lambda kind, title, body, **kw: sent.update(title=title, body=body))
+    nt.push_precall_summary({"gap_up": 0, "low_open": 0, "position_low_open": 0,
+                             "auction": 0, "member_ex_rights": 2})
+    assert "另 2 只疑似除权除息" in sent["body"] and "今日未核对" in sent["body"]
+
+    sent.clear()          # 老调用方不传这个键 → 一字不多(缺键 = 0,零感知)
+    nt.push_precall_summary({"gap_up": 1, "low_open": 0, "position_low_open": 0, "auction": 0})
+    assert "除权除息" not in sent["body"]
 
 
 # ————————————————————————————————————————————————————————————————
@@ -309,7 +415,7 @@ def _precall_with_circuit(isolated_env, *, locked: bool):
     now = datetime.combine(today, time(9, 25, 30))
     # open 9.55 vs ma10 9.5 → 高开 +0.5%(未超 3% 阈)、pre_close 10.0 → 低开 -4.5%?
     # 用 open=pre_close=9.55 令四类判定全部不触发,专测「零判定 + 熔断锁定」这一格。
-    quotes = {"600001.SH": _quote(open_=9.55, pre_close=9.55, code="600001.SH")}
+    quotes = {"600001.SH": _quote(open_=9.55, pre_close=9.5, code="600001.SH")}
     res = run_precall_tick(now, db_path=settings.db_path,
                            parquet_dir=settings.parquet_dir, quotes_fn=lambda codes: quotes)
     return settings, today, res

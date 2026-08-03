@@ -12,6 +12,15 @@
 
     · **只读冻结值,盘前一律不重算**(§2.4 铁律的原意:计划是昨晚写死的)。卡里没有
       该成员的行 / 该阈值为 null → **跳过该票不判**,不拿现价现推一个阈值顶上。
+    · **⑧-E 除权除息锚失效检测先于前两类判定**(判定线审计 🟡-2,2026-08-03 补):
+      竞价 `pre_close ≠ 卡里冻结的 ref_close` → 冻结锚今日已失效,拿 D+1 的原始开盘价
+      去跟除权前尺度的价位比是**错的比较**。⑬-7 晚于 ⑧-E 落地,把同一个锚错配在另一个
+      消费方重新引入:成员恰在 D+1 除权除息(⑧-E 真实样本 603409.SH,D0 收盘 31.70 →
+      D+1 除权参考价 21.07)时,`open ≤ stop_line` 必真 →「开盘即在失效位下方」假警,
+      直接进 9:26 盘前汇总推送。现改为**该票前两类判定跳过 + 如实标 `member_ex_rights`**;
+      检测器复用 `basket_verify.anchor_mismatch`(全项目唯一一份),⛔ 不做自动 rescale
+      (与 ⑧-E 同理:盘中分不开「真除权」与「行情源故障」,确诊留给今晚 ⑧-E EOD 的
+      `adj_factor` 交叉确认)。竞价量能附注不受此影响(它比的是量,不读冻结锚)。
     · **不碰 `verification_rules.py` 的条件集与 `VERIFICATION_RULESET_VERSION`**:
       竞价开盘价不是收盘价,把它塞进 ⑦-b 的 close 语义条件里会污染 ⑧ 的四态判定。
       本模块**只借冻结价位**(ref_close / stop_line 两个数),自己用既有的
@@ -61,6 +70,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from neckline.calendar import is_trading_day
+from neckline.sentinel.basket_verify import anchor_mismatch
 from neckline.sentinel.dedup import already_pushed, record_pushed
 from neckline.sentinel.holding import STOP_APPROACH_BUFFER
 from neckline.sentinel.positions import Position, d_count
@@ -106,6 +116,12 @@ EVENT_GAP_UP = "gap_up_invalidate"
 EVENT_LOW_OPEN = "low_open_falsify"
 EVENT_AUCTION = "auction_vol_anomaly"
 EVENT_POS_LOW_OPEN = "position_low_open"
+# 🟡-2:冻结锚今日失效(竞价 pre_close ≠ 卡里 ref_close)。**这是「今天没法核对」的
+# 如实标注,不是一条判定** —— 不进 `summary_actionable`,不单独触发推送。⚠ 名字里的
+# `ex_rights` 是**盘前的疑似**:盘前没有 `adj_factor` 交叉确认能力,分不开「真除权」与
+# 「行情源故障」(⑧-E 同款局限),确诊在今晚 ⑧-E EOD 那一拍(`REASON_MEMBER_EX_RIGHTS`
+# 才是确诊码)。文案里据此写「疑似」,别在别处把这个标记当成已确诊。
+EVENT_MEMBER_EX_RIGHTS = "member_ex_rights"
 # 市场级「当日盘前 tick 已跑」标记(ts_code 空,不进看板事件列表,见 api board 过滤)。
 EVENT_TICK = "tick"
 # 市场级「熔断锁定中·今日只减不加」盘前强提醒(§2.1 第 7 条的「次日」那一半;2026-07-27
@@ -201,14 +217,29 @@ def _positive_or_none(v: Any) -> Optional[float]:
     return f if f > 0 else None
 
 
+def member_anchor_stale(script: MemberScript, quote: Quote) -> bool:
+    """🟡-2:这只成员的**冻结锚今日还成不成立** —— 竞价 `pre_close` 与卡里 `ref_close`
+    对不上(带 `vr.EPS` 容差)即判失效。检测器**复用 ⑧-E 的 `basket_verify.
+    anchor_mismatch`,不在本模块抄第二份**(抄一份 = 两处容差各自漂移,正是 ⑧-E 那场
+    事故的复发路径)。
+
+    `pre_close` 取不到(测试替身 / 老调用点)→ `getattr` 兜底 `None` → 检测器返回
+    `False` = **不做锚检测**,不是"锚一定有效"(⛔「没有」不是「不匹配」)。"""
+    return anchor_mismatch(script.ref_close, getattr(quote, "pre_close", None))
+
+
 def judge_gap_up_invalidate(
     script: MemberScript, quote: Quote, threshold: float = PRECALL_GAP_UP_INVALIDATE
 ) -> Optional[str]:
     """成员集合竞价开盘高于**卡里冻结的 D0 收盘锚**超阈 →「今日高开已偏离冻结剧本」。
     锚缺失或 open≤0 → None(数据不足,不妄判)。阈值沿用 V1 的
-    `PRECALL_GAP_UP_INVALIDATE`,一个字未改。"""
+    `PRECALL_GAP_UP_INVALIDATE`,一个字未改。
+
+    **锚失效(疑似除权除息)→ None**(🟡-2):这一步在阈值判定**之前**,与 ⑧-E
+    「检测先于任何条件判定」同序 —— 先排除错的比较,不许先判后知错。编排层
+    (`run_precall_tick`)会另标 `member_ex_rights` 如实披露,不是静默丢弃。"""
     ref = script.ref_close
-    if ref is None or quote.open <= 0:
+    if ref is None or quote.open <= 0 or member_anchor_stale(script, quote):
         return None
     gap = quote.open / ref - 1
     if gap >= threshold - _EPS:
@@ -224,9 +255,13 @@ def judge_low_open_falsify(script: MemberScript, quote: Quote) -> Optional[str]:
     `stop_pct` 算出)下方 →「开盘即在失效位下方」。失效位缺失或 open≤0 → None。
 
     ⛔ 这是**成员级剧本核对**,不是篮子 `falsified` 定论(⑦-b/⑧ 的 EOD 拍才是,且
-    篮子 falsified ⛔ 不进推送),更不驱动任何持仓动作(持仓走下面第 4 类判定)。"""
+    篮子 falsified ⛔ 不进推送),更不驱动任何持仓动作(持仓走下面第 4 类判定)。
+
+    **锚失效(疑似除权除息)→ None**(🟡-2):这条是假警重灾区 —— 除权除息日的开盘价
+    比冻结止损线低一大截是**尺度问题不是破位**,`open ≤ stop_line` 必真。分红季每 1–3 天
+    就有一个被验证成员中招(⑧-E 裁定书量化过),而这条会进 9:26 锁屏推送。"""
     stop_line = script.stop_line
-    if stop_line is None or quote.open <= 0:
+    if stop_line is None or quote.open <= 0 or member_anchor_stale(script, quote):
         return None
     if quote.open <= stop_line + _EPS:
         gap_txt = ""
@@ -483,6 +518,9 @@ class PrecallResult:
     low_open: List[str] = field(default_factory=list)            # 开盘证伪候选代码
     auction: List[str] = field(default_factory=list)             # 竞价量能异常代码(附注)
     position_low_open: List[str] = field(default_factory=list)   # 持仓止损预警代码
+    # 🟡-2:冻结锚今日失效(疑似除权除息)→ 该票前两类判定**没做**。**附注,不是判定**
+    # ——「没做」必须与「做了没异常」分得开,所以它有自己的位置而不是被静默省略。
+    member_ex_rights: List[str] = field(default_factory=list)
     d5_exits: List["TimeExit"] = field(default_factory=list)     # 需推的两档时间退出(actionable)
     circuit_locked: bool = False           # 熔断锁定中(§2.1 第 7 条「次日只减不加」盘前强提醒)
     watched_codes: int = 0
@@ -495,13 +533,17 @@ class PrecallResult:
             "low_open": len(self.low_open),
             "position_low_open": len(self.position_low_open),
             "auction": len(self.auction),
+            "member_ex_rights": len(self.member_ex_rights),
         }
 
     @property
     def summary_actionable(self) -> int:
         """盘前四类判定中「需要动作」的条数:买点变形 + 开盘证伪 + 持仓预警之和(竞价量能
         异常是附注、不计入,避免每个平静清晨都轰炸)。**注意:这是判定计数,不是推送门槛**
-        ——门槛见 `should_push_summary`。"""
+        ——门槛见 `should_push_summary`。
+
+        🟡-2 的 `member_ex_rights` **同样不计入**:它是「今天核对不了」的如实标注,不是
+        「你得做点什么」。分红季若把它算进来,每天都会因为几只除权票而推一条盘前提醒。"""
         return len(self.gap_up) + len(self.low_open) + len(self.position_low_open)
 
     @property
@@ -597,6 +639,21 @@ def run_precall_tick(
         q = quotes.get(sc.ts_code)
         if q is None:
             continue  # 拉不到竞价快照 → 该票无意见,跳过(不是「无异常」)
+        # 🟡-2:⑧-E 锚失效检测**先于**前两类判定 —— 冻结锚今日失效时,拿原始开盘价去跟
+        # 除权前尺度的价位比是错的比较,判出来的「开盘即失效」是假警(而它会进 9:26 锁屏
+        # 推送)。⛔ 不自动 rescale;如实标一条附注,确诊留给今晚 ⑧-E EOD 的交叉确认。
+        if member_anchor_stale(sc, q):
+            result.member_ex_rights.append(sc.ts_code)
+            _record("precall", sc.ts_code, EVENT_MEMBER_EX_RIGHTS, (
+                f"竞价昨收{q.pre_close:.2f}与卡里冻结的 D0 收盘锚{sc.ref_close:.2f}不符,"
+                f"疑似除权除息(或行情源异常)——冻结锚今日失效,本票盘前剧本核对跳过"
+                f"(不是「无异常」);今晚 EOD 会用复权因子交叉确认成因。"
+            ))
+            auc_only = judge_auction_volume(q, prev5.get(sc.ts_code, 0.0))
+            if auc_only:   # 竞价量能比的是量、不读冻结锚,不受锚失效影响,照常附注
+                result.auction.append(sc.ts_code)
+                _record("precall", sc.ts_code, EVENT_AUCTION, auc_only)
+            continue
         gap_reason = judge_gap_up_invalidate(sc, q)
         if gap_reason:
             result.gap_up.append(sc.ts_code)
@@ -673,6 +730,7 @@ __all__ = [
     "PRECALL_AUCTION_VOL_HIGH_FRAC",
     "PRECALL_AUCTION_VOL_LOW_FRAC",
     "is_precall_window",
+    "member_anchor_stale",
     "judge_gap_up_invalidate",
     "judge_low_open_falsify",
     "judge_auction_volume",
@@ -694,6 +752,7 @@ __all__ = [
     "EVENT_GAP_UP",
     "EVENT_LOW_OPEN",
     "EVENT_AUCTION",
+    "EVENT_MEMBER_EX_RIGHTS",
     "EVENT_POS_LOW_OPEN",
     "EVENT_TICK",
     "EVENT_CIRCUIT_LOCKED",
