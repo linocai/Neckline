@@ -104,9 +104,6 @@ final class DTODecodeTests: XCTestCase {
           "candidates": [
             {
               "rank": 1, "code": "600001.SH", "name": "示例甲", "score": 88.0, "board": "主板",
-              "buyPoint": "回调低吸:站稳10日线", "stop": "参考止损价约 9.50 元(-5%)",
-              "target": "不设固定止盈线;持有满5日无条件离场",
-              "invalidation": "次日低开≤-2%且全天未翻红…",
               "invalidationSpec": {"low_open_pct": -0.02, "vwap_break": true},
               "entrySpec": {"buypoint": "pullback", "ma10": 9.9},
               "formTags": ["浅回调贴前高", "放量"],
@@ -116,7 +113,6 @@ final class DTODecodeTests: XCTestCase {
             },
             {
               "rank": 2, "code": "600002.SH", "name": "示例乙", "score": 80.0, "board": "主板",
-              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
               "formTags": [], "hotSectors": [], "sectorNames": [],
               "llmJudgment": null
             }
@@ -141,8 +137,6 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(report.candidates.count, 2)
         let c0 = report.candidates[0]
         XCTAssertEqual(c0.code, "600001.SH")
-        XCTAssertTrue(c0.buyPoint.contains("回调低吸"))
-        XCTAssertTrue(c0.stop.contains("-5%"))
         XCTAssertEqual(c0.formTags, ["浅回调贴前高", "放量"])
         XCTAssertEqual(c0.llmJudgment?.verdict, "通过")
         XCTAssertNil(report.candidates[1].llmJudgment)   // 未审判候选无 llmJudgment(nil,非降级占位)
@@ -162,7 +156,6 @@ final class DTODecodeTests: XCTestCase {
           "sectors": [],
           "candidates": [{
             "rank": 1, "code": "600001.SH", "name": "示例甲", "score": 88.0, "board": "MAIN",
-            "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
             "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
             "k4Flags": ["B2_double_gold_cross"],
             "intelRank": {
@@ -206,13 +199,11 @@ final class DTODecodeTests: XCTestCase {
           "candidates": [
             {
               "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
-              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
               "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
               "intelRank": {"industryRank": 2, "industryPersistDays": 1, "yellowCardCount": 3}
             },
             {
               "rank": 2, "code": "600002.SH", "name": "乙", "score": 85.0, "board": "MAIN",
-              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
               "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
               "intelRank": {"industryRank": null}
             }
@@ -232,15 +223,14 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(report.candidates[1].intelRank.yellowCardCount, 0)
     }
 
-    /// v1.4-④-B/⑤-A:候选携带信息卡摘要(`infoCard`)+ 执行提示(`execHints`)。
-    func testDecodeCandidateInfoCardSummaryAndExecHints() async throws {
+    /// v1.4-④-B:候选携带信息卡摘要(`infoCard`)。⚠ V2-⑬-4:执行提示 `execHints` 键已删。
+    func testDecodeCandidateInfoCardSummary() async throws {
         let json = jsonData("""
         {
           "tradeDate": "20260728", "generatedAt": "g", "strategyVersion": "v1.3.3", "sentiment": null,
           "sectors": [],
           "candidates": [{
             "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
-            "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
             "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
             "infoCard": {
               "snapshot": {"volRatio5": 1.8, "turnoverRate": 6.2, "industryRank": 3, "industryPersistDays": 1,
@@ -249,10 +239,7 @@ final class DTODecodeTests: XCTestCase {
               "mildBand": true,
               "news": {"scanned": false, "items": [], "unavailableReason": "候选不在消息面扫描域(仅持仓+自选)"},
               "topList": {"onListToday": false, "lookbackDaysCovered": 3, "lookbackHitDays": 0}
-            },
-            "execHints": [
-              {"code": "C2_mild_red_low_variance", "text": "低方差首选带(H5),但≈0期望、非正alpha,不构成买入理由", "source": "db"}
-            ]
+            }
           }],
           "degraded": false, "reason": ""
         }
@@ -269,23 +256,17 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertFalse(card.news.scanned)
         XCTAssertEqual(card.news.unavailableReason, "候选不在消息面扫描域(仅持仓+自选)")
         XCTAssertEqual(card.topList.lookbackDaysCovered, 3)
-        XCTAssertEqual(c.execHints.count, 1)
-        XCTAssertEqual(c.execHints[0].code, "C2_mild_red_low_variance")
-        XCTAssertEqual(c.execHints[0].source, "db")
     }
 
-    /// 老报告快照(建于本字段前)缺 `infoCard`/`execHints`/`referencePlan`/`judgeSkipped`
-    /// 键 → `nil`/`[]`/`nil`/`false`,不崩(`infoCard=nil`/`referencePlan=nil` 表示"该
-    /// 信息暂不可用",不冒充"确认无内容"——v1.5-①-F 契约「`referencePlan=nil` 不冒充
-    /// 确认无参考」同一惯例)。
-    func testDecodeCandidateOmittingV14InfoCardExecHintsDefaultsGracefully() async throws {
+    /// 老报告快照(建于本字段前)缺 `infoCard`/`judgeSkipped` 键 → `nil`/`false`,不崩
+    /// (`infoCard=nil` 表示"该信息暂不可用",不冒充"确认无内容")。
+    func testDecodeCandidateOmittingOptionalKeysDefaultsGracefully() async throws {
         let json = jsonData("""
         {
           "tradeDate": "20260717", "generatedAt": "g", "strategyVersion": "v1", "sentiment": null,
           "sectors": [],
           "candidates": [{
             "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
-            "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
             "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null
           }],
           "degraded": false, "reason": ""
@@ -295,155 +276,7 @@ final class DTODecodeTests: XCTestCase {
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
         let report = try await client.fetchReportLatest()
         XCTAssertNil(report.candidates[0].infoCard)
-        XCTAssertEqual(report.candidates[0].execHints, [])
-        XCTAssertNil(report.candidates[0].referencePlan)
         XCTAssertFalse(report.candidates[0].judgeSkipped)
-    }
-
-    /// v1.5-①-F/②-A(需求 9):参考件三件套 `referencePlan` 三态(ok/vetoed/unavailable)
-    /// + `judgeSkipped`(预算耗尽未发起,与 `llmJudgment` 为 nil 但语义不同,不许合并成
-    /// 一个"没审")。样例字段对照 `neckline/api/schemas.py::ReferencePlanOut`。**同时是
-    /// §五 v1.5-⑤-G「老客户端兼容回归」的机器证据一部分**:老四件套四键在本样例里同
-    /// 老服务端一样保持非空 String,用当前(未改严格性的)`Candidate.init(from:)` 解码
-    /// 不抛错,证明向后兼容硬约束成立。
-    func testDecodeCandidateReferencePlanThreeStatesAndJudgeSkipped() async throws {
-        let json = jsonData("""
-        {
-          "tradeDate": "20260730", "generatedAt": "g", "strategyVersion": "v1.3.3", "sentiment": null,
-          "sectors": [],
-          "candidates": [
-            {
-              "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
-              "buyPoint": "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。",
-              "stop": "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。",
-              "target": "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。",
-              "invalidation": "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。",
-              "formTags": [], "hotSectors": [], "sectorNames": [],
-              "llmJudgment": {"verdict": "通过", "narrative": "催化站得住。", "degraded": false},
-              "referencePlan": {
-                "status": "ok",
-                "buy": {"low": 12.30, "high": 12.98, "stopPrice": 11.68, "why": "站稳10日线,量能温和"},
-                "exit": {"low": 15.10, "high": 15.80, "why": "本轮上涨压力位"},
-                "script": "竞价掉进危险区就放弃,温和低开量能正常就观望。",
-                "disclaimer": "参考,非指令 —— 买卖与终选在你,系统不代下单;纪律以章程为准。",
-                "degraded": false
-              }
-            },
-            {
-              "rank": 2, "code": "600002.SH", "name": "乙", "score": 85.0, "board": "MAIN",
-              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
-              "formTags": [], "hotSectors": [], "sectorNames": [],
-              "llmJudgment": {"verdict": "否决", "narrative": "催化证据不足。", "degraded": false},
-              "referencePlan": {"status": "vetoed", "vetoReason": "无法验证催化真实性",
-                                "disclaimer": "参考,非指令 —— 买卖与终选在你,系统不代下单;纪律以章程为准。",
-                                "degraded": false}
-            },
-            {
-              "rank": 3, "code": "600003.SH", "name": "丙", "score": 80.0, "board": "MAIN",
-              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
-              "formTags": [], "hotSectors": [], "sectorNames": [],
-              "llmJudgment": {"verdict": "未激活", "narrative": "LLM 未配置。", "degraded": true},
-              "referencePlan": {"status": "unavailable", "unavailableReason": "LLM 未激活",
-                                "disclaimer": "参考,非指令 —— 买卖与终选在你,系统不代下单;纪律以章程为准。",
-                                "degraded": true}
-            },
-            {
-              "rank": 4, "code": "600004.SH", "name": "丁", "score": 75.0, "board": "MAIN",
-              "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
-              "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
-              "judgeSkipped": true
-            }
-          ],
-          "degraded": false, "reason": ""
-        }
-        """)
-        MockURLProtocol.handler = { _ in (200, json) }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let report = try await client.fetchReportLatest()
-        XCTAssertEqual(report.candidates.count, 4)
-
-        let ok = report.candidates[0]
-        XCTAssertFalse(ok.judgeSkipped)
-        let okPlan = try XCTUnwrap(ok.referencePlan)
-        XCTAssertTrue(okPlan.isOk)
-        XCTAssertEqual(okPlan.buy?.low, 12.30)
-        XCTAssertEqual(okPlan.buy?.stopPrice, 11.68)
-        XCTAssertEqual(okPlan.exit?.high, 15.80)
-        XCTAssertTrue(okPlan.script?.contains("放弃") ?? false)
-        XCTAssertFalse(okPlan.disclaimer.isEmpty)
-        // 老四件套四键仍是非空 String(向后兼容硬约束,§五 v1.5-⑤-C「本版不改它们的
-        // 解码严格性」),新 UI 不展示,但必须继续能被严格解码逻辑读到、不抛错。
-        XCTAssertFalse(ok.buyPoint.isEmpty)
-        XCTAssertFalse(ok.stop.isEmpty)
-        XCTAssertFalse(ok.target.isEmpty)
-        XCTAssertFalse(ok.invalidation.isEmpty)
-
-        let vetoed = report.candidates[1]
-        let vetoedPlan = try XCTUnwrap(vetoed.referencePlan)
-        XCTAssertTrue(vetoedPlan.isVetoed)
-        XCTAssertNil(vetoedPlan.buy)
-        XCTAssertNil(vetoedPlan.exit)
-        XCTAssertEqual(vetoedPlan.vetoReason, "无法验证催化真实性")
-
-        let unavailable = report.candidates[2]
-        let unavailablePlan = try XCTUnwrap(unavailable.referencePlan)
-        XCTAssertTrue(unavailablePlan.isUnavailable)
-        XCTAssertEqual(unavailablePlan.unavailableReason, "LLM 未激活")
-
-        // judgeSkipped=true(预算耗尽未发起)与 llmJudgment=nil 并存,referencePlan 键
-        // 干脆没给(该票压根没被送去审)——两者语义不同,不许合并成一个"没审"。
-        let skipped = report.candidates[3]
-        XCTAssertTrue(skipped.judgeSkipped)
-        XCTAssertNil(skipped.llmJudgment)
-        XCTAssertNil(skipped.referencePlan)
-
-        // v1.5.1 增量两键在本样例里都没给(等价老快照)→ nil,不是 0(0 会被
-        // `ratioPct` 渲染成 "0%",等于对用户宣称"章程止损 0%",极危险)。
-        XCTAssertNil(okPlan.buy?.stopPct)
-        XCTAssertNil(okPlan.exit?.takeProfitRetrace)
-    }
-
-    /// v1.5.1(两线 review 共同项):章程口径指纹 `buy.stopPct` / `exit.takeProfitRetrace`
-    /// 解码 + 标签动态生成。样例对照 `tests/test_api_report_board.py::
-    /// test_report_candidate_reference_plan_carries_charter_fingerprints`。
-    func testDecodeReferencePlanCharterFingerprintsAndDynamicLabels() async throws {
-        let json = jsonData("""
-        {
-          "tradeDate": "20260730", "generatedAt": "g", "strategyVersion": "v1.5.1", "sentiment": null,
-          "sectors": [],
-          "candidates": [
-            {
-              "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
-              "buyPoint": "x", "stop": "x", "target": "x", "invalidation": "x",
-              "formTags": [], "hotSectors": [], "sectorNames": [],
-              "referencePlan": {
-                "status": "ok",
-                "buy": {"low": 12.30, "high": 12.98, "stopPrice": 11.32, "stopPct": 0.08, "why": ""},
-                "exit": {"low": 15.10, "high": 15.80, "takeProfitRetrace": 0.12, "why": ""},
-                "script": "s", "disclaimer": "参考,非指令", "degraded": false
-              }
-            }
-          ],
-          "degraded": false, "reason": ""
-        }
-        """)
-        MockURLProtocol.handler = { _ in (200, json) }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let report = try await client.fetchReportLatest()
-        let plan = try XCTUnwrap(report.candidates[0].referencePlan)
-        XCTAssertEqual(plan.buy?.stopPct, 0.08)
-        XCTAssertEqual(plan.exit?.takeProfitRetrace, 0.12)
-        // 标签跟着指纹走,不再硬编 −5% / 8%(章程一改,数字与标签同步)。
-        XCTAssertEqual(ReferencePlanSection.stopLabel(try XCTUnwrap(plan.buy)), "章程 −8%")
-        XCTAssertEqual(ReferencePlanSection.retraceLabel(try XCTUnwrap(plan.exit)),
-                       "纪律仍以回落止盈 12% 兜底")
-    }
-
-    /// 指纹缺失(老快照 / 章程未配置)→ 退化成**不带数字**的说法,绝不硬编 5%/8%。
-    func testReferencePlanCharterLabelsDegradeWithoutNumber() {
-        XCTAssertEqual(ReferencePlanSection.stopLabel(ReferencePlanBuy(low: 1, high: 2)), "章程止损")
-        XCTAssertEqual(ReferencePlanSection.retraceLabel(ReferencePlanExit(low: 1, high: 2)),
-                       "纪律仍以章程的回落止盈兜底")
     }
 
     /// 比例→百分数格式化:整百分点不留 ".00",非整百分点不四舍五入成整数骗人。
@@ -452,18 +285,6 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(NKFmt.ratioPct(0.08), "8%")
         XCTAssertEqual(NKFmt.ratioPct(0.055), "5.5%")
         XCTAssertEqual(NKFmt.ratioPct(0.1), "10%")
-    }
-
-    /// v1.5.1(契约线 review 🔵-2):`plan != nil` 但 status 未知时**不许整节静默消失**
-    /// ——展示态判定必须落到 `.unknown(原始status)`,由 UI 给一条诚实兜底文案。
-    func testReferencePlanUnknownStatusIsNotSilentlyDropped() {
-        XCTAssertEqual(ReferencePlanSection.displayState(nil), .absent)
-        XCTAssertEqual(ReferencePlanSection.displayState(ReferencePlan(status: "ok")), .ok)
-        XCTAssertEqual(ReferencePlanSection.displayState(ReferencePlan(status: "vetoed")), .vetoed)
-        XCTAssertEqual(ReferencePlanSection.displayState(ReferencePlan(status: "unavailable")), .unavailable)
-        XCTAssertEqual(ReferencePlanSection.displayState(ReferencePlan(status: "future_state")),
-                       .unknown("future_state"))
-        XCTAssertEqual(ReferencePlanSection.displayState(ReferencePlan(status: "")), .unknown(""))
     }
 
     // MARK: - v1.3-③-C1/C2/C4「情报」板块(样例对照 test_report_latest_carries_intel_and_sector_moneyflow /
@@ -661,7 +482,6 @@ final class DTODecodeTests: XCTestCase {
               "sectors": [], "degraded": false, "reason": "",
               "candidates": [{
                 "rank": 1, "code": "600001.SH", "name": "甲", "score": 90.0, "board": "MAIN",
-                "buyPoint": "b", "stop": "s", "target": "t", "invalidation": "i",
                 "formTags": [], "hotSectors": [], "sectorNames": [], "llmJudgment": null,
                 "infoCard": {
                   "snapshot": {"volRatio5": 1.1, "turnoverRate": 5.0, "industryRank": null,
@@ -1582,52 +1402,6 @@ final class DTODecodeTests: XCTestCase {
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
         let ok = try await client.putSettingsLLM(provider: .glm, apiKey: "sk-secret-abc")
         XCTAssertTrue(ok)
-    }
-
-    // MARK: - v1.3-③-C3/⑥ 五常驻板块可配(样例对照 tests/test_api_settings.py 新增用例)
-
-    func testFetchIntelWatchBoardsDecodesArray() async throws {
-        MockURLProtocol.handler = { _ in
-            (200, jsonData("""
-            {"boards": ["芯片概念", "创新药", "储能", "机器人概念", "稀土永磁"]}
-            """))
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let r = try await client.fetchIntelWatchBoards()
-        XCTAssertEqual(r.boards, ["芯片概念", "创新药", "储能", "机器人概念", "稀土永磁"])
-    }
-
-    func testPutIntelWatchBoardsRequestBodyAndResponse() async throws {
-        MockURLProtocol.handler = { req in
-            let body = try XCTUnwrap(req.httpBodyOrStream())
-            let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
-            XCTAssertEqual(obj?["boards"] as? [String], ["储能", "芯片概念"])
-            return (200, jsonData("""
-            {"boards": ["储能", "芯片概念"]}
-            """))
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let r = try await client.putIntelWatchBoards(["储能", "芯片概念"])
-        XCTAssertEqual(r.boards, ["储能", "芯片概念"])
-    }
-
-    /// 精确匹配失败 → 422,`reason` 前缀 "board_not_found",冒号后是具体没匹配到的名字
-    /// (`reasonString` 对 detail.unresolved 数组的展开,见传输层注释;对照
-    /// test_put_intel_boards_rejects_fuzzy_unmatched_name_422)。
-    func testPutIntelWatchBoardsRejectedNamesSurfaceInValidationReason() async throws {
-        MockURLProtocol.handler = { _ in
-            (422, jsonData("""
-            {"detail": {"ok": false, "reason": "board_not_found", "unresolved": ["芯片"],
-                        "message": "以下板块名未能在 ths_index.name 精确匹配到(禁模糊匹配,请核对全名):['芯片']"}}
-            """))
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        do {
-            _ = try await client.putIntelWatchBoards(["芯片"])
-            XCTFail("应抛 validation(board_not_found)")
-        } catch APIError.validation(let reason) {
-            XCTAssertEqual(reason, "board_not_found:芯片")
-        }
     }
 
     // MARK: - v1.2-E.5 一键补录预填推荐,区间双档(样例对照契约清单

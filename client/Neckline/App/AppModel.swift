@@ -188,7 +188,7 @@ final class AppModel {
 
     // —— v1.4-④ 信息卡(§五 v1.4-④,依需求现算;候选专属,本版先只接候选)——————————
     /// 候选卡点进去要展示信息卡时的目标(携带整个 `Candidate`,不只是 code——
-    /// `execHints` 只在 `Candidate` 上,信息卡页复用候选对象展示,不重复请求)。
+    /// (⑬-4 起执行提示位已删,信息卡页不再展示它)。
     struct InfoCardRequest: Identifiable, Equatable {
         let tradeDate: String
         let candidate: Candidate
@@ -239,12 +239,6 @@ final class AppModel {
     var pushCircuitDraft: Bool = true
     // v1.3-②/⑥:第六类(K4 持仓派发警报),默认开,独立于 D5 时间退出通道。
     var pushHoldingAlertDraft: Bool = true
-
-    // —— v1.3-③-C3/⑥ 五常驻板块可配(`GET/PUT /settings/intel-boards`)——————————————
-    var intelWatchBoards: [String] = []       // 已保存态(展示用)
-    var intelBoardsDraft: [String] = []       // 编辑中的草稿(保存前可增删,不即时生效)
-    var intelBoardDraftInput: String = ""     // 新增一个板块名的临时输入框
-    var intelWatchBoardsLoading = false
 
     // —— 4D 周复盘工作台(拖入交割单对账;macOS 独有,§五 阶段4D)——
     var reviewWeeks: [WeeklyReviewEntry] = []
@@ -398,7 +392,7 @@ final class AppModel {
     // 序列,体量不小,只在用户点开候选时才请求,§五 v1.4-④-B「不落库、服务端现算」)。
 
     /// 候选卡「查看信息卡」入口调用。携带整个 `Candidate`(而非只传 code)是刻意的
-    /// ——execHints 只在 `Candidate` 上,信息卡页复用候选对象展示「执行提示」,不为它
+    /// ——⑬-4 起执行提示位已删,本页不再展示它;不为它
     /// 单独发一次请求、也不给 `InfoCardOut` 加字段(⑤ 留的待核对假设,已核对:本版
     /// 信息卡入口只有候选卡这一条路,假设成立)。
     func openInfoCard(tradeDate: String, candidate: Candidate) {
@@ -486,10 +480,8 @@ final class AppModel {
         revisingDecisionId = nil
         entryForm.code = candidate.code
         entryForm.name = candidate.name
-        // v1.5-①/⑤:`candidate.buyPoint` 老四件套字段自 v1.5.0 起恒为过渡文案
-        // (`LEGACY_FOURPIECE_NOTICE`,服务端 ③-B 定案),不再是真实买点描述——预填
-        // 理由改取参考买入区间的 `why`(参考件三件套 ①-F 契约),没有则留一句通用
-        // 描述,不把过渡文案塞进用户的进场理由里。
+        // ⚠ **V2-⑬-3/⑬-6**:老四件套与参考件三件套两个键都已删 → 进场理由预填退回
+        // 通用文案(⑮ 换成篮子卡后改取篮子卡的对应字段,那时再接)。
         entryForm.reason = Self.entryReasonText(for: candidate)
         decisionForm.code = candidate.code
         decisionForm.name = candidate.name
@@ -508,15 +500,12 @@ final class AppModel {
         modal = .decisionLog
     }
 
-    /// 候选卡「买入补录」入口的进场理由预填(纯函数,单测覆盖)。优先用参考买入区间
-    /// 的 `why`(LLM 参考件,§2.0 第〇原则——只是预填一个可编辑文本框,用户提交前
-    /// 仍可改写,不构成"参考件触发机器动作");三态(否决/未生成/无 buy)统一退回
-    /// 通用文案,不显示过渡文案或空字符串。
+    /// 「买入补录」入口的进场理由预填(纯函数,单测覆盖)。⚠ **V2-⑬-3**:原先优先取
+    /// 参考买入区间的 `why`,该键已随参考件三件套展示位删除 → 统一退回通用文案,
+    /// 不显示空字符串、也不编造理由(⑮ 接篮子卡时再从卡里取)。
     static func entryReasonText(for candidate: Candidate) -> String {
-        guard let why = candidate.referencePlan?.buy?.why, !why.isEmpty else {
-            return "已按计划买入"
-        }
-        return "已按计划买入 · \(why)"
+        _ = candidate
+        return "已按计划买入"
     }
 
     func openCloseSheet(code: String) {
@@ -885,60 +874,6 @@ final class AppModel {
                                                  circuit: pushCircuitDraft, holdingAlert: pushHoldingAlertDraft)
             await loadSettings()
             showToast("推送设置已保存")
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "保存失败", isError: true)
-        } catch {
-            showToast("保存失败:\(error.localizedDescription)", isError: true)
-        }
-    }
-
-    // MARK: - v1.3-③-C3/⑥:候选情报「五常驻板块」可配(§2.3;设置屏调用)——————————————
-
-    func loadIntelWatchBoards() async {
-        guard let client = clientProvider() else { return }
-        intelWatchBoardsLoading = true
-        do {
-            let r = try await client.fetchIntelWatchBoards()
-            intelWatchBoards = r.boards
-            intelBoardsDraft = r.boards
-        } catch let e as APIError {
-            if case .noToken = e {} else { showToast("常驻板块拉取失败", isError: true) }
-        } catch {
-            showToast("常驻板块拉取失败", isError: true)
-        }
-        intelWatchBoardsLoading = false
-    }
-
-    /// 草稿区加一个板块名(未保存前不生效,`saveIntelWatchBoards()` 才落库;去重,
-    /// 不接受空白输入)。
-    func addIntelBoardDraft() {
-        let name = intelBoardDraftInput.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty, !intelBoardsDraft.contains(name) else { return }
-        intelBoardsDraft.append(name)
-        intelBoardDraftInput = ""
-    }
-
-    func removeIntelBoardDraft(_ name: String) {
-        intelBoardsDraft.removeAll { $0 == name }
-    }
-
-    /// 保存常驻板块名单。**禁模糊匹配**——服务端逐个精确核对 `ths_index.name`,匹配不到
-    /// 明确报出具体是哪个名字(`APIError.validation("board_not_found:名字1、名字2")`,
-    /// 见 `APIClient.reasonString` 对 `unresolved` 的展开),不是笼统「字段校验失败」。
-    func saveIntelWatchBoards() async {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        do {
-            let r = try await client.putIntelWatchBoards(intelBoardsDraft)
-            intelWatchBoards = r.boards
-            intelBoardsDraft = r.boards
-            showToast("常驻板块已保存")
-        } catch APIError.validation(let reason) where reason.hasPrefix("board_not_found") {
-            let names = reason.split(separator: ":", maxSplits: 1).count > 1
-                ? String(reason.split(separator: ":", maxSplits: 1)[1]) : ""
-            showToast(names.isEmpty ? "以下板块名未能精确匹配,请检查全名" : "以下板块名未能精确匹配:\(names)(不支持模糊匹配)",
-                     isError: true)
         } catch let e as APIError {
             showToast(e.errorDescription ?? "保存失败", isError: true)
         } catch {

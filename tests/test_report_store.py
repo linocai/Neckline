@@ -182,85 +182,21 @@ class TestNewsAlertsScanJsonRoundtrip:
         assert loaded["news_alerts_scan"] == []
 
 
-class TestLLMJudgmentRoundtrip:
-    def test_save_and_load_with_search_hits(self, db):
-        result = JudgeResult(
-            ts_code="600001.SH", provider="glm", model="glm-5.2", verdict=VERDICT_PASS,
-            narrative="催化仍在持续。", degraded=False,
-            search_hits=[SearchHit(title="标题", link="https://a.com", content="摘要", media="媒体A", publish_date="2026-07-18")],
-            search_engine="search_pro",
-        )
-        store.save_llm_judgment(D, result, db_path=db)
-        rows = store.load_llm_judgments(D, db_path=db)
-        assert len(rows) == 1
-        r = rows[0]
-        assert r["ts_code"] == "600001.SH"
-        assert r["verdict"] == VERDICT_PASS
-        assert r["degraded"] is False
-        assert r["search_hits"][0]["title"] == "标题"
-        assert r["search_hits"][0]["link"] == "https://a.com"
-        assert r["search_engine"] == "search_pro"
+class TestLLMJudgmentReadOnlyAfterRetirement:
+    """**V2-⑬-2**:`llm_judgments` 停写留档 —— 写函数 `save_llm_judgment` /
+    `delete_llm_judgments` 已物理删除,原 `TestLLMJudgmentRoundtrip`(6 例往返/删除
+    用例)随之删除。`load_llm_judgments` 保留为历史行只读,这里锁死这两点。"""
 
-    def test_degraded_judgment_stores_flag_and_reason(self, db):
-        result = JudgeResult(
-            ts_code="600002.SH", provider="none", model="", verdict=VERDICT_INACTIVE,
-            narrative="LLM 未激活...", degraded=True, degrade_reason="未配置 LLM_PROVIDER/LLM_API_KEY",
-        )
-        store.save_llm_judgment(D, result, db_path=db)
-        rows = store.load_llm_judgments(D, db_path=db)
-        assert rows[0]["degraded"] is True
-        assert rows[0]["degrade_reason"] == "未配置 LLM_PROVIDER/LLM_API_KEY"
-        assert rows[0]["search_hits"] == []
-        assert rows[0]["search_engine"] is None   # v1.5-④-A3:未记录,不臆造
+    def test_write_functions_are_gone_read_stays(self):
+        from neckline.report import store as st
 
-    def test_multiple_candidates_same_day_ordered_by_insertion(self, db):
-        for code in ["600001.SH", "600002.SH", "600003.SH"]:
-            store.save_llm_judgment(
-                D,
-                JudgeResult(ts_code=code, provider="glm", model="glm-5.2", verdict=VERDICT_VETO, narrative="x", degraded=False),
-                db_path=db,
-            )
-        rows = store.load_llm_judgments(D, db_path=db)
-        assert [r["ts_code"] for r in rows] == ["600001.SH", "600002.SH", "600003.SH"]
+        for gone in ("save_llm_judgment", "delete_llm_judgments"):
+            assert not hasattr(st, gone), f"{gone} 应已随 ⑬-2 删除"
+            assert gone not in st.__all__
+        assert hasattr(st, "load_llm_judgments")
 
-    def test_overwrite_same_trade_date_and_code_is_idempotent(self, db):
-        store.save_llm_judgment(
-            D, JudgeResult(ts_code="600001.SH", provider="glm", model="glm-5.2", verdict=VERDICT_PASS, narrative="第一次", degraded=False),
-            db_path=db,
-        )
-        store.save_llm_judgment(
-            D, JudgeResult(ts_code="600001.SH", provider="glm", model="glm-5.2", verdict=VERDICT_VETO, narrative="重跑后改判", degraded=False),
-            db_path=db,
-        )
-        rows = store.load_llm_judgments(D, db_path=db)
-        assert len(rows) == 1
-        assert rows[0]["verdict"] == VERDICT_VETO
-        assert rows[0]["narrative"] == "重跑后改判"
+    def test_load_on_empty_table_returns_empty_list(self, tmp_path):
+        from neckline.report import store as st
 
-    def test_missing_date_returns_empty_list(self, db):
-        assert store.load_llm_judgments(date(2020, 1, 1), db_path=db) == []
+        assert st.load_llm_judgments(date(2026, 7, 20), db_path=tmp_path / "t.db") == []
 
-    def test_delete_named_codes_only_and_idempotent(self, db):
-        """v1.5.1(契约线 review 🟡-1 写侧收口):同日重跑 + 预算耗尽时,被跳过那批码的
-        既有审判行必须真删掉,否则 API 会同时返回「陈旧结论」与「本次未发起」。"""
-        for code in ["600001.SH", "600002.SH", "600003.SH"]:
-            store.save_llm_judgment(
-                D, JudgeResult(ts_code=code, provider="glm", model="m", verdict=VERDICT_PASS,
-                               narrative="x", degraded=False), db_path=db,
-            )
-        assert store.delete_llm_judgments(D, ["600002.SH", "600003.SH"], db_path=db) == 2
-        assert [r["ts_code"] for r in store.load_llm_judgments(D, db_path=db)] == ["600001.SH"]
-        assert store.delete_llm_judgments(D, ["600002.SH"], db_path=db) == 0      # 幂等
-        assert store.delete_llm_judgments(D, [], db_path=db) == 0                 # 空名单不建连不报错
-        assert store.delete_llm_judgments(D, ["", None], db_path=db) == 0         # 脏名单不误伤
-
-    def test_delete_does_not_touch_other_dates(self, db):
-        other = date(2026, 7, 17)
-        for d in (D, other):
-            store.save_llm_judgment(
-                d, JudgeResult(ts_code="600001.SH", provider="glm", model="m", verdict=VERDICT_PASS,
-                               narrative="x", degraded=False), db_path=db,
-            )
-        store.delete_llm_judgments(D, ["600001.SH"], db_path=db)
-        assert store.load_llm_judgments(D, db_path=db) == []
-        assert len(store.load_llm_judgments(other, db_path=db)) == 1

@@ -54,13 +54,12 @@ final class IntegrationSmokeTests: XCTestCase {
         try await skipUnlessDevServerReachable()
         let report = try await makeClient().fetchReportLatest()
         XCTAssertFalse(report.degraded, "dev 后端应已由 scripts/report.py 生成过真实报告")
-        XCTAssertFalse(report.candidates.isEmpty)
         XCTAssertNotNil(report.sentiment)
-        // 四件套字段非空(真实报告文案,不是占位符)
-        let c0 = report.candidates[0]
-        XCTAssertFalse(c0.buyPoint.isEmpty)
-        XCTAssertFalse(c0.stop.isEmpty)
-        XCTAssertTrue(c0.stop.contains("-5%"), "止损口径必须是 -5% 单一常量")
+        // ⚠ **V2-⑬-1/⑬-6**:候选榜与老四件套四键均已删除 → 新报告 `candidates` 恒为空,
+        // 原「四件套文案非空 + 止损口径 -5%」两条断言随之下线。止损口径的单一源守门在
+        // 服务端(`brain.get_active().rule["config"].stop_pct`,`tests/test_brain.py`);
+        // ⑮ 换成篮子卡后,这里应改为断言「今日篮子」非空 + 卡的 11 项齐。
+        XCTAssertTrue(report.candidates.isEmpty, "⑬-1 后候选榜已删,报告不应再带候选")
     }
 
     /// 盘中看板:GET /board 真请求(§4C.2)。

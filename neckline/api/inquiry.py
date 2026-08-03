@@ -78,7 +78,6 @@ from neckline.llm.prompt_context import (
     date_anchor_line,
     search_subject_with_recency,
 )
-from neckline.report.candidates import _base_score_expr  # 同码:展示排序分与报告一致
 from neckline.report.industry_strength import (
     IndustryStrength,
     industry_strength_lookup,
@@ -98,7 +97,7 @@ from neckline.review.parse import normalize_ts_code
 from neckline.strategy import brain
 from neckline.strategy import signals as S
 from neckline.strategy.features import build_research_panel
-from neckline.strategy.momentum import MomentumConfig, build_entry_mask
+from neckline.strategy.momentum import MomentumConfig
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +148,12 @@ class DeterministicResult:
     risk_flags: List[str] = field(default_factory=list)
     # K4 安检命中(如「年线下涨停(派发域)」),同样只提示不拦。
     k4_flags: List[str] = field(default_factory=list)
+    # ⚠ **V2-⑬-9 起两项恒为缺省**:「母战法买点形态 + 展示排序分」是 K1 entry mask /
+    # base score 的产物,而 ⑬-9 要求 `strategy/momentum.build_entry_mask` 的**生产 import
+    # 清零**(V2 选股走策略包原语,K1 只留回测/研究线)。字段本身**保留**(契约不破,
+    # `InquiryOut.deterministic` 是透传 dict;⑭ 契约总装时再决定删不删),但不再有产出方
+    # —— 也**不再进 evidence / LLM 上下文**(留着一个恒 False 的"未满足"会让读者以为
+    # "看过了、不满足",那是撒谎)。
     passes_buypoint_today: bool = False
     score: Optional[float] = None
     sectors: List[str] = field(default_factory=list)          # 所属概念板块名
@@ -276,13 +281,10 @@ def run_deterministic_checks(
     det.board = _BOARD_LABEL.get(board_raw, board_raw)
     det.risk_flags = [label for col, label, _expr in checks if row.get(col)]
 
-    # —— 同码买点/评分(材料,不作任何门槛)——
-    try:
-        mask_val = sub.select(build_entry_mask(cfg).alias("_m")).row(0)[0]
-        det.passes_buypoint_today = bool(mask_val)
-        det.score = round(float(sub.select(_base_score_expr(cfg).alias("_s")).row(0)[0]), 1)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("问询台买点/评分核算异常(%s,不影响其余材料)", e)
+    # —— V2-⑬-9:同码买点/评分已退役(K1 entry mask 生产 import 清零)——
+    # 这里原本跑 `build_entry_mask(cfg)` + `_base_score_expr(cfg)` 出「母战法买点形态 +
+    # 展示排序分」。V2 的选股判据住在策略包原语里,K1 只留回测/研究线,故整段删除。
+    # ⛔ 不留降级占位:恒 False 的"今日未满足"比没有更糟(见 `DeterministicResult` 注释)。
 
     # —— 板块名 + 板块年龄(§2.5「板块年龄」,纯展示)——
     member_map: Dict[str, List[str]] = {}
@@ -355,10 +357,6 @@ def _build_evidence(det: DeterministicResult) -> None:
     # 看到「其中题材那一维这次没看成」,不会把空缺读成「查过了、没问题」。
     if det.industry_strength_unavailable:
         ev.append(det.industry_strength_unavailable)
-    if det.passes_buypoint_today:
-        ev.append(f"今日已同时满足母战法买点(pullback/breakout),展示排序分约 {det.score}。")
-    elif det.score is not None:
-        ev.append(f"今日未走出母战法买点形态(展示排序分约 {det.score};买点是形态口径,不是买卖建议)。")
     if det.hot_sectors:
         ev.append("命中今日热门板块:" + "、".join(det.hot_sectors))
     elif det.sectors:
@@ -388,10 +386,6 @@ def build_llm_context(det: DeterministicResult, quote: Optional[Any] = None) -> 
     if det.k4_flags:
         lines.append("K4 派发域安检命中(研究结论,价量强证据可信度高于成分弱证据):"
                      + "、".join(det.k4_flags))
-    if det.has_data:
-        lines.append(f"母战法买点形态:{'今日已满足' if det.passes_buypoint_today else '今日未满足'}" +
-                     (f";展示排序分约 {det.score}" if det.score is not None else "") +
-                     "(形态口径,不是买卖建议)")
     if det.hot_sectors:
         lines.append("命中今日热门板块(含板块年龄):" + "、".join(det.hot_sectors))
     elif det.sectors:

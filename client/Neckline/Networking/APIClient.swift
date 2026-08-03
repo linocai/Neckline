@@ -32,8 +32,6 @@
 //    GET  /api/v1/settings                  → SettingsOut(key 只回布尔;push 六字段 v1.3-②)
 //    PUT  /api/v1/settings/llm              → {ok}                            · 422 供应商非法
 //    PUT  /api/v1/settings/push             → {ok}(六字段:report/retreatBrake/precall/d5exit/circuit/holdingAlert)
-//    GET  /api/v1/settings/intel-boards     → IntelWatchBoardsOut{boards}(v1.3-⑥,五常驻板块可配)
-//    PUT  /api/v1/settings/intel-boards     → IntelWatchBoardsOut{boards}    · 422 board_not_found(禁模糊匹配)
 //    POST /api/v1/devices                   → {ok}
 //  鉴权:Authorization: Bearer <API_TOKEN>(health 外全部)。
 //
@@ -219,9 +217,8 @@ struct SettingsPushRequest: Encodable {
 }
 struct SettingsReviewColMapRequest: Encodable { let colMap: [String: String] }
 
-// —— v1.3-③-C3/⑥ 五常驻板块可配(`GET/PUT /settings/intel-boards`)——————————————————
-struct IntelWatchBoardsRequest: Encodable { let boards: [String] }
-private struct IntelWatchBoardsResponse: Decodable { let boards: [String] }
+
+// —— 设备注册 + 通用 ok 响应 ————————————————————————————————————————————————
 
 struct DeviceRegisterRequest: Encodable { let token: String; let platform: String }
 
@@ -644,22 +641,6 @@ actor APIClient {
     // —— v1.3-③-C3/⑥ 五常驻板块可配 ——————————————————————————————————————————
 
     /// 读当前常驻板块名单(从未配置 → 默认五板块;曾显式清空 → 空数组)。
-    func fetchIntelWatchBoards() async throws -> IntelWatchBoards {
-        let data = try await get("/api/v1/settings/intel-boards")
-        return IntelWatchBoards(boards: try JSONDecoder().decode(IntelWatchBoardsResponse.self, from: data).boards)
-    }
-
-    /// 写常驻板块名单。**禁模糊匹配**——每个名字须能在 `ths_index.name` 精确匹配到,匹配
-    /// 不到 → `APIError.validation("board_not_found:名字1、名字2")`(`reasonString` 对
-    /// `unresolved` 数组的展开,见传输层注释),调用方据此给出具体哪个名字没对上的提示,
-    /// 不是笼统的「字段校验失败」。返回写入后的最终名单(与 GET 同形状)。
-    @discardableResult
-    func putIntelWatchBoards(_ boards: [String]) async throws -> IntelWatchBoards {
-        let body = IntelWatchBoardsRequest(boards: boards)
-        let data = try await put("/api/v1/settings/intel-boards", body: body)
-        return IntelWatchBoards(boards: try JSONDecoder().decode(IntelWatchBoardsResponse.self, from: data).boards)
-    }
-
     // —— 设备注册(iOS APNs token)——
     @discardableResult
     func registerDevice(token deviceToken: String, platform: String = "ios") async throws -> Bool {
@@ -827,10 +808,9 @@ actor APIClient {
     private func reasonString(_ data: Data) -> String? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         if let detail = obj["detail"] as? [String: Any], let r = detail["reason"] as? String {
-            // v1.3-⑥:`PUT /settings/intel-boards` 422 额外带 `unresolved`(具体哪些板块名
-            // 没精确匹配到)——**纯附加行为**,只在这个键存在时才拼接,不影响其它端点既有
-            // `reason` 语义(无此键的 reason 原样返回不变)。拼接成
-            // "board_not_found:名字1、名字2",调用方按前缀识别 + 取冒号后的展示文案。
+            // 422 若额外带 `unresolved` 数组(具体哪些名字没对上)则拼进 reason ——
+            // **纯附加行为**,只在这个键存在时才拼接,不影响其它端点既有 `reason` 语义。
+            // (首个用例 `PUT /settings/intel-boards` 已随 ⑬-1 删除,机制保留。)
             if let unresolved = detail["unresolved"] as? [String], !unresolved.isEmpty {
                 return "\(r):\(unresolved.joined(separator: "、"))"
             }

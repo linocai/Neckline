@@ -50,7 +50,6 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from neckline.report.candidates import Candidate
 from neckline.report.info_card import is_mild_band
 
 logger = logging.getLogger(__name__)
@@ -220,35 +219,35 @@ def _latest_decision(ts_code: str, trade_date: date, db_path: Optional[Path]) ->
     return rows[-1] if rows else None
 
 
-# —— 批量装配(pipeline.py 报告生成期调用,`Candidate` 原地补 `exec_hints`)——————————
+# —— 纯计算出口(V2-⑬-4:展示位已删,四条计算并入篮子剧本的输入)————————————————
 
-def attach_exec_hints(
-    candidates: List[Candidate],
+def exec_hints_for(
+    row: Dict[str, Any],
+    ts_code: str,
     trade_date: date,
     *,
     db_path: Optional[Path] = None,
-) -> None:
-    """给一批候选**原地**补 `Candidate.exec_hints`(plan §五 v1.4-⑤-A)。`pipeline.py::
-    build_report` 在候选算好后调用一次。**零额外 parquet 读取**——C1/C2/C4 直接读
-    `Candidate.raw`(候选生成时已装配好的 K4 特征面板行);C3 每只候选查一次该
-    `ts_code` 最近一条 `decision_log`(SQLite 索引点查)。DB `k4_advisory.exec_hint`
-    文字只读一次(四码共用同一份 `db_texts`),逐码各自判定 db/fallback 来源。
+    db_texts: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """算一只票在 `trade_date` 的执行提示(0~4 条,`ExecHint.public_dict()` 形状)。
 
-    `trade_date` **用于 C3 的无前视偏差截断**(见 `_latest_decision` docstring)——
-    只看该票在 `trade_date` 当天或之前创建的决策日志,不让历史回放读到"未来"才存在
-    的决策记录(§3.8「无前视偏差」铁律)。C1/C2/C4 不需要 `trade_date`(它们只读
-    `Candidate.raw`,该行本身已经是 `trade_date` 当天的横截面,不存在跨日期问题)。
-    """
-    db_texts = _load_k4_exec_hint_texts(db_path)
-    for c in candidates:
-        row = c.raw or {}
-        recent_decision = _latest_decision(c.ts_code, trade_date, db_path)
-        codes = _evaluate_codes(row, recent_decision)
-        hints: List[Dict[str, Any]] = []
-        for code in codes:
-            text, source = _hint_text_and_source(code, db_texts)
-            hints.append(ExecHint(code=code, text=text, source=source).public_dict())
-        c.exec_hints = hints
+    ⚠ **V2-⑬-4**:本函数取代已删除的 `attach_exec_hints(candidates, ...)` —— 那是
+    「候选卡展示位」的原地装配器(吃 `Candidate` 列表、写 `Candidate.exec_hints`),
+    展示位随候选榜一并退役;**四条判定与文案来源逐字未改**,只是改成「吃一行特征 +
+    吐一个列表」的纯计算形状,好让 ⑦ 的篮子剧本上下文按需取用(⑭ 接线)。
+
+    `row` = 该票当日的 K4 特征面板行(`ret_1d`/`is_limit_up`/`limit_pct` 等,调用方
+    已有的横截面,本函数**零额外 parquet 读取**)。`trade_date` **用于 C3 的无前视偏差
+    截断**(见 `_latest_decision` docstring)——只看该票在当天或之前创建的决策日志,
+    不让历史回放读到"未来"才存在的决策记录(§3.8 铁律)。`db_texts` 可由调用方一次
+    读好、批量复用(不传则本函数自己读一次)。"""
+    texts = _load_k4_exec_hint_texts(db_path) if db_texts is None else db_texts
+    recent_decision = _latest_decision(ts_code, trade_date, db_path)
+    hints: List[Dict[str, Any]] = []
+    for code in _evaluate_codes(row or {}, recent_decision):
+        text, source = _hint_text_and_source(code, texts)
+        hints.append(ExecHint(code=code, text=text, source=source).public_dict())
+    return hints
 
 
 __all__ = [
@@ -257,5 +256,5 @@ __all__ = [
     "C3_LOW_LIMIT_SELF_AWARE",
     "C4_NO_PULLBACK_BIGRED_MECHANICAL",
     "ExecHint",
-    "attach_exec_hints",
+    "exec_hints_for",
 ]

@@ -13,7 +13,6 @@ from tests.conftest import business_days, insert_stock_basic, insert_trade_cal, 
 
 from neckline.data.board import Board
 from neckline.report import store
-from neckline.report.candidates import Candidate
 from neckline.sentinel.positions import open_position
 from neckline.sentinel.universe import (
     is_new_stock_exempt,
@@ -25,55 +24,58 @@ from neckline.sentinel.universe import (
 pytestmark = pytest.mark.usefixtures("isolated_env")
 
 
-def _candidate(ts_code: str, **overrides) -> Candidate:
-    base = dict(
-        ts_code=ts_code, name=ts_code, close=10.0, score=90.0, rank=1, board="MAIN",
-        pattern_tags=[], hot_sectors=[], sector_names=[],
-        entry_plan="回调低吸...", stop_loss="止损...", target="目标...",
-        invalidation_text="证伪...",
-        invalidation_spec={"low_open_pct": -0.02, "vol_ratio_low": 0.8, "vol_ratio_high": 3.0},
-        entry_spec={"buypoint": "pullback", "ma10": 9.5, "prev_close": 10.0},
-    )
-    base.update(overrides)
-    return Candidate(**base)
-
-
-def _save_report(settings, trade_date: date, candidates):
+def _save_report(settings, trade_date: date):
     store.save_report(
         trade_date, strategy_version="v1", sentiment={}, sectors=[],
-        candidates=[c.public_dict() for c in candidates], markdown="# test",
-        db_path=settings.db_path,
+        candidates=[], markdown="# test", db_path=settings.db_path,
     )
 
 
 class TestLoadWatchUniverse:
-    def test_candidates_read_from_prior_trading_day_report(self, isolated_env):
+    def test_targets_built_from_prior_trading_day_baskets(self, isolated_env):
+        """**V2-⑬-1**:证伪哨兵的判定对象由「昨晚候选」换成「D0 冻结的 T1/T2 篮子成员」
+        —— `WatchTarget` 逐位带上码 / 名 / 全局证伪 spec / 所属篮子。"""
+        from neckline.sentinel.invalidation import invalidation_spec
+
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         report_day, today = days[-2], days[-1]
-        _save_report(isolated_env, report_day, [_candidate("600001.SH")])
+        insert_stock_basic(isolated_env, [{"ts_code": "600001.SH", "name": "示例甲", "market": "主板"}])
+        _save_report(isolated_env, report_day)
+        _seed_basket(isolated_env, report_day, ["600001.SH"], tier=1, key="k1")
 
         wu = load_watch_universe(today, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
         assert wu.report_found is True
         assert wu.report_date == report_day
-        assert [c.ts_code for c in wu.candidates] == ["600001.SH"]
-        # entry_spec/invalidation_spec 完整往返,不是被裁掉的字段
-        assert wu.candidates[0].entry_spec["ma10"] == pytest.approx(9.5)
-        assert wu.candidates[0].invalidation_spec["vol_ratio_high"] == pytest.approx(3.0)
+        assert [t.ts_code for t in wu.targets] == ["600001.SH"]
+        assert wu.targets[0].name == "示例甲"
+        assert wu.targets[0].basket_key == "k1"
+        # 证伪 spec 是**全局常量那一份**(零入参),不是 per-code 重算出来的
+        assert wu.targets[0].invalidation_spec == invalidation_spec()
 
-    def test_no_report_degrades_to_empty_candidates_not_crash(self, isolated_env):
+    def test_no_baskets_degrades_to_empty_targets_not_crash(self, isolated_env):
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         wu = load_watch_universe(days[-1], db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
         assert wu.report_found is False
-        assert wu.candidates == []
+        assert wu.targets == []
 
-    def test_positions_included_and_deduped_with_candidates(self, isolated_env):
+    def test_target_name_falls_back_to_code_when_meta_missing(self, isolated_env):
+        """查不到 `stock_basic` 元数据 → 名字退回代码,**不猜**(也不崩)。"""
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         report_day, today = days[-2], days[-1]
-        _save_report(isolated_env, report_day, [_candidate("600001.SH")])
-        open_position("600001.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)  # 恰好也是候选
+        _seed_basket(isolated_env, report_day, ["600001.SH"], tier=1, key="k1")
+        wu = load_watch_universe(today, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+        assert [t.name for t in wu.targets] == ["600001.SH"]
+
+    def test_positions_included_and_deduped_with_targets(self, isolated_env):
+        days = business_days(date(2026, 7, 13), 5)
+        insert_trade_cal(isolated_env, days)
+        report_day, today = days[-2], days[-1]
+        _save_report(isolated_env, report_day)
+        _seed_basket(isolated_env, report_day, ["600001.SH"], tier=1, key="k1")
+        open_position("600001.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)  # 恰好也是篮子成员
         open_position("600002.SH", 20.0, 100, report_day, db_path=isolated_env.db_path)
 
         wu = load_watch_universe(today, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
@@ -240,7 +242,7 @@ class TestV2WatchPoolComposition:
             {"ts_code": "300001.SZ", "name": "创业板", "market": "创业板"},
             {"ts_code": "600003.SH", "name": "持仓票", "market": "主板"},
         ])
-        _save_report(isolated_env, report_day, [_candidate("600009.SH")])
+        _save_report(isolated_env, report_day)
         open_position("600003.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)
         _seed_basket(isolated_env, report_day, ["600001.SH", "300001.SZ"], tier=1, key="k1")
         _seed_basket(isolated_env, report_day, ["600002.SH"], tier=2, key="k2")
@@ -254,14 +256,13 @@ class TestV2WatchPoolComposition:
         wu = load_watch_universe(today, db_path=isolated_env.db_path,
                                  parquet_dir=isolated_env.parquet_dir)
         # ① 持仓 ② T1/T2 篮子成员(T3 不进)③ 板块指数 ④ 昨日涨停 —— 四类齐
+        # (V1 候选那一类已随 ⑬-1 删除,不再是关注池来源)
         assert "600003.SH" in wu.codes
         assert set(wu.basket_codes) == {"600001.SH", "300001.SZ", "600002.SH"}
         assert "600004.SH" not in wu.codes
         assert wu.index_codes == ["000001.SH", "399006.SZ"]     # 沪主板 + 创业板,确定性排序
         assert set(wu.index_codes) <= set(wu.codes)
         assert wu.breadth_extra_codes == ["700001.SH"]
-        # 候选(V1 残留,⑬-1 才删)仍在
-        assert "600009.SH" in wu.codes
         # 去重:codes 无重复
         assert len(wu.codes) == len(set(wu.codes))
         assert [b.tier for b in wu.baskets] == [1, 2]
@@ -284,14 +285,14 @@ class TestV2WatchPoolComposition:
 
     def test_cap_is_respected_and_indexes_yield_first(self, isolated_env):
         """总量 ≤ `breadth_cap`;真要挤,先挤**没有纪律消费方**的指数(优先序:
-        持仓 > T1/T2 成员 > 候选 > 指数)。"""
+        持仓 > T1/T2 成员 > 指数)。"""
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         report_day, today = days[-2], days[-1]
         insert_stock_basic(isolated_env, [{"ts_code": "600001.SH", "name": "甲", "market": "主板"}])
-        _save_report(isolated_env, report_day, [_candidate("600009.SH")])
+        _save_report(isolated_env, report_day)
         open_position("600003.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)
-        _seed_basket(isolated_env, report_day, ["600001.SH"], tier=1, key="k1")
+        _seed_basket(isolated_env, report_day, ["600001.SH", "600009.SH"], tier=1, key="k1")
 
         wu = load_watch_universe(today, breadth_cap=3, db_path=isolated_env.db_path,
                                  parquet_dir=isolated_env.parquet_dir)

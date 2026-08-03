@@ -19,19 +19,35 @@ from neckline.llm.judge import (
     judge_candidate,
 )
 from neckline.llm.providers.glm import GLMProvider
-from neckline.report.candidates import Candidate
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
 
 
-def _candidate(**overrides) -> Candidate:
-    base = dict(
-        ts_code="600001.SH", name="示例股份", close=12.34, score=95.0, rank=1, board="MAIN",
-        pattern_tags=["浅回调贴前高", "均线多头"], hot_sectors=["人工智能"], sector_names=["人工智能", "算力"],
-        entry_plan="回调低吸:现价 12.34...", stop_loss="参考止损价约 11.72 元...",
-        target="不设固定止盈线...", invalidation_text="次日低开...", invalidation_spec={},
-        raw={},
-    )
-    base.update(overrides)
-    return Candidate(**base)
+@dataclass
+class _DuckCandidate:
+    """`judge_candidate` 是 **duck-typed** 的(⑬-2 定死:它保留为「通用 LLM 调用 +
+    降级链 + verdict 解析」工具),只要求几个属性。V1 的 `report.candidates.Candidate`
+    数据类已随候选榜删除(⑬-1),本文件因此改用这个最小替身构造——**被测函数
+    一行未改**。"""
+    ts_code: str = "600001.SH"
+    name: str = "示例股份"
+    close: float = 12.34
+    score: float = 95.0
+    rank: int = 1
+    board: str = "MAIN"
+    pattern_tags: List[str] = field(default_factory=lambda: ["浅回调贴前高", "均线多头"])
+    hot_sectors: List[str] = field(default_factory=lambda: ["人工智能"])
+    sector_names: List[str] = field(default_factory=lambda: ["人工智能", "算力"])
+    entry_plan: str = "回调低吸:现价 12.34..."
+    stop_loss: str = "参考止损价约 11.72 元..."
+    target: str = "不设固定止盈线..."
+    invalidation_text: str = "次日低开..."
+    invalidation_spec: Dict[str, Any] = field(default_factory=dict)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+def _candidate(**overrides) -> _DuckCandidate:
+    return _DuckCandidate(**overrides)
 
 
 class _StubProvider:
@@ -210,31 +226,11 @@ class TestContextBlock:
         assert "人工智能" in block
         assert "浅回调贴前高" in block
 
-    def test_board_age_from_real_candidate_reaches_context_block(self):
-        """§2.4 审判信息源要求"板块年龄"本身可查,不只是"是否命中热门"的布尔态——
-        用真实 `score_candidates`(而非手工构造的 `_candidate()`)产出的 Candidate
-        验证板块年龄数字确实流到了 LLM 看到的上下文里,不是只在 `_candidate()` 这个
-        测试替身里手工写对了。"""
-        from neckline.report.candidates import score_candidates
-        from neckline.report.sectors import SectorScore
-        from neckline.strategy.momentum import MomentumConfig
-
-        panel = [{
-            "ts_code": "600001.SH", "trade_date": date(2024, 3, 4), "board": "MAIN", "close": 10.0,
-            "amount_ma20": 50000.0, "ma20": 9.0, "is_st": False,
-            "above_ma20_bullish": True, "vol_ratio_5": 1.2, "ret_1d": -0.01,
-            "ma10": 9.5, "dist_from_high_20d": -0.02, "prev_close_max_20d": 10.5,
-            "consec_limit_up_days": 0, "is_limit_up": False, "limitup_count_20d": 0,
-            "turnover_rate": 5.0,
-        }]
-        import polars as pl
-
-        cfg = MomentumConfig(strength="none", buypoint="pullback")
-        sector_scores = [SectorScore(index_code="SEC.A", name="人工智能", board_age=3, ret_20d=0.18, bonus=3.0, rank=1)]
-        out = score_candidates(pl.DataFrame(panel), cfg, sector_scores=sector_scores, member_map={"600001.SH": ["SEC.A"]})
-        block = build_context_block(out[0])
-        assert "板块年龄3天" in block
-        assert "18.0%" in block
+    # ⚠ **V2-⑬-1 删除**:`test_board_age_from_real_candidate_reaches_context_block`
+    # 用真实 `report.candidates.score_candidates`(K1 评分)产出的 Candidate 验证
+    # 「板块年龄数字确实流到 LLM 上下文」;K1 候选评分整条已随候选榜删除,没有真实
+    # 产出方可对拍了。`build_context_block` 读 `.hot_sectors` 的行为由上面
+    # `test_includes_hot_sector_and_pattern_tags` 继续锁死。
 
 
 class TestEndToEndWithRealProviderMockTransport:

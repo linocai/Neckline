@@ -176,57 +176,9 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
     }
 
 
-def save_llm_judgment(trade_date: date, result: JudgeResult, db_path: Optional[Path] = None) -> None:
-    init_schema(db_path)
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    hits_json = json.dumps([asdict(h) for h in result.search_hits], ensure_ascii=False)
-    with connection(db_path) as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO llm_judgments "
-            "(trade_date, ts_code, provider, model, verdict, narrative, degraded, degrade_reason, "
-            "search_hits_json, search_engine, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                _d(trade_date),
-                result.ts_code,
-                result.provider,
-                result.model,
-                result.verdict,
-                result.narrative,
-                1 if result.degraded else 0,
-                result.degrade_reason,
-                hits_json,
-                result.search_engine,   # v1.5-④-A3(§七 P1-7):None=未记录,不回填猜测
-                now,
-            ),
-        )
-
-
-def delete_llm_judgments(trade_date: date, ts_codes: List[str], db_path: Optional[Path] = None) -> int:
-    """删掉当日这批码的审判行,返回删除行数(v1.5.1,契约线 review 🟡-1 的写侧收口)。
-
-    **为什么需要**:`/report` 端点的审判是**从本表现连**的(`app.py::_shape_candidate`
-    拿 `load_llm_judgments` 的结果),而 `judge_skipped` 只是打在候选快照上的标。同日
-    重跑(第一跑审完 20 只 → 补跑时预算在第 10 只耗尽)会让 11~20 号同时带着「第一跑
-    的审判结论」和「本次预算耗尽未发起」——`judgeSkipped` 的全部价值就是诚实分辨"为
-    什么没审",两句话打架时它恰好在撒谎。收口在**写侧**(本函数)而不是读侧遮蔽:
-    藏真数据不是诚实,该没有的行就该真没有。
-
-    幂等(删不存在的行 = 0 行,不报错);空名单直接返回 0、不建连。批量一条 DELETE
-    语句 = 单事务,不逐码开事务。"""
-    codes = [c for c in dict.fromkeys(ts_codes) if c]
-    if not codes:
-        return 0
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        cur = conn.execute(
-            f"DELETE FROM llm_judgments WHERE trade_date=? AND ts_code IN ({','.join('?' * len(codes))})",
-            (_d(trade_date), *codes),
-        )
-        return cur.rowcount
-
-
 def load_llm_judgments(trade_date: date, db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    # ⚠ **V2-⑬-2 起本表停写留档**:写函数 `save_llm_judgment`/`delete_llm_judgments`
+    # 已物理删除,本函数只服务历史行的归因只读(`/report` 读历史报告时仍会 live join)。
     """同 `load_report` 的防御性 `init_schema` 理由:查询一个还没审判过的交易日
     是正常场景,不应因表未建过而崩。"""
     init_schema(db_path)
@@ -255,6 +207,5 @@ def load_llm_judgments(trade_date: date, db_path: Optional[Path] = None) -> List
 
 
 __all__ = [
-    "save_report", "load_report", "load_report_by_str", "latest_report_date",
-    "save_llm_judgment", "load_llm_judgments", "delete_llm_judgments",
+    "save_report", "load_report", "load_report_by_str", "latest_report_date", "load_llm_judgments",
 ]

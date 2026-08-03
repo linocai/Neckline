@@ -5,14 +5,15 @@
 
 **原则守护(§2.4 铁律,写进编排顺序本身,不是靠人记住)**:
     1. 退潮哨兵先判——一旦当日已触发红色刹车(`sentinel_events` 表里已有
-       `(trade_date,"retreat","","brake")`,不论是今天哪一拍触发的),买点哨兵
-       **本拍直接跳过**,不产生任何新的开仓许可信号,即便某只候选这一刻价量结构
-       确实满足条件。持仓哨兵与证伪哨兵不受影响——管理已有仓位的风险、和把
-       已经变坏的候选标记"剔除勿进",在退潮当日依然是有意义的信息。
+       `(trade_date,"retreat","","brake")`,不论是今天哪一拍触发的)→ ⚠ **V2-⑬-1 起
+       买点哨兵已退役**(它 100% 由 K1 per-code `entry_spec` 驱动,V2 无单票买点计划),
+       退潮红色刹车因此只剩「不产生任何新的开仓许可信号」这一层语义上的保证 ——
+       系统本就不再产生开仓信号。持仓哨兵与证伪哨兵不受退潮影响——管理已有仓位的
+       风险、和把已经变坏的关注目标标记"剔除勿进",在退潮当日依然是有意义的信息。
     2. 拉不到行情(quotes 缺该票)→ 对应哨兵该票直接跳过(已在各哨兵纯函数
        内部处理,`quote=None` 时返回 None),不是"当没发生"而是"没有意见"。
-    3. 无候选(报告未生成)/ 无持仓 都是合法状态,只是那部分哨兵没有对象可判,
-       不报错。
+    3. 无篮子(V2 引擎未跑过 / 今日无篮子定档)/ 无持仓 都是合法状态,只是那部分
+       哨兵没有对象可判,不报错。
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from neckline import custom_alerts as custom_alerts_store
 from neckline import notify_kinds
 from neckline.db import connection
-from neckline.report.candidates import Candidate
 from neckline.report.sectors import load_member_map
 from neckline.sentinel import attention, basket_verify, capture
 from neckline.sentinel import custom as custom_alerts_tick
@@ -40,7 +40,6 @@ from neckline.sentinel.channels import (
     push_all,
 )
 from neckline.sentinel.dedup import already_pushed, record_pushed
-from neckline.sentinel.entry import EntrySignal, check_entry
 from neckline.sentinel.holding import (
     HoldingAlert,
     check_exit_reference_reached,
@@ -125,7 +124,6 @@ class TickResult:
     retreat_alert: Optional[RetreatAlert] = None       # 仅红色刹车时非空(驱动 APNs/通道推送)
     retreat_warning: Optional[str] = None              # 黄色预警文案(只进看板,不推送)
     breadth_snapshot: Optional[MarketBreadthSnapshot] = None
-    entry_signals: List[EntrySignal] = field(default_factory=list)
     invalidation_signals: List[InvalidationSignal] = field(default_factory=list)
     holding_alerts: List[HoldingAlert] = field(default_factory=list)
     pushed_events: List[str] = field(default_factory=list)
@@ -138,14 +136,16 @@ def _candidate_return(quote: Optional[Quote]) -> Optional[float]:
     return quote.price / quote.pre_close - 1
 
 
-def _hot_sector_peer_returns(candidates: List[Candidate], quotes: Dict[str, Quote]) -> List[float]:
-    """退潮哨兵「主线板块跳水」的样本——关注池里恰好命中"今日热门板块"标签的
-    候选(§2.2 板块热度),用它们已经拉到的行情算盘中收益率,不额外拉价。"""
+def _hot_sector_peer_returns(targets: List["WatchTarget"], quotes: Dict[str, Quote]) -> List[float]:
+    """退潮哨兵「主线板块跳水」的样本,用已经拉到的行情算盘中收益率,不额外拉价。
+
+    ⚠ **V2-⑬-1 换样本源(判定逻辑与阈值一行未改)**:V1 取「关注池里命中今日热门
+    板块标签的候选」;候选榜已删,V2 换成 **T1/T2 篮子成员全体** —— 篮子的定义
+    就是「同一个驱动串起来的一组票」、且 T1/T2 是当日注意力最高的两档,它比
+    V1 的「热门板块标签」更贴近"主线"这个词。⛔ 不新增任何阈值。"""
     rets: List[float] = []
-    for c in candidates:
-        if not c.hot_sectors:
-            continue
-        r = _candidate_return(quotes.get(c.ts_code))
+    for t in targets:
+        r = _candidate_return(quotes.get(t.ts_code))
         if r is not None:
             rets.append(r)
     return rets
@@ -341,7 +341,7 @@ def run_tick(
     hhmm = now.strftime("%H%M")
     breadth_snapshot = compute_breadth_snapshot(trade_date, quotes, meta)
     result.breadth_snapshot = breadth_snapshot
-    hot_peer_rets = _hot_sector_peer_returns(wu.candidates, quotes)
+    hot_peer_rets = _hot_sector_peer_returns(wu.targets, quotes)
     hot_avg = (sum(hot_peer_rets) / len(hot_peer_rets)) if hot_peer_rets else None
     metrics = RetreatMetrics(
         trade_date=trade_date, hhmm=hhmm, sample_size=breadth_snapshot.sample_size,
@@ -397,32 +397,17 @@ def run_tick(
                 )
     result.retreat_active = retreat_active
 
-    # v1.1-C.2「自选票享候选同级待遇」:买点/证伪哨兵对候选与「昨晚体检已触发
-    # 买点」的自选票一视同仁——两者的 entry_spec/invalidation_spec 都是昨晚写死
-    # 的,盘中只读不重算(§2.4 铁律)。退潮哨兵的板块联动样本(`_hot_sector_peer_
-    # returns`)刻意只用 `wu.candidates`,不纳入自选(见 `universe.py` 模块头
-    # 注释「四类哨兵」不含退潮)。
-    entry_pool = list(wu.candidates)
-
-    # —— 2) 买点哨兵(退潮生效时本拍整体跳过,不逐票判断)——————————————————
-    if not retreat_active:
-        for c in entry_pool:
-            sig = check_entry(c, quotes.get(c.ts_code), prev5.get(c.ts_code, 0.0), now)
-            if sig is not None:
-                result.entry_signals.append(sig)
-                _maybe_push(
-                    "entry", c.ts_code, "trigger",
-                    f"买点确认:{c.name}({c.ts_code})", sig.reason, LEVEL_INFO,
-                )
-
-    # —— 3) 证伪哨兵(不受退潮抑制——"剔除勿进"任何时候都是有效信息)——————————
-    for c in entry_pool:
-        inv = check_invalidation(c, quotes.get(c.ts_code), prev5.get(c.ts_code, 0.0), now)
+    # —— 2) 证伪哨兵(不受退潮抑制——"剔除勿进"任何时候都是有效信息)——————————
+    # ⚠ **V2-⑬-1**:判定对象 = D0 冻结的 T1/T2 篮子成员(`wu.targets`),不再是 V1 候选;
+    # 判定逻辑与阈值一行未改(证伪 spec 本就是零入参全局常量)。**买点哨兵已退役**
+    # (原第 2 段),编号顺延不重排 —— 其余段落的序号沿用历史编号,便于对照旧日志。
+    for t in wu.targets:
+        inv = check_invalidation(t, quotes.get(t.ts_code), prev5.get(t.ts_code, 0.0), now)
         if inv is not None:
             result.invalidation_signals.append(inv)
             _maybe_push(
-                "invalidation", c.ts_code, "trigger",
-                f"剔除勿进:{c.name}({c.ts_code})", inv.reason_text, LEVEL_WARN,
+                "invalidation", t.ts_code, "trigger",
+                f"剔除勿进:{t.name}({t.ts_code})", inv.reason_text, LEVEL_WARN,
             )
 
     # —— 4) 持仓哨兵(不受退潮抑制——管理已有仓位任何时候都要做)——————————————

@@ -2,7 +2,7 @@
 
 覆盖:①DB `k4_advisory.exec_hint` 读取——文字随 DB 变、K4 行缺失时兜底不崩、四码可
 部分命中 DB 部分兜底;②四条触发镜像各一组单测(C1 强票/C2 温和带/C3 挂低单自觉·与
-⑤-B 联动/C4 回调大红);③`attach_exec_hints` 端到端装配(零额外 parquet 读取,DB 文
+⑤-B 联动/C4 回调大红);③`exec_hints_for` 端到端装配(零额外 parquet 读取,DB 文
 字随 K4 行变化,多码并存);④语义红线自查(文案不含"建议买入"类表述)。
 """
 
@@ -11,26 +11,33 @@ from __future__ import annotations
 from datetime import date
 
 import neckline.report.exec_hint as eh
-from neckline.report.candidates import Candidate
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
 # v2.0.0(⑩-C):`decision_log` 表停写留档,`neckline.decision_log.create_decision`
 # 已物理删除;`tests.conftest.insert_decision_log_row` 是同签名的裸 SQL fixture
 # 替身,起别名保持下面全部既有调用点逐字不变(两者关键字参数集合恰好一致)。
 from tests.conftest import insert_decision_log_row as create_decision
 
-_TODAY = date.today()   # attach_exec_hints 按 trade_date 截断 decision_log(无前视偏差,
+_TODAY = date.today()   # exec_hints_for 按 trade_date 截断 decision_log(无前视偏差,
                          # 见 exec_hint._latest_decision docstring)——测试里的决策日志
                          # created_at 是"现在"(真实时钟),trade_date 必须 >= 今天才不会
                          # 被截断掉,故这里统一用 date.today() 而非任意历史日期。
 
 
-def _candidate(ts_code: str, raw: dict) -> Candidate:
-    """构造一个仅供 exec_hint 测试用的最小 Candidate(其余字段无关本模块判据)。"""
-    return Candidate(
-        ts_code=ts_code, name=ts_code, close=raw.get("close", 10.0), score=1.0, rank=1,
-        board="MAIN", pattern_tags=[], hot_sectors=[], sector_names=[],
-        entry_plan="", stop_loss="", target="", invalidation_text="", invalidation_spec={},
-        raw=raw,
-    )
+@dataclass
+class _DuckCandidate:
+    """⑬-1 后 `report.candidates.Candidate` 已删;`exec_hint` 的**纯计算**函数
+    (`_hit_c1`~`_hit_c4`/`_evaluate_codes`/`_latest_decision`)本就只吃 dict 与标量,
+    这个替身只服务少数需要"一个带 raw 的对象"的用例。"""
+    ts_code: str
+    name: str = ""
+    raw: Dict[str, Any] = field(default_factory=dict)
+    exec_hints: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def _candidate(ts_code: str, raw: dict) -> "_DuckCandidate":
+    """构造一个仅供 exec_hint 测试用的最小替身(其余字段无关本模块判据)。"""
+    return _DuckCandidate(ts_code=ts_code, name=ts_code, raw=raw)
 
 
 def _seed_k4(db_path, exec_hint: dict) -> None:
@@ -70,13 +77,13 @@ def test_output_text_changes_when_db_text_changes(isolated_env):
     """验收硬要求:「改 DB 文字 → 输出跟着变」。"""
     _seed_k4(isolated_env.db_path, {eh.C1_STRONG_MARKET_ORDER: "版本一"})
     cand = _candidate("600001.SH", {"ret_1d": 0.06, "is_limit_up": False})
-    eh.attach_exec_hints([cand], _TODAY, db_path=isolated_env.db_path)
+    cand.exec_hints = eh.exec_hints_for(cand.raw, cand.ts_code, _TODAY, db_path=isolated_env.db_path)
     hit = next(h for h in cand.exec_hints if h["code"] == eh.C1_STRONG_MARKET_ORDER)
     assert hit["text"] == "版本一" and hit["source"] == "db"
 
     _seed_k4(isolated_env.db_path, {eh.C1_STRONG_MARKET_ORDER: "版本二·已更新"})
     cand2 = _candidate("600001.SH", {"ret_1d": 0.06, "is_limit_up": False})
-    eh.attach_exec_hints([cand2], _TODAY, db_path=isolated_env.db_path)
+    cand2.exec_hints = eh.exec_hints_for(cand2.raw, cand2.ts_code, _TODAY, db_path=isolated_env.db_path)
     hit2 = next(h for h in cand2.exec_hints if h["code"] == eh.C1_STRONG_MARKET_ORDER)
     assert hit2["text"] == "版本二·已更新" and hit2["source"] == "db"
 
@@ -216,12 +223,12 @@ class TestEvaluateCodesOrderingAndCoexistence:
 
 
 # ————————————————————————————————————————————————————————————————
-# 3) attach_exec_hints 端到端装配(零额外 parquet 读取,原地补 Candidate.exec_hints)
+# 3) exec_hints_for 端到端装配(零额外 parquet 读取,原地补 Candidate.exec_hints)
 # ————————————————————————————————————————————————————————————————
 
-def test_attach_exec_hints_writes_public_dicts_onto_candidates(isolated_env):
+def test_exec_hints_for_writes_public_dicts_onto_candidates(isolated_env):
     cand = _candidate("600001.SH", {"ret_1d": 0.06, "is_limit_up": False, "close": 11.0, "ma20": 9.0})
-    eh.attach_exec_hints([cand], _TODAY, db_path=isolated_env.db_path)
+    cand.exec_hints = eh.exec_hints_for(cand.raw, cand.ts_code, _TODAY, db_path=isolated_env.db_path)
     codes = {h["code"] for h in cand.exec_hints}
     assert eh.C1_STRONG_MARKET_ORDER in codes
     assert eh.C4_NO_PULLBACK_BIGRED_MECHANICAL in codes
@@ -230,23 +237,23 @@ def test_attach_exec_hints_writes_public_dicts_onto_candidates(isolated_env):
         assert h["source"] == "fallback"   # 隔离库无 K4 行
 
 
-def test_attach_exec_hints_no_trigger_leaves_empty_list(isolated_env):
+def test_exec_hints_for_no_trigger_leaves_empty_list(isolated_env):
     cand = _candidate("600001.SH", {"ret_1d": -0.01, "is_limit_up": False, "close": 9.9, "ma20": 10.0})
-    eh.attach_exec_hints([cand], _TODAY, db_path=isolated_env.db_path)
+    cand.exec_hints = eh.exec_hints_for(cand.raw, cand.ts_code, _TODAY, db_path=isolated_env.db_path)
     assert cand.exec_hints == []
 
 
-def test_attach_exec_hints_k4_row_missing_does_not_crash(isolated_env):
+def test_exec_hints_for_k4_row_missing_does_not_crash(isolated_env):
     """DB 缺该节(K4 行本就不存在,隔离库默认态)→ 镜像照跑不崩,全部落到
     `_FALLBACK_HINT_TEXT`。"""
     cand = _candidate("600001.SH", {"ret_1d": 0.07, "is_limit_up": False})
-    eh.attach_exec_hints([cand], _TODAY, db_path=isolated_env.db_path)
+    cand.exec_hints = eh.exec_hints_for(cand.raw, cand.ts_code, _TODAY, db_path=isolated_env.db_path)
     hit = next(h for h in cand.exec_hints if h["code"] == eh.C1_STRONG_MARKET_ORDER)
     assert hit["source"] == "fallback"
     assert hit["text"] == eh._FALLBACK_HINT_TEXT[eh.C1_STRONG_MARKET_ORDER]
 
 
-def test_attach_exec_hints_c3_uses_latest_decision_for_that_code(isolated_env):
+def test_exec_hints_for_c3_uses_latest_decision_for_that_code(isolated_env):
     """C3 与 ⑤-B 联动:该票关联决策日志的 `max_chase_pct`/`planned_price` 决定是否
     触发,且只看**最近一条**(第二条覆盖第一条的判定结果)。"""
     create_decision(
@@ -255,7 +262,7 @@ def test_attach_exec_hints_c3_uses_latest_decision_for_that_code(isolated_env):
         db_path=isolated_env.db_path,
     )
     cand = _candidate("600001.SH", {"ret_1d": 0.0, "pre_close": 10.0})
-    eh.attach_exec_hints([cand], _TODAY, db_path=isolated_env.db_path)
+    cand.exec_hints = eh.exec_hints_for(cand.raw, cand.ts_code, _TODAY, db_path=isolated_env.db_path)
     assert eh.C3_LOW_LIMIT_SELF_AWARE not in {h["code"] for h in cand.exec_hints}
 
     # 追加最近一条 max_chase_pct<=0 → 应改为触发(最近一条覆盖判定)
@@ -265,11 +272,11 @@ def test_attach_exec_hints_c3_uses_latest_decision_for_that_code(isolated_env):
         db_path=isolated_env.db_path,
     )
     cand2 = _candidate("600001.SH", {"ret_1d": 0.0, "pre_close": 10.0})
-    eh.attach_exec_hints([cand2], _TODAY, db_path=isolated_env.db_path)
+    cand2.exec_hints = eh.exec_hints_for(cand2.raw, cand2.ts_code, _TODAY, db_path=isolated_env.db_path)
     assert eh.C3_LOW_LIMIT_SELF_AWARE in {h["code"] for h in cand2.exec_hints}
 
 
-def test_attach_exec_hints_c3_does_not_look_ahead_past_trade_date(isolated_env):
+def test_exec_hints_for_c3_does_not_look_ahead_past_trade_date(isolated_env):
     """无前视偏差铁律(§3.8):重新生成一个**历史**交易日的报告时,不能捞到那天
     **之后**才创建的决策日志——否则历史回放会用到当时根本不存在的未来信息。
 
@@ -284,18 +291,18 @@ def test_attach_exec_hints_c3_does_not_look_ahead_past_trade_date(isolated_env):
 
     historical_trade_date = date(2026, 7, 20)   # 早于决策创建日(07-25)
     cand = _candidate("600001.SH", {"ret_1d": 0.0, "pre_close": 10.0})
-    eh.attach_exec_hints([cand], historical_trade_date, db_path=isolated_env.db_path)
+    cand.exec_hints = eh.exec_hints_for(cand.raw, cand.ts_code, historical_trade_date, db_path=isolated_env.db_path)
     assert eh.C3_LOW_LIMIT_SELF_AWARE not in {h["code"] for h in cand.exec_hints}
 
     # 同一份决策日志,report 日期改到决策创建日当天或之后 → 应正常触发(证明截断
     # 只挡"未来",不误伤"当天或更晚")。
     on_or_after = date(2026, 7, 25)
     cand2 = _candidate("600001.SH", {"ret_1d": 0.0, "pre_close": 10.0})
-    eh.attach_exec_hints([cand2], on_or_after, db_path=isolated_env.db_path)
+    cand2.exec_hints = eh.exec_hints_for(cand2.raw, cand2.ts_code, on_or_after, db_path=isolated_env.db_path)
     assert eh.C3_LOW_LIMIT_SELF_AWARE in {h["code"] for h in cand2.exec_hints}
 
 
-def test_attach_exec_hints_c3_truncation_uses_beijing_date_not_utc(isolated_env):
+def test_exec_hints_for_c3_truncation_uses_beijing_date_not_utc(isolated_env):
     """**v1.4 review 契约线 🟡-2(时区缝)**:`created_at` 落库是 UTC,而截断日是**交易日**
     (北京日)。北京 **T+1 00:00–07:59**(= UTC T 日 16:00–23:59)创建的决策,UTC 日期还停
     在 T —— 从前 T 日回放看得见它,等于读到了"当时还不存在"的决策。
@@ -310,12 +317,12 @@ def test_attach_exec_hints_c3_truncation_uses_beijing_date_not_utc(isolated_env)
         db_path=isolated_env.db_path,
     )
     cand = _candidate("600001.SH", {"ret_1d": 0.0, "pre_close": 10.0})
-    eh.attach_exec_hints([cand], date(2026, 7, 20), db_path=isolated_env.db_path)
+    cand.exec_hints = eh.exec_hints_for(cand.raw, cand.ts_code, date(2026, 7, 20), db_path=isolated_env.db_path)
     assert eh.C3_LOW_LIMIT_SELF_AWARE not in {h["code"] for h in cand.exec_hints}, \
         "北京 T+1 凌晨创建的决策在 T 日回放里可见 = 前视偏差(UTC/北京时区缝)"
 
     cand2 = _candidate("600001.SH", {"ret_1d": 0.0, "pre_close": 10.0})
-    eh.attach_exec_hints([cand2], date(2026, 7, 21), db_path=isolated_env.db_path)
+    cand2.exec_hints = eh.exec_hints_for(cand2.raw, cand2.ts_code, date(2026, 7, 21), db_path=isolated_env.db_path)
     assert eh.C3_LOW_LIMIT_SELF_AWARE in {h["code"] for h in cand2.exec_hints}
 
 
@@ -338,10 +345,11 @@ def test_list_decisions_date_filter_is_beijing_day(isolated_env):
     assert ids(date_from="20260720", date_to="20260720") == []
 
 
-def test_attach_exec_hints_multiple_candidates_independent(isolated_env):
+def test_exec_hints_for_multiple_candidates_independent(isolated_env):
     strong = _candidate("600001.SH", {"ret_1d": 0.06, "is_limit_up": False})
     flat = _candidate("600002.SH", {"ret_1d": 0.0, "is_limit_up": False})
-    eh.attach_exec_hints([strong, flat], _TODAY, db_path=isolated_env.db_path)
+    for _c in (strong, flat):
+        _c.exec_hints = eh.exec_hints_for(_c.raw, _c.ts_code, _TODAY, db_path=isolated_env.db_path)
     assert eh.C1_STRONG_MARKET_ORDER in {h["code"] for h in strong.exec_hints}
     assert flat.exec_hints == []
 

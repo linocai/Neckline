@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from neckline.report.candidates import Candidate
+from neckline.sentinel.universe import WatchTarget
 from neckline.sentinel.invalidation import check_invalidation
 from neckline.sentinel.quotes import Quote
 
@@ -38,12 +38,15 @@ _DEFAULT_SPEC = {
 }
 
 
-def _candidate(spec=None) -> Candidate:
-    return Candidate(
-        ts_code="600001.SH", name="示例甲", close=10.0, score=90.0, rank=1, board="MAIN",
-        pattern_tags=[], hot_sectors=[], sector_names=[],
-        entry_plan="", stop_loss="", target="", invalidation_text="",
-        invalidation_spec=_DEFAULT_SPEC if spec is None else spec,
+def _candidate(spec=None) -> WatchTarget:
+    """V2-⑬-1:证伪哨兵的判定对象由 `Candidate` 换成 `WatchTarget`(T1/T2 篮子成员),
+    **判定逻辑与阈值一行未改**,故本文件的用例全部原样保留、只换构造。"""
+    from neckline.sentinel.invalidation import invalidation_spec
+
+    return WatchTarget(
+        ts_code="600001.SH", name="示例甲",
+        invalidation_spec=(invalidation_spec() if spec is None else spec),
+        basket_key="B1",
     )
 
 

@@ -12,7 +12,6 @@ import pytest
 from tests.conftest import business_days, insert_stock_basic, insert_trade_cal, seed_active_rule_v1, write_daily_fixture
 
 from neckline.report import store
-from neckline.report.candidates import Candidate
 from neckline.sentinel.channels import PushChannel
 from neckline.sentinel.dedup import already_pushed
 from neckline.sentinel.engine import reset_retreat_process_state, run_tick
@@ -33,17 +32,28 @@ class _CapturingChannel(PushChannel):
         return True
 
 
-def _candidate(ts_code="600001.SH", **overrides) -> Candidate:
-    base = dict(
-        ts_code=ts_code, name="示例甲", close=10.0, score=90.0, rank=1, board="MAIN",
-        pattern_tags=[], hot_sectors=[], sector_names=[],
-        entry_plan="回调低吸...", stop_loss="止损...", target="目标...",
-        invalidation_text="证伪...",
-        invalidation_spec={"low_open_pct": -0.02, "vwap_break": True, "vol_ratio_low": 0.8, "vol_ratio_high": 3.0},
-        entry_spec={"buypoint": "pullback", "ma10": 9.5, "prev_close": 10.0, "breakout_vol_expand": 1.5},
-    )
-    base.update(overrides)
-    return Candidate(**base)
+def _seed_basket_members(settings, report_day: date, codes, *, tier=1, key="k1"):
+    """**V2-⑬-1**:关注池 / 证伪哨兵的判定对象由「昨晚候选」换成「D0 冻结的 T1/T2
+    篮子成员」,本文件的构造随之从 `_candidate()` + `save_report(candidates=…)` 换成
+    直接种 `baskets`/`basket_members` 两张表(裸 SQL,不经任何应用层写口)。"""
+    from neckline.db import connection
+
+    with connection(settings.db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO baskets (trade_date, basket_key, name, driver, driver_kind, tier,"
+            " pack_version, engine_api_version, charter_version, via, evidence_status, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (report_day.strftime("%Y%m%d"), key, "篮" + key, "驱动", "theme", tier,
+             "K4-pack-v1", 1, "v1.3.3", "auto", "ok", "2026-08-02T00:00:00+08:00"),
+        )
+        bid = int(cur.lastrowid)
+        for c in codes:
+            conn.execute(
+                "INSERT INTO basket_members (basket_id, ts_code, role_llm, role_mech,"
+                " role_conflict, reason, is_primary, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (bid, c, "core", None, 0, "理由", 1, "2026-08-02T00:00:00+08:00"),
+            )
+    return bid
 
 
 def _setup_calendar_and_history(settings, code: str, report_day: date, today: date, *, vol=1000.0):
@@ -62,10 +72,10 @@ def _setup_calendar_and_history(settings, code: str, report_day: date, today: da
     return days
 
 
-def _save_report(settings, report_day: date, candidates):
+def _save_report(settings, report_day: date):
     store.save_report(
         report_day, strategy_version="v1", sentiment={}, sectors=[],
-        candidates=[c.public_dict() for c in candidates], markdown="# test", db_path=settings.db_path,
+        candidates=[], markdown="# test", db_path=settings.db_path,
     )
 
 
@@ -82,67 +92,30 @@ class TestSkipsOutsideTradingHours:
         assert result.skipped_non_trading is True
 
 
-class TestEntrySentinelFiresAndDedupes:
-    def test_fires_once_and_dedupes_on_second_tick(self, isolated_env):
-        days = business_days(date(2026, 7, 1), 30)
-        report_day, today = days[-2], days[-1]
-        # vol=200000 让 prev5_avg_vol=200000,配合 quote 的 current_vol=60000/elapsed=60min
-        # 折算比=1.2,落在 pullback 下限(0.8)与证伪高位异常线(3.0)之间,单独触发买点、
-        # 不同时触发证伪(两者本可能同时为真,这里刻意构造成互斥以隔离测试意图)。
-        _setup_calendar_and_history(isolated_env, "600001.SH", report_day, today, vol=200000.0)
-        seed_active_rule_v1(isolated_env)
-        _save_report(isolated_env, report_day, [_candidate("600001.SH")])
-        insert_stock_basic(isolated_env, [{"ts_code": "600001.SH", "name": "示例甲", "market": "主板"}])
+class TestRetreatDoesNotSuppressInvalidationOrHolding:
+    """⚠ **V2-⑬-1**:退潮红色刹车原本抑制的是**买点哨兵**,而买点哨兵已随 K1
+    `entry_spec` 一并退役 —— 编排里已无「开仓许可信号」这类产物。本类因此改为锁死
+    剩下那半句纪律:**退潮不抑制证伪与持仓**(管理已有风险任何时候都要做)。"""
 
-        now = datetime.combine(today, time(10, 30))  # elapsed=60min,脱离 early 窗口
-
-        def quotes_fn(codes):
-            return {
-                "600001.SH": Quote(
-                    code="600001", name="示例甲", price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
-                    volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
-                )
-            }
-
-        cap = _CapturingChannel()
-        r1 = run_tick(
-            now, channels=[cap], db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir,
-            quotes_fn=quotes_fn,
-        )
-        assert len(r1.entry_signals) == 1
-        assert len(cap.messages) == 1
-        assert already_pushed(today, "entry", "600001.SH", "trigger", db_path=isolated_env.db_path) is True
-
-        cap2 = _CapturingChannel()
-        r2 = run_tick(
-            now, channels=[cap2], db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir,
-            quotes_fn=quotes_fn,
-        )
-        assert len(r2.entry_signals) == 1  # 判定仍然成立(纯函数不知道"推过"这回事)
-        assert r2.skipped_duplicate == 1
-        assert cap2.messages == []  # 但第二拍不应再实际推送
-
-
-class TestRetreatSuppressesEntryButNotInvalidationOrHolding:
-    def test_retreat_active_blocks_entry_this_tick(self, isolated_env):
+    def test_retreat_active_does_not_block_invalidation(self, isolated_env):
         days = business_days(date(2026, 7, 1), 30)
         report_day, today = days[-2], days[-1]
         _setup_calendar_and_history(isolated_env, "600001.SH", report_day, today, vol=15000.0)
         seed_active_rule_v1(isolated_env)
-        candidate_would_enter = _candidate("600001.SH")
-        _save_report(isolated_env, report_day, [candidate_would_enter])
+        _save_report(isolated_env, report_day)
+        _seed_basket_members(isolated_env, report_day, ["600001.SH"])
         insert_stock_basic(isolated_env, [{"ts_code": "600001.SH", "name": "示例甲", "market": "主板"}])
 
         now = datetime.combine(today, time(10, 30))
 
         def quotes_fn(codes):
-            out = {
+            # 低开 -3% 且截至此刻未翻红 → 命中证伪(退潮当日照样该报)
+            return {
                 "600001.SH": Quote(
-                    code="600001", name="示例甲", price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
-                    volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
+                    code="600001", name="示例甲", price=9.75, pre_close=10.0, open=9.7, high=9.8, low=9.7,
+                    volume=60000.0, amount=9.75 * 60000 * 100 * 0.95, ts="", source="sina",
                 )
             }
-            return out
 
         # 预先手工记一条今日已触发的退潮刹车事件,模拟"更早一拍已经触发"
         from neckline.sentinel.dedup import record_pushed
@@ -155,7 +128,8 @@ class TestRetreatSuppressesEntryButNotInvalidationOrHolding:
             quotes_fn=quotes_fn,
         )
         assert result.retreat_active is True
-        assert result.entry_signals == []  # 本该触发买点,但退潮生效当日整体抑制
+        # 证伪不受退潮抑制——"剔除勿进"任何时候都是有效信息(编排注释原文)
+        assert "600001.SH" in {s.ts_code for s in result.invalidation_signals}
 
 
 class TestRetreatTwoTierEngineWiring:
@@ -181,7 +155,8 @@ class TestRetreatTwoTierEngineWiring:
         report_day, today = days[-2], days[-1]
         insert_trade_cal(isolated_env, days)
         x_codes = [f"60010{i}.SH" for i in range(6)]  # 6 只 → 跌停家数 6≥5 + 主线跳水,两条件同拍
-        _save_report(isolated_env, report_day, [_candidate(c, hot_sectors=["半导体"]) for c in x_codes])
+        _save_report(isolated_env, report_day)
+        _seed_basket_members(isolated_env, report_day, x_codes)
         insert_stock_basic(isolated_env, [{"ts_code": c, "name": c, "market": "主板"} for c in x_codes])
 
         qn = self._crash_quotes()
@@ -215,10 +190,12 @@ class TestRetreatTwoTierEngineWiring:
         days = business_days(date(2026, 7, 1), 30)
         report_day, today = days[-2], days[-1]
         _setup_calendar_and_history(isolated_env, "600001.SH", report_day, today, vol=200000.0)
-        y = _candidate("600001.SH")  # 会触发买点(上涨),无 hot_sectors → 不进主线样本
         x_codes = ["600201.SH", "600202.SH", "600203.SH"]
-        xs = [_candidate(c, hot_sectors=["半导体"]) for c in x_codes]
-        _save_report(isolated_env, report_day, [y] + xs)
+        _save_report(isolated_env, report_day)
+        # ⚠ V2-⑬-1:主线样本 = T1/T2 篮子成员全体(不再靠 `hot_sectors` 标签筛)。
+        # 600001.SH 是持仓票、不进篮子,故不进主线跳水样本 —— 与原用例意图一致。
+        _seed_basket_members(isolated_env, report_day, x_codes)
+        open_position("600001.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)
         insert_stock_basic(
             isolated_env, [{"ts_code": c, "name": c, "market": "主板"} for c in ["600001.SH"] + x_codes]
         )
@@ -247,7 +224,6 @@ class TestRetreatTwoTierEngineWiring:
         assert r.retreat_active is False          # 黄色不闩锁
         assert r.retreat_alert is None
         assert not any("退潮刹车" in m[0] for m in cap.messages)   # 黄色不推退潮刹车
-        assert "600001.SH" in {s.ts_code for s in r.entry_signals}  # 黄色不抑制买点
         assert already_pushed(today, "retreat", "", "warn", db_path=isolated_env.db_path) is True
         assert already_pushed(today, "retreat", "", "brake", db_path=isolated_env.db_path) is False
 
@@ -312,79 +288,8 @@ class TestGracefulEmptyState:
         now = datetime.combine(days[-1], time(10, 30))
         result = run_tick(now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=lambda codes: {})
         assert result.watched_codes == 0
-        assert result.entry_signals == []
         assert result.holding_alerts == []
         assert result.pushed_events == []
-
-
-class TestNeverRecommendsNewStocks:
-    """原则守护(§2.4 铁律「盘中不产生任何新决策,永不盘中推荐新票」)的直接单测:
-    即便某只【非候选】代码的行情完美满足买点哨兵的全部触发条件,只要它不在昨晚
-    报告的候选列表里,就永远不会被评估、更不会出现在 entry_signals 里——买点
-    哨兵结构上只遍历 `wu.candidates`(昨晚 16:35 报告生成时已经算好、写死的快照,
-    不是盘中临时决定),不遍历"拉到行情的全部代码"。"""
-
-    def test_non_candidate_code_with_perfect_entry_conditions_is_never_surfaced(self, isolated_env):
-        days = business_days(date(2026, 7, 1), 30)
-        report_day, today = days[-2], days[-1]
-        _setup_calendar_and_history(isolated_env, "600001.SH", report_day, today, vol=200000.0)
-        seed_active_rule_v1(isolated_env)
-        _save_report(isolated_env, report_day, [_candidate("600001.SH")])  # 唯一候选
-        insert_stock_basic(isolated_env, [{"ts_code": "600001.SH", "name": "示例甲", "market": "主板"}])
-
-        now = datetime.combine(today, time(10, 30))
-
-        # NOT_A_CANDIDATE.SH 完美满足"候选600001.SH的买点+确认条件"(站稳同一个
-        # ma10/量比/VWAP),但它压根不是候选、也没进关注池(不在 candidates/
-        # positions/breadth_extra 任何一路里)——哨兵结构上不该碰它。
-        def quotes_fn(codes):
-            good_quote = Quote(
-                code="600001", name="示例甲", price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
-                volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
-            )
-            return {code: good_quote for code in codes} | {
-                "NOT_A_CANDIDATE.SH": Quote(
-                    code="999999", name="非候选", price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
-                    volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
-                )
-            }
-
-        result = run_tick(
-            now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=quotes_fn,
-        )
-        assert result.watched_codes == 1  # 关注池只有候选600001.SH,NOT_A_CANDIDATE.SH 从未进入关注池
-        entry_codes = {sig.ts_code for sig in result.entry_signals}
-        assert entry_codes == {"600001.SH"}
-        assert "NOT_A_CANDIDATE.SH" not in entry_codes
-
-    def test_entry_codes_always_subset_of_report_candidates(self, isolated_env):
-        """更一般的结构性断言:任意一拍产出的 entry_signals 代码集合,必须是
-        "昨晚报告候选代码集合"的子集——不依赖某一次具体构造,而是断言这个
-        结构性不变量本身。"""
-        days = business_days(date(2026, 7, 1), 30)
-        report_day, today = days[-2], days[-1]
-        _setup_calendar_and_history(isolated_env, "600001.SH", report_day, today, vol=200000.0)
-        seed_active_rule_v1(isolated_env)
-        candidate_codes = {"600001.SH"}
-        _save_report(isolated_env, report_day, [_candidate(c) for c in candidate_codes])
-        insert_stock_basic(isolated_env, [{"ts_code": c, "name": c, "market": "主板"} for c in candidate_codes])
-
-        now = datetime.combine(today, time(10, 30))
-
-        def quotes_fn(codes):
-            return {
-                code: Quote(
-                    code=code, name=code, price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
-                    volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
-                )
-                for code in codes
-            }
-
-        result = run_tick(
-            now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=quotes_fn,
-        )
-        entry_codes = {sig.ts_code for sig in result.entry_signals}
-        assert entry_codes.issubset(candidate_codes)
 
 
 class TestV2Bypasses:
@@ -398,7 +303,7 @@ class TestV2Bypasses:
         seed_active_rule_v1(isolated_env)
         insert_stock_basic(isolated_env, [{"ts_code": code, "name": "示例甲", "market": "主板"}])
         store.save_report(report_day, strategy_version="v1", sentiment={}, sectors=[],
-                          candidates=[_candidate(code).public_dict()], markdown="# t",
+                          candidates=[], markdown="# t",
                           db_path=isolated_env.db_path)
         with connection(isolated_env.db_path) as conn:
             cur = conn.execute(

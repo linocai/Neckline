@@ -40,7 +40,6 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ONLINE_FILES = [
     "neckline/report/pipeline.py",
     "neckline/report/info_card.py",
-    "neckline/report/intel_candidates.py",
     "neckline/api/inquiry.py",
 ]
 _BANNED = ["compute_industry_strength", "industry_median_return_series"]
@@ -597,9 +596,13 @@ def test_refresh_command_hint_is_single_source():
 # ————————————————————————————————————————————————————————————————
 
 def test_fuse_report_degrades_without_crash_and_is_reproducible(isolated_env, monkeypatch):
-    """保险丝态①:**表为空 → 报告照出、不崩,且同一批候选两次跑出同一序**(排序键①全部
-    `None → +inf`,序退化成 `yellow_card_count → base_score → code`,**仍确定性可复现**)。
-    同时:`dataFreshness` 里行业强度三键如实标未就绪,报告顶部有告警。"""
+    """保险丝态①:**表为空 → 报告照出、不崩,且两次跑出逐字节相同的报告**。
+    同时:`dataFreshness` 里行业强度三键如实标未就绪,报告顶部有告警。
+
+    ⚠ **V2-⑬-1**:原断言锚在「候选序可复现」(排序键① 全 `None → +inf` 退化成
+    `yellow_card_count → base_score → code`)——候选榜已删,锚改成 markdown 全文;
+    排序键的确定性守门本体随 `test_intel_candidates.py` 一并退役,V2 的等价守门在
+    `tests/test_selection_tier.py`(机械分三路等价 + 确定性 tie-break)。"""
     from tests.conftest import seed_active_rule_v1, seed_synthetic_market
     import neckline.report.pipeline as pipeline_mod
 
@@ -613,7 +616,7 @@ def test_fuse_report_degrades_without_crash_and_is_reproducible(isolated_env, mo
     b2 = pipeline_mod.build_report(
         dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
     )
-    assert [c.ts_code for c in b1.candidates] == [c.ts_code for c in b2.candidates]   # 可复现
+    assert b1.markdown == b2.markdown   # 可复现
     assert b1.industry_freshness.unavailable and b1.industry_freshness.stale
     assert "行业强度数据未就绪" in b1.markdown
     assert b1.industry_freshness.to_public_dict()["industryStrengthLagDays"] == -1

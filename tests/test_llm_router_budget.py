@@ -222,7 +222,6 @@ def test_get_settings_family_never_leaks_provider_key(client, AUTH):
         "/api/v1/settings",
         "/api/v1/settings/providers",
         "/api/v1/settings/llm-routes",
-        "/api/v1/settings/intel-boards",
     ):
         resp = client.get(path, headers=AUTH)
         assert resp.status_code == 200, path

@@ -19,7 +19,6 @@ import polars as pl
 import pytest
 
 from neckline.report import info_card as ic
-from neckline.report.candidates import Candidate
 from tests.conftest import (
     business_days,
     insert_stock_basic,
@@ -495,61 +494,13 @@ def test_build_info_card_code_with_no_eod_data_degrades_everything_gracefully(is
 
 
 # ======================================================================
-#  attach_info_card_summaries(pipeline 批量摘要路径)
+#  摘要位形状(V2-⑬-1:pipeline 批量装配 `attach_info_card_summaries` 随候选榜删除
+#  —— 它的入参就是 `List[Candidate]`、出参写 `Candidate.info_card_summary`,两端都
+#  没了。⑬-N 把信息卡改指篮子成员后,摘要位的**键集契约**仍成立,故这条留下。)
 # ======================================================================
 
-def _fake_candidate(ts_code: str, *, raw: Optional[dict] = None, intel_rank: Optional[dict] = None) -> Candidate:
-    return Candidate(
-        ts_code=ts_code, name="示例", close=10.0, score=80.0, rank=1, board="MAIN",
-        pattern_tags=[], hot_sectors=[], sector_names=[],
-        entry_plan="", stop_loss="", target="", invalidation_text="", invalidation_spec={},
-        intel_rank=intel_rank or {}, raw=raw or {},
-    )
-
-
-def test_attach_info_card_summaries_reuses_raw_zero_extra_parquet_reads(isolated_env, monkeypatch):
-    """`attach_info_card_summaries` 走候选生成时已装配好的 `Candidate.raw` +
-    `intel_rank`,**零额外 parquet 读取**——monkeypatch `get_stock_history` 断言
-    从未被调用,证明批量摘要路径没有偷偷重新拉一遍单票历史。"""
-    def _boom(*args, **kwargs):
-        raise AssertionError("attach_info_card_summaries 不应读取单票历史(应直接吃 candidate.raw)")
-
-    monkeypatch.setattr(ic, "get_stock_history", _boom)
-
-    cands = [_fake_candidate(
-        "600001.SH",
-        raw={"close": 10.25, "ma250": None, "vol_ratio_5": 1.1, "turnover_rate": 5.0,
-             "dist_from_high_20d": -0.02, "consec_limit_up_days": 0, "ret_1d": 0.025},
-        intel_rank={"industryRank": 3, "industryPersistDays": 1},
-    )]
-    ic.attach_info_card_summaries(
-        cands, date(2024, 1, 1),
-        news_items=[{"ts_code": "600001.SH", "category": "REDUCTION", "summary": "x", "source": "tushare_holdertrade"}],
-        news_domain_codes={"600001.SH"},
-        top_list={"600001.SH": {"reason": "涨停", "net_amount": 10.0, "net_rate": 1.0}},
-    )
-    summary = cands[0].info_card_summary
-    assert summary["snapshot"]["industryRank"] == 3
-    assert summary["snapshot"]["turnoverRate"] == pytest.approx(5.0)
-    assert summary["mildBand"] is True
-    assert summary["news"]["scanned"] is True and summary["news"]["items"][0]["summary"] == "x"
-    assert summary["topList"]["onListToday"] is True
-
-
-def test_attach_info_card_summaries_old_candidate_without_raw_degrades_gracefully():
-    """`raw`/`intel_rank` 皆空(理论上不该发生,但旧路径/异常构造须防御)→ 摘要
-    字段全部 None/0/False,不抛异常。"""
-    cands = [_fake_candidate("600002.SH")]
-    ic.attach_info_card_summaries(cands, date(2024, 1, 1), news_items=[], news_domain_codes=set(), top_list={})
-    summary = cands[0].info_card_summary
-    assert summary["snapshot"]["industryRank"] is None
-    assert summary["mildBand"] is False
-    assert summary["news"]["scanned"] is False
-    assert summary["topList"]["onListToday"] is False
-
-
 def test_info_card_summary_payload_excludes_60day_series():
-    """`CandidateOut.infoCard` 摘要位不含 60 日序列(payload 键集断言,④ 验收原话)。"""
+    """摘要位不含 60 日序列(payload 键集断言,④ 验收原话)。"""
     summary = ic.InfoCardSummary().to_public_dict()
     assert set(summary.keys()) == {"snapshot", "mildBand", "news", "topList"}
     for forbidden in ("kline", "rsLine", "industryDivergenceLine", "market", "k4Flags"):

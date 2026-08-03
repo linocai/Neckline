@@ -4,12 +4,29 @@
 原则的执行层落点,不是选新票)。现有 9:35 起的 intraday 判定逻辑(`engine.run_tick`)
 一字不改。
 
-四类判定(全从 `Quote` + 已落库的 `entry_spec` / `invalidation_spec` + 派生 stopLine 算):
-    1. 候选高开超阈 →「买点已变形今日失效」:`open` 相对候选买点(pullback 型 ma10 /
-       breakout 型 platform_high,读 `Candidate.entry_spec`)高开超 `PRECALL_GAP_UP_INVALIDATE`
-       → 今日买点作废。
-    2. 低开踩证伪线 →「开盘即证伪预警」:`open` 触发候选 `invalidation_spec` 的低开阈
-       (`low_open_pct`,复用阶段 3 写死值,不新造)→ 证伪预警。
+⚠ **V2-⑬-7:判定对象与判据源换血(阈值与推送一行未改)**。V1 的对象是「昨晚 20 只
+候选」、判据源是候选 `entry_spec`/`invalidation_spec`;候选榜已删(⑬-1)→ 改为
+**篮子竞价剧本核对**:对象 = **D0 冻结的 T1/T2 篮子成员**,判据源 = **⑦ 冻结在
+`basket_cards.card_json` 里的结构化 spec**(`verification_spec.members[].ref_close`
+与 `invalidation_spec.members[].close_below_stop_line`)。三点纪律:
+
+    · **只读冻结值,盘前一律不重算**(§2.4 铁律的原意:计划是昨晚写死的)。卡里没有
+      该成员的行 / 该阈值为 null → **跳过该票不判**,不拿现价现推一个阈值顶上。
+    · **不碰 `verification_rules.py` 的条件集与 `VERIFICATION_RULESET_VERSION`**:
+      竞价开盘价不是收盘价,把它塞进 ⑦-b 的 close 语义条件里会污染 ⑧ 的四态判定。
+      本模块**只借冻结价位**(ref_close / stop_line 两个数),自己用既有的
+      `PRECALL_GAP_UP_INVALIDATE` 阈值判偏离 —— 判定与阈值都是 V1 原样。
+    · **依赖方向单向**(`precall → selection`,反向被 `test_selection_basket_card.py`
+      守门锁死);本模块也**不读 ⑦-K7 的成员标注件**(那套标注禁入 `neckline/sentinel/`,
+      守门单测按「标注码字面量 + 模块名」全目录扫描,别在这里写出它们的名字)。
+
+四类判定(全从 `Quote` + 冻结 spec + 派生 stopLine 算):
+    1. 成员竞价高开偏离剧本 →「今日高开已偏离冻结剧本」:`open` 相对卡里冻结的
+       `ref_close` 高开超 `PRECALL_GAP_UP_INVALIDATE` → 提示今日追入位已失真。
+    2. 成员竞价低开踩失效位 →「开盘即在失效位下方」:`open` ≤ 卡里冻结的
+       `close_below_stop_line`(章程 `stop_pct` 算出的价位,系统算不由 LLM 给)→
+       失效预警。⛔ 这是**成员级剧本核对**,不是篮子 `falsified` 定论(那归 ⑧ 的
+       EOD 拍,且 ⛔ 不进推送);也不驱动任何持仓动作。
     3. 竞价量能异常标注:集合竞价量相对 `load_prev5_avg_volume`(前 5 日**日**均量)
        异常放大 / 地量 → 附注(非独立刹车)。**诚实局限**:竞价量是「开盘一撮」的量,
        与「全天日均量」量纲不同,这里用「竞价量 / 前 5 日日均量」的占比做启发式标注
@@ -41,14 +58,15 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from neckline.calendar import is_trading_day
-from neckline.report.candidates import Candidate
 from neckline.sentinel.dedup import already_pushed, record_pushed
 from neckline.sentinel.holding import STOP_APPROACH_BUFFER
 from neckline.sentinel.positions import Position, d_count
 from neckline.sentinel.quotes import Quote, get_quotes
+from neckline.selection import verification_rules as vr
+from neckline.selection.basket_store import BasketRef, load_basket_card
 from neckline.sentinel.universe import (
     DEFAULT_BREADTH_CAP,
     WatchUniverse,
@@ -130,49 +148,93 @@ def is_precall_window(now: datetime) -> bool:
 
 # —— 四类纯规则判定(可单测,不联网、不落库)——————————————————————————————
 
-def _entry_ref_level(candidate: Candidate) -> Optional[float]:
-    """候选买点参考位:breakout 型取 platform_high、其余(pullback/either/none)取 ma10
-    (与买点哨兵 `entry.py` 的分支口径一致)。缺失 / 非正 → None。"""
-    spec = candidate.entry_spec or {}
-    if spec.get("buypoint") == "breakout":
-        ref = spec.get("platform_high")
-    else:
-        ref = spec.get("ma10")
-    if ref is None or ref <= 0:
+@dataclass(frozen=True)
+class MemberScript:
+    """一位 T1/T2 篮子成员的**冻结竞价剧本**(V2-⑬-7)。两个价位都直接取自 ⑦ 冻结在
+    `basket_cards.card_json` 里的结构化 spec,**盘前不重算**;取不到就是 `None`,
+    对应判定直接跳过(「没有」与「没看」分得开:None = 卡里没给,不是"不触发")。"""
+    ts_code: str
+    basket_key: str
+    ref_close: Optional[float] = None     # verification_spec.members[].ref_close(D0 收盘锚)
+    stop_line: Optional[float] = None     # invalidation_spec.members[].close_below_stop_line
+
+
+def load_member_scripts(
+    baskets: Sequence["BasketRef"], *, db_path: Optional[Path] = None
+) -> List[MemberScript]:
+    """把 D0 冻结的 T1/T2 篮子卡摊成「一位成员一份竞价剧本」。
+
+    **有篮子无卡是合法中间态**(`load_basket_card` 返回 None)——⛔ 不许拿默认条件顶上,
+    该篮子本拍直接不判(与 `basket_verify.evaluate_card` 的 `REASON_NO_CARD` 同一纪律)。
+    读卡异常只 WARNING、跳过该篮,绝不掀翻整个盘前 tick(持仓那一类判定还要跑)。"""
+    out: List[MemberScript] = []
+    for b in baskets:
+        try:
+            row = load_basket_card(b.basket_id, db_path=db_path)
+        except Exception:  # noqa: BLE001
+            logger.warning("[precall] 读篮子 %s 的冻结卡失败,本篮不做竞价剧本核对",
+                           b.basket_key, exc_info=True)
+            continue
+        card = (row or {}).get("card") or {}
+        if not card:
+            continue        # 有篮子无卡:合法,不判(不猜阈值)
+        verify = card.get("verification_spec") or {}
+        invalid = card.get("invalidation_spec") or {}
+        ref_of = {m.get("ts_code"): m.get("ref_close")
+                  for m in (verify.get("members") or []) if isinstance(m, dict)}
+        stop_of = {m.get("ts_code"): m.get(vr.COND_CLOSE_BELOW_STOP_LINE)
+                   for m in (invalid.get("members") or []) if isinstance(m, dict)}
+        for code in b.member_codes:
+            out.append(MemberScript(
+                ts_code=code, basket_key=b.basket_key,
+                ref_close=_positive_or_none(ref_of.get(code)),
+                stop_line=_positive_or_none(stop_of.get(code)),
+            ))
+    return out
+
+
+def _positive_or_none(v: Any) -> Optional[float]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
         return None
-    return float(ref)
+    return f if f > 0 else None
 
 
 def judge_gap_up_invalidate(
-    candidate: Candidate, quote: Quote, threshold: float = PRECALL_GAP_UP_INVALIDATE
+    script: MemberScript, quote: Quote, threshold: float = PRECALL_GAP_UP_INVALIDATE
 ) -> Optional[str]:
-    """候选集合竞价开盘高于买点参考位超阈 →「买点已变形今日失效」。买点参考位缺失
-    或 open≤0 → None(数据不足,不妄判)。"""
-    ref = _entry_ref_level(candidate)
+    """成员集合竞价开盘高于**卡里冻结的 D0 收盘锚**超阈 →「今日高开已偏离冻结剧本」。
+    锚缺失或 open≤0 → None(数据不足,不妄判)。阈值沿用 V1 的
+    `PRECALL_GAP_UP_INVALIDATE`,一个字未改。"""
+    ref = script.ref_close
     if ref is None or quote.open <= 0:
         return None
     gap = quote.open / ref - 1
     if gap >= threshold - _EPS:
         return (
-            f"集合竞价开盘{quote.open:.2f}高于买点参考位{ref:.2f} {gap:.1%}"
-            f"(超阈{threshold:.0%}),今日买点已变形失效——勿追高开缺口。"
+            f"集合竞价开盘{quote.open:.2f}高于冻结锚{ref:.2f} {gap:.1%}"
+            f"(超阈{threshold:.0%}),今日已偏离冻结剧本——勿追高开缺口。"
         )
     return None
 
 
-def judge_low_open_falsify(candidate: Candidate, quote: Quote) -> Optional[str]:
-    """候选集合竞价开盘踩证伪线(复用 `invalidation_spec.low_open_pct`,不新造)→
-    「开盘即证伪预警」。盘中证伪还要求「截至目前未翻红」,但集合竞价阶段 open 即当前价、
-    无「盘中翻红」可言,故此处只以 open 低开幅度判定(哨兵是提前预警,不必等盘中)。"""
-    spec = candidate.invalidation_spec or {}
-    low_open_pct = spec.get("low_open_pct")
-    if low_open_pct is None or quote.pre_close <= 0 or quote.open <= 0:
+def judge_low_open_falsify(script: MemberScript, quote: Quote) -> Optional[str]:
+    """成员集合竞价开盘已在**卡里冻结的失效位**(`close_below_stop_line`,由现役章程
+    `stop_pct` 算出)下方 →「开盘即在失效位下方」。失效位缺失或 open≤0 → None。
+
+    ⛔ 这是**成员级剧本核对**,不是篮子 `falsified` 定论(⑦-b/⑧ 的 EOD 拍才是,且
+    篮子 falsified ⛔ 不进推送),更不驱动任何持仓动作(持仓走下面第 4 类判定)。"""
+    stop_line = script.stop_line
+    if stop_line is None or quote.open <= 0:
         return None
-    gap = (quote.open - quote.pre_close) / quote.pre_close
-    if gap <= low_open_pct + _EPS:
+    if quote.open <= stop_line + _EPS:
+        gap_txt = ""
+        if quote.pre_close > 0:
+            gap_txt = f"低开{(quote.open - quote.pre_close) / quote.pre_close:.1%},"
         return (
-            f"集合竞价低开{gap:.1%}(证伪线{low_open_pct:.0%}),开盘即证伪预警"
-            f"——前晚计划今日大概率不成立。"
+            f"集合竞价开盘{quote.open:.2f}已在冻结失效位{stop_line:.2f}下方({gap_txt}"
+            f"该价位由现役章程 stop_pct 算出),开盘即失效预警——前晚剧本今日大概率不成立。"
         )
     return None
 
@@ -527,26 +589,27 @@ def run_precall_tick(
             payload={"body": body}, db_path=db_path,
         )
 
-    # —— 候选四件套 → 高开变形 / 低开证伪 / 竞价量能(三类判定)——————————————
-    # v1.1-C.2「自选票享候选同级待遇」:候选 ∪「昨晚体检已触发买点」的自选票
-    # 一视同仁(entry_spec/invalidation_spec 均是昨晚写死,盘前只读不重算)。
-    for c in wu.candidates:
-        q = quotes.get(c.ts_code)
+    # —— 篮子竞价剧本核对(V2-⑬-7)→ 高开偏离 / 低开踩失效位 / 竞价量能 ——————————
+    # 对象 = D0 冻结的 T1/T2 篮子成员;判据 = ⑦ 冻结在卡里的 ref_close / stop_line。
+    # 有篮子无卡 / 卡里没这只 / 阈值为 null → 该票不判(见 `load_member_scripts`)。
+    scripts = load_member_scripts(wu.baskets, db_path=db_path)
+    for sc in scripts:
+        q = quotes.get(sc.ts_code)
         if q is None:
             continue  # 拉不到竞价快照 → 该票无意见,跳过(不是「无异常」)
-        gap_reason = judge_gap_up_invalidate(c, q)
+        gap_reason = judge_gap_up_invalidate(sc, q)
         if gap_reason:
-            result.gap_up.append(c.ts_code)
-            _record("precall", c.ts_code, EVENT_GAP_UP, gap_reason)
+            result.gap_up.append(sc.ts_code)
+            _record("precall", sc.ts_code, EVENT_GAP_UP, gap_reason)
         else:
-            low_reason = judge_low_open_falsify(c, q)  # 高开与低开互斥,只判其一
+            low_reason = judge_low_open_falsify(sc, q)  # 高开与低开互斥,只判其一
             if low_reason:
-                result.low_open.append(c.ts_code)
-                _record("precall", c.ts_code, EVENT_LOW_OPEN, low_reason)
-        auc_reason = judge_auction_volume(q, prev5.get(c.ts_code, 0.0))
+                result.low_open.append(sc.ts_code)
+                _record("precall", sc.ts_code, EVENT_LOW_OPEN, low_reason)
+        auc_reason = judge_auction_volume(q, prev5.get(sc.ts_code, 0.0))
         if auc_reason:
-            result.auction.append(c.ts_code)
-            _record("precall", c.ts_code, EVENT_AUCTION, auc_reason)
+            result.auction.append(sc.ts_code)
+            _record("precall", sc.ts_code, EVENT_AUCTION, auc_reason)
 
     # —— 持仓 → 大幅低开逼近/跌破止损线 ————————————————————————————————
     for p in wu.positions:

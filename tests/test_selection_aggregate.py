@@ -728,28 +728,58 @@ class TestPrimaryAttribution:
         assert ag.MIN_LIFT_SAMPLE_SIZE == _MIN_MEMBERS
 
     def test_lift_formula_matches_v131_industry_gate_precedent(self):
-        """**交叉断言**:本模块的 lift 与 v1.3.1 行业闸(`intel_candidates`)同口径。
+        """**交叉断言**:本模块的 lift 与 v1.3.1 行业闸同口径。
 
-        生产代码刻意不 import 那个私有函数(`intel_candidates.py` 按 plan §五 V2-⑬-1
-        随候选榜退役,生产不挂在计划删除的模块上);等价性由这条测试锁死,同 v1.5
-        自选/持仓两侧 K4 镜像的交叉断言体例。"""
-        from neckline.report.intel_candidates import (
-            INDUSTRY_GATE_MIN_LIFT,
-            _dominant_industries,
-            _market_industry_shares,
-        )
+        ⚠ **V2-⑬-1**:对拍的另一侧 `report/intel_candidates.py` 已随候选榜物理删除,
+        无法再 import 它的 `_market_industry_shares`/`_dominant_industries` 做实物对拍。
+        改为**把 v1.3.1 的公式与门槛就地冻结成参考实现**(逐字照抄自那个模块删除前的
+        源码,见下面注释),再与本模块对拍 —— 等价性依然被锁死,只是参照物从"活代码"
+        变成"冻结的历史口径"。⛔ 改本函数里的公式 = 宣告与 v1.3.1 不再同口径,必须
+        同时更新 `STRATEGY_LAB.md` 的口径记录,不许悄悄改。"""
+        # ——— v1.3.1 行业闸冻结参考实现(`intel_candidates.py` 删除前原样) ———
+        v131_min_lift = 2.0          # INDUSTRY_GATE_MIN_LIFT
+        v131_eps = 1e-9              # _INDUSTRY_GATE_EPS
+
+        def v131_market_industry_shares(industry_of):
+            total = len(industry_of)
+            if total <= 0:
+                return {}
+            counts = {}
+            for ind in industry_of.values():
+                if ind:
+                    counts[ind] = counts.get(ind, 0) + 1
+            return {k: v / total for k, v in counts.items()}
+
+        def v131_dominant_industries(members, industry_of, shares, min_lift):
+            n = len(members)
+            if n <= 0:
+                return set()
+            counts = {}
+            for c in members:
+                ind = industry_of.get(c)
+                if ind:
+                    counts[ind] = counts.get(ind, 0) + 1
+            out = set()
+            for ind, cnt in counts.items():
+                share = shares.get(ind)
+                if not share:
+                    continue
+                if (cnt / n) / share >= min_lift - v131_eps:
+                    out.add(ind)
+            return out
+        # ——————————————————————————————————————————————————————————————
 
         industry_of = {
             "600001.SH": "半导体", "600002.SH": "半导体", "600003.SH": "半导体",
             **{f"60001{i}.SH": "白酒" for i in range(0, 7)},
         }
         members = ["600001.SH", "600002.SH", "600010.SH", "600011.SH"]
-        theirs_shares = _market_industry_shares(industry_of)
+        theirs_shares = v131_market_industry_shares(industry_of)
         mine_shares = ag.market_industry_shares(industry_of)
         assert mine_shares == theirs_shares
         mine = ag.industry_lift_map(members, industry_of, mine_shares)
-        theirs = _dominant_industries(members, industry_of, theirs_shares, INDUSTRY_GATE_MIN_LIFT)
-        assert {k for k, v in mine.items() if v >= INDUSTRY_GATE_MIN_LIFT - 1e-9} == theirs
+        theirs = v131_dominant_industries(members, industry_of, theirs_shares, v131_min_lift)
+        assert {k for k, v in mine.items() if v >= v131_min_lift - v131_eps} == theirs
 
     def test_industry_lift_skips_industry_absent_from_market_shares(self):
         """全市场查无该行业占比 → lift 未定义,**不写 0 冒充"不富集"**。"""

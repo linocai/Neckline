@@ -305,13 +305,11 @@ private struct CandidateRow: View {
                     }
                 }
                 intelRankRow(candidate.intelRank)
-                execHintsSection
-                // v1.5-①-F/⑤-B(需求 9):候选卡输出层老四件套(买点/止损/目标/证伪条件)
-                // 已由参考三件套取代——服务端仍发老四键(过渡文案,向后兼容硬约束),
-                // 但新 UI 不再展示,改展示 `ReferencePlanSection`。自选体检卡
-                // (`WatchlistView.WatchlistRow`)的四件套不受影响,仍用 `FourPieceDisclosure`。
-                ReferencePlanSection(plan: candidate.referencePlan, judgeSkipped: candidate.judgeSkipped,
-                                     llmJudgment: candidate.llmJudgment)
+                // ⚠ **V2-⑬-1/3/4/6 过渡态**:老四件套展开区(⑬-6)、参考三件套展开区
+                // (⑬-3)、执行提示区(⑬-4)三块 UI 随服务端键一并删除;而**候选卡本身
+                // 由 ⑮ 换成篮子卡(11 项)**,不在 ⑬ 范围。此刻这张卡只剩「码/名/分/板块/
+                // K4 牌/情报排序理由/LLM 审判徽标」—— 中间状态,不是最终形态。
+                if let j = candidate.llmJudgment { LLMJudgmentBadge(judgment: j) }
                 Divider().overlay(NK.hairline)
                 HStack(spacing: 14) {
                     // v1.4-④-B:信息卡入口(60 日 K 线/RS 线/行业分歧线 + 快照/红黄牌/温和带/
@@ -386,19 +384,6 @@ private struct CandidateRow: View {
         }
     }
 
-    /// v1.4-⑤-A:执行提示(读 DB `k4_advisory.exec_hint`)。标题统一「执行提示」,
-    /// **不叫「买入建议」**,文案原样透传 DB 文字,不改写、不加"建议"字样。
-    @ViewBuilder
-    private var execHintsSection: some View {
-        if !candidate.execHints.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("执行提示").font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
-                ForEach(candidate.execHints) { hint in
-                    Text(hint.text).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
-                }
-            }
-        }
-    }
 }
 
 // MARK: - 持仓卡

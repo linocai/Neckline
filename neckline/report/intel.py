@@ -34,7 +34,7 @@ import polars as pl
 
 from neckline.data.market_data import get_index_history, get_market_slice
 from neckline.report.board_pool import apply_hygiene, count_members, invert_member_map
-from neckline.report.candidates import _load_stock_names
+from neckline.data.market_data import resolve_stock_names
 from neckline.report.sectors import DEFAULT_TOP_N, compute_sector_strength, load_index_names, load_member_map
 from neckline.strategy.features import SSE_INDEX
 
@@ -359,7 +359,7 @@ def _top_themes(
     leader_codes: List[str] = []
     for s in kept_scores:
         leader_codes.extend(inv.get(s.index_code, []))
-    names = _load_stock_names(list(dict.fromkeys(leader_codes)), db_path)
+    names = resolve_stock_names(list(dict.fromkeys(leader_codes)), db_path)
 
     themes: List[ThemeItem] = []
     dist: Dict[str, int] = {}
@@ -455,7 +455,7 @@ def compute_intel(
         )
         if not limit_down.is_empty():
             top_codes |= set(limit_down.sort("ts_code").head(_LIMIT_DOWN_DISPLAY_N)["ts_code"].to_list())
-        mover_names = _safe(warnings, "涨跌幅/跌停名称解析", lambda: _load_stock_names(list(top_codes), db_path), {})
+        mover_names = _safe(warnings, "涨跌幅/跌停名称解析", lambda: resolve_stock_names(list(top_codes), db_path), {})
 
     gainers = _safe(warnings, "涨幅榜", lambda: _rank_movers(daily, mover_names, descending=True, n=_RANK_LIST_N), []) if not daily.is_empty() else []
     losers = _safe(warnings, "跌幅榜", lambda: _rank_movers(daily, mover_names, descending=False, n=_RANK_LIST_N), []) if not daily.is_empty() else []

@@ -1,7 +1,18 @@
-"""证伪哨兵(plan §2.4 第4条)。**只用价量结构,不看资金面**(§2.4 铁律:「盘中
-主力资金流免费源不可靠,证伪只用价量结构」)。逐字实现候选四件套的证伪条件——
-读 `Candidate.invalidation_spec`(阶段2 报告生成时写死,见
-`neckline.report.candidates.invalidation_spec`),不重新发明任何阈值:
+"""证伪哨兵(plan §2.4 第4条,**⑪-A 点名的「证伪四哨兵」= 现役纪律分支,原样保留**)。
+**只用价量结构,不看资金面**(§2.4 铁律:「盘中主力资金流免费源不可靠,证伪只用
+价量结构」)。读 `WatchTarget.invalidation_spec`,不重新发明任何阈值:
+
+⚠ **V2-⑬-1 判定对象换血(判定逻辑一行未改)**:V1 的对象是「昨晚 20 只候选」,
+候选榜已删 → 对象换成 **D0 冻结的 T1/T2 篮子成员**(`universe.WatchTarget`)。
+之所以能一行不改地平移:本模块用到的 `invalidation_spec` 是**全局常量三件**
+(低开阈 / 量比上下限 / VWAP 开关),`report/candidates.py::invalidation_spec()`
+本来就是**零入参**的纯常量函数 —— 它不是"每只票各自算出来的",没有任何 per-code
+依赖需要跟着候选榜一起消失。该函数与三个常量随 `report/candidates.py` 删除**搬到
+本模块**(唯一消费方就是这里)。
+
+⛔ **与 ⑦-b/⑧ 的「篮子 `falsified`」是两件事,不许混**:那个问「这个驱动假设还
+成不成立」(篮子级、⛔ 不进推送);本模块问「这只票今天还能不能进」(成员级、
+进推送)。同一天同一只票两者给相反结论是**合法**的。
 
     · 低开不回:开盘涨幅 ≤ `low_open_pct`(默认 -2%)**且**截至当前仍未翻红
       (现价 < 昨收)。EOD 口径原文是"全天未翻红",盘中检查的是"截至目前"——
@@ -19,12 +30,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from neckline.report.candidates import Candidate
-from neckline.sentinel.entry import MIN_STRUCTURAL_ELAPSED_MINUTES
 from neckline.sentinel.intraday import elapsed_trading_minutes, intraday_vol_ratio, vwap_of
 from neckline.sentinel.quotes import Quote
+
+# 开盘头几分钟集合竞价延续 + 极早盘噪声大,VWAP/价格结构判断均不可靠,先按兵不动
+# (量能折算另有更严的 60min 阈,见 `intraday.EARLY_MINUTES_THRESHOLD`)。
+# ⚠ V2-⑬-1 前住在已退役的 `sentinel/entry.py`(买点哨兵)里,随其删除搬到本模块。
+MIN_STRUCTURAL_ELAPSED_MINUTES = 5
+
+# —— 证伪条件阈值(结构化;只用价量结构,不看资金面,§2.4)——————————————————
+# V2-⑬-1 前住在 `report/candidates.py`(候选四件套的一部分),随该模块删除搬来。
+LOW_OPEN_PCT = -0.02
+VOL_RATIO_LOW = 0.8
+VOL_RATIO_HIGH = 3.0
+
+
+def invalidation_spec() -> Dict[str, Any]:
+    """证伪条件(结构化,**零入参 = 全局常量,不是 per-code 判据**)。只用价量,不看
+    资金面(§2.4 铁律:盘中主力资金流免费源不可靠)。`universe.py` 给每个关注目标挂
+    的就是这一份。"""
+    return {
+        "low_open_pct": LOW_OPEN_PCT,
+        "require_stay_below_prev_close": True,   # 全天未能翻红(收盘仍 < 昨收)
+        "vwap_break": True,                        # 全天收盘价 < 当日 VWAP
+        "vol_ratio_low": VOL_RATIO_LOW,
+        "vol_ratio_high": VOL_RATIO_HIGH,
+    }
 
 
 @dataclass
@@ -40,13 +73,16 @@ class InvalidationSignal:
 
 
 def check_invalidation(
-    candidate: Candidate,
+    target: "Any",
     quote: Optional[Quote],
     prev5_avg_vol: float,
     now: datetime,
 ) -> Optional[InvalidationSignal]:
-    """候选是否命中前晚写死的证伪条件。`quote is None` → None(拉不到行情时不
-    妄下"剔除"判断,宁可漏判也不能拿缺失数据当证据)。"""
+    """该关注目标是否命中证伪条件。`quote is None` → None(拉不到行情时不妄下
+    "剔除"判断,宁可漏判也不能拿缺失数据当证据)。
+
+    `target` 是 **duck-typed**:只要求 `.ts_code`/`.name`/`.invalidation_spec` 三个
+    属性(现役实现 = `sentinel.universe.WatchTarget`)。"""
     if quote is None:
         return None
 
@@ -54,7 +90,7 @@ def check_invalidation(
     if elapsed_min < MIN_STRUCTURAL_ELAPSED_MINUTES:
         return None
 
-    spec = candidate.invalidation_spec or {}
+    spec = target.invalidation_spec or {}
     reasons: List[str] = []
 
     if quote.pre_close and quote.pre_close > 0:
@@ -80,7 +116,10 @@ def check_invalidation(
     if not reasons:
         return None
 
-    return InvalidationSignal(ts_code=candidate.ts_code, name=candidate.name, price=quote.price, reasons=reasons)
+    return InvalidationSignal(ts_code=target.ts_code, name=target.name, price=quote.price, reasons=reasons)
 
 
-__all__ = ["InvalidationSignal", "check_invalidation"]
+__all__ = [
+    "InvalidationSignal", "check_invalidation", "invalidation_spec",
+    "MIN_STRUCTURAL_ELAPSED_MINUTES", "LOW_OPEN_PCT", "VOL_RATIO_LOW", "VOL_RATIO_HIGH",
+]

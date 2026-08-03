@@ -74,7 +74,10 @@ def test_deterministic_mainboard_clean(market):
     assert det.has_data is True
     assert det.risk_flags == []
     assert det.board == "主板"
-    assert det.score is not None                    # 评分现在无条件给(不再只在买点触发时算)
+    # ⚠ **V2-⑬-9**:「母战法买点形态 + 展示排序分」两项已随 K1 entry mask 的生产
+    # import 清零而退役 —— 恒为缺省,且**不再进 evidence / LLM 上下文**。
+    assert det.score is None and det.passes_buypoint_today is False
+    assert not any("母战法买点" in e for e in det.evidence)
 
 
 def test_deterministic_st_is_warning_not_block(market):

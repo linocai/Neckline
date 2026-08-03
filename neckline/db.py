@@ -135,6 +135,14 @@ CREATE TABLE IF NOT EXISTS reports (
     news_alerts_scan_json TEXT NOT NULL DEFAULT '[]'
 );
 
+-- ⚠ **v2.0.0 起停写留档**(PROJECT_PLAN §五 V2-⑬-2「单票 LLM 审判 → 删调用路径」):
+-- 写入方 `report/store.py::save_llm_judgment` / `delete_llm_judgments` 已物理删除,
+-- 唯一的产出编排 `pipeline._judge_candidates_with_budget` 随候选榜一并退役。历史行
+-- (v1.0~v1.5.2 生产数据)供归因只读,读函数 `load_llm_judgments` 保留。
+-- ⚠ **`llm/judge.py::judge_candidate` 本体不在删除之列** —— ⑬-2 明确它保留为「通用
+-- LLM 调用 + 降级链 + verdict 解析」工具(含 `narrative_splitter` 依赖注入纪律);
+-- V2 的篮子链路走 ⑤ 的两段式,只在需要结论标签处用它,且**不落本表**。
+--
 -- LLM 逻辑审判存档(plan 2.4,v1.5-②起 20 只全覆盖)。实际发起过调用的候选每只
 -- 一行(预算耗尽被跳过、未发起调用的不落此表,查 candidates_json 里的
 -- judge_skipped);search_hits_json 是该次审判用到的联网搜索结果全文(§2.4「搜索
@@ -233,6 +241,9 @@ CREATE TABLE IF NOT EXISTS app_settings (
     -- v1.3-③-C3:候选情报管线「五板块常驻」可配名单(JSON 数组存**板块中文名**,
     -- 运行时按 ths_index.name 精确匹配解析 ts_code;NULL=未配置=用
     -- settings_store.DEFAULT_INTEL_WATCH_BOARDS,'[]'=用户显式清空=无常驻)。
+    -- ⚠ **v2.0.0-⑬-1/⑬-13 起停写留档**(五常驻板块保底删除,裁定 #9-c):列保留不
+    -- DROP(历史配置留档),`settings_store.get/set_intel_watch_boards` 与
+    -- `GET|PUT /settings/intel-boards` 两端点、客户端设置屏板块选择均已物理删除。
     intel_watch_boards TEXT,
     updated_at      TEXT
 );
@@ -614,6 +625,15 @@ CREATE TABLE IF NOT EXISTS industry_strength_daily (
 );
 CREATE INDEX IF NOT EXISTS idx_industry_strength_daily_industry ON industry_strength_daily(industry, trade_date);
 
+-- ⚠ **v2.0.0 起停写留档**(PROJECT_PLAN §五 V2-⑬-3「单票参考件三件套展示位 → 删」):
+-- 生成侧 `report/reference_plan.py` 与读写通道 `report/reference_plan_store.py`
+-- **已物理删除**,契约键 `CandidateOut.referencePlan` 随候选榜一并退役。历史行供归因
+-- 只读(要读得自己写 SQL,应用层已无访问函数)。
+-- ⚠ **夹逼 / 冻结 / 口径指纹 / disclaimer 这套体例不是废弃,是整套移交篮子卡**
+-- (`selection/basket_card.py`,§2.8-A 对照表);围栏 JSON 解析器早在 ⑤ 就搬去了通用件
+-- `neckline/llm/json_block.py`(⑬-3 明文「删 reference_plan.py 时只删那层再导出,
+-- 别把通用件一起陪葬」),它现在服务 ⑤ 聚合层与 ⑦ 卡生成。
+--
 -- v1.5-①-E 参考件三件套(需求 9,§2.0 第〇原则「参考件必须落库,将来与实际走势/
 -- 成交对拍 = LLM 参谋成绩单」)。读写单一通道 = `neckline/report/reference_plan_store.py`,
 -- 生成侧唯一实现 = `neckline/report/reference_plan.py`。**参考件不进任何机器判据**——

@@ -47,7 +47,6 @@ from neckline.data.adjust import apply_qfq
 from neckline.data.market_data import day_file_exists, get_stock_history, resolve_stock_names
 from neckline.data.top_list import top_list_lookup
 from neckline.report import holding_k4_check
-from neckline.report.candidates import Candidate
 from neckline.report.industry_strength import (
     IndustryStrength,
     industry_strength_lookup,
@@ -60,7 +59,6 @@ from neckline.report.industry_strength_store import (
     load_industry_median_series,
     load_industry_strength,
 )
-from neckline.report.intel_candidates import _DEFAULT_SECTION
 from neckline.report.sentiment import compute_sentiment
 from neckline.strategy.features import (
     SSE_INDEX,
@@ -531,7 +529,7 @@ def _k4_flags_detail(codes: List[str], db_path: Optional[Path]) -> List[InfoCard
     return [
         InfoCardK4Flag(
             code=h.code, label=h.label, level=h.level,
-            section=sections.get(h.code, _DEFAULT_SECTION),
+            section=sections.get(h.code, holding_k4_check.K4_DEFAULT_SECTION),
             evidence_strength=h.evidence_strength, evidence=h.evidence,
         )
         for h in hits
@@ -716,49 +714,6 @@ def build_info_card(
     )
 
 
-def attach_info_card_summaries(
-    candidates: List[Candidate],
-    trade_date: date,
-    *,
-    news_items: Optional[List[Dict[str, Any]]] = None,
-    news_domain_codes: Optional[Set[str]] = None,
-    top_list: Optional[Dict[str, dict]] = None,
-    parquet_dir: Optional[Path] = None,
-    db_path: Optional[Path] = None,
-    industry_ready: bool = True,
-) -> None:
-    """给一批候选**原地**补 `Candidate.info_card_summary`(plan §五 v1.4-④-B「报告
-    快照只存摘要位」)。`pipeline.py::build_report` 在 `candidates`/`news_alerts`/
-    `top_list` 都已算好后调用一次,供 20 只候选批量补齐,**不逐只重新读 60 日 K 线**
-    (那是 `build_info_card` 的职责,只在用户点开信息卡页时才付出)。
-
-    快照数值(`snapshot`)与温和带直接从 `Candidate.raw`(候选生成时已装配好的 K4
-    特征面板行,含 `vol_ratio_5`/`turnover_rate`/`ma250`/`dist_from_high_20d`/
-    `consec_limit_up_days`/`ret_1d`)与 `Candidate.intel_rank`(已含
-    `industryRank`/`industryPersistDays`,② 唯一源同一次计算的产物)取,**零额外
-    parquet 读取**。`news_items`/`top_list` 由调用方传入该次报告生成时已经拿到的
-    内存态数据(此时尚未落库,不能靠现读 DB/parquet 拿到)——见各自参数注释。
-
-    `industry_ready`(v1.4-⑩-E):调用方(pipeline)告知行业强度表当日**有没有数据**。
-    `False` 时快照的 `industryRank`/`industryPersistDays` 一律**如实缺省(None)**,
-    不拿排序键那份 `0` 冒充「评了、持续 0 天」—— 排序键要的是可比数值(None→+inf),
-    信息卡要的是诚实缺省,**两者刻意不同**,别"统一"。
-    """
-    domain = news_domain_codes or set()
-    lookback = _load_lookback_top_lists(trade_date, parquet_dir=parquet_dir, t0_top_list=top_list)
-    for c in candidates:
-        row = c.raw or {}
-        rank = (c.intel_rank or {}).get("industryRank") if industry_ready else None
-        persist = ((c.intel_rank or {}).get("industryPersistDays", 0) or 0) if industry_ready else None
-        snapshot = _build_snapshot(row, rank, persist)
-        mild = is_mild_band(row.get("ret_1d"))
-        news = _news_summary_for_code(c.ts_code, trade_date, domain, items=news_items, db_path=db_path)
-        top_list_summary = _top_list_summary_for_code(c.ts_code, lookback)
-        c.info_card_summary = InfoCardSummary(
-            snapshot=snapshot, mild_band=mild, news=news, top_list=top_list_summary,
-        ).to_public_dict()
-
-
 __all__ = [
     "DISPLAY_WINDOW_TRADING_DAYS",
     "TOP_LIST_LOOKBACK_TRADING_DAYS",
@@ -777,5 +732,4 @@ __all__ = [
     "InfoCard",
     "InfoCardSummary",
     "build_info_card",
-    "attach_info_card_summaries",
 ]

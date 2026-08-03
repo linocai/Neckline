@@ -168,65 +168,6 @@ def test_put_llm_routes_does_not_reset_push(client, AUTH):
     assert got == all_off
 
 
-def test_get_intel_boards_default(client, AUTH):
-    """v1.3-⑥ 后端补齐②:从未配置 → 默认五板块(settings_store.DEFAULT_INTEL_WATCH_BOARDS,
-    与候选情报管线 `get_intel_watch_boards` 回退口径一致)。"""
-    r = client.get("/api/v1/settings/intel-boards", headers=AUTH)
-    assert r.status_code == 200
-    assert r.json()["boards"] == list(settings_store.DEFAULT_INTEL_WATCH_BOARDS)
-
-
-def test_put_intel_boards_exact_match_roundtrip(client, AUTH, api_env):
-    """精确匹配 `ths_index.name` → 写入生效,GET 回读一致(顺序保留,保底认领 load-bearing)。"""
-    write_flat_parquet(api_env, "ths_index.parquet", [
-        {"ts_code": "885921.TI", "name": "储能"},
-        {"ts_code": "885922.TI", "name": "芯片概念"},
-    ])
-    r = client.put("/api/v1/settings/intel-boards", headers=AUTH, json={"boards": ["储能", "芯片概念"]})
-    assert r.status_code == 200
-    assert r.json()["boards"] == ["储能", "芯片概念"]
-    assert client.get("/api/v1/settings/intel-boards", headers=AUTH).json()["boards"] == ["储能", "芯片概念"]
-
-
-def test_put_intel_boards_rejects_fuzzy_unmatched_name_422(client, AUTH, api_env):
-    """禁模糊匹配——"芯片"不精确等于 ths_index 里的"芯片概念",须传整段精确名;
-    422 带明确 reason + 具体哪个名字没匹配到,不静默接受写坏的名单。"""
-    write_flat_parquet(api_env, "ths_index.parquet", [{"ts_code": "885922.TI", "name": "芯片概念"}])
-    r = client.put("/api/v1/settings/intel-boards", headers=AUTH, json={"boards": ["芯片"]})
-    assert r.status_code == 422
-    detail = r.json()["detail"]
-    assert detail["reason"] == "board_not_found"
-    assert detail["unresolved"] == ["芯片"]
-    # 校验先行、未部分写入——GET 仍是默认五板块,不是"芯片"
-    assert client.get("/api/v1/settings/intel-boards", headers=AUTH).json()["boards"] == list(
-        settings_store.DEFAULT_INTEL_WATCH_BOARDS
-    )
-
-
-def test_put_intel_boards_partial_mismatch_lists_only_unresolved(client, AUTH, api_env):
-    """一部分匹配、一部分不匹配 → 整体拒收(不做"部分生效"),`unresolved` 只列出没匹配到的那些。"""
-    write_flat_parquet(api_env, "ths_index.parquet", [{"ts_code": "885921.TI", "name": "储能"}])
-    r = client.put("/api/v1/settings/intel-boards", headers=AUTH, json={"boards": ["储能", "不存在的板块"]})
-    assert r.status_code == 422
-    assert r.json()["detail"]["unresolved"] == ["不存在的板块"]
-
-
-def test_put_intel_boards_empty_list_clears_explicitly(client, AUTH, api_env):
-    """空列表 = 显式清空(与"从未配置"回退默认语义不同,`set_intel_watch_boards([])` 口径)。"""
-    r = client.put("/api/v1/settings/intel-boards", headers=AUTH, json={"boards": []})
-    assert r.status_code == 200
-    assert r.json()["boards"] == []
-    assert client.get("/api/v1/settings/intel-boards", headers=AUTH).json()["boards"] == []
-
-
-def test_put_intel_boards_missing_ths_index_file_rejects_all(client, AUTH, api_env):
-    """`ths_index.parquet` 尚未 backfill(文件不存在)→ `load_index_names` 返回空 dict →
-    任何非空名单都无法精确匹配、保守 422(不静默接受一个当下无法验证的名字)。"""
-    r = client.put("/api/v1/settings/intel-boards", headers=AUTH, json={"boards": ["储能"]})
-    assert r.status_code == 422
-    assert r.json()["detail"]["reason"] == "board_not_found"
-
-
 def test_register_device(client, AUTH, api_env):
     from neckline.api.stores import list_device_tokens
 

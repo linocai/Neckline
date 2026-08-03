@@ -38,7 +38,6 @@ struct SettingsView: View {
             selfCheckSection
             llmSection
             pushSection
-            intelBoardsSection
             #if os(iOS)
             devicePushSection
             #endif
@@ -47,7 +46,6 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .task {
             await model.loadSettings()
-            await model.loadIntelWatchBoards()
             await model.loadServerVersion()
         }
     }
@@ -200,48 +198,6 @@ struct SettingsView: View {
             Text("APNs 推送")
         } footer: {
             Text("买点触发 / 证伪剔除 / 持仓预警(普通级)不推送,只进「盘中看板」/持仓卡(§2.4 拍板)。")
-        }
-    }
-
-    // MARK: - v1.3-③-C3/⑥ 候选情报「五常驻板块」可配
-
-    private var intelBoardsSection: some View {
-        Section {
-            if model.intelBoardsDraft.isEmpty {
-                Text("未配置常驻板块(候选情报管线仅按当日暴起板块选取,不保证长期方向每天有票)")
-                    .font(.system(size: 12)).foregroundStyle(NK.textTertiary)
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(model.intelBoardsDraft, id: \.self) { name in
-                            HStack(spacing: 4) {
-                                Text(name).font(.system(size: 12))
-                                Button { model.removeIntelBoardDraft(name) } label: {
-                                    Image(systemName: "xmark.circle.fill").font(.system(size: 11))
-                                }
-                                .buttonStyle(.plain).foregroundStyle(NK.textTertiary)
-                            }
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(Capsule().fill(NK.chipNeutral))
-                        }
-                    }
-                }
-            }
-            HStack(spacing: 8) {
-                TextField("板块全名,如 芯片概念", text: $model.intelBoardDraftInput)
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    #endif
-                    .onSubmit { model.addIntelBoardDraft() }
-                Button("添加") { model.addIntelBoardDraft() }
-                    .disabled(model.intelBoardDraftInput.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            Button("保存常驻板块") { Task { await model.saveIntelWatchBoards() } }
-        } header: {
-            Text("候选情报 · 五常驻板块")
-        } footer: {
-            Text("每个常驻板块每日保底 2 只候选(不足则如实说明原因,不降标准凑数)。板块名须与同花顺概念板块全名精确一致,不支持模糊匹配——匹配失败会拒绝保存,并提示具体是哪个名字没对上。")
         }
     }
 

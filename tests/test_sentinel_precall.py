@@ -20,7 +20,6 @@ from tests.conftest import (
 )
 
 from neckline.report import store
-from neckline.report.candidates import Candidate
 from neckline.sentinel import precall
 from neckline.sentinel.dedup import already_pushed, load_events_for_date
 from neckline.sentinel.positions import Position, open_position
@@ -47,16 +46,12 @@ def _quote(*, open_: float, pre_close: float = 10.0, price: float = None, volume
     )
 
 
-def _candidate(ts_code="600001.SH", buypoint="pullback", ma10=9.5, platform_high=10.0,
-               low_open_pct=-0.02) -> Candidate:
-    return Candidate(
-        ts_code=ts_code, name="示例甲", close=10.0, score=90.0, rank=1, board="MAIN",
-        pattern_tags=[], hot_sectors=[], sector_names=[],
-        entry_plan="回调低吸...", stop_loss="止损...", target="目标...", invalidation_text="证伪...",
-        invalidation_spec={"low_open_pct": low_open_pct, "vwap_break": True, "vol_ratio_low": 0.8, "vol_ratio_high": 3.0},
-        entry_spec={"buypoint": buypoint, "ma10": ma10, "prev_close": 10.0, "platform_high": platform_high,
-                    "breakout_vol_expand": 1.5},
-    )
+def _script(ts_code="600001.SH", ref_close=9.5, stop_line=9.7) -> precall.MemberScript:
+    """**V2-⑬-7**:盘前判定对象由「昨晚候选」换成「T1/T2 篮子成员 + 卡里冻结的两个
+    价位」。`ref_close` = 卡的 D0 收盘锚(判高开偏离),`stop_line` = 卡的
+    `close_below_stop_line`(判开盘即失效)。判定阈值与文案口径均沿用 V1。"""
+    return precall.MemberScript(ts_code=ts_code, basket_key="k1",
+                                ref_close=ref_close, stop_line=stop_line)
 
 
 def _position(buy_price=10.0, buy_date="20260716", ts_code="600001.SH", pid=1) -> Position:
@@ -69,34 +64,38 @@ def _position(buy_price=10.0, buy_date="20260716", ts_code="600001.SH", pid=1) -
 # ————————————————————————————————————————————————————————————————
 
 class TestGapUpInvalidate:
-    def test_pullback_gap_up_over_threshold_invalidates(self):
-        # ma10=9.5,open=10.0 → 高开 5.3% > 3% → 变形
-        assert judge_gap_up_invalidate(_candidate(), _quote(open_=10.0)) is not None
+    def test_gap_up_over_threshold_deviates_from_frozen_script(self):
+        # ref_close=9.5,open=10.0 → 高开 5.3% > 3% → 偏离剧本
+        assert judge_gap_up_invalidate(_script(), _quote(open_=10.0)) is not None
 
-    def test_pullback_gap_up_below_threshold_ok(self):
-        # ma10=9.5,open=9.6 → 高开 1.05% < 3% → 不触发
-        assert judge_gap_up_invalidate(_candidate(), _quote(open_=9.6)) is None
+    def test_gap_up_below_threshold_ok(self):
+        # ref_close=9.5,open=9.6 → 高开 1.05% < 3% → 不触发
+        assert judge_gap_up_invalidate(_script(), _quote(open_=9.6)) is None
 
-    def test_breakout_uses_platform_high(self):
-        c = _candidate(buypoint="breakout", platform_high=10.0)
-        assert judge_gap_up_invalidate(c, _quote(open_=10.4)) is not None   # +4% > 3%
-        assert judge_gap_up_invalidate(c, _quote(open_=10.2)) is None       # +2% < 3%
+    def test_threshold_is_measured_against_the_frozen_anchor_not_pre_close(self):
+        """阈值锚在**卡里冻结的 ref_close**上,不是昨收 —— 两者不同时必须按前者判。"""
+        sc = _script(ref_close=10.0)
+        assert judge_gap_up_invalidate(sc, _quote(open_=10.4, pre_close=12.0)) is not None  # +4% > 3%
+        assert judge_gap_up_invalidate(sc, _quote(open_=10.2, pre_close=8.0)) is None       # +2% < 3%
 
-    def test_missing_ref_level_no_judgment(self):
-        c = _candidate(ma10=0.0)   # 参考位缺失
-        assert judge_gap_up_invalidate(c, _quote(open_=12.0)) is None
+    def test_missing_frozen_anchor_no_judgment(self):
+        """卡里没给这只票的锚 → **不判**(不拿现价现推一个阈值顶上)。"""
+        assert judge_gap_up_invalidate(_script(ref_close=None), _quote(open_=12.0)) is None
 
 
 class TestLowOpenFalsify:
-    def test_low_open_hits_falsify_line(self):
-        # low_open_pct=-0.02,pre_close=10,open=9.7 → -3% ≤ -2% → 证伪
-        assert judge_low_open_falsify(_candidate(), _quote(open_=9.7, pre_close=10.0)) is not None
+    def test_open_below_frozen_stop_line_warns(self):
+        # stop_line=9.7,open=9.6 → 开盘即在失效位下方
+        assert judge_low_open_falsify(_script(), _quote(open_=9.6, pre_close=10.0)) is not None
 
-    def test_small_low_open_ok(self):
-        assert judge_low_open_falsify(_candidate(), _quote(open_=9.9, pre_close=10.0)) is None
+    def test_open_above_stop_line_ok(self):
+        assert judge_low_open_falsify(_script(), _quote(open_=9.9, pre_close=10.0)) is None
 
     def test_high_open_not_falsify(self):
-        assert judge_low_open_falsify(_candidate(), _quote(open_=10.5, pre_close=10.0)) is None
+        assert judge_low_open_falsify(_script(), _quote(open_=10.5, pre_close=10.0)) is None
+
+    def test_missing_frozen_stop_line_no_judgment(self):
+        assert judge_low_open_falsify(_script(stop_line=None), _quote(open_=1.0, pre_close=10.0)) is None
 
 
 class TestAuctionVolume:
@@ -161,8 +160,17 @@ class TestPrecallWindow:
 # 3) run_precall_tick 集成:落库 + 防重 + 非窗口跳过
 # ————————————————————————————————————————————————————————————————
 
-def _setup(settings, *, report_day: date, today: date, candidates, positions=(), daily_vol=None):
-    """铺交易日历 + (可选)prev5 日线 + 前晚报告 + 持仓,供 run_precall_tick 消费。"""
+def _setup(settings, *, report_day: date, today: date, member_codes=(), positions=(), daily_vol=None,
+           ref_close=9.5, stop_pct=0.05):
+    """铺交易日历 + (可选)prev5 日线 + **D0 冻结的 T1 篮子与卡** + 持仓,供
+    `run_precall_tick` 消费(V2-⑬-7:判定对象已从候选换成篮子成员)。
+
+    卡走 `basket_card.build_verification_spec`/`build_invalidation_spec` **本尊**产出,
+    不手拼 JSON —— 保证测试和生产读的是同一份结构(键名一改这里就红)。"""
+    from neckline.db import connection
+    from neckline.selection import basket_card as bc
+    from neckline.selection.basket_store import save_basket_card
+
     days = business_days(report_day - timedelta(days=20), 30)
     assert report_day in days and today in days
     insert_trade_cal(settings, days)
@@ -171,13 +179,36 @@ def _setup(settings, *, report_day: date, today: date, candidates, positions=(),
             if dd >= today:
                 continue
             write_daily_fixture(settings, "daily", dd, [
-                {"ts_code": c.ts_code, "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0,
+                {"ts_code": c, "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0,
                  "pre_close": 10.0, "vol": daily_vol, "amount": 10000.0}
-                for c in candidates
+                for c in member_codes
             ])
     store.save_report(report_day, strategy_version="v1", sentiment={}, sectors=[],
-                      candidates=[c.public_dict() for c in candidates], markdown="# t", db_path=settings.db_path)
-    insert_stock_basic(settings, [{"ts_code": c.ts_code, "name": c.name} for c in candidates]
+                      candidates=[], markdown="# t", db_path=settings.db_path)
+    if member_codes:
+        with connection(settings.db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO baskets (trade_date, basket_key, name, driver, driver_kind, tier,"
+                " pack_version, engine_api_version, charter_version, via, evidence_status, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (report_day.strftime("%Y%m%d"), "k1", "篮甲", "驱动", "theme", 1,
+                 "K4-pack-v1", 1, "v1.3.3", "auto", "ok", "2026-08-02T00:00:00+08:00"),
+            )
+            bid = int(cur.lastrowid)
+            for c in member_codes:
+                conn.execute(
+                    "INSERT INTO basket_members (basket_id, ts_code, role_llm, role_mech,"
+                    " role_conflict, reason, is_primary, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (bid, c, "core", None, 0, "理由", 1, "2026-08-02T00:00:00+08:00"),
+                )
+        mechs = [bc.MemberMech(ts_code=c, name=c, close=ref_close, ma20=9.2, limit_up=11.0,
+                               limit_down=9.0, stop_price=round(ref_close * (1 - stop_pct), 2))
+                 for c in member_codes]
+        save_basket_card(bid, {
+            "verification_spec": bc.build_verification_spec("k1", report_day, mechs),
+            "invalidation_spec": bc.build_invalidation_spec("k1", report_day, mechs, stop_pct=stop_pct),
+        }, db_path=settings.db_path)
+    insert_stock_basic(settings, [{"ts_code": c, "name": c} for c in member_codes]
                        + [{"ts_code": p.ts_code, "name": "持仓票"} for p in positions])
     for p in positions:
         open_position(p.ts_code, p.buy_price, p.qty, datetime.strptime(p.buy_date, "%Y%m%d").date(),
@@ -192,11 +223,10 @@ def test_run_precall_records_and_dedupes(isolated_env):
     days = business_days(date(2026, 6, 1), 30)
     report_day, today = days[-2], days[-1]
     seed_active_rule_v1(settings)
-    cand = _candidate(ts_code="600001.SH")          # ma10=9.5
-    _setup(settings, report_day=report_day, today=today, candidates=[cand])
+    _setup(settings, report_day=report_day, today=today, member_codes=["600001.SH"])  # ref_close=9.5
 
     now = datetime.combine(today, time(9, 25, 30))
-    # 高开变形:open=10.0 vs ma10 9.5 → +5.3%
+    # 高开偏离剧本:open=10.0 vs 冻结锚 9.5 → +5.3%
     quotes = {"600001.SH": _quote(open_=10.0, pre_close=10.0, code="600001.SH")}
     res = run_precall_tick(now, db_path=settings.db_path,
                            parquet_dir=settings.parquet_dir, quotes_fn=lambda codes: quotes)
@@ -216,7 +246,7 @@ def test_run_precall_skips_outside_window(isolated_env):
     days = business_days(date(2026, 6, 1), 30)
     report_day, today = days[-2], days[-1]
     seed_active_rule_v1(settings)
-    _setup(settings, report_day=report_day, today=today, candidates=[_candidate()])
+    _setup(settings, report_day=report_day, today=today, member_codes=["600001.SH"])
     now = datetime.combine(today, time(9, 31, 0))   # 盘中,非盘前窗口
     res = run_precall_tick(now, db_path=settings.db_path, parquet_dir=settings.parquet_dir,
                            quotes_fn=lambda codes: {})
@@ -230,14 +260,15 @@ def test_run_precall_low_open_and_position_and_auction(isolated_env):
     days = business_days(date(2026, 6, 1), 30)
     report_day, today = days[-2], days[-1]
     seed_active_rule_v1(settings)
-    cand = _candidate(ts_code="600001.SH")
     pos = _position(buy_price=10.0, buy_date=report_day.strftime("%Y%m%d"), ts_code="600900.SH", pid=1)
     # daily_vol=10000 → prev5_avg_vol=10000;竞价量 1500 → frac 15% 放量
-    _setup(settings, report_day=report_day, today=today, candidates=[cand], positions=[pos], daily_vol=10000.0)
+    # ref_close=10.0 → 冻结失效位 = 10.0×(1−5%) = 9.5;open=9.4 已在失效位下方
+    _setup(settings, report_day=report_day, today=today, member_codes=["600001.SH"],
+           positions=[pos], daily_vol=10000.0, ref_close=10.0)
 
     now = datetime.combine(today, time(9, 26, 0))
     quotes = {
-        "600001.SH": _quote(open_=9.6, pre_close=10.0, volume=1500.0, code="600001.SH"),   # 低开 -4% + 竞价放量
+        "600001.SH": _quote(open_=9.4, pre_close=10.0, volume=1500.0, code="600001.SH"),   # 跌破冻结失效位 9.5 + 竞价放量
         "600900.SH": _quote(open_=9.3, pre_close=10.0, code="600900.SH"),                  # 持仓跌破止损线 9.5
     }
     res = run_precall_tick(now, db_path=settings.db_path,
@@ -266,7 +297,7 @@ def _precall_with_circuit(isolated_env, *, locked: bool):
     days = business_days(date(2026, 6, 1), 30)
     report_day, today = days[-2], days[-1]
     seed_active_rule_v1(settings)
-    _setup(settings, report_day=report_day, today=today, candidates=[_candidate()])
+    _setup(settings, report_day=report_day, today=today, member_codes=["600001.SH"])
     if locked:
         with connection(settings.db_path) as conn:
             conn.execute(
@@ -337,7 +368,7 @@ def test_run_precall_d5_exit_records_and_dedupes(isolated_env):
     assert len([d for d in days if buy_day <= d <= today]) == 5   # 闭区间 5 个交易日
     seed_active_rule_v1(settings)   # max_hold_days=5
     pos = _position(buy_price=10.0, buy_date=buy_day.strftime("%Y%m%d"), ts_code="600900.SH")
-    _setup(settings, report_day=report_day, today=today, candidates=[_candidate()], positions=[pos])
+    _setup(settings, report_day=report_day, today=today, member_codes=["600001.SH"], positions=[pos])
 
     now = datetime.combine(today, time(9, 25, 30))
     quotes = {"600900.SH": _quote(open_=10.0, pre_close=10.0, code="600900.SH")}   # 无止损预警,只测 D5

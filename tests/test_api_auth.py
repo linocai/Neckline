@@ -12,7 +12,6 @@ PROTECTED_GET = [
     "/api/v1/board",
     "/api/v1/positions",
     "/api/v1/settings",
-    "/api/v1/settings/intel-boards",
     "/api/v1/settings/providers",
     "/api/v1/settings/llm-routes",
 ]
@@ -42,7 +41,6 @@ def test_protected_put_requires_token(client):
     assert client.put("/api/v1/settings/push", json={"report": True, "retreatBrake": True}).status_code == 401
     assert client.put("/api/v1/settings/providers/glm", json={}).status_code == 401
     assert client.put("/api/v1/settings/llm-routes", json={}).status_code == 401
-    assert client.put("/api/v1/settings/intel-boards", json={"boards": []}).status_code == 401
 
 
 def test_protected_delete_requires_token(client):

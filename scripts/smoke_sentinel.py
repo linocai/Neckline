@@ -157,11 +157,11 @@ def main() -> int:
     logger.info("已复制真实 DB 到临时副本(不污染生产数据):%s", tmp_db)
 
     try:
-        logger.info("=== 用真实数据生成 %s 的候选报告(用于 %s 开仓计划)===", report_day, today)
+        logger.info("=== 用真实数据生成 %s 的报告(用于 %s 冒烟)===", report_day, today)
         bundle = build_report(report_day, db_path=tmp_db, save=True)
         logger.info(
-            "候选%d只(策略大脑 %s);情绪仪表盘:涨停%d/跌停%d/炸板率%.0f%%/仓位额度%s",
-            len(bundle.candidates), bundle.strategy_version,
+            "报告已生成(策略大脑 %s);情绪仪表盘:涨停%d/跌停%d/炸板率%.0f%%/仓位额度%s",
+            bundle.strategy_version,
             bundle.sentiment.limit_up_count, bundle.sentiment.limit_down_count,
             bundle.sentiment.zaban_rate * 100, bundle.sentiment.position_quota,
         )
@@ -172,8 +172,8 @@ def main() -> int:
             logger.info("合成持仓:%s(%s) 买入价%.2f 买入日%s", p["ts_code"], p["label"], p["buy_price"], p["buy_date"])
 
         wu = load_watch_universe(today, db_path=tmp_db, parquet_dir=None)
-        logger.info("关注池:候选%d只 + 持仓%d只 + 昨日涨停股代理样本%d只,共去重%d只代码",
-                    len(wu.candidates), len(wu.positions), len(wu.breadth_extra_codes), len(wu.codes))
+        logger.info("关注池:T1/T2 篮子成员%d只 + 持仓%d只 + 昨日涨停股代理样本%d只,共去重%d只代码",
+                    len(wu.targets), len(wu.positions), len(wu.breadth_extra_codes), len(wu.codes))
 
         rows = _daily_rows_lookup(today, wu.codes)
         missing = [c for c in wu.codes if c not in rows]
@@ -202,16 +202,14 @@ def main() -> int:
                 retreat_state = "未触发"
             logger.info(
                 "%s 汇总:拉到%d/%d只行情;关注池宽度(样本%d只)涨停%d/跌停%d/炸板率%.0f%%;"
-                "退潮%s;买点信号%d个;证伪信号%d个;持仓告警%d个;本拍推送%d条(去重跳过%d条)",
+                "退潮%s;证伪信号%d个;持仓告警%d个;本拍推送%d条(去重跳过%d条)",
                 cp.label, result.quotes_fetched, result.watched_codes,
                 bs.sample_size if bs else 0, bs.limit_up_count if bs else 0,
                 bs.limit_down_count if bs else 0, (bs.zaban_rate * 100) if bs else 0.0,
                 retreat_state,
-                len(result.entry_signals), len(result.invalidation_signals), len(result.holding_alerts),
+                len(result.invalidation_signals), len(result.holding_alerts),
                 len(result.pushed_events), result.skipped_duplicate,
             )
-            for sig in result.entry_signals:
-                logger.info("  [买点] %s(%s):%s", sig.name, sig.ts_code, sig.reason)
             for inv in result.invalidation_signals:
                 logger.info("  [证伪] %s(%s):%s", inv.name, inv.ts_code, inv.reason_text)
             for alert in result.holding_alerts:

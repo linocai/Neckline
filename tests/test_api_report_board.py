@@ -35,10 +35,30 @@ def _seed_report(db, d: date, *, intel=None, sector_moneyflow=None, news_alerts_
         markdown="# 报告", intel=intel, sector_moneyflow=sector_moneyflow,
         news_alerts_scan=news_alerts_scan, db_path=db,
     )
-    report_store.save_llm_judgment(
-        d, JudgeResult(ts_code="600001.SH", provider="glm", model="glm-5.2", verdict="通过",
-                       narrative="催化站得住。", degraded=False), db_path=db,
-    )
+    _insert_llm_judgment_row(db, d, "600001.SH")
+
+
+def _insert_llm_judgment_row(db, d: date, ts_code: str) -> None:
+    """**V2-⑬-2**:`llm_judgments` 停写留档,`store.save_llm_judgment` 已物理删除;
+    `/report` 仍会 live join 该表读**历史行**,故单测改走裸 SQL 造历史行(同
+    `conftest.insert_decision_log_row`/`insert_inquiry_pool_row` 体例)。"""
+    import sqlite3
+
+    from neckline.db import init_schema
+
+    init_schema(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO llm_judgments "
+            "(trade_date, ts_code, provider, model, verdict, narrative, degraded, degrade_reason,"
+            " search_hits_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (d.strftime("%Y%m%d"), ts_code, "glm", "glm-5.2", "通过", "催化站得住。", 0, "",
+             "[]", "2026-07-17T08:00:00+00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def test_report_latest(client, AUTH, api_env):
@@ -54,11 +74,10 @@ def test_report_latest(client, AUTH, api_env):
     assert len(cands) == 2
     c0 = cands[0]
     assert c0["code"] == "600001.SH" and c0["rank"] == 1
-    # v1.5-③-B:老四件套键仍在、恒非空,但值已统一改成过渡文案(不再回读落库快照
-    # 里的 entry_plan/stop_loss 真文本)——即便种子数据里塞了"回调低吸"字样也不
-    # 该透出来,见 test_report_latest_legacy_fourpiece_keys_always_notice。
-    assert "回调低吸" not in c0["buyPoint"]
-    assert c0["buyPoint"] == c0["stop"] == c0["target"] == c0["invalidation"]
+    # ⑬-6:老四件套四键已物理删除(D2=A 路,一次性换血、不留过渡文案);
+    # ⑬-3/⑬-4:`referencePlan`/`execHints` 两键同批删除。
+    for gone in ("buyPoint", "stop", "target", "invalidation", "referencePlan", "execHints"):
+        assert gone not in c0, f"{gone} 应已随 ⑬-3/4/6 从 CandidateOut 删除"
     assert c0["formTags"] == ["浅回调贴前高", "放量"]
     # 前排候选带 LLM 审判
     assert c0["llmJudgment"]["verdict"] == "通过"
@@ -67,31 +86,6 @@ def test_report_latest(client, AUTH, api_env):
 
 
 # —— v1.5-③-B `_shape_candidate` 老四件套过渡文案(需求 9,向后兼容硬约束)————————————
-
-def test_report_latest_legacy_fourpiece_keys_always_notice(client, AUTH, api_env):
-    """已装 v1.4.1 客户端对 `buyPoint`/`stop`/`target`/`invalidation` 四键是**硬解码**
-    (`try c.decode(String.self,…)`),v1.5.0 起候选生成路径不再产出这四件套文案后,
-    服务端必须仍发非空 String——一律无条件下发 `LEGACY_FOURPIECE_NOTICE`,**不按
-    落库快照里 `entry_plan` 等字段是否有真文本分叉**(覆盖两种落库快照:①v1.5.0 起
-    的新报告,`entry_plan` 等字段恒空串;②v1.5.0 前生成的老报告,`entry_plan` 等
-    字段是真实历史文本——两者读回结果必须一致)。"""
-    from neckline.api.app import LEGACY_FOURPIECE_NOTICE
-
-    new_style = _candidate(1, "600001.SH", "示例甲")
-    new_style["entry_plan"] = new_style["stop_loss"] = new_style["target"] = ""
-    new_style["invalidation_text"] = ""
-    old_style = _candidate(2, "600002.SH", "示例乙")  # 助手默认自带 v1.5 前的真文本
-    report_store.save_report(
-        date(2026, 7, 29), strategy_version="v1.5.0",
-        sentiment={"trade_date": "20260729"}, sectors=[], candidates=[new_style, old_style],
-        markdown="# 报告", db_path=api_env.db_path,
-    )
-    cands = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"]
-    assert len(cands) == 2
-    for c in cands:
-        assert c["buyPoint"] == c["stop"] == c["target"] == c["invalidation"] == LEGACY_FOURPIECE_NOTICE
-        assert LEGACY_FOURPIECE_NOTICE != ""   # 非空是硬约束的重点,顺带断言常量本身不是空串
-
 
 def test_report_latest_carries_intel_and_sector_moneyflow(client, AUTH, api_env):
     """v1.3-③ C1/C2 契约(`ReportOut.intel`/`sectorMoneyflow`)——透传报告落库快照,
@@ -445,132 +439,6 @@ def test_report_candidate_info_card_none_for_old_snapshot(client, AUTH, api_env)
 
 
 # —— v1.4-⑤-A `CandidateOut.execHints`(执行提示)——————————————————————————————
-
-def test_report_candidate_carries_exec_hints(client, AUTH, api_env):
-    """`Candidate.exec_hints` 存档 → `CandidateOut.execHints` 往返不丢字段,多条
-    保序。"""
-    c = _candidate(1, "600001.SH", "示例甲")
-    c["exec_hints"] = [
-        {"code": "C1_strong_market_order", "text": "强票挂低单会漏掉起飞的", "source": "db"},
-        {"code": "C4_no_pullback_bigred_mechanical", "text": "回调大红机械层不做", "source": "fallback"},
-    ]
-    report_store.save_report(
-        date(2026, 7, 28), strategy_version="v1.4.0",
-        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
-        markdown="# 报告", db_path=api_env.db_path,
-    )
-    body = client.get("/api/v1/report/latest", headers=AUTH).json()
-    hints = body["candidates"][0]["execHints"]
-    assert len(hints) == 2
-    assert hints[0] == {"code": "C1_strong_market_order", "text": "强票挂低单会漏掉起飞的", "source": "db"}
-    assert hints[1]["source"] == "fallback"
-
-
-def test_report_candidate_exec_hints_defaults_empty_for_old_snapshot(client, AUTH, api_env):
-    """老报告(`candidates_json` 里没有 `exec_hints` 键)→ `execHints=[]`(空列表是
-    "无命中"的天然合法态,与 `infoCard` 用 `None` 的理由不同——同 `k4Flags`/
-    `intelRank` 的"缺键即默认空"惯例,不是"确认查过没数据"意义上的空)。"""
-    _seed_report(api_env.db_path, date(2026, 7, 17))
-    body = client.get("/api/v1/report/latest", headers=AUTH).json()
-    assert body["candidates"][0]["execHints"] == []
-
-
-# —— v1.5-①-F `CandidateOut.referencePlan`(参考件三件套,需求 9)——————————————————
-
-def test_report_candidate_carries_reference_plan_ok_state(client, AUTH, api_env):
-    """`Candidate.reference_plan` 存档(v1.5-①,`ReferencePlan.to_public_dict()`
-    已是 camelCase)→ `CandidateOut.referencePlan` 往返不丢字段。"""
-    c = _candidate(1, "600001.SH", "示例甲")
-    c["reference_plan"] = {
-        "status": "ok",
-        "buy": {"low": 12.34, "high": 12.98, "stopPrice": 11.72, "why": "贴近支撑"},
-        "buyUnavailableReason": None,
-        "exit": {"low": 15.10, "high": 15.80, "why": "前高压力位"},
-        "exitUnavailableReason": None,
-        "script": "若集合竞价大幅低开则放弃,温和低开则观望",
-        "vetoReason": None,
-        "unavailableReason": None,
-        "disclaimer": "参考,非指令 —— 买卖与终选在你,系统不代下单;纪律以章程为准。",
-        "degraded": False,
-    }
-    report_store.save_report(
-        date(2026, 7, 28), strategy_version="v1.5.0",
-        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
-        markdown="# 报告", db_path=api_env.db_path,
-    )
-    body = client.get("/api/v1/report/latest", headers=AUTH).json()
-    rplan = body["candidates"][0]["referencePlan"]
-    assert rplan["status"] == "ok"
-    assert rplan["buy"]["low"] == 12.34 and rplan["buy"]["stopPrice"] == 11.72
-    assert rplan["exit"]["high"] == 15.80
-    assert rplan["script"].startswith("若集合竞价")
-    assert rplan["vetoReason"] is None
-    assert rplan["disclaimer"]
-    assert rplan["degraded"] is False
-    # v1.5.1 增量两键:老快照(本用例的 buy/exit 就没带这两个键)→ `None`,不是 0、
-    # 也不是键消失(客户端据此退化成不带数字的章程标签)。
-    assert rplan["buy"]["stopPct"] is None
-    assert rplan["exit"]["takeProfitRetrace"] is None
-
-
-def test_report_candidate_reference_plan_carries_charter_fingerprints(client, AUTH, api_env):
-    """v1.5.1(两线 review 共同项):章程口径指纹 `buy.stopPct` / `exit.takeProfitRetrace`
-    原样透传到契约,供客户端动态生成「章程 −5%」「回落止盈 8%」两句标签(不硬编)。"""
-    c = _candidate(1, "600001.SH", "示例甲")
-    c["reference_plan"] = {
-        "status": "ok",
-        "buy": {"low": 12.34, "high": 12.98, "stopPrice": 11.04, "stopPct": 0.08, "why": ""},
-        "buyUnavailableReason": None,
-        "exit": {"low": 15.10, "high": 15.80, "takeProfitRetrace": 0.12, "why": ""},
-        "exitUnavailableReason": None,
-        "script": "s", "vetoReason": None, "unavailableReason": None,
-        "disclaimer": "参考,非指令", "degraded": False,
-    }
-    report_store.save_report(
-        date(2026, 7, 28), strategy_version="v1.5.1",
-        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
-        markdown="# 报告", db_path=api_env.db_path,
-    )
-    rplan = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"][0]["referencePlan"]
-    assert rplan["buy"]["stopPct"] == 0.08
-    assert rplan["exit"]["takeProfitRetrace"] == 0.12
-
-
-def test_report_candidate_reference_plan_vetoed_state_has_null_buy_exit(client, AUTH, api_env):
-    """否决态:三件套全 null + vetoReason,票本身仍在候选列表里(本测试只验证
-    契约形状,候选去留断言见 test_pipeline.py)。"""
-    c = _candidate(1, "600001.SH", "示例甲")
-    c["reference_plan"] = {
-        "status": "vetoed",
-        "buy": None, "buyUnavailableReason": "本次未生成买入参考区间",
-        "exit": None, "exitUnavailableReason": "本次未生成离场参考区间",
-        "script": None, "vetoReason": "股东大幅减持", "unavailableReason": None,
-        "disclaimer": "参考,非指令 —— 买卖与终选在你,系统不代下单;纪律以章程为准。",
-        "degraded": False,
-    }
-    report_store.save_report(
-        date(2026, 7, 28), strategy_version="v1.5.0",
-        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
-        markdown="# 报告", db_path=api_env.db_path,
-    )
-    body = client.get("/api/v1/report/latest", headers=AUTH).json()
-    rplan = body["candidates"][0]["referencePlan"]
-    assert rplan["status"] == "vetoed"
-    assert rplan["buy"] is None and rplan["exit"] is None
-    assert rplan["vetoReason"] == "股东大幅减持"
-
-
-def test_report_candidate_reference_plan_none_for_old_snapshot(client, AUTH, api_env):
-    """老报告(建于本字段前,`candidates_json` 里没有 `reference_plan` 键)→
-    `referencePlan=None`,不冒充"确认无参考"(同 `infoCard` 的处理方式——`None` 与
-    `status="unavailable"` 刻意区分,前者是"这份报告压根没有这个概念",后者是
-    "生成过、只是没看")。"""
-    _seed_report(api_env.db_path, date(2026, 7, 17))
-    body = client.get("/api/v1/report/latest", headers=AUTH).json()
-    assert body["candidates"][0]["referencePlan"] is None
-
-
-# —— v1.5-②-B `CandidateOut.judgeSkipped`(预算耗尽标记,需求 9)——————————————————
 
 def test_report_candidate_carries_judge_skipped_true(client, AUTH, api_env):
     """`Candidate.judge_skipped` 存档 → `CandidateOut.judgeSkipped` 往返不丢字段;

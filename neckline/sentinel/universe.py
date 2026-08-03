@@ -6,7 +6,7 @@
 **V2-⑧-A 新组成(plan §五 V2-⑧-A)**::
 
     持仓 ∪ **T1/T2 篮子成员**(D0 冻结的前两档,`baskets`/`basket_members`)
-         ∪ 候选(V1 残留,⑬-1 删)∪ **相关板块指数** ∪ 昨日涨停股(宽度代理样本)
+         ∪ **相关板块指数** ∪ 昨日涨停股(宽度代理样本)
 
 三处**刻意**的取舍,别当成疏漏:
 
@@ -14,17 +14,23 @@
       与 `report/watchlist_check.py` 已物理删除、`watchlist` 表停写留档;⑧-A 留下的
       两个恒空字段 `watchlist_codes`/`watchlist_candidates` 随之一并删除,
       `engine.py`/`precall.py` 的 `wu.candidates + wu.watchlist_candidates` 同步改写。
-    · **候选仍在**:⑬-1 还没执行,买点 / 证伪哨兵此刻仍以 `Candidate` 为对象;⑧ 只
-      「加篮子、去自选」,**不顺手拆 V1**(先建后拆纪律)。
+    · **候选已删**(V2-⑬-1 执行完毕):V1 候选榜与 `report.candidates.Candidate` 数据类
+      全部退役。**证伪哨兵(⑪-A 点名的纪律分支)判定对象随之换成 T1/T2 篮子成员**
+      —— 本模块新出 `targets: List[WatchTarget]`(轻量载体:码 / 名 / 全局证伪 spec /
+      所属篮子),`engine.py` 遍历它而不是候选列表;判定逻辑一行未改(证伪 spec 本就是
+      零入参的全局常量,见 `invalidation.invalidation_spec`)。
+      ⚠ **买点哨兵(`sentinel/entry.py`)同批退役**:它 100% 由 K1 的 per-code
+      `entry_spec`(platform_high / ma10 / breakout_vol_expand)驱动,V2 没有「单票买点
+      计划」这个概念,给篮子成员现编一个买点 = 发明策略(§3.8 禁)。已如实登记。
     · **「相关板块 ETF/指数」本版落地为板块基准指数**(见 `BOARD_BENCHMARK_INDEX`):
       本项目**没有** ETF 成分/映射数据源(TuShare 600 元档未含,`ths_index` 是同花顺
       板块指数、免费实时源不认它的代码),硬编一份 ETF 清单等于凭空发明。指数是
       **可得且可核对**的那一半,已如实登记(⑧ 完工记录)。
 
 **容量与优先序(≤ `breadth_cap`,默认 200,与改组前同量级)**:
-`持仓 > T1/T2 篮子成员 > 候选 > 板块指数`,`_load_prev_limit_up_codes` 只填**剩余
-额度**。指数排在候选之后是因为它**没有任何纪律消费方**(只进存拍与语境),真要挤,
-先挤它、不挤哨兵要判的票。
+`持仓 > T1/T2 篮子成员 > 板块指数`,`_load_prev_limit_up_codes` 只填**剩余额度**。
+指数排最后是因为它**没有任何纪律消费方**(只进存拍与语境),真要挤,先挤它、
+不挤哨兵要判的票。
 
 ⚠ **指数 / ETF 代码不会污染退潮哨兵的宽度样本**:`retreat.compute_breadth_snapshot`
 按 `stock_basic` 元数据逐票判涨跌停,查无元数据的代码**结构上就被跳过**(它本来就
@@ -38,7 +44,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import polars as pl
 
@@ -46,9 +52,8 @@ from neckline.calendar import prev_trading_day, trading_days_between
 from neckline.data.board import Board, classify
 from neckline.data.limit_derived import resolve_exempt_days
 from neckline.data.market_data import get_market_slice, load_stock_basic, scan_table_range
-from neckline.report import store
-from neckline.report.candidates import Candidate
 from neckline.selection.basket_store import BasketRef, load_baskets_for_date
+from neckline.sentinel.invalidation import invalidation_spec
 from neckline.sentinel.positions import Position, load_open_positions
 
 logger = logging.getLogger(__name__)
@@ -76,12 +81,27 @@ MAIN_BOARD_INDEX_SH = "000001.SH"   # 上证综指
 MAIN_BOARD_INDEX_SZ = "399001.SZ"   # 深证成指
 
 
+@dataclass(frozen=True)
+class WatchTarget:
+    """盘中要被**证伪哨兵**判的一只票(V2-⑬-1 起 = T1/T2 篮子成员)。
+
+    刻意做成「码 + 名 + 一份 spec」的轻量载体,不是把整张篮子卡塞进哨兵——哨兵只需要
+    判据,拿到更多字段只会诱使后人在盘中重算(§2.4 铁律:盘中不产生新决策)。
+    `invalidation_spec` 对所有目标是**同一份全局常量**(见
+    `invalidation.invalidation_spec`),挂在每个目标上只是为了让判定函数保持
+    duck-typed、与 V1 的调用形状逐字一致。"""
+    ts_code: str
+    name: str
+    invalidation_spec: Dict[str, Any]
+    basket_key: str = ""        # 来自哪个篮子(审计/文案用,不参与判定)
+
+
 @dataclass
 class WatchUniverse:
     trade_date: date            # 哨兵运行的这一天(今天)
-    report_date: date           # prev_trading_day(trade_date)——candidates / 篮子理应来自这天
-    report_found: bool          # 该日报告是否真的生成过(找不到→candidates 为空,不是报告本身为空)
-    candidates: List[Candidate]
+    report_date: date           # prev_trading_day(trade_date)——篮子理应来自这天
+    report_found: bool          # 该日报告是否真的生成过(找不到不代表篮子也没有)
+    targets: List[WatchTarget]  # V2-⑬-1:证伪哨兵的判定对象 = T1/T2 篮子成员
     positions: List[Position]
     breadth_extra_codes: List[str]   # 上面几类之外,为退潮哨兵补充的昨日涨停股代码
     # —— V2-⑧-A 新增两类来源 ————————————————————————————————————————————
@@ -103,12 +123,10 @@ def load_watch_universe(
     部署当天尚未跑过 `scripts/report.py`),调用方(engine.py/precall.py)据此
     优雅跳过对应哨兵。
     """
+    from neckline.report import store
+
     report_date = prev_trading_day(trade_date)
     report = store.load_report(report_date, db_path=db_path)
-    candidates: List[Candidate] = []
-    if report is not None:
-        for d in report["candidates"]:
-            candidates.append(_dict_to_candidate(d))
 
     positions = load_open_positions(db_path=db_path)
 
@@ -120,14 +138,30 @@ def load_watch_universe(
             if code not in basket_codes:
                 basket_codes.append(code)
 
-    # —— 优先序:持仓 > T1/T2 成员 > 候选 > 板块指数(理由见模块头)——————————
+    # V2-⑬-1:证伪哨兵的判定对象 = T1/T2 篮子成员(名称查不到就退回代码,不猜)。
+    names = load_stock_meta(basket_codes, db_path=db_path) if basket_codes else {}
+    spec = invalidation_spec()
+    basket_of: Dict[str, str] = {}
+    for b in baskets:
+        for code in b.member_codes:
+            basket_of.setdefault(code, b.basket_key)
+    targets = [
+        WatchTarget(
+            ts_code=code,
+            name=(names[code].name if code in names else code),
+            invalidation_spec=spec,
+            basket_key=basket_of.get(code, ""),
+        )
+        for code in basket_codes
+    ]
+
+    # —— 优先序:持仓 > T1/T2 成员 > 板块指数(理由见模块头)—————————————————
     index_codes = _related_index_codes(
         list(dict.fromkeys(basket_codes + [p.ts_code for p in positions])), db_path=db_path
     )
     priority_codes: List[str] = []
     seen = set()
-    for c in ([p.ts_code for p in positions] + basket_codes
-              + [c.ts_code for c in candidates] + index_codes):
+    for c in [p.ts_code for p in positions] + basket_codes + index_codes:
         if c not in seen:
             seen.add(c)
             priority_codes.append(c)
@@ -149,7 +183,7 @@ def load_watch_universe(
         trade_date=trade_date,
         report_date=report_date,
         report_found=report is not None,
-        candidates=candidates,
+        targets=targets,
         positions=positions,
         breadth_extra_codes=breadth_extra,
         baskets=baskets,
@@ -189,13 +223,6 @@ def _related_index_codes(codes: List[str], *, db_path: Optional[Path]) -> List[s
         elif m.board in BOARD_BENCHMARK_INDEX:
             out.add(BOARD_BENCHMARK_INDEX[m.board])
     return sorted(out)
-
-
-def _dict_to_candidate(d: Dict) -> Candidate:
-    """`store.load_report` 的 `candidates` 是 `Candidate.public_dict()` 的 JSON
-    往返(不含 `raw`),`Candidate.raw`/`entry_spec`/`invalidation_spec` 均有缺省值
-    或本就在 dict 里,`Candidate(**d)` 可直接重建。"""
-    return Candidate(**d)
 
 
 def _load_prev_limit_up_codes(report_date: date, cap: int, parquet_dir: Optional[Path]) -> List[str]:
@@ -296,6 +323,7 @@ def is_new_stock_exempt(meta: StockMeta, trade_date: date) -> bool:
 
 
 __all__ = [
+    "WatchTarget",
     "WatchUniverse",
     "load_watch_universe",
     "load_prev5_avg_volume",

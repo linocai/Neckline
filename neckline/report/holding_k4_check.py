@@ -391,6 +391,15 @@ def _load_k4_evidence(db_path: Optional[Path]) -> Dict[str, str]:
     return out
 
 
+# K4 安检「DB 里查不到该码归属」时的保守缺省档:当**黄牌**(标一下),不当红牌
+# (硬剔)—— 不在 DB 之外自造硬剔判据。⚠ **V2-⑬-1 前住在已删除的
+# `report/intel_candidates.py`**,随该模块删除搬到这里(信息卡 `info_card.py` 是
+# 现存的唯一消费方,而它本来就 import 本模块的 `describe_hits`)。
+# `selection/member_hygiene.py::_K4_DEFAULT_SECTION` 是 V2 选股侧的同值副本
+# (两条链路各自独立演进,**刻意不互相 import**,见该处注释)。
+K4_DEFAULT_SECTION = "avoid_flag"
+
+
 def load_k4_sections(db_path: Optional[Path] = None) -> Dict[str, str]:
     """读 DB `strategy_versions` K4 行 `k4_advisory` 的**分区归属** `{advisory 码: 'hard_cut'
     | 'avoid_flag'}`(plan §五 v1.3-③-C3-③:hard_cut 命中→拦截出池、avoid_flag 命中→打标
@@ -698,10 +707,10 @@ def _parse_buy_date(buy_date: str) -> Optional[date]:
 
 
 def _resolve_names(codes: List[str], db_path: Optional[Path]) -> Dict[str, str]:
-    """从 stock_basic 补名(展示用);查不到 → 调用方回 code。复用候选评分同一取名口径。"""
-    from neckline.report.candidates import _load_stock_names
+    """从 stock_basic 补名(展示用);查不到 → 调用方回 code。走「按代码查中文名」唯一实现。"""
+    from neckline.data.market_data import resolve_stock_names
     try:
-        return _load_stock_names(codes, db_path)
+        return resolve_stock_names(codes, db_path)
     except Exception:  # noqa: BLE001
         return {}
 

@@ -53,7 +53,6 @@ from neckline.api.schemas import (
     DecisionTrackRowOut,
     DeviceRegisterIn,
     EntrySuggestionOut,
-    ExecHintOut,
     InfoCardNewsItemOut,
     InfoCardNewsOut,
     InfoCardOut,
@@ -65,8 +64,6 @@ from neckline.api.schemas import (
     InquiryLogsListOut,
     InquiryOut,
     IntelRankOut,
-    IntelWatchBoardsIn,
-    IntelWatchBoardsOut,
     K4AdvisoryOut,
     LLMJudgmentOut,
     NewsAlertOut,
@@ -85,9 +82,6 @@ from neckline.api.schemas import (
     ProvidersListOut,
     PushKindOut,
     PushSettingsOut,
-    ReferencePlanBuyOut,
-    ReferencePlanExitOut,
-    ReferencePlanOut,
     ReportOut,
     RetreatBrakeOut,
     ReviewGetOut,
@@ -113,10 +107,8 @@ from neckline.settings_store import (
     create_provider,
     delete_provider,
     get_app_settings,
-    get_intel_watch_boards,
     get_llm_routes,
     list_providers_public,
-    set_intel_watch_boards,
     set_llm_routes,
     set_push_kinds,
     set_review_col_map,
@@ -369,47 +361,15 @@ def _shape_info_card_summary(d: Optional[Dict[str, Any]]) -> Optional[InfoCardSu
     )
 
 
-def _shape_reference_plan(d: Optional[Dict[str, Any]]) -> Optional[ReferencePlanOut]:
-    """`Candidate.reference_plan` 存档(v1.5-①,`reference_plan.ReferencePlan.
-    to_public_dict()` 已是 camelCase)→ `ReferencePlanOut`。空/缺(老报告快照、或该次
-    生成整体异常)→ `None`,客户端不冒充"确认无参考"(同 `_shape_info_card_summary`
-    姿势,§2.0 第〇原则)。"""
-    if not d:
-        return None
-    return ReferencePlanOut(
-        status=d.get("status", "unavailable"),
-        buy=ReferencePlanBuyOut(**d["buy"]) if d.get("buy") else None,
-        buyUnavailableReason=d.get("buyUnavailableReason"),
-        exit=ReferencePlanExitOut(**d["exit"]) if d.get("exit") else None,
-        exitUnavailableReason=d.get("exitUnavailableReason"),
-        script=d.get("script"),
-        vetoReason=d.get("vetoReason"),
-        unavailableReason=d.get("unavailableReason"),
-        disclaimer=d.get("disclaimer", ""),
-        degraded=bool(d.get("degraded", False)),
-    )
-
-
-# —— v1.5-③-B:老四件套「键保留 + 值换过渡文案」单一源(PROJECT_PLAN §五 v1.5-③-B,
-#    向后兼容硬约束的落点)——————————————————————————————————————————————————
-# 已装 v1.4.1 客户端对 `buyPoint`/`stop`/`target`/`invalidation` 四键是**硬解码**
-# (`client/Models.swift::Candidate.init(from:)` 用 `try c.decode(String.self,…)`,
-# 非 `decodeIfPresent`):服务端一旦不发这四个键就整份报告解不出、今日计划全空。
-# v1.5.0 起候选生成路径(`intel_candidates.py`)不再产出这四件套的自然语言文案
-# (`Candidate.entry_plan` 等字段恒为默认空串),故 `_shape_candidate` **不再从落库
-# 快照读取这四个字段**,一律无条件下发本常量——同一句话发四遍(四键语义已合一:
-# 「查看新版参考三件套」),不按字段各自拍不同文案(避免四句话各自维护、更难保持
-# 一致)。**老报告快照(v1.5.0 前生成,`entry_plan` 等字段是真文本)同样统一改发本
-# 通知**,不按报告新旧分叉行为——老客户端拿旧报告与新报告的体验应一致(反正它也
-# 用不了 `referencePlan`),避免"有的历史报告能看到真文案、有的看不到"这种不必要
-# 的不一致。真正删除这四个键的条件见 PROJECT_PLAN §七 P3-27(双端换包到 ≥1.5.0 后)。
-LEGACY_FOURPIECE_NOTICE = "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。"
-
-
 def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> CandidateOut:
-    """报告落库的候选 JSON 快照 → 客户端契约。同码不重写:字段直接取自
-    `Candidate.public_dict()` 存档,不在此重算任何领域值——**唯一例外是老四件套
-    四键**,见 `LEGACY_FOURPIECE_NOTICE` 上方注释(无条件下发过渡文案,不读快照)。"""
+    """报告落库的候选 JSON 快照 → 客户端契约。同码不重写:字段直接取自落库存档,
+    不在此重算任何领域值。
+
+    ⚠ **V2-⑬ 过渡态**:候选榜已删(⑬-1),新报告的 `candidates_json` 恒为 `[]`,
+    本函数因此只在**读历史报告**时还有输入。老四件套四键(⑬-6)、参考件三件套
+    (⑬-3)、执行提示位(⑬-4)三组键已按 D2=A 路**直接删除、不留过渡文案**。
+    `CandidateOut` 这个壳与 `ReportOut.candidates` 由 **⑭-B 契约总装**换成篮子 DTO,
+    本块不动它(⑬「删除端点」清单里没有 `/report`)。"""
     llm = None
     if judgment is not None:
         llm = LLMJudgmentOut(
@@ -423,10 +383,6 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
         name=c.get("name", ""),
         score=c.get("score", 0.0),
         board=c.get("board", ""),
-        buyPoint=LEGACY_FOURPIECE_NOTICE,
-        stop=LEGACY_FOURPIECE_NOTICE,
-        target=LEGACY_FOURPIECE_NOTICE,
-        invalidation=LEGACY_FOURPIECE_NOTICE,
         invalidationSpec=c.get("invalidation_spec", {}) or {},
         entrySpec=c.get("entry_spec", {}) or {},
         formTags=c.get("pattern_tags", []) or [],
@@ -438,9 +394,7 @@ def _shape_candidate(c: Dict[str, Any], judgment: Optional[Dict[str, Any]]) -> C
         # v1.4-④-B:信息卡摘要(老报告快照无该键 → None,前向兼容)。
         infoCard=_shape_info_card_summary(c.get("info_card_summary")),
         # v1.4-⑤-A:执行提示(老报告快照无该键 → 默认空列表,前向兼容)。
-        execHints=[ExecHintOut(**h) for h in (c.get("exec_hints") or [])],
         # v1.5-①-F:参考件三件套(老报告快照无该键/该键为 None → None,前向兼容)。
-        referencePlan=_shape_reference_plan(c.get("reference_plan")),
         llmJudgment=llm,
         # v1.5-②-B:预算耗尽未发起(老报告快照无该键 → False,前向兼容;与
         # `llmJudgment is None` 单独并存不冲突——见 CandidateOut.judgeSkipped 注释)。
@@ -459,7 +413,7 @@ def _shape_news_alert(a: Dict[str, Any], names: Dict[str, str]) -> NewsAlertOut:
 
 
 def _shape_report(rep: Dict[str, Any]) -> ReportOut:
-    from neckline.report.candidates import _load_stock_names
+    from neckline.data.market_data import resolve_stock_names
     from neckline.report.news_alerts_store import load_news_alerts
     from neckline.report.pipeline import compute_missed_entry_hint
 
@@ -470,7 +424,7 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
     # v1.3-③-C4:命中告警条目独立表实时查(同 llm_judgments 的「live join」惯例,
     # 不像 intel 那样整段嵌 JSON——见 news_alerts.py 模块头设计说明)。
     alert_rows = load_news_alerts(d, db_path=_db())
-    alert_names = _load_stock_names(list({r["ts_code"] for r in alert_rows}), _db()) if alert_rows else {}
+    alert_names = resolve_stock_names(list({r["ts_code"] for r in alert_rows}), _db()) if alert_rows else {}
     news_alerts = [_shape_news_alert(a, alert_names) for a in alert_rows]
     news_alerts_scan = [
         NewsAlertScanStatusOut(
@@ -1367,41 +1321,6 @@ def put_settings_push(body: SettingsPushIn) -> OkOut:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                              detail={"ok": False, "reason": "invalid_push_kinds", "message": str(e)})
     return OkOut(ok=True)
-
-
-@app.get(f"{API_PREFIX}/settings/intel-boards", dependencies=[Depends(require_token)])
-def get_settings_intel_boards() -> IntelWatchBoardsOut:
-    """读候选情报管线「五板块常驻」名单(plan v1.3-⑥ 后端补齐②)。存取本身早在
-    v1.3-③-C3 就绪(`settings_store.get_intel_watch_boards`);本端点只补 HTTP 读路径。
-    从未配置 → 默认五板块(`DEFAULT_INTEL_WATCH_BOARDS`);用户曾显式清空 → 空列表。"""
-    return IntelWatchBoardsOut(boards=get_intel_watch_boards(db_path=_db()))
-
-
-@app.put(f"{API_PREFIX}/settings/intel-boards", dependencies=[Depends(require_token)])
-def put_settings_intel_boards(body: IntelWatchBoardsIn) -> IntelWatchBoardsOut:
-    """写「五板块常驻」名单(plan v1.3-⑥ 后端补齐②)。**禁模糊匹配**——每个名字须能在
-    `ths_index.name` 精确匹配到(同 `report.intel_candidates._resolve_watch_board_codes`
-    的精确匹配口径,不重推一遍),匹配不到 → 422 + 明确 `reason`(`board_not_found`)与
-    具体哪些名字没匹配到(`unresolved`),不静默接受用户会以为生效、实际情报管线跑起来
-    还是精确匹配失败被诚实跳过(`_resolve_watch_board_codes` 的 `unresolved` 只落
-    warning 日志,用户看不到——故端点层必须先行拦截,不能让写入端悄悄收一个错的名字)。
-    允许空列表(显式清空常驻,与「从未配置」回退默认语义不同,见 `set_intel_watch_boards`)。
-    返回写入后的最终名单(与 GET 同形状,便于客户端直接刷新展示)。"""
-    from neckline.report.sectors import load_index_names
-
-    if body.boards:
-        valid_names = set(load_index_names(parquet_dir=_parquet_dir()).values())
-        unresolved = [nm for nm in body.boards if nm not in valid_names]
-        if unresolved:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "ok": False, "reason": "board_not_found", "unresolved": unresolved,
-                    "message": f"以下板块名未能在 ths_index.name 精确匹配到(禁模糊匹配,请核对全名):{unresolved}",
-                },
-            )
-    set_intel_watch_boards(body.boards, db_path=_db())
-    return IntelWatchBoardsOut(boards=get_intel_watch_boards(db_path=_db()))
 
 
 @app.put(f"{API_PREFIX}/settings/review-col-map", dependencies=[Depends(require_token)])

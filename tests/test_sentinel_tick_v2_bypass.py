@@ -469,11 +469,12 @@ class TestBypassFailuresNeverTouchDiscipline:
         assert r.holding_alerts                                       # 纪律判定照旧
         assert r.skipped_non_trading is False
 
-    def test_bypasses_do_not_change_retreat_or_entry_paths(self, tick_env):
-        """旁路存在与否,退潮 / 买点 / 证伪三条路径的结果一模一样(结构性对拍)。"""
+    def test_bypasses_do_not_change_retreat_or_invalidation_paths(self, tick_env):
+        """旁路存在与否,退潮 / 证伪两条路径的结果一模一样(结构性对拍)。
+        ⚠ V2-⑬-1:买点哨兵已退役,原三条路径变两条。"""
         now = datetime.combine(tick_env.today, time(10, 30))
         qf = lambda codes: {"600001.SH": _q("600001.SH", 9.9)}  # noqa: E731
         r = run_tick(now, db_path=tick_env.db_path, parquet_dir=tick_env.parquet_dir,
                      quotes_fn=qf, notifier=_FakeNotifier())
         assert r.retreat_active is False and r.retreat_alert is None
-        assert r.entry_signals == [] and r.invalidation_signals == []
+        assert r.invalidation_signals == []

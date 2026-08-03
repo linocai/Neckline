@@ -11,7 +11,8 @@
       llm_provider 的列级停写纪律)。老库取值已由 `db.py::_seed_push_kinds` 一次性
       播种进 `push_kinds`;本模块此后**既不读也不写**这六列。
     · review_col_map —— 周复盘交割单列映射(4D 用,本块只建字段)。
-    · intel_watch_boards —— 候选情报管线「五板块常驻」可配名单(v1.3-③-C3)。
+    · intel_watch_boards —— ⚠ **v2.0.0-⑬-1/⑬-13 起停写留档**(五常驻板块保底删除):
+      列保留不 DROP,存取函数 `get/set_intel_watch_boards` 与两个 HTTP 端点已物理删除。
     · llm_task_routes / llm_default_provider —— V2-② 任务→Provider 路由(见
       `get_llm_routes`/`set_llm_routes`),`neckline.llm.factory.get_provider()`
       解析用。
@@ -57,13 +58,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from neckline import notify_kinds
 from neckline.config import settings as _default_settings  # noqa: F401
 from neckline.db import connection, init_schema
-
-# v1.3-③-C3 候选情报管线「五板块常驻」默认名单(用户 2026-07-26 从真实数据挑定,
-# plan §五 v1.3-③-C3-①)。**单一事实源**:DB 列 `app_settings.intel_watch_boards`
-# 为 NULL(未配置)时回退到此;存的是**板块中文名**,运行时按 `ths_index.name`
-# 精确匹配解析 ts_code(禁关键词模糊匹配——"芯片"会误命中汽车芯片/存储芯片,
-# "机器人"会误命中人形机器人;实测见 intel_candidates 模块 docstring)。
-DEFAULT_INTEL_WATCH_BOARDS = ("芯片概念", "创新药", "储能", "机器人概念", "稀土永磁")
 
 # 局部更新(`update_provider`)用的"未传"哨兵——与"显式传 None/空串"区分。
 _UNSET = object()
@@ -218,38 +212,6 @@ def set_review_col_map(col_map: dict, db_path: Optional[Path] = None) -> None:
         conn.execute(
             "UPDATE app_settings SET review_col_map=?, updated_at=? WHERE id=1",
             (json.dumps(col_map, ensure_ascii=False), _now()),
-        )
-
-
-def get_intel_watch_boards(db_path: Optional[Path] = None) -> list:
-    """读候选情报管线「五板块常驻」名单(板块中文名列表,plan §五 v1.3-③-C3-①)。
-    DB 列 `intel_watch_boards` 为 NULL(从未配置)→ 返回 `DEFAULT_INTEL_WATCH_BOARDS`
-    的**默认五板块**;为 `'[]'`(用户显式清空)→ 返回空列表(无常驻,尊重显式配置,
-    不再回退默认);非法 JSON → 回退默认(诚实兜底)。**只读**,写路径留 ⑥/设置屏。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute("SELECT intel_watch_boards FROM app_settings WHERE id=1").fetchone()
-    if row is None or row[0] is None:
-        return list(DEFAULT_INTEL_WATCH_BOARDS)
-    try:
-        parsed = json.loads(row[0])
-    except (json.JSONDecodeError, TypeError):
-        return list(DEFAULT_INTEL_WATCH_BOARDS)
-    if not isinstance(parsed, list):
-        return list(DEFAULT_INTEL_WATCH_BOARDS)
-    return [str(x) for x in parsed]
-
-
-def set_intel_watch_boards(names: list, db_path: Optional[Path] = None) -> None:
-    """写「五板块常驻」名单(板块中文名列表)。空列表 → 存 `'[]'`(显式清空,
-    与 NULL「未配置」区分:后者回退默认、前者尊重空)。供 ⑥/设置屏/QA 用。"""
-    init_schema(db_path)
-    payload = json.dumps([str(x) for x in (names or [])], ensure_ascii=False)
-    with connection(db_path) as conn:
-        _ensure_row(conn)
-        conn.execute(
-            "UPDATE app_settings SET intel_watch_boards=?, updated_at=? WHERE id=1",
-            (payload, _now()),
         )
 
 
@@ -463,14 +425,11 @@ __all__ = [
     "AppSettings",
     "ProviderRecord",
     "ProviderPublic",
-    "DEFAULT_INTEL_WATCH_BOARDS",
     "get_app_settings",
     "get_push_kinds",
     "set_push_kinds",
     "push_kind_enabled",
     "set_review_col_map",
-    "get_intel_watch_boards",
-    "set_intel_watch_boards",
     "list_providers",
     "list_providers_public",
     "get_provider_record",

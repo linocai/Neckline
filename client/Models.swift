@@ -305,74 +305,13 @@ struct InfoCardSummary: Codable, Equatable {
     var topList: InfoCardTopList = InfoCardTopList()
 }
 
-/// 执行提示单条(v1.4-⑤-A,需求 8 末段)。**语义红线**:回答"如果你决定动手,怎么
-/// 执行更不吃亏",不是"该不该买"——`text` 原样透传服务端文字(DB `k4_advisory.
-/// exec_hint` 原文或缺读时的模块兜底),客户端不改写、不加"建议"字样。展示标题统一
-/// 「执行提示」。
-struct ExecHint: Codable, Equatable, Identifiable {
-    var code: String        // advisory 码(C1_strong_market_order 等四选一)
-    var text: String        // 展示文字(服务端原文)
-    var source: String      // db | fallback(诚实展示文字来源)
-
-    var id: String { code }
-}
-
-// MARK: - v1.5-①-F 参考件三件套(需求 9,§2.0 第〇原则:LLM 是参考,硬条款才是纪律)
-//
-// 挂 `Candidate.referencePlan`,服务端 `_shape_reference_plan` 每次响应从落库快照
-// **重新拼装**(同 `infoCard`/`intelRank` 惯例,非 `reviews.result_json` 那种冻结历史
-// 快照)——键缺失只发生在整个 `referencePlan` 对象层面(老报告快照/本次生成异常,
-// 由外层 `Optional` 兜住),对象内部各字段一旦存在就是 pydantic 重新构造出来的完整
-// 形状,故本组三个类型用普通 `Codable`(不写容错 `init(from:)`),同 `K4Advisory`/
-// `RetraceState` 先例。
-
-/// 买入参考区间(①-C 唯一底线:数字必须落在明日涨跌停区间内,出界不显示——出现在
-/// 这里说明已过夹逼校验)。`stopPrice` 系统算(`close×(1−stop_pct)`),不是 LLM 产出,
-/// 与买入区间同一行展示(§2.1「−5.0 是全系统单一止损常量」)。
-///
-/// `stopPct`(v1.5.1 增量键,两线 review 共同项):产出该参考件时的**现役止损比例**
-/// (小数,如 0.05)。「章程 −5%」这句标签由它**动态生成**(`NKFmt.ratioPct`),客户端
-/// 不许硬编数字;`nil`(老快照/章程未配置)时退化成不带数字的「章程止损」。
-struct ReferencePlanBuy: Codable, Equatable {
-    var low: Double
-    var high: Double
-    var stopPrice: Double? = nil
-    var stopPct: Double? = nil
-    var why: String = ""
-}
-
-/// 离场参考区间(本轮上涨压力位,**不受涨跌停夹逼**——压力位可能几天后才到;
-/// **明示参考、非止盈线**,回落止盈纪律独立生效、不受此区间影响)。
-/// `takeProfitRetrace`(v1.5.1 增量键,同 `ReferencePlanBuy.stopPct` 一对):产出该参考件
-/// 时的现役回落止盈比例(小数,如 0.08),旁注文案由它动态生成,`nil` 时不带数字。
-struct ReferencePlanExit: Codable, Equatable {
-    var low: Double
-    var high: Double
-    var takeProfitRetrace: Double? = nil
-    var why: String = ""
-}
-
-/// 参考件三件套(①-F 契约)。`status` 三态不许合并(同 `PositionTimeExitState`
-/// 「不许合并」惯例):`ok`=通过+至少一件有效 | `vetoed`=否决,三件套全空 |
-/// `unavailable`=LLM未激活/调用失败/JSON解析失败,"没看"不是"没有"。`buy`/`exit`
-/// 为 `nil` 时对应的 `*UnavailableReason` 必有值(与 `buy`/`exit` 互斥非空,UI 不得
-/// 静默消失、须展示未展示原因)。`disclaimer` 原样透传、不改写。
-struct ReferencePlan: Codable, Equatable {
-    var status: String
-    var buy: ReferencePlanBuy? = nil
-    var buyUnavailableReason: String? = nil
-    var exit: ReferencePlanExit? = nil
-    var exitUnavailableReason: String? = nil
-    var script: String? = nil
-    var vetoReason: String? = nil
-    var unavailableReason: String? = nil
-    var disclaimer: String = ""
-    var degraded: Bool = false
-
-    var isOk: Bool { status == "ok" }
-    var isVetoed: Bool { status == "vetoed" }
-    var isUnavailable: Bool { status == "unavailable" }
-}
+// ⚠ **V2-⑬-3/⑬-4:`ExecHint` 与参考件三件套(`ReferencePlanBuy`/`ReferencePlanExit`/
+// `ReferencePlan`)三个类型已随服务端键一并删除**。
+//   · 执行提示位(⑬-4):四条计算保留在服务端 `report/exec_hint.py`(纯计算模块),
+//     并入篮子剧本的输入,不再单独出展示位。
+//   · 参考件三件套(⑬-3):体例整套移交**篮子卡**(⑦,11 项),⑮ 客户端改版按篮子卡
+//     重新出 UI —— 不是"参考件没了",是"它换了载体"。
+// 删键走 D2 已拍板的 A 路(新机新子域 / 老 App 打老机,契约一次性换血、不留过渡键)。
 
 struct Candidate: Codable, Equatable, Identifiable {
     var rank: Int
@@ -380,11 +319,11 @@ struct Candidate: Codable, Equatable, Identifiable {
     var name: String
     var score: Double
     var board: String                 // 主板/创业板/科创板/北交所(股票板块分类,非本页"看板")
-    // 四件套(§2.2/§2.3):买点 / 止损(-5%) / 目标 / 证伪条件 —— 全部自由文本,不在客户端重排模板卡
-    var buyPoint: String
-    var stop: String
-    var target: String
-    var invalidation: String
+    // ⚠ **V2-⑬-6:老四件套 `buyPoint`/`stop`/`target`/`invalidation` 四键已删**
+    // (§七 P3-27 兑现)。原先它们是 `try c.decode(String.self,…)` **硬解码**,服务端
+    // 不发就整份报告解不出 —— 这次是**双端同批换血**(D2=A 路:老 App 打老机、新 App
+    // 打新机,两者不交叉),故可直接删。⚠ 「先客户端可选解码、下版服务端才删键」这条
+    // 两步淘汰纪律**本身仍然有效**(CLAUDE.md 铁律),V2 只是靠换机窗口绕开了它。
     var formTags: [String]
     var hotSectors: [String]
     var sectorNames: [String]
@@ -405,12 +344,6 @@ struct Candidate: Codable, Equatable, Identifiable {
     /// 暂不可用"处理。完整信息卡(60 日 K 线/RS 线/行业分歧线)另走
     /// `GET /report/{date}/info-card/{code}`。
     var infoCard: InfoCardSummary? = nil
-    /// v1.4-⑤-A:执行提示(读 DB `k4_advisory.exec_hint`)。0~4 条,老报告快照读回默认空。
-    var execHints: [ExecHint] = []
-    /// v1.5-①-F:参考件三件套(需求 9,§2.0 第〇原则)。`nil` = 老报告快照(建于本字段前)
-    /// 或本次生成整体异常,**不冒充"确认无参考"**——与 `status="unavailable"`(已装配好、
-    /// 只是"没看")刻意区分,展示层按此判断该走哪种缺省文案(见 `ReferencePlanSection`)。
-    var referencePlan: ReferencePlan? = nil
     /// v1.5-②-A:20 只全覆盖起,`llmJudgment` 为 `nil` 有两种成因,靠本字段分辨——
     /// `true` = 墙钟预算耗尽、这一票根本没发起调用(与 `llmJudgment.degraded`〔发起了
     /// 但失败/未激活〕语义不同,**不许合并成一个"没审"**,承 `newsAlertsScan.
@@ -420,9 +353,9 @@ struct Candidate: Codable, Equatable, Identifiable {
     /// 显式 `CodingKeys`(提供自定义 `init(from:)` 时不依赖合成时机是否可靠——同
     /// `ReportResponse`/`Position` 的处理姿势)。字段名与 JSON 字面一致,逐一列出。
     enum CodingKeys: String, CodingKey {
-        case rank, code, name, score, board, buyPoint, stop, target, invalidation
+        case rank, code, name, score, board
         case formTags, hotSectors, sectorNames, llmJudgment, entrySpec, k4Flags, intelRank
-        case infoCard, execHints, referencePlan, judgeSkipped
+        case infoCard, judgeSkipped
     }
 
     var id: String { code }
@@ -434,19 +367,15 @@ struct Candidate: Codable, Equatable, Identifiable {
     var boardLabel: String { nkBoardLabel(board) }
 
     init(rank: Int, code: String, name: String, score: Double, board: String,
-         buyPoint: String, stop: String, target: String, invalidation: String,
          formTags: [String], hotSectors: [String], sectorNames: [String],
          llmJudgment: LLMJudgment?, entrySpec: EntrySpec? = nil,
          k4Flags: [String] = [], intelRank: IntelRank = IntelRank(),
-         infoCard: InfoCardSummary? = nil, execHints: [ExecHint] = [],
-         referencePlan: ReferencePlan? = nil, judgeSkipped: Bool = false) {
+         infoCard: InfoCardSummary? = nil, judgeSkipped: Bool = false) {
         self.rank = rank; self.code = code; self.name = name; self.score = score; self.board = board
-        self.buyPoint = buyPoint; self.stop = stop; self.target = target; self.invalidation = invalidation
         self.formTags = formTags; self.hotSectors = hotSectors; self.sectorNames = sectorNames
         self.llmJudgment = llmJudgment; self.entrySpec = entrySpec
         self.k4Flags = k4Flags; self.intelRank = intelRank
-        self.infoCard = infoCard; self.execHints = execHints
-        self.referencePlan = referencePlan; self.judgeSkipped = judgeSkipped
+        self.infoCard = infoCard; self.judgeSkipped = judgeSkipped
     }
 
     init(from decoder: Decoder) throws {
@@ -456,10 +385,6 @@ struct Candidate: Codable, Equatable, Identifiable {
         name = try c.decode(String.self, forKey: .name)
         score = try c.decode(Double.self, forKey: .score)
         board = try c.decode(String.self, forKey: .board)
-        buyPoint = try c.decode(String.self, forKey: .buyPoint)
-        stop = try c.decode(String.self, forKey: .stop)
-        target = try c.decode(String.self, forKey: .target)
-        invalidation = try c.decode(String.self, forKey: .invalidation)
         formTags = try c.decode([String].self, forKey: .formTags)
         hotSectors = try c.decode([String].self, forKey: .hotSectors)
         sectorNames = try c.decode([String].self, forKey: .sectorNames)
@@ -468,8 +393,6 @@ struct Candidate: Codable, Equatable, Identifiable {
         k4Flags = try c.decodeIfPresent([String].self, forKey: .k4Flags) ?? []
         intelRank = try c.decodeIfPresent(IntelRank.self, forKey: .intelRank) ?? IntelRank()
         infoCard = try c.decodeIfPresent(InfoCardSummary.self, forKey: .infoCard)
-        execHints = try c.decodeIfPresent([ExecHint].self, forKey: .execHints) ?? []
-        referencePlan = try c.decodeIfPresent(ReferencePlan.self, forKey: .referencePlan)
         judgeSkipped = try c.decodeIfPresent(Bool.self, forKey: .judgeSkipped) ?? false
     }
 }
@@ -480,8 +403,8 @@ struct Candidate: Codable, Equatable, Identifiable {
 // `Candidate.infoCard`);这里只补 60 日序列 + 红黄牌明细专属类型。**第〇原则(考卷
 // 同构)**:数据不可得如实缺省,禁止硬凑——每一路数据源独立 `*Available`/
 // `*UnavailableReason`,任何一路缺失都不得连带其余各路"看起来也不可用"。
-// **execHints 待核对假设(⑤留)**:本类型刻意不含 `execHints`——信息卡页复用候选对象
-// 自带的 `Candidate.execHints`(同一份数据,不重复开字段/不重复请求)。
+// ⚠ V2-⑬-4:信息卡页原先复用 `Candidate.execHints` 展示执行提示卡,该键已删 →
+// 执行提示卡随之下线(⑬-N 改造后信息卡的三块新内容归 ⑮ 出 UI)。
 
 struct InfoCardKlineBar: Codable, Equatable, Identifiable {
     var tradeDate: String
@@ -1430,13 +1353,6 @@ struct SettingsSnapshot: Codable, Equatable {
     )
 }
 
-/// v1.3-③-C3/⑥ 候选情报管线「五板块常驻」名单(`GET/PUT /settings/intel-boards`)。
-/// 板块中文名列表,按配置顺序(保底认领 load-bearing,§2.3);写入须与 `ths_index.name`
-/// 精确匹配,匹配失败服务端 422(见 `APIClient.putIntelWatchBoards`)。
-struct IntelWatchBoards: Codable, Equatable {
-    var boards: [String]
-    static let empty = IntelWatchBoards(boards: [])
-}
 
 // MARK: - 4D 周复盘工作台(对账三查 + 单周统计,§五 阶段4D)
 //

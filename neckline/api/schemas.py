@@ -134,83 +134,19 @@ class InfoCardSummaryOut(BaseModel):
     topList: InfoCardTopListOut = Field(default_factory=InfoCardTopListOut)
 
 
-class ExecHintOut(BaseModel):
-    """执行提示单条(plan §五 v1.4-⑤-A,需求 8 末段)。**语义红线**:回答"如果你决定
-    动手,怎么执行更不吃亏",不是"该不该买"——`text` 原样透传 DB `k4_advisory.exec_hint`
-    文字(或缺读时的模块兜底),客户端不改写、不加"建议"字样。"""
-    code: str              # advisory 码(C1_strong_market_order 等四选一)
-    text: str              # 展示文字(DB 原文 或 缺读兜底)
-    source: str            # db | fallback ——文字来源,供诚实展示
-
-
-# —— v1.5-①-F 参考件三件套(需求 9,§2.0 第〇原则)——————————————————————————————
-# LLM 参考,**不触发任何机器动作**——买入/离场参考区间、明早证伪剧本均须标"参考、
-# 非指令"。老四件套(buyPoint/stop/target/invalidation,见 `CandidateOut` 下方)本版
-# 保留不动(③ 才做过渡文案替换),本节是**新增**字段,不影响老客户端解码。
-
-class ReferencePlanBuyOut(BaseModel):
-    """买入参考区间(①-C 唯一底线:数字必须落在明日涨跌停区间内,出界不显示——
-    出现在这里说明已经过夹逼校验)。`stopPrice` 系统算(`close×(1−stop_pct)`),
-    不是 LLM 产出,与买入区间同一行展示,§2.1「−5.0 是全系统单一止损常量」。
-
-    `stopPct`(v1.5.1 增量键,两线 review 共同项):产出该参考件时的**现役止损比例**
-    (小数,如 0.05),客户端据此**动态生成**「章程 −5%」这句标签,不许硬编数字;
-    `null`(老快照/章程未配置)时退化成不带数字的「章程止损」。老客户端忽略本键。"""
-    low: float
-    high: float
-    stopPrice: Optional[float] = None
-    stopPct: Optional[float] = None
-    why: str = ""
-
-
-class ReferencePlanExitOut(BaseModel):
-    """离场参考区间(本轮上涨压力位,**不受涨跌停夹逼**——压力位可能几天后才到;
-    **明示参考、非止盈线**,回落止盈纪律独立生效、不受此区间影响)。
-
-    `takeProfitRetrace`(v1.5.1 增量键,同 `ReferencePlanBuyOut.stopPct` 一对):产出该
-    参考件时的**现役回落止盈比例**(小数,如 0.08),客户端据此动态生成「纪律仍以回落
-    止盈 8% 兜底」这句旁注;`null` 时退化成不带数字的说法。"""
-    low: float
-    high: float
-    takeProfitRetrace: Optional[float] = None
-    why: str = ""
-
-
-class ReferencePlanOut(BaseModel):
-    """参考件三件套(plan §五 v1.5-①-F)。`status` 三态不许合并
-    (ok=通过+至少一件有效 | vetoed=否决,三件套全空 | unavailable=LLM未激活/调用
-    失败/JSON解析失败,"没看"不是"没有")。`buy`/`exit` 为 `None` 时对应的
-    `*UnavailableReason` 必有值(与 `buy`/`exit` 互斥非空);`disclaimer` 原样透传、
-    不改写。"""
-    status: str                                      # ok | vetoed | unavailable
-    buy: Optional[ReferencePlanBuyOut] = None
-    buyUnavailableReason: Optional[str] = None
-    exit: Optional[ReferencePlanExitOut] = None
-    exitUnavailableReason: Optional[str] = None
-    script: Optional[str] = None                      # 明早证伪剧本(自由文本,含分支)
-    vetoReason: Optional[str] = None
-    unavailableReason: Optional[str] = None            # status=unavailable 时的原文
-    disclaimer: str = ""
-    degraded: bool = False
-
-
 class CandidateOut(BaseModel):
     rank: int
     code: str
     name: str
     score: float
     board: str
-    # 老四件套(K1 时代文案,§2.2/§2.3)**v1.5.0 起已退役**:候选卡输出层改
-    # `referencePlan`(见下)。四个键仍在、类型仍是非空 `str`(向后兼容硬约束,
-    # 已装 v1.4.1 客户端对这四键硬解码,`decode(String.self,…)`),但值**恒为**
-    # `api/app.py::LEGACY_FOURPIECE_NOTICE` 过渡文案,不再是真实买点/止损/目标/
-    # 证伪条件——不读落库快照里的 `entry_plan`/`stop_loss`/`target`/
-    # `invalidation_text`(那几个字段本身已随候选生成路径退役、恒为默认空串)。
-    # 真正删键条件见 PROJECT_PLAN §七 P3-27。
-    buyPoint: str
-    stop: str
-    target: str
-    invalidation: str
+    # ⚠ **V2-⑬-6 起老四件套四键(buyPoint/stop/target/invalidation)已物理删除**
+    # (§七 P3-27 兑现)。删键条件 = D2 已拍板的 A 路:新机挂新子域、老 App 打老机,
+    # 两者不交叉 → 契约一次性换血、不留过渡文案。`report/candidates.py` 的四个文案
+    # 函数(`entry_plan_text`/`stop_loss_text`/`target_text`/`invalidation_text`)
+    # 随该模块一并删除。⚠ **「先客户端可选解码、下版服务端才删键」这条两步淘汰纪律
+    # 本身仍然有效**(CLAUDE.md 铁律,V2 之后的版本照守),V2 只是靠换机窗口结构性
+    # 绕开了它,不是废除它。
     invalidationSpec: Dict[str, Any] = Field(default_factory=dict)
     entrySpec: Dict[str, Any] = Field(default_factory=dict)
     formTags: List[str] = Field(default_factory=list)         # 价量结构形态标签
@@ -227,13 +163,10 @@ class CandidateOut(BaseModel):
     # "确认无内容"**——客户端按"该信息暂不可用"处理,不是"已查证为空"。完整信息卡
     # (60日K线/RS线/行业分歧线)另走 `GET /report/{date}/info-card/{code}`。
     infoCard: Optional[InfoCardSummaryOut] = None
-    # v1.4-⑤-A:执行提示(读 DB `k4_advisory.exec_hint`,展示标题统一「执行提示」,不叫
-    # 「买入建议」)。0~4 条,老报告快照(建于本字段前)读回默认空列表(前向兼容)。
-    execHints: List[ExecHintOut] = Field(default_factory=list)
-    # v1.5-①-F:参考件三件套(需求 9)。`None` = 老报告快照(建于本字段前)或本次生成
-    # 整体异常,**不冒充"确认无参考"**——与 `status="unavailable"`(已装配好、只是
-    # "没看")刻意区分,客户端按此判断展示哪种缺省文案。
-    referencePlan: Optional[ReferencePlanOut] = None
+    # ⚠ **V2-⑬-4 执行提示展示位已删**(`execHints`):C1–C4 四条计算保留在
+    # `report/exec_hint.py`(纯计算模块),并入篮子剧本的输入(⑦),不再单独出展示位。
+    # ⚠ **V2-⑬-3 参考件三件套展示位已删**(`referencePlan`):体例整套移交篮子卡(⑦),
+    # `reference_plans` 表停写留档。
     # v1.5-②-A:20 只全覆盖(旧「仅前10只有」分档退役)——`llmJudgment` 现在 20 只
     # 都可能有,`None` 有两种成因,靠 `judgeSkipped` 分辨是哪种:① 老报告快照
     # (建于本字段前);② 本次生成时 v1.5-②-B 墙钟预算耗尽、这一票根本没发起调用
@@ -705,21 +638,6 @@ class SettingsReviewColMapIn(BaseModel):
     colMap: Dict[str, str] = Field(default_factory=dict)
 
 
-# —— v1.3-⑥ 后端补齐:五常驻板块可配(`app_settings.intel_watch_boards`,列 + 存取函数
-# `settings_store.get_intel_watch_boards`/`set_intel_watch_boards` 早在 v1.3-③-C3 已就绪,
-# 本块只补 HTTP 读写端点)——————————————————————————————————————————————————
-
-class IntelWatchBoardsOut(BaseModel):
-    boards: List[str] = Field(default_factory=list)   # 板块中文名,按配置顺序(保底认领 load-bearing)
-
-
-class IntelWatchBoardsIn(BaseModel):
-    """PUT 请求体。**禁模糊匹配**——每个名字须能在 `ths_index.name` 精确匹配到,匹配不到
-    422(`reason="board_not_found"` + `unresolved` 列出具体哪些名字没匹配到,不含糊拒收)。
-    允许空列表(显式清空常驻,`set_intel_watch_boards([])` 语义,与「未配置」回退默认区分)。"""
-    boards: List[str] = Field(default_factory=list)
-
-
 # —— v1.2-B 预注册决策日志(§2.1 第 3 条 / plan §五 v1.2-B)——————————————————
 # **v2.0.0(⑩-C)决策日志强制表单退役**:`decision_log` 表 v2.0.0 起停写留档
 # (历史行只读归因,`neckline.decision_log` 不再提供任何写函数,见该模块 docstring)。
@@ -1031,7 +949,7 @@ class ReviewGetOut(BaseModel):
 __all__ = [
     "OkOut", "LLMJudgmentOut", "PermanentBoardStatusOut", "IntelRankOut",
     "InfoCardSnapshotOut", "InfoCardNewsItemOut", "InfoCardNewsOut", "InfoCardTopListOut",
-    "InfoCardSummaryOut", "ExecHintOut", "CandidateOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
+    "InfoCardSummaryOut", "CandidateOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "EntrySuggestionOut", "CircuitEpisodeOut", "CircuitStateOut",
@@ -1041,7 +959,7 @@ __all__ = [
     "AlertCreateIn", "AlertUpdateIn", "AlertParseIn", "AlertParseOut",
     "ProviderOut", "ProvidersListOut", "ProviderCreateIn", "ProviderUpdateIn",
     "LLMRoutesOut", "LLMRoutesIn",
-    "SettingsReviewColMapIn", "IntelWatchBoardsOut", "IntelWatchBoardsIn",
+    "SettingsReviewColMapIn",
     "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
     "ContingencyScenarioOut", "NoteLabelLiteral",
     "DecisionCreateIn", "DecisionNoteOut", "DecisionOut", "DecisionsListOut",

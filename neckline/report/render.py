@@ -3,6 +3,11 @@
 禁模板卡)只管 LLM 叙述**本身**的文风;报告整体版式(标题/表格)是系统输出、不是
 LLM 输出,可以用 markdown 标题与表格排版,但 LLM 审判的叙述段落必须原文整段
 呈现,不得拆解塞回枚举卡片里。
+
+⚠ **V2-⑬ 过渡态**:V1 的「候选节 + 参考件三件套展示位 + 执行提示位 + 老四件套 +
+自选体检节」已按 §五 V2-⑬-1/3/4/6/8/11 整段删除,而**篮子日报的新版式是 ⑭-A 的活**。
+此刻的报告 = 情绪 → 强势板块 → 持仓体检 → 情报件 → 板块资金流 → 消息面 + 两条
+数据新鲜度告警。**这是先建后拆的中间状态。**
 """
 
 from __future__ import annotations
@@ -10,9 +15,6 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-from neckline.llm.base import search_coverage_line
-from neckline.llm.judge import JudgeResult, VERDICT_PASS, VERDICT_VETO
-from neckline.report.candidates import Candidate
 # v1.4-⑩-F:只借类型(`IndustryStrengthFreshness` 是纯 dataclass);本模块仍不碰任何
 # I/O —— 新鲜度由 pipeline 查好后原样传进来,render 只读它的 `stale`/`note()`。
 from neckline.report.industry_strength_store import IndustryStrengthFreshness
@@ -39,9 +41,6 @@ _CATEGORY_LABEL = {
     "REDUCTION": "减持", "INVESTIGATION": "立案", "BLOWUP": "暴雷", "REGULATORY": "监管",
 }
 
-_VERDICT_BADGE = {VERDICT_PASS: "✅ 通过", VERDICT_VETO: "🚫 否决"}
-
-
 def render_markdown(
     *,
     trade_date: date,
@@ -49,9 +48,6 @@ def render_markdown(
     generated_at: str,
     sentiment: SentimentDashboard,
     sectors: List[SectorScore],
-    candidates: List[Candidate],
-    judged: Dict[str, JudgeResult],
-    top_n_judged: int,
     holding_k4_check: Optional[List[HoldingK4Item]] = None,
     intel: Optional[IntelReport] = None,
     sector_moneyflow: Optional[SectorMoneyflowReport] = None,
@@ -88,7 +84,6 @@ def render_markdown(
     # v1.5-③-C:持仓体检排在候选**之前**(镜像客户端 v1.1-E.1「持仓管理优先于选新票」
     # 的同一顺序;需求 9「今日计划拆两块:持仓股 / 候选列表」在 markdown 侧的落地)。
     parts.append(_render_holding_check(holding_k4_check or []))
-    parts.append(_render_candidates(candidates, judged, top_n_judged))
     parts.append(_render_intel(intel, sector_freshness))
     parts.append(_render_sector_moneyflow(sector_moneyflow))
     parts.append(_render_news_alerts(news_alerts))
@@ -199,243 +194,6 @@ def _render_holding_check(items: List[HoldingK4Item]) -> str:
         lines.append("")
         lines.append("---")
         lines.append("")
-    return "\n".join(lines)
-
-
-def _intel_rank_line(c: Candidate) -> Optional[str]:
-    """候选情报排序理由(v1.4-③ 起三级键:行业强度排名 → 题材持续天数 → K4 黄牌数,依次
-    优先;`sectorFlow` 降为并列展示,不再是排序依据,见需求 8)。K1/v1.3 老报告 `intel_rank`
-    空 → None 不渲染;**旧报告没有三新键时按缺键处理**(不拿 `.get()` 的 None 默认值冒充
-    "确实未参与排名"——旧报告压根没算过这件事,两者语义不同,不能混为一谈)。"""
-    ir = c.intel_rank or {}
-    if not ir:
-        return None
-    parts: List[str] = []
-    has_new_keys = "industryRank" in ir   # 三新键同批加,判其一即可(见 ③-E 契约)
-    if has_new_keys:
-        rank = ir.get("industryRank")
-        parts.append(f"行业强度排名第{rank}" if rank is not None else "行业强度未参与排名(无行业/成员<5)")
-    persist = ir.get("industryPersistDays") if has_new_keys else ir.get("themePersistDays")
-    if persist is not None:
-        fresh = {0: "未启动", 1: "第1天(新鲜)", 2: "第2天(警惕)", 3: "第3天(警惕)"}.get(persist, f"第{persist}天")
-        parts.append(f"题材持续 {fresh}")
-    if has_new_keys:
-        parts.append(f"K4 黄牌 {ir.get('yellowCardCount', 0)} 个")
-    sf = ir.get("sectorFlow")
-    if sf is not None:
-        tail = "(并列展示,不参与排序)" if has_new_keys else ""
-        parts.append(f"板块资金净流入 {sf:+,.0f} 万元{tail}")
-    if ir.get("highElasticity"):
-        parts.append("高弹板块(GEM/STAR,20cm 易波动,自行判断)")
-    return "- 情报排序理由:" + " · ".join(parts) if parts else None
-
-
-def _k4_flag_line(c: Candidate) -> Optional[str]:
-    """K4 安检打标(avoid_flag 命中;hard_cut 命中的票已在生成时拦出池、不到这里)。"""
-    if not c.k4_flags:
-        return None
-    return "- ⚠ K4 安检标注(机器不禁、供你判断):" + "、".join(c.k4_flags)
-
-
-def _exec_hint_line(c: Candidate) -> Optional[str]:
-    """执行提示(v1.4-⑤-A `exec_hint.py` 既有计算,本节起首次渲染进 markdown——
-    plan §五 v1.5-③-A 候选卡结构「…→ 执行提示(不变)→ 参考三件套(新)→ …」,数据/
-    判据零改动,只是新增一处展示位)。语义红线(`exec_hint.py` 模块头硬约束):回答
-    「如果决定动手,怎么执行更不吃亏」,不是「该不该买」。"""
-    if not c.exec_hints:
-        return None
-    texts = [h.get("text", "") for h in c.exec_hints if h.get("text")]
-    if not texts:
-        return None
-    return "- 执行提示(如果决定动手,怎么做更不吃亏,非买卖建议):" + "；".join(texts)
-
-
-def _ratio_pct_txt(v: float) -> str:
-    """比例(0.05)→ 展示百分数("5%");非整百分点保留小数("5.5%"),不四舍五入成
-    "6%" 骗人。章程口径指纹专用。"""
-    s = f"{v * 100:.2f}".rstrip("0").rstrip(".")
-    return f"{s}%"
-
-
-def _charter_stop_label(buy: Dict[str, Any]) -> str:
-    """止损标签(v1.5.1,两线 review 共同项:原文案硬编「章程 −5%」)。数字取参考件
-    落库时的**现役章程口径指纹** `stopPct`,章程一改标签跟着走;缺(老快照/章程未
-    配置)时退化成不带数字的说法——**绝不硬编 5%**(§2.1 常量唯一源)。"""
-    pct = buy.get("stopPct")
-    return f"章程 −{_ratio_pct_txt(pct)}" if isinstance(pct, (int, float)) else "章程止损"
-
-
-def _charter_retrace_label(exit_: Dict[str, Any]) -> str:
-    """回落止盈旁注(同上,原文案硬编「回落止盈 8%」)。语义红线不变:这是**纪律的
-    被动兜底**,与参考离场区间并存、不互相取代(§五 v1.5「⛔ 语义红线」)。"""
-    pct = exit_.get("takeProfitRetrace")
-    if isinstance(pct, (int, float)):
-        return f"纪律仍以回落止盈 {_ratio_pct_txt(pct)} 兜底"
-    return "纪律仍以章程的回落止盈兜底"
-
-
-def _render_reference_plan(c: Candidate) -> List[str]:
-    """参考三件套渲染(v1.5-③-A,需求 9)——取代老四件套(买点/止损/目标/证伪条件)
-    在候选卡上的位置。四态与 `reference_plan.py` ①-D 状态机逐位对应,**不许合并**
-    (§3.8"没有"vs"没看"):
-        · `c.reference_plan is None` —— 老报告快照(建于本字段前)或本次生成整体
-          异常;`judge_skipped` 时换一句更具体的"预算耗尽未发起"理由(与下方 LLM
-          审判段落的措辞呼应,不重复解释同一件事两种说法)。
-        · `status="vetoed"` —— LLM 判风险大,三件套全不展示,只给不买理由;票与
-          信息卡仍照留(机器不禁、人可复核,§2.0 第 3 条)。
-        · `status="unavailable"` —— 生成过、本次没看清楚(未激活/调用失败/JSON
-          解析失败),不是"确认无参考"。
-        · `status="ok"` —— 逐件展示;某一件被夹逼拦下或本就没给时,**不画空区间、
-          不写 0**,如实给出未展示原因(`buyUnavailableReason`/`exitUnavailableReason`)。
-    """
-    rp = c.reference_plan
-    if rp is None:
-        if c.judge_skipped:
-            return ["**参考件**:本次预算耗尽未发起审判,因此没有参考件"
-                    "(非异常状态,详见下方 LLM 审判段落)。"]
-        return ["**参考件**:本报告未生成参考三件套"
-                "(老报告快照建于本功能上线前,或本次生成异常;不代表已确认无参考)。"]
-
-    status = rp.get("status")
-    if status == "vetoed":
-        reason = rp.get("vetoReason") or "见下方 LLM 审判叙述"
-        return [f"**参考件:LLM 判风险大,本次不给参考区间**;不买理由:{reason}"]
-    if status == "unavailable":
-        reason = rp.get("unavailableReason") or "原因未知"
-        return [f"**参考件:本次未生成**({reason})——不代表确认无参考,仅本次没看清楚。"]
-
-    lines: List[str] = []
-    buy = rp.get("buy")
-    if buy:
-        why = f" {buy['why']}" if buy.get("why") else ""
-        stop_txt = f"{buy['stopPrice']:.2f}" if buy.get("stopPrice") is not None else "未知"
-        lines.append(
-            f"- **参考买入区间(参考,非指令)**:{buy['low']:.2f}~{buy['high']:.2f};"
-            f"止损参考约 {stop_txt}({_charter_stop_label(buy)},以实际成交价为准)。{why}"
-        )
-    else:
-        lines.append(f"- **参考买入区间**:本次未展示({rp.get('buyUnavailableReason') or '原因未知'})。")
-    exit_ = rp.get("exit")
-    if exit_:
-        why = f" {exit_['why']}" if exit_.get("why") else ""
-        lines.append(
-            f"- **参考离场区间(参考,非止盈线)**:{exit_['low']:.2f}~{exit_['high']:.2f}。"
-            f"{why} —— {_charter_retrace_label(exit_)}。"
-        )
-    else:
-        lines.append(f"- **参考离场区间**:本次未展示({rp.get('exitUnavailableReason') or '原因未知'})。")
-    script = rp.get("script")
-    lines.append(f"- **明早证伪剧本(参考,非指令)**:{script}" if script else "- **明早证伪剧本**:本次未生成。")
-    disclaimer = rp.get("disclaimer")
-    if disclaimer:
-        lines.append(f"*{disclaimer}*")
-    return lines
-
-
-def _render_candidates(candidates: List[Candidate], judged: Dict[str, JudgeResult], top_n_judged: int) -> str:
-    # v1.3-③-C3 语义变更:候选 = 「过完安检、值得关注的票」非「会涨的票」,终选在用户
-    # (§2.3)。生成源从 K1 entry mask 退役 → 情报筛选四步管线。v1.4-③(需求 8)起排序键
-    # 改三级(行业强度排名 → 题材持续天数 → K4 黄牌数),语义红线文案扩到本节(§五 v1.4
-    # 「语义红线」)。**v1.5-③-A(需求 9)**:候选卡输出层老四件套(买点/止损/目标/证伪
-    # 条件)退役,改参考三件套(买入/离场参考区间 + 明早证伪剧本,§2.0 第〇原则)。
-    #
-    # `top_n_judged`:v1.5-②-A 起「前 N 只审判 / 后 N 只只给分数」的旧分档已退役
-    # (20 只全覆盖,生产恒 `top_n_judged==len(candidates)`)——本函数**不再用它
-    # 区分"详情"与"表格"两种渲染规格**(全体候选统一走详情 + 全量速览表),参数
-    # 仍保留在签名里只为与 `render_markdown`/`pipeline.py` 的既有调用签名保持稳定,
-    # 不因这次改版牵动上一层签名。
-    lines = ["## 候选(情报筛选 · 过完安检、值得花注意力的票,非买入信号,终选在你)", ""]
-    if not candidates:
-        lines.append("今日无候选通过情报筛选(无热门板块成员过安检,或数据缺失)。")
-        lines.append("")
-        return "\n".join(lines)
-    lines.append(
-        "> 候选 = 五板块常驻 + 当日暴起板块的成员里,过完卫生线/非次新/趋势向上安检、"
-        "再过 K4 避坑安检(hard_cut 已拦出池、avoid_flag 打标)的票;**不是回测选出的买入信号**,"
-        "买入/离场参考区间与明早证伪剧本均为 LLM 参考件(参考,非指令),买卖与终选在你(§2.3)。"
-    )
-    lines.append(
-        "> **排序 = 注意力优先级,不是收益预测;排第一 ≠ 最会涨;终选权在你。**"
-        "排序依次看行业强度排名(K2 拥挤探测器)→ 题材持续天数(越新鲜越靠前,H6 证据)→ "
-        "K4 黄牌数(越少越靠前,风险优先非收益优先);板块资金流强度只作并列展示,不参与排序"
-        "(需求 8)。"
-    )
-    lines.append("")
-
-    # v1.5-③-A:「前N只/后N只」两段结构随 ②-A(20 只全覆盖)合并成一段——每票或出
-    # 参考三件套、或出不买理由,不再区分"过审判的详情"与"仅形态标签的表格"两种规格。
-    lines.append(f"### 候选详情({len(candidates)} 只)")
-    lines.append("")
-    for c in candidates:
-        jr = judged.get(c.ts_code)
-        lines.append(f"#### {c.rank}. {c.name}({c.ts_code}) —— 展示分 {c.score:.1f}")
-        lines.append("")
-        lines.append(f"- 现价:{c.close:.2f} 元 · 形态标签:{'、'.join(c.pattern_tags) if c.pattern_tags else '无'}")
-        if c.hot_sectors:
-            lines.append(f"- 命中热门板块:{'、'.join(c.hot_sectors)}")
-        intel_line = _intel_rank_line(c)
-        if intel_line:
-            lines.append(intel_line)
-        k4_line = _k4_flag_line(c)
-        if k4_line:
-            lines.append(k4_line)
-        hint_line = _exec_hint_line(c)
-        if hint_line:
-            lines.append(hint_line)
-        lines.append("")
-        lines.extend(_render_reference_plan(c))
-        lines.append("")
-        if jr is not None:
-            badge = _VERDICT_BADGE.get(jr.verdict, f"⏸ {jr.verdict}")
-            lines.append(f"**LLM 审判({jr.provider or '未激活'}){' · ' + jr.model if jr.model else ''}:{badge}**")
-            lines.append("")
-            lines.append(jr.narrative)
-            if not jr.degraded:
-                # 搜索取证覆盖脚注(v1.3.4):**命中 0 条也要写出来**。搜索静默返空时
-                # 模型照样能写出一段像样的判词(退回训练数据),不写这行用户分不清
-                # 「搜过没消息」与「一条都没搜到」——20260721/22/23 三天 10/10 空命中
-                # 就是这么无声发生的。降级判词本就没调用成功,不在此列。
-                lines.append("")
-                lines.append(f"*{search_coverage_line(len(jr.search_hits or []))}*")
-                if jr.search_hits:
-                    lines.append("")
-                    lines.append("联网搜索来源:" + "、".join(f"[{h.title or h.link}]({h.link})" for h in jr.search_hits if h.link))
-        elif c.judge_skipped:
-            # v1.5-②-B:预算耗尽、按 rank 靠后被跳过——**如实标注,不是异常**
-            # (与下方 else 分支的"真异常"刻意区分,不合并成一句话;`judgeSkipped`
-            # 与 `degraded` 语义不同,见 `Candidate.judge_skipped` 字段注释)。
-            lines.append(
-                "**LLM 审判:本次预算耗尽未发起**"
-                "(候选 LLM 审判墙钟预算已用完,按排序靠后被跳过,不代表否决,"
-                "非异常状态)。"
-            )
-        else:
-            lines.append("**LLM 审判:未执行**(异常状态,请检查 pipeline)。")
-        lines.append("")
-        lines.append("---")
-        lines.append("")
-
-    # v1.5-③-A:原「后 N 只」紧凑表格保留为**全部 N 只**的速览表,放在详情之后
-    # (表头列不变)——不必逐只翻详情也能一眼看排序依据。
-    lines.append(f"### 速览表(全部 {len(candidates)} 只)")
-    lines.append("")
-    # v1.4-③(需求 8):表格列补「行业排名」「黄牌数」两列(排序键①③),让排序依据在
-    # 紧凑表格里也能一眼看到,不必逐只翻详情。「题材天数」沿用旧列名(=排序键②同一个量)。
-    lines.append("| 排名 | 代码 | 名称 | 展示分 | 行业排名 | 题材天数 | 黄牌数 | 高弹 | K4标注 | 形态标签 |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|")
-    for c in candidates:
-        tags = "、".join(c.pattern_tags) if c.pattern_tags else "无"
-        ir = c.intel_rank or {}
-        irank = ir.get("industryRank")
-        irank_disp = irank if irank is not None else "-"
-        persist = ir.get("industryPersistDays", ir.get("themePersistDays", "-"))
-        yellow = ir.get("yellowCardCount", "-")
-        he = "是" if ir.get("highElasticity") else ""
-        k4 = "、".join(c.k4_flags) if c.k4_flags else ""
-        lines.append(f"| {c.rank} | {c.ts_code} | {c.name} | {c.score:.1f} | {irank_disp} | "
-                    f"{persist} | {yellow} | {he} | {k4} | {tags} |")
-    lines.append("")
-
     return "\n".join(lines)
 
 

@@ -105,7 +105,6 @@ final class AppModelTests: XCTestCase {
     func testCandidateBoardLabelTranslatesKnownCodes() {
         func candidate(board: String) -> Candidate {
             Candidate(rank: 1, code: "600001.SH", name: "甲", score: 90, board: board,
-                     buyPoint: "", stop: "", target: "", invalidation: "",
                      formTags: [], hotSectors: [], sectorNames: [], llmJudgment: nil)
         }
         XCTAssertEqual(candidate(board: "MAIN").boardLabel, "主板")
@@ -274,18 +273,12 @@ final class AppModelTests: XCTestCase {
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: session)
         let model = AppModel(clientProvider: { client })
 
-        // v1.5-⑤:老四件套 `buyPoint` 自 v1.5.0 起恒为过渡文案(服务端 ③-B 定案,不再是
-        // 真实买点描述)——本测例改用参考件三件套的 `referencePlan.buy.why` 验证进场
-        // 理由预填(`AppModel.entryReasonText(for:)`,另有专属纯函数单测覆盖三态)。
+        // ⚠ **V2-⑬-3/⑬-6**:老四件套四键与参考件三件套键均已删除 → 进场理由预填
+        // 退回通用文案(见 `AppModel.entryReasonText(for:)` 的 ⑬ 登记)。
         let candidate = Candidate(
             rank: 1, code: "600519.SH", name: "贵州茅台", score: 98.7, board: "MAIN",
-            buyPoint: "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。",
-            stop: "s", target: "t", invalidation: "i",
             formTags: [], hotSectors: [], sectorNames: [], llmJudgment: nil,
-            entrySpec: EntrySpec(buypoint: "pullback", ma10: 1217.11, platformHigh: 1258.99),
-            referencePlan: ReferencePlan(status: "ok",
-                                         buy: ReferencePlanBuy(low: 1200, high: 1230, stopPrice: 1156.25,
-                                                               why: "站稳 10 日线,量能温和"))
+            entrySpec: EntrySpec(buypoint: "pullback", ma10: 1217.11, platformHigh: 1258.99)
         )
         await model.beginPositionEntryFlow(fromCandidate: candidate)
 
@@ -294,8 +287,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.entryForm.code, "600519.SH")
         XCTAssertEqual(model.entryForm.name, "贵州茅台")
         XCTAssertEqual(model.entryForm.price, "1217.11")
-        XCTAssertTrue(model.entryForm.reason.contains("站稳 10 日线"))
-        XCTAssertFalse(model.entryForm.reason.contains("参考三件套"), "不得把老四件套过渡文案塞进进场理由")
+        XCTAssertEqual(model.entryForm.reason, "已按计划买入")
         XCTAssertEqual(model.decisionForm.code, "600519.SH")
         XCTAssertEqual(model.decisionForm.plannedPrice, "1217.11")
         // v1.2-E.5:区间双档,不再预填单一 qty(不替用户拍单笔金额)。
@@ -306,32 +298,20 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.entryForm.qty, "", "客户端不替用户拍单笔金额,qty 必须留空手填")
     }
 
-    /// `AppModel.entryReasonText(for:)` 纯函数三态(v1.5-⑤:老四件套 `buyPoint` 恒为
-    /// 过渡文案后,进场理由预填改源参考件三件套 `referencePlan.buy.why`)。
-    func testEntryReasonTextPrefersReferencePlanBuyWhyOverLegacyFourPiece() {
-        func candidate(referencePlan: ReferencePlan?) -> Candidate {
-            Candidate(rank: 1, code: "600001.SH", name: "甲", score: 90, board: "MAIN",
-                     buyPoint: "本版已由「参考三件套」取代四件套,请更新 App 查看(参考、非指令)。",
-                     stop: "s", target: "t", invalidation: "i",
-                     formTags: [], hotSectors: [], sectorNames: [], llmJudgment: nil,
-                     referencePlan: referencePlan)
-        }
-        // ok 态且有 why → 拼进理由。
-        let ok = candidate(referencePlan: ReferencePlan(
-            status: "ok", buy: ReferencePlanBuy(low: 10, high: 11, stopPrice: 9.5, why: "量能温和回踩不破位")))
-        XCTAssertEqual(AppModel.entryReasonText(for: ok), "已按计划买入 · 量能温和回踩不破位")
-        // vetoed/unavailable(`buy` 为 nil)→ 通用文案,不崩、不显示过渡文案。
-        let vetoed = candidate(referencePlan: ReferencePlan(status: "vetoed", vetoReason: "追高风险大"))
-        XCTAssertEqual(AppModel.entryReasonText(for: vetoed), "已按计划买入")
-        // 无 referencePlan(老报告快照/本次生成异常)→ 同样通用文案。
-        XCTAssertEqual(AppModel.entryReasonText(for: candidate(referencePlan: nil)), "已按计划买入")
+    /// `AppModel.entryReasonText(for:)`(⚠ **V2-⑬-3**:参考件三件套键已删 → 本函数退回
+    /// 单一通用文案。**断言保留**是为了锁死"不显示空字符串、不编造理由"这条,⑮ 接篮子卡
+    /// 时改从卡里取,那时再恢复多态断言)。
+    func testEntryReasonTextIsAlwaysTheGenericLineAfterReferencePlanRemoval() {
+        let c = Candidate(rank: 1, code: "600001.SH", name: "甲", score: 90, board: "MAIN",
+                          formTags: [], hotSectors: [], sectorNames: [], llmJudgment: nil)
+        XCTAssertEqual(AppModel.entryReasonText(for: c), "已按计划买入")
+        XCTAssertFalse(AppModel.entryReasonText(for: c).isEmpty)
     }
 
     /// 买点参考价缺失(entrySpec 未算出)→ 价格留空手填,不虚构数字、不崩、仍能打开表单。
     func testBeginPositionEntryFlowFromCandidateWithoutEntrySpecLeavesPriceBlank() async throws {
         let model = AppModel(clientProvider: { nil })   // 无后端连接也不该崩
         let candidate = Candidate(rank: 1, code: "600001.SH", name: "甲", score: 80, board: "MAIN",
-                                  buyPoint: "b", stop: "s", target: "t", invalidation: "i",
                                   formTags: [], hotSectors: [], sectorNames: [], llmJudgment: nil)
         await model.beginPositionEntryFlow(fromCandidate: candidate)
         XCTAssertEqual(model.entryForm.code, "600001.SH")

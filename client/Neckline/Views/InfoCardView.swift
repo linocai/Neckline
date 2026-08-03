@@ -8,8 +8,8 @@
 //  `*Available`/`*UnavailableReason`,一路缺失不连带其余各路"看起来也不可用"、
 //  不画空图、不画 0 值线。
 //
-//  **execHints 待核对假设(⑤留,已核对)**:信息卡页复用候选对象自带的
-//  `Candidate.execHints` 展示「执行提示」,不为它单独请求、不给 `InfoCardOut` 加字段
+//  ⚠ **V2-⑬-4**:执行提示卡已下线(它复用的 `Candidate.execHints` 键随展示位删除);
+//  ⑬-N 把信息卡数据源改指篮子成员后新增的三块内容,由 ⑮ 出 UI
 //  ——本版信息卡入口只有候选卡这一条路(`TodayPlanView.CandidateRow`),假设成立。
 //
 //  **图表实现**:项目部署目标 iOS 26 / macOS 26(远高于 Swift Charts 最低要求
@@ -73,7 +73,6 @@ struct InfoCardPageView: View {
                     NKEmptyState(title: "信息卡加载失败", subtitle: err, systemImage: "exclamationmark.triangle")
                 }
             } else if let card = model.infoCard {
-                execHintsCard
                 klineCard(card)
                 rsLineCard(card)
                 industryDivergenceCard(card)
@@ -96,22 +95,6 @@ struct InfoCardPageView: View {
             #endif
             Text("交易日 \(model.calendar.displayString(request.tradeDate)) · \(request.candidate.boardLabel)")
                 .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
-        }
-    }
-
-    // MARK: - 执行提示(复用候选对象,不为本页单独请求)
-
-    @ViewBuilder
-    private var execHintsCard: some View {
-        if !request.candidate.execHints.isEmpty {
-            NKCard {
-                VStack(alignment: .leading, spacing: 6) {
-                    NKSectionHeader(title: "执行提示")
-                    ForEach(request.candidate.execHints) { hint in
-                        Text(hint.text).font(.system(size: 12.5)).foregroundStyle(NK.textPrimary)
-                    }
-                }
-            }
         }
     }
 

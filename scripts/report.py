@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""盘后报告 CLI(plan 2.5)。串起情绪仪表盘(2.1)+ 强势板块(2.2)+ 候选评分四件套
-(2.3)+ LLM 逻辑审判(2.4,v1.5-②起 20 只全覆盖;无 `.env` LLM key 时自动降级为
-「未激活」占位,不崩)-> markdown 落文件 + SQLite 存档(2.5)。
+"""盘后报告 CLI(plan 2.5)。串起情绪仪表盘(2.1)+ 强势板块(2.2)+ 持仓体检 + 情报件 /
+板块资金流 / 消息面 -> markdown 落文件 + SQLite 存档(2.5)。
+
+⚠ **V2-⑬ 过渡态**:候选评分四件套 + 20 只 LLM 审判 + 参考件三件套已按 §五 V2-⑬-1/2/3
+删除;篮子日报的编排是 **⑭-A** 的活。此刻产出的是一份只剩市场语境与持仓体检的过渡报告。
 
 用法:
     python scripts/report.py                # 最近一个已有数据的交易日
                                              # (今天若是交易日用今天,否则回退到上一交易日)
     python scripts/report.py 20260717        # 指定某交易日(含历史任意交易日回放,§2.6)
     python scripts/report.py 20260717 --no-save       # 只打印,不落库/不写文件(调试用)
-    python scripts/report.py 20260717 --top-judged 5  # 覆盖默认全部20只审判(测试/调参用)
+
 
 产出:
     - markdown 打印到 stdout
@@ -33,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neckline.calendar import is_trading_day, prev_trading_day  # noqa: E402
 from neckline.config import ensure_data_dirs, settings  # noqa: E402
-from neckline.report.pipeline import TOP_N_JUDGED, TOP_N_TOTAL, build_report  # noqa: E402
+from neckline.report.pipeline import build_report  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("report")
@@ -50,8 +52,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("trade_date", nargs="?", default=None, help="YYYYMMDD;缺省=最近一个已有数据的交易日")
     parser.add_argument("--no-save", action="store_true", help="只打印,不写文件/不落库(调试用)")
-    parser.add_argument("--top-total", type=int, default=TOP_N_TOTAL, help=f"候选总数(默认 {TOP_N_TOTAL})")
-    parser.add_argument("--top-judged", type=int, default=TOP_N_JUDGED, help=f"过 LLM 审判的候选数(默认 {TOP_N_JUDGED})")
+    # ⚠ **V2-⑬-1/⑬-2**:`--top-total`/`--top-judged` 两个参数随 20 只候选榜与单票 LLM
+    # 审判一并删除(候选榜没了,"取前几只/审几只"无对象)。⑭-A 上篮子日报后,若需要
+    # "只出前几档篮子"这类开关,那是新参数、不要复活这两个名字。
     parser.add_argument("--notify", action="store_true",
                         help="落库后触发 APNs 报告推送(受 kind=report_ready 开关);16:00 timer 用")
     args = parser.parse_args()
@@ -67,11 +70,9 @@ def main() -> int:
         logger.error("%s 不是交易日,无报告可生成。", trade_date)
         return 1
 
-    logger.info("生成报告:%s(top_total=%d, top_judged=%d, save=%s)", trade_date, args.top_total, args.top_judged, not args.no_save)
+    logger.info("生成报告:%s(save=%s)", trade_date, not args.no_save)
     try:
-        bundle = build_report(
-            trade_date, top_n_total=args.top_total, top_n_judged=args.top_judged, save=not args.no_save,
-        )
+        bundle = build_report(trade_date, save=not args.no_save)
     except RuntimeError as e:
         logger.error("生成报告失败:%s", e)
         return 1
@@ -80,7 +81,7 @@ def main() -> int:
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         out_path = REPORTS_DIR / f"{trade_date.strftime('%Y%m%d')}.md"
         out_path.write_text(bundle.markdown, encoding="utf-8")
-        logger.info("报告已写入 %s,并已落库 SQLite `reports`/`llm_judgments` 表。", out_path)
+        logger.info("报告已写入 %s,并已落库 SQLite `reports` 表。", out_path)
 
         if args.notify:
             # APNs 报告推送(plan 4B.5;受 kind=`report_ready` 开关 + 无设备/无 APNs 配置优雅跳过,

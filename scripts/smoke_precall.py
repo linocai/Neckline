@@ -112,7 +112,7 @@ def main() -> int:
     try:
         logger.info("=== 用真实数据生成 %s 候选报告(供 %s 盘前校准)===", report_day, today)
         bundle = build_report(report_day, db_path=tmp_db, save=True)
-        logger.info("候选 %d 只(策略大脑 %s)", len(bundle.candidates), bundle.strategy_version)
+        logger.info("报告已生成(策略大脑 %s)", bundle.strategy_version)
 
         wu = load_watch_universe(today, db_path=tmp_db, parquet_dir=None)
         rows = _daily_rows_lookup(today, wu.codes)
