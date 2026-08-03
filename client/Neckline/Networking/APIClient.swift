@@ -26,9 +26,6 @@
 //    POST /api/v1/decisions/{id}/cancel     → {ok}                            · 404 not_found
 //    POST /api/v1/decisions/{id}/revise     → DecisionOut{新id}(新增修订行,旧行原地不变)
 //    POST /api/v1/decisions/{id}/scenario-outcome → {ok}(只翻 matched)         · 404/422
-//    GET  /api/v1/breathing/{id}/trades     → {items,baseCostAdj,edgeToPrice}(v1.2-G)· 404
-//    POST /api/v1/breathing/{id}/trades     → BreathingTradeOut                · 404
-//    DELETE /api/v1/breathing/trades/{id}   → {ok}                            · 404 not_found
 //    POST /api/v1/inquiry                   → InquiryOut(描述性标注非裁决,§2.5,v1.4-⑦-B 带 inquiryId)
 //    GET  /api/v1/inquiries                 → {items:[InquiryLogOut]}(v1.4-⑦-B 问询历史,分页+tsCode过滤)
 //    GET  /api/v1/inquiries/{id}            → InquiryLogOut(详情)              · 404 not_found
@@ -355,23 +352,6 @@ struct ScenarioOutcomeRequest: Encodable { let outcomes: [ScenarioOutcomeItemReq
 
 private struct DecisionsListResponse: Decodable { let items: [DecisionLog] }
 
-// —— v1.2-G 呼吸试验仓台账(§五 v1.2-E.4)—————————————————————————————————————
-
-struct BreathingTradeRequest: Encodable {
-    let buyPrice: Double
-    let sellPrice: Double
-    let qty: Int
-    let fees: Double        // 客户端如实录入,服务端原样落库、不按费率估算
-    let tDate: String?
-    let note: String?
-}
-
-private struct BreathingTradesResponse: Decodable {
-    let items: [BreathingTrade]
-    let baseCostAdj: Double?
-    let edgeToPrice: Double?
-}
-
 // MARK: - APIClient
 
 actor APIClient {
@@ -607,32 +587,6 @@ actor APIClient {
     func setScenarioOutcome(id: Int, outcomes: [(index: Int, matched: Bool)]) async throws -> Bool {
         let body = ScenarioOutcomeRequest(outcomes: outcomes.map { ScenarioOutcomeItemRequest(index: $0.index, matched: $0.matched) })
         let data = try await post("/api/v1/decisions/\(id)/scenario-outcome", body: body)
-        return try JSONDecoder().decode(OkResponse.self, from: data).ok
-    }
-
-    // —— v1.2-G 呼吸试验仓台账(§五 v1.2-E.4;写入只经这三个端点,同 positions/
-    // watchlist 姿势)—————————————————————————————————————————————————————————
-
-    /// T 子账列表 + 底仓摊薄成本 / 先手距离派生。底仓不存在 → 404 not_found。
-    func breathingTrades(positionId: Int) async throws -> BreathingLedger {
-        let data = try await get("/api/v1/breathing/\(positionId)/trades")
-        let r = try JSONDecoder().decode(BreathingTradesResponse.self, from: data)
-        return BreathingLedger(items: r.items, baseCostAdj: r.baseCostAdj, edgeToPrice: r.edgeToPrice)
-    }
-
-    /// 录入一次 T。`fees` 必填、如实录入(不替用户估费率,G.2)。底仓不存在 → 404 not_found。
-    func addBreathingTrade(positionId: Int, buyPrice: Double, sellPrice: Double, qty: Int, fees: Double,
-                           tDate: String? = nil, note: String? = nil) async throws -> BreathingTrade {
-        let body = BreathingTradeRequest(buyPrice: buyPrice, sellPrice: sellPrice, qty: qty, fees: fees,
-                                         tDate: tDate, note: note)
-        let data = try await post("/api/v1/breathing/\(positionId)/trades", body: body)
-        return try JSONDecoder().decode(BreathingTrade.self, from: data)
-    }
-
-    /// 误录可删(硬删除)。不存在 → 404 not_found(幂等安全,重复删除同样 404)。
-    @discardableResult
-    func deleteBreathingTrade(id: Int) async throws -> Bool {
-        let data = try await delete("/api/v1/breathing/trades/\(id)")
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 

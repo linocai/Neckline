@@ -393,6 +393,14 @@ CREATE TABLE IF NOT EXISTS circuit_breaker (
 CREATE INDEX IF NOT EXISTS idx_circuit_breaker_unlocked ON circuit_breaker(unlocked_at);
 CREATE INDEX IF NOT EXISTS idx_circuit_breaker_ref_date ON circuit_breaker(trigger_ref_date);
 
+-- ⚠ **v2.0.0 起停写留档**(PROJECT_PLAN §五 V2-⑬-12,裁定 #9-b「呼吸台账删」):本表
+-- 自 V2.0.0 起**无任何读写路径** —— 领域模块 `neckline/breathing.py` 与三个
+-- `/breathing*` 端点、客户端 `BreathingLedgerView.swift` 均已物理删除,历史行
+-- (v1.2-G~v1.5.2 生产数据)只供归因审计手工查询。DDL 与下面全部历史字段注释
+-- **原样保留不删**(对历史行依然成立,只是不会再有新行诞生);⚠ 注释里提到的
+-- `neckline.breathing.*` 函数名是**历史语义说明**,那个模块已不存在。
+-- 连带:§七 P3-11 的「呼吸 T 净贡献」归因维随之废弃。
+--
 -- v1.2-G 呼吸试验仓台账 · T 子账(plan §五 v1.2-G,§2.1 第 3 条仓位分配「2 短线追击 +
 -- 1 呼吸底仓试验」配套)。底仓是 `positions` 表的一行(语义不变,本表绝不覆盖它);
 -- 持有期内的多次日内 T 是「一个底仓 → N 次 T」一对多关系,`positions` 扩列表达不了

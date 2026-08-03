@@ -1280,34 +1280,6 @@ struct CircuitState: Codable, Equatable {
     static let empty = CircuitState(locked: false, episode: nil)
 }
 
-// MARK: - v1.2-G 呼吸试验仓台账(§五 v1.2-E.4)。`tPnl`/`baseCostAdj`/`edgeToPrice`
-// 均服务端派生下发,客户端不重算(§2.1/§2.5 领域四条铁律的延伸)。
-
-struct BreathingTrade: Codable, Equatable, Identifiable {
-    var id: Int
-    var positionId: Int
-    var buyPrice: Double
-    var sellPrice: Double
-    var qty: Int
-    var fees: Double
-    var tDate: String
-    var tPnl: Double
-    var note: String = ""
-}
-
-struct BreathingLedger: Codable, Equatable {
-    var items: [BreathingTrade]
-    /// 底仓摊薄成本(先手成本)。无 T 记录 / 算不出 → nil,展示「—」不崩。
-    var baseCostAdj: Double?
-    /// 「先手」距离,**相对成本口径**(2026-07-25 用户拍板,浮盈率直觉):
-    /// `(price−baseCostAdj)/baseCostAdj`——正值代表先手成本比现价低(浮盈),
-    /// 负值代表先手成本比现价高(浮亏)。文案按「先手成本比现价低/高 X%」写,
-    /// **不要**按「距现价」写(容易和 `Position.distToStopPct` 的现价分母口径混淆)。
-    var edgeToPrice: Double?
-
-    static let empty = BreathingLedger(items: [], baseCostAdj: nil, edgeToPrice: nil)
-}
-
 // MARK: - v1.1-B.3/v1.2-E.5 一键补录预填(区间双档,替换 v1.1 的单 `qty`)
 //
 // `EntrySuggestionOut` 改区间:`qtyHigh`/`capCeil` = 现役 `single_cap` 违纪判定

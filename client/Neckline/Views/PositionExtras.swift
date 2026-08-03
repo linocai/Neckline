@@ -66,22 +66,12 @@ struct PositionDecisionSection: View {
                 }
                 .buttonStyle(.plain)
             }
-            // 呼吸底仓试验主动露出台账入口(主展示区);其余打法仍可从「更多」次级菜单进入。
-            if log.isBreathingTrial {
-                Button {
-                    model.openBreathingSheet(positionId: position.id)
-                } label: {
-                    NKChip(text: "呼吸台账", tone: .good)
-                }
-                .buttonStyle(.plain)
-            }
             moreMenu
         }
     }
 
     private var moreMenu: some View {
         Menu {
-            Button("呼吸 T 台账") { model.openBreathingSheet(positionId: position.id) }
             if let log = linked {
                 Button("修订决策日志") { model.beginReviseDecision(log) }
             }

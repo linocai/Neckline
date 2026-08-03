@@ -64,7 +64,6 @@ struct TodayPlanView: View {
             case .open: return "open"
             case .close(let code): return "close-\(code)"
             case .circuitReview: return "circuitReview"
-            case .breathing(let positionId): return "breathing-\(positionId)"
             }
         }
     }
@@ -76,12 +75,6 @@ struct TodayPlanView: View {
         case .open: OpenPositionSheet(model: model)
         case .close(let code): ClosePositionSheet(model: model, code: code)
         case .circuitReview: CircuitReviewSheet(model: model)
-        case .breathing(let positionId):
-            if let p = model.position(byID: positionId) {
-                BreathingLedgerView(model: model, positionId: positionId, code: p.code, name: p.name)
-            } else {
-                NKEmptyState(title: "持仓不存在", systemImage: "exclamationmark.triangle")
-            }
         }
     }
 

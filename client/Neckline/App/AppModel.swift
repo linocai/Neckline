@@ -159,32 +159,11 @@ struct DecisionLogForm {
     }
 }
 
-// —— v1.2-G 呼吸 T 台账录入草稿(§五 v1.2-E.4)———————————————————————————————
-
-struct BreathingTradeForm {
-    var buyPrice = ""
-    var sellPrice = ""
-    var qty = ""
-    var fees = ""     // 必填(§G.2「不替用户估费率」),留空视为无效,不代入 0
-    var note = ""
-
-    var buyPriceValue: Double? { Double(buyPrice.trimmingCharacters(in: .whitespaces)) }
-    var sellPriceValue: Double? { Double(sellPrice.trimmingCharacters(in: .whitespaces)) }
-    var qtyValue: Int? { Int(qty.trimmingCharacters(in: .whitespaces)) }
-    var feesValue: Double? { Double(fees.trimmingCharacters(in: .whitespaces)) }
-
-    var isValid: Bool {
-        (buyPriceValue ?? 0) > 0 && (sellPriceValue ?? 0) > 0 && (qtyValue ?? 0) > 0
-            && (feesValue ?? -1) >= 0
-    }
-}
-
 enum PositionModal: Equatable {
     case decisionLog                  // v1.2-E.1:八项录入(建计划 → 录八项 → 成交后关联)
     case open
     case close(code: String)
     case circuitReview                // v1.2-E.3:熔断复盘材料 + 解锁
-    case breathing(positionId: Int)   // v1.2-E.4:呼吸 T 台账
 }
 
 struct Toast: Identifiable, Equatable {
@@ -300,11 +279,6 @@ final class AppModel {
 
     // —— v1.2-A2 熔断纪律(§五 v1.2-E.3;纯提醒层,客户端只展示 + 自律灰化,§3.8)——
     var circuit: CircuitState = .empty
-
-    // —— v1.2-G 呼吸试验仓台账(§五 v1.2-E.4)——
-    var breathingLedger: BreathingLedger = .empty
-    var breathingLoading = false
-    var breathingTradeForm = BreathingTradeForm()
 
     // —— 模态 / 录入 / toast ——
     var modal: PositionModal? = nil
@@ -782,68 +756,6 @@ final class AppModel {
             showToast(e.errorDescription ?? "解锁失败", isError: true)
         } catch {
             showToast("解锁失败:\(error.localizedDescription)", isError: true)
-        }
-    }
-
-    // MARK: - v1.2-G 呼吸试验仓台账(§五 v1.2-E.4;写入只经这三个函数对应的端点,
-    // 同 positions/watchlist 姿势,不存在任何自动写路径)。
-
-    func openBreathingSheet(positionId: Int) {
-        breathingLedger = .empty
-        breathingTradeForm = BreathingTradeForm()
-        modal = .breathing(positionId: positionId)
-    }
-
-    func loadBreathingLedger(positionId: Int) async {
-        guard let client = clientProvider() else { return }
-        breathingLoading = true
-        do {
-            breathingLedger = try await client.breathingTrades(positionId: positionId)
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "呼吸台账拉取失败", isError: true)
-        } catch {
-            showToast("呼吸台账拉取失败", isError: true)
-        }
-        breathingLoading = false
-    }
-
-    /// 录入一次 T。`fees` 必填、如实录入(不替用户估费率,G.2)。
-    func submitBreathingTrade(positionId: Int) async {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        guard breathingTradeForm.isValid,
-              let buy = breathingTradeForm.buyPriceValue, let sell = breathingTradeForm.sellPriceValue,
-              let qty = breathingTradeForm.qtyValue, let fees = breathingTradeForm.feesValue else {
-            showToast("请完整填写买价/卖价/数量/费用", isError: true); return
-        }
-        do {
-            _ = try await client.addBreathingTrade(
-                positionId: positionId, buyPrice: buy, sellPrice: sell, qty: qty, fees: fees, tDate: nil,
-                note: breathingTradeForm.note.trimmingCharacters(in: .whitespaces).isEmpty
-                    ? nil : breathingTradeForm.note
-            )
-            breathingTradeForm = BreathingTradeForm()
-            await loadBreathingLedger(positionId: positionId)
-            showToast("已记一笔 T")
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "记录失败", isError: true)
-        } catch {
-            showToast("记录失败:\(error.localizedDescription)", isError: true)
-        }
-    }
-
-    /// 误录可删(硬删除)。
-    func deleteBreathingTrade(id: Int, positionId: Int) async {
-        guard let client = clientProvider() else { return }
-        do {
-            _ = try await client.deleteBreathingTrade(id: id)
-            await loadBreathingLedger(positionId: positionId)
-            showToast("已删除")
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "删除失败", isError: true)
-        } catch {
-            showToast("删除失败:\(error.localizedDescription)", isError: true)
         }
     }
 

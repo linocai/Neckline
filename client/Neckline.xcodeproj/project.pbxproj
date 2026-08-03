@@ -23,13 +23,12 @@
 		9B003EF3A758FDFDC3FEE58E /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5673E3EE875B18B1B650342 /* DesignTokens.swift */; };
 		A1A4C298677F524146F0AF02 /* StaticTradingCalendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0AE1E9D0EC8D59A1EF69F45 /* StaticTradingCalendar.swift */; };
 		A7785C3AECB61450C089692D /* DecisionLogSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2AF18304557039554136763 /* DecisionLogSheet.swift */; };
-		AA53A795CF03234393CDF613 /* BreathingLedgerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DE7B29D77FF3E312F3F57E6 /* BreathingLedgerView.swift */; };
 		AB52CA616EFD21F6EA0C4967 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A75B75043B9190B8F306FF1D /* Assets.xcassets */; };
+		C6A7800544ED3CD2E062F1E8 /* InfoCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A90418AEA32F7C299080AF /* InfoCardView.swift */; };
 		CAAD011D80D904B2D1EB4614 /* TodayPlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 895AF892BD6873B812A664D3 /* TodayPlanView.swift */; };
 		CCCBAE520CB8795277F18C90 /* PushManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7692438CB8859E874A66E3E /* PushManager.swift */; };
 		D10EDFBD9EFD027DEEF58088 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE316F84834D593284EA3A4C /* RootView.swift */; };
 		E2DC292F96B25CA6ECFC5D6F /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88CE7120D9B217DAD934B14B /* APIClient.swift */; };
-		E62CDF889D364DA597F94E89 /* InfoCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44EC6CD3DA2F404E98166F0D /* InfoCardView.swift */; };
 		E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */; };
 		EB18B7D4374EA05AD70C0D9C /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE386C48FF2459211CE2D690 /* AppModel.swift */; };
 		EFF01FAD1D2D9784FFCB9DA6 /* InquiryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD3045BA6DDA89226241C3AD /* InquiryView.swift */; };
@@ -49,10 +48,8 @@
 /* Begin PBXFileReference section */
 		113AF3404301CFB32768254B /* WatchlistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchlistView.swift; sourceTree = "<group>"; };
 		2D0BBABA72F92C8117ACD41E /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
-		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		3DE7B29D77FF3E312F3F57E6 /* BreathingLedgerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BreathingLedgerView.swift; sourceTree = "<group>"; };
+		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4077CE80BC54331F1A0225D2 /* NecklineTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NecklineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		44EC6CD3DA2F404E98166F0D /* InfoCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfoCardView.swift; sourceTree = "<group>"; };
 		58E32D24CA427022EEC9C9A9 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		6995CFD51E96AA2443EC4E3A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7ECA7F173C89B027705A4FC0 /* AppConfigDefaultTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfigDefaultTests.swift; sourceTree = "<group>"; };
@@ -64,6 +61,7 @@
 		A75B75043B9190B8F306FF1D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NecklineApp.swift; sourceTree = "<group>"; };
 		AE316F84834D593284EA3A4C /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		B0A90418AEA32F7C299080AF /* InfoCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfoCardView.swift; sourceTree = "<group>"; };
 		B0C09A262074F0F512BCF821 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
 		B7692438CB8859E874A66E3E /* PushManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushManager.swift; sourceTree = "<group>"; };
 		BC33E699B9891551265741C6 /* Neckline.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Neckline.entitlements; sourceTree = "<group>"; };
@@ -163,9 +161,8 @@
 			isa = PBXGroup;
 			children = (
 				CA115ADDC48416F2473C5717 /* BoardView.swift */,
-				3DE7B29D77FF3E312F3F57E6 /* BreathingLedgerView.swift */,
 				F2AF18304557039554136763 /* DecisionLogSheet.swift */,
-				44EC6CD3DA2F404E98166F0D /* InfoCardView.swift */,
+				B0A90418AEA32F7C299080AF /* InfoCardView.swift */,
 				FD3045BA6DDA89226241C3AD /* InquiryView.swift */,
 				A4E1C3A5DD39EEB4270411BB /* IntelSectionView.swift */,
 				D5E6F8707B8AC21038F80089 /* PositionExtras.swift */,
@@ -297,10 +294,9 @@
 				2D7C50E9D88B18651A9771EF /* AppConfig.swift in Sources */,
 				EB18B7D4374EA05AD70C0D9C /* AppModel.swift in Sources */,
 				7673436CA4D488E5D4D0189D /* BoardView.swift in Sources */,
-				AA53A795CF03234393CDF613 /* BreathingLedgerView.swift in Sources */,
 				A7785C3AECB61450C089692D /* DecisionLogSheet.swift in Sources */,
 				9B003EF3A758FDFDC3FEE58E /* DesignTokens.swift in Sources */,
-				E62CDF889D364DA597F94E89 /* InfoCardView.swift in Sources */,
+				C6A7800544ED3CD2E062F1E8 /* InfoCardView.swift in Sources */,
 				EFF01FAD1D2D9784FFCB9DA6 /* InquiryView.swift in Sources */,
 				730CE8D10C7BDBCA711C9342 /* IntelSectionView.swift in Sources */,
 				8A9D9C1AF48200AC1E370EBF /* Models.swift in Sources */,
@@ -380,7 +376,6 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.5.2;
 				PRODUCT_BUNDLE_IDENTIFIER = top.linotsai.neckline;
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;
@@ -464,7 +459,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.5.2;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -533,7 +528,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.5.2;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -565,7 +560,6 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.5.2;
 				PRODUCT_BUNDLE_IDENTIFIER = top.linotsai.neckline;
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;
