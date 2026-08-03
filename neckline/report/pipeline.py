@@ -304,21 +304,10 @@ def build_report(
             refresh_command_hint(trade_date, trade_date),
         )
 
-    # 消费问询台海选池(§2.5 闭环报告侧;v1.1-D 问询窗口修复)——「初审通过」的票
-    # 强制并入当晚候选评分 universe(只扩输入,不改评分逻辑)。消费窗口从「入池当日
-    # 等于本报告日」改为「待消费(consumed_report_date IS NULL)∪ 已被本报告日消费过
-    # (幂等补跑)」,修复 16:35 报告已生成后问询通过的票永久掉缝的生产真洞(详见
-    # `neckline.api.stores.load_pending_inquiry_codes` docstring 根因说明)。lazy
-    # import 沿 `review/reconcile.py` 惯例,让报告管线不在模块加载期依赖 api 包。
-    from neckline.api.stores import load_pending_inquiry_codes, mark_inquiry_pool_consumed
-    inquiry_codes = list(dict.fromkeys(
-        p["ts_code"] for p in load_pending_inquiry_codes(trade_date, db_path=db_path)
-    ))
-
     # v1.3-③-C3:候选生成从 K1 entry mask 退役 → 情报筛选四步管线(需求 5,§2.3/§3.8-(b))。
     # 候选 = 「过完安检、值得关注的票」非「会涨的票」;`build_intel_candidates` 内部自算大
-    # 板块拥挤度列表(需常驻板块 board_age,pipeline 的 top-10 sector_scores 不够大),
-    # forced_codes(问询台海选池)语义不变(§2.5 强制并入,豁免卫生线/hard_cut、仅 K4 打标)。
+    # 板块拥挤度列表(需常驻板块 board_age,pipeline 的 top-10 sector_scores 不够大)。
+    # ⚠ **V2-⑬-10:问询台海选池强制并入通道已删**(本处不再传强制并入名单)。
     # `industry_scores` = v1.4-② 行业强度(A2/B3 题材持续天数判据输入,pipeline 已算好一份)。
     candidates = build_intel_candidates(
         trade_date,
@@ -329,7 +318,6 @@ def build_report(
         top_n=top_n_total,
         parquet_dir=parquet_dir,
         db_path=db_path,
-        forced_codes=inquiry_codes,
     )
 
     provider = llm_provider or get_provider(db_path=db_path)
@@ -482,10 +470,6 @@ def build_report(
             },
             db_path=db_path,
         )
-        # v1.1-D 问询窗口修复:报告落库成功后才标记消费(§根因见
-        # `load_pending_inquiry_codes`/`mark_inquiry_pool_consumed` docstring)——
-        # `save=False`(预览/单测)绝不应有这个副作用,故放在 `if save:` 内。
-        mark_inquiry_pool_consumed(trade_date, db_path=db_path)
         # v1.3-② 持仓 K4 体检 + D5 净浮盈落库(同 `save=False` 不落库口径,防预览/单测副作用)。
         from neckline.report import holding_store
         holding_store.save_holding_eod_checks(trade_date, holding_k4_check, db_path=db_path)

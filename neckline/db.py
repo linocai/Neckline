@@ -246,6 +246,14 @@ CREATE TABLE IF NOT EXISTS devices (
     updated_at  TEXT NOT NULL
 );
 
+-- ⚠ **v2.0.0 起停写留档**(PROJECT_PLAN §五 V2-⑬-10「问询台 forced 海选池通道 → 删」):
+-- 写入方 `add_to_inquiry_pool`、消费查询 `load_pending_inquiry_codes`、消费标记
+-- `mark_inquiry_pool_consumed` 三个函数已物理删除,`build_report` 不再传 `forced_codes`。
+-- **只留 `neckline.api.stores.load_inquiry_pool` 一个只读**,唯一消费方是周复盘
+-- `review/reconcile.py::check_plan_and_ledger` 的「计划内(问询台海选池)」归因判定
+-- —— 那是对历史成交的判定,删了会改写历史周的 plan_status,故保留。
+-- (自动写入方其实早在 v1.3.3 就退役了,V2 删的是剩下的消费侧闭环。)
+--
 -- 阶段4 (4A) 问询台海选池(plan §2.5 / 4A.5)。问询台裁决「初审通过进当晚海选池」→
 -- 落本表(当日),当晚 `report.py` 生成报告时把海选池的票强制纳入候选评分 universe
 -- (不改评分逻辑,只扩输入)。UNIQUE(trade_date, ts_code) 幂等,同日同票复问不重复入池。

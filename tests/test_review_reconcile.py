@@ -500,14 +500,17 @@ class TestCheckPlanAndLedger:
         assert out[0].plan_status == "计划内(当日报告候选)"
 
     def test_in_inquiry_pool_is_plan_in(self, isolated_env):
-        from neckline.api.stores import add_to_inquiry_pool
+        """⑬-10 后 `inquiry_pool` 只剩历史行(写函数已删),但周复盘对历史成交的
+        「计划内(问询台海选池)」归因判定必须一字不变 —— 故 fixture 改走裸 SQL
+        `insert_inquiry_pool_row`,判定逻辑本身照测。"""
+        from tests.conftest import insert_inquiry_pool_row
         from neckline.report import store as report_store
 
         report_store.save_report(
             date(2026, 7, 14), strategy_version="v1", sentiment={}, sectors={},
             candidates=[], markdown="", db_path=isolated_env.db_path,
         )
-        add_to_inquiry_pool(date(2026, 7, 14), "600519.SH", db_path=isolated_env.db_path)
+        insert_inquiry_pool_row(isolated_env.db_path, date(2026, 7, 14), "600519.SH")
         trades = [_trade(date(2026, 7, 14), "600519.SH", "buy", 100.0, 100)]
         out = check_plan_and_ledger(trades, db_path=isolated_env.db_path)
         assert out[0].plan_status == "计划内(问询台海选池)"

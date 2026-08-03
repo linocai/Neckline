@@ -278,23 +278,16 @@ class TestInquiryPoolRetired:
                         parquet_dir=s.parquet_dir, provider=StubProvider())
         assert load_inquiry_pool(day, db_path=s.db_path) == []
 
-    def test_pool_consumption_side_still_intact(self, market_wall_down):
-        """表与消费侧**保留不动**(向后兼容):手工入池的历史行仍能被正常读到/消费,
-        「同日补跑幂等 + 次日不再重复消费」的既有语义一字未变。"""
-        from datetime import timedelta
+    def test_pool_consumption_functions_are_gone(self, market_wall_down):
+        """**V2-⑬-10**:强制并入通道整条删除 —— 写(`add_to_inquiry_pool`)与消费两函数
+        (`load_pending_inquiry_codes`/`mark_inquiry_pool_consumed`)都不许再存在,
+        表停写留档。**只留 `load_inquiry_pool` 一个只读**(周复盘归因历史行要用)。"""
+        from neckline.api import stores
 
-        from neckline.api.stores import (
-            add_to_inquiry_pool, load_pending_inquiry_codes, mark_inquiry_pool_consumed,
-        )
-        s, day = market_wall_down
-        add_to_inquiry_pool(day, "600001.SH", db_path=s.db_path)
-        assert [p["ts_code"] for p in load_pending_inquiry_codes(day, db_path=s.db_path)] \
-            == ["600001.SH"]
-        mark_inquiry_pool_consumed(day, db_path=s.db_path)
-        # 同日补跑仍取得到(幂等分支);次日的报告不再重复消费。
-        assert [p["ts_code"] for p in load_pending_inquiry_codes(day, db_path=s.db_path)] \
-            == ["600001.SH"]
-        assert load_pending_inquiry_codes(day + timedelta(days=1), db_path=s.db_path) == []
+        for gone in ("add_to_inquiry_pool", "load_pending_inquiry_codes", "mark_inquiry_pool_consumed"):
+            assert not hasattr(stores, gone), f"{gone} 应已随 ⑬-10 删除"
+            assert gone not in stores.__all__
+        assert hasattr(stores, "load_inquiry_pool")   # 历史只读保留
 
     def test_run_inquiry_has_no_pool_date_param(self):
         import inspect

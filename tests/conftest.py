@@ -504,6 +504,32 @@ def write_flat_parquet(settings: Settings, filename: str, rows: List[dict]) -> P
     return path
 
 
+def insert_inquiry_pool_row(db_path, trade_date, ts_code, *, name=None, reason=None,
+                            consumed_report_date=None):
+    """v2.0.0 起(PROJECT_PLAN §五 V2-⑬-10)`inquiry_pool` 表停写留档、
+    `neckline.api.stores.add_to_inquiry_pool` 已物理删除——但周复盘的「计划内(问询台
+    海选池)」判定仍要读**历史行**做归因,单测因此需要能造一条历史行。直接裸 SQL 插入,
+    不经任何已退役的应用层写口(同 `insert_decision_log_row` 体例)。"""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from neckline.db import init_schema
+    from neckline.review.parse import normalize_ts_code
+
+    init_schema(db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO inquiry_pool "
+            "(trade_date, ts_code, name, reason, created_at, consumed_report_date) VALUES (?,?,?,?,?,?)",
+            (trade_date.strftime("%Y%m%d"), normalize_ts_code(ts_code), name, reason,
+             datetime.now(timezone.utc).isoformat(timespec="seconds"), consumed_report_date),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def insert_decision_log_row(
     db_path,
     *,
@@ -596,5 +622,6 @@ __all__ = [
     "seed_synthetic_market",
     "write_flat_parquet",
     "insert_decision_log_row",
+    "insert_inquiry_pool_row",
     "set_decision_status",
 ]

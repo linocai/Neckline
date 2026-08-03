@@ -66,22 +66,6 @@ class TestDecisionLogNormalization:
         assert [d.ts_code for d in list_decisions(ts_code=_FULL, db_path=db)] == [_FULL]
 
 
-class TestInquiryPoolNormalization:
-    def test_add_to_inquiry_pool_normalizes(self, isolated_env):
-        from neckline.api.stores import add_to_inquiry_pool, load_inquiry_pool
-        day = date(2026, 7, 27)
-        add_to_inquiry_pool(day, _BARE, db_path=isolated_env.db_path)
-        assert [p["ts_code"] for p in load_inquiry_pool(day, db_path=isolated_env.db_path)] == [_FULL]
-
-    def test_idempotent_across_bare_and_full(self, isolated_env):
-        """裸码与带后缀视作同一票:UNIQUE(trade_date, ts_code) 幂等不再被格式差异绕过。"""
-        from neckline.api.stores import add_to_inquiry_pool, load_inquiry_pool
-        day = date(2026, 7, 27)
-        add_to_inquiry_pool(day, _BARE, db_path=isolated_env.db_path)
-        add_to_inquiry_pool(day, _FULL, db_path=isolated_env.db_path)
-        assert len(load_inquiry_pool(day, db_path=isolated_env.db_path)) == 1
-
-
 class TestOriginalFailureIsReproducible:
     """反向证伪哨兵:直接实证「裸码 join 不上行情面板」这个原始故障,证明本修复不是
     在解决一个想象出来的问题——若哪天有人把归一去掉,本测试会失败。"""
