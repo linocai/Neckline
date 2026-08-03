@@ -27,21 +27,16 @@ class LLMJudgmentOut(BaseModel):
     degraded: bool
 
 
-class PermanentBoardStatusOut(BaseModel):
-    """五常驻板块诊断漏斗(v1.3-③-C3 `_permanent_board_status`,v1.3-⑥ 后端补齐透出)。
-    **报告级构件,非本票专属**——`build_intel_candidates` 只能经候选列表进报告快照,
-    0 保底板块自身无候选可挂,故这份完整列表挂在**每一只候选**的 `intelRank.
-    permanentBoardStatus` 上,客户端从任一候选读到即可(通常取第一只候选或去重后展示)。
-    0 只/不足 2 只时 `note` 必须说清「为什么」(行业不属主导 / 命中 K4 安检 / 被在前
-    常驻板块认领),0 只明标「宁缺毋滥、非静默空白」——守项目「『没有』和『没看』必须
-    能分开」原则,**静默空白是禁止的**。"""
-    board: str                    # 常驻板块中文名
-    surviveCount: int = 0         # 过②卫生线(流动性/次新/趋势/ST)的成员数
-    industryGatePass: int = 0     # 其中行业属本板块主导行业(过行业闸)的数量
-    industryGateBlocked: int = 0  # 过②但行业不属主导、被行业闸挡下的数量
-    hardCutBlocked: int = 0       # 过行业闸但命中 K4 hard_cut、被安检拦截的数量
-    quotaFilled: int = 0          # 实际认领的保底名额数(≤ QUOTA_PER_PERMANENT_BOARD=2)
-    note: str = ""                # 人读文案(满额简述;不足额/0 只时说清「为什么」)
+# ⚠ **`PermanentBoardStatusOut` 已随 V2-⑬-1 退役**(契约线审计 🟡 Y4,2026-08-03 补删):
+# 五常驻板块保底(`QUOTA_PER_PERMANENT_BOARD` / `_permanent_board_status`)住在已删除的
+# `report/intel_candidates.py` 里,⑬-1 把实现层删干净了,**契约层这个 DTO 与客户端那张
+# 卡片整套还留着** —— 新报告 `candidates` 恒空,那张卡因此会**稳定**显示「暂无候选可显示
+# 常驻板块状态(今晚 16:35 报告后可见)」:一句永远兑现不了的承诺,另一分支还指向已删的
+# `/settings/intel-boards`。守门只断言了 settings_store 符号与端点,罩不到 DTO 与客户端。
+# ⛔ 别因为「留着不占地方」就把僵尸 DTO 留在契约里:契约面留着 = 它还在承诺这件事。
+# 删除安全性:客户端 `IntelRank.permanentBoardStatus` 是 `decodeIfPresent ?? []`(非
+# `try c.decode`),服务端停发不会让老 App 解不出报告 —— 这是 CLAUDE.md「删键前先查客户端
+# 是不是硬解码」那条的一次实查结论,不是想当然。
 
 
 class IntelRankOut(BaseModel):
@@ -62,7 +57,7 @@ class IntelRankOut(BaseModel):
                                    # 旧报告(建于本字段前)读回空串——客户端未识别值原样透传不崩。
     industry: str = ""            # 该票行业(stock_basic.industry,过行业闸后的代表行业),
                                    # 让用户看清「凭什么在这个板块栏」;查不到/旧报告 → 空串。
-    permanentBoardStatus: List[PermanentBoardStatusOut] = Field(default_factory=list)
+    # (`permanentBoardStatus` 已随 ⑬-1 / 🟡 Y4 删除,见本文件上方注释。)
     # —— v1.4-③ 新增(需求 8):排序键三级原样透出(`intel_candidates._sort_key`)————————
     industryRank: Optional[int] = None      # 排序键①:行业强度当日排名(1=最强)。**None=未
                                              # 参与排名(无 industry/成员<5),客户端展示时不得
@@ -998,7 +993,7 @@ class ReviewGetOut(BaseModel):
 
 
 __all__ = [
-    "OkOut", "LLMJudgmentOut", "PermanentBoardStatusOut", "IntelRankOut",
+    "OkOut", "LLMJudgmentOut", "IntelRankOut",
     "InfoCardSnapshotOut", "InfoCardNewsItemOut", "InfoCardNewsOut", "InfoCardTopListOut",
     "InfoCardSummaryOut", "CandidateOut", "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",

@@ -147,9 +147,13 @@ final class DTODecodeTests: XCTestCase {
     }
 
     /// v1.3-③-C3/⑥:候选新语义字段——`k4Flags`(avoid_flag 打标)+ `intelRank`(情报排序
-    /// 理由:来源/资金流强度/题材天数/高弹/行业/五常驻板块诊断漏斗)。样例对照
-    /// `test_report_latest_intel_rank_carries_source_industry_permanent_board_status`。
-    func testDecodeCandidateK4FlagsAndIntelRankWithPermanentBoardStatus() async throws {
+    /// 理由:来源/资金流强度/题材天数/高弹/行业)。
+    ///
+    /// ⚠ **五常驻板块诊断漏斗那一段已随 V2-⑬-1 / 契约线 🟡 Y4 退役**(2026-08-03):
+    /// 服务端 DTO 与客户端 struct 都已删除。样例 JSON 里**刻意保留** `permanentBoardStatus`
+    /// 这个键 —— 它现在演的是「老服务端/老快照仍在发这个键」,断言 `IntelRank` 遇到
+    /// **未知键**照样解得出来(客户端对未知键宽容,是过渡期不炸的前提)。
+    func testDecodeCandidateK4FlagsAndIntelRankIgnoresRetiredKey() async throws {
         let json = jsonData("""
         {
           "tradeDate": "20260722", "generatedAt": "g", "strategyVersion": "v1.3", "sentiment": null,
@@ -181,12 +185,9 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(rank.industry, "小金属")
         XCTAssertEqual(rank.sectorFlow, 1234.5)
         XCTAssertTrue(rank.highElasticity)
-        XCTAssertEqual(rank.permanentBoardStatus.count, 1)
-        let status0 = rank.permanentBoardStatus[0]
-        XCTAssertEqual(status0.board, "稀土永磁")
-        XCTAssertEqual(status0.quotaFilled, 0)
-        XCTAssertEqual(status0.industryGateBlocked, 8)
-        XCTAssertTrue(status0.note.contains("宁缺毋滥"), "0 只时必须带「为什么」,不能静默空白")
+        // 已退役的 `permanentBoardStatus` 键仍在样例 JSON 里:解码必须**照常成功**、
+        // 其余字段一个不丢(未知键宽容),而不是抛 `keyNotFound`/`typeMismatch`。
+        XCTAssertEqual(rank.industryPersistDays, 0)
     }
 
     /// v1.4-③ 排序键三级原样透出(需求 8):`industryRank`(①,nil=未参与排名,**不得

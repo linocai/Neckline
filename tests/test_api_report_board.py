@@ -101,22 +101,20 @@ def test_report_latest_carries_intel_and_sector_moneyflow(client, AUTH, api_env)
     assert body["sectorMoneyflow"]["topInflow"][0]["code"] == "AAA.TI"
 
 
-def test_report_latest_intel_rank_carries_source_industry_permanent_board_status(client, AUTH, api_env):
-    """v1.3-⑥ 后端补齐①:`IntelRankOut` 补 `source`/`industry`/`permanentBoardStatus` 三
-    字段——数据早在 v1.3-③-C3 落 `intel_rank` 字典/报告落库快照,此前 pydantic 未声明
-    这三键 → 默认丢弃(`CandidateOut.intelRank = IntelRankOut(**(c.get("intel_rank") or {}))`
-    静默吞掉未声明的额外键),本次补字段透出、生成逻辑零改动。"""
-    board_status = [{
-        "board": "稀土永磁", "surviveCount": 9, "industryGatePass": 1, "industryGateBlocked": 8,
-        "hardCutBlocked": 1, "quotaFilled": 0,
-        "note": "稀土永磁:保底 0 只 —— 9 只过卫生线成员中 8 只行业不属本板块主导行业、"
-                "1 只过闸但命中 K4 安检拦截,宁缺毋滥、非静默空白",
-    }]
+def test_report_latest_intel_rank_carries_source_industry_and_sort_keys(client, AUTH, api_env):
+    """v1.3-⑥ 后端补齐①:`IntelRankOut` 补 `source`/`industry` 两字段——数据早在
+    v1.3-③-C3 落 `intel_rank` 字典/报告落库快照,此前 pydantic 未声明这些键 → 默认丢弃
+    (`CandidateOut.intelRank = IntelRankOut(**(c.get("intel_rank") or {}))` 静默吞掉未
+    声明的额外键),本次补字段透出、生成逻辑零改动。
+
+    ⚠ 同批补齐的第三个字段 `permanentBoardStatus` **已随 ⑬-1 / 契约线 🟡 Y4 退役**
+    (2026-08-03),对应断言移到 `test_report_latest_drops_retired_permanent_board_status_key`
+    ——那条现在验的是反面:老快照里存着这个键,响应里也不许再出现。"""
     c = _candidate(1, "600001.SH", "示例甲")
     c["k4_flags"] = ["B2_double_gold_cross"]
     c["intel_rank"] = {
         "sectorFlow": 1234.5, "themePersistDays": 1, "highElasticity": True,
-        "source": "quota", "industry": "小金属", "permanentBoardStatus": board_status,
+        "source": "quota", "industry": "小金属",
     }
     report_store.save_report(
         date(2026, 7, 22), strategy_version="v1.3",
@@ -127,12 +125,6 @@ def test_report_latest_intel_rank_carries_source_industry_permanent_board_status
     assert rank["source"] == "quota"
     assert rank["industry"] == "小金属"
     assert rank["sectorFlow"] == 1234.5
-    assert len(rank["permanentBoardStatus"]) == 1
-    status0 = rank["permanentBoardStatus"][0]
-    assert status0["board"] == "稀土永磁"
-    assert status0["quotaFilled"] == 0
-    assert status0["industryGateBlocked"] == 8
-    assert "宁缺毋滥" in status0["note"]
 
 
 def test_report_latest_intel_rank_carries_v143_sort_key_fields(client, AUTH, api_env):
@@ -142,13 +134,13 @@ def test_report_latest_intel_rank_carries_v143_sort_key_fields(client, AUTH, api
     c = _candidate(1, "600001.SH", "示例甲")
     c["intel_rank"] = {
         "sectorFlow": 1234.5, "themePersistDays": 2, "highElasticity": False,
-        "source": "competition", "industry": "半导体", "permanentBoardStatus": [],
+        "source": "competition", "industry": "半导体",
         "industryRank": 7, "industryPersistDays": 2, "yellowCardCount": 1,
     }
     c2 = _candidate(2, "600002.SH", "示例乙")
     c2["intel_rank"] = {
         "sectorFlow": None, "themePersistDays": 0, "highElasticity": False,
-        "source": "quota", "industry": "", "permanentBoardStatus": [],
+        "source": "quota", "industry": "",
         "industryRank": None, "industryPersistDays": 0, "yellowCardCount": 0,
     }
     report_store.save_report(
@@ -169,19 +161,38 @@ def test_report_latest_intel_rank_carries_v143_sort_key_fields(client, AUTH, api
 
 
 def test_report_latest_intel_rank_defaults_when_old_snapshot(client, AUTH, api_env):
-    """旧报告(建于本三字段前,`intel_rank` 无 source/industry/permanentBoardStatus 键,
-    也无 v1.4-③ 的 industryRank/industryPersistDays/yellowCardCount 三键)读回默认——
-    `source`/`industry` 空串、`permanentBoardStatus` 空数组、`industryRank` None、
-    `industryPersistDays`/`yellowCardCount` 0,前向兼容不崩、不冒充"quota/competition/
-    forced"三值之一(客户端未识别值原样透传),也不把 `industryRank=None` 冒充"参与过排名
-    但查无"(旧报告压根没算过这件事)。"""
+    """旧报告(建于本三字段前,`intel_rank` 无 source/industry 键,也无 v1.4-③ 的
+    industryRank/industryPersistDays/yellowCardCount 三键)读回默认——`source`/`industry`
+    空串、`industryRank` None、`industryPersistDays`/`yellowCardCount` 0,前向兼容不崩、
+    不冒充"quota/competition/forced"三值之一(客户端未识别值原样透传),也不把
+    `industryRank=None` 冒充"参与过排名但查无"(旧报告压根没算过这件事)。
+
+    ⚠ `permanentBoardStatus` **已随 ⑬-1 / 契约线 🟡 Y4 退役**(2026-08-03):不在响应里。"""
     _seed_report(api_env.db_path, date(2026, 7, 17))
     rank = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"][0]["intelRank"]
     assert rank == {
         "sectorFlow": None, "themePersistDays": 0, "highElasticity": False,
-        "source": "", "industry": "", "permanentBoardStatus": [],
+        "source": "", "industry": "",
         "industryRank": None, "industryPersistDays": 0, "yellowCardCount": 0,
     }
+
+
+def test_report_latest_drops_retired_permanent_board_status_key(client, AUTH, api_env):
+    """🟡 Y4:**老快照里存着**这个键时,响应里也不许再出现(pydantic 只透出已声明字段
+    ——这条是把"DTO 删了 = 键真的停发"钉死,而不是靠"反正现在没人写这个键了")。"""
+    c = _candidate(1, "600001.SH", "示例甲")
+    c["intel_rank"] = {
+        "source": "quota", "industry": "小金属",
+        "permanentBoardStatus": [{"board": "稀土永磁", "quotaFilled": 0, "note": "老快照残留"}],
+    }
+    report_store.save_report(
+        date(2026, 7, 28), strategy_version="v1.4.0",
+        sentiment={"trade_date": "20260728"}, sectors=[], candidates=[c],
+        markdown="# 报告", db_path=api_env.db_path,
+    )
+    rank = client.get("/api/v1/report/latest", headers=AUTH).json()["candidates"][0]["intelRank"]
+    assert "permanentBoardStatus" not in rank
+    assert rank["source"] == "quota" and rank["industry"] == "小金属"   # 其余字段一个不丢
 
 
 def test_report_latest_intel_defaults_to_empty_dict_when_not_seeded(client, AUTH, api_env):

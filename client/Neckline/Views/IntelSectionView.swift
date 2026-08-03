@@ -3,9 +3,12 @@
 //  Neckline — 「情报」板块(§五 v1.3-⑥-F):C1 复盘情报件 + C2 板块资金流 + C4 消息面。
 //
 //  挂在「今日计划」候选之后展示(iOS/macOS 通用,§五 v1.3-⑥ 硬约束「不新增 tab」)。
-//  五常驻板块诊断漏斗(`intelRank.permanentBoardStatus`)也在这里——它是「报告级构件」
-//  (`report/intel_candidates.py::_permanent_board_status` 每只候选携同一份完整列表),
-//  取任一候选(这里取第一只)读出即可,不必逐票重复展示。
+//
+//  **常驻板块诊断漏斗那张卡已随 V2-⑬-1 退役**(契约线审计 🟡 Y4,2026-08-03 拆):它挂在
+//  候选的 `intelRank` 上,而 ⑬-1 删掉整条单票候选管线之后 `candidates` 恒空 —— 那张卡
+//  会**稳定**显示一句「今晚 16:35 报告后可见」的等待文案,而那份数据永远不会再来;
+//  另一分支还指向已删的 `/settings/intel-boards` 设置项。⛔ 别把这类「等一个永远不会来的
+//  数据」的空卡当成无害:它比没有这张卡更误导人。
 //
 //  **定位铁律(硬要求,写进 UI 文案,不只是代码注释)**:
 //   · 候选 = 「过完安检、值得关注的票」,不是「会涨的票」(候选卡自身文案见
@@ -14,8 +17,6 @@
 //     次日领先性)——文案不得暗示"买入依据"。
 //   · 消息面必须先展示扫描状态再展示命中,「本次未扫描」/「N 只未及扫描」绝不能被
 //     误渲染成「确认无消息」(§硬要求「没扫到 vs 扫了没有必须能区分」)。
-//   · 五常驻板块 0 只/不足 2 只时必须展示"为什么"(`note` 服务端已写好文案),
-//     **静默空白是禁止的**——这是本版一路守的「『没有』和『没看』必须分开」。
 //
 
 import SwiftUI
@@ -26,39 +27,11 @@ struct IntelPackageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: NKSpace.gap) {
             NKSectionHeader(title: "情报")
-            permanentBoardsCard
             intelC1Card
             if let mf = report.sectorMoneyflow {
                 sectorMoneyflowCard(mf)
             }
             NewsAlertsCard(alerts: report.newsAlerts, scanStatuses: report.newsAlertsScan)
-        }
-    }
-
-    // MARK: - 五常驻板块诊断漏斗(用户 2026-07-26 拍板:0 只/不足 2 只必须带「为什么」)
-
-    private var permanentBoardsCard: some View {
-        NKCard {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("五常驻板块").font(.system(size: 14, weight: .semibold)).foregroundStyle(NK.textPrimary)
-                let statuses = report.candidates.first?.intelRank.permanentBoardStatus ?? []
-                if statuses.isEmpty {
-                    Text(report.candidates.isEmpty
-                         ? "暂无候选可显示常驻板块状态(今晚 16:35 报告后可见)"
-                         : "常驻板块未配置(设置屏「候选情报 · 五常驻板块」可配)")
-                        .font(.system(size: 12)).foregroundStyle(NK.textTertiary)
-                } else {
-                    ForEach(statuses) { s in
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: s.quotaFilled > 0 ? "checkmark.circle" : "exclamationmark.circle")
-                                .font(.system(size: 12))
-                                .foregroundStyle(s.quotaFilled > 0 ? NK.up : NK.amber)
-                            Text(s.note).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-            }
         }
     }
 

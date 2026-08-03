@@ -127,6 +127,31 @@ def test_13_1_candidate_board_and_permanent_quota_are_gone():
     assert not any("intel-boards" in p for p in paths)
 
 
+def test_13_1_permanent_board_dto_and_client_card_are_gone():
+    """契约线审计 🟡 Y4(2026-08-03):⑬-1 的实现层删干净了,**契约层 DTO 与客户端卡片
+    整套还留着** —— 新报告 `candidates` 恒空,那张卡会稳定显示「暂无候选可显示常驻板块
+    状态(今晚 16:35 报告后可见)」,一句永远兑现不了的承诺。原守门只断言 settings_store
+    符号与端点,罩不到这两处,所以全绿。
+
+    ⚠ 这条与上面那条一起构成 ⑬-1 的完整判据:**「实现删了」不等于「退役了」**,
+    契约面与渲染件留着,对用户来说这个功能就还在(还在承诺、还在占位)。"""
+    from neckline.api import schemas
+
+    assert not hasattr(schemas, "PermanentBoardStatusOut")
+    assert "PermanentBoardStatusOut" not in schemas.__all__
+    assert "permanentBoardStatus" not in schemas.IntelRankOut.model_fields
+
+    models = (_ROOT / "client" / "Models.swift").read_text(encoding="utf-8")
+    assert "struct PermanentBoardStatus" not in models
+    assert "var permanentBoardStatus" not in models
+
+    view = (_ROOT / "client" / "Neckline" / "Views" / "IntelSectionView.swift").read_text(
+        encoding="utf-8")
+    assert "permanentBoardsCard" not in view
+    assert "暂无候选可显示常驻板块状态" not in view, "永远兑现不了的承诺文案不许留"
+    assert "五常驻板块" not in view.split("import SwiftUI", 1)[1], "卡片本体已拆(注释里可留因由)"
+
+
 def test_13_1_board_pool_survives_because_it_is_not_the_permanent_quota_module():
     """反向守门(Plan 落点表笔误的防线):`report/board_pool.py` **必须还在**且仍被
     V2 扫描层消费 —— 它是板块池卫生线,不是五常驻。"""

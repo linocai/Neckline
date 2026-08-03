@@ -148,22 +148,11 @@ struct EntrySpec: Codable, Equatable {
     }
 }
 
-/// 五常驻板块诊断漏斗(v1.3-③-C3/⑥,§2.3)。**报告级构件,非本票专属**——每只候选携带
-/// 同一份完整列表(服务端设计:0 保底板块自身无候选可挂,状态挂在所有候选的
-/// `intelRank.permanentBoardStatus` 上),客户端取任一候选(通常首只)读出展示即可。
-/// 0 只/不足 2 只时 `note` 必须说清「为什么」——守「『没有』和『没看』必须能分开」原则,
-/// **静默空白是禁止的**,UI 不得因这份列表为空就什么都不画。
-struct PermanentBoardStatus: Codable, Equatable, Identifiable {
-    var board: String
-    var surviveCount: Int
-    var industryGatePass: Int
-    var industryGateBlocked: Int
-    var hardCutBlocked: Int
-    var quotaFilled: Int
-    var note: String
-
-    var id: String { board }
-}
+// `PermanentBoardStatus` 与 `IntelRank.permanentBoardStatus` 已随 **V2-⑬-1 单票候选管线
+// 退役**一并删除(契约线审计 🟡 Y4,2026-08-03):服务端的五常驻保底住在已删的
+// `report/intel_candidates.py` 里,新报告 `candidates` 恒空,这份列表永远不会再出现。
+// 情报节里那张卡也一并拆掉(见 `IntelSectionView.swift`)——一张永远只会说「暂无候选可
+// 显示常驻板块状态」的卡片,比没有这张卡更误导人。
 
 /// 候选情报排序理由(v1.3-③-C3/⑥,§2.3 语义变更;v1.4-③ 起补三级排序键,需求 8)。
 /// 候选=「过完安检、值得关注的票」非「会涨的票」——客户端据此写对文案,不写成正面
@@ -175,7 +164,6 @@ struct IntelRank: Codable, Equatable {
     var highElasticity: Bool = false       // 高弹板块(GEM/STAR;生成域刻意含高弹,标注给人判)
     var source: String = ""                // quota(常驻保底)| competition(情报竞争)| forced(问询强制);旧报告空串
     var industry: String = ""              // 该票行业(过行业闸后的代表行业),说清「凭什么在这个板块栏」
-    var permanentBoardStatus: [PermanentBoardStatus] = []
     // —— v1.4-③ 排序键三级原样透出(`intel_candidates._sort_key`,需求 8)——————————————
     var industryRank: Int? = nil           // 排序键①:行业强度当日排名(1=最强)。nil=未参与排名
                                             // (无 industry/成员<5),**展示不得当 0**(0 会误读成"最强")
@@ -187,19 +175,18 @@ struct IntelRank: Codable, Equatable {
     /// ——同 `Candidate`/`Position` 的处理姿势,新增非 Optional 字段不能指望 Swift 合成
     /// Decodable 用默认值兜底缺键)。
     enum CodingKeys: String, CodingKey {
-        case sectorFlow, themePersistDays, highElasticity, source, industry, permanentBoardStatus
+        case sectorFlow, themePersistDays, highElasticity, source, industry
         case industryRank, industryPersistDays, yellowCardCount
     }
 
     init(sectorFlow: Double? = nil, themePersistDays: Int = 0, highElasticity: Bool = false,
-         source: String = "", industry: String = "", permanentBoardStatus: [PermanentBoardStatus] = [],
+         source: String = "", industry: String = "",
          industryRank: Int? = nil, industryPersistDays: Int = 0, yellowCardCount: Int = 0) {
         self.sectorFlow = sectorFlow
         self.themePersistDays = themePersistDays
         self.highElasticity = highElasticity
         self.source = source
         self.industry = industry
-        self.permanentBoardStatus = permanentBoardStatus
         self.industryRank = industryRank
         self.industryPersistDays = industryPersistDays
         self.yellowCardCount = yellowCardCount
@@ -212,7 +199,6 @@ struct IntelRank: Codable, Equatable {
         highElasticity = try c.decodeIfPresent(Bool.self, forKey: .highElasticity) ?? false
         source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
         industry = try c.decodeIfPresent(String.self, forKey: .industry) ?? ""
-        permanentBoardStatus = try c.decodeIfPresent([PermanentBoardStatus].self, forKey: .permanentBoardStatus) ?? []
         industryRank = try c.decodeIfPresent(Int.self, forKey: .industryRank)
         industryPersistDays = try c.decodeIfPresent(Int.self, forKey: .industryPersistDays) ?? 0
         yellowCardCount = try c.decodeIfPresent(Int.self, forKey: .yellowCardCount) ?? 0
