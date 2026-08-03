@@ -194,7 +194,15 @@ def test_scope_with_no_price_data_is_counted_not_silently_dropped(price_env):
 def test_bulk_vs_day_by_day_vs_readback(price_env):
     """三路等价:全量批算(一次调用 3 天)≡ 逐日循环 ≡ 落表读回,随机 3 日
     (plan §五 V2-④ 验收原文)——第三天故意不给任何簇,验证批量路径对"合法零
-    scope"的一天不出岔子(不会串到前后两天的结果里)。"""
+    scope"的一天不出岔子(不会串到前后两天的结果里)。
+
+    **比较时排除 `computed_at`**(§七 P1-36 定案):该列是"这行何时算的"审计戳
+    (秒精度墙钟,每次调用 `_now()` 重新生成),不是业务判据列——批算与逐日循环
+    是**两次独立调用**,只要跨越了墙钟的秒边界,`computed_at` 就会合法地不同,
+    与业务列(scope_key/code_a/code_b/corr/n_obs/...)是否一致无关。同一坑
+    `tests/test_industry_strength_store.py` 早有先例(`{k:v for k,v in
+    r.items() if k!="computed_at"}`),此处用 `.drop("computed_at")` 复刻同一
+    修法,不是放宽断言(业务列仍要求逐位相同)。"""
     env, dates = price_env
     d0, d1, d2 = dates[-3], dates[-2], dates[-1]
     for d in (d0, d1):
@@ -213,7 +221,9 @@ def test_bulk_vs_day_by_day_vs_readback(price_env):
     daybyday = {d: corr.load_corr_matrix(d, db_path=env.db_path).sort(["scope_key", "code_a", "code_b"]) for d in days}
 
     for d in days:
-        assert bulk[d].equals(daybyday[d]), f"{d} 批算与逐日结果不一致"
+        assert bulk[d].drop("computed_at").equals(daybyday[d].drop("computed_at")), (
+            f"{d} 批算与逐日结果不一致(业务列,已排除审计戳 computed_at)"
+        )
     assert bulk[d2].is_empty()
 
     # 幂等:再跑一次不产生重复行

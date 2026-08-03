@@ -209,7 +209,15 @@ def test_broad_concept_excluded_by_board_pool_hygiene(isolated_env):
 def test_bulk_vs_day_by_day_vs_readback_are_identical(isolated_env):
     """三路等价:全量批算(一次调用 3 天)≡ 逐日循环 ≡ 落表读回,随机 3 日
     (plan §五 V2-④ 验收原文),三天故意给三种不同形状——同日簇、连板簇变化、
-    与"当日合法零簇"——覆盖批量路径对"稀疏输出"的处理不出岔子。"""
+    与"当日合法零簇"——覆盖批量路径对"稀疏输出"的处理不出岔子。
+
+    **比较时排除 `computed_at`**(§七 P1-36 定案):该列是"这行何时算的"审计戳
+    (秒精度墙钟,每次调用 `_now()` 重新生成),不是业务判据列——批算与逐日循环
+    是**两次独立调用**,只要跨越了墙钟的秒边界,`computed_at` 就会合法地不同,
+    与业务列(cluster_key/ts_code/cluster_size/...)是否一致无关。同一坑
+    `tests/test_industry_strength_store.py` 早有先例(`{k:v for k,v in
+    r.items() if k!="computed_at"}`),此处用 `.drop("computed_at")` 复刻同一
+    修法,不是放宽断言(业务列仍要求逐位相同)。"""
     env = isolated_env
     _seed_basic(env)
     write_daily_fixture(env, "limit_derived", D0, [
@@ -237,7 +245,9 @@ def test_bulk_vs_day_by_day_vs_readback_are_identical(isolated_env):
 
     # 路③ 落表读回已经是上面两次 load_limit_clusters 本身(SELECT 直读,不做二次判断)
     for d in days:
-        assert bulk[d].equals(daybyday[d]), f"{d} 批算与逐日结果不一致"
+        assert bulk[d].drop("computed_at").equals(daybyday[d].drop("computed_at")), (
+            f"{d} 批算与逐日结果不一致(业务列,已排除审计戳 computed_at)"
+        )
     assert bulk[D2].is_empty()   # D2 合法零簇,批量路径没有把它悄悄凑出内容
 
 
