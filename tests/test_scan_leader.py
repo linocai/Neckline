@@ -203,6 +203,10 @@ def _seed_full_day(env, d: date) -> None:
 
 
 def test_refresh_is_deterministic_and_readback_matches(isolated_env):
+    """⚠ **比较时排除 `computed_at`**(§七 P1-36 同一定案,2026-08-03 V2-⑬ 期间在
+    `leader` 侧复现):该列是「这行何时算的」审计戳、不是业务列;两次独立 refresh 只要
+    跨越墙钟秒边界,它就会**合法地**不同 —— 拿它比等价性是测试缺陷,不是业务分叉
+    (`test_scan_cluster.py`/`test_scan_corr.py` 已按此修过,本文件当时漏改)。"""
     env = isolated_env
     _seed_full_day(env, D0)
 
@@ -214,7 +218,8 @@ def test_refresh_is_deterministic_and_readback_matches(isolated_env):
 
     leader.refresh_leader_structure([D0], db_path=env.db_path, parquet_dir=env.parquet_dir)
     second = leader.load_leader_structure(D0, db_path=env.db_path).sort("ts_code")
-    assert first.equals(second)
+    assert first.drop("computed_at").equals(second.drop("computed_at")), \
+        "两次 refresh 的业务列应逐位相同(已排除审计戳 computed_at)"
     with connection(env.db_path) as conn:
         n = conn.execute(
             "SELECT COUNT(*) FROM leader_structure_daily WHERE trade_date=?", (D0.strftime("%Y%m%d"),)
