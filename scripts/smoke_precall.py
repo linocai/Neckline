@@ -92,7 +92,7 @@ def _seed_d5_position(today: date, code_rows: Dict[str, dict], tmp_db: Path) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--report-day", default="20260716", help="生成候选用的报告日 YYYYMMDD")
+    parser.add_argument("--report-day", default="20260716", help="D0 报告日 YYYYMMDD(篮子与卡的冻结日)")
     parser.add_argument("--today", default="20260717", help="合成集合竞价的交易日 YYYYMMDD")
     parser.add_argument("--keep-db", action="store_true", help="跑完保留临时 DB 副本(调试用)")
     args = parser.parse_args()
@@ -110,7 +110,7 @@ def main() -> int:
     logger.info("已复制真实 DB 到临时副本(不污染生产):%s", tmp_db)
 
     try:
-        logger.info("=== 用真实数据生成 %s 候选报告(供 %s 盘前校准)===", report_day, today)
+        logger.info("=== 用真实数据生成 %s 报告(供 %s 盘前校准)===", report_day, today)
         bundle = build_report(report_day, db_path=tmp_db, save=True)
         logger.info("报告已生成(策略大脑 %s)", bundle.strategy_version)
 
@@ -138,15 +138,15 @@ def main() -> int:
             logger.warning("盘前 tick 未执行(skipped=%s)——%s 是否真实交易日?", res.skipped_reason, today)
             return 0
         logger.info(
-            "盘前校准结果:买点变形%d / 开盘证伪%d / 持仓止损预警%d / 竞价量能异常%d;"
+            "盘前校准结果:高开偏离剧本%d / 开盘即失效%d / 持仓止损预警%d / 竞价量能异常%d;"
             "D5 时间退出%d 只;汇总推送门槛(actionable)=%d",
             len(res.gap_up), len(res.low_open), len(res.position_low_open),
             len(res.auction), len(res.d5_exits), res.summary_actionable,
         )
         for code in res.gap_up:
-            logger.info("  [买点变形] %s", code)
+            logger.info("  [高开偏离剧本] %s", code)
         for code in res.low_open:
-            logger.info("  [开盘证伪] %s", code)
+            logger.info("  [开盘即失效] %s", code)
         for code in res.position_low_open:
             logger.info("  [持仓预警] %s", code)
         for code in res.auction:

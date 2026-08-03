@@ -170,13 +170,13 @@ class IndustryStrengthFreshness:
         """脚注文案(单一源,报告 markdown 与客户端横幅共用同一句口径)。新鲜 → 空串。"""
         if self.unavailable:
             return (
-                "行业强度数据未就绪(表内无任何数据)——今日候选排序缺行业维度、"
+                "行业强度数据未就绪(表内无任何数据)——今日排序缺行业维度、"
                 "题材持续天数与 A2/B3 本日不可得。"
             )
         if self.lag_days > 0:
             return (
                 f"行业强度数据未就绪(最新至 {self.latest_date},落后 {self.lag_days} 个交易日)"
-                "——今日候选排序缺行业维度、题材持续天数与 A2/B3 本日不可得。"
+                "——今日排序缺行业维度、题材持续天数与 A2/B3 本日不可得。"
             )
         if self.hole_days:
             # 断口:数据看着"最新",但中间缺了几天 → 题材持续天数是桥过缺口算出来的,

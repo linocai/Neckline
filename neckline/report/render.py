@@ -62,7 +62,7 @@ def render_markdown(
     parts.append("")
     parts.append(
         "> 规则 v1 是一套经回测验证的**减损纪律系统,不是正 alpha**(见 `research/stage1_report.md`)。"
-        "本报告的候选排序与评分只是展示排序,不构成收益预测,买卖决策请以纪律章程为准。"
+        "本报告的一切排序与评分只是**注意力优先级**,不是收益预测,买卖决策请以纪律章程为准。"
     )
     parts.append("")
     # v1.4-①-C:板块数据过期 → **报告顶部醒目告警**(§七 P0-3)。放在这里而不是塞进
@@ -335,11 +335,11 @@ def _render_sector_moneyflow(report: Optional[SectorMoneyflowReport]) -> str:
 
 
 def _render_news_alerts(report: Optional[NewsAlertsReport]) -> str:
-    """消息面节(C4,plan §五 v1.3-③-C4):持仓 + 自选票的减持/立案/暴雷/监管
+    """消息面节(C4,plan §五 v1.3-③-C4;⚠ V2-⑬-11 起扫描域只剩持仓)的减持/立案/暴雷/监管
     扫描。**先亮扫描状态,再列命中**——「没扫到」(未激活/调用失败)与「扫了
     没有」(确认无此类消息)必须能区分开(§硬要求),不能让读者把"下面没有列
     出任何条目"直接当成"确认干净"。"""
-    lines = ["## 消息面(C4,持仓 + 自选票扫描:减持/立案/暴雷/监管)", ""]
+    lines = ["## 消息面(C4,持仓票扫描:减持/立案/暴雷/监管)", ""]
     if report is None:
         lines.append("消息面节未生成。")
         lines.append("")
@@ -361,7 +361,7 @@ def _render_news_alerts(report: Optional[NewsAlertsReport]) -> str:
     lines.append("")
 
     if not report.items:
-        lines.append("扫描范围内(持仓 + 自选)未发现命中条目——请结合上方扫描状态判断是"
+        lines.append("扫描范围内(持仓)未发现命中条目——请结合上方扫描状态判断是"
                      "「确认干净」还是「本次未扫描」。")
         lines.append("")
         return "\n".join(lines)
