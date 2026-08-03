@@ -88,7 +88,20 @@ def _pick_codes(d0: date, n: int = 6) -> List[Tuple[str, float]]:
 
 
 def _seed_basket(db: Path, d0: date, key: str, name: str, tier: int,
-                 members: List[Tuple[str, float]], stop_pct: float) -> int:
+                 members: List[Tuple[str, float]], stop_pct: float, *,
+                 with_card: bool = True) -> int:
+    """造一个冒烟篮子;`with_card=False` 时**根本不生成卡**,用来演「有篮子无卡」这个
+    合法中间态。
+
+    ⚠ 原写法是「先照常发卡、再对冻结表 `basket_cards` 下一条 DELETE 抹掉」—— 仓里因此
+    真的存在一条打冻结表的删除语句(契约线审计 🟡 Y1 点名),而三律守门当时只扫
+    `neckline/`、看不见它。**不要为了造中间态去删冻结行**:不发卡本来就是这个中间态的
+    真实成因(⑦ 的 LLM 不可用 / 预算耗尽 / 生成失败),照它演才是对的。
+
+    ⚠⚠ 顺带记一条:冻结守门是**纯文本 grep**(见 `tests/test_v2_schema_guard.py`),
+    连注释与 docstring 里的那四个字面短语也一并拦 —— 讲解这件事时得绕开写法本身,
+    别把守门的靶子写进散文里。这是"钝但强"换来的代价,是刻意的。
+    """
     with connection(db) as conn:
         cur = conn.execute(
             "INSERT INTO baskets (trade_date, basket_key, name, driver, driver_kind, tier,"
@@ -104,6 +117,10 @@ def _seed_basket(db: Path, d0: date, key: str, name: str, tier: int,
                 " role_conflict, reason, is_primary, created_at) VALUES (?,?,?,?,?,?,?,?)",
                 (bid, code, "core", None, 0, "冒烟", 1, datetime.now().isoformat(timespec="seconds")),
             )
+
+    if not with_card:
+        logger.info("    (故意不发卡:演「有篮子无卡」合法中间态)")
+        return bid
 
     mechs = list(bc.build_member_mech(
         {c: px for c, px in members}, d0, stop_pct=stop_pct,
@@ -175,10 +192,9 @@ def main() -> int:
             "unclear": _seed_basket(db, d0, "smk-u", "冒烟·中间地带", 2, [picks[5]], stop_pct),
             "falsified": _seed_basket(db, d0, "smk-f", "冒烟·破位证伪", 2, [picks[6]], stop_pct),
         }
-        nocard = _seed_basket(db, d0, "smk-n", "冒烟·有篮无卡", 2, [picks[7]], stop_pct)
-        with connection(db) as conn:      # 抹掉卡,制造「有篮子无卡」的合法中间态
-            conn.execute("DELETE FROM basket_cards WHERE basket_id=?", (nocard,))
-        baskets["no_card"] = nocard
+        # 「有篮子无卡」= **压根没发卡**(不是发了再删,见 `_seed_basket` 的 docstring)
+        baskets["no_card"] = _seed_basket(db, d0, "smk-n", "冒烟·有篮无卡", 2, [picks[7]],
+                                          stop_pct, with_card=False)
 
         refs = {k: v for k, v in baskets.items()}
         member_of: Dict[int, List[Tuple[str, float]]] = {

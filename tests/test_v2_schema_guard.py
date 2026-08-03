@@ -29,8 +29,24 @@ import pytest
 from neckline.data import market_data as md
 from neckline.db import connection, init_schema
 
-_NECKLINE_DIR = Path(__file__).resolve().parent.parent / "neckline"
+_ROOT = Path(__file__).resolve().parent.parent
+_NECKLINE_DIR = _ROOT / "neckline"
+# 扫描域 = `neckline/` + `scripts/`(契约线审计 🟡 Y1 第 3 洞,2026-08-03 扩):以前只罩
+# `neckline/`,而 `scripts/smoke_basket_verify.py` 里就真长出过一条打冻结表的删除语句
+# ——「扫描域外」不是「合法」,冒烟脚本跑的是同一套表、犯的是同一个错。⚠ 没有豁免清单:
+# 真需要破例时**先来这里加名单并写清理由**,不要靠"它不在扫描域里"这种沉默默许。
+_SCRIPTS_DIR = _ROOT / "scripts"
 _NECKLINE_PY_FILES = sorted(_NECKLINE_DIR.rglob("*.py"))
+_SCANNED_PY_FILES = sorted(_NECKLINE_DIR.rglob("*.py")) + sorted(_SCRIPTS_DIR.rglob("*.py"))
+
+
+def test_scan_domain_covers_both_package_and_scripts():
+    """扫描范围本身要被看住(同 `test_eighteen_new_tables_is_the_declared_count` 精神):
+    删掉 `scripts/` 那一半、或把某个目录悄悄挪走,这条会红。"""
+    rel = {str(p.relative_to(_ROOT)) for p in _SCANNED_PY_FILES}
+    assert any(p.startswith("neckline/") for p in rel)
+    assert any(p.startswith("scripts/") for p in rel)
+    assert any(p.startswith("scripts/oneoff/") for p in rel), "oneoff 留档脚本同样在扫描域内"
 
 _NEW_SQLITE_TABLES = (
     "baskets",
@@ -129,22 +145,48 @@ def test_entry_snapshots_duplicate_key_raises_integrity_error(tmp_path):
 # plan 原文列了三个短语(`UPDATE basket_cards` / `UPDATE entry_snapshots` /
 # `DELETE FROM basket_cards`);这里补上第四个对称短语 `DELETE FROM entry_snapshots`
 # ——entry_snapshots 与 basket_cards 同享"冻结"三律,没有理由只守一半。
-_FROZEN_FORBIDDEN_TEXT = (
-    "UPDATE basket_cards",
-    "UPDATE entry_snapshots",
-    "DELETE FROM basket_cards",
-    "DELETE FROM entry_snapshots",
+#
+# **写法变体成套补齐(契约线审计 🟡 Y1 第 1 洞,2026-08-03)**:原来只有 UPDATE/DELETE
+# 四条纯短语,而**绕开 UNIQUE 冻结的第一写法根本不是它们** —— `INSERT OR REPLACE INTO
+# basket_cards`(= 先删后插)一个字都不命中,`REPLACE INTO` 同理。仓里现役
+# `INSERT OR REPLACE` 手法有十余处合法用途(scan/stage/retreat 等),抄错一个表名
+# 守门全程沉默。故对两张冻结表把「任何会覆盖既有行的写法」一并列进来。
+# ⚠ 大小写:比对前统一 `upper()`,不再只认全大写字面量。
+_FROZEN_TABLES = ("basket_cards", "entry_snapshots")
+_FROZEN_FORBIDDEN_TEXT = tuple(
+    f"{verb} {tbl}" if verb == "UPDATE" else f"{verb} FROM {tbl}"
+    for tbl in _FROZEN_TABLES for verb in ("UPDATE", "DELETE")
+) + tuple(
+    f"{verb} {tbl}"
+    for tbl in _FROZEN_TABLES
+    for verb in ("INSERT OR REPLACE INTO", "REPLACE INTO", "INSERT OR ABORT INTO",
+                 "INSERT OR FAIL INTO", "INSERT OR ROLLBACK INTO")
 )
 
 
 def test_no_forbidden_sql_text_against_frozen_tables():
+    """⚠ **纯文本 grep(刻意)**:连注释 / docstring 里的这些字面短语也一并拦。
+    「钝但强」是选定的取向 —— 它能抓到 AST 字面量提取抓不到的写法(如 SQL 存在模块级
+    常量里再 `execute(_SQL)`),代价是讲解这些写法时得绕开字面量本身。"""
     hits: List[Tuple[str, str]] = []
-    for path in _NECKLINE_PY_FILES:
-        text = path.read_text(encoding="utf-8")
+    for path in _SCANNED_PY_FILES:
+        text = path.read_text(encoding="utf-8").upper()
         for forbidden in _FROZEN_FORBIDDEN_TEXT:
-            if forbidden in text:
-                hits.append((str(path.relative_to(_NECKLINE_DIR.parent)), forbidden))
-    assert not hits, f"冻结表出现禁止字样(neckline/ 全仓不许出现):{hits}"
+            if forbidden.upper() in text:
+                hits.append((str(path.relative_to(_ROOT)), forbidden))
+    assert not hits, f"冻结表出现禁止字样(neckline/ 与 scripts/ 全域不许出现):{hits}"
+
+
+def test_frozen_guard_actually_catches_the_or_replace_variant(tmp_path):
+    """守门本身可证伪(🟡 Y1 的病根是"看起来在守、其实漏"):造一个含
+    `INSERT OR REPLACE` 的假源文件,断言上面那套短语集**确实**命中它。"""
+    fake = tmp_path / "sneaky.py"
+    fake.write_text(
+        'conn.execute("insert or replace into basket_cards (basket_id) values (1)")\n',
+        encoding="utf-8",
+    )
+    text = fake.read_text(encoding="utf-8").upper()
+    assert any(f.upper() in text for f in _FROZEN_FORBIDDEN_TEXT)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -153,10 +195,16 @@ def test_no_forbidden_sql_text_against_frozen_tables():
 
 _EXEC_METHOD_NAMES = {"execute", "executemany", "executescript"}
 _APPEND_ONLY_TABLES = ("user_actions", "basket_verification", "selection_pack_activation_log")
+# 追加表禁 UPDATE/DELETE;**`INSERT OR REPLACE` 也算改写**(= 先删后插),Y1 一并补上
+# ——「只 INSERT」这条纪律不是靠动词第一个单词是 INSERT 就算数的。
 _FORBIDDEN_APPEND_SQL = tuple(
     f"{verb} {tbl}" if verb == "UPDATE" else f"{verb} FROM {tbl}"
     for tbl in _APPEND_ONLY_TABLES
     for verb in ("UPDATE", "DELETE")
+) + tuple(
+    f"{verb} {tbl}"
+    for tbl in _APPEND_ONLY_TABLES
+    for verb in ("INSERT OR REPLACE INTO", "REPLACE INTO")
 )
 
 
@@ -204,13 +252,19 @@ def _execute_sql_literals(path: Path) -> List[Tuple[int, str]]:
 
 def test_append_only_tables_have_no_update_or_delete_call_sites():
     hits: List[Tuple[str, int, str]] = []
-    for path in _NECKLINE_PY_FILES:
+    for path in _SCANNED_PY_FILES:      # 🟡 Y1:扫描域含 `scripts/`
         for lineno, sql in _execute_sql_literals(path):
-            upper = sql.upper()
+            upper = " ".join(sql.upper().split())   # 折行 SQL 也要能匹配到相邻关键字
             for forbidden in _FORBIDDEN_APPEND_SQL:
-                if forbidden in upper:
-                    hits.append((str(path.relative_to(_NECKLINE_DIR.parent)), lineno, forbidden))
-    assert not hits, f"追加表(append-only)出现禁止的 UPDATE/DELETE 调用点:{hits}"
+                # ⚠ `forbidden.upper()`,不是裸 `forbidden`(🟡 Y1 施工期反向证伪时打出来的
+                # **第 4 个洞,审计报告未列**):禁止串里的表名是小写(`UPDATE user_actions`),
+                # 而右边是 `sql.upper()` —— 老写法 `forbidden in upper` 两边大小写永不相等,
+                # 这条守门**从上线起一次都不可能命中**,是彻头彻尾的空转。
+                # 教训与 🟡-5 锁空靶同类:守门写完必须**反向造一条真违规**验证它会红,
+                # 「全绿」本身不构成"守住了"的证据。
+                if forbidden.upper() in upper:
+                    hits.append((str(path.relative_to(_ROOT)), lineno, forbidden))
+    assert not hits, f"追加表(append-only)出现禁止的改写调用点:{hits}"
 
 
 def test_user_actions_module_exposes_only_insert_and_read():

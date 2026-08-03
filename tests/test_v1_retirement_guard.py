@@ -31,6 +31,10 @@ import pytest
 _ROOT = Path(__file__).resolve().parent.parent
 _PKG = _ROOT / "neckline"
 _PY_FILES = sorted(_PKG.rglob("*.py"))
+# 停写守门的扫描域 = `neckline/` + `scripts/`(契约线审计 🟡 Y1 第 3 洞,2026-08-03 扩)。
+# `_PY_FILES` 保持只有 `neckline/`:上面 ① 类「模块已删 + 全仓零 import」断言的语义就是
+# **包内**零 import(脚本层引用已删模块会自己 ImportError,不是同一件事),别混用。
+_WRITE_SCAN_FILES = sorted(_PKG.rglob("*.py")) + sorted((_ROOT / "scripts").rglob("*.py"))
 _EXEC_METHODS = {"execute", "executemany", "executescript"}
 
 
@@ -69,11 +73,23 @@ def _sql_literal(node: ast.AST):
 
 
 def _write_sql_hits(table: str) -> List[Tuple[str, int, str]]:
-    """全仓 `neckline/` 里针对该表的 INSERT/UPDATE/DELETE 调用点(宁可漏报不许误报:
-    取不到字面量的动态 SQL 不算命中,同 `test_v2_schema_guard._sql_literal` 既定取向)。"""
-    forbidden = (f"INSERT INTO {table}", f"UPDATE {table}", f"DELETE FROM {table}")
+    """`neckline/` + `scripts/` 全域针对该表的**任何写入**调用点(宁可漏报不许误报:
+    取不到字面量的动态 SQL 不算命中,同 `test_v2_schema_guard._sql_literal` 既定取向)。
+
+    **写法变体成套(契约线审计 🟡 Y1 第 2 洞,2026-08-03)**:原来只有
+    `INSERT INTO` / `UPDATE` / `DELETE FROM` 三条前缀 —— 而
+    `INSERT OR REPLACE INTO <停写表>` / `INSERT OR IGNORE INTO <停写表>` 这两种**最常见的
+    幂等写法**都不含子串 `INSERT INTO <表>`,一个都不命中。停写就是停写,不分写法。
+    """
+    forbidden = (
+        f"INSERT INTO {table}", f"UPDATE {table}", f"DELETE FROM {table}",
+        f"REPLACE INTO {table}",                      # 覆盖 `INSERT OR REPLACE INTO` 与裸 REPLACE
+        f"INSERT OR IGNORE INTO {table}",
+        f"INSERT OR ABORT INTO {table}", f"INSERT OR FAIL INTO {table}",
+        f"INSERT OR ROLLBACK INTO {table}",
+    )
     hits: List[Tuple[str, int, str]] = []
-    for path in _PY_FILES:
+    for path in _WRITE_SCAN_FILES:
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
             if not isinstance(node, ast.Call):
                 continue
@@ -421,6 +437,24 @@ def test_13_N_K7_tags_stay_out_of_the_sentinel_tree(path):
 
 _FROZEN_TABLES = ("watchlist", "breathing_t_trades", "inquiry_pool",
                   "llm_judgments", "reference_plans", "decision_log")
+
+
+def test_write_guard_scan_domain_and_variants_are_both_live():
+    """守门本身可证伪(🟡 Y1 的病根是"看起来在守、其实漏"两处):
+    ① 扫描域真的含 `scripts/`;② `INSERT OR REPLACE/IGNORE` 变体真的会命中。"""
+    rel = {str(p.relative_to(_ROOT)) for p in _WRITE_SCAN_FILES}
+    assert any(p.startswith("scripts/") for p in rel)
+    assert any(p.startswith("neckline/") for p in rel)
+
+    def _hits(sql: str) -> list:
+        forbidden = ("INSERT INTO decision_log", "REPLACE INTO decision_log",
+                     "INSERT OR IGNORE INTO decision_log")
+        upper = " ".join(sql.upper().split())
+        return [f for f in forbidden if f.upper() in upper]
+
+    assert _hits("INSERT OR REPLACE INTO decision_log (id) VALUES (1)")
+    assert _hits("insert or ignore into decision_log (id) values (1)")
+    assert not _hits("SELECT * FROM decision_log")
 
 
 def test_frozen_tables_gain_no_rows_after_a_full_pipeline_run(isolated_env, monkeypatch):
