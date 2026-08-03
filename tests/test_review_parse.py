@@ -96,6 +96,108 @@ def test_format1_skips_non_trade_rows(seeded_names):
     assert result.warnings == []   # 全是已知的"跳过"行,不应产生警告噪音
 
 
+# —— ⑫-A 资金流水四分类扩展(跳过行一并留痕成 `CashFlowEvent`)——————————————————
+
+def test_format1_skip_rows_are_classified_into_cash_flow_events(seeded_names):
+    """§五 V2-⑫-A:转入转出/分红/税费三类必须从跳过行的「发生金额」如实留痕、
+    互不混同;既有 `skip_counts`/`warnings` 行为不受影响(上一条测试逐位不变)。"""
+    from neckline.review.parse import CASH_FLOW_DIVIDEND, CASH_FLOW_OTHER, CASH_FLOW_TAX, CASH_FLOW_TRANSFER
+
+    data = _workbook_bytes({
+        "对账单": [
+            FORMAT1_HEADER,
+            [datetime(2026, 7, 14), "国泰君安", "银证转入", "", 0, 0, 0.0, 50000.0, 50000.0, ""],
+            [datetime(2026, 7, 15), "国泰君安", "红股派息", "贵州茅台", 10, 110, 0.0, 0.0, 50000.0, ""],
+            [datetime(2026, 7, 15), "国泰君安", "股息红利个人所得税扣款", "贵州茅台", 0, 110, 0.0, -1.0, 49999.0, ""],
+            [datetime(2026, 7, 15), "国泰君安", "利息归本", "", 0, 0, 0.0, 0.5, 49999.5, ""],
+            [datetime(2026, 7, 15), "国泰君安", "银证转出", "", 0, 0, 0.0, -1000.0, 48999.5, ""],
+        ]
+    })
+    result = parse_workbook(data, "t.xlsx", db_path=seeded_names.db_path)
+    events = {e.business_name: e for e in result.cash_flow_events}
+    assert len(result.cash_flow_events) == 5
+
+    assert events["银证转入"].kind == CASH_FLOW_TRANSFER
+    assert events["银证转入"].amount == pytest.approx(50000.0)
+    assert events["银证转入"].trade_date == date(2026, 7, 14)
+    assert events["银证转入"].ts_code is None    # 账户级事件,格式一无代码列
+
+    assert events["银证转出"].kind == CASH_FLOW_TRANSFER
+    assert events["银证转出"].amount == pytest.approx(-1000.0)
+
+    assert events["红股派息"].kind == CASH_FLOW_DIVIDEND
+    assert events["红股派息"].amount == pytest.approx(0.0)
+    assert events["红股派息"].name == "贵州茅台"
+
+    assert events["股息红利个人所得税扣款"].kind == CASH_FLOW_TAX
+    assert events["股息红利个人所得税扣款"].amount == pytest.approx(-1.0)
+
+    # 利息归本不属"转入转出/分红/税费/交易盈亏"任何一类 —— 如实标"其他",
+    # 不强并入分红(两者性质不同:broker 账户利息 vs 公司分配)。
+    assert events["利息归本"].kind == CASH_FLOW_OTHER
+    assert events["利息归本"].amount == pytest.approx(0.5)
+
+    # 四分类互不混同:分别加总互不相等(在造数上分得开)
+    by_kind: Dict[str, float] = {}
+    for e in result.cash_flow_events:
+        by_kind[e.kind] = by_kind.get(e.kind, 0.0) + e.amount
+    assert by_kind[CASH_FLOW_TRANSFER] == pytest.approx(49000.0)     # 50000 - 1000
+    assert by_kind[CASH_FLOW_DIVIDEND] == pytest.approx(0.0)
+    assert by_kind[CASH_FLOW_TAX] == pytest.approx(-1.0)
+    assert by_kind[CASH_FLOW_OTHER] == pytest.approx(0.5)
+
+    # 既有行为逐位不变(上一条测试的断言原样复核一遍)
+    assert result.trades == []
+    assert result.warnings == []
+    assert result.skip_counts.get("银证转入") == 1
+
+
+def test_format2_skip_rows_carry_ts_code_when_present(seeded_names):
+    """格式二的银行转证券/指定交易行本身带「证券代码」列 —— 直读留痕,不额外反查。"""
+    from neckline.review.parse import CASH_FLOW_OTHER, CASH_FLOW_TRANSFER
+
+    data = _workbook_bytes({
+        "成交流水": [
+            FORMAT2_HEADER,
+            [datetime(2026, 7, 14), "华泰证券", "600519", "贵州茅台", "指定交易",
+             0, 0, 0, 0, 0, 0, 0, 0, 100000.0, 0, "A001", "CNY", "C001"],
+            [datetime(2026, 7, 14), "华泰证券", "600519", "贵州茅台", "银行转证券",
+             0, 0, 0, 0, 0, 0, 0, 50000.0, 150000.0, 0, "A001", "CNY", "C002"],
+        ]
+    })
+    result = parse_workbook(data, "t.xlsx", db_path=seeded_names.db_path)
+    events = {e.business_name: e for e in result.cash_flow_events}
+    assert len(result.cash_flow_events) == 2
+
+    assert events["指定交易"].kind == CASH_FLOW_OTHER   # 纯账户操作,不是资金流水,如实标"其他"
+    assert events["指定交易"].amount == pytest.approx(0.0)
+    assert events["指定交易"].ts_code == "600519.SH"
+
+    assert events["银行转证券"].kind == CASH_FLOW_TRANSFER
+    assert events["银行转证券"].amount == pytest.approx(50000.0)
+    assert events["银行转证券"].ts_code == "600519.SH"
+
+    # 既有行为不受影响
+    assert result.trades == []
+    assert result.skip_counts.get("指定交易") == 1
+    assert result.skip_counts.get("银行转证券") == 1
+
+
+def test_cash_flow_event_absent_when_amount_column_missing(seeded_names):
+    """找不到「发生金额」列(如整理表格式砍掉了该列)→ 如实不留痕资金流水事件,
+    但既有 `skip_counts` 计数不受影响(「没找到列」与「跳过行本身」是两件事)。"""
+    custom_header = ["交易日期", "券商来源", "业务名称", "证券名称", "成交数量", "股份余额", "费用", "备注"]
+    data = _workbook_bytes({
+        "对账单": [
+            custom_header,
+            [datetime(2026, 7, 14), "国泰君安", "银证转入", "", 0, 0, 0.0, ""],
+        ]
+    })
+    result = parse_workbook(data, "t.xlsx", db_path=seeded_names.db_path)
+    assert result.cash_flow_events == []
+    assert result.skip_counts.get("银证转入") == 1
+
+
 def test_format1_missing_fee_column_skips_not_silently_zero(seeded_names):
     """回归测试:格式一「手续费」对应列(默认列名"费用")若压根没找到实际列(非
     col_map 覆盖场景),不能悄悄按 0 兜底继续反推价格——那样会算出一个看似合理

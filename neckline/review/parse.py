@@ -60,6 +60,46 @@ _SKIP_NAMES = {
     "format2": {"银行转证券", "指定交易"},
 }
 
+# —— 资金流水四分类(plan §五 V2-⑫-A 扩展,2026-08-03)————————————————————————
+# 蓝图 5.3 原文:"资金转入、转出、分红、税费和交易盈亏必须分开;账户金额增加不得
+# 直接视为策略收益"。**这四类里只有前三类(转入转出/分红/税费)出自本模块的"跳过
+# 行"**——"交易盈亏"来自 `reconcile.py` 的 FIFO 回合净盈亏(`RoundTrip.net_pnl`),
+# 不是一种"业务名称";它的分类常量 `CASH_FLOW_TRADING_PNL` 因此不在本模块声明,
+# 与这三类一起在更上层的 `review/cashflow.py` 统一导出,调用方按同一份四分类
+# 常量拼装周度资金流水摘要,不在两处各写一份。
+#
+# ⚠ **对账引擎既有行为原样不动**:以下全部是新增能力,`_parse_row`/`_SKIP_NAMES`/
+# `parse_workbook` 对成交行(买/卖)的既有解析路径一字未改;跳过行原有的
+# `skip_counts` 计数行为也不变,本次只是**额外**把这些行的日期/金额/分类留痕到
+# 新增的 `ParseResult.cash_flow_events`,供 `review/cashflow.py` 消费。
+CASH_FLOW_TRANSFER = "transfer"   # 转入转出:银证转入/转出(格式一)、银行转证券(格式二)——符号即方向
+CASH_FLOW_DIVIDEND = "dividend"   # 分红:红股派息等公司分配
+CASH_FLOW_TAX = "tax"             # 税费:股息红利个人所得税扣款等
+CASH_FLOW_OTHER = "other"         # 不属前三类的资金流水事件(如"利息归本"——broker 结算账户利息,
+                                   # 既非转账也非分红/税费)或零金额账户操作(如"指定交易"——纯登记
+                                   # 动作,不是资金流水)。**如实标"其他",不强并入分红/税费**——
+                                   # 把利息记成分红、把账户操作记成税费都是伪造分类。
+
+# 「业务名称 → 资金流水分类」唯一映射(两家券商跳过名合并成一张表——两边字面量
+# 互不重叠,可以安全合并;新增券商格式时如果引入新的跳过名,必须同步在此登记,
+# 否则会静默落 `CASH_FLOW_OTHER` 兜底——**兜底是故意的**,不识别的业务名称宁可
+# 如实标"其他"也不可判"没有这笔事件")。
+_CASH_FLOW_KIND_BY_NAME: Dict[str, str] = {
+    "银证转入": CASH_FLOW_TRANSFER,
+    "银证转出": CASH_FLOW_TRANSFER,
+    "银行转证券": CASH_FLOW_TRANSFER,
+    "红股派息": CASH_FLOW_DIVIDEND,
+    "股息红利个人所得税扣款": CASH_FLOW_TAX,
+    "利息归本": CASH_FLOW_OTHER,
+    "指定交易": CASH_FLOW_OTHER,
+}
+
+# 「发生金额」列名(⚠ 不入 col_map——它不是任务指令原文枚举的 9 个规范字段之一,
+# 同 `_FORMAT2_CLEARING_FEE_HEADER` 的既定体例:固定按此列名探测,两家格式的表头
+# 都确有这一列〔见模块头两份 schema 描述〕,找不到该列时 ⛔ 不猜是哪一列,如实
+# 放弃该行的资金流水留痕〔不影响 `skip_counts` 计数,那是另一件事〕)。
+_CASH_FLOW_AMOUNT_HEADER = "发生金额"
+
 # —— 内置默认列名(未被 col_map 覆盖时的兜底;§4D.1"先支持整理格式,留可配支持
 #    两家券商原始格式")—————————————————————————————————————————————————
 _DEFAULT_HEADERS = {
@@ -246,11 +286,28 @@ class ParseWarning:
 
 
 @dataclass
+class CashFlowEvent:
+    """⑫-A 扩展:一条非成交行(`_SKIP_NAMES`命中)的资金流水留痕。**只读派生**——
+    不改变 `skip_counts` 既有计数语义,是同一批跳过行的另一份视图(带日期/金额/
+    四分类,供 `review/cashflow.py` 按周聚合)。"""
+
+    trade_date: date
+    business_name: str        # 原始业务名称(留痕,如"红股派息")
+    kind: str                 # CASH_FLOW_* 之一
+    amount: float              # 「发生金额」原始符号(转入转出的方向即由符号表达)
+    ts_code: Optional[str] = None   # 关联证券(格式二的代码列直读;格式一账户级事件无代码 → None)
+    name: str = ""             # 证券名称(账户级事件为空串,如银证转入/转出)
+    source_format: str = ""    # "format1" | "format2"
+    source_ref: str = ""       # "<sheet>!row<N>",诊断用
+
+
+@dataclass
 class ParseResult:
     trades: List[RawTrade] = field(default_factory=list)
     warnings: List[ParseWarning] = field(default_factory=list)
     sheet_formats: Dict[str, str] = field(default_factory=dict)   # sheet名 -> "format1"/"format2"/"skipped:<reason>"
     skip_counts: Dict[str, int] = field(default_factory=dict)     # 业务名称(非成交行)-> 跳过行数,供展示留痕
+    cash_flow_events: List[CashFlowEvent] = field(default_factory=list)   # ⑫-A:跳过行的资金流水留痕(新增,不影响以上既有字段)
 
 
 def _find_header_row(rows: List[List[object]]) -> Optional[int]:
@@ -301,6 +358,50 @@ def _cell(row: List[object], idx: Optional[int]) -> object:
     return row[idx]
 
 
+def _extract_cash_flow_event(
+    row: List[object],
+    business: str,
+    fmt: str,
+    cols: Dict[str, Optional[int]],
+    cash_flow_idx: Optional[int],
+    ref: str,
+) -> Optional[CashFlowEvent]:
+    """⑫-A 扩展:把一条已判定为「跳过」的非成交行(`business in _SKIP_NAMES[fmt]`)
+    一并留痕成 `CashFlowEvent`。**只在这里新增能力,不改 `_parse_row` 一个字节**
+    ——调用方(`parse_workbook`)在拿到 `skip_label` 之后另行调用本函数,两条路径
+    互不干扰。
+
+    日期解不出 / 找不到「发生金额」列(两家已知格式表头都确有此列,找不到多半是
+    col_map 覆盖了非本函数管辖的字段名)→ 如实返回 `None`(该行仍计入既有
+    `skip_counts`,只是资金流水这一份"新视图"缺席,**绝不**猜一个日期或金额凑数)。
+    **本函数永不抛异常、永不产生 `ParseWarning`**——已知的跳过行本就不该有警告噪音
+    (`test_format1_skips_non_trade_rows` 断言 `warnings == []`,四分类留痕不能打破
+    这条既有断言)。"""
+    trade_date = _parse_cell_date(_cell(row, cols["成交日期"]))
+    if trade_date is None or cash_flow_idx is None:
+        return None
+    amount = _parse_cell_float(_cell(row, cash_flow_idx))
+    if amount is None:
+        amount = 0.0
+    name = clean_str(_cell(row, cols["名称"]))
+    ts_code: Optional[str] = None
+    if fmt == "format2":
+        # 格式二的「证券代码」列对跳过行(银行转证券/指定交易)同样直读——这两类
+        # 业务名称本身就与某只证券的账户操作相关(见模块头两家 schema 描述),不需要
+        # 反查;格式一的账户级事件(银证转入/转出/利息归本)没有代码列,`ts_code`
+        # 恒 None。**红股派息/股息红利个人所得税扣款虽有「证券名称」,本函数不额外
+        # 反查代码**(需要 `NameIndex`,本函数刻意不接它以保持零依赖/零警告)——
+        # `name` 字段已留痕,够审计用,不为了补全一个 ts_code 而引入新的失败模式。
+        raw_code = clean_str(_cell(row, cols["代码"]))
+        ts_code = normalize_ts_code(raw_code) if raw_code else None
+    return CashFlowEvent(
+        trade_date=trade_date, business_name=business,
+        kind=_CASH_FLOW_KIND_BY_NAME.get(business, CASH_FLOW_OTHER),
+        amount=amount, ts_code=ts_code, name=name,
+        source_format=fmt, source_ref=ref,
+    )
+
+
 def parse_workbook(
     data: bytes,
     filename: str = "",
@@ -342,6 +443,8 @@ def parse_workbook(
 
         cols = {c: _col_index(headers, c, fmt, col_map) for c in CANONICAL_FIELDS}
         clearing_fee_idx = headers.index(_FORMAT2_CLEARING_FEE_HEADER) if _FORMAT2_CLEARING_FEE_HEADER in headers else None
+        # ⑫-A 扩展:「发生金额」不入 col_map(同 `clearing_fee_idx` 体例),固定列名探测。
+        cash_flow_idx = headers.index(_CASH_FLOW_AMOUNT_HEADER) if _CASH_FLOW_AMOUNT_HEADER in headers else None
 
         for r in range(header_i + 1, len(rows)):
             row = rows[r]
@@ -359,6 +462,12 @@ def parse_workbook(
                 result.warnings.append(ParseWarning(ws.title, r + 1, warn_msg))
             if skip_label:
                 result.skip_counts[skip_label] = result.skip_counts.get(skip_label, 0) + 1
+                try:  # ⑫-A 扩展:资金流水留痕是可选的"新视图",失败绝不牵连既有解析
+                    event = _extract_cash_flow_event(row, skip_label, fmt, cols, cash_flow_idx, ref)
+                except Exception:  # noqa: BLE001
+                    event = None
+                if event is not None:
+                    result.cash_flow_events.append(event)
             if trade is not None:
                 result.trades.append(trade)
 
@@ -449,4 +558,10 @@ __all__ = [
     "ParseWarning",
     "ParseResult",
     "parse_workbook",
+    # ⑫-A 资金流水四分类扩展
+    "CASH_FLOW_TRANSFER",
+    "CASH_FLOW_DIVIDEND",
+    "CASH_FLOW_TAX",
+    "CASH_FLOW_OTHER",
+    "CashFlowEvent",
 ]
