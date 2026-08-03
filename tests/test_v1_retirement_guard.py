@@ -225,12 +225,28 @@ def test_13_7_precall_judges_basket_members_from_frozen_card_spec():
     assert KIND_PRECALL == "precall"
 
 
-def test_13_7_precall_does_not_bump_the_verification_ruleset():
-    """⛔ 竞价开盘价不是收盘价 —— precall 只借冻结价位,**不许**往 ⑦-b 的条件集里加
-    竞价语义(那会污染 ⑧ 的四态判定,且要 bump `VERIFICATION_RULESET_VERSION`)。"""
-    from neckline.selection.verification_rules import VERIFICATION_RULESET_VERSION
+def test_13_7_precall_does_not_touch_the_verification_ruleset():
+    """⛔ 竞价开盘价不是收盘价 —— precall 只借冻结价位(`ref_close` / `stop_line`
+    两个数),**不许**往 ⑦-b 的条件集里加竞价语义(那会污染 ⑧ 的四态判定)。
 
-    assert VERIFICATION_RULESET_VERSION == "verify_ruleset_v1"
+    ⚠ 判据从「版本串等于某个字面量」改成「precall **碰不到**条件集的判定面」
+    (2026-08-03,判定线 🟡-1 bump 到 v2 时暴露):钉死字面量的写法把「⑦-b 因**别的**
+    原因正当 bump」也判成违规,是**误报型守门** —— 守门该锁的是这个模块的行为边界,
+    不是另一个模块的版本号取值。"""
+    import neckline.sentinel.precall as pc
+    from neckline.selection import verification_rules as vr
+
+    src = (_PKG / "sentinel" / "precall.py").read_text(encoding="utf-8")
+    # ① 只准引用条件**码**(当键去读冻结 spec),不准调用条件集的任何判定/生成函数
+    for banned in ("evaluate_condition", "decide_state", "conditions_block", "combine_side",
+                   "min_members_hit", "VERIFICATION_RULESET_VERSION"):
+        assert f"vr.{banned}" not in src, f"precall 不该调用条件集的 {banned}"
+    # ② 不准自己造条件码 / 自己写一份条件集
+    assert not any(name.startswith("COND_") for name in vars(pc)), "precall 不许自定义条件码"
+    # ③ 条件集本身仍是 ⑦-b 那套(precall 落地前后逐字相同)
+    assert tuple(vr.VERIFY_REQUIRE_ALL) == ("close_at_or_above_ref", "holds_ma20")
+    assert tuple(vr.INVALIDATE_ANY_OF) == (
+        "close_below_stop_line", "limit_down_touch", "close_below_ref_and_ma20")
 
 
 # ======================================================================

@@ -71,7 +71,12 @@ SOURCE_EOD = store.SOURCE_EOD
 REASON_NO_CARD = "no_card"
 REASON_NO_SPEC = "no_spec"                    # 有卡但卡里没有结构化 spec(降级卡不该出现)
 FLAG_MEMBER_DATA_MISSING = "member_data_missing"   # 该成员当日无行情(停牌 / 数据缺口)
-FLAG_SPEC_LEVELS_MISSING = "spec_levels_missing"   # 卡里这一侧的阈值全是 null(D0 就算不出)
+FLAG_SPEC_LEVELS_MISSING = "spec_levels_missing"   # 卡里**两侧**的阈值全是 null(D0 全算不出)
+# 判定线审计 🟡-1(2026-08-03):**部分**阈值缺失 —— 该成员至少有一条条件判得了、也至少
+# 有一条判不了。以前这种情形零披露(`FLAG_SPEC_LEVELS_MISSING` 只在两侧全不可判时才打),
+# 于是「两条 AND 被降格成一条」在证据里完全看不出来。它与 `spec_levels_missing` 是两件事:
+# 一个是「这张卡这只票压根没锚」,一个是「锚缺了一半,本次这一侧因此不下结论」。
+FLAG_SPEC_LEVELS_PARTIAL = "spec_levels_partial"
 
 # ⑧-E(2026-08-02 planner 裁定):除权除息锚失效检测器的原因码。检测命中(盘中 / EOD
 # 通用,由 `evaluate_specs` 打)一律先标 `FLAG_ANCHOR_MISMATCH`;EOD 独有的
@@ -172,25 +177,31 @@ def _judge_side(
     *,
     require_all: bool,
 ) -> Tuple[Optional[bool], Dict[str, Optional[bool]]]:
-    """判一侧(验证 = `require_all`;失效 = 任一命中)。
+    """判一侧(验证 = `require_all` 全部满足;失效 = 任一命中)。
 
-    返回 `(命中?, 逐条结果)`。**`None` = 这一侧对该成员判不了**(阈值全 null /
-    观测缺失 / 比较语义不认识),⛔ 绝不当成 `False` —— 「没有」与「没看」必须分得开。
+    返回 `(命中?, 逐条结果)`。**`None` = 这一侧对该成员判不了**(阈值 null / 观测
+    缺失 / 比较语义不认识),⛔ 绝不当成 `False` —— 「没有」与「没看」必须分得开。
+
+    **合成一侧结论的读法住 `verification_rules.combine_side()`**(判定线审计 🟡-1,
+    2026-08-03,= `verify_ruleset_v2` 的全部内容):本模块只负责「代入观测、逐条求值」,
+    「判不了怎么算」与「什么算命中」同属条件集,归 ⑦-b 的单一源管 —— 本模块**不写
+    任何阈值、不定任何门槛**这条纪律,对这套读法同样成立。
+
+    修的是什么:原实现先把 `None` 那几条**扔掉**,再对**剩下的子集**取 `all()`/`any()`
+    —— 于是「⑦-b-B 定死的两条 AND」在某成员 MA20 缺失时被静默降格成**单条 AND**,
+    只要收盘 ≥ D0 收盘就计一个验证命中,`flags` 一片空白。而失效侧的复合条件
+    (`close_below_ref_and_ma20`)本来就是「任一子阈值 null 整条不判」,于是**同一个
+    数据缺口在两侧一松一紧,系统性偏向 `verified`**。`verified` 虽然不触发纪律,却是
+    ⑨ 评价引擎算验证率的原料 —— 拿被半判成员污染的数据去校准条件集 = 错上加错。
     """
     per: Dict[str, Optional[bool]] = {}
     if row is None:
         return None, per
-    judged: List[bool] = []
     for code in codes:
-        r = vr.evaluate_condition(
+        per[code] = vr.evaluate_condition(
             compares.get(code) or "", row.get(code), price=obs.price, low=obs.low
         )
-        per[code] = r
-        if r is not None:
-            judged.append(r)
-    if not judged:
-        return None, per
-    return (all(judged) if require_all else any(judged)), per
+    return vr.combine_side(list(per.values()), require_all=require_all), per
 
 
 def evaluate_specs(
@@ -225,6 +236,7 @@ def evaluate_specs(
     verify_hits = invalidate_hits = observed = 0
     missing: List[str] = []
     anchor_mismatched: List[str] = []
+    levels_partial: List[str] = []
     detail: List[Dict[str, Any]] = []
     for code in codes:
         obs = observations.get(code)
@@ -255,8 +267,15 @@ def evaluate_specs(
         observed += 1
         v_hit, v_per = _judge_side(v_row, require, v_cmp, obs, require_all=True)
         i_hit, i_per = _judge_side(i_row, any_of, i_cmp, obs, require_all=False)
-        if v_hit is None and i_hit is None:
+        # 🟡-1:两个 flag 的分界 = 「一条都判不了」vs「判得了一部分」。前者维持原语义
+        # (两侧全部不可判);后者是新披露位,凡有阈值缺失就必须留下痕迹 —— 被半判的
+        # 成员现在既不计验证命中、也不计失效命中,但**这件事本身要能被 ⑨ 看见**。
+        all_conditions = list(v_per.values()) + list(i_per.values())
+        if not any(r is not None for r in all_conditions):
             flags.append(FLAG_SPEC_LEVELS_MISSING)
+        elif any(r is None for r in all_conditions):
+            flags.append(FLAG_SPEC_LEVELS_PARTIAL)
+            levels_partial.append(code)
         verify_hits += 1 if v_hit else 0
         invalidate_hits += 1 if i_hit else 0
         detail.append({
@@ -269,6 +288,11 @@ def evaluate_specs(
     state = vr.decide_state(verify_hits, invalidate_hits, min_hit)
     evidence: Dict[str, Any] = {
         "ruleset_version": verification_spec.get("ruleset_version"),
+        # 🟡-1:卡上冻的版本(上一行)跟的是**这张卡的条件与阈值**;判定代码永远只有
+        # 一份、跑的是**当下**这套读法。跨版本那几天(老卡 v1 × 新读法 v2)两者会不等,
+        # 如实两个都记下来,⑨ 分层才不至于把「按 v2 读出来的成绩」记在 v1 头上而无从
+        # 察觉。相等时也照记,不做"只在不同时才写"的花活(那会让缺键有两种含义)。
+        "ruleset_version_engine": vr.VERIFICATION_RULESET_VERSION,
         "verify_spec_version": verification_spec.get("spec_version"),
         "invalidate_spec_version": invalidation_spec.get("spec_version"),
         "min_members_hit": min_hit,
@@ -281,6 +305,10 @@ def evaluate_specs(
     if missing:
         # ⛔ 「查不到」不是「失效」:如实标出来,让 ⑨ / 报告能说「这一态里有几只没数据」。
         evidence[FLAG_MEMBER_DATA_MISSING] = missing
+    if levels_partial:
+        # 🟡-1:「锚缺了一半 → 该侧不下结论」的成员名单。与 member_data_missing 分开:
+        # 那是"今天没看到这只票",这是"看到了但卡上的锚不全"。
+        evidence[FLAG_SPEC_LEVELS_PARTIAL] = levels_partial
     if anchor_mismatched:
         # ⑧-E:「锚失效」不是「失效」也不是「查不到」——单独一个原因码,别混进上面
         # 那条,否则 ⑨ 分不清「数据缺口」与「除权除息误判」这两种截然不同的成因。
@@ -548,7 +576,7 @@ __all__ = [
     "MemberObservation", "BasketVerdict", "VerificationRunResult",
     "SOURCE_INTRADAY", "SOURCE_EOD",
     "REASON_NO_CARD", "REASON_NO_SPEC",
-    "FLAG_MEMBER_DATA_MISSING", "FLAG_SPEC_LEVELS_MISSING",
+    "FLAG_MEMBER_DATA_MISSING", "FLAG_SPEC_LEVELS_MISSING", "FLAG_SPEC_LEVELS_PARTIAL",
     "FLAG_ANCHOR_MISMATCH", "REASON_MEMBER_EX_RIGHTS",
     "REASON_ANCHOR_MISMATCH", "REASON_ANCHOR_UNCONFIRMED",
     "evaluate_specs", "evaluate_card",

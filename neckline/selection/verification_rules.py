@@ -40,7 +40,16 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 # `spec_version` 跟的是**形状**(键怎么摆),本串跟的是**条件集与阈值**(判据是什么)。
 # **条件或阈值一改就 bump**。为什么要它:⑨ 评价引擎按它分层,才谈得上「这套条件集的
 # 验证率是多少」;没有它,日后回看会把两套条件集的成绩混成一锅。
-VERIFICATION_RULESET_VERSION = "verify_ruleset_v1"
+#
+# v2(2026-08-03,判定线审计 🟡-1):**条件与阈值一个没动,变的是「判不了」怎么算**。
+# ⑧ 的成员级判定从「扔掉不可判的条件、对剩下的子集取 all()/any()」改为 **Kleene 三值**
+# (见 `sentinel/basket_verify._judge_side`):AND 侧任一条判不了且无人否定 → 该成员
+# 验证侧整体不判(不计命中)、打 `spec_levels_partial`;OR 侧对称。这是**判据语义变化**
+# —— 同一天同一张卡在 v1 与 v2 下可能给出不同的 verify_hits(v1 偏松),故必须 bump,
+# ⑨ 分层才不会把两套读法的验证率混成一锅。⚠ 老卡里冻的仍是 `verify_ruleset_v1`,
+# ⑧ 判老卡时用的是**当下这套读法**(判定代码只有一份),这正是分层要按卡上冻的那个
+# 版本号读、而不是按"今天引擎是哪版"读的原因。
+VERIFICATION_RULESET_VERSION = "verify_ruleset_v2"
 
 # —— 结构化条件码(**⑧ 的唯一判据源**;码即契约,改名等于改契约 → 连带 bump 上面
 #    的 ruleset 版本与对应 spec 的 `spec_version`)————————————————————————
@@ -182,6 +191,38 @@ def evaluate_condition(
     return None                    # 不认识的比较语义:如实"判不了",不瞎猜
 
 
+def combine_side(results: Sequence[Optional[bool]], *, require_all: bool) -> Optional[bool]:
+    """把一个成员**某一侧**的逐条结果合成一个结论(验证侧 `require_all=True` 全部满足;
+    失效侧 `require_all=False` 任一命中)。**这是条件集的一部分,不是实现细节** ——
+    「判不了怎么算」和「什么算命中」同样决定判据松紧,故与条件码、比较语义住同一个
+    单一源(⑧ 只负责代入观测,不许自己定这套读法)。
+
+    **Kleene 三值**(判定线审计 🟡-1,2026-08-03,`verify_ruleset_v2` 的全部内容)::
+
+        AND:任一条 False → False;否则任一条 None → None;全 True → True
+        OR :任一条 True  → True; 否则任一条 None → None;全 False → False
+        空集 → None(一条都没有 = 判不了,不是"满足")
+
+    ⛔ **不许退回「先扔掉 None 再对子集取 all()/any()」** —— 那会把「两条 AND」在阈值
+    缺一条时静默降格成单条 AND(验证侧变松),而失效侧的复合条件本就是「半条判不了整条
+    不判」(变紧),同一个数据缺口在两侧一松一紧,系统性偏向 `verified`。
+    ⛔ 也不许走另一个极端「有 None 就整侧 None」 —— 那会把「已经确定跌破 D0 收盘」这种
+    **能下定论的否定**也丢掉。三值逻辑是唯一两边都不冤枉的读法。
+    """
+    decisive = False if require_all else True
+    saw_unjudged = False
+    seen = False
+    for r in results:
+        seen = True
+        if r is None:
+            saw_unjudged = True
+        elif bool(r) is decisive:
+            return decisive
+    if saw_unjudged or not seen:
+        return None
+    return not decisive
+
+
 def conditions_block(codes: Sequence[str]) -> List[Dict[str, Any]]:
     """spec 里 `conditions[]` 那一段(每条带人读描述 + 机器可用的比较语义)。"""
     out: List[Dict[str, Any]] = []
@@ -204,5 +245,6 @@ __all__ = [
     "VERIFY_REQUIRE_ALL", "INVALIDATE_ANY_OF",
     "MIN_MEMBERS_HIT_DIVISOR", "EPS",
     "STATE_VERIFIED", "STATE_PARTIAL", "STATE_UNCLEAR", "STATE_FALSIFIED", "STATES",
-    "min_members_hit", "decide_state", "compare_of", "evaluate_condition", "conditions_block",
+    "min_members_hit", "decide_state", "compare_of", "evaluate_condition", "combine_side",
+    "conditions_block",
 ]

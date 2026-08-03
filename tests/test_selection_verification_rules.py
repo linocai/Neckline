@@ -153,7 +153,10 @@ def test_ruleset_snapshot_forces_version_bump_when_conditions_change():
     条件集的成绩混成一锅)。
     """
     snapshot = {
-        "ruleset_version": "verify_ruleset_v1",
+        # v2(2026-08-03,判定线审计 🟡-1):条件码与阈值一个没动,变的是**「判不了」
+        # 怎么算** —— 由「扔掉不可判的条件、对剩下的子集取 all()/any()」改为 Kleene
+        # 三值(见下面 `side_logic` 真值表)。判据松紧变了就是条件集变了,故 bump。
+        "ruleset_version": "verify_ruleset_v2",
         "require_all": ("close_at_or_above_ref", "holds_ma20"),
         "any_of": ("close_below_stop_line", "limit_down_touch", "close_below_ref_and_ma20"),
         "compare": {
@@ -165,6 +168,14 @@ def test_ruleset_snapshot_forces_version_bump_when_conditions_change():
         },
         "min_members_hit_divisor": 2,
         "states": ("verified", "partial", "unclear", "falsified"),
+        # 一侧结论的合成读法(**也是条件集的一部分**,🟡-1 起纳入本快照:光锁「什么算
+        # 命中」锁不住「缺一条阈值时这一侧算不算命中」,而后者同样决定判据松紧)。
+        "side_logic": {
+            "and_all_true": True, "and_one_false_one_none": False,
+            "and_one_true_one_none": None, "and_empty": None,
+            "or_one_true_one_none": True, "or_all_false": False,
+            "or_all_false_one_none": None, "or_empty": None,
+        },
     }
     actual = {
         "ruleset_version": vr.VERIFICATION_RULESET_VERSION,
@@ -174,6 +185,16 @@ def test_ruleset_snapshot_forces_version_bump_when_conditions_change():
                     for c in tuple(vr.VERIFY_REQUIRE_ALL) + tuple(vr.INVALIDATE_ANY_OF)},
         "min_members_hit_divisor": vr.MIN_MEMBERS_HIT_DIVISOR,
         "states": vr.STATES,
+        "side_logic": {
+            "and_all_true": vr.combine_side([True, True], require_all=True),
+            "and_one_false_one_none": vr.combine_side([False, None], require_all=True),
+            "and_one_true_one_none": vr.combine_side([True, None], require_all=True),
+            "and_empty": vr.combine_side([], require_all=True),
+            "or_one_true_one_none": vr.combine_side([True, None], require_all=False),
+            "or_all_false": vr.combine_side([False, False], require_all=False),
+            "or_all_false_one_none": vr.combine_side([False, None], require_all=False),
+            "or_empty": vr.combine_side([], require_all=False),
+        },
     }
     assert actual == snapshot
 

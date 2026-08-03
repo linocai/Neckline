@@ -84,8 +84,11 @@ def _flat_maps(codes, cal, *, closes=None):
 
 class TestStratification:
     def test_pack_and_ruleset_are_separate_strata(self):
+        # 第三条刻意用**已退役的** `verify_ruleset_v1`(判定线 🟡-1 之后现役是 v2):
+        # 这里要的是「另一个条件集版本自成一层」,不是某个具体串,故取真实历史值而不是
+        # 跟着现役版本走(跟着走就永远比不出两层)。
         recs = [_rec(1, pack="K4-pack-v1"), _rec(2, pack="K7-pack-v1"),
-                _rec(3, pack="K4-pack-v1", ruleset="verify_ruleset_v2")]
+                _rec(3, pack="K4-pack-v1", ruleset="verify_ruleset_v1")]
         reports = metrics.evaluate(recs, score_kw=_KW, notional=20000.0, with_tradable=False)
         keys = [(r.pack_version, r.ruleset_version) for r in reports]
         assert keys == sorted(keys)                      # 层序确定

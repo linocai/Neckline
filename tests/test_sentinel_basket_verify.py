@@ -153,14 +153,67 @@ def test_all_missing_yields_unclear_not_falsified():
     assert out.evidence[bv.FLAG_MEMBER_DATA_MISSING] == ["600000.SH", "600001.SH"]
 
 
-def test_spec_level_null_condition_is_skipped_not_failed():
-    """卡里 MA20 算不出(null)→ 那一条不判,**剩下的条照判**,不当成"不满足"。"""
+def test_spec_level_null_condition_is_not_a_failure_but_blocks_the_and():
+    """判定线审计 🟡-1(2026-08-03,`verify_ruleset_v2`):卡里 MA20 算不出(null)时,
+    那一条**不判**(⛔ 不当成"不满足"),但 ⑦-b-B 的「两条 AND」**不许因此降格成单条**
+    —— 该成员验证侧整体不下结论、不计命中,并如实标 `spec_levels_partial`。
+
+    修之前:`judged` 只收集可判条件、`all()` 在子集上取真 → 只要收盘 ≥ D0 收盘就白送
+    一个验证命中,`flags` 一片空白,`min_hit=1` 的篮子能仅凭这只"半判"成员进 `verified`。
+    """
     mechs = [_mech("600000.SH", ma20=None)]
     out = _verdict(mechs, {"600000.SH": _obs("600000.SH", 10.5)})
-    assert out.state == vr.STATE_VERIFIED
+    assert out.state == vr.STATE_UNCLEAR and out.verify_hits == 0
     row = out.evidence["members"][0]
     assert row["verify_conditions"][vr.COND_HOLDS_MA20] is None
     assert row["verify_conditions"][vr.COND_CLOSE_AT_OR_ABOVE_REF] is True
+    assert row["verify"] is None, "半判 → 该侧不下结论(不是 False,也不是 True)"
+    assert bv.FLAG_SPEC_LEVELS_PARTIAL in row["flags"]
+    assert out.evidence[bv.FLAG_SPEC_LEVELS_PARTIAL] == ["600000.SH"]
+
+
+def test_partial_levels_still_allow_a_decisive_negative():
+    """三值逻辑不是「有 null 就整侧不判」:某条**已经确定不满足**时,AND 侧照样给
+    `False`(定论就是定论)——这条与上一条一起,证明修法两边都不冤枉。"""
+    mechs = [_mech("600000.SH", ma20=None)]
+    out = _verdict(mechs, {"600000.SH": _obs("600000.SH", 9.8)})   # < D0 收盘 10.0
+    row = out.evidence["members"][0]
+    assert row["verify"] is False and out.verify_hits == 0
+    assert row["verify_conditions"][vr.COND_CLOSE_AT_OR_ABOVE_REF] is False
+    assert out.state == vr.STATE_UNCLEAR
+
+
+def test_invalidation_side_is_symmetric_under_partial_levels():
+    """失效侧对称核查:OR 侧在「已判的全 False、还有一条判不了」时同样**不下结论**
+    (`None`),⛔ 不许把"判不了"读成"没失效"。计数上两者都不加分,但证据里必须分得开
+    —— ⑨ 靠它区分「确实没破位」与「今天根本判不了」。"""
+    mechs = [_mech("600000.SH", ma20=None)]
+    out = _verdict(mechs, {"600000.SH": _obs("600000.SH", 9.8)})
+    row = out.evidence["members"][0]
+    # 止损线 9.5 / 跌停 9.0 都判得了且都没触发,复合条件因 ma20=null 判不了 → 整侧 None
+    assert row["invalidate_conditions"][vr.COND_CLOSE_BELOW_STOP_LINE] is False
+    assert row["invalidate_conditions"][vr.COND_BELOW_REF_AND_MA20] is None
+    assert row["invalidate"] is None and out.invalidate_hits == 0
+
+
+def test_all_levels_null_keeps_the_old_missing_flag():
+    """两侧**一条都判不了** → 仍是原来的 `spec_levels_missing`(不是新 partial 位):
+    「这张卡这只票压根没锚」与「锚缺了一半」是两件事,别合并。"""
+    mechs = [_mech("600000.SH", close=None, ma20=None, limit_down=None, stop_price=None)]
+    out = _verdict(mechs, {"600000.SH": _obs("600000.SH", 10.5)})
+    row = out.evidence["members"][0]
+    assert bv.FLAG_SPEC_LEVELS_MISSING in row["flags"]
+    assert bv.FLAG_SPEC_LEVELS_PARTIAL not in row["flags"]
+    assert bv.FLAG_SPEC_LEVELS_PARTIAL not in out.evidence
+
+
+def test_ruleset_version_records_both_card_and_engine():
+    """🟡-1 bump 之后:证据里同时记「卡上冻的条件集版本」与「判定代码当下的版本」——
+    跨版本那几天(老卡 × 新读法)⑨ 才不会把成绩记错层而无从察觉。"""
+    mechs = [_mech("600000.SH")]
+    out = _verdict(mechs, {"600000.SH": _obs("600000.SH", 10.5)})
+    assert out.evidence["ruleset_version"] == vr.VERIFICATION_RULESET_VERSION
+    assert out.evidence["ruleset_version_engine"] == vr.VERIFICATION_RULESET_VERSION
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -460,6 +513,31 @@ def test_rows_only_grow_never_replaced(isolated_env):
 # 语义红线:证伪不接任何持仓动作 / 不推送
 # ══════════════════════════════════════════════════════════════════════════
 
+# 禁入清单(判定线审计 🟡-5,2026-08-03 修):原清单里的 `neckline.push.notify`
+# **不存在** —— 真实布局是 APNs 层 `neckline/push/apns.py` + 措辞/扇出层
+# `neckline/api/notify.py`,守门扫的是**空靶**:谁往 `basket_verify.py` 里加一句
+# `from neckline.api import notify` 把 falsified 接进推送,这条单测都不会挂。
+# 现清单按真实模块名逐个列全,并由下面的反向存在性断言钉住(防再次锁空靶)。
+_PUSH_AND_POSITION_BANNED = (
+    "neckline.sentinel.channels",     # 推送通道(Bark/APNs 发送口)
+    "neckline.api.notify",            # 推送措辞与扇出层
+    "neckline.push.apns",             # APNs 直发层
+    "neckline.notify_kinds",          # kind 白名单(basket_falsified 无 kind 是红线的一半)
+    "neckline.sentinel.positions",    # 持仓台账读写
+    "neckline.sentinel.holding",      # 持仓纪律判定
+    "neckline.positions_entry",       # 开平仓编排(会写 positions/entry_snapshots/plans)
+)
+
+
+def test_banned_modules_actually_exist():
+    """反向存在性断言:禁入清单里的模块名**必须真实存在**。守门的意义是防未来,
+    锁一个不存在的模块名等于什么都没锁(🟡-5 的病根),故先证明靶子是真的。"""
+    import importlib.util
+
+    missing = [m for m in _PUSH_AND_POSITION_BANNED if importlib.util.find_spec(m) is None]
+    assert not missing, f"禁入清单锁了不存在的模块(空靶):{missing}"
+
+
 def test_verification_never_touches_positions_or_push_channels():
     """⑦-b / ⑧-C2 红线:篮子 `falsified` **不接任何持仓动作、不进推送**。"""
     for name in ("basket_verify.py", "basket_verify_store.py"):
@@ -469,8 +547,10 @@ def test_verification_never_touches_positions_or_push_channels():
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module)
+                # `from neckline.api import notify` 的 module 是 `neckline.api`,
+                # 被 import 的名字才是 `notify` —— 只看 module 会漏掉这种写法。
+                imported.update(f"{node.module}.{a.name}" for a in node.names)
             elif isinstance(node, ast.Import):
                 imported.update(a.name for a in node.names)
-        for banned in ("neckline.sentinel.channels", "neckline.push.notify",
-                       "neckline.sentinel.positions", "neckline.sentinel.holding"):
+        for banned in _PUSH_AND_POSITION_BANNED:
             assert banned not in imported, f"{name} 不该 import {banned}"
