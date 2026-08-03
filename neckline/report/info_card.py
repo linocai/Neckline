@@ -227,6 +227,83 @@ class InfoCardMarket:
 
 
 @dataclass
+class InfoCardMemberTag:
+    """⑦-K7 成员标注件的一条(⑬-N-K7:信息卡展示区)。**读 `selection/member_tags.py`
+    同一份实现与同一份文案模板**,⛔ 禁在信息卡侧重写判据 —— `text` 已由
+    `member_tags.tag_text()` 拼好「参考、非指令」后缀,原样透传、不改写。"""
+    code: str
+    label: str
+    tone: str        # neutral | warn
+    text: str
+    source: str
+
+    def to_public_dict(self) -> Dict[str, Any]:
+        return {"code": self.code, "label": self.label, "tone": self.tone,
+                "text": self.text, "source": self.source}
+
+
+@dataclass
+class InfoCardBasketPeer:
+    """同篮其他成员的一行对比(⑬-N 第三块)。数值全部取自**卡里冻结的成员节**,
+    信息卡侧零重算(§2.4「计划是昨晚写死的」的同一条纪律)。"""
+    ts_code: str
+    name: str
+    role_llm: Optional[str] = None
+    role_mech: Optional[str] = None
+    role_conflict: bool = False
+    rs_rank: Optional[int] = None
+    close: Optional[float] = None
+    industry: Optional[str] = None
+
+    def to_public_dict(self) -> Dict[str, Any]:
+        return {"tsCode": self.ts_code, "name": self.name, "roleLlm": self.role_llm,
+                "roleMech": self.role_mech, "roleConflict": self.role_conflict,
+                "rsRank": self.rs_rank, "close": self.close, "industry": self.industry}
+
+
+@dataclass
+class InfoCardBasket:
+    """⑬-N 新增三块:①所属篮子与共同驱动 ②本票角色(含对拍分歧)③与同篮其他成员的对比。
+
+    `available=False` 有两种成因,**必须靠 `unavailable_reason` 分辨,不许合并**:
+    「这只票今天不在任何篮子里」vs「在篮子里但卡还没生成」(后者 = ⑦ 的
+    `card_not_ready` 同一语义)。⛔ 卡缺失时不拿 `basket_members` 表里的裸行顶上冒充
+    冻结件 —— 那会让读者以为看到的是当晚冻住的东西。"""
+    available: bool = False
+    unavailable_reason: Optional[str] = None
+    basket_id: Optional[int] = None
+    basket_key: str = ""
+    name: str = ""
+    tier: Optional[int] = None
+    driver: str = ""
+    driver_kind: str = ""
+    why_now: str = ""
+    # ② 本票角色
+    role_llm: Optional[str] = None
+    role_mech: Optional[str] = None
+    role_conflict: bool = False        # 对拍分歧:LLM 角色与机械角色不一致
+    role_reason: str = ""
+    is_primary: bool = False
+    industry: Optional[str] = None
+    industry_lift: Optional[float] = None
+    # ③ 同篮其他成员
+    peers: List[InfoCardBasketPeer] = field(default_factory=list)
+
+    def to_public_dict(self) -> Dict[str, Any]:
+        return {
+            "available": self.available, "unavailableReason": self.unavailable_reason,
+            "basketId": self.basket_id, "basketKey": self.basket_key, "name": self.name,
+            "tier": self.tier, "driver": self.driver, "driverKind": self.driver_kind,
+            "whyNow": self.why_now,
+            "roleLlm": self.role_llm, "roleMech": self.role_mech,
+            "roleConflict": self.role_conflict, "roleReason": self.role_reason,
+            "isPrimary": self.is_primary,
+            "industry": self.industry, "industryLift": self.industry_lift,
+            "peers": [p.to_public_dict() for p in self.peers],
+        }
+
+
+@dataclass
 class InfoCard:
     code: str
     name: str
@@ -249,6 +326,10 @@ class InfoCard:
     news: InfoCardNews = field(default_factory=lambda: InfoCardNews(scanned=False))
     top_list: InfoCardTopList = field(default_factory=InfoCardTopList)
     market: InfoCardMarket = field(default_factory=InfoCardMarket)
+    # —— V2-⑬-N:篮子成员详情页地基(三块)+ ⑬-N-K7 成员标注件展示区 ——————————————
+    basket: InfoCardBasket = field(default_factory=InfoCardBasket)
+    tags: List[InfoCardMemberTag] = field(default_factory=list)
+    tags_absent: List[str] = field(default_factory=list)   # 判不了的标注码(≠ 判过没命中)
 
     def to_public_dict(self) -> Dict[str, Any]:
         return {
@@ -269,6 +350,9 @@ class InfoCard:
             "news": self.news.to_public_dict(),
             "topList": self.top_list.to_public_dict(),
             "market": self.market.to_public_dict(),
+            "basket": self.basket.to_public_dict(),
+            "tags": [t.to_public_dict() for t in self.tags],
+            "tagsAbsent": list(self.tags_absent),
         }
 
 
@@ -629,6 +713,102 @@ def _top_list_summary_for_code(
 #  两条消费路径入口
 # ======================================================================
 
+BASKET_NOT_A_MEMBER_REASON = "本票当日不在任何篮子里"
+BASKET_CARD_NOT_READY_REASON = "本票所在篮子当日尚未生成篮子卡"
+
+
+def build_basket_context(
+    code: str, trade_date: date, *, db_path: Optional[Path] = None
+) -> "InfoCardBasket":
+    """⑬-N 三块的取数(所属篮子与共同驱动 / 本票角色含对拍分歧 / 与同篮其他成员对比)。
+
+    **只读 D0 冻结的篮子卡**(`basket_cards.card_json`),信息卡侧零重算。
+    「不在篮子里」与「在篮子里但卡没生成」两态分开如实标(承 ⑦ 的
+    `basket_not_found` vs `card_not_ready`,同一条「『没有』与『没看』必须能分开」)。
+    读库异常 → `available=False` + 原因,⛔ 绝不掀翻整张信息卡(其余八件套照出)。
+
+    同一票落在多个篮子时取**主归属**(`is_primary=1`)那一个;都不是主归属则取
+    `load_baskets_for_date` 的确定性序里的第一个(该函数按 `tier, basket_key` 排序)。"""
+    from neckline.selection.basket_store import load_basket_card, load_baskets_for_date
+
+    try:
+        baskets = load_baskets_for_date(trade_date, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        logger.warning("[info_card] 读 %s 篮子失败,本卡不含篮子上下文", trade_date, exc_info=True)
+        return InfoCardBasket(available=False, unavailable_reason="读取篮子失败(详见服务端日志)")
+
+    hits = [b for b in baskets if code in b.member_codes]
+    if not hits:
+        return InfoCardBasket(available=False, unavailable_reason=BASKET_NOT_A_MEMBER_REASON)
+
+    chosen, chosen_card, chosen_member = None, None, None
+    for b in hits:
+        try:
+            row = load_basket_card(b.basket_id, db_path=db_path)
+        except Exception:  # noqa: BLE001
+            logger.warning("[info_card] 读篮子 %s 的卡失败", b.basket_key, exc_info=True)
+            row = None
+        card = (row or {}).get("card") or {}
+        m = next((x for x in (card.get("members") or []) if x.get("ts_code") == code), None)
+        if m is None:
+            continue
+        if chosen is None or int(m.get("is_primary") or 0) == 1:
+            chosen, chosen_card, chosen_member = b, card, m
+            if int(m.get("is_primary") or 0) == 1:
+                break
+    if chosen is None:
+        return InfoCardBasket(available=False, unavailable_reason=BASKET_CARD_NOT_READY_REASON)
+
+    peers = [
+        InfoCardBasketPeer(
+            ts_code=x.get("ts_code", ""), name=x.get("name") or x.get("ts_code", ""),
+            role_llm=x.get("role_llm"), role_mech=x.get("role_mech"),
+            role_conflict=bool(x.get("role_conflict")),
+            rs_rank=x.get("rs_rank"), close=(x.get("mech") or {}).get("close"),
+            industry=x.get("industry"),
+        )
+        for x in (chosen_card.get("members") or []) if x.get("ts_code") != code
+    ]
+    return InfoCardBasket(
+        available=True, basket_id=chosen.basket_id, basket_key=chosen.basket_key,
+        name=chosen_card.get("name") or chosen.name, tier=chosen.tier,
+        driver=chosen_card.get("driver") or "", driver_kind=chosen_card.get("driver_kind") or "",
+        why_now=chosen_card.get("why_now") or "",
+        role_llm=chosen_member.get("role_llm"), role_mech=chosen_member.get("role_mech"),
+        role_conflict=bool(chosen_member.get("role_conflict")),
+        role_reason=chosen_member.get("reason") or "",
+        is_primary=bool(chosen_member.get("is_primary")),
+        industry=chosen_member.get("industry"), industry_lift=chosen_member.get("industry_lift"),
+        peers=peers,
+    )
+
+
+def build_member_tags(
+    code: str, trade_date: date, *,
+    db_path: Optional[Path] = None, parquet_dir: Optional[Path] = None,
+) -> Tuple[List["InfoCardMemberTag"], List[str]]:
+    """⑬-N-K7 成员标注件。**读 `selection/member_tags.py` 的同一个入口
+    `tags_for_members`**(⑦ 篮子卡也走它),⛔ 禁在这里重写任何判据或文案 ——
+    交叉断言「同一票同一天,信息卡与篮子卡的标签集合逐位相同」靠的就是这一点。
+
+    返回 `(tags, absent)`:`absent` = **判不了**的标注码(数据缺失),与「判过没命中」
+    是两回事(`member_tags` 的三值语义,不许合并)。任何异常 → 空 + 全 absent,
+    信息卡其余部分照出。"""
+    from neckline.selection import member_tags as mt
+
+    try:
+        batch = mt.tags_for_members([code], trade_date, db_path=db_path, parquet_dir=parquet_dir)
+        res = batch.get(code)
+    except Exception:  # noqa: BLE001
+        logger.warning("[info_card] 成员标注件计算异常,本卡不含标注", exc_info=True)
+        return [], list(mt.ALL_TAG_CODES)
+    tags = [
+        InfoCardMemberTag(code=t.code, label=t.label, tone=t.tone, text=t.text, source=t.source)
+        for t in res.tags
+    ]
+    return tags, list(res.absent)
+
+
 def build_info_card(
     trade_date: date,
     code: str,
@@ -642,6 +822,7 @@ def build_info_card(
     top_list_t0: Optional[Dict[str, dict]] = None,
     parquet_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
+    with_basket: bool = True,
 ) -> InfoCard:
     """完整信息卡(单只,`GET /report/{date}/info-card/{code}` endpoint 用,plan §五
     v1.4-④-B)。**服务端现算,不落库**——除 `k4_flags`(§硬要求"不重算",调用方须从
@@ -703,6 +884,14 @@ def build_info_card(
     lookback = _load_lookback_top_lists(trade_date, parquet_dir=parquet_dir, t0_top_list=top_list_t0)
     top_list_summary = _top_list_summary_for_code(code, lookback)
 
+    # —— V2-⑬-N:篮子成员详情页地基(三块)+ ⑬-N-K7 标注件 ————————————————————
+    # 两段各自内部已 try/except 降级,**不阻断其余八件套**(同 C1/C2/C4 保险丝惯例)。
+    if with_basket:
+        basket_ctx = build_basket_context(code, trade_date, db_path=db_path)
+        tags, tags_absent = build_member_tags(code, trade_date, db_path=db_path, parquet_dir=parquet_dir)
+    else:
+        basket_ctx, tags, tags_absent = InfoCardBasket(), [], []
+
     return InfoCard(
         code=code, name=name, trade_date=trade_date.strftime("%Y%m%d"),
         kline_available=kline_available, kline=kline, kline_unavailable_reason=kline_reason,
@@ -711,6 +900,7 @@ def build_info_card(
         industry=industry_name, industry_divergence_unavailable_reason=div_reason,
         snapshot=snapshot, k4_flags=k4_details, mild_band=mild,
         news=news, top_list=top_list_summary, market=market,
+        basket=basket_ctx, tags=tags, tags_absent=tags_absent,
     )
 
 
@@ -729,6 +919,13 @@ __all__ = [
     "InfoCardNews",
     "InfoCardTopList",
     "InfoCardMarket",
+    "InfoCardMemberTag",
+    "InfoCardBasketPeer",
+    "InfoCardBasket",
+    "build_basket_context",
+    "build_member_tags",
+    "BASKET_NOT_A_MEMBER_REASON",
+    "BASKET_CARD_NOT_READY_REASON",
     "InfoCard",
     "InfoCardSummary",
     "build_info_card",

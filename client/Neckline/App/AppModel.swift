@@ -136,16 +136,20 @@ struct DecisionLogForm {
     }
 
     var maxChasePctValue: Double? { Double(maxChasePct.trimmingCharacters(in: .whitespaces)) }
-    /// ⑨ 二选一强制(考官规格 §九 同构,plan §五-⑤-B「同论点必填纪律」):要么填了
-    /// 合法数字,要么显式勾选「不设上限」——两者皆无时用户尚未做出选择,不许提交。
+    /// ⚠ **V2-⑬-5:强制表单退役** —— 服务端已在 ⑩-C 下线全部五项必填校验
+    /// (`decision_log` 停写留档,`POST /decisions` 换血成「用户可选补充」入口,
+    /// **不传五必填 → 200 而非 400**)。客户端的必填分支随之删除:`maxChaseChosen`
+    /// 从「二选一强制」降级为**纯展示态**(勾了「不设上限」或填了数字都算已选,
+    /// 用来决定要不要显示换算提示),⛔ 不再驱动任何提交拦截。
     var maxChaseChosen: Bool { maxChaseNoCap || maxChasePctValue != nil }
 
+    /// ⚠ **V2-⑬-5**:原先要求 `code`/`whyBuy`/`whyEntryPrice`/`invalidation`/`maxChase`
+    /// 五项齐全才准提交(硬约束②的"软阻断"落点)。表单强制度已整体退役 → 现在只保留
+    /// **一条真硬前提**:没有 `code` 就无从记账。其余全部可空(空提交合法)。
+    /// ⛔ 别把那四项加回来:「表单可选化 → 归因标签稀疏」这个代价已由用户拍板接受
+    /// (裁定 #6,§七 P3-28 挂账),不是遗漏。
     var isValid: Bool {
         !code.trimmingCharacters(in: .whitespaces).isEmpty
-            && !whyBuy.trimmingCharacters(in: .whitespaces).isEmpty
-            && !whyEntryPrice.trimmingCharacters(in: .whitespaces).isEmpty
-            && !invalidation.trimmingCharacters(in: .whitespaces).isEmpty
-            && maxChaseChosen
     }
 
     /// 只提交「情景描述 + 触发条件」都非空的行(服务端不强制条数,留白的引导行
@@ -630,11 +634,10 @@ final class AppModel {
         guard let client = clientProvider() else {
             showToast("未配置后端连接", isError: true); return
         }
+        // ⚠ **V2-⑬-5**:五项必填校验文案随强制表单退役一并删除(服务端 ⑩-C 起空提交
+        // 合法)。只剩「没有代码就无从记账」这一条真硬前提。
         guard decisionForm.isValid else {
-            let msg = decisionForm.maxChaseChosen
-                ? "请完整填写代码 / 为什么买 / 为什么这个入场价 / 证伪条件"
-                : "请完整填写代码 / 为什么买 / 为什么这个入场价 / 证伪条件 / ⑨最高追价上限(填数字或勾选不设上限)"
-            showToast(msg, isError: true); return
+            showToast("请先填写股票代码", isError: true); return
         }
         let tags = decisionForm.thesisTags.map(\.rawValue)
         let scenarios = decisionForm.filledScenarios.map {
@@ -648,7 +651,7 @@ final class AppModel {
         let plannedPrice = Double(decisionForm.plannedPrice.trimmingCharacters(in: .whitespaces))
         let plannedQty = Int(decisionForm.plannedQty.trimmingCharacters(in: .whitespaces))
         // ⑨ 最高追价上限:勾了「不设上限」→ 显式传 nil(= JSON null);否则传数字文本框
-        // 解析出的值(表单校验 `maxChaseChosen` 已保证二者必居其一)。
+        // 解析出的值(⑬-5 后两者皆无也合法 → 同样传 nil)。
         let maxChasePct: Double? = decisionForm.maxChaseNoCap ? nil : decisionForm.maxChasePctValue
         do {
             if let did = revisingDecisionId {

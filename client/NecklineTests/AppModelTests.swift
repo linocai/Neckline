@@ -379,8 +379,32 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.entryForm.code, "600001.SH")
     }
 
-    /// ⑨ 未做选择时 `submitDecisionLog()` 不该发出网络请求,提示信息须点名这一项。
-    func testSubmitDecisionLogBlocksWhenMaxChaseNotChosen() async throws {
+    /// ⚠ **V2-⑬-5:强制表单退役** —— 原用例锁的是「⑨ 未做选择 → 不发请求 + 提示点名
+    /// 该项」;服务端 ⑩-C 起空提交合法(不传五必填返 200 而非 400),客户端必填分支
+    /// 随之删除。本用例改为**反向锁死**:只填代码、其余全空,必须**照发请求**。
+    func testSubmitDecisionLogSendsRequestWithOnlyCodeFilled() async throws {
+        var requestFired = false
+        MockURLProtocol.handler = { _ in
+            requestFired = true
+            return (200, #"{"ok": true, "recorded": []}"#.data(using: .utf8)!)
+        }
+        defer { MockURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
+                               session: URLSession(configuration: config))
+        let model = AppModel(clientProvider: { client })
+        model.beginPositionEntryFlow()
+        model.decisionForm.code = "600001.SH"
+        // 故意不填 whyBuy / whyEntryPrice / invalidation / maxChase —— ⑬-5 后全部可空。
+
+        await model.submitDecisionLog()
+
+        XCTAssertTrue(requestFired, "⑬-5 后空提交合法,必须照发请求")
+    }
+
+    /// 连代码都没有 → 仍不发请求(唯一剩下的真硬前提:没有代码无从记账)。
+    func testSubmitDecisionLogStillBlocksWithoutCode() async throws {
         var requestFired = false
         MockURLProtocol.handler = { _ in
             requestFired = true
@@ -393,17 +417,12 @@ final class AppModelTests: XCTestCase {
                                session: URLSession(configuration: config))
         let model = AppModel(clientProvider: { client })
         model.beginPositionEntryFlow()
-        model.decisionForm.code = "600001.SH"
-        model.decisionForm.whyBuy = "题材热"
-        model.decisionForm.whyEntryPrice = "回调企稳"
-        model.decisionForm.invalidation = "跌破均线"
-        // 故意不设 maxChasePct / maxChaseNoCap。
+        model.decisionForm.code = "   "
 
         await model.submitDecisionLog()
 
-        XCTAssertFalse(requestFired, "⑨ 未选择时不该发请求")
-        XCTAssertNil(model.pendingDecisionId)
-        XCTAssertEqual(model.toast?.message.contains("最高追价上限"), true)
+        XCTAssertFalse(requestFired)
+        XCTAssertEqual(model.toast?.message.contains("股票代码"), true)
     }
 
     /// 用户在 `.open` 阶段中途放弃(dismissModal)→ 自动 cancel 该预注册计划,不留孤儿 pending 行。
@@ -612,16 +631,18 @@ final class AppModelTests: XCTestCase {
         form.whyBuy = "题材热"
         form.whyEntryPrice = "回调企稳"
         form.invalidation = "跌破均线"
-        // v1.4-⑤-B ⑨:前八项填完仍不够——最高追价上限未做选择,不许提交。
-        XCTAssertFalse(form.isValid, "⑨ 未做选择(既未填数字也未勾不设上限)不该通过校验")
-        form.maxChaseNoCap = true
-        XCTAssertTrue(form.isValid)
+        // ⚠ **V2-⑬-5:强制表单退役** —— 五项必填(含 ⑨ 二选一)全部下线,空提交合法。
+        // 只剩「有代码」这一条真硬前提。
+        XCTAssertTrue(form.isValid, "⑬-5 后未选 ⑨ 也应可提交")
+        var blank = DecisionLogForm()
+        blank.code = "600001.SH"
+        XCTAssertTrue(blank.isValid, "⑬-5 后只填代码即可提交(其余全可空)")
         form.code = "  "
         XCTAssertFalse(form.isValid, "代码不能只是空白")
     }
 
-    /// ⑨ 最高追价上限二选一强制(v1.4-⑤-B,需求 2 补充,「同论点必填纪律」)——填数字
-    /// 或勾选「不设上限」,两者都不做时 `maxChaseChosen` 必须为 false。
+    /// ⑨ 最高追价上限的「已选择」态(⚠ **V2-⑬-5 起只是展示态,不再驱动提交拦截**)
+    /// ——填数字或勾选「不设上限」都算已选,两者都不做时为 false。
     func testDecisionLogFormMaxChaseChosenRequiresExplicitNumberOrNoCap() {
         var form = DecisionLogForm()
         XCTAssertFalse(form.maxChaseChosen)
@@ -655,8 +676,8 @@ final class AppModelTests: XCTestCase {
     /// 枚举码正确映射回对应 case,情景树数组还原。
     ///
     /// v1.4-⑤-B:该行的 `maxChasePct` 是 nil——**存储层无法区分**"老行(建于本字段前)"
-    /// 与"用户当年显式选了不设上限",故预填**不自动勾选**「不设上限」,两格都留白,
-    /// 强制用户修订时重新主动选择一次(`isValid` 因而是 false,即便其余八项都完整)。
+    /// 与"用户当年显式选了不设上限",故预填**不自动勾选**「不设上限」,两格都留白
+    /// (⑬-5 后这不再阻断提交,只是不替用户猜)。
     func testDecisionLogFormInitFromDecisionLogPrefillsAllFields() {
         let log = DecisionLog(
             id: 9, code: "600001.SH", name: "甲", createdAt: "2026-07-25T10:00:00+00:00",
@@ -680,7 +701,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(form.plannedQty, "1000")
         XCTAssertEqual(form.maxChasePct, "", "老行 maxChasePct=nil 不自动预填")
         XCTAssertFalse(form.maxChaseNoCap, "不自动预勾「不设上限」——那是替用户瞎猜当年的选择")
-        XCTAssertFalse(form.isValid, "⑨ 未重新选择前不许提交,即便其余八项都完整")
+        XCTAssertTrue(form.isValid, "⑬-5 后 ⑨ 未选择也可提交(强制表单退役);不预勾只是不替用户猜")
     }
 
     /// 修订预填:该行 `maxChasePct` 有具体数值(非 nil)时,正确回填数字框,

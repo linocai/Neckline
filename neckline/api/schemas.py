@@ -785,6 +785,52 @@ class InfoCardMarketOut(BaseModel):
     aboveMa20: Optional[bool] = None
 
 
+class InfoCardMemberTagOut(BaseModel):
+    """⑬-N-K7 成员标注件一条(⑦-K7 唯一实现 `selection/member_tags.py` 产出,
+    服务端原样透传)。`text` **已含「参考、非指令」后缀**,客户端不许改写、不许截断。
+    **四不硬约束**:不进排序 / 不进哨兵 / 不改去留 / 不加分。"""
+    code: str            # pullback_leader | warn_streak_top | warn_chase_zone
+    label: str
+    tone: str            # neutral | warn(客户端据此上色)
+    text: str
+    source: str          # 证据出处(研究报告锚点)
+
+
+class InfoCardBasketPeerOut(BaseModel):
+    """同篮其他成员一行(数值取自卡里冻结的成员节,零重算)。"""
+    tsCode: str
+    name: str
+    roleLlm: Optional[str] = None
+    roleMech: Optional[str] = None
+    roleConflict: bool = False
+    rsRank: Optional[int] = None
+    close: Optional[float] = None
+    industry: Optional[str] = None
+
+
+class InfoCardBasketOut(BaseModel):
+    """⑬-N 三块:①所属篮子与共同驱动 ②本票角色(含对拍分歧)③与同篮其他成员的对比。
+    `available=False` 时 `unavailableReason` **必有值**且两态分得开:「不在任何篮子里」
+    vs「在篮子里但卡没生成」—— ⛔ 客户端不许把两者显示成同一句话。"""
+    available: bool = False
+    unavailableReason: Optional[str] = None
+    basketId: Optional[int] = None
+    basketKey: str = ""
+    name: str = ""
+    tier: Optional[int] = None
+    driver: str = ""
+    driverKind: str = ""
+    whyNow: str = ""
+    roleLlm: Optional[str] = None
+    roleMech: Optional[str] = None
+    roleConflict: bool = False
+    roleReason: str = ""
+    isPrimary: bool = False
+    industry: Optional[str] = None
+    industryLift: Optional[float] = None
+    peers: List[InfoCardBasketPeerOut] = Field(default_factory=list)
+
+
 class InfoCardOut(BaseModel):
     """完整信息卡(考卷同构九件套,plan §五 v1.4-④)。每一路数据源独立
     `*Available`/`*UnavailableReason`——**数据不可得如实缺省,禁止硬凑**是本端点
@@ -810,6 +856,11 @@ class InfoCardOut(BaseModel):
     news: InfoCardNewsOut = Field(default_factory=lambda: InfoCardNewsOut(scanned=False))
     topList: InfoCardTopListOut = Field(default_factory=InfoCardTopListOut)
     market: InfoCardMarketOut = Field(default_factory=InfoCardMarketOut)
+    # —— V2-⑬-N:篮子成员详情页地基 + ⑬-N-K7 标注件展示区 ————————————————————
+    basket: InfoCardBasketOut = Field(default_factory=InfoCardBasketOut)
+    tags: List[InfoCardMemberTagOut] = Field(default_factory=list)
+    # 判不了的标注码(数据缺失)—— 与「判过没命中」是两回事,⛔ 不许合并成"没有标注"。
+    tagsAbsent: List[str] = Field(default_factory=list)
 
 
 # —— V2-⑪-C 自然语言临时提醒(`custom_alerts`)————————————————————————————
@@ -964,5 +1015,6 @@ __all__ = [
     "ContingencyScenarioOut", "NoteLabelLiteral",
     "DecisionCreateIn", "DecisionNoteOut", "DecisionOut", "DecisionsListOut",
     "DecisionTrackOut", "DecisionTrackRowOut",
-    "InfoCardKlineBarOut", "InfoCardIndexPointOut", "InfoCardK4FlagOut", "InfoCardMarketOut", "InfoCardOut",
+    "InfoCardKlineBarOut", "InfoCardIndexPointOut", "InfoCardK4FlagOut", "InfoCardMarketOut",
+    "InfoCardMemberTagOut", "InfoCardBasketPeerOut", "InfoCardBasketOut", "InfoCardOut",
 ]

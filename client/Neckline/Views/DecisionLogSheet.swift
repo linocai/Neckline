@@ -7,6 +7,9 @@
 //  三条硬边界(§五 v1.2-E 验收逐条要验):
 //   · **决策日志强制度 = 软约束**(§三条本版硬约束②,用户拍板)——本表单顶部提供
 //     「跳过,直接补录开仓」出口,绝不硬阻断开仓流程(硬阻断会逼出假日志)。
+//     ⚠ **V2-⑬-5 起更进一步:表单强制度整体退役**(服务端 ⑩-C 已下线五项必填校验,
+//     `POST /decisions` 换血成「用户可选补充」入口)。客户端的必填分支与校验文案随之
+//     删除,`DecisionLogForm.isValid` 只剩「有 code」这一条真硬前提。
 //   · **八项内容落库后不可编辑**——本表单只有两种提交路径:创建(`POST /decisions`)
 //     与修订(`POST /decisions/{id}/revise` 新增一行,原行原地不变),没有任何
 //     「改旧行」的提交路径;情景树的 `matched` 事后结果标记走别处的专用端点
@@ -182,7 +185,7 @@ struct DecisionLogSheet: View {
     // —— ⑨ 最高追价上限(v1.4-⑤-B,需求 2 补充)——————————————————————————————————
     // 语义定死(考官规格 §九 同构):相对昨收百分比,开盘价 > 上限 → 放弃该票、盘中不
     // 追补;低开照买(不设下沿)。**二选一强制**:填数字或勾选「不设上限」,两者皆无
-    // 不许提交(`DecisionLogForm.maxChaseChosen` 驱动提交按钮的 disabled 态)。
+    // ⚠ V2-⑬-5:强制表单退役 —— 本节不再驱动提交按钮的 disabled 态(留空合法)。
 
     private var maxChaseSection: some View {
         Section {
@@ -193,10 +196,10 @@ struct DecisionLogSheet: View {
                 .disabled(model.decisionForm.maxChaseNoCap)
             Toggle("不设上限(无论开盘涨多高都照买,不设放弃线)", isOn: $model.decisionForm.maxChaseNoCap)
         } header: {
-            Text("⑨ 最高追价上限(必填,二选一)")
+            Text("⑨ 最高追价上限(可选)")
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("开盘价超过此涨幅 → 放弃该票、盘中不追补;低开照买(不设下沿)。填数字或勾选「不设上限」二选一,两者都不做无法提交。")
+                Text("开盘价超过此涨幅 → 放弃该票、盘中不追补;低开照买(不设下沿)。V2 起可留空(强制表单已退役),留空 = 本次不记这一项。")
                 if let hint = maxChasePriceHint {
                     Text(hint)
                 }

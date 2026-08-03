@@ -489,33 +489,71 @@ def report_by_date(date: str = "") -> ReportOut:
 
 @app.get(f"{API_PREFIX}/report/{{date}}/info-card/{{code}}", dependencies=[Depends(require_token)])
 def report_info_card(date: str, code: str) -> InfoCardOut:
-    """单只完整信息卡(plan §五 v1.4-④-B,考卷信息集与实盘情报包同构的落地端点)。
-    **服务端现算,不落库**——除 `k4_flags`(§硬要求"复用③已算好的 k4_flags,不重算")
-    原样取自当日报告存档外,其余(K 线/RS 线/行业分歧线/快照/消息面/龙虎榜/市场语境)
-    全部独立现读 parquet/DB,不依赖 `CandidateOut.infoCard` 摘要位是否算成功。
+    """单只完整信息卡(plan §五 v1.4-④-B;**V2-⑬-N 保留改造**为篮子成员详情页地基)。
+    **服务端现算,不落库**——K 线/RS 线/行业分歧线/快照/消息面/龙虎榜/市场语境全部
+    独立现读 parquet/DB。
 
-    404 两个 reason(客户端 `mapReason` 须各加 case,守项目 CLAUDE.md 404 映射坑):
+    ⚠ **V2-⑬-N:数据来源由「候选快照」换成「篮子成员」**。V1 从当日报告的
+    `candidates_json` 里找这只票(候选榜已随 ⑬-1 删除,那条路恒空);V2 改为在
+    **D0 冻结的篮子成员**里找,并新增三块(所属篮子与共同驱动 / 本票角色含对拍分歧 /
+    与同篮其他成员的对比,见 `info_card.build_basket_context`)+ ⑬-N-K7 成员标注件
+    展示区(读 `selection/member_tags.py` 同一份实现)。
+
+    `k4_flags`(§硬要求「复用③已算好的 k4_flags,不重算」)V2 取自**卡里冻结的成员节**
+    `members[].k4_tag`;卡没生成 / 该票没标 → 空列表(**如实空**,不现算补齐)。
+
+    404 两个 reason(客户端 `mapReason` 须各有 case,守项目 CLAUDE.md 404 映射坑):
     `report_not_found`(日期格式非法 / 该日从未生成过报告)、`code_not_in_report`
-    (该日报告存在,但这只票不在当日候选榜里——`code` 经 `normalize_ts_code` 归一后
-    比对,裸 6 位代码与带后缀 `ts_code` 均可)。"""
-    from neckline.report.info_card import build_info_card
+    (该日报告存在,但这只票当日既不在任何篮子里、也不在历史候选快照里)。
+    ⚠ **`code_not_in_report` 这个字符串刻意复用不改** —— 客户端 `mapReason` 已有
+    对应 case,复用已有 reason 不需要新 case(CLAUDE.md 明文)。"""
+    from neckline.report.info_card import build_basket_context, build_info_card
     from neckline.review.parse import normalize_ts_code
 
     rep = report_store.load_report_by_str(date, db_path=_db()) if (len(date) == 8 and date.isdigit()) else None
     if rep is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "report_not_found"})
     ts_code = normalize_ts_code(code)
-    cand = next((c for c in rep.get("candidates", []) if c.get("ts_code") == ts_code), None)
-    if cand is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "code_not_in_report"})
     trade_date = datetime.strptime(rep["trade_date"], "%Y%m%d").date()
+
+    basket_ctx = build_basket_context(ts_code, trade_date, db_path=_db())
+    name = ts_code
+    k4_flags: List[str] = []
+    if basket_ctx.available:
+        name = _resolve_names([ts_code]).get(ts_code) or ts_code
+        # 卡里冻结的 K4 标(⑤ 成员卫生线打的 `avoid_flag` 标),不重算。
+        k4_flags = [t for t in [_member_k4_tag(basket_ctx, ts_code)] if t]
+    else:
+        # 历史报告(⑬-1 之前生成、`candidates_json` 里还有真候选)仍可看信息卡 ——
+        # 这是**读历史**的合法路径,不是把候选榜接回来。
+        cand = next((c for c in rep.get("candidates", []) if c.get("ts_code") == ts_code), None)
+        if cand is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail={"ok": False, "reason": "code_not_in_report"})
+        name = cand.get("name") or ts_code
+        k4_flags = cand.get("k4_flags", []) or []
+
     card = build_info_card(
-        trade_date, ts_code,
-        k4_flags=cand.get("k4_flags", []) or [],
-        name=cand.get("name") or ts_code,
+        trade_date, ts_code, k4_flags=k4_flags, name=name,
         parquet_dir=_parquet_dir(), db_path=_db(),
     )
     return InfoCardOut(**card.to_public_dict())
+
+
+def _member_k4_tag(ctx, ts_code: str) -> Optional[str]:
+    """从已装配好的篮子上下文里取这只票冻结的 K4 标(没有 → None,**不现算**)。"""
+    from neckline.selection.basket_store import load_basket_card
+
+    if not ctx.available or ctx.basket_id is None:
+        return None
+    try:
+        row = load_basket_card(ctx.basket_id, db_path=_db())
+    except Exception:  # noqa: BLE001
+        return None
+    for m in ((row or {}).get("card") or {}).get("members") or []:
+        if m.get("ts_code") == ts_code:
+            return m.get("k4_tag")
+    return None
 
 
 # —— 4A.3 盘中看板 ————————————————————————————————————————————————————
