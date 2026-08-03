@@ -11,6 +11,54 @@
 > 🔵 B1/B3 ✅ · Y6 ✅(对照表已补档)。**未修(本批次范围外,已登记)**:🟡 Y5(⑮ 硬清单)、
 > 🔵 B2/B4/B5/B6/B7/B8。逐条标注见各条目下的 `✅ 已修` 行。
 
+> **✅ 复核销项(@reviewer 契约/数据线,2026-08-03 第二轮,独立重放不信修复自述)**:
+> **全部已修项复核通过,零打回**。逐条判据:
+> - **R1 ✅ 验证通过**:原报告附录 A 复现路径重放(隔离临时库)——重跑扩成员 / 重跑换成员
+>   两向 `members_inserted=0`、冻结成员集逐位原样;独立入口 `save_baskets` 同一路径同样不写
+>   且 stats 带 `frozen_conflicts`(B1 一并验证);披露文案「未采纳 + 冻结成员集原样保留」
+>   与事实一致,不再撒谎。diff 审读:`basket_is_new` 分支干净,「父行冻结 + 子行另表」的
+>   通用规则写进了模块头。
+> - **Y1 ✅ 探针通过(9/9)**:亲手造九种违规写法喂给三套守门(monkeypatch 扫描域,探针不
+>   入仓)——冻结表 `INSERT OR REPLACE`/小写 `replace into`、追加表小写 `UPDATE`/`DELETE`/
+>   `OR REPLACE`、停写表 `OR IGNORE`/小写 `or replace`/裸 `REPLACE INTO`/`UPDATE`,**全部命中**。
+>   builder 自发现的第 4 洞(禁止串小写 vs `sql.upper()` 永不相等 = 追加表守门从上线起零命中)
+>   属实且已修——这条印证了本报告 Y1 的原判:全绿从来不是「守住了」的证据。
+> - **Y2 ✅ 重放通过**:同一时刻 `+00:00`/`+08:00`/naive 三种写法落库后归一为北京时间、
+>   `list_actions` 排序与 `since/until` 窗口按真实时间轴走;非法输入 `ValueError` fail loud。
+>   「occurred_at 北京 / created_at UTC 两列刻意不同轴」的定案与 v1.4-⑥ 时间轴纪律一致,认可。
+> - **Y3 ✅ 重放通过**:同期重算后消失的取值真消失、share 归一;空批次整期清空。按 dimension
+>   替换的粒度选择(share 是维度内归一)比本报告原建议的整期替换更准,认可。
+> - **Y4 ✅**:DTO/`__all__`/`IntelRankOut` 字段/客户端卡与 struct 全净,守门两侧齐;删键前
+>   查过客户端是 `decodeIfPresent`(CLAUDE.md 两步淘汰纪律的正确豁免:非硬解码键可直删)。
+> - **Y6 ✅**:`archive/V2-⑬_删除前后对照表_20260803.md` 已补,端点面 11 条逐路由(纠正完工
+>   记录的 10 条计数)、带出处 commit、末节列 ⑭ 对拍注意项——比验收原文要求的更完整。
+> - **Y7 ✅(增量审计通过)**:三写单事务 + `IntegrityError` 只在幂等键真命中时转重放、否则
+>   照抛(不吞真写坏);重放只读冻结行不现查来源、`planDeviationNotice` 不重放的理由成立;
+>   部分唯一索引(`WHERE idempotency_key IS NOT NULL`)不伤 CLI/历史补录;
+>   `_POST_MIGRATION_INDEXES` 的取舍正确——依赖迁移列的索引进 `_SCHEMA` 会在老库上
+>   "no such column",逐条 try/except `IntegrityError` 降级(WARNING + 继续启动)与 P0-23
+>   「降级=不拦+显式披露」同向,⛔ 开机脚本无权替用户清数据这条边界划得对。
+> - **B1/B3 ✅**:B1 已随 R1 验证;B3 库级部分唯一索引 + 读侧多行现役 WARNING + 确定性
+>   tie-break(`created_at DESC, pack_version DESC`)齐。
+> - **Y5 ⏸ 归档合理**:⑮ 硬清单已逐处列(PROJECT_PLAN:2512,含 `SettingsLLMRequest` 整体
+>   退役)+ ⑭-C 机器断言「客户端调用面 ⊆ 服务端路由面」(:2515)防复发——归属与防线都在,认可。
+> - **基线复核**:全量 `pytest tests/ -q` = **2801 passed + 2 skipped + 1 failed**,唯一红是
+>   `test_sentinel_custom.py::test_cooldown_blocks_second_hit_and_expires`(已知挂钟脆弱:用例取
+>   `now+700s` 越过 15:00 收盘,本次跑在 14:5x;已另行挂账),与销项批次无关。
+>
+> **复核期增量发现(三条观察,均不构成打回)**:
+> - 🔵 **Y3 残留一角**:按 dimension 替换意味着「重算时某维度恰好产出 0 行(而其他维度有行)」
+>   时,该维度旧行仍留在当期。数据面上 `user_actions`/`positions` 只增不减、同期重算样本单调
+>   增长,该情形现实中几乎打不出来;但若日后画像口径改版(某维度整体停算),记得先清历史期
+>   该维度行。建议在 `_clear_period` docstring 加一句边界说明即可,不需要代码改动。
+> - 🔵 **`_POST_MIGRATION_INDEXES` 的降级窗口**:脏库上索引建不上时(WARNING + 跳过),幂等键
+>   /单现役两条约束在该库上**持续不设防**直到人工清理——WARNING 只在 `init_schema` 时打,
+>   常驻服务只在启动时看得见一次。可接受(方向对、有披露),但 ⑯ 迁移检查清单里应加一条
+>   「新机首次 `init_schema` 后 grep 日志确认零条『唯一索引建不上』」。
+> - 🔵 **幂等键的语义边界未写进契约注释**:同键不同 payload(客户端 bug 复用键)会静默重放
+>   原仓且丢弃新参数——`replayed=true` 有透出,属标准幂等语义,但 ⑭-B 契约文档应写明
+>   「键必须每笔新交易唯一生成,⛔ 不许复用」,客户端生成规则(如 UUID per 提交)归 ⑮。
+
 ---
 
 ## 🔴 致命(1)
