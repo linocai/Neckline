@@ -27,6 +27,13 @@
 把差异逐条 WARNING 落日志并**原样返回给调用方**(`frozen_conflicts`),由报告层
 如实披露,**不静默**。
 
+⚠ **`INSERT OR IGNORE` 只冻「同一行」,冻不住「聚合长子行」**(契约线审计 🔴 R1,
+2026-08-03 修复):`baskets` 是聚合根、`basket_members` 是它的子行,行级 UNIQUE 挡得住
+「同一个成员写第二遍」,挡不住「本次新算出来的成员码插进已冻结的篮」。故
+`_save_baskets_on_conn` 里**篮子行已存在 = 该篮成员整段不写**,只比对成员集入
+`frozen_conflicts`。凡是「父行冻结 + 子行另表」的结构(日后若再加同型表)一律照此办理
+—— 冻结的是那一批**集合**,不是集合里的某一行。
+
 **搬迁说明(V2-⑥)**:`save_baskets()` 从 `neckline/selection/aggregate.py` **原地
 搬来,行为逐字节不变**(新增的 `conn=` 参数默认 `None`,不传时与搬迁前逐字等价);
 `aggregate.py` 保留同名再导出,⑤ 的既有单测一字不动 —— 照 ⑤ 自己刚做过的
@@ -80,6 +87,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _warn_conflicts(tag: str, conflicts: Sequence[str]) -> None:
+    """冻结冲突的统一披露口(**三个入口共用同一句话**,🔵 B1)。文案里的「未采纳」
+    是有前提的:🔴 R1 修好之后,冻结篮的成员确实一个都没被改写,这句才成立 ——
+    改写侧行为时先回头看这句话还对不对,别让日志替代码撒谎。"""
+    if not conflicts:
+        return
+    logger.warning(
+        "[%s] 今日已有冻结行,本次重算结果**未采纳**(差异 %d 处):%s",
+        tag, len(conflicts), "; ".join(conflicts),
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # `baskets` / `basket_members`(V2-⑥ 写入;搬自 aggregate.py,行为不变)
 # ══════════════════════════════════════════════════════════════════════════
@@ -125,12 +144,14 @@ def _save_baskets_on_conn(
                 b.engine_api_version, b.charter_version, via, b.evidence_status, now,
             ),
         )
-        if cur.rowcount:
+        basket_is_new = bool(cur.rowcount)
+        if basket_is_new:
             stats["baskets_inserted"] += 1
         else:
             stats["baskets_existing"] += 1
             logger.warning(
-                "[aggregate] baskets 已存在同日同键行(%s/%s),幂等跳过、不覆盖既有行。",
+                "[aggregate] baskets 已存在同日同键行(%s/%s),幂等跳过、不覆盖既有行;"
+                "**该篮成员写入整段跳过**(冻结篮不接受追加成员,只比对留痕)。",
                 b.trade_date, b.basket_key,
             )
         row = conn.execute(
@@ -143,22 +164,35 @@ def _save_baskets_on_conn(
             conflicts.append(
                 f"baskets[{b.trade_date}/{b.basket_key}].tier 冻结值 {int(row[1])} ≠ 本次算出 {tier}"
             )
+        computed_members = {m.ts_code for m in b.members}
+        if basket_is_new:
+            for m in b.members:
+                mc = conn.execute(
+                    f"INSERT OR IGNORE INTO basket_members ({_MEMBER_COLUMNS}) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (basket_id, m.ts_code, m.role_llm, m.role_mech, int(m.role_conflict),
+                     m.reason, int(m.is_primary), now),
+                )
+                stats["members_inserted"] += mc.rowcount or 0
+            continue
+        # ⚠ **冻结篮:一个成员都不写**(契约线审计 🔴 R1,2026-08-03)。原实现只让
+        # `baskets` 行幂等跳过,成员照走 `INSERT OR IGNORE` —— 既有成员被
+        # `UNIQUE(basket_id, ts_code)` 挡下,**本次新算出来的成员码却直接插进了冻结篮**,
+        # 而同一批日志正在说「本次重算结果未采纳」。`INSERT OR IGNORE` 只保证「同一行
+        # 不写第二遍」,它**不保证「这个聚合不长出新子行」** —— 冻结的是**成员集合**,
+        # 不是单行。泄漏进来的码会以「D0 判断的一员」身份进入 ⑧ 关注池 / ⑨ 复盘归因 /
+        # ⑫ 画像对照 / ⑩ 开仓来源关联,而它从未被 D0 定档时采纳,卡上的成员节(冻结
+        # card_json)与表里的成员集也就从此对不上。
         frozen_members = {
             r[0] for r in conn.execute(
                 "SELECT ts_code FROM basket_members WHERE basket_id=?", (basket_id,)
             ).fetchall()
         }
-        for m in b.members:
-            mc = conn.execute(
-                f"INSERT OR IGNORE INTO basket_members ({_MEMBER_COLUMNS}) VALUES (?,?,?,?,?,?,?,?)",
-                (basket_id, m.ts_code, m.role_llm, m.role_mech, int(m.role_conflict),
-                 m.reason, int(m.is_primary), now),
-            )
-            stats["members_inserted"] += mc.rowcount or 0
-        if frozen_members and frozen_members != {m.ts_code for m in b.members}:
+        if frozen_members != computed_members:
             conflicts.append(
                 f"basket_members[{b.trade_date}/{b.basket_key}] 冻结成员集 "
-                f"{sorted(frozen_members)} ≠ 本次算出 {sorted(m.ts_code for m in b.members)}"
+                f"{sorted(frozen_members)} ≠ 本次算出 {sorted(computed_members)}"
+                f"(本次结果未采纳,冻结成员集原样保留)"
             )
     return stats, ids, conflicts
 
@@ -170,7 +204,7 @@ def save_baskets(
     db_path: Optional[Path] = None,
     via: str = "auto",
     conn: Optional[sqlite3.Connection] = None,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     """把聚合结果落 `baskets` / `basket_members`。
 
     ⚠ **`tier_by_basket_key` 是必填、且必须覆盖每一个篮子** —— `baskets.tier` 是
@@ -187,26 +221,36 @@ def save_baskets(
 
     `conn`:给了就**复用调用方的 connection、不自己开事务也不 commit**(供
     `save_tier_decision` 的事务 1 并入三表同批落地);不给就照旧自开自提交 ——
-    **不传 `conn` 时行为与搬迁前逐字节等价**。
+    **写入行为与搬迁前逐字节等价**。
+
+    返回 stats;**含 `frozen_conflicts`**(契约线审计 🔵 B1,2026-08-03):本函数是
+    导出的公开入口,以前把冲突直接丢弃 —— 走这条路的调用方连「成员集与冻结的不一样」
+    都看不见,只剩一句泛化的「幂等跳过」。现在与 `save_tier_decision` 同口径:打
+    WARNING + 原样带出。⚠ 正常路径仍应走 `save_tier_decision`(三表同事务)。
     """
     _validate_tiers(result, tier_by_basket_key)
 
-    stats = {"baskets_inserted": 0, "baskets_existing": 0, "members_inserted": 0}
+    stats: Dict[str, Any] = {
+        "baskets_inserted": 0, "baskets_existing": 0, "members_inserted": 0,
+        "frozen_conflicts": [],
+    }
     if not result.baskets:
         return stats
 
     now = _now()
     if conn is not None:
-        stats, _ids, _conflicts = _save_baskets_on_conn(
+        wstats, _ids, conflicts = _save_baskets_on_conn(
             conn, result, tier_by_basket_key, via=via, now=now
         )
-        return stats
-
-    init_schema(db_path)
-    with connection(db_path) as own:
-        stats, _ids, _conflicts = _save_baskets_on_conn(
-            own, result, tier_by_basket_key, via=via, now=now
-        )
+    else:
+        init_schema(db_path)
+        with connection(db_path) as own:
+            wstats, _ids, conflicts = _save_baskets_on_conn(
+                own, result, tier_by_basket_key, via=via, now=now
+            )
+    stats.update(wstats)
+    stats["frozen_conflicts"] = conflicts
+    _warn_conflicts("aggregate", conflicts)
     return stats
 
 
@@ -274,7 +318,7 @@ def save_tier_history(
     basket_id_by_key: Mapping[str, int],
     db_path: Optional[Path] = None,
     conn: Optional[sqlite3.Connection] = None,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     """落 `tier_history`(每日一行幂等,`UNIQUE(trade_date, basket_id)`)。
 
     `entries` 每条是一个 mapping,必须带 `basket_key` 以及
@@ -282,7 +326,8 @@ def save_tier_history(
     **查不到就 fail loud**(篮子还没落库就写它的定档留痕 = 次序错了,不许静默跳过)。
 
     ⚠ 正常路径应该走 `save_tier_decision()`(三表同事务);本函数单独暴露只为
-    单测与补写场景。
+    单测与补写场景。返回 stats **含 `frozen_conflicts`**(🔵 B1,同 `save_baskets`:
+    公开入口不许把冲突吞掉)。
     """
     now = _now()
     rows = []
@@ -295,14 +340,20 @@ def save_tier_history(
             )
         rows.append(_tier_history_row(e, trade_date=trade_date,
                                       basket_id=basket_id_by_key[key], now=now))
+    stats: Dict[str, Any] = {
+        "tier_history_inserted": 0, "tier_history_existing": 0, "frozen_conflicts": [],
+    }
     if not rows:
-        return {"tier_history_inserted": 0, "tier_history_existing": 0}
-    if conn is not None:
-        stats, _conflicts = _save_tier_history_on_conn(conn, rows)
         return stats
-    init_schema(db_path)
-    with connection(db_path) as own:
-        stats, _conflicts = _save_tier_history_on_conn(own, rows)
+    if conn is not None:
+        wstats, conflicts = _save_tier_history_on_conn(conn, rows)
+    else:
+        init_schema(db_path)
+        with connection(db_path) as own:
+            wstats, conflicts = _save_tier_history_on_conn(own, rows)
+    stats.update(wstats)
+    stats["frozen_conflicts"] = conflicts
+    _warn_conflicts("tier", conflicts)
     return stats
 
 
@@ -362,11 +413,7 @@ def save_tier_decision(
     stats.update(bstats)
     stats.update(hstats)
     stats["frozen_conflicts"] = bconflicts + hconflicts
-    if stats["frozen_conflicts"]:
-        logger.warning(
-            "[tier] 今日已有冻结篮子,本次重算结果**未采纳**(差异 %d 处):%s",
-            len(stats["frozen_conflicts"]), "; ".join(stats["frozen_conflicts"]),
-        )
+    _warn_conflicts("tier", stats["frozen_conflicts"])
     return stats
 
 

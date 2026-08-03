@@ -883,6 +883,72 @@ class TestTransactionOne:
         assert any("未采纳" in rec.message for rec in caplog.records)
         assert any("幂等跳过" in rec.message for rec in caplog.records)
 
+    def test_replay_with_changed_member_set_writes_zero_members(self, isolated_env, caplog):
+        """🔴 R1(契约线审计 2026-08-03)回归:同日重跑且**成员集变了**时,冻结篮的
+        成员集必须**逐位不变**,一只都不许追加 —— 原实现只让 `baskets` 行幂等跳过,
+        成员照走 `INSERT OR IGNORE`,新算出来的码就这么插进了冻结篮,而同一批日志
+        正在说「本次重算结果未采纳」(披露与事实相反)。
+
+        复现路径照审计报告附录 A:首跑 {600001, 600002} → 重跑 {600001, 600002, 600003}。
+        """
+        env = isolated_env
+        one = _agg([_basket("k-frozen", [_member("600001.SH"), _member("600002.SH")])])
+        res1 = ti.score_and_tier(one, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
+                                 pack=K7_PACK)
+        s1 = ti.save_tier_result(one, res1, db_path=env.db_path)
+        assert s1["members_inserted"] == 2
+
+        two = _agg([_basket("k-frozen", [_member("600001.SH"), _member("600002.SH"),
+                                         _member("600003.SH")])])
+        res2 = ti.score_and_tier(two, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
+                                 pack=K7_PACK)
+        with caplog.at_level(logging.WARNING):
+            s2 = ti.save_tier_result(two, res2, db_path=env.db_path)
+
+        assert s2["baskets_existing"] == 1
+        assert s2["members_inserted"] == 0, "冻结篮不许追加成员(🔴 R1)"
+        codes = [r[0] for r in _rows(env.db_path,
+                                     "SELECT ts_code FROM basket_members ORDER BY ts_code")]
+        assert codes == ["600001.SH", "600002.SH"], "冻结成员集必须逐位不变"
+        assert any("600003.SH" in c for c in s2["frozen_conflicts"]), "差异要如实带出"
+        assert any("未采纳" in rec.message for rec in caplog.records)
+
+    def test_replay_with_swapped_member_writes_nothing_either(self, isolated_env):
+        """成员**换人**(不是扩张)同样一字不改:换掉的那只不许进,原来的那只不许走。"""
+        env = isolated_env
+        one = _agg([_basket("k-frozen", [_member("600001.SH"), _member("600002.SH")])])
+        res1 = ti.score_and_tier(one, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
+                                 pack=K7_PACK)
+        ti.save_tier_result(one, res1, db_path=env.db_path)
+
+        swapped = _agg([_basket("k-frozen", [_member("600001.SH"), _member("600009.SH")])])
+        res2 = ti.score_and_tier(swapped, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
+                                 pack=K7_PACK)
+        s2 = ti.save_tier_result(swapped, res2, db_path=env.db_path)
+        assert s2["members_inserted"] == 0
+        codes = [r[0] for r in _rows(env.db_path,
+                                     "SELECT ts_code FROM basket_members ORDER BY ts_code")]
+        assert codes == ["600001.SH", "600002.SH"]
+        assert s2["frozen_conflicts"]
+
+    def test_standalone_save_baskets_reports_conflicts_too(self, isolated_env, caplog):
+        """🔵 B1:`save_baskets` 这个**独立公开入口**也要把冲突打出来 + 带出来,
+        不能只有 `save_tier_decision` 会说话(以前这条路径连成员集不一致都看不见)。"""
+        env = isolated_env
+        one = _agg([_basket("k-frozen", [_member("600001.SH")])])
+        tiers = {"k-frozen": 2}
+        first = basket_store.save_baskets(one, tier_by_basket_key=tiers, db_path=env.db_path)
+        assert first["frozen_conflicts"] == []
+
+        two = _agg([_basket("k-frozen", [_member("600001.SH"), _member("600002.SH")])])
+        with caplog.at_level(logging.WARNING):
+            second = basket_store.save_baskets(two, tier_by_basket_key=tiers, db_path=env.db_path)
+        assert second["members_inserted"] == 0
+        assert second["frozen_conflicts"], "独立入口不许把冲突丢弃"
+        assert any("未采纳" in rec.message for rec in caplog.records)
+        assert [r[0] for r in _rows(env.db_path, "SELECT ts_code FROM basket_members")] == \
+            ["600001.SH"]
+
     def test_overflowed_baskets_are_not_written(self, isolated_env):
         env = isolated_env
         many = _agg([_basket(f"k{i:02d}", [_member(f"6000{i:02d}.SH")]) for i in range(20)])

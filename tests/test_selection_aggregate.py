@@ -1120,7 +1120,9 @@ class TestPersistence:
         r = _one_basket(env)
         key = r.baskets[0].basket_key
         stats = ag.save_baskets(r, tier_by_basket_key={key: 1}, db_path=env.db_path)
-        assert stats == {"baskets_inserted": 1, "baskets_existing": 0, "members_inserted": 1}
+        # `frozen_conflicts` 是 🔵 B1(2026-08-03)给独立入口补的披露位,首跑必为空。
+        assert stats == {"baskets_inserted": 1, "baskets_existing": 0, "members_inserted": 1,
+                         "frozen_conflicts": []}
         conn = sqlite3.connect(str(env.db_path))
         try:
             b = conn.execute(
@@ -1161,7 +1163,8 @@ class TestPersistence:
         insert_trade_cal(env, [D0])
         empty = ag.AggregateResult(trade_date=D0_S)
         assert ag.save_baskets(empty, tier_by_basket_key={}, db_path=env.db_path) == {
-            "baskets_inserted": 0, "baskets_existing": 0, "members_inserted": 0}
+            "baskets_inserted": 0, "baskets_existing": 0, "members_inserted": 0,
+            "frozen_conflicts": []}
 
 
 # ══════════════════════════════════════════════════════════════════════════
