@@ -136,21 +136,25 @@ def _candidate_return(quote: Optional[Quote]) -> Optional[float]:
     return quote.price / quote.pre_close - 1
 
 
-def _hot_sector_peer_returns(sample_codes: Iterable[str], quotes: Dict[str, Quote]) -> List[float]:
-    """退潮哨兵「主线板块跳水」的样本收益率,用已经拉到的行情算,不额外拉价。
+def _hot_sector_peer_returns(sample_codes: Iterable[str], quotes: Dict[str, Quote]) -> Dict[str, float]:
+    """退潮哨兵「主线板块跳水」样本里**有报价那部分**的收益率,用已经拉到的行情算,
+    不额外拉价。
 
-    ⚠ **V2-⑧-F 换样本源(判定逻辑与 `sector_dive` 阈值一行未改)**:
+    ⚠ **样本源的三代变迁(判定逻辑与 `sector_dive` 阈值一行未改)**:
     · V1 = 「关注池里命中今日热门板块标签的**候选**」(候选机械生成);
     · V2-⑬-1 一度换成 **T1/T2 篮子成员全体** —— 那是 LLM 挑出来的,**一个纪律
       触发器的样本组成被 LLM 塑形**(V2 review 判定线 🟡-4);
-    · V2-⑧-F(现行)= **④ 机械种子(热点行业 / 暴起概念)的原始成分 ∩ 关注池的
-      机械成分**,派生在 `sentinel/mainline.py`(为什么不经篮子、为什么只认机械
-      进池路径,见该模块头)。本函数只负责"有报价的才算",⛔ 不新增任何阈值。"""
-    rets: List[float] = []
+    · V2-⑧-F = ④ 机械种子成分 ∩ 关注池机械成分(拆掉 LLM 塑形,但对拍量出这条路
+      **近乎失效** —— ∩ 池把样本压成了"最抗跌的一群");
+    · **V2-⑧-G(现行)= ④ 每颗机械种子按 `crc32` 取前 K 的配额切片**,派生与估计量
+      都在 `sentinel/mainline.py`(为什么不经篮子、为什么不 ∩ 池、为什么 per-seed,
+      见该模块头)。本函数只负责"有报价的才算",⛔ 不新增任何阈值、不做任何平均
+      ——**平均怎么取是 `mainline.estimate` 的事**(⑧-G-C:每条主线一票)。"""
+    rets: Dict[str, float] = {}
     for code in sample_codes:
         r = _candidate_return(quotes.get(code))
         if r is not None:
-            rets.append(r)
+            rets[code] = r
     return rets
 
 
@@ -352,32 +356,25 @@ def run_tick(
     hhmm = now.strftime("%H%M")
     breadth_snapshot = compute_breadth_snapshot(trade_date, quotes, meta)
     result.breadth_snapshot = breadth_snapshot
-    # —— V2-⑧-F:「主线板块跳水」样本 = ④ 机械种子成分 ∩ 关注池的机械成分。
-    #    ⛔ **不经篮子**(为什么、以及为什么不整池取交,见 `sentinel/mainline.py` 模块头)。
-    #    派生失败一律降级为"本拍无样本 → 该路不判"并如实落原因码,⛔ 不回退到旧的
-    #    篮子成员样本(回退等于把刚拆掉的 LLM 塑形又接回来)。
-    try:
-        mainline_sample = mainline.derive_mainline_sample(
-            wu.report_date,
-            position_codes=[p.ts_code for p in wu.positions],
-            prev_limit_up_codes=wu.breadth_extra_codes,
-            db_path=db_path, parquet_dir=parquet_dir,
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning("[tick] 主线跳水样本派生失败,本拍该路不判(其余退潮条件照常)",
-                       exc_info=True)
-        mainline_sample = mainline.MainlineSample(
-            unavailable_reason=mainline.REASON_SEED_FAILED)
+    # —— V2-⑧-G:「主线板块跳水」样本 = ④ 每颗机械种子按 crc32 取前 K 的**配额切片**
+    #    (派生 + 池位配额都在关注池组装期完成,见 `sentinel/universe.py` 模块头
+    #    「容量与配额」与 `sentinel/mainline.py`)。⛔ **不经篮子**;派生失败在
+    #    `universe` 那层已降级成"空样本 + 原因码",这里拿到什么算什么,⛔ 不回退到
+    #    任何 LLM 相关样本(回退等于把刚拆掉的塑形又接回来)。
+    mainline_sample = wu.mainline_sample
     hot_peer_rets = _hot_sector_peer_returns(mainline_sample.codes, quotes)
-    hot_avg = (sum(hot_peer_rets) / len(hot_peer_rets)) if hot_peer_rets else None
+    # ⑧-G-C:**每条主线一票**(先种子内均值、再种子间均值);pooled 只作审计对照。
+    hot_est = mainline.estimate(mainline_sample, hot_peer_rets)
+    hot_avg = hot_est.per_seed_avg
     metrics = RetreatMetrics(
         trade_date=trade_date, hhmm=hhmm, sample_size=breadth_snapshot.sample_size,
         limit_up_count=breadth_snapshot.limit_up_count, limit_down_count=breadth_snapshot.limit_down_count,
         zaban_count=breadth_snapshot.zaban_count, zaban_rate=breadth_snapshot.zaban_rate,
         hot_sector_avg_chg=hot_avg,
-        # ⑧-F 留痕:触发与否都落样本构成(codes + 来源标签 + 样本量),让"样本没被
-        # LLM 塑形"事后可审计。`quoted` = 实际参与均值的只数(有报价的那部分)。
-        hot_sector_sample_detail={**mainline_sample.payload(), "quoted": len(hot_peer_rets)},
+        # ⑧-F 立、⑧-G 扩的留痕:触发与否都落样本构成(codes + 逐颗种子切片 + 样本量)
+        # 与**两个口径的读数**,让"样本没被 LLM 塑形"「两口径讲不讲同一句话」都事后
+        # 可审计。`quoted` = 实际参与均值的只数(有报价的那部分)。
+        hot_sector_sample_detail={**mainline_sample.payload(), **hot_est.payload()},
     )
 
     retreat_active = already_pushed(trade_date, "retreat", "", "brake", db_path=db_path)
@@ -395,7 +392,7 @@ def run_tick(
             now_time=now.time(),
             same_time_zaban_baseline=baseline,
             hot_sector_avg_chg=hot_avg,
-            hot_sector_sample=len(hot_peer_rets),
+            hot_sector_sample=hot_est.quoted,
             prev_tick_triggered=prev_triggered,
             allow_red=not first_tick,
         )

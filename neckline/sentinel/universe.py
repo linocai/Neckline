@@ -27,10 +27,29 @@
       板块指数、免费实时源不认它的代码),硬编一份 ETF 清单等于凭空发明。指数是
       **可得且可核对**的那一半,已如实登记(⑧ 完工记录)。
 
-**容量与优先序(≤ `breadth_cap`,默认 200,与改组前同量级)**:
-`持仓 > T1/T2 篮子成员 > 板块指数`,`_load_prev_limit_up_codes` 只填**剩余额度**。
-指数排最后是因为它**没有任何纪律消费方**(只进存拍与语境),真要挤,先挤它、
-不挤哨兵要判的票。
+**容量与配额(≤ `breadth_cap`,默认 200;V2-⑧-G 由"先到先得的优先队列"改成
+"有界必需项全进 + 两份纪律测量样本各有保底")**:
+
+    ①【有界必需项,无条件全进】持仓(三仓制 ≤3)+ T1/T2 篮子成员(≤7 篮 × ≤3 = ≤21)
+      + 板块基准指数(≤5)= 上界 `MANDATORY_POOL_RESERVE`(29),**本来就有界**,
+      不必让它们参与抢位;内部优先序仍是 `持仓 > 成员 > 指数`(真要挤〔`breadth_cap`
+      被调得极小〕先挤没有纪律消费方的指数)。
+    ②【两份纪律测量样本,各有保底】剩余 `breadth_cap − MANDATORY_POOL_RESERVE`
+      (=171)个位在**主线切片**(`MAINLINE_SLICE_QUOTA_FLOOR`)与**昨日涨停**
+      (`PREV_LIMIT_UP_QUOTA_FLOOR`)之间按保底分配,**谁不够用谁的实际量,余量归
+      对方**。
+
+⚠ **为什么测量预算按「必需项上界 29」算,而不是按"这一拍实际占了几个"算**:后者会
+让 **LLM 多挑一个篮子成员就把某份测量样本挤小一只** —— 一个大小随 LLM 输出浮动的
+样本,产生的是**不可靠的测量**(⑧-G-D 原文:会被别人挤掉、大小不可预期的样本 =
+不可靠的测量)。按固定上界算,两份样本的实际取值**只是机械输入的函数**,与篮子里
+有几只票**完全无关**(单测锁死:换篮子成员数 → 两份测量样本逐位不变)。代价是必需项
+不满 29 时池子会略微欠填(≤29 个位空着),**刻意接受** —— 少 poll 几只的代价远小于
+一个会漂的纪律测量。⚠ 若必需项**异常**超过 29(上游违约,如篮子超发),测量预算按
+实际占用缩,不越 `breadth_cap`(降级路径,如实登记)。
+
+⛔ **`breadth_cap` 一字不动(仍 200)** —— 抬它会改盘中轮询量与限流风险面(⑧-G-D
+明文,守门单测锁死)。
 
 ⚠ **指数 / ETF 代码不会污染退潮哨兵的宽度样本**:`retreat.compute_breadth_snapshot`
 按 `stock_basic` 元数据逐票判涨跌停,查无元数据的代码**结构上就被跳过**(它本来就
@@ -53,6 +72,7 @@ from neckline.data.board import Board, classify
 from neckline.data.limit_derived import resolve_exempt_days
 from neckline.data.market_data import get_market_slice, load_stock_basic, scan_table_range
 from neckline.selection.basket_store import BasketRef, load_baskets_for_date
+from neckline.sentinel import mainline
 from neckline.sentinel.invalidation import invalidation_spec
 from neckline.sentinel.positions import Position, load_open_positions
 
@@ -64,6 +84,25 @@ logger = logging.getLogger(__name__)
 DEFAULT_BREADTH_CAP = 200
 # 计算前5日均量时的自然日回溯窗口(足够覆盖5个交易日,含长假缓冲)。
 _VOLUME_LOOKBACK_DAYS = 15
+
+# —— V2-⑧-G-D 池位配额(三个数,含义见模块头「容量与配额」)——————————————————
+# 有界必需项的**上界**:持仓 ≤3 + T1/T2 篮子成员 ≤7 篮 × ≤3 = ≤21 + 板块指数 ≤5。
+# plan §五 ⑧-G-D 原文的 ≈29,写死在这里当"测量预算"的分界线,让两份测量样本的大小
+# **与 LLM 挑了几个成员无关**。
+MANDATORY_POOL_RESERVE = 3 + 21 + 5
+# 两份纪律测量样本的保底名额(合计 = 200 − 29 = 171,即设计点上把剩余池位分完)。
+# **实测定数(2026-08-03,真实 parquet 只读,2026-07 全月 17 个交易日)**:
+#   · 主线切片(K=4)40 ~ 100 只/日 → 保底 100 = 实测上界,**四天窗口内一次没被截断**;
+#   · 昨日涨停 32 ~ 223 只/日(planner 引的 43~129 是 ⑧-F 四天窗口的范围)。
+# ⚠ **如实登记:两份样本"都不被截断"在 200 池位内做不到** —— 07-21 两份合计需要 213
+# 个不同代码(切片 100 + 涨停 121 − 重叠 8)> 171;更极端的 07-01 光昨日涨停就 223 只,
+# **现状代码本来也在截它**(旧口径给涨停的额度同样是"剩余 ~171")。故按"新样本(主线
+# 切片)优先吃满实测上界、老样本(昨日涨停)拿余量且不低于保底"定数,并把这条差异
+# 交回 planner(⑧-G 完工记录 + §七 P3-37 一并回看)。
+# ⛔ 这两个数是**池位分配**,不是判定阈值;调它们不改任何触发阈值,但会改测量样本的
+# 大小,**改前先读 ⑧-G-D 与完工记录里的实测表**。
+MAINLINE_SLICE_QUOTA_FLOOR = 100
+PREV_LIMIT_UP_QUOTA_FLOOR = 71
 
 # 盘中会被盯的篮子档位(T1/T2)。T3 不进盘中池是**容量取舍**,不是"T3 不重要"——
 # 它在 EOD 那一拍照样被判(`basket_verify.run_eod_verification` 判全部档位)。
@@ -103,11 +142,17 @@ class WatchUniverse:
     report_found: bool          # 该日报告是否真的生成过(找不到不代表篮子也没有)
     targets: List[WatchTarget]  # V2-⑬-1:证伪哨兵的判定对象 = T1/T2 篮子成员
     positions: List[Position]
-    breadth_extra_codes: List[str]   # 上面几类之外,为退潮哨兵补充的昨日涨停股代码
+    # 本拍纳入的**昨日涨停样本**(退潮宽度 / 炸板率的代理样本)。⚠ V2-⑧-G 起它是
+    # 「按连板数降序取前 N 只」的**机械结果**,不再是"扣掉别人之后剩下的"——极个别
+    # 码可能同时是持仓 / 篮子成员(`codes` 去重后只占一个池位)。
+    breadth_extra_codes: List[str]
     # —— V2-⑧-A 新增两类来源 ————————————————————————————————————————————
     baskets: List[BasketRef] = field(default_factory=list)      # D0 的 T1/T2 篮子(含成员)
     basket_codes: List[str] = field(default_factory=list)       # 上面那些篮子的成员代码(去重)
     index_codes: List[str] = field(default_factory=list)        # 相关板块基准指数(只进存拍/语境)
+    # —— V2-⑧-G:主线跳水的**配额切片**(纪律测量样本,派生见 `sentinel/mainline.py`)
+    mainline_sample: mainline.MainlineSample = field(default_factory=mainline.MainlineSample)
+    mainline_codes: List[str] = field(default_factory=list)      # 切片里**新占池位**的那些码
     codes: List[str] = field(default_factory=list)  # 去重后全部关注代码(拉价用)
 
 
@@ -155,25 +200,40 @@ def load_watch_universe(
         for code in basket_codes
     ]
 
-    # —— 优先序:持仓 > T1/T2 成员 > 板块指数(理由见模块头)—————————————————
+    # —— ①【有界必需项】持仓 > T1/T2 成员 > 板块指数,无条件全进(理由见模块头)——
     index_codes = _related_index_codes(
         list(dict.fromkeys(basket_codes + [p.ts_code for p in positions])), db_path=db_path
     )
-    priority_codes: List[str] = []
+    mandatory: List[str] = []
     seen = set()
     for c in [p.ts_code for p in positions] + basket_codes + index_codes:
         if c not in seen:
             seen.add(c)
-            priority_codes.append(c)
-    if len(priority_codes) > breadth_cap:
-        priority_codes = priority_codes[:breadth_cap]
-        seen = set(priority_codes)
+            mandatory.append(c)
+    if len(mandatory) > breadth_cap:
+        mandatory = mandatory[:breadth_cap]
+        seen = set(mandatory)
         index_codes = [c for c in index_codes if c in seen]
 
-    remaining = breadth_cap - len(priority_codes)
-    breadth_extra = _load_prev_limit_up_codes(report_date, remaining, parquet_dir=parquet_dir) if remaining > 0 else []
+    # —— ②【两份纪律测量样本按保底分配剩余池位】——————————————————————————
+    # ⚠ 两份样本的**取值只由机械输入决定**(切片大小 / 昨日涨停只数 / 三个常量),
+    # ⛔ 刻意不看 `mandatory` 里已经有谁 —— 一旦"已经在池里的码不占额度",LLM 多挑
+    # 一个恰好也在切片里的成员就会让样本多出一只,残留耦合 ②b 又回来了。重叠的码
+    # 只是让池子略微欠填(去重后总数更小),**永远不会超过 `breadth_cap`**。
+    budget = _measurement_budget(breadth_cap, len(mandatory))
+    sample = _derive_mainline_sample(report_date, db_path=db_path, parquet_dir=parquet_dir)
+    limit_up_all = _load_prev_limit_up_codes(report_date, parquet_dir=parquet_dir)
+    quota_mainline = _mainline_quota(budget, sample.size, len(limit_up_all))
+    sample = sample.restrict(quota_mainline)
+    breadth_extra = limit_up_all[:max(0, budget - quota_mainline)]
 
-    codes: List[str] = list(priority_codes)
+    codes: List[str] = list(mandatory)
+    mainline_codes: List[str] = []
+    for c in sample.codes:
+        if c not in seen:
+            seen.add(c)
+            mainline_codes.append(c)
+            codes.append(c)
     for c in breadth_extra:
         if c not in seen:
             seen.add(c)
@@ -189,8 +249,53 @@ def load_watch_universe(
         baskets=baskets,
         basket_codes=basket_codes,
         index_codes=index_codes,
+        mainline_sample=sample,
+        mainline_codes=mainline_codes,
         codes=codes,
     )
+
+
+def _measurement_budget(breadth_cap: int, mandatory_used: int) -> int:
+    """两份纪律测量样本可用的池位总数(⑧-G-D)。
+
+    **按必需项的上界算,不按这一拍实际占了几个** —— 这正是"LLM 挪不动测量样本"这条
+    不变量的落点(理由见模块头)。上界按 `breadth_cap` 等比缩放,好让单测里把池调得
+    很小时仍有意义(设计点 `breadth_cap=200` 处恰为 `MANDATORY_POOL_RESERVE`=29);
+    必需项**异常**超过上界时按实际占用缩,保证总量不越 `breadth_cap`。
+    """
+    reserve = MANDATORY_POOL_RESERVE * breadth_cap // DEFAULT_BREADTH_CAP
+    return max(0, breadth_cap - max(mandatory_used, reserve))
+
+
+def _mainline_quota(budget: int, need_mainline: int, need_limit_up: int) -> int:
+    """主线切片能拿几个池位:**保底管够,余量归对方**(⑧-G-D)。
+
+    `min(实际需要, max(自己的保底, 总预算 − 对方的实际需要))` —— 三个量都只跟**机械
+    输入**有关(切片大小 / 昨日涨停只数 / 两个常量),⛔ 与篮子成员数无关。
+    这个式子同时保证了对方的保底:主线最多拿到 `budget − PREV_LIMIT_UP_QUOTA_FLOOR`
+    (当昨日涨停多到吃得下保底时),昨日涨停因此至少拿得到自己的保底。
+    """
+    if budget <= 0:
+        return 0
+    floor_mainline = MAINLINE_SLICE_QUOTA_FLOOR
+    floors_total = MAINLINE_SLICE_QUOTA_FLOOR + PREV_LIMIT_UP_QUOTA_FLOOR
+    if budget < floors_total:       # 池被调小(单测/极端配置):两个保底等比缩
+        floor_mainline = budget * MAINLINE_SLICE_QUOTA_FLOOR // floors_total
+    return max(0, min(need_mainline, max(floor_mainline, budget - need_limit_up)))
+
+
+def _derive_mainline_sample(
+    report_date: date, *, db_path: Optional[Path], parquet_dir: Optional[Path],
+) -> mainline.MainlineSample:
+    """主线跳水的机械切片(⑧-G)。派生失败 → 空样本 + 原因码,⛔ 绝不因此掀翻整个
+    关注池(同 `_load_intraday_baskets` 的降级纪律:拿不到切片也还要盯持仓)。"""
+    try:
+        return mainline.derive_mainline_sample(
+            report_date, db_path=db_path, parquet_dir=parquet_dir)
+    except Exception:  # noqa: BLE001
+        logger.warning("[universe] %s 主线切片派生失败,本拍主线跳水一路不判", report_date,
+                       exc_info=True)
+        return mainline.MainlineSample(unavailable_reason=mainline.REASON_SEED_FAILED)
 
 
 def _load_intraday_baskets(report_date: date, *, db_path: Optional[Path]) -> List[BasketRef]:
@@ -225,12 +330,14 @@ def _related_index_codes(codes: List[str], *, db_path: Optional[Path]) -> List[s
     return sorted(out)
 
 
-def _load_prev_limit_up_codes(report_date: date, cap: int, parquet_dir: Optional[Path]) -> List[str]:
+def _load_prev_limit_up_codes(report_date: date, *, parquet_dir: Optional[Path]) -> List[str]:
+    """D0 全部涨停股,按连板数降序(**不截断** —— ⑧-G 起截断由池配额统一裁,调用方
+    才知道还剩几个位;这里返回"需求"而不是"配额后的结果")。"""
     prev_limit = get_market_slice(report_date, table="limit_derived", parquet_dir=parquet_dir)
     if prev_limit.is_empty():
         return []
     up = prev_limit.filter(pl.col("is_limit_up")).sort("consec_limit_up_days", descending=True)
-    return up["ts_code"].to_list()[:cap]
+    return up["ts_code"].to_list()
 
 
 def load_prev5_avg_volume(
@@ -331,6 +438,9 @@ __all__ = [
     "load_stock_meta",
     "is_new_stock_exempt",
     "DEFAULT_BREADTH_CAP",
+    "MANDATORY_POOL_RESERVE",
+    "MAINLINE_SLICE_QUOTA_FLOOR",
+    "PREV_LIMIT_UP_QUOTA_FLOOR",
     "INTRADAY_BASKET_TIERS",
     "BOARD_BENCHMARK_INDEX",
     "MAIN_BOARD_INDEX_SH",

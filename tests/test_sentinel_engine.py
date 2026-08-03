@@ -80,32 +80,36 @@ def _save_report(settings, report_day: date):
 
 
 def _seed_mainline_sample(settings, monkeypatch, report_day: date, codes):
-    """**V2-⑧-F**:把「主线板块跳水」的样本喂成新口径 = ④ 机械种子成分 ∩ 关注池的
-    **机械成分**(⛔ 不再是 T1/T2 篮子成员——那条路已被 🟡-4 裁掉,见
-    `sentinel/mainline.py` 模块头)。两件事都要做,缺一样样本就是空:
+    """**V2-⑧-G(取代 ⑧-F 的口径)**:把「主线板块跳水」的样本喂成配额切片 = ④ 每颗
+    机械种子按 `crc32` 取前 K 只,由 `universe` 直接并进关注池(⛔ 不再是 T1/T2 篮子
+    成员、也**不再** ∩ 关注池 —— 见 `sentinel/mainline.py` 模块头)。
 
-    ① `limit_derived` 分区把这些码标成 D0 涨停 → 它们才会经 `prev_limit_up` 这条
-       **机械路**进关注池(篮子成员那条路进的池**不进样本**);
-    ② stub 掉 ④ 的种子生成(那是读五张表的重活,单测不铺全套),只留「这些码是热点
-       行业种子的原始成分」这一个事实 —— `derive_mainline_sample` 的交集/排序/来源
-       标签逻辑仍是**生产那一份**,没有被 stub 掉。
+    只需 stub ④ 的种子生成(那是读五张表的重活,单测不铺全套),把 `codes` **按每颗
+    ≤K 只切成多颗种子**喂进去;`derive_mainline_sample` 的 crc32 采样 / 池配额 /
+    per-seed 估计量全是**生产那一份**,没有被 stub 掉。
+
+    ⚠ 两处与 ⑧-F 版夹具的刻意不同(**只改夹具,不改任何断言**):
+    ① **不再写 `limit_derived` 把这些码伪装成 D0 涨停** —— ⑧-G 起切片自己就是一条
+       进池路径,不必借昨日涨停那条路,顺带证明池位配额真的接上了;
+    ② **codes 要跨多颗种子**:单颗种子最多贡献 K(=4)只,而 ⑧-G-E 的准入下限是
+       `MIN_MAINLINE_SAMPLE`(=5),一颗种子的切片**永远够不到下限**(这是裁定后的
+       正确行为,不是夹具凑数)。
     """
     from neckline.scan.seeds import HOT_INDUSTRY, DriverSeed, SeedSet
     from neckline.sentinel import mainline
 
-    write_daily_fixture(settings, "limit_derived", report_day, [
-        {"ts_code": c, "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
-         "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
-         "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1}
-        for c in codes
-    ])
+    k = mainline.MAINLINE_SAMPLE_PER_SEED
+    chunks = [tuple(codes[i:i + k]) for i in range(0, len(codes), k)]
     seed_set = SeedSet(
         trade_date=report_day.strftime("%Y%m%d"), pack_version="K4-pack-v1",
-        hot_industry=(DriverSeed(seed_key="s1", seed_kind=HOT_INDUSTRY, label="测试行业",
-                                 member_codes=tuple(codes)),),
+        hot_industry=tuple(
+            DriverSeed(seed_key=f"s{i}", seed_kind=HOT_INDUSTRY, label=f"测试行业{i}",
+                       member_codes=chunk)
+            for i, chunk in enumerate(chunks)
+        ),
     )
     monkeypatch.setattr("neckline.scan.seeds.generate_seeds",
-                        lambda *a, **k: seed_set)
+                        lambda *a, **k_: seed_set)
     mainline.reset_seed_cache()
 
 
@@ -220,11 +224,15 @@ class TestRetreatTwoTierEngineWiring:
         days = business_days(date(2026, 7, 1), 30)
         report_day, today = days[-2], days[-1]
         _setup_calendar_and_history(isolated_env, "600001.SH", report_day, today, vol=200000.0)
-        x_codes = ["600201.SH", "600202.SH", "600203.SH"]
+        # ⚠ **V2-⑧-G:样本数由 3 改 5**(唯一原因:⑧-G-E 加了最小样本量下限
+        # `MIN_MAINLINE_SAMPLE`=5,n=3 起该路不判)。**本用例的断言一字未改**,改的是
+        # 喂进去的数据规模 —— 行为按 planner 裁定变了,夹具跟着变。
+        x_codes = ["600201.SH", "600202.SH", "600203.SH", "600204.SH", "600205.SH"]
         _save_report(isolated_env, report_day)
-        # ⚠ V2-⑧-F:主线样本 = ④ 机械种子成分 ∩ 关注池机械成分(不再是 T1/T2 篮子成员)。
-        # 600001.SH 是持仓票、不在种子成分里,故不进主线跳水样本 —— 与原用例意图一致。
-        # 篮子仍种(关注池/证伪哨兵照旧盯它们),但**它不再是主线样本的来源**。
+        # ⚠ V2-⑧-G:主线样本 = ④ 每颗机械种子的 crc32 配额切片(不再是 T1/T2 篮子成员,
+        # 也不再 ∩ 关注池)。600001.SH 是持仓票、不在种子成分里,故不进主线跳水样本
+        # —— 与原用例意图一致。篮子仍种(关注池/证伪哨兵照旧盯它们),但**它不是主线
+        # 样本的来源**。
         _seed_basket_members(isolated_env, report_day, x_codes)
         _seed_mainline_sample(isolated_env, monkeypatch, report_day, x_codes)
         open_position("600001.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)

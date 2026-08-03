@@ -46,6 +46,7 @@ from datetime import date, time
 from typing import Dict, Iterable, List, NamedTuple, Optional
 
 from neckline.data.limit_derived import compute_intraday_limit_prices
+from neckline.sentinel.mainline import MIN_MAINLINE_SAMPLE
 from neckline.sentinel.quotes import Quote
 from neckline.sentinel.universe import StockMeta, is_new_stock_exempt
 
@@ -252,8 +253,10 @@ def evaluate_retreat(
         now_time — 用于早盘加严(修法3),`< EARLY_SESSION_CUTOFF` 取加严档。
         same_time_zaban_baseline — 昨日同一时刻(±窗)关注池炸板率(修法1);
             `None`=无基线(部署首日/昨日该时段无数据)→ 飙升子判据静默失效。
-        hot_sector_avg_chg / hot_sector_sample — 热门板块可比个股平均盘中涨跌幅
-            与样本数;`None`/0 = 无样本 → 主线跳水条件不判(诚实"无数据")。
+        hot_sector_avg_chg / hot_sector_sample — 主线板块跳水的读数(V2-⑧-G 起 =
+            **per-seed 均值**,见 `sentinel/mainline.py::estimate`)与有报价的样本
+            只数;`None` 或样本 < `MIN_MAINLINE_SAMPLE` → 该条件**不判**(诚实
+            "无数据",不是判"板块健康")。
         prev_tick_triggered — 上一拍成立的条件族键集合(持续性判据,修法2)。
         allow_red — False 时任何红色降级为黄色(进程重启后首拍保守,修法2)。
 
@@ -292,7 +295,12 @@ def evaluate_retreat(
             )
 
     # —— 主线板块跳水族——————————————————————————————————————————————————
-    if hot_sector_avg_chg is not None and hot_sector_sample > 0:
+    # ⚠ **V2-⑧-G-E:准入门槛由 `> 0` 抬到 `>= MIN_MAINLINE_SAMPLE`(=5,同源引用
+    # `industry_strength._MIN_MEMBERS`)。阈值比较本身一字未动** —— n=3 时横截面
+    # 收益率标准误约 2pp,拿它判 −3% 阈值接近抛硬币,而误触发的代价是**整天禁开
+    # 新仓**;配额切片上线后正常日样本 40~100 只,n<5 意味着上游已经出事,**这种
+    # 时候更不该开火**。样本不足 = 该路不判(不是判"板块健康")。
+    if hot_sector_avg_chg is not None and hot_sector_sample >= MIN_MAINLINE_SAMPLE:
         if hot_sector_avg_chg <= th.sector_dive + _EPS:
             reasons_by_cond[COND_SECTOR_DIVE] = (
                 f"热门板块可比个股平均跌幅{hot_sector_avg_chg:.1%}"

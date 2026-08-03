@@ -145,8 +145,16 @@ class TestEarlySessionStricter:
 
     def test_sector_dive_gradient(self):
         # 平均跌幅 -3.5%:常规(≤-3%)触发,早盘(≤-4%)不触发
-        assert _eval(_snap(), hot_avg=-0.035, hot_n=3, now_time=NORMAL).triggered == [COND_SECTOR_DIVE]
-        assert _eval(_snap(), hot_avg=-0.035, hot_n=3, now_time=EARLY).tier == "none"
+        # ⚠ **V2-⑧-G-E 显式改动(planner 2026-08-03 裁定 `351ce56` 授权)**:本用例
+        # 原本用 `hot_n=3`,⑧-G 给主线跳水一路加了最小样本量下限
+        # `MIN_MAINLINE_SAMPLE`(=5,同源引用 `industry_strength._MIN_MEMBERS`),
+        # n=3 起**不再准入该条件**(n=3 时横截面收益率标准误约 2pp,判 −3% 阈值接近
+        # 抛硬币,而误触发的代价是整天禁开新仓)。故改 `hot_n=3` → `hot_n=5`,
+        # **两个阈值(−3% / 早盘 −4%)与本用例要证的梯度语义一字未动**。
+        # ⛔ 这不是"改断言迁就新代码",是**行为按裁定变了、测试跟着变**(⑧-G-E 原文
+        # 明确区分这两件事);n<5 的新行为由下面 `TestSectorDiveNoDataHonesty` 补锁。
+        assert _eval(_snap(), hot_avg=-0.035, hot_n=5, now_time=NORMAL).triggered == [COND_SECTOR_DIVE]
+        assert _eval(_snap(), hot_avg=-0.035, hot_n=5, now_time=EARLY).tier == "none"
 
 
 # ————————————————————— 修法4:双级制(黄 / 红两条路径)+ 修法2:持续性 —————————
@@ -206,3 +214,13 @@ class TestSectorDiveNoDataHonesty:
 
     def test_none_avg_is_no_data(self):
         assert _eval(_snap(), hot_avg=None, hot_n=5).tier == "none"
+
+    def test_sample_below_min_mainline_sample_is_not_judged(self):
+        """**V2-⑧-G-E**:n < `MIN_MAINLINE_SAMPLE`(=5)一律不判该路 —— 小样本的
+        估计量本身没意义,而误触发的代价是整天禁开新仓(⛔ 保守方向 = 不触发,与
+        项目别处"宁可多提醒"刻意相反,理由见 `sentinel/mainline.py` 模块头第 7 条)。"""
+        from neckline.sentinel.mainline import MIN_MAINLINE_SAMPLE
+
+        for n in range(MIN_MAINLINE_SAMPLE):            # 0..4 一律不判,哪怕跌 10%
+            assert _eval(_snap(), hot_avg=-0.10, hot_n=n).tier == "none"
+        assert _eval(_snap(), hot_avg=-0.10, hot_n=MIN_MAINLINE_SAMPLE).triggered == [COND_SECTOR_DIVE]
