@@ -7,6 +7,10 @@
 
 **分级统计:🔴 1 · 🟡 7 · 🔵 8 · 🟢 10**
 
+> **销项状态(@builder-pro 修复批次,2026-08-03)**:🔴 R1 ✅ · 🟡 Y1/Y2/Y3/Y4/Y7 ✅ ·
+> 🔵 B1/B3 ✅ · Y6 ✅(对照表已补档)。**未修(本批次范围外,已登记)**:🟡 Y5(⑮ 硬清单)、
+> 🔵 B2/B4/B5/B6/B7/B8。逐条标注见各条目下的 `✅ 已修` 行。
+
 ---
 
 ## 🔴 致命(1)
@@ -20,6 +24,7 @@
 - **影响面**:`basket_members` 是 D0 冻结件,五路下游直接消费——⑧ 关注池(`load_baskets_for_date.member_codes`)、⑨ 复盘面板(`eval/metrics.load_basket_panel`)、⑫ 能力画像「同篮未选成员」对照、⑬-N 信息卡 `build_basket_context`、⑩ `find_source_basket_member`。泄漏成员会以「D0 判断的一员」身份进入盘中关注、复盘归因、画像对照与开仓来源关联,而它从未被 D0 定档时采纳;卡上的成员节(冻结 card_json)与表里的成员集从此不一致。
 - **守门为何没抓到**:`tests/test_selection_tier.py` 的重跑单测只断言 `baskets.tier` 不变 + `frozen_conflicts` 非空,**没有断言成员集逐位不变**;三律守门(`test_v2_schema_guard.py`)只盯 UPDATE/DELETE,不盯「向冻结聚合追加子行」。
 - **修法**:`_save_baskets_on_conn` 里,当 `baskets` 行已存在(`cur.rowcount == 0`)时**整段跳过该篮成员 INSERT**,只做比对入 `frozen_conflicts`;补守门单测「重跑成员集扩/换 → 库里成员集逐位不变 + 冲突如实披露」。修完把披露文案里的「未采纳」才真正成立。
+- **✅ 已修**(commit `1052622`):照上述正解。另两处顺带收口:成员集比对不再要求 `frozen_members` 非空(冻结篮零成员 vs 本次算出非空同样是冲突);冲突文案补「本次结果未采纳,冻结成员集原样保留」。回归三条(重跑扩成员 / 重跑换成员 / 独立入口披露),复现路径照本报告附录 A。
 
 ---
 
@@ -34,24 +39,29 @@
   3. 两套扫描都只罩 `neckline/`,不罩 `scripts/`——`scripts/smoke_basket_verify.py:180` 已真实存在一条 `DELETE FROM basket_cards`(冒烟脚本、隔离库,但它证明该写法在扫描域外自由生长)。
 - **现存兜底**:`test_v1_retirement_guard.py:410-431` 跑完整管线后断言六张停写表行数不增——这条能抓动态 SQL 与 OR REPLACE,但只覆盖「管线会路过的路径」。
 - **修法**:① 冻结短语集补 `INSERT OR REPLACE INTO` / `REPLACE INTO` 两个前缀(对两张冻结表);② `_write_sql_hits` 的 forbidden 对停写表改成「任何 INSERT 变体 + UPDATE + DELETE」;③ 把 `scripts/`(至少非 oneoff)纳入两套扫描,smoke 脚本如需破例用显式豁免清单登记。
+- **✅ 已修**(commit `fdf604c`):三洞照正解全修,扫描域含 `scripts/oneoff/`(不需要豁免清单——`scripts/` 仅有的两条命中是 `INSERT INTO entry_snapshots`,冻结表的合法建行)。报告点名的那条 DELETE 按上下文改写:`smoke_basket_verify.py` 是活脚本,「有篮子无卡」改成**压根不发卡**(`_seed_basket(with_card=False)`),那本来就是该中间态的真实成因。
+- **⚠ 报告未列的第 4 洞(施工期反向证伪打出来)**:追加表 AST 守门的禁止串是**小写表名**(`UPDATE user_actions`)、右边却是 `sql.upper()` —— `forbidden in upper` 两边永不相等,**这条守门从上线起一次都没可能命中**,是彻头彻尾的空转。已修(`forbidden.upper() in upper`)。教训与 🟡-5 锁空靶同类:守门写完必须反向造一条真违规验证它会红,「全绿」本身不构成「守住了」的证据。
 
 ### Y2 · `user_actions.occurred_at` 时区口径与 DDL 相悖,混时区字符串会破坏排序与过滤
 
 - **位置**:`neckline/db.py:847`(DDL 注释「ISO8601 北京时间」)vs `neckline/user_actions.py:44,56`(`record()` 缺省落 **UTC** `+00:00`);`user_actions.py:97-105`(`since`/`until` 与 `ORDER BY occurred_at` 都是**字符串比较**)。
 - **问题**:当前全部写入方(buy/sell/label/voice_note/alert)都走 UTC 缺省,暂时同质;但契约注释承诺北京时间,⑮ 客户端上报 `view` 事件几乎必然按北京时间传 `occurred_at`——同一时刻的 `…T01:00:00+00:00` 与 `…T09:00:00+08:00` 字符串排序不等价,`list_actions` 的时间序与窗口过滤在时间轴上错乱,⑫ 画像若日后引用 occurred_at 窗口同样中招。
 - **修法**:`record()` 缺省改 `datetime.now(CN_TZ)`(与 `basket_verify_store.observed_at_now` 同源),并对显式传入值归一化到同一时区后再落库;或改 DDL 注释统一 UTC——两者选一,**不能一边承诺一边另落**。
+- **✅ 已修**(commit `040bd27`):取「向 DDL 承诺看齐」这一路。`occurred_at` 缺省 = `datetime.now(CN_TZ)`(唯一源 `calendar.CN_TZ`);显式传入经新 `normalize_occurred_at()` 归一(带时区→换算 / naive→按北京时间读 / 解析不了→`ValueError` fail loud,⛔ 不原样落库);`list_actions` 的 `since`/`until` 走同一函数(窗口过滤是字符串比较,递进来 UTC 串会静默筛错时段)。`created_at` **保持 UTC**(审计戳,全仓 store 惯例)——两列不同轴是刻意的,DDL 与模块头两处都写死「别统一」。V2 表 0 行,直接改写侧、无数据迁移。
 
 ### Y3 · 画像「每期一版」可退化成两次计算的嵌合体
 
 - **位置**:`neckline/profile/store.py:40-49`(preference)/ `:82-95`(capability)。
 - **问题**:UPSERT(`ON CONFLICT DO UPDATE`)只覆盖**同键**行;同一 `as_of_date` 重算时,凡是新一轮不再产出的 `(dimension, value)` 旧行**原样残留**,与新行混在同一期里(`computed_at` 不同但 `load_*` 不区分)。「每期一版」变成「每期 = 多次运行的并集」——例:上午跑画像后用户又补录两笔,傍晚重跑,某个占比归零的题材值仍以旧 share 挂在当期里,share 合计 > 1。
 - **修法**:两表非冻结件(plan 三律=「每期一版」),`save_*` 在同一事务里先 `DELETE FROM … WHERE as_of_date=?`(或按 dimension)再插;或读侧只取该期 `computed_at` 最大的一批。前者更贴「每期一版」语义。
+- **✅ 已修**(commit `040bd27`):取**按 dimension** 那一路(`share` 是维度内归一,一致性单位就是维度;也不会顺手抹掉别的维度的当期结果)。空批次 = 这期真没算出东西 → 整期清空。回归四条(消失的取值真消失 + share 合计 ≤1 / 单维重算不牵连他维 / 空批清期 / 旧期不受牵连)。
 
 ### Y4 · ⑬-1 契约层与客户端仍有五常驻残留(含一块「永远等不到」的僵尸卡)
 
 - **位置**:`neckline/api/schemas.py:30`(`PermanentBoardStatusOut` 整个 DTO)、`:65`(`IntelRankOut.permanentBoardStatus`)、`:1001`(仍在 `__all__`);`client/Neckline/Views/IntelSectionView.swift:29-63`(`permanentBoardsCard` 仍挂在情报节 body 上)。
 - **问题**:⑬-1 验收是「十三项逐项 grep 零残余」。实现层删干净了,但契约 DTO 与客户端渲染件整套还在;⑬-1 后新报告 `candidates` 恒空,该卡片将**稳定**显示「暂无候选可显示常驻板块状态(今晚 16:35 报告后可见)」——一句永远兑现不了的承诺,另一分支文案还指向已删除的 `/settings/intel-boards`。守门(`test_v1_retirement_guard.py:104-111`)只断言了 settings_store 符号与端点,没罩 DTO 与客户端卡片,所以全绿。
 - **修法**:若按 D2=A 路留给 ⑮ 一次性换血,也应现在就把这两处写进 ⑭-B/⑮ 的必办清单并加守门(断言 `PermanentBoardStatusOut` 不在 schemas、`permanentBoardsCard` 不在 client);最起码先把僵尸文案改成如实的「该栏目已随 V1 候选榜退役」。
+- **✅ 已修**(commit `d9b41a1`):不留到 ⑮,**现在就删干净**——服务端删 DTO + `IntelRankOut.permanentBoardStatus` + `__all__` 条目;客户端拆整块 `permanentBoardsCard` + `PermanentBoardStatus` struct + `IntelRank` 四处接线。守门按建议加(契约 + 客户端两侧)。**删键安全性实查过**(CLAUDE.md「删键前先查客户端是不是硬解码」):该字段是 `decodeIfPresent ?? []`,不是 `try c.decode`,停发不会让老 App 解不出整份报告。老快照兼容两条(服务端库里存着该键也不再透出 / 客户端遇未知键照常解码)。双端 build + iOS Simulator 154 例通过。
 
 ### Y5 · 客户端仍有五个已删端点的活调用(含向已删端点发送明文 apiKey 的请求体)
 
@@ -60,6 +70,7 @@
 - **位置**:`client/Neckline/Networking/APIClient.swift:535`(`POST /decisions/{id}/link`)、`:542`(`cancel`)、`:560`(`revise`)、`:569`(`scenario-outcome`)、`:616`(`PUT /settings/llm`,请求体 `SettingsLLMRequest` 含明文 `apiKey`,定义 `:210`,调用点 `client/Neckline/App/AppModel.swift:857`)。
 - **定性**:D2=A 路裁定下「老 App 打老机」是合法过渡态,⑮ 才换客户端——**但当前仓库构建出的客户端对 V2 服务端是五处 404/静默失败**,其中 LLM 设置路径还是「采集了 key、发到不存在的端点」的假成功面。⑬-5 只删了表单必填分支,没有处置这些调用面。
 - **修法**:登记进 ⑮ 的硬清单(逐个删调用点 + `SettingsLLMRequest` 一并退役,换 `/settings/providers*`);⑭-B 三方对拍时把「客户端调用面 ⊆ 服务端路由面」做成对拍脚本的一条断言,防再漂。
+- **⏸ 未修(本批次范围外)**:交办明示 Y5 归 ⑮ 硬清单,本次不动。
 
 ### Y6 · ⑬ 验收交付物缺一件:「报告与端点删除前/删除后对照表」没有落 archive/
 
@@ -68,12 +79,14 @@
 - **证据**:⑬ 验收原文「报告与端点『删除前 / 删除后』对照表落 `archive/`(⑭ 的三方对拍要用)」;`archive/` 目录最新文件停在 20260802,无任何 ⑬ 对照表;⑬ 完工记录也未提及此件。
 - **影响**:⑭ 三方对拍(老报告 vs 新报告 vs 契约)的基准输入缺席,届时只能靠 git 考古重建删除前形状。
 - **修法**:趁 ⑬ 的删除提交还新鲜(`1161441`/`1a318db`/`01d04c2`),补一份对照表归档;成本远低于 ⑭ 开工时再考古。
+- **✅ 已补**:`archive/V2-⑬_删除前后对照表_20260803.md`(端点 10 条 + 报告字段/节 + 停写六表 + 客户端渲染件,逐条「删除前 → 删除后」+ 出处 commit)。
 
 ### Y7 · `record_buy` 三段核心写入无事务、`POST /positions` 无幂等键:失败重试会开出第二笔仓
 
 - **位置**:`neckline/positions_entry.py:517-532`(`open_position` → `freeze_entry_snapshot` → `create_position_plan_v1` 三个独立连接、无共同事务);`neckline/api/app.py:962-1000`。
 - **问题**:保险丝只包了「快照内容丰富度」子项;三个**核心写入本身**是串行独立提交。`open_position` 成功后任何一步抛异常 → API 500,但持仓已落库;客户端按 500 重试 = **重复开仓**(POST 无幂等键,positions 表也没有防重约束)。同时留下「持仓无 entry_snapshot / 无 plan v1」中间态,与 ⑩ 验收「开仓即有冻结行」的隐含预期不符,`create_position_plan_version` 见到无 v1 会直接 ValueError。
 - **修法**:三写并入同一个 `with connection()`(`freeze_entry_snapshot`/`create_position_plan_v1` 照 `basket_store` 体例加可选 `conn=`);`user_actions` 记账留在事务外维持 best-effort。
+- **✅ 已修**(commit `50ff5b2`):事务照正解(`open_position` 也加 `conn=`;复用连接时不再各自 `init_schema` —— 那会另开一条连接、在对方事务开着时抢写锁并自行提交 DDL)。幂等键另做:`PositionOpenIn.idempotencyKey` → `positions.idempotency_key` 迁移列 + **部分唯一索引**,`PositionOpenOut.replayed` 如实透出;两道闸(应用层查 = 快路径,库级约束 = 真闸,并发撞车时 `IntegrityError` 转重放而不是 500)。重放只读开仓当时冻结的 `entry_snapshots` + `position_plans` v1,⛔ 不现查来源篮子(那等于给同一笔仓编第二套来源);`planDeviationNotice` 刻意不重放(本次没有新成交)。老库迁移在模拟老库上实测过。
 
 ---
 
@@ -82,11 +95,15 @@
 ### B1 · `save_baskets` / `save_tier_history` 独立入口静默丢弃 `frozen_conflicts`
 `neckline/selection/basket_store.py:199-210, 300-306`:两个独立入口把 `_conflicts` 直接丢弃(成员集冲突在该路径下连 WARNING 都没有,只有「幂等跳过」这条泛化警告);只有 `save_tier_decision` 披露。docstring 已标「正常路径应走 save_tier_decision」,但独立入口是导出的公开函数。建议:独立路径也把 conflicts 打 WARNING 并放进返回值。
 
+**✅ 已修**(commit `1052622`):三个入口共用新的 `_warn_conflicts()`,返回 stats 统一带 `frozen_conflicts`;⑤ 两条断言 stats 全等的老用例补上该键。
+
 ### B2 · 存拍 `cum_volume/cum_amount` 用 `or 0.0` 把「源没给」写成 0
 `neckline/sentinel/capture.py:168-169`:`cum_v = _f(...) or 0.0`——源缺累计量(None)时落 0.0,与模块自己「累计值原样落」的承诺及「没有 ≠ 没看」纪律相悖,还把下一拍的增量基线焊死在 0。增量列(d_v/d_a)的 null 纪律做对了,累计列漏了同一课。建议:None 原样落 null,且该码不进 `last_cum` 基线。
 
 ### B3 · `selection_packs` 单现役无 DB 级约束,多现役时读侧静默择新
 无 `is_active=1` 的 partial unique index;`pack.py:398-401` 的 `get_active_pack` 在(仅可能由手工 SQL 造成的)多现役行下按 `created_at DESC` 静默取一行、不告警,`activate_pack:480-489` 也只 deactivate 一行。建议:`_SCHEMA` 补 `CREATE UNIQUE INDEX IF NOT EXISTS … ON selection_packs(is_active) WHERE is_active=1`,读侧遇 >1 行打 WARNING。
+
+**✅ 已修**(commit `d61b0b8`),但**索引没放进 `_SCHEMA`**:那样老库上若已有两行现役,`executescript` 会在这条上抛 `IntegrityError` 并**中断整个建表脚本**,而 `init_schema` 是所有入口的开机路径 —— 一个「防新脏数据」的约束会把已有脏数据的库锁死开不了机,还只给一句 `UNIQUE constraint failed`。改放新的 `_POST_MIGRATION_INDEXES` 并逐条 try/except:吵得足够响 + 说清怎么修 + 继续启动(⛔ 开机脚本无权替用户清理数据)。读侧告警照建议加,排序补 `pack_version DESC` 作确定性 tie-break。
 
 ### B4 · `scripts/oneoff/` 两个留档脚本已断 import(运行即 ImportError)
 `compare_intel_sort_key_switch.py:39-40`(import 已删的 `intel_candidates`/`report.candidates`)、`compare_a2b3_industry_switch.py:26`。留档定位没问题,但「留档审计用」的脚本如今跑不起来。建议:文件头补一行「⑬ 后依赖已删,仅供阅读」,或挪 `archive/`。

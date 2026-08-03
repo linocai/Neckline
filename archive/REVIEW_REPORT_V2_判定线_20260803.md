@@ -15,6 +15,10 @@
   failed**(与任务书基线一致);④ 两条三路等价测试单独 3 连跑全绿(全量下偶发失败未复现,
   见 🟡-6)。真实 `data/neckline.db` 与生产零接触,仓库零代码改动(仅本报告)。
 
+> **销项状态(@builder-pro 修复批次,2026-08-03)**:🟡-1 ✅ · 🟡-2 ✅ · 🟡-5 ✅ · 🔵-1 ✅。
+> **未修**:🟡-3 / 🟡-4(planner 已裁定,§五 新增 ⑪-D 与 ⑧-F,另派施工)、🟡-6(⑯ 上生产前
+> 定位,已挂 background task)、🔵-2/3/4/5。逐条标注见各条目下的 `✅ 已修` 行。
+
 **总评**:四锁的主干是真的锁住了 —— 机械分访问锁是运行期证伪而非注释自觉、跨档拒收无绕过、
 `basket_falsified` 无 kind 无调用点、`falsified` 定格在 store 层强制、⑨ 判分唯一源以冻结源
 文本+行为双对拍锁死、种子确定性修复(`3af64e0`)后四类全部收口。**没有发现可直接绕过纪律
@@ -52,6 +56,19 @@
 - **修法方向**:验证侧改为「`require` 中任一条判不了(`None`)→ 该成员验证侧整体 `None`
   (不计命中)+ 新 flag `spec_levels_partial`」,与失效复合条件的「半条判不了就整条不判」
   对齐;改动属条件集语义变化,**须 bump `VERIFICATION_RULESET_VERSION`**,并让 ⑨ 分层可见。
+- **✅ 已修**(commit `0f885b2`):照修法方向,并把「一侧结论怎么合成」**上收到
+  `verification_rules.combine_side()`** —— 「判不了怎么算」与「什么算命中」同样决定判据松紧,
+  同属条件集单一源;⑧ 只负责代入观测,`basket_verify` 那条「不写任何阈值、不定任何门槛」的
+  纪律对这套读法同样成立。合成读法取 **Kleene 三值**(AND 任一 False→False,否则任一
+  None→None;OR 对称):既不放宽 AND(原「扔掉不可判再取 all()」),也不丢掉「已经确定跌破
+  D0 收盘」这种能下定论的否定 —— 「有 None 就整侧不判」会犯后一种错。失效侧对称核查过:
+  改后 OR 侧在「已判的全 False、还有一条判不了」时同样返 `None`(计数上仍不加分,但证据里
+  分得开「确实没破位」与「今天根本判不了」),有专门单测锁。新 flag `spec_levels_partial`
+  (成员级 + evidence 顶层名单)与「两侧全 null」的 `spec_levels_missing` 分开;evidence 增
+  `ruleset_version_engine`(卡上冻的版本 vs 判定代码当下版本,跨版本那几天 ⑨ 分层才不会记错
+  层)。**已 bump `VERIFICATION_RULESET_VERSION = verify_ruleset_v2`**;ruleset 快照守门同步
+  纳入 `side_logic` 真值表(光锁「什么算命中」锁不住这次的变化)。回归用 reviewer 的探针路径
+  (成员 B 的 D0 `ma20` 缺失)。
 
 ### 🟡-2 盘前篮子剧本核对(⑬-7)漏掉 ⑧-E 除权除息锚失效检测,分红季会产出成员级假警报并进 9:26 推送
 
@@ -70,6 +87,16 @@
   冻结锚今日失效」;⛔ 不做自动 rescale(与 ⑧-E 同理)。
 - **附注**:第 4 类「持仓大幅低开」用 `buy_price×(1−stop_pct)` 同样无除权防护,但那是 V1
   既有行为(持仓哨兵 `stop_approach` 同理),非本次引入,建议一并挂账不算本条。
+- **✅ 已修**(commit `47775cb`):照修法方向。`basket_verify._anchor_mismatch` 公开为
+  `anchor_mismatch`(全项目唯一一份检测器,⛔ 不许抄第二份 —— 抄一份 = 两处容差各自漂移,
+  正是 ⑧-E 那场事故的复发路径),precall 侧薄封装 `member_anchor_stale(script, quote)`。
+  两个 judge 函数**入口**先检测再判阈值(与 ⑧-E「检测先于任何条件判定」同序),编排层另标
+  `member_ex_rights` + 落 `sentinel_events`;⛔ 不自动 rescale,文案写「疑似除权除息(或行情源
+  异常)」——盘前没有 `adj_factor` 交叉确认能力,确诊留今晚 ⑧-E EOD 那一拍。该标记**不计入
+  `summary_actionable`**(否则分红季天天推);竞价量能附注照常(比的是量,不读冻结锚)。
+  9:26 汇总文案增「另 N 只疑似除权除息、冻结锚失效,今日未核对」——「没核对」与「核对过没
+  异常」分得开。回归造了除权样本(用本报告点名的 603409.SH 真实数值)。
+  **附注那条(第 4 类持仓低开)按建议未动**,仍挂账。
 
 ### 🟡-3 `take_profit` 立即级 APNs 的触发阈值 = LLM 产出的离场参考区间(未夹逼),与 §2.0 第 1 条 / §2.8-C-2(a) 的字面红线冲突未收口
 
@@ -132,6 +159,10 @@
   `{neckline.sentinel.channels, neckline.api.notify, neckline.push.apns, neckline.notify_kinds,
   neckline.sentinel.positions, neckline.sentinel.holding, neckline.positions_entry}`,并加一条
   反向存在性断言(清单里的模块名必须真实存在,防再次锁空靶)。
+- **✅ 已修**(commit `0f885b2`):照修法方向逐字落地,反向存在性断言用 `importlib.util.find_spec`。
+  另补一处报告未提的漏网:原 AST 扫描只看 `ImportFrom.module`,`from neckline.api import notify`
+  的 module 是 `neckline.api`、被 import 的名字才是 `notify` —— 这种写法**照样绕过**。已改成
+  同时收集 `module` 与 `module.name`,三种 import 写法逐一验证过会被抓到。
 
 ### 🟡-6 ④ 扫描层三路等价测试在全量套件下偶发失败(已挂账未定位)—— 「同输入两跑逐位一致」的确定性主张未完全闭环
 
@@ -159,6 +190,9 @@
    算),从不读 `evaluable_members`。实际行为(全 null 成员照占分母 → 偏向 `unclear`)是
    保守方向、符合 ⑦-b「缺数据多到够不着门槛 → unclear」,**该修的是 docstring**,别让后人
    照注释"补全"出第二套门槛。与 🟡-1 一并处理最省。
+   **✅ 已修**(commit `0f885b2`):按实际行为改口 —— 明写「`evaluable_members` 只是留痕计数,
+   不是第二道门槛,⑧ 从不读它;阈值全 null 的成员照占分母,这是刻意的保守方向」,并留下
+   ⛔ 别照旧注释补全出第二套门槛的告诫。
 2. **种子截断优先级 = crc32 任意序**:`scan/seeds.py:284-291` 修复确定性时把四类种子一律按
    `seed_key`(crc32)升序,`hot_industry` 因此失去 `industry_rank` 语义序;⑤ 只取前 20 颗,
    某类内部超过剩余额度时,进聚合的是"crc32 恰好小"的而非"最强的"。确定性已达成,但截断
