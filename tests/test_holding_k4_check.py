@@ -196,8 +196,14 @@ def _panel_row(code, close=10.5, **hits):
     return r
 
 
-def test_build_has_strong_only_price_volume(monkeypatch):
-    """强价量命中(A3)→ has_strong=True(触发第六类);仅题材≥4天(弱证据)→ has_strong=False。"""
+def test_build_has_strong_only_price_volume(monkeypatch, isolated_env):
+    """强价量命中(A3)→ has_strong=True(触发第六类);仅题材≥4天(弱证据)→ has_strong=False。
+
+    ⚠ `db_path=` **必须显式传**(A8,CLAUDE.md「测试隔离」条):`build_holding_k4_check`
+    内部经 `brain.get_version` / `holding_store.locked_time_exit_map` 走
+    `neckline.db.connection(None)`,而 `isolated_env` **不重写** `neckline/db.py` 自己那份
+    `settings` —— 不传就静默落到真实开发库 `data/neckline.db`(V2-① 登记的既有缺陷,
+    2026-08-04 用全量套件探针定位到本文件 6 个用例)。"""
     rows = [_panel_row("600001.SH", _hit_A3=True), _panel_row("600002.SH")]
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel(rows))
     # 600002 命中 A2(题材≥4)但弱证据:构造行业强度热表使其所属行业 persist≥4
@@ -205,7 +211,7 @@ def test_build_has_strong_only_price_volume(monkeypatch):
                                            industry_rank=1, is_strength_day=True, persist_days=5)]
     industry_map = {"600002.SH": "题材行业"}
     positions = [_pos(1, "600001.SH"), _pos(2, "600002.SH")]
-    items = hk.build_holding_k4_check(TD, _RULE_K1, positions,
+    items = hk.build_holding_k4_check(TD, _RULE_K1, positions, db_path=isolated_env.db_path,
                                       industry_scores=industry_scores, industry_map=industry_map)
     by_code = {it.ts_code: it for it in items}
     assert by_code["600001.SH"].has_strong is True                 # A3 强价量
@@ -216,23 +222,26 @@ def test_build_has_strong_only_price_volume(monkeypatch):
     assert a2_item.strong_price_volume_labels() == []             # 无强价量文案 → 不推 APNs
 
 
-def test_build_net_float_and_two_tier_state(monkeypatch):
-    """net_float 扣双边费(现价>成本 → 浮盈);两档 config 下 d≥5 且浮盈 → profit_exempt。"""
+def test_build_net_float_and_two_tier_state(monkeypatch, isolated_env):
+    """net_float 扣双边费(现价>成本 → 浮盈);两档 config 下 d≥5 且浮盈 → profit_exempt。
+    (`db_path=` 显式传的理由同上一条,A8。)"""
     # 现价 11 vs 成本 10,qty 1000 → 毛浮盈 1000 元,扣费后仍明显 >0
     rows = [_panel_row("600001.SH", close=11.0)]
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel(rows))
     # buy_date 距 TD ≥5 交易日(20260710 → 20260717 跨 5 交易日)
     positions = [_pos(1, "600001.SH", buy_price=10.0, qty=1000, buy_date="20260710", buy_fees=15.0)]
-    items = hk.build_holding_k4_check(TD, _RULE_V13, positions)
+    items = hk.build_holding_k4_check(TD, _RULE_V13, positions, db_path=isolated_env.db_path)
     it = items[0]
     assert it.net_float is not None and it.net_float > 0
     assert it.time_exit_state == PROFIT_EXEMPT and it.max_hold_effective == 15
 
 
-def test_build_no_data_position_conservative(monkeypatch):
-    """停牌/无 EOD 行(不在面板)→ has_data False、net_float None、无命中。"""
+def test_build_no_data_position_conservative(monkeypatch, isolated_env):
+    """停牌/无 EOD 行(不在面板)→ has_data False、net_float None、无命中。
+    (`db_path=` 显式传的理由见 `test_build_has_strong_only_price_volume`,A8。)"""
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([]))
-    items = hk.build_holding_k4_check(TD, _RULE_V13, [_pos(1, "600001.SH")])
+    items = hk.build_holding_k4_check(TD, _RULE_V13, [_pos(1, "600001.SH")],
+                                      db_path=isolated_env.db_path)
     it = items[0]
     assert it.has_data is False and it.net_float is None and it.hits == []
 
@@ -308,12 +317,15 @@ def test_eod_no_freeze_before_decision_point(isolated_env, monkeypatch):
     assert holding_store.locked_time_exit_map(db_path=db) == {}
 
 
-def test_build_scenario_review_flag(monkeypatch):
+def test_build_scenario_review_flag(monkeypatch, isolated_env):
+    """(`db_path=` 显式传的理由见 `test_build_has_strong_only_price_volume`,A8。)"""
+    db = isolated_env.db_path
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([_panel_row("600001.SH")]))
-    items = hk.build_holding_k4_check(TD, _RULE_K1, [_pos(7, "600001.SH")],
+    items = hk.build_holding_k4_check(TD, _RULE_K1, [_pos(7, "600001.SH")], db_path=db,
                                       scenario_position_ids={7})
     assert items[0].scenario_review is True
-    items2 = hk.build_holding_k4_check(TD, _RULE_K1, [_pos(8, "600001.SH")], scenario_position_ids={7})
+    items2 = hk.build_holding_k4_check(TD, _RULE_K1, [_pos(8, "600001.SH")], db_path=db,
+                                       scenario_position_ids={7})
     assert items2[0].scenario_review is False
 
 
@@ -586,20 +598,21 @@ def test_locked_state_provider_missing_returns_none(isolated_env):
 
 # —— v1.4-①-B 停牌 / 无当日 EOD 行的持仓票(§七 P0-2)——————————————————————————
 
-def test_no_data_hangs_time_exit_instead_of_pushing(monkeypatch):
+def test_no_data_hangs_time_exit_instead_of_pushing(monkeypatch, isolated_env):
     """到判定点(D≥5)但当日无 EOD 行且从未定格 → 判向挂起 `suspended_hold`,
     **且这一天不写定格**(停牌当天根本没有收盘价,硬判等于凭空定一个不可回头的向)。"""
     from neckline.sentinel.precall import SUSPENDED_HOLD
 
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([]))
-    items = hk.build_holding_k4_check(TD, _RULE_V13, [_pos(1, "600001.SH", buy_date="20260710")])
+    items = hk.build_holding_k4_check(TD, _RULE_V13, [_pos(1, "600001.SH", buy_date="20260710")],
+                                      db_path=isolated_env.db_path)
     it = items[0]
     assert it.d_count >= 5                       # D 计数照常累计(纪律口径是「持有交易日数」)
     assert it.time_exit_state == SUSPENDED_HOLD
     assert (it.time_exit_locked_state, it.time_exit_locked_date, it.time_exit_locked_net_float) == (None, None, None)
 
 
-def test_no_data_skips_whole_checkup_including_theme_hits(monkeypatch):
+def test_no_data_skips_whole_checkup_including_theme_hits(monkeypatch, isolated_env):
     """**整份体检跳过**:当日无 EOD 行时连题材类 A2/B3(不依赖价量面板)也不产出——
     「空牌 = 体检过了没问题」与「今天压根没体检」必须能分开(§3.8)。"""
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([]))
@@ -607,7 +620,7 @@ def test_no_data_skips_whole_checkup_including_theme_hits(monkeypatch):
                                            industry_rank=1, is_strength_day=True, persist_days=6)]
     industry_map = {"600001.SH": "题材行业"}
     items = hk.build_holding_k4_check(
-        TD, _RULE_V13, [_pos(1, "600001.SH")],
+        TD, _RULE_V13, [_pos(1, "600001.SH")], db_path=isolated_env.db_path,
         industry_scores=industry_scores, industry_map=industry_map,
     )
     it = items[0]
@@ -616,7 +629,7 @@ def test_no_data_skips_whole_checkup_including_theme_hits(monkeypatch):
     # 对照:同样的题材条件,有 EOD 行时 A2 是会命中的(证明上面的空不是因为条件不成立)
     monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([_panel_row("600001.SH")]))
     it2 = hk.build_holding_k4_check(
-        TD, _RULE_V13, [_pos(1, "600001.SH")],
+        TD, _RULE_V13, [_pos(1, "600001.SH")], db_path=isolated_env.db_path,
         industry_scores=industry_scores, industry_map=industry_map,
     )[0]
     assert {h.code for h in it2.hits} == {"A2_theme_persist_ge_4"}

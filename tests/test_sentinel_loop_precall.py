@@ -28,6 +28,19 @@ class _FixedNow:
         return getattr(datetime, name)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_loop_db(tmp_path, monkeypatch):
+    """把循环里一切走 `_db()` 的路径钉到临时库(A8,2026-08-04 用全量套件探针定位)。
+
+    ⚠ **为什么本文件需要它**:盘前那一拍除了被 stub 掉的 `run_precall_tick`,循环里
+    还挂着 **⑧-B 竞价存拍旁路**(`capture.run_auction_capture`,9:25–9:30 窗口真会被
+    调到)——它经 `universe.load_watch_universe → report.store.load_report →
+    init_schema(None)` 落到 `neckline/db.py` 自己那份**未被任何夹具重写**的
+    `settings.db_path` = **真实开发库**(CLAUDE.md「测试隔离」条)。本文件只验盘前分支
+    的接线,不该顺手在开发库上建一遍 schema。autouse = 新增用例自动受保护。"""
+    monkeypatch.setattr(app_mod, "_DB_PATH_OVERRIDE", tmp_path / "loop.db")
+
+
 def _run_one_iteration(monkeypatch, *, now, precall_result=None, precall_exc=None):
     """驱动 `_sentinel_loop` 恰好一次迭代:stub 令 run_precall_tick 被调后置位 stop。"""
     monkeypatch.setattr(app_mod, "datetime", _FixedNow(now))

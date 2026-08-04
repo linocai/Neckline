@@ -455,6 +455,75 @@ def test_spec_levels_are_null_when_data_missing_not_zero():
     assert spec["evaluable_members"] == 0
 
 
+# ── spec ⇄ 人读条款 一致性(A6-①,契约线审计 🔵 B6-①:V1 的
+#    `test_candidates.py::test_invalidation_spec_and_text_consistent` 随候选管线
+#    陪葬后没重建。V2 的等价对象 = 卡上**双份条款**:结构化半份(`verification_spec` /
+#    `invalidation_spec`,⑧ 的唯一判据源)与人读半份。人话半份由 LLM 写、机器验不了,
+#    但**喂给它的那份人读阈值块**(`spec_threshold_text`,plan 验收点名的通路,prompt
+#    里写死「人话条款必须与机械阈值同频」)是机械生成的 —— 它一旦与 spec 讲不一样的话,
+#    LLM 手上的条款和盘中判定用的条款就不是一回事了。这条测试锁的就是这个通路。────
+
+def _spec_pair(mechs, *, stop_pct: Optional[float] = 0.05):
+    v = bc.build_verification_spec("b1", D0, list(mechs))
+    iv = bc.build_invalidation_spec("b1", D0, list(mechs), stop_pct=stop_pct)
+    return v, iv
+
+
+def test_spec_text_names_every_condition_and_every_threshold():
+    """正例:每条条件码的人读描述、每个非空阈值、两侧的聚合门槛,都必须出现在
+    人读块里 —— 一条都不许在"翻译"过程中掉队。"""
+    mechs = [_mech("600000.SH"), _mech("600001.SH", close=20.0, ma20=18.4,
+                                       limit_up=22.0, limit_down=18.0, stop_price=19.0)]
+    v, iv = _spec_pair(mechs)
+    text = bc.spec_threshold_text(v, iv)
+
+    # ① 条件码 → 人读描述(单一源 `verification_rules.COND_DESC`,不在渲染层另拍文案)
+    for code in v["require"] + iv["any_of"]:
+        assert bc._COND_DESC[code] in text, f"人读块缺条件描述:{code}"
+    # ② 两侧聚合门槛(判「几只成员算数」的那个数)
+    assert f"≥ {v['min_members_hit']}" in text and f"≥ {iv['min_members_hit']}" in text
+    # ③ 逐成员的每个非空阈值都出现(两位小数,与 spec 里的数值同一个)
+    for row in v["members"]:
+        assert row["ts_code"] in text
+        for key in (bc.COND_CLOSE_AT_OR_ABOVE_REF, bc.COND_HOLDS_MA20):
+            assert f"{row[key]:.2f}" in text, f"验证侧阈值没进人读块:{row['ts_code']} {key}"
+    for row in iv["members"]:
+        assert f"{row[bc.COND_CLOSE_BELOW_STOP_LINE]:.2f}" in text
+        assert f"{row[bc.COND_LIMIT_DOWN_TOUCH]:.2f}" in text
+        both = row[bc.COND_BELOW_REF_AND_MA20]
+        assert f"{both['ref_close']:.2f}" in text and f"{both['ma20']:.2f}" in text
+    # ④ 形状版本两侧各自透出(冻结件跨版本回看要认得出是哪套形状)
+    assert v["spec_version"] in text and iv["spec_version"] in text
+
+
+def test_spec_text_says_not_judged_where_the_spec_is_null_and_invents_no_number():
+    """负例(本条是这套测试的重点):spec 里是 `null` 的那条,人读块必须说成
+    「不判 / 算不出」,**⛔ 不许出现任何编出来的数字**。null 被翻译成一个具体价位 =
+    LLM 拿着一个系统根本不会判的阈值去写条款,正是「没有」与「没看」混为一谈。"""
+    blind = _mech("600002.SH", close=None, ma20=None,
+                  limit_up=None, limit_down=None, stop_price=None)
+    v, iv = _spec_pair([blind], stop_pct=None)
+    text = bc.spec_threshold_text(v, iv)
+
+    assert v["members"][0][bc.COND_HOLDS_MA20] is None          # 前提:spec 真的是 null
+    assert iv["members"][0][bc.COND_LIMIT_DOWN_TOUCH] is None
+    assert text.count("不判") >= 5                              # 五处阈值全部如实标
+    assert "0.00" not in text                                   # ⛔ 没有把 null 写成 0
+    # 该出现的仍要出现:条件描述与门槛不因缺数据而消失(条款还在,只是这次判不了)
+    for code in v["require"] + iv["any_of"]:
+        assert bc._COND_DESC[code] in text
+
+
+def test_spec_text_prints_the_stop_line_from_the_spec_not_a_hardcoded_multiplier():
+    """止损线那一格必须**原样取 spec 里的数**(它由现役章程 `stop_pct` 算出),⛔ 渲染层
+    不许自己乘一个 0.95 —— 那样章程一换,人读条款与盘中判定就各说各话。用一个不可能
+    被巧合命中的价位(8.37)证明数字真是从 spec 流过来的。"""
+    odd = _mech(stop_price=8.37)
+    text = bc.spec_threshold_text(*_spec_pair([odd]))
+    assert "止损线 8.37" in text
+    assert f"{odd.close * 0.95:.2f}" not in text.split("止损线")[1][:12]
+
+
 def test_structured_thresholds_reach_the_llm_context():
     """plan 验收:**结构化阈值确实出现在喂给 LLM 的上下文里**(剧本与盘中自动警报
     同频,v1.5-①-A 体例)。"""

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import ast
 import inspect
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -25,6 +25,36 @@ pytestmark = pytest.mark.usefixtures("isolated_env")
 CODE = "600519.SH"
 TODAY = date(2026, 7, 31)
 MIDDAY = datetime(2026, 7, 31, 10, 45, tzinfo=CN_TZ)
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """把**三处时间源**一起钉在 `MIDDAY`,返回那个时刻(A7,2026-08-04)。
+
+    **为什么必须三处一起冻**:冷却那条用例要同时摆布「上次命中在什么时候」与
+    「现在几点」,而这两件事分别由三个各自取墙钟的地方决定 ——
+    ① `custom_alerts._now_utc()`(提醒的 `created_at` → `created_trade_day` →
+    **创建当日 15:00 自动失效**)、② `dedup.record_pushed()` 落的 `pushed_at`
+    (= `last_fired_at`,冷却的起点)、③ 调用方传给 `evaluate_alerts` 的 `now`。
+    只冻第三个不够:老写法拿 `datetime.now(CN_TZ)` 当 now、再 `+700s` 试冷却到期,
+    **北京时间 14:48:20 之后跑就必然越过 15:00 收盘线**,提醒先被判 `expired`、
+    当拍不再响 —— 每天傍晚的全量跑都带这一条"已知红"(判定线/契约线两份审计报告
+    都点过名)。冻住之后任何时段跑都绿,且断言的仍是同一件事。
+
+    ⛔ 不改生产代码来迁就测试:`record_pushed` 不加 `pushed_at` 形参,这里 patch
+    模块级 `datetime` 名字(测试内 monkeypatch,进程外零影响)。"""
+    import neckline.sentinel.dedup as dedup_mod
+
+    frozen_utc = MIDDAY.astimezone(timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_utc.astimezone(tz) if tz is not None else MIDDAY.replace(tzinfo=None)
+
+    monkeypatch.setattr(ca, "_now_utc", lambda: frozen_utc.isoformat(timespec="seconds"))
+    monkeypatch.setattr(dedup_mod, "datetime", _FrozenDatetime)
+    return MIDDAY
 
 
 def _q(code, price, pre_close=10.0, high=None, volume=1000.0) -> Quote:
@@ -177,18 +207,23 @@ class TestEvaluateAlerts:
                                db_path=isolated_env.db_path)
         assert r.hits == [] and r.skipped[a.id] == "max_fires_reached"
 
-    def test_cooldown_blocks_second_hit_and_expires(self, isolated_env):
+    def test_cooldown_blocks_second_hit_and_expires(self, isolated_env, frozen_clock):
+        """⚠ 走**冻结时钟**(`frozen_clock` fixture,理由见其 docstring):老写法用
+        `datetime.now(CN_TZ)+700s`,北京时间 14:48 之后跑会越过 15:00 收盘线、提醒先
+        被判失效 → 每晚必红。冻住之后任何时段跑都绿,断言的还是同一件事。"""
+        now = frozen_clock
         a = _mk(isolated_env, [{"metric": "price", "op": "<=", "value": 9.6}],
                 max_fires=0, cooldown_seconds=600)
         record_pushed(TODAY, cu.SENTINEL_NAME, CODE, f"alert{a.id}#1",
                       payload={}, db_path=isolated_env.db_path)
         ca.mark_fired(a.id, db_path=isolated_env.db_path)
         # 刚推完 → 冷却中
-        r = cu.evaluate_alerts(datetime.now(CN_TZ), quotes={CODE: _q(CODE, 9.5)}, positions=[],
+        r = cu.evaluate_alerts(now, quotes={CODE: _q(CODE, 9.5)}, positions=[],
                                db_path=isolated_env.db_path)
         assert r.hits == [] and r.skipped[a.id] == "cooldown"
-        # 冷却过后 → 再次可命中
-        later = datetime.now(CN_TZ) + timedelta(seconds=700)
+        # 冷却过后 → 再次可命中(700s > cooldown 600s,且仍在收盘前)
+        later = now + timedelta(seconds=700)
+        assert later.time() < time(15, 0)                    # 冻结时钟真的没越过收盘线
         r2 = cu.evaluate_alerts(later, quotes={CODE: _q(CODE, 9.5)}, positions=[],
                                 db_path=isolated_env.db_path)
         assert [h.alert.id for h in r2.hits] == [a.id]
