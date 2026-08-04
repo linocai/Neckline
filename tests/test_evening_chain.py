@@ -109,8 +109,9 @@ class TestOrderIsPinnedDown:
         ev.run_evening_chain(D, segments=["report", "basket", "verify"], use_llm=False)
         assert chain_stubs.calls == ["verify", "basket", "report"]
 
-    def test_unrequested_segments_are_marked_skipped_not_ok(self, chain_stubs):
-        res = ev.run_evening_chain(D, segments=[ev.SEG_REPORT], use_llm=False)
+    def test_unrequested_segments_are_marked_skipped_not_ok(self, chain_stubs, isolated_env):
+        res = ev.run_evening_chain(D, segments=[ev.SEG_REPORT], use_llm=False,
+                                   db_path=isolated_env.db_path)
         assert res.status[ev.SEG_VERIFY] == ev.STATUS_SKIPPED
         assert res.status[ev.SEG_SCAN] == ev.STATUS_SKIPPED
         assert res.status[ev.SEG_REPORT] == ev.STATUS_OK
@@ -159,9 +160,12 @@ class TestDroppedThreeStates:
         ev.run_evening_chain(D, use_llm=False)
         assert [d.reason for d in chain_stubs.dropped_seen] == ["capacity_overflow"]
 
-    def test_dropped_is_none_when_basket_segment_was_not_requested(self, chain_stubs):
-        """没跑 ⑥ → `None`(③b 如实标"本段未取得"),⛔ 不是 `[]`。"""
-        ev.run_evening_chain(D, segments=[ev.SEG_REPORT], use_llm=False)
+    def test_dropped_is_none_when_basket_segment_was_not_requested(self, chain_stubs, isolated_env):
+        """没跑 ⑥ 且跨进程交接表当天也无行(⑤⑥ 从未跑过)→ `None`(③b 如实标
+        "本段未取得"),⛔ 不是 `[]`。V2-⑯-D 补记后,这条同时是"交接表无行"分支的
+        回归锁——完整的跨进程状态矩阵见 `TestDroppedCrossProcessHandoff`。"""
+        ev.run_evening_chain(D, segments=[ev.SEG_REPORT], use_llm=False,
+                             db_path=isolated_env.db_path)
         assert chain_stubs.dropped_seen is None
 
     def test_dropped_is_none_when_basket_segment_blew_up(self, chain_stubs, monkeypatch):
@@ -181,6 +185,88 @@ class TestDroppedThreeStates:
         monkeypatch.setattr(ev, "_run_basket_segment", _basket)
         ev.run_evening_chain(D, use_llm=False)
         assert chain_stubs.dropped_seen == []
+
+
+class TestDroppedCrossProcessHandoff:
+    """V2-⑯-D 补记(2026-08-04 定向小修):⑤⑥⑦(`neckline-basket.service`)与
+    「⑨+报告」(`neckline-report.service`)拆进两个独立进程后,报告段独立跑时必须
+    能跨进程读回 ⑥ 的结果——`basket_dropped_handoff` 表是唯一落点。
+
+    **两次独立调用模拟 seg2/seg3**:第一次直接调真实写入口 `save_dropped_handoff`
+    (= seg2 进程里 `_run_basket_segment` 落表那一刻的真实效果,不经
+    `run_evening_chain` 编排),第二次调用真实的 `run_evening_chain(segments=
+    ['report'])`(= seg3 独立进程的真实调用形状)——两次只共享磁盘上同一个
+    sqlite 文件,不共享任何进程内内存状态,`chain_stubs` 只桩掉 LLM/批算重活,
+    交接表读写走的是本文件测的真代码。"""
+
+    def test_seg3_alone_reads_back_overflow_that_seg2_wrote(self, chain_stubs, isolated_env):
+        from neckline.selection.basket_dropped_handoff import save_dropped_handoff
+        from neckline.selection.tier import DroppedBasket
+
+        save_dropped_handoff(D, [
+            DroppedBasket("k1", "capacity_overflow", 0.81),
+            DroppedBasket("k2", "below_quality_line", 0.22),
+        ], db_path=isolated_env.db_path)
+
+        ev.run_evening_chain(D, segments=[ev.SEG_REPORT], use_llm=False,
+                             db_path=isolated_env.db_path)
+        assert [(d.basket_key, d.reason, d.mech_score) for d in chain_stubs.dropped_seen] == [
+            ("k1", "capacity_overflow", 0.81), ("k2", "below_quality_line", 0.22),
+        ]
+
+    def test_seg3_alone_reads_back_zero_overflow_as_empty_list_not_none(
+        self, chain_stubs, isolated_env
+    ):
+        """跑了、零溢出 ≠ 没跑——空列表也是"取得了"的答案,不能退化成 `None`。"""
+        from neckline.selection.basket_dropped_handoff import save_dropped_handoff
+
+        save_dropped_handoff(D, [], db_path=isolated_env.db_path)
+        ev.run_evening_chain(D, segments=[ev.SEG_REPORT], use_llm=False,
+                             db_path=isolated_env.db_path)
+        assert chain_stubs.dropped_seen == []
+
+    def test_seg3_alone_before_seg2_ever_ran_stays_honestly_none(
+        self, chain_stubs, isolated_env
+    ):
+        """交接表当天无行(seg2 还没跑过,或跑了但 ⑤ 零产出)——报告必须如实标
+        "未取得",⛔ 不许猜。"""
+        ev.run_evening_chain(D, segments=[ev.SEG_REPORT], use_llm=False,
+                             db_path=isolated_env.db_path)
+        assert chain_stubs.dropped_seen is None
+
+    def test_attempted_and_failed_this_run_is_not_rescued_by_a_stale_handoff_row(
+        self, chain_stubs, isolated_env, monkeypatch
+    ):
+        """⚠ 关键防回归:哪怕交接表里躺着今天早些时候写的旧数据,只要**本次调用**
+        确实尝试跑了 SEG_BASKET 且炸了,结果就必须原样是 `None`——不许被表里的
+        旧数据"救回来"(那会把"这次失败"讲成"这次成功",一个编造出来的市场结论;
+        见 `_run_basket_segment` 与 `run_evening_chain` 里"炸了就是 None 不是回退
+        查表"的既定纪律)。"""
+        from neckline.selection.basket_dropped_handoff import save_dropped_handoff
+        from neckline.selection.tier import DroppedBasket
+
+        save_dropped_handoff(D, [DroppedBasket("stale", "capacity_overflow", 0.5)],
+                             db_path=isolated_env.db_path)
+        monkeypatch.setattr(ev, "_run_basket_segment",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("篮子段炸了")))
+        ev.run_evening_chain(D, use_llm=False, db_path=isolated_env.db_path)
+        assert chain_stubs.dropped_seen is None
+
+    def test_single_process_full_chain_never_consults_the_handoff_table(
+        self, chain_stubs, isolated_env
+    ):
+        """单进程整链跑法(`SEG_BASKET` 恒在 `wanted` 里)绝不查表——哪怕表里躺着
+        与本次内存结果不同的数据,也必须原样用本次内存结果(行为逐字节不变,
+        单进程路径不受本次补记影响)。"""
+        from neckline.selection.basket_dropped_handoff import save_dropped_handoff
+        from neckline.selection.tier import DroppedBasket
+
+        save_dropped_handoff(D, [DroppedBasket("stale", "capacity_overflow", 0.5)],
+                             db_path=isolated_env.db_path)
+        ev.run_evening_chain(D, use_llm=False, db_path=isolated_env.db_path)  # 默认全链
+        # `chain_stubs` 的 `_basket` 桩返回 basket_key="k9",与表里的 "stale" 不同——
+        # 断言必须命中内存结果,证明查表分支未被触发。
+        assert [d.basket_key for d in chain_stubs.dropped_seen] == ["k9"]
 
 
 class TestEmptyIsNotFailure:

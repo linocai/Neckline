@@ -369,24 +369,32 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-04 · 🚀 V2.0.0 已上新机 + 公网入口打通(未对外)—— ①→⑯ 全部完工,只剩 ⑰ 双端换包 + 两件待裁定**。各块细节见「完工记录」。**⑯ 新服务器建成并跑通 V2 全链**:数据搬家逐文件 md5 全等、`init_schema` 零索引 WARNING、P0-23 门禁全过(主链峰值 **439 MB** / 3.8 GiB)、两步包激活 + B3 退役全绿。**⑯-G 已收口**:`https://nk.linotsai.top/api/v1/health` **公网实测 = `{"status":"ok","version":"v2.0.0"}`**(LE 证书、TLS1.3、HTTP/2)。**老机 `ln` 全程零接触**(v1.5.2 照常在跑)。
+**2026-08-04 · 🚀 V2.0.0 已上新机 + 公网入口打通(未对外)—— ①→⑯ 全部完工,只剩 ⑰ 双端换包 + 一件待裁定**。各块细节见「完工记录」。**⑯ 新服务器建成并跑通 V2 全链**:数据搬家逐文件 md5 全等、`init_schema` 零索引 WARNING、P0-23 门禁全过(主链峰值 **439 MB** / 3.8 GiB)、两步包激活 + B3 退役全绿。**⑯-G 已收口**:`https://nk.linotsai.top/api/v1/health` **公网实测 = `{"status":"ok","version":"v2.0.0"}`**(LE 证书、TLS1.3、HTTP/2)。**⑯-D 的 ③b 跨进程缺陷已修复**(见下)。**老机 `ln` 全程零接触**(v1.5.2 照常在跑)。
 
 - **✅ ⑯-G 公网入口已通(2026-08-04 收口,走 NPM 自定义 include 路线)**:不动用户既有的 `nginx-proxy-manager` 面板与数据库,只在它官方留的扩展位 `/opt/npm/data/nginx/custom/http.conf` 加一份**纯增量**配置(`server_name` 只有 `nk.linotsai.top`),反代到 `172.18.0.1:8002`;证书走**宿主 certbot webroot** + deploy hook 投递进容器。**既有 `nas`/`mt`/`web` + 一个 IP 站四站回归与基线逐行相同**。⚠ **服务仍全部 `disabled`,公网现在打过去是 502**(双推送处置不变,留 ⑰ 一体切换)。
-- **🔴 两件卡着、等你一句话**(⑯ 停手上报,builder 不自行处置):
-  1. **🔴 `ln.linotsai.top` 与 `lf.linotsai.top` 的 A 记录已从 DNS 消失(NXDOMAIN)** —— 四个解析器一致;同域 `linotsai.top`/`www`/`fiscal`/`xiaoran` 正常。**老机服务本身完好**(`neckline.service` active、`/health` = v1.5.2 用 IP+Host 头实测 200、两个 timer 昨日正常跑过)。**= 老 App 与 Lino Finance 现在都连不上服务端,而服务端其实活着。** 非本次操作所致;按零接触红线 builder 未动任何 DNS。
-  2. **⑯-D 三段切法的一处真代价** —— 报告 ③b `droppedBaskets` 的数据源只在内存里随链传,拆成三个 unit 后**该节将恒为 `available=false` 且披露文案会误导**(写「本次未运行 Tier 分层引擎」,而今晚其实跑了)。三条出路见 `deploy/neckline-report.service` 头部。**因 timer 未 enable,尚未实际发生。**
-- **新机事实(`nk` / `114.66.0.38`,Ubuntu 24.04.4 / 4 vCPU / 3.8 GiB / 58G)**:`/opt/neckline` 代码态 = 本地 v2.0.0(12 个关键文件 sha256 逐个吻合),venv Py3.12.3,parquet **9594 文件 1.1 GB(与老机逐文件 md5 全等)**,`neckline.db` **45 表**(V1 26 表行数逐表一致 + 19 张 V2 新表全 0 行),现役章程仍 **`v1.3.3`**,现役选股包 **`K7-pack-v1`**。**三个 systemd 单元 + target + timer 装好、演练过、`ExecMainStatus=0`,但一律 `disabled`**。
+- **✅ ⑯-D 的 ③b 跨进程缺陷已修复(2026-08-04 同日追加,定向小修,用户裁定选③)**:报告 ③b
+  `droppedBaskets` 原本卡死 `available=false` 且披露文案误导 —— 现由新表 `basket_dropped_handoff`
+  (`neckline/selection/basket_dropped_handoff.py`)承接跨进程交接,seg2 落、seg3 读回,三态(没跑
+  ⑥ / 跑了零溢出 / 跑了有溢出)在新机上用两次独立进程调用逐一复现验证通过。详见下方 §五
+  V2-⑯ 完工记录里的「⑯-D 补记」。⚠ **不选①(改文案掩盖)也不选②(牺牲 LLM 长超时收益)**。
+- **🔴 一件卡着、等你一句话**(⑯ 停手上报,builder 不自行处置):
+  **`ln.linotsai.top` 与 `lf.linotsai.top` 的 A 记录已从 DNS 消失(NXDOMAIN)** —— 四个解析器一致;
+  同域 `linotsai.top`/`www`/`fiscal`/`xiaoran` 正常。**老机服务本身完好**(`neckline.service` active、
+  `/health` = v1.5.2 用 IP+Host 头实测 200、两个 timer 昨日正常跑过)。**= 老 App 与 Lino Finance
+  现在都连不上服务端,而服务端其实活着。** 非本次操作所致;按零接触红线 builder 未动任何 DNS。
+- **新机事实(`nk` / `114.66.0.38`,Ubuntu 24.04.4 / 4 vCPU / 3.8 GiB / 58G)**:`/opt/neckline` 代码态 = 本地 v2.0.0(12 个关键文件 sha256 逐个吻合;⑯-D 补记另加 7 个文件 sha256 逐个吻合,见下),venv Py3.12.3,parquet **9594 文件 1.1 GB(与老机逐文件 md5 全等)**,`neckline.db` **46 表**(45 表 + ⑯-D 补记新增 `basket_dropped_handoff`;V1 26 表行数逐表一致 + 20 张 V2 新表全 0 行),现役章程仍 **`v1.3.3`**,现役选股包 **`K7-pack-v1`**。**三个 systemd 单元 + target + timer 装好、演练过、`ExecMainStatus=0`,但一律 `disabled`**。
 - **🔔 双推送处置**:迁来的库带 APNs device token + `.env` 四要素齐全 → 新机一排程就与老机**同一条报告推两遍**。故 `neckline.service` / `neckline-daily.timer` / `neckline-evening.timer` **全部装好但不 enable**,演练与活体全程不带 `--notify`。**⑰ 换包时一体切换**(老机 disable → 新机 enable)。
 - **⑰ 前置(⑯ 新挂的账)**:① **必须再做一次 `neckline.db` 增量搬家** —— 本次快照定格在 **08-04 14:18**,老机此后的写入(今日 16:05 拉数 / 16:35 报告 / 盘中哨兵尾段)不在新机上;② ~~⑯-G 裁定落地 + 公网 `/health` 复验~~ **✅ 已完成**(公网 200 `v2.0.0` 实测);③ 老机 timer 与新机 timer 一体切换 —— **切换那一刻公网入口即刻生效,无需再动 nginx**。
 - **⑯-F preseed 如实跳过(⛔ 未编数据)**:脚本 `scripts/oneoff/preseed_baskets.py` 四道闸齐、演练过,但**「外部准备好的近期若干交易日篮子/Tier/卡」在仓库与本机都不存在** —— 那是人 + LLM 在外部配的产物。`--example` 可打模板,交策略线/用户配好再灌。
 - **⑯-C 未能实测的三项(⛔ 不编数)**:⑤⑥ **LLM 段**(`llm_providers` **0 行**,`.env` 也无 key)、⑦ 卡冻结(无篮子即无卡)、⑧ 盘中存拍(需真实盘中)。**待 ⑰ 后首个有 key 的交易日补测。**
 - **⑯-I B3 退役已生效(生产 + 本地同批)**:K4 行 `avoid_flag` 摘掉 `B3_theme_persist_2_3`(2100→1999 字节),**K4 仍 `is_active=0` / `activated_at` 未变 / `strategy_activation_log` 未增行 / A2 红牌未动**;实测 B3 零黄牌、A2 照常命中、历史快照仍能回显。全文 diff → `archive/K4_advisory_B3退役_20260804.md`。
 - **诚实降级实证(端到端活体)**:无 LLM key 时链跑完五段、退出码 0,⑤ 打出 `推理段缺席(no_provider)—— 当日不成篮`(**不硬造篮子、不静默**);④ 真在产种子(热点行业 10 + 涨停簇 239);顺带在生产库上验到上一笔提交的 **Y-1 修复生效**(空候选快照不覆写 V1 冻结的 `candidates_json`)。
-- **本地测试**:`pytest tests/ -q` **2896 过 + 2 skip + 0 fail**(⑯ 净增 3 条 B3 退役守门、退役 1 条旧断言)。Swift 侧本块未动。
+- **本地测试**:`pytest tests/ -q` **2911 过 + 2 skip + 1 fail**(⑯-D 补记净增 16〔14 条新测试 + 2 条仓库级参数化守门自动纳入新文件〕,零回归;唯一 1 fail 是与本次无关的既有失败
+  `test_sentinel_custom.py::TestEvaluateAlerts::test_cooldown_blocks_second_hit_and_expires`〔时间炸弹同类问题,`git stash` 验证过在改动前就已失败〕,已 spawn_task 登记、本子项未碰)。Swift 侧本块未动。
 - **①–⑮ 完工内容**(逐块细节见各「完工记录」):⑮ 客户端双端改版 + 版号三方 2.0.0;⑭ 16:35 编排链 + 篮子日报;⑬ V1 十三项清理;⑫ 对账与画像;⑪ 监控三级 + NL 提醒;⑩ 三字段录入;⑨ 复盘 + 评价引擎;⑧ 篮子验证 + 存拍 + 关注池;⑦ 卡冻结;⑥ Tier;⑤ 驱动聚合;④ 扫描层 + ④b 行业阶段;③ 策略包机制 + ③-K7;②① LLM 路由 + 全部新表 DDL。
 - **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处、⑥ 十处、⑥-b 一处、⑦ 六处、⑦-b 一处、⑧ 七处、⑧-E 两处、⑨ 六处、⑩ 两处、⑪ 九处、⑪-D 一处、⑧-F 三处、⑧-G 六处、⑫ 九处、⑬ 一处勘误 + 三处判断 + 三处欠账(**⑭ 已全部兑现**)、⑭ 五处判断 + 一件交回 planner、⑮ 六处判断、**⑯ 见其完工记录(含三件待裁定 + 三项未实测 + 一处「不扩」)**。均未改 Plan,如与规划意图不符请澄清。
 - **仍未修复的既有欠账**(与 ⑯ 无关):V2-① 的 `test_holding_k4_check.py` 未传 `db_path`(会写开发库)、V2-② 的 `news_scan.py` 缺 `prompt_context`、`TASK_INQUIRY` 归入检索类默认路由待澄清;**⑫ 周度 unit 的形态未定**(plan 明说不由 ⑯-D 决定,⑯ 未擅自排)。
-- **下一步** = **你裁定上面三件** → 然后 ⑰ 双端换包(⛔ builder 不自行换包)。**⑯ 碰了高危区(权威库迁移 + 包激活 + advisory 载体变更),建议叫一次 review。**
+- **下一步** = **你裁定上面这件(NXDOMAIN)** → 然后 ⑰ 双端换包(⛔ builder 不自行换包)。**⑯ 碰了高危区(权威库迁移 + 包激活 + advisory 载体变更),建议叫一次 review。**
 - **待办总入口 = §七 Backlog**。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/v1.5_施工图_20260802归档.md` 文末附录。
@@ -2898,7 +2906,61 @@ allow-out,放行 22/80/443(先放行后 enable,零自锁窗口)。首登后即�
   在 seg3 进程 → **这一节将恒为 `available=false`**,而披露文案写的是「本次未运行 Tier 分层引擎」——
   **今晚明明跑了,文案会误导**。三条出路(⛔ builder 不自行选):① 接受 + 改那句文案;② seg2/seg3 合成
   一个 unit(牺牲「LLM 长超时不外溢到批算段」);③ 让 dropped 落表(动代码,超出 ⑯-D「⛔ 不动代码」)。
-  **因 timer 未 enable,此代价尚未实际发生。**
+  **因 timer 未 enable,此代价尚未实际发生。**(2026-08-04 同日已修复,选③,见下方「⑯-D 补记」。)
+
+**✅ V2-⑯-D 补记(2026-08-04 同日追加,@builder,定向小修,选③)**
+
+> 用户裁定选③(让 dropped 落表),不选①(改文案掩盖真相)或②(牺牲 LLM 长超时收益)。
+
+- **落点选择与理由**:新表 `basket_dropped_handoff`(`neckline/db.py`,追加在 `industry_stage_daily`
+  之后,不回头改 ⑥/⑦ 的 DDL 段)+ 唯一读写实现 `neckline/selection/basket_dropped_handoff.py`。
+  ⛔ **不选 `tier_history`**(⑥-b-C 原文明写「不落 `tier_history`」,且 `tier_history.basket_id`
+  `NOT NULL` 而溢出篮永远没有 `basket_id`,结构上也塞不进去);⛔ 不选 `baskets`(同一裁定的另一半)。
+  新表按 `trade_date` 主键、`INSERT OR REPLACE` 整行覆写——**它是搬运工不是审计账本**,语义与
+  `baskets`/`tier_history`(冻结/追加)刻意不同,故不塞进 `basket_store.py`(那个模块头写明是
+  「篮子四表的唯一写入口」,四表共享的冻结语义与本表不是一回事)。写侧接线在 `report/evening.py::
+  _run_basket_segment`——⑥ 一算完(`tr.score_and_tier` 成功)立刻落,不依赖 ⑦ 卡生成是否成功
+  (同「有篮子无卡是合法中间态」既定姿势);读侧接线在 `run_evening_chain` 的 SEG_REPORT 分支——
+  仅当 `dropped_baskets` 为 `None` **且本次调用压根没打算跑 `SEG_BASKET`** 时才查表,若 `SEG_BASKET`
+  在 `wanted` 里但结果是 `None`(跑了但炸了 / ⑤ 零产出),原样保留 `None`、**不查表**(防止本次真实的
+  失败/空结果被表里可能存在的旧数据"救回来",编造一个假的市场结论)。两处都包保险丝,读写异常一律
+  降级为 WARNING + 按"未取得"处理,不牵连主链。
+- **三态证据(本地 `tests/test_basket_dropped_handoff.py` 9 例 + `tests/test_evening_chain.py`
+  新增 `TestDroppedCrossProcessHandoff` 5 例,均含"两次独立调用模拟 seg2/seg3"形状;新机上重复
+  验证见下)**:无行→`None`(如实标「本次未运行 Tier 分层引擎」,该文案在这一态下依然准确);
+  有行+`[]`→`available=true`+空列表(「今日无未定档篮子」);有行+非空→`available=true`+两种
+  原因码(`capacity_overflow`/`below_quality_line`)分开的清单。**防回归两例**:①单进程整链
+  (`SEG_BASKET` 恒在 `wanted` 里)绝不查表——哪怕表里躺着不同的旧数据,内存结果原样赢,行为
+  逐字节不变;②本次确实尝试且炸了 ≠ 交给表里的旧数据顶上。
+- **新机(114.66.0.38)演练结果**:7 个改动文件 sha256 传输后与本地逐位相同(`neckline/db.py`、
+  `neckline/selection/basket_dropped_handoff.py`、`neckline/report/evening.py`、
+  `neckline/report/basket_daily.py`、`deploy/neckline-report.service`、两个测试文件);`init_schema`
+  幂等建表零报错。真实环境两次**独立进程调用**(`sudo -u neckline .venv/bin/python` 各起一个新
+  解释器,不共享内存,只共享磁盘上的隔离副本库——`sqlite3.backup` 出的 `data/neckline.db` 副本,
+  真实库/parquet 全程只读)复现三态:① `trade_date=20260804`(新机 16:05 拉数/④ 扫描层 timer 未
+  enable,当天确无扫描层数据)→ seg3 独立跑 → `available=false` + 原文案(**未跑,如实**);
+  ② `trade_date=20260803`(有真实扫描层数据)→ seg2 进程用确定性桩 LLM(`smoke_basket_review.
+  StubProvider`,复用既有冒烟体例)真跑 ⑤⑥⑦→ 4 个真实篮子、0 溢出 → seg3 独立进程读回
+  `available=true`+空列表;③ 同一天用真实 `save_dropped_handoff()` 写入 3 条合成溢出(2
+  `capacity_overflow` + 1 `below_quality_line`)→ seg3 再次独立进程读回,`available=true`+3 条、
+  两种原因码与 `mechScore` 均逐位正确。**新机测试**:两个改动测试文件在新机 venv(Python 3.12.3)
+  下单独跑 **29 过**;新机 `pytest tests/ -q` 全量另跑 **10 fail + 2902 过 + 2 skip**,但 9/10 fail
+  均为 `ModuleNotFoundError: No module named 'research'`(`research/` 目录被 `sync_code.sh` 显式
+  排除、从不部署到服务器,与本子项无关,纯环境差异——本地含 `research/` 的同一份代码已证零回归,
+  见下方「测试数字」);剩下 1 fail 是同一条 `test_sentinel_custom.py` 既有失败。演练全程只读真实
+  `data/`,未写入任何持久文件(隔离副本库跑完已清理),**新机三个 systemd 单元/timer 原状
+  `disabled`/`static`,未 enable、未碰推送**,老机零接触。
+- **测试数字(本地)**:`pytest tests/ -q` 改动前(commit `f042c7a`)**2895 过 + 1 fail(既有、
+  与本次无关,见下)+ 2 skip**;改动后 **2911 过 + 1 fail(同一条)+ 2 skip**——净增 16(本子项
+  14 条新测试 + 2 条仓库级参数化守门测试〔`test_db_isolation_guardrail.py`/
+  `test_selection_primitives.py`〕自动把新文件纳入扫描范围,均过),**零回归**。⚠ **如实登记一条
+  与本次无关的既有失败**:`test_sentinel_custom.py::TestEvaluateAlerts::
+  test_cooldown_blocks_second_hit_and_expires` 在 `git stash` 掉本次全部改动后**同样失败**(硬编码
+  `TODAY = date(2026, 7, 31)` 与用例内 `datetime.now()` 的真实当前时间已相差数日,时间炸弹同类问题,
+  与 ③b/⑥ 无关),已通过 spawn_task 登记给独立会话处理,本子项未碰。
+- **文档连带**:`report/basket_daily.py` 模块头规则 #3、`report/evening.py` 模块头「分段是 ⑯-D
+  拆三个 oneshot 的接缝」段落、`deploy/neckline-report.service` 头部三条出路,均已同步改写为
+  "已修复"口径(不再是待裁定状态)。
 
 **⑯-E 两步包激活 ✅(全绿)**
 写前双备份 `neckline.db.{bak,cpbak}-preE-20260804-143112`(各 32 468 992 B,`.backup` 0.13s,integrity ok)。
@@ -3300,6 +3362,7 @@ K7 相对 K4 的实际 diff(演练打印,已核对):`intel_rank_priority.dims` �
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-04 · 🩹 **V2-⑯-D 补记:③b 跨进程缺陷修复(选③,新表落地)**(@builder,定向小修,纯本地代码 + 新机同步验证,不 enable 任何 timer)。新表 `basket_dropped_handoff`(`neckline/db.py`)+ 唯一读写实现 `neckline/selection/basket_dropped_handoff.py`(按 `trade_date` 覆写,不臆造 tier/`basket_id`,⑥-b-C「不落 `baskets`/`tier_history`」原判不动);写侧接线 `report/evening.py::_run_basket_segment`(⑥ 一算完立刻落,不依赖 ⑦ 卡生成成败),读侧接线 `run_evening_chain` 的 SEG_REPORT 分支(仅当本次压根没打算跑 `SEG_BASKET` 时才查表,已尝试但炸了/⑤零产出的 `None` 不被表里旧数据覆盖,单进程整链路径行为逐字节不变)。三态(没跑/零溢出/有溢出)本地 14 例新测试 + 2 条仓库级参数化守门自动覆盖,`pytest tests/ -q` 2895→**2911 过 + 1 fail(既有无关,已 spawn_task)+ 2 skip**,零回归。新机(114.66.0.38)7 文件 sha256 同步核对相同,`init_schema` 幂等建表(46 表,新表 0 行);两次**独立进程调用**(隔离副本库、真实 parquet 只读、`smoke_basket_review.StubProvider` 桩 LLM 真跑 ⑤⑥⑦)复现三态全部正确,新机两个改动测试文件另跑 29 过。`deploy/neckline-report.service` 头部三条出路 + `report/basket_daily.py`/`report/evening.py` 模块头同步改写为已修复口径。详见 §五 V2-⑯ 完工记录「⑯-D 补记」。
 - 2026-08-04 · 🌐 **V2-⑯-G 公网入口收口完工 —— `https://nk.linotsai.top` 已通**(🔴 @builder-pro,在用户活着的反代基础设施上做纯增量)。**没走阻塞上报时列的三条路**(用户从未配过 NPM 面板、拿不到也不该造管理凭据),改走 **NPM 官方 custom include 扩展位** `/data/nginx/custom/http.conf`:`:80` 承 ACME HTTP-01 + 全量 301、`:443` 挂 LE 证书反代 `172.18.0.1:8002`(桥网关 = 宿主),`server_name` **只有 `nk.linotsai.top`**。证书 = 宿主 `certbot certonly --webroot -w /opt/npm/data/acme`(ECDSA,至 2026-11-02),续期投递 hook 落 `/etc/letsencrypt/renewal-hooks/deploy/`(拷进容器 `/data/custom-certs/nk/` → `nginx -t` 过了才 reload),**`renew --dry-run` + `--run-deploy-hooks` 双验通过、certbot 日志实证 hook 被调起**。**公网活体**(临时 `systemd-run` 起 API、关哨兵、不带 `--notify`、验完即停,8002 复核无监听):`/api/v1/health` **200 `v2.0.0`** + TLS 严格校验 0 + HTTP/2,http→301、无/错 token→401、`/baskets/999999`→404 `basket_not_found`、真实报告 12015 B 解得开。**既有 `nas`/`mt`/`web` + IP 站四次采样与基线逐行相同**(基线/两阶段/hook reload 后各一次),四份 `proxy_host/*.conf` md5 未变、`database.sqlite` mtime 未变、容器未重启、WireGuard 未动、三个 neckline unit 仍 `disabled`。回滚绳 + 采样存新机 `/root/npm-backup-20260804/`;生产件原样留档 `deploy/npm-custom-http.conf` / `deploy/npm-le-deploy-hook.sh`(md5 与生产逐字节相同),`deploy/nginx-neckline-nk.conf` 改头标**作废**(它的 `default_server` 搬进 NPM 会炸四站)。如实登记两处判断:ACME 账户 `--register-unsafely-without-email`(无到期邮件预警)、`--agree-tos` 接受 LE 服务条款。老机零接触。
 - 2026-08-04 · 🔧 **⑯-G NPM 反代前置两项准备**(@builder,新机 `114.66.0.38`;不碰 NPM 容器 / WireGuard / 其他 UFW 规则,不 enable/start 任何 neckline unit,老机零接触)。① `/etc/systemd/system/neckline.service` ExecStart 的 `--host 127.0.0.1` 改 `--host 0.0.0.0`(端口 8002 不变)+ `daemon-reload`,服务维持现状 `disabled`/`inactive`(双推送处置不变,未启动);② UFW 新增 `8002/tcp ALLOW IN 172.18.0.0/16`(comment `NPM -> neckline api`),默认 `deny (incoming)` 仍在、原 22/80/443/51820(WireGuard)五条规则未动,外网直打 8002 仍被拒;③ 本仓库 `deploy/neckline.service` 同步改 host 并补注释说明原因(为 npm_default bridge 反代做准备,暴露面靠 UFW 源限制收口、不靠绑定地址)。
 - 2026-08-04 · 🚀 **V2-⑯ 新服务器建成 + 数据搬家 + 晚间管线三段化 + 两步包激活 + B3 退役完工**(🔴 @builder-pro,首次触碰新机与权威库;**老机 `ln` 全程零接触**、v1.5.2 照常在跑)。新机 `nk`/`114.66.0.38`(4 vCPU/3.8 GiB/58G)属主纪律复刻 + UFW 基线 + venv Py3.12.3;parquet **9594 文件与老机逐文件 md5 全等**、`neckline.db` 端到端 **sha256 逐位相同**(快照 08-04 14:18)、`init_schema` **零「唯一索引建不上」WARNING**、26 张老表行数逐表一致 + 19 张 V2 新表全 0 行、现役章程仍 `v1.3.3`;**P0-23 门禁全过**(主链峰值 **439 MB**/13.55s、扫描层 bootstrap 58 天 135 MB/4m38s、全程 load ≤1.58,⛔ 未抬 swap 未降精度);三段 oneshot + target + timer **装好 + 演练 `ExecMainStatus=0` 严格串行,但一律 `disabled`**(双推送处置);`daily_update` 的 ④/④b 双挂载按 plan 摘除;**⑯-E 两步激活全绿**(`selection_packs` 2 行、现役唯一 `K7-pack-v1`、事件流 3 条,未碰 `strategy_versions`);**⑯-I B3 黄牌退役全绿**(K4 仍 inert、`activated_at` 未变、激活流水未增行、A2 未误伤,全文 diff → `archive/K4_advisory_B3退役_20260804.md`);新机 `/health` = **`v2.0.0`**、端到端活体五段跑通并实证无 key 时的诚实降级。**三件停手上报待裁定**:⑯-G 公网入口被用户既有 `nginx-proxy-manager` 容器占着 80/443、`ln`+`lf` 的 A 记录已从 DNS 消失(NXDOMAIN,非本次所致,老机服务完好)、⑯-D 三段切法会让报告 ③b `droppedBaskets` 恒缺席且文案误导。**⑯-F preseed 无外部输入件,如实跳过未编数据**;⑤⑥ LLM 段 / ⑦ 卡 / ⑧ 存拍三项未实测(无 key / 无篮子 / 需盘中)。测试 **2896 过 + 2 skip**。详见 §五 V2-⑯ 完工记录。

@@ -14,10 +14,19 @@
 2. **「没有」与「没看」必须分开**:每一段都带 `available` + `unavailableReason`。
    `baskets=[]` 且 `available=True` = 今天真没有篮子(合法输出,⑥-b-B);
    `available=False` = 这一段本次没取到(读历史快照 / 该段降级),⛔ 不许拿空数组冒充。
-3. **`droppedBaskets` 只能由本次跑 ⑥ 的那条链传进来**:⑥ 的 `TierResult.dropped`
-   **不进 `baskets` 表**(`baskets.tier` NOT NULL,溢出篮无档可填),报告快照
-   (`reports.basket_daily_json`)是它唯一的落点。历史回放拿不到 → 如实标 `available=False`,
-   ⛔ 不许现算一遍"当时会溢出哪些"(那是拿今天的包/今天的数据编造昨天的结论)。
+3. **`droppedBaskets` 只能由「本次跑 ⑥」的那次运行传进来,⛔ 本函数不许现算**:
+   ⑥ 的 `TierResult.dropped` **不进 `baskets` 表**(`baskets.tier` NOT NULL,溢出篮
+   无档可填),报告快照(`reports.basket_daily_json`)是它的落点。**V2-⑯-D 补记**:
+   三段拆进程后「本次跑 ⑥」不必与「本次出报告」同一个进程——
+   `report/evening.py::run_evening_chain` 在报告段独立跑(SEG_BASKET 不在本次
+   `segments` 里)时,会去跨进程交接表(`selection/basket_dropped_handoff.py`,
+   按 `trade_date` 存最近一次 ⑤⑥ 的结果)找"今晚早些时候〔另一个进程里〕⑥ 是否
+   跑过"——**读的是同一晚同一次 ⑥ 运行留下的事实,不是重算**。本函数
+   (`build_basket_daily`)的契约不变:`dropped=None` 就是"本次未取得",不关心
+   调用方是从内存还是从交接表拿到的答案。历史回放(`scripts/report.py` 直调
+   `pipeline.build_report`,不经过 `evening.py`)仍然拿不到 → 如实标
+   `available=False`,⛔ 不许现算一遍"当时会溢出哪些"(那是拿今天的包/今天的
+   数据编造昨天的结论)。
 
 **camelCase 转换点单一**:`card_to_public_dict()` 是 `basket_cards.card_json`
 (snake_case 冻结件)→ 契约 camelCase 的**唯一**实现,报告快照与 `GET /baskets/{id}/card`

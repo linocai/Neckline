@@ -1034,6 +1034,33 @@ CREATE TABLE IF NOT EXISTS industry_stage_daily (
   PRIMARY KEY (trade_date, industry)
 );
 CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade_date);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2-⑯-D 补记(2026-08-04,定向小修):⑥ 溢出篮**跨进程**留痕。不进「篮子四表」
+-- (`baskets`/`basket_members`/`tier_history`/`basket_cards`,`neckline/selection/
+-- basket_store.py` 的唯一写入口)——单独一张表追加在这里,同 ④b 的既有体例
+-- (新表不回头改早前 DDL 段、不进 `_COLUMN_MIGRATIONS`)。
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- ⚠ **这不是给溢出篮一个身份**:⑥-b-C 的裁定原样有效——溢出篮不臆造 tier、不落
+-- `baskets`、不落 `tier_history`,永远没有 `basket_id`。⑥-b-C 写下那条裁定时晚间链
+-- 还是单进程,"留痕在内存态 `TierResult.dropped`"天然够用;⑯-D 把 ⑤⑥⑦
+-- (`neckline-basket.service`)与报告(`neckline-report.service`)拆进两个进程后,
+-- 内存态活不过进程边界,报告 ③b 因此**永远**看到 `None`(三条出路见 `deploy/
+-- neckline-report.service` 头部,本表是出路③的落地)。
+-- 本表**只是搬运工,不是审计账本**:`trade_date` 主键,`INSERT OR REPLACE` 整行
+-- 覆写(同日重跑 = 只认最近一次 ⑤⑥ 的结果,不追加历史、不提供按篮子查询的入口)。
+-- 三态靠"有没有这一行"+ 数组是否为空区分(与 `EveningChainResult.dropped_baskets`
+-- 的 `None`/`[]`/`[...]` 同一套纪律,见 `report/evening.py` 模块头):
+--   无行            = ⑤⑥ 本次(迄今)没跑过;
+--   有行、`[]`      = 跑了,今天零溢出;
+--   有行、非空数组   = 跑了,有溢出。
+-- 读写唯一实现:`neckline/selection/basket_dropped_handoff.py`。
+CREATE TABLE IF NOT EXISTS basket_dropped_handoff (
+  trade_date   TEXT PRIMARY KEY,
+  dropped_json TEXT NOT NULL,      -- [{basket_key, reason, mech_score}, ...],允许 []
+  created_at   TEXT NOT NULL
+);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

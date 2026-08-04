@@ -23,9 +23,19 @@
 本身炸了(那才是真的没有报告,异常往上抛,退出码必须非零)。
 
 **分段是 ⑯-D 拆三个 oneshot 的接缝**:`run_evening_chain(segments=...)` 可以只跑其中
-几段(`neckline-scan.service` / `neckline-basket.service` / `neckline-review.service`),
-到那一块不必重写编排逻辑。⚠ `segments` **只挑跑哪几段,不改顺序**(传进来的集合会按
-`CHAIN_SEGMENTS` 重排)。
+几段(`neckline-scan.service` / `neckline-basket.service` / `neckline-report.service`
+—— 后者跑 ⑨ 复盘 + 报告落库两段),到那一块不必重写编排逻辑。⚠ `segments` **只挑
+跑哪几段,不改顺序**(传进来的集合会按 `CHAIN_SEGMENTS` 重排)。
+
+**V2-⑯-D 补记(2026-08-04 定向小修)**:⑤⑥⑦ 与「⑨+报告」拆进两个独立进程后,
+⑥ 的 `TierResult.dropped`(③b 的数据源)原本只在内存里随链传递、跨不过进程边界
+——报告段独立跑时(`SEG_BASKET` 不在本次 `segments` 里)会看到 `None`。本函数
+的 SEG_REPORT 分支据此加了一条**跨进程回退**:`dropped_baskets` 为 `None` 且
+**本次压根没打算跑** `SEG_BASKET` 时,去 `selection/basket_dropped_handoff.py`
+的交接表里找"今晚早些时候(另一个进程里)⑥ 是否跑过"。⚠ 只在"没打算跑"时才
+查表——若 `SEG_BASKET` 在本次 `segments` 里但结果是 `None`(跑了但炸了 / ⑤ 没
+产出),那是**本次**的明确结论,不许被表里可能存在的旧数据覆盖。单进程整链跑法
+(`SEG_BASKET` 恒在 `wanted` 里)不触发查表分支,行为逐字节不变。
 """
 
 from __future__ import annotations
@@ -229,10 +239,29 @@ def run_evening_chain(
     # —— 报告落库(链的最后一段)————————————————————————————————————
     if SEG_REPORT in wanted:
         try:
+            dropped_for_report = res.dropped_baskets
+            if dropped_for_report is None and SEG_BASKET not in wanted:
+                # V2-⑯-D 补记:本次调用压根没打算跑 SEG_BASKET(⑯-D 拆进程后
+                # `neckline-report.service` 独立跑的真实形状)——去跨进程交接表
+                # 里找"今晚(另一个进程里)⑤⑥ 是否跑过、结果是什么"。⚠ 只在
+                # **没打算跑**时才查:若 SEG_BASKET 在 wanted 里但结果是 `None`
+                # (跑了但炸了 / ⑤ 没产出),那是**本次**的明确结论,不许被表里
+                # 可能存在的旧数据覆盖(见上面 `_run_basket_segment` 与 `_fail`
+                # 分支——炸了就是 `None` 不是回退查表)。
+                try:
+                    from neckline.selection.basket_dropped_handoff import load_dropped_handoff
+
+                    dropped_for_report = load_dropped_handoff(trade_date, db_path=db_path)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "[evening] ⑥ dropped 跨进程交接表读取异常,按未取得处理"
+                        "(不阻断报告)", exc_info=True,
+                    )
+                    dropped_for_report = None
             res.bundle = build_report(
                 trade_date, llm_provider=report_llm_provider, llm_transport=transport,
                 parquet_dir=parquet_dir, db_path=db_path, save=save,
-                dropped_baskets=res.dropped_baskets,
+                dropped_baskets=dropped_for_report,
             )
         except Exception as exc:  # noqa: BLE001
             # ⚠ 报告这一段炸了是**真的没有报告**(不像前面几段可以缺席披露),故往上抛:
@@ -298,6 +327,20 @@ def _run_basket_segment(
         result, trade_date, db_path=db_path, parquet_dir=parquet_dir,
         provider=tier_provider, use_llm=use_llm, ledger=ledger, transport=transport,
     )
+    # V2-⑯-D 补记:⑥ 一跑完就落跨进程交接表(`basket_dropped_handoff`,见该模块
+    # 头)——这是「⑥ 定档」这件事本身的既成事实,不依赖 ⑦ 卡生成是否成功(同
+    # baskets/tier_history 由事务 1 独立提交的既定姿势,"有篮子无卡"是合法中间态)。
+    # 整段包保险丝:这一步失败不许连累 ⑤⑥⑦ 已经算好的东西——本次调用仍会把
+    # `decision.dropped` 原样返回给调用方走内存路径,单进程行为不受影响。
+    try:
+        from neckline.selection.basket_dropped_handoff import save_dropped_handoff
+
+        save_dropped_handoff(trade_date, decision.dropped, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[evening] ⑥ dropped 跨进程交接表写入异常(已吞,不影响本次内存路径)",
+            exc_info=True,
+        )
     tier_by_key = {d.basket_key: d.tier for d in decision.decisions}
     hist_by_key = {
         d.basket_key: {

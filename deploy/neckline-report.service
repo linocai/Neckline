@@ -9,16 +9,16 @@
 # 配错**;拆成两个 unit 则任何人改一次 `After=` 就能把顺序弄反。
 # ⛔ **别把 `--segments review,report` 拆成两个 unit。**
 #
-# 🟡 **已知代价(⑯ 如实登记,待裁定)**:报告 ③b「今日未定档篮子」(`droppedBaskets`)
-# 的数据源是 ⑥ `TierResult.dropped`,它**只在内存里随链传递、不落任何表**
-# (`baskets.tier` NOT NULL,溢出篮无档可填 —— `report/basket_daily.py` 模块头第 3 条)。
-# 三段拆开后 ⑥ 在 seg2 进程里、报告在 seg3 进程里 → 本节会**恒为** `available=false`,
-# 且披露文案写的是"本次未运行 Tier 分层引擎",而实际上今晚是跑了的(只是在另一个
-# 进程)—— **文案会误导**。三条出路(⛔ builder 不自行选,回 planner):
-#   ① 接受现状 + 改那句披露文案;
-#   ② seg2/seg3 合成一个 unit(牺牲"LLM 长超时不外溢到批算段"这条收益);
-#   ③ 让 ⑥ 的 dropped 落一张表(动代码,超出 ⑯-D「⛔ 不动代码」的边界)。
-# **⑯ 交付时三段 timer 一律不 enable**(双推送处置),故本代价尚未实际发生。
+# ✅ **已修复(2026-08-04 同日追加,定向小修,选③)**:报告 ③b「今日未定档篮子」
+# (`droppedBaskets`)原本卡死 `available=false` 且披露文案误导(⑥ 的 `TierResult.
+# dropped` 只在内存里随链传递、跨不过 seg2/seg3 的进程边界)。现由新表
+# `basket_dropped_handoff`(唯一读写实现 `neckline/selection/basket_dropped_
+# handoff.py`)承接跨进程交接:seg2(`neckline-basket.service`)在 ⑥ 定档完成后
+# 立刻落一行(按 `trade_date` 整行覆写,不追加历史、无 `basket_id`、不进
+# `baskets`/`tier_history` —— ⑥-b-C「溢出篮不落库」的裁定原样有效,本表只是
+# 搬运工不是审计账本);本 unit(seg3)在 SEG_BASKET 不在本次 `segments` 里时
+# 读回。三态(没跑 ⑥ / 跑了零溢出 / 跑了有溢出)与单进程路径逐位同构,详见
+# PROJECT_PLAN §五 V2-⑯-D 补记。
 #
 # 安装:sudo cp /opt/neckline/deploy/neckline-report.service /etc/systemd/system/ && sudo systemctl daemon-reload
 # ⛔ 无 [Install]:由 neckline-evening.target 拉起。
