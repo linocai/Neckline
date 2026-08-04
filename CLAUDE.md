@@ -109,7 +109,12 @@
   内、且已是 camelCase(`to_public_dict()` 原样存档)。跑一次 `scripts/report.py`
   生成真报告后直接 `UPDATE reports SET candidates_json=…` 改 2~3 只候选即可拼出
   ok/vetoed/judgeSkipped 三态样例(v1.5-⑤ 验证过)。
-- **需要展示"报告加载完成后才能确定的内容"(如某只候选的信息卡)时**,`NecklineApp.
+- **模拟器截图被推送授权弹窗盖住时,别去点它(点不动)**:`UNUserNotificationCenter`
+  的授权弹窗会挡住页面中部,而且**终止 App 甚至重装都不会让它消失**(它挂在
+  SpringBoard 上);`xcrun simctl privacy` **不支持 notifications**。两步解:①
+  `NECKLINE_SKIP_PUSH_PROMPT=1` 跳过挂推送(v1.5/⑮ 起的 QA 钩子);② 已经弹出来的
+  那一个,**`simctl shutdown` + `boot` 重启模拟器**才清得掉。
+- **需要展示"报告加载完成后才能确定的内容"(如篮子卡 / 信息卡 / NL 确认卡)时**,`NecklineApp.
   init()` 里的同步 QA 钩子够不着(数据是 `AppModel.refresh()` 异步拉的)——照
   `NECKLINE_INITIAL_TAB` 先例另开一个 env 钩子,放在 `refresh()` 数据到位之后触发
   (v1.4-⑧ `NECKLINE_INITIAL_INFOCARD_CODE` 先例),不要塞进 `init()`。
@@ -137,6 +142,16 @@
   冻住**的历史快照原样读回,不会因服务端升级而补全新键,新增字段(如
   `charterSegments`)必须给该 DTO 手写 `init(from:)` 做 `decodeIfPresent` 兜底
   (v1.4-⑧ `ReviewWeeklyResult` 定案)——加字段前先确认是哪一类,别套错模板。
+- **Swift 合成 `Decodable` 对非 Optional 属性「有默认值也不容忍缺键」——V2-⑮ 起客户端
+  DTO 一律手写 `init(from:)`**(不只是冻结快照那一类):B 类(`basket_cards.card_json`
+  / `basket_review_daily.mech_json` / `reviews.result_json`)是**硬要求**(守门单测
+  `test_contract_crosscheck.py::test_frozen_snapshot_dtos_hand_write_init_from_decoder`
+  按类型名精确锁);A 类手写是白拿的保险,也让测试 fixture 不必逐字段补全。
+  ⚠ **新建 B 类 DTO 时别在它前面放同前缀的类型**(如 `BasketReviewMech` 排在
+  `BasketReview` 之前)—— 那条守门用 `split("struct <Name>")` 取首个匹配,会切错块。
+- **`NKJSON`(自由结构透传字段的载体)解码顺序:Bool 必须排在 Double 之前**——
+  JSON `true` 在 Foundation 里也能解成 `1.0`,顺序反了布尔会悄悄变成数字(界面显示
+  「1」而不是「是」),且**看不出是 bug**。
 - **服务端删/停发任何键之前,先查已装客户端是不是硬解码**:`Models.swift` 里手写
   `init(from:)` 的 DTO 混着 `try c.decode`(必需)与 `decodeIfPresent`(可选)两种
   写法 —— 如 `Candidate` 的 `buyPoint`/`stop`/`target`/`invalidation` 是 `try c.decode`,

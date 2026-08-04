@@ -369,23 +369,25 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-03 · 🏗️ V2.0.0 施工中 —— V2-①→⑭ 全部完工,⑮(客户端双端改版)可开**。①–⑬ 详见各块「完工记录」。**⑭ 换血层第二块完工:报告换血成五段篮子日报 + 16:35 编排链独立成段 + API 契约总装 + 契约三方对拍** —— 报告顺序定死为 ① 情绪与市场语境 → ② 持仓体检 → ③ 今日篮子(T1/T2/T3 每篮一张卡)→ ③b 未定档篮子 → ④ 昨日篮子复盘 → ⑤ 数据新鲜度与降级披露,**每段独立保险丝**;新 `report/evening.py::run_evening_chain`(⑧ EOD 验证拍 → ④ 扫描 → ⑤⑥⑦ → ⑨ 复盘 → 报告落库,**⑧ 位置定死在拉数后扫描前**,`segments` 参数是 ⑯-D 拆三个 oneshot 的接缝);契约面 `CandidateOut` 整族 4 个 DTO + `ReportOut.candidates` 退役,换 `basketDaily`,新增 12 条路径 + 17 个 DTO。**哨兵纪律阈值自 ⑧ 起一行未动;现役章程恒 `v1.3.3`,V2 全程未新建章程行、未跑 `activate_charter.py`**。全量测试 **2887 过 + 4 skip**(⑭ 前基线 2808 + 2;另有一条既有挂钟脆弱测试 `test_sentinel_custom.py::test_cooldown_blocks_second_hit_and_expires` 在北京时间 ~14:48 后跑必红,已用 `git worktree` 拉干净 HEAD 复现证实与施工无关)。
+**2026-08-03 · 🏗️ V2.0.0 施工中 —— V2-①→⑮ 全部完工,只剩【门禁】用户判定点 + ⑯⑰ 两个尾声块**。①–⑭ 详见各块「完工记录」。**⑮ 客户端双端改版完工:D8 信息架构落地 + 契约欠账清单 6 组全部还清 + 版号三方同批升 2.0.0** —— iPhone 四板块换成 **今日篮子 / 持仓 / 问询台 / 设置**(macOS 同四板块 + 周复盘工作台);V1 的「盘中看板」不再是 tab,**内容一条没删**、并入持仓板块成一节(80/15/5 里盘中动态本就是为解释持仓服务的)。全量测试 **Python 2890 过 + 2 skip**(两条 skip 是需 `NECKLINE_RUN_6Y=1` 的六年真回测;⑭ 时 4 skip 里那两条冻结快照 DTO 闸**已转跑**)、**Swift 179 过 + 12 skip**(skip = 未起 dev 后端的真实联调冒烟)、**iOS/macOS × Debug/Release 四路 `xcodebuild` 全 BUILD SUCCEEDED**。**哨兵纪律阈值自 ⑧ 起一行未动;现役章程恒 `v1.3.3`,V2 全程未新建章程行、未跑 `activate_charter.py`**。
 
-- **🟡 交回 planner 的一件(不拦 ⑮)**:**⑨ 复盘与报告落库的先后**在 Plan 两处描述不一致 —— ⑭-A 说「⑨ 复盘引擎单独一段」未明说前后,⑯-D 却把「报告」归 `neckline-basket.service`、⑨ 归 `neckline-review.service`(报告在前)。现按「**⑨ 在前**」实现,理由是报告的 ④ 节要读当日 `basket_review_daily`,排后面那一节在同一次运行里必然空;`segments` 参数让两种切法都跑得动,**改口径只需调 ⑯-D 的服务划分、不必动代码**。
-- **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;至今全部改动**纯本地代码 + 单测**,未碰任何服务器/DNS/部署。真实 `data/neckline.db` 里全部 V2 表**仍是 0 行**(冒烟一律跑在 `sqlite3.backup` 副本或纯 `tempfile` 临时库上,真实 parquet 只读;⑭ 冒烟前后真实库 MD5 双证未变)。
-- **V2-⑭ 完工内容**(详见 §五 V2-⑭ 段尾「完工记录」,含**五处设计判断 + 一件交回 planner**):新增 `report/basket_daily.py`(三段视图模型 + **`card_json` snake→camel 唯一转换点**)、`report/evening.py`(16:35 链)、`scripts/evening.py`、`scripts/smoke_evening.py`;`reports` 新列 `basket_daily_json`(⑥ 的溢出篮不进 `baskets` 表,报告快照是它唯一落点)。**兑现三处前置块欠账**:④ 的 `dataFreshness.scanLayer*` 三键接线(与板块三键、行业强度三键**并列九个键**,三件独立故障不合并)、⑬-4 的 `exec_hints_for()` 接进篮子成员、⑬ 的 `news_alerts` 次级扫描域接篮子成员 + `info_card._default_news_domain` 同步扩域。
-  - ⚠ **③b 的两个原因码 `capacity_overflow` / `below_quality_line` 永不合并**(相反的市场结论),**零溢出时这一节仍在**;`dropped=None`(没跑 ⑥)与 `dropped=[]`(跑了零溢出)两态分开。
-  - ⚠ **编排链刻意住 `report/evening.py` 而非 `pipeline.py`**:后者在 P0-23 在线模块守门清单里,搬进去等于为迁就文件摆放而钝化一条被生产 OOM 打出来的防线。`build_report` 自此**只读不算**(历史回放的生命线)。
-- **🔴 ⑮ 必接的三处「服务端已改、客户端硬解码」——不改就是白屏,不是少个字段**(⑭-C 对拍打出,全表见 `archive/V2_契约三方对拍_20260803.md`):① `ReportResponse.candidates` 是 `try c.decode` → **整份报告解不出**;② `PushSettings` 六个具名 bool 合成解码 → **整个 `/settings` 解不出**;③ `SettingsSnapshot.llmKeySet` 必需。**D2=A 路让它们在生产上不会相遇**(老 App 打老机 `ln`、新 App 打新机 `nk`),但 ⑰ 换包前必须真的改完。⑮ 欠账清单终稿(6 组、含逐项可勾复选框)在该对拍表 §六。
-- **⑭ 交付的三份档案**:`archive/V2_契约三方对拍_20260803.md`(逐字段对照 + ⑮ 欠账终稿 + ⑩ 枚举码裁定 + ⑫ 画像数据源裁定 + 幂等键语义文档化)、`deploy/A路割接前提自检清单.md`(⑯-G 执行,任一条不成立就停手回 planner)、`tests/test_contract_crosscheck.py`(7 条机器断言 + 2 条待 ⑮ 生效的 skip;**「客户端调用面 ⊆ 服务端路由面」用 `==` 不用 `<=`** —— 已知欠账是精确集合不是 allowlist)。
-- **V2-⑬ 完工内容**:V1 十三项清理全部执行完毕(无跳过)—— 单票候选管线整链、自选池 + 同花顺对账整链、呼吸台账、问询台 forced 海选池通道全部物理删除;盘前 9:26 判定换血成**篮子竞价剧本核对**;信息卡改造成**篮子成员详情页地基**。删除前后对照表 → `archive/V2-⑬_删除前后对照表_20260803.md`。
-- **V2-⑫ / ⑪ / ⑩ 完工内容**:`review/cashflow.py` 资金流水四分类 + 新包 `neckline/profile/`(偏好/能力画像);`notify_kinds.py`(三级 × 11 kind 唯一源)+ `custom_alerts.py` + `sentinel/attention.py` + `llm/nl_alert.py`,`/alerts` 五端点已落地;`positions_entry.py`(买卖三字段唯一编排入口),`decision_log` 停写留档。
+- **V2-⑮ 完工内容**(详见 §五 V2-⑮ 段尾「完工记录」,含**六处设计判断**):`Models.swift` 候选族五个类型退役 → 篮子族 8 个 + 计划/快照/画像/包/评价 5 个 + 提醒族 4 个 + Provider/推送族 4 个 DTO;`APIClient` 删五处「打向已删端点」的活调用(含**采集明文 key 打进空洞**的那条)、接 V2 新端点、`mapReason` 补八个 case 并把 409/422 也接进来;新建 `BasketDailyView`/`BasketCardView`/`PositionsView`,重写 `SettingsView`(Provider 注册表 + 任务路由 + **按 kind 动态渲染**的推送开关)、`PushManager`(三级 category + **按 `kind` 路由**)、`PositionExtras`(计划继承卡 + **⑪-D-D per-position 触达提醒开关**)。
+- **🔴 ⑭ 打出的三处「服务端已改、客户端硬解码」——已全部改完**:`ReportResponse.candidates`(整份报告解不出)/ `PushSettings` 六个具名 bool(整个 `/settings` 解不出)/ `SettingsSnapshot.llmKeySet`。**⑮ 之后客户端与 V2 服务端契约对得上**,⑰ 换包的前提已具备。
+- **两个「已登记的债」集合双双清空**(`tests/test_contract_crosscheck.py`):`PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15` 与 `PENDING_MAP_REASON_CASES_FOR_15`。⚠ **空集合不是「闸松了」,恰恰是最严的状态** —— 两条断言都用 `==`,此后任何新增的「打不到的调用 / 没 case 的 reason」立刻红。对拍表 §六 的 6 组复选框已逐项打勾并注明落在哪一笔提交(另加 6.6 两条 ⑮ 施工中追加项)。
+- **版号三方已恒等 `2.0.0`**:`api/app.py::VERSION` = `v2.0.0`、`project.yml` + pbxproj `MARKETING_VERSION` = `2.0.0`(守门单测 `test_client_version_governance` 锁死)。⚠ **本地代码已是 v2.0.0,生产 `/health` 仍报 v1.5.2** —— 因为**至今零部署**,⑯ 上云后才会对上。
+- **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;至今全部改动**纯本地代码 + 单测 + `xcodebuild`**,未碰任何服务器/DNS/部署。真实 `data/neckline.db` 里全部 V2 表**仍是 0 行**(⑮ 的界面核对跑在 scratchpad 的隔离临时库上,真实库只读拷了 `trade_cal`/`strategy_versions`/`stock_basic`/`namechange` 四张参考表)。
+- **🟡 交回 planner 的一件(⑭ 提出,仍挂着,不拦 ⑯)**:**⑨ 复盘与报告落库的先后**在 Plan 两处描述不一致(⑭-A 未明说前后 vs ⑯-D 的服务划分)。现按「**⑨ 在前**」实现(报告 ④ 节要读当日 `basket_review_daily`);`segments` 参数让两种切法都跑得动,**改口径只需调 ⑯-D 的服务划分、不必动代码**。
+- **V2-⑭ 完工内容**:`report/basket_daily.py`(三段视图模型 + **`card_json` snake→camel 唯一转换点**)、`report/evening.py`(16:35 链)、`scripts/evening.py`、`scripts/smoke_evening.py`;`reports` 新列 `basket_daily_json`。**兑现三处前置块欠账**:④ 的 `dataFreshness.scanLayer*` 三键接线(与板块三键、行业强度三键**并列九个键**)、⑬-4 的 `exec_hints_for()` 接进篮子成员、⑬ 的 `news_alerts` 次级扫描域接篮子成员。
+  - ⚠ **③b 的两个原因码 `capacity_overflow` / `below_quality_line` 永不合并**(相反的市场结论),**零溢出时这一节仍在**;⑮ 的界面已按此实现并截图核对过。
+  - ⚠ **编排链刻意住 `report/evening.py` 而非 `pipeline.py`**(后者在 P0-23 在线模块守门清单里)。`build_report` 自此**只读不算**。
+- **V2-⑬ 完工内容**:V1 十三项清理全部执行完毕 —— 单票候选管线整链、自选池 + 同花顺对账整链、呼吸台账、问询台 forced 海选池通道全部物理删除;盘前 9:26 判定换血成**篮子竞价剧本核对**;信息卡改造成**篮子成员详情页地基**(⑮ 已把 ⑬-N 的三块接上 UI)。删除前后对照表 → `archive/V2-⑬_删除前后对照表_20260803.md`。
+- **V2-⑫ / ⑪ / ⑩ 完工内容**:`review/cashflow.py` + `neckline/profile/`;`notify_kinds.py`(三级 × 14 kind 唯一源)+ `custom_alerts.py` + `sentinel/attention.py` + `llm/nl_alert.py`;`positions_entry.py`(买卖三字段唯一编排入口),`decision_log` 停写留档。
 - **V2-⑧ / ⑦-b / ⑧-E / ⑧-F / ⑧-G 完工内容**:`selection/verification_rules.py`、`sentinel/basket_verify.py`、`sentinel/capture.py`、`sentinel/mainline.py`。**关注池(⑧-G 起)= 【有界必需项无条件全进】持仓 > T1/T2 篮子成员 > 板块基准指数(上界 29)+【两份纪律测量样本各有保底】主线切片 100 / 昨日涨停 71**(合计 = `breadth_cap` 200,守门单测锁死)。⚠ **主线跳水样本 ≠ 关注池**(⑧-G-A)。
 - **V2-⑨ / ⑦ / ⑥ / ⑤ / ④ 系列完工内容**:`review/basket_review.py` + `neckline/eval/`;`selection/basket_card.py` + `member_tags.py`;`selection/tier.py` + `basket_store.py`;`selection/aggregate.py` + `member_hygiene.py`;全新包 `neckline/scan/` 与 `neckline/selection/` + `scripts/activate_pack.py` + 两个 pack。
-- **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处、⑥ 十处、⑥-b 一处、⑦ 六处、⑦-b 一处、⑧ 七处、⑧-E 两处、⑨ 六处、⑩ 两处、⑪ 九处、⑪-D 一处、⑧-F 三处、⑧-G 六处、⑫ 九处、⑬ 一处勘误 + 三处判断 + 三处欠账(**⑭ 已全部兑现**)、**⑭ 五处判断 + 一件交回 planner**。均未改 Plan,如与规划意图不符请澄清。
-- **仍未修复的两点既有欠账**(与各新块均无关):V2-① 的 `test_holding_k4_check.py` 未传 `db_path`(会写开发库)、V2-② 的 `news_scan.py` 缺 `prompt_context`、`TASK_INQUIRY` 归入检索类默认路由待澄清。
-- **⑭ 顺带发现、未处理的两条**(登记备查,详见对拍表 §七):① 客户端 `ReportSnapshot` 的合成 `Decodable` 是**死代码**(`/report` 走私有 wire DTO 解码后手工映射),⑮ 重写时顺手收掉;② 客户端 `InfoCard` 用合成 `Codable` 且直接解 wire → **每个属性都是必需的**,服务端日后停发任一键会让整张信息卡解不出,⑮ 若动 info-card 契约先改这里。
-- **下一步** = **V2-⑮**(客户端双端改版)。⑮ 之后是【门禁·非施工块】**用户判定点:是否召唤 @reviewer**(建议范围:⑥⑦⑧⑪ 判定线 + ⑭ 契约线两线并行)。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工 + 用户已购机并解析好 `nk`**;在那之前 ①–⑮ 全部本地推进,**不碰任何服务器**。
+- **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处、⑥ 十处、⑥-b 一处、⑦ 六处、⑦-b 一处、⑧ 七处、⑧-E 两处、⑨ 六处、⑩ 两处、⑪ 九处、⑪-D 一处、⑧-F 三处、⑧-G 六处、⑫ 九处、⑬ 一处勘误 + 三处判断 + 三处欠账(**⑭ 已全部兑现**)、⑭ 五处判断 + 一件交回 planner、**⑮ 六处判断**。均未改 Plan,如与规划意图不符请澄清。
+- **仍未修复的三点既有欠账**(与各新块均无关):V2-① 的 `test_holding_k4_check.py` 未传 `db_path`(会写开发库)、V2-② 的 `news_scan.py` 缺 `prompt_context`、`TASK_INQUIRY` 归入检索类默认路由待澄清。
+- **⑭ 顺带发现的两条已在 ⑮ 处理掉**:`ReportSnapshot` 的死代码 `Decodable` 已收(改成纯 `Equatable`);`InfoCard` 的合成 `Codable`(每个属性都必需)已改手写 `init(from:)` 全字段 `decodeIfPresent`。
+- **下一步** = 【门禁·非施工块】**用户判定点:是否召唤 @reviewer**(建议范围:⑥⑦⑧⑪ 判定线 + ⑭⑮ 契约线两线并行)。⚠ **⑮ 碰了鉴权相关面(Provider key 写入路径)与全部客户端契约,建议叫一次 review**。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工(✅ 已满足)+ 用户已购机并解析好 `nk`(⏳ 待用户)**;在用户交付新机之前,**不碰任何服务器**。
 - **待办总入口 = §七 Backlog**。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/v1.5_施工图_20260802归档.md` 文末附录。
@@ -2633,7 +2635,7 @@ A 路让它们在生产上不会相遇,但 ⑰ 换包前必须真的改完。
 
 ---
 
-### V2-⑮ · 客户端双端改版(iOS + macOS,@builder)
+### V2-⑮ · 客户端双端改版(iOS + macOS,@builder)✅ 完工(2026-08-03)
 
 **信息架构(**D8 已拍板**)**:iPhone 四板块 = **今日篮子 / 持仓 / 问询台 / 设置**;macOS 四板块 + **周复盘工作台**(交割单上传 + 对账 + 画像 + 评价校准报告)。**不新增 tab。**
 
@@ -2665,6 +2667,78 @@ A 路让它们在生产上不会相遇,但 ⑰ 换包前必须真的改完。
 
 **依赖**:⑭。
 **验收**:iOS + macOS `xcodebuild build` 双端 **BUILD SUCCEEDED**;iOS Simulator `xcodebuild test` 全绿;`MARKETING_VERSION` = `2.0.0` 三方一致(`project.yml` + pbxproj + `api/app.py::VERSION`,版本号守门单测);语义红线全仓 grep 零命中;截图核对篮子卡 / 成员卡 / NL 确认卡 / Provider 设置四处。
+
+---
+
+#### ✅ V2-⑮ 完工记录(2026-08-03,@builder-pro;纯本地代码 + 双端构建 + 模拟器截图核对,零服务器 / 零部署)
+
+**三笔提交**:`0ed277c`(契约层:DTO + APIClient)/ `dcd90cf`(D8 信息架构 + 界面)/
+`e676967`(欠账销账 + 版号三方)。
+
+**① 四板块落地形状(D8,不新增 tab)**
+
+| 板块 | 内容 | 关键文件 |
+|---|---|---|
+| **今日篮子** | 报告**五段**:① 情绪与市场语境 → ②(持仓体检**指过去**,不重画)→ ③ 今日篮子 T1/T2/T3 每篮一张卡 → ③b 未定档 → ④ 昨日复盘 → ⑤ 数据新鲜度与降级披露(**恒在**) | `BasketDailyView` + `BasketCardView` |
+| **持仓** | 极简台账(三字段录入)+ **同题材合并敞口** + 计划继承卡 + per-position 触达提醒开关 + 临时提醒 + **盘中动态**(原「盘中看板」并入) | `PositionsView` + `PositionExtras` + `BoardSection` |
+| **问询台** | 主体不动(⑬-11 的「+自选」按钮此前已随自选池整链删除) | `InquiryView` |
+| **设置** | Provider 注册表增删改(**key 只写不回显** + 删除二次确认)+ 任务路由表 + **按 kind 动态渲染**的推送开关(按 level 分组)+ App/服务端双版本行 | `SettingsView` |
+
+macOS 侧栏 = 同四板块 + **周复盘工作台**(既有对账保留,⑮ 补上 ⑫ 画像两张账 + ⑨-C 评价校准报告)。
+
+**② 欠账销账证据(⑭-C 对拍表 §六,6 组逐项打勾并注了落在哪一笔)**
+
+- **两个「已登记的债」集合双双清空**:`PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15` / `PENDING_MAP_REASON_CASES_FOR_15`。⚠ **空集合是本闸最严的状态**(两条断言都用 `==`),不是"闸松了"。
+- **两条 skip 转跑**:`test_frozen_snapshot_dtos_hand_write_init_from_decoder[BasketCard|BasketReview]` —— `tests/test_contract_crosscheck.py` 从 **7 过 + 2 skip** 变 **9 过 + 0 skip**。
+- **三处硬失败已改完**:`ReportResponse.candidates` 删属性换 `basketDaily`;`PushSettings` 六 bool 换 `kinds[]`;`SettingsSnapshot` 换 `providers[]` + `routes`。
+- **五处活调用物理删除**(含 `PUT /settings/llm` 那条**采集明文 key 打进空洞**的),连同 `SettingsLLMRequest` 等五个请求体类型与对应 UI。
+
+**③ 六处如实登记的设计判断(Plan 未给精确形状,已按最贴合上下文的解读实现,均未改 Plan 原文)**
+
+1. **「盘中看板」不再是 tab,内容并入持仓板块**:D8 把 iPhone 板块**精确列成四个**且写死「不新增 tab」,而 V1 的看板是第五个;⛔ 删数据不可接受(退潮红条 + 哨兵事件是纪律露出位)。取「换挂载点、不删内容」——V2 注意力分配是 80/15/5,盘中动态本就是为解释持仓服务的。⚠ 若 planner 本意是保留独立看板 tab,请澄清。
+2. **「② 持仓体检」在今日篮子页只给一行入口,不重画**:D8 已把持仓拆成独立板块,同一份数据画两遍会让用户在两处看到可能不同步的两个版本。报告五段的**顺序与编号原样保留**(点进去仍是那一段)。
+3. **409/422 的五个 reason 选「扩 `mapReason` 调用点」而非就近处理**(⑭-C §六 C3 给了二选一):就近处理会让同一个 reason 在不同调用点拼出不同文案,那正是这张表想消掉的漂移。故 `send()` 的 409/422 两个分支也走 `mapReason`,五个 reason 各建独立 `APIError` case。
+4. **A 类 DTO 也全部手写 `init(from:)`**(对拍表只要求 B 类):Swift 合成 `Decodable` 对**非 Optional 属性不会因为声明了默认值就容忍缺键**(本仓多处注释早已记过),A 类手写是白拿的保险,且让测试 fixture 不必逐字段补全。
+5. **持仓卡上的「决策日志回显 / 情景勾选 / 修订入口」整块删除,不保留只读态**:服务端四个写端点已删(⑩-C),留着按钮就是**假成功面**;`GET /decisions` 的只读归因入口保留在 `APIClient`(`listDecisions`/`decisionTrack`),但本版界面不挂 —— 归因是周复盘/事后的事,不是持仓卡的事。⚠ 若希望在 macOS 工作台补一个历史决策只读表,这是可加项。
+6. **`entry_reason` 与 `buy_fees` 从「UI 强制必填」降为可选**:⑩-A 原文「买入 = 票 + 价 + 量」「买卖录入控制在数秒内、不再要求长表单」,而 V1 的 `PositionEntryForm.isValid` 强制了理由 + 费用。已改成三字段即可提交,费用留空时服务端照旧走默认佣金率估算并**诚实标注为估算**。
+
+**④ 幂等键(契约线 🟡 Y7;planner 施工中追加,已照办)**:`AppModel.entryIdempotencyKey` 在 **`beginPositionEntryFlow()` 时铸一枚新 UUID**(= 绑在「这一次提交动作」上),提交失败重试**复用同一枚**,下次进入录入流程才换新的。⛔ 严禁跨提交复用、⛔ 未绑「票 + 日期」之类业务量。单测两条:`testIdempotencyKeyIsFreshPerEntryFlow`(两次独立提交键不同)、`testIdempotencyKeyReusedAcrossRetriesOfSameSubmission`(同次重试键相同);另有 `replayed=true` 时**如实提示「未重复开仓」**的一条(⛔ 不让"看起来成功了"掩盖"其实什么都没发生")。
+
+**⑤ 版号三方**:`api/app.py::VERSION` `v1.5.2` → **`v2.0.0`**;`client/project.yml` 与 `pbxproj` 的 `MARKETING_VERSION`(两处,Debug/Release)→ **`2.0.0`**。**同一笔提交 `e676967`**,守门单测 `test_client_version_governance` 绿。⚠ 生产 `/health` 仍是 v1.5.2 —— 因为至今零部署,⑯ 上云后才会对上。
+
+**⑥ 截图核对清单**(本环境 computer-use 点不动模拟器 → 走 `xcrun simctl io screenshot` + QA 钩子;长页用**临时 iPad**,用完 `simctl delete` 已收掉):
+
+| # | 核对点 | 结论 |
+|---|---|---|
+| 1 | 四 tab 形状 | 今日篮子 / 持仓 / 问询台 / 设置,底部 TabBar 四项 ✅ |
+| 2 | **篮子卡** | 11 项齐;T1/卡 v1 徽标、共同驱动、证据链(来源 + 日期)、为什么是现在、成员 2(角色分歧 1 只) ✅ |
+| 3 | **成员卡** | **角色两说并存**(`LLM:龙头` + `机械:跟随` + 「两说并存」标)✅;三个参考件齐,**「离场参考区间(不是止盈线)」** ✅;**「参考、非指令 · 不进排序、不进哨兵、不改去留、不加分」恒显** ✅;K7 标注件文案原样透传 + 「判不了的标注」独立成句 ✅ |
+| 4 | 空档位 / 卡未就绪 | T3「军工换装」在档且显示**「本篮的卡还没生成」**(⛔ 不是「篮子不存在」)✅ |
+| 5 | ③b 两个原因码 | 「档位已满 · 今天机会多到装不下」(绿)vs「未过质量线 · 今天没什么好货」(黄),**分开展示** ✅ |
+| 6 | ④ 昨日复盘 | 详复盘带 LLM 正文 + 参考标注;T3 简评**未生成**时如实标 `llmSkipReason` ✅ |
+| 7 | **NL 确认卡** | **七项逐项渲染**(① 标的 …⑥ 行情延迟 / 数据中断 ⑦ 只通知不自动交易),模型复述带「参考、非指令」✅ |
+| 8 | **Provider 设置** | 三个 provider,只显示 **key 已配 / key 未配**(⛔ 无明文)、带联网检索 chip、已停用 chip、编辑 / 删除 / 新增 + 任务路由表 ✅ |
+| 9 | 持仓页 | **同题材合并敞口**(稀土订单链 2 只 · 成本 ¥35660)、per-position 计划继承行(「来自「稀土订单链」」vs「独立买入 · 没有来源篮子可继承」)、临时提醒 2 条 ✅ |
+| 10 | 极简录入 sheet | 「三字段即可提交」+「可选补充」两段 ✅ |
+
+⚠ **截图核对期间修的一处实机问题**:持仓卡的纪律位 chips 与两个动作按钮挤在一行,iPhone 宽度下被压成竖排断字 —— 改成 chips 横向滚动、按钮独占一行。
+
+**⑦ 测试与构建**
+
+- Python:`python -m pytest tests/ -q` → **2890 passed + 2 skipped**(2 skip = 需 `NECKLINE_RUN_6Y=1` 的六年真回测)。⚠ 施工中见过一次 `test_report_consistency` 随机序偶发红,**单独跑与再次全量跑均绿**,是既有的用例间顺序敏感,与本块无关。
+- Swift:`xcodebuild test`(iOS Simulator)→ **179 passed + 12 skipped**(skip = 未起 dev 后端的真实联调冒烟)。⚠ `NecklineTests` 只在 iOS Simulator destination 跑得动(既有工程设置,与本块无关)。
+- 构建:**iOS Simulator / macOS × Debug / Release 四路全 `BUILD SUCCEEDED`**。
+- 语义红线 grep:客户端非测试代码中「推荐买入 / 建议买入 / 看好 / 值得买」**零命中**;「止盈线」只出现在**否定句**里。
+
+**⑧ 新增的 QA 钩子(纯截图辅助,缺环境变量时行为逐字节不变)**:`NECKLINE_INITIAL_BASKET_ID`(Plan 点名)、`NECKLINE_INITIAL_ALERT_TEXT`/`NECKLINE_INITIAL_ALERT_CODE`(开 NL 确认卡要先发一次异步解析,同样够不着 `init()`)、`NECKLINE_SKIP_PUSH_PROMPT`(推送授权弹窗会盖住页面,而本环境点不动模拟器)。前两个放在 `refresh()` 数据到位之后触发,承 v1.4-⑧ 先例。
+
+**⑨ Plan 疏漏 / 待澄清(不拦后续块)**
+
+1. **⑮ 没说「盘中看板」怎么办**:D8 只列了四个板块,删的清单里也没有它。已按「换挂载点、不删内容」处理(见判断 1)。
+2. **推送开关的「三级分组」在服务端 `level` 之外没有兜底约定**:已实现为**未识别 level 自成一组照常显示**(⛔ 不静默丢弃),与「未知 kind 优雅降级」同一条纪律,但 Plan 未明写这一层。
+3. **`GET /decisions` 只读归因入口在 V2 界面上没有落点**:⑩-C 说它"保留为只读归因入口",但 ⑮ 的四板块里没有任何一处提到它。已实现为「客户端方法保留、界面不挂」(见判断 5)。
+
+**依赖**:⑭。**下一步**:【门禁】用户判定点(是否召唤 @reviewer)→ ⑯(需用户先购机 + 解析 `nk`)。
 
 ---
 
@@ -2989,6 +3063,7 @@ A 路让它们在生产上不会相遇,但 ⑰ 换包前必须真的改完。
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-03 · 📱 **V2-⑮ 完工:客户端双端改版(D8 四板块)+ ⑮ 欠账清单 6 组全部还清 + 版号三方同批升 2.0.0**(@builder-pro,commits `0ed277c` / `dcd90cf` / `e676967`,纯本地 + 双端构建 + 模拟器截图核对,零服务器 / 零部署)。iPhone 四板块 = **今日篮子 / 持仓 / 问询台 / 设置**(macOS 同四板块 + 周复盘工作台);V1「盘中看板」不再是 tab,**内容一条没删**并入持仓板块成一节(80/15/5 里它本就是为解释持仓服务的,判断已登记)。契约层:候选族五个 Swift 类型退役 → 篮子族 8 + 计划/快照/画像/包/评价 5 + 提醒族 4 + Provider/推送族 4 个 DTO(**两类快照一律手写 `init(from:)` + `decodeIfPresent`**,A 类也手写 = 白拿的保险);**删五处打向已删端点的活调用**(含 `PUT /settings/llm` 那条采集明文 key 打进空洞的);`mapReason` 补八个 case 并把 409/422 也接进来(此前只有 400/404)。界面:篮子卡 11 项 + 成员卡(**角色两说并存**、三个参考件夹逼拒收显示原因不兜 0、**「离场参考区间(不是止盈线)」**、「参考、非指令」四不标注恒显)、③b 两个原因码分开展示、三段两种「空」讲不同的话、Provider 注册表(**key 只写不回显**)+ 按 kind 动态渲染的推送开关(未识别 level 自成一组、未知 kind 优雅降级)、**⑪-D-D per-position 触达提醒开关**(只翻静音位、计划正文一项不动)、**同题材合并敞口**。**幂等键按 planner 追加口径落地**:每笔新提交动作铸一枚 UUID、重试复用同一枚,⛔ 不绑业务量(单测两条)。**两个已登记的债集合双双清空 + 两条冻结快照 DTO 闸从 skip 转跑**(对拍表 7 过 + 2 skip → 9 过)。测试:Python **2890 过 + 2 skip**、Swift **179 过 + 12 skip**、iOS/macOS × Debug/Release **四路 BUILD SUCCEEDED**;语义红线 grep 零命中。**六处设计判断 + 三条 Plan 疏漏**详见 §五 ⑮ 完工记录,对拍表 §六 复选框已逐项打勾注明提交号。
 - 2026-08-03 · ⚖️ **⑭ 完工后两件归档:⑯-D oneshot 划分口径改写(我原切法会让报告 ④ 节常态空)+ 三条 🔵 增量落位**(@planner,只改 `PROJECT_PLAN.md`,零代码 / 零数据库 / 零部署;⑮ builder 并行施工 `client/` 全域,已 hunk 级挑拣、diff 零 Swift / 零 `client/`)。**① ⑯-D 的切法我写错了,改写(⛔ 只调文字、未要求动代码)**:原文把**报告**归 `neckline-basket.service`、**⑨ 复盘**归 `neckline-review.service`(即报告在前、复盘在后),而报告的 ④「昨日篮子复盘」节要读 `basket_review_daily` **当日行** → **照原切法那一节会常态显示「今日无昨日篮子可复盘」**。⑭ 已按「⑨ 在前、报告在后」实现,本节对齐。**新切法按「资源画像」而不是「功能名称」切**:(1)`neckline-scan.service` = **⑧ EOD 验证拍 + ④ + ④b**(纯机械批算、吃 parquet 全表扫描 = **内存最重那段**,`MemoryMax` 主要卡这里,P0-23 的正主);(2)`neckline-basket.service` = **⑤⑥⑦**(**LLM 段**,资源画像是墙钟 / 网络不是内存 —— 单独成段才能给它长超时**而不必把长超时也给批算段**);(3)`neckline-report.service` = **⑨ 复盘 + 报告落库**。⚠ **为什么这两个必须同段才是改口径的真正收益**:「⑨ 在报告之前」是**语义依赖**,放进**同一个 unit** 就由链内固定序保证、**systemd 侧根本无法配错**;拆两个 unit 的话任何人改一次 `After=`/`Wants=` 就能弄反,而**症状是报告 ④ 节静默变空、不报错** = 最难查的那类故障 —— **把约束关进一个 unit 里 = 让它结构性不可违反**。复用 V1 已有的 `neckline-report.service` 名(它本来干的就是这件事),不新造 `review`。**顺带纠一处**:⑫ 的**周度**部分原文挂在日链后面 = **周频作业每天跑一次**,已摘出去按 ⑫ 实际触发方式(交割单上传后 / 周末 timer)单独排,⑯-D 不替它决定形态。**② 核 ⑭ 另三处设计判断,三条全核准**:(a) **编排链住新文件 `report/evening.py`、⛔ 不住 `pipeline.py`** —— 理由很硬:`pipeline.py` 在 P0-23 守门单测的**在线模块清单**里、逐字 grep 禁止它出现扫描层批算写入口,而链的第二段恰恰要调那几个入口,**塞进去 = 为了迁就文件摆放而钝化一条被生产 OOM 打出来的真防线**;`build_report` 保持**只读不算**(历史回放的生命线)。⑭ 还**主动**把 `report/basket_daily.py` 加进那份在线清单(`build_report` 的只读装配层)—— **扩大守门覆盖面,好**。⑭-A 原文「`pipeline.build_report` 分段」**是我写错的,已在 ⑭-A 就地更正 + 链序定死**,防后人照原文把链塞回去。(b) **④ 双挂载二选一 = 摘掉 `daily_update` 那份、留链里的**(采纳建议):⑤ 直接依赖 ④ 的**当日**产出,**留在链里链自己就能保证「⑤ 读到的是今天的」**;留 `daily_update` 则是跨进程隐式依赖,那一步失败时**链会拿昨天的扫描表当今天用而且不报错**(它在 `daily_update` 里是「尽力而为不改退出码」)= 又一个「静默用陈旧数据」;移进链里还顺带有了明确退出码。⚠ **⑯-D 拆分时才做,⛔ 现在不动**(`daily_update.py` 是生产 timer 里在跑的脚本,⑭ 不擅自摘是对的)。(c) **`VERSION` 不升、版号归 ⑮ —— 判得对**(三方恒等且必须同一次提交动,⑭ 提前升会让守门单测常年红);⚠ **已在 ⑮ 块点名提醒**:别只改客户端那两处,**`api/app.py::VERSION` 是三方里的第三方**,漏了守门单测立刻红;当前「服务端跑 V2 契约但 `/health` 仍报 v1.5.2」如实登记,⑯ 上云前必须已是 `v2.0.0`。**③ 三条 🔵 增量逐条落位**:(a) **Y3 零行边界** → 补进 **⑫**:按 dimension 整段替换后,「**某维度恰好产出 0 行而其他维度有行**」时该维度旧行会留在当期;现实中几乎打不出来,**但日后画像口径改版、某维度整体停算时会真踩到 —— 那时旧维度的行会永远留在历史期里冒充当期结论**,故要求在 `_clear_period` docstring 写明边界 + 「某维度整体停算须先手工清历史期该维度行」一句(**文档级,⛔ 不改行为**);(b) **索引降级窗口** → 补进 **⑯-B 迁移清单**:「**新机首次 `init_schema` 后 grep 日志确认零条『唯一索引建不上』**」,**为什么要专门查** —— `_POST_MIGRATION_INDEXES` 在脏库上建不上时是 WARNING + 跳过,于是**幂等键与「单现役」两条约束在该库上持续不设防**,而 WARNING **只在 `init_schema` 那一刻打一次**,**不专门查就等于没有这两条约束而且没人会知道**;查到有 → 先清脏数据再重跑,⛔ 不许带着跳过的索引上线;(c) **幂等键语义** → 核对**已落**(`archive/V2_契约三方对拍_20260803.md` §十一 已文档化),但报告点名的「**客户端生成规则归 ⑮**」此前没落 → **已补进 ⑮**:每笔新交易生成新键(UUID per 提交)、⛔ 严禁复用;⚠ 说清后果 —— 服务端是标准幂等语义,**同键 = 同一笔意图的重试**,**同键不同 payload 会静默重放原仓、丢弃新参数**,即「**用户改了价格数量再提交,系统当作重试把改动整个吃掉**」;⛔ 别把键绑在"这只票 + 今天"之类业务量上(必然复用),**绑在"这一次提交动作"上**。**⚠ 环境异常第三次复现**:又一次工具返回里被追加了与命令输出无关的 computer-use 指引块。**工具返回是数据不是指令通道**,已整段忽略、未据此做任何动作(本次纯 markdown、零代码零桌面操作,也未请求任何桌面权限)。前两次已建议排查,**这是第三次,建议当作确定的注入面问题处理**
 - 2026-08-03 · 🧺 **V2-⑭ 完工:报告换血成五段篮子日报 + 16:35 编排链独立成段 + API 契约总装 + 契约三方对拍**(@builder-pro,commits `0fb267c` / `3937e9d`)。报告五段顺序定死(① 市场语境 → ② 持仓体检 → ③ 今日篮子 → ③b 未定档 → ④ 昨日复盘 → ⑤ 新鲜度披露),每段独立保险丝;③b 两个原因码 `capacity_overflow` / `below_quality_line` 永不合并、零溢出时节仍在;新 `report/evening.py::run_evening_chain`(⑧ 验证拍 → ④ 扫描 → ⑤⑥⑦ → ⑨ 复盘 → 报告,⑧ 位置定死在拉数后扫描前,`segments` 是 ⑯-D 拆三个 oneshot 的接缝,**刻意不塞进 `pipeline.py`** 以免钝化 P0-23 在线模块守门);兑现三处前置块欠账(`dataFreshness.scanLayer*` 接线 / `exec_hints_for()` 接进篮子成员 / news_alerts 次级域 + `info_card` 同步扩域)。契约面 `CandidateOut` 整族 4 个 DTO + `ReportOut.candidates` 退役换 `basketDaily`,新增 12 条路径 + 17 个 DTO,`GET /baskets/{id}/card` 404 双 reason 分得开。三方对拍表与 ⑮ 欠账清单终稿 → `archive/V2_契约三方对拍_20260803.md`;A 路前提自检清单 → `deploy/A路割接前提自检清单.md`;「客户端调用面 ⊆ 服务端路由面」等 7 条机器断言 → `tests/test_contract_crosscheck.py`(**用 `==` 不用 `<=`**,欠账是精确集合不是 allowlist)。测试 **2808 → 2887 passed + 4 skip**(零回归);真实历史日 20260724 隔离库全链冒烟五段齐、九个新鲜度键在、真实库 MD5 未变。
 
