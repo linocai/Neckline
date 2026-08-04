@@ -228,9 +228,13 @@ final class AppModel {
     var entryForm = PositionEntryForm()
     /// **本次开仓提交动作**的幂等键(v2.0.0,契约线 🟡 Y7)。
     /// ⚠ 规则定死:**每笔新提交动作铸一枚新键**(打开录入表单时铸),提交失败重试
-    /// **复用同一枚**,提交成功后作废。⛔ 严禁跨提交复用、⛔ 别绑「票 + 日期」之类
-    /// 业务量 —— 服务端是标准幂等语义,同键不同 payload 会**静默重放原仓**,把用户
-    /// 改过的价格数量整个吃掉。
+    /// **复用同一枚**;提交成功**不主动作废这枚键**,旧值原样留在内存里,直到**下一次
+    /// `beginPositionEntryFlow()`** 才换新(🔵-5 小审 2026-08-03 措辞订正:原注释写
+    /// "提交成功后作废"与实现不符——成功路径只 `dismissModal()`,没有重置本属性;
+    /// 风险为零,因为下一笔提交必经 `beginPositionEntryFlow()` 铸新键,
+    /// `AppModelTests` 已反向断言同一录入流程内重试不换键)。⛔ 严禁跨提交复用、
+    /// ⛔ 别绑「票 + 日期」之类业务量 —— 服务端是标准幂等语义,同键不同 payload 会
+    /// **静默重放原仓**,把用户改过的价格数量整个吃掉。
     private(set) var entryIdempotencyKey: String = UUID().uuidString
     var noteForm = NoteForm()
     var closeSellPrice = ""
@@ -885,11 +889,16 @@ final class AppModel {
         let notes = f.notes.trimmingCharacters(in: .whitespaces)
         do {
             if let editing = f.editingName {
-                // 局部更新:**没填 key 就不传该键**(不传 = 不改;传空串 = 显式清空)。
+                // 局部更新:**没填就不传该键**(不传 = 不改;传了才是显式改写)。
+                // ⚠ 🔵-6 小审 2026-08-03 对齐:`searchEngine`/`notes` 原先不判空,留空会
+                // 被当成"显式清空"发给服务端,与 `apiKey`「留空 = 不改」的语义不对称、
+                // 同一张表单里两种"留空"含义不同容易让用户误清；现改为与 `apiKey` 同一种
+                // 留空即不改的读法(代价与 `apiKey` 相同:一旦服务端已有值,不能再靠"清空
+                // 这个字段"把它改回空 —— 要清除得整个 Provider 删了重建)。
                 let body = ProviderUpdateRequest(
                     baseUrl: f.baseUrl, model: f.model, apiKey: key.isEmpty ? nil : key,
-                    hasWebSearch: f.hasWebSearch, searchEngine: engine, notes: notes,
-                    enabled: f.enabled)
+                    hasWebSearch: f.hasWebSearch, searchEngine: engine.isEmpty ? nil : engine,
+                    notes: notes.isEmpty ? nil : notes, enabled: f.enabled)
                 _ = try await client.updateProvider(name: editing, body)
             } else {
                 let body = ProviderCreateRequest(
@@ -904,8 +913,10 @@ final class AppModel {
             await loadSettings()
             showToast("Provider 已保存 · 运行时生效")
         } catch let e as APIError {
+            providerForm.apiKey = ""   // 🔵-4 小审 2026-08-03:失败重试保留其余字段,key 草稿不残留明文
             showToast(e.errorDescription ?? "保存失败", isError: true)
         } catch {
+            providerForm.apiKey = ""
             showToast("保存失败:\(error.localizedDescription)", isError: true)
         }
     }

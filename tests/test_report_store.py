@@ -1,9 +1,12 @@
 """报告与 LLM 审判落库单测(plan 2.4/2.5)。锁死:① 存/读往返;② 幂等覆盖(同一
 交易日/同一 (交易日,票) 重跑不留重复行);③ 搜索结果全文(SearchHit)正确序列化
-存档;④ 查不存在的交易日返回 None/空列表,不崩。"""
+存档;④ 查不存在的交易日返回 None/空列表,不崩;⑤ 🟡 Y-1(小审 2026-08-03)—— 重跑
+历史日期不得销毁 V1 冻结的 `candidates_json`/`watchlist_json` 快照(见
+`TestV1FrozenSnapshotSurvivesRerun`)。"""
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -64,6 +67,89 @@ class TestReportRoundtrip:
         finally:
             conn.close()
         assert n == 1
+
+
+class TestV1FrozenSnapshotSurvivesRerun:
+    """🟡 Y-1(小审 2026-08-03,`archive/REVIEW_REPORT_V2_小审_⑭⑮_20260803.md`)守门:
+    `INSERT OR REPLACE`(整行先删后插)叠加 ⑬-11 起 `watchlist_json` 不进列清单 + ⑭
+    起 `candidates` 恒传 `[]`,会让重跑历史日期的 `scripts/report.py` 把 V1 冻结的
+    `candidates_json`/`watchlist_json` 快照永久清空(V2 已删候选管线与自选体检,两者
+    都无法重算)。修法:`INSERT ... ON CONFLICT(trade_date) DO UPDATE SET <本次
+    写入列>`——`watchlist_json` 天然不在列清单里,`candidates_json` 额外加 SQL `CASE`
+    守卫(只在"本次写 `[]` 且历史已非 `[]`"时保留旧值)。本类锁死:① 两列逐字节不变;
+    ② 守卫不误伤"调用方真的想写非空 candidates"的合法路径;③ markdown/sentiment 等
+    可重算字段仍会被新一轮渲染正常覆盖(不是"整行冻结",只冻两列)。"""
+
+    def test_v1_candidates_and_watchlist_survive_v2_rerun(self, db):
+        import sqlite3
+
+        from neckline.db import init_schema
+
+        init_schema(db_path=db)   # 先建好含全部现役列(含 watchlist_json)的真实 DDL
+        v1_candidates = json.dumps(
+            [{"ts_code": "600001.SH", "score": 95.0, "reason": "V1 历史候选快照"}],
+            ensure_ascii=False,
+        )
+        v1_watchlist = json.dumps(
+            [{"ts_code": "600002.SH", "verdict": "hold", "reason": "V1 历史自选体检快照"}],
+            ensure_ascii=False,
+        )
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "INSERT INTO reports (trade_date, generated_at, strategy_version, sentiment_json, "
+                "sectors_json, candidates_json, markdown, watchlist_json) VALUES (?,?,?,?,?,?,?,?)",
+                ("20260304", "2026-03-04T09:00:00+00:00", "v1.3.3", "{}", "[]",
+                 v1_candidates, "# V1 历史报告", v1_watchlist),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 模拟 V2 重跑当日报告(`scripts/report.py 20260304`):`build_report` 恒传 candidates=[]。
+        store.save_report(
+            D, strategy_version="v2.0.0", sentiment={"x": 1}, sectors=[],
+            candidates=[], markdown="# V2 重新渲染的报告", db_path=db,
+        )
+
+        conn = sqlite3.connect(str(db))
+        try:
+            row = conn.execute(
+                "SELECT candidates_json, watchlist_json, markdown FROM reports WHERE trade_date='20260304'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row[0] == v1_candidates, "V1 候选快照被重跑覆写,冻结留档纪律被击穿"
+        assert row[1] == v1_watchlist, "V1 自选体检快照被重跑覆写,冻结留档纪律被击穿"
+        # markdown 不是冻结快照(V2 仍在正常生成报告正文),重跑应正常拿到新内容。
+        assert row[2] == "# V2 重新渲染的报告"
+
+    def test_explicit_non_empty_candidates_still_overwrites(self, db):
+        """守卫只挡"本次写 `[]` 且历史已非 `[]`"这一种模式;调用方若显式传入非空
+        `candidates`(不排除未来的合法写路径),仍必须正常覆盖,不误伤合法写入。"""
+        store.save_report(
+            D, strategy_version="v1", sentiment={}, sectors=[],
+            candidates=[{"ts_code": "A"}], markdown="# 1", db_path=db,
+        )
+        store.save_report(
+            D, strategy_version="v1", sentiment={}, sectors=[],
+            candidates=[{"ts_code": "B"}], markdown="# 2", db_path=db,
+        )
+        loaded = store.load_report(D, db_path=db)
+        assert loaded["candidates"] == [{"ts_code": "B"}]
+
+    def test_empty_stays_empty_when_history_already_empty(self, db):
+        """历史值本来就是 `[]`(如 V2 上线后新造的行)时,守卫不应把它"锁死"成
+        任何非预期状态——重跑仍正常落 `[]`,不是误报"检测到冻结值"。"""
+        store.save_report(
+            D, strategy_version="v2.0.0", sentiment={}, sectors=[], candidates=[], markdown="# 1", db_path=db,
+        )
+        store.save_report(
+            D, strategy_version="v2.0.0", sentiment={}, sectors=[], candidates=[], markdown="# 2", db_path=db,
+        )
+        loaded = store.load_report(D, db_path=db)
+        assert loaded["candidates"] == []
+        assert loaded["markdown"] == "# 2"
 
 
 class TestIntelAndSectorMoneyflowJsonRoundtrip:

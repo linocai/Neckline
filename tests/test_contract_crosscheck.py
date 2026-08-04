@@ -5,7 +5,7 @@
 `APIClient.swift` 解码。**逐字段对照表**是人读件,落
 `archive/V2_契约三方对拍_20260803.md`;本文件只装**能机器判的那几条**:
 
-1. **客户端调用面 ⊆ 服务端路由面** —— 客户端 `APIClient.swift` 里出现的每一个
+1. **客户端调用面 ⊆ 服务端路由面** —— 客户端**任意 Swift 文件**里出现的每一个
    `/api/v1/...` 路径,服务端都必须真有那条路由。**这是 Y5 的防复发闸**:当前仓库
    构建出的客户端对 V2 服务端有 5 处 404 / 静默失败,其中 `PUT /settings/llm`
    **采集了用户的明文 key、发到一个不存在的端点、界面上还是一副成功的样子**。
@@ -17,6 +17,18 @@
    那句驴唇不对马嘴的话。)
 
 ⚠ **本文件不是 review**:它是施工块内的自查(⑭-C 原文),不等于独立复审。
+
+**小审 🔵-2(2026-08-03)修补的两处结构性盲区**:① `client_call_surface()` 曾只扫
+`APIClient.swift` 单文件(依赖"网络层只此一家"的架构惯例,当时靠人眼核实过其余
+文件零 `/api` 字面量)——改为扫 `client/` 下**全部** `.swift` 文件,日后任何 View/
+Model 直接拼 URL 立刻被机器抓到,不再依赖"人核实过一次就假设永远成立"。②
+对拍原本只认路径形状、无 HTTP method 维度——新增
+`test_client_call_methods_match_server_route_methods_where_determinable`,
+**已知不完整**:只覆盖路径字面量直接传给 `get/post/put/delete(...)` 的调用点
+(本文件实测约 36/56 处),调用点若先 `let path = "..."` 再传变量给这四个函数,
+正则不解析变量绑定、**不纳入**这条 method 校验(宁可少覆盖一部分,不假装能可靠
+解析变量流而产出假阳性)——两条测试合起来仍能抓住"POST 打到 GET-only 路径"这类
+在直接字面量调用点上的回归。
 """
 
 from __future__ import annotations
@@ -27,27 +39,39 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
+_CLIENT_DIR = _ROOT / "client"
 _API_CLIENT = _ROOT / "client" / "Neckline" / "Networking" / "APIClient.swift"
 _MODELS = _ROOT / "client" / "Models.swift"
 
 # Swift 里的路径字面量:`"/api/v1/positions/\(id)/close"` → `/api/v1/positions/{}/close`
 _PATH_LITERAL = re.compile(r'"(/api/v1[^"]*)"')
 _INTERPOLATION = re.compile(r"\\\([^)]*\)")
+# 只认"字面量直接传给这四个私有请求方法"的调用点(见模块 docstring 🔵-2 第②点的
+# 已知不完整声明)——`get(_ path: String, ...)` / `post(_ path: String, body:, ...)` 等。
+_METHOD_CALL = re.compile(r'\b(get|post|put|delete)\(\s*"(/api/v1[^"]*)"')
 
 
 def _normalize(path: str) -> str:
-    """插值段归一成 `{}`、去掉查询串。FastAPI 的 `{basket_id}` 也归一成 `{}` ——
-    对拍的是**路径形状**,不是参数名(名字不一致不影响 HTTP 能不能打通)。"""
+    """插值段归一成 `{}`、去掉查询串。FastAPI 的 `{basket_id}` 也归一成 `{}`,
+    客户端代码里的**具体数字示例值**(如测试代码常写的字面量 `"42"`)同样折叠成
+    `{}`(🔵-2 小审 2026-08-03:`client/NecklineTests/URLGateTests.swift` 用
+    `"/api/v1/positions/42/close"` 断言 URL 拼接——`42` 与 `\\(id)` 插值在服务端
+    眼里是同一个路径形状,折叠前会被误判成"多出的调用";已核实服务端真实路由
+    没有任何固定的纯数字路径段,折叠不会掩盖真实回归)——对拍的是**路径形状**,
+    不是参数名或具体取值(名字/取值不一致不影响 HTTP 能不能打通)。"""
     path = path.split("?", 1)[0]
     path = _INTERPOLATION.sub("{}", path)
     path = re.sub(r"\{[^}]*\}", "{}", path)
+    path = re.sub(r"/\d+(?=/|$)", "/{}", path)
     return path.rstrip("/") or "/"
 
 
 def client_call_surface() -> set:
-    """客户端**实际会打出去**的路径集合(含已删端点的活调用 —— 那正是本闸要抓的)。"""
-    text = _API_CLIENT.read_text(encoding="utf-8")
-    return {_normalize(m) for m in _PATH_LITERAL.findall(text)}
+    """客户端**实际会打出去**的路径集合(含已删端点的活调用 —— 那正是本闸要抓的)。
+    **🔵-2 小审 2026-08-03 起扫 `client/` 下全部 `.swift` 文件**(含 `NecklineTests/`),
+    不再只锚 `APIClient.swift` 单文件(见模块 docstring)。"""
+    texts = (p.read_text(encoding="utf-8") for p in sorted(_CLIENT_DIR.rglob("*.swift")))
+    return {_normalize(m) for text in texts for m in _PATH_LITERAL.findall(text)}
 
 
 def server_route_surface() -> set:
@@ -55,6 +79,28 @@ def server_route_surface() -> set:
 
     return {_normalize(r.path) for r in app.routes
             if getattr(r, "path", "").startswith("/api/v1")}
+
+
+def client_call_method_pairs() -> set:
+    """客户端**能确定 HTTP method** 的 `(METHOD, 归一化路径)` 对——只覆盖
+    `APIClient.swift` 里路径字面量直接传给 `get/post/put/delete(...)` 的调用点
+    (模块 docstring 🔵-2 第②点已声明的已知不完整范围)。"""
+    text = _API_CLIENT.read_text(encoding="utf-8")
+    return {(method.upper(), _normalize(path)) for method, path in _METHOD_CALL.findall(text)}
+
+
+def server_route_method_pairs() -> dict:
+    """`{归一化路径: {服务端支持的 METHOD 集合}}`,只收 `/api/v1` 路由。"""
+    from neckline.api.app import app
+
+    out: dict = {}
+    for r in app.routes:
+        path = getattr(r, "path", "")
+        if not path.startswith("/api/v1"):
+            continue
+        methods = {m for m in (getattr(r, "methods", None) or set()) if m not in ("HEAD", "OPTIONS")}
+        out.setdefault(_normalize(path), set()).update(methods)
+    return out
 
 
 # ⑮ 待删的**已知欠账**(V2 review 契约线 🟡 Y5 点名的五处 + 其对应路径形状)。
@@ -90,6 +136,28 @@ def test_registered_debt_entries_are_really_still_in_the_client():
     surface = client_call_surface()
     stale = PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15 - surface
     assert not stale, f"这些欠账在客户端已不存在,请从清单里删掉:{sorted(stale)}"
+
+
+def test_client_call_methods_match_server_route_methods_where_determinable():
+    """HTTP method 维度对拍(🔵-2 小审 2026-08-03,⑭-C 遗留盲区③的部分修补)——
+    路径对得上不代表方法对得上("POST 打到 GET-only 路径"这类回归,原闸看不见)。
+
+    ⚠ **已知不完整**(模块 docstring 已声明):只覆盖 `client_call_method_pairs()`
+    能确定 method 的那部分调用点;路径层面的缺失已由
+    `test_client_call_surface_is_subset_of_server_routes_modulo_registered_debt`
+    抓,这里只管"路径两边都认、但 method 对不上"这一种新增维度。"""
+    server_methods = server_route_method_pairs()
+    bad = []
+    for method, path in sorted(client_call_method_pairs()):
+        allowed = server_methods.get(path)
+        if allowed is None:
+            continue   # 路径本身缺失不归本条测试管
+        if method not in allowed:
+            bad.append((method, path, sorted(allowed)))
+    assert not bad, (
+        f"客户端用了服务端该路径不支持的 HTTP method(method, 客户端路径, 服务端允许的 method):"
+        f"{bad}"
+    )
 
 
 def test_new_v2_endpoints_are_reachable_shapes():

@@ -2004,8 +2004,11 @@ struct Position: Codable, Equatable, Identifiable {
     // —— v1.3-② K4 持仓牌(服务端 16:35 EOD 重算命中;老快照/刚开仓未体检 → 空数组,
     // 前向兼容不特判)——————————————————————————————————————————————————————————
     var k4Advisory: [K4Advisory] = []
-    // 该持仓是否有关联决策日志(via position_id)含非空情景树待每日对照(v1.3-②-D 提醒;
-    // 勾选仍走既有 `POST /decisions/{id}/scenario-outcome`,本字段只做「挑出来」)。
+    // 该持仓是否有关联决策日志(via position_id)含非空情景树待每日对照(v1.3-②-D 提醒)。
+    // ⚠ 🔵-5 小审 2026-08-03 措辞订正:原注释称"勾选仍走既有 `POST /decisions/{id}/
+    // scenario-outcome`"——V2-⑩-C 起 `decision_log` 停写留档,该端点与客户端对应方法
+    // `setScenarioOutcome` 均已物理删除(见 `APIClient.swift:555`)。本字段现在纯只读
+    // 展示「挑出来」,不再有任何写回动作,别被这句话误导去把调用接回来。
     var scenarioReviewPending: Bool = false
 
     /// 显式 CodingKeys(`distToStopPctServer` 与服务端字面 `distToStopPct` 改了名——避免

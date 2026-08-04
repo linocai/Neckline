@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -15,6 +16,8 @@ from typing import Any, Dict, List, Optional
 
 from neckline.db import connection, init_schema
 from neckline.llm.judge import JudgeResult
+
+logger = logging.getLogger(__name__)
 
 
 def _d(trade_date: date) -> str:
@@ -54,22 +57,58 @@ def save_report(
     `basket_daily`(V2-⑭-A,`report/basket_daily.py::BasketDaily.to_public_dict()`:
     今日篮子 + ③b 未定档篮子 + 昨日篮子复盘,已是 camelCase):同上**随报告冻住**。
     ⚠ ③b 的 `droppedBaskets` 只活在这份快照里(⑥ 的溢出篮不进 `baskets` 表),
-    不落 = 历史回放看不到那天有多少好货装不下。默认 `None` → 落 `'{}'`。"""
+    不落 = 历史回放看不到那天有多少好货装不下。默认 `None` → 落 `'{}'`。
+
+    ⚠ **小审 🟡 Y-1(2026-08-03)修复:改 `INSERT OR REPLACE`(整行先删后插)为
+    `INSERT ... ON CONFLICT(trade_date) DO UPDATE SET <本函数实际写入的列>`**。
+    `watchlist_json`(⑬-11 起已停写、不在本函数参数/列清单里)天然不进 `DO UPDATE
+    SET` 子句,重跑历史日期时**原样保留**,不再被"先删后插"重置回 DDL 默认
+    `'[]'`——这正是修复 Y-1 的关键机制,不需要额外代码。
+    `candidates_json` 仍在列清单里(⑬-1 起调用方恒传 `[]`),但**只保护"覆写为
+    `[]`"这一种模式**:SQL 层 `CASE` 判断"本次要写的是 `[]` 且该行已有非 `[]`
+    历史值"时,保留历史值不覆写(V1 时代的 20 只候选快照,V2 已删候选管线、
+    永远无法重算);调用方若真的传入非空 `candidates`(不排除未来的合法写路径),
+    仍照常覆盖,不误伤合法写入。触发保留时额外记一条 WARNING,便于生产观测
+    "这天被跳过覆写了"。"""
     init_schema(db_path)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    candidates_json_new = json.dumps(candidates, ensure_ascii=False)
     with connection(db_path) as conn:
+        if candidates_json_new == "[]":
+            existing = conn.execute(
+                "SELECT candidates_json FROM reports WHERE trade_date=?", (_d(trade_date),)
+            ).fetchone()
+            if existing is not None and existing[0] not in (None, "[]"):
+                logger.warning(
+                    "save_report(%s):本次候选快照为空([]),但该日已有非空 candidates_json"
+                    "(V1 冻结快照,V2 已删候选管线无法重算)——已跳过覆写、保留历史值。",
+                    _d(trade_date),
+                )
         conn.execute(
-            "INSERT OR REPLACE INTO reports "
+            "INSERT INTO reports "
             "(trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
             "intel_json, sector_moneyflow_json, news_alerts_scan_json, data_freshness_json, basket_daily_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(trade_date) DO UPDATE SET "
+            "generated_at=excluded.generated_at, "
+            "strategy_version=excluded.strategy_version, "
+            "sentiment_json=excluded.sentiment_json, "
+            "sectors_json=excluded.sectors_json, "
+            "candidates_json=CASE WHEN excluded.candidates_json='[]' AND reports.candidates_json!='[]' "
+            "THEN reports.candidates_json ELSE excluded.candidates_json END, "
+            "markdown=excluded.markdown, "
+            "intel_json=excluded.intel_json, "
+            "sector_moneyflow_json=excluded.sector_moneyflow_json, "
+            "news_alerts_scan_json=excluded.news_alerts_scan_json, "
+            "data_freshness_json=excluded.data_freshness_json, "
+            "basket_daily_json=excluded.basket_daily_json",
             (
                 _d(trade_date),
                 now,
                 strategy_version,
                 json.dumps(sentiment, ensure_ascii=False),
                 json.dumps(sectors, ensure_ascii=False),
-                json.dumps(candidates, ensure_ascii=False),
+                candidates_json_new,
                 markdown,
                 json.dumps(intel or {}, ensure_ascii=False),
                 json.dumps(sector_moneyflow or {}, ensure_ascii=False),
