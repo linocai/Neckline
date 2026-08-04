@@ -1,5 +1,11 @@
-# Neckline 主服务 systemd unit(plan 4B.3)。单 unit = FastAPI(127.0.0.1:8002)+ 盘中
+# Neckline 主服务 systemd unit(plan 4B.3)。单 unit = FastAPI(0.0.0.0:8002)+ 盘中
 # 哨兵 asyncio 后台任务(折进 lifespan,不另起进程,照搬 LinoN 单 unit 省内存)。
+#
+# ⚠ 2026-08-04(⑯-G NPM 反代前置):host 由 127.0.0.1 改 0.0.0.0 ——
+# npm_default bridge(172.18.0.0/16)里的 nginx-proxy-manager 容器够不着
+# 127.0.0.1,需绑 0.0.0.0 才能被反代到。外网暴露面**不靠绑定地址收口**,
+# 靠 UFW『`ufw allow from 172.18.0.0/16 to any port 8002 proto tcp`』把源限制在
+# 该 bridge 子网,默认 incoming deny 仍在,外网直打 8002 仍被拒。
 #
 # 安装(手动,rsync 不装 unit;改动后须 daemon-reload):
 #   sudo cp /opt/neckline/deploy/neckline.service /etc/systemd/system/neckline.service
@@ -17,7 +23,7 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-ExecStart=/opt/neckline/.venv/bin/uvicorn neckline.api.app:app --host 127.0.0.1 --port 8002
+ExecStart=/opt/neckline/.venv/bin/uvicorn neckline.api.app:app --host 0.0.0.0 --port 8002
 Restart=on-failure
 RestartSec=5
 # —— 内存护栏(hz 仅 1.6G + 2G swap,与 lf/linon/fiscal/pg 共存)——
