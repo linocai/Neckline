@@ -83,6 +83,35 @@ def test_first_tick_delta_is_null_not_zero(isolated_env):
     assert df["cum_volume"].to_list() == [100.0, 260.0]
 
 
+def test_missing_cumulative_is_null_and_does_not_become_the_next_baseline(isolated_env):
+    """契约线审计 🔵 B2:源**没给**累计量 → `cum_volume`/`cum_amount` 落 `null`
+    (⛔ 不落 0 —— 0 是真实取值),且该列这一拍**不进增量基线**:下一拍的增量按
+    "算不出"落 null,⛔ 不许拿 0 当基线算出一个"等于当日全部累计量"的假增量。"""
+    insert_trade_cal(isolated_env, business_days(date(2026, 7, 20), 5))
+    _tick(9, 30, {"600000.SH": _Q(10.0, 100.0, 1000.0)})
+    _tick(9, 31, {"600000.SH": _Q(10.1, None, None)})          # 源这一拍没给累计量
+    _tick(9, 32, {"600000.SH": _Q(10.2, 300.0, 3000.0)})
+    capture.flush_day(D, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+    df = pl.read_parquet(day_file_path("intraday_ticks", D, isolated_env.parquet_dir)).sort("ts")
+
+    assert df["cum_volume"].to_list() == [100.0, None, 300.0]   # 缺的那格是 null 不是 0
+    assert df["cum_amount"].to_list() == [1000.0, None, 3000.0]
+    assert df["volume"][1] is None and df["amount"][1] is None  # 缺这拍 → 增量算不出
+    # 关键一条:下一拍**没有**拿 0 当基线(否则会算出 300.0 这个假增量)
+    assert df["volume"][2] is None and df["amount"][2] is None
+
+
+def test_partial_missing_cumulative_only_blinds_that_column(isolated_env):
+    """两列各自记基线:只缺 `amount` 时 `volume` 侧照常算增量(不牵连)。"""
+    insert_trade_cal(isolated_env, business_days(date(2026, 7, 20), 5))
+    _tick(9, 30, {"600000.SH": _Q(10.0, 100.0, 1000.0)})
+    _tick(9, 31, {"600000.SH": _Q(10.1, 260.0, None)})
+    capture.flush_day(D, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
+    df = pl.read_parquet(day_file_path("intraday_ticks", D, isolated_env.parquet_dir)).sort("ts")
+    assert df["volume"][1] == pytest.approx(160.0)
+    assert df["amount"][1] is None and df["cum_amount"][1] is None
+
+
 def test_source_rollback_yields_null_delta_not_negative(isolated_env):
     """免费源快照抖动导致累计值回退 → 增量落 `null`(数据有问题不伪装成没成交)。"""
     insert_trade_cal(isolated_env, business_days(date(2026, 7, 20), 5))

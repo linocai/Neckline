@@ -29,10 +29,12 @@ class _StubProvider:
         self._result = result
         self.calls = 0
         self.captured_messages = []
+        self.captured_search_query = None
 
-    def chat(self, messages, *, enable_search=True, transport=None):
+    def chat(self, messages, *, enable_search=True, transport=None, search_query=None):
         self.calls += 1
         self.captured_messages = list(messages)
+        self.captured_search_query = search_query
         return self._result
 
 
@@ -57,6 +59,36 @@ class TestSystemPromptWiring:
         scan_news_for_code("600001.SH", "示例甲", provider=stub)
         assert "示例甲" in stub.captured_messages[1].content
         assert "600001.SH" in stub.captured_messages[1].content
+
+
+class TestPromptContextWiring:
+    """A4(2026-08-04):消息面链路补上日期锚 / 时效纪律 / 显式检索词 —— 接线**照
+    `judge.py` 既有姿势**,`prompt_context` 是唯一实现(⛔ 全仓不许抄第二份)。"""
+
+    def test_system_prompt_embeds_the_shared_timeliness_rules(self):
+        from neckline.llm.prompt_context import TIMELINESS_RULES
+
+        assert TIMELINESS_RULES in NEWS_SCAN_SYSTEM_PROMPT
+
+    def test_user_message_first_line_is_the_date_anchor(self, isolated_env):
+        stub = _StubProvider(LLMResult(ok=True, content="正文\n结论:未发现", provider="glm", model="glm-5.2"))
+        scan_news_for_code("600001.SH", "示例甲", provider=stub)
+        first = stub.captured_messages[1].content.splitlines()[0]
+        assert first.startswith("今天是"), first          # 模型必须知道"现在"是哪天
+
+    def test_explicit_search_query_carries_subject_and_current_year(self, isolated_env):
+        from neckline.llm.prompt_context import recency_hint
+
+        stub = _StubProvider(LLMResult(ok=True, content="正文\n结论:未发现", provider="glm", model="glm-5.2"))
+        scan_news_for_code("600001.SH", "示例甲", provider=stub)
+        q = stub.captured_search_query
+        assert q is not None and "示例甲" in q and "600001.SH" in q
+        assert recency_hint() in q                       # 年份动态取,不硬编
+
+    def test_search_query_falls_back_to_code_when_name_missing(self):
+        from neckline.llm.news_scan import news_search_query
+
+        assert news_search_query("600001.SH", "").startswith("600001.SH")
 
 
 class TestProviderFailureDegradation:

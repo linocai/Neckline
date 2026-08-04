@@ -171,13 +171,12 @@ def _imports_prompt_context(path: Path) -> bool:
     return False
 
 
-# **已知缺口(如实登记,不在本块修复范围)**:`neckline/llm/news_scan.py::
-# scan_news_for_code` 调用 `provider.chat(...)`(消息面立案/暴雷/监管扫描,
-# v1.3-③-C4)但未 import `prompt_context`——早于本块存在、与本块改动无关。若
-# 这里不豁免,下面这条新增的全仓守门会把这个既有缺口变成"本块新增的失败",
-# 与任务纪律「不新增失败」冲突;如实登记 + 已 `spawn_task` 记账跟进,不在此处
-# 顺手修(改 news_scan 的 system prompt 属于另一块工作量,不做静默无关改动)。
-_GRANDFATHERED_MISSING_PROMPT_CONTEXT = ("neckline/llm/news_scan.py",)
+# **豁免名单已清空(2026-08-04,A4)**:唯一一条 `neckline/llm/news_scan.py`
+# (消息面立案/暴雷/监管扫描,v1.3-③-C4)已按 `judge.py` 姿势接上 `prompt_context`
+# (system prompt 内嵌 `TIMELINESS_RULES` + user 首行日期锚 + 显式检索词),欠账销账。
+# ⚠ 名单**保留但为空**:下面 `test_grandfather_list_is_still_accurate` 是它的反向
+# 守门(登记了却已修好会挂),将来真要再豁免一条,得连着理由一起写进来。
+_GRANDFATHERED_MISSING_PROMPT_CONTEXT: tuple = ()
 
 
 def test_every_provider_chat_call_site_imports_prompt_context():

@@ -79,7 +79,7 @@ from neckline.data.limit_derived import compute_intraday_limit_prices
 from neckline.llm.base import ChatMessage, LLMProvider
 from neckline.llm.budget import LEDGER_REASON, BudgetLedger
 from neckline.llm.json_block import split_narrative_and_reference_json
-from neckline.llm.prompt_context import date_anchor_line
+from neckline.llm.prompt_context import TIMELINESS_RULES, date_anchor_line
 from neckline.llm.router import TASK_SCRIPT
 from neckline.selection import member_tags as mt
 from neckline.selection import verification_rules as vr
@@ -538,6 +538,10 @@ def clamp_reason_text(clamp: str) -> Optional[str]:
 # LLM 段(TASK_SCRIPT → ② 路由;不联网;预算走推理账)
 # ══════════════════════════════════════════════════════════════════════════
 
+# ⚠ `TIMELINESS_RULES` 必须内嵌(判定线审计 🔵-3;§五铁律「日期锚 + 时效纪律」,
+# 与 ⑤⑥⑪ 同体例):本段**不联网**,但资料里的驱动证据是检索环节更早一步取回的
+# **带日期**条目,模型照样可能把一条几个月前的旧证据当"现在正在发生"来讲。日期锚在
+# user 消息第一行(`build_card_context`),时效纪律在这里,两半凑齐才算齐。
 CARD_SYSTEM_PROMPT = """你是「颈线」系统的盘后篮子参谋。系统本身只做审计、不代客下单,读者是一位短线交易者。
 你现在要为**一个已经定好的股票篮子**(1—3 只同驱动的票)写卡面上"给人看"的那几段。
 
@@ -551,6 +555,8 @@ CARD_SYSTEM_PROMPT = """你是「颈线」系统的盘后篮子参谋。系统�
 **你产出的一切都只是参考,不是指令**——买卖时机、价格与是否下单的终选权始终在用户,系统永远不会
 代替用户下单。**不得使用"止盈线""目标价""建议买入""推荐买点""必涨"这类措辞**;止损是系统按现役
 章程自动算的,**不要给出任何止损数字**(资料里已经给了,你只能引用,不能另给一个)。
+
+""" + TIMELINESS_RULES + """
 
 输出格式(两部分,顺序不可颠倒,中间空一行):
 

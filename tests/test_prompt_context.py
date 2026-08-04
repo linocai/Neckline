@@ -105,6 +105,14 @@ class TestTimelinessRulesAreInEveryPrompt:
     @pytest.mark.parametrize("prompt_ref", [
         "neckline.api.inquiry:INQUIRY_SYSTEM_PROMPT",
         "neckline.llm.judge:JUDGE_SYSTEM_PROMPT",
+        # V2 起的四条 LLM 链路(⑤ 检索/推理、⑥ 同档次序、⑦ 卡)——⑦ 是 2026-08-04
+        # 判定线审计 🔵-3 补的最后一处;⑦ 不联网,但资料里的证据带日期,同样要时效纪律。
+        "neckline.selection.aggregate:DRIVER_SEARCH_SYSTEM_PROMPT",
+        "neckline.selection.aggregate:BASKET_REASON_SYSTEM_PROMPT",
+        "neckline.selection.tier:TIER_RANK_SYSTEM_PROMPT",
+        "neckline.selection.basket_card:CARD_SYSTEM_PROMPT",
+        # 消息面扫描(A4 补;联网 + 问的就是"近期",没有日期概念最伤)
+        "neckline.llm.news_scan:NEWS_SCAN_SYSTEM_PROMPT",
     ])
     def test_prompt_embeds_the_shared_rules_verbatim(self, prompt_ref):
         import importlib

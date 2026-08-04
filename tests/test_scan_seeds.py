@@ -305,10 +305,16 @@ def test_generate_seeds_is_deterministic(isolated_env):
 # 确定 —— ⑨ 完工时实证发现涨停簇/异动簇走 `frame.group_by(["cluster_key"])`
 # 迭代(polars 不保证顺序)+ 上游 SQL `SELECT` 未加 `ORDER BY`,同一 D0 同一库
 # `generate_seeds()` 同进程内连调三次,第 3 颗起 `seed_key` 就不一样。本测试
-# 用**四类各自 ≥4 个合格项**(且 DB/构造顺序刻意与 `seed_key` 升序不一致)
-# 复现"够多分组"的场景,断言:①同一天连跑三次逐位相同;②顺序恰好等于按
-# `seed_key` 升序(锁死具体 tie-break,不只是"跟自己一致")。四类**全部**覆盖,
-# 不只覆盖被点名的涨停簇/异动簇两类。
+# 用**四类各自 ≥4 个合格项**(且 DB/构造顺序刻意与排序结果不一致)复现"够多
+# 分组"的场景,断言:①同一天连跑三次逐位相同;②顺序恰好等于**语义主键 →
+# `seed_key` 两级序**(锁死具体 tie-break,不只是"跟自己一致")。四类**全部**
+# 覆盖,不只覆盖被点名的涨停簇/异动簇两类。
+#
+# ⚠ 2026-08-04(判定线审计 🔵-2)排序键升级:原来是 `seed_key` 单键升序,现在
+# 第一级换成该类自己的强弱主键(行业名次升 / 涨幅降 / 簇大小降),`seed_key` 降为
+# 并列打散键。本测试的两类构造刻意分工:热点行业 / 暴起概念**主键互不相同**
+# (锁语义序真的生效),涨停簇 / 异动簇**主键全部并列**(cluster_size 恒 2 →
+# 锁并列时仍退回 `seed_key` 升序,确定性没丢)。
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_generate_seeds_multi_item_categories_stay_ordered_across_repeated_calls(isolated_env):
@@ -406,12 +412,48 @@ def test_generate_seeds_multi_item_categories_stay_ordered_across_repeated_calls
     baseline_keys = {
         kind: [s.seed_key for s in getattr(runs[0], field_of[kind])] for kind in categories
     }
+
+    # ① 每一类的实际顺序 == 「语义主键升序 → seed_key 升序」重排一遍的结果
     for kind in categories:
-        assert baseline_keys[kind] == sorted(baseline_keys[kind]), (
-            f"{kind} 未按 seed_key 升序排定:{baseline_keys[kind]}"
+        got = list(getattr(runs[0], field_of[kind]))
+        want = sorted(got, key=lambda s: (seeds._semantic_primary(s), s.seed_key))
+        assert [s.seed_key for s in got] == [s.seed_key for s in want], (
+            f"{kind} 未按「语义主键 → seed_key」两级序排定:"
+            f"{[(s.label, seeds._semantic_primary(s), s.seed_key) for s in got]}"
         )
+
+    # ②-a 语义序真的生效:热点行业按 industry_rank 升序、暴起概念按涨幅降序
+    hot_ranks = [s.evidence["industry_rank"] for s in runs[0].hot_industry]
+    assert hot_ranks == sorted(hot_ranks) and len(set(hot_ranks)) == len(hot_ranks), hot_ranks
+    concept_pcts = [s.evidence["pct_change"] for s in runs[0].surging_concept]
+    assert concept_pcts == [9.0, 8.0, 7.0, 6.0], concept_pcts      # 涨得最多的排最前
+
+    # ②-b 主键并列时退回 seed_key 升序(两类簇的 cluster_size 全是 2)
+    for kind in (seeds.LIMIT_CLUSTER, seeds.ANOMALY_CLUSTER):
+        sizes = {s.evidence["cluster_size"] for s in getattr(runs[0], field_of[kind])}
+        assert sizes == {2}, f"{kind} 构造应全部并列以覆盖 tie-break:{sizes}"
+        assert baseline_keys[kind] == sorted(baseline_keys[kind]), (
+            f"{kind} 主键并列时未退回 seed_key 升序:{baseline_keys[kind]}"
+        )
+
+    # ③ 连跑三次逐位相同(确定性没因为换排序键而减弱)
     for run in runs[1:]:
         assert run.counts() == counts
         for kind in categories:
             keys = [s.seed_key for s in getattr(run, field_of[kind])]
             assert keys == baseline_keys[kind], f"{kind} 顺序在重跑间漂移:{keys} != {baseline_keys[kind]}"
+
+
+def test_semantic_primary_missing_evidence_sorts_last_not_zero():
+    """语义主键算不出(evidence 缺项 / 非数)→ 排同类最后,⛔ 不拿 0 冒充"最弱"
+    (0 在涨幅与簇大小里都是真实取值)。"""
+    strong = seeds.DriverSeed(seed_key="ffff", seed_kind=seeds.SURGING_CONCEPT, label="强",
+                              member_codes=(), evidence={"pct_change": 6.0})
+    unknown = seeds.DriverSeed(seed_key="0001", seed_kind=seeds.SURGING_CONCEPT, label="缺",
+                               member_codes=(), evidence={})
+    zero = seeds.DriverSeed(seed_key="0002", seed_kind=seeds.SURGING_CONCEPT, label="零",
+                            member_codes=(), evidence={"pct_change": 0.0})
+    out = seeds._sort_seeds([unknown, zero, strong])
+    assert [s.label for s in out] == ["强", "零", "缺"]
+    assert seeds._semantic_primary(unknown) == seeds._PRIMARY_MISSING
+    assert seeds._semantic_primary(zero) == 0.0        # 真实的 0 不是"算不出"

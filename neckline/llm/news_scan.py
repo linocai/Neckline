@@ -19,6 +19,16 @@
 "结论:通过|否决"单行标签,本场景天然有 3 个独立布尔而非 1 个,故收尾扩到最多
 3 行,不是每次都出现的固定表格)。
 
+**日期锚 + 时效纪律 + 显式检索词(2026-08-04 补,A4)**:本模块**联网**
+(`enable_search=True`),却曾是全仓唯一一条没挂 `llm/prompt_context.py` 的
+`provider.chat(...)` 链路(V2-② 核实时登记的欠账,晚于 2026-07-30 三链路修复才被
+排查到)。接线**照 `judge.py` 既有姿势逐条对齐、不另起一套**:① `TIMELINESS_RULES`
+内嵌 system prompt;② `date_anchor_line()` 放 user 消息**第一行**(模型没有"现在"
+的概念,一份 2024 年的处罚决定与上个月的立案在它眼里一样新 —— 而本模块问的恰恰是
+「**近期**有没有」);③ `search_subject_with_recency()` 拼**显式检索词**(v1.3.4
+已证:不显式传时检索词跟最后一条 user 消息走)。⛔ 不加任何新 API 参数(v1.3.4 案底:
+取值不被上游认识会 `ok=True` 静默返 0 条)。
+
 **格式缺失的保守方向与 `judge.py`相反,原因写明**:`judge.py` 选股场景「格式缺失
 → 保守按否决(=不放行)」,因为放行的代价更大;本模块是**风险警报**场景,若格式
 缺失就"沉默",代价是可能漏掉真实立案/暴雷/监管——但生造一个不知道具体是哪类的
@@ -35,6 +45,11 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
 
 from neckline.llm.base import ChatMessage, LLMProvider, SearchHit
+from neckline.llm.prompt_context import (
+    TIMELINESS_RULES,
+    date_anchor_line,
+    search_subject_with_recency,
+)
 
 # 类别码(与 `report.news_alerts.NewsCategory` 同一套值,此处直接用字符串常量
 # 避免 llm/ 依赖 report/ 造成循环 import——`report/news_alerts.py` 侧再对齐
@@ -61,6 +76,8 @@ NEWS_SCAN_SYSTEM_PROMPT = """你是「颈线」系统的盘后消息面扫描员
 2. 如果搜索没有找到相关消息,或搜到的内容与该股票无关,必须在分析里明确说
 "未搜到相关消息",绝不允许凭猜测编造新闻、公告或处罚事项。
 3. 你不做买卖建议,只做消息面排查,不评价该股票是否值得买卖。
+
+""" + TIMELINESS_RULES + """
 
 输出风格(硬约束):自由叙述,写成一段连贯的分析文字,像分析师口头点评。禁止
 使用分点列表、表格、"技术面/资金面/消息面"这类固定分栏模板。
@@ -102,6 +119,15 @@ def _parse_hits(content: str) -> Optional[List[Tuple[str, str]]]:
     return None
 
 
+def news_search_query(ts_code: str, name: str) -> str:
+    """消息面链路的**显式检索词** = 「中文名(代码) <当前年份> 最新」(同
+    `judge.judge_search_query`,年份词的位置与截断风险见
+    `prompt_context.search_subject_with_recency`)。**不另拼一套字符串**。"""
+    code = (ts_code or "").strip()
+    nm = (name or "").strip()
+    return search_subject_with_recency(f"{nm}({code})" if nm else code)
+
+
 def scan_news_for_code(
     ts_code: str,
     name: str,
@@ -121,9 +147,17 @@ def scan_news_for_code(
 
     messages = [
         ChatMessage(role="system", content=NEWS_SCAN_SYSTEM_PROMPT),
-        ChatMessage(role="user", content=f"股票:{name}({ts_code})。请排查该股票近期是否有上述三类消息。"),
+        ChatMessage(role="user", content="\n".join([
+            # 第一行永远是当前日期锚(单一实现 `llm/prompt_context.py`,模块头 A4 节)。
+            date_anchor_line(),
+            f"股票:{name}({ts_code})。请排查该股票近期是否有上述三类消息。",
+        ])),
     ]
-    result = provider.chat(messages, enable_search=True, transport=transport)
+    result = provider.chat(
+        messages, enable_search=True, transport=transport,
+        # 显式检索词(带当前年份),同 `judge.judge_search_query` 姿势。
+        search_query=news_search_query(ts_code, name),
+    )
     if not result.ok:
         return NewsScanResult(
             ts_code=ts_code, provider=provider.name, model=getattr(provider, "model", ""),
@@ -150,5 +184,6 @@ __all__ = [
     "CATEGORY_REGULATORY",
     "NEWS_SCAN_SYSTEM_PROMPT",
     "NewsScanResult",
+    "news_search_query",
     "scan_news_for_code",
 ]

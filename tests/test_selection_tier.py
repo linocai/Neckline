@@ -300,6 +300,21 @@ class TestTradability:
         assert score == ti.NEUTRAL_DIM_SCORE
         assert flags == [ti.FLAG_TRADABILITY_MISSING]
 
+    def test_unresolved_one_word_member_makes_the_whole_dim_neutral(self):
+        """判定线审计 🔵-5:涨停命中、一字与否判不出来的成员 → 整维中性 + flag,
+        **不再按"开过板"半罚混过**(半罚 = 拿"没看"当"没有",且方向偏松)。"""
+        fctx = _fctx(tradability_available=True, limit_up={"A"}, one_word_unresolved={"A"})
+        score, flags = ti._dim_tradability(["A", "D"], fctx)
+        assert score == ti.NEUTRAL_DIM_SCORE
+        assert flags == [ti.FLAG_TRADABILITY_MISSING]
+        # 对照:同一份 fctx 下不含该成员的篮子照常算分,不被牵连
+        clean, clean_flags = ti._dim_tradability(["C", "D"], fctx)
+        assert clean == pytest.approx(1.0) and clean_flags == []
+        # 对照:同一只票若判过了是"开过板",走的是半罚而不是中性(两态真的分得开)
+        judged = _fctx(tradability_available=True, limit_up={"A"})
+        half, half_flags = ti._dim_tradability(["A", "D"], judged)
+        assert half == pytest.approx(1.0 - ti.LIMIT_UP_PENALTY / 2) and half_flags == []
+
 
 class TestCardDensity:
     def test_more_k4_tags_lower_score(self):
@@ -1051,6 +1066,30 @@ class TestFeatureContextIO:
         sealed, _ = ti._dim_tradability(["600001.SH"], fctx)
         reopened, _ = ti._dim_tradability(["600002.SH"], fctx)
         assert sealed < reopened
+        assert fctx.one_word_unresolved == set()    # 两只都判过了,没有"不知道"
+
+    def test_limit_hits_without_daily_partition_are_unresolved_not_half_penalised(self, isolated_env):
+        """判定线审计 🔵-5:`limit_derived` 有涨停命中、当日 `daily` 分区**整段缺失**
+        → 一字与否**判不出来**,该维走中性分 + flag(⛔ 不再让 `one_word` 恒空、
+        把一字板当"开过板"半罚混过)。"""
+        env = isolated_env
+        write_daily_fixture(env, "limit_derived", D0, [
+            {"ts_code": "600001.SH", "board": "MAIN", "status": "limit_up", "limit_pct": 0.1,
+             "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
+             "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1},
+        ])
+        fctx = ti.build_feature_context(D0, ["600001.SH"],
+                                        db_path=env.db_path, parquet_dir=env.parquet_dir)
+        assert fctx.tradability_available                     # 涨跌停表读到了
+        assert fctx.limit_up == {"600001.SH"}
+        assert fctx.one_word == set()                          # 确实一个都没判出来
+        assert fctx.one_word_unresolved == {"600001.SH"}       # 但如实记着"不知道"
+        score, flags = ti._dim_tradability(["600001.SH"], fctx)
+        assert score == ti.NEUTRAL_DIM_SCORE
+        # ⚠ 单成员篮的"半罚"数值(1−0.5)**恰好也等于** NEUTRAL_DIM_SCORE —— 正是模块头
+        # 说的"拿数值反推是不是中性填充会判错,只有 flag 靠得住"。判据锁 flag:
+        assert flags == [ti.FLAG_TRADABILITY_MISSING]
+        assert ti._DIM_MISSING_FLAGS[ti.DIM_TRADABILITY] & set(flags)   # 计入 neutral_filled_weight
 
     def test_missing_everything_degrades_each_dim_independently(self, isolated_env):
         env = isolated_env

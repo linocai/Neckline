@@ -1197,8 +1197,11 @@ def assign_primary(
 def _select_seeds(seed_set: SeedSet, limit: int = MAX_SEEDS_AGGREGATED) -> Tuple[DriverSeed, ...]:
     """本次要聊的种子。`SeedSet.all_seeds()` 的次序本身就是确定的(热点行业 →
     暴起概念 → 涨停簇 → 异动簇,每类内部各自有序),题材类种子天然排在成百上千颗
-    涨停簇之前,截断因此有意义而不是随机砍。按 `seed_key` 去重(不同类之间理论上
-    不会撞键,防御性去重不额外花钱)。"""
+    涨停簇之前,截断因此有意义而不是随机砍。**类内序是强弱序**(`scan/seeds.py::
+    _sort_seeds`:语义主键〔行业名次 / 涨幅 / 簇大小〕→ `seed_key` crc32 两级序,
+    2026-08-04 判定线审计 🔵-2),故某类超出剩余额度时被砍掉的是该类里最弱的那些,
+    不是"crc32 恰好大"的那些。按 `seed_key` 去重(不同类之间理论上不会撞键,
+    防御性去重不额外花钱)。"""
     out: List[DriverSeed] = []
     seen: set = set()
     for s in seed_set.all_seeds():

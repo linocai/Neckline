@@ -257,6 +257,11 @@ class TierFeatureContext:
     stage_available: bool = False
     limit_up: Set[str] = field(default_factory=set)
     one_word: Set[str] = field(default_factory=set)
+    # 涨停命中、但**一字与否判不出来**的码(当日 `daily` 分区整段缺失,或该码在
+    # `daily` 里没有行 / 没有最低价、`limit_derived` 没给涨停价)。⚠ 与 `one_word`
+    # 是两个集合、语义相反的"知道"与"不知道":空集 = 全都判过了,不是"都不是一字"
+    # (2026-08-04 判定线审计 🔵-5)。
+    one_word_unresolved: Set[str] = field(default_factory=set)
     tradability_available: bool = False
 
 
@@ -376,17 +381,26 @@ def build_feature_context(
             hit = limit.filter(pl.col("ts_code").is_in(wanted) & pl.col("is_limit_up"))
             ctx.limit_up = set(hit["ts_code"].to_list())
             ctx.tradability_available = True
-            if ctx.limit_up and not daily.is_empty():
-                lows = {
-                    r["ts_code"]: r["low"]
-                    for r in daily.filter(pl.col("ts_code").is_in(list(ctx.limit_up)))
-                    .select(["ts_code", "low"]).iter_rows(named=True)
-                }
+            if ctx.limit_up:
+                # ⚠ `daily` 整段缺失时**不能**当"这些涨停都开过板"(那是半罚混过,
+                # 判定线审计 🔵-5):一个都判不出来,全部记进 `one_word_unresolved`。
+                lows = (
+                    {
+                        r["ts_code"]: r["low"]
+                        for r in daily.filter(pl.col("ts_code").is_in(list(ctx.limit_up)))
+                        .select(["ts_code", "low"]).iter_rows(named=True)
+                    }
+                    if not daily.is_empty() else {}
+                )
                 for r in hit.select(["ts_code", "limit_up_price"]).iter_rows(named=True):
                     low = lows.get(r["ts_code"])
                     price = r["limit_up_price"]
-                    # 一字板 = 全天最低价都没低于涨停价 → 根本没有买进的机会。
-                    if low is not None and price is not None and float(low) >= float(price) - _EPS:
+                    if low is None or price is None:
+                        # 缺最低价 / 缺涨停价 = 这只票的一字与否**判不出来**,
+                        # 既不算一字也不算"开过板"(「没有」与「没看」分开)。
+                        ctx.one_word_unresolved.add(r["ts_code"])
+                    elif float(low) >= float(price) - _EPS:
+                        # 一字板 = 全天最低价都没低于涨停价 → 根本没有买进的机会。
                         ctx.one_word.add(r["ts_code"])
         elif not daily.is_empty():
             # `limit_derived` 是**稀疏表**(只落有信号的行):当日 `daily` 有数据而
@@ -471,10 +485,18 @@ def _dim_leader_clarity(rs_ranks: Sequence[Optional[int]]) -> Tuple[float, List[
 
 
 def _dim_tradability(codes: Sequence[str], fctx: TierFeatureContext) -> Tuple[float, List[str]]:
-    """一字比例与涨停占比 —— **买不进的涨停不算机会**(蓝图 4.9)。"""
+    """一字比例与涨停占比 —— **买不进的涨停不算机会**(蓝图 4.9)。
+
+    ⚠ **本篮有"涨停了但一字与否判不出来"的成员 → 整维走中性分 + `tradability_
+    missing`**(2026-08-04 判定线审计 🔵-5):`limit_derived` 有涨停命中、当日 `daily`
+    分区却缺失(或该码缺最低价)时,老实现让 `one_word` 恒空 → 一字板被当成"开过板"
+    只扣半罚(0.5)悄悄混过去 —— 那是拿"没看"当"没有",而且方向偏松(买不进的票被
+    打成"买得进")。判不出来就别给分,如实标。"""
     if not codes:
         return NEUTRAL_DIM_SCORE, [FLAG_TRADABILITY_MISSING]
     if not fctx.tradability_available:
+        return NEUTRAL_DIM_SCORE, [FLAG_TRADABILITY_MISSING]
+    if any(c in fctx.one_word_unresolved for c in codes):
         return NEUTRAL_DIM_SCORE, [FLAG_TRADABILITY_MISSING]
     n = len(codes)
     one_word = sum(1 for c in codes if c in fctx.one_word)

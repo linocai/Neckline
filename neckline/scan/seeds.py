@@ -37,11 +37,20 @@ loud 的对立面是"如实披露",不是"报错崩溃"也不是"造一份默认
 "别用行序"这条不只针对 `group_by`,也针对上游查询)。实测同一 D0、同一库
 `generate_seeds()` 同进程内连调三次,第 3 颗起 `seed_key` 就不一样,连带
 哪 20 颗种子进聚合、聚出哪些篮子全部随机。**修法**:四类种子各自的输出列表在
-返回前一律经 `_sort_by_seed_key()` 按 `seed_key`(crc32 十六进制串,由行业名 /
-概念代码 / 簇 anchor 等稳定业务标识派生,`cluster.make_cluster_key` 同手法,
-跨进程无随机盐)升序排定,不依赖任何上游行序——热点行业(SQL `ORDER BY
+返回前一律经 `_sort_seeds()` 排定,不依赖任何上游行序——热点行业(SQL `ORDER BY
 industry_rank`)与暴起概念(parquet 读回顺序)目前看似已经稳定,但那是"恰好
 如此"而非"契约保证",四类**全部**过一遍这一道收口,不只收被点名的两类。
+
+**排序键 = 「语义主键 → `seed_key`」两级序(2026-08-04,判定线审计 🔵-2)**:
+2026-08-02 那版一律按 `seed_key`(crc32)单键升序——确定性达成了,但 **截断变得
+不可解释**:`⑤` 只取前 20 颗,某类内部超额时进聚合的是"crc32 恰好小"的而不是
+"最强的"(热点行业因此丢掉了 `industry_rank` 语义序)。现改为先按该类**自己的
+强弱主键**排(热点行业 = `industry_rank` 升序;暴起概念 = 当日涨幅降序;涨停簇 /
+异动簇 = `cluster_size` 降序),**再**用 `seed_key` crc32 升序打散并列。
+确定性一点没减(第二级键仍是跨进程可复现的 crc32,主键相等时全序仍唯一),
+截断从此可解释。⚠ **与 ⑧-G `mainline.crc_rank`(按票 `crc32(ts_code)` 采样)不是
+一回事** —— 那是"从池子里等概率抽一批票"的采样键,本函数是"种子谁先谁后"的
+展示/截断序,两者同为 crc32 但不同层,别互相"统一"。
 """
 
 from __future__ import annotations
@@ -281,13 +290,56 @@ def _anomaly_cluster_seeds(
 # 编排入口
 # ══════════════════════════════════════════════════════════════════════════
 
-def _sort_by_seed_key(items: List[DriverSeed]) -> Tuple[DriverSeed, ...]:
+# 语义主键算不出时的排位(排在同类最后,由第二级 `seed_key` 内部定序)。
+# ⛔ 不拿 0 冒充"最弱"——0 在涨幅/簇大小里都是真实取值,「没有」与「没看」分开。
+_PRIMARY_MISSING = float("inf")
+
+
+def _semantic_primary(seed: DriverSeed) -> float:
+    """一颗种子在**它自己那一类**里的强弱主键,**统一成"越小越强"的升序量**
+    (模块头「排序键 = 两级序」节)。取值全部来自 `evidence` 里已经算好的机械量,
+    本函数**不新算任何判据、也不引入任何阈值**——它只决定"同类里谁先谁后",
+    不决定"谁够格当种子"(那是 `PRIMITIVES` 的事)。
+
+        hot_industry     → `industry_rank` 升序(第 1 名最强)
+        surging_concept  → `pct_change` **降序**(涨得多的在前)→ 取负号归一成升序
+        limit_cluster    → `cluster_size` **降序**(簇越大共振越强)→ 同上
+        anomaly_cluster  → 同 `limit_cluster`
+
+    缺主键(evidence 少这一项 / 非数)→ `_PRIMARY_MISSING`,排在同类最后。"""
+    ev = seed.evidence or {}
+
+    def _f(v: Any) -> Optional[float]:
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        f = float(v)
+        return f if f == f else None      # NaN 当算不出
+
+    if seed.seed_kind == HOT_INDUSTRY:
+        rank = _f(ev.get("industry_rank"))
+        return rank if rank is not None else _PRIMARY_MISSING
+    if seed.seed_kind == SURGING_CONCEPT:
+        pct = _f(ev.get("pct_change"))
+        return -pct if pct is not None else _PRIMARY_MISSING
+    # 两类簇:`cluster_size` 是 evidence 里的机械量;真缺了退回成员数(同一个量的
+    # 另一种数法,不是新判据),再缺才算算不出。
+    size = _f(ev.get("cluster_size"))
+    if size is None and seed.member_codes:
+        size = float(len(seed.member_codes))
+    return -size if size is not None else _PRIMARY_MISSING
+
+
+def _sort_seeds(items: List[DriverSeed]) -> Tuple[DriverSeed, ...]:
     """四类种子各自落定顺序后再交给 ⑤(模块头「四类种子的输出顺序必须确定性」
-    节)。按 `seed_key` 升序——不用行序,也不假设调用方传入的列表已经有序。
-    `sorted()` 是稳定排序,若同一 `seed_kind` 内出现完全相同的 `seed_key`
-    (crc32 碰撞,概率级极小),会保留其原相对次序,不影响绝大多数情形下的
-    全序确定性。"""
-    return tuple(sorted(items, key=lambda s: s.seed_key))
+    节)。**两级序**:`(语义主键升序, seed_key 升序)`——不用行序,也不假设调用方
+    传入的列表已经有序。第二级的 `seed_key` 是 crc32 十六进制串(由行业名 / 概念
+    代码 / 簇 anchor 等稳定业务标识派生,`cluster.make_cluster_key` 同手法,跨进程
+    无随机盐),故**主键并列时全序仍唯一且可复现**;只有 `seed_key` 也完全相同
+    (crc32 碰撞,概率级极小)才会退回 `sorted()` 的稳定序。
+
+    ⚠ 2026-08-02 的旧实现 `_sort_by_seed_key()` 是本函数的单键版本,已被取代
+    (确定性等价,截断语义更可解释,判定线审计 🔵-2)。"""
+    return tuple(sorted(items, key=lambda s: (_semantic_primary(s), s.seed_key)))
 
 
 def generate_seeds(
@@ -295,8 +347,9 @@ def generate_seeds(
 ) -> Optional[SeedSet]:
     """当日四类驱动种子(**无现役包 → `None`**,如实披露"今日不产出种子",不
     造一份默认包——见 `get_active_pack()` docstring 原文)。四类种子各自经
-    `_sort_by_seed_key()` 落定确定性顺序(模块头节),`⑤` 截断前 `MAX_SEEDS_
-    AGGREGATED` 颗的前提"每类内部各自有序"由此保证。"""
+    `_sort_seeds()` 落定确定性顺序(模块头节:语义主键 → `seed_key` 两级序),
+    `⑤` 截断前 `MAX_SEEDS_AGGREGATED` 颗的前提"每类内部各自有序、且序是强弱序"
+    由此保证。"""
     pack = get_active_pack(db_path)
     if pack is None:
         logger.warning(
@@ -309,10 +362,10 @@ def generate_seeds(
     return SeedSet(
         trade_date=_d(trade_date),
         pack_version=pack.pack_version,
-        hot_industry=_sort_by_seed_key(_hot_industry_seeds(trade_date, pack, db_path=db_path)),
-        surging_concept=_sort_by_seed_key(_surging_concept_seeds(trade_date, pack, parquet_dir=parquet_dir)),
-        limit_cluster=_sort_by_seed_key(_limit_cluster_seeds(trade_date, pack, db_path=db_path)),
-        anomaly_cluster=_sort_by_seed_key(
+        hot_industry=_sort_seeds(_hot_industry_seeds(trade_date, pack, db_path=db_path)),
+        surging_concept=_sort_seeds(_surging_concept_seeds(trade_date, pack, parquet_dir=parquet_dir)),
+        limit_cluster=_sort_seeds(_limit_cluster_seeds(trade_date, pack, db_path=db_path)),
+        anomaly_cluster=_sort_seeds(
             _anomaly_cluster_seeds(trade_date, pack, db_path=db_path, parquet_dir=parquet_dir)
         ),
     )

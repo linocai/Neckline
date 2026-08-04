@@ -102,7 +102,10 @@ class DayBuffer:
     ticks: List[Tuple[Any, ...]] = field(default_factory=list)
     auction: List[Tuple[Any, ...]] = field(default_factory=list)
     auction_requested: int = 0
-    last_cum: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    # 每只票最近一拍的 `(cum_volume, cum_amount)` 增量基线。**两列各自可为 `None`**
+    # = 那一拍源没给这一列(基线失效,下一拍的增量算不出 → 落 null,见 `_delta`)。
+    # 键的存在与否另有用途:`len(last_cum)` = 当日观测到过几只票(`res.codes`)。
+    last_cum: Dict[str, Tuple[Optional[float], Optional[float]]] = field(default_factory=dict)
     minutes: Set[int] = field(default_factory=set)
     attempted_ticks: int = 0
     empty_ticks: int = 0
@@ -142,6 +145,16 @@ def _f(v: Any) -> Optional[float]:
     return f if f == f else None
 
 
+def _delta(cur: Optional[float], prev: Optional[float]) -> Optional[float]:
+    """本拍增量。**三种"算不出"一律 `None`**:这一拍没拿到累计量 / 上一拍没拿到
+    (基线失效,含该票当日首次观测)/ 累计值回退(免费源快照抖动 —— 累计值理应
+    单调不减)。⛔ 一律不 clamp 成 0:0 是"这一分钟真的没成交"的合法取值,拿它
+    冒充"数据有问题"就把「没有」和「没看」混成一件事。"""
+    if cur is None or prev is None:
+        return None
+    return cur - prev if cur >= prev else None
+
+
 def record_intraday_tick(
     trade_date: date,
     now: datetime,
@@ -153,6 +166,12 @@ def record_intraday_tick(
     **该票当日第一次被观测时增量是 `None`** —— 那一格不是"这一分钟成交了 0",而是
     "自开盘到此刻的量,算不出本拍增量",⛔ 不许写 0 冒充(「没有」与「没看」)。
     累计值原样落 `cum_volume`/`cum_amount`,两者都在,⑨ 想用哪个用哪个。
+
+    ⚠ **源没给累计量时落 `null`,⛔ 不落 0**(2026-08-04 契约线审计 🔵 B2):老实现
+    `_f(...) or 0.0` 把"这一拍没拿到累计量"写成一个**真实价位级的 0**,同一课增量列
+    做对了、累计列漏了;更糟的是它会**把下一拍的增量基线焊死在 0** —— 下一拍算出的
+    "增量"会等于当日全部累计量。现在缺就落 null,并且**该列这一拍不进 `last_cum`
+    基线**(基线存 `None`),下一拍据此判"算不出",不编一个凭空的大增量。
     """
     buf = _buffer(trade_date)
     buf.attempted_ticks += 1
@@ -165,16 +184,11 @@ def record_intraday_tick(
     n = 0
     for code, q in quotes.items():
         price = _f(getattr(q, "price", None))
-        cum_v = _f(getattr(q, "volume", None)) or 0.0
-        cum_a = _f(getattr(q, "amount", None)) or 0.0
-        prev = buf.last_cum.get(code)
-        if prev is None:
-            d_v = d_a = None
-        else:
-            # 累计值理应单调不减;源偶发回退(免费源快照抖动)→ 增量算不出,落 null,
-            # ⛔ 不 clamp 成 0(那会把"数据有问题"伪装成"这一分钟没成交")。
-            d_v = cum_v - prev[0] if cum_v >= prev[0] else None
-            d_a = cum_a - prev[1] if cum_a >= prev[1] else None
+        cum_v = _f(getattr(q, "volume", None))
+        cum_a = _f(getattr(q, "amount", None))
+        prev_v, prev_a = buf.last_cum.get(code, (None, None))
+        d_v, d_a = _delta(cum_v, prev_v), _delta(cum_a, prev_a)
+        # 两列各自记基线(缺就记 None = 基线失效),不要求两列同进同退。
         buf.last_cum[code] = (cum_v, cum_a)
         buf.ticks.append((
             code, trade_date, stamp, price, d_v, d_a, cum_v, cum_a,
