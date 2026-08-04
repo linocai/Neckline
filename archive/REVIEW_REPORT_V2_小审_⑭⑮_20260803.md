@@ -22,6 +22,21 @@
 - **为什么归 ⑭**:⑭ 是报告落库与契约总装的收口块,`basket_daily_json` 新列沿用了同一条 `INSERT OR REPLACE` 写法,列清单缩水的破坏向量在 ⑭ 定稿时应当被看见。
 - **修法方向**:① `save_report` 改 `INSERT INTO … ON CONFLICT(trade_date) DO UPDATE SET <本次列>`(不在清单里的列天然保留,`watchlist_json` 立即得救);② `candidates_json` 对「已有非空历史值」的行不覆写为 `[]`(或对 V2 上线日之前的日期直接拒绝重生成 / 覆写前自动 `.backup`);③ 补一条守门:对造好的 V1 形状历史行重跑 `save_report` → 断言 `watchlist_json`/`candidates_json` 逐字节不变。
 - **缓解面**:此刻纯本地、生产未部署;真实生产库尚未被此路径碰过。但 ⑯ 数据搬家后新机上这条枪就是上膛的,应在 ⑯ 之前修掉。
+- ✅ **已修(2026-08-04,commit `a123fe9`)**:采纳修法方向 ①③ + ② 的第一种选项(`candidates_json`
+  对「已有非空历史值」的行不覆写为 `[]`,不是拒绝重生成 / 自动 `.backup`)——
+  `save_report` 改 `INSERT INTO … ON CONFLICT(trade_date) DO UPDATE SET <本次写入列>`;
+  `watchlist_json` 不在写入列清单里,天然免疫;`candidates_json` 额外加 SQL `CASE`
+  守卫(本次写 `[]` 且历史已非 `[]` 时保留旧值并记 WARNING,真的写非空 candidates
+  时仍正常覆盖,不误伤合法路径)。**全仓同模式扫描结论**:除本处外零命中——
+  `app_settings` 的停写列(`llm_provider`/`llm_api_key`/六个推送开关/
+  `intel_watch_boards`)全部走「`INSERT OR IGNORE` 补首行 + 逐字段 `UPDATE…SET…
+  WHERE id=1`」,天然安全;`inquiry_pool`/`watchlist`/`decision_log`/
+  `reference_plans`/`llm_judgments`/`breathing_t_trades` 六表是**整表停写**
+  (写函数已物理删除),没有残留写手能触发同类风险;`holding_eod_check` 的三列
+  「D5 判一次定格」不是"停写留档"列而是活跃写路径,且 `save_holding_eod_checks`
+  每次都显式带上这三列的值(由调用方 carry-forward,不是从列清单省略),不同险。
+  守门单测 `tests/test_report_store.py::TestV1FrozenSnapshotSurvivesRerun`(3 例:
+  两列逐字节不变 / 显式非空写入仍正常覆盖 / 历史本就是 `[]` 时重跑不误报)。
 
 ---
 
@@ -30,20 +45,55 @@
 ### B-1 · `ReportResponse` 残留六处硬解码,`sectors` 数组是最重的一处
 `client/Neckline/Networking/APIClient.swift:143-150`:⑮ 修了 ⑭ 点名的三处硬失败,但同一个 `init(from:)` 里 `sectors = try c.decode([SectorSnapshot].self,…)`(`SectorSnapshot` 合成 Codable,内部非 Optional)与 `tradeDate`/`generatedAt`/`strategyVersion`/`degraded`/`reason` 五个标量仍是硬解码。现役契约恒发这些键(`sectors_json` NOT NULL),不构成活险;但它们与被修的三处同源同病,服务端日后动 `sectors` 形状 = 整份报告解不出。建议顺手拉平成 `decodeIfPresent + 诚实空态`,别等 CLAUDE.md 两步淘汰纪律来兜。
 
+⛔ **本轮(2026-08-04 修复批)未处理**:现役契约恒发这些键、不构成活险,且改动面覆盖整个 `ReportResponse.init(from:)`,超出「便宜 🔵」的授权范围;留待下一轮 review 或专项收口。
+
 ### B-2 · ⑭-C 调用面提取的三个结构性盲区(今日干净,漂移时静默失守)
 `tests/test_contract_crosscheck.py:30,34,47`:① 只扫 `APIClient.swift` 单文件——已亲手验证 client 其余文件零 `/api` 字面量(今日成立,依赖「网络层只此一家」的架构惯例),日后任何 View/Model 直接拼 URL 即绕过闭包断言且无人知晓;② 正则只认 `"/api/v1…"` 开头的字符串字面量,`basePath + "/x"` 类拼接不可见;③ 对拍的是路径形状、无 HTTP method 维度(POST 打到 GET-only 路径不报)。建议:glob 扩到 `client/**/*.swift`(成本一行)+ 给 client 侧提取补 method。
+
+✅ **已修(2026-08-04,commit `a123fe9`)**:① `client_call_surface()` 改扫 `client/`
+下全部 `.swift` 文件(含 `NecklineTests/`),不再只锚 `APIClient.swift` 单文件;
+③ method 维度新增 `test_client_call_methods_match_server_route_methods_where_
+determinable`——**已知不完整**,只覆盖路径字面量直接传给 `get/post/put/delete(...)`
+的调用点(实测约 36/56),调用点若先 `let path = "..."` 再传变量则不纳入(正则不解析
+变量绑定,宁可少覆盖、不产出假阳性)。② `basePath + "/x"` 类拼接的盲区**未处理**
+(本仓库实测零此类拼接,且要可靠检测需要更深的解析能力,不是「一行成本」的范畴,
+留作已知限制)。顺带发现并修:glob 扩到全部文件后 `client/NecklineTests/
+URLGateTests.swift` 里字面量 `"42"`(而非插值)会被误判成路径不闭合,`_normalize`
+补一条「裸数字路径段折叠成 `{}`」规则(已核实服务端真实路由没有固定的纯数字路径段,
+折叠不会掩盖真实回归)。
 
 ### B-3 · 卡损坏与卡未生成共用 `card_not_ready`
 `neckline/api/app.py:621-625` + `basket_store.load_basket_card`:`card_json` 解不出(损坏)时 `row["card"]=None` → 端点同样返 `card_not_ready`。「本篮的卡还没生成」会让一张**已生成但损坏**的冻结卡永远显示成"还没生成",数据损坏被降格成等待中。建议:store 解码失败时透传独立标记,端点区分 `card_corrupt`(或 500)与 `card_not_ready`。
 
+⛔ **本轮(2026-08-04 修复批)未处理**:拆分 `card_not_ready` 涉及新增 reason 码,
+需要 planner 先定新 reason 字符串与客户端 `mapReason` 接线口径,不属于施工侧可
+自行拍板的「便宜 🔵」;留待 planner 裁定后再排期。
+
 ### B-4 · Provider key 草稿在提交失败路径不清空
 `client/Neckline/App/AppModel.swift:906-910`:成功清(`:902`)、取消清(SettingsView:441)、**失败留**——明文 key 驻留 `@Observable` 内存直到用户下一步操作。属「保留输入好重试」的常见取舍,但与同文件 `:94-95`「只在本次填写期间存在」的注释有距离。建议 catch 分支提示后仅保留非 key 字段,或至少把注释改成与实现一致。
+
+✅ **已修(2026-08-04,commit `a123fe9`)**:采纳「catch 分支仅保留非 key 字段」——
+`submitProviderForm()` 的两个 `catch` 分支补 `providerForm.apiKey = ""`,失败重试
+时表单其余字段(name/baseUrl/model/searchEngine/notes/enabled)原样保留、明文 key
+草稿不残留。
 
 ### B-5 · 两处注释与事实不符(纯文档债)
 ① `client/Models.swift:2008`:声称 `scenarioReviewPending` 勾选「仍走既有 `POST /decisions/{id}/scenario-outcome`」——该端点服务端已删、客户端方法已删,会误导后人"把调用接回来";② `AppModel.swift:231` 幂等键「提交成功后作废」vs 实现「下次 `beginPositionEntryFlow()` 才换新」(风险为零:成功即 `dismissModal()`,下一笔必经 begin;且 AppModelTests:380 反向断言了同流程不换键),措辞应改一致。
 
+✅ **已修(2026-08-04,commit `a123fe9`)**:两处均订正为与实现一致的措辞
+(① 说明该端点/方法已物理删除,本字段现在纯只读展示;② 改为准确描述「提交成功
+不主动作废,旧值留到下次 `beginPositionEntryFlow()` 才换新」,并引用
+`AppModelTests` 的反向断言)。
+
 ### B-6 · ⑮ 更新 Provider 时 `searchEngine`/`notes` 的「留空」语义与 `apiKey` 不对称
 `AppModel.swift:891` 更新路径把空串直接发出(= 清空服务端值),而 `apiKey` 是「留空 = 不传 = 不改」。语义各自成立,但同一张表单里两种「留空」含义不同,用户会按 key 的直觉误清 engine/notes。建议 UI 提示或统一为「留空不改 + 显式清除按钮」。
+
+✅ **已修(2026-08-04,commit `a123fe9`)**:采纳「对齐 `apiKey`」一侧(未加「显式
+清除按钮」——那是 UI 功能新增,超出本轮授权范围)——`submitProviderForm()` 的更新
+分支对 `searchEngine`/`notes` 也做「空串 → `nil`」判断,与 `apiKey` 同一种「留空 =
+不改」读法;代价与 `apiKey` 相同(一旦服务端已有值,不能再靠清空这个字段把它改回
+空,要清除须删除 Provider 重建),已在代码注释与契约对拍表 §6.2-B1 写明。UI 侧
+补充提示文案(如 `apiKey` 已有的 footer 说明)未做,留作后续观察项。
 
 ---
 
