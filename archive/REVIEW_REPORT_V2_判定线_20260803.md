@@ -203,9 +203,22 @@
    某类内部超过剩余额度时,进聚合的是"crc32 恰好小"的而非"最强的"。确定性已达成,但截断
    语义任意。建议:排序键改为「语义主键(行业名次 / cluster_size 降序)→ seed_key」,
    确定性不减、截断变得可解释。
+   **✅ 已修**(commit `8c3e650`,2026-08-04 A 组 A1):照建议落成两级序 ——
+   `_sort_by_seed_key` → `_sort_seeds`,第一级 `_semantic_primary()`(热点行业
+   `industry_rank` 升 / 暴起概念涨幅降 / 两类簇 `cluster_size` 降,统一归一成"越小越强"
+   的升序量),第二级仍是 `seed_key` crc32(跨进程可复现),故**确定性一点没减**。
+   语义主键算不出 → 排同类最后(⛔ 不拿 0 冒充"最弱",0 在涨幅与簇大小里都是真实取值)。
+   既有三连跑逐位测试改成断言新语义序(热点/概念锁语义序、两类簇构造成全并列锁
+   "并列时退回 seed_key 升序"),另加一例锁"算不出排最后"。⑤ `_select_seeds` docstring
+   同步说明截断砍的是各类最弱者。⚠ 与 ⑧-G `mainline.crc_rank`(按票采样)不同层,未动。
 3. **`CARD_SYSTEM_PROMPT` 未内嵌 `TIMELINESS_RULES`**(`basket_card.py:493-538`):⑤⑥⑪ 的
    system prompt 全部内嵌,⑦ 的卡 LLM 段只有 user 消息首行日期锚。影响低(不联网、证据自带
    日期),但与 §五铁律「日期锚 + 时效纪律」的措辞不齐,补一行即可。
+   **✅ 已修**(commit `8c3e650`,2026-08-04 A 组 A3):照 ⑤⑥⑪ 体例内嵌(不联网 ≠ 不需要 ——
+   资料里的驱动证据是检索环节更早一步取回的**带日期**条目,模型照样会把几个月前的旧证据
+   讲成"正在发生")。守门 `test_prompt_context.py::test_prompt_embeds_the_shared_rules_
+   verbatim` 的 prompt 快照断言从 2 条扩到 **7 条**(问询台 / 审判 / ⑤ 检索 / ⑤ 推理 /
+   ⑥ 同档次序 / ⑦ 卡 / 消息面扫描),不再只锁被点名的那一处。
 4. **`leader.py:19-27` docstring 单位错**:tie-break 说「成交额(元)」,`daily.amount`
    实为**千元**(TuShare 口径,`aggregate.py:784-787` 写对了)。组内序不受除法影响,纯注释
    错,但这是 CLAUDE.md 点名过的单位坑,注释错会误导下一个人。
@@ -213,6 +226,14 @@
    `limit_derived` 非空而 `daily` 空时,`tradability_available=True` 但 `one_word` 恒空 →
    一字板按「开过板」半罚(0.5)而非全罚(1.0),无 flag。极端数据缺口情形;建议
    `daily` 空且有涨停命中时该维走 `tradability_missing` 中性分。
+   **✅ 已修**(commit `8c3e650`,2026-08-04 A 组 A2):照建议,落法是新集合
+   `TierFeatureContext.one_word_unresolved`(涨停命中但一字与否**判不出来**的码),
+   `_dim_tradability` 见到本篮成员命中该集合即走中性分 + `tradability_missing`。
+   **比报告点名的范围多收一种同类缺口**(同一段代码、同一句语义):`daily` 整段缺失
+   **以及**该码在 `daily` 里没有行 / 缺 `low` / `limit_derived` 缺涨停价 —— 都是"判不出",
+   老实现一律走半罚。⚠ 单成员篮的半罚数值(1−0.5)**恰好等于** `NEUTRAL_DIM_SCORE`,
+   故单测判据锁 **flag** 不锁数值(正是模块头「拿数值反推是不是中性填充会判错」那条)。
+   两态各一例 + 端到端一例(只写 `limit_derived` 不写 `daily`)。
 
 ---
 
@@ -304,6 +325,13 @@
 🔵-2(种子截断 crc32 任意序)/ 🔵-3(CARD prompt 无 TIMELINESS_RULES)/ 🔵-4(leader.py
 成交额单位注释)/ 🔵-5(tradability daily 缺失边缘)**未处理,维持开放**(均为便宜改进,
 不阻塞;本批未承诺)。
+
+> **✅ 2026-08-04 A 组销项(@builder-pro,⑰ 割接前的次级修理批次)**:**🔵-2 / 🔵-3 /
+> 🔵-5 三条已修**(commit `8c3e650`,逐条标注见各条目下的 `✅ 已修` 行)。
+> **🔵-4(`leader.py` docstring 说"成交额(元)"、实为千元)未在本批范围内**,维持开放
+> —— A 组九项清单没列它;它是纯注释错,但 CLAUDE.md 点名过这个单位坑,建议下批顺手改。
+> 另:🟢-8 登记的「`llm/news_scan.py` 缺 `prompt_context` 日期锚」**已修**(A4,同批
+> `8c3e650`),`tests/test_llm_router_budget.py` 的豁免名单已清空。
 
 ## 二、⑪-D / ⑧-F / ⑧-G 增量审计(新代码从零审)
 

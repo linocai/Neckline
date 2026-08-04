@@ -10,6 +10,14 @@
 > **销项状态(@builder-pro 修复批次,2026-08-03)**:🔴 R1 ✅ · 🟡 Y1/Y2/Y3/Y4/Y7 ✅ ·
 > 🔵 B1/B3 ✅ · Y6 ✅(对照表已补档)。**未修(本批次范围外,已登记)**:🟡 Y5(⑮ 硬清单)、
 > 🔵 B2/B4/B5/B6/B7/B8。逐条标注见各条目下的 `✅ 已修` 行。
+>
+> **✅ 第二批销项(@builder-pro,2026-08-04 A 组,⑰ 割接前的次级修理批次)**:
+> **🔵 B2 ✅**(`8c3e650`)· **B4 ✅ / B5 ✅ / B8 ✅**(`4c00976`)· **B6 ✅**(`65abbf2`)。
+> **🟡 Y5 已由 ⑮ 兑现**(planner `199521f` 的 A10 账本核验实查:五处活调用现已全部清零,
+> 只剩注释复述;本报告原文是审计当时的事实)。**🔵 B7 未修,维持开放** —— A 组九项清单
+> 没列它;其中三小项 planner 已核实**事实上已修**(`status` 参数名两侧一致 / 双 404 case
+> 已落 / 幂等键语义已写进客户端注释),剩下的是 `PositionOpenIn|Out` 蛇驼混排(自认既有)
+> 与 `max_chase_required` 死码两条纯整洁项,建议下批顺手。
 
 > **✅ 复核销项(@reviewer 契约/数据线,2026-08-03 第二轮,独立重放不信修复自述)**:
 > **全部已修项复核通过,零打回**。逐条判据:
@@ -148,6 +156,8 @@
 ### B2 · 存拍 `cum_volume/cum_amount` 用 `or 0.0` 把「源没给」写成 0
 `neckline/sentinel/capture.py:168-169`:`cum_v = _f(...) or 0.0`——源缺累计量(None)时落 0.0,与模块自己「累计值原样落」的承诺及「没有 ≠ 没看」纪律相悖,还把下一拍的增量基线焊死在 0。增量列(d_v/d_a)的 null 纪律做对了,累计列漏了同一课。建议:None 原样落 null,且该码不进 `last_cum` 基线。
 
+**✅ 已修**(commit `8c3e650`,2026-08-04 A 组 A5):照建议。新 `_delta()` 把三种"算不出"收口成一处(这一拍没拿到 / 上一拍没拿到〔基线失效,含当日首次观测〕/ 累计值回退),`last_cum` 改成**两列各自记基线**(`Tuple[Optional[float], Optional[float]]`,缺就记 `None` = 该列基线失效),`res.codes = len(last_cum)` 的既有语义(当日观测到过几只票)不变。回归三条:「没有≠0」/「缺这拍不当下一拍基线」(锁的正是本条点名的那个害处 —— 否则下一拍会算出一个等于当日全部累计量的假增量)/「只缺一列不牵连另一列」。
+
 ### B3 · `selection_packs` 单现役无 DB 级约束,多现役时读侧静默择新
 无 `is_active=1` 的 partial unique index;`pack.py:398-401` 的 `get_active_pack` 在(仅可能由手工 SQL 造成的)多现役行下按 `created_at DESC` 静默取一行、不告警,`activate_pack:480-489` 也只 deactivate 一行。建议:`_SCHEMA` 补 `CREATE UNIQUE INDEX IF NOT EXISTS … ON selection_packs(is_active) WHERE is_active=1`,读侧遇 >1 行打 WARNING。
 
@@ -156,11 +166,20 @@
 ### B4 · `scripts/oneoff/` 两个留档脚本已断 import(运行即 ImportError)
 `compare_intel_sort_key_switch.py:39-40`(import 已删的 `intel_candidates`/`report.candidates`)、`compare_a2b3_industry_switch.py:26`。留档定位没问题,但「留档审计用」的脚本如今跑不起来。建议:文件头补一行「⑬ 后依赖已删,仅供阅读」,或挪 `archive/`。
 
+**✅ 已修**(commit `4c00976`,2026-08-04 A 组 A9-①):取"补文件头"这一路(**不挪 `archive/`** —— `scripts/oneoff/` 本就是"已执行完毕的一次性脚本"留档区,项目 CLAUDE.md「跑法」节有明文定位,挪走反而破坏那条约定)。两个文件头各补一段:⛔ 已跑不起来仅供阅读 + 断的是哪个 import + **刻意不删不改回去的理由**(留的是方法学证据)+ 指向它当年产出的 `archive/` 对照表。
+
 ### B5 · `exec_hints_for()` 零生产调用方,守门只查存在性不查接线
 `neckline/report/exec_hint.py:224`:C1–C4 四条判定完好、11 条单测供养,但 `neckline/` 与 `scripts/` 内零调用(⑬ 完工记录已如实登记留 ⑭-A)。风险在于 `test_v1_retirement_guard.py:172-179` 只断言 `hasattr`,⑭ 若忘接线不会有任何测试变红。建议:⑭-A 完工判据里点名「exec_hints_for 有生产调用点」并加一条接线守门。
 
+**✅ 已修**(commit `4c00976`,2026-08-04 A 组 A9-③)。**先核实再动手**(交办要求"报告与完工记录矛盾,以代码为准"):⑭-A **确实接了** —— `neckline/report/basket_daily.py:414-427`(函数内延迟 import `_load_k4_exec_hint_texts`/`exec_hints_for`,按篮子成员逐票调,整段包保险丝)。本条报告的"零调用方"是**审计当时**的事实,不是遗漏。故按建议补守门:新增 `test_13_4_exec_hints_for_has_a_real_production_call_site`,判据取 **AST 调用点**而不是 import —— 那是延迟 import,`_import_hits` 这类模块级扫描看不见它(照抄 import 判据会写出一条恒绿的空守门,正是本报告 Y1 与判定线 🟡-5 反复点名的那种"锁空靶")。
+
 ### B6 · 两处测试防线随 ⑬ 删除而变薄(功能没丢,断言丢了)
 ① 原 `test_candidates.py::test_invalidation_spec_and_text_consistent`(spec 与人话文案一致性)未随 spec 搬进 `sentinel/invalidation.py` 重建——阈值行为在 `test_sentinel_invalidation.py` 有边界锚(0.6<0.8 触发等,构造走真 `invalidation_spec()`,数值仍被间接钉住),但 spec 形状/文案一致性无断言。② `discipline_checks` 的行为覆盖从原 `test_watchlist_check.py` 约 11 例正负分支塌缩到「*ST 进 risk_flags」一例 + 两条函数同一性守门(`tests/test_api_inquiry.py:84-88,599-619`)。建议:补一个小型 `test_discipline_checks.py`(每条硬线正负各一)。
+
+**✅ 两条都已补**(commit `65abbf2`,2026-08-04 A 组 A6):
+
+- **①** 按交办口径把对象换成 **V2 的双份条款**(`verification_rules` + 卡上结构化/人话两半),语义等价。⚠ 人话半份是 **LLM 写的**、机器验不了,所以锁的是**喂给它的那份机械人读阈值块** `basket_card.spec_threshold_text()` —— plan 验收点名的通路,prompt 里明令「人话条款必须与机械阈值同频」;它与 spec 讲不一样的话 = LLM 手上的条款和盘中判定用的条款不是一回事。三例:每条条件描述 / 每个非空阈值 / 两侧门槛 / 两个 `spec_version` 都在;**spec 是 `null` 的那条必须说「不判」且全文无 `0.00`**(⛔ 不把 null 翻译成一个具体价位);止损线原样取 spec 的数(用 8.37 这种不可能巧合的价位证明渲染层没自己乘 0.95)。**反向验证过**:两处变异(null→`"0.00"`、漏一条条件描述)都被打红。
+- **②** 新建 `tests/test_discipline_checks.py`(**19 例**):干净行零命中(负例的公共前提)/ 选股域五个组件各一正例 + 边界含等号 / 三条可配禁买正负各一 + `config=None` 时**根本不进清单**(与"进了但恒 False"分开)/ 原因文案带现役阈值 / 拆墙后高弹墙关闭但回退即回来 / 多条同时命中要逐条报。阈值一律从 `MomentumConfig` 与 `signals` 默认值取,⛔ 测试里不抄字面量(抄了就变成"测试锁死测试自己写的数")。
 
 ### B7 · ⑭-B 契约总装清单(小口径杂项打包)
 - `GET /alerts` 查询参数名是 `status_filter`(Python 形参名直接漏成契约键,`app.py:1413`),与全仓 camelCase 取向不合;
@@ -171,6 +190,11 @@
 ### B8 · 两处措辞/注释与实现出入(行为本身无错)
 - `neckline/sentinel/__init__.py:17` 仍写「entry.py …… 四哨兵判定」,该文件已删;
 - ⑬ 完工记录称 `missedEntryHint`「保留但恒空」——准确口径是「**新数据下恒空,历史日期回放仍会非空**」(`pipeline.py:95` 读 `sentinel_events` 历史 `entry` 行;与 `ReportOut.candidates` 的历史回放语义同类,合理,但措辞该改)。
+
+**✅ 两处均已改**(commit `4c00976`,2026-08-04 A 组 A9-②):
+
+- 第一处**不止改那一行**:该模块头整段还停在 V1 口径(「四哨兵 = 买点/退潮/持仓/证伪」、关注池是"候选 + 持仓 + 昨日涨停"、模块地图缺 `mainline`/`precall`/`basket_verify`/`capture`/`circuit`)。改行不改段等于把一句假话换成一段假话,故按 V2 现役事实重写模块头,并逐条标出换血点(判定对象 = T1/T2 篮子成员、主线样本取 ④ 机械种子、篮子 `falsified` ⛔ 不接持仓动作/不进推送)。
+- 第二处照建议逐字改口,并写明**为什么"恒空"这个说法有害**:它会让后人以为可以直接把 `compute_missed_entry_hint` 那条读路径删掉。已核实代码属实(`pipeline.py:97-105` 数 `sentinel_events` 的 `entry` 行,V1 时期真跑出来的行还在库里)。
 
 ---
 

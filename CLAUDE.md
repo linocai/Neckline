@@ -280,6 +280,12 @@
   `llmJudgment` 从 `llm_judgments` 现连、`judgeSkipped` 却来自候选快照 —— 同日重跑时两者
   会讲相反的话。规则:标"本次没做"的同时**删掉该批码当日的既有行**(写侧收口、单事务
   幂等),**不许在读侧遮蔽**(藏真数据不是诚实)。
+- **冻结件"读不出"是独立第三态,与"还没生成"必须分开**(V2 B1 定案,`card_corrupt`
+  = **500** vs `card_not_ready` = 404):冻结件 `INSERT OR IGNORE` 永不覆盖 → **坏了就是
+  永久坏的**,混成一类 = 客户端永远重试、永远显示"还没生成" = 静默永久失败。
+  ⚠ 判「完整性」的**必需键判据一律取「内容键有其一」,⛔ 不取「都要有」** ——
+  各消费方吃的是不同键子集(⑧ 只读两份 spec、⑩ 只读 `members`),"都要有"会把合法的
+  局部件判成损坏;误判代价还不对称(判错 = 好数据看不到且不可自愈)。
 - **喂"类候选对象"给 LLM 审判**一律复用 `llm/judge.py::judge_candidate`
   (duck-typed,只要求几个属性;可选 `system_prompt`),不另写调用/解析/降级。
 - **纪律红绿灯要"拆解展示触发了哪条"时**,不许手写 Python 重抄
@@ -302,6 +308,10 @@
   调用这些模块的函数时**必须显式传 `db_path=env.db_path`**,`db_path=None` 兜底不
   安全——会静默读到真实项目 `data/neckline.db`(`info_card.describe_hits` 一测就踩过,
   查回真实生产 K4 分区,断言全错但不报错、极具迷惑性)。
+- **定位这类泄漏别靠肉眼 grep**(2026-08-04 A8 定案):`DB_PATH=<scratch>` 重定向 +
+  一个临时 pytest 插件里 patch `sqlite3.connect`、命中 `settings.db_path` 就记
+  **nodeid + 栈**,跑一次全量套件即得全部命中点(探针不入仓)。⚠ **「MD5 没变」不等于
+  没泄漏**:已迁移完的库上那些写是幂等 no-op,泄漏照样在,换台新机就会真写。
 
 ## 决策日志「必填但可 null」+ 报告时点查表防前视(v1.4-⑤ 定案)
 
@@ -351,9 +361,11 @@
   `evidence_status`(`ok|search_unavailable|partial`)是 `baskets` 表的列,单侧
   故障的诚实披露只能在产生篮子的那一层(V2-⑤ 驱动聚合层)写;`llm/router.py`/
   `llm/budget.py` 只提供路由与预算原语,别在这两个文件里找编排代码。
-- **`news_scan.py` 消息面扫描链路缺 `prompt_context` 日期锚**(V2-② 核实全仓
-  LLM 调用点时发现,晚于 07-30 三链路修复才引入、当时漏排查到)——已挂账未修,
-  改之前先读 `judge.py`/`api/inquiry.py` 的既有接线方式,不要另起一套。
+- **每条 `provider.chat(...)` 链路都必须 import `prompt_context`**(时效纪律入 system
+  prompt + `date_anchor_line()` 放 user 首行 + 联网链路显式传 `search_query`,照
+  `judge.py` 姿势,⛔ 不另起一套)。全仓守门在 `tests/test_llm_router_budget.py`
+  (AST 扫调用点 + 豁免名单反向校验,名单现为空);`news_scan.py` 那笔欠账已于
+  2026-08-04 销账。
 
 ## 双会话架构(2026-07-25 起,冷启动必读)
 
