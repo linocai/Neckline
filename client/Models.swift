@@ -1077,12 +1077,16 @@ struct PositionPlan: Codable, Equatable, Identifiable {
 
     /// `false` = 无来源篮子 或 篮子有但卡未就绪(**合法**,行照落,不是错误)。
     var available: Bool { plan["available"]?.boolValue ?? false }
-    /// `no_source_basket` | `card_not_ready`;`available == true` 时为 nil。
+    /// `no_source_basket` | `card_not_ready` | `card_corrupt`;`available == true` 时为 nil。
     var unavailableReason: String? { plan["reason"]?.stringValue }
     var unavailableText: String? {
         switch unavailableReason {
         case "no_source_basket": return "独立买入 · 没有来源篮子可继承"
         case "card_not_ready": return "有来源篮子,但当时卡还没生成"
+        // `card_corrupt`(2026-08-04,B1 同类裁定):**不是**"还没生成"——那张卡是
+        // 冻结件、有行但读不出,坏了就是永久坏的。⛔ 不与上一条合并展示,⛔ 不进任何
+        // 静默重试路径(同 `APIError.cardCorrupt` 的既定文案方向)。
+        case "card_corrupt": return "来源卡数据损坏,已记录待排查"
         case .some(let r): return r
         case .none: return nil
         }

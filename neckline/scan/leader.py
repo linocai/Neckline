@@ -22,8 +22,9 @@
       **只读 `rs_rank` 一列**(见下),不混入连板高度/成交额占比。
 
 **`rs_rank` 的 tie-break(K7 需求 1a 定死,可复现铁律,不得自行更改)**:
-`RS(ret_20d) 降序 → 成交额(元,原始量非占比,组内序不受除法影响)降序 →
-ts_code 升序`,排定后再 `rank(method="ordinal")`(`rank(ordinal)` 的并列由
+`RS(ret_20d) 降序 → 成交额(千元,`daily.amount` 原始量非占比,组内序不受除法影响,
+单位不影响排序结果但注释须如实——TuShare `daily.amount` 口径见 `tushare_client.py`)
+降序 → ts_code 升序`,排定后再 `rank(method="ordinal")`(`rank(ordinal)` 的并列由
 行序打散=不确定性,必须先排定确定性 tie-break 再 ordinal,§五铁律体例)。
 
 **`role_mech` 判据(K7 定死"不得混入连板高度"之外,leader/core/elastic 的
@@ -123,7 +124,9 @@ def compute_leader_structure_for_day(
     amounts_today: pl.DataFrame,
 ) -> pl.DataFrame:
     """纯函数(无 I/O)。`clusters_today` = `cluster.load_limit_clusters` 的输出;
-    `amounts_today` 需含 `ts_code`/`amount`(当日 `daily.amount`,元)。"""
+    `amounts_today` 需含 `ts_code`/`amount`(当日 `daily.amount`,**千元**——TuShare
+    口径,见 `neckline/data/tushare_client.py` 惯例注释;`amount_share` 是比值,
+    单位不影响该列结果,仅供审计时核对原始量用)。"""
     if clusters_today.is_empty():
         return pl.DataFrame(schema=_ROW_SCHEMA)
 

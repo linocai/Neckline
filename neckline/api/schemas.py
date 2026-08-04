@@ -632,7 +632,13 @@ class PositionPlanOut(BaseModel):
     armed` / `..._reason` / `..._note` / `..._muted` 四键**恒存在**,缺键即不武装,
     fail-closed),在 API 层再镜像一套嵌套模型只会多一处会漂的定义。
     ⚠ `plan.available=false` + `plan.reason` ∈ {`no_source_basket`, `card_not_ready`}
-    是**合法**结果(独立买入 / 卡未就绪),行照落、⛔ 不省略整条记录。"""
+    是**合法**结果(独立买入 / 卡未就绪),行照落、⛔ 不省略整条记录。
+    ⚠ `plan.reason="card_corrupt"`(2026-08-04 起,B1 同类裁定)**不是**合法中间态,
+    是数据事故——basket_store 的冻结卡有行但读不出(`json` 解不出 / 顶层内容键缺失),
+    与 `card_not_ready`(压根没有行)分得开,⛔ 客户端不许把两者合并展示。判据唯一
+    检测点在 `neckline.selection.basket_store`(打 ERROR),本模型只透传 reason 字符串,
+    不是独立的 404/500 端点(这是 `plan.reason` 内嵌字段,不是 `GET /baskets/{id}/card`
+    那种整请求即整卡的场景,故不单独升 500——同 `_shape_basket` 内嵌卡的既定姿势)。"""
 
     id: int
     positionId: int

@@ -601,6 +601,15 @@ final class AppModelTests: XCTestCase {
             "available": .bool(false), "reason": .string("card_not_ready"),
         ]))
         XCTAssertNotEqual(noSource.unavailableText, cardNotReady.unavailableText)
+
+        // 「卡损坏」是第三态(2026-08-04,B1 同类裁定):⛔ 不与「卡未就绪」合并展示——
+        // 前者是数据事故(冻结卡有行读不出,不会自己好),后者是合法中间态(等 ⑦ 补版本)。
+        let cardCorrupt = PositionPlan(plan: .object([
+            "available": .bool(false), "reason": .string("card_corrupt"),
+        ]))
+        XCTAssertEqual(cardCorrupt.unavailableText, "来源卡数据损坏,已记录待排查")
+        XCTAssertNotEqual(cardCorrupt.unavailableText, cardNotReady.unavailableText)
+        XCTAssertNotEqual(cardCorrupt.unavailableText, noSource.unavailableText)
     }
 
     // MARK: - 蓝图 6.2 同题材合并敞口(同一来源篮子的多笔仓不是完全分散的两笔)

@@ -83,9 +83,13 @@ class SourceBasketMember:
     role_llm: Optional[str]
     role_mech: Optional[str]
     role_conflict: bool
-    card_version: Optional[int]              # None = 有篮子无卡(合法中间态)
-    card: Optional[Dict[str, Any]] = None    # 卡正文(card_json 解析后);无卡时 None
+    card_version: Optional[int]              # None = 有篮子无卡(合法中间态);有卡行(含损坏)则为该行版本号
+    card: Optional[Dict[str, Any]] = None    # 卡正文(card_json 解析后);无卡**或卡损坏**时均为 None
     member_entry: Optional[Dict[str, Any]] = None  # 卡里该票的成员节;无卡时 None
+    # `card is None` 时用它分流「没有行」vs「有行但读不出」(basket_store 唯一检测点
+    # `_decode_card_json` 的判定结果原样转发,⛔ 不在本模块另写一份判据)。B1 同类:
+    # 见 `build_inherited_plan`。
+    card_corrupt: bool = False
 
     @property
     def role(self) -> Optional[str]:
@@ -127,12 +131,17 @@ def find_source_basket_member(
         return None
     r = rows[0]
     basket_id = int(r[0])
+    # `load_basket_card` 是「这张卡读不读得出」的**唯一检测点**(basket_store._decode_
+    # card_json,B1 裁定);读到损坏行时它已经打过 ERROR 了,这里只管原样转发
+    # `card_corrupt`,⛔ 不重新判一遍(同 `api/app.py::get_basket_card` 的复用姿势)。
     card_row = basket_store.load_basket_card(basket_id, db_path=db_path)  # version=None → 最新版本
     card_version: Optional[int] = None
     card_json: Optional[Dict[str, Any]] = None
     member_entry: Optional[Dict[str, Any]] = None
+    card_corrupt = False
     if card_row is not None:
         card_version = int(card_row["version"])
+        card_corrupt = bool(card_row.get("card_corrupt"))
         parsed = card_row.get("card")
         if isinstance(parsed, dict):
             card_json = parsed
@@ -144,6 +153,7 @@ def find_source_basket_member(
         basket_id=basket_id, basket_key=str(r[1]), basket_name=str(r[2]), driver=str(r[3]),
         tier=int(r[4]), role_llm=r[5], role_mech=r[6], role_conflict=bool(r[7]),
         card_version=card_version, card=card_json, member_entry=member_entry,
+        card_corrupt=card_corrupt,
     )
 
 
@@ -248,6 +258,13 @@ def build_inherited_plan(
     标**(`available=False` + `reason`)——`position_plans` 仍会落 version=1 这一行,
     不是省略整条记录。
 
+    **卡损坏是第三态,与「卡未就绪」分得开**(2026-08-04,B1 同类裁定):`source.
+    card_corrupt=True`(basket_store 唯一检测点判定,见 `SourceBasketMember` 字段
+    注释)→ `reason="card_corrupt"`,⛔ 不降格成 `card_not_ready`——那张卡是冻结件、
+    `INSERT OR IGNORE` 永不覆盖,坏了就是永久坏的;当成"未就绪"处理会让继承计划
+    永远显示"还没生成"而那张卡这辈子不会来。此态下 `source_card_version` 仍如实
+    回填该行的版本号(**不是** `None`)—— 与「没有行」区分开,方便定位坏在哪一版。
+
     `buy_price`(⑪-D-B 闸②,2026-08-03):**必填关键字**,不给默认 —— 闸②是红线闸,
     "忘了传"等于静默把 `take_profit` kind 武装给一个没比过成交价的数字。三条空计划
     路径同样落武装态三件套(值必为未武装 + `no_exit_reference`),**键恒存在**。"""
@@ -265,9 +282,12 @@ def build_inherited_plan(
             None, None,
         )
     if source.card is None:
+        # 「没有行」(card_not_ready)与「有行但读不出」(card_corrupt)分流——判据原样
+        # 转发自 basket_store 的唯一检测点(`source.card_corrupt`),⛔ 本函数不重判。
         return (
             {
-                "available": False, "reason": "card_not_ready",
+                "available": False,
+                "reason": "card_corrupt" if source.card_corrupt else "card_not_ready",
                 "source_basket_key": source.basket_key, "source_basket_name": source.basket_name,
                 "driver": source.driver,
                 "entry_zone": None, "entry_zone_clamp": "absent",
@@ -276,7 +296,7 @@ def build_inherited_plan(
                 **_arm_fields(None, buy_price, muted=False),
                 "verification_spec": None, "invalidation_spec": None, "risks": [],
             },
-            source.basket_id, None,
+            source.basket_id, source.card_version,
         )
     member_fields = _member_plan_fields(source.member_entry)
     plan = {

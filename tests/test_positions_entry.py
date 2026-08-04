@@ -1,6 +1,6 @@
 """持仓开平仓系统自动记录编排层单测(PROJECT_PLAN §五 V2-⑩,`neckline.positions_entry`)。
 
-覆盖:①`find_source_basket_member` 当日现役卡查找(命中/查无篮子/有篮子无卡三态);
+覆盖:①`find_source_basket_member` 当日现役卡查找(命中/查无篮子/有篮子无卡/卡损坏四态);
 ②`build_inherited_plan`/`evaluate_entry_deviation` 计划继承与偏离提示纯函数;
 ③`record_buy`/`record_sell` 端到端编排(entry_snapshots 冻结 + position_plans
 version=1 + user_actions 自动记账);④`create_position_plan_version` 新版本不改
@@ -88,6 +88,13 @@ def _seed_basket(
     return basket_id
 
 
+def _corrupt_card_json(db_path, basket_id: int, raw: str) -> None:
+    """把冻结卡的 `card_json` 直接改坏(只在测试库里造事故现场,同
+    `tests/test_api_baskets.py::_corrupt_card_json` 体例)。"""
+    with connection(db_path) as conn:
+        conn.execute("UPDATE basket_cards SET card_json=? WHERE basket_id=?", (raw, basket_id))
+
+
 @pytest.fixture
 def calendar_days(isolated_env):
     """三个连续交易日:dates[0]=D0(篮子冻结日),dates[1]=D+1(买入日)。"""
@@ -111,6 +118,8 @@ class TestFindSourceBasketMember:
         assert src.role == "leader"
         assert src.card is not None
         assert src.member_entry["entry_zone"] == {"low": 9.5, "high": 10.5, "why": "示例"}
+        # 好卡不误伤:`card_corrupt` 恒 False(2026-08-04,positions_entry 卡损坏分流)。
+        assert src.card_corrupt is False
 
     def test_no_basket_returns_none(self, isolated_env, calendar_days):
         buy_date = calendar_days[1]
@@ -122,6 +131,8 @@ class TestFindSourceBasketMember:
         src = pe.find_source_basket_member("600001.SH", buy_date, db_path=isolated_env.db_path)
         assert src is not None
         assert src.card is None and src.card_version is None
+        # 「没有行」≠「有行读不出」:前者 `card_corrupt` 必须是 False,不能靠巧合为假。
+        assert src.card_corrupt is False
 
     def test_wrong_date_member_not_matched(self, isolated_env, calendar_days):
         """篮子冻结日不是 `buy_date` 的上一交易日 → 查无(不是"随便哪天都算")。"""
@@ -129,6 +140,19 @@ class TestFindSourceBasketMember:
         _seed_basket(isolated_env.db_path, trade_date=wrong_day.strftime("%Y%m%d"))
         buy_date = calendar_days[1]
         assert pe.find_source_basket_member("600001.SH", buy_date, db_path=isolated_env.db_path) is None
+
+    def test_corrupt_card_is_flagged_distinctly_from_missing_card(self, isolated_env, calendar_days):
+        """卡损坏是第三态(2026-08-04,B1 同类裁定):`card_row` 存在但 `card_json` 解不出,
+        判据原样转发自 `basket_store` 唯一检测点(`_decode_card_json`),⛔ 本模块不重判。"""
+        d0, buy_date = calendar_days[0], calendar_days[1]
+        basket_id = _seed_basket(isolated_env.db_path, trade_date=d0.strftime("%Y%m%d"))
+        _corrupt_card_json(isolated_env.db_path, basket_id, "{这不是 JSON")
+        src = pe.find_source_basket_member("600001.SH", buy_date, db_path=isolated_env.db_path)
+        assert src is not None
+        assert src.card is None
+        assert src.card_corrupt is True
+        # 行还在(只是读不出)——版本号照旧能拿到,与"没有行"(上一条测试)分得开。
+        assert src.card_version == 1
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -150,12 +174,31 @@ class TestBuildInheritedPlan:
         assert plan["available"] is False and plan["reason"] == "card_not_ready"
         assert basket_id == src.basket_id and card_version is None
 
+    def test_corrupt_card_reason_is_distinct_from_not_ready(self, isolated_env, calendar_days):
+        """卡损坏(2026-08-04,B1 同类裁定):`reason` 必须是 `card_corrupt`,⛔ 不许
+        降格成 `card_not_ready`——两者要求的后续处置完全相反(等 ⑦ 补版本 vs 需人排查)。
+        `source_card_version` 如实回填那一行的版本号(不是 `None`),与「没有行」分得开,
+        方便定位坏在哪一版。"""
+        d0, buy_date = calendar_days[0], calendar_days[1]
+        basket_id = _seed_basket(isolated_env.db_path, trade_date=d0.strftime("%Y%m%d"))
+        _corrupt_card_json(isolated_env.db_path, basket_id, "{这不是 JSON")
+        src = pe.find_source_basket_member("600001.SH", buy_date, db_path=isolated_env.db_path)
+        plan, out_basket_id, card_version = pe.build_inherited_plan(src, buy_price=10.0)
+        assert plan["available"] is False and plan["reason"] == "card_corrupt"
+        assert plan["reason"] != "card_not_ready"
+        assert out_basket_id == src.basket_id
+        assert card_version == 1
+        # 空计划的其余字段与 card_not_ready 路径同构(⛔ 只是 reason 不同,不是另起一套形状)。
+        assert plan["entry_zone"] is None and plan["verification_spec"] is None
+        assert plan["source_basket_key"] == src.basket_key
+
     def test_full_card_populates_five_items(self, isolated_env, calendar_days):
         d0, buy_date = calendar_days[0], calendar_days[1]
         _seed_basket(isolated_env.db_path, trade_date=d0.strftime("%Y%m%d"))
         src = pe.find_source_basket_member("600001.SH", buy_date, db_path=isolated_env.db_path)
         plan, basket_id, card_version = pe.build_inherited_plan(src, buy_price=10.0)
         assert plan["available"] is True
+        assert plan["reason"] is None
         assert plan["entry_zone"] == {"low": 9.5, "high": 10.5, "why": "示例"}
         assert plan["max_chase"] == 11.0
         assert plan["exit_reference"] == {"low": 12.0, "high": 13.0}
