@@ -240,9 +240,14 @@ def test_13_5_decision_log_form_required_branches_gone_from_client():
 # ======================================================================
 
 def test_13_6_legacy_four_piece_keys_gone_from_contract_and_client():
-    """⚠ **V2-⑭-B 起断言升级**:整个 `CandidateOut` 连同 `ReportOut.candidates` 都
-    已退役(契约面留着 = 它还在承诺这件事),所以不再是"某四个键不在 DTO 里",
-    而是"这族 DTO 压根不存在"。"""
+    """⚠ **断言两次升级**:
+
+    · **V2-⑭-B**:整个 `CandidateOut` 连同 `ReportOut.candidates` 退役(契约面留着 =
+      它还在承诺这件事),判据从"某四个键不在 DTO 里"升级为"这族 DTO 压根不存在"。
+    · **V2-⑮**:客户端侧同批换血 —— `Candidate`/`IntelRank`/`LLMJudgment`/
+      `InfoCardSummary`/`EntrySpec` 五个 Swift 类型一并删除,判据再升级为
+      **"客户端连这族类型都没有"**(老四件套的键自然无处存身)。
+    """
     import neckline.api.schemas as schemas
 
     for gone in ("CandidateOut", "IntelRankOut", "LLMJudgmentOut", "InfoCardSummaryOut"):
@@ -250,10 +255,14 @@ def test_13_6_legacy_four_piece_keys_gone_from_contract_and_client():
     assert "candidates" not in schemas.ReportOut.model_fields, \
         "`ReportOut.candidates` 应已换成 `basketDaily`(⑭-B)"
     assert "basketDaily" in schemas.ReportOut.model_fields
+
     swift = (_ROOT / "client" / "Models.swift").read_text(encoding="utf-8")
-    cand = swift.split("struct Candidate: Codable", 1)[1].split("\n}\n", 1)[0]
-    for gone in ("var buyPoint", "var stop:", "var target:", "var invalidation:"):
-        assert gone not in cand, gone
+    for gone in ("struct Candidate:", "struct IntelRank:", "struct LLMJudgment:",
+                 "struct InfoCardSummary:", "struct EntrySpec:"):
+        assert gone not in swift, f"`{gone}` 应已随 ⑮ 客户端换血删除"
+    # 报告展示模型改挂篮子日报三段。
+    assert "var basketDaily: BasketDaily" in swift
+    assert "var candidates: [Candidate]" not in swift
 
 
 # ======================================================================

@@ -58,18 +58,14 @@ def server_route_surface() -> set:
 
 
 # ⑮ 待删的**已知欠账**(V2 review 契约线 🟡 Y5 点名的五处 + 其对应路径形状)。
-# ⚠ **这是一份「已登记的债」,不是豁免**:⑮ 删完客户端调用之后,本集合必须**同步
-# 清空**,否则下面那条 `==` 断言会因为"清单里有、代码里没有"而红 —— 这正是要的效果
-# (⛔ 只会越放越松的 allowlist 等于没有闸)。
-PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15 = {
-    "/api/v1/decisions/{}/link",              # ⑩-C 已删服务端写端点
-    "/api/v1/decisions/{}/cancel",            # 同上
-    "/api/v1/decisions/{}/revise",            # 同上
-    "/api/v1/decisions/{}/scenario-outcome",  # 同上
-    # 🔴 最糟的一处:`SettingsLLMRequest` 请求体含**明文 apiKey**,发到一个 V2 已删的
-    # 端点,界面上还是一副成功的样子 = 假成功面 + 明文密钥打进空洞。⑮ 换 `/settings/providers*`。
-    "/api/v1/settings/llm",
-}
+#
+# ✅ **2026-08-03 V2-⑮ 已全部还清,本集合清空** —— 五处活调用(`PUT /settings/llm` +
+# `POST /decisions/{id}/{link,cancel,revise,scenario-outcome}`)连同它们的请求体类型
+# (`SettingsLLMRequest` 含**明文 apiKey**)已从 `APIClient.swift` 物理删除。
+# ⚠ **空集合不是"闸松了",恰恰相反**:下面那条断言用 `==`,清空之后**任何**新增的
+# 「打不到的调用」都会立刻红 —— 这是本闸最严的状态。⛔ 别再往里加条目当豁免用;
+# 真要新增一笔债,得先有人在 plan 里登记它。
+PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15: set = set()
 
 
 def test_client_call_surface_is_subset_of_server_routes_modulo_registered_debt():
@@ -144,26 +140,16 @@ SERVER_REASONS = {
     "basket_not_found", "card_not_ready", "no_base_plan",
 }
 
-# ⑮ 待加 `mapReason` case 的字符串。⚠ 这是**已登记的债**:⑮ 加完 case 后必须从这里
-# 删掉,否则上面那条 `==` 断言会因为"清单里有、代码里已覆盖"而红(要的就是这个效果)。
-PENDING_MAP_REASON_CASES_FOR_15 = {
-    # ——(a)V2-⑭-B 全新 reason,**fallback 猜不对文案**,⑮ 必须逐个加 case ——
-    # 404 的 fallback 是 `.notHolding`「持仓已清」:`card_not_ready` 若不加 case,
-    # 用户会看到「持仓已清」而不是「本篮的卡还没生成」(v1.4 `watchlist` 的
-    # `not_found` 就是这么踩的)。
-    "basket_not_found",   # 文案方向「找不到这个篮子」
-    "card_not_ready",     # 文案方向「本篮的卡还没生成」——⛔ **不是**「篮子不存在」
-    "no_base_plan",       # 文案方向「这笔仓没有可继承的计划基线」
-    # ——(b)②/⑪ 已落地但客户端**尚未接线**的端点带来的 reason ——
-    # `mapReason` 目前只在 400/404 两个分支被调用,而下面这些是 409/422;⑮ 接
-    # Provider 设置屏与 NL 提醒时,要么扩 `mapReason` 的调用点、要么就近处理。
-    # 登记在此是为了**不让它们悄悄留在盲区**,不是豁免。
-    "already_exists",       # 409 `POST /settings/providers`(同名 provider)
-    "duplicate_alert",      # 409 `POST /alerts`(同标的 + 规则逐字节相同)
-    "invalid_rule",         # 422 `POST|PUT /alerts`(规则不合白名单)
-    "invalid_task",         # 422 `PUT /settings/llm-routes`(未知任务名)
-    "invalid_push_kinds",   # 422 `PUT /settings/push`(缺键 / 未登记 kind)
-}
+# ⑮ 待加 `mapReason` case 的字符串。
+#
+# ✅ **2026-08-03 V2-⑮ 已全部还清,本集合清空**:八个 reason 各建了独立 `APIError`
+# case —— 三个 ⑭-B 全新 reason(`basket_not_found` / `card_not_ready` / `no_base_plan`)
+# + 五个 409/422 reason(`already_exists` / `duplicate_alert` / `invalid_rule` /
+# `invalid_task` / `invalid_push_kinds`),并把 `send()` 的 409 / 422 两个分支也接进
+# `mapReason`(此前只有 400/404 走它)。
+# 🔴 其中 `card_not_ready` 最要紧:404 的 fallback 是 `.notHolding`「持仓已清」——
+# 不建 case,用户点开一个卡还没生成的篮子会看到「持仓已清」(v1.4 `watchlist` 有案底)。
+PENDING_MAP_REASON_CASES_FOR_15: set = set()
 
 
 def _server_reason_literals() -> set:

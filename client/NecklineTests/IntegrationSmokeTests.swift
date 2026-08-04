@@ -55,11 +55,22 @@ final class IntegrationSmokeTests: XCTestCase {
         let report = try await makeClient().fetchReportLatest()
         XCTAssertFalse(report.degraded, "dev 后端应已由 scripts/report.py 生成过真实报告")
         XCTAssertNotNil(report.sentiment)
-        // ⚠ **V2-⑬-1/⑬-6**:候选榜与老四件套四键均已删除 → 新报告 `candidates` 恒为空,
-        // 原「四件套文案非空 + 止损口径 -5%」两条断言随之下线。止损口径的单一源守门在
-        // 服务端(`brain.get_active().rule["config"].stop_pct`,`tests/test_brain.py`);
-        // ⑮ 换成篮子卡后,这里应改为断言「今日篮子」非空 + 卡的 11 项齐。
-        XCTAssertTrue(report.candidates.isEmpty, "⑬-1 后候选榜已删,报告不应再带候选")
+        // V2-⑮:候选榜整族已退役,报告改由**篮子日报三段**承载。⚠ 这里**刻意不断言
+        // 「今日篮子非空」** —— 「今天真没有篮子」是合法输出(⑥-b-B);能断言的是
+        // **三段的可得性位真的解出来了**(空数组 + available=true 与 available=false
+        // 是两回事,界面上必须讲不同的话)。
+        let daily = report.basketDaily
+        for b in daily.baskets {
+            XCTAssertGreaterThan(b.basketId, 0)
+            // 篮子在、卡没生成是合法中间态 —— 有卡时卡里的 basketKey 不该是空的。
+            if let card = b.card { XCTAssertFalse(card.basketKey.isEmpty) }
+            else { XCTAssertNotNil(b.cardUnavailableText, "无卡时必须给得出诚实文案") }
+        }
+        // ③b 两个原因码语义相反,⛔ 不许合并成「未入选」。
+        for d in daily.droppedBaskets {
+            XCTAssertTrue(["capacity_overflow", "below_quality_line"].contains(d.reason),
+                          "未登记的 dropped reason:\(d.reason)")
+        }
     }
 
     /// 盘中看板:GET /board 真请求(§4C.2)。
@@ -119,25 +130,37 @@ final class IntegrationSmokeTests: XCTestCase {
         XCTAssertFalse(result.verdict.enablesBuyAction)
     }
 
-    /// 设置真请求闭环(§4C.4,🔴):GET → PUT llm → GET(确认不回明文)→ PUT push(五字段,
-    /// v1.2-A2 新增 circuit)→ GET。
+    /// 设置真请求闭环(V2-②/⑪ 换血后):GET → POST provider(key 只发一次)→ GET
+    /// (**确认只回 keySet 布尔、绝不回明文**)→ PUT push(按 kind 全量覆盖)→ GET →
+    /// DELETE provider 清理。
     func testSettingsRoundTripRealRequest() async throws {
         try await skipUnlessDevServerReachable()
         let client = makeClient()
 
-        _ = try await client.putSettingsLLM(provider: .glm, apiKey: "sk-integration-test-not-real")
-        let afterLLM = try await client.fetchSettings()
-        XCTAssertEqual(afterLLM.llmProvider, "glm")
-        XCTAssertTrue(afterLLM.llmKeySet)
+        let name = "integration-test-provider"
+        _ = try? await client.deleteProvider(name: name)   // 清理上一轮残留
+        _ = try await client.createProvider(ProviderCreateRequest(
+            name: name, baseUrl: "https://example.invalid/v1", model: "test-model",
+            apiKey: "sk-integration-test-not-real", hasWebSearch: false,
+            searchEngine: nil, notes: "IntegrationSmokeTests", enabled: false))
 
-        _ = try await client.putSettingsPush(report: true, retreatBrake: false, precall: false,
-                                             d5exit: true, circuit: false)
+        let afterCreate = try await client.fetchSettings()
+        let p = try XCTUnwrap(afterCreate.providers.first { $0.name == name })
+        XCTAssertTrue(p.keySet, "key 已配 —— 但响应里只有布尔,类型层面就没有明文字段")
+
+        // 按 kind 全量覆盖式写:**把服务端发来的那一份原样回写**(⛔ 客户端不硬编清单)。
+        var kinds = afterCreate.push.enabledMap
+        XCTAssertFalse(kinds.isEmpty, "服务端应给出已登记的 kind 清单")
+        if let first = afterCreate.push.kinds.first { kinds[first.kind] = !first.enabled }
+        _ = try await client.putSettingsPush(kinds: kinds)
         let afterPush = try await client.fetchSettings()
-        XCTAssertTrue(afterPush.push.report)
-        XCTAssertFalse(afterPush.push.retreatBrake)
-        XCTAssertFalse(afterPush.push.precall)
-        XCTAssertTrue(afterPush.push.d5exit)
-        XCTAssertFalse(afterPush.push.circuit)
+        if let first = afterCreate.push.kinds.first {
+            XCTAssertEqual(afterPush.push.kinds.first { $0.kind == first.kind }?.enabled,
+                           !first.enabled, "翻一个 kind 不该连坐其它 kind")
+        }
+        // 复原(不污染 dev 库)。
+        _ = try await client.putSettingsPush(kinds: afterCreate.push.enabledMap)
+        _ = try await client.deleteProvider(name: name)
 
         _ = try await client.registerDevice(token: "integration-test-device-token")
     }
@@ -164,53 +187,83 @@ final class IntegrationSmokeTests: XCTestCase {
         }
     }
 
-    // MARK: - v1.2-B 决策日志八项:创建 → link → scenario-outcome 真请求闭环(§五 v1.2-E 验收)
+    // MARK: - ⑩ 极简录入真请求闭环:三字段开仓 → 自动关联 + 计划继承 + 建仓快照 → 可选补充
 
-    func testDecisionLogCreateLinkScenarioOutcomeRoundTripRealRequest() async throws {
+    /// ⚠ **V2-⑮ 换血**:决策日志「创建 → link → scenario-outcome」闭环整套退役
+    /// (`decision_log` v2.0.0 起停写留档,四个写端点服务端已删)。本用例改为验
+    /// ⑩ 的新闭环:**三字段开仓**(其余自动关联)+ `position_plans` v1 自动落 +
+    /// `entry_snapshots` 冻结 + ⑩-C「用户可选补充」空提交合法。
+    func testMinimalEntryAutoLinkAndOptionalNoteRoundTripRealRequest() async throws {
         try await skipUnlessDevServerReachable()
         let client = makeClient()
 
-        let created = try await client.createDecision(
-            code: "600006.SH", name: "集成测试甲", whyBuy: "题材热+量能启动", whyEntryPrice: "回调至10日线企稳",
-            targetPrice: 12.0, exitLow: 9.0, exitHigh: 9.5,
-            thesisTags: ["THEME", "CAPITAL_FLOW"], invalidation: "跌破10日线且放量下杀",
-            contingencyScenarios: [
-                ContingencyScenario(scenario: "次日高开超预期", trigger: "开盘涨幅>3%", action: "HOLD", matched: false),
-                ContingencyScenario(scenario: "次日低开破位", trigger: "开盘跌幅>2%", action: "ABANDON", matched: false),
-            ],
-            playbookTag: "SWING_CHASE", plannedPrice: 10.0, plannedQty: 1000,
-            maxChasePct: 3.0
-        )
-        XCTAssertFalse(created.createdAt.isEmpty, "createdAt 服务端生成")
-        XCTAssertEqual(created.status, "pending")
-        XCTAssertNil(created.positionId)
-        XCTAssertEqual(created.contingencyScenarios.count, 2)
+        // ⑩-A:票 + 价 + 量三字段即可(理由 / 费用都不传)。幂等键每次新铸。
+        let opened = try await client.openPosition(
+            code: "600006.SH", name: nil, buyPrice: 10.0, qty: 1000, entryReason: "",
+            idempotencyKey: UUID().uuidString)
+        XCTAssertGreaterThan(opened.positionId, 0)
+        XCTAssertFalse(opened.replayed, "全新幂等键不该被判成重放")
 
-        // link:成交后一键关联到一笔真实开仓。
-        let opened = try await client.openPosition(code: "600006.SH", name: "集成测试甲", buyPrice: 10.0,
-                                                    qty: 1000, entryReason: "IntegrationSmokeTests 决策日志闭环")
-        _ = try await client.linkDecision(id: created.id, positionId: opened.positionId)
+        // ⑩-B:开仓必落 `version=1` 计划行(**有仓无 v1 是走不出去的死局**)。
+        let plans = try await client.fetchPositionPlans(positionId: opened.positionId)
+        let v1 = try XCTUnwrap(plans.first { $0.version == 1 }, "开仓应自动落 version=1")
+        // 无来源篮子 / 卡未就绪都是**合法**结果 —— 行照落、如实标原因,⛔ 不省略整条记录。
+        if !v1.available { XCTAssertNotNil(v1.unavailableText) }
+        // ⑪-D 武装态四键**恒存在**(读侧 fail-closed:缺键 = 不武装)。
+        XCTAssertNotNil(v1.plan["exit_reference_armed"], "武装态键必须恒存在,不搞「缺键即默认」")
 
-        let listed = try await client.listDecisions(status: "filled", code: "600006.SH")
-        XCTAssertTrue(listed.contains { $0.id == created.id && $0.positionId == opened.positionId })
+        // ⑩-A:`entry_snapshots` 冻结一行(没有则 404 not_found,也是可接受的历史态)。
+        do {
+            let snap = try await client.fetchEntrySnapshot(positionId: opened.positionId)
+            XCTAssertEqual(snap.positionId, opened.positionId)
+            // ⛔ 别把"没采"读成"没有"。
+            XCTAssertFalse(snap.notCaptured.contains(""), "not_captured 不该有空串")
+        } catch APIError.notFound {
+            XCTFail("⑩ 起开仓必落 entry_snapshots 冻结行")
+        }
 
-        // scenario-outcome:只翻 matched,不动情景文本。
-        _ = try await client.setScenarioOutcome(id: created.id, outcomes: [(index: 0, matched: true)])
-        let afterOutcome = try await client.listDecisions(code: "600006.SH")
-        let hit = afterOutcome.first { $0.id == created.id }
-        XCTAssertEqual(hit?.contingencyScenarios.first?.matched, true)
-        XCTAssertEqual(hit?.contingencyScenarios.first?.scenario, "次日高开超预期", "情景文本必须逐字不变")
-        XCTAssertEqual(hit?.contingencyScenarios.last?.matched, false, "未提及的第二项不受影响")
+        // ⑩-C:用户可选补充 —— **空提交合法**(200,不是 400)。
+        let empty = try await client.postDecisionNote(code: "600006.SH")
+        XCTAssertTrue(empty.ok)
+        let labeled = try await client.postDecisionNote(
+            code: "600006.SH", positionId: opened.positionId,
+            labels: ["THEME_SHIFT"], voiceNote: "IntegrationSmokeTests")
+        XCTAssertTrue(labeled.recorded.contains("label"))
 
-        // 清理:清仓 + 放弃另一条独立预注册计划(cancel 路径),不污染 dev 库演示数据。
-        _ = try? await client.closePosition(id: opened.positionId, sellPrice: 10.1, closeReason: "MANUAL")
-        let toCancel = try await client.createDecision(
-            code: "600006.SH", name: nil, whyBuy: "占位", whyEntryPrice: "占位", targetPrice: nil,
-            exitLow: nil, exitHigh: nil, thesisTags: [], invalidation: "占位", contingencyScenarios: [],
-            playbookTag: "SWING_CHASE", plannedPrice: nil, plannedQty: nil,
-            maxChasePct: nil
-        )
-        _ = try await client.cancelDecision(id: toCancel.id)
+        // 清理:清仓,不污染 dev 库演示数据。
+        _ = try? await client.closePosition(id: opened.positionId, sellPrice: 10.1,
+                                            closeReason: "MANUAL")
+    }
+
+    /// **幂等键真实往返**:同键二次提交 → `replayed=true` 且**不开第二笔仓**。
+    func testIdempotencyKeyReplayDoesNotOpenSecondPositionRealRequest() async throws {
+        try await skipUnlessDevServerReachable()
+        let client = makeClient()
+        let key = UUID().uuidString
+        let first = try await client.openPosition(code: "600008.SH", name: nil, buyPrice: 5.0,
+                                                  qty: 100, entryReason: "", idempotencyKey: key)
+        let second = try await client.openPosition(code: "600008.SH", name: nil, buyPrice: 5.0,
+                                                   qty: 100, entryReason: "", idempotencyKey: key)
+        XCTAssertTrue(second.replayed, "同键 = 同一笔意图的重试,服务端应重放而不是开第二笔")
+        XCTAssertEqual(first.positionId, second.positionId)
+        _ = try? await client.closePosition(id: first.positionId, sellPrice: 5.1, closeReason: "MANUAL")
+    }
+
+    /// 篮子族端点真请求:列表 → 单篮 → 卡 / 验证。**空列表是合法输出**,⛔ 不是 404。
+    func testBasketsRealRequest() async throws {
+        try await skipUnlessDevServerReachable()
+        let client = makeClient()
+        let baskets = try await client.fetchBaskets()
+        guard let first = baskets.first else {
+            throw XCTSkip("dev 库当日无篮子(合法输出),跳过卡 / 验证的真请求")
+        }
+        let one = try await client.fetchBasket(id: first.basketId)
+        XCTAssertEqual(one.basketId, first.basketId)
+        // 「篮子在、卡没生成」是合法中间态 → `card_not_ready`,⛔ **不是**「篮子不存在」。
+        do { _ = try await client.fetchBasketCard(id: first.basketId) }
+        catch APIError.cardNotReady { /* 合法中间态 */ }
+        let v = try await client.fetchBasketVerification(id: first.basketId)
+        XCTAssertEqual(v.basketId, first.basketId)
     }
 
     // MARK: - v1.2-A2 熔断纪律状态真请求(§五 v1.2-E.3;不强造锁定态,只验真实解码)

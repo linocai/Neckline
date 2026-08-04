@@ -1,6 +1,7 @@
 //
 //  AppModelTests.swift
-//  NecklineTests — AppModel 派生逻辑 / 问询台「永不买」不变量 / 交易日历。
+//  NecklineTests — AppModel 派生逻辑 / 问询台「永不买」不变量 / 展示层枚举换算 /
+//  V2-⑮ 新增:幂等键规则、篮子成员补录预填、per-position 静音开关、推送按 kind 路由。
 //
 
 import XCTest
@@ -33,18 +34,12 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(InquiryVerdict("已分析·有风险提示").label, "已分析·有风险提示")
     }
 
-    /// P3-14(⑦-C):回归锁死这次要修的展示 bug——「有风险提示」此前无对应 case,落
-    /// `.unknown` → 中性色调,和普通「已分析」在 UI 上长得一模一样,风险提示形同
-    /// 隐身。修复后必须是**警示色**(复用既有 `NKAxisTone.warn`,不新造色值),而
-    /// 「已分析」维持中性——标注不是判决,不该给它套好评色调。
     func testInquiryVerdictWarnGetsWarnToneAnalyzedStaysNeutral() {
         XCTAssertEqual(InquiryVerdict("已分析·有风险提示").tone, .warn)
         XCTAssertEqual(InquiryVerdict("已分析").tone, .neutral)
     }
 
     func testInquiryVerdictUnrecognizedStringNeverSilentlyBecomesKnownState() {
-        // 契约漂移防护:未知字符串必须落 .unknown,不能被静默当成已知态展示,否则
-        // 后端一改措辞、前端就可能把"未识别"误当已知态渲染。
         let v = InquiryVerdict("某种新裁决")
         guard case .unknown(let raw) = v else {
             return XCTFail("未识别字符串应归 .unknown,实际 \(v)")
@@ -53,7 +48,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(v.enablesBuyAction)
     }
 
-    // MARK: - 问询台多轮上下文截断(§2.5「客户端回传」,继承 LinoN /chat 姿势)
+    // MARK: - 问询台多轮上下文截断
 
     func testInquiryContextTruncatesFromUserBoundary() {
         var thread: [ChatMessage] = []
@@ -100,18 +95,14 @@ final class AppModelTests: XCTestCase {
         }
     }
 
-    // MARK: - 候选板块码展示换算(实测服务端 board 字段是英文枚举码,非中文名)
+    // MARK: - 板块码展示换算(服务端 board 是英文枚举码,中文只在客户端换算;E7)
 
-    func testCandidateBoardLabelTranslatesKnownCodes() {
-        func candidate(board: String) -> Candidate {
-            Candidate(rank: 1, code: "600001.SH", name: "甲", score: 90, board: board,
-                     formTags: [], hotSectors: [], sectorNames: [], llmJudgment: nil)
-        }
-        XCTAssertEqual(candidate(board: "MAIN").boardLabel, "主板")
-        XCTAssertEqual(candidate(board: "GEM").boardLabel, "创业板")
-        XCTAssertEqual(candidate(board: "STAR").boardLabel, "科创板")
-        XCTAssertEqual(candidate(board: "BSE").boardLabel, "北交所")
-        XCTAssertEqual(candidate(board: "UNKNOWN_FUTURE").boardLabel, "UNKNOWN_FUTURE",
+    func testBoardLabelTranslatesKnownCodes() {
+        XCTAssertEqual(nkBoardLabel("MAIN"), "主板")
+        XCTAssertEqual(nkBoardLabel("GEM"), "创业板")
+        XCTAssertEqual(nkBoardLabel("STAR"), "科创板")
+        XCTAssertEqual(nkBoardLabel("BSE"), "北交所")
+        XCTAssertEqual(nkBoardLabel("UNKNOWN_FUTURE"), "UNKNOWN_FUTURE",
                        "未识别值原样透传,不静默瞎翻译")
     }
 
@@ -135,14 +126,8 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(p.distToStopPct)
     }
 
-    // MARK: - §五 v1.1-E.1 持仓生命周期展示层派生(dCount/maxHoldDays/distToStopPct/
-    // retraceState 服务端下发,todayActionTone 只按优先级选颜色/是否醒目横幅,不重推文案)
+    // MARK: - 持仓生命周期展示层派生(服务端权威 `timeExitState` 驱动,客户端不重算)
 
-    /// v1.3-①/⑥:`isExitDay` 自本版起由服务端权威 `timeExitState` 驱动(不再由客户端
-    /// 重新比较 `dCount >= maxHoldDays`)——这里直接构造 Position 时必须显式给
-    /// `timeExitState`,才能反映"服务端在这个 dCount 会怎么判"(K1 单档口径下,
-    /// `time_exit_next_day` 恰好等价于 `dCount >= maxHoldDays`,见 `sentinel/precall.py::
-    /// classify_time_exit` config 未启用分支)。
     func testPositionIsExitDayWhenDCountReachesMaxHoldDays() {
         var p = Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10.0, qty: 100,
                          entryReason: "", buyDate: "20260710", price: 10.0, status: "holding",
@@ -151,19 +136,17 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(p.isExitDay)
         XCTAssertEqual(p.todayActionTone, .bad, "D5 时间退出必须最高优先醒目")
 
-        p.dCount = 6   // 改 config 到更短的 hold 天数后,超过也仍算 exit day(不是恰好相等才算)
+        p.dCount = 6
         XCTAssertTrue(p.isExitDay)
 
         p.dCount = 3
-        p.timeExitState = PositionTimeExitState.holdingRaw   // 服务端此时应判 holding,非 time_exit_next_day
+        p.timeExitState = PositionTimeExitState.holdingRaw
         XCTAssertFalse(p.isExitDay)
     }
 
-    /// v1.3-①/⑥ 两档 D 徽标核心场景:`profitExempt`(浮盈豁免续持到 D15)**不是**离场提示
-    /// ——即便 `dCount` 已经 ≥ 旧单档 `maxHoldDays`(5),只要服务端判 `profit_exempt`,
-    /// `isExitDay` 必须为 false、`todayActionTone` 不得是 `.bad`(§五 v1.3-⑥-A 明文
-    /// "profit_exempt 是持有态,不要当离场提示展示")。这正是本版把 `isExitDay` 判据从
-    /// `dCount>=maxHoldDays` 迁到 `timeExitState` 的根本原因——旧口径会在这里误报。
+    /// `profitExempt`(浮盈豁免续持到 D15)**不是**离场提示 —— 即便 `dCount` 已经 ≥ 旧单档
+    /// `maxHoldDays`(5)。这正是把 `isExitDay` 判据从 `dCount>=maxHoldDays` 迁到
+    /// `timeExitState` 的根本原因:旧口径会在这里误报。
     func testPositionProfitExemptIsNotExitDayEvenPastOldSingleTierThreshold() {
         let p = Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10.0, qty: 100,
                          entryReason: "", buyDate: "20260701", price: 12.0, status: "holding",
@@ -174,7 +157,6 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(p.timeExitKind, .profitExempt)
     }
 
-    /// 硬上限到期(D15)**是**离场提示——两档里唯二的"该走了"态之一(另一是非浮盈 D5)。
     func testPositionHardCapExitIsExitDay() {
         let p = Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10.0, qty: 100,
                          entryReason: "", buyDate: "20260601", price: 13.0, status: "holding",
@@ -185,8 +167,6 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(p.timeExitKind, .hardCapExit)
     }
 
-    /// 未识别 `timeExitState` 字符串兜底 `.holding`(不误报离场,同 `PositionQuota`/
-    /// `InquiryVerdict` 等既有"未识别值归中性态"先例)。
     func testPositionUnknownTimeExitStateFallsBackToHoldingNotExitDay() {
         let p = Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10.0, qty: 100,
                          entryReason: "", buyDate: "20260710", price: 10.0, status: "holding",
@@ -197,7 +177,6 @@ final class AppModelTests: XCTestCase {
     }
 
     func testPositionTodayActionTonePriorityRetraceOverStopDistance() {
-        // 回落止盈已触发的优先级高于"距止损线"(与服务端 `_today_action` 判定顺序一致)。
         let p = Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10.0, qty: 100,
                          entryReason: "", buyDate: "20260716", price: 11.0, status: "holding",
                          stopLine: 9.5, stopOrderChecked: false, dCount: 2, maxHoldDays: 5,
@@ -231,30 +210,92 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(p.todayActionTone, .neutral)
     }
 
-    // MARK: - §五 v1.1-E.2 买点参考价(展示层选择,`Candidate.entrySpec`,不新推导数字)
+    // MARK: - V2-⑮ 参考件展示纪律:夹逼拒收 → nil,⛔ 不许显示成 0 或空白
 
-    func testEntrySpecReferencePricePullbackUsesMA10() {
-        let spec = EntrySpec(buypoint: "pullback", ma10: 12.34, platformHigh: nil)
-        XCTAssertEqual(spec.referencePrice, 12.34)
+    func testBasketPriceBandRangeTextNilWhenClamped() {
+        XCTAssertEqual(BasketPriceBand(low: 10.0, high: 11.0).rangeText, "¥10.00 ~ ¥11.00")
+        XCTAssertNil(BasketPriceBand(low: nil, high: nil).rangeText,
+                     "夹逼拒收时必须是 nil(UI 据此显示原因),⛔ 不许兜成 0")
+        XCTAssertNil(BasketPriceBand(low: 10.0, high: nil).rangeText, "半边缺失同样不算可用区间")
     }
 
-    func testEntrySpecReferencePriceBreakoutUsesPlatformHigh() {
-        let spec = EntrySpec(buypoint: "breakout", ma10: nil, platformHigh: 15.5)
-        XCTAssertEqual(spec.referencePrice, 15.5)
+    /// **角色两说并存**(E5):`roleConflict=true` 时两个都出现,⛔ 不挑一个当正确答案。
+    func testBasketMemberRoleDisplayKeepsBothWhenConflicting() {
+        let conflicting = BasketMember(tsCode: "600001.SH", name: "甲", roleLlm: "龙头",
+                                       roleMech: "跟随", roleConflict: true)
+        XCTAssertTrue(conflicting.roleDisplay.contains("龙头"))
+        XCTAssertTrue(conflicting.roleDisplay.contains("跟随"))
+
+        let agreed = BasketMember(tsCode: "600002.SH", name: "乙", roleLlm: "跟随",
+                                  roleMech: "跟随", roleConflict: false)
+        XCTAssertEqual(agreed.roleDisplay, "跟随")
+
+        let unknown = BasketMember(tsCode: "600003.SH", name: "丙")
+        XCTAssertEqual(unknown.roleDisplay, "角色未判定", "两个角色都空时如实说没判定,不留空白")
     }
 
-    func testEntrySpecReferencePriceMissingBothIsNil() {
-        let spec = EntrySpec(buypoint: "pullback", ma10: nil, platformHigh: nil)
-        XCTAssertNil(spec.referencePrice, "买点参考价缺失时不得虚构数字,UI 须留空手填")
+    /// ③b 两个原因码**语义相反,⛔ 不许合并成「未入选」**(E2)。
+    func testDroppedBasketReasonLabelsAreDistinct() {
+        let overflow = DroppedBasket(name: "A", mechScore: 8.0, reason: "capacity_overflow")
+        let belowLine = DroppedBasket(name: "B", mechScore: 2.0, reason: "below_quality_line")
+        XCTAssertNotEqual(overflow.reasonLabel, belowLine.reasonLabel)
+        XCTAssertTrue(overflow.reasonLabel.contains("装不下"))
+        XCTAssertTrue(belowLine.reasonLabel.contains("没什么好货"))
+        XCTAssertEqual(overflow.reasonTone, .good)
+        XCTAssertEqual(belowLine.reasonTone, .warn)
+        XCTAssertEqual(nkDroppedReasonLabel("some_future_reason"), "some_future_reason")
     }
 
-    // MARK: - §五 v1.2-E.1/E.5 决策日志优先流程 + 一键补录预填区间(端到端,经
-    // `MockURLProtocol` 免联网,同 DTODecodeTests 的桩姿势——验证
-    // `AppModel.beginPositionEntryFlow(fromCandidate:)` 真的拉了 entry-suggestion
-    // 并把区间写回状态,且流程先落在 `.decisionLog` 而非直接 `.open`
-    // 〔v1.2-E.1「嵌『已按计划买入』流程之前」硬边界〕,不是只测 EntrySpec 纯函数)。
+    /// 验证四态角标:**「今天还没判过」与「判了是 unclear」讲不同的话**。
+    func testVerificationBadgeSeparatesNotEvaluatedFromUnclear() {
+        let notEvaluated = BasketVerification(basketId: 1, state: "unclear", label: "未明",
+                                              notEvaluated: true)
+        XCTAssertEqual(notEvaluated.badgeText, "今日尚未判定")
+        XCTAssertEqual(notEvaluated.badgeTone, .neutral)
 
-    func testBeginPositionEntryFlowFromCandidateOpensDecisionLogFirstAndPrefillsRange() async throws {
+        let unclear = BasketVerification(basketId: 1, state: "unclear", label: "未明")
+        XCTAssertEqual(unclear.badgeText, "未明")
+
+        let provisional = BasketVerification(basketId: 1, state: "verified", label: "已验证",
+                                             provisional: true)
+        XCTAssertTrue(provisional.badgeText.contains("盘中暂态"))
+        XCTAssertEqual(provisional.badgeTone, .good)
+
+        let falsified = BasketVerification(basketId: 1, state: "falsified", label: "驱动假设已证伪")
+        XCTAssertEqual(falsified.badgeTone, .bad)
+    }
+
+    /// 「卡还没生成」⛔ **不是**「篮子不存在」。
+    func testBasketCardUnavailableTextIsNeverBasketNotFound() {
+        let b = Basket(basketId: 7, basketKey: "k", name: "篮子", cardUnavailableReason: "card_not_ready")
+        XCTAssertEqual(b.cardUnavailableText, "本篮的卡还没生成")
+        XCTAssertFalse(b.cardUnavailableText!.contains("不存在"))
+        let withCard = Basket(basketId: 8, card: BasketCard(basketKey: "k2"))
+        XCTAssertNil(withCard.cardUnavailableText)
+    }
+
+    /// 取证不完整必须**显式标注**,⛔ 不许静默当完整证据展示。
+    func testBasketCardEvidenceIncompleteNoteSpeaksUp() {
+        XCTAssertNil(BasketCard(evidenceStatus: "ok").evidenceIncompleteNote)
+        XCTAssertNil(BasketCard(evidenceStatus: "").evidenceIncompleteNote)
+        XCTAssertNotNil(BasketCard(evidenceStatus: "search_unavailable").evidenceIncompleteNote)
+        XCTAssertNotNil(BasketCard(evidenceStatus: "partial").evidenceIncompleteNote)
+        XCTAssertNotNil(BasketCard(evidenceStatus: "some_future_status").evidenceIncompleteNote,
+                        "未识别状态同样要说出来,⛔ 不许当 ok")
+    }
+
+    /// E1:空档位如实显示 —— `baskets(tier:)` 对没有的档返回空数组(由 UI 画「今日 T1 为空」)。
+    func testBasketDailyTierFilter() {
+        let daily = BasketDaily(baskets: [Basket(basketId: 1, tier: 1), Basket(basketId: 2, tier: 3)],
+                                basketsAvailable: true)
+        XCTAssertEqual(daily.baskets(tier: 1).map(\.basketId), [1])
+        XCTAssertTrue(daily.baskets(tier: 2).isEmpty)
+        XCTAssertEqual(daily.baskets(tier: 3).map(\.basketId), [2])
+    }
+
+    // MARK: - V2-⑮ 从篮子成员一键补录(预填 code/name + 区间下沿,⛔ 不虚构数字)
+
+    func testBeginPositionEntryFlowFromMemberPrefillsAndFetchesRange() async throws {
         MockURLProtocol.handler = { req in
             let url = req.url?.absoluteString ?? ""
             XCTAssertTrue(url.contains("/positions/entry-suggestion"))
@@ -273,90 +314,84 @@ final class AppModelTests: XCTestCase {
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: session)
         let model = AppModel(clientProvider: { client })
 
-        // ⚠ **V2-⑬-3/⑬-6**:老四件套四键与参考件三件套键均已删除 → 进场理由预填
-        // 退回通用文案(见 `AppModel.entryReasonText(for:)` 的 ⑬ 登记)。
-        let candidate = Candidate(
-            rank: 1, code: "600519.SH", name: "贵州茅台", score: 98.7, board: "MAIN",
-            formTags: [], hotSectors: [], sectorNames: [], llmJudgment: nil,
-            entrySpec: EntrySpec(buypoint: "pullback", ma10: 1217.11, platformHigh: 1258.99)
-        )
-        await model.beginPositionEntryFlow(fromCandidate: candidate)
+        let member = BasketMember(tsCode: "600519.SH", name: "贵州茅台", roleMech: "龙头",
+                                  entryZone: BasketPriceBand(low: 1217.11, high: 1258.99))
+        await model.beginPositionEntryFlow(fromMember: member, basketName: "白酒复苏")
 
-        // §五 v1.2-E.1 硬边界:先落决策日志表单,不是直接开仓表单。
-        XCTAssertEqual(model.modal, .decisionLog)
+        XCTAssertEqual(model.modal, .open, "⑩-A 表单退役后直接进开仓录入,不再前置决策日志表单")
         XCTAssertEqual(model.entryForm.code, "600519.SH")
         XCTAssertEqual(model.entryForm.name, "贵州茅台")
         XCTAssertEqual(model.entryForm.price, "1217.11")
-        XCTAssertEqual(model.entryForm.reason, "已按计划买入")
-        XCTAssertEqual(model.decisionForm.code, "600519.SH")
-        XCTAssertEqual(model.decisionForm.plannedPrice, "1217.11")
-        // v1.2-E.5:区间双档,不再预填单一 qty(不替用户拍单笔金额)。
+        XCTAssertTrue(model.entryForm.reason.contains("白酒复苏"))
         XCTAssertEqual(model.entrySuggestionRange?.qtyLow, 200)
         XCTAssertEqual(model.entrySuggestionRange?.qtyHigh, 400)
-        XCTAssertEqual(model.entrySuggestionRange?.capCeil, 40000.0)
         XCTAssertEqual(model.entrySuggestionRange?.stopLine, 1156.25)
         XCTAssertEqual(model.entryForm.qty, "", "客户端不替用户拍单笔金额,qty 必须留空手填")
     }
 
-    /// `AppModel.entryReasonText(for:)`(⚠ **V2-⑬-3**:参考件三件套键已删 → 本函数退回
-    /// 单一通用文案。**断言保留**是为了锁死"不显示空字符串、不编造理由"这条,⑮ 接篮子卡
-    /// 时改从卡里取,那时再恢复多态断言)。
-    func testEntryReasonTextIsAlwaysTheGenericLineAfterReferencePlanRemoval() {
-        let c = Candidate(rank: 1, code: "600001.SH", name: "甲", score: 90, board: "MAIN",
-                          formTags: [], hotSectors: [], sectorNames: [], llmJudgment: nil)
-        XCTAssertEqual(AppModel.entryReasonText(for: c), "已按计划买入")
-        XCTAssertFalse(AppModel.entryReasonText(for: c).isEmpty)
-    }
-
-    /// 买点参考价缺失(entrySpec 未算出)→ 价格留空手填,不虚构数字、不崩、仍能打开表单。
-    func testBeginPositionEntryFlowFromCandidateWithoutEntrySpecLeavesPriceBlank() async throws {
+    /// 建仓区间被夹逼拒收(`entryZone == nil`)→ 价格留空手填,**不虚构数字**、不崩。
+    func testBeginPositionEntryFlowFromMemberWithoutEntryZoneLeavesPriceBlank() async throws {
         let model = AppModel(clientProvider: { nil })   // 无后端连接也不该崩
-        let candidate = Candidate(rank: 1, code: "600001.SH", name: "甲", score: 80, board: "MAIN",
-                                  formTags: [], hotSectors: [], sectorNames: [], llmJudgment: nil)
-        await model.beginPositionEntryFlow(fromCandidate: candidate)
+        let member = BasketMember(tsCode: "600001.SH", name: "甲",
+                                  entryZoneClamp: "rejected_out_of_limit")
+        await model.beginPositionEntryFlow(fromMember: member, basketName: "某题材")
         XCTAssertEqual(model.entryForm.code, "600001.SH")
-        XCTAssertEqual(model.entryForm.price, "", "缺 entrySpec 参考价时不得虚构数字")
+        XCTAssertEqual(model.entryForm.price, "", "夹逼拒收时不得虚构数字")
         XCTAssertNil(model.entrySuggestionRange)
-        XCTAssertEqual(model.modal, .decisionLog)
+        XCTAssertEqual(model.modal, .open)
     }
 
-    // MARK: - §五 v1.2-E.1 决策日志软约束:跳过 / 建计划→录八项→成交后关联 / 中途放弃
+    /// 进场理由预填:只陈述**来源事实**,⛔ 不得出现「推荐 / 建议买入 / 看好」类表述。
+    func testEntryReasonTextStatesSourceOnlyNeverRecommends() {
+        let member = BasketMember(tsCode: "600001.SH", name: "甲", roleMech: "跟随")
+        let text = AppModel.entryReasonText(basketName: "某题材", member: member)
+        XCTAssertTrue(text.contains("某题材"))
+        XCTAssertFalse(text.isEmpty)
+        for banned in ["推荐", "建议买入", "看好", "值得买"] {
+            XCTAssertFalse(text.contains(banned), "语义红线:进场理由不得出现「\(banned)」")
+        }
+        // 篮子名缺失 → 退回中性文案,不显示空串。
+        XCTAssertEqual(AppModel.entryReasonText(basketName: "  ", member: member), "已按计划买入")
+    }
 
-    func testSkipDecisionLogGoesStraightToOpenSheetWithoutHardBlocking() {
+    /// **角色对拍分歧时预填文案不挑边**(E5 的延伸:连预填的一句话也不能替用户选一说)。
+    func testEntryReasonTextDoesNotPickASideWhenRolesConflict() {
+        let member = BasketMember(tsCode: "600001.SH", name: "甲", roleLlm: "龙头",
+                                  roleMech: "跟随", roleConflict: true)
+        let text = AppModel.entryReasonText(basketName: "某题材", member: member)
+        XCTAssertTrue(text.contains("两说并存"))
+        XCTAssertFalse(text.contains("龙头"))
+        XCTAssertFalse(text.contains("跟随"))
+    }
+
+    // MARK: - V2-⑮ 幂等键规则(契约线 🟡 Y7;**每笔新提交动作一个新键,⛔ 严禁复用**)
+
+    /// **两次独立提交动作的键必须不同**(⛔ 别绑「票 + 日期」之类业务量 —— 那必然复用;
+    /// 服务端是标准幂等语义,同键不同 payload 会**静默重放原仓**、把用户改过的价格数量吃掉)。
+    func testIdempotencyKeyIsFreshPerEntryFlow() {
         let model = AppModel(clientProvider: { nil })
         model.beginPositionEntryFlow()
-        model.decisionForm.code = "600001.SH"
-        model.decisionForm.name = "甲"
-        XCTAssertEqual(model.modal, .decisionLog)
-
-        model.skipDecisionLog()
-
-        XCTAssertEqual(model.modal, .open, "跳过必须能直接进入开仓补录,不做硬阻断(§三条本版硬约束②)")
-        XCTAssertEqual(model.entryForm.code, "600001.SH", "跳过时已填的代码应带过去,不必重打")
-        XCTAssertNil(model.pendingDecisionId)
+        let first = model.entryIdempotencyKey
+        model.beginPositionEntryFlow()
+        let second = model.entryIdempotencyKey
+        XCTAssertFalse(first.isEmpty)
+        XCTAssertNotEqual(first, second, "每次进入录入流程必须铸一枚新键")
+        // 同一次流程内(含从篮子成员进入)不改键 —— 那是"重试同一意图"。
+        XCTAssertEqual(model.entryIdempotencyKey, second)
     }
 
-    /// 请求体逐字段核对(含「客户端传 createdAt 也会被忽略」)已在
-    /// `DTODecodeTests.testCreateDecisionRequestBodyShapeAndCreatedAtNeverSent` 覆盖
-    /// (`httpBodyOrStream()` 是该文件内 `private extension`,不跨文件复用);这里只
-    /// 验证 `AppModel` 的状态编排——创建成功后正确转入 `.open` 并暂存 `pendingDecisionId`。
-    func testSubmitDecisionLogCreatesThenTransitionsToOpenWithPendingId() async throws {
+    /// **同一次提交动作的重试复用同一枚键**:提交失败后再提交,请求体里的 key 必须一致。
+    func testIdempotencyKeyReusedAcrossRetriesOfSameSubmission() async throws {
+        var keys: [String] = []
         MockURLProtocol.handler = { req in
-            // v1.4-⑤-B ⑨:请求体必须带上 maxChasePct(显式 null = 本测试勾了「不设上限」)。
             if let body = req.httpBodyOrStream(),
-               let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
-                XCTAssertTrue(obj.keys.contains("maxChasePct"))
-                XCTAssertTrue(obj["maxChasePct"] is NSNull)
-            } else {
-                XCTFail("请求体应能解析")
+               let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let k = obj["idempotencyKey"] as? String {
+                keys.append(k)
             }
-            return (200, """
-            {"id": 42, "code": "600001.SH", "name": "甲", "createdAt": "2026-07-25T10:00:00+00:00",
-             "whyBuy": "题材热", "whyEntryPrice": "回调企稳", "targetPrice": null, "exitLow": null,
-             "exitHigh": null, "thesisTags": ["THEME"], "invalidation": "跌破均线",
-             "contingencyScenarios": [], "playbookTag": "SWING_CHASE", "plannedPrice": 10.0,
-             "plannedQty": 1000, "maxChasePct": null, "status": "pending", "positionId": null, "revisionOf": null}
-            """.data(using: .utf8)!)
+            // 第一次故意 500,逼出一次重试。
+            if keys.count == 1 { return (500, #"{"detail": "boom"}"#.data(using: .utf8)!) }
+            return (200, #"{"ok": true, "position_id": 1, "stop_line": 9.5}"#.data(using: .utf8)!)
         }
         defer { MockURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral
@@ -365,78 +400,26 @@ final class AppModelTests: XCTestCase {
                                session: URLSession(configuration: config))
         let model = AppModel(clientProvider: { client })
         model.beginPositionEntryFlow()
-        model.decisionForm.code = "600001.SH"
-        model.decisionForm.name = "甲"
-        model.decisionForm.whyBuy = "题材热"
-        model.decisionForm.whyEntryPrice = "回调企稳"
-        model.decisionForm.invalidation = "跌破均线"
-        model.decisionForm.maxChaseNoCap = true   // ⑨ 显式勾选「不设上限」
+        model.entryForm.code = "600519.SH"
+        model.entryForm.price = "10.0"
+        model.entryForm.qty = "100"
 
-        await model.submitDecisionLog()
+        await model.submitOpenPosition()   // 失败
+        await model.submitOpenPosition()   // 重试
 
-        XCTAssertEqual(model.pendingDecisionId, 42)
-        XCTAssertEqual(model.modal, .open, "创建成功后应转入开仓补录表单(建计划→录八项→成交后关联)")
-        XCTAssertEqual(model.entryForm.code, "600001.SH")
+        XCTAssertEqual(keys.count, 2)
+        XCTAssertEqual(keys[0], keys[1], "同一次提交动作的重试必须复用同一枚幂等键")
     }
 
-    /// ⚠ **V2-⑬-5:强制表单退役** —— 原用例锁的是「⑨ 未做选择 → 不发请求 + 提示点名
-    /// 该项」;服务端 ⑩-C 起空提交合法(不传五必填返 200 而非 400),客户端必填分支
-    /// 随之删除。本用例改为**反向锁死**:只填代码、其余全空,必须**照发请求**。
-    func testSubmitDecisionLogSendsRequestWithOnlyCodeFilled() async throws {
-        var requestFired = false
-        MockURLProtocol.handler = { _ in
-            requestFired = true
-            return (200, #"{"ok": true, "recorded": []}"#.data(using: .utf8)!)
-        }
-        defer { MockURLProtocol.handler = nil }
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockURLProtocol.self]
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
-                               session: URLSession(configuration: config))
-        let model = AppModel(clientProvider: { client })
-        model.beginPositionEntryFlow()
-        model.decisionForm.code = "600001.SH"
-        // 故意不填 whyBuy / whyEntryPrice / invalidation / maxChase —— ⑬-5 后全部可空。
-
-        await model.submitDecisionLog()
-
-        XCTAssertTrue(requestFired, "⑬-5 后空提交合法,必须照发请求")
-    }
-
-    /// 连代码都没有 → 仍不发请求(唯一剩下的真硬前提:没有代码无从记账)。
-    func testSubmitDecisionLogStillBlocksWithoutCode() async throws {
-        var requestFired = false
-        MockURLProtocol.handler = { _ in
-            requestFired = true
-            return (200, "{}".data(using: .utf8)!)
-        }
-        defer { MockURLProtocol.handler = nil }
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockURLProtocol.self]
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
-                               session: URLSession(configuration: config))
-        let model = AppModel(clientProvider: { client })
-        model.beginPositionEntryFlow()
-        model.decisionForm.code = "   "
-
-        await model.submitDecisionLog()
-
-        XCTAssertFalse(requestFired)
-        XCTAssertEqual(model.toast?.message.contains("股票代码"), true)
-    }
-
-    /// 用户在 `.open` 阶段中途放弃(dismissModal)→ 自动 cancel 该预注册计划,不留孤儿 pending 行。
-    func testDismissModalDuringOpenAutoCancelsPendingDecision() async throws {
-        var cancelledId: Int? = nil
-        let expectation = XCTestExpectation(description: "cancel fired")
+    /// 服务端 `replayed=true` 时,如实说「什么都没发生」—— ⛔ 别让"看起来成功了"掩盖它。
+    func testReplayedResponseIsSurfacedHonestly() async throws {
         MockURLProtocol.handler = { req in
-            if req.url?.absoluteString.contains("/decisions/42/cancel") == true {
-                cancelledId = 42
-                expectation.fulfill()
+            if req.url?.absoluteString.contains("/positions") == true, req.httpMethod == "POST" {
+                return (200, """
+                {"ok": true, "position_id": 7, "stop_line": 9.5, "replayed": true}
+                """.data(using: .utf8)!)
             }
-            return (200, """
-            {"ok": true}
-            """.data(using: .utf8)!)
+            return (200, #"{"holdings": []}"#.data(using: .utf8)!)
         }
         defer { MockURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral
@@ -444,41 +427,37 @@ final class AppModelTests: XCTestCase {
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
                                session: URLSession(configuration: config))
         let model = AppModel(clientProvider: { client })
-        model.modal = .open
-        model.pendingDecisionId = 42
+        model.beginPositionEntryFlow()
+        model.entryForm.code = "600519.SH"
+        model.entryForm.price = "10.0"
+        model.entryForm.qty = "100"
 
-        model.dismissModal()
+        await model.submitOpenPosition()
 
-        await fulfillment(of: [expectation], timeout: 2.0)
-        XCTAssertEqual(cancelledId, 42)
-        XCTAssertNil(model.modal)
-        XCTAssertNil(model.pendingDecisionId)
+        XCTAssertEqual(model.toast?.message.contains("未重复开仓"), true)
     }
 
-    // MARK: - 开仓表单校验
+    // MARK: - 开仓表单校验(⑩-A **三字段即可提交**;⛔ 别把理由 / 费用加回必填)
 
-    func testPositionEntryFormValidation() {
+    func testPositionEntryFormValidationIsThreeFieldsOnly() {
         var form = PositionEntryForm()
         XCTAssertFalse(form.isValid)
         form.code = "600519.SH"
         form.price = "1500.0"
         form.qty = "100"
-        form.reason = "回调低吸"
-        // v1.3-①/⑥-B:实付买入费用 UI 强制必填(§五 v1.3-⑥-B 拍板口径),缺了仍不通过。
-        XCTAssertFalse(form.isValid, "缺实付买入费用不应通过")
-        form.buyFees = "12.5"
-        XCTAssertTrue(form.isValid)
+        XCTAssertTrue(form.isValid, "⑩-A:票 + 价 + 量三字段即可提交(表单退役是本版立项主题)")
         form.price = "0"
         XCTAssertFalse(form.isValid, "买入价必须 > 0")
         form.price = "1500.0"
-        form.buyFees = "0"
-        XCTAssertTrue(form.isValid, "费用允许为 0(如实录入,不代表未填)")
-        form.buyFees = "-1"
-        XCTAssertFalse(form.isValid, "费用不能为负")
+        form.qty = "0"
+        XCTAssertFalse(form.isValid, "数量必须 > 0")
+        form.qty = "100"
+        form.reason = ""
+        form.buyFees = ""
+        XCTAssertTrue(form.isValid, "理由 / 费用留空照样提交(⛔ 不做硬阻断)")
     }
 
-    /// v1.4-①-A(§七 P0-1):补录持仓日期选择器——`PositionEntryForm.buyDate` 默认今天,
-    /// `submitOpenPosition()` 提交时正确格式化成 'YYYYMMDD' 并透传给 `openPosition(buyDate:)`。
+    /// 补录持仓日期选择器:`submitOpenPosition()` 正确格式化成 'YYYYMMDD' 并透传。
     func testSubmitOpenPositionEncodesBuyDateFromForm() async throws {
         var capturedBuyDate: String?
         MockURLProtocol.handler = { req in
@@ -499,8 +478,6 @@ final class AppModelTests: XCTestCase {
         model.entryForm.code = "600519.SH"
         model.entryForm.price = "10.0"
         model.entryForm.qty = "100"
-        model.entryForm.reason = "回调低吸"
-        model.entryForm.buyFees = "5.0"
         let fixedDate = StaticTradingCalendar.shared.parseDate("20260722")!
         model.entryForm.buyDate = fixedDate
 
@@ -509,7 +486,165 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(capturedBuyDate, "20260722")
     }
 
-    // MARK: - §五 v1.2-B/E.6 枚举码→中文展示层换算(沿 `nkBoardLabel` 先例,未识别透传)
+    // MARK: - ⑩-C 用户可选补充(**空提交合法**,⛔ 不做硬阻断)
+
+    func testNoteFormAllowsEmptySubmission() async throws {
+        var requestFired = false
+        MockURLProtocol.handler = { _ in
+            requestFired = true
+            return (200, #"{"ok": true, "recorded": []}"#.data(using: .utf8)!)
+        }
+        defer { MockURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
+                               session: URLSession(configuration: config))
+        let model = AppModel(clientProvider: { client })
+        model.beginNote(code: "600001.SH")
+        // 一个标签都不选、说明也不写 —— ⑩-C 起这是合法的空提交。
+        await model.submitNote()
+        XCTAssertTrue(requestFired, "空提交必须照发请求(服务端 200,不是 400)")
+        XCTAssertNil(model.modal)
+    }
+
+    func testNoteFormSendsSelectedLabelCodes() async throws {
+        var captured: [String] = []
+        MockURLProtocol.handler = { req in
+            if let body = req.httpBodyOrStream(),
+               let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                captured = (obj["labels"] as? [String]) ?? []
+                XCTAssertEqual(obj["voiceNote"] as? String, "跟着龙头进的")
+            }
+            return (200, #"{"ok": true, "recorded": ["label", "voice_note"]}"#.data(using: .utf8)!)
+        }
+        defer { MockURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
+                               session: URLSession(configuration: config))
+        let model = AppModel(clientProvider: { client })
+        model.beginNote(code: "600001.SH", positionId: 3)
+        model.noteForm.labels = [.themeShift, .leaderReactivate]
+        model.noteForm.voiceNote = "跟着龙头进的"
+
+        await model.submitNote()
+
+        // **服务端只认英文码**(唯一源 `NoteLabelLiteral`),⛔ 不许发中文键。
+        XCTAssertEqual(captured.sorted(), ["LEADER_REACTIVATE", "THEME_SHIFT"])
+    }
+
+    // MARK: - ⑪-D-D per-position 触达提醒开关(**只翻静音位,计划正文一项不动**)
+
+    func testSetExitReferenceMutedOnlyFlipsMuteKeyAndKeepsPlanBodyIntact() async throws {
+        var capturedPlan: [String: Any] = [:]
+        MockURLProtocol.handler = { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/positions/3/plans"), req.httpMethod == "POST" {
+                if let body = req.httpBodyOrStream(),
+                   let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                    capturedPlan = (obj["plan"] as? [String: Any]) ?? [:]
+                }
+                return (201, #"{"id": 2, "positionId": 3, "version": 2, "plan": {}}"#.data(using: .utf8)!)
+            }
+            return (200, #"{"items": []}"#.data(using: .utf8)!)
+        }
+        defer { MockURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
+                               session: URLSession(configuration: config))
+        let model = AppModel(clientProvider: { client })
+        model.positionPlans[3] = [PositionPlan(
+            id: 1, positionId: 3, version: 1,
+            plan: .object([
+                "available": .bool(true),
+                "driver": .string("题材 A"),
+                "exit_reference": .object(["low": .number(12.0), "high": .number(13.0)]),
+                "exit_reference_armed": .bool(true),
+                "exit_reference_muted": .bool(false),
+                "risks": .array([.string("风险一")]),
+            ])
+        )]
+
+        await model.setExitReferenceMuted(positionId: 3, muted: true)
+
+        XCTAssertEqual(capturedPlan["exit_reference_muted"] as? Bool, true)
+        // ⛔ 计划正文一项不动。
+        XCTAssertEqual(capturedPlan["driver"] as? String, "题材 A")
+        XCTAssertEqual((capturedPlan["exit_reference"] as? [String: Any])?["low"] as? Double, 12.0)
+        XCTAssertEqual((capturedPlan["risks"] as? [String])?.count, 1)
+    }
+
+    /// `PositionPlan` 的武装态便利读取:**缺键 = 不武装**(fail-closed,与服务端读侧同口径)。
+    func testPositionPlanArmingAccessorsAreFailClosed() {
+        let noKeys = PositionPlan(plan: .object([:]))
+        XCTAssertFalse(noKeys.exitReferenceArmed, "缺键即不武装(fail-closed)")
+        XCTAssertFalse(noKeys.exitReferenceMuted)
+        XCTAssertFalse(noKeys.available)
+
+        let armed = PositionPlan(plan: .object([
+            "available": .bool(true),
+            "exit_reference_armed": .bool(true),
+            "exit_reference_muted": .bool(false),
+            "exit_reference_armed_note": .string("已武装"),
+        ]))
+        XCTAssertTrue(armed.exitReferenceArmed)
+        XCTAssertTrue(armed.available)
+        XCTAssertEqual(armed.exitReferenceArmedNote, "已武装")
+
+        // 「无来源篮子」与「卡未就绪」两态**分得开**(合法结果,不是错误)。
+        let noSource = PositionPlan(plan: .object([
+            "available": .bool(false), "reason": .string("no_source_basket"),
+        ]))
+        XCTAssertEqual(noSource.unavailableText, "独立买入 · 没有来源篮子可继承")
+        let cardNotReady = PositionPlan(plan: .object([
+            "available": .bool(false), "reason": .string("card_not_ready"),
+        ]))
+        XCTAssertNotEqual(noSource.unavailableText, cardNotReady.unavailableText)
+    }
+
+    // MARK: - 蓝图 6.2 同题材合并敞口(同一来源篮子的多笔仓不是完全分散的两笔)
+
+    func testMergedExposureGroupsByBasketAndNeedsTwoDistinctCodes() {
+        let model = AppModel(clientProvider: { nil })
+        model.positions = [
+            Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10, qty: 100, entryReason: "",
+                     buyDate: "20260716", price: 11, status: "holding", stopLine: 9.5, stopOrderChecked: false),
+            Position(id: 2, code: "600002.SH", name: "乙", buyPrice: 20, qty: 50, entryReason: "",
+                     buyDate: "20260716", price: 21, status: "holding", stopLine: 19, stopOrderChecked: false),
+            Position(id: 3, code: "600003.SH", name: "丙", buyPrice: 5, qty: 100, entryReason: "",
+                     buyDate: "20260716", price: 5, status: "holding", stopLine: 4.75, stopOrderChecked: false),
+        ]
+        func plan(_ pid: Int, basketId: Int?) -> PositionPlan {
+            PositionPlan(id: pid, positionId: pid, version: 1, sourceBasketId: basketId,
+                         plan: .object(["source_basket_name": .string("题材 A")]))
+        }
+        model.positionPlans = [1: [plan(1, basketId: 9)], 2: [plan(2, basketId: 9)],
+                               3: [plan(3, basketId: nil)]]
+
+        let merged = model.mergedExposures
+        XCTAssertEqual(merged.count, 1, "只有同一篮 ≥2 个不同标的才算合并敞口")
+        XCTAssertEqual(merged[0].basketId, 9)
+        XCTAssertEqual(merged[0].codes, ["600001.SH", "600002.SH"])
+        XCTAssertEqual(merged[0].costAmount, 10 * 100 + 20 * 50, accuracy: 0.001)
+        XCTAssertEqual(merged[0].marketAmount, 11 * 100 + 21 * 50, accuracy: 0.001)
+    }
+
+    /// 同一篮里**同一只票**加了两笔仓 → **不算**"看起来分散实则集中",不出提示。
+    func testMergedExposureIgnoresSameCodeAddedTwice() {
+        let model = AppModel(clientProvider: { nil })
+        model.positions = [
+            Position(id: 1, code: "600001.SH", name: "甲", buyPrice: 10, qty: 100, entryReason: "",
+                     buyDate: "20260716", price: 11, status: "holding", stopLine: 9.5, stopOrderChecked: false),
+            Position(id: 2, code: "600001.SH", name: "甲", buyPrice: 10.5, qty: 100, entryReason: "",
+                     buyDate: "20260717", price: 11, status: "holding", stopLine: 9.9, stopOrderChecked: false),
+        ]
+        let p = PositionPlan(version: 1, sourceBasketId: 9)
+        model.positionPlans = [1: [p], 2: [p]]
+        XCTAssertTrue(model.mergedExposures.isEmpty)
+    }
+
+    // MARK: - 枚举码→中文展示层换算(沿 `nkBoardLabel` 先例,未识别透传)
 
     func testThesisTagLabelMapping() {
         XCTAssertEqual(nkThesisTagLabel("THEME"), "题材主线")
@@ -517,7 +652,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(nkThesisTagLabel("CAPITAL_FLOW"), "资金流向")
         XCTAssertEqual(nkThesisTagLabel("TECH_PATTERN"), "技术形态")
         XCTAssertEqual(nkThesisTagLabel("NEWS"), "消息")
-        XCTAssertEqual(nkThesisTagLabel("SOME_FUTURE_CODE"), "SOME_FUTURE_CODE", "未识别值原样透传,不静默瞎翻译")
+        XCTAssertEqual(nkThesisTagLabel("SOME_FUTURE_CODE"), "SOME_FUTURE_CODE", "未识别值原样透传")
         XCTAssertEqual(ThesisTag.allCases.count, 5)
     }
 
@@ -537,18 +672,37 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(ScenarioAction.allCases.count, 4)
     }
 
-    func testCloseReasonLabelMapping() {
+    /// ⑩-A:既有五码**原样不动、只加不改**,新增四码。
+    /// ⚠ `TARGET_ZONE_REACHED` 的文案是「达到参考区间」,⛔ **不许写成「止盈」**
+    /// —— 离场参考区间不是止盈线(§2.8-C 语义红线),码名与文案都要守住这条。
+    func testCloseReasonLabelMappingNineCodes() {
         XCTAssertEqual(nkCloseReasonLabel("STOP_LOSS"), "止损")
         XCTAssertEqual(nkCloseReasonLabel("TAKE_PROFIT"), "回落止盈")
         XCTAssertEqual(nkCloseReasonLabel("TIME_EXIT"), "时间退出")
         XCTAssertEqual(nkCloseReasonLabel("INVALIDATION"), "证伪离场")
         XCTAssertEqual(nkCloseReasonLabel("MANUAL"), "主动离场")
+        XCTAssertEqual(nkCloseReasonLabel("SECTOR_WEAKENING"), "板块转弱")
+        XCTAssertEqual(nkCloseReasonLabel("TARGET_ZONE_REACHED"), "达到参考区间")
+        XCTAssertFalse(nkCloseReasonLabel("TARGET_ZONE_REACHED").contains("止盈"),
+                       "⛔ 离场参考区间不是止盈线")
+        XCTAssertEqual(nkCloseReasonLabel("ACTIVE_SWITCH"), "主动切换")
+        XCTAssertEqual(nkCloseReasonLabel("AD_HOC"), "临时决定")
         XCTAssertEqual(nkCloseReasonLabel("???"), "???")
-        XCTAssertEqual(CloseReasonCode.allCases.count, 5)
+        XCTAssertEqual(CloseReasonCode.allCases.count, 9)
     }
 
-    // MARK: - §五 v1.3-⑥ 枚举码→中文展示层换算(消息面类别 / 候选情报来源,沿
-    // `nkBoardLabel` 先例,未识别值原样透传不静默瞎翻译)
+    /// ⑩-C 七枚标签码(服务端 `NoteLabelLiteral` 唯一源;客户端只做展示层换算)。
+    func testNoteLabelMapping() {
+        XCTAssertEqual(nkNoteLabelText("THEME_SHIFT"), "题材切换")
+        XCTAssertEqual(nkNoteLabelText("LEADER_REACTIVATE"), "龙头重新激活")
+        XCTAssertEqual(nkNoteLabelText("VOLUME_BREAKOUT"), "放量突破")
+        XCTAssertEqual(nkNoteLabelText("WEAK_TO_STRONG"), "弱转强")
+        XCTAssertEqual(nkNoteLabelText("CORE_POSITION"), "容量中军")
+        XCTAssertEqual(nkNoteLabelText("NEWS_CATALYST"), "消息催化")
+        XCTAssertEqual(nkNoteLabelText("PURE_TAPE_READING"), "纯盘口判断")
+        XCTAssertEqual(nkNoteLabelText("SOME_FUTURE_LABEL"), "SOME_FUTURE_LABEL")
+        XCTAssertEqual(NoteLabel.allCases.count, 7)
+    }
 
     func testNewsCategoryLabelMapping() {
         XCTAssertEqual(nkNewsCategoryLabel("REDUCTION"), "减持")
@@ -558,16 +712,26 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(nkNewsCategoryLabel("SOME_FUTURE_CATEGORY"), "SOME_FUTURE_CATEGORY")
     }
 
-    func testIntelSourceLabelMapping() {
-        XCTAssertEqual(nkIntelSourceLabel("quota"), "常驻保底")
-        XCTAssertEqual(nkIntelSourceLabel("competition"), "情报竞争")
-        XCTAssertEqual(nkIntelSourceLabel("forced"), "问询强制纳入")
-        XCTAssertEqual(nkIntelSourceLabel(""), "", "旧报告空串原样透传,不冒充某个已知来源")
+    /// 三级展示层换算:**未识别 level 原样透传**(服务端加第四级时,设置屏照样把它
+    /// 分成独立一组显示,⛔ 不静默丢弃)。
+    func testPushLevelLabelMapping() {
+        XCTAssertEqual(nkPushLevelLabel("immediate"), "立即")
+        XCTAssertEqual(nkPushLevelLabel("important"), "重要不紧急")
+        XCTAssertEqual(nkPushLevelLabel("digest"), "盘后汇总")
+        XCTAssertEqual(nkPushLevelLabel("some_future_level"), "some_future_level")
+        XCTAssertEqual(nkPushLevelLabel(""), "未分级")
     }
 
-    // MARK: - §五 v1.3-⑥-C K4 持仓牌展示层派生(`K4Advisory.isTopBillboard`)——
-    // 只有「level=strong ∧ evidenceStrength=price_volume」才置顶醒目,守 §2.4 铁律
-    // 「证伪只用价量结构」(题材类弱证据即便标了 strong 也只能降级展示)。
+    /// 验证状态四态兜底换算。
+    func testVerificationStateLabelMapping() {
+        XCTAssertEqual(nkVerificationStateLabel("verified"), "已验证")
+        XCTAssertEqual(nkVerificationStateLabel("partial"), "部分验证")
+        XCTAssertEqual(nkVerificationStateLabel("unclear"), "未明")
+        XCTAssertEqual(nkVerificationStateLabel("falsified"), "驱动假设已证伪")
+        XCTAssertEqual(nkVerificationStateLabel("some_future_state"), "some_future_state")
+    }
+
+    // MARK: - K4 持仓牌展示层派生(只有 strong ∧ price_volume 才置顶醒目)
 
     func testK4AdvisoryTopBillboardRequiresBothStrongAndPriceVolume() {
         let strongPriceVolume = K4Advisory(code: "A3_belowyear_limitup", label: "年线下涨停,疑似派发",
@@ -576,15 +740,13 @@ final class AppModelTests: XCTestCase {
 
         let strongConstituent = K4Advisory(code: "A2_theme_persist_ge_4", label: "题材持续≥4天",
                                            level: "strong", evidence: "board_age>=4", evidenceStrength: "constituent")
-        XCTAssertFalse(strongConstituent.isTopBillboard, "强证据字段是 strong 但 evidenceStrength=constituent(成分类弱证据)不得置顶")
+        XCTAssertFalse(strongConstituent.isTopBillboard, "成分类弱证据即便标 strong 也不得置顶")
 
         let normalPriceVolume = K4Advisory(code: "B2_double_gold_cross", label: "双金叉",
                                            level: "normal", evidence: "macd_cross", evidenceStrength: "price_volume")
-        XCTAssertFalse(normalPriceVolume.isTopBillboard, "normal 级别即便是价量证据也不置顶,只进列表")
+        XCTAssertFalse(normalPriceVolume.isTopBillboard, "normal 级别即便是价量证据也不置顶")
     }
 
-    /// 熔断触发原因展示层换算的另一分支(consecutive_stops 已在 DTODecodeTests 随
-    /// 网络解码测过,这里补 daily_loss + 未识别兜底,纯模型层不必再起网络桩)。
     func testCircuitEpisodeTriggerReasonLabelMapping() {
         let daily = CircuitEpisode(triggerReason: "daily_loss", triggeredAt: "", triggerRefDate: "",
                                    basisTradesCount: 1, basisWindow: "", note: "")
@@ -594,20 +756,17 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(unknown.triggerReasonLabel, "some_future_reason")
     }
 
-    /// 三仓 = 2 短线追击 + 1 呼吸底仓试验(§2.1 第 3 条)——`isBreathingTrial` 是
-    /// 呼吸台账入口露出规则(§五 v1.2-E.4)的唯一判据,不新存第二份标记。
+    /// `DecisionLog` 保留为**只读归因**类型(v2.0.0 起零新增行);展示层派生仍需正确。
     func testDecisionLogIsBreathingTrialDerivation() {
         func log(playbookTag: String) -> DecisionLog {
             DecisionLog(id: 1, code: "600001.SH", name: "甲", createdAt: "", whyBuy: "", whyEntryPrice: "",
-                       targetPrice: nil, exitLow: nil, exitHigh: nil, thesisTags: [], invalidation: "",
-                       contingencyScenarios: [], playbookTag: playbookTag, plannedPrice: nil, plannedQty: nil,
-                       status: "filled", positionId: 1, revisionOf: nil)
+                        targetPrice: nil, exitLow: nil, exitHigh: nil, thesisTags: [], invalidation: "",
+                        contingencyScenarios: [], playbookTag: playbookTag, plannedPrice: nil, plannedQty: nil,
+                        status: "filled", positionId: 1, revisionOf: nil)
         }
         XCTAssertTrue(log(playbookTag: "BREATHING_TRIAL").isBreathingTrial)
         XCTAssertFalse(log(playbookTag: "SWING_CHASE").isBreathingTrial)
     }
-
-    // MARK: - §五 v1.2-B ⑦ 情景树数组 Codable 往返(纯模型层,不必经网络桩)
 
     func testContingencyScenarioArrayCodableRoundTrip() throws {
         let original = [
@@ -622,121 +781,29 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(decoded[1].actionLabel, "放弃")
     }
 
-    // MARK: - §五 v1.2-E.1 决策日志录入草稿(`DecisionLogForm`)
+    // MARK: - 通用 JSON 值(自由结构透传字段的载体)
 
-    func testDecisionLogFormValidation() {
-        var form = DecisionLogForm()
-        XCTAssertFalse(form.isValid)
-        form.code = "600001.SH"
-        form.whyBuy = "题材热"
-        form.whyEntryPrice = "回调企稳"
-        form.invalidation = "跌破均线"
-        // ⚠ **V2-⑬-5:强制表单退役** —— 五项必填(含 ⑨ 二选一)全部下线,空提交合法。
-        // 只剩「有代码」这一条真硬前提。
-        XCTAssertTrue(form.isValid, "⑬-5 后未选 ⑨ 也应可提交")
-        var blank = DecisionLogForm()
-        blank.code = "600001.SH"
-        XCTAssertTrue(blank.isValid, "⑬-5 后只填代码即可提交(其余全可空)")
-        form.code = "  "
-        XCTAssertFalse(form.isValid, "代码不能只是空白")
+    func testNKJSONDecodesScalarsAndKeepsBoolDistinctFromNumber() throws {
+        let raw = """
+        {"b": true, "n": 3, "f": 1.5, "s": "x", "nul": null,
+         "arr": [1, "a"], "obj": {"k": "v"}}
+        """.data(using: .utf8)!
+        let v = try JSONDecoder().decode(NKJSON.self, from: raw)
+        XCTAssertEqual(v["b"]?.boolValue, true)
+        XCTAssertNil(v["b"]?.doubleValue, "布尔不得被解成数字(顺序反了会显示成 1)")
+        XCTAssertEqual(v["n"]?.intValue, 3)
+        XCTAssertEqual(v["f"]?.doubleValue, 1.5)
+        XCTAssertEqual(v["s"]?.stringValue, "x")
+        XCTAssertEqual(v["nul"]?.isNull, true)
+        XCTAssertEqual(v["arr"]?.arrayValue?.count, 2)
+        XCTAssertEqual(v["obj"]?["k"]?.stringValue, "v")
+        XCTAssertEqual(v.sortedKeys, ["arr", "b", "f", "n", "nul", "obj", "s"], "键序必须确定")
+        XCTAssertEqual(v["b"]?.displayText, "是")
+        XCTAssertEqual(v["n"]?.displayText, "3")
+        XCTAssertEqual(v["nul"]?.displayText, "—")
     }
 
-    /// ⑨ 最高追价上限的「已选择」态(⚠ **V2-⑬-5 起只是展示态,不再驱动提交拦截**)
-    /// ——填数字或勾选「不设上限」都算已选,两者都不做时为 false。
-    func testDecisionLogFormMaxChaseChosenRequiresExplicitNumberOrNoCap() {
-        var form = DecisionLogForm()
-        XCTAssertFalse(form.maxChaseChosen)
-        form.maxChasePct = "3.0"
-        XCTAssertTrue(form.maxChaseChosen, "填了合法数字应视为已选择")
-        form.maxChasePct = ""
-        form.maxChaseNoCap = true
-        XCTAssertTrue(form.maxChaseChosen, "勾选「不设上限」应视为已选择")
-        form.maxChaseNoCap = false
-        XCTAssertFalse(form.maxChaseChosen, "两者都不做 = 未选择")
-        // 允许负值(只在低开时买)。
-        form.maxChasePct = "-1.5"
-        XCTAssertEqual(form.maxChasePctValue, -1.5)
-        XCTAssertTrue(form.maxChaseChosen)
-    }
-
-    /// 情景树 UI 引导 2-3 行,服务端不强制条数——只提交「情景描述+触发条件」都非空的行,
-    /// 留白的引导行不当垃圾数据提交。
-    func testDecisionLogFormFilledScenariosFiltersBlankRows() {
-        var form = DecisionLogForm()
-        form.scenarios = [
-            ContingencyScenarioDraft(scenario: "次日高开超预期", trigger: "开盘涨幅>3%", action: .hold),
-            ContingencyScenarioDraft(scenario: "", trigger: "", action: .hold),
-            ContingencyScenarioDraft(scenario: "只填了情景没填触发条件", trigger: "", action: .abandon),
-        ]
-        XCTAssertEqual(form.filledScenarios.count, 1)
-        XCTAssertEqual(form.filledScenarios[0].scenario, "次日高开超预期")
-    }
-
-    /// 修订模式预填(`beginReviseDecision` 用):从已有 `DecisionLog` 构造草稿,
-    /// 枚举码正确映射回对应 case,情景树数组还原。
-    ///
-    /// v1.4-⑤-B:该行的 `maxChasePct` 是 nil——**存储层无法区分**"老行(建于本字段前)"
-    /// 与"用户当年显式选了不设上限",故预填**不自动勾选**「不设上限」,两格都留白
-    /// (⑬-5 后这不再阻断提交,只是不替用户猜)。
-    func testDecisionLogFormInitFromDecisionLogPrefillsAllFields() {
-        let log = DecisionLog(
-            id: 9, code: "600001.SH", name: "甲", createdAt: "2026-07-25T10:00:00+00:00",
-            whyBuy: "题材热", whyEntryPrice: "回调企稳", targetPrice: 12.0, exitLow: 9.0, exitHigh: 9.5,
-            thesisTags: ["THEME", "NEWS"], invalidation: "跌破均线",
-            contingencyScenarios: [ContingencyScenario(scenario: "s1", trigger: "t1", action: "BUY", matched: false)],
-            playbookTag: "BREATHING_TRIAL", plannedPrice: 10.0, plannedQty: 1000,
-            status: "filled", positionId: 7, revisionOf: nil, maxChasePct: nil
-        )
-        let form = DecisionLogForm(from: log)
-        XCTAssertEqual(form.code, "600001.SH")
-        XCTAssertEqual(form.whyBuy, "题材热")
-        XCTAssertEqual(form.targetPrice, "12.00")
-        XCTAssertEqual(form.exitLow, "9.00")
-        XCTAssertEqual(form.exitHigh, "9.50")
-        XCTAssertEqual(form.thesisTags, [.theme, .news])
-        XCTAssertEqual(form.playbookTag, .breathingTrial)
-        XCTAssertEqual(form.scenarios.count, 1)
-        XCTAssertEqual(form.scenarios[0].scenario, "s1")
-        XCTAssertEqual(form.scenarios[0].action, .buy)
-        XCTAssertEqual(form.plannedQty, "1000")
-        XCTAssertEqual(form.maxChasePct, "", "老行 maxChasePct=nil 不自动预填")
-        XCTAssertFalse(form.maxChaseNoCap, "不自动预勾「不设上限」——那是替用户瞎猜当年的选择")
-        XCTAssertTrue(form.isValid, "⑬-5 后 ⑨ 未选择也可提交(强制表单退役);不预勾只是不替用户猜")
-    }
-
-    /// 修订预填:该行 `maxChasePct` 有具体数值(非 nil)时,正确回填数字框,
-    /// `maxChaseNoCap` 保持 false(与「不设上限」互斥)。
-    func testDecisionLogFormInitFromDecisionLogWithMaxChasePctPrefillsNumber() {
-        let log = DecisionLog(
-            id: 10, code: "600001.SH", name: "甲", createdAt: "2026-07-25T10:00:00+00:00",
-            whyBuy: "b", whyEntryPrice: "e", targetPrice: nil, exitLow: nil, exitHigh: nil,
-            thesisTags: [], invalidation: "i", contingencyScenarios: [],
-            playbookTag: "SWING_CHASE", plannedPrice: nil, plannedQty: nil,
-            status: "filled", positionId: 7, revisionOf: nil, maxChasePct: 2.5
-        )
-        let form = DecisionLogForm(from: log)
-        XCTAssertEqual(form.maxChasePct, "2.50")
-        XCTAssertFalse(form.maxChaseNoCap)
-        XCTAssertTrue(form.maxChaseChosen)
-        XCTAssertTrue(form.isValid)
-    }
-
-    /// 入口露出规则(§五 v1.2-E.4):取该 positionId 下最新一行;无关联 → nil。
-    func testLinkedDecisionPicksLatestRowForPositionId() {
-        let model = AppModel(clientProvider: { nil })
-        func log(id: Int, positionId: Int?) -> DecisionLog {
-            DecisionLog(id: id, code: "600001.SH", name: "甲", createdAt: "", whyBuy: "", whyEntryPrice: "",
-                       targetPrice: nil, exitLow: nil, exitHigh: nil, thesisTags: [], invalidation: "",
-                       contingencyScenarios: [], playbookTag: "BREATHING_TRIAL", plannedPrice: nil, plannedQty: nil,
-                       status: positionId == nil ? "pending" : "filled", positionId: positionId, revisionOf: nil)
-        }
-        model.decisions = [log(id: 1, positionId: 7), log(id: 3, positionId: 7), log(id: 2, positionId: 8)]
-        XCTAssertEqual(model.linkedDecision(forPositionId: 7)?.id, 3, "同一持仓多行时取 id 最大的一行")
-        XCTAssertEqual(model.linkedDecision(forPositionId: 8)?.id, 2)
-        XCTAssertNil(model.linkedDecision(forPositionId: 999), "无关联 → nil,不是报错")
-    }
-
-    // MARK: - 交易日历(日期解析,§五 阶段4C 复用清单)
+    // MARK: - 交易日历(日期解析)
 
     func testCalendarParsesCompactAndISODates() {
         let cal = StaticTradingCalendar.shared
@@ -752,54 +819,59 @@ final class AppModelTests: XCTestCase {
     }
 
     func testCalendarKnownTradingDayIsTradingDay() {
-        // 2026-07-17 是阶段0/2 施工期真实交易日(报告/情绪仪表盘真数据锚点日之一)。
         let cal = StaticTradingCalendar.shared
         let d = cal.parseDate("20260717")!
         XCTAssertTrue(cal.isTradingDay(d))
     }
 }
 
-// MARK: - PushManager 推送路由(纯函数,iOS 专属——PushManager 整文件 #if os(iOS)）
+// MARK: - PushManager 推送路由(纯函数,iOS 专属——PushManager 整文件 #if os(iOS))
 
 #if os(iOS)
 @MainActor
 final class PushRoutingTests: XCTestCase {
-    func testReportCategoryRoutesToToday() {
-        XCTAssertEqual(PushManager.targetTab(forCategory: NKNotificationCategory.report), .today)
+
+    /// **按 `kind` 分发,⛔ 不按 category** —— category 只决定「怎么响」。
+    func testReportReadyKindRoutesToBaskets() {
+        XCTAssertEqual(PushManager.targetTab(forKind: "report_ready"), .baskets)
     }
-    func testRetreatCategoryRoutesToBoard() {
-        XCTAssertEqual(PushManager.targetTab(forCategory: NKNotificationCategory.retreat), .board)
+
+    func testRetreatKindRoutesToBaskets() {
+        XCTAssertEqual(PushManager.targetTab(forKind: "retreat"), .baskets,
+                       "退潮 = 今日计划整体作废,指向选股面")
     }
-    // v1.1-G.2:推送白名单四类路由(PRECALL→盘中看板、D5EXIT→今日计划)。
-    func testPrecallCategoryRoutesToBoard() {
-        XCTAssertEqual(PushManager.targetTab(forCategory: NKNotificationCategory.precall), .board)
+
+    /// 持仓线各 kind **各自独立**指向持仓板块 —— ⛔ 不因为同属一个 category 就连坐。
+    func testHoldingKindsRouteToPositionsIndividually() {
+        for kind in ["circuit", "d5exit", "holding_alert", "precall",
+                     "stop_approach", "take_profit", "sector_dive",
+                     "basket_peers_weak", "sector_bid_fade", "holding_decoupled",
+                     "market_shock", "custom_alert"] {
+            XCTAssertEqual(PushManager.targetTab(forKind: kind), .positions, "kind=\(kind)")
+        }
     }
-    func testD5ExitCategoryRoutesToToday() {
-        XCTAssertEqual(PushManager.targetTab(forCategory: NKNotificationCategory.d5exit), .today)
+
+    /// **未知 kind 优雅降级**:不路由(停在当前页),但通知本身照常展示 ——
+    /// ⛔ 不静默丢弃(v1.5「Swift 未知 status 静默消失」的同类坑)。
+    func testUnknownKindRoutesNowhereButIsNotAnError() {
+        XCTAssertNil(PushManager.targetTab(forKind: "some_future_kind"))
+        XCTAssertNil(PushManager.targetTab(forKind: ""))
     }
-    // v1.2-A2:第五类(CIRCUIT→今日计划,熔断横幅在今日计划面顶部,§五 v1.2-E.3)。
-    func testCircuitCategoryRoutesToToday() {
-        XCTAssertEqual(PushManager.targetTab(forCategory: NKNotificationCategory.circuit), .today)
+
+    /// ⛔ **篮子 `falsified` 不是也不会是一个 kind**(⑪-B planner 裁决 + CLAUDE.md 坑条 +
+    /// ⑦-b/⑧-C2 红线三处锁死)。这里锁死客户端**不给它任何路由**,防止日后有人
+    /// 「照例举接回去」。
+    func testBasketFalsifiedIsNotARoutableKind() {
+        XCTAssertNil(PushManager.targetTab(forKind: "basket_falsified"))
     }
-    // v1.3-②/⑥:第六类(HOLDINGALERT→今日计划,K4 持仓牌强警示在持仓卡置顶,§五 v1.3-⑥-C)。
-    func testHoldingAlertCategoryRoutesToToday() {
-        XCTAssertEqual(PushManager.targetTab(forCategory: NKNotificationCategory.holdingAlert), .today)
-    }
-    func testUnknownCategoryRoutesNowhere() {
-        XCTAssertNil(PushManager.targetTab(forCategory: "SOME_OTHER_CATEGORY"))
-    }
-    /// category 字面必须与后端 `neckline/push/apns.py` 的 `CATEGORY_PRECALL="PRECALL"`/
-    /// `CATEGORY_D5EXIT="D5EXIT"`/`CATEGORY_CIRCUIT="CIRCUIT"`/
-    /// `CATEGORY_HOLDING_ALERT="HOLDINGALERT"` 完全一致(客户端/服务端各自独立声明
-    /// 字符串,契约漂移只能靠这类断言在编译期之外兜底——同后端 `test_notify.py`
-    /// 白名单六入口结构守护镜像)。
+
+    /// category 字面必须与服务端 `neckline/notify_kinds.py` 的三个 `CATEGORY_*` 完全一致
+    /// (双端各自独立声明字符串,契约漂移只能靠这类断言兜底)。
     func testCategoryLiteralsMatchBackend() {
-        XCTAssertEqual(NKNotificationCategory.report, "REPORT")
-        XCTAssertEqual(NKNotificationCategory.retreat, "RETREAT")
-        XCTAssertEqual(NKNotificationCategory.precall, "PRECALL")
-        XCTAssertEqual(NKNotificationCategory.d5exit, "D5EXIT")
-        XCTAssertEqual(NKNotificationCategory.circuit, "CIRCUIT")
-        XCTAssertEqual(NKNotificationCategory.holdingAlert, "HOLDINGALERT")
+        XCTAssertEqual(NKNotificationCategory.immediate, "NKIMMEDIATE")
+        XCTAssertEqual(NKNotificationCategory.important, "NKIMPORTANT")
+        XCTAssertEqual(NKNotificationCategory.digest, "NKDIGEST")
+        XCTAssertEqual(NKNotificationCategory.all.count, 3, "V2 起是三级,不再是 V1 的六个具名 category")
     }
 }
 #endif

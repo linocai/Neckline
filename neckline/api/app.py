@@ -200,7 +200,11 @@ logger = logging.getLogger(__name__)
 # 日期):纯提示词层修复(日期锚 + 时效纪律 + 检索词年份引导),**零契约改动、客户端
 # 零改动**(已装 1.5.1 App 无需换包,设置屏会显示版本差提示,属预期)。同上,本行与
 # `project.yml`/`pbxproj` 同一次提交动;`/health` 返 v1.5.2 即为本次部署的到位判据。
-VERSION = "v1.5.2"
+# V2.0.0(⑮,2026-08-03):契约换血 + 客户端双端改版同批到位。⚠ **三方同一次提交动**
+# ——`client/project.yml` 与 `pbxproj` 的 `MARKETING_VERSION` 必须同为 `2.0.0`
+# (守门单测 `tests/test_client_version_governance.py` 锁三处恒等,漏一处立刻红)。
+# ⚠ ⑭ 刻意没升它:提前升会让守门单测常年红,版号归 ⑮。
+VERSION = "v2.0.0"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
