@@ -222,6 +222,10 @@
 4. **`leader.py:19-27` docstring 单位错**:tie-break 说「成交额(元)」,`daily.amount`
    实为**千元**(TuShare 口径,`aggregate.py:784-787` 写对了)。组内序不受除法影响,纯注释
    错,但这是 CLAUDE.md 点名过的单位坑,注释错会误导下一个人。
+   **✅ 已修**(commit `642b4a9`,2026-08-04,⑰ 前尾巴批次 2/3):两处「成交额(元)」
+   (tie-break 说明 `leader.py:25` + `compute_leader_structure_for_day` docstring
+   `leader.py:126`)均改「千元」,补充指向 `tushare_client.py` 惯例注释与
+   `amount_share` 是比值、单位不影响排序结果的说明。核对全文无第三处同款错述。
 5. **`tier.py:371-394` `_dim_tradability` 的一字板识别在 `daily` 分区缺失时静默降格**:
    `limit_derived` 非空而 `daily` 空时,`tradability_available=True` 但 `one_word` 恒空 →
    一字板按「开过板」半罚(0.5)而非全罚(1.0),无 flag。极端数据缺口情形;建议
@@ -328,8 +332,9 @@
 
 > **✅ 2026-08-04 A 组销项(@builder-pro,⑰ 割接前的次级修理批次)**:**🔵-2 / 🔵-3 /
 > 🔵-5 三条已修**(commit `8c3e650`,逐条标注见各条目下的 `✅ 已修` 行)。
-> **🔵-4(`leader.py` docstring 说"成交额(元)"、实为千元)未在本批范围内**,维持开放
-> —— A 组九项清单没列它;它是纯注释错,但 CLAUDE.md 点名过这个单位坑,建议下批顺手改。
+> ~~**🔵-4(`leader.py` docstring 说"成交额(元)"、实为千元)未在本批范围内**,维持开放~~
+> **✅ 已修(commit `642b4a9`,2026-08-04,⑰ 前尾巴批次 2/3)**:至此 🔵-1~🔵-5 五条
+> 全部销项完毕,详见条目下 `✅ 已修` 行。
 > 另:🟢-8 登记的「`llm/news_scan.py` 缺 `prompt_context` 日期锚」**已修**(A4,同批
 > `8c3e650`),`tests/test_llm_router_budget.py` 的豁免名单已清空。
 

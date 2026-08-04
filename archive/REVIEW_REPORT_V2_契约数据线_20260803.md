@@ -14,10 +14,14 @@
 > **✅ 第二批销项(@builder-pro,2026-08-04 A 组,⑰ 割接前的次级修理批次)**:
 > **🔵 B2 ✅**(`8c3e650`)· **B4 ✅ / B5 ✅ / B8 ✅**(`4c00976`)· **B6 ✅**(`65abbf2`)。
 > **🟡 Y5 已由 ⑮ 兑现**(planner `199521f` 的 A10 账本核验实查:五处活调用现已全部清零,
-> 只剩注释复述;本报告原文是审计当时的事实)。**🔵 B7 未修,维持开放** —— A 组九项清单
-> 没列它;其中三小项 planner 已核实**事实上已修**(`status` 参数名两侧一致 / 双 404 case
-> 已落 / 幂等键语义已写进客户端注释),剩下的是 `PositionOpenIn|Out` 蛇驼混排(自认既有)
-> 与 `max_chase_required` 死码两条纯整洁项,建议下批顺手。
+> 只剩注释复述;本报告原文是审计当时的事实)。
+>
+> **✅ 2026-08-04 B7 收口(⑰ 前尾巴批次 3/3,@builder)**:四条逐一核实,详见 B7 条目下
+> 新增段落。结论:`status` 参数名 / 双 404 case / 幂等键注释三项**此前已修**(planner
+> A10 核验);`max_chase_required` 死码**经核查已在 ⑮-A(`0ed277c`)一并删除,并非本批
+> 修复**(A 组收尾记录曾误判为"仍待清"是记录滞后于代码,现已更正);`PositionOpenIn|Out`
+> 蛇驼混排**裁定维持不改**(登记入对拍表 §七,不是遗留)。**至此 🔴/🟡/🔵 全部销项完毕
+> (含本报告全部 8 个 🔵),无开口。**
 
 > **✅ 复核销项(@reviewer 契约/数据线,2026-08-03 第二轮,独立重放不信修复自述)**:
 > **全部已修项复核通过,零打回**。逐条判据:
@@ -186,6 +190,29 @@
 - 客户端 `mapReason` 的 `max_chase_required` case 已成死码(服务端零 raise 点,`APIClient.swift:803`),`reasonString` 的 `unresolved` 拼接机制空转(`:814-816`);
 - `PositionOpenOut` 蛇驼混排(`schemas.py:425-442`,自认既有);`PositionOpenIn`/`PositionCloseIn` 同病;
 - `card_not_ready`/`basket_not_found` 两个 reason 目前只活在注释与 200 内嵌字段里,⑭-B 建 `/baskets/{id}/card` 时客户端 `mapReason` 必须加 case(404 fallback 是 `.notHolding`,新 reason 不加 case 会显示成「持仓已清」——CLAUDE.md 已有案底)。
+
+**✅ B7 四条全部核实收口(2026-08-04,⑰ 前尾巴批次 3/3,@builder;`status_filter` 一条
+早前已由 planner A10 核实修复、`card_not_ready`/`basket_not_found` 一条早前已由 ⑭-B
+落地,本次是逐条重新核对现状而非重复修复)**:
+- `GET /alerts` 的 `status_filter` → **已核实两侧一致**(planner A10 账本核验,PROJECT_PLAN
+  §九 2026-08-04 记录:服务端 `Query(alias="status")`、Python 形参名不外泄,客户端发 `status=`)。
+- **`max_chase_required` 死 case**:重新核查 `client/Neckline/Networking/APIClient.swift`
+  当前全文(`mapReason`/`APIError` 两处),**零残留**——它已在 ⑮-A(commit `0ed277c`,
+  2026-08-03)随 `decision_log` 整族退役时一并删除(该 commit diff 明确写着"删死码
+  `max_chase_required`"),比本报告发现的时间还早。⚠ **08-04 A 组收尾记录曾复述本报告
+  原文"已成死码待清"、未去核实现状**——本条系记录滞后,不是代码欠账,不需要也不应该
+  再去"修复"一次已经不存在的死码。`reasonString` 的 `unresolved` 拼接机制(`:962-966`)
+  目前确实空转(server 侧无任何端点发 `detail.unresolved`),但这不是死码——它是**通用
+  兜底逻辑**(422 校验错误若带该字段就拼进提示),不专属于 `max_chase_required`,该端点
+  退役不影响此机制继续为未来任何 422 端点服务,维持不动。
+- `PositionOpenIn`/`PositionOpenOut`/`PositionCloseIn` 蛇驼混排:**裁定维持现状不改**,
+  登记入 `archive/V2_契约三方对拍_20260803.md` §七 第 4 条(四条理由:①这是入参/既有
+  出参字段名,改名是破坏性契约变更;②`PositionOpenIn.code`/`buy_price`/`qty` 等已被
+  CLI `scripts/positions.py` 与既有测试大量引用,收益/风险不对称;③本次割接核心目的是
+  篮子契约换血,不是借机清理全部历史命名不一致;④对比篮子族新端点已是纯 camelCase,
+  形成对照但不构成"必须改这两个"的理由)。
+- `card_not_ready`/`basket_not_found` 两个 reason 加 case:**已随 ⑭-B/⑮ 落地**(`mapReason`
+  两个独立 case,注释明写"语义相反",见 A10 账本核验)。
 
 ### B8 · 两处措辞/注释与实现出入(行为本身无错)
 - `neckline/sentinel/__init__.py:17` 仍写「entry.py …… 四哨兵判定」,该文件已删;

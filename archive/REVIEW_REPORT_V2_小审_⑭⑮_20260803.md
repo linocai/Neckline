@@ -100,6 +100,17 @@ URLGateTests.swift` 里字面量 `"42"`(而非插值)会被误判成路径不闭
   文案),要分开需连带改 `find_source_basket_member` 与 `SourceBasketMember`,已列进
   完工汇报的「发现的新问题」。
 
+  **✅ 已修(commit `642b4a9`,2026-08-04,⑰ 前尾巴批次 1/3)**:`SourceBasketMember`
+  新增 `card_corrupt: bool` 字段,`find_source_basket_member` 原样转发
+  `basket_store.load_basket_card` 返回的 `card_corrupt`(⛔ 不重判);
+  `build_inherited_plan` 在 `source.card is None` 时据此把 `plan.reason` 分流为
+  `card_corrupt`/`card_not_ready`,且 `card_corrupt` 态下 `source_card_version`
+  如实回填该行版本号(不是 `None`)。`schemas.py::PositionPlanOut` 文档同步三态;
+  客户端 `Models.swift::PositionPlan.unavailableText` 加 `card_corrupt` case,文案
+  「来源卡数据损坏,已记录待排查」,⛔ 不进静默重试(同 `APIError.cardCorrupt` 既定
+  文案方向)。测试:`tests/test_positions_entry.py` 新增 2 例(损坏卡两态分流)+ 既有
+  3 例补 `card_corrupt is False` 断言(好卡 / 无卡两路均不误伤)。
+
 ### B-4 · Provider key 草稿在提交失败路径不清空
 `client/Neckline/App/AppModel.swift:906-910`:成功清(`:902`)、取消清(SettingsView:441)、**失败留**——明文 key 驻留 `@Observable` 内存直到用户下一步操作。属「保留输入好重试」的常见取舍,但与同文件 `:94-95`「只在本次填写期间存在」的注释有距离。建议 catch 分支提示后仅保留非 key 字段,或至少把注释改成与实现一致。
 
