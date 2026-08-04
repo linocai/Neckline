@@ -24,10 +24,10 @@ final class URLGateTests: XCTestCase {
         let plain = APIClient.makeURL(base: base, path: "/api/v1/positions")
         XCTAssertEqual(plain?.absoluteString, "http://127.0.0.1:8002/api/v1/positions")
 
-        // prod https 基址同样正确(接班切换后 ln.linotsai.top 指向 Neckline,§3.6)
-        let prod = APIClient.makeURL(base: URL(string: "https://ln.linotsai.top")!,
+        // prod https 基址同样正确(V2-⑰ 割接后 prod = nk.linotsai.top,§3.6 / §五 V2-⑰)
+        let prod = APIClient.makeURL(base: URL(string: "https://nk.linotsai.top")!,
                                      path: "/api/v1/report?date=20260101")
-        XCTAssertEqual(prod?.absoluteString, "https://ln.linotsai.top/api/v1/report?date=20260101")
+        XCTAssertEqual(prod?.absoluteString, "https://nk.linotsai.top/api/v1/report?date=20260101")
         XCTAssertFalse(prod?.absoluteString.contains("%3F") ?? true)
 
         // 路径参数端点(/positions/{id}/close)不含 query,同样必须原样保留

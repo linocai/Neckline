@@ -14,6 +14,11 @@
 #   `ln.linotsai.top` 的 A 记录已从 DNS 消失(NXDOMAIN,非本次操作所致,已上报)。
 #   A 路要的是"两拨客户端不交叉",NXDOMAIN 比"指向老机"更强地满足这一点;真正要
 #   守死的是**它绝不能解析到新机**,以及**新机绝不接管这个 Host**。
+# ⚠ **P1 的 `ln` 命中判据必须先剥掉注释行**(2026-08-04 ⑰ 现场修):⑯-G 落产的
+#   `npm-custom-http.conf` 文件头**自己就写着**「绝不接管 ln.linotsai.top」这句护栏注释,
+#   裸 grep 会把它判成"配置里出现了 ln" → 每次都红。**一个对自己的注释报警的闸门,
+#   等于没有闸门** —— 下次真出现一条 `server_name ln...` 时人只会当它又是那条老误报。
+#   故此处一律用 `grep -vE '^\s*#'` 先剥注释再判。
 set -uo pipefail
 
 NK_DOMAIN="${NK_DOMAIN:-nk.linotsai.top}"
@@ -35,20 +40,23 @@ hdr "P1 · 新机 nginx **只**服务 ${NK_DOMAIN}"
 if command -v nginx >/dev/null 2>&1 && nginx -T >/dev/null 2>&1; then
   NAMES=$(nginx -T 2>/dev/null | grep -E '^\s*server_name' | sed 's/^[[:space:]]*//' | sort -u)
   printf '%s\n' "$NAMES" | sed 's/^/      /'
-  if nginx -T 2>/dev/null | grep -q "${LN_DOMAIN}"; then
-    bad "系统 nginx 全量配置里出现了 ${LN_DOMAIN} —— A 路前提破,停手删掉那段"
+  if nginx -T 2>/dev/null | grep -vE '^\s*#' | grep -q "${LN_DOMAIN}"; then
+    bad "系统 nginx 全量配置里出现了 ${LN_DOMAIN}(非注释行)—— A 路前提破,停手删掉那段"
   else
-    ok "系统 nginx 全量配置零命中 ${LN_DOMAIN}"
+    ok "系统 nginx 全量配置零命中 ${LN_DOMAIN}(已剥注释)"
   fi
 else
   warn "系统 nginx 未运行 / 无法 nginx -T(新机 80/443 被 nginx-proxy-manager 容器占用时属预期)"
 fi
 # 反代若由容器(NPM 等)承担,判据换成读它生成的站点配置
 if [ -d /opt/npm/data/nginx ]; then
-  if grep -rqs "${LN_DOMAIN}" /opt/npm/data/nginx/; then
-    bad "nginx-proxy-manager 的站点配置里出现了 ${LN_DOMAIN} —— A 路前提破,停手"
+  # 剥注释后再判(见文件头 P1 说明);另打一行"含注释的原始命中数"供人眼核对,
+  # 好让"只命中在注释里"这件事一眼可见,而不是被静默吃掉。
+  _RAW_HITS=$(grep -rns "${LN_DOMAIN}" /opt/npm/data/nginx/ 2>/dev/null | wc -l | tr -d ' ')
+  if grep -rhs "${LN_DOMAIN}" /opt/npm/data/nginx/ 2>/dev/null | grep -vE '^\s*#' | grep -q .; then
+    bad "nginx-proxy-manager 的站点配置里出现了 ${LN_DOMAIN}(非注释行)—— A 路前提破,停手"
   else
-    ok "nginx-proxy-manager 站点配置零命中 ${LN_DOMAIN}"
+    ok "nginx-proxy-manager 站点配置零命中 ${LN_DOMAIN}(已剥注释;含注释的原始命中 ${_RAW_HITS} 处 = 护栏注释本身)"
     grep -rhs 'server_name' /opt/npm/data/nginx/proxy_host/*.conf 2>/dev/null \
       | sed 's/^[[:space:]]*/      (NPM) /' | sort -u
   fi

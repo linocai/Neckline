@@ -234,8 +234,22 @@
   `Result=success` + `ExecMainStatus=1` —— `systemctl reset-failed`(或等价操作)会把
   `Result` 抹回 success 而 `ExecMainStatus` 留着,**以 `ExecMainStatus` + 时间戳为准**。
 
+## 现役生产机 = `nk`(V2-⑰ 割接后,2026-08-04 起;冷启动先认这条)
+
+- **Neckline 的生产机是新机 `nk`(114.66.0.38)/ `https://nk.linotsai.top`**;**hz 老机上的
+  Neckline 已 stop + disable 留档**(⛔ 只停不删:五个 unit 文件 + `/opt/neckline` + `.env`/`.p8`/
+  `data/` 全在)。hz 上其余四类业务照常在跑,**别把 hz 当"已退役机器"整体处置**。
+- **客户端 `AppConfig.prod` = `https://nk.linotsai.top`**(⑮ 曾漏改、⑰ 补上并加了反向闸门单测)。
+  ⚠ **`NK_BASE_URL_OVERRIDE` 压过默认值** —— 换包后连不上先查设置屏有没有手填过老基址。
+- ⚠ **要复活老机做对照,必须先在新机 disable**:两台都排程 = 同一条报告推两遍(⑯ 双推送处置的原因)。
+- `ln.linotsai.top` / `lf.linotsai.top` 的 A 记录 **2026-08-04 起 NXDOMAIN**(非本项目所致,已上报用户)。
+
 ## 新机 `nk` 公网入口(V2-⑯-G 定案,碰 nginx / 证书前必读)
 
+- **判「配置里有没有 `ln`」必须先剥注释行**(⑰ 现场踩):`npm-custom-http.conf` 文件头**自己就写着**
+  「绝不接管 ln.linotsai.top」这句护栏注释,裸 grep 每次都红。`deploy/preflight_a_route.sh` 已修成
+  `grep -vE '^\s*#'` 后再判。**一个对自己的注释报警的闸门等于没有闸门** —— 真出现
+  `server_name ln...` 那天,人只会当它又是那条老误报。
 - **80/443 归用户既有的 `nginx-proxy-manager` 容器**(还反代着 `nas`/`mt`/`web` + 一个 IP 站,
   **一个都不能坏**);Neckline 只占 NPM 官方扩展位 `/opt/npm/data/nginx/custom/http.conf`
   (仓库副本 `deploy/npm-custom-http.conf`)。系统 nginx 起不来是**正常的**,别去修。

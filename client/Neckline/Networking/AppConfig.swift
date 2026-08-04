@@ -2,11 +2,18 @@
 //  AppConfig.swift
 //  Neckline — 后端连接配置(baseURL + apiToken 可配)
 //
-//  **App 默认后端 = prod(https://ln.linotsai.top)**(2026-07-20 4E 接班切换后 nginx
-//  upstream 已指向 Neckline 8002,§3.6「接班切换」)——域名 `ln` 语义留痕是设计已接受的
-//  表面不符,勿"纠正"成 neckline 子域。
+//  **App 默认后端 = prod(https://nk.linotsai.top)**(2026-08-04 V2-⑰ 割接;D2 = A 路)。
+//  ⚠ **V2.0.0 起改指新机子域 `nk`,不再是老机 `ln`** —— A 路的全部依据是「老 App 打老机、
+//  新 App 打新机,两拨客户端永不交叉」(`deploy/A路割接前提自检清单.md`)。V2 契约已删了
+//  V1 客户端硬解码的键,**这个默认值指错 = 老机吃 V2 契约 / 新 App 吃 V1 契约,两个方向
+//  都是整份报告解不出、今日计划页全空**,不是"少个字段"。改它之前先读那份清单。
+//  历史留痕:V1 时代此处是 `ln.linotsai.top`(2026-07-20 4E 接班切换,nginx upstream 从
+//  LinoN 8001 切到 Neckline 8002);`ln` 域名的语义不符当时是"设计已接受",V2 换机后不再
+//  适用 —— 现在域名与机器一一对应。
 //  dev(http://127.0.0.1:8002,本地 uvicorn)保留作可切换选项(设置屏「环境」picker /
 //  手填 baseURLOverride);两环境同端口 8002。
+//  ⚠ **`NK_BASE_URL_OVERRIDE` 压过本默认值**:老 App 若手填过 `ln` 基址,换包后仍会打老机
+//  (override 优先级见 `resolvedBaseURL`)。换包后连不上时先去设置屏清空手填基址。
 //
 //  ⚠️ API_TOKEN 绝不硬编码进提交源码(plan 铁律):
 //   解析优先级 ——
@@ -20,20 +27,20 @@ import Foundation
 
 enum NKEnvironment: String, CaseIterable, Identifiable {
     case dev      // 本地 uvicorn :8002
-    case prod     // ln.linotsai.top(接班切换后指向 Neckline 8002)
+    case prod     // nk.linotsai.top(V2 新机 114.66.0.38,NPM 反代 → 8002)
     var id: String { rawValue }
 
     var baseURL: URL {
         switch self {
         case .dev:  return URL(string: "http://127.0.0.1:8002")!
-        case .prod: return URL(string: "https://ln.linotsai.top")!
+        case .prod: return URL(string: "https://nk.linotsai.top")!
         }
     }
 
     var label: String {
         switch self {
         case .dev:  return "Dev · 127.0.0.1:8002"
-        case .prod: return "Prod · ln.linotsai.top"
+        case .prod: return "Prod · nk.linotsai.top"
         }
     }
 }
@@ -62,9 +69,10 @@ final class AppConfig: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        // 默认后端 = prod(https://ln.linotsai.top,2026-07-20 4E 接班切换后 nginx upstream 指向
-        // Neckline 8002)。无持久化选择时用 prod;dev(本地 uvicorn 8002)仍可在设置屏「环境」
-        // picker 或手填 baseURLOverride 切换,配置能力不变。
+        // 默认后端 = prod(https://nk.linotsai.top,V2-⑰ 割接后的新机)。无持久化选择时用 prod;
+        // dev(本地 uvicorn 8002)仍可在设置屏「环境」picker 或手填 baseURLOverride 切换,配置
+        // 能力不变。⚠ 老 App 存过的 `NK_ENVIRONMENT="prod"` 在这里会被读成 **新** prod = nk,
+        // 这正是换包要的效果(同一个 rawValue,指向随版本换血)。
         self.environment = NKEnvironment(rawValue: defaults.string(forKey: Self.envKey) ?? "") ?? .prod
         self.baseURLOverride = defaults.string(forKey: Self.baseOverrideKey) ?? ""
 

@@ -11,7 +11,7 @@
 		<string>remote-notification</string>
 	</array>
 	<!-- dev 联调:仅允许本机回环明文 HTTP(127.0.0.1:8002 uvicorn)。
-	     生产 ln.linotsai.top 走 HTTPS,不受此影响。 -->
+	     生产 nk.linotsai.top 走 HTTPS,不受此影响。 -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

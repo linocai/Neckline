@@ -17,7 +17,7 @@
 //      -destination 'platform=iOS Simulator,name=LinoJ-iPhone16Pro' \
 //      -only-testing:NecklineTests/IntegrationSmokeTests
 //
-//  ⚠️ 只打 127.0.0.1:8002,任何情况下都不得指向 prod(ln.linotsai.top)—— 这批测试
+//  ⚠️ 只打 127.0.0.1:8002,任何情况下都不得指向 prod(nk.linotsai.top)—— 这批测试
 //     会真实开/清仓、真实改设置,绝不能碰生产台账。
 //
 
