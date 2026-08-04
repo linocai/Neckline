@@ -4,6 +4,14 @@
 #
 # 是否启用由 4B.1 内存门禁定(daily_update 是三项里最重的 polars 活):
 #   方案 A → enable;方案 B → 不 enable(留模板)。见 PROJECT_PLAN 4B 门禁结论。
+
+# ⚠ **V2-⑯-D 变更(2026-08-04)**:本 unit 跑的 `daily_update.py` **不再包含 ④ 市场扫描层
+# 与 ④b 行业阶段**(它们此前是双挂载,已按 plan「二选一 = 摘掉 daily_update 那份、留链里
+# 的」移进 16:35 晚间链的 `neckline-scan.service`)。本 unit 现在的职责 = **拉数 + 尾窗
+# limit_derived 重算 + 停牌名单 + 概念板块 + `industry_strength_daily`**。
+# `industry_strength_daily` **刻意留在这里**:它是 ④b 的唯一上游、不在链的任何段里。
+# 内存画像随之下降,但 `MemoryMax` 仍按 ⑯-C 新机实测填,别照抄老机的 900M。
+
 [Unit]
 Description=Neckline EOD daily incremental data update (Scheme A only)
 After=network-online.target

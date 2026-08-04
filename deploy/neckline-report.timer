@@ -1,14 +1,18 @@
-# Neckline 16:00 盘后报告定时(plan 4B.4)。A 股 16:00 后收盘数据稳定(§2.3)。
-# 交易日门控在 report.py 内(is_trading_day),故 timer 打 Mon-Fri,节假日 report.py 自退。
-[Unit]
-Description=Run Neckline EOD report at 16:00 on weekdays
-
-# ⚠ 排在 daily(16:05)之后:report 需要当日 EOD 数据已由 daily_update 落进 Parquet
-# (plan 原文「report 16:00 / daily 16:30」把依赖顺序写反了——report 依赖 daily 先拉数;
-# 方案 A 下改为 daily 16:05 → report 16:35。方案 B 下数据在 Mac 落好 rsync 上云,report 可提前)。
-[Timer]
-OnCalendar=Mon-Fri 16:35 Asia/Shanghai
-Persistent=false
-
-[Install]
-WantedBy=timers.target
+# ⛔ **已退役(V2-⑯-D,2026-08-04)—— 新机不要安装本 timer。**
+#
+# V1 里它 16:35 直接触发 `neckline-report.service`(当时那个 service 跑
+# `scripts/report.py --notify`)。V2 起 `neckline-report.service` 变成晚间链的**第 3 段**
+# (⑨ 复盘 + 报告),由 `neckline-evening.target` 拉起 —— 若本 timer 也 enable,
+# **报告会被触发两次**(一次经 target 串行链、一次经本 timer 单跑),而且两次都会
+# `--notify` 推 APNs。
+#
+# **替代品**:`deploy/neckline-evening.timer` → `neckline-evening.target` →
+#            scan → basket → report 三段串行。
+#
+# **老机(ln.linotsai.top,v1.5.2)上这个 timer 仍 enable 且必须保持不动** —— 老机在
+# ⑰ 双端换包完成前照常出报告。⛔ 零接触红线。本文件保留只为让人在老机上看到
+# `neckline-report.timer` 时能查到它的出处与退役原因,**不是给新机装的**。
+#
+# 文件正文刻意留空(无 [Unit]/[Timer]/[Install] 段)—— 就算有人手滑 `cp` 到
+# /etc/systemd/system/ 再 enable,systemd 也只会报"unit 没有 Install 段、无法 enable",
+# 而不会真的排上一条重复的报告排程。

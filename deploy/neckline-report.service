@@ -1,16 +1,32 @@
-# Neckline 盘后报告(plan 4B.4;方案 A 定时 16:35,排在 daily 16:05 之后——见 timer 说明)。
-# oneshot 瞬态进程 —— 跑完即释放内存(对 hz 紧内存友好,不常驻 polars)。
-# 生成报告 → 落库 → --notify 触发 APNs 报告推送(受 push_report 开关)。
+# Neckline 晚间链 **第 3 段**:⑨ 盘后复盘引擎 + 篮子日报渲染落库 + APNs
+# (plan §五 V2-⑯-D;**沿用 V1 的 unit 名**,它本来干的就是"出报告"这件事。
+#  V1 原文 = `scripts/report.py --notify` 单跑;V2 起换成晚间链的 review+report 两段。)
 #
-# report.py 自身查 is_trading_day:非交易日(节假日)直接退出 1,timer 打 Mon-Fri 无害。
+# ⚠⚠ **为什么 ⑨ 与报告必须同一个 unit(⑯-D 改口径的真正收益)**:「⑨ 在报告之前」
+# 是一条**语义依赖** —— 报告的 ④「昨日篮子复盘」节要读 `basket_review_daily` 的**当日
+# 行**,⑨ 排后面那一节在同一次运行里必然空,而且**症状是那一节静默变空、不报错**。
+# 放进同一个 unit,这个顺序由链内固定序(`CHAIN_SEGMENTS`)保证、**systemd 侧根本无法
+# 配错**;拆成两个 unit 则任何人改一次 `After=` 就能把顺序弄反。
+# ⛔ **别把 `--segments review,report` 拆成两个 unit。**
 #
-# 安装:
-#   sudo cp /opt/neckline/deploy/neckline-report.service /etc/systemd/system/
-#   sudo cp /opt/neckline/deploy/neckline-report.timer   /etc/systemd/system/
-#   sudo systemctl daemon-reload && sudo systemctl enable --now neckline-report.timer
+# 🟡 **已知代价(⑯ 如实登记,待裁定)**:报告 ③b「今日未定档篮子」(`droppedBaskets`)
+# 的数据源是 ⑥ `TierResult.dropped`,它**只在内存里随链传递、不落任何表**
+# (`baskets.tier` NOT NULL,溢出篮无档可填 —— `report/basket_daily.py` 模块头第 3 条)。
+# 三段拆开后 ⑥ 在 seg2 进程里、报告在 seg3 进程里 → 本节会**恒为** `available=false`,
+# 且披露文案写的是"本次未运行 Tier 分层引擎",而实际上今晚是跑了的(只是在另一个
+# 进程)—— **文案会误导**。三条出路(⛔ builder 不自行选,回 planner):
+#   ① 接受现状 + 改那句披露文案;
+#   ② seg2/seg3 合成一个 unit(牺牲"LLM 长超时不外溢到批算段"这条收益);
+#   ③ 让 ⑥ 的 dropped 落一张表(动代码,超出 ⑯-D「⛔ 不动代码」的边界)。
+# **⑯ 交付时三段 timer 一律不 enable**(双推送处置),故本代价尚未实际发生。
+#
+# 安装:sudo cp /opt/neckline/deploy/neckline-report.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# ⛔ 无 [Install]:由 neckline-evening.target 拉起。
+
 [Unit]
-Description=Neckline EOD 16:00 report (oneshot, releases memory after run)
-After=network-online.target
+Description=Neckline evening chain seg3: post-close review + basket daily report + APNs
+Documentation=file:///opt/neckline/PROJECT_PLAN.md
+After=network-online.target neckline-basket.service
 Wants=network-online.target
 
 [Service]
@@ -19,5 +35,7 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-ExecStart=/opt/neckline/.venv/bin/python scripts/report.py --notify
-MemoryMax=800M
+ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --segments review,report --notify
+# ⑨ 复盘含 LLM(TASK_REVIEW)+ 报告渲染;墙钟以 LLM 为主。
+TimeoutStartSec=2400
+MemoryMax=1000M

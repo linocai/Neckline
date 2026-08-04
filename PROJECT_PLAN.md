@@ -369,25 +369,24 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-03 · 🏗️ V2.0.0 施工中 —— V2-①→⑮ 全部完工,只剩【门禁】用户判定点 + ⑯⑰ 两个尾声块**。①–⑭ 详见各块「完工记录」。**⑮ 客户端双端改版完工:D8 信息架构落地 + 契约欠账清单 6 组全部还清 + 版号三方同批升 2.0.0** —— iPhone 四板块换成 **今日篮子 / 持仓 / 问询台 / 设置**(macOS 同四板块 + 周复盘工作台);V1 的「盘中看板」不再是 tab,**内容一条没删**、并入持仓板块成一节(80/15/5 里盘中动态本就是为解释持仓服务的)。全量测试 **Python 2890 过 + 2 skip**(两条 skip 是需 `NECKLINE_RUN_6Y=1` 的六年真回测;⑭ 时 4 skip 里那两条冻结快照 DTO 闸**已转跑**)、**Swift 179 过 + 12 skip**(skip = 未起 dev 后端的真实联调冒烟)、**iOS/macOS × Debug/Release 四路 `xcodebuild` 全 BUILD SUCCEEDED**。**哨兵纪律阈值自 ⑧ 起一行未动;现役章程恒 `v1.3.3`,V2 全程未新建章程行、未跑 `activate_charter.py`**。
+**2026-08-04 · 🚀 V2.0.0 已上新机(未对外)—— ①→⑯ 全部完工,只剩 ⑰ 双端换包 + 三件待裁定**。各块细节见「完工记录」。**⑯ 新服务器建成并跑通 V2 全链**:数据搬家逐文件 md5 全等、`init_schema` 零索引 WARNING、P0-23 门禁全过(主链峰值 **439 MB** / 3.8 GiB)、两步包激活 + B3 退役全绿、新机 `/health` = **`v2.0.0`**。**老机 `ln` 全程零接触**(v1.5.2 照常在跑)。
 
-- **V2-⑮ 完工内容**(详见 §五 V2-⑮ 段尾「完工记录」,含**六处设计判断**):`Models.swift` 候选族五个类型退役 → 篮子族 8 个 + 计划/快照/画像/包/评价 5 个 + 提醒族 4 个 + Provider/推送族 4 个 DTO;`APIClient` 删五处「打向已删端点」的活调用(含**采集明文 key 打进空洞**的那条)、接 V2 新端点、`mapReason` 补八个 case 并把 409/422 也接进来;新建 `BasketDailyView`/`BasketCardView`/`PositionsView`,重写 `SettingsView`(Provider 注册表 + 任务路由 + **按 kind 动态渲染**的推送开关)、`PushManager`(三级 category + **按 `kind` 路由**)、`PositionExtras`(计划继承卡 + **⑪-D-D per-position 触达提醒开关**)。
-- **🔴 ⑭ 打出的三处「服务端已改、客户端硬解码」——已全部改完**:`ReportResponse.candidates`(整份报告解不出)/ `PushSettings` 六个具名 bool(整个 `/settings` 解不出)/ `SettingsSnapshot.llmKeySet`。**⑮ 之后客户端与 V2 服务端契约对得上**,⑰ 换包的前提已具备。
-- **两个「已登记的债」集合双双清空**(`tests/test_contract_crosscheck.py`):`PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15` 与 `PENDING_MAP_REASON_CASES_FOR_15`。⚠ **空集合不是「闸松了」,恰恰是最严的状态** —— 两条断言都用 `==`,此后任何新增的「打不到的调用 / 没 case 的 reason」立刻红。对拍表 §六 的 6 组复选框已逐项打勾并注明落在哪一笔提交(另加 6.6 两条 ⑮ 施工中追加项)。
-- **版号三方已恒等 `2.0.0`**:`api/app.py::VERSION` = `v2.0.0`、`project.yml` + pbxproj `MARKETING_VERSION` = `2.0.0`(守门单测 `test_client_version_governance` 锁死)。⚠ **本地代码已是 v2.0.0,生产 `/health` 仍报 v1.5.2** —— 因为**至今零部署**,⑯ 上云后才会对上。
-- **生产现状(未动)**:公网 `/health` = **v1.5.2**,现役章程 **v1.3.3**,macOS App **1.5.1**,iPhone 仍是 v1.4 之前的旧构建。**V2 施工期间不改动 v1.5.2 生产行为**;至今全部改动**纯本地代码 + 单测 + `xcodebuild`**,未碰任何服务器/DNS/部署。真实 `data/neckline.db` 里全部 V2 表**仍是 0 行**(⑮ 的界面核对跑在 scratchpad 的隔离临时库上,真实库只读拷了 `trade_cal`/`strategy_versions`/`stock_basic`/`namechange` 四张参考表)。
-- **🟡 交回 planner 的一件(⑭ 提出,仍挂着,不拦 ⑯)**:**⑨ 复盘与报告落库的先后**在 Plan 两处描述不一致(⑭-A 未明说前后 vs ⑯-D 的服务划分)。现按「**⑨ 在前**」实现(报告 ④ 节要读当日 `basket_review_daily`);`segments` 参数让两种切法都跑得动,**改口径只需调 ⑯-D 的服务划分、不必动代码**。
-- **V2-⑭ 完工内容**:`report/basket_daily.py`(三段视图模型 + **`card_json` snake→camel 唯一转换点**)、`report/evening.py`(16:35 链)、`scripts/evening.py`、`scripts/smoke_evening.py`;`reports` 新列 `basket_daily_json`。**兑现三处前置块欠账**:④ 的 `dataFreshness.scanLayer*` 三键接线(与板块三键、行业强度三键**并列九个键**)、⑬-4 的 `exec_hints_for()` 接进篮子成员、⑬ 的 `news_alerts` 次级扫描域接篮子成员。
-  - ⚠ **③b 的两个原因码 `capacity_overflow` / `below_quality_line` 永不合并**(相反的市场结论),**零溢出时这一节仍在**;⑮ 的界面已按此实现并截图核对过。
-  - ⚠ **编排链刻意住 `report/evening.py` 而非 `pipeline.py`**(后者在 P0-23 在线模块守门清单里)。`build_report` 自此**只读不算**。
-- **V2-⑬ 完工内容**:V1 十三项清理全部执行完毕 —— 单票候选管线整链、自选池 + 同花顺对账整链、呼吸台账、问询台 forced 海选池通道全部物理删除;盘前 9:26 判定换血成**篮子竞价剧本核对**;信息卡改造成**篮子成员详情页地基**(⑮ 已把 ⑬-N 的三块接上 UI)。删除前后对照表 → `archive/V2-⑬_删除前后对照表_20260803.md`。
-- **V2-⑫ / ⑪ / ⑩ 完工内容**:`review/cashflow.py` + `neckline/profile/`;`notify_kinds.py`(三级 × 14 kind 唯一源)+ `custom_alerts.py` + `sentinel/attention.py` + `llm/nl_alert.py`;`positions_entry.py`(买卖三字段唯一编排入口),`decision_log` 停写留档。
-- **V2-⑧ / ⑦-b / ⑧-E / ⑧-F / ⑧-G 完工内容**:`selection/verification_rules.py`、`sentinel/basket_verify.py`、`sentinel/capture.py`、`sentinel/mainline.py`。**关注池(⑧-G 起)= 【有界必需项无条件全进】持仓 > T1/T2 篮子成员 > 板块基准指数(上界 29)+【两份纪律测量样本各有保底】主线切片 100 / 昨日涨停 71**(合计 = `breadth_cap` 200,守门单测锁死)。⚠ **主线跳水样本 ≠ 关注池**(⑧-G-A)。
-- **V2-⑨ / ⑦ / ⑥ / ⑤ / ④ 系列完工内容**:`review/basket_review.py` + `neckline/eval/`;`selection/basket_card.py` + `member_tags.py`;`selection/tier.py` + `basket_store.py`;`selection/aggregate.py` + `member_hygiene.py`;全新包 `neckline/scan/` 与 `neckline/selection/` + `scripts/activate_pack.py` + 两个 pack。
-- **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处、⑥ 十处、⑥-b 一处、⑦ 六处、⑦-b 一处、⑧ 七处、⑧-E 两处、⑨ 六处、⑩ 两处、⑪ 九处、⑪-D 一处、⑧-F 三处、⑧-G 六处、⑫ 九处、⑬ 一处勘误 + 三处判断 + 三处欠账(**⑭ 已全部兑现**)、⑭ 五处判断 + 一件交回 planner、**⑮ 六处判断**。均未改 Plan,如与规划意图不符请澄清。
-- **仍未修复的三点既有欠账**(与各新块均无关):V2-① 的 `test_holding_k4_check.py` 未传 `db_path`(会写开发库)、V2-② 的 `news_scan.py` 缺 `prompt_context`、`TASK_INQUIRY` 归入检索类默认路由待澄清。
-- **⑭ 顺带发现的两条已在 ⑮ 处理掉**:`ReportSnapshot` 的死代码 `Decodable` 已收(改成纯 `Equatable`);`InfoCard` 的合成 `Codable`(每个属性都必需)已改手写 `init(from:)` 全字段 `decodeIfPresent`。
-- **下一步** = 【门禁·非施工块】**用户判定点:是否召唤 @reviewer**(建议范围:⑥⑦⑧⑪ 判定线 + ⑭⑮ 契约线两线并行)。⚠ **⑮ 碰了鉴权相关面(Provider key 写入路径)与全部客户端契约,建议叫一次 review**。**⑯ 的两条硬前置仍是 ①–⑮ 全部完工(✅ 已满足)+ 用户已购机并解析好 `nk`(⏳ 待用户)**;在用户交付新机之前,**不碰任何服务器**。
+- **🔴 三件卡着、等你一句话**(⑯ 停手上报,builder 不自行处置):
+  1. **⑯-G 公网入口阻塞** —— 新机 `114.66.0.38` **不是空白机**:用户既有的 `nginx-proxy-manager` 容器占着 **80/443**(在反代 `nas`/`mt`/`web` 三个站),另有 WireGuard `wg0` 带活跃 peer。系统 nginx 起不来、certbot 也签不了证。三条路见 §五 ⑯ 完工记录 ⑯-G(**推荐**:在 NPM 里加一条 `nk.linotsai.top → 127.0.0.1:8002` 的 proxy host,非破坏性)。
+  2. **🔴 `ln.linotsai.top` 与 `lf.linotsai.top` 的 A 记录已从 DNS 消失(NXDOMAIN)** —— 四个解析器一致;同域 `linotsai.top`/`www`/`fiscal`/`xiaoran` 正常。**老机服务本身完好**(`neckline.service` active、`/health` = v1.5.2 用 IP+Host 头实测 200、两个 timer 昨日正常跑过)。**= 老 App 与 Lino Finance 现在都连不上服务端,而服务端其实活着。** 非本次操作所致;按零接触红线 builder 未动任何 DNS。
+  3. **⑯-D 三段切法的一处真代价** —— 报告 ③b `droppedBaskets` 的数据源只在内存里随链传,拆成三个 unit 后**该节将恒为 `available=false` 且披露文案会误导**(写「本次未运行 Tier 分层引擎」,而今晚其实跑了)。三条出路见 `deploy/neckline-report.service` 头部。**因 timer 未 enable,尚未实际发生。**
+- **新机事实(`nk` / `114.66.0.38`,Ubuntu 24.04.4 / 4 vCPU / 3.8 GiB / 58G)**:`/opt/neckline` 代码态 = 本地 v2.0.0(12 个关键文件 sha256 逐个吻合),venv Py3.12.3,parquet **9594 文件 1.1 GB(与老机逐文件 md5 全等)**,`neckline.db` **45 表**(V1 26 表行数逐表一致 + 19 张 V2 新表全 0 行),现役章程仍 **`v1.3.3`**,现役选股包 **`K7-pack-v1`**。**三个 systemd 单元 + target + timer 装好、演练过、`ExecMainStatus=0`,但一律 `disabled`**。
+- **🔔 双推送处置**:迁来的库带 APNs device token + `.env` 四要素齐全 → 新机一排程就与老机**同一条报告推两遍**。故 `neckline.service` / `neckline-daily.timer` / `neckline-evening.timer` **全部装好但不 enable**,演练与活体全程不带 `--notify`。**⑰ 换包时一体切换**(老机 disable → 新机 enable)。
+- **⑰ 前置(⑯ 新挂的账)**:① **必须再做一次 `neckline.db` 增量搬家** —— 本次快照定格在 **08-04 14:18**,老机此后的写入(今日 16:05 拉数 / 16:35 报告 / 盘中哨兵尾段)不在新机上;② ⑯-G 裁定落地 + 公网 `/health` 复验;③ 老机 timer 与新机 timer 一体切换。
+- **⑯-F preseed 如实跳过(⛔ 未编数据)**:脚本 `scripts/oneoff/preseed_baskets.py` 四道闸齐、演练过,但**「外部准备好的近期若干交易日篮子/Tier/卡」在仓库与本机都不存在** —— 那是人 + LLM 在外部配的产物。`--example` 可打模板,交策略线/用户配好再灌。
+- **⑯-C 未能实测的三项(⛔ 不编数)**:⑤⑥ **LLM 段**(`llm_providers` **0 行**,`.env` 也无 key)、⑦ 卡冻结(无篮子即无卡)、⑧ 盘中存拍(需真实盘中)。**待 ⑰ 后首个有 key 的交易日补测。**
+- **⑯-I B3 退役已生效(生产 + 本地同批)**:K4 行 `avoid_flag` 摘掉 `B3_theme_persist_2_3`(2100→1999 字节),**K4 仍 `is_active=0` / `activated_at` 未变 / `strategy_activation_log` 未增行 / A2 红牌未动**;实测 B3 零黄牌、A2 照常命中、历史快照仍能回显。全文 diff → `archive/K4_advisory_B3退役_20260804.md`。
+- **诚实降级实证(端到端活体)**:无 LLM key 时链跑完五段、退出码 0,⑤ 打出 `推理段缺席(no_provider)—— 当日不成篮`(**不硬造篮子、不静默**);④ 真在产种子(热点行业 10 + 涨停簇 239);顺带在生产库上验到上一笔提交的 **Y-1 修复生效**(空候选快照不覆写 V1 冻结的 `candidates_json`)。
+- **本地测试**:`pytest tests/ -q` **2896 过 + 2 skip + 0 fail**(⑯ 净增 3 条 B3 退役守门、退役 1 条旧断言)。Swift 侧本块未动。
+- **①–⑮ 完工内容**(逐块细节见各「完工记录」):⑮ 客户端双端改版 + 版号三方 2.0.0;⑭ 16:35 编排链 + 篮子日报;⑬ V1 十三项清理;⑫ 对账与画像;⑪ 监控三级 + NL 提醒;⑩ 三字段录入;⑨ 复盘 + 评价引擎;⑧ 篮子验证 + 存拍 + 关注池;⑦ 卡冻结;⑥ Tier;⑤ 驱动聚合;④ 扫描层 + ④b 行业阶段;③ 策略包机制 + ③-K7;②① LLM 路由 + 全部新表 DDL。
+- **如实登记的设计判断汇总**(各块「完工记录」尾段):③ 三处、④ 六处、⑤ 十处、③-K7 三处、④b 三处、⑤-b/⑤-c 五处、⑥ 十处、⑥-b 一处、⑦ 六处、⑦-b 一处、⑧ 七处、⑧-E 两处、⑨ 六处、⑩ 两处、⑪ 九处、⑪-D 一处、⑧-F 三处、⑧-G 六处、⑫ 九处、⑬ 一处勘误 + 三处判断 + 三处欠账(**⑭ 已全部兑现**)、⑭ 五处判断 + 一件交回 planner、⑮ 六处判断、**⑯ 见其完工记录(含三件待裁定 + 三项未实测 + 一处「不扩」)**。均未改 Plan,如与规划意图不符请澄清。
+- **仍未修复的既有欠账**(与 ⑯ 无关):V2-① 的 `test_holding_k4_check.py` 未传 `db_path`(会写开发库)、V2-② 的 `news_scan.py` 缺 `prompt_context`、`TASK_INQUIRY` 归入检索类默认路由待澄清;**⑫ 周度 unit 的形态未定**(plan 明说不由 ⑯-D 决定,⑯ 未擅自排)。
+- **下一步** = **你裁定上面三件** → 然后 ⑰ 双端换包(⛔ builder 不自行换包)。**⑯ 碰了高危区(权威库迁移 + 包激活 + advisory 载体变更),建议叫一次 review。**
 - **待办总入口 = §七 Backlog**。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/v1.5_施工图_20260802归档.md` 文末附录。
@@ -2805,6 +2804,182 @@ macOS 侧栏 = 同四板块 + **周复盘工作台**(既有对账保留,⑮ 补�
 
 ---
 
+#### ✅ V2-⑯ 完工记录(2026-08-04,@builder-pro;🔴 高危块,首次触碰新服务器 + 权威库)
+
+> **一句话**:新机 `nk` 已建成并跑通 V2 全链,数据搬家逐文件 md5 全等,P0-23 门禁**全过且余量极大**,
+> 两步包激活 + B3 退役全绿;**⑯-G 公网入口卡在一处 Plan 未预见的现场事实(新机 80/443 被用户既有
+> nginx-proxy-manager 容器占用),须用户裁定**;⑯-F preseed **无外部输入件,如实跳过、未编数据**。
+
+**⑯-A 新机准备 ✅**:`114.66.0.38`(Ubuntu 24.04.4 / 6.8.0-136 / **4 vCPU / 3.8 GiB / 58G(53G 可用)/
+Swap 0**)。时区已是 `Asia/Shanghai`、时钟同步。`apt upgrade` + 装 `python3-venv/build-essential/git/
+rsync/sqlite3/nginx/certbot/ufw/jq/sysstat`。属主纪律复刻:nologin `neckline`(uid 997)+ 运维
+`deploy`(uid 1000,加入 neckline 组、NOPASSWD sudo),`/opt/neckline` `deploy:neckline` **2770 setgid**、
+`data/` `neckline:neckline`、`.env` / `.p8` **600 `neckline:neckline`**。venv Python 3.12.3、
+`/etc/pip.conf` 阿里云镜像、`pip install -r requirements.txt` **1m24s**。UFW:默认 deny-in /
+allow-out,放行 22/80/443(先放行后 enable,零自锁窗口)。首登后即装本机运维公钥,**之后全程密钥登录**;
+密码未写进任何 git 跟踪文件。
+- ⚠ **规格与 D3 建议(8G/100G)有差**:实到 **4G / 60G**。结论:**够用且余量很大** —— 见 ⑯-C 实测,
+  全链峰值 439 MB,离 4G 天差地别;60G 对 1.1G parquet + 32M 库同样宽裕。**未调小任何算法精度、未加 swap。**
+- ⚠ **`.env` 里没有 LLM key**(V1 时代 `LLM_API_KEY` 为空,V2 的 key 归 `llm_providers` 表而该表迁移后 0 行)。
+  → 篮子链的 LLM 段本次**只能验降级路径**,见下方「诚实降级实证」。
+
+**⑯-B 数据搬家 ✅(老机零接触红线全程守住:只读、无停机、无配置改动、无 DNS 改动)**
+- **parquet**:先 Mac→新机 `sync_data.sh` 全量(1.11 GB / 9552 文件,DRY_RUN **零删除**),再按
+  **md5 清单差集**从老机只读取回 **60 个文件 / 51.8 MB**(44 个老机独有 + 16 个同名内容不同),并删掉
+  2 个 Mac 独有文件。**收尾:新机 9594 文件,与老机逐文件 md5 全等(独有 0 / 内容不同 0)。**
+- **SQLite**:老机 `sqlite3 ".backup /tmp/nk_migrate.db"`(**耗时 0.336s**,`integrity=ok`,快照时刻
+  **2026-08-04T14:18:29+08:00**)→ 拉到新机 → **端到端 sha256 逐位相同**
+  `bcc8552707cf3316b0497ff28399d5f4cbe9cda1e79f80db54606fb5ae04da33` / 31 928 320 B /
+  `neckline:neckline 600` / `integrity=ok`;老机 `/tmp` 临时件已删除。
+- **迁移后 / `init_schema` 前双备份(回滚绳)**:`data/backups/neckline.db.{bak,cpbak}-v2mig-20260804-142017`
+  (各 31 928 320 B,sha256 与源同,`.backup` 0.18s)。
+- **`init_schema` 幂等升级 ✅**:26 表(V1)→ **45 表**,新增 **19 张 V2 表全部 0 行**;
+  **老库 26 张表行数逐表一致**(逐表比对脚本核过,0 处不一致);**「唯一索引建不上」WARNING = 0 条**
+  (⑯-B 新增的那条检查:第二次跑 `init_schema` 抓 root logger,日志字节数 0);两条关键唯一索引
+  `idx_positions_idempotency_key` / `idx_selection_packs_single_active` **都在**。
+  ⚠ Plan 写「21 张新表」,实到 **19 张 SQLite 新表** —— 差额是汇总表里两张 **parquet** 表(不落 SQLite)。
+  决定性判据用的是「**新机 schema 与本地 V2 开发库逐表同名同数(均 45 张)**」,已核过。
+- **现役章程未变** ✅:`v1.3.3` `is_active=1`、`activated_at=2026-07-27T07:39:30+00:00`(与 `hz_info.md`
+  记录逐位相同),`strategy_activation_log` 仍 3 行。
+- 🟡 **快照边界如实登记**:DB 快照取于 **08-04 14:18**,老机此后的写入(今日 16:05 拉数、16:35 报告、
+  盘中哨兵尾段)**不在新机上**。⑰ 割接时**必须再做一次 DB 增量搬家**,否则会丢这段台账。**已列为 ⑰ 前置。**
+
+**⑯-C P0-23 性能实测门禁 ✅(全过,余量极大)**
+体例:`systemd-run --scope -p MemoryMax=… -p CPUQuota=200% --uid=neckline` 隔离单进程、**串行**、
+`/usr/bin/time -v` 取 Max RSS;每跑一项看一次 load(**全程最高 1.58,判据线是 >4 停手**),跑完
+`systemctl --failed` 零残留。交易日取 **20260803**。
+
+| # | 项 | cap | 墙钟 | **峰值 RSS** | 备注 |
+|---|---|---|---|---|---|
+| a | ④ 扫描层日更(cluster→corr→leader+seeds) | 1400M | **5.69s** | **110 MB** | 1006 簇行 / 289 scope 14930 相关行 / 1006 龙头行 |
+| b | ④b 行业阶段日更 | 900M | **0.34s** | **70 MB** | 110 行 |
+| c | **P0-23 正主** 行业强度日更 | 1400M | **0.48s** | **80 MB** | 110 行(老机 1400M 曾 600s 跑不完的那一类,已按预计算落表改造) |
+| d | ⑧ EOD 验证拍 | 900M | **0.15s** | **19 MB** | 当日 0 篮可判 |
+| e | ⑨ 复盘引擎 | 900M | **0.35s** | **45 MB** | 当日 0 篮可复盘 |
+| g | **④ 扫描层 bootstrap(2026Q1,58 个交易日)** | 2500M | **4m38s** | **135 MB** | ≈4.8s/天;**峰值不随天数涨** = 逐日设计没有退化成全历史扫描 |
+| h | ⑨-C 周度校准(--draws 20) | 2500M | **0.30s** | **43 MB** | 无篮子,**此数不代表满载**,如实登记 |
+| f | **整条晚间链**(五段,无现役包时) | 2500M | **9.41s** | **336 MB** | — |
+| i | **整条晚间链**(五段,K7-pack 现役、真实数据) | 2500M | **13.55s** | **439 MB** | **主链门禁数** |
+
+**结论**:主链峰值 **439 MB**,对 3.8 GiB 可用内存 **余量约 8 倍**;最重的批算段(bootstrap)也只有
+135 MB。**三段 oneshot 的 `MemoryMax` 据此定为 scan 1400M / basket 900M / report 1000M**(均为实测
+峰值的 3~10 倍余量,写进各单元注释)。⛔ 未抬 swap、未调小任何算法精度。
+- ⚠ **未能实测的三项,如实登记,⛔ 不编数**:**⑤⑥ 的 LLM 段**(`llm_providers` 0 行,无 key)、
+  **⑦ 卡冻结**(无篮子即无卡)、**⑧ 盘中存拍落盘**(需真实盘中时段)。这三项的资源画像**待 ⑰ 后
+  首个有 key 的交易日补测**,已列为 ⑰ 后待办。
+- ⚠ **探针副作用已清理并登记**:探针 g 往三张扫描表写进了 2026Q1 的 58 天历史(DB 32M → 167M,
+  且在 4–7 月造出空洞)。**探针目的是计时不是补历史**,已 `DELETE trade_date < 20260803` 清回
+  944 910 行 + `VACUUM`(DB 回到 32.5M),`scan_layer.py verify` 三项自检全绿。
+
+**⑯-D 晚间管线多段化 ✅(装好 + 演练跑通;⛔ timer 一律未 enable,见「双推送处置」)**
+- 新单元:`deploy/neckline-scan.service`(`--segments verify,scan`)/ `neckline-basket.service`
+  (`--segments basket`)/ `neckline-report.service`(`--segments review,report --notify`,**沿用 V1 名**)
+  + **`neckline-evening.target`**(`Wants=` 三段、**`Wants` 不是 `Requires`** —— 一段失败后面照跑,
+  与链自身的保险丝哲学一致)+ `neckline-evening.timer`(Mon-Fri 16:35)。段序由各 service 的 `After=`
+  串成,**systemd 侧改不了链内顺序**。
+- **`deploy/neckline-report.timer` 已改写为退役标记**(正文刻意留空、无 `[Install]` 段):V2 里
+  `neckline-report.service` 变成链的第 3 段由 target 拉起,若旧 timer 也 enable **报告会被触发两次
+  且两次都 `--notify`**。⚠ **老机上那个 timer 仍 enable 且必须保持不动**(零接触红线)。
+- **④/④b 的双挂载已按 plan 二选一**:`scripts/daily_update.py::main()` 里的 `update_scan_layer` /
+  `update_industry_stage` **两处调用摘除**(两个函数保留作手动补算后门);`update_industry_strength`
+  **留在 16:05 不动**(④b 的唯一上游、不在链的任何段里)。`scripts/scan_layer.py` /
+  `industry_stage.py` 两处「daily_update 已挂」的陈述已同步改写。
+- **演练**:`systemctl start neckline-evening.target`(drop-in 临时去掉 `--notify`,理由见双推送处置)
+  → 三段 **`ExecMainStatus=0`**、`NRestarts=0`、**严格串行**(scan 退出 14:36:29 → basket 起 14:36:29
+  → basket 退出 14:36:32 → report 起 14:36:32),总墙钟 **13s**;演练 drop-in 已移除,出厂 `ExecStart`
+  已复核。`systemd-analyze verify` 八个单元全 OK。
+- 🟡 **⑫ 周度部分**:代码里它**从来不在日链**(`CHAIN_SEGMENTS` 只有 verify/scan/basket/review/report),
+  所以「摘出去」是空动作。**周度 unit 的形态 plan 明说不由 ⑯-D 决定,故本块未擅自排** —— 挂账待裁定。
+- 🟡🔴 **⑯-D 三段切法带出的一处真代价(必须裁定,已写进 `neckline-report.service` 头部)**:
+  报告 ③b「今日未定档篮子」(`droppedBaskets`)的数据源是 ⑥ 的 `TierResult.dropped`,它**只在内存里
+  随链传递、不落任何表**(`baskets.tier` NOT NULL,溢出篮无档可填)。三段拆开后 ⑥ 在 seg2 进程、报告
+  在 seg3 进程 → **这一节将恒为 `available=false`**,而披露文案写的是「本次未运行 Tier 分层引擎」——
+  **今晚明明跑了,文案会误导**。三条出路(⛔ builder 不自行选):① 接受 + 改那句文案;② seg2/seg3 合成
+  一个 unit(牺牲「LLM 长超时不外溢到批算段」);③ 让 dropped 落表(动代码,超出 ⑯-D「⛔ 不动代码」)。
+  **因 timer 未 enable,此代价尚未实际发生。**
+
+**⑯-E 两步包激活 ✅(全绿)**
+写前双备份 `neckline.db.{bak,cpbak}-preE-20260804-143112`(各 32 468 992 B,`.backup` 0.13s,integrity ok)。
+第 1 步 `K4-pack-v1`(回滚锚)→ 第 2 步 `K7-pack-v1`(现役),各自先演练再 `--confirm`。**验收三条全中**:
+`selection_packs` **2 行**;`is_active` **唯一在 `K7-pack-v1`**(`2026-08-04T06:31:43+00:00`);
+`selection_pack_activation_log` **3 条且顺序正确**(K4 activate → K4 deactivate「由 K7-pack-v1 取代」→
+K7 activate)。**未碰 `strategy_versions`、未跑 `activate_charter.py`**,现役章程恒 `v1.3.3`。
+K7 相对 K4 的实际 diff(演练打印,已核对):`intel_rank_priority.dims` 换成
+`[industry_rank, industry_stage_score, leader_rs_rank, yellow_card_count]`;`tier.weights` 三项调整
+(`sector_strength` .25→.30 / `leader_clarity` .25→.30 / `driver_freshness` .20→.10)。
+
+**⑯-I B3 黄牌退役 ✅(与 ⑯-E 同窗;🔴 红线逐条复核全绿)**
+新脚本 `scripts/oneoff/retire_k4_b3.py` + 声明件 `retire_k4_b3_payload.json`(before/after 两个 sha256
+硬钉,fail-closed;`--allow-unknown-base` 是唯一逃生口且必须显式给)。演练 → `--confirm`(写前双备份
+`…bak/cpbak-b3retire-20260804-143213`,`.backup` 0.51s,单事务 `rowcount=1`)。
+`rule_json` `b4b1f49…` → `32da6a10…`,**2100 → 1999 字节(-101,= 被删条目精确大小)**。
+**红线断言全绿**:K4 仍 `is_active=0` / `activated_at` 未变 / 现役集合仍 `['v1.3.3']` /
+`strategy_activation_log` **未增行**(3 行) / `hard_cut` 四项未动(**A2 红牌仍在**) / `intel_order` 未动 /
+`integrity=ok`。**生产库功能实测**:镜像 `persist_days` 0..10 全区间发射集合 = `['A2_theme_persist_ge_4']`
+(**B3 零黄牌**),A2 在 ≥4 照常命中(**未误伤**),`describe_hits(["B3…"])` 仍能回显(历史快照不掉标签)。
+**全文 diff 落 `archive/K4_advisory_B3退役_20260804.md`**(§九 只留一行 + 链接)。本地开发库已同批退役,
+与生产口径一致。代码侧:`_evaluate_hits` 删 B3 分支 + 删 `_B3_PERSIST_LO/HI` 常量 + 新增
+`RETIRED_HIT_CODES`;**`_HIT_META`/`_FALLBACK_EVIDENCE` 的 B3 条目刻意保留**(`describe_hits` 是历史
+快照回显入口,删了老卡片会掉标签);新增守门单测 3 条。
+- ⚠ **一处「不扩」如实登记**:`k4_advisory.intel_order` 里的 `"B3题材23"` **未动**(plan「只此一项,不扩」)。
+  它只是展示序前缀表,B3 退役后永不匹配任何命中 = 惰性残留、零行为影响;要清理须另立一项。
+
+**⑯-F Tier 预启动填充 ⏭️ 如实跳过(⛔ 未编任何数据)**
+脚本 `scripts/oneoff/preseed_baskets.py` **已写好并演练过**(四道闸齐:JSON Schema / 成员白名单闸复用
+`apply_member_hygiene` / 角色对拍读 `leader_structure_daily` 且**分歧原样入库不覆盖** / 夹逼复用
+`basket_card.clamp_entry_zone`+`clamp_max_chase`;默认演练、`--confirm` 才写、写前双备份、单事务、
+**同日已有篮子行则拒绝**;`via='preseed'` + `pack_version='preseed'` 两处都标,⛔ 不许填 K7-pack-v1)。
+**但 ⑯-F 要的「外部准备好的近期若干交易日篮子/Tier/卡」在仓库与本机都不存在** —— 这是人 + LLM 在外部
+配的产物,不是脚本能生成的。按纪律**跳过灌入、如实登记,绝不编数据**。`--example` 可打印输入件模板,
+交策略线/用户照着配好再跑。
+
+**⑯-G 域名与割接 ⛔ 阻塞,须用户裁定(Plan 未预见的现场事实)**
+- **现场事实**:`114.66.0.38` **不是空白机** —— 它已在用户手上跑了 6 天:① Docker 容器
+  `jc21/nginx-proxy-manager:2.15.1` **占着 80 与 443**(管理口 127.0.0.1:81),已在反代
+  `nas.linotsai.top` / `mt.linotsai.top` / `web.linotsai.top` + 一个裸 IP 站点;② WireGuard `wg0`
+  在 51820/udp,**有活跃 peer**(实时握手、已传 1.32 GiB)。
+- **后果**:Plan 写的「新机 nginx 站点 + certbot」**装不上** —— 系统 nginx `bind() 0.0.0.0:80 failed
+  (98: Address already in use)`。已 `stop + disable + reset-failed` 系统 nginx(留包待裁定),
+  `systemctl --failed` 零条。**certbot 也不能申请**(HTTP-01 要 80 口)。
+- **⛔ builder 不自行处置**:换掉用户既有 NPM = 拆用户在跑的服务;从 NPM 里加一条 `nk` 代理主机需要
+  它的管理凭据(我没有、也不会去造)。**三条路请裁定**:① 在 NPM 里加一条 `nk.linotsai.top →
+  127.0.0.1:8002` 的 proxy host 并用它自带的 Let's Encrypt 签证书(**推荐,非破坏性**,但需用户在
+  NPM 界面上操作或给出授权方式);② 把 NPM 迁走 / 停掉,改用 Plan 原文的系统 nginx + certbot
+  (**会影响 nas/mt/web 三个站**);③ 另购一台干净机器。
+- ✅ **A 路前提本身没破,且现场已逐条留证**(`deploy/preflight_a_route.sh`,本块新写):
+  **P1** 系统 nginx 与 NPM 两侧配置**零命中 `ln.linotsai.top`**;**P2** 带 `Host: ln.linotsai.top`
+  打新机 80 口 → **HTTP 404**、443 → 连不上(**均非 200**);**P3** `nk` → `114.66.0.38` ✅。
+  `deploy/nginx-neckline-nk.conf` 已备好(**只 `server_name nk`**,并带一个 `return 444` 的
+  `default_server` 兜底作物理闸门),但**未投产**。
+- 🔴🔴 **另一件必须上报的现场事实(非本次操作所致)**:**`ln.linotsai.top` 与 `lf.linotsai.top` 的
+  A 记录已从 DNS 消失(NXDOMAIN)** —— 阿里/DNSPod/Cloudflare/Google 四个解析器一致;同域的
+  `linotsai.top` / `www` / `fiscal` / `xiaoran` 仍正常解析到老机。老机本身**完好**:`neckline.service`
+  active、`/health` = `v1.5.2`(用 IP + Host 头直连实测 200)、两个 timer 昨日 16:05/16:35 都正常跑过。
+  **也就是说老 App 与 Lino Finance 现在都连不上服务端,而服务端其实活着。** 这不影响 A 路(NXDOMAIN
+  比"指向老机"更强地保证两拨客户端不交叉),但**是用户侧要立刻知道的生产事实**。⛔ 按零接触红线,
+  builder **没有也不会**去改任何 DNS 记录。
+
+**⑯-H 部署当次证据**:见上各段。补充:`sync_code.sh` DRY_RUN **零删除**;**12 个关键文件 sha256
+与本地逐个吻合**(含 `holding_k4_check.py` / 两个 oneoff 脚本 + 声明件 / `daily_update.py` /
+五个新单元 / 两个 pack);preflight import **`VERSION=v2.0.0` / 51 路由 / 43 去重路径**;
+属主自检**绿**(`data/neckline.db` = `neckline:neckline`);`.env` `.p8` 两端 sha256 相同、600
+`neckline:neckline`。**回滚绳** = 三对双备份 + 上一版代码态 git 号 + **老机原样在跑**。
+
+**🔔 双推送处置(按 plan 保守方向,已落地)**:迁来的 `neckline.db` 带着 APNs device token(`devices` 1 行)
+与推送开关,`.env` 的 APNs 四要素齐全 → 新机一旦排程就会与老机**同一条报告推两遍**。故:
+**`neckline.service` / `neckline-daily.timer` / `neckline-evening.timer` 三者全部「装好但 `disabled`」**
+(现场已核 `systemctl is-enabled` 三个都是 `disabled`);⑯-D 的三段演练用 drop-in 临时去掉了 `--notify`;
+端到端活体一律不带 `--notify`。**留到 ⑰ 换包时与老机 timer 一体切换(老机 disable → 新机 enable)。**
+
+**端到端活体(真实数据,LLM 无 key 走诚实降级)**:`scripts/evening.py 20260803 --no-llm`(不带 `--notify`)
+五段全跑通、退出码 0。逐段实况:⑧ 判定 0 篮 → ④ **1006 簇行 / 14930 相关行 / 1006 龙头行 / 110 阶段行,
+驱动种子 热点行业 10 + 涨停簇 239**(**现役 K7-pack 真的在产种子**)→ ⑤ **`推理段缺席(no_provider)——
+当日不成篮`**(**这正是要验的诚实降级:无 key 不硬造篮子、不静默、日志点名**)→ ⑨ 0 篮可复盘 → 报告落库。
+**顺带在生产库上验到上一笔提交的 Y-1 修复真的生效**:`save_report(20260803)` 打出
+「本次候选快照为空,但该日已有非空 `candidates_json`(V1 冻结快照)—— 已跳过覆写、保留历史值」。
+
+---
+
 ### V2-⑰ · 双端换包(macOS + iOS)—— **末块,等用户指令**
 
 - **macOS**:旧包先 `ditto` 备份 → **`ditto`**(⛔ 禁 `cp -R`)装 `/Applications/Neckline.app`;验 `CFBundleShortVersionString=2.0.0`、universal、`codesign --verify --deep --strict` valid + Designated Requirement、产物与安装态可执行 sha256 逐字节一致。
@@ -3063,6 +3238,7 @@ macOS 侧栏 = 同四板块 + **周复盘工作台**(既有对账保留,⑮ 补�
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-04 · 🚀 **V2-⑯ 新服务器建成 + 数据搬家 + 晚间管线三段化 + 两步包激活 + B3 退役完工**(🔴 @builder-pro,首次触碰新机与权威库;**老机 `ln` 全程零接触**、v1.5.2 照常在跑)。新机 `nk`/`114.66.0.38`(4 vCPU/3.8 GiB/58G)属主纪律复刻 + UFW 基线 + venv Py3.12.3;parquet **9594 文件与老机逐文件 md5 全等**、`neckline.db` 端到端 **sha256 逐位相同**(快照 08-04 14:18)、`init_schema` **零「唯一索引建不上」WARNING**、26 张老表行数逐表一致 + 19 张 V2 新表全 0 行、现役章程仍 `v1.3.3`;**P0-23 门禁全过**(主链峰值 **439 MB**/13.55s、扫描层 bootstrap 58 天 135 MB/4m38s、全程 load ≤1.58,⛔ 未抬 swap 未降精度);三段 oneshot + target + timer **装好 + 演练 `ExecMainStatus=0` 严格串行,但一律 `disabled`**(双推送处置);`daily_update` 的 ④/④b 双挂载按 plan 摘除;**⑯-E 两步激活全绿**(`selection_packs` 2 行、现役唯一 `K7-pack-v1`、事件流 3 条,未碰 `strategy_versions`);**⑯-I B3 黄牌退役全绿**(K4 仍 inert、`activated_at` 未变、激活流水未增行、A2 未误伤,全文 diff → `archive/K4_advisory_B3退役_20260804.md`);新机 `/health` = **`v2.0.0`**、端到端活体五段跑通并实证无 key 时的诚实降级。**三件停手上报待裁定**:⑯-G 公网入口被用户既有 `nginx-proxy-manager` 容器占着 80/443、`ln`+`lf` 的 A 记录已从 DNS 消失(NXDOMAIN,非本次所致,老机服务完好)、⑯-D 三段切法会让报告 ③b `droppedBaskets` 恒缺席且文案误导。**⑯-F preseed 无外部输入件,如实跳过未编数据**;⑤⑥ LLM 段 / ⑦ 卡 / ⑧ 存拍三项未实测(无 key / 无篮子 / 需盘中)。测试 **2896 过 + 2 skip**。详见 §五 V2-⑯ 完工记录。
 - 2026-08-04 · 🩹 **V2 小审(⑭⑮)修 🟡 Y-1 必修 + 四条便宜 🔵**(@builder,commit `a123fe9`,详见 `archive/REVIEW_REPORT_V2_小审_⑭⑮_20260803.md` 逐条销项)。**Y-1**:`report/store.py::save_report` 的 `INSERT OR REPLACE`(整行先删后插)叠加 ⑬-11 起 `watchlist_json` 不进列清单 + ⑭ 起 `candidates` 恒传 `[]`,会让重跑历史日期的 `scripts/report.py` 把 V1 冻结的 `candidates_json`/`watchlist_json` 快照永久清空;改 `INSERT ... ON CONFLICT(trade_date) DO UPDATE SET <本次写入列>`——`watchlist_json` 不在写入列清单里天然免疫,`candidates_json` 额外加 SQL `CASE` 守卫(本次写 `[]` 且历史已非 `[]` 时保留旧值、记 WARNING,真写非空 candidates 时仍正常覆盖)。**全仓同模式扫描**(INSERT OR REPLACE 落在含「停写留档」列的表上)结论:**除本处外零命中**——`app_settings` 全部走「`INSERT OR IGNORE` 补首行 + 逐字段 `UPDATE…WHERE id=1`」安全模式;`inquiry_pool`/`watchlist`/`decision_log`/`reference_plans`/`llm_judgments`/`breathing_t_trades` 六表整表停写、零残留写手;`holding_eod_check` 的「D5 判一次定格」三列不属此模式(活跃写路径且调用方每次显式带值,非列清单省略)。**四条 🔵**:②`test_contract_crosscheck.py` 调用面扫描从 `APIClient.swift` 单文件扩到 `client/` 全部 Swift 文件 + 新增 HTTP method 维度对拍(已知只覆盖字面量直传调用点,约 36/56)、顺带修正测试代码裸数字路径段("42")误报;④ `AppModel.submitProviderForm()` 两个 `catch` 分支补清 `providerForm.apiKey`,失败重试不再残留明文 key 草稿;⑤ 两处过期注释订正(`scenarioReviewPending` 不再声称走已删的 scenario-outcome 端点;幂等键"提交成功后作废"改为准确描述"下次开仓流程才换新");⑥ `updateProvider` 的 `searchEngine`/`notes` 留空语义对齐 `apiKey`(留空=不改),契约对拍表 §6.2-B1 同步一句。B-1(六处硬解码)与 B-3(`card_not_ready` 语义合并)不在本批(前者改动面超出授权、后者需 planner 先定 reason 拆分口径),报告已标注留待后续。测试:Python **2890 → 2894 passed + 2 skip**(净增 4,零回归);Swift iOS Simulator **179 过 + 12 skip**、iOS/macOS Debug `xcodebuild build` 双 SUCCEEDED。
 
 - 2026-08-03 · 📱 **V2-⑮ 完工:客户端双端改版(D8 四板块)+ ⑮ 欠账清单 6 组全部还清 + 版号三方同批升 2.0.0**(@builder-pro,commits `0ed277c` / `dcd90cf` / `e676967`,纯本地 + 双端构建 + 模拟器截图核对,零服务器 / 零部署)。iPhone 四板块 = **今日篮子 / 持仓 / 问询台 / 设置**(macOS 同四板块 + 周复盘工作台);V1「盘中看板」不再是 tab,**内容一条没删**并入持仓板块成一节(80/15/5 里它本就是为解释持仓服务的,判断已登记)。契约层:候选族五个 Swift 类型退役 → 篮子族 8 + 计划/快照/画像/包/评价 5 + 提醒族 4 + Provider/推送族 4 个 DTO(**两类快照一律手写 `init(from:)` + `decodeIfPresent`**,A 类也手写 = 白拿的保险);**删五处打向已删端点的活调用**(含 `PUT /settings/llm` 那条采集明文 key 打进空洞的);`mapReason` 补八个 case 并把 409/422 也接进来(此前只有 400/404)。界面:篮子卡 11 项 + 成员卡(**角色两说并存**、三个参考件夹逼拒收显示原因不兜 0、**「离场参考区间(不是止盈线)」**、「参考、非指令」四不标注恒显)、③b 两个原因码分开展示、三段两种「空」讲不同的话、Provider 注册表(**key 只写不回显**)+ 按 kind 动态渲染的推送开关(未识别 level 自成一组、未知 kind 优雅降级)、**⑪-D-D per-position 触达提醒开关**(只翻静音位、计划正文一项不动)、**同题材合并敞口**。**幂等键按 planner 追加口径落地**:每笔新提交动作铸一枚 UUID、重试复用同一枚,⛔ 不绑业务量(单测两条)。**两个已登记的债集合双双清空 + 两条冻结快照 DTO 闸从 skip 转跑**(对拍表 7 过 + 2 skip → 9 过)。测试:Python **2890 过 + 2 skip**、Swift **179 过 + 12 skip**、iOS/macOS × Debug/Release **四路 BUILD SUCCEEDED**;语义红线 grep 零命中。**六处设计判断 + 三条 Plan 疏漏**详见 §五 ⑮ 完工记录,对拍表 §六 复选框已逐项打勾注明提交号。

@@ -278,13 +278,18 @@ def main() -> int:
     # v1.4-⑩-C:排在两位增强项**之后**(它吃的是本次主增量刚落的当日 `daily` 分区,
     # 时序上必须在 `backfill_day_tables` 之后)。
     update_industry_strength(target)
-    # V2-④b:排在 `update_industry_strength` 之后(依赖它刚写的 `persist_days`),
-    # 在 `update_scan_layer` 之前(两者互不依赖,谁先谁后均可,这里选择紧跟着它的
-    # 唯一上游一起收尾)。
-    update_industry_stage(target)
-    # V2-④:排在最后——依赖本次刚落的 `limit_derived`(上面 `run_limit_derived`)与
-    # `industry_strength_daily`(上面 `update_industry_strength`)两者都已就绪。
-    update_scan_layer(target)
+    # —— ⑯-D(2026-08-04):**④ 扫描层与 ④b 行业阶段的日更挂载已从这里摘掉** ————————
+    # 它们此前是**双挂载**(这里一份 + `report/evening.py` 的 `scan` 段一份)。⑯-D 拆三个
+    # oneshot 时按 plan「二选一 = 摘掉 `daily_update` 那份、留链里的」执行,理由是**跨进程
+    # 隐式依赖会静默用陈旧数据**:⑤ 直接吃 ④ 的**当日**产出,留在链里则链自己保证「⑤ 读到
+    # 的是今天的」;留在这里,一旦这一步失败(它在本脚本里是「尽力而为不改退出码」),链会
+    # 拿**昨天的**扫描表当今天用**而且不报错**。移进链里还顺带让它有了明确退出码。
+    # ⚠ `update_scan_layer` / `update_industry_stage` **两个函数刻意保留**(补算用:
+    # `python scripts/scan_layer.py refresh --from … --to …` 是对外补算入口,本脚本这两个
+    # 函数则是「某天要在拉数进程里顺手补一次」的手动后门),只是**不再挂进 `main()`**。
+    # ⛔ 别"顺手"加回来 —— 加回来就恢复了上面那个静默陈旧数据的故障面。
+    # `update_industry_strength`(`industry_strength_daily`)**留在这里不动**:它不在链的
+    # 任何段里,是 ④b 的唯一上游,必须在 16:05 这一跑落好。
 
     logger.info("增量更新完成:%s", target)
     return 0

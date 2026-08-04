@@ -1,0 +1,41 @@
+# Neckline 晚间链 **第 1 段**:⑧ EOD 篮子验证拍 + ④ 市场扫描层 + ④b 行业阶段
+# (plan §五 V2-⑯-D「新切法(三段,按资源画像而不是功能名称切)」)。
+#
+# **这一段是纯机械批算、吃 parquet 全表扫描 = 三段里内存最重的一段**,`MemoryMax`
+# 主要卡在这里(P0-23 的正主)。数值见下方 —— 由 ⑯-C 在**本机**实测峰值 + 余量定,
+# ⛔ 不许照抄老机 / 拍脑袋;改数值前先重跑一次 ⑯-C 的隔离计时。
+#
+# **段序**(⛔ 由 `run_evening_chain` 的 `CHAIN_SEGMENTS` 固定,systemd 侧改不了顺序):
+#   16:05 neckline-daily(拉数,另一个 unit)
+#     → 本段 verify,scan
+#     → neckline-basket.service(⑤⑥⑦,LLM 段)
+#     → neckline-report.service(⑨ 复盘 + 报告落库)
+#
+# ⚠ **⑯-D 起 ④/④b 只挂在这里**:`scripts/daily_update.py` 里那份双挂载已摘除
+# (理由见该脚本 `main()` 内注释:跨进程隐式依赖会让链静默拿昨天的扫描表当今天用)。
+#
+# 安装(rsync 不同步 deploy/,改动后须手动 scp + daemon-reload):
+#   sudo cp /opt/neckline/deploy/neckline-scan.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+# ⛔ 本 unit **不带 [Install]**:它由 `neckline-evening.target` 的 `Wants=` 拉起,
+#   不单独 enable(避免出现"两条路都能触发这一段"的双跑面)。
+
+[Unit]
+Description=Neckline evening chain seg1: EOD basket verification + scan layer + industry stage
+Documentation=file:///opt/neckline/PROJECT_PLAN.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --segments verify,scan
+# 批算段不碰 LLM,墙钟应当是分钟级;超时按 ⑯-C 实测 × 3 余量设,卡死不许无限占着串行队列。
+TimeoutStartSec=1800
+# —— 内存护栏(⑯-C 新机实测填,见本文件头)——
+MemoryMax=1400M
+# ⛔ 不设 MemoryHigh:软节流会让进程陷进回收死循环 = 卡死不报错(P0-23 老机教训),
+#    宁可 OOM-kill 一个 oneshot、日志里看得见,也不要静默变慢。

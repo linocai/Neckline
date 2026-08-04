@@ -119,6 +119,7 @@ def test_hit_meta_levels_and_evidence_strength():
     assert meta["A2_theme_persist_ge_4"][2] == "constituent"
     # 普通警示
     assert meta["B1_volume_stacking"][1] == "normal" and meta["B1_volume_stacking"][2] == "price_volume"
+    # B3 已退役(V2-⑯-I)但**条目仍在** —— `describe_hits` 要靠它回显历史快照,文案逐字不变。
     assert meta["B3_theme_persist_2_3"][1] == "normal" and meta["B3_theme_persist_2_3"][2] == "constituent"
 
 
@@ -133,7 +134,7 @@ def test_theme_persist_from_industry_strength():
     ])
     industry_of = {"600001.SH": "半导体", "600002.SH": "食品饮料", "600003.SH": "冷门行业(不在热表)"}
     assert hk.stock_persist_days("600001.SH", industry_of, hot) == 5   # ≥4 → A2
-    assert hk.stock_persist_days("600002.SH", industry_of, hot) == 2   # 2-3 → B3
+    assert hk.stock_persist_days("600002.SH", industry_of, hot) == 2   # 2-3(B3 退役后不再打牌)
     assert hk.stock_persist_days("600003.SH", industry_of, hot) == 0   # 行业不在热表 → 0
 
 
@@ -145,10 +146,36 @@ def test_evaluate_hits_theme_ge4_is_strong_but_constituent():
     assert a2.level == "strong" and a2.evidence_strength == "constituent"
 
 
-def test_evaluate_hits_theme_2_3_normal():
-    hits = hk._evaluate_hits(None, persist_days=3, evidence={})
-    assert [h.code for h in hits] == ["B3_theme_persist_2_3"]
-    assert hits[0].level == "normal"
+# —— V2-⑯-I:B3 黄牌退役守门(K7 需求 3 / H11)————————————————————————————
+# 这一组是 plan ⑯-I 点名要求的守门单测:**B3 不再产生任何黄牌,且 A2 仍照常命中**
+# (防误伤)。⛔ 谁把 B3 分支加回 `_evaluate_hits` 都会在这里当场红。
+
+def test_b3_retired_emits_no_hit_at_any_persist_days():
+    """退役后的 B3:**任何** persist_days 都不再发射它(原判据区间 2-3 逐值验)。"""
+    for d in range(0, 11):
+        codes = {h.code for h in hk._evaluate_hits(None, persist_days=d, evidence={})}
+        assert "B3_theme_persist_2_3" not in codes, f"persist_days={d} 仍发射了已退役的 B3"
+
+
+def test_b3_retired_but_a2_still_fires():
+    """防误伤:A2(≥4 天硬回避)一个字节都不动。"""
+    for d in (4, 5, 9):
+        codes = {h.code for h in hk._evaluate_hits(None, persist_days=d, evidence={})}
+        assert codes == {"A2_theme_persist_ge_4"}, f"persist_days={d} 的 A2 命中被误伤:{codes}"
+    # 2-3 天这一档退役后是**零命中**(不是换个码继续打牌)
+    for d in (2, 3):
+        assert hk._evaluate_hits(None, persist_days=d, evidence={}) == []
+
+
+def test_retired_codes_still_decorate_history_but_never_emit():
+    """退役码必须仍在 `_HIT_META`(历史快照回显靠它),但绝不出现在任何新命中里。"""
+    for code in hk.RETIRED_HIT_CODES:
+        assert code in hk._HIT_META, f"{code} 从 _HIT_META 删了 —— 历史报告的该标签会掉"
+        assert code in hk._FALLBACK_EVIDENCE
+    emitted = set()
+    for d in range(0, 11):
+        emitted |= {h.code for h in hk._evaluate_hits(None, persist_days=d, evidence={})}
+    assert not (emitted & hk.RETIRED_HIT_CODES)
 
 
 # ————————————————————————————————————————————————————————————————

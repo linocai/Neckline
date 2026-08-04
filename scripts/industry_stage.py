@@ -5,8 +5,11 @@
 `scripts/industry_strength.py` 那种两遍法——理由见 `neckline/scan/stage.py` 模块
 docstring「两遍法的如实 departure」)。
 
-正常日子**不需要跑本脚本**:`scripts/daily_update.py` 已挂 `update_industry_stage`
-自动增量(排在 `update_industry_strength` 之后,依赖它的 `persist_days`)。本脚本
+正常日子**不需要跑本脚本**:16:35 晚间链的 `scan` 段(`report/evening.py`,systemd
+`neckline-scan.service`)已挂 `refresh_industry_stage` 自动增量。⚠ **⑯-D 起挂载点从
+`scripts/daily_update.py` 换到了链里**(此前是双挂载,按 plan「摘掉 daily_update 那份、
+留链里的」二选一;`daily_update.update_industry_stage` 函数仍在、只是不再进 `main()`,
+留作手动后门)。上游 `industry_strength_daily` 仍由 16:05 的 `daily_update` 落。本脚本
 用于:①日更漏跑 / 报错后补算;②口径常量改动后重算区间;③一次性历史回填
 (bootstrap);④出问题时的三项自检。
 

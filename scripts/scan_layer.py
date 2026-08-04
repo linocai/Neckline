@@ -6,10 +6,13 @@
 调用方明确传 `db_path`/`parquet_dir`,不靠隐式模块级 `settings` 兜底——同
 项目 CLAUDE.md「测试隔离」条纪律,防止单测在隔离环境下意外写穿真实开发库)。
 
-正常日子**不需要跑本脚本**:`scripts/daily_update.py` 已挂
-`update_scan_layer` 自动增量(见该脚本 docstring)。本脚本用于:①日更漏跑 /
-报错后补算;②口径常量改动后重算区间;③一次性历史回填(bootstrap);④出问题
-时的三项自检。
+正常日子**不需要跑本脚本**:16:35 晚间链的 `scan` 段(`report/evening.py`,systemd
+`neckline-scan.service`)已挂 cluster/corr/leader + 驱动种子自动增量。⚠ **⑯-D 起挂载
+点从 `scripts/daily_update.py` 换到了链里**(此前是双挂载,按 plan「摘掉 daily_update
+那份、留链里的」二选一 —— 留在拉数进程里会让「⑤ 拿昨天的扫描表当今天用」这类故障
+静默发生;`daily_update.update_scan_layer` 函数仍在、只是不再进 `main()`,留作手动
+后门)。本脚本用于:①日更漏跑 / 报错后补算;②口径常量改动后重算区间;③一次性
+历史回填(bootstrap);④出问题时的三项自检。
 
 **批算顺序固定**:cluster → corr → leader(`corr.py` 读 `cluster.py` 当日
 产出的簇成员做候选对;`leader.py` 读簇成员 + 复用 corr 的价格窗口),`refresh`/

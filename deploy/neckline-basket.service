@@ -1,0 +1,36 @@
+# Neckline 晚间链 **第 2 段**:⑤ 驱动聚合 → ⑥ Tier 定档(事务1)→ ⑦ 卡冻结(事务2)
+# (plan §五 V2-⑯-D)。
+#
+# **这一段是 LLM 段**,资源画像是**墙钟 / 网络**而不是内存 —— 单独成段才能给它长
+# 超时**而不必把长超时也给批算段**(带联网搜索的调用正常生成 30–60s+,见 CLAUDE.md
+# 「带联网搜索的 LLM 调用不能用短读超时」)。
+#
+# ⚠ **本段不重跑 ④**:`run_evening_chain(segments=['basket'])` 里 `seed_set` 是 `None`,
+#   `aggregate_baskets` 会自己 `generate_seeds()` —— 那是**只读上一段刚落的扫描表**,
+#   不是重算(只多一次便宜的 DB 查询)。故 seg1 失败 / 零行时,本段会如实得到"今日无
+#   种子",走"当日无篮子是合法输出"分支,⛔ 不会拿昨天的凑数。
+#
+# ⚠ **Wants 不是 Requires**:seg1 失败本段照跑(链的保险丝哲学:任一段失败,后面照走、
+#   缺席如实披露)。要改成"前段失败就不跑",那是产品判断,得先回 planner。
+#
+# 安装:sudo cp /opt/neckline/deploy/neckline-basket.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# ⛔ 无 [Install]:由 neckline-evening.target 拉起。
+
+[Unit]
+Description=Neckline evening chain seg2: driver aggregation + Tier + card freeze (LLM segment)
+Documentation=file:///opt/neckline/PROJECT_PLAN.md
+After=network-online.target neckline-scan.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --segments basket
+# LLM 段:双 Agent × 每篮多次调用 × 90s 读超时 × 重试。给足墙钟,别让慢调用被 systemd
+# 掐成"链断了"。数值按 ⑯-C 实测的 LLM 段耗时 × 余量设。
+TimeoutStartSec=3600
+# 内存画像轻(不做全表扫描,只读上一段落好的表 + 装配上下文)。
+MemoryMax=900M

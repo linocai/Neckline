@@ -1,0 +1,26 @@
+# Neckline 16:35 晚间链的**编排锚**(plan §五 V2-⑯-D)。三个 oneshot **串行**。
+#
+# **为什么用 target 而不是三个 timer**:三个各自定时的 timer 是"按钟点碰运气"——
+# 上一段跑超时下一段照样开跑,链序就断了。target 一次拉起三段、由各 service 自己的
+# `After=` 串成序,systemd 保证"前一个 oneshot 跑完(不论成败)才轮到下一个"。
+#
+# **`Wants=` 而不是 `Requires=`**:任一段失败,后面几段**照跑**、报告照出、缺席如实
+# 披露 —— 这是晚间链自己的保险丝哲学(`report/evening.py` 模块头),systemd 侧不许
+# 加严成"一段挂了整条不跑"。⛔ 改成 Requires 前先回 planner。
+#
+# **顺序由 service 侧的 After= 定**(scan ← basket ← report),不在这里重复声明,
+# 免得两处对不上时不知道听谁的。
+#
+# 安装:
+#   sudo cp /opt/neckline/deploy/neckline-evening.target /etc/systemd/system/
+#   sudo cp /opt/neckline/deploy/neckline-{scan,basket,report}.service /etc/systemd/system/
+#   sudo cp /opt/neckline/deploy/neckline-evening.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   # 演练(不等 timer):sudo systemctl start neckline-evening.target
+#   # 正式排程:sudo systemctl enable --now neckline-evening.timer
+
+[Unit]
+Description=Neckline 16:35 evening chain (3 serial oneshots: scan -> basket -> report)
+Documentation=file:///opt/neckline/PROJECT_PLAN.md
+Wants=neckline-scan.service neckline-basket.service neckline-report.service
+After=neckline-scan.service neckline-basket.service neckline-report.service

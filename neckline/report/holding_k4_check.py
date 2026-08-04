@@ -17,7 +17,7 @@
     A3b_belowyear_bigvol(派发放量) | (雷区地图 3-⑤:年线下 ret1d≥5%×量比≥2=派发)★★     | _trend_below_expr() & _dispatch_bigred_expr()(量比 vol/vol_ma5≥2)
     B1_volume_stacking             | vol_above_ma20_cnt3≥2 & ret_1d≥5% & vol>vol_ma20×1.5 | _big_red_expr() & ~_trend_below_expr()(年线上才算普通堆积)
     B2_dual_golden_cross           | MACD多头(DIF>DEA) & KDJ多头(K>D)=双金叉态          | state4 == "①双金叉态"(_add_macd_kdj 镜像)
-    B3_theme_persist_2_3           | 行业强度连续2-3天成员                              | 2 ≤ industry_strength.industry_persist_days ≤ 3 ★
+    B3_theme_persist_2_3           | ⛔ **已退役(V2-⑯-I)** —— 不再产生任何新命中     | (无判据;仅 `describe_hits` 回显历史快照)
     B4_chase_strong_red            | close>ma20 & ret_1d>5%                             | (close>ma20) & (ret_1d > _B4_UP=5%)
 
     ★ 题材持续天数镜像口径说明(**v1.4-② 已回归规格档,v1.3-② 的 board_age 代理到此
@@ -54,7 +54,7 @@
       A3b 年线下放量大阳(三者 evidence_strength=price_volume,价量硬数据)。A2 题材≥4天
       level=strong 但 evidence_strength=constituent(弱证据/参考)→ **不单独触发 APNs**。
     · **普通警示(level=normal,→ 只进看板/报告卡)**:B1 量能堆积 / B2 双金叉 / B4 追强大红
-      (price_volume) + B3 题材2-3天(constituent/参考)。
+      (price_volume)。~~B3 题材2-3天~~ **已于 V2-⑯-I 退役**,见下方 `RETIRED_HIT_CODES`。
     · **第六类 APNs 门槛 `has_strong`** = 命中含「level=strong ∧ evidence_strength=price_volume」。
 
 **net_float(v1.3-① seam)**:D5 收盘净浮盈 = 现价(EOD 面板 close,前复权锚点在 trade_date
@@ -116,8 +116,23 @@ _BIGRED_UP = 0.05         # A3b/B1 放量大阳共用:当日涨幅 ≥5%
 _A3B_VOLUME_RATIO_HI = 2.0  # A3b:量比 vol/vol_ma5 ≥2(= 面板 vol_ratio_5,贴雷区地图 3-⑤ 实测口径)
 _B1_MULT = 1.5            # B1(年线上普通堆积)专用:vol > vol_ma20×1.5(DB advisory 原文形态)
 _B1_CNT3 = 2             # B1 专用:前 3 交易日放量天数 ≥2(vol_above_ma20_cnt3,advisory 原文)
-_B3_PERSIST_LO, _B3_PERSIST_HI = 2, 3   # B3:题材持续 2-3 天(认可题材=接盘侧)
 _B4_UP = 0.05             # B4:追强大红,close>ma20 & ret_1d>5%
+
+# —— 已退役的 advisory 码(V2-⑯-I,2026-08-04;K7 需求 3 / H11 证据)——————————————
+# **B3「题材持续 2-3 天」黄牌停用**:H11 证据下 2-3 天(发酵态)在当前 regime 是最优
+# 注意力段,原「被认可 = 接盘侧」的判决主要由样本内年份驱动。正向偏好改由**排序侧**
+# 承接(K7-pack 的 `industry_stage_score` 五态序),⛔ 不在 advisory 里造第三种牌。
+# ⛔ **A2 红牌(≥4 天硬回避)不动** —— 过热态双尾最重,H11 再确认。
+#
+# **镜像与 DB 讲同一句话**:DB 侧同批把 `strategy_versions` K4 行的
+# `k4_advisory.avoid_flag.B3_theme_persist_2_3` 摘除(`scripts/oneoff/retire_k4_b3.py`,
+# diff 全文落 `archive/K4_advisory_B3退役_20260804.md`);本模块侧 `_evaluate_hits`
+# **不再发射它**。
+# ⚠ **`_HIT_META` / `_FALLBACK_EVIDENCE` 里的 B3 条目刻意保留、不删**:`describe_hits()`
+# 是**历史快照回显**入口(`report/info_card.py` 拿冻结在老报告里的 `k4_flags` 码列表来
+# decorate),删了会让退役之前生成的历史卡片**掉标签**(未知码静默跳过)。保留 = 老快照
+# 照常显示,新命中一个也不会产生。⛔ 别把 B3 加回 `_evaluate_hits`。
+RETIRED_HIT_CODES = frozenset({"B3_theme_persist_2_3"})
 
 # 前复权价列(与 features.py 同一组,本地常量避免 import 私名)
 _QFQ_PRICE_COLS = ("open", "high", "low", "close", "pre_close")
@@ -150,6 +165,8 @@ _HIT_META: Dict[str, tuple] = {
     "A2_theme_persist_ge_4": ("题材持续≥4天(过热/接盘;成分类参考)", "strong", "constituent"),
     "B1_volume_stacking":    ("量能堆积大涨(诱多末端形态)", "normal", "price_volume"),
     "B2_dual_golden_cross":  ("双金叉态(四态垫底,左尾最肥)", "normal", "price_volume"),
+    # ⛔ 已退役(V2-⑯-I,见 `RETIRED_HIT_CODES`):**只服务 `describe_hits` 的历史快照回显**,
+    #    `_evaluate_hits` 永不发射它。文案逐字保留 —— 老报告里冻的就是这句。
     "B3_theme_persist_2_3":  ("题材持续2-3天(认可题材=接盘侧;成分类参考)", "normal", "constituent"),
     "B4_chase_strong_red":   ("追强大红(close>ma20 且涨>5%)", "normal", "price_volume"),
 }
@@ -557,11 +574,11 @@ def _evaluate_hits(
             _emit("B2_dual_golden_cross")
         if row.get("_hit_B4"):
             _emit("B4_chase_strong_red")
-    # 题材持续天数(弱证据/参考;A2≥4=强级别但不触发 APNs、B3=2-3 普通)。
+    # 题材持续天数(弱证据/参考;A2≥4=强级别但不触发 APNs)。
+    # ⚠ **2-3 天(B3)那一档已于 V2-⑯-I 退役,这里刻意没有 `elif` 分支** —— 发酵态
+    # 由排序侧 `industry_stage_score` 正向承接,不再打黄牌。见 `RETIRED_HIT_CODES`。
     if persist_days >= _A2_PERSIST_MIN:
         _emit("A2_theme_persist_ge_4")
-    elif _B3_PERSIST_LO <= persist_days <= _B3_PERSIST_HI:
-        _emit("B3_theme_persist_2_3")
     return hits
 
 
@@ -716,6 +733,7 @@ def _resolve_names(codes: List[str], db_path: Optional[Path]) -> Dict[str, str]:
 
 
 __all__ = [
+    "RETIRED_HIT_CODES",
     "HoldingK4Hit",
     "HoldingK4Item",
     "build_holding_k4_check",

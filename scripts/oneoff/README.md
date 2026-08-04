@@ -17,6 +17,21 @@
   `holding_eod_check.data_unavailable`(①-B 新列)按**分区实况推导**回填到历史行。
   不补的话,上云当天的 9:25:30 盘前那一拍读到的还是旧代码写的 NULL 快照 → 停牌票照推
   「D5 时间退出」(**实测踩到**)。分区不可读的行**留 NULL 不推导**。
+- `retire_k4_b3.py` + `retire_k4_b3_payload.json` — **V2-⑯-I(2026-08-04 已在生产执行)**:
+  K4 advisory 的 B3「题材持续2-3天」黄牌退役(从 `k4_advisory.avoid_flag` 摘掉那一个键)。
+  声明件里 **before/after 两个 rule_json sha256 硬钉**、fail-closed(基线不符即拒,
+  `--allow-unknown-base` 是唯一逃生口且必须显式给);默认演练、`--confirm` 才写、写前
+  `.backup`+`cp -p` 双备份、单事务、**三态幂等**(已退役则 0 改动);写后逐条断言
+  K4 仍 `is_active=0` / `activated_at` 未变 / `strategy_activation_log` 不增行 /
+  A2 红牌未动。**改 `strategy_versions` 里 inert 行的 advisory 载体一律照此体例。**
+  全文 diff → `archive/K4_advisory_B3退役_20260804.md`。
+- `preseed_baskets.py` — **V2-⑯-F(脚本已就绪,但 2026-08-04 当次未灌:无外部输入件)**:
+  把外部准备好的近期若干交易日篮子/Tier/卡灌进权威库做 Tier 冷启动。四道闸:JSON Schema /
+  成员白名单闸(复用 `selection.member_hygiene.apply_member_hygiene`)/ 角色对拍(读
+  `leader_structure_daily`,**分歧原样入库不覆盖**)/ 夹逼(复用 `basket_card.clamp_entry_zone`
+  + `clamp_max_chase`,被拦置空**不改成边界值**)。⚠ 与在线路径相反,**降级在这里 fail-closed**
+  (往权威库灌历史,宁可不灌);`via='preseed'` + `pack_version='preseed'` **两处都标、
+  ⛔ 不许填 K7-pack-v1**(会污染按包归因)。`--example` 打输入件模板。
 - `compare_a2b3_industry_switch.py` — v1.4-②-C 硬要求:A2/B3 题材持续天数判据从概念板块
   `board_age` 代理切到 `industry_strength` 行业强度唯一源的切换对拍,只读本地库/parquet
   (零生产访问、零写库),产出 `archive/v1.4_A2B3口径切换对拍_<date>.md`(全市场 + 候选池
