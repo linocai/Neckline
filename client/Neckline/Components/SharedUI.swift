@@ -80,18 +80,57 @@ struct VerdictBadge: View {
     }
 }
 
-/// LLM 审判徽标(通过/否决/未激活)。
-struct LLMJudgmentBadge: View {
-    let judgment: LLMJudgment
-    private var tone: NKAxisTone {
-        switch judgment.verdict {
-        case "通过": return .good
-        case "否决": return .bad
-        default: return .neutral   // "未激活"等降级占位
-        }
-    }
+// ⚠ **`LLMJudgmentBadge` 已随候选族 DTO 整族退役**(V2-⑮):`ReportOut.candidates` 键
+// 已删,LLM 的产出改由**篮子卡**承载(叙述 / 剧本 / 三个参考件),每处带下面这条标注。
+
+/// **「参考、非指令」标注**(§2.8 红线:参考件每处出现都要带)。
+///
+/// **四不**:不进排序 / 不进哨兵 / 不改去留 / 不加分。⛔ 不许省略、不许改写成
+/// 「建议」「推荐」之类的指令口吻 —— 这句话是 LLM 产出与硬纪律之间的那条线。
+struct NKReferenceNote: View {
+    var text: String = "参考、非指令 · 不进排序、不进哨兵、不改去留、不加分"
     var body: some View {
-        NKChip(text: "LLM \(judgment.verdict)", tone: tone)
+        HStack(spacing: 4) {
+            Image(systemName: "info.circle").font(.system(size: 9))
+            Text(text).font(.system(size: 9.5))
+        }
+        .foregroundStyle(NK.textTertiary)
+    }
+}
+
+/// 自由结构字段(`mech` / `tierBreakdown` / `verificationSpec` / `manualForm` …)的
+/// 键值表。**只展示、不解释**:这些键是服务端的语义标识符(维度名 / 条件名),
+/// ⛔ 客户端不改名、不重算、不猜含义。
+struct NKJSONTable: View {
+    let value: NKJSON
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let obj = value.objectValue, !obj.isEmpty {
+                // 按字典序,**确定性** —— 顺序不能每次刷新都跳。
+                ForEach(value.sortedKeys, id: \.self) { k in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(k).font(.system(size: 10.5).monospaced())
+                            .foregroundStyle(NK.textTertiary)
+                        Spacer(minLength: 8)
+                        Text(obj[k]?.displayText ?? "—")
+                            .font(.system(size: 10.5).monospaced())
+                            .foregroundStyle(NK.textSecondary)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            } else if let arr = value.arrayValue {
+                ForEach(Array(arr.enumerated()), id: \.offset) { _, item in
+                    Text("· \(item.displayText)").font(.system(size: 10.5).monospaced())
+                        .foregroundStyle(NK.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text(value.displayText).font(.system(size: 10.5).monospaced())
+                    .foregroundStyle(NK.textSecondary)
+            }
+        }
     }
 }
 
@@ -137,8 +176,9 @@ struct MissedEntryHintBanner: View {
 // MARK: - v1.4-①-C 板块数据过期告警(§七 P0-3:报告顶部醒目告警,不静默把过期数据
 // 当正常结果展示)。
 
-/// 数据新鲜度告警(v1.4-①-C 板块 + v1.4-⑩-F 行业强度)。**两件独立故障各占一行**,
-/// 不合并成一句 —— 合并读者就分不清哪个坏了(服务端契约同样是两组独立键)。
+/// 数据新鲜度告警(板块 + 行业强度 + **V2-⑭-A 市场扫描层**)。
+/// **三件独立故障各占一行,⛔ 不合并成一句** —— 合并读者就分不清哪个坏了
+/// (服务端契约同样是三组独立键)。
 struct DataFreshnessBanner: View {
     let freshness: DataFreshness
     var body: some View {
@@ -156,7 +196,17 @@ struct DataFreshnessBanner: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("行业强度数据未就绪").font(.system(size: 13, weight: .bold))
                         Text(industryText).font(.system(size: 12)).opacity(0.9)
-                        Text("今日候选排序缺行业维度、题材持续天数不可用").font(.system(size: 11)).opacity(0.85)
+                        Text("排序缺行业维度、题材持续天数不可用").font(.system(size: 11)).opacity(0.85)
+                    }
+                }
+                if freshness.scanLayerStale == true {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("市场扫描层未就绪").font(.system(size: 13, weight: .bold))
+                        Text(scanText).font(.system(size: 12)).opacity(0.9)
+                        // 扫描层没跑 → 今日无种子 → 今日无篮子;而「今天没有篮子」与
+                        // 「今天没看」必须能分开,这一行就是把它们分开的那句话。
+                        Text("今日篮子若为空,可能是**没看**而不是**今天真没有**")
+                            .font(.system(size: 11)).opacity(0.85)
                     }
                 }
             }
@@ -172,14 +222,69 @@ struct DataFreshnessBanner: View {
         return "板块数据\(dateText),落后 \(freshness.sectorLagDays) 个交易日"
     }
 
-    /// `industryStrengthLagDays == -1` 是哨兵值(完全无数据),**不是"落后 -1 天"**,
-    /// 故单独成句;有数据时才报落后天数。
+    /// `-1` 是哨兵值(完全无数据),**不是"落后 -1 天"**,故单独成句。
     private var industryText: String {
         guard let date = freshness.industryStrengthDate,
               let lag = freshness.industryStrengthLagDays, lag >= 0 else {
             return "行业强度数据完全缺失(预计算表无任何数据)"
         }
         return "行业强度数据最新至 \(date),落后 \(lag) 个交易日"
+    }
+
+    private var scanText: String {
+        guard let date = freshness.scanLayerDate,
+              let lag = freshness.scanLayerLagDays, lag >= 0 else {
+            return "扫描层三张预计算表完全缺失"
+        }
+        return "扫描层最新至 \(date),落后 \(lag) 个交易日"
+    }
+}
+
+/// ⑤ 数据新鲜度明细(三组各自一行,**该组三键整体缺席 = 本次连新鲜度都没查到**,
+/// ⛔ 不是"新鲜")。
+struct DataFreshnessDetail: View {
+    let freshness: DataFreshness
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            row(title: "概念板块日更",
+                date: freshness.sectorDataDate, lag: freshness.sectorLagDays,
+                stale: freshness.stale, present: true)
+            row(title: "行业强度日更",
+                date: freshness.industryStrengthDate, lag: freshness.industryStrengthLagDays,
+                stale: freshness.industryStrengthStale,
+                present: freshness.industryStrengthLagDays != nil || freshness.industryStrengthDate != nil
+                    || freshness.industryStrengthStale != nil)
+            row(title: "市场扫描层批算",
+                date: freshness.scanLayerDate, lag: freshness.scanLayerLagDays,
+                stale: freshness.scanLayerStale,
+                present: freshness.scanLayerLagDays != nil || freshness.scanLayerDate != nil
+                    || freshness.scanLayerStale != nil)
+        }
+    }
+
+    @ViewBuilder
+    private func row(title: String, date: String?, lag: Int?, stale: Bool?, present: Bool) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(title).font(.system(size: 11, weight: .bold)).foregroundStyle(NK.textTertiary)
+            Spacer(minLength: 8)
+            Text(text(date: date, lag: lag, stale: stale, present: present))
+                .font(.system(size: 11)).multilineTextAlignment(.trailing)
+                .foregroundStyle(tone(stale: stale, present: present).color)
+        }
+    }
+
+    private func text(date: String?, lag: Int?, stale: Bool?, present: Bool) -> String {
+        guard present else { return "本次没查到(⛔ 不等于新鲜)" }
+        guard let l = lag else { return date.map { "最新至 \($0)" } ?? "无数据" }
+        if l < 0 { return "完全缺失(哨兵值 -1)" }
+        let base = date.map { "最新至 \($0)" } ?? "无日期"
+        return "\(base) · 落后 \(l) 个交易日" + (stale == true ? " · 已过期" : "")
+    }
+
+    private func tone(stale: Bool?, present: Bool) -> NKAxisTone {
+        guard present else { return .warn }
+        return stale == true ? .bad : .good
     }
 }
 

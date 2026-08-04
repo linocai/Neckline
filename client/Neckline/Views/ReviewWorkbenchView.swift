@@ -31,12 +31,62 @@ struct ReviewWorkbenchView: View {
                         weekContent(entry)
                     }
                 }
+                // V2-⑫/⑨-C:画像两张账 + 评价校准报告(工作台的另外两块,与对账并列)。
+                profilesSection
+                evalSection
             }
             .padding(NKSpace.pagePad)
             .frame(maxWidth: 860)
         }
         .frame(maxWidth: .infinity)
         .background(NK.pageBg)
+        .task { await model.loadWorkbenchExtras() }
+    }
+
+    // MARK: - V2-⑫ 画像(**两张账刻意分开**:偏好答「喜欢什么」、能力答「什么真有效」)
+
+    @ViewBuilder
+    private var profilesSection: some View {
+        VStack(alignment: .leading, spacing: NKSpace.gap) {
+            NKSectionHeader(title: "画像")
+            Text("偏好画像答「你喜欢什么」,能力画像答「什么在你手里真有效」—— ⛔ 两张账不合并。")
+                .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
+            ProfileCard(title: "偏好画像", profile: model.preferenceProfile)
+            ProfileCard(title: "能力画像", profile: model.capabilityProfile)
+        }
+    }
+
+    // MARK: - V2-⑨-C 评价校准报告(**长期统计,不是单日打分**)
+
+    @ViewBuilder
+    private var evalSection: some View {
+        VStack(alignment: .leading, spacing: NKSpace.gap) {
+            NKSectionHeader(title: "评价校准报告")
+            NKCard {
+                if let ev = model.evalWeekly {
+                    if ev.available {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("窗口 \(ev.weekStart) ~ \(ev.weekEnd)")
+                                .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                            if !ev.markdown.isEmpty {
+                                Text(ev.markdown).font(.system(size: 12))
+                                    .foregroundStyle(NK.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } else {
+                                NKJSONTable(value: ev.result)
+                            }
+                        }
+                    } else {
+                        // ⛔ 不许拿半截样本给结论。
+                        NKEmptyState(title: "本期评价尚不可用",
+                                     subtitle: ev.unavailableReason ?? "样本窗未就绪 / 前向窗口还没走完",
+                                     systemImage: "hourglass")
+                    }
+                } else {
+                    NKEmptyState(title: "评价报告未取到", systemImage: "exclamationmark.icloud")
+                }
+            }
+        }
     }
 
     // MARK: - 头部 + 拖入区
@@ -448,4 +498,70 @@ private struct StopDisciplineRow: View {
         }
     }
 }
+
+// MARK: - V2-⑫ 画像卡(每行必带**样本量 / 时间范围 / 置信度**)
+
+private struct ProfileCard: View {
+    let title: String
+    let profile: Profile?
+
+    var body: some View {
+        NKCard {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                guardBody
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var guardBody: some View {
+        if let p = profile {
+            if !p.available {
+                NKEmptyState(title: "本期画像不可用",
+                             subtitle: p.unavailableReason ?? "该期从未算过(不是「算出来是空的」)",
+                             systemImage: "person.crop.circle.badge.questionmark")
+            } else if p.items.isEmpty {
+                Text("算过了 · 本期无可展示的分组").font(.system(size: 12))
+                    .foregroundStyle(NK.textSecondary)
+            } else {
+                Text("截至 \(p.asOf.isEmpty ? "—" : p.asOf)")
+                    .font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                ForEach(p.items.map(ProfileRow.init(raw:))) { row in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("\(row.dimension) · \(row.bucket)")
+                                .font(.system(size: 12, weight: .medium)).foregroundStyle(NK.textPrimary)
+                            Spacer()
+                            NKChip(text: "样本 \(row.sampleN)",
+                                   tone: row.isLowConfidence ? .warn : .neutral)
+                        }
+                        Text("窗口 \(row.windowStart) ~ \(row.windowEnd)")
+                            .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                        if row.isLowConfidence {
+                            // ⛔ 低置信度**不许当结论展示**(⑫ 验收条款)。
+                            Text("样本不足,不给结论").font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(NK.amber)
+                        } else {
+                            ForEach(row.metricKeys, id: \.self) { k in
+                                HStack {
+                                    Text(k).font(.system(size: 10.5).monospaced())
+                                        .foregroundStyle(NK.textTertiary)
+                                    Spacer()
+                                    Text(row.raw[k]?.displayText ?? "—")
+                                        .font(.system(size: 10.5).monospaced())
+                                        .foregroundStyle(NK.textSecondary)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        } else {
+            NKEmptyState(title: "画像未取到", systemImage: "exclamationmark.icloud")
+        }
+    }
+}
+
 #endif

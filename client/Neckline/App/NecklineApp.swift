@@ -25,24 +25,28 @@ struct NecklineApp: App {
         // bind(config:) 必须先于 refresh(),放 .task 而非 .onAppear)。
         let m = AppModel()
         // 纯 QA/截图辅助:`simctl launch` 可用 `SIMCTL_CHILD_NECKLINE_INITIAL_TAB=<tab>`
-        // 免交互地把 App 启动到指定板块(数值取 AppTab.rawValue,如 board/inquiry/
-        // settings/review),用于视觉核对——不影响正常用户启动路径(缺此环境变量则
-        // 按默认 .today 打开)。
+        // 免交互地把 App 启动到指定板块(数值取 AppTab.rawValue —— V2-⑮ 起是
+        // baskets/positions/inquiry/settings/review),用于视觉核对;不影响正常用户
+        // 启动路径(缺此环境变量则按默认 .baskets 打开)。
         if let raw = ProcessInfo.processInfo.environment["NECKLINE_INITIAL_TAB"],
            let tab = AppTab(rawValue: raw) {
             m.view = tab
         }
-        // v1.2-E:同款 QA 钩子扩到弹层——`NECKLINE_INITIAL_MODAL=decisionLog|circuitReview`
-        // 免交互地把 App 启动到指定 sheet(用于本环境 computer-use 点击权限受限时的视觉
-        // 核对,见 CLAUDE.md「模拟器截图走 xrun simctl io screenshot」坑吸收)。不影响
-        // 正常用户路径(缺此环境变量则不弹层)。
+        // 同款 QA 钩子扩到弹层——`NECKLINE_INITIAL_MODAL=open|note|circuitReview`
+        // (用于本环境 computer-use 点击权限受限时的视觉核对,见 CLAUDE.md
+        // 「模拟器截图走 xcrun simctl io screenshot」坑吸收)。不影响正常用户路径。
         if let modalRaw = ProcessInfo.processInfo.environment["NECKLINE_INITIAL_MODAL"] {
             switch modalRaw {
-            case "decisionLog": m.modal = .decisionLog
+            case "open": m.modal = .open
+            case "note": m.modal = .note
             case "circuitReview": m.modal = .circuitReview
             default: break
             }
         }
+        // ⚠ **数据到位之后才能触发的钩子**(`NECKLINE_INITIAL_BASKET_ID` /
+        // `NECKLINE_INITIAL_INFOCARD_CODE`)**不能塞进这里** —— 那些内容是
+        // `AppModel.refresh()` 异步拉回来的,`init()` 里够不着。它们落在
+        // `AppModel.applyQAHooksAfterRefresh()`(v1.4-⑧ 立下的先例)。
         _model = State(initialValue: m)
     }
 
@@ -69,6 +73,11 @@ struct NecklineApp: App {
 
     private func wire() {
         #if os(iOS)
+        // 纯 QA/截图辅助:`NECKLINE_SKIP_PUSH_PROMPT=1` 时不挂推送(系统授权弹窗会盖住
+        // 页面,让 `xcrun simctl io screenshot` 的视觉核对拍不到内容;本环境 computer-use
+        // 点不动模拟器,没法手动点「允许」)。⛔ **只影响截图路径**:缺此环境变量时行为
+        // 与之前逐字节相同,正常用户永远走 `attach()`。
+        if ProcessInfo.processInfo.environment["NECKLINE_SKIP_PUSH_PROMPT"] == "1" { return }
         appDelegate.attach(config: config, model: model)
         #endif
     }

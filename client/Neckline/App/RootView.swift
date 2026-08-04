@@ -2,6 +2,11 @@
 //  RootView.swift
 //  Neckline — 导航壳(平台分叉:iOS 底部 TabView / macOS 240px 玻璃侧栏 + 周复盘工作台)
 //
+//  **信息架构 = D8(2026-08-02 用户拍板,⛔ 施工时不得重开)**:
+//    iPhone 四板块 = 今日篮子 / 持仓 / 问询台 / 设置;macOS 同四板块 + 周复盘工作台。
+//    **不新增 tab** —— 加 tab 会稀释「打开就看今天做什么」。
+//  V1 的「盘中看板」不再是 tab,内容并入持仓板块(见 `BoardSection`)。
+//
 
 import SwiftUI
 
@@ -20,17 +25,17 @@ struct RootView: View {
         .preferredColorScheme(.light)
     }
 
-    // MARK: - iOS:底部 TabView(四板块——V2-⑬-11 自选 tab 已删;不含周复盘工作台——桌面场景)
+    // MARK: - iOS:底部 TabView(D8 四板块;周复盘工作台是桌面场景,不进 iPhone)
 
     #if os(iOS)
     private var iosShell: some View {
         TabView(selection: Binding(get: { model.view }, set: { model.view = $0 })) {
-            TodayPlanView(model: model)
-                .tabItem { Label(AppTab.today.title, systemImage: AppTab.today.systemImage) }
-                .tag(AppTab.today)
-            BoardView(model: model)
-                .tabItem { Label(AppTab.board.title, systemImage: AppTab.board.systemImage) }
-                .tag(AppTab.board)
+            BasketDailyView(model: model)
+                .tabItem { Label(AppTab.baskets.title, systemImage: AppTab.baskets.systemImage) }
+                .tag(AppTab.baskets)
+            PositionsView(model: model)
+                .tabItem { Label(AppTab.positions.title, systemImage: AppTab.positions.systemImage) }
+                .tag(AppTab.positions)
             InquiryView(model: model)
                 .tabItem { Label(AppTab.inquiry.title, systemImage: AppTab.inquiry.systemImage) }
                 .tag(AppTab.inquiry)
@@ -71,8 +76,8 @@ struct RootView: View {
                 .foregroundStyle(NK.textTertiary)
                 .padding(.horizontal, 16).padding(.bottom, 7)
 
-            navItem(.today)
-            navItem(.board, badge: model.board.retreatBrake.active ? "!" : nil, badgeColor: NK.down)
+            navItem(.baskets)
+            navItem(.positions, badge: model.board.retreatBrake.active ? "!" : nil, badgeColor: NK.down)
             navItem(.inquiry)
             navItem(.settings)
 
@@ -115,8 +120,8 @@ struct RootView: View {
     @ViewBuilder
     private var content: some View {
         switch model.view {
-        case .today: TodayPlanView(model: model)
-        case .board: BoardView(model: model)
+        case .baskets: BasketDailyView(model: model)
+        case .positions: PositionsView(model: model)
         case .inquiry: InquiryView(model: model)
         case .settings: SettingsView(model: model, config: config)
         case .review: ReviewWorkbenchView(model: model)

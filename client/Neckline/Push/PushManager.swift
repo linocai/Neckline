@@ -1,14 +1,19 @@
 //
 //  PushManager.swift
-//  Neckline — 锁屏推送(iOS 专属;macOS 无锁屏推送,平台分叉,搬自 LinoN §五 阶段4C)
+//  Neckline — 锁屏推送(iOS 专属;macOS 无锁屏推送,平台分叉)
 //
-//  §2.4 拍板:APNs 只推两类且均为「信息类」通知(无需盘中动作按钮,对比 LinoN
-//  的持仓硬线推送做了简化)——① 16:00 报告就绪 → 点开跳「今日计划」;
-//  ② 退潮红色刹车 → 点开跳「盘中看板」。category 标识须与后端 `push/apns.py`
-//  的 `CATEGORY_REPORT="REPORT"` / `CATEGORY_RETREAT="RETREAT"` 字面一致。
+//  **V2-⑪ 通知三级(D5 已拍板)**:三个 APNs category —— `NKIMMEDIATE`(立即)/
+//  `NKIMPORTANT`(重要不紧急)/ `NKDIGEST`(盘后汇总)。category 字面量必须与服务端
+//  `neckline/notify_kinds.py` 的 `CATEGORY_*` **逐字一致**(改串 = 改契约)。
 //
-//  ⚠️ 真实推送投递留阶段 4E(需 ECS 部署 + 真机 + 真签名)。本期实现注册 + 通知
-//     处理 + UI 路由,本地可走授权→token→上报闭环(真机才有真 token)。
+//  ⚠ **业务分支一律读 payload 里的 `kind`,⛔ 不按 category 分支** ——
+//  **category 只决定「怎么响」(系统层呈现分组),`kind` 决定「响不响」与「点开去哪」。**
+//  按 category 分支会**连坐**:同一组里躺着好几件完全不同的事(正是 V1 拆
+//  `HOLDINGALERT` 被逼出来的教训)。
+//
+//  ⚠ **未知 `kind` 必须优雅降级**:服务端日后加 kind 时,旧 App 收到不认识的 `kind`
+//  应当**照常显示标题正文**(系统本就会显示;这里只是不做路由、不静默吞),
+//  ⛔ **不许静默丢弃**(v1.5「Swift 未知 `status` 静默消失」的同类坑)。
 //
 
 import Foundation
@@ -16,19 +21,18 @@ import Foundation
 import UIKit
 import UserNotifications
 
-/// 推送 category 标识(必须与后端 `neckline/push/apns.py` 字面一致)。v1.1 推送白名单
-/// 扩到四类:precall(9:26 盘前校准汇总)/ d5exit(D5 时间退出);v1.2-A2 扩到第五类
-/// circuit(熔断提醒,§2.1 第 7 条);v1.3-②/⑥ 扩到第六类 holdingAlert(K4 持仓派发警报
-/// ——年线下涨停/放量大阳等强价量证据,**独立**于 d5exit,不复用,§2.4「用户 2026-07-26
-/// 拍板独立开关」)。
+/// APNs category 标识(**必须与服务端 `notify_kinds.py` 字面一致**)。
+/// V2-⑪ 起由 V1 的六个具名 category 收敛为**三级**。
 enum NKNotificationCategory {
-    static let report = "REPORT"
-    static let retreat = "RETREAT"
-    static let precall = "PRECALL"
-    static let d5exit = "D5EXIT"
-    static let circuit = "CIRCUIT"
-    static let holdingAlert = "HOLDINGALERT"
+    static let immediate = "NKIMMEDIATE"
+    static let important = "NKIMPORTANT"
+    static let digest = "NKDIGEST"
+
+    static let all = [immediate, important, digest]
 }
+
+/// payload 里携带业务 `kind` 的键名(服务端 `api/notify.py` 扇出时写入)。
+private let kNKKindKey = "kind"
 
 @MainActor
 final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
@@ -45,7 +49,7 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
         super.init()
     }
 
-    /// 启动时挂载:设 delegate + 注册 category。
+    /// 启动时挂载:设 delegate + 注册三个 category。
     func bootstrap() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
@@ -60,24 +64,13 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
         UNUserNotificationCenter.current().setBadgeCount(0)
     }
 
-    /// 六类信息通知均无动作按钮(点通知本体即打开 App 到对应板块,§2.4 简化;v1.2-A2/
-    /// v1.3-② 新增的 circuit/holdingAlert 同款「纯信息、无按钮」)。
+    /// 三级均为**纯信息通知、无动作按钮**(点通知本体即打开 App 到对应板块)。
+    /// ⛔ 通知里不提供任何"下单 / 卖出"类动作 —— 系统永不代下单(§3.8)。
     private func registerCategories() {
-        let report = UNNotificationCategory(identifier: NKNotificationCategory.report,
-                                            actions: [], intentIdentifiers: [], options: [])
-        let retreat = UNNotificationCategory(identifier: NKNotificationCategory.retreat,
-                                             actions: [], intentIdentifiers: [], options: [])
-        let precall = UNNotificationCategory(identifier: NKNotificationCategory.precall,
-                                             actions: [], intentIdentifiers: [], options: [])
-        let d5exit = UNNotificationCategory(identifier: NKNotificationCategory.d5exit,
-                                            actions: [], intentIdentifiers: [], options: [])
-        let circuit = UNNotificationCategory(identifier: NKNotificationCategory.circuit,
-                                             actions: [], intentIdentifiers: [], options: [])
-        let holdingAlert = UNNotificationCategory(identifier: NKNotificationCategory.holdingAlert,
-                                                  actions: [], intentIdentifiers: [], options: [])
-        UNUserNotificationCenter.current().setNotificationCategories(
-            [report, retreat, precall, d5exit, circuit, holdingAlert]
-        )
+        let categories = NKNotificationCategory.all.map {
+            UNNotificationCategory(identifier: $0, actions: [], intentIdentifiers: [], options: [])
+        }
+        UNUserNotificationCenter.current().setNotificationCategories(Set(categories))
     }
 
     /// 请求通知权限 → 注册远程通知(拿 device token)。已决定则不再弹系统对话框。
@@ -125,40 +118,48 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    /// 前台收到推送:仍展示横幅(两类都值得立即看见)。
+    /// 前台收到推送:**照常展示横幅**(含未知 kind —— ⛔ 不静默丢弃)。
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async
         -> UNNotificationPresentationOptions {
         return [.banner, .sound, .badge, .list]
     }
 
-    /// 点开通知 → 路由到对应板块(报告→今日计划;退潮→盘中看板)。
+    /// 点开通知 → 按 **payload 的 `kind`** 路由到对应板块。
+    /// 未知 kind → **不路由**(停在当前页),但通知本身照常显示过 —— ⛔ 不吞、不崩。
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
-        let category = response.notification.request.content.categoryIdentifier
-        if let tab = Self.targetTab(forCategory: category) {
+        let info = response.notification.request.content.userInfo
+        let kind = (info[kNKKindKey] as? String) ?? ""
+        if let tab = Self.targetTab(forKind: kind) {
             model?.view = tab
             switch tab {
-            case .today: await model?.refresh()
-            case .board: await model?.loadBoard()
+            case .baskets: await model?.refresh()
+            case .positions: await model?.loadBoard()
             default: break
             }
         }
         clearBadge()
     }
 
-    /// 纯路由函数(单测覆盖,不依赖 UNUserNotificationCenter 真实回调链路)。v1.1-G.2:
-    /// PRECALL→盘中看板(校准明细在看板)、D5EXIT→今日计划(持仓区置顶可见 D5 卡片)。
-    /// v1.2-A2:CIRCUIT→今日计划(熔断横幅在今日计划面顶部,§五 v1.2-E.3)。
-    /// v1.3-②/⑥:HOLDINGALERT→今日计划(K4 持仓牌强警示在持仓卡置顶,§五 v1.3-⑥-C)。
-    static func targetTab(forCategory category: String) -> AppTab? {
-        switch category {
-        case NKNotificationCategory.report: return .today
-        case NKNotificationCategory.retreat: return .board
-        case NKNotificationCategory.precall: return .board
-        case NKNotificationCategory.d5exit: return .today
-        case NKNotificationCategory.circuit: return .today
-        case NKNotificationCategory.holdingAlert: return .today
+    /// 纯路由函数(单测覆盖,不依赖 UNUserNotificationCenter 真实回调链路)。
+    ///
+    /// **按 `kind` 分发,⛔ 不按 category** —— 三级 category 只决定系统层怎么响。
+    /// kind 串的唯一源是服务端 `neckline/notify_kinds.py`;这里**只做「去哪个板块」的
+    /// 展示层映射**,⛔ 不硬编一份"有哪些 kind"的清单去过滤(未登记的 kind 走
+    /// `default` → `nil` = 不跳转,通知照常展示)。
+    static func targetTab(forKind kind: String) -> AppTab? {
+        switch kind {
+        // 选股线:报告就绪 / 退潮红色刹车(今日计划整体作废)→ 今日篮子
+        case "report_ready", "retreat": return .baskets
+        // 持仓线(80% 注意力都在这):熔断 / 时间退出 / K4 派发 / 止损逼近 / 触达离场参考 /
+        // 板块跳水 / ⑪-A 四监测 / NL 临时提醒 —— 全部指向持仓板块。
+        case "circuit", "d5exit", "holding_alert", "precall",
+             "stop_approach", "take_profit", "sector_dive",
+             "basket_peers_weak", "sector_bid_fade", "holding_decoupled", "market_shock",
+             "custom_alert":
+            return .positions
+        // 未知 kind:**不跳转**,但通知已照常显示(优雅降级,⛔ 不静默丢弃)。
         default: return nil
         }
     }

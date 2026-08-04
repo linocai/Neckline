@@ -33,7 +33,7 @@ struct InfoCardPageView: View {
                 content.padding(NKSpace.pagePad)
             }
             .background(platformBg)
-            .navigationTitle(request.candidate.name)
+            .navigationTitle(request.name)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -73,6 +73,8 @@ struct InfoCardPageView: View {
                     NKEmptyState(title: "信息卡加载失败", subtitle: err, systemImage: "exclamationmark.triangle")
                 }
             } else if let card = model.infoCard {
+                basketCard(card)          // V2-⑬-N:所属篮子 / 本票角色 / 同篮对比
+                tagsCard(card)            // V2-⑬-N-K7:成员标注件(参考、非指令)
                 klineCard(card)
                 rsLineCard(card)
                 industryDivergenceCard(card)
@@ -89,12 +91,114 @@ struct InfoCardPageView: View {
         VStack(alignment: .leading, spacing: 2) {
             #if os(macOS)
             HStack(spacing: 6) {
-                Text(request.candidate.name).font(NKFont.stockName).foregroundStyle(NK.textPrimary)
-                Text(request.candidate.code).font(.system(size: 12)).foregroundStyle(NK.textTertiary)
+                Text(request.name).font(NKFont.stockName).foregroundStyle(NK.textPrimary)
+                Text(request.code).font(.system(size: 12)).foregroundStyle(NK.textTertiary)
             }
             #endif
-            Text("交易日 \(model.calendar.displayString(request.tradeDate)) · \(request.candidate.boardLabel)")
+            Text("交易日 \(model.calendar.displayString(request.tradeDate))")
                 .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+        }
+    }
+
+    // MARK: - V2-⑬-N ①所属篮子与共同驱动 ②本票角色(含对拍分歧)③同篮成员对比
+
+    @ViewBuilder
+    private func basketCard(_ card: InfoCard) -> some View {
+        NKCard {
+            VStack(alignment: .leading, spacing: 8) {
+                NKSectionHeader(title: "所属篮子")
+                if !card.basket.available {
+                    // ⛔ 「不在任何篮子里」与「在篮子里但卡没生成」**两态分得开**,
+                    // 不许显示成同一句话。
+                    unavailableRow(card.basket.unavailableText ?? "篮子信息暂不可用")
+                } else {
+                    HStack(spacing: 6) {
+                        Text(card.basket.name).font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(NK.textPrimary)
+                        if let t = card.basket.tier { NKChip(text: "T\(t)") }
+                        if card.basket.isPrimary { NKChip(text: "主归属", tone: .good) }
+                        Spacer()
+                    }
+                    if !card.basket.driver.isEmpty {
+                        metricRow("共同驱动", card.basket.driver)
+                    }
+                    if !card.basket.whyNow.isEmpty {
+                        metricRow("为什么是现在", card.basket.whyNow)
+                    }
+                    // **角色两说并存**:冲突时两个都显示,⛔ 不挑一个当正确答案。
+                    HStack(spacing: 4) {
+                        if card.basket.roleConflict {
+                            NKChip(text: "LLM:\(card.basket.roleLlm ?? "—")", tone: .warn)
+                            NKChip(text: "机械:\(card.basket.roleMech ?? "—")", tone: .warn)
+                            Text("两说并存").font(.system(size: 10)).foregroundStyle(NK.amber)
+                        } else {
+                            NKChip(text: card.basket.roleDisplay)
+                        }
+                        Spacer()
+                    }
+                    if !card.basket.roleReason.isEmpty {
+                        Text(card.basket.roleReason).font(.system(size: 11.5))
+                            .foregroundStyle(NK.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !card.basket.peers.isEmpty {
+                        Divider().overlay(NK.hairline)
+                        Text("同篮其他成员").font(.system(size: 10.5, weight: .bold))
+                            .foregroundStyle(NK.textTertiary)
+                        ForEach(card.basket.peers) { p in
+                            HStack(spacing: 6) {
+                                Text(p.name).font(.system(size: 12)).foregroundStyle(NK.textPrimary)
+                                Text(p.tsCode).font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                                Spacer()
+                                Text(p.roleDisplay).font(.system(size: 10.5))
+                                    .foregroundStyle(p.roleConflict ? NK.amber : NK.textSecondary)
+                                if let rs = p.rsRank {
+                                    Text("RS #\(rs)").font(.system(size: 10.5).monospacedDigit())
+                                        .foregroundStyle(NK.textTertiary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// ⑬-N-K7 标注件。`text` **已含「参考、非指令」后缀,不改写、不截断**;
+    /// `tagsAbsent`(判不了的码)与「判过没命中」是两回事,⛔ 不合并成"没有标注"。
+    @ViewBuilder
+    private func tagsCard(_ card: InfoCard) -> some View {
+        if !card.tags.isEmpty || !card.tagsAbsent.isEmpty {
+            NKCard {
+                VStack(alignment: .leading, spacing: 6) {
+                    NKSectionHeader(title: "成员标注")
+                    ForEach(card.tags) { t in
+                        HStack(alignment: .top, spacing: 6) {
+                            NKChip(text: t.label, tone: t.axisTone)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(t.text).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if !t.source.isEmpty {
+                                    Text(t.source).font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
+                                }
+                            }
+                        }
+                    }
+                    if !card.tagsAbsent.isEmpty {
+                        Text("判不了的标注:\(card.tagsAbsent.joined(separator: "、"))(数据缺失,**不等于**没命中)")
+                            .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                    }
+                    NKReferenceNote()
+                }
+            }
+        }
+    }
+
+    private func metricRow(_ label: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+            Text(text).font(.system(size: 12)).foregroundStyle(NK.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
