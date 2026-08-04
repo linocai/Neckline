@@ -103,16 +103,86 @@ struct SectorSnapshot: Codable, Equatable, Identifiable {
     }
 }
 
-// MARK: - 4A.2 报告:候选四件套 + LLM 审判
+// MARK: - 通用 JSON 值(服务端「自由结构原样透传」字段的载体)
+//
+// `mech` / `evidence` 之外的 `tierBreakdown` / `verificationSpec` / `invalidationSpec` /
+// `fingerprint` / `plan` / `snapshot` / `rule` / `result` 这一族字段,服务端 `schemas.py`
+// 的既定口径就是 `Dict[str, Any]` **原样透传**(该文件原话:「在 API 层再镜像一套嵌套
+// 模型只会多一处会漂的定义」)。客户端同理:再镜像一份强类型只会多一处会漂的定义,
+// 且 `tierBreakdown` 的键是**五维维度名**、`verificationSpec` 的键是**喂哨兵的条件名**
+// ——那些是语义标识符,不是字段名,连 camel 化都刻意不做。
+//
+// 本类型只保证三件事:**解得出来 / 按需取值 / 诚实展示**。⛔ 客户端不用它重算任何判据。
 
-struct LLMJudgment: Codable, Equatable {
-    var verdict: String       // "通过" | "否决" | "未激活"
-    var narrative: String
-    var degraded: Bool
+enum NKJSON: Codable, Equatable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([NKJSON])
+    case object([String: NKJSON])
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null; return }
+        // ⚠ Bool 必须排在 Double 之前:JSON `true` 在 Foundation 里也能解成 1.0,
+        // 顺序反了会把布尔悄悄变成数字(展示成 "1" 而不是 "是")。
+        if let b = try? c.decode(Bool.self) { self = .bool(b); return }
+        if let d = try? c.decode(Double.self) { self = .number(d); return }
+        if let s = try? c.decode(String.self) { self = .string(s); return }
+        if let a = try? c.decode([NKJSON].self) { self = .array(a); return }
+        if let o = try? c.decode([String: NKJSON].self) { self = .object(o); return }
+        throw DecodingError.dataCorruptedError(in: c, debugDescription: "无法识别的 JSON 值")
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .null: try c.encodeNil()
+        case .bool(let v): try c.encode(v)
+        case .number(let v): try c.encode(v)
+        case .string(let v): try c.encode(v)
+        case .array(let v): try c.encode(v)
+        case .object(let v): try c.encode(v)
+        }
+    }
+
+    var isNull: Bool { if case .null = self { return true }; return false }
+    var stringValue: String? { if case .string(let v) = self { return v }; return nil }
+    var doubleValue: Double? { if case .number(let v) = self { return v }; return nil }
+    var intValue: Int? { if case .number(let v) = self { return Int(v) }; return nil }
+    var boolValue: Bool? { if case .bool(let v) = self { return v }; return nil }
+    var arrayValue: [NKJSON]? { if case .array(let v) = self { return v }; return nil }
+    var objectValue: [String: NKJSON]? { if case .object(let v) = self { return v }; return nil }
+
+    subscript(key: String) -> NKJSON? { objectValue?[key] }
+
+    /// 该对象里的键(按字典序,**确定性** —— 界面上逐项列出时顺序不能每次刷新都跳)。
+    var sortedKeys: [String] { (objectValue ?? [:]).keys.sorted() }
+
+    /// 人读串。标量原样(布尔译「是 / 否」),数组 / 对象走紧凑 JSON。
+    /// **纯展示兜底**,⛔ 不参与任何判定。
+    var displayText: String {
+        switch self {
+        case .null: return "—"
+        case .bool(let v): return v ? "是" : "否"
+        case .number(let v):
+            if v == v.rounded() && abs(v) < 1e15 { return String(Int(v)) }
+            return String(format: "%.4g", v)
+        case .string(let v): return v
+        case .array, .object:
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            guard let data = try? enc.encode(self),
+                  let s = String(data: data, encoding: .utf8) else { return "—" }
+            return s
+        }
+    }
 }
 
-/// 板块英文码 → 中文展示名(唯一展示层换算源,`Candidate` 等共用
-/// 同一份映射,不各自重复一份;未识别值原样透传,不静默瞎翻译)。
+// MARK: - 展示层枚举换算(服务端只存英文码,中文一律在客户端换算)
+
+/// 板块英文码 → 中文展示名(唯一展示层换算源;未识别值原样透传,不静默瞎翻译)。
 func nkBoardLabel(_ raw: String) -> String {
     switch raw {
     case "MAIN": return "主板"
@@ -123,97 +193,16 @@ func nkBoardLabel(_ raw: String) -> String {
     }
 }
 
-/// 买点条件(结构化,§五 v1.1-E.2「一键补录预填候选买点价」的取值来源)。字段对齐
-/// 服务端 `report/candidates.py::entry_spec`——只做「读哪个字段」的展示层选择
-/// (pullback→ma10,breakout→platformHigh),不新推导任何数字,与 `boardLabel` 同一
-/// 类展示层换算先例。
-struct EntrySpec: Codable, Equatable {
-    var buypoint: String?
-    var ma10: Double?
-    var platformHigh: Double?
-
-    enum CodingKeys: String, CodingKey {
-        case buypoint
-        case ma10
-        case platformHigh = "platform_high"
-    }
-
-    /// 买点参考价(展示层选择,详见类型注释)。两个字段都缺失(哨兵尚未算出 / 数据缺)
-    /// → nil,UI 须留手填空位,不虚构数字。
-    var referencePrice: Double? {
-        switch buypoint {
-        case "breakout": return platformHigh ?? ma10
-        default: return ma10 ?? platformHigh
-        }
-    }
-}
-
-// `PermanentBoardStatus` 与 `IntelRank.permanentBoardStatus` 已随 **V2-⑬-1 单票候选管线
-// 退役**一并删除(契约线审计 🟡 Y4,2026-08-03):服务端的五常驻保底住在已删的
-// `report/intel_candidates.py` 里,新报告 `candidates` 恒空,这份列表永远不会再出现。
-// 情报节里那张卡也一并拆掉(见 `IntelSectionView.swift`)——一张永远只会说「暂无候选可
-// 显示常驻板块状态」的卡片,比没有这张卡更误导人。
-
-/// 候选情报排序理由(v1.3-③-C3/⑥,§2.3 语义变更;v1.4-③ 起补三级排序键,需求 8)。
-/// 候选=「过完安检、值得关注的票」非「会涨的票」——客户端据此写对文案,不写成正面
-/// 买入暗示,展示情报维度而非回测信号。**排序 = 注意力优先级,不是收益预测;
-/// 排第一 ≠ 最会涨,终选权在用户。**
-struct IntelRank: Codable, Equatable {
-    var sectorFlow: Double? = nil          // 所属常驻/暴起板块最大净流入(万元,C2;并列展示,不参与排序,无数据=nil)
-    var themePersistDays: Int = 0          // 题材持续天数(反用:1天新鲜>2-3天警惕;≥4已在③剔;与 industryPersistDays 同源同值,旧字段名保留)
-    var highElasticity: Bool = false       // 高弹板块(GEM/STAR;生成域刻意含高弹,标注给人判)
-    var source: String = ""                // quota(常驻保底)| competition(情报竞争)| forced(问询强制);旧报告空串
-    var industry: String = ""              // 该票行业(过行业闸后的代表行业),说清「凭什么在这个板块栏」
-    // —— v1.4-③ 排序键三级原样透出(`intel_candidates._sort_key`,需求 8)——————————————
-    var industryRank: Int? = nil           // 排序键①:行业强度当日排名(1=最强)。nil=未参与排名
-                                            // (无 industry/成员<5),**展示不得当 0**(0 会误读成"最强")
-    var industryPersistDays: Int = 0       // 排序键②:行业强度持续天数(升序,第1天最新鲜)
-    var yellowCardCount: Int = 0           // 排序键③:K4 avoid_flag 命中数(升序,无牌靠前;
-                                            // 「无牌靠前」只是风险优先排序,无牌 ≠ 会涨)
-
-    /// 显式 CodingKeys + 手写 `init(from:)`(容忍旧报告快照 / 手工 fixture 缺 v1.4-③ 三新键
-    /// ——同 `Candidate`/`Position` 的处理姿势,新增非 Optional 字段不能指望 Swift 合成
-    /// Decodable 用默认值兜底缺键)。
-    enum CodingKeys: String, CodingKey {
-        case sectorFlow, themePersistDays, highElasticity, source, industry
-        case industryRank, industryPersistDays, yellowCardCount
-    }
-
-    init(sectorFlow: Double? = nil, themePersistDays: Int = 0, highElasticity: Bool = false,
-         source: String = "", industry: String = "",
-         industryRank: Int? = nil, industryPersistDays: Int = 0, yellowCardCount: Int = 0) {
-        self.sectorFlow = sectorFlow
-        self.themePersistDays = themePersistDays
-        self.highElasticity = highElasticity
-        self.source = source
-        self.industry = industry
-        self.industryRank = industryRank
-        self.industryPersistDays = industryPersistDays
-        self.yellowCardCount = yellowCardCount
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        sectorFlow = try c.decodeIfPresent(Double.self, forKey: .sectorFlow)
-        themePersistDays = try c.decodeIfPresent(Int.self, forKey: .themePersistDays) ?? 0
-        highElasticity = try c.decodeIfPresent(Bool.self, forKey: .highElasticity) ?? false
-        source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
-        industry = try c.decodeIfPresent(String.self, forKey: .industry) ?? ""
-        industryRank = try c.decodeIfPresent(Int.self, forKey: .industryRank)
-        industryPersistDays = try c.decodeIfPresent(Int.self, forKey: .industryPersistDays) ?? 0
-        yellowCardCount = try c.decodeIfPresent(Int.self, forKey: .yellowCardCount) ?? 0
-    }
-}
-
-/// 候选入选来源展示层换算(沿 `nkBoardLabel` 先例,未识别值原样透传)。
-func nkIntelSourceLabel(_ raw: String) -> String {
-    switch raw {
-    case "quota": return "常驻保底"
-    case "competition": return "情报竞争"
-    case "forced": return "问询强制纳入"
-    default: return raw
-    }
-}
+/*
+ ⚠ **V2-⑮:候选族 Swift 类型整族退役**(⑭-C 对拍表 §六 A1 / 6.4-D1)。
+   · `EntrySpec` —— 服务端 `report/candidates.py` 已随 ⑬-1 单票候选管线整链删除;
+   · `IntelRank` / `LLMJudgment` / `InfoCardSummary` / `Candidate` —— `ReportOut.candidates`
+     键已由 ⑭-B **删除**,换 `basketDaily`(篮子日报三段)。
+   `Candidate.buyPoint`/`stop`/`target`/`invalidation` 曾是 `try c.decode` **硬解码**,
+   服务端不发就整份报告解不出 —— 这次双端同批换血(D2=A 路:老 App 打老机、新 App 打
+   新机,两者不交叉),故可直接删。⚠ 「先客户端可选解码、下版服务端才删键」这条两步
+   淘汰纪律**本身仍然有效**(CLAUDE.md 铁律),V2 只是靠换机窗口绕开了它一次。
+*/
 
 /// K4 红黄牌分区展示层换算(v1.4-④,`InfoCardK4Flag.section`)——
 /// hard_cut=红牌(会拦出候选池)、avoid_flag=黄牌(打标保留,只提醒)。
@@ -284,109 +273,1016 @@ struct InfoCardTopList: Codable, Equatable {
     var lookbackHitDays: Int = 0
 }
 
-struct InfoCardSummary: Codable, Equatable {
-    var snapshot: InfoCardSnapshot = InfoCardSnapshot()
-    var mildBand: Bool = false
-    var news: InfoCardNews = InfoCardNews(scanned: false)
-    var topList: InfoCardTopList = InfoCardTopList()
-}
+// ══════════════════════════════════════════════════════════════════════════
+// MARK: - V2 篮子族(⑭-B 契约,⑮ 客户端落地)
+// ══════════════════════════════════════════════════════════════════════════
+//
+// **两类 DTO,决定解码怎么写**(CLAUDE.md「落库快照两类论」/ 对拍表 §四.1):
+//   · **A 类:每次响应重新拼装**(`Basket` / `Tier` / `BasketVerification` /
+//     `DroppedBasket` / `PositionPlan` / `Profile` / `Pack` / `EvalWeekly`)——服务端用
+//     pydantic 默认值重构,新字段旧数据也会补全。
+//   · **B 类:写入当时冻住的历史快照**(`BasketCard` ← `basket_cards.card_json`;
+//     `BasketReview.mech` ← `basket_review_daily.mech_json`)——服务端升级**永远不会**
+//     给老快照补新键。⛔ 用合成 `Codable` 的后果:装了新 App 的用户翻几周前的老卡 →
+//     **整张卡解不出**。
+// 本文件对**两类一律手写 `init(from:)` + `decodeIfPresent`**:B 类是硬要求;A 类这么写
+// 是白拿的保险(Swift 合成 Decodable 对非 Optional 属性**不会**因为声明了默认值就容忍
+// 缺键 —— 默认值只影响 memberwise init,这条坑本文件其它类型早已踩过)。
 
-// ⚠ **V2-⑬-3/⑬-4:`ExecHint` 与参考件三件套(`ReferencePlanBuy`/`ReferencePlanExit`/
-// `ReferencePlan`)三个类型已随服务端键一并删除**。
-//   · 执行提示位(⑬-4):四条计算保留在服务端 `report/exec_hint.py`(纯计算模块),
-//     并入篮子剧本的输入,不再单独出展示位。
-//   · 参考件三件套(⑬-3):体例整套移交**篮子卡**(⑦,11 项),⑮ 客户端改版按篮子卡
-//     重新出 UI —— 不是"参考件没了",是"它换了载体"。
-// 删键走 D2 已拍板的 A 路(新机新子域 / 老 App 打老机,契约一次性换血、不留过渡键)。
+/// 篮子卡上的一条证据(`evidence[]`,⑤ 两段式流水的检索产出)。**来源与日期必带**,
+/// 缺了就如实留空,⛔ 不替 LLM 补一个看起来像样的出处。
+struct BasketEvidence: Codable, Equatable, Identifiable {
+    var claim: String = ""
+    var source: String = ""
+    var date: String = ""
+    var url: String = ""
 
-struct Candidate: Codable, Equatable, Identifiable {
-    var rank: Int
-    var code: String
-    var name: String
-    var score: Double
-    var board: String                 // 主板/创业板/科创板/北交所(股票板块分类,非本页"看板")
-    // ⚠ **V2-⑬-6:老四件套 `buyPoint`/`stop`/`target`/`invalidation` 四键已删**
-    // (§七 P3-27 兑现)。原先它们是 `try c.decode(String.self,…)` **硬解码**,服务端
-    // 不发就整份报告解不出 —— 这次是**双端同批换血**(D2=A 路:老 App 打老机、新 App
-    // 打新机,两者不交叉),故可直接删。⚠ 「先客户端可选解码、下版服务端才删键」这条
-    // 两步淘汰纪律**本身仍然有效**(CLAUDE.md 铁律),V2 只是靠换机窗口绕开了它。
-    var formTags: [String]
-    var hotSectors: [String]
-    var sectorNames: [String]
-    var llmJudgment: LLMJudgment?      // 仅前 10 只有(nil = 未过 LLM 审判,非降级)
-    /// 买点结构化条件(§五 v1.1-E.2 一键补录预填用)。服务端字段恒是一个对象(可能
-    /// 内部字段皆缺),故用可选类型兜住任何缺失/旧报告没有这个键的情形,不崩。
-    var entrySpec: EntrySpec? = nil
-    /// v1.3-③-C3/⑥:K4 avoid_flag 命中码(打标保留;hard_cut 已在服务端拦截出池、不会
-    /// 出现在候选里)+ 情报排序理由。均是**非 Optional 但要容忍缺键**的字段(真实后端
-    /// 恒会发,只有本文件里较早写的手工 JSON fixture 可能没有这两键)——Swift 合成
-    /// Decodable 对非 Optional 属性不会自动容忍缺键(即便声明了默认值,那只影响
-    /// memberwise init,不影响解码),故本类型改手写 `init(from:)` 显式 `decodeIfPresent`
-    /// 兜底,换来「旧 fixture / 旧报告快照缺这两键也不崩、直接给默认空值」。
-    var k4Flags: [String] = []
-    var intelRank: IntelRank = IntelRank()
-    /// v1.4-④-B:信息卡摘要(不含 60 日序列,供列表页直接展示)。`nil` = 老报告快照
-    /// (建于本字段前)或该次生成异常降级,**不冒充"确认无内容"**——客户端按"该信息
-    /// 暂不可用"处理。完整信息卡(60 日 K 线/RS 线/行业分歧线)另走
-    /// `GET /report/{date}/info-card/{code}`。
-    var infoCard: InfoCardSummary? = nil
-    /// v1.5-②-A:20 只全覆盖起,`llmJudgment` 为 `nil` 有两种成因,靠本字段分辨——
-    /// `true` = 墙钟预算耗尽、这一票根本没发起调用(与 `llmJudgment.degraded`〔发起了
-    /// 但失败/未激活〕语义不同,**不许合并成一个"没审"**,承 `newsAlertsScan.
-    /// codesSkipped`/`codesFailed` 同一纪律);老报告快照缺键 → 默认 `false`。
-    var judgeSkipped: Bool = false
+    var id: String { "\(claim)|\(source)|\(date)" }
 
-    /// 显式 `CodingKeys`(提供自定义 `init(from:)` 时不依赖合成时机是否可靠——同
-    /// `ReportResponse`/`Position` 的处理姿势)。字段名与 JSON 字面一致,逐一列出。
-    enum CodingKeys: String, CodingKey {
-        case rank, code, name, score, board
-        case formTags, hotSectors, sectorNames, llmJudgment, entrySpec, k4Flags, intelRank
-        case infoCard, judgeSkipped
-    }
+    enum CodingKeys: String, CodingKey { case claim, source, date, url }
 
-    var id: String { code }
-
-    /// `board` 服务端字面实测是英文枚举码("MAIN"/"GEM"/"STAR"/"BSE",唯一源
-    /// `neckline/data/board.py` 的 `Board` 枚举,§3.2.7/CLAUDE.md「板块分类唯一源」),
-    /// 不是中文名。这里只做**展示层换算四个已知常量**,不改判定、不猜测新分类
-    /// (未识别值原样透传,不静默瞎翻译——万一后端枚举新增值,界面照样不崩、只是显英文)。
-    var boardLabel: String { nkBoardLabel(board) }
-
-    init(rank: Int, code: String, name: String, score: Double, board: String,
-         formTags: [String], hotSectors: [String], sectorNames: [String],
-         llmJudgment: LLMJudgment?, entrySpec: EntrySpec? = nil,
-         k4Flags: [String] = [], intelRank: IntelRank = IntelRank(),
-         infoCard: InfoCardSummary? = nil, judgeSkipped: Bool = false) {
-        self.rank = rank; self.code = code; self.name = name; self.score = score; self.board = board
-        self.formTags = formTags; self.hotSectors = hotSectors; self.sectorNames = sectorNames
-        self.llmJudgment = llmJudgment; self.entrySpec = entrySpec
-        self.k4Flags = k4Flags; self.intelRank = intelRank
-        self.infoCard = infoCard; self.judgeSkipped = judgeSkipped
+    init(claim: String = "", source: String = "", date: String = "", url: String = "") {
+        self.claim = claim; self.source = source; self.date = date; self.url = url
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        rank = try c.decode(Int.self, forKey: .rank)
-        code = try c.decode(String.self, forKey: .code)
-        name = try c.decode(String.self, forKey: .name)
-        score = try c.decode(Double.self, forKey: .score)
-        board = try c.decode(String.self, forKey: .board)
-        formTags = try c.decode([String].self, forKey: .formTags)
-        hotSectors = try c.decode([String].self, forKey: .hotSectors)
-        sectorNames = try c.decode([String].self, forKey: .sectorNames)
-        llmJudgment = try c.decodeIfPresent(LLMJudgment.self, forKey: .llmJudgment)
-        entrySpec = try c.decodeIfPresent(EntrySpec.self, forKey: .entrySpec)
-        k4Flags = try c.decodeIfPresent([String].self, forKey: .k4Flags) ?? []
-        intelRank = try c.decodeIfPresent(IntelRank.self, forKey: .intelRank) ?? IntelRank()
-        infoCard = try c.decodeIfPresent(InfoCardSummary.self, forKey: .infoCard)
-        judgeSkipped = try c.decodeIfPresent(Bool.self, forKey: .judgeSkipped) ?? false
+        claim = try c.decodeIfPresent(String.self, forKey: .claim) ?? ""
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
+        date = try c.decodeIfPresent(String.self, forKey: .date) ?? ""
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+    }
+}
+
+/// 次日强 / 平 / 弱三剧本。**参考件**(⑦ 十一项之一)—— 展示处必带「参考、非指令」。
+struct BasketScripts: Codable, Equatable {
+    var strong: String? = nil
+    var flat: String? = nil
+    var weak: String? = nil
+
+    enum CodingKeys: String, CodingKey { case strong, flat, weak }
+
+    init(strong: String? = nil, flat: String? = nil, weak: String? = nil) {
+        self.strong = strong; self.flat = flat; self.weak = weak
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        strong = try c.decodeIfPresent(String.self, forKey: .strong)
+        flat = try c.decodeIfPresent(String.self, forKey: .flat)
+        weak = try c.decodeIfPresent(String.self, forKey: .weak)
+    }
+
+    var isEmpty: Bool {
+        [strong, flat, weak].allSatisfy { ($0 ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+}
+
+/// 口径指纹(章程 / 包 / 引擎 / 验证条件集四个版本号 + 两个纪律比例)。
+/// ⑨ 的按包归因靠它分层,**不是装饰字段**。
+struct BasketFingerprint: Codable, Equatable {
+    var stopPct: Double? = nil
+    var takeProfitRetrace: Double? = nil
+    var charterVersion: String? = nil
+    var packVersion: String? = nil
+    var engineApiVersion: String? = nil
+    var verificationRulesetVersion: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case stopPct, takeProfitRetrace, charterVersion, packVersion
+        case engineApiVersion, verificationRulesetVersion
+    }
+
+    init(stopPct: Double? = nil, takeProfitRetrace: Double? = nil, charterVersion: String? = nil,
+         packVersion: String? = nil, engineApiVersion: String? = nil,
+         verificationRulesetVersion: String? = nil) {
+        self.stopPct = stopPct; self.takeProfitRetrace = takeProfitRetrace
+        self.charterVersion = charterVersion; self.packVersion = packVersion
+        self.engineApiVersion = engineApiVersion
+        self.verificationRulesetVersion = verificationRulesetVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        stopPct = try c.decodeIfPresent(Double.self, forKey: .stopPct)
+        takeProfitRetrace = try c.decodeIfPresent(Double.self, forKey: .takeProfitRetrace)
+        charterVersion = try c.decodeIfPresent(String.self, forKey: .charterVersion)
+        packVersion = try c.decodeIfPresent(String.self, forKey: .packVersion)
+        engineApiVersion = try c.decodeIfPresent(String.self, forKey: .engineApiVersion)
+        verificationRulesetVersion = try c.decodeIfPresent(String.self,
+                                                           forKey: .verificationRulesetVersion)
+    }
+}
+
+/// 价格区间参考件(`entryZone` = `{low, high, why}`;`exitReference` = `{low, high}`)。
+/// ⛔ **`exitReference` 不是止盈线**(§2.8-C 语义红线)——文案里不许这么写:回落止盈
+/// 才是纪律,离场参考只是来源篮子卡上的一个参考位。
+struct BasketPriceBand: Codable, Equatable {
+    var low: Double? = nil
+    var high: Double? = nil
+    var why: String? = nil
+
+    enum CodingKeys: String, CodingKey { case low, high, why }
+
+    init(low: Double? = nil, high: Double? = nil, why: String? = nil) {
+        self.low = low; self.high = high; self.why = why
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        low = try c.decodeIfPresent(Double.self, forKey: .low)
+        high = try c.decodeIfPresent(Double.self, forKey: .high)
+        why = try c.decodeIfPresent(String.self, forKey: .why)
+    }
+
+    /// `nil` = 夹逼闸拒收(值为 null 且原因非空)——⛔ 展示时不许把 nil 画成 0 或空白。
+    var rangeText: String? {
+        guard let lo = low, let hi = high else { return nil }
+        return "¥\(String(format: "%.2f", lo)) ~ ¥\(String(format: "%.2f", hi))"
+    }
+}
+
+/// ⑦-K7 成员标注件一条(与 `InfoCardOut.tags` 同源同形,`selection/member_tags.py`
+/// 唯一实现)。`text` **已含「参考、非指令」后缀,客户端不许改写、不许截断**。
+/// **四不硬约束**:不进排序 / 不进哨兵 / 不改去留 / 不加分。
+struct BasketMemberTag: Codable, Equatable, Identifiable {
+    var code: String = ""
+    var label: String = ""
+    var tone: String = "neutral"   // neutral | warn
+    var text: String = ""
+    var source: String = ""
+
+    var id: String { code }
+    var axisTone: NKAxisTone { tone == "warn" ? .warn : .neutral }
+
+    enum CodingKeys: String, CodingKey { case code, label, tone, text, source }
+
+    init(code: String = "", label: String = "", tone: String = "neutral",
+         text: String = "", source: String = "") {
+        self.code = code; self.label = label; self.tone = tone
+        self.text = text; self.source = source
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        code = try c.decodeIfPresent(String.self, forKey: .code) ?? ""
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        tone = try c.decodeIfPresent(String.self, forKey: .tone) ?? "neutral"
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
+    }
+}
+
+/// 篮子卡上的一名成员(**B 类冻结快照**)。
+///
+/// **两条展示纪律写死在类型注释里**:
+///  1. `roleLlm` / `roleMech` 是**两说并存**的对拍结果 —— `roleConflict=true` 时
+///     **两个都显示**,⛔ 不许挑一个当"正确答案"。
+///  2. 三个参考件各带 `*Clamp` + `*UnavailableReason`:夹逼闸拒收时值是 `nil` 且原因
+///     非空,⛔ 不许把 `nil` 显示成 `0` 或空白了事。
+struct BasketMember: Codable, Equatable, Identifiable {
+    var tsCode: String = ""
+    var name: String = ""
+    var roleLlm: String? = nil
+    var roleMech: String? = nil
+    var roleConflict: Bool = false
+    var reason: String = ""
+    var isPrimary: Bool = false
+    var industry: String? = nil
+    var industryLift: Double? = nil
+    var liftReason: String? = nil
+    var primaryReason: String? = nil
+    var rsRank: Int? = nil
+    var k4Tag: String? = nil
+    /// 机械面板原样透传(⑦ `MemberMech.to_dict()`,自由结构)。
+    var mech: NKJSON = .object([:])
+    var entryZone: BasketPriceBand? = nil
+    var entryZoneClamp: String = ""
+    var entryZoneUnavailableReason: String? = nil
+    var maxChase: Double? = nil
+    var maxChaseClamp: String = ""
+    var maxChaseUnavailableReason: String? = nil
+    var exitReference: BasketPriceBand? = nil
+    var exitReferenceClamp: String = ""
+    var exitReferenceUnavailableReason: String? = nil
+    var tags: [BasketMemberTag] = []
+    /// **判不了的标注码** —— 与「判过没命中」是两回事,⛔ 不许合并成"没有标注"。
+    var tagsAbsent: [String] = []
+
+    var id: String { tsCode }
+
+    enum CodingKeys: String, CodingKey {
+        case tsCode, name, roleLlm, roleMech, roleConflict, reason, isPrimary
+        case industry, industryLift, liftReason, primaryReason, rsRank, k4Tag, mech
+        case entryZone, entryZoneClamp, entryZoneUnavailableReason
+        case maxChase, maxChaseClamp, maxChaseUnavailableReason
+        case exitReference, exitReferenceClamp, exitReferenceUnavailableReason
+        case tags, tagsAbsent
+    }
+
+    init(tsCode: String = "", name: String = "", roleLlm: String? = nil, roleMech: String? = nil,
+         roleConflict: Bool = false, reason: String = "", isPrimary: Bool = false,
+         industry: String? = nil, industryLift: Double? = nil, liftReason: String? = nil,
+         primaryReason: String? = nil, rsRank: Int? = nil, k4Tag: String? = nil,
+         mech: NKJSON = .object([:]), entryZone: BasketPriceBand? = nil,
+         entryZoneClamp: String = "", entryZoneUnavailableReason: String? = nil,
+         maxChase: Double? = nil, maxChaseClamp: String = "",
+         maxChaseUnavailableReason: String? = nil, exitReference: BasketPriceBand? = nil,
+         exitReferenceClamp: String = "", exitReferenceUnavailableReason: String? = nil,
+         tags: [BasketMemberTag] = [], tagsAbsent: [String] = []) {
+        self.tsCode = tsCode; self.name = name; self.roleLlm = roleLlm; self.roleMech = roleMech
+        self.roleConflict = roleConflict; self.reason = reason; self.isPrimary = isPrimary
+        self.industry = industry; self.industryLift = industryLift; self.liftReason = liftReason
+        self.primaryReason = primaryReason; self.rsRank = rsRank; self.k4Tag = k4Tag
+        self.mech = mech; self.entryZone = entryZone; self.entryZoneClamp = entryZoneClamp
+        self.entryZoneUnavailableReason = entryZoneUnavailableReason
+        self.maxChase = maxChase; self.maxChaseClamp = maxChaseClamp
+        self.maxChaseUnavailableReason = maxChaseUnavailableReason
+        self.exitReference = exitReference; self.exitReferenceClamp = exitReferenceClamp
+        self.exitReferenceUnavailableReason = exitReferenceUnavailableReason
+        self.tags = tags; self.tagsAbsent = tagsAbsent
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tsCode = try c.decodeIfPresent(String.self, forKey: .tsCode) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        roleLlm = try c.decodeIfPresent(String.self, forKey: .roleLlm)
+        roleMech = try c.decodeIfPresent(String.self, forKey: .roleMech)
+        roleConflict = try c.decodeIfPresent(Bool.self, forKey: .roleConflict) ?? false
+        reason = try c.decodeIfPresent(String.self, forKey: .reason) ?? ""
+        isPrimary = try c.decodeIfPresent(Bool.self, forKey: .isPrimary) ?? false
+        industry = try c.decodeIfPresent(String.self, forKey: .industry)
+        industryLift = try c.decodeIfPresent(Double.self, forKey: .industryLift)
+        liftReason = try c.decodeIfPresent(String.self, forKey: .liftReason)
+        primaryReason = try c.decodeIfPresent(String.self, forKey: .primaryReason)
+        rsRank = try c.decodeIfPresent(Int.self, forKey: .rsRank)
+        k4Tag = try c.decodeIfPresent(String.self, forKey: .k4Tag)
+        mech = try c.decodeIfPresent(NKJSON.self, forKey: .mech) ?? .object([:])
+        entryZone = try c.decodeIfPresent(BasketPriceBand.self, forKey: .entryZone)
+        entryZoneClamp = try c.decodeIfPresent(String.self, forKey: .entryZoneClamp) ?? ""
+        entryZoneUnavailableReason = try c.decodeIfPresent(String.self,
+                                                           forKey: .entryZoneUnavailableReason)
+        maxChase = try c.decodeIfPresent(Double.self, forKey: .maxChase)
+        maxChaseClamp = try c.decodeIfPresent(String.self, forKey: .maxChaseClamp) ?? ""
+        maxChaseUnavailableReason = try c.decodeIfPresent(String.self,
+                                                          forKey: .maxChaseUnavailableReason)
+        exitReference = try c.decodeIfPresent(BasketPriceBand.self, forKey: .exitReference)
+        exitReferenceClamp = try c.decodeIfPresent(String.self, forKey: .exitReferenceClamp) ?? ""
+        exitReferenceUnavailableReason = try c.decodeIfPresent(
+            String.self, forKey: .exitReferenceUnavailableReason)
+        tags = try c.decodeIfPresent([BasketMemberTag].self, forKey: .tags) ?? []
+        tagsAbsent = try c.decodeIfPresent([String].self, forKey: .tagsAbsent) ?? []
+    }
+
+    /// 角色两说的展示串。**冲突时两个都出现**(⛔ 不挑一个),不冲突时只出一个。
+    var roleDisplay: String {
+        let llm = (roleLlm ?? "").trimmingCharacters(in: .whitespaces)
+        let mech = (roleMech ?? "").trimmingCharacters(in: .whitespaces)
+        if roleConflict {
+            return "LLM:\(llm.isEmpty ? "—" : llm) / 机械:\(mech.isEmpty ? "—" : mech)"
+        }
+        if !mech.isEmpty { return mech }
+        if !llm.isEmpty { return llm }
+        return "角色未判定"
+    }
+}
+
+/// 一张 D0 冻结的篮子卡(**B 类冻结快照**,蓝图 4.6 十一项)。
+///
+/// `narrative` 是 LLM 叙述,**原文整段呈现**、不得拆解塞回枚举卡片(§2.7);
+/// `degraded=true` = **人话半份缺席、结构化半份照出**(不是"这张卡不可信")。
+/// `disclaimer` 是固定文案单一源,**客户端原样透传不改写**。
+struct BasketCard: Codable, Equatable {
+    var specVersion: String? = nil
+    var version: Int? = nil
+    var basketKey: String = ""
+    var tradeDate: String = ""
+    var nextTradeDate: String? = nil
+    var name: String = ""
+    var driver: String = ""
+    var driverKind: String = ""
+    var evidence: [BasketEvidence] = []
+    /// ⑤ 两段式流水的单侧故障披露:`ok` | `search_unavailable` | `partial`。
+    /// ⛔ 不是 `ok` 时必须显式标注"取证不完整",不许静默当完整证据展示。
+    var evidenceStatus: String = ""
+    var whyNow: String = ""
+    var members: [BasketMember] = []
+    var roleConflicts: [String] = []
+    var tier: Int? = nil
+    var rankInTier: Int? = nil
+    var rankMech: Int? = nil
+    var mechScore: Double? = nil
+    /// 五维分项 + 权重。**键是维度名**(与现役包权重键逐字对应),原样透传、⛔ 不改名。
+    var tierBreakdown: NKJSON = .object([:])
+    var tierReason: String? = nil
+    var tierNote: String? = nil
+    var scripts: BasketScripts? = nil
+    var scriptsUnavailableReason: String? = nil
+    /// 喂 ⑧ 哨兵的结构化 spec(机器半份),原样透传。
+    var verificationSpec: NKJSON = .object([:])
+    var verificationText: String? = nil
+    var invalidationSpec: NKJSON = .object([:])
+    var invalidationText: String? = nil
+    var risks: [String] = []
+    var disclaimer: String = ""
+    var fingerprint: BasketFingerprint = BasketFingerprint()
+    var disciplineLabels: [String] = []
+    var narrative: String = ""
+    var llmStage: String = ""
+    var degraded: Bool = false
+    var notes: [String] = []
+
+    enum CodingKeys: String, CodingKey {
+        case specVersion, version, basketKey, tradeDate, nextTradeDate, name
+        case driver, driverKind, evidence, evidenceStatus, whyNow, members, roleConflicts
+        case tier, rankInTier, rankMech, mechScore, tierBreakdown, tierReason, tierNote
+        case scripts, scriptsUnavailableReason
+        case verificationSpec, verificationText, invalidationSpec, invalidationText
+        case risks, disclaimer, fingerprint, disciplineLabels, narrative, llmStage, degraded, notes
+    }
+
+    init(specVersion: String? = nil, version: Int? = nil, basketKey: String = "",
+         tradeDate: String = "", nextTradeDate: String? = nil, name: String = "",
+         driver: String = "", driverKind: String = "", evidence: [BasketEvidence] = [],
+         evidenceStatus: String = "", whyNow: String = "", members: [BasketMember] = [],
+         roleConflicts: [String] = [], tier: Int? = nil, rankInTier: Int? = nil,
+         rankMech: Int? = nil, mechScore: Double? = nil, tierBreakdown: NKJSON = .object([:]),
+         tierReason: String? = nil, tierNote: String? = nil, scripts: BasketScripts? = nil,
+         scriptsUnavailableReason: String? = nil, verificationSpec: NKJSON = .object([:]),
+         verificationText: String? = nil, invalidationSpec: NKJSON = .object([:]),
+         invalidationText: String? = nil, risks: [String] = [], disclaimer: String = "",
+         fingerprint: BasketFingerprint = BasketFingerprint(), disciplineLabels: [String] = [],
+         narrative: String = "", llmStage: String = "", degraded: Bool = false,
+         notes: [String] = []) {
+        self.specVersion = specVersion; self.version = version; self.basketKey = basketKey
+        self.tradeDate = tradeDate; self.nextTradeDate = nextTradeDate; self.name = name
+        self.driver = driver; self.driverKind = driverKind; self.evidence = evidence
+        self.evidenceStatus = evidenceStatus; self.whyNow = whyNow; self.members = members
+        self.roleConflicts = roleConflicts; self.tier = tier; self.rankInTier = rankInTier
+        self.rankMech = rankMech; self.mechScore = mechScore; self.tierBreakdown = tierBreakdown
+        self.tierReason = tierReason; self.tierNote = tierNote; self.scripts = scripts
+        self.scriptsUnavailableReason = scriptsUnavailableReason
+        self.verificationSpec = verificationSpec; self.verificationText = verificationText
+        self.invalidationSpec = invalidationSpec; self.invalidationText = invalidationText
+        self.risks = risks; self.disclaimer = disclaimer; self.fingerprint = fingerprint
+        self.disciplineLabels = disciplineLabels; self.narrative = narrative
+        self.llmStage = llmStage; self.degraded = degraded; self.notes = notes
+    }
+
+    /// **B 类冻结快照 → 全字段 `decodeIfPresent`**(⛔ 一个 `try c.decode` 都不许有):
+    /// `card_json` 是写入当时冻住的,服务端升级永远不会给老卡补新键;硬解码任何一个键,
+    /// 装了新 App 的用户翻几周前的老卡就是**整张卡解不出**。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        specVersion = try c.decodeIfPresent(String.self, forKey: .specVersion)
+        version = try c.decodeIfPresent(Int.self, forKey: .version)
+        basketKey = try c.decodeIfPresent(String.self, forKey: .basketKey) ?? ""
+        tradeDate = try c.decodeIfPresent(String.self, forKey: .tradeDate) ?? ""
+        nextTradeDate = try c.decodeIfPresent(String.self, forKey: .nextTradeDate)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        driver = try c.decodeIfPresent(String.self, forKey: .driver) ?? ""
+        driverKind = try c.decodeIfPresent(String.self, forKey: .driverKind) ?? ""
+        evidence = try c.decodeIfPresent([BasketEvidence].self, forKey: .evidence) ?? []
+        evidenceStatus = try c.decodeIfPresent(String.self, forKey: .evidenceStatus) ?? ""
+        whyNow = try c.decodeIfPresent(String.self, forKey: .whyNow) ?? ""
+        members = try c.decodeIfPresent([BasketMember].self, forKey: .members) ?? []
+        roleConflicts = try c.decodeIfPresent([String].self, forKey: .roleConflicts) ?? []
+        tier = try c.decodeIfPresent(Int.self, forKey: .tier)
+        rankInTier = try c.decodeIfPresent(Int.self, forKey: .rankInTier)
+        rankMech = try c.decodeIfPresent(Int.self, forKey: .rankMech)
+        mechScore = try c.decodeIfPresent(Double.self, forKey: .mechScore)
+        tierBreakdown = try c.decodeIfPresent(NKJSON.self, forKey: .tierBreakdown) ?? .object([:])
+        tierReason = try c.decodeIfPresent(String.self, forKey: .tierReason)
+        tierNote = try c.decodeIfPresent(String.self, forKey: .tierNote)
+        scripts = try c.decodeIfPresent(BasketScripts.self, forKey: .scripts)
+        scriptsUnavailableReason = try c.decodeIfPresent(String.self,
+                                                         forKey: .scriptsUnavailableReason)
+        verificationSpec = try c.decodeIfPresent(NKJSON.self, forKey: .verificationSpec) ?? .object([:])
+        verificationText = try c.decodeIfPresent(String.self, forKey: .verificationText)
+        invalidationSpec = try c.decodeIfPresent(NKJSON.self, forKey: .invalidationSpec) ?? .object([:])
+        invalidationText = try c.decodeIfPresent(String.self, forKey: .invalidationText)
+        risks = try c.decodeIfPresent([String].self, forKey: .risks) ?? []
+        disclaimer = try c.decodeIfPresent(String.self, forKey: .disclaimer) ?? ""
+        fingerprint = try c.decodeIfPresent(BasketFingerprint.self,
+                                            forKey: .fingerprint) ?? BasketFingerprint()
+        disciplineLabels = try c.decodeIfPresent([String].self, forKey: .disciplineLabels) ?? []
+        narrative = try c.decodeIfPresent(String.self, forKey: .narrative) ?? ""
+        llmStage = try c.decodeIfPresent(String.self, forKey: .llmStage) ?? ""
+        degraded = try c.decodeIfPresent(Bool.self, forKey: .degraded) ?? false
+        notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
+    }
+
+    /// 取证完整性展示(⛔ 不是 `ok` 就必须说出来,不许静默当完整证据展示)。
+    var evidenceIncompleteNote: String? {
+        switch evidenceStatus {
+        case "", "ok": return nil
+        case "search_unavailable": return "取证不完整 · 检索侧不可用,以下证据未经联网核实"
+        case "partial": return "取证不完整 · 仅部分证据经检索核实"
+        default: return "取证不完整(\(evidenceStatus))"
+        }
+    }
+}
+
+/// 一篮的 Tier 定档留痕(`tier_history` 一行,**A 类**)。
+/// **Tier = 注意力优先级,不是收益预测**(§2.8-C 红线):`rankInTier` 排第一 ≠ 最会涨。
+struct Tier: Codable, Equatable {
+    var basketId: Int = 0
+    var tradeDate: String = ""
+    var tier: Int? = nil
+    var mechScore: Double? = nil
+    var mechBreakdown: NKJSON = .object([:])
+    var rankInTier: Int? = nil
+    /// LLM 微调**之前**的机械序;与 `llmRankDelta`(微调位移)两个都留着,定档才谈得上可复现。
+    var rankMech: Int? = nil
+    var llmRankDelta: Int = 0
+    var llmReason: String? = nil
+    var packVersion: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case basketId, tradeDate, tier, mechScore, mechBreakdown
+        case rankInTier, rankMech, llmRankDelta, llmReason, packVersion
+    }
+
+    init(basketId: Int = 0, tradeDate: String = "", tier: Int? = nil, mechScore: Double? = nil,
+         mechBreakdown: NKJSON = .object([:]), rankInTier: Int? = nil, rankMech: Int? = nil,
+         llmRankDelta: Int = 0, llmReason: String? = nil, packVersion: String? = nil) {
+        self.basketId = basketId; self.tradeDate = tradeDate; self.tier = tier
+        self.mechScore = mechScore; self.mechBreakdown = mechBreakdown
+        self.rankInTier = rankInTier; self.rankMech = rankMech; self.llmRankDelta = llmRankDelta
+        self.llmReason = llmReason; self.packVersion = packVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        basketId = try c.decodeIfPresent(Int.self, forKey: .basketId) ?? 0
+        tradeDate = try c.decodeIfPresent(String.self, forKey: .tradeDate) ?? ""
+        tier = try c.decodeIfPresent(Int.self, forKey: .tier)
+        mechScore = try c.decodeIfPresent(Double.self, forKey: .mechScore)
+        mechBreakdown = try c.decodeIfPresent(NKJSON.self, forKey: .mechBreakdown) ?? .object([:])
+        rankInTier = try c.decodeIfPresent(Int.self, forKey: .rankInTier)
+        rankMech = try c.decodeIfPresent(Int.self, forKey: .rankMech)
+        llmRankDelta = try c.decodeIfPresent(Int.self, forKey: .llmRankDelta) ?? 0
+        llmReason = try c.decodeIfPresent(String.self, forKey: .llmReason)
+        packVersion = try c.decodeIfPresent(String.self, forKey: .packVersion)
+    }
+}
+
+/// 一个篮子的壳(**A 类**)。`card == nil` + `cardUnavailableReason == "card_not_ready"`
+/// = **篮子在、卡没生成**(⑦ 事务 1 与事务 2 分开,合法中间态)。
+/// ⛔ 不许把它显示成「篮子不存在」——那是另一回事(`basket_not_found`)。
+struct Basket: Codable, Equatable, Identifiable {
+    var basketId: Int = 0
+    var basketKey: String = ""
+    var name: String = ""
+    var tradeDate: String = ""
+    var tier: Int? = nil
+    var memberCodes: [String] = []
+    var card: BasketCard? = nil
+    var cardVersion: Int? = nil
+    var cardUnavailableReason: String? = nil
+    var tierHistory: Tier? = nil
+
+    var id: Int { basketId }
+
+    enum CodingKeys: String, CodingKey {
+        case basketId, basketKey, name, tradeDate, tier, memberCodes
+        case card, cardVersion, cardUnavailableReason, tierHistory
+    }
+
+    init(basketId: Int = 0, basketKey: String = "", name: String = "", tradeDate: String = "",
+         tier: Int? = nil, memberCodes: [String] = [], card: BasketCard? = nil,
+         cardVersion: Int? = nil, cardUnavailableReason: String? = nil, tierHistory: Tier? = nil) {
+        self.basketId = basketId; self.basketKey = basketKey; self.name = name
+        self.tradeDate = tradeDate; self.tier = tier; self.memberCodes = memberCodes
+        self.card = card; self.cardVersion = cardVersion
+        self.cardUnavailableReason = cardUnavailableReason; self.tierHistory = tierHistory
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        basketId = try c.decodeIfPresent(Int.self, forKey: .basketId) ?? 0
+        basketKey = try c.decodeIfPresent(String.self, forKey: .basketKey) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        tradeDate = try c.decodeIfPresent(String.self, forKey: .tradeDate) ?? ""
+        tier = try c.decodeIfPresent(Int.self, forKey: .tier)
+        memberCodes = try c.decodeIfPresent([String].self, forKey: .memberCodes) ?? []
+        card = try c.decodeIfPresent(BasketCard.self, forKey: .card)
+        cardVersion = try c.decodeIfPresent(Int.self, forKey: .cardVersion)
+        cardUnavailableReason = try c.decodeIfPresent(String.self, forKey: .cardUnavailableReason)
+        tierHistory = try c.decodeIfPresent(Tier.self, forKey: .tierHistory)
+    }
+
+    /// 卡未就绪时的诚实文案。⛔ **不是**「篮子不存在」。
+    var cardUnavailableText: String? {
+        guard card == nil else { return nil }
+        switch cardUnavailableReason {
+        case "card_not_ready", .none: return "本篮的卡还没生成"
+        case .some(let r): return "本篮的卡暂不可用(\(r))"
+        }
+    }
+}
+
+/// ③b 未定档篮子一行(⑥-b-C)。
+/// **`reason` 两个码语义相反,⛔ 不许合并成一句「未入选」**:
+/// `capacity_overflow` = 分数够、位置满 →「今天机会多到装不下」;
+/// `below_quality_line` = 连 T3 下限都没过 →「今天没什么好货」。
+/// **没有 `basketId`** —— 它没进 `baskets` 表,给一个 id 会让用户以为点得进去。
+struct DroppedBasket: Codable, Equatable, Identifiable {
+    var name: String = ""
+    var mechScore: Double? = nil
+    var reason: String = ""
+
+    var id: String { "\(name)|\(reason)" }
+
+    enum CodingKeys: String, CodingKey { case name, mechScore, reason }
+
+    init(name: String = "", mechScore: Double? = nil, reason: String = "") {
+        self.name = name; self.mechScore = mechScore; self.reason = reason
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        mechScore = try c.decodeIfPresent(Double.self, forKey: .mechScore)
+        reason = try c.decodeIfPresent(String.self, forKey: .reason)  ?? ""
+    }
+
+    var reasonLabel: String { nkDroppedReasonLabel(reason) }
+    var reasonTone: NKAxisTone { reason == "capacity_overflow" ? .good : .warn }
+}
+
+/// ③b 两个原因码的展示层换算(**⛔ 不许合并**,两者指向相反的市场结论)。
+func nkDroppedReasonLabel(_ raw: String) -> String {
+    switch raw {
+    case "capacity_overflow": return "档位已满 · 今天机会多到装不下"
+    case "below_quality_line": return "未过质量线 · 今天没什么好货"
+    default: return raw
+    }
+}
+
+/// ⑧ 的「当前状态」三路读法(**A 类**)。三个位分别回答不同问题,⛔ 不许合并:
+/// `state` 四态 / `provisional`(盘中暂态、未收盘定论)/ `notEvaluated`(**今天还没判过**,
+/// 不是「判了是 unclear」)。
+///
+/// ⚠ **篮子 `falsified` ≠ 持仓该走**(CLAUDE.md 坑条):它说的是「这个驱动假设不成立了」,
+/// **不指向任何持仓动作**、不进推送。展示处不得写成卖出暗示。
+struct BasketVerification: Codable, Equatable {
+    var basketId: Int = 0
+    var tradeDate: String = ""
+    var state: String = ""      // verified | partial | unclear | falsified
+    var label: String = ""
+    var source: String? = nil
+    var observedAt: String? = nil
+    var provisional: Bool = false
+    var notEvaluated: Bool = false
+    var evidence: NKJSON? = nil
+    var rows: [NKJSON] = []
+
+    enum CodingKeys: String, CodingKey {
+        case basketId, tradeDate, state, label, source, observedAt
+        case provisional, notEvaluated, evidence, rows
+    }
+
+    init(basketId: Int = 0, tradeDate: String = "", state: String = "", label: String = "",
+         source: String? = nil, observedAt: String? = nil, provisional: Bool = false,
+         notEvaluated: Bool = false, evidence: NKJSON? = nil, rows: [NKJSON] = []) {
+        self.basketId = basketId; self.tradeDate = tradeDate; self.state = state
+        self.label = label; self.source = source; self.observedAt = observedAt
+        self.provisional = provisional; self.notEvaluated = notEvaluated
+        self.evidence = evidence; self.rows = rows
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        basketId = try c.decodeIfPresent(Int.self, forKey: .basketId) ?? 0
+        tradeDate = try c.decodeIfPresent(String.self, forKey: .tradeDate) ?? ""
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? ""
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        source = try c.decodeIfPresent(String.self, forKey: .source)
+        observedAt = try c.decodeIfPresent(String.self, forKey: .observedAt)
+        provisional = try c.decodeIfPresent(Bool.self, forKey: .provisional) ?? false
+        notEvaluated = try c.decodeIfPresent(Bool.self, forKey: .notEvaluated) ?? false
+        evidence = try c.decodeIfPresent(NKJSON.self, forKey: .evidence)
+        rows = try c.decodeIfPresent([NKJSON].self, forKey: .rows) ?? []
+    }
+
+    /// 角标文案。**「今天还没判过」与「判了是 unclear」讲不同的话**。
+    var badgeText: String {
+        if notEvaluated { return "今日尚未判定" }
+        let base = label.isEmpty ? nkVerificationStateLabel(state) : label
+        return provisional ? "\(base) · 盘中暂态" : base
+    }
+
+    var badgeTone: NKAxisTone {
+        if notEvaluated { return .neutral }
+        switch state {
+        case "verified": return .good
+        case "partial": return .warn
+        case "falsified": return .bad
+        default: return .neutral
+        }
+    }
+}
+
+/// 验证四态的展示层换算(服务端 `label` 优先;这里只做兜底,未识别原样透传)。
+func nkVerificationStateLabel(_ raw: String) -> String {
+    switch raw {
+    case "verified": return "已验证"
+    case "partial": return "部分验证"
+    case "unclear": return "未明"
+    case "falsified": return "驱动假设已证伪"
+    default: return raw.isEmpty ? "未判定" : raw
+    }
+}
+
+/// ⑨ 的一篮盘后复盘(`mech` 是 **B 类冻结快照**,`llmText` 是参考件)。
+/// `depth`:`full`(T1/T2 详复盘)| `brief`(T3 简评)。
+/// `llmText == nil` + `llmSkipReason` 非空 = **未生成**(预算耗尽 / 降级),
+/// ⛔ 不拿空串冒充「生成了但没内容」。
+struct BasketReview: Codable, Equatable, Identifiable {
+    var basketId: Int = 0
+    var basketKey: String = ""
+    var name: String = ""
+    var tier: Int? = nil
+    var d0: String = ""
+    var reviewDate: String = ""
+    var depth: String = ""
+    var mech: NKJSON = .object([:])
+    var llmText: String? = nil
+    var llmSkipReason: String? = nil
+    var degraded: Bool = false
+    var verification: NKJSON? = nil
+
+    var id: Int { basketId }
+
+    enum CodingKeys: String, CodingKey {
+        case basketId, basketKey, name, tier, d0, reviewDate, depth
+        case mech, llmText, llmSkipReason, degraded, verification
+    }
+
+    init(basketId: Int = 0, basketKey: String = "", name: String = "", tier: Int? = nil,
+         d0: String = "", reviewDate: String = "", depth: String = "",
+         mech: NKJSON = .object([:]), llmText: String? = nil, llmSkipReason: String? = nil,
+         degraded: Bool = false, verification: NKJSON? = nil) {
+        self.basketId = basketId; self.basketKey = basketKey; self.name = name; self.tier = tier
+        self.d0 = d0; self.reviewDate = reviewDate; self.depth = depth; self.mech = mech
+        self.llmText = llmText; self.llmSkipReason = llmSkipReason; self.degraded = degraded
+        self.verification = verification
+    }
+
+    /// **B 类冻结快照**(`mech` ← `basket_review_daily.mech_json`)→ 全字段 `decodeIfPresent`。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        basketId = try c.decodeIfPresent(Int.self, forKey: .basketId) ?? 0
+        basketKey = try c.decodeIfPresent(String.self, forKey: .basketKey) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        tier = try c.decodeIfPresent(Int.self, forKey: .tier)
+        d0 = try c.decodeIfPresent(String.self, forKey: .d0) ?? ""
+        reviewDate = try c.decodeIfPresent(String.self, forKey: .reviewDate) ?? ""
+        depth = try c.decodeIfPresent(String.self, forKey: .depth) ?? ""
+        mech = try c.decodeIfPresent(NKJSON.self, forKey: .mech) ?? .object([:])
+        llmText = try c.decodeIfPresent(String.self, forKey: .llmText)
+        llmSkipReason = try c.decodeIfPresent(String.self, forKey: .llmSkipReason)
+        degraded = try c.decodeIfPresent(Bool.self, forKey: .degraded) ?? false
+        verification = try c.decodeIfPresent(NKJSON.self, forKey: .verification)
+    }
+
+    var depthLabel: String {
+        switch depth {
+        case "full": return "详复盘"
+        case "brief": return "简评"
+        default: return depth
+        }
+    }
+}
+
+/// 报告里的篮子日报三段(③ 今日篮子 / ③b 未定档 / ④ 昨日复盘)。
+///
+/// **每段各自带 `*Available` + `*UnavailableReason`**,两种「空」在界面上**必须讲不同的话**:
+///  · 空数组 + `available == true` = **今天真没有**(合法输出);
+///  · `available == false` = **本次没取到**。
+struct BasketDaily: Codable, Equatable {
+    var tradeDate: String = ""
+    var baskets: [Basket] = []
+    var basketsAvailable: Bool = false
+    var basketsUnavailableReason: String? = nil
+    var droppedBaskets: [DroppedBasket] = []
+    var droppedBasketsAvailable: Bool = false
+    var droppedBasketsUnavailableReason: String? = nil
+    var reviews: [BasketReview] = []
+    var reviewsAvailable: Bool = false
+    var reviewsUnavailableReason: String? = nil
+    var reviewD0: String? = nil
+    var packVersion: String? = nil
+    var notes: [String] = []
+
+    enum CodingKeys: String, CodingKey {
+        case tradeDate, baskets, basketsAvailable, basketsUnavailableReason
+        case droppedBaskets, droppedBasketsAvailable, droppedBasketsUnavailableReason
+        case reviews, reviewsAvailable, reviewsUnavailableReason
+        case reviewD0, packVersion, notes
+    }
+
+    init(tradeDate: String = "", baskets: [Basket] = [], basketsAvailable: Bool = false,
+         basketsUnavailableReason: String? = nil, droppedBaskets: [DroppedBasket] = [],
+         droppedBasketsAvailable: Bool = false, droppedBasketsUnavailableReason: String? = nil,
+         reviews: [BasketReview] = [], reviewsAvailable: Bool = false,
+         reviewsUnavailableReason: String? = nil, reviewD0: String? = nil,
+         packVersion: String? = nil, notes: [String] = []) {
+        self.tradeDate = tradeDate; self.baskets = baskets
+        self.basketsAvailable = basketsAvailable
+        self.basketsUnavailableReason = basketsUnavailableReason
+        self.droppedBaskets = droppedBaskets
+        self.droppedBasketsAvailable = droppedBasketsAvailable
+        self.droppedBasketsUnavailableReason = droppedBasketsUnavailableReason
+        self.reviews = reviews; self.reviewsAvailable = reviewsAvailable
+        self.reviewsUnavailableReason = reviewsUnavailableReason
+        self.reviewD0 = reviewD0; self.packVersion = packVersion; self.notes = notes
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tradeDate = try c.decodeIfPresent(String.self, forKey: .tradeDate) ?? ""
+        baskets = try c.decodeIfPresent([Basket].self, forKey: .baskets) ?? []
+        basketsAvailable = try c.decodeIfPresent(Bool.self, forKey: .basketsAvailable) ?? false
+        basketsUnavailableReason = try c.decodeIfPresent(String.self,
+                                                         forKey: .basketsUnavailableReason)
+        droppedBaskets = try c.decodeIfPresent([DroppedBasket].self, forKey: .droppedBaskets) ?? []
+        droppedBasketsAvailable = try c.decodeIfPresent(Bool.self,
+                                                        forKey: .droppedBasketsAvailable) ?? false
+        droppedBasketsUnavailableReason = try c.decodeIfPresent(
+            String.self, forKey: .droppedBasketsUnavailableReason)
+        reviews = try c.decodeIfPresent([BasketReview].self, forKey: .reviews) ?? []
+        reviewsAvailable = try c.decodeIfPresent(Bool.self, forKey: .reviewsAvailable) ?? false
+        reviewsUnavailableReason = try c.decodeIfPresent(String.self,
+                                                         forKey: .reviewsUnavailableReason)
+        reviewD0 = try c.decodeIfPresent(String.self, forKey: .reviewD0)
+        packVersion = try c.decodeIfPresent(String.self, forKey: .packVersion)
+        notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
+    }
+
+    /// 某一档的篮子(T1/T2/T3)。**空档位如实显示「今日 T1 为空」,⛔ 不隐藏**(E1)。
+    func baskets(tier: Int) -> [Basket] { baskets.filter { $0.tier == tier } }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// MARK: - V2 计划继承 / 建仓快照 / 画像 / 策略包 / 评价(A 类)
+// ══════════════════════════════════════════════════════════════════════════
+
+/// 一条持仓计划版本(⑩-B)。`version == 1` 恒从 D0 篮子卡继承;用户可创建
+/// `version = 2,3…`,**新版本不修改原始篮子卡**。
+///
+/// `plan` **原样透传领域 `plan_json`(snake_case)** —— 它是哨兵旁路 E 的判据源,
+/// 四个武装态键(`exit_reference_armed` / `..._reason` / `..._note` / `..._muted`)
+/// **恒存在**,缺键即不武装(fail-closed)。
+struct PositionPlan: Codable, Equatable, Identifiable {
+    var id: Int = 0
+    var positionId: Int = 0
+    var version: Int = 1
+    var sourceBasketId: Int? = nil
+    var sourceCardVersion: Int? = nil
+    var plan: NKJSON = .object([:])
+    var note: String? = nil
+    var createdAt: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case id, positionId, version, sourceBasketId, sourceCardVersion, plan, note, createdAt
+    }
+
+    init(id: Int = 0, positionId: Int = 0, version: Int = 1, sourceBasketId: Int? = nil,
+         sourceCardVersion: Int? = nil, plan: NKJSON = .object([:]), note: String? = nil,
+         createdAt: String = "") {
+        self.id = id; self.positionId = positionId; self.version = version
+        self.sourceBasketId = sourceBasketId; self.sourceCardVersion = sourceCardVersion
+        self.plan = plan; self.note = note; self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(Int.self, forKey: .id) ?? 0
+        positionId = try c.decodeIfPresent(Int.self, forKey: .positionId) ?? 0
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        sourceBasketId = try c.decodeIfPresent(Int.self, forKey: .sourceBasketId)
+        sourceCardVersion = try c.decodeIfPresent(Int.self, forKey: .sourceCardVersion)
+        plan = try c.decodeIfPresent(NKJSON.self, forKey: .plan) ?? .object([:])
+        note = try c.decodeIfPresent(String.self, forKey: .note)
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+    }
+
+    // —— `plan_json`(snake_case)便利读取。⛔ 只读不算,任何判定都在服务端 ——
+
+    /// `false` = 无来源篮子 或 篮子有但卡未就绪(**合法**,行照落,不是错误)。
+    var available: Bool { plan["available"]?.boolValue ?? false }
+    /// `no_source_basket` | `card_not_ready`;`available == true` 时为 nil。
+    var unavailableReason: String? { plan["reason"]?.stringValue }
+    var unavailableText: String? {
+        switch unavailableReason {
+        case "no_source_basket": return "独立买入 · 没有来源篮子可继承"
+        case "card_not_ready": return "有来源篮子,但当时卡还没生成"
+        case .some(let r): return r
+        case .none: return nil
+        }
+    }
+    var sourceBasketKey: String? { plan["source_basket_key"]?.stringValue }
+    var sourceBasketName: String? { plan["source_basket_name"]?.stringValue }
+    var driver: String? { plan["driver"]?.stringValue }
+    var entryZone: BasketPriceBand? { Self.band(plan["entry_zone"]) }
+    var entryZoneClamp: String { plan["entry_zone_clamp"]?.stringValue ?? "" }
+    var maxChase: Double? { plan["max_chase"]?.doubleValue }
+    var maxChaseClamp: String { plan["max_chase_clamp"]?.stringValue ?? "" }
+    var exitReference: BasketPriceBand? { Self.band(plan["exit_reference"]) }
+    var exitReferenceClamp: String { plan["exit_reference_clamp"]?.stringValue ?? "" }
+    var risks: [String] { (plan["risks"]?.arrayValue ?? []).compactMap { $0.stringValue } }
+
+    /// ⑪-D 武装态(**派生态**,由服务端重算,客户端说了不算)。
+    var exitReferenceArmed: Bool { plan["exit_reference_armed"]?.boolValue ?? false }
+    var exitReferenceArmedReason: String? { plan["exit_reference_armed_reason"]?.stringValue }
+    /// 未武装理由的人读文案(**服务端单一源**,客户端不另拍文案)。
+    var exitReferenceArmedNote: String? { plan["exit_reference_armed_note"]?.stringValue }
+    /// ⑪-D-D 的**用户意图位**(per-position「不提醒」开关的真身)。与 `exitReferenceArmed`
+    /// 分开存:一个是用户说的,一个是机械闸算的。
+    var exitReferenceMuted: Bool { plan["exit_reference_muted"]?.boolValue ?? false }
+
+    private static func band(_ v: NKJSON?) -> BasketPriceBand? {
+        guard let obj = v?.objectValue else { return nil }
+        return BasketPriceBand(low: obj["low"]?.doubleValue, high: obj["high"]?.doubleValue,
+                               why: obj["why"]?.stringValue)
+    }
+
+    /// 翻转静音位后的新计划正文(⛔ **只翻这一个键,计划正文一项不动**)。
+    /// 落法 = `POST /positions/{id}/plans` 追加新版本(版本化只增表,不就地改历史行)。
+    func planBodyTogglingMute(_ muted: Bool) -> NKJSON {
+        var obj = plan.objectValue ?? [:]
+        obj["exit_reference_muted"] = .bool(muted)
+        return .object(obj)
+    }
+}
+
+/// 建仓瞬间的冻结快照(⑩-A,`entry_snapshots` 一行)。
+/// `snapshot.not_captured` **如实列出本次没采到的项** —— ⛔ 别把"没采"读成"没有"。
+struct EntrySnapshot: Codable, Equatable {
+    var positionId: Int = 0
+    var tsCode: String = ""
+    var tradeDate: String = ""
+    var basketId: Int? = nil
+    var cardVersion: Int? = nil
+    var tier: Int? = nil
+    var role: String? = nil
+    var snapshot: NKJSON = .object([:])
+    var createdAt: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case positionId, tsCode, tradeDate, basketId, cardVersion, tier, role, snapshot, createdAt
+    }
+
+    init(positionId: Int = 0, tsCode: String = "", tradeDate: String = "", basketId: Int? = nil,
+         cardVersion: Int? = nil, tier: Int? = nil, role: String? = nil,
+         snapshot: NKJSON = .object([:]), createdAt: String = "") {
+        self.positionId = positionId; self.tsCode = tsCode; self.tradeDate = tradeDate
+        self.basketId = basketId; self.cardVersion = cardVersion; self.tier = tier
+        self.role = role; self.snapshot = snapshot; self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        positionId = try c.decodeIfPresent(Int.self, forKey: .positionId) ?? 0
+        tsCode = try c.decodeIfPresent(String.self, forKey: .tsCode) ?? ""
+        tradeDate = try c.decodeIfPresent(String.self, forKey: .tradeDate) ?? ""
+        basketId = try c.decodeIfPresent(Int.self, forKey: .basketId)
+        cardVersion = try c.decodeIfPresent(Int.self, forKey: .cardVersion)
+        tier = try c.decodeIfPresent(Int.self, forKey: .tier)
+        role = try c.decodeIfPresent(String.self, forKey: .role)
+        snapshot = try c.decodeIfPresent(NKJSON.self, forKey: .snapshot) ?? .object([:])
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+    }
+
+    /// 本次**没采到**的项(⑩ 范围内:资金流 / 竞价表现 / 换手率 / 量比四项未采集)。
+    var notCaptured: [String] {
+        (snapshot["not_captured"]?.arrayValue ?? []).compactMap { $0.stringValue }
+    }
+}
+
+/// 偏好画像 / 能力画像(⑫-B,每期一版)。**两张账刻意分开**:偏好答「喜欢什么」、
+/// 能力答「什么真有效」—— ⛔ 不合并成一张"用户画像"。
+/// `asOf` 为空 = **该期从未算过**(不是"算出来是空的")。
+struct Profile: Codable, Equatable {
+    var asOf: String = ""
+    var available: Bool = false
+    var unavailableReason: String? = nil
+    var items: [NKJSON] = []
+
+    enum CodingKeys: String, CodingKey { case asOf, available, unavailableReason, items }
+
+    init(asOf: String = "", available: Bool = false, unavailableReason: String? = nil,
+         items: [NKJSON] = []) {
+        self.asOf = asOf; self.available = available
+        self.unavailableReason = unavailableReason; self.items = items
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        asOf = try c.decodeIfPresent(String.self, forKey: .asOf) ?? ""
+        available = try c.decodeIfPresent(Bool.self, forKey: .available) ?? false
+        unavailableReason = try c.decodeIfPresent(String.self, forKey: .unavailableReason)
+        items = try c.decodeIfPresent([NKJSON].self, forKey: .items) ?? []
+    }
+}
+
+/// 画像一行的读取视图。每行必带**样本量 / 时间范围 / 置信度**;
+/// `confidence == "low"` 时**必须**显式写「样本不足,不给结论」,⛔ 不许把低置信度的
+/// 数字当结论展示(⑫ 验收条款)。
+struct ProfileRow: Identifiable, Equatable {
+    let raw: NKJSON
+    var id: String { "\(dimension)|\(bucket)" }
+
+    var dimension: String { raw["dimension"]?.stringValue ?? "" }
+    var bucket: String { raw["bucket"]?.stringValue ?? "" }
+    var sampleN: Int { raw["sample_n"]?.intValue ?? raw["sampleN"]?.intValue ?? 0 }
+    var windowStart: String { raw["window_start"]?.stringValue ?? raw["windowStart"]?.stringValue ?? "" }
+    var windowEnd: String { raw["window_end"]?.stringValue ?? raw["windowEnd"]?.stringValue ?? "" }
+    var confidence: String { raw["confidence"]?.stringValue ?? "" }
+    var isLowConfidence: Bool { confidence == "low" }
+    /// 除去上述元信息之外的度量键(按字典序,确定性)。
+    var metricKeys: [String] {
+        let meta: Set<String> = ["dimension", "bucket", "sample_n", "sampleN",
+                                 "window_start", "windowStart", "window_end", "windowEnd",
+                                 "confidence"]
+        return raw.sortedKeys.filter { !meta.contains($0) }
+    }
+}
+
+/// 一个选股策略包(`selection_packs` 一行)。
+/// ⚠ **策略包与纪律章程是两条版本线、两张表、两套激活流程,永不混用** ——
+/// 本类型**不含任何纪律参数**(`stop_pct` 等住 `strategy_versions`)。
+struct Pack: Codable, Equatable, Identifiable {
+    var packVersion: String = ""
+    var isActive: Bool = false
+    var createdAt: String = ""
+    var activatedAt: String? = nil
+    var manifest: NKJSON = .object([:])
+    var config: NKJSON = .object([:])
+
+    var id: String { packVersion }
+
+    enum CodingKeys: String, CodingKey {
+        case packVersion, isActive, createdAt, activatedAt, manifest, config
+    }
+
+    init(packVersion: String = "", isActive: Bool = false, createdAt: String = "",
+         activatedAt: String? = nil, manifest: NKJSON = .object([:]),
+         config: NKJSON = .object([:])) {
+        self.packVersion = packVersion; self.isActive = isActive; self.createdAt = createdAt
+        self.activatedAt = activatedAt; self.manifest = manifest; self.config = config
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        packVersion = try c.decodeIfPresent(String.self, forKey: .packVersion) ?? ""
+        isActive = try c.decodeIfPresent(Bool.self, forKey: .isActive) ?? false
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+        activatedAt = try c.decodeIfPresent(String.self, forKey: .activatedAt)
+        manifest = try c.decodeIfPresent(NKJSON.self, forKey: .manifest) ?? .object([:])
+        config = try c.decodeIfPresent(NKJSON.self, forKey: .config) ?? .object([:])
+    }
+}
+
+/// 周度评价校准报告(⑨-C,含安慰剂对照臂)。
+/// ⚠ **评价是长期统计,不是单日打分**:`available == false` 时 `unavailableReason` 必有值,
+/// ⛔ 不许拿半截样本给结论。
+struct EvalWeekly: Codable, Equatable {
+    var weekStart: String = ""
+    var weekEnd: String = ""
+    var available: Bool = false
+    var unavailableReason: String? = nil
+    var result: NKJSON = .object([:])
+    var markdown: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case weekStart, weekEnd, available, unavailableReason, result, markdown
+    }
+
+    init(weekStart: String = "", weekEnd: String = "", available: Bool = false,
+         unavailableReason: String? = nil, result: NKJSON = .object([:]), markdown: String = "") {
+        self.weekStart = weekStart; self.weekEnd = weekEnd; self.available = available
+        self.unavailableReason = unavailableReason; self.result = result; self.markdown = markdown
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        weekStart = try c.decodeIfPresent(String.self, forKey: .weekStart) ?? ""
+        weekEnd = try c.decodeIfPresent(String.self, forKey: .weekEnd) ?? ""
+        available = try c.decodeIfPresent(Bool.self, forKey: .available) ?? false
+        unavailableReason = try c.decodeIfPresent(String.self, forKey: .unavailableReason)
+        result = try c.decodeIfPresent(NKJSON.self, forKey: .result) ?? .object([:])
+        markdown = try c.decodeIfPresent(String.self, forKey: .markdown) ?? ""
     }
 }
 
 // MARK: - v1.4-④ 信息卡(完整,`GET /report/{date}/info-card/{code}` 专用,§五 v1.4-④)
 //
-// 摘要位共用的 `InfoCardSnapshot`/`InfoCardNews`/`InfoCardTopList` 已在上面声明(挂
-// `Candidate.infoCard`);这里只补 60 日序列 + 红黄牌明细专属类型。**第〇原则(考卷
+// 摘要位共用的 `InfoCardSnapshot`/`InfoCardNews`/`InfoCardTopList` 已在上面声明;
+// 这里只补 60 日序列 + 红黄牌明细专属类型。**第〇原则(考卷
 // 同构)**:数据不可得如实缺省,禁止硬凑——每一路数据源独立 `*Available`/
 // `*UnavailableReason`,任何一路缺失都不得连带其余各路"看起来也不可用"。
 // ⚠ V2-⑬-4:信息卡页原先复用 `Candidate.execHints` 展示执行提示卡,该键已删 →
@@ -439,11 +1335,146 @@ struct InfoCardMarket: Codable, Equatable {
     var aboveMa20: Bool? = nil
 }
 
+/// ⑬-N 三块之一:①所属篮子与共同驱动 ②本票角色(含对拍分歧)③与同篮其他成员的对比。
+/// `available == false` 时 `unavailableReason` **必有值且两态分得开**:
+/// 「不在任何篮子里」vs「在篮子里但卡没生成」—— ⛔ 不许显示成同一句话。
+struct InfoCardBasketPeer: Codable, Equatable, Identifiable {
+    var tsCode: String = ""
+    var name: String = ""
+    var roleLlm: String? = nil
+    var roleMech: String? = nil
+    var roleConflict: Bool = false
+    var rsRank: Int? = nil
+    var close: Double? = nil
+    var industry: String? = nil
+
+    var id: String { tsCode }
+
+    enum CodingKeys: String, CodingKey {
+        case tsCode, name, roleLlm, roleMech, roleConflict, rsRank, close, industry
+    }
+
+    init(tsCode: String = "", name: String = "", roleLlm: String? = nil, roleMech: String? = nil,
+         roleConflict: Bool = false, rsRank: Int? = nil, close: Double? = nil,
+         industry: String? = nil) {
+        self.tsCode = tsCode; self.name = name; self.roleLlm = roleLlm; self.roleMech = roleMech
+        self.roleConflict = roleConflict; self.rsRank = rsRank; self.close = close
+        self.industry = industry
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tsCode = try c.decodeIfPresent(String.self, forKey: .tsCode) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        roleLlm = try c.decodeIfPresent(String.self, forKey: .roleLlm)
+        roleMech = try c.decodeIfPresent(String.self, forKey: .roleMech)
+        roleConflict = try c.decodeIfPresent(Bool.self, forKey: .roleConflict) ?? false
+        rsRank = try c.decodeIfPresent(Int.self, forKey: .rsRank)
+        close = try c.decodeIfPresent(Double.self, forKey: .close)
+        industry = try c.decodeIfPresent(String.self, forKey: .industry)
+    }
+
+    /// 角色两说并存(同 `BasketMember.roleDisplay`,⛔ 冲突时不挑一个当正确答案)。
+    var roleDisplay: String {
+        let llm = (roleLlm ?? "").trimmingCharacters(in: .whitespaces)
+        let mech = (roleMech ?? "").trimmingCharacters(in: .whitespaces)
+        if roleConflict { return "LLM:\(llm.isEmpty ? "—" : llm) / 机械:\(mech.isEmpty ? "—" : mech)" }
+        if !mech.isEmpty { return mech }
+        if !llm.isEmpty { return llm }
+        return "角色未判定"
+    }
+}
+
+struct InfoCardBasket: Codable, Equatable {
+    var available: Bool = false
+    var unavailableReason: String? = nil
+    var basketId: Int? = nil
+    var basketKey: String = ""
+    var name: String = ""
+    var tier: Int? = nil
+    var driver: String = ""
+    var driverKind: String = ""
+    var whyNow: String = ""
+    var roleLlm: String? = nil
+    var roleMech: String? = nil
+    var roleConflict: Bool = false
+    var roleReason: String = ""
+    var isPrimary: Bool = false
+    var industry: String? = nil
+    var industryLift: Double? = nil
+    var peers: [InfoCardBasketPeer] = []
+
+    enum CodingKeys: String, CodingKey {
+        case available, unavailableReason, basketId, basketKey, name, tier
+        case driver, driverKind, whyNow, roleLlm, roleMech, roleConflict, roleReason
+        case isPrimary, industry, industryLift, peers
+    }
+
+    init(available: Bool = false, unavailableReason: String? = nil, basketId: Int? = nil,
+         basketKey: String = "", name: String = "", tier: Int? = nil, driver: String = "",
+         driverKind: String = "", whyNow: String = "", roleLlm: String? = nil,
+         roleMech: String? = nil, roleConflict: Bool = false, roleReason: String = "",
+         isPrimary: Bool = false, industry: String? = nil, industryLift: Double? = nil,
+         peers: [InfoCardBasketPeer] = []) {
+        self.available = available; self.unavailableReason = unavailableReason
+        self.basketId = basketId; self.basketKey = basketKey; self.name = name; self.tier = tier
+        self.driver = driver; self.driverKind = driverKind; self.whyNow = whyNow
+        self.roleLlm = roleLlm; self.roleMech = roleMech; self.roleConflict = roleConflict
+        self.roleReason = roleReason; self.isPrimary = isPrimary; self.industry = industry
+        self.industryLift = industryLift; self.peers = peers
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        available = try c.decodeIfPresent(Bool.self, forKey: .available) ?? false
+        unavailableReason = try c.decodeIfPresent(String.self, forKey: .unavailableReason)
+        basketId = try c.decodeIfPresent(Int.self, forKey: .basketId)
+        basketKey = try c.decodeIfPresent(String.self, forKey: .basketKey) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        tier = try c.decodeIfPresent(Int.self, forKey: .tier)
+        driver = try c.decodeIfPresent(String.self, forKey: .driver) ?? ""
+        driverKind = try c.decodeIfPresent(String.self, forKey: .driverKind) ?? ""
+        whyNow = try c.decodeIfPresent(String.self, forKey: .whyNow) ?? ""
+        roleLlm = try c.decodeIfPresent(String.self, forKey: .roleLlm)
+        roleMech = try c.decodeIfPresent(String.self, forKey: .roleMech)
+        roleConflict = try c.decodeIfPresent(Bool.self, forKey: .roleConflict) ?? false
+        roleReason = try c.decodeIfPresent(String.self, forKey: .roleReason) ?? ""
+        isPrimary = try c.decodeIfPresent(Bool.self, forKey: .isPrimary) ?? false
+        industry = try c.decodeIfPresent(String.self, forKey: .industry)
+        industryLift = try c.decodeIfPresent(Double.self, forKey: .industryLift)
+        peers = try c.decodeIfPresent([InfoCardBasketPeer].self, forKey: .peers) ?? []
+    }
+
+    /// 两态**分得开**的诚实文案(⛔ 不许合并)。
+    var unavailableText: String? {
+        guard !available else { return nil }
+        switch unavailableReason {
+        case "not_in_any_basket": return "这只票不在当日任何篮子里"
+        case "card_not_ready": return "在篮子里,但那张卡还没生成"
+        case .some(let r): return r
+        case .none: return "篮子信息暂不可用"
+        }
+    }
+
+    var roleDisplay: String {
+        let llm = (roleLlm ?? "").trimmingCharacters(in: .whitespaces)
+        let mech = (roleMech ?? "").trimmingCharacters(in: .whitespaces)
+        if roleConflict { return "LLM:\(llm.isEmpty ? "—" : llm) / 机械:\(mech.isEmpty ? "—" : mech)" }
+        if !mech.isEmpty { return mech }
+        if !llm.isEmpty { return llm }
+        return "角色未判定"
+    }
+}
+
+/// 完整信息卡。⚠ **本类型全部属性手写 `init(from:)`**(⑭-C 对拍表 §七-2 登记项):
+/// 原先用合成 `Codable` 直接解 wire,**每个属性都是必需的** —— 服务端日后停发任一键
+/// 就是整张卡解不出。⑮ 动了 info-card 契约(⑬-N 三块 + ⑬-N-K7 标注件),照 CLAUDE.md
+/// 「服务端删/停发任何键之前先查已装客户端是不是硬解码」这条,顺手把它改成可选解码。
 struct InfoCard: Codable, Equatable {
-    var code: String
-    var name: String
-    var tradeDate: String
-    var klineAvailable: Bool
+    var code: String = ""
+    var name: String = ""
+    var tradeDate: String = ""
+    var klineAvailable: Bool = false
     var kline: [InfoCardKlineBar] = []
     var klineUnavailableReason: String? = nil
     var rsAvailable: Bool = false
@@ -461,6 +1492,81 @@ struct InfoCard: Codable, Equatable {
     var news: InfoCardNews = InfoCardNews(scanned: false)
     var topList: InfoCardTopList = InfoCardTopList()
     var market: InfoCardMarket = InfoCardMarket()
+    // —— V2-⑬-N:篮子成员详情页 + ⑬-N-K7 标注件展示区 ————————————————————
+    var basket: InfoCardBasket = InfoCardBasket()
+    var tags: [BasketMemberTag] = []
+    /// **判不了的标注码**(数据缺失)—— 与「判过没命中」是两回事,⛔ 不许合并成"没有标注"。
+    var tagsAbsent: [String] = []
+
+    enum CodingKeys: String, CodingKey {
+        case code, name, tradeDate, klineAvailable, kline, klineUnavailableReason
+        case rsAvailable, rsLine, rsBenchmark, rsUnavailableReason
+        case industryDivergenceAvailable, industryDivergenceLine, industry
+        case industryDivergenceNote, industryDivergenceUnavailableReason
+        case snapshot, k4Flags, mildBand, news, topList, market
+        case basket, tags, tagsAbsent
+    }
+
+    init(code: String = "", name: String = "", tradeDate: String = "",
+         klineAvailable: Bool = false, kline: [InfoCardKlineBar] = [],
+         klineUnavailableReason: String? = nil, rsAvailable: Bool = false,
+         rsLine: [InfoCardIndexPoint] = [], rsBenchmark: String = "000001.SH",
+         rsUnavailableReason: String? = nil, industryDivergenceAvailable: Bool = false,
+         industryDivergenceLine: [InfoCardIndexPoint] = [], industry: String = "",
+         industryDivergenceNote: String = "行业线=行业成员中位数合成,非申万官方指数",
+         industryDivergenceUnavailableReason: String? = nil,
+         snapshot: InfoCardSnapshot = InfoCardSnapshot(), k4Flags: [InfoCardK4Flag] = [],
+         mildBand: Bool = false, news: InfoCardNews = InfoCardNews(scanned: false),
+         topList: InfoCardTopList = InfoCardTopList(), market: InfoCardMarket = InfoCardMarket(),
+         basket: InfoCardBasket = InfoCardBasket(), tags: [BasketMemberTag] = [],
+         tagsAbsent: [String] = []) {
+        self.code = code; self.name = name; self.tradeDate = tradeDate
+        self.klineAvailable = klineAvailable; self.kline = kline
+        self.klineUnavailableReason = klineUnavailableReason
+        self.rsAvailable = rsAvailable; self.rsLine = rsLine; self.rsBenchmark = rsBenchmark
+        self.rsUnavailableReason = rsUnavailableReason
+        self.industryDivergenceAvailable = industryDivergenceAvailable
+        self.industryDivergenceLine = industryDivergenceLine; self.industry = industry
+        self.industryDivergenceNote = industryDivergenceNote
+        self.industryDivergenceUnavailableReason = industryDivergenceUnavailableReason
+        self.snapshot = snapshot; self.k4Flags = k4Flags; self.mildBand = mildBand
+        self.news = news; self.topList = topList; self.market = market
+        self.basket = basket; self.tags = tags; self.tagsAbsent = tagsAbsent
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        code = try c.decodeIfPresent(String.self, forKey: .code) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        tradeDate = try c.decodeIfPresent(String.self, forKey: .tradeDate) ?? ""
+        klineAvailable = try c.decodeIfPresent(Bool.self, forKey: .klineAvailable) ?? false
+        kline = try c.decodeIfPresent([InfoCardKlineBar].self, forKey: .kline) ?? []
+        klineUnavailableReason = try c.decodeIfPresent(String.self, forKey: .klineUnavailableReason)
+        rsAvailable = try c.decodeIfPresent(Bool.self, forKey: .rsAvailable) ?? false
+        rsLine = try c.decodeIfPresent([InfoCardIndexPoint].self, forKey: .rsLine) ?? []
+        rsBenchmark = try c.decodeIfPresent(String.self, forKey: .rsBenchmark) ?? "000001.SH"
+        rsUnavailableReason = try c.decodeIfPresent(String.self, forKey: .rsUnavailableReason)
+        industryDivergenceAvailable = try c.decodeIfPresent(
+            Bool.self, forKey: .industryDivergenceAvailable) ?? false
+        industryDivergenceLine = try c.decodeIfPresent(
+            [InfoCardIndexPoint].self, forKey: .industryDivergenceLine) ?? []
+        industry = try c.decodeIfPresent(String.self, forKey: .industry) ?? ""
+        industryDivergenceNote = try c.decodeIfPresent(
+            String.self, forKey: .industryDivergenceNote) ?? "行业线=行业成员中位数合成,非申万官方指数"
+        industryDivergenceUnavailableReason = try c.decodeIfPresent(
+            String.self, forKey: .industryDivergenceUnavailableReason)
+        snapshot = try c.decodeIfPresent(InfoCardSnapshot.self,
+                                          forKey: .snapshot) ?? InfoCardSnapshot()
+        k4Flags = try c.decodeIfPresent([InfoCardK4Flag].self, forKey: .k4Flags) ?? []
+        mildBand = try c.decodeIfPresent(Bool.self, forKey: .mildBand) ?? false
+        news = try c.decodeIfPresent(InfoCardNews.self,
+                                      forKey: .news) ?? InfoCardNews(scanned: false)
+        topList = try c.decodeIfPresent(InfoCardTopList.self, forKey: .topList) ?? InfoCardTopList()
+        market = try c.decodeIfPresent(InfoCardMarket.self, forKey: .market) ?? InfoCardMarket()
+        basket = try c.decodeIfPresent(InfoCardBasket.self, forKey: .basket) ?? InfoCardBasket()
+        tags = try c.decodeIfPresent([BasketMemberTag].self, forKey: .tags) ?? []
+        tagsAbsent = try c.decodeIfPresent([String].self, forKey: .tagsAbsent) ?? []
+    }
 }
 
 // MARK: - 4A.2 报告:整份报告
@@ -682,18 +1788,35 @@ struct DataFreshness: Codable, Equatable {
     var industryStrengthLagDays: Int? = nil
     /// `lag > 0` 即 true(**无容忍度** —— 行业强度用当日 EOD 算,16:05 当天就该有)。
     var industryStrengthStale: Bool? = nil
+    // —— V2-⑭-A 市场扫描层三键(**第三组独立故障,⛔ 不与上面两组合并**)——————————
+    // 扫描层没跑 → 今日无种子 → 今日无篮子;而「今天没有篮子」与「今天没看」必须能分开。
+    // **该组三键整体缺席 = 本次连新鲜度都没查到**,⛔ 不是"新鲜"。
+    /// 三张预计算表(`corr_matrix_daily`/`limit_cluster_daily`/`leader_structure_daily`)
+    /// 批算到的最新交易日;`nil` = 完全无数据 / 老快照缺键。
+    var scanLayerDate: String? = nil
+    /// 落后几个交易日;`-1` = 完全无数据(哨兵值,同 `sectorLagDays` 惯例)。
+    var scanLayerLagDays: Int? = nil
+    var scanLayerStale: Bool? = nil
 
-    /// 顶部横幅是否该出现:板块过期**或**行业强度未就绪,任一成立即展示(两条各自成行)。
-    var needsBanner: Bool { stale || industryStrengthStale == true }
+    /// 顶部横幅是否该出现:板块过期 **或** 行业强度未就绪 **或** 扫描层未就绪,
+    /// 任一成立即展示(**三条各自成行**,合并就分不清哪个坏了)。
+    var needsBanner: Bool { stale || industryStrengthStale == true || scanLayerStale == true }
 }
 
-struct ReportSnapshot: Codable, Equatable {
+/// 报告展示模型。
+///
+/// ⚠ **刻意不是 `Codable`**(⑭-C 对拍表 §七-1 登记项):`/report` 走 `APIClient` 里的
+/// 私有 wire DTO 解码后**手工映射**到本类型,合成 `Decodable` 从来没被 JSON 解过 —— 是
+/// 死代码,留着只会让「wire 字段清单」与「展示字段清单」两份各自漂。⑮ 顺手收掉。
+struct ReportSnapshot: Equatable {
     var tradeDate: String
     var generatedAt: String
     var strategyVersion: String
     var sentiment: SentimentSnapshot?
     var sectors: [SectorSnapshot]
-    var candidates: [Candidate]
+    /// V2-⑭-B:篮子日报三段(③ 今日篮子 / ③b 未定档 / ④ 昨日复盘),取代已退役的
+    /// `candidates`。**随报告冻住**:读三天前的报告该看到当时的篮子,不是今天的。
+    var basketDaily: BasketDaily = BasketDaily()
     var degraded: Bool
     var reason: String
     /// §五 v1.1-B.4 漏录兜底:当日买点哨兵触发过但台账无补录时的一句提示,否则空串
@@ -714,7 +1837,8 @@ struct ReportSnapshot: Codable, Equatable {
     /// 空态占位(无报告 / 拉取失败),UI 据 `degraded`+`reason` 诚实展示,不假装有数据。
     static func empty(reason: String) -> ReportSnapshot {
         ReportSnapshot(tradeDate: "", generatedAt: "", strategyVersion: "",
-                       sentiment: nil, sectors: [], candidates: [], degraded: true, reason: reason)
+                       sentiment: nil, sectors: [], basketDaily: BasketDaily(),
+                       degraded: true, reason: reason)
     }
 }
 
@@ -1073,21 +2197,62 @@ func nkCloseReasonLabel(_ raw: String) -> String {
     case "TIME_EXIT": return "时间退出"
     case "INVALIDATION": return "证伪离场"
     case "MANUAL": return "主动离场"
+    // —— v2.0.0(⑩-A)蓝图 §5.2 卖出快捷标签新增四码 ——————————————————————
+    case "SECTOR_WEAKENING": return "板块转弱"
+    // ⛔ **不许写成「止盈」**:离场参考区间不是止盈线(§2.8-C 语义红线),
+    // 回落止盈才是纪律。码名与文案都要守住这条。
+    case "TARGET_ZONE_REACHED": return "达到参考区间"
+    case "ACTIVE_SWITCH": return "主动切换"
+    case "AD_HOC": return "临时决定"
     default: return raw
     }
 }
 
-/// 离场原因(v1.2-A2,`PositionCloseIn.closeReason`,五码;不选则服务端按价格兜底
-/// 判止损,见 CLAUDE.md「熔断兜底判据」坑)。
+/// 离场原因(`PositionCloseIn.closeReason`)。v2.0.0(⑩-A)起**九码**:既有五码原样
+/// 不动、只加不改;熔断判据「是否止损离场」只看 `STOP_LOSS`,新增四码不改任何纪律判定。
+/// 不选则服务端按价格兜底判止损(见 CLAUDE.md「熔断兜底判据」坑)。
 enum CloseReasonCode: String, CaseIterable, Identifiable, Hashable, Codable {
     case stopLoss = "STOP_LOSS"
     case takeProfit = "TAKE_PROFIT"
     case timeExit = "TIME_EXIT"
     case invalidation = "INVALIDATION"
     case manual = "MANUAL"
+    case sectorWeakening = "SECTOR_WEAKENING"
+    case targetZoneReached = "TARGET_ZONE_REACHED"
+    case activeSwitch = "ACTIVE_SWITCH"
+    case adHoc = "AD_HOC"
 
     var id: String { rawValue }
     var label: String { nkCloseReasonLabel(rawValue) }
+}
+
+/// 蓝图 §2.2「用户可选补充」七枚标签(`POST /decisions` 的 `labels`,落 `user_actions`)。
+/// **服务端只存英文码**(`schemas.NoteLabelLiteral` 唯一源),中文在此换算 —— 同
+/// `board`/`NewsCategory`/`CloseReasonCode` 三处的既定体例。⛔ 不另造一套中文键。
+func nkNoteLabelText(_ raw: String) -> String {
+    switch raw {
+    case "THEME_SHIFT": return "题材切换"
+    case "LEADER_REACTIVATE": return "龙头重新激活"
+    case "VOLUME_BREAKOUT": return "放量突破"
+    case "WEAK_TO_STRONG": return "弱转强"
+    case "CORE_POSITION": return "容量中军"
+    case "NEWS_CATALYST": return "消息催化"
+    case "PURE_TAPE_READING": return "纯盘口判断"
+    default: return raw
+    }
+}
+
+enum NoteLabel: String, CaseIterable, Identifiable, Hashable, Codable {
+    case themeShift = "THEME_SHIFT"
+    case leaderReactivate = "LEADER_REACTIVATE"
+    case volumeBreakout = "VOLUME_BREAKOUT"
+    case weakToStrong = "WEAK_TO_STRONG"
+    case corePosition = "CORE_POSITION"
+    case newsCatalyst = "NEWS_CATALYST"
+    case pureTapeReading = "PURE_TAPE_READING"
+
+    var id: String { rawValue }
+    var label: String { nkNoteLabelText(rawValue) }
 }
 
 // MARK: - v1.2-B 预注册决策日志(§五 v1.2-E.1;审计件、非下单件——本文件任何类型
@@ -1300,43 +2465,443 @@ struct InquiryLogEntry: Codable, Equatable, Identifiable {
     var verdictBadge: InquiryVerdict { InquiryVerdict(verdict) }
 }
 
-// MARK: - 4A.5 设置
+// MARK: - 4A.5 设置(V2-②/⑪ 换血:Provider 自填制 + 按 kind 的推送开关)
+//
+// ⚠ **`LLMProviderKind`(`glm`/`kimi` 二值枚举)已退役**:V2-② 起 Provider 是**自填制**
+// (任意 OpenAI 兼容端点可配),枚举写死两家本身就是那个要被替换掉的东西。
+// ⚠ **`PushSettings` 六个具名 bool 已退役**:V2-⑪ 起 = **按 kind 的开关清单**。
 
-enum LLMProviderKind: String, CaseIterable, Identifiable, Codable {
-    case glm, kimi
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .glm: return "GLM"
-        case .kimi: return "Kimi"
-        }
+/// 一个通知 kind 的开关行。`level` 是三级之一(`immediate`/`important`/`digest`),
+/// `label` 是**服务端给的人读名** —— 避免双端各抄一份中文映射(`board` 的反面教训)。
+///
+/// ⛔ **客户端不许硬编 kind 清单**:权威在服务端 `notify_kinds.py`,硬编一份必然漂移;
+/// 新增 kind 时客户端应当**不改代码就能显示出来**。
+struct PushKind: Codable, Equatable, Identifiable {
+    var kind: String
+    var level: String
+    var label: String
+    var enabled: Bool
+
+    var id: String { kind }
+    /// 未识别 `level` 原样透传(**照常显示**,⛔ 不静默丢弃这一行)。
+    var levelLabel: String { nkPushLevelLabel(level) }
+
+    enum CodingKeys: String, CodingKey { case kind, level, label, enabled }
+
+    init(kind: String, level: String, label: String, enabled: Bool) {
+        self.kind = kind; self.level = level; self.label = label; self.enabled = enabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        level = try c.decodeIfPresent(String.self, forKey: .level) ?? ""
+        // `label` 缺席时退回 kind 串本身:**照常显示**好过什么都不显示(E6 同一条纪律)。
+        let rawLabel = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        label = rawLabel.isEmpty ? kind : rawLabel
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
     }
 }
 
-/// v1.1-G.1 推送开关四类(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)+ v1.2-A2 第五类
-/// (熔断提醒)+ v1.3-②/⑥ 第六类(K4 持仓派发警报),对齐后端 `PushSettingsOut`/
-/// `SettingsPushIn` 六字段契约。
+/// 三级的展示层换算(服务端 `notify_kinds.LEVEL_LABEL` 同一份文案;
+/// **未识别值原样透传** —— 服务端日后加第四级时,设置屏照样把它分成独立一组显示)。
+func nkPushLevelLabel(_ raw: String) -> String {
+    switch raw {
+    case "immediate": return "立即"
+    case "important": return "重要不紧急"
+    case "digest": return "盘后汇总"
+    default: return raw.isEmpty ? "未分级" : raw
+    }
+}
+
+/// V2-⑪ 起 = **按 kind 的开关清单**(不再是 V1 的六个具名布尔字段)。
+/// ⚠ `kinds` 顺序 = 服务端 `notify_kinds.ALL_KINDS` 顺序(确定性,客户端照序渲染)。
 struct PushSettings: Codable, Equatable {
-    var report: Bool
-    var retreatBrake: Bool
-    var precall: Bool
-    var d5exit: Bool
-    var circuit: Bool         // v1.2-A2:熔断提醒推送开关,默认开
-    var holdingAlert: Bool    // v1.3-②:K4 持仓派发警报推送开关(第六类,默认开),独立于 d5exit
+    var kinds: [PushKind] = []
+
+    enum CodingKeys: String, CodingKey { case kinds }
+
+    init(kinds: [PushKind] = []) { self.kinds = kinds }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kinds = try c.decodeIfPresent([PushKind].self, forKey: .kinds) ?? []
+    }
+
+    /// 按 `level` 分组(**服务端出现过的每一个 level 都成一组**,含未识别的;
+    /// 组内保持服务端顺序)。⛔ 不按硬编的三级过滤 —— 那等于把未知 level 静默丢掉。
+    var groupedByLevel: [(level: String, kinds: [PushKind])] {
+        var order: [String] = []
+        var bucket: [String: [PushKind]] = [:]
+        for k in kinds {
+            if bucket[k.level] == nil { order.append(k.level) }
+            bucket[k.level, default: []].append(k)
+        }
+        return order.map { (level: $0, kinds: bucket[$0] ?? []) }
+    }
+
+    /// 全量覆盖式写请求体的载荷(`{kind: enabled}`)—— 服务端要求**给全**每一个已登记
+    /// kind(缺键 → 422),承 V1「六字段均必填,防漏传静默重置某开关」的同一条纪律。
+    var enabledMap: [String: Bool] {
+        Dictionary(kinds.map { ($0.kind, $0.enabled) }, uniquingKeysWith: { _, b in b })
+    }
+}
+
+/// `GET /settings` 内嵌的精简 Provider 视图(比 `GET /settings/providers` 少
+/// `baseUrl`/`searchEngine`/`notes`,只给设置屏首屏摘要够用的五个字段)。
+struct SettingsProvider: Codable, Equatable, Identifiable {
+    var name: String = ""
+    var model: String = ""
+    var hasWebSearch: Bool = false
+    /// **只回布尔,绝不回 key 明文**(§3.4 高危区)。
+    var keySet: Bool = false
+    var enabled: Bool = true
+
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey { case name, model, hasWebSearch, keySet, enabled }
+
+    init(name: String = "", model: String = "", hasWebSearch: Bool = false,
+         keySet: Bool = false, enabled: Bool = true) {
+        self.name = name; self.model = model; self.hasWebSearch = hasWebSearch
+        self.keySet = keySet; self.enabled = enabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
+        hasWebSearch = try c.decodeIfPresent(Bool.self, forKey: .hasWebSearch) ?? false
+        keySet = try c.decodeIfPresent(Bool.self, forKey: .keySet) ?? false
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+    }
+}
+
+/// LLM Provider 完整安全视图(`GET /settings/providers`)。**绝不含 `apiKey`**,
+/// 只回 `keySet` 布尔 —— 写入是单向的:key 只发出去,永不回显。
+struct Provider: Codable, Equatable, Identifiable {
+    var name: String = ""
+    var baseUrl: String = ""
+    var model: String = ""
+    var hasWebSearch: Bool = false
+    var searchEngine: String? = nil
+    var notes: String? = nil
+    var enabled: Bool = true
+    var keySet: Bool = false
+
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey {
+        case name, baseUrl, model, hasWebSearch, searchEngine, notes, enabled, keySet
+    }
+
+    init(name: String = "", baseUrl: String = "", model: String = "", hasWebSearch: Bool = false,
+         searchEngine: String? = nil, notes: String? = nil, enabled: Bool = true,
+         keySet: Bool = false) {
+        self.name = name; self.baseUrl = baseUrl; self.model = model
+        self.hasWebSearch = hasWebSearch; self.searchEngine = searchEngine; self.notes = notes
+        self.enabled = enabled; self.keySet = keySet
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        baseUrl = try c.decodeIfPresent(String.self, forKey: .baseUrl) ?? ""
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
+        hasWebSearch = try c.decodeIfPresent(Bool.self, forKey: .hasWebSearch) ?? false
+        searchEngine = try c.decodeIfPresent(String.self, forKey: .searchEngine)
+        notes = try c.decodeIfPresent(String.self, forKey: .notes)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        keySet = try c.decodeIfPresent(Bool.self, forKey: .keySet) ?? false
+    }
+}
+
+/// 任务 → provider 路由表(`GET|PUT /settings/llm-routes`)。
+/// `routes` 的键须落在服务端 `llm/router.ALL_TASKS`,否则 422 `invalid_task`。
+struct LLMRoutes: Codable, Equatable {
+    var routes: [String: String] = [:]
+    var defaultProvider: String? = nil
+
+    enum CodingKeys: String, CodingKey { case routes, defaultProvider }
+
+    init(routes: [String: String] = [:], defaultProvider: String? = nil) {
+        self.routes = routes; self.defaultProvider = defaultProvider
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        routes = try c.decodeIfPresent([String: String].self, forKey: .routes) ?? [:]
+        defaultProvider = try c.decodeIfPresent(String.self, forKey: .defaultProvider)
+    }
 }
 
 struct SettingsSnapshot: Codable, Equatable {
-    var llmProvider: String?     // "glm" | "kimi" | nil(未设)
-    var llmKeySet: Bool          // 只回布尔,绝不回明文(§3.4 高危区)
-    var push: PushSettings
-    var reviewColMap: [String: String]      // 4D 周复盘交割单列映射(见 §五 阶段4D.1)
+    var providers: [SettingsProvider] = []
+    var routes: [String: String] = [:]
+    var push: PushSettings = PushSettings()
+    var reviewColMap: [String: String] = [:]     // 4D 周复盘交割单列映射
 
-    static let empty = SettingsSnapshot(
-        llmProvider: nil, llmKeySet: false,
-        push: PushSettings(report: true, retreatBrake: true, precall: true, d5exit: true,
-                           circuit: true, holdingAlert: true),
-        reviewColMap: [:]
-    )
+    static let empty = SettingsSnapshot()
+
+    enum CodingKeys: String, CodingKey { case providers, routes, push, reviewColMap }
+
+    init(providers: [SettingsProvider] = [], routes: [String: String] = [:],
+         push: PushSettings = PushSettings(), reviewColMap: [String: String] = [:]) {
+        self.providers = providers; self.routes = routes
+        self.push = push; self.reviewColMap = reviewColMap
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        providers = try c.decodeIfPresent([SettingsProvider].self, forKey: .providers) ?? []
+        routes = try c.decodeIfPresent([String: String].self, forKey: .routes) ?? [:]
+        push = try c.decodeIfPresent(PushSettings.self, forKey: .push) ?? PushSettings()
+        reviewColMap = try c.decodeIfPresent([String: String].self, forKey: .reviewColMap) ?? [:]
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// MARK: - V2-⑪-C 自然语言临时提醒(`custom_alerts`)—— **只通知,永不交易**
+// ══════════════════════════════════════════════════════════════════════════
+
+/// 一条提醒规则的单个条件(白名单在服务端领域层卡死,客户端只搬运)。
+struct AlertCondition: Codable, Equatable, Identifiable {
+    var metric: String = ""
+    var op: String = ""
+    var value: Double = 0
+    var ref: String? = nil            // 仅 index_chg_pct 需要
+    var refBasketId: Int? = nil       // 仅 basket_weak_ratio 可选
+
+    var id: String { "\(metric)|\(op)|\(value)|\(ref ?? "")|\(refBasketId.map(String.init) ?? "")" }
+
+    enum CodingKeys: String, CodingKey { case metric, op, value, ref, refBasketId }
+
+    init(metric: String = "", op: String = "", value: Double = 0,
+         ref: String? = nil, refBasketId: Int? = nil) {
+        self.metric = metric; self.op = op; self.value = value
+        self.ref = ref; self.refBasketId = refBasketId
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        metric = try c.decodeIfPresent(String.self, forKey: .metric) ?? ""
+        op = try c.decodeIfPresent(String.self, forKey: .op) ?? ""
+        value = try c.decodeIfPresent(Double.self, forKey: .value) ?? 0
+        ref = try c.decodeIfPresent(String.self, forKey: .ref)
+        refBasketId = try c.decodeIfPresent(Int.self, forKey: .refBasketId)
+    }
+}
+
+/// `POST /alerts` 的请求体(= LLM 解析结果里的 `draft`,用户点「确认」时**原样回传**)。
+/// 手填表单走的也是这个入口 —— LLM 解析只是把这些字段先替用户填好,落库路径只有一条。
+struct AlertDraft: Codable, Equatable {
+    var tsCode: String? = nil          // nil = 大盘级
+    var nlText: String = ""
+    var conditions: [AlertCondition] = []
+    var logic: String = "all"
+    var activeFrom: String? = nil
+    var activeTo: String? = nil
+    var expiresAt: String? = nil
+    var persist: Bool = false
+    var cooldownSeconds: Int = 0
+    var maxFires: Int = 1
+
+    enum CodingKeys: String, CodingKey {
+        case tsCode, nlText, conditions, logic, activeFrom, activeTo, expiresAt
+        case persist, cooldownSeconds, maxFires
+    }
+
+    init(tsCode: String? = nil, nlText: String = "", conditions: [AlertCondition] = [],
+         logic: String = "all", activeFrom: String? = nil, activeTo: String? = nil,
+         expiresAt: String? = nil, persist: Bool = false, cooldownSeconds: Int = 0,
+         maxFires: Int = 1) {
+        self.tsCode = tsCode; self.nlText = nlText; self.conditions = conditions
+        self.logic = logic; self.activeFrom = activeFrom; self.activeTo = activeTo
+        self.expiresAt = expiresAt; self.persist = persist
+        self.cooldownSeconds = cooldownSeconds; self.maxFires = maxFires
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tsCode = try c.decodeIfPresent(String.self, forKey: .tsCode)
+        nlText = try c.decodeIfPresent(String.self, forKey: .nlText) ?? ""
+        conditions = try c.decodeIfPresent([AlertCondition].self, forKey: .conditions) ?? []
+        logic = try c.decodeIfPresent(String.self, forKey: .logic) ?? "all"
+        activeFrom = try c.decodeIfPresent(String.self, forKey: .activeFrom)
+        activeTo = try c.decodeIfPresent(String.self, forKey: .activeTo)
+        expiresAt = try c.decodeIfPresent(String.self, forKey: .expiresAt)
+        persist = try c.decodeIfPresent(Bool.self, forKey: .persist) ?? false
+        cooldownSeconds = try c.decodeIfPresent(Int.self, forKey: .cooldownSeconds) ?? 0
+        maxFires = try c.decodeIfPresent(Int.self, forKey: .maxFires) ?? 1
+    }
+}
+
+/// ⑪-C 的**七项确认卡**。后两项(`quoteDelayDisclosure` / `noAutoTrade`)是固定文案、
+/// **恒出现**(蓝图 5.6 安全要求)—— ⛔ 客户端不得隐藏任何一项:用户是在这张卡上同意
+/// 「行情有延迟」「只通知不交易」的。
+struct ConfirmationCard: Codable, Equatable {
+    var subject: String = ""                 // ① 标的
+    var condition: String = ""               // ② 触发条件与方向
+    var activeWindow: String = ""            // ③ 生效时间
+    var notifyLimit: String = ""             // ④ 通知次数 / 冷却
+    var expiry: String = ""                  // ⑤ 到期时间
+    var quoteDelayDisclosure: String = ""    // ⑥ 行情延迟 / 数据中断披露(必选)
+    var noAutoTrade: String = ""             // ⑦ 只通知不自动交易
+    var rule: NKJSON = .object([:])
+
+    enum CodingKeys: String, CodingKey {
+        case subject, condition, activeWindow, notifyLimit, expiry
+        case quoteDelayDisclosure, noAutoTrade, rule
+    }
+
+    init(subject: String = "", condition: String = "", activeWindow: String = "",
+         notifyLimit: String = "", expiry: String = "", quoteDelayDisclosure: String = "",
+         noAutoTrade: String = "", rule: NKJSON = .object([:])) {
+        self.subject = subject; self.condition = condition; self.activeWindow = activeWindow
+        self.notifyLimit = notifyLimit; self.expiry = expiry
+        self.quoteDelayDisclosure = quoteDelayDisclosure; self.noAutoTrade = noAutoTrade
+        self.rule = rule
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        subject = try c.decodeIfPresent(String.self, forKey: .subject) ?? ""
+        condition = try c.decodeIfPresent(String.self, forKey: .condition) ?? ""
+        activeWindow = try c.decodeIfPresent(String.self, forKey: .activeWindow) ?? ""
+        notifyLimit = try c.decodeIfPresent(String.self, forKey: .notifyLimit) ?? ""
+        expiry = try c.decodeIfPresent(String.self, forKey: .expiry) ?? ""
+        quoteDelayDisclosure = try c.decodeIfPresent(String.self,
+                                                     forKey: .quoteDelayDisclosure) ?? ""
+        noAutoTrade = try c.decodeIfPresent(String.self, forKey: .noAutoTrade) ?? ""
+        rule = try c.decodeIfPresent(NKJSON.self, forKey: .rule) ?? .object([:])
+    }
+
+    /// 七项**逐项**(标题 + 正文),供 UI 逐行渲染 —— ⛔ 不许为界面清爽省掉任何一项。
+    var rows: [(title: String, text: String)] {
+        [("① 标的", subject), ("② 触发条件与方向", condition), ("③ 生效时间", activeWindow),
+         ("④ 通知次数 / 冷却", notifyLimit), ("⑤ 到期时间", expiry),
+         ("⑥ 行情延迟 / 数据中断", quoteDelayDisclosure), ("⑦ 只通知不自动交易", noAutoTrade)]
+    }
+}
+
+/// 一条已落库的临时提醒。`status` 是**库里那一列**;`expiredNow` 是「按此刻算实际上还
+/// 生不生效」—— 读路径不写库,两者可能短暂不一致,**分开给、不合并**。
+struct CustomAlert: Codable, Equatable, Identifiable {
+    var id: Int = 0
+    var tsCode: String? = nil        // nil = 大盘级
+    var nlText: String = ""          // 用户原话(留痕;哨兵不看)
+    var rule: NKJSON = .object([:])
+    var condition: String = ""       // 由结构化规则生成的人读描述
+    var activeFrom: String? = nil
+    var activeTo: String? = nil
+    var expiresAt: String? = nil
+    var persist: Bool = false
+    var cooldownSeconds: Int = 0
+    var maxFires: Int = 1
+    var firedCount: Int = 0
+    var status: String = "active"    // active | expired | cancelled
+    var expiredNow: Bool = false
+    var createdAt: String = ""
+    var updatedAt: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case id, tsCode, nlText, rule, condition, activeFrom, activeTo, expiresAt
+        case persist, cooldownSeconds, maxFires, firedCount, status, expiredNow
+        case createdAt, updatedAt
+    }
+
+    init(id: Int = 0, tsCode: String? = nil, nlText: String = "", rule: NKJSON = .object([:]),
+         condition: String = "", activeFrom: String? = nil, activeTo: String? = nil,
+         expiresAt: String? = nil, persist: Bool = false, cooldownSeconds: Int = 0,
+         maxFires: Int = 1, firedCount: Int = 0, status: String = "active",
+         expiredNow: Bool = false, createdAt: String = "", updatedAt: String = "") {
+        self.id = id; self.tsCode = tsCode; self.nlText = nlText; self.rule = rule
+        self.condition = condition; self.activeFrom = activeFrom; self.activeTo = activeTo
+        self.expiresAt = expiresAt; self.persist = persist
+        self.cooldownSeconds = cooldownSeconds; self.maxFires = maxFires
+        self.firedCount = firedCount; self.status = status; self.expiredNow = expiredNow
+        self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(Int.self, forKey: .id) ?? 0
+        tsCode = try c.decodeIfPresent(String.self, forKey: .tsCode)
+        nlText = try c.decodeIfPresent(String.self, forKey: .nlText) ?? ""
+        rule = try c.decodeIfPresent(NKJSON.self, forKey: .rule) ?? .object([:])
+        condition = try c.decodeIfPresent(String.self, forKey: .condition) ?? ""
+        activeFrom = try c.decodeIfPresent(String.self, forKey: .activeFrom)
+        activeTo = try c.decodeIfPresent(String.self, forKey: .activeTo)
+        expiresAt = try c.decodeIfPresent(String.self, forKey: .expiresAt)
+        persist = try c.decodeIfPresent(Bool.self, forKey: .persist) ?? false
+        cooldownSeconds = try c.decodeIfPresent(Int.self, forKey: .cooldownSeconds) ?? 0
+        maxFires = try c.decodeIfPresent(Int.self, forKey: .maxFires) ?? 1
+        firedCount = try c.decodeIfPresent(Int.self, forKey: .firedCount) ?? 0
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? "active"
+        expiredNow = try c.decodeIfPresent(Bool.self, forKey: .expiredNow) ?? false
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+        updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+    }
+
+    var statusLabel: String {
+        switch status {
+        case "active": return expiredNow ? "生效中(已过期,待哨兵下一拍收口)" : "生效中"
+        case "expired": return "已到期"
+        case "cancelled": return "已停用"
+        default: return status
+        }
+    }
+
+    var statusTone: NKAxisTone {
+        if status == "active" && !expiredNow { return .good }
+        return .neutral
+    }
+
+    var subjectLabel: String { tsCode ?? "大盘" }
+}
+
+/// NL 解析结果。**永远 200**(交互式接口):失败也把可读原因和降级表单给出去 ——
+/// 「LLM 不可用 → 降级为手填结构化表单,**不静默失败**」的契约落点。
+struct AlertParseResult: Codable, Equatable {
+    var ok: Bool = false
+    var action: String = "create"   // create | query | cancel | modify
+    var reason: String = "ok"
+    var narrative: String = ""      // 模型那句复述(只展示,不进判据)
+    var degraded: Bool = false      // true = LLM 不可用,已给手填表单
+    var manualForm: NKJSON? = nil
+    var confirmationCard: ConfirmationCard? = nil
+    var draft: AlertDraft? = nil
+    var targetAlertId: Int? = nil
+    var matches: [CustomAlert] = []
+
+    enum CodingKeys: String, CodingKey {
+        case ok, action, reason, narrative, degraded, manualForm
+        case confirmationCard, draft, targetAlertId, matches
+    }
+
+    init(ok: Bool = false, action: String = "create", reason: String = "ok",
+         narrative: String = "", degraded: Bool = false, manualForm: NKJSON? = nil,
+         confirmationCard: ConfirmationCard? = nil, draft: AlertDraft? = nil,
+         targetAlertId: Int? = nil, matches: [CustomAlert] = []) {
+        self.ok = ok; self.action = action; self.reason = reason; self.narrative = narrative
+        self.degraded = degraded; self.manualForm = manualForm
+        self.confirmationCard = confirmationCard; self.draft = draft
+        self.targetAlertId = targetAlertId; self.matches = matches
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? false
+        action = try c.decodeIfPresent(String.self, forKey: .action) ?? "create"
+        reason = try c.decodeIfPresent(String.self, forKey: .reason) ?? "ok"
+        narrative = try c.decodeIfPresent(String.self, forKey: .narrative) ?? ""
+        degraded = try c.decodeIfPresent(Bool.self, forKey: .degraded) ?? false
+        manualForm = try c.decodeIfPresent(NKJSON.self, forKey: .manualForm)
+        confirmationCard = try c.decodeIfPresent(ConfirmationCard.self, forKey: .confirmationCard)
+        draft = try c.decodeIfPresent(AlertDraft.self, forKey: .draft)
+        targetAlertId = try c.decodeIfPresent(Int.self, forKey: .targetAlertId)
+        matches = try c.decodeIfPresent([CustomAlert].self, forKey: .matches) ?? []
+    }
 }
 
 

@@ -1,39 +1,53 @@
 //
 //  APIClient.swift
-//  Neckline — 后端 REST 客户端(track 4A FastAPI,§五 阶段4A)
+//  Neckline — 后端 REST 客户端(FastAPI,§五 阶段4A → **V2.0.0 契约换血,V2-⑮**)
 //
-//  端点契约见 `neckline/api/schemas.py` + `neckline/api/app.py`(逐字段对齐,不猜):
-//    GET  /api/v1/health                    → 免鉴权,{status,version}
-//    GET  /api/v1/report/latest             → ReportOut(含 missedEntryHint,
-//                                              v1.4-①-C dataFreshness)
-//    GET  /api/v1/report?date=YYYYMMDD      → ReportOut(历史回放;带 query,走 makeURL)
-//    GET  /api/v1/report/{date}/info-card/{code} → InfoCardOut(v1.4-④,60日K线/RS线/行业分歧线
-//                                              + 快照/红黄牌/温和带/消息面/龙虎榜/市场语境)
-//                                              · 404 report_not_found/code_not_in_report
-//    GET  /api/v1/board                     → BoardOut(v1.1 事件含 precall/d5exit 两新类)
-//    GET  /api/v1/positions                 → PositionsOut{holdings}(v1.1-B.1 生命周期字段,
-//                                              v1.4-①-B priceStale/suspended_hold,v1.4-⑥-C 定格标注)
-//    GET  /api/v1/positions/entry-suggestion→ EntrySuggestionOut(v1.2-E.5 改区间双档)
-//    POST /api/v1/positions                 → {ok,position_id,stop_line}       · 400/422 字段
-//    POST /api/v1/positions/{id}/close      → {ok}(closeReason 可选,v1.2-A2)   · 404 not_holding
-//    GET  /api/v1/circuit                   → CircuitStateOut(v1.2-A2 熔断纪律状态)
-//    POST /api/v1/circuit/unlock            → {ok}
-//    POST /api/v1/decisions                 → DecisionOut(v1.2-B 预注册决策日志八项 +
-//                                              v1.4-⑤-B ⑨maxChasePct)        · 400 max_chase_required
-//    GET  /api/v1/decisions                 → {items:[DecisionOut]}(status/code/from/to 过滤)
-//    GET  /api/v1/decisions/{id}/track      → DecisionTrackOut(v1.4-⑦-A 挂单未成交追踪) · 404 not_found
-//    POST /api/v1/decisions/{id}/link       → {ok}                            · 404 not_found
-//    POST /api/v1/decisions/{id}/cancel     → {ok}                            · 404 not_found
-//    POST /api/v1/decisions/{id}/revise     → DecisionOut{新id}(新增修订行,旧行原地不变)
-//    POST /api/v1/decisions/{id}/scenario-outcome → {ok}(只翻 matched)         · 404/422
-//    POST /api/v1/inquiry                   → InquiryOut(描述性标注非裁决,§2.5,v1.4-⑦-B 带 inquiryId)
-//    GET  /api/v1/inquiries                 → {items:[InquiryLogOut]}(v1.4-⑦-B 问询历史,分页+tsCode过滤)
-//    GET  /api/v1/inquiries/{id}            → InquiryLogOut(详情)              · 404 not_found
-//    GET  /api/v1/settings                  → SettingsOut(key 只回布尔;push 六字段 v1.3-②)
-//    PUT  /api/v1/settings/llm              → {ok}                            · 422 供应商非法
-//    PUT  /api/v1/settings/push             → {ok}(六字段:report/retreatBrake/precall/d5exit/circuit/holdingAlert)
-//    POST /api/v1/devices                   → {ok}
+//  端点契约见 `neckline/api/schemas.py` + `neckline/api/app.py`(逐字段对齐,不猜);
+//  逐字段对照表见 `archive/V2_契约三方对拍_20260803.md`。
+//
+//    GET  /api/v1/health                        → 免鉴权,{status,version}
+//    GET  /api/v1/report/latest · /report?date= → ReportOut(**V2:candidates 已删,
+//                                                  换 basketDaily 三段**)
+//    GET  /api/v1/report/{date}/info-card/{code}→ InfoCardOut(+ ⑬-N 篮子块 + K7 标注件)
+//    GET  /api/v1/baskets?date=&tier=           → BasketsListOut
+//    GET  /api/v1/baskets/{id}                  → BasketOut          · 404 basket_not_found
+//    GET  /api/v1/baskets/{id}/card?version=    → BasketCardOut      · 404 basket_not_found /
+//                                                                       card_not_ready
+//    GET  /api/v1/baskets/{id}/verification?date=→ BasketVerificationOut · 404 basket_not_found
+//    GET  /api/v1/baskets/{id}/review?date=     → BasketReviewOut    · 404 basket_not_found /
+//                                                                       not_found
+//    GET  /api/v1/board                         → BoardOut
+//    GET  /api/v1/positions                     → PositionsOut{holdings}
+//    GET  /api/v1/positions/entry-suggestion    → EntrySuggestionOut
+//    POST /api/v1/positions                     → PositionOpenOut(**幂等键**)· 400 字段
+//    POST /api/v1/positions/{id}/close          → {ok}                · 404 not_holding
+//    GET  /api/v1/positions/{id}/plans          → PositionPlansOut
+//    POST /api/v1/positions/{id}/plans          → PositionPlanOut(201)· 400 no_base_plan
+//    GET  /api/v1/positions/{id}/entry-snapshot → EntrySnapshotOut    · 404 not_found
+//    GET  /api/v1/circuit · POST /circuit/unlock→ CircuitStateOut / {ok}
+//    POST /api/v1/decisions                     → DecisionNoteOut(**用户可选补充**入口)
+//    GET  /api/v1/decisions                     → {items:[DecisionOut]}(只读归因)
+//    GET  /api/v1/decisions/{id}/track          → DecisionTrackOut    · 404 not_found
+//    POST /api/v1/inquiry · GET /inquiries[/{id}]→ InquiryOut / InquiryLogOut
+//    GET|POST|PUT|DELETE /api/v1/alerts[/{id}]  → AlertsListOut / CustomAlertOut
+//    POST /api/v1/alerts/parse                  → AlertParseOut(**恒 200**)
+//    GET  /api/v1/settings                      → SettingsOut(**providers[] + routes + kinds[]**)
+//    GET|POST|PUT|DELETE /api/v1/settings/providers[/{name}]
+//    GET|PUT  /api/v1/settings/llm-routes       → LLMRoutesOut
+//    PUT  /api/v1/settings/push                 → {ok}(**kinds 全量覆盖**)· 422 invalid_push_kinds
+//    PUT  /api/v1/settings/review-col-map       → {ok}
+//    POST /api/v1/devices                       → {ok}
+//    GET  /api/v1/profile/preference · /capability → ProfileOut
+//    GET  /api/v1/packs · /packs/{version}      → PacksListOut / PackOut · 404 not_found
+//    GET  /api/v1/eval/weekly?week=             → EvalWeeklyOut(**恒 200**)
+//    POST /api/v1/review/upload · GET /review   → 周复盘工作台(macOS)
 //  鉴权:Authorization: Bearer <API_TOKEN>(health 外全部)。
+//
+//  ⚠ **V2-⑮ 删掉的五处「打向已删端点」的活调用**(⑭-C 对拍表 §六 B1/B2):
+//    `PUT /settings/llm`(请求体含**明文 apiKey**,发到一个不存在的端点、界面上还是
+//    一副成功的样子 = 假成功面 + 明文密钥打进空洞)+ `POST /decisions/{id}/`
+//    `link|cancel|revise|scenario-outcome` 四处(服务端 ⑩-C 已删写端点)。
+//    机器判据见 `tests/test_contract_crosscheck.py`(客户端调用面 ⊆ 服务端路由面)。
 //
 
 import Foundation
@@ -43,22 +57,26 @@ import Foundation
 enum APIError: Error, LocalizedError, Equatable {
     case unauthorized
     case notHolding          // 404 该持仓已清或不存在(POST /positions/{id}/close)
-    // 404 通用「未找到」(reason="not_found";V2-⑬-11 前的 watchlist delete/pin 是它的首个用例)。
-    // 与 `notHolding` 分开是因为两者文案不同,合并会让"删自选未命中"误显"持仓已清"。
+    // 404 通用「未找到」(reason="not_found":决策追踪 / 问询详情 / provider / alert /
+    // 篮子复盘 / 建仓快照 / 策略包)。与 `notHolding` 分开是因为两者文案不同。
     case notFound
-    // v1.4-①-A:补录买入日的两个 400 reason。**逐个建 case,不吃 fallback**——守项目
-    // CLAUDE.md「404/reason 映射」坑(自选池 `not_found` 曾被 fallback 误显成
-    // 「持仓已清」)。两者文案不同:一个是「那天不开市」,一个是「你填到未来去了」。
-    case notTradingDay       // 400 buyDate 不是交易日(reason="not_trading_day")
-    case futureBuyDate       // 400 buyDate 晚于今天(reason="future_buy_date")
-    // v1.4-④-B:`GET /report/{date}/info-card/{code}` 两个 404 reason(**逐个建 case,
-    // 不吃 fallback**,同 notTradingDay/futureBuyDate 守法)。
-    case reportNotFound      // 404 该日期未生成过报告(日期非法 / 当天未生成)
-    case codeNotInReport     // 404 该票不在当日候选榜里
-    // v1.4-⑤-B:`POST/revise /decisions` 的 `maxChasePct` 必须显式传(填数字或显式
-    // null),省略该键 → 400 reason="max_chase_required"。
-    case maxChaseRequired
-    case validation(String)  // 422 字段校验(含 provider 白名单)
+    case notTradingDay       // 400 buyDate 不是交易日
+    case futureBuyDate       // 400 buyDate 晚于今天
+    case reportNotFound      // 404 该日期未生成过报告
+    case codeNotInReport     // 404 该票不在当日报告里
+    // —— V2-⑭-B 三个全新 reason(⑮ 必接;⛔ 不吃 fallback)——————————————————
+    // 404 的 fallback 是 `.notHolding`「持仓已清」——`cardNotReady` 若不建 case,
+    // 用户点开一个卡还没生成的篮子会看到「持仓已清」(v1.4 `watchlist` 有案底)。
+    case basketNotFound      // 404 找不到这个篮子
+    case cardNotReady        // 404 篮子在、**卡还没生成**(⛔ 不是「篮子不存在」)
+    case noBasePlan          // 400 这笔仓没有可继承的计划基线
+    // —— 409 / 422 的四个 reason(② / ⑪ 端点接线带来的)——————————————————————
+    case alreadyExists       // 409 POST /settings/providers 同名 provider
+    case duplicateAlert      // 409 POST /alerts 同标的 + 规则逐字节相同
+    case invalidRule         // 422 提醒规则不合白名单
+    case invalidTask         // 422 PUT /settings/llm-routes 未知任务名
+    case invalidPushKinds    // 422 PUT /settings/push 缺键 / 未登记 kind
+    case validation(String)  // 422 其它字段校验
     case server(Int, String)
     case transport(String)
     case noToken
@@ -71,8 +89,15 @@ enum APIError: Error, LocalizedError, Equatable {
         case .notTradingDay:    return "买入日不是交易日,请选择实际成交的交易日"
         case .futureBuyDate:    return "买入日不能晚于今天"
         case .reportNotFound:   return "该交易日尚无报告(日期不合法或当天报告尚未生成)"
-        case .codeNotInReport:  return "这只票不在当日候选榜里"
-        case .maxChaseRequired: return "请设置「最高追价上限」(填数字,或勾选不设上限)"
+        case .codeNotInReport:  return "这只票不在当日报告里"
+        case .basketNotFound:   return "找不到这个篮子"
+        case .cardNotReady:     return "本篮的卡还没生成"
+        case .noBasePlan:       return "这笔仓没有可继承的计划基线"
+        case .alreadyExists:    return "同名 Provider 已存在(请改用「编辑」)"
+        case .duplicateAlert:   return "已有一条一模一样的提醒(未重复创建)"
+        case .invalidRule:      return "提醒规则不在支持的条件范围内"
+        case .invalidTask:      return "路由表里有未知的任务名"
+        case .invalidPushKinds: return "推送开关清单不完整或含未登记的通知类型"
         case .validation(let m): return "字段校验失败:\(m)"
         case .server(let c, let m): return "服务端错误 \(c):\(m)"
         case .transport(let m): return "网络错误:\(m)"
@@ -91,36 +116,28 @@ private struct ReportResponse: Decodable {
     let strategyVersion: String
     let sentiment: SentimentSnapshot?
     let sectors: [SectorSnapshot]
-    let candidates: [Candidate]
+    /// V2-⑭-B:取代已删的 `candidates`。**服务端恒是对象**(老报告读回一份三段全标
+    /// `available=false` 的诚实占位),故 `decodeIfPresent` + 默认值兜底。
+    let basketDaily: BasketDaily?
     let degraded: Bool
     let reason: String
-    // v1.1-B.4:漏录兜底提示。`Optional` 兼容老响应/测试 fixture 没有这个键的情形
-    // (真实后端恒返回该字段,但用 Optional 更稳,缺失时按空串处理,不崩)。
     let missedEntryHint: String?
-    // v1.3-③-C1/C2/C4「情报」板块(§五 v1.3-⑥-F)。
     let intel: IntelSection?
     let sectorMoneyflow: SectorMoneyflowSection?
     let newsAlerts: [NewsAlert]?
     let newsAlertsScan: [NewsAlertScanStatus]?
-    // v1.4-①-C:板块数据新鲜度(§七 P0-3)。同 intel/sectorMoneyflow 惯例——服务端恒是
-    // 对象(旧报告是空字典 `{}`),`try?` 把「形状对不上」也当「没有」处理,归一成 nil。
     let dataFreshness: DataFreshness?
 
-    /// 显式 `CodingKeys`(提供自定义 `init(from:)` 时,编译器不总能推出合成
-    /// `CodingKeys`,显式声明避免依赖不透明的合成时机)。字段名与 JSON 字面一致,
-    /// 逐一列出。
     enum CodingKeys: String, CodingKey {
-        case tradeDate, generatedAt, strategyVersion, sentiment, sectors, candidates
+        case tradeDate, generatedAt, strategyVersion, sentiment, sectors, basketDaily
         case degraded, reason, missedEntryHint, intel, sectorMoneyflow, newsAlerts, newsAlertsScan
         case dataFreshness
     }
 
-    /// 自定义解码(而非纯合成):`intel`/`sectorMoneyflow`/`dataFreshness` 服务端**恒是
-    /// 对象**(旧报告/降级态是空对象 `{}`,不是缺键或 null)——空对象缺我方强类型要求的
-    /// 字段(如 `tradeDate`/`sectorLagDays`),标准合成解码会直接抛错,这里用 `try?` 把
-    /// "形状对不上"也当"没有"处理,归一成 `nil`(§硬要求「没有 vs 没看」由 nil 表达
-    /// "这份报告没有该节数据",UI 据此展示诚实空态而非崩溃)。`newsAlerts`/
-    /// `newsAlertsScan` 是数组,老响应/老 fixture 缺键时按空数组兜底。
+    /// 自定义解码:`intel`/`sectorMoneyflow`/`dataFreshness` 服务端**恒是对象**(旧报告 /
+    /// 降级态是空对象 `{}`,不是缺键或 null)——空对象缺我方强类型要求的字段,标准合成
+    /// 解码会直接抛错,这里用 `try?` 把"形状对不上"也当"没有"处理,归一成 `nil`
+    /// (「没有 vs 没看」由 nil 表达"这份报告没有该节数据",UI 据此展示诚实空态而非崩溃)。
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         tradeDate = try c.decode(String.self, forKey: .tradeDate)
@@ -128,7 +145,7 @@ private struct ReportResponse: Decodable {
         strategyVersion = try c.decode(String.self, forKey: .strategyVersion)
         sentiment = try c.decodeIfPresent(SentimentSnapshot.self, forKey: .sentiment)
         sectors = try c.decode([SectorSnapshot].self, forKey: .sectors)
-        candidates = try c.decode([Candidate].self, forKey: .candidates)
+        basketDaily = try c.decodeIfPresent(BasketDaily.self, forKey: .basketDaily)
         degraded = try c.decode(Bool.self, forKey: .degraded)
         reason = try c.decode(String.self, forKey: .reason)
         missedEntryHint = try c.decodeIfPresent(String.self, forKey: .missedEntryHint)
@@ -155,32 +172,52 @@ struct OpenPositionRequest: Encodable {
     let buy_price: Double
     let qty: Int
     let entry_reason: String
-    // v1.3-①/⑥:补录开仓实付买入费用(camelCase,与既有 snake_case 字段并存——契约
-    // 如此,同 `ClosePositionRequest.closeReason` 惯例)。UI 层强制必填(见
-    // `PositionEntryForm.isValid`),这里仍设 Optional + 默认 nil——服务端本就宽松
-    // (`PositionOpenIn.buyFees: Optional[float] = None`),且这样不必为完全不关心
-    // 费用的既有测试调用点(如 IntegrationSmokeTests 的基础开仓闭环)逐一补参数。
     let buyFees: Double?
-    // v1.4-①-A(§七 P0-1):真实买入日 'YYYYMMDD'。Optional + 默认 nil —— Swift 合成的
-    // Encodable 对 Optional 走 `encodeIfPresent`,**nil 时该键根本不出现在 JSON 里**,
-    // 故不传时请求体与 v1.4 之前逐字节相同(服务端此时取今天,行为不变)。
-    // 日期选择器 UI 归第 ⑧ 块;本块只把传输层的口子开好 + 400 reason 映射到位。
     let buyDate: String?
+    /// v2.0.0(契约线审计 🟡 Y7)**幂等键**。⚠ **每笔新提交动作一个新键(UUID),⛔ 严禁
+    /// 复用、⛔ 别绑「票 + 日期」之类业务量**(那必然复用)——服务端是标准幂等语义:
+    /// **同键 = 同一笔意图的重试**,同键不同 payload 会**静默重放原仓、把用户改过的
+    /// 价格数量整个吃掉**。生成点见 `AppModel.beginPositionEntryFlow`(每次打开录入
+    /// 表单铸一枚新键,提交失败重试复用同一枚)。
+    let idempotencyKey: String?
 }
+
+/// `POST /positions` 响应(v2.0.0 起带 ⑩-A/B 的自动关联结果 + 幂等重放位)。
 private struct OpenPositionResponse: Decodable {
     let ok: Bool
     let position_id: Int
     let stop_line: Double
+    let sourceBasketKey: String?
+    let sourceBasketName: String?
+    let tier: Int?
+    let role: String?
+    let planAvailable: Bool?
+    /// 「原盈亏结构已变」偏离提示(纯展示,不质问不阻断);**无从比较 → null,不是"未偏离"**。
+    let planDeviationNotice: String?
+    /// `true` = 本次**没有开新仓**,`position_id` 指的是同一个幂等键之前已经开好的那笔。
+    /// 如实透出,别让"看起来成功了"掩盖"其实什么都没发生"。
+    let replayed: Bool?
+}
+
+/// 开仓结果(展示层)。
+struct OpenPositionResult: Equatable {
+    var positionId: Int
+    var stopLine: Double
+    var sourceBasketKey: String? = nil
+    var sourceBasketName: String? = nil
+    var tier: Int? = nil
+    var role: String? = nil
+    var planAvailable: Bool = false
+    var planDeviationNotice: String? = nil
+    var replayed: Bool = false
 }
 
 struct ClosePositionRequest: Encodable {
     let sell_price: Double
     let sell_time: String?   // 'YYYYMMDD';缺省服务端用今日
-    // v1.2-A2:离场原因(可选)。⚠ 契约字段名 `closeReason` 是 camelCase,与本结构体
-    // 既有 `sell_price`/`sell_time` 的 snake_case 并存——后端契约如此(见 CLAUDE.md
-    // 「v1.1-E/F/G 踩过的坑」同款留痕),不自作主张统一大小写。
+    // ⚠ 契约字段名 `closeReason` 是 camelCase,与本结构体既有 `sell_price`/`sell_time`
+    // 的 snake_case 并存——后端契约如此,不自作主张统一大小写。
     let closeReason: String?
-    // v1.3-①/⑥:清仓实付卖出费用真数(可选,成交后回填)——周复盘对账用真数、不用估数。
     let sellFees: Double?
 }
 
@@ -193,30 +230,51 @@ private struct InquiryResponse: Decodable {
     let verdict: String
     let evidence: [String]
     let degraded: Bool
-    /// v1.4-⑦-B:本次问询落进 `inquiry_log` 档案表的行 id。**Optional 是契约语义,不是
-    /// 容错兜底**——服务端落库是旁路(失败时如实发 null,本次回答仍有效,见 schemas.py
-    /// `InquiryOut.inquiryId` 注释);老服务端(v1.3 及更早)压根没有这个键 → nil。
-    /// ⚠ v1.4 review 契约线 🟡-3:服务端 → JSON 三段都在,唯独这里从前没声明,字段被
-    /// Codable 静默丢弃 =「链路末段漏字段」的复发形态(这次漏在客户端侧)。
+    /// **Optional 是契约语义,不是容错兜底**——服务端落库是旁路(失败时如实发 null,
+    /// 本次回答仍有效)。
     let inquiryId: Int?
 }
 
-private struct SettingsResponse: Decodable {
-    let llmProvider: String?
-    let llmKeySet: Bool
-    let push: PushSettings
-    let reviewColMap: [String: String]
-}
-struct SettingsLLMRequest: Encodable { let provider: String; let apiKey: String }
-/// v1.1-G.1 推送开关四字段(报告 / 退潮刹车 / 盘前校准 / D5 时间退出)+ v1.2-A2 第五字段
-/// (熔断提醒)+ v1.3-②/⑥ 第六字段(K4 持仓派发警报)。六字段均必填(后端 `SettingsPushIn`
-/// 无默认值,缺字段 → 422)。
-struct SettingsPushRequest: Encodable {
-    let report: Bool; let retreatBrake: Bool; let precall: Bool; let d5exit: Bool
-    let circuit: Bool; let holdingAlert: Bool
-}
+// —— 设置(V2-② Provider 自填制 + V2-⑪ 按 kind 的推送开关)——————————————————
+
+/// `PUT /settings/push`:**全量覆盖式**写。`kinds` 必须给全服务端 `ALL_KINDS` 的每一个键
+/// (缺键 / 未登记 kind → 422 `invalid_push_kinds`),承 V1「六字段均必填,防漏传静默
+/// 重置某开关」的同一条纪律 —— 静默忽略会让用户以为自己关掉了某类通知而服务端根本没收到。
+struct SettingsPushRequest: Encodable { let kinds: [String: Bool] }
+
 struct SettingsReviewColMapRequest: Encodable { let colMap: [String: String] }
 
+/// 新建 Provider。`apiKey` **只发一次、不回显、不落日志**(§3.4 高危区);
+/// `name` 已存在 → 409 `already_exists`(须显式走 PUT 更新,防误覆盖)。
+struct ProviderCreateRequest: Encodable {
+    let name: String
+    let baseUrl: String
+    let model: String
+    let apiKey: String?
+    let hasWebSearch: Bool
+    let searchEngine: String?
+    let notes: String?
+    let enabled: Bool
+}
+
+/// 局部更新:**未出现的字段不改**(服务端 `model_fields_set` 判据)。故这里一律
+/// `Optional` + 合成 `Encodable`(nil → 该键不出现),**刻意**不手写 `encode(to:)`
+/// ——与 `maxChasePct` 那种「键必须永远出现」的字段是相反的需求,别套错模板。
+struct ProviderUpdateRequest: Encodable {
+    let baseUrl: String?
+    let model: String?
+    let apiKey: String?
+    let hasWebSearch: Bool?
+    let searchEngine: String?
+    let notes: String?
+    let enabled: Bool?
+}
+
+/// 路由表:**全量覆盖式**写(同 `SettingsPushRequest` 风格,调用方须传完整状态)。
+struct LLMRoutesRequest: Encodable {
+    let routes: [String: String]
+    let defaultProvider: String?
+}
 
 // —— 设备注册 + 通用 ok 响应 ————————————————————————————————————————————————
 
@@ -224,7 +282,7 @@ struct DeviceRegisterRequest: Encodable { let token: String; let platform: Strin
 
 private struct OkResponse: Decodable { let ok: Bool }
 
-// —— v1.2-E.5 一键补录预填推荐(区间双档,替换 v1.1 的单 `qty`)——————————————————
+// —— v1.2-E.5 一键补录预填推荐(区间双档)——————————————————————————————
 
 private struct EntrySuggestionResponse: Decodable {
     let ok: Bool; let code: String; let price: Double
@@ -234,103 +292,59 @@ private struct EntrySuggestionResponse: Decodable {
 /// 无请求体 POST 占位({})。
 private struct EmptyBody: Encodable {}
 
-// —— v1.2-B 预注册决策日志(§五 v1.2-E.1;`code`/`name` 走 create,revise 请求体
-// 不含这两个字段——修订不能换股票,新行继承原行 ts_code/name,见 CLAUDE.md
-// 「decision_log 唯一写入通道」坑)——————————————————————————————————————————
-
-// v1.4-⑤-B(需求 2 补充):`maxChasePct` 必须**永远出现在请求体里**(填数字或显式
-// `null`),绝不能被省略——服务端 `_extract_max_chase_pct_or_400` 用
-// `model_fields_set` 判「这个键有没有出现过」,缺键 → 400 `reason=max_chase_required`。
-// Swift 编译器合成的 `Encodable` 对 `Optional` 属性一律走 `encodeIfPresent`(nil 时
-// 整个键消失,同本文件其余 Optional 字段的既有行为)——那对这一个字段是错的,故两个
-// 请求体改手写 `encode(to:)`,只对 `maxChasePct` 用 `encode(_:forKey:)`(`Optional`
-// 类型自身的 `Encodable` conformance 在 nil 时走 `encodeNil`,故键永远存在,值为
-// 数字或 JSON null),其余字段仍是 `encodeIfPresent`(省略键)/`encode`(必填),逐位
-// 保留原有请求体形状。
-
-struct DecisionCreateRequest: Encodable {
-    let code: String
-    let name: String?
-    let whyBuy: String
-    let whyEntryPrice: String
-    let targetPrice: Double?
-    let exitLow: Double?
-    let exitHigh: Double?
-    let thesisTags: [String]
-    let invalidation: String
-    let contingencyScenarios: [ContingencyScenario]
-    let playbookTag: String
-    let plannedPrice: Double?
-    let plannedQty: Int?
-    let maxChasePct: Double?
-
-    enum CodingKeys: String, CodingKey {
-        case code, name, whyBuy, whyEntryPrice, targetPrice, exitLow, exitHigh
-        case thesisTags, invalidation, contingencyScenarios, playbookTag
-        case plannedPrice, plannedQty, maxChasePct
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(code, forKey: .code)
-        try c.encodeIfPresent(name, forKey: .name)
-        try c.encode(whyBuy, forKey: .whyBuy)
-        try c.encode(whyEntryPrice, forKey: .whyEntryPrice)
-        try c.encodeIfPresent(targetPrice, forKey: .targetPrice)
-        try c.encodeIfPresent(exitLow, forKey: .exitLow)
-        try c.encodeIfPresent(exitHigh, forKey: .exitHigh)
-        try c.encode(thesisTags, forKey: .thesisTags)
-        try c.encode(invalidation, forKey: .invalidation)
-        try c.encode(contingencyScenarios, forKey: .contingencyScenarios)
-        try c.encode(playbookTag, forKey: .playbookTag)
-        try c.encodeIfPresent(plannedPrice, forKey: .plannedPrice)
-        try c.encodeIfPresent(plannedQty, forKey: .plannedQty)
-        try c.encode(maxChasePct, forKey: .maxChasePct)   // 永远出现该键,nil → JSON null
-    }
+// —— ⑩-C「用户可选补充」入口(`POST /decisions` 语义换血:不再是九项强制表单)————
+//
+// **全部字段可选**——`code` 缺省也合法(该次提交完全没有可落的内容时,端点 200 空提交,
+// 不 400)。落 `user_actions`(`kind='label'`/`'voice_note'`),**不碰 `decision_log`**
+// (该表 v2.0.0 起停写留档)。
+struct DecisionNoteRequest: Encodable {
+    let code: String?
+    let positionId: Int?
+    let labels: [String]
+    let voiceNote: String?
 }
 
-struct DecisionReviseRequest: Encodable {
-    let whyBuy: String
-    let whyEntryPrice: String
-    let targetPrice: Double?
-    let exitLow: Double?
-    let exitHigh: Double?
-    let thesisTags: [String]
-    let invalidation: String
-    let contingencyScenarios: [ContingencyScenario]
-    let playbookTag: String
-    let plannedPrice: Double?
-    let plannedQty: Int?
-    let maxChasePct: Double?
-
-    enum CodingKeys: String, CodingKey {
-        case whyBuy, whyEntryPrice, targetPrice, exitLow, exitHigh
-        case thesisTags, invalidation, contingencyScenarios, playbookTag
-        case plannedPrice, plannedQty, maxChasePct
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(whyBuy, forKey: .whyBuy)
-        try c.encode(whyEntryPrice, forKey: .whyEntryPrice)
-        try c.encodeIfPresent(targetPrice, forKey: .targetPrice)
-        try c.encodeIfPresent(exitLow, forKey: .exitLow)
-        try c.encodeIfPresent(exitHigh, forKey: .exitHigh)
-        try c.encode(thesisTags, forKey: .thesisTags)
-        try c.encode(invalidation, forKey: .invalidation)
-        try c.encode(contingencyScenarios, forKey: .contingencyScenarios)
-        try c.encode(playbookTag, forKey: .playbookTag)
-        try c.encodeIfPresent(plannedPrice, forKey: .plannedPrice)
-        try c.encodeIfPresent(plannedQty, forKey: .plannedQty)
-        try c.encode(maxChasePct, forKey: .maxChasePct)   // 永远出现该键,nil → JSON null
-    }
+/// `POST /decisions` 响应:**如实回显本次记了哪些 kind**(`[]` = 空提交,合法、不是错误)。
+struct DecisionNoteResult: Decodable, Equatable {
+    var ok: Bool = true
+    var recorded: [String] = []
 }
-
-struct DecisionLinkRequest: Encodable { let positionId: Int }
-struct ScenarioOutcomeItemRequest: Encodable { let index: Int; let matched: Bool }
-struct ScenarioOutcomeRequest: Encodable { let outcomes: [ScenarioOutcomeItemRequest] }
 
 private struct DecisionsListResponse: Decodable { let items: [DecisionLog] }
+
+// —— V2-⑭-B 篮子族 / 计划 / 画像 / 包 / 评价 / 提醒 的列表包装 ————————————————
+
+private struct BasketsListResponse: Decodable { let tradeDate: String; let items: [Basket] }
+private struct PositionPlansResponse: Decodable { let items: [PositionPlan] }
+private struct PacksListResponse: Decodable { let items: [Pack] }
+private struct AlertsListResponse: Decodable { let items: [CustomAlert] }
+private struct ProvidersListResponse: Decodable { let items: [Provider] }
+
+/// `POST /alerts` 请求体 = `AlertDraft` 原样回传(⑪-C:LLM 解析只是把字段先替用户填好,
+/// **落库路径只有一条**)。
+private struct AlertParseRequest: Encodable { let text: String; let tsCode: String? }
+
+/// `PUT /alerts/{id}`:局部更新(未出现的字段不改)。
+struct AlertUpdateRequest: Encodable {
+    let conditions: [AlertCondition]?
+    let logic: String?
+    let nlText: String?
+    let activeFrom: String?
+    let activeTo: String?
+    let expiresAt: String?
+    let persist: Bool?
+    let cooldownSeconds: Int?
+    let maxFires: Int?
+    let resetFired: Bool
+}
+
+/// `POST /positions/{id}/plans`:计划新版本。
+/// ⚠ **武装态由服务端重算,请求体说了不算**(⑪-D-B 闸②)——即使这里带了
+/// `exit_reference_armed`,服务端也会拿这笔仓的真实成交价重过一遍闸。
+struct PositionPlanCreateRequest: Encodable {
+    let plan: NKJSON
+    let note: String?
+}
 
 // MARK: - APIClient
 
@@ -345,11 +359,7 @@ actor APIClient {
         self.session = session
     }
 
-    // —— health(免鉴权,联通性自检 + v1.5-⑤-E 服务端版本诚实展示)——
-    /// 端点本就返 `{status, version}`,此前 `version` 被丢弃(§五 v1.5-⑤-E「此前被
-    /// 丢弃」)。**返回值改元组**——`ok` 语义不变(200 且 `status=="ok"`),`version`
-    /// 独立于 `ok` 展示(即便 `ok=false` 也把拿到的 version 原样带回,由调用方判断
-    /// 用不用;拿不到/解码失败 → `nil`,不冒充"服务端无版本")。
+    // —— health(免鉴权,联通性自检 + 服务端版本诚实展示)——
     func health() async throws -> (ok: Bool, version: String?) {
         guard let url = Self.makeURL(base: baseURL, path: "/api/v1/health") else {
             throw APIError.transport("无效 URL")
@@ -378,7 +388,7 @@ actor APIClient {
         let r = try JSONDecoder().decode(ReportResponse.self, from: data)
         return ReportSnapshot(tradeDate: r.tradeDate, generatedAt: r.generatedAt,
                               strategyVersion: r.strategyVersion, sentiment: r.sentiment,
-                              sectors: r.sectors, candidates: r.candidates,
+                              sectors: r.sectors, basketDaily: r.basketDaily ?? BasketDaily(),
                               degraded: r.degraded, reason: r.reason,
                               missedEntryHint: r.missedEntryHint ?? "",
                               intel: r.intel, sectorMoneyflow: r.sectorMoneyflow,
@@ -386,23 +396,63 @@ actor APIClient {
                               dataFreshness: r.dataFreshness)
     }
 
-    /// v1.4-④-B:单只完整信息卡(60 日 K 线/RS 线/行业分歧线 + 快照 + 红黄牌 + 温和带 +
-    /// 消息面 + 龙虎榜 + 市场语境,§五 v1.4-④)。**候选专属**(本版只接候选,不接持仓/
-    /// 自选——若发现某处需要脱离候选对象单独调用本端点,先停下来核对,不要自行猜测)。
-    /// `code` 支持裸 6 位或带交易所后缀(服务端 `normalize_ts_code` 归一比对)。
-    /// 直接 `Codable` 解码 `InfoCard`(字段名与 JSON 字面一致,不需要私有 wire DTO 中转,
-    /// 同 `Position`/`BoardEvent` 先例)。404 两个 reason:
-    /// `report_not_found`(日期非法/当天未生成过报告)、`code_not_in_report`(该日报告
-    /// 存在但这只票不在候选榜里)——均映射到独立 `APIError` case,不吃 fallback。
-    /// **`timeout: 60`(v1.4.1 热修,§七 P1-26)** —— 本端点是全仓最重的读:一次请求要装
-    /// 60 日 K 线面板 + 大盘指数线 + 情绪仪表盘(5 次全市场横截面)+ 龙虎榜回看 + 红黄牌,
-    /// 生产 2 vCPU 箱上冷调实测以秒计。默认 12s **必然超时**(用户报障「信息卡总是加载
-    /// 失败」的直接原因),且失败会诱发用户反复重试、把常驻服务顶到内存节流线,越试越慢。
-    /// 服务端已按年裁剪分区把耗时压下来,但**客户端也不该拿一个比服务端真实耗时还短的
-    /// 超时去赌** —— 照问询台(同样重、同样 60s)的既有惯例给足预算。
+    /// 单只完整信息卡(60 日 K 线/RS 线/行业分歧线 + 快照 + 红黄牌 + 温和带 + 消息面 +
+    /// 龙虎榜 + 市场语境 + **⑬-N 篮子块与 K7 标注件**)。`code` 支持裸 6 位或带交易所后缀。
+    /// **`timeout: 60`**(§七 P1-26):本端点是全仓最重的读,默认 12s 在生产 2 vCPU 箱上
+    /// 必然超时,且失败会诱发用户反复重试、把常驻服务顶到内存节流线。
     func fetchInfoCard(date: String, code: String) async throws -> InfoCard {
         let data = try await get("/api/v1/report/\(date)/info-card/\(code)", timeout: 60)
         return try JSONDecoder().decode(InfoCard.self, from: data)
+    }
+
+    // —— V2-⑭-B 篮子族 ————————————————————————————————————————————————
+
+    /// 某交易日的篮子清单(T1/T2/T3,按 tier 升序、basket_key 升序,**确定性**)。
+    /// `date` 缺省 = 最近一份报告的交易日;`tier`(1/2/3)可选过滤。
+    /// **空列表是合法输出**(「今日无篮子达到定档标准」),⛔ 不是 404。
+    func fetchBaskets(date: String? = nil, tier: Int? = nil) async throws -> [Basket] {
+        var query: [String] = []
+        if let d = date, !d.isEmpty { query.append("date=\(d)") }
+        if let t = tier, (1...3).contains(t) { query.append("tier=\(t)") }
+        let path = query.isEmpty ? "/api/v1/baskets" : "/api/v1/baskets?" + query.joined(separator: "&")
+        let data = try await get(path)
+        return try JSONDecoder().decode(BasketsListResponse.self, from: data).items
+    }
+
+    /// 单个篮子(含冻结卡与 Tier 留痕)。不存在 → 404 `basket_not_found`。
+    /// ⚠ **篮子在、卡没生成不是 404**:照返 200,`card == nil` +
+    /// `cardUnavailableReason == "card_not_ready"`(合法中间态)。
+    func fetchBasket(id: Int) async throws -> Basket {
+        let data = try await get("/api/v1/baskets/\(id)")
+        return try JSONDecoder().decode(Basket.self, from: data)
+    }
+
+    /// 一张冻结的篮子卡。`version` 缺省 = 最新版本。
+    /// **404 两个 reason 语义相反**:`basket_not_found`(篮子本身不存在)/
+    /// `card_not_ready`(**篮子在、卡还没生成**),各有独立 `APIError` case。
+    func fetchBasketCard(id: Int, version: Int? = nil) async throws -> BasketCard {
+        let path = version.map { "/api/v1/baskets/\(id)/card?version=\($0)" }
+            ?? "/api/v1/baskets/\(id)/card"
+        let data = try await get(path)
+        return try JSONDecoder().decode(BasketCard.self, from: data)
+    }
+
+    /// 某篮某日的验证状态(⑧ 三路读法,只读不判)。篮子不存在 → 404 `basket_not_found`;
+    /// **篮子在、今天没判过**照返 200 + `notEvaluated == true`(⛔ 不是 404)。
+    func fetchBasketVerification(id: Int, date: String? = nil) async throws -> BasketVerification {
+        let path = (date?.isEmpty == false) ? "/api/v1/baskets/\(id)/verification?date=\(date!)"
+                                            : "/api/v1/baskets/\(id)/verification"
+        let data = try await get(path)
+        return try JSONDecoder().decode(BasketVerification.self, from: data)
+    }
+
+    /// 某篮某个复盘日(D+1)的盘后复盘。篮子不存在 → 404 `basket_not_found`;
+    /// 篮子在、那天还没复盘 → 404 `not_found`(**复用既有 reason,无需新 case**)。
+    func fetchBasketReview(id: Int, date: String? = nil) async throws -> BasketReview {
+        let path = (date?.isEmpty == false) ? "/api/v1/baskets/\(id)/review?date=\(date!)"
+                                            : "/api/v1/baskets/\(id)/review"
+        let data = try await get(path)
+        return try JSONDecoder().decode(BasketReview.self, from: data)
     }
 
     // —— 4A.3 盘中看板 ——
@@ -419,27 +469,30 @@ actor APIClient {
         return try JSONDecoder().decode(PositionsListResponse.self, from: data).holdings
     }
 
-    /// 开仓录入(补录用户已在券商完成的真实操作)。返回 (positionId, 派生止损线)。
-    /// `buyFees`(v1.3-①/⑥):实付买入费用。UI 层(`PositionEntryForm.isValid`)强制
-    /// 必填,这里仍是 Optional + 默认 nil(服务端宽松,且不强迫不关心费用的既有调用点
-    /// 逐一改)。
-    /// `buyDate`(v1.4-①-A):真实买入日 'YYYYMMDD',**不传 → 服务端取今天**(与 v1.4
-    /// 之前逐位一致)。服务端校验非交易日 / 未来日 → 400 + reason,分别映射到
-    /// `.notTradingDay` / `.futureBuyDate`(见 `mapReason`)。
+    /// 开仓录入(补录用户已在券商完成的真实操作)。
+    ///
+    /// `idempotencyKey`(v2.0.0):**这一次提交动作**的键。⛔ 严禁跨提交复用 —— 同键不同
+    /// payload 会被服务端当重试**静默重放原仓**。生成规则见 `OpenPositionRequest`。
+    /// `buyDate`:**不传 → 服务端取今天**;非交易日 / 未来日 → 400 + reason。
     func openPosition(code: String, name: String?, buyPrice: Double, qty: Int,
                       entryReason: String, buyFees: Double? = nil,
-                      buyDate: String? = nil) async throws -> (positionId: Int, stopLine: Double) {
+                      buyDate: String? = nil,
+                      idempotencyKey: String? = nil) async throws -> OpenPositionResult {
         let body = OpenPositionRequest(code: code, name: name, buy_price: buyPrice,
                                        qty: qty, entry_reason: entryReason, buyFees: buyFees,
-                                       buyDate: buyDate)
+                                       buyDate: buyDate, idempotencyKey: idempotencyKey)
         let data = try await post("/api/v1/positions", body: body)
         let r = try JSONDecoder().decode(OpenPositionResponse.self, from: data)
-        return (r.position_id, r.stop_line)
+        return OpenPositionResult(positionId: r.position_id, stopLine: r.stop_line,
+                                  sourceBasketKey: r.sourceBasketKey,
+                                  sourceBasketName: r.sourceBasketName,
+                                  tier: r.tier, role: r.role,
+                                  planAvailable: r.planAvailable ?? false,
+                                  planDeviationNotice: r.planDeviationNotice,
+                                  replayed: r.replayed ?? false)
     }
 
-    /// 清仓录入。`sellTime` 缺省 → 服务端用今日('YYYYMMDD')。`closeReason`(v1.2-A2)
-    /// 可选——不传 → 服务端落 NULL,熔断评估走价格兜底判止损(不由客户端二次猜)。
-    /// `sellFees`(v1.3-①/⑥):清仓实付卖出费用真数,可选、成交后回填,周复盘对账用真数。
+    /// 清仓录入。`sellTime` 缺省 → 服务端用今日。`closeReason` 可选(九码之一)。
     @discardableResult
     func closePosition(id: Int, sellPrice: Double, sellTime: String? = nil,
                        closeReason: String? = nil, sellFees: Double? = nil) async throws -> Bool {
@@ -449,11 +502,7 @@ actor APIClient {
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    /// 一键补录预填推荐(v1.2-E.5 改区间双档,只读计算,不写台账):`qtyHigh`/`capCeil`
-    /// = 现役 `single_cap` 违纪判定上限对应手数/金额(**非推荐值**),`qtyLow`/`capFloor`
-    /// = 半仓保守下沿;`stopLine = price×(1−stop_pct)`(读现役 config)。客户端只展示
-    /// 两档,不替用户拍单笔金额。`code`/`price` 走 query(同 `fetchReport(date:)` 惯例,
-    /// 需走 `makeURL` 免 "?" 编码坑)。
+    /// 一键补录预填推荐(区间双档,只读计算,不写台账)。
     func entrySuggestion(code: String, price: Double) async throws -> EntrySuggestionRange {
         let priceStr = String(format: "%.2f", price)
         let data = try await get("/api/v1/positions/entry-suggestion?code=\(code)&price=\(priceStr)")
@@ -462,51 +511,61 @@ actor APIClient {
                                     capFloor: r.capFloor, capCeil: r.capCeil, stopLine: r.stopLine)
     }
 
-    // —— v1.2-A2 熔断纪律状态(§五 v1.2-E.3;纯提醒层,客户端只读锁定态 + 记录用户
-    // 解锁 ack,绝不代下单/撤单、绝不拦 `POST /positions`,§3.8)——————————————————————
+    // —— V2-⑩-B 计划继承 + 建仓快照 ————————————————————————————————————
 
-    /// 权威熔断锁定态。`PositionsOut.circuit` 内嵌同一形状供今日计划面直接读取
-    /// (契约清单「或」两种取法均可,这里选独立端点,避免牵动 `fetchPositions()`
-    /// 既有返回类型 / 既有单测)。
+    /// 某持仓的全部计划版本(升序,`version=1` 是从 D0 卡继承的原判)。
+    /// **空列表 = 这笔仓不存在或建于 ⑩ 之前**,不 404。
+    func fetchPositionPlans(positionId: Int) async throws -> [PositionPlan] {
+        let data = try await get("/api/v1/positions/\(positionId)/plans")
+        return try JSONDecoder().decode(PositionPlansResponse.self, from: data).items
+    }
+
+    /// 创建计划新版本(⑩-B)。**新版本不修改原始篮子卡**。
+    /// 无既有计划(缺 `version=1`)→ 400 `no_base_plan`。
+    @discardableResult
+    func createPositionPlanVersion(positionId: Int, plan: NKJSON,
+                                   note: String? = nil) async throws -> PositionPlan {
+        let body = PositionPlanCreateRequest(plan: plan, note: note)
+        let data = try await post("/api/v1/positions/\(positionId)/plans", body: body)
+        return try JSONDecoder().decode(PositionPlan.self, from: data)
+    }
+
+    /// 建仓瞬间的冻结快照。无快照行 → 404 `not_found`(复用既有 case)。
+    func fetchEntrySnapshot(positionId: Int) async throws -> EntrySnapshot {
+        let data = try await get("/api/v1/positions/\(positionId)/entry-snapshot")
+        return try JSONDecoder().decode(EntrySnapshot.self, from: data)
+    }
+
+    // —— v1.2-A2 熔断纪律状态(纯提醒层,绝不代下单/撤单、绝不拦 `POST /positions`)——
+
     func getCircuit() async throws -> CircuitState {
         let data = try await get("/api/v1/circuit")
         return try JSONDecoder().decode(CircuitState.self, from: data)
     }
 
-    /// 客户端「熔断复盘」按钮解锁(先展示强制复盘材料,用户确认后调用)。无锁定态时
-    /// 幂等成功。
     @discardableResult
     func unlockCircuit() async throws -> Bool {
         let data = try await post("/api/v1/circuit/unlock", body: EmptyBody())
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    // —— v1.2-B 预注册决策日志(§五 v1.2-E.1;审计件、非下单件——本节任何方法都不
-    // 触发任何持仓写入)——————————————————————————————————————————————————————————
+    // —— ⑩-C 用户可选补充(七枚标签 + 一句可选说明)————————————————————————
+    //
+    // ⚠ **决策日志强制表单已退役**:`decision_log` 表 v2.0.0 起停写留档,
+    // `link`/`cancel`/`revise`/`scenario-outcome` 四个写端点服务端已删,客户端对应四个
+    // 方法随之删除(⑭-C 对拍表 §六 B2)。`GET /decisions`(只读归因)保留。
 
-    /// 预注册(status=pending)。`createdAt` 服务端生成,请求体本就无此字段,物理
-    /// 杜绝客户端覆盖(同 CLAUDE.md「B 块 created_at 三处防线」①)。`maxChasePct`
-    /// (⑨,v1.4-⑤-B)**必须显式传**(填数字或显式 `nil`=不设上限)——省略等价于
-    /// Swift 里没得选,本参数无默认值,强制每个调用点显式决定,与服务端「省略该键→
-    /// 400」的强制语义对齐。
-    func createDecision(code: String, name: String?, whyBuy: String, whyEntryPrice: String,
-                        targetPrice: Double?, exitLow: Double?, exitHigh: Double?,
-                        thesisTags: [String], invalidation: String,
-                        contingencyScenarios: [ContingencyScenario], playbookTag: String,
-                        plannedPrice: Double?, plannedQty: Int?,
-                        maxChasePct: Double?) async throws -> DecisionLog {
-        let body = DecisionCreateRequest(code: code, name: name, whyBuy: whyBuy, whyEntryPrice: whyEntryPrice,
-                                         targetPrice: targetPrice, exitLow: exitLow, exitHigh: exitHigh,
-                                         thesisTags: thesisTags, invalidation: invalidation,
-                                         contingencyScenarios: contingencyScenarios, playbookTag: playbookTag,
-                                         plannedPrice: plannedPrice, plannedQty: plannedQty,
-                                         maxChasePct: maxChasePct)
+    /// 记一次「用户可选补充」。**全部参数可选**,空提交合法(200,不是 400)。
+    @discardableResult
+    func postDecisionNote(code: String?, positionId: Int? = nil,
+                          labels: [String] = [], voiceNote: String? = nil) async throws -> DecisionNoteResult {
+        let body = DecisionNoteRequest(code: code, positionId: positionId,
+                                       labels: labels, voiceNote: voiceNote)
         let data = try await post("/api/v1/decisions", body: body)
-        return try JSONDecoder().decode(DecisionLog.self, from: data)
+        return try JSONDecoder().decode(DecisionNoteResult.self, from: data)
     }
 
-    /// 客户端历史 + macOS 归因表(默认返全部,可按 `status`/`code`/`from`/`to` 过滤;
-    /// `from`/`to` 对齐服务端 `created_at` 日期区间,'YYYYMMDD')。
+    /// 历史决策日志(**只读归因**;v2.0.0 起零新增行,读的都是历史)。
     func listDecisions(status: String? = nil, code: String? = nil,
                        from: String? = nil, to: String? = nil) async throws -> [DecisionLog] {
         var query: [String] = []
@@ -519,75 +578,28 @@ actor APIClient {
         return try JSONDecoder().decode(DecisionsListResponse.self, from: data).items
     }
 
-    /// v1.4-⑦-A:挂单未成交追踪(§七 P3-12)。`id` 不存在 → 404 not_found(既有
-    /// `case "not_found": return .notFound` 已覆盖,未新增 case);决策存在但还没攒到
-    /// 任何追踪快照 → 合法 200 空态 `rows=[]`,不是错误(两种「空」分开)。直接
-    /// `Codable` 解码 `DecisionTrack`(字段名与 JSON 字面一致)。
+    /// 挂单未成交追踪。`id` 不存在 → 404 `not_found`(既有 case 覆盖);决策存在但还没攒到
+    /// 任何追踪快照 → 合法 200 空态 `rows=[]`,不是错误(两种「空」分开)。
     func decisionTrack(id: Int) async throws -> DecisionTrack {
         let data = try await get("/api/v1/decisions/\(id)/track")
         return try JSONDecoder().decode(DecisionTrack.self, from: data)
     }
 
-    /// 成交后一键关联:`status` 置 filled + `position_id` 回填。id 不存在 → 404 not_found。
-    @discardableResult
-    func linkDecision(id: Int, positionId: Int) async throws -> Bool {
-        let body = DecisionLinkRequest(positionId: positionId)
-        let data = try await post("/api/v1/decisions/\(id)/link", body: body)
-        return try JSONDecoder().decode(OkResponse.self, from: data).ok
-    }
-
-    /// 用户放弃该预注册计划:`status` 置 cancelled。id 不存在 → 404 not_found。
-    @discardableResult
-    func cancelDecision(id: Int) async throws -> Bool {
-        let data = try await post("/api/v1/decisions/\(id)/cancel", body: EmptyBody())
-        return try JSONDecoder().decode(OkResponse.self, from: data).ok
-    }
-
-    /// 新增一行修订(旧行原地不变,`revisionOf` 落链根 id,`status` 重置 pending、
-    /// `positionId` 重置为 nil——修订与「已成交关联」是两件事,不自动重新关联)。
-    /// `id` 不存在 → 404 not_found。**`maxChasePct` 必须显式传**(同 `createDecision`
-    /// 纪律——修订等于重新预注册一整套九项内容)。
-    func reviseDecision(id: Int, whyBuy: String, whyEntryPrice: String, targetPrice: Double?,
-                        exitLow: Double?, exitHigh: Double?, thesisTags: [String], invalidation: String,
-                        contingencyScenarios: [ContingencyScenario], playbookTag: String,
-                        plannedPrice: Double?, plannedQty: Int?,
-                        maxChasePct: Double?) async throws -> DecisionLog {
-        let body = DecisionReviseRequest(whyBuy: whyBuy, whyEntryPrice: whyEntryPrice, targetPrice: targetPrice,
-                                         exitLow: exitLow, exitHigh: exitHigh, thesisTags: thesisTags,
-                                         invalidation: invalidation, contingencyScenarios: contingencyScenarios,
-                                         playbookTag: playbookTag, plannedPrice: plannedPrice, plannedQty: plannedQty,
-                                         maxChasePct: maxChasePct)
-        let data = try await post("/api/v1/decisions/\(id)/revise", body: body)
-        return try JSONDecoder().decode(DecisionLog.self, from: data)
-    }
-
-    /// ⑦ 情景树结果标记专用(只翻 `matched`,绝不改 `scenario`/`trigger`/`action`)。
-    /// `id` 不存在 → 404;`index` 越界 → 422(FastAPI/pydantic 走既有 `.validation` 映射)。
-    @discardableResult
-    func setScenarioOutcome(id: Int, outcomes: [(index: Int, matched: Bool)]) async throws -> Bool {
-        let body = ScenarioOutcomeRequest(outcomes: outcomes.map { ScenarioOutcomeItemRequest(index: $0.index, matched: $0.matched) })
-        let data = try await post("/api/v1/decisions/\(id)/scenario-outcome", body: body)
-        return try JSONDecoder().decode(OkResponse.self, from: data).ok
-    }
-
     // —— 4A.5 问询台(§2.5:描述性标注非裁决,永不「现在就买」)——
-    /// `messages` 为客户端持有的全部上下文(无状态端点,每次全量回传,继承 LinoN `/chat` 姿势)。
     func sendInquiry(code: String, messages: [ChatMessage]) async throws -> InquiryResult {
         let wire = messages.map { ChatMessageWire(role: $0.role.rawValue, content: $0.text) }
         let body = InquiryRequest(code: code, messages: wire)
-        // LLM 段可能真联网搜索 + 降级重试(§3.4 _MAX_ATTEMPTS=3),给足长超时,同 LinoN chat 60s 模式。
+        // LLM 段可能真联网搜索 + 降级重试,给足长超时。
         let data = try await post("/api/v1/inquiry", body: body, timeout: 60)
         let r = try JSONDecoder().decode(InquiryResponse.self, from: data)
         return InquiryResult(code: r.code, reply: r.reply, verdict: InquiryVerdict(r.verdict),
                              evidence: r.evidence, degraded: r.degraded, inquiryId: r.inquiryId)
     }
 
-    // —— v1.4-⑦-B 问询历史(§七 P3-13;**与已退役的 `inquiry_pool` 无耦合**,本节读的
-    // 是 `inquiry_log` 档案表)——————————————————————————————————————————————————
+    // —— v1.4-⑦-B 问询历史(读 `inquiry_log` 档案表)——————————————————————
 
     private struct InquiryLogsListResponse: Decodable { let items: [InquiryLogEntry] }
 
-    /// 倒序分页,`tsCode` 归一后等值匹配(空/nil = 不按代码过滤)。
     func fetchInquiries(limit: Int = 20, offset: Int = 0, tsCode: String? = nil) async throws -> [InquiryLogEntry] {
         var query = ["limit=\(limit)", "offset=\(offset)"]
         if let c = tsCode, !c.trimmingCharacters(in: .whitespaces).isEmpty { query.append("tsCode=\(c)") }
@@ -595,42 +607,108 @@ actor APIClient {
         return try JSONDecoder().decode(InquiryLogsListResponse.self, from: data).items
     }
 
-    /// 详情。不存在 → 404 not_found(既有 case 覆盖,未新增)。
     func fetchInquiryDetail(id: Int) async throws -> InquiryLogEntry {
         let data = try await get("/api/v1/inquiries/\(id)")
         return try JSONDecoder().decode(InquiryLogEntry.self, from: data)
     }
 
-    // —— 4A.5 设置(🔴 LLM key 服务端存取)——
-    func fetchSettings() async throws -> SettingsSnapshot {
-        let data = try await get("/api/v1/settings")
-        let r = try JSONDecoder().decode(SettingsResponse.self, from: data)
-        return SettingsSnapshot(llmProvider: r.llmProvider, llmKeySet: r.llmKeySet, push: r.push,
-                                reviewColMap: r.reviewColMap)
+    // —— V2-⑪-C 自然语言临时提醒(**只通知,永不交易**)————————————————————
+
+    /// `status` 过滤(⚠ 契约键是 `status`,不是 `status_filter` —— ⑭-B 已改名)。
+    func fetchAlerts(status: String? = nil, tsCode: String? = nil) async throws -> [CustomAlert] {
+        var query: [String] = []
+        if let s = status, !s.isEmpty { query.append("status=\(s)") }
+        if let c = tsCode, !c.isEmpty { query.append("tsCode=\(c)") }
+        let path = query.isEmpty ? "/api/v1/alerts" : "/api/v1/alerts?" + query.joined(separator: "&")
+        let data = try await get(path)
+        return try JSONDecoder().decode(AlertsListResponse.self, from: data).items
     }
 
-    /// 写 LLM 供应商 + key。**key 只发一次、不回显、不落日志**(§3.4 高危区)。
+    /// 自然语言解析 → 确认卡。**永远 200**:LLM 不可用时 `degraded=true` + 手填表单,
+    /// **不静默失败**。
+    func parseAlert(text: String, tsCode: String? = nil) async throws -> AlertParseResult {
+        let body = AlertParseRequest(text: text, tsCode: tsCode)
+        // 走 LLM,给足长超时(同问询台 60s 惯例)。
+        let data = try await post("/api/v1/alerts/parse", body: body, timeout: 60)
+        return try JSONDecoder().decode(AlertParseResult.self, from: data)
+    }
+
+    /// 建一条提醒(**用户已在确认卡上确认之后**)。同标的 + 规则逐字节相同 → 409
+    /// `duplicate_alert`;规则不合白名单 → 422 `invalid_rule`。
+    func createAlert(_ draft: AlertDraft) async throws -> CustomAlert {
+        let data = try await post("/api/v1/alerts", body: draft)
+        return try JSONDecoder().decode(CustomAlert.self, from: data)
+    }
+
+    /// 局部更新(未出现的字段不改)。
+    func updateAlert(id: Int, _ body: AlertUpdateRequest) async throws -> CustomAlert {
+        let data = try await put("/api/v1/alerts/\(id)", body: body)
+        return try JSONDecoder().decode(CustomAlert.self, from: data)
+    }
+
+    /// 停用 / 删除一条提醒。不存在 → 404 `not_found`。
     @discardableResult
-    func putSettingsLLM(provider: LLMProviderKind, apiKey: String) async throws -> Bool {
-        let body = SettingsLLMRequest(provider: provider.rawValue, apiKey: apiKey)
-        let data = try await put("/api/v1/settings/llm", body: body)
+    func deleteAlert(id: Int) async throws -> Bool {
+        let data = try await delete("/api/v1/alerts/\(id)")
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    /// 推送开关六字段一并写入(报告 / 退潮刹车 / 盘前校准 / D5 时间退出 / v1.2-A2 熔断提醒 /
-    /// v1.3-② K4 持仓派发警报)。`holdingAlert` 给默认值 `true`(六字段里最新加的一个,
-    /// 服务端本就要求六字段必填——默认值只是省得既有「不关心持仓警报开关」的调用点
-    /// 逐一改,实际请求体仍会带上这第六字段,不会让后端因缺字段 422)。
+    // —— 4A.5 设置(🔴 key 服务端存取,只写不回显)——
+
+    func fetchSettings() async throws -> SettingsSnapshot {
+        let data = try await get("/api/v1/settings")
+        return try JSONDecoder().decode(SettingsSnapshot.self, from: data)
+    }
+
+    /// Provider 注册表(完整安全视图,**绝不含 key 明文**)。
+    func fetchProviders() async throws -> [Provider] {
+        let data = try await get("/api/v1/settings/providers")
+        return try JSONDecoder().decode(ProvidersListResponse.self, from: data).items
+    }
+
+    /// 新建 Provider。同名 → 409 `already_exists`(须显式走 `updateProvider`,防误覆盖)。
+    /// **`apiKey` 只发一次、不回显、不落日志**(§3.4 高危区)。
+    func createProvider(_ body: ProviderCreateRequest) async throws -> Provider {
+        let data = try await post("/api/v1/settings/providers", body: body)
+        return try JSONDecoder().decode(Provider.self, from: data)
+    }
+
+    /// 局部更新(未出现的字段不改;`apiKey` 传空串 = **显式清空**)。
+    func updateProvider(name: String, _ body: ProviderUpdateRequest) async throws -> Provider {
+        let data = try await put("/api/v1/settings/providers/\(name)", body: body)
+        return try JSONDecoder().decode(Provider.self, from: data)
+    }
+
     @discardableResult
-    func putSettingsPush(report: Bool, retreatBrake: Bool, precall: Bool, d5exit: Bool,
-                         circuit: Bool, holdingAlert: Bool = true) async throws -> Bool {
-        let body = SettingsPushRequest(report: report, retreatBrake: retreatBrake, precall: precall,
-                                       d5exit: d5exit, circuit: circuit, holdingAlert: holdingAlert)
+    func deleteProvider(name: String) async throws -> Bool {
+        let data = try await delete("/api/v1/settings/providers/\(name)")
+        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    func fetchLLMRoutes() async throws -> LLMRoutes {
+        let data = try await get("/api/v1/settings/llm-routes")
+        return try JSONDecoder().decode(LLMRoutes.self, from: data)
+    }
+
+    /// **全量覆盖式**写路由表。未知任务名 → 422 `invalid_task`。
+    @discardableResult
+    func putLLMRoutes(routes: [String: String], defaultProvider: String?) async throws -> Bool {
+        let body = LLMRoutesRequest(routes: routes, defaultProvider: defaultProvider)
+        let data = try await put("/api/v1/settings/llm-routes", body: body)
+        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    }
+
+    /// 按 `kind` 的推送开关,**全量覆盖式**写。⛔ 客户端不许硬编 kind 清单 —— 传的是
+    /// 从 `GET /settings` 拿回来的那一份(服务端 `notify_kinds.py` 是唯一源),
+    /// 缺键 / 未登记 kind → 422 `invalid_push_kinds`。
+    @discardableResult
+    func putSettingsPush(kinds: [String: Bool]) async throws -> Bool {
+        let body = SettingsPushRequest(kinds: kinds)
         let data = try await put("/api/v1/settings/push", body: body)
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    /// 周复盘交割单列映射(plan 4D.1「留 review_col_map 可覆盖以支持两家券商原始格式」)。
+    /// 周复盘交割单列映射(支持两家券商原始格式)。
     @discardableResult
     func putSettingsReviewColMap(_ colMap: [String: String]) async throws -> Bool {
         let body = SettingsReviewColMapRequest(colMap: colMap)
@@ -638,9 +716,6 @@ actor APIClient {
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    // —— v1.3-③-C3/⑥ 五常驻板块可配 ——————————————————————————————————————————
-
-    /// 读当前常驻板块名单(从未配置 → 默认五板块;曾显式清空 → 空数组)。
     // —— 设备注册(iOS APNs token)——
     @discardableResult
     func registerDevice(token deviceToken: String, platform: String = "ios") async throws -> Bool {
@@ -649,10 +724,45 @@ actor APIClient {
         return try JSONDecoder().decode(OkResponse.self, from: data).ok
     }
 
-    // —— 4D 周复盘工作台(拖入交割单对账;macOS 独有,§五 阶段4D)——————————————————
+    // —— V2-⑫ 画像 / ③ 策略包 / ⑨-C 评价 ————————————————————————————————
 
-    /// 上传一份或多份 xlsx 交割单 → 解析 → 对账(可能同时落多个 ISO 周)。解析/数据
-    /// 完整性问题走 `parseWarnings`/`dataWarnings` 降级展示,不当异常抛(同后端契约)。
+    /// 偏好画像(答「喜欢什么」)。**与能力画像刻意分开,⛔ 不合并成一张"用户画像"**。
+    func fetchPreferenceProfile(asOf: String? = nil) async throws -> Profile {
+        let path = (asOf?.isEmpty == false) ? "/api/v1/profile/preference?asOf=\(asOf!)"
+                                            : "/api/v1/profile/preference"
+        let data = try await get(path)
+        return try JSONDecoder().decode(Profile.self, from: data)
+    }
+
+    /// 能力画像(答「什么真有效」)。
+    func fetchCapabilityProfile(asOf: String? = nil) async throws -> Profile {
+        let path = (asOf?.isEmpty == false) ? "/api/v1/profile/capability?asOf=\(asOf!)"
+                                            : "/api/v1/profile/capability"
+        let data = try await get(path)
+        return try JSONDecoder().decode(Profile.self, from: data)
+    }
+
+    func fetchPacks() async throws -> [Pack] {
+        let data = try await get("/api/v1/packs")
+        return try JSONDecoder().decode(PacksListResponse.self, from: data).items
+    }
+
+    /// 单个策略包。不存在 → 404 `not_found`。
+    func fetchPack(version: String) async throws -> Pack {
+        let data = try await get("/api/v1/packs/\(version)")
+        return try JSONDecoder().decode(Pack.self, from: data)
+    }
+
+    /// 周度评价校准报告(**恒 200**,失败给可读原因)。
+    func fetchEvalWeekly(week: String? = nil) async throws -> EvalWeekly {
+        let path = (week?.isEmpty == false) ? "/api/v1/eval/weekly?week=\(week!)"
+                                            : "/api/v1/eval/weekly"
+        let data = try await get(path, timeout: 60)
+        return try JSONDecoder().decode(EvalWeekly.self, from: data)
+    }
+
+    // —— 4D 周复盘工作台(拖入交割单对账;macOS 独有)——————————————————————
+
     func uploadReview(files: [(filename: String, data: Data)]) async throws -> ReviewUploadResponse {
         try ensureToken()
         guard let url = Self.makeURL(base: baseURL, path: "/api/v1/review/upload") else {
@@ -677,12 +787,11 @@ actor APIClient {
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
-        req.timeoutInterval = 60   // 解析+对账可能稍慢(涉及面板计算),同问询台 60s 惯例
+        req.timeoutInterval = 60   // 解析+对账可能稍慢(涉及面板计算)
         let data = try await send(req)
         return try JSONDecoder().decode(ReviewUploadResponse.self, from: data)
     }
 
-    /// 历史回放(带 query,务必走 makeURL,同 `fetchReport(date:)` 惯例)。
     func fetchReview(week: String) async throws -> ReviewGetResponse {
         let data = try await get("/api/v1/review?week=\(week)")
         return try JSONDecoder().decode(ReviewGetResponse.self, from: data)
@@ -691,9 +800,8 @@ actor APIClient {
     // MARK: - 传输层
 
     /// 由 base + path(可含 "?query")构造 URL。**禁止 `appendingPathComponent`**——它把整个
-    /// path(含 "?date=...")当单个路径组件、"?" 编码成 "%3F",带 query 的端点(`report?date=`)
-    /// 真后端恒 404 且被静默吞(LinoN v1.3.0 致命坑,§五 阶段4C 坑吸收清单②)。用
-    /// `URL(string:relativeTo:)` 让 "?" 正确解析为 query 分隔符。可单测(见 NecklineTests)。
+    /// path(含 "?date=...")当单个路径组件、"?" 编码成 "%3F",带 query 的端点真后端恒 404
+    /// 且被静默吞(LinoN v1.3.0 致命坑)。
     static func makeURL(base: URL, path: String) -> URL? {
         URL(string: path, relativeTo: base)?.absoluteURL
     }
@@ -738,7 +846,8 @@ actor APIClient {
         return try await send(req)
     }
 
-    /// 无请求体的 DELETE(`/alerts/{id}` 等用)。
+    /// 无请求体的 DELETE(`/alerts/{id}`、`/settings/providers/{name}` 用)。
+    @discardableResult
     private func delete(_ path: String, timeout: TimeInterval = 12) async throws -> Data {
         try ensureToken()
         guard let url = Self.makeURL(base: baseURL, path: path) else {
@@ -771,36 +880,52 @@ actor APIClient {
             return data
         case 401:
             throw APIError.unauthorized
-        // v1.4-①-A:400 走 reason 映射(`POST /positions` 的 buyDate 校验)。fallback 保持
-        // 既有 `.server(400, …)` 语义 —— 未知 400 reason 不冒充成买入日错误。
+        // 400 走 reason 映射;fallback 保持 `.server(400, …)` 语义 —— 未知 400 reason
+        // 不冒充成某个具体业务错误。
         case 400:
             throw mapReason(data, fallback: .server(400, reasonString(data) ?? "请求不合法"))
         case 404:
             throw mapReason(data, fallback: .notHolding)
+        // V2-⑮:409 / 422 也走 `mapReason` —— ② 的 `already_exists`、⑪ 的 `duplicate_alert`/
+        // `invalid_rule`、`invalid_task`、`invalid_push_kinds` 五个 reason 各有独立 case,
+        // 不再靠一句泛泛的「字段校验失败」蒙混(⑭-C 对拍表 §六 C3)。
+        case 409:
+            throw mapReason(data, fallback: .server(409, reasonString(data) ?? "资源冲突"))
         case 422:
-            throw APIError.validation(reasonString(data) ?? "请检查输入")
+            throw mapReason(data, fallback: .validation(reasonString(data) ?? "请检查输入"))
         default:
             throw APIError.server(http.statusCode, reasonString(data) ?? "未知错误")
         }
     }
 
     /// FastAPI 的 HTTPException(detail={ok:false, reason:...})落在 "detail" 里。
+    ///
+    /// ⚠ **新增会返 4xx 的端点必须回来检查这里要不要加 case**(CLAUDE.md 明文;机器判据
+    /// 见 `tests/test_contract_crosscheck.py::test_map_reason_covers_every_server_reason…`)。
+    /// **复用已有 reason 字符串不算"没加"**,只有全新字符串才需要新 case。
     private func mapReason(_ data: Data, fallback: APIError) -> APIError {
         guard let reason = reasonString(data) else { return fallback }
         switch reason {
         case "not_holding": return .notHolding
-        // v1.4-⑦-A:GET /decisions/{id}/track 的 not_found(decision_id 不存在)复用
-        // 本既有 case(字符串与 decisions link/cancel/revise 端点相同,未新增);
-        // v1.4-⑦-B:GET /inquiries/{id} 的 not_found 同样复用本 case。
-        case "not_found": return .notFound   // 通用「引用对象不存在」
-        // v1.4-①-A:POST /positions 的 buyDate 校验(400),两个 reason 各一 case。
+        // 通用「引用对象不存在」:决策追踪 / 问询详情 / provider / alert / **篮子复盘** /
+        // **建仓快照** / **策略包** 共用这一个字符串(复用,不新增 case)。
+        case "not_found": return .notFound
         case "not_trading_day": return .notTradingDay
         case "future_buy_date": return .futureBuyDate
-        // v1.4-④-B:GET /report/{date}/info-card/{code} 的两个 404 reason。
         case "report_not_found": return .reportNotFound
         case "code_not_in_report": return .codeNotInReport
-        // v1.4-⑤-B:POST/revise /decisions 的 maxChasePct 未显式传(400)。
-        case "max_chase_required": return .maxChaseRequired
+        // —— V2-⑭-B 三个全新 reason ——————————————————————————————————————
+        case "basket_not_found": return .basketNotFound
+        // ⛔ **文案是「本篮的卡还没生成」,不是「篮子不存在」** —— 后者会让用户以为
+        // 系统丢了篮子;不加这个 case 则 404 fallback 会显示「持仓已清」(有案底)。
+        case "card_not_ready": return .cardNotReady
+        case "no_base_plan": return .noBasePlan
+        // —— 409 / 422 ————————————————————————————————————————————————
+        case "already_exists": return .alreadyExists
+        case "duplicate_alert": return .duplicateAlert
+        case "invalid_rule": return .invalidRule
+        case "invalid_task": return .invalidTask
+        case "invalid_push_kinds": return .invalidPushKinds
         default: return fallback
         }
     }
@@ -810,7 +935,6 @@ actor APIClient {
         if let detail = obj["detail"] as? [String: Any], let r = detail["reason"] as? String {
             // 422 若额外带 `unresolved` 数组(具体哪些名字没对上)则拼进 reason ——
             // **纯附加行为**,只在这个键存在时才拼接,不影响其它端点既有 `reason` 语义。
-            // (首个用例 `PUT /settings/intel-boards` 已随 ⑬-1 删除,机制保留。)
             if let unresolved = detail["unresolved"] as? [String], !unresolved.isEmpty {
                 return "\(r):\(unresolved.joined(separator: "、"))"
             }
