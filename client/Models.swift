@@ -778,6 +778,9 @@ struct Basket: Codable, Equatable, Identifiable {
         guard card == nil else { return nil }
         switch cardUnavailableReason {
         case "card_not_ready", .none: return "本篮的卡还没生成"
+        // B1(2026-08-04):「有卡行但读不出」是**数据事故**,不是等待中 ——
+        // ⛔ 不许合进上一条,那会让用户以为再等等就有了(卡是冻结件,不会自己好)。
+        case "card_corrupt": return "本篮卡数据损坏,已记录待排查"
         case .some(let r): return "本篮的卡暂不可用(\(r))"
         }
     }

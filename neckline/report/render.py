@@ -491,8 +491,14 @@ def _render_one_basket(b: Any) -> str:
     lines = [f"#### {b.name}(`{b.basket_key}` · basketId {b.basket_id})", ""]
     card = b.card
     if not card:
-        lines.append(f"- ⚠ **本篮的卡还没生成**(`{b.card_unavailable_reason or 'card_not_ready'}`)"
-                     f"——篮子与成员已冻结,卡生成是独立一段,本次未完成。")
+        reason = b.card_unavailable_reason or "card_not_ready"
+        # B1 裁定:「有行但读不出」是数据事故,⛔ 不许在报告里降级成「卡未生成」。
+        if reason == "card_corrupt":
+            lines.append("- ⚠ **本篮卡数据损坏,已记录待排查**(`card_corrupt`)——卡行在库里,"
+                         "但读不出来;卡是冻结件、不会自动重建,**等不来新的**,需要人工排查。")
+        else:
+            lines.append(f"- ⚠ **本篮的卡还没生成**(`{reason}`)"
+                         f"——篮子与成员已冻结,卡生成是独立一段,本次未完成。")
         lines.append(f"- 成员({len(b.member_codes)}):{'、'.join(b.member_codes) or '(无)'}")
         lines.append("")
         lines.append("---")

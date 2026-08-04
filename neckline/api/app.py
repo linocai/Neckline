@@ -533,8 +533,20 @@ def _member_k4_tag(ctx, ts_code: str) -> Optional[str]:
 # 不存在」)—— 404 的 fallback 是 `.notHolding`「持仓已清」,不加 case 就会显示成那句
 # 驴唇不对马嘴的话(v1.4 `watchlist` 的 `not_found` 已经这么踩过一次)。
 
+# **第三态 `card_corrupt` = 500 + reason(2026-08-04 planner 裁定,小审 🔵 B-3)**:
+#   · 判据分界:`basket_cards` **有行但读不出**(`card_json` 解不出 / 顶层必需键缺失)
+#     → `card_corrupt`;**根本没有行** → 仍是 `card_not_ready`。
+#   · **为什么给它 500 而不是塞进 404 家族**(⛔ 别按"体例一致"改回去):① 404 是在
+#     说谎,卡**存在**、只是读不出;② 它会与 `card_not_ready` 撞成同一类,而两者要求
+#     的反应完全相反(等 ⑦ 补 version=1 vs 需人排查);③ **决定性一条**:卡是冻结件、
+#     `INSERT OR IGNORE` 永不覆盖 → 坏了就是永久坏的,客户端当 `card_not_ready` 处理
+#     就会永远重试、界面永远显示「卡还没生成」而那张卡这辈子不会来 = **静默永久失败**;
+#     ④ 放 500 这一类,连只看状态码的采集器也不会误当良性态。**防误判优先于家族整齐。**
+#   · 体例一致性另有保住方式:响应体仍是同一个 `{"reason": ...}` 形状,`mapReason`
+#     仍是唯一语义映射点(客户端 `send()` 的 500 分支已接进 `mapReason`)。
 REASON_BASKET_NOT_FOUND = "basket_not_found"
 REASON_CARD_NOT_READY = "card_not_ready"
+REASON_CARD_CORRUPT = "card_corrupt"
 
 
 def _shape_basket(ref, *, with_card: bool = True, card_version: Optional[int] = None) -> BasketOut:
@@ -550,7 +562,10 @@ def _shape_basket(ref, *, with_card: bool = True, card_version: Optional[int] = 
         row = load_basket_card(ref.basket_id, version=card_version, db_path=_db())
         payload = card_to_public_dict((row or {}).get("card")) if row else None
         if payload is None:
-            reason = REASON_CARD_NOT_READY
+            # 列表/详情端点里卡只是**内嵌可选字段**,不像 `/card` 那样"整个请求就是要这张
+            # 卡",故这里**照返 200 + 如实的 reason**(⛔ 不把一篮坏卡升级成整份清单 500);
+            # 但两态必须分得开 —— 降格成 `card_not_ready` 就把数据事故说成了等待中。
+            reason = REASON_CARD_CORRUPT if (row and row.get("card_corrupt")) else REASON_CARD_NOT_READY
         else:
             card_out = BasketCardOut(**payload)
             version = (row or {}).get("version")
@@ -607,10 +622,13 @@ def get_basket_card(basket_id: int, version: int = 0) -> BasketCardOut:
     """一张冻结的篮子卡(⑦)。`version` 缺省 `0` = 取**最新版本**;给具体版本号则取那一版
     (D0 原判恒 `version=1`,D+1 的新信息追加 `version=2,3…`,**D0 行一字不改**)。
 
-    **404 两个 reason,语义相反,⛔ 客户端必须各有 case**:
-      · `basket_not_found` —— 篮子本身不存在。
-      · `card_not_ready`  —— **篮子在、卡还没生成**(⑦ 事务 2 独立于事务 1)。
+    **三个 reason,语义两两相反,⛔ 客户端必须各有 case**:
+      · `basket_not_found`(404)—— 篮子本身不存在。
+      · `card_not_ready` (404)—— **篮子在、卡还没生成**(⑦ 事务 2 独立于事务 1)。
         文案方向「本篮的卡还没生成」,**不是**「篮子不存在」——后者会让用户以为系统丢了篮子。
+      · `card_corrupt`   (**500**)—— **有卡行但读不出**(json 解不出 / 顶层必需键缺失)。
+        ⛔ 不是 404、⛔ 不许降格成 `card_not_ready`:那张卡是冻结件,**不会自己好**,
+        当成「还没生成」就是让客户端永远等一张永远不来的卡(裁定详见上方常量块)。
     """
     from neckline.report.basket_daily import card_to_public_dict
     from neckline.selection.basket_store import load_basket, load_basket_card
@@ -619,6 +637,10 @@ def get_basket_card(basket_id: int, version: int = 0) -> BasketCardOut:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail={"ok": False, "reason": REASON_BASKET_NOT_FOUND})
     row = load_basket_card(basket_id, version=(version or None), db_path=_db())
+    if row and row.get("card_corrupt"):
+        # store 侧已打 ERROR(唯一检测点),这里只负责如实转成 500 + reason。
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail={"ok": False, "reason": REASON_CARD_CORRUPT})
     payload = card_to_public_dict((row or {}).get("card")) if row else None
     if payload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,

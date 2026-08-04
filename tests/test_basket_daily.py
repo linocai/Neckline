@@ -303,6 +303,20 @@ class TestTodayBasketsSection:
         assert "本篮的卡还没生成" in md
         assert "600001.SH" in md
 
+    def test_corrupt_card_says_damaged_not_not_ready(self, isolated_env):
+        """B1(2026-08-04 裁定):卡**有行但读不出** → 报告如实写「数据损坏,已记录待
+        排查」,⛔ **不许降级成「卡还没生成」** —— 那张卡是冻结件、不会自动重建,写成
+        「还没生成」等于叫人白等一张永远不来的卡。"""
+        bid = _seed_basket(isolated_env, ["600001.SH"])
+        with connection(isolated_env.db_path) as conn:      # 只在测试库里造事故现场
+            conn.execute("UPDATE basket_cards SET card_json='{坏了' WHERE basket_id=?", (bid,))
+        views = bd.load_today_baskets(D0, db_path=isolated_env.db_path)
+        assert views[0].card is None and views[0].card_unavailable_reason == "card_corrupt"
+        md = _render(self._daily(isolated_env))
+        assert "本篮卡数据损坏,已记录待排查" in md
+        assert "本篮的卡还没生成" not in md
+        assert "600001.SH" in md                            # 整篮不许因此从报告里消失
+
 
 class TestDroppedSection:
     def test_section_exists_even_with_zero_overflow(self, isolated_env):

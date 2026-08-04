@@ -565,12 +565,69 @@ def save_basket_cards(
     return stats
 
 
+# 判「这张卡还读得出来吗」的**内容键**(B1 裁定「顶层必需键缺失」这一半的落地)。
+#
+# **判据 = 三者至少有其一**(不是"三者都要有"),这是刻意的:
+#   ① **各消费方要的不是同一批键** —— ⑧ 篮子验证只读两份 spec(`basket_verify` 的
+#      设计如此,卡面其余项与它的判定无关)、⑩ 开仓继承只读 `members` 里的区间、
+#      客户端要全套。要求"都得有"会把这些**合法的局部卡**判成损坏。
+#   ② **误判代价不对称** —— 判错成损坏 = 端点 500、用户看不到一张其实好好的卡,而且
+#      这个错还不可自愈;判漏 = 卡上少几个字段照常渲染。故判据取最保守的一侧:
+#      **顶层一个内容键都没有 = 这压根不是一张卡**(典型是被别的东西覆写、或半截写入),
+#      只要还有一个内容键在,就交给各消费方按自己的口径处理。
+# ⛔ 刻意**不收**身份键(`basket_key`/`trade_date`/`spec_version`)与展示键:身份信息
+#    行上本来就有(`basket_cards.basket_id`/`version` + join `baskets`),而外部预置的卡
+#    (⑯-F `preseed_baskets.py` 灌的那种)可能只带内容不带身份键 —— 那不是数据事故。
+# ⛔ 更别往这里加"新版本才出现"的键 —— 卡是冻结件,老卡永远不会补新键,那等于把合法
+#    老卡判成坏卡(同 CLAUDE.md「落库快照两类论」第二类的处置纪律)。
+CARD_CONTENT_KEYS: Tuple[str, ...] = (
+    "members", "verification_spec", "invalidation_spec",
+)
+
+
+def _decode_card_json(
+    raw: Any, *, basket_id: Any = None, version: Any = None
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """`card_json` → `(卡, 损坏原因)`。**两者恰有一个非 None**:读得出且键齐 →
+    `(卡, None)`;否则 `(None, 人读原因)` 并打 **ERROR**(冻结件损坏是数据事故)。
+    ⛔ 不做任何补全 / 跳过坏字段(读侧糊过去 = 藏真数据)。"""
+    try:
+        card = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        reason = "card_json 解不出(不是合法 JSON)"
+    else:
+        if not isinstance(card, dict):
+            reason = f"card_json 顶层不是对象(实为 {type(card).__name__})"
+        elif not any(k in card for k in CARD_CONTENT_KEYS):
+            reason = ("card_json 顶层一个内容键都没有(期望至少有 "
+                      + " / ".join(CARD_CONTENT_KEYS) + " 之一)")
+        else:
+            return card, None
+    logger.error(
+        "[basket_card] basket_id=%s version=%s 的冻结卡损坏(%s)—— 卡是冻结件、"
+        "INSERT OR IGNORE 永不覆盖,**这张卡不会自己好**,需要人排查。"
+        "⛔ 不当作『卡还没生成』处理(那会让客户端永远等一张永远不来的卡)。",
+        basket_id, version, reason,
+    )
+    return None, reason
+
+
 def load_basket_card(
     basket_id: int, *, version: Optional[int] = None, db_path: Optional[Path] = None
 ) -> Optional[Dict[str, Any]]:
     """读一张卡(`version=None` → **最新版本**)。无卡 → `None`,由调用方表达
     「有篮子、无卡」这个合法中间态(契约侧 `GET /baskets/{id}/card` 返 404 +
-    reason `card_not_ready`,⑭-B 落地)。**⛔ 不许因为没卡就把篮子从报告里抹掉。**"""
+    reason `card_not_ready`,⑭-B 落地)。**⛔ 不许因为没卡就把篮子从报告里抹掉。**
+
+    **「有行但读不出」是第三态,与「没有行」分得开**(2026-08-04 planner 裁定 B1,
+    小审 🔵 B-3):`card_json` 解不出、或顶层必需键缺失 → 返回的 dict 里
+    `card=None` **且** `card_corrupt=True` + `card_corrupt_reason=<人读原因>`,
+    调用方据此走 `card_corrupt`(端点 = **500**,⛔ 不是 404 家族)。
+    理由(裁定原文压缩版):卡是冻结件、`INSERT OR IGNORE` 永不覆盖 → **坏了就是
+    永久坏的**;当成 `card_not_ready` 处理的客户端会永远重试、界面永远显示「卡还没
+    生成」而那张卡这辈子不会来 = 静默永久失败。
+    ⛔ **不许在读侧"重建"或跳过坏字段糊过去**(藏真数据不是诚实);检测到即打
+    **ERROR**(不是 WARNING)—— 冻结件损坏是真数据事故,必须有人看见。"""
     init_schema(db_path)
     sql = (
         f"SELECT id, {_BASKET_CARD_COLUMNS} FROM basket_cards WHERE basket_id=?"
@@ -584,12 +641,9 @@ def load_basket_card(
         return None
     keys = ["id"] + [c.strip() for c in _BASKET_CARD_COLUMNS.split(",")]
     out = dict(zip(keys, row))
-    try:
-        out["card"] = json.loads(out["card_json"])
-    except (json.JSONDecodeError, TypeError):
-        logger.warning("[basket_card] basket_id=%s version=%s 的 card_json 解不出,原样返回字符串",
-                       out.get("basket_id"), out.get("version"))
-        out["card"] = None
+    out["card"], out["card_corrupt_reason"] = _decode_card_json(
+        out.get("card_json"), basket_id=out.get("basket_id"), version=out.get("version"))
+    out["card_corrupt"] = out["card_corrupt_reason"] is not None
     return out
 
 

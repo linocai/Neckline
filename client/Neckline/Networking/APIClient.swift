@@ -69,6 +69,11 @@ enum APIError: Error, LocalizedError, Equatable {
     // 用户点开一个卡还没生成的篮子会看到「持仓已清」(v1.4 `watchlist` 有案底)。
     case basketNotFound      // 404 找不到这个篮子
     case cardNotReady        // 404 篮子在、**卡还没生成**(⛔ 不是「篮子不存在」)
+    // **500** 有卡行但**读不出**(json 坏 / 顶层必需键缺失)。⛔ **不是 404、不是
+    // `cardNotReady`**:卡是冻结件、服务端 `INSERT OR IGNORE` 永不覆盖 → **坏了就是
+    // 永久坏的**,当成「还没生成」处理就会永远重试、界面永远显示「卡还没生成」而那张卡
+    // 这辈子不会来 = 静默永久失败。⛔ **不进任何静默重试路径**(重试永远不会好)。
+    case cardCorrupt
     case noBasePlan          // 400 这笔仓没有可继承的计划基线
     // —— 409 / 422 的四个 reason(② / ⑪ 端点接线带来的)——————————————————————
     case alreadyExists       // 409 POST /settings/providers 同名 provider
@@ -92,6 +97,7 @@ enum APIError: Error, LocalizedError, Equatable {
         case .codeNotInReport:  return "这只票不在当日报告里"
         case .basketNotFound:   return "找不到这个篮子"
         case .cardNotReady:     return "本篮的卡还没生成"
+        case .cardCorrupt:      return "这张卡的数据损坏了,需要排查"
         case .noBasePlan:       return "这笔仓没有可继承的计划基线"
         case .alreadyExists:    return "同名 Provider 已存在(请改用「编辑」)"
         case .duplicateAlert:   return "已有一条一模一样的提醒(未重复创建)"
@@ -138,16 +144,27 @@ private struct ReportResponse: Decodable {
     /// 降级态是空对象 `{}`,不是缺键或 null)——空对象缺我方强类型要求的字段,标准合成
     /// 解码会直接抛错,这里用 `try?` 把"形状对不上"也当"没有"处理,归一成 `nil`
     /// (「没有 vs 没看」由 nil 表达"这份报告没有该节数据",UI 据此展示诚实空态而非崩溃)。
+    ///
+    /// **⑮ 小审 🔵 B-1(2026-08-04 A9-④ 拉平)**:`sectors` 数组 + 五个标量原本还是硬解码
+    /// (`try c.decode`)。现役契约恒发这些键、当时不构成活险,但它们与已修的三处**同源
+    /// 同病**:服务端哪天动了 `sectors` 的形状 = **整份报告解不出**,今日计划整页空白,
+    /// 而真正坏的只是一个板块字段。现全部改成"取不到就退到诚实空态"——单个字段降级,
+    /// ⛔ 不再让一个字段掀翻整份报告。
+    /// ⚠ **`degraded` 缺键时取 `true` 而不是 `false`**:这个位的含义是「这份报告完不完整」,
+    /// 缺了它就是**不知道**,而 `false` 是在替服务端保证"一切正常"——那正是拿"没看"当
+    /// "没有"。宁可多显示一次降级提示,不可静默把降级报告当完整报告展示。
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        tradeDate = try c.decode(String.self, forKey: .tradeDate)
-        generatedAt = try c.decode(String.self, forKey: .generatedAt)
-        strategyVersion = try c.decode(String.self, forKey: .strategyVersion)
+        tradeDate = (try? c.decode(String.self, forKey: .tradeDate)) ?? ""
+        generatedAt = (try? c.decode(String.self, forKey: .generatedAt)) ?? ""
+        strategyVersion = (try? c.decode(String.self, forKey: .strategyVersion)) ?? ""
         sentiment = try c.decodeIfPresent(SentimentSnapshot.self, forKey: .sentiment)
-        sectors = try c.decode([SectorSnapshot].self, forKey: .sectors)
+        sectors = (try? c.decode([SectorSnapshot].self, forKey: .sectors)) ?? []
         basketDaily = try c.decodeIfPresent(BasketDaily.self, forKey: .basketDaily)
-        degraded = try c.decode(Bool.self, forKey: .degraded)
-        reason = try c.decode(String.self, forKey: .reason)
+        let degradedRaw = try? c.decode(Bool.self, forKey: .degraded)
+        degraded = degradedRaw ?? true
+        reason = (try? c.decode(String.self, forKey: .reason))
+            ?? (degradedRaw == nil ? "服务端响应缺 degraded 字段,无法确认这份报告是否完整" : "")
         missedEntryHint = try c.decodeIfPresent(String.self, forKey: .missedEntryHint)
         intel = try? c.decodeIfPresent(IntelSection.self, forKey: .intel)
         sectorMoneyflow = try? c.decodeIfPresent(SectorMoneyflowSection.self, forKey: .sectorMoneyflow)
@@ -893,6 +910,12 @@ actor APIClient {
             throw mapReason(data, fallback: .server(409, reasonString(data) ?? "资源冲突"))
         case 422:
             throw mapReason(data, fallback: .validation(reasonString(data) ?? "请检查输入"))
+        // V2 B1(2026-08-04):**500 也走 `mapReason`** —— `card_corrupt`(冻结卡损坏)
+        // 是唯一一个刻意用 500 承载的业务 reason(裁定:404 会说谎、且会与「卡还没生成」
+        // 撞成同一类,而两者要求的反应完全相反)。fallback 保持 `.server(500, …)`,
+        // 未知 500 不冒充成某个具体业务错误。
+        case 500:
+            throw mapReason(data, fallback: .server(500, reasonString(data) ?? "服务端内部错误"))
         default:
             throw APIError.server(http.statusCode, reasonString(data) ?? "未知错误")
         }
@@ -919,6 +942,9 @@ actor APIClient {
         // ⛔ **文案是「本篮的卡还没生成」,不是「篮子不存在」** —— 后者会让用户以为
         // 系统丢了篮子;不加这个 case 则 404 fallback 会显示「持仓已清」(有案底)。
         case "card_not_ready": return .cardNotReady
+        // ⛔ 与上一条**必须分开**:这条是「卡在库里但读不出」(500),文案「数据损坏,
+        // 需要排查」;写成「还没生成」= 让用户白等一张永远不会来的卡。
+        case "card_corrupt": return .cardCorrupt
         case "no_base_plan": return .noBasePlan
         // —— 409 / 422 ————————————————————————————————————————————————
         case "already_exists": return .alreadyExists

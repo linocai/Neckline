@@ -158,6 +158,95 @@ class TestBasketDetailAndCard:
         assert REASON_BASKET_NOT_FOUND != REASON_CARD_NOT_READY
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# B1(2026-08-04 planner 裁定,小审 🔵 B-3):卡**损坏** = 500 + `card_corrupt`,
+# ⛔ 不是 404、⛔ 不许降格成 `card_not_ready`。
+#
+# 决定性理由:卡是冻结件、`INSERT OR IGNORE` 永不覆盖 → **坏了就是永久坏的**;
+# 客户端若当 `card_not_ready` 处理就会永远重试、界面永远显示「卡还没生成」而那张卡
+# 这辈子不会来 = 静默永久失败。
+# ══════════════════════════════════════════════════════════════════════════
+
+def _corrupt_card_json(db, basket_id: int, raw: str) -> None:
+    """把冻结卡的 `card_json` 直接改坏(**只在测试库里**造事故现场;生产侧这张表
+    是冻结件,应用代码没有任何 UPDATE 路径)。"""
+    with connection(db) as conn:
+        conn.execute("UPDATE basket_cards SET card_json=? WHERE basket_id=?", (raw, basket_id))
+
+
+class TestCorruptCardIsNotCardNotReady:
+    @pytest.mark.parametrize("raw,why", [
+        ("{这不是 JSON", "json.loads 抛错"),
+        ("[1, 2, 3]", "顶层不是对象"),
+        ('{"spec_version": "card-1", "basket_key": "k1"}', "顶层一个内容键都没有"),
+        ("{}", "空对象"),
+    ])
+    def test_corrupt_card_returns_500_card_corrupt(self, client, AUTH, api_env, raw, why):
+        _seed_basket(api_env.db_path, ["600001.SH"])
+        _corrupt_card_json(api_env.db_path, 1, raw)
+        r = client.get("/api/v1/baskets/1/card", headers=AUTH)
+        assert r.status_code == 500, f"{why}:期望 500 得 {r.status_code}"
+        assert r.json()["detail"]["reason"] == "card_corrupt"
+
+    def test_missing_card_row_is_still_404_card_not_ready(self, client, AUTH, api_env):
+        """分界线的另一侧一个字节都不许动:**根本没有行** = 仍是 404 `card_not_ready`。"""
+        _seed_basket(api_env.db_path, ["600001.SH"], with_card=False)
+        r = client.get("/api/v1/baskets/1/card", headers=AUTH)
+        assert r.status_code == 404 and r.json()["detail"]["reason"] == "card_not_ready"
+
+    def test_good_card_is_unaffected(self, client, AUTH, api_env):
+        """防误伤:完好的卡照常 200(必需键判据不许把好卡判成坏卡)。"""
+        _seed_basket(api_env.db_path, ["600001.SH"])
+        assert client.get("/api/v1/baskets/1/card", headers=AUTH).status_code == 200
+
+    def test_list_endpoint_reports_corrupt_reason_not_not_ready(self, client, AUTH, api_env):
+        """列表/详情里卡只是内嵌可选字段 → 照返 200,但 reason 必须是 `card_corrupt`
+        (⛔ 降格成 `card_not_ready` 就把数据事故说成了等待中)。"""
+        _seed_basket(api_env.db_path, ["600001.SH"])
+        _corrupt_card_json(api_env.db_path, 1, "{坏了")
+        body = client.get("/api/v1/baskets/1", headers=AUTH).json()
+        assert body["card"] is None and body["cardUnavailableReason"] == "card_corrupt"
+
+    def test_store_flags_corruption_and_never_rebuilds(self, api_env, caplog):
+        """检测点在 store(唯一一处),且**只报不修**:⛔ 不补全、不跳过坏字段;
+        日志级别是 **ERROR** 不是 WARNING(冻结件损坏是真数据事故,必须有人看见)。"""
+        import logging
+
+        from neckline.selection.basket_store import load_basket_card
+
+        _seed_basket(api_env.db_path, ["600001.SH"])
+        _corrupt_card_json(api_env.db_path, 1, '{"spec_version": "card-1"}')
+        with caplog.at_level(logging.ERROR):
+            row = load_basket_card(1, db_path=api_env.db_path)
+        assert row is not None                       # 行还在(不是"没有卡")
+        assert row["card"] is None and row["card_corrupt"] is True
+        assert "一个内容键都没有" in row["card_corrupt_reason"]
+        assert any(r.levelno >= logging.ERROR for r in caplog.records)
+
+    def test_healthy_card_is_not_flagged(self, api_env):
+        from neckline.selection.basket_store import load_basket_card
+
+        _seed_basket(api_env.db_path, ["600001.SH"])
+        row = load_basket_card(1, db_path=api_env.db_path)
+        assert row["card_corrupt"] is False and row["card_corrupt_reason"] is None
+
+    def test_content_key_rule_is_any_of_not_all_of(self):
+        """判据本身要看住(误判代价不对称:判错成损坏 = 用户看不到一张其实好好的卡,
+        而且不可自愈):**三个内容键有其一即可**,⛔ 不许改成"都得有" —— 各消费方要的
+        不是同一批键(⑧ 只读两份 spec、⑩ 只读 members),"都得有"会把合法局部卡判成
+        损坏;也⛔ 不收身份键/展示键、更不许加"新版本才有"的键(卡是冻结件)。"""
+        from neckline.selection.basket_store import CARD_CONTENT_KEYS, _decode_card_json
+
+        assert set(CARD_CONTENT_KEYS) == {"members", "verification_spec", "invalidation_spec"}
+        assert set(CARD_CONTENT_KEYS) <= set(_card(["600001.SH"]).keys())
+        for cosmetic in ("spec_version", "basket_key", "trade_date", "name", "disclaimer"):
+            assert cosmetic not in CARD_CONTENT_KEYS, cosmetic
+        # 只带其中一个键的**局部卡**(⑧ / ⑩ 各自的合法用法)不许被判成损坏
+        for k in CARD_CONTENT_KEYS:
+            card, why = _decode_card_json('{"%s": {}}' % k)
+            assert card is not None and why is None, f"只带 {k} 的局部卡被误判成损坏"
+
+
 class TestVerificationAndReview:
     def test_verification_not_evaluated_is_200_not_404(self, client, AUTH, api_env):
         """「今天还没判过」≠「判了是 unclear」≠「没有这个篮子」——三态分开。"""

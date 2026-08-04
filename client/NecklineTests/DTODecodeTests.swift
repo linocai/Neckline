@@ -276,6 +276,44 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertTrue(daily.baskets.isEmpty)
     }
 
+    /// 🔵 **B-1(2026-08-04 A9-④)`ReportResponse` 六处硬解码拉平**:`sectors` 数组与
+    /// `tradeDate`/`generatedAt`/`strategyVersion`/`degraded`/`reason` 五个标量原本是
+    /// `try c.decode`(缺键 = **整份报告解不出**、今日计划整页空白)。现在单个字段降级成
+    /// 诚实空态,⛔ 一个字段掀不翻整份报告。
+    func testReportSurvivesMissingScalarsAndSectorsWithHonestEmptyState() async throws {
+        // 极端形状:整份报告只剩 basketDaily 一段(现役契约恒发那六个键,这是防未来)
+        let json = jsonData(#"{"basketDaily": {"baskets": [], "basketsAvailable": true}}"#)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let snap = try await client.fetchReportLatest()
+        XCTAssertEqual(snap.tradeDate, "")
+        XCTAssertEqual(snap.generatedAt, "")
+        XCTAssertEqual(snap.strategyVersion, "")
+        XCTAssertTrue(snap.sectors.isEmpty)
+        XCTAssertTrue(snap.basketDaily.basketsAvailable, "别的段照常解出来")
+        // ⚠ `degraded` 缺键取 **true** 而不是 false:这个位说的是"这份报告完不完整",
+        // 缺了它就是**不知道** —— false 等于替服务端保证"一切正常"(拿"没看"当"没有")。
+        XCTAssertTrue(snap.degraded)
+        XCTAssertTrue(snap.reason.contains("缺 degraded"), "空态要说清为什么,不给一句空白")
+    }
+
+    /// 形状变了(不是缺键)同样只降级那一个字段 —— `sectors` 从数组变成对象时,
+    /// 报告其余部分照常可用。
+    func testReportSectorsShapeChangeDoesNotBreakTheWholeReport() async throws {
+        let json = jsonData("""
+        {"tradeDate": "20260717", "generatedAt": "g", "strategyVersion": "v1.3.3",
+         "sentiment": null, "sectors": {"unexpected": "shape"},
+         "degraded": false, "reason": ""}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let snap = try await client.fetchReportLatest()
+        XCTAssertTrue(snap.sectors.isEmpty)
+        XCTAssertEqual(snap.tradeDate, "20260717", "别的字段一个没丢")
+        XCTAssertFalse(snap.degraded, "服务端明说没降级就是没降级")
+        XCTAssertEqual(snap.reason, "")
+    }
+
     /// 🔴 **B 类冻结快照的核心回归**:`card_json` 是**写入当时冻住**的,老卡缺一堆新键。
     /// 全字段 `decodeIfPresent` 必须让老卡**照常解得出来** —— ⛔ 合成 `Codable` 会让
     /// 「装了新 App 的用户翻几周前的老卡」变成整张卡解不出。
@@ -361,6 +399,49 @@ final class DTODecodeTests: XCTestCase {
             XCTAssertEqual(e.errorDescription, "本篮的卡还没生成")
             XCTAssertNotEqual(e, .notHolding)
         }
+    }
+
+    /// 🔴 **B1(2026-08-04 裁定):`card_corrupt` 走 500,且必须有独立 case**。
+    /// 三条同时锁死:①**不是** `.cardNotReady`(两者要求的反应完全相反 —— 一个等就行,
+    /// 一个必须人排查);②**不是**泛泛的 `.server(500, …)`(那句话用户看不懂);
+    /// ③文案就是「这张卡的数据损坏了,需要排查」。卡是冻结件、坏了就是永久坏的,
+    /// 当成「还没生成」处理 = 客户端永远重试、界面永远显示"还没生成" = 静默永久失败。
+    func testBasketCardCorruptMapsToDedicatedErrorOn500() async throws {
+        MockURLProtocol.handler = { _ in
+            (500, jsonData(#"{"detail": {"ok": false, "reason": "card_corrupt"}}"#))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.fetchBasketCard(id: 11)
+            XCTFail("应抛 cardCorrupt")
+        } catch let e as APIError {
+            XCTAssertEqual(e, .cardCorrupt)
+            XCTAssertEqual(e.errorDescription, "这张卡的数据损坏了,需要排查")
+            XCTAssertNotEqual(e, .cardNotReady)
+            XCTAssertNotEqual(e, .server(500, "card_corrupt"))
+        }
+    }
+
+    /// 未登记的 500 **不许**冒充成某个具体业务错误 —— fallback 仍是 `.server(500, …)`。
+    func testUnknownFiveHundredStillFallsBackToServerError() async throws {
+        MockURLProtocol.handler = { _ in
+            (500, jsonData(#"{"detail": {"ok": false, "reason": "something_else"}}"#))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.fetchBasketCard(id: 11)
+            XCTFail("应抛 server(500,…)")
+        } catch let e as APIError {
+            XCTAssertEqual(e, .server(500, "something_else"))
+        }
+    }
+
+    /// 篮子壳上的 `cardUnavailableReason` 两态文案不许合并(同一条裁定的展示侧)。
+    func testBasketShellCardUnavailableTextSplitsCorruptFromNotReady() {
+        let notReady = Basket(basketId: 1, cardUnavailableReason: "card_not_ready")
+        let corrupt = Basket(basketId: 2, cardUnavailableReason: "card_corrupt")
+        XCTAssertEqual(notReady.cardUnavailableText, "本篮的卡还没生成")
+        XCTAssertEqual(corrupt.cardUnavailableText, "本篮卡数据损坏,已记录待排查")
     }
 
     func testBasketNotFoundMapsToDedicatedError() async throws {

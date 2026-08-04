@@ -451,12 +451,15 @@ def load_today_baskets(
             logger.warning("[basket_daily] basket_id=%s 读卡异常,按卡未就绪处理",
                            ref.basket_id, exc_info=True)
         card = card_to_public_dict((card_row or {}).get("card")) if card_row else None
+        # 「有行但读不出」如实标 `card_corrupt`,⛔ 不降格成「卡未生成」(B1 裁定:
+        # 报告侧同样要说真话 —— 那张卡不会自己好,写成"还没生成"等于叫人白等)。
+        corrupt = bool(card_row and card_row.get("card_corrupt"))
         views.append(BasketView(
             basket_id=ref.basket_id, basket_key=ref.basket_key, name=ref.name,
             tier=ref.tier, member_codes=tuple(ref.member_codes),
             card=card,
             card_version=(card_row or {}).get("version") if card_row else None,
-            card_unavailable_reason=(None if card else "card_not_ready"),
+            card_unavailable_reason=(None if card else ("card_corrupt" if corrupt else "card_not_ready")),
         ))
     return views
 

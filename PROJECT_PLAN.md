@@ -2461,7 +2461,12 @@ readback_are_identical` 与 `tests/test_scan_corr.py::test_bulk_vs_day_by_day_vs
    100% 由 K1 的 per-code `entry_spec`(platform_high/ma10/breakout_vol_expand)驱动;
    V2 没有「单票买点计划」这个概念,给篮子成员现编一个买点 = 发明策略(§3.8 禁)。
    连带删 `compute_missed_entry_hint` 的触发源(`sentinel_events` 里不再有 `entry` 行,
-   函数与 `missedEntryHint` 键**保留但恒空**,是否删键归 ⑭-B 契约总装裁定)。
+   函数与 `missedEntryHint` 键**保留**,是否删键归 ⑭-B 契约总装裁定)。
+   ⚠ **口径更正(2026-08-04,契约线审计 🔵 B8-②)**:原文写「保留但**恒空**」不准确 ——
+   准确说法是「**新数据下恒空,历史日期回放仍会非空**」:`pipeline.py` 读的是
+   `sentinel_events` 的历史 `entry` 行,V1 时期真跑出来的那些行还在库里,回放 V1 日期
+   的报告照样会带出这一句(与 `ReportOut.candidates` 的历史回放语义同类,合理)。
+   「恒空」这个说法会让后人以为可以直接把这条读路径删掉。
    **它不在 ⑪-A 点名保留的「现役纪律分支」清单里**(-5% 止损 / 回落止盈 / 时间退出 /
    证伪四哨兵 / 熔断),这是判它可退役的依据。
 2. **证伪四哨兵(在 ⑪-A 保留清单里)判定对象换成 T1/T2 篮子成员,判定逻辑一行未改**。

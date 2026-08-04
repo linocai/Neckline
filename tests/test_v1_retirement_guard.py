@@ -222,6 +222,33 @@ def test_13_4_exec_hint_display_gone_but_pure_computation_kept():
         assert isinstance(code, str) and code
 
 
+def test_13_4_exec_hints_for_has_a_real_production_call_site():
+    """**接线守门**(契约线审计 🔵 B5,2026-08-04 A9-③ 补):上面那条只查"函数还在"
+    (`hasattr`)—— ⑬ 完工时它确实零生产调用方(留给 ⑭-A),那时 `hasattr` 是能给的
+    最强断言;⑭-A 接上之后,"存在但没人调"与"存在且真被调"就必须分得开,否则哪天
+    接线被顺手删掉,11 条单测照样全绿、报告里默默少一节。
+
+    判据取**调用点**而不是 import(`basket_daily.py` 是函数内延迟 import,`_import_hits`
+    那种模块级扫描看不见它)。"""
+    import ast
+
+    callers = []
+    for path in _PY_FILES:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
+            if name == "exec_hints_for":
+                callers.append(str(path.relative_to(_ROOT)))
+                break
+    assert callers, (
+        "`exec_hints_for` 在 `neckline/` 里零调用点 —— 四条执行提示算了没人用,"
+        "报告的篮子剧本会静默少一节(⑭-A 的接线点是 report/basket_daily.py)"
+    )
+
+
 # ======================================================================
 #  ⑬-5:决策日志强制表单(服务端 ⑩-C 已下线,⑬ 删客户端必填分支)
 # ======================================================================

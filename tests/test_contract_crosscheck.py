@@ -206,6 +206,10 @@ SERVER_REASONS = {
     "invalid_task", "invalid_push_kinds", "invalid_rule", "duplicate_alert",
     # V2-⑭-B 新增三个
     "basket_not_found", "card_not_ready", "no_base_plan",
+    # B1(2026-08-04 planner 裁定,小审 🔵 B-3):唯一一个**用 500 承载**的业务 reason
+    # ——「卡有行但读不出」。⚠ 本集合的名字叫「服务端 reason」不叫「404 reason」,
+    # 状态码不是它的判据;客户端 `send()` 的 500 分支已接进 `mapReason`,闭包照旧成立。
+    "card_corrupt",
 }
 
 # ⑮ 待加 `mapReason` case 的字符串。
