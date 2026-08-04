@@ -369,15 +369,15 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-04 · 🚀 V2.0.0 已上新机(未对外)—— ①→⑯ 全部完工,只剩 ⑰ 双端换包 + 三件待裁定**。各块细节见「完工记录」。**⑯ 新服务器建成并跑通 V2 全链**:数据搬家逐文件 md5 全等、`init_schema` 零索引 WARNING、P0-23 门禁全过(主链峰值 **439 MB** / 3.8 GiB)、两步包激活 + B3 退役全绿、新机 `/health` = **`v2.0.0`**。**老机 `ln` 全程零接触**(v1.5.2 照常在跑)。
+**2026-08-04 · 🚀 V2.0.0 已上新机 + 公网入口打通(未对外)—— ①→⑯ 全部完工,只剩 ⑰ 双端换包 + 两件待裁定**。各块细节见「完工记录」。**⑯ 新服务器建成并跑通 V2 全链**:数据搬家逐文件 md5 全等、`init_schema` 零索引 WARNING、P0-23 门禁全过(主链峰值 **439 MB** / 3.8 GiB)、两步包激活 + B3 退役全绿。**⑯-G 已收口**:`https://nk.linotsai.top/api/v1/health` **公网实测 = `{"status":"ok","version":"v2.0.0"}`**(LE 证书、TLS1.3、HTTP/2)。**老机 `ln` 全程零接触**(v1.5.2 照常在跑)。
 
-- **🔴 三件卡着、等你一句话**(⑯ 停手上报,builder 不自行处置):
-  1. **⑯-G 公网入口阻塞** —— 新机 `114.66.0.38` **不是空白机**:用户既有的 `nginx-proxy-manager` 容器占着 **80/443**(在反代 `nas`/`mt`/`web` 三个站),另有 WireGuard `wg0` 带活跃 peer。系统 nginx 起不来、certbot 也签不了证。三条路见 §五 ⑯ 完工记录 ⑯-G(**推荐**:在 NPM 里加一条 `nk.linotsai.top → 127.0.0.1:8002` 的 proxy host,非破坏性)。
-  2. **🔴 `ln.linotsai.top` 与 `lf.linotsai.top` 的 A 记录已从 DNS 消失(NXDOMAIN)** —— 四个解析器一致;同域 `linotsai.top`/`www`/`fiscal`/`xiaoran` 正常。**老机服务本身完好**(`neckline.service` active、`/health` = v1.5.2 用 IP+Host 头实测 200、两个 timer 昨日正常跑过)。**= 老 App 与 Lino Finance 现在都连不上服务端,而服务端其实活着。** 非本次操作所致;按零接触红线 builder 未动任何 DNS。
-  3. **⑯-D 三段切法的一处真代价** —— 报告 ③b `droppedBaskets` 的数据源只在内存里随链传,拆成三个 unit 后**该节将恒为 `available=false` 且披露文案会误导**(写「本次未运行 Tier 分层引擎」,而今晚其实跑了)。三条出路见 `deploy/neckline-report.service` 头部。**因 timer 未 enable,尚未实际发生。**
+- **✅ ⑯-G 公网入口已通(2026-08-04 收口,走 NPM 自定义 include 路线)**:不动用户既有的 `nginx-proxy-manager` 面板与数据库,只在它官方留的扩展位 `/opt/npm/data/nginx/custom/http.conf` 加一份**纯增量**配置(`server_name` 只有 `nk.linotsai.top`),反代到 `172.18.0.1:8002`;证书走**宿主 certbot webroot** + deploy hook 投递进容器。**既有 `nas`/`mt`/`web` + 一个 IP 站四站回归与基线逐行相同**。⚠ **服务仍全部 `disabled`,公网现在打过去是 502**(双推送处置不变,留 ⑰ 一体切换)。
+- **🔴 两件卡着、等你一句话**(⑯ 停手上报,builder 不自行处置):
+  1. **🔴 `ln.linotsai.top` 与 `lf.linotsai.top` 的 A 记录已从 DNS 消失(NXDOMAIN)** —— 四个解析器一致;同域 `linotsai.top`/`www`/`fiscal`/`xiaoran` 正常。**老机服务本身完好**(`neckline.service` active、`/health` = v1.5.2 用 IP+Host 头实测 200、两个 timer 昨日正常跑过)。**= 老 App 与 Lino Finance 现在都连不上服务端,而服务端其实活着。** 非本次操作所致;按零接触红线 builder 未动任何 DNS。
+  2. **⑯-D 三段切法的一处真代价** —— 报告 ③b `droppedBaskets` 的数据源只在内存里随链传,拆成三个 unit 后**该节将恒为 `available=false` 且披露文案会误导**(写「本次未运行 Tier 分层引擎」,而今晚其实跑了)。三条出路见 `deploy/neckline-report.service` 头部。**因 timer 未 enable,尚未实际发生。**
 - **新机事实(`nk` / `114.66.0.38`,Ubuntu 24.04.4 / 4 vCPU / 3.8 GiB / 58G)**:`/opt/neckline` 代码态 = 本地 v2.0.0(12 个关键文件 sha256 逐个吻合),venv Py3.12.3,parquet **9594 文件 1.1 GB(与老机逐文件 md5 全等)**,`neckline.db` **45 表**(V1 26 表行数逐表一致 + 19 张 V2 新表全 0 行),现役章程仍 **`v1.3.3`**,现役选股包 **`K7-pack-v1`**。**三个 systemd 单元 + target + timer 装好、演练过、`ExecMainStatus=0`,但一律 `disabled`**。
 - **🔔 双推送处置**:迁来的库带 APNs device token + `.env` 四要素齐全 → 新机一排程就与老机**同一条报告推两遍**。故 `neckline.service` / `neckline-daily.timer` / `neckline-evening.timer` **全部装好但不 enable**,演练与活体全程不带 `--notify`。**⑰ 换包时一体切换**(老机 disable → 新机 enable)。
-- **⑰ 前置(⑯ 新挂的账)**:① **必须再做一次 `neckline.db` 增量搬家** —— 本次快照定格在 **08-04 14:18**,老机此后的写入(今日 16:05 拉数 / 16:35 报告 / 盘中哨兵尾段)不在新机上;② ⑯-G 裁定落地 + 公网 `/health` 复验;③ 老机 timer 与新机 timer 一体切换。
+- **⑰ 前置(⑯ 新挂的账)**:① **必须再做一次 `neckline.db` 增量搬家** —— 本次快照定格在 **08-04 14:18**,老机此后的写入(今日 16:05 拉数 / 16:35 报告 / 盘中哨兵尾段)不在新机上;② ~~⑯-G 裁定落地 + 公网 `/health` 复验~~ **✅ 已完成**(公网 200 `v2.0.0` 实测);③ 老机 timer 与新机 timer 一体切换 —— **切换那一刻公网入口即刻生效,无需再动 nginx**。
 - **⑯-F preseed 如实跳过(⛔ 未编数据)**:脚本 `scripts/oneoff/preseed_baskets.py` 四道闸齐、演练过,但**「外部准备好的近期若干交易日篮子/Tier/卡」在仓库与本机都不存在** —— 那是人 + LLM 在外部配的产物。`--example` 可打模板,交策略线/用户配好再灌。
 - **⑯-C 未能实测的三项(⛔ 不编数)**:⑤⑥ **LLM 段**(`llm_providers` **0 行**,`.env` 也无 key)、⑦ 卡冻结(无篮子即无卡)、⑧ 盘中存拍(需真实盘中)。**待 ⑰ 后首个有 key 的交易日补测。**
 - **⑯-I B3 退役已生效(生产 + 本地同批)**:K4 行 `avoid_flag` 摘掉 `B3_theme_persist_2_3`(2100→1999 字节),**K4 仍 `is_active=0` / `activated_at` 未变 / `strategy_activation_log` 未增行 / A2 红牌未动**;实测 B3 零黄牌、A2 照常命中、历史快照仍能回显。全文 diff → `archive/K4_advisory_B3退役_20260804.md`。
@@ -2807,8 +2807,10 @@ macOS 侧栏 = 同四板块 + **周复盘工作台**(既有对账保留,⑮ 补�
 #### ✅ V2-⑯ 完工记录(2026-08-04,@builder-pro;🔴 高危块,首次触碰新服务器 + 权威库)
 
 > **一句话**:新机 `nk` 已建成并跑通 V2 全链,数据搬家逐文件 md5 全等,P0-23 门禁**全过且余量极大**,
-> 两步包激活 + B3 退役全绿;**⑯-G 公网入口卡在一处 Plan 未预见的现场事实(新机 80/443 被用户既有
-> nginx-proxy-manager 容器占用),须用户裁定**;⑯-F preseed **无外部输入件,如实跳过、未编数据**。
+> 两步包激活 + B3 退役全绿;**⑯-G 公网入口当日先卡在一处 Plan 未预见的现场事实(新机 80/443 被用户
+> 既有 nginx-proxy-manager 容器占用),同日改走 NPM 官方 custom include 收口 —— `https://nk.linotsai.top
+> /api/v1/health` 公网实测 200 `v2.0.0`,既有四站回归与基线逐行相同**;⑯-F preseed **无外部输入件,
+> 如实跳过、未编数据**。
 
 **⑯-A 新机准备 ✅**:`114.66.0.38`(Ubuntu 24.04.4 / 6.8.0-136 / **4 vCPU / 3.8 GiB / 58G(53G 可用)/
 Swap 0**)。时区已是 `Asia/Shanghai`、时钟同步。`apt upgrade` + 装 `python3-venv/build-essential/git/
@@ -2933,7 +2935,7 @@ K7 相对 K4 的实际 diff(演练打印,已核对):`intel_rank_priority.dims` �
 配的产物,不是脚本能生成的。按纪律**跳过灌入、如实登记,绝不编数据**。`--example` 可打印输入件模板,
 交策略线/用户照着配好再跑。
 
-**⑯-G 域名与割接 ⛔ 阻塞,须用户裁定(Plan 未预见的现场事实)**
+**⑯-G 域名与割接 —— ✅ 已完工(2026-08-04 收口;当日先阻塞上报、同日走第 4 条路解决,两段都留着看演进)**
 - **现场事实**:`114.66.0.38` **不是空白机** —— 它已在用户手上跑了 6 天:① Docker 容器
   `jc21/nginx-proxy-manager:2.15.1` **占着 80 与 443**(管理口 127.0.0.1:81),已在反代
   `nas.linotsai.top` / `mt.linotsai.top` / `web.linotsai.top` + 一个裸 IP 站点;② WireGuard `wg0`
@@ -2951,6 +2953,59 @@ K7 相对 K4 的实际 diff(演练打印,已核对):`intel_rank_priority.dims` �
   打新机 80 口 → **HTTP 404**、443 → 连不上(**均非 200**);**P3** `nk` → `114.66.0.38` ✅。
   `deploy/nginx-neckline-nk.conf` 已备好(**只 `server_name nk`**,并带一个 `return 444` 的
   `default_server` 兜底作物理闸门),但**未投产**。
+
+##### ✅ ⑯-G 收口(2026-08-04 同日晚,@builder-pro)—— 走「NPM 官方 custom include」第 4 条路
+
+上面三条路**一条都没走**:用户从未配过 NPM 面板、拿不到也不该造管理凭据(路①的前提不成立),
+路②③ 代价太大。实际走的是 **NPM 自己在 `nginx.conf` 里留的官方扩展位**
+`include /data/nginx/custom/http[.]conf;` —— **纯增量、不碰面板、不碰它的
+`database.sqlite`、不碰它生成的四份 `proxy_host/*.conf`**。这条路在阻塞上报时没被识别出来,
+是当时的盲点,记在这里备查。
+
+- **落地三件**(仓库留档件 = 生产件,md5 逐字节相同):
+  - `/opt/npm/data/nginx/custom/http.conf` ← `deploy/npm-custom-http.conf`。
+    两个 server:`:80`(ACME HTTP-01 + 全量 301)与 `:443`(LE 证书 + 反代
+    `http://172.18.0.1:8002`,即 `npm_default` 桥网关 = 宿主)。`server_name` **只有 `nk.linotsai.top`**。
+  - `/etc/letsencrypt/renewal-hooks/deploy/10-neckline-nk-to-npm.sh` ← `deploy/npm-le-deploy-hook.sh`。
+    宿主 `/etc/letsencrypt` 与容器里的 `/etc/letsencrypt`(= 宿主 `/opt/npm/letsencrypt`,NPM 自己的库)
+    **是两个不同的目录**,容器看不见宿主的证书 → hook 把证书**拷**进 `/opt/npm/data/custom-certs/nk/`
+    (容器 `/data/custom-certs/nk/`)再 `nginx -t` → 过了才 reload。
+  - 证书:宿主 `certbot certonly --webroot -w /opt/npm/data/acme -d nk.linotsai.top`,
+    ECDSA,有效期 **2026-11-02**;续期靠已 enabled 的 `certbot.timer`。
+- **🔴 三条会炸既有站的写法,已写死在 `deploy/npm-custom-http.conf` 文件头**:① 不许写
+  `default_server`(与 NPM 的 `conf.d/default.conf` 重复声明 → `nginx -t` 直接挂,四站一起起不来;
+  而且 NPM 的那个 default **正是**「`Host: ln` 打进来只见 Default Site、永远到不了 neckline」的
+  物理闸门 —— 本次公网实测复验过);② 不许建 `custom/server_proxy.conf`(会被注入**每一个**
+  proxy host);③ 不许在这里写 `map` 等 http 级指令。**⛔ `deploy/nginx-neckline-nk.conf` 那份
+  独占式模板不可搬运到这里,它带的 `return 444` default_server 正好踩中 ①** —— 该文件已改头标作废。
+- **回归证据**:改动前取基线 → Phase 1(只加 `:80`)reload 后对照 → Phase 2(加 `:443`)reload
+  后对照 → 续期 hook 触发 reload 后再对照,**四次采样与基线逐行完全相同**
+  (`nas` 80→301/443→200、`mt` 80→200/443→TLS `unrecognized_name`、`web` 80→301/443→401、
+  IP 站 80→200,两张自有证书指纹与到期日未变)。脚本与四份采样留在新机
+  `/root/npm-backup-20260804/`(另存 `nginx-T.before.txt` + `npm-data-nginx.before.tgz` 作回滚绳)。
+  收工复核:四份 `proxy_host/*.conf` md5 与开工前逐个相同、`database.sqlite` mtime 仍是 7-28、
+  容器 `Up 6 days`(**未重启**)、WireGuard 未动。
+- **公网活体**(临时用 `systemd-run --unit=nk-probe-api` 起 API、`NECKLINE_ENABLE_SENTINEL=0`
+  关哨兵、**不带 `--notify`、不 enable 任何单元**,验完 `systemctl stop` 收掉,`ss` 复核 8002 无监听):
+  `https://nk.linotsai.top/api/v1/health` → **200 `{"status":"ok","version":"v2.0.0"}`**,
+  TLS 严格校验 `Verify return code: 0`、TLSv1.3、**HTTP/2**;`http://…` → **301**;
+  无 token / 错 token → **401**;`/api/v1/baskets/999999` → **404 `{"ok":false,"reason":"basket_not_found"}`**;
+  真实报告 `?date=20260803` → 200 / 12015 B / 0.21s,JSON 解得开。
+  ⚠ **路径前缀是 `/api/v1`,不是裸 `/health`** —— 裸路径返 404 是对的(`API_PREFIX="/api/v1"`,
+  客户端 `APIClient.swift` 也是这个前缀),**别为了让裸 `/health` 能通而在 nginx 里加 rewrite**。
+- **续期链已实证跑通,不是"配好了应该行"**:`certbot renew --dry-run` 成功;再跑一次
+  `--dry-run --run-deploy-hooks` 证明 **certbot 真的发现并调起了这个 hook**
+  (certbot 日志 `Running deploy-hook command: /etc/letsencrypt/renewal-hooks/deploy/10-neckline-nk-to-npm.sh`,
+  投递日志同一秒新增「证书已投递 + nginx -t 通过并已 reload」)。`certbot.timer` enabled + active。
+- **两处如实登记的判断**:① **ACME 账户用 `--register-unsafely-without-email` 注册**(没拿用户邮箱
+  去第三方登记)—— 代价是**证书到期不会有邮件预警**,要预警可 `certbot update_account -m <邮箱>` 补;
+  兜底是 dry-run 已证明续期链通 + timer 已 enabled。② **`--agree-tos` 接受了 Let's Encrypt 的服务
+  条款**(ACME 协议强制,不同意就签不了证)—— 依据是 Plan §五 ⑯-G 与 §八 第 14 项本就写死「certbot
+  证书 + 定时续期」。**这两条如与你的意图不符,说一声即可撤/改。**
+- **未做(刻意)**:没开 gzip(NPM 全局 `proxy_set_header Accept-Encoding ""` 在,要压得在本 server
+  内自己开;报告 JSON 才 12 KB,不值得为它在活基础设施上多担一份风险)、没加 HSTS(浏览器会缓存,
+  对只服务 App 的 API 是净负担)、没引 NPM 的 `block-exploits.conf`(那套正则是给网站用的,
+  对 API 参数有误伤面)。三条都是可选优化,要哪条说一声。
 - 🔴🔴 **另一件必须上报的现场事实(非本次操作所致)**:**`ln.linotsai.top` 与 `lf.linotsai.top` 的
   A 记录已从 DNS 消失(NXDOMAIN)** —— 阿里/DNSPod/Cloudflare/Google 四个解析器一致;同域的
   `linotsai.top` / `www` / `fiscal` / `xiaoran` 仍正常解析到老机。老机本身**完好**:`neckline.service`
@@ -3227,7 +3282,7 @@ K7 相对 K4 的实际 diff(演练打印,已核对):`intel_rank_priority.dims` �
     - **购买页**(用现有账号即可,新开一台,**不要动老机**):`https://ecs.console.aliyun.com/`(阿里云 ECS 控制台 → 创建实例);也可选任意云厂商,只要能 SSH。
     - **办完给我什么**:公网 IP + SSH 登录方式(**口令 / 密钥都行,但绝不要贴进任何被 git 跟踪的文件** —— 直接在对话里给,builder 只写进服务器上的 `~/.ssh` 与本机 config)。
     - ⚠ **老机不要停**:`ln.linotsai.top` 上的 v1.5.2 要一直服务到你完成 ⑰ 双端换包并确认之后,才由你决定退役与数据归档。
-14. **🔴(V2,挡 §五 ⑯-G)把 `nk.linotsai.top` 解析到新机** —— **D2 = A 路已拍板(2026-08-02),这一步是必办项,不再是二选一**。你的原话已记录在案:「我本来就要换云服务器,NK 这个域名我会直接把它解析到新的云服务器上」。
+14. ~~**🔴(V2,挡 §五 ⑯-G)把 `nk.linotsai.top` 解析到新机**~~ —— **✅ 已办妥并验收(2026-08-04)**:DoH 实测 `nk.linotsai.top` → `114.66.0.38`,证书已据此签发、公网 `/api/v1/health` 实测 200。**⛔ 别再改这条 A 记录** —— 改了会连带作废 LE 证书的续期(HTTP-01 要打回这台机)。
     - **在哪办**:你域名 `linotsai.top` 的 DNS 控制台加一条 **A 记录** —— 主机记录 `nk` → 记录值 = 第 13 项那台新机的公网 IP,TTL 默认即可。若域名在阿里云:`https://dns.console.aliyun.com/`。
     - **builder 侧接手的部分**(无需你操作):解析生效后申请证书(certbot)+ 配 nginx 站点 + 定时续期;判据 = `dig nk.linotsai.top` 已返回新机 IP。
     - ⚠ **两条边界**:① **新机 nginx 绝不接管 `ln.linotsai.top`** —— 老 App 必须继续打老机,这是「V2 契约一次性换血、不留过渡键」成立的唯一前提;② **老机的解析在 ⑰ 换包完成前一律不动**。
@@ -3245,6 +3300,7 @@ K7 相对 K4 的实际 diff(演练打印,已核对):`intel_rank_priority.dims` �
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-04 · 🌐 **V2-⑯-G 公网入口收口完工 —— `https://nk.linotsai.top` 已通**(🔴 @builder-pro,在用户活着的反代基础设施上做纯增量)。**没走阻塞上报时列的三条路**(用户从未配过 NPM 面板、拿不到也不该造管理凭据),改走 **NPM 官方 custom include 扩展位** `/data/nginx/custom/http.conf`:`:80` 承 ACME HTTP-01 + 全量 301、`:443` 挂 LE 证书反代 `172.18.0.1:8002`(桥网关 = 宿主),`server_name` **只有 `nk.linotsai.top`**。证书 = 宿主 `certbot certonly --webroot -w /opt/npm/data/acme`(ECDSA,至 2026-11-02),续期投递 hook 落 `/etc/letsencrypt/renewal-hooks/deploy/`(拷进容器 `/data/custom-certs/nk/` → `nginx -t` 过了才 reload),**`renew --dry-run` + `--run-deploy-hooks` 双验通过、certbot 日志实证 hook 被调起**。**公网活体**(临时 `systemd-run` 起 API、关哨兵、不带 `--notify`、验完即停,8002 复核无监听):`/api/v1/health` **200 `v2.0.0`** + TLS 严格校验 0 + HTTP/2,http→301、无/错 token→401、`/baskets/999999`→404 `basket_not_found`、真实报告 12015 B 解得开。**既有 `nas`/`mt`/`web` + IP 站四次采样与基线逐行相同**(基线/两阶段/hook reload 后各一次),四份 `proxy_host/*.conf` md5 未变、`database.sqlite` mtime 未变、容器未重启、WireGuard 未动、三个 neckline unit 仍 `disabled`。回滚绳 + 采样存新机 `/root/npm-backup-20260804/`;生产件原样留档 `deploy/npm-custom-http.conf` / `deploy/npm-le-deploy-hook.sh`(md5 与生产逐字节相同),`deploy/nginx-neckline-nk.conf` 改头标**作废**(它的 `default_server` 搬进 NPM 会炸四站)。如实登记两处判断:ACME 账户 `--register-unsafely-without-email`(无到期邮件预警)、`--agree-tos` 接受 LE 服务条款。老机零接触。
 - 2026-08-04 · 🔧 **⑯-G NPM 反代前置两项准备**(@builder,新机 `114.66.0.38`;不碰 NPM 容器 / WireGuard / 其他 UFW 规则,不 enable/start 任何 neckline unit,老机零接触)。① `/etc/systemd/system/neckline.service` ExecStart 的 `--host 127.0.0.1` 改 `--host 0.0.0.0`(端口 8002 不变)+ `daemon-reload`,服务维持现状 `disabled`/`inactive`(双推送处置不变,未启动);② UFW 新增 `8002/tcp ALLOW IN 172.18.0.0/16`(comment `NPM -> neckline api`),默认 `deny (incoming)` 仍在、原 22/80/443/51820(WireGuard)五条规则未动,外网直打 8002 仍被拒;③ 本仓库 `deploy/neckline.service` 同步改 host 并补注释说明原因(为 npm_default bridge 反代做准备,暴露面靠 UFW 源限制收口、不靠绑定地址)。
 - 2026-08-04 · 🚀 **V2-⑯ 新服务器建成 + 数据搬家 + 晚间管线三段化 + 两步包激活 + B3 退役完工**(🔴 @builder-pro,首次触碰新机与权威库;**老机 `ln` 全程零接触**、v1.5.2 照常在跑)。新机 `nk`/`114.66.0.38`(4 vCPU/3.8 GiB/58G)属主纪律复刻 + UFW 基线 + venv Py3.12.3;parquet **9594 文件与老机逐文件 md5 全等**、`neckline.db` 端到端 **sha256 逐位相同**(快照 08-04 14:18)、`init_schema` **零「唯一索引建不上」WARNING**、26 张老表行数逐表一致 + 19 张 V2 新表全 0 行、现役章程仍 `v1.3.3`;**P0-23 门禁全过**(主链峰值 **439 MB**/13.55s、扫描层 bootstrap 58 天 135 MB/4m38s、全程 load ≤1.58,⛔ 未抬 swap 未降精度);三段 oneshot + target + timer **装好 + 演练 `ExecMainStatus=0` 严格串行,但一律 `disabled`**(双推送处置);`daily_update` 的 ④/④b 双挂载按 plan 摘除;**⑯-E 两步激活全绿**(`selection_packs` 2 行、现役唯一 `K7-pack-v1`、事件流 3 条,未碰 `strategy_versions`);**⑯-I B3 黄牌退役全绿**(K4 仍 inert、`activated_at` 未变、激活流水未增行、A2 未误伤,全文 diff → `archive/K4_advisory_B3退役_20260804.md`);新机 `/health` = **`v2.0.0`**、端到端活体五段跑通并实证无 key 时的诚实降级。**三件停手上报待裁定**:⑯-G 公网入口被用户既有 `nginx-proxy-manager` 容器占着 80/443、`ln`+`lf` 的 A 记录已从 DNS 消失(NXDOMAIN,非本次所致,老机服务完好)、⑯-D 三段切法会让报告 ③b `droppedBaskets` 恒缺席且文案误导。**⑯-F preseed 无外部输入件,如实跳过未编数据**;⑤⑥ LLM 段 / ⑦ 卡 / ⑧ 存拍三项未实测(无 key / 无篮子 / 需盘中)。测试 **2896 过 + 2 skip**。详见 §五 V2-⑯ 完工记录。
 - 2026-08-04 · 🩹 **V2 小审(⑭⑮)修 🟡 Y-1 必修 + 四条便宜 🔵**(@builder,commit `a123fe9`,详见 `archive/REVIEW_REPORT_V2_小审_⑭⑮_20260803.md` 逐条销项)。**Y-1**:`report/store.py::save_report` 的 `INSERT OR REPLACE`(整行先删后插)叠加 ⑬-11 起 `watchlist_json` 不进列清单 + ⑭ 起 `candidates` 恒传 `[]`,会让重跑历史日期的 `scripts/report.py` 把 V1 冻结的 `candidates_json`/`watchlist_json` 快照永久清空;改 `INSERT ... ON CONFLICT(trade_date) DO UPDATE SET <本次写入列>`——`watchlist_json` 不在写入列清单里天然免疫,`candidates_json` 额外加 SQL `CASE` 守卫(本次写 `[]` 且历史已非 `[]` 时保留旧值、记 WARNING,真写非空 candidates 时仍正常覆盖)。**全仓同模式扫描**(INSERT OR REPLACE 落在含「停写留档」列的表上)结论:**除本处外零命中**——`app_settings` 全部走「`INSERT OR IGNORE` 补首行 + 逐字段 `UPDATE…WHERE id=1`」安全模式;`inquiry_pool`/`watchlist`/`decision_log`/`reference_plans`/`llm_judgments`/`breathing_t_trades` 六表整表停写、零残留写手;`holding_eod_check` 的「D5 判一次定格」三列不属此模式(活跃写路径且调用方每次显式带值,非列清单省略)。**四条 🔵**:②`test_contract_crosscheck.py` 调用面扫描从 `APIClient.swift` 单文件扩到 `client/` 全部 Swift 文件 + 新增 HTTP method 维度对拍(已知只覆盖字面量直传调用点,约 36/56)、顺带修正测试代码裸数字路径段("42")误报;④ `AppModel.submitProviderForm()` 两个 `catch` 分支补清 `providerForm.apiKey`,失败重试不再残留明文 key 草稿;⑤ 两处过期注释订正(`scenarioReviewPending` 不再声称走已删的 scenario-outcome 端点;幂等键"提交成功后作废"改为准确描述"下次开仓流程才换新");⑥ `updateProvider` 的 `searchEngine`/`notes` 留空语义对齐 `apiKey`(留空=不改),契约对拍表 §6.2-B1 同步一句。B-1(六处硬解码)与 B-3(`card_not_ready` 语义合并)不在本批(前者改动面超出授权、后者需 planner 先定 reason 拆分口径),报告已标注留待后续。测试:Python **2890 → 2894 passed + 2 skip**(净增 4,零回归);Swift iOS Simulator **179 过 + 12 skip**、iOS/macOS Debug `xcodebuild build` 双 SUCCEEDED。

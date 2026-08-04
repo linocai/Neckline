@@ -234,6 +234,22 @@
   `Result=success` + `ExecMainStatus=1` —— `systemctl reset-failed`(或等价操作)会把
   `Result` 抹回 success 而 `ExecMainStatus` 留着,**以 `ExecMainStatus` + 时间戳为准**。
 
+## 新机 `nk` 公网入口(V2-⑯-G 定案,碰 nginx / 证书前必读)
+
+- **80/443 归用户既有的 `nginx-proxy-manager` 容器**(还反代着 `nas`/`mt`/`web` + 一个 IP 站,
+  **一个都不能坏**);Neckline 只占 NPM 官方扩展位 `/opt/npm/data/nginx/custom/http.conf`
+  (仓库副本 `deploy/npm-custom-http.conf`)。系统 nginx 起不来是**正常的**,别去修。
+- **三条会当场炸掉那四个站的写法**:① 在 custom include 里写 `default_server`(与 NPM 的
+  `conf.d/default.conf` 重复声明 → `nginx -t` 直接挂);② 建 `custom/server_proxy.conf`
+  (会被注入**每一个** proxy host);③ 在这里写 `map` 等 http 级指令。
+  ⛔ `deploy/nginx-neckline-nk.conf` 是**作废的独占式模板**,搬进 NPM 正好踩中 ①。
+- **改完的铁律**:`docker exec nginx-proxy-manager nginx -t` **过了才** `nginx -s reload`;
+  reload 后跑新机 `/root/npm-backup-20260804/regress.sh` 与 `regress.baseline.txt` 逐行对照。
+- **证书两个目录别搞混**:宿主 `/etc/letsencrypt`(我们的 LE 证书)≠ 容器内 `/etc/letsencrypt`
+  (= 宿主 `/opt/npm/letsencrypt`,NPM 自己的库)。容器读的是 hook 拷进去的
+  `/data/custom-certs/nk/`,改证书路径前先想清楚在说哪一个。
+- **API 路径前缀是 `/api/v1`**,裸 `/health` 返 404 是对的,⛔ 别加 rewrite 去"修"它。
+
 ## 概念板块与停牌数据(v1.4-① 定案)
 
 - **`ths_daily.parquet` 是 `write_table_day` 铁律的唯一登记例外**:维持**扁平单文件**,
