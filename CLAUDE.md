@@ -181,11 +181,17 @@
   (逐文件 cast、幂等、不整表 scan)。
 - **核心管线对可选情报输入的调用必须包保险丝**:一处裸奔就把"排序少一维"升级成
   "当日无报告"(07-27 `intel_candidates` 调 `compute_sector_moneyflow` 真崩过)。
-- **LLM 读超时按 task 分级,⛔ 别当成一个全局数字**(案底 §七 **P0-40**):**检索类 90s / 推理类
-  大上下文 240s**(`LONG_CONTEXT_TASKS`;⑤ 一次塞 20 颗种子要结构化 JSON = **确定性超长**,不是
-  网络抖动 —— 生产 3/3 次恰好 90s 超时)。唯一分级实现 `llm/router.py::read_timeout_for_task()`,
-  唯一接线点 `factory.get_provider(task)`;⛔ 别改成 `chat()` 参数(漏一个调用点退回 90s 还看不
-  出来)、⛔ 别全局翻倍。⚠ 改这两个数先重算 `neckline-basket.service` 的 `TimeoutStartSec`(单测钉死)。
+- **大上下文推理走流式,⛔ 别再去抬那个固定读超时**(案底 §七 **P0-40 → P0-44**,同一个病一天
+  内复发两次):90s→240s 抬完,当晚 3/3 次**精确各花 240s** —— 「整段生成必须在 X 秒内回完」这个
+  判据要求提前猜准一个**与上游吞吐挂钩、每天都不一样**的数字,再抬只是推迟下一次翻车。**根治 =
+  换判据**:`LONG_CONTEXT_TASKS`(推理/定档/剧本/复盘)开 `stream:true`,httpx 的 read 超时天然
+  作用在每次 socket 读上 → 语义变成 **chunk 间隔 90s**(判「还在不在吐字」,与吞吐无关);⛔ **看见
+  90 别以为回退了**,两处 90 含义完全不同。⛔ **检索类刻意保持非流式** —— GLM `web_search` tools
+  协议 × 流式本项目从未验证,v1.3.4 案底说明这种组合坏起来是**静默的**。唯一实现
+  `llm/router.py::{use_streaming,read_timeout}_for_task()`(两项**必须同路接线**,只接一半 = 原病
+  复发),唯一接线点 `factory.get_provider(task)`;⛔ 别改成 `chat()` 参数(漏一个调用点还看不出来)。
+  ⚠ 流式下单次调用墙钟**无固定上限是刻意的**,由 chunk 间隔 + 预算账 + `neckline-basket.service`
+  的 `TimeoutStartSec` 三层兜(单测把三者钉死,改一个不改另一个会红)。
 - **GLM 联网搜索 0 命中(已结案,v1.3.4 真 key 实证)**,两个真因:①
   `search_engine` 取值不被上游认识会 `ok=True` **静默返 0 条**(模型退训练数据
   作答,文字看不出);② 检索词跟**最后一条 user 消息**走,代词提问救不回来。
