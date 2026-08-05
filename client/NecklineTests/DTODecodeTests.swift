@@ -863,9 +863,16 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(report.newsAlertsScan, [])
     }
 
+    /// `sentiment` 用 `"{}"`(空对象)而不是 `null`——**这才是服务端真实发的形状**
+    /// (`app.py::_empty_report()` 传 `sentiment={}` 给 `ReportOut.sentiment: Dict[str, Any]`
+    /// 这个必填非 Optional 字段,pydantic 序列化空 dict 恒是 JSON `{}`,不是 `null`;
+    /// 2026-08-05 契约类型核对拿真实端点实测确认,见
+    /// `testDecodeEmptyReportRealShapeSentimentIsEmptyObjectNotNull`)。此前这里手写
+    /// `null` 是**错的测试假设**——`null` 走 `decodeIfPresent` 的判空捷径,天然安全,
+    /// 从未真正跑到过 `{}` 那条路径,给了假的绿灯。
     func testDecodeReportDegradedEmpty() async throws {
         let json = jsonData("""
-        {"tradeDate": "", "generatedAt": "", "strategyVersion": "", "sentiment": null,
+        {"tradeDate": "", "generatedAt": "", "strategyVersion": "", "sentiment": {},
          "sectors": [], "candidates": [], "degraded": true, "reason": "no_report"}
         """)
         MockURLProtocol.handler = { _ in (200, json) }
@@ -877,6 +884,51 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertFalse(report.basketDaily.basketsAvailable,
                        "降级态:三段全 available=false,⛔ 不冒充「今天没有篮子」")
         XCTAssertNil(report.sentiment)
+    }
+
+    // MARK: - 2026-08-05 契约类型核对补漏:`sentiment: {}` 拖炸整份报告解码(与
+    // `engineApiVersion` 同一晚发现的第二个"名对型不对/可选性没对齐"坑,但这次是
+    // 「服务端可空对象、客户端硬解码」而非「数字 vs 字符串」)。
+    //
+    // 起因:`ReportResponse.init(from:)` 对 `sentiment` 用的是裸 `decodeIfPresent`(未接
+    // `try?`),而同一个函数里紧邻三行之后的 `intel`/`sectorMoneyflow`/`dataFreshness`
+    // 早就接了 `try?`(注释原话:「服务端恒是对象……空对象缺我方强类型要求的字段，标准
+    // 合成解码会直接抛错，这里用 try? 把『形状对不上』也当『没有』处理」)—— `sentiment`
+    // 满足**完全相同**的前提(`SentimentSnapshot` 九个非 Optional 字段,`{}` 必抛
+    // `keyNotFound`),却是这一组四个字段里唯一漏掉 `try?` 的。
+    //
+    // 触发路径**不是边角情形**:`app.py::_empty_report()` 是 `GET /report/latest`
+    // 当日无报告、与 `GET /report?date=` 查无该日报告**两条主路径**共用的降级响应,
+    // 2026-08-05 拿真实 `api_env`(零报告的全新库)打 `/api/v1/report/latest` 实测,原始
+    // 响应逐字节确认 `"sentiment": {}`(非 `null`,非缺键)。本测试固化那份真实响应,
+    // 而不是手写一个"看起来像"的最小样例——这正是导致该坑长期未被发现的原因:全部手写
+    // fixture 都用了 `sentiment: null` 这个从未在生产实际出现过的形状。
+    func testDecodeEmptyReportRealShapeSentimentIsEmptyObjectNotNull() async throws {
+        // 2026-08-05 `GET /api/v1/report/latest` 对全新(零报告)库的真实响应原文。
+        let json = jsonData("""
+        {"tradeDate": "", "generatedAt": "", "strategyVersion": "", "sentiment": {}, "sectors": [], \
+        "basketDaily": {"tradeDate": "", "baskets": [], "basketsAvailable": false, \
+        "basketsUnavailableReason": null, "droppedBaskets": [], "droppedBasketsAvailable": false, \
+        "droppedBasketsUnavailableReason": null, "reviews": [], "reviewsAvailable": false, \
+        "reviewsUnavailableReason": null, "reviewD0": null, "packVersion": null, "notes": []}, \
+        "missedEntryHint": "", "intel": {}, "sectorMoneyflow": {}, "newsAlerts": [], \
+        "newsAlertsScan": [], "dataFreshness": {}, "degraded": true, "reason": "no_report"}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+
+        // 修复前:这一行会抛 `DecodingError.keyNotFound(... "trade_date" ... Path: sentiment)`,
+        // 整份报告解不出——今日计划页对全新安装 / 无报告日期回放会直接报错退回空态。
+        let report = try await client.fetchReportLatest()
+
+        XCTAssertTrue(report.degraded)
+        XCTAssertEqual(report.reason, "no_report")
+        XCTAssertNil(report.sentiment, "空对象形状不对,归一成 nil——不是崩溃,也不是硬凑一个假快照")
+        XCTAssertEqual(report.sectors, [])
+        XCTAssertNil(report.intel)
+        XCTAssertNil(report.sectorMoneyflow)
+        XCTAssertNil(report.dataFreshness)
+        XCTAssertFalse(report.basketDaily.basketsAvailable)
     }
 
     /// `report?date=` 带 query,顺带验证请求真走了 makeURL(URL 里 "?" 未被编码)。

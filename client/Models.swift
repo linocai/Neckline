@@ -1795,9 +1795,25 @@ struct NewsAlertScanStatus: Codable, Equatable, Identifiable {
 /// 三个键。两者**不许合并成一个 bool** —— 合并就分不清哪个坏了(服务端同样并列存放)。
 ///
 /// 三个行业强度键是 `Optional`:老报告快照(建于本字段前)没有这三键 → `nil` 兜底不崩。
-/// 之所以能这么偷懒:`dataFreshness` 属于「`_shape_report` 每次响应**重新构造**」那一类
-/// (**不是** `reviews.result_json` 那种写入时冻住的历史快照,后者新增字段必须手写
-/// `init(from:)` 做 `decodeIfPresent` 兜底,见项目 CLAUDE.md 该条)。
+///
+/// **2026-08-05 契约类型核对订正一处不准确的旧注释**:此前这里写「`dataFreshness` 属于
+/// `_shape_report` 每次响应重新构造那一类,不是 `reviews.result_json` 那种冻结快照」——
+/// **这个定性是错的**:`app.py::_shape_report` 里 `dataFreshness=rep.get("data_freshness",
+/// {})` 读的是 `reports.data_freshness_json` 列,与 `reviews.result_json` 同样是**写入
+/// 当时冻住、读回原样不补全**的历史快照(`pipeline.py::build_report` 只在生成报告那一刻
+/// 写一次)。本类型能安全用合成 `Codable`(非 Optional 只有 `sectorLagDays`/`stale` 两个)
+/// 靠的是**另一条**、且更脆弱的理由:这两个必填键是 `dataFreshness` 概念最早的那版形状
+/// (v1.4-①-C),写侧 `{**sector_freshness.to_public_dict(), ...}` 恒把它们俩**一起**摊开,
+/// 从未有过"这两个键其中一个单独缺席"的写法——所以字典要么整个是 `{}`(建于 v1.4-①-C 之前
+/// 的老报告 / `_empty_report()` 降级态),要么这两个键必然同现。**真正兜底的是调用点的
+/// `try?`**(`APIClient.swift::ReportResponse.init(from:)`):`{}` 触发 `keyNotFound` 时靠它
+/// 把"形状不对"归一成 `nil`,不是本类型自己健壮。⚠ 这正是 2026-08-05 同批发现的
+/// `sentiment` 那个坑的反面教材——`sentiment` 满足一模一样的"写侧要么整体空、要么必填键
+/// 同现"前提,却唯独调用点漏了 `try?`,详见 `APIClient.swift` 与
+/// `DTODecodeTests.swift::testDecodeEmptyReportRealShapeSentimentIsEmptyObjectNotNull`。
+/// 新增本类型的非 Optional 字段前,先确认写侧真的会让它与 `sectorLagDays`/`stale`
+/// **恒同现**,否则请连同调用点一起手写容错(同 CLAUDE.md「V2-⑮ 起客户端 DTO 一律手写
+/// `init(from:)`」这条纪律,本类型是当前唯一的、有条件成立的例外)。
 struct DataFreshness: Codable, Equatable {
     var sectorDataDate: String?
     var sectorLagDays: Int

@@ -140,9 +140,9 @@ private struct ReportResponse: Decodable {
         case dataFreshness
     }
 
-    /// 自定义解码:`intel`/`sectorMoneyflow`/`dataFreshness` 服务端**恒是对象**(旧报告 /
-    /// 降级态是空对象 `{}`,不是缺键或 null)——空对象缺我方强类型要求的字段,标准合成
-    /// 解码会直接抛错,这里用 `try?` 把"形状对不上"也当"没有"处理,归一成 `nil`
+    /// 自定义解码:`sentiment`/`intel`/`sectorMoneyflow`/`dataFreshness` 服务端**恒是对象**
+    /// (旧报告 / 降级态是空对象 `{}`,不是缺键或 null)——空对象缺我方强类型要求的字段,
+    /// 标准合成解码会直接抛错,这里用 `try?` 把"形状对不上"也当"没有"处理,归一成 `nil`
     /// (「没有 vs 没看」由 nil 表达"这份报告没有该节数据",UI 据此展示诚实空态而非崩溃)。
     ///
     /// **⑮ 小审 🔵 B-1(2026-08-04 A9-④ 拉平)**:`sectors` 数组 + 五个标量原本还是硬解码
@@ -153,12 +153,23 @@ private struct ReportResponse: Decodable {
     /// ⚠ **`degraded` 缺键时取 `true` 而不是 `false`**:这个位的含义是「这份报告完不完整」,
     /// 缺了它就是**不知道**,而 `false` 是在替服务端保证"一切正常"——那正是拿"没看"当
     /// "没有"。宁可多显示一次降级提示,不可静默把降级报告当完整报告展示。
+    ///
+    /// **2026-08-05 契约类型核对补漏**:`sentiment` 此前是本组四个"服务端 `Dict[str,Any]`
+    /// 透传 + 客户端强类型 struct"字段(`sentiment`/`intel`/`sectorMoneyflow`/
+    /// `dataFreshness`)里唯一一个漏加 `try?` 的——`app.py::_empty_report()`(`GET
+    /// /report/latest` 当日无报告 / `GET /report?date=` 查无该日报告,**两条主路径**)
+    /// 实测真发 `"sentiment": {}`,`SentimentSnapshot` 九个非可选字段缺键必抛
+    /// `keyNotFound`,且此前唯独这一行没接 `try?` → 整份 `ReportResponse` 解码被拖炸,
+    /// 与当晚 `engineApiVersion` 同一种炸法(§4.2/§4.3 型别核对未覆盖到的口子,已补登
+    /// `archive/V2_契约三方对拍_20260803.md` §七;新对照表见
+    /// `archive/V2_契约类型核对_20260805.md`)。真实响应回归 fixture 见
+    /// `DTODecodeTests.swift::testDecodeEmptyReportRealShapeSentimentIsEmptyObjectNotNull`。
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         tradeDate = (try? c.decode(String.self, forKey: .tradeDate)) ?? ""
         generatedAt = (try? c.decode(String.self, forKey: .generatedAt)) ?? ""
         strategyVersion = (try? c.decode(String.self, forKey: .strategyVersion)) ?? ""
-        sentiment = try c.decodeIfPresent(SentimentSnapshot.self, forKey: .sentiment)
+        sentiment = try? c.decodeIfPresent(SentimentSnapshot.self, forKey: .sentiment)
         sectors = (try? c.decode([SectorSnapshot].self, forKey: .sectors)) ?? []
         basketDaily = try c.decodeIfPresent(BasketDaily.self, forKey: .basketDaily)
         let degradedRaw = try? c.decode(Bool.self, forKey: .degraded)
