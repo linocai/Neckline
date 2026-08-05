@@ -345,7 +345,11 @@ struct BasketFingerprint: Codable, Equatable {
     var takeProfitRetrace: Double? = nil
     var charterVersion: String? = nil
     var packVersion: String? = nil
-    var engineApiVersion: String? = nil
+    /// 服务端契约是 int(`neckline/db.py` 三处 `engine_api_version INTEGER`,`selection/
+    /// pack.py`/`aggregate.py` 的 pydantic 字段同为 `int`)。2026-08-05 定向快修:此前
+    /// 误写成 `String?`,生产恒发数字 `1` → `typeMismatch` 直接拖炸**整份**报告解码
+    /// (Mac 实证,iPhone 同代码同炸)。
+    var engineApiVersion: Int? = nil
     var verificationRulesetVersion: String? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -354,7 +358,7 @@ struct BasketFingerprint: Codable, Equatable {
     }
 
     init(stopPct: Double? = nil, takeProfitRetrace: Double? = nil, charterVersion: String? = nil,
-         packVersion: String? = nil, engineApiVersion: String? = nil,
+         packVersion: String? = nil, engineApiVersion: Int? = nil,
          verificationRulesetVersion: String? = nil) {
         self.stopPct = stopPct; self.takeProfitRetrace = takeProfitRetrace
         self.charterVersion = charterVersion; self.packVersion = packVersion
@@ -368,7 +372,16 @@ struct BasketFingerprint: Codable, Equatable {
         takeProfitRetrace = try c.decodeIfPresent(Double.self, forKey: .takeProfitRetrace)
         charterVersion = try c.decodeIfPresent(String.self, forKey: .charterVersion)
         packVersion = try c.decodeIfPresent(String.self, forKey: .packVersion)
-        engineApiVersion = try c.decodeIfPresent(String.self, forKey: .engineApiVersion)
+        // B 类冻结快照字段(`basket_cards.card_json` 写入当时冻住,`INSERT OR IGNORE`
+        // 永不覆盖)——容错双态解码:数字优先(现役契约),字符串数字也认(防万一某张
+        // 历史卡是字符串形态),都没有 / 都解不出才 nil,⛔ 不许因这一个字段整份报告炸。
+        if let n = try? c.decode(Int.self, forKey: .engineApiVersion) {
+            engineApiVersion = n
+        } else if let s = try? c.decode(String.self, forKey: .engineApiVersion) {
+            engineApiVersion = Int(s)
+        } else {
+            engineApiVersion = nil
+        }
         verificationRulesetVersion = try c.decodeIfPresent(String.self,
                                                            forKey: .verificationRulesetVersion)
     }
