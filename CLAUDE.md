@@ -223,6 +223,14 @@
   `systemd-run --scope -p MemoryMax=… -p CPUQuota=…` 隔离单进程、**串行**,别并行开多个、
   更别拿常驻 `neckline.service` 当小白鼠;跑完 `pgrep -af` 确认无残留 + `reset-failed` + 看 load 回落。
   **判据:`load > 4` 立即停手**(07-29 探针在**交易时段**把 load 推到 65)。
+- **等远端长任务:ssh 会话不许长时间零流量,`systemd-run` 记得 `--no-block`**(2026-08-05 连踩两次)。
+  ① `systemd-run` 跑 `Type=oneshot` **默认阻塞到 ExecStart 退出**(等价 `systemctl start`),一次 29
+  分钟的链会把"启动命令"本身变成 29 分钟的前台调用 —— 要立刻返回就加 `--no-block`。② 用
+  `until [ ... ]; do sleep 10; done` 守在 ssh 里等,**几十分钟零输出**,空闲 TCP 被 NAT/防火墙静默掐
+  断,守候进程既不报错也不返回。**同一天的对照实验**:三条 ssh 里只有带 `-o ServerAliveInterval=30`
+  的那条(journal `-f` 跟随)每条事件都送达,另两条全哑。规则:长跑一律
+  `-o ServerAliveInterval=30 -o ServerAliveCountMax=6`,轮询循环每圈**打一行心跳**(有流量 + 看得见
+  进度),或干脆用多次短连接轮询代替一条长连接。
 - **在远端 `pkill -f <pattern>` 前先确认 pattern 不匹配自己**:`pkill -f probe_industry` 会匹配到
   正在跑它的那条 `bash -c` 命令行,自杀式掐断 SSH 会话(exit 255,2026-07-29 真踩)。用
   `pgrep -af` 先看命中集,或按 PID 杀。
