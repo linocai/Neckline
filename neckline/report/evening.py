@@ -36,6 +36,15 @@
 查表——若 `SEG_BASKET` 在本次 `segments` 里但结果是 `None`(跑了但炸了 / ⑤ 没
 产出),那是**本次**的明确结论,不许被表里可能存在的旧数据覆盖。单进程整链跑法
 (`SEG_BASKET` 恒在 `wanted` 里)不触发查表分支,行为逐字节不变。
+
+**§七 P0-39 补记(2026-08-05,生产实打)**:⑤ 的**段状态**同样跨不过进程边界,
+而 `baskets` 零行有两种相反成因(「跑了、真没够格的篮子」vs「⑤ 压根没跑成」)
+——报告 ③ 节因此把 `no_provider` 讲成了实质性市场判断。修法:`_run_basket_segment`
+里 ⑤ 一返回就把段状态落 `selection/basket_stage_handoff.py`(**在"没篮子就早返回"
+那句之前**,缺席场景恰恰走那条早返回),SEG_BASKET 整段炸掉时也覆写一行
+`segment_failed:*`;读侧由 `report/basket_daily.py` 在**零篮子时**查表判读。
+⚠ 与 ③b 的 `dropped` 不同,本条**不走参数链路**:报告层本来就在查库,直读表最省
+接线,`build_report` / `build_basket_daily` 的签名与 API 契约形状**均不变**。
 """
 
 from __future__ import annotations
@@ -213,6 +222,24 @@ def run_evening_chain(
             _fail(SEG_BASKET, "⑤⑥⑦ 篮子生成", exc)
             # ⚠ **炸了就是 `None`,不是 `[]`** —— `[]` 的意思是「⑥ 跑过、今天零溢出」。
             res.dropped_baskets = None
+            # §七 P0-39:整段炸在编排层(⑤ 都没返回,或返回后 ⑥⑦ 塌了)——**本次的
+            # 明确结论是"没跑成"**,必须覆写掉该日可能存在的旧行,⛔ 不许让报告 ③ 节
+            # 沿用一次更早的 ⑤ 结论去讲"今天市场上没有够格的篮子"(与 ③b「本次结论
+            # 不许被表里旧数据覆盖」同一条纪律)。整段包保险丝:留痕失败不许连累链。
+            try:
+                import types as _types
+
+                from neckline.selection.basket_stage_handoff import (
+                    STAGE_SEGMENT_FAILED_PREFIX, save_stage_handoff,
+                )
+
+                code = f"{STAGE_SEGMENT_FAILED_PREFIX}{type(exc).__name__}"
+                save_stage_handoff(trade_date, _types.SimpleNamespace(
+                    search_stage=code, reason_stage=code, baskets=(), notes=(),
+                ), db_path=db_path)
+            except Exception:  # noqa: BLE001
+                logger.warning("[evening] ⑤ 段状态留痕(整段异常分支)写入失败(已吞)",
+                               exc_info=True)
 
     # —— ⑨ 盘后复盘引擎(单独一段;⑯-D 会把它拆成 `neckline-review.service`)——
     if SEG_REVIEW in wanted:
@@ -318,6 +345,18 @@ def _run_basket_segment(
     stats["aggregate"] = {"baskets": len(result.baskets), "rejected": len(result.rejected),
                           "hygiene_rejected": len(result.hygiene_rejected),
                           "search_stage": result.search_stage, "reason_stage": result.reason_stage}
+    # §七 P0-39:⑤ 的段状态**立刻落表**(在下面那句"没篮子就早返回"之前 —— 缺席时
+    # 恰恰走那条早返回,晚一行就永远记不下来)。这是 ③ 节区分「跑了、真没够格的篮子」
+    # 与「引擎没跑(no_provider / 预算尽 / 异常)」的唯一依据,与 ⑥ 的
+    # `basket_dropped_handoff` 是两张表两个问题(见该模块头「不许合并」)。
+    # 整段包保险丝:留痕失败不许连累 ⑤ 已经算好的东西。
+    try:
+        from neckline.selection.basket_stage_handoff import save_stage_handoff
+
+        save_stage_handoff(trade_date, result, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        logger.warning("[evening] ⑤ 段状态留痕写入异常(已吞,不影响本次篮子生成)",
+                       exc_info=True)
     if not result.baskets:
         stats["basket"] = {"baskets": 0, "cards": 0}
         # ⑤ 没产出篮子 → ⑥ 没跑过 → **`None`**,不是 `[]`(见 ③b 的两态纪律)。

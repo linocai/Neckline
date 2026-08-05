@@ -1061,6 +1061,33 @@ CREATE TABLE IF NOT EXISTS basket_dropped_handoff (
   dropped_json TEXT NOT NULL,      -- [{basket_key, reason, mech_score}, ...],允许 []
   created_at   TEXT NOT NULL
 );
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- §七 P0-39(2026-08-05,生产实打):⑤ 驱动聚合的**段状态**跨进程留痕。
+-- 同 ⑯-D 的既有体例:新表追加在这里,不回头改 ⑤/⑥/⑦ 的 DDL 段、不进
+-- `_COLUMN_MIGRATIONS`,更**不碰篮子四表**(`baskets`/`basket_members`/
+-- `tier_history`/`basket_cards` 的冻结语义原样不动)。
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- **为什么非有这张表不可**:`baskets` 零行有两种完全相反的成因——「⑤⑥ 跑过、
+-- 今天确实没有够格的篮子」(合法市场结论)与「⑤ 压根没跑成(no_provider /
+-- 预算尽 / 调用失败)」(系统缺席)。零行本身分不出这两件事,报告 ③ 节据此把
+-- 后者渲染成了前者,即 P0-39。本表只回答一件事:**最近一次 ⑤ 在这个交易日
+-- 跑成什么样**。判读逻辑(哪些段状态算"跑过")的唯一实现在
+-- `neckline/selection/basket_stage_handoff.py`,⛔ 报告层不许自己再推一遍。
+-- 三态与 `basket_dropped_handoff` 同一套纪律:
+--   无行                        = ⑤ 本次(迄今)没跑过 → ③ 如实标「本段未取得」;
+--   有行、`reason_stage=ok`     = 跑了 → 零篮子是真结论,可以说「今日无篮子达标」;
+--   有行、`reason_stage` 是缺席码 = 没跑成 → ③ 标「本段未取得」+ 原因码。
+-- `trade_date` 主键 + `INSERT OR REPLACE`:同日重跑只认最近一次,不追加历史。
+CREATE TABLE IF NOT EXISTS basket_stage_handoff (
+  trade_date   TEXT PRIMARY KEY,
+  search_stage TEXT NOT NULL,      -- ⑤ 检索段(ok|partial|no_provider|…;只披露,不进判读)
+  reason_stage TEXT NOT NULL,      -- ⑤ 推理段(判「跑没跑成」的那一个)
+  basket_count INTEGER NOT NULL,   -- ⑤ 产出的候选篮数(留痕,判读不依赖它)
+  notes_json   TEXT NOT NULL,      -- AggregateResult.notes 原样(判 aggregate_failed:* 等)
+  created_at   TEXT NOT NULL
+);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

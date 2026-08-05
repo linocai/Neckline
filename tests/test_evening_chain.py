@@ -287,6 +287,80 @@ class TestEmptyIsNotFailure:
         assert res.status[ev.SEG_BASKET] == ev.STATUS_EMPTY and res.ok(ev.SEG_BASKET)
 
 
+class TestStageHandoffWriteSide:
+    """§七 P0-39(2026-08-05 生产实打):⑤ 的**段状态**必须落表,报告 ③ 节才分得清
+    「跑了、真没够格的篮子」与「引擎压根没跑成」。
+
+    ⚠ **落点位置是本条的要害**:⑤ 缺席时 `_run_basket_segment` 在
+    `if not result.baskets` 就早返回了 —— 留痕写在那句**之后**就永远记不下缺席这件事,
+    而缺席恰恰是唯一需要它的场景。本类正面钉死这个顺序。
+    """
+
+    def _seg(self, isolated_env, result, monkeypatch):
+        from neckline.selection import aggregate as agg
+
+        monkeypatch.setattr(agg, "aggregate_baskets", lambda *a, **k: result)
+        return ev._run_basket_segment(
+            D, seed_set=None, db_path=isolated_env.db_path, parquet_dir=None, use_llm=False,
+            search_provider=None, reason_provider=None, tier_provider=None, card_provider=None,
+            transport=None, ledger=None, stats={}, notes=[],
+        )
+
+    def _stub(self, *, reason="no_provider", search="no_provider", notes=()):
+        class _AggR:
+            baskets = ()
+            rejected = ()
+            hygiene_rejected = ()
+            search_stage = search
+            reason_stage = reason
+
+        _AggR.notes = tuple(notes)
+        return _AggR()
+
+    def test_absent_reason_stage_is_recorded_even_though_five_returns_early(
+        self, isolated_env, monkeypatch
+    ):
+        from neckline.selection.basket_stage_handoff import load_stage_verdict
+
+        assert self._seg(isolated_env, self._stub(), monkeypatch) is None  # ③b 仍是"没跑 ⑥"
+        v = load_stage_verdict(D, db_path=isolated_env.db_path)
+        assert v is not None, "⑤ 缺席时一行都没落 = P0-39 原样复发"
+        assert v.reason_stage == "no_provider" and v.engine_ran is False
+
+    def test_engine_ran_with_zero_baskets_is_recorded_as_ran(self, isolated_env, monkeypatch):
+        """跑完了、提案全被机械闸拦下 → 零篮子是**真结论**,③ 节照旧可以那么写。"""
+        from neckline.selection.basket_stage_handoff import load_stage_verdict
+
+        self._seg(isolated_env, self._stub(reason="ok", search="ok"), monkeypatch)
+        assert load_stage_verdict(D, db_path=isolated_env.db_path).engine_ran is True
+
+    def test_notes_are_carried_so_the_aggregate_fuse_is_not_read_as_no_seeds(
+        self, isolated_env, monkeypatch
+    ):
+        from neckline.selection.basket_stage_handoff import load_stage_verdict
+
+        self._seg(isolated_env,
+                  self._stub(reason="no_seeds", search="no_seeds",
+                             notes=("aggregate_failed:KeyError",)), monkeypatch)
+        v = load_stage_verdict(D, db_path=isolated_env.db_path)
+        assert v.engine_ran is False and v.reason_code == "aggregate_failed:KeyError"
+
+    def test_segment_blowup_overwrites_a_stale_row_instead_of_inheriting_it(
+        self, chain_stubs, isolated_env, monkeypatch
+    ):
+        """⚠ 关键防回归(同 ③b 那条):今天早些时候 ⑤ 跑成过、表里躺着 `ok`;本次
+        SEG_BASKET 整段炸了 —— **本次的明确结论是"没跑成"**,不许沿用旧行让报告
+        ③ 节继续讲"今天市场上没有够格的篮子"。"""
+        from neckline.selection.basket_stage_handoff import load_stage_verdict, save_stage_handoff
+
+        save_stage_handoff(D, self._stub(reason="ok", search="ok"), db_path=isolated_env.db_path)
+        monkeypatch.setattr(ev, "_run_basket_segment",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("篮子段炸了")))
+        ev.run_evening_chain(D, use_llm=False, db_path=isolated_env.db_path)
+        v = load_stage_verdict(D, db_path=isolated_env.db_path)
+        assert v.engine_ran is False and v.reason_code == "segment_failed:RuntimeError"
+
+
 def test_evening_module_is_the_only_place_that_calls_scan_write_entrypoints():
     """结构性守门:批算写入口只许出现在本链模块里 —— `report/pipeline.py` 与
     `report/basket_daily.py` 属在线路径,由 `test_scan_layer_guardrails.py` 把关。

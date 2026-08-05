@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -106,6 +107,18 @@ class _Dropped:
         self.basket_key, self.reason, self.mech_score = basket_key, reason, mech_score
 
 
+def _seed_stage(env, *, reason_stage="ok", search_stage="ok", baskets=0, notes=(),
+                trade_date=D0) -> None:
+    """落一行 ⑤ 段状态(§七 P0-39)。**零篮子时 ③ 节说什么话全看这一行** ——
+    没有它 = 我们不知道引擎跑没跑 = 「本段未取得」。"""
+    from neckline.selection.basket_stage_handoff import save_stage_handoff
+
+    save_stage_handoff(trade_date, SimpleNamespace(
+        search_stage=search_stage, reason_stage=reason_stage,
+        baskets=tuple(range(baskets)), notes=tuple(notes),
+    ), db_path=env.db_path)
+
+
 def _render(bdaily=None, **kw):
     s = SentimentDashboard(
         trade_date=D0, limit_up_count=1, limit_down_count=0, zaban_count=0, zaban_rate=0.0,
@@ -184,7 +197,11 @@ class TestBuildBasketDaily:
         assert out.baskets[0].card_unavailable_reason == "card_not_ready"
 
     def test_no_baskets_is_available_true_with_empty_list(self, isolated_env):
-        """「今天真没有篮子」= `available=True` + 空列表(合法输出,⑥-b-B)。"""
+        """「今天真没有篮子」= `available=True` + 空列表(合法输出,⑥-b-B)。
+
+        ⚠ **§七 P0-39 起这句话有前提**:必须有一行 ⑤ 段状态证明引擎跑过。本测试
+        原先不落这一行也断言 `True` —— 那正是被生产打出来的那个 bug 的镜像。"""
+        _seed_stage(isolated_env, reason_stage="ok")
         out = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
         assert out.baskets_available is True and out.baskets == []
 
@@ -211,6 +228,113 @@ class TestBuildBasketDaily:
         assert {d.reason for d in out.dropped} == {"capacity_overflow", "below_quality_line"}
         pub = out.to_public_dict()["droppedBaskets"]
         assert all("basketId" not in d for d in pub), "溢出篮没进 baskets 表,不许给 id"
+
+
+class TestZeroBasketHonesty:
+    """§七 P0-39:`baskets` 零行有**两种相反成因**,③ 节必须讲成两句不同的话。
+
+    2026-08-05 生产实打:`llm_providers` 配置不全 → ⑤ `no_provider` 全缺席 →
+    `baskets` 零行,而报告照样输出「今天没有共同驱动清晰、成员结构够格的篮子」
+    这句**实质性市场判断** —— 系统其实什么都没判。本类逐条钉死四态。
+
+    ⚠ 判据锚在「⑤ 的段状态行」,**不是**「读表成功」—— 后者只证明表读得出来。
+    """
+
+    _LEGAL_OUTPUT_SENTENCE = "今日无篮子达到定档标准"
+
+    def _section(self, env, **kw) -> str:
+        daily = bd.build_basket_daily(D0, db_path=env.db_path, with_exec_hints=False, **kw)
+        md = _render(daily)
+        return md.split("## ③ 今日篮子")[1].split("### ③b")[0]
+
+    # —— 态 1:引擎没跑(no_provider)————————————————————————————————
+    def test_no_provider_is_not_dressed_up_as_a_market_verdict(self, isolated_env):
+        _seed_stage(isolated_env, reason_stage="no_provider", search_stage="no_provider")
+        out = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
+        assert out.baskets_available is False
+        assert "no_provider" in (out.baskets_unavailable_reason or "")
+        assert "未运行" in (out.baskets_unavailable_reason or "")
+        section = self._section(isolated_env)
+        assert "本段未取得" in section
+        assert self._LEGAL_OUTPUT_SENTENCE not in section, (
+            "引擎没跑却讲「今天没有够格的篮子」= 把缺席伪装成市场判断(P0-39 本体)"
+        )
+        assert "共同驱动清晰" not in section
+
+    # —— 态 2:预算尽 ————————————————————————————————————————————
+    def test_budget_exhausted_is_reported_with_its_own_reason_code(self, isolated_env):
+        _seed_stage(isolated_env, reason_stage="budget_exhausted", search_stage="ok")
+        out = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
+        assert out.baskets_available is False
+        assert "budget_exhausted" in (out.baskets_unavailable_reason or ""), (
+            "原因码必须如实带出 —— 「没跑」的各种成因语义不合并"
+        )
+        section = self._section(isolated_env)
+        assert "本段未取得" in section and self._LEGAL_OUTPUT_SENTENCE not in section
+
+    # —— 态 3:跑了、今天真没有够格的篮子 ————————————————————————————
+    def test_engine_ran_and_found_nothing_keeps_the_legal_output_wording(self, isolated_env):
+        _seed_stage(isolated_env, reason_stage="ok", search_stage="ok")
+        out = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
+        assert out.baskets_available is True and out.baskets_unavailable_reason is None
+        section = self._section(isolated_env)
+        assert self._LEGAL_OUTPUT_SENTENCE in section and "不是故障" in section
+        assert "本段未取得" not in section
+
+    # —— 态 4:正常有篮子 ————————————————————————————————————————
+    def test_baskets_present_is_available_regardless_of_the_stage_row(self, isolated_env):
+        """有篮子 = 引擎跑过的**活证据**(篮子就是它产出的)——段状态行缺失也不许
+        把一份有篮子的报告标成「未取得」。"""
+        _seed_basket(isolated_env, ["600001.SH"], tier=1)
+        out = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
+        assert out.baskets_available is True and len(out.baskets) == 1
+        section = self._section(isolated_env)
+        assert "固态电池" in section and "本段未取得" not in section
+        assert self._LEGAL_OUTPUT_SENTENCE not in section
+
+    # —— 第五种:压根没有段状态行 = 我们不知道 ————————————————————————
+    def test_missing_stage_row_is_not_obtained_not_no_baskets(self, isolated_env):
+        """读历史报告 / 只出报告(`scripts/report.py` 回放)拿不到段状态 → 如实标
+        未取得,⛔ 不许拿「不知道」冒充「知道没有」(同 ③b 在历史回放时的姿势)。"""
+        out = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
+        assert out.baskets_available is False
+        assert "本报告未取得" in (out.baskets_unavailable_reason or "")
+        section = self._section(isolated_env)
+        assert "本段未取得" in section and self._LEGAL_OUTPUT_SENTENCE not in section
+
+    def test_aggregate_crash_default_stage_is_not_mistaken_for_no_seeds(self, isolated_env):
+        """⑤ 自己那道保险丝返回的是**默认字段值**(`reason_stage=no_seeds`)——光看
+        段状态会被读成「跑了、今天真没种子」。notes 里的 `aggregate_failed:*` 才是真相。"""
+        _seed_stage(isolated_env, reason_stage="no_seeds", search_stage="no_seeds",
+                    notes=("aggregate_failed:ValueError",))
+        out = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
+        assert out.baskets_available is False
+        assert "aggregate_failed:ValueError" in (out.baskets_unavailable_reason or "")
+
+    def test_zero_seeds_with_an_active_pack_is_a_real_market_verdict(self, isolated_env):
+        """④ 扫描层跑过、当日零种子 = 「今日无热点 → 今日无篮子」,既有合法输出。"""
+        _seed_stage(isolated_env, reason_stage="no_seeds", search_stage="no_seeds",
+                    notes=("empty_seed_set",))
+        out = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
+        assert out.baskets_available is True and out.baskets_unavailable_reason is None
+
+    def test_no_active_pack_is_a_config_gap_not_a_market_verdict(self, isolated_env):
+        _seed_stage(isolated_env, reason_stage="no_seeds", search_stage="no_seeds",
+                    notes=("no_active_pack_or_seed_set",))
+        out = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
+        assert out.baskets_available is False
+        assert "no_active_pack" in (out.baskets_unavailable_reason or "")
+
+    def test_dropped_three_states_still_work_independently(self, isolated_env):
+        """③b 既有三态不许被 ③ 的改动带偏(两段各判各的)。"""
+        _seed_stage(isolated_env, reason_stage="no_provider")
+        out = bd.build_basket_daily(D0, dropped=[], db_path=isolated_env.db_path,
+                                    with_exec_hints=False)
+        assert out.baskets_available is False        # ③ 没跑
+        assert out.dropped_available is True         # ③b 明确跑了、零溢出
+        out2 = bd.build_basket_daily(D0, dropped=None, db_path=isolated_env.db_path,
+                                     with_exec_hints=False)
+        assert out2.dropped_available is False
 
 
 class TestPublicSnapshot:
@@ -271,6 +395,8 @@ class TestTodayBasketsSection:
         assert "今日 T2 为空" in md and "今日 T3 为空" in md
 
     def test_all_tiers_empty_is_stated_as_a_legal_output(self, isolated_env):
+        """⚠ §七 P0-39:这句「合法输出」**只有在 ⑤ 真跑过时**才准说,故先落段状态行。"""
+        _seed_stage(isolated_env, reason_stage="ok")
         md = _render(self._daily(isolated_env))
         assert "今日无篮子达到定档标准" in md
         assert "不是故障" in md

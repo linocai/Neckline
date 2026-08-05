@@ -14,6 +14,12 @@
 2. **「没有」与「没看」必须分开**:每一段都带 `available` + `unavailableReason`。
    `baskets=[]` 且 `available=True` = 今天真没有篮子(合法输出,⑥-b-B);
    `available=False` = 这一段本次没取到(读历史快照 / 该段降级),⛔ 不许拿空数组冒充。
+   **§七 P0-39(2026-08-05,生产实打后加固)**:③ 的 `available` 曾经挂在
+   「`load_today_baskets()` 读表成功」上 —— 那只证明**表读得出来**,不证明**引擎跑过**,
+   于是 `no_provider` 全缺席时报告照样输出「今天没有共同驱动清晰、成员结构够格的篮子」
+   这句**实质性市场判断**。现在改成:**有篮子** = 引擎跑过的活证据 → `True`;**零篮子**
+   → 查 ⑤ 的段状态(`selection/basket_stage_handoff.py`,判读唯一实现在那儿)三态定夺,
+   见 `_zero_basket_verdict`。⛔ 别再把"读得出表"当"跑过引擎"。
 3. **`droppedBaskets` 只能由「本次跑 ⑥」的那次运行传进来,⛔ 本函数不许现算**:
    ⑥ 的 `TierResult.dropped` **不进 `baskets` 表**(`baskets.tier` NOT NULL,溢出篮
    无档可填),报告快照(`reports.basket_daily_json`)是它的落点。**V2-⑯-D 补记**:
@@ -514,6 +520,41 @@ def load_yesterday_reviews(
     return views, d0
 
 
+def _zero_basket_verdict(
+    trade_date: date, *, db_path: Optional[Path],
+) -> Tuple[bool, Optional[str]]:
+    """③ 在**零篮子**时的三态判读(§七 P0-39)。返回 `(available, unavailable_reason)`。
+
+    零篮子的三种成因必须讲成三句不同的话:
+    - ⑤ 跑了、结论是"今天没有够格的篮子" → `(True, None)`,③ 照旧写那句**合法输出**;
+    - ⑤ 没跑成(`no_provider` / 预算尽 / 调用失败 / ⑤⑥⑦ 整段异常)→ `(False, 原因)`,
+      ③ 走「本段未取得」体例并**如实带原因码**;
+    - 段状态表**无行**(读历史报告 / 只出报告 / 该日在本表上线之前)→ 同样
+      `(False, 原因)` —— 我们**不知道**引擎跑没跑,⛔ 不许拿"不知道"冒充"知道没有"
+      (这与 ③b 在历史回放时如实标 `available=False` 是同一条纪律)。
+
+    判读逻辑本身在 `selection/basket_stage_handoff.py::stage_verdict`(唯一实现),
+    本函数只负责把它翻译成契约字段 + 人话。整段包保险丝:查表异常 → 按"无行"处理
+    (读侧永远不比"没有这张表"更糟)。
+    """
+    verdict = None
+    try:
+        from neckline.selection.basket_stage_handoff import load_stage_verdict
+
+        verdict = load_stage_verdict(trade_date, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        logger.warning("[basket_daily] ⑤ 段状态查表异常,今日篮子段按未取得处理", exc_info=True)
+    if verdict is None:
+        return False, (
+            "本次未运行驱动聚合/定档引擎(读历史报告 / 只出报告),今日篮子信息本报告未取得。"
+        )
+    if verdict.engine_ran:
+        return True, None
+    return False, (
+        f"聚合/定档引擎本次未运行(原因:{verdict.reason_code}),今日篮子信息本报告未取得。"
+    )
+
+
 def build_basket_daily(
     trade_date: date, *,
     dropped: Optional[Sequence[Any]] = None,
@@ -535,7 +576,15 @@ def build_basket_daily(
     # ③ 今日篮子
     try:
         out.baskets = load_today_baskets(trade_date, db_path=db_path)
-        out.baskets_available = True
+        # §七 P0-39:`available` **不许挂在"读表成功"上** —— 那只证明表读得出来,
+        # 不证明引擎跑过。有篮子 = ⑤⑥ 跑过的活证据(篮子就是它们产出的);零篮子
+        # 才需要查 ⑤ 的段状态,把「跑了、真没够格的」与「引擎没跑」分开。
+        if out.baskets:
+            out.baskets_available = True
+        else:
+            out.baskets_available, out.baskets_unavailable_reason = _zero_basket_verdict(
+                trade_date, db_path=db_path,
+            )
     except Exception:  # noqa: BLE001
         logger.warning("[basket_daily] 今日篮子读取异常,该段降级留空", exc_info=True)
         out.baskets = []
