@@ -394,30 +394,35 @@ Neckline/
   key 已落库(服务端只回 `keySet`,不回明文)。⑤⑥ 推理段自此**具备完整跑的条件**,不再必然降级。
   ⚠ **`search_engine` 列为空** —— 空 = 不发该字段(`OpenAICompatProvider` 的安全默认);
   ⛔ 别去"补"一个取值,CLAUDE.md 有案底:取值不被上游认识会 `ok=True` **静默返 0 条**。
-  **⑤⑥ 在真 key 下仍未活体跑过一次**(见下条阻塞项),首跑后要看「搜索取证覆盖」命中数。
+  **⑤⑥ 在真实报告管线里仍未首跑**(两处配置缺口已于 08-05 修复并做过裸 provider 验证,见下方
+  LLM 修复条;晚间链层面的首跑仍待下次评估),首跑后要看「搜索取证覆盖」命中数。
 - **✅ ~~nk 缺 `20260804` EOD parquet~~ 已销案(2026-08-05 11:24,A 方案官方补拉)**:七张 EOD 表
   08-04 分区全部在位、属主 `neckline:neckline`、schema 与 08-03 逐表一致、整年 `scan_parquet` 无
   `SchemaError`;`ths_daily` 尾窗自愈到 08-04(08-03/08-04 各 394 行,滞后 0 天);**连板递推抽查
   全绿**(20 只 08-04 连板票 08-03 consec 恰为 c−1、异常 0;8 只断板 consec 全归 0、异常 0)。
   📌 **反证样本留档**:`001223.SZ` 08-03 是 **2 连板、08-04 炸板** —— 若 08-04 仍缺失且它 08-05
   涨停,就会被算成 3 连板,这就是那条判据污染的具体长相。详见 §九 2026-08-05。
-- **🔴 新的头号阻塞项:LLM 两处配置缺口 —— key 有效但一次调用也没成功(2026-08-05 补跑实测打出来)**。
-  ⚠ **今晚 16:35 的生产链会原样再撞一次**,不是只影响补跑。两处**都在 App 设置屏可改,builder 未擅动**
-  (改路由/默认 provider 属持久配置,须你授权):
-  1. **`llm_providers.base_url` 少了尾巴**:现值 `https://open.bigmodel.cn/api/paas/v4`,应为
-     **`https://open.bigmodel.cn/api/paas/v4/chat/completions`**。本项目这一列虽名叫 `base_url`,
-     实际是 `OpenAICompatProvider` 直接 `client.post(self.api_url, …)` 的**完整端点 URL、不做路径拼接**
-     (预置参考实现 `llm/providers/glm.py:37` 硬编码的正是带 `/chat/completions` 那条)。
-     ⚠ 而 GLM 官方文档管 `…/paas/v4` 叫「OpenAI 兼容 base_url」—— **你填的是官方文档原文,是本项目
-     字段语义与通用叫法撞车**,不是你填错。**实测证据**:带真 key 打 20 次全 **404**(不是 401)
-     —— 404 说明**鉴权已通过、key 有效**,纯粹路径不对。
-  2. **`app_settings.llm_default_provider` 从未设过**(现为空串,`llm_task_routes` 为 `{}`)。
-     路由三级(`llm/router.py::resolve_task_provider_name`):①显式路由 → ②检索类任务挑第一个
-     `enabled AND has_web_search` → ③其余**全部**回退默认 provider。GLM 只能靠 ② 接住**检索类**;
-     `TASK_BASKET_REASON`/`TASK_TIER_RANK`/`TASK_SCRIPT`/`TASK_REVIEW` 这些推理类走 ③,**空默认 = 无
-     provider**,于是 `[aggregate] 推理段缺席(no_provider)—— 当日不成篮`。**GLM 不会自动兼任推理**。
-  ⇒ 两处都补上后,同日重跑 `scripts/evening.py 20260804` 即可补出篮子(`baskets`/`basket_cards`
-  是 `INSERT OR IGNORE` 冻结件,同日补跑安全、不覆盖)。
+- **✅ LLM 两处配置缺口已修复并验证(2026-08-05 定向快修,生产库直改无对应代码 commit,详见 §九当日条,
+  赶在 16:35 生产链之前)**:
+  ① `llm_providers.base_url`(id=1 `GLM` 行)由 `…/paas/v4` 补全为 **`…/paas/v4/chat/completions`**
+  (本项目该列语义 = 完整端点、不拼路径,原委见 §九当日条);② `app_settings.llm_default_provider`
+  由空串设为 **`GLM`**(`llm_task_routes` 原样 `{}` 未动,回退机制生效即可;`search_engine`/`api_key`
+  均未动)。**改法 = 项目自身代码路径**(`settings_store.update_provider`/`set_llm_routes`,非裸 SQL)。
+  **真实调用验证**(nk,`neckline` 用户,项目 venv,`get_provider(task=...)` 两类各一):检索类
+  `TASK_DRIVER_SEARCH`(路由②挑中 GLM)—— `ok=True`/18.9s/`search_hits=5`(search_query 机制正常,
+  非 v1.3.4 案底那种静默 0 命中;回答如实注明「参考材料最新至 7 月 30 日,暂无今日数据」,时效纪律
+  在真调用下生效);推理类 `TASK_BASKET_REASON`(路由③回退 default_provider)—— `ok=True`/6.0s/
+  `content="收到"`。双备份 `neckline.db.{bak,cpbak}-prellmcfg-20260805-115602`(均
+  `integrity_check=ok`),改前改后 `neckline.service` active、`/health` 200。
+  ⚠ **本次只验证裸 provider 调用,未重跑 `scripts/evening.py 20260804`**(晚间链改动/重跑归另一
+  builder 会话,本次任务书明确排除不碰)—— ⑤⑥ 篮子引擎**在真实报告管线里仍未首跑**,今晚 16:35
+  生产链或下次补跑才是真正验证。
+- **📌 用户 2026-08-05 拍板「单 LLM 为常态」,修订架构裁定 #2(§〇)的双 Agent 分工前提**:GLM 单家
+  兼任检索与推理(即上面验证的路由③回退路径);裁定 #2「双 Agent 分工(DeepSeek + GLM)」**降级为
+  可选扩展路径**——`llm_task_routes` 路由表机制照常保留,将来接入第二家 Provider(如专事推理的
+  DeepSeek)时,把它设为 `llm_default_provider` 或显式路由推理类任务过去即恢复分工,不需要改代码。
+  §〇 表格原文未改(用户逐条裁定纪律,不擅自重写锁定表),本条是最新有效口径。App 设置屏侧不用动
+  (已填 key 原样有效)。
 - **✅ 顺带打出来的诚实性缺陷已当日修完上线(P0-39,§七 已结案;commit `99f0e76`)**:⑤⑥ 明明是
   `no_provider` 全缺席,报告 ③ 节却写「**今日无篮子达到定档标准…今天没有共同驱动清晰、成员结构够格
   的篮子**」—— 把「引擎没跑」讲成了一句**实质性市场判断**。根因:`report/basket_daily.py` 的
@@ -427,8 +432,10 @@ Neckline/
   与 §九 当日一行)。**契约形状零变化 → 常驻 API 全程未重启**。
   ⇒ **2026-08-04 那份报告的 ③ 节已于 2026-08-05 12:00 就地重跑修正**:`basketsAvailable` true→
   **false**、原因如实写「聚合/定档引擎本次未运行(原因:no_provider)」,旧文案已绝迹;其余四段
-  (情绪/板块/情报/新鲜度)是纯机械段,前后均不受影响。**⚠ 两处 LLM 配置缺口仍未补**(见上一条),
-  故 ③ 节眼下仍是「未取得」—— 只是**这一次是诚实的**;补齐配置后同日再重跑即可补出篮子。
+  (情绪/板块/情报/新鲜度)是纯机械段,前后均不受影响。**📌 追记(2026-08-05 稍晚)**:本条完工时两处
+  LLM 配置缺口仍未补,③ 节当时仍是「未取得」—— 只是那一次是诚实的;两处缺口已于当日晚些时候由另一
+  快修批次修复并验证(见上方 LLM 修复条),但**同日重跑补篮子仍未执行**,08-04 报告的 ③ 节至本次
+  编辑时仍维持「未取得」这一诚实状态,不因配置修复而自动改变 —— 需要真正重跑一次晚间链才会更新。
   📌 **Y-1 基线**(08-05 两次重跑各验一次,两次 sha256 均逐字节相同):`candidates_json` len
   **53421** / `d5d2aeec…fdd429`、`watchlist_json` len **17808** / `31d84448…f504bf6`。
 - **🧹 生产持仓台账已清空(2026-08-05,你的指令)**:`positions` **open 2 → 0**(删 `#4 601567.SH`
@@ -469,8 +476,9 @@ Neckline/
   ⑮ 六处判断、⑯ 见其完工记录、**⑰ 三处**(P1 误报按"修闸门"办 / `sqlite_sequence` 判为预期 /
   ⑮ 漏改客户端默认后端已补)。均未改 Plan,如与规划意图不符请澄清。
 - **唯一仍开放的规划项**:**⑫ 周度 unit 的形态未定**(plan 明说不由 ⑯-D 决定,⑯/⑰ 均未擅自排)。
-- **下一步**:① 🔴 **改 LLM 那两处配置(端点 URL 补 `/chat/completions` + 设默认 provider = GLM)** ——
-  ⚠ **今晚 16:35 之前改完,否则生产链原样再撞一次**;改完可同日重跑 08-04 补篮子;
+- **下一步**:① ~~改 LLM 那两处配置(端点 URL 补 `/chat/completions` + 设默认 provider = GLM)~~
+  **✅ 2026-08-05 定向快修已完成**(裸 provider 调用已验证,见上方 LLM 修复条;同日重跑 08-04
+  补篮子留给下一次晚间链或专门 builder 会话,本次未碰 `scripts/evening.py`);
   ② ~~裁定 08-04 EOD 缺口修法~~ **✅ 已按 A 方案补拉完成(11:24)**;③ ~~填 LLM key~~ **✅ 08-05 10:53 完成**
   (key 有效,是端点与路由没配全);④ **iOS 用 Xcode 直连真机装 2.0.0**(§八 第 12 项);
   ⑤ 云解析控制台核对 `ln`/`lf` 的 A 记录;⑥ 老机退役与老库归档由你决定(§八 第 8 项),
@@ -3601,6 +3609,8 @@ macOS + iOS `xcodebuild build -configuration Release` **双端 BUILD SUCCEEDED**
 ## 九、变更日志(一行制;详版全文 → `archive/变更日志_详版_20260719-20260728.md`)
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
+
+- 2026-08-05 · 🩹 **LLM 两处生产配置缺口定向快修完工(@builder,盘中,用户拍板须赶在 16:35 首条正常生产链之前;生产库直改,无对应代码 commit)**。**背景**:上一批快修(commit `97e74e0`)在生产上真打出两处配置缺口 —— `llm_providers.base_url` 少 `/chat/completions` 尾巴(带真 key 打 20 次全 404,鉴权已过、纯路径不对)、`app_settings.llm_default_provider` 从未设过(空串)导致推理类任务(`TASK_BASKET_REASON` 等)路由到空 provider、`[aggregate] 推理段缺席(no_provider)`。**改法**:先双备份 `/opt/neckline/data/backups/neckline.db.{bak,cpbak}-prellmcfg-20260805-115602`(`.bak` 走 `sqlite3 .backup`、`.cpbak` 走 `cp -p`,均 `integrity_check=ok`;`.cpbak` 与改前活库 sha256 逐位相同),再用**项目自身代码路径**(`neckline.settings_store.update_provider`/`set_llm_routes`,零裸 SQL 写)—— ① `llm_providers`(id=1 `GLM` 行)`base_url` 由 `https://open.bigmodel.cn/api/paas/v4` 补全为 `https://open.bigmodel.cn/api/paas/v4/chat/completions`;② `app_settings.llm_default_provider` 由空串设为 `GLM`(读表取的准确值,非猜测大小写),`llm_task_routes` 原样 `{}` 未动、`search_engine`/`api_key` 均未动。**真实调用验证**(nk,`neckline` 用户,`/opt/neckline/.venv`,项目代码路径 `get_provider(task=...)`,验证脚本用后即删、未入库):检索类 `TASK_DRIVER_SEARCH`(路由②因 `enabled AND has_web_search` 挑中 GLM)—— `ok=True`/耗时 18.9s/`search_hits=5`/回答「参考材料最新至7月30日,暂无今日8月5日A股大盘表现」(证明 `search_query` 机制正常触发真实检索且时效纪律生效,不是 v1.3.4 案底那种 `ok=True` 静默 0 命中);推理类 `TASK_BASKET_REASON`(路由③回退 `default_provider`)—— `ok=True`/耗时 6.0s/`content="收到"`。两次解析出的 provider 均为 `GLM`(唯一一行,符合预期)。改前改后 `PRAGMA integrity_check=ok`、`neckline.service` active、`/api/v1/health` 200。**用户同日拍板「单 LLM 为常态」**:GLM 单家兼任检索与推理;架构裁定 #2(§〇「LLM 成本与晚间窗口」)的双 Agent 分工(DeepSeek 推理 + GLM 检索)**降级为可选扩展路径**——路由表机制(`llm_task_routes`)保留,将来加第二家 Provider 时把默认切过去即恢复分工,不需要改代码;App 设置屏侧不用动(已填 key 原样有效);§〇 锁定表原文未改,本条口径以此次记录为准。**范围边界(如实登记)**:本次严格未碰 `scripts/evening.py` 与报告相关文件(另一 builder 会话同时在 nk 上处理 P0-39/晚间链)——仅验证裸 provider 调用,⑤⑥ 篮子引擎在真实报告管线里的首跑仍待下次晚间链或专门补跑验证。
 
 - 2026-08-05 · 🩹 **P0-39 当日修复上线 + 08-04 那份报告的 ③ 节就地改成诚实陈述**(@builder-pro,盘中 11:41→12:01,赶在今晚 16:35 首条正常生产链之前;commit `99f0e76`)。**病灶**:③ 的 `baskets_available=True` 挂在「`load_today_baskets()` 读表成功」上 —— 只证明表读得出来、不证明引擎跑过,于是 ⑤ `no_provider` 全缺席时报告照样输出「今天没有共同驱动清晰、成员结构够格的篮子」这句**实质性市场判断**。**修法**:新表 `basket_stage_handoff`(搬运工体例,⛔ 未碰篮子四表)+ 判读唯一实现 `selection/basket_stage_handoff.py`;写侧 `_run_basket_segment` 在 ⑤ 一返回**立刻**落表(**位置定死在「没篮子就早返回」那句之前** —— 缺席场景恰恰走那条早返回),SEG_BASKET 整段炸掉时覆写 `segment_failed:*`;读侧「有篮子 = 引擎跑过的活证据 / 零篮子才查段状态三态定夺 / 无行 = 不知道也标未取得」。**⚠ 与 ⑥ 的 `basket_dropped_handoff` 是两张表两个问题,不合并**(⑤ 缺席时压根走不到 ⑥,dropped 表**无行**而本表**必须有行**)。**契约形状零变化 → 常驻 API 全程未重启**(`NRestarts=0`、`ActiveEnterTimestamp` 停在 08-04 22:01:08 未动,而公网已返回新文案)。**测试**:四态 + 无行第五态 + 默认段状态陷阱(⑤ 保险丝返回 `reason_stage=no_seeds` **默认值**,只看段状态会把故障读成结论 → 判读先看 `notes` 的 `aggregate_failed:*`)+ 写侧落点顺序正面钉死 + ③b 不回归;**全量 2996 passed / 2 skipped**,nk 上同套 92 例复跑绿(⚠ `DB_PATH` 重定向到 scratch 跑,实测确有 507 KB 泄漏写落在 scratch 库 = §七 A8 那条测试隔离洞的又一次实证,生产库 mtime 未受扰)。**部署**:7 个文件 `install -o deploy -g neckline -m 644` 逐个 sha256 与本地**逐字节相同**;⛔ 未重启 `neckline.service`。**08-04 就地重跑**:隔离瞬态 unit `nk-evening-0804-p039`(`User=neckline`/`MemoryMax=1400M`/**⛔ 无 `--notify`**),墙钟 **11:58:43 → 11:59:00 = 17s**,`ExecMainStatus=0`/`Result=success`,五段 `verify:empty · scan:ok(seeds 449) · basket:empty · review:empty · report:ok`;⑤ 再次打出 `推理段缺席(no_provider)—— 当日不成篮`(**两处 LLM 配置缺口照旧未擅改**,本次修的是「缺席时不许撒谎」不是「让它别缺席」)。**结果对照**:`basketsAvailable` **true→false**、`basketsUnavailableReason` `null`→**「聚合/定档引擎本次未运行(原因:no_provider),今日篮子信息本报告未取得。」**,markdown ③ 节旧文案「今日无篮子达到定档标准…」**已绝迹**、改为「⚠ **本段未取得**…」+ 既有的「『未取得』≠『今日无篮子』」提示;新表行 = `search_stage=call_failed:上游 404 · reason_stage=no_provider · basket_count=0`。**Y-1 保护再次实测生效**(日志留证「已跳过覆写、保留历史值」):`candidates_json` 53421 B / `d5d2aec…`、`watchlist_json` 17808 B / `31d8444…` —— **与基线两个 sha256 逐字节相同**;`basket_daily_json` 366→**407 B**、`markdown` 6380→**6453 字符**(只多了诚实文案)。**公网验收**:`GET /report?date=20260804` **200 / 16 799 B / HTTP/2 / 0.118s**,`basketDaily` **13 个键与修前完全同集**(形状零变化的机器证据),`dataFreshness` 三项全 lag 0。收尾:瞬态 unit 已回收、`systemctl --failed` 零条、无残留进程、落盘 md 属主 `neckline:neckline`、全程 load ≤0.43(执行时段恰在 11:30–13:00 午休,盘中哨兵空转)。
 - 2026-08-05 · 📄 **08-04 的 V2 报告已补跑落库 —— 机械段全出、篮子段如实缺席;顺带在生产上打出两处 LLM 配置缺口 + 一条 P0 诚实性缺陷**(@builder-pro,盘中,隔离瞬态 unit `nk-evening-0804`,**⛔ 未传 `--notify`** —— 给一份补跑的历史日报告推「报告就绪」到用户锁屏是误导性噪音,任务书亦未要求)。**跑法与结果**:`scripts/evening.py 20260804` 全链带 LLM 落库,`User=neckline`/`MemoryMax=1400M`,墙钟 **11:28:06 → 11:28:27 = 21s**,`ExecMainStatus=0`/`Result=success`,1400M 闸下零 OOM;五段状态 **`[verify] empty`(08-03 无冻结卡,无对象)· `[scan] ok`(cluster 2153 / corr 21382 / leader 2153 / stage 110 / seeds 449〔hot_industry 10 · surging_concept 21 · limit_cluster 323 · anomaly_cluster 95〕)· `[basket] empty`(0 篮 0 卡)· `[review] empty` · `[report] ok`**。**Y-1 保护实测生效(日志留证)**:`save_report(20260804):本次候选快照为空([]),但该日已有非空 candidates_json…已跳过覆写、保留历史值。`;补跑后 `candidates_json` len **53421** / sha256 `d5d2aeeca2d7d4e4b616db26334bfecb3bb55bd75a1c0056f8ff442910fdd429`、`watchlist_json` len **17808** / `31d844483997634f3ba01b0f3835400112a1485f26a1999b8a3de2929f504bf6` —— **与补跑前基线两个哈希逐字节相同**(不是只比长度);V2 侧 `basket_daily_json` `{}`→**366 B** 正常写入、`markdown` 31527→6380 字符(V1 那份含 20 只候选,V2 无候选管线,短属预期)。**日期纪律逐项过**:`daily_update`/`evening` 两条链的 `target`/`trade_date` 全程取自命令行参数、下游无一处旁路 `date.today()`;**日期锚抽查**(补跑历史日的「锚不撒谎」机制)实测装配出 `今天是 2026年8月5日(周三);本次分析的基准交易日是 2026年8月4日(周二)(系补跑/回放历史日,请按该日及之前的信息判断);下一交易日是 2026年8月5日(周三)。`,V2 链四个 LLM 调用点(`aggregate.py:620/757`、`tier.py:717`、`basket_card.py:615`)与 `basket_review.py:855` 全部显式传 `ref_date=trade_date`;**污染 grep**:markdown 里 `20260805|2026-08-05|8月5日|08-05` **仅 1 处命中 = `生成时间(UTC):2026-08-05T03:28:27`(报告确实生成于今日,必须这么写)**,其余六个 `*_json` 列命中 **0**,公网整份响应里唯一命中同样是 `generatedAt`。**公网验收**:`GET /report?date=20260804` **200 / 16 706 B / HTTP/2 / 0.137s**,`tradeDate=20260804`,`dataFreshness` 三项全 **lag 0 / stale=false**(补拉之功)。**🔑 LLM 段如实报告 —— 是「降级版」,但不是任务书预想的那种降级**:key **有效**(带真 key 打出的是 **404 不是 401**,鉴权已过),但**一次调用也没成功**,两处配置缺口:① `llm_providers.base_url` 现值 `…/api/paas/v4`,而本项目这一列是 `OpenAICompatProvider` 直接 `client.post(self.api_url,…)` 的**完整端点、不做路径拼接**,应为 `…/api/paas/v4/chat/completions`(预置参考实现 `llm/providers/glm.py:37` 即此值)—— ⚠ **GLM 官方文档管 `…/paas/v4` 叫「OpenAI 兼容 base_url」,用户填的是官方原文,是本项目字段语义与通用叫法撞车,不是用户填错**;② `app_settings.llm_default_provider` 从未设过(空串,`llm_task_routes={}`),而路由三级里 GLM 只能靠 ②「检索类挑第一个 `enabled AND has_web_search`」被选中,推理类(`TASK_BASKET_REASON`/`TASK_TIER_RANK`/`TASK_SCRIPT`/`TASK_REVIEW`)走 ③ 回退默认 → 空 → `no_provider`,**GLM 不会自动兼任推理**。**两处均属持久配置(路由/端点),builder ⛔ 未擅改**,补齐后同日重跑即可补出篮子(冻结件 `INSERT OR IGNORE`,同日补跑安全)。**🔴 并打出 P0-39(已登记 §七)**:⑤⑥ 全缺席时报告 ③ 节仍输出「今日无篮子达到定档标准…今天没有共同驱动清晰、成员结构够格的篮子」= 把「引擎没跑」讲成实质性市场判断,`basketsAvailable=true`/`basketsUnavailableReason=null` 同样说谎;根因 `basket_daily.py` 的 `baskets_available=True` 只挂在「读表成功」上(同函数 ③b 的三态区分做对了、③ 没有),⑤ 侧 `STAGE_NO_PROVIDER` 等一等状态没落到报告层能读到的地方。**⚠ 故 08-04 那份报告的 ③ 节不可信,其余四段(机械段)不受影响**。收尾:`systemctl --failed` 零条、`neckline.service` `NRestarts=0` 全程未受扰、load ≤0.06、无残留进程、瞬态 unit 已回收。
