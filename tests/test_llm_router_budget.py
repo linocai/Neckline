@@ -69,6 +69,52 @@ def test_non_search_task_without_route_uses_default_directly_ignoring_search_row
     assert name == "deepseek"  # 非检索类,不看 has_web_search,直接回退默认
 
 
+def test_read_timeout_grading_is_by_task_class_and_defaults_to_none():
+    """§七 P0-40:`None` = **不覆盖**(用 provider 类属性 90.0),与"分级后恰好等于
+    90.0"分得开 —— 前者让 provider 子类保留自己的默认值,后者会把它按死。"""
+    for t in router.LONG_CONTEXT_TASKS:
+        assert router.read_timeout_for_task(t) == router.LONG_CONTEXT_READ_TIMEOUT_SECONDS
+    for t in router.DEFAULT_SEARCH_TASKS:
+        assert router.read_timeout_for_task(t) is None
+    assert router.read_timeout_for_task(None) is None
+    assert router.read_timeout_for_task("some_future_task") is None
+
+
+def test_long_context_and_search_task_sets_never_overlap():
+    """⛔ 一个任务不能同时"要长超时"又"是检索类" —— 两套语义撞在一起时,读超时该
+    取哪个会变成隐式约定;真出现这种任务,先回 planner 定口径。"""
+    assert not (set(router.LONG_CONTEXT_TASKS) & set(router.DEFAULT_SEARCH_TASKS))
+    assert set(router.LONG_CONTEXT_TASKS) <= set(router.ALL_TASKS)
+
+
+def test_worst_case_long_context_retry_fits_inside_the_reason_budget():
+    """算术守门:放宽后的最坏一组重试必须仍在推理账之内 —— 否则一次慢调用就能把
+    整本账吃穿,后面的 Tier/剧本全成 `budget_exhausted`(§七 P0-40 定案时的判据)。"""
+    worst = router.LONG_CONTEXT_READ_TIMEOUT_SECONDS * 3  # max_attempts=3
+    assert worst < budget.REASON_BUDGET_SECONDS
+    assert worst < budget.REVIEW_BUDGET_SECONDS * 2, "复盘账 15min,一组 12min 已接近上限"
+
+
+def test_basket_unit_timeout_covers_the_new_budget_arithmetic():
+    """`deploy/neckline-basket.service` 的 `TimeoutStartSec` 是**按预算算术定的**,
+    不是随便留的余量。抬读超时而不抬它 = 最坏情况下被 systemd 掐断("链断了"),
+    这条把两者钉在一起,改一个不改另一个会红。"""
+    import re
+
+    unit = (Path(__file__).resolve().parent.parent / "deploy" / "neckline-basket.service").read_text(
+        encoding="utf-8")
+    m = re.search(r"^TimeoutStartSec=(\d+)", unit, re.MULTILINE)
+    assert m, "neckline-basket.service 没有 TimeoutStartSec"
+    worst_seconds = (
+        budget.SEARCH_BUDGET_SECONDS + 90.0 * 3          # 检索账 + 一组检索超时溢出
+        + budget.REASON_BUDGET_SECONDS
+        + router.LONG_CONTEXT_READ_TIMEOUT_SECONDS * 3   # 推理账 + 一组推理超时溢出
+    )
+    assert int(m.group(1)) >= worst_seconds, (
+        f"unit 超时 {m.group(1)}s < 预算算术最坏 {worst_seconds:.0f}s"
+    )
+
+
 def test_task_none_falls_back_to_default():
     name = router.resolve_task_provider_name(None, routes={}, default_provider="deepseek", rows=[])
     assert name == "deepseek"

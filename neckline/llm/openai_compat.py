@@ -65,12 +65,18 @@ class OpenAICompatProvider(LLMProvider):
         api_url: Optional[str] = None,
         has_web_search: Optional[bool] = None,
         search_engine: Optional[str] = None,
+        read_timeout: Optional[float] = None,
     ) -> None:
-        """`name`/`api_url`/`has_web_search`/`search_engine` 均为**可选覆盖**
-        (默认 `None` = 不改类属性),故 `GLMProvider(api_key="sk-xxx")`/
+        """`name`/`api_url`/`has_web_search`/`search_engine`/`read_timeout` 均为
+        **可选覆盖**(默认 `None` = 不改类属性),故 `GLMProvider(api_key="sk-xxx")`/
         `KimiProvider(api_key="sk-xxx")` 这类既有调用方式**逐字节不变**——只有
         `neckline.llm.factory.get_provider()` 拿 `llm_providers` 行构造裸
-        `OpenAICompatProvider` 实例时才会用到这四个新参数。"""
+        `OpenAICompatProvider` 实例时才会用到这几个新参数。
+
+        `read_timeout`(§七 P0-40):按 task 类别分级的读超时,唯一来源是
+        `llm/router.py::read_timeout_for_task()`(**⛔ 别在别处再写一份数字**)。
+        `None` 时保持类属性 90.0 —— 检索类与所有直接 new 出来的 provider 行为
+        逐字节不变。"""
         self.api_key = api_key
         self.model = model or self.default_model
         if name is not None:
@@ -81,6 +87,8 @@ class OpenAICompatProvider(LLMProvider):
             self.has_web_search = bool(has_web_search)
         if search_engine is not None:
             self.search_engine = search_engine
+        if read_timeout is not None:
+            self.read_timeout = float(read_timeout)
 
     # —— provider 特有钩子(子类可覆盖;未覆盖时走下面的通用默认实现)———————
     def _headers(self) -> Dict[str, str]:

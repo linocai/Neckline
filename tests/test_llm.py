@@ -115,6 +115,61 @@ class TestFactory:
         p = get_provider(TASK_BASKET_REASON, db_path=db)
         assert p is not None and p.name == "deepseek"
 
+    # —— §七 P0-40:读超时按 task 类别分级 ————————————————————————————————
+    def _provider_for(self, tmp_path, task):
+        db = self._db(tmp_path)
+        settings_store.create_provider("glm", "https://open.bigmodel.cn/x", "glm-5.2", api_key="k",
+                                        has_web_search=True, search_engine="search_pro", db_path=db)
+        settings_store.set_llm_routes({}, "glm", db_path=db)
+        return get_provider(task, db_path=db)
+
+    @pytest.mark.parametrize("task", ["basket_reason", "tier_rank", "script", "review"])
+    def test_long_context_tasks_get_the_longer_read_timeout(self, tmp_path, task):
+        """⑤ 篮子聚合一次塞 20 颗种子 + 成员机械数据,2026-08-05 生产实测 **3/3 次恰好
+        90s ReadTimeout**(确定性超长,不是抖动)—— 推理类必须拿到放宽后的读超时。"""
+        assert self._provider_for(tmp_path, task).read_timeout == 240.0
+
+    @pytest.mark.parametrize("task", ["driver_search", "news_scan", "inquiry", "nl_alert",
+                                      "profile", None])
+    def test_search_and_light_tasks_keep_the_validated_90s(self, tmp_path, task):
+        """⛔ 90s 是**有实测背书的**(v1.3.4:25s 下 10 只审判 5 只超时 → 定 90s),
+        分级不许误伤它 —— 全局翻倍会把"真卡死"的每次等待也拖成 240s。"""
+        assert self._provider_for(tmp_path, task).read_timeout == 90.0
+
+    def test_directly_constructed_providers_are_untouched(self):
+        """分级只发生在工厂里;直接 new 出来的(单测替身 / `providers/{glm,kimi}.py`
+        参考实现)行为**逐字节不变**。"""
+        assert OpenAICompatProvider(api_key="k").read_timeout == 90.0
+        assert GLMProvider(api_key="k").read_timeout == 90.0
+        assert KimiProvider(api_key="k").read_timeout == 90.0
+        assert OpenAICompatProvider(api_key="k", read_timeout=240).read_timeout == 240.0
+
+    def test_the_number_actually_reaches_the_wire(self, tmp_path, monkeypatch):
+        """⚠ 光断言属性不够 —— 要证明它**真的进了 httpx 的 timeout**。`_post` 里
+        `httpx.Timeout(self.read_timeout, connect=...)` 是唯一构造点,这里把
+        `httpx.Client` 换成探针,捕获实际传下去的 timeout。"""
+        seen: List[Any] = []
+
+        class _Probe:
+            def __init__(self, **kw):
+                seen.append(kw.get("timeout"))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def post(self, *a, **k):
+                raise RuntimeError("探针不发真请求")
+
+        monkeypatch.setattr(httpx, "Client", _Probe)
+        p = self._provider_for(tmp_path, "basket_reason")
+        p.max_attempts = 1
+        body, reason = p._post({"x": 1}, None)
+        assert body is None and reason == "调用异常 RuntimeError"
+        assert seen and seen[0].read == 240.0 and seen[0].connect == 6.0
+
     def test_fresh_isolated_db_has_no_configured_provider(self, tmp_path):
         """替代 V1"真实 `.env` 现状必解析为 None"的断言:V2 起没有 `.env` 单
         provider 兜底这个概念,`get_provider()` 完全由 DB 驱动——一份全新/空库

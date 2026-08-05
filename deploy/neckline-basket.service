@@ -29,8 +29,16 @@ Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
 ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --segments basket
-# LLM 段:双 Agent × 每篮多次调用 × 90s 读超时 × 重试。给足墙钟,别让慢调用被 systemd
-# 掐成"链断了"。数值按 ⑯-C 实测的 LLM 段耗时 × 余量设。
-TimeoutStartSec=3600
+# LLM 段:检索 + 推理多次调用 × 读超时 × 重试。给足墙钟,别让慢调用被 systemd
+# 掐成"链断了"。
+# ⚠ **这个数字是按预算账的算术定的,不是拍脑袋的余量** —— 改读超时/预算常量前先重算:
+#     检索账 20min(`SEARCH_BUDGET_SECONDS`)+ 一组超时溢出(90s × 3 = 4.5min)
+#   + 推理账 30min(`REASON_BUDGET_SECONDS`)+ 一组超时溢出(**240s** × 3 = 12min)
+#   ≈ 66.5min  → 取 **5400s(90min)**。
+# 「一组溢出」= 预算是**发起调用前**检查的,所以最后一次调用可以整组超时后才发现账空。
+# **2026-08-05 §七 P0-40 起推理类读超时 90s → 240s**(生产实测篮子聚合 3/3 次恰好
+# 90s 超时 = 确定性超长),原值 3600 恰好卡在旧算术(20+4.5+30+4.5≈59min)的边上,
+# 不抬就会在最坏情况下被 systemd 掐断。⛔ 别把它当"随便留的余量"往回调。
+TimeoutStartSec=5400
 # 内存画像轻(不做全表扫描,只读上一段落好的表 + 装配上下文)。
 MemoryMax=900M
