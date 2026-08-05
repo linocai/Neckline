@@ -389,9 +389,31 @@ Neckline/
   `ln.linotsai.top`,照此换包**新 App 会打老机 → 撞 V1.5.2 契约 → 整份报告解不出、今日计划页全空**
   (`Candidate` 四个价格键是 `try c.decode` 必需)。已改指 `nk` + 加一条**反向闸门单测**。
   ⚠ **若你手填过 `NK_BASE_URL_OVERRIDE`,它压过默认值** —— 换包后连不上先去设置屏清空手填基址。
-- **🔑 唯一挡在"完整可用"前面的事:LLM key 未配**。`llm_providers` **0 行**(V2 的 key 归这张表,
-  不再走 `.env`),**需要你在 App 设置屏自填**。在那之前,晚间链 ⑤⑥ 推理段走**诚实降级**
-  (`推理段缺席(no_provider)—— 当日不成篮`),报告主体照常产出、**不硬造篮子**。已知态,不是故障。
+- **🔑 LLM key 已配(2026-08-05 10:53 CST,你在 App 设置屏填的)**:`llm_providers` **1 行** ——
+  `GLM` / `glm-5.2` / `https://open.bigmodel.cn/api/paas/v4` / `has_web_search=1` / `enabled=1`,
+  key 已落库(服务端只回 `keySet`,不回明文)。⑤⑥ 推理段自此**具备完整跑的条件**,不再必然降级。
+  ⚠ **`search_engine` 列为空** —— 空 = 不发该字段(`OpenAICompatProvider` 的安全默认);
+  ⛔ 别去"补"一个取值,CLAUDE.md 有案底:取值不被上游认识会 `ok=True` **静默返 0 条**。
+  **⑤⑥ 在真 key 下仍未活体跑过一次**(见下条阻塞项),首跑后要看「搜索取证覆盖」命中数。
+- **🔴 当前唯一阻塞项:nk 缺 `20260804` 当日 EOD parquet(⑰ 割接漏搬的增量)**。七张 EOD 表
+  最新分区全停在 `20260803`,`ths_daily` 只到 `2026-07-31`;而**库里**有 08-04
+  (`industry_strength_daily`/`holding_eod_check`)—— 因为 parquet 搬在 08-04 14:42、`neckline.db`
+  搬在 21:48,老机 16:05 拉数正夹在两次之间,验收只逐表对拍了 SQLite。**照原样跑 08-04 的 V2 链
+  会静默出一份空心报告**(缺分区 → `scan_table_range` 返空 DF 不抛异常);**更要紧的是它会污染
+  今晚 16:35 的链** —— `limit_derived` 连板计数按行相邻递推,08-04 空洞会让 08-03/08-05 直接接上、
+  炸掉的板算成连着的,而连板数是 K7 判据输入。**今日 16:05 只拉 08-05,不会自愈**,须在 16:05 前修。
+  两条修法(A:nk 上 `daily_update.py 20260804`,日期口径已审干净;B:从 hz 只读 rsync 那 7 个
+  分区 ~786 KB,与 V1 那份 08-04 报告同源)**等你裁定**,builder 未擅自执行。详见 §九 2026-08-05 两行。
+  📌 **补跑前已固化的 Y-1 基线**(事后拿这两个 sha256 逐字节对比,别只比长度):
+  `reports.20260804` 的 `candidates_json` len **53421** / `d5d2aeeca2d7d4e4b616db26334bfecb3bb55bd75a1c0056f8ff442910fdd429`、
+  `watchlist_json` len **17808** / `31d844483997634f3ba01b0f3835400112a1485f26a1999b8a3de2929f504bf6`;
+  `basket_daily_json` 现为 `{}`(V1 管线从不写它),`generated_at=2026-08-04T09:05:51+00:00`。
+  公网 `GET /report?date=20260804` 补跑前基线 = **200 / 11 711 B / HTTP/2 / `degraded=false`**。
+- **🧹 生产持仓台账已清空(2026-08-05,你的指令)**:`positions` **open 2 → 0**(删 `#4 601567.SH`
+  / `#5 600499.SH` 两笔 07-30 建仓的僵尸行,双备份 `*-preclearpos-20260805-110527` 在
+  `data/backups/`),3 笔历史平仓行与 `holding_eod_check`/`decision_log` 审计行**原样保留**。
+  ⛔ **未编造卖出价** —— 代码里不存在"不伪造成交价的关闭/作废机制",故按用户给的优先级走删除。
+  今早 09:25–09:30 这两笔仓还推过 8 条哨兵警报,自此止住。
 - **回滚绳(三重)**:① 新机 `data/backups/neckline.db.{bak,cpbak}-pre17cut-20260804-214747`
   + `data/neckline.db.{bak,cpbak}-b3retire-20260804-215320`;② macOS 旧包
   `~/Lino/app_backups/Neckline-1.5.1-20260804-215939.app`;③ **老机原封不动,可随时复活**
@@ -400,8 +422,9 @@ Neckline/
   (`activated_at` 未变)、现役选股包 **`K7-pack-v1`**;三件 **active + enabled**,下次触发
   **Wed 2026-08-05 16:05(拉数)/ 16:35(晚间链)**;`systemctl --failed` 零条、`NRestarts=0`、
   journal error 0 条、`memory.events` 全零、idle RSS 78.5 MB;**NPM 四个既有站回归与基线逐行相同**。
-- **仍未实测的三项(⛔ 不编数,⑯ 起挂账)**:⑤⑥ **LLM 段**(无 key)、⑦ **卡冻结**(无篮子即无卡)、
-  ⑧ **盘中存拍**(需真实盘中)。另有 **`neckline.service` 的 `MemoryHigh=420M`/`MemoryMax=600M`**
+- **仍未实测的三项(⛔ 不编数,⑯ 起挂账)**:⑤⑥ **LLM 段**(key 已于 08-05 配好,但**尚未真跑过一次**)、
+  ⑦ **卡冻结**(无篮子即无卡)、⑧ **盘中存拍**(2026-08-05 是新机第一个真实盘中,当日 15:05 落
+  `sentinel='capture'` 行后即可首验)。另有 **`neckline.service` 的 `MemoryHigh=420M`/`MemoryMax=600M`**
   是老机 1.6G 五业务共存时代的数,新机 3.8G 独占下偏紧,但**盘中哨兵在新机上一次都没跑过**、
   真实峰值未知 —— ⛔ 别拍脑袋调(`MemoryHigh` 软节流会让进程陷进回收死循环 = 卡死不报错)。
 - **🔴 一件与本项目无关但你要知道的生产事实(⑯ 已上报,至今未变)**:`ln.linotsai.top` 与
@@ -424,10 +447,12 @@ Neckline/
   ⑮ 六处判断、⑯ 见其完工记录、**⑰ 三处**(P1 误报按"修闸门"办 / `sqlite_sequence` 判为预期 /
   ⑮ 漏改客户端默认后端已补)。均未改 Plan,如与规划意图不符请澄清。
 - **唯一仍开放的规划项**:**⑫ 周度 unit 的形态未定**(plan 明说不由 ⑯-D 决定,⑯/⑰ 均未擅自排)。
-- **下一步(全是你的动作,builder 已交付完毕)**:① **在 App 设置屏填 LLM Provider key**;
-  ② **iOS 用 Xcode 直连真机装 2.0.0**(§八 第 12 项);③ 云解析控制台核对 `ln`/`lf` 的 A 记录;
-  ④ 老机退役与老库归档由你决定(§八 第 8 项),**builder 不自行退役**。
-  **⑯/⑰ 连碰两次高危区(权威库迁移 + 包激活 + 生产割接),建议叫一次 review。**
+- **下一步**:① 🔴 **裁定 08-04 EOD 缺口修法(A 拉数 / B 从 hz rsync),须赶在今日 16:05 前** ——
+  这条定了,08-04 的 V2 报告补跑才有前提;② ~~填 LLM key~~ **已于 08-05 10:53 完成**;
+  ③ **iOS 用 Xcode 直连真机装 2.0.0**(§八 第 12 项);④ 云解析控制台核对 `ln`/`lf` 的 A 记录;
+  ⑤ 老机退役与老库归档由你决定(§八 第 8 项),**builder 不自行退役** ——
+  ⚠ **在 08-04 缺口修法定案之前先别退役 hz**,B 方案要从它身上取那 7 个分区。
+  **⑯/⑰ 连碰两次高危区(权威库迁移 + 包激活 + 生产割接),外加本次生产库点删,建议叫一次 review。**
 - **待办总入口 = §七 Backlog**。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/v1.5_施工图_20260802归档.md` 文末附录。
@@ -3549,6 +3574,10 @@ macOS + iOS `xcodebuild build -configuration Release` **双端 BUILD SUCCEEDED**
 ## 九、变更日志(一行制;详版全文 → `archive/变更日志_详版_20260719-20260728.md`)
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
+
+- 2026-08-05 · 🔴 **补跑 08-04 V2 报告的前提不成立 —— 查出 ⑰ 割接漏搬 08-04 当日 EOD 增量,已停手待裁**(@builder-pro,盘中,**纯只读诊断,零写入**)。**病灶**:nk 的 `data/parquet/` 七张 EOD 表(`daily`/`daily_basic`/`adj_factor`/`moneyflow_dc`/`index_daily`/`limit_derived`/`suspend_d`)**最新分区都停在 `20260803`**,**`20260804` 一张都没有**;`ths_daily` 更只到 `2026-07-31`(超 `SECTOR_DATA_STALE_MAX_LAG_DAYS=2` 容忍)。**根因**:⑰ 割接是**两次搬家**——parquet 在 08-04 **14:42** 逐文件 md5 全等地搬过一次,`neckline.db` 在 **21:48** 又增量搬了第二次;而老机 hz 的 16:05 拉数**发生在两次之间**,于是**库里有 08-04(`industry_strength_daily`/`holding_eod_check` 皆 `20260804`),文件里没有** —— 割接验收当时逐表对拍的是 SQLite,parquet 侧没有第二次对拍,缺口因此没被发现。老机 hz 上七张表 **08-04 分区俱在**(本次只读 `ls` 核实,neckline 三单元仍 inactive+disabled,零改动)。**两条后果**:**①** 照原样跑 V2 链会**静默出一份空心报告** —— `market_data.scan_table_range` 对缺分区**返回空 DataFrame 而不抛异常**,④ 扫描层零行 → ⑤ 无种子 → 报告写「当日不成篮」,而真相是「这台机器上压根没有那天的数据」,**看不出是坏的**,正是本项目一贯最忌的静默降级;**②** 更要紧的是**它会污染今晚 16:35 那条链** —— `limit_derived` 连板计数是**按行相邻**递推(`is_limit_up.shift(1).over(ts_code)`,「停牌无行不打断连板」口径),08-04 的空洞会让 08-03 与 08-05 两行**直接相邻**,08-04 炸掉的板会被算成连着的,而连板数是 K7 包的判据输入。**两条候选修法**(均未执行,等用户裁定):**A** 在 nk 上 `python scripts/daily_update.py 20260804`(已审代码:`target` 全程取自 `sys.argv[1]`,下游函数无一处旁路 `date.today()`,日期口径干净;且 ⑯-D 起 `main()` **已不再挂 ④/④b 扫描层**,只补拉数 + `limit_derived` 15 交易日尾窗 + `suspend_d` + 概念板块 + `industry_strength_daily`,与晚间链不重叠)—— 代价是盘中向 TuShare 拉一次全量 EOD;**B** 从 hz 只读 rsync 那 7 个分区(~786 KB)过来 —— 与生成 V1 那份 08-04 报告的数据逐字节同源、零外部调用,代价是要碰一次停用留档的老机。**⚠ 时效**:今日 16:05 拉数只拉 08-05,**不会自愈 08-04 的洞**,故修复应赶在 16:05 之前。
+
+- 2026-08-05 · 🧹 **生产持仓台账清空:删除 2 笔与现实早已不符的僵尸持仓(用户指令)**(@builder-pro,盘中,只动 SQLite 点删、零重活)。**先双备份**`/opt/neckline/data/backups/neckline.db.{bak,cpbak}-preclearpos-20260805-110527`(各 33 038 336 B,`.backup` 耗时 0.162s,**两份各自 `PRAGMA integrity_check` = ok、各自读回 `open:2 closed:3` 复核**;WAL 当时已 checkpoint、`-wal` 0 字节,故 `cp` 副本一致)。**清空方式 = 删除 `positions` 表 `status='open'` 的 2 行,⛔ 未编造任何卖出价**:先查证「不伪造成交价的关闭/作废机制」在代码里**不存在** —— `sentinel/positions.py::close_position(position_id, sell_price: float, sell_date)` 的价格是**必填位置参数**,`status` 全仓只有 `open|closed` 两态、无 void/cancel,且 `closed` + `sell_price=NULL` 是**代码不支持的态**(`scripts/positions.py::_fmt_row` 对 closed 行直接 `f"{p.sell_price:.2f}"`,None 会当场 TypeError;熔断价格兜底同样要读它)—— 故按用户给的优先级降到「删除 + 留档」。**被删两行原文留档**:`#4 601567.SH 买入价16.749×2400 买入日20260730 备注「放量突破」`、`#5 600499.SH 买入价16.769×2400 买入日20260730 备注「放量突破,昨日涨停,重组利好」`(均 `buy_fees=5.0`,`created_at` 2026-07-30)。**3 笔历史平仓行(#1/#2/#3)原样保留**。**关联行核对**:`entry_snapshots`/`position_plans`/`user_actions` 均 **0 行**(V2 表,如预期);另查出**任务书未预料的两处** `holding_eod_check` **8 行**(#4/#5 各 07-30→08-04 四天体检快照)与 `decision_log` **1 行**(#4 的建仓论点)—— **一并保留不删**,理由:它们是「那几天系统看到了什么」的**append-only 审计事实**,删掉等于篡改历史;且全部消费点(`holding_store.py` 三个 load 函数、`precall` 两个 provider)都是**按当前 open 持仓 `.get(pos.id)` 反查**,空仓下永不被取出,孤儿行惰性无害(已逐个读代码确认无 JOIN)。**验证**:`positions` open **2→0**、closed 3 不变;`GET /api/v1/positions` **200 / `{"holdings":[],"circuit":{"locked":false,...}}`**;删后跨多个哨兵拍(盘中 60s/拍)`journalctl -p warning` **零条**、`NRestarts=0`、load 0.00;空仓是合法态有单测背书(`test_sentinel_tick_v2_bypass.py::test_unavailable_reasons_are_reported` 断言 `no_open_position`)。**推送噪音实证**:今早 09:25–09:30 这两笔仓共触发 **8 条**哨兵事件(`precall position_low_open`×2 / `d5exit trigger`×2 / `holding stop_approach`×2 / `holding take_profit` / `attention decoupled`),正是本次要止住的东西;`sentinel_events` 既有行**保留**(已推是事实)。
 
 - 2026-08-04 · 🚀🔻 **V2-⑰ 割接切换完工 —— Neckline 现役生产机由 hz 老机换成新机 `nk`,V2.0.0 正式上线**(🔴 @builder-pro,高危块:权威库二次搬家 + 生产割接;22:00–22:05 CST 一体切换)。**序**:A 路前提自检 → 代码最终同步 → 数据最终增量搬家 → 客户端指向 + macOS 换包 → 老机停 / 新机启 → 公网转 200 → 收尾核查。**① A 路自检**:P1 打出一条 ✗ 经查证是**脚本自身的误报**(唯一命中是 ⑯-G 落产的 `npm-custom-http.conf` 文件头那句护栏注释),权威判据复核「容器 `nginx -T` 剥注释后零命中 `ln`、全量 `server_name` 无任何 `ln` 指令」→ 修 `deploy/preflight_a_route.sh` 两处 grep 先剥注释(**对自己的注释报警的闸门等于没有闸门**);P2/P3/P4/P5 全成立(老机 active、`/health` = `v1.5.2` 用 IP+Host 实测;`ln` 仍 NXDOMAIN,⑯ 已上报的既有事实)。**② 代码同步**:DRY_RUN **零删除**、属主自检绿;sha256 对拍**做成全树而非抽样 —— 396 个文件逐个全等、零差异**(⑰ 前置-④ 的 A 组九项 + B1 + 尾巴三件与 ⑯ 的 12+7 关键文件全含在内);`init_schema` **WARNING 零字节**、46 表、两条关键唯一索引都在。**③ 数据搬家**:写前双备份 `neckline.db.{bak,cpbak}-pre17cut-20260804-214747`(`.cpbak` 与活库 sha256 逐位相同)→ 老机 21:48:10 `.backup` **0.343s / integrity ok / `feff9a4d…`**、**老机→Mac→新机三跳 sha256 逐位相同** → 确认无进程持有库后 `install` 替换(并清 stale wal/shm)→ `init_schema` 26→**46 表**零 WARNING → **重放 ⑯ 三步各自先演练后 `--confirm`**(K4-pack 锚 → K7-pack 现役,演练 diff 与 ⑯-E 记录逐项吻合 → B3 退役,fail-closed 的 before 哈希与老机库实际值精确对上,写后 `32da6a10…`/1999 B **与 archive 存档逐位相同**)。**验证**:老机 26 表**逐表行数一致**,唯一差异 `sqlite_sequence` 7→9 **逐条核实为两张 AUTOINCREMENT 表的记账** = 预期;`selection_packs` 2 行 / 现役唯一 K7-pack-v1 / 激活流水 3 条;现役章程仍 **`v1.3.3`**(`activated_at` 未变)、`strategy_activation_log` 未增行;走**代码路径**复核现役包与 `stop_pct=0.05`;**B3 零黄牌、A2 仍命中**(`persist_days` 0..10 全区间发射集合 = `['A2_theme_persist_ge_4']`);今日写入确已在新库(`reports` 20260804 1 行、`sentinel_events` 62 条)。🔒 **额外保险(plan 未要求)**:停老机**前**再跑一次老机库逐表行数,与快照**零差异** = 搬家未漏任何写入。**④ ⚠ ⑮ 漏改的客户端默认后端,本次补上(真洞)**:`AppConfig.swift` 的 `.prod` 此前仍是 `ln.linotsai.top`,照此换包**新 App 会打老机 → 撞 V1.5.2 契约 → 整份报告解不出、今日计划页全空**(`Candidate` 四个价格键是 `try c.decode` 必需)—— 改指 `nk` + 四处引用换血 + **新增反向闸门单测**(断言消息自带理由),iOS 测试 184 → **185 过**。**⑤ macOS 换包**:旧包 `ditto` 备份 → `~/Lino/app_backups/Neckline-1.5.1-20260804-215939.app`,`ditto`(⛔ 未用 `cp -R`)装 `/Applications/Neckline.app`;验 **2.0.0 / universal / `codesign --verify --deep --strict` valid + 满足 DR / 产物与安装态可执行 sha256 逐位一致**;**二进制字符串实证**:安装态含 `nk.linotsai.top`、**`ln` 零命中**。iOS Release 产物就位(装真机是用户动作,§八-12)。**⑥ 一体切换**:老机 `stop`+`disable` 三单元(**⛔ 只停不删**,五个 unit 文件与 `/opt/neckline`、`.env`/`.p8`/`data/` 原样留档;停机前最终快照 `/health`=`v1.5.2`、自 07-31 06:09:55 连续运行、`NRestarts=0`、当日两 timer **`ExecMainStatus=0`** 16:05:00/16:35:01 —— 铁律的状态码+本次时间戳双证)→ 新机 `enable --now` 三件全 **active+enabled**、下次触发 **Wed 08-05 16:05/16:35** → 公网 `https://nk.linotsai.top/api/v1/health` **502 → 200 `v2.0.0`**。⚠ **本机 Mac curl 该域名 `remote_ip` 显示 `127.0.0.1`**(CLAUDE.md 登记的代理 fake-ip),故**另从老机这个真外部机位复验**:DNS→`114.66.0.38`、200 `v2.0.0`、TLS 校验 0、**HTTP/2**、证书 `CN=nk.linotsai.top`/LE/至 **2026-11-02**;http→301、无/错 token→401、`/baskets/999999`→**404 `basket_not_found`**;**最强一条** —— 带 token 取 `?date=20260804` **200 / 11 711 B / `degraded=false`**,即**老机 16:35 生成的今日报告现由新机对外服务**,一条请求同证搬家完整与 V2 可用。**⑦ 收尾**:新机 `systemctl --failed` 零条、`NRestarts=0`、journal error 0 条、`memory.events` 全零、idle 78.5 MB;**NPM 四个既有站回归与基线逐行完全相同**;A 路自检复跑**「全过」**;`~/Lino/hz_info.md` 已同步(老机 Neckline 条目改「已停用留档」、nk-3/nk-4/nk-6 改现役态)。**回滚绳三重**:新机两对双备份 + macOS 旧包 + **老机原封不动可随时复活**(⚠ 复活前须先在新机 disable,否则双推送重现)。**测试**:`pytest tests/ -q` **2963 过 + 2 skip + 0 fail**(零回归);iOS Simulator **185 过 + 12 skip + 0 failures**;双端 Release `xcodebuild build` **BUILD SUCCEEDED**。**三处如实登记**:P1 误报按「修闸门」办 / `sqlite_sequence` 判为预期(逐条比对得出)/ ⑮ 漏改客户端默认后端已补。**留给用户四件**:App 设置屏填 LLM key、iOS 真机装包、云解析核对 `ln`/`lf` 的 NXDOMAIN、老机退役与老库归档由用户定。详见 §五 V2-⑰ 完工记录。
 
