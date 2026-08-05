@@ -265,10 +265,12 @@ class InfoCardBasketPeer:
 class InfoCardBasket:
     """⑬-N 新增三块:①所属篮子与共同驱动 ②本票角色(含对拍分歧)③与同篮其他成员的对比。
 
-    `available=False` 有两种成因,**必须靠 `unavailable_reason` 分辨,不许合并**:
-    「这只票今天不在任何篮子里」vs「在篮子里但卡还没生成」(后者 = ⑦ 的
-    `card_not_ready` 同一语义)。⛔ 卡缺失时不拿 `basket_members` 表里的裸行顶上冒充
-    冻结件 —— 那会让读者以为看到的是当晚冻住的东西。"""
+    `available=False` 有三种成因,**必须靠 `unavailable_reason` 分辨,不许合并**:
+    「这只票今天不在任何篮子里」/「在篮子里但卡还没生成」(= ⑦ 的 `card_not_ready`
+    同一语义,合法中间态,等等就有)/「在篮子里,但那张卡数据损坏」(2026-08-05 补齐,
+    = B1 的 `card_corrupt` 同一语义,**数据事故,不会自己好**)——⛔ 后两者不许合并
+    展示,合并等于让用户以为"损坏的卡"再等等就会出现。⛔ 卡缺失/损坏时不拿
+    `basket_members` 表里的裸行顶上冒充冻结件 —— 那会让读者以为看到的是当晚冻住的东西。"""
     available: bool = False
     unavailable_reason: Optional[str] = None
     basket_id: Optional[int] = None
@@ -730,6 +732,11 @@ def _top_list_summary_for_code(
 
 BASKET_NOT_A_MEMBER_REASON = "本票当日不在任何篮子里"
 BASKET_CARD_NOT_READY_REASON = "本票所在篮子当日尚未生成篮子卡"
+# 2026-08-05(B1 同类裁定,顺手补齐)：「压根没有卡行」与「有卡行但读不出」是两个原因,
+# 不许摊成一句——后者是数据事故(冻结件损坏,`INSERT OR IGNORE` 永不覆盖,不会自己好),
+# 前者是合法中间态(⑦ 的卡生成事务还没跑到)。检测点 = `basket_store.load_basket_card`
+# 唯一实现(`_decode_card_json` 已在那里打 ERROR),本模块不重复打日志、只转述原因。
+BASKET_CARD_CORRUPT_REASON = "本票所在篮子的卡数据损坏(详见服务端日志)"
 
 
 def build_basket_context(
@@ -738,8 +745,9 @@ def build_basket_context(
     """⑬-N 三块的取数(所属篮子与共同驱动 / 本票角色含对拍分歧 / 与同篮其他成员对比)。
 
     **只读 D0 冻结的篮子卡**(`basket_cards.card_json`),信息卡侧零重算。
-    「不在篮子里」与「在篮子里但卡没生成」两态分开如实标(承 ⑦ 的
-    `basket_not_found` vs `card_not_ready`,同一条「『没有』与『没看』必须能分开」)。
+    「不在篮子里」/「在篮子里但卡没生成」/「在篮子里但卡数据损坏」三态分开如实标
+    (承 ⑦ 的 `basket_not_found` vs `card_not_ready`,再叠 B1 的 `card_corrupt` ≠
+    `card_not_ready`,同一条「『没有』与『没看』必须能分开」)。
     读库异常 → `available=False` + 原因,⛔ 绝不掀翻整张信息卡(其余八件套照出)。
 
     同一票落在多个篮子时取**主归属**(`is_primary=1`)那一个;都不是主归属则取
@@ -757,12 +765,18 @@ def build_basket_context(
         return InfoCardBasket(available=False, unavailable_reason=BASKET_NOT_A_MEMBER_REASON)
 
     chosen, chosen_card, chosen_member = None, None, None
+    any_corrupt = False
     for b in hits:
         try:
             row = load_basket_card(b.basket_id, db_path=db_path)
         except Exception:  # noqa: BLE001
             logger.warning("[info_card] 读篮子 %s 的卡失败", b.basket_key, exc_info=True)
             row = None
+        # `basket_store.load_basket_card` 是唯一检测点:`row` 非空且 `card_corrupt=True`
+        # 时 `row["card"]` 恒为 None(_decode_card_json 的返回契约),ERROR 已在那里打过,
+        # 这里只如实转述、不重复打日志。
+        if row is not None and row.get("card_corrupt"):
+            any_corrupt = True
         card = (row or {}).get("card") or {}
         m = next((x for x in (card.get("members") or []) if x.get("ts_code") == code), None)
         if m is None:
@@ -772,7 +786,8 @@ def build_basket_context(
             if int(m.get("is_primary") or 0) == 1:
                 break
     if chosen is None:
-        return InfoCardBasket(available=False, unavailable_reason=BASKET_CARD_NOT_READY_REASON)
+        reason = BASKET_CARD_CORRUPT_REASON if any_corrupt else BASKET_CARD_NOT_READY_REASON
+        return InfoCardBasket(available=False, unavailable_reason=reason)
 
     peers = [
         InfoCardBasketPeer(
@@ -942,6 +957,7 @@ __all__ = [
     "build_member_tags",
     "BASKET_NOT_A_MEMBER_REASON",
     "BASKET_CARD_NOT_READY_REASON",
+    "BASKET_CARD_CORRUPT_REASON",
     "InfoCard",
     "InfoCardSummary",
     "build_info_card",

@@ -301,6 +301,32 @@ def test_info_card_basket_two_unavailable_reasons_are_distinct(api_env):
     assert BASKET_NOT_A_MEMBER_REASON != BASKET_CARD_NOT_READY_REASON
 
 
+def test_info_card_basket_card_corrupt_is_distinct_from_card_not_ready(api_env):
+    """B1(2026-08-04 裁定)的信息卡侧收口(2026-08-05,契约类型核对顺手单)。
+
+    修前:`build_basket_context` 用 `(row or {}).get("card") or {}` 把「压根没有卡行」
+    与「有卡行但读不出」摊成同一个 `{}`,两态最终都落 `BASKET_CARD_NOT_READY_REASON`
+    ——冻结卡是「有行但读不出就永久读不出」(`INSERT OR IGNORE` 永不覆盖),用户看到
+    「还没生成」会一直等一张永远不来的卡。同 `test_basket_daily.py::
+    test_corrupt_card_says_damaged_not_not_ready` 的事故现场手法:先用 `basket_card`
+    本尊产出一张好卡,再直接 `UPDATE` 成坏 JSON,复用 `basket_store.load_basket_card`
+    唯一检测点(ERROR 已在那里打过,本模块不重复打)。"""
+    from neckline.db import connection
+    from neckline.report.info_card import (
+        BASKET_CARD_CORRUPT_REASON, BASKET_CARD_NOT_READY_REASON, build_basket_context,
+    )
+
+    d = date(2026, 7, 17)
+    bid = _seed_basket_with_card(api_env.db_path, d, ["600001.SH"], key="k11")
+    with connection(api_env.db_path) as conn:   # 只在测试库里造事故现场
+        conn.execute("UPDATE basket_cards SET card_json='{坏了' WHERE basket_id=?", (bid,))
+
+    ctx = build_basket_context("600001.SH", d, db_path=api_env.db_path)
+    assert ctx.available is False
+    assert ctx.unavailable_reason == BASKET_CARD_CORRUPT_REASON
+    assert ctx.unavailable_reason != BASKET_CARD_NOT_READY_REASON
+
+
 def test_info_card_tags_are_bit_for_bit_identical_to_the_basket_card_tags(api_env, monkeypatch):
     """**⑬-N-K7 交叉断言(plan 点名)**:同一票同一天,信息卡与篮子卡的标签集合**逐位
     相同** —— 因为两侧读的是 `member_tags.tags_for_members` 同一个入口、同一份文案模板。
