@@ -70,35 +70,60 @@ def test_non_search_task_without_route_uses_default_directly_ignoring_search_row
 
 
 def test_read_timeout_grading_is_by_task_class_and_defaults_to_none():
-    """§七 P0-40:`None` = **不覆盖**(用 provider 类属性 90.0),与"分级后恰好等于
-    90.0"分得开 —— 前者让 provider 子类保留自己的默认值,后者会把它按死。"""
+    """§七 P0-40 → P0-44:`None` = **不覆盖**(用 provider 类属性 90.0),与"分级后
+    恰好等于 90.0"分得开 —— 前者让 provider 子类保留自己的默认值,后者会把它按死。
+
+    ⚠ 长上下文那一档的数字**在 P0-44 后又回到 90.0,但语义完全不同**:流式下它是
+    **chunk 间隔**上限,不是整段墙钟。别看见 90 就以为回退了。"""
     for t in router.LONG_CONTEXT_TASKS:
-        assert router.read_timeout_for_task(t) == router.LONG_CONTEXT_READ_TIMEOUT_SECONDS
+        assert router.read_timeout_for_task(t) == router.STREAM_CHUNK_GAP_TIMEOUT_SECONDS
     for t in router.DEFAULT_SEARCH_TASKS:
         assert router.read_timeout_for_task(t) is None
     assert router.read_timeout_for_task(None) is None
     assert router.read_timeout_for_task("some_future_task") is None
 
 
+def test_streaming_is_switched_on_for_exactly_the_long_context_set():
+    """§七 P0-44:流式与 chunk 间隔超时是**同一个判据的两半**,必须同进同出 ——
+    只开一半 = 语义与数字对不上(给非流式任务配 chunk 间隔的数字 = 悄悄变成 90s
+    整段墙钟 = P0-40 原病复发)。"""
+    for t in router.ALL_TASKS:
+        assert router.use_streaming_for_task(t) is (t in router.LONG_CONTEXT_TASKS)
+        assert router.use_streaming_for_task(t) is (router.read_timeout_for_task(t) is not None)
+    assert router.use_streaming_for_task(None) is False
+    assert router.use_streaming_for_task("some_future_task") is False
+
+
+def test_the_disproven_fixed_wall_constant_is_gone():
+    """⛔ P0-40 的 `LONG_CONTEXT_READ_TIMEOUT_SECONDS=240.0` **已被生产证伪并删除**
+    (当晚 3/3 次精确撞满 240s)。留着它 = 后人会"顺手"再抬一次那个数字,重走死路;
+    这条把"已证伪的常量不许复活"变成机器可查。"""
+    assert not hasattr(router, "LONG_CONTEXT_READ_TIMEOUT_SECONDS")
+
+
 def test_long_context_and_search_task_sets_never_overlap():
-    """⛔ 一个任务不能同时"要长超时"又"是检索类" —— 两套语义撞在一起时,读超时该
-    取哪个会变成隐式约定;真出现这种任务,先回 planner 定口径。"""
+    """⛔ 一个任务不能同时"走流式"又"是检索类" —— `web_search` tools 协议 × 流式
+    是本项目从未验证过的组合(v1.3.4 案底:坏起来是静默的);真出现这种任务,
+    先回 planner 定口径。"""
     assert not (set(router.LONG_CONTEXT_TASKS) & set(router.DEFAULT_SEARCH_TASKS))
     assert set(router.LONG_CONTEXT_TASKS) <= set(router.ALL_TASKS)
 
 
-def test_worst_case_long_context_retry_fits_inside_the_reason_budget():
-    """算术守门:放宽后的最坏一组重试必须仍在推理账之内 —— 否则一次慢调用就能把
-    整本账吃穿,后面的 Tier/剧本全成 `budget_exhausted`(§七 P0-40 定案时的判据)。"""
-    worst = router.LONG_CONTEXT_READ_TIMEOUT_SECONDS * 3  # max_attempts=3
-    assert worst < budget.REASON_BUDGET_SECONDS
-    assert worst < budget.REVIEW_BUDGET_SECONDS * 2, "复盘账 15min,一组 12min 已接近上限"
+def test_worst_case_streaming_generation_fits_inside_the_reason_budget():
+    """算术守门:**流式下单次调用的墙钟没有固定上限**(生成多长都合法,这正是
+    P0-44 要治的),故这里守的是给它留的**悲观额度**必须仍在推理账之内 —— 否则
+    一次慢调用就能把整本账吃穿,后面的 Tier/剧本全成 `budget_exhausted`。"""
+    allowance = router.STREAM_GENERATION_BUDGET_ALLOWANCE_SECONDS
+    assert allowance < budget.REASON_BUDGET_SECONDS
+    assert allowance < budget.REVIEW_BUDGET_SECONDS
+    # 悲观额度必须**明显宽于**已实测过的最慢一次(中午 173s;晚高峰更慢)。
+    assert allowance >= 173.0 * 3, "额度没给够,遇上比中午慢三倍的晚高峰就会低估"
 
 
 def test_basket_unit_timeout_covers_the_new_budget_arithmetic():
     """`deploy/neckline-basket.service` 的 `TimeoutStartSec` 是**按预算算术定的**,
-    不是随便留的余量。抬读超时而不抬它 = 最坏情况下被 systemd 掐断("链断了"),
-    这条把两者钉在一起,改一个不改另一个会红。"""
+    不是随便留的余量。改读超时/流式额度而不改它 = 最坏情况下被 systemd 掐断
+    ("链断了"),这条把两者钉在一起,改一个不改另一个会红。"""
     import re
 
     unit = (Path(__file__).resolve().parent.parent / "deploy" / "neckline-basket.service").read_text(
@@ -106,9 +131,9 @@ def test_basket_unit_timeout_covers_the_new_budget_arithmetic():
     m = re.search(r"^TimeoutStartSec=(\d+)", unit, re.MULTILINE)
     assert m, "neckline-basket.service 没有 TimeoutStartSec"
     worst_seconds = (
-        budget.SEARCH_BUDGET_SECONDS + 90.0 * 3          # 检索账 + 一组检索超时溢出
+        budget.SEARCH_BUDGET_SECONDS + 90.0 * 3   # 检索账 + 一组非流式超时溢出(检索类不流式)
         + budget.REASON_BUDGET_SECONDS
-        + router.LONG_CONTEXT_READ_TIMEOUT_SECONDS * 3   # 推理账 + 一组推理超时溢出
+        + router.STREAM_GENERATION_BUDGET_ALLOWANCE_SECONDS  # 推理账 + 最后一次整段生成溢出
     )
     assert int(m.group(1)) >= worst_seconds, (
         f"unit 超时 {m.group(1)}s < 预算算术最坏 {worst_seconds:.0f}s"

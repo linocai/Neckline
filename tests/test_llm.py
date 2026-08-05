@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional
 
 import httpx
 import pytest
@@ -115,7 +116,7 @@ class TestFactory:
         p = get_provider(TASK_BASKET_REASON, db_path=db)
         assert p is not None and p.name == "deepseek"
 
-    # —— §七 P0-40:读超时按 task 类别分级 ————————————————————————————————
+    # —— §七 P0-40 → P0-44:按 task 类别分级(流式 + chunk 间隔超时)——————————
     def _provider_for(self, tmp_path, task):
         db = self._db(tmp_path)
         settings_store.create_provider("glm", "https://open.bigmodel.cn/x", "glm-5.2", api_key="k",
@@ -124,25 +125,31 @@ class TestFactory:
         return get_provider(task, db_path=db)
 
     @pytest.mark.parametrize("task", ["basket_reason", "tier_rank", "script", "review"])
-    def test_long_context_tasks_get_the_longer_read_timeout(self, tmp_path, task):
-        """⑤ 篮子聚合一次塞 20 颗种子 + 成员机械数据,2026-08-05 生产实测 **3/3 次恰好
-        90s ReadTimeout**(确定性超长,不是抖动)—— 推理类必须拿到放宽后的读超时。"""
-        assert self._provider_for(tmp_path, task).read_timeout == 240.0
+    def test_long_context_tasks_stream_with_chunk_gap_timeout(self, tmp_path, task):
+        """⑤ 篮子聚合一次塞 20 颗种子 + 成员机械数据:2026-08-05 中午 3/3 次撞满 90s、
+        当晚 3/3 次撞满 240s —— **抬数字这条路已被证伪**,推理类必须走流式,读超时
+        语义随之变成 **chunk 间隔**(判「还在不在吐字」,与上游吞吐无关)。"""
+        p = self._provider_for(tmp_path, task)
+        assert p.use_streaming is True
+        assert p.read_timeout == 90.0   # ⚠ 语义 = chunk 间隔,不是整段墙钟
 
     @pytest.mark.parametrize("task", ["driver_search", "news_scan", "inquiry", "nl_alert",
                                       "profile", None])
-    def test_search_and_light_tasks_keep_the_validated_90s(self, tmp_path, task):
-        """⛔ 90s 是**有实测背书的**(v1.3.4:25s 下 10 只审判 5 只超时 → 定 90s),
-        分级不许误伤它 —— 全局翻倍会把"真卡死"的每次等待也拖成 240s。"""
-        assert self._provider_for(tmp_path, task).read_timeout == 90.0
+    def test_search_and_light_tasks_stay_non_streaming_at_the_validated_90s(self, tmp_path, task):
+        """⛔ 检索类**刻意不开流式** —— GLM `web_search` tools 协议与流式的组合本项目
+        从未验证过(v1.3.4 案底:不被认识的组合会 `ok=True` 静默返 0 条)。90s 整段
+        墙钟是有实测背书的,一字不动。"""
+        p = self._provider_for(tmp_path, task)
+        assert p.use_streaming is False
+        assert p.read_timeout == 90.0
 
     def test_directly_constructed_providers_are_untouched(self):
         """分级只发生在工厂里;直接 new 出来的(单测替身 / `providers/{glm,kimi}.py`
-        参考实现)行为**逐字节不变**。"""
-        assert OpenAICompatProvider(api_key="k").read_timeout == 90.0
-        assert GLMProvider(api_key="k").read_timeout == 90.0
-        assert KimiProvider(api_key="k").read_timeout == 90.0
+        参考实现)行为**逐字节不变** —— 含"默认不流式"。"""
+        for p in (OpenAICompatProvider(api_key="k"), GLMProvider(api_key="k"), KimiProvider(api_key="k")):
+            assert p.read_timeout == 90.0 and p.use_streaming is False
         assert OpenAICompatProvider(api_key="k", read_timeout=240).read_timeout == 240.0
+        assert OpenAICompatProvider(api_key="k", use_streaming=True).use_streaming is True
 
     def test_the_number_actually_reaches_the_wire(self, tmp_path, monkeypatch):
         """⚠ 光断言属性不够 —— 要证明它**真的进了 httpx 的 timeout**。`_post` 里
@@ -163,12 +170,15 @@ class TestFactory:
             def post(self, *a, **k):
                 raise RuntimeError("探针不发真请求")
 
+            def stream(self, *a, **k):
+                raise RuntimeError("探针不发真请求")
+
         monkeypatch.setattr(httpx, "Client", _Probe)
         p = self._provider_for(tmp_path, "basket_reason")
         p.max_attempts = 1
-        body, reason = p._post({"x": 1}, None)
+        body, reason = p._post({"x": 1, "stream": True}, None)
         assert body is None and reason == "调用异常 RuntimeError"
-        assert seen and seen[0].read == 240.0 and seen[0].connect == 6.0
+        assert seen and seen[0].read == 90.0 and seen[0].connect == 6.0
 
     def test_fresh_isolated_db_has_no_configured_provider(self, tmp_path):
         """替代 V1"真实 `.env` 现状必解析为 None"的断言:V2 起没有 `.env` 单
@@ -176,6 +186,266 @@ class TestFactory:
         天然等价于旧断言想验证的"当前无可用 LLM"现状(§2.0/§3.8「全链路必须在
         无 key 下优雅降级跑通」)。"""
         assert get_provider(db_path=self._db(tmp_path)) is None
+
+
+class TestStreamingAssembly:
+    """§七 P0-44:大上下文推理改 SSE 流式。**这一组的核心断言是「拼出来的东西与非
+    流式逐字节等价」** —— 上层(`chat()` 的 tool 循环 / 空内容判定 / 搜索命中提取 /
+    所有调用方)一行都没改,靠的就是这条等价性。"""
+
+    CONTENT = "这是一段较长的分析。\n结论:通过"
+
+    def _sse(self, *chunks: Dict[str, Any], done: bool = True) -> bytes:
+        out = b""
+        for c in chunks:
+            out += b"data: " + json.dumps(c, ensure_ascii=False).encode("utf-8") + b"\n\n"
+        if done:
+            out += b"data: [DONE]\n\n"
+        return out
+
+    def _delta_chunks(self, content: str, model: str = "glm-5.2") -> List[Dict[str, Any]]:
+        """把一段内容切成逐字 delta,首块带 role、末块带 finish_reason —— GLM/OpenAI
+        标准形状。"""
+        chunks: List[Dict[str, Any]] = []
+        for i, ch in enumerate(content):
+            delta: Dict[str, Any] = {"content": ch}
+            if i == 0:
+                delta["role"] = "assistant"
+            chunks.append({"id": "abc", "model": model,
+                           "choices": [{"index": 0, "delta": delta, "finish_reason": None}]})
+        chunks.append({"id": "abc", "model": model,
+                       "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        return chunks
+
+    def _streaming_provider(self, **kw) -> OpenAICompatProvider:
+        kw.setdefault("api_key", "sk-xxx")
+        kw.setdefault("model", "glm-5.2")
+        kw.setdefault("name", "glm")
+        kw.setdefault("api_url", "https://example.invalid/chat/completions")
+        kw.setdefault("use_streaming", True)
+        return OpenAICompatProvider(**kw)
+
+    def _transport(self, payload: bytes, ctype: str = "text/event-stream",
+                   seen: Optional[Dict[str, Any]] = None) -> httpx.MockTransport:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if seen is not None:
+                seen.update(json.loads(request.content))
+            return httpx.Response(200, content=iter([payload]), headers={"content-type": ctype})
+
+        return httpx.MockTransport(handler)
+
+    # —— 等价性(本组的主命题)——————————————————————————————————————————
+    def test_assembled_body_is_byte_identical_to_the_non_streaming_body(self):
+        """**逐字节**:拼出来的 dict 连键序都要和非流式响应体一样 —— 不是"字段差不多
+        齐",是 `json.dumps` 完全相等。"""
+        p = self._streaming_provider()
+        body, err = p._assemble_stream(
+            self._sse(*self._delta_chunks(self.CONTENT)).decode("utf-8").split("\n")
+        )
+        assert err is None
+        expected = _openai_success_body(self.CONTENT)
+        assert json.dumps(body, ensure_ascii=False) == json.dumps(expected, ensure_ascii=False)
+
+    def test_streaming_and_non_streaming_yield_the_same_llm_result(self):
+        """端到端:同一段内容,走流式与走非流式,`LLMResult` 的每个字段都一样
+        (`raw_responses` 里那份 body 也一样,上面那条已逐字节锁死)。"""
+        streamed = self._streaming_provider().chat(
+            [ChatMessage(role="user", content="hi")], enable_search=False,
+            transport=self._transport(self._sse(*self._delta_chunks(self.CONTENT))),
+        )
+        plain = self._streaming_provider(use_streaming=False).chat(
+            [ChatMessage(role="user", content="hi")], enable_search=False,
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(200, json=_openai_success_body(self.CONTENT))),
+        )
+        assert streamed.ok is plain.ok is True
+        assert streamed.content == plain.content == self.CONTENT
+        assert (streamed.provider, streamed.model) == (plain.provider, plain.model)
+        assert streamed.search_hits == plain.search_hits == []
+        assert streamed.raw_responses == plain.raw_responses
+
+    def test_stream_true_actually_reaches_the_wire(self):
+        seen: Dict[str, Any] = {}
+        self._streaming_provider().chat(
+            [ChatMessage(role="user", content="hi")], enable_search=False,
+            transport=self._transport(self._sse(*self._delta_chunks("好")), seen=seen),
+        )
+        assert seen["stream"] is True
+
+    # —— 守门:检索类绝不走流式 ————————————————————————————————————————
+    def test_non_streaming_payload_is_unchanged_byte_for_byte(self):
+        """P0-44 的**零回归断言**:不开流式时 payload 仍是 `stream: False`,与改动前
+        逐字节相同 —— 检索链路(GLM `web_search` tools 协议)一个字节都没被碰。"""
+        seen: Dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_openai_success_body("ok"))
+
+        GLMProvider(api_key="sk-xxx").chat([ChatMessage(role="user", content="hi")],
+                                            transport=httpx.MockTransport(handler))
+        assert seen["stream"] is False
+        assert seen["tools"][0]["type"] == "web_search"      # 搜索声明原样发出
+        assert set(seen) == {"model", "messages", "stream", "tools"}
+
+    def test_search_tasks_are_never_streamed(self, tmp_path):
+        """⛔ 守门:`web_search` tools 协议 × 流式 = 本项目从未验证过的组合,
+        v1.3.4 案底说明它坏起来是**静默的**(`ok=True` + 0 条)。检索类必须恒非流式。"""
+        from neckline.llm import router
+
+        for task in router.DEFAULT_SEARCH_TASKS:
+            assert router.use_streaming_for_task(task) is False
+        db = tmp_path / "n.db"
+        init_schema(db)
+        settings_store.create_provider("glm", "https://x/chat/completions", "glm-5.2", api_key="k",
+                                        has_web_search=True, search_engine="search_pro", db_path=db)
+        settings_store.set_llm_routes({}, "glm", db_path=db)
+        seen: Dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_openai_success_body("ok"))
+
+        get_provider(TASK_DRIVER_SEARCH, db_path=db).chat(
+            [ChatMessage(role="user", content="hi")], transport=httpx.MockTransport(handler))
+        assert seen["stream"] is False and "tools" in seen
+
+    # —— chunk 间隔超时:本次修复的**判据本身** ——————————————————————————
+    def test_chunk_gap_timeout_retries_then_degrades_without_partial_content(self):
+        """流到一半静默超时 → 重试 N 次后干净降级。**⛔ 半截内容绝不当成品返回**:
+        半截 JSON 解出来可能正好是个"看着合法"的残缺篮子,比干净失败危险得多。"""
+        attempts = {"n": 0}
+        head = self._sse(*self._delta_chunks("这是开头")[:3], done=False)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts["n"] += 1
+
+            def gen():
+                yield head
+                raise httpx.ReadTimeout("chunk 间隔超时", request=request)
+
+            return httpx.Response(200, content=gen(), headers={"content-type": "text/event-stream"})
+
+        p = self._streaming_provider()
+        p.max_attempts = 2
+        r = p.chat([ChatMessage(role="user", content="hi")], enable_search=False,
+                   transport=httpx.MockTransport(handler))
+        assert attempts["n"] == 2
+        assert r.ok is False and "调用异常 ReadTimeout" in r.reason
+        assert not r.content
+
+    def test_a_generation_longer_than_the_old_240s_wall_still_completes(self):
+        """**本次修复的核心命题**:非流式下"整段生成 > read_timeout"必死(P0-40 的
+        240s 当晚 3/3 撞满);流式下只要 chunk 不断,**整段多长都活**。这里用一个
+        「每块之间的间隔都在容忍内、但总时长远超单块容忍」的流来证明它。"""
+        p = self._streaming_provider()
+        p.read_timeout = 0.05                     # chunk 间隔容忍 50ms
+        chunks = self._delta_chunks("很长的一段生成")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            def gen():
+                for c in chunks:                  # 每块间隔 10ms < 50ms,总时长 > 50ms
+                    time.sleep(0.01)
+                    yield self._sse(c, done=False)
+                yield b"data: [DONE]\n\n"
+
+            return httpx.Response(200, content=gen(), headers={"content-type": "text/event-stream"})
+
+        started = time.monotonic()
+        r = p.chat([ChatMessage(role="user", content="hi")], enable_search=False,
+                   transport=httpx.MockTransport(handler))
+        elapsed = time.monotonic() - started
+        assert r.ok is True and r.content == "很长的一段生成"
+        assert elapsed > p.read_timeout, "整段耗时必须超过单个 chunk 间隔容忍,否则这条没验到东西"
+
+    # —— 容错三条 ——————————————————————————————————————————————————
+    def test_missing_done_sentinel_is_tolerated(self):
+        """`[DONE]` 缺失不算错(不少实现直接关连接了事)。"""
+        p = self._streaming_provider()
+        body, err = p._assemble_stream(
+            self._sse(*self._delta_chunks(self.CONTENT), done=False).decode("utf-8").split("\n"))
+        assert err is None
+        assert body["choices"][0]["message"]["content"] == self.CONTENT
+
+    def test_malformed_chunk_is_skipped_not_fatal(self):
+        """半截 / 非法 JSON 的**单条** chunk 只跳过它自己,不丢整段生成。"""
+        p = self._streaming_provider()
+        good = self._sse(*self._delta_chunks(self.CONTENT), done=False).decode("utf-8").split("\n")
+        polluted = good[:4] + ['data: {"id":"abc","choi', "data: 不是 JSON"] + good[4:]
+        body, err = p._assemble_stream(polluted)
+        assert err is None
+        assert body["choices"][0]["message"]["content"] == self.CONTENT
+
+    def test_every_chunk_malformed_degrades_explicitly_not_silently_empty(self):
+        """⚠ 全坏 ≠ 空回答:必须如实报错,**不许静默返一个空内容的成功体**。"""
+        p = self._streaming_provider()
+        body, err = p._assemble_stream(["data: {坏", "data: 也坏", ""])
+        assert body is None and "流式响应为空" in err
+
+    def test_upstream_that_ignores_stream_true_falls_back_to_whole_json(self):
+        """自填制下完全可能碰到不认 `stream:true` 的端点 —— 它原样回一整份 JSON。
+        判据取**数据本身**(有没有 `data:` 行),不看 `Content-Type`(缺头/写错头的
+        实现太多)。"""
+        plain = json.dumps(_openai_success_body(self.CONTENT), ensure_ascii=False).encode("utf-8")
+        r = self._streaming_provider().chat(
+            [ChatMessage(role="user", content="hi")], enable_search=False,
+            transport=self._transport(plain, ctype="application/json"),
+        )
+        assert r.ok is True and r.content == self.CONTENT
+
+    # —— 形状保真的其余两处 ————————————————————————————————————————
+    def test_reasoning_content_is_not_merged_into_content(self):
+        """思考型模型的 `reasoning_content` **不并入 content**(非流式返回的也只有
+        `message.content`,并进来就不等价了);但它照样算一个 chunk —— 「还在思考」
+        不会被 chunk 间隔超时误杀。"""
+        p = self._streaming_provider()
+        chunks = [
+            {"id": "abc", "model": "glm-5.2",
+             "choices": [{"index": 0, "delta": {"role": "assistant", "reasoning_content": "先想想…"}}]},
+            {"id": "abc", "model": "glm-5.2",
+             "choices": [{"index": 0, "delta": {"content": "答案"}, "finish_reason": "stop"}]},
+        ]
+        body, err = p._assemble_stream(self._sse(*chunks).decode("utf-8").split("\n"))
+        assert err is None
+        assert body["choices"][0]["message"]["content"] == "答案"
+
+    def test_tool_call_deltas_are_accumulated_by_index(self):
+        """`tool_calls` 的分片 `arguments` 要按 `index` 拼回完整串 —— 否则上层
+        `chat()` 的工具循环会拿到半截 arguments(当前不给检索类开流式,这里是形状
+        保真的保险,不是已验证过的生产路径)。"""
+        p = self._streaming_provider()
+        chunks = [
+            {"choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "$web_search", "arguments": '{"que'}}]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": 'ry":"x"}'}}]}, "finish_reason": "tool_calls"}]},
+        ]
+        body, err = p._assemble_stream(self._sse(*chunks).decode("utf-8").split("\n"))
+        assert err is None
+        tc = body["choices"][0]["message"]["tool_calls"]
+        assert len(tc) == 1 and tc[0]["id"] == "call_1"
+        assert json.loads(tc[0]["function"]["arguments"]) == {"query": "x"}
+        assert body["choices"][0]["finish_reason"] == "tool_calls"
+
+    def test_non_200_on_stream_degrades_same_as_non_streaming(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={"error": "boom"})
+
+        r = self._streaming_provider().chat([ChatMessage(role="user", content="hi")],
+                                             enable_search=False,
+                                             transport=httpx.MockTransport(handler))
+        assert r.ok is False and "500" in r.reason
+
+    def test_stream_completion_logs_the_wall_clock_evidence(self, caplog):
+        """生产判据埋点:journal 里必须留下"这次流了多久 / 多少 chunk" —— 它是
+        「生成超过旧 240s 固定墙也照样活着」的唯一现场证据。"""
+        with caplog.at_level("INFO"):
+            self._streaming_provider().chat(
+                [ChatMessage(role="user", content="hi")], enable_search=False,
+                transport=self._transport(self._sse(*self._delta_chunks(self.CONTENT))),
+            )
+        assert any("流式生成完成" in rec.getMessage() for rec in caplog.records)
 
 
 class TestOpenAICompatSharedDegradation:

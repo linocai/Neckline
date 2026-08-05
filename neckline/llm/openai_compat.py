@@ -25,12 +25,21 @@ get_provider()` 不再只经由 `GLMProvider`/`KimiProvider` 两个子类构造 
 工具形状——这是本项目目前唯一有文档验证过的联网搜索协议;`has_web_search=0`
 时这份通用实现直接不发 `tools`,见 `_search_tools`)。`GLMProvider`/`KimiProvider`
 两个子类各自完整覆盖这四个钩子,行为与 V1 逐字节不变,不受本类新增默认实现影响。
+
+**§七 P0-44(2026-08-05 晚)起本类支持 SSE 流式**(`use_streaming`,默认关):
+大上下文推理调用改流式后,读超时的语义从「整段生成的墙钟上限」变成「**chunk 间隔
+上限**」—— 判「还在不在吐字」而非「一共要吐多久」,不必再提前猜一个与上游吞吐挂钩
+的固定数字(P0-40 抬到 240s,当晚仍 3/3 次撞满)。拼装结果**与非流式响应体同形状**
+(单测逐字节比对),`chat()` 与所有调用方零改动。⛔ **检索类刻意不开** —— 见
+`use_streaming` 类属性注释。
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from neckline.llm.base import ChatMessage, LLMProvider, LLMResult, SearchHit
 
@@ -51,6 +60,13 @@ class OpenAICompatProvider(LLMProvider):
     # 四个搜索钩子,不读这两个属性,不受影响。
     has_web_search: bool = False
     search_engine: Optional[str] = None
+    # §七 P0-44:是否走 SSE 流式(`stream: true`)。**默认 False = 既有行为逐字节
+    # 不变**;唯一打开它的地方是 `factory.get_provider(task)`,判据唯一实现在
+    # `llm/router.py::use_streaming_for_task()`(现为「大上下文推理类」)。
+    # ⛔ **检索类刻意不开** —— GLM 的 `web_search` tools 协议与流式的组合本项目
+    # 从未验证过,v1.3.4 案底(不被上游认识的组合会 `ok=True` 静默返 0 条)说明
+    # 这种赌注的代价是**看不出来的错**,不拿生产赌。
+    use_streaming: bool = False
     # 检索词长度上限(防御性截断,非官方文档明确数字;原为 GLM 专属类属性,V2-②
     # 起下沉到基类供通用 provider 共享——`GLMProvider` 不再重复声明同一个数字,
     # 直接继承本值)。截断只影响检索词,不影响提问本身——问题全文照样在 messages 里。
@@ -66,17 +82,25 @@ class OpenAICompatProvider(LLMProvider):
         has_web_search: Optional[bool] = None,
         search_engine: Optional[str] = None,
         read_timeout: Optional[float] = None,
+        use_streaming: Optional[bool] = None,
     ) -> None:
-        """`name`/`api_url`/`has_web_search`/`search_engine`/`read_timeout` 均为
-        **可选覆盖**(默认 `None` = 不改类属性),故 `GLMProvider(api_key="sk-xxx")`/
-        `KimiProvider(api_key="sk-xxx")` 这类既有调用方式**逐字节不变**——只有
-        `neckline.llm.factory.get_provider()` 拿 `llm_providers` 行构造裸
-        `OpenAICompatProvider` 实例时才会用到这几个新参数。
+        """`name`/`api_url`/`has_web_search`/`search_engine`/`read_timeout`/
+        `use_streaming` 均为 **可选覆盖**(默认 `None` = 不改类属性),故
+        `GLMProvider(api_key="sk-xxx")`/`KimiProvider(api_key="sk-xxx")` 这类既有
+        调用方式**逐字节不变**——只有 `neckline.llm.factory.get_provider()` 拿
+        `llm_providers` 行构造裸 `OpenAICompatProvider` 实例时才会用到这几个新参数。
 
-        `read_timeout`(§七 P0-40):按 task 类别分级的读超时,唯一来源是
-        `llm/router.py::read_timeout_for_task()`(**⛔ 别在别处再写一份数字**)。
-        `None` 时保持类属性 90.0 —— 检索类与所有直接 new 出来的 provider 行为
-        逐字节不变。"""
+        `read_timeout`(§七 P0-40 定,P0-44 起语义**按是否流式分两种**,⚠ 别把
+        两种读串了):
+          · **非流式**(默认):它是「整段响应必须在这么久之内回完」的墙钟上限 ——
+            90.0 有实测背书(v1.3.4:25s 下 10 只审判 5 只 ReadTimeout)。
+          · **流式**(`use_streaming=True`):httpx 的 read 超时天然作用在**每次
+            socket 读**上,于是它变成「**chunk 与 chunk 之间**最多能静默这么久」
+            —— 吐字只要不断,整段生成多长都合法。
+        两种语义下唯一来源都是 `llm/router.py::read_timeout_for_task()`
+        (**⛔ 别在别处再写一份数字**);`None` 时保持类属性 90.0。
+
+        `use_streaming`(§七 P0-44):见类属性注释。"""
         self.api_key = api_key
         self.model = model or self.default_model
         if name is not None:
@@ -89,6 +113,8 @@ class OpenAICompatProvider(LLMProvider):
             self.search_engine = search_engine
         if read_timeout is not None:
             self.read_timeout = float(read_timeout)
+        if use_streaming is not None:
+            self.use_streaming = bool(use_streaming)
 
     # —— provider 特有钩子(子类可覆盖;未覆盖时走下面的通用默认实现)———————
     def _headers(self) -> Dict[str, str]:
@@ -183,7 +209,11 @@ class OpenAICompatProvider(LLMProvider):
         raw_responses: List[Dict[str, Any]] = []
 
         for _round in range(self.max_tool_rounds):
-            payload: Dict[str, Any] = {"model": self.model, "messages": wire_messages, "stream": False}
+            # `use_streaming=False`(默认)时这里恒 `False`,payload 与 P0-44 之前
+            # 逐字节相同 —— 检索类/所有直接 new 出来的 provider 的 wire 格式未变。
+            payload: Dict[str, Any] = {
+                "model": self.model, "messages": wire_messages, "stream": bool(self.use_streaming),
+            }
             if tools:
                 payload["tools"] = tools
             body, err = self._post(payload, transport)
@@ -244,34 +274,192 @@ class OpenAICompatProvider(LLMProvider):
 
     def _post(self, payload: Dict[str, Any], transport: Optional[Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """一次 HTTP 往返(短读超时 + 每次全新连接重试,继承 LinoN deepseek.py 姿势)。
-        返回 `(body, None)` 成功,或 `(None, 降级原因)`。"""
+        返回 `(body, None)` 成功,或 `(None, 降级原因)`。
+
+        **只有网络层异常才重试**(超时 / 连接断);「上游非 200」与「响应解析异常」
+        是**已经拿到一个明确答复**,当场降级、不重放 —— 这条分工是 P0-44 重构前
+        就有的(旧代码靠"状态码检查写在重试循环外面"表达),重构后由两个
+        `_attempt_*` 各自把这类结果**作为返回值**交回来表达,行为逐字节不变。
+
+        `payload["stream"]` 决定走哪条:流式那条的读超时语义是 **chunk 间隔**,
+        见 `__init__` 的 `read_timeout` 文档。"""
         import httpx
 
         timeout = httpx.Timeout(self.read_timeout, connect=self.connect_timeout)
-        resp = None
+        streaming = bool(payload.get("stream"))
+        outcome: Optional[Tuple[Optional[Dict[str, Any]], Optional[str]]] = None
         last_exc: Optional[BaseException] = None
         for attempt in range(1, self.max_attempts + 1):
+            started = time.monotonic()
             try:
                 client_kwargs: Dict[str, Any] = {"timeout": timeout}
                 if transport is not None:
                     client_kwargs["transport"] = transport
                 with httpx.Client(**client_kwargs) as client:
-                    resp = client.post(self.api_url, json=payload, headers=self._headers())
+                    outcome = (self._attempt_stream(client, payload) if streaming
+                               else self._attempt_post(client, payload))
                 break
             except Exception as e:  # noqa: BLE001  超时/网络/连接异常 → 换新连接重试
                 last_exc = e
-                logger.warning("%s 调用第 %d/%d 次异常(将重试): %s", self.name, attempt, self.max_attempts, e)
-        if resp is None:
+                # ⚠ 流式下把**这次已经流了多久**也打出来:它是判「是真卡死(≈ 一个
+                # chunk 间隔就死)还是生成太长(流了很久才断)」的唯一现场证据。
+                logger.warning(
+                    "%s 调用第 %d/%d 次异常(将重试;本次已耗 %.1fs%s): %s",
+                    self.name, attempt, self.max_attempts, time.monotonic() - started,
+                    ",流式" if streaming else "", e,
+                )
+        if outcome is None:
             reason = f"调用异常 {type(last_exc).__name__}" if last_exc is not None else "调用异常"
             return None, reason
+        return outcome
 
+    def _attempt_post(self, client: Any, payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """非流式单次尝试。行为与 P0-44 之前完全一致(见 `_post` docstring)。"""
+        resp = client.post(self.api_url, json=payload, headers=self._headers())
         if resp.status_code != 200:
             return None, f"上游 {resp.status_code}"
-
         try:
             return resp.json(), None
         except Exception as e:  # noqa: BLE001
             return None, f"响应解析异常: {e}"
+
+    def _attempt_stream(self, client: Any, payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """流式(SSE)单次尝试 —— §七 P0-44。
+
+        **为什么流式治得了 P0-40 治不了的那一半**:非流式下 `read_timeout` 是「整段
+        生成必须在这么久之内回完」,那是一个**必须提前猜准的固定数字** —— 2026-08-05
+        中午实测 173s、当晚 240s 三连超时,证明晚高峰吞吐下这个数字赌不赢。流式下
+        httpx 的 read 超时作用在每次 socket 读上 = **chunk 间隔**,于是判据从「生成
+        总共多久」换成「**还在不在吐字**」;后者与吞吐无关,不需要猜。
+
+        **中途断掉不拿半截当成品**:流到一半抛异常 → 异常原样上抛给 `_post` 的重试
+        循环(整次重来),⛔ 绝不把已累积的半截内容当结果返回 —— 半截 JSON 解出来
+        可能正好是个"看着合法"的残缺篮子,那比干净地失败危险得多。"""
+        with client.stream("POST", self.api_url, json=payload, headers=self._headers()) as resp:
+            if resp.status_code != 200:
+                resp.read()  # 流式响应必须先读完才能拿 body/关闭,与非流式取值口径一致
+                return None, f"上游 {resp.status_code}"
+            return self._assemble_stream(resp.iter_lines())
+
+    def _assemble_stream(self, lines: Iterable[str]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """把 SSE 行流拼成**与非流式响应体同形状**的 dict(`chat()` 上层零改动)。
+
+        容错三条(都是"如实降级",不猜):
+        ① **`[DONE]` 缺失不算错** —— 不少实现直接关连接了事;流正常结束就当收尾。
+        ② **单条 chunk 不是合法 JSON → 跳过这一条**(计数 + DEBUG 留痕),不因为一
+           条坏行丢掉整段生成。⚠ 但**全部坏掉**(一条都没解出来)不许静默返空,
+           走下面的"整段 JSON 兜底",再不行就如实报解析失败。
+        ③ **上游根本没按 `stream:true` 回 SSE**(自填制下完全可能:某个端点不认这个
+           参数,原样回一整份 JSON)→ 用**数据本身**判(有没有 `data:` 行),不看
+           `Content-Type`(缺头/写错头的实现太多),把整段当普通响应体解。
+        """
+        content_parts: List[str] = []
+        # 少数实现最后一块给的是完整 `message` 而不是增量 `delta`;仅在**从未见过
+        # delta 内容**时才用它兜底(覆盖式,不累加 —— 累加会把全文重复一遍)。
+        fallback_message_content = ""
+        tool_calls_by_index: Dict[int, Dict[str, Any]] = {}
+        finish_reason: Optional[str] = None
+        resp_id = ""
+        model = self.model
+        role = "assistant"
+        extra_top_level: Dict[str, Any] = {}
+        plain_lines: List[str] = []
+        chunks = 0
+        malformed = 0
+        started = time.monotonic()
+
+        for raw in lines:
+            line = (raw or "").strip()
+            if not line:
+                continue
+            if not line.startswith("data:"):
+                plain_lines.append(line)   # 兜底③ 的素材(也顺带吞掉 `event:`/`:` 心跳行)
+                continue
+            data = line[len("data:"):].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except Exception:  # noqa: BLE001  容错②
+                malformed += 1
+                logger.debug("%s 流式:跳过一条解不出的 chunk(第 %d 条坏行)", self.name, malformed)
+                continue
+            if not isinstance(obj, dict):
+                malformed += 1
+                continue
+            chunks += 1
+            if obj.get("id"):
+                resp_id = str(obj["id"])
+            if obj.get("model"):
+                model = str(obj["model"])
+            # 顶层搜索结果(GLM 形状)若在流里出现照样带出 —— 当前不给检索类开流式,
+            # 这一行是"万一将来开了也不丢东西"的保险,不是已验证过的路径。
+            if obj.get("web_search"):
+                extra_top_level["web_search"] = obj["web_search"]
+            choices = obj.get("choices") or []
+            if not choices or not isinstance(choices[0], dict):
+                continue
+            ch0 = choices[0]
+            if ch0.get("finish_reason"):
+                finish_reason = ch0["finish_reason"]
+            delta = ch0.get("delta") if isinstance(ch0.get("delta"), dict) else {}
+            if delta.get("role"):
+                role = str(delta["role"])
+            piece = delta.get("content")
+            if isinstance(piece, str) and piece:
+                content_parts.append(piece)
+            # ⚠ `reasoning_content`(思考型模型的思维链)**刻意不并入 content** ——
+            # 非流式路径返回的也只有 `message.content`,并进来就不等价了。它照样算
+            # 一次 chunk,故"还在思考"不会被 chunk 间隔超时误杀。
+            msg = ch0.get("message")
+            if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                fallback_message_content = msg["content"]
+            for tc in delta.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                idx = tc.get("index")
+                idx = int(idx) if isinstance(idx, int) else 0
+                slot = tool_calls_by_index.setdefault(
+                    idx, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                if tc.get("id"):
+                    slot["id"] = str(tc["id"])
+                if tc.get("type"):
+                    slot["type"] = str(tc["type"])
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["function"]["name"] = str(fn["name"])
+                if isinstance(fn.get("arguments"), str):
+                    slot["function"]["arguments"] += fn["arguments"]
+
+        if chunks == 0:
+            # 兜底③:一条 `data:` 都没解出来 —— 大概率上游压根没走 SSE。
+            text = "\n".join(plain_lines).strip()
+            if not text:
+                return None, f"流式响应为空(坏行 {malformed} 条)"
+            try:
+                body = json.loads(text)
+            except Exception as e:  # noqa: BLE001
+                return None, f"响应解析异常: {e}"
+            logger.warning("%s 请求了 stream:true,但上游回的不是 SSE(已按整段响应解析)", self.name)
+            return (body, None) if isinstance(body, dict) else (None, "响应结构异常: 顶层不是对象")
+
+        content = "".join(content_parts) or fallback_message_content
+        message: Dict[str, Any] = {"role": role, "content": content}
+        if tool_calls_by_index:
+            message["tool_calls"] = [tool_calls_by_index[k] for k in sorted(tool_calls_by_index)]
+        body = {
+            "id": resp_id,
+            "model": model,
+            "choices": [{"index": 0, "finish_reason": finish_reason, "message": message}],
+        }
+        body.update(extra_top_level)
+        # 生产判据埋点:这一行就是"生成超过旧的 240s 固定墙也照样活着"的现场证据。
+        logger.info(
+            "%s 流式生成完成:%.1fs / %d 个 chunk / %d 字%s",
+            self.name, time.monotonic() - started, chunks, len(content),
+            f" / 坏行 {malformed} 条" if malformed else "",
+        )
+        return body, None
 
 
 __all__ = ["OpenAICompatProvider"]

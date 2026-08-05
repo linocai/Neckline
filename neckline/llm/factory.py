@@ -39,7 +39,11 @@ from typing import Optional
 from neckline.config import Settings
 from neckline.llm.base import LLMProvider
 from neckline.llm.openai_compat import OpenAICompatProvider
-from neckline.llm.router import read_timeout_for_task, resolve_task_provider_name
+from neckline.llm.router import (
+    read_timeout_for_task,
+    resolve_task_provider_name,
+    use_streaming_for_task,
+)
 from neckline.settings_store import get_llm_routes, list_providers
 
 
@@ -64,12 +68,17 @@ def get_provider(
         api_url=row.base_url,
         has_web_search=row.has_web_search,
         search_engine=row.search_engine,
-        # §七 P0-40:读超时按 task 类别分级 —— 「大上下文 + 长结构化生成」的推理类
-        # 放宽到 240s,检索类维持有实测背书的 90s。**分级判据的唯一实现在 router**,
-        # 本层只负责把它接上;`task=None`(V1 遗留调用点)→ `None` → 不覆盖。
+        # §七 P0-40 → P0-44:按 task 类别分级。**分级判据的唯一实现在 router**,
+        # 本层只负责把它接上;`task=None`(V1 遗留调用点)→ 不覆盖任何一项。
         # ⚠ 这是**所有 provider 的唯一出生地**,所以分级只需接这一处就全覆盖 ——
         # 若改成在 `chat()` 加参数,⑤⑥⑦⑨ 每个调用点都要改,漏一个还看不出来。
+        #
+        # 两项**必须同路接线、同一个判据**(`LONG_CONTEXT_TASKS`):`read_timeout`
+        # 在流式下的语义是 **chunk 间隔**、非流式下是**整段墙钟**,只接一项 =
+        # 语义与数字对不上(如给非流式任务配 chunk 间隔的数字 → 悄悄变成 90s 整段
+        # 墙钟 = P0-40 原病复发)。
         read_timeout=read_timeout_for_task(task),
+        use_streaming=use_streaming_for_task(task),
     )
 
 
