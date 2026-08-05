@@ -395,20 +395,38 @@ Neckline/
   ⚠ **`search_engine` 列为空** —— 空 = 不发该字段(`OpenAICompatProvider` 的安全默认);
   ⛔ 别去"补"一个取值,CLAUDE.md 有案底:取值不被上游认识会 `ok=True` **静默返 0 条**。
   **⑤⑥ 在真 key 下仍未活体跑过一次**(见下条阻塞项),首跑后要看「搜索取证覆盖」命中数。
-- **🔴 当前唯一阻塞项:nk 缺 `20260804` 当日 EOD parquet(⑰ 割接漏搬的增量)**。七张 EOD 表
-  最新分区全停在 `20260803`,`ths_daily` 只到 `2026-07-31`;而**库里**有 08-04
-  (`industry_strength_daily`/`holding_eod_check`)—— 因为 parquet 搬在 08-04 14:42、`neckline.db`
-  搬在 21:48,老机 16:05 拉数正夹在两次之间,验收只逐表对拍了 SQLite。**照原样跑 08-04 的 V2 链
-  会静默出一份空心报告**(缺分区 → `scan_table_range` 返空 DF 不抛异常);**更要紧的是它会污染
-  今晚 16:35 的链** —— `limit_derived` 连板计数按行相邻递推,08-04 空洞会让 08-03/08-05 直接接上、
-  炸掉的板算成连着的,而连板数是 K7 判据输入。**今日 16:05 只拉 08-05,不会自愈**,须在 16:05 前修。
-  两条修法(A:nk 上 `daily_update.py 20260804`,日期口径已审干净;B:从 hz 只读 rsync 那 7 个
-  分区 ~786 KB,与 V1 那份 08-04 报告同源)**等你裁定**,builder 未擅自执行。详见 §九 2026-08-05 两行。
-  📌 **补跑前已固化的 Y-1 基线**(事后拿这两个 sha256 逐字节对比,别只比长度):
-  `reports.20260804` 的 `candidates_json` len **53421** / `d5d2aeeca2d7d4e4b616db26334bfecb3bb55bd75a1c0056f8ff442910fdd429`、
-  `watchlist_json` len **17808** / `31d844483997634f3ba01b0f3835400112a1485f26a1999b8a3de2929f504bf6`;
-  `basket_daily_json` 现为 `{}`(V1 管线从不写它),`generated_at=2026-08-04T09:05:51+00:00`。
-  公网 `GET /report?date=20260804` 补跑前基线 = **200 / 11 711 B / HTTP/2 / `degraded=false`**。
+- **✅ ~~nk 缺 `20260804` EOD parquet~~ 已销案(2026-08-05 11:24,A 方案官方补拉)**:七张 EOD 表
+  08-04 分区全部在位、属主 `neckline:neckline`、schema 与 08-03 逐表一致、整年 `scan_parquet` 无
+  `SchemaError`;`ths_daily` 尾窗自愈到 08-04(08-03/08-04 各 394 行,滞后 0 天);**连板递推抽查
+  全绿**(20 只 08-04 连板票 08-03 consec 恰为 c−1、异常 0;8 只断板 consec 全归 0、异常 0)。
+  📌 **反证样本留档**:`001223.SZ` 08-03 是 **2 连板、08-04 炸板** —— 若 08-04 仍缺失且它 08-05
+  涨停,就会被算成 3 连板,这就是那条判据污染的具体长相。详见 §九 2026-08-05。
+- **🔴 新的头号阻塞项:LLM 两处配置缺口 —— key 有效但一次调用也没成功(2026-08-05 补跑实测打出来)**。
+  ⚠ **今晚 16:35 的生产链会原样再撞一次**,不是只影响补跑。两处**都在 App 设置屏可改,builder 未擅动**
+  (改路由/默认 provider 属持久配置,须你授权):
+  1. **`llm_providers.base_url` 少了尾巴**:现值 `https://open.bigmodel.cn/api/paas/v4`,应为
+     **`https://open.bigmodel.cn/api/paas/v4/chat/completions`**。本项目这一列虽名叫 `base_url`,
+     实际是 `OpenAICompatProvider` 直接 `client.post(self.api_url, …)` 的**完整端点 URL、不做路径拼接**
+     (预置参考实现 `llm/providers/glm.py:37` 硬编码的正是带 `/chat/completions` 那条)。
+     ⚠ 而 GLM 官方文档管 `…/paas/v4` 叫「OpenAI 兼容 base_url」—— **你填的是官方文档原文,是本项目
+     字段语义与通用叫法撞车**,不是你填错。**实测证据**:带真 key 打 20 次全 **404**(不是 401)
+     —— 404 说明**鉴权已通过、key 有效**,纯粹路径不对。
+  2. **`app_settings.llm_default_provider` 从未设过**(现为空串,`llm_task_routes` 为 `{}`)。
+     路由三级(`llm/router.py::resolve_task_provider_name`):①显式路由 → ②检索类任务挑第一个
+     `enabled AND has_web_search` → ③其余**全部**回退默认 provider。GLM 只能靠 ② 接住**检索类**;
+     `TASK_BASKET_REASON`/`TASK_TIER_RANK`/`TASK_SCRIPT`/`TASK_REVIEW` 这些推理类走 ③,**空默认 = 无
+     provider**,于是 `[aggregate] 推理段缺席(no_provider)—— 当日不成篮`。**GLM 不会自动兼任推理**。
+  ⇒ 两处都补上后,同日重跑 `scripts/evening.py 20260804` 即可补出篮子(`baskets`/`basket_cards`
+  是 `INSERT OR IGNORE` 冻结件,同日补跑安全、不覆盖)。
+- **🔴 顺带打出来的诚实性缺陷(报告层,已登记 §七)**:⑤⑥ 明明是 `no_provider` 全缺席,报告 ③ 节
+  却写「**今日无篮子达到定档标准…今天没有共同驱动清晰、成员结构够格的篮子**」—— 把「引擎没跑」
+  讲成了一句**实质性市场判断**。根因:`report/basket_daily.py` 的 `baskets_available=True` 只代表
+  「`baskets` 表读得出来」,不代表引擎跑过(同函数里 ③b 用 `None` 正确区分了「本次没跑」,③ 没有);
+  `aggregate` 侧的 `STAGE_NO_PROVIDER` 是一等状态、语义不合并,但**没有落到报告能看见的地方**。
+  ⇒ **2026-08-04 那份报告的 ③ 节内容不可信,⛔ 别照它做任何判断**;其余四段(情绪/板块/情报/新鲜度)
+  是纯机械段,不受影响。
+  📌 **Y-1 基线**(已验过,留作日后重跑再比):`candidates_json` len **53421** /
+  `d5d2aeec…fdd429`、`watchlist_json` len **17808** / `31d84448…f504bf6`。
 - **🧹 生产持仓台账已清空(2026-08-05,你的指令)**:`positions` **open 2 → 0**(删 `#4 601567.SH`
   / `#5 600499.SH` 两笔 07-30 建仓的僵尸行,双备份 `*-preclearpos-20260805-110527` 在
   `data/backups/`),3 笔历史平仓行与 `holding_eod_check`/`decision_log` 审计行**原样保留**。
@@ -447,12 +465,13 @@ Neckline/
   ⑮ 六处判断、⑯ 见其完工记录、**⑰ 三处**(P1 误报按"修闸门"办 / `sqlite_sequence` 判为预期 /
   ⑮ 漏改客户端默认后端已补)。均未改 Plan,如与规划意图不符请澄清。
 - **唯一仍开放的规划项**:**⑫ 周度 unit 的形态未定**(plan 明说不由 ⑯-D 决定,⑯/⑰ 均未擅自排)。
-- **下一步**:① 🔴 **裁定 08-04 EOD 缺口修法(A 拉数 / B 从 hz rsync),须赶在今日 16:05 前** ——
-  这条定了,08-04 的 V2 报告补跑才有前提;② ~~填 LLM key~~ **已于 08-05 10:53 完成**;
-  ③ **iOS 用 Xcode 直连真机装 2.0.0**(§八 第 12 项);④ 云解析控制台核对 `ln`/`lf` 的 A 记录;
-  ⑤ 老机退役与老库归档由你决定(§八 第 8 项),**builder 不自行退役** ——
-  ⚠ **在 08-04 缺口修法定案之前先别退役 hz**,B 方案要从它身上取那 7 个分区。
-  **⑯/⑰ 连碰两次高危区(权威库迁移 + 包激活 + 生产割接),外加本次生产库点删,建议叫一次 review。**
+- **下一步**:① 🔴 **改 LLM 那两处配置(端点 URL 补 `/chat/completions` + 设默认 provider = GLM)** ——
+  ⚠ **今晚 16:35 之前改完,否则生产链原样再撞一次**;改完可同日重跑 08-04 补篮子;
+  ② ~~裁定 08-04 EOD 缺口修法~~ **✅ 已按 A 方案补拉完成(11:24)**;③ ~~填 LLM key~~ **✅ 08-05 10:53 完成**
+  (key 有效,是端点与路由没配全);④ **iOS 用 Xcode 直连真机装 2.0.0**(§八 第 12 项);
+  ⑤ 云解析控制台核对 `ln`/`lf` 的 A 记录;⑥ 老机退役与老库归档由你决定(§八 第 8 项),
+  **builder 不自行退役**(A 方案未碰 hz,它已不再是补数据的必要条件)。
+  **⑯/⑰ 连碰两次高危区,外加 08-05 这次生产库点删 + 生产补拉 + 补报告,建议叫一次 review。**
 - **待办总入口 = §七 Backlog**。策略假设 / K 字头版本权威在 `STRATEGY_LAB.md`。
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/v1.5_施工图_20260802归档.md` 文末附录。
@@ -3407,7 +3426,9 @@ macOS + iOS `xcodebuild build -configuration Release` **双端 BUILD SUCCEEDED**
 >
 > **⚑ V2.0.0 逐条处置(2026-08-02 立项)**:三态标注 —— ① 被 V2 吸收的标「**→ V2.0.0 第 N 块**」;② V2 后不再适用的标「**⛔ V2 后废弃**」,**稳定 ID 与原文一律保留不删**(留痕,防后人当新问题重开);③ 未标注 = 仍是待办。本次吸收 **P1-5 / P1-8 / P3-11 / P3-15 / P3-27**,废弃 **P4-16**,新挂 **P3-28 / P3-29 / P4-30 / P4-31**。
 
-### 🔴 P0 · 影响判定正确性(**当前为空** —— P0-1/2/3 → v1.4.0 第 ① 块已完工上线;P0-23 → v1.4.0 第 ⑩ 块已结案)
+### 🔴 P0 · 影响判定正确性(P0-1/2/3 → v1.4.0 第 ① 块已完工上线;P0-23 → v1.4.0 第 ⑩ 块已结案;**新挂 P0-39**)
+
+- **[P0-39] 🔴 报告 ③ 节把「⑤⑥ 引擎没跑」讲成「今天市场上没有够格的篮子」**(2026-08-05 补跑 08-04 时**在生产上真打出来**,不是推演)。**现象**:`llm_providers` 配置不全 → `[aggregate] 推理段缺席(no_provider)—— 当日不成篮`,`baskets` 表零行;而报告 ③ 节输出的是「**今日无篮子达到定档标准。这是合法输出,不是故障——今天没有共同驱动清晰、成员结构够格的篮子,系统不会为了让报告好看而放宽质量线。**」—— 一句**实质性市场判断**,而系统其实什么都没判。`basketDaily.basketsAvailable=true` / `basketsUnavailableReason=null` 同样在说谎,`degraded` 也是 `false`。**根因**:`report/basket_daily.py::build_basket_daily` 里 `out.baskets_available = True` 挂在 `load_today_baskets()` **读表成功**这个条件上 —— 它只证明「表读得出来」,**不证明引擎跑过**。⚠ **同一个函数里 ③b 做对了**(`dropped=None` = 本次没跑 ⑥ → `available=False` + 「本段未取得」;空序列 = 跑了零溢出 → `available=True`),③ 缺的正是这个三态区分。**⑤ 侧的信息本来就有**:`selection/aggregate.py` 的 `STAGE_NO_PROVIDER`/`STAGE_CALL_FAILED`/`STAGE_BUDGET_EXHAUSTED`/`STAGE_PARSE_FAILED`/`STAGE_NO_SEEDS`/`STAGE_PARTIAL` 是一等状态、注释明写「语义不合并」,只是**没有落到报告层能读到的地方**(`baskets` 表零行时,报告无从分辨「跑了没成篮」与「压根没跑」)。**修法方向**(未施工,待排):把 ⑤ 的段状态**落库**(候选落点:`baskets` 之外单起一张当日段状态表,或复用 ⑧-B 存拍那种「当日状态行」体例),报告层据此三态输出 —— 「跑了、确实不成篮」/「没跑(no_provider 等)」/「部分跑成」,⛔ 不许把后两者渲染成第一种。**这条与 v1.5「写侧收口、不读侧遮蔽」和 B1「`card_corrupt` ≠ `card_not_ready`」是同一条纪律的第三次现身** —— 「不知道」与「知道没有」必须分开,合并的代价一律落在用户的判断上。**⚠ 已交付的 2026-08-04 那份报告 ③ 节据此不可信**(其余四段是纯机械段,不受影响)。
 
 - **[P0-23] ✅ 已结案** · ~~`compute_industry_strength` 扫全历史,在生产机不可完成 —— 挡住 v1.4.0 整版上云~~(2026-07-29 ⑨ 首次部署实测发现并回滚,**当天由 ⑩ 修复、傍晚重新上云验证通过**)。`report/industry_strength.py::_load_ret1d_panel(start=None)` 对 `daily` 做**全历史 `scan_parquet`**(生产 1591 分区 / **7,841,894 行**),模块 docstring 的「本地实测全历史加载廉价(<1s)」**只在开发机(Mac)成立**;生产(2 vCPU / 1.6G RAM)实测:**700M cap → OOM-kill(exit 137)**、**1400M cap → 600s 未跑完(exit 124)**。**为什么要紧**:v1.4-② 把它立成 A2/B3 判据唯一源后,三个调用点全部中招 —— ① `pipeline.py:163` 在 **16:35 报告主链**(`neckline-report.service MemoryMax=800M`,而 07-28 那份**不含**本步的报告峰值已经恰好顶满 800M)→ 上了大概率**当日无报告**;② `info_card.py:652`(新端点,实测公网/本地**永不返回**,120s 与 600s 两次都超时);③ `inquiry.py:297`(问询台)。②③ 跑在**常驻 `neckline.service` 内、与盘中哨兵同进程**,`MemoryHigh=420M` 先节流导致进程陷在回收死循环(`memory.events.high` 飙到 54 万次、`oom_kill=0`)——**表现为卡死而非崩溃**,盘中被点一次就拖累哨兵。**⚠ 抬 `MemoryMax` 不是解**(1400M 都跑不完,是算法成本不是配额),⑨-F 原文「视情抬到 1G」按此作废。**✅ 修法已裁定(用户 2026-07-29)= 方案②「预计算落表」→ 施工图 §五 v1.4-⑩**(🔴 @builder-pro,**⑨ 重跑的硬前置**):新 SQLite 表 `industry_strength_daily`(110 行/日,含未达标行业),16:05 日更增量算一天(**只读当日一个分区**),`persist_days` 用「上一评定日 streak + 今日强度日标记」递推 → **不需要任何人为窗口**;三个在线调用点 + ④ 信息卡 60 日中位数序列全部改**只读表**,缺行走保险丝(降级方向 = 不拦 + 显式披露)。~~① 给 `start` 加下界窗口~~ **否决**(与「持续天数看多远由上次断裂决定」的设计意图冲突,会低报长 streak,§3.8 宁可多算不可少算);~~③ 只给 `info_card`/`inquiry` 注入报告已算好的结果~~ **否决**(治标,16:35 主链照旧中招)。**修完必须在生产机上实测复验**(⑩-G,含新立的「探针只许收盘后跑」纪律),**且 review 前移到上云之前**(§五 前提第 4 条)。**✅ 2026-07-29 本地部分完工**(@builder-pro):新表 + store + CLI + 16:05 挂载 + 四处读侧改造 + 保险丝四态 + `dataFreshness` 三键 + 客户端横幅;守门单测(四文件零现算入口 + 三路等价)绿;本地真数据演练 bootstrap 全历史 3s / 17.5 万行 / 库 +25MB、`verify` 三项绿、随机 3 日单日对拍逐位一致、读侧 1.3ms、日更增量 0.02s、信息卡 0.56s。**演练打出一个真洞并已修**:`rank(ordinal)` 并列由行序打散 → 按年块 bootstrap 与单日日更算出**不同 rank**(20230803 实测),修法 = 排名前按 `(median_ret 降序, industry 升序)` 排定(已入 CLAUDE.md 纪律 + 单测)。**✅ 2026-07-29 生产侧亦完工并随 ⑨ 上云验证**:旁路 bootstrap 落表 175,120 行 / 1592 交易日 / 110 行业,⑩-D 五条 + ⑩-G 五条判据全绿;⑨ 上云后生产实测 —— `verify` 三项自检全绿(exit 0)、**上午「永不返回」的 `GET /report/{date}/info-card/{code}` 现返 200 / 15.6s / 16431B**、16:35 报告主链恢复正常。**残留**:信息卡 15~20s 仍偏慢,根因是 `_load_single_code_panel` 全 glob(**与行业强度无关**,那一维已是读表 5.3ms)→ 另立 **P1-26**,不再挂在本条。
 - **[P0-1] 补录持仓无法指定真实买入日**。`api/app.py::open_position`(~703 行)写死 `buy_date=date.today()`、`PositionOpenIn`(`api/schemas.py:304`)无买入日字段 → 用户 2026-07-27 补录的 **3 笔历史持仓买入日全被盖成当天**。**为什么要紧**:D 计数、时间退出 D5/D15 判向、回落止盈峰值追踪起点、周复盘持有天数、按打法归因的持有周期,**全部起点错**。**怎么修**:① `PositionOpenIn` 加可选 `buyDate`(`YYYYMMDD`,缺省今天,校验不晚于今天);② `app.py` 透传 —— **领域层 `sentinel/positions.py::open_position` 与 CLI `scripts/positions.py add` 本来就收 `buy_date`,缺口只在 HTTP 契约 + 客户端**,改动面很小;③ 客户端补录 sheet 加日期选择器(默认今天);④ **纠正已落库的 3 笔**:需用户提供真实买入日,改前 `sqlite3 .backup`,改后复查 `holding_eod_check` 是否已按错误 D 定格(`time_exit_locked_*` 三列有值就要清掉重算)。~~归 v1.3.6~~ → **v1.4.0 第 ① 块(①-A)**,🔴 高危区:碰持仓判定。⚠ 纠正 3 笔**需用户先提供真实买入日**(§八 第 11 项)。**✅ 2026-07-28 完工**:契约 `buyDate` + 两个 400 reason(`not_trading_day`/`future_buy_date`)+ 客户端 mapReason 两 case 已落;生产 3 笔已按用户提供的真实买入日纠正(`scripts/oneoff/fix_position_buy_dates.py`)。**客户端日期选择器 UI 归第 ⑧ 块,代码上云归第 ⑨ 块。**
@@ -3574,6 +3595,10 @@ macOS + iOS `xcodebuild build -configuration Release` **双端 BUILD SUCCEEDED**
 ## 九、变更日志(一行制;详版全文 → `archive/变更日志_详版_20260719-20260728.md`)
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
+
+- 2026-08-05 · 📄 **08-04 的 V2 报告已补跑落库 —— 机械段全出、篮子段如实缺席;顺带在生产上打出两处 LLM 配置缺口 + 一条 P0 诚实性缺陷**(@builder-pro,盘中,隔离瞬态 unit `nk-evening-0804`,**⛔ 未传 `--notify`** —— 给一份补跑的历史日报告推「报告就绪」到用户锁屏是误导性噪音,任务书亦未要求)。**跑法与结果**:`scripts/evening.py 20260804` 全链带 LLM 落库,`User=neckline`/`MemoryMax=1400M`,墙钟 **11:28:06 → 11:28:27 = 21s**,`ExecMainStatus=0`/`Result=success`,1400M 闸下零 OOM;五段状态 **`[verify] empty`(08-03 无冻结卡,无对象)· `[scan] ok`(cluster 2153 / corr 21382 / leader 2153 / stage 110 / seeds 449〔hot_industry 10 · surging_concept 21 · limit_cluster 323 · anomaly_cluster 95〕)· `[basket] empty`(0 篮 0 卡)· `[review] empty` · `[report] ok`**。**Y-1 保护实测生效(日志留证)**:`save_report(20260804):本次候选快照为空([]),但该日已有非空 candidates_json…已跳过覆写、保留历史值。`;补跑后 `candidates_json` len **53421** / sha256 `d5d2aeeca2d7d4e4b616db26334bfecb3bb55bd75a1c0056f8ff442910fdd429`、`watchlist_json` len **17808** / `31d844483997634f3ba01b0f3835400112a1485f26a1999b8a3de2929f504bf6` —— **与补跑前基线两个哈希逐字节相同**(不是只比长度);V2 侧 `basket_daily_json` `{}`→**366 B** 正常写入、`markdown` 31527→6380 字符(V1 那份含 20 只候选,V2 无候选管线,短属预期)。**日期纪律逐项过**:`daily_update`/`evening` 两条链的 `target`/`trade_date` 全程取自命令行参数、下游无一处旁路 `date.today()`;**日期锚抽查**(补跑历史日的「锚不撒谎」机制)实测装配出 `今天是 2026年8月5日(周三);本次分析的基准交易日是 2026年8月4日(周二)(系补跑/回放历史日,请按该日及之前的信息判断);下一交易日是 2026年8月5日(周三)。`,V2 链四个 LLM 调用点(`aggregate.py:620/757`、`tier.py:717`、`basket_card.py:615`)与 `basket_review.py:855` 全部显式传 `ref_date=trade_date`;**污染 grep**:markdown 里 `20260805|2026-08-05|8月5日|08-05` **仅 1 处命中 = `生成时间(UTC):2026-08-05T03:28:27`(报告确实生成于今日,必须这么写)**,其余六个 `*_json` 列命中 **0**,公网整份响应里唯一命中同样是 `generatedAt`。**公网验收**:`GET /report?date=20260804` **200 / 16 706 B / HTTP/2 / 0.137s**,`tradeDate=20260804`,`dataFreshness` 三项全 **lag 0 / stale=false**(补拉之功)。**🔑 LLM 段如实报告 —— 是「降级版」,但不是任务书预想的那种降级**:key **有效**(带真 key 打出的是 **404 不是 401**,鉴权已过),但**一次调用也没成功**,两处配置缺口:① `llm_providers.base_url` 现值 `…/api/paas/v4`,而本项目这一列是 `OpenAICompatProvider` 直接 `client.post(self.api_url,…)` 的**完整端点、不做路径拼接**,应为 `…/api/paas/v4/chat/completions`(预置参考实现 `llm/providers/glm.py:37` 即此值)—— ⚠ **GLM 官方文档管 `…/paas/v4` 叫「OpenAI 兼容 base_url」,用户填的是官方原文,是本项目字段语义与通用叫法撞车,不是用户填错**;② `app_settings.llm_default_provider` 从未设过(空串,`llm_task_routes={}`),而路由三级里 GLM 只能靠 ②「检索类挑第一个 `enabled AND has_web_search`」被选中,推理类(`TASK_BASKET_REASON`/`TASK_TIER_RANK`/`TASK_SCRIPT`/`TASK_REVIEW`)走 ③ 回退默认 → 空 → `no_provider`,**GLM 不会自动兼任推理**。**两处均属持久配置(路由/端点),builder ⛔ 未擅改**,补齐后同日重跑即可补出篮子(冻结件 `INSERT OR IGNORE`,同日补跑安全)。**🔴 并打出 P0-39(已登记 §七)**:⑤⑥ 全缺席时报告 ③ 节仍输出「今日无篮子达到定档标准…今天没有共同驱动清晰、成员结构够格的篮子」= 把「引擎没跑」讲成实质性市场判断,`basketsAvailable=true`/`basketsUnavailableReason=null` 同样说谎;根因 `basket_daily.py` 的 `baskets_available=True` 只挂在「读表成功」上(同函数 ③b 的三态区分做对了、③ 没有),⑤ 侧 `STAGE_NO_PROVIDER` 等一等状态没落到报告层能读到的地方。**⚠ 故 08-04 那份报告的 ③ 节不可信,其余四段(机械段)不受影响**。收尾:`systemctl --failed` 零条、`neckline.service` `NRestarts=0` 全程未受扰、load ≤0.06、无残留进程、瞬态 unit 已回收。
+
+- 2026-08-05 · 🩹 **A 方案官方补拉:nk 补齐 `20260804` 当日 EOD,⑰ 割接的 parquet 缺口销案**(@builder-pro,盘中,用户裁定 A;隔离瞬态 unit `nk-backfill-0804`)。**⚠ 一处有意偏离**:任务书写 `systemd-run --scope`,实际改用**瞬态 service** —— `--scope` 在 root 下跑会让新落的 parquet 变成 `root:root`,而 `data/` 必须是 `neckline:neckline`(`sync_code.sh` 的属主自检就是防这个,v1.1-H/H2 因属主翻转两次把生产库跑成只读、服务 502)。瞬态 service 同样是「隔离单进程 + MemoryMax」,还能钉住 `User=neckline`、并给出 `ExecMainStatus`(本项目「timer 跑过 ≠ 任务成功」的判据),逐项照抄 `neckline-daily.service`(`User/Group/WorkingDirectory/EnvironmentFile/MemoryMax=900M/Type=oneshot`)。**结果**:墙钟 **11:23:14 → 11:24:36 = 82s**,CPU 6.06s,`ExecMainStatus=0`/`Result=success`,900M 闸下零 OOM;`[daily] 5529 行 · [daily_basic] 5529 · [adj_factor] 5550 · [moneyflow_dc] 5941 · index_daily 5 指数各 1 · limit_derived 落 2455 行(2026-07-15~08-04,15 交易日尾窗)· suspend_d 7 只 · ths_daily 尾窗 5 日写 1970 行 · industry_strength 110 行(滞后 0)`;`ths_index/ths_member` 未到 7 天重拉周期、如实跳过(省下 ~400 次配额)。**逐表验收**:七张表 08-04 分区**全部在位**、属主全 `neckline:neckline`、体量与 08-03 同量级、**每张表 08-03 与 08-04 的 schema 逐表一致**、整年 `scan_parquet` 无 `SchemaError`(项目两次崩报告的类型漂移案底,故显式验);`ths_daily` 自愈到 08-04(08-03/08-04 各 394 行 = 概念指数口径、非 2499 的全板块,滞后 0 天,dtype 未漂)。**🎯 连板递推抽查(本次修复的核心判据,全绿)**:08-04 涨停 141 只 / 炸板 25 只;**A** 20 只 08-04 连板≥2 的票,08-03 的 `consec_limit_up_days` **逐个恰为 c−1、递推异常 0 只**(最长 `003032.SZ` 6→7 连板);**B** 8 只 08-03 涨停而 08-04 未涨停的票,`consec` **全部归 0、异常 0 只**。📌 **反证样本**:`001223.SZ` 08-03 是 **2 连板、08-04 炸板** —— 若 08-04 仍缺失、它 08-05 再涨停,就会被算成 3 连板,这就是那条判据污染的具体长相。**老机 hz 全程零接触**(A 方案不需要它)。
 
 - 2026-08-05 · 🔴 **补跑 08-04 V2 报告的前提不成立 —— 查出 ⑰ 割接漏搬 08-04 当日 EOD 增量,已停手待裁**(@builder-pro,盘中,**纯只读诊断,零写入**)。**病灶**:nk 的 `data/parquet/` 七张 EOD 表(`daily`/`daily_basic`/`adj_factor`/`moneyflow_dc`/`index_daily`/`limit_derived`/`suspend_d`)**最新分区都停在 `20260803`**,**`20260804` 一张都没有**;`ths_daily` 更只到 `2026-07-31`(超 `SECTOR_DATA_STALE_MAX_LAG_DAYS=2` 容忍)。**根因**:⑰ 割接是**两次搬家**——parquet 在 08-04 **14:42** 逐文件 md5 全等地搬过一次,`neckline.db` 在 **21:48** 又增量搬了第二次;而老机 hz 的 16:05 拉数**发生在两次之间**,于是**库里有 08-04(`industry_strength_daily`/`holding_eod_check` 皆 `20260804`),文件里没有** —— 割接验收当时逐表对拍的是 SQLite,parquet 侧没有第二次对拍,缺口因此没被发现。老机 hz 上七张表 **08-04 分区俱在**(本次只读 `ls` 核实,neckline 三单元仍 inactive+disabled,零改动)。**两条后果**:**①** 照原样跑 V2 链会**静默出一份空心报告** —— `market_data.scan_table_range` 对缺分区**返回空 DataFrame 而不抛异常**,④ 扫描层零行 → ⑤ 无种子 → 报告写「当日不成篮」,而真相是「这台机器上压根没有那天的数据」,**看不出是坏的**,正是本项目一贯最忌的静默降级;**②** 更要紧的是**它会污染今晚 16:35 那条链** —— `limit_derived` 连板计数是**按行相邻**递推(`is_limit_up.shift(1).over(ts_code)`,「停牌无行不打断连板」口径),08-04 的空洞会让 08-03 与 08-05 两行**直接相邻**,08-04 炸掉的板会被算成连着的,而连板数是 K7 包的判据输入。**两条候选修法**(均未执行,等用户裁定):**A** 在 nk 上 `python scripts/daily_update.py 20260804`(已审代码:`target` 全程取自 `sys.argv[1]`,下游函数无一处旁路 `date.today()`,日期口径干净;且 ⑯-D 起 `main()` **已不再挂 ④/④b 扫描层**,只补拉数 + `limit_derived` 15 交易日尾窗 + `suspend_d` + 概念板块 + `industry_strength_daily`,与晚间链不重叠)—— 代价是盘中向 TuShare 拉一次全量 EOD;**B** 从 hz 只读 rsync 那 7 个分区(~786 KB)过来 —— 与生成 V1 那份 08-04 报告的数据逐字节同源、零外部调用,代价是要碰一次停用留档的老机。**⚠ 时效**:今日 16:05 拉数只拉 08-05,**不会自愈 08-04 的洞**,故修复应赶在 16:05 之前。
 
