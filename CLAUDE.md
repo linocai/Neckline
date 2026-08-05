@@ -142,13 +142,11 @@
   冻住**的历史快照原样读回,不会因服务端升级而补全新键,新增字段(如
   `charterSegments`)必须给该 DTO 手写 `init(from:)` 做 `decodeIfPresent` 兜底
   (v1.4-⑧ `ReviewWeeklyResult` 定案)——加字段前先确认是哪一类,别套错模板。
-- **Swift 合成 `Decodable` 对非 Optional 属性「有默认值也不容忍缺键」——V2-⑮ 起客户端
-  DTO 一律手写 `init(from:)`**(不只是冻结快照那一类):B 类(`basket_cards.card_json`
-  / `basket_review_daily.mech_json` / `reviews.result_json`)是**硬要求**(守门单测
-  `test_contract_crosscheck.py::test_frozen_snapshot_dtos_hand_write_init_from_decoder`
-  按类型名精确锁);A 类手写是白拿的保险,也让测试 fixture 不必逐字段补全。
-  ⚠ **新建 B 类 DTO 时别在它前面放同前缀的类型**(如 `BasketReviewMech` 排在
-  `BasketReview` 之前)—— 那条守门用 `split("struct <Name>")` 取首个匹配,会切错块。
+- **Swift 合成 `Decodable` 对非 Optional 属性「有默认值也不容忍缺键」——V2-⑮ 起客户端 DTO 一律
+  手写 `init(from:)`**(不只是冻结快照那一类):B 类(`basket_cards.card_json` /
+  `basket_review_daily.mech_json` / `reviews.result_json`)是**硬要求**,守门单测按类型名精确锁
+  (`tests/test_contract_crosscheck.py` 的 `..._hand_write_init_from_decoder`);A 类手写是白拿的保险。
+  ⚠ 新建 B 类 DTO 别在它前面放**同前缀**类型(守门用 `split("struct <Name>")` 取首个匹配,会切错块)。
 - **`NKJSON`(自由结构透传字段的载体)解码顺序:Bool 必须排在 Double 之前**——
   JSON `true` 在 Foundation 里也能解成 `1.0`,顺序反了布尔会悄悄变成数字(界面显示
   「1」而不是「是」),且**看不出是 bug**。
@@ -183,16 +181,11 @@
   (逐文件 cast、幂等、不整表 scan)。
 - **核心管线对可选情报输入的调用必须包保险丝**:一处裸奔就把"排序少一维"升级成
   "当日无报告"(07-27 `intel_candidates` 调 `compute_sector_moneyflow` 真崩过)。
-- **LLM 读超时按 task 类别分级,⛔ 别当成一个全局数字**(§七 P0-39/P0-40 两次实打)。
-  **检索类 90s**(带搜索正常生成 30-60s+;25s 下 10 只审判 5 只 ReadTimeout);
-  **推理类大上下文 240s**(`LONG_CONTEXT_TASKS` = basket_reason/tier_rank/script/review
-  —— ⑤ 一次塞 20 颗种子 + 成员机械数据要结构化 JSON,2026-08-05 生产 **3/3 次恰好 90s
-  超时** = 确定性超长,重试只是把"生成没跑完"重放三遍)。**唯一分级实现**
-  `llm/router.py::read_timeout_for_task()`,唯一接线点 `factory.get_provider(task)`
-  (provider 的唯一出生地;⛔ 别改成 `chat()` 参数——那要改每个调用点,漏一个退回 90s
-  还看不出来)。⛔ **不许全局翻倍**:短超时是用来快速掐断真卡死连接的。
-  ⚠ **改这两个数字前先重算 `deploy/neckline-basket.service` 的 `TimeoutStartSec`**
-  (= 检索账 + 一组检索超时溢出 + 推理账 + 一组推理超时溢出;单测已把两者钉在一起)。
+- **LLM 读超时按 task 分级,⛔ 别当成一个全局数字**(案底 §七 **P0-40**):**检索类 90s / 推理类
+  大上下文 240s**(`LONG_CONTEXT_TASKS`;⑤ 一次塞 20 颗种子要结构化 JSON = **确定性超长**,不是
+  网络抖动 —— 生产 3/3 次恰好 90s 超时)。唯一分级实现 `llm/router.py::read_timeout_for_task()`,
+  唯一接线点 `factory.get_provider(task)`;⛔ 别改成 `chat()` 参数(漏一个调用点退回 90s 还看不
+  出来)、⛔ 别全局翻倍。⚠ 改这两个数先重算 `neckline-basket.service` 的 `TimeoutStartSec`(单测钉死)。
 - **GLM 联网搜索 0 命中(已结案,v1.3.4 真 key 实证)**,两个真因:①
   `search_engine` 取值不被上游认识会 `ok=True` **静默返 0 条**(模型退训练数据
   作答,文字看不出);② 检索词跟**最后一条 user 消息**走,代词提问救不回来。
@@ -223,14 +216,11 @@
   `systemd-run --scope -p MemoryMax=… -p CPUQuota=…` 隔离单进程、**串行**,别并行开多个、
   更别拿常驻 `neckline.service` 当小白鼠;跑完 `pgrep -af` 确认无残留 + `reset-failed` + 看 load 回落。
   **判据:`load > 4` 立即停手**(07-29 探针在**交易时段**把 load 推到 65)。
-- **等远端长任务:ssh 会话不许长时间零流量,`systemd-run` 记得 `--no-block`**(2026-08-05 连踩两次)。
-  ① `systemd-run` 跑 `Type=oneshot` **默认阻塞到 ExecStart 退出**(等价 `systemctl start`),一次 29
-  分钟的链会把"启动命令"本身变成 29 分钟的前台调用 —— 要立刻返回就加 `--no-block`。② 用
-  `until [ ... ]; do sleep 10; done` 守在 ssh 里等,**几十分钟零输出**,空闲 TCP 被 NAT/防火墙静默掐
-  断,守候进程既不报错也不返回。**同一天的对照实验**:三条 ssh 里只有带 `-o ServerAliveInterval=30`
-  的那条(journal `-f` 跟随)每条事件都送达,另两条全哑。规则:长跑一律
-  `-o ServerAliveInterval=30 -o ServerAliveCountMax=6`,轮询循环每圈**打一行心跳**(有流量 + 看得见
-  进度),或干脆用多次短连接轮询代替一条长连接。
+- **等远端长任务:`systemd-run` 记得 `--no-block`,ssh 一律带 keepalive**(2026-08-05 连踩两次)。
+  ① `systemd-run` 跑 `Type=oneshot` **默认阻塞到 ExecStart 退出**,一次 29 分钟的链会把"启动命令"
+  变成 29 分钟前台调用;② 几十分钟零输出的 ssh 守候会被 NAT/防火墙静默掐断,**既不报错也不返回**
+  (同日对照:三条里只有带 `-o ServerAliveInterval=30` 的那条每条事件都送达,另两条全哑)。规则:
+  `-o ServerAliveInterval=30 -o ServerAliveCountMax=6` + 轮询每圈打一行心跳,或多次短连接代替长连接。
 - **在远端 `pkill -f <pattern>` 前先确认 pattern 不匹配自己**:`pkill -f probe_industry` 会匹配到
   正在跑它的那条 `bash -c` 命令行,自杀式掐断 SSH 会话(exit 255,2026-07-29 真踩)。用
   `pgrep -af` 先看命中集,或按 PID 杀。
@@ -309,18 +299,16 @@
   `llmJudgment` 从 `llm_judgments` 现连、`judgeSkipped` 却来自候选快照 —— 同日重跑时两者
   会讲相反的话。规则:标"本次没做"的同时**删掉该批码当日的既有行**(写侧收口、单事务
   幂等),**不许在读侧遮蔽**(藏真数据不是诚实)。
-- **冻结件"读不出"是独立第三态,与"还没生成"必须分开**(V2 B1 定案,`card_corrupt`
-  = **500** vs `card_not_ready` = 404):冻结件 `INSERT OR IGNORE` 永不覆盖 → **坏了就是
-  永久坏的**,混成一类 = 客户端永远重试、永远显示"还没生成" = 静默永久失败。
-  ⚠ 判「完整性」的**必需键判据一律取「内容键有其一」,⛔ 不取「都要有」** ——
-  各消费方吃的是不同键子集(⑧ 只读两份 spec、⑩ 只读 `members`),"都要有"会把合法的
-  局部件判成损坏;误判代价还不对称(判错 = 好数据看不到且不可自愈)。
-- **`available` 标志永远不许挂在「读表成功」上**(§七 P0-39,2026-08-05 生产实打;同一条纪律
-  的第三次现身):读得出表 ≠ 引擎跑过,**零行有两种相反成因**(跑了真没有 / 压根没跑),混成
-  一句就把系统缺席讲成了实质性市场判断。规则:**产出物在 = 跑过的活证据**;**零产出必须另有
-  一处段状态可查**(⑤ 的落点 = `selection/basket_stage_handoff.py`,判读唯一实现在那儿),
-  **查不到 = 不知道 = 照样标未取得**。⚠ 判读别只看段状态枚举:各层保险丝往往返回 dataclass
-  **默认值**(⑤ 是 `reason_stage=no_seeds`),故障会伪装成结论 —— 先看 `notes` 里的失败标记。
+- **冻结件"读不出"是独立第三态,与"还没生成"必须分开**(V2 B1:`card_corrupt` **500** vs
+  `card_not_ready` **404**):`INSERT OR IGNORE` 永不覆盖 → **坏了就是永久坏的**,混成一类 =
+  客户端永远重试、永远显示"还没生成" = 静默永久失败。⚠ 判完整性的必需键判据一律取
+  **「内容键有其一」,⛔ 不取「都要有」** —— 各消费方吃不同键子集(⑧ 只读两份 spec、⑩ 只读
+  `members`),且误判代价不对称(判错 = 好数据看不到且不可自愈)。
+- **`available` 标志永远不许挂在「读表成功」上**(案底 §七 **P0-39**,2026-08-05 生产实打):读得
+  出表 ≠ 引擎跑过,**零行有两种相反成因**(跑了真没有 / 压根没跑),混成一句就把系统缺席讲成了
+  实质性市场判断。规则:**产出物在 = 跑过的活证据**;**零产出必须另有一处段状态可查**(⑤ 的落点
+  与判读唯一实现 = `selection/basket_stage_handoff.py`),**查不到 = 不知道 = 照样标未取得**。
+  ⚠ 别只看段状态枚举:保险丝常返 dataclass **默认值**(⑤ 是 `no_seeds`),先看 `notes` 里的失败标记。
 - **喂"类候选对象"给 LLM 审判**一律复用 `llm/judge.py::judge_candidate`
   (duck-typed,只要求几个属性;可选 `system_prompt`),不另写调用/解析/降级。
 - **纪律红绿灯要"拆解展示触发了哪条"时**,不许手写 Python 重抄
@@ -382,6 +370,10 @@
 
 ## LLM Provider 自填制(V2-②定案,碰 `neckline/llm/` 前必读)
 
+- **生产现役 = 单 Provider(GLM 一家兼检索与推理;2026-08-05 用户拍板为常态)**:推理类任务靠
+  「路由未命中 → 回退 `llm_default_provider`」走通,**这不是没配好**;双 Agent 分工是可选扩展路径
+  (加第二家 + 设路由即恢复,不改代码)。⚠ `llm_providers.base_url` 列语义 = **完整端点**(必须带
+  `/chat/completions`,少写 = 拿真 key 打出 404),`search_engine` **留空是对的**(空 = 不发该字段)。
 - **`GLMProvider`/`KimiProvider` 降级为预置参考实现,不删、行为逐字节不变**:
   `llm/factory.py::get_provider(task, ...)` 永远构造裸 `OpenAICompatProvider`
   (按 `llm_providers` 行的 base_url/model/has_web_search/search_engine 建),
@@ -411,9 +403,8 @@
   任何新策略讨论前必读,防止重走死路)。
 - 跨线协作:纪律章程唯一源在 PROJECT_PLAN §2.1(策略线只引用);策略过门+用户批准后,
   激活/部署归系统线;`research/*.md` 不可变档案归策略线;本坑清单两线共用。
-- **V2 文档层级(2026-08-02 立项后定死,防第三份权威)**:施工权威**只有**
-  `PROJECT_PLAN.md` §五 V2.0.0;根目录 `新版本量化交易APP与选股架构.md` 是**产品语义
-  蓝图**(用户原文,可读不可当施工口径);`archive/V2架构设计稿_*.md` 是**历史档案**
-  (已转写完毕,**不得再引用**)。三者冲突时:施工口径以 PROJECT_PLAN 为准,产品语义
-  以蓝图为准,架构稿一律作废。**选股策略包**(`selection_packs`)与**纪律章程**
-  (`strategy_versions`)是两条版本线、两张表、两套激活流程,**永不混用**。
+- **V2 文档层级(防第三份权威;2026-08-05 V2 收官后的常态口径)**:**现行口径权威只有
+  `PROJECT_PLAN.md`** —— V2 施工图全文已归档 `archive/V2.0.0_施工图_20260805归档.md`(**查施工
+  细节去那儿,但它不追改后续裁定**,已知两处:单 LLM 常态、⑫ 周度 unit → §七 P3-42);根目录
+  `新版本量化交易APP与选股架构.md` = 产品语义蓝图(可读、不可当施工口径),`archive/V2架构设计稿_*.md`
+  **作废不得引用**。**选股策略包**(`selection_packs`)与**纪律章程**(`strategy_versions`)是两条版本线、两张表、两套激活流程,**永不混用**。
