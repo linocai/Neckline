@@ -183,9 +183,16 @@
   (逐文件 cast、幂等、不整表 scan)。
 - **核心管线对可选情报输入的调用必须包保险丝**:一处裸奔就把"排序少一维"升级成
   "当日无报告"(07-27 `intel_candidates` 调 `compute_sector_moneyflow` 真崩过)。
-- **带联网搜索的 LLM 调用不能用短读超时**:现值 `openai_compat.read_timeout=90`
-  (带搜索正常生成 30-60s+;25s 下 10 只审判 5 只 ReadTimeout);卡死场景由
-  max_attempts 全新连接重试兜住,勿因个别慢调用回调短超时。
+- **LLM 读超时按 task 类别分级,⛔ 别当成一个全局数字**(§七 P0-39/P0-40 两次实打)。
+  **检索类 90s**(带搜索正常生成 30-60s+;25s 下 10 只审判 5 只 ReadTimeout);
+  **推理类大上下文 240s**(`LONG_CONTEXT_TASKS` = basket_reason/tier_rank/script/review
+  —— ⑤ 一次塞 20 颗种子 + 成员机械数据要结构化 JSON,2026-08-05 生产 **3/3 次恰好 90s
+  超时** = 确定性超长,重试只是把"生成没跑完"重放三遍)。**唯一分级实现**
+  `llm/router.py::read_timeout_for_task()`,唯一接线点 `factory.get_provider(task)`
+  (provider 的唯一出生地;⛔ 别改成 `chat()` 参数——那要改每个调用点,漏一个退回 90s
+  还看不出来)。⛔ **不许全局翻倍**:短超时是用来快速掐断真卡死连接的。
+  ⚠ **改这两个数字前先重算 `deploy/neckline-basket.service` 的 `TimeoutStartSec`**
+  (= 检索账 + 一组检索超时溢出 + 推理账 + 一组推理超时溢出;单测已把两者钉在一起)。
 - **GLM 联网搜索 0 命中(已结案,v1.3.4 真 key 实证)**,两个真因:①
   `search_engine` 取值不被上游认识会 `ok=True` **静默返 0 条**(模型退训练数据
   作答,文字看不出);② 检索词跟**最后一条 user 消息**走,代词提问救不回来。
