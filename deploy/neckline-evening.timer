@@ -14,6 +14,12 @@
 # APNs device tokens 一并迁来,两台同时排程 = **同一条报告推两遍**。留到 ⑰ 双端换包
 # 时与老机 timer 一体切换(老机 disable → 新机 enable),见 ⑯ 完工记录「双推送处置」。
 #
+# 🔴 **本 timer 的 NEXT 变成 `-` / `Trigger: n/a` 时,病不在这个文件里** —— 去看
+# `neckline-evening.target` 的 `StopWhenUnneeded=yes` 还在不在(§七 **P0-45**:target
+# 不落下 → timer 永远停在 `SubState=running`、不重算 NEXT → 首晚必成、次晚起必哑)。
+# 自检一行:`systemctl show neckline-evening.timer -p SubState -p NextElapseUSecRealtime`
+# —— 正常态是 `waiting` + 有值;`running` + 空值就是那个病。
+#
 # 安装见 neckline-evening.target 头部。
 
 [Unit]

@@ -239,6 +239,18 @@
   A 股一天里收益完全相同的票成堆,110 个行业当日中位数撞车很常见;行序又随"读的是按年块
   还是单日分区"而变 → 同一天算出两种 rank。**任何进判据/排序的 rank 必须先排定确定性
   tie-break 再 ordinal**(体例:`_day_local_table` 按 `(median_ret 降序, industry 升序)`)。
+- **systemd timer 触发 `.target` 必须给 target 配 `StopWhenUnneeded=yes`**(§七 P0-45,08-06 整晚
+  没跑):timer 触发后停在 `TIMER_RUNNING`,**只有被触发的 unit 转 inactive 才会重算 NEXT**;
+  `.target` 不会自己落下 → NEXT 永远算不出 → **首晚必成、次晚起静默全哑**(自检:
+  `systemctl show <timer> -p SubState -p NextElapseUSecRealtime`,正常是 `waiting`+有值)。
+  ⛔ **别信"已 active 的 target 吞掉触发"那套说法**(已被 08-05 整链跑完证伪);⛔ 被 target
+  拉起的 oneshot **永不许加 `RemainAfterExit=yes`**(那才会让 ExecStart 一行不执行地静默空跑)。
+- **在已卡住的机器上首次加那一行:先 `stop` timer 再改**(同上,次生事故真踩):`daemon-reload`
+  **异步**落下 target(同步查一次还看得见 `active`,极具迷惑性)→ timer 以过期的 `LastTriggerUSec`
+  为基点算日历槽 → 算出**已过去的**槽 → **当场补跑一遍全链**(带 `--notify` 就真推送);
+  `Persistent=false` 拦不住(它只管重启后补)。
+- **凡"周期性"的东西,验收必须验第二次**(P0-45 通用教训):⑯-D 只验了首跑成功 + NEXT 存在,
+  两项首晚都为真;缺的是**跨两次触发的不变量**(跑完后状态有没有复位)。单次跑通证明不了排程还活着。
 - **timer 跑过 ≠ 任务成功**:部署/定时任务验收必须看 `ExecMainStatus=0` **且**
   `ExecMainStartTimestamp` 是本次那一跑,别只看 `list-timers` 的 LAST。⚠ **`Result=`
   也不够**(2026-07-28 实测):07-27 那次崩掉的报告在库里是
