@@ -780,6 +780,104 @@ final class AppModelTests: XCTestCase {
         let d = cal.parseDate("20260717")!
         XCTAssertTrue(cal.isTradingDay(d))
     }
+
+    // MARK: - V2.1-⑦ 信息架构:三板块 + 设置沉底
+
+    /// **顺序即 iOS TabBar 顺序**:选股 / 持仓 / 复盘 / 设置 —— 设置**必须排最后**
+    /// (它是入口不是板块,用户裁定 #2)。
+    func testAppTabOrderIsThreeBoardsPlusSettingsLast() {
+        XCTAssertEqual(AppTab.allCases, [.baskets, .positions, .review, .settings])
+        XCTAssertEqual(AppTab.allCases.last, .settings, "设置沉底:⛔ 不许挪到板块中间")
+    }
+
+    func testAppTabTitlesAreV21ThreeBoards() {
+        XCTAssertEqual(AppTab.baskets.title, "选股", "原「今日篮子」改名(用户裁定 #2)")
+        XCTAssertEqual(AppTab.positions.title, "持仓")
+        XCTAssertEqual(AppTab.review.title, "复盘", "原「周复盘工作台」升为板块")
+        XCTAssertEqual(AppTab.settings.title, "设置")
+    }
+
+    /// 🔴 **`rawValue` 是 `NECKLINE_INITIAL_TAB` QA 钩子与截图脚本的契约**:
+    /// 改 case 名会把那些脚本静默变成"落到默认 tab",而**截图看起来还挺正常**。
+    func testAppTabRawValuesAreTheQAHookContract() {
+        XCTAssertEqual(AppTab.allCases.map(\.rawValue),
+                       ["baskets", "positions", "review", "settings"])
+        XCTAssertEqual(AppTab(rawValue: "review"), .review)
+        XCTAssertNil(AppTab(rawValue: "inquiry"), "问询台已整链退役(V2.1-①)")
+    }
+
+    /// 复盘板块三页的 rawValue = `NECKLINE_INITIAL_REVIEW_PAGE` 的合法值。
+    func testReviewPageRawValuesAreTheQAHookContract() {
+        XCTAssertEqual(ReviewPage.allCases.map(\.rawValue), ["daily", "cumulative", "reconcile"])
+        XCTAssertEqual(ReviewPage(rawValue: "cumulative"), .cumulative)
+        XCTAssertNil(ReviewPage(rawValue: "handoff"), "移交件是累计页里的出口,不是第四页")
+    }
+
+    // MARK: - V2.1-② 移交 ⑦:③ 节档位 = **现役两档 ∪ 快照实际档位**
+
+    /// 新报告(只有 T1/T2)→ 恰好两档:⛔ 不许凭空多一个恒空 T3 分组
+    /// (那会说「今日 T3 为空(算过了…)」,而真相是 T3 已取消 = 把系统缺席讲成市场结论)。
+    func testDisplayTiersOnTwoTierSnapshotHasNoGhostT3() {
+        let daily = BasketDaily(baskets: [Basket(basketId: 1, tier: 1), Basket(basketId: 2, tier: 2)],
+                                basketsAvailable: true)
+        XCTAssertEqual(daily.displayTiers, [1, 2])
+    }
+
+    /// 空篮子的新报告仍显示两档(「今日 T1 为空」这句诚实披露不许消失)。
+    func testDisplayTiersOnEmptySnapshotStillShowsBothLiveTiers() {
+        XCTAssertEqual(BasketDaily(baskets: [], basketsAvailable: true).displayTiers, [1, 2])
+    }
+
+    /// 🔴 回放 V2 老报告(含 tier=3)→ **T3 分组必须照出**:写死 `[1,2]` 会让历史 T3
+    /// 在客户端静默消失,等于把服务端的读侧宽容在展示层拆掉(② 移交 ⑦ 的硬约束)。
+    func testDisplayTiersKeepsHistoricalT3FromFrozenSnapshot() {
+        let daily = BasketDaily(baskets: [Basket(basketId: 1, tier: 1), Basket(basketId: 9, tier: 3)],
+                                basketsAvailable: true)
+        XCTAssertEqual(daily.displayTiers, [1, 2, 3])
+        XCTAssertEqual(daily.baskets(tier: 3).map(\.basketId), [9])
+    }
+
+    /// `tier == nil`(极旧快照 / 数据缺口)**不进任何档**,⛔ 不拿假档位塞进去。
+    func testDisplayTiersIgnoresNilTierBaskets() {
+        let daily = BasketDaily(baskets: [Basket(basketId: 7, tier: nil)], basketsAvailable: true)
+        XCTAssertEqual(daily.displayTiers, [1, 2])
+    }
+
+    // MARK: - V2.1-④ 百分制打分卡的读法(两条路各填一处)
+
+    /// 报告快照路径:分数住 `BasketOut.scorePercent`(B 类,随报告冻住)。
+    func testScoreReadsFromSnapshotWhenPresent() {
+        let b = Basket(basketId: 1, scorePercent: 62.5,
+                       scoreContributions: [ScoreContribution(dim: "tradability", label: "可交易性",
+                                                              contribPercent: 20.0)])
+        XCTAssertEqual(b.scoreDisplayPercent, 62.5)
+        XCTAssertEqual(b.scoreDisplayContributions.map(\.dim), ["tradability"])
+    }
+
+    /// live 路径(`GET /baskets`):`BasketOut` 两键刻意留空,分数住 `tierHistory`。
+    func testScoreFallsBackToTierHistoryOnLivePath() {
+        let th = Tier(basketId: 1, scorePercent: 55.0,
+                      scoreContributions: [ScoreContribution(dim: "card_density", label: "卡密度",
+                                                             contribPercent: 6.7)])
+        let b = Basket(basketId: 1, tierHistory: th)
+        XCTAssertEqual(b.scoreDisplayPercent, 55.0)
+        XCTAssertEqual(b.scoreDisplayContributions.map(\.dim), ["card_density"],
+                       "分数从哪条路来,拆解就从哪条路取 —— ⛔ 不许拼两份数据的混合体")
+    }
+
+    /// 🔴 两条路都没有 → `nil` = **本报告版本无打分**,⛔ **绝不是 0 分**
+    /// (0 是一个极差的实质性判断,拿它冒充"没这个数"是本项目反复禁止的那类谎)。
+    func testScoreAbsenceIsNilNotZero() {
+        let b = Basket(basketId: 1)
+        XCTAssertNil(b.scoreDisplayPercent)
+        XCTAssertTrue(b.scoreDisplayContributions.isEmpty)
+    }
+
+    /// 未登记的新维度:`label` 为空时**原样显示 `dim`**,⛔ 客户端不另建中文映射表。
+    func testScoreContributionFallsBackToRawDimName() {
+        XCTAssertEqual(ScoreContribution(dim: "brand_new_dim").displayLabel, "brand_new_dim")
+        XCTAssertEqual(ScoreContribution(dim: "sector_strength", label: "板块强度").displayLabel, "板块强度")
+    }
 }
 
 // MARK: - PushManager 推送路由(纯函数,iOS 专属——PushManager 整文件 #if os(iOS))

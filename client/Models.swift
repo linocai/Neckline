@@ -697,8 +697,60 @@ struct BasketCard: Codable, Equatable {
     }
 }
 
+/// 百分制打分卡里的**一维贡献**(V2.1-④,**纯展示层**)。
+///
+/// `contribPercent = 归一化权重 × 该维得分 × 100`,五维合计 ≈ `scorePercent`
+/// (各项独立舍入,末位可能差零点几)。**唯一换算实现在服务端**
+/// `neckline/report/score_display.py` —— ⛔ 客户端不重算、不另建中文标签表
+/// (`label` 由服务端给);本类型只负责把已经算好的数**格式化**成一位小数。
+/// ⚠ 契约里 `contribPercent` 是 **4 位小数**(精度住契约),展示层各自 `:.1f`
+/// (位数住展示)—— ⛔ 别在解码时先舍入,那会把"五维合计 ≈ 总分"的自洽性吃掉。
+///
+/// 🔴 **`neutralFilled == true` 是一句必须说出口的话**:那一维今天**没算出来**、
+/// 按中性分 0.5 计入 —— 它撑起来的那部分分数**不是「这一维表现好」**。
+/// ⛔ 不许渲染成与其它维度无差别的一根条(§3.8「没有」与「没看」必须分得开)。
+///
+/// `dimScore` / `weight` 为 `nil` = 该维在冻结留痕里就缺这个数,**⛔ 不是 0**。
+struct ScoreContribution: Codable, Equatable, Identifiable {
+    var dim: String = ""
+    var label: String = ""
+    var dimScore: Double? = nil
+    var weight: Double? = nil
+    var contribPercent: Double? = nil
+    var neutralFilled: Bool = false
+
+    var id: String { dim }
+
+    enum CodingKeys: String, CodingKey {
+        case dim, label, dimScore, weight, contribPercent, neutralFilled
+    }
+
+    init(dim: String = "", label: String = "", dimScore: Double? = nil, weight: Double? = nil,
+         contribPercent: Double? = nil, neutralFilled: Bool = false) {
+        self.dim = dim; self.label = label; self.dimScore = dimScore; self.weight = weight
+        self.contribPercent = contribPercent; self.neutralFilled = neutralFilled
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        dim = try c.decodeIfPresent(String.self, forKey: .dim) ?? ""
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        dimScore = try c.decodeIfPresent(Double.self, forKey: .dimScore)
+        weight = try c.decodeIfPresent(Double.self, forKey: .weight)
+        contribPercent = try c.decodeIfPresent(Double.self, forKey: .contribPercent)
+        neutralFilled = try c.decodeIfPresent(Bool.self, forKey: .neutralFilled) ?? false
+    }
+
+    /// 展示名:服务端给了中文 `label` 就用它,没给(未登记的新维度)原样显示 `dim`
+    /// —— ⛔ 不在客户端另建一份中文映射(那就是第二个会漂的语义来源)。
+    var displayLabel: String { label.isEmpty ? dim : label }
+}
+
 /// 一篮的 Tier 定档留痕(`tier_history` 一行,**A 类**)。
 /// **Tier = 注意力优先级,不是收益预测**(§2.8-C 红线):`rankInTier` 排第一 ≠ 最会涨。
+///
+/// `tier` 取值域:**新数据 ∈ {1, 2}**(V2.1-② T3 全链退役,写侧收窄);
+/// 历史留痕行仍可能是 `3` —— ⛔ 客户端别把 3 当非法值,那是 V2 时代的真实数据。
 struct Tier: Codable, Equatable {
     var basketId: Int = 0
     var tradeDate: String = ""
@@ -711,19 +763,28 @@ struct Tier: Codable, Equatable {
     var llmRankDelta: Int = 0
     var llmReason: String? = nil
     var packVersion: String? = nil
+    /// **V2.1-④ 新增两个只读键**:`mechScore` 的百分制等价换算 + 五维拆解,
+    /// 由服务端 `report/score_display.py` 从**同一份已冻结的 `mechBreakdown`** 算出。
+    /// ⛔ 它不是第二个分数、不进任何判定路径。
+    /// `scorePercent == nil` = 这一篮取不到分(没有 breakdown),**⛔ 不是 0 分**。
+    var scorePercent: Double? = nil
+    var scoreContributions: [ScoreContribution] = []
 
     enum CodingKeys: String, CodingKey {
         case basketId, tradeDate, tier, mechScore, mechBreakdown
         case rankInTier, rankMech, llmRankDelta, llmReason, packVersion
+        case scorePercent, scoreContributions
     }
 
     init(basketId: Int = 0, tradeDate: String = "", tier: Int? = nil, mechScore: Double? = nil,
          mechBreakdown: NKJSON = .object([:]), rankInTier: Int? = nil, rankMech: Int? = nil,
-         llmRankDelta: Int = 0, llmReason: String? = nil, packVersion: String? = nil) {
+         llmRankDelta: Int = 0, llmReason: String? = nil, packVersion: String? = nil,
+         scorePercent: Double? = nil, scoreContributions: [ScoreContribution] = []) {
         self.basketId = basketId; self.tradeDate = tradeDate; self.tier = tier
         self.mechScore = mechScore; self.mechBreakdown = mechBreakdown
         self.rankInTier = rankInTier; self.rankMech = rankMech; self.llmRankDelta = llmRankDelta
         self.llmReason = llmReason; self.packVersion = packVersion
+        self.scorePercent = scorePercent; self.scoreContributions = scoreContributions
     }
 
     init(from decoder: Decoder) throws {
@@ -738,6 +799,9 @@ struct Tier: Codable, Equatable {
         llmRankDelta = try c.decodeIfPresent(Int.self, forKey: .llmRankDelta) ?? 0
         llmReason = try c.decodeIfPresent(String.self, forKey: .llmReason)
         packVersion = try c.decodeIfPresent(String.self, forKey: .packVersion)
+        scorePercent = try c.decodeIfPresent(Double.self, forKey: .scorePercent)
+        scoreContributions = try c.decodeIfPresent([ScoreContribution].self,
+                                                   forKey: .scoreContributions) ?? []
     }
 }
 
@@ -755,21 +819,31 @@ struct Basket: Codable, Equatable, Identifiable {
     var cardVersion: Int? = nil
     var cardUnavailableReason: String? = nil
     var tierHistory: Tier? = nil
+    /// 🔴 **这两键只在「报告快照」这条路上有值**(V2.1-④,**B 类:随
+    /// `reports.basket_daily_json` 冻住**);**live 路径(`GET /baskets`)刻意留空**,
+    /// 那条路上同一个数住 `tierHistory.scorePercent`(分数是定档留痕的属性)。
+    /// ⛔ 读的时候别只读一处 —— 唯一正确读法是下面的 `scoreDisplayPercent`
+    /// (= `scorePercent ?? tierHistory?.scorePercent`,服务端 `BasketOut` docstring 定死)。
+    var scorePercent: Double? = nil
+    var scoreContributions: [ScoreContribution] = []
 
     var id: Int { basketId }
 
     enum CodingKeys: String, CodingKey {
         case basketId, basketKey, name, tradeDate, tier, memberCodes
         case card, cardVersion, cardUnavailableReason, tierHistory
+        case scorePercent, scoreContributions
     }
 
     init(basketId: Int = 0, basketKey: String = "", name: String = "", tradeDate: String = "",
          tier: Int? = nil, memberCodes: [String] = [], card: BasketCard? = nil,
-         cardVersion: Int? = nil, cardUnavailableReason: String? = nil, tierHistory: Tier? = nil) {
+         cardVersion: Int? = nil, cardUnavailableReason: String? = nil, tierHistory: Tier? = nil,
+         scorePercent: Double? = nil, scoreContributions: [ScoreContribution] = []) {
         self.basketId = basketId; self.basketKey = basketKey; self.name = name
         self.tradeDate = tradeDate; self.tier = tier; self.memberCodes = memberCodes
         self.card = card; self.cardVersion = cardVersion
         self.cardUnavailableReason = cardUnavailableReason; self.tierHistory = tierHistory
+        self.scorePercent = scorePercent; self.scoreContributions = scoreContributions
     }
 
     init(from decoder: Decoder) throws {
@@ -784,6 +858,21 @@ struct Basket: Codable, Equatable, Identifiable {
         cardVersion = try c.decodeIfPresent(Int.self, forKey: .cardVersion)
         cardUnavailableReason = try c.decodeIfPresent(String.self, forKey: .cardUnavailableReason)
         tierHistory = try c.decodeIfPresent(Tier.self, forKey: .tierHistory)
+        scorePercent = try c.decodeIfPresent(Double.self, forKey: .scorePercent)
+        scoreContributions = try c.decodeIfPresent([ScoreContribution].self,
+                                                   forKey: .scoreContributions) ?? []
+    }
+
+    // —— V2.1-④ 百分制打分卡的**唯一读法**(两条路各填一处,展示层收口在这里)——
+
+    /// 本篮的百分分数。`nil` = **本篮无打分可显示**(老报告快照没有这两个键 /
+    /// 这一篮没有定档留痕)—— 🔴 **⛔ 绝不是 0 分**,展示处如实写「本报告版本无打分」。
+    var scoreDisplayPercent: Double? { scorePercent ?? tierHistory?.scorePercent }
+
+    /// 与 `scoreDisplayPercent` **同源**的五维拆解:分数从哪条路来,拆解就从哪条路取
+    /// (⛔ 不许一处取分、另一处取拆解 —— 那会在同一张卡上拼出两份数据的混合体)。
+    var scoreDisplayContributions: [ScoreContribution] {
+        scorePercent != nil ? scoreContributions : (tierHistory?.scoreContributions ?? [])
     }
 
     /// 卡未就绪时的诚实文案。⛔ **不是**「篮子不存在」。
@@ -1038,8 +1127,27 @@ struct BasketDaily: Codable, Equatable {
         notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
     }
 
-    /// 某一档的篮子(T1/T2/T3)。**空档位如实显示「今日 T1 为空」,⛔ 不隐藏**(E1)。
+    /// 某一档的篮子。**空档位如实显示「今日 T1 为空」,⛔ 不隐藏**(E1)。
+    /// `tier == nil`(极旧快照 / 数据缺口)的篮子**不进任何档**,⛔ 别拿假档位塞进去。
     func baskets(tier: Int) -> [Basket] { baskets.filter { $0.tier == tier } }
+
+    /// **现役档位**(V2.1-② 起引擎两档化;写侧收紧的单一源在服务端
+    /// `selection/tier.py::TIERS`,客户端这份是展示层的镜像)。
+    static let liveTiers: [Int] = [1, 2]
+
+    /// ③ 节要渲染的档位 = **现役两档 ∪ 本份快照实际出现的档位**(V2.1-② 移交 ⑦ 的硬约束,
+    /// 与服务端 `render._render_today_baskets` 同构)。
+    ///
+    /// 🔴 **⛔ 不许写死 `[1, 2]`**:`basketDaily` 是**冻结快照**,回放一份 V2 时代的老报告
+    /// 时里面就有 tier=3 的篮子 —— 写死两档会让它们在客户端**静默消失**(那是"把历史删了",
+    /// 不是"退役新档"),等于把服务端刚立起来的读侧宽容在展示层拆掉。
+    /// 🔴 **⛔ 也不许写死 `[1, 2, 3]`**:新报告会凭空多出一个恒空的 T3 分组并说
+    /// 「今日 T3 为空(算过了,今天没有达到该档标准的篮子)」—— 而真相是 T3 已取消,
+    /// **那正是把系统缺席讲成实质性市场结论**(§2 诚实披露红线)。
+    /// 并集两头都对:现役档保证「今日 T2 为空」这句诚实披露不消失,实际档保证老报告照出。
+    var displayTiers: [Int] {
+        Array(Set(Self.liveTiers).union(baskets.compactMap { $0.tier })).sorted()
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1217,15 +1325,20 @@ struct ProfileRow: Identifiable, Equatable {
     var id: String { "\(dimension)|\(bucket)" }
 
     var dimension: String { raw["dimension"]?.stringValue ?? "" }
-    var bucket: String { raw["bucket"]?.stringValue ?? "" }
+    /// ⚠ **服务端这一格叫 `value`,不叫 `bucket`**(`profile/store.py::list_*` 的行形状:
+    /// `dimension` / `value` / `share` / `sampleN` / …)。V2.1-⑦ 修:原实现只读 `bucket`,
+    /// 于是**每一行的分组名恒为空**(界面上显示成「role · 」),而且**看不出是 bug** ——
+    /// 一行画像看起来只是"没写清楚"。`bucket` 保留在第一顺位只为向前兼容,⛔ 别删回去。
+    var bucket: String { raw["bucket"]?.stringValue ?? raw["value"]?.stringValue ?? "" }
     var sampleN: Int { raw["sample_n"]?.intValue ?? raw["sampleN"]?.intValue ?? 0 }
     var windowStart: String { raw["window_start"]?.stringValue ?? raw["windowStart"]?.stringValue ?? "" }
     var windowEnd: String { raw["window_end"]?.stringValue ?? raw["windowEnd"]?.stringValue ?? "" }
     var confidence: String { raw["confidence"]?.stringValue ?? "" }
     var isLowConfidence: Bool { confidence == "low" }
     /// 除去上述元信息之外的度量键(按字典序,确定性)。
+    /// ⚠ `value` 也算元信息(它就是 `bucket` 那一格,见上)——不排除会在度量区再列一遍。
     var metricKeys: [String] {
-        let meta: Set<String> = ["dimension", "bucket", "sample_n", "sampleN",
+        let meta: Set<String> = ["dimension", "bucket", "value", "sample_n", "sampleN",
                                  "window_start", "windowStart", "window_end", "windowEnd",
                                  "confidence"]
         return raw.sortedKeys.filter { !meta.contains($0) }
@@ -3049,6 +3162,172 @@ struct ReviewGetResponse: Codable, Equatable {
     var generatedAt: String
     var result: ReviewWeeklyResult?
     var material: String
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// MARK: - V2.1-⑤/⑦ 复盘板块:累计页五段 + 校准移交件(**B 类:含冻结产物内容**)
+// ══════════════════════════════════════════════════════════════════════════
+//
+// 🔴 **为什么整族手写 `init(from:)` + `decodeIfPresent`**:这两条端点回的不是"服务端
+// 每次重拼的视图",而是**已经落盘冻住的产物原文**(周度校准报告 JSON / `reviews.result_json`
+// / 画像表行)透传出来的 —— 服务端升级**不会**给老产物补新键(CLAUDE.md 落库快照两类论
+// 的 B 类)。合成 `Decodable` 对非 Optional 属性「有默认值也不容忍缺键」,一旦某期老产物
+// 缺一个键,**整页复盘直接解不出**。
+
+/// 复盘板块「累计」页里的**一段**(V2.1-⑤,五段形状统一)。
+///
+/// 🔴 **三态读法,⛔ 不许拿一个总开关罩住五段**:
+///   · **有**   → `available == true` + 有内容;
+///   · **没有** → `available == true` + 空内容(该段自己的空态文案说清为什么空);
+///   · **没取到** → `available == false` + `unavailableReason`(⛔ 不许拿空数组冒充)。
+///
+/// ⚠ **画像段与对账段的空态服务端刻意判得不一样,客户端也必须分开渲染,⛔ 别"统一"**:
+/// 画像缺席 = **系统自己那一步没跑**(周度批算未运行)→ 那是**「没看」**→ `available=false`;
+/// 对账缺席 = 输入(券商交割单)**只能由用户给**、系统查过表确实没有 → 那是**「没有」**
+/// → `available=true` + `detail.found == false`。两者给用户的动作完全不同(等系统 vs 去上传)。
+struct ReviewSegment: Codable, Equatable {
+    var available: Bool = false
+    var unavailableReason: String? = nil
+    var label: String = ""
+    /// 该段的时点标识:画像期 / ISO 周 / 校准窗口(`20260720→20260724`)。
+    var asOf: String = ""
+    /// **原样透传领域形状**(同 `WeeklyReviewOut.result` / `EvalWeeklyOut.result` 惯例)。
+    var items: [NKJSON] = []
+    var detail: NKJSON = .object([:])
+
+    enum CodingKeys: String, CodingKey {
+        case available, unavailableReason, label, asOf, items, detail
+    }
+
+    init(available: Bool = false, unavailableReason: String? = nil, label: String = "",
+         asOf: String = "", items: [NKJSON] = [], detail: NKJSON = .object([:])) {
+        self.available = available; self.unavailableReason = unavailableReason
+        self.label = label; self.asOf = asOf; self.items = items; self.detail = detail
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        available = try c.decodeIfPresent(Bool.self, forKey: .available) ?? false
+        unavailableReason = try c.decodeIfPresent(String.self, forKey: .unavailableReason)
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        asOf = try c.decodeIfPresent(String.self, forKey: .asOf) ?? ""
+        items = try c.decodeIfPresent([NKJSON].self, forKey: .items) ?? []
+        detail = try c.decodeIfPresent(NKJSON.self, forKey: .detail) ?? .object([:])
+    }
+
+    /// 对账段专用:`false` = **这周没有**(不是"没查")。⚠ 只在 `available == true` 时
+    /// 才读得出意思;`available == false` 时该段根本没查成,别拿它当"没有"。
+    var found: Bool? { detail["found"]?.boolValue }
+    /// 该段可直接渲染的一句话(服务端给的空态说明,如「本周尚未上传交割单 —— …」)。
+    var note: String? { detail["note"]?.stringValue }
+}
+
+/// 复盘板块「累计」页的聚合读(V2.1-⑤,`GET /review/overview`)。
+///
+/// **零现算**:五段全部读**已冻结 / 已落盘**的产物(校准报告由离线周度作业算好落盘)。
+/// 🔴 **本端点一律不 404**(空态走各段 `available=false`)→ 客户端**不需要**为它加任何
+/// `mapReason` case(V2.1 零新增 reason 字符串)。
+struct ReviewOverview: Codable, Equatable {
+    var weekStart: String = ""
+    var weekEnd: String = ""
+    /// ISO 周键(`YYYY-Www`),对账段按它取。
+    var weekKey: String = ""
+    var calibration: ReviewSegment = ReviewSegment()
+    var preference: ReviewSegment = ReviewSegment()
+    var capability: ReviewSegment = ReviewSegment()
+    var reconcile: ReviewSegment = ReviewSegment()
+    var observations: ReviewSegment = ReviewSegment()
+
+    enum CodingKeys: String, CodingKey {
+        case weekStart, weekEnd, weekKey, calibration, preference, capability
+        case reconcile, observations
+    }
+
+    init(weekStart: String = "", weekEnd: String = "", weekKey: String = "",
+         calibration: ReviewSegment = ReviewSegment(), preference: ReviewSegment = ReviewSegment(),
+         capability: ReviewSegment = ReviewSegment(), reconcile: ReviewSegment = ReviewSegment(),
+         observations: ReviewSegment = ReviewSegment()) {
+        self.weekStart = weekStart; self.weekEnd = weekEnd; self.weekKey = weekKey
+        self.calibration = calibration; self.preference = preference
+        self.capability = capability; self.reconcile = reconcile; self.observations = observations
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        weekStart = try c.decodeIfPresent(String.self, forKey: .weekStart) ?? ""
+        weekEnd = try c.decodeIfPresent(String.self, forKey: .weekEnd) ?? ""
+        weekKey = try c.decodeIfPresent(String.self, forKey: .weekKey) ?? ""
+        calibration = try c.decodeIfPresent(ReviewSegment.self, forKey: .calibration) ?? ReviewSegment()
+        preference = try c.decodeIfPresent(ReviewSegment.self, forKey: .preference) ?? ReviewSegment()
+        capability = try c.decodeIfPresent(ReviewSegment.self, forKey: .capability) ?? ReviewSegment()
+        reconcile = try c.decodeIfPresent(ReviewSegment.self, forKey: .reconcile) ?? ReviewSegment()
+        observations = try c.decodeIfPresent(ReviewSegment.self, forKey: .observations) ?? ReviewSegment()
+    }
+}
+
+/// 校准移交件(V2.1-⑤,`GET /review/handoff`)——一份能**直接交给策略台**的 markdown。
+///
+/// **`available == false` 的两种成因文案服务端已分开写在 `unavailableReason` 里**
+/// (① 一期产物都还没有 = **会自愈**;② 指定窗口的产物读不出 = **不会自愈**),
+/// ⛔ 客户端原样展示那句话,别自己再合并成一句「暂不可用」。
+struct ReviewHandoff: Codable, Equatable {
+    var available: Bool = false
+    var unavailableReason: String? = nil
+    var windowFrom: String = ""
+    var windowTo: String = ""
+    var generatedAt: String = ""
+    /// 那份文档 §① 的数字版(`tradingDays` / `baskets` / `strata` / `preferenceRows` / …)。
+    var sampleN: [String: Int] = [:]
+    var markdown: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case available, unavailableReason, windowFrom, windowTo, generatedAt, sampleN, markdown
+    }
+
+    init(available: Bool = false, unavailableReason: String? = nil, windowFrom: String = "",
+         windowTo: String = "", generatedAt: String = "", sampleN: [String: Int] = [:],
+         markdown: String = "") {
+        self.available = available; self.unavailableReason = unavailableReason
+        self.windowFrom = windowFrom; self.windowTo = windowTo; self.generatedAt = generatedAt
+        self.sampleN = sampleN; self.markdown = markdown
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        available = try c.decodeIfPresent(Bool.self, forKey: .available) ?? false
+        unavailableReason = try c.decodeIfPresent(String.self, forKey: .unavailableReason)
+        windowFrom = try c.decodeIfPresent(String.self, forKey: .windowFrom) ?? ""
+        windowTo = try c.decodeIfPresent(String.self, forKey: .windowTo) ?? ""
+        generatedAt = try c.decodeIfPresent(String.self, forKey: .generatedAt) ?? ""
+        sampleN = try c.decodeIfPresent([String: Int].self, forKey: .sampleN) ?? [:]
+        markdown = try c.decodeIfPresent(String.self, forKey: .markdown) ?? ""
+    }
+
+    /// 窗口显示名;两端都空时给一句诚实的占位(⛔ 不显示 "→")。
+    var windowLabel: String {
+        guard !windowFrom.isEmpty || !windowTo.isEmpty else { return "窗口未知" }
+        return "\(windowFrom) → \(windowTo)"
+    }
+
+    /// 导出文件名(`ShareLink` / macOS 存盘共用,**双端同一个名字**)。
+    var suggestedFilename: String {
+        let w = windowFrom.isEmpty && windowTo.isEmpty ? "unknown" : "\(windowFrom)_\(windowTo)"
+        return "Neckline_校准移交件_\(w).md"
+    }
+}
+
+/// 观察项一条(移交件与累计页共用的读取视图;服务端 `HANDOFF_OBSERVATIONS` 静态登记册)。
+/// **只读透传,⛔ 客户端不改写 status、不给"建议"** —— 它是**等证据的策略问题清单**,
+/// 攒够样本后由用户带去策略台,不是待办事项。
+struct ReviewObservation: Identifiable, Equatable {
+    let raw: NKJSON
+    var id: String { obsId }
+
+    var obsId: String { raw["id"]?.stringValue ?? "" }
+    var title: String { raw["title"]?.stringValue ?? "" }
+    var question: String { raw["question"]?.stringValue ?? "" }
+    var evidenceNeeded: String { raw["evidence_needed"]?.stringValue ?? "" }
+    var status: String { raw["status"]?.stringValue ?? "" }
 }
 
 // MARK: - 展示用轴向着色(沿用 LinoN `AxisTone` 概念,四值穷举)

@@ -1,11 +1,20 @@
 //
 //  ReviewWorkbenchView.swift
-//  Neckline — 周复盘工作台(macOS 独有,§五 阶段4D):拖入券商交割单 xlsx → 上传 →
-//  展示对账周报(自由叙述材料 + 结构化表格)。对账逻辑全在后端 `neckline/review/`
-//  (解析/FIFO闭合/三查/统计/强制复盘判定),本视图只负责拖文件、上传、纯展示
-//  ——不在客户端重算任何判定(§3.8「同码不重写」精神的延伸)。
+//  Neckline — **复盘板块 · 对账页**(macOS 独有;V2.1-⑦ 起由 `ReviewView` 嵌入,
+//  不再是一个独立 tab):拖入券商交割单 xlsx → 上传 → 展示对账周报(自由叙述材料 +
+//  结构化表格)。对账逻辑全在后端 `neckline/review/`(解析/FIFO闭合/三查/统计/
+//  强制复盘判定),本视图只负责拖文件、上传、纯展示 —— 不在客户端重算任何判定
+//  (§3.8「同码不重写」精神的延伸)。
 //
-//  iOS 不做此板块(拖文件 + 阅读长材料是桌面场景,plan §五 阶段4D 明文)。
+//  iOS 侧只做**只读**展示(见 `ReviewView.reconcilePage`):拖文件 + 阅读长材料是桌面场景。
+//
+//  ⚠ **V2.1-⑦ 移出的两节**:「画像」与「评价校准报告」已迁往复盘板块的**累计页**
+//  (数据源换成 ⑤ 的 `GET /review/overview` 聚合读)。⛔ 不在两处各画一遍 —— 同一份
+//  数据画两遍只会让用户在两处看到可能不同步的两个版本(同 ② 持仓体检那条)。
+//  ⚠ 顺带的口径变化(如实登记,不是漏做):累计页的校准段读的是**离线落盘产物**,
+//  而本页原先那张卡走的是 `GET /eval/weekly`(**在线现算**,§七 P4-46 已挂账)——
+//  周度作业(⑥,批 3)上线前,累计页会如实说「本窗口的周度校准产物尚未生成」。
+//  那是 plan §五⑤ 明写的合法中间态,**不是缺陷**。
 //
 
 import SwiftUI
@@ -17,73 +26,20 @@ struct ReviewWorkbenchView: View {
     @State private var isTargeted = false
     @State private var warningsExpanded = false
 
+    /// ⚠ **本视图不再自带 `ScrollView` / 背景 / 页边距**:V2.1-⑦ 起它被 `ReviewView`
+    /// 的滚动容器嵌入(嵌套 ScrollView 会让内层高度无界、滚动手势打架)——
+    /// 容器的事归容器,⛔ 别在这里再套一层。
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: NKSpace.gap) {
-                header
-                dropZone
-                warningsSection
-                if model.reviewWeeks.isEmpty {
-                    emptyState
-                } else {
-                    weekPicker
-                    if let entry = model.selectedReviewEntry {
-                        weekContent(entry)
-                    }
-                }
-                // V2-⑫/⑨-C:画像两张账 + 评价校准报告(工作台的另外两块,与对账并列)。
-                profilesSection
-                evalSection
-            }
-            .padding(NKSpace.pagePad)
-            .frame(maxWidth: 860)
-        }
-        .frame(maxWidth: .infinity)
-        .background(NK.pageBg)
-        .task { await model.loadWorkbenchExtras() }
-    }
-
-    // MARK: - V2-⑫ 画像(**两张账刻意分开**:偏好答「喜欢什么」、能力答「什么真有效」)
-
-    @ViewBuilder
-    private var profilesSection: some View {
         VStack(alignment: .leading, spacing: NKSpace.gap) {
-            NKSectionHeader(title: "画像")
-            Text("偏好画像答「你喜欢什么」,能力画像答「什么在你手里真有效」—— ⛔ 两张账不合并。")
-                .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
-            ProfileCard(title: "偏好画像", profile: model.preferenceProfile)
-            ProfileCard(title: "能力画像", profile: model.capabilityProfile)
-        }
-    }
-
-    // MARK: - V2-⑨-C 评价校准报告(**长期统计,不是单日打分**)
-
-    @ViewBuilder
-    private var evalSection: some View {
-        VStack(alignment: .leading, spacing: NKSpace.gap) {
-            NKSectionHeader(title: "评价校准报告")
-            NKCard {
-                if let ev = model.evalWeekly {
-                    if ev.available {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("窗口 \(ev.weekStart) ~ \(ev.weekEnd)")
-                                .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
-                            if !ev.markdown.isEmpty {
-                                Text(ev.markdown).font(.system(size: 12))
-                                    .foregroundStyle(NK.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            } else {
-                                NKJSONTable(value: ev.result)
-                            }
-                        }
-                    } else {
-                        // ⛔ 不许拿半截样本给结论。
-                        NKEmptyState(title: "本期评价尚不可用",
-                                     subtitle: ev.unavailableReason ?? "样本窗未就绪 / 前向窗口还没走完",
-                                     systemImage: "hourglass")
-                    }
-                } else {
-                    NKEmptyState(title: "评价报告未取到", systemImage: "exclamationmark.icloud")
+            header
+            dropZone
+            warningsSection
+            if model.reviewWeeks.isEmpty {
+                emptyState
+            } else {
+                weekPicker
+                if let entry = model.selectedReviewEntry {
+                    weekContent(entry)
                 }
             }
         }
@@ -93,7 +49,9 @@ struct ReviewWorkbenchView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("周复盘工作台").font(NKFont.largeTitle).foregroundStyle(NK.textPrimary)
+            // ⚠ 它现在是复盘板块的**第三页**,不再是一个独立板块 → 标题降一级、改名。
+            Text("复盘 · 交割单对账").font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(NK.textPrimary)
             Text("拖入券商交割单 xlsx,对照当周计划与纪律章程生成违纪清单")
                 .font(.system(size: 12)).foregroundStyle(NK.textSecondary)
         }
@@ -499,69 +457,9 @@ private struct StopDisciplineRow: View {
     }
 }
 
-// MARK: - V2-⑫ 画像卡(每行必带**样本量 / 时间范围 / 置信度**)
-
-private struct ProfileCard: View {
-    let title: String
-    let profile: Profile?
-
-    var body: some View {
-        NKCard {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
-                guardBody
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var guardBody: some View {
-        if let p = profile {
-            if !p.available {
-                NKEmptyState(title: "本期画像不可用",
-                             subtitle: p.unavailableReason ?? "该期从未算过(不是「算出来是空的」)",
-                             systemImage: "person.crop.circle.badge.questionmark")
-            } else if p.items.isEmpty {
-                Text("算过了 · 本期无可展示的分组").font(.system(size: 12))
-                    .foregroundStyle(NK.textSecondary)
-            } else {
-                Text("截至 \(p.asOf.isEmpty ? "—" : p.asOf)")
-                    .font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
-                ForEach(p.items.map(ProfileRow.init(raw:))) { row in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text("\(row.dimension) · \(row.bucket)")
-                                .font(.system(size: 12, weight: .medium)).foregroundStyle(NK.textPrimary)
-                            Spacer()
-                            NKChip(text: "样本 \(row.sampleN)",
-                                   tone: row.isLowConfidence ? .warn : .neutral)
-                        }
-                        Text("窗口 \(row.windowStart) ~ \(row.windowEnd)")
-                            .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
-                        if row.isLowConfidence {
-                            // ⛔ 低置信度**不许当结论展示**(⑫ 验收条款)。
-                            Text("样本不足,不给结论").font(.system(size: 10.5, weight: .semibold))
-                                .foregroundStyle(NK.amber)
-                        } else {
-                            ForEach(row.metricKeys, id: \.self) { k in
-                                HStack {
-                                    Text(k).font(.system(size: 10.5).monospaced())
-                                        .foregroundStyle(NK.textTertiary)
-                                    Spacer()
-                                    Text(row.raw[k]?.displayText ?? "—")
-                                        .font(.system(size: 10.5).monospaced())
-                                        .foregroundStyle(NK.textSecondary)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-        } else {
-            NKEmptyState(title: "画像未取到", systemImage: "exclamationmark.icloud")
-        }
-    }
-}
+// ⚠ **`ProfileCard` 已随「画像」一节迁往复盘板块累计页**(V2.1-⑦):那边的
+// `ProfileSegmentCard` / `ProfileRowView` 读的是 `GET /review/overview` 的画像段
+// (与 `/profile/*` 同码同源,服务端直接复用那两个端点函数),双端共用、不再 macOS 独有。
+// ⛔ 别在这里再留一份 —— 两份画像卡迟早会讲不同的话。
 
 #endif

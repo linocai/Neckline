@@ -1,9 +1,20 @@
 //
 //  BasketDailyView.swift
-//  Neckline — **今日篮子**(D8 四板块之一,V2-⑮)。渲染 `GET /report/latest` 的
-//  **篮子日报五段**:
-//    ① 情绪与市场语境 → ②(持仓体检见「持仓」板块)→ ③ 今日篮子(T1/T2/T3 每篮一张卡)
-//    → ③b 未定档篮子 → ④ 昨日篮子复盘 → ⑤ 数据新鲜度与降级披露
+//  Neckline — 🔴 **本文件 = 选股板块**(V2.1 三板块之一;板块名由
+//  `AppTab.baskets.title` 单点定义)。⚠ **文件名刻意不改**(改名要同步 `project.yml`
+//  + `pbxproj`,收益低风险高)—— 文件叫 `BasketDaily`,板块叫「选股」,不冲突。
+//
+//  渲染 `GET /report/latest` 的**篮子日报**:
+//    ① 情绪与市场语境 → ②(持仓体检见「持仓」板块)→ ③ 今日篮子(每篮一张卡)
+//    → ③b 未定档篮子 → ⑤ 数据新鲜度与降级披露
+//
+//  ⚠ **④ 昨日篮子复盘已迁往「复盘」板块的「每日」页**(V2.1-⑦):数据源仍是同一份
+//  `model.basketDaily.reviews`(**零新增网络调用、服务端零改动**),只是换了挂载点 ——
+//  ⛔ 不是删掉,更不许在两处各画一遍。
+//
+//  🔴 **段号与段名一字不动**(「① 情绪与市场语境」「③ 今日篮子」「③b 未定档篮子」
+//  「⑤ 数据新鲜度与降级披露」):它们与**服务端 markdown 报告同构**,是审计锚,改了
+//  客户端就与历史报告对不上。**板块名是导航语义,段名是报告结构,两回事。**
 //
 //  **展示纪律(⑭-C 对拍表 §六.5,逐条守)**:
 //   E1 空档位如实显示「今日 T1 为空」,⛔ 不隐藏。
@@ -31,7 +42,9 @@ struct BasketDailyView: View {
                 content.padding(NKSpace.pagePad)
             }
             .background(NK.pageBgIOS)
-            .navigationTitle("今日篮子")
+            // 页面标题跟着板块名走(单点定义在 `AppTab.baskets.title`)——
+            // ⛔ 别在这里再写一个字面量,同屏两个名字是改名最容易漏的那一处。
+            .navigationTitle(AppTab.baskets.title)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button { Task { await model.refresh() } } label: {
@@ -90,7 +103,7 @@ struct BasketDailyView: View {
                 holdingCheckupPointer     // ②(指向持仓板块)
                 basketsSection            // ③ 今日篮子
                 droppedSection            // ③b 未定档
-                reviewSection             // ④ 昨日复盘
+                reviewPointer             // ④(昨日复盘已迁往复盘板块,这里只留入口)
                 IntelPackageView(report: model.report)
             }
             freshnessSection              // ⑤ 数据新鲜度与降级披露(**恒在**)
@@ -110,7 +123,7 @@ struct BasketDailyView: View {
             #if os(macOS)
             HStack(spacing: 8) {
                 NKLogo(size: 24)
-                Text("今日篮子").font(NKFont.largeTitle).foregroundStyle(NK.textPrimary)
+                Text(AppTab.baskets.title).font(NKFont.largeTitle).foregroundStyle(NK.textPrimary)
             }
             #endif
             if !model.report.tradeDate.isEmpty {
@@ -182,7 +195,11 @@ struct BasketDailyView: View {
                 }
             } else {
                 // E1:**空档位如实显示,⛔ 不隐藏**。
-                ForEach([1, 2, 3], id: \.self) { tier in
+                // 🔴 档位清单 = **现役两档 ∪ 本份快照实际出现的档位**(V2.1-② 移交 ⑦ 的
+                // 硬约束,判据与理由见 `BasketDaily.displayTiers`)——⛔ 既不许写死
+                // `[1,2]`(历史 T3 回放会在客户端消失)、也不许写死 `[1,2,3]`(新报告
+                // 凭空多一个恒空 T3 分组,把系统缺席讲成市场结论)。
+                ForEach(daily.displayTiers, id: \.self) { tier in
                     tierBlock(tier: tier, baskets: daily.baskets(tier: tier))
                 }
             }
@@ -219,7 +236,11 @@ struct BasketDailyView: View {
         switch tier {
         case 1: return "最先看的一档"
         case 2: return "次一档"
-        default: return "留作对照的一档"
+        // ⚠ T3 **只可能出现在历史报告回放里**(V2.1-② 起引擎不再产生第三档;
+        // `displayTiers` 的并集只在快照真有该档篮子时才把它加进来,所以这一分组
+        // **永远不会以"空档"的样子出现**)。如实标明,免得看老报告的人以为它还活着。
+        case 3: return "留作对照的一档 · V2.1 起已取消(历史报告回放)"
+        default: return "历史档位(现役引擎不产生)"
         }
     }
 
@@ -270,35 +291,42 @@ struct BasketDailyView: View {
         }
     }
 
-    // MARK: - ④ 昨日篮子复盘
+    // MARK: - ④(昨日篮子复盘已迁往复盘板块 · 每日页;这里只留一行入口,⛔ 不重画)
+    //
+    // 同 ② 持仓体检那条:**同一份数据画两遍只会让用户在两处看到可能不同步的两个版本**。
+    // 数据源没变(仍是 `model.basketDaily.reviews`,随报告冻结),换的是挂载点。
 
-    @ViewBuilder
-    private var reviewSection: some View {
-        let daily = model.basketDaily
-        VStack(alignment: .leading, spacing: NKSpace.gap) {
-            NKSectionHeader(title: "④ 昨日篮子复盘 \(daily.reviews.count)",
-                            trailing: daily.reviewD0.map { "D0 \($0)" })
-            if !daily.reviewsAvailable {
-                NKCard {
-                    NKEmptyState(title: "本次没跑复盘",
-                                 subtitle: daily.reviewsUnavailableReason.map { "原因:\($0)" }
-                                     ?? "这一段本次未取到(不是「昨日无篮子可复盘」)",
-                                 systemImage: "exclamationmark.icloud")
-                }
-            } else if daily.reviews.isEmpty {
-                NKCard {
-                    HStack(spacing: 8) {
-                        Image(systemName: "calendar.badge.clock").foregroundStyle(NK.textTertiary)
-                        Text("昨日无篮子可复盘").font(.system(size: 12)).foregroundStyle(NK.textSecondary)
-                        Spacer()
+    private var reviewPointer: some View {
+        NKCard {
+            Button {
+                model.view = .review
+                model.reviewPage = .daily
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: AppTab.review.systemImage).foregroundStyle(NK.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("④ 昨日篮子复盘").font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(NK.textPrimary)
+                        Text(reviewPointerCaption)
+                            .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
                     }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 12))
+                        .foregroundStyle(NK.textTertiary)
                 }
-            } else {
-                ForEach(daily.reviews) { r in
-                    BasketReviewRow(review: r)
-                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
+    }
+
+    /// ⚠ 入口这一行也得**三态分开说**(⛔ 不许统一成「\(n) 篮」):本次没跑复盘 /
+    /// 昨日无篮子可复盘 / 有 —— 详细三态在复盘板块每日页逐字保留,这里是它的缩写。
+    private var reviewPointerCaption: String {
+        let daily = model.basketDaily
+        if !daily.reviewsAvailable { return "本次没跑复盘 · 在「复盘 · 每日」查看原因" }
+        if daily.reviews.isEmpty { return "昨日无篮子可复盘 · 在「复盘 · 每日」查看" }
+        return "\(daily.reviews.count) 篮已复盘 · 在「复盘 · 每日」查看"
     }
 
     // MARK: - ⑤ 数据新鲜度与降级披露(**恒在**:降级必须诚实披露)
@@ -365,6 +393,9 @@ private struct BasketRow: View {
                     }
                     Spacer()
                 }
+                // V2.1-④ 百分制打分卡:总分 + 五维贡献条(**纯展示**)。
+                BasketScoreCard(percent: basket.scoreDisplayPercent,
+                                contributions: basket.scoreDisplayContributions)
                 if let note = basket.cardUnavailableText {
                     // ⛔ 「本篮的卡还没生成」**不是**「篮子不存在」。
                     Text(note).font(.system(size: 11.5)).foregroundStyle(NK.amber)
@@ -379,6 +410,105 @@ private struct BasketRow: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - V2.1-④ 百分制打分卡(总分 + 五维贡献条)
+//
+// **数据全部由服务端 `report/score_display.py` 算好下发**(唯一换算实现):
+// 本视图只做三件事 —— 格式化成一位小数、按贡献画条、把 `neutralFilled` 那句话说出口。
+// ⛔ 不重算分数、⛔ 不另建中文标签表(`label` 服务端给)、⛔ 不把百分分数塞进任何
+// 排序/筛选逻辑(§五 V2.1-④:该分数不进任何判定路径)。
+//
+// 🔴 **`percent == nil` 时如实说「本报告版本无打分」,⛔ 绝不渲染成 0 分** ——
+// 0 分是一个极差的实质性判断,拿它冒充"没这个数"是本项目反复禁止的那类谎。
+
+struct BasketScoreCard: View {
+    let percent: Double?
+    let contributions: [ScoreContribution]
+    /// 卡详情页给更大的字号;列表行用紧凑档。
+    var compact: Bool = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 4 : 6) {
+            if let p = percent {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("总分").font(.system(size: compact ? 11 : 12, weight: .bold))
+                        .foregroundStyle(NK.textTertiary)
+                    Text(String(format: "%.1f", p))
+                        .font(.system(size: compact ? 17 : 20, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(NK.textPrimary)
+                    Text("/ 100").font(.system(size: compact ? 11 : 12))
+                        .foregroundStyle(NK.textTertiary)
+                    Spacer()
+                }
+                ForEach(contributions) { c in
+                    contributionRow(c)
+                }
+                if contributions.contains(where: { $0.neutralFilled }) {
+                    // 一个数字后面跟着"这个数是猜的"必须当场说清,⛔ 不能只放在结构化字段里。
+                    Text("`*` = 该维今天没算出来、按中性分 0.5 计入(**不是表现好**)")
+                        .font(.system(size: 9.5)).foregroundStyle(NK.amber)
+                }
+                Text("百分制 = 机械分 ×100 的等价换算 · 纯展示:不进排序、不进哨兵、不改去留")
+                    .font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
+            } else {
+                Text("本报告版本无打分(⛔ 不是 0 分)")
+                    .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func contributionRow(_ c: ScoreContribution) -> some View {
+        HStack(spacing: 6) {
+            // ⚠ `*` 角标只挂在**数值**上(与服务端 markdown 那一行
+            // 「龙头清晰度 12.5*」逐位同形),⛔ 不在标签上再挂一个。
+            Text(c.displayLabel)
+                .font(.system(size: compact ? 10.5 : 11.5))
+                .foregroundStyle(c.neutralFilled ? NK.amber : NK.textSecondary)
+                .frame(width: compact ? 88 : 104, alignment: .leading)
+                .lineLimit(1)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(NK.chipNeutral).frame(height: 6)
+                    Capsule()
+                        .fill(c.neutralFilled ? NK.amber.opacity(0.55) : NK.accent)
+                        .frame(width: geo.size.width * barFraction(c), height: 6)
+                }
+                .frame(height: geo.size.height, alignment: .center)
+            }
+            .frame(height: 10)
+            Text(contribText(c))
+                .font(.system(size: compact ? 10.5 : 11.5).monospacedDigit())
+                .foregroundStyle(c.neutralFilled ? NK.amber : NK.textSecondary)
+                .frame(width: 40, alignment: .trailing)
+            // 「占比」= 该维在机械分里的**归一化权重**(契约字段 `weight`,服务端给)。
+            // ⛔ 客户端不自己求和、不自己归一化 —— 那就成了第二份换算。
+            Text(weightText(c))
+                .font(.system(size: 9.5).monospacedDigit())
+                .foregroundStyle(NK.textTertiary)
+                .frame(width: 46, alignment: .trailing)
+        }
+    }
+
+    /// 条长只是**版式**:按本篮内最大贡献归一,⛔ 不代表任何比例判断。
+    private func barFraction(_ c: ScoreContribution) -> CGFloat {
+        let maxContrib = contributions.compactMap(\.contribPercent).max() ?? 0
+        guard let v = c.contribPercent, maxContrib > 0, v > 0 else { return 0 }
+        return CGFloat(min(1.0, v / maxContrib))
+    }
+
+    /// 契约里是 4 位小数(精度住契约),展示统一 1 位(位数住展示)。
+    /// 算不出的项显示 `—`,**⛔ 不显示 0.0**。
+    private func contribText(_ c: ScoreContribution) -> String {
+        guard let v = c.contribPercent else { return "—" }
+        return String(format: "%.1f", v) + (c.neutralFilled ? "*" : "")
+    }
+
+    private func weightText(_ c: ScoreContribution) -> String {
+        guard let w = c.weight else { return "权重 —" }
+        return "权重 " + NKFmt.ratioPct(w)
     }
 }
 
@@ -400,53 +530,8 @@ struct VerificationBadge: View {
     }
 }
 
-// MARK: - 昨日复盘一行
-
-private struct BasketReviewRow: View {
-    let review: BasketReview
-    @State private var expanded = false
-
-    var body: some View {
-        NKCard {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(review.name.isEmpty ? review.basketKey : review.name)
-                        .font(.system(size: 13.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
-                    if let t = review.tier { NKChip(text: "T\(t)") }
-                    NKChip(text: review.depthLabel)
-                    Spacer()
-                    Text("D0 \(review.d0)").font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
-                }
-                if let text = review.llmText, !text.isEmpty {
-                    // §2.7:LLM 叙述**原文整段呈现**,⛔ 不拆解塞回枚举卡片。
-                    Text(text).font(.system(size: 12.5)).foregroundStyle(NK.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    NKReferenceNote()
-                } else if let skip = review.llmSkipReason, !skip.isEmpty {
-                    // **未生成**(预算耗尽 / 降级)—— ⛔ 不拿空串冒充「生成了但没内容」。
-                    Text("本篮未生成人话复盘:\(skip)")
-                        .font(.system(size: 11.5)).foregroundStyle(NK.amber)
-                }
-                if review.degraded {
-                    Text("本次复盘降级:人话半份缺席,机械判照出")
-                        .font(.system(size: 11)).foregroundStyle(NK.amber)
-                }
-                if let obj = review.mech.objectValue, !obj.isEmpty {
-                    Button { withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() } } label: {
-                        HStack(spacing: 4) {
-                            Text(expanded ? "收起机械判" : "展开机械判(九项)")
-                                .font(.system(size: 11.5, weight: .medium))
-                            Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 9))
-                        }
-                    }
-                    .buttonStyle(.plain).foregroundStyle(NK.accent)
-                    if expanded { NKJSONTable(value: review.mech) }
-                }
-            }
-        }
-    }
-}
+// ⚠ **`BasketReviewRow` 已整块搬到 `ReviewView.swift`**(V2.1-⑦ ④ 节迁移;
+// **一字未改**)—— 它现在是复盘板块「每日」页的行视图。⛔ 别在这里再留一份。
 
 // MARK: - 情绪仪表盘卡
 

@@ -171,6 +171,13 @@ struct BasketCardPage: View {
                         .fixedSize(horizontal: false, vertical: true)
                     NKReferenceNote()
                 }
+                // V2.1-④ 百分制打分卡(**纯展示层**:机械分 ×100 + 五维贡献拆解)。
+                // ⚠ 它与下面的 `tierBreakdown` 原始表**不是重复**:那张表是冻结留痕的
+                // 原样键值(审计用),这张卡是同一份数据的人读换算(理解用)。
+                Divider().overlay(NK.hairline)
+                BasketScoreCard(percent: basket.scoreDisplayPercent,
+                                contributions: basket.scoreDisplayContributions,
+                                compact: false)
                 if let obj = card.tierBreakdown.objectValue, !obj.isEmpty {
                     Text("五维分项(维度名与现役包权重键逐字对应)")
                         .font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)

@@ -139,7 +139,10 @@ def push_report_ready(
     return push_event(
         KIND_REPORT_READY,
         "今日盘后报告已生成",
-        f"{trade_date_disp} 盘后报告与今日篮子已就绪。{_OPEN_APP_LATER}",
+        # ⚠ V2.1-⑦:「今日篮子」→「今日选股」跟着板块改名(客户端 `AppTab.baskets.title`)。
+        # **只改文案** —— kind / 开关 / extra 一律不动(新增推送 kind 须用户拍板,
+        # 改一句话不触发那条纪律)。
+        f"{trade_date_disp} 盘后报告与今日选股已就绪。{_OPEN_APP_LATER}",
         custom_extra={"tradeDate": trade_date_disp},
         db_path=db_path, transport=transport,
     )

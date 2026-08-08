@@ -25,8 +25,8 @@ struct NecklineApp: App {
         // bind(config:) 必须先于 refresh(),放 .task 而非 .onAppear)。
         let m = AppModel()
         // 纯 QA/截图辅助:`simctl launch` 可用 `SIMCTL_CHILD_NECKLINE_INITIAL_TAB=<tab>`
-        // 免交互地把 App 启动到指定板块(数值取 AppTab.rawValue —— V2.1-① 起是
-        // baskets/positions/settings/review,`inquiry` 已随问询台整链退役删除),
+        // 免交互地把 App 启动到指定板块(数值取 AppTab.rawValue —— V2.1-⑦ 起合法值 =
+        // **baskets | positions | review | settings**,`inquiry` 已随问询台整链退役删除),
         // 用于视觉核对;不影响正常用户启动路径(缺此环境变量则按默认 .baskets 打开)。
         if let raw = ProcessInfo.processInfo.environment["NECKLINE_INITIAL_TAB"],
            let tab = AppTab(rawValue: raw) {
@@ -44,7 +44,9 @@ struct NecklineApp: App {
             }
         }
         // ⚠ **数据到位之后才能触发的钩子**(`NECKLINE_INITIAL_BASKET_ID` /
-        // `NECKLINE_INITIAL_INFOCARD_CODE`)**不能塞进这里** —— 那些内容是
+        // `NECKLINE_INITIAL_INFOCARD_CODE` / V2.1-⑦ 新增的
+        // `NECKLINE_INITIAL_REVIEW_PAGE=daily|cumulative|reconcile` 与
+        // `NECKLINE_INITIAL_REVIEW_WEEK=YYYYMMDD`)**不能塞进这里** —— 那些内容是
         // `AppModel.refresh()` 异步拉回来的,`init()` 里够不着。它们落在
         // `AppModel.applyQAHooksAfterRefresh()`(v1.4-⑧ 立下的先例)。
         _model = State(initialValue: m)

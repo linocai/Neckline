@@ -2,9 +2,13 @@
 //  AppModel.swift
 //  Neckline — 应用状态(@Observable)
 //
-//  **信息架构 = D8 已拍板(2026-08-02 用户逐条裁定,⛔ 施工时不得重开)**:
-//    iPhone 四板块 = **今日篮子 / 持仓 / 问询台 / 设置**;macOS 同四板块 + **周复盘工作台**。
-//    **不新增 tab** —— 加 tab 会稀释「打开就看今天做什么」。
+//  **信息架构 = V2.1 三板块(2026-08-07 用户裁定 #2,⛔ 施工时不得重开)**:
+//    **选股 / 持仓 / 复盘** 三个板块 + **设置沉底为入口**(排最后、齿轮图标,
+//    **产品语义上不算板块**)。iOS 底部 TabBar 四项即此顺序;macOS 侧栏「交易」组
+//    = 选股 / 持仓,「复盘」组 = 复盘,设置沉到侧栏最底部。
+//
+//  ⚠ **前身 = D8 四板块**(今日篮子 / 持仓 / 问询台 / 设置):问询台整链退役(V2.1-①)、
+//  「今日篮子」改名「选股」、原 macOS 独有的「周复盘工作台」升为**复盘板块**(V2.1-⑦)。
 //
 //  ⚠ V1 的「盘中看板」不再是独立 tab:它的内容(退潮刹车 + 哨兵事件)**并入持仓板块**
 //  作为一节 —— V2 的注意力分配是 80/15/5(持仓 80%),盘中动态本来就是为解释持仓服务的。
@@ -15,26 +19,47 @@ import Foundation
 import Observation
 
 enum AppTab: String, CaseIterable, Identifiable {
-    // D8:iPhone 四 tab,顺序即 TabBar 顺序;`review` 只在 macOS 侧栏。
-    // ⚠ V2.1-① 起 `inquiry` case 已删(问询台整链退役,用户裁定 #1)——
-    // IA 重排(三板块 + 设置沉底、`review` 升为 iOS 第四 tab)归 V2.1-⑦,本块
-    // 只做"问询台从产品面消失"这一件事,不改剩余 case 的顺序/文案。
-    case baskets, positions, settings, review
+    // V2.1-⑦:三板块 + 设置沉底,**枚举顺序即 iOS TabBar 顺序**。
+    // 🔴 **`rawValue` 一个都不许改**(= case 名):`NECKLINE_INITIAL_TAB` QA 钩子与既有
+    // 截图脚本按 rawValue 传参,改名会把那些脚本静默变成"落到默认 tab"。改的只有
+    // `title` / `systemImage` / 顺序。
+    // ⚠ V2.1-① 起 `inquiry` case 已删(问询台整链退役,用户裁定 #1)。
+    case baskets, positions, review, settings
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .baskets: return "今日篮子"
+        // 「选股」= 原「今日篮子」改名(用户裁定 #2)。⚠ **板块名是导航语义,
+        // 报告段名(「③ 今日篮子」等)是报告结构,两回事** —— 段名与服务端 markdown
+        // 报告同构、是审计锚,⛔ 不许跟着改。
+        case .baskets: return "选股"
         case .positions: return "持仓"
+        case .review: return "复盘"
         case .settings: return "设置"
-        case .review: return "周复盘工作台"
         }
     }
     var systemImage: String {
         switch self {
         case .baskets: return "square.grid.2x2"
         case .positions: return "chart.line.uptrend.xyaxis"
+        // 它已不只是"拖交割单"(每日复盘 + 累计成绩单 + 对账 + 移交件四件),
+        // 故弃用 `tray.and.arrow.down`(那是"上传"的图标)。
+        case .review: return "chart.bar.doc.horizontal"
         case .settings: return "gearshape"
-        case .review: return "tray.and.arrow.down"
+        }
+    }
+}
+
+/// 复盘板块的三页(V2.1-⑦)。**三页答三个不同的问题,⛔ 不合并**:
+/// 每日 =「昨天那批篮子后来怎么样了」· 累计 =「这套选股长期成绩如何」·
+/// 对账 =「我实际的成交与计划/章程对不对得上」。
+enum ReviewPage: String, CaseIterable, Identifiable {
+    case daily, cumulative, reconcile
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .daily: return "每日"
+        case .cumulative: return "累计"
+        case .reconcile: return "对账"
         }
     }
 }
@@ -137,8 +162,10 @@ struct Toast: Identifiable, Equatable {
 @MainActor
 @Observable
 final class AppModel {
-    // —— 导航(D8 四板块)——
+    // —— 导航(V2.1 三板块 + 设置沉底)——
     var view: AppTab = .baskets
+    /// 复盘板块当前页(三页各自独立数据源,切页不重拉已有数据)。
+    var reviewPage: ReviewPage = .daily
 
     // —— 今日篮子:报告(含 `basketDaily` 三段)——
     var report: ReportSnapshot = .empty(reason: "not_loaded")
@@ -197,17 +224,30 @@ final class AppModel {
     var alertForm = AlertComposeForm()
     var showAlertComposer = false
 
-    // —— 周复盘工作台(macOS)——
+    // —— 复盘板块 · 对账页(交割单上传与周报,macOS 独有)——
     var reviewWeeks: [WeeklyReviewEntry] = []
     var reviewSelectedWeek: String? = nil
     var reviewParseWarnings: [String] = []
     var reviewDataWarnings: [String] = []
     var reviewUploading = false
     var reviewHasUploaded = false
-    var preferenceProfile: Profile? = nil
-    var capabilityProfile: Profile? = nil
-    var evalWeekly: EvalWeekly? = nil
-    var workbenchLoading = false
+
+    // —— 复盘板块 · 累计页 + 移交件(V2.1-⑦,数据来自 ⑤ 的两条聚合端点)——
+    //
+    // ⚠ **两张画像账与校准报告不再各自单拉**:`GET /review/overview` 一次给回五段
+    // (校准 / 偏好画像 / 能力画像 / 对账 / 观察项),**每段自带 `available`**。
+    // 原 macOS 工作台里的「画像」「评价校准报告」两节由本页取代 —— ⛔ 不在两处各画
+    // 一遍(同一份数据画两遍就会在两处看到可能不同步的两个版本,同 ② 持仓体检那条)。
+    var reviewOverview: ReviewOverview? = nil
+    var reviewOverviewLoading = false
+    /// 累计页看的是哪一周(`YYYYMMDD`,该周任意一天;`nil` = 本周)。
+    /// ⚠ **必须能翻周**:周度校准产物是**周六离线作业**落的,周一到周五看"本周"永远是
+    /// 「尚未生成」—— 没有翻周入口 = 用户永远看不到上周那份已经算好的成绩单。
+    var reviewWeekAnchor: String? = nil
+    /// 校准移交件(`GET /review/handoff`)。**按需拉**(用户点导出才拉),
+    /// ⛔ 不进主刷新 —— 它要读产物 + 装配 markdown,不该每次开 App 都跑一次。
+    var reviewHandoff: ReviewHandoff? = nil
+    var reviewHandoffLoading = false
 
     // —— 熔断纪律(纯提醒层,客户端只展示 + 自律灰化,§3.8)——
     var circuit: CircuitState = .empty
@@ -373,6 +413,23 @@ final class AppModel {
                     return
                 }
             }
+        }
+        // 复盘板块选页钩子(V2.1-⑦):`NECKLINE_INITIAL_REVIEW_PAGE=daily|cumulative|reconcile`。
+        // ⚠ **必须在这里、不能塞进 `NecklineApp.init()`** —— 累计页 / 移交件的内容要等
+        // `refresh()` 之后的网络往返才有,`init()` 里够不着(同 `NECKLINE_INITIAL_INFOCARD_CODE`
+        // 先例)。⛔ 只影响截图路径:缺此环境变量时行为与之前逐字节相同。
+        if let raw = env["NECKLINE_INITIAL_REVIEW_PAGE"], let page = ReviewPage(rawValue: raw) {
+            reviewPage = page
+            // 五段由 `ReviewView.task` 拉;**移交件是按需拉的**(见 `loadReviewHandoff`
+            // docstring),截图钩子得替用户点那一下,否则那一段永远是"点按钮才有"。
+            if page == .cumulative { Task { await loadReviewHandoff() } }
+        }
+        // 同族钩子:`NECKLINE_INITIAL_REVIEW_WEEK=YYYYMMDD` 直接把累计页翻到某一周。
+        // ⚠ 本环境 computer-use 点不动模拟器(CLAUDE.md 坑条),翻周箭头点不了 ——
+        // 没有这个钩子就**拍不到"有产物的那一周"**(周度产物只在周六作业后才有)。
+        if let w = env["NECKLINE_INITIAL_REVIEW_WEEK"], w.count == 8 {
+            reviewWeekAnchor = w
+            Task { await loadReviewOverview() }
         }
         // NL 提醒确认卡的截图钩子:开确认卡需要先发一次解析请求(异步),同样够不着
         // `init()`。`NECKLINE_INITIAL_ALERT_TEXT=<一句话>`(可选
@@ -905,7 +962,7 @@ final class AppModel {
         pushKindsDraft[idx].enabled = enabled
     }
 
-    // MARK: - 周复盘工作台(对账逻辑全在后端 `neckline/review/`,本模型只装配/展示)
+    // MARK: - 复盘板块 · 对账页(对账逻辑全在后端 `neckline/review/`,本模型只装配/展示)
 
     var selectedReviewEntry: WeeklyReviewEntry? {
         if let sel = reviewSelectedWeek, let hit = reviewWeeks.first(where: { $0.week == sel }) {
@@ -940,19 +997,49 @@ final class AppModel {
         reviewUploading = false
     }
 
-    /// 画像两张账 + 评价校准报告(macOS 工作台)。**三者各自独立降级**,一路失败不连带
-    /// 其余各路"看起来也不可用"。
-    func loadWorkbenchExtras() async {
+    // MARK: - 复盘板块 · 累计页 + 移交件(V2.1-⑦;聚合逻辑全在服务端 ⑤,本模型只装配/展示)
+
+    /// 累计页五段(`GET /review/overview`)。**端点恒 200**,空态走各段自己的
+    /// `available` —— 故这里拉失败**只可能是网络/鉴权**,那才是 `reviewOverview = nil`
+    /// 的含义(界面上说「本次没取到累计复盘」,⛔ 不冒充"五段都没有")。
+    func loadReviewOverview(week: String? = nil) async {
         guard let client = clientProvider() else { return }
-        workbenchLoading = true
-        async let prefTask: Result<Profile, Error> = fetchResult { try await client.fetchPreferenceProfile() }
-        async let capTask: Result<Profile, Error> = fetchResult { try await client.fetchCapabilityProfile() }
-        async let evalTask: Result<EvalWeekly, Error> = fetchResult { try await client.fetchEvalWeekly() }
-        let (pref, cap, ev) = await (prefTask, capTask, evalTask)
-        if case .success(let v) = pref { preferenceProfile = v }
-        if case .success(let v) = cap { capabilityProfile = v }
-        if case .success(let v) = ev { evalWeekly = v }
-        workbenchLoading = false
+        reviewOverviewLoading = true
+        do { reviewOverview = try await client.fetchReviewOverview(week: week ?? reviewWeekAnchor) }
+        catch let e as APIError {
+            if case .noToken = e {} else { showToast(e.errorDescription ?? "累计复盘拉取失败", isError: true) }
+        } catch { showToast("累计复盘拉取失败", isError: true) }
+        reviewOverviewLoading = false
+    }
+
+    /// 累计页翻周:`delta = -1` 上一周 / `+1` 下一周 / `nil` 回到本周。
+    /// **纯选参数,不做任何判定** —— 周边界由服务端按交易日历算(客户端给该周任意一天即可)。
+    func shiftReviewWeek(_ delta: Int?) async {
+        guard let d = delta else {
+            reviewWeekAnchor = nil
+            await loadReviewOverview()
+            return
+        }
+        let base = reviewWeekAnchor.flatMap { calendar.parseDate($0) }
+            ?? reviewOverview.flatMap { calendar.parseDate($0.weekStart) }
+            ?? Date()
+        let moved = base.addingTimeInterval(TimeInterval(7 * 86400 * d))
+        reviewWeekAnchor = calendar.compactString(moved)
+        await loadReviewOverview()
+    }
+
+    /// 校准移交件(`GET /review/handoff`)。**同样恒 200**:产物没生成 / 读不出都由
+    /// `available=false` + `unavailableReason` 如实说,⛔ 客户端不把两者合成一句。
+    func loadReviewHandoff(from: String? = nil, to: String? = nil) async {
+        guard let client = clientProvider() else {
+            showToast("未配置后端连接", isError: true); return
+        }
+        reviewHandoffLoading = true
+        do { reviewHandoff = try await client.fetchReviewHandoff(from: from, to: to) }
+        catch let e as APIError {
+            showToast(e.errorDescription ?? "移交件拉取失败", isError: true)
+        } catch { showToast("移交件拉取失败:\(error.localizedDescription)", isError: true) }
+        reviewHandoffLoading = false
     }
 
     // MARK: - Toast

@@ -39,7 +39,9 @@
 //    GET  /api/v1/profile/preference · /capability → ProfileOut
 //    GET  /api/v1/packs · /packs/{version}      → PacksListOut / PackOut · 404 not_found
 //    GET  /api/v1/eval/weekly?week=             → EvalWeeklyOut(**恒 200**)
-//    POST /api/v1/review/upload · GET /review   → 周复盘工作台(macOS)
+//    POST /api/v1/review/upload · GET /review   → 复盘板块 · 对账页(macOS 上传)
+//    GET  /api/v1/review/overview?week=&asOf=   → ReviewOverviewOut(**恒 200**,五段各自 available)
+//    GET  /api/v1/review/handoff?from=&to=      → ReviewHandoffOut(**恒 200**,校准移交件 markdown)
 //  鉴权:Authorization: Bearer <API_TOKEN>(health 外全部)。
 //
 //  ⚠ **V2-⑮ 删掉的五处「打向已删端点」的活调用**(⑭-C 对拍表 §六 B1/B2):
@@ -784,6 +786,37 @@ actor APIClient {
     func fetchReview(week: String) async throws -> ReviewGetResponse {
         let data = try await get("/api/v1/review?week=\(week)")
         return try JSONDecoder().decode(ReviewGetResponse.self, from: data)
+    }
+
+    // —— V2.1-⑤/⑦ 复盘板块:累计页五段 + 校准移交件 ————————————————————————
+    //
+    // 🔴 **两条端点都恒 200**(空态走各自的 `available=false` + 可读原因)→ V2.1
+    // **零新增 reason 字符串**,`mapReason` 一字未动 —— ⛔ 别为它们加 case,也别把
+    // `available=false` 当错误抛出去(那正是"把没有讲成故障"那类谎)。
+
+    /// 复盘板块「累计」页五段。`week` = 该周任意一天 `YYYYMMDD`(缺省本周)。
+    func fetchReviewOverview(week: String? = nil, asOf: String? = nil) async throws -> ReviewOverview {
+        var query: [String] = []
+        if let w = week, !w.isEmpty { query.append("week=\(w)") }
+        if let a = asOf, !a.isEmpty { query.append("asOf=\(a)") }
+        let path = "/api/v1/review/overview" + (query.isEmpty ? "" : "?" + query.joined(separator: "&"))
+        let data = try await get(path, timeout: 30)
+        return try JSONDecoder().decode(ReviewOverview.self, from: data)
+    }
+
+    /// 校准移交件。`from`/`to` 缺省 = **最近一期已落盘的校准窗口**(⛔ 不是"现在算一份")。
+    /// ⚠ 服务端那个查询参数就叫 `from`(Python 关键字,服务端用 `Query(alias="from")`
+    /// 绕开)—— 客户端这边**照契约原样发 `?from=`**,别自作主张改名。
+    func fetchReviewHandoff(from: String? = nil, to: String? = nil,
+                            asOf: String? = nil) async throws -> ReviewHandoff {
+        var query: [String] = []
+        if let f = from, !f.isEmpty { query.append("from=\(f)") }
+        if let t = to, !t.isEmpty { query.append("to=\(t)") }
+        if let a = asOf, !a.isEmpty { query.append("asOf=\(a)") }
+        let path = "/api/v1/review/handoff" + (query.isEmpty ? "" : "?" + query.joined(separator: "&"))
+        // 装配要读产物 + 拼 markdown(仍是纯读),比一般 GET 稍慢,给足超时。
+        let data = try await get(path, timeout: 30)
+        return try JSONDecoder().decode(ReviewHandoff.self, from: data)
     }
 
     // MARK: - 传输层
