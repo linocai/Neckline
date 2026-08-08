@@ -45,7 +45,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from neckline.calendar import prev_trading_day
 from neckline.llm.budget import (
-    DEGRADE_ORDER, DROP_T2_REVIEW_DETAIL, DROP_T3_BRIEF, LEDGER_REVIEW, BudgetLedger,
+    DEGRADE_ORDER, DROP_T2_REVIEW_DETAIL, LEDGER_REVIEW, BudgetLedger,
 )
 from neckline.llm.json_block import split_narrative_and_reference_json
 from neckline.llm.prompt_context import date_anchor_line
@@ -60,8 +60,11 @@ logger = logging.getLogger(__name__)
 #: `mech_json` 的形状版本(**形状变了就 bump**;条件集版本是另一回事,那个跟卡走)。
 MECH_SPEC_VERSION = "basket_review_mech_v1"
 
-DEPTH_FULL = "full"      # T1 / T2:每日必复盘(机械判 + LLM 解释)
-DEPTH_BRIEF = "brief"    # T3:量化全量 + 简评(简评是预算不足时第一个被丢的)
+DEPTH_FULL = "full"      # T1 / T2:每日必复盘(机械判 + LLM 解释)—— V2.1 起唯一写入值
+# ⚠ **`DEPTH_BRIEF` 保留但已无写入方**(V2.1-② T3 全链退役):历史
+# `basket_review_daily` 里 `depth='brief'` 的旧行仍要能读回渲染 —— 这是「停写留档」
+# 纪律在**值**层面的同一条(⛔ 别删这个常量,删了历史复盘就读不回来了)。
+DEPTH_BRIEF = "brief"    # 历史值:T3 篮子的简评深度(V2.1 起不再产生新行)
 
 MFE_SOURCE_INTRADAY = "intraday"     # 有存拍:幅度 + **时刻**都有
 MFE_SOURCE_EOD_APPROX = "eod_approx"  # 缺存拍:用当日最高/最低近似,**没有时刻**
@@ -990,16 +993,22 @@ class ReviewRunResult:
 
 
 def depth_for_tier(tier: int) -> str:
-    """T1/T2 → `full`(每日必复盘);T3 → `brief`(量化全量 + 简评,防错杀检验)。"""
-    return DEPTH_FULL if int(tier) in (1, 2) else DEPTH_BRIEF
+    """**恒 `full`**(V2.1-② T3 全链退役后只剩 T1/T2,两档都是每日必复盘)。
+
+    ⚠ 形参保留是刻意的:签名不变,调用方(`review_day`)不必改;而且**历史 D0 被
+    重放**时(那天可能有 tier=3 的篮子)也给 `full` —— 新规下 `brief` 已无写入方,
+    给它更完整的复盘而不是更少,方向安全。历史库里已冻住的 `depth='brief'` 行照常
+    读回(`DEPTH_BRIEF` 常量为此保留)。
+    """
+    return DEPTH_FULL
 
 
 def plan_llm_drops(reviews: Sequence[BasketReview], ledger: BudgetLedger) -> List[str]:
     """按 ② 定死的降级次序,决定这一批要丢哪些 LLM 段。
 
-    **次序恒为** `budget.DEGRADE_ORDER` = (T3 简评 → T2 复盘细节)。预算没耗尽 →
-    一个都不丢;耗尽了先丢 T3 简评;还不够再丢 T2 细节。**T1 永远不在可丢清单里**
-    —— 那不是本函数"心软",是 `DEGRADE_ORDER` 里根本没有它这一项。
+    **次序恒为** `budget.DEGRADE_ORDER`,V2.1-② 起只剩一项 = (T2 复盘细节,)。
+    预算没耗尽 → 一个都不丢;耗尽了丢 T2 细节。**T1 永远不在可丢清单里** —— 那不是
+    本函数"心软",是 `DEGRADE_ORDER` 里根本没有它这一项。
     """
     if not ledger.exhausted(LEDGER_REVIEW):
         return []
@@ -1010,8 +1019,7 @@ def plan_llm_drops(reviews: Sequence[BasketReview], ledger: BudgetLedger) -> Lis
 
 
 def _dropped_reason(review: BasketReview, dropped: Sequence[str]) -> Optional[str]:
-    if review.depth == DEPTH_BRIEF and DROP_T3_BRIEF in dropped:
-        return f"{LLM_DROPPED}:{DROP_T3_BRIEF}"
+    # V2.1-②:T3 简评分支随 `DROP_T3_BRIEF` 一并删除(可丢清单只剩 T2 细节)。
     if review.tier == 2 and DROP_T2_REVIEW_DETAIL in dropped:
         return f"{LLM_DROPPED}:{DROP_T2_REVIEW_DETAIL}"
     return None
@@ -1082,7 +1090,7 @@ def review_day(
     if use_llm:
         dropped = plan_llm_drops(res.reviews, ledger)
         res.llm_dropped = list(dropped)
-        # T1 → T2 → T3:先把最该有解释的那几篮做掉,预算耗尽时后面的自然轮空,
+        # T1 → T2:先把最该有解释的那几篮做掉,预算耗尽时后面的自然轮空,
         # 与 `DEGRADE_ORDER` 的语义方向一致(不是靠这个顺序代替次序判定)。
         for review in sorted(res.reviews, key=lambda x: (x.tier, x.basket_key)):
             skip = _dropped_reason(review, dropped)

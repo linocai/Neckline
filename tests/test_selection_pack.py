@@ -203,10 +203,41 @@ def test_validate_config_accepts_well_formed_quality_lines():
 
 
 def test_validate_config_accepts_partial_quality_lines():
-    """三键各自独立可选——同 `stage_scores` "不要求六态全部出现"同一纪律
+    """子键各自独立可选——同 `stage_scores` "不要求六态全部出现"同一纪律
     (⑥-b-A schema 定死:与 weights/dims/stage_scores 平级、可选键)。"""
     config = _minimal_pack()["config"]
-    config["tier"]["quality_lines"] = {"tier3_min": 0.25}
+    config["tier"]["quality_lines"] = {"tier2_min": 0.40}
+    assert pack.validate_config(config) == []
+
+
+def test_v1_pack_with_retired_tier3_min_still_validates(tmp_path: Path):
+    """🔴 **V2.1-② 回滚锚判据**:`K7-pack-v1` 里就写着 `tier3_min`,而它是**回滚绳**。
+    schema 若把退役键当"未知键"拒掉,回滚锚当场作废 —— 所以受理但不生效。
+
+    这一条直接吃**仓库里那份真包文件**,不是构造出来的样例:它就是批 2 出事时要
+    重新激活的那一行。"""
+    doc = json.loads(_K7_PACK_FILE.read_text(encoding="utf-8"))
+    assert "tier3_min" in doc["config"]["tier"]["quality_lines"]     # 前提:真包里真的有
+    assert pack.validate_manifest(doc["manifest"]) == []
+    assert pack.validate_config(doc["config"]) == []
+    # 而且还能**原样过闸激活**(回滚路径活着,不只是校验通过)
+    db_path = tmp_path / "rollback.db"
+    pack.activate_pack(doc["manifest"], doc["config"], via="test", db_path=db_path)
+    active = pack.get_active_pack(db_path=db_path)
+    assert active.pack_version == "K7-pack-v1"
+    # 包对象**原样保留**那一键(`get_active_pack()` 对旧包行为逐位不变,②-4 判定
+    # 规则的第一条);忽略发生在引擎侧 `tier.resolve_quality_lines()`,不在这里。
+    assert "tier3_min" in active.tier_quality_lines()
+
+
+def test_retired_quality_line_key_is_accepted_but_not_active():
+    """V2.1-②:`tier3_min` **受理**(不报未知键)但**不是现役键**,
+    ⛔ 别把它并回 `_ACTIVE_QUALITY_LINE_KEYS`(那等于把 T3 复活)。"""
+    assert pack._ACTIVE_QUALITY_LINE_KEYS == {"tier1_min", "tier2_min"}
+    assert pack._RETIRED_QUALITY_LINE_KEYS == {"tier3_min"}
+    assert pack._QUALITY_LINE_ORDER == ("tier1_min", "tier2_min")
+    config = _minimal_pack()["config"]
+    config["tier"]["quality_lines"] = {"tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.25}
     assert pack.validate_config(config) == []
 
 
@@ -247,20 +278,17 @@ def test_validate_config_rejects_non_monotonic_quality_lines_tier1_tier2():
     assert any("单调" in e for e in errors)
 
 
-def test_validate_config_rejects_non_monotonic_quality_lines_tier2_tier3():
+def test_monotonicity_only_compares_active_keys():
+    """V2.1-②:单调性**只比现役两键**。退役的 `tier3_min` 无论多离谱都不参与
+    —— 它已经不表达任何档位,拿它当比较项等于让一个不生效的旋钮否决合法的包
+    (进而作废回滚锚)。"""
     config = _minimal_pack()["config"]
-    config["tier"]["quality_lines"] = {"tier1_min": 0.60, "tier2_min": 0.20, "tier3_min": 0.40}
-    errors = pack.validate_config(config)
-    assert any("单调" in e for e in errors)
-
-
-def test_validate_config_rejects_non_monotonic_quality_lines_across_a_missing_middle_key():
-    """中间那一档缺省也不能蒙混过关——靠传递性比较两个"字面给出"的键
-    (`_QUALITY_LINE_ORDER` 顺序,不是相邻 DB 列)。"""
-    config = _minimal_pack()["config"]
-    config["tier"]["quality_lines"] = {"tier1_min": 0.20, "tier3_min": 0.40}   # 缺 tier2_min
-    errors = pack.validate_config(config)
-    assert any("单调" in e for e in errors)
+    # 现役两键单调,退役键倒挂到天上去也照样过
+    config["tier"]["quality_lines"] = {"tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.99}
+    assert pack.validate_config(config) == []
+    # 只给退役键 + 一个现役键,同样无对可比
+    config["tier"]["quality_lines"] = {"tier2_min": 0.20, "tier3_min": 0.90}
+    assert pack.validate_config(config) == []
 
 
 def test_validate_config_accepts_equal_adjacent_quality_lines():
@@ -271,12 +299,12 @@ def test_validate_config_accepts_equal_adjacent_quality_lines():
 
 
 def test_validate_config_does_not_require_defaults_merged_for_monotonicity():
-    """单调性只比较**字面给出**的键,不合并引擎默认值——只给一个极端的
-    `tier3_min` 且没有别的键可比时,不会被这条拒绝(即便与引擎默认组合后
+    """单调性只比较**字面给出**的现役键,不合并引擎默认值——只给一个极端的
+    `tier1_min` 且没有别的现役键可比时,不会被这条拒绝(即便与引擎默认组合后
     可能"看起来"不单调,那不是本文件的职责,见 `_validate_quality_lines`
     docstring)。"""
     config = _minimal_pack()["config"]
-    config["tier"]["quality_lines"] = {"tier3_min": 0.99}
+    config["tier"]["quality_lines"] = {"tier1_min": 0.01}
     assert pack.validate_config(config) == []
 
 
@@ -327,6 +355,25 @@ def test_engine_api_version_not_bumped_by_quality_lines_addition():
     from neckline.selection import engine_api
 
     assert engine_api.ENGINE_API_VERSION == 1
+
+
+def test_engine_api_version_not_bumped_by_t3_retirement():
+    """🔴 **V2.1-②-4 裁定的机器判据**:T3 退役**不** bump `ENGINE_API_VERSION`。
+
+    三条理由(plan 原文写死):① 按 ③-K7 判定规则,「旧包原样重新校验仍通过 +
+    `get_active_pack()` 对旧包行为逐位不变」两条本次都成立;② `ENGINE_API_VERSION`
+    表达的是**原语签名与特征白名单这一整套约定**,本次没改任何原语签名、没收紧
+    白名单、没动五维,改的是档位数;③ bump 的代价是 `is_compatible()` 的逐位相等
+    判据**当场作废两个回滚锚**,代价与收益不成比例。"""
+    from neckline.selection import engine_api
+
+    assert engine_api.ENGINE_API_VERSION == 1
+    assert engine_api.is_compatible({"engine_api_version": 1}) is True
+    # 两个回滚锚的 manifest 都仍判"兼容"(回滚绳没被这一版剪断)
+    for pack_file in (_K4_PACK_FILE, _K7_PACK_FILE):
+        doc = pack.load_pack_file(pack_file)
+        assert engine_api.is_compatible(doc["manifest"]) is True
+        assert pack.validate_pack_doc(doc) == []
 
 
 def test_validate_pack_doc_checks_engine_api_compat_only_after_structure_passes():

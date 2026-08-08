@@ -4,7 +4,8 @@
 (单测两路,⑨ 验收第二条);龙头从**冻结卡**认(不拿当日涨幅最大者当龙头);
 可买性与 `fwd_buyable` 同口径 + 一字单列;当日横截面名次的**确定性 tie-break**;
 `basket_review_daily` 每日一行幂等 + **没有 UPDATE 路径**;LLM 降级次序
-(T3 简评先丢、T1 永不在可丢清单里)+ 缺席时机械判照出。
+(V2.1-② 起只剩 T2 细节一项、T1 永不在可丢清单里)+ 缺席时机械判照出;
+**历史 `depth='brief'` 行读回渲染**(T3 退役后 `brief` 无写入方,但老行照常读)。
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from tests.conftest import business_days, insert_trade_cal, write_daily_fixture
 
 from neckline.db import connection
 from neckline.llm.budget import (
-    DROP_T2_REVIEW_DETAIL, DROP_T3_BRIEF, LEDGER_REVIEW, NEVER_DROPPED, BudgetLedger,
+    DROP_T2_REVIEW_DETAIL, LEDGER_REVIEW, NEVER_DROPPED, BudgetLedger,
 )
 from neckline.review import basket_review as br
 from neckline.review import basket_review_store as store
@@ -474,32 +475,34 @@ class _StubProvider:
 
 
 class TestLlmDegradeOrder:
-    def test_drop_order_is_t3_then_t2_and_never_t1(self):
+    def test_drop_order_is_only_t2_and_never_t1(self):
+        """V2.1-②:可丢清单由「T3 简评 → T2 细节」收窄为**只有 T2 细节**。"""
         from neckline.llm.budget import DEGRADE_ORDER
 
         empty = BudgetLedger(limits={LEDGER_REVIEW: 0.0, "search": 1.0, "reason": 1.0})
-        assert br.plan_llm_drops([], empty) == [DROP_T3_BRIEF, DROP_T2_REVIEW_DETAIL]
+        assert br.plan_llm_drops([], empty) == [DROP_T2_REVIEW_DETAIL]
         assert br.plan_llm_drops([], BudgetLedger()) == []      # 预算够就一个都不丢
-        # 可丢清单**只有这两项** —— T1 复盘、卡冻结、纪律外壳一律不在其中
-        assert DEGRADE_ORDER == (DROP_T3_BRIEF, DROP_T2_REVIEW_DETAIL)
+        # 可丢清单**只有这一项** —— T1 复盘、卡冻结、纪律外壳一律不在其中
+        assert DEGRADE_ORDER == (DROP_T2_REVIEW_DETAIL,)
         assert all(item not in DEGRADE_ORDER for item in NEVER_DROPPED)
         assert not any("t1" in item for item in DEGRADE_ORDER)
+        assert not any("t3" in item for item in DEGRADE_ORDER)
 
-    def test_budget_exhausted_drops_t3_brief_and_says_so(self, isolated_env):
+    def test_budget_exhausted_drops_t2_detail_and_says_so(self, isolated_env):
         env = isolated_env
         insert_trade_cal(env, business_days(date(2026, 7, 1), 40))
         _seed_basket(env, ["A.SZ"], tier=1, key="ka", name="T1篮")
-        _seed_basket(env, ["B.SZ"], tier=3, key="kc", name="T3篮")
+        _seed_basket(env, ["B.SZ"], tier=2, key="kb", name="T2篮")
         write_daily_fixture(env, "daily", D1, [_bar("A.SZ", close=10.5, pre_close=10.0),
                                                _bar("B.SZ", close=9.8, pre_close=10.0)])
         provider = _StubProvider()
         ledger = BudgetLedger(limits={LEDGER_REVIEW: 0.0, "search": 60.0, "reason": 60.0})
         res = br.review_day(D1, d0=D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
                             use_llm=True, provider=provider, ledger=ledger)
-        assert res.llm_dropped == [DROP_T3_BRIEF, DROP_T2_REVIEW_DETAIL]
-        t3 = next(r for r in res.reviews if r.tier == 3)
-        assert t3.depth == br.DEPTH_BRIEF
-        assert t3.llm_skip_reason == f"{br.LLM_DROPPED}:{DROP_T3_BRIEF}" and t3.degraded is True
+        assert res.llm_dropped == [DROP_T2_REVIEW_DETAIL]
+        t2 = next(r for r in res.reviews if r.tier == 2)
+        assert t2.depth == br.DEPTH_FULL
+        assert t2.llm_skip_reason == f"{br.LLM_DROPPED}:{DROP_T2_REVIEW_DETAIL}" and t2.degraded is True
         # T1 不在可丢清单里 —— 它照样试着调,只是预算已空,如实标 budget_exhausted
         t1 = next(r for r in res.reviews if r.tier == 1)
         assert t1.llm_skip_reason == br.LLM_BUDGET_EXHAUSTED
@@ -539,9 +542,16 @@ class TestLlmDegradeOrder:
 
 class TestReviewDayOrchestration:
     def test_depth_by_tier(self):
+        """V2.1-②:两档恒 `full`(T3 退役,`brief` 已无写入方)。
+
+        `DEPTH_BRIEF` 常量**保留**——历史 `basket_review_daily` 行仍是 `depth='brief'`,
+        读回渲染要用它(「停写留档」纪律在**值**层面的同一条),⛔ 别因为"没人写了"
+        就把常量删掉。历史 D0 被重放(那天可能有 tier=3)也给 `full`:新规下给更完整
+        的复盘而不是更少,方向安全。"""
         assert br.depth_for_tier(1) == br.DEPTH_FULL
         assert br.depth_for_tier(2) == br.DEPTH_FULL
-        assert br.depth_for_tier(3) == br.DEPTH_BRIEF
+        assert br.depth_for_tier(3) == br.DEPTH_FULL
+        assert br.DEPTH_BRIEF == "brief"      # 常量还在(读侧要用)
 
     def test_no_basket_day_is_a_note_not_an_exception(self, isolated_env):
         env = isolated_env

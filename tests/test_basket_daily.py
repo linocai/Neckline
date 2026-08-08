@@ -2,7 +2,9 @@
 
 核心断言(每条对应 plan 的一句硬要求):
 · **五段结构顺序定死**:① 市场语境 → ② 持仓体检 → ③ 今日篮子 → ③b 未定档 → ④ 昨日复盘 → ⑤ 新鲜度;
-· **③ 三档全部可空是合法输出**,空档位如实写出、不隐藏;
+· **③ 各档全部可空是合法输出**,空档位如实写出、不隐藏;
+· **V2.1-② 读侧宽容**:`by_tier()` 按数据实际档位构造 —— 回放 V2 老快照时 **T3 篮子照常显示**,
+  新报告不出幽灵 T3(两条互为对照,少一条就只证明了一半);
 · **③b 两个原因码永不合并**,且**零溢出时这一节仍在**;
 · **「没有」与「没看」分开**:`available=false` 与「空列表 + available=true」讲不同的话;
 · **有篮子无卡是合法中间态**(`card_not_ready`),⛔ 不把整篮从报告里抹掉;
@@ -390,9 +392,35 @@ class TestTodayBasketsSection:
                                      with_exec_hints=False, **kw)
 
     def test_empty_tiers_are_shown_not_hidden(self, isolated_env):
+        """空档位如实显示。V2.1-②:现役档位只剩 T1/T2 → **不再出现幽灵的
+        「今日 T3 为空」**(那句话在两档时代是假话:T3 不是"今天空",是已取消)。"""
         _seed_basket(isolated_env, ["600001.SH"], tier=1)
         md = _render(self._daily(isolated_env))
-        assert "今日 T2 为空" in md and "今日 T3 为空" in md
+        assert "今日 T2 为空" in md
+        assert "T3" not in md
+
+    def test_historical_t3_baskets_still_render_on_replay(self, isolated_env):
+        """🔴 **本块最该有的一条**(V2.1-② 硬约束「历史 T3 回放不许消失」):
+
+        `reports.basket_daily_json` 是**冻结快照**,V2 时代的老报告里躺着 tier=3 的
+        篮子。读侧(`BasketDaily.by_tier()` / `render._tier_title`)若写死两档,
+        回放老报告时那些篮子会**静默消失** —— 用户看不出、日志里也没有痕迹。
+        本条把「读侧宽容」钉成机器判据:T3 分组照出、篮子名照出、卡照渲染。"""
+        _seed_basket(isolated_env, ["600001.SH"], tier=1, key="k1", name="现役T1篮")
+        _seed_basket(isolated_env, ["600003.SH"], tier=3, key="k3", name="历史T3篮")
+        daily = self._daily(isolated_env)
+        assert sorted(daily.by_tier()) == [1, 3]                  # 按数据实际档位构造
+        assert [b.name for b in daily.by_tier()[3]] == ["历史T3篮"]
+        md = _render(daily)
+        assert "### T3" in md and "历史T3篮" in md
+        assert "### T1" in md and "现役T1篮" in md
+        assert "今日 T2 为空" in md                                # 现役空档仍如实披露
+
+    def test_by_tier_is_built_from_data_not_from_a_hardcoded_tuple(self, isolated_env):
+        """反向:只有 T1 时**不许**凭空多出一个 T2/T3 的空键 —— `by_tier()` 的键
+        就是数据里实际出现的档位(渲染层再决定要不要为现役空档补一句披露)。"""
+        _seed_basket(isolated_env, ["600001.SH"], tier=1)
+        assert list(self._daily(isolated_env).by_tier()) == [1]
 
     def test_all_tiers_empty_is_stated_as_a_legal_output(self, isolated_env):
         """⚠ §七 P0-39:这句「合法输出」**只有在 ⑤ 真跑过时**才准说,故先落段状态行。"""
@@ -504,6 +532,33 @@ class TestReviewSection:
         assert "算不出" in section and "当日既无存拍也无 EOD 行情" in section
         # §2.7:LLM 解释原文整段呈现
         assert "今天这一篮跑赢了大盘。" in section
+
+    def test_historical_brief_t3_review_still_renders(self, isolated_env):
+        """V2.1-② 硬约束的另一半:**历史 `depth='brief'` 的 T3 复盘行照常渲染**。
+
+        `basket_review_daily` 是**每日一行、写下去就冻住**的表(⛔ 无 UPDATE 路径),
+        V2 时代的 T3 简评行永远是 `tier=3` + `depth='brief'`。渲染层若按现役档位或
+        现役 depth 过滤,这些行会静默消失 —— 那是"删了历史"。"""
+        bid = _seed_basket(isolated_env, ["600003.SH"], tier=3, key="k3", name="历史T3篮")
+        from neckline.review.basket_review import BasketReview
+        from neckline.review.basket_review_store import save_review
+
+        mech = {
+            "meta": {"basket_id": bid, "basket_key": "k3", "name": "历史T3篮", "tier": 3,
+                     "d0": D0.strftime("%Y%m%d"), "review_date": D0.strftime("%Y%m%d")},
+            "close_rs": {"available": True, "excess_median": -0.004, "index_code": "000001.SH",
+                         "index_ret": 0.004, "outperformers": 0},
+        }
+        save_review(BasketReview(basket_id=bid, basket_key="k3", name="历史T3篮", tier=3,
+                                 review_date=D0, d0=D0, depth="brief",
+                                 mech=mech, llm_text="当时这一篮只做了简评。"),
+                    db_path=isolated_env.db_path)
+        daily = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
+        assert [(r.tier, r.depth) for r in daily.reviews] == [(3, "brief")]
+        md = _render(daily)
+        section = md.split("## ④ 昨日篮子复盘")[1].split("## ⑤")[0]
+        assert "历史T3篮" in section
+        assert "当时这一篮只做了简评。" in section
 
 
 class TestFreshnessSection:

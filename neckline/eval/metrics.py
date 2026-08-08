@@ -3,7 +3,9 @@
 
 **七组指标**::
 
-    1. tier_monotonicity   Tier 单调性(T1 > T2 > T3 成不成立)
+    1. tier_monotonicity   Tier 单调性(T1 > T2 成不成立;**按数据实际出现的档位**算
+                           —— 历史 V2 分层里仍有 tier=3,那一层照旧按三档算,⛔ 不许
+                           丢样本或并档,见该函数 docstring)
     2. resonance_rate      篮子共振率(成员同向且过 ⑦-b 那道门槛)
     3. verification_rate   验证率(D+1 四态分布,`not_evaluated` 单独计,不混进分母)
     4. leader_vs_members   龙头 vs 同篮其他成员
@@ -263,28 +265,46 @@ def _median(xs: Sequence[float]) -> Optional[float]:
 # 1 Tier 单调性
 # ══════════════════════════════════════════════════════════════════════════
 
+def _tier_chain_text(tier_stats: Mapping[str, Any]) -> str:
+    """把「本分层实际参与单调性比较的档位」拼成 `T1 ≥ T2`(两档时代)或
+    `T1 ≥ T2 ≥ T3`(历史三档分层)。⛔ 不写死档位数 —— 写死就会在某一边说假话。"""
+    med = tier_stats.get("median_outcome") or {}
+    have = [t for t in sorted(med) if med.get(t) is not None]
+    return " ≥ ".join(f"T{t}" for t in have) if have else "各档"
+
+
 def tier_monotonicity(records: Sequence[BasketRecord]) -> Dict[str, Any]:
-    """T1 > T2 > T3 成不成立(用 D+1 篮子结果中位数比)。
+    """档位单调性成不成立(用 D+1 篮子结果中位数比)——**按数据中实际出现的档位
+    升序逐对比较**。
 
     ⚠ **语义红线**:Tier 是**注意力优先级,不是收益预测**(§红线 5)。这条指标问的
     是「注意力有没有分配到更值得看的地方」,**不是**「T1 会不会涨得多」;单调性不
     成立也不等于机器坏了,它只是**送进策略线的一个观察**。文案不许写成"T1 应该涨最多"。
+
+    🔴 **V2.1-② 定死:判据锚在数据,不锚在当前引擎的档位数**。新数据只有 T1/T2 →
+    自然退化为 `T1 ≥ T2`;而历史 `K7-pack-v1` 分层里**仍会出现 tier=3**,那个分层就
+    仍按 `T1 ≥ T2 ≥ T3` 算。⛔ **不许把历史 T3 样本丢掉、更不许并进 T2** —— 那是伪造
+    归因(评价引擎的职责是解释历史,不是让历史符合今天的产品定义)。`counts` /
+    `observed` 两个字典因此**按数据键构造**,⛔ 不许写死档位元组(写死 `(1,2)` 会让
+    历史 T3 样本从成绩单上凭空消失,写死 `(1,2,3)` 会给两档时代的分层挂一个恒为 0 的
+    幽灵档)。
     """
-    by_tier: Dict[int, List[float]] = {1: [], 2: [], 3: []}
-    counts: Dict[int, int] = {1: 0, 2: 0, 3: 0}
+    by_tier: Dict[int, List[float]] = {}
+    counts: Dict[int, int] = {}
     for r in records:
         counts[r.tier] = counts.get(r.tier, 0) + 1
+        by_tier.setdefault(r.tier, [])
         if r.outcome is not None:
-            by_tier.setdefault(r.tier, []).append(r.outcome)
+            by_tier[r.tier].append(r.outcome)
     med = {t: _median(v) for t, v in by_tier.items()}
-    have = [t for t in (1, 2, 3) if med.get(t) is not None]
+    have = [t for t in sorted(med) if med.get(t) is not None]
     holds = None
     if len(have) >= 2:
         seq = [med[t] for t in have]
         holds = all(seq[i] >= seq[i + 1] for i in range(len(seq) - 1))
     return {
         "counts": counts,
-        "observed": {t: len(by_tier.get(t) or []) for t in (1, 2, 3)},
+        "observed": {t: len(v) for t, v in sorted(by_tier.items())},
         "median_outcome": med,
         "mean_outcome": {t: _mean(v) for t, v in by_tier.items()},
         "monotonic": holds,
@@ -641,7 +661,9 @@ def evaluate(
             contribution=contribution(rs, tr),
             tier_verdict=verdict(
                 len(days), len(rs),
-                ("Tier 单调性成立(T1 ≥ T2 ≥ T3 的结果中位数)" if mono
+                # V2.1-②:文案按**本分层实际出现的档位**拼(两档时代说 T1 ≥ T2,
+                # 历史三档分层照旧说 T1 ≥ T2 ≥ T3),⛔ 不写死档位数。
+                (f"Tier 单调性成立({_tier_chain_text(tier_stats)}的结果中位数)" if mono
                  else "Tier 单调性不成立" if mono is not None
                  else "档位样本不足两档,单调性无从谈起"),
                 {"medianOutcome": tier_stats.get("median_outcome")},

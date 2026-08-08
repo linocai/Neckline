@@ -38,20 +38,28 @@ import `neckline.selection`,已核实)。
 
 **V2-⑥-b 新增(2026-08-02 planner 裁定):`config.tier.quality_lines`**——与
 `weights`/`dims`/`stage_scores` 平级的新增**可选**键(档位质量线:每档一道
-机械分下限,`{tier1_min, tier2_min, tier3_min}` 三个子键也**各自独立可选**,
-同 `stage_scores` "不要求六态全部出现"同一纪律)。归属判给"包"而不是"引擎
-常量"的决定性理由是**标度耦合**:质量线与五维权重作用在**同一个标度**上,
-权重已经在包里,线留在代码里 = 换一次权重就静默改变 T1 的选择性。
+机械分下限,子键**各自独立可选**,同 `stage_scores` "不要求六态全部出现"同一
+纪律)。归属判给"包"而不是"引擎常量"的决定性理由是**标度耦合**:质量线与五维
+权重作用在**同一个标度**上,权重已经在包里,线留在代码里 = 换一次权重就静默
+改变 T1 的选择性。
 **缺键回退 vs `weights` 缺维度 fail loud,两种姿势刻意不同**:`weights` 每个
 包 schema 都必须给全,缺了就是包坏了;`quality_lines` 缺(整段缺或单键缺)
 一律回退引擎默认——因为 `K4-pack-v1` 不重发版、是 ⑯-E 的回滚锚,不给回退
 路径就等于把回滚锚作废。回退的具体数值与"引擎默认"本身住在
-`neckline/selection/tier.py`(`TIER1_MIN_SCORE`/`TIER2_MIN_SCORE`/
-`TIER3_MIN_SCORE`,`tier.resolve_quality_lines()`),**本文件不 import 它们**
-(方向相反会成环:`tier.py` 已经 `from neckline.selection.pack import Pack,
-get_active_pack`)——`_validate_quality_lines` 的单调性检查因此**只比较字面
-给出的那些键**,不合并引擎默认值再比较,见该函数 docstring。同样是纯增量
-可选键、K4-pack-v1 原样重新校验仍通过,**不 bump** `ENGINE_API_VERSION`。
+`neckline/selection/tier.py`(`TIER1_MIN_SCORE`/`TIER2_MIN_SCORE`,
+`tier.resolve_quality_lines()`),**本文件不 import 它们**(方向相反会成环:
+`tier.py` 已经 `from neckline.selection.pack import Pack, get_active_pack`)
+——`_validate_quality_lines` 的单调性检查因此**只比较字面给出的那些现役键**,
+不合并引擎默认值再比较,见该函数 docstring。同样是纯增量可选键、K4-pack-v1
+原样重新校验仍通过,**不 bump** `ENGINE_API_VERSION`。
+
+**V2.1-② T3 全链退役**:现役子键收窄为 `{tier1_min, tier2_min}`,`tier3_min`
+移入 `_RETIRED_QUALITY_LINE_KEYS` —— **schema 仍受理它**(否则 `K7-pack-v1`
+这个回滚锚当场作废),但它不生效、不进单调性;引擎侧忽略它并打 WARNING。
+按 ③-K7 的判定规则(「旧包原样重新校验仍通过 + `get_active_pack()` 对旧包行为
+逐位不变」),本次**同样不 bump** `ENGINE_API_VERSION`(仍为 1):没改任何原语
+签名、没收紧特征白名单、没动五维,改的只是档位数;bump 的代价是
+`is_compatible()` 的逐位相等判据当场作废两个回滚锚,代价与收益不成比例。
 """
 
 from __future__ import annotations
@@ -86,14 +94,24 @@ _EVIDENCE_REF_SEP = "; "   # `selection_packs.evidence_ref` 落库时的连接�
 # `neckline.scan.stage.STAGE_ORDER`,不在本文件复抄第二份六码元组)。
 _STAGE_CODES = frozenset(STAGE_ORDER)
 
-# `config.tier.quality_lines` 键的合法集合(V2-⑥-b 新增可选键:档位质量线,
-# 与 `weights`/`dims`/`stage_scores` 平级)。
-_QUALITY_LINE_KEYS = frozenset({"tier1_min", "tier2_min", "tier3_min"})
+# `config.tier.quality_lines` 的**现役**键(V2-⑥-b 新增可选键:档位质量线,
+# 与 `weights`/`dims`/`stage_scores` 平级)。V2.1-② 起只剩两档。
+_ACTIVE_QUALITY_LINE_KEYS = frozenset({"tier1_min", "tier2_min"})
 
-# 三档由严到松的固定顺序,单调性检查(`_validate_quality_lines`)按这个顺序
+# **已退役的**质量线键(V2.1-② T3 全链退役)。校验侧对它**受理但不报"未知键"**,
+# 🔴 理由:`K4-pack-v1` / `K7-pack-v1` 是**回滚锚**,而 `K7-pack-v1` 里写着
+# `tier3_min` —— 拒绝 = 回滚锚当场作废(与 ⑥-b-A 立 `quality_lines` 时"缺键回退
+# 保回滚锚"的理由同源)。受理 ≠ 生效:引擎侧 `tier.resolve_quality_lines()` 见到它
+# 会打一行 WARNING 并忽略(⛔ 不静默),单调性检查也**只比现役两键**。
+# ⛔ 别把它并回 `_ACTIVE_QUALITY_LINE_KEYS`(那等于把 T3 复活)。
+_RETIRED_QUALITY_LINE_KEYS = frozenset({"tier3_min"})
+
+_QUALITY_LINE_KEYS = _ACTIVE_QUALITY_LINE_KEYS | _RETIRED_QUALITY_LINE_KEYS
+
+# 现役档位由严到松的固定顺序,单调性检查(`_validate_quality_lines`)按这个顺序
 # 逐对比较相邻的**字面给出**的键——不是 DB 列序也不是字典序,是"档位越高线
-# 越严"这条产品语义本身。
-_QUALITY_LINE_ORDER = ("tier1_min", "tier2_min", "tier3_min")
+# 越严"这条产品语义本身。**退役键不进这个元组**(它已经不表达任何档位)。
+_QUALITY_LINE_ORDER = ("tier1_min", "tier2_min")
 
 
 def _now() -> str:
@@ -175,30 +193,35 @@ def _validate_quality_lines(quality_lines: Any) -> List[str]:
     """`config.tier.quality_lines`(V2-⑥-b 新增可选键,plan §五 ⑥-b-A 裁定)。
     **整段可选**——K4-pack-v1(回滚锚)完全不写这个键,`Pack.tier_quality_lines()`
     缺省返回空字典,逐键回退引擎默认是 `tier.resolve_quality_lines()` 的职责,
-    不在这里猜。**三个子键也各自独立可选**(同 `_validate_stage_scores` "不要求
+    不在这里猜。**子键也各自独立可选**(同 `_validate_stage_scores` "不要求
     六态全部出现"同一纪律)——存在时只校验形状:必须是对象,键必须是
-    `tier1_min`/`tier2_min`/`tier3_min` 之一,值必须是数值(`bool` 视为非数值,
-    同 `_validate_stage_scores` 的既有陷阱防线)。
+    `tier1_min`/`tier2_min`(现役)或 `tier3_min`(**已退役但受理**)之一,现役键的
+    值必须是数值(`bool` 视为非数值,同 `_validate_stage_scores` 的既有陷阱防线)。
 
-    **单调性("档位越高线越严")只检查字面给出的那些键**,不合并引擎默认值
+    **V2.1-② 退役键的处置(定死)**:`tier3_min` **受理、不报"未知键"、不参与值校验、
+    不参与单调性** —— 🔴 因为 `K7-pack-v1` 里就写着它,而那是**回滚锚**;拒绝它 =
+    回滚锚当场作废。受理 ≠ 生效:`tier.resolve_quality_lines()` 见到它会打一行
+    WARNING 并忽略(⛔ 不静默,静默忽略等于让包以为自己配了个生效的旋钮)。
+
+    **单调性("档位越高线越严")只检查字面给出的那些现役键**,不合并引擎默认值
     再比较——`pack.py` 不 import `tier.py` 的具体默认数字(那个方向会成环,
     `tier.py` 已经反过来 import 本模块的 `Pack`/`get_active_pack`);K4-pack-v1
-    等价于三键全部缺省,天然满足单调性(无键可比,不会被这条拒绝)。plan
+    等价于两键全部缺省,天然满足单调性(无键可比,不会被这条拒绝)。plan
     验收原文给的反例 `tier1_min < tier2_min` 是两键都给出的场景,本检查逐对
-    比较**相邻的**已给出键(`_QUALITY_LINE_ORDER` 顺序),靠传递性覆盖任意
-    两个给出键之间的比较(哪怕中间那一档缺省)。"""
+    比较**相邻的**已给出现役键(`_QUALITY_LINE_ORDER` 顺序)。"""
     if not isinstance(quality_lines, dict):
-        return ["config.tier.quality_lines 必须是对象(tier1_min/tier2_min/tier3_min → 分数)"]
+        return ["config.tier.quality_lines 必须是对象(tier1_min/tier2_min → 分数)"]
     errors: List[str] = []
     unknown = sorted(set(quality_lines) - _QUALITY_LINE_KEYS)
     if unknown:
         errors.append(
             f"config.tier.quality_lines 出现未知键:{unknown}"
-            f"(仅允许 {sorted(_QUALITY_LINE_KEYS)})"
+            f"(仅允许 {sorted(_ACTIVE_QUALITY_LINE_KEYS)};"
+            f"另受理已退役键 {sorted(_RETIRED_QUALITY_LINE_KEYS)},受理但不生效)"
         )
     bad_values = sorted(
         k for k, v in quality_lines.items()
-        if k in _QUALITY_LINE_KEYS and (not isinstance(v, (int, float)) or isinstance(v, bool))
+        if k in _ACTIVE_QUALITY_LINE_KEYS and (not isinstance(v, (int, float)) or isinstance(v, bool))
     )
     if bad_values:
         errors.append(f"config.tier.quality_lines 存在非数值分数:{bad_values}")

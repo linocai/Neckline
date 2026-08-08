@@ -207,7 +207,10 @@ class TierOut(BaseModel):
 
     **Tier = 注意力优先级,不是收益预测**(§2.8-C 红线):`rankInTier` 排第一 ≠ 最会涨。
     `rankMech` 是 LLM 微调**之前**的机械序,`llmRankDelta` 是微调位移 —— 两个都留着,
-    才谈得上「定档可完整复现」(⑥ 的验收条款)。"""
+    才谈得上「定档可完整复现」(⑥ 的验收条款)。
+
+    `tier` 取值域:**新数据 ∈ {1, 2}**(V2.1-② T3 全链退役,写侧收窄);
+    历史留痕行仍可能是 `3`,⛔ 客户端别把 3 当非法值 —— 那是 V2 时代的真实数据。"""
 
     basketId: int
     tradeDate: str = ""
@@ -224,7 +227,9 @@ class TierOut(BaseModel):
 class BasketOut(BaseModel):
     """一个篮子的壳(**A 类**)。`card=null` + `cardUnavailableReason='card_not_ready'`
     = 篮子在、卡没生成(事务 1 与事务 2 分开,**合法中间态**)。
-    ⛔ 客户端不许把它显示成「篮子不存在」——那是另一回事(`basket_not_found`)。"""
+    ⛔ 客户端不许把它显示成「篮子不存在」——那是另一回事(`basket_not_found`)。
+
+    `tier` 取值域:**新数据 ∈ {1, 2}**(V2.1-② T3 退役);历史日期查回来仍可能是 `3`。"""
 
     basketId: int
     basketKey: str = ""
@@ -246,7 +251,8 @@ class BasketsListOut(BaseModel):
 class DroppedBasketOut(BaseModel):
     """③b 一行(⑥-b-C)。**`reason` 两个码语义相反,⛔ 客户端不许合并成一句「未入选」**:
     `capacity_overflow` = 分数够、位置满 →「今天机会多到装不下」;
-    `below_quality_line` = 连 T3 下限都没过 →「今天没什么好货」。
+    `below_quality_line` = 连最低档下限都没过 →「今天没什么好货」(V2.1-② 起 = T2 下限,
+    历史报告里是 T3 下限;**码字符串一字未改** —— ⑨ 按原因码归因,改码 = 历史归因断线)。
     **没有 `basketId`** —— 它没进 `baskets` 表,给一个 id 会让人以为点得进去。"""
 
     name: str = ""
@@ -276,7 +282,9 @@ class BasketVerificationOut(BaseModel):
 class BasketReviewOut(BaseModel):
     """⑨ 的一篮盘后复盘(`mech` 是 **B 类冻结快照**,`llmText` 是参考件)。
 
-    `depth`:`full`(T1/T2 详复盘)| `brief`(T3 简评)。
+    `depth`:`full`(T1/T2 详复盘)| `brief`(**历史值**:V2 时代 T3 篮子的简评;
+    V2.1-② T3 退役后新数据恒 `full`,但历史行照常读回,⛔ 客户端别把 `brief` 当非法值)。
+    `tier`:新数据 ∈ {1,2},历史数据仍可能是 3。
     `llmText=null` + `llmSkipReason` 非空 = **未生成**(预算耗尽/降级),
     ⛔ 不拿空串冒充「生成了但没内容」。"""
 

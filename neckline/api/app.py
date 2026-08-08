@@ -586,9 +586,14 @@ def _shape_basket(ref, *, with_card: bool = True, card_version: Optional[int] = 
 
 @app.get(f"{API_PREFIX}/baskets", dependencies=[Depends(require_token)])
 def list_baskets(date: str = "", tier: int = 0) -> BasketsListOut:
-    """某交易日的篮子清单(T1/T2/T3,按 tier 升序、basket_key 升序,**确定性**)。
+    """某交易日的篮子清单(V2.1 起新数据只有 T1/T2,按 tier 升序、basket_key 升序,
+    **确定性**)。
 
-    `date` 缺省 = 最近一份报告的交易日;`tier`(1/2/3)可选过滤,`0` = 全部。
+    `date` 缺省 = 最近一份报告的交易日;`tier` 可选过滤,`0` = 全部。
+    ⚠ **`tier=3` 仍在白名单里,是刻意的**(V2.1-② 读侧宽容):T3 已于 V2.1 退役、
+    写侧不再产生新的 tier=3 行,但 `baskets` 表里躺着 V2 时代的历史行 —— 把 `3` 从
+    过滤白名单里删掉 = 历史日期按 T3 查会被当成"非法档位"退化成"全部",**用户拿不到
+    也看不出**。收窄的是**写侧**(`selection/tier.py::TIERS`),不是这里。
     **空列表是合法输出**:「今日无篮子达到定档标准」(⑥-b-B)—— ⛔ 不是 404,
     也⛔ 不许为了让界面好看而放宽任何一条质量线。日期格式非法 → 空列表 + 原 `date`
     回显(同 `GET /report` 的降级契约,不 4xx)。"""
@@ -597,7 +602,7 @@ def list_baskets(date: str = "", tier: int = 0) -> BasketsListOut:
     day = date or (report_store.latest_report_date(db_path=_db()) or "")
     if not (len(day) == 8 and day.isdigit()):
         return BasketsListOut(tradeDate=date, items=[])
-    tiers = (tier,) if tier in (1, 2, 3) else None
+    tiers = (tier,) if tier in (1, 2, 3) else None   # ⚠ 3 = 历史档位,读侧宽容(见 docstring)
     refs = load_baskets_for_date(day, tiers=tiers, db_path=_db())
     return BasketsListOut(tradeDate=day, items=[_shape_basket(r) for r in refs])
 

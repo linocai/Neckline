@@ -1,5 +1,10 @@
 """篮子日报的视图模型(plan §五 V2-⑭-A)。把**已经冻结在库里的**篮子四表读成一份
-报告快照结构:③ 今日篮子(T1/T2/T3,每篮一张卡)+ ③b 今日未定档篮子 + ④ 昨日篮子复盘。
+报告快照结构:③ 今日篮子(V2.1 起 T1/T2,每篮一张卡)+ ③b 今日未定档篮子 + ④ 昨日
+篮子复盘。
+
+⚠ **本模块是冻结快照的读侧,一律按"数据里实际有什么"构造,⛔ 不按"引擎现在支持
+什么"写死**(V2.1-②):`reports.basket_daily_json` 里躺着 V2 时代含 tier=3 的老报告,
+读侧写死两档会让它们静默消失 —— 见 `BasketDaily.by_tier()`。
 
 **本模块只读、不判、不算策略**:篮子、Tier、卡、验证、复盘全部由 ⑤⑥⑦⑧⑨ 在各自的段
 落里算完落库,这里只负责「读回来 + 转成契约形状 + 每一段各自包保险丝」。⛔ 不许在这里
@@ -66,9 +71,11 @@ _EXEC_HINT_LOOKBACK_CALENDAR_DAYS = 60
 
 # ③b 两个原因码(唯一源在 `selection/tier.py`,这里只做**展示文案**映射 —— 码本身
 # 从传进来的 `DroppedBasket.reason` 原样透出,不在本模块重定义)。
+# ⚠ V2.1-②:`below_quality_line` 的**码一字不改**(⑨ 按原因码归因,改码 = 历史归因
+# 断线),只改展示文案里的档位名(T3 下限 → T2 下限)。
 DROPPED_REASON_LABEL: Dict[str, str] = {
     "capacity_overflow": "档位已满(分数够、今天位置装不下)",
-    "below_quality_line": "未过质量线(连 T3 下限都没到)",
+    "below_quality_line": "未过质量线(连 T2 下限都没到)",
 }
 
 
@@ -299,11 +306,23 @@ class BasketDaily:
     notes: List[str] = field(default_factory=list)
 
     def by_tier(self) -> Dict[int, List[BasketView]]:
-        out: Dict[int, List[BasketView]] = {1: [], 2: [], 3: []}
+        """按**实际出现的档位**分组(V2.1-②)。
+
+        🔴 **⛔ 不许写死档位元组**:`basket_daily_json` 是**冻结快照**,读回一份 V2
+        时代的老报告时里面就有 tier=3 的篮子 —— 写死 `{1:[],2:[]}` 会让它们**静默
+        消失**(那是"删了历史",不是"退役新档")。写死 `{1:[],2:[],3:[]}` 同样不行:
+        新报告会凭空多出一个恒空的幽灵档。**读侧宽容、写侧收紧**是这条的完整表述,
+        写侧收紧在 `selection/tier.py::TIERS`。
+
+        `tier is None`(极旧快照 / 数据缺口)的篮子**不进任何档** —— 它在 ③ 节不显示,
+        但仍在 `self.baskets` 里,⛔ 别拿一个假档位把它塞进去。
+        """
+        out: Dict[int, List[BasketView]] = {}
         for b in self.baskets:
-            if b.tier in out:
-                out[b.tier].append(b)
-        return out
+            if b.tier is None:
+                continue
+            out.setdefault(int(b.tier), []).append(b)
+        return dict(sorted(out.items()))
 
     def to_public_dict(self) -> Dict[str, Any]:
         return {

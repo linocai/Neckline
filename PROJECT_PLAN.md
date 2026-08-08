@@ -370,7 +370,11 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-07 · 🏗 V2.1.0 已立项,施工图见 §五,⛔ 尚未开工(等用户下 Build 指令)**。主题 =
+**2026-08-08 · 🏗 V2.1.0 批 1 施工中(本地,⛔ 未部署生产)**。施工图见 §五。已完工:
+**② T3 全链退役**(引擎两档 T1≤2/T2≤5、`TIER3_MIN_SCORE` 删除、降级次序只剩 T2 细节、
+评价引擎按实际档位算 —— **历史 T3 读侧全程宽容,老报告回放照常显示**)。同批并行:①(问询台
+整链退役)。**生产仍跑 V2.0.0**(下面那份常态快照仍是现役事实),批 1 全部块本地完工 + 双端
+build 绿之后才进 ⑨ 分批部署。主题 =
 功能删减(问询台整链 + T3 全链)+ 三板块信息架构重排 + 复盘板块补环 + 百分制展示层。
 🔴 **本版是对一台活着的生产系统做在线升级,没有 V2 那种割接窗口** —— 本地施工优先、生产
 分批部署、涉常驻 API 的重启只在收盘后、每批双备份带回滚绳、**本版零删键**(用户 iPhone 上
@@ -505,7 +509,7 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 
 ---
 
-### ② T3 全链退役(删除面 B · 引擎与呈现)
+### ② T3 全链退役(删除面 B · 引擎与呈现)—— ✅ **本地完工 2026-08-08(@builder-pro,⛔ 未部署)**
 
 **目标**:定档只剩 **T1 ≤ 2 / T2 ≤ 5(上限非配额,允许任一档为空)**;**历史数据里的 T3 一行都不许凭空消失**。
 
@@ -537,6 +541,51 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 **依赖与部署批次**:无前置(引擎先两档、包后发,是**合法中间态**,见 ③)。→ **批 1**。
 
 **验收**:新数据只出 T1/T2 且 ③b 如实记下被拒篮子的名 / 分 / 码;**任取一份 V2 时代含 T3 的历史报告回放,T3 篮子与 T3 复盘照常显示**。
+
+#### ✅ ② 完工记录(2026-08-08 · @builder-pro · 本地,⛔ 零部署 / 零包文件接触)
+
+- **11 处逐处改法全部照做**,另有**两处 plan 未列但必须跟着改**(如实登记,理由见下):
+  - **`eval/calibration.py`(plan 疏漏 · 已修)**:周度校准报告的「Tier 单调性」一行**写死
+    `(1, 2, 3)`**,是 `tier_monotonicity()` 的直接消费方。只改指标不改渲染 = 两档时代凭空
+    多一行 **「T3 —(n=0)」** —— 读起来像"今天 T3 没样本",真相是 T3 已取消,**正是把系统
+    缺席讲成实质性结论**(§2 诚实披露红线)。冒烟第一跑当场打出来了。已改成按本分层实际
+    出现的档位渲染(两头都对:两档不出幽灵、历史三档不丢样本),守门单测双向锁死。
+    ⚠ 这份报告正是 ⑤ 复盘板块要端给用户的东西,**⑤ 施工时不必再动它**。
+  - **`selection/aggregate.py::MAX_SEEDS_AGGREGATED` 注释**:原文写「Tier 容量上限总共
+    T1≤2+T2≤5+T3≤10 = 17 篮」,改后成假话。**常量值刻意不动**(检索段按**种子**计费,与篮子
+    数无关,调小换不来钱只会砍掉聚合选择面 —— 附「成本与超时算术」第 1/5 条),只把注释
+    改真并写死"为什么不动"。
+- **读侧宽容的三个落点**(硬约束「历史 T3 回放不许消失」):① `basket_daily.by_tier()` 按数据
+  实际档位构造(`tier is None` 不进任何档);② `render._TIER_TITLE` 字典 → `_tier_title()`
+  函数式兜底;③ `render._render_today_baskets` 迭代 **`现役 TIERS ∪ 快照实际档位`** —— 现役档
+  保证「今日 T2 为空」这句诚实披露不消失,并集保证老报告的 T3 分组照出。`api/app.py::list_baskets`
+  的 `tier` 过滤白名单**保留 `(1,2,3)`** 并写明理由(删了 = 历史按 T3 查会静默退化成"全部")。
+- **写侧收紧只在引擎**:`TIERS=(1,2)` / `TIER_CAPACITY={1:2,2:5}` / `_eligible_tier` 无第三分支。
+  `basket_store.save_baskets` 的 `(1,2,3)` 写入校验**刻意未动**(它是 DDL 取值域的护栏,历史
+  回放/补写仍可能落 tier=3;引擎已不产生 3,收紧它只增加回放脆性、不增加安全)。
+- **反向守门(防复活)三条**:`not hasattr(tier, "TIER3_MIN_SCORE")` · `not hasattr(budget,
+  "DROP_T3_BRIEF")` · `test_selection_primitives` 的引擎常量白名单**不给已删常量留登记**
+  (白名单是"允许存在"的登记,留一行等于给复活开绿灯)。
+- **回滚锚活着**:`pack._RETIRED_QUALITY_LINE_KEYS = {tier3_min}` —— schema **受理不报未知键**、
+  不参与值校验与单调性;守门直接吃**仓库里那份真 `packs/K7-pack.json`**(它就是批 2 的回滚绳),
+  断言「校验通过 + 原样过闸激活 + `get_active_pack()` 仍原样带着那一键」。忽略只发生在引擎侧
+  `resolve_quality_lines()`,**打一行 WARNING(⛔ 不静默)**,单测断言 WARNING 里同时出现
+  `tier3_min` / 退役 / 忽略。`ENGINE_API_VERSION` **仍为 1**,两个回滚锚 manifest 都仍判兼容。
+- **测试数字(隔离 worktree 对拍,排除同批 ① 的在制品干扰)**:pristine `5635c77`
+  **3028 passed / 2 failed / 2 skipped** → 本块 **3041 passed / 2 failed / 2 skipped**,
+  **+13 例、零回归**,两侧失败集**完全相同**(`test_api_positions` / `test_fix_position_buy_dates`
+  两条**日期依赖**的既存红,今天 08-08 是周六非交易日,与本块无关)。
+- **端到端冒烟(`scripts/smoke_basket_review.py --d0 20260723`,隔离临时库 + LLM 桩,真实
+  parquet/db 只读,前后 md5 `def0cea6…` 未变)**:三档时代 `定档 {'T1':1,'T2':1,'T3':2}(溢出 0)`
+  → 两档 **`定档 {'T1':1,'T2':1}(溢出 2)`**,那 2 篮如实落 `below_quality_line` 并进 ③b;
+  校准报告 Tier 行由 `T1…、T2…、T3 —(n=0)` 变为 `T1…、T2…`。
+- **客户端零接触**;pristine 客户端 iOS + macOS `xcodebuild build` **BUILD SUCCEEDED**,
+  iOS Simulator `xcodebuild test` **187 executed / 12 skipped / 0 failures**。
+- 🔴 **移交 ⑦ 的一条硬约束(plan ⑦ 未写,别漏)**:`BasketDailyView.swift:185` 的
+  `ForEach([1, 2, 3])` **不许简单改成 `[1, 2]`** —— 那会让**历史 T3 回放在客户端消失**,把
+  ② 刚在服务端立起来的读侧宽容在展示层拆掉。正确改法与服务端同构:
+  **`现役两档 ∪ 本份快照实际出现的档位`**(空档位仍如实显示)。老 2.0.0 客户端的空 T3 分组
+  仍是 §五〇b-5 已登记的过渡期代价,换包即消失。
 
 ---
 
@@ -1046,6 +1095,7 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-08 · 🗑 **V2.1-② T3 全链退役本地完工(@builder-pro,⛔ 未部署 / 零接触包文件 / 零客户端改动)**。引擎两档化:`TIER_CAPACITY={1:2,2:5}` · `TIERS=(1,2)` · **删 `TIER3_MIN_SCORE`** · `_eligible_tier` 无兜底档(够不到 `tier2_min` 即 `below_quality_line`,**码字符串一字未改**保住 ⑨ 归因)· `DEGRADE_ORDER` 只剩 `t2_review_detail`(**删 `DROP_T3_BRIEF`**)· `depth_for_tier` 恒 `full`(`DEPTH_BRIEF` 常量**保留**供读回历史行)。**硬约束「历史 T3 回放不许消失」三处落点**:`basket_daily.by_tier()` 按数据实际档位构造、`render._TIER_TITLE` 改函数式兜底、③ 节迭代 `现役档 ∪ 快照实际档`;`list_baskets` 的 `tier` 白名单**保留 3**(读侧宽容,删了 = 历史按 T3 查静默退化成"全部")。**plan 两处疏漏已补并登记**:① `eval/calibration.py` 的 Tier 行写死 `(1,2,3)`(冒烟当场打出幽灵「T3 —(n=0)」= 把系统缺席讲成实质性结论),改成按实际档位渲染、双向守门 —— 这份报告正是 ⑤ 复盘板块要端给用户的东西;② `aggregate.py` 的「17 篮」注释成假话(常量**刻意不动**,检索段按种子计费)。**回滚锚保住**:`pack` 对 `tier3_min` **受理不报未知键**、不进单调性,守门直吃真 `packs/K7-pack.json` 断言"校验通过 + 原样过闸 + 包对象仍带该键";引擎侧忽略并**打 WARNING(⛔ 不静默)**;`ENGINE_API_VERSION` **仍为 1**(②-4 三条理由,两个回滚锚仍判兼容)。反向 hasattr 守门两条 + 白名单不给已删常量留登记。**测试(隔离 worktree 对拍,排除同批 ① 在制品)**:pristine `5635c77` **3028 passed** → 本块 **3041 passed**,+13 例零回归,两侧失败集相同(2 条日期依赖既存红,08-08 周六)。**冒烟**(隔离库 + LLM 桩,真实 db md5 未变):`{'T1':1,'T2':1,'T3':2}` 溢出 0 → **`{'T1':1,'T2':1}` 溢出 2**(2 篮如实进 ③b `below_quality_line`)。pristine 客户端双端 `BUILD SUCCEEDED` + iOS test **187/12 skipped/0 failures**。🔴 **移交 ⑦**:`BasketDailyView.swift` 的 `ForEach([1,2,3])` ⛔ 不许简单改 `[1,2]`(会在展示层拆掉刚立起来的读侧宽容),改法见 ② 完工记录末条。
 - 2026-08-07 · 📐 **V2.1.0 立项:施工图转写进 §五(@planner,⛔ 未开工,等用户 Build 指令)**。六项用户裁定定格(问询台整删 / 三板块 IA / 复盘人工闭环无自动反馈 / T3 彻底删 / 百分制甲案纯展示 / 前端视觉让位 v2.2);分九块 ①问询台整链退役 ②T3 全链退役 ③`K7-pack-v2` 发版激活 ④百分制展示层 ⑤复盘板块服务端 ⑥周度 unit 定案(**P3-42 结案**)⑦客户端 IA 重排 + 复盘板块 ⑧契约对拍守门收口 ⑨分批部署。**本版是对活着的生产系统做在线升级**,四条铁律入 §五〇b(本地施工优先 / 分批部署 / 常驻 API 只在收盘后重启 / **零删键**)。planner 核出四处与前瞻规划的出入并已在图中纠正:`K4-pack-v1` 无 `quality_lines` 故**不必重发版**、`ENGINE_API_VERSION` **不 bump**(理由三条)、报告 ④ 节**服务端零改动**只搬客户端展示、T3 删除**省不到联网检索那笔大头**。§七 吸收 P3-42、部分落地 P3-44、部分作废 P3-33、新挂 P4-46/P3-47;前瞻规划稿归档 `archive/V2.1前瞻规划_20260807立项归档.md`(防双权威)。
 - 2026-08-07 · 🔧 **晚间链 timer/target 接线修复:`neckline-evening.target` 加 `StopWhenUnneeded=yes`,排程从"只跑首晚"恢复为天天跑(@builder-pro,已部署 nk,案底 §七 P0-45)**。08-06 整晚未触发的根因是 **timer 的重新武装边**(target 永不落下 → timer 卡在 `SubState=running`、NEXT 永不重算),**不是**"已 active 的 target 吞掉触发"(08-05 那晚整链跑完即为反证)。修法一行、零代码零契约,三段严格串行未动;`/bin/true` drop-in 空跑演练拿到微秒级五连证据(三段串行 → Reached target → 5.6 ms 后自动 Stopped),演练后 ExecStart 逐字复原、五个 unit 与 `/opt/neckline/deploy/` md5 全 MATCH、`NEXT=2026-08-07 16:35:00`、`neckline.service` `NRestarts=0` 未受扰。**🟠 施加过程中踩了一次次生事故并如实登记**:`daemon-reload` 异步落下 target → timer 以过期基点(08-05 16:35)算出已过去的 08-06 槽 → **当场空跑一遍全链并真推送了一条 APNs**(盘中、无当日 EOD,0 篮 0 卡,空 `20260807` 报告今晚 16:35 会被 `ON CONFLICT DO UPDATE` 覆盖 = 自愈;唯一不可逆的是那条推送)。正确的施加顺序(先 stop timer)已固化进 target 文件头。**08-06 补跑按用户"异常停手回报"纪律暂停,待用户裁量。**
 - 2026-08-05 · 🩹 **信息卡第三面 `card_corrupt`/`card_not_ready` 混淆修复(B1 同类裁定收口,@builder,commit `06e44e2`,已部署 nk)**。`info_card.py::build_basket_context()` 的 `(row or {}).get("card") or {}` 曾把「压根没有卡行」与「有行但读不出(冻结件损坏)」摊成同一句 `card_not_ready`,照抄 `basket_daily.py::load_today_baskets()`(报告③节)已有的 `any_corrupt` 判读体例修复,复用 `basket_store.load_basket_card` 唯一检测点(不重复打 ERROR),新增 `BASKET_CARD_CORRUPT_REASON`。测试两态(`test_api_info_card.py` 新增 1 例,既有 `card_not_ready` 例保持绿);Python 全量 3030 passed / 2 skipped。部署:sha256 对拍逐字节相同,`systemctl restart neckline.service`(晚间收盘后窗口,`NRestarts=0`、`ActiveEnterTimestamp` 已刷新、journal 干净、公网 `/health` 200 复核)。详见 §九下一行(同批完成,合并部署)。

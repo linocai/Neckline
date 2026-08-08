@@ -414,11 +414,15 @@ class TestAssignTiers:
         assert {d.reason for d in dropped} == {ti.DROP_CAPACITY_OVERFLOW}
 
     def test_t1_is_empty_when_nothing_clears_the_bar(self):
-        """「上限非配额,允许 T1 为空」—— 市场混沌(全场平庸)时不许凑数。"""
+        """「上限非配额,允许 T1 为空」—— 市场混沌(全场平庸)时不许凑数。
+
+        V2.1-②:0.30 曾落 T3(默认 `tier3_min=0.25`),T3 退役后它够不到 `tier2_min`
+        → `below_quality_line`,**没有兜底档**。"""
         placement, dropped = ti.assign_tiers([("a", 0.55), ("b", 0.50), ("c", 0.30)])
-        assert [placement[k][0] for k in ("a", "b", "c")] == [2, 2, 3]
+        assert [placement[k][0] for k in ("a", "b")] == [2, 2]
         assert not [k for k, v in placement.items() if v[0] == 1]
-        assert dropped == []
+        assert "c" not in placement
+        assert [(d.basket_key, d.reason) for d in dropped] == [("c", ti.DROP_BELOW_QUALITY_LINE)]
 
     def test_clearing_t1_bar_but_t1_full_cascades_down_not_squeezed_in(self):
         scored = [("a", 0.95), ("b", 0.90), ("c", 0.85), ("d", 0.80)]
@@ -477,8 +481,15 @@ class TestScoreAndTier:
         res = ti.score_and_tier(_three_baskets(), D0, db_path=env.db_path,
                                 parquet_dir=env.parquet_dir, pack=K7_PACK)
         order = [d.basket_key for d in res.decisions]
-        assert order == ["k-strong", "k-mid", "k-weak"]
-        assert res.decisions[0].tier <= res.decisions[-1].tier
+        # V2.1-②:k-mid / k-weak 原先落 T3(纺织第 99 名 + overheat + 红牌),
+        # T3 退役后两者都够不到 `tier2_min` → 如实丢弃并留痕,⛔ 不给兜底档。
+        assert order == ["k-strong"]
+        assert res.decisions[0].tier == 1
+        assert {d.basket_key: d.reason for d in res.dropped} == {
+            "k-mid": ti.DROP_BELOW_QUALITY_LINE, "k-weak": ti.DROP_BELOW_QUALITY_LINE,
+        }
+        # 定档的那个分数**严格高于**被丢的那两个 —— "更强的拿更好的档"这句话仍成立
+        assert all(res.decisions[0].mech_score > d.mech_score for d in res.dropped)
 
     def test_breakdown_explains_the_score(self, isolated_env):
         env = isolated_env
@@ -536,8 +547,9 @@ class TestScoreAndTier:
 
     def test_overflowing_baskets_are_dropped_with_trace(self, isolated_env):
         """20 个**零数据**篮子(每一维都降级取中性分)→ 分数全是同一个平庸值,
-        **一个都够不到 T1 线**:T1 空、T2 满 5、T3 满 10、余下 5 个溢出留痕。
-        这一条同时兑现「上限非配额」与「市场混沌时不许凑数」两句话。"""
+        **一个都够不到 T1 线**:T1 空、T2 满 5、余下 15 个溢出留痕。
+        这一条同时兑现「上限非配额」与「市场混沌时不许凑数」两句话。
+        (V2.1-②:T3 退役,原先接住 10 个的那一档没了 → 溢出数由 5 变 15。)"""
         env = isolated_env
         many = _agg([_basket(f"k{i:02d}", [_member(f"6000{i:02d}.SH")]) for i in range(20)])
         res = ti.score_and_tier(many, D0, db_path=env.db_path,
@@ -545,14 +557,15 @@ class TestScoreAndTier:
         by_tier = res.by_tier()
         assert by_tier[1] == []                                    # T1 空,没被凑数
         assert len(by_tier[2]) == ti.TIER_CAPACITY[2]
-        assert len(by_tier[3]) == ti.TIER_CAPACITY[3]
-        assert len(res.dropped) == 20 - ti.TIER_CAPACITY[2] - ti.TIER_CAPACITY[3]
+        assert 3 not in by_tier                                    # T3 已退役,不出现
+        assert len(res.dropped) == 20 - ti.TIER_CAPACITY[2]
         assert {d.reason for d in res.dropped} == {ti.DROP_CAPACITY_OVERFLOW}
         assert any(n.startswith("capacity_overflow") for n in res.notes)
 
-    def test_total_capacity_is_seventeen_when_everything_clears_t1(self, isolated_env):
-        """全场都够 T1 线时:T1 收 2、其余向下顺延填满 T2/T3,合计 17 个,
-        第 18 个起溢出 —— **容量上限一个都不许突破**。"""
+    def test_total_capacity_is_seven_when_everything_clears_t1(self, isolated_env):
+        """全场都够 T1 线时:T1 收 2、其余向下顺延填满 T2,合计 **7** 个,
+        第 8 个起溢出 —— **容量上限一个都不许突破**。
+        (V2.1-②:总容量由 17 降为 7,plan §五 V2.1 附「成本与超时算术」的算术基数。)"""
         env = isolated_env
         _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1}])
         _insert_stage(env.db_path, {"半导体": stage_mod.FERMENTATION})
@@ -565,8 +578,8 @@ class TestScoreAndTier:
         assert all(d.mech_score >= ti.TIER1_MIN_SCORE for d in res.decisions)
         counts = {t: len(v) for t, v in res.by_tier().items()}
         assert counts == ti.TIER_CAPACITY
-        assert len(res.decisions) == sum(ti.TIER_CAPACITY.values()) == 17
-        assert len(res.dropped) == 3
+        assert len(res.decisions) == sum(ti.TIER_CAPACITY.values()) == 7
+        assert len(res.dropped) == 13
 
 
 class TestPackSwapChangesTierOrder:
@@ -1114,21 +1127,37 @@ class TestQualityLineResolution:
         assert ti.resolve_quality_lines(K4_PACK) == {
             "tier1_min": ti.TIER1_MIN_SCORE,
             "tier2_min": ti.TIER2_MIN_SCORE,
-            "tier3_min": ti.TIER3_MIN_SCORE,
         }
 
     def test_resolves_to_pack_values_when_present(self):
-        assert ti.resolve_quality_lines(K7_PACK) == {
-            "tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.25,
-        }
+        """V2.1-②:只返两键。`K7-pack-v1` 里写着 `tier3_min`,它**不出现在返回值里**。"""
+        assert ti.resolve_quality_lines(K7_PACK) == {"tier1_min": 0.60, "tier2_min": 0.40}
+
+    def test_retired_tier3_min_in_pack_is_ignored_with_a_warning(self, caplog):
+        """V2.1-② 定死:包里带 `tier3_min`(回滚锚 `K7-pack-v1` 就带)→ **忽略 + 打
+        一行 WARNING**。⛔ 不静默 —— 静默忽略等于让包以为自己配了个生效的旋钮;
+        ⛔ 也不抛 —— 抛了会把两个回滚锚当场作废。"""
+        assert "tier3_min" in K7_PACK.tier_quality_lines()      # 前提:包里真的有这一键
+        with caplog.at_level(logging.WARNING, logger="neckline.selection.tier"):
+            lines = ti.resolve_quality_lines(K7_PACK)
+        assert set(lines) == {"tier1_min", "tier2_min"}
+        assert "tier3_min" in caplog.text
+        assert "退役" in caplog.text and "忽略" in caplog.text
+        assert any(r.levelno >= logging.WARNING for r in caplog.records)
 
     def test_partial_override_falls_back_key_by_key(self):
-        """三键各自独立回退——同 `stage_scores` "不要求六态全部出现"同一纪律,
-        不是"quality_lines 要么整段给要么整段不给"的全有全无开关。"""
+        """现役两键各自独立回退——同 `stage_scores` "不要求六态全部出现"同一纪律,
+        不是"quality_lines 要么整段给要么整段不给"的全有全无开关。
+        (V2.1-②:整段只写一个**退役键**时,两个现役键都回退引擎默认。)"""
         custom = _pack_with_tier({**K7_PACK.config["tier"],
-                                  "quality_lines": {"tier3_min": 0.10}})
+                                  "quality_lines": {"tier2_min": 0.10}})
         assert ti.resolve_quality_lines(custom) == {
-            "tier1_min": ti.TIER1_MIN_SCORE, "tier2_min": ti.TIER2_MIN_SCORE, "tier3_min": 0.10,
+            "tier1_min": ti.TIER1_MIN_SCORE, "tier2_min": 0.10,
+        }
+        only_retired = _pack_with_tier({**K7_PACK.config["tier"],
+                                        "quality_lines": {"tier3_min": 0.10}})
+        assert ti.resolve_quality_lines(only_retired) == {
+            "tier1_min": ti.TIER1_MIN_SCORE, "tier2_min": ti.TIER2_MIN_SCORE,
         }
 
     def test_no_active_pack_fails_loud(self):
@@ -1137,10 +1166,11 @@ class TestQualityLineResolution:
 
 
 class TestAssignTiersQualityLineFloor:
-    """⑥-b-B:T3 也要有下限,「上限非配额」这句话是对三档同时说的。"""
+    """⑥-b-B:每一档都有下限,「上限非配额」这句话是对**全部现役档位**说的。
+    V2.1-② 起最低档 = T2,够不到 `tier2_min` 就是 `below_quality_line`,⛔ 无兜底档。"""
 
-    def test_all_baskets_below_t3_line_leave_every_tier_empty(self):
-        """一批分数 0.10~0.20 的篮子(全部低于默认 tier3_min=0.25)→ T3 为空,
+    def test_all_baskets_below_the_lowest_line_leave_every_tier_empty(self):
+        """一批分数 0.10~0.20 的篮子(全部低于默认 tier2_min=0.40)→ 每一档都空,
         而不是被塞满(⑥-b 验收原文)。"""
         scored = [(f"k{i:02d}", round(0.10 + i * 0.01, 2)) for i in range(11)]   # 0.10..0.20
         placement, dropped = ti.assign_tiers(scored)
@@ -1153,52 +1183,61 @@ class TestAssignTiersQualityLineFloor:
         """溢出摘要两种原因码必须分得开(⑥-b-C):同一批里**同时**制造「分数够、
         位置满」与「分数不够」两种"没进来",断言两个原因码都出现且互不覆盖
         对方的篮子。"""
-        # 18 个够 T1 线的篮子:T1(2)+T2(5)+T3(10)=17 个坑,第 18 个分数也够但
-        # 位置满 → capacity_overflow;另外三个连 T3 线(0.25)都没过 → below_quality_line。
-        plenty = [(f"ok{i:02d}", round(0.90 - i * 0.001, 6)) for i in range(18)]
+        # 8 个够 T1 线的篮子:T1(2)+T2(5)=7 个坑,第 8 个分数也够但位置满 →
+        # capacity_overflow;另外三个连 T2 线(0.40)都没过 → below_quality_line。
+        plenty = [(f"ok{i:02d}", round(0.90 - i * 0.001, 6)) for i in range(8)]
         starved = [(f"bad{i:02d}", 0.05 + i * 0.01) for i in range(3)]
         placement, dropped = ti.assign_tiers(plenty + starved)
         by_reason = {d.basket_key: d.reason for d in dropped}
         assert set(by_reason.values()) == {ti.DROP_CAPACITY_OVERFLOW, ti.DROP_BELOW_QUALITY_LINE}
         overflow_keys = {k for k, r in by_reason.items() if r == ti.DROP_CAPACITY_OVERFLOW}
         starved_keys = {k for k, r in by_reason.items() if r == ti.DROP_BELOW_QUALITY_LINE}
-        assert overflow_keys == {"ok17"}                       # 唯一一个"分数够、位置满"
+        assert overflow_keys == {"ok07"}                       # 唯一一个"分数够、位置满"
         assert starved_keys == {f"bad{i:02d}" for i in range(3)}
         assert overflow_keys.isdisjoint(starved_keys)
 
     def test_custom_quality_lines_change_eligibility(self):
         """`assign_tiers` 吃自定义 `quality_lines`(不是只认模块默认)——验证
-        换包后三线真的跟着变,不是摆设参数。"""
-        scored = [("a", 0.30)]
+        换包后两条线真的跟着变,不是摆设参数。"""
+        scored = [("a", 0.45)]
         placement_default, dropped_default = ti.assign_tiers(scored)
-        assert placement_default == {"a": (3, 1)} and dropped_default == []   # 默认 tier3_min=0.25,达标
+        assert placement_default == {"a": (2, 1)} and dropped_default == []   # 默认 tier2_min=0.40,达标
 
-        strict = {"tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.35}
+        strict = {"tier1_min": 0.60, "tier2_min": 0.50}
         placement_strict, dropped_strict = ti.assign_tiers(scored, quality_lines=strict)
         assert placement_strict == {}
         assert {d.reason for d in dropped_strict} == {ti.DROP_BELOW_QUALITY_LINE}
 
+    def test_retired_tier3_min_in_custom_lines_does_not_resurrect_a_third_tier(self):
+        """**防复活**:哪怕调用方硬塞一个 `tier3_min` 进 `quality_lines`,
+        `_eligible_tier` 也不许据此造出第三档 —— 0.30 只够 `tier3_min` 不够
+        `tier2_min` → 丢弃。"""
+        lines = {"tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.25}
+        placement, dropped = ti.assign_tiers([("a", 0.30)], quality_lines=lines)
+        assert placement == {}
+        assert [(d.basket_key, d.reason) for d in dropped] == [("a", ti.DROP_BELOW_QUALITY_LINE)]
+
 
 class TestScoreAndTierAllTiersEmpty:
     def test_all_tiers_empty_is_a_legal_output(self, isolated_env):
-        """三档皆空是合法输出(⑥-b-B):篮子确实存在,只是一个都够不到(严格自定义
+        """两档皆空是合法输出(⑥-b-B):篮子确实存在,只是一个都够不到(严格自定义
         质量线拉满)——`score_and_tier` 应当如实产出「今日无篮子定档」,不抛异常、
         不是 `no_baskets`(那是"根本没有篮子"的另一种情况)。"""
         env = isolated_env
         strict_pack = _pack_with_tier({
             **K7_PACK.config["tier"],
-            "quality_lines": {"tier1_min": 0.99, "tier2_min": 0.98, "tier3_min": 0.97},
+            "quality_lines": {"tier1_min": 0.99, "tier2_min": 0.98},
         })
         many = _agg([_basket(f"k{i:02d}", [_member(f"6000{i:02d}.SH")]) for i in range(5)])
         res = ti.score_and_tier(many, D0, db_path=env.db_path,
                                 parquet_dir=env.parquet_dir, pack=strict_pack)
         assert res.decisions == ()
-        assert res.by_tier() == {1: [], 2: [], 3: []}
+        assert res.by_tier() == {1: [], 2: []}
         assert len(res.dropped) == 5
         assert {d.reason for d in res.dropped} == {ti.DROP_BELOW_QUALITY_LINE}
         assert "no_baskets" not in res.notes
         assert "below_quality_line:5" in res.notes
-        assert res.quality_lines == {"tier1_min": 0.99, "tier2_min": 0.98, "tier3_min": 0.97}
+        assert res.quality_lines == {"tier1_min": 0.99, "tier2_min": 0.98}
 
 
 class TestScoreAndTierMixedDropReasons:
@@ -1219,12 +1258,13 @@ class TestScoreAndTierMixedDropReasons:
              "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
              "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1},
         ])
-        # 20 个板块最强 + 龙头头名的篮子(全部够 T1 线)→ 17 个坑,3 个 capacity_overflow。
+        # 10 个板块最强 + 龙头头名的篮子(全部够 T1 线)→ V2.1-② 只有 7 个坑,
+        # 3 个 capacity_overflow。
         strong = [
             _basket(f"strong{i:02d}", [_member(f"6001{i:02d}.SH", industry="半导体", rs_rank=1)])
-            for i in range(20)
+            for i in range(10)
         ]
-        # 板块最弱 + 一字板 + 红牌的篮子 → 连 T3 线都够不到,below_quality_line。
+        # 板块最弱 + 一字板 + 红牌的篮子 → 连 T2 线都够不到,below_quality_line。
         weak = _basket("k-weak", [_member("600999.SH", industry="纺织", k4_tag="A2")], name="弱")
         res = ti.score_and_tier(_agg(strong + [weak]), D0, db_path=env.db_path,
                                 parquet_dir=env.parquet_dir, pack=K7_PACK)
@@ -1410,4 +1450,19 @@ def test_tier_score_inputs_contains_exactly_the_five_dims():
 
 
 def test_capacity_matches_the_plan():
-    assert ti.TIER_CAPACITY == {1: 2, 2: 5, 3: 10}
+    """V2.1-② 两档化:T1 ≤ 2 / T2 ≤ 5,总容量 7(原 17)。"""
+    assert ti.TIER_CAPACITY == {1: 2, 2: 5}
+    assert ti.TIERS == (1, 2)
+    assert set(ti.TIER_CAPACITY) == set(ti.TIERS)
+
+
+def test_tier3_min_score_is_retired():
+    """**反向守门(防"顺手加回来")**:`TIER3_MIN_SCORE` 常量必须不存在
+    —— 同 P0-44 删 `LONG_CONTEXT_READ_TIMEOUT_SECONDS` 的 `hasattr` 体例。
+
+    V2.1-② 裁定「T3 彻底删除,不留影子档」:留一个常量在那儿,迟早会有人把
+    `_eligible_tier` 的第三个分支接回去,当晚就会凭空多出一批 T3 篮子。"""
+    assert not hasattr(ti, "TIER3_MIN_SCORE")
+    assert "TIER3_MIN_SCORE" not in ti.__all__
+    assert set(ti._DEFAULT_QUALITY_LINES) == {"tier1_min", "tier2_min"}
+    assert 3 not in ti.TIER_CAPACITY and 3 not in ti.TIERS

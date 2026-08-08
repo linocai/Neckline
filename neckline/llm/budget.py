@@ -2,9 +2,10 @@
 不合并**——一个吃光另一个是最难查的那类故障(承 v1.5-②「候选审判独立墙钟预算」
 定案的同一条精神,只是从"一本账"扩成"三本账各自独立")。
 
-**降级次序定死**:预算耗尽时,先丢 T3(Tier-3 篮子)的简评,再丢 T2 复盘细节,
-**篮子卡冻结与纪律外壳永远不在可丢清单里**——它们不受 LLM 预算支配(前者是机械
-冻结产物,后者是章程,两者都不经过本模块)。
+**降级次序定死**:预算耗尽时丢 T2 复盘细节(**V2.1-② T3 全链退役后,可丢清单只剩
+这一项**),**篮子卡冻结与纪律外壳永远不在可丢清单里**——它们不受 LLM 预算支配
+(前者是机械冻结产物,后者是章程,两者都不经过本模块)。**T1 从来、现在、以后都
+不在可丢清单里**。
 
 本模块**只提供记账与次序原语**,不做实际的"调用/跳过某个篮子的复盘"决策——那是
 消费方(⑨ 盘后复盘引擎等)的职责,读 `next_to_drop()` 决定跳过谁。
@@ -22,7 +23,10 @@ from typing import Dict, Iterable, Optional, Tuple
 # 在实例化那一刻,不是模块加载那一刻)。
 SEARCH_BUDGET_SECONDS: float = 20 * 60.0   # T1/T2 驱动证据检索(带联网,单只慢)
 REASON_BUDGET_SECONDS: float = 30 * 60.0   # 篮子逻辑/Tier 微调/剧本等推理任务
-REVIEW_BUDGET_SECONDS: float = 15 * 60.0   # 盘后复盘解释(T1/T2 full + T3 brief)
+# ⚠ **V2.1-② 不下调**(算过了,不是没算):篮子上限 17→7 让复盘调用数上界从 17 降到
+# 7,但预算账是"防跑飞的上限"不是"预期用量";按次计费与墙钟预算无关,调小它换不来
+# 钱,却会在慢夜把正常调用掐掉(plan §五 V2.1 附「成本与超时算术」第 4 条)。
+REVIEW_BUDGET_SECONDS: float = 15 * 60.0   # 盘后复盘解释(T1/T2 全部 full 深度)
 
 LEDGER_SEARCH = "search"
 LEDGER_REASON = "reason"
@@ -61,14 +65,18 @@ class BudgetLedger:
         return self.remaining(ledger) <= 0.0
 
 
-# —— 降级次序(定死,plan §五 V2-②)——————————————————————————————————————
-# 预算不足时被丢的顺序恒为:T3 简评 → T2 复盘细节。**这两项之外的任何东西都不许
-# 出现在这个元组里**——尤其是篮子卡冻结(D0 产物,机械冻结,不经 LLM 预算)与纪律
-# 外壳(章程,§2.1,LLM 说什么都不改它,§2.0 第〇原则)。
-DROP_T3_BRIEF = "t3_brief"              # Tier-3 篮子的简评(brief 深度复盘)
+# —— 降级次序(定死,plan §五 V2-② / V2.1-②)————————————————————————————————
+# 预算不足时被丢的只有:T2 复盘细节。**这一项之外的任何东西都不许出现在这个元组里**
+# ——尤其是篮子卡冻结(D0 产物,机械冻结,不经 LLM 预算)与纪律外壳(章程,§2.1,
+# LLM 说什么都不改它,§2.0 第〇原则),以及 T1 复盘(从来不在可丢清单里)。
+#
+# ⚠ **V2.1-②:`DROP_T3_BRIEF` 已删除**(T3 全链退役,不留影子档)——反向 hasattr
+# 守门在 `tests/test_llm_router_budget.py`,⛔ 别顺手加回来。历史 `basket_review_daily`
+# 里 `llm_skip_reason='llm_dropped:t3_brief'` 的旧行仍能原样读回(那是**值**层面的
+# "停写留档",不需要常量还活着)。
 DROP_T2_REVIEW_DETAIL = "t2_review_detail"   # Tier-2 篮子复盘的细节展开
 
-DEGRADE_ORDER: Tuple[str, ...] = (DROP_T3_BRIEF, DROP_T2_REVIEW_DETAIL)
+DEGRADE_ORDER: Tuple[str, ...] = (DROP_T2_REVIEW_DETAIL,)
 
 # 永不可丢清单(仅用于自证 + 单测断言,不参与任何运行时判断——`DEGRADE_ORDER`
 # 本身从一开始就不包含它们,这里只是把"不许包含"这条断言变成机器可查的常量)。
@@ -78,7 +86,7 @@ NEVER_DROPPED: Tuple[str, ...] = ("basket_card_freeze", "discipline_shell")
 def next_to_drop(already_dropped: Iterable[str]) -> Optional[str]:
     """给定已经丢弃的项集合,返回**下一个**该丢的项(`DEGRADE_ORDER` 中第一个还
     没被丢的);全部丢完 → `None`(意味着连 T2 细节都保不住了,但 `DEGRADE_ORDER`
-    的边界仍然是「只到这两项为止」,调用方不应该、也无法从本函数问出"再丢点别的"
+    的边界仍然是「只到这一项为止」,调用方不应该、也无法从本函数问出"再丢点别的"
     ——没有别的可丢)。"""
     dropped = set(already_dropped)
     for item in DEGRADE_ORDER:
@@ -95,7 +103,6 @@ __all__ = [
     "LEDGER_REASON",
     "LEDGER_REVIEW",
     "BudgetLedger",
-    "DROP_T3_BRIEF",
     "DROP_T2_REVIEW_DETAIL",
     "DEGRADE_ORDER",
     "NEVER_DROPPED",

@@ -204,9 +204,15 @@ def render_markdown(report: CalibrationReport) -> str:
         out.append(f"- 样本:{s.n_days} 个交易日 / {s.n_baskets} 个篮子")
         t = s.tier
         med = t.get("median_outcome") or {}
+        obs = t.get("observed") or {}
+        # V2.1-②:档位按**本分层数据里实际出现的**那些渲染,⛔ 不写死 `(1,2,3)`。
+        # 写死会两头出错:两档时代凭空多一行「T3 —(n=0)」(读起来像"今天 T3 没样本",
+        # 真相是 T3 已取消 —— 把系统缺席讲成了实质性结论);而若改写死 `(1,2)`,
+        # 历史 K7-pack-v1 分层里真实存在的 T3 样本又会从成绩单上消失(伪造归因)。
+        tiers_here = sorted(set(med) | set(obs) | set(t.get("counts") or {}))
         out.append("- **Tier 单调性**:"
-                   + "、".join(f"T{k} {_pct(med.get(k))}(n={t.get('observed', {}).get(k, 0)})"
-                               for k in (1, 2, 3))
+                   + ("、".join(f"T{k} {_pct(med.get(k))}(n={obs.get(k, 0)})"
+                                for k in tiers_here) or "(本层无档位样本)")
                    + f" → {'成立' if t.get('monotonic') else '不成立' if t.get('monotonic') is not None else '判不了'}")
         out.append(f"  - 判断:{s.tier_verdict.get('text')}")
         out.append(f"  - ⚠ {t.get('note')}")

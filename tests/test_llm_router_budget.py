@@ -200,11 +200,20 @@ def test_spend_unknown_ledger_raises():
         ledger.spend("bogus_ledger", 1.0)
 
 
-def test_degrade_order_is_t3_brief_then_t2_review_detail():
-    assert budget.DEGRADE_ORDER == (budget.DROP_T3_BRIEF, budget.DROP_T2_REVIEW_DETAIL)
-    assert budget.next_to_drop([]) == budget.DROP_T3_BRIEF
-    assert budget.next_to_drop([budget.DROP_T3_BRIEF]) == budget.DROP_T2_REVIEW_DETAIL
-    assert budget.next_to_drop([budget.DROP_T3_BRIEF, budget.DROP_T2_REVIEW_DETAIL]) is None
+def test_degrade_order_is_only_t2_review_detail():
+    """V2.1-②:T3 全链退役后可丢清单**只剩一项**(由「T3 简评 → T2 细节」两项收窄)。"""
+    assert budget.DEGRADE_ORDER == (budget.DROP_T2_REVIEW_DETAIL,)
+    assert budget.next_to_drop([]) == budget.DROP_T2_REVIEW_DETAIL
+    assert budget.next_to_drop([budget.DROP_T2_REVIEW_DETAIL]) is None
+
+
+def test_drop_t3_brief_is_retired():
+    """**反向守门(防复活)**:`DROP_T3_BRIEF` 常量必须不存在 —— 同 P0-44 删
+    `LONG_CONTEXT_READ_TIMEOUT_SECONDS` 的 `hasattr` 体例。V2.1-② 裁定「T3 彻底删除,
+    不留影子档」,留一个常量在那儿迟早会有人把它接回 `DEGRADE_ORDER`。"""
+    assert not hasattr(budget, "DROP_T3_BRIEF")
+    assert "DROP_T3_BRIEF" not in budget.__all__
+    assert not any("t3" in item.lower() for item in budget.DEGRADE_ORDER)
 
 
 def test_basket_card_freeze_and_discipline_never_in_degrade_order():

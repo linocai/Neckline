@@ -296,7 +296,8 @@ def main() -> int:
         stats1 = save_tier_decision(result, tier_by_basket_key=tier_by_key,
                                     tier_history_by_basket_key=hist_by_key, db_path=db, via="smoke")
         logger.info("  定档 %s(溢出 %d);事务 1 落库 %s",
-                    {f"T{t}": sum(1 for d in decision.decisions if d.tier == t) for t in (1, 2, 3)},
+                    # V2.1-②:按引擎现役档位统计(⛔ 别写死 —— 写死 3 会打印一个恒为 0 的幽灵档)
+                    {f"T{t}": sum(1 for d in decision.decisions if d.tier == t) for t in tr.TIERS},
                     len(getattr(decision, "dropped", []) or []),
                     {k: v for k, v in stats1.items() if k != "frozen_conflicts"})
 

@@ -6,7 +6,7 @@
 
 **五段结构(顺序定死,⑭-A)**
 
-    ① 情绪与市场语境 → ② 持仓体检(先管住手里的)→ ③ 今日篮子(T1/T2/T3,每篮一张卡)
+    ① 情绪与市场语境 → ② 持仓体检(先管住手里的)→ ③ 今日篮子(V2.1 起 T1/T2,每篮一张卡)
     → ③b 今日未定档篮子 → ④ 昨日篮子复盘 → ⑤ 数据新鲜度与降级披露
 
 **三条不许动的纪律**
@@ -437,12 +437,22 @@ def _render_news_alerts(report: Optional[NewsAlertsReport]) -> str:
     return "\n".join(lines)
 
 
-# —— ③ 今日篮子(T1/T2/T3,每篮一张卡)——————————————————————————————————
+# —— ③ 今日篮子(V2.1 起 T1/T2,每篮一张卡)——————————————————————————————
 #    数据 = ⑦ 在 D0 冻结的 `basket_cards.card_json`(经 `basket_daily.card_to_public_dict`
 #    转 camel)。本节**零重算**:卡上每个数字要么机械算出、要么过了机械闸(夹逼 /
 #    白名单 / 对拍),渲染层只负责把它们摆出来。
 
-_TIER_TITLE = {1: "T1", 2: "T2", 3: "T3"}
+
+def _tier_title(tier: int) -> str:
+    """档位标题 = `f"T{tier}"`(V2.1-②:由写死字典改成函数式兜底)。
+
+    🔴 **历史回放里的 T3 必须仍显示** —— 报告渲染吃的是**冻结快照**,V2 时代的老报告
+    里有 tier=3 的篮子;写死一张 `{1,2}` 的字典会让它们渲染成 `KeyError` 或凭空消失。
+    函数式兜底对任何整数档位都给得出标题,天然向前向后都宽容。
+    """
+    return f"T{tier}"
+
+
 _ROLE_LABEL = {"leader": "龙头", "core": "中军", "elastic": "弹性", "unknown": "未定"}
 
 
@@ -462,7 +472,7 @@ def _render_today_baskets(bd: Optional[BasketDaily]) -> str:
         reason = (bd.baskets_unavailable_reason if bd is not None else None) or "本次未取得今日篮子。"
         lines.append(f"⚠ **本段未取得**:{reason}")
         lines.append("")
-        lines.append("*(「未取得」≠「今日无篮子」——后者会在本节如实写出三档各自为空。)*")
+        lines.append("*(「未取得」≠「今日无篮子」——后者会在本节如实写出各档各自为空。)*")
         lines.append("")
         return "\n".join(lines)
     by_tier = bd.by_tier()
@@ -471,13 +481,21 @@ def _render_today_baskets(bd: Optional[BasketDaily]) -> str:
                      "今天没有共同驱动清晰、成员结构够格的篮子,系统不会为了让报告好看而放宽质量线。")
         lines.append("")
         return "\n".join(lines)
-    for tier in (1, 2, 3):
-        lines.append(f"### {_TIER_TITLE[tier]}")
+    # 局部 import(同 `basket_daily.py` / `info_card.py` 的 report→selection 体例):
+    # 现役档位的**单一源**是引擎,渲染层不抄第二份档位元组。
+    from neckline.selection.tier import TIERS as _ACTIVE_TIERS
+
+    # **现役档位 ∪ 快照里实际出现的档位**(V2.1-②):前者保证"今日 T1 为空"这句诚实
+    # 披露不会因为当天没篮子而消失;后者保证**回放 V2 老报告时 T3 篮子照常显示**
+    # (`basket_daily_json` 是冻结快照,读侧宽容)。⛔ 别退回写死元组。
+    for tier in sorted(set(_ACTIVE_TIERS) | set(by_tier)):
+        title = _tier_title(tier)
+        lines.append(f"### {title}")
         lines.append("")
         items = by_tier.get(tier) or []
         if not items:
             # ⑥-b-B / ⑮ 信息架构:空档位**如实显示**,不隐藏。
-            lines.append(f"今日 {_TIER_TITLE[tier]} 为空。")
+            lines.append(f"今日 {title} 为空。")
             lines.append("")
             continue
         for b in items:
@@ -632,7 +650,7 @@ def _render_dropped_baskets(bd: Optional[BasketDaily]) -> str:
     lines.append(f"- **档位已满(`capacity_overflow`,{len(overflow)} 个)**:"
                  f"分数过了质量线、今天位置装不下 —— **今天机会多到装不下**。")
     lines.append(f"- **未过质量线(`below_quality_line`,{len(below)} 个)**:"
-                 f"连 T3 下限都没到 —— **今天没什么好货**。")
+                 f"连 T2 下限都没到 —— **今天没什么好货**。")
     if other:
         lines.append(f"- 其它原因码({len(other)} 个):" + "、".join(sorted({d.reason for d in other})))
     lines.append("")
@@ -646,8 +664,10 @@ def _render_dropped_baskets(bd: Optional[BasketDaily]) -> str:
     return "\n".join(lines)
 
 
-# —— ④ 昨日篮子复盘(T1/T2 详复盘 + T3 简评)——————————————————————————
+# —— ④ 昨日篮子复盘(T1/T2 详复盘)——————————————————————————————————————
 #    数据 = ⑨ 落 `basket_review_daily` 的九项机械判 + LLM 解释 + ⑧ 的验证状态。
+#    ⚠ V2.1-②:新数据 `depth` 恒 `full`;历史 `depth='brief'` 的行**照常渲染**
+#    (本节按行渲染、不按 depth 分组,天然宽容)。markdown 段标题一字未动(审计锚)。
 
 _MECH_ITEM_LABEL = {
     "auction_vs_script": "竞价 vs 剧本", "open_direction": "开盘方向", "mfe_mae": "MFE / MAE",

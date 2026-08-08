@@ -1,4 +1,4 @@
-"""③Tier 分层引擎(plan §五 V2-⑥)。把 ⑤ 产出的**篮子候选**定档 T1/T2/T3。
+"""③Tier 分层引擎(plan §五 V2-⑥;V2.1-② 起只剩两档)。把 ⑤ 产出的**篮子候选**定档 T1/T2。
 
 **目标一句话**:定档**全机械、可完整复现**;LLM 只能在**同档内**微调次序并留痕,
 **不得跨档**(§2.8-C 第 1 条 —— 「LLM 不进排序」精确化 = 不进**机械分**)。
@@ -33,20 +33,26 @@
 读白名单里那五个键 —— 单测用"记录实际访问过哪些键"的字典子类在**运行期**证明
 「LLM 产出的任何字段不得进机械分」,不是靠注释自觉。
 
-**容量**:T1 ≤ 2 / T2 ≤ 5 / T3 ≤ 10,**全部是上限非配额**(市场混沌时不许凑数,
-允许**任何一档**为空——V2-⑥-b-B 纠正:「T3 无下限」曾让 `T3≤10` 变成事实上的
-配额,这正是 V1「每天硬凑 20 只候选」的病)。落地 = 每档一道**质量线**(机械分
-下限):够不到某档线就进不了那一档,哪怕那一档空着;连 T3 线都够不到 →
+**容量(V2.1-② 起两档)**:T1 ≤ 2 / T2 ≤ 5,**全部是上限非配额**(市场混沌时
+不许凑数,允许**任何一档**为空——V2-⑥-b-B 纠正:档位无下限时容量会退化成事实
+上的配额,这正是 V1「每天硬凑 20 只候选」的病)。落地 = 每档一道**质量线**(机械
+分下限):够不到某档线就进不了那一档,哪怕那一档空着;连 T2 线都够不到 →
 **当天不进任何档**(`DROP_BELOW_QUALITY_LINE`,与容量溢出的
 `DROP_CAPACITY_OVERFLOW` 是两种不同的"没进来",不许合并,见 ⑥-b-C)。
 
-**V2-⑥-b 追加(2026-08-02 planner 裁定)**:三档质量线的**权威**从"引擎常量"
+**V2.1-② T3 退役(2026-08-07 用户裁定「彻底删除,不留影子档」)**:`T3 ≤ 10` 与
+`TIER3_MIN_SCORE` 一并删除,代价(防错杀对照消失、Tier 单调性检验降为两档)已
+当面告知并接受。⚠ **只收窄写侧,读侧一律宽容** —— `tier_history` / `baskets` /
+`basket_review_daily` 里的历史 tier=3 行照常读回、照常渲染、照常进 ⑨ 评价引擎的
+归因(`eval/metrics.py::tier_monotonicity` 按**数据中实际出现的档位**算),
+⛔ 不许把历史 T3 样本丢掉或并进 T2(那是伪造归因)。
+
+**V2-⑥-b 追加(2026-08-02 planner 裁定)**:档位质量线的**权威**从"引擎常量"
 移到"现役包" `config.tier.quality_lines`(与 `weights` 同标度,换权重会静默
 改变 T1 选择性,两个数必须住在一起才谈得上一起校准)。`TIER1_MIN_SCORE` /
-`TIER2_MIN_SCORE` / `TIER3_MIN_SCORE` 三个模块常量**降级为「包未给
-`quality_lines` 时的缺省回退值」**,不再是权威;读取一律经
-`resolve_quality_lines()`,**不直接读模块常量**(K4-pack-v1 没有这个键,回退
-到这三个数正是它作为回滚锚必须保持的行为)。
+`TIER2_MIN_SCORE` 两个模块常量**降级为「包未给 `quality_lines` 时的缺省回退
+值」**,不再是权威;读取一律经 `resolve_quality_lines()`,**不直接读模块常量**
+(K4-pack-v1 没有这个键,回退到这两个数正是它作为回滚锚必须保持的行为)。
 
 **保险丝(承 P0-23「降级方向 = 不拦 + 显式披露」)**:任何一维算不出 → 取**中性分**
 并在 `mech_breakdown_json` 的 `flags` 里如实标(如 `stage_missing`),**绝不写 0**
@@ -126,33 +132,38 @@ _TIER_ROW_KEYS = _TIER_SCORE_INPUTS | _LLM_PROVENANCE_KEYS
 # 容量上限(plan §五 V2-⑥ 原文写死的产品规则,同 `aggregate.MIN_MEMBERS/MAX_MEMBERS`
 # 性质:改它等于改产品定义,要走 plan 而不是换包)。**上限非配额** —— 见
 # `assign_tiers()`。
-TIER_CAPACITY: Dict[int, int] = {1: 2, 2: 5, 3: 10}
-TIERS: Tuple[int, ...] = (1, 2, 3)
+# ⚠ **V2.1-② 起两档**(T3 彻底退役):⛔ 别往这两个字典里加回 `3` —— 反向守门
+# `tests/test_selection_tier.py` 会红。历史 tier=3 数据的读回不经过这里(读侧
+# 一律按数据实际出现的档位构造,见模块头「T3 退役」节)。
+TIER_CAPACITY: Dict[int, int] = {1: 2, 2: 5}
+TIERS: Tuple[int, ...] = (1, 2)
 
-# 每档的**质量线**(机械分下限)。V2-⑥-b-B 纠正:T3 也有下限——没有下限时
-# `T3≤10` 是事实上的配额(只要有 ≥10 个候选就永远填满),质量线的职责是
-# **防止把平庸篮子抬进任何一档**("市场混沌时不许凑数",不是只对 T1/T2 说的)。
+# 每档的**质量线**(机械分下限)。质量线的职责是**防止把平庸篮子抬进任何一档**
+# ——档位有容量而无下限时,容量会退化成事实上的配额("市场混沌时不许凑数")。
 #
-# ⚠ **以下三个数是「包未给 `config.tier.quality_lines` 时的缺省回退值」,
+# ⚠ **以下两个数是「包未给 `config.tier.quality_lines` 时的缺省回退值」,
 # 不再是权威**(V2-⑥-b-A planner 裁定:质量线归属改判"进包",理由是它与五维
 # 权重同标度、换权重会静默改变 T1 选择性,两者必须住在一起才能一起校准)。
-# 读取一律经 `resolve_quality_lines()`,业务代码不直接读这三个模块常量。
+# 读取一律经 `resolve_quality_lines()`,业务代码不直接读这两个模块常量。
 # **数值本身仍是临时工程默认**(同 ⑤-c `MIN_LIFT_SAMPLE_SIZE=5` 的处置姿势,
 # 未获证据支持):五维各自归一到 [0,1]、权重归一后加权和亦在 [0,1],`0.5` 是
 # "整体中性"的自然基准 —— T1 线取 `0.60`(明显好于中性)、T2 线取 `0.40`
-# (不明显差于中性)、T3 线取 `0.25`(planner 拟定:明显低于 T2 但不为零,不为
-# 零是因为零就退回"无下限=配额"的老病)。前向校准走 ⑨ 评价引擎周报 + 进化
-# 门禁(= 换包),⛔ 不许顺手改这里的数、也不许顺手改包里的数(§七 P3-33 挂账)。
+# (不明显差于中性)。前向校准走 ⑨ 评价引擎周报 + 进化门禁(= 换包),⛔ 不许
+# 顺手改这里的数、也不许顺手改包里的数(§七 P3-33 挂账)。
 TIER1_MIN_SCORE = 0.60
 TIER2_MIN_SCORE = 0.40
-TIER3_MIN_SCORE = 0.25
 
 # `assign_tiers()` 的 `quality_lines` 形参默认值——保证既有调用方(测试与任何
-# 未来的直接调用)不传这个新参数时行为不变。三键只读不改,共享同一个字典
+# 未来的直接调用)不传这个参数时行为不变。两键只读不改,共享同一个字典
 # 对象是安全的。
 _DEFAULT_QUALITY_LINES: Dict[str, float] = {
-    "tier1_min": TIER1_MIN_SCORE, "tier2_min": TIER2_MIN_SCORE, "tier3_min": TIER3_MIN_SCORE,
+    "tier1_min": TIER1_MIN_SCORE, "tier2_min": TIER2_MIN_SCORE,
 }
+
+# **已退役的质量线子键**(V2.1-②)。包里出现它 → `resolve_quality_lines()` 打一行
+# WARNING 并忽略,⛔ 不静默(静默忽略等于让包以为自己配了个生效的旋钮);校验侧
+# 仍**受理**它,理由见 `pack._RETIRED_QUALITY_LINE_KEYS`(回滚锚不许作废)。
+_RETIRED_QUALITY_LINE_KEYS: Tuple[str, ...] = ("tier3_min",)
 
 # 某一维算不出时的**中性分**(⛔ 不是 0 —— 0 在 `stage_scores` 里是 `overheat`
 # 的真实取值,拿它冒充"没数据"就把「没有」和「没看」混成一件事)。取 [0,1] 的
@@ -215,12 +226,15 @@ REJECT_DUPLICATE_KEY = "duplicate_key"     # 同一个篮子被提了两次(第�
 REJECT_MALFORMED = "malformed"             # 形状不对
 
 DROP_CAPACITY_OVERFLOW = "capacity_overflow"       # 分数够、位置满 → 机会多到装不下
-DROP_BELOW_QUALITY_LINE = "below_quality_line"     # 连 tier3_min 都没过 → 今天没什么好货
+# ⚠ **码字符串一字不改**(V2.1-②):⑨ 评价引擎按原因码归因,改码 = 历史归因断线。
+# 语义随 T3 退役由「连 tier3_min 都没过」收窄为「连 tier2_min 都没过」,展示文案
+# 在 `report/basket_daily.py::DROPPED_REASON_LABEL` 同步。
+DROP_BELOW_QUALITY_LINE = "below_quality_line"     # 连 tier2_min 都没过 → 今天没什么好货
 # ⚠ 两者是相反的市场结论(⑥-b-C),⛔ 不许合并成一个"未入选"。
 
 TIER_RANK_SYSTEM_PROMPT = f"""你是 A 股短线交易系统里的「同档次序参谋」。
 
-系统已经用**机械分**把今天的篮子定好了档位(T1/T2/T3)。你的权限**只有一个**:
+系统已经用**机械分**把今天的篮子定好了档位(T1/T2)。你的权限**只有一个**:
 在**同一个档位内部**微调篮子的先后次序,并说明理由。
 
 硬边界(违反者会被系统机械丢弃,不会生效):
@@ -307,7 +321,7 @@ class TierResult:
     llm_narrative: str = ""
     pack_version: str = ""
     weights: Dict[str, float] = field(default_factory=dict)
-    # 本次定档实际用的三档质量线(`resolve_quality_lines()` 解出来的那份,已经
+    # 本次定档实际用的两档质量线(`resolve_quality_lines()` 解出来的那份,已经
     # 是"包给了就用包的、缺了就回退引擎默认"之后的最终值)——同 `weights`,
     # 是审计快照,不是可写配置。
     quality_lines: Dict[str, float] = field(default_factory=dict)
@@ -590,22 +604,34 @@ def resolve_weights(pack: Optional[Pack]) -> Dict[str, float]:
 
 
 def resolve_quality_lines(pack: Optional[Pack]) -> Dict[str, float]:
-    """从**现役包**读三档质量线(V2-⑥-b-A 裁定)。**逐键独立回退引擎默认**——
-    与 `resolve_weights()` 的 fail-loud 姿势刻意不同,两条理由各自写死、别去
-    "统一"成同一种:`weights` 每个包 schema 都必须给全(缺了就是包坏了),
-    `quality_lines` 缺(整段缺,或只缺其中一两个子键)一律回退
-    `TIER1_MIN_SCORE`/`TIER2_MIN_SCORE`/`TIER3_MIN_SCORE` —— 因为 `K4-pack-v1`
-    不重发版、是 ⑯-E 的回滚锚,不给回退路径就等于把回滚锚作废。
+    """从**现役包**读两档质量线(V2-⑥-b-A 裁定;V2.1-② 起只剩 T1/T2)。**逐键独立
+    回退引擎默认**——与 `resolve_weights()` 的 fail-loud 姿势刻意不同,两条理由各自
+    写死、别去"统一"成同一种:`weights` 每个包 schema 都必须给全(缺了就是包坏了),
+    `quality_lines` 缺(整段缺,或只缺其中一个子键)一律回退
+    `TIER1_MIN_SCORE`/`TIER2_MIN_SCORE` —— 因为 `K4-pack-v1` 不重发版、是 ⑯-E 的
+    回滚锚,不给回退路径就等于把回滚锚作废。
+
+    **包里出现已退役的 `tier3_min`(如回滚锚 `K7-pack-v1`)→ 打一行 WARNING 并忽略**
+    (V2.1-② 定死)。⛔ 不静默:静默忽略等于让包以为自己配了个生效的旋钮;⛔ 也不
+    报错:那会把两个回滚锚当场作废(与 ⑥-b-A 立 `quality_lines` 时"缺键回退保回滚锚"
+    同源理由)。
 
     无现役包 → 抛(同 `resolve_weights`:定档必须有包,哪怕这次只是为了取
     质量线的回退默认,也不该在没有包的情况下悄悄定档)。"""
     if pack is None:
         raise ValueError("Tier 定档需要现役策略包(质量线只住包里或回退引擎默认),当前无现役包")
     raw = pack.tier_quality_lines()
+    retired = [k for k in _RETIRED_QUALITY_LINE_KEYS if k in raw]
+    if retired:
+        logger.warning(
+            "[tier] 策略包 %s 的 config.tier.quality_lines 含已退役键 %s —— "
+            "`tier3_min` 已于 V2.1 退役(T3 全链删除),本次忽略;"
+            "定档只用 tier1_min/tier2_min。",
+            getattr(pack, "pack_version", "?"), retired,
+        )
     return {
         "tier1_min": float(raw.get("tier1_min", TIER1_MIN_SCORE)),
         "tier2_min": float(raw.get("tier2_min", TIER2_MIN_SCORE)),
-        "tier3_min": float(raw.get("tier3_min", TIER3_MIN_SCORE)),
     }
 
 
@@ -643,14 +669,12 @@ def neutral_filled_weight(flags: Sequence[str], weights: Mapping[str, float]) ->
 
 def _eligible_tier(score: float, quality_lines: Mapping[str, float]) -> Optional[int]:
     """score 够哪一档的线,就"想要"哪一档(是否真能进去还要看容量,见
-    `assign_tiers`)。**连 T3 线都够不到 → `None`**(V2-⑥-b-B:T3 也有下限,
-    不是"只要不够 T1/T2 就自动落进 T3")。"""
+    `assign_tiers`)。**连 T2 线都够不到 → `None`**(V2.1-②:T3 已彻底退役,
+    够不到 `tier2_min` 就是 `DROP_BELOW_QUALITY_LINE`,⛔ 没有兜底档)。"""
     if score >= quality_lines["tier1_min"] - _EPS:
         return 1
     if score >= quality_lines["tier2_min"] - _EPS:
         return 2
-    if score >= quality_lines["tier3_min"] - _EPS:
-        return 3
     return None
 
 
@@ -661,7 +685,7 @@ def assign_tiers(
     """机械定档。输入 `[(basket_key, mech_score), ...]`,输出
     `({basket_key: (tier, rank_mech)}, dropped)`。
 
-    `quality_lines`:`{"tier1_min", "tier2_min", "tier3_min"}` 三键(默认取
+    `quality_lines`:`{"tier1_min", "tier2_min"}` 两键(默认取
     `_DEFAULT_QUALITY_LINES` = 引擎缺省值;`score_and_tier()` 会传现役包
     `resolve_quality_lines()` 解出来的那份)。
 
@@ -670,10 +694,10 @@ def assign_tiers(
     `rank(method="ordinal")` 的并列由行序打散 = 不确定性)。
 
     **上限非配额**:每档先看质量线(`_eligible_tier`),够格才进那一档;够格但该档
-    已满 → **向下顺延**到还有位子的档(不是把它挤进去,也不是丢掉);三档都满 →
+    已满 → **向下顺延**到还有位子的档(不是把它挤进去,也不是丢掉);两档都满 →
     今日不定档(`DROP_CAPACITY_OVERFLOW`,「分数够、位置满」)。**允许任何一档
     为空**(V2-⑥-b-B):没有篮子够某档线时,那一档就是空的,不许拿别档凑数。
-    **连 T3 线都够不到 → 直接丢弃**(`DROP_BELOW_QUALITY_LINE`,「分数不够」),
+    **连 T2 线都够不到 → 直接丢弃**(`DROP_BELOW_QUALITY_LINE`,「分数不够」),
     连容量判断都不参与 —— 这与容量溢出是两种相反的市场结论,⛔ 不许合并
     (V2-⑥-b-C)。
     """
@@ -1068,7 +1092,6 @@ __all__ = [
     "TIERS",
     "TIER1_MIN_SCORE",
     "TIER2_MIN_SCORE",
-    "TIER3_MIN_SCORE",
     "NEUTRAL_DIM_SCORE",
     "LLM_OK",
     "LLM_NO_PROVIDER",

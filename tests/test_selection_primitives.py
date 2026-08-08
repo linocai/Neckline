@@ -583,8 +583,9 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
     # —— V2-⑥ Tier 分层引擎(plan §五「插槽边界」同一条:定档引擎是**引擎本体**,
     #    进包的只有 `tier.weights` / `tier.stage_scores` 两项)——————————————
     ("tier.py", "TIER_CAPACITY"): (
-        "T1≤2 / T2≤5 / T3≤10,plan §五 V2-⑥ 原文写死的产品规则(同 aggregate 的"
-        "MIN_MEMBERS/MAX_MEMBERS 性质:改它等于改产品定义,要走 plan 而不是换包)。"
+        "T1≤2 / T2≤5(V2.1-② T3 退役前还有 T3≤10),plan §五 原文写死的产品规则"
+        "(同 aggregate 的 MIN_MEMBERS/MAX_MEMBERS 性质:改它等于改产品定义,要走 "
+        "plan 而不是换包)。"
     ),
     # —— V2-⑦-K7 成员标注件(判据阈值一律走**函数关键字默认值**〔见
     #    `member_tags.evaluate_member_tags` 签名〕,故这里只剩一个浮点容差)————
@@ -596,7 +597,9 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
         "形态之一。"
     ),
     ("tier.py", "TIERS"): (
-        "三个档位的枚举本身(1/2/3),对应 `baskets.tier` 的 DDL 取值域,不是阈值。"
+        "现役档位的枚举本身(V2.1-② 起 1/2),是**写侧**取值域,不是阈值。"
+        "⚠ `baskets.tier` 的 DDL 取值域仍含 3(历史行),读侧一律按数据实际出现的"
+        "档位构造,别拿这个常量去收窄读侧。"
     ),
     ("tier.py", "TIER1_MIN_SCORE"): (
         "T1 质量线的**缺省回退值**(V2-⑥-b planner 裁定后降级,不再是权威——"
@@ -608,12 +611,10 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
         "P3-33 挂账,⛔ 不许在代码里顺手改数、也不许顺手改包里的数。"
     ),
     ("tier.py", "TIER2_MIN_SCORE"): "T2 质量线的缺省回退值,同 TIER1_MIN_SCORE 那一条。",
-    ("tier.py", "TIER3_MIN_SCORE"): (
-        "T3 质量线的缺省回退值(V2-⑥-b-B 新增,纠正「T3 无下限」——没有下限时 "
-        "`T3≤10` 是事实上的配额,只要有 ≥10 个候选就永远填满,正是 V1「每天硬凑 "
-        "20 只候选」那个被 V2 立项要治的病)。0.25 是 planner 拟的临时默认,与"
-        "TIER1_MIN_SCORE/TIER2_MIN_SCORE 同批待 ⑨ 校准,§七 P3-33 挂账。"
-    ),
+    # ⚠ `TIER3_MIN_SCORE` 于 V2.1-② 随 T3 全链退役而**删除**(不留影子档);
+    # 反向 hasattr 守门在 `tests/test_selection_tier.py::test_tier3_min_score_is_retired`。
+    # ⛔ 别在这份白名单里给它留一行"以防万一"——白名单是"允许存在"的登记,
+    # 给一个已删常量留登记等于给复活开绿灯。
     ("tier.py", "NEUTRAL_DIM_SCORE"): (
         "某一维算不出时的中性分。它是「[0,1] 归一化维度的中点」这一**度量约定**,"
         "不是可调偏好——真正要防的是拿 0 冒充「没数据」(0 是 stage_scores 里 overheat "

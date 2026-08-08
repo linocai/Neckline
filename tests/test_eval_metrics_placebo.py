@@ -123,6 +123,51 @@ class TestMetrics:
         assert broken["monotonic"] is False
         assert "不是收益预测" in t["note"]
 
+    def test_historical_t3_samples_are_never_dropped_or_merged(self):
+        """🔴 **V2.1-② 的"历史样本不许消失"机器判据**(plan ② 测试与守门第 3 条)。
+
+        T3 于 V2.1 退役,但 `K7-pack-v1` 那个分层里的 tier=3 篮子**是真实历史样本**。
+        评价引擎若把它们丢掉(或更糟:并进 T2)就是**伪造归因** —— 成绩单会凭空变好
+        或变差,而且看不出来。判据:三档全部出现在 `counts`/`observed`/`median_outcome`
+        里,且单调性**按三档算**。"""
+        recs = [_rec(1, tier=1, outcome=0.05), _rec(2, tier=2, outcome=0.02),
+                _rec(3, tier=3, outcome=-0.01), _rec(4, tier=3, outcome=-0.03)]
+        t = metrics.tier_monotonicity(recs)
+        assert t["counts"] == {1: 1, 2: 1, 3: 2}          # 两个 T3 样本一个都没少
+        assert t["observed"] == {1: 1, 2: 1, 3: 2}
+        assert set(t["median_outcome"]) == {1, 2, 3}
+        assert t["median_outcome"][3] == pytest.approx(-0.02)   # ⛔ 没被并进 T2
+        assert t["monotonic"] is True                    # 按 T1 ≥ T2 ≥ T3 三档算
+
+        # 反例:只有 T3 的中位数抬到 T2 之上,三档比较才判得出"不单调"
+        # ——若历史 T3 被丢掉,这个 False 就永远出不来(那正是"归因被搅乱"的样子)。
+        broken = metrics.tier_monotonicity(
+            [_rec(1, tier=1, outcome=0.05), _rec(2, tier=2, outcome=0.02),
+             _rec(3, tier=3, outcome=0.09)])
+        assert broken["monotonic"] is False
+
+    def test_two_tier_data_is_scored_on_two_tiers_without_a_ghost_third(self):
+        """反向:V2.1 之后的新数据只有 T1/T2 → **不许**凭空多出一个恒为 0 的 T3
+        幽灵档(写死 `(1,2,3)` 就会)。单调性自然退化为 `T1 ≥ T2`。"""
+        recs = [_rec(1, tier=1, outcome=0.05), _rec(2, tier=2, outcome=0.02)]
+        t = metrics.tier_monotonicity(recs)
+        assert t["counts"] == {1: 1, 2: 1}
+        assert t["observed"] == {1: 1, 2: 1}
+        assert 3 not in t["median_outcome"] and 3 not in t["mean_outcome"]
+        assert t["monotonic"] is True
+
+    def test_tier_chain_text_follows_the_data_not_a_hardcoded_arity(self):
+        """`strata()` 的 `tier_verdict` 文案按**本分层实际出现的档位**拼:两档时代
+        说 `T1 ≥ T2`,历史三档分层说 `T1 ≥ T2 ≥ T3`。⛔ 写死一边就在另一边说假话。"""
+        two = metrics.tier_monotonicity(
+            [_rec(1, tier=1, outcome=0.05), _rec(2, tier=2, outcome=0.02)])
+        three = metrics.tier_monotonicity(
+            [_rec(1, tier=1, outcome=0.05), _rec(2, tier=2, outcome=0.02),
+             _rec(3, tier=3, outcome=-0.01)])
+        assert metrics._tier_chain_text(two) == "T1 ≥ T2"
+        assert metrics._tier_chain_text(three) == "T1 ≥ T2 ≥ T3"
+        assert metrics._tier_chain_text({}) == "各档"      # 无样本时不说假话
+
     def test_resonance_reuses_min_members_hit(self):
         """门槛复用 ⑦-b 的 `min_members_hit`,⛔ 不在评价层发明第二个"几只算共振"。"""
         recs = [_rec(1, up=2, observed=3),       # ceil(3/2)=2 → 共振
@@ -509,6 +554,35 @@ class TestCalibrationReport:
         for banned in ("推荐买入", "建议买入", "看好", "值得买", "止盈线", "目标价"):
             assert banned not in md, f"校准报告出现禁用表述:{banned}"
         assert "尚不足以判断" in md          # 单日样本 → 只报样本数
+
+    def test_tier_line_follows_the_data_no_ghost_t3_no_lost_history(self, isolated_env):
+        """V2.1-②:校准报告的「Tier 单调性」一行按**本分层实际出现的档位**渲染。
+
+        写死 `(1,2,3)` 会两头出错 —— 两档时代凭空多一行「T3 —(n=0)」(读起来像
+        "今天 T3 没样本",真相是 T3 已取消 = 把系统缺席讲成了实质性结论);
+        写死 `(1,2)` 又会让历史分层里真实存在的 T3 样本从成绩单上消失(伪造归因)。
+        这份报告是复盘板块要端给用户的东西,两种错法都不许有。"""
+        import json
+
+        env = isolated_env
+        insert_trade_cal(env, business_days(date(2026, 7, 1), 40))
+        # ① 新数据(只有 T1/T2)→ 不许出现 T3
+        _seed(env, basket_id_key="ka", tier=1, review_mech=json.dumps(_mech()))
+        _seed(env, basket_id_key="kb", tier=2, review_mech=json.dumps(_mech()))
+        md = calibration.render_markdown(calibration.build_report(
+            "20260701", "20260731", db_path=env.db_path, parquet_dir=env.parquet_dir,
+            with_placebo=False, with_tradable=False))
+        tier_line = next(ln for ln in md.splitlines() if "Tier 单调性" in ln)
+        assert "T1" in tier_line and "T2" in tier_line
+        assert "T3" not in tier_line, tier_line
+
+        # ② 同一份代码读历史(含 tier=3)→ T3 必须照常出现在成绩单上
+        _seed(env, basket_id_key="kc", tier=3, review_mech=json.dumps(_mech()))
+        md2 = calibration.render_markdown(calibration.build_report(
+            "20260701", "20260731", db_path=env.db_path, parquet_dir=env.parquet_dir,
+            with_placebo=False, with_tradable=False))
+        tier_line2 = next(ln for ln in md2.splitlines() if "Tier 单调性" in ln)
+        assert "T3" in tier_line2 and "(n=1)" in tier_line2, tier_line2
 
     def test_honesty_section_counts_gaps(self, isolated_env):
         import json
