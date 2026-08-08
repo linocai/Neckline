@@ -1,11 +1,23 @@
-"""v1.3-① 六年真回测基线实证(可选,数据缺失自动 skip;§五 v1.3-①-B 护栏「跑六年回测」)。
+"""v1.3-① 六年真回测基线的**冻结数字载体**(§七 P4-54,2026-08-09 起如实改口)。
 
-新增 `MomentumConfig.max_hold_days_profit`/`time_exit_only_if_unprofitable` 加载吃默认 → K1
-现役 config 六年回测(2021-01-01~2026-07-17)必须逐位不变:**N=1288 / total_return −20.53%**。
+🔴 **这条基线在本仓已永久无法复跑**:它依赖的 `research/lab.py` 与
+`research/_cache/k3_panel.parquet`(1.9G 面板,属 5.5G `research/_cache/` 缓存)已随
+2026-08-09 策略研究档案整体迁出/删除(**面板已删且不可回滚**,见 PROJECT_PLAN §1.6)。
+下面的 skipif 因此**恒真跳过** —— 这不是"数据暂缺",是结构性缺席。
 
-依赖 `research/_cache/k3_panel.parquet`(1.9G,不入 CI)+ `research/lab.py` + 全量 parquet
-backfill;任一缺失 → `pytest.skip`(CI 干净跳过,本地施工期实证)。同时验证两档启用后回测
-条件退出分支确实被走到(硬上限豁免续命单出现),锚定 h9 V1 语义在**引擎口径**下活着。
+**冻结基线数字(本文件是它在本仓的唯一载体,⛔ 别删这个文件)**:K1 现役 config
+(两档时间退出字段吃默认)六年回测 2021-01-01~2026-07-17 = **N=1288 笔 /
+total_return −20.53%**(施工期逐位实证,精确断言在 `test_k1_six_year_backtest_
+bit_identical`)。「六年真回测逐位不变」这一层护栏自迁出起只剩:①
+`test_v13_exit_guardrail.py` 的逻辑层护栏(始终运行,不依赖 research/);② 本文件
+记载的冻结数字文字。
+
+**怎么重建才能复跑**(档案 README 记了完整办法,耗时以小时计):
+  1. 从档案根 `~/Lino/whynotme/Archive/Neckline量化研究档案_K2-K7/research/` 拷回
+     `lab.py`(及其依赖的研究件)到本仓顶层 `research/`;
+  2. 用本仓仍在的 `neckline/research/panel.py::load_or_build_panel`(回测面板引擎
+     没搬走)+ 全量 parquet backfill 重建 `research/_cache/k3_panel.parquet`;
+  3. `NECKLINE_RUN_6Y=1 python -m pytest tests/test_v13_exit_6y_baseline.py`。
 """
 
 from __future__ import annotations
@@ -21,14 +33,16 @@ _ROOT = Path(__file__).resolve().parent.parent
 _K3_PANEL = _ROOT / "research" / "_cache" / "k3_panel.parquet"
 _LAB = _ROOT / "research" / "lab.py"
 
-# 六年真回测 ~90s(读 1.9G panel + 全量 qfq),照 IntegrationSmokeTests 惯例默认跳过——
-# 施工期已手动实证(N=1288 / −20.53% 逐位吻合)。按需实证:
-#     NECKLINE_RUN_6Y=1 python -m pytest tests/test_v13_exit_6y_baseline.py
-# 数据缺失(CI / 新克隆无 1.9G k3_panel)同样跳过。逐位不变的**逻辑层**护栏见
-# test_v13_exit_guardrail.py(始终运行,快)。
+# ⚠ 2026-08-09 起 `_K3_PANEL`/`_LAB` 两个路径在本仓**结构性不存在**(研究档案迁出,
+# §七 P4-54)→ 本 skipif 恒真、全文件恒跳过;理由如实写在下面 reason 里,⛔ 不再说
+# "数据缺失/默认跳过"那种听起来像暂时状态的话。重建复跑的办法见模块头。
 pytestmark = pytest.mark.skipif(
     not (os.environ.get("NECKLINE_RUN_6Y") and _K3_PANEL.exists() and _LAB.exists()),
-    reason="六年真回测默认跳过(NECKLINE_RUN_6Y=1 且数据存在时实证;~90s / 1.9G 数据)",
+    reason=(
+        "六年真回测基线(N=1288 / total_return −20.53%)在本仓已永久无法复跑:"
+        "research/lab.py 与 1.9G k3_panel 已随 2026-08-09 策略档案迁出且面板不可回滚"
+        "(§1.6 / §七 P4-54)。本文件保留为冻结数字的载体,重建复跑办法见模块头。"
+    ),
 )
 
 _RUN_START = date(2021, 1, 1)

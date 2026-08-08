@@ -72,6 +72,8 @@ from neckline.api.schemas import (
     NewsAlertScanStatusOut,
     LLMRoutesIn,
     LLMRoutesOut,
+    MarketRegimeDayOut,
+    MarketRegimeOut,
     OkOut,
     PackOut,
     PacksListOut,
@@ -1919,6 +1921,97 @@ def review_by_week(week: str = "") -> ReviewGetOut:
         ok=True, found=True, week=rec["week"], generatedAt=rec["generatedAt"],
         result=rec["result"], material=rec.get("material") or "",
     )
+
+
+# —— V2.2-② 行情状态层:只读端点 ————————————————————————————————————————
+
+def _regime_row_out(row: Dict[str, Any]) -> MarketRegimeDayOut:
+    from neckline.scan.regime import REGIME_LABELS
+
+    return MarketRegimeDayOut(
+        tradeDate=row["trade_date"],
+        regime=row["regime"],
+        regimeLabel=REGIME_LABELS.get(row["regime"], row["regime"]),
+        regimeReason=row["regime_reason"],
+        inputs=row["inputs"],
+        strengthening=row["strengthening"],
+        weakening=row["weakening"],
+        skeletonVersion=row["skeleton_version"],
+        computedAt=row["computed_at"],
+    )
+
+
+def _parse_yyyymmdd(s: str) -> Optional[date_cls]:
+    if len(s) == 8 and s.isdigit():
+        try:
+            return datetime.strptime(s, "%Y%m%d").date()
+        except ValueError:
+            return None
+    return None
+
+
+@app.get(f"{API_PREFIX}/market-regime", dependencies=[Depends(require_token)])
+def market_regime(
+    date: str = "",
+    date_from: str = Query(default="", alias="from"),
+    date_to: str = Query(default="", alias="to"),
+) -> MarketRegimeOut:
+    """行情状态 D0 盘后三态(V2.2-②,`market_regime_daily` 只读)。`date` 缺省 =
+    表内最近一日;`from`/`to` 给出时走区间(⚠ `from` 是 Python 关键字,形参
+    `date_from` + `Query(alias="from")`,同 `/review/handoff` 既有姿势)。
+
+    🔴 三条硬边界(体例照 `/review` 一族):**零现算**(判定 16:35 落表,本端点
+    只 SELECT —— 常驻服务与盘中哨兵同进程,P0-23);**零写库**;**一律不 404**
+    (缺行/表空/参数非法一律 200 + `available=false` + 自由文本原因)——
+    **零新增 reason 字符串**,`SERVER_REASONS` 与客户端 `mapReason` 一字不动。"""
+    from neckline.scan import regime_store
+
+    if date_from or date_to:
+        lo = _parse_yyyymmdd(date_from) if date_from else None
+        hi = _parse_yyyymmdd(date_to) if date_to else None
+        if (date_from and lo is None) or (date_to and hi is None):
+            return MarketRegimeOut(
+                available=False,
+                unavailableReason="from/to 参数格式非法(应为 YYYYMMDD),本次未取数。",
+            )
+        lo = lo or hi
+        hi = hi or lo
+        rows = regime_store.load_market_regime_range(lo, hi, db_path=_db())
+        if not rows:
+            return MarketRegimeOut(
+                available=False,
+                unavailableReason=(
+                    f"{lo.strftime('%Y%m%d')}~{hi.strftime('%Y%m%d')} 区间无行情状态判定行"
+                    "(D0 盘后批算未跑,或区间内无交易日)。缺行 = 不知道,不猜。"
+                ),
+            )
+        return MarketRegimeOut(available=True, days=[_regime_row_out(r) for r in rows])
+
+    if date:
+        d = _parse_yyyymmdd(date)
+        if d is None:
+            return MarketRegimeOut(
+                available=False,
+                unavailableReason="date 参数格式非法(应为 YYYYMMDD),本次未取数。",
+            )
+        row = regime_store.load_market_regime(d, db_path=_db())
+        if row is None:
+            return MarketRegimeOut(
+                available=False,
+                unavailableReason=(
+                    f"{date} 无行情状态判定行(D0 盘后批算未跑或该日非交易日)。"
+                    "缺行 = 不知道,不猜。"
+                ),
+            )
+        return MarketRegimeOut(available=True, day=_regime_row_out(row))
+
+    row = regime_store.load_latest_market_regime(db_path=_db())
+    if row is None:
+        return MarketRegimeOut(
+            available=False,
+            unavailableReason="行情状态层尚无任何判定行(D0 盘后批算还没跑过)。",
+        )
+    return MarketRegimeOut(available=True, day=_regime_row_out(row))
 
 
 # —— V2.1-⑤ 复盘板块:聚合读 + 校准移交件 ————————————————————————————————

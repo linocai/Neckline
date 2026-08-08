@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from neckline.scan import seeds
+from neckline.selection import engine_api
 from neckline.selection.pack import activate_pack, load_pack_file
 from tests.conftest import (
     insert_stock_basic,
@@ -28,14 +29,16 @@ from tests.conftest import (
 D0 = date(2024, 4, 8)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_K4_PACK_FILE = _REPO_ROOT / "packs" / "K4-pack.json"
-_K7_PACK_FILE = _REPO_ROOT / "packs" / "K7-pack.json"
+_K8_SKELETON_FILE = _REPO_ROOT / "packs" / "K8-skeleton.json"
 
 _MANIFEST = {
     "pack_version": "test-pack-v1",
     "name": "测试包",
     "date": "2024-01-01",
-    "engine_api_version": 1,
+    # V2.2-①:seeds 的消费入口 `get_active_pack()` 已是骨架线(V)薄封装,合成包
+    # 必须声明 line_code='V' 才会被它读到;版本号跟常量走(bump 时夹具自动跟上)。
+    "engine_api_version": engine_api.ENGINE_API_VERSION,
+    "line_code": "V",
     "evidence_ref": [],
 }
 
@@ -69,7 +72,7 @@ def test_no_active_pack_returns_none_and_warns(isolated_env, caplog):
     with caplog.at_level(logging.WARNING):
         result = seeds.generate_seeds(D0, db_path=env.db_path, parquet_dir=env.parquet_dir)
     assert result is None
-    assert any("无现役策略包" in r.message for r in caplog.records)
+    assert any("无现役骨架线包" in r.message for r in caplog.records)   # V2.2-① 文案:只认 V 线
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -194,25 +197,20 @@ def test_switching_pack_changes_seed_set(isolated_env):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# V2-③-K7 补的「真实版本」单测(承 V2-③ 完工记录登记的测试局限:「插槽真被
-# 消费」当时只能用合成迷你包代理验证,待 ④ 落地后应在真实种子集上重跑——④
-# 已完工,`generate_seeds()` 已存在。本测试改用仓库里两份**真实**包文件
-# `packs/K4-pack.json`/`packs/K7-pack.json`,不再是合成配置)。
+# 「真实版本」单测(V2-③-K7 立,V2.2-① 换主角:K4/K7 两份历史包已被 engine_api
+# 闸作废、不可激活〔守门见 test_activate_pack_script.py〕,真实包文件改用
+# `packs/K8-skeleton.json` —— 生产割接后 seeds 层真正要吃的那一份)。
 #
-# ③-K7-E 定案:「K7 的变更集中在排序键(`intel_rank_priority`)、Tier 权重与
-# `stage_scores`」——四类驱动种子的资格判断阈值(四个 scan-seed 原语)承
-# K4-pack **逐字不变**。本测试因此断言 `generate_seeds()` 在两份真实包下产出
-# 逐位相同(这是"没有悄悄改变"的证明);"排序 dims 确实不同"那半是
-# `intel_rank_priority` 的职责(`generate_seeds()` 从不读它),覆盖在
-# `tests/test_selection_pack.py::
-# test_real_k4_pack_vs_k7_pack_intel_rank_priority_dims_and_ranking_differ`。
-# "Tier 序" 那半留给 ⑥ 落地后用真实 Tier 引擎重跑。
+# K8 骨架包的四个 scan-seed 原语参数承 K7-pack **逐字不变**(plan §五 ①:骨架包
+# 只改 allowed_boards / industry_blacklist / close_min 注记三处,均不在 scan-seed
+# 资格判断里)——本测试断言 `generate_seeds()` 在真实骨架包下四类种子照常产出,
+# 且与同参数合成包逐位相同(= 三处值改动没有悄悄波及种子生成)。
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_generate_seeds_identical_under_real_k4_and_k7_pack_files(isolated_env):
-    """同一份合成市场数据,依次激活仓库里两份真实包文件,`generate_seeds()`
-    产出的四类种子集合(含 label / member_codes)逐位相同——证明 K7-pack 确实
-    没有悄悄改变市场扫描层的种子生成行为,不是只在配置文件层面"看起来一样"。"""
+def test_generate_seeds_under_real_k8_skeleton_pack_file(isolated_env):
+    """同一份合成市场数据:激活仓库里真实 `K8-skeleton.json` → 四类种子照常产出;
+    再切到 scan-seed 参数逐字相同的合成骨架包 → 产出逐位相同(证明骨架包的三处
+    值改动〔排科创/白酒黑名单/close_min 注记〕不波及市场扫描层的种子生成)。"""
     env = isolated_env
     insert_trade_cal(env, [D0])
 
@@ -255,20 +253,24 @@ def test_generate_seeds_identical_under_real_k4_and_k7_pack_files(isolated_env):
         {"ts_code": "600302.SH", "volume_ratio": 4.0},
     ])
 
-    k4_doc = load_pack_file(_K4_PACK_FILE)
-    activate_pack(k4_doc["manifest"], k4_doc["config"], via="seed", db_path=env.db_path)
-    k4_result = seeds.generate_seeds(D0, db_path=env.db_path, parquet_dir=env.parquet_dir)
+    skeleton_doc = load_pack_file(_K8_SKELETON_FILE)
+    activate_pack(skeleton_doc["manifest"], skeleton_doc["config"], via="seed", db_path=env.db_path)
+    skeleton_result = seeds.generate_seeds(D0, db_path=env.db_path, parquet_dir=env.parquet_dir)
 
-    k7_doc = load_pack_file(_K7_PACK_FILE)
-    activate_pack(k7_doc["manifest"], k7_doc["config"], via="seed", db_path=env.db_path)
-    k7_result = seeds.generate_seeds(D0, db_path=env.db_path, parquet_dir=env.parquet_dir)
+    # 合成对照包:四个 scan-seed 原语参数逐字抄真实骨架包(其余用测试缺省)。
+    _activate(env, pack_version="scan-seed-twin", **{
+        k: dict(skeleton_doc["config"]["seeds"][k])
+        for k in ("hot_industry_seed", "surging_concept_seed",
+                  "limit_cluster_seed", "anomaly_cluster_seed")
+    })
+    twin_result = seeds.generate_seeds(D0, db_path=env.db_path, parquet_dir=env.parquet_dir)
 
-    assert k4_result is not None and k7_result is not None
-    assert k4_result.pack_version == "K4-pack-v1"
-    assert k7_result.pack_version == "K7-pack-v1"   # 两份真实包确实都被真实激活过
+    assert skeleton_result is not None and twin_result is not None
+    assert skeleton_result.pack_version == "K8-V0.5"   # 真实骨架包确实被真实激活过
+    assert twin_result.pack_version == "scan-seed-twin"
 
-    counts = k4_result.counts()
-    assert counts == k7_result.counts()
+    counts = skeleton_result.counts()
+    assert counts == twin_result.counts()
     assert all(n >= 1 for n in counts.values()), counts   # 四类都真的产出了种子,不是空对空
 
     def _fingerprint(result: "seeds.SeedSet"):
@@ -277,7 +279,7 @@ def test_generate_seeds_identical_under_real_k4_and_k7_pack_files(isolated_env):
             for s in result.all_seeds()
         ]
 
-    assert _fingerprint(k4_result) == _fingerprint(k7_result)
+    assert _fingerprint(skeleton_result) == _fingerprint(twin_result)
 
 
 # ══════════════════════════════════════════════════════════════════════════

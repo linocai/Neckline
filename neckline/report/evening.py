@@ -191,10 +191,20 @@ def run_evening_chain(
             except Exception:  # noqa: BLE001  ④b 与 ④ 三表无耦合,单独降级
                 logger.warning("[evening] ④b 行业阶段批算异常(已吞,不阻断扫描层)", exc_info=True)
                 st = {}
+            # V2.2-② 行情状态层 D0 盘后三态(独立保险丝,失败只 WARNING 不炸主链——
+            # 该日缺行由读侧按 available=false 披露,⛔ 不落猜出来的行)。
+            try:
+                from neckline.scan.regime_store import refresh_market_regime
+
+                rg = refresh_market_regime([trade_date], db_path=db_path, parquet_dir=parquet_dir)
+            except Exception:  # noqa: BLE001  ② 与 ④/④b 无耦合,单独降级
+                logger.warning("[evening] ② 行情状态批算异常(已吞,不阻断扫描层)", exc_info=True)
+                rg = {}
             seed_set = generate_seeds(trade_date, db_path=db_path, parquet_dir=parquet_dir)
             res.stats["scan"] = {
                 "cluster_rows": c.get("rows"), "corr_rows": r.get("rows"),
                 "leader_rows": l.get("rows"), "stage_rows": st.get("rows"),
+                "regime_rows": rg.get("rows"),
                 "seeds": (seed_set.counts() if seed_set is not None else None),
             }
             if seed_set is None or not seed_set.all_seeds():

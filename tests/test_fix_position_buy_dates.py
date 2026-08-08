@@ -26,16 +26,17 @@ from fix_position_buy_dates import (  # noqa: E402
 )
 
 
-def _mk_db(tmp_path: Path) -> Path:
+def _mk_db(tmp_path: Path, today: date = None) -> Path:
     """建一份最小可用库:trade_cal(近 30 自然日,工作日开市)+ 3 笔 open 持仓
-    + 各一行 holding_eod_check(含一行已定格)。"""
+    + 各一行 holding_eod_check(含一行已定格)。`today` 缺省取真实 `date.today()`
+    (既有行为);冻结时钟的用例(§七 P1-46)显式传固定工作日。"""
     from neckline.db import init_schema
 
     db = tmp_path / "neckline.db"
     init_schema(db_path=db)
     conn = sqlite3.connect(str(db))
     try:
-        today = date.today()
+        today = today or date.today()
         rows = []
         for i in range(-30, 1):
             d = today + timedelta(days=i)
@@ -170,10 +171,27 @@ def test_idempotent_second_run_zero_change(tmp_path):
     assert diff_snapshots(before, after) == {}
 
 
-def test_unchanged_position_does_not_bump_updated_at(tmp_path):
-    """已是目标值的笔连 `updated_at` 都不动(否则「零改动」是假的)。"""
-    db = _mk_db(tmp_path)
-    today = date.today().strftime("%Y%m%d")
+def test_unchanged_position_does_not_bump_updated_at(tmp_path, monkeypatch):
+    """已是目标值的笔连 `updated_at` 都不动(否则「零改动」是假的)。
+
+    §七 P1-46(周末日期炸弹):本用例的目标日 = 「今天」本身,老写法直连
+    `date.today()` → 逢周末目标日不是交易日,`_validate_target_dates` 直接
+    SystemExit,全量套件周末必红。修法照 A7 `frozen_clock` 体例:把「今天」钉在
+    固定周三 2026-07-29(库与 fix 目标同源),并 monkeypatch 脚本模块的 `date`
+    名字让 `_validate_target_dates` 的 future 判定也用同一冻结时钟(⛔ 不改生产
+    代码来迁就测试)。"""
+    import fix_position_buy_dates as script_mod
+
+    frozen = date(2026, 7, 29)   # 周三(交易日)
+
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 29)
+
+    monkeypatch.setattr(script_mod, "date", _FrozenDate)
+    db = _mk_db(tmp_path, today=frozen)
+    today = frozen.strftime("%Y%m%d")
     before = _read(db, "SELECT updated_at FROM positions WHERE id=2")[0][0]
     apply_buy_date_fixes(db, [Fix(2, "300261.SZ", today)], confirm=True)
     assert _read(db, "SELECT updated_at FROM positions WHERE id=2")[0][0] == before

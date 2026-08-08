@@ -14,6 +14,12 @@
                      计算本身足够便宜,不需要额外物化)
     · `freshness.py` → 扫描层新鲜度(`dataFreshness.scanLayer*` 三键的计算逻辑,
                      供未来 `report/pipeline.py` 接线消费,本块只提供函数)
+    · `regime.py` + `regime_store.py` → `market_regime_daily`(plan §五 V2.2-②,
+                     K8 §一 行情状态层;D0 盘后三态判定。⚠ 本对文件是**判定**不是
+                     事实表:五个阈值读骨架包 `config.regime`〔无现役骨架线时回退
+                     引擎默认 + `skeleton_version='engine_default'`〕,`regime.py`
+                     只算不写、`regime_store.py` 只管落表读表;对 `selection.pack`
+                     仅 import 读入口〔权限锁,AST 守门〕)
     · `stage.py`   → `industry_stage_daily`(plan §五 V2-④b,K7 需求 1b;行业题材
                      阶段六态状态机——启动/发酵/过热/分歧回调/退潮/无题材,取代
                      `driver_freshness` 原先借用的 `stock_persist_days` 单调函数。

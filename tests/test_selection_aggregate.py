@@ -188,6 +188,7 @@ def _ensure_test_pack(env, pack_version: str) -> None:
     manifest = {
         "pack_version": pack_version, "name": "⑤-b 测试脚手架包",
         "date": "2024-04-08", "engine_api_version": ag.engine_api.ENGINE_API_VERSION,
+        "line_code": "V",   # V2.2-①:成员卫生线经 `get_active_pack()`(骨架线)读包
         "evidence_ref": [],
     }
     try:
@@ -1222,4 +1223,4 @@ def test_charter_version_is_recorded_as_fingerprint_only(isolated_env):
     env = isolated_env
     r = _one_basket(env)
     assert r.baskets[0].charter_version == ag.CHARTER_UNKNOWN
-    assert r.baskets[0].engine_api_version == 1
+    assert r.baskets[0].engine_api_version == ag.engine_api.ENGINE_API_VERSION   # V2.2-① 起 = 2

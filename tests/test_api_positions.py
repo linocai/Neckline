@@ -313,14 +313,37 @@ def test_entry_suggestion_high_price_zero_lots(client, AUTH):
 
 # —— v1.4-①-A 补录真实买入日(§七 P0-1,🔴 碰持仓判定)——————————————————————
 
-def _seed_cal_around_today(api_env):
-    """在隔离库铺一段稠密 trade_cal:今天 ± 10 个自然日,其中**工作日 = 交易日**。
-    刻意含今天(默认路径要走得通)与至少一个非交易日(周末)。"""
+@pytest.fixture
+def frozen_today(monkeypatch):
+    """§七 P1-46(周末日期炸弹):把 `neckline/api/app.py` 模块内的 `date` 名字换成
+    「`today()` 恒返 2026-07-29(周三)」的子类 —— POST /positions 的 buyDate 校验
+    (future 判定/缺省今天)与 GET /positions 的 dCount(`d_count(buy, today)`)全部
+    走 app.py 模块级 `date`,一处 patch 全覆盖。照 A7 `frozen_clock` fixture 体例
+    (`tests/test_sentinel_custom.py`):⛔ 不改生产代码来迁就测试,monkeypatch 模块级
+    名字,进程外零影响。老写法直连 `date.today()`:逢周末 `_recent_trading_day(back=3)`
+    会跨过双休,闭区间交易日数从 4 掉到 3 → 全量套件周末必红(§七 P1-46 案底)。"""
+    from datetime import date
+
+    import neckline.api.app as app_mod
+
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 29)   # 周三
+
+    monkeypatch.setattr(app_mod, "date", _FrozenDate)
+    return date(2026, 7, 29)
+
+
+def _seed_cal_around_today(api_env, today=None):
+    """在隔离库铺一段稠密 trade_cal:「今天」± 10 个自然日,其中**工作日 = 交易日**。
+    刻意含今天(默认路径要走得通)与至少一个非交易日(周末)。`today` 缺省取真实
+    `date.today()`(既有行为);冻结时钟的用例显式传 `frozen_today`。"""
     from datetime import date, timedelta
 
     from tests.conftest import insert_trade_cal
 
-    today = date.today()
+    today = today or date.today()
     days = [today + timedelta(days=i) for i in range(-10, 11)]
     insert_trade_cal(api_env, [d for d in days if d.weekday() < 5],
                      range_start=days[0], range_end=days[-1])
@@ -351,9 +374,13 @@ def test_buy_date_omitted_defaults_to_today(client, AUTH, api_env):
     assert h["buyDate"] == date.today().strftime("%Y%m%d")
 
 
-def test_buy_date_historical_trading_day_written_through(client, AUTH, api_env):
-    """传历史交易日 → 原样落库,且 dCount 按真实买入日算(≥2,不是刚开仓的 1)。"""
-    today = _seed_cal_around_today(api_env)
+def test_buy_date_historical_trading_day_written_through(client, AUTH, api_env, frozen_today):
+    """传历史交易日 → 原样落库,且 dCount 按真实买入日算(≥2,不是刚开仓的 1)。
+
+    §七 P1-46:走冻结时钟(`frozen_today` = 2026-07-29 周三)。老写法直连
+    `date.today()`,`back=3` 的目标日逢周末会跨过双休 → 闭区间交易日数 3 ≠ 4,
+    全量套件周末必红;冻住之后任何星期几跑都绿,断言的仍是同一件事。"""
+    today = _seed_cal_around_today(api_env, today=frozen_today)
     target = _recent_trading_day(today, back=3)
 
     client.post("/api/v1/positions", headers=AUTH, json={

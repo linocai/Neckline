@@ -244,9 +244,9 @@ def main() -> int:
     logger.info("临时库 %s(真实 parquet 只读,真实库全程不写)", db)
 
     try:
-        # —— 前置:激活 K4-pack(真实库里 selection_packs 是 0 行)——————————
+        # —— 前置:激活 K8 骨架包(V2.2-①:K4 包已被 engine_api 闸作废)——————————
         if get_active_pack(db_path=db) is None:
-            doc = load_pack_file(Path(__file__).resolve().parent.parent / "packs" / "K4-pack.json")
+            doc = load_pack_file(Path(__file__).resolve().parent.parent / "packs" / "K8-skeleton.json")
             p = activate_pack(doc["manifest"], doc["config"], via="smoke", db_path=db)
             logger.info("[前置] 隔离库激活策略包 %s", p.pack_version)
 

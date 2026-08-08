@@ -53,7 +53,9 @@ def test_dirty_legacy_db_does_not_brick_init_schema(tmp_path, caplog):
     db_path = tmp_path / "n.db"
     init_schema(db_path)
     with connection(db_path) as conn:
-        conn.execute("DROP INDEX IF EXISTS idx_selection_packs_single_active")
+        # V2.2-① 起唯一现役索引 = per-line 版(`idx_selection_packs_single_active_per_line`);
+        # 两行同为 DEFAULT 'LEGACY' 线 → 仍构成同线冲突,场景语义不变。
+        conn.execute("DROP INDEX IF EXISTS idx_selection_packs_single_active_per_line")
         for v in ("a", "b"):        # 造两行现役(模拟索引加入之前的手工 SQL 遗留)
             conn.execute(
                 "INSERT INTO selection_packs (pack_version, name, engine_api_version, "
@@ -76,7 +78,12 @@ def test_dirty_legacy_db_does_not_brick_init_schema(tmp_path, caplog):
     with connection(db_path) as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' "
-            "AND name='idx_selection_packs_single_active'").fetchone()[0] == 1
+            "AND name='idx_selection_packs_single_active_per_line'").fetchone()[0] == 1
+        # 旧的全表口径索引名必须**不存在**(DROP → 重建为 per-line 是 V2.2-① 的
+        # 单向迁移;旧索引若还魂,激活第二条线会被它无差别拦死)。
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' "
+            "AND name='idx_selection_packs_single_active'").fetchone()[0] == 0
 
 
 def test_scan_domain_covers_both_package_and_scripts():

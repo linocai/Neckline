@@ -1098,6 +1098,28 @@ CREATE TABLE IF NOT EXISTS basket_stage_handoff (
   notes_json   TEXT NOT NULL,      -- AggregateResult.notes 原样(判 aggregate_failed:* 等)
   created_at   TEXT NOT NULL
 );
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.2-②(2026-08,K8 §一 行情状态层):D0 盘后三态判定,EOD 预计算落表、在线只读
+-- (P0-23 纪律;§3.11-B 点名的两张全市场级预计算表之一)。同既有体例:新表追加在
+-- 这里,进 `CREATE TABLE IF NOT EXISTS`,⛔ 不进 `_COLUMN_MIGRATIONS`(那只收
+-- 「给既有表补列」)。判定唯一实现 = `neckline/scan/regime.py::decide_regime`,
+-- 读写唯一通道 = `neckline/scan/regime_store.py`。`regime` 恒非 NULL(默认态 =
+-- trend_continuation,不是「不知道」;当日**缺行**才是「不知道」,由消费方按
+-- `available=false` 披露)。inputs_json 五维各自带 available/unavailable_reason
+-- (缺维不当 0 参与比较,§3.8);skeleton_version = 阈值口径指纹(骨架包版本,
+-- 无骨架线现役时为哨兵串 'engine_default',⛔ 不写 NULL、不伪造版本号)。
+-- ══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS market_regime_daily (
+  trade_date        TEXT PRIMARY KEY,
+  regime            TEXT NOT NULL,   -- trend_continuation | high_divergence | rotation_confirmed
+  regime_reason     TEXT NOT NULL,   -- 机器可读原因码串(逐条判据留痕)
+  inputs_json       TEXT NOT NULL,   -- 五维原始读数(每维带 available/unavailable_reason)
+  strengthening_json TEXT NOT NULL,  -- 增强方向(行业/概念 + 依据)
+  weakening_json    TEXT NOT NULL,   -- 减弱方向
+  skeleton_version  TEXT NOT NULL,   -- 口径指纹(阈值住骨架包)
+  computed_at       TEXT NOT NULL
+);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库
@@ -1211,6 +1233,17 @@ _COLUMN_MIGRATIONS = [
     # = 「这一拍没记样本构成」(老行建于本列之前,**不是**「样本为空」)。见
     # `sentinel/universe.py::WatchUniverse.breadth_extra_payload()`。
     ("retreat_metrics", "breadth_extra_sample_json", "TEXT NOT NULL DEFAULT '{}'"),
+    # V2.2-①(plan §五 ①「表与契约变更」):`selection_packs` 从「单包制」升级
+    # 「多版本线注册表」的两根柱子。历史两行(K4-pack-v1 / K7-pack-v1)靠 DEFAULT
+    # 天然落位 `LEGACY` / `running`,⛔ **init_schema 只建列,不改业务行** —— 清
+    # LEGACY 行的 `is_active` 是业务动作,住 `scripts/oneoff/retire_legacy_packs.py`。
+    # `line_code` ∈ {V, C, Z, Y, LEGACY}(骨架线 / 三条引擎线 / 历史单包制),取值
+    # 校验在写侧 `selection/pack.py`(SQLite ADD COLUMN 不能带 CHECK,不硬塞)。
+    # `status` ∈ {running, stopped}(K8 §四「引擎状态」:停止 = 不产候选,保留历史
+    # 版本与复盘数据)。⚠ `status` 本版**只由 DEFAULT 落位、无任何切换入口**
+    # (用户 2026-08-09 裁定,详见 `selection/pack.py::get_active_engines` docstring)。
+    ("selection_packs", "line_code", "TEXT NOT NULL DEFAULT 'LEGACY'"),
+    ("selection_packs", "status", "TEXT NOT NULL DEFAULT 'running'"),
     # V2-⑭-A(plan §五 V2-⑭-A「报告重构为篮子日报」):篮子日报快照。
     # **随报告一起冻住**(同 `intel_json`/`data_freshness_json` 既定惯例):今日篮子
     # (T1/T2/T3,每篮一张卡)+ ③b 未定档篮子(`capacity_overflow` /
@@ -1304,12 +1337,19 @@ _POST_MIGRATION_INDEXES = (
     # 这里写明 WHERE 是为了让"只约束给了键的那些行"这件事在 DDL 上就一目了然。
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_idempotency_key "
     "ON positions(idempotency_key) WHERE idempotency_key IS NOT NULL",
-    # 「任一时刻至多一个现役策略包」(契约线审计 🔵 B3):此前这条不变量只由
-    # `pack.activate_pack()` 的写入顺序保证(先 deactivate 旧、再 activate 新),库本身拦不住
-    # 手工 SQL 造出两行 is_active=1 —— 而 `get_active_pack` 会静默取一行,于是"今天用的是
-    # 哪个包"变成看运气的事(包版本是 ⑤⑥ 的判定输入、⑨ 的归因分层键)。
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_selection_packs_single_active "
-    "ON selection_packs(is_active) WHERE is_active = 1",
+    # V2.2-①:「任一时刻至多一个现役策略包」改口径为「**每线**至多一个现役」
+    # (plan §五 ①「唯一现役约束改口径」)。旧的全表口径索引
+    # `idx_selection_packs_single_active`(契约线审计 🔵 B3,2026-08-03 加)先 DROP
+    # 再建 per-line 版 —— 骨架 V 与引擎 C/Z/Y 四条线要并跑,全表唯一会把「激活第
+    # 二条线」直接拦死。防「手工 SQL 造两行同线现役」的 B3 原意由新索引原样接管。
+    # ⚠ **部署顺序铁律(plan §五 ① 原文)**:生产上必须**先**由
+    # `scripts/oneoff/retire_legacy_packs.py` 把 LEGACY 行的 `is_active` 清零,**再**
+    # 激活骨架线 —— 顺序反了新索引照样能建(单行不冲突),但接下来会出现「LEGACY 与
+    # V 两行同时现役」,两行都合法、`get_active_*` 各取各的,正是 B3 要防的
+    # 「今天用的是哪个包看运气」。init_schema 管不了这条(它不改业务行),⑦ 部署清单管。
+    "DROP INDEX IF EXISTS idx_selection_packs_single_active",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_selection_packs_single_active_per_line "
+    "ON selection_packs(line_code, is_active) WHERE is_active = 1",
 )
 
 

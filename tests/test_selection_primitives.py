@@ -132,15 +132,16 @@ def test_primitive_run_dispatches_to_impl_with_merged_params():
 # ③ 注册表 + 防御性复核(含合成坏注册表负例)
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_registry_contains_exactly_the_five_first_pack_primitives():
-    """V2-③ 首包 5 原语 + V2-④ 市场扫描层新增 4 原语(见 `primitives.py` 模块头
-    「V2-④ 新增 4 个原语」节),共 9 个,不多不少(改动这个集合同样是架构决策,
-    见上一测试同款纪律)。"""
+def test_registry_contains_exactly_the_registered_primitives():
+    """V2-③ 首包 5 原语 + V2-④ 市场扫描层 4 原语 + V2.2-① 新增 `industry_blacklist`
+    (K8 §三 排除白酒的机器载体),共 10 个,不多不少(改动这个集合同样是架构
+    决策,见上一测试同款纪律)。"""
     assert set(prim.PRIMITIVES) == {
         "stock_hygiene", "non_new_stock", "k4_advisory_gate",
         "industry_dominance_gate", "intel_rank_priority",
         "hot_industry_seed", "surging_concept_seed",
         "limit_cluster_seed", "anomaly_cluster_seed",
+        "industry_blacklist",
     }
 
 
@@ -287,6 +288,80 @@ def test_stock_hygiene_params_change_outcome():
     custom_result = prim.PRIMITIVES["stock_hygiene"].run(dict(row), {"allowed_boards": ["BSE"]})
     assert default_result is False
     assert custom_result is True
+
+
+# —— industry_blacklist(V2.2-①,K8 §三 排除白酒;plan §五 ① 测试清单原文)————
+
+@pytest.mark.parametrize("industry,industries,expected", [
+    ("白酒", ["白酒"], False),        # 命中 → 排除
+    ("红黄酒", ["白酒"], True),        # 未命中:同为酒类但 industry 归类值不同,精确归类不殃及
+    ("啤酒", ["白酒"], True),
+    ("通信", ["白酒"], True),
+    ("白酒", [], True),               # 空名单 = 不排除任何行业(schema 缺省)
+    (None, ["白酒"], True),           # 🔴 缺失保守判通过:不臆造「反正不是白酒」
+])
+def test_industry_blacklist_behavior(industry, industries, expected):
+    row = {"industry": industry}
+    assert prim.PRIMITIVES["industry_blacklist"].run(row, {"industries": industries}) is expected
+
+
+def test_industry_blacklist_missing_industry_conservative_direction_is_opposite_of_non_new_stock():
+    """两个原语的「缺数保守方向」**刻意相反**(docstring 已定死,⛔ 别"统一"):
+    黑名单缺数时排除会误杀 → 判通过;白名单(非次新)缺数时放行会漏网 → 判不
+    通过。两者代价不对称,各取「宁可少做动作」的那一侧。"""
+    assert prim.PRIMITIVES["industry_blacklist"].run({}, {"industries": ["白酒"]}) is True
+    assert prim.PRIMITIVES["non_new_stock"].run({}, {"min_days": 120}) is False
+
+
+def test_industry_blacklist_is_exact_category_match_not_keyword():
+    """LinoN 教训:**精确归类,⛔ 非名称关键词** —— 名单串是行业归类值的全等比较,
+    不是子串匹配(「白酒概念龙头」这种自造串匹不上真归类值「白酒」才是对的)。"""
+    assert prim.PRIMITIVES["industry_blacklist"].run(
+        {"industry": "白酒饮料"}, {"industries": ["白酒"]}) is True   # 非全等 → 不排除
+
+
+# —— P2-47 结案守门:选股域 × 回测域卫生线共享常量逐位对拍 ————————————————————
+
+def test_p247_shared_hygiene_constants_drive_both_domains_bit_for_bit():
+    """§七 P2-47(V2.2-① 结案):`base_universe_expr`(回测域)与 `_stock_hygiene`
+    (选股域)的三项数值判据自本版起 import 同一组共享常量 —— 本测试在**边界值**
+    上逐位对拍两域行为,任何一边再长出私有字面量、边界就会先崩在这里。
+    ⚠ 板块口径刻意不对拍(两域不是同一个量:回测排 BSE 含 STAR,选股按包配置),
+    见 `primitives.py` 共享常量声明处的理由。"""
+    import polars as pl
+
+    from neckline.research.panel import base_universe_expr
+
+    cases = [
+        # (close, amount_ma20, 预期)——两常量各自的边界两侧
+        (prim.STOCK_HYGIENE_CLOSE_MIN, prim.STOCK_HYGIENE_AMOUNT_MA20_MIN, True),
+        (prim.STOCK_HYGIENE_CLOSE_MIN - 0.01, prim.STOCK_HYGIENE_AMOUNT_MA20_MIN, False),
+        (prim.STOCK_HYGIENE_CLOSE_MIN, prim.STOCK_HYGIENE_AMOUNT_MA20_MIN - 1.0, False),
+    ]
+    df = pl.DataFrame({
+        "close": [c for c, _a, _e in cases],
+        "amount_ma20": [a for _c, a, _e in cases],
+        "ma20": [1.0] * len(cases),
+        "board": ["MAIN"] * len(cases),
+        "is_st": [False] * len(cases),
+    })
+    research_side = df.select(base_universe_expr().alias("ok"))["ok"].to_list()
+    selection_side = [
+        prim.PRIMITIVES["stock_hygiene"].run(
+            {"close": c, "amount_ma20": a, "ma20": 1.0, "board": "MAIN", "is_st": False})
+        for c, a, _e in cases
+    ]
+    expected = [e for _c, _a, e in cases]
+    assert research_side == expected
+    assert selection_side == expected
+    assert research_side == selection_side   # 逐位对拍:两域同一张嘴
+
+
+def test_p247_shared_constants_current_values_are_registered_facts():
+    """共享常量的现值钉死(改数 = 同时改选股域与回测域的入场资格,必须走 plan)。"""
+    assert prim.STOCK_HYGIENE_CLOSE_MIN == 2.0
+    assert prim.STOCK_HYGIENE_AMOUNT_MA20_MIN == 20000.0
+    assert prim.STOCK_HYGIENE_REQUIRE_MA20 is True
 
 
 # —— non_new_stock ——————————————————————————————————————————————————————
@@ -561,6 +636,18 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
         "浮点比较容差,工程不变量(同 sentinel/holding.py `_EPS` / "
         "intel_candidates.py `_INDUSTRY_GATE_EPS` 先例:裸 >=/<= 比较除法产生的"
         "浮点噪声是本项目通用坑),非策略参数。"
+    ),
+    # —— V2.2-①(§七 P2-47 结案):选股域 × 回测域卫生线**共享常量**,唯一源。
+    #    它们不是"裸模块级阈值全局"那类病(那病的判据是「只有这里一份、包够不着」),
+    #    而是刻意的双域同源点:选股域包可覆盖(params_schema default 引用它),回测域
+    #    `neckline/research/panel.py::base_universe_expr` import 它 —— 改数 = 同时改
+    #    两域入场资格,必须走 plan;逐位对拍守门见本文件 P2-47 段。
+    ("primitives.py", "STOCK_HYGIENE_CLOSE_MIN"): (
+        "P2-47 共享常量:qfq 收盘下限,选股域 stock_hygiene 默认值与回测域 "
+        "base_universe_expr 的唯一同源点(值仍可被包覆盖)。"
+    ),
+    ("primitives.py", "STOCK_HYGIENE_AMOUNT_MA20_MIN"): (
+        "P2-47 共享常量:20 日均额下限(千元),同上——两域同源,改数走 plan。"
     ),
     # —— V2-⑤ 驱动聚合层(plan §五「插槽边界」原文:「②驱动聚合的两道机械闸 =
     #    **引擎本体,不进包**」——本节四项因此**刻意**不是包参数)——————————

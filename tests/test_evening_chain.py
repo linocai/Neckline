@@ -81,6 +81,8 @@ def chain_stubs(monkeypatch):
     monkeypatch.setattr("neckline.scan.corr.refresh_corr_matrix", lambda *a, **k: {"rows": 1})
     monkeypatch.setattr("neckline.scan.leader.refresh_leader_structure", lambda *a, **k: {"rows": 1})
     monkeypatch.setattr("neckline.scan.stage.refresh_industry_stage", lambda *a, **k: {"rows": 1})
+    monkeypatch.setattr("neckline.scan.regime_store.refresh_market_regime",
+                        lambda *a, **k: {"days": 1, "rows": 1, "failed": 0})
     monkeypatch.setattr("neckline.scan.seeds.generate_seeds", _seeds)
     monkeypatch.setattr("neckline.review.basket_review.review_day", _review)
     monkeypatch.setattr(ev, "_run_basket_segment", _basket)
@@ -134,6 +136,15 @@ class TestFusesPerSegment:
                             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("扫描炸了")))
         res = ev.run_evening_chain(D, use_llm=False)
         assert res.status[ev.SEG_SCAN] == ev.STATUS_FAILED
+        assert res.bundle == "BUNDLE"
+
+    def test_regime_failure_does_not_fail_the_scan_segment(self, chain_stubs, monkeypatch):
+        """V2.2-②:行情状态批算挂在 SEG_SCAN 里但**独立保险丝**(照 ④b 行业阶段
+        先例)—— 它炸了扫描段照常 ok、种子照产、链照走。"""
+        monkeypatch.setattr("neckline.scan.regime_store.refresh_market_regime",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("regime 炸了")))
+        res = ev.run_evening_chain(D, use_llm=False)
+        assert res.status[ev.SEG_SCAN] == ev.STATUS_OK
         assert res.bundle == "BUNDLE"
 
     def test_review_failure_does_not_stop_the_report(self, chain_stubs, monkeypatch):

@@ -276,21 +276,42 @@ def validate_params(primitive: Primitive, params: Mapping[str, Any]) -> List[str
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# V2.2-①(§七 P2-47 结案):选股域 × 回测域**卫生线共享常量,唯一源在此**。
+# 此前 `_stock_hygiene` 的默认值与 `neckline/research/panel.py::base_universe_expr`
+# 的字面量只靠 docstring 人工声称一致(无 import、无守门),任何一边改数另一边
+# **静默漂移** —— 选股与回测对"什么票配入场"分叉且无人报警。修法 = 抽共享常量
+# (plan §五 ① 首选修法):`base_universe_expr` 改 import 这三个名字,两域同源。
+# ⛔ **板块口径刻意不在共享之列**:回测域排的是 `BSE`(`board != "BSE"`,含 STAR,
+# 是 K2–K7 全部战役可比性的地基,一个字不许动),选股域 V2.2 起按包配置排
+# `STAR + BSE`(`allowed_boards=["MAIN","GEM"]`,K8 §三)—— **两者不是同一个量**,
+# 强行"统一"会悄悄改掉回测域的选股域清洗。同理 `exclude_st` 两侧实现机制不同
+# (研究域 `S.forbid_st()` 表达式 vs 原语读 `row["is_st"]`),不抽。
+# 数值登记:`tests/test_selection_primitives.py::_ENGINE_CONSTANT_WHITELIST`。
+STOCK_HYGIENE_CLOSE_MIN: float = 2.0          # qfq 收盘下限(元)
+STOCK_HYGIENE_AMOUNT_MA20_MIN: float = 20000.0  # 20 日均额下限(千元,=2000 万元)
+STOCK_HYGIENE_REQUIRE_MA20: bool = True       # 至少 20 交易日历史(ma20 非空)
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 首包 K4-pack 用到的 5 个原语实现(现值来源见模块头)
 # ══════════════════════════════════════════════════════════════════════════
 
 def _stock_hygiene(
     row: Mapping[str, Any],
     *,
-    close_min: float = 2.0,
-    amount_ma20_min: float = 20000.0,
-    require_ma20: bool = True,
+    close_min: float = STOCK_HYGIENE_CLOSE_MIN,
+    amount_ma20_min: float = STOCK_HYGIENE_AMOUNT_MA20_MIN,
+    require_ma20: bool = STOCK_HYGIENE_REQUIRE_MA20,
     allowed_boards: Sequence[str] = ("MAIN", "GEM", "STAR"),
     exclude_st: bool = True,
 ) -> bool:
-    """个股卫生线(现值 ← `research/panel.py::base_universe_expr` +
-    `intel_candidates.py::_ALLOWED_BOARDS`)。`board`/`is_st` 是分类/身份数据,
-    不计入白名单 `inputs`(见模块头「身份/分类数据」节)。"""
+    """个股卫生线(三项数值默认 ← 模块级共享常量,P2-47 结案后与
+    `neckline/research/panel.py::base_universe_expr` 同源)。`board`/`is_st` 是
+    分类/身份数据,不计入白名单 `inputs`(见模块头「身份/分类数据」节)。
+    ⚠ `allowed_boards` **默认值不动**(仍含 STAR):K8 §三「排除科创板」是**纯包
+    配置**(`packs/K8-skeleton.json` 写 `["MAIN","GEM"]`),零代码改动(plan §五
+    ① 原文);默认值是「原语的中性起点」不是「现役策略」,改默认值 = 悄悄改掉
+    所有不显式给这个键的历史包语义。"""
     if exclude_st and row.get("is_st"):
         return False
     if row.get("board") not in allowed_boards:
@@ -304,6 +325,30 @@ def _stock_hygiene(
     if amount_ma20 is None or amount_ma20 < amount_ma20_min:
         return False
     return True
+
+
+def _industry_blacklist(row: Mapping[str, Any], *, industries: Sequence[str] = ()) -> bool:
+    """行业黑名单(V2.2-① 新原语,K8 §三「排除白酒股」的机器载体)。按
+    `stock_basic.industry` **精确归类**排除(继承 LinoN 教训:⛔ 非名称关键词匹配
+    ——按板块/行业整段归类,不枚举精确子串,见项目 CLAUDE.md「钉死的领域常量·
+    板块分类」条)。`industry` 属「身份 / 分类数据」,**不进 `_ALLOWED_FEATURES`**
+    (既有约定,同 `board`/`is_st`,见模块头「身份/分类数据」节)。
+
+    **`industry` 缺失 → 保守判通过(True,不排除)** —— 与 `_non_new_stock`
+    「缺失判不通过」的保守方向**刻意相反**,⛔ 别"统一":黑名单缺数时排除会
+    **误杀**(把查无行业的好票当白酒扔掉),白名单缺数时放行会**漏网**(把没证据
+    的票放进来)——两者代价不对称,保守方向各自取「宁可少做动作」的那一侧。
+    不臆造"反正不是白酒"这种正面结论,只是"没有排除它的依据"(plan §五 ①
+    测试与守门原文)。
+
+    实测口径(2026-08-08 对本地 `stock_basic` 核实):白酒股的 `industry` 取值
+    = **「白酒」**(19 只);同库另有「红黄酒」(9)/「啤酒」(8)/「酒店餐饮」(9)
+    等**不同的**归类值,K8 只排白酒,故 `packs/K8-skeleton.json` 写 `["白酒"]`
+    恰好只命中那 19 只,不殃及其余酒类。"""
+    industry = row.get("industry")
+    if industry is None:
+        return True
+    return industry not in set(industries)
 
 
 def _non_new_stock(row: Mapping[str, Any], *, min_days: int = 120) -> bool:
@@ -420,13 +465,25 @@ _register(Primitive(
     kind="filter",
     inputs=("daily.close", "daily.amount_ma20", "daily.ma20"),
     params_schema={
-        "close_min": {"type": "number", "default": 2.0},
-        "amount_ma20_min": {"type": "number", "default": 20000.0},
-        "require_ma20": {"type": "boolean", "default": True},
+        "close_min": {"type": "number", "default": STOCK_HYGIENE_CLOSE_MIN},
+        "amount_ma20_min": {"type": "number", "default": STOCK_HYGIENE_AMOUNT_MA20_MIN},
+        "require_ma20": {"type": "boolean", "default": STOCK_HYGIENE_REQUIRE_MA20},
         "allowed_boards": {"type": "array", "items": "string", "default": ["MAIN", "GEM", "STAR"]},
         "exclude_st": {"type": "boolean", "default": True},
     },
     impl=_stock_hygiene,
+))
+
+_register(Primitive(
+    name="industry_blacklist",
+    kind="filter",
+    # 空:`industry` 是身份/分类数据,不受特征白名单约束(同 industry_dominance_gate
+    # 的 inputs=() 先例,见模块头「身份/分类数据」节)。
+    inputs=(),
+    params_schema={
+        "industries": {"type": "array", "items": "string", "default": []},
+    },
+    impl=_industry_blacklist,
 ))
 
 _register(Primitive(

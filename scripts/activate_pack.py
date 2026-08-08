@@ -7,21 +7,24 @@
 
 四道闸(缺一不激活):
     1. **JSON Schema 校验**:`manifest`(pack_version/name/date/engine_api_version/
-       evidence_ref)+ `config`(seeds 引用的原语必须已注册且参数合法、tier.weights/
-       dims 结构合法)。
+       evidence_ref/line_code)+ `config`(V2.2-① 起按版本线分两套:骨架线 V =
+       seeds+tier〔原语必须已注册且参数合法〕;引擎线 C/Z/Y = engine 段 +
+       `engine_code`×`line_code` 逐位交叉 + gates/tier_evidence 键名白名单 +
+       **每个阈值叶子必须带 `{value, provenance}`,缺 provenance 即拒**)。
     2. **原语 / 白名单核对 + `engine_api_version` 兼容**:防御性复核整个原语
        注册表仍满足特征白名单(构造期已经拦过一次,这里是第二道);
        `manifest.engine_api_version` 必须与引擎现版本逐位相等,不兼容 →
-       拒绝、fail loud。
-    3. **打印 old→new 逐项 diff**(默认演练模式,不写库):`seeds.*` 改动标注
-       「影响 ④ 市场扫描层」,`tier.*` 改动标注「影响 ⑥ Tier 分层引擎」。
+       拒绝、fail loud(V2.2 起 = 2,K4/K7 两个 v1 包**被拒是刻意的**,⛔ 别
+       "修"——回滚绳一律是「代码 commit + DB 备份还原」,不是激活旧包)。
+    3. **打印 old→new 逐项 diff**(默认演练模式,不写库):对照物 = **同一条
+       版本线**的现役行;骨架线打 seeds/tier 三段,引擎线打五关 + tier_evidence。
     4. **`--confirm` 才写**:单事务落库 + 激活切换(`neckline.selection.pack.
-       activate_pack()`),写后断言现役唯一。
+       activate_pack()`),写后断言**该线**现役唯一(每线唯一,不再是全表唯一)。
 
 **不做 API 端点**(同章程激活铁律,§3.8:系统内核永不被客户端改),只走命令行:
-    python scripts/activate_pack.py                                   # dry-run(默认 packs/K4-pack.json)
+    python scripts/activate_pack.py                                   # dry-run(默认 packs/K8-skeleton.json)
     python scripts/activate_pack.py --confirm                         # 校验通过 + 激活
-    python scripts/activate_pack.py --file packs/其它包.json --confirm
+    python scripts/activate_pack.py --file packs/C1.json --confirm    # 引擎线各自过闸
     python scripts/activate_pack.py --db /path.db --confirm
 """
 
@@ -38,7 +41,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from neckline.config import settings  # noqa: E402
 from neckline.selection import engine_api, pack, primitives  # noqa: E402
 
-_DEFAULT_PACK_FILE = Path(__file__).resolve().parent.parent / "packs" / "K4-pack.json"
+# V2.2-① 起默认包 = K8 骨架包(旧默认 K4-pack.json 已被 engine_api 闸作废——留一个
+# 必被拒的默认值只会让运维以为脚本坏了;K4/K7 文件本身留档不删,负例守门单测在吃)。
+_DEFAULT_PACK_FILE = Path(__file__).resolve().parent.parent / "packs" / "K8-skeleton.json"
 
 
 def _format_diff_block(title: str, impact: str, old: Dict[str, Any], new: Dict[str, Any]) -> List[str]:
@@ -64,13 +69,37 @@ def _format_diff_block(title: str, impact: str, old: Dict[str, Any], new: Dict[s
 
 
 def _describe_diff(active: Optional["pack.Pack"], new_manifest: Dict[str, Any], new_config: Dict[str, Any]) -> List[str]:
+    """闸 3 的人读 diff。V2.2-① 起按版本线分两种形状:骨架/LEGACY 线打 seeds/tier
+    三段(既有体例);引擎线(C/Z/Y)打 engine.gates 五关 + tier_evidence(引擎线
+    里根本没有 seeds/tier,硬套旧模板只会打出三段"(空)")。`active` 由调用方保证
+    是**同一条线**的现役行(跨线 diff 没有意义)。"""
+    line_code = pack.manifest_line_code(new_manifest)
     old_config = active.config if active is not None else {}
+
+    lines: List[str] = []
+    if line_code in ("C", "Z", "Y"):
+        old_engine = dict(old_config.get("engine", {}) or {})
+        new_engine = dict(new_config.get("engine", {}) or {})
+        old_gates = dict(old_engine.get("gates", {}) or {})
+        new_gates = dict(new_engine.get("gates", {}) or {})
+        for section in ("market", "sector", "position", "core", "evidence"):
+            lines += _format_diff_block(
+                f"engine.gates.{section}", "影响 ③ 六道关口门槛判定",
+                dict(old_gates.get(section, {}) or {}), dict(new_gates.get(section, {}) or {}),
+            )
+            lines.append("")
+        lines += _format_diff_block(
+            "engine.tier_evidence", "影响 ③ T1/T2 证据成熟度定档",
+            dict(old_engine.get("tier_evidence", {}) or {}),
+            dict(new_engine.get("tier_evidence", {}) or {}),
+        )
+        return lines
+
     old_seeds = dict(old_config.get("seeds", {}) or {})
     new_seeds = dict(new_config.get("seeds", {}) or {})
     old_tier = dict(old_config.get("tier", {}) or {})
     new_tier = dict(new_config.get("tier", {}) or {})
 
-    lines: List[str] = []
     lines += _format_diff_block("seeds(原语参数)", "影响 ④ 市场扫描层驱动种子生成", old_seeds, new_seeds)
     lines.append("")
     lines += _format_diff_block("tier.weights", "影响 ⑥ Tier 分层引擎机械分", old_tier.get("weights", {}) or {}, new_tier.get("weights", {}) or {})
@@ -138,32 +167,45 @@ def run(file: Path, db_path: Path, confirm: bool) -> int:
         return 2
 
     # ---- 闸 3:打印 old→new 逐项 diff(默认演练模式,本步骤零写库)----
-    active = pack.get_active_pack(db_path=db_path)
+    # V2.2-①:「现役」按**本包所属的版本线**取(`get_active_line`),⛔ 不再是全表
+    # 口径 —— 激活 C1 时的对照物是 C 线现役行,拿骨架线来 diff 既误导也误拦。
+    target_line = pack.manifest_line_code(manifest)
+    active = pack.get_active_line(target_line, db_path=db_path)
     if active is not None and active.pack_version == target_version:
-        print(f"\n提示:{target_version} 已是现役策略包,无需激活(is_active 已在该版本)。")
+        print(f"\n提示:{target_version} 已是 {target_line} 线现役策略包,无需激活(is_active 已在该版本)。")
         return 0
 
-    print(f"\n现役 {active.pack_version if active is not None else '(无)'} → 目标 {target_version} 逐项 diff:")
+    print(
+        f"\n[{target_line} 线] 现役 {active.pack_version if active is not None else '(无)'} "
+        f"→ 目标 {target_version} 逐项 diff:"
+    )
     for line in _describe_diff(active, manifest, config):
         print(line)
     print(f"\n包名:{manifest['name']}  日期:{manifest['date']}  证据链:{manifest.get('evidence_ref')}")
 
     # ---- 闸 4:--confirm 才写(单事务)----
     if not confirm:
-        print(f"\n[dry-run] 未带 --confirm,不写库。现役仍为 {active.pack_version if active is not None else '(无)'}。")
+        print(
+            f"\n[dry-run] 未带 --confirm,不写库。{target_line} 线现役仍为 "
+            f"{active.pack_version if active is not None else '(无)'}。"
+        )
         print(f"确认无误后加 --confirm 激活:python scripts/activate_pack.py --file {file} --confirm")
         return 0
 
     activated = pack.activate_pack(manifest, config, via="cli", db_path=db_path)
     print(
         f"\n已激活:{activated.pack_version}"
-        f"(is_active={int(activated.is_active)}, activated_at={activated.activated_at})"
+        f"(line={activated.line_code}, is_active={int(activated.is_active)}, "
+        f"activated_at={activated.activated_at})"
     )
-    actives = [p.pack_version for p in pack.list_packs(db_path=db_path) if p.is_active]
-    if actives != [activated.pack_version]:
-        print(f"错误:现役包不唯一或不对:{actives}", file=sys.stderr)
+    all_packs = pack.list_packs(db_path=db_path)
+    line_actives = [p.pack_version for p in all_packs if p.is_active and p.line_code == target_line]
+    if line_actives != [activated.pack_version]:
+        print(f"错误:{target_line} 线现役包不唯一或不对:{line_actives}", file=sys.stderr)
         return 3
-    print(f"现役断言通过:唯一现役 = {activated.pack_version}")
+    all_actives = {p.line_code: p.pack_version for p in all_packs if p.is_active}
+    print(f"现役断言通过:{target_line} 线唯一现役 = {activated.pack_version}")
+    print(f"全部线现役一览(运维核对用):{all_actives}")
     return 0
 
 

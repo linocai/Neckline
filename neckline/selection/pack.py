@@ -8,8 +8,9 @@
 本模块不提供"只登记不激活"的旁路(plan 没有要求这个功能,包的登记与激活在这个
 产品里刻意是同一个动作,不像章程切换那样分成"先建行再切换"两步)。
 
-**读现役包唯一入口 = `get_active_pack()`**(照 `neckline.strategy.brain.
-get_active()` 体例)。**不做时间线解析**(不像 `brain.py` 有
+**读现役行唯一实现 = `get_active_line()`**(V2.2-① 起;`get_active_pack()` 降为
+其骨架线薄封装,照 `neckline.strategy.brain.get_active()` 体例,详见文末
+「V2.2-① 多版本线注册表」节)。**不做时间线解析**(不像 `brain.py` 有
 `config_active_at`/`config_governing_at` 那一整套"某历史时刻该按哪版判"的机关)
 ——包只需要回答"现在现役的是哪个",篮子/卡在生成当下把 `pack_version` 抄一份
 到自己行里做归因快照(`baskets.pack_version`),不需要日后按历史时刻反查。
@@ -57,9 +58,56 @@ import `neckline.selection`,已核实)。
 移入 `_RETIRED_QUALITY_LINE_KEYS` —— **schema 仍受理它**(否则 `K7-pack-v1`
 这个回滚锚当场作废),但它不生效、不进单调性;引擎侧忽略它并打 WARNING。
 按 ③-K7 的判定规则(「旧包原样重新校验仍通过 + `get_active_pack()` 对旧包行为
-逐位不变」),本次**同样不 bump** `ENGINE_API_VERSION`(仍为 1):没改任何原语
-签名、没收紧特征白名单、没动五维,改的只是档位数;bump 的代价是
-`is_compatible()` 的逐位相等判据当场作废两个回滚锚,代价与收益不成比例。
+逐位不变」),当时**不 bump** `ENGINE_API_VERSION`(仍为 1)。
+⚠ 该「回滚锚」语境自 V2.2-① 起**已成历史**:`ENGINE_API_VERSION` 已 bump 到 2
+(判定依据见 `engine_api.py` 模块头),K4-pack-v1 / K7-pack-v1 两个回滚锚**作废**
+——受理 `tier3_min` 的 schema 宽容**保留**(历史行读回仍要能解析),但那两个包
+**不再能过闸激活**,这是刻意的(⛔ 不许再写「回滚 = 激活旧包」)。
+
+════════════════════════════════════════════════════════════════════════════
+**V2.2-① 多版本线注册表(plan §五 ①,2026-08-09 K8 立项)** —— 本模块最大一次
+语义换血,冷启动先读这一节:
+
+- `selection_packs` 从「单包制(全表唯一现役)」升级为「**一条骨架线 V + 三条
+  引擎线 C/Z/Y 并跑**」:每条线独立版本、独立激活、独立运行/停止,唯一现役约束
+  改为**每线唯一**(库级 partial unique index `(line_code, is_active)`,见
+  `neckline/db.py::_POST_MIGRATION_INDEXES`)。历史两行(K4/K7)= `LEGACY` 线。
+- **`line_code` 的声明位置 = `manifest.line_code`**(缺省 = `"LEGACY"`,取值
+  ∈ `_LINE_CODES`):它是「这个包是谁」的身份声明,与 `pack_version`/`name` 同属
+  manifest 一层,不塞进 config(config 是"包配的参数",身份不该混进参数)。
+- **两套 config schema,交叉校验、⛔ 不混**(`_validate_line_cross`):
+  骨架线 `V` → 必须有 `seeds`+`tier`、**不许有 `engine`**;引擎线 `C/Z/Y` →
+  必须有 `engine`、**不许有 `seeds`/`tier`**,且 `config.engine.engine_code`
+  与 `line_code` **逐位相等**。**其他 config 顶层键一律不管**(② 要给骨架包加
+  `config.regime`、③ 要加 `config.landing`,现在拒了它们等于给后续块挖坑)。
+- **`provenance` 强制字段(裁定 #4 落成机器判据,闸 1 执行)**:引擎包
+  `gates.*` 与 `tier_evidence.*` 下**每个阈值叶子**必须写成
+  `{"value": <任意 JSON>, "provenance": {...}}` 的两键对象,`provenance` 二选一:
+      `{"source": "audited", "ref": "<指向审计档案的非空指针>"}`
+      `{"source": "engineering_v1", "basis": "<从 K8 哪句定性边界翻译来的>",
+        "calibration": "pending"}`
+  **缺 `provenance` / 形状不对 = 拒绝激活** —— 这条的全部意义是让「工程首版
+  ⛔ 不冒充审计结论」变成过不去的闸,而不是一句自觉。
+- **引擎阈值键名白名单 = `_ENGINE_GATE_SCHEMA`(plan 字面的一处落地澄清,已由
+  orchestrator 裁定)**:施工图原文「`gates.*` 的每个键都必须引用已注册原语
+  (白名单制照旧)」—— 但 `PRIMITIVES` 是 **seeds 域**的原语注册表(逐票
+  filter/sort 纯函数),六关阈值不是 seeds 原语(六关实现在第 ③ 块的
+  `gates.py`,吃的是行情状态/板块强度/落地态等**篮子级/市场级**输入)。硬把
+  六关键名塞进 `PRIMITIVES` 等于给每个阈值造一个永远不会被 seeds 管线调用的假
+  原语。故「白名单制」落成本文件的 `_ENGINE_GATE_SCHEMA`:五个关口段 +
+  `tier_evidence.t1/t2` 各自允许的阈值键名逐个登记,闸 1 校验「键在白名单内 +
+  每个叶子带 {value, provenance}」——**"要新玩法先扩白名单"的既有代价一字不变**,
+  只是名单住在这里、⛔ 不绑 `PRIMITIVES`。
+- **读侧四入口(定死,⛔ 别自创第五个)**:`get_active_line()` 唯一实现;
+  `get_active_skeleton()` = `get_active_line("V")`;`get_active_engines()`(只含
+  `status='running'` 的 C/Z/Y,按 C→Z→Y 确定性排序);`get_active_pack()` 保留
+  为 `get_active_line("V")` 的薄封装(既有消费方 `scan/seeds.py` /
+  `selection/tier.py` 零改动——K8 §一 明写骨架管「股票池、篮子、梯度」,而它们
+  读的 `seeds`/`tier` 两段正是骨架线内容;⛔ 别把它们改成读引擎线,引擎线里
+  根本没有这两段)。
+- **现役包缓存自本版按 `(db_path, line_code)` 分桶**:只按 db_path 分桶在多线下
+  会「读 V 之后读 C 互相顶掉缓存 → 静默返回错误的线」(plan 点名的陷阱)。
+════════════════════════════════════════════════════════════════════════════
 """
 
 from __future__ import annotations
@@ -85,8 +133,70 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 _PACK_COLUMNS = (
     "pack_version, name, engine_api_version, manifest_json, config_json, "
-    "evidence_ref, is_active, created_at, activated_at"
+    "evidence_ref, is_active, created_at, activated_at, line_code, status"
 )
+
+# —— V2.2-① 版本线常量(取值域与 DB 列注释同源,见 neckline/db.py)—————————————
+# ⚠ 命名纪律(项目 CLAUDE.md「三条版本线」):骨架版本写全称 `K8-V0.5`,⛔ `V0.5`
+# 禁简写;引擎升级写 `C2`/`Z2`/`Y2`,⛔ 不写「K8 v2」。
+_LINE_CODES: Tuple[str, ...] = ("V", "C", "Z", "Y", "LEGACY")
+_ENGINE_LINE_CODES: Tuple[str, ...] = ("C", "Z", "Y")   # get_active_engines 的确定性序
+_LINE_DEFAULT = "LEGACY"
+
+# —— V2.2-① 引擎阈值键名白名单(「白名单制」在引擎线上的落地,⛔ 不绑 PRIMITIVES,
+# 理由见模块头)。五个关口段名 = plan §五 ① schema 原文;段内键名 = ③-F 三引擎
+# 首版阈值表逐条对应的机器名。要新玩法(新阈值键)先来这里登记,再发包 —— 与
+# seeds 域「要新玩法先加原语」同一条既有代价。————————————————————————————————
+_ENGINE_GATE_SCHEMA: Dict[str, frozenset] = {
+    "market": frozenset({
+        "primary_regimes",                      # 该引擎的主场行情状态集合
+        "high_divergence_min_breadth_pctile",   # C1:高位分歧下要求板块广度分位下限
+        "rotation_confirmed_blocks_t1",         # C1:切换确认下不产 T1
+        "trend_continuation_required_stages",   # Z1:趋势延续下要求 stage 所属集合
+    }),
+    "sector": frozenset({
+        "industry_rank_max",                    # C1/Y1:行业强度名次上限
+        "strength_days_min_5d",                 # C1:近 5 日强度日数下限
+        "stage_allowed",                        # Z1:行业题材阶段允许集合
+        "cluster_members_min",                  # Z1:簇成员数下限(扩散成层级)
+    }),
+    "position": frozenset({
+        "t1_landing_states",                    # C1:进 T1 允许的落地态集合
+        "t2_landing_states",                    # C1:进 T2 允许的落地态集合
+        "pullback_depth_range",                 # C1:回撤深度带 [lo, hi](趋势内整理)
+        "landing_states",                       # Z1/Y1:允许的落地态集合
+        "dist_from_high_60d_min",               # Z1:距 60 日高点回撤下限(右侧启动回撤浅)
+        "platform_days_min",                    # Y1:平台天数下限
+        "platform_amplitude_max",               # Y1:平台振幅上限
+    }),
+    "core": frozenset({
+        "leader_rs_rank_max",                   # 三引擎:簇内 RS 名次上限
+    }),
+    "evidence": frozenset({
+        "independent_evidence_min",             # 三引擎:独立证据份数下限
+        "require_news_policy_source",           # Z1:必须含一份消息/政策类来源
+    }),
+}
+_TIER_EVIDENCE_TIERS: Tuple[str, ...] = ("t1", "t2")
+_TIER_EVIDENCE_LEAF_KEYS: frozenset = frozenset({
+    "max_evidence_degrades",                    # 该档允许证据关降级的处数上限(K8 §八)
+})
+_PROVENANCE_SOURCES: Tuple[str, ...] = ("audited", "engineering_v1")
+
+# —— V2.2-② 行情状态层五个判定阈值的键名白名单(骨架线 `config.regime` 段)。
+# 引擎默认值与语义注释住 `neckline/scan/regime.py::REGIME_THRESHOLD_DEFAULTS`
+# (守门单测锁两处键集合相等,防漂);白名单本体住这里而不是 regime.py,理由同
+# `_ENGINE_GATE_SCHEMA`:regime.py 已 import 本模块的读入口,反向 import 会成环。
+# 每个键的叶子 = {value, provenance} 两键对象(复用 `_validate_provenance_leaf`,
+# 裁定 #4 同一道闸)且 value 必须是数值 —— 键写错/形状不对在闸 1 当场拒,⛔ 不许
+# 静默回退默认值(那种错看不出来,plan §五 ②-D 点名的陷阱)。——————————————
+_REGIME_THRESHOLD_KEYS: frozenset = frozenset({
+    "rot_gap",          # 切换确认:新旧方向 5 日中位收益差下限
+    "rot_rank",         # 切换确认:资金迁移排名上升名次下限
+    "div_core_drop",    # 高位分歧 A:核心强度较 5 日均值下降分位下限
+    "div_breadth",      # 高位分歧 B:板块广度分位上限
+    "div_limit_drop",   # 高位分歧 C:涨停家数环比降幅下限
+})
 
 _EVIDENCE_REF_SEP = "; "   # `selection_packs.evidence_ref` 落库时的连接符(展示/grep 友好)
 
@@ -118,8 +228,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _cache_key(db_path: Optional[Path]) -> str:
+def _db_cache_key(db_path: Optional[Path]) -> str:
     return str(db_path) if db_path is not None else str(settings.db_path)
+
+
+def _cache_key(db_path: Optional[Path], line_code: str) -> Tuple[str, str]:
+    """V2.2-①:缓存键 = `(解析后的 db 路径, line_code)` 双元组 —— 只按 db_path
+    分桶在多线并跑下会「读 V 之后读 C 互相顶掉缓存 → 静默返回错误的线」。"""
+    return (_db_cache_key(db_path), line_code)
 
 
 def _join_evidence_ref(refs: List[str]) -> Optional[str]:
@@ -141,7 +257,9 @@ def _split_evidence_ref(text: Optional[str]) -> List[str]:
 def validate_manifest(manifest: Any) -> List[str]:
     """manifest 必需字段(plan §五 V2-③「包格式定死」):`pack_version` / `name` /
     `date`(`YYYY-MM-DD`)/ `engine_api_version`(int)/ `evidence_ref`(字符串数组,
-    允许空列表——校验只管形状,"证据链是否该非空"是产品判断不是格式判断)。"""
+    允许空列表——校验只管形状,"证据链是否该非空"是产品判断不是格式判断)。
+    **V2.2-① 新增可选键 `line_code`**(缺省 = `LEGACY`,取值 ∈ `_LINE_CODES`,
+    声明位置的裁定见模块头「V2.2-① 多版本线注册表」节)。"""
     if not isinstance(manifest, dict):
         return ["manifest 必须是 JSON 对象"]
     errors: List[str] = []
@@ -158,7 +276,22 @@ def validate_manifest(manifest: Any) -> List[str]:
     evidence = manifest.get("evidence_ref")
     if not isinstance(evidence, list) or not all(isinstance(x, str) and x.strip() for x in evidence):
         errors.append("manifest.evidence_ref 必须是非空字符串组成的数组(可以是空数组)")
+    line_code = manifest.get("line_code", _LINE_DEFAULT)
+    if line_code not in _LINE_CODES:
+        errors.append(
+            f"manifest.line_code 取值非法:{line_code!r}(仅允许 {list(_LINE_CODES)};"
+            "缺省 = 'LEGACY')"
+        )
     return errors
+
+
+def manifest_line_code(manifest: Any) -> str:
+    """从 manifest 取版本线码(缺省 `LEGACY`;非法值也原样返回,由
+    `validate_manifest` 负责报错——本函数只取值不判罪,免得两处各判一套)。"""
+    if not isinstance(manifest, dict):
+        return _LINE_DEFAULT
+    v = manifest.get("line_code", _LINE_DEFAULT)
+    return v if isinstance(v, str) else _LINE_DEFAULT
 
 
 def _validate_stage_scores(stage_scores: Any) -> List[str]:
@@ -239,16 +372,187 @@ def _validate_quality_lines(quality_lines: Any) -> List[str]:
     return errors
 
 
-def validate_config(config: Any) -> List[str]:
-    """config 必需两段(plan §五 V2-③「插槽边界」):`seeds`(原语名 → 参数,
-    键必须是已注册原语,值按该原语 `params_schema` 校验)与 `tier`(`weights` 非空
-    对象 + `dims` 非空数组,`dims` 引用的维度必须都在 `weights` 里出现;
-    **V2-③-K7 新增**:与 `weights`/`dims` 平级的可选键 `stage_scores`,见
-    `_validate_stage_scores`;**V2-⑥-b 新增**:同平级的可选键 `quality_lines`,
-    见 `_validate_quality_lines`)。"""
+def _validate_regime(regime: Any) -> List[str]:
+    """`config.regime`(V2.2-② 新增可选段:行情状态层五个判定阈值,只住骨架线)。
+    **整段可选、子键各自独立可选**(照 `_validate_quality_lines` 体例)——缺段/缺键
+    一律由 `scan/regime.py::resolve_regime_thresholds()` 逐键回退引擎默认(+WARNING),
+    不在这里猜。存在的键必须:①在 `_REGIME_THRESHOLD_KEYS` 白名单内(**键写错 =
+    激活时拒**,⛔ 不许静默回退默认值 —— plan §五 ②-D 点名的陷阱:typo 的阈值键
+    会悄悄失效且看不出来);②叶子过 `_validate_provenance_leaf`(裁定 #4 同一道闸:
+    工程首版阈值必须自报来源,⛔ 不冒充审计结论);③`value` 是数值。"""
+    if not isinstance(regime, dict):
+        return ["config.regime 必须是对象(阈值键 → {value, provenance})"]
+    errors: List[str] = []
+    unknown = sorted(set(regime) - _REGIME_THRESHOLD_KEYS)
+    if unknown:
+        errors.append(
+            f"config.regime 出现白名单外的阈值键:{unknown}"
+            f"(仅允许 {sorted(_REGIME_THRESHOLD_KEYS)};键写错会静默回退引擎默认,"
+            "故在闸 1 当场拒 —— plan §五 ②-D)"
+        )
+    for key in sorted(set(regime) & _REGIME_THRESHOLD_KEYS):
+        leaf = regime[key]
+        leaf_errors = _validate_provenance_leaf(f"config.regime.{key}", leaf)
+        errors.extend(leaf_errors)
+        if not leaf_errors:
+            value = leaf["value"]
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                errors.append(f"config.regime.{key}.value 必须是数值(得到 {value!r})")
+    return errors
+
+
+def _validate_provenance_leaf(path: str, leaf: Any) -> List[str]:
+    """V2.2-① 闸 1:引擎包一个阈值叶子的 `{value, provenance}` 形状校验(裁定 #4
+    的机器判据,形状定义见模块头)。`value` 允许任意 JSON(数值 / 布尔 / 数组——
+    阈值带、状态集合都是合法阈值),`provenance` 二选一,**缺了 / 混了就是拒**。"""
+    errors: List[str] = []
+    if not isinstance(leaf, dict) or set(leaf) != {"value", "provenance"}:
+        return [
+            f"{path} 必须是恰含 value/provenance 两键的对象"
+            "(引擎包每个阈值都要自报来源,plan §3.11-D / §五 ① 裁定 #4)"
+        ]
+    prov = leaf["provenance"]
+    if not isinstance(prov, dict):
+        return [f"{path}.provenance 必须是对象"]
+    source = prov.get("source")
+    if source == "audited":
+        ref = prov.get("ref")
+        if not isinstance(ref, str) or not ref.strip():
+            errors.append(f"{path}.provenance 声明 audited 却缺非空 ref(审计结论必须可回指)")
+        extra = set(prov) - {"source", "ref"}
+        if extra:
+            errors.append(f"{path}.provenance(audited)出现未知键:{sorted(extra)}")
+    elif source == "engineering_v1":
+        basis = prov.get("basis")
+        if not isinstance(basis, str) or not basis.strip():
+            errors.append(
+                f"{path}.provenance 声明 engineering_v1 却缺非空 basis"
+                "(必须写清从 K8 哪句定性边界翻译来的,⛔ 不冒充审计结论)"
+            )
+        if prov.get("calibration") != "pending":
+            errors.append(
+                f"{path}.provenance(engineering_v1)必须带 calibration='pending'"
+                "(工程首版待时钟数据校准,裁定 #4 原文)"
+            )
+        extra = set(prov) - {"source", "basis", "calibration"}
+        if extra:
+            errors.append(f"{path}.provenance(engineering_v1)出现未知键:{sorted(extra)}")
+    else:
+        errors.append(
+            f"{path}.provenance.source 取值非法:{source!r}(仅允许 {list(_PROVENANCE_SOURCES)})"
+        )
+    return errors
+
+
+def _validate_engine_config(config: Dict[str, Any], line_code: str) -> List[str]:
+    """引擎线(C/Z/Y)config 校验:`engine` 段必备、`seeds`/`tier` 禁入、
+    `engine_code` 与 line_code 逐位相等、gates/tier_evidence 键名走
+    `_ENGINE_GATE_SCHEMA` 白名单、每个阈值叶子过 `_validate_provenance_leaf`。
+    其他 config 顶层键一律不管(模块头「V2.2-①」节:② 的 regime、③ 的 landing
+    都要往顶层加键,现在拒了它们就是给后续块挖坑)。"""
+    errors: List[str] = []
+    for forbidden in ("seeds", "tier"):
+        if forbidden in config:
+            errors.append(
+                f"引擎线(line_code={line_code})的 config 不许出现 {forbidden} 段"
+                "(骨架/引擎两套 schema 交叉校验,⛔ 不混——plan §五 ① 原文)"
+            )
+    engine = config.get("engine")
+    if not isinstance(engine, dict):
+        errors.append(f"引擎线(line_code={line_code})的 config.engine 必须是对象")
+        return errors
+
+    unknown = sorted(set(engine) - {"engine_code", "applies_to", "gates", "tier_evidence"})
+    if unknown:
+        errors.append(f"config.engine 出现未知键:{unknown}")
+
+    engine_code = engine.get("engine_code")
+    if engine_code != line_code:
+        errors.append(
+            f"config.engine.engine_code({engine_code!r})必须与 manifest.line_code"
+            f"({line_code!r})逐位相等(闸 1 交叉校验,plan §五 ① 原文)"
+        )
+    applies_to = engine.get("applies_to")
+    if not isinstance(applies_to, str) or not applies_to.strip():
+        errors.append("config.engine.applies_to 必须是非空字符串(人话,不进任何判据)")
+
+    gates = engine.get("gates")
+    if not isinstance(gates, dict):
+        errors.append("config.engine.gates 必须是对象(market/sector/position/core/evidence)")
+    else:
+        missing = sorted(set(_ENGINE_GATE_SCHEMA) - set(gates))
+        if missing:
+            errors.append(f"config.engine.gates 缺关口段:{missing}(五关一段都不能少)")
+        unknown_sections = sorted(set(gates) - set(_ENGINE_GATE_SCHEMA))
+        if unknown_sections:
+            errors.append(f"config.engine.gates 出现未知关口段:{unknown_sections}")
+        for section, allowed in _ENGINE_GATE_SCHEMA.items():
+            body = gates.get(section)
+            if body is None:
+                continue
+            if not isinstance(body, dict):
+                errors.append(f"config.engine.gates.{section} 必须是对象(阈值键 → {{value, provenance}})")
+                continue
+            unknown_keys = sorted(set(body) - allowed)
+            if unknown_keys:
+                errors.append(
+                    f"config.engine.gates.{section} 出现白名单外的阈值键:{unknown_keys}"
+                    f"(允许:{sorted(allowed)};要新玩法先扩 _ENGINE_GATE_SCHEMA——"
+                    "白名单制既有代价,⛔ 不许包侧自创键名)"
+                )
+            for key in sorted(set(body) & allowed):
+                errors.extend(_validate_provenance_leaf(f"config.engine.gates.{section}.{key}", body[key]))
+
+    tier_evidence = engine.get("tier_evidence")
+    if not isinstance(tier_evidence, dict):
+        errors.append("config.engine.tier_evidence 必须是对象(t1/t2)")
+    else:
+        missing_tiers = sorted(set(_TIER_EVIDENCE_TIERS) - set(tier_evidence))
+        if missing_tiers:
+            errors.append(f"config.engine.tier_evidence 缺档位段:{missing_tiers}")
+        unknown_tiers = sorted(set(tier_evidence) - set(_TIER_EVIDENCE_TIERS))
+        if unknown_tiers:
+            errors.append(f"config.engine.tier_evidence 出现未知档位段:{unknown_tiers}")
+        for tier_key in _TIER_EVIDENCE_TIERS:
+            body = tier_evidence.get(tier_key)
+            if body is None:
+                continue
+            if not isinstance(body, dict):
+                errors.append(f"config.engine.tier_evidence.{tier_key} 必须是对象")
+                continue
+            unknown_keys = sorted(set(body) - _TIER_EVIDENCE_LEAF_KEYS)
+            if unknown_keys:
+                errors.append(
+                    f"config.engine.tier_evidence.{tier_key} 出现白名单外的阈值键:"
+                    f"{unknown_keys}(允许:{sorted(_TIER_EVIDENCE_LEAF_KEYS)})"
+                )
+            for key in sorted(set(body) & _TIER_EVIDENCE_LEAF_KEYS):
+                errors.extend(
+                    _validate_provenance_leaf(f"config.engine.tier_evidence.{tier_key}.{key}", body[key])
+                )
+    return errors
+
+
+def validate_config(config: Any, *, line_code: str = _LINE_DEFAULT) -> List[str]:
+    """config 校验,**按版本线分两套 schema**(V2.2-①,交叉规则见模块头):
+
+    - `V` / `LEGACY`(缺省):必需 `seeds`(原语名 → 参数,键必须是已注册原语,
+      值按该原语 `params_schema` 校验)与 `tier`(`weights` 非空对象 + `dims` 非空
+      数组 + 可选 `stage_scores` / `quality_lines`)两段;`V` 额外禁止 `engine` 段
+      (LEGACY 不加新禁令——历史行为原样保留,那两行反正已被 engine_api 闸挡死)。
+    - `C` / `Z` / `Y`:走 `_validate_engine_config`(engine 段 + provenance 闸)。
+    """
     if not isinstance(config, dict):
         return ["config 必须是 JSON 对象"]
+    if line_code in _ENGINE_LINE_CODES:
+        return _validate_engine_config(config, line_code)
+
     errors: List[str] = []
+    if line_code == "V" and "engine" in config:
+        errors.append(
+            "骨架线(line_code=V)的 config 不许出现 engine 段"
+            "(骨架/引擎两套 schema 交叉校验,⛔ 不混——plan §五 ① 原文)"
+        )
 
     seeds = config.get("seeds")
     if not isinstance(seeds, dict):
@@ -291,18 +595,28 @@ def validate_config(config: Any) -> List[str]:
         quality_lines = tier.get("quality_lines")
         if quality_lines is not None:
             errors.extend(_validate_quality_lines(quality_lines))
+
+    # V2.2-②:行情状态层阈值段(可选;存在即校验形状,见 `_validate_regime`)。
+    regime = config.get("regime")
+    if regime is not None:
+        errors.extend(_validate_regime(regime))
     return errors
 
 
 def validate_pack_doc(doc: Any) -> List[str]:
-    """闸 1(schema)+ 闸 2 一部分(engine_api_version 兼容)的组合入口。返回空
-    列表 = 通过。**结构错误时不再往下核对兼容性**(避免在 `manifest` 都不是字典
-    时去 `.get()` 报一堆无意义的连锁错误)。"""
+    """闸 1(schema + V2.2-① 版本线交叉校验 + provenance)+ 闸 2 一部分
+    (engine_api_version 兼容)的组合入口。返回空列表 = 通过。**结构错误时不再
+    往下核对兼容性**(避免在 `manifest` 都不是字典时去 `.get()` 报一堆无意义的
+    连锁错误)。config 按 `manifest.line_code` 分线校验;line_code 本身非法时
+    (validate_manifest 已报错)config 按缺省 LEGACY 校验,不放大连锁错误。"""
     if not isinstance(doc, dict):
         return ["包文件顶层必须是 JSON 对象(含 manifest / config 两个键)"]
     manifest = doc.get("manifest")
     config = doc.get("config")
-    errors = validate_manifest(manifest) + validate_config(config)
+    line_code = manifest_line_code(manifest)
+    if line_code not in _LINE_CODES:
+        line_code = _LINE_DEFAULT
+    errors = validate_manifest(manifest) + validate_config(config, line_code=line_code)
     if not errors and not engine_api.is_compatible(manifest):
         errors.append(
             f"engine_api_version 不兼容:包声明 {manifest.get('engine_api_version')},"
@@ -342,6 +656,9 @@ class Pack:
     is_active: bool
     created_at: str
     activated_at: Optional[str]
+    # V2.2-① 两个新列(默认值 = DB 列 DEFAULT,老行/直接构造的测试替身同口径)。
+    line_code: str = _LINE_DEFAULT
+    status: str = "running"
 
     def seeds_config(self, primitive_name: str) -> Dict[str, Any]:
         """`config.seeds.<primitive_name>` 那一段参数(缺省 = 空字典,由调用方
@@ -369,6 +686,12 @@ class Pack:
         里猜)。"""
         return dict(self.config.get("tier", {}).get("quality_lines", {}))
 
+    def regime_config(self) -> Dict[str, Any]:
+        """`config.regime`(V2.2-② 新增可选段:行情状态层五个判定阈值,每键
+        `{value, provenance}` 叶子)。缺省返回空字典 —— 逐键回退引擎默认是
+        `scan/regime.py::resolve_regime_thresholds()` 的职责,不在本访问器里猜。"""
+        return dict(self.config.get("regime", {}))
+
 
 def _row_to_pack(row: Tuple[Any, ...]) -> Pack:
     return Pack(
@@ -381,6 +704,8 @@ def _row_to_pack(row: Tuple[Any, ...]) -> Pack:
         is_active=bool(row[6]),
         created_at=row[7],
         activated_at=row[8],
+        line_code=row[9],
+        status=row[10],
     )
 
 
@@ -404,38 +729,43 @@ def get_pack(pack_version: str, db_path: Optional[Path] = None) -> Optional[Pack
     return _row_to_pack(row) if row is not None else None
 
 
-# 现役包缓存:**按 `(db_path, pack_version)` 失效**,不是只按 `pack_version`——
-# 单纯按版本号做全局缓存,在多个 DB 文件里恰好用了同一个 pack_version 字符串时
-# (测试隔离下这完全可能:不同测试各自的 tmp db 都装同一份 `K4-pack.json`)会
-# 把 A 库的 Pack 对象错误地喂给 B 库的调用方。故缓存键必须先按解析后的 db 路径
-# 分桶,同一桶内才谈"pack_version 没变就不用重新反序列化 JSON"这层优化
-# (`init_schema`/一次 SELECT 仍然每次都做,只省了 `json.loads` 两遍 + 造对象)。
-_ACTIVE_PACK_CACHE: Dict[str, Tuple[str, Pack]] = {}
+# 现役包缓存:**按 `((db_path, line_code), pack_version)` 失效**。db_path 分桶的
+# 既有理由:单纯按版本号做全局缓存,在多个 DB 文件里恰好用了同一个 pack_version
+# 字符串时(测试隔离下这完全可能:不同测试各自的 tmp db 都装同一份包文件)会把
+# A 库的 Pack 对象错误地喂给 B 库的调用方。**V2.2-① 追加 line_code 分桶**:四条
+# 线并跑后同一个库同时有多个"现役",只按 db 分桶会读 V 之后读 C 互相顶掉缓存 →
+# **静默返回错误的线**。同一桶内才谈"pack_version 没变就不用重新反序列化 JSON"
+# 这层优化(`init_schema`/一次 SELECT 仍然每次都做,只省 `json.loads` + 造对象)。
+_ACTIVE_PACK_CACHE: Dict[Tuple[str, str], Tuple[str, Pack]] = {}
 
 
-def get_active_pack(db_path: Optional[Path] = None) -> Optional[Pack]:
-    """读现役策略包(照 `neckline.strategy.brain.get_active()` 体例)。无现役包
-    (全新库、或曾激活后又被后续激活切走且没有"当前唯一现役"的中间态——正常流程
-    不会出现,`activate_pack()` 保证任一时刻至多一行 `is_active=1`)→ `None`,
-    调用方各自决定降级(④/⑥ 未来的消费方:无现役包 = 当日不产出驱动种子/Tier,
-    如实披露,不许现造一份默认包)。"""
+def get_active_line(line_code: str, db_path: Optional[Path] = None) -> Optional[Pack]:
+    """**读某条版本线现役行的唯一实现**(V2.2-①,plan §五 ① 读侧 API 定死,⛔ 别
+    自创第五个入口)。无该线现役行 → `None`,调用方各自决定降级(无骨架线现役 =
+    当日不产任何种子;无运行引擎 = 当日不产任何候选,如实披露,不许现造默认包)。
+    `line_code` 必须 ∈ `_LINE_CODES`,否则 `ValueError`(fail loud,防手滑传
+    `'v'`/`'c1'` 之类静默查空)。"""
+    if line_code not in _LINE_CODES:
+        raise ValueError(f"line_code 取值非法:{line_code!r}(仅允许 {list(_LINE_CODES)})")
     init_schema(db_path)
-    key = _cache_key(db_path)
+    key = _cache_key(db_path, line_code)
     with connection(db_path) as conn:
-        # 取两行只为**能发现异常**(🔵 B3):库级部分唯一索引之后「两行现役」已经进不来,
-        # 但索引是 2026-08-03 才加的,老库上可能已经有历史遗留 —— 那时候静默取一行等于
-        # 让「今天用的是哪个包」看运气(包版本是 ⑤⑥ 判定输入与 ⑨ 归因的分层键)。
-        # `pack_version DESC` 是**确定性 tie-break**:同秒创建的两行不该靠行序决定胜负。
+        # 取两行只为**能发现异常**(🔵 B3,per-line 版):库级 partial unique index
+        # `(line_code, is_active)` 之后「同线两行现役」已经进不来,但索引换代前的老库
+        # 可能有历史遗留 —— 那时候静默取一行等于让「今天这条线用的是哪个包」看运气
+        # (包版本是判定输入与归因分层键)。`pack_version DESC` 是确定性 tie-break。
         rows = conn.execute(
             f"SELECT {_PACK_COLUMNS} FROM selection_packs "
-            "WHERE is_active=1 ORDER BY created_at DESC, pack_version DESC LIMIT 2"
+            "WHERE is_active=1 AND line_code=? "
+            "ORDER BY created_at DESC, pack_version DESC LIMIT 2",
+            (line_code,),
         ).fetchall()
     if len(rows) > 1:
         logger.warning(
-            "[pack] selection_packs 出现 %d 行 is_active=1(只可能来自手工 SQL / 老库遗留)"
-            "—— 本次按 (created_at, pack_version) 降序取 %r,**请人工核对并把多余的行置 0**;"
-            "现役包版本是判定输入与归因分层键,含糊不得。",
-            len(rows), rows[0][0],
+            "[pack] selection_packs 线 %s 出现 %d 行 is_active=1(只可能来自手工 SQL / "
+            "老库遗留)—— 本次按 (created_at, pack_version) 降序取 %r,**请人工核对并把"
+            "多余的行置 0**;现役包版本是判定输入与归因分层键,含糊不得。",
+            line_code, len(rows), rows[0][0],
         )
     row = rows[0] if rows else None
     if row is None:
@@ -448,6 +778,50 @@ def get_active_pack(db_path: Optional[Path] = None) -> Optional[Pack]:
     pack = _row_to_pack(row)
     _ACTIVE_PACK_CACHE[key] = (pack_version, pack)
     return pack
+
+
+def get_active_skeleton(db_path: Optional[Path] = None) -> Optional[Pack]:
+    """骨架线(`V`)现役行 = `get_active_line("V")`(纯别名,K8 §一「系统骨架管理
+    股票池、篮子、梯度」的读入口)。"""
+    return get_active_line("V", db_path)
+
+
+def get_active_engines(db_path: Optional[Path] = None) -> Dict[str, Pack]:
+    """现役**运行中**引擎线(V2.2-①):`line_code ∈ {C,Z,Y}` 且 `is_active=1` 且
+    `status='running'`,返回**按 C → Z → Y 确定性排序**的有序字典(顺序由本函数的
+    `_ENGINE_LINE_CODES` 元组钉死,⛔ 不靠 SQL 行序 —— 行序随库文件/插入历史漂,
+    而引擎遍历顺序会影响任何"先到先得"式消费逻辑的可复现性)。
+
+    `status='stopped'` 的线**不出现在返回值里**,但它仍是该线的现役版本
+    (`get_active_line` 照常返回它)—— K8 §四「引擎状态」:停止 = 不产候选,
+    保留历史版本与复盘数据;"现役版本是谁"与"现在产不产候选"是两个问题。
+
+    ⚠ **`status` 本版只由建表 `DEFAULT 'running'` 落位,无任何切换入口**(⛔ 无
+    CLI / 无端点 / 无写函数)——要停一条引擎线只能手工 SQL。这是**用户 2026-08-09
+    的裁定**(「引擎线不必设计得那么完善,要开关就让它默认的放在那里」),⛔ 不是
+    遗漏,别"顺手补全"。读侧仍尊重该列,是为了将来真需要开关时不必改读侧。"""
+    out: Dict[str, Pack] = {}
+    for code in _ENGINE_LINE_CODES:
+        p = get_active_line(code, db_path)
+        if p is not None and p.status == "running":
+            out[code] = p
+    return out
+
+
+def get_active_pack(db_path: Optional[Path] = None) -> Optional[Pack]:
+    """读现役策略包 = **K8 起返回骨架线(`line_code='V'`)现役行**
+    (`get_active_line("V")` 的薄封装,V2.2-① 语义换血,`ENGINE_API_VERSION`
+    1→2 的判定依据正是这一条)。
+
+    为什么这样映射恰好正确、且既有调用方零改动(plan §五 ① 原文):K8 §一 明写
+    「系统骨架管理**股票池、篮子、梯度**」,而现有包 config 的两段正是 `seeds`
+    (股票池 + 种子资格)与 `tier`(梯度容量/权重/质量线)—— `scan/seeds.py` 与
+    `selection/tier.py` 继续读本函数,语义反而更准了。⛔ 别把它们改成读引擎线,
+    引擎线里根本没有 seeds/tier 段。
+
+    无骨架线现役(含「库里只有 LEGACY 现役行」的割接前状态)→ `None` = 当日不产
+    任何种子/Tier,如实披露,不许现造默认包(既有 docstring 纪律原文)。"""
+    return get_active_line("V", db_path)
 
 
 def activate_pack(
@@ -465,14 +839,15 @@ def activate_pack(
       2. `pack_version` 已存在 → 逐字节比对 `manifest`/`config`:相同则视为
          幂等重放(不重复插入,不报错);不同则 `ValueError`(append-only:
          改内容必须换一个新的 `pack_version`,不可静默覆盖已登记的包)。
-      3. 若目标已是当前唯一现役包 → 不追加任何事件(与
-         `scripts/activate_pack.py` 的 CLI 层"已现役、无需激活"提前拦截一致;
-         直接调用本函数〔绕过 CLI 提前检查〕重复以同版本激活同样保持幂等,不
-         产生冗余事件)。
-      4. 否则:若存在其它现役包 → 先给它追加一条 `deactivate` 事件 + 置
+      3. 若目标已是**它那条线的**当前现役包(V2.2-① 起现役唯一性按 `line_code`
+         分线)→ 不追加任何事件(与 `scripts/activate_pack.py` 的 CLI 层"已现役、
+         无需激活"提前拦截一致;直接调用本函数〔绕过 CLI 提前检查〕重复以同版本
+         激活同样保持幂等,不产生冗余事件)。
+      4. 否则:若**同线**存在其它现役包 → 先给它追加一条 `deactivate` 事件 + 置
          `is_active=0`;再给目标追加一条 `activate` 事件 + 置 `is_active=1`
-         `activated_at=now()`。**首次激活(此前无任何现役包)只有后半段**——
-         没有"旧行"可关,不伪造一条 deactivate 事件。
+         `activated_at=now()`。**该线首次激活(此前无该线现役包)只有后半段**——
+         没有"旧行"可关,不伪造一条 deactivate 事件。**其它线的现役行一概不碰**
+         (陷阱 #1:全表口径的切换会让"激活 C1"静默把骨架线 V 踢下去)。
 
     `via`:`"cli"`(`scripts/activate_pack.py --confirm`)或 `"seed"`(测试/未来
     预填充脚本,同 `strategy_activation_log.via` 既有取值风格)。
@@ -487,6 +862,7 @@ def activate_pack(
         raise ValueError("包 schema 校验未通过,拒绝激活:" + "; ".join(errors))
 
     pack_version = manifest["pack_version"]
+    line_code = manifest_line_code(manifest)
     init_schema(db_path)
     manifest_json = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
     config_json = json.dumps(config, ensure_ascii=False, sort_keys=True)
@@ -505,26 +881,34 @@ def activate_pack(
                     "(append-only,不可覆盖已登记的包;如需改动请换一个新的 pack_version)。"
                 )
         else:
+            # `status` 刻意不出现在 INSERT 列里 —— 只由 DDL `DEFAULT 'running'` 落位
+            # (本版无任何 status 切换入口,见 `get_active_engines` docstring 的裁定)。
             conn.execute(
                 "INSERT INTO selection_packs "
                 "(pack_version, name, engine_api_version, manifest_json, config_json, "
-                " evidence_ref, is_active, created_at, activated_at) "
-                "VALUES (?,?,?,?,?,?,0,?,NULL)",
+                " evidence_ref, is_active, created_at, activated_at, line_code) "
+                "VALUES (?,?,?,?,?,?,0,?,NULL,?)",
                 (
                     pack_version, manifest["name"], manifest["engine_api_version"],
-                    manifest_json, config_json, evidence_ref_text, now,
+                    manifest_json, config_json, evidence_ref_text, now, line_code,
                 ),
             )
 
+        # 🔴 V2.2-①:现役查找与切换**必须按 line_code 分线**(plan 点名的陷阱 #1)——
+        # 全表口径下"激活 C1"会把骨架线 V 踢下去,闸全过、库不报错,**静默**。
         prior_row = conn.execute(
-            "SELECT pack_version FROM selection_packs WHERE is_active=1"
+            "SELECT pack_version FROM selection_packs WHERE is_active=1 AND line_code=?",
+            (line_code,),
         ).fetchone()
         prior_version = prior_row[0] if prior_row is not None else None
 
         if prior_version != pack_version:
             if prior_version is not None:
+                # WHERE 带 line_code 双保险(pack_version 本身 UNIQUE,加线号是防
+                # "prior 查询与 UPDATE 之间语义漂移"的一致性钉子,plan 陷阱 #1 同源)。
                 conn.execute(
-                    "UPDATE selection_packs SET is_active=0 WHERE pack_version=?", (prior_version,)
+                    "UPDATE selection_packs SET is_active=0 WHERE pack_version=? AND line_code=?",
+                    (prior_version, line_code),
                 )
                 conn.execute(
                     "INSERT INTO selection_pack_activation_log (pack_version, action, via, note, at) "
@@ -542,7 +926,12 @@ def activate_pack(
             )
         # else: 目标已是现役 —— 幂等 no-op,不追加事件。
 
-    _ACTIVE_PACK_CACHE.pop(_cache_key(db_path), None)
+    # 缓存失效:**整库清**(该 db 下所有线的桶一起清,plan 陷阱 #2 给的两个合法
+    # 选项之一;选整库而不是按线,因为便宜且绝不会漏 —— 激活只动一条线,但"少清"
+    # 的代价是静默读旧,"多清"的代价只是一次 json.loads)。
+    db_key = _db_cache_key(db_path)
+    for key in [k for k in _ACTIVE_PACK_CACHE if k[0] == db_key]:
+        _ACTIVE_PACK_CACHE.pop(key, None)
     activated = get_pack(pack_version, db_path=db_path)
     assert activated is not None and activated.is_active
     return activated
@@ -551,11 +940,15 @@ def activate_pack(
 __all__ = [
     "Pack",
     "validate_manifest",
+    "manifest_line_code",
     "validate_config",
     "validate_pack_doc",
     "load_pack_file",
     "list_packs",
     "get_pack",
+    "get_active_line",
+    "get_active_skeleton",
+    "get_active_engines",
     "get_active_pack",
     "activate_pack",
 ]

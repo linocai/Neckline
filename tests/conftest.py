@@ -4,9 +4,38 @@
 Settings 是 frozen dataclass,不能 `setattr` 单个字段;换库路径按 LinoN 教训用
 "替身对象 + monkeypatch 模块级 settings 名字"(每个 `from neckline.config import
 settings` 的模块各自 patch 一遍,因为各模块持有各自的本地绑定)。
+
+**§七 P4-48 全局兜底重定向(V2.2-① 结案,治类不治例)**:见文件最上方那段
+`os.environ["DB_PATH"]` 注入 —— 它必须发生在本文件(乃至整个 pytest 进程)第一次
+import `neckline.config` **之前**,所以不住在夹具里、直接写在 import 区之前。
 """
 
 from __future__ import annotations
+
+# ══════════════════════════════════════════════════════════════════════════
+# §七 P4-48(测试隔离写库残留,V2.2-① 结案):**全局兜底重定向,治类不治例**。
+# 病根:全量 pytest 里任何经 `db_path=None` 兜底的调用(`neckline/db.py` 的
+# `db_path or settings.db_path`)都会**静默写真实开发库** `data/neckline.db`
+# ——A8 批次修过一轮调用点,后续版本新增测试又带回(逐例修是打地鼠)。
+# 修法:`neckline.config._load_settings()` 本来就支持 `DB_PATH` 环境变量覆盖
+# (冒烟/隔离测试的既有后门)——在**任何 neckline 模块被 import 之前**把它指到
+# 一次性临时目录,则所有 `db_path=None` 兜底从此天然落在废弃桶里,新测试怎么漏
+# 传都污染不到真实开发库。真需要真库数据的护栏用例走 `real_db_readonly_copy`
+# (它按 `neckline.config.DB_PATH` **常量**找真库,不受本环境变量影响,已核)。
+# ⚠ 若外部已显式设了 DB_PATH(如 A8 探针法手动重定向),尊重外部值不再覆盖。
+# 机器判据:`tests/test_db_isolation_guardrail.py` 的 P4-48 段(重定向失效即红)。
+# ══════════════════════════════════════════════════════════════════════════
+import os as _os
+import os.path as _ospath
+import sys as _sys
+import tempfile as _tempfile
+
+if "DB_PATH" not in _os.environ:
+    _os.environ["DB_PATH"] = _ospath.join(
+        _tempfile.mkdtemp(prefix="neckline-tests-dbredirect-"), "neckline.db"
+    )
+if "neckline.config" in _sys.modules:   # 万一有插件抢先 import 过,best-effort 刷新
+    _sys.modules["neckline.config"].reload_settings()
 
 from datetime import date, timedelta
 from pathlib import Path

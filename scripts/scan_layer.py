@@ -25,6 +25,8 @@
     python scripts/scan_layer.py verify --from 20260101 --to 20260731
     python scripts/scan_layer.py bootstrap --year 2026          # 该年全部交易日
     python scripts/scan_layer.py bootstrap --from 20260101 --to 20260731
+    python scripts/scan_layer.py regime                         # V2.2-② 行情状态三态(今天)
+    python scripts/scan_layer.py regime --from 20260720 --to 20260807   # 区间回放
     python scripts/scan_layer.py refresh --db /path.db --parquet-dir /path/parquet
 """
 
@@ -142,6 +144,40 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_regime(args: argparse.Namespace) -> int:
+    """V2.2-② 行情状态层:批算 + 逐日打印三态/原因码/五维状态(回放即验收:任取
+    区间跑一遍,每天都能说出三态之一 + 逐条原因码 + 五维各自「有 / 没取到」)。"""
+    from neckline.scan import regime as regime_mod
+    from neckline.scan import regime_store
+
+    days = resolve_days(args)
+    if not days:
+        logger.error("解析不出任何交易日(检查 --from/--to/--year 与 trade_cal 覆盖范围)")
+        return 1
+    stats = regime_store.refresh_market_regime(days, db_path=args.db, parquet_dir=args.parquet_dir)
+    logger.info(
+        "market_regime_daily: 处理 %d 天 / 落 %d 行 / 失败 %d 天",
+        stats["days"], stats["rows"], stats["failed"],
+    )
+    for d in days:
+        row = regime_store.load_market_regime(d, db_path=args.db)
+        if row is None:
+            logger.warning("%s 无判定行(该日批算未产出,缺行 = 不知道,读侧按 available=false 披露)",
+                           d.strftime("%Y%m%d"))
+            continue
+        dims = " ".join(
+            f"{k}={'有' if (row['inputs'].get(k) or {}).get('available') else '没取到(' + str((row['inputs'].get(k) or {}).get('unavailable_reason', '?')) + ')'}"
+            for k in regime_mod.DIM_ORDER
+        )
+        logger.info(
+            "%s → %s(%s)| skeleton=%s\n    五维:%s\n    原因码:%s",
+            row["trade_date"], row["regime"],
+            regime_mod.REGIME_LABELS.get(row["regime"], row["regime"]),
+            row["skeleton_version"], dims, row["regime_reason"],
+        )
+    return 0 if not stats["failed"] else 1
+
+
 def _add_common_args(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--db", type=Path, default=None, help="目标 SQLite 库(默认 settings.db_path)")
 
@@ -171,6 +207,14 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--parquet-dir", type=Path, default=None, help="Parquet 根目录(默认 settings.parquet_dir)")
     _add_common_args(b)
     b.set_defaults(func=cmd_bootstrap)
+
+    g = sub.add_parser("regime", help="V2.2-② 行情状态层三态:批算落 market_regime_daily + 逐日回放打印")
+    g.add_argument("--from", dest="date_from", help="起始交易日 YYYYMMDD")
+    g.add_argument("--to", dest="date_to", help="结束交易日 YYYYMMDD")
+    g.add_argument("--year", type=int, help="整年")
+    g.add_argument("--parquet-dir", type=Path, default=None, help="Parquet 根目录(默认 settings.parquet_dir)")
+    _add_common_args(g)
+    g.set_defaults(func=cmd_regime)
     return p
 
 

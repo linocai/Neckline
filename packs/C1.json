@@ -1,0 +1,86 @@
+{
+  "manifest": {
+    "pack_version": "C1",
+    "name": "C 引擎首版:主线核心健康回调再启动",
+    "date": "2026-08-09",
+    "engine_api_version": 2,
+    "line_code": "C",
+    "evidence_ref": ["K8_STRATEGY_ARCH.md"],
+    "notes": [
+      "阈值来源分布(plan §五 ③-F):leader_rs_rank / industry_rank 名次档 = audited;其余全部 engineering_v1 + calibration:pending(工程首版待选股时钟数据校准,⛔ 不冒充审计结论)。",
+      "迭代路径:选股时钟攒样本 → 周度按引擎归因 → 四分类建议 → 用户确认 → C2 走四道闸;⛔ 零自动回写。"
+    ]
+  },
+  "config": {
+    "engine": {
+      "engine_code": "C",
+      "applies_to": "主线核心健康回调再启动",
+      "gates": {
+        "market": {
+          "primary_regimes": {
+            "value": ["trend_continuation"],
+            "provenance": {"source": "engineering_v1", "basis": "K8 §四 C1「主线逻辑、关注度和资金承接延续」→ 主场 = 趋势延续态", "calibration": "pending"}
+          },
+          "high_divergence_min_breadth_pctile": {
+            "value": 0.60,
+            "provenance": {"source": "engineering_v1", "basis": "K8 §五 市场关「确认主线强弱」→ 高位分歧下要求板块广度分位 ≥ 0.60 的工程翻译", "calibration": "pending"}
+          },
+          "rotation_confirmed_blocks_t1": {
+            "value": true,
+            "provenance": {"source": "engineering_v1", "basis": "K8 §四 C1 适用「已经确认的市场主线」→ 切换确认态下主线延续前提不成立,不产 T1", "calibration": "pending"}
+          }
+        },
+        "sector": {
+          "industry_rank_max": {
+            "value": 10,
+            "provenance": {"source": "audited", "ref": "PROJECT_PLAN.md §2.2 v1.3.1 行业闸先例(行业强度名次档判据)"}
+          },
+          "strength_days_min_5d": {
+            "value": 3,
+            "provenance": {"source": "engineering_v1", "basis": "K8 §五 板块关「资金持续性」→ 近 5 日强度日 ≥ 3 天 = 主线延续的工程翻译", "calibration": "pending"}
+          }
+        },
+        "position": {
+          "t1_landing_states": {
+            "value": ["liftoff_confirmed"],
+            "provenance": {"source": "engineering_v1", "basis": "K8 §五 位置关「调整结束 / 价格转强」→ T1 要求起跳确认态", "calibration": "pending"}
+          },
+          "t2_landing_states": {
+            "value": ["landing_pending"],
+            "provenance": {"source": "engineering_v1", "basis": "K8 §八 T2「逻辑成立,等待关键确认」→ 落地进行中可入 T2", "calibration": "pending"}
+          },
+          "pullback_depth_range": {
+            "value": [-0.20, -0.05],
+            "provenance": {"source": "engineering_v1", "basis": "K8 §四 C1「回调属于趋势内整理」→ 回撤深度带 [-20%, -5%](浅于 -5% 不算回调,深于 -20% 按趋势破坏论)", "calibration": "pending"}
+          }
+        },
+        "core": {
+          "leader_rs_rank_max": {
+            "value": 3,
+            "provenance": {"source": "audited", "ref": "档案/research/k7_pre_report.md#H10(十二格审计:簇内 RS 名次档,路径口径见 PROJECT_PLAN §1.6)"}
+          }
+        },
+        "evidence": {
+          "independent_evidence_min": {
+            "value": 3,
+            "provenance": {"source": "engineering_v1", "basis": "K8 §五 证据关「证据应当来源独立、方向一致」→ 独立证据 ≥ 3 份的工程首版", "calibration": "pending"}
+          }
+        }
+      },
+      "tier_evidence": {
+        "t1": {
+          "max_evidence_degrades": {
+            "value": 0,
+            "provenance": {"source": "engineering_v1", "basis": "K8 §八 T1「支撑确认,启动成立」= 六关全过,证据关零降级", "calibration": "pending"}
+          }
+        },
+        "t2": {
+          "max_evidence_degrades": {
+            "value": 1,
+            "provenance": {"source": "engineering_v1", "basis": "K8 §八 T2「逻辑成立,等待关键确认」→ 证据关至多一处降级(plan §五 ③-D)", "calibration": "pending"}
+          }
+        }
+      }
+    }
+  }
+}

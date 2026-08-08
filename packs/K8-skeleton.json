@@ -1,0 +1,123 @@
+{
+  "manifest": {
+    "pack_version": "K8-V0.5",
+    "name": "K8 系统骨架包(股票池 + 梯度)",
+    "date": "2026-08-09",
+    "engine_api_version": 2,
+    "line_code": "V",
+    "evidence_ref": ["K8_STRATEGY_ARCH.md"],
+    "notes": [
+      "config 结构承 K7-pack-v1 一字不改(seeds+tier 两段),只改值三处(plan §五 ① 原文):",
+      "① seeds.stock_hygiene.allowed_boards → [MAIN, GEM](K8 §三 排除科创板,纯包配置零代码改动);",
+      "② 新增 seeds.industry_blacklist.industries=[白酒](K8 §三;实测 stock_basic.industry 白酒股取值 = 「白酒」共 19 只,「红黄酒」「啤酒」是不同归类值不受累);",
+      "③ seeds.stock_hygiene.close_min 维持 2.0,且**全仓刻意无价格上限**(K8 §三「股价不限,允许 100 元及以上」= 确认现状零改动)——⛔ 别顺手加 close_max,这里没写就是不设。",
+      "另:K7-pack-v1 里的退役键 tier.quality_lines.tier3_min 本包不再携带(V2.1-② T3 全链退役后它受理但不生效,引擎侧见到必打 WARNING——新包再抄一遍等于每晚制造一条假警报;零行为差异)。"
+    ]
+  },
+  "config": {
+    "seeds": {
+      "stock_hygiene": {
+        "close_min": 2.0,
+        "amount_ma20_min": 20000,
+        "require_ma20": true,
+        "allowed_boards": ["MAIN", "GEM"],
+        "exclude_st": true
+      },
+      "industry_blacklist": {
+        "industries": ["白酒"]
+      },
+      "non_new_stock": {
+        "min_days": 120
+      },
+      "k4_advisory_gate": {
+        "hard_cut_action": "exclude",
+        "avoid_flag_action": "tag"
+      },
+      "industry_dominance_gate": {
+        "min_lift": 2.0
+      },
+      "intel_rank_priority": {
+        "dims": ["industry_rank", "industry_stage_score", "leader_rs_rank", "yellow_card_count"]
+      },
+      "hot_industry_seed": {
+        "max_rank": 10,
+        "require_strength_day": true
+      },
+      "surging_concept_seed": {
+        "min_pct_change": 5.0
+      },
+      "limit_cluster_seed": {
+        "min_cluster_size": 2,
+        "min_consecutive_days": 2
+      },
+      "anomaly_cluster_seed": {
+        "min_volume_ratio": 3.0,
+        "min_cluster_members": 2
+      }
+    },
+    "tier": {
+      "weights": {
+        "sector_strength": 0.30,
+        "leader_clarity": 0.30,
+        "driver_freshness": 0.10,
+        "tradability": 0.20,
+        "card_density": 0.10
+      },
+      "dims": ["sector_strength", "driver_freshness", "leader_clarity", "tradability", "card_density"],
+      "stage_scores": {
+        "ignition": 0.6,
+        "fermentation": 1.0,
+        "overheat": 0.0,
+        "divergence": 0.4,
+        "ebb": 0.2,
+        "none": 0.2
+      },
+      "quality_lines": {
+        "tier1_min": 0.60,
+        "tier2_min": 0.40
+      }
+    },
+    "regime": {
+      "rot_gap": {
+        "value": 0.03,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §一「旧主线持续转弱,新方向形成相对强势」——新旧方向 5 日中位收益差下限的工程首版翻译(plan §五 ② ROT_GAP)",
+          "calibration": "pending"
+        }
+      },
+      "rot_rank": {
+        "value": 10,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §一「资金开始迁移」——行业主力净额排名上升名次下限的工程首版翻译(plan §五 ② ROT_RANK)",
+          "calibration": "pending"
+        }
+      },
+      "div_core_drop": {
+        "value": 0.30,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §一 高位分歧之「主线核心」走弱——核心强度较 5 日均值下降分位下限的工程首版翻译(plan §五 ② DIV_CORE_DROP)",
+          "calibration": "pending"
+        }
+      },
+      "div_breadth": {
+        "value": 0.35,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §一 高位分歧之「板块广度」萎缩——板块广度分位上限的工程首版翻译(plan §五 ② DIV_BREADTH)",
+          "calibration": "pending"
+        }
+      },
+      "div_limit_drop": {
+        "value": 0.30,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §一 高位分歧之涨停家数萎缩——涨停家数环比降幅下限的工程首版翻译(plan §五 ② DIV_LIMIT_DROP)",
+          "calibration": "pending"
+        }
+      }
+    }
+  }
+}

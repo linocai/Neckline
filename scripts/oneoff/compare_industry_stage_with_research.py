@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""④b-D 对拍脚本:`research/k7p_h11_stage.py`(研究参考实现)vs
+"""⚠ 依赖已迁出,不可复跑(2026-08-09 策略研究档案整体迁出本仓,见 PROJECT_PLAN
+§1.6 / §七 P4-54)—— 本脚本 `sys.path.insert(research/)` 指向的目录已不存在,跑起来
+必 `ImportError`;`scripts/oneoff/` 按既有约定 = 已执行完毕的留档审计件,留着无害。
+
+④b-D 对拍脚本:`research/k7p_h11_stage.py`(研究参考实现)vs
 `neckline/scan/stage.py`(生产实现)在研究面板可覆盖的真实交易日上逐行业比对。
 
 **不进生产链路**(④b-D 明文),纯本地一次性对拍工具;不在 `scripts/` 顶层。

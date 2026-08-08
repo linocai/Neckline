@@ -87,7 +87,7 @@ def main() -> int:
 
     try:
         if get_active_pack(db_path=db) is None:
-            doc = load_pack_file(Path(__file__).resolve().parent.parent / "packs" / "K4-pack.json")
+            doc = load_pack_file(Path(__file__).resolve().parent.parent / "packs" / "K8-skeleton.json")
             p = activate_pack(doc["manifest"], doc["config"], via="smoke", db_path=db)
             logger.info("[前置] 隔离库激活策略包 %s", p.pack_version)
 

@@ -14,24 +14,71 @@ from typing import Any, Dict
 
 import pytest
 
-from neckline.selection import pack, primitives
+from neckline.selection import engine_api, pack, primitives
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _K4_PACK_FILE = _REPO_ROOT / "packs" / "K4-pack.json"
 _K7_PACK_FILE = _REPO_ROOT / "packs" / "K7-pack.json"
+_K8_SKELETON_FILE = _REPO_ROOT / "packs" / "K8-skeleton.json"
+_ENGINE_PACK_FILES = {
+    "C": _REPO_ROOT / "packs" / "C1.json",
+    "Z": _REPO_ROOT / "packs" / "Z1.json",
+    "Y": _REPO_ROOT / "packs" / "Y1.json",
+}
 
 
 def _minimal_pack(pack_version: str = "test-pack-v1", **overrides: Any) -> Dict[str, Any]:
+    """合成最小骨架线包(V2.2-① 起缺省 `line_code='V'` —— 本文件绝大多数用例经
+    `get_active_pack()` 读回,而它已是骨架线薄封装;LEGACY 线专属用例自行覆盖)。"""
     manifest = {
         "pack_version": pack_version,
         "name": "测试包",
         "date": "2026-08-02",
-        "engine_api_version": 1,
+        "engine_api_version": engine_api.ENGINE_API_VERSION,
+        "line_code": "V",
         "evidence_ref": [],
     }
     config = {
         "seeds": {"non_new_stock": {"min_days": 60}},
         "tier": {"weights": {"sector_strength": 1.0}, "dims": ["sector_strength"]},
+    }
+    manifest.update(overrides.get("manifest", {}))
+    config.update(overrides.get("config", {}))
+    return {"manifest": manifest, "config": config}
+
+
+def _engine_leaf(value: Any, *, basis: str = "测试:从 K8 某句翻译") -> Dict[str, Any]:
+    return {"value": value,
+            "provenance": {"source": "engineering_v1", "basis": basis, "calibration": "pending"}}
+
+
+def _minimal_engine_pack(line_code: str = "C", pack_version: str = "C-test-v1",
+                         **overrides: Any) -> Dict[str, Any]:
+    """合成最小引擎线包(五关一段不少、每叶带 provenance —— 闸 1 的正例底座)。"""
+    manifest = {
+        "pack_version": pack_version,
+        "name": "测试引擎包",
+        "date": "2026-08-09",
+        "engine_api_version": engine_api.ENGINE_API_VERSION,
+        "line_code": line_code,
+        "evidence_ref": [],
+    }
+    config = {
+        "engine": {
+            "engine_code": line_code,
+            "applies_to": "测试用引擎",
+            "gates": {
+                "market": {"primary_regimes": _engine_leaf(["trend_continuation"])},
+                "sector": {"industry_rank_max": _engine_leaf(10)},
+                "position": {"landing_states": _engine_leaf(["liftoff_confirmed"])},
+                "core": {"leader_rs_rank_max": _engine_leaf(3)},
+                "evidence": {"independent_evidence_min": _engine_leaf(3)},
+            },
+            "tier_evidence": {
+                "t1": {"max_evidence_degrades": _engine_leaf(0)},
+                "t2": {"max_evidence_degrades": _engine_leaf(1)},
+            },
+        },
     }
     manifest.update(overrides.get("manifest", {}))
     config.update(overrides.get("config", {}))
@@ -210,24 +257,23 @@ def test_validate_config_accepts_partial_quality_lines():
     assert pack.validate_config(config) == []
 
 
-def test_v1_pack_with_retired_tier3_min_still_validates(tmp_path: Path):
-    """🔴 **V2.1-② 回滚锚判据**:`K7-pack-v1` 里就写着 `tier3_min`,而它是**回滚绳**。
-    schema 若把退役键当"未知键"拒掉,回滚锚当场作废 —— 所以受理但不生效。
-
-    这一条直接吃**仓库里那份真包文件**,不是构造出来的样例:它就是批 2 出事时要
-    重新激活的那一行。"""
+def test_v1_pack_with_retired_tier3_min_still_parses_but_can_no_longer_activate(tmp_path: Path):
+    """V2.1-② 的「受理退役键」宽容**保留**(历史行读回要能解析,schema 层不报
+    未知键);但 V2.2-① 起 `K7-pack-v1` **不再是回滚锚** —— `ENGINE_API_VERSION`
+    1→2 后它被闸 2 硬拒,⛔ 全项目不许再写「回滚 = 激活旧包」(回滚绳 = 代码
+    commit + DB 备份还原,plan §五 ① 原文)。本测试直接吃仓库里那份真包文件。"""
     doc = json.loads(_K7_PACK_FILE.read_text(encoding="utf-8"))
     assert "tier3_min" in doc["config"]["tier"]["quality_lines"]     # 前提:真包里真的有
-    assert pack.validate_manifest(doc["manifest"]) == []
+    assert pack.validate_manifest(doc["manifest"]) == []             # schema 层仍逐字受理
     assert pack.validate_config(doc["config"]) == []
-    # 而且还能**原样过闸激活**(回滚路径活着,不只是校验通过)
+    # 但组合校验(含 engine_api 兼容)必须拒 —— 且是**只有**这一条错误(说明拒因
+    # 恰是版本闸,不是 schema 被顺手改坏)。
+    errors = pack.validate_pack_doc(doc)
+    assert len(errors) == 1 and "engine_api_version 不兼容" in errors[0]
     db_path = tmp_path / "rollback.db"
-    pack.activate_pack(doc["manifest"], doc["config"], via="test", db_path=db_path)
-    active = pack.get_active_pack(db_path=db_path)
-    assert active.pack_version == "K7-pack-v1"
-    # 包对象**原样保留**那一键(`get_active_pack()` 对旧包行为逐位不变,②-4 判定
-    # 规则的第一条);忽略发生在引擎侧 `tier.resolve_quality_lines()`,不在这里。
-    assert "tier3_min" in active.tier_quality_lines()
+    with pytest.raises(ValueError, match="engine_api_version 不兼容"):
+        pack.activate_pack(doc["manifest"], doc["config"], via="test", db_path=db_path)
+    assert pack.get_active_pack(db_path=db_path) is None             # 一行都没写进去
 
 
 def test_retired_quality_line_key_is_accepted_but_not_active():
@@ -334,51 +380,60 @@ def test_pack_accessor_tier_quality_lines_defaults_to_empty_dict(tmp_path: Path)
 
 
 def test_real_k4_pack_still_has_no_quality_lines_key():
-    """K4-pack-v1 是回滚锚,⑥-b 零改动——直接从"没有这个键"验证,而不是去读
-    文件 diff。"""
+    """K4-pack-v1 文件冻结留档(⛔ 一字不改),schema 层仍能逐字解析——直接从
+    "没有这个键"验证,而不是去读文件 diff。"""
     doc = pack.load_pack_file(_K4_PACK_FILE)
     assert "quality_lines" not in doc["config"]["tier"]
-    assert pack.validate_pack_doc(doc) == []   # 重新校验仍通过
+    assert pack.validate_manifest(doc["manifest"]) == []   # schema 层仍逐字受理
+    assert pack.validate_config(doc["config"]) == []
 
 
 def test_real_k7_pack_file_has_quality_lines_matching_plan_decision():
-    """⑥-b-A/⑥-b-B 裁定的三个数:0.60/0.40/0.25。"""
+    """⑥-b-A/⑥-b-B 裁定的三个数:0.60/0.40/0.25(文件冻结留档,内容不许漂)。"""
     doc = pack.load_pack_file(_K7_PACK_FILE)
-    assert pack.validate_pack_doc(doc) == []
+    assert pack.validate_manifest(doc["manifest"]) == []
+    assert pack.validate_config(doc["config"]) == []
     assert doc["config"]["tier"]["quality_lines"] == {
         "tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.25,
     }
-    assert doc["manifest"]["engine_api_version"] == 1   # ⑥-b-A 判定:纯增量,不 bump
+    assert doc["manifest"]["engine_api_version"] == 1   # 历史事实,文件冻结不改
 
 
-def test_engine_api_version_not_bumped_by_quality_lines_addition():
-    from neckline.selection import engine_api
+# ══════════════════════════════════════════════════════════════════════════
+# V2.2-① 反向守门(plan §五 ① 测试与守门原文,三条一条不少):版本闸真的剪断了
+# 老回滚绳 —— ⛔ 不留一条自己都不信的绳。
+# ══════════════════════════════════════════════════════════════════════════
 
-    assert engine_api.ENGINE_API_VERSION == 1
+def test_engine_api_version_is_2_after_v22_line_split():
+    """`ENGINE_API_VERSION == 2`(V2.2-① 裁定):`get_active_pack()` 语义改为取
+    骨架线现役行,LEGACY 包不再会被返回 → 判定规则第二条不成立 → 必须 bump。
+    理由全文见 `engine_api.py` 模块头。"""
+    assert engine_api.ENGINE_API_VERSION == 2
 
 
-def test_engine_api_version_not_bumped_by_t3_retirement():
-    """🔴 **V2.1-②-4 裁定的机器判据**:T3 退役**不** bump `ENGINE_API_VERSION`。
+def test_v1_manifests_are_incompatible_now():
+    """`is_compatible({"engine_api_version": 1})` 必须为 **False**(逐位相等判据)。"""
+    assert engine_api.is_compatible({"engine_api_version": 1}) is False
+    assert engine_api.is_compatible({"engine_api_version": 2}) is True
 
-    三条理由(plan 原文写死):① 按 ③-K7 判定规则,「旧包原样重新校验仍通过 +
-    `get_active_pack()` 对旧包行为逐位不变」两条本次都成立;② `ENGINE_API_VERSION`
-    表达的是**原语签名与特征白名单这一整套约定**,本次没改任何原语签名、没收紧
-    白名单、没动五维,改的是档位数;③ bump 的代价是 `is_compatible()` 的逐位相等
-    判据**当场作废两个回滚锚**,代价与收益不成比例。"""
-    from neckline.selection import engine_api
 
-    assert engine_api.ENGINE_API_VERSION == 1
-    assert engine_api.is_compatible({"engine_api_version": 1}) is True
-    # 两个回滚锚的 manifest 都仍判"兼容"(回滚绳没被这一版剪断)
+def test_legacy_rollback_anchors_are_dead_and_gate_says_so():
+    """仓库里真的 `packs/K4-pack.json` / `packs/K7-pack.json` 走组合校验**必须被拒**
+    —— 把「回滚锚已作废」钉成机器判据(⛔ 有人把这两个文件"顺手升级"到
+    engine_api_version=2 来让测试变绿,就把这道守门连同历史档案一起销毁了,
+    所以同时断言文件内容仍是历史原样)。"""
     for pack_file in (_K4_PACK_FILE, _K7_PACK_FILE):
         doc = pack.load_pack_file(pack_file)
-        assert engine_api.is_compatible(doc["manifest"]) is True
-        assert pack.validate_pack_doc(doc) == []
+        assert doc["manifest"]["engine_api_version"] == 1, f"{pack_file.name} 被改动过!历史文件必须冻结"
+        assert "line_code" not in doc["manifest"], f"{pack_file.name} 被改动过!历史文件必须冻结"
+        assert engine_api.is_compatible(doc["manifest"]) is False
+        errors = pack.validate_pack_doc(doc)
+        assert any("engine_api_version 不兼容" in e for e in errors)
 
 
 def test_validate_pack_doc_checks_engine_api_compat_only_after_structure_passes():
     doc = _minimal_pack()
-    doc["manifest"]["engine_api_version"] = 2
+    doc["manifest"]["engine_api_version"] = 1   # V2.2 起 1 = 不兼容的那一侧
     errors = pack.validate_pack_doc(doc)
     assert any("engine_api_version 不兼容" in e for e in errors)
 
@@ -419,48 +474,33 @@ def test_load_pack_file_raises_on_missing_file(tmp_path: Path):
 
 def test_real_k4_pack_file_is_schema_valid_and_matches_d6_d7_decisions():
     """D7 定案:`packs/K4-pack.json`,`pack_version = "K4-pack-v1"`。本测试直接读
-    仓库里那份真实文件(不是测试夹具里另造的一份),防止它腐化成"能过 schema 但
-    其实字段值早就漂移"的僵尸文件。"""
+    仓库里那份真实文件(不是测试夹具里另造的一份),防止它腐化成"字段值早就漂移"
+    的僵尸文件。V2.2-① 起它是**冻结历史档案**:schema 层仍逐字受理,组合校验被
+    engine_api 闸拒(那是另一条守门的职责,见 `test_legacy_rollback_anchors_...`)。"""
     doc = pack.load_pack_file(_K4_PACK_FILE)
-    assert pack.validate_pack_doc(doc) == []
+    assert pack.validate_manifest(doc["manifest"]) == []
+    assert pack.validate_config(doc["config"]) == []
     assert doc["manifest"]["pack_version"] == "K4-pack-v1"
     assert doc["manifest"]["engine_api_version"] == 1
     assert doc["manifest"]["evidence_ref"] == ["research/k4_assembly_report.md"]
-    assert set(doc["config"]["seeds"]) == set(primitives.PRIMITIVES)   # 五个原语一个不多一个不少
+    # 历史文件冻结在它写成那天的原语集(当时 9 个);V2.2-① 新增的 industry_blacklist
+    # 不在其中且**不许**被补进去(文件一字不改),但它引用的每个原语必须仍在注册表。
+    assert "industry_blacklist" not in doc["config"]["seeds"]
+    assert set(doc["config"]["seeds"]) <= set(primitives.PRIMITIVES)
+    assert set(doc["config"]["seeds"]) == set(primitives.PRIMITIVES) - {"industry_blacklist"}
 
 
-def test_k4_pack_v1_still_validates_and_activates_identically_after_k7_extension(tmp_path: Path):
-    """回滚锚硬判据(V2-③-K7 验收原文,不许含糊):K4-pack-v1 逐字节重新校验
-    仍通过,`get_active_pack()` 对它的输出逐位不变——白名单新增
-    `industry_stage_daily.*`、`intel_rank_priority.dims` 扩容、
-    `config.tier.stage_scores` 新增可选键,这三处改动对 K4-pack-v1 必须是零
-    影响的纯增量,`ENGINE_API_VERSION` 因此不 bump(仍是 1)。"""
+def test_k4_pack_config_still_drives_primitives_identically_without_activation(tmp_path: Path):
+    """K4-pack-v1 已不可激活(engine_api 闸),但它的 config **作为历史归因资料**
+    仍要能逐位驱动原语(历史报告按 `pack_version` 指纹回查参数时,解释不能变)。
+    排序键行为逐位不变:三个既有维度全部 asc,与扩容前数值等价。"""
     doc = pack.load_pack_file(_K4_PACK_FILE)
-    assert pack.validate_pack_doc(doc) == []   # 逐字节重新校验仍通过
-
-    db_path = tmp_path / "rollback_anchor.db"
-    pack.activate_pack(doc["manifest"], doc["config"], via="seed", db_path=db_path)
-    active = pack.get_active_pack(db_path=db_path)
-
-    assert active is not None
-    assert active.pack_version == "K4-pack-v1"
-    assert active.engine_api_version == 1   # 未 bump
-    assert active.manifest == doc["manifest"]
-    assert active.config == doc["config"]
-    assert active.tier_weights() == {
-        "sector_strength": 0.25, "driver_freshness": 0.20, "leader_clarity": 0.25,
-        "tradability": 0.20, "card_density": 0.10,
-    }
-    assert active.tier_stage_scores() == {}   # K4-pack-v1 没有这一段,新访问器缺省空字典
-    assert active.seeds_config("intel_rank_priority") == {
+    assert doc["config"]["seeds"]["intel_rank_priority"] == {
         "dims": ["industry_rank", "industry_persist_days", "yellow_card_count"]
     }
-
-    # 排序键行为逐位不变:K4-pack-v1 的三个既有维度全部是 asc,与扩容前"直接
-    # 取值参与字典序比较"数值等价,排序结果不变。
     row_a = {"industry_rank": 1, "industry_persist_days": 3, "yellow_card_count": 0}
     row_b = {"industry_rank": 1, "industry_persist_days": 1, "yellow_card_count": 9}
-    dims_param = active.seeds_config("intel_rank_priority")
+    dims_param = doc["config"]["seeds"]["intel_rank_priority"]
     key_a = primitives.PRIMITIVES["intel_rank_priority"].run(row_a, dims_param)
     key_b = primitives.PRIMITIVES["intel_rank_priority"].run(row_b, dims_param)
     assert key_a == (1.0, 3.0, 0.0)
@@ -470,16 +510,17 @@ def test_k4_pack_v1_still_validates_and_activates_identically_after_k7_extension
 
 def test_real_k7_pack_file_is_schema_valid_and_matches_plan_decisions():
     """③-K7-E 定案:`packs/K7-pack.json`,`pack_version = "K7-pack-v1"`。本测试
-    直接读仓库里那份真实文件,防止它腐化成"能过 schema 但字段值早就漂移"的
-    僵尸文件(同 K4-pack 那条测试的既有纪律)。"""
+    直接读仓库里那份真实文件,防止它腐化成"字段值早就漂移"的僵尸文件(同
+    K4-pack 那条测试的既有纪律;V2.2-① 起同为冻结历史档案,不再走组合校验)。"""
     doc = pack.load_pack_file(_K7_PACK_FILE)
-    assert pack.validate_pack_doc(doc) == []
+    assert pack.validate_manifest(doc["manifest"]) == []
+    assert pack.validate_config(doc["config"]) == []
     assert doc["manifest"]["pack_version"] == "K7-pack-v1"
-    assert doc["manifest"]["engine_api_version"] == 1   # ③-K7-C 判定:纯增量,不 bump
+    assert doc["manifest"]["engine_api_version"] == 1   # 历史事实,文件冻结不改
     assert doc["manifest"]["evidence_ref"] == [
         "research/k7_pre_report.md", "research/k7_pre2_report.md",
     ]
-    assert set(doc["config"]["seeds"]) == set(primitives.PRIMITIVES)   # 九个原语一个不多一个不少
+    assert set(doc["config"]["seeds"]) == set(primitives.PRIMITIVES) - {"industry_blacklist"}
     assert doc["config"]["seeds"]["intel_rank_priority"]["dims"] == [
         "industry_rank", "industry_stage_score", "leader_rs_rank", "yellow_card_count",
     ]
@@ -498,10 +539,13 @@ def test_k7_pack_carries_k4_pack_hygiene_gate_and_scan_seed_params_unchanged():
     """③-K7-E 定案:「K7 的变更集中在排序键、Tier 权重与两个新维度」——本测试
     交叉断言 K7-pack 里**除** `intel_rank_priority`(排序键,预期不同)与
     `tier`(权重/stage_scores,预期不同)之外的全部 8 个原语参数与 K4-pack
-    逐字节相同,防止未来有人顺手在"承 K4-pack 不变"的部分悄悄夹带改动。"""
+    逐字节相同,防止未来有人顺手在"承 K4-pack 不变"的部分悄悄夹带改动。
+    (V2.2-① 起遍历基准 = K4 文件自己的 seeds 键,不再是 `PRIMITIVES` 全集——
+    注册表已长出两个历史文件没有的新原语。)"""
     k4_doc = pack.load_pack_file(_K4_PACK_FILE)
     k7_doc = pack.load_pack_file(_K7_PACK_FILE)
-    for prim_name in set(primitives.PRIMITIVES) - {"intel_rank_priority"}:
+    assert set(k4_doc["config"]["seeds"]) == set(k7_doc["config"]["seeds"])
+    for prim_name in set(k4_doc["config"]["seeds"]) - {"intel_rank_priority"}:
         assert k4_doc["config"]["seeds"][prim_name] == k7_doc["config"]["seeds"][prim_name], (
             f"{prim_name} 的参数在 K7-pack 与 K4-pack 之间不一致,但该原语不在"
             "「K7 变更集中在排序键/Tier 权重/stage_scores」的允许范围内"
@@ -585,9 +629,9 @@ def test_get_active_pack_warns_when_legacy_db_has_two_active_rows(tmp_path: Path
     doc_a, doc_b = _minimal_pack("legacy-a"), _minimal_pack("legacy-b")
     pack.activate_pack(doc_a["manifest"], doc_a["config"], db_path=db_path)
     pack.activate_pack(doc_b["manifest"], doc_b["config"], db_path=db_path)
-    # 模拟"索引存在之前就留下的脏数据":绕过索引直接造第二行现役
+    # 模拟"索引存在之前就留下的脏数据":绕过索引直接造第二行现役(两行同为 V 线)
     with connection(db_path) as conn:
-        conn.execute("DROP INDEX IF EXISTS idx_selection_packs_single_active")
+        conn.execute("DROP INDEX IF EXISTS idx_selection_packs_single_active_per_line")
         conn.execute("UPDATE selection_packs SET is_active=1 WHERE pack_version='legacy-a'")
     pack._ACTIVE_PACK_CACHE.clear()
 
@@ -795,21 +839,17 @@ def test_slot_is_really_consumed_not_an_empty_shell(tmp_path: Path):
 # "Tier 序" 那半留给 ⑥ 落地后用真实 Tier 引擎重跑,不在本测试范围内。
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_real_k4_pack_vs_k7_pack_intel_rank_priority_dims_and_ranking_differ(tmp_path: Path):
-    """装载并激活两份真实包文件(非合成迷你包),证明 `intel_rank_priority` 的
+def test_real_k4_pack_vs_k7_pack_intel_rank_priority_dims_and_ranking_differ():
+    """装载两份真实历史包文件(非合成迷你包),证明 `intel_rank_priority` 的
     排序维度配置真的不同,且用同一份合成候选数据跑出的排序结果真的翻转——
-    不是"配置字符串不同"这种表面差异,而是"排序行为真的变了"。"""
-    db_path = tmp_path / "real_packs.db"
+    不是"配置字符串不同"这种表面差异,而是"排序行为真的变了"。
+    (V2.2-① 起两包已不可激活〔engine_api 闸〕,改为直接吃文件 config —— 本测试
+    验的本来就是「配置驱动排序行为」这条纽带,不依赖激活。)"""
     k4_doc = pack.load_pack_file(_K4_PACK_FILE)
     k7_doc = pack.load_pack_file(_K7_PACK_FILE)
 
-    pack.activate_pack(k4_doc["manifest"], k4_doc["config"], via="seed", db_path=db_path)
-    active_k4 = pack.get_active_pack(db_path=db_path)
-    pack.activate_pack(k7_doc["manifest"], k7_doc["config"], via="seed", db_path=db_path)
-    active_k7 = pack.get_active_pack(db_path=db_path)
-
-    k4_dims_params = active_k4.seeds_config("intel_rank_priority")
-    k7_dims_params = active_k7.seeds_config("intel_rank_priority")
+    k4_dims_params = k4_doc["config"]["seeds"]["intel_rank_priority"]
+    k7_dims_params = k7_doc["config"]["seeds"]["intel_rank_priority"]
     assert k4_dims_params["dims"] != k7_dims_params["dims"]   # 真实配置确实不同
 
     # 两只候选:industry_rank 打平(第一维分不出胜负)。候选 A 的
@@ -833,3 +873,367 @@ def test_real_k4_pack_vs_k7_pack_intel_rank_priority_dims_and_ranking_differ(tmp
 
     assert key_a_under_k4 < key_b_under_k4   # K4-pack:A 的 persist_days 更小 → A 排前面
     assert key_b_under_k7 < key_a_under_k7   # K7-pack:B 的 stage_score 更高 → B 排前面(顺序翻转)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.2-① 多版本线注册表(plan §五 ① 测试与守门,逐条):每线各自唯一现役 /
+# 跨线可并存 / stopped 不出现在 get_active_engines / get_active_pack ≡ V 线。
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_same_line_two_active_rows_is_a_db_level_integrity_error(tmp_path: Path):
+    """同线两行 `is_active=1` → 库级 IntegrityError(per-line partial unique index)。"""
+    import sqlite3
+
+    from neckline.db import connection
+
+    db_path = tmp_path / "n.db"
+    doc_v1, doc_v2 = _minimal_pack("line-v-1"), _minimal_pack("line-v-2")
+    pack.activate_pack(doc_v1["manifest"], doc_v1["config"], db_path=db_path)
+    pack.activate_pack(doc_v2["manifest"], doc_v2["config"], db_path=db_path)   # v1 已被置 0
+    with pytest.raises(sqlite3.IntegrityError):
+        with connection(db_path) as conn:
+            conn.execute("UPDATE selection_packs SET is_active=1 WHERE pack_version='line-v-1'")
+
+
+def test_cross_line_active_rows_coexist(tmp_path: Path):
+    """跨线各一行现役**必须**能并存(单包制的全表唯一约束已废)——四条线各自唯一。"""
+    db_path = tmp_path / "n.db"
+    docs = [_minimal_pack("skel-v1")]
+    for line in ("C", "Z", "Y"):
+        docs.append(_minimal_engine_pack(line, pack_version=f"{line}-eng-v1"))
+    for d in docs:
+        pack.activate_pack(d["manifest"], d["config"], via="seed", db_path=db_path)
+
+    actives = {p.line_code: p.pack_version for p in pack.list_packs(db_path=db_path) if p.is_active}
+    assert actives == {"V": "skel-v1", "C": "C-eng-v1", "Z": "Z-eng-v1", "Y": "Y-eng-v1"}
+
+
+def test_activating_engine_line_does_not_kick_skeleton_line(tmp_path: Path):
+    """plan 陷阱 #1 的机器判据:激活引擎线**不许**把骨架线现役行踢下去(全表口径
+    的 prior 查找会静默干这件事,而且闸全过、库不报错)。事件流里也不许出现骨架
+    包被 deactivate 的伪事件。"""
+    import sqlite3
+
+    db_path = tmp_path / "n.db"
+    skel = _minimal_pack("skel-stay")
+    pack.activate_pack(skel["manifest"], skel["config"], db_path=db_path)
+    eng = _minimal_engine_pack("C", pack_version="C-newcomer")
+    pack.activate_pack(eng["manifest"], eng["config"], db_path=db_path)
+
+    assert pack.get_active_skeleton(db_path).pack_version == "skel-stay"   # 骨架线还在
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            "SELECT pack_version, action FROM selection_pack_activation_log ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == [("skel-stay", "activate"), ("C-newcomer", "activate")]   # 零 deactivate
+
+
+def test_switching_within_engine_line_deactivates_only_that_line(tmp_path: Path):
+    db_path = tmp_path / "n.db"
+    for d in (_minimal_pack("skel-v1"),
+              _minimal_engine_pack("C", pack_version="C-old"),
+              _minimal_engine_pack("C", pack_version="C-new")):
+        pack.activate_pack(d["manifest"], d["config"], db_path=db_path)
+    actives = {p.line_code: p.pack_version for p in pack.list_packs(db_path=db_path) if p.is_active}
+    assert actives == {"V": "skel-v1", "C": "C-new"}
+
+
+def test_get_active_engines_orders_c_z_y_and_filters_stopped(tmp_path: Path):
+    """`get_active_engines()`:C→Z→Y 确定性排序(⛔ 不靠 SQL 行序 —— 刻意乱序激活);
+    `status='stopped'` 的线不出现在返回值,但 `get_active_line` 照常返回它(「现役
+    版本是谁」与「现在产不产候选」是两个问题)。status 本版无切换入口(用户裁定),
+    测试按 plan 授权直接 UPDATE 验读侧。"""
+    import sqlite3
+
+    db_path = tmp_path / "n.db"
+    for line in ("Y", "C", "Z"):   # 刻意乱序插入
+        d = _minimal_engine_pack(line, pack_version=f"{line}-eng")
+        pack.activate_pack(d["manifest"], d["config"], db_path=db_path)
+
+    engines = pack.get_active_engines(db_path=db_path)
+    assert list(engines) == ["C", "Z", "Y"]
+    assert [p.pack_version for p in engines.values()] == ["C-eng", "Z-eng", "Y-eng"]
+    assert all(p.status == "running" for p in engines.values())   # DEFAULT 落位
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE selection_packs SET status='stopped' WHERE line_code='Z'")
+    conn.commit(); conn.close()
+    pack._ACTIVE_PACK_CACHE.clear()
+
+    engines = pack.get_active_engines(db_path=db_path)
+    assert list(engines) == ["C", "Y"]                        # Z 不产候选
+    z = pack.get_active_line("Z", db_path)
+    assert z is not None and z.pack_version == "Z-eng" and z.status == "stopped"   # 但仍是现役版本
+
+
+def test_get_active_pack_is_the_skeleton_line_view(tmp_path: Path):
+    """`get_active_pack()` ≡ `get_active_line("V")` ≡ `get_active_skeleton()` 行为
+    等价;库里只有 LEGACY 现役行(割接前生产形状)时三者一致返回 None——⛔ 不许
+    拿 LEGACY 行冒充骨架线。"""
+    import sqlite3
+
+    from neckline.db import init_schema
+
+    db_path = tmp_path / "n.db"
+    init_schema(db_path)
+    # 裸 SQL 造一行 LEGACY 现役(activate_pack 已被 engine_api 闸挡死,这正是老库形状)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO selection_packs (pack_version,name,engine_api_version,manifest_json,"
+        "config_json,is_active,created_at) VALUES ('K7-pack-v1','k7',1,'{}','{}',1,'2026')"
+    )
+    conn.commit(); conn.close()
+    assert pack.get_active_pack(db_path=db_path) is None
+    assert pack.get_active_skeleton(db_path=db_path) is None
+    assert pack.get_active_line("LEGACY", db_path).pack_version == "K7-pack-v1"   # 留档可查
+
+    doc = _minimal_pack("skel-eq")
+    pack.activate_pack(doc["manifest"], doc["config"], db_path=db_path)
+    a, b, c = (pack.get_active_pack(db_path=db_path),
+               pack.get_active_skeleton(db_path=db_path),
+               pack.get_active_line("V", db_path=db_path))
+    assert a.pack_version == b.pack_version == c.pack_version == "skel-eq"
+    assert a is b is c   # 同一缓存对象:薄封装没有另走一条路
+
+
+def test_get_active_line_rejects_unknown_line_code(tmp_path: Path):
+    with pytest.raises(ValueError, match="line_code"):
+        pack.get_active_line("v", tmp_path / "n.db")   # 小写手滑必须炸,不许静默查空
+
+
+def test_active_pack_cache_is_bucketed_per_line_not_per_db(tmp_path: Path):
+    """plan 陷阱 #2 的机器判据:读 V 之后读 C **不许**互相顶掉缓存(只按 db_path
+    分桶时,交替读两条线每次都 cache miss 且可能拿错线)。"""
+    db_path = tmp_path / "n.db"
+    skel = _minimal_pack("cache-skel")
+    eng = _minimal_engine_pack("C", pack_version="cache-eng")
+    pack.activate_pack(skel["manifest"], skel["config"], db_path=db_path)
+    pack.activate_pack(eng["manifest"], eng["config"], db_path=db_path)
+
+    v1 = pack.get_active_line("V", db_path)
+    c1 = pack.get_active_line("C", db_path)
+    v2 = pack.get_active_line("V", db_path)
+    c2 = pack.get_active_line("C", db_path)
+    assert v1.pack_version == "cache-skel" and c1.pack_version == "cache-eng"
+    assert v2 is v1 and c2 is c1   # 交替读不互踢(同一对象 = 缓存真的命中)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.2-① schema 交叉校验 + provenance 闸(闸 1 的机器判据,正反两例齐)
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_skeleton_line_config_must_not_carry_engine_section():
+    doc = _minimal_pack()
+    doc["config"]["engine"] = {"engine_code": "V"}
+    errors = pack.validate_pack_doc(doc)
+    assert any("不许出现 engine 段" in e for e in errors)
+
+
+def test_engine_line_config_must_not_carry_seeds_or_tier():
+    doc = _minimal_engine_pack("C")
+    doc["config"]["seeds"] = {"non_new_stock": {"min_days": 60}}
+    doc["config"]["tier"] = {"weights": {"x": 1.0}, "dims": ["x"]}
+    errors = pack.validate_pack_doc(doc)
+    assert any("不许出现 seeds 段" in e for e in errors)
+    assert any("不许出现 tier 段" in e for e in errors)
+
+
+def test_engine_code_must_equal_line_code_bit_for_bit():
+    doc = _minimal_engine_pack("C")
+    doc["config"]["engine"]["engine_code"] = "Z"
+    errors = pack.validate_pack_doc(doc)
+    assert any("逐位相等" in e for e in errors)
+
+
+def test_unknown_config_top_level_keys_are_tolerated_on_both_line_kinds(tmp_path: Path):
+    """② 要给骨架包加 `config.regime`、③ 要加 `config.landing` —— 本版交叉校验
+    只管 seeds/tier/engine 三个段的归属,**其他顶层键一律不管**(plan §五 ① 原文),
+    拒了它们就是给后续块挖坑。
+
+    ⚠ V2.2-② 落地后 `config.regime` 已是**注册段**(有键名白名单 + provenance 形状
+    校验,见 `_validate_regime`)—— 不再能当"未知顶层键"的样例,样例换成尚未注册的
+    未来段名;「未知顶层键宽容」这条性质本身原样受测。"""
+    skel = _minimal_pack("tolerant-v")
+    skel["config"]["future_section"] = {"future": True}
+    assert pack.validate_pack_doc(skel) == []
+    eng = _minimal_engine_pack("C", pack_version="tolerant-c")
+    eng["config"]["landing"] = {"future": True}
+    assert pack.validate_pack_doc(eng) == []
+    # 而且真的能激活(不是只有校验层宽容)
+    db_path = tmp_path / "n.db"
+    pack.activate_pack(skel["manifest"], skel["config"], db_path=db_path)
+    pack.activate_pack(eng["manifest"], eng["config"], db_path=db_path)
+
+
+def test_missing_provenance_rejected_and_well_formed_accepted():
+    """闸 1 provenance 正反两例(plan §五 ① 测试与守门原文)。"""
+    good = _minimal_engine_pack("C")
+    assert pack.validate_pack_doc(good) == []                       # 正例:全叶带 provenance
+
+    bare = _minimal_engine_pack("C")
+    bare["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = 3   # 裸值,缺 provenance
+    errors = pack.validate_pack_doc(bare)
+    assert any("value/provenance" in e for e in errors)
+
+
+def test_provenance_engineering_v1_requires_basis_and_pending_calibration():
+    doc = _minimal_engine_pack("C")
+    doc["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = {
+        "value": 3, "provenance": {"source": "engineering_v1", "calibration": "pending"},
+    }
+    assert any("basis" in e for e in pack.validate_pack_doc(doc))
+
+    doc2 = _minimal_engine_pack("C")
+    doc2["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = {
+        "value": 3, "provenance": {"source": "engineering_v1", "basis": "K8 某句"},
+    }
+    assert any("calibration" in e for e in pack.validate_pack_doc(doc2))
+
+
+def test_provenance_audited_requires_ref():
+    doc = _minimal_engine_pack("C")
+    doc["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = {
+        "value": 3, "provenance": {"source": "audited"},
+    }
+    assert any("ref" in e for e in pack.validate_pack_doc(doc))
+
+
+def test_provenance_unknown_source_rejected():
+    doc = _minimal_engine_pack("C")
+    doc["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = {
+        "value": 3, "provenance": {"source": "i_swear_its_fine"},
+    }
+    assert any("source 取值非法" in e for e in pack.validate_pack_doc(doc))
+
+
+def test_engine_gate_keys_outside_whitelist_rejected():
+    """键名白名单(`_ENGINE_GATE_SCHEMA`,⛔ 不绑 PRIMITIVES,裁定见 pack.py 模块头):
+    包侧自创阈值键 → 拒;要新玩法先扩白名单。"""
+    doc = _minimal_engine_pack("C")
+    doc["config"]["engine"]["gates"]["market"]["my_secret_knob"] = _engine_leaf(0.5)
+    errors = pack.validate_pack_doc(doc)
+    assert any("白名单外" in e and "my_secret_knob" in e for e in errors)
+
+
+def test_engine_gates_missing_a_section_rejected():
+    doc = _minimal_engine_pack("C")
+    del doc["config"]["engine"]["gates"]["evidence"]
+    errors = pack.validate_pack_doc(doc)
+    assert any("缺关口段" in e and "evidence" in e for e in errors)
+
+
+def test_manifest_line_code_must_be_one_of_five(tmp_path: Path):
+    doc = _minimal_pack()
+    doc["manifest"]["line_code"] = "C1"   # 引擎版本号 ≠ 线号,常见手滑
+    errors = pack.validate_pack_doc(doc)
+    assert any("line_code 取值非法" in e for e in errors)
+    with pytest.raises(ValueError):
+        pack.activate_pack(doc["manifest"], doc["config"], db_path=tmp_path / "n.db")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.2-① 四个真实新包文件(K8-skeleton / C1 / Z1 / Y1):防僵尸文件 + ③-F 守门
+# (plan ③ 测试清单第 5 条提前入列:三个引擎包阈值全部能解析出 provenance,
+# engineering_v1 的条目都带 basis)。
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_real_k8_skeleton_pack_matches_plan_value_changes():
+    """骨架包三处值改动逐条钉死(plan §五 ① 原文):排科创(纯包配置)/ 白酒黑名单
+    (实测 industry 取值 = 「白酒」)/ close_min 维持 2.0 且**刻意无价格上限**。"""
+    doc = pack.load_pack_file(_K8_SKELETON_FILE)
+    assert pack.validate_pack_doc(doc) == []
+    assert doc["manifest"]["pack_version"] == "K8-V0.5"   # ⛔ `V0.5` 禁简写(三线命名纪律)
+    assert doc["manifest"]["line_code"] == "V"
+    assert doc["manifest"]["engine_api_version"] == 2
+    hygiene = doc["config"]["seeds"]["stock_hygiene"]
+    assert hygiene["allowed_boards"] == ["MAIN", "GEM"]           # K8 §三 排除科创板
+    assert hygiene["close_min"] == 2.0
+    assert "close_max" not in hygiene                             # 刻意无上限,⛔ 别顺手加
+    assert doc["config"]["seeds"]["industry_blacklist"] == {"industries": ["白酒"]}
+    # config 结构承 K7 的 seeds+tier 两段,tier 权重/打分映射原样;V2.2-② 追加
+    # regime 段(行情状态五阈值,值与引擎默认逐位一致由 test_market_regime.py 锁)
+    assert set(doc["config"]) == {"seeds", "tier", "regime"}
+    k7 = pack.load_pack_file(_K7_PACK_FILE)
+    assert doc["config"]["tier"]["weights"] == k7["config"]["tier"]["weights"]
+    assert doc["config"]["tier"]["stage_scores"] == k7["config"]["tier"]["stage_scores"]
+
+
+def test_skeleton_allowed_boards_narrowing_is_pack_config_not_code():
+    """「排除科创板 = 纯包配置、零代码改动」的机器判据:原语默认值**仍含 STAR**,
+    收窄只发生在骨架包的参数里(改默认值 = 悄悄改掉所有不给这个键的包的语义)。"""
+    prim = primitives.PRIMITIVES["stock_hygiene"]
+    assert prim.params_schema["allowed_boards"]["default"] == ["MAIN", "GEM", "STAR"]
+    star_row = {"is_st": False, "board": "STAR", "close": 10.0, "ma20": 9.5, "amount_ma20": 50000.0}
+    doc = pack.load_pack_file(_K8_SKELETON_FILE)
+    assert prim.run(star_row) is True                                          # 默认:STAR 放行
+    assert prim.run(star_row, doc["config"]["seeds"]["stock_hygiene"]) is False  # 骨架包:排除
+
+
+@pytest.mark.parametrize("line", sorted(_ENGINE_PACK_FILES))
+def test_real_engine_pack_files_pass_gate1_and_every_leaf_has_provenance(line: str):
+    doc = pack.load_pack_file(_ENGINE_PACK_FILES[line])
+    assert pack.validate_pack_doc(doc) == []
+    assert doc["manifest"]["line_code"] == line
+    assert doc["manifest"]["pack_version"] == f"{line}1"   # 引擎版本命名:C1/Z1/Y1
+    engine = doc["config"]["engine"]
+    assert engine["engine_code"] == line
+
+    leaves = []
+    for section, body in engine["gates"].items():
+        for key, leaf in body.items():
+            leaves.append((f"gates.{section}.{key}", leaf))
+    for tier_key, body in engine["tier_evidence"].items():
+        for key, leaf in body.items():
+            leaves.append((f"tier_evidence.{tier_key}.{key}", leaf))
+    assert leaves, "引擎包至少得有阈值叶子"
+    for path, leaf in leaves:
+        prov = leaf["provenance"]                          # 全部能解析出 provenance
+        assert prov["source"] in ("audited", "engineering_v1"), path
+        if prov["source"] == "engineering_v1":
+            assert prov["basis"].strip(), f"{path}: engineering_v1 必须带 basis"
+            assert prov["calibration"] == "pending", path
+        else:
+            assert prov["ref"].strip(), f"{path}: audited 必须带 ref"
+
+
+def test_engine_pack_audited_leaves_match_plan_distribution():
+    """③-F 表的 provenance 分布如实登记(plan 874 行):`leader_rs_rank` 三档 /
+    `stage` 五态取值 / `industry_rank` 名次档 = audited,**其余全部 engineering_v1**。"""
+    audited_paths = {}
+    for line, file in _ENGINE_PACK_FILES.items():
+        doc = pack.load_pack_file(file)
+        for section, body in doc["config"]["engine"]["gates"].items():
+            for key, leaf in body.items():
+                if leaf["provenance"]["source"] == "audited":
+                    audited_paths.setdefault(line, set()).add(f"{section}.{key}")
+    assert audited_paths["C"] == {"core.leader_rs_rank_max", "sector.industry_rank_max"}
+    assert audited_paths["Z"] == {"core.leader_rs_rank_max", "sector.stage_allowed",
+                                  "market.trend_continuation_required_stages"}
+    assert audited_paths["Y"] == {"core.leader_rs_rank_max", "sector.industry_rank_max"}
+
+
+def test_engine_pack_threshold_values_match_plan_table():
+    """③-F 三引擎首版阈值逐条对表(866–875 行)——文件值漂了这里当场红。"""
+    def val(line, section, key):
+        doc = pack.load_pack_file(_ENGINE_PACK_FILES[line])
+        return doc["config"]["engine"]["gates"][section][key]["value"]
+
+    assert val("C", "core", "leader_rs_rank_max") == 3
+    assert val("Z", "core", "leader_rs_rank_max") == 2
+    assert val("Y", "core", "leader_rs_rank_max") == 5
+    assert val("C", "sector", "industry_rank_max") == 10
+    assert val("Y", "sector", "industry_rank_max") == 30
+    assert val("C", "sector", "strength_days_min_5d") == 3
+    assert val("Z", "sector", "stage_allowed") == ["ignition", "fermentation"]
+    assert val("Z", "sector", "cluster_members_min") == 3
+    assert val("C", "position", "pullback_depth_range") == [-0.20, -0.05]
+    assert val("Z", "position", "dist_from_high_60d_min") == -0.15
+    assert val("Y", "position", "platform_days_min") == 40
+    assert val("Y", "position", "platform_amplitude_max") == 0.25
+    assert val("C", "evidence", "independent_evidence_min") == 3
+    assert val("Z", "evidence", "independent_evidence_min") == 3
+    assert val("Z", "evidence", "require_news_policy_source") is True
+    assert val("Y", "evidence", "independent_evidence_min") == 2

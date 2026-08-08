@@ -538,12 +538,14 @@ class TestScoreAndTier:
         assert ti.FLAG_CARD_DENSITY_MISSING in res.decisions[0].breakdown["flags"]
 
     def test_active_pack_is_read_from_db_when_not_passed(self, isolated_env):
+        """V2.2-①:`get_active_pack()` 已是骨架线薄封装,真实文件改用
+        `K8-skeleton.json`(K7-pack-v1 被 engine_api 闸作废,不可再激活)。"""
         env = isolated_env
-        doc = json.loads((_PACKS_DIR / "K7-pack.json").read_text(encoding="utf-8"))
+        doc = json.loads((_PACKS_DIR / "K8-skeleton.json").read_text(encoding="utf-8"))
         pack_mod.activate_pack(doc["manifest"], doc["config"], via="test", db_path=env.db_path)
         res = ti.score_and_tier(_three_baskets(), D0, db_path=env.db_path,
                                 parquet_dir=env.parquet_dir)
-        assert res.pack_version == "K7-pack-v1"
+        assert res.pack_version == "K8-V0.5"
 
     def test_overflowing_baskets_are_dropped_with_trace(self, isolated_env):
         """20 个**零数据**篮子(每一维都降级取中性分)→ 分数全是同一个平庸值,

@@ -1333,6 +1333,36 @@ class ReviewGetOut(BaseModel):
     material: str = ""
 
 
+class MarketRegimeDayOut(BaseModel):
+    """`market_regime_daily` 一行(V2.2-②,`GET /market-regime`)。`inputs` /
+    `strengthening` / `weakening` **原样透传**领域层形状(同 `ReviewSegmentOut.detail`
+    的既定惯例 —— API 层再镜像一套嵌套模型只会多一处会漂的定义);`inputs` 五维各自
+    带 `available`/`unavailable_reason` 双位(§3.8)。`regimeLabel` 由服务端给人读名
+    (唯一源 `scan/regime.py::REGIME_LABELS`,同 `PushKindOut.label` 先例)。"""
+
+    tradeDate: str
+    regime: str
+    regimeLabel: str = ""
+    regimeReason: str = ""
+    inputs: Dict[str, Any] = Field(default_factory=dict)
+    strengthening: List[Dict[str, Any]] = Field(default_factory=list)
+    weakening: List[Dict[str, Any]] = Field(default_factory=list)
+    skeletonVersion: str = ""
+    computedAt: str = ""
+
+
+class MarketRegimeOut(BaseModel):
+    """`GET /market-regime` 响应(V2.2-②)。🔴 **只读、零现算、一律不 404**(空态走
+    `available=false` + 自由文本 `unavailableReason`)→ **零新增 reason 字符串**,
+    `SERVER_REASONS` 与客户端 `mapReason` 一字不动(体例照 `/review` 三条硬边界)。
+    单日查询填 `day`;`from`/`to` 区间查询填 `days`(升序,缺行的日子不出现)。"""
+
+    available: bool = False
+    unavailableReason: Optional[str] = None
+    day: Optional[MarketRegimeDayOut] = None
+    days: List[MarketRegimeDayOut] = Field(default_factory=list)
+
+
 __all__ = [
     "OkOut",
     "InfoCardSnapshotOut", "InfoCardNewsItemOut", "InfoCardNewsOut", "InfoCardTopListOut",
@@ -1353,6 +1383,8 @@ __all__ = [
     "LLMRoutesOut", "LLMRoutesIn",
     "SettingsReviewColMapIn",
     "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
+    # V2.2-② 行情状态层
+    "MarketRegimeDayOut", "MarketRegimeOut",
     # V2.1-⑤ 复盘板块聚合读 + 校准移交件
     "ReviewSegmentOut", "ReviewOverviewOut", "ReviewHandoffOut",
     "ContingencyScenarioOut", "NoteLabelLiteral",

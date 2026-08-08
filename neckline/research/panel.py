@@ -15,6 +15,11 @@ from typing import Optional
 
 import polars as pl
 
+from neckline.selection.primitives import (
+    STOCK_HYGIENE_AMOUNT_MA20_MIN,
+    STOCK_HYGIENE_CLOSE_MIN,
+    STOCK_HYGIENE_REQUIRE_MA20,
+)
 from neckline.strategy import signals as S
 from neckline.strategy.features import build_research_panel
 
@@ -45,14 +50,23 @@ def base_universe_expr() -> pl.Expr:
         · qfq 收盘 ≥ 2 元（规避低价股/面值退市区,注:qfq 价历史偏低=更保守）
         · 20 日均额 ≥ 2000 万元（amount 单位千元 → ≥20000;滤掉流动性差/滑点失真的票）
         · ma20 非空（至少 20 交易日历史,新上市未成形的排除;次新精细过滤见 P6）
+
+    **数值阈值三项 = `neckline/selection/primitives.py` 的共享常量**(V2.2-①,
+    §七 P2-47 结案:此前两域各写一份字面量、只靠 docstring 声称一致,改一边另一边
+    静默漂移)。⚠ **板块口径刻意不共享**:本函数排 `BSE`(含 STAR,是 K2–K7 全部
+    回测战役可比性的地基,⛔ 一个字不许动);选股域 V2.2 起按包配置排 STAR+BSE
+    (`packs/K8-skeleton.json` 的 `allowed_boards`)—— **两者不是同一个量**,别
+    "统一"(理由全文见 primitives.py 共享常量声明处)。
     """
-    return (
+    expr = (
         (~S.forbid_st())
         & (pl.col("board") != "BSE")
-        & (pl.col("close") >= 2.0)
-        & (pl.col("amount_ma20") >= 20000)
-        & pl.col("ma20").is_not_null()
+        & (pl.col("close") >= STOCK_HYGIENE_CLOSE_MIN)
+        & (pl.col("amount_ma20") >= STOCK_HYGIENE_AMOUNT_MA20_MIN)
     )
+    if STOCK_HYGIENE_REQUIRE_MA20:
+        expr = expr & pl.col("ma20").is_not_null()
+    return expr
 
 
 def in_sample(panel: pl.DataFrame) -> pl.DataFrame:

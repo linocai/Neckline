@@ -353,9 +353,10 @@ def generate_seeds(
     pack = get_active_pack(db_path)
     if pack is None:
         logger.warning(
-            "[scan.seeds] %s 无现役策略包(selection_packs 无 is_active=1 行)—— "
-            "本日不产出任何驱动种子,不使用默认阈值。请先跑 "
-            "`python scripts/activate_pack.py --file packs/K4-pack.json --confirm`。",
+            "[scan.seeds] %s 无现役骨架线包(selection_packs 无 line_code='V' 且 "
+            "is_active=1 行)—— 本日不产出任何驱动种子,不使用默认阈值。请先跑 "
+            "`python scripts/activate_pack.py --file packs/K8-skeleton.json --confirm`"
+            "(V2.2-① 起 get_active_pack() 只认骨架线,LEGACY 老包行不算现役)。",
             _d(trade_date),
         )
         return None
