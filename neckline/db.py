@@ -569,6 +569,16 @@ CREATE TABLE IF NOT EXISTS decision_pending_track (
 );
 CREATE INDEX IF NOT EXISTS idx_decision_pending_track_decision ON decision_pending_track(decision_id);
 
+-- ⚠ **V2.1-① 起停写留档**(PROJECT_PLAN §五 V2.1-①「问询台整链退役」,§七 P4-31
+-- 由六张扩到七张):问询台整条产品链(端点 / `api/inquiry.py` / 客户端 tab)已物理
+-- 删除,写入方 `neckline.api.stores.create_inquiry_log` 随之消失。**本表自此无任何
+-- 读写路径**——`list_inquiry_logs`/`get_inquiry_log` 也已删除,不像 `inquiry_pool`
+-- 那样留一个只读函数:`inquiry_pool` 仍被周复盘 `review/reconcile.py` 消费(对历史
+-- 成交的归因判定),本表**零下游消费方**,读函数留着就是死码(同 `watchlist` 表
+-- v2.0.0-⑬-11 的处置口径)。历史行(v1.4~v2.0.0 生产数据)只供审计,查询走 `sqlite3`
+-- 直连,不再有任何 Python API。DDL 与下面的历史字段注释**原样保留不删**;⚠ 注释里
+-- 提到的 `api/inquiry.py`/`POST /inquiry`/`InquiryOut` 均已不存在。
+--
 -- v1.4-⑦-B 问询记录档案(plan §五 v1.4-⑦-B / §七 P3-13)。`POST /inquiry` 每问一次
 -- 落一行(答案已经算好之后落库,失败不影响当次回答——旁路写入,见
 -- `api/inquiry.py::run_inquiry` 结尾的 try/except)。**与 `inquiry_pool` 是两件事,

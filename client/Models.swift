@@ -2409,100 +2409,10 @@ struct EntrySuggestionRange: Codable, Equatable {
     var stopLine: Double
 }
 
-// MARK: - 4A.5 问询台
-
-enum ChatRole: String, Codable {
-    case user, assistant
-}
-
-struct ChatMessage: Identifiable, Equatable {
-    let id = UUID()
-    var role: ChatRole
-    var text: String
-}
-
-/// 问询台描述性标注(§2.5,v1.3.3 起「审判员→自由分析师」)——**不是裁决**,不授权
-/// 也不禁止任何操作,只标"这次回答里带没带风险提示"。后端 `verdict` 是宽松 `str`
-/// (非枚举),客户端只认当前两个已知值,任何第三个字符串归 `.unknown`(绝不静默
-/// 当成某个已知态展示,便于第一时间发现契约漂移)。
-///
-/// P3-14(⑦-C,2026-07-29):此前认的是 v1.3.3 已退役的二值裁决「不符合」/
-/// 「初审通过进海选池」(`rejectRaw`/`passRaw`)——那两个值后端早已不产出,只剩
-/// 单测在引用,是死码;换成当前真实会出现的两个值,顺带修掉「有风险提示」被
-/// `.unknown` 兜底成中性色调、看不出风险的展示 bug(见 `tone`)。
-enum InquiryVerdict: Equatable {
-    static let analyzedRaw = "已分析"
-    static let analyzedWarnRaw = "已分析·有风险提示"
-
-    case analyzed
-    case analyzedWarn
-    case unknown(String)
-
-    init(_ raw: String) {
-        switch raw {
-        case Self.analyzedRaw: self = .analyzed
-        case Self.analyzedWarnRaw: self = .analyzedWarn
-        default: self = .unknown(raw)
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .analyzed: return Self.analyzedRaw
-        case .analyzedWarn: return Self.analyzedWarnRaw
-        case .unknown(let s): return s
-        }
-    }
-
-    /// P3-14(⑦-C):「已分析·有风险提示」此前落 `.unknown` → 中性色调,风险提示
-    /// 形同隐身;现识别为已知态并显式给**警示色**(复用既有 `NKAxisTone.warn` →
-    /// `NK.amber`,不新造色值)。「已分析」(无风险提示)维持中性——**verdict 不是
-    /// 判决**,不给它套好评色调,以免被误读成"系统认可这只票"。
-    var tone: NKAxisTone {
-        switch self {
-        case .analyzed: return .neutral
-        case .analyzedWarn: return .warn
-        case .unknown: return .neutral
-        }
-    }
-
-    /// 硬约束不变量(§2.5「永不现在就买」):问询台标注**任何一种取值**都不启用
-    /// 「买」类操作——UI 层只展示 `label` 徽标,从不为任何 verdict 渲染下单/买入按钮。
-    /// 恒 false,穷举写死,不看 verdict 分支(见 NecklineTests 的对抗性字符串单测)。
-    var enablesBuyAction: Bool { false }
-}
-
-struct InquiryResult: Equatable {
-    var code: String
-    var reply: String
-    var verdict: InquiryVerdict
-    var evidence: [String]
-    var degraded: Bool
-    /// v1.4-⑦-B:本次问答在 `inquiry_log` 档案表里的行 id(→ 问询历史 `InquiryLogEntry.id`
-    /// 的关联位:问完即可跳转/高亮本次那一条)。**nil = 服务端落库失败(旁路,回答仍有效)
-    /// 或对端是没有该字段的老服务端**,不是"没问过"。默认 nil 保持既有构造点不破。
-    var inquiryId: Int? = nil
-}
-
-// MARK: - v1.4-⑦-B 问询记录档案(§五 v1.4-⑦-B,§七 P3-13)。**与 `inquiry_pool`
-// (已退役历史队列表)是两件事**——本节是问答本身的档案记录,供历史列表 + 详情使用。
-// `materials`/`searchHits`(服务端落库的原始快照,任意嵌套 JSON)不在客户端强类型化
-// (UI 不需要逐字段渲染这两坨结构化材料,解码时按未声明键处理、天然跳过,不报错)。
-
-struct InquiryLogEntry: Codable, Equatable, Identifiable {
-    var id: Int
-    var createdAt: String
-    var code: String
-    var name: String = ""
-    var question: String = ""
-    var answer: String
-    var evidence: [String] = []
-    var verdict: String
-    var positionId: Int? = nil
-    var decisionId: Int? = nil
-
-    var verdictBadge: InquiryVerdict { InquiryVerdict(verdict) }
-}
+// ⚠ V2.1-① 起「问询台」一族类型(`ChatRole`/`ChatMessage`/`InquiryVerdict`/
+// `InquiryResult`/`InquiryLogEntry`,原 "MARK: - 4A.5 问询台" +
+// "MARK: - v1.4-⑦-B 问询记录档案" 两节)已随问询台整链退役删除——见
+// `tests/test_v21_retirement_guard.py::test_inquiry_desk_is_gone`。
 
 // MARK: - 4A.5 设置(V2-②/⑪ 换血:Provider 自填制 + 按 kind 的推送开关)
 //

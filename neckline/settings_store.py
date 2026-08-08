@@ -42,11 +42,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # `_default_settings` 自 V2-② 起不再被本模块任何函数消费(V1 的 `.env` 单 provider
 # 兜底 `resolve_llm` 已退役,自填制下没有这个概念)——**但保留这个导入**:
@@ -377,7 +380,16 @@ def delete_provider(name: str, db_path: Optional[Path] = None) -> bool:
 
 def get_llm_routes(db_path: Optional[Path] = None) -> Tuple[Dict[str, str], Optional[str]]:
     """读 (任务路由表, 默认 provider 名)。路由表 JSON 非法/非 dict → 空字典兜底
-    (诚实降级,不崩)。"""
+    (诚实降级,不崩)。
+
+    **V2.1-① 起读侧过滤未知任务名**(丢弃 + 一行 WARNING,不抛):库里可能残留已退役
+    任务名(如问询台整链退役后的 `"inquiry"` 键——从老备份恢复、或退役前就写入过),
+    若原样透传给客户端,`GET` 回来的 routes 被客户端原样 `PUT` 回去会撞
+    `set_llm_routes()` 的 `ALL_TASKS` 校验 400。**这是与一次性清库脚本
+    `scripts/oneoff/strip_retired_llm_routes.py` 配套的两件事之一**——脚本清生产库
+    那一次性的键,这里兜住"任何时候库里又冒出未知任务名"的自愈,少一件都不够
+    (只清库、不读侧过滤 = 恢复一次备份就复发;只读侧过滤、不清库 = 生产库长期带一个
+    死键,`app_settings.llm_task_routes` 的审计视图会显示假信息)。"""
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
@@ -391,7 +403,14 @@ def get_llm_routes(db_path: Optional[Path] = None) -> Tuple[Dict[str, str], Opti
         routes = {}
     if not isinstance(routes, dict):
         routes = {}
-    return {str(k): str(v) for k, v in routes.items()}, _clean(row[1])
+    routes = {str(k): str(v) for k, v in routes.items()}
+    from neckline.llm.router import ALL_TASKS
+
+    unknown = sorted(k for k in routes if k not in ALL_TASKS)
+    if unknown:
+        logger.warning("llm_task_routes 含未知任务名 %s,读侧已过滤(不阻塞 GET/PUT)", unknown)
+        routes = {k: v for k, v in routes.items() if k in ALL_TASKS}
+    return routes, _clean(row[1])
 
 
 def set_llm_routes(

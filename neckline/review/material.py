@@ -4,8 +4,8 @@
 plan 原文允许"叙述性复盘材料可选叠加 LLM(自由对话体,缺 key 降级为纯确定性
 材料)",但本次任务明确指示该 LLM 叠加层不在本块交付范围——现状即"缺 key
 降级"路径本身,`build_material_text` 产出的就是这份确定性材料,不是半成品。
-未来若要叠加 LLM 反思叙述,应遵循 `neckline.llm.judge`/`neckline.api.inquiry`
-已确立的降级链姿势(`get_provider()` 为 None → 跳过、不阻塞)。
+未来若要叠加 LLM 反思叙述,应遵循 `neckline.llm.judge` 已确立的降级链姿势
+(`get_provider()` 为 None → 跳过、不阻塞)。
 
 风格:写成连贯段落(§2.7 精神下的确定性文案惯例,同 `report/candidates.py` 的
 `entry_plan_text`/`target_text`——确定性规则文案也不写成枚举卡),表格化的明细

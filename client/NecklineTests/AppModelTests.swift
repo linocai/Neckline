@@ -1,7 +1,10 @@
 //
 //  AppModelTests.swift
-//  NecklineTests — AppModel 派生逻辑 / 问询台「永不买」不变量 / 展示层枚举换算 /
+//  NecklineTests — AppModel 派生逻辑 / 展示层枚举换算 /
 //  V2-⑮ 新增:幂等键规则、篮子成员补录预填、per-position 静音开关、推送按 kind 路由。
+//  ⚠ V2.1-① 起「问询台『永不买』不变量」+「问询台多轮上下文截断」两节测试已随
+//  问询台整链退役删除(`InquiryVerdict`/`ChatMessage`/`AppModel.inquiryContext`
+//  均已物理删除)。
 //
 
 import XCTest
@@ -9,61 +12,6 @@ import XCTest
 
 @MainActor
 final class AppModelTests: XCTestCase {
-
-    // MARK: - §2.5 硬约束:问询台标注永不「买」
-
-    /// 镜像后端 `test_verdict_is_descriptive_never_a_judgement`(tests/test_api_inquiry.py):
-    /// 即便上游文本疯狂喊「现在就买」,客户端标注枚举也只可能是
-    /// analyzed/analyzedWarn/unknown 三态之一,且**任何一态**都不启用买入操作。
-    func testInquiryVerdictNeverEnablesBuyAction() {
-        let raws = [
-            InquiryVerdict.analyzedRaw, InquiryVerdict.analyzedWarnRaw,
-            "现在就买!马上买入!强烈建议买买买!",   // 对抗性字符串(后端同款测试用例)
-            "", "买",
-        ]
-        for raw in raws {
-            let v = InquiryVerdict(raw)
-            XCTAssertFalse(v.enablesBuyAction, "verdict for raw=\(raw) 不得启用买入操作")
-        }
-    }
-
-    func testInquiryVerdictKnownCasesMapExactly() {
-        XCTAssertEqual(InquiryVerdict("已分析"), .analyzed)
-        XCTAssertEqual(InquiryVerdict("已分析·有风险提示"), .analyzedWarn)
-        XCTAssertEqual(InquiryVerdict("已分析").label, "已分析")
-        XCTAssertEqual(InquiryVerdict("已分析·有风险提示").label, "已分析·有风险提示")
-    }
-
-    func testInquiryVerdictWarnGetsWarnToneAnalyzedStaysNeutral() {
-        XCTAssertEqual(InquiryVerdict("已分析·有风险提示").tone, .warn)
-        XCTAssertEqual(InquiryVerdict("已分析").tone, .neutral)
-    }
-
-    func testInquiryVerdictUnrecognizedStringNeverSilentlyBecomesKnownState() {
-        let v = InquiryVerdict("某种新裁决")
-        guard case .unknown(let raw) = v else {
-            return XCTFail("未识别字符串应归 .unknown,实际 \(v)")
-        }
-        XCTAssertEqual(raw, "某种新裁决")
-        XCTAssertFalse(v.enablesBuyAction)
-    }
-
-    // MARK: - 问询台多轮上下文截断
-
-    func testInquiryContextTruncatesFromUserBoundary() {
-        var thread: [ChatMessage] = []
-        for i in 0..<20 {
-            thread.append(ChatMessage(role: i % 2 == 0 ? .user : .assistant, text: "msg\(i)"))
-        }
-        let truncated = AppModel.inquiryContext(from: thread, maxCount: 16)
-        XCTAssertLessThanOrEqual(truncated.count, 16)
-        XCTAssertEqual(truncated.first?.role, .user, "截断后必须从 user 边界开始,不能 assistant 打头")
-    }
-
-    func testInquiryContextShortThreadUnchanged() {
-        let thread = [ChatMessage(role: .user, text: "hi"), ChatMessage(role: .assistant, text: "hello")]
-        XCTAssertEqual(AppModel.inquiryContext(from: thread).count, 2)
-    }
 
     // MARK: - 退潮警示(§2.4「今日计划作废、禁开新仓」只警示不硬拦)
 

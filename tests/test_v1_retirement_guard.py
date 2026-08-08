@@ -11,7 +11,10 @@
      `tests/` 自身的裸 SQL 夹具**不在扫描范围**——那是造历史行用的,合法)。
   ③ **该活下来的确实活着**:⑬ 明文点名"不许陪葬"的几件(`llm/json_block.py`、
      `llm/judge.py::judge_candidate`、`report/board_pool.py`、`report/exec_hint.py`
-     纯计算、问询台主体 + `inquiry_log`),以及守门迁移后的新家。
+     纯计算、问询台主体 + `inquiry_log`〔⚠ **该项已被 V2.1-① 用户裁定 #1 推翻**——
+     问询台整链退役,`inquiry_log` 改为停写留档,原断言 `test_13_10_
+     inquiry_desk_itself_survives` 已删除,见文中该编号处的留痕注释〕),以及
+     守门迁移后的新家。
 
 ⚠ **`report/board_pool.py` 不是「五常驻」模块**(Plan ⑬-1 落点表里那一行是笔误,已回报):
 它是**板块池卫生线**(名称模式闸 + 成分数上限),V2 的 `scan/corr.py`/`scan/cluster.py`/
@@ -389,14 +392,10 @@ def test_13_10_inquiry_pool_channel_gone_but_historical_read_kept():
     assert _write_sql_hits("inquiry_pool") == []
 
 
-def test_13_10_inquiry_desk_itself_survives():
-    """⑬「明确不动」:问询台主体 + `inquiry_log`。"""
-    from neckline.api.inquiry import run_deterministic_checks, run_inquiry  # noqa: F401
-    from neckline.api.stores import create_inquiry_log, list_inquiry_logs  # noqa: F401
-    from neckline.api.app import app
-
-    paths = {r.path for r in app.routes}
-    assert any(p.endswith("/inquiry") for p in paths)
+# ⚠ **V2.1-① 起 `test_13_10_inquiry_desk_itself_survives` 已删除**(反转见
+# `tests/test_v21_retirement_guard.py::test_inquiry_desk_is_gone` 的 docstring):
+# 该测试锁的是「⑬『明确不动』:问询台主体 + `inquiry_log`」这条 V2.0.0 时代的判据,
+# 前提已被 V2.1-① 用户裁定(#1「问询台整体删除」)推翻——问询台不再是保留件。
 
 
 # ======================================================================
@@ -415,13 +414,11 @@ def test_13_11_watchlist_chain_is_gone():
     assert not any("/watchlist" in r.path for r in app.routes)
 
 
-def test_13_11_discipline_checks_moved_out_instead_of_dying_with_it():
-    """守门迁移:纪律判定项是**问询台**(保留件)的判据源,随自选体检删除**搬家**
-    到独立模块,不是陪葬。"""
-    from neckline.api import inquiry as inq
-    from neckline.report.discipline_checks import discipline_checks
-
-    assert inq.discipline_checks is discipline_checks
+# ⚠ **V2.1-① 起 `test_13_11_discipline_checks_moved_out_instead_of_dying_with_it`
+# 已删除**(反转见 `tests/test_v21_retirement_guard.py::
+# test_discipline_checks_dies_with_its_last_consumer` 的 docstring):该测试的前提
+# 「纪律判定项是问询台(保留件)的判据源」已不成立——问询台本身随 V2.1-① 整链
+# 退役,`report/discipline_checks.py`(唯一消费方已消失)随之物理删除,不再搬家。
 
 
 # ======================================================================
@@ -505,7 +502,10 @@ def test_13_N_K7_tags_stay_out_of_the_sentinel_tree(path):
 # ======================================================================
 
 _FROZEN_TABLES = ("watchlist", "breathing_t_trades", "inquiry_pool",
-                  "llm_judgments", "reference_plans", "decision_log")
+                  "llm_judgments", "reference_plans", "decision_log",
+                  # V2.1-①(§七 P4-31 由六张扩到七张):问询台整链退役,
+                  # `inquiry_log` 随之停写留档不 DROP。
+                  "inquiry_log")
 
 
 def test_write_guard_scan_domain_and_variants_are_both_live():

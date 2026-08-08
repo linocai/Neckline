@@ -1,5 +1,5 @@
 """市场扫描层结构性防复发守门(plan §五 V2-④ 验收:「grep 守门:在线模块
-[api/ / report/pipeline.py / api/inquiry.py] 零现算入口」),体例照
+[api/ / report/pipeline.py] 零现算入口」),体例照
 `tests/test_industry_strength_store.py::test_online_paths_never_reference_full_scan_entrypoints`
 (同一条 P0-23 纪律的结构性防线)。
 
@@ -24,7 +24,9 @@ _ONLINE_FILES = [
     "neckline/report/basket_daily.py",
     "neckline/api/app.py",
     "neckline/api/deps.py",
-    "neckline/api/inquiry.py",
+    # ⚠ V2.1-① 起 `neckline/api/inquiry.py` 已随问询台整链退役物理删除,从本清单
+    # 摘除(不是"文件改名/移动"那种要靠 skip 兜底的场景,而是这个在线消费方
+    # 本身不存在了——清单摘除比留一条永远 skip 的参数化用例更诚实)。
     "neckline/api/notify.py",
     "neckline/api/schemas.py",
     "neckline/api/stores.py",

@@ -7,9 +7,10 @@
 `research/k4p_h6_theme.py`)。两者不是同一个量:概念板块是多对多(一票挂多个板块,
 取 max)、行业是一对一(`stock_basic.industry`);H6 审计的是**行业**口径、不是
 board_age 代理。本模块把「行业强度」做成**唯一源**,`report/holding_k4_check.py`
-(A2/B3)、`report/intel_candidates.py`(候选安检 hard_cut/avoid_flag)、
-`api/inquiry.py`(问询台 K4 提示)三处判据入口一并回归——**下游只许 import 本模块,
-不得各自再算一份**。
+(A2/B3)判据入口一并回归(⚠ `report/intel_candidates.py` 的候选安检 hard_cut/
+avoid_flag、`api/inquiry.py` 的问询台 K4 提示两处历史消费方已分别随 V2.0.0-⑬-1 与
+V2.1-① 物理删除,不再是本模块的下游)——**下游只许 import 本模块,不得各自再算
+一份**。
 
 **口径逐条对齐 `research/k4p_h6_theme.py::industry_persistence`**(独立实现,不
 import 研究代码——研究侧代码是既定研究产出物,不因产品化回改;生产侧另起一份小函数
@@ -48,9 +49,10 @@ daily_basic 等)——省去无关列的 I/O 与内存(全市场多年历史只�
 (2 vCPU / 1.6G,1591 分区 / 784 万行)实测 700M cap **OOM-kill**、1400M cap **600s 跑不完**,
 2026-07-29 挡住整版上云。修法 = **预计算落表**:16:05 日更**只读当日一个分区**算一天,
 `persist_days` 用「上一评定日 streak + 今日强度日标记」一步递推(`next_persist_days`),
-在线路径(报告主链 / 信息卡 / 问询台)一律读 `report/industry_strength_store.py`。
+在线路径(报告主链 / 信息卡)一律读 `report/industry_strength_store.py`。
 本模块两个 I/O 入口**降级为离线 / 对拍用**(bootstrap、单测三路等价、「表内算得对不对」的
-参考实现),各自 docstring 顶部已复述该禁令;守门单测 grep 四个在线文件断言它们不出现。
+参考实现),各自 docstring 顶部已复述该禁令;守门单测 grep 两个在线文件断言它们不出现
+(⚠ V2.1-① 起原第三个在线文件 `api/inquiry.py` 已随问询台整链退役物理删除)。
 
 **计算侧三件套(v1.4-⑩-B 拆分,口径一个字未改)**:
     · `_day_local_table(panel, quantile)` —— **当日量**(只依赖当天那一个分区):全部
@@ -62,9 +64,10 @@ daily_basic 等)——省去无关列的 I/O 与内存(全市场多年历史只�
       store 的日更增量与 bootstrap Pass 2 都调它,不各写一遍。
 
 **A2/B3 回归规格档(v1.4-②生效)**:`report/holding_k4_check.py` 的
-`A2_theme_persist_ge_4`(hard_cut)/`B3_theme_persist_2_3`(avoid_flag)、
-`report/intel_candidates.py` 的候选安检、`api/inquiry.py` 的问询台 K4 提示,
-三处均改读 `stock_persist_days`(本模块),不再用概念板块 `board_age` 代理。
+`A2_theme_persist_ge_4`(hard_cut)/`B3_theme_persist_2_3`(avoid_flag)改读
+`stock_persist_days`(本模块),不再用概念板块 `board_age` 代理(⚠ 当初一并回归的
+`report/intel_candidates.py` 候选安检、`api/inquiry.py` 问询台 K4 提示两处历史消费方
+已分别随 V2.0.0-⑬-1 与 V2.1-① 物理删除,现仅 `holding_k4_check.py` 一处)。
 **概念板块 `board_age`/`SectorScore` 本身不退役**——仍用于板块展示("所属热门
 板块"文案、常驻/暴起板块拥挤度排序等展示用途),只是不再充当"题材持续天数"
 判据的数据源。
@@ -296,8 +299,9 @@ def compute_industry_strength(
     (生产 1591 分区 / 784 万行),在生产机(2 vCPU / 1.6G)**跑不完**(700M cap OOM-kill、
     1400M cap 600s 超时)。在线一律读 `report/industry_strength_store.py::load_industry_strength`;
     本函数只留给**离线用途** —— bootstrap 回填、单测三路等价对拍、「表内算得对不对」的参考
-    实现。守门单测 grep `pipeline.py`/`info_card.py`/`intel_candidates.py`/`api/inquiry.py`
-    四个文件断言本函数名不出现。
+    实现。守门单测 grep `pipeline.py`/`info_card.py` 两个在线文件断言本函数名不出现
+    (⚠ `intel_candidates.py`/`api/inquiry.py` 两个历史在线消费方已分别随 V2.0.0-⑬-1
+    与 V2.1-① 物理删除,不再是这条守门的扫描目标)。
 
     只返回当日成员数达 `_MIN_MEMBERS` 的行业(未达标 = 不参与排名,调用方按"查无该
     行业"处理——持续天数按 0、排名按 None,同 `sectors.py::sector_hot_lookup` 的

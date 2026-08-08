@@ -10,8 +10,8 @@
        的启用中 provider;其余缺路由回退 `llm_default_provider`)。
     3. 按名字查行;行不存在 / `enabled=0` / `api_key` 未设 → 整体判「不可用」,
        返回 `None`(**全链路必须在无 key/被禁用下优雅降级跑通**,§2.0/§3.8 铁律
-       一字不变,调用方——`judge.py`/`api/inquiry.py`/`report/pipeline.py`等——
-       据此走既有降级路径,不用改)。
+       一字不变,调用方——`judge.py`/`selection/aggregate.py`/`report/pipeline.py`
+       等——据此走既有降级路径,不用改)。
     4. 可用 → 直接构造裸 `OpenAICompatProvider`(`base_url`/`model`/`api_key`/
        `has_web_search`/`search_engine` 由行给),**不再要求 provider 名字必须是
        "glm"/"kimi" 这类白名单值**——任意 OpenAI 兼容端点都能配。
@@ -20,7 +20,7 @@
 的一部分**——本模块不 import 这两个类,它们降级为预置参考实现(见各自模块头
 注释),只服务于既有单测的"具体测试替身"这一用途。
 
-`task`:见 `neckline.llm.router` 的任务常量(`TASK_INQUIRY` 等);传 `None`(默认)
+`task`:见 `neckline.llm.router` 的任务常量(`TASK_REVIEW` 等);传 `None`(默认)
 走"缺路由回退默认 provider"分支,适合尚未纳入 V2 任务分工、只需要"随便一个能用
 的 provider"的旧调用点(如 V1 `report/pipeline.py` 候选审判,该管线将在 ⑬ 块
 被篮子引擎取代,不必现在补任务语义)。

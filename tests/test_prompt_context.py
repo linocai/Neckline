@@ -103,7 +103,9 @@ class TestTimelinessRulesAreInEveryPrompt:
         assert "只能作为历史参照" in r and "不得" in r
 
     @pytest.mark.parametrize("prompt_ref", [
-        "neckline.api.inquiry:INQUIRY_SYSTEM_PROMPT",
+        # ⚠ V2.1-① 起 `neckline.api.inquiry:INQUIRY_SYSTEM_PROMPT` 已随问询台整链
+        # 退役从本清单摘除(该注入点本身不存在了)——清单**只许少这一项**,其余
+        # 逐字不动(见 PROJECT_PLAN §五 V2.1-① 完工记录的改前改后对照)。
         "neckline.llm.judge:JUDGE_SYSTEM_PROMPT",
         # V2 起的四条 LLM 链路(⑤ 检索/推理、⑥ 同档次序、⑦ 卡)——⑦ 是 2026-08-04
         # 判定线审计 🔵-3 补的最后一处;⑦ 不联网,但资料里的证据带日期,同样要时效纪律。

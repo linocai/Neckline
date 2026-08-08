@@ -36,9 +36,6 @@ struct RootView: View {
             PositionsView(model: model)
                 .tabItem { Label(AppTab.positions.title, systemImage: AppTab.positions.systemImage) }
                 .tag(AppTab.positions)
-            InquiryView(model: model)
-                .tabItem { Label(AppTab.inquiry.title, systemImage: AppTab.inquiry.systemImage) }
-                .tag(AppTab.inquiry)
             SettingsView(model: model, config: config)
                 .tabItem { Label(AppTab.settings.title, systemImage: AppTab.settings.systemImage) }
                 .tag(AppTab.settings)
@@ -78,7 +75,6 @@ struct RootView: View {
 
             navItem(.baskets)
             navItem(.positions, badge: model.board.retreatBrake.active ? "!" : nil, badgeColor: NK.down)
-            navItem(.inquiry)
             navItem(.settings)
 
             Divider().overlay(NK.hairline).padding(.vertical, 10).padding(.horizontal, 16)
@@ -122,7 +118,6 @@ struct RootView: View {
         switch model.view {
         case .baskets: BasketDailyView(model: model)
         case .positions: PositionsView(model: model)
-        case .inquiry: InquiryView(model: model)
         case .settings: SettingsView(model: model, config: config)
         case .review: ReviewWorkbenchView(model: model)
         }

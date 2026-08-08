@@ -1085,73 +1085,10 @@ final class DTODecodeTests: XCTestCase {
         } catch APIError.notFound {}
     }
 
-    // MARK: - v1.4-⑦-B 问询历史(样例对照 tests/test_api_inquiry_log.py)
-
-    func testFetchInquiriesDecodesListAndBuildsQuery() async throws {
-        let json = jsonData("""
-        {"items": [
-          {"id": 3, "createdAt": "2026-07-28T10:00:00+00:00", "code": "600001.SH", "name": "示例甲",
-           "question": "300759 康龙化成怎么样", "answer": "综合评分…", "evidence": ["硬线核对通过"],
-           "verdict": "已分析", "positionId": null, "decisionId": null}
-        ]}
-        """)
-        MockURLProtocol.handler = { req in
-            let url = req.url?.absoluteString ?? ""
-            XCTAssertTrue(url.contains("limit=10"))
-            XCTAssertTrue(url.contains("offset=0"))
-            XCTAssertTrue(url.contains("tsCode=600001.SH"))
-            return (200, json)
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let items = try await client.fetchInquiries(limit: 10, offset: 0, tsCode: "600001.SH")
-        XCTAssertEqual(items.count, 1)
-        XCTAssertEqual(items[0].id, 3)
-        XCTAssertEqual(items[0].question, "300759 康龙化成怎么样")
-        XCTAssertEqual(items[0].verdictBadge, .analyzed)
-    }
-
-    /// 不传 `tsCode` → 请求 URL 不含该 query 段(默认全量列表)。
-    func testFetchInquiriesWithoutTsCodeOmitsQueryParam() async throws {
-        MockURLProtocol.handler = { req in
-            let url = req.url?.absoluteString ?? ""
-            XCTAssertFalse(url.contains("tsCode="))
-            return (200, jsonData("""
-            {"items": []}
-            """))
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let items = try await client.fetchInquiries()
-        XCTAssertTrue(items.isEmpty)
-    }
-
-    func testFetchInquiryDetailDecodes() async throws {
-        let json = jsonData("""
-        {"id": 3, "createdAt": "2026-07-28T10:00:00+00:00", "code": "600001.SH", "name": "示例甲",
-         "question": "怎么样", "answer": "综合评分…", "evidence": [],
-         "verdict": "已分析·有风险提示", "positionId": 5, "decisionId": null}
-        """)
-        MockURLProtocol.handler = { _ in (200, json) }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let item = try await client.fetchInquiryDetail(id: 3)
-        XCTAssertEqual(item.answer, "综合评分…")
-        XCTAssertEqual(item.verdictBadge, .analyzedWarn)
-        XCTAssertEqual(item.positionId, 5)
-        XCTAssertNil(item.decisionId)
-    }
-
-    /// 不存在 → 404 `not_found`(复用既有 case,未新增)。
-    func testFetchInquiryDetailNonexistentMapsToExistingNotFoundCase() async throws {
-        MockURLProtocol.handler = { _ in
-            (404, jsonData("""
-            {"detail": {"ok": false, "reason": "not_found"}}
-            """))
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        do {
-            _ = try await client.fetchInquiryDetail(id: 999999)
-            XCTFail("应抛 notFound")
-        } catch APIError.notFound {}
-    }
+    // ⚠ V2.1-① 起「v1.4-⑦-B 问询历史」一节(`testFetchInquiriesDecodesListAndBuildsQuery`/
+    // `testFetchInquiriesWithoutTsCodeOmitsQueryParam`/`testFetchInquiryDetailDecodes`/
+    // `testFetchInquiryDetailNonexistentMapsToExistingNotFoundCase`)已随问询台整链
+    // 退役删除(`fetchInquiries`/`fetchInquiryDetail`/`InquiryLogEntry` 均已物理删除)。
 
     // MARK: - 4A.3 盘中看板(样例对照 test_board_aggregates_events)
 
@@ -1649,61 +1586,9 @@ final class DTODecodeTests: XCTestCase {
         }
     }
 
-    // MARK: - 4A.5 问询台(样例对照 test_inquiry_endpoint;§2.5 描述性标注,非裁决)
-
-    func testDecodeInquiryAnalyzedWarn() async throws {
-        MockURLProtocol.handler = { _ in
-            (200, jsonData("""
-            {"ok": true, "code": "600001.SH", "reply": "结合搜索,题材催化尚在,未见明显利空。",
-             "verdict": "已分析·有风险提示", "evidence": ["主板,非ST", "板块年龄3天"], "degraded": false}
-            """))
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let r = try await client.sendInquiry(code: "600001.SH", messages: [ChatMessage(role: .user, text: "看看这票")])
-        XCTAssertEqual(r.verdict, .analyzedWarn)
-        XCTAssertEqual(r.verdict.label, "已分析·有风险提示")
-        XCTAssertEqual(r.verdict.tone, .warn)   // P3-14:警示色,不再是中性色
-        XCTAssertFalse(r.evidence.isEmpty)
-        XCTAssertFalse(r.degraded)
-    }
-
-    func testDecodeInquiryAnalyzed() async throws {
-        MockURLProtocol.handler = { _ in
-            (200, jsonData("""
-            {"ok": true, "code": "600002.SH", "reply": "未命中任何硬线,形态上暂未走出买点。",
-             "verdict": "已分析", "evidence": ["未命中系统硬线"], "degraded": false}
-            """))
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let r = try await client.sendInquiry(code: "600002.SH", messages: [])
-        XCTAssertEqual(r.verdict, .analyzed)
-        XCTAssertEqual(r.verdict.tone, .neutral)
-    }
-
-    /// v1.4 review 契约线 🟡-3:`POST /inquiry` 的 `inquiryId`(v1.4-⑦-B 契约清单登记在案)
-    /// 从前在 Swift 解码段被丢掉 —— 服务端 → JSON 三段都在,第四段漏了,问询历史关联位没料。
-    /// 三态各锁一条:有值 / 显式 null(服务端落库失败的旁路态)/ 老服务端压根没这个键。
-    func testDecodeInquiryIdPresentNullAndAbsent() async throws {
-        func send(_ json: String) async throws -> InquiryResult {
-            MockURLProtocol.handler = { _ in (200, jsonData(json)) }
-            let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t",
-                                   session: mockSession())
-            return try await client.sendInquiry(code: "600002.SH", messages: [])
-        }
-        let base = """
-        {"ok": true, "code": "600002.SH", "reply": "r", "verdict": "已分析",
-         "evidence": [], "degraded": false
-        """
-        let withId = try await send(base + ", \"inquiryId\": 42}")
-        let nullId = try await send(base + ", \"inquiryId\": null}")   // 落库失败 = 旁路
-        let noKey = try await send(base + "}")                         // 老服务端无此键
-        XCTAssertEqual(withId.inquiryId, 42)
-        XCTAssertNil(nullId.inquiryId)
-        XCTAssertNil(noKey.inquiryId)
-        // 落库失败不影响回答本身:reply/verdict 照常(与 degraded 是两件独立的事)
-        XCTAssertEqual(nullId.verdict, .analyzed)
-        XCTAssertFalse(nullId.degraded)
-    }
+    // ⚠ V2.1-① 起「4A.5 问询台」一节(`testDecodeInquiryAnalyzedWarn`/
+    // `testDecodeInquiryAnalyzed`/`testDecodeInquiryIdPresentNullAndAbsent`)已随
+    // 问询台整链退役删除(`sendInquiry`/`InquiryResult` 均已物理删除)。
 
     // MARK: - 4A.5 设置(V2-② Provider 自填制 + V2-⑪ 按 kind 的推送开关)
 

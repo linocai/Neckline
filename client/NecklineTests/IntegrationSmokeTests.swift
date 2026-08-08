@@ -1,7 +1,8 @@
 //
 //  IntegrationSmokeTests.swift
 //  NecklineTests — 真实网络联调冒烟(§五 阶段4C 验收:「与本地 dev 后端的联调闭环
-//  证据(开清仓/看板/问询台真请求)」)。
+//  证据(开清仓/看板真请求)」)。⚠ V2.1-① 起「问询台真请求」一项(原三项之一)
+//  已随问询台整链退役删除。
 //
 //  这批测试用**真实 URLSession**(不经 MockURLProtocol)对本机 dev 后端发真请求,
 //  只有本地跑起 dev uvicorn 才会执行;检测不到服务 → `XCTSkip`,不影响默认
@@ -113,22 +114,8 @@ final class IntegrationSmokeTests: XCTestCase {
         }
     }
 
-    /// 问询台真请求(§4C.3,v1.3.3 起自由分析师):标注必须落在两个已知描述性标注
-    /// 之一,「已分析」/「已分析·有风险提示」(**不是裁决**,不影响任何操作),
-    /// 且这是**真实**跑通了「确定性检查 + LLM 降级链」全链路(dev 环境未必配了 LLM key,
-    /// 走降级占位也是本条铁律「缺 key 全链路不崩」的真实证据,而不是靠 mock 假装)。
-    func testInquiryRealRequestVerdictIsDescriptive() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-        let result = try await client.sendInquiry(
-            code: "600519.SH",
-            messages: [ChatMessage(role: .user, text: "这票现在还能追吗?")]
-        )
-        XCTAssertTrue(result.verdict == .analyzed || result.verdict == .analyzedWarn,
-                      "真实响应应落在两个已知描述性标注之一,实际 verdict=\(result.verdict)")
-        XCTAssertFalse(result.reply.isEmpty)
-        XCTAssertFalse(result.verdict.enablesBuyAction)
-    }
+    // ⚠ V2.1-① 起 `testInquiryRealRequestVerdictIsDescriptive`(§4C.3 问询台真请求)
+    // 已随问询台整链退役删除(`sendInquiry`/`ChatMessage` 均已物理删除)。
 
     /// 设置真请求闭环(V2-②/⑪ 换血后):GET → POST provider(key 只发一次)→ GET
     /// (**确认只回 keySet 布尔、绝不回明文**)→ PUT push(按 kind 全量覆盖)→ GET →

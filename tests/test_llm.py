@@ -64,8 +64,8 @@ class TestFactory:
         """路由永远优先(即便指向的名字当前不存在)——不悄悄跳过到默认值,见
         `router.resolve_task_provider_name` 文档。"""
         db = self._db(tmp_path)
-        settings_store.set_llm_routes({"inquiry": "ghost"}, None, db_path=db)
-        assert get_provider("inquiry", db_path=db) is None
+        settings_store.set_llm_routes({"review": "ghost"}, None, db_path=db)
+        assert get_provider("review", db_path=db) is None
 
     def test_default_provider_without_key_returns_none(self, tmp_path):
         db = self._db(tmp_path)
@@ -90,8 +90,8 @@ class TestFactory:
             "my-custom-glm", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-5.2",
             api_key="sk-xxx", has_web_search=True, search_engine="search_pro", db_path=db,
         )
-        settings_store.set_llm_routes({"inquiry": "my-custom-glm"}, None, db_path=db)
-        p = get_provider("inquiry", db_path=db)
+        settings_store.set_llm_routes({"review": "my-custom-glm"}, None, db_path=db)
+        p = get_provider("review", db_path=db)
         assert type(p) is OpenAICompatProvider  # 不是 GLMProvider/KimiProvider 子类
         assert p.name == "my-custom-glm" and p.model == "glm-5.2"
         assert p.has_web_search is True and p.search_engine == "search_pro"
@@ -133,7 +133,7 @@ class TestFactory:
         assert p.use_streaming is True
         assert p.read_timeout == 90.0   # ⚠ 语义 = chunk 间隔,不是整段墙钟
 
-    @pytest.mark.parametrize("task", ["driver_search", "news_scan", "inquiry", "nl_alert",
+    @pytest.mark.parametrize("task", ["driver_search", "news_scan", "nl_alert",
                                       "profile", None])
     def test_search_and_light_tasks_stay_non_streaming_at_the_validated_90s(self, tmp_path, task):
         """⛔ 检索类**刻意不开流式** —— GLM `web_search` tools 协议与流式的组合本项目

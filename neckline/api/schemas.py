@@ -746,70 +746,7 @@ class EvalWeeklyOut(BaseModel):
     markdown: str = ""
 
 
-# —— 4A.5 问询台 + 设置 ————————————————————————————————————————————————
-
-class ChatMessageIn(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
-
-
-class InquiryIn(BaseModel):
-    code: str
-    messages: List[ChatMessageIn] = Field(default_factory=list)
-
-
-# —— v1.3.3:二值裁决退役 → **描述性标注**(用户 2026-07-27 拍板「问询台改自由分析师」)——
-# 旧的 `VERDICT_REJECT="不符合"` / `VERDICT_PASS="初审通过进海选池"` 已删除:问询台不再
-# 做通过/不通过的判决,也不再自动写海选池。下面两个值**不是判决**——它们既不授权也不
-# 禁止任何操作,只告诉客户端"这次回答里带没带风险提示",供徽标展示。
-VERDICT_ANALYZED = "已分析"
-VERDICT_ANALYZED_WARN = "已分析·有风险提示"
-
-
-class InquiryOut(BaseModel):
-    ok: bool = True
-    code: str
-    reply: str                                   # 自由对话体(§2.7)
-    # **契约刻意不破**:字段名/字段集合一个不动,只把类型由
-    # `Literal["不符合","初审通过进海选池"]` 放宽成 `str`(v1.3.3)。已装的 macOS 客户端
-    # 对未识别取值走 `InquiryVerdict.unknown(raw)`(原样显示 + 中性色调)、且
-    # `enablesBuyAction` 恒 false 穷举写死,故不会解码失败、不会误显示成某个已知态。
-    verdict: str
-    evidence: List[str] = Field(default_factory=list)
-    degraded: bool = False                       # LLM 段是否走了降级占位
-    # v1.4-⑦-B(P3-13):问一次落一行(`inquiry_log` 表),历史见
-    # `GET /inquiries`/`GET /inquiries/{id}`。**落库是旁路**——失败不影响本次回答,
-    # 此时为 `None`(不代表本次问询本身失败;`reply`/`verdict`/`evidence` 仍是有效
-    # 结果,`degraded` 字段专指 LLM 段是否降级,与这个字段是两件独立的事)。老客户端
-    # (v1.3 及更早)对未声明的多余字段直接忽略,不影响既有解码——契约新增字段,不是破坏。
-    inquiryId: Optional[int] = None
-
-
-# —— v1.4-⑦-B 问询记录档案(plan §五 v1.4-⑦-B / §七 P3-13)——————————————————————
-# **与 `inquiry_pool`(已退役历史队列表)是两件事**:本节是问答本身的档案记录,
-# 供 `GET /inquiries`(历史列表)/`GET /inquiries/{id}`(详情)使用。
-
-class InquiryLogOut(BaseModel):
-    """问询记录档案单条。`materials`/`searchHits` 是落库时的快照(不重算,读回来
-    就是当时喂给/搜回来的东西);`evidence`/`answer`/`verdict` 与当时 `InquiryOut`
-    返回给用户的内容一致(同一份数据,两处落地)。"""
-    id: int
-    createdAt: str
-    code: str
-    name: str = ""
-    question: str = ""
-    materials: Dict[str, Any] = Field(default_factory=dict)
-    answer: str
-    evidence: List[str] = Field(default_factory=list)
-    searchHits: List[Dict[str, Any]] = Field(default_factory=list)
-    verdict: str
-    positionId: Optional[int] = None
-    decisionId: Optional[int] = None
-
-
-class InquiryLogsListOut(BaseModel):
-    items: List[InquiryLogOut] = Field(default_factory=list)
-
+# —— 4A.5 设置 ——————————————————————————————————————————————————————————
 
 class PushKindOut(BaseModel):
     """一个通知 kind 的开关行(V2-⑪,plan §五 V2-⑪-B / D5)。`level` 是三级之一
@@ -1293,7 +1230,6 @@ __all__ = [
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "EntrySuggestionOut", "CircuitEpisodeOut", "CircuitStateOut",
-    "ChatMessageIn", "InquiryIn", "InquiryOut", "VERDICT_ANALYZED", "VERDICT_ANALYZED_WARN",
     "PushKindOut", "PushSettingsOut", "SettingsOut", "SettingsProviderOut", "SettingsPushIn", "DeviceRegisterIn",
     "ConfirmationCardOut", "CustomAlertOut", "AlertsListOut", "AlertConditionIn",
     "AlertCreateIn", "AlertUpdateIn", "AlertParseIn", "AlertParseOut",

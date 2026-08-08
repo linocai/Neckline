@@ -32,7 +32,9 @@ def test_protected_get_requires_token(client, path):
 def test_protected_post_requires_token(client):
     assert client.post("/api/v1/devices", json={"token": "x"}).status_code == 401
     assert client.post("/api/v1/positions", json={"code": "600001.SH", "buy_price": 1.0, "qty": 100}).status_code == 401
-    assert client.post("/api/v1/inquiry", json={"code": "600001.SH", "messages": []}).status_code == 401
+    # V2.1-①:`/inquiry` 已随问询台整链退役删除,401 覆盖面换一条同样全字段可选的
+    # POST 端点顶上(不许因此变窄)——`DecisionCreateIn` 全部字段可选,空提交合法。
+    assert client.post("/api/v1/decisions", json={}).status_code == 401
     # V2-②:Provider 注册表新增端点(自填制,plan §3.10-B)
     assert client.post("/api/v1/settings/providers", json={"name": "x"}).status_code == 401
 

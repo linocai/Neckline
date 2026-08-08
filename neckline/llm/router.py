@@ -24,7 +24,6 @@ TASK_TIER_RANK = "tier_rank"            # 同档排序理由(③Tier 分层引�
 TASK_SCRIPT = "script"                  # 明早证伪剧本
 TASK_REVIEW = "review"                  # 盘后复盘解释
 TASK_PROFILE = "profile"                # 画像总结
-TASK_INQUIRY = "inquiry"                # 问询台
 TASK_NL_ALERT = "nl_alert"              # 自然语言临时提醒解析
 
 ALL_TASKS = (
@@ -35,18 +34,15 @@ ALL_TASKS = (
     TASK_SCRIPT,
     TASK_REVIEW,
     TASK_PROFILE,
-    TASK_INQUIRY,
     TASK_NL_ALERT,
 )
 
 # 默认路由的「检索类」集合(plan 原文明确点名 driver_search/news_scan 两项)。
-# ⚠ builder 推断,如实标注:问询台(TASK_INQUIRY)一并收录进检索类——plan §3.10-B
-# 原文只举了两个例子、未列举问询台,但 `api/inquiry.py` 现有实现本就
-# `provider.chat(enable_search=True, ...)`(§2.5「LLM 带工具调用/联网搜索」是问询台
-# 的核心能力之一);若不把它归入检索类,配好双 provider 后问询台会默认拿到无搜索
-# 能力的推理 provider,静默丢失搜索能力——这比"没做"更隐蔽,故按行为保真原则收录。
-# 若与规划意图不符,以 planner 澄清为准,后续可从此元组摘除。
-DEFAULT_SEARCH_TASKS = (TASK_DRIVER_SEARCH, TASK_NEWS_SCAN, TASK_INQUIRY)
+# ⚠ **V2.1-① 起 `TASK_INQUIRY` 已随问询台整链退役从本元组移除**——它此前是
+# builder 推断收录(问询台 `provider.chat(enable_search=True, ...)` 需要搜索能力
+# 的 provider),现在连同问询台主体一起消失,不留影子档;`ALL_TASKS`/`__all__` 三处
+# 同步摘除,反向 hasattr 守门见 `tests/test_v21_retirement_guard.py`。
+DEFAULT_SEARCH_TASKS = (TASK_DRIVER_SEARCH, TASK_NEWS_SCAN)
 
 # —— 大上下文推理:流式 + chunk 间隔超时(§七 P0-44,2026-08-05 晚间生产实打)——
 # **P0-40 的病灶**:`OpenAICompatProvider.read_timeout=90.0` 那个数字是给**带联网
@@ -167,7 +163,6 @@ __all__ = [
     "TASK_SCRIPT",
     "TASK_REVIEW",
     "TASK_PROFILE",
-    "TASK_INQUIRY",
     "TASK_NL_ALERT",
     "ALL_TASKS",
     "DEFAULT_SEARCH_TASKS",

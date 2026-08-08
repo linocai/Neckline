@@ -25,9 +25,9 @@ struct NecklineApp: App {
         // bind(config:) 必须先于 refresh(),放 .task 而非 .onAppear)。
         let m = AppModel()
         // 纯 QA/截图辅助:`simctl launch` 可用 `SIMCTL_CHILD_NECKLINE_INITIAL_TAB=<tab>`
-        // 免交互地把 App 启动到指定板块(数值取 AppTab.rawValue —— V2-⑮ 起是
-        // baskets/positions/inquiry/settings/review),用于视觉核对;不影响正常用户
-        // 启动路径(缺此环境变量则按默认 .baskets 打开)。
+        // 免交互地把 App 启动到指定板块(数值取 AppTab.rawValue —— V2.1-① 起是
+        // baskets/positions/settings/review,`inquiry` 已随问询台整链退役删除),
+        // 用于视觉核对;不影响正常用户启动路径(缺此环境变量则按默认 .baskets 打开)。
         if let raw = ProcessInfo.processInfo.environment["NECKLINE_INITIAL_TAB"],
            let tab = AppTab(rawValue: raw) {
             m.view = tab

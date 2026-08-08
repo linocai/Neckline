@@ -16,13 +16,15 @@ import Observation
 
 enum AppTab: String, CaseIterable, Identifiable {
     // D8:iPhone 四 tab,顺序即 TabBar 顺序;`review` 只在 macOS 侧栏。
-    case baskets, positions, inquiry, settings, review
+    // ⚠ V2.1-① 起 `inquiry` case 已删(问询台整链退役,用户裁定 #1)——
+    // IA 重排(三板块 + 设置沉底、`review` 升为 iOS 第四 tab)归 V2.1-⑦,本块
+    // 只做"问询台从产品面消失"这一件事,不改剩余 case 的顺序/文案。
+    case baskets, positions, settings, review
     var id: String { rawValue }
     var title: String {
         switch self {
         case .baskets: return "今日篮子"
         case .positions: return "持仓"
-        case .inquiry: return "问询台"
         case .settings: return "设置"
         case .review: return "周复盘工作台"
         }
@@ -31,7 +33,6 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .baskets: return "square.grid.2x2"
         case .positions: return "chart.line.uptrend.xyaxis"
-        case .inquiry: return "bubble.left.and.bubble.right"
         case .settings: return "gearshape"
         case .review: return "tray.and.arrow.down"
         }
@@ -176,20 +177,8 @@ final class AppModel {
     var board: BoardSnapshot = .empty
     var boardLoading = false
 
-    // —— 问询台(§2.5:描述性标注非裁决,任何时候都不存在「买」路径)——
-    var inquiryCode: String = ""
-    var inquiryThread: [ChatMessage] = []
-    var inquiryVerdict: InquiryVerdict? = nil
-    var inquiryEvidence: [String] = []
-    var inquiryDegraded = false
-    var inquiryComposer = ""
-    var inquiryLoading = false
-
-    // —— 问询历史 ——
-    var inquiryHistory: [InquiryLogEntry] = []
-    var inquiryHistoryLoading = false
-    var showInquiryHistory = false
-    var lastInquiryId: Int? = nil
+    // ⚠ V2.1-① 起「问询台」+「问询历史」两节(11 个属性 + 4 个方法)已随问询台
+    // 整链退役删除——见 `tests/test_v21_retirement_guard.py::test_inquiry_desk_is_gone`。
 
     // —— 设置 ——
     var settings: SettingsSnapshot = .empty
@@ -770,65 +759,6 @@ final class AppModel {
         } catch {
             showToast("更新失败:\(error.localizedDescription)", isError: true)
         }
-    }
-
-    // MARK: - 问询台(§2.5 自由分析师,描述性标注非裁决;§2.7 自由对话体)
-
-    func startInquiry(code: String) {
-        inquiryCode = code.trimmingCharacters(in: .whitespaces)
-        inquiryThread = []
-        inquiryVerdict = nil
-        inquiryEvidence = []
-        inquiryDegraded = false
-    }
-
-    func sendInquiryComposer() async {
-        let text = inquiryComposer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !inquiryCode.isEmpty else { return }
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        inquiryThread.append(ChatMessage(role: .user, text: text))
-        inquiryComposer = ""
-        inquiryLoading = true
-        lastInquiryId = nil          // 本轮还没结果,上一轮的 id 不许留在这儿
-        do {
-            let payload = Self.inquiryContext(from: inquiryThread)
-            let r = try await client.sendInquiry(code: inquiryCode, messages: payload)
-            inquiryThread.append(ChatMessage(role: .assistant, text: r.reply))
-            inquiryVerdict = r.verdict
-            inquiryEvidence = r.evidence
-            inquiryDegraded = r.degraded
-            lastInquiryId = r.inquiryId
-        } catch let e as APIError {
-            inquiryThread.append(ChatMessage(role: .assistant, text: "问询失败:\(e.errorDescription ?? "未知错误")"))
-        } catch {
-            inquiryThread.append(ChatMessage(role: .assistant, text: "问询失败:\(error.localizedDescription)"))
-        }
-        inquiryLoading = false
-    }
-
-    /// 多轮上下文回传(纯函数,单测覆盖):保留最近 16 条、从 user 边界截起。
-    static func inquiryContext(from thread: [ChatMessage], maxCount: Int = 16) -> [ChatMessage] {
-        guard thread.count > maxCount else { return thread }
-        var truncated = Array(thread.suffix(maxCount))
-        while let first = truncated.first, first.role != .user {
-            truncated.removeFirst()
-        }
-        return truncated
-    }
-
-    func loadInquiryHistory() async {
-        guard let client = clientProvider() else { return }
-        inquiryHistoryLoading = true
-        do {
-            inquiryHistory = try await client.fetchInquiries()
-        } catch let e as APIError {
-            if case .noToken = e {} else { showToast(e.errorDescription ?? "问询历史拉取失败", isError: true) }
-        } catch {
-            showToast("问询历史拉取失败", isError: true)
-        }
-        inquiryHistoryLoading = false
     }
 
     // MARK: - 设置

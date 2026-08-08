@@ -71,14 +71,9 @@ struct QuotaBadge: View {
     }
 }
 
-/// 问询台描述性标注徽标(§2.5:已知两值「已分析」/「已分析·有风险提示」;
-/// `.unknown` 仅为契约漂移兜底展示,不代表第三态)。
-struct VerdictBadge: View {
-    let verdict: InquiryVerdict
-    var body: some View {
-        NKChip(text: verdict.label, tone: verdict.tone, filled: true)
-    }
-}
+// ⚠ **`VerdictBadge` 已随问询台整链退役删除**(V2.1-①):它是问询台描述性标注
+// (`InquiryVerdict`)专用的徽标,唯一消费方 `InquiryView.swift` 已物理删除,依赖的
+// `InquiryVerdict` 类型也已从 `Models.swift` 删除,徽标随之陪葬(不是遗漏)。
 
 // ⚠ **`LLMJudgmentBadge` 已随候选族 DTO 整族退役**(V2-⑮):`ReportOut.candidates` 键
 // 已删,LLM 的产出改由**篮子卡**承载(叙述 / 剧本 / 三个参考件),每处带下面这条标注。

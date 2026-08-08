@@ -5,11 +5,11 @@
 哨兵后台轮询任务(§3.6「哨兵折进 FastAPI 单 unit 的 lifespan asyncio 任务」,不另起进程)。
 shutdown:置位 stop_event,优雅停轮询。
 
-**同码不重写**:报告 / 看板 / 持仓 / 问询台的领域逻辑全部复用现有模块,端点只做「装配 +
+**同码不重写**:报告 / 看板 / 持仓的领域逻辑全部复用现有模块,端点只做「装配 +
 出入参映射 + 鉴权」。
 
 **测试注入(沿 LinoN 模块级替身姿势)**:`ENABLE_SENTINEL`(关后台轮询)、`_DB_PATH_OVERRIDE`
-(隔离库)、`_QUOTES_FN`/`_PANEL_FN`/`_PROVIDER_FN`(免联网 / 免真 LLM)。
+(隔离库)、`_QUOTES_FN`(免联网)。
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from neckline import decision_log as decision_log_store
 from neckline import user_actions
 from neckline.api import notify
 from neckline.api.deps import require_api_token_ready, require_token
-from neckline.api.inquiry import run_inquiry
 from neckline.api.schemas import (
     BoardEventOut,
     BoardOut,
@@ -66,10 +65,6 @@ from neckline.api.schemas import (
     InfoCardOut,
     InfoCardSnapshotOut,
     InfoCardTopListOut,
-    InquiryIn,
-    InquiryLogOut,
-    InquiryLogsListOut,
-    InquiryOut,
     EntrySnapshotOut,
     EvalWeeklyOut,
     K4AdvisoryOut,
@@ -106,11 +101,10 @@ from neckline.api.schemas import (
     TierOut,
     WeeklyReviewOut,
 )
-from neckline.api.stores import get_inquiry_log, list_inquiry_logs, upsert_device
-from neckline.calendar import CN_TZ, is_trading_day, prev_trading_day
+from neckline.api.stores import upsert_device
+from neckline.calendar import CN_TZ, is_trading_day
 from neckline.config import ensure_data_dirs
 from neckline.llm.factory import get_provider
-from neckline.llm.router import TASK_INQUIRY
 from neckline.report import store as report_store
 from neckline import custom_alerts, notify_kinds
 from neckline.sentinel import circuit as circuit_store
@@ -218,8 +212,6 @@ _DB_PATH_OVERRIDE: Optional[Path] = None      # 隔离库(None → settings.db_p
 # 项目 `data/parquet`。
 _PARQUET_DIR_OVERRIDE: Optional[Path] = None  # 隔离 parquet 目录(None → settings.parquet_dir)
 _QUOTES_FN: Optional[Callable[[List[str]], Dict[str, Any]]] = None  # 实时拉价(None → sentinel.quotes)
-_PANEL_FN: Optional[Callable[..., Any]] = None                       # 问询台面板(None → 真 build_research_panel)
-_PROVIDER_FN: Optional[Callable[[Optional[Path]], Any]] = None       # 问询台 provider(None → get_provider)
 
 # 哨兵轮询节奏
 _SENTINEL_POLL_SEC = 60
@@ -1387,70 +1379,6 @@ def decision_track(decision_id: int) -> DecisionTrackOut:
             for t in tracks
         ],
     )
-
-
-# —— 4A.5 问询台 ————————————————————————————————————————————————————————
-
-def _inquiry_basis_date() -> date:
-    """确定性材料的 EOD 基准日——最近一份已生成报告的交易日(最可靠的"有数据日");
-    无报告 → 日历默认(今日交易日则今日,否则上一交易日)。
-
-    **v1.3.3:原 `_inquiry_basis_pool_date()` 返回的第二个值 `pool_date` 已删除**——
-    问询台不再自动写 `inquiry_pool`(「初审通过进海选池」退役,改由用户在客户端一键加
-    自选)。`inquiry_pool` 表与报告侧消费逻辑保留不动(向后兼容,空池 noop),只是不再
-    有自动写入方,故这里也不再需要算"入池当日"。"""
-    lr = report_store.latest_report_date(db_path=_db())
-    if lr:
-        return datetime.strptime(lr, "%Y%m%d").date()
-    today0 = date.today()
-    return today0 if is_trading_day(today0) else prev_trading_day(today0)
-
-
-@app.post(f"{API_PREFIX}/inquiry", dependencies=[Depends(require_token)])
-def inquiry(body: InquiryIn) -> InquiryOut:
-    """问询台(§2.5,**v1.3.3 = 自由分析师**):确定性材料(同码评分 + 硬线提示 + 板块年龄
-    + K4 安检)→ LLM 自由叙述回答用户实际问的问题。**不再有裁决、不再有拦截**——任何票
-    都给实质回答,纪律命中项降级为回答里的警告标注。软护栏「不下买卖指令」只在 prompt 层
-    (刻意不做枚举强校验/输出后处理);真正的护栏是 §3.8「系统永不下单」。缺 key → 确定性
-    材料照给、LLM 段占位降级,不崩。**v1.4-⑦-B**:`run_inquiry` 内部旁路把本次问答落进
-    `inquiry_log`(失败不影响本次回答),`inquiryId` 原样透传(落库失败时为 `None`)。"""
-    provider = (_PROVIDER_FN or (lambda dbp: get_provider(TASK_INQUIRY, db_path=dbp)))(_db())
-    quotes_fn = _QUOTES_FN
-    if quotes_fn is None:
-        from neckline.sentinel.quotes import get_quotes
-        quotes_fn = get_quotes
-    result = run_inquiry(
-        body.code,
-        [{"role": m.role, "content": m.content} for m in body.messages],
-        basis_date=_inquiry_basis_date(), db_path=_db(),
-        provider=provider, quotes_fn=quotes_fn, panel_fn=_PANEL_FN,
-    )
-    return InquiryOut(
-        ok=True, code=body.code, reply=result["reply"], verdict=result["verdict"],
-        evidence=result["evidence"], degraded=result["degraded"],
-        inquiryId=result.get("inquiryId"),
-    )
-
-
-@app.get(f"{API_PREFIX}/inquiries", dependencies=[Depends(require_token)])
-def list_inquiries(limit: int = 20, offset: int = 0, tsCode: str = "") -> InquiryLogsListOut:
-    """问询历史列表(plan §五 v1.4-⑦-B / §七 P3-13),按最近问询在前排序。**与
-    `inquiry_pool`(已退役历史队列表)无关**——本端点读的是 `inquiry_log` 档案表。
-    `limit`/`offset` 简单分页(无 `total`,同 `DecisionsListOut` 等既有
-    列表端点惯例——列表页翻页读不到下一页空数组即知到底,不必服务端额外算总数)。"""
-    items = list_inquiry_logs(
-        limit=limit, offset=offset, ts_code=(tsCode or None), db_path=_db(),
-    )
-    return InquiryLogsListOut(items=[InquiryLogOut(**i) for i in items])
-
-
-@app.get(f"{API_PREFIX}/inquiries/{{inquiry_id}}", dependencies=[Depends(require_token)])
-def inquiry_detail(inquiry_id: int) -> InquiryLogOut:
-    """问询记录详情(plan §五 v1.4-⑦-B)。不存在 → 404 `reason="not_found"`。"""
-    row = get_inquiry_log(inquiry_id, db_path=_db())
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"ok": False, "reason": "not_found"})
-    return InquiryLogOut(**row)
 
 
 # —— 4A.5 设置 + 设备注册 ——————————————————————————————————————————————

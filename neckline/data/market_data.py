@@ -343,8 +343,8 @@ def load_stock_basic(db_path: Optional[Path] = None) -> pl.DataFrame:
 
 def resolve_stock_names(codes: Sequence[str], db_path: Optional[Path] = None) -> Dict[str, str]:
     """`ts_code -> name`(`stock_basic` 当前名称)。**「按代码查中文名」的唯一实现**——
-    `api.app._resolve_names`(看板/持仓展示)与 `api.inquiry`(喂 LLM 的材料 + 联网
-    搜索查询词)都走这里,不各自写一份 `load_stock_basic` + filter。
+    `api.app._resolve_names`(看板/持仓展示)、`selection.aggregate`(喂 LLM 的材料 +
+    联网搜索查询词)等多处都走这里,不各自写一份 `load_stock_basic` + filter。
 
     查不到 / 任何异常 → 该 code 不出现在返回 dict 里(调用方自行兜底回 code),
     **绝不抛**:补名字是展示与检索的增强,不该让主链路崩。"""

@@ -28,7 +28,6 @@
 //    POST /api/v1/decisions                     → DecisionNoteOut(**用户可选补充**入口)
 //    GET  /api/v1/decisions                     → {items:[DecisionOut]}(只读归因)
 //    GET  /api/v1/decisions/{id}/track          → DecisionTrackOut    · 404 not_found
-//    POST /api/v1/inquiry · GET /inquiries[/{id}]→ InquiryOut / InquiryLogOut
 //    GET|POST|PUT|DELETE /api/v1/alerts[/{id}]  → AlertsListOut / CustomAlertOut
 //    POST /api/v1/alerts/parse                  → AlertParseOut(**恒 200**)
 //    GET  /api/v1/settings                      → SettingsOut(**providers[] + routes + kinds[]**)
@@ -57,7 +56,7 @@ import Foundation
 enum APIError: Error, LocalizedError, Equatable {
     case unauthorized
     case notHolding          // 404 该持仓已清或不存在(POST /positions/{id}/close)
-    // 404 通用「未找到」(reason="not_found":决策追踪 / 问询详情 / provider / alert /
+    // 404 通用「未找到」(reason="not_found":决策追踪 / provider / alert /
     // 篮子复盘 / 建仓快照 / 策略包)。与 `notHolding` 分开是因为两者文案不同。
     case notFound
     case notTradingDay       // 400 buyDate 不是交易日
@@ -247,20 +246,6 @@ struct ClosePositionRequest: Encodable {
     // 的 snake_case 并存——后端契约如此,不自作主张统一大小写。
     let closeReason: String?
     let sellFees: Double?
-}
-
-private struct ChatMessageWire: Encodable { let role: String; let content: String }
-private struct InquiryRequest: Encodable { let code: String; let messages: [ChatMessageWire] }
-private struct InquiryResponse: Decodable {
-    let ok: Bool
-    let code: String
-    let reply: String
-    let verdict: String
-    let evidence: [String]
-    let degraded: Bool
-    /// **Optional 是契约语义,不是容错兜底**——服务端落库是旁路(失败时如实发 null,
-    /// 本次回答仍有效)。
-    let inquiryId: Int?
 }
 
 // —— 设置(V2-② Provider 自填制 + V2-⑪ 按 kind 的推送开关)——————————————————
@@ -613,32 +598,8 @@ actor APIClient {
         return try JSONDecoder().decode(DecisionTrack.self, from: data)
     }
 
-    // —— 4A.5 问询台(§2.5:描述性标注非裁决,永不「现在就买」)——
-    func sendInquiry(code: String, messages: [ChatMessage]) async throws -> InquiryResult {
-        let wire = messages.map { ChatMessageWire(role: $0.role.rawValue, content: $0.text) }
-        let body = InquiryRequest(code: code, messages: wire)
-        // LLM 段可能真联网搜索 + 降级重试,给足长超时。
-        let data = try await post("/api/v1/inquiry", body: body, timeout: 60)
-        let r = try JSONDecoder().decode(InquiryResponse.self, from: data)
-        return InquiryResult(code: r.code, reply: r.reply, verdict: InquiryVerdict(r.verdict),
-                             evidence: r.evidence, degraded: r.degraded, inquiryId: r.inquiryId)
-    }
-
-    // —— v1.4-⑦-B 问询历史(读 `inquiry_log` 档案表)——————————————————————
-
-    private struct InquiryLogsListResponse: Decodable { let items: [InquiryLogEntry] }
-
-    func fetchInquiries(limit: Int = 20, offset: Int = 0, tsCode: String? = nil) async throws -> [InquiryLogEntry] {
-        var query = ["limit=\(limit)", "offset=\(offset)"]
-        if let c = tsCode, !c.trimmingCharacters(in: .whitespaces).isEmpty { query.append("tsCode=\(c)") }
-        let data = try await get("/api/v1/inquiries?" + query.joined(separator: "&"))
-        return try JSONDecoder().decode(InquiryLogsListResponse.self, from: data).items
-    }
-
-    func fetchInquiryDetail(id: Int) async throws -> InquiryLogEntry {
-        let data = try await get("/api/v1/inquiries/\(id)")
-        return try JSONDecoder().decode(InquiryLogEntry.self, from: data)
-    }
+    // ⚠ V2.1-① 起「问询台」(`sendInquiry`)+「问询历史」(`fetchInquiries`/
+    // `fetchInquiryDetail`)三个方法已随问询台整链退役删除。
 
     // —— V2-⑪-C 自然语言临时提醒(**只通知,永不交易**)————————————————————
 

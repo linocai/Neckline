@@ -475,7 +475,7 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 
 ---
 
-### ① 问询台整链退役(删除面 A)
+### ① 问询台整链退役(删除面 A)—— ✅ **本地完工 2026-08-08(@builder,⛔ 未部署)**
 
 **目标**:问询台在**产品面与代码面零残留**;`inquiry_log` 停写留档;守门**迁移不丢防线**。
 
@@ -506,6 +506,77 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 **依赖与部署批次**:无前置。→ **批 1**。
 
 **验收**:全量 `pytest tests/ -q` 绿 + 双端 `xcodebuild BUILD SUCCEEDED`;`grep -ri inquiry neckline/ client/` 只剩 `inquiry_pool` 相关与历史注释,`app.routes` 零 `/inquir` 前缀。
+
+#### ✅ ① 完工记录(2026-08-08 · @builder · 本地,⛔ 零部署 / 零一次性脚本生产执行)
+
+- **删除面逐项照做**:6 个文件物理删除(`api/inquiry.py`/`report/discipline_checks.py`/
+  `test_api_inquiry.py`/`test_api_inquiry_log.py`/`test_discipline_checks.py`/
+  `InquiryView.swift`);服务端 3 路由 + 5 pydantic 模型 + `TASK_INQUIRY`(常量/`ALL_TASKS`/
+  `DEFAULT_SEARCH_TASKS`/`__all__` 四处)+ `stores.py` 三函数一并删除;客户端 `AppTab.inquiry`
+  case、11 个 `inquiry*` 属性(plan 原文写「12 个」,清点实为 11 个,如实订正,见下)、
+  4 个方法、`VerdictBadge`、`ChatRole`/`ChatMessage`/`InquiryVerdict`/`InquiryResult`/
+  `InquiryLogEntry` 五类型、`APIClient` 三方法均删。`inquiry_log` 表停写留档(db.py 表头加
+  V2.1-① 登记,同 `watchlist` 处置口径);`inquiry_pool` **零接触**(`load_inquiry_pool` 逐字
+  未动,`test_inquiry_pool_is_untouched_by_this_retirement` 反向锁死)。新增
+  `scripts/oneoff/strip_retired_llm_routes.py`(默认演练/`--confirm`双备份/幂等/只碰
+  `llm_task_routes` 一列,单测 10 例 + 本地临时库 CLI 冒烟验证,**未碰生产库**)。
+- **Plan 与实测的三处出入(如实登记,均已就地订正,不是漏做)**:
+  1. **属性计数**:plan 原文「`AppModel` 的 12 个 `inquiry*` 属性」,`grep -ni inquir` 实点
+     11 个(`inquiryCode/Thread/Verdict/Evidence/Degraded/Composer/Loading/History/
+     HistoryLoading/showInquiryHistory/lastInquiryId`)。已全部删除,数字仅供 planner 核对。
+  2. **`InquiryReply` 该型不存在**:plan ⑦ 删除面写「`Models.swift` 的 `InquiryVerdict`/
+     `ChatMessage`/`InquiryReply`/`InquiryLogEntry`」,代码里实际叫 `InquiryResult`
+     (`sendInquiry` 的返回类型)——已按实名删除,判断是笔误不是遗漏。
+  3. 🔴 **`selection/primitives.py` 并不 import `base_universe_expr`**(plan §五①原文「反向
+     断言…仍被 `selection/primitives.py` 与 `strategy/momentum.py` 消费」,`_import_hits` 核实
+     只有后者是真 import)。`primitives.py::_stock_hygiene` 是一份**独立手写**的标量行谓词,
+     四个默认参数值与 `base_universe_expr()` 的阈值一致,但只在 docstring 里声明"现值 ←
+     base_universe_expr",不是运行时依赖——这是 CLAUDE.md「纪律红绿灯不许手写第二份」同类
+     风险的一个**既有实例**(非本块引入)。守门测试已按实况只锁 `strategy/momentum.py`
+     一个消费方,详细说明写在 `test_v21_retirement_guard.py::
+     test_discipline_checks_dies_with_its_last_consumer` docstring 里。**留一条后续待办**:
+     `selection/primitives.py` 要不要重构成真正复用 `base_universe_expr`,不在本块动
+     (跨模块重构,超出「问询台整链退役」范围)。
+- **发现并修复了 plan 文件清单外、真实会导致 `pytest` 报红的三处隐性耦合**(不是自由发挥,
+  是保证「零回归」验收条款不得不做的连带):`tests/test_llm.py`(两处把字面量 `"inquiry"`
+  当"随便一个合法任务名"示例传给 `set_llm_routes`,+ 一处 `"inquiry"` 混进
+  `DEFAULT_SEARCH_TASKS` 参数化清单)、`tests/test_scan_layer_guardrails.py` 与
+  `tests/test_industry_strength_store.py`(两份**各自独立**的 `_ONLINE_FILES` grep 清单都点
+  过名 `api/inquiry.py`,后者还有两例直接 `from neckline.api import inquiry as inq` 调
+  `run_deterministic_checks`——随对象删除,不是覆盖率退化,已在文件头登记)、
+  `tests/test_llm_router_budget.py::test_all_tasks_declared_count_and_uniqueness`
+  (`len(ALL_TASKS)==9` 硬编数字改 8)。
+- **§五①原文点名的两处"如实登记"**,改前改后逐字核对:
+  1. `tests/test_prompt_context.py::TestTimelinessRulesAreInEveryPrompt` 的
+     `prompt_ref` 参数化清单**只少一项** `"neckline.api.inquiry:INQUIRY_SYSTEM_PROMPT"`,
+     其余六项(`judge`/`aggregate` 两个/`tier`/`basket_card`/`news_scan`)逐字未动。
+  2. 客户端 `InquiryVerdict.analyzedWarn → .warn` 那条 tone 断言
+     (`testInquiryVerdictWarnGetsWarnToneAnalyzedStaysNeutral`)随 `InquiryVerdict`
+     整个类型一起从 `AppModelTests.swift` 消失。
+- **验收条款逐条核对**:`grep -ri inquiry neckline/ client/` 剩余 16 个文件的**全部**行
+  逐行人工核对,均属「`inquiry_pool` 相关」或「本块自己写的退役注释(过去式)」两类之一
+  (零活代码引用);`{r.path for r in app.routes if 'inquir' in r.path.lower()} == []`。
+- **测试数字(直接在共享工作树用 `git stash` 前后对拍,与 ② 的隔离 worktree 手法等价)**:
+  基线(commit `85f4e1e`,即 ② 已提交后的状态)**3041 passed / 2 failed / 2 skipped**(3045
+  collected)→ 本块 **2967 passed / 2 failed / 2 skipped**(2971 collected,-74:净减是因为
+  `test_api_inquiry.py` 单文件 50 个 `def test_` 中含多个参数化用例的 collected 放大,并非
+  单纯"删的比加的多"这么简单)。**两侧失败集合逐字节相同**
+  (`test_api_positions.py::test_buy_date_historical_trading_day_written_through` /
+  `test_fix_position_buy_dates.py::test_unchanged_position_does_not_bump_updated_at`,
+  两条都用 `date.today()`/`_seed_cal_around_today` 拼日历,今天 08-08 是周六非交易日,
+  与本块**及** ② 均无关,基线本来就红,已核实与本块文件零交集)。
+- **双端 build + iOS test**:macOS/iOS `xcodebuild build` 均 **BUILD SUCCEEDED**(`xcodegen
+  generate` 已同步 `project.pbxproj`,diff 仅 4 行删除,纯粹去掉 `InquiryView.swift` 的文件
+  引用);iOS Simulator `xcodebuild test` **173 executed / 11 skipped / 0 failures**
+  (对照 ② 报告的 pristine 客户端「187 executed / 12 skipped」:187−173=14 = 本块删除的
+  Swift 测试方法数逐个对上,12−11=1 = `IntegrationSmokeTests` 里唯一被删的那条
+  `testInquiryRealRequestVerdictIsDescriptive` 原本也是跳过态,两侧互证)。截图验收
+  (`xcrun simctl io screenshot`,`NECKLINE_SKIP_PUSH_PROMPT` 未生效但不影响验证)确认
+  iOS 底部 TabBar 为「今日篮子 / 持仓 / 设置」三项,零「问询台」残留。
+- **不越块声明**:未做 `AppTab` 重排(baskets/positions/review/settings 最终顺序)、未做
+  「选股」改名、未做 macOS 侧栏「交易/复盘」分组调整、未做 `RootView`/`AppModel` 文件头
+  D8 注释改写为「V2.1 三板块」——这些逐条留给 ⑦(§五⑦原文点名的落点)。§四「当前状态」
+  未动(留给 ②/后续收尾)。**未部署生产**(含一次性脚本,归 ⑨ 批 1)。
 
 ---
 
@@ -1095,6 +1166,7 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-08 · 🗑 **V2.1-① 问询台整链退役本地完工(@builder,⛔ 未部署 / 零一次性脚本生产执行)**。服务端 3 端点 + 5 pydantic 模型 + `TASK_INQUIRY`(常量/`ALL_TASKS`/`DEFAULT_SEARCH_TASKS`/`__all__` 四处)+ `api/stores.py` 三函数 + `report/discipline_checks.py`(唯一消费方已亡)一并物理删除;`inquiry_log` 表停写留档(db.py 表头登记,同 `watchlist` 口径);`inquiry_pool` **零接触**(反向测试锁死)。`settings_store.get_llm_routes()` 加读侧未知任务名过滤 + WARNING;新增一次性脚本 `scripts/oneoff/strip_retired_llm_routes.py`(默认演练/`--confirm`双备份/幂等,单测 10 例 + 本地库 CLI 冒烟,**未碰生产库**)。客户端 `AppTab.inquiry` case、11 个 `inquiry*` 属性(plan 写 12,清点订正)、4 方法、`VerdictBadge`、五个 Inquiry 系类型(`InquiryReply` 系 plan 笔误,实名 `InquiryResult`)、`APIClient` 三方法全删;iOS TabBar 截图确认三项(今日篮子/持仓/设置),零 IA 重排(留给 ⑦)。**如实登记发现的三处 plan 出入**:属性计数 12→11、类型名 `InquiryReply`→`InquiryResult`、🔴 `selection/primitives.py` 经核实**并不** import `base_universe_expr`(独立手写谓词,值靠 docstring 人工同步,既有风险非本块引入,守门测试已按实况只锁 `strategy/momentum.py`)。**发现并修复 plan 清单外三处真实测试耦合**(否则 pytest 会红):`test_llm.py`(`"inquiry"` 字面量当示例任务名 × 3 处)、`test_scan_layer_guardrails.py`/`test_industry_strength_store.py`(各自独立的 `_ONLINE_FILES` grep 清单 + 后者两例直调 `run_deterministic_checks`)、`test_llm_router_budget.py`(`len(ALL_TASKS)==9` 改 8)。**测试**(`git stash` 前后对拍,基线 = ② 已提交的 `85f4e1e`):**3041 passed → 2967 passed**(2 failed / 2 skipped 两侧不变,失败集逐字节相同,系 `test_api_positions`/`test_fix_position_buy_dates` 两条与今日〔周六〕日期相关的既存红,核实与 ①② 均无关)。双端 `xcodebuild build` **BUILD SUCCEEDED**(`xcodegen generate` 同步 pbxproj,diff 4 行);iOS test **173/11 skipped/0 failures**(对照 ② 报告的 pristine 187/12,187−173=14 与本块删除的 Swift 测试方法数逐个对上)。详见 §五①完工记录。
 - 2026-08-08 · 🗑 **V2.1-② T3 全链退役本地完工(@builder-pro,⛔ 未部署 / 零接触包文件 / 零客户端改动)**。引擎两档化:`TIER_CAPACITY={1:2,2:5}` · `TIERS=(1,2)` · **删 `TIER3_MIN_SCORE`** · `_eligible_tier` 无兜底档(够不到 `tier2_min` 即 `below_quality_line`,**码字符串一字未改**保住 ⑨ 归因)· `DEGRADE_ORDER` 只剩 `t2_review_detail`(**删 `DROP_T3_BRIEF`**)· `depth_for_tier` 恒 `full`(`DEPTH_BRIEF` 常量**保留**供读回历史行)。**硬约束「历史 T3 回放不许消失」三处落点**:`basket_daily.by_tier()` 按数据实际档位构造、`render._TIER_TITLE` 改函数式兜底、③ 节迭代 `现役档 ∪ 快照实际档`;`list_baskets` 的 `tier` 白名单**保留 3**(读侧宽容,删了 = 历史按 T3 查静默退化成"全部")。**plan 两处疏漏已补并登记**:① `eval/calibration.py` 的 Tier 行写死 `(1,2,3)`(冒烟当场打出幽灵「T3 —(n=0)」= 把系统缺席讲成实质性结论),改成按实际档位渲染、双向守门 —— 这份报告正是 ⑤ 复盘板块要端给用户的东西;② `aggregate.py` 的「17 篮」注释成假话(常量**刻意不动**,检索段按种子计费)。**回滚锚保住**:`pack` 对 `tier3_min` **受理不报未知键**、不进单调性,守门直吃真 `packs/K7-pack.json` 断言"校验通过 + 原样过闸 + 包对象仍带该键";引擎侧忽略并**打 WARNING(⛔ 不静默)**;`ENGINE_API_VERSION` **仍为 1**(②-4 三条理由,两个回滚锚仍判兼容)。反向 hasattr 守门两条 + 白名单不给已删常量留登记。**测试(隔离 worktree 对拍,排除同批 ① 在制品)**:pristine `5635c77` **3028 passed** → 本块 **3041 passed**,+13 例零回归,两侧失败集相同(2 条日期依赖既存红,08-08 周六)。**冒烟**(隔离库 + LLM 桩,真实 db md5 未变):`{'T1':1,'T2':1,'T3':2}` 溢出 0 → **`{'T1':1,'T2':1}` 溢出 2**(2 篮如实进 ③b `below_quality_line`)。pristine 客户端双端 `BUILD SUCCEEDED` + iOS test **187/12 skipped/0 failures**。🔴 **移交 ⑦**:`BasketDailyView.swift` 的 `ForEach([1,2,3])` ⛔ 不许简单改 `[1,2]`(会在展示层拆掉刚立起来的读侧宽容),改法见 ② 完工记录末条。
 - 2026-08-07 · 📐 **V2.1.0 立项:施工图转写进 §五(@planner,⛔ 未开工,等用户 Build 指令)**。六项用户裁定定格(问询台整删 / 三板块 IA / 复盘人工闭环无自动反馈 / T3 彻底删 / 百分制甲案纯展示 / 前端视觉让位 v2.2);分九块 ①问询台整链退役 ②T3 全链退役 ③`K7-pack-v2` 发版激活 ④百分制展示层 ⑤复盘板块服务端 ⑥周度 unit 定案(**P3-42 结案**)⑦客户端 IA 重排 + 复盘板块 ⑧契约对拍守门收口 ⑨分批部署。**本版是对活着的生产系统做在线升级**,四条铁律入 §五〇b(本地施工优先 / 分批部署 / 常驻 API 只在收盘后重启 / **零删键**)。planner 核出四处与前瞻规划的出入并已在图中纠正:`K4-pack-v1` 无 `quality_lines` 故**不必重发版**、`ENGINE_API_VERSION` **不 bump**(理由三条)、报告 ④ 节**服务端零改动**只搬客户端展示、T3 删除**省不到联网检索那笔大头**。§七 吸收 P3-42、部分落地 P3-44、部分作废 P3-33、新挂 P4-46/P3-47;前瞻规划稿归档 `archive/V2.1前瞻规划_20260807立项归档.md`(防双权威)。
 - 2026-08-07 · 🔧 **晚间链 timer/target 接线修复:`neckline-evening.target` 加 `StopWhenUnneeded=yes`,排程从"只跑首晚"恢复为天天跑(@builder-pro,已部署 nk,案底 §七 P0-45)**。08-06 整晚未触发的根因是 **timer 的重新武装边**(target 永不落下 → timer 卡在 `SubState=running`、NEXT 永不重算),**不是**"已 active 的 target 吞掉触发"(08-05 那晚整链跑完即为反证)。修法一行、零代码零契约,三段严格串行未动;`/bin/true` drop-in 空跑演练拿到微秒级五连证据(三段串行 → Reached target → 5.6 ms 后自动 Stopped),演练后 ExecStart 逐字复原、五个 unit 与 `/opt/neckline/deploy/` md5 全 MATCH、`NEXT=2026-08-07 16:35:00`、`neckline.service` `NRestarts=0` 未受扰。**🟠 施加过程中踩了一次次生事故并如实登记**:`daemon-reload` 异步落下 target → timer 以过期基点(08-05 16:35)算出已过去的 08-06 槽 → **当场空跑一遍全链并真推送了一条 APNs**(盘中、无当日 EOD,0 篮 0 卡,空 `20260807` 报告今晚 16:35 会被 `ON CONFLICT DO UPDATE` 覆盖 = 自愈;唯一不可逆的是那条推送)。正确的施加顺序(先 stop timer)已固化进 target 文件头。**08-06 补跑按用户"异常停手回报"纪律暂停,待用户裁量。**

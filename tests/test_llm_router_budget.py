@@ -31,9 +31,10 @@ class _Row(NamedTuple):
 
 
 def test_all_tasks_declared_count_and_uniqueness():
-    """九项任务常量(plan 原文逐字对应),不许漏项也不许有重复字符串。"""
-    assert len(router.ALL_TASKS) == 9
-    assert len(set(router.ALL_TASKS)) == 9
+    """plan 原文九项任务常量,**V2.1-① 起 `TASK_INQUIRY` 退役 → 八项**(问询台整链
+    退役,§五①原文四处摘除清单之一);不许漏项也不许有重复字符串。"""
+    assert len(router.ALL_TASKS) == 8
+    assert len(set(router.ALL_TASKS)) == 8
 
 
 def test_explicit_route_always_wins_even_if_provider_nonexistent():

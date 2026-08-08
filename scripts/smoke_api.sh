@@ -2,7 +2,7 @@
 # 阶段4 · 4A FastAPI 脊椎冒烟(plan 4A 验收:本地 uvicorn 起 → curl 全端点闭环)。
 # 起 uvicorn → health(免鉴权 200)+ 无/错 token 401 + 报告/看板 degraded 空态 +
 # 持仓 open→list→close→重复 close 404 + 设置(GET / PUT llm 不回明文 / PUT push)+
-# 问询台二值裁决 + 设备注册。
+# 设备注册。
 #
 # 用法:bash scripts/smoke_api.sh
 #   · 默认用**临时库**(DB_PATH=/tmp/neckline_smoke_*.db)+ 临时 API_TOKEN,不碰生产台账。
@@ -48,7 +48,7 @@ PID=$(echo "$OPEN" | "$PY" -c "import sys,json;print(json.load(sys.stdin)['posit
 echo "11) list:"; curl -s "${AUTH[@]}" "$BASE/positions"; echo
 echo "12) close:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"sell_price":1520.0}' "$BASE/positions/$PID/close"; echo
 echo "13) 重复 close → 404:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "${JSON[@]}" -d '{"sell_price":1520.0}' "$BASE/positions/$PID/close"
-echo "14) inquiry(无 key 降级,裁决二值):"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"code":"600519.SH","messages":[]}' "$BASE/inquiry"; echo
+# —— (14) 问询台 → **V2.1-① 整链退役**,步骤号留空 ——
 echo "15) device register:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"token":"smoke-device","platform":"ios"}' "$BASE/devices"; echo
 
 # —— (16~24) v1.1-C 自选池 + 同花顺 txt 对账/导出 → **V2-⑬-11 整链删除**,步骤号留空 ——

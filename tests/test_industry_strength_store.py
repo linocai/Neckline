@@ -1,12 +1,19 @@
 """行业强度预计算表 `industry_strength_daily` 单测(plan §五 v1.4-⑩ 验收,§七 P0-23)。
 
-覆盖:①**守门单测·禁用扫描**(四个在线文件不出现两个现算入口 + 日更路径真的不走
+覆盖:①**守门单测·禁用扫描**(两个在线文件不出现两个现算入口 + 日更路径真的不走
 `scan_parquet`);②**三路等价**(全量算 ≡ 逐日递推 ≡ 落表读回,逐位相等)—— 这是
 「表只是物化,不是第二套判据」的机器证明;③幂等 + 补跑自动向后延;④`NULL ≠ 0` 三列
 语义;⑤口径指纹不匹配 → 视同缺行 + WARNING;⑥`verify` 三项自检(绿 + 每一项各自的红);
 ⑦bootstrap 两遍法与逐日路径逐位一致 + ⑩-D 退路(只回填最近 N 个交易日);⑧新鲜度三态
-与 `dataFreshness` 三键契约;⑨**保险丝四态**(报告降级不崩且可复现 / 信息卡如实缺省 /
-分歧线新 reason / 问询台 evidence 明说不可得)。
+与 `dataFreshness` 三键契约;⑨**保险丝三态**(报告降级不崩且可复现 / 信息卡如实缺省 /
+分歧线新 reason)。
+
+⚠ **V2.1-① 起「问询台 evidence 明说不可得」这一态随问询台整链退役一并删除**——
+它此前是这套保险丝的第四个消费面,`api/inquiry.py` 整个文件已物理删除,不再有
+"喂给问询台的 evidence 列表"这回事,原两条覆盖它的测试
+(`test_fuse_inquiry_evidence_states_data_not_available` /
+`test_inquiry_evidence_clean_when_table_ready`)一并删除,不是覆盖率退化——保险丝
+本身(`industry_strength_unavailable` 的产生逻辑)仍由其它三态的测试锁着。
 """
 
 from __future__ import annotations
@@ -40,7 +47,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ONLINE_FILES = [
     "neckline/report/pipeline.py",
     "neckline/report/info_card.py",
-    "neckline/api/inquiry.py",
+    # ⚠ V2.1-① 起 `neckline/api/inquiry.py` 已随问询台整链退役物理删除,从本清单
+    # 摘除(该消费面本身不存在了,不是文件改名/移动)。
 ]
 _BANNED = ["compute_industry_strength", "industry_median_return_series"]
 
@@ -49,9 +57,10 @@ _BANNED = ["compute_industry_strength", "industry_median_return_series"]
 def test_online_paths_never_reference_full_scan_entrypoints(rel):
     """§七 P0-23 的**结构性防复发**:两个现算入口各自对 `daily` 做 `scan_parquet`
     (前者全历史 784 万行),在生产 2 vCPU/1.6G 上跑不完 —— 16:35 报告主链 / 信息卡端点 /
-    问询台三处曾全部中招。本断言把「在线路径只读表」这条纪律钉死在文件层面:四个在线
-    文件里**这两个名字一次都不许出现**(连注释里点名都不行 —— 照 ③-C `_SORT_KEY_INPUTS`
-    白名单单测的体例,判据要机器可查,不留人肉裁量空间)。
+    问询台三处曾全部中招(问询台已随 V2.1-① 整链退役,见模块头)。本断言把「在线路径
+    只读表」这条纪律钉死在文件层面:两个在线文件里**这两个名字一次都不许出现**
+    (连注释里点名都不行 —— 照 ③-C `_SORT_KEY_INPUTS` 白名单单测的体例,判据要机器
+    可查,不留人肉裁量空间)。
 
     要现算?去 `report/industry_strength.py`(离线 / bootstrap / 对拍),别把它接回在线。"""
     text = (_PROJECT_ROOT / rel).read_text(encoding="utf-8")
@@ -655,36 +664,11 @@ def test_fuse_info_card_snapshot_is_honestly_null_not_zero(isolated_env):
     assert "行业强度数据未就绪" in card.industry_divergence_unavailable_reason
     assert "样本不足" not in card.industry_divergence_unavailable_reason
 
-
-def test_fuse_inquiry_evidence_states_data_not_available(isolated_env):
-    """保险丝态③:问询台 `det.evidence` 必须**明说本次不可得**,
-    **绝不静默按 0 输出「未命中 A2/B3」**(拿「没看」冒充「没有」)。"""
-    from neckline.api import inquiry as inq
-    from tests.conftest import seed_active_rule_v1
-
-    dates = _seed_two_industries(isolated_env, n_days=6)
-    seed_active_rule_v1(isolated_env)       # 无现役章程会在纪律核对处提前返回,材料根本不走到行业那一段
-    code = next(iter(ist.load_industry_map(isolated_env.db_path)))
-    det = inq.run_deterministic_checks(
-        code, dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
-    )
-    assert det.industry_strength_unavailable
-    joined = "".join(det.evidence)
-    assert "行业强度数据未就绪" in joined
-    assert "题材持续天数与 A2/B3 本次不可得" in joined
-
-
-def test_inquiry_evidence_clean_when_table_ready(isolated_env):
-    """反面:表喂上之后那条「不可得」告白**不该出现**(它是故障标记,不是常驻噪音)。"""
-    from neckline.api import inquiry as inq
-    from tests.conftest import seed_active_rule_v1
-
-    dates = _seed_two_industries(isolated_env, n_days=6)
-    seed_active_rule_v1(isolated_env)
-    seed_industry_strength(isolated_env, dates)
-    code = next(iter(ist.load_industry_map(isolated_env.db_path)))
-    det = inq.run_deterministic_checks(
-        code, dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path,
-    )
-    assert det.industry_strength_unavailable == ""
-    assert "行业强度数据未就绪" not in "".join(det.evidence)
+# ⚠ **V2.1-① 起本文件在此终止**:原保险丝态④(`test_fuse_inquiry_evidence_states_
+# data_not_available` / `test_inquiry_evidence_clean_when_table_ready`,问询台
+# `det.evidence` 必须明说行业强度不可得)已随 `neckline/api/inquiry.py` 整链退役
+# 一并删除——`run_deterministic_checks` 这个函数本身不存在了,不是"这条防线不要了"
+# (模块头已登记为"防线随对象消失",同 CLAUDE.md「诚实披露体例不许退化」一节的判据:
+# `industry_strength_unavailable` 的产生逻辑本体仍由 `test_fuse_info_card_snapshot_
+# is_honestly_null_not_zero` 等其余三态测试锁着,只是失去了"问询台也会诚实说明"这
+# 一个额外消费面的直接见证)。

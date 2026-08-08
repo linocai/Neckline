@@ -31,7 +31,6 @@
 		E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */; };
 		EB18B7D4374EA05AD70C0D9C /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE386C48FF2459211CE2D690 /* AppModel.swift */; };
 		ECFCB610389F542E1496563A /* PositionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F9C5BF6E9D9D111073B296 /* PositionsView.swift */; };
-		EFF01FAD1D2D9784FFCB9DA6 /* InquiryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD3045BA6DDA89226241C3AD /* InquiryView.swift */; };
 		FB4C33C48625D4934F6074BD /* BoardSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A997AA8B113E10CE7B48C1E /* BoardSection.swift */; };
 		FE0DC5D1335F2F673834AB37 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0C09A262074F0F512BCF821 /* AppModelTests.swift */; };
 /* End PBXBuildFile section */
@@ -77,7 +76,6 @@
 		F09D5AFF89E79AD30E6F0B1F /* IntegrationSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationSmokeTests.swift; sourceTree = "<group>"; };
 		F5673E3EE875B18B1B650342 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		FB50F6958E9E0102B8D0841F /* ReviewWorkbenchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewWorkbenchView.swift; sourceTree = "<group>"; };
-		FD3045BA6DDA89226241C3AD /* InquiryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InquiryView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -166,7 +164,6 @@
 				581182CED4C6109290DA84E3 /* BasketDailyView.swift */,
 				6A997AA8B113E10CE7B48C1E /* BoardSection.swift */,
 				B0A90418AEA32F7C299080AF /* InfoCardView.swift */,
-				FD3045BA6DDA89226241C3AD /* InquiryView.swift */,
 				A4E1C3A5DD39EEB4270411BB /* IntelSectionView.swift */,
 				1AE91C1C1F16155E79F87794 /* NoteSheet.swift */,
 				D5E6F8707B8AC21038F80089 /* PositionExtras.swift */,
@@ -301,7 +298,6 @@
 				FB4C33C48625D4934F6074BD /* BoardSection.swift in Sources */,
 				9B003EF3A758FDFDC3FEE58E /* DesignTokens.swift in Sources */,
 				C6A7800544ED3CD2E062F1E8 /* InfoCardView.swift in Sources */,
-				EFF01FAD1D2D9784FFCB9DA6 /* InquiryView.swift in Sources */,
 				730CE8D10C7BDBCA711C9342 /* IntelSectionView.swift in Sources */,
 				8A9D9C1AF48200AC1E370EBF /* Models.swift in Sources */,
 				E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */,

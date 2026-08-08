@@ -184,7 +184,8 @@ def test_new_v2_endpoints_are_reachable_shapes():
 
 
 def test_deleted_v1_endpoints_have_no_server_route():
-    """⑬ 删掉的十个端点 + `PUT /settings/llm` 服务端零残留(路由面判据)。"""
+    """⑬ 删掉的十个端点 + `PUT /settings/llm` + V2.1-① 删掉的问询台三条,
+    服务端零残留(路由面判据)。"""
     server = server_route_surface()
     for gone in (
         "/api/v1/watchlist", "/api/v1/watchlist/{}", "/api/v1/watchlist/reconcile-ths",
@@ -192,6 +193,8 @@ def test_deleted_v1_endpoints_have_no_server_route():
         "/api/v1/settings/intel-boards", "/api/v1/settings/llm",
         "/api/v1/decisions/{}/link", "/api/v1/decisions/{}/cancel",
         "/api/v1/decisions/{}/revise", "/api/v1/decisions/{}/scenario-outcome",
+        # V2.1-①:问询台整链退役
+        "/api/v1/inquiry", "/api/v1/inquiries", "/api/v1/inquiries/{}",
     ):
         assert gone not in server, f"{gone} 应已删除,服务端不该还有这条路由"
 
