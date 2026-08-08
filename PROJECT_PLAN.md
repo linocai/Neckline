@@ -1033,7 +1033,7 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 
 ---
 
-### ⑧ 契约对拍与守门总收口
+### ⑧ 契约对拍与守门总收口 —— ✅ **完工 2026-08-08(@builder-pro,批 1 范围)**
 
 **目标**:把本版的**删除面 / 新增面 / 值域收窄面**三张表对拍清楚,并证明「本版零删键」。
 
@@ -1046,6 +1046,55 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 **守门收口清单**:`test_contract_crosscheck.py`(删除端点 +3 / 新端点形状 +2 / reason 闭包不变的显式断言)· `test_v21_retirement_guard.py`(① ② 两个删除面的全部机器判据)· `score_display` 三条不进判定守门 · unit 文件两条 P0-45 判据 · 移交件观察项与 §七 的闭合断言。
 
 **验收**:全量 `pytest tests/ -q` 绿(数量只增不减,减少必须逐条说明是"防线随对象消失"还是"防线丢了")+ 双端 build 绿 + iOS test 绿。
+
+#### ✅ ⑧ 完工记录(2026-08-08 · @builder-pro · 本地,⛔ 零部署 / 零块③接触)
+
+- **三张对拍表 → `archive/V2.1_契约对拍_20260808.md`**(表头四句结论:**零删键** ·
+  `SERVER_REASONS`/`mapReason` 逐字节不变 · 零 schema 变更 · 老 2.0.0 客户端仍能正常读今日报告)。
+  三张表各带「守门在哪」一列,逐行点名到具体测试函数。**三处 plan 计数按实点订正**(均已在
+  ①/⑦ 完工记录登记过,本表只是汇总):客户端 DTO **5 个不是 4 个**(多一个 `ChatRole` 枚举,
+  plan 只数了 struct)· `AppModel` 属性 **11 个不是 12 个** · `InquiryReply` 该型不存在
+  (实名 `InquiryResult`)。
+- **`test_contract_crosscheck.py` 10 例 → 18 例**(+8),四处收口:
+  ① 删除面 —— 问询台三端点已在 ① 落进 `test_deleted_v1_endpoints_have_no_server_route`(本块核实);
+  ② 新增面 —— `test_new_v21_endpoints_are_reachable_shapes`(`/review/{overview,handoff}`)+
+  `test_v21_new_score_keys_are_declared_on_both_sides`(4 个新键**服务端声明了、客户端也解得出**,
+  参数化 A 类/B 类各一);③ 🔴 `test_v21_changes_the_reason_surface_by_exactly_nothing` ——
+  拿 **V2.0.0 收官 commit `352f235` 的 reason 面快照**当分界线。**这条守的是既有两条闭包测试
+  守不住的那一半**:「悄悄多引入一个 reason、但客户端同批加了 case」两侧照样闭合、照样绿,
+  而那恰恰意味着老客户端会看到 fallback 错话;④ `FROZEN_SNAPSHOT_DTOS` **3 → 6 项**
+  (加 `Basket`/`BasketDaily`/`ScoreContribution` —— ④ 的两个 B 类新键正落在它们身上)。
+- 🔴 **把 CLAUDE.md 那条「⚠ 新建 B 类 DTO 别在它前面放同前缀类型」的人肉纪律做成了机器判据**
+  ——`Models.swift` 里 `struct BasketEvidence`(294 行)**排在** `struct Basket`(811 行)**之前**,
+  老守门的 `models.split("struct Basket")` 会切到 `BasketEvidence` 的块上:**断言照样绿,守的
+  却是另一个类型**。切块改为「行首 + 词边界定位 → 下一个顶层声明收尾」(`_dto_body()`),
+  并加 `test_dto_slicer_is_not_fooled_by_same_prefix_types` 自守门。⚠ 不改这个就没法把 `Basket`
+  收进清单 —— 这不是顺手优化,是本条扩容的前置。
+- **对拍当场抓到两处「口径已假」的注释(已修,零行为变更)**:② 把展示文案改成「连 T2 下限
+  都没到」,但 `report/basket_daily.py` 模块 docstring 与 `client/Models.swift::DroppedBasket`
+  的 doc 注释**仍写着 T3**。注释不影响运行时,但「注释说 T3、代码判 T2」正是下一个人排查时
+  被带沟里的东西 —— **这正是对拍表存在的理由**。
+- 🔧 **`scripts/smoke_api.sh` 自 V2-⑬ 起就跑不完(本块修好,详见对拍表 §4.1)**:第 25 步
+  `POST /decisions` 在 ⑩-C 改成「可选补充入口」后**不再回 `id`** → `KeyError` + `set -e`
+  **硬中断**,**其后所有步骤从未执行过**(包括本次要加的 34/35/36);另有第 7/8 步打已删的
+  `PUT /settings/llm`、第 9 步用 v1.2 五字段 push 体(V2-⑪ 起要求给全每一个 kind)——
+  这三步不中断,只是**默默打印 404/422 正文**,看起来像正常输出、实际什么都没验。
+  处置按脚本既有的「步骤号留空」体例(与 (14)/(16~24) 一致):7~8 / 26 / 28~33 留空;
+  25 改现行契约 + 新增 25b(空提交仍 200);9 改成**从 `GET /settings` 现取 kind 清单**拼 payload
+  (⛔ 不写死字段名 —— 写死过一次就是 7~8 的下场)+ 9b(缺键 → 422)。
+  **新增三步实测**:34 `/review/overview` **200**、五段各自说得出话(calibration/preference/
+  capability 三段 `available=false` + 各自可读原因,reconcile `available=true` +「本周尚未上传
+  交割单」,observations 4 条)· 35 `/review/handoff` **200 + available=false** · 36 问询台三条
+  **全 404**。**脚本现在跑到底**(`>> 冒烟完成。`)。
+- **验收**:全量 `pytest tests/ -q` **3064 passed / 2 failed / 2 skipped**(基线 3056 → **+8,
+  零回归**;两条 failed 仍是 `test_api_positions` / `test_fix_position_buy_dates` 的周末日期
+  既存红,今天 08-08 周六)。**守门总收口一次跑齐 16 个文件 529 例全绿**(①②④⑤⑦ 各自守门 +
+  `test_v1_retirement_guard` + `test_prompt_context`)。macOS **Release** `xcodebuild`
+  **BUILD SUCCEEDED**;iOS Simulator `xcodebuild test` **192 executed / 11 skipped / 0 failures**
+  (与 ⑦ 基线逐位相同 —— 本块只动了一行 Swift 注释)。
+- **不越块声明**:⛔ 零接触 `packs/` / `selection_packs` / `activate_pack.py`(批 2);
+  ⑥ 的 `scripts/weekly.py` 与两个 unit 文件仍未建(批 3),故 plan 守门清单里「unit 文件两条
+  P0-45 判据」**本块无对象可守**,随 ⑥ 一起落(如实登记,不是漏做)。
 
 ---
 

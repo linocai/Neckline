@@ -18,6 +18,13 @@
 
 ⚠ **本文件不是 review**:它是施工块内的自查(⑭-C 原文),不等于独立复审。
 
+**V2.1-⑧(2026-08-08)收口的四处**(人读件 = `archive/V2.1_契约对拍_20260808.md` 三张表):
+① 删除面 —— 问询台三条端点进 `test_deleted_v1_endpoints_have_no_server_route`(①  已落);
+② 新增面 —— `/review/{overview,handoff}` 两条进路由面自检,④ 的 4 个只读新键两侧对拍;
+③ **零新增 reason 的显式断言** —— 拿 V2.0.0 收官快照当分界线,闭包测试守不住的那一半
+(「悄悄多一个 reason 但客户端同批加了 case」)由它守;④ `FROZEN_SNAPSHOT_DTOS` 扩容
+到 6 项,并把「同前缀类型会切错块」这条人肉纪律做成机器判据。
+
 **小审 🔵-2(2026-08-03)修补的两处结构性盲区**:① `client_call_surface()` 曾只扫
 `APIClient.swift` 单文件(依赖"网络层只此一家"的架构惯例,当时靠人眼核实过其余
 文件零 `/api` 字面量)——改为扫 `client/` 下**全部** `.swift` 文件,日后任何 View/
@@ -183,6 +190,19 @@ def test_new_v2_endpoints_are_reachable_shapes():
         assert path in server, f"⑭-B 清单里的端点 {path} 没挂上"
 
 
+def test_new_v21_endpoints_are_reachable_shapes():
+    """**V2.1-⑤ 新增的两条复盘聚合端点必须真的挂上了**(路由面自检;⑧ 对拍表「新增面」
+    第 1 行的机器判据)。
+
+    ⚠ 这两条端点**一律不 404**(空态走 `available=false`),所以路由面在不在是它们
+    唯一能被机器判的存在性判据 —— 少挂一条,客户端复盘板块的「累计」页会拿到
+    `mapReason` 的 404 fallback 文案,那是驴唇不对马嘴的「持仓已清」(v1.4 `watchlist`
+    案底),而不是「产物尚未生成」。"""
+    server = server_route_surface()
+    for path in ("/api/v1/review/overview", "/api/v1/review/handoff"):
+        assert path in server, f"V2.1-⑤ 的端点 {path} 没挂上"
+
+
 def test_deleted_v1_endpoints_have_no_server_route():
     """⑬ 删掉的十个端点 + `PUT /settings/llm` + V2.1-① 删掉的问询台三条,
     服务端零残留(路由面判据)。"""
@@ -261,24 +281,123 @@ def test_map_reason_covers_every_server_reason_modulo_registered_debt():
     )
 
 
+# **V2.0.0 收官时(commit `352f235`)的 reason 面快照**,逐字节抄自当时的
+# `SERVER_REASONS`。V2.1 的对拍结论是 **零新增 reason**(①:删的三条端点本就不 raise
+# 业务 404;⑤:两条新端点一律不 404、空态走 `available=false`)—— 这份快照就是那句
+# 结论的**机器判据**。
+_V20_REASON_SURFACE = frozenset({
+    "not_holding", "not_found", "not_trading_day", "future_buy_date",
+    "report_not_found", "code_not_in_report", "already_exists",
+    "invalid_task", "invalid_push_kinds", "invalid_rule", "duplicate_alert",
+    "basket_not_found", "card_not_ready", "no_base_plan", "card_corrupt",
+})
+
+
+def test_v21_changes_the_reason_surface_by_exactly_nothing():
+    """🔴 **V2.1 零新增 reason** 的显式断言(⑧ 对拍表三张表共用的表头结论之一)。
+
+    上面两条闭包测试只保证「服务端 reason ↔ 客户端 `mapReason`」两侧对得上;它们
+    **不会**因为 V2.1 悄悄多引入一个 reason 而红(只要客户端同批加了 case 就仍闭合)。
+    本条锁的是另一件事:**这一版根本没动过 reason 面** —— 它是 ⑧「零删键 / 零新增
+    reason」那句话在代码里的落点,也是「老 2.0.0 客户端装着不换包也不会看到错话」
+    这条在线升级前提的依据。
+
+    ⚠ 真要在后续版本新增 reason,正确做法是**同时**更新 `SERVER_REASONS`、客户端
+    `mapReason` **和**这份 V2.0.0 快照旁边的说明(把本条改成新的分界线),
+    ⛔ 不是把本条删掉。
+    """
+    assert SERVER_REASONS == set(_V20_REASON_SURFACE), (
+        "V2.1 的对拍结论是「零新增 reason」,但 `SERVER_REASONS` 与 V2.0.0 快照不一致。\n"
+        f"  V2.1 多出来的:{sorted(SERVER_REASONS - _V20_REASON_SURFACE)}\n"
+        f"  V2.1 少掉的(⛔ 删 reason = 老客户端的 case 变死码,更要当心):"
+        f"{sorted(_V20_REASON_SURFACE - SERVER_REASONS)}"
+    )
+    # 闭包处在最严状态(两份欠账清单都空)才谈得上「零新增」是被守住的。
+    assert not PENDING_MAP_REASON_CASES_FOR_15 and not PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15
+
+
+# —— V2.1 契约新增面:4 个只读新键(⑧ 对拍表「新增面」的机器判据)——————————
+
+# `(pydantic 模型, 客户端 struct, A 类/B 类)`。**两条路刻意只填各自那一处**
+# (④ 完工记录):live 路径的分数住 `tierHistory`,快照路径住 `basket` 自己;
+# 客户端读法收口成 `basket.scorePercent ?? basket.tierHistory?.scorePercent`。
+_V21_NEW_KEY_SITES = (
+    ("TierOut", "Tier", "A"),       # 每次响应重拼
+    ("BasketOut", "Basket", "B"),   # 随报告冻住
+)
+_V21_NEW_KEYS = ("scorePercent", "scoreContributions")
+
+
+@pytest.mark.parametrize("model,struct,kind", _V21_NEW_KEY_SITES)
+def test_v21_new_score_keys_are_declared_on_both_sides(model: str, struct: str, kind: str):
+    """V2.1-④ 的 4 个只读新键(2 模型 × 2 键)必须**服务端声明了、客户端也解得出**。
+
+    这条抓的是「服务端加了键、客户端没跟」以及反过来的那半边 —— 打分卡是纯展示层,
+    键掉了不会报错,只会**静默显示不出分数**(而"没分"本身是个合法状态,⛔ 看不出
+    是 bug)。"""
+    schemas = (_ROOT / "neckline" / "api" / "schemas.py").read_text(encoding="utf-8")
+    server_block = schemas.split(f"class {model}(BaseModel):", 1)[1].split("\nclass ", 1)[0]
+    client_block = _dto_body(struct)
+    for key in _V21_NEW_KEYS:
+        assert f"{key}:" in server_block, f"服务端 `{model}` 没有声明 `{key}`"
+        assert key in client_block, f"客户端 `{struct}` 没有解 `{key}`"
+    # 元素类型必须两侧都在(它不计入"键"数,但键没有它就是空壳)
+    assert "class ScoreContribOut(BaseModel):" in schemas
+    assert "struct ScoreContribution" in _MODELS.read_text(encoding="utf-8")
+
+
 # —— 冻结快照类 DTO 的解码姿势(CLAUDE.md「落库快照两类论」)——————————————
 
 # **写入当时冻住**的那一类:服务端升级永远不会给老快照补新键 → 客户端必须手写
 # `init(from:)` 全字段 `decodeIfPresent` 兜底。⛔ 合成 `Codable` 的后果是「装了新
 # App 的用户翻几周前的老卡 → 整张卡解不出」。
-FROZEN_SNAPSHOT_DTOS = ("BasketCard", "BasketReview", "ReviewWeeklyResult")
+#
+# **V2.1-⑧ 扩容三项**(④ 的两个新键正是随报告冻住的那一类,清单里却一直没有它们的家):
+# `Basket` / `BasketDaily` 解的是 `reports.basket_daily_json`(**冻结快照**,老报告永远
+# 不会被服务端补上 `scorePercent`),`ScoreContribution` 是这两键的元素类型、同样落在
+# 快照里。⚠ 它们在 V2.1 之前就是 B 类,只是当时清单只收了三个"最痛"的;本次一并收编。
+FROZEN_SNAPSHOT_DTOS = (
+    "BasketCard", "BasketReview", "ReviewWeeklyResult",
+    "Basket", "BasketDaily", "ScoreContribution",
+)
+
+# ⚠ **同前缀陷阱**(CLAUDE.md 明写的坑):`Models.swift` 里 `struct BasketEvidence`
+# (294 行)排在 `struct Basket`(811 行)**之前**,老写法 `models.split("struct Basket")`
+# 会切到 `BasketEvidence` 的块上 —— 断言照样绿,守的却是另一个类型。故本文件不再用
+# 裸 `split`,改用**行首 + 词边界**定位 + 下一个顶层声明收尾。
+_TOP_LEVEL_DECL = re.compile(r"^(?:struct|enum|final class|class|extension|protocol)\s", re.M)
+
+
+def _dto_body(name: str) -> str:
+    """取 `Models.swift` 里 `struct <name>` **这一个**类型的源码块(到下一个顶层声明为止)。"""
+    models = _MODELS.read_text(encoding="utf-8")
+    m = re.search(rf"^struct {re.escape(name)}\b", models, re.M)
+    if m is None:
+        return ""
+    rest = models[m.end():]
+    nxt = _TOP_LEVEL_DECL.search(rest)
+    return models[m.start():m.end() + (nxt.start() if nxt else len(rest))]
+
+
+def test_dto_slicer_is_not_fooled_by_same_prefix_types():
+    """本闸自己的守门:切块必须切到**同名那一个**类型,而不是同前缀的邻居。
+
+    `Basket` 之前有 `BasketEvidence`/`BasketCard`/`BasketMember` 等一票同前缀类型 ——
+    这条测试就是让「别在 B 类 DTO 前面放同前缀类型」那条人肉纪律**变成机器判据**
+    (纪律靠人记就总有忘的一天;切错块的后果是**绿灯守着错的类型**)。"""
+    body = _dto_body("Basket")
+    assert body.startswith("struct Basket:") or body.startswith("struct Basket "), body[:40]
+    assert "struct BasketEvidence" not in body and "struct BasketCard" not in body
+    assert _dto_body("NoSuchDTOAnywhere") == ""
 
 
 @pytest.mark.parametrize("name", FROZEN_SNAPSHOT_DTOS)
 def test_frozen_snapshot_dtos_hand_write_init_from_decoder(name: str):
     """⑮ 落地后本条才会真正生效;在那之前,尚不存在的 DTO **跳过并说明原因**
     (⛔ 不静默通过 —— 那会让这条闸在最需要它的那一刻是空的)。"""
-    models = _MODELS.read_text(encoding="utf-8")
-    marker = f"struct {name}"
-    if marker not in models:
+    body = _dto_body(name)
+    if not body:
         pytest.skip(f"`{name}` 尚未在客户端定义(⑮ 的活);本闸在 ⑮ 落地后生效")
-    body = models.split(marker, 1)[1]
-    body = body.split("\nstruct ", 1)[0]
     assert "init(from decoder: Decoder)" in body, (
         f"`{name}` 是**写入当时冻住**的历史快照类 DTO,必须手写 `init(from:)` + 全字段 "
         f"`decodeIfPresent` 兜底(CLAUDE.md 落库快照两类论);合成 Codable 会让老快照解不出。"

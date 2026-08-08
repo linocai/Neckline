@@ -891,7 +891,9 @@ struct Basket: Codable, Equatable, Identifiable {
 /// ③b 未定档篮子一行(⑥-b-C)。
 /// **`reason` 两个码语义相反,⛔ 不许合并成一句「未入选」**:
 /// `capacity_overflow` = 分数够、位置满 →「今天机会多到装不下」;
-/// `below_quality_line` = 连 T3 下限都没过 →「今天没什么好货」。
+/// `below_quality_line` = 连最低档下限都没过 →「今天没什么好货」(**V2.1-② 起最低档
+/// = T2**,此前是 T3;⚠ **码一字不改**,展示文案里也不出现档位数字,故老快照回放
+/// 与新数据共用这一句)。
 /// **没有 `basketId`** —— 它没进 `baskets` 表,给一个 id 会让用户以为点得进去。
 struct DroppedBasket: Codable, Equatable, Identifiable {
     var name: String = ""

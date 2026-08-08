@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # 阶段4 · 4A FastAPI 脊椎冒烟(plan 4A 验收:本地 uvicorn 起 → curl 全端点闭环)。
 # 起 uvicorn → health(免鉴权 200)+ 无/错 token 401 + 报告/看板 degraded 空态 +
-# 持仓 open→list→close→重复 close 404 + 设置(GET / PUT llm 不回明文 / PUT push)+
-# 设备注册。
+# 持仓 open→list→close→重复 close 404 + 设置(GET / PUT push 全量 kind)+ 设备注册
+# + **V2.1-⑤ 复盘两端点(空态 200,⛔ 不是 404)** + **V2.1-① 问询台三端点 404**。
+#
+# ⚠ **步骤号一律留空不重排**(与 plan 完工记录、契约对拍表逐条对得上比"号码连续"重要):
+# (7~8)(16~24)(26)(28~33) = 已删端点,(14) = V2.1-① 问询台。
+# 🔴 **2026-08-08(⑧)修复**:此前脚本自 V2-⑬ 起在第 25 步硬中断(`POST /decisions`
+# 改成"可选补充入口"后不再回 `id`,`set -e` 当场退出),**其后所有断言从未跑过**;
+# 另有三步打已删端点/旧契约、只打印 404/422 正文不中断,看起来像正常输出。详见
+# `archive/V2.1_契约对拍_20260808.md` §4.1。
 #
 # 用法:bash scripts/smoke_api.sh
 #   · 默认用**临时库**(DB_PATH=/tmp/neckline_smoke_*.db)+ 临时 API_TOKEN,不碰生产台账。
@@ -40,9 +47,17 @@ echo "3) 错 token → 401:"; curl -s -o /dev/null -w "  status=%{http_code}\n" 
 echo "4) report/latest(空 → degraded):"; curl -s "${AUTH[@]}" "$BASE/report/latest"; echo
 echo "5) board(空):"; curl -s "${AUTH[@]}" "$BASE/board"; echo
 echo "6) settings(默认):"; curl -s "${AUTH[@]}" "$BASE/settings"; echo
-echo "7) PUT settings/llm(key 不回明文):"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"provider":"glm","apiKey":"sk-smoke-secret"}' -X PUT "$BASE/settings/llm"; echo
-echo "8) settings(应 llmKeySet=true 且无明文):"; curl -s "${AUTH[@]}" "$BASE/settings"; echo
-echo "9) PUT settings/push(v1.2-A2 起五字段):"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"report":true,"retreatBrake":false,"precall":true,"d5exit":true,"circuit":true}' -X PUT "$BASE/settings/push"; echo
+# —— (7~8) `PUT /settings/llm` → **V2-⑬ 已删端点**(明文 key 那条,契约测试的删除面
+#    第 8 项),步骤号留空;⑧(2026-08-08)顺手收口 —— 此前这两步只是打印 404 正文,
+#    看起来像正常输出,实际什么都没验。
+echo "9) PUT settings/push(**V2-⑪ 起全量覆盖式、必须给全每一个 kind**):"
+# 🔴 payload 从 `GET /settings` 现取,⛔ 不写死字段名 —— 写死过一次就是 (7~8) 的下场:
+#    kind 清单一变,这一步默默变成"打印一条 422 正文"。
+curl -s "${AUTH[@]}" "$BASE/settings" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+print(json.dumps({'kinds':{k['kind']:True for k in d['push']['kinds']}}))" > /tmp/neckline_smoke_push.json
+curl -s "${AUTH[@]}" "${JSON[@]}" -d @/tmp/neckline_smoke_push.json -X PUT "$BASE/settings/push"; echo
+echo "9b) 缺键 → 422(invalid_push_kinds):"; curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "${JSON[@]}" -d '{"kinds":{"report_ready":true}}' -X PUT "$BASE/settings/push"
 echo "10) open:"; OPEN=$(curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"code":"600519.SH","name":"贵州茅台","buy_price":1500.0,"qty":100,"entry_reason":"回调低吸"}' "$BASE/positions"); echo "  $OPEN"
 PID=$(echo "$OPEN" | "$PY" -c "import sys,json;print(json.load(sys.stdin)['position_id'])")
 echo "11) list:"; curl -s "${AUTH[@]}" "$BASE/positions"; echo
@@ -53,34 +68,43 @@ echo "15) device register:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"token":"smo
 
 # —— (16~24) v1.1-C 自选池 + 同花顺 txt 对账/导出 → **V2-⑬-11 整链删除**,步骤号留空 ——
 
-# —— v1.2-B 预注册决策日志(八项)————————————————————————————————————————
-echo "25) POST /decisions(八项 + 情景树 + 打法标签,附带一个荒谬 createdAt 入参验证被忽略):"
-DEC=$(curl -s "${AUTH[@]}" "${JSON[@]}" -d '{
-  "code":"600001.SH","name":"示例甲",
-  "whyBuy":"题材热+量能启动","whyEntryPrice":"回调至10日线企稳",
-  "targetPrice":12.0,"exitLow":9.0,"exitHigh":9.5,
-  "thesisTags":["THEME","CAPITAL_FLOW"],"invalidation":"跌破10日线",
-  "contingencyScenarios":[
-    {"scenario":"次日高开","trigger":"开盘涨幅>3%","action":"HOLD"},
-    {"scenario":"次日低开","trigger":"开盘跌幅>2%","action":"ABANDON"}
-  ],
-  "playbookTag":"SWING_CHASE","plannedPrice":10.0,"plannedQty":1000,
-  "createdAt":"1999-01-01T00:00:00Z"
-}' "$BASE/decisions"); echo "  $DEC"
-DID=$(echo "$DEC" | "$PY" -c "import sys,json;print(json.load(sys.stdin)['id'])")
-echo "26) 非法论点标签码 → 422:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "${JSON[@]}" -d '{"code":"600001.SH","whyBuy":"x","whyEntryPrice":"x","thesisTags":["NOT_REAL"],"invalidation":"x","contingencyScenarios":[],"playbookTag":"SWING_CHASE"}' "$BASE/decisions"
-echo "27) GET /decisions(应 1 条,createdAt 不是 1999):"; curl -s "${AUTH[@]}" "$BASE/decisions"; echo
-echo "28) POST /decisions/{id}/link:"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"positionId":1}' "$BASE/decisions/$DID/link"; echo
-echo "29) POST /decisions/{id}/revise(新增行,旧行原地不变):"
-REV=$(curl -s "${AUTH[@]}" "${JSON[@]}" -d '{
-  "whyBuy":"修订后理由","whyEntryPrice":"修订后入场价理由","targetPrice":13.0,
-  "thesisTags":["NEWS"],"invalidation":"修订后证伪","contingencyScenarios":[],
-  "playbookTag":"BREATHING_TRIAL"
-}' "$BASE/decisions/$DID/revise"); echo "  $REV"
-echo "30) POST /decisions/{id}/scenario-outcome(只翻 matched):"; curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"outcomes":[{"index":0,"matched":true}]}' "$BASE/decisions/$DID/scenario-outcome"; echo
-echo "31) scenario-outcome index 越界 → 422:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "${JSON[@]}" -d '{"outcomes":[{"index":99,"matched":true}]}' "$BASE/decisions/$DID/scenario-outcome"
-echo "32) POST /decisions/{id}/cancel(把首版 $DID 从 filled 改判 cancelled)+ 不存在 id → 404:"; curl -s -X POST "${AUTH[@]}" "$BASE/decisions/$DID/cancel"; echo
-curl -s -o /dev/null -w "  status=%{http_code}\n" -X POST "${AUTH[@]}" "$BASE/decisions/999999/cancel"
-echo "33) GET /decisions?status=pending(首版 $DID 已 cancelled 不在内,应只剩 29) 的修订行):"; curl -s "${AUTH[@]}" "$BASE/decisions?status=pending"; echo
+# —— v1.2-B 预注册决策日志 → **V2-⑩-C 强制表单退役**(`decision_log` 停写留档)————
+# `POST /decisions` 自 v2.0.0 起是「用户可选补充入口」:全部字段可选、空提交也 200,
+# 落 `user_actions` 的 label/voice_note 两 kind,**不再回 `id`**。
+echo "25) POST /decisions(可选补充入口:labels + voiceNote → recorded 两项):"
+curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"code":"600001.SH","labels":["THEME_SHIFT"],"voiceNote":"冒烟一句"}' "$BASE/decisions"; echo
+echo "25b) 空提交同样 200 且 recorded=[](⛔ 不是 400 —— 九项强制表单已退役):"
+curl -s "${AUTH[@]}" "${JSON[@]}" -d '{}' "$BASE/decisions"; echo
+# —— (26) 非法论点标签码 → **随 ⑩-C 强制表单退役**(`thesisTags` 已不是入参),步骤号留空 ——
+echo "27) GET /decisions(历史归因只读;停写后新库应为空):"; curl -s "${AUTH[@]}" "$BASE/decisions"; echo
+# —— (28~33) `/decisions/{id}/{link,cancel,revise,scenario-outcome}` → **V2-⑬ 已删端点**
+#    (契约测试删除面第 9~12 项),步骤号留空 ——
+
+# —— V2.1-⑤ 复盘板块聚合端点(两条,⑧ 契约对拍「新增面」)——————————————
+# 🔴 判据是 **200 而不是 404**:两条端点一律不 404,空态走 `available=false` +
+# 可读原因(这正是 V2.1「零新增 reason」的由来)。空库跑出来五段全 false 是**对的**。
+echo "34) GET /review/overview(空库 → 200,五段各自 available + 可读原因):"
+curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "$BASE/review/overview"
+curl -s "${AUTH[@]}" "$BASE/review/overview" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+print('  window=%s→%s %s'%(d.get('weekStart'),d.get('weekEnd'),d.get('weekKey')))
+for k in ('calibration','preference','capability','reconcile','observations'):
+    s=d.get(k) or {}
+    d2=s.get('detail') or {}
+    why=s.get('unavailableReason') or (d2.get('note') if isinstance(d2,dict) else '') or ('%d 条'%len(s.get('items') or []))
+    print('  %-13s available=%-5s %s'%(k,s.get('available'),str(why)[:52]))"
+echo "35) GET /review/handoff(空库 → 200 + available=false,⛔ 不在线补算):"
+curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "$BASE/review/handoff"
+curl -s "${AUTH[@]}" "$BASE/review/handoff" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+print('  available=%s reason=%s'%(d.get('available'),(d.get('unavailableReason') or '')[:60]))"
+
+# —— V2.1-① 问询台整链退役:三条端点必须 404(与 (14) 步骤号留空互为印证)——
+echo "36) 问询台三条端点已退役 → 全 404:"
+for M in "POST $BASE/inquiry" "GET $BASE/inquiries" "GET $BASE/inquiries/1"; do
+  set -- $M
+  printf "  %-5s %-40s " "$1" "$2"
+  curl -s -o /dev/null -w "status=%{http_code}\n" -X "$1" "${AUTH[@]}" "${JSON[@]}" "$2"
+done
 
 echo ">> 冒烟完成。"
