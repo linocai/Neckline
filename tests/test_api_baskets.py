@@ -94,6 +94,42 @@ class TestListBaskets:
         # 维度名是语义标识符,原样透传(⛔ 不 camel 化)
         assert item["tierHistory"]["mechBreakdown"] == {"driver_freshness": 0.8}
 
+    def test_score_card_rides_on_tier_history_not_on_the_basket(self, client, AUTH, api_env):
+        """V2.1-④ live 路径的两条契约(⑦ 照此接线,⛔ 别猜):
+
+        ① 百分制住 `tierHistory.scorePercent` / `.scoreContributions` —— **分数是定档
+           留痕的属性**,那才是它的家;
+        ② `BasketOut.scorePercent` 在这条路上**刻意为 null**(它是"报告快照"那条路
+           的 B 类字段)。两处都填 = 同一份响应里放两个必须永远一致的副本。
+        **客户端读法**:`basket.scorePercent ?? basket.tierHistory?.scorePercent`。"""
+        bid = _seed_basket(api_env.db_path, ["600001.SH"], with_tier_history=False)
+        with connection(api_env.db_path) as conn:
+            conn.execute(
+                "INSERT INTO tier_history (trade_date, basket_id, tier, mech_score,"
+                " mech_breakdown_json, rank_in_tier, rank_mech, llm_rank_delta, llm_reason,"
+                " pack_version, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (D0.strftime("%Y%m%d"), bid, 1, 0.725,
+                 '{"dims": {"leader_clarity": 1.0, "sector_strength": 0.8},'
+                 ' "weights": {"leader_clarity": 0.25, "sector_strength": 0.3},'
+                 ' "contrib": {"leader_clarity": 0.25, "sector_strength": 0.24},'
+                 ' "flags": ["leader_clarity_missing"], "neutral_filled_weight": 0.25}',
+                 1, 1, 0, None, "K4-pack-v1", "2026-08-02T00:00:00+08:00"),
+            )
+        item = client.get(f"/api/v1/baskets?date={D0:%Y%m%d}", headers=AUTH).json()["items"][0]
+        th = item["tierHistory"]
+        assert th["scorePercent"] == 72.5
+        assert [c["dim"] for c in th["scoreContributions"]] == ["leader_clarity", "sector_strength"]
+        assert th["scoreContributions"][0]["label"] == "龙头清晰度"
+        assert th["scoreContributions"][0]["neutralFilled"] is True
+        assert item["scorePercent"] is None and item["scoreContributions"] == []
+
+    def test_basket_without_tier_history_has_no_score_anywhere(self, client, AUTH, api_env):
+        """无定档留痕 → `tierHistory=null`,两个新键在两处都取不到值。
+        ⛔ 不许退化成 0 分(那是"这一篮很差"这个实质性判断)。"""
+        _seed_basket(api_env.db_path, ["600001.SH"], with_tier_history=False)
+        item = client.get(f"/api/v1/baskets?date={D0:%Y%m%d}", headers=AUTH).json()["items"][0]
+        assert item["tierHistory"] is None and item["scorePercent"] is None
+
     def test_empty_day_is_200_with_empty_list_not_404(self, client, AUTH, api_env):
         """「今日无篮子达到定档标准」是**合法输出**(⑥-b-B),不是找不到。"""
         r = client.get("/api/v1/baskets?date=20260101", headers=AUTH)

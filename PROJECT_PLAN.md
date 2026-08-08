@@ -370,12 +370,18 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-08 · 🏗 V2.1.0 批 1 施工中(本地,⛔ 未部署生产)**。施工图见 §五。已完工:
-**② T3 全链退役**(引擎两档 T1≤2/T2≤5、`TIER3_MIN_SCORE` 删除、降级次序只剩 T2 细节、
-评价引擎按实际档位算 —— **历史 T3 读侧全程宽容,老报告回放照常显示**)。同批并行:①(问询台
-整链退役)。**生产仍跑 V2.0.0**(下面那份常态快照仍是现役事实),批 1 全部块本地完工 + 双端
-build 绿之后才进 ⑨ 分批部署。主题 =
+**2026-08-08 · 🏗 V2.1.0 批 1 施工中(本地,⛔ 未部署生产)**。施工图见 §五。**批 1 的服务端
+四块已全部本地完工**:**①** 问询台整链退役 · **②** T3 全链退役(引擎两档 T1≤2/T2≤5,
+**历史 T3 读侧全程宽容**)· **④** 百分制打分卡(`report/score_display.py` 唯一换算,三条
+「不进判定」AST 守门)· **⑤** 复盘板块服务端(`GET /review/overview` + `/review/handoff` +
+`review/handoff.py` 移交件,**零现算 / 零新表 / 零新增 reason**)。**本批服务端到此为止**,
+批 1 余下的是 **⑦ 客户端**(三板块 IA 重排 + 复盘板块 + 打分卡上卡面 + macOS 换包)与
+**⑧ 契约对拍收口**。当前全量 **3056 passed / 2 failed(周末日期既存红,与本批无关)/ 2 skipped**,
+客户端仍是 pristine:双端 build 绿、iOS test 173/11。**生产仍跑 V2.0.0**(下面那份常态快照仍是
+现役事实),批 1 全部块本地完工 + 双端 build 绿之后才进 ⑨ 分批部署。主题 =
 功能删减(问询台整链 + T3 全链)+ 三板块信息架构重排 + 复盘板块补环 + 百分制展示层。
+⚠ **⑤ 的两条端点在 ⑥ 的周度 unit(批 3)上线之前会如实报「本窗口的周度校准产物尚未生成」**
+—— plan 明写的合法中间态,不是缺陷。
 🔴 **本版是对一台活着的生产系统做在线升级,没有 V2 那种割接窗口** —— 本地施工优先、生产
 分批部署、涉常驻 API 的重启只在收盘后、每批双备份带回滚绳、**本版零删键**(用户 iPhone 上
 装的是 2.0.0,他何时重装不可控),四条铁律全文在 §五〇b。生产现役仍是下面这份 V2.0.0 常态。
@@ -685,7 +691,7 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 
 ---
 
-### ④ 百分制打分卡(甲案 · 纯展示层)
+### ④ 百分制打分卡(甲案 · 纯展示层)—— ✅ **本地完工 2026-08-08(@builder-pro,⛔ 未部署)**
 
 **目标**:每篮显示 **机械分 ×100 的百分分数 + 五维贡献逐项拆解**;**⛔ 该分数不进任何判定路径**。
 
@@ -714,9 +720,69 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 
 **验收**:报告 markdown 与客户端选股卡都能看到「总分 + 五维贡献」,且守门三条绿。
 
+#### ✅ ④ 完工记录(2026-08-08 · @builder-pro · 本地,⛔ 零部署 / 零包改动 / 零 DB 变更 / 零客户端改动)
+
+- **新模块 `neckline/report/score_display.py`**(唯一换算实现,纯函数 / 零 I/O / 零 DB):
+  `score_percent()` · `score_view()` · `contribution_line()`(markdown 那一行的**唯一文案实现**,
+  渲染层不另拼)。数据**全部**取自已冻结的 `tier_history.mech_breakdown`
+  (`dims`/`weights`/`contrib`/`flags`/`neutral_filled_weight`),⛔ 零重算、零新取数。
+- **三处接线**:① 报告快照 `basket_daily.BasketView.score`(按 `basket_id` 调既有
+  `load_tier_history`,**单篮包保险丝**,读留痕失败只让这一篮没分、不连坐);
+  ② live 路径 `api/app.py::_shape_basket` → `TierOut.scorePercent/scoreContributions`;
+  ③ `report/render.py` ③ 节每篮加一行。
+- **🔴 守门三条全绿 + 两条自加**(`tests/test_score_display.py`,28 例):① AST 反向 import ——
+  `selection/**`·`sentinel/**`·`strategy/**`·`eval/**`·`review/**` 全仓零 import 本模块
+  (**方向性规则**:要拿分数去判定,第一步必然是 import);② `tier._TIER_SCORE_INPUTS`
+  逐位不变;③ 本模块零 import `neckline.selection`。**自加两条**:五维中文标签与引擎五维
+  同集(漏一个就在卡面冒英文名);`_DIM_NEUTRAL_FILL_FLAGS` 与引擎 `_DIM_MISSING_FLAGS`
+  **逐位相等**(见下"受监督的重复")。
+- **一处不得不留的重复,已改造成机器判据(如实登记)**:`neutralFilled` 需要「哪个 flag 属于
+  哪一维」这份知识,唯一源在 `selection/tier.py::_DIM_MISSING_FLAGS` —— 而守门 ③ 恰恰禁止本
+  模块 import 它,两条约束把"直接复用"堵死。处置 = 展示层留一份**字面等价副本** + 一条逐位
+  相等的守门单测(测试既非判定层也非展示层,允许同时 import 两侧)。漂移从"但愿有人记得同步"
+  变成**当场报红**。⚠ 红了的正确处置是来展示层对齐引擎,⛔ 不是删断言。
+- **🟠 plan 一处数值疏漏,已按实测订正(不是放宽验收)**:plan 写「`sum(contribPercent) ≈
+  scorePercent`(容差 **0.15**)」。若分项也按 1 位小数舍入,五项各带 ≤0.05 误差 → **最坏差
+  0.30**,该容差不是安全上界。**实测**(20000 组随机权重×维分):最坏 0.2000,**1.61% 的组会
+  超过 0.15**(一条会随机翻红的守门比没有守门更糟)。**修法不是抬容差,是让契约值别丢精度**:
+  `contribPercent` 保留 4 位小数(`_CONTRIB_ND=4`),各展示层自己 `:.1f` —— **精度住契约、
+  位数住展示**。plan 原文的 0.15 容差因此**原样成立**并已写成断言,另加一条 200 组随机的
+  property 测试锁死。
+- **契约新增 4 个只读键(与 ⑧ 对拍表逐位对上,⛔ 零删键)**:`TierOut.scorePercent` /
+  `.scoreContributions`(A 类,live 路径)+ `BasketOut.scorePercent` / `.scoreContributions`
+  (B 类,报告快照)+ 一个新 DTO `ScoreContribOut`(不计入"键"数,它是 `scoreContributions`
+  的元素类型)。🔴 **两条路刻意只填各自那一处**:live 路径的分数住 `tierHistory`(分数是
+  **定档留痕的属性**),`BasketOut` 那两键留空;快照路径反之。两处都填 = 同一份响应里两个必须
+  永远一致的副本。**⑦ 客户端读法 = `basket.scorePercent ?? basket.tierHistory?.scorePercent`**
+  (已写进 `BasketOut` docstring + 一条专门的契约测试)。
+- **`neutralFilledPercent` 与 `note` 刻意不进契约**(⑧ 数死 4 个新键):前者的等价信息由每项的
+  `neutralFilled: Bool` 带给客户端,两者都进 markdown 报告。
+- **一处不可区分,如实登记不掩饰**:「老报告快照没有这两个键」与「这一篮没有定档留痕」经
+  `BasketOut` 收口后都是 `scorePercent=null` + `scoreContributions=[]`(pydantic 序列化必然带上
+  全部字段)。**两种成因给用户的动作相同**(等下一份报告),故可接受;`scoreContributions`
+  恒为数组(⛔ 不是 `null`)正是为了让那个非 Optional 列表字段收得下两种输入。
+- **测试**:基线(本次开工实测,commit `a1eb036`)**2967 passed / 2 failed / 2 skipped** →
+  本块 **3003 passed**(+36,零回归)。两条 failed 逐字节同基线
+  (`test_api_positions` / `test_fix_position_buy_dates`,今日 08-08 周六非交易日的既存红,
+  与本块零交集)。
+- **冒烟(真实引擎产出,隔离临时库 + 真实 parquet 只读,真实 `data/neckline.db` md5
+  `65b22606…` 跑前跑后未变)**:`scripts/smoke_basket_review.py --d0 20260723 --keep` 产出两篮真
+  `tier_history`(`K4-pack-v1`),渲染 ③ 节人工核对 ——
+  `机械分 61.7 / 100(可交易性 20.0 · 龙头清晰度 12.5* · 板块强度 12.5* · 驱动新鲜度 10.0* ·
+  卡密度 6.7);`*` = 该维今天没算出来、按中性分 0.5 计入(**不是表现好**,占权重 70%)`。
+  自洽核对:五维合计 61.6667 vs 总分 61.7(差 0.0333)/ 55.0000 vs 55.0(差 0)。
+- 🔴 **冒烟顺带打出一件产品级事实,已并入 ⑤ 的 P3-33 观察项**:那两篮真实数据的
+  `neutral_filled_weight = 0.7` —— **七成权重来自中性填充**,即 P3-33 说的「因为不知道所以进
+  T1」在真实数据上不是假想。打分卡把它**摆到了卡面上**(`*` 角标 + 占比),这正是 P3-33
+  等的那份证据的一部分。⛔ 本块**不因此设任何闸**(设闸要走换包门禁)。
+- **不越块声明**:客户端 DTO 与卡面展示**零改动**(归 ⑦);`tests/test_contract_crosscheck.py`
+  的「新端点形状 +2 / reason 闭包显式断言」**未做**(归 ⑧);`scripts/smoke_api.sh` 未加项。
+  pristine 客户端双端 `xcodebuild build` **BUILD SUCCEEDED**,iOS Simulator test
+  **173 executed / 11 skipped / 0 failures**(与 ① 完工后的基线逐位相同)。
+
 ---
 
-### ⑤ 复盘板块 · 服务端(聚合端点 + 校准移交件)
+### ⑤ 复盘板块 · 服务端(聚合端点 + 校准移交件)—— ✅ **本地完工 2026-08-08(@builder-pro,⛔ 未部署)**
 
 **目标**:复盘板块要的数据**零新建**(`basket_review_daily` / `eval` 三件 / 画像两表 / 周复盘对账全现成),本块只做**聚合读**与**移交件导出**。
 
@@ -748,6 +814,71 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 **依赖与部署批次**:端点代码 → **批 1**;它要读的产物由 ⑥ 在 **批 3** 之后才开始产出 —— 中间这段时间 `available=false` + 「本窗口的周度校准产物尚未生成」是**如实的**,不是缺陷。
 
 **验收**:`/review/overview` 五段各自能独立说出"有 / 没有 / 没取到";`/review/handoff` 能导出一份带样本量、能直接交给策略台的 markdown。
+
+#### ✅ ⑤ 完工记录(2026-08-08 · @builder-pro · 本地,⛔ 零部署 / 零新表 / 零写库 / 零新增 reason)
+
+- **新模块 `neckline/review/handoff.py`**:`list_calibration_artifacts()`(降序,最近在前)·
+  `load_calibration_with_status()`(**唯一读实现**)· `load_calibration()`(plan 点名签名的薄
+  封装)· `load_calibration_markdown()` · `render_handoff()`(**纯函数**,五节)·
+  `build_handoff()`(装配)· `HANDOFF_OBSERVATIONS`。命名**复用** `calibration.write_report`
+  定死的 `calibration_{from}_{to}.{md,json}`,并加一条守门直接从 writer 源码里读出那行 f-string
+  与本模块前缀对拍(⛔ 不另起一套命名)。
+- **🔴 三态而非两态(plan 只说"文案要分开",这里落成机器判据)**:`ok` / `not_generated` /
+  `corrupt`。前两者会自愈(等周度作业),`corrupt` **不会** —— 混成一句就是叫人一直等一份
+  永远好不了的产物(承 V2 B1 `card_corrupt` vs `card_not_ready` 同一条裁定)。`[1,2]` 这种
+  「解得出但不是报告对象」也判 `corrupt`(读得出 ≠ 读到了东西)。plan 点名的
+  `load_calibration() -> dict|None` 签名**原样保留**,带状态那个是它的实现。
+- **两条端点** `GET /api/v1/review/overview`(`week`/`asOf`)与 `GET /api/v1/review/handoff`
+  (`from`/`to`/`asOf`;⚠ `from` 是 Python 关键字 → `Query(alias="from")`,URL 契约不变)。
+  **三个新 Out 模型**:`ReviewSegmentOut` / `ReviewOverviewOut` / `ReviewHandoffOut`(与 plan
+  数目一致)。**一律不 404、零新增 reason 字符串**(`SERVER_REASONS` 与 `mapReason` 一字未动,
+  既有守门测试仍绿)。
+- **⛔ 零在线补算,双向证明**:① 静态 —— `handoff.py` 全文零 `build_report`(AST 扫调用点
+  **与** import 面);两个端点函数 + 四个段装配函数**按函数**扫(⚠ **⛔ 不能整文件 grep**:
+  同一个 `app.py` 里 `get_eval_weekly` 是**合法**调用方,整文件扫必永远误报 —— ⑰ 现场刚踩过
+  「一个对自己报警的闸门等于没有闸门」);② **运行期** —— 把 `calibration.build_report` 换成
+  **会抛 AssertionError 的桩**,两条端点仍 200 且有内容,同时断言 `/eval/weekly` 在同一个桩下
+  变成 `available=false`(**反向对照,证明桩确实生效、上面两条不是假绿**)。
+- **五段各自三态**(plan 验收原文「有 / 没有 / 没取到」),🔴 **两处刻意判得不一样,⛔ 别"统一"**:
+  - **画像段缺席 = 「没看」**(`available=false`)—— 系统自己那一步没跑(周度批算未运行);
+    实现上**直接调 `get_profile_preference/capability` 两个既有端点函数**(同码不重写),
+    两条路上的画像永远讲同一句话(有一条测试逐字段对拍两者)。
+  - **对账段缺席 = 「没有」**(`available=true` + `detail.found=false` + 一句可直接渲染的
+    `note`)—— 必需输入(券商交割单)**只能由用户给**,系统查过 `reviews` 表、确实没有那一行。
+    两者给用户的动作完全不同(等系统 vs 去上传)。
+  - 观察项段**恒 available**(静态登记册);校准段按上面三态说话,窗口不匹配时额外给
+    `detail.latestAvailable` 指向确实存在的那一期。
+- **包成绩单 = `calibration.strata` 本身**(产物原文原样透传在 `calibration.detail`),
+  ⛔ 未另建第二份聚合;`items` 该段刻意留空并写明"成绩单在 `detail.strata`",**零重复**。
+- **观察项清单四条**(P3-32 / P3-33 / P3-34 / P3-37,每条 `{id,title,question,evidence_needed,status}`)。
+  ⚠ **P3-34 只放一条**(§七 里它本身就是一条、内含 (a)(b) 两项)—— 拆成 `P3-34a`/`P3-34b` 会让
+  守门 grep 不到,而那条 grep 正是清单与 Backlog 的**唯一闭合**。P3-33 的 `tier3_min` 一项按
+  plan 要求**如实标作废**(守门断言 `question` 正文里已无它、`status` 里说了作废)。
+  守门:每个 id 必须能在 **§七 那一段**(不是全文)grep 到字面 `[P3-xx]`。
+- **测试隔离新注入点(必需,不是可选)**:`api/app.py::_DATA_DIR_OVERRIDE` + `_calibration_dir()`,
+  `tests/conftest.py::api_env` 同步注入。⚠ 不加这一行,两条端点会去读**真实项目**的
+  `data/reports/`(CLAUDE.md「测试隔离」条:`api_env` 不重写 `neckline.config.settings`;
+  那类泄漏的特征是"断言全错还不报错")。
+- **测试**:**3003 → 3056 passed**(+53:`test_review_handoff.py` 31 例 + `test_api_review.py`
+  新增 22 例),2 failed / 2 skipped 与基线逐字节相同。随机序(pytest-randomly 默认)与固定序
+  两次全量均同样数字,无顺序依赖。
+- **冒烟(隔离库含真实迁移数据副本 + 隔离 data 根;真实 db 与真实 `data/reports/` 全程不碰)**:
+  按 ⑥ 周度 unit 的方式**离线**跑 `calibration.build_report` + `write_report` 落
+  `calibration_20260720_20260724.{json,md}`,再起 API 打两条端点 ——
+  `/review/overview?week=20260723` → `weekStart/End = 20260720/20260724`、`weekKey=2026-W30`,
+  五段全部 `available` 且各自说得出话(calibration 带 `K4-pack-v1 × verify_ruleset_v2` 1 日 2 篮;
+  preference/capability 各 2 行带 `sampleN`/窗口/`confidence`;reconcile `found=false` + 那句
+  「本周尚未上传交割单」;observations 四条 id)。`/review/handoff` → `sampleN =
+  {tradingDays:1, baskets:2, strata:1, preferenceRows:2, capabilityRows:2}`、markdown 4443 字符、
+  五节齐全、校准 `.md` 原文原样嵌入、`low` 置信度行逐行带「样本不足,不给结论」。
+  反向:`?week=20200101` 与 `?from=19990101&to=19990105` **均 HTTP 200**(零 404)。
+  ⚠ 冒烟的画像两行是按真实 CLI 行形状手工落的(该冒烟库无成交记录,批算出来本就是空),
+  用途仅为核对渲染,**不是伪造判据**。
+- **不越块声明**:客户端**零改动**(复盘板块 UI 与移交件导出按钮归 ⑦);
+  `GET /eval/weekly` 一字未动(它是在线现算那一条,已挂账 §七 **P4-46**);
+  `tests/test_contract_crosscheck.py` 的「新端点形状 +2」**未做**(归 ⑧);
+  `scripts/smoke_api.sh` 未加项;⑥ 的 `scripts/weekly.py` 与两个 unit 文件**未建**(归 ⑥)——
+  在它上线之前两条端点如实报「产物尚未生成」,**这是 plan 明写的合法中间态,不是缺陷**。
 
 ---
 
@@ -1166,6 +1297,8 @@ V2.0.0 有割接窗口(新机 + 新子域 + 老机同时活着)兜底,**V2.1 没
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-08 · 🧾 **V2.1-⑤ 复盘板块服务端本地完工(@builder-pro,⛔ 未部署 / 零新表 / 零写库 / 零新增 reason / 零客户端改动)**。新增 `neckline/review/handoff.py`(产物枚举 / **唯一读实现** / 五节移交件渲染 / `HANDOFF_OBSERVATIONS` 四条)+ 两条只读端点 `GET /review/overview`(`week`/`asOf`,五段)与 `GET /review/handoff`(`from`/`to`/`asOf`,⚠ `from` 是关键字 → `Query(alias="from")`)+ 三个 Out 模型。**⛔ 零在线补算双向证明**:静态 AST **按函数**扫两端点 + 四个段装配函数零 `build_report`(⚠ **不能整文件 grep** —— 同文件的 `get_eval_weekly` 是合法调用方,整文件扫必永远误报,⑰ 刚踩过"对自己报警的闸门等于没有闸门");**运行期**把 `build_report` 换成会抛的桩,两端点仍 200,并**反向断言** `/eval/weekly` 在同一个桩下变 `available=false`(证明桩生效、上面不是假绿)。**产物三态**(plan 只要求文案分开,这里落成机器判据):`ok`/`not_generated`/`corrupt` —— 前两者会自愈、`corrupt` 不会,混成一句就是叫人等一份永远好不了的产物(承 V2 B1 同一裁定)。**🔴 两处刻意判得不一样、⛔ 别"统一"**:画像段缺席 = 系统自己那步没跑 = 「没看」`available=false`(实现**直接调 `/profile/*` 两个端点函数**,同码不重写,有测试逐字段对拍);对账段缺席 = 输入只能由用户给、系统查过表确实没有 = 「没有」`available=true`+`found=false`+可直接渲染的 note。**包成绩单 = 产物里的 `strata` 本身**(原样透传),⛔ 未另建第二份聚合。观察项 **P3-34 只放一条**(§七 里它本就是一条含 (a)(b));P3-33 的 `tier3_min` 一项如实标作废;守门断言每个 id 能在 **§七 那一段**grep 到字面 `[P3-xx]`。**新增测试隔离注入点** `app._DATA_DIR_OVERRIDE` + conftest 同步(不加就会读真实项目 `data/reports/`)。**测试** 3003 → **3056 passed**(+53),2 failed/2 skipped 同基线;随机序与固定序两次全量同数字。**冒烟**(隔离库含真实迁移数据副本 + 隔离 data 根,真实 db 与真实 `data/reports/` 全程不碰):离线落 `calibration_20260720_20260724.{json,md}` 后两端点各出一份完整响应人工核对 —— overview 五段全 available 且各自说得出话、handoff `sampleN={1,2,1,2,2}` / markdown 4443 字符 / 五节齐全 / 校准 `.md` 原文原样嵌入 / `low` 行逐行带「样本不足,不给结论」;反向两个查不到的窗口**均 HTTP 200**(零 404)。详见 §五⑤完工记录。
+- 2026-08-08 · 💯 **V2.1-④ 百分制打分卡本地完工(@builder-pro,⛔ 未部署 / 零包改动 / 零 DB 变更 / 零客户端改动)**。新增 `neckline/report/score_display.py`(纯函数、零 I/O、零 DB、**零重算** —— 数据全取已冻结的 `tier_history.mech_breakdown`)+ 三处接线(报告快照 `BasketView.score` / live `_shape_basket` → `TierOut` / `render.py` ③ 节每篮一行)。**守门三条全绿**:AST 反向 import(判定五包 `selection`/`sentinel`/`strategy`/`eval`/`review` 全仓零 import 本模块 —— 方向性规则,要拿分数去判定第一步必然是 import)· `_TIER_SCORE_INPUTS` 逐位不变 · 本模块零 import `neckline.selection`;**自加两条**(中文标签与引擎五维同集、`_DIM_NEUTRAL_FILL_FLAGS` 与引擎 `_DIM_MISSING_FLAGS` 逐位相等)。**一处"受监督的重复"如实登记**:守门 ③ 禁止 import 判定层,故中性填充 flag 映射不得不留一份副本,已用逐位相等的守门把漂移变成当场报红(⚠ 红了是来对齐引擎,⛔ 不是删断言)。**🟠 plan 一处数值疏漏已按实测订正**:「合计 ≈ 总分,容差 0.15」在分项 1 位小数下最坏差 0.30、实测 20000 组有 **1.61% 超 0.15**(会随机翻红的守门比没有更糟);**修法不是抬容差而是契约值别丢精度** —— `contribPercent` 保留 4 位、展示层各自 `:.1f`(精度住契约、位数住展示),plan 的 0.15 因此原样成立并加了 200 组随机 property 测试。**契约新增 4 个只读键 + 1 个元素 DTO,⛔ 零删键**;🔴 **live 与快照两条路刻意只填各自那一处**(live 的分数住 `tierHistory`,两处都填 = 一份响应里两个必须永远一致的副本),⑦ 读法 `basket.scorePercent ?? basket.tierHistory?.scorePercent` 已写进 docstring 与专门测试。**测试** 基线 2967 → **3003 passed**(+36,零回归)。**冒烟**(真实引擎产出,隔离临时库 + 真实 parquet 只读,真实 db md5 `65b22606…` 未变):`机械分 61.7 / 100(可交易性 20.0 · 龙头清晰度 12.5* · 板块强度 12.5* · 驱动新鲜度 10.0* · 卡密度 6.7)`,自洽 61.6667 vs 61.7。🔴 **顺带打出一件产品级事实**:那两篮真实数据 `neutral_filled_weight=0.7` —— **七成权重来自中性填充**,P3-33 说的「因为不知道所以进 T1」在真实数据上不是假想,打分卡把它摆到了卡面(`*` 角标 + 占比),正是 P3-33 等的证据之一;⛔ 本块不因此设任何闸(设闸走换包门禁)。详见 §五④完工记录。
 - 2026-08-08 · 🗑 **V2.1-① 问询台整链退役本地完工(@builder,⛔ 未部署 / 零一次性脚本生产执行)**。服务端 3 端点 + 5 pydantic 模型 + `TASK_INQUIRY`(常量/`ALL_TASKS`/`DEFAULT_SEARCH_TASKS`/`__all__` 四处)+ `api/stores.py` 三函数 + `report/discipline_checks.py`(唯一消费方已亡)一并物理删除;`inquiry_log` 表停写留档(db.py 表头登记,同 `watchlist` 口径);`inquiry_pool` **零接触**(反向测试锁死)。`settings_store.get_llm_routes()` 加读侧未知任务名过滤 + WARNING;新增一次性脚本 `scripts/oneoff/strip_retired_llm_routes.py`(默认演练/`--confirm`双备份/幂等,单测 10 例 + 本地库 CLI 冒烟,**未碰生产库**)。客户端 `AppTab.inquiry` case、11 个 `inquiry*` 属性(plan 写 12,清点订正)、4 方法、`VerdictBadge`、五个 Inquiry 系类型(`InquiryReply` 系 plan 笔误,实名 `InquiryResult`)、`APIClient` 三方法全删;iOS TabBar 截图确认三项(今日篮子/持仓/设置),零 IA 重排(留给 ⑦)。**如实登记发现的三处 plan 出入**:属性计数 12→11、类型名 `InquiryReply`→`InquiryResult`、🔴 `selection/primitives.py` 经核实**并不** import `base_universe_expr`(独立手写谓词,值靠 docstring 人工同步,既有风险非本块引入,守门测试已按实况只锁 `strategy/momentum.py`)。**发现并修复 plan 清单外三处真实测试耦合**(否则 pytest 会红):`test_llm.py`(`"inquiry"` 字面量当示例任务名 × 3 处)、`test_scan_layer_guardrails.py`/`test_industry_strength_store.py`(各自独立的 `_ONLINE_FILES` grep 清单 + 后者两例直调 `run_deterministic_checks`)、`test_llm_router_budget.py`(`len(ALL_TASKS)==9` 改 8)。**测试**(`git stash` 前后对拍,基线 = ② 已提交的 `85f4e1e`):**3041 passed → 2967 passed**(2 failed / 2 skipped 两侧不变,失败集逐字节相同,系 `test_api_positions`/`test_fix_position_buy_dates` 两条与今日〔周六〕日期相关的既存红,核实与 ①② 均无关)。双端 `xcodebuild build` **BUILD SUCCEEDED**(`xcodegen generate` 同步 pbxproj,diff 4 行);iOS test **173/11 skipped/0 failures**(对照 ② 报告的 pristine 187/12,187−173=14 与本块删除的 Swift 测试方法数逐个对上)。详见 §五①完工记录。
 - 2026-08-08 · 🗑 **V2.1-② T3 全链退役本地完工(@builder-pro,⛔ 未部署 / 零接触包文件 / 零客户端改动)**。引擎两档化:`TIER_CAPACITY={1:2,2:5}` · `TIERS=(1,2)` · **删 `TIER3_MIN_SCORE`** · `_eligible_tier` 无兜底档(够不到 `tier2_min` 即 `below_quality_line`,**码字符串一字未改**保住 ⑨ 归因)· `DEGRADE_ORDER` 只剩 `t2_review_detail`(**删 `DROP_T3_BRIEF`**)· `depth_for_tier` 恒 `full`(`DEPTH_BRIEF` 常量**保留**供读回历史行)。**硬约束「历史 T3 回放不许消失」三处落点**:`basket_daily.by_tier()` 按数据实际档位构造、`render._TIER_TITLE` 改函数式兜底、③ 节迭代 `现役档 ∪ 快照实际档`;`list_baskets` 的 `tier` 白名单**保留 3**(读侧宽容,删了 = 历史按 T3 查静默退化成"全部")。**plan 两处疏漏已补并登记**:① `eval/calibration.py` 的 Tier 行写死 `(1,2,3)`(冒烟当场打出幽灵「T3 —(n=0)」= 把系统缺席讲成实质性结论),改成按实际档位渲染、双向守门 —— 这份报告正是 ⑤ 复盘板块要端给用户的东西;② `aggregate.py` 的「17 篮」注释成假话(常量**刻意不动**,检索段按种子计费)。**回滚锚保住**:`pack` 对 `tier3_min` **受理不报未知键**、不进单调性,守门直吃真 `packs/K7-pack.json` 断言"校验通过 + 原样过闸 + 包对象仍带该键";引擎侧忽略并**打 WARNING(⛔ 不静默)**;`ENGINE_API_VERSION` **仍为 1**(②-4 三条理由,两个回滚锚仍判兼容)。反向 hasattr 守门两条 + 白名单不给已删常量留登记。**测试(隔离 worktree 对拍,排除同批 ① 在制品)**:pristine `5635c77` **3028 passed** → 本块 **3041 passed**,+13 例零回归,两侧失败集相同(2 条日期依赖既存红,08-08 周六)。**冒烟**(隔离库 + LLM 桩,真实 db md5 未变):`{'T1':1,'T2':1,'T3':2}` 溢出 0 → **`{'T1':1,'T2':1}` 溢出 2**(2 篮如实进 ③b `below_quality_line`)。pristine 客户端双端 `BUILD SUCCEEDED` + iOS test **187/12 skipped/0 failures**。🔴 **移交 ⑦**:`BasketDailyView.swift` 的 `ForEach([1,2,3])` ⛔ 不许简单改 `[1,2]`(会在展示层拆掉刚立起来的读侧宽容),改法见 ② 完工记录末条。
 - 2026-08-07 · 📐 **V2.1.0 立项:施工图转写进 §五(@planner,⛔ 未开工,等用户 Build 指令)**。六项用户裁定定格(问询台整删 / 三板块 IA / 复盘人工闭环无自动反馈 / T3 彻底删 / 百分制甲案纯展示 / 前端视觉让位 v2.2);分九块 ①问询台整链退役 ②T3 全链退役 ③`K7-pack-v2` 发版激活 ④百分制展示层 ⑤复盘板块服务端 ⑥周度 unit 定案(**P3-42 结案**)⑦客户端 IA 重排 + 复盘板块 ⑧契约对拍守门收口 ⑨分批部署。**本版是对活着的生产系统做在线升级**,四条铁律入 §五〇b(本地施工优先 / 分批部署 / 常驻 API 只在收盘后重启 / **零删键**)。planner 核出四处与前瞻规划的出入并已在图中纠正:`K4-pack-v1` 无 `quality_lines` 故**不必重发版**、`ENGINE_API_VERSION` **不 bump**(理由三条)、报告 ④ 节**服务端零改动**只搬客户端展示、T3 删除**省不到联网检索那笔大头**。§七 吸收 P3-42、部分落地 P3-44、部分作废 P3-33、新挂 P4-46/P3-47;前瞻规划稿归档 `archive/V2.1前瞻规划_20260807立项归档.md`(防双权威)。

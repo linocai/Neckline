@@ -202,6 +202,27 @@ class BasketCardOut(BaseModel):
     notes: List[str] = Field(default_factory=list)
 
 
+class ScoreContribOut(BaseModel):
+    """百分制打分卡里的**一维贡献**(V2.1-④,**纯展示层**)。
+
+    `contribPercent = 归一化权重 × 该维得分 × 100`,五维合计 ≈ `scorePercent`
+    (各项独立舍入,末位可能差零点几)。唯一换算实现 =
+    `neckline/report/score_display.py`,⛔ 双端都不许另写一份换算或另建中文标签表。
+
+    🔴 **`neutralFilled=true` 是一句必须说出口的话**:那一维今天**没算出来**、按中性分
+    0.5 计入 —— 它撑起来的那部分分数**不是"这一维表现好"**。⛔ 客户端不许把它渲染成
+    与其它维度无差别的一根条(§3.8「没有」与「没看」必须分得开)。
+
+    `dimScore`/`weight` 为 `null` = 该维在冻结留痕里就缺这个数,⛔ 不是 0。"""
+
+    dim: str
+    label: str = ""
+    dimScore: Optional[float] = None
+    weight: Optional[float] = None
+    contribPercent: Optional[float] = None
+    neutralFilled: bool = False
+
+
 class TierOut(BaseModel):
     """一篮的 Tier 定档留痕(`tier_history` 一行,**A 类**)。
 
@@ -210,7 +231,14 @@ class TierOut(BaseModel):
     才谈得上「定档可完整复现」(⑥ 的验收条款)。
 
     `tier` 取值域:**新数据 ∈ {1, 2}**(V2.1-② T3 全链退役,写侧收窄);
-    历史留痕行仍可能是 `3`,⛔ 客户端别把 3 当非法值 —— 那是 V2 时代的真实数据。"""
+    历史留痕行仍可能是 `3`,⛔ 客户端别把 3 当非法值 —— 那是 V2 时代的真实数据。
+
+    **V2.1-④ 新增两个只读键**(`scorePercent` / `scoreContributions`):
+    `mechScore` 的百分制**等价换算 + 五维拆解**,由 `report/score_display.py` 从
+    **同一份已冻结的 `mechBreakdown`** 算出 —— ⛔ 它不是第二个分数、不进任何判定路径
+    (排序 / 哨兵 / 去留一律不读它,守门在 `tests/test_score_display.py` 三条)。
+    `scorePercent=null` = 这一篮取不到分(没有 breakdown),**⛔ 不是 0 分**;
+    此时 `scoreContributions` 为空数组(A 类每次响应重拼,不是冻结快照)。"""
 
     basketId: int
     tradeDate: str = ""
@@ -222,6 +250,8 @@ class TierOut(BaseModel):
     llmRankDelta: int = 0
     llmReason: Optional[str] = None
     packVersion: Optional[str] = None
+    scorePercent: Optional[float] = None
+    scoreContributions: List[ScoreContribOut] = Field(default_factory=list)
 
 
 class BasketOut(BaseModel):
@@ -229,7 +259,17 @@ class BasketOut(BaseModel):
     = 篮子在、卡没生成(事务 1 与事务 2 分开,**合法中间态**)。
     ⛔ 客户端不许把它显示成「篮子不存在」——那是另一回事(`basket_not_found`)。
 
-    `tier` 取值域:**新数据 ∈ {1, 2}**(V2.1-② T3 退役);历史日期查回来仍可能是 `3`。"""
+    `tier` 取值域:**新数据 ∈ {1, 2}**(V2.1-② T3 退役);历史日期查回来仍可能是 `3`。
+
+    🔴 **`scorePercent`/`scoreContributions` 两键只在"报告快照"这条路上有值**
+    (V2.1-④,**B 类:随 `reports.basket_daily_json` 冻住**)。⛔ **live 路径
+    (`GET /baskets`、`GET /baskets/{id}`)刻意留空** —— 那条路上同一个数住
+    `tierHistory.scorePercent`(**分数是定档留痕的属性**,那才是它的家);两处都填
+    等于在同一份响应里放两个必须永远一致的副本。**客户端读法(⑦ 照此)**:
+    `basket.scorePercent ?? basket.tierHistory?.scorePercent`。
+    `scorePercent=null` + `scoreContributions=[]` = **本篮无打分可显示**(老报告快照
+    没有这两个键 / 这一篮没有定档留痕,两种成因经本 DTO 收口后不可区分,给用户的
+    动作也相同)—— 🔴 **⛔ 绝不是 0 分**,客户端如实写「本报告版本无打分」。"""
 
     basketId: int
     basketKey: str = ""
@@ -241,6 +281,8 @@ class BasketOut(BaseModel):
     cardVersion: Optional[int] = None
     cardUnavailableReason: Optional[str] = None
     tierHistory: Optional[TierOut] = None
+    scorePercent: Optional[float] = None
+    scoreContributions: List[ScoreContribOut] = Field(default_factory=list)
 
 
 class BasketsListOut(BaseModel):
@@ -1206,6 +1248,80 @@ class ReviewUploadOut(BaseModel):
     sheetFormats: Dict[str, str] = Field(default_factory=dict)
 
 
+class ReviewSegmentOut(BaseModel):
+    """复盘板块「累计」页里的**一段**(V2.1-⑤)。五段各一份,形状统一。
+
+    🔴 **每段各自带 `available` + `unavailableReason`,⛔ 不许拿一个总开关罩住五段** ——
+    校准产物没生成、画像没批算、这周没传交割单是**三件互不相干的事**,合成一句读者就
+    分不清哪个没有。三态读法(plan §五⑤ 验收原文「有 / 没有 / 没取到」):
+
+      · **有**   → `available=true` + 有内容;
+      · **没有** → `available=true` + 空内容(该段自己的空态文案说清为什么空);
+      · **没取到** → `available=false` + `unavailableReason`(⛔ 不许拿空数组冒充)。
+
+    ⚠ **画像段与对账段的空态刻意判得不一样,⛔ 别"统一"**:画像缺席 = **系统自己那一步
+    没跑**(周度批算未运行)→ 那是「没看」→ `available=false`;对账缺席 = 输入(券商
+    交割单)**只能由用户给**、系统查过表确实没有 → 那是「没有」→ `available=true` +
+    `detail.found=false`。两者给用户的动作完全不同(等系统 vs 去上传)。
+
+    `items` / `detail` **原样透传**领域层形状(同 `WeeklyReviewOut.result` /
+    `EvalWeeklyOut.result` 的既定惯例)—— 在 API 层再镜像一套嵌套模型只会多一处会漂的
+    定义。`label` 由服务端给人读名(同 `PushKindOut.label` 先例,免双端各抄一份中文)。"""
+
+    available: bool = False
+    unavailableReason: Optional[str] = None
+    label: str = ""
+    asOf: str = ""                          # 该段的时点标识:画像期 / ISO 周 / 校准窗口
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+    detail: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ReviewOverviewOut(BaseModel):
+    """复盘板块「累计」页的聚合读(V2.1-⑤,`GET /review/overview`)。
+
+    **零现算**:五段全部读**已冻结 / 已落盘**的产物 —— 校准报告由离线周度作业算好落盘
+    (§七 P0-23:本端点与盘中哨兵同进程,重活进常驻服务 = 卡死不报错),画像读
+    `profile_*` 两表,对账读 `reviews` 表。⛔ 读不到就说读不到,**永不在线补算**。
+
+    **包成绩单 = `calibration.detail.strata` 本身**(产物原文已按
+    `pack_version × verification_ruleset_version` 分层)——⛔ 不另建第二份聚合,
+    那就是「同一个数两个算法」的老病。
+
+    🔴 **本端点一律不 404**(空态走各段的 `available=false`)→ V2.1 **零新增 reason
+    字符串**,`SERVER_REASONS` 与客户端 `mapReason` 一字不动。"""
+
+    weekStart: str = ""
+    weekEnd: str = ""
+    weekKey: str = ""                       # ISO 周键(`YYYY-Www`),对账段按它取
+    calibration: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
+    preference: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
+    capability: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
+    reconcile: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
+    observations: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
+
+
+class ReviewHandoffOut(BaseModel):
+    """校准移交件导出(V2.1-⑤,`GET /review/handoff`)。
+
+    `markdown` = 一份能**直接交给策略台**的五节文档(窗口与样本量 / 校准报告原文 /
+    画像两表 / 观察项清单 / 免责)。`sampleN` 是那份文档 §① 的数字版,便于客户端在
+    按钮旁边先显示"这一份带多少样本"。
+
+    **`available=false` 的两种成因文案必须分开**(⛔ 别合并):① 一期校准产物都还没有
+    (周度作业没跑过)—— **会自愈**;② 指定窗口的产物**读不出**(文件在、JSON 解不出)
+    —— **不会自愈**,要人排查。合成一句就会让人一直等一份永远好不了的产物。
+
+    🔴 本端点同样**一律不 404**,零新增 reason。"""
+
+    available: bool = False
+    unavailableReason: Optional[str] = None
+    windowFrom: str = ""
+    windowTo: str = ""
+    generatedAt: str = ""
+    sampleN: Dict[str, int] = Field(default_factory=dict)
+    markdown: str = ""
+
+
 class ReviewGetOut(BaseModel):
     ok: bool = True
     found: bool = False
@@ -1222,7 +1338,7 @@ __all__ = [
     "InfoCardSnapshotOut", "InfoCardNewsItemOut", "InfoCardNewsOut", "InfoCardTopListOut",
     "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
     # V2-⑭-B 篮子族
-    "BasketMemberOut", "BasketCardOut", "TierOut", "BasketOut", "BasketsListOut",
+    "BasketMemberOut", "BasketCardOut", "ScoreContribOut", "TierOut", "BasketOut", "BasketsListOut",
     "DroppedBasketOut", "BasketVerificationOut", "BasketReviewOut", "BasketDailyOut",
     # V2-⑭-B 计划继承 / 建仓快照 / 画像 / 策略包 / 评价
     "PositionPlanOut", "PositionPlansOut", "PositionPlanCreateIn", "EntrySnapshotOut",
@@ -1237,6 +1353,8 @@ __all__ = [
     "LLMRoutesOut", "LLMRoutesIn",
     "SettingsReviewColMapIn",
     "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
+    # V2.1-⑤ 复盘板块聚合读 + 校准移交件
+    "ReviewSegmentOut", "ReviewOverviewOut", "ReviewHandoffOut",
     "ContingencyScenarioOut", "NoteLabelLiteral",
     "DecisionCreateIn", "DecisionNoteOut", "DecisionOut", "DecisionsListOut",
     "DecisionTrackOut", "DecisionTrackRowOut",

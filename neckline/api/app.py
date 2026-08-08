@@ -93,7 +93,11 @@ from neckline.api.schemas import (
     ReportOut,
     RetreatBrakeOut,
     ReviewGetOut,
+    ReviewHandoffOut,
+    ReviewOverviewOut,
+    ReviewSegmentOut,
     ReviewUploadOut,
+    ScoreContribOut,
     SettingsOut,
     SettingsProviderOut,
     SettingsPushIn,
@@ -211,6 +215,12 @@ _DB_PATH_OVERRIDE: Optional[Path] = None      # 隔离库(None → settings.db_p
 # `_DB_PATH_OVERRIDE` 姿势新增此注入点,供测试指向隔离 parquet 目录,不污染/依赖真实
 # 项目 `data/parquet`。
 _PARQUET_DIR_OVERRIDE: Optional[Path] = None  # 隔离 parquet 目录(None → settings.parquet_dir)
+# V2.1-⑤:`GET /review/{overview,handoff}` 要读**离线落盘**的周度校准产物
+# (`data/reports/calibration/`)——这是 app.py 端点层首次直接读 `data_dir` 下的
+# 文件产物。同 `_PARQUET_DIR_OVERRIDE` 姿势新增注入点:CLAUDE.md「测试隔离」条明载
+# `api_env` **不重写** `neckline.config.settings`,不给注入点就会读到真实项目的
+# `data/reports/`(而那正是"一测就踩、断言全错还不报错"的那类泄漏)。
+_DATA_DIR_OVERRIDE: Optional[Path] = None     # 隔离 data 根(None → settings.data_dir)
 _QUOTES_FN: Optional[Callable[[List[str]], Dict[str, Any]]] = None  # 实时拉价(None → sentinel.quotes)
 
 # 哨兵轮询节奏
@@ -230,6 +240,12 @@ def _db() -> Optional[Path]:
 
 def _parquet_dir() -> Optional[Path]:
     return _PARQUET_DIR_OVERRIDE
+
+
+def _calibration_dir() -> Optional[Path]:
+    """周度校准产物目录(`<data>/reports/calibration`)。`None` = 用
+    `review/handoff.py::calibration_dir()` 自己的缺省(真实 `settings.data_dir`)。"""
+    return None if _DATA_DIR_OVERRIDE is None else (_DATA_DIR_OVERRIDE / "reports" / "calibration")
 
 
 # —— 哨兵后台轮询(4B.3;折进 lifespan asyncio,单 unit 省内存)——————————————————
@@ -545,6 +561,7 @@ def _shape_basket(ref, *, with_card: bool = True, card_version: Optional[int] = 
     """`BasketRef` + 冻结卡 + Tier 留痕 → 契约。**snake→camel 走
     `basket_daily.card_to_public_dict` 这个唯一转换点**,API 层不另写一份。"""
     from neckline.report.basket_daily import card_to_public_dict
+    from neckline.report.score_display import score_view
     from neckline.selection.basket_store import load_basket_card, load_tier_history
 
     card_out: Optional[BasketCardOut] = None
@@ -562,6 +579,10 @@ def _shape_basket(ref, *, with_card: bool = True, card_version: Optional[int] = 
             card_out = BasketCardOut(**payload)
             version = (row or {}).get("version")
     th = load_tier_history(ref.basket_id, db_path=_db())
+    # V2.1-④ 百分制:从**同一份已冻结的** `mech_breakdown` 换算(⛔ 零重算、零取数),
+    # 唯一实现在展示层 `report/score_display.py`。`None` → 两个新键退化成
+    # `null` + `[]`(**⛔ 不是 0 分**)。
+    sv = score_view(th["mech_score"], th["mech_breakdown"]) if th else None
     return BasketOut(
         basketId=ref.basket_id, basketKey=ref.basket_key, name=ref.name,
         tradeDate=ref.trade_date, tier=ref.tier, memberCodes=list(ref.member_codes),
@@ -572,6 +593,8 @@ def _shape_basket(ref, *, with_card: bool = True, card_version: Optional[int] = 
             rankInTier=th["rank_in_tier"], rankMech=th["rank_mech"],
             llmRankDelta=th["llm_rank_delta"], llmReason=th["llm_reason"],
             packVersion=th["pack_version"],
+            scorePercent=(sv or {}).get("scorePercent"),
+            scoreContributions=[ScoreContribOut(**c) for c in ((sv or {}).get("contributions") or [])],
         ) if th else None),
     )
 
@@ -1895,6 +1918,181 @@ def review_by_week(week: str = "") -> ReviewGetOut:
     return ReviewGetOut(
         ok=True, found=True, week=rec["week"], generatedAt=rec["generatedAt"],
         result=rec["result"], material=rec.get("material") or "",
+    )
+
+
+# —— V2.1-⑤ 复盘板块:聚合读 + 校准移交件 ————————————————————————————————
+#
+# 🔴 **两条端点的三条硬边界**(⛔ 施工时别改主意,守门在 `tests/test_review_handoff.py`
+# 与 `tests/test_api_review.py`):
+#   ① **零现算**:只读已冻结 / 已落盘的产物。它们跑在常驻 `neckline.service` 里、
+#      **与盘中哨兵同进程** —— §七 P0-23 的原教旨:重活进常驻服务 = `MemoryHigh`
+#      先节流 → 卡死不报错,盘中点一次就拖累哨兵。⛔ 永不调 `calibration.build_report`
+#      (静态 AST + 运行期双向守门)。
+#   ② **零写库**(纯 GET,一行都不写)。
+#   ③ **一律不 404**:空态走 `available=false` → V2.1 **零新增 reason 字符串**,
+#      `SERVER_REASONS` 与客户端 `mapReason` 一字不动。
+
+def _week_anchor(week: str) -> date_cls:
+    """`week` = 该周任意一天 `YYYYMMDD`;非法 / 缺省 → 今天(同 `/eval/weekly` 惯例,
+    **降级不 4xx**)。"""
+    if len(week) == 8 and week.isdigit():
+        try:
+            return datetime.strptime(week, "%Y%m%d").date()
+        except ValueError:
+            pass
+    return date_cls.today()
+
+
+def _calibration_segment(lo, hi) -> ReviewSegmentOut:
+    """校准段:**只读离线产物**,三态分开说话(`ok` / 没生成 / 读不出)。
+
+    🔴 **包成绩单 = 产物里的 `strata` 本身**(已按 `pack_version × verification_ruleset_version`
+    分层)——⛔ 不在这里另建第二份聚合,那就是"同一个数两个算法"的老病。"""
+    from neckline.review import handoff as ho
+
+    label = "包成绩单 · 周度校准"
+    if lo is None or hi is None:
+        return ReviewSegmentOut(available=False, label=label,
+                                unavailableReason="该周没有交易日,本周无校准窗口。")
+    lo_s, hi_s = lo.strftime("%Y%m%d"), hi.strftime("%Y%m%d")
+    out_dir = _calibration_dir()
+    payload, status = ho.load_calibration_with_status(lo_s, hi_s, out_dir)
+    if status == ho.CAL_OK:
+        return ReviewSegmentOut(available=True, label=label, asOf=f"{lo_s}→{hi_s}",
+                                detail=dict(payload or {}))
+    latest = ho.list_calibration_artifacts(out_dir)
+    detail = {"latestAvailable": latest[0].label} if latest else {}
+    if status == ho.CAL_CORRUPT:
+        # ⛔ 不降级成"还没生成":文件在那儿、不会自己好,是要人排查的事故。
+        reason = (f"本窗口({lo_s}→{hi_s})的周度校准产物**读不出**"
+                  f"(文件在、JSON 解析失败)—— 它不会自愈,需人工排查。")
+    else:
+        reason = (f"本窗口({lo_s}→{hi_s})的周度校准产物尚未生成 —— 周度作业按周离线"
+                  f"落盘,在线路径只读产物、**不补算**。等下一次周度作业跑完即有。")
+    return ReviewSegmentOut(available=False, label=label, asOf=f"{lo_s}→{hi_s}",
+                            unavailableReason=reason, detail=detail)
+
+
+def _profile_segment(label: str, po: ProfileOut) -> ReviewSegmentOut:
+    """画像段 = **直接复用 `/profile/*` 两个端点的返回**(同码不重写)——
+    两条路上的画像永远讲同一句话,⛔ 不在这里另写一遍"没有 vs 没看"的判读。"""
+    return ReviewSegmentOut(available=po.available, unavailableReason=po.unavailableReason,
+                            label=label, asOf=po.asOf, items=list(po.items))
+
+
+def _reconcile_segment(week_key: str) -> ReviewSegmentOut:
+    """对账段。
+
+    🔴 **`available=true` + `found=false` 才是"这周没上传交割单"的正确说法**
+    (⛔ 不是 `available=false`):对账的必需输入(券商交割单)**只能由用户手动给**,
+    系统查过 `reviews` 表、确实没有这一行 —— 那是**「没有」**,不是**「没看」**。
+    ⚠ 与上面画像段刻意判得不同:画像缺席 = 系统自己那一步没跑(周度批算未运行)= 没看。
+    两者给用户的动作完全不同(去上传 vs 等系统),⛔ 别"统一"成同一种。"""
+    from neckline.review.store import load_weekly_review
+
+    label = "交割单对账"
+    rec = load_weekly_review(week_key, db_path=_db())
+    if rec is None:
+        return ReviewSegmentOut(
+            available=True, label=label, asOf=week_key,
+            detail={"found": False, "week": week_key,
+                    "note": "本周尚未上传交割单 —— 对账需要券商交割单,"
+                            "系统补不出没上传的那一份(上传在 macOS 端的复盘 · 对账页)。"},
+        )
+    return ReviewSegmentOut(
+        available=True, label=label, asOf=week_key,
+        detail={"found": True, "week": rec["week"], "generatedAt": rec["generatedAt"],
+                "result": rec["result"], "material": rec.get("material") or ""},
+    )
+
+
+def _observations_segment() -> ReviewSegmentOut:
+    """观察项段:静态登记册(与 `PROJECT_PLAN.md` §七 Backlog 的闭合由守门单测钉死)。
+    它**恒 available** —— 清单本身一直在,空不空是内容的事。"""
+    from neckline.review.handoff import HANDOFF_OBSERVATIONS
+
+    return ReviewSegmentOut(available=True, label="观察项 · 等证据的策略问题",
+                            items=[dict(o) for o in HANDOFF_OBSERVATIONS])
+
+
+@app.get(f"{API_PREFIX}/review/overview", dependencies=[Depends(require_token)])
+def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
+    """复盘板块「累计」页的五段聚合读(V2.1-⑤)。
+
+    `week` = 该周任意一天 `YYYYMMDD`(缺省本周);`asOf` = 画像期(缺省最近一期)。
+
+    **五段各自独立说"有 / 没有 / 没取到"**,⛔ 不许一个总开关罩住五段 —— 校准产物没
+    生成、画像没批算、这周没传交割单是三件互不相干的事。**每段各自包保险丝**:任一段
+    炸了只让那一段 `available=false`,其余四段照出(⛔ 不 500)。"""
+    out = ReviewOverviewOut()
+    anchor = _week_anchor(week)
+    try:
+        from neckline.review.reconcile import iso_week_key
+
+        out.weekKey = iso_week_key(anchor)
+    except Exception:  # noqa: BLE001
+        logger.warning("[review] ISO 周键计算异常", exc_info=True)
+
+    lo = hi = None
+    try:
+        from neckline.eval.calibration import week_bounds
+
+        lo, hi = week_bounds(anchor)          # 该周的**交易日**首尾(与产物命名同源)
+    except Exception:  # noqa: BLE001  交易日历读不到不该掀翻整页
+        logger.warning("[review] 周边界(交易日)解析异常", exc_info=True)
+    out.weekStart = lo.strftime("%Y%m%d") if lo else ""
+    out.weekEnd = hi.strftime("%Y%m%d") if hi else ""
+
+    for field_name, build in (
+        ("calibration", lambda: _calibration_segment(lo, hi)),
+        ("preference", lambda: _profile_segment("偏好画像 · 喜欢什么",
+                                                get_profile_preference(asOf=asOf))),
+        ("capability", lambda: _profile_segment("能力画像 · 什么真有效",
+                                                get_profile_capability(asOf=asOf))),
+        ("reconcile", lambda: _reconcile_segment(out.weekKey)),
+        ("observations", _observations_segment),
+    ):
+        try:
+            setattr(out, field_name, build())
+        except Exception as exc:  # noqa: BLE001  段级保险丝:一段炸不连坐其余四段
+            logger.warning("[review] overview 的 %s 段装配异常(已降级为不可得)",
+                           field_name, exc_info=True)
+            setattr(out, field_name, ReviewSegmentOut(
+                available=False,
+                unavailableReason=f"本段本次未取得:{type(exc).__name__}(详见服务端日志)。"))
+    return out
+
+
+@app.get(f"{API_PREFIX}/review/handoff", dependencies=[Depends(require_token)])
+def get_review_handoff(
+    date_from: str = Query(default="", alias="from"),
+    date_to: str = Query(default="", alias="to"),
+    asOf: str = "",
+) -> ReviewHandoffOut:
+    """导出一份**能直接交给策略台**的校准移交件(V2.1-⑤)。
+
+    `from`/`to` 缺省 = **最近一期已落盘的校准窗口**(⛔ 不是"现在算一份");
+    `asOf` = 画像期(缺省最近一期)。
+
+    ⚠ **`from` 是 Python 关键字**,故形参名 `date_from` + `Query(alias="from")` ——
+    URL 上仍是客户端契约里那个 `?from=`(同 `GET /decisions` 的既有姿势)。
+
+    整段包保险丝:异常 → `available=false` + 可读原因,**⛔ 不 500、⛔ 不 404**。"""
+    from neckline.review import handoff as ho
+
+    try:
+        h = ho.build_handoff(date_from, date_to, out_dir=_calibration_dir(),
+                             db_path=_db(), profile_as_of=asOf)
+    except Exception as exc:  # noqa: BLE001  移交件是审计件,炸了如实说,不 500
+        logger.warning("[review] 校准移交件装配异常(已降级为不可得)", exc_info=True)
+        return ReviewHandoffOut(
+            available=False,
+            unavailableReason=f"校准移交件本次生成失败:{type(exc).__name__}(详见服务端日志)。")
+    return ReviewHandoffOut(
+        available=h.available, unavailableReason=h.unavailable_reason,
+        windowFrom=h.window_from, windowTo=h.window_to, generatedAt=h.generated_at,
+        sampleN=dict(h.sample_n), markdown=h.markdown,
     )
 
 

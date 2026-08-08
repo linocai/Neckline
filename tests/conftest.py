@@ -473,6 +473,11 @@ def api_env(api_settings: Settings, monkeypatch: "pytest.MonkeyPatch"):
     # 真实项目 `data/parquet`(未设置此项时其它测试从未触发过 parquet 读取,新增本行
     # 对既有测试零行为影响)。
     monkeypatch.setattr(app_mod, "_PARQUET_DIR_OVERRIDE", api_settings.parquet_dir)
+    # V2.1-⑤:`GET /review/{overview,handoff}` 读离线落盘的周度校准产物
+    # (`<data>/reports/calibration/`)。⚠ 不注入这一行就会读到**真实项目**的
+    # `data/reports/`(CLAUDE.md「测试隔离」条:`api_env` 不重写 `neckline.config.settings`)
+    # —— 那类泄漏的特征是"断言全错还不报错",必须在夹具里堵死。
+    monkeypatch.setattr(app_mod, "_DATA_DIR_OVERRIDE", api_settings.data_dir)
     monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {})
     yield api_settings
     tc_mod.reset_cache()

@@ -236,6 +236,16 @@ class BasketView:
     card_version: Optional[int] = None
     card_unavailable_reason: Optional[str] = None
     exec_hints: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    # V2.1-④ 百分制打分卡:`report/score_display.score_view()` 的**完整返回**
+    # (`scorePercent` / `contributions` / `neutralFilledPercent` / `note`)。
+    # **整份留着、只往契约里放两键**,理由两条:① 一个来源 —— markdown 渲染要的
+    # `note`/`neutralFilledPercent` 与契约要的两键出自同一次换算,不各算一遍;
+    # ② 契约面**只新增 4 个只读键**(本 DTO 两个 + `TierOut` 两个)是 ⑧ 对拍表数
+    # 死的,⛔ 别顺手把 note 也发出去。
+    # 🔴 **契约两键是 B 类:随报告冻住** —— 老报告读回来根本没有它们(不是 `null`,
+    # 是**没有这个键**),客户端一律 `decodeIfPresent` 兜底、如实说「该报告版本无
+    # 打分」;`None` = 本篮没有定档留痕 / 留痕里没有 breakdown。**两者都不是 0 分。**
+    score: Optional[Dict[str, Any]] = None
 
     def to_public_dict(self) -> Dict[str, Any]:
         return {
@@ -248,6 +258,18 @@ class BasketView:
             "cardVersion": self.card_version,
             "cardUnavailableReason": self.card_unavailable_reason,
             "execHints": {k: list(v) for k, v in self.exec_hints.items()},
+            # 新报告**永远带这两个键**(取不到分时 `null` + `[]`);老报告的这份 JSON
+            # 里它们**根本不存在**。⚠ **如实登记一处不可区分**:两者经
+            # `api/schemas.py::BasketOut` 收口后都变成 `scorePercent=null` + `[]`
+            # (pydantic 序列化必然带上全部字段),客户端两种情况说的是同一句
+            # 「本篮无打分」。这是可接受的 —— 两种成因给用户的动作完全相同(等下一份
+            # 报告),⛔ 但别据此以为快照层也不需要区分:`scoreContributions` 恒为
+            # 数组(⛔ 不是 `null`)正是为了让 `BasketOut` 那个非 Optional 的
+            # `List[ScoreContribOut]` 收得下老快照与无分快照两种输入。
+            "scorePercent": (self.score or {}).get("scorePercent"),
+            "scoreContributions": [
+                dict(c) for c in ((self.score or {}).get("contributions") or [])
+            ],
         }
 
 
@@ -463,8 +485,16 @@ def load_today_baskets(
     """③ 今日篮子:`baskets` + `basket_members`(⑥ 落)+ `basket_cards`(⑦ 落)。
 
     **有篮子无卡是合法中间态**(事务 1 与事务 2 分开):该篮 `card=None` +
-    `cardUnavailableReason='card_not_ready'`,⛔ 不许因此把整篮从报告里抹掉。"""
-    from neckline.selection.basket_store import load_basket_card, load_baskets_for_date
+    `cardUnavailableReason='card_not_ready'`,⛔ 不许因此把整篮从报告里抹掉。
+
+    **V2.1-④ 百分制**:按 `basket_id` 读**已冻结**的 `tier_history.mech_breakdown`
+    (≤7 篮 × 1 次单行查询,成本可忽略),交 `report/score_display.score_view()` 换算。
+    ⛔ 这里一个数都不重算;读留痕失败**只让这一篮没有打分**,不连坐(打分是附加展示,
+    绝不掀翻报告)。"""
+    from neckline.report.score_display import score_view
+    from neckline.selection.basket_store import (
+        load_basket_card, load_baskets_for_date, load_tier_history,
+    )
 
     refs = load_baskets_for_date(trade_date, db_path=db_path)
     views: List[BasketView] = []
@@ -474,6 +504,14 @@ def load_today_baskets(
             card_row = load_basket_card(ref.basket_id, db_path=db_path)
         except Exception:  # noqa: BLE001  单篮读卡失败不连坐其余篮
             logger.warning("[basket_daily] basket_id=%s 读卡异常,按卡未就绪处理",
+                           ref.basket_id, exc_info=True)
+        score = None
+        try:
+            th = load_tier_history(ref.basket_id, db_path=db_path)
+            if th is not None:
+                score = score_view(th.get("mech_score"), th.get("mech_breakdown"))
+        except Exception:  # noqa: BLE001  单篮读留痕失败不连坐其余篮、更不阻断报告
+            logger.warning("[basket_daily] basket_id=%s 读定档留痕异常,本篮不出百分制打分",
                            ref.basket_id, exc_info=True)
         card = card_to_public_dict((card_row or {}).get("card")) if card_row else None
         # 「有行但读不出」如实标 `card_corrupt`,⛔ 不降格成「卡未生成」(B1 裁定:
@@ -485,6 +523,7 @@ def load_today_baskets(
             card=card,
             card_version=(card_row or {}).get("version") if card_row else None,
             card_unavailable_reason=(None if card else ("card_corrupt" if corrupt else "card_not_ready")),
+            score=score,
         ))
     return views
 

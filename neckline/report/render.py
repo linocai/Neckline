@@ -43,6 +43,7 @@ from neckline.scan.freshness import ScanLayerFreshness
 from neckline.report.holding_k4_check import HoldingK4Item
 from neckline.report.intel import IntelReport
 from neckline.report.news_alerts import NewsAlertsReport
+from neckline.report.score_display import contribution_line
 from neckline.report.sector_moneyflow import SectorMoneyflowReport
 from neckline.report.sectors import SectorDataFreshness, SectorScore
 from neckline.report.sentiment import SentimentDashboard
@@ -528,6 +529,13 @@ def _render_one_basket(b: Any) -> str:
     lines.append(f"- 机械分 {_fmt_num(card.get('mechScore'), '{:.3f}')} · 档内第 "
                  f"{card.get('rankInTier') if card.get('rankInTier') is not None else '—'} 名"
                  f"(机械序第 {card.get('rankMech') if card.get('rankMech') is not None else '—'} 名)")
+    # V2.1-④ 百分制打分卡:同一个机械分的**等价换算 + 五维贡献拆解**(⛔ 不是第二个
+    # 分数、更不进任何判定)。文案唯一实现在 `report/score_display.contribution_line`,
+    # 取不到打分 → **整行不出**(⛔ 不出一行「机械分 —/100」的空壳:那看起来像
+    # "算过了是空的",而真相多半是这份快照生成于打分卡上线之前)。
+    score_line = contribution_line(getattr(b, "score", None))
+    if score_line:
+        lines.append(f"- {score_line}")
     if card.get("tierReason"):
         lines.append(f"- 分层理由:{card['tierReason']}")
     if card.get("tierNote"):

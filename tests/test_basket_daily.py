@@ -102,6 +102,33 @@ def _seed_basket(env, codes, *, tier=1, key="k1", name="固态电池", card="aut
     return bid
 
 
+_BREAKDOWN = {
+    "dims": {"card_density": 0.6, "driver_freshness": 0.5, "leader_clarity": 1.0,
+             "sector_strength": 0.8, "tradability": 0.5},
+    "weights": {"card_density": 0.1, "driver_freshness": 0.2, "leader_clarity": 0.25,
+                "sector_strength": 0.3, "tradability": 0.15},
+    "contrib": {"card_density": 0.06, "driver_freshness": 0.1, "leader_clarity": 0.25,
+                "sector_strength": 0.24, "tradability": 0.075},
+    "flags": ["stage_missing"], "neutral_filled_weight": 0.2,
+}
+
+
+def _seed_tier_history(env, basket_id, *, tier=1, mech=0.725, breakdown=None) -> None:
+    """落一行 ⑥ 的定档留痕(V2.1-④ 百分制的**唯一**数据源)。⚠ `_seed_basket` 刻意
+    不落它 —— 「有篮子无定档留痕」是手工造数库里才有的状态,正好用来测"无打分"那一面。"""
+    import json
+
+    with connection(env.db_path) as conn:
+        conn.execute(
+            "INSERT INTO tier_history (trade_date, basket_id, tier, mech_score,"
+            " mech_breakdown_json, rank_in_tier, rank_mech, llm_rank_delta, llm_reason,"
+            " pack_version, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (D0.strftime("%Y%m%d"), int(basket_id), tier, mech,
+             json.dumps(breakdown if breakdown is not None else _BREAKDOWN, ensure_ascii=False),
+             1, 1, 0, None, "K4-pack-v1", "2026-08-02T00:00:00+08:00"),
+        )
+
+
 class _Dropped:
     """⑥ `TierResult.dropped` 的鸭子替身(只有三个字段,同真件)。"""
 
@@ -361,6 +388,69 @@ class TestPublicSnapshot:
         out = bd.empty_basket_daily(D0, "装配异常")
         assert not out.baskets_available and not out.dropped_available and not out.reviews_available
         assert out.notes == ["装配异常"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.1-④ 百分制打分卡在快照与渲染两侧的落点
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestScoreCardInSnapshot:
+    def _daily(self, env):
+        return bd.build_basket_daily(D0, dropped=[], db_path=env.db_path, with_exec_hints=False)
+
+    def test_score_is_assembled_from_the_frozen_tier_history(self, isolated_env):
+        bid = _seed_basket(isolated_env, ["600001.SH"])
+        _seed_tier_history(isolated_env, bid)
+        pub = self._daily(isolated_env).to_public_dict()["baskets"][0]
+        assert pub["scorePercent"] == 72.5                       # 0.725 × 100
+        assert {c["dim"] for c in pub["scoreContributions"]} == set(_BREAKDOWN["contrib"])
+        assert sum(c["contribPercent"] for c in pub["scoreContributions"]) == pytest.approx(
+            72.5, abs=0.15)
+        # 中性填充如实标(`stage_missing` → driver_freshness),⛔ 不当作"这一维表现好"
+        neutral = {c["dim"] for c in pub["scoreContributions"] if c["neutralFilled"]}
+        assert neutral == {"driver_freshness"}
+
+    def test_basket_without_tier_history_gets_null_score_not_zero(self, isolated_env):
+        """🔴 没有定档留痕 = **没有分**,⛔ 不是 0 分(0 分是"这一篮很差"这个
+        实质性判断)。`scoreContributions` 恒为数组是给 `BasketOut` 那个非 Optional
+        列表字段留的收口位,与"有没有分"无关。"""
+        _seed_basket(isolated_env, ["600001.SH"])                # 刻意不落 tier_history
+        pub = self._daily(isolated_env).to_public_dict()["baskets"][0]
+        assert pub["scorePercent"] is None
+        assert pub["scoreContributions"] == []
+
+    def test_old_snapshot_without_the_two_keys_reads_back_without_raising(self):
+        """plan §五④ 点名:**老快照(无两键)读回 → 两键为 `None`,不抛**。
+
+        老报告的 `basket_daily_json` 里那些篮子对象根本没有这两个键 —— 经
+        `api/schemas.py::BasketDailyOut` 收口后退化成 `scorePercent=None` + `[]`,
+        客户端如实说「该报告版本无打分」。⛔ 不许因为缺键就整份报告解不出。"""
+        from neckline.api.schemas import BasketDailyOut
+
+        legacy = {
+            "tradeDate": "20260723",
+            "baskets": [{"basketId": 1, "basketKey": "k1", "name": "老篮子", "tier": 1,
+                         "memberCodes": ["600001.SH"], "card": None, "cardVersion": None,
+                         "cardUnavailableReason": "card_not_ready", "execHints": {}}],
+            "basketsAvailable": True, "droppedBaskets": [], "droppedBasketsAvailable": True,
+            "reviews": [], "reviewsAvailable": True, "notes": [],
+        }
+        out = BasketDailyOut(**bd.basket_daily_from_snapshot(legacy))
+        assert out.baskets[0].scorePercent is None
+        assert out.baskets[0].scoreContributions == []
+
+    def test_markdown_carries_the_score_line_next_to_the_mech_score(self, isolated_env):
+        bid = _seed_basket(isolated_env, ["600001.SH"])
+        _seed_tier_history(isolated_env, bid)
+        md = _render(self._daily(isolated_env))
+        assert "机械分 72.5 / 100(" in md
+        assert "龙头清晰度 25.0" in md and "板块强度 24.0" in md
+        assert "驱动新鲜度 10.0*" in md and "不是表现好" in md
+
+    def test_markdown_omits_the_line_entirely_when_there_is_no_score(self, isolated_env):
+        """⛔ 不出一行「机械分 — / 100」的空壳(那看起来像"算过了是空的")。"""
+        _seed_basket(isolated_env, ["600001.SH"])
+        assert "/ 100" not in _render(self._daily(isolated_env))
 
 
 # ══════════════════════════════════════════════════════════════════════════
