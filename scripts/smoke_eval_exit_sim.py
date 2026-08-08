@@ -10,6 +10,19 @@ qfq 价 + `is_limit_down`),用真实的 (代码, 交易日) 组合造出成百�
 研究缓存不该成为单测的前置依赖。**为什么还要有它**:随机造数覆盖分支,真 K 线
 覆盖"真实市场长什么样"(连续跌停、长期停牌、除权跳空……),两者互补。
 
+⚠ **2026-08-08 起本脚本默认会直接跳过**:`research/_cache/`(5.5G 研究面板缓存)随
+策略研究档案迁出一并删除,`research/` 目录在本仓已不存在 —— 脚本自带的
+「面板不存在 → 打印提示后跳过」分支会命中,**这是预期行为不是故障**。要真跑起来,
+先重建面板再用 `--panel` 指路::
+
+    # runner 在 ~/Lino/whynotme/Archive/Neckline量化研究档案_K2-K7/research/
+    # 把 k3_panel.py + lab.py + k4p_common.py 拷回本仓 research/ 后跑(耗时以小时计)
+    python -m research.k3_panel
+    python scripts/smoke_eval_exit_sim.py --panel research/_cache/k3_panel.parquet
+
+随机造数那一半(`tests/test_eval_exit_sim.py::TestFrozenPairing`)**不受影响,照常在
+全量套件里跑** —— 判分口径的守门没有因为这次迁出出现缺口。
+
 用法::
 
     python scripts/smoke_eval_exit_sim.py                 # 默认 800 笔

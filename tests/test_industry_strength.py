@@ -1,19 +1,26 @@
 """行业强度单一源单测(plan §五 v1.4-②-A 验收)。
 
-覆盖:①核心计算与 `research/k4p_h6_theme.py::industry_persistence` **逐位对拍**
+覆盖:①核心计算与 `k4p_h6_theme.py::industry_persistence` 参照实现 **逐位对拍**
 (排名/强度日集合/持续天数三项,含 quantile 敏感性 ±1 格参数化);②成员数
 `< _MIN_MEMBERS` 的行业当日不参与排名;③无前视(T 日结果不受 T 之后数据影响);
 ④公开 I/O 入口 `compute_industry_strength`(全市场 daily + `stock_basic.industry`
 接线正确性);⑤`stock_persist_days`/`stock_industry_rank` 查无行业/行业不达标的
 缺省行为(A2/B3 判据 + ③ 排序键的消费方式)。
 
-**①组直接 `import research.k4p_h6_theme`**——这是 plan §五 v1.4-②-A 的硬要求
-("单测硬要求:与 research/k4p_h6_theme.py...逐位对拍"),与 `conftest.py` "tests/
-不应依赖 research/"的一般建议刻意例外:`industry_persistence` 是纯函数(只接收
-`panel` 参数,不读 DB/parquet,import 与调用均无副作用,已验证),且**正是本模块要
-对齐的参照实现本身**——不直接比对就无法机器验证"口径逐条对齐"这条硬要求,比对
-本身就是这条要求存在的意义,不属于 conftest.py 那条注释想防的"一般测试基础设施
-耦合到易变研究脚本"。
+**①组用本文件内嵌的冻结源副本对拍**(体例同 `test_eval_exit_sim.py::TestFrozenPairing`)
+——plan §五 v1.4-②-A 的硬要求是"与 `research/k4p_h6_theme.py::industry_persistence`
+逐位对拍",该要求**逐字仍然成立**,变的只是参照实现的取得方式:
+
+· **为什么不再 `import research.`**:策略研究档案已于 2026-08 整体迁出本仓(K8 立项
+  后 K2–K7 战役全部归档,见迁移记录),`research/` 包在本仓不复存在,活 import 必然
+  `ImportError`。同时这也让 `conftest.py` 那条"tests/ 不应依赖 research/(纯研究
+  脚本,可能改动/有导入期副作用),测试夹具须自包含"从"刻意例外"回归为**无例外**。
+· **为什么冻结源比活 import 更强**:活 import 对拍的是"研究件此刻长什么样"——研究件
+  在新家被改一笔,这里的基准就跟着漂,对拍反而失去锚。冻结副本锚死的是**迁出当时
+  的逐字实现**,`industry_strength.py` 任何一笔无意改动都照得出来。
+· **⛔ 永远不要"顺手更新"下面那段冻结源**——它不是"研究件的镜像",是**基准**。真要
+  改口径,先改 `neckline/report/industry_strength.py` 并在 plan 里留裁定,再连同这段
+  基准一起换,两处必须同一笔提交。
 """
 
 from __future__ import annotations
@@ -29,12 +36,56 @@ from tests.conftest import business_days, insert_stock_basic, insert_trade_cal, 
 
 
 # ————————————————————————————————————————————————————————————————
-# ① 核心计算逐位对拍 research/k4p_h6_theme.py::industry_persistence
+# ① 核心计算逐位对拍 k4p_h6_theme.py::industry_persistence(冻结源副本)
 # ————————————————————————————————————————————————————————————————
+# 冻结源 —— 迁出前 `research/k4p_h6_theme.py` 第 63–83 行**逐字副本**,连注释和
+# 默认参数都未改一个字节。依赖的两个模块级常量(`MIN_MEMBERS` / `STRENGTH_Q`)
+# 一并冻结在 exec 命名空间里,取值同迁出当时。
+# ⛔ 永远不要"顺手更新"它(理由见模块 docstring 第三条)。
+
+_FROZEN_SRC = '''
+MIN_MEMBERS = 5           # 当日行业成员数下限(中位数稳健)
+STRENGTH_Q = 0.80         # 主判决:top 20%
+
+
+def industry_persistence(panel: pl.DataFrame, q: float = STRENGTH_Q) -> pl.DataFrame:
+    """算 (industry, trade_date) → 强度日标记 + 持续天数。返回仅强度日的行。"""
+    # 行业每日中位数(市场宽度:全体有 industry & ret_1d 的票)。
+    ind_daily = (
+        panel.filter(pl.col("industry").is_not_null() & pl.col("ret_1d").is_not_null())
+        .group_by(["trade_date", "industry"])
+        .agg(pl.col("ret_1d").median().alias("med"), pl.len().alias("m"))
+        .filter(pl.col("m") >= MIN_MEMBERS)
+    )
+    # 逐日阈值 quantile(q);强度 = med >= 阈。
+    thr = pl.col("med").quantile(q).over("trade_date")
+    ind_daily = ind_daily.with_columns(thr.alias("thr"))
+    ind_daily = ind_daily.with_columns((pl.col("med") >= pl.col("thr")).alias("is_str"))
+    # 持续天数(连续强度日;断裂重置)。sort → flip cumsum → cum_count。
+    ind_daily = ind_daily.sort(["industry", "trade_date"])
+    flip = (pl.col("is_str") != pl.col("is_str").shift(1).fill_null(False)).over("industry")
+    ind_daily = ind_daily.with_columns(flip.cum_sum().over("industry").alias("_run_id"))
+    ind_daily = ind_daily.with_columns(
+        pl.col("trade_date").cum_count().over(["industry", "_run_id"]).alias("persist")
+    )
+    return ind_daily.filter(pl.col("is_str")).select(["trade_date", "industry", "persist"])
+'''
+
+
+def _frozen_namespace() -> dict:
+    """把冻结源 exec 成一份独立可调用体(只注入 polars,不共享本模块任何对象)。"""
+    ns: dict = {"pl": pl}
+    exec(compile(_FROZEN_SRC, "<frozen_k4p_h6_industry_persistence>", "exec"), ns)  # noqa: S102 - 冻结副本,非外部输入
+    return ns
+
+
+_FROZEN = _frozen_namespace()
+industry_persistence = _FROZEN["industry_persistence"]
+
 
 def _synthetic_panel(seed: int = 42, n_industries: int = 6, n_members: int = 8, n_days: int = 20) -> pl.DataFrame:
     """构造一份带"部分行业轮流持续强势"模式的合成 (ts_code, trade_date, industry,
-    ret_1d) 面板(纯 polars 对象,不落盘)——喂两套实现(research 参照 + 本模块)做
+    ret_1d) 面板(纯 polars 对象,不落盘)——喂两套实现(冻结参照 + 本模块)做
     逐位对拍。"""
     rng = random.Random(seed)
     industries = [f"IND{i}" for i in range(n_industries)]
@@ -52,8 +103,6 @@ def _synthetic_panel(seed: int = 42, n_industries: int = 6, n_members: int = 8, 
 
 
 def test_core_table_matches_research_bit_for_bit():
-    from research.k4p_h6_theme import industry_persistence
-
     panel = _synthetic_panel()
     mine = ist._compute_daily_table(panel, ist._STRENGTH_QUANTILE)
     research = industry_persistence(panel, ist._STRENGTH_QUANTILE)
@@ -117,9 +166,7 @@ def test_rank_tie_break_is_deterministic_regardless_of_row_order():
 @pytest.mark.parametrize("q", [0.85, 0.80, 0.70])
 def test_quantile_sensitivity_parametrizable(q):
     """阈值敏感性 ±1 格(0.85/0.80/0.70)只作参数化能力(plan 原文,默认仍 0.80);
-    每一格都应与 research 参照逐位对拍通过。"""
-    from research.k4p_h6_theme import industry_persistence
-
+    每一格都应与冻结参照逐位对拍通过。"""
     panel = _synthetic_panel()
     mine = ist._compute_daily_table(panel, q)
     research = industry_persistence(panel, q)

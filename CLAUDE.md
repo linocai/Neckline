@@ -5,6 +5,15 @@
 > Neckline **专属的工程坑**:每坑只留判据 + 规则 + 指针,事故叙事全文在
 > `archive/`(总索引:`archive/变更日志_详版_20260719-20260728.md`)。数据源坑的
 > 权威原文在 `/Users/linotsai/Lino/LinoN/CLAUDE.md`(前作)。
+>
+> ⚠ **策略研究档案已于 2026-08-08 整体迁出本仓**(K8 立项后本仓只留回测引擎与生产
+> 代码)。新家:`~/Lino/whynotme/`(现役策略 `K8.md`;K2–K7 的 41 个 runner + 14 份
+> 结果报告 + `STRATEGY_LAB.md` + `K4_STRATEGY.md` 归
+> `~/Lino/whynotme/Archive/Neckline量化研究档案_K2-K7/`,该目录 README 记了重建成本)。
+> **下文凡提到 `research/…`、`STRATEGY_LAB.md`、`K4_STRATEGY.md` 的,一律指迁出后的
+> 新位置,本仓已无这些路径。**⛔ 但**回测核心留在本仓**:`neckline/{backtest,research,
+> eval,strategy}/`,判分引擎唯一源 `neckline/eval/exit_sim.py`(考官线 V2-⑨ 下沉件,
+> 周复盘/能力画像/周度校准/信息卡都在吃它 —— **「考卷设计不用了」≠ 这份能动**)。
 
 ## 记录纪律(2026-07-28 立规,动文档前先读)
 

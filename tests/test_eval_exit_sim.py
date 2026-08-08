@@ -287,8 +287,21 @@ class TestFrozenPairing:
         assert a2 is not None and a2.reason == "stop" and a2.sell_date == cal[4]
         assert _fields(a2) == _fields(b2)
 
+    @pytest.mark.skipif(
+        not ((_REPO / "research" / "drill.py").is_file()
+             and (_REPO / "research" / "h9_exit_reform.py").is_file()),
+        reason="策略研究档案 2026-08-09 已整体迁出本仓(K8 立项,归 ~/Lino/whynotme/Archive/)"
+               "—— 守门对象不在本仓,无可断言;拷回 research/ 时本用例自动恢复",
+    )
     def test_research_三处_import_的是同一个函数对象(self):
-        """`research/h9_exit_reform.py` / `drill.py` / `exam.py` 用的必须是本模块这一份。"""
+        """`research/h9_exit_reform.py` / `drill.py` / `exam.py` 用的必须是本模块这一份。
+
+        ⚠ 2026-08-09 起本用例**常态 skip**:研究件已迁出本仓,这条断言够不着它们了。
+        **纪律本身没有放松** —— 「判分引擎唯一源」在本仓内仍由 `neckline/eval/` 不许
+        出现第二份实现的 grep 守门 + `TestFrozenPairing` 的源文本/行为双对拍看着;
+        迁出件那一侧改成由归档 README 记载(拷回来跑时本用例自动复活接管)。
+        ⛔ 别因为它常态 skip 就删掉 —— 删了就等于承诺"研究件永不回来"。
+        """
         import sys
 
         sys.path.insert(0, str(_REPO / "research"))
