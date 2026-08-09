@@ -182,6 +182,44 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(unknown.roleDisplay, "角色未判定", "两个角色都空时如实说没判定,不留空白")
     }
 
+    // MARK: - V2.2-③-C/③-C2 位置关 / 核心关三态展示层换算(裁定 #11/#12)
+
+    /// `ok`/`weak`/`unfit` 三态的中文与着色 —— **纯展示层换算**(沿 `nkBoardLabel`
+    /// 先例:服务端只发英文码,客户端算,⛔ 不要服务端另建中文映射)。位置关与核心关
+    /// **同构**(裁定 #12 与 #11 同款处理),同一套函数覆盖两组独立字段。
+    func testPositionAndCoreVerdictLabelsMapThreeStatesConsistently() {
+        let ok = BasketMember(tsCode: "600001.SH", positionVerdict: "ok", coreVerdict: "ok")
+        XCTAssertEqual(ok.positionVerdictLabel, "合适")
+        XCTAssertEqual(ok.positionVerdictTone, .good)
+        XCTAssertEqual(ok.coreVerdictLabel, "合适")
+        XCTAssertEqual(ok.coreVerdictTone, .good)
+
+        let weak = BasketMember(tsCode: "600002.SH", positionVerdict: "weak", coreVerdict: "weak")
+        XCTAssertEqual(weak.positionVerdictLabel, "勉强")
+        XCTAssertEqual(weak.positionVerdictTone, .warn)
+        XCTAssertEqual(weak.coreVerdictLabel, "勉强")
+        XCTAssertEqual(weak.coreVerdictTone, .warn)
+
+        let unfit = BasketMember(tsCode: "600003.SH", positionVerdict: "unfit", coreVerdict: "unfit")
+        XCTAssertEqual(unfit.positionVerdictLabel, "不合适")
+        XCTAssertEqual(unfit.positionVerdictTone, .bad)
+        XCTAssertEqual(unfit.coreVerdictLabel, "不合适")
+        XCTAssertEqual(unfit.coreVerdictTone, .bad)
+
+        // 老卡缺键(`verdict == nil`)时展示层也必须是 nil,⛔ 不许显示成"未判定"
+        // 这种看起来像结论的占位 —— 调用方据此让整行不显示。
+        let legacy = BasketMember(tsCode: "600004.SH")
+        XCTAssertNil(legacy.positionVerdict)
+        XCTAssertNil(legacy.positionVerdictLabel)
+        XCTAssertEqual(legacy.positionVerdictTone, .neutral)
+        XCTAssertNil(legacy.coreVerdictLabel)
+
+        // 未识别值原样透传、不静默瞎翻译(沿 `nkBoardLabel`/`nkK4SectionLabel` 先例,
+        // 给未来新增第四态留活路)。
+        XCTAssertEqual(nkVerdictLabel("some_future_verdict"), "some_future_verdict")
+        XCTAssertEqual(nkVerdictTone("some_future_verdict"), .neutral)
+    }
+
     /// ③b 两个原因码**语义相反,⛔ 不许合并成「未入选」**(E2)。
     func testDroppedBasketReasonLabelsAreDistinct() {
         let overflow = DroppedBasket(name: "A", mechScore: 8.0, reason: "capacity_overflow")

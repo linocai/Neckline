@@ -385,6 +385,11 @@ private struct BasketRow: View {
                 }
                 HStack(spacing: 6) {
                     NKChip(text: "成员 \(basket.memberCodes.count)")
+                    // V2.2-③-E 引擎徽标(裁定 #9:单篮子单引擎)—— 卡头一眼看出这篮
+                    // 走的哪条引擎;老数据缺这三键是常态,不显示不代表异常。
+                    if let ev = basket.engineVersionDisplay {
+                        NKChip(text: "选股引擎 \(ev)", tone: .neutral)
+                    }
                     if let s = basket.card?.mechScore {
                         NKChip(text: String(format: "机械分 %.1f", s))
                     }

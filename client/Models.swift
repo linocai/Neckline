@@ -223,6 +223,30 @@ func nkK4SectionTone(_ raw: String) -> NKAxisTone {
     }
 }
 
+/// V2.2-③-C / ③-C2 位置关 / 核心关判定三态展示层换算(裁定 #11/#12:机械层只出
+/// 读数,判定交 LLM,只降级不除名)。`ok` = 判定合适 / 是那一群的龙头;
+/// `weak` = 勉强、降一档;`unfit` = 不合适 / 不是龙头、退出正式候选(**⛔ 不是
+/// 硬否决**——票仍在 ③b 列名,理由见 `positionReason`/`coreReason`)。
+/// 位置关与核心关**同构**(裁定 #12 与 #11 同款处理),共用同一套三态换算。
+/// 沿 `nkBoardLabel` 先例:服务端只发英文码,未识别值原样透传、不静默瞎翻译。
+func nkVerdictLabel(_ raw: String) -> String {
+    switch raw {
+    case "ok": return "合适"
+    case "weak": return "勉强"
+    case "unfit": return "不合适"
+    default: return raw
+    }
+}
+
+func nkVerdictTone(_ raw: String) -> NKAxisTone {
+    switch raw {
+    case "ok": return .good
+    case "weak": return .warn
+    case "unfit": return .bad
+    default: return .neutral
+    }
+}
+
 // MARK: - v1.4-④ 信息卡摘要(挂 `Candidate.infoCard`,不含 60 日序列,§五 v1.4-④-B)
 //
 // 服务端重构后恒是完整对象(pydantic 默认值兜底 + 全量序列化,§五-④-C「数据不可得
@@ -467,6 +491,19 @@ struct BasketMember: Codable, Equatable, Identifiable {
     var primaryReason: String? = nil
     var rsRank: Int? = nil
     var k4Tag: String? = nil
+    // —— V2.2-③-C 位置关(裁定 #11:机械层只出读数,判定交 LLM,只降级不除名)——
+    // `positionVerdict` ∈ ok(合适)/ weak(勉强,降一档)/ unfit(不合适,退出正式
+    // 候选但**仍在 ③b 列名**,⛔ 非硬否决)。`positionMetrics` = 当次喂给模型的
+    // 落地起跳读数原样(⛔ 缺项就是真的没取到,不是 0)。**老卡缺这三键是常态**——
+    // 纯新增,`landingState` 那个作废的四态枚举从未上过产,零删键。
+    var positionVerdict: String? = nil
+    var positionReason: String? = nil
+    var positionMetrics: NKJSON? = nil
+    // —— V2.2-③-C2 核心关(裁定 #12:同构但独立于位置关,问的是"是不是那一群的
+    // 龙头")—— `coreMetrics` 一定带分母(`industry_member_count`),⛔ 缺项不是 0。
+    var coreVerdict: String? = nil
+    var coreReason: String? = nil
+    var coreMetrics: NKJSON? = nil
     /// 机械面板原样透传(⑦ `MemberMech.to_dict()`,自由结构)。
     var mech: NKJSON = .object([:])
     var entryZone: BasketPriceBand? = nil
@@ -486,7 +523,10 @@ struct BasketMember: Codable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case tsCode, name, roleLlm, roleMech, roleConflict, reason, isPrimary
-        case industry, industryLift, liftReason, primaryReason, rsRank, k4Tag, mech
+        case industry, industryLift, liftReason, primaryReason, rsRank, k4Tag
+        case positionVerdict, positionReason, positionMetrics
+        case coreVerdict, coreReason, coreMetrics
+        case mech
         case entryZone, entryZoneClamp, entryZoneUnavailableReason
         case maxChase, maxChaseClamp, maxChaseUnavailableReason
         case exitReference, exitReferenceClamp, exitReferenceUnavailableReason
@@ -497,6 +537,9 @@ struct BasketMember: Codable, Equatable, Identifiable {
          roleConflict: Bool = false, reason: String = "", isPrimary: Bool = false,
          industry: String? = nil, industryLift: Double? = nil, liftReason: String? = nil,
          primaryReason: String? = nil, rsRank: Int? = nil, k4Tag: String? = nil,
+         positionVerdict: String? = nil, positionReason: String? = nil,
+         positionMetrics: NKJSON? = nil, coreVerdict: String? = nil, coreReason: String? = nil,
+         coreMetrics: NKJSON? = nil,
          mech: NKJSON = .object([:]), entryZone: BasketPriceBand? = nil,
          entryZoneClamp: String = "", entryZoneUnavailableReason: String? = nil,
          maxChase: Double? = nil, maxChaseClamp: String = "",
@@ -507,6 +550,9 @@ struct BasketMember: Codable, Equatable, Identifiable {
         self.roleConflict = roleConflict; self.reason = reason; self.isPrimary = isPrimary
         self.industry = industry; self.industryLift = industryLift; self.liftReason = liftReason
         self.primaryReason = primaryReason; self.rsRank = rsRank; self.k4Tag = k4Tag
+        self.positionVerdict = positionVerdict; self.positionReason = positionReason
+        self.positionMetrics = positionMetrics
+        self.coreVerdict = coreVerdict; self.coreReason = coreReason; self.coreMetrics = coreMetrics
         self.mech = mech; self.entryZone = entryZone; self.entryZoneClamp = entryZoneClamp
         self.entryZoneUnavailableReason = entryZoneUnavailableReason
         self.maxChase = maxChase; self.maxChaseClamp = maxChaseClamp
@@ -531,6 +577,12 @@ struct BasketMember: Codable, Equatable, Identifiable {
         primaryReason = try c.decodeIfPresent(String.self, forKey: .primaryReason)
         rsRank = try c.decodeIfPresent(Int.self, forKey: .rsRank)
         k4Tag = try c.decodeIfPresent(String.self, forKey: .k4Tag)
+        positionVerdict = try c.decodeIfPresent(String.self, forKey: .positionVerdict)
+        positionReason = try c.decodeIfPresent(String.self, forKey: .positionReason)
+        positionMetrics = try c.decodeIfPresent(NKJSON.self, forKey: .positionMetrics)
+        coreVerdict = try c.decodeIfPresent(String.self, forKey: .coreVerdict)
+        coreReason = try c.decodeIfPresent(String.self, forKey: .coreReason)
+        coreMetrics = try c.decodeIfPresent(NKJSON.self, forKey: .coreMetrics)
         mech = try c.decodeIfPresent(NKJSON.self, forKey: .mech) ?? .object([:])
         entryZone = try c.decodeIfPresent(BasketPriceBand.self, forKey: .entryZone)
         entryZoneClamp = try c.decodeIfPresent(String.self, forKey: .entryZoneClamp) ?? ""
@@ -559,6 +611,16 @@ struct BasketMember: Codable, Equatable, Identifiable {
         if !llm.isEmpty { return llm }
         return "角色未判定"
     }
+
+    // —— V2.2-③-C/③-C2 位置关 / 核心关判定的**纯展示层换算**(沿 `nkBoardLabel` 先例:
+    // 服务端只发英文码 ok/weak/unfit,中文与着色在客户端算,⛔ 不要服务端另建映射)。
+    // `verdict == nil` 时 label 也是 `nil`(老卡缺这三键是常态)——调用方据此整行不显示,
+    // ⛔ 不许显示成"未判定"这种看起来像结论的占位。
+
+    var positionVerdictLabel: String? { positionVerdict.map(nkVerdictLabel) }
+    var positionVerdictTone: NKAxisTone { positionVerdict.map(nkVerdictTone) ?? .neutral }
+    var coreVerdictLabel: String? { coreVerdict.map(nkVerdictLabel) }
+    var coreVerdictTone: NKAxisTone { coreVerdict.map(nkVerdictTone) ?? .neutral }
 }
 
 /// 一张 D0 冻结的篮子卡(**B 类冻结快照**,蓝图 4.6 十一项)。
@@ -575,6 +637,12 @@ struct BasketCard: Codable, Equatable {
     var name: String = ""
     var driver: String = ""
     var driverKind: String = ""
+    // V2.2-③-E 引擎归属三键(裁定 #9:单篮子单引擎,成员继承篮子引擎;老卡缺键 =
+    // 「当时没有引擎归属概念」,⛔ 不是 engine 为空)。⚠ 成员上没有这两键(引擎标在
+    // 篮子上),要显示成员引擎从这里(或壳 `Basket.engineCode` 等)取。
+    var engineCode: String? = nil
+    var engineVersion: String? = nil
+    var skeletonVersion: String? = nil
     var evidence: [BasketEvidence] = []
     /// ⑤ 两段式流水的单侧故障披露:`ok` | `search_unavailable` | `partial`。
     /// ⛔ 不是 `ok` 时必须显式标注"取证不完整",不许静默当完整证据展示。
@@ -608,7 +676,8 @@ struct BasketCard: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case specVersion, version, basketKey, tradeDate, nextTradeDate, name
-        case driver, driverKind, evidence, evidenceStatus, whyNow, members, roleConflicts
+        case driver, driverKind, engineCode, engineVersion, skeletonVersion
+        case evidence, evidenceStatus, whyNow, members, roleConflicts
         case tier, rankInTier, rankMech, mechScore, tierBreakdown, tierReason, tierNote
         case scripts, scriptsUnavailableReason
         case verificationSpec, verificationText, invalidationSpec, invalidationText
@@ -617,7 +686,9 @@ struct BasketCard: Codable, Equatable {
 
     init(specVersion: String? = nil, version: Int? = nil, basketKey: String = "",
          tradeDate: String = "", nextTradeDate: String? = nil, name: String = "",
-         driver: String = "", driverKind: String = "", evidence: [BasketEvidence] = [],
+         driver: String = "", driverKind: String = "", engineCode: String? = nil,
+         engineVersion: String? = nil, skeletonVersion: String? = nil,
+         evidence: [BasketEvidence] = [],
          evidenceStatus: String = "", whyNow: String = "", members: [BasketMember] = [],
          roleConflicts: [String] = [], tier: Int? = nil, rankInTier: Int? = nil,
          rankMech: Int? = nil, mechScore: Double? = nil, tierBreakdown: NKJSON = .object([:]),
@@ -630,7 +701,9 @@ struct BasketCard: Codable, Equatable {
          notes: [String] = []) {
         self.specVersion = specVersion; self.version = version; self.basketKey = basketKey
         self.tradeDate = tradeDate; self.nextTradeDate = nextTradeDate; self.name = name
-        self.driver = driver; self.driverKind = driverKind; self.evidence = evidence
+        self.driver = driver; self.driverKind = driverKind
+        self.engineCode = engineCode; self.engineVersion = engineVersion
+        self.skeletonVersion = skeletonVersion; self.evidence = evidence
         self.evidenceStatus = evidenceStatus; self.whyNow = whyNow; self.members = members
         self.roleConflicts = roleConflicts; self.tier = tier; self.rankInTier = rankInTier
         self.rankMech = rankMech; self.mechScore = mechScore; self.tierBreakdown = tierBreakdown
@@ -656,6 +729,9 @@ struct BasketCard: Codable, Equatable {
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         driver = try c.decodeIfPresent(String.self, forKey: .driver) ?? ""
         driverKind = try c.decodeIfPresent(String.self, forKey: .driverKind) ?? ""
+        engineCode = try c.decodeIfPresent(String.self, forKey: .engineCode)
+        engineVersion = try c.decodeIfPresent(String.self, forKey: .engineVersion)
+        skeletonVersion = try c.decodeIfPresent(String.self, forKey: .skeletonVersion)
         evidence = try c.decodeIfPresent([BasketEvidence].self, forKey: .evidence) ?? []
         evidenceStatus = try c.decodeIfPresent(String.self, forKey: .evidenceStatus) ?? ""
         whyNow = try c.decodeIfPresent(String.self, forKey: .whyNow) ?? ""
@@ -815,6 +891,15 @@ struct Basket: Codable, Equatable, Identifiable {
     var tradeDate: String = ""
     var tier: Int? = nil
     var memberCodes: [String] = []
+    // V2.2-③-E 引擎归属三键(裁定 #9:单篮子单引擎,成员继承篮子引擎)。⚠ **与
+    // `scorePercent` 不同构**:live(`GET /baskets`)与报告快照两条路**都**从
+    // `baskets` 表行直填(服务端 `_shape_basket`/`load_today_baskets` 同一姿势),
+    // ⛔ 不是"live 路径刻意留空"那种非对称 —— 这里不需要 `?? tierHistory` 式合并。
+    // `card.engineCode` 等是同一次落库写入在冻结卡里的另一份拷贝,读法见下方
+    // `engineVersionDisplay`(壳优先,壳缺席时兜底读卡)。
+    var engineCode: String? = nil
+    var engineVersion: String? = nil
+    var skeletonVersion: String? = nil
     var card: BasketCard? = nil
     var cardVersion: Int? = nil
     var cardUnavailableReason: String? = nil
@@ -831,16 +916,20 @@ struct Basket: Codable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case basketId, basketKey, name, tradeDate, tier, memberCodes
+        case engineCode, engineVersion, skeletonVersion
         case card, cardVersion, cardUnavailableReason, tierHistory
         case scorePercent, scoreContributions
     }
 
     init(basketId: Int = 0, basketKey: String = "", name: String = "", tradeDate: String = "",
-         tier: Int? = nil, memberCodes: [String] = [], card: BasketCard? = nil,
+         tier: Int? = nil, memberCodes: [String] = [], engineCode: String? = nil,
+         engineVersion: String? = nil, skeletonVersion: String? = nil, card: BasketCard? = nil,
          cardVersion: Int? = nil, cardUnavailableReason: String? = nil, tierHistory: Tier? = nil,
          scorePercent: Double? = nil, scoreContributions: [ScoreContribution] = []) {
         self.basketId = basketId; self.basketKey = basketKey; self.name = name
         self.tradeDate = tradeDate; self.tier = tier; self.memberCodes = memberCodes
+        self.engineCode = engineCode; self.engineVersion = engineVersion
+        self.skeletonVersion = skeletonVersion
         self.card = card; self.cardVersion = cardVersion
         self.cardUnavailableReason = cardUnavailableReason; self.tierHistory = tierHistory
         self.scorePercent = scorePercent; self.scoreContributions = scoreContributions
@@ -854,6 +943,9 @@ struct Basket: Codable, Equatable, Identifiable {
         tradeDate = try c.decodeIfPresent(String.self, forKey: .tradeDate) ?? ""
         tier = try c.decodeIfPresent(Int.self, forKey: .tier)
         memberCodes = try c.decodeIfPresent([String].self, forKey: .memberCodes) ?? []
+        engineCode = try c.decodeIfPresent(String.self, forKey: .engineCode)
+        engineVersion = try c.decodeIfPresent(String.self, forKey: .engineVersion)
+        skeletonVersion = try c.decodeIfPresent(String.self, forKey: .skeletonVersion)
         card = try c.decodeIfPresent(BasketCard.self, forKey: .card)
         cardVersion = try c.decodeIfPresent(Int.self, forKey: .cardVersion)
         cardUnavailableReason = try c.decodeIfPresent(String.self, forKey: .cardUnavailableReason)
@@ -874,6 +966,14 @@ struct Basket: Codable, Equatable, Identifiable {
     var scoreDisplayContributions: [ScoreContribution] {
         scorePercent != nil ? scoreContributions : (tierHistory?.scoreContributions ?? [])
     }
+
+    // —— V2.2-③-E 引擎徽标的**唯一读法**(壳优先,壳缺席〔极旧数据〕时兜底读卡;
+    // 两条路正常情况下逐位相同,见上方字段注释,这里的 `??` 只是防御性兜底,
+    // ⛔ 不是"两条路刻意不同步"那种语义)——
+
+    var engineCodeDisplay: String? { engineCode ?? card?.engineCode }
+    var engineVersionDisplay: String? { engineVersion ?? card?.engineVersion }
+    var skeletonVersionDisplay: String? { skeletonVersion ?? card?.skeletonVersion }
 
     /// 卡未就绪时的诚实文案。⛔ **不是**「篮子不存在」。
     var cardUnavailableText: String? {

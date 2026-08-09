@@ -340,6 +340,105 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertNil(card.specVersion)
         XCTAssertTrue(card.risks.isEmpty)
         XCTAssertNil(card.scripts)
+        // V2.2-③-E/③-C/③-C2 九键同样是纯新增 —— 老卡缺键必须解得出来,⛔ 不崩、
+        // 也⛔ 兜成"未判定"这种看起来像结论的占位(三键都该是 nil)。
+        XCTAssertNil(card.engineCode)
+        XCTAssertNil(card.engineVersion)
+        XCTAssertNil(card.skeletonVersion)
+        XCTAssertNil(card.members[0].positionVerdict)
+        XCTAssertNil(card.members[0].positionMetrics)
+        XCTAssertNil(card.members[0].coreVerdict)
+        XCTAssertNil(card.members[0].coreMetrics)
+        XCTAssertNil(card.members[0].positionVerdictLabel, "verdict 缺席时展示层也必须是 nil,不是「未判定」占位")
+    }
+
+    // MARK: - V2.2-③-E/③-C/③-C2 K8 篮子卡九键(引擎三件套 · 位置三件套 · 核心三件套)
+
+    /// 九键全部有值时逐个解出来 —— 引擎三键**壳与卡两处都发**(裁定 #9:两条路都从
+    /// `baskets` 表行直填,不是 `scorePercent` 那种"live 路径刻意留空"的非对称)。
+    func testAllNineK8CardKeysDecodeWhenPresent() async throws {
+        let json = jsonData("""
+        {"tradeDate": "20260810", "items": [{
+          "basketId": 21, "basketKey": "bk1", "name": "篮子甲", "tier": 1,
+          "memberCodes": ["600001.SH"],
+          "engineCode": "C", "engineVersion": "C1", "skeletonVersion": "K8-V0.5",
+          "card": {
+            "name": "篮子甲", "engineCode": "C", "engineVersion": "C1",
+            "skeletonVersion": "K8-V0.5",
+            "members": [{
+              "tsCode": "600001.SH", "name": "甲",
+              "positionVerdict": "weak", "positionReason": "支撑刚破又收回",
+              "positionMetrics": {"platform_days": 12, "at_60d_high": false},
+              "coreVerdict": "unfit", "coreReason": "行业内 30/42,是跟风",
+              "coreMetrics": {"industry_member_count": 42, "industry_rs_rank_20d": 30}
+            }]
+          }
+        }]}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let items = try await client.fetchBaskets()
+        let b = try XCTUnwrap(items.first)
+        // 引擎三件套:壳上直接有值(⛔ 不需要走 card 兜底)。
+        XCTAssertEqual(b.engineCode, "C")
+        XCTAssertEqual(b.engineVersion, "C1")
+        XCTAssertEqual(b.skeletonVersion, "K8-V0.5")
+        XCTAssertEqual(b.engineVersionDisplay, "C1")
+        // 卡上是同一份归属的另一份拷贝(裁定 #9:成员继承篮子引擎,成员本身没有这两键)。
+        XCTAssertEqual(b.card?.engineCode, "C")
+        XCTAssertEqual(b.card?.engineVersion, "C1")
+        XCTAssertEqual(b.card?.skeletonVersion, "K8-V0.5")
+
+        let m = try XCTUnwrap(b.card?.members.first)
+        XCTAssertEqual(m.positionVerdict, "weak")
+        XCTAssertEqual(m.positionReason, "支撑刚破又收回")
+        XCTAssertEqual(m.positionVerdictLabel, "勉强")
+        XCTAssertEqual(m.positionVerdictTone, .warn)
+        XCTAssertEqual(m.coreVerdict, "unfit")
+        XCTAssertEqual(m.coreReason, "行业内 30/42,是跟风")
+        XCTAssertEqual(m.coreVerdictLabel, "不合适")
+        XCTAssertEqual(m.coreVerdictTone, .bad)
+        // 读数原样透传(自由结构,`NKJSON` 载体)—— 分母必须读得出来。
+        XCTAssertEqual(m.positionMetrics?["platform_days"]?.intValue, 12)
+        XCTAssertEqual(m.coreMetrics?["industry_member_count"]?.intValue, 42)
+        // ⚠ **NKJSON Bool 必须排在 Double 之前**:`at_60d_high: false` 若顺序反了会被
+        // 解成数字 0,界面就会显示成"0"而不是"否"——这条链路也要守住这一坑。
+        XCTAssertEqual(m.positionMetrics?["at_60d_high"]?.boolValue, false)
+        XCTAssertNil(m.positionMetrics?["at_60d_high"]?.doubleValue,
+                     "布尔读数不得被解成数字(顺序反了会显示成 0)")
+    }
+
+    /// **显式 `null`** 与「键缺失」是两条不同的路,都必须解得出来、都归 `nil`
+    /// (⛔ 不许抛错;pydantic 的 `Optional[...] = None` 字段服务端本就可能显式发 `null`)。
+    func testNineK8CardKeysDecodeWhenExplicitlyNull() async throws {
+        let json = jsonData("""
+        {"basketId": 22, "engineCode": null, "engineVersion": null, "skeletonVersion": null,
+         "card": {"name": "篮", "engineCode": null, "engineVersion": null, "skeletonVersion": null,
+           "members": [{"tsCode": "600002.SH", "positionVerdict": null, "positionReason": null,
+             "positionMetrics": null, "coreVerdict": null, "coreReason": null, "coreMetrics": null}]}}
+        """)
+        let b = try JSONDecoder().decode(Basket.self, from: json)
+        XCTAssertNil(b.engineVersionDisplay)
+        let m = try XCTUnwrap(b.card?.members.first)
+        XCTAssertNil(m.positionVerdict)
+        XCTAssertNil(m.positionMetrics)
+        XCTAssertNil(m.coreVerdict)
+        XCTAssertNil(m.coreMetrics)
+    }
+
+    /// 引擎徽标展示读法:壳缺席(极旧数据的边缘情形)时兜底读卡;两处都没有则 `nil`。
+    func testEngineVersionDisplayFallsBackToCardWhenShellFieldsAreMissing() {
+        let shellHasIt = Basket(basketId: 1, engineVersion: "Z1", card: BasketCard(engineVersion: "Z1"))
+        XCTAssertEqual(shellHasIt.engineVersionDisplay, "Z1")
+
+        let onlyCardHasIt = Basket(basketId: 2, card: BasketCard(engineCode: "Y", engineVersion: "Y1",
+                                                                  skeletonVersion: "K8-V0.5"))
+        XCTAssertEqual(onlyCardHasIt.engineCodeDisplay, "Y")
+        XCTAssertEqual(onlyCardHasIt.engineVersionDisplay, "Y1")
+        XCTAssertEqual(onlyCardHasIt.skeletonVersionDisplay, "K8-V0.5")
+
+        let neitherHasIt = Basket(basketId: 3)
+        XCTAssertNil(neitherHasIt.engineVersionDisplay)
     }
 
     /// 取证不完整(⑤ 两段式流水单侧故障)必须**显式标注**,⛔ 不静默当完整证据展示。

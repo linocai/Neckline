@@ -85,6 +85,14 @@ struct BasketCardPage: View {
                                filled: true)
                     }
                     if let v = card.version { NKChip(text: "卡 v\(v)") }
+                    // V2.2-③-E 引擎徽标(裁定 #9:单篮子单引擎,成员继承 —— 徽标只出
+                    // 现在篮子头上,⛔ 不在成员卡上重复画)。老卡缺这三键是常态。
+                    // ⚠ 文案刻意写「选股引擎」而不是裸「引擎」:下方口径指纹区已有
+                    // `engineApiVersion`(契约版本号)占用了「引擎 N」这个措辞,两个是
+                    // 完全不同的概念,同页出现容易撞名。
+                    if let ev = basket.engineVersionDisplay {
+                        NKChip(text: "选股引擎 \(ev)", tone: .neutral)
+                    }
                     Spacer()
                     VerificationBadge(model: model, basketId: basket.basketId)
                 }
@@ -344,6 +352,9 @@ struct BasketCardPage: View {
                             NKChip(text: "验证条件集 \(v)")
                         }
                         if let v = card.specVersion { NKChip(text: "卡形状 \(v)") }
+                        // V2.2-③-E:K8 骨架线版本(股票池 / 篮子 / 梯度那条线,与上面
+                        // 头部的「选股引擎」徽标是两码事 —— 骨架线只有一条,引擎有三条)。
+                        if let v = basket.skeletonVersionDisplay { NKChip(text: "骨架 \(v)") }
                     }
                 }
                 if !card.disciplineLabels.isEmpty {
@@ -399,6 +410,7 @@ struct BasketMemberCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 industryRow
+                gateVerdictsRow
                 referenceRow
                 tagsRow
                 Divider().overlay(NK.hairline)
@@ -454,6 +466,51 @@ struct BasketMemberCard: View {
                     }
                     if let k4 = member.k4Tag, !k4.isEmpty { NKChip(text: k4, tone: .warn) }
                     if let pr = member.primaryReason, !pr.isEmpty { NKChip(text: pr) }
+                }
+            }
+        }
+    }
+
+    /// V2.2-③-C / ③-C2 位置关 / 核心关判定(裁定 #11/#12:机械层只出读数,判定
+    /// 交 LLM,只降级不除名)。**老卡缺这六键是常态**(纯新增)——两组各自
+    /// `positionVerdict`/`coreVerdict` 为 `nil` 时整行不显示,⛔ 不显示"未判定"
+    /// 这种看起来像结论的占位。
+    @ViewBuilder
+    private var gateVerdictsRow: some View {
+        if member.positionVerdict != nil || member.coreVerdict != nil {
+            VStack(alignment: .leading, spacing: 6) {
+                gateVerdictRow(title: "位置关 · 落地起跳", label: member.positionVerdictLabel,
+                              tone: member.positionVerdictTone, reason: member.positionReason,
+                              metrics: member.positionMetrics)
+                gateVerdictRow(title: "核心关 · 行业龙头", label: member.coreVerdictLabel,
+                              tone: member.coreVerdictTone, reason: member.coreReason,
+                              metrics: member.coreMetrics)
+            }
+        }
+    }
+
+    /// 单关判定行:三态徽标 + LLM 理由 + **展开区**读数(⛔ 不塞满首屏 ——
+    /// `positionMetrics`/`coreMetrics` 是"当次喂给模型的读数原样",放
+    /// `DisclosureGroup` 里,点开才看到)。
+    @ViewBuilder
+    private func gateVerdictRow(title: String, label: String?, tone: NKAxisTone,
+                                reason: String?, metrics: NKJSON?) -> some View {
+        if let l = label {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(title).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+                    NKChip(text: l, tone: tone)
+                }
+                if let r = reason, !r.isEmpty {
+                    Text(r).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // 读数(⛔ 缺项不是 0,是真的没取到)——**展开区**,不塞满首屏。
+                if let m = metrics, let obj = m.objectValue, !obj.isEmpty {
+                    DisclosureGroup("查看读数(\(obj.count) 项)") {
+                        NKJSONTable(value: m).padding(.top, 2)
+                    }
+                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(NK.textTertiary)
                 }
             }
         }
