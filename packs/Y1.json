@@ -5,10 +5,13 @@
     "date": "2026-08-09",
     "engine_api_version": 2,
     "line_code": "Y",
-    "evidence_ref": ["K8_STRATEGY_ARCH.md"],
+    "evidence_ref": [
+      "K8_STRATEGY_ARCH.md"
+    ],
     "notes": [
       "阈值来源分布(plan §五 ③-F):leader_rs_rank / industry_rank 名次档 = audited;其余全部 engineering_v1 + calibration:pending(工程首版待选股时钟数据校准,⛔ 不冒充审计结论)。",
-      "迭代路径:选股时钟攒样本 → 周度按引擎归因 → 四分类建议 → 用户确认 → Y2 走四道闸;⛔ 零自动回写。"
+      "迭代路径:选股时钟攒样本 → 周度按引擎归因 → 四分类建议 → 用户确认 → Y2 走四道闸;⛔ 零自动回写。",
+      "位置关自 2026-08-09 用户裁定 #11 起**零阈值**:由机械关改判为证据关,判定直接交大模型(只降级不除名),包里只留一条定性准则 `gates.position.guidance` 进 prompt、⛔ 不进任何机械判据、⛔ 不走 provenance 闸。原七个阈值键已删除,⛔ 不得恢复。"
     ]
   },
   "config": {
@@ -18,40 +21,47 @@
       "gates": {
         "market": {
           "primary_regimes": {
-            "value": ["trend_continuation", "high_divergence", "rotation_confirmed"],
-            "provenance": {"source": "engineering_v1", "basis": "K8 §四 Y1 适用「经过较长时间整理的股票」,不依赖当下行情性质 → 三态皆可,切换确认下不额外加严(plan §五 ③-F)", "calibration": "pending"}
+            "value": [
+              "trend_continuation",
+              "high_divergence",
+              "rotation_confirmed"
+            ],
+            "provenance": {
+              "source": "engineering_v1",
+              "basis": "K8 §四 Y1 适用「经过较长时间整理的股票」,不依赖当下行情性质 → 三态皆可,切换确认下不额外加严(plan §五 ③-F)",
+              "calibration": "pending"
+            }
           }
         },
         "sector": {
           "industry_rank_max": {
             "value": 30,
-            "provenance": {"source": "audited", "ref": "PROJECT_PLAN.md §2.2 v1.3.1 行业闸先例(行业强度名次档判据;Y1 放宽到 ≤30 = K8 §四「中期驱动有效」不要求当下最热的工程放宽,名次档本身有审计背书)"}
+            "provenance": {
+              "source": "audited",
+              "ref": "PROJECT_PLAN.md §2.2 v1.3.1 行业闸先例(行业强度名次档判据;Y1 放宽到 ≤30 = K8 §四「中期驱动有效」不要求当下最热的工程放宽,名次档本身有审计背书)"
+            }
           }
         },
         "position": {
-          "landing_states": {
-            "value": ["liftoff_confirmed"],
-            "provenance": {"source": "engineering_v1", "basis": "K8 §四 Y1「价格处于平台完成后的启动早期」→ 要求起跳确认态", "calibration": "pending"}
-          },
-          "platform_days_min": {
-            "value": 40,
-            "provenance": {"source": "engineering_v1", "basis": "K8 §四 Y1「平台或支撑区域整理充分」→ 平台天数 ≥ 40 的工程翻译(近 N 日振幅受限的连续天数,派生列落 landing.py 的 metrics_json,plan §五 ③-F 附注)", "calibration": "pending"}
-          },
-          "platform_amplitude_max": {
-            "value": 0.25,
-            "provenance": {"source": "engineering_v1", "basis": "K8 §四 Y1「整理充分 / 筹码交换」→ 平台振幅 ≤ 25% 的工程翻译", "calibration": "pending"}
-          }
+          "guidance": "**中期平台走完之后**的启动早期 —— 平台够长、振幅够收敛。"
         },
         "core": {
           "leader_rs_rank_max": {
             "value": 5,
-            "provenance": {"source": "audited", "ref": "档案/research/k7_pre_report.md#H10(十二格审计:簇内 RS 名次档;Y1 放宽 ≤5 = 中期启动不要求当下最强,名次档本身有审计背书)"}
+            "provenance": {
+              "source": "audited",
+              "ref": "档案/research/k7_pre_report.md#H10(十二格审计:簇内 RS 名次档;Y1 放宽 ≤5 = 中期启动不要求当下最强,名次档本身有审计背书)"
+            }
           }
         },
         "evidence": {
           "independent_evidence_min": {
             "value": 2,
-            "provenance": {"source": "engineering_v1", "basis": "K8 §四 Y1「中期驱动有效」→ 证据自然稀,独立证据 ≥ 2 份(plan §五 ③-F)", "calibration": "pending"}
+            "provenance": {
+              "source": "engineering_v1",
+              "basis": "K8 §四 Y1「中期驱动有效」→ 证据自然稀,独立证据 ≥ 2 份(plan §五 ③-F)",
+              "calibration": "pending"
+            }
           }
         }
       },
@@ -59,13 +69,21 @@
         "t1": {
           "max_evidence_degrades": {
             "value": 0,
-            "provenance": {"source": "engineering_v1", "basis": "K8 §八 T1「支撑确认,启动成立」= 六关全过,证据关零降级", "calibration": "pending"}
+            "provenance": {
+              "source": "engineering_v1",
+              "basis": "K8 §八 T1「支撑确认,启动成立」= 六关全过,证据关零降级",
+              "calibration": "pending"
+            }
           }
         },
         "t2": {
           "max_evidence_degrades": {
             "value": 1,
-            "provenance": {"source": "engineering_v1", "basis": "K8 §八 T2「逻辑成立,等待关键确认」→ 证据关至多一处降级(plan §五 ③-D)", "calibration": "pending"}
+            "provenance": {
+              "source": "engineering_v1",
+              "basis": "K8 §八 T2「逻辑成立,等待关键确认」→ 证据关至多一处降级(plan §五 ③-D)",
+              "calibration": "pending"
+            }
           }
         }
       }

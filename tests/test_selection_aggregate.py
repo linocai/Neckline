@@ -1224,3 +1224,147 @@ def test_charter_version_is_recorded_as_fingerprint_only(isolated_env):
     r = _one_basket(env)
     assert r.baskets[0].charter_version == ag.CHARTER_UNKNOWN
     assert r.baskets[0].engine_api_version == ag.engine_api.ENGINE_API_VERSION   # V2.2-① 起 = 2
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.2-③-C 位置关(🔴 2026-08-09 用户裁定 #11:判定交 LLM,机械层只出读数)
+#
+# 本节守三件事:① prompt 里三样东西齐(K8 §二 五句 + 引擎定性准则 + 该票读数);
+# ② 三值解析与**保守兜底**(缺判定 ⛔ 不静默当 ok);③ **判定与读数必须一路带到
+# `BasketMemberCandidate` 上**(⑥ 靠它写 `gate_evaluations.evidence_json`)。
+# ══════════════════════════════════════════════════════════════════════════
+
+_POS_METRICS = {k: 1.0 for k in ag.POSITION_METRIC_KEYS}
+
+
+def _pos_ctx(**kw) -> ag.MechContext:
+    ctx = ag.MechContext(trade_date=D0)
+    ctx.position_metrics_of = {"600001.SH": dict(_POS_METRICS)}
+    ctx.position_metrics_missing_of = {"600001.SH": "rs5=industry_unmapped"}
+    ctx.position_metrics_available = True
+    ctx.engine_position_guidance = {"C": "主线核心的趋势内健康回撤后再启动",
+                                    "Z": "新方向核心的早期右侧启动",
+                                    "Y": "中期平台走完之后的启动早期"}
+    for k, v in kw.items():
+        setattr(ctx, k, v)
+    return ctx
+
+
+class TestPositionGatePromptAndParsing:
+    def test_prompt_carries_k8_criteria_engine_guidance_and_per_stock_readings(self):
+        """裁定 #11 的 prompt 三件套 —— 少任何一件,模型都是在**没有依据**的情况下
+        给位置判定(而它照样会给一个,看不出是 bug)。"""
+        ctx = _pos_ctx()
+        seeds = [_seed("s1", members=("600001.SH",))]
+        text = ag.build_reason_context(seeds, {"s1": ("600001.SH",)}, {}, ctx)
+        assert "下跌或调整已经结束" in text and "当前仍处于启动早期" in text   # ① K8 §二 原文
+        assert "中期平台走完之后的启动早期" in text                            # ② 引擎定性准则
+        assert "位置读数:" in text and "距60日高点" in text                    # ③ 该票读数
+        assert "rs5=industry_unmapped" in text                                # 缺项与原因如实透传
+        # ⛔ prompt 里不许出现任何阈值/及格线(位置关自此零阈值)
+        for banned in ("liftoff_confirmed", "landing_pending", "high_extended",
+                       "≥ 阈值", "pullback_depth_range"):
+            assert banned not in text, banned
+
+    def test_missing_readings_are_stated_not_faked(self):
+        """读数缺行 → 明说「本次未取得」,⛔ 不填 0、不填默认值(plan ③-C 原文:
+        喂给 LLM 的必须是「这项没取到」而不是一个假数)。"""
+        ctx = _pos_ctx()
+        line = ag._position_metrics_line("999999.SZ", ctx)
+        assert "本次未取得" in line and "0" not in line.replace("60", "").replace("20", "")
+        # 单项缺:值写「未取到」而不是 0
+        ctx.position_metrics_of["600002.SH"] = {**_POS_METRICS, "platform_days": None}
+        assert "平台天数 未取到" in ag._position_metrics_line("600002.SH", ctx)
+
+    def test_whole_table_missing_is_disclosed_at_the_top_of_the_block(self):
+        ctx = _pos_ctx(position_metrics_available=False, position_metrics_of={})
+        assert "整张落地起跳读数表都没有当日行" in "\n".join(ag._position_prompt_block(ctx))
+
+    def test_bool_readings_render_as_yes_no_not_one_zero(self):
+        """`NKJSON` 同款坑:`True` 在 Python 里也是 `int` —— 判 bool 必须排在数值
+        之前,否则界面/prompt 上「是」会静静变成「1」。"""
+        assert ag._fmt_metric(True) == "是" and ag._fmt_metric(False) == "否"
+        assert ag._fmt_metric(1) == "1" and ag._fmt_metric(None) == "未取到"
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("ok", ag.POSITION_OK), ("WEAK", ag.POSITION_WEAK), (" unfit ", ag.POSITION_UNFIT),
+    ])
+    def test_three_values_parse_case_insensitively(self, raw, expected):
+        verdict, _reason = ag._parse_position_verdict(
+            {"position_verdict": raw, "position_reason": "理由"}, code="600001.SH", name="篮")
+        assert verdict == expected
+
+    @pytest.mark.parametrize("member_raw", [{}, {"position_verdict": "excellent"},
+                                            {"position_verdict": ""}])
+    def test_missing_or_bogus_verdict_falls_back_to_weak_with_a_trace(self, member_raw):
+        """🔴 ⛔ 不静默当 ok:「模型没判」与「判过、没问题」是两件事,合并成后者
+        等于替它下结论。⛔ 也不整条拒收(位置关是证据关,只降级不除名)。"""
+        verdict, reason = ag._parse_position_verdict(
+            dict(member_raw), code="600001.SH", name="篮")
+        assert verdict == ag.POSITION_WEAK
+        assert "verdict_missing" in reason
+
+    def test_verdict_readings_and_missing_ride_along_to_the_member_row(self, isolated_env):
+        """🔴 **本节最该有的一条**:判定 + 当次读数 + 缺项原因必须一路带到成员行上
+        —— ⑥ 靠它们写 `gate_evaluations.evidence_json`(裁定 #11 之后「当时按什么
+        标准判的」不再是可回放的数字,不存这两样事后无法复核)。"""
+        env = isolated_env
+        insert_trade_cal(env, [D0])
+        payload = _basket_payload(members=[
+            {"ts_code": "600001.SH", "role": "leader", "reason": "r",
+             "position_verdict": "unfit", "position_reason": "已经拉开的加速段"}])
+        import unittest.mock as _mock
+        real = ag.build_mech_context
+
+        def _patched(*a, **kw):
+            ctx = real(*a, **kw)
+            ctx.position_metrics_of = {"600001.SH": dict(_POS_METRICS)}
+            ctx.position_metrics_missing_of = {"600001.SH": "rs5=industry_unmapped"}
+            ctx.position_metrics_available = True
+            return ctx
+
+        with _mock.patch.object(ag, "build_mech_context", _patched):
+            r = _run(env, _seedset(_seed("s1")), search=_StubProvider(_search_reply(_EV)),
+                     reason=_StubProvider(_reason_reply([payload])))
+        m = r.baskets[0].members[0]
+        assert m.position_verdict == "unfit"
+        assert m.position_reason == "已经拉开的加速段"
+        assert set(m.position_metrics) == set(ag.POSITION_METRIC_KEYS)
+        assert m.position_metrics_missing == "rs5=industry_unmapped"
+
+    def test_assign_primary_must_not_drop_the_position_fields(self):
+        """🔴 **回归钉子(施工期真踩)**:`assign_primary` 曾**逐字段手抄**重建
+        `BasketMemberCandidate`,新增的位置四字段没抄进来 → 全篮判定被静默重置成
+        默认值 → 六关侧全员回退成 `weak`、读数全丢,**日志一行警告都没有**。
+        ⛔ 那里只许 `dataclasses.replace` 改要改的四格,其余原样带过。"""
+        ctx = ag.MechContext(trade_date=D0)
+        seeds_by_key = {"s1": _seed("s1")}
+        member = ag.BasketMemberCandidate(
+            "600001.SH", "leader", None, 0, "r",
+            position_verdict="unfit", position_reason="加速段",
+            position_metrics={"platform_days": 12}, position_metrics_missing="rs5=x")
+        basket = ag.BasketCandidate(
+            trade_date=D0_S, basket_key="k1", name="篮", driver="d", driver_kind="theme",
+            why_now="w", seed_keys=("s1",), members=(member,), evidence=(),
+            evidence_status=ag.EVIDENCE_OK, pack_version="p", engine_api_version=1,
+            charter_version="v1.3.3")
+        out = ag.assign_primary([basket], seeds_by_key, ctx)
+        m = out[0].members[0]
+        assert (m.position_verdict, m.position_reason) == ("unfit", "加速段")
+        assert m.position_metrics == {"platform_days": 12}
+        assert m.position_metrics_missing == "rs5=x"
+        assert m.is_primary == 1                      # 该函数**该改的那格**照样改了
+
+
+def test_position_metrics_reader_is_fused_and_honest(isolated_env, caplog):
+    """读数表读不到 = 位置关的输入缺席(prompt 里如实写「本次未取得」),
+    **⛔ 绝不让当日无篮子**(§五铁律:核心管线对可选情报输入的调用必须包保险丝)。"""
+    import unittest.mock as _mock
+
+    with _mock.patch("neckline.scan.landing_store.load_landing_metrics",
+                     side_effect=RuntimeError("表炸了")):
+        with caplog.at_level(logging.WARNING):
+            metrics, missing, present = ag._load_position_metrics(
+                D0, ["600001.SH"], db_path=isolated_env.db_path)
+    assert (metrics, missing, present) == ({}, {}, False)
+    assert "load_landing_metrics" in caplog.text        # 报错时说得出该找哪个符号

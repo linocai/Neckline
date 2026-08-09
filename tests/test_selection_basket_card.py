@@ -205,7 +205,11 @@ def test_card_json_key_shape_is_stable():
     assert set(j["members"][0]) == {
         "ts_code", "name", "role_llm", "role_mech", "role_conflict", "reason",
         "is_primary", "industry", "industry_lift", "lift_reason", "primary_reason",
-        "rs_rank", "k4_tag", "mech", "entry_zone", "entry_zone_clamp",
+        "rs_rank", "k4_tag",
+        # V2.2-③-C(裁定 #11):位置关判定 + 理由 + **当次读数**(卡是冻结件,
+        # 存读数 = 事后复核「模型拿什么下的判断」不必回头猜)。
+        "position_verdict", "position_reason", "position_metrics",
+        "mech", "entry_zone", "entry_zone_clamp",
         "entry_zone_unavailable_reason", "max_chase", "max_chase_clamp",
         "max_chase_unavailable_reason", "exit_reference", "exit_reference_clamp",
         "exit_reference_unavailable_reason", "tags", "tags_absent",

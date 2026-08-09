@@ -44,8 +44,8 @@ _BANNED = [
     "compute_leader_structure_for_day",
     # V2.2-③-C:落地起跳的批算/写入口(全市场逐票 × 145 交易日回看,P4-50 点名的
     # 第二条 P0-23 靶心路径)——在线路径只许读 `landing_store.load_*`。
-    "refresh_landing_states",
-    "compute_landing_states",
+    "refresh_landing_metrics",
+    "compute_landing_metrics",
 ]
 
 

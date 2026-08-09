@@ -2,30 +2,33 @@
 
 覆盖:
     ① **六关各自 pass / degrade / reject 三态**(机械关只会 pass/reject,证据关只会
-       pass/degrade —— ③-A 二分的机器判据);
+       pass/degrade —— ③-A 二分的机器判据;🔴 裁定 #11 后位置关在证据关那一侧);
     ② **机械关 reject → 硬否决**、**证据关 degrade → 只降档且仍在 ③b**(正反双向,
        ⑥ 侧的另一半在 `test_selection_tier.py`);
-    ③ **引擎归属**:LLM 主张被机械对拍校验;缺席/给错 → C→Z→Y 机械兜底;成员不满足
-       该引擎机械关阈值 → **直接出篮**;零运行引擎 → 当日不产任何候选(全部 ③b);
+    ③ **引擎归属**:LLM 主张被机械对拍校验;缺席/给错 → C→Z→Y 机械兜底;
+       零运行引擎 → 当日不产任何候选(全部 ③b);
     ④ **缺数 = 不知道,不拦但不给 T1**(六关统一姿势);
     ⑤ 证据独立性:按 `evidence_kind` 归并、技术指标折一份、Z1 消息/政策类来源要求;
-    ⑥ `gate_evaluations` 留痕:append-only、成员级 ts_code 语义、engine 列;
-    ⑦ 门槛制正面钉子:**机械分 0.9+ 但位置关 falling → 不进任何档**(plan 点名);
-    ⑧ 反向守门:gates.py 零 import `report.score_display` / `sentinel` / `selection.tier`。
+    ⑥ `gate_evaluations` 留痕:append-only、成员级 ts_code 语义、engine 列,
+       **位置关行 `gate_kind='llm'` 且 `evidence_json` 同时存下读数与 LLM 理由**;
+    ⑦ 门槛制正面钉子:**机械分 0.9+ 但机械关(板块/市场)被否 → 不进任何档**;
+    ⑧ 🆕 **裁定 #11 的机器判据(正反双向)**:位置关在证据关集合里、`gate_kind='llm'`、
+       verdict 只会 pass/degrade、`unfit` 的票 **⛔ 不得从 ③b 消失**、LLM 没给判定
+       **⛔ 不静默当 ok**、**LLM 调用增量恒为 0**;
+    ⑨ 反向守门:gates.py 零 import `report.score_display` / `sentinel` /
+       `selection.tier` / **`scan.landing*`**。
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Dict, Optional, Sequence
 
 import pytest
 
-from neckline.scan import landing as landing_mod
 from neckline.scan import stage as stage_mod
 from neckline.selection import aggregate as ag
 from neckline.selection import gates as gt
@@ -65,11 +68,32 @@ _EV3 = (
 )
 
 
+# 一份"什么都取到了"的位置读数(键名 = `scan/landing.py::METRIC_KEYS` 契约)。
+_METRICS_OK: Dict[str, object] = {
+    "low5_over_low20_ratio": 1.03, "is_new_low_20d": False,
+    "close_over_ma20_dev": 0.012, "close_over_platform_floor_dev": 0.034,
+    "down_day_amount_ratio_5v20": 0.82, "max_daily_drop_5d": -0.031,
+    "close_over_ma5_dev": 0.008, "pct_chg": 2.04, "rs5": 0.014,
+    "dist_from_high_60d": -0.10, "cum_return_3d": 0.042, "is_limit_up": False,
+    "is_new_high_60d": False, "platform_days": 12,
+}
+
+
 def _member(code: str, *, industry: Optional[str] = None,
-            rs_rank: Optional[int] = None) -> ag.BasketMemberCandidate:
+            rs_rank: Optional[int] = None,
+            position: Optional[str] = ag.POSITION_OK,
+            position_reason: str = "回撤到位、量能收敛后转强",
+            metrics: Optional[Dict[str, object]] = _METRICS_OK,
+            ) -> ag.BasketMemberCandidate:
+    """⚠ 裁定 #11 后位置关吃的是**⑤ 随成员带下来的 LLM 判定 + 当次读数**
+    (⛔ gates 不再读 `landing_metrics_daily`)。`position=None` = 模型压根没给判定
+    (下游必须保守按 weak 处理);`metrics=None` = 当次没有读数可喂。"""
     return ag.BasketMemberCandidate(
         ts_code=code, role_llm="core", role_mech=None, role_conflict=0,
         reason="理由", industry=industry, rs_rank=rs_rank, name=code,
+        position_verdict=position or "", position_reason=position_reason,
+        position_metrics=dict(metrics) if metrics is not None else None,
+        position_metrics_missing="",
     )
 
 
@@ -108,25 +132,6 @@ def _insert_regime(db_path: Path, regime: str, *, breadth_pctile=None) -> None:
             "VALUES (?,?,?,?,?,?,?,?)",
             (D0_S, regime, "test", json.dumps(inputs), "[]", "[]", "K8-V0.5", "now"),
         )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _insert_landing(db_path: Path, states: Dict[str, str],
-                    metrics: Optional[Dict[str, dict]] = None) -> None:
-    from neckline.db import init_schema
-
-    init_schema(db_path=db_path)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        for code, state in states.items():
-            m = (metrics or {}).get(code, {})
-            conn.execute(
-                "INSERT OR REPLACE INTO landing_state_daily (trade_date, ts_code, state, "
-                "state_reason, metrics_json, skeleton_version, computed_at) VALUES (?,?,?,?,?,?,?)",
-                (D0_S, code, state, "test", json.dumps(m), "K8-V0.5", "now"),
-            )
         conn.commit()
     finally:
         conn.close()
@@ -285,67 +290,72 @@ class TestSectorGate:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# ④ 位置关(机械,成员级):四态 + 引擎分支阈值 + 出篮
+# ④ 位置关(🔴 裁定 #11:**证据关**,判定吃 LLM 输出,只降级不除名)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestPositionGate:
-    def test_falling_member_is_removed(self, isolated_env):
-        _insert_landing(isolated_env.db_path, {"600001.SH": landing_mod.FALLING})
-        check, removed, t1 = gt._position_member_check(
-            C1, _ctx(isolated_env, ["600001.SH"]), "600001.SH")
-        assert check.verdict == gt.VERDICT_REJECT and removed and not t1
+    def test_ok_passes_and_does_not_bar_t1(self):
+        check, unfit = gt._position_member_check(C1, _member("600001.SH"))
+        assert check.verdict == gt.VERDICT_PASS and not unfit
+        assert check.available is True and check.blocks_t1 is False
+        assert check.gate_kind == gt.GATE_KIND_LLM          # 位置关是 LLM 关(裁定 #11)
 
-    def test_liftoff_with_depth_in_band_is_t1_capable(self, isolated_env):
-        _insert_landing(isolated_env.db_path, {"600001.SH": landing_mod.LIFTOFF_CONFIRMED},
-                        {"600001.SH": {"dist_from_high_60d": -0.10}})
-        check, removed, t1 = gt._position_member_check(
-            C1, _ctx(isolated_env, ["600001.SH"]), "600001.SH")
-        assert check.verdict == gt.VERDICT_PASS and not removed and t1
+    def test_weak_degrades_and_never_rejects(self):
+        """③-A:证据关**永不 reject**。位置勉强 → degrade(降一档),成员照留。"""
+        check, unfit = gt._position_member_check(
+            C1, _member("600001.SH", position=ag.POSITION_WEAK, position_reason="支撑刚破又收回"))
+        assert check.verdict == gt.VERDICT_DEGRADE and not unfit
+        assert check.verdict != gt.VERDICT_REJECT
 
-    def test_c1_pullback_too_shallow_removes_member(self, isolated_env):
-        """C1 回撤深度带 [-0.20, -0.05]:回撤太浅 = 不是「健康回调」→ 出篮。"""
-        _insert_landing(isolated_env.db_path, {"600001.SH": landing_mod.LIFTOFF_CONFIRMED},
-                        {"600001.SH": {"dist_from_high_60d": -0.02}})
-        check, removed, _t1 = gt._position_member_check(
-            C1, _ctx(isolated_env, ["600001.SH"]), "600001.SH")
-        assert check.verdict == gt.VERDICT_REJECT and removed
-        assert "pullback_depth" in check.reason
+    def test_unfit_degrades_but_flags_exit_from_formal_candidacy(self):
+        """`unfit` 的 verdict 仍是 **degrade**(⛔ 不是硬否决,第 4 锁完好),
+        「退出正式候选」由定档层执行(`t2_eligible=False`),票仍进 ③b。"""
+        check, unfit = gt._position_member_check(
+            C1, _member("600001.SH", position=ag.POSITION_UNFIT, position_reason="已在加速段"))
+        assert check.verdict == gt.VERDICT_DEGRADE and unfit is True
+        assert "已在加速段" in check.reason
 
-    def test_c1_landing_pending_stays_but_not_t1(self, isolated_env):
-        _insert_landing(isolated_env.db_path, {"600001.SH": landing_mod.LANDING_PENDING},
-                        {"600001.SH": {"dist_from_high_60d": -0.10}})
-        check, removed, t1 = gt._position_member_check(
-            C1, _ctx(isolated_env, ["600001.SH"]), "600001.SH")
-        assert check.verdict == gt.VERDICT_PASS and not removed and not t1
+    def test_missing_verdict_falls_back_to_weak_not_ok(self):
+        """🔴 LLM 没给判定 → **保守按 weak + 留痕**,⛔ 不静默当 ok
+        (「没判」与「判过、没问题」是两件事)。"""
+        check, unfit = gt._position_member_check(
+            C1, _member("600001.SH", position=None, position_reason=""))
+        assert check.verdict == gt.VERDICT_DEGRADE and not unfit
+        assert check.evidence["position_verdict"] == ag.POSITION_VERDICT_FALLBACK
+        assert check.evidence["verdict_fallback"] is True
 
-    def test_z1_landing_pending_is_removed(self, isolated_env):
-        """Z1 只认 `liftoff_confirmed`(右侧启动):落地进行中不满足该引擎阈值 → 出篮。"""
-        _insert_landing(isolated_env.db_path, {"600001.SH": landing_mod.LANDING_PENDING})
-        check, removed, _t1 = gt._position_member_check(
-            Z1, _ctx(isolated_env, ["600001.SH"]), "600001.SH")
-        assert check.verdict == gt.VERDICT_REJECT and removed
+    def test_out_of_enum_verdict_also_falls_back_to_weak(self):
+        check, _unfit = gt._position_member_check(
+            C1, _member("600001.SH", position="excellent"))
+        assert check.evidence["position_verdict"] == ag.POSITION_WEAK
+        assert check.evidence["position_verdict_raw"] == "excellent"
 
-    def test_y1_platform_too_short_removes_member(self, isolated_env):
-        _insert_landing(isolated_env.db_path, {"600001.SH": landing_mod.LIFTOFF_CONFIRMED},
-                        {"600001.SH": {"platform_days": 12, "platform_amplitude": 0.10}})
-        check, removed, _t1 = gt._position_member_check(
-            Y1, _ctx(isolated_env, ["600001.SH"]), "600001.SH")
-        assert check.verdict == gt.VERDICT_REJECT and removed
-        assert check.score == 12.0 and check.threshold == 40.0
+    def test_ok_without_any_reading_does_not_block_but_bars_t1(self):
+        """读数整份缺席 → `available=False` + 挡 T1:让模型在**零读数**下给的 ok
+        直接换来 T1,等于拿"没有依据"当依据。⛔ 但不拦(缺数 = 不知道)。"""
+        check, unfit = gt._position_member_check(
+            C1, _member("600001.SH", metrics=None))
+        assert check.verdict == gt.VERDICT_PASS and not unfit
+        assert check.available is False and check.blocks_t1 is True
+        assert "missing:position_metrics" in check.reason
 
-    def test_missing_landing_row_keeps_member_but_bars_t1(self, isolated_env):
-        _insert_landing(isolated_env.db_path, {"600009.SH": landing_mod.LIFTOFF_CONFIRMED})
-        check, removed, t1 = gt._position_member_check(
-            C1, _ctx(isolated_env, ["600001.SH", "600009.SH"]), "600001.SH")
-        assert check.verdict == gt.VERDICT_PASS and not removed and not t1
-        assert check.available is False and check.reason == "missing:landing_state"
+    def test_evidence_json_carries_both_readings_and_llm_reason(self):
+        """🔴 plan ③-C 末段的硬要求:位置关留痕**必须同时**有当次读数与 LLM 理由
+        —— 判定不再是可回放的数字而是模型输出,少一样事后就无法复核。"""
+        check, _unfit = gt._position_member_check(
+            C1, _member("600001.SH", position_reason="回撤到位后放量转强"))
+        ev = check.evidence
+        assert ev["position_reason"] == "回撤到位后放量转强"
+        assert ev["metrics"]["dist_from_high_60d"] == pytest.approx(-0.10)
+        assert set(ev["metrics"]) == set(ag.POSITION_METRIC_KEYS)
+        assert ev["metrics_available"] is True
+        assert ev["position_guidance"]              # 该引擎的定性准则也留痕
 
-    def test_none_state_keeps_member_but_bars_t1(self, isolated_env):
-        _insert_landing(isolated_env.db_path, {"600001.SH": landing_mod.NONE_STATE})
-        check, removed, t1 = gt._position_member_check(
-            C1, _ctx(isolated_env, ["600001.SH"]), "600001.SH")
-        assert check.verdict == gt.VERDICT_PASS and not removed and not t1
-        assert check.reason == "landing.none"
+    def test_engine_guidance_comes_from_the_pack_and_differs_per_engine(self):
+        c = gt._position_member_check(C1, _member("600001.SH"))[0]
+        z = gt._position_member_check(Z1, _member("600001.SH"))[0]
+        assert c.evidence["position_guidance"] != z.evidence["position_guidance"]
+        assert c.evidence["engine_code"] == "C" and z.evidence["engine_code"] == "Z"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -403,13 +413,8 @@ class TestEvidenceClassGates:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestEvaluateDay:
-    def _liftoff(self, env, *codes):
-        _insert_landing(env.db_path, {c: landing_mod.LIFTOFF_CONFIRMED for c in codes},
-                        {c: {"dist_from_high_60d": -0.10} for c in codes})
-
     def test_llm_engine_claim_is_adopted_after_mech_check(self, isolated_env):
         env = isolated_env
-        self._liftoff(env, "600001.SH")
         r = _agg([_basket("k1", [_member("600001.SH")], engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         b = out.result.baskets[0]
@@ -420,37 +425,36 @@ class TestEvaluateDay:
 
     def test_invalid_llm_engine_falls_back_mechanically_in_czy_order(self, isolated_env):
         env = isolated_env
-        self._liftoff(env, "600001.SH")
         r = _agg([_basket("k1", [_member("600001.SH")], engine=None)])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         b = out.result.baskets[0]
         assert b.engine_code == "C" and b.engine_source == "mech_fallback"
 
-    def test_member_failing_engine_mech_threshold_is_removed(self, isolated_env):
-        """§2.9-C-4 对拍闸:LLM 说 C,篮内一名成员 falling → **那一只直接出篮**,
-        篮子照留(⚠ 与 role_conflict「两说并存」刻意不同)。"""
+    def test_position_gate_never_removes_a_member(self, isolated_env):
+        """🔴 裁定 11-b 的正面判据:位置关**只降级不除名** —— 哪怕模型判 `unfit`,
+        成员照样留在篮子里(⛔ 不出篮),候选也不在关口层被 excluded;
+        「退出正式候选」发生在定档层,且票仍在 ③b 列名。"""
         env = isolated_env
-        _insert_landing(env.db_path,
-                        {"600001.SH": landing_mod.LIFTOFF_CONFIRMED,
-                         "600002.SH": landing_mod.FALLING},
-                        {"600001.SH": {"dist_from_high_60d": -0.10}})
-        r = _agg([_basket("k1", [_member("600001.SH"), _member("600002.SH")], engine="C")])
+        r = _agg([_basket("k1", [_member("600001.SH"),
+                                 _member("600002.SH", position=ag.POSITION_UNFIT)],
+                          engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         b = out.result.baskets[0]
-        assert [m.ts_code for m in b.members] == ["600001.SH"]
+        assert [m.ts_code for m in b.members] == ["600001.SH", "600002.SH"]
         s = out.summaries["k1"]
-        assert [rm.ts_code for rm in s.removed_members] == ["600002.SH"]
-        assert not s.excluded
+        assert s.removed_members == ()          # ⛔ 一个成员都没被摘掉
+        assert not s.excluded                    # ⛔ 关口层不除名
+        assert s.position_unfit is True and "600002.SH" in s.position_unfit_detail
+        assert not s.t1_eligible and not s.t2_eligible   # 退出正式候选(定档层执行)
 
-    def test_all_members_removed_exits_formal_candidacy(self, isolated_env):
+    def test_all_members_unfit_still_keeps_the_basket_at_gate_level(self, isolated_env):
         env = isolated_env
-        _insert_landing(env.db_path, {"600001.SH": landing_mod.FALLING})
-        r = _agg([_basket("k1", [_member("600001.SH")], engine="C")])
+        r = _agg([_basket("k1", [_member("600001.SH", position=ag.POSITION_UNFIT)],
+                          engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
-        assert out.result.baskets == ()
-        s = out.summaries["k1"]
-        assert s.excluded and s.exclusion_reason == gt.EXCLUDE_MEMBERS_ALL_REMOVED
-        assert s.stuck_gate == gt.GATE_POSITION and "falling" in (s.stuck_detail or "")
+        assert len(out.result.baskets) == 1      # 篮子还在(⛔ 不是 members_all_removed)
+        assert out.summaries["k1"].excluded is False
+        assert out.summaries["k1"].position_unfit is True
 
     def test_no_active_engines_means_no_candidates_today(self, isolated_env):
         """零运行引擎 = 当日不产任何候选(pack.get_active_line 既定语义);候选
@@ -466,7 +470,6 @@ class TestEvaluateDay:
         TestEvidenceClassGates 与 tier 测里锁)。"""
         env = isolated_env
         _insert_regime(env.db_path, "high_divergence", breadth_pctile=0.10)   # C1 → reject
-        self._liftoff(env, "600001.SH")
         r = _agg([_basket("k1", [_member("600001.SH")], engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         s = out.summaries["k1"]
@@ -479,7 +482,6 @@ class TestEvaluateDay:
         """证据关 degrade **只降级**:gates 层照样保留候选(除不除名归 ⑥ 按
         `tier_evidence.t2` 上限判)。"""
         env = isolated_env
-        self._liftoff(env, "600001.SH")
         r = _agg([_basket("k1", [_member("600001.SH")], evidence=_EV3[:1], engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         s = out.summaries["k1"]
@@ -487,7 +489,7 @@ class TestEvaluateDay:
         assert s.evidence_degrades == 1 and gt.GATE_EVIDENCE in s.degraded_gates
         assert len(out.result.baskets) == 1
 
-    def test_t1_eligibility_needs_all_available_and_liftoff_and_regime(self, isolated_env):
+    def test_t1_eligibility_needs_all_available_and_position_ok_and_regime(self, isolated_env):
         env = isolated_env
         insert_trade_cal(env, [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3),
                                date(2024, 4, 4), D0])
@@ -496,7 +498,6 @@ class TestEvaluateDay:
                                date(2024, 4, 4), D0],
                               {"半导体": 1}, {"半导体": True})
         _insert_regime(env.db_path, "trend_continuation")
-        self._liftoff(env, "600001.SH")
         r = _agg([_basket("k1", [_member("600001.SH", industry="半导体", rs_rank=1)],
                           engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
@@ -520,8 +521,6 @@ class TestEvaluateDay:
 class TestGateEvaluationsTable:
     def test_rows_written_with_member_level_ts_code_semantics(self, isolated_env):
         env = isolated_env
-        _insert_landing(env.db_path, {"600001.SH": landing_mod.LIFTOFF_CONFIRMED},
-                        {"600001.SH": {"dist_from_high_60d": -0.10}})
         r = _agg([_basket("k1", [_member("600001.SH", rs_rank=1)], engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         n = gt.save_gate_evaluations(out, db_path=env.db_path)
@@ -568,15 +567,19 @@ class TestGateEvaluationsTable:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestHighScoreCannotBeatTheGates:
-    def test_high_mech_score_with_falling_landing_enters_no_tier(self, isolated_env):
-        """机械分拉满(板块第 1 + 龙头头名 + 零红牌)但位置关 `falling` → 成员出篮、
-        候选退出正式候选,**不进任何档**;③b 说得出名/分/关/原因码(没消失)。"""
+    def test_high_mech_score_with_sector_gate_rejected_enters_no_tier(self, isolated_env):
+        """机械分不低(龙头头名 + 零红牌 + 板块有强度数据)但**板块关名次超限** →
+        机械关硬否决,候选退出正式候选,**不进任何档**;③b 说得出名/分/关/原因码
+        (没消失)。
+
+        ⚠ **裁定 #11 后位置关不再是这条测试的抓手**(它已是只降级的证据关)——
+        plan ③-D 测试清单原文点名改用市场关或板块关构造,照办。"""
         env = isolated_env
         days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
         insert_trade_cal(env, days)
-        _insert_strength_days(env.db_path, days, {"半导体": 1}, {"半导体": True})
+        # 行业强度名次 30 > C1 的 industry_rank_max=10 → 板块关 reject(硬否决)
+        _insert_strength_days(env.db_path, days, {"半导体": 30}, {"半导体": True})
         _insert_regime(env.db_path, "trend_continuation")
-        _insert_landing(env.db_path, {"600001.SH": landing_mod.FALLING})
         r = _agg([_basket("k-hot", [_member("600001.SH", industry="半导体", rs_rank=1)],
                           engine="C", name="高分候选")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
@@ -585,9 +588,25 @@ class TestHighScoreCannotBeatTheGates:
         assert res.decisions == ()                       # 不进任何档
         hit = res.dropped[0]
         assert hit.basket_key == "k-hot" and hit.name == "高分候选"
-        assert hit.reason == gt.EXCLUDE_MEMBERS_ALL_REMOVED
-        assert hit.gate == gt.GATE_POSITION and "falling" in (hit.gate_detail or "")
-        assert hit.mech_score is not None and hit.mech_score >= 0.6   # 分数真的高,仍然出局
+        assert hit.reason == gt.EXCLUDE_MECH_GATE_REJECTED
+        assert hit.gate == gt.GATE_SECTOR and "industry_rank" in (hit.gate_detail or "")
+        assert hit.mech_score is not None and hit.mech_score >= 0.4   # 分数不低,仍然出局
+
+    def test_market_gate_rejection_is_also_a_hard_veto_regardless_of_score(self, isolated_env):
+        """第二个抓手(市场关):C1 在高位分歧下广度分位不够 → 硬否决。"""
+        env = isolated_env
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength_days(env.db_path, days, {"半导体": 1}, {"半导体": True})
+        _insert_regime(env.db_path, "high_divergence", breadth_pctile=0.10)
+        r = _agg([_basket("k-hot", [_member("600001.SH", industry="半导体", rs_rank=1)],
+                          engine="C", name="高分候选")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        res = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
+                                pack=_pack("K7-pack.json"), gates_outcome=out)
+        assert res.decisions == ()
+        assert res.dropped[0].reason == gt.EXCLUDE_MECH_GATE_REJECTED
+        assert res.dropped[0].gate == gt.GATE_MARKET
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -597,10 +616,12 @@ class TestHighScoreCannotBeatTheGates:
 _GATES_PATH = Path(__file__).resolve().parent.parent / "neckline" / "selection" / "gates.py"
 
 
-def test_gates_never_imports_score_display_sentinel_or_tier():
+def test_gates_never_imports_score_display_sentinel_tier_or_landing():
     """V2.1-④ 方向性规则(gates 零 import `report.score_display`)+ 第〇原则
     (零 import `sentinel`)+ 防循环(零 import `selection.tier`,方向单一:
-    tier → gates)。"""
+    tier → gates)+ 🆕 裁定 #11(零 import `scan.landing*`:位置关的读数由 ⑤ 随成员
+    带进来 —— gates 另读一遍会存下「事后那一份」,与模型当时看到的可能不是同一份,
+    留痕就白留了)。"""
     import ast
 
     tree = ast.parse(_GATES_PATH.read_text(encoding="utf-8"))
@@ -610,17 +631,133 @@ def test_gates_never_imports_score_display_sentinel_or_tier():
             mods += [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom) and node.module:
             mods.append(node.module)
-    banned = ("neckline.report.score_display", "neckline.sentinel", "neckline.selection.tier")
+    banned = ("neckline.report.score_display", "neckline.sentinel",
+              "neckline.selection.tier", "neckline.scan.landing",
+              "neckline.scan.landing_store")
     for m in mods:
         assert not any(m == b or m.startswith(b + ".") for b in banned), m
 
 
-def test_gate_bisection_matches_ruling_six():
-    """③-A 裁定 #6 的机器判据:机械关 = {市场, 板块, 位置},证据关 = {驱动, 核心,
-    证据},二分互斥且覆盖六关。⛔ 不重开。"""
-    assert gt.MECH_GATES == {gt.GATE_MARKET, gt.GATE_SECTOR, gt.GATE_POSITION}
-    assert gt.EVIDENCE_GATES == {gt.GATE_DRIVER, gt.GATE_CORE, gt.GATE_EVIDENCE}
+def test_gate_bisection_matches_rulings_six_and_eleven():
+    """③-A 裁定 #6 的机器判据,**按裁定 #11 改判**:机械关 = {市场, 板块},
+    证据关 = {驱动, 核心, **位置**, 证据};二分互斥且覆盖六关。
+
+    🔴 位置关移入证据关后,**能硬否决的只剩两道读客观预计算量的关** —— 第〇原则
+    第 4 锁「LLM 不做闸门」因此不但没被突破、反而更严。⛔ 不得改回。"""
+    assert gt.MECH_GATES == {gt.GATE_MARKET, gt.GATE_SECTOR}
+    assert gt.EVIDENCE_GATES == {gt.GATE_DRIVER, gt.GATE_CORE,
+                                 gt.GATE_POSITION, gt.GATE_EVIDENCE}
+    assert gt.GATE_POSITION not in gt.MECH_GATES          # ⛔ 反向:不得改回机械关
     assert gt.MECH_GATES | gt.EVIDENCE_GATES == set(gt.GATE_ORDER)
     assert not (gt.MECH_GATES & gt.EVIDENCE_GATES)
     assert all(gt.GATE_KIND_OF[g] == gt.GATE_KIND_MECH for g in gt.MECH_GATES)
     assert all(gt.GATE_KIND_OF[g] == gt.GATE_KIND_LLM for g in gt.EVIDENCE_GATES)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑩ 🆕 裁定 #11 的机器判据(正反双向)
+# ══════════════════════════════════════════════════════════════════════════
+
+_AGG_PATH = Path(__file__).resolve().parent.parent / "neckline" / "selection" / "aggregate.py"
+
+
+class TestRulingElevenMachineCriteria:
+    def test_unfit_candidate_must_not_disappear_from_section_3b(self, isolated_env):
+        """🔴 **本裁定最该有的一条**:位置关判 `unfit` 的票 **⛔ 不得从 ③b 消失**
+        —— 只降级不除名(§2.9-C-2「退出正式候选 ≠ 从报告里消失」)。"""
+        env = isolated_env
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength_days(env.db_path, days, {"半导体": 1}, {"半导体": True})
+        _insert_regime(env.db_path, "trend_continuation")
+        r = _agg([_basket("k-unfit",
+                          [_member("600001.SH", industry="半导体", rs_rank=1,
+                                   position=ag.POSITION_UNFIT,
+                                   position_reason="已经拉开的加速段,不是落地起跳")],
+                          engine="C", name="位置不合适篮")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        res = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
+                                pack=_pack("K7-pack.json"), gates_outcome=out)
+        assert res.decisions == ()                        # 退出正式候选
+        assert len(res.dropped) == 1
+        hit = res.dropped[0]
+        assert hit.basket_key == "k-unfit" and hit.name == "位置不合适篮"   # ⛔ 没消失
+        assert hit.reason == ti.DROP_POSITION_UNFIT       # 与"证据关降级超上限"分开
+        assert hit.gate == gt.GATE_POSITION
+        assert "600001.SH" in (hit.gate_detail or "")
+        assert "加速段" in (hit.gate_detail or "")          # 模型那句理由也在 ③b 上
+
+    def test_weak_only_demotes_one_notch_and_stays_a_candidate(self, isolated_env):
+        """`weak` = 降一档:T1 拿不到、T2 还在(⛔ 不是出局)。"""
+        env = isolated_env
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength_days(env.db_path, days, {"半导体": 1}, {"半导体": True})
+        _insert_regime(env.db_path, "trend_continuation")
+        r = _agg([_basket("k-weak",
+                          [_member("600001.SH", industry="半导体", rs_rank=1,
+                                   position=ag.POSITION_WEAK)], engine="C")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        s = out.summaries["k-weak"]
+        assert not s.t1_eligible and s.t2_eligible
+        assert gt.GATE_POSITION in s.degraded_gates and s.evidence_degrades == 1
+
+    def test_position_row_is_llm_kind_and_stores_readings_plus_reason(self, isolated_env):
+        """plan ③ 验收原文:位置关行 `gate_kind='llm'` 且 `evidence_json` **同时**
+        存下当次读数与 LLM 理由。"""
+        env = isolated_env
+        r = _agg([_basket("k1", [_member("600001.SH", rs_rank=1,
+                                         position_reason="回撤到位后放量转强")], engine="C")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        gt.save_gate_evaluations(out, db_path=env.db_path)
+        rows = gt.load_gate_evaluations(D0, db_path=env.db_path, candidate_key="k1")
+        pos = [r0 for r0 in rows if r0["gate"] == gt.GATE_POSITION]
+        assert len(pos) == 1
+        row = pos[0]
+        assert row["gate_kind"] == gt.GATE_KIND_LLM
+        assert row["ts_code"] == "600001.SH"
+        assert row["verdict"] in (gt.VERDICT_PASS, gt.VERDICT_DEGRADE)   # ⛔ 永不 reject
+        ev = row["evidence"]
+        assert ev["position_reason"] == "回撤到位后放量转强"              # LLM 理由
+        assert set(ev["metrics"]) == set(ag.POSITION_METRIC_KEYS)         # 当次读数
+        assert ev["metrics"]["platform_days"] == 12
+
+    def test_evidence_gates_never_produce_a_reject_verdict(self, isolated_env):
+        """③-A 反向守门:四道证据关(含位置关)在**任何**输入下都不会产 reject。"""
+        env = isolated_env
+        r = _agg([_basket("k1", [_member("600001.SH", position=ag.POSITION_UNFIT),
+                                 _member("600002.SH", position=None)],
+                          evidence=(), evidence_status=ag.EVIDENCE_SEARCH_UNAVAILABLE,
+                          answers=False, engine="C")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        for c in out.summaries["k1"].checks:
+            if c.gate in gt.EVIDENCE_GATES:
+                assert c.verdict != gt.VERDICT_REJECT, (c.gate, c.reason)
+
+    def test_llm_call_count_stays_two_in_the_aggregate_layer(self):
+        """🔴 成本铁律(附「成本与超时算术」第 1 条):位置判定**搭 `basket_reason`
+        那一次**,⛔ 不新增任何 LLM 调用 —— ⑤ 里 `provider.chat(...)` 的调用点
+        恒为 **2 个**(检索段 1 + 推理段 1)。AST 数,⛔ 不数字符串。"""
+        import ast
+
+        tree = ast.parse(_AGG_PATH.read_text(encoding="utf-8"))
+        calls = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "chat"
+            and isinstance(n.func.value, ast.Name) and n.func.value.id == "provider"
+        ]
+        assert len(calls) == 2, [n.lineno for n in calls]
+        # gates.py 本身零 LLM 调用(判定复用 ⑤ 的输出)
+        gtree = ast.parse(_GATES_PATH.read_text(encoding="utf-8"))
+        assert not [n for n in ast.walk(gtree)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "chat"]
+
+    def test_metric_key_contract_is_shared_with_the_scan_side(self):
+        """键名契约两处对拍(防漂,同 `regime` 阈值键的既有体例):⑤ 读侧的
+        `POSITION_METRIC_KEYS` 必须与写侧 `scan/landing.py::METRIC_KEYS` 逐个相等。"""
+        from neckline.scan import landing as landing_mod
+
+        assert tuple(ag.POSITION_METRIC_KEYS) == tuple(landing_mod.METRIC_KEYS)
+        assert len(set(ag.POSITION_METRIC_KEYS)) == 14

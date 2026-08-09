@@ -8,13 +8,18 @@
 **V2.2-③-D 门槛制(K8 §八,🔴 换心脏;冷启动先读这一节)**
 
 - **定档的闸自此是六道关口**(`selection/gates.py`,唯一实现),不再是机械分:
-    · **T1** = 六关全过 且 全员 `landing_state=liftoff_confirmed` 且 `market_regime`
-      可得 且 **次日交易预案四件套齐**(四件套在 ⑦ 卡生成后由
+    · **T1** = **机械关 ①③ pass + 证据关 ②④⑤⑥ 全 pass(含位置关 `position_verdict=ok`)**
+      且 `market_regime` 可得 且 **次日交易预案四件套齐**(四件套在 ⑦ 卡生成后由
       `enforce_plan_completeness()` 补验 —— 缺任一 → 降 T2,⛔ 不是拦截);上限 ≤2,允许为空。
-    · **T2** = 机械关全过、证据关至多 `tier_evidence.t2.max_evidence_degrades`(引擎包)
-      处 degrade;上限 ≤5。
+    · **T2** = 机械关全过、证据关(**含位置关**)至多
+      `tier_evidence.t2.max_evidence_degrades`(引擎包)处 degrade;上限 ≤5。
     · 达不到 T2 → **退出正式候选**,进 `TierResult.dropped` → 报告 ③b
       (名 / 分 / 卡在哪一关、差多少 / 原因码;**票永远不会从报告里消失**,§2.9-C-2)。
+  🔴 **2026-08-09 用户裁定 #11**:位置关由机械关改判为**证据关**(判定交 LLM、只降级
+  不除名),**T1 不再要求任何机械态枚举** —— 原文那套「T1 要 `liftoff_confirmed`」
+  整体作废,⛔ 别照原文改回:那正是把 T1 掐成近乎不可达的那一条(实测全市场当日
+  `liftoff_confirmed` 仅 1~2 / 5526、14 个 D0 回放零 T1)。位置 `unfit` → 出局码
+  `DROP_POSITION_UNFIT`(与 `DROP_EVIDENCE_DEGRADED_OUT` **不合并**)。
 - **机械分五维 / `_TIER_SCORE_INPUTS` 白名单锁 / `tier_history.mech_breakdown` /
   V2.1-④ 百分制打分卡 —— 全部原样保留,⛔ 一个都不许删**(plan ③-D 原文):它们
   **不再是定档的闸**,降级为「档内排序 + 展示标度」。删了会连带作废百分制卡与
@@ -259,6 +264,11 @@ DROP_CAPACITY_OVERFLOW = "capacity_overflow"       # 关口过了、位置满 �
 DROP_BELOW_QUALITY_LINE = "below_quality_line"     # 〔历史〕连 tier2_min 都没过
 # V2.2-③-D:证据关降级到出局(③-A:T1→T2→退出正式候选;仍在 ③b 列名)。
 DROP_EVIDENCE_DEGRADED_OUT = "evidence_degraded_out"
+# 🔴 V2.2-③-C(裁定 #11):位置关(**证据关**)被 LLM 判 `unfit` → 退出正式候选。
+# ⚠ 与 `DROP_EVIDENCE_DEGRADED_OUT` **刻意分开**:一个是「证据没撑住逻辑」、一个是
+# 「位置不对」,指向完全不同的复盘结论(④ 周度按关口归因要分得开)。
+# ⛔ 这**不是硬否决**:票没从报告里消失,③b 逐条写明是哪只成员、模型的理由是什么。
+DROP_POSITION_UNFIT = "position_unfit"
 # gates 侧的四个除名码(硬否决 / 引擎归属失败)直接沿用 `gates.EXCLUDE_*` 字面,
 # `DroppedBasket.reason` 与 ③b/⑨ 消费同一套码,⛔ 不在这里再抄一份字符串。
 # ⚠ 各码指向**不同的市场/系统结论**,⛔ 不许合并成一个"未入选"(⑥-b-C 纪律扩容)。
@@ -961,7 +971,14 @@ def _gate_breakdown(summary: Any) -> Dict[str, Any]:
         "evidence_degrades": summary.evidence_degrades,
         "degraded_gates": list(summary.degraded_gates),
         "blocks_t1": summary.blocks_t1,
-        "all_members_liftoff": summary.all_members_liftoff,
+        # 🔴 裁定 #11:位置关的判定是**模型输出**而不是可回放的数字 —— 快照里逐票
+        # 记下它给的三值,归因链才接得上(全量读数与理由在 `gate_evaluations`)。
+        "position_unfit": bool(getattr(summary, "position_unfit", False)),
+        "position_verdicts": {
+            c.ts_code: (c.evidence or {}).get("position_verdict")
+            for c in summary.checks
+            if c.gate == gates_mod.GATE_POSITION and c.ts_code
+        },
         "removed_members": [
             {"ts_code": r.ts_code, "gate": r.gate, "reason": r.reason}
             for r in summary.removed_members
@@ -1108,6 +1125,17 @@ def score_and_tier(
             ))
             continue
         if not s.t2_eligible:
+            # 🔴 裁定 #11:位置关 `unfit` 与「证据关降级超上限」是两种不同的出局,
+            # ⛔ 不合并(④ 周度按关口归因要分得开)。位置关优先报 —— 它是**这一只
+            # 具体成员**的位置判定,比"降级处数超了"这句更说得清卡在哪。
+            if getattr(s, "position_unfit", False):
+                dropped.append(DroppedBasket(
+                    basket_key=key, reason=DROP_POSITION_UNFIT,
+                    mech_score=score_by_key[key], name=b.name,
+                    gate=gates_mod.GATE_POSITION,
+                    gate_detail=(s.position_unfit_detail or "位置关判定 unfit"),
+                ))
+                continue
             detail = ";".join(
                 c.reason for c in s.checks if c.verdict == gates_mod.VERDICT_DEGRADE
             )
@@ -1359,6 +1387,7 @@ __all__ = [
     "DROP_CAPACITY_OVERFLOW",
     "DROP_BELOW_QUALITY_LINE",
     "DROP_EVIDENCE_DEGRADED_OUT",
+    "DROP_POSITION_UNFIT",
     "T1_DEMOTED_PLAN_INCOMPLETE",
     "FLAG_SECTOR_MISSING",
     "FLAG_STAGE_MISSING",

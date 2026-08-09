@@ -1,11 +1,25 @@
-"""落地起跳位置关:全市场逐票四态判定唯一实现(plan §五 V2.2-③-C,K8 §二)。
+"""落地起跳位置关:全市场逐票**原始读数**唯一实现(plan §五 V2.2-③-C,K8 §二,
+🔴 2026-08-09 用户裁定 #11 整节重写)。
 
-每个交易日盘后对**当日有 `daily` 行的每只票**判定
-**下落 / 落地待确认 / 支撑确认起跳 / 高位加速** 四态之一(判据缺数落 `none`),
-落 `landing_state_daily`(EOD 预计算落表、在线只读,P0-23;§七 P4-50 登记的本项目
-第二条「全市场逐票 × 多年回看」批算路径)。本模块只做「算」:纯判定
-`decide_landing()` + 全市场批量特征装配 `compute_landing_states()`;落表/读表在
-`landing_store.py`。**本模块零写库**(全部 SQL 只读)。
+**用户裁定 #11 原话**:「推翻,不要搞这个机械层了。我们现在在研究这个机械,研究的
+要死。其实对于 LLM 来说,它能够完全决定的。所以说这个地方的判定直接给到大模型。」
+
+裁定后本模块的职责收窄为**只算事实、不下结论**:每个交易日盘后对**当日有 `daily`
+行的每只票**算出 K8 §二 五句定性话各自对应的原始读数(比值/收益率/布尔事实),
+落 `landing_metrics_daily`(EOD 预计算落表、在线只读,P0-23;§七 P4-50 登记的
+本项目第二条「全市场逐票 × 多年回看」批算路径)。**判定交给 LLM**:六关⑤位置关
+(`neckline/selection/gates.py`)拿 K8 §二 原文 + 引擎定性准则 `gates.position.guidance`
++ 本模块的读数,产出 `position_verdict ∈ {ok, weak, unfit}`(复用 `basket_reason`
+那一次调用,⛔ 不新增 LLM 调用)。本模块只做「算」:纯特征装配
+`compute_landing_metrics()`;落表/读表在 `landing_store.py`。**本模块零写库**
+(全部 SQL 只读)。
+
+🔴 **本次改动删掉了什么(如实登记,防后人以为是遗漏而"补回去")**:四态判定
+`decide_landing()`、四态枚举字面量(下落/落地待确认/支撑确认起跳/高位加速)、
+十二个判定阈值、阈值解析函数、对骨架包 `config.landing` 段的一切依赖 ——
+**整段删除,不是重构**。机械层现在不做任何「≥ X 即通过」「属于第几态」的判断
+(裁定 #11-c 原话「保留读数、删阈值与四态」)。骨架包 `packs/K8-skeleton.json`
+自本次起也不再携带 `config.landing` 段。
 
 🔴 **雷区对照(plan §五 ③-C 原文一字不省;防后人当新发现,也防后人当禁令删掉;
 只作"知情登记"、不作"否决依据"——§七 P3-49 用户裁定 #10)**:
@@ -14,42 +28,42 @@
 - 判据 1 单独用的形状 = **K3 系统化超跌反弹四臂全灭**。
 - 判据 5 的排除项 = **K2「追强势」全否决 + K7-C1 诱多做局**的正面兑现(这一半是**站在案底同侧**的)。
 - **本关因此只产注意力分层,⛔ 不得被读成买入期望背书**(§3.8-(b) 一字不变)。它的真伪由 K8 自己的选股时钟在**前向样本**上回答(K8 §十七),**不由本版声称**。义务已挂 §七 **P3-49**。
+- 🆕 **判定交给 LLM 之后,P3-49 的证伪义务不减反增**:现在连"当时按什么标准判的"都不再是一组可回放的数字,而是一段模型输出 —— 故 `gate_evaluations.evidence_json`(写在 `gates.py`)**必须同时存下当次读数与 LLM 理由**,否则事后无法复核它到底在拿什么下判断。
 
-**五项判据(唯一定义 = `decide_landing()`;阈值住骨架包 `config.landing`,全部
-`engineering_v1`,plan §五 ③-C 表逐条)**:
+**十四个原始读数(`metrics_json` 键名,唯一定义 = `compute_landing_metrics()`;
+两个 agent 共用同一份契约,⛔ 不许改名、不许增减,详见 `METRIC_KEYS`)**:
 
-    1 下跌或调整已经结束   近 N_LOW=5 日最低价 > 前 N_BACK=20 日区间最低价 ×(1+LOW_TOL=0.01)
-                          且 当日未创 20 日新低
-    2 关键位置形成有效支撑 close ≥ max(MA20, 平台下沿) × (1 − SUP_TOL=0.01);
-                          平台下沿 = 近 PLATFORM_WIN=20 日收盘的 20% 分位
-    3 抛压明显衰减        近 5 日下跌日均成交额 ÷ 近 20 日均成交额 ≤ SELL_DECAY=0.90,
-                          且 近 5 日最大单日跌幅 ≥ −PANIC_DROP=−0.05
-    4 价格开始向上转强    close > MA5 且 close > 昨收 且 RS5 > 0(相对所属行业中位 5 日超额)
-    5 当前仍处于启动早期   dist_from_high_60d ≤ −HIGH_GAP=−0.03 且 近 LIFT_WIN=3 日累计涨幅
-                          ≤ LIFT_MAX=0.12 且 当日非涨停 且 未创 60 日新高
+    K8 那句话                键(全部无阈值、无及格线,纯事实)
+    ────────────────────────────────────────────────────────────────────
+    下跌或调整已经结束        low5_over_low20_ratio  近5日最低 ÷ 前20日区间最低
+                             is_new_low_20d         bool,当日是否创 20 日新低
+    关键位置形成有效支撑      close_over_ma20_dev            close/MA20 − 1
+                             close_over_platform_floor_dev  close÷近20日收盘20%分位 − 1
+    抛压明显衰减              down_day_amount_ratio_5v20  近5日下跌日均额÷近20日均额
+                             max_daily_drop_5d           近5日最大单日跌幅
+    价格开始向上转强          close_over_ma5_dev      close/MA5 − 1
+                             pct_chg                 当日涨跌幅(close/昨收 − 1)
+                             rs5                     相对所属行业中位 5 日超额
+    仍处于启动早期            dist_from_high_60d      close/60日高点(含当日) − 1
+                             cum_return_3d           近 3 日累计涨幅(日收益率之和)
+                             is_limit_up             bool
+                             is_new_high_60d         bool
+                             platform_days           近 N 日振幅 ≤ X 的连续天数
 
-**四态映射(K8 §二 原文逐条;互斥、优先级从上往下,`state` 恒非 NULL——照
-`scan/stage.py::decide_stage` / `scan/regime.py::decide_regime` 既有体例)**:
+- 🔴 **机械层的唯一职责 = 把数算对、把缺的说清楚。⛔ 任何形如「≥ X 即通过」「属于
+  第几态」的东西一律不许出现在本模块里**——那正是裁定 #11 推翻的东西。上表里
+  仅有的三个布尔字段(`is_new_low_20d`/`is_limit_up`/`is_new_high_60d`)与
+  `platform_days` 是**契约点名的事实型读数本身**(不是派生的通过/不通过判断),
+  ⛔ 不属于本条禁令覆盖范围。
+- **缺数照旧不猜**:某项算不出 → 记入 `metrics_missing`(`{读数键: 原因码}`,
+  原因码见 `REASON_*` 常量),**⛔ 不填 0、不填默认值**(喂给 LLM 的必须是「这项
+  没取到」而不是一个假数)。
 
-    falling            判据 1 不成立                → 排除(「下落阶段:排除」)
-    landing_pending    1+2 成立,4 不成立            → T2 候选(「落地待确认」)
-    liftoff_confirmed  1+2+3+4+5 全成立             → T1 候选(「支撑确认并开始起跳」)
-    high_extended      1+2+3+4 成立但 5 不成立       → 低优先级:可进 T2 尾部,⛔ 不进 T1
-    none               判据缺数(state_reason 逐条)  → 不拦,但 ⛔ 不给 T1
-
-**映射补全两处(plan 四态表是偏函数,两个组合原文没写;本实现按「最不激进」补全,
-登记于此,⛔ 不是静默选边,单测真值表锁死)**:
-  - **判据 1 成立、判据 2 不成立** → `falling`:未获支撑 = 未落地,「下跌已结束」这个
-    结论在无支撑时不可靠,归排除桶(注意力分层里最保守的一档)。
-  - **判据 1+2+4 成立、判据 3 不成立** → `landing_pending`:已落地、价格转强但抛压
-    未衰减 = 起跳**未确认**,按「落地待确认」处理(映射表对 landing_pending 本就
-    不问判据 3,此处只是把「4 成立但 3 不成立」也归回待确认,不发明第五态)。
-
-**缺数不猜(§3.8)**:任何一项判据的输入为 `None` = 该项 na;级联判定只要求**走到
-那一步所必需**的判据可判(如判据 1 已 fail,后四项缺数不影响 `falling`),必需项
-na → `none` + `state_reason` 逐条说明。判据 3 的特例:近 5 日**无下跌日**(
-`down_days_5d=0`)→ 抛压衰减子门按成立读(没有抛压可言),⛔ 与「数据缺失算不出」
-(na)分开——两者在原因码里分别是 `no_down_days:ok` 与 `na`。
+**`platform_days` 的两个定义参数(`PLATFORM_AMP_WIN` / `PLATFORM_AMP_MAX`)**:
+这是**算这个量的定义参数,不是判据阈值**(振幅窗口 + 振幅上限,用来数「连续多少
+天振幅足够收敛」这件事本身——就像「MA20」需要"20"这个数字才能定义,但"20"不是
+一条判据)。⛔ 别把它们塞回骨架包:`packs/K8-skeleton.json` 自裁定 #11 起已删掉
+整个 `config.landing` 段,本模块也不再对任何包做 import。
 
 **口径细则(登记在案,⛔ 别当 bug 修)**:
   - **价格窗口一律前复权**(公式唯一源 `data/adjust.qfq_expr`,基准因子取该票
@@ -61,28 +75,43 @@ na → `none` + `state_reason` 逐条说明。判据 3 的特例:近 5 日**无�
   - **收益率用原始 `close/pre_close − 1`**(`report/industry_strength.py` 既有论证:
     同行两列同标量缩放,比值精确抵消)。
   - **窗口 = 该票自己的交易行窗口**(停牌缺行不特殊处理,「近 5 日」= 该票最近
-    5 个成交日;长停牌复牌初期各窗口跨停牌期,判出保守方向)。唯一例外是 **RS5**:
-    行业中位 5 日和锚在**市场交易日**上(`industry_strength_daily` 逐日行),故该票
-    必须在同一段 5 个市场交易日上连续有行,否则 RS5 = na(两个不同步的窗口相减
-    没有意义)。
-  - **阈值比较一律带 `_EPS=1e-9` 容差**(`sentinel/holding.py` 体例,恰好等于阈值
-    按满足读——regime.py 同款登记取舍)。
+    5 个成交日;长停牌复牌初期各窗口跨停牌期,读数据实反映这一情况)。唯一例外
+    是 **RS5**:行业中位 5 日锚在**市场交易日**上(`industry_strength_daily` 逐日
+    行),故该票必须在同一段 5 个市场交易日上连续有行,否则 `rs5` 缺失
+    (`window_misaligned`,两个不同步的窗口相减没有意义)。
+  - **定义性比较一律带 `_EPS=1e-9` 容差**(`sentinel/holding.py` 体例,恰好持平
+    按满足读):`is_new_low_20d`/`is_new_high_60d` 的严格不等号、`platform_days`
+    的振幅上限判断均属此类——⚠ 这些是**布尔事实/量的定义**本身的一部分,不是
+    「通过/不通过」的判据(见上方"唯一职责"条)。
   - **`platform_days`(近 N 日振幅 ≤ X 的连续天数)算在 `metrics_json` 里,⛔ 不另起
     一张表**(plan §五 ③-F 原文)。振幅 = 滚动 `PLATFORM_AMP_WIN` 日
     (max_high − min_low) / min_low;连续天数在 `PLATFORM_DAYS_CAP` 处右截尾
-    (饱和值仍满足 Y1 首版 `platform_days ≥ 40` 的判读,docstring 登记)。
+    (饱和值仍满足 Y1 首版「platform_days ≥ 40」的判读,docstring 登记)。
   - 行业归属用 `stock_basic.industry` 当前快照(`industry_strength` 同款既有取舍)。
+  - **`is_limit_up` 的「缺」只有一种,不是两种**(2026-08-09 用真实生产数据回放
+    时发现并订正,登记于此防回归):`limit_derived` 是**稀疏表**
+    (`data/limit_derived.py` 模块头「仅落涨停/跌停/炸板命中行」,源码
+    `hit = df.filter(is_limit_up | is_limit_down | is_zaban)` 逐字为证)——某票
+    某日不在表里是「三者皆不成立」的**确定事实**(`is_limit_up=False`),⛔ 不是
+    「不知道」;真正的「不知道」只有分区**文件本身不存在**这一种
+    (`limit_data_unavailable`)。真实数据实测:全市场 5526 票里单日仅 ~80 只
+    在稀疏表中有行,若把「查无此行」当缺数,会把 5400+ 票的确定事实(它就是没
+    涨停)错报成"没取到"。
 
-**性能纪律(P0-23 / P4-50 正面靶心)**:取数一律走 `scan_table_range`(内部
-`_scan_table(years=…)` 年分区裁剪,P1-26 既有修法,⛔ 不全 glob);回看窗口 =
-`_lookback_bars()` 个**交易日**(由阈值推出,默认 145);增量日更只算当日一行
-×全市场,batch 回填由 `landing_store.refresh_landing_states` 分块复用同一实现。
-⚠ 本地实测数字不是生产结论(CLAUDE.md 铁律)——上生产前必须按 §七 P4-50
-`systemd-run --scope` 隔离实测计时 + 量峰值。
+**性能纪律(P0-23 / P4-50 正面靶心)**:取数一律走 `_scan_table(years=…)`(年分区
+裁剪,P1-26 既有修法,⛔ 不全 glob);回看窗口 = `_lookback_bars()` 个**交易日**
+(全部由固定窗口常量推出,145);增量日更只算当日一行 × 全市场,batch 回填由
+`landing_store.refresh_landing_metrics` 分块复用同一实现。底层特征管线(join/
+rolling/collect 结构)与裁定 #11 之前**逐字未变**——本次改动只动了"算出读数之后
+怎么处理"这一步(不再喂进 `decide_landing()`,直接整理成 `metrics`/`metrics_missing`
+两个 dict),内存/耗时量级不预期变化。⚠ 本地实测数字不是生产结论(CLAUDE.md 铁律)
+——上生产前必须按 §七 P4-50 `systemd-run --unit=… --property=User=neckline` 隔离
+实测计时 + 量峰值(⛔ nk 上不用 root `systemd-run --scope`)。
 
 **反向守门(plan §五 ③ 测试与守门原文)**:本模块零 import `neckline.sentinel.*`
 与 `neckline.report.score_display`(位置态 ⛔ 不接任何持仓动作、不进任何推送、
-不碰展示标度;守门单测扫源码锁死)。
+不碰展示标度;守门单测扫源码锁死)。本模块也零 import `neckline.selection.pack`
+(裁定 #11 后没有阈值要从包里读,已不存在需要读包的理由)。
 """
 
 from __future__ import annotations
@@ -98,79 +127,75 @@ from neckline.data.adjust import qfq_expr
 # `_scan_table(years=…)` 年分区裁剪是 plan §五 ③-C 性能条款点名的取数路径(P1-26);
 # 直接用惰性入口而不是 `scan_table_range`,是为了整条特征管线**惰性到底、单次
 # collect 只物化判定日的行**——列投影/日期过滤全部下推。全市场单日 refresh 本地
-# 实测(2026-07-24,5526 票 × 145 交易日回看):eager 版 ~716MB 峰值 / 1.2s →
-# 惰性版 ~644MB@默认线程、~490MB@POLARS_MAX_THREADS=2 / 0.4s(峰值随 polars 线程
-# 数走;`industry_strength._load_ret1d_panel` 的投影下推同款姿势,推到整条管线)。
-# ⚠ 本地数不是生产结论:上生产前按 §七 P4-50 在生产机 systemd-run --scope 隔离实测。
-from neckline.data.market_data import _scan_table, _years_in_range
+# 实测(2026-07-24,5526 票 × 145 交易日回看,裁定 #11 之前的同一条管线):eager
+# 版 ~716MB 峰值 / 1.2s → 惰性版 ~644MB@默认线程、~490MB@POLARS_MAX_THREADS=2 /
+# 0.4s(峰值随 polars 线程数走;`industry_strength._load_ret1d_panel` 的投影下推
+# 同款姿势,推到整条管线)。裁定 #11 只删了"算完之后下判断"那一步,管线结构不变,
+# 数量级预期不变——⚠ 本地数不是生产结论:上生产前按 §七 P4-50 在生产机隔离实测。
+from neckline.data.market_data import _scan_table, _years_in_range, day_file_path
 from neckline.db import connection, init_schema
 from neckline.report import industry_strength_store as strength_store
-# ⚠ 对 selection.pack 只许 import 读入口(regime.py 同款权限锁姿势)。
-from neckline.selection.pack import Pack, get_active_skeleton
-# 复用 regime.py 的「engine_default」哨兵串(同一条纪律的同一个字面,不抄第二份)
-# 与 `_ret_5d_sum`(「5 日中位收益和必须凑满窗口」的唯一实现,同包私有复用,登记)。
-from neckline.scan.regime import SKELETON_VERSION_FALLBACK, _ret_5d_sum
+# 复用 regime.py 的 `_ret_5d_sum`(「5 日中位收益和必须凑满窗口」的唯一实现,同包
+# 私有复用,登记于此;裁定 #11 后不再需要 regime.py 的 `SKELETON_VERSION_FALLBACK`
+# ——本表没有 skeleton_version 列,机械层零阈值 = 零口径指纹可言)。
+from neckline.scan.regime import _ret_5d_sum
 
 logger = logging.getLogger(__name__)
 
-TABLE = "landing_state_daily"
+TABLE = "landing_metrics_daily"
 
-# —— 四态 + 缺数英文码(唯一源;库列值与展示映射同源,照 `stage.py` STAGE_LABELS
-# 先例)。⚠ 中文标签是**注意力分层**用语,⛔ 不许出现「买入」「期望」「胜率」字眼
-# (§七 P3-49-(b):位置关产出不得出现在任何声称期望/胜率/会涨的文案里)。————————
-FALLING = "falling"
-LANDING_PENDING = "landing_pending"
-LIFTOFF_CONFIRMED = "liftoff_confirmed"
-HIGH_EXTENDED = "high_extended"
-NONE_STATE = "none"
-
-STATE_ORDER: Tuple[str, ...] = (
-    FALLING, LANDING_PENDING, LIFTOFF_CONFIRMED, HIGH_EXTENDED, NONE_STATE,
+# —— 十四个原始读数键名(唯一契约,与 `neckline/selection/gates.py` 共用;
+# ⛔ 不许改名、不许增减,模块头「十四个原始读数」表逐字对应)。————————————————
+METRIC_KEYS: Tuple[str, ...] = (
+    "low5_over_low20_ratio",
+    "is_new_low_20d",
+    "close_over_ma20_dev",
+    "close_over_platform_floor_dev",
+    "down_day_amount_ratio_5v20",
+    "max_daily_drop_5d",
+    "close_over_ma5_dev",
+    "pct_chg",
+    "rs5",
+    "dist_from_high_60d",
+    "cum_return_3d",
+    "is_limit_up",
+    "is_new_high_60d",
+    "platform_days",
 )
 
-STATE_LABELS: Dict[str, str] = {
-    FALLING: "下落",
-    LANDING_PENDING: "落地待确认",
-    LIFTOFF_CONFIRMED: "支撑确认起跳",
-    HIGH_EXTENDED: "高位加速",
-    NONE_STATE: "判据缺数",
-}
+# —— `metrics_missing` 的原因码词汇(唯一定义;喂 LLM 时原样透传,让它知道
+# "没取到"具体是哪一类,不是笼统的一个 null)。——————————————————————————————
+REASON_INSUFFICIENT_HISTORY = "insufficient_history"      # 滚动窗口未凑满(该票交易行不够长)
+REASON_NO_DOWN_DAYS = "no_down_days"                       # 近 5 日无下跌日,均额无定义(非缺数据)
+REASON_INDUSTRY_UNMAPPED = "industry_unmapped"              # stock_basic.industry 查无该票
+REASON_INDUSTRY_DATA_UNAVAILABLE = "industry_data_unavailable"  # 行业 5 日中位收益凑不满
+REASON_WINDOW_MISALIGNED = "window_misaligned"              # 该票 5 日窗口与市场 5 日窗口不同步
+REASON_LIMIT_DATA_UNAVAILABLE = "limit_data_unavailable"    # 当日 limit_derived 分区/该票行缺失
 
-# —— 十二个判定阈值的引擎默认(plan §五 ③-C 表原文数值)。权威住骨架包
-# `config.landing`(每键 {value, provenance},全部 engineering_v1);这里只是
-# **无包/缺键时的回退值**(照 `regime.REGIME_THRESHOLD_DEFAULTS` 既有分工)。
-# 键名白名单与 `selection/pack.py::_LANDING_THRESHOLD_KEYS` 双向对拍(守门单测
-# 锁相等,防漂)。窗口类键(n_low/n_back/platform_win/lift_win/platform_amp_win)
-# 在 plan ③-C 表里就是带值的具名阈值(N_LOW=5 等),故进包,⚠ 与 regime.py
-# 「窗口是引擎常量不进包」的分工刻意不同——那边窗口没在判据表里具名,这边有。——
-LANDING_THRESHOLD_DEFAULTS: Dict[str, float] = {
-    "n_low": 5,              # 判据1:近端最低价窗口(交易日)
-    "n_back": 20,            # 判据1:前区间最低价窗口(交易日;也是「未创 20 日新低」的 20)
-    "low_tol": 0.01,         # 判据1:近端低点须高出前区间低点的比例下限
-    "sup_tol": 0.01,         # 判据2:支撑位下方容忍比例
-    "platform_win": 20,      # 判据2:平台下沿分位窗口(交易日)
-    "sell_decay": 0.90,      # 判据3:下跌日均成交额 ÷ 20 日均成交额 的上限
-    "panic_drop": 0.05,      # 判据3:近 5 日单日最大跌幅的排除线(跌幅 ≥ −panic_drop 才算衰减)
-    "high_gap": 0.03,        # 判据5:距 60 日高点至少回撤的比例
-    "lift_win": 3,           # 判据5:近端累计涨幅窗口(交易日)
-    "lift_max": 0.12,        # 判据5:近端累计涨幅上限
-    "platform_amp_win": 20,  # platform_days:滚动振幅窗口(交易日)
-    "platform_amp_max": 0.25,  # platform_days:振幅上限 X(Y1 平台判读同源量)
-}
+# —— 窗口/定义类引擎常量(事实口径,不是策略参数,⛔ 不进包——照 `stage.py`
+# LOOKBACK 常量的既有分工;要改口径改这里并重算历史)。—————————————————————
+N_LOW_DAYS = 5                   # 判据①近端最低价窗口(交易日)
+N_BACK_DAYS = 20                 # 判据①前区间最低价窗口(交易日;也是「20 日新低」的 20)
+MA5_WINDOW = 5                   # 判据④ MA5
+MA20_WINDOW = 20                 # 判据② MA20
+PLATFORM_WIN_DAYS = 20           # 判据②平台下沿分位窗口(交易日)
+PLATFORM_QUANTILE = 0.20         # 判据②平台下沿 =「收盘的 20% 分位」(定义的一部分)
+SELL_SHORT_WINDOW = 5            # 判据③「近 5 日」(字面)
+SELL_LONG_WINDOW = 20            # 判据③「近 20 日」(字面)
+RS_WINDOW_DAYS = 5               # 判据④ RS5 窗口(regime RET_WINDOW_DAYS 同口径)
+HIGH_WINDOW_DAYS = 60            # 判据⑤ 60 日高点窗口(字面即 60 日)
+LIFT_WINDOW_DAYS = 3             # 判据⑤近端累计涨幅窗口(cum_return_3d 定义的一部分,字面即 3 日)
+PLATFORM_DAYS_CAP = 120          # platform_days 右截尾上限(内存上界的一部分,见模块头性能纪律)
 
-# —— 窗口/定义类引擎常量(事实口径,不是策略参数——照 `stage.py` LOOKBACK 常量
-# 的既有分工;要改口径改这里并重算历史,⛔ 不进包)————————————————————————————
-MA5_WINDOW = 5                  # 判据4 的 MA5(字面即 5 日均线)
-MA20_WINDOW = 20                # 判据2 的 MA20(字面即 20 日均线)
-HIGH_WINDOW_DAYS = 60           # 判据5 的 60 日高点窗口(字面即 60 日)
-SELL_SHORT_WINDOW = 5           # 判据3 的「近 5 日」(字面)
-SELL_LONG_WINDOW = 20           # 判据3 的「近 20 日」(字面)
-RS_WINDOW_DAYS = 5              # 判据4 的 RS5 窗口(字面;regime RET_WINDOW_DAYS 同口径)
-PLATFORM_QUANTILE = 0.20        # 判据2 平台下沿 =「收盘的 20% 分位」(定义的一部分)
-PLATFORM_DAYS_CAP = 120         # platform_days 右截尾上限(内存上界的一部分,见模块头)
-_LOOKBACK_MARGIN = 5            # 取数窗口安全余量(交易日)
+# platform_days 的两个定义参数(模块头「`platform_days` 的两个定义参数」段落已
+# 详述取舍——这是量的定义,不是及格线,⛔ 别把它们塞回骨架包)。—————————————————
+PLATFORM_AMP_WIN = 20             # 滚动振幅窗口(交易日)
+PLATFORM_AMP_MAX = 0.25           # 振幅上限 X(取自 K8 §七 Y1「平台够长、振幅够收敛」的定义)
 
-# 阈值比较容差(`sentinel/holding.py` 体例)。
+_LOOKBACK_MARGIN = 5              # 取数窗口安全余量(交易日)
+
+# 定义性比较容差(`sentinel/holding.py` 体例;仅用于布尔事实/`platform_days`
+# 定义本身的严格不等号,⛔ 不是判据阈值——见模块头「口径细则」)。
 _EPS = 1e-9
 
 
@@ -178,264 +203,29 @@ def _d(d: date) -> str:
     return d.strftime("%Y%m%d")
 
 
-# —————————————————————————————————————————————————————————————————————————————
-# 阈值解析(骨架包 → 引擎默认逐键回退;照 regime.resolve_regime_thresholds 体例)
-# —————————————————————————————————————————————————————————————————————————————
-
-def resolve_landing_thresholds(
-    pack: Optional[Pack],
-) -> Tuple[Dict[str, float], str, Tuple[str, ...]]:
-    """从骨架包 `config.landing` 解出十二个判定阈值(逐键独立回退引擎默认 +
-    WARNING 不静默)。返回 `(阈值字典, skeleton_version, 附加原因码元组)`:
-
-    - 无骨架线现役 → 全默认 + `'engine_default'` 哨兵串 + `('missing:skeleton_pack',)`;
-      ⛔ 不写 NULL、不伪造版本号(regime.py 同款既有裁定)。
-    - 有包但缺键/叶子形状不对(历史行才可能;新包激活时 `pack.py::_validate_landing`
-      已挡)→ 该键回退默认 + WARNING,`skeleton_version` 仍是包版本。"""
-    if pack is None:
-        logger.warning(
-            "[landing] 无现役骨架线(selection_packs 无 line_code='V' 现役行)——十二个"
-            "判定阈值全部回退引擎默认常量,skeleton_version 记 %r(state_reason 记 "
-            "missing:skeleton_pack)。", SKELETON_VERSION_FALLBACK,
-        )
-        return dict(LANDING_THRESHOLD_DEFAULTS), SKELETON_VERSION_FALLBACK, ("missing:skeleton_pack",)
-    raw = pack.landing_config()
-    out: Dict[str, float] = {}
-    fell_back: List[str] = []
-    for key, default in LANDING_THRESHOLD_DEFAULTS.items():
-        leaf = raw.get(key)
-        value = leaf.get("value") if isinstance(leaf, dict) else None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            out[key] = float(value)
-        else:
-            out[key] = float(default)
-            fell_back.append(key)
-    if fell_back:
-        logger.warning(
-            "[landing] 骨架包 %s 的 config.landing 缺键或叶子形状不对:%s —— 逐键回退"
-            "引擎默认(照 regime.resolve_regime_thresholds 体例,不静默)。",
-            pack.pack_version, fell_back,
-        )
-    return out, pack.pack_version, ()
+def _round6(v: Any) -> Any:
+    return round(float(v), 6) if isinstance(v, float) else v
 
 
-def _lookback_bars(thresholds: Mapping[str, float]) -> int:
-    """取数回看窗口(交易日):五项判据所需的最长窗口 与 platform_days 可测跨度
-    (截尾上限 + 振幅窗口)取大,加安全余量。bulk 与 day-by-day 三路等价依赖
-    「截尾上限 ≤ 两种取数方式都可测的跨度」,⛔ 别把 PLATFORM_DAYS_CAP 抬到
+def _lookback_bars() -> int:
+    """取数回看窗口(交易日):全部读数所需的最长窗口与 `platform_days` 可测跨度
+    (截尾上限 + 振幅窗口)取大,加安全余量。全部由本模块固定常量推出(裁定 #11
+    后没有骨架包可读,窗口不再随包变化)。bulk 与 day-by-day 三路等价依赖
+    「截尾上限 ≤ 两种取数方式都可测的跨度」,⛔ 别把 `PLATFORM_DAYS_CAP` 抬到
     比这里算出的窗口还大。"""
     need = max(
-        int(thresholds["n_low"]) + int(thresholds["n_back"]) + 1,   # 判据1(shift 后再看一格)
-        HIGH_WINDOW_DAYS + 1,                                       # 判据5(新高看前 60 日)
-        int(thresholds["platform_win"]),
+        N_LOW_DAYS + N_BACK_DAYS + 1,     # 判据①(shift 后再看一格)
+        HIGH_WINDOW_DAYS + 1,             # 判据⑤(新高看前 60 日)
+        PLATFORM_WIN_DAYS,
         MA20_WINDOW,
         SELL_LONG_WINDOW,
-        PLATFORM_DAYS_CAP + int(thresholds["platform_amp_win"]),
+        PLATFORM_DAYS_CAP + PLATFORM_AMP_WIN,
     )
     return need + _LOOKBACK_MARGIN
 
 
 # —————————————————————————————————————————————————————————————————————————————
-# 四态判据(唯一定义,纯函数)
-# —————————————————————————————————————————————————————————————————————————————
-
-def _fmt(x: float) -> str:
-    return f"{x:.4f}"
-
-
-def _and3(gates: Sequence[Optional[bool]]) -> Optional[bool]:
-    """三值 AND(Kleene):有 False 即 False;无 False 有 None 即 None;全 True 即 True。
-    「缺数不猜」的机械化:能凭已有数据判 fail 的就判 fail,判不动的才是 na。"""
-    if any(g is False for g in gates):
-        return False
-    if any(g is None for g in gates):
-        return None
-    return True
-
-
-def decide_landing(
-    *,
-    low5_over_base: Optional[float],
-    new_low_20d: Optional[bool],
-    close_over_support: Optional[float],
-    sell_ratio: Optional[float],
-    down_days_5d: Optional[int],
-    max_drop_5d: Optional[float],
-    close_over_ma5: Optional[float],
-    ret_1d: Optional[float],
-    rs5: Optional[float],
-    dist_from_high_60d: Optional[float],
-    lift_ret: Optional[float],
-    is_limit_up: Optional[bool],
-    new_high_60d: Optional[bool],
-    thresholds: Optional[Mapping[str, float]] = None,
-    extra_reason_tokens: Sequence[str] = (),
-) -> Tuple[str, str]:
-    """四态判据唯一实现(互斥、优先级从上往下,`state` 恒非 NULL)。返回
-    `(state, state_reason)`。
-
-    输入全部是**缩放不变量**(比值/收益率/布尔;理由见模块头「口径细则」):
-      - `low5_over_base` = 近 n_low 日最低 ÷ 前 n_back 日区间最低(判据1);
-      - `close_over_support` = close ÷ max(MA20, 平台下沿)(判据2);
-      - `sell_ratio` = 近 5 日下跌日均成交额 ÷ 近 20 日均成交额;`down_days_5d`=0 时
-        `sell_ratio` 合法为 None 且子门按成立读(no_down_days,模块头登记);
-      - `close_over_ma5` / `ret_1d`(= close/昨收 − 1)/ `rs5`(判据4 三子门);
-      - `dist_from_high_60d`(≤0,距含当日的 60 日最高的比例)/ `lift_ret`
-        (近 lift_win 日累计涨幅)/ `is_limit_up` / `new_high_60d`(判据5)。
-
-    级联(优先级与两处补全的登记见模块头「四态映射」):
-        c1 fail→falling · c1 na→none · c2 fail→falling(补全①) · c2 na→none ·
-        c4 fail→landing_pending · c4 na→none · c3 fail→landing_pending(补全②) ·
-        c3 na→none · c5 ok→liftoff_confirmed · c5 fail→high_extended · c5 na→none
-
-    `state_reason` = 先五项判据 rollup(`c1:ok;…;c5:na`)再逐子门明细,分号连接,
-    尾挂 `extra_reason_tokens`(如 `missing:skeleton_pack`)。全部比较带 `_EPS`
-    容差(恰好等于阈值按满足读,登记取舍)。"""
-    th = dict(LANDING_THRESHOLD_DEFAULTS)
-    if thresholds:
-        th.update({k: float(v) for k, v in thresholds.items() if k in LANDING_THRESHOLD_DEFAULTS})
-    detail: List[str] = []
-
-    # —— 判据 1:下跌或调整已经结束 ————————————————————————————————————————
-    if low5_over_base is None:
-        g_range: Optional[bool] = None
-        detail.append("c1.low5_over_base=na")
-    else:
-        g_range = low5_over_base > 1.0 + th["low_tol"] - _EPS
-        detail.append(
-            f"c1.low5_over_base={_fmt(low5_over_base)}>{_fmt(1.0 + th['low_tol'])}:"
-            f"{'ok' if g_range else 'fail'}"
-        )
-    if new_low_20d is None:
-        g_nolow: Optional[bool] = None
-        detail.append("c1.new_low_20d=na")
-    else:
-        g_nolow = not new_low_20d
-        detail.append(f"c1.new_low_20d={'yes:fail' if new_low_20d else 'no:ok'}")
-    c1 = _and3((g_range, g_nolow))
-
-    # —— 判据 2:关键位置形成有效支撑 ————————————————————————————————————————
-    if close_over_support is None:
-        c2: Optional[bool] = None
-        detail.append("c2.close_over_support=na")
-    else:
-        c2 = close_over_support >= 1.0 - th["sup_tol"] - _EPS
-        detail.append(
-            f"c2.close_over_support={_fmt(close_over_support)}>={_fmt(1.0 - th['sup_tol'])}:"
-            f"{'ok' if c2 else 'fail'}"
-        )
-
-    # —— 判据 3:抛压明显衰减 ————————————————————————————————————————————————
-    if down_days_5d is not None and down_days_5d == 0:
-        g_sell: Optional[bool] = True     # 无下跌日 = 无抛压可言(模块头登记的特例)
-        detail.append("c3.sell_ratio=no_down_days:ok")
-    elif sell_ratio is None:
-        g_sell = None
-        detail.append("c3.sell_ratio=na")
-    else:
-        g_sell = sell_ratio <= th["sell_decay"] + _EPS
-        detail.append(
-            f"c3.sell_ratio={_fmt(sell_ratio)}<={_fmt(th['sell_decay'])}:"
-            f"{'ok' if g_sell else 'fail'}"
-        )
-    if max_drop_5d is None:
-        g_panic: Optional[bool] = None
-        detail.append("c3.max_drop_5d=na")
-    else:
-        g_panic = max_drop_5d >= -th["panic_drop"] - _EPS
-        detail.append(
-            f"c3.max_drop_5d={_fmt(max_drop_5d)}>={_fmt(-th['panic_drop'])}:"
-            f"{'ok' if g_panic else 'fail'}"
-        )
-    c3 = _and3((g_sell, g_panic))
-
-    # —— 判据 4:价格开始向上转强 ————————————————————————————————————————————
-    if close_over_ma5 is None:
-        g_ma5: Optional[bool] = None
-        detail.append("c4.close_over_ma5=na")
-    else:
-        g_ma5 = close_over_ma5 > 1.0 - _EPS
-        detail.append(f"c4.close_over_ma5={_fmt(close_over_ma5)}>1:{'ok' if g_ma5 else 'fail'}")
-    if ret_1d is None:
-        g_up: Optional[bool] = None
-        detail.append("c4.ret_1d=na")
-    else:
-        g_up = ret_1d > -_EPS
-        detail.append(f"c4.ret_1d={_fmt(ret_1d)}>0:{'ok' if g_up else 'fail'}")
-    if rs5 is None:
-        g_rs: Optional[bool] = None
-        detail.append("c4.rs5=na")
-    else:
-        g_rs = rs5 > -_EPS
-        detail.append(f"c4.rs5={_fmt(rs5)}>0:{'ok' if g_rs else 'fail'}")
-    c4 = _and3((g_ma5, g_up, g_rs))
-
-    # —— 判据 5:当前仍处于启动早期 ——————————————————————————————————————————
-    if dist_from_high_60d is None:
-        g_dist: Optional[bool] = None
-        detail.append("c5.dist_high_60d=na")
-    else:
-        g_dist = dist_from_high_60d <= -th["high_gap"] + _EPS
-        detail.append(
-            f"c5.dist_high_60d={_fmt(dist_from_high_60d)}<={_fmt(-th['high_gap'])}:"
-            f"{'ok' if g_dist else 'fail'}"
-        )
-    if lift_ret is None:
-        g_lift: Optional[bool] = None
-        detail.append("c5.lift_ret=na")
-    else:
-        g_lift = lift_ret <= th["lift_max"] + _EPS
-        detail.append(
-            f"c5.lift_ret={_fmt(lift_ret)}<={_fmt(th['lift_max'])}:{'ok' if g_lift else 'fail'}"
-        )
-    if is_limit_up is None:
-        g_nolimit: Optional[bool] = None
-        detail.append("c5.limit_up=na")
-    else:
-        g_nolimit = not is_limit_up
-        detail.append(f"c5.limit_up={'yes:fail' if is_limit_up else 'no:ok'}")
-    if new_high_60d is None:
-        g_nohigh: Optional[bool] = None
-        detail.append("c5.new_high_60d=na")
-    else:
-        g_nohigh = not new_high_60d
-        detail.append(f"c5.new_high_60d={'yes:fail' if new_high_60d else 'no:ok'}")
-    c5 = _and3((g_dist, g_lift, g_nolimit, g_nohigh))
-
-    # —— 级联(互斥、优先级从上往下;两处补全见模块头登记)——————————————————————
-    if c1 is False:
-        state = FALLING
-    elif c1 is None:
-        state = NONE_STATE
-    elif c2 is False:
-        state = FALLING          # 补全①:落地未获支撑 → 归排除桶
-    elif c2 is None:
-        state = NONE_STATE
-    elif c4 is False:
-        state = LANDING_PENDING
-    elif c4 is None:
-        state = NONE_STATE
-    elif c3 is False:
-        state = LANDING_PENDING  # 补全②:转强但抛压未衰减 = 起跳未确认
-    elif c3 is None:
-        state = NONE_STATE
-    elif c5 is True:
-        state = LIFTOFF_CONFIRMED
-    elif c5 is False:
-        state = HIGH_EXTENDED
-    else:
-        state = NONE_STATE
-
-    def _s(v: Optional[bool]) -> str:
-        return "na" if v is None else ("ok" if v else "fail")
-
-    rollup = f"c1:{_s(c1)};c2:{_s(c2)};c3:{_s(c3)};c4:{_s(c4)};c5:{_s(c5)}"
-    reason = ";".join([rollup] + detail + list(extra_reason_tokens))
-    return state, reason
-
-
-# —————————————————————————————————————————————————————————————————————————————
-# 全市场批量特征装配(只读;落表在 landing_store.refresh_landing_states)
+# 全市场批量特征装配(只读;落表在 landing_store.refresh_landing_metrics)
 # —————————————————————————————————————————————————————————————————————————————
 
 def _recent_trading_days_before(d: date, n: int) -> List[date]:
@@ -456,7 +246,7 @@ def _industry_ret_sums(
     """每个判定日 × 每个行业的「中位收益 5 日和」(凑满窗口才算,`_ret_5d_sum`
     唯一实现)。`day_strs_per_day` = {判定日: 其 5 个市场交易日窗口(升序)}。
     返回 {(判定日, 行业): 和或 None};`industry_strength_daily` 整段缺失时返回
-    空 dict(所有票 RS5 = na,缺数不猜)。"""
+    空 dict(所有票 rs5 缺失,缺数不猜)。"""
     all_days = sorted({d for win in day_strs_per_day.values() for d in win})
     if not all_days:
         return {}
@@ -478,42 +268,161 @@ def _industry_ret_sums(
     return out
 
 
-def _round6(v: Any) -> Any:
-    return round(float(v), 6) if isinstance(v, float) else v
+def _assemble_row_metrics(
+    row: Mapping[str, Any],
+    *,
+    day_str: str,
+    rs_windows: Mapping[str, List[str]],
+    industry_of: Mapping[str, str],
+    ind_sums: Mapping[Tuple[str, str], Optional[float]],
+    limit_partition_present: bool,
+    limit_up_map: Mapping[Tuple[str, str], bool],
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """单票单日:十四个原始读数 + 缺项原因码(唯一装配点)。返回
+    `(metrics, metrics_missing)`——`metrics` 只含算出来的键,`metrics_missing`
+    只含缺失的键(值 = 原因码);两者的键并集恰为 `METRIC_KEYS`,零重叠。"""
+    metrics: Dict[str, Any] = {}
+    missing: Dict[str, str] = {}
+
+    def _set(key: str, value: Any, reason: str) -> None:
+        if value is None:
+            missing[key] = reason
+        else:
+            metrics[key] = _round6(value)
+
+    # —— 下跌或调整已经结束 ————————————————————————————————————————————————
+    low5_over_base = (
+        row["_low5"] / row["_backlow"]
+        if row["_low5"] is not None and row["_backlow"] not in (None, 0.0) else None
+    )
+    _set("low5_over_low20_ratio", low5_over_base, REASON_INSUFFICIENT_HISTORY)
+
+    is_new_low_20d = (
+        bool(row["low_qfq"] < row["_prior_low"] * (1.0 - _EPS))
+        if row["low_qfq"] is not None and row["_prior_low"] is not None else None
+    )
+    _set("is_new_low_20d", is_new_low_20d, REASON_INSUFFICIENT_HISTORY)
+
+    # —— 关键位置形成有效支撑 ————————————————————————————————————————————————
+    ma20_dev = (
+        row["close_qfq"] / row["_ma20"] - 1.0
+        if row["close_qfq"] is not None and row["_ma20"] not in (None, 0.0) else None
+    )
+    _set("close_over_ma20_dev", ma20_dev, REASON_INSUFFICIENT_HISTORY)
+
+    plat_dev = (
+        row["close_qfq"] / row["_plat_low"] - 1.0
+        if row["close_qfq"] is not None and row["_plat_low"] not in (None, 0.0) else None
+    )
+    _set("close_over_platform_floor_dev", plat_dev, REASON_INSUFFICIENT_HISTORY)
+
+    # —— 抛压明显衰减 ——————————————————————————————————————————————————————
+    down_cnt = int(row["_down_cnt5"]) if row["_down_cnt5"] is not None else None
+    if down_cnt is None:
+        missing["down_day_amount_ratio_5v20"] = REASON_INSUFFICIENT_HISTORY
+    elif down_cnt == 0:
+        # 近 5 日无下跌日:均额无定义(除以空集),与「数据不够算」是两回事——
+        # 对 LLM 而言这本身是有信息量的事实(模块头「口径细则」登记)。
+        missing["down_day_amount_ratio_5v20"] = REASON_NO_DOWN_DAYS
+    elif row["_down_amt5"] is None or row["_amt20"] in (None, 0.0):
+        missing["down_day_amount_ratio_5v20"] = REASON_INSUFFICIENT_HISTORY
+    else:
+        metrics["down_day_amount_ratio_5v20"] = _round6(
+            (row["_down_amt5"] / down_cnt) / row["_amt20"]
+        )
+
+    _set("max_daily_drop_5d", row["_max_drop5"], REASON_INSUFFICIENT_HISTORY)
+
+    # —— 价格开始向上转强 ————————————————————————————————————————————————————
+    ma5_dev = (
+        row["close_qfq"] / row["_ma5"] - 1.0
+        if row["close_qfq"] is not None and row["_ma5"] not in (None, 0.0) else None
+    )
+    _set("close_over_ma5_dev", ma5_dev, REASON_INSUFFICIENT_HISTORY)
+    _set("pct_chg", row["ret_1d"], REASON_INSUFFICIENT_HISTORY)
+
+    # rs5:该票 5 日窗口必须与市场 5 日窗口对齐(模块头「口径细则」登记)。
+    rs_window = rs_windows.get(day_str)
+    stock_ret5 = None
+    if (
+        rs_window is not None and row["_ret5"] is not None
+        and row["_rs_anchor"] is not None and _d(row["_rs_anchor"]) == rs_window[0]
+    ):
+        stock_ret5 = row["_ret5"]
+    industry = industry_of.get(row["ts_code"])
+    industry_ret5 = ind_sums.get((day_str, industry)) if industry else None
+    if stock_ret5 is None:
+        reason = REASON_INSUFFICIENT_HISTORY if row["_ret5"] is None else REASON_WINDOW_MISALIGNED
+        missing["rs5"] = reason
+    elif industry is None:
+        missing["rs5"] = REASON_INDUSTRY_UNMAPPED
+    elif industry_ret5 is None:
+        missing["rs5"] = REASON_INDUSTRY_DATA_UNAVAILABLE
+    else:
+        metrics["rs5"] = _round6(stock_ret5 - industry_ret5)
+
+    # —— 仍处于启动早期 ——————————————————————————————————————————————————————
+    dist_high = (
+        row["close_qfq"] / row["_high60"] - 1.0
+        if row["close_qfq"] is not None and row["_high60"] not in (None, 0.0) else None
+    )
+    _set("dist_from_high_60d", dist_high, REASON_INSUFFICIENT_HISTORY)
+    _set("cum_return_3d", row["_lift3"], REASON_INSUFFICIENT_HISTORY)
+
+    # `limit_derived` 是**稀疏表**(`data/limit_derived.py` 模块头:「输出:仅落
+    # 涨停/跌停/炸板命中行……衍生表设计为稀疏表,只存"有信号"的行」)——某票某日
+    # 不在表里 ⛔ 不是「不知道」,是「涨停/跌停/炸板三者皆不成立」的确定事实
+    # (源码 `hit = df.filter(is_limit_up | is_limit_down | is_zaban)` 逐字证实:
+    # 未命中的票根本不会被写进表,不是"漏采")。真正的「不知道」只有一种:那一天
+    # 的分区**文件本身不存在**(批算没跑,`limit_partition_present=False`)。两者
+    # 判据必须分开——2026-08-09 用真实生产数据回放时发现:某票某日在 84 行的稀疏
+    # 表里查无此行是全市场 5526 票里 5400+ 票的常态(绝大多数股票任何一天都不会
+    # 涨停),若把「查无此行」当「不知道」,会把全市场每天 98% 的确定事实(它就是
+    # 没涨停)错报成"没取到",这既不诚实也会把 `metrics_missing` 的信号噪声比拖垮。
+    if limit_partition_present:
+        metrics["is_limit_up"] = bool(limit_up_map.get((day_str, row["ts_code"]), False))
+    else:
+        missing["is_limit_up"] = REASON_LIMIT_DATA_UNAVAILABLE
+
+    new_high_60d = (
+        bool(row["high_qfq"] > row["_prior_high60"] * (1.0 + _EPS))
+        if row["high_qfq"] is not None and row["_prior_high60"] is not None else None
+    )
+    _set("is_new_high_60d", new_high_60d, REASON_INSUFFICIENT_HISTORY)
+
+    platform_days = (
+        min(int(row["_amp_run"]), PLATFORM_DAYS_CAP) if row["_amp"] is not None else None
+    )
+    _set("platform_days", platform_days, REASON_INSUFFICIENT_HISTORY)
+
+    return metrics, missing
 
 
-def compute_landing_states(
+def compute_landing_metrics(
     days: Sequence[date],
     *,
     db_path: Optional[Path] = None,
     parquet_dir: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
-    """`days`(升序去重后)每个交易日的全市场逐票判定(全程只读)。返回行 dict
-    列表(键 = `landing_state_daily` 除 `computed_at` 外全部列,`metrics` 为 dict,
-    JSON 序列化由 store 落表时做)。
+    """`days`(升序去重后)每个交易日的全市场逐票**原始读数**装配(全程只读,
+    零判定)。返回行 dict 列表:`{"trade_date", "ts_code", "metrics",
+    "metrics_missing"}`(JSON 序列化由 store 落表时做)。
 
     - **判定域 = 当日有 `daily` 行的票**(停牌票当日无行 = 无判定行,由读侧按
       「缺行 = 不知道」披露,⛔ 不落猜出来的行)。
-    - 取数一次覆盖 `[min(days) − lookback, max(days)]`(`scan_table_range` 年分区
-      裁剪);逐票 rolling 全部尾窗 + `min_samples=窗口长`(缺一根 bar 即 na,
-      缺数不猜)。bulk 与 day-by-day 等价:尾窗只看各票最近 N 根 bar,与取数区间
-      起点无关(platform_days 的截尾保证见 `_lookback_bars` docstring)。
-    - `daily` 整段缺失 / 判定日无行 → 该日零行(不猜、不凑)。"""
+    - 取数一次覆盖 `[min(days) − lookback, max(days)]`(`_scan_table(years=…)` 年
+      分区裁剪);逐票 rolling 全部尾窗 + `min_samples=窗口长`(缺一根 bar 即记入
+      `metrics_missing`,缺数不猜)。bulk 与 day-by-day 等价:尾窗只看各票最近
+      N 根 bar,与取数区间起点无关(`platform_days` 的截尾保证见 `_lookback_bars`
+      docstring)。
+    - `daily` 整段缺失 / 判定日无行 → 该日零行(不猜、不凑)。
+    """
     uniq_days = sorted(set(days))
     if not uniq_days:
         return []
     init_schema(db_path)
-    thresholds, skeleton_version, extra_tokens = resolve_landing_thresholds(
-        get_active_skeleton(db_path)
-    )
-    n_low = int(thresholds["n_low"])
-    n_back = int(thresholds["n_back"])
-    platform_win = int(thresholds["platform_win"])
-    lift_win = int(thresholds["lift_win"])
-    amp_win = int(thresholds["platform_amp_win"])
-    amp_max = float(thresholds["platform_amp_max"])
 
-    lookback = _lookback_bars(thresholds)
+    lookback = _lookback_bars()
     start_day = _recent_trading_days_before(uniq_days[0], lookback)[0]
     end_day = uniq_days[-1]
 
@@ -567,20 +476,20 @@ def compute_landing_states(
 
     lf = lf.with_columns(
         ret_1d.alias("ret_1d"),
-        # 判据1
-        pl.col("low_qfq").rolling_min(n_low, min_samples=n_low).over("ts_code").alias("_low5"),
-        pl.col("low_qfq").rolling_min(n_back, min_samples=n_back).shift(n_low)
+        # 下跌或调整已经结束
+        pl.col("low_qfq").rolling_min(N_LOW_DAYS, min_samples=N_LOW_DAYS).over("ts_code").alias("_low5"),
+        pl.col("low_qfq").rolling_min(N_BACK_DAYS, min_samples=N_BACK_DAYS).shift(N_LOW_DAYS)
         .over("ts_code").alias("_backlow"),
-        pl.col("low_qfq").rolling_min(n_back, min_samples=n_back).shift(1)
+        pl.col("low_qfq").rolling_min(N_BACK_DAYS, min_samples=N_BACK_DAYS).shift(1)
         .over("ts_code").alias("_prior_low"),
-        # 判据2
+        # 关键位置形成有效支撑
         pl.col("close_qfq").rolling_mean(MA20_WINDOW, min_samples=MA20_WINDOW)
         .over("ts_code").alias("_ma20"),
         pl.col("close_qfq").rolling_quantile(
-            quantile=PLATFORM_QUANTILE, window_size=platform_win,
-            min_samples=platform_win, interpolation="linear",
+            quantile=PLATFORM_QUANTILE, window_size=PLATFORM_WIN_DAYS,
+            min_samples=PLATFORM_WIN_DAYS, interpolation="linear",
         ).over("ts_code").alias("_plat_low"),
-        # 判据3
+        # 抛压明显衰减
         pl.when(down_flag).then(pl.col("amount")).otherwise(0.0)
         .rolling_sum(SELL_SHORT_WINDOW, min_samples=SELL_SHORT_WINDOW)
         .over("ts_code").alias("_down_amt5"),
@@ -591,27 +500,27 @@ def compute_landing_states(
         .over("ts_code").alias("_amt20"),
         ret_1d.rolling_min(SELL_SHORT_WINDOW, min_samples=SELL_SHORT_WINDOW)
         .over("ts_code").alias("_max_drop5"),
-        # 判据4
+        # 价格开始向上转强
         pl.col("close_qfq").rolling_mean(MA5_WINDOW, min_samples=MA5_WINDOW)
         .over("ts_code").alias("_ma5"),
-        ret_1d.rolling_sum(RS_WINDOW_DAYS, min_samples=RS_WINDOW_DAYS)
-        .over("ts_code").alias("_ret5"),
+        ret_1d.rolling_sum(RS_WINDOW_DAYS, min_samples=RS_WINDOW_DAYS).over("ts_code").alias("_ret5"),
         pl.col("trade_date").shift(RS_WINDOW_DAYS - 1).over("ts_code").alias("_rs_anchor"),
-        # 判据5
+        # 仍处于启动早期
         pl.col("high_qfq").rolling_max(HIGH_WINDOW_DAYS, min_samples=HIGH_WINDOW_DAYS)
         .over("ts_code").alias("_high60"),
         pl.col("high_qfq").rolling_max(HIGH_WINDOW_DAYS, min_samples=HIGH_WINDOW_DAYS)
         .shift(1).over("ts_code").alias("_prior_high60"),
-        ret_1d.rolling_sum(lift_win, min_samples=lift_win).over("ts_code").alias("_lift"),
-        # platform_days(振幅 + 连续天数,模块头「口径细则」)
+        ret_1d.rolling_sum(LIFT_WINDOW_DAYS, min_samples=LIFT_WINDOW_DAYS)
+        .over("ts_code").alias("_lift3"),
+        # platform_days(振幅 + 连续天数,模块头「定义参数」段)
         (
-            (pl.col("high_qfq").rolling_max(amp_win, min_samples=amp_win)
-             - pl.col("low_qfq").rolling_min(amp_win, min_samples=amp_win))
-            / pl.col("low_qfq").rolling_min(amp_win, min_samples=amp_win)
+            (pl.col("high_qfq").rolling_max(PLATFORM_AMP_WIN, min_samples=PLATFORM_AMP_WIN)
+             - pl.col("low_qfq").rolling_min(PLATFORM_AMP_WIN, min_samples=PLATFORM_AMP_WIN))
+            / pl.col("low_qfq").rolling_min(PLATFORM_AMP_WIN, min_samples=PLATFORM_AMP_WIN)
         ).over("ts_code").alias("_amp"),
     )
     lf = lf.with_columns(
-        (pl.col("_amp") <= amp_max + _EPS).fill_null(False).alias("_amp_ok"),
+        (pl.col("_amp") <= PLATFORM_AMP_MAX + _EPS).fill_null(False).alias("_amp_ok"),
     ).with_columns(
         (~pl.col("_amp_ok")).cast(pl.Int32).cum_sum().over("ts_code").alias("_amp_brk"),
     ).with_columns(
@@ -625,7 +534,7 @@ def compute_landing_states(
             "ts_code", "trade_date", "ret_1d", "_low5", "_backlow", "_prior_low",
             "low_qfq", "close_qfq", "high_qfq", "_ma20", "_plat_low", "_down_amt5",
             "_down_cnt5", "_amt20", "_max_drop5", "_ma5", "_ret5", "_rs_anchor",
-            "_high60", "_prior_high60", "_lift", "_amp", "_amp_run",
+            "_high60", "_prior_high60", "_lift3", "_amp", "_amp_run",
         ])
         .sort(["trade_date", "ts_code"])
         .collect()
@@ -648,7 +557,12 @@ def compute_landing_states(
     industry_of = load_industry_map(db_path)
     ind_sums = _industry_ret_sums(rs_windows, db_path)
 
-    # 涨停判定:只读判定日的 limit_derived 分区;某日分区缺失 = 该日全体 na(不猜)。
+    # 涨停判定:只读判定日的 limit_derived 分区(**稀疏表**,`_assemble_row_metrics`
+    # 「is_limit_up」段已详述其语义)。这里只负责两件事:① 收集该稀疏表里**真的
+    # 有的**行(某票某日命中涨停/跌停/炸板其一才会在这);② 逐日直接查文件是否
+    # 存在(⛔ 不用"该日有没有行"当存在性代理——那会把"当天恰好零命中"的极端日子
+    # 误判成"分区缺失",`day_file_path(...).exists()` 才是与旧测试
+    # `os.remove(...)` 手法完全对称的存在性判据)。
     limit_lf = _scan_table(
         "limit_derived", parquet_dir, years=_years_in_range(uniq_days[0], end_day)
     )
@@ -658,7 +572,6 @@ def compute_landing_states(
         ).select(["ts_code", "trade_date", "is_limit_up"]).collect()
         if limit_lf is not None else pl.DataFrame()
     )
-    limit_days: set = set()
     limit_up_map: Dict[Tuple[str, str], bool] = {}
     if not limit_df.is_empty():
         for ts, td, up in zip(
@@ -666,145 +579,38 @@ def compute_landing_states(
             limit_df["trade_date"].to_list(),
             limit_df["is_limit_up"].to_list(),
         ):
-            key = _d(td)
-            limit_days.add(key)
             if up is not None:
-                limit_up_map[(key, ts)] = bool(up)
+                limit_up_map[(_d(td), ts)] = bool(up)
+    limit_partition_present: Dict[str, bool] = {
+        _d(d0): day_file_path("limit_derived", d0, parquet_dir).exists() for d0 in uniq_days
+    }
 
     out: List[Dict[str, Any]] = []
     for row in cols.iter_rows(named=True):
         day_str = _d(row["trade_date"])
-
-        # 判据1 读数
-        low5_over_base = (
-            row["_low5"] / row["_backlow"]
-            if row["_low5"] is not None and row["_backlow"] not in (None, 0.0) else None
+        metrics, missing = _assemble_row_metrics(
+            row, day_str=day_str, rs_windows=rs_windows, industry_of=industry_of,
+            ind_sums=ind_sums, limit_partition_present=limit_partition_present.get(day_str, False),
+            limit_up_map=limit_up_map,
         )
-        new_low_20d = (
-            bool(row["low_qfq"] < row["_prior_low"] * (1.0 - _EPS))
-            if row["low_qfq"] is not None and row["_prior_low"] is not None else None
-        )
-        # 判据2 读数
-        support = (
-            max(row["_ma20"], row["_plat_low"])
-            if row["_ma20"] is not None and row["_plat_low"] is not None else None
-        )
-        close_over_support = (
-            row["close_qfq"] / support
-            if row["close_qfq"] is not None and support not in (None, 0.0) else None
-        )
-        # 判据3 读数
-        down_cnt = int(row["_down_cnt5"]) if row["_down_cnt5"] is not None else None
-        sell_ratio = None
-        if (
-            down_cnt is not None and down_cnt > 0
-            and row["_down_amt5"] is not None and row["_amt20"] not in (None, 0.0)
-        ):
-            sell_ratio = (row["_down_amt5"] / down_cnt) / row["_amt20"]
-        # 判据4 读数(RS5:该票 5 日窗口必须与市场 5 日窗口对齐,模块头登记)
-        rs_window = rs_windows.get(day_str)
-        stock_ret5 = None
-        if (
-            rs_window is not None and row["_ret5"] is not None
-            and row["_rs_anchor"] is not None and _d(row["_rs_anchor"]) == rs_window[0]
-        ):
-            stock_ret5 = row["_ret5"]
-        industry = industry_of.get(row["ts_code"])
-        industry_ret5 = ind_sums.get((day_str, industry)) if industry else None
-        rs5 = (
-            stock_ret5 - industry_ret5
-            if stock_ret5 is not None and industry_ret5 is not None else None
-        )
-        close_over_ma5 = (
-            row["close_qfq"] / row["_ma5"]
-            if row["close_qfq"] is not None and row["_ma5"] not in (None, 0.0) else None
-        )
-        # 判据5 读数
-        dist_high = (
-            row["close_qfq"] / row["_high60"] - 1.0
-            if row["close_qfq"] is not None and row["_high60"] not in (None, 0.0) else None
-        )
-        new_high_60d = (
-            bool(row["high_qfq"] > row["_prior_high60"] * (1.0 + _EPS))
-            if row["high_qfq"] is not None and row["_prior_high60"] is not None else None
-        )
-        # 当日 limit_derived 分区缺失 → 全体 na;分区在但该票无行/值为空 → 该票 na
-        # (缺数不猜,⛔ 不把「查无此行」当「非涨停」)。
-        is_limit_up = (
-            limit_up_map.get((day_str, row["ts_code"])) if day_str in limit_days else None
-        )
-        platform_days = (
-            min(int(row["_amp_run"]), PLATFORM_DAYS_CAP) if row["_amp"] is not None else None
-        )
-
-        state, reason = decide_landing(
-            low5_over_base=low5_over_base,
-            new_low_20d=new_low_20d,
-            close_over_support=close_over_support,
-            sell_ratio=sell_ratio,
-            down_days_5d=down_cnt,
-            max_drop_5d=row["_max_drop5"],
-            close_over_ma5=close_over_ma5,
-            ret_1d=row["ret_1d"],
-            rs5=rs5,
-            dist_from_high_60d=dist_high,
-            lift_ret=row["_lift"],
-            is_limit_up=is_limit_up,
-            new_high_60d=new_high_60d,
-            thresholds=thresholds,
-            extra_reason_tokens=extra_tokens,
-        )
-        metrics = {
-            "low5_over_base": _round6(low5_over_base),
-            "new_low_20d": new_low_20d,
-            "close_over_support": _round6(close_over_support),
-            "close_over_ma20": _round6(
-                row["close_qfq"] / row["_ma20"]
-                if row["close_qfq"] is not None and row["_ma20"] not in (None, 0.0) else None
-            ),
-            "close_over_platform_low": _round6(
-                row["close_qfq"] / row["_plat_low"]
-                if row["close_qfq"] is not None and row["_plat_low"] not in (None, 0.0) else None
-            ),
-            "sell_ratio": _round6(sell_ratio),
-            "down_days_5d": down_cnt,
-            "max_drop_5d": _round6(row["_max_drop5"]),
-            "close_over_ma5": _round6(close_over_ma5),
-            "ret_1d": _round6(row["ret_1d"]),
-            "stock_ret_5d": _round6(stock_ret5),
-            "industry_ret_5d": _round6(industry_ret5),
-            "rs5": _round6(rs5),
-            "industry": industry,
-            "dist_from_high_60d": _round6(dist_high),
-            "lift_ret": _round6(row["_lift"]),
-            "is_limit_up": is_limit_up,
-            "new_high_60d": new_high_60d,
-            "platform_amplitude": _round6(row["_amp"]),
-            "platform_days": platform_days,
-        }
         out.append({
             "trade_date": day_str,
             "ts_code": row["ts_code"],
-            "state": state,
-            "state_reason": reason,
             "metrics": metrics,
-            "skeleton_version": skeleton_version,
+            "metrics_missing": missing,
         })
     return out
 
 
 __all__ = [
     "TABLE",
-    "FALLING",
-    "LANDING_PENDING",
-    "LIFTOFF_CONFIRMED",
-    "HIGH_EXTENDED",
-    "NONE_STATE",
-    "STATE_ORDER",
-    "STATE_LABELS",
-    "LANDING_THRESHOLD_DEFAULTS",
+    "METRIC_KEYS",
+    "REASON_INSUFFICIENT_HISTORY",
+    "REASON_NO_DOWN_DAYS",
+    "REASON_INDUSTRY_UNMAPPED",
+    "REASON_INDUSTRY_DATA_UNAVAILABLE",
+    "REASON_WINDOW_MISALIGNED",
+    "REASON_LIMIT_DATA_UNAVAILABLE",
     "PLATFORM_DAYS_CAP",
-    "resolve_landing_thresholds",
-    "decide_landing",
-    "compute_landing_states",
+    "compute_landing_metrics",
 ]

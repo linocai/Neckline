@@ -403,3 +403,79 @@ def test_frozen_snapshot_dtos_hand_write_init_from_decoder(name: str):
         f"`decodeIfPresent` 兜底(CLAUDE.md 落库快照两类论);合成 Codable 会让老快照解不出。"
     )
     assert "decodeIfPresent" in body, f"`{name}` 的 `init(from:)` 里没有 `decodeIfPresent` 兜底"
+
+
+# —— V2.2-③-C 位置关三键(🔴 用户裁定 #11)的两侧声明 ——————————————————————
+
+# 服务端本版**新增**的成员级键(全部可选)。⚠ **零删键纪律(〇b-3)在这里没有被
+# 违反,因为没有键被删**:上一版曾计划发的 `landingState`(落地四态枚举)**一天都
+# 没上过产**(V2.2 批 2 未部署,生产客户端从未见过它),故直接换成这三键,⛔ 不走
+# 「先改客户端 decodeIfPresent → 下一版服务端才删」两步。**换得成的前提是那个键从未
+# 上产** —— 后人别据此以为可以随手换键。
+_V22_POSITION_KEYS = ("positionVerdict", "positionReason", "positionMetrics")
+
+# V2.2-③ 在**篮子卡**上新增的全部键(引擎三件套由 ③-E 加、位置三件套由 ③-C 加)。
+# 客户端侧统一归 **⑥ 契约与客户端** 那一块落地,本块只做服务端半边 —— 故下面那条
+# 测试守的是「要么一个都没接、要么全接」,⛔ 不是「必须已接」。
+_V22_CARD_MEMBER_KEYS = _V22_POSITION_KEYS
+_V22_CARD_TOP_KEYS = ("engineCode", "engineVersion", "skeletonVersion")
+
+
+def test_server_declares_the_position_gate_keys_and_the_converter_maps_them():
+    """位置关三键必须**服务端 DTO 声明了**且 **snake→camel 唯一转换点也映射了** ——
+    少任何一头的后果都是静默的:卡上没有位置判定,而"没有位置判定"本身看起来
+    像个合法状态(⛔ 看不出是 bug)。"""
+    schemas = (_ROOT / "neckline" / "api" / "schemas.py").read_text(encoding="utf-8")
+    block = schemas.split("class BasketMemberOut(BaseModel):", 1)[1].split("\nclass ", 1)[0]
+    for key in _V22_POSITION_KEYS:
+        assert f"{key}:" in block, f"服务端 `BasketMemberOut` 没有声明 `{key}`"
+    # 冻结卡的 snake 键 → 契约 camel 键,唯一转换点(⛔ API 层不另写一份)
+    from neckline.report.basket_daily import card_member_to_public_dict as member_to_public_dict
+
+    snake = {"ts_code": "600001.SH", "position_verdict": "weak",
+             "position_reason": "支撑刚破又收回", "position_metrics": {"platform_days": 12}}
+    out = member_to_public_dict(snake)
+    assert out["positionVerdict"] == "weak"
+    assert out["positionReason"] == "支撑刚破又收回"
+    assert out["positionMetrics"] == {"platform_days": 12}
+    # 老卡缺键 → 该键**不出现**(⛔ 不是补 null:「这一版卡没有这个概念」≠「有但为空」)
+    assert set(_V22_POSITION_KEYS) & set(member_to_public_dict({"ts_code": "x"})) == set()
+
+
+def _strip_comments(text: str, markers: tuple = ("#", "//")) -> str:
+    """剥掉整行注释再判。**这不是洁癖,是 CLAUDE.md 登记过的坑**:`npm-custom-http.conf`
+    的护栏注释里写着它自己要防的那个域名,裸 grep 每次都红 —— **一个对自己的注释
+    报警的闸门等于没有闸门**。本文件同款:`schemas.py` 里解释「为什么 `landingState`
+    可以直接换掉」的那段注释,自己就带着这个词。"""
+    keep = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if any(stripped.startswith(m) for m in markers):
+            continue
+        keep.append(line)
+    return "\n".join(keep)
+
+
+def test_landing_state_key_never_reaches_the_contract():
+    """🔴 裁定 #11 的反向守门:作废的 `landingState`(四态枚举)⛔ 不许出现在契约
+    任何一侧的**代码**里 —— 机械四态已整体删除,发一个"态"出去等于把被推翻的东西
+    又讲了一遍。(注释里提它是**必要的**留痕,故先剥注释再判,见 `_strip_comments`。)"""
+    schemas = (_ROOT / "neckline" / "api" / "schemas.py").read_text(encoding="utf-8")
+    assert "landingState" not in _strip_comments(schemas)
+    assert "landingState" not in _strip_comments(_MODELS.read_text(encoding="utf-8"))
+    # 闸自己的守门:剥注释这一步不许把真声明也剥掉
+    assert "positionVerdict:" in _strip_comments(schemas)
+
+
+def test_v22_card_keys_are_ported_to_the_client_all_or_nothing():
+    """**客户端半边归 ⑥ 那一块**(本块只做服务端)。这条不要求"已接",要求的是
+    **别接一半**:引擎三件套与位置三件套同属 V2.2-③ 的卡形状(同一个
+    `basket_card_v3`),接了其中任意一个就必须六个全接 —— 半份移植的后果是卡上
+    某几格永远空着,而空着看起来像"这张卡没有这个数",⛔ 看不出是漏接。"""
+    models = _MODELS.read_text(encoding="utf-8")
+    keys = _V22_CARD_TOP_KEYS + _V22_CARD_MEMBER_KEYS
+    present = [k for k in keys if k in models]
+    assert present == [] or len(present) == len(keys), (
+        f"V2.2-③ 的卡新增键只接了一部分:已接 {present},缺 "
+        f"{[k for k in keys if k not in present]}(⑥ 落地时请一次接齐)"
+    )

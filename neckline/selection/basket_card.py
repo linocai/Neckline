@@ -97,6 +97,10 @@ logger = logging.getLogger(__name__)
 # V2.2-③:v2 → v3 = 新增引擎归属三键(engine_code/engine_version/skeleton_version,
 # 裁定 #9 单篮子单引擎;纯增量、老键一字未动 —— 「spec_version 恒随形状变化而变」
 # 的既定纪律,老卡照常按 v2 读回)。
+# ⚠ **裁定 #11 的位置关三键(position_verdict/position_reason/position_metrics)
+# 并入同一个 v3,⛔ 不另 bump v4**:v3 本身**一天都没上过产**(V2.2 批 2 未部署),
+# 同一个未发版形状里再 bump 只会造出一个没有任何卡携带的幽灵版本号。规则不变 ——
+# **一旦 v3 上产,再改形状必须 bump**。
 CARD_SPEC_VERSION = "basket_card_v3"
 VERIFY_SPEC_VERSION = "basket_verify_v2"
 INVALIDATE_SPEC_VERSION = "basket_invalidate_v2"
@@ -750,6 +754,12 @@ class MemberCardEntry:
     rs_rank: Optional[int]
     k4_tag: Optional[str]
     mech: MemberMech
+    # V2.2-③-C 位置关(裁定 #11:判定交 LLM、只降级不除名)。`position_metrics` 是
+    # **当次喂给模型的那份读数原样** —— 卡是 D0 冻结件,存在这里 = 事后复核「它拿
+    # 什么下的判断」不必回头猜(与 `gate_evaluations.evidence_json` 互为两处留痕)。
+    position_verdict: str = ""
+    position_reason: str = ""
+    position_metrics: Optional[Dict[str, Any]] = None
     entry_low: Optional[float] = None
     entry_high: Optional[float] = None
     entry_clamp: str = CLAMP_ABSENT
@@ -780,6 +790,9 @@ class MemberCardEntry:
             "primary_reason": self.primary_reason,
             "rs_rank": self.rs_rank,
             "k4_tag": self.k4_tag,
+            "position_verdict": self.position_verdict,
+            "position_reason": self.position_reason,
+            "position_metrics": self.position_metrics,
             "mech": d,
             "entry_zone": ({"low": self.entry_low, "high": self.entry_high,
                             "why": self.entry_why or ""} if self.entry_clamp == CLAMP_OK else None),
@@ -1053,6 +1066,9 @@ def build_basket_card(
             primary_reason=getattr(m, "primary_reason", None),
             rs_rank=getattr(m, "rs_rank", None),
             k4_tag=getattr(m, "k4_tag", None),
+            position_verdict=getattr(m, "position_verdict", "") or "",
+            position_reason=getattr(m, "position_reason", "") or "",
+            position_metrics=getattr(m, "position_metrics", None),
             mech=mech,
             entry_low=low, entry_high=high, entry_clamp=entry_clamp,
             entry_why=_clean_text(item.get("why")) if item else None,

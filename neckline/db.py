@@ -1122,25 +1122,37 @@ CREATE TABLE IF NOT EXISTS market_regime_daily (
 );
 
 -- ══════════════════════════════════════════════════════════════════════════
--- V2.2-③-C(2026-08,K8 §二「落地起跳」):全市场逐票四态位置判据,EOD 预计算
+-- V2.2-③-C(2026-08,K8 §二「落地起跳」):全市场逐票**原始读数**,EOD 预计算
 -- 落表、在线只读(P0-23 纪律;§3.11-B 点名的两张全市场级预计算表之二,§七 P4-50
 -- 登记的第二条「全市场逐票 × 多年回看」批算路径——上生产前必须隔离实测)。
--- 同既有体例:新表追加在这里,⛔ 不进 `_COLUMN_MIGRATIONS`。判定唯一实现 =
--- `neckline/scan/landing.py::decide_landing`,读写唯一通道 =
--- `neckline/scan/landing_store.py`。`state` 恒非 NULL:判据缺数落 `none`
--- (state_reason 逐条说明缺在哪),⛔ 不猜;当日整行**缺失**才是「没算过」,由
--- 消费方按 `available=false` 披露(与 `market_regime_daily` 缺行同一套纪律)。
--- 🔴 本表只产**注意力分层**,⛔ 不得被读成买入期望背书(§3.8-(b);雷区对照与
--- 前向证伪义务见 `landing.py` 模块头与 §七 P3-49)。`platform_days` 等派生量
--- 一律住 `metrics_json`,⛔ 不另起一张表(plan §五 ③-F)。
+--
+-- 🔴 2026-08-09 用户裁定 #11 后表改名重定义:`landing_state_daily` → 本表
+-- `landing_metrics_daily`(⚠ 旧表**从未上产**——批 1 只部署了 ①②,生产零表
+-- 零行,故本次是**干净重构**,不受「停写留档不 DROP」约束——那条红线保护的是
+-- 已上产数据,本表不构成它的例外)。旧表 DDL 不保留、不迁移、不留痕迹。
+--
+-- 用户原话:「推翻,不要搞这个机械层了……其实对于 LLM 来说,它能够完全决定的。
+-- 所以说这个地方的判定直接给到大模型。」—— 机械层因此从「四态判定 + 十二个
+-- 阈值」收窄为「只算事实、不下结论」:`metrics_json` 是十四项原始读数(比值/
+-- 收益率/布尔事实,⛔ 不含任何判定结论或阈值比较结果),`metrics_missing` 逐项
+-- 说明「哪个读数没取到 + 为什么」(⛔ 缺数不当 0,诚实披露)。**判定在 LLM 侧
+-- 发生**(六关⑤位置关,`neckline/selection/gates.py`,产出
+-- `position_verdict ∈ {ok,weak,unfit}` 落 `gate_evaluations`,复用
+-- `basket_reason` 那一次调用,⛔ 不新增 LLM 调用)。同既有体例:新表追加在
+-- 这里,⛔ 不进 `_COLUMN_MIGRATIONS`。装配唯一实现 =
+-- `neckline/scan/landing.py::compute_landing_metrics`,读写唯一通道 =
+-- `neckline/scan/landing_store.py`。**本表没有 `state` 列**——当日整行
+-- **缺失**才是「没算过」,由消费方按「缺行 = 不知道」披露(与
+-- `market_regime_daily` 缺行同一套纪律)。🔴 本表只产**注意力分层**,⛔ 不得被
+-- 读成买入期望背书(§3.8-(b);雷区对照与前向证伪义务见 `landing.py` 模块头与
+-- §七 P3-49)。`platform_days` 等派生量一律住 `metrics_json`,⛔ 不另起一张表
+-- (plan §五 ③-F)。
 -- ══════════════════════════════════════════════════════════════════════════
-CREATE TABLE IF NOT EXISTS landing_state_daily (
+CREATE TABLE IF NOT EXISTS landing_metrics_daily (
   trade_date       TEXT NOT NULL,
   ts_code          TEXT NOT NULL,
-  state            TEXT NOT NULL,  -- falling|landing_pending|liftoff_confirmed|high_extended|none
-  state_reason     TEXT NOT NULL,  -- 五项判据逐项通过/未通过的原因码串
-  metrics_json     TEXT NOT NULL,  -- 五项判据的原始读数(含 platform_days)
-  skeleton_version TEXT NOT NULL,
+  metrics_json     TEXT NOT NULL,  -- 十四项原始读数(事实),⛔ 不含任何判定结论/阈值比较结果
+  metrics_missing  TEXT NOT NULL,  -- {读数键: 缺失原因码}(诚实披露,⛔ 缺数不当 0/默认值)
   computed_at      TEXT NOT NULL,
   PRIMARY KEY (trade_date, ts_code)
 );

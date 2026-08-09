@@ -27,8 +27,8 @@
     python scripts/scan_layer.py bootstrap --from 20260101 --to 20260731
     python scripts/scan_layer.py regime                         # V2.2-② 行情状态三态(今天)
     python scripts/scan_layer.py regime --from 20260720 --to 20260807   # 区间回放
-    python scripts/scan_layer.py landing                        # V2.2-③-C 落地起跳四态(今天)
-    python scripts/scan_layer.py landing --from 20260720 --to 20260807  # 回填 + 逐日分布回放
+    python scripts/scan_layer.py landing                        # V2.2-③-C 落地起跳读数(今天)
+    python scripts/scan_layer.py landing --from 20260720 --to 20260807  # 回填 + 逐日覆盖率回放
     python scripts/scan_layer.py refresh --db /path.db --parquet-dir /path/parquet
 """
 
@@ -181,13 +181,13 @@ def cmd_regime(args: argparse.Namespace) -> int:
 
 
 def cmd_landing(args: argparse.Namespace) -> int:
-    """V2.2-③-C 落地起跳位置关:批算落 `landing_state_daily` + 逐日打印四态分布
-    (回放即验收:任取区间跑一遍,每天说得出四态 + none 的分布;refresh 与
-    bootstrap 回填共用本命令——按 `--from/--to/--year` 给区间即回填,同
-    `refresh`/`bootstrap` 一体的既有语义)。⚠ 全市场逐票 × 145 交易日回看,
+    """V2.2-③-C 落地起跳位置关(🔴 裁定 #11 后 = 机械只出读数,判定交给 LLM):
+    批算落 `landing_metrics_daily` + 逐日打印读数覆盖率与缺项分布(回放即验收:
+    任取区间跑一遍,每天说得出全市场判定行数 + 十四项读数各自的缺失分布;
+    refresh 与 bootstrap 回填共用本命令——按 `--from/--to/--year` 给区间即回填,
+    同 `refresh`/`bootstrap` 一体的既有语义)。⚠ 全市场逐票 × ~145 交易日回看,
     生产机大区间回填前先按项目 CLAUDE.md「生产机性能探针纪律」隔离实测
-    (§七 P4-50,⛔ 不许跳过)。"""
-    from neckline.scan import landing as landing_mod
+    (§七 P4-50,⛔ 不许跳过)。⛔ 不再打印四态分布——裁定 #11 后没有态了。"""
     from neckline.scan import landing_store
 
     days = resolve_days(args)
@@ -195,23 +195,23 @@ def cmd_landing(args: argparse.Namespace) -> int:
         logger.error("解析不出任何交易日(检查 --from/--to/--year 与 trade_cal 覆盖范围)")
         return 1
     t0 = datetime.now()
-    stats = landing_store.refresh_landing_states(days, db_path=args.db, parquet_dir=args.parquet_dir)
+    stats = landing_store.refresh_landing_metrics(days, db_path=args.db, parquet_dir=args.parquet_dir)
     logger.info(
-        "landing_state_daily: 处理 %d 天 / 落 %d 行 / 失败 %d 天(耗时 %.1fs)",
+        "landing_metrics_daily: 处理 %d 天 / 落 %d 行 / 失败 %d 天(耗时 %.1fs)",
         stats["days"], stats["rows"], stats["failed"],
         (datetime.now() - t0).total_seconds(),
     )
     for d in days:
-        counts = landing_store.landing_state_counts(d, db_path=args.db)
-        if not counts:
+        cov = landing_store.landing_metrics_coverage(d, db_path=args.db)
+        if not cov["total"]:
             logger.warning("%s 无判定行(该日批算未产出/当日无 daily 数据,缺行 = 不知道)",
                            d.strftime("%Y%m%d"))
             continue
-        dist = " ".join(
-            f"{state}({landing_mod.STATE_LABELS.get(state, state)})={counts.get(state, 0)}"
-            for state in landing_mod.STATE_ORDER
-        )
-        logger.info("%s 四态分布:%s | 共 %d 行", d.strftime("%Y%m%d"), dist, sum(counts.values()))
+        if cov["missing_counts"]:
+            miss = " ".join(f"{k}缺{v}" for k, v in sorted(cov["missing_counts"].items()))
+        else:
+            miss = "(全员齐全)"
+        logger.info("%s 共 %d 票有读数 | 缺项分布:%s", d.strftime("%Y%m%d"), cov["total"], miss)
     return 0 if not stats["failed"] else 1
 
 
@@ -255,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ld = sub.add_parser(
         "landing",
-        help="V2.2-③-C 落地起跳四态:批算落 landing_state_daily + 逐日分布回放(区间即回填)",
+        help="V2.2-③-C 落地起跳读数(裁定 #11 后零判定):批算落 landing_metrics_daily + 逐日覆盖率回放(区间即回填)",
     )
     ld.add_argument("--from", dest="date_from", help="起始交易日 YYYYMMDD")
     ld.add_argument("--to", dest="date_to", help="结束交易日 YYYYMMDD")

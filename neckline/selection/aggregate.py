@@ -40,6 +40,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -74,7 +75,7 @@ from neckline.scan.seeds import DriverSeed, SeedSet
 from neckline.selection import basket_store as _basket_store
 from neckline.selection import engine_api
 from neckline.selection import member_hygiene
-from neckline.selection.pack import Pack, get_active_pack, get_pack
+from neckline.selection.pack import Pack, get_active_engines, get_active_pack, get_pack
 from neckline.strategy import brain
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,166 @@ _NEG_INF = float("-inf")
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# ⑤ 位置关(落地起跳)的 LLM 判定件 —— **2026-08-09 用户裁定 #11**
+#
+# 位置关**由机械关改判为证据关**:机械层只出读数(`landing_metrics_daily`),
+# 判定直接交大模型,**只降级不除名**(§2.0 第〇原则第 4 锁「LLM 不做闸门」因此
+# 完好无损)。⛔ 不得改回机械阈值 —— K8 §二 对「落地起跳」只有五句定性、零个
+# 数字,工程侧翻译出的十二个阈值连乘后交集近乎为空(14 个 D0 回放零 T1)。
+#
+# 🔴 **成本铁律(附「成本与超时算术」五条写死的第 1 条,一字不变)**:位置判定
+# **搭 `basket_reason` 那一次调用**,⛔ **不新增任何 LLM 调用,增量仍是 0**。
+# 本模块的 LLM 调用点恒为 2 个(检索段 1 + 推理段 1),守门单测按 AST 数死。
+# ══════════════════════════════════════════════════════════════════════════
+
+# LLM 位置判定三值(唯一源;`gates.py` 与契约层都读这里,⛔ 不抄第二份)。
+POSITION_OK = "ok"          # 位置合适 → 位置关 pass(T1 的必要条件之一)
+POSITION_WEAK = "weak"      # 位置勉强 → 位置关 degrade(降一档)
+POSITION_UNFIT = "unfit"    # 位置不合适 → 退出正式候选,**仍在 ③b 列名**
+POSITION_VERDICTS: Tuple[str, ...] = (POSITION_OK, POSITION_WEAK, POSITION_UNFIT)
+
+# LLM 没给 / 给了枚举外取值时的**保守兜底**(⛔ 不静默当 ok —— 「没判」不能被
+# 讲成「判过了、没问题」;取 weak = 降一档,与「证据关只降级」同一姿势)。
+POSITION_VERDICT_FALLBACK = POSITION_WEAK
+POSITION_REASON_FALLBACK = "position.verdict_missing:LLM 未给位置判定,保守按 weak 处理"
+
+# K8 §二「核心逻辑」原文(⛔ 逐字,不改写不缩写)—— prompt 里给 LLM 的第 ① 样。
+K8_POSITION_CRITERIA = (
+    "选择完成下落或调整、确认支撑并刚刚向上启动的核心股票。"
+    "股票此前可以经历长期下跌、横盘整理或趋势内回撤。入选时必须具备以下状态:\n"
+    "  1. 下跌或调整已经结束;\n"
+    "  2. 关键位置形成有效支撑;\n"
+    "  3. 抛压明显衰减;\n"
+    "  4. 价格开始向上转强;\n"
+    "  5. 当前仍处于启动早期。"
+)
+
+# `landing_metrics_daily.metrics_json` 的**键名契约**(🔴 两个施工面共用,
+# ⛔ 不许改名、不许增减:写侧 `neckline/scan/landing.py`,读侧本模块)。
+# 分组 = K8 §二 五句话各自对应的可观测事实(plan §五 ③-C 读数表逐行)。
+# ⚠ 全部是**事实读数**,⛔ 不含任何阈值比较结果、不含四态枚举。
+POSITION_METRIC_GROUPS: Tuple[Tuple[str, Tuple[Tuple[str, str], ...]], ...] = (
+    ("下跌或调整已经结束", (
+        ("low5_over_low20_ratio", "近5日最低价÷前20日区间最低价"),
+        ("is_new_low_20d", "当日创20日新低"),
+    )),
+    ("关键位置形成有效支撑", (
+        ("close_over_ma20_dev", "收盘相对MA20偏离"),
+        ("close_over_platform_floor_dev", "收盘相对平台下沿偏离"),
+    )),
+    ("抛压明显衰减", (
+        ("down_day_amount_ratio_5v20", "近5日下跌日均额÷近20日均额"),
+        ("max_daily_drop_5d", "近5日最大单日跌幅"),
+    )),
+    ("价格开始向上转强", (
+        ("close_over_ma5_dev", "收盘相对MA5偏离"),
+        ("pct_chg", "当日涨跌幅"),
+        ("rs5", "RS5(相对所属行业中位5日超额)"),
+    )),
+    ("当前仍处于启动早期", (
+        ("dist_from_high_60d", "距60日高点"),
+        ("cum_return_3d", "近3日累计涨幅"),
+        ("is_limit_up", "当日涨停"),
+        ("is_new_high_60d", "创60日新高"),
+        ("platform_days", "平台天数"),
+    )),
+)
+POSITION_METRIC_KEYS: Tuple[str, ...] = tuple(
+    k for _group, items in POSITION_METRIC_GROUPS for k, _label in items
+)
+
+
+def _fmt_metric(value: Any) -> str:
+    """一个读数 → 人读串。**布尔必须排在数值之前**(CLAUDE.md `NKJSON` 同款坑:
+    `True` 在 Python 里也是 `int`,顺序反了「是/否」会变成「1/0」)。
+    `None` = 这一项没取到 —— ⛔ 不填 0、不填默认值(plan ③-C:喂给 LLM 的必须是
+    「这项没取到」而不是一个假数)。"""
+    if value is None:
+        return "未取到"
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, (int, float)):
+        return f"{float(value):.4g}"
+    return str(value)
+
+
+def _fmt_metrics_missing(raw: Any) -> str:
+    """`landing_metrics_daily.metrics_missing` → 人读串。写侧落的是
+    `{读数键: 原因码}` 的 JSON(`scan/landing.py::REASON_*` 词汇),**原因码原样透传**
+    —— 让模型知道"没取到"具体是哪一类,不是笼统一个 null(plan ③-C 的诚实披露)。"""
+    if raw in (None, "", "{}"):
+        return ""
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return raw.strip()
+    else:
+        parsed = raw
+    if isinstance(parsed, Mapping):
+        return "、".join(f"{k}={parsed[k]}" for k in sorted(parsed))
+    if isinstance(parsed, (list, tuple)):
+        return "、".join(str(x) for x in parsed)
+    return str(parsed)
+
+
+def _load_position_metrics(
+    trade_date: date, codes: Sequence[str], *, db_path: Optional[Path] = None,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str], bool]:
+    """读 `landing_metrics_daily`(**只读预计算表**,P0-23 纪律:⛔ 不在线现算)。
+
+    返回 `(code → 读数字典, code → metrics_missing 串, 当日表里有没有行)`。
+    整段包保险丝(§五铁律:核心管线对可选情报输入的调用必须包保险丝)——
+    读不到只是位置关的输入缺席(prompt 里如实写「本次未取得」、gates 侧
+    `available=False` 不拦但不给 T1),⛔ 绝不让当日无篮子。"""
+    metrics: Dict[str, Dict[str, Any]] = {}
+    missing: Dict[str, str] = {}
+    wanted = {c for c in codes if c}
+    if not wanted:
+        return metrics, missing, False
+    try:
+        # 惰性 import:写侧 `scan/landing*.py` 与本模块是两个施工面,把耦合收在
+        # 这一句里 —— 名字对不上时是这里一行 WARNING,不是整条晚间链 ImportError。
+        from neckline.scan.landing_store import load_landing_metrics
+
+        df = load_landing_metrics(trade_date, db_path=db_path)
+        day_present = not df.is_empty()
+        if day_present:
+            sub = df.filter(pl.col("ts_code").is_in(sorted(wanted)))
+            for r in sub.iter_rows(named=True):
+                try:
+                    parsed = json.loads(r["metrics_json"]) if r["metrics_json"] else {}
+                except (json.JSONDecodeError, TypeError):
+                    parsed = {}
+                metrics[r["ts_code"]] = parsed if isinstance(parsed, dict) else {}
+                missing[r["ts_code"]] = _fmt_metrics_missing(r["metrics_missing"])
+        return metrics, missing, day_present
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[aggregate] 落地起跳读数表读取失败(位置关本次无读数可喂,按「未取得」如实披露);"
+            "写侧唯一入口应为 `neckline.scan.landing_store.load_landing_metrics`",
+            exc_info=True,
+        )
+        return {}, {}, False
+
+
+def _load_engine_position_guidance(db_path: Optional[Path] = None) -> Dict[str, str]:
+    """三条引擎线的 `config.engine.gates.position.guidance`(**定性文本、无数字**,
+    裁定 #11:三引擎的位置差别自此由定性描述 + LLM 判断承担)。⛔ 不走 `provenance`
+    闸(它不是阈值),读不到只是 prompt 里少一段引擎准则,不影响成篮。"""
+    out: Dict[str, str] = {}
+    try:
+        for code, pk in get_active_engines(db_path).items():
+            gates = ((pk.config.get("engine") or {}).get("gates") or {})
+            text = str((gates.get("position") or {}).get("guidance") or "").strip()
+            if text:
+                out[code] = text
+    except Exception:  # noqa: BLE001
+        logger.warning("[aggregate] 引擎线位置准则读取失败,prompt 少这一段", exc_info=True)
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 数据形状
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -258,6 +419,17 @@ class BasketMemberCandidate:
     # `avoid_flag→tag`,这里落的是"tag"那一档,供未来 ⑦ 卡面展示 + ⑥ `card_density`
     # 消费)。`None` = 未命中任何 K4 分区,或 K4 评估本次不可用(降级不拦、不打标)。
     k4_tag: Optional[str] = None
+    # —— V2.2-③-C 位置关(裁定 #11:判定交 LLM,机械层只出读数)————————————
+    # 🔴 `position_metrics` / `position_metrics_missing` 是**当次喂给 LLM 的那份
+    # 读数原样**(⛔ 不是 gates 侧另读一遍的),`position_verdict` /
+    # `position_reason` 是模型据此给的判定与理由 —— 两样一起被 `gates.py` 写进
+    # `gate_evaluations.evidence_json`。裁定 #11 之后「当时按什么标准判的」不再是
+    # 一组可回放的数字而是一段模型输出,**不把这两样存在一起,事后就无法复核它
+    # 到底在拿什么下判断**(plan ③-C 末段的硬要求)。
+    position_verdict: str = ""             # ok|weak|unfit;"" = 本次没走过位置判定
+    position_reason: str = ""              # 模型那句人话(或兜底原因码)
+    position_metrics: Optional[Dict[str, Any]] = None      # None = 当次没有读数可喂
+    position_metrics_missing: str = ""     # 哪几项没取到 + 为什么(诚实披露)
 
 
 @dataclass(frozen=True)
@@ -429,6 +601,15 @@ class MechContext:
     # 算好后由 `aggregate_baskets()` 塞进来;hard_cut 命中已在装配阶段被剔,不会
     # 出现在这里)。`_gate_proposal` 构造 `BasketMemberCandidate` 时从这里取值。
     k4_tag_of: Dict[str, str] = field(default_factory=dict)
+    # —— V2.2-③-C 位置关读数(裁定 #11):`landing_metrics_daily` 只读产物。
+    # `position_metrics_available=False` = 当日整张表没行(引擎没跑 / 没数据),
+    # 与「某只票单独缺行」是两回事,⛔ 不合并(「没有」与「没看」必须分得开)。
+    position_metrics_of: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    position_metrics_missing_of: Dict[str, str] = field(default_factory=dict)
+    position_metrics_available: bool = False
+    # 三条引擎线的定性位置准则(engine_code → guidance;裁定 #11 后位置关零阈值,
+    # 三引擎的位置差别由**定性描述 + LLM 判断**承担)。
+    engine_position_guidance: Dict[str, str] = field(default_factory=dict)
 
     def display(self, code: str) -> str:
         name = self.names.get(code)
@@ -519,6 +700,13 @@ def build_mech_context(
             ctx.corr_by_pair = {k: sum(v) / len(v) for k, v in acc.items()}
     except Exception:  # noqa: BLE001
         logger.warning("[aggregate] 相关性表加载失败,辅助证据缺这一路", exc_info=True)
+
+    # —— V2.2-③-C(裁定 #11):位置关读数 + 三引擎定性位置准则 —— 两路都只读表,
+    # 各自包保险丝(缺了只是 prompt 少一段 + 位置关按「未取得」披露)。
+    ctx.position_metrics_of, ctx.position_metrics_missing_of, ctx.position_metrics_available = (
+        _load_position_metrics(trade_date, wanted, db_path=db_path)
+    )
+    ctx.engine_position_guidance = _load_engine_position_guidance(db_path)
 
     return ctx
 
@@ -720,7 +908,7 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
 
 股票篮子的定义:**由同一个主要驱动因素影响、预计次日具有相似方向或明显联动关系的一组股票。**
 
-你要做的六件事:
+你要做的七件事:
 1. **合并名称不同但实际驱动相同的题材**(例如某个行业种子和某个概念种子其实是同一件事);
 2. 给每个篮子命名,并用一句话说清**共同驱动**,再用一两句话说清**为什么是现在**;
 3. 从系统给出的成员清单里**挑 1 到 3 只**股票,说明**为什么是这几只而不是同题材其他票**;
@@ -736,6 +924,13 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
 凭什么还能延续)、`strengthen_and_invalidate`(接下来出现什么会强化它、出现什么会证伪它);
 另外若给出的各条证据之间**互相矛盾**,在 `evidence_conflicts` 里指出是哪几条打架、你如何取舍
 (没有矛盾就写空字符串)。
+7. 给**你选中的每一只成员**判一次**位置**(下面「位置关」一节给了判断标准与该票的读数),
+产出 `position_verdict`(`ok` / `weak` / `unfit` 三选一)+ `position_reason`(一句人话说清依据):
+   · `ok` = 位置符合「落地起跳」,现在正是值得投入注意力的位置;
+   · `weak` = 位置勉强、有明显疑点(该票会被降一档);
+   · `unfit` = 位置不合适(该票所在篮子退出正式候选,但**仍会在报告里列名并写明你的理由**)。
+**读数里写「未取到」的项就是真的没取到**,请据实说明不确定性,⛔ 不要把它当成 0 或默认值。
+判不准就给 `weak` 并说明缺什么,⛔ 不要为了让票留下而给 `ok`。
 
 硬约束(系统会做机械校验,违反的建议会被整条丢弃,不是提醒而是规则):
 · **成员只能从下面每颗种子给出的成员清单里选**。清单之外的任何代码都算凭空捏造,
@@ -771,7 +966,9 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
    "seed_keys": ["这个篮子合并了哪几颗种子的编号"],
    "members": [{"ts_code": "必须来自该种子的成员清单",
                 "role": "leader|core|elastic",
-                "reason": "为什么是这只而不是同题材其他票"}]}
+                "reason": "为什么是这只而不是同题材其他票",
+                "position_verdict": "ok|weak|unfit 三选一(该票的落地起跳位置判定)",
+                "position_reason": "一句话说清位置判定的依据"}]}
 ]}
 ```
 
@@ -786,11 +983,18 @@ def build_reason_context(
     evidence_by_seed: Mapping[str, DriverEvidence],
     ctx: MechContext,
 ) -> str:
-    """推理段的 user 消息 = 日期锚 + 逐颗种子(机械依据 + 检索证据 + 成员机械数据)。
+    """推理段的 user 消息 = 日期锚 + **位置关判断标准** + 逐颗种子(机械依据 +
+    检索证据 + 成员机械数据 + **该票的落地起跳读数**)。
 
     **检索段缺席的种子照样列出**,并显式标注「本次未取得联网证据」——藏起来会让
-    模型误以为这颗种子没被查过就是没证据(「没有」与「没看」必须分得开)。"""
+    模型误以为这颗种子没被查过就是没证据(「没有」与「没看」必须分得开)。
+
+    **V2.2-③-C 位置关(裁定 #11)**:prompt 里给三样 —— ① K8 §二 五句原文;
+    ② 三条引擎线的定性位置准则 `gates.position.guidance`;③ 该票的
+    `landing_metrics_daily` 读数 + `metrics_missing`。⛔ **不新增 LLM 调用**,
+    判定搭本次 `basket_reason` 一并产出。"""
     lines = [date_anchor_line(ref_date=ctx.trade_date, name_tomorrow=True), ""]
+    lines.extend(_position_prompt_block(ctx))
     for seed in seeds:
         presented = presented_by_seed.get(seed.seed_key, ())
         ev = evidence_by_seed.get(seed.seed_key)
@@ -825,12 +1029,58 @@ def build_reason_context(
             if rs_rank is not None:
                 bits.append(f"簇内RS名次 {rs_rank}")
             lines.append("     · " + ";".join(bits))
+            lines.append("       位置读数:" + _position_metrics_line(code, ctx))
         pair_note = _corr_note(presented, ctx)
         if pair_note:
             lines.append(f"   成员间 20 日相关性(**只作辅助证据,单凭相关性不足以成篮**):{pair_note}")
         lines.append("")
     lines.append("请据此给出今天的篮子。没有站得住的共同驱动就交空数组。")
     return "\n".join(lines)
+
+
+def _position_prompt_block(ctx: MechContext) -> List[str]:
+    """位置关判断标准段(裁定 #11 的 prompt 第 ①②样:K8 §二 五句 + 三引擎定性准则)。
+
+    ⛔ **这一段里不许出现任何阈值/及格线** —— 位置关自此零阈值,数字只以「该票读数」
+    的形式出现在成员清单里,由模型自己权衡。"""
+    lines = [
+        "── 位置关(落地起跳)判断标准 —— 给你选中的每一只成员判 position_verdict",
+        "【K8 核心逻辑原文】" + K8_POSITION_CRITERIA,
+    ]
+    if ctx.engine_position_guidance:
+        lines.append("【各引擎的位置准则(按你给该篮子标的 engine_code 取对应那条)】")
+        for code in sorted(ctx.engine_position_guidance):
+            lines.append(f"  · {code}:{ctx.engine_position_guidance[code]}")
+    else:
+        lines.append("【各引擎的位置准则】**本次未取得**(引擎线读取失败)——"
+                     "只按上面 K8 原文判断,并在理由里注明缺这一条。")
+    if not ctx.position_metrics_available:
+        lines.append("⚠ 本次**整张落地起跳读数表都没有当日行**(引擎没跑或当日无数据)——"
+                     "下面每只票的位置读数都会写「本次未取得」。⛔ 不要凭空想象读数,"
+                     "据实说明不确定性即可。")
+    lines.append("")
+    return lines
+
+
+def _position_metrics_line(code: str, ctx: MechContext) -> str:
+    """一只票的落地起跳读数(按 K8 五句分组的人读串)。
+
+    **缺行 / 缺项一律如实说「未取到」**,⛔ 不填 0、不填默认值(plan ③-C:喂给
+    LLM 的必须是「这项没取到」而不是一个假数)。"""
+    metrics = ctx.position_metrics_of.get(code)
+    if metrics is None:
+        why = ("当日读数表无行" if ctx.position_metrics_available
+               else "当日读数表整张缺行")
+        return f"**本次未取得**({why})"
+    parts: List[str] = []
+    for group, items in POSITION_METRIC_GROUPS:
+        body = "、".join(f"{label} {_fmt_metric(metrics.get(key))}" for key, label in items)
+        parts.append(f"[{group}]{body}")
+    line = ";".join(parts)
+    miss = (ctx.position_metrics_missing_of.get(code) or "").strip()
+    if miss:
+        line += f";(未取到的项与原因:{miss})"
+    return line
 
 
 def _corr_note(codes: Sequence[str], ctx: MechContext, top: int = 5) -> str:
@@ -958,6 +1208,34 @@ def _resolve_driver_kind(
     return "theme", True
 
 
+def _parse_position_verdict(
+    member_raw: Mapping[str, Any], *, code: str, name: str,
+) -> Tuple[str, str]:
+    """成员项 → `(position_verdict, position_reason)`(V2.2-③-C,裁定 #11)。
+
+    🔴 **缺字段 / 枚举外取值 = 保守按 `weak` 处理 + 留痕,⛔ 不静默当 `ok`**:
+    「模型没判」与「模型判过、说没问题」是两件事,合并成后者等于替它下结论
+    (§2.0 第〇原则的同一条精神)。⛔ 也**不整条拒收** —— 位置关是证据关,
+    证据关只降级不除名(③-A)。"""
+    raw = str(member_raw.get("position_verdict") or "").strip().lower()
+    reason = str(member_raw.get("position_reason") or "").strip()
+    if raw in POSITION_VERDICTS:
+        return raw, reason
+    if raw:
+        logger.warning(
+            "[aggregate] 篮子 %r 成员 %s 的 position_verdict=%r 不在 %s 内,"
+            "保守按 %s 处理(⛔ 不静默当 ok)", name, code, raw,
+            list(POSITION_VERDICTS), POSITION_VERDICT_FALLBACK,
+        )
+    else:
+        logger.warning(
+            "[aggregate] 篮子 %r 成员 %s 未给 position_verdict,保守按 %s 处理",
+            name, code, POSITION_VERDICT_FALLBACK,
+        )
+    detail = f"(模型给的是 {raw!r})" if raw else ""
+    return POSITION_VERDICT_FALLBACK, (reason or (POSITION_REASON_FALLBACK + detail))
+
+
 def _gate_proposal(
     proposal: Any,
     *,
@@ -1010,7 +1288,8 @@ def _gate_proposal(
         return None, RejectedProposal(
             REJECT_MEMBER_COUNT, f"成员数 {len(members_raw)} 不在 [{MIN_MEMBERS},{MAX_MEMBERS}]", raw
         )
-    parsed_members: List[Tuple[str, str, str]] = []   # (code, role, reason)
+    # (code, role, reason, position_verdict, position_reason)
+    parsed_members: List[Tuple[str, str, str, str, str]] = []
     codes_seen: set = set()
     for m in members_raw:
         if not isinstance(m, dict):
@@ -1018,6 +1297,7 @@ def _gate_proposal(
         code = str(m.get("ts_code") or "").strip()
         role = str(m.get("role") or "").strip().lower()
         reason = str(m.get("reason") or "").strip()
+        pos_verdict, pos_reason = _parse_position_verdict(m, code=code, name=name)
         if not code:
             return None, RejectedProposal(REJECT_MALFORMED, "成员缺 ts_code", raw)
         if code in codes_seen:
@@ -1029,13 +1309,13 @@ def _gate_proposal(
             # 角色是三值枚举、prompt 里逐字给过;写不对就没法跟机械侧对拍(对拍闸
             # 会失去意义),故按 malformed 拒收而不是猜一个角色塞进去。
             return None, RejectedProposal(REJECT_BAD_ROLE, f"{code} 的角色 {role!r} 不在 {ROLES}", raw)
-        parsed_members.append((code, role, reason))
+        parsed_members.append((code, role, reason, pos_verdict, pos_reason))
 
     # —— 闸 3:**成员白名单闸**(plan §五 V2-⑤ 第 1 道)———————————————————
     allowed: set = set()
     for k in seed_keys:
         allowed.update(presented_by_seed.get(k, ()))
-    fabricated = sorted(c for c, _r, _why in parsed_members if c not in allowed)
+    fabricated = sorted(c for c, *_rest in parsed_members if c not in allowed)
     if fabricated:
         logger.warning(
             "[aggregate] 白名单闸:提案 %r 出现成员集合外的代码 %s(声明种子 %s),"
@@ -1061,7 +1341,7 @@ def _gate_proposal(
 
     # —— **角色对拍闸**(plan §五 V2-⑤ 第 2 道)———————————————————————
     members: List[BasketMemberCandidate] = []
-    for code, role, reason in parsed_members:
+    for code, role, reason, pos_verdict, pos_reason in parsed_members:
         role_mech, rs_rank = _resolve_mech_role(code, ctx, prefer_cluster_keys=seed_keys)
         conflict = 1 if (role_mech is not None and role_mech != role) else 0
         if conflict:
@@ -1074,6 +1354,11 @@ def _gate_proposal(
             ts_code=code, role_llm=role, role_mech=role_mech, role_conflict=conflict,
             reason=reason, industry=ctx.industry_of.get(code), rs_rank=rs_rank,
             name=ctx.names.get(code, ""), k4_tag=ctx.k4_tag_of.get(code),
+            # 位置关(裁定 #11):判定 + **当次喂给它的那份读数**一起带下去 ——
+            # `gates.py` 靠这两样把 `gate_evaluations.evidence_json` 写全。
+            position_verdict=pos_verdict, position_reason=pos_reason,
+            position_metrics=ctx.position_metrics_of.get(code),
+            position_metrics_missing=ctx.position_metrics_missing_of.get(code, ""),
         ))
 
     seed_kinds = [seeds_by_key[k].seed_kind for k in seed_keys]
@@ -1222,12 +1507,16 @@ def assign_primary(
     out: List[BasketCandidate] = []
     for b in baskets:
         qualified = qualified_of[b.basket_key]
+        # 🔴 **只改这四格,其余字段一律 `dc_replace` 原样带过**(V2.2-③-C 施工期真
+        # 踩:这里原本是**逐字段手抄构造** `BasketMemberCandidate(...)`,新增的位置关
+        # 四字段没抄进来 → 全篮成员的 `position_verdict` 被静默重置成默认值 → 六关
+        # 侧全员回退成 `weak`、读数全丢,**日志一行警告都没有、界面上看起来像模型
+        # 判的**。与下面那句对篮子级的告诫是同一条:逐字段手抄在加新字段时会静默丢
+        # 字段,⛔ 别再改回手抄。
         members = tuple(
-            BasketMemberCandidate(
-                ts_code=m.ts_code, role_llm=m.role_llm, role_mech=m.role_mech,
-                role_conflict=m.role_conflict, reason=m.reason,
+            dc_replace(
+                m,
                 is_primary=1 if primary_of.get(m.ts_code) == b.basket_key else 0,
-                industry=m.industry,
                 # 不达标篮:lift 不参与比较、也不展示数值(「算不出」≠「等于 0」,
                 # 承 ⑤ 既有姿势;这里"算不出"的原因是样本太小,标 `lift_reason`)。
                 industry_lift=(_lift(b.basket_key, m.ts_code) if qualified else None),
@@ -1236,7 +1525,6 @@ def assign_primary(
                     primary_reason_of.get(m.ts_code)
                     if primary_of.get(m.ts_code) == b.basket_key else None
                 ),
-                rs_rank=m.rs_rank, name=m.name, k4_tag=m.k4_tag,
             )
             for m in b.members
         )

@@ -467,6 +467,15 @@ def _fmt_num(v: Any, fmt: str = "{:.2f}", dash: str = "—") -> str:
         return str(v)
 
 
+def _md_cell(v: Any, dash: str = "—") -> str:
+    """一格 Markdown 表格文本:`|` 转义 + 换行折平。**凡是有可能装进 LLM 自由文本的
+    表格格都要过这里** —— 一个未转义的竖线会把整张表切歪,而且是静默的
+    (V2.2-③-C 起 ③b 的「差多少」那一格开始装模型写的位置判定理由)。"""
+    if v is None or v == "":
+        return dash
+    return str(v).replace("|", "\\|").replace("\n", " ").strip() or dash
+
+
 def _render_today_baskets(bd: Optional[BasketDaily]) -> str:
     lines = ["## ③ 今日篮子", ""]
     if bd is None or not bd.baskets_available:
@@ -664,10 +673,14 @@ def _render_dropped_baskets(bd: Optional[BasketDaily]) -> str:
     lines.append("| 篮子名 | 机械分 | 卡在哪一关 | 差多少 | 原因码 |")
     lines.append("|---|---|---|---|---|")
     for d in sorted(bd.dropped, key=lambda x: (x.reason, -(x.mech_score or 0.0), x.name)):
-        gate = getattr(d, "gate", None) or "—"
-        detail = getattr(d, "gate_detail", None) or "—"
+        gate = _md_cell(getattr(d, "gate", None))
+        # ⚠ V2.2-③-C(裁定 #11)起 `gate_detail` 可能带**模型写的自由中文**
+        # (位置关 `unfit` 的理由),里面出现一个 `|` 就会把整张表切歪 —— 逐格转义,
+        # ⛔ 不要因为"以前这里只放原因码"就省掉这一步。
+        detail = _md_cell(getattr(d, "gate_detail", None))
         lines.append(
-            f"| {d.name} | {_fmt_num(d.mech_score, '{:.3f}')} | {gate} | {detail} | `{d.reason}` |"
+            f"| {_md_cell(d.name)} | {_fmt_num(d.mech_score, '{:.3f}')} | {gate} | "
+            f"{detail} | `{d.reason}` |"
         )
     lines.append("")
     lines.append("*本节只列名 / 分 / 关口 / 原因码,**不出卡、无 basketId** —— 它们没有进 "

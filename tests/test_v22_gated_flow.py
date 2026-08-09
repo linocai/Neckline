@@ -24,7 +24,6 @@ import pytest
 
 from neckline.llm.base import LLMResult
 from neckline.report import evening as ev
-from neckline.scan import landing as landing_mod
 from neckline.selection import aggregate as ag
 from neckline.selection import basket_card as bc
 from neckline.selection import gates as gt
@@ -32,7 +31,7 @@ from neckline.selection import pack as pack_mod
 from neckline.selection import tier as ti
 from tests.conftest import insert_stock_basic, insert_trade_cal, write_daily_fixture
 from tests.test_selection_gates import (
-    _EV3, _insert_landing, _insert_regime, _insert_strength_days,
+    _EV3, _METRICS_OK, _insert_regime, _insert_strength_days,
 )
 
 D0 = date(2024, 4, 8)
@@ -47,18 +46,24 @@ def _activate_all_lines(db_path: Path) -> None:
         pack_mod.activate_pack(doc["manifest"], doc["config"], via="seed", db_path=db_path)
 
 
-def _member(code: str = CODE) -> ag.BasketMemberCandidate:
+def _member(code: str = CODE, *, position: str = ag.POSITION_OK) -> ag.BasketMemberCandidate:
+    """⚠ 裁定 #11:位置关吃的是 ⑤ 随成员带下来的 **LLM 判定 + 当次读数**
+    (⛔ gates 不再读 `landing_metrics_daily`,夹具也不再造那张表的行)。"""
     return ag.BasketMemberCandidate(
         ts_code=code, role_llm="leader", role_mech=None, role_conflict=0,
         reason="理由", industry="半导体", rs_rank=1, name=code,
+        position_verdict=position, position_reason="回撤到位后转强",
+        position_metrics=dict(_METRICS_OK), position_metrics_missing="",
     )
 
 
-def _basket(key: str = "k1", *, name: str = "篮") -> ag.BasketCandidate:
+def _basket(key: str = "k1", *, name: str = "篮",
+            position: str = ag.POSITION_OK) -> ag.BasketCandidate:
     return ag.BasketCandidate(
         trade_date=D0_S, basket_key=key, name=name, driver="共同驱动",
         driver_kind="theme", why_now="为什么是现在", seed_keys=("s-1",),
-        members=(_member(),), evidence=_EV3, evidence_status=ag.EVIDENCE_OK,
+        members=(_member(position=position),), evidence=_EV3,
+        evidence_status=ag.EVIDENCE_OK,
         pack_version="K8-V0.5", engine_api_version=ag.engine_api.ENGINE_API_VERSION,
         charter_version="v1.3.3", engine_code_llm="C",
         common_trait="共同特征", persistence="持续性", strengthen_and_invalidate="强化与证伪",
@@ -79,8 +84,6 @@ def _seed_t1_world(env) -> None:
     insert_trade_cal(env, days)
     _insert_strength_days(env.db_path, days, {"半导体": 1}, {"半导体": True})
     _insert_regime(env.db_path, "trend_continuation")
-    _insert_landing(env.db_path, {CODE: landing_mod.LIFTOFF_CONFIRMED},
-                    {CODE: {"dist_from_high_60d": -0.10}})
     # 卡的机械锚(收盘 + 涨跌停)。⚠ **两样缺一不可**:
     #   · `stock_basic` —— `basket_card.build_member_mech` 经 `load_stock_meta` 取
     #     board/is_st 才算得出涨跌停价;缺了 → limit_up/limit_down 皆 None →
@@ -196,20 +199,49 @@ class TestGatedEveningFlow:
 
     def test_gate_excluded_basket_lands_in_dropped_and_handoff(self, isolated_env, monkeypatch):
         """机械关硬否决的候选:不落 `baskets`、进返回的 dropped(③b)与跨进程
-        交接表 —— **没消失**。"""
+        交接表 —— **没消失**。
+
+        ⚠ 裁定 #11 后**位置关不再硬否决**,这条改用市场关构造(C1 在高位分歧下
+        广度分位不够 → reject)。"""
         env = isolated_env
         _activate_all_lines(env.db_path)
-        _insert_landing(env.db_path, {CODE: landing_mod.FALLING})
-        dropped, _stats, _notes = _run_segment(env, _agg([_basket(name="下落篮")]),
+        _insert_regime(env.db_path, "high_divergence", breadth_pctile=0.10)
+        dropped, _stats, _notes = _run_segment(env, _agg([_basket(name="弱广度篮")]),
                                                monkeypatch, use_llm=False)
-        assert [d.reason for d in dropped] == [gt.EXCLUDE_MEMBERS_ALL_REMOVED]
-        assert dropped[0].gate == gt.GATE_POSITION and dropped[0].name == "下落篮"
+        assert [d.reason for d in dropped] == [gt.EXCLUDE_MECH_GATE_REJECTED]
+        assert dropped[0].gate == gt.GATE_MARKET and dropped[0].name == "弱广度篮"
         assert _rows(env.db_path, "SELECT COUNT(*) FROM baskets")[0][0] == 0
         from neckline.selection.basket_dropped_handoff import load_dropped_handoff
 
         back = load_dropped_handoff(D0, db_path=env.db_path)
-        assert back is not None and back[0].reason == gt.EXCLUDE_MEMBERS_ALL_REMOVED
-        assert back[0].gate == gt.GATE_POSITION and back[0].name == "下落篮"
+        assert back is not None and back[0].reason == gt.EXCLUDE_MECH_GATE_REJECTED
+        assert back[0].gate == gt.GATE_MARKET and back[0].name == "弱广度篮"
+
+    def test_position_unfit_basket_exits_candidacy_but_lands_in_3b(self, isolated_env,
+                                                                   monkeypatch):
+        """🔴 裁定 #11 在**整条编排链**上的机器判据:位置关判 `unfit` → 不落
+        `baskets`,但 ③b 与跨进程交接表里**名 / 分 / 关 / 原因码 / 模型理由**齐全
+        —— 票没消失,只是退出正式候选。"""
+        env = isolated_env
+        _seed_t1_world(env)
+        dropped, _stats, _notes = _run_segment(
+            env, _agg([_basket(name="位置不合适篮", position=ag.POSITION_UNFIT)]),
+            monkeypatch, use_llm=False)
+        assert [d.reason for d in dropped] == [ti.DROP_POSITION_UNFIT]
+        assert dropped[0].gate == gt.GATE_POSITION and dropped[0].name == "位置不合适篮"
+        assert CODE in (dropped[0].gate_detail or "")
+        assert _rows(env.db_path, "SELECT COUNT(*) FROM baskets")[0][0] == 0
+        from neckline.selection.basket_dropped_handoff import load_dropped_handoff
+
+        back = load_dropped_handoff(D0, db_path=env.db_path)
+        assert back is not None and back[0].reason == ti.DROP_POSITION_UNFIT
+        # 关口留痕照写:位置关行是 LLM 关、且读数与理由都在
+        rows = _rows(env.db_path,
+                     "SELECT gate_kind, verdict, evidence_json FROM gate_evaluations "
+                     "WHERE gate='position'")
+        assert rows and rows[0][0] == "llm" and rows[0][1] == "degrade"
+        ev = json.loads(rows[0][2])
+        assert ev["position_verdict"] == ag.POSITION_UNFIT and ev["metrics"]
 
 
 # ══════════════════════════════════════════════════════════════════════════

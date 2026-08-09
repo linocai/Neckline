@@ -116,21 +116,26 @@ def _agg(baskets: Sequence[ag.BasketCandidate], notes: Sequence[str] = ()) -> ag
 
 def _summary(key: str, *, name: str = "", t1: bool = False, excluded: bool = False,
              reason: str | None = None, gate: str | None = None, detail: str | None = None,
-             degrades: int = 0) -> gates_mod.BasketGateSummary:
+             degrades: int = 0, position_unfit: bool = False,
+             position_detail: str = "") -> gates_mod.BasketGateSummary:
+    """⚠ 裁定 #11:`all_members_liftoff` 已删(T1 不再要求任何机械态枚举);
+    位置关的「退出正式候选」由 `position_unfit` 表达,**⛔ 不是 excluded**。"""
     return gates_mod.BasketGateSummary(
         basket_key=key, name=name,
         engine_code=None if excluded else "C", engine_version=None if excluded else "C1",
         skeleton_version="K8-V0.5", engine_source=None if excluded else "llm",
         excluded=excluded, exclusion_reason=reason, stuck_gate=gate, stuck_detail=detail,
         evidence_degrades=degrades,
-        degraded_gates=tuple(gates_mod.EVIDENCE_GATES)[:degrades],
-        blocks_t1=not t1, all_members_liftoff=t1, regime_available=True,
+        degraded_gates=tuple(sorted(gates_mod.EVIDENCE_GATES))[:degrades],
+        blocks_t1=not t1, position_unfit=position_unfit,
+        position_unfit_detail=position_detail, regime_available=True,
     )
 
 
 def _outcome(r: ag.AggregateResult, *, t1_keys: Sequence[str] = (),
              excluded: Dict[str, str] | None = None,
-             degrades_by_key: Dict[str, int] | None = None) -> gates_mod.GateDayOutcome:
+             degrades_by_key: Dict[str, int] | None = None,
+             position_unfit_keys: Sequence[str] = ()) -> gates_mod.GateDayOutcome:
     """默认:全部候选过六关、但 blocks_t1(缺 landing/regime 之类)→ 全 T2 资格
     (与旧质量线时代"零数据篮子落 T2"的行为对齐,存量断言最小扰动)。
     `t1_keys` 指定哪些篮子 T1 资格;`excluded` = {key: 除名原因码};
@@ -144,7 +149,10 @@ def _outcome(r: ag.AggregateResult, *, t1_keys: Sequence[str] = (),
                      detail="test:excluded")
             if b.basket_key in excluded else
             _summary(b.basket_key, name=b.name, t1=b.basket_key in set(t1_keys),
-                     degrades=degrades_by_key.get(b.basket_key, 0))
+                     degrades=degrades_by_key.get(b.basket_key, 0),
+                     position_unfit=b.basket_key in set(position_unfit_keys),
+                     position_detail=("600001.SH:position.unfit[C]:已在加速段"
+                                      if b.basket_key in set(position_unfit_keys) else ""))
         )
         for b in r.baskets
     }
@@ -1369,6 +1377,47 @@ class TestScoreAndTierMixedDropReasons:
         assert "mech_gate_rejected:1" in res.notes
         assert "evidence_degraded_out:1" in res.notes
         assert "capacity_overflow:3" in res.notes
+
+    def test_position_unfit_is_its_own_reason_code_not_merged(self, isolated_env):
+        """🔴 裁定 #11:位置关 `unfit` 出局 ≠ 证据关降级超上限 —— 两个原因码指向
+        完全不同的复盘结论(④ 周度按关口归因要分得开),⛔ 不许合并。"""
+        env = isolated_env
+        unfit = _basket("k-unfit", [_member("600001.SH")], name="位置不合适")
+        degraded = _basket("k-degraded", [_member("600999.SH")], name="证据不足")
+        r = _agg([unfit, degraded])
+        res = ti.score_and_tier(
+            r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(r, position_unfit_keys=["k-unfit"],
+                                   degrades_by_key={"k-degraded": 2}),
+        )
+        by_key = {d.basket_key: d for d in res.dropped}
+        assert res.decisions == ()
+        assert by_key["k-unfit"].reason == ti.DROP_POSITION_UNFIT
+        assert by_key["k-degraded"].reason == ti.DROP_EVIDENCE_DEGRADED_OUT
+        # ③b 上说得出卡在哪一关、是哪只成员、模型给的理由
+        assert by_key["k-unfit"].gate == gates_mod.GATE_POSITION
+        assert "600001.SH" in (by_key["k-unfit"].gate_detail or "")
+        assert by_key["k-unfit"].name == "位置不合适"          # ⛔ 票没从 ③b 消失
+        assert "position_unfit:1" in res.notes
+
+    def test_position_unfit_never_enters_any_tier_even_with_a_high_score(self, isolated_env):
+        """反向:同一个候选把 `position_unfit` 摘掉就进得了档 —— 证明出局确实是
+        位置判定造成的,不是分数或别的关。"""
+        env = isolated_env
+        _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1}])
+        b = _basket("k-hot", [_member("600001.SH", industry="半导体", rs_rank=1)], name="高分")
+        r = _agg([b])
+        blocked = ti.score_and_tier(
+            r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(r, t1_keys=["k-hot"], position_unfit_keys=["k-hot"]))
+        assert blocked.decisions == ()
+        assert blocked.dropped[0].reason == ti.DROP_POSITION_UNFIT
+        assert blocked.dropped[0].mech_score is not None and blocked.dropped[0].mech_score > 0.4
+
+        ok = ti.score_and_tier(
+            r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(r, t1_keys=["k-hot"]))
+        assert [d.tier for d in ok.decisions] == [1]
 
 
 class TestNeutralFilledWeight:

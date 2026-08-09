@@ -75,7 +75,8 @@ def _write_engine_pack(tmp_path: Path, filename: str, line_code: str = "C",
             "gates": {
                 "market": {"primary_regimes": leaf(["trend_continuation"])},
                 "sector": {"industry_rank_max": leaf(10)},
-                "position": {"landing_states": leaf(["liftoff_confirmed"])},
+                # 🔴 裁定 #11:位置关零阈值,只剩定性文本键(⛔ 不走 provenance 闸)。
+                "position": {"guidance": "测试用的定性位置准则"},
                 "core": {"leader_rs_rank_max": leaf(3)},
                 "evidence": {"independent_evidence_min": leaf(3)},
             },

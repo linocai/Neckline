@@ -70,7 +70,8 @@ def _minimal_engine_pack(line_code: str = "C", pack_version: str = "C-test-v1",
             "gates": {
                 "market": {"primary_regimes": _engine_leaf(["trend_continuation"])},
                 "sector": {"industry_rank_max": _engine_leaf(10)},
-                "position": {"landing_states": _engine_leaf(["liftoff_confirmed"])},
+                # 🔴 裁定 #11:位置关零阈值,只剩一条**定性文本**键(⛔ 不走 provenance 闸)。
+                "position": {"guidance": "测试用的定性位置准则"},
                 "core": {"leader_rs_rank_max": _engine_leaf(3)},
                 "evidence": {"independent_evidence_min": _engine_leaf(3)},
             },
@@ -1049,7 +1050,7 @@ def test_engine_code_must_equal_line_code_bit_for_bit():
 
 
 def test_unknown_config_top_level_keys_are_tolerated_on_both_line_kinds(tmp_path: Path):
-    """② 要给骨架包加 `config.regime`、③ 要加 `config.landing` —— 本版交叉校验
+    """② 要给骨架包加 `config.regime` —— 本版交叉校验
     只管 seeds/tier/engine 三个段的归属,**其他顶层键一律不管**(plan §五 ① 原文),
     拒了它们就是给后续块挖坑。
 
@@ -1060,7 +1061,7 @@ def test_unknown_config_top_level_keys_are_tolerated_on_both_line_kinds(tmp_path
     skel["config"]["future_section"] = {"future": True}
     assert pack.validate_pack_doc(skel) == []
     eng = _minimal_engine_pack("C", pack_version="tolerant-c")
-    eng["config"]["landing"] = {"future": True}
+    eng["config"]["future_engine_section"] = {"future": True}
     assert pack.validate_pack_doc(eng) == []
     # 而且真的能激活(不是只有校验层宽容)
     db_path = tmp_path / "n.db"
@@ -1155,8 +1156,9 @@ def test_real_k8_skeleton_pack_matches_plan_value_changes():
     assert doc["config"]["seeds"]["industry_blacklist"] == {"industries": ["白酒"]}
     # config 结构承 K7 的 seeds+tier 两段,tier 权重/打分映射原样;V2.2-② 追加
     # regime 段(行情状态五阈值,值与引擎默认逐位一致由 test_market_regime.py 锁);
-    # V2.2-③-C 追加 landing 段(落地起跳十二阈值,同款锁在 test_scan_landing.py)
-    assert set(doc["config"]) == {"seeds", "tier", "regime", "landing"}
+    # ⚠ **`config.landing` 段已随裁定 #11 整体删除**(位置关不再有机械判定):
+    # 骨架包 config 回到 seeds + tier + regime 三段。⛔ 不得恢复第四段。
+    assert set(doc["config"]) == {"seeds", "tier", "regime"}
     k7 = pack.load_pack_file(_K7_PACK_FILE)
     assert doc["config"]["tier"]["weights"] == k7["config"]["tier"]["weights"]
     assert doc["config"]["tier"]["stage_scores"] == k7["config"]["tier"]["stage_scores"]
@@ -1184,7 +1186,13 @@ def test_real_engine_pack_files_pass_gate1_and_every_leaf_has_provenance(line: s
 
     leaves = []
     for section, body in engine["gates"].items():
+        qualitative = pack._QUALITATIVE_GATE_KEYS.get(section, frozenset())
         for key, leaf in body.items():
+            if key in qualitative:
+                # 裁定 #11:定性文本键(position.guidance)**不是阈值**,不走
+                # provenance 闸 —— ⛔ 别把它算进"每叶都要有 provenance"里。
+                assert isinstance(leaf, str) and leaf.strip(), f"gates.{section}.{key}"
+                continue
             leaves.append((f"gates.{section}.{key}", leaf))
     for tier_key, body in engine["tier_evidence"].items():
         for key, leaf in body.items():
@@ -1207,7 +1215,10 @@ def test_engine_pack_audited_leaves_match_plan_distribution():
     for line, file in _ENGINE_PACK_FILES.items():
         doc = pack.load_pack_file(file)
         for section, body in doc["config"]["engine"]["gates"].items():
+            qualitative = pack._QUALITATIVE_GATE_KEYS.get(section, frozenset())
             for key, leaf in body.items():
+                if key in qualitative:
+                    continue                      # 定性文本键无 provenance(裁定 #11)
                 if leaf["provenance"]["source"] == "audited":
                     audited_paths.setdefault(line, set()).add(f"{section}.{key}")
     assert audited_paths["C"] == {"core.leader_rs_rank_max", "sector.industry_rank_max"}
@@ -1230,11 +1241,62 @@ def test_engine_pack_threshold_values_match_plan_table():
     assert val("C", "sector", "strength_days_min_5d") == 3
     assert val("Z", "sector", "stage_allowed") == ["ignition", "fermentation"]
     assert val("Z", "sector", "cluster_members_min") == 3
-    assert val("C", "position", "pullback_depth_range") == [-0.20, -0.05]
-    assert val("Z", "position", "dist_from_high_60d_min") == -0.15
-    assert val("Y", "position", "platform_days_min") == 40
-    assert val("Y", "position", "platform_amplitude_max") == 0.25
+    # 🔴 位置关**没有阈值可对表了**(裁定 #11:七个阈值键全删,只剩定性 guidance)
+    # —— 逐引擎的定性准则由 `test_engine_pack_position_is_qualitative_only` 守。
     assert val("C", "evidence", "independent_evidence_min") == 3
     assert val("Z", "evidence", "independent_evidence_min") == 3
     assert val("Z", "evidence", "require_news_policy_source") is True
     assert val("Y", "evidence", "independent_evidence_min") == 2
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🔴 裁定 #11:位置关零阈值 + `guidance` 是定性文本(不走 provenance 闸)
+# ══════════════════════════════════════════════════════════════════════════
+
+_RETIRED_POSITION_KEYS = (
+    "t1_landing_states", "t2_landing_states", "pullback_depth_range", "landing_states",
+    "dist_from_high_60d_min", "platform_days_min", "platform_amplitude_max",
+)
+
+
+def test_position_gate_schema_has_only_guidance_and_no_retired_thresholds():
+    """2026-08-09 用户裁定 #11 的机器判据:位置关白名单**只剩 `guidance` 一个键**,
+    七个老阈值键一个都不许回来(K8 §二 零个数字,那套翻译出来的阈值连乘交集近乎
+    为空 —— 14 个 D0 回放零 T1)。⛔ 不重开。"""
+    assert pack._ENGINE_GATE_SCHEMA["position"] == frozenset({"guidance"})
+    for key in _RETIRED_POSITION_KEYS:
+        assert key not in pack._ENGINE_GATE_SCHEMA["position"], key
+    # 其余四关一字未动(裁定 11-a:范围只限位置关,⛔ 别顺手一起改)
+    assert "primary_regimes" in pack._ENGINE_GATE_SCHEMA["market"]
+    assert "industry_rank_max" in pack._ENGINE_GATE_SCHEMA["sector"]
+    assert "leader_rs_rank_max" in pack._ENGINE_GATE_SCHEMA["core"]
+    assert "independent_evidence_min" in pack._ENGINE_GATE_SCHEMA["evidence"]
+
+
+def test_guidance_is_qualitative_text_and_skips_the_provenance_gate():
+    """`guidance` 是定性文本不是阈值 → **不走 provenance 闸**(白名单里单列),
+    但形状仍受校验:必须是非空字符串。"""
+    doc = _minimal_engine_pack("C")
+    assert pack.validate_pack_doc(doc) == []                       # 裸字符串,不带 provenance
+    doc["config"]["engine"]["gates"]["position"]["guidance"] = "   "
+    assert any("非空字符串" in e for e in pack.validate_pack_doc(doc))
+    # 写成阈值叶子形状反而不对(它不是阈值,⛔ 别给它编一个 provenance)
+    doc["config"]["engine"]["gates"]["position"]["guidance"] = _engine_leaf("文本")
+    assert any("非空字符串" in e for e in pack.validate_pack_doc(doc))
+    # 白名单仍然管用:位置段自创键照拒
+    doc["config"]["engine"]["gates"]["position"] = {
+        "guidance": "文本", "platform_days_min": _engine_leaf(40)}
+    assert any("白名单外" in e and "platform_days_min" in e
+               for e in pack.validate_pack_doc(doc))
+
+
+@pytest.mark.parametrize("line", sorted(_ENGINE_PACK_FILES))
+def test_real_engine_pack_position_is_guidance_only(line: str):
+    """三个真实引擎包的 position 段:**恰一个 `guidance` 键、值是非空文本、零数字键**
+    (文案取 plan §五 ③-F 位置关那三格)。"""
+    doc = pack.load_pack_file(_ENGINE_PACK_FILES[line])
+    position = doc["config"]["engine"]["gates"]["position"]
+    assert set(position) == {"guidance"}
+    assert isinstance(position["guidance"], str) and position["guidance"].strip()
+    keyword = {"C": "健康回撤", "Z": "早期右侧启动", "Y": "中期平台"}[line]
+    assert keyword in position["guidance"]

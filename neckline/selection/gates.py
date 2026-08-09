@@ -1,25 +1,36 @@
 """六道关口管线(plan §五 V2.2-③,K8 §五 的唯一实现;🔴 换心脏件)。
 
-**③-A 关口二分是本模块的宪法**(2026-08-09 用户裁定 #6,⛔ 不重开):
+**③-A 关口二分是本模块的宪法**(2026-08-09 用户裁定 #6,**#11 改判位置关**,⛔ 不重开):
 
-    ==========  ==========================  ==============================================
-    机械关       ① 市场 · ③ 板块 · ⑤ 位置     全机械、可复现、可回放 → **硬否决**
-                                            (退出正式候选,落 `gate_evaluations` 留痕)
-    证据关       ② 驱动 · ④ 核心 · ⑥ 证据     LLM 组织证据 + 机械最低标注 → **只降级**
-                                            (T1→T2→退出正式候选,**仍在 ③b 列名**)
-    ==========  ==========================  ==============================================
+    ==========  ==================================  ======================================
+    机械关       ① 市场 · ③ 板块                      全机械、可复现、可回放 → **硬否决**
+                                                    (退出正式候选,落 `gate_evaluations`)
+    证据关       ② 驱动 · ④ 核心 · ⑤ 位置 · ⑥ 证据    LLM 组织证据 + 机械最低标注 → **只降级**
+                                                    (T1→T2→退出正式候选,**仍在 ③b 列名**)
+    ==========  ==================================  ======================================
+
+🔴 **2026-08-09 用户裁定 #11:位置关由机械关移入证据关,⛔ 不得改回**。原因:K8 §二
+对「落地起跳」只有五句定性、零个数字;裁定 #4 授权的工程首版定量落成十二个阈值 /
+13 个子门,实测**连乘交集近乎为空**(全市场当日 1~2 / 5526,14 个 D0 回放零 T1)。
+用户原话「不要搞这个机械层了……这个地方的判定直接给到大模型」。**第 4 锁「LLM 不做
+闸门」因此不但没被突破、反而更严** —— 六关里能硬否决的只剩两道读客观预计算量的关
+(市场关读 `market_regime_daily`、板块关读 `industry_strength_daily`/`industry_stage_daily`)。
 
 **「退出正式候选」≠「从报告里消失」**(§2.9-C-2):被本模块除名的候选一律进
 `TierResult.dropped` → 报告 ③b(名 / 分 / 卡在哪一关、差多少 / 原因码)。
 
 **引擎归属(裁定 #9 单篮子单引擎,§2.9-C-4)**:`basket_reason` 那**一次**调用为每个
 篮子主张一个 `engine_code`(`BasketCandidate.engine_code_llm`),本模块拿该引擎的
-**机械关阈值**对拍 —— **不满足的成员直接出篮**(⚠ 与角色对拍 `role_conflict` 的
-「两说并存」姿势**刻意不同**:篮子只留 1-3 只本就是筛选,不是并存的场合)。
-⛔ 不静默采信 LLM;LLM 没给 / 给错 → 机械兜底(按 C→Z→Y 确定性序找第一个
-「篮子级机械关不拒 且 ≥1 名成员过位置对拍」的引擎),仍无 → 退出正式候选
-(`engine_unresolved`,③b 列名)。**零运行引擎 = 当日不产任何候选**
-(`pack.get_active_line` docstring 既定语义),全部候选按 `no_active_engine` 落 ③b。
+**机械关阈值**对拍。⛔ 不静默采信 LLM;LLM 没给 / 给错 → 机械兜底(按 C→Z→Y 确定性
+序找第一个「篮子级机械关不拒」的引擎),仍无 → 退出正式候选(`engine_unresolved`,
+③b 列名)。**零运行引擎 = 当日不产任何候选**(`pack.get_active_line` docstring 既定
+语义),全部候选按 `no_active_engine` 落 ③b。
+
+⚠ **裁定 #11 之后「成员出篮」这条路当前没有触发源(如实登记,不是遗漏)**:
+唯一会成员级除名的是原来的机械位置关,它已改判为只降级的证据关;剩下两道机械关
+(市场 / 板块)都是**篮子级**判据。留下 `removed_members` / `_repair_primary` /
+`members_all_removed` 这套机械是给**未来真的出现成员级机械关**时用的通路,当前恒空
+—— ⛔ 别据此以为"对拍闸没接线",也别为了"让它有用"把位置关改回硬否决。
 
 **「缺数 = 不知道,⛔ 不许猜」的统一姿势**(承 ② 市场关缺行裁定,推广到六关):
 任何一关的判定输入取不到 → 该关 **不拦**(verdict=pass)+ `available=False` +
@@ -27,12 +38,19 @@
 「判过了」,也永远不是「拦下来」。
 
 **成本铁律(附「成本与超时算术」)**:本模块 **零 LLM 调用** —— 证据关/驱动关/
-核心关的 LLM 侧产出一律复用 ⑤ `basket_reason` 那一次调用带回的结构化字段
+核心关/**位置关**的 LLM 侧产出一律复用 ⑤ `basket_reason` 那一次调用带回的结构化字段
 (`common_trait` / `persistence` / `strengthen_and_invalidate` / `evidence_conflicts` /
-成员 `reason` / 角色),本模块只做机械判定与归并。三引擎并跑只体现在**阈值分支**上。
+成员 `reason` / 角色 / **`position_verdict` + `position_reason` + 当次读数**),本模块
+只做归并与留痕。三引擎并跑只体现在**阈值分支**上,⛔ 不体现在调用次数上。
 
 **留痕**:`gate_evaluations`(append-only,每候选每关一行;成员级关口〔核心/位置〕
 每成员一行)。写入口只有 `save_gate_evaluations()`,零 UPDATE/DELETE。
+🔴 **位置关行的硬要求(plan ③-C 末段)**:`gate_kind='llm'` 且 `evidence_json`
+**必须同时存下当次读数与 LLM 理由** —— 判定不再是一组可回放的数字而是一段模型输出,
+不把这两样存在一起,事后无法复核它到底在拿什么下判断(P3-49 的证伪义务不减反增)。
+⚠ 读数取自 `BasketMemberCandidate.position_metrics`(= **当次喂进 prompt 的那一份**),
+⛔ 本模块不另读一遍 `landing_metrics_daily` —— 另读会存下「事后那一份」,与模型当时
+看到的可能不是同一份,留痕就白留了。
 
 **阈值唯一源 = 引擎包 `config.engine.gates`**(键名契约 =
 `selection/pack.py::_ENGINE_GATE_SCHEMA`,⛔ 本模块不自创第二套键名、不硬编任何
@@ -48,7 +66,8 @@
 
 **反向守门**:零 import `neckline.report.score_display`(V2.1-④ 方向性规则)、
 零 import `neckline.sentinel.*`、零 import `neckline.selection.tier`(tier 反过来
-import 本模块,方向单一)。
+import 本模块,方向单一)、🆕 零 import `neckline.scan.landing*`(裁定 #11:位置关的
+读数由 ⑤ 随成员带进来,本模块不碰那张表)。
 """
 
 from __future__ import annotations
@@ -64,12 +83,17 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from neckline.db import connection, init_schema
 from neckline.report.industry_strength_store import load_industry_strength
-from neckline.scan import landing as landing_mod
 from neckline.scan import stage as stage_mod
-from neckline.scan.landing_store import load_landing_states
 # 「无骨架线现役」哨兵串与 regime 同一个字面(同一条纪律,不抄第二份)。
 from neckline.scan.regime import SKELETON_VERSION_FALLBACK
 from neckline.scan.regime_store import load_market_regime
+# 位置关三值的**唯一源**在 ⑤(判定就发生在那一次调用里),这里只消费,⛔ 不抄第二份。
+from neckline.selection.aggregate import (
+    POSITION_OK,
+    POSITION_UNFIT,
+    POSITION_VERDICT_FALLBACK,
+    POSITION_VERDICTS,
+)
 from neckline.selection.pack import Pack, get_active_engines, get_active_skeleton
 
 logger = logging.getLogger(__name__)
@@ -89,15 +113,17 @@ GATE_ORDER: Tuple[str, ...] = (
     GATE_MARKET, GATE_DRIVER, GATE_SECTOR, GATE_CORE, GATE_POSITION, GATE_EVIDENCE,
 )
 
-# ③-A 二分(宪法,⛔ 不重开):机械关硬否决,证据关只降级。
-MECH_GATES = frozenset({GATE_MARKET, GATE_SECTOR, GATE_POSITION})
-EVIDENCE_GATES = frozenset({GATE_DRIVER, GATE_CORE, GATE_EVIDENCE})
+# ③-A 二分(宪法,⛔ 不重开;🔴 裁定 #11 把位置关从机械关移进证据关):
+# 机械关硬否决,证据关只降级。
+MECH_GATES = frozenset({GATE_MARKET, GATE_SECTOR})
+EVIDENCE_GATES = frozenset({GATE_DRIVER, GATE_CORE, GATE_POSITION, GATE_EVIDENCE})
 
 GATE_KIND_MECH = "mech"
 GATE_KIND_LLM = "llm"
 GATE_KIND_OF: Dict[str, str] = {
-    GATE_MARKET: GATE_KIND_MECH, GATE_SECTOR: GATE_KIND_MECH, GATE_POSITION: GATE_KIND_MECH,
-    GATE_DRIVER: GATE_KIND_LLM, GATE_CORE: GATE_KIND_LLM, GATE_EVIDENCE: GATE_KIND_LLM,
+    GATE_MARKET: GATE_KIND_MECH, GATE_SECTOR: GATE_KIND_MECH,
+    GATE_DRIVER: GATE_KIND_LLM, GATE_CORE: GATE_KIND_LLM,
+    GATE_POSITION: GATE_KIND_LLM, GATE_EVIDENCE: GATE_KIND_LLM,
 }
 
 # 成员级关口(`gate_evaluations.ts_code` 非空的那两关,plan ③-B DDL 注释原文)。
@@ -122,7 +148,9 @@ ENGINE_SOURCE_MECH_FALLBACK = "mech_fallback"  # LLM 缺席/给错,机械按 C�
 EXCLUDE_NO_ACTIVE_ENGINE = "no_active_engine"        # 零运行引擎 = 当日不产任何候选
 EXCLUDE_ENGINE_UNRESOLVED = "engine_unresolved"      # LLM 没给/给错 + 机械兜底也找不到
 EXCLUDE_MECH_GATE_REJECTED = "mech_gate_rejected"    # 篮子级机械关(市场/板块)硬否决
-EXCLUDE_MEMBERS_ALL_REMOVED = "members_all_removed"  # 位置关对拍后成员全部出篮
+# ⚠ 裁定 #11 后**当前没有触发源**(唯一的成员级机械关〔位置关〕已改判为证据关);
+# 码与通路保留给未来真的出现成员级机械关时用,⛔ 别据此把位置关改回硬否决。
+EXCLUDE_MEMBERS_ALL_REMOVED = "members_all_removed"  # 成员级机械关对拍后成员全部出篮
 
 # tier_evidence 缺键时的引擎默认(K8 §八:T1 零降级 / T2 至多一处;包里给了以包为准)。
 T1_MAX_EVIDENCE_DEGRADES_DEFAULT = 0
@@ -252,29 +280,39 @@ class BasketGateSummary:
     degraded_gates: Tuple[str, ...] = ()
     blocks_t1: bool = False
     blocks_t1_reasons: Tuple[str, ...] = ()
-    all_members_liftoff: bool = False
+    # 🔴 裁定 #11:任一成员被 LLM 判 `position_verdict='unfit'` → 该候选**退出正式
+    # 候选**(③-A 证据关的最重后果:T1→T2→退出正式候选),**仍在 ③b 列名**。
+    # ⛔ 这不是硬否决:位置关的 `verdict` 永远只有 pass/degrade(第 4 锁),
+    # 「退出」发生在定档层(`t2_eligible=False`),不是在关口层把票删掉。
+    position_unfit: bool = False
+    position_unfit_detail: str = ""
     regime_available: bool = False
     t1_max_evidence_degrades: int = T1_MAX_EVIDENCE_DEGRADES_DEFAULT
     t2_max_evidence_degrades: int = T2_MAX_EVIDENCE_DEGRADES_DEFAULT
 
     @property
     def t1_eligible(self) -> bool:
-        """六关全过 + 全部输入可得 + 成员全为 liftoff_confirmed + regime 可得
-        (③-D T1 定义里除「四件套齐」之外的全部机械项 —— 四件套在 ⑦ 卡生成之后
-        才验,见 `tier.enforce_plan_completeness`)。"""
+        """③-D 的 T1:**机械关 ①③ pass + 证据关 ②④⑤⑥ 全 pass(含
+        `position_verdict=ok`)** + 全部输入可得 + `market_regime` 可得。
+        (「四件套齐」在 ⑦ 卡生成之后才验,见 `tier.enforce_plan_completeness`。)
+
+        🔴 裁定 #11:**⛔ 不再要求任何机械态枚举** —— 原「全员 `liftoff_confirmed`」
+        那一条正是把 T1 掐成近乎不可达的东西(实测 14 个 D0 回放零 T1),已整体作废。"""
         return (
             not self.excluded
+            and not self.position_unfit
             and self.evidence_degrades <= self.t1_max_evidence_degrades
             and not self.degraded_gates
             and not self.blocks_t1
-            and self.all_members_liftoff
             and self.regime_available
         )
 
     @property
     def t2_eligible(self) -> bool:
-        """机械关全过 且 证据关降级处数 ≤ 引擎 T2 上限(③-D)。"""
+        """③-D 的 T2:机械关全过 且 证据关(**含位置关**)降级处数 ≤ 引擎 T2 上限。
+        任一成员位置 `unfit` → 退出正式候选(⛔ 但票仍进 ③b,不消失)。"""
         return (not self.excluded
+                and not self.position_unfit
                 and self.evidence_degrades <= self.t2_max_evidence_degrades)
 
 
@@ -304,8 +342,9 @@ class GateContext:
     trade_date: date
     regime_row: Optional[Dict[str, Any]] = None
     regime_breadth_pctile: Optional[float] = None
-    landing_by_code: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    landing_day_present: bool = False       # 当日 landing 表有行(缺行=引擎没跑,全员「不知道」)
+    # ⚠ 裁定 #11 后**位置关不在这里取数**:读数由 ⑤ 随 `BasketMemberCandidate`
+    # 带进来(= 当次喂给 LLM 的那一份),本上下文零 landing 字段、本模块零 import
+    # `neckline.scan.landing*`(守门单测锁死)。
     industry_rank: Dict[str, int] = field(default_factory=dict)
     industry_available: bool = False
     strength_days_5d: Dict[str, int] = field(default_factory=dict)
@@ -317,16 +356,18 @@ class GateContext:
 
 def build_gate_context(
     trade_date: date,
-    codes: Sequence[str],
+    codes: Sequence[str],                 # noqa: ARG001  —— 裁定 #11 后六关无成员级取数
     *,
     db_path: Optional[Path] = None,
     parquet_dir: Optional[Path] = None,   # noqa: ARG001  —— 签名对齐管线;当前六关全部只读表
     skeleton: Optional[Pack] = None,
 ) -> GateContext:
-    """装配六关所需的机械数据(**只读表**,P0-23 纪律:regime / landing /
-    industry_strength / stage 全是 EOD 预计算产物,本函数零现算、零 parquet 扫描)。"""
+    """装配六关所需的机械数据(**只读表**,P0-23 纪律:regime / industry_strength /
+    stage 全是 EOD 预计算产物,本函数零现算、零 parquet 扫描)。
+
+    ⚠ **位置关不在这里取数**(裁定 #11):它的读数与判定由 ⑤ 随成员带进来。
+    `codes` 因此当前只用于签名对齐与将来的成员级机械关,本函数不按它取任何数。"""
     ctx = GateContext(trade_date=trade_date)
-    wanted = sorted({c for c in codes if c})
 
     # —— 骨架版本口径指纹 ——
     try:
@@ -345,23 +386,6 @@ def build_gate_context(
                 ctx.regime_breadth_pctile = float(p)
     except Exception:  # noqa: BLE001
         logger.warning("[gates] 行情状态表读取失败,市场关按缺行处理", exc_info=True)
-
-    # —— ⑤ 位置关:落地态(直接读表;`landing.py` 的批算 ⛔ 不在这里跑)——
-    try:
-        df = load_landing_states(trade_date, db_path=db_path)
-        ctx.landing_day_present = not df.is_empty()
-        if ctx.landing_day_present and wanted:
-            sub = df.filter(df["ts_code"].is_in(wanted))
-            for r in sub.iter_rows(named=True):
-                try:
-                    metrics = json.loads(r["metrics_json"]) if r["metrics_json"] else {}
-                except (json.JSONDecodeError, TypeError):
-                    metrics = {}
-                ctx.landing_by_code[r["ts_code"]] = {
-                    "state": r["state"], "state_reason": r["state_reason"], "metrics": metrics,
-                }
-    except Exception:  # noqa: BLE001
-        logger.warning("[gates] 落地态表读取失败,位置关按缺行处理", exc_info=True)
 
     # —— ③ 板块关:行业强度(D0 名次 + 近 5 交易日强度日数)——
     try:
@@ -569,121 +593,61 @@ def _sector_gate(
                      reason="sector.ok", evidence=ev)
 
 
-def _position_member_check(
-    engine: Pack, ctx: GateContext, code: str,
-) -> Tuple[GateCheck, bool, bool]:
-    """⑤ 位置关(机械,成员级):读 `landing_state_daily` + 引擎分支阈值。
-    返回 `(check, removed, t1_capable)`。`removed=True` = 该成员不满足该引擎的
-    机械关阈值,**直接出篮**(§2.9-C-4 对拍闸)。"""
+def _position_member_check(engine: Pack, member: Any) -> Tuple[GateCheck, bool]:
+    """⑤ 位置关(**证据关**,成员级;🔴 裁定 #11 整节重写)。
+
+    判定不在这里做 —— 它由 ⑤ `basket_reason` 那**一次**调用给出
+    (`BasketMemberCandidate.position_verdict`),本函数只做三件事:
+    ① 三值 → 三态映射(`ok`→pass / `weak`→degrade / `unfit`→degrade + 退出正式候选);
+    ② 把**当次读数 + LLM 理由**一起塞进 `evidence`(→ `gate_evaluations.evidence_json`,
+       plan ③-C 末段的硬要求);③ 读数整份缺席时标 `available=False` + `blocks_t1`
+    (「判不出」既不是「判过了」也不是「拦下来」——⛔ 但它挡 T1:让 LLM 在零读数下
+    给的 `ok` 直接换来 T1,等于拿"没有依据"当依据)。
+
+    返回 `(check, unfit)`。**⛔ 永不返回 reject、永不让成员出篮** —— 位置关是证据关,
+    第 4 锁「LLM 不做闸门」在这里必须完好(裁定 11-b,用户在两条自己的裁定冲突时
+    选的那一边)。`unfit` 的后果发生在**定档层**(`t2_eligible=False` → ③b 列名)。"""
+    code = getattr(member, "ts_code", "") or ""
     engine_code = str((engine.config.get("engine") or {}).get("engine_code") or "")
-    row = ctx.landing_by_code.get(code)
-    state = str(row["state"]) if row else None
-    if row is None or state == landing_mod.NONE_STATE:
-        reason = ("landing.none" if row is not None else
-                  ("missing:landing_state" if ctx.landing_day_present
-                   else "missing:landing_table"))
-        return (GateCheck(GATE_POSITION, VERDICT_PASS, ts_code=code, available=False,
-                          blocks_t1=True, reason=reason), False, False)
+    guidance = str(((engine.config.get("engine") or {}).get("gates") or {})
+                   .get("position", {}).get("guidance") or "")
 
-    metrics = row.get("metrics") or {}
-    ev: Dict[str, Any] = {"state": state}
+    raw_verdict = str(getattr(member, "position_verdict", "") or "").strip().lower()
+    reason_text = str(getattr(member, "position_reason", "") or "").strip()
+    metrics = getattr(member, "position_metrics", None)
+    metrics_missing = str(getattr(member, "position_metrics_missing", "") or "")
 
-    if state == landing_mod.FALLING:
-        return (GateCheck(GATE_POSITION, VERDICT_REJECT, ts_code=code,
-                          reason="landing.falling", evidence=ev), True, False)
+    verdict_llm = raw_verdict if raw_verdict in POSITION_VERDICTS else POSITION_VERDICT_FALLBACK
+    # 🔴 evidence_json 的两样必需品:**当次读数** + **LLM 理由**。缺读数如实标
+    # `metrics_available=False`,⛔ 不补 0、不补默认值。
+    ev: Dict[str, Any] = {
+        "position_verdict": verdict_llm,
+        "position_verdict_raw": raw_verdict,
+        "position_reason": reason_text,
+        "metrics_available": metrics is not None,
+        "metrics": dict(metrics) if isinstance(metrics, Mapping) else None,
+        "metrics_missing": metrics_missing,
+        "engine_code": engine_code,
+        "position_guidance": guidance,
+    }
+    if raw_verdict not in POSITION_VERDICTS:
+        ev["verdict_fallback"] = True
 
-    # 允许态集合(键名契约:C 引擎两键 t1/t2;Z/Y 单键 landing_states)。
-    t1_states = _gate_value(engine, "position", "t1_landing_states")
-    t2_states = _gate_value(engine, "position", "t2_landing_states")
-    plain_states = _gate_value(engine, "position", "landing_states")
-    if isinstance(t1_states, list) or isinstance(t2_states, list):
-        t1set = set(t1_states or [])
-        allowed = t1set | set(t2_states or [])
-    elif isinstance(plain_states, list):
-        t1set = set(plain_states)
-        allowed = set(plain_states)
-    else:
-        # 包没声明任何落地态键(闸 1 白名单内不会发生;测试替身可能)→ 只认骨架
-        # 默认:liftoff 为 T1 态,landing_pending/high_extended 可留(③-C 四态表)。
-        t1set = {landing_mod.LIFTOFF_CONFIRMED}
-        allowed = {landing_mod.LIFTOFF_CONFIRMED, landing_mod.LANDING_PENDING,
-                   landing_mod.HIGH_EXTENDED}
-    if state not in allowed:
-        return (GateCheck(GATE_POSITION, VERDICT_REJECT, ts_code=code,
-                          reason=f"landing.state={state}∉{sorted(allowed)}[{engine_code}]",
-                          evidence=ev), True, False)
+    reason_code = f"position.{verdict_llm}[{engine_code}]"
+    if reason_text:
+        reason_code += f":{reason_text}"
+    metrics_absent = metrics is None
 
-    unavailable: List[str] = []
-    score: Optional[float] = None
-    threshold: Optional[float] = None
-
-    depth_range = _gate_value(engine, "position", "pullback_depth_range")
-    if isinstance(depth_range, list) and len(depth_range) == 2:
-        dist = metrics.get("dist_from_high_60d")
-        if not isinstance(dist, (int, float)) or isinstance(dist, bool):
-            unavailable.append("missing:dist_from_high_60d")
-        else:
-            lo, hi = float(depth_range[0]), float(depth_range[1])
-            ev["dist_from_high_60d"] = dist
-            score, threshold = float(dist), lo
-            if not (lo - _EPS <= float(dist) <= hi + _EPS):
-                return (GateCheck(
-                    GATE_POSITION, VERDICT_REJECT, ts_code=code, score=float(dist), threshold=lo,
-                    reason=f"landing.pullback_depth={float(dist):.4f}∉[{lo:.2f},{hi:.2f}]",
-                    evidence=ev), True, False)
-
-    dist_min = _gate_value(engine, "position", "dist_from_high_60d_min")
-    if isinstance(dist_min, (int, float)) and not isinstance(dist_min, bool):
-        dist = metrics.get("dist_from_high_60d")
-        if not isinstance(dist, (int, float)) or isinstance(dist, bool):
-            unavailable.append("missing:dist_from_high_60d")
-        else:
-            ev["dist_from_high_60d"] = dist
-            score, threshold = float(dist), float(dist_min)
-            if float(dist) < float(dist_min) - _EPS:
-                return (GateCheck(
-                    GATE_POSITION, VERDICT_REJECT, ts_code=code,
-                    score=float(dist), threshold=float(dist_min),
-                    reason=f"landing.dist_from_high_60d={float(dist):.4f}<{float(dist_min):.4f}",
-                    evidence=ev), True, False)
-
-    pdays_min = _gate_value(engine, "position", "platform_days_min")
-    if isinstance(pdays_min, (int, float)) and not isinstance(pdays_min, bool):
-        pdays = metrics.get("platform_days")
-        if not isinstance(pdays, (int, float)) or isinstance(pdays, bool):
-            unavailable.append("missing:platform_days")
-        else:
-            ev["platform_days"] = pdays
-            score, threshold = float(pdays), float(pdays_min)
-            if float(pdays) < float(pdays_min) - _EPS:
-                return (GateCheck(
-                    GATE_POSITION, VERDICT_REJECT, ts_code=code,
-                    score=float(pdays), threshold=float(pdays_min),
-                    reason=f"landing.platform_days={int(pdays)}<{int(pdays_min)}",
-                    evidence=ev), True, False)
-
-    amp_max = _gate_value(engine, "position", "platform_amplitude_max")
-    if isinstance(amp_max, (int, float)) and not isinstance(amp_max, bool):
-        amp = metrics.get("platform_amplitude")
-        if not isinstance(amp, (int, float)) or isinstance(amp, bool):
-            unavailable.append("missing:platform_amplitude")
-        else:
-            ev["platform_amplitude"] = amp
-            if float(amp) > float(amp_max) + _EPS:
-                return (GateCheck(
-                    GATE_POSITION, VERDICT_REJECT, ts_code=code,
-                    score=float(amp), threshold=float(amp_max),
-                    reason=f"landing.platform_amplitude={float(amp):.4f}>{float(amp_max):.4f}",
-                    evidence=ev), True, False)
-
-    t1_capable = state in t1set
-    if unavailable:
-        return (GateCheck(GATE_POSITION, VERDICT_PASS, ts_code=code, available=False,
-                          blocks_t1=True, score=score, threshold=threshold,
-                          reason=";".join(unavailable), evidence=ev), False, False)
-    return (GateCheck(GATE_POSITION, VERDICT_PASS, ts_code=code, score=score,
-                      threshold=threshold, blocks_t1=not t1_capable,
-                      reason=f"landing.state={state}", evidence=ev), False, t1_capable)
+    if verdict_llm == POSITION_OK:
+        return (GateCheck(GATE_POSITION, VERDICT_PASS, ts_code=code,
+                          available=not metrics_absent, blocks_t1=metrics_absent,
+                          reason=(reason_code if not metrics_absent
+                                  else reason_code + ";missing:position_metrics"),
+                          evidence=ev), False)
+    unfit = verdict_llm == POSITION_UNFIT
+    return (GateCheck(GATE_POSITION, VERDICT_DEGRADE, ts_code=code,
+                      available=not metrics_absent, blocks_t1=True,
+                      reason=reason_code, evidence=ev), unfit)
 
 
 def _core_member_check(engine: Pack, member: Any) -> GateCheck:
@@ -775,7 +739,8 @@ class _EngineEval:
     kept_members: Tuple[Any, ...]
     removed: Tuple[MemberRemoval, ...]
     mech_reject_check: Optional[GateCheck]   # 篮子级机械关(市场/板块)首个 reject
-    all_members_liftoff: bool
+    position_unfit: bool                     # 任一成员 `position_verdict='unfit'`
+    position_unfit_detail: str = ""
 
 
 def _evaluate_under_engine(basket: Any, engine: Pack, ctx: GateContext) -> _EngineEval:
@@ -794,17 +759,16 @@ def _evaluate_under_engine(basket: Any, engine: Pack, ctx: GateContext) -> _Engi
 
     kept: List[Any] = []
     removed: List[MemberRemoval] = []
-    liftoff_flags: List[bool] = []
+    unfit_notes: List[str] = []
     for m in basket.members:
         checks.append(_core_member_check(engine, m))
-        pos_check, is_removed, t1_capable = _position_member_check(engine, ctx, m.ts_code)
+        pos_check, is_unfit = _position_member_check(engine, m)
         checks.append(pos_check)
-        if is_removed:
-            removed.append(MemberRemoval(ts_code=m.ts_code, gate=GATE_POSITION,
-                                         reason=pos_check.reason))
-        else:
-            kept.append(m)
-            liftoff_flags.append(t1_capable)
+        # ⚠ 裁定 #11:位置关**永不让成员出篮**(证据关只降级)。`kept` 因此恒等于
+        # 全体成员 —— 成员出篮的通路留着,但当前没有成员级机械关会触发它。
+        kept.append(m)
+        if is_unfit:
+            unfit_notes.append(f"{m.ts_code}:{pos_check.reason}")
 
     checks.append(_evidence_gate(engine, basket))
 
@@ -812,13 +776,14 @@ def _evaluate_under_engine(basket: Any, engine: Pack, ctx: GateContext) -> _Engi
     return _EngineEval(
         checks=tuple(checks), kept_members=tuple(kept), removed=tuple(removed),
         mech_reject_check=mech_reject,
-        all_members_liftoff=bool(kept) and all(liftoff_flags),
+        position_unfit=bool(unfit_notes), position_unfit_detail=";".join(unfit_notes),
     )
 
 
 def _fits(ev: _EngineEval) -> bool:
-    """机械兜底的「该引擎装得下这个篮子」判据:篮子级机械关不拒 且 ≥1 名成员过
-    位置对拍(⛔ 不看证据关 —— 证据关只降级,不该影响归属)。"""
+    """机械兜底的「该引擎装得下这个篮子」判据:**篮子级机械关(市场/板块)不拒**。
+    ⛔ 不看证据关 —— 证据关只降级,不该影响归属(裁定 #11 后位置关也在其中,
+    故位置判定**不参与**引擎归属选择:LLM 判位置不佳不代表该篮该换个引擎)。"""
     return ev.mech_reject_check is None and bool(ev.kept_members)
 
 
@@ -921,9 +886,10 @@ def evaluate_day(
             kept_member_codes=tuple(m.ts_code for m in ev.kept_members),
             evidence_degrades=len(degraded_gates),
             degraded_gates=degraded_gates,
-            blocks_t1=bool(blocks_reasons) or not ev.all_members_liftoff,
+            blocks_t1=bool(blocks_reasons),
             blocks_t1_reasons=blocks_reasons,
-            all_members_liftoff=ev.all_members_liftoff,
+            position_unfit=ev.position_unfit,
+            position_unfit_detail=ev.position_unfit_detail,
             regime_available=ctx.regime_row is not None,
             t1_max_evidence_degrades=_tier_evidence_max(
                 engine_pack, "t1", T1_MAX_EVIDENCE_DEGRADES_DEFAULT),

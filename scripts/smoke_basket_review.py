@@ -60,6 +60,20 @@ MAX_STUB_BASKETS = 4        # 桩最多编几个篮子(够验链路,不追求真
 MAX_STUB_MEMBERS = 3        # 每篮最多几个成员(与 ⑤ 的成员上限同量级)
 
 
+def _stub_position_verdict(basket_index: int, member_index: int) -> str:
+    """桩的位置判定(V2.2-③-C,裁定 #11):**按篮序 × 成员序派三态**,一次冒烟同时
+    走通 ok / weak(降一档)/ unfit(退出正式候选、仍在 ③b 列名)三条路。
+
+    ⚠ **刻意按序号而不是按 `crc32(ts_code)` 派**:后者虽然也确定性,但命中率随当日
+    票池漂 —— 某些交易日会把**每一篮**都判掉,冒烟于是以"零定档"收场,看起来像链路
+    坏了(施工时真跑出过)。按序号派保证第 0 篮永远全 ok,**定档那一段照样被走到**。"""
+    if basket_index == 1 and member_index == 0:
+        return "weak"
+    if basket_index == 2 and member_index == 0:
+        return "unfit"
+    return "ok"
+
+
 class _Result:
     def __init__(self, content: str):
         self.ok, self.content, self.reason = True, content, "stub"
@@ -113,8 +127,15 @@ class StubProvider:
                     "strengthen_and_invalidate": "冒烟桩:再出政策则强化,龙头炸板则证伪",
                     "evidence_conflicts": "",
                     "seed_keys": [seed_key],
+                    # V2.2-③-C(裁定 #11):位置判定**搭同一次调用**产出(⛔ 零新增
+                    # LLM 调用)。桩按 `crc32(ts_code) % 5` 派三态 —— 一次冒烟同时走通
+                    # ok / weak(降一档)/ unfit(退出正式候选、仍在 ③b 列名)三条路,
+                    # ⛔ 不是为了让结果好看而全给 ok(那样降级分支永远测不到)。
                     "members": [{"ts_code": c, "role": "leader" if i == 0 else "core",
-                                 "reason": "冒烟桩理由"} for i, c in enumerate(picked)],
+                                 "reason": "冒烟桩理由",
+                                 "position_verdict": _stub_position_verdict(len(baskets), i),
+                                 "position_reason": "冒烟桩:按当日落地起跳读数给的位置判定"}
+                                for i, c in enumerate(picked)],
                 })
 
         for line in text.splitlines():
@@ -128,10 +149,16 @@ class StubProvider:
                 collecting = True
                 continue
             if collecting:
+                stripped = line.strip()
+                # ⚠ V2.2-③-C 起每个成员行后面**跟一行「位置读数:…」续行**(裁定 #11
+                # 把读数喂进 prompt)。它不以「·」开头 —— 不显式跳过就会被当成清单
+                # 结束,每颗种子只剩 1 个成员(施工时真踩过)。
+                if stripped.startswith("位置读数"):
+                    continue
                 found = self._CODE_RE.findall(line)
-                if found and line.strip().startswith("·"):
+                if found and stripped.startswith("·"):
                     members.extend(found)
-                elif not line.strip().startswith("·"):
+                elif not stripped.startswith("·"):
                     collecting = False
         flush()
         return {"baskets": baskets}
@@ -192,7 +219,10 @@ def _print_gates(gate_out: Any, decision: Any, db: Path) -> None:
             avail = "" if c.available else "  (判定输入缺失:不拦、但不给 T1)"
             print(f"    {mark} {c.gate:9s}{who:14s} {c.reason}{gap}{avail}")
         if s.removed_members:
-            print(f"    ⚠ 位置关对拍出篮:{[(r.ts_code, r.reason) for r in s.removed_members]}")
+            print(f"    ⚠ 成员级机械关对拍出篮:{[(r.ts_code, r.reason) for r in s.removed_members]}")
+        if s.position_unfit:
+            print(f"    ⚠ 位置关判 unfit → 退出正式候选(⛔ 仍在 ③b 列名):"
+                  f"{s.position_unfit_detail}")
 
     print(f"\n{'-' * 78}\n③b 今日未定档披露(名 / 分 / 卡在哪一关 / 差多少 / 原因码)")
     if not decision.dropped:
@@ -344,11 +374,13 @@ def main() -> int:
             logger.warning("  regime 批算失败(六关按缺行处理)", exc_info=True)
         # 🔴 **`industry_strength_daily` 必须排在 landing 之前**(顺序不是摆设):
         #   · ③ 板块关吃它的**名次 + 近 5 日强度日**;
-        #   · ⑤ 位置关的**判据 4 RS5**(相对所属行业中位 5 日超额)也读它 ——
-        #     该表为空时全市场 `c4.rs5=na` → `c4` 永远判不出 → **`liftoff_confirmed`
-        #     整个市场恒为 0 → T1 结构性不可达**(每行都诚实写着 na,但没人汇总,
-        #     是一次**静默的系统级降级**)。生产靠 16:05 日更保证它先落地;隔离库是
-        #     真库副本、该表可能为空,故这里先补算 D0 及其前 4 个交易日。
+        #   · ⑤ 位置关读数里的 **RS5**(相对所属行业中位 5 日超额)也读它 ——
+        #     该表为空时全市场 `rs5` 恒进 `metrics_missing`,喂给 LLM 的读数就少一
+        #     整维(每行都诚实写着缺,但没人汇总,是一次**静默的系统级降级**)。
+        #     生产靠 16:05 日更保证它先落地;隔离库是真库副本、该表可能为空,
+        #     故这里先补算 D0 及其前 4 个交易日。
+        #     ⚠ 裁定 #11 前这条注释写的是「`liftoff_confirmed` 恒 0 → T1 结构性
+        #     不可达」——那套四态已整体删除,后果改成了"读数缺一维",⛔ 别照旧文读。
         try:
             from neckline.calendar import prev_trading_day
             from neckline.report.industry_strength_store import refresh_industry_strength
@@ -362,8 +394,8 @@ def main() -> int:
             logger.warning("  行业强度补算失败(板块关 unavailable + 位置关 RS5 恒 na)",
                            exc_info=True)
         try:
-            from neckline.scan.landing_store import refresh_landing_states
-            logger.info("  landing %s", refresh_landing_states([d0], db_path=db))
+            from neckline.scan.landing_store import refresh_landing_metrics
+            logger.info("  landing %s", refresh_landing_metrics([d0], db_path=db))
         except Exception:  # noqa: BLE001
             logger.warning("  landing 批算失败(位置关按缺行处理)", exc_info=True)
         seed_set = generate_seeds(d0, db_path=db)

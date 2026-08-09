@@ -79,7 +79,11 @@ import `neckline.selection`,已核实)。
   骨架线 `V` → 必须有 `seeds`+`tier`、**不许有 `engine`**;引擎线 `C/Z/Y` →
   必须有 `engine`、**不许有 `seeds`/`tier`**,且 `config.engine.engine_code`
   与 `line_code` **逐位相等**。**其他 config 顶层键一律不管**(② 要给骨架包加
-  `config.regime`、③ 要加 `config.landing`,现在拒了它们等于给后续块挖坑)。
+  `config.regime`,现在拒了它等于给后续块挖坑)。
+  ⚠ **`config.landing` 段已随 2026-08-09 用户裁定 #11 整体删除**(位置关不再有机械
+  判定,判定交 LLM)——`_LANDING_THRESHOLD_KEYS` / `_validate_landing` /
+  `Pack.landing_config()` 一并退场,`gates.position` 的七个阈值键也全删,只剩一个
+  **定性文本键 `guidance`**(⛔ 不走 `provenance` 闸,见 `_QUALITATIVE_GATE_KEYS`)。
 - **`provenance` 强制字段(裁定 #4 落成机器判据,闸 1 执行)**:引擎包
   `gates.*` 与 `tier_evidence.*` 下**每个阈值叶子**必须写成
   `{"value": <任意 JSON>, "provenance": {...}}` 的两键对象,`provenance` 二选一:
@@ -160,14 +164,14 @@ _ENGINE_GATE_SCHEMA: Dict[str, frozenset] = {
         "stage_allowed",                        # Z1:行业题材阶段允许集合
         "cluster_members_min",                  # Z1:簇成员数下限(扩散成层级)
     }),
+    # 🔴 **位置关自此零阈值**(2026-08-09 用户裁定 #11:位置关由机械关改判为证据关,
+    # 判定直接交 LLM)。原来的七个阈值键(`t1_landing_states` / `t2_landing_states` /
+    # `pullback_depth_range` / `landing_states` / `dist_from_high_60d_min` /
+    # `platform_days_min` / `platform_amplitude_max`)**全部删除,⛔ 不得恢复** ——
+    # K8 §二 对「落地起跳」只有五句定性零个数字,那套翻译出来的阈值连乘后交集近乎
+    # 为空(14 个 D0 回放零 T1)。三引擎的位置差别改由**定性描述 + LLM 判断**承担。
     "position": frozenset({
-        "t1_landing_states",                    # C1:进 T1 允许的落地态集合
-        "t2_landing_states",                    # C1:进 T2 允许的落地态集合
-        "pullback_depth_range",                 # C1:回撤深度带 [lo, hi](趋势内整理)
-        "landing_states",                       # Z1/Y1:允许的落地态集合
-        "dist_from_high_60d_min",               # Z1:距 60 日高点回撤下限(右侧启动回撤浅)
-        "platform_days_min",                    # Y1:平台天数下限
-        "platform_amplitude_max",               # Y1:平台振幅上限
+        "guidance",                             # 定性位置准则(文本,⛔ 不是阈值)
     }),
     "core": frozenset({
         "leader_rs_rank_max",                   # 三引擎:簇内 RS 名次上限
@@ -177,6 +181,14 @@ _ENGINE_GATE_SCHEMA: Dict[str, frozenset] = {
         "require_news_policy_source",           # Z1:必须含一份消息/政策类来源
     }),
 }
+# 🔴 **`provenance` 闸的白名单例外**(裁定 #11):`gates.position.guidance` 是**定性
+# 文本不是阈值** —— 它进 prompt、**不进任何机械判据**,故不走 `_validate_provenance_leaf`
+# (同 `config.engine.applies_to` 的既有体例:人话字段不自报来源)。⛔ 白名单只此一处,
+# 要再加"不走闸的键"必须先想清楚它是不是真的不进判据。形状要求 = **非空字符串**。
+_QUALITATIVE_GATE_KEYS: Dict[str, frozenset] = {
+    "position": frozenset({"guidance"}),
+}
+
 _TIER_EVIDENCE_TIERS: Tuple[str, ...] = ("t1", "t2")
 _TIER_EVIDENCE_LEAF_KEYS: frozenset = frozenset({
     "max_evidence_degrades",                    # 该档允许证据关降级的处数上限(K8 §八)
@@ -198,24 +210,9 @@ _REGIME_THRESHOLD_KEYS: frozenset = frozenset({
     "div_limit_drop",   # 高位分歧 C:涨停家数环比降幅下限
 })
 
-# —— V2.2-③-C 落地起跳位置关十二个判定阈值的键名白名单(骨架线 `config.landing`
-# 段)。引擎默认值与语义注释住 `neckline/scan/landing.py::LANDING_THRESHOLD_DEFAULTS`
-# (守门单测锁两处键集合相等,防漂);白名单住这里、校验姿势与 `_validate_regime`
-# 完全同款(理由同上:landing.py 已 import 本模块读入口,反向 import 成环)。————
-_LANDING_THRESHOLD_KEYS: frozenset = frozenset({
-    "n_low",             # 判据1:近端最低价窗口(交易日)
-    "n_back",            # 判据1:前区间最低价窗口(交易日)
-    "low_tol",           # 判据1:近端低点须高出前区间低点的比例下限
-    "sup_tol",           # 判据2:支撑位下方容忍比例
-    "platform_win",      # 判据2:平台下沿分位窗口(交易日)
-    "sell_decay",        # 判据3:下跌日均成交额 ÷ 20 日均成交额 上限
-    "panic_drop",        # 判据3:近 5 日单日最大跌幅排除线
-    "high_gap",          # 判据5:距 60 日高点至少回撤比例
-    "lift_win",          # 判据5:近端累计涨幅窗口(交易日)
-    "lift_max",          # 判据5:近端累计涨幅上限
-    "platform_amp_win",  # platform_days:滚动振幅窗口(交易日)
-    "platform_amp_max",  # platform_days:振幅上限 X
-})
+# ⚠ **`config.landing` 段(落地起跳十二个阈值)已随 2026-08-09 用户裁定 #11 整体删除**:
+# 位置关不再有机械判定,骨架包里那一段与 `_LANDING_THRESHOLD_KEYS` / `_validate_landing`
+# / `Pack.landing_config()` 一并退场。⛔ 不得恢复 —— 机械层自此**只算读数、不下结论**。
 
 _EVIDENCE_REF_SEP = "; "   # `selection_packs.evidence_ref` 落库时的连接符(展示/grep 友好)
 
@@ -420,35 +417,6 @@ def _validate_regime(regime: Any) -> List[str]:
     return errors
 
 
-def _validate_landing(landing: Any) -> List[str]:
-    """`config.landing`(V2.2-③-C 新增可选段:落地起跳位置关十二个判定阈值,只住
-    骨架线)。**整段可选、子键各自独立可选**(照 `_validate_regime` 体例)——缺段/
-    缺键一律由 `scan/landing.py::resolve_landing_thresholds()` 逐键回退引擎默认
-    (+WARNING),不在这里猜。存在的键必须:①在 `_LANDING_THRESHOLD_KEYS` 白名单内
-    (键写错 = 激活时拒,⛔ 不许静默回退——②-D 同款陷阱);②叶子过
-    `_validate_provenance_leaf`(裁定 #4 同一道闸:五项判据全是 `engineering_v1`
-    工程首版,⛔ 不冒充审计结论);③`value` 是数值。"""
-    if not isinstance(landing, dict):
-        return ["config.landing 必须是对象(阈值键 → {value, provenance})"]
-    errors: List[str] = []
-    unknown = sorted(set(landing) - _LANDING_THRESHOLD_KEYS)
-    if unknown:
-        errors.append(
-            f"config.landing 出现白名单外的阈值键:{unknown}"
-            f"(仅允许 {sorted(_LANDING_THRESHOLD_KEYS)};键写错会静默回退引擎默认,"
-            "故在闸 1 当场拒 —— plan §五 ②-D 同款陷阱)"
-        )
-    for key in sorted(set(landing) & _LANDING_THRESHOLD_KEYS):
-        leaf = landing[key]
-        leaf_errors = _validate_provenance_leaf(f"config.landing.{key}", leaf)
-        errors.extend(leaf_errors)
-        if not leaf_errors:
-            value = leaf["value"]
-            if not isinstance(value, (int, float)) or isinstance(value, bool):
-                errors.append(f"config.landing.{key}.value 必须是数值(得到 {value!r})")
-    return errors
-
-
 def _validate_provenance_leaf(path: str, leaf: Any) -> List[str]:
     """V2.2-① 闸 1:引擎包一个阈值叶子的 `{value, provenance}` 形状校验(裁定 #4
     的机器判据,形状定义见模块头)。`value` 允许任意 JSON(数值 / 布尔 / 数组——
@@ -548,8 +516,19 @@ def _validate_engine_config(config: Dict[str, Any], line_code: str) -> List[str]
                     f"(允许:{sorted(allowed)};要新玩法先扩 _ENGINE_GATE_SCHEMA——"
                     "白名单制既有代价,⛔ 不许包侧自创键名)"
                 )
+            qualitative = _QUALITATIVE_GATE_KEYS.get(section, frozenset())
             for key in sorted(set(body) & allowed):
-                errors.extend(_validate_provenance_leaf(f"config.engine.gates.{section}.{key}", body[key]))
+                path = f"config.engine.gates.{section}.{key}"
+                if key in qualitative:
+                    # 定性文本键:只要求非空字符串,⛔ 不过 provenance 闸(它不是阈值)。
+                    value = body[key]
+                    if not isinstance(value, str) or not value.strip():
+                        errors.append(
+                            f"{path} 必须是非空字符串(定性准则,进 prompt 不进判据;"
+                            "⛔ 不是 {value, provenance} 阈值叶子)"
+                        )
+                    continue
+                errors.extend(_validate_provenance_leaf(path, body[key]))
 
     tier_evidence = engine.get("tier_evidence")
     if not isinstance(tier_evidence, dict):
@@ -648,11 +627,6 @@ def validate_config(config: Any, *, line_code: str = _LINE_DEFAULT) -> List[str]
     regime = config.get("regime")
     if regime is not None:
         errors.extend(_validate_regime(regime))
-
-    # V2.2-③-C:落地起跳位置关阈值段(可选;存在即校验形状,见 `_validate_landing`)。
-    landing = config.get("landing")
-    if landing is not None:
-        errors.extend(_validate_landing(landing))
     return errors
 
 
@@ -744,12 +718,6 @@ class Pack:
         `{value, provenance}` 叶子)。缺省返回空字典 —— 逐键回退引擎默认是
         `scan/regime.py::resolve_regime_thresholds()` 的职责,不在本访问器里猜。"""
         return dict(self.config.get("regime", {}))
-
-    def landing_config(self) -> Dict[str, Any]:
-        """`config.landing`(V2.2-③-C 新增可选段:落地起跳位置关十二个判定阈值,
-        每键 `{value, provenance}` 叶子)。缺省返回空字典 —— 逐键回退引擎默认是
-        `scan/landing.py::resolve_landing_thresholds()` 的职责,不在本访问器里猜。"""
-        return dict(self.config.get("landing", {}))
 
 
 def _row_to_pack(row: Tuple[Any, ...]) -> Pack:

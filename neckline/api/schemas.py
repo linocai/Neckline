@@ -132,6 +132,20 @@ class BasketMemberOut(BaseModel):
     primaryReason: Optional[str] = None
     rsRank: Optional[int] = None
     k4Tag: Optional[str] = None
+    # —— V2.2-③-C 位置关(**2026-08-09 用户裁定 #11**:位置关由机械关改判为证据关,
+    # 判定交 LLM、只降级不除名)————————————————————————————————————————————
+    # `positionVerdict` ∈ `ok`(位置合适)/ `weak`(勉强、降一档)/ `unfit`(不合适,
+    # 该篮退出正式候选但**仍在报告 ③b 列名**)。`positionReason` = 模型那句人话
+    # (或「本次没给判定,保守按 weak」的兜底原因码)。`positionMetrics` = **当次喂给
+    # 模型的那份落地起跳读数原样**(信息卡展开用;缺项就是真的没取到,⛔ 客户端不许
+    # 把缺项显示成 0)。
+    # ⚠ **零删键纪律(〇b-3)在这里不适用,因为没有键被删**:上一版曾计划发的
+    # `landingState`(四态枚举)**从未上产**(V2.2 批 2 没部署,生产客户端从未见过
+    # 这个键),故直接换成本组三键,⛔ 不走「先改客户端 → 下一版服务端才删」两步。
+    # 后人别据此以为可以随手换键 —— 换得成的前提是**那个键一天都没上过产**。
+    positionVerdict: Optional[str] = None
+    positionReason: Optional[str] = None
+    positionMetrics: Optional[Dict[str, Any]] = None
     # 机械面板原样透传(⑦ `MemberMech.to_dict()`;自由结构,在 API 层再镜像一套嵌套
     # 模型只会多一处会漂的定义 —— 同 `WeeklyReviewOut.result` 的既定透传惯例)。
     mech: Dict[str, Any] = Field(default_factory=dict)
