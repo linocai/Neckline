@@ -253,21 +253,9 @@ final class IntegrationSmokeTests: XCTestCase {
         XCTAssertEqual(v.basketId, first.basketId)
     }
 
-    // MARK: - v1.2-A2 熔断纪律状态真请求(§五 v1.2-E.3;不强造锁定态,只验真实解码)
-
-    func testCircuitStateRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-        let state = try await client.getCircuit()
-        // 不对 locked 具体值做强断言(dev 库当前态可能因其它测试残留而变化),只验证
-        // 真实解码成功 + 类型正确;锁定态时 episode 字段齐全。
-        if state.locked {
-            XCTAssertNotNil(state.episode)
-            XCTAssertFalse(state.episode?.note.isEmpty ?? true)
-        }
-        // 无锁定态时解锁应幂等成功(不因"本来就没锁"而报错)。
-        _ = try await client.unlockCircuit()
-    }
+    // ⚠ **`testCircuitStateRealRequest` 已删**(V2.2-⑤-B):`GET /circuit` /
+    // `POST /circuit/unlock` 两条端点随熔断整体退役消失(用户裁定 #8),客户端两个
+    // 方法同批删 —— 这条真请求测试没有可打的目标了。⛔ 不许接回来。
 
     /// 清仓带 closeReason 真请求(§五 v1.2-E.2)。
     func testClosePositionWithCloseReasonRealRequest() async throws {

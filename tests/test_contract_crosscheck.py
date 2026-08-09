@@ -118,17 +118,12 @@ def server_route_method_pairs() -> dict:
 # ⚠ **空集合不是"闸松了",恰恰相反**:下面那条断言用 `==`,清空之后**任何**新增的
 # 「打不到的调用」都会立刻红 —— 这是本闸最严的状态。⛔ 别再往里加条目当豁免用;
 # 真要新增一笔债,得先有人在 plan 里登记它。
-# ⚠ **2026-08-09 V2.2-⑤-B 重新挂上两笔债(熔断整体退役,用户裁定 #8)**:服务端已删
-# `GET /api/v1/circuit` 与 `POST /api/v1/circuit/unlock` 两条端点(锁定态 / 解锁两件机制
-# 随熔断一起没了),而**客户端里那两条活调用归 ⑥ 删**(本批 ⛔ 不碰 `client/`)。
-# 这两条在 plan 里**已登记**(§五 ⑤-B 第 4 项 + ⑥「客户端连带(归 ⑥ 一起做)」),符合上面
-# 那句「真要新增一笔债,得先有人在 plan 里登记它」。
-# ✅ **⑥ 做完必须把这两条删掉** —— 下面 `test_registered_debt_entries_are_really_still_in_
-# the_client` 是反向闸:客户端一旦删干净,清单不同步就会红。
-PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15: set = {
-    "/api/v1/circuit",
-    "/api/v1/circuit/unlock",
-}
+# ⚠ **2026-08-09 V2.2-⑤-B 曾挂上两笔债(熔断整体退役,用户裁定 #8)**:服务端先删了
+# `GET /api/v1/circuit` 与 `POST /api/v1/circuit/unlock`,而客户端那两条活调用归 ⑥ 删。
+# ✅ **2026-08-09 V2.2-⑥ 已还清,本集合重新清空** —— `APIClient.swift` 里
+# `getCircuit()` / `unlockCircuit()`(连同只服务于后者的 `EmptyBody`)已物理删除,
+# 客户端调用面重新 ⊆ 服务端路由面。**空集合 = 本闸最严的状态**(下面那条断言用 `==`)。
+PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15: set = set()
 
 
 def test_client_call_surface_is_subset_of_server_routes_modulo_registered_debt():
@@ -324,13 +319,13 @@ def test_v21_changes_the_reason_surface_by_exactly_nothing():
     )
     # reason 侧闭包必须处在**最严状态**(欠账清单为空)才谈得上「零新增 reason」被守住。
     assert not PENDING_MAP_REASON_CASES_FOR_15
-    # ⚠ **路由侧欠账清单 V2.2-⑤-B 起非空,且只许是那两条**(服务端已删 `/circuit` 两条端点,
-    # 客户端的活调用归 ⑥ 删)。原来这里与 reason 侧写在同一句 `and` 里 —— 那把两件事捆成了
-    # 一个判据:一旦路由侧挂债,这条「零新增 reason」的断言就会因为**跟 reason 无关**的原因
-    # 变红,人只会把它当噪音关掉。故拆成两句,并给路由侧一条**精确**的白名单闸:
-    # 多一条、少一条都红(⑥ 删完客户端调用后,这里与上面的清单要一起清空)。
-    assert PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15 == {"/api/v1/circuit", "/api/v1/circuit/unlock"}, (
-        "路由侧欠账清单只许是 V2.2-⑤-B 登记的那两条熔断端点(⑥ 删客户端调用后清空)。"
+    # ⚠ **路由侧欠账清单 V2.2-⑤-B 曾非空(那两条熔断端点),⑥ 已还清 → 重新清空**。
+    # 这里与 reason 侧刻意**拆成两句**而不是写在同一句 `and` 里:捆成一个判据的话,
+    # 一旦路由侧挂债,这条「零新增 reason」的断言就会因为**跟 reason 无关**的原因变红,
+    # 人只会把它当噪音关掉。⛔ 别再合回去。
+    assert PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15 == set(), (
+        "路由侧欠账清单必须是空的:V2.2-⑤-B 登记的那两条熔断端点已由 ⑥ 从客户端删净。"
+        "⛔ 想往里加新条目,先在 plan 里登记那笔债。"
     )
 
 
@@ -377,6 +372,16 @@ def test_v21_new_score_keys_are_declared_on_both_sides(model: str, struct: str, 
 FROZEN_SNAPSHOT_DTOS = (
     "BasketCard", "BasketReview", "ReviewWeeklyResult",
     "Basket", "BasketDaily", "ScoreContribution",
+    # —— V2.2-⑥ 扩容三项(⑥ 表格「`FROZEN_SNAPSHOT_DTOS` 扩容」的落点)——
+    # `SelectionClock` 载的是 `selection_clock.mech_json`(D1 九项验证,**结案即冻**,
+    # `INSERT OR IGNORE` 永不覆盖);`TradeClock` 载 `trade_clock.final_json`(结案八项);
+    # `TradeClockEvent` 载 append-only 流水的 `mech_json`。三者都**不随服务端升级补键**
+    # → 合成 `Codable` 会让「装了新 App 的用户翻几周前的老结案件」整条解不出。
+    # ⚠ 同前缀陷阱在这里是真的:`SelectionClock` 之外还有 `SelectionClocksResponse`
+    # (在 `APIClient.swift`,不在本切块器的扫描域)、`TradeClock` 之外还有
+    # `TradeClockEvent` / `TradeClockNoteResult` —— 切块器用 `^struct <Name>\b`,
+    # `\b` 保证不会切到同前缀邻居(下面 `test_dto_slicer_...` 是这条的守门)。
+    "SelectionClock", "TradeClock", "TradeClockEvent",
 )
 
 # ⚠ **同前缀陷阱**(CLAUDE.md 明写的坑):`Models.swift` 里 `struct BasketEvidence`
@@ -406,6 +411,10 @@ def test_dto_slicer_is_not_fooled_by_same_prefix_types():
     body = _dto_body("Basket")
     assert body.startswith("struct Basket:") or body.startswith("struct Basket "), body[:40]
     assert "struct BasketEvidence" not in body and "struct BasketCard" not in body
+    # V2.2-⑥ 新的同前缀族:`TradeClock` 前面就摆着 `TradeClockEvent`。
+    tc = _dto_body("TradeClock")
+    assert tc.startswith("struct TradeClock:") or tc.startswith("struct TradeClock "), tc[:40]
+    assert "struct TradeClockEvent" not in tc and "struct TradeClockNoteResult" not in tc
     assert _dto_body("NoSuchDTOAnywhere") == ""
 
 
@@ -521,4 +530,68 @@ def test_v22_card_keys_are_ported_to_the_client_all_or_nothing():
     assert present == [] or len(present) == len(keys), (
         f"V2.2-③ 的卡新增键只接了一部分:已接 {present},缺 "
         f"{[k for k in keys if k not in present]}(⑥ 落地时请一次接齐)"
+    )
+
+
+# —— V2.2-⑥ 客户端半边落地后的三条机器判据 ————————————————————————————————
+#
+# 前面那条 `test_v22_card_keys_are_ported_to_the_client_all_or_nothing` 守的是
+# 「别接一半」;⑥ 完工后下面这三条守的是「接对了」。
+
+# ③b 原因码:**唯一源 = 服务端 `report/basket_daily.py::DROPPED_REASON_LABEL`**。
+# 客户端有一份中文短句镜像(界面一行要放得下,服务端那份带括号补充给 markdown 报告用)
+# —— 两份**内容刻意不同、码必须相同**。⚠ 码漏一个的后果是静默的:界面上直接印英文
+# 原因码,而"看不懂的码"不像 bug、只像"系统在说黑话"。
+def test_client_maps_every_dropped_reason_code_the_server_can_emit():
+    from neckline.report.basket_daily import DROPPED_REASON_LABEL
+
+    body = _MODELS.read_text(encoding="utf-8")
+    block = body.split("func nkDroppedReasonLabel(", 1)[1].split("\nfunc ", 1)[0]
+    missing = [code for code in DROPPED_REASON_LABEL if f'case "{code}"' not in block]
+    assert not missing, (
+        f"客户端 `nkDroppedReasonLabel` 缺这些服务端会发的原因码:{sorted(missing)} —— "
+        f"缺了就会在 ③b 列表里直接印英文码。⛔ 别指望 default 分支兜(它是原样透传)。"
+    )
+
+
+# 六关码 + 机械关 / 证据关二分:**唯一源 = 服务端 `selection/gates.py`**。
+# ⛔ 二分错了不是配色问题:机械关**硬否决**、证据关**只降级**,混起来就是把
+# 「这篮没了」和「这篮扣了一档」讲成同一件事(裁定 #6 / #11 / #12)。
+def test_client_gate_split_matches_the_server_constants():
+    from neckline.selection.gates import EVIDENCE_GATES, GATE_ORDER, MECH_GATES
+
+    body = _MODELS.read_text(encoding="utf-8")
+    order_line = body.split("let nkGateOrder: [String] = ", 1)[1].split("\n", 1)[0]
+    for g in GATE_ORDER:
+        assert f'"{g}"' in order_line, f"客户端 `nkGateOrder` 少了关口 `{g}`"
+    assert order_line.index('"' + GATE_ORDER[0] + '"') < order_line.index('"' + GATE_ORDER[-1] + '"'), (
+        "客户端 `nkGateOrder` 的顺序与服务端 `GATE_ORDER` 不同 —— 灯条顺序是管线顺序,不是字典序"
+    )
+    kind_block = body.split("func nkGateKind(", 1)[1].split("\nfunc ", 1)[0]
+    mech_line = [ln for ln in kind_block.splitlines() if "return .mechanical" in ln]
+    ev_line = [ln for ln in kind_block.splitlines() if "return .evidence" in ln]
+    assert len(mech_line) == 1 and len(ev_line) == 1, "二分应各只有一条 case 行,便于机器核对"
+    for g in MECH_GATES:
+        assert f'"{g}"' in mech_line[0], f"`{g}` 在服务端是**机械关(硬否决)**,客户端没归对"
+    for g in EVIDENCE_GATES:
+        assert f'"{g}"' in ev_line[0], f"`{g}` 在服务端是**证据关(只降级)**,客户端没归对"
+    # 反向:机械关不许混进证据关那一行(反之亦然)。
+    for g in MECH_GATES:
+        assert f'"{g}"' not in ev_line[0]
+    for g in EVIDENCE_GATES:
+        assert f'"{g}"' not in mech_line[0]
+
+
+# 用户主观说明的长度上界:**领域层是唯一权威**(`review/trade_clock.USER_NOTE_MAX_CHARS`),
+# 契约层已经靠 import 同源(`schemas.py`),客户端**只能抄一份数**(Swift 读不到 Python 常量)。
+# 🔴 这条把那份抄写钉成机器判据:不同步 = 静默出现「客户端说能写、服务端说太长」——
+# 用户写满 500 字点提交,拿到一个英文 422,而界面上的计数器一路是绿的。
+def test_client_note_limit_mirrors_the_single_source():
+    from neckline.review.trade_clock import USER_NOTE_MAX_CHARS
+
+    body = _MODELS.read_text(encoding="utf-8")
+    line = body.split("let nkTradeNoteMaxChars: Int = ", 1)[1].split("\n", 1)[0].strip()
+    assert line == str(USER_NOTE_MAX_CHARS), (
+        f"客户端 `nkTradeNoteMaxChars` = {line},服务端 `USER_NOTE_MAX_CHARS` = "
+        f"{USER_NOTE_MAX_CHARS} —— 两处必须相等(唯一源在领域层,客户端那份只是镜像)。"
     )

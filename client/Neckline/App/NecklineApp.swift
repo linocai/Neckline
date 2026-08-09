@@ -32,20 +32,25 @@ struct NecklineApp: App {
            let tab = AppTab(rawValue: raw) {
             m.view = tab
         }
-        // 同款 QA 钩子扩到弹层——`NECKLINE_INITIAL_MODAL=open|note|circuitReview`
+        // 同款 QA 钩子扩到弹层——`NECKLINE_INITIAL_MODAL=open|note|tradeNote:<positionId>`
         // (用于本环境 computer-use 点击权限受限时的视觉核对,见 CLAUDE.md
         // 「模拟器截图走 xcrun simctl io screenshot」坑吸收)。不影响正常用户路径。
+        // ⚠ `circuitReview` 已随熔断整体退役删除(V2.2-⑤-B):传它 → 落 default、
+        // 不弹任何层(⛔ 不要为了"兼容老脚本"把那个弹层留着)。
         if let modalRaw = ProcessInfo.processInfo.environment["NECKLINE_INITIAL_MODAL"] {
             switch modalRaw {
             case "open": m.modal = .open
             case "note": m.modal = .note
-            case "circuitReview": m.modal = .circuitReview
+            case let s where s.hasPrefix("tradeNote:"):
+                if let pid = Int(s.dropFirst("tradeNote:".count)) {
+                    m.modal = .tradeNote(positionId: pid)
+                }
             default: break
             }
         }
         // ⚠ **数据到位之后才能触发的钩子**(`NECKLINE_INITIAL_BASKET_ID` /
         // `NECKLINE_INITIAL_INFOCARD_CODE` / V2.1-⑦ 新增的
-        // `NECKLINE_INITIAL_REVIEW_PAGE=daily|cumulative|reconcile` 与
+        // `NECKLINE_INITIAL_REVIEW_PAGE=daily|selectionClock|tradeClock|cumulative|reconcile` 与
         // `NECKLINE_INITIAL_REVIEW_WEEK=YYYYMMDD`)**不能塞进这里** —— 那些内容是
         // `AppModel.refresh()` 异步拉回来的,`init()` 里够不着。它们落在
         // `AppModel.applyQAHooksAfterRefresh()`(v1.4-⑧ 立下的先例)。

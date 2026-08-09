@@ -96,6 +96,9 @@ struct BasketCardPage: View {
                     Spacer()
                     VerificationBadge(model: model, basketId: basket.basketId)
                 }
+                // 🔴 V2.2-③ 六关灯条(展开档:多一行「卡在哪一关 / 降了几档」)。
+                // **机械关硬否决 vs 证据关只降级**的视觉区分在 `GateLightBar` 里定死。
+                GateLightBar(gates: basket.gates, showDetail: true)
                 if !card.driver.isEmpty {
                     labeled("① 共同驱动", card.driver)
                 }
@@ -425,17 +428,17 @@ struct BasketMemberCard: View {
                     Spacer()
                     // 动作按钮,不是状态。⛔ 文案不得写成买入建议 —— 这是**补录**用户已在
                     // 券商完成的真实操作(审计台账,系统永不下单)。
+                    // 🔴 **「熔断中」灰化已删**(V2.2-⑤-B / 〇b-7):熔断三件机制整体
+                    // 退役,补录本就是记账动作 —— ⛔ 不许以任何条件把这个按钮再灰掉。
                     Button {
                         Task { await model.beginPositionEntryFlow(fromMember: member,
                                                                   basketName: basketName) }
                     } label: {
-                        Label(model.circuit.locked ? "熔断中" : "买入补录",
-                              systemImage: model.circuit.locked ? "lock.fill" : "square.and.pencil")
+                        Label("买入补录", systemImage: "square.and.pencil")
                             .font(.system(size: 12.5, weight: .semibold))
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(model.circuit.locked ? NK.textTertiary : NK.accent)
-                    .disabled(model.circuit.locked)
+                    .foregroundStyle(NK.accent)
                 }
             }
         }
@@ -496,23 +499,7 @@ struct BasketMemberCard: View {
     private func gateVerdictRow(title: String, label: String?, tone: NKAxisTone,
                                 reason: String?, metrics: NKJSON?) -> some View {
         if let l = label {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(title).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
-                    NKChip(text: l, tone: tone)
-                }
-                if let r = reason, !r.isEmpty {
-                    Text(r).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                // 读数(⛔ 缺项不是 0,是真的没取到)——**展开区**,不塞满首屏。
-                if let m = metrics, let obj = m.objectValue, !obj.isEmpty {
-                    DisclosureGroup("查看读数(\(obj.count) 项)") {
-                        NKJSONTable(value: m).padding(.top, 2)
-                    }
-                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(NK.textTertiary)
-                }
-            }
+            GateVerdictRow(title: title, label: l, tone: tone, reason: reason, metrics: metrics)
         }
     }
 
@@ -580,6 +567,41 @@ struct BasketMemberCard: View {
                     Text("判不了的标注:\(member.tagsAbsent.joined(separator: "、"))(数据缺失,**不等于**没命中)")
                         .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
                 }
+            }
+        }
+    }
+}
+
+
+/// 单个关口的判定行(位置关 / 核心关同构)。**拆成独立 `View` 只为一件事**:
+/// 展开态要有 `@State`(函数式 `@ViewBuilder` 里放不下),而 `isExpanded:
+/// .constant(...)` 会**夺走用户的点击** —— 那是拿截图便利换掉真交互,⛔ 不行。
+private struct GateVerdictRow: View {
+    let title: String
+    let label: String
+    let tone: NKAxisTone
+    let reason: String?
+    let metrics: NKJSON?
+    /// ⚠ 初值来自 QA 钩子(`NKQA.expandDisclosures`,缺环境变量时恒 `false`):
+    /// 本环境点不动模拟器,读数展开态只能靠它出截图。**只改初值**,用户照常可收起。
+    @State private var expanded: Bool = NKQA.expandDisclosures
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(title).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+                NKChip(text: label, tone: tone)
+            }
+            if let r = reason, !r.isEmpty {
+                Text(r).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // 读数(⛔ 缺项不是 0,是真的没取到)——**展开区**,不塞满首屏。
+            if let m = metrics, let obj = m.objectValue, !obj.isEmpty {
+                DisclosureGroup("查看读数(\(obj.count) 项)", isExpanded: $expanded) {
+                    NKJSONTable(value: m).padding(.top, 2)
+                }
+                .font(.system(size: 10.5, weight: .medium)).foregroundStyle(NK.textTertiary)
             }
         }
     }

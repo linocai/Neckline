@@ -99,6 +99,11 @@ struct BasketDailyView: View {
                                  systemImage: "moon.zzz")
                 }
             } else {
+                // 🔴 V2.2-② 行情状态条(报告顶部,K8 十项产物之 ①)。**纯展示、零动作**;
+                // `available=false` 时如实说「本段未取得」,⛔ 不静默省略。
+                // ⚠ 它**不是**「① 情绪与市场语境」的替代 —— 两者一个讲市场结构、一个讲
+                // 情绪读数,段名各自保留(段名是审计锚,⛔ 不合并、不改字面)。
+                MarketRegimeStrip(regime: model.marketRegime)
                 sentimentSection          // ① 情绪与市场语境
                 holdingCheckupPointer     // ②(指向持仓板块)
                 basketsSection            // ③ 今日篮子
@@ -268,21 +273,43 @@ struct BasketDailyView: View {
                     }
                 }
             } else {
-                // E2:**两个原因码语义相反,分开展示**。
+                // E2:**每个原因码语义不同,分开展示**(V2.2-③ 起共 9 码,
+                // 「位置不合适」「无引擎线」「档位已满」讲的是完全不同的三件事)。
                 ForEach(daily.droppedBaskets) { d in
                     NKCard {
-                        HStack(alignment: .top, spacing: 10) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(d.name).font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(NK.textPrimary)
-                                Text(d.reasonLabel).font(.system(size: 11.5))
-                                    .foregroundStyle(d.reasonTone.color)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(alignment: .top, spacing: 10) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(d.name).font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(NK.textPrimary)
+                                    Text(d.reasonLabel).font(.system(size: 11.5))
+                                        .foregroundStyle(d.reasonTone.color)
+                                }
+                                Spacer()
+                                if let s = d.mechScore {
+                                    Text(String(format: "%.1f 分", s))
+                                        .font(.system(size: 12.5, weight: .semibold).monospacedDigit())
+                                        .foregroundStyle(NK.textSecondary)
+                                }
                             }
-                            Spacer()
-                            if let s = d.mechScore {
-                                Text(String(format: "%.1f 分", s))
-                                    .font(.system(size: 12.5, weight: .semibold).monospacedDigit())
-                                    .foregroundStyle(NK.textSecondary)
+                            // V2.2-③ 新增:卡在哪一关 + 差多少。老快照没有这两键 →
+                            // 整行不显示(⛔ 不写「无」,那会看起来像"没卡在任何关")。
+                            if let g = d.gateLabel {
+                                HStack(spacing: 6) {
+                                    NKChip(text: "卡在 \(g)",
+                                           tone: d.gateKind == .mechanical ? .bad : .warn)
+                                    if let kind = d.gateKind {
+                                        Text(kind.label).font(.system(size: 10))
+                                            .foregroundStyle(NK.textTertiary)
+                                    }
+                                    Spacer()
+                                }
+                            }
+                            // 服务端的机器原因码串(数值内嵌)。**原样展示,⛔ 不改写**。
+                            if let detail = d.gateDetail, !detail.isEmpty {
+                                Text(detail).font(.system(size: 10.5).monospaced())
+                                    .foregroundStyle(NK.textTertiary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
@@ -397,6 +424,26 @@ private struct BasketRow: View {
                         NKChip(text: "T\(t) 第 \(r) 位")
                     }
                     Spacer()
+                }
+                // 🔴 V2.2-③ 六关灯条:每篮说得出六关过没过、卡在哪。
+                // **机械关(硬否决)与证据关(只降级)视觉上分得开**,详见 `GateLightBar`。
+                GateLightBar(gates: basket.gates)
+                // 落地起跳位置态 / 核心地位(裁定 #11/#12)。
+                // 🔴 **这两项是成员级判定,篮子只能报「最差的那只」** —— 文案里必须
+                // 带「最差」二字,⛔ 不许写成「本篮位置不合适」(那会把一只跟风票的
+                // 判定说成整篮的结论);逐成员的判定与读数在篮子卡里。
+                // nil = 这张卡没有任何成员带该判定(老卡常态)→ 整行不显示,
+                // ⛔ 不显示成"合适"这种看起来像结论的占位。
+                if basket.worstPositionVerdict != nil || basket.worstCoreVerdict != nil {
+                    HStack(spacing: 6) {
+                        if let v = basket.worstPositionVerdict {
+                            NKChip(text: "落地起跳 最差 \(nkVerdictLabel(v))", tone: nkVerdictTone(v))
+                        }
+                        if let v = basket.worstCoreVerdict {
+                            NKChip(text: "龙头地位 最差 \(nkVerdictLabel(v))", tone: nkVerdictTone(v))
+                        }
+                        Spacer()
+                    }
                 }
                 // V2.1-④ 百分制打分卡:总分 + 五维贡献条(**纯展示**)。
                 BasketScoreCard(percent: basket.scoreDisplayPercent,

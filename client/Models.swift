@@ -247,6 +247,16 @@ func nkVerdictTone(_ raw: String) -> NKAxisTone {
     }
 }
 
+/// 一组三值里**最差**的那个(`unfit` > `weak` > `ok`)。空 → nil。
+/// ⚠ 未识别码**不参与比较**(⛔ 不猜它有多严重),全是未识别码时返回第一个原样。
+func nkWorstVerdict(_ raws: [String]?) -> String? {
+    guard let raws, !raws.isEmpty else { return nil }
+    let rank = ["ok": 0, "weak": 1, "unfit": 2]
+    let known = raws.filter { rank[$0] != nil }
+    guard !known.isEmpty else { return raws.first }
+    return known.max { (rank[$0] ?? 0) < (rank[$1] ?? 0) }
+}
+
 // MARK: - v1.4-④ 信息卡摘要(挂 `Candidate.infoCard`,不含 60 日序列,§五 v1.4-④-B)
 //
 // 服务端重构后恒是完整对象(pydantic 默认值兜底 + 全量序列化,§五-④-C「数据不可得
@@ -975,6 +985,24 @@ struct Basket: Codable, Equatable, Identifiable {
     var engineVersionDisplay: String? { engineVersion ?? card?.engineVersion }
     var skeletonVersionDisplay: String? { skeletonVersion ?? card?.skeletonVersion }
 
+    /// V2.2-③ 六关灯条的**唯一读法**(两条路各自带一份**同一次写入**的拷贝):
+    /// 报告快照路只有 `card.tierBreakdown`(⚠ `BasketView` 不发 `tierHistory`),
+    /// live 路(`GET /baskets/{id}`)两处都有 —— 故卡优先、留痕兜底。
+    /// ⛔ 这不是"两份可能不同步的数据":`tier.py` 把同一个 breakdown dict 同时写进
+    /// `tier_history.mech_breakdown` 与卡的 `tier_breakdown`。
+    var gates: BasketGates {
+        let g = BasketGates(tierBreakdown: card?.tierBreakdown)
+        return g.available ? g : BasketGates(tierBreakdown: tierHistory?.mechBreakdown)
+    }
+
+    /// 「落地起跳位置态」的篮子级摘要(裁定 #11:位置关是**成员级**判定,篮子级只能
+    /// 说"最差的那只是什么")。nil = 这张卡没有任何成员带位置判定(老卡常态)。
+    /// ⛔ 别把 nil 显示成「位置合适」。
+    var worstPositionVerdict: String? { nkWorstVerdict(card?.members.compactMap(\.positionVerdict)) }
+
+    /// 核心关同款(裁定 #12)。
+    var worstCoreVerdict: String? { nkWorstVerdict(card?.members.compactMap(\.coreVerdict)) }
+
     /// 卡未就绪时的诚实文案。⛔ **不是**「篮子不存在」。
     var cardUnavailableText: String? {
         guard card == nil else { return nil }
@@ -988,24 +1016,32 @@ struct Basket: Codable, Equatable, Identifiable {
     }
 }
 
-/// ③b 未定档篮子一行(⑥-b-C)。
-/// **`reason` 两个码语义相反,⛔ 不许合并成一句「未入选」**:
-/// `capacity_overflow` = 分数够、位置满 →「今天机会多到装不下」;
-/// `below_quality_line` = 连最低档下限都没过 →「今天没什么好货」(**V2.1-② 起最低档
-/// = T2**,此前是 T3;⚠ **码一字不改**,展示文案里也不出现档位数字,故老快照回放
-/// 与新数据共用这一句)。
+/// ③b 未定档篮子一行(⑥-b-C;**V2.2-③ 起「名 / 分 / 卡在哪一关、差多少 / 原因码」**)。
+/// 🔴 **每个 `reason` 码指向不同的市场 / 系统结论,⛔ 不许合并成一句「未入选」**——
+/// 逐码含义见 `nkDroppedReasonLabel`(唯一源 = 服务端
+/// `report/basket_daily.py::DROPPED_REASON_LABEL`,这里是它的中文展示层镜像)。
+/// `gate`/`gateDetail` 是 **V2.2 新增可选键**:老快照缺它们 = 该版本还没有关口概念
+/// (⛔ 不是「没卡在任何关」)。
 /// **没有 `basketId`** —— 它没进 `baskets` 表,给一个 id 会让用户以为点得进去。
 struct DroppedBasket: Codable, Equatable, Identifiable {
     var name: String = ""
     var mechScore: Double? = nil
     var reason: String = ""
+    /// 卡在哪一关(`market|driver|sector|core|position|evidence`);nil = 老快照 / 与关口无关。
+    var gate: String? = nil
+    /// 差多少(服务端的机器原因码串,数值内嵌)。**原样展示**,⛔ 不改写、不翻译。
+    var gateDetail: String? = nil
 
-    var id: String { "\(name)|\(reason)" }
+    // ⚠ id 必须把 `gate` 也算进去:同一篮同一 reason 但卡在不同关是可能的(如
+    // 证据关降级出局时 `gate` 取第一道降级关),不带进 id 会让 ForEach 撞 key。
+    var id: String { "\(name)|\(reason)|\(gate ?? "")" }
 
-    enum CodingKeys: String, CodingKey { case name, mechScore, reason }
+    enum CodingKeys: String, CodingKey { case name, mechScore, reason, gate, gateDetail }
 
-    init(name: String = "", mechScore: Double? = nil, reason: String = "") {
+    init(name: String = "", mechScore: Double? = nil, reason: String = "",
+         gate: String? = nil, gateDetail: String? = nil) {
         self.name = name; self.mechScore = mechScore; self.reason = reason
+        self.gate = gate; self.gateDetail = gateDetail
     }
 
     init(from decoder: Decoder) throws {
@@ -1013,18 +1049,185 @@ struct DroppedBasket: Codable, Equatable, Identifiable {
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         mechScore = try c.decodeIfPresent(Double.self, forKey: .mechScore)
         reason = try c.decodeIfPresent(String.self, forKey: .reason)  ?? ""
+        gate = try c.decodeIfPresent(String.self, forKey: .gate)
+        gateDetail = try c.decodeIfPresent(String.self, forKey: .gateDetail)
     }
 
     var reasonLabel: String { nkDroppedReasonLabel(reason) }
-    var reasonTone: NKAxisTone { reason == "capacity_overflow" ? .good : .warn }
+    var reasonTone: NKAxisTone { nkDroppedReasonTone(reason) }
+    /// 「卡在哪一关」的人读名;nil = 老快照没有这个键(⛔ 不写「无」)。
+    var gateLabel: String? { gate.map(nkGateLabel) }
+    /// 该关是机械关(硬否决)还是证据关(只降级)—— nil = 不知道是哪一关。
+    var gateKind: NKGateKind? { gate.map(nkGateKind) }
 }
 
-/// ③b 两个原因码的展示层换算(**⛔ 不许合并**,两者指向相反的市场结论)。
+/// ③b 原因码的展示层换算(**⛔ 不许合并**,每个码指向不同的结论)。
+/// 🔴 **唯一源是服务端 `report/basket_daily.py::DROPPED_REASON_LABEL`**;这里是
+/// 中文短句镜像(界面要一行放得下,服务端那份带括号补充给 markdown 报告用)。
+/// ⚠ **码字符串一经落库不改**(⑨ 按原因码归因,改码 = 历史归因断线)——
+/// 新增码只加 case,⛔ 不改既有码的字面。未识别码原样透传,不静默瞎翻译。
 func nkDroppedReasonLabel(_ raw: String) -> String {
     switch raw {
     case "capacity_overflow": return "档位已满 · 今天机会多到装不下"
-    case "below_quality_line": return "未过质量线 · 今天没什么好货"
+    // ⚠ V2.2 门槛制**之前**的历史码:老快照回放仍会出现,⛔ 别当非法值。
+    case "below_quality_line": return "未过质量线 · 今天没什么好货(V2.2 前的历史码)"
+    // —— V2.2-③ 六道关口新增七码(服务端已登记;⛔ 一个都不许并成「未入选」)——
+    case "evidence_degraded_out": return "证据关降级出局 · 逻辑没被证据撑住"
+    case "mech_gate_rejected": return "机械关硬否决 · 市场关 / 板块关不过"
+    // 🔴 裁定 #11:位置关判定交 LLM,`unfit` **不是硬否决** —— 票就在这张表里、
+    // 写明是哪只成员与模型的理由。
+    case "position_unfit": return "位置关判定不合适 · 落地起跳位置不对(非硬否决)"
+    // 🔴 裁定 #12:核心关同款交 LLM。「不是龙头」≠「这票不行」。
+    case "core_unfit": return "核心关判定不是龙头 · 同行业里不占核心地位(非硬否决)"
+    case "members_all_removed": return "成员级机械关对拍后成员全部出篮"
+    // 🔴 下面两码是**系统缺席**,不是市场结论 —— ⛔ 别读成「今天没好票」。
+    case "no_active_engine": return "无运行中的引擎线 · 系统缺席(不是市场结论)"
+    case "engine_unresolved": return "引擎归属解析失败 · 无引擎可容纳"
     default: return raw
+    }
+}
+
+/// ③b 原因码的着色。**三类分开**:关口过了只是位置满(good)/ 市场或证据判它不行
+/// (warn)/ **系统自己缺席**(bad —— 那不是市场结论,是我们没跑起来,该最刺眼)。
+func nkDroppedReasonTone(_ raw: String) -> NKAxisTone {
+    switch raw {
+    case "capacity_overflow": return .good
+    case "no_active_engine", "engine_unresolved": return .bad
+    default: return .warn
+    }
+}
+
+// MARK: - V2.2-③ 六道关口(展示层:码 → 中文 + 机械关 / 证据关二分)
+//
+// 🔴 **③-A 二分是产品语义,不是配色偏好**(用户裁定 #6 + #11 + #12):
+//   · **机械关**(市场 / 板块)读的是已预计算的**客观量** → **硬否决**,过不去就没了;
+//   · **证据关**(驱动 / 核心 / 位置 / 证据)由 LLM 组织证据 → **只降级**
+//     (T1→T2→退出正式候选,**仍在报告 ③b 列名**)。
+// ⛔ 界面上两者必须能分辨:后果完全不同,混成一种灯就是把「否决」与「扣分」讲成一回事。
+// 唯一源 = 服务端 `selection/gates.py`(`MECH_GATES` / `EVIDENCE_GATES` / `GATE_LABELS`)。
+
+enum NKGateKind: Equatable {
+    /// 机械关:硬否决(市场 / 板块)。
+    case mechanical
+    /// 证据关:只降级、不除名(驱动 / 核心 / 位置 / 证据)。
+    case evidence
+    /// 未识别的关口码(新服务端加了关而这版客户端还不认识)——⛔ 不猜成任何一类。
+    case unknown
+
+    var label: String {
+        switch self {
+        case .mechanical: return "机械关 · 硬否决"
+        case .evidence:   return "证据关 · 只降级"
+        case .unknown:    return "未知关口"
+        }
+    }
+}
+
+/// 六关码的固定展示顺序(= 服务端 `GATE_ORDER`)。⛔ 别按字典序排 —— 那会把
+/// 「市场 → 驱动 → 板块 → 核心 → 位置 → 证据」这条管线顺序打乱。
+let nkGateOrder: [String] = ["market", "driver", "sector", "core", "position", "evidence"]
+
+func nkGateLabel(_ raw: String) -> String {
+    switch raw {
+    case "market": return "市场关"
+    case "driver": return "驱动关"
+    case "sector": return "板块关"
+    case "core": return "核心关"
+    case "position": return "位置关"
+    case "evidence": return "证据关"
+    default: return raw
+    }
+}
+
+func nkGateKind(_ raw: String) -> NKGateKind {
+    switch raw {
+    case "market", "sector": return .mechanical
+    case "driver", "core", "position", "evidence": return .evidence
+    default: return .unknown
+    }
+}
+
+/// 关口判定三值的展示层换算(服务端 `VERDICT_PASS/DEGRADE/REJECT`)。
+func nkGateVerdictLabel(_ raw: String) -> String {
+    switch raw {
+    case "pass": return "过"
+    case "degrade": return "降级"
+    case "reject": return "否决"
+    default: return raw
+    }
+}
+
+func nkGateVerdictTone(_ raw: String) -> NKAxisTone {
+    switch raw {
+    case "pass": return .good
+    case "degrade": return .warn
+    case "reject": return .bad
+    default: return .neutral
+    }
+}
+
+/// 一篮的六关灯条读数(**纯展示投影**,从已冻结的 `card.tierBreakdown["gates"]` 读出)。
+///
+/// 🔴 **数据来源刻意是冻结卡而不是现连**:这一节由 `selection/tier.py::_gate_breakdown`
+/// 在定档当时写进 `mech_breakdown_json.gates`,并随篮子卡冻住 —— 回看三天前的报告
+/// 该看到**当时**判的六关,不是今天重判一遍的结果。⛔ 别改成调 `gate_evaluations`。
+///
+/// **`available == false` 的三种成因经本类型收口后不可区分**(老卡没有这一节 /
+/// 这一篮没有关口汇总 / 汇总读不出)—— 三者给用户的动作相同(等下一份报告),
+/// 但 ⛔ **绝不许渲染成「六关都过了」**:那是把「没看」讲成「没有问题」。
+struct BasketGates: Equatable {
+    var available: Bool = false
+    /// `gate 码 → verdict 码`(每关取**最严**的那一条,服务端已归并)。
+    var verdicts: [String: String] = [:]
+    var engineCode: String? = nil
+    var engineVersion: String? = nil
+    /// 证据关累计降了几档(服务端 `evidence_degrades`)。
+    var evidenceDegrades: Int? = nil
+    /// 哪些证据关判了降级。
+    var degradedGates: [String] = []
+    /// **该篮不得进 T1**(⚠ 与「被否决」不是一回事:多半是某一关**判不出**)。
+    var blocksT1: Bool = false
+    /// 位置关 / 核心关有成员被判 `unfit`(裁定 #11 / #12:退出正式候选,⛔ 非硬否决)。
+    var positionUnfit: Bool = false
+    var coreUnfit: Bool = false
+
+    /// 从 `card.tierBreakdown` 里读那一节。⛔ 不重算任何判据,只做投影。
+    init(tierBreakdown: NKJSON?) {
+        guard let node = tierBreakdown?["gates"], let obj = node.objectValue else { return }
+        available = obj["available"]?.boolValue ?? false
+        guard available else { return }
+        engineCode = obj["engine_code"]?.stringValue
+        engineVersion = obj["engine_version"]?.stringValue
+        evidenceDegrades = obj["evidence_degrades"]?.intValue
+        degradedGates = (obj["degraded_gates"]?.arrayValue ?? []).compactMap(\.stringValue)
+        blocksT1 = obj["blocks_t1"]?.boolValue ?? false
+        positionUnfit = obj["position_unfit"]?.boolValue ?? false
+        coreUnfit = obj["core_unfit"]?.boolValue ?? false
+        for (k, v) in (obj["verdicts"]?.objectValue ?? [:]) {
+            if let s = v.stringValue { verdicts[k] = s }
+        }
+    }
+
+    /// 灯条一格。`verdict == nil` = **这一关这份快照里没有记录**,⛔ 不是「过了」。
+    struct Light: Identifiable, Equatable {
+        let gate: String
+        let verdict: String?
+        var id: String { gate }
+        var label: String { nkGateLabel(gate) }
+        var kind: NKGateKind { nkGateKind(gate) }
+        var verdictLabel: String { verdict.map(nkGateVerdictLabel) ?? "未记录" }
+        var tone: NKAxisTone { verdict.map(nkGateVerdictTone) ?? .neutral }
+    }
+
+    /// 六格,**恒定六格、恒定顺序**(缺记录的那格如实标「未记录」,⛔ 不隐藏 ——
+    /// 隐藏会让「这一关没判」看起来像「这一关不存在」)。
+    var lights: [Light] {
+        nkGateOrder.map { Light(gate: $0, verdict: verdicts[$0]) }
+    }
+
+    /// 「卡在哪一关」= 按管线顺序第一道非 pass 的关;全过 → nil。
+    var blockedGate: String? {
+        nkGateOrder.first { (verdicts[$0] ?? "pass") != "pass" }
     }
 }
 
@@ -2228,13 +2431,18 @@ struct Position: Codable, Equatable, Identifiable {
     var stopOrderChecked: Bool
     // —— §五 v1.1-B.1/E.1 持仓生命周期派生字段(服务端算好,客户端不重算日历/阈值)——
     var dCount: Int = 1              // D 计数(买入日=D1,唯一源 sentinel/positions.py::d_count)
-    var maxHoldDays: Int = 5         // 现役 max_hold_days(读 config,不硬编 5);K1 单档口径,v1.3 起
-                                      // 展示改用 `maxHoldDaysEffective`(见下),本字段保留供旧逻辑/归因参考
+    /// 现役 `max_hold_days`(读 config,不硬编 5)。
+    /// 🔴 **V2.2-⑤ 起可为 nil = 本版章程无时间退出条款**(`v2.2-k8`,K8 §十三:时间退出
+    /// 让位主观换股权)。**取值域放宽,不是删键**。⛔ 拿 5 顶上冒充"有时间退出"是本项目
+    /// 反复禁止的那类谎 —— nil 时展示层走 `timeExitDisclosure`,不显示任何 D 上限。
+    var maxHoldDays: Int? = 5
     var distToStopPctServer: Double? = nil   // 服务端算好的距止损线百分比(小数,非 ×100);无实时价 → nil
     var retraceState: RetraceState? = nil
     var todayAction: String = ""     // 今日动作提示文案(D5离场/距止损/回落止盈已触发等,服务端定文案)
     // —— v1.3-① 两档时间退出(服务端按 D5 净浮盈判好下发,客户端不重算)——————————————
-    var maxHoldDaysEffective: Int = 5   // 该单有效硬上限:非浮盈=maxHoldDays;浮盈豁免=硬上限(如 15)
+    /// 该单有效硬上限:非浮盈=maxHoldDays;浮盈豁免=硬上限(如 15)。
+    /// 🔴 **同样自 V2.2-⑤ 起可为 nil**(章程无时间退出条款 → 根本没有"有效硬上限"这回事)。
+    var maxHoldDaysEffective: Int? = 5
     var timeExitState: String = "holding"
     // —— v1.3-① 费用回显(实付,供周复盘对账用真数;nil=未录)——————————————————————
     var buyFees: Double? = nil
@@ -2278,9 +2486,9 @@ struct Position: Codable, Equatable, Identifiable {
 
     init(id: Int, code: String, name: String, buyPrice: Double, qty: Int, entryReason: String,
          buyDate: String, price: Double, status: String, stopLine: Double, stopOrderChecked: Bool,
-         dCount: Int = 1, maxHoldDays: Int = 5, distToStopPctServer: Double? = nil,
+         dCount: Int = 1, maxHoldDays: Int? = 5, distToStopPctServer: Double? = nil,
          retraceState: RetraceState? = nil, todayAction: String = "",
-         maxHoldDaysEffective: Int = 5, timeExitState: String = "holding",
+         maxHoldDaysEffective: Int? = 5, timeExitState: String = "holding",
          buyFees: Double? = nil, sellFees: Double? = nil,
          priceStale: PriceStale? = nil, k4DataUnavailable: Bool? = nil,
          timeExitLockedDay: Int? = nil, timeExitLockedLateDays: Int = 0,
@@ -2311,16 +2519,29 @@ struct Position: Codable, Equatable, Identifiable {
         stopLine = try c.decode(Double.self, forKey: .stopLine)
         stopOrderChecked = try c.decode(Bool.self, forKey: .stopOrderChecked)
         dCount = try c.decodeIfPresent(Int.self, forKey: .dCount) ?? 1
-        maxHoldDays = try c.decodeIfPresent(Int.self, forKey: .maxHoldDays) ?? 5
+        // 🔴 **「缺键」与「显式 null」在这里语义相反,必须分开**(V2.2-⑤):
+        //   · **缺键** = 真·老服务端 / 老 fixture(v1.1 之前根本没有这个字段)→ 按当时
+        //     的单档口径补 5,老断言逐位不变;
+        //   · **显式 null** = **本版章程无时间退出条款**(`v2.2-k8`)→ 如实 nil,
+        //     ⛔ 不许拿 5 顶上冒充"有时间退出"。
+        // `decodeIfPresent` 两种情况都返回 nil、区分不了 → 用 `contains(_:)` 判键在不在
+        // (它对显式 null 返回 true)。⛔ 别"简化"回 `?? 5`,那会让新章程静默显示 D5。
+        maxHoldDays = c.contains(.maxHoldDays)
+            ? try c.decodeIfPresent(Int.self, forKey: .maxHoldDays)
+            : 5
         distToStopPctServer = try c.decodeIfPresent(Double.self, forKey: .distToStopPctServer)
         retraceState = try c.decodeIfPresent(RetraceState.self, forKey: .retraceState)
         todayAction = try c.decodeIfPresent(String.self, forKey: .todayAction) ?? ""
-        maxHoldDaysEffective = try c.decodeIfPresent(Int.self, forKey: .maxHoldDaysEffective) ?? maxHoldDays
+        maxHoldDaysEffective = c.contains(.maxHoldDaysEffective)
+            ? try c.decodeIfPresent(Int.self, forKey: .maxHoldDaysEffective)
+            : maxHoldDays
         // 缺键(真正的旧服务端/旧 fixture,v1.3-① 前)→ 按旧单档口径派生(dCount>=maxHoldDays
         // 才算到期),与「服务端本该发什么」逐位一致——不是拍脑袋的"holding"兜底,而是精确
         // 复现 v1.1 单档时间退出行为,故老 fixture 的 isExitDay 断言不必因这次改动而重写。
+        // ⚠ **无上限(nil)时这条派生整个不成立** → 只能是 `holding`(没有"到期"这回事)。
         timeExitState = try c.decodeIfPresent(String.self, forKey: .timeExitState)
-            ?? (dCount >= maxHoldDays ? PositionTimeExitState.timeExitNextDayRaw : PositionTimeExitState.holdingRaw)
+            ?? ((maxHoldDays.map { dCount >= $0 } ?? false)
+                ? PositionTimeExitState.timeExitNextDayRaw : PositionTimeExitState.holdingRaw)
         buyFees = try c.decodeIfPresent(Double.self, forKey: .buyFees)
         sellFees = try c.decodeIfPresent(Double.self, forKey: .sellFees)
         priceStale = try c.decodeIfPresent(PriceStale.self, forKey: .priceStale)
@@ -2359,6 +2580,26 @@ struct Position: Codable, Equatable, Identifiable {
 
     /// 服务端两档时间退出态的展示层枚举(见 `PositionTimeExitState`)。
     var timeExitKind: PositionTimeExitState { PositionTimeExitState(timeExitState) }
+
+    // —— V2.2-⑤ 章程按 K8 持仓原则修订:**时间退出让位主观换股权** ——————————
+    //
+    // 🔴 `maxHoldDaysEffective == nil` = **本版章程没有时间退出条款**(不是"读不到")。
+    // ⛔ 不许显示成 `D3/D5` 这类假上限,也不许显示成 `D3/D0`。
+
+    /// 本单是否受时间退出条款约束。
+    var hasTimeExitRule: Bool { maxHoldDaysEffective != nil }
+
+    /// D 徽标文案。无时间退出条款时**只报 D 计数**(它仍是有用的持有天数记录)。
+    var dBadgeText: String {
+        guard let cap = maxHoldDaysEffective else { return "D\(dCount)" }
+        return "D\(dCount)/D\(cap)"
+    }
+
+    /// 无时间退出条款时那句必须说出口的话;有条款时 nil(不啰嗦)。
+    var timeExitDisclosure: String? {
+        guard maxHoldDaysEffective == nil else { return nil }
+        return "本版章程无时间退出条款(K8:换股由你主观决定),D 计数只作记录、不构成离场提示"
+    }
 
     /// 是否该醒目展示为「离场/到期」(两档:非浮盈到期 `timeExitNextDay` 或浮盈硬上限到期
     /// `hardCapExit`)。**`profitExempt` 不算**——它是持有态(交回落止盈+止损管到硬上限),
@@ -3339,19 +3580,30 @@ struct ReviewOverview: Codable, Equatable {
     var capability: ReviewSegment = ReviewSegment()
     var reconcile: ReviewSegment = ReviewSegment()
     var observations: ReviewSegment = ReviewSegment()
+    // —— V2.2-④ 新增三段(**同样各自 `available` + `unavailableReason`**;
+    //    ⛔ 不许被上面五段的任何一段罩住 —— 它们是八件互不相干的事)——
+    var selectionClock: ReviewSegment = ReviewSegment()
+    var tradeClock: ReviewSegment = ReviewSegment()
+    var iterationSuggestions: ReviewSegment = ReviewSegment()
 
     enum CodingKeys: String, CodingKey {
         case weekStart, weekEnd, weekKey, calibration, preference, capability
         case reconcile, observations
+        case selectionClock, tradeClock, iterationSuggestions
     }
 
     init(weekStart: String = "", weekEnd: String = "", weekKey: String = "",
          calibration: ReviewSegment = ReviewSegment(), preference: ReviewSegment = ReviewSegment(),
          capability: ReviewSegment = ReviewSegment(), reconcile: ReviewSegment = ReviewSegment(),
-         observations: ReviewSegment = ReviewSegment()) {
+         observations: ReviewSegment = ReviewSegment(),
+         selectionClock: ReviewSegment = ReviewSegment(),
+         tradeClock: ReviewSegment = ReviewSegment(),
+         iterationSuggestions: ReviewSegment = ReviewSegment()) {
         self.weekStart = weekStart; self.weekEnd = weekEnd; self.weekKey = weekKey
         self.calibration = calibration; self.preference = preference
         self.capability = capability; self.reconcile = reconcile; self.observations = observations
+        self.selectionClock = selectionClock; self.tradeClock = tradeClock
+        self.iterationSuggestions = iterationSuggestions
     }
 
     init(from decoder: Decoder) throws {
@@ -3364,7 +3616,68 @@ struct ReviewOverview: Codable, Equatable {
         capability = try c.decodeIfPresent(ReviewSegment.self, forKey: .capability) ?? ReviewSegment()
         reconcile = try c.decodeIfPresent(ReviewSegment.self, forKey: .reconcile) ?? ReviewSegment()
         observations = try c.decodeIfPresent(ReviewSegment.self, forKey: .observations) ?? ReviewSegment()
+        selectionClock = try c.decodeIfPresent(ReviewSegment.self, forKey: .selectionClock) ?? ReviewSegment()
+        tradeClock = try c.decodeIfPresent(ReviewSegment.self, forKey: .tradeClock) ?? ReviewSegment()
+        iterationSuggestions = try c.decodeIfPresent(ReviewSegment.self,
+                                                     forKey: .iterationSuggestions) ?? ReviewSegment()
     }
+}
+
+// MARK: - V2.2-④-D 修改建议四分类(K8 §十七;**只给建议,⛔ 零写回**)
+//
+// 🔴 **`klass == nil` + `klassStatus == "thresholds_undecided"` 是设计中的状态,不是缺陷**:
+// K8 §十七 只给了定性描述(保留 / 观察 / 降权 / 淘汰),**没有给「多少样本算够」
+// 「差多少算失效」这两个数**;它们必须由用户拍板、经四道闸进骨架包才生效。
+// ⛔ **界面上绝不许把它显示成「暂无建议」或空白** —— 那会把「还没决定」讲成「没问题」;
+// ⛔ 也不许渲染成「观察」——「还没决定」与「样本不足」是两件事(服务端 docstring 原话)。
+
+/// 四分类码 → 中文(唯一源 = 服务端 `eval/iteration.py::KLASS_LABELS`;
+/// 服务端已在 `klassLabel` 里下发,本函数只在那个键缺席时兜底)。
+func nkIterationKlassLabel(_ raw: String) -> String {
+    switch raw {
+    case "keep": return "保留 · 持续有效"
+    case "observe": return "观察 · 样本不足"
+    case "downweight": return "降权 · 辅助有效"
+    case "retire": return "淘汰 · 持续失效"
+    default: return raw
+    }
+}
+
+func nkIterationKlassTone(_ raw: String) -> NKAxisTone {
+    switch raw {
+    case "keep": return .good
+    case "observe": return .neutral
+    case "downweight": return .warn
+    case "retire": return .bad
+    default: return .neutral
+    }
+}
+
+/// 四分类建议一行(`ReviewSegment.items` 的一条,**自由结构原样透传** → 这里只做投影)。
+struct IterationSuggestion: Identifiable, Equatable {
+    let raw: NKJSON
+    /// 因素标识(`dimension=value`,如 `gate=position:ok`)。
+    var factor: String { raw["factor"]?.stringValue ?? "—" }
+    var n: Int { raw["n"]?.intValue ?? 0 }
+    var klass: String? { raw["klass"]?.stringValue }
+    var klassStatus: String? { raw["klassStatus"]?.stringValue }
+    /// 服务端给的中文名优先(`klassLabel`),缺席才用客户端换算。
+    var klassLabel: String? {
+        raw["klassLabel"]?.stringValue ?? klass.map(nkIterationKlassLabel)
+    }
+    var klassTone: NKAxisTone { klass.map(nkIterationKlassTone) ?? .neutral }
+    /// 服务端写好的整句建议(**分界线未定时,这句话里就写着缺哪两个数**)。⛔ 原样展示。
+    var suggestion: String { raw["suggestion"]?.stringValue ?? "" }
+    var engineCode: String? { raw["engineCode"]?.stringValue }
+    var engineVersion: String? { raw["engineVersion"]?.stringValue }
+    var accuracy: Double? { raw["accuracy"]?.doubleValue }
+    var delta: Double? { raw["delta"]?.doubleValue }
+    var placeboEdge: String? { raw["placeboEdge"]?.stringValue }
+
+    /// 🔴 **分界线还没拍板**。⛔ 界面必须显式说出这件事。
+    var thresholdsUndecided: Bool { klass == nil && klassStatus == "thresholds_undecided" }
+
+    var id: String { "\(engineCode ?? "")|\(engineVersion ?? "")|\(factor)" }
 }
 
 /// 校准移交件(V2.1-⑤,`GET /review/handoff`)——一份能**直接交给策略台**的 markdown。
@@ -3431,6 +3744,340 @@ struct ReviewObservation: Identifiable, Equatable {
     var evidenceNeeded: String { raw["evidence_needed"]?.stringValue ?? "" }
     var status: String { raw["status"]?.stringValue ?? "" }
 }
+
+// MARK: - V2.2-② 行情状态层(`GET /market-regime`,D0 盘后三态)
+//
+// 🔴 **三条硬边界**(服务端 docstring 原文):**只读、零现算、一律不 404** ——
+// 缺行 / 表空 / 参数非法一律 200 + `available=false` + 自由文本原因。
+// ⛔ **`available == false` 既不是错误、也不是「没风险」**:它是「我们今天没算出
+// 行情状态」。展示处必须把 `unavailableReason` 那句话原样说出口(§3.8 诚实披露)。
+//
+// ⚠ **纯展示、⛔ 零动作**:行情状态**不改变任何持仓判定、不触发任何提醒**
+// (§五 〇b-7:不许留「建议今天别开仓」这类自动状态位)。
+
+/// `market_regime_daily` 一行。`inputs` / `strengthening` / `weakening` 是**原样透传**
+/// 的自由结构(五维各自带 `available`/`unavailable_reason` 双位);`regimeLabel` 由
+/// **服务端**给人读名(唯一源 `scan/regime.py::REGIME_LABELS`)——⛔ 客户端不另建
+/// 一份中文映射,那会在服务端改名时静默显示旧名。
+struct MarketRegimeDay: Codable, Equatable {
+    var tradeDate: String = ""
+    /// `trend_continuation` | `high_divergence` | `rotation_confirmed`。
+    var regime: String = ""
+    var regimeLabel: String = ""
+    var regimeReason: String = ""
+    var inputs: NKJSON = .object([:])
+    var strengthening: [NKJSON] = []
+    var weakening: [NKJSON] = []
+    var skeletonVersion: String = ""
+    var computedAt: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case tradeDate, regime, regimeLabel, regimeReason, inputs
+        case strengthening, weakening, skeletonVersion, computedAt
+    }
+
+    init(tradeDate: String = "", regime: String = "", regimeLabel: String = "",
+         regimeReason: String = "", inputs: NKJSON = .object([:]),
+         strengthening: [NKJSON] = [], weakening: [NKJSON] = [],
+         skeletonVersion: String = "", computedAt: String = "") {
+        self.tradeDate = tradeDate; self.regime = regime; self.regimeLabel = regimeLabel
+        self.regimeReason = regimeReason; self.inputs = inputs
+        self.strengthening = strengthening; self.weakening = weakening
+        self.skeletonVersion = skeletonVersion; self.computedAt = computedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tradeDate = try c.decodeIfPresent(String.self, forKey: .tradeDate) ?? ""
+        regime = try c.decodeIfPresent(String.self, forKey: .regime) ?? ""
+        regimeLabel = try c.decodeIfPresent(String.self, forKey: .regimeLabel) ?? ""
+        regimeReason = try c.decodeIfPresent(String.self, forKey: .regimeReason) ?? ""
+        inputs = try c.decodeIfPresent(NKJSON.self, forKey: .inputs) ?? .object([:])
+        strengthening = try c.decodeIfPresent([NKJSON].self, forKey: .strengthening) ?? []
+        weakening = try c.decodeIfPresent([NKJSON].self, forKey: .weakening) ?? []
+        skeletonVersion = try c.decodeIfPresent(String.self, forKey: .skeletonVersion) ?? ""
+        computedAt = try c.decodeIfPresent(String.self, forKey: .computedAt) ?? ""
+    }
+
+    /// 人读名兜底:服务端没给 `regimeLabel` 时原样显示英文码(⛔ 不瞎翻译)。
+    var displayLabel: String { regimeLabel.isEmpty ? regime : regimeLabel }
+
+    /// 三态着色。**「切换确认」不是坏事、「趋势延续」也不是买入背书** —— 这里的颜色
+    /// 只表达「市场结构有多不稳」,⛔ 不是行情看多看空的信号(§2.8-C)。
+    var tone: NKAxisTone {
+        switch regime {
+        case "trend_continuation": return .good
+        case "high_divergence": return .bad
+        case "rotation_confirmed": return .warn
+        default: return .neutral
+        }
+    }
+
+    /// 五维里**没算出来**的那几维(`inputs.<dim>.available == false`)。
+    /// 🔴 界面要把它说出口:缺维不是「这一维没问题」。
+    var missingDims: [String] {
+        (inputs.objectValue ?? [:])
+            .filter { $0.value["available"]?.boolValue == false }
+            .keys.sorted()
+    }
+}
+
+/// `GET /market-regime` 响应。`day` = 单日查询;`days` = 区间查询(本版只用 `day`)。
+struct MarketRegime: Codable, Equatable {
+    var available: Bool = false
+    var unavailableReason: String? = nil
+    var day: MarketRegimeDay? = nil
+    var days: [MarketRegimeDay] = []
+
+    static let empty = MarketRegime()
+
+    enum CodingKeys: String, CodingKey { case available, unavailableReason, day, days }
+
+    init(available: Bool = false, unavailableReason: String? = nil,
+         day: MarketRegimeDay? = nil, days: [MarketRegimeDay] = []) {
+        self.available = available; self.unavailableReason = unavailableReason
+        self.day = day; self.days = days
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        available = try c.decodeIfPresent(Bool.self, forKey: .available) ?? false
+        unavailableReason = try c.decodeIfPresent(String.self, forKey: .unavailableReason)
+        day = try c.decodeIfPresent(MarketRegimeDay.self, forKey: .day)
+        days = try c.decodeIfPresent([MarketRegimeDay].self, forKey: .days) ?? []
+    }
+}
+
+// MARK: - V2.2-④ 双时钟(选股时钟 / 交易时钟)
+//
+// 🔴 **两个时钟问的是两件事,⛔ 不合并**(K8 §十四):
+//   · **选股时钟** = 「这批票选得对不对」—— 覆盖 D0 **全部** T1/T2,
+//     **与用户买没买无关**,D1 收盘统一验证一次后**结案**;
+//   · **交易时钟** = 「这笔买卖做得怎么样」—— **启动唯一条件 = 实际买入**,全部离场后结案。
+// ⛔ 客户端文案不许把选股时钟写成「你关注的篮子」之类 —— 那会把覆盖域讲小。
+//
+// ⚠ 两者都是 **B 类冻结快照**(`selection_clock.mech_json` / `trade_clock.final_json`
+// 写入当时冻住、不随服务端升级补键)→ DTO **必须手写 `init(from:)`**(V2-⑮ 铁律)。
+
+/// 一篮的选股时钟**结案件**。`tierAccuracy` 是 ⑦-b **四态原样**
+/// (`verified`/`partial`/`unclear`/`falsified`)加两个"没判"码 —— **⛔ 不是 0/1 的
+/// 对错**,折成正确率是周度侧的事,客户端不折。
+struct SelectionClock: Codable, Equatable, Identifiable {
+    var basketId: Int = 0
+    var d0Date: String = ""
+    var d1Date: String = ""
+    var coveredTier: Int = 0
+    /// D0 当天的行情状态;**nil = 当日无行**(如实,⛔ 不猜)。
+    var regimeAtD0: String? = nil
+    var tierAccuracy: String? = nil
+    /// 未触发原因(触发了则 nil)。
+    var untriggeredReason: String? = nil
+    var closedAt: String = ""
+    var skeletonVersion: String = ""
+    var verificationRulesetVersion: String = ""
+    /// 引擎归因快照(裁定 #9 单篮子单引擎 → 两键)。
+    var engineBreakdown: NKJSON = .object([:])
+    /// 九项验证内容(**顺序即 K8 原文顺序**;每项自带 available/source)。原样透传。
+    var mech: NKJSON = .object([:])
+
+    var id: Int { basketId }
+
+    enum CodingKeys: String, CodingKey {
+        case basketId, d0Date, d1Date, coveredTier, regimeAtD0, tierAccuracy
+        case untriggeredReason, closedAt, skeletonVersion, verificationRulesetVersion
+        case engineBreakdown, mech
+    }
+
+    init(basketId: Int = 0, d0Date: String = "", d1Date: String = "", coveredTier: Int = 0,
+         regimeAtD0: String? = nil, tierAccuracy: String? = nil, untriggeredReason: String? = nil,
+         closedAt: String = "", skeletonVersion: String = "",
+         verificationRulesetVersion: String = "", engineBreakdown: NKJSON = .object([:]),
+         mech: NKJSON = .object([:])) {
+        self.basketId = basketId; self.d0Date = d0Date; self.d1Date = d1Date
+        self.coveredTier = coveredTier; self.regimeAtD0 = regimeAtD0
+        self.tierAccuracy = tierAccuracy; self.untriggeredReason = untriggeredReason
+        self.closedAt = closedAt; self.skeletonVersion = skeletonVersion
+        self.verificationRulesetVersion = verificationRulesetVersion
+        self.engineBreakdown = engineBreakdown; self.mech = mech
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        basketId = try c.decodeIfPresent(Int.self, forKey: .basketId) ?? 0
+        d0Date = try c.decodeIfPresent(String.self, forKey: .d0Date) ?? ""
+        d1Date = try c.decodeIfPresent(String.self, forKey: .d1Date) ?? ""
+        coveredTier = try c.decodeIfPresent(Int.self, forKey: .coveredTier) ?? 0
+        regimeAtD0 = try c.decodeIfPresent(String.self, forKey: .regimeAtD0)
+        tierAccuracy = try c.decodeIfPresent(String.self, forKey: .tierAccuracy)
+        untriggeredReason = try c.decodeIfPresent(String.self, forKey: .untriggeredReason)
+        closedAt = try c.decodeIfPresent(String.self, forKey: .closedAt) ?? ""
+        skeletonVersion = try c.decodeIfPresent(String.self, forKey: .skeletonVersion) ?? ""
+        verificationRulesetVersion = try c.decodeIfPresent(
+            String.self, forKey: .verificationRulesetVersion) ?? ""
+        engineBreakdown = try c.decodeIfPresent(NKJSON.self, forKey: .engineBreakdown) ?? .object([:])
+        mech = try c.decodeIfPresent(NKJSON.self, forKey: .mech) ?? .object([:])
+    }
+
+    var engineCode: String? { engineBreakdown["engine_code"]?.stringValue }
+    var engineVersion: String? { engineBreakdown["engine_version"]?.stringValue }
+
+    /// ⚠ **`tierAccuracy == nil` 是「没判」,不是「判错了」** —— 展示处如实说。
+    var tierAccuracyLabel: String {
+        guard let t = tierAccuracy else { return "本篮未给分层准确性判定" }
+        return nkVerificationStateLabel(t)
+    }
+    var tierAccuracyTone: NKAxisTone {
+        switch tierAccuracy {
+        case "verified": return .good
+        case "partial": return .warn
+        case "falsified": return .bad
+        default: return .neutral   // unclear / 两个"没判"码 / nil
+        }
+    }
+}
+
+/// 交易时钟事件流水一行(**append-only**)。`userNote` = K8 §十五 用户主观说明
+/// (⛔ 系统不生成、不改写、不合并 —— §七 P3-28 纪律)。
+struct TradeClockEvent: Codable, Equatable, Identifiable {
+    var id: Int = 0
+    var eventDate: String = ""
+    /// `d1_open | daily_check | target_zone | invalidation | manual_note | close`。
+    var kind: String = ""
+    var mech: NKJSON = .object([:])
+    var userNote: String? = nil
+    var createdAt: String = ""
+
+    enum CodingKeys: String, CodingKey { case id, eventDate, kind, mech, userNote, createdAt }
+
+    init(id: Int = 0, eventDate: String = "", kind: String = "", mech: NKJSON = .object([:]),
+         userNote: String? = nil, createdAt: String = "") {
+        self.id = id; self.eventDate = eventDate; self.kind = kind
+        self.mech = mech; self.userNote = userNote; self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(Int.self, forKey: .id) ?? 0
+        eventDate = try c.decodeIfPresent(String.self, forKey: .eventDate) ?? ""
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        mech = try c.decodeIfPresent(NKJSON.self, forKey: .mech) ?? .object([:])
+        userNote = try c.decodeIfPresent(String.self, forKey: .userNote)
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+    }
+
+    var kindLabel: String { nkTradeClockEventKindLabel(kind) }
+}
+
+/// 交易时钟事件类型的展示层换算(未识别码原样透传,⛔ 不瞎翻译)。
+func nkTradeClockEventKindLabel(_ raw: String) -> String {
+    switch raw {
+    case "d1_open": return "D1 开盘"
+    case "daily_check": return "每日检查"
+    case "target_zone": return "进入目标区间"
+    case "invalidation": return "失效信号"
+    case "manual_note": return "你的说明"
+    case "close": return "结案"
+    default: return raw
+    }
+}
+
+/// 一笔真实买入的交易时钟。`final` **只在结案后有值**(运行中恒 nil ——「还没结案」
+/// 与「结案了但八项算不出」必须分得开);`basketId == nil` = 非篮子来源的手动开仓,
+/// **合法**,⛔ 不是数据错误。
+struct TradeClock: Codable, Equatable, Identifiable {
+    var positionId: Int = 0
+    var tsCode: String = ""
+    var basketId: Int? = nil
+    var openedOn: String = ""
+    var closedOn: String? = nil
+    /// `running` | `closed`。
+    var status: String = ""
+    /// 开仓时从 `position_plans` 冻的四件套快照(原样透传)。
+    var entryPlan: NKJSON = .object([:])
+    /// 结案时的八项验证(K8 §十四)。nil = **还在跑**。
+    var final: NKJSON? = nil
+    var events: [TradeClockEvent] = []
+
+    var id: Int { positionId }
+
+    enum CodingKeys: String, CodingKey {
+        case positionId, tsCode, basketId, openedOn, closedOn, status, entryPlan, final, events
+    }
+
+    init(positionId: Int = 0, tsCode: String = "", basketId: Int? = nil, openedOn: String = "",
+         closedOn: String? = nil, status: String = "", entryPlan: NKJSON = .object([:]),
+         final: NKJSON? = nil, events: [TradeClockEvent] = []) {
+        self.positionId = positionId; self.tsCode = tsCode; self.basketId = basketId
+        self.openedOn = openedOn; self.closedOn = closedOn; self.status = status
+        self.entryPlan = entryPlan; self.final = final; self.events = events
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        positionId = try c.decodeIfPresent(Int.self, forKey: .positionId) ?? 0
+        tsCode = try c.decodeIfPresent(String.self, forKey: .tsCode) ?? ""
+        basketId = try c.decodeIfPresent(Int.self, forKey: .basketId)
+        openedOn = try c.decodeIfPresent(String.self, forKey: .openedOn) ?? ""
+        closedOn = try c.decodeIfPresent(String.self, forKey: .closedOn)
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        entryPlan = try c.decodeIfPresent(NKJSON.self, forKey: .entryPlan) ?? .object([:])
+        // ⚠ `final` 运行中服务端发的是 JSON `null`(不是缺键)——`decodeIfPresent`
+        // 对显式 null 返回 nil,正是我们要的「还没结案」。
+        final = try c.decodeIfPresent(NKJSON.self, forKey: .final)
+        events = try c.decodeIfPresent([TradeClockEvent].self, forKey: .events) ?? []
+    }
+
+    var isRunning: Bool { status == "running" }
+    var statusLabel: String {
+        switch status {
+        case "running": return "跟踪中"
+        case "closed": return "已结案"
+        default: return status.isEmpty ? "状态未知" : status
+        }
+    }
+    /// 用户已补的主观说明(按时间序)。**空 = 这笔仓一条说明都没写**(K8 §十五 覆盖率
+    /// 稀疏的直接体现,§七 P3-28)—— ⛔ 系统不代猜、不代填。
+    var userNotes: [TradeClockEvent] { events.filter { ($0.userNote ?? "").isEmpty == false } }
+}
+
+/// `POST /clocks/trade/{id}/note` 响应。`coverage` = 「本期 N 笔中有 M 笔带说明」
+/// (§七 P3-28 候选解法①:让稀疏程度当场可见)。
+struct TradeClockNoteResult: Codable, Equatable {
+    var ok: Bool = true
+    var eventId: Int = 0
+    var eventDate: String = ""
+    var coverage: NKJSON = .object([:])
+
+    enum CodingKeys: String, CodingKey { case ok, eventId, eventDate, coverage }
+
+    init(ok: Bool = true, eventId: Int = 0, eventDate: String = "",
+         coverage: NKJSON = .object([:])) {
+        self.ok = ok; self.eventId = eventId; self.eventDate = eventDate; self.coverage = coverage
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? true
+        eventId = try c.decodeIfPresent(Int.self, forKey: .eventId) ?? 0
+        eventDate = try c.decodeIfPresent(String.self, forKey: .eventDate) ?? ""
+        coverage = try c.decodeIfPresent(NKJSON.self, forKey: .coverage) ?? .object([:])
+    }
+
+    /// 一句人读的覆盖率(键缺就不说,⛔ 不拿 0 冒充)。
+    var coverageText: String? {
+        guard let total = coverage["total"]?.intValue,
+              let withNote = coverage["withNote"]?.intValue else { return nil }
+        return "本期 \(total) 笔中 \(withNote) 笔带说明"
+    }
+}
+
+/// 🔴 **用户主观说明的长度上界 —— 这是服务端 `review/trade_clock.USER_NOTE_MAX_CHARS`
+/// 的镜像,⛔ 不是客户端自己定的阈值。** 权威永远在服务端:超长服务端返 **422**,
+/// 客户端这个数只用来画字数计数器与提前提示。
+/// ⚠ 两处不同步就会静默出现「客户端说能写、服务端说太长」——
+/// 故 `tests/test_contract_crosscheck.py` 有一条机器判据把两个数钉成相等,
+/// **改服务端那个常量不改这里,Python 套件当场红**。
+let nkTradeNoteMaxChars: Int = 500
 
 // MARK: - 展示用轴向着色(沿用 LinoN `AxisTone` 概念,四值穷举)
 //

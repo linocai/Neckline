@@ -3,7 +3,10 @@
 //  Neckline — 持仓卡的从属组件(V2-⑮ 换血):
 //    · **计划继承卡**(⑩-B):从 D0 篮子卡继承的五项 + 版本号 + 偏离提示;
 //    · **per-position「不提醒」开关**(⑪-D-D):只关这一票的触达提醒,⛔ 不连坐其它持仓;
-//    · 熔断锁定横幅 + 复盘解锁弹层(§2.1 第 7 条,纯提醒层)。
+//    · **交易时钟主观说明**(V2.2-④-B / K8 §十五):`POST /clocks/trade/{id}/note`。
+//
+//  🔴 **V2.2-⑤-B 删掉的**:熔断锁定横幅 `CircuitLockBanner` + 复盘解锁弹层
+//  `CircuitReviewSheet` —— 熔断三件机制整体退役(用户裁定 #8),⛔ 不许接回来。
 //
 //  ⚠ **V2-⑮ 删掉的**:决策日志回显区 / 情景兑现勾选 / 「修订决策日志」入口 ——
 //  `decision_log` 表 v2.0.0 起**停写留档**,`link`/`cancel`/`revise`/`scenario-outcome`
@@ -149,98 +152,195 @@ struct PositionPlanSection: View {
     }
 }
 
-// MARK: - 熔断锁定横幅(持仓板块置顶,比退潮刹车更靠前)
 
-struct CircuitLockBanner: View {
+// MARK: - V2.2-④-B 交易时钟(**只读跟踪** + 唯一写入口:一条主观说明)
+//
+// 🔴 **交易时钟只在「实际买入」后存在**(K8 §十四 原文):这笔仓没有时钟 = 服务端
+// 404 `not_found` —— 那是**合法空态**(建于 V2.2 之前的老仓 / 时钟还没建),
+// ⛔ 不许渲染成错误、更不许显示成「未找到该记录」那句通用文案。
+//
+// 🔴 **本节零动作**:「上涨效率变化」等八项验证**只进复盘与展示**,
+// ⛔ 不触发任何持仓动作、不进推送(K8 明写「保留主观判断,不设机械规则」)。
+
+struct TradeClockSection: View {
     @Bindable var model: AppModel
+    let position: Position
+    /// ⚠ 初值走 QA 钩子(缺环境变量恒 `false`,正常路径逐字节不变)—— 见 `NKQA`。
+    @State private var expanded = NKQA.expandDisclosures
+
+    private var clock: TradeClock? { model.tradeClocks[position.id] }
+    private var absent: Bool { model.tradeClockAbsent.contains(position.id) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "exclamationmark.octagon.fill").font(.system(size: 16, weight: .bold))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("熔断中 · \(model.circuit.episode?.triggerReasonLabel ?? "")")
-                        .font(.system(size: 13.5, weight: .bold))
-                    Text("今日停止开新仓、次日只减不加").font(.system(size: 12)).opacity(0.9)
-                    if let note = model.circuit.episode?.note, !note.isEmpty {
-                        Text(note).font(.system(size: 11.5)).opacity(0.85)
+        VStack(alignment: .leading, spacing: 6) {
+            header
+            if expanded { detail }
+        }
+        .task(id: position.id) { await model.loadTradeClock(positionId: position.id) }
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Button { withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() } } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "stopwatch").font(.system(size: 11))
+                    Text(expanded ? "收起交易时钟" : headerTitle)
+                        .font(.system(size: 12, weight: .medium))
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
+                }
+            }
+            .buttonStyle(.plain).foregroundStyle(NK.accent)
+            Spacer()
+            if let c = clock {
+                NKChip(text: c.statusLabel, tone: c.isRunning ? .warn : .neutral)
+            }
+        }
+    }
+
+    private var headerTitle: String {
+        if let c = clock {
+            let n = c.userNotes.count
+            return "交易时钟 · \(c.statusLabel)" + (n > 0 ? " · \(n) 条说明" : " · 还没写说明")
+        }
+        // ⚠ 「没有时钟」与「还没拉到」讲不同的话(§3.8)。
+        if absent { return "交易时钟 · 这笔仓没有(建于 V2.2 之前 / 未建时钟)" }
+        return "交易时钟 · 读取中"
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        if let c = clock {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    NKChip(text: "开仓 \(c.openedOn)")
+                    if let closed = c.closedOn { NKChip(text: "结案 \(closed)") }
+                    if let bid = c.basketId {
+                        NKChip(text: "来源篮子 #\(bid)")
+                    } else {
+                        // **合法**:非篮子来源的手动开仓。⛔ 不写成"数据缺失"。
+                        NKChip(text: "非篮子来源(手动开仓)", tone: .neutral)
+                    }
+                    Spacer()
+                }
+                if c.final == nil {
+                    // 「还没结案」与「结案了但八项算不出」必须分得开(服务端 docstring)。
+                    Text("还在跟踪中 · 八项结案验证要等全部离场后才有")
+                        .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                } else if let f = c.final {
+                    DisclosureGroup("展开结案八项验证(K8 §十四,只读)") {
+                        NKJSONTable(value: f)
+                    }
+                    .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                }
+                if c.userNotes.isEmpty {
+                    Text("你还没为这笔仓写过主观说明 —— 系统**不会**替你猜(§七 P3-28)")
+                        .font(.system(size: 11)).foregroundStyle(NK.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(c.userNotes) { e in
+                            HStack(alignment: .top, spacing: 6) {
+                                Text(e.eventDate).font(.system(size: 10).monospaced())
+                                    .foregroundStyle(NK.textTertiary)
+                                Text(e.userNote ?? "").font(.system(size: 11.5))
+                                    .foregroundStyle(NK.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
                 }
-                Spacer()
+                Button { model.beginTradeClockNote(positionId: position.id) } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.and.pencil").font(.system(size: 11))
+                        Text("补一条主观说明").font(.system(size: 12.5, weight: .semibold))
+                    }
+                }
+                .buttonStyle(.plain).foregroundStyle(NK.accent)
             }
-            Button {
-                model.modal = .circuitReview
-            } label: {
-                Text("查看复盘材料并解锁 →")
-                    .font(.system(size: 12.5, weight: .bold))
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Capsule().fill(Color.white.opacity(0.22)))
+        } else if absent {
+            Text("这笔仓没有交易时钟(**不是**读取失败):时钟只在 V2.2-④ 之后的实际买入上建立。")
+                .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("读取交易时钟…").font(.system(size: 11)).foregroundStyle(NK.textTertiary)
             }
-            .buttonStyle(.plain)
         }
-        .foregroundStyle(.white)
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.alertGrad))
     }
 }
 
-// MARK: - 「熔断复盘」按钮先展示材料再调 `POST /circuit/unlock`
+// MARK: - 「补一条主观说明」弹层(**本版唯一新增写端点**)
+//
+// K8 §十五 原文:「用户只补充系统无法识别的主观原因,**每次一条简短说明**」。
+// ⛔ **系统不生成、不改写、不合并**(§七 P3-28 纪律)—— 这里没有任何"帮你润色"。
+// ⚠ 长度上界的**权威在服务端**(`review/trade_clock.USER_NOTE_MAX_CHARS`,超长返 422);
+// `nkTradeNoteMaxChars` 只是它的镜像,用于画字数计数器,两者由 Python 守门单测钉相等。
 
-struct CircuitReviewSheet: View {
+struct TradeClockNoteSheet: View {
     @Bindable var model: AppModel
+    let positionId: Int
+    @State private var text = ""
     @State private var submitting = false
+
+    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var over: Bool { text.count > nkTradeNoteMaxChars }
+    private var canSubmit: Bool { !trimmed.isEmpty && !over && !submitting }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NKSpace.gap) {
-                    if let ep = model.circuit.episode {
-                        NKCard {
-                            VStack(alignment: .leading, spacing: 10) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("触发原因").font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
-                                    Text(ep.triggerReasonLabel).font(.system(size: 15, weight: .semibold))
-                                }
-                                Divider().overlay(NK.hairline)
-                                row("触发交易日", ep.triggerRefDate)
-                                row("触发时间", ep.triggeredAt)
-                                row("判据笔数", "\(ep.basisTradesCount) 笔")
-                                row("判据时窗", ep.basisWindow)
-                                Divider().overlay(NK.hairline)
-                                Text(ep.note).font(.system(size: 12.5)).foregroundStyle(NK.textSecondary)
+                    NKCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("补充系统看不到的那部分原因")
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundStyle(NK.textPrimary)
+                            Text("机器能记的(价格 / 时间 / 触发的条件)它自己会记。这里写的是**只有你知道的那半份**:为什么在这个位置动手、当时在担心什么。⛔ 系统不会替你猜、也不会改写你写的话。")
+                                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            TextEditor(text: $text)
+                                .font(.system(size: 13))
+                                .frame(minHeight: 140)
+                                .overlay(RoundedRectangle(cornerRadius: NKRadius.field)
+                                    .stroke(over ? NK.down : NK.hairline, lineWidth: 1))
+                            HStack {
+                                Text("纯追加 · 不改任何既有记录")
+                                    .font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                                Spacer()
+                                Text("\(text.count)/\(nkTradeNoteMaxChars)")
+                                    .font(.system(size: 10.5).monospacedDigit())
+                                    .foregroundStyle(over ? NK.down : NK.textTertiary)
+                            }
+                            if over {
+                                Text("超过上限了 —— 服务端会拒收(422)。⛔ 系统不会替你截断:截一半还装作收下了,那是把你写的话改掉。")
+                                    .font(.system(size: 11)).foregroundStyle(NK.down)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
-                    } else {
-                        NKCard { NKEmptyState(title: "当前无锁定态", systemImage: "checkmark.seal") }
                     }
-                    Text("请先阅读以上触发材料,确认已完成复盘后再解锁。系统无法验证复盘是否真实完成,但会记录本次确认时间。")
-                        .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
                 }
                 .padding(NKSpace.pagePad)
             }
-            .navigationTitle("熔断复盘")
+            .navigationTitle("补一条说明")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { model.dismissModal() }
+                    Button("取消") { model.dismissModal() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("确认已复盘 · 解锁") {
-                        Task { submitting = true; await model.confirmCircuitReview(); submitting = false }
+                    Button("记下来") {
+                        Task {
+                            submitting = true
+                            await model.submitTradeClockNote(positionId: positionId, note: trimmed)
+                            submitting = false
+                        }
                     }
-                    .disabled(!model.circuit.locked || submitting)
+                    .disabled(!canSubmit)
                 }
             }
-        }
-    }
-
-    private func row(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label).font(.system(size: 12)).foregroundStyle(NK.textTertiary)
-            Spacer()
-            Text(value).font(.system(size: 12.5, weight: .medium)).foregroundStyle(NK.textPrimary)
         }
     }
 }

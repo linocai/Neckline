@@ -2237,49 +2237,36 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(log.contingencyScenarios[0].actionLabel, "持有")
     }
 
-    // MARK: - v1.2-A2 熔断纪律状态(样例对照 tests/test_api_circuit.py,§五 v1.2-E.3)
+    // MARK: - v1.2-A2 熔断纪律状态 DTO(**类型留、端点没了**,V2.2-⑤-B)
+    //
+    // 🔴 熔断三件机制已整体退役(用户裁定 #8):`GET /circuit` / `POST /circuit/unlock`
+    // 服务端已删、客户端两个方法同批删 → 原来那三条「打端点」的解码测试没有目标了。
+    // ⚠ **但 `CircuitState` / `CircuitEpisode` 两个类型刻意留着**:服务端
+    // `PositionsOut.circuit` 本版仍恒发 `locked=false` 空态(〇b-3 零删键,用户 iPhone
+    // 何时换包不可控),删 DTO 与服务端删键同排 v2.3。故这里改成**纯解码断言**,
+    // 锁住"老客户端装着不换包也解得出"这条在线升级前提。
 
-    func testDecodeCircuitStateUnlocked() async throws {
-        MockURLProtocol.handler = { _ in
-            (200, jsonData("""
-            {"locked": false, "episode": null}
-            """))
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let state = try await client.getCircuit()
+    func testCircuitStateDTOStillDecodesEmptyState() throws {
+        // 服务端退役后恒发的那份空态。
+        let data = jsonData(#"{"locked": false, "episode": null}"#)
+        let state = try JSONDecoder().decode(CircuitState.self, from: data)
         XCTAssertFalse(state.locked)
         XCTAssertNil(state.episode)
     }
 
-    /// 锁定态含 episode 全部诚实边界字段(basisTradesCount/note 等);
-    /// `triggerReasonLabel` 展示层换算 consecutive_stops→连续止损。
-    func testDecodeCircuitStateLockedWithEpisode() async throws {
-        MockURLProtocol.handler = { _ in
-            (200, jsonData("""
-            {"locked": true, "episode": {
-              "triggerReason": "consecutive_stops", "triggeredAt": "2026-07-22T15:05:00+00:00",
-              "triggerRefDate": "20260722", "basisTradesCount": 3, "basisWindow": "2026-07-20~2026-07-22",
-              "note": "基于台账 3 笔已补录成交判定连续止损触发。"
-            }}
-            """))
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let state = try await client.getCircuit()
+    /// 历史锁定态载荷仍解得出(库里那些老行、老快照不会因为机制退役就消失)。
+    func testCircuitEpisodeDTOStillDecodesHistoricalPayload() throws {
+        let data = jsonData("""
+        {"locked": true, "episode": {
+          "triggerReason": "consecutive_stops", "triggeredAt": "2026-07-22T15:05:00+00:00",
+          "triggerRefDate": "20260722", "basisTradesCount": 3, "basisWindow": "2026-07-20~2026-07-22",
+          "note": "基于台账 3 笔已补录成交判定连续止损触发。"
+        }}
+        """)
+        let state = try JSONDecoder().decode(CircuitState.self, from: data)
         XCTAssertTrue(state.locked)
         XCTAssertEqual(state.episode?.triggerReasonLabel, "连续止损")
         XCTAssertEqual(state.episode?.basisTradesCount, 3)
-        XCTAssertTrue(state.episode?.note.contains("已补录成交") ?? false)
-    }
-
-    func testUnlockCircuitDecodesOk() async throws {
-        MockURLProtocol.handler = { _ in
-            (200, jsonData("""
-            {"ok": true}
-            """))
-        }
-        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let ok = try await client.unlockCircuit()
-        XCTAssertTrue(ok)
     }
 
     // MARK: - 2026-08-05 定向快修回归:真实生产 7 篮载荷(`engineApiVersion` 字段名对、类型不对)
@@ -2506,6 +2493,242 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(b.scoreDisplayContributions.map(\.dim), ["card_density"])
         XCTAssertEqual(try XCTUnwrap(b.scoreDisplayContributions[0].contribPercent),
                        6.6667, accuracy: 1e-9, "契约 4 位小数原样保留,⛔ 解码时不许先舍入")
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  V2.2-② 行情状态层(`GET /market-regime`)
+    // ══════════════════════════════════════════════════════════════════
+
+    /// 正常一天:三态 + 增强/减弱方向 + 五维输入。`regimeLabel` **由服务端给**,
+    /// 客户端不另建映射(测的就是"照服务端那份显示")。
+    func testDecodeMarketRegimeAvailableDay() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"available": true, "unavailableReason": null, "days": [], "day": {
+              "tradeDate": "20260807", "regime": "high_divergence", "regimeLabel": "高位分歧",
+              "regimeReason": "核心强度较 5 日均值下降 0.34;宽度回落",
+              "inputs": {"core_strength": {"available": true, "value": 0.31},
+                         "t1t2_accuracy": {"available": false, "unavailable_reason": "missing:t1t2_accuracy"}},
+              "strengthening": [{"industry": "半导体", "basis": "今日强度日"}],
+              "weakening": [{"industry": "白酒", "basis": "连续两日走弱"}],
+              "skeletonVersion": "K8-V0.5", "computedAt": "2026-08-07T08:35:00+00:00"
+            }}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let r = try await client.fetchMarketRegime()
+        XCTAssertTrue(r.available)
+        XCTAssertEqual(r.day?.displayLabel, "高位分歧")
+        XCTAssertEqual(r.day?.tone, .bad)
+        XCTAssertEqual(r.day?.strengthening.count, 1)
+        // 🔴 五维里没算出来的那一维必须能被拎出来说 —— 缺维 ≠ 这一维没问题。
+        XCTAssertEqual(r.day?.missingDims, ["t1t2_accuracy"])
+        XCTAssertEqual(MockURLProtocol.lastRequest?.url?.path, "/api/v1/market-regime")
+    }
+
+    /// 🔴 缺行:端点**恒 200**,`available=false` + 原因。客户端必须解得出这一态、
+    /// 且 `day == nil`(⛔ 不许伪造一个"正常"的三态)。
+    func testDecodeMarketRegimeUnavailableIsNotAnError() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"available": false,
+             "unavailableReason": "20260808 无行情状态判定行(D0 盘后批算未跑或该日非交易日)。缺行 = 不知道,不猜。",
+             "day": null, "days": []}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let r = try await client.fetchMarketRegime(date: "20260808")
+        XCTAssertFalse(r.available)
+        XCTAssertNil(r.day)
+        XCTAssertTrue(r.unavailableReason?.contains("缺行 = 不知道") ?? false)
+        XCTAssertEqual(MockURLProtocol.lastRequest?.url?.query, "date=20260808")
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  V2.2-④ 双时钟
+    // ══════════════════════════════════════════════════════════════════
+
+    func testDecodeSelectionClocks() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"dateFrom": "20260803", "dateTo": "20260807", "items": [{
+              "basketId": 41, "d0Date": "20260806", "d1Date": "20260807", "coveredTier": 1,
+              "regimeAtD0": "trend_continuation", "tierAccuracy": "verified",
+              "untriggeredReason": null, "closedAt": "2026-08-07T08:40:00+00:00",
+              "skeletonVersion": "K8-V0.5", "verificationRulesetVersion": "vr-1",
+              "engineBreakdown": {"engine_code": "C1", "engine_version": "C1-v1"},
+              "mech": {"regime_at_d0": {"available": true, "value": "trend_continuation"}}
+            }]}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let items = try await client.fetchSelectionClocks(from: "20260803", to: "20260807")
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].engineCode, "C1")
+        XCTAssertEqual(items[0].tierAccuracyTone, .good)
+        XCTAssertEqual(items[0].coveredTier, 1)
+    }
+
+    /// 🔴 **`tierAccuracy == nil` = 没判**,⛔ 不是"判错了" —— 文案必须是"未给判定"。
+    func testSelectionClockNilAccuracyReadsAsNotJudged() throws {
+        let c = SelectionClock(basketId: 7, coveredTier: 2)
+        XCTAssertEqual(c.tierAccuracyLabel, "本篮未给分层准确性判定")
+        XCTAssertEqual(c.tierAccuracyTone, .neutral)
+        XCTAssertNil(c.regimeAtD0)
+    }
+
+    /// 运行中的交易时钟:`final` 是**显式 null** → 解成 nil(「还没结案」)。
+    func testDecodeTradeClockRunningHasNilFinal() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"positionId": 12, "tsCode": "600519.SH", "basketId": null,
+             "openedOn": "20260805", "closedOn": null, "status": "running",
+             "entryPlan": {"driver": "白酒复苏"}, "final": null,
+             "events": [{"id": 3, "eventDate": "20260806", "kind": "manual_note",
+                         "mech": {}, "userNote": "开盘冲高时我犹豫了", "createdAt": "2026-08-06T02:00:00+00:00"}]}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let c = try await client.fetchTradeClock(positionId: 12)
+        XCTAssertTrue(c.isRunning)
+        XCTAssertNil(c.final, "运行中必须是 nil —— 「还没结案」与「结案了但八项算不出」要分得开")
+        XCTAssertNil(c.basketId, "非篮子来源的手动开仓是**合法**的")
+        XCTAssertEqual(c.userNotes.count, 1)
+        XCTAssertEqual(c.events[0].kindLabel, "你的说明")
+    }
+
+    /// 🔴 这笔仓没有交易时钟 → 404 `not_found` → **既有 `.notFound` case**
+    /// (V2.2 契约要求零新增 reason;`mapReason` 一字未动的机器判据)。
+    func testTradeClockMissingMapsToExistingNotFoundReason() async throws {
+        MockURLProtocol.handler = { _ in
+            (404, jsonData(#"{"detail": {"ok": false, "reason": "not_found"}}"#))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.fetchTradeClock(positionId: 99)
+            XCTFail("应抛 notFound")
+        } catch let e as APIError {
+            XCTAssertEqual(e, .notFound)
+        }
+    }
+
+    func testPostTradeClockNoteSendsOnlyNoteAndDecodesCoverage() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData(#"{"ok": true, "eventId": 8, "eventDate": "20260809", "coverage": {"total": 4, "withNote": 2}}"#))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let r = try await client.postTradeClockNote(positionId: 12, note: "追高了,当时怕踏空")
+        XCTAssertEqual(r.eventId, 8)
+        XCTAssertEqual(r.coverageText, "本期 4 笔中 2 笔带说明")
+        XCTAssertEqual(MockURLProtocol.lastRequest?.url?.path, "/api/v1/clocks/trade/12/note")
+        let body = MockURLProtocol.lastRequest?.httpBodyOrStream()
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: XCTUnwrap(body)) as? [String: Any])
+        // ⛔ 只发 note:kind / 时间戳由服务端定,多发一份就是第二个事实源。
+        XCTAssertEqual(Array(obj.keys), ["note"])
+    }
+
+    /// 超长 → 服务端 422(pydantic 数组形状)→ `.validation`,**⛔ 不新增 reason**。
+    func testTradeClockNoteTooLongSurfacesAsValidation() async throws {
+        MockURLProtocol.handler = { _ in
+            (422, jsonData(#"{"detail": [{"msg": "String should have at most 500 characters"}]}"#))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.postTradeClockNote(positionId: 12, note: String(repeating: "长", count: 501))
+            XCTFail("应抛 validation")
+        } catch let e as APIError {
+            guard case .validation(let m) = e else { return XCTFail("应是 .validation,实得 \(e)") }
+            XCTAssertTrue(m.contains("500"))
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  V2.2-⑤ 章程无时间退出条款:`maxHoldDays` 的「缺键」vs「显式 null」
+    // ══════════════════════════════════════════════════════════════════
+
+    /// 🔴 **显式 null = 本版章程没有时间退出条款** → 不显示任何 D 上限。
+    /// ⛔ 拿 5 顶上就是把"没有这条规矩"讲成"上限是 5"。
+    func testPositionNullMaxHoldDaysMeansNoTimeExitRule() throws {
+        let data = jsonData("""
+        {"id": 1, "code": "600519.SH", "name": "贵州茅台", "buyPrice": 10.0, "qty": 100,
+         "entryReason": "", "buyDate": "20260805", "price": 10.5, "status": "open",
+         "stopLine": 9.5, "stopOrderChecked": false, "dCount": 7,
+         "maxHoldDays": null, "maxHoldDaysEffective": null, "timeExitState": "holding"}
+        """)
+        let p = try JSONDecoder().decode(Position.self, from: data)
+        XCTAssertNil(p.maxHoldDays)
+        XCTAssertNil(p.maxHoldDaysEffective)
+        XCTAssertFalse(p.hasTimeExitRule)
+        XCTAssertEqual(p.dBadgeText, "D7", "⛔ 不许出现 D7/D5 这种假上限")
+        XCTAssertTrue(p.timeExitDisclosure?.contains("无时间退出条款") ?? false)
+        XCTAssertFalse(p.isExitDay)
+    }
+
+    /// **缺键**(真·老服务端 / 老 fixture)→ 仍按当时的单档口径补 5,老断言逐位不变。
+    func testPositionMissingMaxHoldDaysKeepsLegacyFive() throws {
+        let data = jsonData("""
+        {"id": 1, "code": "600519.SH", "name": "贵州茅台", "buyPrice": 10.0, "qty": 100,
+         "entryReason": "", "buyDate": "20260805", "price": 10.5, "status": "open",
+         "stopLine": 9.5, "stopOrderChecked": false, "dCount": 6}
+        """)
+        let p = try JSONDecoder().decode(Position.self, from: data)
+        XCTAssertEqual(p.maxHoldDays, 5)
+        XCTAssertEqual(p.maxHoldDaysEffective, 5)
+        XCTAssertEqual(p.dBadgeText, "D6/D5")
+        XCTAssertNil(p.timeExitDisclosure)
+        // 缺 `timeExitState` 时的旧派生仍成立(dCount 6 >= 5 → 到期)。
+        XCTAssertTrue(p.isExitDay)
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  V2.2-④ 复盘 overview 三段 + 四分类「分界线未定」
+    // ══════════════════════════════════════════════════════════════════
+
+    func testDecodeReviewOverviewThreeNewSegments() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"weekStart": "20260803", "weekEnd": "20260807", "weekKey": "2026-W32",
+             "calibration": {"available": false}, "preference": {"available": false},
+             "capability": {"available": false}, "reconcile": {"available": true},
+             "observations": {"available": true},
+             "selectionClock": {"available": true, "label": "选股时钟 · D0 全部 T1/T2",
+                                "detail": {"samples": 12}},
+             "tradeClock": {"available": false, "label": "交易时钟 · 真实买入",
+                            "unavailableReason": "本窗口尚无周度校准产物"},
+             "iterationSuggestions": {"available": true,
+               "label": "修改建议 · 保留 / 观察 / 降权 / 淘汰",
+               "items": [{"factor": "gate=position:ok", "n": 12, "klass": null,
+                          "klassStatus": "thresholds_undecided", "klassLabel": null,
+                          "engineCode": "C1", "engineVersion": "C1-v1",
+                          "suggestion": "统计量已备齐,四分类尚不可给 —— 请拍板 min_n 与 retire_min_n。"}],
+               "detail": {"thresholds": {"available": false}, "disclaimer": "四分类是建议,不是动作"}}}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let ov = try await client.fetchReviewOverview()
+        XCTAssertTrue(ov.selectionClock.available)
+        // 🔴 三段各自独立:交易时钟段没取到,⛔ 不许被选股时钟段的 available 罩住。
+        XCTAssertFalse(ov.tradeClock.available)
+        XCTAssertTrue(ov.iterationSuggestions.available)
+        let rows = ov.iterationSuggestions.items.map(IterationSuggestion.init(raw:))
+        XCTAssertEqual(rows.count, 1)
+        // 🔴 **「分界线未定」是设计中的状态**:不是 nil-klass 就当"暂无建议"。
+        XCTAssertTrue(rows[0].thresholdsUndecided)
+        XCTAssertNil(rows[0].klass)
+        XCTAssertNil(rows[0].klassLabel, "⛔ 未拍板时不许伪造一个分类名")
+        XCTAssertTrue(rows[0].suggestion.contains("min_n"))
+    }
+
+    /// 分界线拍板之后:`klass` 有值 + 服务端下发 `klassLabel`(客户端优先用服务端那份)。
+    func testIterationSuggestionDecidedUsesServerLabel() throws {
+        let raw = NKJSON.object([
+            "factor": .string("engine=C1"), "n": .number(41), "klass": .string("retire"),
+            "klassStatus": .string("decided"), "klassLabel": .string("淘汰:持续失效"),
+        ])
+        let r = IterationSuggestion(raw: raw)
+        XCTAssertFalse(r.thresholdsUndecided)
+        XCTAssertEqual(r.klassLabel, "淘汰:持续失效")
+        XCTAssertEqual(r.klassTone, .bad)
     }
 
 }

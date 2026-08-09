@@ -24,7 +24,8 @@
 //    GET  /api/v1/positions/{id}/plans          → PositionPlansOut
 //    POST /api/v1/positions/{id}/plans          → PositionPlanOut(201)· 400 no_base_plan
 //    GET  /api/v1/positions/{id}/entry-snapshot → EntrySnapshotOut    · 404 not_found
-//    GET  /api/v1/circuit · POST /circuit/unlock→ CircuitStateOut / {ok}
+//    ⚠ `GET /circuit` · `POST /circuit/unlock` **已随熔断整体退役删除**(V2.2-⑤-B,
+//      裁定 #8);客户端两条活调用同批删。⛔ 不许接回来。
 //    POST /api/v1/decisions                     → DecisionNoteOut(**用户可选补充**入口)
 //    GET  /api/v1/decisions                     → {items:[DecisionOut]}(只读归因)
 //    GET  /api/v1/decisions/{id}/track          → DecisionTrackOut    · 404 not_found
@@ -42,6 +43,11 @@
 //    POST /api/v1/review/upload · GET /review   → 复盘板块 · 对账页(macOS 上传)
 //    GET  /api/v1/review/overview?week=&asOf=   → ReviewOverviewOut(**恒 200**,五段各自 available)
 //    GET  /api/v1/review/handoff?from=&to=      → ReviewHandoffOut(**恒 200**,校准移交件 markdown)
+//    GET  /api/v1/market-regime?date=           → MarketRegimeOut(**恒 200**,V2.2-②)
+//    GET  /api/v1/clocks/selection?from=&to=    → SelectionClocksOut(**恒 200**,V2.2-④-A)
+//    GET  /api/v1/clocks/trade/{position_id}    → TradeClockOut     · 404 not_found
+//    POST /api/v1/clocks/trade/{id}/note        → TradeClockNoteOut · 404 not_found · 422 超长/空
+//                                                 (**本版唯一新增写端点**)
 //  鉴权:Authorization: Bearer <API_TOKEN>(health 外全部)。
 //
 //  ⚠ **V2-⑮ 删掉的五处「打向已删端点」的活调用**(⑭-C 对拍表 §六 B1/B2):
@@ -304,8 +310,8 @@ private struct EntrySuggestionResponse: Decodable {
     let qtyLow: Int; let qtyHigh: Int; let capFloor: Double; let capCeil: Double; let stopLine: Double
 }
 
-/// 无请求体 POST 占位({})。
-private struct EmptyBody: Encodable {}
+// ⚠ 「无请求体 POST 占位」`EmptyBody` 已删:它的唯一使用者是 `POST /circuit/unlock`,
+// 该端点随熔断整体退役消失(V2.2-⑤-B)。⛔ 别为了"以后可能用得上"留一个死类型。
 
 // —— ⑩-C「用户可选补充」入口(`POST /decisions` 语义换血:不再是九项强制表单)————
 //
@@ -330,6 +336,23 @@ private struct DecisionsListResponse: Decodable { let items: [DecisionLog] }
 // —— V2-⑭-B 篮子族 / 计划 / 画像 / 包 / 评价 / 提醒 的列表包装 ————————————————
 
 private struct BasketsListResponse: Decodable { let tradeDate: String; let items: [Basket] }
+/// V2.2-④-A `GET /clocks/selection` 的列表包装(**空列表是合法态**,见方法 doc)。
+private struct SelectionClocksResponse: Decodable {
+    let dateFrom: String?
+    let dateTo: String?
+    let items: [SelectionClock]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        dateFrom = try c.decodeIfPresent(String.self, forKey: .dateFrom)
+        dateTo = try c.decodeIfPresent(String.self, forKey: .dateTo)
+        items = try c.decodeIfPresent([SelectionClock].self, forKey: .items) ?? []
+    }
+    enum CodingKeys: String, CodingKey { case dateFrom, dateTo, items }
+}
+/// `POST /clocks/trade/{id}/note` 请求体。**唯一字段**(K8 §十五「每次一条简短说明」);
+/// ⛔ 不加 kind / 不加时间戳 —— 那两样服务端自己定,客户端多发一份就是第二个事实源。
+private struct TradeClockNoteRequest: Encodable { let note: String }
 private struct PositionPlansResponse: Decodable { let items: [PositionPlan] }
 private struct PacksListResponse: Decodable { let items: [Pack] }
 private struct AlertsListResponse: Decodable { let items: [CustomAlert] }
@@ -551,18 +574,50 @@ actor APIClient {
         return try JSONDecoder().decode(EntrySnapshot.self, from: data)
     }
 
-    // —— v1.2-A2 熔断纪律状态(纯提醒层,绝不代下单/撤单、绝不拦 `POST /positions`)——
+    // —— V2.2-④-B 双时钟(选股时钟只读 / 交易时钟只读 + **本版唯一新增写端点**)——
+    //
+    // 🔴 **样本口径**:选股时钟覆盖 D0 **全部** T1/T2,**与用户买没买无关**(K8 §十四
+    // 第 3 条)—— ⛔ 客户端文案不许写成「你关注的篮子」,那会把覆盖域讲小。
+    // ⚠ 两条 `clocks/trade` 端点 404 复用既有 `not_found`(服务端 docstring 明写
+    // 「⛔ 不新增 reason」)→ `mapReason` **一字不动**;调用方把 `.notFound` 当
+    // **「这笔仓还没有交易时钟」的合法空态**处理,⛔ 别弹成网络错误。
 
-    func getCircuit() async throws -> CircuitState {
-        let data = try await get("/api/v1/circuit")
-        return try JSONDecoder().decode(CircuitState.self, from: data)
+    /// 已结案的选股时钟(按 **D0** 区间)。**空列表 = 这段时间没有结案样本**(合法),
+    /// ⛔ 不是「系统没跑」。端点整段包保险丝,恒 200。
+    func fetchSelectionClocks(from: String? = nil, to: String? = nil) async throws -> [SelectionClock] {
+        var query: [String] = []
+        if let f = from, !f.isEmpty { query.append("from=\(f)") }
+        if let t = to, !t.isEmpty { query.append("to=\(t)") }
+        let path = "/api/v1/clocks/selection" + (query.isEmpty ? "" : "?" + query.joined(separator: "&"))
+        let data = try await get(path)
+        return try JSONDecoder().decode(SelectionClocksResponse.self, from: data).items
     }
 
+    /// 一笔真实买入的交易时钟 + 全部事件流水。这笔仓没有交易时钟 → 404 `not_found`
+    /// (既有 case 覆盖,⛔ 不新增 reason)。
+    func fetchTradeClock(positionId: Int) async throws -> TradeClock {
+        let data = try await get("/api/v1/clocks/trade/\(positionId)")
+        return try JSONDecoder().decode(TradeClock.self, from: data)
+    }
+
+    /// 追加一条**用户主观说明**(K8 §十五)。**纯追加**,⛔ 不改任何既有行、⛔ 系统
+    /// 不代猜(§七 P3-28)。超长 / 空 → **422**(服务端 `TradeClockNoteIn.note` 的
+    /// `Field` 约束,上界唯一源 = `review/trade_clock.USER_NOTE_MAX_CHARS`)。
     @discardableResult
-    func unlockCircuit() async throws -> Bool {
-        let data = try await post("/api/v1/circuit/unlock", body: EmptyBody())
-        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+    func postTradeClockNote(positionId: Int, note: String) async throws -> TradeClockNoteResult {
+        let data = try await post("/api/v1/clocks/trade/\(positionId)/note",
+                                  body: TradeClockNoteRequest(note: note))
+        return try JSONDecoder().decode(TradeClockNoteResult.self, from: data)
     }
+
+    // ⚠ **V2.2-⑤-B 熔断整体退役(用户裁定 #8)**:`getCircuit()` / `unlockCircuit()`
+    // 两个方法已随服务端 `GET /circuit` · `POST /circuit/unlock` 两条端点一起删除 ——
+    // 「锁定态 / 次日只减不加 / 强制复盘解锁」三件机制在产品面消失,留下的只有一条
+    // 提醒推送与一条看板事件(`sentinel='circuit'`)。⛔ **不许以任何形式接回来**
+    // (§五 〇b-7:不许留锁定标志、灰化按钮、或「建议今天别开仓」的自动状态位)。
+    // ⚠ **`CircuitState` / `CircuitEpisode` 两个 DTO 刻意留在 `Models.swift`**:
+    // 服务端 `PositionsOut.circuit` 本版仍恒发 `locked=false` 空态(〇b-3 零删键),
+    // 删 DTO 与服务端删键同排 v2.3 —— ⛔ 本版不动它们。
 
     // —— ⑩-C 用户可选补充(七枚标签 + 一句可选说明)————————————————————————
     //
@@ -793,6 +848,16 @@ actor APIClient {
     // 🔴 **两条端点都恒 200**(空态走各自的 `available=false` + 可读原因)→ V2.1
     // **零新增 reason 字符串**,`mapReason` 一字未动 —— ⛔ 别为它们加 case,也别把
     // `available=false` 当错误抛出去(那正是"把没有讲成故障"那类谎)。
+
+    /// 行情状态 D0 盘后三态(V2.2-②,`market_regime_daily` **只读、零现算**)。
+    /// `date` 缺省 = 表内最近一日。🔴 **一律不 404**:缺行 / 表空 / 参数非法一律 200 +
+    /// `available=false` + 自由文本原因 —— ⛔ **不许把 `available=false` 当错误抛**
+    /// (那正是「把没有讲成故障」);⛔ 也不许把它当「没风险」(那是把没看讲成没有)。
+    func fetchMarketRegime(date: String? = nil) async throws -> MarketRegime {
+        let path = "/api/v1/market-regime" + ((date?.isEmpty == false) ? "?date=\(date!)" : "")
+        let data = try await get(path)
+        return try JSONDecoder().decode(MarketRegime.self, from: data)
+    }
 
     /// 复盘板块「累计」页五段。`week` = 该周任意一天 `YYYYMMDD`(缺省本周)。
     func fetchReviewOverview(week: String? = nil, asOf: String? = nil) async throws -> ReviewOverview {

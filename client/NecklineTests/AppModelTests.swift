@@ -844,11 +844,135 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(AppTab(rawValue: "inquiry"), "问询台已整链退役(V2.1-①)")
     }
 
-    /// 复盘板块三页的 rawValue = `NECKLINE_INITIAL_REVIEW_PAGE` 的合法值。
+    // MARK: - V2.2-③ ③b 原因码 + 六关灯条(展示层换算,纯逻辑)
+
+    /// 🔴 **V2.2 新增七码一个都不许落回原样透传**(那等于界面上直接印英文码),
+    /// 且 `no_active_engine` / `engine_unresolved` 是**系统缺席**、着色最刺眼 ——
+    /// ⛔ 不许和「今天没好票」用同一种颜色。
+    func testDroppedReasonLabelsCoverAllV22Codes() {
+        let v22 = ["evidence_degraded_out", "mech_gate_rejected", "position_unfit",
+                   "core_unfit", "members_all_removed", "no_active_engine", "engine_unresolved"]
+        for code in v22 {
+            XCTAssertNotEqual(nkDroppedReasonLabel(code), code, "\(code) 没有中文换算,界面会印英文码")
+        }
+        XCTAssertEqual(nkDroppedReasonTone("capacity_overflow"), .good)
+        XCTAssertEqual(nkDroppedReasonTone("no_active_engine"), .bad)
+        XCTAssertEqual(nkDroppedReasonTone("engine_unresolved"), .bad)
+        XCTAssertEqual(nkDroppedReasonTone("position_unfit"), .warn)
+        // 历史码仍认(老快照回放,⛔ 别当非法值)。
+        XCTAssertNotEqual(nkDroppedReasonLabel("below_quality_line"), "below_quality_line")
+        // 未识别码原样透传,⛔ 不瞎翻译。
+        XCTAssertEqual(nkDroppedReasonLabel("some_future_code"), "some_future_code")
+    }
+
+    /// ③b 新增两键解得出;老快照缺键 → nil(⛔ 不是「没卡在任何关」)。
+    func testDroppedBasketGateKeysDecodeAndOldSnapshotHasNone() throws {
+        let withGate = try JSONDecoder().decode(DroppedBasket.self, from: Data("""
+        {"name": "固态电池", "mechScore": 0.61, "reason": "mech_gate_rejected",
+         "gate": "sector", "gateDetail": "sector.strength=0.21<0.35"}
+        """.utf8))
+        XCTAssertEqual(withGate.gateLabel, "板块关")
+        XCTAssertEqual(withGate.gateKind, .mechanical)
+        XCTAssertEqual(withGate.gateDetail, "sector.strength=0.21<0.35")
+
+        let old = try JSONDecoder().decode(DroppedBasket.self, from: Data("""
+        {"name": "老快照", "mechScore": 0.4, "reason": "below_quality_line"}
+        """.utf8))
+        XCTAssertNil(old.gateLabel)
+        XCTAssertNil(old.gateKind)
+    }
+
+    /// 🔴 **机械关 / 证据关二分是产品语义**(裁定 #6/#11/#12):市场 · 板块 = 硬否决;
+    /// 驱动 · 核心 · 位置 · 证据 = 只降级。⛔ 混成一类就是把「否决」讲成「扣分」。
+    func testGateKindSplitMatchesServerContract() {
+        XCTAssertEqual(nkGateKind("market"), .mechanical)
+        XCTAssertEqual(nkGateKind("sector"), .mechanical)
+        for g in ["driver", "core", "position", "evidence"] {
+            XCTAssertEqual(nkGateKind(g), .evidence, "\(g) 是证据关(只降级)")
+        }
+        XCTAssertEqual(nkGateKind("future_gate"), .unknown, "⛔ 未识别关口不许猜成任何一类")
+        XCTAssertEqual(nkGateOrder, ["market", "driver", "sector", "core", "position", "evidence"])
+    }
+
+    /// 六关灯条从**冻结卡**的 `tierBreakdown.gates` 读出;恒六格、顺序固定。
+    func testBasketGatesProjectionFromFrozenCard() {
+        let node = NKJSON.object(["gates": .object([
+            "available": .bool(true),
+            "engine_code": .string("C1"), "engine_version": .string("C1-v1"),
+            "verdicts": .object(["market": .string("pass"), "sector": .string("reject"),
+                                 "driver": .string("pass"), "evidence": .string("degrade")]),
+            "evidence_degrades": .number(1),
+            "degraded_gates": .array([.string("evidence")]),
+            "blocks_t1": .bool(true),
+            "position_unfit": .bool(false),
+            "core_unfit": .bool(true),
+        ])])
+        let g = BasketGates(tierBreakdown: node)
+        XCTAssertTrue(g.available)
+        XCTAssertEqual(g.engineCode, "C1")
+        XCTAssertEqual(g.lights.count, 6, "恒六格 —— 缺记录的那格也要在,⛔ 不隐藏")
+        XCTAssertEqual(g.lights.map(\.gate), nkGateOrder)
+        // 「板块关否决」按管线顺序排在「证据关降级」之前 → 卡在板块关。
+        XCTAssertEqual(g.blockedGate, "sector")
+        // 没记录的那关如实标「未记录」,⛔ 不是「过了」。
+        XCTAssertEqual(g.lights.first(where: { $0.gate == "core" })?.verdictLabel, "未记录")
+        XCTAssertEqual(g.lights.first(where: { $0.gate == "core" })?.tone, .neutral)
+        XCTAssertTrue(g.blocksT1)
+        XCTAssertTrue(g.coreUnfit)
+        XCTAssertFalse(g.positionUnfit)
+    }
+
+    /// 🔴 老卡没有 `gates` 节 → `available == false`,**⛔ 绝不许被读成「六关都过了」**。
+    func testBasketGatesAbsentIsNotAllPass() {
+        XCTAssertFalse(BasketGates(tierBreakdown: nil).available)
+        XCTAssertFalse(BasketGates(tierBreakdown: .object([:])).available)
+        // 服务端显式写 available=false(该篮没有关口汇总)同样不是"都过了"。
+        XCTAssertFalse(BasketGates(tierBreakdown: .object(["gates": .object(["available": .bool(false)])])).available)
+        XCTAssertTrue(BasketGates(tierBreakdown: nil).lights.allSatisfy { $0.verdict == nil })
+    }
+
+    /// 篮子级读法:卡优先、留痕兜底(报告快照路只有卡,live 路两处都有)。
+    func testBasketGatesReadsCardFirstThenTierHistory() {
+        let gatesNode = NKJSON.object(["gates": .object([
+            "available": .bool(true), "verdicts": .object(["market": .string("pass")]),
+        ])])
+        let liveOnly = Basket(basketId: 1, tierHistory: Tier(basketId: 1, mechBreakdown: gatesNode))
+        XCTAssertTrue(liveOnly.gates.available, "live 路要能从 tierHistory 兜到")
+        let snapshot = Basket(basketId: 1, card: BasketCard(tierBreakdown: gatesNode))
+        XCTAssertTrue(snapshot.gates.available, "报告快照路要能从卡上读到")
+    }
+
+    /// 成员级三值的篮子级摘要 = **最差的那个**;⛔ 全无判定时不许给出"合适"。
+    func testWorstVerdictSummaryPicksTheWorstAndNilWhenAbsent() {
+        XCTAssertEqual(nkWorstVerdict(["ok", "weak", "unfit"]), "unfit")
+        XCTAssertEqual(nkWorstVerdict(["ok", "weak"]), "weak")
+        XCTAssertEqual(nkWorstVerdict(["ok"]), "ok")
+        XCTAssertNil(nkWorstVerdict([]))
+        XCTAssertNil(nkWorstVerdict(nil))
+        let card = BasketCard(members: [BasketMember(tsCode: "a", positionVerdict: "ok"),
+                                        BasketMember(tsCode: "b", positionVerdict: "unfit")])
+        XCTAssertEqual(Basket(basketId: 1, card: card).worstPositionVerdict, "unfit")
+        XCTAssertNil(Basket(basketId: 1, card: card).worstCoreVerdict,
+                     "没有任何成员带核心判定 → nil,⛔ 不许显示成「是龙头」")
+    }
+
+    // MARK: - V2.2-② 行情状态:`available == false` 不是「没风险」
+
+    func testMarketRegimeEmptyStateIsExplicitlyUnavailable() {
+        XCTAssertFalse(MarketRegime.empty.available)
+        XCTAssertNil(MarketRegime.empty.day)
+    }
+
+    /// 复盘板块五页的 rawValue = `NECKLINE_INITIAL_REVIEW_PAGE` 的合法值。
+    /// ⚠ **V2.2-④ 从三页扩到五页**:双时钟各占一页 —— 它们的**样本域根本不同**
+    /// (选股钟覆盖 D0 全部 T1/T2、与买没买无关;交易钟只在实际买入后存在),
+    /// 合成一页会让人以为「选股时钟里的篮子 = 我买过的票」。⛔ 别为了少一个 tab 合并。
     func testReviewPageRawValuesAreTheQAHookContract() {
-        XCTAssertEqual(ReviewPage.allCases.map(\.rawValue), ["daily", "cumulative", "reconcile"])
+        XCTAssertEqual(ReviewPage.allCases.map(\.rawValue),
+                       ["daily", "selectionClock", "tradeClock", "cumulative", "reconcile"])
         XCTAssertEqual(ReviewPage(rawValue: "cumulative"), .cumulative)
-        XCTAssertNil(ReviewPage(rawValue: "handoff"), "移交件是累计页里的出口,不是第四页")
+        XCTAssertEqual(ReviewPage(rawValue: "selectionClock"), .selectionClock)
+        XCTAssertNil(ReviewPage(rawValue: "handoff"), "移交件是累计页里的出口,不是独立页")
     }
 
     // MARK: - V2.1-② 移交 ⑦:③ 节档位 = **现役两档 ∪ 快照实际档位**

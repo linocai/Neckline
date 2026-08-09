@@ -2,10 +2,16 @@
 //  ReviewView.swift
 //  Neckline — 🔴 **复盘板块**(V2.1 三板块之一,双端共用;V2.1-⑦ 新建)。
 //
-//  **三页答三个不同的问题,⛔ 不合并**(`ReviewPage`):
+//  **五页答五个不同的问题,⛔ 不合并**(`ReviewPage`;V2.2-④ 从三页扩到五页):
 //    · **每日** —— 昨天那批篮子后来怎么样了(④ 昨日篮子复盘,自选股板块迁入;
 //      数据源仍是 `model.basketDaily.reviews`,**随报告冻结、零新增网络调用、服务端零改动**)。
-//    · **累计** —— 这套选股长期成绩如何(`GET /review/overview` 五段 + 校准移交件出口)。
+//    · **选股钟**(V2.2-④-A)—— 这批票**选**得对不对。🔴 样本 = D0 **全部** T1/T2,
+//      **与用户买没买无关**(K8 §十四 第 3 条),D1 收盘验证一次即结案。
+//    · **交易钟**(V2.2-④-B)—— 这笔买卖**做**得怎么样。**启动的唯一条件 = 实际买入**;
+//      逐仓明细带写入口在「持仓」板块的持仓卡里,本页只给周度侧归因。
+//      ⚠ 两个时钟**刻意分成两页**:样本域根本不同,并排一页会让人以为
+//      「选股时钟里的篮子 = 我买过的票」—— 那正是 K8 反复强调的、最容易讲小的那个域。
+//    · **累计** —— 这套选股长期成绩如何(`GET /review/overview` 八段 + 校准移交件出口)。
 //    · **对账** —— 我实际的成交与计划 / 章程对不对得上(macOS 上传交割单;iOS 只读)。
 //
 //  **诚实披露纪律(本页每一段都受它约束,⛔ 不许退化)**:
@@ -17,6 +23,10 @@
 //   3. 观察项是**等证据的策略问题清单**,不是待办 —— ⛔ 不给"建议"、不改写 status。
 //   4. 复盘板块**只呈现证据,⛔ 不做任何自动反馈回写选股**(用户裁定 #3:改包唯一通道
 //      仍是「攒够样本 → 用户带材料去策略台 → 新 K 包 → 用户过门 → 四道闸激活」)。
+//   5. 🔴 **四分类的 `klass == nil` + `klassStatus == "thresholds_undecided"` 是设计中的
+//      状态**(K8 §十七 没给「多少样本算够」「差多少算失效」这两个数)—— 界面必须写
+//      「分界线未定 · 待你拍板」并说清缺哪两个数,⛔ 不许显示成「暂无建议」或空白
+//      (那会把「还没决定」讲成「没问题」),⛔ 也不许渲染成「观察」。
 //
 
 import SwiftUI
@@ -65,6 +75,11 @@ struct ReviewView: View {
     /// 重打一次网络(⛔ 也别做自动轮询:这是回看件,不是盘中数据)。手动刷新在工具栏。
     private func loadIfNeeded() async {
         if model.reviewOverview == nil { await model.loadReviewOverview() }
+        // V2.2-④-A 选股时钟结案列表:与五段是两条独立数据源(一条读周度落盘产物、
+        // 一条读 `selection_clock` 结案行)—— ⛔ 别为了"少一次请求"把它并进 overview。
+        if model.selectionClocks.isEmpty && !model.selectionClocksLoading {
+            await model.loadSelectionClocks()
+        }
     }
 
     @ViewBuilder
@@ -74,6 +89,8 @@ struct ReviewView: View {
             pagePicker
             switch model.reviewPage {
             case .daily: dailyPage
+            case .selectionClock: selectionClockPage
+            case .tradeClock: tradeClockPage
             case .cumulative: cumulativePage
             case .reconcile: reconcilePage
             }
@@ -144,7 +161,81 @@ struct ReviewView: View {
         }
     }
 
-    // MARK: - 累计:五段 + 校准移交件出口
+    // MARK: - 选股时钟(V2.2-④-A):**D0 全部 T1/T2 的结案件**
+    //
+    // 🔴 **样本口径必须当面讲清**:覆盖 D0 **全部** T1/T2,**与你买没买无关**
+    // (K8 §十四 第 3 条)。⛔ 文案不许写成「你关注的篮子」之类 —— 那会把覆盖域讲小,
+    // 而这条覆盖域正是它能当选股正确率样本的前提。
+
+    @ViewBuilder
+    private var selectionClockPage: some View {
+        VStack(alignment: .leading, spacing: NKSpace.gap) {
+            NKSectionHeader(title: "选股时钟 · 已结案 \(model.selectionClocks.count)",
+                            trailing: "D1 收盘验证一次即结案")
+            Text("样本 = D0 当天全部 T1/T2 篮子,**与你买没买无关** · 结案 = 只结一次,之后不再改")
+                .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            if model.selectionClocksLoading && model.selectionClocks.isEmpty {
+                NKCard { NKEmptyState(title: "正在取选股时钟…", systemImage: "hourglass") }
+            } else if model.selectionClocks.isEmpty {
+                NKCard {
+                    // ⚠ 端点恒 200 → 空列表是**合法态**。⛔ 别写成「读取失败」,
+                    // 也 ⛔ 别写成「系统没跑」(那要看每日复盘与段状态,是另一件事)。
+                    NKEmptyState(title: "这段时间还没有结案样本",
+                                 subtitle: "选股时钟在 D1 收盘验证后才结案;⛔ 这不等于「系统没跑」——那要看「每日」页的复盘段。",
+                                 systemImage: "stopwatch")
+                }
+            } else {
+                ForEach(model.selectionClocks) { c in
+                    SelectionClockRow(clock: c)
+                }
+            }
+            // 周度侧的正确率归因(读周度落盘产物,与上面的逐篮结案件是两条数据源)。
+            if let ov = model.reviewOverview {
+                ClockScoreboardCard(segment: ov.selectionClock)
+            }
+        }
+    }
+
+    // MARK: - 交易时钟(V2.2-④-B):**只在实际买入后存在**
+    //
+    // ⚠ 逐仓明细在「持仓」板块每张持仓卡里(`TradeClockSection`,带写入口);
+    // 本页给的是**周度侧的六项归因** + 一行指路。⛔ 不在两处各画一遍逐仓流水。
+
+    @ViewBuilder
+    private var tradeClockPage: some View {
+        VStack(alignment: .leading, spacing: NKSpace.gap) {
+            NKSectionHeader(title: "交易时钟 · 真实买入", trailing: "全部离场后结案")
+            Text("启动的唯一条件是**你真的买了** · 与选股时钟的样本域不同:那边看「选得对不对」,这边看「做得怎么样」")
+                .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            NKCard {
+                Button { model.view = .positions } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "stopwatch").foregroundStyle(NK.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("逐笔时钟与「补一条主观说明」在持仓卡里")
+                                .font(.system(size: 13, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                            Text("每张持仓卡底部展开即可 · 系统不会替你写那句话")
+                                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.system(size: 12))
+                            .foregroundStyle(NK.textTertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if let ov = model.reviewOverview {
+                ClockScoreboardCard(segment: ov.tradeClock)
+            } else {
+                NKCard { NKEmptyState(title: "本次没取到周度归因", systemImage: "exclamationmark.icloud") }
+            }
+        }
+    }
+
+    // MARK: - 累计:五段 + **四分类建议** + 校准移交件出口
 
     @ViewBuilder
     private var cumulativePage: some View {
@@ -152,6 +243,11 @@ struct ReviewView: View {
             if let ov = model.reviewOverview {
                 windowCard(ov)
                 CalibrationSegmentCard(segment: ov.calibration)
+                // V2.2-④-D 修改建议四分类(K8 §十七)。**只给建议、⛔ 零写回。**
+                // ⚠ 紧跟校准段是刻意的:两段吃的是**同一份**周度落盘产物(校准产物的
+                // `iteration` 段),四分类是校准结论的直接延伸;画像 / 对账是另外两件
+                // 互不相干的事,隔开更不容易被读成"这些数都出自同一处"。
+                IterationSegmentCard(segment: ov.iterationSuggestions)
                 ProfileSegmentCard(segment: ov.preference)
                 ProfileSegmentCard(segment: ov.capability)
                 ReconcileSegmentCard(segment: ov.reconcile, showUploadHint: false)
@@ -787,6 +883,199 @@ private struct ObservationSegmentCard: View {
                     }
                 }
             }
+        }
+    }
+}
+
+// MARK: - V2.2-④-A 选股时钟结案一行
+//
+// ⚠ **`tierAccuracy` 是四态原样**(verified/partial/unclear/falsified)加两个"没判"码,
+// **⛔ 不是 0/1 的对错** —— 折成正确率是周度侧的事,这里一个数都不折。
+// ⚠ **`regimeAtD0 == nil` = D0 当天没有行情状态行**(如实),⛔ 不猜、不显示成"正常"。
+
+private struct SelectionClockRow: View {
+    let clock: SelectionClock
+    @State private var expanded = false
+
+    var body: some View {
+        NKCard {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    NKChip(text: "T\(clock.coveredTier)",
+                           tone: clock.coveredTier == 1 ? .good : .warn, filled: true)
+                    Text("篮子 #\(clock.basketId)").font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(NK.textPrimary)
+                    Spacer()
+                    NKChip(text: clock.tierAccuracyLabel, tone: clock.tierAccuracyTone)
+                }
+                HStack(spacing: 6) {
+                    NKChip(text: "D0 \(clock.d0Date)")
+                    NKChip(text: "D1 \(clock.d1Date)")
+                    if let e = clock.engineCode {
+                        NKChip(text: "引擎 \(e)\(clock.engineVersion.map { " " + $0 } ?? "")")
+                    }
+                    Spacer()
+                }
+                // 「D0 无行情状态行」与「行情状态是 X」讲不同的话。
+                if let r = clock.regimeAtD0 {
+                    Text("D0 行情状态:\(r)").font(.system(size: 11))
+                        .foregroundStyle(NK.textSecondary)
+                } else {
+                    Text("D0 当天无行情状态判定行(缺行 = 不知道,不猜)")
+                        .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                }
+                if let why = clock.untriggeredReason, !why.isEmpty {
+                    Text("未触发:\(why)").font(.system(size: 11)).foregroundStyle(NK.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                DisclosureGroup("展开 D1 九项验证(K8 §十四,只读冻结件)", isExpanded: $expanded) {
+                    NKJSONTable(value: clock.mech)
+                }
+                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                Text("结案于 \(clock.closedAt) · 骨架 \(clock.skeletonVersion) · 验证条件集 \(clock.verificationRulesetVersion)")
+                    .font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+// MARK: - 双时钟的周度归因段(读**周度落盘产物**,⛔ 在线不补算)
+
+private struct ClockScoreboardCard: View {
+    let segment: ReviewSegment
+
+    var body: some View {
+        SegmentShell(segment: segment, fallbackTitle: "时钟归因", emptyIcon: "doc.badge.clock") {
+            NKCard {
+                DisclosureGroup("展开本期归因产物(只读)") {
+                    NKJSONTable(value: segment.detail)
+                }
+                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+            }
+        }
+    }
+}
+
+// MARK: - V2.2-④-D 修改建议四分类(K8 §十七)
+//
+// 🔴 **只给建议,⛔ 零写回**(V2.1 裁定 #3 一字不变):系统攒证据、**用户拍板改包**。
+// 唯一通道 = 带着移交件去策略台 → 新引擎版本 → 四道闸激活。
+//
+// 🔴🔴 **`klass == nil` + `klassStatus == "thresholds_undecided"` 是设计中的状态**:
+// K8 §十七 只给了四个类别的定性描述,**没有给「多少样本算够」「差多少算失效」这两个数**。
+// ⛔ **绝不许把它渲染成「暂无建议」或空白** —— 那会把「还没决定」讲成「没问题」;
+// ⛔ 也不许渲染成「观察」——「还没决定」与「样本不足」是两件不同的事。
+// 界面必须当面说:**缺的是哪两个数、由谁定、定完怎么生效**。
+
+private struct IterationSegmentCard: View {
+    let segment: ReviewSegment
+
+    private var rows: [IterationSuggestion] { segment.items.map(IterationSuggestion.init(raw:)) }
+    private var undecided: Bool { rows.contains(where: { $0.thresholdsUndecided }) }
+    private var thresholds: NKJSON? { segment.detail["thresholds"] }
+
+    var body: some View {
+        SegmentShell(segment: segment, fallbackTitle: "修改建议 · 保留 / 观察 / 降权 / 淘汰",
+                     emptyIcon: "slider.horizontal.3") {
+            if undecided { undecidedBanner }
+            if rows.isEmpty {
+                NKCard {
+                    Text("算过了 · 本期没有可分类的因素(窗口内没有结案样本)")
+                        .font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                }
+            } else {
+                ForEach(rows) { r in
+                    NKCard {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                if r.thresholdsUndecided {
+                                    // 🔴 **不是「暂无建议」**:统计量有,缺的是那两个数。
+                                    NKChip(text: "分界线未定 · 待你拍板", tone: .warn, filled: true)
+                                } else if let label = r.klassLabel {
+                                    NKChip(text: label, tone: r.klassTone, filled: true)
+                                }
+                                Text(r.factor).font(.system(size: 12, weight: .semibold).monospaced())
+                                    .foregroundStyle(NK.textPrimary)
+                                Spacer()
+                                Text("n=\(r.n)").font(.system(size: 11).monospacedDigit())
+                                    .foregroundStyle(NK.textSecondary)
+                            }
+                            HStack(spacing: 6) {
+                                if let e = r.engineCode {
+                                    NKChip(text: "引擎 \(e)\(r.engineVersion.map { " " + $0 } ?? "")")
+                                }
+                                if let a = r.accuracy { NKChip(text: "正确率 \(nkRatioText(a))") }
+                                if let d = r.delta {
+                                    NKChip(text: String(format: "相对基线 %+.3f", d),
+                                           tone: d > 0 ? .good : (d < 0 ? .bad : .neutral))
+                                }
+                                if let e = r.placeboEdge { NKChip(text: "安慰剂 \(e)") }
+                                Spacer()
+                            }
+                            if !r.suggestion.isEmpty {
+                                // 服务端把「缺哪两个数、该怎么定」整句写好了 —— **原样展示**。
+                                Text(r.suggestion).font(.system(size: 11))
+                                    .foregroundStyle(NK.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+            }
+            NKCard {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let t = thresholds {
+                        Text("本期分界线").font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(NK.textTertiary)
+                        NKJSONTable(value: t)
+                    }
+                    if let d = segment.detail["disclaimer"]?.stringValue, !d.isEmpty {
+                        Text(d).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text("改包唯一通道是你带材料去策略台 —— 系统不会自己改选股包。")
+                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// 🔴 分界线未定的整段说明。**这一段本身就是产品要说的话**,⛔ 不许省。
+    private var undecidedBanner: some View {
+        NKCard {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12)).foregroundStyle(NK.amber)
+                    Text("四分类的分界线还没定 —— 等你拍板")
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                    Spacer()
+                }
+                Text("统计量**已经算出来了**(下面每行的 n / 正确率 / 相对基线 / 安慰剂对照都是真的),缺的只是两个数:")
+                    .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 3) {
+                    numbered("min_n", "低于它一律判「观察:样本不足」——「多少样本算够」")
+                    numbered("retire_min_n", "判「淘汰:持续失效」所需的最低样本量——「差多少算失效」")
+                }
+                Text("K8 §十七 只给了四个类别的定性描述,没有给这两个数。定好之后经四道闸写进骨架包 `config.iteration`,本段会自动开始给分类。**⛔ 系统不会替你选这两个数。**")
+                    .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("⛔ 这**不是**「本期没有建议」,也**不是**「都判成观察」——是这两个数还没有人定。")
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func numbered(_ key: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(key).font(.system(size: 11, weight: .bold).monospaced())
+                .foregroundStyle(NK.accent)
+            Text(text).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

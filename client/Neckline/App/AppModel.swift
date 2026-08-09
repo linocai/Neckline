@@ -49,15 +49,25 @@ enum AppTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// 复盘板块的三页(V2.1-⑦)。**三页答三个不同的问题,⛔ 不合并**:
-/// 每日 =「昨天那批篮子后来怎么样了」· 累计 =「这套选股长期成绩如何」·
-/// 对账 =「我实际的成交与计划/章程对不对得上」。
+/// 复盘板块的五页(V2.1-⑦ 三页 + **V2.2-④ 双时钟两页**)。
+/// **每页答一个不同的问题,⛔ 不合并**:
+/// 每日 =「昨天那批篮子后来怎么样了」· **选股钟 =「这批票选得对不对」(覆盖 D0 全部
+/// T1/T2,与买没买无关)** · **交易钟 =「这笔买卖做得怎么样」(只在实际买入后存在)** ·
+/// 累计 =「这套选股长期成绩如何」· 对账 =「我实际的成交与计划/章程对不对得上」。
+///
+/// 🔴 **两个时钟刻意分成两页而不是合成一页**(K8 §十四):它们的**样本域根本不同** ——
+/// 一页并排就会让人以为"选股时钟里的篮子 = 我买过的票",而那正是 K8 反复强调的、
+/// 最容易把覆盖域讲小的误读。
+///
+/// ⚠ `rawValue` 一个都不许改(`NECKLINE_INITIAL_REVIEW_PAGE` QA 钩子按它传参)。
 enum ReviewPage: String, CaseIterable, Identifiable {
-    case daily, cumulative, reconcile
+    case daily, selectionClock, tradeClock, cumulative, reconcile
     var id: String { rawValue }
     var title: String {
         switch self {
         case .daily: return "每日"
+        case .selectionClock: return "选股钟"
+        case .tradeClock: return "交易钟"
         case .cumulative: return "累计"
         case .reconcile: return "对账"
         }
@@ -148,9 +158,12 @@ struct ProviderForm {
 enum PositionModal: Equatable {
     case open
     case close(code: String)
-    case circuitReview
     /// ⑩-C 用户可选补充(标签 + 语音说明)。
     case note
+    /// V2.2-④-B 交易时钟的一条主观说明(K8 §十五)。**本版唯一新增写入口。**
+    case tradeNote(positionId: Int)
+    // ⚠ `case circuitReview` **已删**(V2.2-⑤-B 熔断整体退役,用户裁定 #8)——
+    // 「强制复盘解锁」这件机制在产品面消失,⛔ 不许接回来。
 }
 
 struct Toast: Identifiable, Equatable {
@@ -249,8 +262,29 @@ final class AppModel {
     var reviewHandoff: ReviewHandoff? = nil
     var reviewHandoffLoading = false
 
-    // —— 熔断纪律(纯提醒层,客户端只展示 + 自律灰化,§3.8)——
-    var circuit: CircuitState = .empty
+    // 🔴 **熔断状态位已删**(V2.2-⑤-B / 〇b-7):`var circuit` 连同它驱动的横幅、
+    // 开仓灰化、解锁弹层一起没了。⛔ **不许以任何名字加回一个「今天别开仓」的状态位**
+    // —— 用户裁定 #8 原话:「我不需要你替我做决定;这个程序永远是提醒」。
+    // ⚠ `CircuitState` 类型本身仍留在 `Models.swift`(服务端 `PositionsOut.circuit`
+    // 恒发空态、零删键),删 DTO 排 v2.3。
+
+    // —— V2.2-② 行情状态(**纯展示、⛔ 无动作**)——
+    //
+    // 🔴 三态既不是买入背书、也不是禁令:它只回答「今天市场结构是什么样」。
+    // `available == false` = **我们今天没算出来**,⛔ 不许当成"没风险"。
+    var marketRegime: MarketRegime = .empty
+
+    // —— V2.2-④ 双时钟 ——
+    //
+    // 选股时钟:**覆盖 D0 全部 T1/T2,与买没买无关**(K8 §十四)——⛔ 文案别写成
+    // 「你关注的篮子」。交易时钟:**只在实际买入后存在**,按仓懒加载。
+    var selectionClocks: [SelectionClock] = []
+    var selectionClocksLoading = false
+    var tradeClocks: [Int: TradeClock] = [:]
+    /// 🔴 **「这笔仓没有时钟」与「还没拉到」是两件事**:服务端 404 `not_found` 落进
+    /// 这个集合(合法空态),⛔ 不弹错误、⛔ 不显示成通用的「未找到该记录」。
+    var tradeClockAbsent: Set<Int> = []
+    private var tradeClockLoading: Set<Int> = []
 
     // —— 模态 / 录入 / toast ——
     var modal: PositionModal? = nil
@@ -349,9 +383,11 @@ final class AppModel {
 
     // MARK: - 刷新
 
-    /// 主刷新:报告 + 持仓 + 盘中动态 + 熔断态 + 临时提醒(五者并发)。
-    /// 盘中动态 / 熔断态也在此拉一份是刻意的 —— 「退潮红色刹车禁开新仓」「熔断中停开
-    /// 新仓」的警示要在用户点「开仓」之前就可见。
+    /// 主刷新:报告 + 持仓 + 盘中动态 + **行情状态** + 临时提醒(五者并发)。
+    /// 盘中动态也在此拉一份是刻意的 —— 「退潮红色刹车禁开新仓」的警示要在用户点
+    /// 「开仓」之前就可见。
+    /// ⚠ **行情状态取代了原来那一路熔断态**(V2.2-⑤-B 熔断整体退役):两者形似而
+    /// 语义相反 —— 熔断是**状态锁**(会改变行为),行情状态是**纯展示**(⛔ 零动作)。
     func refresh() async {
         guard let client = clientProvider() else {
             loadError = "未配置后端连接"
@@ -363,10 +399,10 @@ final class AppModel {
         async let reportTask: Result<ReportSnapshot, Error> = fetchResult { try await client.fetchReportLatest() }
         async let positionsTask: Result<[Position], Error> = fetchResult { try await client.fetchPositions() }
         async let boardTask: Result<BoardSnapshot, Error> = fetchResult { try await client.fetchBoard() }
-        async let circuitTask: Result<CircuitState, Error> = fetchResult { try await client.getCircuit() }
+        async let regimeTask: Result<MarketRegime, Error> = fetchResult { try await client.fetchMarketRegime() }
         async let alertsTask: Result<[CustomAlert], Error> = fetchResult { try await client.fetchAlerts() }
-        let (reportResult, positionsResult, boardResult, circuitResult, alertsResult) =
-            await (reportTask, positionsTask, boardTask, circuitTask, alertsTask)
+        let (reportResult, positionsResult, boardResult, regimeResult, alertsResult) =
+            await (reportTask, positionsTask, boardTask, regimeTask, alertsTask)
 
         switch reportResult {
         case .success(let r): self.report = r
@@ -380,9 +416,14 @@ final class AppModel {
         case .success(let b): self.board = b
         case .failure: break   // 盘中动态降级不弹错(主内容是篮子 + 持仓,它只为警示条服务)
         }
-        switch circuitResult {
-        case .success(let c): self.circuit = c
-        case .failure: break   // 熔断态读取失败保留上次已知态,不拿失败静默重置成"未锁定"
+        switch regimeResult {
+        case .success(let r): self.marketRegime = r
+        // 🔴 端点**恒 200** → 走到这里只可能是网络 / 鉴权没通。**如实标为没取到**,
+        // ⛔ 不拿失败静默换成一个看起来正常的三态(那是把"没看"讲成"没有")。
+        case .failure(let e):
+            self.marketRegime = MarketRegime(
+                available: false,
+                unavailableReason: "本次没连上服务端,行情状态未取得(\(e.localizedDescription))")
         }
         switch alertsResult {
         case .success(let a): self.alerts = a
@@ -709,21 +750,56 @@ final class AppModel {
         }
     }
 
-    // MARK: - 熔断纪律(纯提醒层;绝不代下单 / 撤单)
+    // MARK: - V2.2-④ 双时钟(选股时钟只读 / 交易时钟只读 + 一条主观说明)
+    //
+    // ⚠ **`confirmCircuitReview()` 已删**(V2.2-⑤-B):它是「强制复盘解锁」的客户端
+    // 半边,机制整体退役后没有任何写入通道 —— 留着就是假成功面。⛔ 不许接回来。
 
-    func confirmCircuitReview() async {
+    /// 已结案的选股时钟。🔴 **样本 = D0 全部 T1/T2,与买没买无关**(K8 §十四)。
+    /// 端点恒 200,空列表 = 这段时间没有结案样本(合法),⛔ 不是"系统没跑"。
+    func loadSelectionClocks(from: String? = nil, to: String? = nil) async {
+        guard let client = clientProvider() else { return }
+        selectionClocksLoading = true
+        defer { selectionClocksLoading = false }
+        do { selectionClocks = try await client.fetchSelectionClocks(from: from, to: to) }
+        catch let e as APIError {
+            if case .noToken = e {} else { showToast(e.errorDescription ?? "选股时钟读取失败", isError: true) }
+        } catch { showToast("选股时钟读取失败:\(error.localizedDescription)", isError: true) }
+    }
+
+    /// 某笔仓的交易时钟(按仓懒加载,一仓一次)。
+    /// 🔴 **404 `not_found` = 这笔仓没有交易时钟,是合法空态** —— 落进
+    /// `tradeClockAbsent`、**不弹错误**。⛔ 别让通用文案「未找到该记录(可能已被删除)」
+    /// 出现在这里:那会让用户以为自己的持仓丢了(v1.4 `watchlist` 有案底)。
+    func loadTradeClock(positionId: Int) async {
+        guard tradeClocks[positionId] == nil, !tradeClockAbsent.contains(positionId),
+              !tradeClockLoading.contains(positionId), let client = clientProvider() else { return }
+        tradeClockLoading.insert(positionId)
+        defer { tradeClockLoading.remove(positionId) }
+        do { tradeClocks[positionId] = try await client.fetchTradeClock(positionId: positionId) }
+        catch APIError.notFound { tradeClockAbsent.insert(positionId) }
+        catch { /* 网络抖动:保持"读取中",下次进页面再试,⛔ 不冒充"没有时钟" */ }
+    }
+
+    func beginTradeClockNote(positionId: Int) { modal = .tradeNote(positionId: positionId) }
+
+    /// 追加一条用户主观说明(K8 §十五)。**纯追加**;成功后重拉该仓时钟以带出新事件。
+    /// ⚠ 超长 → 服务端 422(`.validation`),⛔ 客户端不静默截断。
+    func submitTradeClockNote(positionId: Int, note: String) async {
         guard let client = clientProvider() else {
             showToast("未配置后端连接", isError: true); return
         }
         do {
-            _ = try await client.unlockCircuit()
-            circuit = try await client.getCircuit()
+            let r = try await client.postTradeClockNote(positionId: positionId, note: note)
+            tradeClocks[positionId] = nil
+            tradeClockAbsent.remove(positionId)
+            await loadTradeClock(positionId: positionId)
             dismissModal()
-            showToast("已解锁 · 可继续开新仓")
+            showToast(r.coverageText.map { "已记下 · \($0)" } ?? "已记下")
         } catch let e as APIError {
-            showToast(e.errorDescription ?? "解锁失败", isError: true)
+            showToast(e.errorDescription ?? "记录失败", isError: true)
         } catch {
-            showToast("解锁失败:\(error.localizedDescription)", isError: true)
+            showToast("记录失败:\(error.localizedDescription)", isError: true)
         }
     }
 

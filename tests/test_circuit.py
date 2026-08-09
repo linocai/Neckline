@@ -41,6 +41,10 @@ from neckline.sentinel.positions import (
 _ROOT = Path(__file__).resolve().parent.parent
 _SCAN_DIRS = (_ROOT / "neckline", _ROOT / "scripts")
 _SCAN_FILES = sorted(p for d in _SCAN_DIRS for p in d.rglob("*.py"))
+# ✅ **V2.2-⑥ 起扫描域扩到 `client/`**(⑤-B 施工时留的那句「⑥ 完工后应把扫描域扩到
+# client/」已兑现):熔断的客户端半边(横幅 / 开仓灰化 / 解锁弹层 / 两条活调用)已删,
+# 反向守门必须跟着覆盖那半边 —— 否则「服务端删干净了、客户端又长回来」这条路没人看。
+_CLIENT_FILES = sorted((_ROOT / "client").rglob("*.swift"))
 _EXEC_METHODS = {"execute", "executemany", "executescript"}
 
 
@@ -73,12 +77,14 @@ def test_circuit_public_surface_is_exactly_two_names():
     assert circuit.CIRCUIT_CONSECUTIVE_STOPS == 3
 
 
-def _text_hits(needle: str) -> List[Tuple[str, int]]:
+def _text_hits(needle: str, files=None) -> List[Tuple[str, int]]:
+    """整行注释剥掉再判。**Python 用 `#`、Swift 用 `//`** —— 两种都要认,否则扩到
+    `client/` 之后那些「熔断已删」的留痕注释会让本闸每次都红。"""
     hits: List[Tuple[str, int]] = []
-    for path in _SCAN_FILES:
+    for path in (files if files is not None else _SCAN_FILES):
         for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
-            if stripped.startswith("#") or needle not in line:
+            if stripped.startswith("#") or stripped.startswith("//") or needle not in line:
                 continue
             hits.append((str(path.relative_to(_ROOT)), i))
     return hits
@@ -89,14 +95,52 @@ def test_no_circuit_locked_state_anywhere_in_server(needle):
     """全服务端(`neckline/` + `scripts/`)**零锁定态字段**。
 
     ⚠ **注释行剥掉再判**(承 CLAUDE.md「一个对自己的注释报警的闸门等于没有闸门」):本次
-    退役在多处留了「`circuit_locked` 已删」这类留痕注释,裸 grep 每次都红。
-    ⚠ **扫描域刻意不含 `client/`**:客户端那半边(熔断横幅 / 灰化 / 解锁按钮)归 ⑥ 删,
-    本批 ⛔ 不碰 `client/`;⑥ 完工后应把扫描域扩到 `client/`。"""
+    退役在多处留了「`circuit_locked` 已删」这类留痕注释,裸 grep 每次都红。"""
     hits = _text_hits(needle)
     assert not hits, (
         f"服务端仍有 `{needle}` 的活代码(非注释):{hits} —— 熔断锁定态已整体退役,"
         f"⛔ 不许留任何自动状态位(§五 〇b-7)。"
     )
+
+
+# ✅ V2.2-⑥ 客户端半边的反向守门(⑤-B「客户端连带(归 ⑥ 一起做)」的机器判据)。
+#
+# 🔴 **两组针脚分开写**,因为它们防的是两件不同的事:
+#   ① `model.circuit` / `circuitReview` / 两条活调用 —— 「机制没删干净」;
+#   ② `CircuitState` / `CircuitEpisode` —— **刻意保留**(服务端 `PositionsOut.circuit`
+#      恒发空态、〇b-3 零删键),所以它们**不在**禁用清单里。⛔ 别顺手把它们也加进来:
+#      那会逼下一个人删掉两个还必须解得出的 DTO。
+_FORBIDDEN_IN_CLIENT = (
+    "model.circuit",          # 状态位(横幅 / 灰化都读它)
+    "circuitReview",          # 强制复盘解锁弹层 + 它的 modal case
+    "CircuitLockBanner",      # 锁定横幅
+    "CircuitReviewSheet",     # 解锁弹层
+    "getCircuit",             # GET /circuit 活调用
+    "unlockCircuit",          # POST /circuit/unlock 活调用
+    "confirmCircuitReview",   # 解锁动作
+    "/api/v1/circuit",        # 路径字面量(含 /unlock)
+)
+
+
+@pytest.mark.parametrize("needle", _FORBIDDEN_IN_CLIENT)
+def test_circuit_machinery_is_gone_from_the_client_too(needle):
+    """🔴 客户端**零熔断机制**(V2.2-⑥ 收口):横幅 / 开仓灰化 / 解锁弹层 / 两条活调用
+    全删。⛔ **不许以任何形式接回来** —— §五 〇b-7:不许留锁定标志、灰化按钮、或
+    「建议今天别开仓」的自动状态位。用户裁定 #8:「我不需要你替我做决定」。"""
+    hits = _text_hits(needle, files=_CLIENT_FILES)
+    assert not hits, (
+        f"客户端仍有 `{needle}` 的活代码(非注释):{hits} —— 熔断三件机制已整体退役。"
+    )
+
+
+def test_circuit_dtos_are_deliberately_kept_in_the_client():
+    """🔴 **反向锁**(与上一条方向相反,同等重要):`CircuitState` / `CircuitEpisode`
+    两个 DTO **必须还在**。服务端 `PositionsOut.circuit` 本版仍恒发 `locked=false`
+    空态(〇b-3 零删键:用户 iPhone 何时换包不可控),删 DTO 与服务端删键**同排 v2.3**。
+    ⛔ 谁把上面那条守门理解成"把 Circuit 相关的东西全删光",这条会当场拦住他。"""
+    models = (_ROOT / "client" / "Models.swift").read_text(encoding="utf-8")
+    assert "struct CircuitState" in models
+    assert "struct CircuitEpisode" in models
 
 
 def test_forced_review_line_is_not_collaterally_deleted():

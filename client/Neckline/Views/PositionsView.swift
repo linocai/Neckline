@@ -13,7 +13,9 @@
 //   · 计划 vs 实际偏离 → 提示「原盈亏结构已变」,**不质问、不阻断、不进任何判定**。
 //   · 同题材合并敞口(蓝图 6.2):同一来源篮子的多笔仓**不得视为完全分散的两笔仓位**。
 //   · ⑪-D-D per-position「不提醒」开关:关的是**这一票的触达提醒**,⛔ 不连坐其它持仓。
-//   · 系统**永不代下单**:补录是记账动作,退潮 / 熔断只醒目警示、不硬拦(硬拦 = 帮用户瞒报)。
+//   · 系统**永不代下单**:补录是记账动作,退潮刹车只醒目警示、不硬拦(硬拦 = 帮用户瞒报)。
+//   · ⚠ **熔断整套已于 V2.2-⑤-B 退役**(裁定 #8):横幅 / 开仓灰化 / 解锁弹层全删,
+//     留下的只有一条纯告知推送与一条看板事件。⛔ 不许在本文件里加回任何锁定态。
 //
 
 import SwiftUI
@@ -64,8 +66,8 @@ struct PositionsView: View {
             switch kind {
             case .open: return "open"
             case .close(let code): return "close-\(code)"
-            case .circuitReview: return "circuitReview"
             case .note: return "note"
+            case .tradeNote(let positionId): return "tradeNote-\(positionId)"
             }
         }
     }
@@ -75,8 +77,8 @@ struct PositionsView: View {
         switch kind {
         case .open: OpenPositionSheet(model: model)
         case .close(let code): ClosePositionSheet(model: model, code: code)
-        case .circuitReview: CircuitReviewSheet(model: model)
         case .note: NoteSheet(model: model)
+        case .tradeNote(let positionId): TradeClockNoteSheet(model: model, positionId: positionId)
         }
     }
 
@@ -89,9 +91,14 @@ struct PositionsView: View {
                 Text("持仓").font(NKFont.largeTitle).foregroundStyle(NK.textPrimary)
             }
             #endif
-            // 熔断横幅置顶(比退潮刹车更靠前 —— 这是用户自身纪律被触发,§2.1 第 7 条)。
-            if model.circuit.locked { CircuitLockBanner(model: model) }
+            // 🔴 **熔断横幅已整体删除**(V2.2-⑤-B,用户裁定 #8):「锁定态 / 次日只减
+            // 不加 / 强制复盘解锁」三件机制在产品面消失。用户原话:「我不需要你替我
+            // 做决定;这个程序永远是提醒」。连续 3 笔止损仍会推一条**纯告知**推送 +
+            // 一条看板事件(见下面 `BoardSection`),**零状态、零锁、零行为改变**。
+            // ⛔ 不许以任何形式在这里加回一个「建议今天别开仓」的自动状态位(〇b-7)。
             if let warning = model.retreatWarning { RetreatBrakeBanner(reason: warning) }
+            // V2.2-② 行情状态:**纯展示、⛔ 无动作**(灰色地带提示,K8 §十三)。
+            MarketRegimeStrip(regime: model.marketRegime, compact: true)
             mergedExposureSection
             positionsSection
             alertsSection
@@ -137,15 +144,15 @@ struct PositionsView: View {
             HStack {
                 NKSectionHeader(title: "持仓 \(model.positions.count)")
                 Spacer()
-                // 熔断锁定时灰化「开新仓」入口(**客户端自律,服务端不拦**,§3.8)。
+                // 🔴 **「熔断中灰化开仓」已删**(V2.2-⑤-B / 〇b-7):补录本就是记账动作,
+                // 而这个按钮此前是全系统唯一一处「程序替用户做决定」的自律灰化。
+                // ⛔ 不许以任何条件把它再灰掉。
                 Button { model.beginPositionEntryFlow() } label: {
-                    Label(model.circuit.locked ? "熔断中 · 暂停开仓" : "补录开仓",
-                          systemImage: model.circuit.locked ? "lock.fill" : "plus.circle.fill")
+                    Label("补录开仓", systemImage: "plus.circle.fill")
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(model.circuit.locked ? NK.textTertiary : NK.accent)
-                .disabled(model.circuit.locked)
+                .foregroundStyle(NK.accent)
             }
             Text("先管住手里的").font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
             if model.positions.isEmpty {
@@ -244,6 +251,9 @@ private struct PositionCard: View {
                 Divider().overlay(NK.hairline)
                 // ⑩-B 计划继承卡 + ⑪-D-D per-position 触达提醒开关。
                 PositionPlanSection(model: model, position: position)
+                Divider().overlay(NK.hairline)
+                // V2.2-④-B 交易时钟(只读跟踪 + 「补一条主观说明」写入口)。
+                TradeClockSection(model: model, position: position)
             }
         }
     }
@@ -255,7 +265,9 @@ private struct PositionCard: View {
                     Text(position.name).font(NKFont.stockName).foregroundStyle(NK.textPrimary)
                     Text(position.code).font(.system(size: 11)).foregroundStyle(NK.textTertiary)
                     // 两档 D 徽标(服务端按 D5 净浮盈判好下发,客户端不重算)。
-                    NKChip(text: "D\(position.dCount)/D\(position.maxHoldDaysEffective)",
+                    // ⚠ V2.2-⑤ 起章程可能**没有时间退出条款** → 徽标只报 D 计数
+                    // (`dBadgeText` 单点判断),⛔ 不拿 D5 顶上冒充有上限。
+                    NKChip(text: position.dBadgeText,
                            tone: dBadgeTone, filled: dBadgeTone != .neutral)
                     if position.timeExitKind == .suspendedHold {
                         NKChip(text: "判向挂起 · 复牌当日重判", tone: .warn)
@@ -272,9 +284,16 @@ private struct PositionCard: View {
                         .font(.system(size: 11)).foregroundStyle(NK.amber)
                 }
                 // 定格日 ≠ D5 显式标注,只提示、不改判定逻辑,**只在晚于 D{maxHoldDays} 时展示**。
-                if position.timeExitLockedLateDays > 0, let lockedDay = position.timeExitLockedDay {
-                    Text("定格于 D\(lockedDay),晚于 D\(position.maxHoldDays) \(position.timeExitLockedLateDays) 天")
+                if position.timeExitLockedLateDays > 0, let lockedDay = position.timeExitLockedDay,
+                   let cap = position.maxHoldDays {
+                    Text("定格于 D\(lockedDay),晚于 D\(cap) \(position.timeExitLockedLateDays) 天")
                         .font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                }
+                // 🔴 V2.2-⑤:本版章程无时间退出条款时,**把这件事说出口**——
+                // 否则用户看到一个光秃秃的「D3」会以为系统忘了算上限。
+                if let disclosure = position.timeExitDisclosure {
+                    Text(disclosure).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer()
@@ -523,7 +542,7 @@ struct ClosePositionSheet: View {
                     }
                 }
             } footer: {
-                Text("卖出时间缺省为今日;此处只记录真实成交,系统不代下单。离场原因用于熔断纪律统计(§2.1 第 7 条),不选时系统按 -5% 价格近似兜底判止损。")
+                Text("卖出时间缺省为今日;此处只记录真实成交,系统不代下单。离场原因用于周复盘归因与「连续 3 笔止损」提醒的计数,不选时系统按 -5% 价格近似兜底判止损。")
             }
         }
     }

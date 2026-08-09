@@ -368,3 +368,211 @@ enum NKFmt {
     /// 不需要 `price` 的两位小数精度)。
     static func money(_ v: Double) -> String { String(format: "%.1f", v) }
 }
+
+// MARK: - V2.2-② 行情状态条(报告顶部 / 持仓页顶部;**纯展示、⛔ 零动作**)
+//
+// 🔴 **这不是买卖信号**:三态回答的是「今天市场结构是什么样」(趋势延续 / 高位分歧 /
+// 切换确认),⛔ 不构成任何仓位建议,更不是「今天别开仓」的自动状态位(§五 〇b-7)。
+//
+// 🔴 **`available == false` 必须如实说出口**:服务端已经把原因写好(批算没跑 / 非交易日
+// / 参数非法),⛔ 客户端不合并、不改写、**更不许什么都不显示** —— 不显示等于让读者
+// 默认"今天没什么特别的",那正是把「没看」讲成「没有」。
+
+struct MarketRegimeStrip: View {
+    let regime: MarketRegime
+    /// 紧凑档(持仓页顶部一行);报告顶部用完整档(带增强 / 减弱方向)。
+    var compact: Bool = false
+
+    var body: some View {
+        NKCard {
+            if let d = regime.day, regime.available {
+                available(d)
+            } else {
+                unavailable
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func available(_ d: MarketRegimeDay) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 4 : 8) {
+            HStack(spacing: 8) {
+                Text("行情状态").font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(NK.textTertiary)
+                NKChip(text: d.displayLabel, tone: d.tone, filled: true)
+                if !d.tradeDate.isEmpty {
+                    Text(d.tradeDate).font(.system(size: 10.5).monospacedDigit())
+                        .foregroundStyle(NK.textTertiary)
+                }
+                Spacer()
+                if !d.skeletonVersion.isEmpty { NKChip(text: d.skeletonVersion) }
+            }
+            if !d.regimeReason.isEmpty {
+                Text(d.regimeReason).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !compact {
+                directionRow("增强方向", d.strengthening, .good)
+                directionRow("减弱方向", d.weakening, .warn)
+            }
+            // 🔴 五维里没算出来的那几维要说出口:缺维**不是**「这一维没问题」。
+            if !d.missingDims.isEmpty {
+                Text("本次未取得的判定输入:\(d.missingDims.joined(separator: "、")) —— 缺数 = 不知道,不猜")
+                    .font(.system(size: 10.5)).foregroundStyle(NK.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("行情状态是市场结构的描述 · 不是买卖建议、不改变任何持仓判定")
+                .font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
+        }
+    }
+
+    @ViewBuilder
+    private func directionRow(_ title: String, _ items: [NKJSON], _ tone: NKAxisTone) -> some View {
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { _, it in
+                            NKChip(text: it["industry"]?.stringValue ?? it.displayText, tone: tone)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var unavailable: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "questionmark.circle").font(.system(size: 13))
+                .foregroundStyle(NK.textTertiary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("行情状态本次未取得").font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(NK.textSecondary)
+                // 服务端已把「批算没跑 / 非交易日 / 参数非法」分开写好,原样展示。
+                Text(regime.unavailableReason ?? "服务端未给原因")
+                    .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("⛔ 「没取到」不等于「今天没什么特别的」")
+                    .font(.system(size: 10)).foregroundStyle(NK.amber)
+            }
+            Spacer()
+        }
+    }
+}
+
+// MARK: - V2.2-③ 六关灯条(每篮一条;**机械关与证据关视觉上必须分得开**)
+//
+// 🔴 **二分是产品语义,不是配色偏好**(裁定 #6 / #11 / #12):
+//   · **机械关**(市场 / 板块)= 读客观预计算量 → **硬否决**,不过就没了;
+//   · **证据关**(驱动 / 核心 / 位置 / 证据)= LLM 组织证据 → **只降级**,
+//     最坏也只是「退出正式候选、仍在 ③b 列名」。
+// 两者混成一种灯 = 把「否决」与「扣分」讲成同一回事。故:机械关格子**加实心边框 +
+// 「硬」角标**,证据关格子留描边。
+//
+// 🔴 **`available == false` 绝不许渲染成「六关都过了」** —— 那是把「没看」讲成
+// 「没有问题」(§3.8)。
+
+struct GateLightBar: View {
+    let gates: BasketGates
+    /// 展开态多给一行「卡在哪一关 / 降了几档」。
+    var showDetail: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if gates.available {
+                lights
+                if showDetail { detailLines }
+            } else {
+                Text("六关判定:本份快照没有关口记录(⛔ 不等于六关都过了)")
+                    .font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var lights: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 5) {
+                ForEach(gates.lights) { l in
+                    HStack(spacing: 3) {
+                        Circle().fill(l.tone.color).frame(width: 6, height: 6)
+                        Text(l.label).font(.system(size: 10, weight: .semibold))
+                        Text(l.verdictLabel).font(.system(size: 9.5))
+                            .foregroundStyle(l.tone.color)
+                        // 「硬」= 机械关(硬否决)。⛔ 别把它也挂到证据关上。
+                        if l.kind == .mechanical {
+                            Text("硬").font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 3).padding(.vertical, 0.5)
+                                .background(Capsule().fill(NK.textSecondary))
+                        }
+                    }
+                    .foregroundStyle(NK.textSecondary)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(l.kind == .mechanical ? l.tone.color.opacity(0.10) : Color.clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(l.tone.color.opacity(l.kind == .mechanical ? 0.55 : 0.28),
+                                    lineWidth: l.kind == .mechanical ? 1.2 : 0.8)
+                    )
+                }
+            }
+            .padding(.vertical, 1)
+        }
+    }
+
+    @ViewBuilder
+    private var detailLines: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("实心边框 + 「硬」= 机械关(市场 / 板块),不过 = 硬否决;"
+                 + "描边 = 证据关(驱动 / 核心 / 位置 / 证据),最坏只降级、仍在 ③b 列名")
+                .font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let g = gates.blockedGate {
+                Text("卡在:\(nkGateLabel(g))(\(nkGateKind(g).label))")
+                    .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(NK.amber)
+            }
+            if let n = gates.evidenceDegrades, n > 0 {
+                Text("证据关累计降 \(n) 档" + (gates.degradedGates.isEmpty ? ""
+                     : "(\(gates.degradedGates.map(nkGateLabel).joined(separator: "、")))"))
+                    .font(.system(size: 10.5)).foregroundStyle(NK.textSecondary)
+            }
+            // ⚠ 「不得进 T1」多半是某一关**判不出**,不是"被否决" —— 分开说。
+            if gates.blocksT1 {
+                Text("本篮不得进 T1(多为某一关判不出 —— 判不出 ≠ 判过了,也 ≠ 拦下来)")
+                    .font(.system(size: 10.5)).foregroundStyle(NK.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if gates.positionUnfit {
+                Text("位置关有成员被判「不合适」(裁定 #11:退出正式候选,⛔ 非硬否决)")
+                    .font(.system(size: 10.5)).foregroundStyle(NK.textSecondary)
+            }
+            if gates.coreUnfit {
+                Text("核心关有成员被判「不是龙头」(裁定 #12:退出正式候选,⛔ 非硬否决)")
+                    .font(.system(size: 10.5)).foregroundStyle(NK.textSecondary)
+            }
+        }
+    }
+}
+
+// MARK: - QA / 截图钩子(⚠ **只影响初始展开态,⛔ 不改任何数据、不夺走交互**)
+//
+// 🔴 **为什么需要它**:本环境 computer-use **点不动 Simulator**(CLAUDE.md 登记的
+// 已知限制,`mcp__Claude_Code_iOS_Simulator__control` 的 tap 恒报错、且与
+// `xcode-select` 无关),视觉核对只能走 `xcrun simctl io screenshot` —— 于是
+// 「点开才看得到」的内容(如位置关 / 核心关的读数展开区)在截图里永远拍不到。
+// 同 `NECKLINE_INITIAL_TAB` / `NECKLINE_INITIAL_MODAL` 的既有先例。
+//
+// ⚠ **缺环境变量时恒 `false`**:正常用户路径逐字节不变。
+// ⛔ 用它的地方必须是 `@State` 的**初值**,不许写成 `isExpanded: .constant(...)`
+// —— 那会把用户的点击一起夺走,拿截图便利换掉真交互。
+
+enum NKQA {
+    /// `NECKLINE_EXPAND_DISCLOSURES=1` → 展开区默认展开(纯截图辅助)。
+    static let expandDisclosures: Bool =
+        ProcessInfo.processInfo.environment["NECKLINE_EXPAND_DISCLOSURES"] == "1"
+}
