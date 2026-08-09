@@ -1,17 +1,35 @@
-"""v1.2-A2 熔断纪律单测(plan §五 v1.2-A2 验收①/③/④/⑤,§2.1 第 7 条,🔴)。
+"""连续止损**纯提醒** + 熔断整体退役的**反向守门**(V2.2-⑤-B,用户裁定 #8)。
 
-覆盖:连续 3 笔止损(尾部连续 / 遇非止损断链归零 / 显式码 vs NULL 价格兜底 / 显式
-非止损码不被价格二次猜)、单日净亏 ≤ −4000(净口径盈亏互抵不触发、连续止损链独立
-触发)、已锁定重复触发幂等不开第二行、锁定态派生、两条解锁路径各置对 unlocked_via、
-阈值 stop_pct 读现役 config 不硬编。
+🔴 **裁定 #8 原话**:「**我不需要你替我做决定;这个程序永远是提醒 —— 连续三笔止损真的
+发生了,那也是提醒**」。
+
+本文件把 §五 〇b-7 那条铁律钉成**机器判据**:
+
+    ⛔ 不许「为了安全」偷偷留一个锁定标志、一个灰化按钮、或一个「建议今天别开仓」的
+       自动状态位。留下的只有一条事件与一条推送。
+
+三类断言:
+  ① **防复活**:被删的符号 / 常量 / 端点 / 字段一个都不许回来(`hasattr` + AST/文本扫描)。
+  ② **停写留档**:`circuit_breaker` 表在 `neckline/` + `scripts/` 全域零写入调用点,
+     跑完一整轮"三笔止损 + 提醒"后**零新增行**。
+  ③ **纯提醒语义**:达阈值 → 一条推送 + 一条看板事件 + **零状态**;第 4 笔**再推一条**;
+     `POST /positions/{id}/close` 的返回值逐字段不变(在 `test_api_circuit.py`)。
+
+⚠ **反向锁一条**:§2.1 **第 4 条**「单周亏损 ≥ 总仓 2% → 强制复盘」**不是熔断**,
+`FORCED_REVIEW_LOSS_FRAC` 必须仍在、周复盘仍判 —— ⛔ 别连坐删掉。
 """
 
 from __future__ import annotations
 
+import ast
 from datetime import date
+from pathlib import Path
+from typing import List, Set, Tuple
 
 import pytest
 
+from neckline import positions_entry
+from neckline.db import connection
 from neckline.sentinel import circuit
 from neckline.sentinel.positions import (
     CLOSE_REASON_MANUAL,
@@ -19,242 +37,307 @@ from neckline.sentinel.positions import (
     close_position,
     open_position,
 )
-from neckline.review.reconcile import WeeklyReview
 
-from .conftest import seed_active_rule_v1
+_ROOT = Path(__file__).resolve().parent.parent
+_SCAN_DIRS = (_ROOT / "neckline", _ROOT / "scripts")
+_SCAN_FILES = sorted(p for d in _SCAN_DIRS for p in d.rglob("*.py"))
+_EXEC_METHODS = {"execute", "executemany", "executescript"}
 
 
-def _open_close(db, *, buy, sell, sell_date, reason=None, qty=100):
-    """开一笔再平掉,返回 position_id。buy/sell 是单价,qty 股数。"""
-    pid = open_position("600001.SH", buy, qty, date(2026, 7, 1), db_path=db)
-    close_position(pid, sell, sell_date, close_reason=reason, db_path=db)
+# ======================================================================
+#  ① 防复活:三件机制的符号一个都不许回来
+# ======================================================================
+
+# 锁定态 / 解锁 / 幂等评估 / 派生状态 / 单日亏损档 —— §五 ⑤-B「测试与守门(熔断面)」逐条。
+_FORBIDDEN_CIRCUIT_ATTRS = (
+    "get_state", "is_locked", "unlock", "evaluate_after_close", "auto_unlock_for_reviews",
+    "current_locked_episode", "list_episodes", "get_episode", "detect_trigger",
+    "CircuitEpisode", "CircuitState",
+    "CIRCUIT_DAILY_LOSS_YUAN", "TRIGGER_DAILY_LOSS", "TRIGGER_CONSECUTIVE_STOPS",
+    "UNLOCK_VIA_REVIEW_ACK", "UNLOCK_VIA_WEEKLY_REVIEW",
+)
+
+
+@pytest.mark.parametrize("attr", _FORBIDDEN_CIRCUIT_ATTRS)
+def test_circuit_module_has_no_lock_machinery(attr):
+    """锁定 / 解锁 / 幂等 / 派生状态整套**已删且不许回来**(裁定 #8 的字面结果)。"""
+    assert not hasattr(circuit, attr), (
+        f"`sentinel/circuit.py` 又出现了 `{attr}` —— 熔断三件机制已于 V2.2-⑤-B 整体退役"
+        f"(用户裁定 #8),⛔ 不许以任何形式复活锁定态 / 次日只减不加 / 强制复盘解锁。"
+    )
+
+
+def test_circuit_public_surface_is_exactly_two_names():
+    """本模块公开面**恰好两项**:提醒阈值常量 + 一个无状态纯函数。多一项就该问为什么。"""
+    assert set(circuit.__all__) == {"CIRCUIT_CONSECUTIVE_STOPS", "count_tail_consecutive_stops"}
+    assert circuit.CIRCUIT_CONSECUTIVE_STOPS == 3
+
+
+def _text_hits(needle: str) -> List[Tuple[str, int]]:
+    hits: List[Tuple[str, int]] = []
+    for path in _SCAN_FILES:
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#") or needle not in line:
+                continue
+            hits.append((str(path.relative_to(_ROOT)), i))
+    return hits
+
+
+@pytest.mark.parametrize("needle", ["circuit_locked", "EVENT_CIRCUIT_LOCKED", "circuitLocked"])
+def test_no_circuit_locked_state_anywhere_in_server(needle):
+    """全服务端(`neckline/` + `scripts/`)**零锁定态字段**。
+
+    ⚠ **注释行剥掉再判**(承 CLAUDE.md「一个对自己的注释报警的闸门等于没有闸门」):本次
+    退役在多处留了「`circuit_locked` 已删」这类留痕注释,裸 grep 每次都红。
+    ⚠ **扫描域刻意不含 `client/`**:客户端那半边(熔断横幅 / 灰化 / 解锁按钮)归 ⑥ 删,
+    本批 ⛔ 不碰 `client/`;⑥ 完工后应把扫描域扩到 `client/`。"""
+    hits = _text_hits(needle)
+    assert not hits, (
+        f"服务端仍有 `{needle}` 的活代码(非注释):{hits} —— 熔断锁定态已整体退役,"
+        f"⛔ 不许留任何自动状态位(§五 〇b-7)。"
+    )
+
+
+def test_forced_review_line_is_not_collaterally_deleted():
+    """🔴 **反向锁**:§2.1 **第 4 条**「单周亏损 ≥ 总仓 2% → 强制复盘」**不是熔断**,
+    ⛔ 别连坐删掉(§五 ⑤-B 测试与守门里明文点名的那一条)。"""
+    from neckline.review import reconcile
+
+    assert reconcile.FORCED_REVIEW_LOSS_FRAC == 0.02
+    assert callable(reconcile.is_forced_review)
+
+
+def test_notify_entrypoint_renamed_and_old_one_gone():
+    """⑤-B 第 8 项:`push_circuit_breaker` → `push_consecutive_stops_notice`。"""
+    from neckline.api import notify
+
+    assert not hasattr(notify, "push_circuit_breaker")
+    assert "push_circuit_breaker" not in notify.__all__
+    assert "push_consecutive_stops_notice" in notify.__all__
+
+
+def test_precall_summary_no_longer_takes_circuit_locked():
+    """⑤-B 第 8 项:`push_precall_summary` 的 `circuit_locked` 参数已删 ——
+    连带「锁定期 9:26 汇总必发」豁免一并取消(§八 第 19 项已当面告知用户)。"""
+    import inspect
+
+    from neckline.api import notify
+    from neckline.sentinel.precall import PrecallResult
+
+    assert "circuit_locked" not in inspect.signature(notify.push_precall_summary).parameters
+    assert not hasattr(PrecallResult(trade_date=date(2026, 8, 10), now=None), "circuit_locked")
+
+
+def test_should_push_summary_has_no_must_push_exemption():
+    """必发豁免真的没了:零 actionable 判定 → **不推**,没有任何第二个析取项能翻盘。"""
+    from neckline.sentinel.precall import PrecallResult
+
+    r = PrecallResult(trade_date=date(2026, 8, 10), now=None)
+    assert r.summary_actionable == 0 and r.should_push_summary is False
+
+
+# ======================================================================
+#  ② 停写留档:`circuit_breaker` 表零写入调用点(照 test_v1_retirement_guard 体例)
+# ======================================================================
+
+def _sql_literal(node: ast.AST):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else ""
+                       for v in node.values)
+    return None
+
+
+def test_circuit_breaker_table_has_zero_write_call_sites():
+    """`circuit_breaker` **停写留档不 DROP**(⑤-B 第 3 项;§七 P4-31 七张 → 八张)。
+    写法变体成套(承契约线审计 🟡 Y1 第 2 洞:`INSERT OR REPLACE/IGNORE` 也算写)。"""
+    table = "circuit_breaker"
+    forbidden = (
+        f"INSERT INTO {table}", f"UPDATE {table}", f"DELETE FROM {table}",
+        f"REPLACE INTO {table}", f"INSERT OR IGNORE INTO {table}",
+        f"INSERT OR ABORT INTO {table}", f"INSERT OR FAIL INTO {table}",
+        f"INSERT OR ROLLBACK INTO {table}",
+    )
+    hits: List[Tuple[str, int, str]] = []
+    for path in _SCAN_FILES:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else None)
+            if name not in _EXEC_METHODS or not node.args:
+                continue
+            sql = _sql_literal(node.args[0])
+            if sql is None:
+                continue
+            upper = " ".join(sql.upper().split())
+            for f in forbidden:
+                if f.upper() in upper:
+                    hits.append((str(path.relative_to(_ROOT)), node.lineno, f))
+    assert not hits, f"`circuit_breaker` 表出现禁止的写入调用点(V2.2-⑤-B 起停写留档):{hits}"
+
+
+def test_circuit_breaker_table_exists_in_isolated_db(isolated_env):
+    """**停写留档 ≠ DROP**(§七 P4-31 纪律):表必须还在,历史行可查。
+    ⚠ 显式传 `db_path=isolated_env.db_path`(v1.4-④ 测试隔离纪律:`neckline/db.py` 那份
+    `settings` 不被夹具重写,`db_path=None` 会静默写到真实 `data/neckline.db`)。"""
+    from neckline.db import init_schema
+
+    init_schema(isolated_env.db_path)
+    with connection(isolated_env.db_path) as conn:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='circuit_breaker'"
+        ).fetchone()
+    assert row is not None, "`circuit_breaker` 表被 DROP 了 —— 停写留档纪律是「不 DROP」"
+
+
+# ======================================================================
+#  ③ 纯提醒语义:尾部连续止损计数 + 达阈值只推不建行
+# ======================================================================
+
+_BUY = date(2026, 7, 20)
+
+
+def _stop_close(env, code: str, *, reason=CLOSE_REASON_STOP_LOSS, sell=9.0,
+                sell_date=date(2026, 7, 22)) -> int:
+    """开一笔 10.0 的仓,再以 `sell` 平掉(默认 9.0 = 破 -5% 线)。返回 position_id。"""
+    pid = open_position(code, 10.0, 100, _BUY, db_path=env.db_path)
+    close_position(pid, sell, sell_date, close_reason=reason, db_path=env.db_path)
     return pid
 
 
-# ————————————————————————————————————————————————————————————————
-# 1) 连续 3 笔止损
-# ————————————————————————————————————————————————————————————————
+class TestCountTailConsecutiveStops:
+    def test_three_explicit_stop_losses_count_three(self, isolated_env):
+        for i, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ"]):
+            _stop_close(isolated_env, code, sell_date=date(2026, 7, 20 + i))
+        assert circuit.count_tail_consecutive_stops(db_path=isolated_env.db_path) == 3
 
-def test_three_explicit_stop_losses_trigger(isolated_env):
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)   # stop_pct=0.05
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 20), reason=CLOSE_REASON_STOP_LOSS)
-    _open_close(db, buy=100, sell=94, sell_date=date(2026, 7, 21), reason=CLOSE_REASON_STOP_LOSS)
-    ep = _open_close_eval(db, buy=100, sell=93, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_STOP_LOSS)
-    assert ep is not None
-    assert ep.trigger_reason == circuit.TRIGGER_CONSECUTIVE_STOPS
-    assert ep.basis_trades_count == 3
-    assert "已补录成交" in ep.note        # 诚实边界文案
-    assert circuit.is_locked(db_path=db)
+    def test_null_reason_price_fallback_counts_as_stop(self, isolated_env):
+        """`close_reason` NULL → 价格近似兜底(sell ≤ buy×(1−stop_pct))计止损。"""
+        for i, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ"]):
+            _stop_close(isolated_env, code, reason=None, sell_date=date(2026, 7, 20 + i))
+        assert circuit.count_tail_consecutive_stops(db_path=isolated_env.db_path) == 3
 
+    def test_explicit_non_stop_reason_not_second_guessed(self, isolated_env):
+        """显式非 STOP_LOSS 码 → **信标注、不用价格二次猜**(哪怕价格深亏)。"""
+        for i, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ"]):
+            _stop_close(isolated_env, code, reason=CLOSE_REASON_MANUAL, sell_date=date(2026, 7, 20 + i))
+        assert circuit.count_tail_consecutive_stops(db_path=isolated_env.db_path) == 0
 
-def test_null_reason_price_fallback_counts_as_stop(isolated_env):
-    """close_reason NULL → 价格近似兜底(sell ≤ buy×(1−stop_pct))判止损。"""
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)   # stop_pct=0.05 → 阈值 95
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 20), reason=None)   # 恰在阈值(含 _EPS)
-    _open_close(db, buy=100, sell=94, sell_date=date(2026, 7, 21), reason=None)
-    ep = _open_close_eval(db, buy=100, sell=93, sell_date=date(2026, 7, 22), reason=None)
-    assert ep is not None and ep.trigger_reason == circuit.TRIGGER_CONSECUTIVE_STOPS
-    # 兜底笔数如实透出(3 笔均未标注 → approx=3)
-    assert ep.basis.get("approx_count") == 3
+    def test_non_stop_at_tail_breaks_chain(self, isolated_env):
+        _stop_close(isolated_env, "000001.SZ", sell_date=date(2026, 7, 20))
+        _stop_close(isolated_env, "000002.SZ", sell_date=date(2026, 7, 21))
+        _stop_close(isolated_env, "000003.SZ", reason=CLOSE_REASON_MANUAL, sell=11.0,
+                    sell_date=date(2026, 7, 22))
+        assert circuit.count_tail_consecutive_stops(db_path=isolated_env.db_path) == 0
 
+    def test_chain_has_no_time_window(self, isolated_env):
+        """链只看「尾部连续」、不看间隔 —— 横跨数月的 3 笔同样计 3(既有口径,刻意保留)。"""
+        for i, (code, d) in enumerate([("000001.SZ", date(2026, 3, 2)),
+                                       ("000002.SZ", date(2026, 5, 6)),
+                                       ("000003.SZ", date(2026, 7, 22))]):
+            _stop_close(isolated_env, code, sell_date=d)
+        assert circuit.count_tail_consecutive_stops(db_path=isolated_env.db_path) == 3
 
-def test_explicit_non_stop_reason_not_second_guessed(isolated_env):
-    """用户显式标注非止损码(MANUAL)——即便卖出价远低于止损线,也**不**用价格二次
-    猜成止损(信用户标注)。3 笔 MANUAL 深亏 → 不触发连续止损。"""
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    _open_close(db, buy=100, sell=80, sell_date=date(2026, 7, 20), reason=CLOSE_REASON_MANUAL)
-    _open_close(db, buy=100, sell=80, sell_date=date(2026, 7, 21), reason=CLOSE_REASON_MANUAL)
-    ep = _open_close_eval(db, buy=100, sell=80, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_MANUAL)
-    assert ep is None
-    assert not circuit.is_locked(db_path=db)
+    def test_fourth_stop_makes_it_four(self, isolated_env):
+        """⛔ **没有"重置"概念了**:第 4 笔止损 → 计数 4(> 阈值),调用方据此再提醒一条。"""
+        for i, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"]):
+            _stop_close(isolated_env, code, sell_date=date(2026, 7, 20 + i))
+        assert circuit.count_tail_consecutive_stops(db_path=isolated_env.db_path) == 4
 
+    def test_stop_pct_read_from_active_config(self, isolated_env):
+        """阈值读现役 config(§3.8 单一源),不硬编 -5%:stop_pct=0.08 时 -6% 不算止损。"""
+        from neckline.strategy import brain
 
-def test_non_stop_at_tail_breaks_chain(isolated_env):
-    """尾部一笔非止损即断链归零:两笔止损在前、最近一笔非止损 → 不触发。"""
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    _open_close(db, buy=100, sell=94, sell_date=date(2026, 7, 20), reason=CLOSE_REASON_STOP_LOSS)
-    _open_close(db, buy=100, sell=94, sell_date=date(2026, 7, 21), reason=CLOSE_REASON_STOP_LOSS)
-    ep = _open_close_eval(db, buy=100, sell=110, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_MANUAL)
-    assert ep is None and not circuit.is_locked(db_path=db)
+        brain.save_version("test-stop8", rule={"config": {"stop_pct": 0.08}},
+                           changelog="单测", activate=True, db_path=isolated_env.db_path)
+        for i, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ"]):
+            _stop_close(isolated_env, code, reason=None, sell=9.4, sell_date=date(2026, 7, 20 + i))
+        assert circuit.count_tail_consecutive_stops(db_path=isolated_env.db_path) == 0
 
-
-def test_consecutive_chain_triggers_despite_earlier_big_win(isolated_env):
-    """连续止损链独立触发,不被(更早的)大赢单遮蔽——三笔小额止损(各 −2000,单日均
-    不到 −4000)仍触发,尽管更早有一笔 +5000 大赢单。"""
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    _open_close(db, buy=100, sell=150, sell_date=date(2026, 7, 17), reason=CLOSE_REASON_MANUAL)  # +5000 早于止损链
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 20), reason=CLOSE_REASON_STOP_LOSS)  # −500
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 21), reason=CLOSE_REASON_STOP_LOSS)
-    ep = _open_close_eval(db, buy=100, sell=95, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_STOP_LOSS)
-    assert ep is not None and ep.trigger_reason == circuit.TRIGGER_CONSECUTIVE_STOPS
+    def test_empty_ledger_is_zero(self, isolated_env):
+        assert circuit.count_tail_consecutive_stops(db_path=isolated_env.db_path) == 0
 
 
-# ————————————————————————————————————————————————————————————————
-# 2) 单日净亏 ≥ 4000(净口径)
-# ————————————————————————————————————————————————————————————————
+class TestPureReminderHasZeroState:
+    """达阈值时:**一条推送 + 一条看板事件 + 零建行 + 零状态**。"""
 
-def test_single_day_net_loss_triggers(isolated_env):
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    # 同日两笔:各自单笔不越 −4000,合计净亏 −5000(-3000 + -2000)才越阈;MANUAL 避免
-    # 走连续止损路径(专测单日净口径)。
-    _open_close(db, buy=100, sell=70, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_MANUAL)   # −3000
-    ep = _open_close_eval(db, buy=100, sell=80, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_MANUAL)  # −2000
-    assert ep is not None
-    assert ep.trigger_reason == circuit.TRIGGER_DAILY_LOSS
-    assert ep.basis["daily_net_pnl"] == pytest.approx(-5000.0)
-    assert ep.basis_trades_count == 2
+    @staticmethod
+    def _pushes(monkeypatch) -> List[dict]:
+        sent: List[dict] = []
+        from neckline.api import notify
 
+        def _fake(count, *, ts_code="", name="", db_path=None, transport=None):
+            sent.append({"count": count, "ts_code": ts_code})
+            return notify.NotifyOutcome(skipped_reason="test")
 
-def test_morning_loss_offset_by_afternoon_win_no_trigger(isolated_env):
-    """净口径:上午亏 6000 + 下午赚 3000 = 净亏 3000 → 不触发(赢单可抵消)。"""
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    _open_close(db, buy=100, sell=40, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_MANUAL)   # −6000
-    ep = _open_close_eval(db, buy=100, sell=130, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_MANUAL)  # +3000
-    assert ep is None
-    assert not circuit.is_locked(db_path=db)
+        monkeypatch.setattr(notify, "push_consecutive_stops_notice", _fake)
+        return sent
 
+    def test_three_stops_push_once_and_create_zero_rows(self, isolated_env, monkeypatch):
+        sent = self._pushes(monkeypatch)
+        pids = []
+        for i, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ"]):
+            pid = _stop_close(isolated_env, code, sell_date=date(2026, 7, 20 + i))
+            pids.append(pid)
+            positions_entry.notice_consecutive_stops_after_close(
+                pid, sell_date=date(2026, 7, 20 + i), db_path=isolated_env.db_path)
+        # 只有第 3 笔越过阈值 → 恰好一条推送
+        assert [s["count"] for s in sent] == [3]
+        # 零建行:`circuit_breaker` 表一行都没多
+        with connection(isolated_env.db_path) as conn:
+            assert conn.execute("SELECT count(*) FROM circuit_breaker").fetchone()[0] == 0
+        # 一条看板事件(sentinel='circuit'),锚在那笔卖出的票上
+        with connection(isolated_env.db_path) as conn:
+            rows = conn.execute(
+                "SELECT ts_code, event_key FROM sentinel_events WHERE sentinel='circuit'"
+            ).fetchall()
+        assert rows == [("000003.SZ", positions_entry.CONSECUTIVE_STOPS_EVENT_KEY)]
 
-def test_daily_loss_exact_boundary_triggers(isolated_env):
-    """恰好 −4000(边界,含 _EPS 容差)→ 触发。"""
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    ep = _open_close_eval(db, buy=100, sell=60, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_MANUAL)  # −4000
-    assert ep is not None and ep.trigger_reason == circuit.TRIGGER_DAILY_LOSS
+    def test_fourth_stop_pushes_again(self, isolated_env, monkeypatch):
+        """⛔ 别发明"解锁后才重推":没有锁,第 4 笔照样再来一条。"""
+        sent = self._pushes(monkeypatch)
+        for i, code in enumerate(["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"]):
+            pid = _stop_close(isolated_env, code, sell_date=date(2026, 7, 20 + i))
+            positions_entry.notice_consecutive_stops_after_close(
+                pid, sell_date=date(2026, 7, 20 + i), db_path=isolated_env.db_path)
+        assert [s["count"] for s in sent] == [3, 4]
 
+    def test_below_threshold_pushes_nothing(self, isolated_env, monkeypatch):
+        sent = self._pushes(monkeypatch)
+        for i, code in enumerate(["000001.SZ", "000002.SZ"]):
+            pid = _stop_close(isolated_env, code, sell_date=date(2026, 7, 20 + i))
+            positions_entry.notice_consecutive_stops_after_close(
+                pid, sell_date=date(2026, 7, 20 + i), db_path=isolated_env.db_path)
+        assert sent == []
 
-# ————————————————————————————————————————————————————————————————
-# 3) 幂等 / 锁定态派生
-# ————————————————————————————————————————————————————————————————
-
-def test_relock_is_idempotent_no_second_row(isolated_env):
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 20), reason=CLOSE_REASON_STOP_LOSS)
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 21), reason=CLOSE_REASON_STOP_LOSS)
-    _open_close_eval(db, buy=100, sell=95, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_STOP_LOSS)
-    assert len(circuit.list_episodes(db_path=db)) == 1
-    # 再平一笔止损(仍锁定)→ 幂等,不开第二行
-    _open_close_eval(db, buy=100, sell=95, sell_date=date(2026, 7, 23), reason=CLOSE_REASON_STOP_LOSS)
-    assert len(circuit.list_episodes(db_path=db)) == 1
-
-
-def test_no_trigger_when_below_threshold(isolated_env):
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    # 只 2 笔止损(不足 3)+ 单日不到 −4000
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 20), reason=CLOSE_REASON_STOP_LOSS)
-    ep = _open_close_eval(db, buy=100, sell=95, sell_date=date(2026, 7, 21), reason=CLOSE_REASON_STOP_LOSS)
-    assert ep is None and not circuit.is_locked(db_path=db)
-
-
-def test_get_state_shape(isolated_env):
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    st = circuit.get_state(db_path=db)
-    assert st.locked is False and st.episode is None
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 20), reason=CLOSE_REASON_STOP_LOSS)
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 21), reason=CLOSE_REASON_STOP_LOSS)
-    _open_close_eval(db, buy=100, sell=95, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_STOP_LOSS)
-    st = circuit.get_state(db_path=db)
-    assert st.locked is True and st.episode is not None
-    assert st.episode.trigger_ref_date == "20260722"
+    def test_notice_never_raises(self, isolated_env, monkeypatch):
+        """提醒是旁路:任何异常一律吞掉,**绝不阻断清仓已记账这一事实**。"""
+        monkeypatch.setattr(circuit, "count_tail_consecutive_stops",
+                            lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert positions_entry.notice_consecutive_stops_after_close(
+            1, sell_date=date(2026, 7, 22), db_path=isolated_env.db_path) is None
 
 
-# ————————————————————————————————————————————————————————————————
-# 4) stop_pct 读现役 config(不硬编 -5%)
-# ————————————————————————————————————————————————————————————————
+class TestNoticeTextIsPurelyInformational:
+    """⑤-B 第 6 项:文案改**纯告知**,⛔ 禁指令词、⛔ 不许出现「停止开仓」/「只减不加」。"""
 
-def test_stop_pct_read_from_active_config(isolated_env):
-    """现役 config stop_pct=0.08 时,价格兜底阈值随之平移到 buy×0.92(不硬编 0.05)。
-    sell=93(> 95,K1 下非止损)在 0.08 档(阈值 92)也非止损 → 3 笔 sell=91(≤92)才止损。"""
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env, {"stop_pct": 0.08})
-    # sell=93 在 0.08 档(阈值 92)不算止损 → 不触发
-    _open_close(db, buy=100, sell=93, sell_date=date(2026, 7, 20), reason=None)
-    _open_close(db, buy=100, sell=93, sell_date=date(2026, 7, 21), reason=None)
-    ep = _open_close_eval(db, buy=100, sell=93, sell_date=date(2026, 7, 22), reason=None)
-    assert ep is None
-    # sell=91(≤92)才算止损 → 3 笔触发
-    _open_close(db, buy=100, sell=91, sell_date=date(2026, 7, 23), reason=None)
-    _open_close(db, buy=100, sell=91, sell_date=date(2026, 7, 24), reason=None)
-    ep = _open_close_eval(db, buy=100, sell=91, sell_date=date(2026, 7, 27), reason=None)
-    assert ep is not None and ep.trigger_reason == circuit.TRIGGER_CONSECUTIVE_STOPS
+    _BANNED = ("只减不加", "停止开仓", "禁开新仓", "停开新仓", "解锁", "熔断", "锁定", "灰化")
 
+    def test_push_text_has_no_command_words(self, isolated_env, monkeypatch):
+        from neckline.api import notify
 
-# ————————————————————————————————————————————————————————————————
-# 5) 解锁两路径
-# ————————————————————————————————————————————————————————————————
-
-def test_unlock_review_ack(isolated_env):
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    _lock_via_three_stops(db)
-    assert circuit.is_locked(db_path=db)
-    assert circuit.unlock(via=circuit.UNLOCK_VIA_REVIEW_ACK, db_path=db) is True
-    assert not circuit.is_locked(db_path=db)
-    ep = circuit.list_episodes(db_path=db)[0]
-    assert ep.unlocked_at is not None and ep.unlocked_via == circuit.UNLOCK_VIA_REVIEW_ACK
-    # 再解锁(已无锁定)→ 幂等 False
-    assert circuit.unlock(db_path=db) is False
-
-
-def test_auto_unlock_weekly_review_forced(isolated_env):
-    """周复盘覆盖触发日且该周走强制复盘口径(forced_review=True)→ 自动解锁。"""
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    _lock_via_three_stops(db)   # trigger_ref_date=20260722(周三)
-    review = WeeklyReview(
-        week="2026-W30", week_start=date(2026, 7, 20), week_end=date(2026, 7, 26),
-        forced_review=True,
-    )
-    n = circuit.auto_unlock_for_reviews([review], db_path=db)
-    assert n == 1 and not circuit.is_locked(db_path=db)
-    ep = circuit.list_episodes(db_path=db)[0]
-    assert ep.unlocked_via == circuit.UNLOCK_VIA_WEEKLY_REVIEW
-
-
-def test_auto_unlock_skips_non_forced_week(isolated_env):
-    """覆盖触发日但该周**未**走强制复盘(forced_review=False)→ 不解锁。"""
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    _lock_via_three_stops(db)
-    review = WeeklyReview(
-        week="2026-W30", week_start=date(2026, 7, 20), week_end=date(2026, 7, 26),
-        forced_review=False,
-    )
-    n = circuit.auto_unlock_for_reviews([review], db_path=db)
-    assert n == 0 and circuit.is_locked(db_path=db)
-
-
-def test_auto_unlock_skips_week_not_covering_ref_date(isolated_env):
-    """强制复盘周但不覆盖触发日 → 不解锁(触发日在别的周)。"""
-    db = isolated_env.db_path
-    seed_active_rule_v1(isolated_env)
-    _lock_via_three_stops(db)   # 20260722
-    review = WeeklyReview(
-        week="2026-W29", week_start=date(2026, 7, 13), week_end=date(2026, 7, 19),
-        forced_review=True,
-    )
-    n = circuit.auto_unlock_for_reviews([review], db_path=db)
-    assert n == 0 and circuit.is_locked(db_path=db)
-
-
-# —— 私有辅助:一次触发 evaluate 的开平仓封装 ——————————————————————————————————
-
-def _open_close_eval(db, *, buy, sell, sell_date, reason=None, qty=100):
-    """开一笔、平掉、再跑一次熔断评估(模拟清仓端点里的 evaluate_after_close)。"""
-    _open_close(db, buy=buy, sell=sell, sell_date=sell_date, reason=reason, qty=qty)
-    return circuit.evaluate_after_close(sell_date, db_path=db)
-
-
-def _lock_via_three_stops(db):
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 20), reason=CLOSE_REASON_STOP_LOSS)
-    _open_close(db, buy=100, sell=95, sell_date=date(2026, 7, 21), reason=CLOSE_REASON_STOP_LOSS)
-    _open_close_eval(db, buy=100, sell=95, sell_date=date(2026, 7, 22), reason=CLOSE_REASON_STOP_LOSS)
+        seen: List[Tuple[str, str]] = []
+        monkeypatch.setattr(notify, "push_event",
+                            lambda kind, title, body, **kw: seen.append((title, body)) or
+                            notify.NotifyOutcome(skipped_reason="test"))
+        notify.push_consecutive_stops_notice(3, ts_code="000003.SZ", db_path=isolated_env.db_path)
+        title, body = seen[0]
+        for word in self._BANNED:
+            assert word not in title and word not in body, (
+                f"连续止损提醒文案里出现禁用词「{word}」—— 裁定 #8 要求这是**纯提醒**,"
+                f"⛔ 不许指令用户、不许暗示任何自动状态。实际:{title} / {body}"
+            )
+        assert "提醒" in body and "已补录成交" in body   # 诚实边界仍在

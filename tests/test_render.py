@@ -123,6 +123,15 @@ class TestHoldingCheckSection:
         assert "持有中" in md
         assert "-88.8 元" in md or "-88.8" in md
 
+    def test_no_time_exit_clause_says_so_instead_of_a_fake_cap(self):
+        """V2.2-⑤:`max_hold_effective is None`(章程无时间退出条款)→ **如实说没有**,
+        ⛔ 不渲染成「有效上限 D None」,也不拿默认 5 顶上(§3.11-E 哨兵位同一种病)。"""
+        item = _holding_item(d_count=9, max_hold_effective=None, time_exit_state=HOLDING)
+        md = _render(holding_k4_check=[item])
+        assert "D9" in md
+        assert "本版章程无时间退出条款" in md
+        assert "有效上限 D" not in md and "D None" not in md
+
     def test_net_float_unknown_shown_explicitly_not_blank(self):
         item = _holding_item(net_float=None)
         md = _render(holding_k4_check=[item])

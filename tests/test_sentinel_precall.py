@@ -393,18 +393,22 @@ def test_precall_summary_text_discloses_unchecked_members(monkeypatch):
 
 
 # ————————————————————————————————————————————————————————————————
-# 3b) 熔断锁定 → 盘前强提醒(审计 🟡-4:§2.1 第 7 条「次日只减不加」的那一半)
+# 3b) 熔断锁定态盘前强提醒 **已整体退役**(V2.2-⑤-B,用户裁定 #8)——本节改为反向守门
 # ————————————————————————————————————————————————————————————————
 
-def _precall_with_circuit(isolated_env, *, locked: bool):
-    """跑一拍盘前 tick;`locked=True` 时先造一条未解锁的熔断触发行。"""
+def _precall_with_stale_circuit_row(isolated_env, *, seed_legacy_row: bool):
+    """跑一拍盘前 tick;`seed_legacy_row=True` 时**先在留档表里塞一条老的未解锁触发行**。
+
+    🔴 这正是本节现在要证的事:`circuit_breaker` 是**停写留档不 DROP** 的表,生产库里
+    很可能真躺着历史行 —— 盘前 tick **必须完全无视它**(不读、不判、不因它多推一条)。
+    退役前的行为恰恰相反(读到就锁、就必发),所以这条是有真实回归价值的反向断言。"""
     from neckline.db import connection
     settings = isolated_env
     days = business_days(date(2026, 6, 1), 30)
     report_day, today = days[-2], days[-1]
     seed_active_rule_v1(settings)
     _setup(settings, report_day=report_day, today=today, member_codes=["600001.SH"])
-    if locked:
+    if seed_legacy_row:
         with connection(settings.db_path) as conn:
             conn.execute(
                 "INSERT INTO circuit_breaker (triggered_at, trigger_reason, trigger_ref_date, "
@@ -413,33 +417,32 @@ def _precall_with_circuit(isolated_env, *, locked: bool):
                  "2026-07-20T08:00:00+00:00"),
             )
     now = datetime.combine(today, time(9, 25, 30))
-    # open 9.55 vs ma10 9.5 → 高开 +0.5%(未超 3% 阈)、pre_close 10.0 → 低开 -4.5%?
-    # 用 open=pre_close=9.55 令四类判定全部不触发,专测「零判定 + 熔断锁定」这一格。
+    # 用 open=pre_close=9.55 令四类判定全部不触发,专测「零判定」这一格。
     quotes = {"600001.SH": _quote(open_=9.55, pre_close=9.5, code="600001.SH")}
     res = run_precall_tick(now, db_path=settings.db_path,
                            parquet_dir=settings.parquet_dir, quotes_fn=lambda codes: quotes)
     return settings, today, res
 
 
-def test_precall_circuit_locked_forces_summary(isolated_env):
-    """锁定态 → `circuit_locked=True`、零判定也 `should_push_summary`、看板留痕已落。"""
-    settings, today, res = _precall_with_circuit(isolated_env, locked=True)
+@pytest.mark.parametrize("seed_legacy_row", [True, False])
+def test_precall_ignores_legacy_circuit_rows_entirely(isolated_env, seed_legacy_row):
+    """🔴 **裁定 #8 的机器判据**:留档表里有没有那条老的"未解锁"行,盘前一拍的行为
+    **逐位相同** —— 零判定就是不推,不存在任何"必发豁免"。
+
+    ⛔ 也不许再落 `circuit_locked` 那条市场级看板事件(整段已删)。"""
+    settings, today, res = _precall_with_stale_circuit_row(
+        isolated_env, seed_legacy_row=seed_legacy_row)
     assert res.ran is True
-    assert res.summary_actionable == 0          # 本拍确实没有其它判定
-    assert res.circuit_locked is True
-    assert res.should_push_summary is True      # 不被「平静清晨不轰炸」门槛吞掉
-    assert already_pushed(today, "precall", "", precall.EVENT_CIRCUIT_LOCKED,
-                          db_path=settings.db_path)
+    assert res.summary_actionable == 0
+    assert res.should_push_summary is False       # ⚠ 退役前 locked=True 这里会是 True
+    assert not hasattr(res, "circuit_locked")
+    assert not already_pushed(today, "precall", "", "circuit_locked", db_path=settings.db_path)
 
 
-def test_precall_circuit_unlocked_no_reminder(isolated_env):
-    """阴性方向:未锁定 → 不带提醒、零判定时也不推(不制造每日噪音)。"""
-    settings, today, res = _precall_with_circuit(isolated_env, locked=False)
-    assert res.ran is True
-    assert res.circuit_locked is False
-    assert res.should_push_summary is False
-    assert not already_pushed(today, "precall", "", precall.EVENT_CIRCUIT_LOCKED,
-                              db_path=settings.db_path)
+def test_precall_module_has_no_circuit_symbols():
+    """符号面反向守门:`EVENT_CIRCUIT_LOCKED` / `CIRCUIT_LOCKED_PRECALL_NOTE` 不许回来。"""
+    for gone in ("EVENT_CIRCUIT_LOCKED", "CIRCUIT_LOCKED_PRECALL_NOTE"):
+        assert not hasattr(precall, gone), f"{gone} 应已随熔断整体退役删除(V2.2-⑤-B)"
 
 
 # ————————————————————————————————————————————————————————————————

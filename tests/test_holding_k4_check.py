@@ -23,6 +23,7 @@ from neckline.report import holding_store
 from neckline.sentinel.positions import Position
 from neckline.sentinel.precall import (
     HARD_CAP_EXIT,
+    HOLDING,
     PROFIT_EXEMPT,
     TIME_EXIT_NEXT_DAY,
     classify_time_exit,
@@ -684,3 +685,49 @@ def test_data_unavailable_persisted_and_legacy_row_is_null(isolated_env):
     finally:
         conn.close()
     assert holding_store.load_latest_checks_by_position(db_path=db)[1]["data_unavailable"] is None
+
+
+# ======================================================================
+# 8) V2.2-⑤:`v2.2-k8` 章程(无时间退出条款)下的 16:35 体检 —— 不炸 + 如实 None
+# ======================================================================
+
+_RULE_K8 = {"config": {"stop_pct": 0.05, "take_profit_retrace": None, "max_hold_days": None,
+                       "max_hold_days_profit": None, "time_exit_only_if_unprofitable": False}}
+
+
+def test_build_under_k8_charter_never_time_exits(monkeypatch, isolated_env):
+    """🔴 `max_hold_days=None`:任何 d_count 下都 `holding` + `max_hold_effective=None`,
+    **定格三件恒 None**(没有判定点就没有定格),且**整段不抛**(`d >= None` 是最现实的
+    翻车方式)。⚠ 止损没退役 —— `stop_pct=0.05` 仍在 config 里,本条不碰它。"""
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([_panel_row("600001.SH", close=11.0)]))
+    for buy_date in ("20260716", "20260710", "20260601"):     # D2 / D≥5 / D 很大
+        items = hk.build_holding_k4_check(
+            TD, _RULE_K8, [_pos(1, "600001.SH", buy_date=buy_date)], db_path=isolated_env.db_path)
+        it = items[0]
+        assert it.time_exit_state == HOLDING
+        assert it.max_hold_effective is None
+        assert (it.time_exit_locked_state, it.time_exit_locked_date,
+                it.time_exit_locked_net_float) == (None, None, None)
+
+
+def test_build_under_k8_charter_survives_no_eod_row(monkeypatch, isolated_env):
+    """停牌/无 EOD 行 + 无时间退出条款:**不进第五态挂起**(挂起是"该判但今天判不了",
+    这里是"根本不判"),仍是 `holding` + None,且不抛。"""
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([]))
+    items = hk.build_holding_k4_check(
+        TD, _RULE_K8, [_pos(1, "600001.SH", buy_date="20260601")], db_path=isolated_env.db_path)
+    it = items[0]
+    assert it.has_data is False
+    assert it.time_exit_state == HOLDING and it.max_hold_effective is None
+
+
+def test_k8_items_round_trip_through_store_and_render(monkeypatch, isolated_env):
+    """端到端一小段:体检 → 落库(NULL)→ 读回 → 渲染文案如实说"无时间退出条款"。"""
+    from neckline.report.holding_store import load_latest_checks_by_position, save_holding_eod_checks
+
+    monkeypatch.setattr(hk, "_build_holding_feature_panel", _stub_panel([_panel_row("600001.SH", close=11.0)]))
+    items = hk.build_holding_k4_check(
+        TD, _RULE_K8, [_pos(1, "600001.SH", buy_date="20260601")], db_path=isolated_env.db_path)
+    save_holding_eod_checks(TD, items, db_path=isolated_env.db_path)
+    snap = load_latest_checks_by_position(db_path=isolated_env.db_path)
+    assert snap[1]["max_hold_effective"] is None

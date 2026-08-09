@@ -98,34 +98,12 @@ def cmd_close(args: argparse.Namespace) -> int:
         logger.error("清仓失败:未找到 id=%d 的持仓,或该持仓已清仓。用 `list --all` 核对。", args.position_id)
         return 1
     logger.info("已清仓记账:#%d 卖出价%.2f 卖出日%s", args.position_id, args.sell_price, args.sell_date)
-    _evaluate_circuit(sell_date)
+    # V2.2-⑤-B(裁定 #8 熔断整体退役):CLI 与 API 走**同一段**连续止损纯提醒编排
+    # (唯一实现 `positions_entry.notice_consecutive_stops_after_close`,零状态、零锁、
+    # 尽力而为),行为不再取决于「从哪个口子录的」——2026-07-27 审计 🔵-6 补的那条
+    # 「两个入口同一段」的纪律原样保留,只是被提醒的东西从"熔断"变成了一条提醒。
+    positions_entry.notice_consecutive_stops_after_close(args.position_id, sell_date=sell_date)
     return 0
-
-
-def _evaluate_circuit(sell_date) -> None:
-    """清仓后折进熔断评估(2026-07-27 审计 🔵-6 补)。
-
-    此前熔断评估只挂在 API 端点 `POST /positions/{id}/close`,**用 CLI 补录的第 3 笔止损
-    不会当场触发熔断**,要等下一次 API 清仓才被尾链带出。运维/应急场景恰恰常用 CLI,
-    这条缺口现在补上——两个入口从此走同一段评估 + 推送,行为不再取决于「从哪个口子录的」。
-
-    **尽力而为、异常吞掉不阻断清仓主流程**(与 API 端点同款,plan v1.2-A2 F.3);
-    **纯提醒层**(§3.8):只建触发行 + 发提醒,绝不代下单/撤单/改止损。"""
-    try:
-        from neckline.sentinel import circuit
-
-        episode = circuit.evaluate_after_close(sell_date)
-        if episode is None:
-            return
-        logger.warning("⚠ 已触发熔断(%s):%s", episode.trigger_reason, episode.note)
-        try:
-            from neckline.api import notify
-            notify.push_circuit_breaker(episode)
-        except Exception:  # noqa: BLE001  推送失败不影响熔断已落库这一事实
-            logger.warning("熔断推送失败(已吞;触发行已落库,App 端横幅/次日盘前提醒仍会生效)",
-                           exc_info=True)
-    except Exception:  # noqa: BLE001  熔断评估异常绝不能掀翻清仓主流程
-        logger.warning("熔断评估异常(已吞,不影响清仓已记账)", exc_info=True)
 
 
 def cmd_list(args: argparse.Namespace) -> int:

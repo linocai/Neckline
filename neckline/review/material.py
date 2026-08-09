@@ -96,6 +96,12 @@ def build_material_text(review: WeeklyReview) -> str:
     else:
         paragraphs.append("本周未发现仓位纪律(单笔上限/持仓只数/敞口/禁买规则)方面的违纪。")
 
+    # V2.2-⑤:章程**条款层面**的如实说明(哪一条本周期压根不存在、所以没判)。
+    # ⛔ 刻意排在违纪清单**之后、独立成段** —— 它不是违纪,也不是"本周没问题",
+    # 而是「这条规矩当时不在」。沉默会被读成前者(§五 〇c 诚实披露体例)。
+    if getattr(review, "charter_notes", None):
+        paragraphs.append("章程条款说明:" + "；".join(review.charter_notes))
+
     return "\n\n".join(paragraphs)
 
 

@@ -28,7 +28,9 @@
     · `positions.py`   —— 极简持仓台账(SQLite `positions` 表)CRUD。
     · `dedup.py`       —— 事件防重台账(SQLite `sentinel_events` 表)。
     · `channels.py`    —— 推送通道抽象:控制台(默认)/ Bark(§3.5)。
-    · `circuit.py`     —— 熔断(⑪-A),`attention.py` —— 关注度/来源篮子归因。
+    · `circuit.py`     —— **连续止损纯提醒**(V2.2-⑤-B:熔断整体退役,只剩一个无状态
+      纯函数 `count_tail_consecutive_stops`;零状态、零锁、零行为改变)。
+      `attention.py` —— 关注度/来源篮子归因。
     · `engine.py`      —— 单拍编排:取关注池 → 拉价 → 判定 → 防重 → 推送。
 
 工程原则(继承全项目铁律):全部判定逻辑纯函数化 + 依赖注入(transport/db_path/

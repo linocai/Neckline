@@ -888,8 +888,71 @@ def record_sell(
     return ok
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  连续止损纯提醒(V2.2-⑤-B 第 9 项;API 与 CLI 两个清仓入口共用**同一段**编排)
+# ══════════════════════════════════════════════════════════════════════════
+
+# 看板事件的落点(`sentinel_events`):sentinel='circuit'(⑤-B 第 6 项刻意复用既有名字,
+# 不新增 kind / 不新增 sentinel 类型),ts_code = 刚清仓那只票,event_key 固定。
+# ⚠ **不是市场级空 ts_code** —— 空 ts_code 会被 `GET /board` 的市场级过滤吞掉(那条过滤
+# 只给退潮黄色预警开了口子),而且锚在具体那笔卖出上,同一天第 3、第 4 笔各留一条,
+# 与「第 4 笔再提醒一条」的语义天然对齐(`INSERT OR IGNORE` 按票去重,不会同票刷屏)。
+CONSECUTIVE_STOPS_SENTINEL = "circuit"
+CONSECUTIVE_STOPS_EVENT_KEY = "consecutive_stops"
+
+
+def notice_consecutive_stops_after_close(
+    position_id: int, *, sell_date: date, db_path: Optional[Path] = None,
+) -> Optional[int]:
+    """清仓之后的**连续止损纯提醒**(裁定 #8;熔断三件机制已全删)。
+
+    达到 `circuit.CIRCUIT_CONSECUTIVE_STOPS` → **一条看板事件 + 一条推送**,返回当前尾部
+    连续止损笔数;未达阈值返回该笔数(不推);出任何错返回 `None`。
+
+    🔴 **零状态铁律(§五 〇b-7)**:本函数**不建任何"熔断行"、不落任何锁定标志、不改
+    `POST /positions/{id}/close` 的返回值语义**。用户原话:「我不需要你替我做决定;这个
+    程序永远是提醒」。⛔ 不许在这里(或任何地方)补一个灰化位 / 「建议今天别开仓」的
+    自动状态位。⛔ 也别发明"解锁后才重推"——没有锁,就没有重置。
+
+    **尽力而为**:提醒是旁路,任何异常一律吞掉 + WARNING,**绝不阻断清仓已记账这一事实**
+    (承 v1.2-A2 F.3 的既有纪律)。"""
+    try:
+        from neckline.api import notify
+        from neckline.sentinel import circuit
+        from neckline.sentinel.dedup import record_pushed
+
+        count = circuit.count_tail_consecutive_stops(db_path=db_path)
+        if count < circuit.CIRCUIT_CONSECUTIVE_STOPS:
+            return count
+        position = pos_store.get_position(position_id, db_path=db_path)
+        ts_code = position.ts_code if position is not None else ""
+        body = (
+            f"连续 {count} 笔以止损离场(基于台账 {count} 笔已补录成交)。"
+            f"这是一条提醒,系统不改变任何设置、也不替你做决定。"
+        )
+        try:
+            record_pushed(
+                sell_date, CONSECUTIVE_STOPS_SENTINEL, ts_code, CONSECUTIVE_STOPS_EVENT_KEY,
+                payload={"body": body, "consecutive_stops": count}, db_path=db_path,
+            )
+        except Exception:  # noqa: BLE001 —— 看板事件落库失败不该吃掉那条推送
+            logger.warning("[positions_entry] 连续止损看板事件落库失败(已吞,推送照发)", exc_info=True)
+        try:
+            notify.push_consecutive_stops_notice(count, ts_code=ts_code, db_path=db_path)
+        except Exception:  # noqa: BLE001
+            logger.warning("[positions_entry] 连续止损提醒推送失败(已吞,看板事件已留痕)", exc_info=True)
+        logger.warning("⚠ 连续 %d 笔止损离场(纯提醒,系统零动作)", count)
+        return count
+    except Exception:  # noqa: BLE001 —— 提醒异常绝不能掀翻清仓主流程
+        logger.warning("[positions_entry] 连续止损提醒评估异常(已吞,不影响清仓已记账)", exc_info=True)
+        return None
+
+
 __all__ = [
     "SNAPSHOT_NOT_CAPTURED",
+    "CONSECUTIVE_STOPS_SENTINEL",
+    "CONSECUTIVE_STOPS_EVENT_KEY",
+    "notice_consecutive_stops_after_close",
     "ARM_REASON_NO_EXIT_REFERENCE",
     "ARM_REASON_BELOW_ENTRY_PRICE",
     "ARM_REASON_USER_MUTED",

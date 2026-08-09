@@ -1283,6 +1283,17 @@ n ≥ 40 且 显著劣于安慰剂基线                        → retire
 2. **「次日只减不加」这条唯一会改变次日行为的提示随之消失** —— 它此前靠 9:26 汇总推送的**必发豁免**送达;豁免一并取消。
 3. **⚠ 生产历史触发情况:施工时必须用只读 SQL 查证后如实填进本条,⛔ 不许拿本地开发库冒充**。planner 2026-08-09 只查得到**本地开发库 `circuit_breaker` = 0 行 / `positions` = 0 行 / `sentinel_events.circuit_locked` = 0 行**,而**那个库不是生产库**(现役 K1、零持仓、无 `selection_packs` 行,与 §四 记的生产态对不上)→ **它证明不了任何事**(承 P0-39:「读得出表 ≠ 跑过」,零行有两种相反成因)。生产查证 SQL 三句:`SELECT count(*) FROM circuit_breaker;` · `SELECT trigger_reason, trigger_ref_date, unlocked_at, unlocked_via FROM circuit_breaker ORDER BY id;` · `SELECT count(*) FROM sentinel_events WHERE event_key='circuit_locked';`。**若查出确实触发过 → 必须把每一次的日期与解锁方式登记进本条**(那是"这个机制救过场"的证据,删它时用户有权看到);**若确实零触发 → 也如实写"零触发,故本次退役无历史损失可计量"**,⛔ 别写成"反正没用过"。
 
+   ✅ **2026-08-09 生产实测回填(orchestrator 在 `nk` 上跑的只读 SQL,⛔ 非本地库)**:
+   - `SELECT count(*) FROM circuit_breaker;` → **0**
+   - 逐条明细查询 → **零行**
+   - `sentinel_events` 全表 **655 行 / 8 类**(`invalidation` 259 · `precall` 247 · `entry` 107 ·
+     `retreat` 17 · `holding` 12 · `capture` 6 · `attention` 5 · `d5exit` 2),
+     其中熔断/锁定类 → **0 条**
+   - **结论(如实写,⛔ 不粉饰)**:**熔断机制自上线以来在生产上从未触发过一次**,
+     故**本次退役无历史损失可计量**。⚠ **这不等于"它没用"** —— 未触发的保险与无用的保险
+     在数据上长得一模一样,三条真实防线的退役代价仍以 §八 第 19 项登记的那些数字为准
+     (−5% 那 13 笔 / 1.38 万 / 85% 是**真发生过**的,与熔断零触发是两件事,⛔ 别混为一谈)。
+
 **测试与守门(熔断面)**
 - **反向守门(防复活)**:全仓 `not hasattr(circuit, "get_state" / "is_locked" / "unlock" / "evaluate_after_close" / "auto_unlock_for_reviews")`;`CIRCUIT_DAILY_LOSS_YUAN` 不存在;`grep` 全仓无 `circuit_locked` 字段与 `EVENT_CIRCUIT_LOCKED`。
 - **停写守门**:`circuit_breaker` 表零新增行(照既有六表体例)。

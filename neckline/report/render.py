@@ -241,8 +241,12 @@ def _render_holding_check(items: List[HoldingK4Item]) -> str:
             continue
         state_label = _TIME_EXIT_STATE_LABEL.get(it.time_exit_state, it.time_exit_state)
         net_float_txt = f"{it.net_float:+.1f} 元" if it.net_float is not None else "未知"
+        # V2.2-⑤:`max_hold_effective is None` = 现役章程无时间退出条款 → **如实说没有**,
+        # ⛔ 不编一个「有效上限 D None」出来,也不拿默认 5 顶上。
+        cap_txt = (f"(有效上限 D{it.max_hold_effective})" if it.max_hold_effective is not None
+                   else "(本版章程无时间退出条款,D 计数只作记录)")
         lines.append(
-            f"- D 计数:D{it.d_count}(有效上限 D{it.max_hold_effective})"
+            f"- D 计数:D{it.d_count}{cap_txt}"
             f" · 时间退出:{state_label}"
             f" · 净浮盈(扣双边费估算):{net_float_txt}"
         )

@@ -556,12 +556,19 @@ class PositionOut(BaseModel):
     stopOrderChecked: bool = False   # 用户自证「已挂 -5% 条件单」(真对账在 4D 周复盘)
     # —— v1.1-B.1 持仓生命周期派生字段(服务端算好,客户端不重算日历)——————————
     dCount: int = 1              # D 计数(买入日=D1,交易日历口径,单一源 positions.d_count)
-    maxHoldDays: int = 5         # 现役 max_hold_days(读 config,不硬编);= 非浮盈时间退出档
+    # 现役 max_hold_days(读 config,不硬编);= 非浮盈时间退出档。
+    # ⚠ **V2.2-⑤ 起可为 `null`** = **章程无时间退出条款**(`v2.2-k8`,K8 §十三)。这是
+    # **取值域放宽,不是删键**(〇b-3 零删键铁律仍满足);已装 2.0.0/2.1.0 客户端用
+    # `decodeIfPresent(Int.self) ?? 5` 解,`null` 与缺键同路、不炸(⑥ 再补展示层文案)。
+    # ⛔ 不许服务端拿 5 顶上冒充"有时间退出" —— 那正是 §3.11-E 否决哨兵位的同一种病。
+    maxHoldDays: Optional[int] = 5
     distToStopPct: Optional[float] = None   # (price−stopLine)/price;无实时价 → null
     retraceState: Optional[Dict[str, Any]] = None   # 回落止盈状态{peak,retracePct,triggered};无价/无阈 → null
     todayAction: str = ""        # 今日动作提示(D5离场 / 距止损 / 回落止盈已触发 等)
     # —— v1.3-① 两档时间退出(服务端按 D5 净浮盈判好下发,客户端不重算)——————————————
-    maxHoldDaysEffective: int = 5   # 该单有效硬上限:非浮盈=maxHoldDays;浮盈豁免=max_hold_days_profit(如 15)
+    # 该单有效硬上限:非浮盈=maxHoldDays;浮盈豁免=max_hold_days_profit(如 15)。
+    # ⚠ V2.2-⑤ 起同样可为 `null`(章程无时间退出条款 → 没有"有效硬上限"这回事)。
+    maxHoldDaysEffective: Optional[int] = 5
     # v1.4-①-B 起多一个第五态 `suspended_hold`(当日无 EOD 行 且 尚未定格 → 判向挂起,
     # 不推 D5 / 不推硬上限;`dCount` 照常累计展示)。客户端展示层须为它加一档文案。
     timeExitState: str = "holding"  # time_exit_next_day | profit_exempt | hard_cap_exit | holding | suspended_hold
@@ -613,13 +620,21 @@ class CircuitEpisodeOut(BaseModel):
 
 
 class CircuitStateOut(BaseModel):
+    """🔴 **已退役(V2.2-⑤-B,用户裁定 #8「熔断整体删除」):`locked` 恒 `false`、
+    `episode` 恒 `null`,下一版(v2.3)删键。**
+
+    保留纯粹是**零删键铁律**(§五 〇b-3):用户 iPhone 何时换包不可控,本类型在 2.0.0 /
+    2.1.0 客户端是**必需解码**,停发 = 整份持仓解不出。⛔ 别把恒 false 读成「当前没锁」
+    —— 锁这个东西已经不存在了(锁定态 / 次日只减不加 / 强制复盘解锁三件机制全删)。
+    ⛔ 也别拿它复活任何自动状态位(§五 〇b-7:用户明确说了不要程序替他做决定)。"""
     locked: bool
-    episode: Optional[CircuitEpisodeOut] = None   # 锁定时带当前触发 episode;未锁定 → null
+    episode: Optional[CircuitEpisodeOut] = None   # 恒 null(V2.2-⑤-B 起熔断已无 episode 概念)
 
 
 class PositionsOut(BaseModel):
     holdings: List[PositionOut] = Field(default_factory=list)
-    # v1.2-A2:今日计划面内嵌熔断状态(处置最相关)。默认未锁定,端点按 `circuit.get_state` 填。
+    # v1.2-A2 原为今日计划面内嵌熔断状态。**V2.2-⑤-B 起恒发空态**(见 `CircuitStateOut`
+    # docstring 与 `app.py::_retired_circuit_state`),端点不再查任何锁定态。
     circuit: CircuitStateOut = Field(default_factory=lambda: CircuitStateOut(locked=False))
 
 

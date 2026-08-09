@@ -124,14 +124,10 @@ EVENT_POS_LOW_OPEN = "position_low_open"
 EVENT_MEMBER_EX_RIGHTS = "member_ex_rights"
 # 市场级「当日盘前 tick 已跑」标记(ts_code 空,不进看板事件列表,见 api board 过滤)。
 EVENT_TICK = "tick"
-# 市场级「熔断锁定中·今日只减不加」盘前强提醒(§2.1 第 7 条的「次日」那一半;2026-07-27
-# 审计 🟡-4 补:plan v1.2-A2.5 声称已加、实际全库零命中,熔断已随 v1.3 部署在生产裸奔)。
-# 同为 ts_code 空的市场级留痕(不进看板列表——客户端熔断横幅有权威来源 `GET /circuit`
-# 与 `PositionsOut.circuit`,看板不重复表达),本条的价值在**推送**:客户端横幅是拉取式,
-# 用户不打开 App 就收不到「今日只减不加」。
-EVENT_CIRCUIT_LOCKED = "circuit_locked"
-# 熔断锁定期的盘前提醒文案(单一源;notify 汇总文案前置同一句)。
-CIRCUIT_LOCKED_PRECALL_NOTE = "熔断中:今日只减不加"
+# ⚠ **V2.2-⑤-B:`EVENT_CIRCUIT_LOCKED` / `CIRCUIT_LOCKED_PRECALL_NOTE` 已随熔断整体退役
+# 删除**(裁定 #8:锁定态 / 次日只减不加 / 强制复盘解锁三件机制全删)。连带:9:26 汇总
+# 推送的「锁定期必发」豁免**一并取消**,`should_push_summary` 回归「有需要动作的判定才推」。
+# ⛔ 别再往盘前 tick 里加任何「建议今天别开仓」的自动状态位(§五 〇b-7)。
 # D5 时间退出:sentinel="d5exit",ts_code=持仓代码,event_key 固定(当日每票防重一次)。
 D5EXIT_EVENT_KEY = "trigger"
 
@@ -294,11 +290,16 @@ def judge_auction_volume(
 
 
 def judge_position_low_open(
-    position: Position, quote: Quote, stop_pct: float, buffer_pct: float = STOP_APPROACH_BUFFER
+    position: Position, quote: Quote, stop_pct: float, buffer_pct: float = STOP_APPROACH_BUFFER,
+    *, advisory: bool = False,
 ) -> Optional[str]:
     """持仓集合竞价大幅低开逼近 / 跌破派生 stopLine →「止损条件单今日可能触发」。
     `stopLine = buy×(1−stop_pct)`(读现役 config,不硬编)。逼近提前量复用 holding 的
-    `STOP_APPROACH_BUFFER`(单一源)。**系统永不代下单**,只提醒确认券商条件单。"""
+    `STOP_APPROACH_BUFFER`(单一源)。**系统永不代下单**,只提醒确认券商条件单。
+
+    `advisory`(V2.2-⑤,口径与 `holding.check_stop_approach` 同源同参名):True = `v2.2-k8`
+    的「止损警戒 + 离场决策」口吻;缺省 False → 文案**逐字不变**(条件单口径)。
+    ⚠ **判定与阈值一字未动**,只换这句话在说什么。"""
     if quote.open <= 0 or position.buy_price <= 0:
         return None
     stop_line = position.buy_price * (1 - stop_pct)
@@ -307,9 +308,19 @@ def judge_position_low_open(
     if drawdown < warn_from - _EPS:
         return None
     if quote.open <= stop_line + _EPS * position.buy_price:
+        if advisory:
+            return (
+                f"止损警戒:集合竞价开盘{quote.open:.2f}已跌破止损线{stop_line:.2f}"
+                f"(-{stop_pct:.0%}),离场决策在你(系统不代下单)。"
+            )
         return (
             f"集合竞价开盘{quote.open:.2f}已跌破止损线{stop_line:.2f}(-{stop_pct:.0%}),"
             f"止损条件单今日很可能触发,请确认券商条件单(系统不代下单)。"
+        )
+    if advisory:
+        return (
+            f"止损警戒:集合竞价开盘{quote.open:.2f}逼近止损线{stop_line:.2f}"
+            f"(-{stop_pct:.0%}),当前较买入价{drawdown:.1%},离场决策在你。"
         )
     return (
         f"集合竞价开盘{quote.open:.2f}逼近止损线{stop_line:.2f}(-{stop_pct:.0%}),"
@@ -330,13 +341,18 @@ class D5Exit:
 def scan_d5_exits(
     positions: List[Position],
     trade_date: date,
-    max_hold_days: int,
+    max_hold_days: Optional[int],
     *,
     names: Optional[Dict[str, str]] = None,
 ) -> List[D5Exit]:
     """单档 D5 时间退出(v1.1 原语,保留供直接单测/兜底)。对每只 open 持仓算 `d_count`,
     `== max_hold_days` → D5 时间退出(改 config 到 3 则 D3 触发)。`names` 供展示名(缺 →
-    回 code)。**v1.3 两档口径见 `scan_time_exits`**(禁用两档 config 时二者结果一致)。"""
+    回 code)。**v1.3 两档口径见 `scan_time_exits`**(禁用两档 config 时二者结果一致)。
+
+    **V2.2-⑤:`max_hold_days is None`(章程不设时间退出)→ 恒返空表**(显式早退,不靠
+    `d == None` 恒假这条"碰巧对"的路径 —— 语义要写在脸上)。"""
+    if max_hold_days is None:
+        return []
     names = names or {}
     out: List[D5Exit] = []
     for p in positions:
@@ -359,18 +375,36 @@ class TimeExit:
     name: str
     d: int                  # d_count(买入日=D1)
     state: str              # TIME_EXIT_NEXT_DAY | PROFIT_EXEMPT | HARD_CAP_EXIT | HOLDING
-    max_hold_effective: int  # 该档有效硬上限(非浮盈=max_hold_days;浮盈/硬上限=max_hold_days_profit)
+    # 该档有效硬上限(非浮盈=max_hold_days;浮盈/硬上限=max_hold_days_profit)。
+    # **V2.2-⑤:章程不设时间退出(`max_hold_days=None`)→ 本字段 None**(没有"有效硬上限"
+    # 这回事,⛔ 不拿 0 或默认天数冒充一个上限)。
+    max_hold_effective: Optional[int]
     two_tier: bool = False   # 是否 v1.3 两档档(推送文案区分:两档非浮盈标「净浮盈 ≤0」,单档不标)
 
 
+def has_time_exit_clause(cfg: MomentumConfig) -> bool:
+    """现役章程**有没有时间退出条款**(V2.2-⑤ 唯一判据;`max_hold_days is None` = 没有)。
+
+    ⚠ 这是 K8 §十三「时间退出让位主观换股权」在 config 层的**全部**表达:`v2.2-k8` 把
+    `max_hold_days` / `max_hold_days_profit` 一并置 `None`、`time_exit_only_if_unprofitable`
+    回落 `False`(免得留一个假旋钮)。判"有没有"只看 `max_hold_days` 这一位 —— 另两位在
+    `None` 下都已无意义(见 §五 ⑤ config 逐字段改动表)。"""
+    return cfg.max_hold_days is not None
+
+
 def is_two_tier_time_exit(cfg: MomentumConfig) -> bool:
-    """是否启用 v1.3 条件时间退出档(需 config 显式开 + 设浮盈硬上限;否则退回 v1.1 单档)。"""
-    return bool(cfg.time_exit_only_if_unprofitable) and cfg.max_hold_days_profit is not None
+    """是否启用 v1.3 条件时间退出档(需 config 显式开 + 设浮盈硬上限;否则退回 v1.1 单档)。
+    **V2.2-⑤:压根没有时间退出条款时恒 False**(两档是"时间退出怎么判",不是"判不判")。"""
+    return (
+        has_time_exit_clause(cfg)
+        and bool(cfg.time_exit_only_if_unprofitable)
+        and cfg.max_hold_days_profit is not None
+    )
 
 
 def classify_time_exit(
     d: int, cfg: MomentumConfig, net_float: Optional[float] = None
-) -> tuple[str, int]:
+) -> tuple[str, Optional[int]]:
     """**判向定格时刻**的时间退出分类(纯函数)。返回 `(state, max_hold_effective)`。
 
     ⚠ **调用边界(2026-07-27 审计 🔴-1 修复后收紧,别再当通用分类器用)**:两档启用时,
@@ -387,7 +421,12 @@ def classify_time_exit(
       定格);`d≥max_hold_days` 时按净浮盈——`>0` → PROFIT_EXEMPT(续持至硬上限)、`≤0`/未知
       → TIME_EXIT_NEXT_DAY;`d<max_hold_days` → HOLDING。**净浮盈未知(None)保守判非浮盈**
       (豁免需正向证据,与 h9 V1 停牌不豁免同理)。
+    · **V2.2-⑤ 章程无时间退出条款**(`max_hold_days is None`,`v2.2-k8` 起)→ 恒
+      `(HOLDING, None)`,**永不定格、永不产生 actionable 判向**。HOLDING 的既有语义
+      「未到时间退出判定点」在这里刚好精确:没有判定点,就永远到不了。
     """
+    if not has_time_exit_clause(cfg):
+        return HOLDING, None
     if not is_two_tier_time_exit(cfg):
         return (TIME_EXIT_NEXT_DAY if d >= cfg.max_hold_days else HOLDING), cfg.max_hold_days
     if d >= cfg.max_hold_days_profit:
@@ -402,7 +441,7 @@ def classify_time_exit(
 def resolve_time_exit(
     d: int, cfg: MomentumConfig, locked_state: Optional[str] = None,
     *, data_unavailable: bool = False,
-) -> tuple[str, int]:
+) -> tuple[str, Optional[int]]:
     """**消费点**的时间退出状态解析(单一源;precall / 16:35 / `GET /positions` 三处共用)。
 
     语义 = 2026-07-27 用户拍板的**方案 A「D5 判一次定格」**(审计 🔴-1):D5 那天在 16:35
@@ -437,7 +476,14 @@ def resolve_time_exit(
         (审计 🔴-1),停牌不能事后把它撤回 —— 否则「D5 判该走 → 用户没走 → 停牌 → 系统
         改口」又是一条违纪被事后合法化的路。
       · `d<max_hold_days` → 仍 HOLDING(压根还没到判定点,无需挂起)。
+
+    **V2.2-⑤ 章程无时间退出条款**(`max_hold_days is None`,`v2.2-k8` 起)→ **最先短路**、
+    恒 `(HOLDING, None)`:连"判定点"都不存在,`data_unavailable` 的挂起态也就无从谈起
+    (挂起是"该判但今天判不了",这里是"根本不判")。⛔ 这一位必须在 `data_unavailable`
+    分支**之前**,否则 `d >= None` 直接 TypeError。
     """
+    if not has_time_exit_clause(cfg):
+        return HOLDING, None
     if data_unavailable and locked_state is None and d >= cfg.max_hold_days:
         two_tier = is_two_tier_time_exit(cfg)
         eff = (cfg.max_hold_days_profit
@@ -484,7 +530,12 @@ def scan_time_exits(
       「D5 该走」直接推到用户锁屏,而那只票**今天根本卖不掉**。挂起态(`SUSPENDED_HOLD`)不在
       `_ACTIONABLE_TIME_EXIT` 里,自然不推。查无快照 / 老快照没记这一位 → **按 False**
       (保守,维持既有推送行为;豁免需正向证据)。
+
+    · **V2.2-⑤ 章程无时间退出条款**(`max_hold_days is None`)→ **恒返空表**:零判定、零
+      看板事件、零推送(⑤ 验收「当晚哨兵 journal 里零时间退出判定」的落点)。
     """
+    if not has_time_exit_clause(cfg):
+        return []
     names = names or {}
     two_tier = is_two_tier_time_exit(cfg)
     out: List[TimeExit] = []
@@ -522,7 +573,7 @@ class PrecallResult:
     # ——「没做」必须与「做了没异常」分得开,所以它有自己的位置而不是被静默省略。
     member_ex_rights: List[str] = field(default_factory=list)
     d5_exits: List["TimeExit"] = field(default_factory=list)     # 需推的两档时间退出(actionable)
-    circuit_locked: bool = False           # 熔断锁定中(§2.1 第 7 条「次日只减不加」盘前强提醒)
+    # ⚠ V2.2-⑤-B:`circuit_locked` 字段已随熔断整体退役删除(裁定 #8),⛔ 别加回来。
     watched_codes: int = 0
     quotes_fetched: int = 0
 
@@ -548,13 +599,13 @@ class PrecallResult:
 
     @property
     def should_push_summary(self) -> bool:
-        """9:26 汇总推送的**门槛**(唯一源,`_sentinel_loop` 照此判)。
+        """9:26 汇总推送的**门槛**(唯一源,`_sentinel_loop` 照此判)= **有需要动作的判定**。
 
-        = 有需要动作的判定 **或** 熔断锁定中。后半句是 2026-07-27 审计 🟡-4 的修复点:
-        熔断锁定期间**即便没有任何其它判定也要发**(「今日只减不加」这句本身就是要传达的
-        动作),否则会被「平静清晨不轰炸」的门槛吞掉——而客户端熔断横幅是拉取式,用户不
-        打开 App 就完全收不到,§2.1 第 7 条纪律的「次日」这一半只剩纯自觉。"""
-        return self.summary_actionable > 0 or self.circuit_locked
+        ⚠ **V2.2-⑤-B:原来的第二个析取项「或熔断锁定中」已删**(裁定 #8 熔断整体退役)。
+        那一项是 2026-07-27 审计 🟡-4 加的「锁定期即便零判定也必发」豁免 —— **豁免随机制
+        一并取消**,如实登记在 §八 第 19 项:**以后平静的清晨就是真的没推送**。
+        ⛔ 别以"少了条提醒"为由把它以别的形式加回来。"""
+        return self.summary_actionable > 0
 
 
 def _resolve_config(db_path: Optional[Path]) -> tuple:
@@ -619,6 +670,9 @@ def run_precall_tick(
     meta = load_stock_meta(wu.codes, db_path=db_path) if wu.codes else {}
     prev5 = load_prev5_avg_volume(wu.codes, trade_date, parquet_dir=parquet_dir) if wu.codes else {}
     stop_pct, cfg = _resolve_config(db_path)
+    # V2.2-⑤:现役章程的止损口径(强制条件单 / 止损警戒),只换文案口吻、不改判定。
+    # 判据单一源 `brain.stop_is_advisory`;`v2.2-k8` 激活前恒 False = 逐字节不变。
+    stop_advisory = brain.active_stop_is_advisory(db_path=db_path)
 
     result.ran = True
     result.watched_codes = len(wu.codes)
@@ -673,7 +727,7 @@ def run_precall_tick(
         q = quotes.get(p.ts_code)
         if q is None:
             continue
-        pos_reason = judge_position_low_open(p, q, stop_pct)
+        pos_reason = judge_position_low_open(p, q, stop_pct, advisory=stop_advisory)
         if pos_reason:
             result.position_low_open.append(p.ts_code)
             _record("precall", p.ts_code, EVENT_POS_LOW_OPEN, pos_reason)
@@ -704,21 +758,9 @@ def run_precall_tick(
         _record("d5exit", ex.ts_code, D5EXIT_EVENT_KEY, _time_exit_body(ex))
     result.d5_exits = actionable
 
-    # —— 熔断锁定态 →「今日只减不加」盘前强提醒(§2.1 第 7 条「次日」那一半,审计 🟡-4)——
-    # 只读锁定态(`circuit.is_locked`,派生自 `unlocked_at IS NULL`),**不做任何熔断评估、
-    # 不代下单**(§3.8 纯提醒层)。防重照既有语义:本函数当日只跑一次(EVENT_TICK 市场级
-    # 标记),故这条提醒天然一天一次;锁定跨日持续 → 每个交易日盘前提醒一次,直到用户解锁。
-    # 读锁定态失败(库异常)绝不能掀翻盘前 tick —— 吞掉并按未锁定处理(诚实降级,宁可少提醒
-    # 一次也不让整个盘前校准挂掉)。
-    try:
-        from neckline.sentinel import circuit as _circuit
-        result.circuit_locked = _circuit.is_locked(db_path=db_path)
-    except Exception:  # noqa: BLE001
-        logger.warning("盘前读熔断锁定态失败(已吞,按未锁定处理)", exc_info=True)
-    if result.circuit_locked:
-        _record("precall", "", EVENT_CIRCUIT_LOCKED,
-                f"{CIRCUIT_LOCKED_PRECALL_NOTE}——熔断未解锁,今日禁开新仓,只许减仓;"
-                f"完成一次强制复盘后在 App 解锁。")
+    # ⚠ **V2.2-⑤-B:原「熔断锁定态 →『今日只减不加』盘前强提醒」整段已删**(裁定 #8)。
+    # 盘前 tick 自此**不读任何熔断/锁定态、不落任何市场级"别开仓"事件**;
+    # ⛔ 不许以任何名义在这里补一个自动状态位(§五 〇b-7「用户明确说了不要程序替他做决定」)。
 
     # —— 市场级「当日 tick 已跑」标记(返回前落,见函数 docstring 的幂等说明)————
     record_pushed(trade_date, "precall", "", EVENT_TICK, payload={"counts": result.counts}, db_path=db_path)
@@ -741,6 +783,7 @@ __all__ = [
     "scan_time_exits",
     "classify_time_exit",
     "resolve_time_exit",
+    "has_time_exit_clause",
     "is_two_tier_time_exit",
     "TIME_EXIT_NEXT_DAY",
     "PROFIT_EXEMPT",
@@ -755,7 +798,5 @@ __all__ = [
     "EVENT_MEMBER_EX_RIGHTS",
     "EVENT_POS_LOW_OPEN",
     "EVENT_TICK",
-    "EVENT_CIRCUIT_LOCKED",
-    "CIRCUIT_LOCKED_PRECALL_NOTE",
     "D5EXIT_EVENT_KEY",
 ]

@@ -491,6 +491,38 @@ def active_config(db_path: Optional[Path] = None) -> Dict:
     return dict(v.rule.get("config", {}) or {})
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  §2.1 第 1 条的止损口径:「强制条件单」 vs 「止损警戒 + 离场决策」(V2.2-⑤)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 **为什么按版本号声明,而不是从 config 推**:`v2.2-k8` 与 `v1.3.3` 的 `stop_pct`
+# **都是 0.05**(§五 ⑤ 明写「值与唯一源地位一字不动,改的是它触发什么」)—— 这个差异
+# **只活在 §2.1 的条文里,config 里没有任何字段编码它**。故只能声明式登记,体例照
+# `scripts/activate_charter.py::_CORE_EXPECTATIONS`(同样是"章程语义按版本名钉死")。
+#
+# ⚠ **默认方向 = 强制条件单(更严)**:名单外的任何版本(含将来新加的)一律按「破线
+# 未走 = 违纪」判。新章程若也走 K8 的警戒口径,**必须显式加进这个名单** —— 漏加的
+# 后果是"多记一条违纪"(吵),不是"少记一条违纪"(静默漏审),方向刻意选前者。
+#
+# ⚠ **这条名单是 staged 的物理落点**:§2.1 前置提示写死「`v2.2-k8` 激活前本节其余全文
+# 一字有效、⛔ 不得按 K8 口径实现或解释」。⑤ 的代码部署即生效、章程却要等用户清仓才
+# 激活 —— 若把口径改成无条件,部署当天就等于提前把 §2.1 第 1 条按 K8 解释了。
+STOP_ADVISORY_CHARTERS = frozenset({"v2.2-k8"})
+
+
+def stop_is_advisory(version: Optional[str]) -> bool:
+    """该章程版本的 −5% 是「止损警戒 + 离场决策」(True)还是「强制条件单」(False)。
+    版本未知(None / 纯 legacy 库)→ **False**(保守:按强制条件单口径审计)。"""
+    return version in STOP_ADVISORY_CHARTERS
+
+
+def active_stop_is_advisory(db_path: Optional[Path] = None) -> bool:
+    """现役章程的止损口径(哨兵 / 端点文案侧的取数入口;判据同 `stop_is_advisory`)。
+    无现役版本(异常状态)→ False(与全项目"无现役版本时保守兜底"的既有姿势一致)。"""
+    v = get_active(db_path=db_path)
+    return stop_is_advisory(v.version if v is not None else None)
+
+
 def list_versions(db_path: Optional[Path] = None) -> List[StrategyVersion]:
     with connection(db_path) as conn:
         return _versions_in(conn)
@@ -507,4 +539,5 @@ __all__ = [
     "StrategyVersion", "save_version", "activate_version", "get_version",
     "get_active", "config_active_at", "config_governing_for_week", "config_governing_at",
     "activations_between", "activation_history", "active_config", "list_versions",
+    "STOP_ADVISORY_CHARTERS", "stop_is_advisory", "active_stop_is_advisory",
 ]

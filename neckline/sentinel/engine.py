@@ -445,6 +445,10 @@ def run_tick(
         active_rule = brain.get_active(db_path=db_path)
         stop_pct = _DEFAULT_STOP_PCT
         take_profit_retrace = None
+        # V2.2-⑤:现役章程的止损口径(强制条件单 / 止损警戒),判据单一源 `brain`。
+        # 只换 `check_stop_approach` 的文案口吻,**判定与阈值一字未动**;`v2.2-k8` 激活前
+        # 恒 False = 与 V2.2 之前逐字节相同(§2.1 前置提示:激活前本节全文一字有效)。
+        stop_advisory = brain.stop_is_advisory(active_rule.version if active_rule else None)
         if active_rule is not None:
             cfg = active_rule.rule.get("config", {}) or {}
             stop_pct = cfg.get("stop_pct") or _DEFAULT_STOP_PCT
@@ -468,7 +472,7 @@ def run_tick(
             peer_rets = _position_sector_peer_returns(p, quotes, member_map)
             alert = evaluate_holding(
                 p, quotes.get(p.ts_code), stop_pct=stop_pct, take_profit_retrace=take_profit_retrace,
-                historical_peak_close=peak, peer_returns=peer_rets,
+                historical_peak_close=peak, peer_returns=peer_rets, stop_advisory=stop_advisory,
             )
             if alert.triggered:
                 result.holding_alerts.append(alert)

@@ -197,7 +197,10 @@ class HoldingK4Item:
     close: float = 0.0
     net_float: Optional[float] = None
     time_exit_state: str = _HOLDING
-    max_hold_effective: int = 5
+    # ⚠ **V2.2-⑤:`None` = 章程无时间退出条款**(`v2.2-k8`,`max_hold_days=None`)——
+    # 没有"有效硬上限"这回事。⛔ 不拿 5 或 0 顶上(§3.11-E 否决哨兵位的同一种病);
+    # 落库侧对应写 `NULL`(见 `report/holding_store.save_holding_eod_checks`)。
+    max_hold_effective: Optional[int] = 5
     # —— 两档时间退出「D5 判一次定格」三件(审计 🔴-1,2026-07-27 用户拍板方案 A)——
     # 定格发生在**首次** d_count ≥ max_hold_days 的那一天(用当日 EOD 收盘净浮盈判一次),
     # 此后每天原样带过来(每行自描述判向来源)。单档现役 K1 恒为 None(无定格概念)。

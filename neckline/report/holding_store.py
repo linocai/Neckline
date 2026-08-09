@@ -23,11 +23,15 @@
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from neckline.db import connection, init_schema
+
+logger = logging.getLogger(__name__)
 
 
 def _d(trade_date: date) -> str:
@@ -50,25 +54,50 @@ def save_holding_eod_checks(trade_date: date, items: List[Any], db_path: Optiona
     now = _now()
     with connection(db_path) as conn:
         for it in items:
-            conn.execute(
-                "INSERT OR REPLACE INTO holding_eod_check "
-                "(position_id, trade_date, d_count, net_float, time_exit_state, max_hold_effective, "
-                "k4_hits_json, has_strong, scenario_review, time_exit_locked_state, "
-                "time_exit_locked_date, time_exit_locked_net_float, data_unavailable, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    it.position_id, td, it.d_count, it.net_float, it.time_exit_state,
-                    it.max_hold_effective, json.dumps(it.hits_public(), ensure_ascii=False),
-                    1 if it.has_strong else 0, 1 if it.scenario_review else 0,
-                    getattr(it, "time_exit_locked_state", None),
-                    getattr(it, "time_exit_locked_date", None),
-                    getattr(it, "time_exit_locked_net_float", None),
-                    # v1.4-①-B:当日无 EOD 行 → 整份体检被跳过,这一位必须落库(否则
-                    # `GET /positions` 读快照时分不清「空牌」是没命中还是没体检)。
-                    0 if getattr(it, "has_data", True) else 1,
-                    now,
-                ),
-            )
+            # V2.2-⑤:`max_hold_effective is None` = 章程无时间退出条款 → 落 `NULL`。
+            # **兜底**:老库若还没被 `db._relax_holding_eod_check_notnull` 放宽(那条迁移
+            # 失败时只告警不拦启动),这里会 `IntegrityError` —— 捕获后**省略该列**重试
+            # (吃 `DEFAULT 5`)+ 吵一条 WARNING。⚠ 那个 5 是**schema 产物、不是判定**,
+            # 权威判向永远看 `time_exit_state`。⛔ 绝不让 16:35 整份报告因为一列崩掉。
+            try:
+                _insert_check_row(conn, it, td, now)
+            except sqlite3.IntegrityError:
+                if it.max_hold_effective is not None:
+                    raise
+                logger.warning(
+                    "[holding_store] holding_eod_check.max_hold_effective 仍是 NOT NULL(迁移未生效),"
+                    "本行省略该列写入、落 schema 默认值 —— **那个数不是判定**,权威判向看 "
+                    "time_exit_state=%s。请重跑一次 init_schema。", it.time_exit_state,
+                )
+                _insert_check_row(conn, it, td, now, omit_max_hold=True)
+
+
+def _insert_check_row(conn, it: Any, td: str, now: str, *, omit_max_hold: bool = False) -> None:
+    """写一行当日体检(幂等覆盖同 `(position_id, trade_date)`)。`omit_max_hold=True` 时
+    **不带** `max_hold_effective` 列(老库 NOT NULL 兜底路径,见调用点注释)。"""
+    cols = ["position_id", "trade_date", "d_count", "net_float", "time_exit_state"]
+    vals: List[Any] = [it.position_id, td, it.d_count, it.net_float, it.time_exit_state]
+    if not omit_max_hold:
+        cols.append("max_hold_effective")
+        vals.append(it.max_hold_effective)
+    cols += ["k4_hits_json", "has_strong", "scenario_review", "time_exit_locked_state",
+             "time_exit_locked_date", "time_exit_locked_net_float", "data_unavailable", "created_at"]
+    vals += [
+        json.dumps(it.hits_public(), ensure_ascii=False),
+        1 if it.has_strong else 0, 1 if it.scenario_review else 0,
+        getattr(it, "time_exit_locked_state", None),
+        getattr(it, "time_exit_locked_date", None),
+        getattr(it, "time_exit_locked_net_float", None),
+        # v1.4-①-B:当日无 EOD 行 → 整份体检被跳过,这一位必须落库(否则
+        # `GET /positions` 读快照时分不清「空牌」是没命中还是没体检)。
+        0 if getattr(it, "has_data", True) else 1,
+        now,
+    ]
+    conn.execute(
+        f"INSERT OR REPLACE INTO holding_eod_check ({', '.join(cols)}) "
+        f"VALUES ({', '.join('?' * len(cols))})",
+        tuple(vals),
+    )
 
 
 def _parse_hits(raw: Optional[str]) -> List[Dict[str, Any]]:

@@ -55,7 +55,7 @@ def test_push_entrypoints_are_exactly_the_declared_set():
     assert set(notify.__all__) == {
         "NotifyOutcome", "push_event",
         "push_report_ready", "push_retreat_brake", "push_precall_summary",
-        "push_d5_exit", "push_circuit_breaker", "push_holding_alert",
+        "push_d5_exit", "push_consecutive_stops_notice", "push_holding_alert",
         "push_attention_alert", "push_custom_alert",
         "push_holding_risk_alert",
     }
@@ -157,8 +157,12 @@ def test_precall_summary_sends_when_on(api_env, apns_configured):
     assert out.sent == 2 and out.failed == 0   # 默认开(列默认 1)
 
 
-def test_precall_summary_circuit_locked_prefixes_note(api_env, apns_configured):
-    """审计 🟡-4:熔断锁定 → 标题/正文前置「熔断中:今日只减不加」+ custom 带 circuitLocked。"""
+def test_precall_summary_has_no_lock_prefix_anymore(api_env, apns_configured):
+    """**V2.2-⑤-B(裁定 #8)**:原「熔断锁定 → 标题/正文前置『今日只减不加』+ custom 带
+    锁定位」三件**全删**。汇总推送从此只有一种形态:一句集合竞价校准。
+
+    ⚠ 连带如实登记:那句「次日只减不加」此前靠 9:26 汇总的**必发豁免**送达,**豁免一并
+    取消**(§八 第 19 项已当面告知用户:以后平静的清晨就是真的没推送)。"""
     import json
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
@@ -169,41 +173,15 @@ def test_precall_summary_circuit_locked_prefixes_note(api_env, apns_configured):
         return apns.PushResult(ok=True, status=200, reason="ok")
 
     out = notify.push_precall_summary(
-        {"gap_up": 0, "low_open": 0, "position_low_open": 0, "auction": 0},
-        circuit_locked=True, db_path=db, transport=_capture,
-    )
-    assert out.sent == 1
-    alert = seen["aps"]["alert"]
-    assert "熔断中:今日只减不加" in alert["title"]
-    assert "熔断中:今日只减不加" in alert["body"] and "只许减仓" in alert["body"]
-    assert seen["circuitLocked"] is True
-
-
-def test_precall_summary_unlocked_has_no_circuit_note(api_env, apns_configured):
-    """阴性方向:未锁定 → 文案不带熔断句(不制造误导),custom 标 False。"""
-    import json
-    db = api_env.db_path
-    upsert_device("tok1", db_path=db)
-    seen = {}
-
-    def _capture(url, headers, body):
-        seen.update(json.loads(body.decode() if isinstance(body, bytes) else body))
-        return apns.PushResult(ok=True, status=200, reason="ok")
-
-    notify.push_precall_summary(
         {"gap_up": 1, "low_open": 0, "position_low_open": 0, "auction": 0},
         db_path=db, transport=_capture,
     )
+    assert out.sent == 1
     alert = seen["aps"]["alert"]
-    assert "熔断" not in alert["title"] and "熔断" not in alert["body"]
-    assert seen["circuitLocked"] is False
-
-
-def test_circuit_locked_note_matches_precall_constant():
-    """结构性:notify 的字面量措辞与 `sentinel/precall.CIRCUIT_LOCKED_PRECALL_NOTE` 一致
-    (两处刻意不互相 import,靠本断言防漂移——同 `_KIND_TIME_EXIT` 惯例)。"""
-    from neckline.sentinel.precall import CIRCUIT_LOCKED_PRECALL_NOTE
-    assert notify._CIRCUIT_LOCKED_NOTE == CIRCUIT_LOCKED_PRECALL_NOTE
+    assert alert["title"] == "盘前校准提醒"
+    for banned in ("熔断", "只减不加", "只许减仓"):
+        assert banned not in alert["title"] and banned not in alert["body"]
+    assert "circuitLocked" not in seen      # custom 载荷里那一位也没了
 
 
 def test_d5_exit_gated_off(api_env, apns_configured):
@@ -268,29 +246,23 @@ def test_d5_exit_hard_cap_body(api_env, apns_configured):
     assert cap["payload"]["timeExitState"] == "hard_cap_exit"
 
 
-def _fake_episode(note="连续 3 笔止损离场触发熔断(基于台账 3 笔已补录成交)。"):
-    from neckline.sentinel.circuit import CircuitEpisode
-    return CircuitEpisode(
-        id=1, triggered_at="2026-07-22T08:00:00+00:00",
-        trigger_reason="consecutive_stops", trigger_ref_date="20260722",
-        basis={"position_ids": [1, 2, 3], "window": "2026-07-22", "note": note},
-        created_at="2026-07-22T08:00:00+00:00",
-    )
-
-
-def test_circuit_push_gated_off(api_env, apns_configured):
+def test_consecutive_stops_push_gated_off(api_env, apns_configured):
+    """⑤-B 第 6 项:**kind 刻意仍是 `circuit`**(新增 kind 要用户拍板,改文案不触发那条
+    纪律),开关 `push_circuit` 原样保留 —— 用户关掉就不推。"""
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
     _set_kind(db, notify_kinds.KIND_CIRCUIT, False)
-    out = notify.push_circuit_breaker(_fake_episode(), db_path=db, transport=_ok_transport)
+    out = notify.push_consecutive_stops_notice(3, ts_code="600519.SH", db_path=db,
+                                               transport=_ok_transport)
     assert out.sent == 0 and out.skipped_reason == "kind_off:circuit"
 
 
-def test_circuit_push_sends_when_on(api_env, apns_configured):
+def test_consecutive_stops_push_sends_when_on(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
     upsert_device("tok2", db_path=db)
-    out = notify.push_circuit_breaker(_fake_episode(), db_path=db, transport=_ok_transport)
+    out = notify.push_consecutive_stops_notice(3, ts_code="600519.SH", db_path=db,
+                                               transport=_ok_transport)
     assert out.sent == 2 and out.failed == 0   # 默认开(push_circuit 列默认 1)
 
 

@@ -411,6 +411,14 @@ CREATE INDEX IF NOT EXISTS idx_decision_log_status ON decision_log(status);
 CREATE INDEX IF NOT EXISTS idx_decision_log_revision_of ON decision_log(revision_of);
 CREATE INDEX IF NOT EXISTS idx_decision_log_created_at ON decision_log(created_at);
 
+-- 🔴 **V2.2-⑤-B 起停写留档不 DROP**(PROJECT_PLAN §五 ⑤-B 第 3 项;§七 **P4-31** 的停写
+-- 留档表由七张扩到**八张**)。2026-08-09 用户裁定 #8「熔断整体删除」——**锁定态 / 次日
+-- 只减不加 / 强制复盘解锁三件机制全删**,单日 −4000 档一并删;`sentinel/circuit.py` 现在
+-- 只剩一个无状态纯函数 `count_tail_consecutive_stops`(读 `positions`,**不碰本表**),
+-- 读写函数一并删(无下游消费方,同 `inquiry_log` 先例;**查历史行走 `sqlite3`**)。
+-- **本表因此长期处于「有历史行、零新增行」状态**,守门单测锁死零写入调用点。
+-- ⛔ **不 DROP**:历史归因与审计要用,且 DROP 不可逆(要不要 DROP 的三条判据见 §七 P4-31)。
+-- 以下为原表注释(**历史留痕,机制已不生效**):
 -- v1.2-A2 熔断纪律事件表(plan §五 v1.2-A2 / §2.1 第 7 条,🔴)。连续 3 笔止损 或
 -- 单日实现净亏 ≥4000 元 → 触发熔断(当日停开新仓、次日只减不加,完成一次强制复盘后
 -- 解锁)。**熔断是纯提醒层**——本表只做「触发/解锁事件留痕 + 派生锁定态」,绝不代
@@ -534,7 +542,12 @@ CREATE TABLE IF NOT EXISTS holding_eod_check (
     d_count             INTEGER NOT NULL DEFAULT 1,
     net_float           REAL,                   -- D5 收盘净浮盈估算 | NULL=停牌/无数据(保守判非浮盈)
     time_exit_state     TEXT NOT NULL DEFAULT 'holding',  -- time_exit_next_day|profit_exempt|hard_cap_exit|holding
-    max_hold_effective  INTEGER NOT NULL DEFAULT 5,
+    -- ⚠ **V2.2-⑤ 起可空**:`NULL` = 该行当时的现役章程**没有时间退出条款**(`v2.2-k8`,
+    -- `max_hold_days=None`)—— 没有"有效硬上限"这回事。⛔ 不拿 5 或 0 顶上(§3.11-E 否决
+    -- 哨兵位的同一种病:`('holding', 5)` 在 K1 的 D2 与 K8 的任何一天下会长得一模一样,
+    -- 事后归因分不开)。**老库的 `NOT NULL` 由 `_relax_holding_eod_check_notnull` 一次性
+    -- 原子放宽**(见其 docstring);`DEFAULT 5` 保留只为老调用点省略该列时不炸。
+    max_hold_effective  INTEGER DEFAULT 5,
     k4_hits_json        TEXT NOT NULL DEFAULT '[]',
     has_strong          INTEGER NOT NULL DEFAULT 0,
     scenario_review     INTEGER NOT NULL DEFAULT 0,
@@ -1512,6 +1525,79 @@ _POST_MIGRATION_INDEXES = (
 )
 
 
+def _relax_holding_eod_check_notnull(conn: sqlite3.Connection) -> None:
+    """把老库 `holding_eod_check.max_hold_effective` 的 `NOT NULL` **一次性原子放宽**(V2.2-⑤)。
+
+    **为什么非做不可**:`v2.2-k8` 章程 `max_hold_days=None`(K8 §十三 时间退出退役)→ 16:35
+    体检算出的「有效硬上限」是 `None`。老列是 `NOT NULL`,写 `NULL` 会 `IntegrityError`
+    → **整份 16:35 报告崩掉**(承 CLAUDE.md「一处裸奔就把『少一维』升级成『当日无报告』」)。
+    而写 5 顶上是**说谎**:`('holding', 5)` 在 K1 的 D2 与 K8 的任何一天下长得一模一样。
+
+    **SQLite 无 `ALTER COLUMN`**,唯一办法是「建新表 → 拷 → 删旧 → 改名」。三条安全措施:
+      ① **有闸**:先查 `PRAGMA table_info`,只有该列仍是 `notnull=1` 时才动 → 天然幂等,
+         新库(本文件 DDL 已是可空)与已迁移过的库都直接跳过,一条语句都不执行;
+      ② **原子**:显式 `BEGIN IMMEDIATE` / `COMMIT`(Python `sqlite3` 对 DDL **不**自动开
+         事务,不显式 BEGIN 就是逐句 autocommit —— 那才是"删到一半断电"的真风险);
+      ③ **不锁死开机**:失败 → `ROLLBACK` + 吵一条 WARNING + 继续启动(同上面唯一索引
+         那条的既定姿势)。写侧另有 `IntegrityError` 兜底(见 `holding_store`),不会因为
+         这里没迁成就在 16:35 崩掉。
+
+    拷贝用**显式列名**(不 `SELECT *`):迁移列 `data_unavailable` 等在老库里位置不定,
+    按位置拷会串列。表很小(每持仓每交易日一行),一次性成本可忽略。"""
+    info = list(conn.execute("PRAGMA table_info(holding_eod_check)"))
+    if not info:
+        return                                   # 表还没建(理论上 executescript 已建)
+    target = [r for r in info if r[1] == "max_hold_effective"]
+    if not target or not target[0][3]:           # r[3] = notnull
+        return                                   # 已是可空 → 一条语句都不执行
+    cols = [r[1] for r in info]
+    col_list = ", ".join(cols)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("""
+            CREATE TABLE holding_eod_check__v22 (
+                position_id         INTEGER NOT NULL,
+                trade_date          TEXT NOT NULL,
+                d_count             INTEGER NOT NULL DEFAULT 1,
+                net_float           REAL,
+                time_exit_state     TEXT NOT NULL DEFAULT 'holding',
+                max_hold_effective  INTEGER DEFAULT 5,
+                k4_hits_json        TEXT NOT NULL DEFAULT '[]',
+                has_strong          INTEGER NOT NULL DEFAULT 0,
+                scenario_review     INTEGER NOT NULL DEFAULT 0,
+                time_exit_locked_state      TEXT,
+                time_exit_locked_date       TEXT,
+                time_exit_locked_net_float  REAL,
+                data_unavailable    INTEGER,
+                created_at          TEXT NOT NULL,
+                PRIMARY KEY (position_id, trade_date)
+            )
+        """)
+        conn.execute(
+            f"INSERT INTO holding_eod_check__v22 ({col_list}) "
+            f"SELECT {col_list} FROM holding_eod_check"
+        )
+        conn.execute("DROP TABLE holding_eod_check")
+        conn.execute("ALTER TABLE holding_eod_check__v22 RENAME TO holding_eod_check")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_holding_eod_check_position "
+                     "ON holding_eod_check(position_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_holding_eod_check_trade_date "
+                     "ON holding_eod_check(trade_date)")
+        conn.execute("COMMIT")
+        logger.info("[db] holding_eod_check.max_hold_effective 已由 NOT NULL 放宽为可空"
+                    "(V2.2-⑤:章程无时间退出条款时该值是 NULL,不是 5)")
+    except sqlite3.Error:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        logger.warning(
+            "[db] holding_eod_check.max_hold_effective 放宽为可空失败 —— **不拦启动**"
+            "(写侧另有 IntegrityError 兜底,见 report/holding_store.save_holding_eod_checks)。"
+            "请人工核对该表后重跑一次 `init_schema`。", exc_info=True,
+        )
+
+
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     """对既有表做「缺列即补」的幂等迁移(见 `_COLUMN_MIGRATIONS` 注释)+ 依赖迁移列的索引
     (`_POST_MIGRATION_INDEXES`,必须在补列之后建)+ v1.2-A 激活戳一次性回填(幂等,见
@@ -1537,6 +1623,7 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
                 "多行 is_active=1 → 把多余的置 0;positions 幂等键重复 → 保留正确那笔)。",
                 stmt, exc_info=True,
             )
+    _relax_holding_eod_check_notnull(conn)
     _backfill_activated_at(conn)
     _seed_activation_log(conn)
     _seed_push_kinds(conn)

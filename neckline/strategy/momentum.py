@@ -69,7 +69,12 @@ class MomentumConfig:
     # —— 退出 ——
     stop_pct: Optional[float] = 0.05               # -5% 止损（None=不设止损）
     take_profit_retrace: Optional[float] = None    # 回落止盈阈值（None=不设）
-    max_hold_days: int = 3                         # 时间退出（交易日）；v1.3 = 非浮盈单时间退出档
+    # V2.2-⑤ / §3.11-E **唯一一处类型放宽**:`int` → `Optional[int]`,`None` = **不设时间退出**
+    # (与上一行 `stop_pct: Optional[float]` 的 `None` 语义同构)。⛔ **否决用哨兵位 9999**
+    # ——哨兵位是"看不出来"的病。**默认值仍是 3、一字未动** → 旧 config 加载吃默认,K1 回测
+    # 逐位不变(护栏 `tests/test_v13_exit_guardrail.py`;⚠ 六年真回测那一层已随策略档案迁出
+    # 本仓、恒 skip,见 §七 P4-54,故逻辑层护栏是本仓唯一还跑得动的那道)。
+    max_hold_days: Optional[int] = 3               # 时间退出（交易日）；v1.3 = 非浮盈单时间退出档；None=不设
     cooldown_days: int = 0                         # 同票亏损后冷却
     # —— v1.3 退出规则改革(§五 v1.3-①;一律默认 None/False = 与 K1 逐位相同,禁改上面字段语义)——
     # 默认值铁律:K1/K2/K3/v1.2 落库 config 均无这两字段,加载吃默认 → 时间退出仍在
@@ -289,8 +294,15 @@ class MomentumStrategy(Strategy):
         `_exit_reason` 前置分支判过,此处只管时间退出。持仓恰达 D5(held==max_hold_days)
         时算收盘净浮盈:>0 → 一次性豁免续命(`_eff_max` 抬到硬上限,此后交回落/止损管
         到 max_hold_days_profit 无条件退)、≤0(或停牌无价)→ 照旧时间退出。
+
+        **V2.2-⑤ 第三档:`max_hold_days is None` = 章程不设时间退出**(K8 §十三「上涨效率
+        下降 → 保留主观换股权」,`v2.2-k8` 起)。与 `stop_pct is None` 同构:引擎**永不**因
+        持有天数卖出,`_eff_max` 也永不被写。⛔ 不许在这里拿一个默认天数顶上。
         """
         c = self.config
+        # —— 无时间退出条款(V2.2-⑤ / §3.11-E)——恒不触发,先于两档判定 ——
+        if c.max_hold_days is None:
+            return None
         # —— 默认档:K1 无条件时间退出 ——
         if not (c.time_exit_only_if_unprofitable and c.max_hold_days_profit is not None):
             if held >= c.max_hold_days:

@@ -162,11 +162,13 @@ def push_retreat_brake(
 # 熔断锁定期盘前提醒的固定措辞(= `sentinel/precall.py::CIRCUIT_LOCKED_PRECALL_NOTE`;
 # 此处按字面量引用以免 notify → sentinel 重耦合,与 `_KIND_TIME_EXIT` 同惯例,
 # 一致性由 `tests/test_notify.py` 结构性断言守护)。
-_CIRCUIT_LOCKED_NOTE = "熔断中:今日只减不加"
+# ⚠ **V2.2-⑤-B:`_CIRCUIT_LOCKED_NOTE`(「熔断中:今日只减不加」)已随熔断整体退役删除**。
+# 连带后果**如实登记**(§八 第 19 项原文):那句「次日只减不加」此前是靠 9:26 汇总推送的
+# **必发豁免**送到用户手机上的,**豁免一并取消** —— 以后平静的清晨就是真的没推送。
 
 
 def push_precall_summary(
-    counts: dict, *, circuit_locked: bool = False,
+    counts: dict, *,
     db_path: Optional[Path] = None, transport: Optional[Any] = None,
 ) -> NotifyOutcome:
     """9:26 盘前校准汇总(kind=`precall`,**重要不紧急**级,plan v1.1-A.4)。`counts` =
@@ -179,10 +181,11 @@ def push_precall_summary(
     它既不是判定也不触发推送(缺键 → 0,老调用方零感知),但**「今天没核对」必须与
     「核对过、没异常」分得开**,否则用户会把沉默读成平安。
 
-    `circuit_locked`(2026-07-27 审计 🟡-4):熔断仍锁定 → **标题与正文前置「熔断中:今日只减
-    不加」**(§2.1 第 7 条纪律的「次日」那一半)。调用方(`_sentinel_loop`)按
-    `PrecallResult.should_push_summary` 决定推不推——锁定期间即便零判定也推,不被「平静清晨
-    不轰炸」的门槛吞掉。**纯提醒层**(§3.8):本函数只发文字,绝不代下单/撤单。"""
+    ⚠ **V2.2-⑤-B:原来的「熔断锁定态」参数已删**(熔断整体退役,裁定 #8)。它原本让锁定期即便
+    零判定也必发一条 —— **这条必发豁免随之取消**,汇总推送回归正常门槛
+    (`PrecallResult.should_push_summary` = 有需要动作的判定才推)。**这是裁定 #8 的字面
+    结果、不是遗漏**:平静的清晨从此真的没推送(§八 第 19 项已当面告知用户)。
+    **纯提醒层**(§3.8):本函数只发文字,绝不代下单/撤单。"""
     n = int(counts.get("gap_up", 0))
     m = int(counts.get("low_open", 0))
     k = int(counts.get("position_low_open", 0))
@@ -194,13 +197,8 @@ def push_precall_summary(
     if x:
         body += f"(另 {x} 只疑似除权除息、冻结锚失效,今日未核对)"
     body += "。前晚计划按校准结果执行," + _OPEN_APP_NOW
-    title = "盘前校准提醒"
-    if circuit_locked:
-        title = f"{_CIRCUIT_LOCKED_NOTE}(盘前提醒)"
-        body = f"{_CIRCUIT_LOCKED_NOTE}——熔断未解锁,今日禁开新仓、只许减仓。" + body
     return push_event(
-        KIND_PRECALL, title, body,
-        custom_extra={"circuitLocked": bool(circuit_locked)},
+        KIND_PRECALL, "盘前校准提醒", body,
         db_path=db_path, transport=transport,
     )
 
@@ -242,18 +240,31 @@ def push_d5_exit(
     )
 
 
-def push_circuit_breaker(
-    episode: Any, *, db_path: Optional[Path] = None, transport: Optional[Any] = None,
+def push_consecutive_stops_notice(
+    count: int, *, ts_code: str = "", name: str = "",
+    db_path: Optional[Path] = None, transport: Optional[Any] = None,
 ) -> NotifyOutcome:
-    """熔断提醒(kind=`circuit`,**立即**级,plan v1.2-A2.6)。`episode` =
-    `neckline.sentinel.circuit.CircuitEpisode`(触发行)——文案取其 `note`(诚实边界:
-    「基于台账 N 笔已补录成交」已在 note 内)。**熔断是纯提醒层**(§3.8):本函数
-    只发提醒,绝不代下单/撤单。"""
-    note = getattr(episode, "note", "") or "触发熔断:今日停开新仓、次日只减不加,完成一次强制复盘后解锁。"
-    reason = getattr(episode, "trigger_reason", "")
+    """连续止损**纯提醒**(V2.2-⑤-B;前身 `push_circuit_breaker`,熔断已整体退役)。
+
+    🔴 **裁定 #8 原话**:「**我不需要你替我做决定;这个程序永远是提醒 —— 连续三笔止损
+    真的发生了,那也是提醒**」。故本函数的文案是**纯告知**:
+      · ⛔ **禁指令词** —— 不许出现「停止开仓」/「只减不加」/「禁开新仓」/「解锁」;
+      · ⛔ 不暗示任何自动状态(没有锁、没有灰化、没有强制复盘);
+      · 只陈述事实 + 诚实边界(「基于台账 N 笔已补录成交」,漏录则失灵)。
+    守门单测 `tests/test_circuit.py` 按禁用词逐条扫这段文案。
+
+    **kind 刻意仍用 `circuit`**(⑤-B 第 6 项):新增 kind 要用户拍板,而复用现有 kind 改
+    文案不触发那条纪律;开关 `push_circuit` 原样保留(用户可关)。**纯提醒层**(§3.8):
+    只发文字,绝不代下单/撤单/改止损。"""
+    disp = (name or ts_code or "").strip()
+    tail = f"(最近一笔:{disp})" if disp else ""
+    body = (
+        f"你最近连续 {count} 笔以止损离场{tail}。这是一条提醒,系统不改变任何设置、"
+        f"也不替你做决定;基于台账 {count} 笔已补录成交,漏录则本提醒失灵。"
+    )
     return push_event(
-        KIND_CIRCUIT, "熔断提醒", note + _OPEN_APP_NOW,
-        custom_extra={"triggerReason": reason},
+        KIND_CIRCUIT, "连续止损提醒", body + _OPEN_APP_NOW,
+        custom_extra={"consecutiveStops": int(count), "code": ts_code},
         db_path=db_path, transport=transport,
     )
 
@@ -389,7 +400,7 @@ __all__ = [
     "push_retreat_brake",
     "push_precall_summary",
     "push_d5_exit",
-    "push_circuit_breaker",
+    "push_consecutive_stops_notice",
     "push_holding_alert",
     # 措辞层(V2-⑪ 新增)
     "push_attention_alert",

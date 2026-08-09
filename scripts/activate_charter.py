@@ -6,6 +6,15 @@
 `v1.3.3`**(拆墙版:v1.3 逐字段相同,只 `forbid_high_elasticity` True→False;用户
 2026-07-27 拍板)。历史:K1 → `v1.3`(2026-07-27 12:01 CST 生产激活)→ `v1.3.3`。
 
+🔴🔴 **V2.2-⑤:白名单新增 `v2.2-k8`(K8 §十三 持仓原则,用户裁定 #5)**。它改的**全是
+退出侧**(回落止盈 / 时间退出两档退役;`stop_pct=0.05` 值不动、语义由「强制条件单」改为
+「止损警戒 + 离场决策」)—— **正是闸 2 当初要防的那一类**,故**闸 2 的纯入场侧窄豁免对它
+必然不成立**(守门单测 `tests/test_activate_charter_gates.py` 正面钉死:对
+`v1.3.3 → v2.2-k8` 的 diff,`_exemption_verdict()` 必须返 `False`)。**默认目标刻意仍是
+`v1.3.3`** —— 高危目标必须显式 `--target` 打出来,不许手滑默认过去。
+**风险登记全文在落行脚本 `scripts/oneoff/seed_charter_v22k8.py` 的 changelog 与
+PROJECT_PLAN §五 ⑤ / §八 第 19 项,⛔ 不得删、不得摘要。**
+
 ⚠ **目标闸是白名单,不是黑名单**(2026-07-27 独立审计 🟡-2 修复):原实现只黑名单拒
 `v1.2`,审计实测 `--target K2 --confirm` 在清仓后**真能把废弃研究臂激活成现役章程**
 (exit=0、`is_active` 变 K2)——K2/K4 的 config 是 K1 旧值(回落 5%/2 万/5 仓),激活后
@@ -68,7 +77,9 @@ _TARGET_VERSION = "v1.3.3"
 # 取代,保留不删但永不激活)、以及任何 typo/复制错的串。
 # **v1.3 保留在名单内**:v1.3.3 只拆了高弹墙,若拆墙后需要紧急退回"主板 only"口径,v1.3 是
 # 唯一合法回退目标(其余字段两版逐字段相同)——回退也须走本切换器四道闸,不许手改 DB。
-_ALLOWED_TARGETS = ("v1.3", "v1.3.3")
+# **V2.2-⑤ 加 `v2.2-k8`**(K8 §十三 持仓原则;用户裁定 #5)。**回滚目标 = `v1.3.3`**,
+# 已在名单内 —— 回滚同样走本切换器四道闸,SOP 见 `archive/SOP_章程回滚_20260730.md`。
+_ALLOWED_TARGETS = ("v1.3", "v1.3.3", "v2.2-k8")
 
 # —— 闸 3:核心值核对(**凡激活必做**,不再只对 v1.3 做)。{版本: {config 键: 期望值}} ——
 # 目的是「防激活到错误/未改的行」:即使目标在白名单里,只要它的退出/仓位核心值不是章程
@@ -99,6 +110,22 @@ _CORE_EXPECTATIONS = {
         "max_positions": 3,
         "forbid_high_elasticity": False,      # 拆墙:创业板/科创板不再被纪律层禁买
     },
+    # —— V2.2-⑤ `v2.2-k8`(K8 §十三 持仓原则;🔴🔴 退出侧四字段退役)——————————————
+    # ⚠ **四个 `None` 是本版的核心判据,不是"没填"**:核心值核对的职责就是"防激活到未改
+    # 对的行" —— 若这四位不是 `None`(比如某人手抄时填了 0 或留了旧值),说明落的不是
+    # K8 那一行,硬拒。`_eq` 对 `None` 做严格同一判定(⛔ 不与 0/False 混,见其 docstring)。
+    # ⚠ **`stop_pct=0.05` 与仓位三件在此逐字重复,是刻意的**:§五 ⑤ 明写它们「一字不动」,
+    # 核对表正是把这句话变成过不去的闸 —— 谁把 stop_pct 顺手改成 None,这里当场拦下。
+    "v2.2-k8": {
+        "take_profit_retrace": None,          # 回落止盈 8% 退役(K8:盈利离场不设统一机械比例)
+        "max_hold_days": None,                # 时间退出档退役(让位主观换股权)
+        "max_hold_days_profit": None,         # 浮盈硬上限随之退役
+        "time_exit_only_if_unprofitable": False,   # 无时间退出时该开关无意义 → 回落 K1 默认值
+        "stop_pct": 0.05,                     # **值一字不动**(语义改:条件单 → 止损警戒)
+        "single_cap": 40000.0,                # 三仓章程一字不动(K8 沉默 ≠ 废除)
+        "max_positions": 3,
+        "forbid_high_elasticity": False,      # 纪律域一字不动(排科创板是选股域,归块 ①)
+    },
 }
 # —— 闸 2 窄豁免(2026-07-27 用户授权)——————————————————————————————————————
 # (a) 允许出现在 diff 里的**入场侧**字段。入场侧 = 只影响「哪些票可以买」(entry mask /
@@ -119,6 +146,17 @@ _TOL = 1e-9
 
 
 def _eq(a, b) -> bool:
+    """章程 config 值的相等判定。
+
+    🔴 **`None` 必须与 `0` / `False` 严格分开**(V2.2-⑤ 起这条是硬要求):`v2.2-k8` 用
+    `None` 表达「**不设**回落止盈 / 不设时间退出」,而 `0` 会是「阈值 0%」这种完全不同
+    (且荒谬)的东西。原实现 `float(None)` 抛 `TypeError` → 落到 `a == b`,`None == 0`
+    在 Python 里是 `False`,**结论恰好正确但纯属侥幸**;`False == 0` 却是 `True` ——
+    `time_exit_only_if_unprofitable: False` 与某个 `0` 会被判等。现显式分层,不靠侥幸。"""
+    if a is None or b is None:
+        return a is None and b is None
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
     try:
         return abs(float(a) - float(b)) <= _TOL
     except (TypeError, ValueError):

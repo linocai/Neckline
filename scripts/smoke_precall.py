@@ -75,7 +75,14 @@ def _seed_d5_position(today: date, code_rows: Dict[str, dict], tmp_db: Path) -> 
     """造一只 buy_date 使 today 恰为 D5 的合成持仓(验证 D5 时间退出扫描)。买入价用
     「买入日的真实收盘价」(模拟已持有若干日),买入日 = today 前 (max_hold−1) 个交易日。"""
     cfg = brain.active_config(db_path=tmp_db)
-    max_hold = int(cfg.get("max_hold_days") or 5)
+    # V2.2-⑤:章程可能压根没有时间退出条款(`max_hold_days=None`,`v2.2-k8`)→ **不造这只
+    # 合成持仓**、如实返回 None。⛔ 别 `or 5` 兜底 —— 那会让冒烟"验"出一条现役章程里
+    # 根本不存在的判定,比不验更糟。
+    max_hold_raw = cfg.get("max_hold_days")
+    if max_hold_raw is None:
+        logger.info("现役章程无时间退出条款(max_hold_days=None),跳过 D5 合成持仓(不是故障)")
+        return None
+    max_hold = int(max_hold_raw)
     if not code_rows:
         return None
     code = next(iter(code_rows))

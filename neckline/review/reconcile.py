@@ -254,14 +254,26 @@ def build_round_trips(trades: List[RawTrade]) -> Tuple[List[RoundTrip], List[str
 #  止损纪律(对账三查②,§1.3/§2.1 第1条)
 # ======================================================================
 
-STOP_BREACHED = "breached"          # 破止损未离场(违纪)
+STOP_BREACHED = "breached"          # 破止损未离场(强制条件单章程 = 违纪;警戒章程 = 警戒记录)
 STOP_KEPT = "kept_stop"             # 止损纪律执行到位(容差带内离场)
 STOP_NOT_TRIGGERED = "not_triggered"  # 未触及止损区间(正常盈利或浅亏离场,无需判定)
 STOP_NOT_APPLICABLE = "not_applicable"  # 现役规则未设止损,不做判定
 
 
-def classify_stop_discipline(rt: RoundTrip, stop_pct: Optional[float]) -> Tuple[str, str]:
-    """返回 (分类, 说明文案)。分类四态见上方常量。"""
+def classify_stop_discipline(
+    rt: RoundTrip, stop_pct: Optional[float], *, advisory: bool = False,
+) -> Tuple[str, str]:
+    """返回 (分类, 说明文案)。分类四态见上方常量。
+
+    **`advisory`(V2.2-⑤,§2.9-A)**:该笔成交当时 governing 的章程,其 §2.1 第 1 条是
+    「止损警戒 + 离场决策」(True)还是「强制条件单」(False)。判据单一源
+    `brain.stop_is_advisory`,由调用方按**卖出时刻**的章程版本解析后传入。
+
+    ⚠ **`STOP_BREACHED` 这个分类本身两种口径下都照常产出** —— 破线未走的**笔数与金额
+    统计一字不少**(§1.3 第一死因的持续体检不能停,§五 ⑤ 明写)。变的只有两处:
+      · 文案:「违纪」→「警戒」;
+      · **是否进 `discipline_violations` 违纪计数**(由 `run_weekly_review` 按同一个
+        `advisory` 位决定,不在本函数里)。"""
     if stop_pct is None:
         return STOP_NOT_APPLICABLE, "现役规则未设固定止损,本回合不做止损纪律判定。"
     pct = rt.pnl_pct
@@ -271,6 +283,12 @@ def classify_stop_discipline(rt: RoundTrip, stop_pct: Optional[float]) -> Tuple[
     hi = -(stop_pct - STOP_TOLERANCE_PP)   # 更浅的一侧(如 -4%)
     pct_txt = f"{pct:+.1%}"
     if pct <= lo + _EPS:
+        if advisory:
+            return STOP_BREACHED, (
+                f"卖出价相对买入价 {pct_txt},跌破止损容差带下沿({lo:.0%}),"
+                f"破 -{stop_pct:.0%} 止损线后未离场(§1.3 第一死因体检;当时章程的 §2.1 第 1 条"
+                f"是「止损警戒 + 离场决策」,故**记为警戒、不计违纪**)。"
+            )
         return STOP_BREACHED, (
             f"卖出价相对买入价 {pct_txt},跌破止损容差带下沿({lo:.0%}),"
             f"疑似未按 -{stop_pct:.0%} 止损离场(§1.3 第一死因、§2.1 第1条违纪)。"
@@ -540,6 +558,7 @@ _TIME_EXIT_KIND_LABEL = {
 
 def check_time_exit_discipline(
     week_start: date, week_end: date, positions: List, due_map: Dict[int, Dict[str, str]],
+    *, has_clause_at: Optional[Callable[[date], bool]] = None,
 ) -> List[str]:
     """时间退出违纪审计(§2.1 第 2 条的**周线兜底**;2026-07-27 审计 🔵-9 补)。
 
@@ -554,9 +573,18 @@ def check_time_exit_discipline(
       · **台账显示没走**:该持仓 `sell_date` 晚于应离场日,或到 `week_end` 仍 `open`。
       · **归哪一周**:应离场日所在的 ISO 周(违纪在那天成立)。
 
-    诚实边界(与熔断同款):**只能基于用户已补录进台账的成交判定**,漏录则失灵;
+    诚实边界:**只能基于用户已补录进台账的成交判定**,漏录则失灵;
     卖在应离场日**之前**不算违纪(更早离场是更严的自律,不罚)。单档现役 K1 与两档 v1.3
-    都覆盖(判据用每日记录的 `time_exit_state`,见 `time_exit_due_map` docstring)。"""
+    都覆盖(判据用每日记录的 `time_exit_state`,见 `time_exit_due_map` docstring)。
+
+    **⚠ V2.2-⑤:`has_clause_at`(注入)—— 本项在「章程无时间退出条款」的时段整项作废。**
+    `has_clause_at(应离场日)` 返 False → **该条不产违纪**(章程都没这条,无违纪可判)。
+    ⛔ **不是静默跳过**:`run_weekly_review` 会在该周的 `charter_notes` 里如实写一句
+    「本周期章程无时间退出条款,不做时间退出纪律判定」(§五 ⑤ 验收条款)。
+    **锚点 = 应离场日那一刻 governing 的章程**(与本项"违纪成立于应离场日"的既有归周口径
+    同一天,不是拿今天的章程重判历史周 —— 那条纪律两个方向都成立:新章程既不能洗白
+    `v1.3.3` 治下的旧违纪,旧章程也不该罚 `v2.2-k8` 治下的行为)。
+    **缺省 None(未注入)→ 逐位维持既有行为**(照判),老调用点与单测零感知。"""
     from neckline.calendar import next_trading_day, trading_days_between
 
     out: List[str] = []
@@ -571,6 +599,8 @@ def check_time_exit_discipline(
         must_exit_by = next_trading_day(decided)
         if not (week_start <= must_exit_by <= week_end):
             continue                      # 违纪(若有)不属于本周
+        if has_clause_at is not None and not has_clause_at(must_exit_by):
+            continue                      # V2.2-⑤:该时段章程无时间退出条款 → 无违纪可判
         sell_date = None
         if p.sell_date:
             try:
@@ -797,6 +827,11 @@ class WeeklyReview:
     # V2.2-③-E:本周开仓里「继承计划四件套不齐」的**警示**清单(⛔ 不是违纪 ——
     # 系统只审计不代下单,缺预案开仓是用户权利;周复盘的职责是让他看见)。
     plan_warnings: List[str] = field(default_factory=list)
+    # V2.2-⑤:本周章程**条款层面**的如实说明(⛔ 既不是违纪也不是警示,是"这条没判、
+    # 为什么没判")。现有两句:① 章程无时间退出条款 → 时间退出纪律整项不判;
+    # ② 章程的 −5% 是「止损警戒」→ 破线未走记警戒不计违纪。
+    # **「没有」与「没看」必须分得开**(§五 〇c 诚实披露体例):沉默会被读成"本周没问题"。
+    charter_notes: List[str] = field(default_factory=list)
 
 
 def run_weekly_review(
@@ -943,13 +978,20 @@ def run_weekly_review(
         review.plan_checks = check_plan_and_ledger(buy_trades_week, db_path=db_path)
 
         # ① 止损纪律:锚**卖出时刻**(审计的是离场决策,与哨兵当时按现役 stop_pct 提醒同源)。
+        #    **V2.2-⑤**:该笔卖出时刻 governing 的章程若是「止损警戒」口径(`v2.2-k8` 起),
+        #    破线未走**仍照常统计**(`stop_discipline` 里的 `STOP_BREACHED` 一条不少 = §1.3
+        #    第一死因的持续体检),但**不进违纪清单**。⛔ 别把统计也一起降级掉。
+        advisory_weeks: List[str] = []
         for rt in closed_week:
             sell_at = rt.sell_instant
-            rt_cfg, _ = _cfg_at(sell_at) if sell_at is not None else (None, None)
+            rt_cfg, rt_ver = _cfg_at(sell_at) if sell_at is not None else (None, None)
             if rt_cfg is not None and rt_cfg.stop_pct is not None:
-                kind, note = classify_stop_discipline(rt, rt_cfg.stop_pct)
+                advisory = brain.stop_is_advisory(rt_ver)
+                kind, note = classify_stop_discipline(rt, rt_cfg.stop_pct, advisory=advisory)
                 review.stop_discipline.append((rt, kind, note))
-                if kind == STOP_BREACHED:
+                if advisory and rt_ver and rt_ver not in advisory_weeks:
+                    advisory_weeks.append(rt_ver)
+                if kind == STOP_BREACHED and not advisory:
                     review.discipline_violations.append(
                         f"{rt.ts_code}({rt.name}) {rt.buy_date}买入→{rt.sell_date}卖出:{note}"
                     )
@@ -991,12 +1033,39 @@ def run_weekly_review(
         review.discipline_violations += [
             msg for msg in cooldown_violations if _cooldown_violation_in_week(msg, w_start, w_end)
         ]
-        # 时间退出违纪(§2.1 第 2 条周线兜底,审计 🔵-9)。与上面几条不同,本项**不读 cfg**
-        # ——判据是「系统当时在 `holding_eod_check` 里记了该走」这一历史事实,不是拿今天的
-        # 参数重算(同「不用今天的章程重判历史周」精神)。无现役 config 的库照样能审。
+        # 时间退出违纪(§2.1 第 2 条周线兜底,审计 🔵-9)。判据主体是「系统当时在
+        # `holding_eod_check` 里记了该走」这一**历史事实**,不是拿今天的参数重算。
+        # **V2.2-⑤ 唯一新增的一位**:该「应离场日」那天 governing 的章程**有没有时间退出
+        # 条款**(`max_hold_days is not None`)—— 没有就整项不判(§五 ⑤ 连带改动 ①)。
+        # 判据仍锚**当时**的章程,故历史周(v1.3.3 治下)照判、一条不少。
+        def _has_time_exit_clause_at(day: date) -> bool:
+            day_cfg, _ = _cfg_at(day_close_instant(day))
+            if day_cfg is None:
+                return True      # 无 config 的老库:维持既有行为(照审),不因缺信息就放过
+            return day_cfg.max_hold_days is not None
+
         review.discipline_violations += check_time_exit_discipline(
-            w_start, w_end, ledger_positions, time_exit_due
+            w_start, w_end, ledger_positions, time_exit_due,
+            has_clause_at=_has_time_exit_clause_at,
         )
+
+        # —— V2.2-⑤ 如实说明:哪些条款本周期压根不存在,所以没判(⛔ 不静默跳过)——
+        for run_lo, run_hi, run_ver in day_runs:
+            run_cfg, _ = _cfg_at(day_close_instant(run_lo))
+            if run_cfg is None or run_cfg.max_hold_days is not None:
+                continue
+            seg = "本周" if len(day_runs) == 1 else (
+                f"本周 {run_lo.strftime('%m-%d')}~{run_hi.strftime('%m-%d')}"
+            )
+            review.charter_notes.append(
+                f"{seg}章程({run_ver or '未知版本'})无时间退出条款,"
+                f"故不做时间退出纪律判定(K8 §十三:时间退出让位主观换股权)。"
+            )
+        for ver in advisory_weeks:
+            review.charter_notes.append(
+                f"本周章程({ver})的 −5% 是「止损警戒 + 离场决策」而非强制条件单,"
+                f"破线未离场**记为警戒、不计违纪**;笔数与金额仍照常统计(§1.3 第一死因体检)。"
+            )
 
         # V2.2-③-E:四件套缺件警示(读**开仓当时冻结**的 `position_plans` v1,
         # ⛔ 不拿今天的卡重判历史;台账读失败 → 该项诚实跳过,同上面几条的降级姿势)。
@@ -1162,6 +1231,9 @@ def weekly_review_dict(review: WeeklyReview) -> dict:
         # V2.2-③-E:四件套缺件警示(新增可选键;老快照读回没有它,客户端
         # `decodeIfPresent` 兜底 —— B 类冻结快照纪律)。
         "planWarnings": list(review.plan_warnings),
+        # V2.2-⑤:章程条款层面的如实说明(同为新增可选键,同一条 B 类纪律)。
+        # ⛔ 不并进 `disciplineViolations` —— 它不是违纪,混进去就把"没这条规矩"讲成了"你犯规"。
+        "charterNotes": list(review.charter_notes),
         "roundTrips": [round_trip_dict(rt) for rt in review.round_trips],
         "closedRoundTrips": [round_trip_dict(rt) for rt in review.closed_round_trips],
         "planChecks": [plan_check_dict(c) for c in review.plan_checks],

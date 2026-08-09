@@ -1,10 +1,13 @@
 """持仓台账 CLI 单测(`scripts/positions.py`)。
 
-本文件因 2026-07-27 独立审计 🔵-6 而建:**CLI 清仓此前不经熔断评估** —— 熔断评估只挂在
-API 端点 `POST /positions/{id}/close`,用 CLI 补录的第 3 笔止损不会当场触发熔断,要等下一次
-API 清仓才被尾链带出;而运维/应急场景恰恰常用 CLI。锁死双向:①三笔止损经 CLI 补录 → 当场
-触发熔断;②不到阈值 → 不触发;③熔断评估异常被吞、绝不影响「清仓已记账」这个事实;
-④`--reason` 白名单(argparse choices)与 store 层白名单防线互补。
+本文件因 2026-07-27 独立审计 🔵-6 而建:**CLI 清仓此前不经那段连带评估** —— 它只挂在 API
+端点 `POST /positions/{id}/close`,用 CLI 补录的第 3 笔止损要等下一次 API 清仓才被尾链带出;
+而运维/应急场景恰恰常用 CLI。**那条「两个入口走同一段」的纪律原样保留**,只是 V2.2-⑤-B
+(用户裁定 #8)之后被连带的东西从「熔断评估」变成了**一条纯提醒**(零状态、零锁)。
+
+锁死四向:①三笔止损经 CLI 补录 → 第三笔当场推一条提醒;②不到阈值 / 断链 → 不推;
+③提醒异常被吞、绝不影响「清仓已记账」这个事实;④`--reason` 白名单(argparse choices)与
+store 层白名单防线互补。
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import positions as cli  # noqa: E402
+from neckline import positions_entry  # noqa: E402
 from neckline.sentinel import circuit  # noqa: E402
 from neckline.sentinel.positions import (  # noqa: E402
     CLOSE_REASON_CODES,
@@ -51,33 +55,75 @@ def _open_and_close(env, code: str, sell_price: float, reason=None) -> int:
     return pid
 
 
-def test_cli_close_records_and_evaluates_circuit(cli_env):
-    """审计 🔵-6:三笔 −6% 止损经 **CLI** 补录 → 第三笔当场触发熔断(不必等下次 API 清仓)。"""
+def _notice_spy(monkeypatch) -> list:
+    """截住那条推送(APNs 在单测里本就发不出去,这里只关心"推了几次、推的什么数")。"""
+    from neckline.api import notify
+
+    sent: list = []
+    monkeypatch.setattr(
+        notify, "push_consecutive_stops_notice",
+        lambda count, *, ts_code="", name="", db_path=None, transport=None:
+            sent.append(count) or notify.NotifyOutcome(skipped_reason="test"),
+    )
+    return sent
+
+
+def test_cli_close_records_and_notices_consecutive_stops(cli_env, monkeypatch):
+    """审计 🔵-6 的纪律不变、被连带的东西换了:三笔 −6% 止损经 **CLI** 补录 → 第三笔当场
+    推一条**纯提醒**(不必等下次 API 清仓)。⛔ 零建行、零锁(裁定 #8)。"""
+    sent = _notice_spy(monkeypatch)
     for i in range(2):
         _open_and_close(cli_env, f"60000{i}.SH", 9.4)
-        assert circuit.is_locked(db_path=cli_env.db_path) is False   # 前两笔不触发
+        assert circuit.count_tail_consecutive_stops(db_path=cli_env.db_path) == i + 1
+        assert sent == []                                  # 前两笔不推
     _open_and_close(cli_env, "600002.SH", 9.4)
-    ep = circuit.current_locked_episode(db_path=cli_env.db_path)
-    assert ep is not None and ep.trigger_reason == circuit.TRIGGER_CONSECUTIVE_STOPS
+    assert sent == [3]
+    from neckline.db import connection
+    with connection(cli_env.db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM circuit_breaker").fetchone()[0] == 0
 
 
-def test_cli_close_no_circuit_when_below_threshold(cli_env):
-    """阴性方向:两笔止损 + 一笔主动离场(断链)→ 不触发熔断(CLI 不制造假熔断)。"""
+def test_cli_close_no_notice_when_below_threshold(cli_env, monkeypatch):
+    """阴性方向:两笔止损 + 一笔主动离场(断链)→ 不推(CLI 不制造假提醒)。"""
+    sent = _notice_spy(monkeypatch)
     _open_and_close(cli_env, "600000.SH", 9.4)
     _open_and_close(cli_env, "600001.SH", 9.4)
     _open_and_close(cli_env, "600002.SH", 10.5, reason=CLOSE_REASON_MANUAL)
-    assert circuit.is_locked(db_path=cli_env.db_path) is False
+    assert circuit.count_tail_consecutive_stops(db_path=cli_env.db_path) == 0
+    assert sent == []
 
 
-def test_cli_close_survives_circuit_failure(cli_env, monkeypatch):
-    """熔断评估异常必须被吞:清仓**已记账**这个事实不受影响(§3.8 只记账,记账优先)。"""
+def test_cli_close_survives_notice_failure(cli_env, monkeypatch):
+    """提醒异常必须被吞:清仓**已记账**这个事实不受影响(§3.8 只记账,记账优先)。"""
     def _boom(*a, **k):
-        raise RuntimeError("circuit boom")
+        raise RuntimeError("notice boom")
 
-    monkeypatch.setattr(circuit, "evaluate_after_close", _boom)
+    monkeypatch.setattr(circuit, "count_tail_consecutive_stops", _boom)
     pid = open_position("600009.SH", 10.0, 100, date(2026, 7, 20), db_path=cli_env.db_path)
     assert cli.cmd_close(_args(pid, 9.4, "20260722")) == 0          # 退出码仍 0
     assert get_position(pid, db_path=cli_env.db_path).status == STATUS_CLOSED
+
+
+def test_cli_and_api_share_one_notice_implementation(cli_env):
+    """「两个入口走同一段」的机器判据(审计 🔵-6 的纪律,V2.2-⑤-B 原样继承):
+    CLI 与 API 都只调 `positions_entry.notice_consecutive_stops_after_close`,
+    ⛔ 谁都不许在自己那侧另写一份计数 / 推送。"""
+    import inspect
+
+    cli_src = inspect.getsource(cli.cmd_close)
+    assert "notice_consecutive_stops_after_close" in cli_src
+    assert callable(positions_entry.notice_consecutive_stops_after_close)
+    api_src = pathlib_read_close_endpoint()
+    assert "notice_consecutive_stops_after_close" in api_src
+    assert "count_tail_consecutive_stops" not in api_src and "count_tail_consecutive_stops" not in cli_src
+
+
+def pathlib_read_close_endpoint() -> str:
+    import inspect
+
+    from neckline.api import app as app_mod
+
+    return inspect.getsource(app_mod.close_position)
 
 
 def test_cli_close_reason_passthrough(cli_env):

@@ -59,7 +59,9 @@ def _run_one_iteration(monkeypatch, *, now, precall_result=None, precall_exc=Non
 
     def _summary_stub(counts, **kw):
         calls["summary"] += 1
-        calls["summary_locked"] = kw.get("circuit_locked")
+        # V2.2-⑤-B:熔断锁定态参数已随熔断整体退役删除 —— 记下实际收到的 kwargs,
+        # 由下面的反向断言确认循环**没有**再往里塞任何锁定位。
+        calls["summary_kwargs"] = set(kw)
 
     def _d5_stub(name, code, d, **kw):
         calls["d5"].append((name, code, d, kw.get("kind"), kw.get("two_tier")))
@@ -112,22 +114,25 @@ def test_loop_skipped_precall_no_push(monkeypatch):
     assert calls["summary"] == 0 and calls["d5"] == []
 
 
-def test_loop_pushes_summary_when_circuit_locked_even_with_zero_findings(monkeypatch):
-    """审计 🟡-4:熔断锁定中,**即便零判定**也要推 9:26 汇总(带「熔断中:今日只减不加」)
-    ——不被「平静清晨不轰炸」的门槛吞掉。"""
-    res = PrecallResult(trade_date=PREOPEN.date(), now=PREOPEN, ran=True, circuit_locked=True)
-    assert res.summary_actionable == 0 and res.should_push_summary is True
-    calls = _run_one_iteration(monkeypatch, now=PREOPEN, precall_result=res)
-    assert calls["summary"] == 1
-    assert calls["summary_locked"] is True
+def test_loop_never_pushes_summary_on_a_quiet_morning(monkeypatch):
+    """🔴 **V2.2-⑤-B(裁定 #8):必发豁免已取消** —— 零判定的清晨**一律不推**。
 
-
-def test_loop_no_summary_when_unlocked_and_nothing_actionable(monkeypatch):
-    """阴性方向:未锁定 + 零判定 → 仍然不推(不因本次修复变成每天轰炸)。"""
-    res = PrecallResult(trade_date=PREOPEN.date(), now=PREOPEN, ran=True, circuit_locked=False)
-    assert res.should_push_summary is False
+    原断言(审计 🟡-4)是它的反面:「熔断锁定中即便零判定也要推」。那条豁免随锁定态一起
+    消失了,**这是裁定 #8 的字面结果、不是遗漏**(§八 第 19 项已当面告知用户:以后平静的
+    清晨就是真的没推送)。⛔ 别以"少了条提醒"为由把它以别的形式加回来。"""
+    res = PrecallResult(trade_date=PREOPEN.date(), now=PREOPEN, ran=True)
+    assert res.summary_actionable == 0 and res.should_push_summary is False
     calls = _run_one_iteration(monkeypatch, now=PREOPEN, precall_result=res)
     assert calls["summary"] == 0
+
+
+def test_loop_does_not_forward_any_lock_flag_to_summary(monkeypatch):
+    """循环调 `push_precall_summary` 时**不再透传任何锁定位**(参数面反向守门)。"""
+    res = PrecallResult(trade_date=PREOPEN.date(), now=PREOPEN, ran=True)
+    res.gap_up = ["600001.SH"]                     # 有 actionable → 会真的推一次
+    calls = _run_one_iteration(monkeypatch, now=PREOPEN, precall_result=res)
+    assert calls["summary"] == 1
+    assert calls["summary_kwargs"] == {"db_path"}
 
 
 def test_loop_swallows_precall_exception(monkeypatch):

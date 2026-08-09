@@ -76,17 +76,18 @@ class TestClosePosition:
     def test_illegal_close_reason_downgraded_to_null(self, isolated_env, bad):
         """审计 🔵-5:非法码降为 NULL(不原样落库)——否则 `circuit._is_stop_loss_close`
         对非空码「信标注、只认 STOP_LOSS」,一个小写 `'stop_loss'` 会让这笔既不算止损、
-        也不走价格兜底 → **熔断静默失效**(审计反例 D4:三笔 −6% 因此不触发)。
-        降为 NULL 后回到价格近似兜底 = 保守方向。"""
+        也不走价格兜底 → **连续止损链静默失效**(审计反例 D4:三笔 −6% 因此数不出来)。
+        降为 NULL 后回到价格近似兜底 = 保守方向。
+        ⚠ V2.2-⑤-B 之后这条的后果面从"熔断不触发"变成"提醒不发",判据与保守方向不变。"""
         db = isolated_env.db_path
         pid = open_position("600519.SH", 10.0, 100, date(2026, 7, 20), db_path=db)
         assert close_position(pid, 9.4, date(2026, 7, 22), close_reason=bad, db_path=db) is True
         assert get_position(pid, db_path=db).close_reason is None   # 降级,不原样落库
         assert get_position(pid, db_path=db).status == STATUS_CLOSED  # 清仓照记(绝不拦「只减」)
 
-    def test_illegal_close_reason_still_triggers_circuit_via_price(self, isolated_env):
+    def test_illegal_close_reason_still_counts_as_stop_via_price(self, isolated_env):
         """审计 🔵-5 的真正后果面:三笔 −6% 卖出、`close_reason='stop_loss'`(非法)。
-        修复前 → 不触发熔断;修复后降为 NULL → 价格兜底照常判止损 → 连续 3 笔触发。"""
+        修复前 → 数不出止损链;修复后降为 NULL → 价格兜底照常判止损 → 尾部连续 3 笔。"""
         from neckline.sentinel import circuit
         from tests.conftest import seed_active_rule_v1
 
@@ -95,12 +96,11 @@ class TestClosePosition:
         for i in range(3):
             pid = open_position(f"60000{i}.SH", 10.0, 100, date(2026, 7, 20), db_path=db)
             close_position(pid, 9.4, date(2026, 7, 22), close_reason="stop_loss", db_path=db)
-        ep = circuit.evaluate_after_close(date(2026, 7, 22), db_path=db)
-        assert ep is not None and ep.trigger_reason == circuit.TRIGGER_CONSECUTIVE_STOPS
+        assert circuit.count_tail_consecutive_stops(db_path=db) == 3
 
     def test_legal_close_reason_still_trusted_verbatim(self, isolated_env):
-        """阴性方向(回归):合法码仍原样落库、仍被熔断「信标注不二猜」——显式 MANUAL 的
-        深亏单不计入止损链(v1.2-A2 既有语义未被本次防线改动)。"""
+        """阴性方向(回归):合法码仍原样落库、仍被「信标注不二猜」——显式 MANUAL 的
+        深亏单不计入止损链(v1.2-A2 既有语义未被本次防线、也未被 V2.2-⑤-B 改动)。"""
         from neckline.sentinel import circuit
         from neckline.sentinel.positions import CLOSE_REASON_MANUAL
         from tests.conftest import seed_active_rule_v1
@@ -111,7 +111,7 @@ class TestClosePosition:
             pid = open_position(f"60000{i}.SH", 10.0, 100, date(2026, 7, 20), db_path=db)
             close_position(pid, 8.0, date(2026, 7, 22), close_reason=CLOSE_REASON_MANUAL, db_path=db)
             assert get_position(pid, db_path=db).close_reason == CLOSE_REASON_MANUAL
-        assert circuit.evaluate_after_close(date(2026, 7, 22), db_path=db) is None
+        assert circuit.count_tail_consecutive_stops(db_path=db) == 0
 
     def test_close_unknown_id_returns_false(self, isolated_env):
         assert close_position(9999, 10.0, date(2026, 7, 22), db_path=isolated_env.db_path) is False

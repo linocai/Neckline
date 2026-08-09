@@ -118,7 +118,17 @@ def server_route_method_pairs() -> dict:
 # ⚠ **空集合不是"闸松了",恰恰相反**:下面那条断言用 `==`,清空之后**任何**新增的
 # 「打不到的调用」都会立刻红 —— 这是本闸最严的状态。⛔ 别再往里加条目当豁免用;
 # 真要新增一笔债,得先有人在 plan 里登记它。
-PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15: set = set()
+# ⚠ **2026-08-09 V2.2-⑤-B 重新挂上两笔债(熔断整体退役,用户裁定 #8)**:服务端已删
+# `GET /api/v1/circuit` 与 `POST /api/v1/circuit/unlock` 两条端点(锁定态 / 解锁两件机制
+# 随熔断一起没了),而**客户端里那两条活调用归 ⑥ 删**(本批 ⛔ 不碰 `client/`)。
+# 这两条在 plan 里**已登记**(§五 ⑤-B 第 4 项 + ⑥「客户端连带(归 ⑥ 一起做)」),符合上面
+# 那句「真要新增一笔债,得先有人在 plan 里登记它」。
+# ✅ **⑥ 做完必须把这两条删掉** —— 下面 `test_registered_debt_entries_are_really_still_in_
+# the_client` 是反向闸:客户端一旦删干净,清单不同步就会红。
+PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15: set = {
+    "/api/v1/circuit",
+    "/api/v1/circuit/unlock",
+}
 
 
 def test_client_call_surface_is_subset_of_server_routes_modulo_registered_debt():
@@ -312,8 +322,16 @@ def test_v21_changes_the_reason_surface_by_exactly_nothing():
         f"  V2.1 少掉的(⛔ 删 reason = 老客户端的 case 变死码,更要当心):"
         f"{sorted(_V20_REASON_SURFACE - SERVER_REASONS)}"
     )
-    # 闭包处在最严状态(两份欠账清单都空)才谈得上「零新增」是被守住的。
-    assert not PENDING_MAP_REASON_CASES_FOR_15 and not PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15
+    # reason 侧闭包必须处在**最严状态**(欠账清单为空)才谈得上「零新增 reason」被守住。
+    assert not PENDING_MAP_REASON_CASES_FOR_15
+    # ⚠ **路由侧欠账清单 V2.2-⑤-B 起非空,且只许是那两条**(服务端已删 `/circuit` 两条端点,
+    # 客户端的活调用归 ⑥ 删)。原来这里与 reason 侧写在同一句 `and` 里 —— 那把两件事捆成了
+    # 一个判据:一旦路由侧挂债,这条「零新增 reason」的断言就会因为**跟 reason 无关**的原因
+    # 变红,人只会把它当噪音关掉。故拆成两句,并给路由侧一条**精确**的白名单闸:
+    # 多一条、少一条都红(⑥ 删完客户端调用后,这里与上面的清单要一起清空)。
+    assert PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15 == {"/api/v1/circuit", "/api/v1/circuit/unlock"}, (
+        "路由侧欠账清单只许是 V2.2-⑤-B 登记的那两条熔断端点(⑥ 删客户端调用后清空)。"
+    )
 
 
 # —— V2.1 契约新增面:4 个只读新键(⑧ 对拍表「新增面」的机器判据)——————————

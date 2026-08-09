@@ -47,7 +47,6 @@ from neckline.api.schemas import (
     BasketReviewOut,
     BasketsListOut,
     BasketVerificationOut,
-    CircuitEpisodeOut,
     CircuitStateOut,
     ConfirmationCardOut,
     ContingencyScenarioOut,
@@ -119,7 +118,6 @@ from neckline.config import ensure_data_dirs
 from neckline.llm.factory import get_provider
 from neckline.report import store as report_store
 from neckline import custom_alerts, notify_kinds
-from neckline.sentinel import circuit as circuit_store
 from neckline.sentinel import dedup
 from neckline.sentinel import positions as pos_store
 from neckline.sentinel.intraday import is_intraday_now
@@ -297,12 +295,11 @@ async def _sentinel_loop(stop_event: asyncio.Event) -> None:
             try:
                 pr = await asyncio.to_thread(run_precall_tick, now, db_path=_db())
                 if pr.ran:
-                    # 汇总推送门槛 = `should_push_summary`(单一源在 PrecallResult):有需动作
-                    # 判定 **或** 熔断锁定中(审计 🟡-4:锁定期零判定也要发「今日只减不加」)。
+                    # 汇总推送门槛 = `should_push_summary`(单一源在 PrecallResult)= 有需要
+                    # 动作的判定。⚠ V2.2-⑤-B:原「或熔断锁定中」的必发豁免已随熔断退役取消。
                     if pr.should_push_summary:
                         await asyncio.to_thread(
-                            notify.push_precall_summary, pr.counts,
-                            circuit_locked=pr.circuit_locked, db_path=_db(),
+                            notify.push_precall_summary, pr.counts, db_path=_db(),
                         )
                     for ex in pr.d5_exits:
                         await asyncio.to_thread(
@@ -743,6 +740,10 @@ _SENTINEL_LABEL.update({"precall": "盘前校准", "d5exit": "D5退出"})
 # retreatBrake 红条,不进列表)。客户端 SentinelKind 无 "退潮" 枚举 → kind=nil →
 # 中性色渲染,不崩(不改客户端)。
 _SENTINEL_LABEL.update({"retreat": "退潮"})
+# V2.2-⑤-B:连续止损**纯提醒**的看板事件(sentinel='circuit',复用既有名字不新增类型)。
+# 客户端 `SentinelKind` 无此枚举 → kind=nil → 中性色渲染,不崩(同 v1.1-H2「退潮」先例,
+# ⛔ 本版不动客户端)。**它是一条事件,不是状态** —— 看板上没有、也不许有任何锁定横幅。
+_SENTINEL_LABEL.update({"circuit": "连续止损提醒"})
 
 
 @app.get(f"{API_PREFIX}/board", dependencies=[Depends(require_token)])
@@ -851,10 +852,14 @@ def _resolve_price_stale(codes: List[str]) -> Dict[str, Any]:
         return {}
 
 
-def _active_config() -> Tuple[float, int, float, Optional[float]]:
+def _active_config() -> Tuple[float, Optional[int], float, Optional[float]]:
     """现役策略 config 的四个值(单一事实源 `brain.active_config`,§3.8 铁律):
     (stop_pct, max_hold_days, single_cap, take_profit_retrace)。无现役版本(异常状态)
     → 退回 `MomentumConfig` 字段默认(不在此另拍字面量)。
+
+    ⚠ **V2.2-⑤:`max_hold_days` 现在可能是 `None`**(`v2.2-k8` = 章程不设时间退出)。
+    **⛔ 不许在这里拿一个默认天数顶上** —— 那是把"没有这条规矩"悄悄换成"D5 该走",
+    正是 §3.11-E 否决哨兵位时说的那种"看不出来"的病。调用方按 `None` 各自如实处理。
 
     **兜底判据是「键缺失」不是「falsy」(2026-07-27 审计 🔵-9)**:旧写法 `cfg.get(k) or fb.k`
     会把章程**显式**设的 0 / None(如未来某版 `stop_pct=None` = 不设止损)悄悄换回默认
@@ -876,7 +881,7 @@ def _active_config() -> Tuple[float, int, float, Optional[float]]:
     tpr = _pick("take_profit_retrace", fb.take_profit_retrace)
     return (
         float(stop_pct if stop_pct is not None else 0.0),
-        int(max_hold),
+        (int(max_hold) if max_hold is not None else None),
         float(single_cap),
         (float(tpr) if tpr is not None else None),
     )
@@ -916,8 +921,9 @@ def _retrace_state(
 
 
 def _today_action(
-    d_count: int, eff_max: int, dist_to_stop_pct: Optional[float],
+    d_count: int, eff_max: Optional[int], dist_to_stop_pct: Optional[float],
     retrace_state: Optional[Dict[str, Any]], time_exit_state: str,
+    *, stop_advisory: bool = False,
 ) -> str:
     """今日动作提示文案(纯展示层,优先级:时间退出 > 回落止盈 > 跌破/逼近止损 > 持有中)。
     v1.3-① 两档:`hard_cap_exit`/`time_exit_next_day` 走离场优先;`profit_exempt` 是「豁免时间
@@ -939,12 +945,20 @@ def _today_action(
     if retrace_state and retrace_state.get("triggered"):
         return "回落止盈已触发,按计划离场"
     if dist_to_stop_pct is not None:
+        # V2.2-⑤:止损口径由现役章程决定(⛔ 判定与阈值一字未动,只换这句话在说什么)。
         if dist_to_stop_pct <= 0:
-            return "现价已跌破止损线,若条件单未成交请立即人工确认(系统不代下单)"
+            return ("止损警戒:现价已跌破止损线,离场决策在你(系统不代下单)"
+                    if stop_advisory else
+                    "现价已跌破止损线,若条件单未成交请立即人工确认(系统不代下单)")
         if dist_to_stop_pct <= 0.02:
-            return f"距止损线 {dist_to_stop_pct:.1%},盯紧条件单"
+            return (f"止损警戒:距止损线 {dist_to_stop_pct:.1%},离场决策在你"
+                    if stop_advisory else f"距止损线 {dist_to_stop_pct:.1%},盯紧条件单")
     if time_exit_state == PROFIT_EXEMPT:
         return f"浮盈豁免时间退出,交回落止盈+止损管到硬上限(D{d_count}/D{eff_max})"
+    # V2.2-⑤:章程无时间退出条款 → **不编一个 D 上限出来**(`eff_max is None`),
+    # 如实说明持有天数只是计数、不指向任何离场日。
+    if eff_max is None:
+        return f"持有中(D{d_count};本版章程无时间退出条款,D 计数只作记录)"
     return f"持有中(D{d_count}/D{eff_max})"
 
 
@@ -964,22 +978,19 @@ def _locked_time_exit_day(buy_date: date, locked_date: Optional[str]) -> Optiona
     return pos_store.d_count(buy_date, d)
 
 
-def _shape_circuit(state: "circuit_store.CircuitState") -> CircuitStateOut:
-    """熔断领域状态 → 客户端契约(诚实边界字段透出)。同 `_shape_candidate` 透传惯例。"""
-    if state.episode is None:
-        return CircuitStateOut(locked=state.locked)
-    ep = state.episode
-    return CircuitStateOut(
-        locked=state.locked,
-        episode=CircuitEpisodeOut(
-            triggerReason=ep.trigger_reason,
-            triggeredAt=ep.triggered_at,
-            triggerRefDate=ep.trigger_ref_date,
-            basisTradesCount=ep.basis_trades_count,
-            basisWindow=ep.basis_window,
-            note=ep.note,
-        ),
-    )
+def _retired_circuit_state() -> CircuitStateOut:
+    """**已退役的熔断态**(V2.2-⑤-B 第 5 项):恒 `locked=false` / `episode=null` 的空态。
+
+    🔴 **为什么还发这个键**:〇b-3 **零删键铁律** —— 用户 iPhone 何时换包不可控,而
+    `CircuitStateOut` 在 2.0.0 / 2.1.0 客户端是**必需解码**,停发 = 整份持仓解不出。
+    故本版**只掏空、不删键**,真删键排 v2.3(两步淘汰纪律:先发一版客户端把它改
+    `decodeIfPresent`,下一版服务端才可删)。
+
+    ⛔ **它不是"当前没锁"这条信息** —— 熔断机制已不存在,这里恒 false 是**兼容占位**。
+    ⛔ 别拿它当状态位复活任何锁定语义(§五 〇b-7)。"""
+    return CircuitStateOut(locked=False)
+
+
 
 
 @app.get(f"{API_PREFIX}/positions", dependencies=[Depends(require_token)])
@@ -993,6 +1004,9 @@ def list_positions() -> PositionsOut:
     prices = _resolve_prices(codes)
     stop_pct, max_hold, _single_cap, tpr = _active_config()
     cfg = _active_momentum_config()
+    # V2.2-⑤:现役章程的止损口径(强制条件单 / 止损警戒),只换 `todayAction` 文案口吻。
+    from neckline.strategy import brain as _brain
+    stop_advisory = _brain.active_stop_is_advisory(db_path=_db())
     # v1.3-② 持仓 K4 牌:读最近一份 16:35 体检快照嵌 k4Advisory[] + scenarioReviewPending
     # (服务端算好,客户端不重算 250 日面板;刚开仓未体检 → 空数组/False)。
     k4_snapshots = load_latest_checks_by_position(db_path=_db())
@@ -1038,7 +1052,9 @@ def list_positions() -> PositionsOut:
         # 都会晚于 D5,系统一直如实落库但此前界面不说)。`d_count` 复用 `positions.d_count`
         # 单一源,不在这里重算日历。
         locked_day = _locked_time_exit_day(buy, lock.get("date"))
-        locked_late = max(0, locked_day - max_hold) if locked_day is not None else 0
+        # V2.2-⑤:章程无时间退出条款(`max_hold` is None)→ 没有"晚于 D{n}"这个量,恒 0。
+        locked_late = (max(0, locked_day - max_hold)
+                       if locked_day is not None and max_hold is not None else 0)
         k4_advisory = [
             K4AdvisoryOut(
                 code=hit.get("code", ""), label=hit.get("label", ""),
@@ -1055,7 +1071,8 @@ def list_positions() -> PositionsOut:
             dCount=dcount, maxHoldDays=max_hold,
             distToStopPct=(round(dist, 4) if dist is not None else None),
             retraceState=retrace,
-            todayAction=_today_action(dcount, eff_max, dist, retrace, te_state),
+            todayAction=_today_action(dcount, eff_max, dist, retrace, te_state,
+                                      stop_advisory=stop_advisory),
             maxHoldDaysEffective=eff_max, timeExitState=te_state,
             timeExitLockedDay=locked_day, timeExitLockedLateDays=locked_late,
             buyFees=h.buy_fees, sellFees=h.sell_fees,
@@ -1063,7 +1080,8 @@ def list_positions() -> PositionsOut:
             k4DataUnavailable=snap.get("data_unavailable"),   # None=老快照未记录,如实透 null
             k4Advisory=k4_advisory, scenarioReviewPending=bool(snap.get("scenario_review")),
         ))
-    return PositionsOut(holdings=out, circuit=_shape_circuit(circuit_store.get_state(db_path=_db())))
+    # V2.2-⑤-B:熔断已整体退役 → `circuit` 键**恒发空态**(零删键铁律,见 `_retired_circuit_state`)。
+    return PositionsOut(holdings=out, circuit=_retired_circuit_state())
 
 
 # 补录预填区间的**保守下沿因子**(下限档金额 = `single_cap` × 本值)。**纯展示层因子,
@@ -1188,10 +1206,11 @@ def open_position(body: PositionOpenIn) -> PositionOpenOut:
 @app.post(f"{API_PREFIX}/positions/{{position_id}}/close", dependencies=[Depends(require_token)])
 def close_position(position_id: int, body: PositionCloseIn) -> OkOut:
     """清仓录入(§3.8 只记账,永不代下单/撤单)。可选 `closeReason` 落库(v1.2-A2,
-    v2.0.0 起枚举扩至九枚,见 `positions.CLOSE_REASON_CODES`);清仓后折进熔断评估
-    (`circuit.evaluate_after_close`)——越阈值即建触发行 + 第五类 APNs 推送。**熔断
-    是纯提醒层**:评估/推送**尽力而为、异常吞掉不阻断清仓主流程**(F.3),服务端
-    **绝不因熔断拦清仓**(本就是「只减」方向)。
+    v2.0.0 起枚举扩至九枚,见 `positions.CLOSE_REASON_CODES`)。
+
+    **V2.2-⑤-B(裁定 #8 熔断整体退役)**:清仓后只折进**纯提醒** —— 算一次尾部连续止损
+    数,达 3 就推一条提醒 + 落一条看板事件,**⛔ 不建行、不锁、不改任何返回值语义**
+    (`OkOut(ok=True)` 逐字段不变)。提醒**尽力而为、异常吞掉不阻断清仓主流程**。
 
     **v2.0.0(⑩-D)**:写入改走 `neckline.positions_entry.record_sell`(同 `record_
     buy` 姿势),清仓成功后额外落 `user_actions(kind='sell')`,该记账失败不影响
@@ -1211,13 +1230,10 @@ def close_position(position_id: int, body: PositionCloseIn) -> OkOut:
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"ok": False, "reason": "not_holding"},
         )
-    # 熔断评估折进清仓路径(尽力而为,失败绝不阻断清仓成功响应)。
-    try:
-        episode = circuit_store.evaluate_after_close(sell_date, db_path=_db())
-        if episode is not None:
-            notify.push_circuit_breaker(episode, db_path=_db())
-    except Exception:  # noqa: BLE001  熔断评估/推送异常绝不能掀翻清仓主流程(F.3)
-        logger.warning("熔断评估/推送异常(已吞,不阻断清仓)", exc_info=True)
+    # 连续止损**纯提醒**折进清仓路径(V2.2-⑤-B;与 CLI 共用同一段编排,行为不因入口而异)。
+    positions_entry.notice_consecutive_stops_after_close(
+        position_id, sell_date=sell_date, db_path=_db(),
+    )
     return OkOut(ok=True)
 
 
@@ -1292,24 +1308,16 @@ def get_entry_snapshot(position_id: int) -> EntrySnapshotOut:
     )
 
 
-# —— v1.2-A2 熔断纪律状态 + 解锁(§2.1 第 7 条,🔴)——————————————————————————————
-# **熔断是纯提醒层**(§3.8):本节端点只读锁定态 / 记录用户解锁 ack,**绝不代下单/
-# 撤单、绝不拦 `POST /positions`**(客户端「开新仓」入口自律灰化)。解锁本就是用户
-# 动作(读强制复盘材料后确认),故可走 API(与「大脑激活绝不暴露给客户端」不同)。
-
-@app.get(f"{API_PREFIX}/circuit", dependencies=[Depends(require_token)])
-def get_circuit() -> CircuitStateOut:
-    """权威熔断锁定态(plan A2.8;客户端今日计划面横幅/「开新仓」灰化据此)。"""
-    return _shape_circuit(circuit_store.get_state(db_path=_db()))
-
-
-@app.post(f"{API_PREFIX}/circuit/unlock", dependencies=[Depends(require_token)])
-def unlock_circuit() -> OkOut:
-    """客户端「熔断复盘」按钮解锁(plan A2.7 主路径,`unlocked_via='review_ack'`)。
-    诚实:系统不能验证用户「真的复盘了」,但强制把材料摆到面前 + 记录 ack(客户端
-    先展示确定性材料再调本端点)。无锁定态时幂等成功(已是解锁态)。"""
-    circuit_store.unlock(via=circuit_store.UNLOCK_VIA_REVIEW_ACK, db_path=_db())
-    return OkOut(ok=True)
+# —— ⚠ V2.2-⑤-B:`GET /circuit` 与 `POST /circuit/unlock` **两条端点已删**(裁定 #8)——
+# 熔断整体退役 = 锁定态 / 次日只减不加 / 强制复盘解锁三件机制全删,故:
+#   · `POST /circuit/unlock` 是「解锁」动作,**随机制消失**;
+#   · `GET /circuit` **没有替代端点** —— 提醒走推送与看板事件,**不走状态查询**。
+# 两条路径自此由 FastAPI 天然返 **404**(⛔ 别加一条返空态的兼容路由:那等于把"已退役"
+# 讲成"查得到、恰好没锁",又是一个看不出来的状态位)。
+# ⚠ **`PositionsOut.circuit` 这个键本版不删**(〇b-3 零删键铁律,`CircuitStateOut` 在
+# 2.0.0/2.1.0 客户端是**必需解码**)→ 恒发 `locked=false` 空态,真删键排 v2.3。
+# ⚠ 客户端里那两条活调用由 ⑥ 删,本版先登记进
+# `tests/test_contract_crosscheck.py::PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15`。
 
 
 # —— v1.2-B 预注册决策日志(§2.1 第 3 条 / plan §五 v1.2-B)——————————————————
@@ -1782,13 +1790,10 @@ def review_upload(files: List[UploadFile] = File(...)) -> ReviewUploadOut:
 
     reviews, data_warnings = run_weekly_review(all_trades, db_path=_db())
 
-    # v1.2-A2 自动解锁(plan A2.7 自动路径):某触发行的 trigger_ref_date 落在一个走了
-    # 强制复盘口径(forced_review=True,即 reconcile.is_forced_review 同源)的 ISO 周内 →
-    # 该行自动解锁(unlocked_via='weekly_review')。尽力而为,失败不阻断周复盘响应。
-    try:
-        circuit_store.auto_unlock_for_reviews(reviews, db_path=_db())
-    except Exception:  # noqa: BLE001
-        logger.warning("周复盘熔断自动解锁异常(已吞,不阻断周复盘)", exc_info=True)
+    # ⚠ **V2.2-⑤-B:原 `circuit.auto_unlock_for_reviews(...)` 接线已删**(裁定 #8 —— 强制
+    # 复盘解锁是被删的三件机制之一,没有锁自然也没有解锁)。
+    # ⚠ **§2.1 第 4 条「单周亏损 ≥ 总仓 2% → 强制复盘」一字不动、⛔ 别连坐删**:它不是熔断,
+    # 判据仍是 `reconcile.FORCED_REVIEW_LOSS_FRAC`,周复盘照常判(下面 `review.forced_review`)。
 
     weeks_out: List[WeeklyReviewOut] = []
     for review in reviews:

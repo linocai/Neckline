@@ -67,8 +67,18 @@ class HoldingAlert:
 
 
 def check_stop_approach(
-    position: Position, quote: Quote, stop_pct: float, buffer_pct: float = STOP_APPROACH_BUFFER
+    position: Position, quote: Quote, stop_pct: float, buffer_pct: float = STOP_APPROACH_BUFFER,
+    *, advisory: bool = False,
 ) -> Optional[str]:
+    """止损逼近 / 已跌破的预警文案。
+
+    **`advisory`(V2.2-⑤,§2.9-A「−5% 由强制条件单改为止损警戒 + 离场决策」)**:
+      · `False`(缺省 = `v1.3.3` 及之前的章程)→ 文案**逐字不变**,仍指向券商条件单。
+      · `True`(`v2.2-k8` 起,判据单一源 `brain.stop_is_advisory`)→ 改「止损警戒」口吻,
+        点明**离场决策在用户**。⚠ **阈值与判定逻辑一字未动** —— `stop_pct=0.05` 仍是同
+        一个唯一源、同一条线、同一个提前量;改的只是它触发的那句话在说什么(§五 ⑤ 工程
+        细节 2)。⛔ 别把它读成"止损放松了":系统本来就不代下单,变的是纪律归属。
+    """
     if quote.price <= 0 or position.buy_price <= 0:
         return None
     drawdown = (position.buy_price - quote.price) / position.buy_price
@@ -77,9 +87,19 @@ def check_stop_approach(
         return None
     stop_line = position.buy_price * (1 - stop_pct)
     if quote.price <= stop_line + _EPS * position.buy_price:
+        if advisory:
+            return (
+                f"止损警戒:现价{quote.price:.2f}已跌破止损线{stop_line:.2f}(-{stop_pct:.0%}),"
+                f"离场决策在你(系统不代下单/撤单)"
+            )
         return (
             f"现价{quote.price:.2f}已跌破止损线{stop_line:.2f}(-{stop_pct:.0%}),"
             f"若券商条件单未成交请立即人工确认(系统不代下单/撤单)"
+        )
+    if advisory:
+        return (
+            f"止损警戒:现价{quote.price:.2f}逼近止损线{stop_line:.2f}(-{stop_pct:.0%}),"
+            f"当前浮亏{drawdown:.1%},离场决策在你"
         )
     return f"现价{quote.price:.2f}逼近止损线{stop_line:.2f}(-{stop_pct:.0%}),当前浮亏{drawdown:.1%}"
 
@@ -161,13 +181,18 @@ def evaluate_holding(
     peer_returns: Optional[List[float]] = None,
     stop_buffer: float = STOP_APPROACH_BUFFER,
     sector_dive_threshold: float = SECTOR_DIVE_RET_THRESHOLD,
+    stop_advisory: bool = False,
 ) -> HoldingAlert:
     """三条子检查合一,返回本持仓当拍命中的全部告警(可能 0~3 条同时命中)。
     `quote is None`(拉不到行情)→ 止损/止盈两条跳过,板块跳水仍可能有数据
-    (peer_returns 来自其它同板块个股的行情,不依赖本票自己的 quote)。"""
+    (peer_returns 来自其它同板块个股的行情,不依赖本票自己的 quote)。
+
+    `stop_advisory`(V2.2-⑤)只透传给 `check_stop_approach` 换文案口吻,**不改任何判定**;
+    缺省 False = 与 V2.2 之前逐字节相同。"""
     alerts: Dict[str, str] = {}
     if quote is not None:
-        stop_reason = check_stop_approach(position, quote, stop_pct, stop_buffer)
+        stop_reason = check_stop_approach(position, quote, stop_pct, stop_buffer,
+                                          advisory=stop_advisory)
         if stop_reason:
             alerts["stop_approach"] = stop_reason
         tp_reason = check_take_profit(position, quote, historical_peak_close, take_profit_retrace)
