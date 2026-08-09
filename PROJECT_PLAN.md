@@ -480,15 +480,13 @@ Neckline/
 - **V2.1 的账已结清**:批 1 六块已上产 = V2.2 的地基;批 2(`K7-pack-v2` 发版激活)**⛔ 作废永不执行**;
   批 3(周度 unit)并入 V2.2 第 ④ 块。
 
-**🔴🔴 一个悬案挡在批 2 之前(实测证实,⛔ 结论未定不许开工 ⑦ 批 1)**
+**✅ 立项时那条批 1 判据已被施工期实测证伪并改写(2026-08-09 用户裁定,⛔ 不得回退)**
 
-**§五 ⑦ 批 1 的部署判据自相矛盾**:批 1 代码一旦上产,`get_active_pack()` = `get_active_line("V")`,
-而生产现役 `K7-pack-v1` 是 `LEGACY` 行 → **实测返 `None`** → `generate_seeds()` 返 `None` →
-**当晚零种子零篮子**;而 ⑦ 批 1 判据写的是「**当晚晚间链行为与 V2.1 逐位相同**」。两句不能同时为真,
-且**与跑不跑 `retire_legacy_packs.py` 无关** —— 是 `ENGINE_API_VERSION` bump + 读侧改线本身的直接推论
-(「批 1 不激活任何新线」与「行为逐位不变」在设计上互斥)。**orchestrator 推荐**:批 1 改成
-「代码 + retire LEGACY + **只激活骨架线 V**」(三引擎线仍留批 2)—— 晚间链不空窗,行为变化收敛成
-可解释的一处(选股域收窄:排科创、排白酒),归因仍分得清。**⛔ 未自行改 Plan,等用户/planner 裁定。**
+原判据「批 1 不激活任何新线 + 当晚晚间链行为与 V2.1 逐位相同」**不可能同时为真**:bump 后
+`get_active_pack()` 对生产那行 `LEGACY` **实测返 `None`** → 当晚零种子零篮子。
+**现判据:批 1 = 代码 + `retire_legacy_packs.py --confirm` + 只激活骨架线 `K8-V0.5`**(三引擎线留批 2),
+与 V2.1 的差异**恰好收敛为选股域收窄一处**(排科创 + 排白酒)。全文与理由 → §五 ⑦「批 1 判据的更正」。
+⚠ 连带更正:**`market_regime_daily` 的 P0-23 隔离实测是批 1 前置,不是批 2**。
 
 **🔴 立项时定死、最容易被后人改回去的六条(全文在 §五 〇b/〇c)**
 
@@ -1175,7 +1173,7 @@ n ≥ 40 且 显著劣于安慰剂基线                        → retire
 
 | 批 | 内容 | 回滚绳 | 判据 |
 |---|---|---|---|
-| **批 1** | ①(注册表 schema + 迁移 + 四个包文件,**不激活**)+ ②(行情状态层落表 + 只读端点) | `git checkout <V2.1 收官 commit>` + `sync_code.sh` + restart;**DB 侧只加了两列一索引 + 清了 LEGACY 的 `is_active`** → 回滚需 `.bak` 还原 | `/health` = `v2.2.0`;`init_schema` 幂等跑表数 +2、列 +2;`selection_packs` 零行 `is_active=1`;`/market-regime` 200 且当日有行;**当晚晚间链行为与 V2.1 逐位相同**(还没接判定) |
+| **批 1**(🔧 **2026-08-09 用户裁定改写,见下「批 1 判据的更正」**) | ①(注册表 schema + 迁移 + 四个包文件)+ ②(行情状态层落表 + 只读端点)+ **`retire_legacy_packs.py --confirm`** + **只激活骨架线 `K8-V0.5`**(⛔ 三引擎线仍留批 2) | `git checkout cf24189` + `sync_code.sh` + restart;**DB 侧加了一表两列一索引 + 清了 LEGACY 的 `is_active` + 追加两条激活事件** → 回滚需 `.bak` 还原 | `/health` = `v2.2.0`;`init_schema` 幂等跑**表 +1、列 +2**、索引换一条;`selection_packs` **恰一行 `is_active=1` 且 `line_code='V'`**;`/market-regime` 200 且当日有行、`skeleton_version='K8-V0.5'`;**当晚晚间链照常产出种子与篮子**,与 V2.1 的差异**恰好收敛为选股域收窄一处**(排科创 + 排白酒),⛔ 无第二处行为变化 |
 | **批 2** 🔴 | ③(关口管线 + 位置关表)+ **骨架线 `K8-V0.5` 与 `C1`/`Z1`/`Y1` 四次激活**(四道闸,先各跑一次不带 `--confirm` 的演练) | **代码 commit 回滚 + DB `.bak` 还原**(⛔ **不是「激活旧包」** —— `ENGINE_API_VERSION` 已 bump 到 2,两个旧包被闸 2 硬拒,这是设计,不是故障) | 四线各一行现役;当晚 `basket_stage_handoff` `reason_stage=ok`;`gate_evaluations` 有行且说得出卡在哪关;成员带 `engineCode×engineVersion`;`landing_state_daily` 全市场有态 |
 | **批 3** | ④(双时钟 + 周度归因 + 四分类)+ `neckline-weekly.{service,timer}` + `enable --now` | `systemctl disable --now neckline-weekly.timer`;新表可留空 | 见 ④ 验收三条(**含跨两次触发的不变量**);`/eval/weekly` 已改读产物 |
 | **批 4** 🔴🔴 | ⑤-A 章程 `v2.2-k8`(staged:**等用户清仓 + 确认**)**+ ⑤-B 熔断整体退役(纯代码,部署即生效)** | 章程侧 `activate_charter.py --target v1.3.3 --confirm`(白名单内,SOP 见 `archive/SOP_章程回滚_20260730.md`);熔断侧 = 代码 commit 回滚(`circuit_breaker` 表**未 DROP**,历史行还在,回滚即复活) | 现役行切换 + 事件流追加;当晚哨兵零回落止盈 / 零时间退出判定;`GET /circuit` 返 404 且 `PositionsOut.circuit.locked` 恒 false(老客户端不炸) |
@@ -1183,8 +1181,29 @@ n ≥ 40 且 显著劣于安慰剂基线                        → retire
 
 **批 2 的 P0-23 前置(⛔ 不许跳过)**:`landing_state_daily` 是**全市场逐票 × 60 日回看**的新批算路径,`market_regime_daily` 亦是新批算。上生产前必须 `systemd-run --scope -p MemoryMax=… -p CPUQuota=…` **隔离单跑**,量时长与峰值,**收盘后 15:00 之后、避开 16:00–17:00、串行、`load > 4` 立即停手**;实测数达标才把 `neckline-scan.service` 的 `TimeoutStartSec`/`MemoryMax` 改成实测值(带理由)。⛔ 别拿常驻 `neckline.service` 当小白鼠。⚠ 顺带把 §七 **P4-43**(nk 资源限额待校准)的数据一并收了。
 
-**⚠ 两条部署顺序硬约束**
+**🔧 批 1 判据的更正(2026-08-09 用户裁定,⛔ 原判据已证伪,不得回退)**
 
+立项时批 1 写的是「**不激活任何新线**」+「**当晚晚间链行为与 V2.1 逐位相同**」——**这两句不可能同时为真**,
+施工期实测证伪:批 1 代码一上产,`get_active_pack()` 已改为 `get_active_line("V")`,而生产现役
+`K7-pack-v1` 是 `LEGACY` 行 → 返 `None` → `generate_seeds()` 返 `None` → **当晚零种子零篮子**。
+
+```
+库里那一行  : [('K7-pack-v1', 'LEGACY', 'running', 1)]
+get_active_pack()    : None      ← 实测
+```
+
+**根因**:这与跑不跑 `retire_legacy_packs.py` **无关**,是 `ENGINE_API_VERSION` bump + 读侧改线**本身**的
+直接推论 ——「批 1 不激活任何新线」与「行为逐位不变」在设计上互斥。**裁定**:批 1 改为
+「**代码 + retire LEGACY + 只激活骨架线 V**」,三引擎线仍留批 2。理由:① 晚间链不空窗(不拿生产停摆
+换一个"更纯"的批次划分);② 行为变化收敛成**可解释的一处**(选股域收窄:排科创、排白酒),
+③ 归因仍分得清 —— **批 1 只动股票池,批 2 才动定档逻辑**,〇b-6 的观察窗前提不受影响。
+
+**⚠ 三条部署顺序硬约束**
+
+0. 🆕 **`market_regime_daily` 的 P0-23 隔离实测是「批 1」前置,不是批 2** —— 下面那段「批 2 的 P0-23 前置」
+   写在 ② 落批 1 之前,**这里更正**:`market_regime_daily` 随批 1 上产,故它的 `systemd-run --scope`
+   隔离计时 + 量峰值必须在**批 1 部署前**做完(`landing_state_daily` 那半仍是批 2 前置)。
+   ⚠ 开发机实测 `<0.1s/日` **不是生产结论**(CLAUDE.md 铁律:P0-23 原教旨)。
 1. **① 的 `retire_legacy_packs.py` 必须在索引重建之前跑**(见 ① 的重建顺序铁律)。
 2. **⑤(章程)必须在 ③(选股换心)上线并观察一个完整交易日之后** —— 否则出了问题分不清是「K8 选的票不行」还是「新退出规则不行」。这是**归因的前提**,不是排期偏好。
 
