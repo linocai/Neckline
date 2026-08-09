@@ -120,6 +120,31 @@ STATE_UNCLEAR = "unclear"
 STATE_FALSIFIED = "falsified"
 STATES: Tuple[str, ...] = (STATE_VERIFIED, STATE_PARTIAL, STATE_UNCLEAR, STATE_FALSIFIED)
 
+# —— 四态 → 「正确率」换算(**唯一源**,V2.2-④ 从 `scan/regime.py` 提上来)——————
+# ⚠ **这是既有登记项,不是 V2.2 新造的数**:`scan/regime.py::_compute_accuracy_dim`
+# (V2.2-② 落地,§七 P3-51)当初就写死了这套换算,现在只是把它挪成单一源,好让
+# ④ 周度「T1/T2 入场信号正确率」与状态层第五维**吃同一份定义**(⛔ 两处各写一份
+# 迟早漂)。口径:`verified=1` / `partial=0.5` / `falsified=0`;**`unclear` 不进
+# 分母**(说不清就不猜,同 `not_evaluated` 不进分母的既有纪律)。
+# 🔴 它是「把四态折成一个 0–1 的数」的换算,**⛔ 不是一条及格线** —— 「正确率多少
+# 算好」是定量决策,那条线不在本项目任何代码里,要由用户拍板后进包(见
+# `neckline/eval/iteration.py` 模块头)。
+STATE_SCORES: Dict[str, float] = {
+    STATE_VERIFIED: 1.0,
+    STATE_PARTIAL: 0.5,
+    STATE_FALSIFIED: 0.0,
+}
+
+
+def accuracy_from_counts(counts: Mapping[str, int]) -> Tuple[Optional[float], int]:
+    """四态计数 → `(正确率, 计入分母的样本数)`。分母为 0 → `(None, 0)`
+    (**「算不出」≠「正确率 0」**,§3.8 老规矩)。`unclear` 与任何未登记的态都不计入。"""
+    denom = sum(int(counts.get(s, 0) or 0) for s in STATE_SCORES)
+    if denom <= 0:
+        return None, 0
+    total = sum(STATE_SCORES[s] * int(counts.get(s, 0) or 0) for s in STATE_SCORES)
+    return total / denom, denom
+
 
 def min_members_hit(n: int) -> int:
     """篮子级聚合门槛 = **过半(向上取整)成员命中**;两侧同一个数(见上方常量注释)。"""
@@ -245,6 +270,7 @@ __all__ = [
     "VERIFY_REQUIRE_ALL", "INVALIDATE_ANY_OF",
     "MIN_MEMBERS_HIT_DIVISOR", "EPS",
     "STATE_VERIFIED", "STATE_PARTIAL", "STATE_UNCLEAR", "STATE_FALSIFIED", "STATES",
+    "STATE_SCORES", "accuracy_from_counts",
     "min_members_hit", "decide_state", "compare_of", "evaluate_condition", "combine_side",
     "conditions_block",
 ]

@@ -1,0 +1,50 @@
+# Neckline 周度作业(plan §五 V2.2-④-E,承 V2.1-⑥ 逐字继承;§七 P3-42 在 V2.2 结案)。
+#
+# 跑 `scripts/weekly.py` 三件:① 画像批算落表 ② 周度校准报告落盘(自带 V2.2-④ 的双时钟
+# 成绩单与四分类建议)③ 交易时钟对账。**对账(券商交割单)仍等用户上传**——它的必需输入
+# 只能由用户手动给(§八 第 7 项),排 timer 也补不出没上传的那一份。
+#
+# 🔴 **⛔ 永不加 `RemainAfterExit=yes`**(§七 **P0-45** 连带铁律):加了它,`Type=oneshot`
+#    跑完不落回 inactive,timer 就永远算不出 NEXT —— **首次必成、之后必哑**,而且是
+#    **静默**的。`tests/test_scripts_weekly.py` 把这条钉成机器判据(本文件出现该字样即红)。
+#
+# 🔴 **由 timer 直接触发,⛔ 不经 `.target`**(同上 P0-45):`.target` 没有"跑完"的概念、
+#    不会自己落下。周度只有三步、本就不需要 target 的编排能力,没有理由去碰那个坑。
+#
+# ⛔ **不推送**:本作业不新增任何推送 kind → 不触发「新增推送须用户拍板」这条纪律。
+#
+# **退出码语义**:三步各自 try/except、一步失败另一步照跑;**任一步失败 → exit 1**。
+# 验收看 `ExecMainStatus=0` **且** `ExecMainStartTimestamp` 是本次那一跑
+# (§铁律:`Result=success` 不够 —— `reset-failed` 会把 Result 抹回 success)。
+#
+# ⚠ **`TimeoutStartSec` / `MemoryMax` 待生产隔离实测校准**(§七 P0-23 纪律:新增全表
+#    扫描路径上产前必须在生产机上单独计时 + 量峰值)。下面两个是**先填的占位**:
+#      · 本作业最重的一段是 `eval/calibration` 的安慰剂对照臂(`PLACEBO_DRAWS=200` ×
+#        每日成员数次判分 + 一次前复权面板装配),与 LLM 无关,墙钟主要花在判分上;
+#      · 实测在 nk 上必须用 `systemd-run --unit=… --property=User=neckline
+#        --property=Group=neckline --property=MemoryMax=…` 的**瞬态 service**,
+#        ⛔ 不许用 root 的 `--scope`(会把行情文件写成 root 属主);
+#      · `Memory peak` 读数不可轻信(cgroup 对已在页缓存的文件页不重复计费)——
+#        **要可信上界就压低 `MemoryMax` 反证**(扛住 = 真上界)。
+#    实测后在**同一次提交**里把这两个数改成实测值 + 写明理由。
+#
+# 安装:
+#   sudo cp /opt/neckline/deploy/neckline-weekly.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now neckline-weekly.timer
+
+[Unit]
+Description=Neckline weekly job: profile batch + calibration artifact + dual-clock attribution
+Documentation=file:///opt/neckline/PROJECT_PLAN.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+ExecStart=/opt/neckline/.venv/bin/python scripts/weekly.py
+# 待实测校准(见文件头);先按「比晚间批算段宽裕一档」填。
+TimeoutStartSec=3600
+MemoryMax=1400M

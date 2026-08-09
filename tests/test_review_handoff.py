@@ -140,12 +140,15 @@ class TestRenderHandoff:
         base.update(kw)
         return ho.render_handoff(**base)
 
-    def test_all_five_sections_are_present_in_order(self):
+    def test_all_six_sections_are_present_in_order(self):
+        """⚠ **V2.2-④ 起是六节**:④「修改建议四分类」插在画像与观察项之间
+        (证据 → 建议 → 待过目项 → 免责,读起来才是一条线),观察项与免责各后移一位。"""
         md = self._md()
         heads = ["## ① 窗口与样本量", "## ② 周度校准报告(原文)",
-                 "## ③ 用户画像", "## ④ 观察项清单", "## ⑤ 免责与口径"]
+                 "## ③ 用户画像", "## ④ 修改建议四分类", "## ⑤ 观察项清单",
+                 "## ⑥ 免责与口径"]
         idx = [md.index(h) for h in heads]
-        assert idx == sorted(idx), f"五节顺序错了:{idx}"
+        assert idx == sorted(idx), f"六节顺序错了:{idx}"
 
     def test_section_one_carries_window_and_every_sample_count(self):
         md = self._md()
@@ -221,10 +224,36 @@ class TestObservations:
             assert set(ob) == {"id", "title", "question", "evidence_needed", "status"}
             assert all(str(v).strip() for v in ob.values())
 
-    def test_ids_are_unique_and_cover_the_four_the_plan_names(self):
+    def test_ids_are_unique_and_cover_the_five_the_plan_names(self):
+        """⚠ **V2.2-④ 定死五条**(plan ④-D 原文):`P3-33` **摘掉** —— 它的主体随
+        门槛制作废,留一条 grep 得到但已经没有意义的观察项比没有更糟;新增
+        `P3-49`(位置关前向证伪义务)与 `P3-51`(状态层第五维冷启动缺席)。"""
         ids = [o["id"] for o in ho.HANDOFF_OBSERVATIONS]
         assert len(ids) == len(set(ids))
-        assert set(ids) == {"P3-32", "P3-33", "P3-34", "P3-37"}
+        assert set(ids) == {"P3-32", "P3-34", "P3-37", "P3-49", "P3-51"}
+
+    def test_p3_33_is_gone_not_left_as_a_dead_entry(self):
+        """plan ④-D 原文:⛔ 不许留一条会 grep 到但已经没意义的观察项。"""
+        assert "P3-33" not in {o["id"] for o in ho.HANDOFF_OBSERVATIONS}
+
+    def test_ids_are_never_split_into_sub_ids(self):
+        """⚠ 拆 id(如写成 `P3-34a`)会让守门 grep 不到 §七 里那条 —— 既有教训。"""
+        for ob in ho.HANDOFF_OBSERVATIONS:
+            assert ob["id"][-1].isdigit(), f"{ob['id']} 看起来被拆了子号"
+
+    def test_p3_49_states_the_forward_falsification_duty_verbatim(self):
+        """🔴 P3-49 是移交件里最该让用户看见的一条:两条义务必须白纸黑字在里面。"""
+        ob = next(o for o in ho.HANDOFF_OBSERVATIONS if o["id"] == "P3-49")
+        assert "100" in ob["evidence_needed"]                    # 结案样本量门槛
+        assert "选股时钟" in ob["evidence_needed"]                # 判据来源写死 = 实盘
+        assert "回测" in ob["evidence_needed"]                    # ⛔ 不立回测战役
+        assert "无论正负" in ob["status"]                         # 结论都要上报
+
+    def test_p3_34_registers_the_v22_expansion(self):
+        """plan ④-D:P3-34 **扩容**含位置关读数口径与三引擎首版阈值(⛔ 不另起第二本账)。"""
+        ob = next(o for o in ho.HANDOFF_OBSERVATIONS if o["id"] == "P3-34")
+        assert "engineering_v1" in ob["question"] and "platform_days" in ob["question"]
+        assert "C2" in ob["status"]
 
     @pytest.mark.parametrize("ob_id", [o["id"] for o in ho.HANDOFF_OBSERVATIONS])
     def test_each_id_closes_with_the_backlog_in_section_seven(self, ob_id: str):
@@ -241,13 +270,6 @@ class TestObservations:
             f"观察项 {ob_id} 在 §七 Backlog 里找不到 —— 要么 Backlog 那条被删/改了 ID"
             f"(该同步本清单),要么这条观察项是凭空发明的(⛔ 不许)")
 
-    def test_p3_33_registers_that_the_tier3_item_is_void(self):
-        """⚠ plan §五⑤ 点名:P3-33 原四项里 `tier3_min` 那一项随 T3 退役**作废**,
-        清单必须如实说,⛔ 不许还端给策略台一个已经不存在的旋钮。"""
-        ob = next(o for o in ho.HANDOFF_OBSERVATIONS if o["id"] == "P3-33")
-        assert "tier3_min" in ob["status"] and "作废" in ob["status"]
-        assert "tier3_min" not in ob["question"]      # 问题正文里已经没有它了
-
 
 # ══════════════════════════════════════════════════════════════════════════
 # 装配 + ⛔ 零在线补算(静态)
@@ -260,7 +282,7 @@ class TestBuildHandoff:
         h = ho.build_handoff(out_dir=tmp_path, db_path=isolated_env.db_path)
         assert h.available and (h.window_from, h.window_to) == ("20260803", "20260807")
         assert h.sample_n["tradingDays"] == 5 and h.sample_n["baskets"] == 12
-        assert "## ④ 观察项清单" in h.markdown
+        assert "## ⑤ 观察项清单" in h.markdown
 
     def test_no_artifact_at_all_is_unavailable_with_a_self_healing_reason(self, tmp_path, isolated_env):
         h = ho.build_handoff(out_dir=tmp_path, db_path=isolated_env.db_path)
@@ -281,7 +303,7 @@ class TestBuildHandoff:
         h = ho.build_handoff("20260803", "20260807", out_dir=tmp_path,
                              db_path=isolated_env.db_path)
         assert h.available is True
-        assert "尚无周度校准产物" in h.markdown and "## ④ 观察项清单" in h.markdown
+        assert "尚无周度校准产物" in h.markdown and "## ⑤ 观察项清单" in h.markdown
 
     def test_profile_rows_from_the_isolated_db_land_in_the_document(self, tmp_path, isolated_env):
         from neckline.profile.capability import CapabilityRow

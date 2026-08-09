@@ -990,6 +990,9 @@ class ReviewRunResult:
     llm_called: int = 0
     llm_dropped: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    # V2.2-④-A:选股时钟结案接线的产出(**结了就是结了**,重跑 = `clock_existing` 增长)。
+    clock_closed: int = 0
+    clock_existing: int = 0
 
 
 def depth_for_tier(tier: int) -> str:
@@ -1125,6 +1128,28 @@ def review_day(
         except Exception as exc:  # noqa: BLE001
             logger.warning("[basket_review] 复盘落库失败", exc_info=True)
             res.notes.append(f"复盘落库失败:{type(exc).__name__}: {exc}")
+
+        # —— V2.2-④-A 选股时钟**结案**接线 ————————————————————————————————
+        # 位置刻意在**复盘落库之后**:结案件的九项里有四项直接吃复盘的机械判,
+        # 而结案是 `INSERT OR IGNORE`(结了就是结了)—— 先把复盘那一行写稳,
+        # 再结案,免得把一份半成品永久冻住。
+        # ⛔ **零新增 LLM 调用**:结案叙述并进上面那一次 `TASK_REVIEW`(plan 附
+        # 「成本与超时算术」第 6 行),`close_day` 自己一次模型都不调。
+        # 整段包保险丝:结案失败只记 note,⛔ 不许掀翻当日复盘(它已经落库了)。
+        try:
+            from neckline.review import selection_clock
+
+            cres = selection_clock.close_day(
+                review_date, d0=res.d0, refs=refs,
+                cards=cards,
+                review_mechs={r.basket_id: r.mech for r in res.reviews},
+                bars=day.bars, db_path=db_path, parquet_dir=parquet_dir,
+            )
+            res.clock_closed, res.clock_existing = cres.inserted, cres.existing
+            res.notes.extend(cres.notes)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[basket_review] 选股时钟结案失败(不影响当日复盘)", exc_info=True)
+            res.notes.append(f"选股时钟结案失败:{type(exc).__name__}: {exc}")
     res.notes.extend(day.notes)
     return res
 

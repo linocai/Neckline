@@ -1346,6 +1346,11 @@ class ReviewOverviewOut(BaseModel):
     capability: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
     reconcile: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
     observations: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
+    # —— V2.2-④ 新增三段(**同样各自 `available` + `unavailableReason`**;
+    #    ⛔ 不许被上面五段的任何一段罩住)——
+    selectionClock: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
+    tradeClock: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
+    iterationSuggestions: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
 
 
 class ReviewHandoffOut(BaseModel):
@@ -1399,6 +1404,97 @@ class MarketRegimeDayOut(BaseModel):
     computedAt: str = ""
 
 
+# —— V2.2-④ 双时钟(`GET /clocks/selection` · `GET /clocks/trade/{position_id}` ·
+#    `POST /clocks/trade/{position_id}/note`)——————————————————————————————————
+#
+# 用户主观说明的长度上界:**唯一源在领域层** `review/trade_clock.USER_NOTE_MAX_CHARS`
+# (⛔ 契约层不抄一个数 —— 两处各写一份,改一处就静默出现"客户端说能写、服务端说太长")。
+from neckline.review.trade_clock import USER_NOTE_MAX_CHARS as _USER_NOTE_MAX_CHARS
+
+#
+# ⚠ `mech` / `final` / `entryPlan` / `engineBreakdown` **原样透传**冻结件形状(同
+# `ReviewSegmentOut.detail` 的既定惯例)。这几个是 **B 类冻结快照**(写入当时冻住、
+# 不随服务端升级补键)→ 客户端 DTO **必须手写 `init(from:)` 做 `decodeIfPresent`**
+# (CLAUDE.md V2-⑮ 铁律;守门按类型名精确锁)。
+
+class SelectionClockOut(BaseModel):
+    """一篮的选股时钟**结案件**(V2.2-④-A)。
+
+    🔴 样本口径 = D0 **全部** T1/T2,**与用户买没买无关**(K8 §十四 第 3 条)——
+    客户端文案不许写成「你关注的篮子」之类,那会把覆盖域讲小。
+    `tierAccuracy` 是 ⑦-b **四态原样**(`verified`/`partial`/`unclear`/`falsified`)
+    加两个"没判"码,**⛔ 不是 0/1 的对错** —— 折成正确率是周度侧的事。"""
+
+    basketId: int
+    d0Date: str
+    d1Date: str
+    coveredTier: int
+    regimeAtD0: Optional[str] = None
+    tierAccuracy: Optional[str] = None
+    untriggeredReason: Optional[str] = None
+    closedAt: str = ""
+    skeletonVersion: str = ""
+    verificationRulesetVersion: str = ""
+    engineBreakdown: Dict[str, Any] = Field(default_factory=dict)
+    mech: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SelectionClocksOut(BaseModel):
+    """区间内已结案的选股时钟。**空列表 = 这段时间没有结案样本**(合法);
+    ⛔ 别读成"系统没跑" —— 那要看 `basket_review_daily` 与段状态。"""
+
+    dateFrom: str = ""
+    dateTo: str = ""
+    items: List[SelectionClockOut] = Field(default_factory=list)
+
+
+class TradeClockEventOut(BaseModel):
+    """交易时钟事件流水一行(**append-only**)。`userNote` = K8 §十五 用户主观说明。"""
+
+    id: int
+    eventDate: str
+    kind: str
+    mech: Dict[str, Any] = Field(default_factory=dict)
+    userNote: Optional[str] = None
+    createdAt: str = ""
+
+
+class TradeClockOut(BaseModel):
+    """一笔真实买入的交易时钟(V2.2-④-B)。`status` ∈ `running|closed`;
+    `final` 只在结案后有值(**运行中恒 `null`** —— 「还没结案」与「结案了但八项算不出」
+    必须分得开)。`basketId=null` = 非篮子来源的手动开仓,**合法**。"""
+
+    positionId: int
+    tsCode: str
+    basketId: Optional[int] = None
+    openedOn: str
+    closedOn: Optional[str] = None
+    status: str
+    entryPlan: Dict[str, Any] = Field(default_factory=dict)
+    final: Optional[Dict[str, Any]] = None
+    events: List[TradeClockEventOut] = Field(default_factory=list)
+
+
+class TradeClockNoteIn(BaseModel):
+    """`POST /clocks/trade/{position_id}/note` 的请求体(K8 §十五「每次一条简短说明」)。
+
+    ⛔ **不做 LLM 代猜**(§七 P3-28 纪律):这条是**用户自己写的**,系统不生成、
+    不改写、不合并 —— 只追加。
+
+    ⚠ 长度上限走 `Field` 约束(→ 非法即 422,与本项目其它端点的非法请求体同款形状),
+    **⛔ 刻意不新造一个 reason 字符串**(V2.2「零新增 reason」是机器判据);上界与领域层
+    `review/trade_clock.USER_NOTE_MAX_CHARS` **同源**,⛔ 别在这里抄一个数。"""
+
+    note: str = Field(min_length=1, max_length=_USER_NOTE_MAX_CHARS)
+
+
+class TradeClockNoteOut(BaseModel):
+    ok: bool = True
+    eventId: int = 0
+    eventDate: str = ""
+    coverage: Dict[str, Any] = Field(default_factory=dict)
+
+
 class MarketRegimeOut(BaseModel):
     """`GET /market-regime` 响应(V2.2-②)。🔴 **只读、零现算、一律不 404**(空态走
     `available=false` + 自由文本 `unavailableReason`)→ **零新增 reason 字符串**,
@@ -1433,6 +1529,9 @@ __all__ = [
     "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
     # V2.2-② 行情状态层
     "MarketRegimeDayOut", "MarketRegimeOut",
+    # V2.2-④ 双时钟
+    "SelectionClockOut", "SelectionClocksOut", "TradeClockOut", "TradeClockEventOut",
+    "TradeClockNoteIn", "TradeClockNoteOut",
     # V2.1-⑤ 复盘板块聚合读 + 校准移交件
     "ReviewSegmentOut", "ReviewOverviewOut", "ReviewHandoffOut",
     "ContingencyScenarioOut", "NoteLabelLiteral",

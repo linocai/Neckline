@@ -641,9 +641,35 @@ def set_decision_status(db_path, decision_id: int, status: str, *, position_id=N
         )
 
 
+def source_code_only(path: Path) -> str:
+    """一个源文件**剥掉注释与 docstring** 之后的代码文本(守门用)。
+
+    🔴 **为什么必须有它**:本仓的模块头习惯把「⛔ 不许做 X」连同 X 的名字一起写进
+    docstring —— 裸文本 grep「有没有出现 X」于是**每次都红**,而
+    「**一个对自己的注释报警的闸门等于没有闸门**」(CLAUDE.md ⑰ 现场教训:
+    `preflight_a_route.sh` 被自己的护栏注释绊住,真出事那天没人会信它)。
+    用 `ast.unparse` 重写一遍即可:注释天然消失,docstring 逐个摘掉,
+    **真代码里的字符串常量原样保留**(SQL 仍然扫得到)。
+    """
+    import ast as _ast
+
+    tree = _ast.parse(Path(path).read_text(encoding="utf-8"))
+    for node in _ast.walk(tree):
+        if not isinstance(node, (_ast.Module, _ast.ClassDef, _ast.FunctionDef,
+                                 _ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None)
+        if (body and isinstance(body[0], _ast.Expr)
+                and isinstance(body[0].value, _ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            node.body = body[1:] or [_ast.Pass()]
+    return _ast.unparse(tree)
+
+
 __all__ = [
     "fake_settings",
     "isolated_env",
+    "source_code_only",
     "insert_trade_cal",
     "business_days",
     "write_daily_fixture",

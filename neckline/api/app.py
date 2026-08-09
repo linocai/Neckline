@@ -100,11 +100,17 @@ from neckline.api.schemas import (
     ReviewSegmentOut,
     ReviewUploadOut,
     ScoreContribOut,
+    SelectionClockOut,
+    SelectionClocksOut,
     SettingsOut,
     SettingsProviderOut,
     SettingsPushIn,
     SettingsReviewColMapIn,
     TierOut,
+    TradeClockEventOut,
+    TradeClockNoteIn,
+    TradeClockNoteOut,
+    TradeClockOut,
     WeeklyReviewOut,
 )
 from neckline.api.stores import upsert_device
@@ -1878,34 +1884,59 @@ def get_eval_weekly(week: str = "") -> EvalWeeklyOut:
     """周度评价校准报告(⑨-C,含安慰剂对照臂)。`week` = 该周任意一天 'YYYYMMDD',
     缺省 = 本周。
 
-    ⚠ **评价是长期统计,不是单日打分**:样本窗未就绪 / 前向窗口没走完时
-    `available=false` + `unavailableReason`,⛔ 不拿半截样本给结论。
-    **现算**(读 6 张表的横截面,不写库);整段包保险丝,异常 → `available=false`
-    + 可读原因,不 500。"""
-    from neckline.eval import calibration
+    🔴 **V2.2-④ 起改为「读周度 unit 落盘的产物」,⛔ 不再在线现算**(§七 **P4-46**
+    在本块结案)。理由两条,都不是偏好:
+      ① 归因分层键从 2 个扩到 4 个(骨架 × 引擎 × 版本 × 条件集),现算成本必然上升,
+         P4-46 原文的触发条件「生产实测 > 5s」大概率当场成立;
+      ② 本端点跑在常驻 `neckline.service` 里、**与盘中哨兵同进程** —— §七 **P0-23**
+         原教旨:重活进常驻服务 = `MemoryHigh` 先节流 → 进程陷进回收死循环 =
+         **卡死不报错**,盘中点一次就拖累哨兵。
+    ⛔ **查不到不许现算自愈**,如实降级(与 `/review/handoff` 完全同一条纪律):
+      · 产物不在   → `available=false`,原因写明**会自愈**(等下一次周度作业);
+      · 产物读不出 → `available=false`,原因写明**不会自愈**、要人排查。
+        两句话必须分开 —— 合成一句就是叫人一直等一份永远好不了的产物。
+
+    ⚠ **评价是长期统计,不是单日打分**:样本窗未就绪时如实说,⛔ 不拿半截样本给结论。
+    """
+    from neckline.eval.calibration import week_bounds
+    from neckline.review.handoff import (
+        CAL_CORRUPT, CAL_OK, load_calibration_markdown, load_calibration_with_status,
+    )
 
     try:
         anchor = (datetime.strptime(week, "%Y%m%d").date()
                   if (len(week) == 8 and week.isdigit()) else date_cls.today())
-        start, end = calibration.week_bounds(anchor)
-        rep = calibration.build_report(start, end, db_path=_db(), parquet_dir=_parquet_dir())
+        start, end = week_bounds(anchor)
+        if start is None or end is None:
+            return EvalWeeklyOut(
+                available=False,
+                unavailableReason="这一周没有交易日,没有可校准的窗口。")
+        lo, hi = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+        out_dir = _calibration_dir()
+        payload, status = load_calibration_with_status(lo, hi, out_dir)
+        if status == CAL_CORRUPT:
+            return EvalWeeklyOut(
+                weekStart=lo, weekEnd=hi, available=False,
+                unavailableReason=(
+                    f"本窗口({lo}→{hi})的周度校准产物**读不出**(文件在、JSON 解析失败)。"
+                    f"它是落盘产物、**不会自己好** —— 需人工排查,⛔ 别当成「还没生成」等下去。"
+                ))
+        if status != CAL_OK or payload is None:
+            return EvalWeeklyOut(
+                weekStart=lo, weekEnd=hi, available=False,
+                unavailableReason=(
+                    f"本窗口({lo}→{hi})尚无周度校准产物 —— 周度作业("
+                    f"`neckline-weekly.timer`,周六 09:00)还没跑到这个窗口。"
+                    f"**会自愈**:下一次周度作业跑完即有。⛔ 在线路径不补算(§七 P0-23)。"
+                ))
         return EvalWeeklyOut(
-            weekStart=start.strftime("%Y%m%d"), weekEnd=end.strftime("%Y%m%d"),
-            available=True, result=_jsonable_report(rep),
-            markdown=calibration.render_markdown(rep),
+            weekStart=lo, weekEnd=hi, available=True, result=dict(payload),
+            markdown=(load_calibration_markdown(lo, hi, out_dir) or ""),
         )
     except Exception as exc:  # noqa: BLE001  评价报告是审计件,炸了如实说,不 500
-        logger.warning("[eval] 周度校准报告生成异常(已降级为不可得)", exc_info=True)
+        logger.warning("[eval] 周度校准产物读取异常(已降级为不可得)", exc_info=True)
         return EvalWeeklyOut(available=False,
-                             unavailableReason=f"周度评价报告本次生成失败:{type(exc).__name__}")
-
-
-def _jsonable_report(rep) -> Dict[str, Any]:
-    """`CalibrationReport`(dataclass)→ JSON 安全字典。同 `pipeline._jsonable` 姿势,
-    复用它以免两处各写一份递归转换(同码不重写)。"""
-    from neckline.report.pipeline import _jsonable
-
-    return _jsonable(rep)
+                             unavailableReason=f"周度评价产物本次读取失败:{type(exc).__name__}")
 
 
 @app.get(f"{API_PREFIX}/review", dependencies=[Depends(require_token)])
@@ -2104,6 +2135,74 @@ def _reconcile_segment(week_key: str) -> ReviewSegmentOut:
     )
 
 
+def _iteration_of(lo, hi) -> Dict[str, Any]:
+    """V2.2-④ 三段共用的取数:**只读落盘产物里的 `iteration` 段**,⛔ 零在线现算
+    (与 `/review/handoff` 完全同一条纪律 —— 本端点跑在常驻服务里,§七 P0-23)。
+
+    ⚠ 调用方**每次请求只调一次**再把结果分给三段(见 `get_review_overview`):
+    校准产物带着安慰剂逐日表,可能是几百 KB 的 JSON —— 一次请求读三遍没必要。
+    """
+    from neckline.review.handoff import CAL_OK, load_calibration_with_status
+
+    if lo is None or hi is None:
+        return {}
+    payload, status_ = load_calibration_with_status(
+        lo.strftime("%Y%m%d"), hi.strftime("%Y%m%d"), _calibration_dir())
+    if status_ != CAL_OK or not isinstance(payload, dict):
+        return {}
+    it = payload.get("iteration")
+    return dict(it) if isinstance(it, dict) else {}
+
+
+def _clock_segment(lo, hi, kind: str, it: Optional[Dict[str, Any]] = None) -> ReviewSegmentOut:
+    """`selectionClock` / `tradeClock` 两段(V2.2-④)。
+
+    ⚠ 空态两句话刻意分开:**产物没落盘** = 周度作业还没跑到这个窗口(「没看」→
+    `available=false`);**产物在但这一段样本为 0** = 这周确实没有结案样本 /
+    没有真实买入(「没有」→ `available=true` + 空内容)。合成一句读者就分不清
+    「等系统」还是「本来就没有」。"""
+    it = _iteration_of(lo, hi)
+    label = "选股时钟 · D0 全部 T1/T2" if kind == "selection" else "交易时钟 · 真实买入"
+    if not it:
+        return ReviewSegmentOut(
+            available=False, label=label,
+            unavailableReason=("本窗口尚无周度校准产物(周六 09:00 的周度作业还没跑到"
+                               "这个窗口)—— **会自愈**;⛔ 在线路径不补算(§七 P0-23)。"))
+    if kind == "selection":
+        detail = (it.get("selection") or {})
+        detail = {"overall": detail.get("overall") or {},
+                  "byStratum": detail.get("byStratum") or [],
+                  "strataKey": it.get("strataKey") or [],
+                  "samples": (it.get("samples") or {}).get("selectionClock", 0)}
+    else:
+        detail = dict(it.get("trade") or {})
+    return ReviewSegmentOut(
+        available=True, label=label,
+        asOf=f"{lo.strftime('%Y%m%d')}→{hi.strftime('%Y%m%d')}", detail=detail)
+
+
+def _iteration_segment(lo, hi, it: Optional[Dict[str, Any]] = None) -> ReviewSegmentOut:
+    """`iterationSuggestions` 段(V2.2-④-D 四分类建议)。
+
+    🔴 **分界线未由用户拍板时,`items` 里每行 `klass=null`** + `klassStatus=
+    'thresholds_undecided'` —— 客户端必须把它显示成「**待你拍板**」,
+    ⛔ 不许渲染成「观察」(「还没决定」与「样本不足」是两件事)。
+    段本身仍 `available=true`:统计量是**有**的,缺的只是那两个数。"""
+    it = _iteration_of(lo, hi) if it is None else it
+    if not it:
+        return ReviewSegmentOut(
+            available=False, label="修改建议 · 保留 / 观察 / 降权 / 淘汰",
+            unavailableReason=("本窗口尚无周度校准产物 —— **会自愈**;"
+                               "⛔ 在线路径不补算(§七 P0-23)。"))
+    return ReviewSegmentOut(
+        available=True, label="修改建议 · 保留 / 观察 / 降权 / 淘汰",
+        asOf=f"{lo.strftime('%Y%m%d')}→{hi.strftime('%Y%m%d')}",
+        items=list(it.get("suggestions") or []),
+        detail={"thresholds": it.get("thresholds") or {},
+                "disclaimer": it.get("disclaimer") or ""},
+    )
+
+
 def _observations_segment() -> ReviewSegmentOut:
     """观察项段:静态登记册(与 `PROJECT_PLAN.md` §七 Backlog 的闭合由守门单测钉死)。
     它**恒 available** —— 清单本身一直在,空不空是内容的事。"""
@@ -2141,6 +2240,12 @@ def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
     out.weekStart = lo.strftime("%Y%m%d") if lo else ""
     out.weekEnd = hi.strftime("%Y%m%d") if hi else ""
 
+    try:                      # V2.2-④ 三段共用的产物:一次请求只读一遍
+        iteration: Dict[str, Any] = _iteration_of(lo, hi)
+    except Exception:  # noqa: BLE001  读不出只让那三段说"没取到",⛔ 不连坐前五段
+        logger.warning("[review] overview 的双时钟产物读取异常", exc_info=True)
+        iteration = {}
+
     for field_name, build in (
         ("calibration", lambda: _calibration_segment(lo, hi)),
         ("preference", lambda: _profile_segment("偏好画像 · 喜欢什么",
@@ -2149,6 +2254,11 @@ def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
                                                 get_profile_capability(asOf=asOf))),
         ("reconcile", lambda: _reconcile_segment(out.weekKey)),
         ("observations", _observations_segment),
+        # V2.2-④ 三段(各自独立 available,⛔ 不被上面五段罩住)。
+        # ⚠ `iteration` **整个请求只读一次产物**再分给三段(那份 JSON 可能几百 KB)。
+        ("selectionClock", lambda: _clock_segment(lo, hi, "selection", iteration)),
+        ("tradeClock", lambda: _clock_segment(lo, hi, "trade", iteration)),
+        ("iterationSuggestions", lambda: _iteration_segment(lo, hi, iteration)),
     ):
         try:
             setattr(out, field_name, build())
@@ -2190,6 +2300,105 @@ def get_review_handoff(
         available=h.available, unavailableReason=h.unavailable_reason,
         windowFrom=h.window_from, windowTo=h.window_to, generatedAt=h.generated_at,
         sampleN=dict(h.sample_n), markdown=h.markdown,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.2-④ 双时钟:两条只读 + **一条写**(`POST …/note` 是本版唯一新增写端点)
+# ══════════════════════════════════════════════════════════════════════════
+
+@app.get(f"{API_PREFIX}/clocks/selection", dependencies=[Depends(require_token)])
+def get_selection_clocks(
+    date_from: str = Query(default="", alias="from"),
+    date_to: str = Query(default="", alias="to"),
+) -> SelectionClocksOut:
+    """已结案的选股时钟(按 **D0** 区间;缺省 = 不设该端)。
+
+    🔴 **样本 = D0 全部 T1/T2,与用户买没买无关**(K8 §十四)。空列表 = 这段时间**没有
+    结案样本**(合法态)—— ⛔ 别读成"系统没跑",那要看当日复盘与段状态。
+
+    整段包保险丝:异常 → 空列表 + 服务端日志,**⛔ 不 500、⛔ 不 404**(同
+    `/review/overview` 的既定姿势:审计读端不该因为读不出就把 App 打红)。"""
+    from neckline.review.selection_clock import list_closures
+
+    lo = (date_from or "").strip() or None
+    hi = (date_to or "").strip() or None
+    try:
+        rows = list_closures(lo, hi, db_path=_db())
+    except Exception:  # noqa: BLE001
+        logger.warning("[clocks] 选股时钟读取异常(已降级为空列表)", exc_info=True)
+        rows = []
+    return SelectionClocksOut(
+        dateFrom=lo or "", dateTo=hi or "",
+        items=[SelectionClockOut(
+            basketId=r["basket_id"], d0Date=r["d0_date"], d1Date=r["d1_date"],
+            coveredTier=r["covered_tier"], regimeAtD0=r["regime_at_d0"],
+            tierAccuracy=r["tier_accuracy"], untriggeredReason=r["untriggered_reason"],
+            closedAt=r["closed_at"], skeletonVersion=r["skeleton_version"],
+            verificationRulesetVersion=r["verification_ruleset_version"],
+            engineBreakdown=r["engine_breakdown"], mech=r["mech"],
+        ) for r in rows],
+    )
+
+
+@app.get(f"{API_PREFIX}/clocks/trade/{{position_id}}", dependencies=[Depends(require_token)])
+def get_trade_clock(position_id: int) -> TradeClockOut:
+    """一笔真实买入的交易时钟 + 全部事件流水。
+
+    **404 只在这笔仓没有交易时钟时触发**,复用既有 `not_found` reason 字符串 ——
+    ⛔ 不新增 reason(客户端 `mapReason` 一字不动,V2.2-⑥ 契约要求)。"""
+    from neckline.review.trade_clock import list_events, load_trade_clock
+
+    clock = load_trade_clock(position_id, db_path=_db())
+    if clock is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": "not_found"})
+    events = list_events(clock["id"], db_path=_db())
+    return TradeClockOut(
+        positionId=clock["position_id"], tsCode=clock["ts_code"],
+        basketId=clock["basket_id"], openedOn=clock["opened_on"],
+        closedOn=clock["closed_on"], status=clock["status"],
+        entryPlan=clock["entry_plan"], final=clock["final"],
+        events=[TradeClockEventOut(
+            id=e["id"], eventDate=e["event_date"], kind=e["kind"],
+            mech=e["mech"], userNote=e["user_note"], createdAt=e["created_at"],
+        ) for e in events],
+    )
+
+
+@app.post(f"{API_PREFIX}/clocks/trade/{{position_id}}/note",
+          dependencies=[Depends(require_token)])
+def post_trade_clock_note(position_id: int, body: TradeClockNoteIn) -> TradeClockNoteOut:
+    """追加一条**用户主观说明**(K8 §十五「用户只补充系统无法识别的主观原因,每次一条
+    简短说明」)。**本版唯一新增写端点。**
+
+    · **纯追加**:写 `trade_clock_events` 新行,⛔ 不改任何既有行。
+    · **404 只在这笔仓没有交易时钟时触发**,复用既有 `not_found`,⛔ 不新增 reason。
+    · 空 / 超长 → **422**(fail loud,⛔ 不静默截断 —— 截断会把用户写的话改掉一半还
+      装作收下了)。⚠ **刻意不给它一个新 reason 字符串**:V2.2 契约要求「零新增
+      reason」(⑥ 表格 + `tests/test_contract_crosscheck.py` 的机器判据),而这一类
+      「请求体本身不合法」在本项目一贯就是 pydantic 校验的 422 形状 —— 长度上限因此
+      直接写在 `TradeClockNoteIn.note` 的 `Field` 里,与其它端点的非法请求体同款。
+    · ⛔ **不做 LLM 代猜**(§七 P3-28 纪律不变):这条是用户自己写的,系统不生成、
+      不改写、不合并。响应顺带回 `coverage`(「本期 N 笔中有 M 笔带说明」),让稀疏
+      程度当场可见 —— 那正是 P3-28 候选解法 ① 的落点。"""
+    from neckline.review.trade_clock import UserNoteError, append_user_note, note_coverage
+
+    try:
+        row = append_user_note(position_id, body.note, db_path=_db())
+    except UserNoteError as exc:
+        # 领域层的 fail loud 兜底(正常路径已被 DTO 的 `Field` 约束拦在 422)。
+        # ⛔ 不带 `reason` 键:那会往 reason 面上加一个新字符串,违反本版「零新增 reason」。
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"ok": False, "message": str(exc)},
+        ) from exc
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": "not_found"})
+    return TradeClockNoteOut(
+        ok=True, eventId=row["id"], eventDate=row["event_date"],
+        coverage=note_coverage(db_path=_db()),
     )
 
 

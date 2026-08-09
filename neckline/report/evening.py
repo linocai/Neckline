@@ -275,6 +275,8 @@ def run_evening_chain(
             res.stats["review"] = {
                 "baskets": len(rr.reviews), "inserted": rr.rows_inserted,
                 "existing": rr.rows_existing, "llm_called": rr.llm_called,
+                # V2.2-④-A:选股时钟结案(⛔ 零新增 LLM 调用,并进上面那一次)
+                "clock_closed": rr.clock_closed, "clock_existing": rr.clock_existing,
             }
             res.notes.extend(rr.notes)
             if not rr.reviews:
@@ -282,6 +284,25 @@ def run_evening_chain(
             logger.info("[evening] ⑨ 复盘:%s", res.stats["review"])
         except Exception as exc:  # noqa: BLE001
             _fail(SEG_REVIEW, "⑨ 盘后复盘引擎", exc)
+
+        # —— V2.2-④-B 交易时钟对账(**旁路**,与篮子复盘互不牵连)————————————
+        # 为什么挂在这里而不是挂在 `positions_entry.record_buy` 上:买入有多条入口
+        # (API / CLI / 历史补录 / 幂等重放),挂钩子必然漏;以 `positions` 为唯一真相
+        # 每晚对一次账天然全覆盖、且**幂等**(漏跑一晚下一晚自动补齐)。
+        # ⚠ 独立 try/except:对账炸了只 WARNING,⛔ 不许连累复盘或报告
+        # (同 V2-⑧-B 盘中存拍「旁路失败只 WARNING」的既有体例)。
+        try:
+            from neckline.review.trade_clock import sync_from_positions
+
+            tres = sync_from_positions(trade_date, db_path=db_path, parquet_dir=parquet_dir)
+            res.stats["trade_clock"] = {
+                "opened": tres.opened, "closed": tres.closed,
+                "events": tres.events, "running": tres.running,
+            }
+            res.notes.extend(tres.notes)
+            logger.info("[evening] ④-B 交易时钟对账:%s", res.stats["trade_clock"])
+        except Exception:  # noqa: BLE001
+            logger.warning("[evening] ④-B 交易时钟对账失败(已吞,不阻断链)", exc_info=True)
 
     # —— 报告落库(链的最后一段)————————————————————————————————————
     if SEG_REPORT in wanted:

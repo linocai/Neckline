@@ -289,7 +289,9 @@ class TestReviewOverview:
     def test_observations_segment_is_always_there(self, client, AUTH, week_env):
         seg = _overview(client, AUTH)["observations"]
         assert seg["available"] is True
-        assert {o["id"] for o in seg["items"]} == {"P3-32", "P3-33", "P3-34", "P3-37"}
+        # V2.2-④:清单改成五条(plan ④-D 定死)—— `P3-33` **摘掉**(主体随门槛制作废),
+        # 新增 `P3-49`(位置关前向证伪义务)与 `P3-51`(状态层第五维冷启动缺席)。
+        assert {o["id"] for o in seg["items"]} == {"P3-32", "P3-34", "P3-37", "P3-49", "P3-51"}
 
     def test_week_without_trading_days_says_so_instead_of_crashing(self, client, AUTH, week_env):
         seg = _overview(client, AUTH, week="20200105")     # 隔离库日历覆盖不到
@@ -322,8 +324,10 @@ class TestReviewHandoff:
         assert body["available"] is True
         assert (body["windowFrom"], body["windowTo"]) == ("20260803", "20260807")
         assert body["sampleN"]["tradingDays"] == 5 and body["sampleN"]["baskets"] == 12
+        # ⚠ V2.2-④ 起是**六节**(④「修改建议四分类」插在画像与观察项之间)。
         for head in ("## ① 窗口与样本量", "## ② 周度校准报告(原文)",
-                     "## ③ 用户画像", "## ④ 观察项清单", "## ⑤ 免责与口径"):
+                     "## ③ 用户画像", "## ④ 修改建议四分类", "## ⑤ 观察项清单",
+                     "## ⑥ 免责与口径"):
             assert head in body["markdown"]
 
     def test_explicit_window_uses_the_from_to_aliases(self, client, AUTH, week_env):
@@ -356,13 +360,125 @@ class TestReviewHandoff:
         assert r.status_code == 200 and r.json()["available"] is False
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# V2.2-④ 双时钟端点 + 复盘板块三段
+# ══════════════════════════════════════════════════════════════════════════
+
+def _seed_clock(env, *, ts_code="A.SZ", buy_price=9.5, buy_date="20260805"):
+    """建一笔仓 + 计划 v1,再对一次账 → 拿到 `position_id`。"""
+    from neckline.db import connection
+    from neckline.review.trade_clock import sync_from_positions
+    import json as _json
+
+    with connection(env.db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO positions (ts_code, buy_price, qty, buy_date, status, created_at,"
+            " updated_at) VALUES (?,?,?,?,'open','t','t')", (ts_code, buy_price, 1000, buy_date))
+        pid = int(cur.lastrowid)
+        conn.execute("INSERT INTO position_plans (position_id, version, plan_json, created_at)"
+                     " VALUES (?,1,?,'t')",
+                     (pid, _json.dumps({"available": True, "driver": "d",
+                                        "entry_zone": {"low": 9.0, "high": 10.0}})))
+    sync_from_positions(buy_date, db_path=env.db_path)
+    return pid
+
+
+class TestClockEndpoints:
+    def test_requires_auth(self, client):
+        assert client.get("/api/v1/clocks/selection").status_code == 401
+        assert client.get("/api/v1/clocks/trade/1").status_code == 401
+        assert client.post("/api/v1/clocks/trade/1/note", json={"note": "x"}).status_code == 401
+
+    def test_selection_clocks_empty_is_a_list_not_a_404(self, client, AUTH, week_env):
+        r = client.get("/api/v1/clocks/selection", headers=AUTH)
+        assert r.status_code == 200 and r.json()["items"] == []
+
+    def test_trade_clock_404_reuses_the_existing_not_found_reason(self, client, AUTH, week_env):
+        """🔴 ⛔ 零新增 reason(V2.2-⑥ 契约):客户端 `mapReason` 一字不动。"""
+        r = client.get("/api/v1/clocks/trade/999", headers=AUTH)
+        assert r.status_code == 404 and r.json()["detail"]["reason"] == "not_found"
+
+    def test_trade_clock_round_trip(self, client, AUTH, week_env):
+        pid = _seed_clock(week_env)
+        body = client.get(f"/api/v1/clocks/trade/{pid}", headers=AUTH).json()
+        assert body["positionId"] == pid and body["status"] == "running"
+        assert body["final"] is None            # 运行中恒 null
+        assert [e["kind"] for e in body["events"]] == ["d1_open"]
+
+    def test_note_appends_and_reports_coverage(self, client, AUTH, week_env):
+        pid = _seed_clock(week_env)
+        r = client.post(f"/api/v1/clocks/trade/{pid}/note", headers=AUTH,
+                        json={"note": "板块情绪转弱,先减一半"})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        assert r.json()["coverage"]["with_note"] == 1
+        events = client.get(f"/api/v1/clocks/trade/{pid}", headers=AUTH).json()["events"]
+        assert [e["kind"] for e in events] == ["d1_open", "manual_note"]
+        assert events[-1]["userNote"] == "板块情绪转弱,先减一半"
+
+    def test_note_on_a_missing_clock_is_404_not_found(self, client, AUTH, week_env):
+        r = client.post("/api/v1/clocks/trade/999/note", headers=AUTH, json={"note": "x"})
+        assert r.status_code == 404 and r.json()["detail"]["reason"] == "not_found"
+
+    @pytest.mark.parametrize("note", ["", "x" * 5000])
+    def test_empty_or_overlong_note_is_422_without_a_new_reason(self, client, AUTH,
+                                                                week_env, note):
+        """⛔ 不静默截断、⛔ 也不新造一个 reason 字符串(那条是机器判据)。"""
+        pid = _seed_clock(week_env)
+        r = client.post(f"/api/v1/clocks/trade/{pid}/note", headers=AUTH, json={"note": note})
+        assert r.status_code == 422
+
+
+class TestOverviewClockSegments:
+    def test_three_new_segments_exist_and_answer_independently(self, client, AUTH, week_env):
+        body = _overview(client, AUTH)
+        for key in ("selectionClock", "tradeClock", "iterationSuggestions"):
+            seg = body[key]
+            assert seg["available"] is False           # 本窗口还没有落盘产物
+            assert "会自愈" in seg["unavailableReason"]
+
+    def test_segments_read_the_artifact_never_recompute(self, client, AUTH, week_env):
+        import json as _json
+
+        d = _cal_dir(week_env)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "calibration_20260803_20260807.json").write_text(_json.dumps({
+            "specVersion": "weekly_calibration_v1", "dateFrom": "20260803",
+            "dateTo": "20260807", "nTradingDays": 5, "nBaskets": 3, "strata": [],
+            "iteration": {
+                "samples": {"selectionClock": 3, "tradeClock": 1},
+                "strataKey": ["skeletonVersion", "engineCode", "engineVersion",
+                              "rulesetVersion"],
+                "selection": {"overall": {"samples": 3}, "byStratum": []},
+                "trade": {"trades": 1, "closed": 1},
+                "thresholds": {"available": False, "unavailableReason": "待拍板"},
+                "suggestions": [{"factor": "tier=T1", "klass": None,
+                                 "klassStatus": "thresholds_undecided", "n": 3}],
+                "disclaimer": "建议不是动作",
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+
+        body = _overview(client, AUTH)
+        assert body["selectionClock"]["available"] is True
+        assert body["selectionClock"]["detail"]["samples"] == 3
+        assert body["tradeClock"]["detail"]["closed"] == 1
+        sug = body["iterationSuggestions"]
+        assert sug["available"] is True                       # 统计量**有**
+        assert sug["detail"]["thresholds"]["available"] is False   # 缺的只是那两个数
+        assert sug["items"][0]["klass"] is None
+        assert sug["items"][0]["klassStatus"] == "thresholds_undecided"
+
+
 class TestNoOnlineRecompute:
-    """🔴 plan §五⑤ 点名的机器判据:**两条端点的实现路径零调用
-    `calibration.build_report`**(§七 P0-23:重活进常驻服务 = 卡死不报错)。"""
+    """🔴 plan §五⑤ 点名的机器判据:**在线端点的实现路径零调用
+    `calibration.build_report`**(§七 P0-23:重活进常驻服务 = 卡死不报错)。
+
+    ⚠ **V2.2-④ 起覆盖面从两条扩到三条**:`/eval/weekly` 随 §七 **P4-46** 结案,也
+    改成「读周度 unit 落盘的产物、查不到才降级」—— 它**不再是**那条现算的反面教材。
+    """
 
     def test_runtime_proof_endpoints_never_call_build_report(
             self, client, AUTH, week_env, monkeypatch):
-        """运行期证明 —— 把 `build_report` 换成**会抛**的桩:两条端点仍 200 且有内容。
+        """运行期证明 —— 把 `build_report` 换成**会抛**的桩:三条端点仍 200 且有内容。
         静态断言只证明"没写这个名字",这一条才证明"真没走那条路"。"""
         import neckline.eval.calibration as cal_mod
 
@@ -370,13 +486,33 @@ class TestNoOnlineRecompute:
             raise AssertionError("⛔ 在线路径调用了 calibration.build_report(P0-23 红线)")
 
         monkeypatch.setattr(cal_mod, "build_report", _must_not_be_called)
+        # 🔴 **桩本身先证一次有效**:P4-46 结案后三条端点都不该碰 `build_report`,
+        # 于是"某一条炸了"这个反向对照没了 —— 缺了这一步,整条测试可能是**假绿**
+        # (桩没装上也全绿)。故直接调一次那个名字,断言它确实会抛。
+        with pytest.raises(AssertionError):
+            cal_mod.build_report("20260803", "20260807")
+
         _write_calibration(week_env)
         assert _overview(client, AUTH)["calibration"]["available"] is True
         h = client.get("/api/v1/review/handoff", headers=AUTH)
         assert h.status_code == 200 and h.json()["available"] is True
-        # 反向对照:`/eval/weekly` **就是**现算的那一条(挂账 §七 P4-46)——
-        # 它调到桩就该炸成 available=false,证明这个桩确实生效、上面两条不是假绿。
-        assert client.get("/api/v1/eval/weekly", headers=AUTH).json()["available"] is False
+        # §七 P4-46 结案:`/eval/weekly` 现在读的是**同一份落盘产物**,桩装着也照样有值。
+        w = client.get("/api/v1/eval/weekly?week=20260805", headers=AUTH)
+        assert w.status_code == 200 and w.json()["available"] is True
+
+    def test_eval_weekly_says_not_generated_instead_of_recomputing(
+            self, client, AUTH, week_env):
+        """§七 **P4-46 结案**的另一半:**没产物就说没产物**,⛔ 不在线补算。
+
+        两种 `available=false` 的话必须**不一样**(会自愈 vs 要人排查)—— 合成一句
+        就是叫人一直等一份永远好不了的产物。"""
+        body = client.get("/api/v1/eval/weekly?week=20260805", headers=AUTH).json()
+        assert body["available"] is False and "会自愈" in body["unavailableReason"]
+
+        _write_calibration(week_env, json_text="{坏了")
+        body2 = client.get("/api/v1/eval/weekly?week=20260805", headers=AUTH).json()
+        assert body2["available"] is False and "读不出" in body2["unavailableReason"]
+        assert body2["unavailableReason"] != body["unavailableReason"]
 
     def test_static_proof_the_two_endpoint_bodies_are_clean(self):
         """静态半:两个端点函数 + 它们的四个段装配函数,函数体内零 `build_report`。

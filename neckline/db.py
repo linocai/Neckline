@@ -1193,6 +1193,83 @@ CREATE TABLE IF NOT EXISTS gate_evaluations (
   created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_gate_eval_day ON gate_evaluations(trade_date, gate);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.2-④-A(2026-08,K8 §十四 选股时钟):D0 的**全部** T1/T2 篮子在 D1 收盘统一
+-- 验证一次,验完即**结案**。唯一实现 = `neckline/review/selection_clock.py`。
+--
+-- 🔴 **结案 = 只增不改**:写入一律 `INSERT OR IGNORE`(同 `basket_cards` 冻结律),
+-- `basket_id` 上的 UNIQUE 就是「只结一次案」这条规则的库级落点。⚠ **与
+-- `basket_review_daily` 的 `UNIQUE(basket_id, review_date)` 覆盖式刻意不同**:那张
+-- 是「每日复盘」(同日重跑可覆盖),这张是「**结案**」(结了就是结了)。⛔ 别"统一"。
+--
+-- 🔴 **「买没买不影响样本」是结构性保证,不靠自觉**:写入路径(那个模块)**零 import**
+-- 持仓 —— 守门单测按 AST 扫 `neckline.sentinel.positions` / `positions_entry` /
+-- 字面 `positions` 表名(同 `basket_cards` 冻结表「靠没有那条路担保」的既有体例)。
+--
+-- `regime_at_d0` 可空 = 当日 `market_regime_daily` **缺行**(如实,⛔ 不填默认态);
+-- `tier_accuracy` / `untriggered_reason` 同理可空(⛔ 不拿空串冒充"判过了")。
+-- `engine_breakdown_json` 随裁定 #9(单篮子单引擎)退化为两键
+-- `{"engine_code":…, "engine_version":…}`,**列名保留不改** —— 将来开混引擎时它能
+-- 原地扩成逐成员映射,零 schema 变更。
+-- ══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS selection_clock (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  basket_id      INTEGER NOT NULL UNIQUE,   -- 一篮一次,UNIQUE 即「只结一次案」
+  d0_date        TEXT NOT NULL,
+  d1_date        TEXT NOT NULL,
+  covered_tier   INTEGER NOT NULL,          -- D0 那天的 tier(1|2)
+  regime_at_d0   TEXT,                      -- K8 验证内容①(NULL = 当日无行,如实)
+  mech_json      TEXT NOT NULL,             -- 九项验证内容逐项(每项带 available/source)
+  engine_breakdown_json TEXT NOT NULL,      -- 引擎归因快照(裁定 #9 → 两键即可)
+  tier_accuracy  TEXT,                      -- K8 验证内容⑨:T1/T2 分层准确性判定
+  untriggered_reason TEXT,                  -- K8 验证内容⑧:未触发原因(触发了则 NULL)
+  closed_at      TEXT NOT NULL,
+  skeleton_version TEXT NOT NULL,
+  verification_ruleset_version TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_selection_clock_d0 ON selection_clock(d0_date);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.2-④-B(2026-08,K8 §十四 交易时钟):**实际买入是启动的唯一条件**,跟到全部
+-- 离场后结案。唯一实现 = `neckline/review/trade_clock.py`。
+--
+-- `position_id` 上的 UNIQUE 是**确定性外键**(§七 P3-38:与交割单 `RoundTrip`
+-- ⛔ 不做任何近似匹配 —— 那条纪律一字不变,本表只认 `positions.id`)。
+-- `basket_id` 可空 = 非篮子来源的手动开仓(**合法**,不是缺陷)。
+-- `final_json` 只在结案时写(运行中恒 NULL —— 「还没结案」与「结案了但八项算不出」
+-- 必须分得开)。`entry_plan_json` = 开仓时 `position_plans` version=1 的四件套快照。
+-- ⚠ 本表**允许 UPDATE**(`status`/`closed_on`/`final_json`/`updated_at`),它是一个
+-- 有生命周期的对象,不是冻结件 —— 冻结的是 `trade_clock_events` 那条流水。
+-- ══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS trade_clock (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id INTEGER NOT NULL UNIQUE,      -- 确定性外键(⛔ 不做任何近似匹配,见 §七 P3-38)
+  ts_code     TEXT NOT NULL,
+  basket_id   INTEGER,                      -- NULL = 非篮子来源的手动开仓(合法)
+  opened_on   TEXT NOT NULL,
+  closed_on   TEXT,
+  status      TEXT NOT NULL,                -- running | closed
+  entry_plan_json TEXT NOT NULL,            -- 开仓时从 position_plans 冻的四件套快照
+  final_json  TEXT,                         -- 结案时的八项验证(K8 §十四)
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trade_clock_status ON trade_clock(status);
+
+-- 交易时钟事件流水,**append-only**(同 `basket_verification` / `user_actions` 三律)。
+-- `user_note` = K8 §十五「用户只补充系统无法识别的主观原因,每次一条简短说明」——
+-- **只追加**,⛔ 不改既有行、⛔ 不做 LLM 代猜(§七 P3-28 原文纪律一字不变)。
+CREATE TABLE IF NOT EXISTS trade_clock_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_clock_id INTEGER NOT NULL,
+  event_date TEXT NOT NULL,
+  kind TEXT NOT NULL,          -- d1_open | daily_check | target_zone | invalidation | manual_note | close
+  mech_json TEXT NOT NULL DEFAULT '{}',
+  user_note TEXT,              -- K8 §十五:用户补充的主观原因,每次一条简短说明
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trade_clock_events ON trade_clock_events(trade_clock_id, event_date);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

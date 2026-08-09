@@ -102,9 +102,45 @@ class TestStratification:
 
     def test_missing_stratum_key_is_explicit_not_merged(self):
         recs = [_rec(1, ruleset=None)]
-        assert recs[0].stratum[1] == metrics.UNSET
+        # V2.2-④-C:分层键从两键扩到四键(骨架 × 引擎码 × 引擎版本 × 条件集)——
+        # 条件集是**最后**一位,⛔ 别再按索引 1 找它(那已经是引擎码了)。
+        assert recs[0].stratum[-1] == metrics.UNSET
+        assert len(recs[0].stratum) == 4
         reports = metrics.evaluate(recs, score_kw=_KW, notional=20000.0, with_tradable=False)
         assert reports[0].ruleset_version == metrics.UNSET
+
+    def test_legacy_samples_keep_their_own_layer_and_are_never_merged(self):
+        """🔴 **历史 `LEGACY` 包的样本仍按老分层算**(plan ④-C 测试点,承 V2.1-②
+        「历史样本不许消失」同一条纪律)。
+
+        判据两条:① K4 与 K7 两个历史包**照旧是两层**(⛔ 不许被引擎两位挤成一层);
+        ② 它们的引擎两位显式落 `LEGACY`(不是 `UNSET` —— 「那个年代没有引擎线」与
+        「这一位本该有值却没记」是两件事);③ K8 样本**另成一层**,⛔ 不并进历史层。"""
+        k8 = _rec(3, pack="K8-V0.5")
+        k8.skeleton_version, k8.engine_code, k8.engine_version = "K8-V0.5", "C", "C1"
+        recs = [_rec(1, pack="K4-pack-v1"), _rec(2, pack="K7-pack-v1"), k8]
+        reports = metrics.evaluate(recs, score_kw=_KW, notional=20000.0, with_tradable=False)
+        assert len(reports) == 3
+        by_pack = {r.pack_version: r for r in reports}
+        assert set(by_pack) == {"K4-pack-v1", "K7-pack-v1", "K8-V0.5"}
+        for legacy in ("K4-pack-v1", "K7-pack-v1"):
+            assert by_pack[legacy].engine_code == metrics.LEGACY_ENGINE
+            assert by_pack[legacy].engine_version == metrics.LEGACY_ENGINE
+            assert by_pack[legacy].n_baskets == 1
+        assert (by_pack["K8-V0.5"].engine_code, by_pack["K8-V0.5"].engine_version) == ("C", "C1")
+        # 老键一个都没丢(V2.2 〇b 铁律 3「零删键」):已装客户端与移交件排版在读它们。
+        d = by_pack["K8-V0.5"].to_dict()
+        assert d["packVersion"] == "K8-V0.5" and d["rulesetVersion"]
+        assert d["skeletonVersion"] == "K8-V0.5" and d["engineCode"] == "C"
+
+    def test_same_pack_two_engines_are_two_layers(self):
+        """K8 §十六 要「C、Z、Y 各版本表现」—— 同骨架不同引擎必须分开算。"""
+        a, b = _rec(1, pack="K8-V0.5"), _rec(2, pack="K8-V0.5")
+        a.skeleton_version = b.skeleton_version = "K8-V0.5"
+        a.engine_code, a.engine_version = "C", "C1"
+        b.engine_code, b.engine_version = "Z", "Z1"
+        reports = metrics.evaluate([a, b], score_kw=_KW, notional=20000.0, with_tradable=False)
+        assert [(r.engine_code, r.engine_version) for r in reports] == [("C", "C1"), ("Z", "Z1")]
 
 
 # ══════════════════════════════════════════════════════════════════════════

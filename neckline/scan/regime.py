@@ -689,7 +689,14 @@ def _compute_accuracy_dim(day: date, db_path: Optional[Path]) -> Dict[str, Any]:
     窗口。同一 `(basket_id, trade_date)` 多行(append-only 流水)取 id 最大的一行
     (读侧「最新状态」既有约定)。正确率口径(工程首版,只留痕不进判据):
     verified=1、partial=0.5、falsified=0,unclear 不计入分母(说不清不猜)。
-    零样本 → `available=false` + `'clock_samples_insufficient'`,⛔ 不当正确率 0。"""
+    零样本 → `available=false` + `'clock_samples_insufficient'`,⛔ 不当正确率 0。
+
+    ⚠ **V2.2-④ 起换算搬走了**:`verified=1 / partial=0.5 / falsified=0、unclear 不计`
+    这套折算改由 `selection/verification_rules.accuracy_from_counts()` 提供(**取值
+    逐位不变**,只是从这里提成单一源)—— 周度「T1/T2 入场信号正确率」要吃同一份定义,
+    两处各写一份迟早漂。
+    """
+    from neckline.selection.verification_rules import accuracy_from_counts
     window = _recent_trading_days_before(day, ACCURACY_WINDOW_DAYS)
     day_strs = [_d(x) for x in window]
     placeholders = ",".join("?" * len(day_strs))
@@ -707,22 +714,18 @@ def _compute_accuracy_dim(day: date, db_path: Optional[Path]) -> Dict[str, Any]:
     counts: Dict[str, int] = {}
     for state in latest.values():
         counts[state] = counts.get(state, 0) + 1
-    verified = counts.get("verified", 0)
-    partial = counts.get("partial", 0)
-    falsified = counts.get("falsified", 0)
-    unclear = counts.get("unclear", 0)
-    denom = verified + partial + falsified
+    accuracy, denom = accuracy_from_counts(counts)
     return {
         "available": denom > 0,
         "unavailable_reason": "" if denom > 0 else "clock_samples_insufficient",
         "source": "basket_verification_fallback",
         "window_days": ACCURACY_WINDOW_DAYS,
         "samples": denom,
-        "verified": verified,
-        "partial": partial,
-        "falsified": falsified,
-        "unclear": unclear,
-        "accuracy": ((verified + 0.5 * partial) / denom) if denom else None,
+        "verified": counts.get("verified", 0),
+        "partial": counts.get("partial", 0),
+        "falsified": counts.get("falsified", 0),
+        "unclear": counts.get("unclear", 0),
+        "accuracy": accuracy,
     }
 
 

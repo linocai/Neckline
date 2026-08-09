@@ -60,6 +60,14 @@ FORWARD_SLACK_DAYS = 1
 
 UNSET = "(未登记)"      # 分层键缺失时的显式占位(⛔ 不许把缺失并进某个真实版本里)
 
+#: **历史单包制**(K4/K7)样本在引擎两位上的占位。与 `UNSET` 刻意分开:`UNSET` 说的是
+#: 「这一位本该有值却没记」,`LEGACY` 说的是「**那个年代根本没有引擎线这个概念**」——
+#: 取值与 `selection_packs.line_code` 的 DEFAULT 同串,读的人一眼能对上。
+#: 🔴 分层扩到四键之后,历史样本靠「骨架位退回它当时的 `pack_version` + 引擎两位落
+#: `LEGACY`」**留在自己那一层**(承 V2.1-② 「历史样本不许消失」:⛔ 不许并进 K8 新层,
+#: 也⛔ 不许把 K4 与 K7 两个历史包挤成同一层)。
+LEGACY_ENGINE = "LEGACY"
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 面板装配(读侧:一次把区间内的篮子 + 定档 + 卡 + 验证 + 复盘拉齐)
@@ -79,6 +87,10 @@ class BasketRecord:
     charter_version: Optional[str] = None
     evidence_status: Optional[str] = None
     via: str = "auto"
+    # V2.2-③-E / ④-C:篮子级引擎归属(单篮子单引擎)。老行 = None,如实。
+    engine_code: Optional[str] = None
+    engine_version: Optional[str] = None
+    skeleton_version: Optional[str] = None
     members: Tuple[str, ...] = ()
     roles: Dict[str, str] = field(default_factory=dict)        # ts_code -> role_mech or role_llm
     mech_score: Optional[float] = None
@@ -93,9 +105,22 @@ class BasketRecord:
     selected: bool = False        # 用户在 D0/D+1 选过它(`user_actions.kind='select'`)
 
     @property
-    def stratum(self) -> Tuple[str, str]:
-        """分层键 =(选股包版本,验证条件集版本)。缺失显式占位,不并层。"""
-        return (self.pack_version or UNSET, self.ruleset_version or UNSET)
+    def stratum(self) -> Tuple[str, str, str, str]:
+        """分层键(**V2.2-④-C 从两键扩到四键**)=
+        (骨架版本,引擎码,引擎版本,验证条件集版本)。缺失显式占位,不并层。
+
+        🔴 **历史样本不许消失、也不许被并进新层**(承 V2.1-② 同一条纪律):
+        K8 之前的篮子没有骨架/引擎概念 → 骨架位**退回它当时的 `pack_version`**
+        (K4-pack-v1 与 K7-pack-v1 因此仍是两层,与扩容前逐位一致),引擎两位落
+        `LEGACY`。⛔ 别把骨架位也写成 `LEGACY` —— 那会把两个历史包挤成一层,
+        等于把「这一版比上一版好不好」这个问题从成绩单上抹掉。
+        """
+        return (
+            self.skeleton_version or self.pack_version or UNSET,
+            self.engine_code or LEGACY_ENGINE,
+            self.engine_version or LEGACY_ENGINE,
+            self.ruleset_version or UNSET,
+        )
 
     def mech_item(self, key: str) -> Dict[str, Any]:
         item = (self.review_mech or {}).get(key)
@@ -139,7 +164,8 @@ def load_basket_panel(
     with connection(db_path) as conn:
         rows = conn.execute(
             "SELECT id, trade_date, basket_key, name, tier, driver_kind, pack_version, "
-            "charter_version, evidence_status, via FROM baskets "
+            "charter_version, evidence_status, via, engine_code, engine_version, "
+            "skeleton_version FROM baskets "
             "WHERE trade_date >= ? AND trade_date <= ? ORDER BY trade_date, basket_key",
             (lo, hi),
         ).fetchall()
@@ -151,6 +177,7 @@ def load_basket_panel(
                 basket_id=int(r[0]), d0=str(r[1]), basket_key=str(r[2]), name=str(r[3]),
                 tier=int(r[4]), driver_kind=str(r[5]), pack_version=str(r[6]),
                 charter_version=r[7], evidence_status=r[8], via=str(r[9] or "auto"),
+                engine_code=r[10], engine_version=r[11], skeleton_version=r[12],
             )
             by_id[rec.basket_id] = rec
             out.append(rec)
@@ -589,6 +616,11 @@ def contribution(records: Sequence[BasketRecord],
 
 @dataclass
 class StratumReport:
+    #: ⚠ **`pack_version` / `ruleset_version` 两个字段名与 `packVersion` /
+    #: `rulesetVersion` 两个键一律保留**(V2.2 〇b 铁律 3「零删键」:已装客户端与既有
+    #: 移交件排版都在读它们)。四键分层新增的三位是**追加**,不是替换。
+    #: 四键分层下 `pack_version` 承载的是**骨架位**(历史样本 = 它当时的单包版本,
+    #: 与扩容前逐位一致),故老读者读到的东西没有变。
     pack_version: str
     ruleset_version: str
     n_baskets: int
@@ -602,10 +634,18 @@ class StratumReport:
     selected: Dict[str, Any]
     contribution: Dict[str, Any]
     tier_verdict: Dict[str, Any]
+    # —— V2.2-④-C 四键分层新增的两位(**追加在末尾、带默认值**:既有构造点与测试
+    #    替身一个字都不用改;`pack_version` 那一位现在承载骨架版本)——
+    engine_code: str = LEGACY_ENGINE
+    engine_version: str = LEGACY_ENGINE
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "packVersion": self.pack_version, "rulesetVersion": self.ruleset_version,
+            # 四键分层的显式三位(`skeletonVersion` 与 `packVersion` 同值 —— 老键
+            # 保留是「零删键」铁律,新键让读的人不必猜 packVersion 现在是什么意思)。
+            "skeletonVersion": self.pack_version,
+            "engineCode": self.engine_code, "engineVersion": self.engine_version,
             "nBaskets": self.n_baskets, "nDays": self.n_days, "days": list(self.days),
             "tierMonotonicity": self.tier, "resonance": self.resonance,
             "verification": self.verification, "leader": self.leader,
@@ -623,17 +663,21 @@ def evaluate(
     parquet_dir: Optional[Path] = None,
     with_tradable: bool = True,
 ) -> List[StratumReport]:
-    """按 `(pack_version, ruleset_version)` 分层出成绩单(层内再算七组指标)。
+    """按 **`骨架 × 引擎码 × 引擎版本 × 条件集`** 四键分层出成绩单(层内再算七组指标)。
 
-    层序:`(pack_version, ruleset_version)` 字典序 —— 确定性,重跑逐位可比。
+    层序 = 四元组字典序 —— 确定性,重跑逐位可比。
+
+    ⚠ **V2.2-④-C 从两键扩到四键**(K8 §十六 要按引擎与版本归因)。历史 `LEGACY` 样本
+    **仍按老分层算**:骨架位 = 它当时的 `pack_version`,引擎两位 = `LEGACY` → K4 与
+    K7 照旧是两层、层内数字逐位不变(⛔ 不许并进 K8 新层,承 V2.1-② 同一条纪律)。
     """
-    strata: Dict[Tuple[str, str], List[BasketRecord]] = {}
+    strata: Dict[Tuple[str, str, str, str], List[BasketRecord]] = {}
     for r in records:
         strata.setdefault(r.stratum, []).append(r)
 
     out: List[StratumReport] = []
-    for (pack, ruleset) in sorted(strata):
-        rs = strata[(pack, ruleset)]
+    for (pack, engine_code, engine_version, ruleset) in sorted(strata):
+        rs = strata[(pack, engine_code, engine_version, ruleset)]
         days = sorted({r.d0 for r in rs})
         tr = TradableResult()
         if with_tradable:
@@ -650,7 +694,8 @@ def evaluate(
         tier_stats = tier_monotonicity(rs)
         mono = tier_stats.get("monotonic")
         out.append(StratumReport(
-            pack_version=pack, ruleset_version=ruleset, n_baskets=len(rs),
+            pack_version=pack, ruleset_version=ruleset,
+            engine_code=engine_code, engine_version=engine_version, n_baskets=len(rs),
             n_days=len(days), days=days,
             tier=tier_stats,
             resonance=resonance_rate(rs),
@@ -689,7 +734,7 @@ def forward_window_ready(d0: Any, *, score_kw: Optional[Mapping[str, Any]] = Non
 
 
 __all__ = [
-    "MIN_CONCLUSION_DAYS", "FORWARD_SLACK_DAYS", "UNSET",
+    "MIN_CONCLUSION_DAYS", "FORWARD_SLACK_DAYS", "UNSET", "LEGACY_ENGINE",
     "BasketRecord", "load_basket_panel",
     "Verdict", "verdict",
     "tier_monotonicity", "resonance_rate", "verification_rate", "leader_vs_members",

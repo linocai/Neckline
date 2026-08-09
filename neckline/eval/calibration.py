@@ -8,9 +8,10 @@
 **报告结构**(渲染顺序即阅读顺序)::
 
     §0 口径与样本(先说清楚这份报告基于多少天、多少篮、有没有降级)
-    §1 分层成绩单(每个 `pack_version × verification_ruleset_version` 一节)
+    §1 分层成绩单(每个 `骨架 × 引擎 × 版本 × 条件集` 一节;V2.2-④-C 从两键扩到四键)
     §2 安慰剂对照臂(⑨-C2:随机同规模篮子 + 满仓持有基准)
     §3 数据诚实度(存拍覆盖 / 复盘降级 / 未判定篮子 —— 缺口摆在明面上)
+    §4 双时钟与修改建议(V2.2-④:选股时钟八项 / 交易时钟六项 / 四分类建议)
 
 **两条文案纪律**(与 §红线 5 一致,渲染层逐条守):
 
@@ -26,7 +27,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from neckline.calendar import trading_days_between
 from neckline.eval.metrics import (
@@ -57,6 +58,9 @@ class CalibrationReport:
     placebo: List[PlaceboReport] = field(default_factory=list)
     honesty: Dict[str, Any] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
+    #: V2.2-④:双时钟成绩单 + 四分类修改建议(`eval/iteration.build_iteration_report`
+    #: 的原样产物)。**空 dict = 本期没跑到 / 算不出**,⛔ 不拿空段冒充"没有建议"。
+    iteration: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -67,6 +71,7 @@ class CalibrationReport:
             "strata": [s.to_dict() for s in self.strata],
             "placebo": [p.to_dict() for p in self.placebo],
             "honesty": dict(self.honesty), "notes": list(self.notes),
+            "iteration": dict(self.iteration),
             "disclaimer": DISCLAIMER,
         }
 
@@ -95,6 +100,33 @@ def _honesty(records: Sequence[BasketRecord]) -> Dict[str, Any]:
         "note": ("`withoutReview` = 那天复盘没跑过;`notEvaluated` = ⑧ 那一拍没跑过。"
                  "两者都是**运维缺口**,不是策略失败,故一律单独计数、不进任何比率的分母。"),
     }
+
+
+def build_iteration_section(
+    date_from: str,
+    date_to: str,
+    *,
+    placebo: Optional[Sequence[PlaceboReport]] = None,
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """V2.2-④ 的那一段:读**已结案**的选股时钟 + 交易时钟,出成绩单与四分类建议。
+
+    **只读**(同本模块既有边界:装配 + 渲染,零写库)。窗口按 **D0**(选股时钟)与
+    **开仓日**(交易时钟)取,与分层成绩单同一个区间口径。
+    """
+    from neckline.eval.iteration import build_iteration_report, resolve_thresholds
+    from neckline.review.selection_clock import list_closures
+    from neckline.review.trade_clock import list_trade_clocks, note_coverage
+
+    closures = list_closures(date_from, date_to, db_path=db_path)
+    clocks = list_trade_clocks(date_from=date_from, date_to=date_to, db_path=db_path)
+    coverage = note_coverage(date_from=date_from, date_to=date_to, db_path=db_path)
+    thresholds, problems = resolve_thresholds(db_path=db_path)
+    return build_iteration_report(
+        closures, clocks=clocks, placebo=list(placebo or ()),
+        note_coverage=coverage, thresholds=thresholds, threshold_problems=problems,
+        db_path=db_path,
+    )
 
 
 def build_report(
@@ -128,6 +160,13 @@ def build_report(
     rep.honesty = _honesty(records)
     if not records:
         rep.notes.append(f"[{lo}, {hi}] 区间内没有任何已冻结的篮子,本期无可校准对象")
+        # ⚠ 「没有篮子」**不等于**「没有交易」:手动开的仓照样有交易时钟。§4 段
+        # 因此在这条早退路径上也要装配一次,⛔ 别让它跟着篮子一起消失。
+        try:
+            rep.iteration = build_iteration_section(lo, hi, db_path=db_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[calibration] 双时钟 / 四分类段计算失败(空篮子路径)", exc_info=True)
+            rep.notes.append(f"双时钟 / 四分类段计算失败:{type(exc).__name__}: {exc}")
         return rep
 
     try:
@@ -144,6 +183,13 @@ def build_report(
         except Exception as exc:  # noqa: BLE001
             logger.warning("[calibration] 安慰剂对照臂计算失败", exc_info=True)
             rep.notes.append(f"安慰剂对照臂计算失败:{type(exc).__name__}: {exc}")
+
+    # —— V2.2-④:双时钟成绩单 + 四分类建议(整段包保险丝,炸了只记 note)————
+    try:
+        rep.iteration = build_iteration_section(lo, hi, placebo=rep.placebo, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[calibration] 双时钟 / 四分类段计算失败", exc_info=True)
+        rep.notes.append(f"双时钟 / 四分类段计算失败:{type(exc).__name__}: {exc}")
 
     if rep.n_trading_days < MIN_CONCLUSION_DAYS:
         rep.notes.append(
@@ -187,8 +233,9 @@ def render_markdown(report: CalibrationReport) -> str:
     out.append(f"- 报告规格:`{r.spec_version}`,生成于 {r.generated_at}")
     out.append(f"- 样本:**{r.n_trading_days} 个交易日 / {r.n_baskets} 个篮子**"
                f"(结论线 = {MIN_CONCLUSION_DAYS} 个交易日)")
-    out.append(f"- 分层维度:`pack_version` × `verification_ruleset_version`"
-               f"(共 {len(r.strata)} 层)")
+    out.append(f"- 分层维度:`skeleton_version` × `engine_code` × `engine_version` × "
+               f"`verification_ruleset_version`(共 {len(r.strata)} 层;V2.2-④-C 从两键扩到"
+               f"四键,历史 `LEGACY` 样本仍按老分层算、⛔ 未并进新层)")
     for n in r.notes:
         out.append(f"- ⚠ {n}")
     out.append("")
@@ -199,7 +246,8 @@ def render_markdown(report: CalibrationReport) -> str:
         out.append("(本期无分层数据)")
         out.append("")
     for s in r.strata:
-        out.append(f"### 包 `{s.pack_version}` × 条件集 `{s.ruleset_version}`")
+        out.append(f"### 骨架 `{s.pack_version}` × 引擎 `{s.engine_code}`/`{s.engine_version}`"
+                   f" × 条件集 `{s.ruleset_version}`")
         out.append("")
         out.append(f"- 样本:{s.n_days} 个交易日 / {s.n_baskets} 个篮子")
         t = s.tier
@@ -301,7 +349,122 @@ def render_markdown(report: CalibrationReport) -> str:
                + "(`eod_approx` = 缺存拍,幅度可信、**时刻未知**)")
     out.append(f"- ⚠ {h.get('note')}")
     out.append("")
+
+    out.extend(render_iteration_section(r.iteration))
     return "\n".join(out)
+
+
+def render_iteration_section(it: Optional[Mapping[str, Any]]) -> List[str]:
+    """§4 双时钟与修改建议(V2.2-④)。**移交件复用同一份排版**,⛔ 不另写第二份。"""
+    out: List[str] = ["## §4 双时钟与修改建议(V2.2-④)", ""]
+    if not it:
+        out.append("(本期未产出双时钟段 —— 周度作业还没跑到这个窗口,或该段计算失败;"
+                   "详见 §0 的 note。**这不是「没有建议」**,是这一段没算出来。)")
+        out.append("")
+        return out
+
+    n = it.get("samples") or {}
+    out.append(f"- 样本:选股时钟已结案 **{n.get('selectionClock', 0)}** 篮 / "
+               f"交易时钟 **{n.get('tradeClock', 0)}** 笔真实买入")
+    out.append(f"- 分层键:{' × '.join('`%s`' % k for k in (it.get('strataKey') or []))}")
+    out.append("")
+
+    sel = (it.get("selection") or {}).get("overall") or {}
+    out.append("### §4-1 选股时钟(K8 §十六 选股侧;样本 = **全部** T1/T2,与买没买无关)")
+    out.append("")
+    if not sel.get("samples"):
+        out.append("(本期没有已结案的选股时钟样本。)")
+    else:
+        tier = sel.get("tier_signal_accuracy") or {}
+        out.append("- **T1/T2 入场信号正确率**:"
+                   + ("、".join(f"{k} {_ratio(v.get('accuracy'))}(n={v.get('n')})"
+                                for k, v in tier.items()) or "—"))
+        reg = sel.get("regime_accuracy") or {}
+        out.append("- **各行情状态下的表现**:"
+                   + ("、".join(f"{k} {_ratio(v.get('accuracy'))}(n={v.get('n')})"
+                                for k, v in reg.items()) or "—(D0 状态层缺行)"))
+        eng = sel.get("engine_versions") or {}
+        out.append("- **C/Z/Y 各版本表现**:"
+                   + ("、".join(f"{k} {_ratio(v.get('accuracy'))}(n={v.get('n')})"
+                                for k, v in eng.items()) or "—"))
+        drv = sel.get("driver_effectiveness") or {}
+        out.append("- **主要驱动有效性**(D1 四态):"
+                   + ("、".join(f"{k} n={v.get('n')}" for k, v in drv.items()) or "—"))
+        sup = sel.get("support_and_liftoff") or {}
+        out.append(f"- **支撑与启动形态**:入场区间触发 {sup.get('entry_triggered')}/"
+                   f"{sel.get('samples')} = {_ratio(sup.get('entry_trigger_rate'))};"
+                   f"D1 有落地读数 {sup.get('with_d1_metrics')} 篮")
+        pv = sup.get("by_position_verdict") or {}
+        if pv:
+            out.append("  - 按 **D0 位置关判定**(§七 P3-49 的证据面):"
+                       + "、".join(f"{k} {_ratio(v.get('accuracy'))}(n={v.get('n')})"
+                                   for k, v in pv.items()))
+        core = sel.get("core_vs_alternates") or {}
+        out.append(f"- **核心与替代标的**:龙头带住 {core.get('led')}/{core.get('judged')} = "
+                   f"{_ratio(core.get('led_rate'))}")
+    out.append("")
+
+    tr = it.get("trade") or {}
+    out.append("### §4-2 交易时钟(K8 §十六 交易侧;样本 = **真实买入**)")
+    out.append("")
+    out.append(f"- 交易时钟:运行中 {tr.get('running', 0)} / 已结案 {tr.get('closed', 0)} "
+               f"(共 {tr.get('trades', 0)} 笔)")
+    pc = tr.get("plan_consistency") or {}
+    out.append(f"- **入场与预案一致性**:落在建仓区间内 {pc.get('in_entry_zone')}/"
+               f"{pc.get('judged')} = {_ratio(pc.get('rate'))};超过最高追价 "
+               f"{pc.get('above_max_chase')} 笔")
+    eq = tr.get("exit_quality_on_thesis") or {}
+    out.append(f"- **判断成立时的离场质量**:到达目标区间 {eq.get('reached_target')}/"
+               f"{eq.get('judged')} = {_ratio(eq.get('rate'))}")
+    dec = tr.get("exit_quality_on_decay") or {}
+    out.append(f"- **上涨效率变化**:有读数 {dec.get('with_efficiency_reading')} 笔,"
+               f"比值中位 {_num(dec.get('ratio_median'), 2)} —— ⚠ {dec.get('note')}")
+    sq = tr.get("stop_quality_on_failure") or {}
+    out.append("- **离场原因分布**:"
+               + ("、".join(f"{k} {v}" for k, v in (sq.get('by_close_reason') or {}).items())
+                  or "—"))
+    cov = tr.get("note_coverage") or {}
+    if cov.get("available"):
+        out.append(f"- **用户主观说明覆盖率**(§七 P3-28):{cov.get('with_note')}/"
+                   f"{cov.get('trades')} = {_ratio(cov.get('coverage'))} 笔带说明"
+                   f"(共 {cov.get('notes')} 条)")
+    else:
+        out.append(f"- **用户主观说明覆盖率**(§七 P3-28):{cov.get('unavailable_reason') or '—'}")
+    out.append("")
+
+    out.append("### §4-3 修改建议四分类(K8 §十七)")
+    out.append("")
+    th = it.get("thresholds") or {}
+    if not th.get("available"):
+        out.append(f"🔴 **本期不给分类**:{th.get('unavailableReason')}")
+        for p in th.get("problems") or []:
+            out.append(f"  - ⚠ 配置问题:{p}")
+        out.append("")
+        out.append("下表只列**统计量**(每行的 `建议` 列写明还缺哪两个数)——"
+                   "「还没决定」与「样本不足」是两件事,⛔ 不许混成一句话。")
+    else:
+        out.append(f"- 分界线(**用户拍板、经四道闸进包**):`min_n={th.get('minN')}` / "
+                   f"`retire_min_n={th.get('retireMinN')}`")
+    out.append("")
+    rows = it.get("suggestions") or []
+    if not rows:
+        out.append("(本期无因素统计量 —— 没有已结案的选股时钟样本。)")
+        out.append("")
+        return out
+    out.append("| 分层(骨架/引擎/版本) | 因素 | n | 正确率 | 本层基线 | 差 | 安慰剂 | 分类 |")
+    out.append("|---|---|--:|--:|--:|--:|---|---|")
+    for row in rows:
+        klass = row.get("klass") or f"**待定**(`{row.get('klassStatus')}`)"
+        out.append(
+            f"| `{row.get('skeletonVersion')}`/`{row.get('engineCode')}`/"
+            f"`{row.get('engineVersion')}` | `{row.get('factor')}` | {row.get('n')} | "
+            f"{_ratio(row.get('accuracy'))} | {_ratio(row.get('baselineAccuracy'))} | "
+            f"{_num(row.get('delta'), 3)} | {row.get('placeboEdge')} | {klass} |"
+        )
+    out.append("")
+    out.append(f"> {it.get('disclaimer')}")
+    out.append("")
+    return out
 
 
 def write_report(
@@ -331,5 +494,6 @@ def week_bounds(any_day: date) -> tuple:
 
 __all__ = [
     "REPORT_SPEC_VERSION", "DISCLAIMER",
-    "CalibrationReport", "build_report", "render_markdown", "write_report", "week_bounds",
+    "CalibrationReport", "build_report", "build_iteration_section",
+    "render_markdown", "render_iteration_section", "write_report", "week_bounds",
 ]

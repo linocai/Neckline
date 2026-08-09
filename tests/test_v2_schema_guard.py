@@ -198,7 +198,10 @@ def test_entry_snapshots_duplicate_key_raises_integrity_error(tmp_path):
 # `INSERT OR REPLACE` 手法有十余处合法用途(scan/stage/retreat 等),抄错一个表名
 # 守门全程沉默。故对两张冻结表把「任何会覆盖既有行的写法」一并列进来。
 # ⚠ 大小写:比对前统一 `upper()`,不再只认全大写字面量。
-_FROZEN_TABLES = ("basket_cards", "entry_snapshots")
+# ⚠ **V2.2-④ 扩容**:`selection_clock` 是「**结案**」件 —— `INSERT OR IGNORE` +
+# `basket_id` UNIQUE,结了就是结了(plan ④-A)。它与 `basket_review_daily` 的
+# 「每日复盘可覆盖」**刻意不同**,⛔ 别把后者也塞进这份清单。
+_FROZEN_TABLES = ("basket_cards", "entry_snapshots", "selection_clock")
 _FROZEN_FORBIDDEN_TEXT = tuple(
     f"{verb} {tbl}" if verb == "UPDATE" else f"{verb} FROM {tbl}"
     for tbl in _FROZEN_TABLES for verb in ("UPDATE", "DELETE")
@@ -240,7 +243,12 @@ def test_frozen_guard_actually_catches_the_or_replace_variant(tmp_path):
 # ══════════════════════════════════════════════════════════════════════════
 
 _EXEC_METHOD_NAMES = {"execute", "executemany", "executescript"}
-_APPEND_ONLY_TABLES = ("user_actions", "basket_verification", "selection_pack_activation_log")
+# ⚠ **V2.2-④ 扩容**:`trade_clock_events` 是交易时钟的事件流水(含 K8 §十五 的用户
+# 主观说明)—— **只追加**。⛔ 注意父表 `trade_clock` **不在**这份清单里:它是一个有
+# 生命周期的对象(`running → closed`),`UPDATE trade_clock SET status=…` 是它的正常
+# 职责,同 `selection_packs` 版本注册表与其 activation_log 的既有分工。
+_APPEND_ONLY_TABLES = ("user_actions", "basket_verification", "selection_pack_activation_log",
+                       "trade_clock_events")
 # 追加表禁 UPDATE/DELETE;**`INSERT OR REPLACE` 也算改写**(= 先删后插),Y1 一并补上
 # ——「只 INSERT」这条纪律不是靠动词第一个单词是 INSERT 就算数的。
 _FORBIDDEN_APPEND_SQL = tuple(
