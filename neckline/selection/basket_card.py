@@ -98,8 +98,9 @@ logger = logging.getLogger(__name__)
 # 裁定 #9 单篮子单引擎;纯增量、老键一字未动 —— 「spec_version 恒随形状变化而变」
 # 的既定纪律,老卡照常按 v2 读回)。
 # ⚠ **裁定 #11 的位置关三键(position_verdict/position_reason/position_metrics)
-# 并入同一个 v3,⛔ 不另 bump v4**:v3 本身**一天都没上过产**(V2.2 批 2 未部署),
-# 同一个未发版形状里再 bump 只会造出一个没有任何卡携带的幽灵版本号。规则不变 ——
+# 与裁定 #12 的核心关三键(core_verdict/core_reason/core_metrics)并入同一个 v3,
+# ⛔ 不另 bump v4/v5**:v3 本身**一天都没上过产**(V2.2 批 2 未部署),同一个未发版
+# 形状里再 bump 只会造出一个没有任何卡携带的幽灵版本号。规则不变 ——
 # **一旦 v3 上产,再改形状必须 bump**。
 CARD_SPEC_VERSION = "basket_card_v3"
 VERIFY_SPEC_VERSION = "basket_verify_v2"
@@ -760,6 +761,12 @@ class MemberCardEntry:
     position_verdict: str = ""
     position_reason: str = ""
     position_metrics: Optional[Dict[str, Any]] = None
+    # V2.2-③-C2 核心关(裁定 #12:核心关也退出机械闸,判定交 LLM、只降级不除名)。
+    # 同款理由:卡是 D0 冻结件,把**当次读数**存在这里 = 事后复核「它拿什么下的判断」
+    # 不必回头猜(与 `gate_evaluations.evidence_json` 互为两处留痕)。
+    core_verdict: str = ""
+    core_reason: str = ""
+    core_metrics: Optional[Dict[str, Any]] = None
     entry_low: Optional[float] = None
     entry_high: Optional[float] = None
     entry_clamp: str = CLAMP_ABSENT
@@ -793,6 +800,9 @@ class MemberCardEntry:
             "position_verdict": self.position_verdict,
             "position_reason": self.position_reason,
             "position_metrics": self.position_metrics,
+            "core_verdict": self.core_verdict,
+            "core_reason": self.core_reason,
+            "core_metrics": self.core_metrics,
             "mech": d,
             "entry_zone": ({"low": self.entry_low, "high": self.entry_high,
                             "why": self.entry_why or ""} if self.entry_clamp == CLAMP_OK else None),
@@ -1069,6 +1079,9 @@ def build_basket_card(
             position_verdict=getattr(m, "position_verdict", "") or "",
             position_reason=getattr(m, "position_reason", "") or "",
             position_metrics=getattr(m, "position_metrics", None),
+            core_verdict=getattr(m, "core_verdict", "") or "",
+            core_reason=getattr(m, "core_reason", "") or "",
+            core_metrics=getattr(m, "core_metrics", None),
             mech=mech,
             entry_low=low, entry_high=high, entry_clamp=entry_clamp,
             entry_why=_clean_text(item.get("why")) if item else None,

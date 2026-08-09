@@ -83,6 +83,8 @@ DROPPED_REASON_LABEL: Dict[str, str] = {
     # 🔴 裁定 #11:位置关判定交 LLM,`unfit` = 位置不合适 → 退出正式候选。
     # ⛔ 这不是硬否决,票就在这张 ③b 表里、写明是哪只成员与模型的理由。
     "position_unfit": "位置关判定不合适(落地起跳位置不对;⛔ 非硬否决,理由见右)",
+    # 🔴 裁定 #12:核心关同款交 LLM,`unfit` = 不是那一群的龙头 → 退出正式候选。
+    "core_unfit": "核心关判定不是龙头(在同行业里不占核心地位;⛔ 非硬否决,理由见右)",
     "members_all_removed": "成员级机械关对拍后成员全部出篮",
     "no_active_engine": "无运行中的引擎线(系统缺席,不是市场结论)",
     "engine_unresolved": "引擎归属解析失败(LLM 未给且机械兜底无引擎可容纳)",
@@ -150,6 +152,10 @@ _CARD_MEMBER_KEYS: Tuple[Tuple[str, str], ...] = (
     ("position_verdict", "positionVerdict"),
     ("position_reason", "positionReason"),
     ("position_metrics", "positionMetrics"),
+    # V2.2-③-C2 核心关(裁定 #12):同构三件(⛔ 与位置三件分开,两个独立判定)。
+    ("core_verdict", "coreVerdict"),
+    ("core_reason", "coreReason"),
+    ("core_metrics", "coreMetrics"),
     ("mech", "mech"),
     ("entry_zone", "entryZone"),
     ("entry_zone_clamp", "entryZoneClamp"),

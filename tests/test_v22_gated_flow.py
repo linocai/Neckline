@@ -31,7 +31,7 @@ from neckline.selection import pack as pack_mod
 from neckline.selection import tier as ti
 from tests.conftest import insert_stock_basic, insert_trade_cal, write_daily_fixture
 from tests.test_selection_gates import (
-    _EV3, _METRICS_OK, _insert_regime, _insert_strength_days,
+    _CORE_METRICS_OK, _EV3, _METRICS_OK, _insert_regime, _insert_strength_days,
 )
 
 D0 = date(2024, 4, 8)
@@ -46,23 +46,28 @@ def _activate_all_lines(db_path: Path) -> None:
         pack_mod.activate_pack(doc["manifest"], doc["config"], via="seed", db_path=db_path)
 
 
-def _member(code: str = CODE, *, position: str = ag.POSITION_OK) -> ag.BasketMemberCandidate:
-    """⚠ 裁定 #11:位置关吃的是 ⑤ 随成员带下来的 **LLM 判定 + 当次读数**
-    (⛔ gates 不再读 `landing_metrics_daily`,夹具也不再造那张表的行)。"""
+def _member(code: str = CODE, *, position: str = ag.POSITION_OK,
+            core: str = ag.CORE_OK) -> ag.BasketMemberCandidate:
+    """⚠ 裁定 #11 / #12:位置关与核心关吃的都是 ⑤ 随成员带下来的 **LLM 判定 + 当次
+    读数**(⛔ gates 不再读 `landing_metrics_daily`、也不再现算核心读数,夹具因此
+    直接给读数)。"""
     return ag.BasketMemberCandidate(
         ts_code=code, role_llm="leader", role_mech=None, role_conflict=0,
         reason="理由", industry="半导体", rs_rank=1, name=code,
         position_verdict=position, position_reason="回撤到位后转强",
         position_metrics=dict(_METRICS_OK), position_metrics_missing="",
+        core_verdict=core, core_reason="行业内 20 日第 1、当日领涨",
+        core_metrics=dict(_CORE_METRICS_OK), core_metrics_missing="",
     )
 
 
 def _basket(key: str = "k1", *, name: str = "篮",
-            position: str = ag.POSITION_OK) -> ag.BasketCandidate:
+            position: str = ag.POSITION_OK,
+            core: str = ag.CORE_OK) -> ag.BasketCandidate:
     return ag.BasketCandidate(
         trade_date=D0_S, basket_key=key, name=name, driver="共同驱动",
         driver_kind="theme", why_now="为什么是现在", seed_keys=("s-1",),
-        members=(_member(position=position),), evidence=_EV3,
+        members=(_member(position=position, core=core),), evidence=_EV3,
         evidence_status=ag.EVIDENCE_OK,
         pack_version="K8-V0.5", engine_api_version=ag.engine_api.ENGINE_API_VERSION,
         charter_version="v1.3.3", engine_code_llm="C",

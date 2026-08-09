@@ -757,6 +757,22 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
         "浮点比较容差,工程不变量(同 primitives._LIFT_EPS / sentinel/holding.py "
         "`_EPS` 先例:裸 >=/<= 比较价位是本项目通用坑),非策略参数。"
     ),
+    # —— V2.2-③-C2 核心关读数层(core_metrics.py,🔴 用户裁定 #12)——————————
+    # ⚠ 这三个是**「这个量是什么」的定义**,不是「够不够格」的阈值 —— 核心关自此
+    # **零阈值、零及格线**(含「行业内前 X%」这类,用户明确否决),整个模块里根本
+    # 没有一条判据可言,只有读数。定义常量的既有分工体例见 `scan/landing.py` 的
+    # 窗口常量段(⛔ 不进包:进包意味着"可调",而可调的前提是它参与判定)。
+    ("core_metrics.py", "RS_WINDOW_DAYS"): (
+        "「20 日收益」里的那个 20 —— 读数名字(`industry_rs_rank_20d`)自己写着它,"
+        "是量的定义而不是及格线。改它 = 换一个量,要走 plan + 改键名。"
+    ),
+    ("core_metrics.py", "CONSEC_LIMIT_LOOKBACK_DAYS"): (
+        "连板高度的回看上限(右截尾,同 `scan/landing.py::PLATFORM_DAYS_CAP` 体例):"
+        "饱和值读作「≥该值」。它是取数窗口 / 内存上界,不参与任何判定。"
+    ),
+    ("core_metrics.py", "_MIN_RANKABLE"): (
+        "分位需要至少两个可比成员 —— 数学定义(分母 n−1 不能为 0),不是门槛。"
+    ),
 }
 
 

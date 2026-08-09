@@ -1172,6 +1172,11 @@ CREATE TABLE IF NOT EXISTS landing_metrics_daily (
 -- pass/degrade;混出别的组合 = gates.py 有 bug)。⚠ `engine_code`/`engine_version`
 -- 在**引擎已解析**的行上一律填(plan 原注「成员级关口才有」写于裁定 #9 之前;单篮子
 -- 单引擎后篮子级关口同样按该篮引擎的阈值分支判,不填 = 归因丢信息,施工时如实扩)。
+-- 🔴 **两道 LLM 成员级关口(⑤位置 / ④核心)的行:`score`/`threshold` 恒为 NULL**
+-- —— 裁定 #11/#12 之后这两关**零阈值**,判定是模型输出而不是一次数值比较;要复核
+-- 「它当时拿什么下的判断」只能看 `evidence_json`,那里**同时**存着当次读数
+-- (`metrics` + `metrics_missing`)与模型那句理由。⛔ 别往这两列回填一个数去"补全"
+-- 报表:一填就等于宣称当时有过一条及格线,而那正是被推翻的东西。
 CREATE TABLE IF NOT EXISTS gate_evaluations (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   trade_date    TEXT NOT NULL,

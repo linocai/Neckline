@@ -16,6 +16,16 @@
 闸门」因此不但没被突破、反而更严** —— 六关里能硬否决的只剩两道读客观预计算量的关
 (市场关读 `market_regime_daily`、板块关读 `industry_strength_daily`/`industry_stage_daily`)。
 
+🔴 **2026-08-09 用户裁定 #12:核心关也退出机械闸,⛔ 不得改回**(同款处置)。原判据
+`leader_rs_rank ≤ 3` 取数自 `leader_structure_daily` 的**簇内**口径,而簇 =「当天一起
+涨停且同行业/概念的 ≥2 只票」—— 生产实测(20260807)全市场**只有 75 只票有 `rs_rank`
+(1.4%)**,其余 98.6% 判不出核心地位 → 结构性进不了 T1。⚠ **不是阈值定严了**
+(`≤3` 的 provenance 是 `audited`),**错的是尺子的取数域**:K8 三引擎找的是「还没怎么
+涨、刚要动」的票,这道关的入场券却是「今天必须涨停」——**涨停是结果,要的是结果之前
+那一刻**。现在:机械侧只出**行业域读数**(`selection/core_metrics.py`,**零阈值、零及格
+线**,含「行业内前 X%」这类,用户明确否决),判定交 LLM(⛔ 只降级不除名)。簇内
+`rs_rank` **降级为补充读数,缺席不挡任何档**。
+
 **「退出正式候选」≠「从报告里消失」**(§2.9-C-2):被本模块除名的候选一律进
 `TierResult.dropped` → 报告 ③b(名 / 分 / 卡在哪一关、差多少 / 原因码)。
 
@@ -40,17 +50,18 @@
 **成本铁律(附「成本与超时算术」)**:本模块 **零 LLM 调用** —— 证据关/驱动关/
 核心关/**位置关**的 LLM 侧产出一律复用 ⑤ `basket_reason` 那一次调用带回的结构化字段
 (`common_trait` / `persistence` / `strengthen_and_invalidate` / `evidence_conflicts` /
-成员 `reason` / 角色 / **`position_verdict` + `position_reason` + 当次读数**),本模块
-只做归并与留痕。三引擎并跑只体现在**阈值分支**上,⛔ 不体现在调用次数上。
+成员 `reason` / 角色 / **`position_verdict` + `core_verdict` + 各自的理由与当次读数**),
+本模块只做归并与留痕。三引擎并跑只体现在**阈值分支**上,⛔ 不体现在调用次数上。
 
 **留痕**:`gate_evaluations`(append-only,每候选每关一行;成员级关口〔核心/位置〕
 每成员一行)。写入口只有 `save_gate_evaluations()`,零 UPDATE/DELETE。
-🔴 **位置关行的硬要求(plan ③-C 末段)**:`gate_kind='llm'` 且 `evidence_json`
-**必须同时存下当次读数与 LLM 理由** —— 判定不再是一组可回放的数字而是一段模型输出,
-不把这两样存在一起,事后无法复核它到底在拿什么下判断(P3-49 的证伪义务不减反增)。
-⚠ 读数取自 `BasketMemberCandidate.position_metrics`(= **当次喂进 prompt 的那一份**),
-⛔ 本模块不另读一遍 `landing_metrics_daily` —— 另读会存下「事后那一份」,与模型当时
-看到的可能不是同一份,留痕就白留了。
+🔴 **位置关行与核心关行的硬要求(plan ③-C 末段 / ③-C2 同款)**:`gate_kind='llm'` 且
+`evidence_json` **必须同时存下当次读数与 LLM 理由** —— 判定不再是一组可回放的数字而是
+一段模型输出,不把这两样存在一起,事后无法复核它到底在拿什么下判断(P3-49 的证伪义务
+不减反增)。⚠ 读数取自 `BasketMemberCandidate.position_metrics` / `.core_metrics`
+(= **当次喂进 prompt 的那一份**),⛔ 本模块不另读一遍 `landing_metrics_daily`、也不另
+调一遍 `core_metrics.compute_core_metrics` —— 另读会存下「事后那一份」,与模型当时看到
+的可能不是同一份,留痕就白留了。
 
 **阈值唯一源 = 引擎包 `config.engine.gates`**(键名契约 =
 `selection/pack.py::_ENGINE_GATE_SCHEMA`,⛔ 本模块不自创第二套键名、不硬编任何
@@ -67,7 +78,8 @@
 **反向守门**:零 import `neckline.report.score_display`(V2.1-④ 方向性规则)、
 零 import `neckline.sentinel.*`、零 import `neckline.selection.tier`(tier 反过来
 import 本模块,方向单一)、🆕 零 import `neckline.scan.landing*`(裁定 #11:位置关的
-读数由 ⑤ 随成员带进来,本模块不碰那张表)。
+读数由 ⑤ 随成员带进来,本模块不碰那张表)、🆕 零 import
+`neckline.selection.core_metrics`(裁定 #12 同款:核心读数也由 ⑤ 随成员带进来)。
 """
 
 from __future__ import annotations
@@ -89,6 +101,10 @@ from neckline.scan.regime import SKELETON_VERSION_FALLBACK
 from neckline.scan.regime_store import load_market_regime
 # 位置关三值的**唯一源**在 ⑤(判定就发生在那一次调用里),这里只消费,⛔ 不抄第二份。
 from neckline.selection.aggregate import (
+    CORE_OK,
+    CORE_UNFIT,
+    CORE_VERDICT_FALLBACK,
+    CORE_VERDICTS,
     POSITION_OK,
     POSITION_UNFIT,
     POSITION_VERDICT_FALLBACK,
@@ -286,6 +302,11 @@ class BasketGateSummary:
     # 「退出」发生在定档层(`t2_eligible=False`),不是在关口层把票删掉。
     position_unfit: bool = False
     position_unfit_detail: str = ""
+    # 🔴 裁定 #12:核心关同款(任一成员被 LLM 判 `core_verdict='unfit'` → 该候选
+    # **退出正式候选**,**仍在 ③b 列名**)。⛔ 与 `position_unfit` **分开两格、不合并**
+    # —— 「不是龙头」与「位置不对」指向完全不同的复盘结论(④ 周度按关口归因要分得开)。
+    core_unfit: bool = False
+    core_unfit_detail: str = ""
     regime_available: bool = False
     t1_max_evidence_degrades: int = T1_MAX_EVIDENCE_DEGRADES_DEFAULT
     t2_max_evidence_degrades: int = T2_MAX_EVIDENCE_DEGRADES_DEFAULT
@@ -297,10 +318,13 @@ class BasketGateSummary:
         (「四件套齐」在 ⑦ 卡生成之后才验,见 `tier.enforce_plan_completeness`。)
 
         🔴 裁定 #11:**⛔ 不再要求任何机械态枚举** —— 原「全员 `liftoff_confirmed`」
-        那一条正是把 T1 掐成近乎不可达的东西(实测 14 个 D0 回放零 T1),已整体作废。"""
+        那一条正是把 T1 掐成近乎不可达的东西(实测 14 个 D0 回放零 T1),已整体作废。
+        🔴 裁定 #12:核心关同样**不再有任何机械及格线**(原 `leader_rs_rank ≤ 3` 只有
+        1.4% 的票判得出),`core_verdict = ok` 是 T1 的必要条件。"""
         return (
             not self.excluded
             and not self.position_unfit
+            and not self.core_unfit
             and self.evidence_degrades <= self.t1_max_evidence_degrades
             and not self.degraded_gates
             and not self.blocks_t1
@@ -309,10 +333,11 @@ class BasketGateSummary:
 
     @property
     def t2_eligible(self) -> bool:
-        """③-D 的 T2:机械关全过 且 证据关(**含位置关**)降级处数 ≤ 引擎 T2 上限。
-        任一成员位置 `unfit` → 退出正式候选(⛔ 但票仍进 ③b,不消失)。"""
+        """③-D 的 T2:机械关全过 且 证据关(**含核心关 / 位置关**)降级处数 ≤ 引擎
+        T2 上限。任一成员核心或位置 `unfit` → 退出正式候选(⛔ 但票仍进 ③b,不消失)。"""
         return (not self.excluded
                 and not self.position_unfit
+                and not self.core_unfit
                 and self.evidence_degrades <= self.t2_max_evidence_degrades)
 
 
@@ -650,25 +675,66 @@ def _position_member_check(engine: Pack, member: Any) -> Tuple[GateCheck, bool]:
                       reason=reason_code, evidence=ev), unfit)
 
 
-def _core_member_check(engine: Pack, member: Any) -> GateCheck:
-    """④ 核心关(证据关,成员级):`leader_rs_rank ≤ gates.core.leader_rs_rank_max`
-    (H10 唯一过闸的量)。名次取不到 → 不拦不给 T1;超限 → **degrade**(只降级,
-    ③-A:证据关不除名)。"""
-    code = member.ts_code
-    rank_max = _gate_value(engine, "core", "leader_rs_rank_max")
-    rs_rank = getattr(member, "rs_rank", None)
-    if not isinstance(rank_max, (int, float)) or isinstance(rank_max, bool):
-        return GateCheck(GATE_CORE, VERDICT_PASS, ts_code=code, reason="core.no_threshold")
-    if rs_rank is None:
-        return GateCheck(GATE_CORE, VERDICT_PASS, ts_code=code, available=False,
-                         blocks_t1=True, threshold=float(rank_max), reason="missing:rs_rank")
-    if int(rs_rank) > int(rank_max):
-        return GateCheck(
-            GATE_CORE, VERDICT_DEGRADE, ts_code=code,
-            score=float(rs_rank), threshold=float(rank_max),
-            reason=f"core.rs_rank={int(rs_rank)}>{int(rank_max)}")
-    return GateCheck(GATE_CORE, VERDICT_PASS, ts_code=code, score=float(rs_rank),
-                     threshold=float(rank_max), reason=f"core.rs_rank={int(rs_rank)}")
+def _core_member_check(engine: Pack, member: Any) -> Tuple[GateCheck, bool]:
+    """④ 核心关(**证据关**,成员级;🔴 裁定 #12 整段重写,与位置关完全同构)。
+
+    判定不在这里做 —— 它由 ⑤ `basket_reason` 那**一次**调用给出
+    (`BasketMemberCandidate.core_verdict`),本函数只做三件事:
+    ① 三值 → 三态映射(`ok`→pass / `weak`→degrade / `unfit`→degrade + 退出正式候选);
+    ② 把**当次读数 + LLM 理由**一起塞进 `evidence`(→ `gate_evaluations.evidence_json`);
+    ③ 读数整份缺席时标 `available=False` + `blocks_t1`(「判不出」既不是「判过了」
+       也不是「拦下来」——⛔ 但它挡 T1:让 LLM 在零读数下给的 `ok` 直接换来 T1,
+       等于拿"没有依据"当依据)。
+
+    🔴 **本函数零阈值、零及格线**(裁定 12-b,含「行业内前 X%」这类,用户明确否决)
+    —— `score`/`threshold` 恒为 `None`,原 `leader_rs_rank_max` 已从包 schema 删除。
+    ⚠ 成员上的 `rs_rank`(簇内名次)**不再是任何判据**:它降级为读数,随
+    `core_metrics.cluster_rs_rank` 一起进 evidence,**缺席不挡任何档**(裁定 12-a)。
+
+    返回 `(check, unfit)`。**⛔ 永不返回 reject、永不让成员出篮** —— 核心关是证据关,
+    第 4 锁「LLM 不做闸门」在这里必须完好。`unfit` 的后果发生在**定档层**
+    (`t2_eligible=False` → ③b 列名)。"""
+    code = getattr(member, "ts_code", "") or ""
+    engine_code = str((engine.config.get("engine") or {}).get("engine_code") or "")
+    guidance = str(((engine.config.get("engine") or {}).get("gates") or {})
+                   .get("core", {}).get("guidance") or "")
+
+    raw_verdict = str(getattr(member, "core_verdict", "") or "").strip().lower()
+    reason_text = str(getattr(member, "core_reason", "") or "").strip()
+    metrics = getattr(member, "core_metrics", None)
+    metrics_missing = str(getattr(member, "core_metrics_missing", "") or "")
+
+    verdict_llm = raw_verdict if raw_verdict in CORE_VERDICTS else CORE_VERDICT_FALLBACK
+    # 🔴 evidence_json 的两样必需品:**当次读数** + **LLM 理由**。缺读数如实标
+    # `metrics_available=False`,⛔ 不补 0、不补默认值。
+    ev: Dict[str, Any] = {
+        "core_verdict": verdict_llm,
+        "core_verdict_raw": raw_verdict,
+        "core_reason": reason_text,
+        "metrics_available": metrics is not None,
+        "metrics": dict(metrics) if isinstance(metrics, Mapping) else None,
+        "metrics_missing": metrics_missing,
+        "engine_code": engine_code,
+        "core_guidance": guidance,
+    }
+    if raw_verdict not in CORE_VERDICTS:
+        ev["verdict_fallback"] = True
+
+    reason_code = f"core.{verdict_llm}[{engine_code}]"
+    if reason_text:
+        reason_code += f":{reason_text}"
+    metrics_absent = metrics is None
+
+    if verdict_llm == CORE_OK:
+        return (GateCheck(GATE_CORE, VERDICT_PASS, ts_code=code,
+                          available=not metrics_absent, blocks_t1=metrics_absent,
+                          reason=(reason_code if not metrics_absent
+                                  else reason_code + ";missing:core_metrics"),
+                          evidence=ev), False)
+    unfit = verdict_llm == CORE_UNFIT
+    return (GateCheck(GATE_CORE, VERDICT_DEGRADE, ts_code=code,
+                      available=not metrics_absent, blocks_t1=True,
+                      reason=reason_code, evidence=ev), unfit)
 
 
 def _driver_gate(basket: Any) -> GateCheck:
@@ -741,6 +807,8 @@ class _EngineEval:
     mech_reject_check: Optional[GateCheck]   # 篮子级机械关(市场/板块)首个 reject
     position_unfit: bool                     # 任一成员 `position_verdict='unfit'`
     position_unfit_detail: str = ""
+    core_unfit: bool = False                 # 任一成员 `core_verdict='unfit'`(裁定 #12)
+    core_unfit_detail: str = ""
 
 
 def _evaluate_under_engine(basket: Any, engine: Pack, ctx: GateContext) -> _EngineEval:
@@ -759,16 +827,21 @@ def _evaluate_under_engine(basket: Any, engine: Pack, ctx: GateContext) -> _Engi
 
     kept: List[Any] = []
     removed: List[MemberRemoval] = []
-    unfit_notes: List[str] = []
+    pos_unfit_notes: List[str] = []
+    core_unfit_notes: List[str] = []
     for m in basket.members:
-        checks.append(_core_member_check(engine, m))
+        core_check, core_is_unfit = _core_member_check(engine, m)
+        checks.append(core_check)
         pos_check, is_unfit = _position_member_check(engine, m)
         checks.append(pos_check)
-        # ⚠ 裁定 #11:位置关**永不让成员出篮**(证据关只降级)。`kept` 因此恒等于
-        # 全体成员 —— 成员出篮的通路留着,但当前没有成员级机械关会触发它。
+        # ⚠ 裁定 #11 / #12:位置关与核心关**都永不让成员出篮**(证据关只降级)。
+        # `kept` 因此恒等于全体成员 —— 成员出篮的通路留着,但当前没有成员级机械关
+        # 会触发它。
         kept.append(m)
         if is_unfit:
-            unfit_notes.append(f"{m.ts_code}:{pos_check.reason}")
+            pos_unfit_notes.append(f"{m.ts_code}:{pos_check.reason}")
+        if core_is_unfit:
+            core_unfit_notes.append(f"{m.ts_code}:{core_check.reason}")
 
     checks.append(_evidence_gate(engine, basket))
 
@@ -776,7 +849,10 @@ def _evaluate_under_engine(basket: Any, engine: Pack, ctx: GateContext) -> _Engi
     return _EngineEval(
         checks=tuple(checks), kept_members=tuple(kept), removed=tuple(removed),
         mech_reject_check=mech_reject,
-        position_unfit=bool(unfit_notes), position_unfit_detail=";".join(unfit_notes),
+        position_unfit=bool(pos_unfit_notes),
+        position_unfit_detail=";".join(pos_unfit_notes),
+        core_unfit=bool(core_unfit_notes),
+        core_unfit_detail=";".join(core_unfit_notes),
     )
 
 
@@ -890,6 +966,8 @@ def evaluate_day(
             blocks_t1_reasons=blocks_reasons,
             position_unfit=ev.position_unfit,
             position_unfit_detail=ev.position_unfit_detail,
+            core_unfit=ev.core_unfit,
+            core_unfit_detail=ev.core_unfit_detail,
             regime_available=ctx.regime_row is not None,
             t1_max_evidence_degrades=_tier_evidence_max(
                 engine_pack, "t1", T1_MAX_EVIDENCE_DEGRADES_DEFAULT),

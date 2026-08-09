@@ -20,6 +20,10 @@
   整体作废,⛔ 别照原文改回:那正是把 T1 掐成近乎不可达的那一条(实测全市场当日
   `liftoff_confirmed` 仅 1~2 / 5526、14 个 D0 回放零 T1)。位置 `unfit` → 出局码
   `DROP_POSITION_UNFIT`(与 `DROP_EVIDENCE_DEGRADED_OUT` **不合并**)。
+  🔴 **2026-08-09 用户裁定 #12(同款)**:**核心关也退出机械闸** —— 原 `leader_rs_rank
+  ≤ 3` 读的是簇内口径(入场券 = 当天必须涨停),全市场只有 1.4% 判得出;机械侧改出
+  行业域读数、判定交 LLM(**零阈值、零及格线**,含「行业内前 X%」这类)。核心
+  `unfit` → 出局码 `DROP_CORE_UNFIT`(与上面两个码**都不合并**)。
 - **机械分五维 / `_TIER_SCORE_INPUTS` 白名单锁 / `tier_history.mech_breakdown` /
   V2.1-④ 百分制打分卡 —— 全部原样保留,⛔ 一个都不许删**(plan ③-D 原文):它们
   **不再是定档的闸**,降级为「档内排序 + 展示标度」。删了会连带作废百分制卡与
@@ -269,6 +273,11 @@ DROP_EVIDENCE_DEGRADED_OUT = "evidence_degraded_out"
 # 「位置不对」,指向完全不同的复盘结论(④ 周度按关口归因要分得开)。
 # ⛔ 这**不是硬否决**:票没从报告里消失,③b 逐条写明是哪只成员、模型的理由是什么。
 DROP_POSITION_UNFIT = "position_unfit"
+# 🔴 V2.2-③-C2(裁定 #12):核心关(**证据关**)被 LLM 判 `unfit` → 退出正式候选。
+# ⚠ 与上面两个码**再一次刻意分开**:「不是龙头」「位置不对」「证据没撑住」是三种
+# 完全不同的复盘结论,合并成一个"未入选"就把 ④ 周度按关口归因的分辨率抹平了。
+# ⛔ 同样**不是硬否决**:票就在 ③b 里,逐条写明是哪只成员、模型的理由是什么。
+DROP_CORE_UNFIT = "core_unfit"
 # gates 侧的四个除名码(硬否决 / 引擎归属失败)直接沿用 `gates.EXCLUDE_*` 字面,
 # `DroppedBasket.reason` 与 ③b/⑨ 消费同一套码,⛔ 不在这里再抄一份字符串。
 # ⚠ 各码指向**不同的市场/系统结论**,⛔ 不许合并成一个"未入选"(⑥-b-C 纪律扩容)。
@@ -979,6 +988,13 @@ def _gate_breakdown(summary: Any) -> Dict[str, Any]:
             for c in summary.checks
             if c.gate == gates_mod.GATE_POSITION and c.ts_code
         },
+        # 🔴 裁定 #12:核心关同款(判定是模型输出而不是可回放的数字)。
+        "core_unfit": bool(getattr(summary, "core_unfit", False)),
+        "core_verdicts": {
+            c.ts_code: (c.evidence or {}).get("core_verdict")
+            for c in summary.checks
+            if c.gate == gates_mod.GATE_CORE and c.ts_code
+        },
         "removed_members": [
             {"ts_code": r.ts_code, "gate": r.gate, "reason": r.reason}
             for r in summary.removed_members
@@ -1125,9 +1141,19 @@ def score_and_tier(
             ))
             continue
         if not s.t2_eligible:
-            # 🔴 裁定 #11:位置关 `unfit` 与「证据关降级超上限」是两种不同的出局,
-            # ⛔ 不合并(④ 周度按关口归因要分得开)。位置关优先报 —— 它是**这一只
-            # 具体成员**的位置判定,比"降级处数超了"这句更说得清卡在哪。
+            # 🔴 裁定 #11/#12:核心关 `unfit`、位置关 `unfit`、「证据关降级超上限」
+            # 是**三种**不同的出局,⛔ 不合并(④ 周度按关口归因要分得开)。两个
+            # 成员级判定优先于"降级处数超了"—— 它们说得清卡在**哪一只**成员上;
+            # 两者同时 unfit 时按 `GATE_ORDER` 报靠前的那一关(④核心 在 ⑤位置 之前),
+            # 纯确定性,⛔ 不按"谁更重要"拍脑袋。
+            if getattr(s, "core_unfit", False):
+                dropped.append(DroppedBasket(
+                    basket_key=key, reason=DROP_CORE_UNFIT,
+                    mech_score=score_by_key[key], name=b.name,
+                    gate=gates_mod.GATE_CORE,
+                    gate_detail=(s.core_unfit_detail or "核心关判定 unfit"),
+                ))
+                continue
             if getattr(s, "position_unfit", False):
                 dropped.append(DroppedBasket(
                     basket_key=key, reason=DROP_POSITION_UNFIT,
@@ -1388,6 +1414,7 @@ __all__ = [
     "DROP_BELOW_QUALITY_LINE",
     "DROP_EVIDENCE_DEGRADED_OUT",
     "DROP_POSITION_UNFIT",
+    "DROP_CORE_UNFIT",
     "T1_DEMOTED_PLAN_INCOMPLETE",
     "FLAG_SECTOR_MISSING",
     "FLAG_STAGE_MISSING",

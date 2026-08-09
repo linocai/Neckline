@@ -173,20 +173,30 @@ _ENGINE_GATE_SCHEMA: Dict[str, frozenset] = {
     "position": frozenset({
         "guidance",                             # 定性位置准则(文本,⛔ 不是阈值)
     }),
+    # 🔴 **核心关自此零阈值**(2026-08-09 用户裁定 #12,与位置关同款):原键
+    # `leader_rs_rank_max`(三引擎 3/2/5)**已删除,⛔ 不得恢复** —— 它取数自
+    # `leader_structure_daily` 的**簇内**口径,入场券 = 「当天必须涨停」,而 K8 三
+    # 引擎找的都是「还没怎么涨、刚要动」的票(生产实测全市场只有 1.4% 判得出)。
+    # ⚠ `≤3` 这个数本身是 `audited`(H10),**错的是那把尺子的取数域**;挪到行业域
+    # 后同一个「3」意思完全变了,⛔ 不许直接搬。机械侧改出行业域读数
+    # (`selection/core_metrics.py`,零阈值、零及格线,**含「行业内前 X%」这类**),
+    # 判定交 LLM。
     "core": frozenset({
-        "leader_rs_rank_max",                   # 三引擎:簇内 RS 名次上限
+        "guidance",                             # 定性核心(龙头)准则(文本,⛔ 不是阈值)
     }),
     "evidence": frozenset({
         "independent_evidence_min",             # 三引擎:独立证据份数下限
         "require_news_policy_source",           # Z1:必须含一份消息/政策类来源
     }),
 }
-# 🔴 **`provenance` 闸的白名单例外**(裁定 #11):`gates.position.guidance` 是**定性
-# 文本不是阈值** —— 它进 prompt、**不进任何机械判据**,故不走 `_validate_provenance_leaf`
-# (同 `config.engine.applies_to` 的既有体例:人话字段不自报来源)。⛔ 白名单只此一处,
-# 要再加"不走闸的键"必须先想清楚它是不是真的不进判据。形状要求 = **非空字符串**。
+# 🔴 **`provenance` 闸的白名单例外**(裁定 #11 位置关 / 裁定 #12 核心关):
+# `gates.<关>.guidance` 是**定性文本不是阈值** —— 它进 prompt、**不进任何机械判据**,
+# 故不走 `_validate_provenance_leaf`(同 `config.engine.applies_to` 的既有体例:人话
+# 字段不自报来源)。⛔ 白名单只此**两关两键**,要再加"不走闸的键"必须先想清楚它是不是
+# 真的不进判据。形状要求 = **非空字符串**。
 _QUALITATIVE_GATE_KEYS: Dict[str, frozenset] = {
     "position": frozenset({"guidance"}),
+    "core": frozenset({"guidance"}),
 }
 
 _TIER_EVIDENCE_TIERS: Tuple[str, ...] = ("t1", "t2")

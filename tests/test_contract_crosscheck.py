@@ -413,11 +413,15 @@ def test_frozen_snapshot_dtos_hand_write_init_from_decoder(name: str):
 # 「先改客户端 decodeIfPresent → 下一版服务端才删」两步。**换得成的前提是那个键从未
 # 上产** —— 后人别据此以为可以随手换键。
 _V22_POSITION_KEYS = ("positionVerdict", "positionReason", "positionMetrics")
+# 🔴 裁定 #12 的核心关三键(与位置三键**同构但独立**:一个问「位置对不对」、
+# 一个问「是不是那一群的龙头」)。同样是纯新增、零删键 —— 上一版的
+# `leader_rs_rank ≤ 3` 从未以任何键发到过客户端。
+_V22_CORE_KEYS = ("coreVerdict", "coreReason", "coreMetrics")
 
-# V2.2-③ 在**篮子卡**上新增的全部键(引擎三件套由 ③-E 加、位置三件套由 ③-C 加)。
-# 客户端侧统一归 **⑥ 契约与客户端** 那一块落地,本块只做服务端半边 —— 故下面那条
-# 测试守的是「要么一个都没接、要么全接」,⛔ 不是「必须已接」。
-_V22_CARD_MEMBER_KEYS = _V22_POSITION_KEYS
+# V2.2-③ 在**篮子卡**上新增的全部键(引擎三件套由 ③-E 加、位置三件套由 ③-C 加、
+# 核心三件套由 ③-C2 加)。客户端侧统一归 **⑥ 契约与客户端** 那一块落地,本块只做
+# 服务端半边 —— 故下面那条测试守的是「要么一个都没接、要么全接」,⛔ 不是「必须已接」。
+_V22_CARD_MEMBER_KEYS = _V22_POSITION_KEYS + _V22_CORE_KEYS
 _V22_CARD_TOP_KEYS = ("engineCode", "engineVersion", "skeletonVersion")
 
 
@@ -440,6 +444,27 @@ def test_server_declares_the_position_gate_keys_and_the_converter_maps_them():
     assert out["positionMetrics"] == {"platform_days": 12}
     # 老卡缺键 → 该键**不出现**(⛔ 不是补 null:「这一版卡没有这个概念」≠「有但为空」)
     assert set(_V22_POSITION_KEYS) & set(member_to_public_dict({"ts_code": "x"})) == set()
+
+
+def test_server_declares_the_core_gate_keys_and_the_converter_maps_them():
+    """🔴 裁定 #12 的契约侧同款守门:核心关三键必须**服务端 DTO 声明了**且
+    **snake→camel 唯一转换点也映射了**。少任何一头的后果同样是静默的:卡上没有
+    核心判定,而"没有核心判定"看起来像个合法状态(⛔ 看不出是 bug)。"""
+    schemas = (_ROOT / "neckline" / "api" / "schemas.py").read_text(encoding="utf-8")
+    block = schemas.split("class BasketMemberOut(BaseModel):", 1)[1].split("\nclass ", 1)[0]
+    for key in _V22_CORE_KEYS:
+        assert f"{key}:" in block, f"服务端 `BasketMemberOut` 没有声明 `{key}`"
+    from neckline.report.basket_daily import card_member_to_public_dict as member_to_public_dict
+
+    snake = {"ts_code": "600001.SH", "core_verdict": "unfit",
+             "core_reason": "行业内 30/42,是跟风",
+             "core_metrics": {"industry_member_count": 42}}
+    out = member_to_public_dict(snake)
+    assert out["coreVerdict"] == "unfit"
+    assert out["coreReason"] == "行业内 30/42,是跟风"
+    # 🔴 分母必须原样透传到契约面(客户端要靠它把「第 3 名」读成 3/42)
+    assert out["coreMetrics"] == {"industry_member_count": 42}
+    assert set(_V22_CORE_KEYS) & set(member_to_public_dict({"ts_code": "x"})) == set()
 
 
 def _strip_comments(text: str, markers: tuple = ("#", "//")) -> str:

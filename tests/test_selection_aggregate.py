@@ -1356,6 +1356,193 @@ class TestPositionGatePromptAndParsing:
         assert m.is_primary == 1                      # 该函数**该改的那格**照样改了
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# V2.2-③-C2 核心关(🔴 2026-08-09 用户裁定 #12:核心关也退出机械闸,判定交 LLM)
+#
+# 与上一节同构、但**是两个独立判定**:① prompt 里三样齐(龙头判断标准 + 引擎定性
+# 准则 + 该票行业域读数〔含 🔴 分母〕);② 三值解析与保守兜底;③ 判定与读数一路带
+# 到成员行上。另加两条本裁定专有的:**prompt 零阈值** + **朝龙头对齐(⛔ 无容量类量)**。
+# ══════════════════════════════════════════════════════════════════════════
+
+_CORE_METRICS = {
+    "industry_member_count": 42, "industry_rs_ranked_count_20d": 40,
+    "industry_rs_rank_20d": 2, "industry_rs_pct_20d": 0.974,
+    "industry_ret_rank_1d": 1, "consec_limit_up_days": 0,
+    "industry_amount_share": 0.18,
+}
+
+
+def _core_ctx(**kw) -> ag.MechContext:
+    ctx = ag.MechContext(trade_date=D0)
+    ctx.core_metrics_of = {"600001.SH": dict(_CORE_METRICS)}
+    ctx.core_metrics_missing_of = {"600001.SH": {"industry_amount_share": "amount_unavailable"}}
+    ctx.core_metrics_available = True
+    ctx.engine_core_guidance = {"C": "已确认主线里的龙头",
+                                "Z": "新方向里率先转强的那一只",
+                                "Y": "中期驱动里的龙头"}
+    for k, v in kw.items():
+        setattr(ctx, k, v)
+    return ctx
+
+
+class TestCoreGatePromptAndParsing:
+    def test_prompt_carries_criteria_engine_guidance_and_per_stock_readings(self):
+        ctx = _core_ctx()
+        seeds = [_seed("s1", members=("600001.SH",))]
+        text = ag.build_reason_context(seeds, {"s1": ("600001.SH",)}, {}, ctx)
+        assert "核心关(龙头识别)判断标准" in text                       # ① 判断标准
+        assert "是不是**龙头**" in text or "是不是龙头" in text
+        assert "新方向里率先转强的那一只" in text                          # ② 引擎定性准则
+        assert "核心读数:" in text                                        # ③ 该票读数
+        # 🔴 两个分母都必须进 prompt(没有它们,「第 2 名」是 2/4 还是 2/40 读不出),
+        # 且**口径说明整段出现一次**(标签写短才装得下 N 只票 —— 成本铁律的另一面)
+        assert "行业成员数 42" in text and "20日可比数 40" in text
+        assert "两个分母**不一样**" in text
+        assert text.count("「行业成员数」= 当日该行业有行情的票数") == 1
+        assert "amount_unavailable" in text                               # 缺项原因如实透传
+
+    def test_prompt_has_no_pass_line_and_no_capacity_wording(self):
+        """🔴 裁定 12-b / 12-c 的 prompt 侧守门:**零阈值**(⛔ 含「行业内前 X%」)
+        且**朝龙头对齐**(⛔ 不许把市值 / 流通盘 / 容量 / 承接引导加回来 —— 那是
+        用户在「龙头 vs K8 §五-4 的容量核心」之间否掉的那一半)。"""
+        lines = ag._core_prompt_block(_core_ctx())
+        # ⚠ **先剥掉禁令行再判**(CLAUDE.md 登记过的坑:一个对自己的注释/禁令报警的
+        # 闸门等于没有闸门 —— 这段 prompt 自己就写着「⛔ 不要用市值大小…」)。
+        positive = "\n".join(ln for ln in lines if "⛔" not in ln)
+        for banned in ("前 3", "前3", "≤ 3", "<= 3", "前 10%", "前10%", "及格",
+                       "至少排到", "市值", "流通盘", "容量核心", "承接", "机构持仓"):
+            assert banned not in positive, banned
+        # 闸自己的守门:剥禁令这一步不许把正面文案也剥光
+        assert "龙头" in positive and "率先" in positive
+        assert any("不要用市值大小" in ln for ln in lines)   # 反向引导必须在(prompt 是背带)
+
+    def test_missing_readings_are_stated_not_faked(self):
+        ctx = _core_ctx()
+        assert "本次未取得" in ag._core_metrics_line("999999.SZ", ctx)
+        ctx.core_metrics_of["600002.SH"] = {"industry_member_count": 8,
+                                            "industry_rs_ranked_count_20d": 8,
+                                            "industry_ret_rank_1d": 3}
+        line = ag._core_metrics_line("600002.SH", ctx)
+        assert "20日可比数 8" in line
+        assert "[谁最强]未取到" in line                 # 整组都缺 → 折一句,⛔ 不是 0
+        assert "当日名次 3" in line                     # 有值的组照常逐项列
+        # 簇内三项同因缺失 → 折成一句带原因(⛔ 不刷三遍「未取到」)
+        assert "[补充·涨停簇内]未取到(cluster_data_unavailable)" in line
+
+    def test_whole_reading_pass_missing_is_disclosed_at_the_top_of_the_block(self):
+        ctx = _core_ctx(core_metrics_available=False, core_metrics_of={})
+        assert "行业域读数整段没算成" in "\n".join(ag._core_prompt_block(ctx))
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("ok", ag.CORE_OK), ("WEAK", ag.CORE_WEAK), (" unfit ", ag.CORE_UNFIT),
+    ])
+    def test_three_values_parse_case_insensitively(self, raw, expected):
+        verdict, _reason = ag._parse_core_verdict(
+            {"core_verdict": raw, "core_reason": "理由"}, code="600001.SH", name="篮")
+        assert verdict == expected
+
+    @pytest.mark.parametrize("member_raw", [{}, {"core_verdict": "leader"},
+                                            {"core_verdict": ""}])
+    def test_missing_or_bogus_verdict_falls_back_to_weak_with_a_trace(self, member_raw):
+        verdict, reason = ag._parse_core_verdict(
+            dict(member_raw), code="600001.SH", name="篮")
+        assert verdict == ag.CORE_WEAK
+        assert "verdict_missing" in reason
+
+    def test_core_and_position_verdicts_are_two_independent_fields(self):
+        """两套三值**字面相同但是两个判定**:一个给 ok、另一个给 unfit,必须各走各的
+        (⛔ 不许用一个字段解释另一个 —— 「位置对」与「是龙头」是两件事)。"""
+        raw = {"position_verdict": "ok", "position_reason": "回撤到位",
+               "core_verdict": "unfit", "core_reason": "只是跟风"}
+        assert ag._parse_position_verdict(raw, code="c", name="n") == ("ok", "回撤到位")
+        assert ag._parse_core_verdict(raw, code="c", name="n") == ("unfit", "只是跟风")
+
+    def test_verdict_readings_and_missing_ride_along_to_the_member_row(self, isolated_env):
+        """🔴 本节最该有的一条:判定 + 当次读数 + 缺项原因一路带到成员行
+        —— ⑥ 靠它们写 `gate_evaluations.evidence_json`。"""
+        env = isolated_env
+        insert_trade_cal(env, [D0])
+        payload = _basket_payload(members=[
+            {"ts_code": "600001.SH", "role": "leader", "reason": "r",
+             "position_verdict": "ok", "position_reason": "回撤到位",
+             "core_verdict": "unfit", "core_reason": "行业内 30/42,是跟风"}])
+        import unittest.mock as _mock
+        real = ag.build_mech_context
+
+        def _patched(*a, **kw):
+            ctx = real(*a, **kw)
+            ctx.core_metrics_of = {"600001.SH": dict(_CORE_METRICS)}
+            ctx.core_metrics_missing_of = {
+                "600001.SH": {"industry_amount_share": "amount_unavailable"}}
+            ctx.core_metrics_available = True
+            ctx.cluster_available = False
+            return ctx
+
+        with _mock.patch.object(ag, "build_mech_context", _patched):
+            r = _run(env, _seedset(_seed("s1")), search=_StubProvider(_search_reply(_EV)),
+                     reason=_StubProvider(_reason_reply([payload])))
+        m = r.baskets[0].members[0]
+        assert (m.core_verdict, m.core_reason) == ("unfit", "行业内 30/42,是跟风")
+        assert m.core_metrics["industry_member_count"] == 42          # 🔴 分母带过来了
+        assert "amount_unavailable" in m.core_metrics_missing
+        # 簇表没取到 → 补充三项标 `cluster_data_unavailable`(≠「不在簇里」),
+        # 且**不挡任何档**:读数字典照样非空,gates 侧 available=True。
+        assert "cluster_data_unavailable" in m.core_metrics_missing
+
+    def test_assign_primary_must_not_drop_the_core_fields(self):
+        """🔴 回归钉子(同位置关那一条):`assign_primary` 只许 `dataclasses.replace`
+        改要改的那几格 —— 改回逐字段手抄会**同时**吞掉位置与核心共八个字段,
+        而且一行警告都不会有。"""
+        ctx = ag.MechContext(trade_date=D0)
+        member = ag.BasketMemberCandidate(
+            "600001.SH", "leader", None, 0, "r",
+            core_verdict="unfit", core_reason="跟风",
+            core_metrics={"industry_member_count": 42}, core_metrics_missing="x=y")
+        basket = ag.BasketCandidate(
+            trade_date=D0_S, basket_key="k1", name="篮", driver="d", driver_kind="theme",
+            why_now="w", seed_keys=("s1",), members=(member,), evidence=(),
+            evidence_status=ag.EVIDENCE_OK, pack_version="p", engine_api_version=1,
+            charter_version="v1.3.3")
+        out = ag.assign_primary([basket], {"s1": _seed("s1")}, ctx)
+        m = out[0].members[0]
+        assert (m.core_verdict, m.core_reason) == ("unfit", "跟风")
+        assert m.core_metrics == {"industry_member_count": 42}
+        assert m.core_metrics_missing == "x=y"
+
+    def test_cluster_supplement_uses_the_same_cluster_as_the_role_matchup(self):
+        """🔴 簇的选取**唯一点**:核心读数里的 `cluster_rs_rank` 必须与角色对拍看的
+        是同一个簇 —— 各挑各的会让卡面上两处名次讲两个数,而且**看不出是 bug**。"""
+        ctx = ag.MechContext(trade_date=D0)
+        ctx.mech_roles = {"600001.SH": [("cl-a", "leader", 1), ("cl-b", "elastic", 5)]}
+        ctx.cluster_amount_share_of = {("600001.SH", "cl-a"): 0.4,
+                                       ("600001.SH", "cl-b"): 0.1}
+        ctx.cluster_size_of = {"cl-a": 6, "cl-b": 3}
+        ctx.cluster_available = True
+        # 篮子声明了 cl-b 这颗种子 → 两处都必须看 cl-b(⛔ 不是 rs_rank 更小的 cl-a)
+        _role, rs_rank = ag._resolve_mech_role("600001.SH", ctx, prefer_cluster_keys=("cl-b",))
+        metrics, _miss = ag.resolve_core_metrics("600001.SH", ctx, prefer_cluster_keys=("cl-b",))
+        assert rs_rank == 5 and metrics["cluster_rs_rank"] == 5
+        assert metrics["cluster_amount_share"] == 0.1 and metrics["cluster_size"] == 3
+        # 没有偏好时:两处同样按 `rs_rank 最小 → cluster_key 升序` 落在 cl-a
+        _role2, rs2 = ag._resolve_mech_role("600001.SH", ctx)
+        m2, _ = ag.resolve_core_metrics("600001.SH", ctx)
+        assert rs2 == 1 and m2["cluster_rs_rank"] == 1
+
+
+def test_core_metrics_reader_is_fused_and_honest(isolated_env, caplog):
+    """核心读数算不出 = 核心关的输入缺席(prompt 里如实写「本次未取得」),
+    **⛔ 绝不让当日无篮子**(§五铁律:核心管线对可选情报输入的调用必须包保险丝)。"""
+    import unittest.mock as _mock
+
+    with _mock.patch("neckline.selection.core_metrics.compute_core_metrics",
+                     side_effect=RuntimeError("行情炸了")):
+        with caplog.at_level(logging.WARNING):
+            metrics, missing, present = ag._load_core_metrics(
+                D0, ["600001.SH"], db_path=isolated_env.db_path)
+    assert (metrics, missing, present) == ({}, {}, False)
+    assert "compute_core_metrics" in caplog.text       # 报错时说得出该找哪个符号
+
+
 def test_position_metrics_reader_is_fused_and_honest(isolated_env, caplog):
     """读数表读不到 = 位置关的输入缺席(prompt 里如实写「本次未取得」),
     **⛔ 绝不让当日无篮子**(§五铁律:核心管线对可选情报输入的调用必须包保险丝)。"""

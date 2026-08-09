@@ -10,13 +10,16 @@
     ④ **缺数 = 不知道,不拦但不给 T1**(六关统一姿势);
     ⑤ 证据独立性:按 `evidence_kind` 归并、技术指标折一份、Z1 消息/政策类来源要求;
     ⑥ `gate_evaluations` 留痕:append-only、成员级 ts_code 语义、engine 列,
-       **位置关行 `gate_kind='llm'` 且 `evidence_json` 同时存下读数与 LLM 理由**;
+       **位置关行与核心关行 `gate_kind='llm'` 且 `evidence_json` 同时存下读数与
+       LLM 理由**;
     ⑦ 门槛制正面钉子:**机械分 0.9+ 但机械关(板块/市场)被否 → 不进任何档**;
     ⑧ 🆕 **裁定 #11 的机器判据(正反双向)**:位置关在证据关集合里、`gate_kind='llm'`、
        verdict 只会 pass/degrade、`unfit` 的票 **⛔ 不得从 ③b 消失**、LLM 没给判定
        **⛔ 不静默当 ok**、**LLM 调用增量恒为 0**;
+    ⑧b 🆕 **裁定 #12 的机器判据**(核心关同款):零阈值(`score`/`threshold` 恒 None)、
+       簇内 `rs_rank` 缺席不挡任何档、`core_verdict='unfit'` 的票 ⛔ 不得从 ③b 消失;
     ⑨ 反向守门:gates.py 零 import `report.score_display` / `sentinel` /
-       `selection.tier` / **`scan.landing*`**。
+       `selection.tier` / **`scan.landing*`** / **`selection.core_metrics`**。
 """
 
 from __future__ import annotations
@@ -79,21 +82,39 @@ _METRICS_OK: Dict[str, object] = {
 }
 
 
+# 一份"什么都取到了"的核心关行业域读数(键名 = `selection/core_metrics.py::
+# CORE_METRIC_KEYS` 契约;⚠ **分母两项必须在**,没有它们名次读不出来)。
+_CORE_METRICS_OK: Dict[str, object] = {
+    "industry_member_count": 42, "industry_rs_ranked_count_20d": 40,
+    "industry_rs_rank_20d": 2, "industry_rs_pct_20d": 0.974359,
+    "industry_ret_rank_1d": 1, "consec_limit_up_days": 0,
+    "industry_amount_share": 0.183,
+    "cluster_rs_rank": 1, "cluster_amount_share": 0.31, "cluster_size": 4,
+}
+
+
 def _member(code: str, *, industry: Optional[str] = None,
             rs_rank: Optional[int] = None,
             position: Optional[str] = ag.POSITION_OK,
             position_reason: str = "回撤到位、量能收敛后转强",
             metrics: Optional[Dict[str, object]] = _METRICS_OK,
+            core: Optional[str] = ag.CORE_OK,
+            core_reason: str = "行业内 20 日第 2、当日领涨,资金明显向它集中",
+            core_metrics: Optional[Dict[str, object]] = _CORE_METRICS_OK,
             ) -> ag.BasketMemberCandidate:
-    """⚠ 裁定 #11 后位置关吃的是**⑤ 随成员带下来的 LLM 判定 + 当次读数**
-    (⛔ gates 不再读 `landing_metrics_daily`)。`position=None` = 模型压根没给判定
-    (下游必须保守按 weak 处理);`metrics=None` = 当次没有读数可喂。"""
+    """⚠ 裁定 #11 / #12 后位置关与核心关吃的都是**⑤ 随成员带下来的 LLM 判定 + 当次
+    读数**(⛔ gates 不再读 `landing_metrics_daily`、也不再现算核心读数)。
+    `position=None` / `core=None` = 模型压根没给判定(下游必须保守按 weak 处理);
+    `metrics=None` / `core_metrics=None` = 当次没有读数可喂。"""
     return ag.BasketMemberCandidate(
         ts_code=code, role_llm="core", role_mech=None, role_conflict=0,
         reason="理由", industry=industry, rs_rank=rs_rank, name=code,
         position_verdict=position or "", position_reason=position_reason,
         position_metrics=dict(metrics) if metrics is not None else None,
         position_metrics_missing="",
+        core_verdict=core or "", core_reason=core_reason,
+        core_metrics=dict(core_metrics) if core_metrics is not None else None,
+        core_metrics_missing="",
     )
 
 
@@ -359,22 +380,99 @@ class TestPositionGate:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# ⑤ 核心关 / 驱动关 / 证据关(证据关类:只 pass/degrade,⛔ 永不 reject)
+# ④ 核心关(🔴 裁定 #12:**证据关**,判定吃 LLM 输出,零阈值,只降级不除名)
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestCoreGate:
+    def test_ok_passes_and_does_not_bar_t1(self):
+        check, unfit = gt._core_member_check(C1, _member("600001.SH"))
+        assert check.verdict == gt.VERDICT_PASS and not unfit
+        assert check.available is True and check.blocks_t1 is False
+        assert check.gate_kind == gt.GATE_KIND_LLM          # 核心关是 LLM 关(裁定 #12)
+
+    def test_weak_degrades_and_never_rejects(self):
+        check, unfit = gt._core_member_check(
+            C1, _member("600001.SH", core=ag.CORE_WEAK, core_reason="强度是被带起来的"))
+        assert check.verdict == gt.VERDICT_DEGRADE and not unfit
+        assert check.verdict != gt.VERDICT_REJECT
+
+    def test_unfit_degrades_but_flags_exit_from_formal_candidacy(self):
+        """`unfit` 的 verdict 仍是 **degrade**(⛔ 不是硬否决,第 4 锁完好),
+        「退出正式候选」由定档层执行(`t2_eligible=False`),票仍进 ③b。"""
+        check, unfit = gt._core_member_check(
+            C1, _member("600001.SH", core=ag.CORE_UNFIT, core_reason="只是同行业跟风票"))
+        assert check.verdict == gt.VERDICT_DEGRADE and unfit is True
+        assert "只是同行业跟风票" in check.reason
+
+    def test_missing_verdict_falls_back_to_weak_not_ok(self):
+        check, unfit = gt._core_member_check(
+            C1, _member("600001.SH", core=None, core_reason=""))
+        assert check.verdict == gt.VERDICT_DEGRADE and not unfit
+        assert check.evidence["core_verdict"] == ag.CORE_VERDICT_FALLBACK
+        assert check.evidence["verdict_fallback"] is True
+
+    def test_out_of_enum_verdict_also_falls_back_to_weak(self):
+        check, _unfit = gt._core_member_check(C1, _member("600001.SH", core="leader!"))
+        assert check.evidence["core_verdict"] == ag.CORE_WEAK
+        assert check.evidence["core_verdict_raw"] == "leader!"
+
+    def test_ok_without_any_reading_does_not_block_but_bars_t1(self):
+        """读数整份缺席 → `available=False` + 挡 T1(⛔ 但不拦:缺数 = 不知道)。
+        缺读数**不静默当 ok**换 T1 —— 那是拿"没有依据"当依据。"""
+        check, unfit = gt._core_member_check(C1, _member("600001.SH", core_metrics=None))
+        assert check.verdict == gt.VERDICT_PASS and not unfit
+        assert check.available is False and check.blocks_t1 is True
+        assert "missing:core_metrics" in check.reason
+
+    def test_evidence_json_carries_both_readings_and_llm_reason(self):
+        """🔴 plan ③-C2 的硬要求(同位置关):核心关留痕**必须同时**有当次读数与
+        LLM 理由。⚠ 读数里**必须带分母** —— 没有它,「第 3 名」是 3/8 还是 3/80
+        完全没法读(裁定 #12 的 🔴 分母条款)。"""
+        check, _unfit = gt._core_member_check(
+            C1, _member("600001.SH", core_reason="它是这一群的龙头"))
+        ev = check.evidence
+        assert ev["core_reason"] == "它是这一群的龙头"
+        assert ev["metrics"]["industry_member_count"] == 42
+        assert ev["metrics"]["industry_rs_ranked_count_20d"] == 40
+        assert set(ev["metrics"]) == set(ag.CORE_METRIC_KEYS)
+        assert ev["metrics_available"] is True
+        assert ev["core_guidance"]                  # 该引擎的定性准则也留痕
+
+    def test_engine_guidance_comes_from_the_pack_and_differs_per_engine(self):
+        c = gt._core_member_check(C1, _member("600001.SH"))[0]
+        z = gt._core_member_check(Z1, _member("600001.SH"))[0]
+        assert c.evidence["core_guidance"] != z.evidence["core_guidance"]
+        assert c.evidence["engine_code"] == "C" and z.evidence["engine_code"] == "Z"
+
+    def test_cluster_rs_rank_absence_never_blocks_anything(self):
+        """🔴 裁定 12-a:簇内 `rs_rank` **降级为补充读数,缺席不挡任何档**。
+        这正是被推翻的那条判据(`leader_rs_rank ≤ 3` 只有 1.4% 的票判得出)——
+        今天没涨停、不在任何簇里的票,核心关照样能 pass。"""
+        no_cluster = {k: v for k, v in _CORE_METRICS_OK.items()
+                      if not k.startswith("cluster_")}
+        check, unfit = gt._core_member_check(
+            C1, _member("600001.SH", rs_rank=None, core_metrics=no_cluster))
+        assert check.verdict == gt.VERDICT_PASS and not unfit
+        assert check.available is True and check.blocks_t1 is False
+
+    def test_core_gate_emits_no_score_and_no_threshold_ever(self):
+        """🔴 裁定 12-b 的机器判据(判定侧那一半):核心关**零阈值、零及格线** ——
+        `score`/`threshold` 恒 None,不论模型给什么、读数是什么。留一格数字在这里,
+        下一个人就会往里填一条及格线。"""
+        for verdict in (ag.CORE_OK, ag.CORE_WEAK, ag.CORE_UNFIT, None, "top3"):
+            for cm in (_CORE_METRICS_OK, None):
+                for rank in (1, 7, None):
+                    check, _u = gt._core_member_check(
+                        C1, _member("600001.SH", core=verdict, rs_rank=rank,
+                                    core_metrics=cm))
+                    assert check.score is None and check.threshold is None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑤ 驱动关 / 证据关(证据关类:只 pass/degrade,⛔ 永不 reject)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestEvidenceClassGates:
-    def test_core_rank_over_threshold_degrades_not_rejects(self):
-        c = gt._core_member_check(C1, _member("600001.SH", rs_rank=7))
-        assert c.verdict == gt.VERDICT_DEGRADE
-        assert c.score == 7.0 and c.threshold == 3.0
-
-    def test_core_rank_within_threshold_passes(self):
-        assert gt._core_member_check(C1, _member("600001.SH", rs_rank=2)).verdict == gt.VERDICT_PASS
-
-    def test_core_missing_rank_bars_t1_not_degrade(self):
-        c = gt._core_member_check(C1, _member("600001.SH", rs_rank=None))
-        assert c.verdict == gt.VERDICT_PASS and c.available is False and c.blocks_t1
-
     def test_driver_all_four_answers_pass(self):
         assert gt._driver_gate(_basket("k", [_member("600001.SH")])).verdict == gt.VERDICT_PASS
 
@@ -616,12 +714,13 @@ class TestHighScoreCannotBeatTheGates:
 _GATES_PATH = Path(__file__).resolve().parent.parent / "neckline" / "selection" / "gates.py"
 
 
-def test_gates_never_imports_score_display_sentinel_tier_or_landing():
+def test_gates_never_imports_score_display_sentinel_tier_landing_or_core_metrics():
     """V2.1-④ 方向性规则(gates 零 import `report.score_display`)+ 第〇原则
     (零 import `sentinel`)+ 防循环(零 import `selection.tier`,方向单一:
     tier → gates)+ 🆕 裁定 #11(零 import `scan.landing*`:位置关的读数由 ⑤ 随成员
     带进来 —— gates 另读一遍会存下「事后那一份」,与模型当时看到的可能不是同一份,
-    留痕就白留了)。"""
+    留痕就白留了)+ 🆕 裁定 #12 同款(零 import `selection.core_metrics`:核心读数
+    也由 ⑤ 随成员带进来)。"""
     import ast
 
     tree = ast.parse(_GATES_PATH.read_text(encoding="utf-8"))
@@ -633,7 +732,7 @@ def test_gates_never_imports_score_display_sentinel_tier_or_landing():
             mods.append(node.module)
     banned = ("neckline.report.score_display", "neckline.sentinel",
               "neckline.selection.tier", "neckline.scan.landing",
-              "neckline.scan.landing_store")
+              "neckline.scan.landing_store", "neckline.selection.core_metrics")
     for m in mods:
         assert not any(m == b or m.startswith(b + ".") for b in banned), m
 
@@ -761,3 +860,137 @@ class TestRulingElevenMachineCriteria:
 
         assert tuple(ag.POSITION_METRIC_KEYS) == tuple(landing_mod.METRIC_KEYS)
         assert len(set(ag.POSITION_METRIC_KEYS)) == 14
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑪ 🆕 裁定 #12 的机器判据(核心关退出机械闸,与 ⑩ 同构)
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestRulingTwelveMachineCriteria:
+    def test_core_unfit_candidate_must_not_disappear_from_section_3b(self, isolated_env):
+        """🔴 **本裁定最该有的一条**:核心关判 `unfit` 的票 **⛔ 不得从 ③b 消失**
+        —— 只降级不除名(§2.9-C-2「退出正式候选 ≠ 从报告里消失」)。"""
+        env = isolated_env
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength_days(env.db_path, days, {"半导体": 1}, {"半导体": True})
+        _insert_regime(env.db_path, "trend_continuation")
+        r = _agg([_basket("k-core-unfit",
+                          [_member("600001.SH", industry="半导体", rs_rank=None,
+                                   core=ag.CORE_UNFIT,
+                                   core_reason="行业内 20 日排在 30/42,是跟风不是龙头")],
+                          engine="C", name="不是龙头篮")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        res = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
+                                pack=_pack("K7-pack.json"), gates_outcome=out)
+        assert res.decisions == ()                        # 退出正式候选
+        assert len(res.dropped) == 1
+        hit = res.dropped[0]
+        assert hit.basket_key == "k-core-unfit" and hit.name == "不是龙头篮"  # ⛔ 没消失
+        assert hit.reason == ti.DROP_CORE_UNFIT           # 与位置关 / 证据关分开三码
+        assert hit.reason != ti.DROP_POSITION_UNFIT
+        assert hit.gate == gt.GATE_CORE
+        assert "600001.SH" in (hit.gate_detail or "")
+        assert "跟风" in (hit.gate_detail or "")           # 模型那句理由也在 ③b 上
+
+    def test_core_weak_only_demotes_one_notch_and_stays_a_candidate(self, isolated_env):
+        env = isolated_env
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength_days(env.db_path, days, {"半导体": 1}, {"半导体": True})
+        _insert_regime(env.db_path, "trend_continuation")
+        r = _agg([_basket("k-weak", [_member("600001.SH", industry="半导体",
+                                             core=ag.CORE_WEAK)], engine="C")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        s = out.summaries["k-weak"]
+        assert not s.t1_eligible and s.t2_eligible
+        assert gt.GATE_CORE in s.degraded_gates and s.evidence_degrades == 1
+
+    def test_core_row_is_llm_kind_and_stores_readings_plus_reason(self, isolated_env):
+        """plan ③-C2 的硬要求:核心关行 `gate_kind='llm'` 且 `evidence_json`
+        **同时**存下当次读数与 LLM 理由,且读数里**必须带分母**。"""
+        env = isolated_env
+        r = _agg([_basket("k1", [_member("600001.SH", core_reason="它是这一群的龙头")],
+                          engine="C")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        gt.save_gate_evaluations(out, db_path=env.db_path)
+        rows = gt.load_gate_evaluations(D0, db_path=env.db_path, candidate_key="k1")
+        core_rows = [r0 for r0 in rows if r0["gate"] == gt.GATE_CORE]
+        assert len(core_rows) == 1
+        row = core_rows[0]
+        assert row["gate_kind"] == gt.GATE_KIND_LLM
+        assert row["ts_code"] == "600001.SH"
+        assert row["verdict"] in (gt.VERDICT_PASS, gt.VERDICT_DEGRADE)   # ⛔ 永不 reject
+        # 🔴 零阈值:留痕行的 score / threshold 两列都必须是空(⛔ 别回填一个数)
+        assert row["score"] is None and row["threshold"] is None
+        ev = row["evidence"]
+        assert ev["core_reason"] == "它是这一群的龙头"                     # LLM 理由
+        assert set(ev["metrics"]) == set(ag.CORE_METRIC_KEYS)             # 当次读数
+        assert ev["metrics"]["industry_member_count"] == 42               # 🔴 分母在
+
+    def test_core_gate_source_has_no_pass_line_comparison(self):
+        """🔴 零阈值守门(代码路径那一半):`_core_member_check` 的函数体里
+        **⛔ 不许出现任何与数值常量的比较** —— 及格线一旦回来,第一处就长这样。
+
+        ⚠ 这条与 `test_selection_pack.py::test_core_gate_has_zero_thresholds`(包
+        schema 那一半)配对:一条守"包里不许有数",一条守"代码里不许自己造数"。"""
+        import ast
+
+        tree = ast.parse(_GATES_PATH.read_text(encoding="utf-8"))
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "_core_member_check")
+        numeric_cmps = [
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.Compare)
+            and any(isinstance(c, ast.Constant) and isinstance(c.value, (int, float))
+                    and not isinstance(c.value, bool) for c in n.comparators)
+        ]
+        assert not numeric_cmps, [n.lineno for n in numeric_cmps]
+
+    def test_retired_key_is_gone_from_the_whole_selection_layer(self):
+        """`leader_rs_rank_max` 作为**活代码里的键名**在全仓与三个引擎包里彻底消失
+        (裁定 12-a)。
+
+        ⚠ **只看 AST 里的字符串常量(不含 docstring)与包里的实际键**,⛔ 不裸 grep
+        源码文本 —— 注释与 docstring 里把这个名字作为**历史登记**写出来是必要的
+        (「原 `leader_rs_rank_max` 已删除,⛔ 不得恢复」正是防复活的那句话)。
+        CLAUDE.md 登记过这个坑:**一个对自己的注释报警的闸门等于没有闸门** ——
+        真有人把它写回代码那天,人只会当它又是那条老误报。"""
+        import ast
+
+        root = _GATES_PATH.resolve().parent.parent.parent
+        for path in sorted((root / "neckline").rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            docstrings = {
+                id(n.body[0].value) for n in ast.walk(tree)
+                if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                  ast.AsyncFunctionDef))
+                and n.body and isinstance(n.body[0], ast.Expr)
+                and isinstance(n.body[0].value, ast.Constant)
+                and isinstance(n.body[0].value.value, str)
+            }
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and id(node) not in docstrings):
+                    assert "leader_rs_rank_max" != node.value, f"{path}:{node.lineno}"
+                if isinstance(node, ast.Name):
+                    assert node.id != "leader_rs_rank_max", f"{path}:{node.lineno}"
+        for name in ("C1.json", "Z1.json", "Y1.json"):
+            doc = json.loads((_PACKS_DIR / name).read_text(encoding="utf-8"))
+            for section in doc["config"]["engine"]["gates"].values():
+                assert "leader_rs_rank_max" not in section, name
+
+    def test_core_metric_key_contract_is_shared_with_the_writer(self):
+        """键名契约两处对拍(同位置关体例):⑤ 读侧的 `CORE_METRIC_KEYS` 必须与写侧
+        `selection/core_metrics.py::CORE_METRIC_KEYS` 是同一份,且**分母两项在里面**。"""
+        from neckline.selection import core_metrics as cm
+
+        assert tuple(ag.CORE_METRIC_KEYS) == tuple(cm.CORE_METRIC_KEYS)
+        assert "industry_member_count" in ag.CORE_METRIC_KEYS
+        assert "industry_rs_ranked_count_20d" in ag.CORE_METRIC_KEYS
+        # 三类读数分界:簇内补充 / 逐票 / 行业域 —— 互不相交且并集 = 全集
+        # (簇内三项是**补充**,缺席不挡任何档;逐票项不依赖行业映射)
+        parts = [set(cm.CLUSTER_METRIC_KEYS), set(cm.STOCK_METRIC_KEYS),
+                 set(cm.INDUSTRY_METRIC_KEYS)]
+        assert set().union(*parts) == set(cm.CORE_METRIC_KEYS)
+        assert sum(len(p) for p in parts) == len(cm.CORE_METRIC_KEYS)

@@ -146,6 +146,19 @@ class BasketMemberOut(BaseModel):
     positionVerdict: Optional[str] = None
     positionReason: Optional[str] = None
     positionMetrics: Optional[Dict[str, Any]] = None
+    # —— V2.2-③-C2 核心关(**2026-08-09 用户裁定 #12**:核心关也退出机械闸,机械侧
+    # 只出行业域读数、判定交 LLM,只降级不除名)——————————————————————————————
+    # `coreVerdict` ∈ `ok`(是那一群的龙头)/ `weak`(勉强、降一档)/ `unfit`(不是
+    # 核心地位,该篮退出正式候选但**仍在报告 ③b 列名**)。`coreMetrics` = **当次喂给
+    # 模型的那份行业域读数原样**,里面**一定带分母**(`industryMemberCount` 等价的
+    # snake 键 `industry_member_count`)—— 没有分母,「第 3 名」是 3/8 还是 3/80 读不
+    # 出来。⚠ 读数键是**自由结构原样透传**(同 `positionMetrics`),⛔ 客户端不许把
+    # 缺项显示成 0:缺项就是真的没取到。
+    # ⚠ 与位置三键一样:上一版的 `leader_rs_rank ≤ 3` 从未以任何键发到过客户端,
+    # 这里是**纯新增、零删键**。
+    coreVerdict: Optional[str] = None
+    coreReason: Optional[str] = None
+    coreMetrics: Optional[Dict[str, Any]] = None
     # 机械面板原样透传(⑦ `MemberMech.to_dict()`;自由结构,在 API 层再镜像一套嵌套
     # 模型只会多一处会漂的定义 —— 同 `WeeklyReviewOut.result` 的既定透传惯例)。
     mech: Dict[str, Any] = Field(default_factory=dict)

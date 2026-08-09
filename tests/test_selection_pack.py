@@ -72,7 +72,8 @@ def _minimal_engine_pack(line_code: str = "C", pack_version: str = "C-test-v1",
                 "sector": {"industry_rank_max": _engine_leaf(10)},
                 # 🔴 裁定 #11:位置关零阈值,只剩一条**定性文本**键(⛔ 不走 provenance 闸)。
                 "position": {"guidance": "测试用的定性位置准则"},
-                "core": {"leader_rs_rank_max": _engine_leaf(3)},
+                # 🔴 裁定 #12:核心关同样零阈值,只剩一条**定性文本**键。
+                "core": {"guidance": "测试用的定性核心(龙头)准则"},
                 "evidence": {"independent_evidence_min": _engine_leaf(3)},
             },
             "tier_evidence": {
@@ -1075,37 +1076,37 @@ def test_missing_provenance_rejected_and_well_formed_accepted():
     assert pack.validate_pack_doc(good) == []                       # 正例:全叶带 provenance
 
     bare = _minimal_engine_pack("C")
-    bare["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = 3   # 裸值,缺 provenance
+    bare["config"]["engine"]["gates"]["sector"]["industry_rank_max"] = 10   # 裸值,缺 provenance
     errors = pack.validate_pack_doc(bare)
     assert any("value/provenance" in e for e in errors)
 
 
 def test_provenance_engineering_v1_requires_basis_and_pending_calibration():
     doc = _minimal_engine_pack("C")
-    doc["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = {
-        "value": 3, "provenance": {"source": "engineering_v1", "calibration": "pending"},
+    doc["config"]["engine"]["gates"]["sector"]["industry_rank_max"] = {
+        "value": 10, "provenance": {"source": "engineering_v1", "calibration": "pending"},
     }
     assert any("basis" in e for e in pack.validate_pack_doc(doc))
 
     doc2 = _minimal_engine_pack("C")
-    doc2["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = {
-        "value": 3, "provenance": {"source": "engineering_v1", "basis": "K8 某句"},
+    doc2["config"]["engine"]["gates"]["sector"]["industry_rank_max"] = {
+        "value": 10, "provenance": {"source": "engineering_v1", "basis": "K8 某句"},
     }
     assert any("calibration" in e for e in pack.validate_pack_doc(doc2))
 
 
 def test_provenance_audited_requires_ref():
     doc = _minimal_engine_pack("C")
-    doc["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = {
-        "value": 3, "provenance": {"source": "audited"},
+    doc["config"]["engine"]["gates"]["sector"]["industry_rank_max"] = {
+        "value": 10, "provenance": {"source": "audited"},
     }
     assert any("ref" in e for e in pack.validate_pack_doc(doc))
 
 
 def test_provenance_unknown_source_rejected():
     doc = _minimal_engine_pack("C")
-    doc["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = {
-        "value": 3, "provenance": {"source": "i_swear_its_fine"},
+    doc["config"]["engine"]["gates"]["sector"]["industry_rank_max"] = {
+        "value": 10, "provenance": {"source": "i_swear_its_fine"},
     }
     assert any("source 取值非法" in e for e in pack.validate_pack_doc(doc))
 
@@ -1209,8 +1210,11 @@ def test_real_engine_pack_files_pass_gate1_and_every_leaf_has_provenance(line: s
 
 
 def test_engine_pack_audited_leaves_match_plan_distribution():
-    """③-F 表的 provenance 分布如实登记(plan 874 行):`leader_rs_rank` 三档 /
-    `stage` 五态取值 / `industry_rank` 名次档 = audited,**其余全部 engineering_v1**。"""
+    """③-F 表的 provenance 分布如实登记(plan 874 行):`stage` 五态取值 /
+    `industry_rank` 名次档 = audited,**其余全部 engineering_v1**。
+    ⚠ 原分布里的 `leader_rs_rank` 三档已随**用户裁定 #12** 整体删除(核心关退出机械
+    闸:那个 `≤3` 本身是 audited,错的是簇内取数域 —— 全市场只有 1.4% 判得出),
+    ⛔ 不许"补回来"。"""
     audited_paths = {}
     for line, file in _ENGINE_PACK_FILES.items():
         doc = pack.load_pack_file(file)
@@ -1221,10 +1225,10 @@ def test_engine_pack_audited_leaves_match_plan_distribution():
                     continue                      # 定性文本键无 provenance(裁定 #11)
                 if leaf["provenance"]["source"] == "audited":
                     audited_paths.setdefault(line, set()).add(f"{section}.{key}")
-    assert audited_paths["C"] == {"core.leader_rs_rank_max", "sector.industry_rank_max"}
-    assert audited_paths["Z"] == {"core.leader_rs_rank_max", "sector.stage_allowed",
+    assert audited_paths["C"] == {"sector.industry_rank_max"}
+    assert audited_paths["Z"] == {"sector.stage_allowed",
                                   "market.trend_continuation_required_stages"}
-    assert audited_paths["Y"] == {"core.leader_rs_rank_max", "sector.industry_rank_max"}
+    assert audited_paths["Y"] == {"sector.industry_rank_max"}
 
 
 def test_engine_pack_threshold_values_match_plan_table():
@@ -1233,9 +1237,9 @@ def test_engine_pack_threshold_values_match_plan_table():
         doc = pack.load_pack_file(_ENGINE_PACK_FILES[line])
         return doc["config"]["engine"]["gates"][section][key]["value"]
 
-    assert val("C", "core", "leader_rs_rank_max") == 3
-    assert val("Z", "core", "leader_rs_rank_max") == 2
-    assert val("Y", "core", "leader_rs_rank_max") == 5
+    # 🔴 核心关**也没有阈值可对表了**(裁定 #12:`leader_rs_rank_max` 三档全删,
+    # 只剩定性 guidance)—— 逐引擎的定性准则由
+    # `test_real_engine_pack_core_is_guidance_only` 守。
     assert val("C", "sector", "industry_rank_max") == 10
     assert val("Y", "sector", "industry_rank_max") == 30
     assert val("C", "sector", "strength_days_min_5d") == 3
@@ -1266,10 +1270,10 @@ def test_position_gate_schema_has_only_guidance_and_no_retired_thresholds():
     assert pack._ENGINE_GATE_SCHEMA["position"] == frozenset({"guidance"})
     for key in _RETIRED_POSITION_KEYS:
         assert key not in pack._ENGINE_GATE_SCHEMA["position"], key
-    # 其余四关一字未动(裁定 11-a:范围只限位置关,⛔ 别顺手一起改)
+    # 市场 / 板块 / 证据三关一字未动(裁定 11-a:范围只限位置关,⛔ 别顺手一起改;
+    # 核心关另由裁定 #12 单独退出机械闸,见 `test_core_gate_has_zero_thresholds`)
     assert "primary_regimes" in pack._ENGINE_GATE_SCHEMA["market"]
     assert "industry_rank_max" in pack._ENGINE_GATE_SCHEMA["sector"]
-    assert "leader_rs_rank_max" in pack._ENGINE_GATE_SCHEMA["core"]
     assert "independent_evidence_min" in pack._ENGINE_GATE_SCHEMA["evidence"]
 
 
@@ -1300,3 +1304,42 @@ def test_real_engine_pack_position_is_guidance_only(line: str):
     assert isinstance(position["guidance"], str) and position["guidance"].strip()
     keyword = {"C": "健康回撤", "Z": "早期右侧启动", "Y": "中期平台"}[line]
     assert keyword in position["guidance"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🔴 裁定 #12:核心关零阈值 + `core.guidance` 是定性文本(不走 provenance 闸)
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_core_gate_has_zero_thresholds():
+    """2026-08-09 用户裁定 #12 的机器判据(包侧那一半):核心关白名单**只剩
+    `guidance` 一个键**,`leader_rs_rank_max` **一个都不许回来**。
+
+    ⚠ 这条守的不是"某个数取多少",而是「核心关不许再有数」—— 用户明确否决了
+    **任何**机械低保,含「行业内前 X%」这类。包 schema 是最硬的那道:白名单外的
+    键在闸 1 当场拒,所以只要这条绿着,就没人能悄悄给核心关塞回一条及格线。"""
+    assert pack._ENGINE_GATE_SCHEMA["core"] == frozenset({"guidance"})
+    assert "guidance" in pack._QUALITATIVE_GATE_KEYS["core"]
+    doc = _minimal_engine_pack("C")
+    doc["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = _engine_leaf(3)
+    assert any("白名单外" in e and "leader_rs_rank_max" in e
+               for e in pack.validate_pack_doc(doc))
+    # 换个名字重新发明一条及格线,照样拒(白名单制的意义就在这里)
+    doc2 = _minimal_engine_pack("C")
+    doc2["config"]["engine"]["gates"]["core"]["industry_rs_pct_min"] = _engine_leaf(0.9)
+    assert any("白名单外" in e for e in pack.validate_pack_doc(doc2))
+
+
+@pytest.mark.parametrize("line", sorted(_ENGINE_PACK_FILES))
+def test_real_engine_pack_core_is_guidance_only(line: str):
+    """三个真实引擎包的 core 段:**恰一个 `guidance` 键、值是非空文本、零数字键**。
+
+    ⚠ 文案必须朝**龙头**对齐(裁定 12-c),⛔ 不许出现市值 / 流通盘 / 容量 / 承接
+    这类词 —— 那是用户在「龙头 vs K8 §五-4 的容量核心」之间**否掉的那一半**。"""
+    doc = pack.load_pack_file(_ENGINE_PACK_FILES[line])
+    core = doc["config"]["engine"]["gates"]["core"]
+    assert set(core) == {"guidance"}
+    text = core["guidance"]
+    assert isinstance(text, str) and text.strip()
+    assert "龙头" in text or "率先转强" in text
+    for banned in ("市值", "流通盘", "容量", "承接", "机构持仓"):
+        assert banned not in text, f"{line} 的核心准则出现被否掉的容量类措辞:{banned}"

@@ -77,7 +77,8 @@ def _write_engine_pack(tmp_path: Path, filename: str, line_code: str = "C",
                 "sector": {"industry_rank_max": leaf(10)},
                 # 🔴 裁定 #11:位置关零阈值,只剩定性文本键(⛔ 不走 provenance 闸)。
                 "position": {"guidance": "测试用的定性位置准则"},
-                "core": {"leader_rs_rank_max": leaf(3)},
+                # 🔴 裁定 #12:核心关同样零阈值,只剩定性文本键。
+                "core": {"guidance": "测试用的定性核心(龙头)准则"},
                 "evidence": {"independent_evidence_min": leaf(3)},
             },
             "tier_evidence": {
@@ -178,7 +179,7 @@ def test_run_rejects_engine_code_mismatching_line_code(tmp_path: Path, capsys):
 def test_run_rejects_engine_pack_with_missing_provenance(tmp_path: Path, capsys):
     file = _write_engine_pack(tmp_path, "bad.json", pack_version="noprov-v1")
     doc = json.loads(file.read_text(encoding="utf-8"))
-    doc["config"]["engine"]["gates"]["core"]["leader_rs_rank_max"] = 3   # 裸值
+    doc["config"]["engine"]["gates"]["sector"]["industry_rank_max"] = 10   # 裸值
     file.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
     rc = activate_pack_script.run(file, tmp_path / "n.db", confirm=False)
     assert rc == 2

@@ -73,6 +73,7 @@ from neckline.scan import leader as leader_mod
 from neckline.scan import seeds as seeds_mod
 from neckline.scan.seeds import DriverSeed, SeedSet
 from neckline.selection import basket_store as _basket_store
+from neckline.selection import core_metrics as core_mod
 from neckline.selection import engine_api
 from neckline.selection import member_hygiene
 from neckline.selection.pack import Pack, get_active_engines, get_active_pack, get_pack
@@ -341,20 +342,105 @@ def _load_position_metrics(
         return {}, {}, False
 
 
-def _load_engine_position_guidance(db_path: Optional[Path] = None) -> Dict[str, str]:
-    """三条引擎线的 `config.engine.gates.position.guidance`(**定性文本、无数字**,
-    裁定 #11:三引擎的位置差别自此由定性描述 + LLM 判断承担)。⛔ 不走 `provenance`
-    闸(它不是阈值),读不到只是 prompt 里少一段引擎准则,不影响成篮。"""
+def _load_engine_gate_guidance(
+    section: str, db_path: Optional[Path] = None,
+) -> Dict[str, str]:
+    """三条引擎线某一关的 `config.engine.gates.<section>.guidance`(**定性文本、
+    无数字**)。现役两处:`position`(裁定 #11)与 `core`(裁定 #12)—— 两关的引擎
+    差别自此都由**定性描述 + LLM 判断**承担,⛔ 不再由数字承担。
+
+    ⛔ 不走 `provenance` 闸(它不是阈值,见 `pack._QUALITATIVE_GATE_KEYS`),读不到
+    只是 prompt 里少一段引擎准则,不影响成篮。"""
     out: Dict[str, str] = {}
     try:
         for code, pk in get_active_engines(db_path).items():
             gates = ((pk.config.get("engine") or {}).get("gates") or {})
-            text = str((gates.get("position") or {}).get("guidance") or "").strip()
+            text = str((gates.get(section) or {}).get("guidance") or "").strip()
             if text:
                 out[code] = text
     except Exception:  # noqa: BLE001
-        logger.warning("[aggregate] 引擎线位置准则读取失败,prompt 少这一段", exc_info=True)
+        logger.warning("[aggregate] 引擎线 %s 关准则读取失败,prompt 少这一段",
+                       section, exc_info=True)
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ④ 核心关(龙头识别)的 LLM 判定件 —— **2026-08-09 用户裁定 #12**
+#
+# 与裁定 #11 同款处理:核心关**退出机械闸**(原判据 `leader_rs_rank ≤ 3` 取数自
+# `leader_structure_daily` 的**簇内**口径 = 「当天必须涨停」,而 K8 三引擎找的是
+# 「还没怎么涨、刚要动」的票 —— **涨停是结果,要的是结果之前那一刻**;生产实测
+# 全市场只有 1.4% 的票判得出)。机械侧改出**行业域读数**(`selection/core_metrics.py`,
+# **零阈值、零及格线**,含「行业内前 X%」这类 —— 用户明确否决),判定交大模型,
+# **只降级不除名**(§2.0 第〇原则第 4 锁「LLM 不做闸门」因此完好无损)。
+#
+# 🔴 **要的是「龙头」不是 K8 §五-4 的「容量核心」**(裁定 12-c):二者在 A 股常常
+# 不是同一只票。⛔ 读数与 prompt 一律朝龙头对齐,**不许把市值 / 流通盘 / 容量 /
+# 承接类的量加回来** —— 那是被否掉的那一半。
+#
+# 🔴 **成本铁律**:核心判定**搭 `basket_reason` 那一次调用**,⛔ **LLM 增量仍是 0**
+# (本模块的 `provider.chat(...)` 调用点恒为 2 个,AST 守门数死)。
+# ══════════════════════════════════════════════════════════════════════════
+
+# LLM 核心判定三值(唯一源;`gates.py` 与契约层都读这里,⛔ 不抄第二份)。
+# ⚠ 取值字面与位置关三值**刻意相同**(③-C2:「映射与位置关完全同构」),但**是两个
+# 独立的判定**,⛔ 不许合并成一个字段、也不许拿一个的兜底去解释另一个。
+CORE_OK = "ok"          # 是那一群的龙头 → 核心关 pass(T1 的必要条件之一)
+CORE_WEAK = "weak"      # 勉强算 / 说不清 → 核心关 degrade(降一档)
+CORE_UNFIT = "unfit"    # 不是核心地位 → 退出正式候选,**仍在 ③b 列名**
+CORE_VERDICTS: Tuple[str, ...] = (CORE_OK, CORE_WEAK, CORE_UNFIT)
+
+# LLM 没给 / 给了枚举外取值时的**保守兜底**(⛔ 不静默当 ok —— 「没判」不能被讲成
+# 「判过了、没问题」;取 weak = 降一档,与「证据关只降级」同一姿势)。
+CORE_VERDICT_FALLBACK = CORE_WEAK
+CORE_REASON_FALLBACK = "core.verdict_missing:LLM 未给核心判定,保守按 weak 处理"
+
+# 核心关判断标准(prompt 第 ① 样)。**朝「龙头」对齐**(裁定 12-c):这不是 K8 §五-4
+# 原文 —— 那四句里有两句讲**容量 / 承接**(「最能代表资金态度的容量核心」),用户在
+# 「龙头 vs 容量核心」之间明确选了龙头,故此处写的是裁定后的口径,⛔ 不许把容量那
+# 半句补回来。「那一群」= **行业**(一对一、100% 覆盖;⛔ 不是概念、⛔ 不是涨停簇)。
+K8_CORE_CRITERIA = (
+    "判断这只票在**它所属的那一群**(= 同一个行业)里,是不是**龙头**:\n"
+    "  1. 它是不是这一群里最强的那一只 —— 谁在领,而不是谁跟着涨;\n"
+    "  2. 它的强度是不是**先于同群其他票**出现(率先转强,不是被带起来的后排);\n"
+    "  3. 它在这一群里有没有**辨识度**(资金关注度、成交是否向它集中);\n"
+    "  4. 为什么是这一只,而不是同题材的其他票。\n"
+    "⛔ 不要用市值大小 / 流通盘 / 机构持仓 / 承接容量来论证「核心地位」——"
+    "本关问的是龙头,不是容量中军,二者在 A 股常常不是同一只票。"
+)
+
+# 读数键名契约的**唯一源在 `selection/core_metrics.py`**(写侧),这里只做别名引用
+# —— ⛔ 不在本模块抄第二份键名表(与位置关 `POSITION_METRIC_GROUPS` 住 aggregate 的
+# 历史分工不同:核心读数的写侧是本包内的新模块,契约理应跟着写侧走)。
+CORE_METRIC_GROUPS = core_mod.CORE_METRIC_GROUPS
+CORE_METRIC_KEYS = core_mod.CORE_METRIC_KEYS
+CORE_METRIC_LEGEND = core_mod.CORE_METRIC_LEGEND
+
+
+def _load_core_metrics(
+    trade_date: date, codes: Sequence[str], *, db_path: Optional[Path] = None,
+    parquet_dir: Optional[Path] = None,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, str]], bool]:
+    """核心关行业域读数(**按需现算**,裁定 #12 的成本纪律:⛔ 不建第三张全市场
+    预计算表)。返回 `(code → 读数, code → {读数键: 原因码}, 本次真的算过没有)`。
+
+    整段包保险丝(§五铁律:核心管线对可选情报输入的调用必须包保险丝)—— 算不出
+    只是核心关的输入缺席(prompt 里如实写「本次未取得」、gates 侧 `available=False`
+    不拦但不给 T1),⛔ 绝不让当日无篮子。"""
+    wanted = sorted({c for c in codes if c})
+    if not wanted:
+        return {}, {}, False
+    try:
+        res = core_mod.compute_core_metrics(
+            trade_date, wanted, db_path=db_path, parquet_dir=parquet_dir)
+        return res.metrics, res.missing, res.available
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[aggregate] 核心关行业域读数装配失败(本次无读数可喂,按「未取得」如实"
+            "披露);写侧唯一入口应为 `neckline.selection.core_metrics.compute_core_metrics`",
+            exc_info=True,
+        )
+        return {}, {}, False
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -430,6 +516,15 @@ class BasketMemberCandidate:
     position_reason: str = ""              # 模型那句人话(或兜底原因码)
     position_metrics: Optional[Dict[str, Any]] = None      # None = 当次没有读数可喂
     position_metrics_missing: str = ""     # 哪几项没取到 + 为什么(诚实披露)
+    # —— V2.2-③-C2 核心关(裁定 #12:核心关也退出机械闸,判定交 LLM)——————————
+    # 与上面四格**同构但独立**:`core_metrics` 同样是**当次喂给 LLM 的那份读数原样**
+    # (⛔ 不是 gates 侧另读一遍的),两样一起被 `gates.py` 写进
+    # `gate_evaluations.evidence_json` —— 判定不再是一组可回放的数字而是一段模型
+    # 输出,不把这两样存在一起,事后就无法复核它到底在拿什么下判断。
+    core_verdict: str = ""                 # ok|weak|unfit;"" = 本次没走过核心判定
+    core_reason: str = ""                  # 模型那句人话(或兜底原因码)
+    core_metrics: Optional[Dict[str, Any]] = None          # None = 当次没有读数可喂
+    core_metrics_missing: str = ""         # 哪几项没取到 + 为什么(诚实披露)
 
 
 @dataclass(frozen=True)
@@ -610,6 +705,20 @@ class MechContext:
     # 三条引擎线的定性位置准则(engine_code → guidance;裁定 #11 后位置关零阈值,
     # 三引擎的位置差别由**定性描述 + LLM 判断**承担)。
     engine_position_guidance: Dict[str, str] = field(default_factory=dict)
+    # —— V2.2-③-C2 核心关读数(裁定 #12):**按需现算**的行业域读数,⛔ 无预计算表。
+    # `core_metrics_available=False` = 本次整段没算成(行情/行业映射取不到),与
+    # 「某只票单独缺某一项」是两回事,⛔ 不合并(「没有」与「没看」必须分得开)。
+    core_metrics_of: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    core_metrics_missing_of: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    core_metrics_available: bool = False
+    engine_core_guidance: Dict[str, str] = field(default_factory=dict)
+    # 涨停簇补充读数的原料(裁定 12-a:簇内名次降级为补充,**缺席不挡任何档**)。
+    # `(ts_code, cluster_key) → amount_share` 与 `cluster_key → 簇内成员数`;
+    # `cluster_available` 区分「当日簇表整段没取到」(不知道)与「这票不在任何簇」
+    # (确定事实)—— 两者语义相反,⛔ 不许合并。
+    cluster_amount_share_of: Dict[Tuple[str, str], float] = field(default_factory=dict)
+    cluster_size_of: Dict[str, int] = field(default_factory=dict)
+    cluster_available: bool = False
 
     def display(self, code: str) -> str:
         name = self.names.get(code)
@@ -672,11 +781,25 @@ def build_mech_context(
     try:
         ls = leader_mod.load_leader_structure(trade_date, db_path=db_path)
         if not ls.is_empty():
+            # `cluster_available` 挂在**当日表真的有行**上(CLAUDE.md P0-39:
+            # 「读得出表 ≠ 跑过」;零行有两种相反成因,⛔ 不许混成一句)。
+            ctx.cluster_available = True
+            # 簇内成员数要数**整簇**(不能只数 wanted 里的那几只 —— 那样 `cluster_size`
+            # 会随"今天问了几只票"变化,是个假的量)。
+            sizes = ls.group_by("cluster_key").agg(pl.len().alias("n"))
+            ctx.cluster_size_of = {
+                r["cluster_key"]: int(r["n"]) for r in sizes.iter_rows(named=True)
+            }
             rows = ls.filter(pl.col("ts_code").is_in(wanted)).sort(["ts_code", "cluster_key"])
-            for r in rows.select(["ts_code", "cluster_key", "role_mech", "rs_rank"]).iter_rows(named=True):
+            for r in rows.select(
+                ["ts_code", "cluster_key", "role_mech", "rs_rank", "amount_share"]
+            ).iter_rows(named=True):
                 ctx.mech_roles.setdefault(r["ts_code"], []).append(
                     (r["cluster_key"], r["role_mech"], r["rs_rank"])
                 )
+                if r["amount_share"] is not None:
+                    ctx.cluster_amount_share_of[(r["ts_code"], r["cluster_key"])] = float(
+                        r["amount_share"])
     except Exception:  # noqa: BLE001
         logger.warning("[aggregate] 龙头结构表加载失败,角色对拍闸本次无机械侧可比", exc_info=True)
 
@@ -706,7 +829,14 @@ def build_mech_context(
     ctx.position_metrics_of, ctx.position_metrics_missing_of, ctx.position_metrics_available = (
         _load_position_metrics(trade_date, wanted, db_path=db_path)
     )
-    ctx.engine_position_guidance = _load_engine_position_guidance(db_path)
+    ctx.engine_position_guidance = _load_engine_gate_guidance("position", db_path)
+
+    # —— V2.2-③-C2(裁定 #12):核心关行业域读数(按需现算)+ 三引擎定性核心准则。
+    # 同样两路各自包保险丝(缺了只是 prompt 少一段 + 核心关按「未取得」披露)。
+    ctx.core_metrics_of, ctx.core_metrics_missing_of, ctx.core_metrics_available = (
+        _load_core_metrics(trade_date, wanted, db_path=db_path, parquet_dir=parquet_dir)
+    )
+    ctx.engine_core_guidance = _load_engine_gate_guidance("core", db_path)
 
     return ctx
 
@@ -724,34 +854,78 @@ def _shortlist(codes: Sequence[str], ctx: MechContext, limit: int) -> Tuple[str,
     return tuple(ordered[: max(0, int(limit))])
 
 
-def _resolve_mech_role(
+def _pick_cluster_row(
     code: str, ctx: MechContext, prefer_cluster_keys: Sequence[str] = ()
-) -> Tuple[Optional[str], Optional[int]]:
-    """机械侧角色 + 簇内 RS 名次。一只票可能同时属于多个簇(同日簇 / 连板簇 /
-    不同 anchor),取值必须**可复现**:
+) -> Optional[Tuple[str, str, Optional[int]]]:
+    """选定这只票**这一次**该看哪个簇(`(cluster_key, role_mech, rs_rank)`)。
+
+    一只票可能同时属于多个簇(同日簇 / 连板簇 / 不同 anchor),取值必须**可复现**:
         ① 优先取 `cluster_key` 落在本篮声明的种子里的那一行(涨停簇种子的
            `seed_key` 直接复用 `cluster_key`,见 `scan/seeds.py::_limit_cluster_seeds`);
         ② 否则取 `rs_rank` 最小(名次最靠前)的那一行,`rs_rank` 为空排最后;
         ③ 仍并列 → `cluster_key` 升序。
-    `role_mech == 'unknown'`(机械侧算不出,如 RS20 窗口不满 20 天)→ 返回
-    `(None, rs_rank)`:**「没判定」不是一种角色**,不能拿它去跟 LLM 对拍判冲突。"""
+
+    🔴 **唯一选取点**(裁定 #12 起两个消费方共用):`_resolve_mech_role`(角色对拍)
+    与核心关的簇内补充读数**必须看同一个簇** —— 各挑各的会让卡面上「簇内RS名次」
+    与 `core_metrics.cluster_rs_rank` 讲两个数,且**看不出是 bug**。"""
     rows = ctx.mech_roles.get(code)
     if not rows:
-        return None, None
+        return None
     prefer = set(prefer_cluster_keys)
-    picked = None
-    for cluster_key, role_mech, rs_rank in rows:
-        if cluster_key in prefer:
-            picked = (cluster_key, role_mech, rs_rank)
-            break
+    for row in rows:
+        if row[0] in prefer:
+            return row
+    return sorted(rows, key=lambda t: (t[2] if t[2] is not None else float("inf"), t[0]))[0]
+
+
+def _resolve_mech_role(
+    code: str, ctx: MechContext, prefer_cluster_keys: Sequence[str] = ()
+) -> Tuple[Optional[str], Optional[int]]:
+    """机械侧角色 + 簇内 RS 名次(簇的选取见 `_pick_cluster_row`)。
+
+    `role_mech == 'unknown'`(机械侧算不出,如 RS20 窗口不满 20 天)→ 返回
+    `(None, rs_rank)`:**「没判定」不是一种角色**,不能拿它去跟 LLM 对拍判冲突。"""
+    picked = _pick_cluster_row(code, ctx, prefer_cluster_keys)
     if picked is None:
-        picked = sorted(
-            rows, key=lambda t: (t[2] if t[2] is not None else float("inf"), t[0])
-        )[0]
+        return None, None
     _key, role_mech, rs_rank = picked
     if not role_mech or role_mech == ROLE_MECH_UNKNOWN:
         return None, rs_rank
     return role_mech, rs_rank
+
+
+def _resolve_core_metrics_raw(
+    code: str, ctx: MechContext, prefer_cluster_keys: Sequence[str] = (),
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, str]]:
+    """核心关读数装配的**唯一实现**(⛔ 只此一处拼簇内补充)。
+
+    = 行业域读数(`core_metrics.compute_core_metrics` 按需现算)+ 簇内补充三项
+    (有簇才给、**缺席不挡任何档**;簇的选取与角色对拍**同一个** `_pick_cluster_row`)。
+
+    返回 `(读数字典 or None, {读数键: 原因码})`。**`None` = 这一次一个读数都没拿到**
+    (整段取数失败 / 该票既无行业域读数又不在任何簇)—— 下游据此标
+    `available=False`(「判不出」既不是「判过了」也不是「拦下来」,但它挡 T1)。"""
+    metrics: Dict[str, Any] = dict(ctx.core_metrics_of.get(code) or {})
+    missing: Dict[str, str] = dict(ctx.core_metrics_missing_of.get(code) or {})
+    picked = _pick_cluster_row(code, ctx, prefer_cluster_keys)
+    core_mod.merge_cluster_supplement(
+        metrics, missing,
+        rs_rank=picked[2] if picked is not None else None,
+        amount_share=(ctx.cluster_amount_share_of.get((code, picked[0]))
+                      if picked is not None else None),
+        size=ctx.cluster_size_of.get(picked[0]) if picked is not None else None,
+        cluster_available=ctx.cluster_available, in_cluster=picked is not None,
+    )
+    return (metrics or None), missing
+
+
+def resolve_core_metrics(
+    code: str, ctx: MechContext, prefer_cluster_keys: Sequence[str] = (),
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """这只票**这一次**的核心关读数 + 缺项**人读串**(落成员行用;展示层要按组
+    折叠的那一路走 `_resolve_core_metrics_raw` 拿逐键原因)。"""
+    metrics, missing = _resolve_core_metrics_raw(code, ctx, prefer_cluster_keys)
+    return metrics, _fmt_metrics_missing(missing)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -908,7 +1082,7 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
 
 股票篮子的定义:**由同一个主要驱动因素影响、预计次日具有相似方向或明显联动关系的一组股票。**
 
-你要做的七件事:
+你要做的八件事:
 1. **合并名称不同但实际驱动相同的题材**(例如某个行业种子和某个概念种子其实是同一件事);
 2. 给每个篮子命名,并用一句话说清**共同驱动**,再用一两句话说清**为什么是现在**;
 3. 从系统给出的成员清单里**挑 1 到 3 只**股票,说明**为什么是这几只而不是同题材其他票**;
@@ -929,8 +1103,14 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
    · `ok` = 位置符合「落地起跳」,现在正是值得投入注意力的位置;
    · `weak` = 位置勉强、有明显疑点(该票会被降一档);
    · `unfit` = 位置不合适(该票所在篮子退出正式候选,但**仍会在报告里列名并写明你的理由**)。
+8. 给**你选中的每一只成员**判一次**核心地位**(下面「核心关」一节给了判断标准与该票的读数),
+产出 `core_verdict`(`ok` / `weak` / `unfit` 三选一)+ `core_reason`(一句人话说清依据):
+   · `ok` = 它就是它那一群(同行业)里的**龙头**;
+   · `weak` = 勉强算、或者说不清它是不是龙头(该票会被降一档);
+   · `unfit` = 它不是核心地位,只是跟风(该票所在篮子退出正式候选,但**仍会在报告里列名并写明你的理由**)。
+
 **读数里写「未取到」的项就是真的没取到**,请据实说明不确定性,⛔ 不要把它当成 0 或默认值。
-判不准就给 `weak` 并说明缺什么,⛔ 不要为了让票留下而给 `ok`。
+位置与核心两项判不准就各给 `weak` 并说明缺什么,⛔ 不要为了让票留下而给 `ok`。
 
 硬约束(系统会做机械校验,违反的建议会被整条丢弃,不是提醒而是规则):
 · **成员只能从下面每颗种子给出的成员清单里选**。清单之外的任何代码都算凭空捏造,
@@ -968,7 +1148,9 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
                 "role": "leader|core|elastic",
                 "reason": "为什么是这只而不是同题材其他票",
                 "position_verdict": "ok|weak|unfit 三选一(该票的落地起跳位置判定)",
-                "position_reason": "一句话说清位置判定的依据"}]}
+                "position_reason": "一句话说清位置判定的依据",
+                "core_verdict": "ok|weak|unfit 三选一(该票在同行业里的龙头/核心地位判定)",
+                "core_reason": "一句话说清核心判定的依据"}]}
 ]}
 ```
 
@@ -992,9 +1174,14 @@ def build_reason_context(
     **V2.2-③-C 位置关(裁定 #11)**:prompt 里给三样 —— ① K8 §二 五句原文;
     ② 三条引擎线的定性位置准则 `gates.position.guidance`;③ 该票的
     `landing_metrics_daily` 读数 + `metrics_missing`。⛔ **不新增 LLM 调用**,
-    判定搭本次 `basket_reason` 一并产出。"""
+    判定搭本次 `basket_reason` 一并产出。
+
+    **V2.2-③-C2 核心关(裁定 #12)**:同款三样 —— ① 龙头判断标准(⛔ 朝龙头对齐,
+    不是容量核心);② `gates.core.guidance`;③ 该票的行业域读数 + 缺项披露。
+    **同一次调用**里一并产出,⛔ LLM 增量仍是 0。"""
     lines = [date_anchor_line(ref_date=ctx.trade_date, name_tomorrow=True), ""]
     lines.extend(_position_prompt_block(ctx))
+    lines.extend(_core_prompt_block(ctx))
     for seed in seeds:
         presented = presented_by_seed.get(seed.seed_key, ())
         ev = evidence_by_seed.get(seed.seed_key)
@@ -1030,6 +1217,8 @@ def build_reason_context(
                 bits.append(f"簇内RS名次 {rs_rank}")
             lines.append("     · " + ";".join(bits))
             lines.append("       位置读数:" + _position_metrics_line(code, ctx))
+            lines.append("       核心读数:"
+                         + _core_metrics_line(code, ctx, (seed.seed_key,)))
         pair_note = _corr_note(presented, ctx)
         if pair_note:
             lines.append(f"   成员间 20 日相关性(**只作辅助证据,单凭相关性不足以成篮**):{pair_note}")
@@ -1080,6 +1269,71 @@ def _position_metrics_line(code: str, ctx: MechContext) -> str:
     miss = (ctx.position_metrics_missing_of.get(code) or "").strip()
     if miss:
         line += f";(未取到的项与原因:{miss})"
+    return line
+
+
+def _core_prompt_block(ctx: MechContext) -> List[str]:
+    """核心关(龙头识别)判断标准段(裁定 #12 的 prompt 第 ①②样)。
+
+    ⛔ **这一段里不许出现任何阈值 / 及格线 / 「行业内前 X%」** —— 核心关自此零阈值,
+    数字只以「该票读数」的形式出现在成员清单里,由模型自己权衡(用户明确否决了
+    任何形式的机械低保)。⛔ 也不许出现市值 / 流通盘 / 容量类的引导(裁定 12-c:
+    要的是龙头,不是容量核心)。"""
+    lines = [
+        "── 核心关(龙头识别)判断标准 —— 给你选中的每一只成员判 core_verdict",
+        "【判断标准】" + K8_CORE_CRITERIA,
+        # 口径说明只出现这一次(成员行里的标签因此可以写短,⛔ 不逐行重复解释)
+        "【" + CORE_METRIC_LEGEND + "】",
+    ]
+    if ctx.engine_core_guidance:
+        lines.append("【各引擎的核心准则(按你给该篮子标的 engine_code 取对应那条)】")
+        for code in sorted(ctx.engine_core_guidance):
+            lines.append(f"  · {code}:{ctx.engine_core_guidance[code]}")
+    else:
+        lines.append("【各引擎的核心准则】**本次未取得**(引擎线读取失败)——"
+                     "只按上面的判断标准判,并在理由里注明缺这一条。")
+    if not ctx.core_metrics_available:
+        lines.append("⚠ 本次**行业域读数整段没算成**(行情或行业映射取不到)——"
+                     "下面每只票的核心读数都会写「本次未取得」。⛔ 不要凭空想象读数,"
+                     "据实说明不确定性即可。")
+    lines.append("")
+    return lines
+
+
+def _core_metrics_line(
+    code: str, ctx: MechContext, prefer_cluster_keys: Sequence[str] = (),
+) -> str:
+    """一只票的核心关读数(按 ③-C2 读数表分组的人读串)。
+
+    **缺项一律如实说「未取到」**,⛔ 不填 0、不填默认值。⚠ 分母(行业成员数 / 20 日
+    名次分母)必须一起出现在这行里 —— 没有它,「第 3 名」是 3/8 还是 3/80 完全没法读
+    (裁定 #12 的 🔴 分母条款)。"""
+    metrics, missing_map = _resolve_core_metrics_raw(code, ctx, prefer_cluster_keys)
+    if metrics is None:
+        why = ("本票行业域与簇内读数均缺" if ctx.core_metrics_available
+               else "行业域读数整段未算成")
+        line = f"**本次未取得**({why})"
+        return line + (f";(未取到的项与原因:{_fmt_metrics_missing(missing_map)})"
+                       if missing_map else "")
+    parts: List[str] = []
+    explained: set = set()
+    for group, items in CORE_METRIC_GROUPS:
+        keys = [k for k, _label in items]
+        # 整组都缺 → **折成一句**(⛔ 不逐项刷「未取到」三遍):最常见的就是簇内三项
+        # (绝大多数票任何一天都不在涨停簇里 —— 这正是被推翻的老判据只覆盖 1.4% 的
+        # 那个事实),逐项列出来只会把真正有内容的读数淹掉。
+        if all(k not in metrics for k in keys):
+            reasons = sorted({missing_map[k] for k in keys if k in missing_map})
+            why = f"({'、'.join(reasons)})" if reasons else ""
+            parts.append(f"[{group}]未取到{why}")
+            explained.update(keys)
+            continue
+        body = "、".join(f"{label} {_fmt_metric(metrics.get(key))}" for key, label in items)
+        parts.append(f"[{group}]{body}")
+    line = ";".join(parts)
+    rest = {k: v for k, v in missing_map.items() if k not in explained}
+    if rest:
+        line += f";(未取到的项与原因:{_fmt_metrics_missing(rest)})"
     return line
 
 
@@ -1208,32 +1462,56 @@ def _resolve_driver_kind(
     return "theme", True
 
 
-def _parse_position_verdict(
-    member_raw: Mapping[str, Any], *, code: str, name: str,
+def _parse_member_verdict(
+    member_raw: Mapping[str, Any], *, field_prefix: str, verdicts: Sequence[str],
+    fallback: str, fallback_reason: str, code: str, name: str,
 ) -> Tuple[str, str]:
-    """成员项 → `(position_verdict, position_reason)`(V2.2-③-C,裁定 #11)。
+    """成员项 → `(<gate>_verdict, <gate>_reason)`(**两关共用的唯一实现**:位置关
+    ③-C/裁定 #11 与核心关 ③-C2/裁定 #12 —— 两关的映射「完全同构」,⛔ 不抄两份)。
 
     🔴 **缺字段 / 枚举外取值 = 保守按 `weak` 处理 + 留痕,⛔ 不静默当 `ok`**:
     「模型没判」与「模型判过、说没问题」是两件事,合并成后者等于替它下结论
-    (§2.0 第〇原则的同一条精神)。⛔ 也**不整条拒收** —— 位置关是证据关,
+    (§2.0 第〇原则的同一条精神)。⛔ 也**不整条拒收** —— 这两关都是证据关,
     证据关只降级不除名(③-A)。"""
-    raw = str(member_raw.get("position_verdict") or "").strip().lower()
-    reason = str(member_raw.get("position_reason") or "").strip()
-    if raw in POSITION_VERDICTS:
+    raw = str(member_raw.get(f"{field_prefix}_verdict") or "").strip().lower()
+    reason = str(member_raw.get(f"{field_prefix}_reason") or "").strip()
+    if raw in verdicts:
         return raw, reason
     if raw:
         logger.warning(
-            "[aggregate] 篮子 %r 成员 %s 的 position_verdict=%r 不在 %s 内,"
-            "保守按 %s 处理(⛔ 不静默当 ok)", name, code, raw,
-            list(POSITION_VERDICTS), POSITION_VERDICT_FALLBACK,
+            "[aggregate] 篮子 %r 成员 %s 的 %s_verdict=%r 不在 %s 内,"
+            "保守按 %s 处理(⛔ 不静默当 ok)", name, code, field_prefix, raw,
+            list(verdicts), fallback,
         )
     else:
         logger.warning(
-            "[aggregate] 篮子 %r 成员 %s 未给 position_verdict,保守按 %s 处理",
-            name, code, POSITION_VERDICT_FALLBACK,
+            "[aggregate] 篮子 %r 成员 %s 未给 %s_verdict,保守按 %s 处理",
+            name, code, field_prefix, fallback,
         )
     detail = f"(模型给的是 {raw!r})" if raw else ""
-    return POSITION_VERDICT_FALLBACK, (reason or (POSITION_REASON_FALLBACK + detail))
+    return fallback, (reason or (fallback_reason + detail))
+
+
+def _parse_position_verdict(
+    member_raw: Mapping[str, Any], *, code: str, name: str,
+) -> Tuple[str, str]:
+    """成员项 → `(position_verdict, position_reason)`(V2.2-③-C,裁定 #11)。"""
+    return _parse_member_verdict(
+        member_raw, field_prefix="position", verdicts=POSITION_VERDICTS,
+        fallback=POSITION_VERDICT_FALLBACK, fallback_reason=POSITION_REASON_FALLBACK,
+        code=code, name=name,
+    )
+
+
+def _parse_core_verdict(
+    member_raw: Mapping[str, Any], *, code: str, name: str,
+) -> Tuple[str, str]:
+    """成员项 → `(core_verdict, core_reason)`(V2.2-③-C2,裁定 #12)。"""
+    return _parse_member_verdict(
+        member_raw, field_prefix="core", verdicts=CORE_VERDICTS,
+        fallback=CORE_VERDICT_FALLBACK, fallback_reason=CORE_REASON_FALLBACK,
+        code=code, name=name,
+    )
 
 
 def _gate_proposal(
@@ -1288,8 +1566,8 @@ def _gate_proposal(
         return None, RejectedProposal(
             REJECT_MEMBER_COUNT, f"成员数 {len(members_raw)} 不在 [{MIN_MEMBERS},{MAX_MEMBERS}]", raw
         )
-    # (code, role, reason, position_verdict, position_reason)
-    parsed_members: List[Tuple[str, str, str, str, str]] = []
+    # (code, role, reason, position_verdict, position_reason, core_verdict, core_reason)
+    parsed_members: List[Tuple[str, str, str, str, str, str, str]] = []
     codes_seen: set = set()
     for m in members_raw:
         if not isinstance(m, dict):
@@ -1298,6 +1576,7 @@ def _gate_proposal(
         role = str(m.get("role") or "").strip().lower()
         reason = str(m.get("reason") or "").strip()
         pos_verdict, pos_reason = _parse_position_verdict(m, code=code, name=name)
+        core_verdict, core_reason = _parse_core_verdict(m, code=code, name=name)
         if not code:
             return None, RejectedProposal(REJECT_MALFORMED, "成员缺 ts_code", raw)
         if code in codes_seen:
@@ -1309,7 +1588,8 @@ def _gate_proposal(
             # 角色是三值枚举、prompt 里逐字给过;写不对就没法跟机械侧对拍(对拍闸
             # 会失去意义),故按 malformed 拒收而不是猜一个角色塞进去。
             return None, RejectedProposal(REJECT_BAD_ROLE, f"{code} 的角色 {role!r} 不在 {ROLES}", raw)
-        parsed_members.append((code, role, reason, pos_verdict, pos_reason))
+        parsed_members.append((code, role, reason, pos_verdict, pos_reason,
+                               core_verdict, core_reason))
 
     # —— 闸 3:**成员白名单闸**(plan §五 V2-⑤ 第 1 道)———————————————————
     allowed: set = set()
@@ -1341,8 +1621,11 @@ def _gate_proposal(
 
     # —— **角色对拍闸**(plan §五 V2-⑤ 第 2 道)———————————————————————
     members: List[BasketMemberCandidate] = []
-    for code, role, reason, pos_verdict, pos_reason in parsed_members:
+    for (code, role, reason, pos_verdict, pos_reason,
+         core_verdict, core_reason) in parsed_members:
         role_mech, rs_rank = _resolve_mech_role(code, ctx, prefer_cluster_keys=seed_keys)
+        core_metrics, core_missing = resolve_core_metrics(
+            code, ctx, prefer_cluster_keys=seed_keys)
         conflict = 1 if (role_mech is not None and role_mech != role) else 0
         if conflict:
             logger.warning(
@@ -1359,6 +1642,11 @@ def _gate_proposal(
             position_verdict=pos_verdict, position_reason=pos_reason,
             position_metrics=ctx.position_metrics_of.get(code),
             position_metrics_missing=ctx.position_metrics_missing_of.get(code, ""),
+            # 核心关(裁定 #12):同款两样一起带下去 —— 判定 + **当次喂给它的那份
+            # 行业域读数**(含簇内补充),`gates.py` 靠这两样把
+            # `gate_evaluations.evidence_json` 写全。
+            core_verdict=core_verdict, core_reason=core_reason,
+            core_metrics=core_metrics, core_metrics_missing=core_missing,
         ))
 
     seed_kinds = [seeds_by_key[k].seed_kind for k in seed_keys]
@@ -1512,7 +1800,9 @@ def assign_primary(
         # 四字段没抄进来 → 全篮成员的 `position_verdict` 被静默重置成默认值 → 六关
         # 侧全员回退成 `weak`、读数全丢,**日志一行警告都没有、界面上看起来像模型
         # 判的**。与下面那句对篮子级的告诫是同一条:逐字段手抄在加新字段时会静默丢
-        # 字段,⛔ 别再改回手抄。
+        # 字段,⛔ 别再改回手抄。⚠ 裁定 #12 的核心关四字段(`core_verdict` /
+        # `core_reason` / `core_metrics` / `core_metrics_missing`)同样只靠这一句
+        # `dc_replace` 原样带过 —— 同一个坑一改回手抄就会同时吞掉八个字段。
         members = tuple(
             dc_replace(
                 m,
@@ -1804,6 +2094,14 @@ __all__ = [
     "REJECT_DUPLICATE_KEY",
     "DRIVER_SEARCH_SYSTEM_PROMPT",
     "BASKET_REASON_SYSTEM_PROMPT",
+    # 位置关(裁定 #11)与核心关(裁定 #12)的 LLM 三值 —— 两套**同构但独立**,
+    # `gates.py` / 契约层 / 单测都从这里取,⛔ 不抄第二份。
+    "POSITION_OK", "POSITION_WEAK", "POSITION_UNFIT", "POSITION_VERDICTS",
+    "POSITION_VERDICT_FALLBACK", "POSITION_REASON_FALLBACK",
+    "CORE_OK", "CORE_WEAK", "CORE_UNFIT", "CORE_VERDICTS",
+    "CORE_VERDICT_FALLBACK", "CORE_REASON_FALLBACK",
+    "K8_CORE_CRITERIA", "CORE_METRIC_GROUPS", "CORE_METRIC_KEYS",
+    "resolve_core_metrics",
     "EvidenceItem",
     "DriverEvidence",
     "BasketMemberCandidate",
