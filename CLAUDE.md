@@ -268,6 +268,18 @@
 
 ## 现役生产机 = `nk`(V2-⑰ 割接后,2026-08-04 起;冷启动先认这条)
 
+- 🔴 **运维事实文件已拆分(2026-08-08)**:`nk`(= 宁波 `nb`)的事实在 **`~/Lino/NB_info.md`**,
+  **不再在 `~/Lino/hz_info.md`**(后者只剩杭州 `hz`)。⛔ 本仓旧文里「以 `hz_info.md` 的 `nk-*` 各节为准」
+  **已失效**,一律改查 `NB_info.md`。
+- 🔴 **nk 上跑瞬态批算/探针,必须用 `User=neckline`+`Group=neckline` 的 systemd 瞬态 service
+  (或 `sudo -u neckline`),⛔ 不许用 root 的 `systemd-run --scope`** —— 会把行情文件写成 root 属主、
+  导致服务写入失败(`NB_info.md` 登记)。⚠ **本文「生产机性能探针纪律」那条写的正是 `--scope`,那是
+  hz 时代的写法,在 nk 上照抄就是事故**;要资源隔离就 `systemd-run --unit=… --property=User=neckline
+  --property=MemoryMax=…`(2026-08-09 V2.2 批 1 实操验证)。
+- ⚠ **nk 是 4 vCPU / 3.8 GiB,不是「2 vCPU / 1.6G」** —— 本文多处 P0-23 叙事里的那台小箱子是 **hz 老机**;
+  搬算术前先认清在说哪台。P0-23 的**方法论**(上产前隔离实测、别抬内存糊算法)仍然全部有效。
+- ⚠ **`systemd-run` 的 `Memory peak` 读数不可轻信**(2026-08-09 实测报 512K,Python 起步都不止):
+  cgroup 对已在页缓存里的文件页不重复计费。**要可信上界就压低 `MemoryMax` 反证**(扛住 = 真上界)。
 - **Neckline 的生产机是新机 `nk`(114.66.0.38)/ `https://nk.linotsai.top`**;**hz 老机上的
   Neckline 已 stop + disable 留档**(⛔ 只停不删:五个 unit 文件 + `/opt/neckline` + `.env`/`.p8`/
   `data/` 全在)。hz 上其余四类业务照常在跑,**别把 hz 当"已退役机器"整体处置**。

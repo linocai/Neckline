@@ -204,7 +204,7 @@ logger = logging.getLogger(__name__)
 # ——`client/project.yml` 与 `pbxproj` 的 `MARKETING_VERSION` 必须同为 `2.0.0`
 # (守门单测 `tests/test_client_version_governance.py` 锁三处恒等,漏一处立刻红)。
 # ⚠ ⑭ 刻意没升它:提前升会让守门单测常年红,版号归 ⑮。
-VERSION = "v2.1.0"
+VERSION = "v2.2.0"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————

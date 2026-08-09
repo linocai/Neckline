@@ -458,9 +458,10 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-08 · 🧱 V2.2.0 批 1(块① 引擎注册表 + 块② 行情状态层)本地施工完工,⛔ 未部署**。
-生产 `nk` 仍是 **`v2.1.0`**(2026-08-08 18:09 CST 上产,常态运行),本次**零接触生产**。
+**2026-08-09 · 🚀 V2.2.0 批 1 已上产(nk = `v2.2.0`,周日窗口部署,判据八条全绿)· 批 2(块③)本地开工中**。
 **全量套件 3166 passed / 3 skipped / 0 failed**(基线 3063 passed / **2 failed**)。
+**⚠ 首个真实运行是 2026-08-10(周一)16:05 日更 + 16:35 晚间链 —— 那一晚才是批 1 的真验收**
+(⑦「每批之间留一个完整交易日」;周日部署等于白拿一个干净观察日)。
 
 - **本次动作 = 批 1 两块代码全部落地 + 三张老账结案**(builder-pro ×2,orchestrator 独立复核):
   ① `selection_packs` 单包制 → **四线注册表**(`line_code`/`status` 两列;唯一现役约束由「全表唯一」
@@ -523,20 +524,24 @@ Neckline/
 
 **现役拓扑与配置(生产侧与 2026-08-08 上产快照相比**零变化** —— 批 1 只落本地代码,只列仍需知道的)**
 
-- **生产机 = `nk`(114.66.0.38)/ `https://nk.linotsai.top` / 对外版号 `v2.1.0`**;API 前缀
+- **生产机 = `nk`(114.66.0.38)/ `https://nk.linotsai.top` / 对外版号 `v2.2.0`**;API 前缀
   `/api/v1`(裸 `/health` 返 404 是对的)。**hz 老机上的 Neckline 仍是 stop + disable 留档**
-  (⛔ 只停不删),hz 上其余四类业务零接触。运维事实以 `~/Lino/hz_info.md` 的 `nk-*` 各节为准。
-- **纪律章程 `v1.3.3`** · **选股策略包 `K7-pack-v1`(仍现役,批 2 作废后它会一直现役到 V2.2 批 2)**
-  · 生产 SQLite **47 表**(⚠ 批 1 上产后 +1 = `market_regime_daily`;四个新包**一个都还没激活**)
-  · 持仓台账 open 0 笔 · LLM 单 Provider(`GLM`/`glm-5.2`/`has_web_search=1`,
+  (⛔ 只停不删),hz 上其余四类业务零接触。🔴 **运维事实已改在 `~/Lino/NB_info.md`**
+  (2026-08-08 拆文件;`hz_info.md` 只剩杭州,⛔ 旧指针失效)。
+- **纪律章程 `v1.3.3`** · 🆕 **选股骨架线 `K8-V0.5` 现役**(`line_code='V'`,**全表恰一行 `is_active=1`**;
+  `K4-pack-v1`/`K7-pack-v1` 已双双 `is_active=0` 留档,**⛔ 未删行**)· **三条引擎线 `C1`/`Z1`/`Y1`
+  包文件已在仓库、⛔ 一个都没激活**(归批 2)· 生产 SQLite **47 表**(批 1 +1 = `market_regime_daily`)
+  · ⚠ **持仓台账 open = 2 笔**(2026-08-09 实测;旧快照记 0 笔已过时 —— **批 4 章程 staged 激活要求清仓,
+  这是硬闸**)· LLM 单 Provider(`GLM`/`glm-5.2`/`has_web_search=1`,
   `llm_task_routes={}` + `llm_default_provider='GLM'` 回退,⚠ `search_engine` 留空是对的)。
 - **排程三件**:`neckline.service`(常驻 API + 盘中哨兵)· `neckline-daily.timer` 16:05 ·
   `neckline-evening.timer` 16:35(三段 oneshot 串行,`neckline-evening.target` 已带
   `StopWhenUnneeded=yes` = P0-45 修复后的正确形态)。**周度 timer 仍不存在**(V2.2 批 3 才建)。
-- **🟡 两个仍活着的合法过渡态(⛔ 都不是故障)**:① 每次读包打一行
-  `WARNING [tier] 策略包 K7-pack-v1 …含已退役键 ['tier3_min'] …本次忽略`(② 的设计,刻意不静默)
-  —— 批 2 作废后**它会一直打到 V2.2 批 2 激活骨架线为止**,不再有"下周就消失"这回事;
-  ② 复盘板块「累计」页说「本窗口的周度校准产物尚未生成」—— 周度 unit 推到 V2.2 批 3。
+- **🟡 过渡态**:① ~~`tier3_min` WARNING~~ ✅ **已随 `K8-V0.5` 上产消失**(骨架包不复刻该退役键 ——
+  这正是当初决定不复刻的理由,见批 1 完工记录裁定 2);② 复盘板块「累计」页说「本窗口的周度校准
+  产物尚未生成」—— 周度 unit 推到 V2.2 批 3,**仍在**。
+- 🆕 **批 1 上产后的合法新常态(⛔ 不是故障)**:`market_regime_daily` 已有行且 `/market-regime`
+  `available:true`;但**行情状态层此刻还没接进任何判定**(接市场关是批 2 的 ③)——它现在只落表 + 只读端点。
 - **🔴 iPhone 上那台 2.0.0 的两处错话仍在**(问询台显示「持仓已清」· 选股页多渲染一个空 T3 分组),
   **换包 2.1.0 即消失**;§八 第 17 项仍是唯一挡在用户那边的待办。
 - **回滚绳(三重,仍有效 —— 描述的是**当前生产** `v2.1.0`)**:① `data/backups/neckline.db.{bak,cpbak}-preV21b1-20260808-180438`
@@ -1578,6 +1583,7 @@ get_active_pack()    : None      ← 实测
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-09 · 🚀 **V2.2.0 批 1 上产(nk,周日窗口,零市场影响;对外版号 `v2.1.0` → `v2.2.0`)**。顺序:双备份(`integrity ok`)→ `sync_code.sh`(6 个关键文件 sha256 双向逐位对拍、`data/` 属主自检通过)→ **`retire_legacy_packs.py --confirm`**(K7-pack-v1 `is_active 1→0`,总行数 2 前后不变 = **零 DELETE**,事件流追加 `deactivate`)→ **P0-23 隔离实测**(`User=neckline` 瞬态 unit,**⛔ 非 root `--scope`**;`ExecMainStatus=0` / **827ms** / **扛住 `MemoryMax=64M` 硬上限**,相对 scan unit 的 1400M 余量极大 → **配额不改**)→ **激活骨架线 `K8-V0.5`**(四道闸演练全过;**上闸前逐键对拍 K7:差异恰 3 键 = 排科创 + 排白酒 + 去退役键 `tier3_min`,`tier.weights`/`dims` 逐位相同** = 兑现「差异收敛为选股域收窄一处」判据)→ restart。**判据八条全绿**:`/health`=`v2.2.0` · 表 46→**47** · `selection_packs` 列 10→**12** · 索引换 per-line · 现役**恰 1 行**且 `line_code='V'` · `/market-regime` `available:true` · 排程未受影响(下次 08-10 16:05/16:35)· 零 failed unit · load 0.00。**回退自愈已验证**:激活后重算 20260806/07,`skeleton_version` 由 `engine_default` → **`K8-V0.5`**、`missing:skeleton_pack` 消失 = 阈值确实从包里读。⚠ **版本号三处同升**(`app.py::VERSION` + `project.yml` + `pbxproj`,守门单测锁恒等)—— **客户端本批不构建不换包**,换包仍归批 5。现场打出三条与既有记载冲突的事实,已进 `CLAUDE.md`:运维事实文件已拆(`nk` 归 `NB_info.md`)· **nk 上瞬态批算禁用 root `--scope`** · nk 是 4 vCPU/3.8G 非 2 vCPU/1.6G。
 - 2026-08-08 · 🧱 **V2.2.0 批 1 本地施工完工(块① 引擎注册表 + 块② 行情状态层;builder-pro ×2,⛔ 未部署)**。① `selection_packs` 单包制 → **四线注册表**(`line_code`/`status` 两列 + 唯一现役约束「全表唯一」改「**每线唯一**」)· 读侧四入口 · **`ENGINE_API_VERSION` 1→2**(两个回滚锚如设计作废,回滚绳改「代码 commit + DB 还原」)· 四个包文件(`K8-V0.5`/`C1`/`Z1`/`Y1`,阈值全带 `provenance`)· 新原语 `industry_blacklist`(**实测 `stock_basic.industry` 白酒取值 = 「白酒」19 只**)· `retire_legacy_packs.py`;**三张老账结案 P2-47 / P4-48 / P1-46** + P4-54 两处文案。② `market_regime_daily` 新表 + `scan/regime.py` 三态判定唯一实现 + 五维各带双位与独立保险丝 + **两道锁落成机器判据**(前视锁逐位断言 / 权限锁 AST)+ `SEG_SCAN` 挂链 + `scan_layer.py regime` + `GET /market-regime`(一律 200、零新增 reason)。**全量套件 3166 passed / 3 skipped / 0 failed**(基线 3063/2 failed),表 46→47、`selection_packs` 列 10→12,A8 探针可写命中集为空。**⛔ 未部署、零接触生产**;🔴 **⑦ 批 1 部署判据自相矛盾已实测证实、待用户裁定**(bump 后 `get_active_pack()` 对生产 LEGACY 行返 `None` → 与「当晚行为逐位相同」互斥)。完工验收全文 → `archive/V2.2.0_批1完工记录_20260808.md`。
 - 2026-08-09 · 🗂 **策略研究档案整体迁出本仓(用户自己执行,planner 只对账 + 保树一致;单独一笔 commit)**。删 **62 件**:顶层 `research/` 全目录(K2–K7 的 41 个 runner + 14 份结果报告 + 盲选训练舱 `drill.py` + 考卷引擎 `exam.py`/`exam_html.py`)· `STRATEGY_LAB.md` · `K4_STRATEGY.md` · archive 五份研究档案。新家 `~/Lino/whynotme/`(档案根 `Archive/Neckline量化研究档案_K2-K7/{research,docs}/`,README 记了重建成本)。⛔ **回测核心留仓**:`neckline/{backtest,research,eval,strategy}/`,判分唯一源 `neckline/eval/exit_sim.py` 一行未动。同批代码面适配三处(**与删除必须同一笔,否则树是坏的**):`test_industry_strength.py` 由 `import research.k4p_h6_theme` 改**本文件内嵌冻结源副本**(plan §五 v1.4-②-A「逐位对拍」硬要求逐字仍成立,**冻结副本比活 import 更强** —— 锚死迁出当时的实现,研究件日后被改也不会让基准漂)· `test_eval_exit_sim.py` 那条「research 三处 import 同一函数对象」加 `skipif`(**⛔ 不删**,删了等于承诺研究件永不回来)· `smoke_eval_exit_sim.py` docstring 写明「默认跳过是预期不是故障」。**新增 §1.6 口径声明**(全文 `research/…` 一律指新家)+ 关键处逐处改写(**`research/panel.py` → `neckline/research/panel.py`,它其实没搬,4 处**)+ 证据链指针改指档案 + K2/K3 存根改指档案。代码面剩 4 处存活引用**只登记不修** → §七 **P4-54**(其中最要紧的是 `test_v13_exit_6y_baseline.py`:**六年真回测基线 N=1288 / −20.53% 在本仓已永久无法复跑**,skip 理由文案现在在撒谎,批 1 顺手改)。验证:全量 `pytest tests/ -q` **3063 passed / 3 skipped / 2 failed**(2 failed = §七 P1-46 周末日期炸弹,今天周日,与清理无关)。
 - 2026-08-09 · ✅ **V2.2.0 五条遗留点用户全部拍板 + 一项新裁定落图(planner,仍 ⛔ 未开工)**。**#6 关口二分照 planner 拆法**(机械关硬否决 / 证据关只降级 / LLM「退出」收窄为退出正式候选仍列名)· **#7 反馈环划线**(正确率只推状态、永不改规则,前视锁 + 权限锁照写)· 🔴 **#8 熔断整体删除**(用户原话「**我不需要你替我做决定;这个程序永远是提醒 —— 连续三笔止损真的发生了,那也是提醒**」)—— 锁定态 / 次日只减不加 / 强制复盘解锁**三件机制全删**,「连续 3 笔止损」降为**纯提醒**(一推送 + 一事件,零状态零锁零行为改变),单日 −4000 档一并删;⑤ 因此扩为「章程修订 + 熔断退役」,**⑤-B 十处逐项清单**(§2.1 第 7 条加删除线留痕 / `circuit.py` 只留无状态纯函数 / `circuit_breaker` 停写留档不 DROP〔P4-31 七张→**八张**〕/ 删两端点 / **`PositionsOut.circuit` 本版不删键、恒发空态**〔零删键铁律,真删排 v2.3〕/ `circuit` kind 保留改纯告知文案〔**刻意不新增 kind** = 不触发用户拍板纪律〕/ 盘前 `circuit_locked` 与 9:26 必发豁免全删 / 接线改「只推提醒不建行」/ 周复盘熔断审计删 —— ⚠ **§2.1 第 4 条强制复盘不是熔断,⛔ 别连坐删**);风险登记三条入册,其中**生产历史触发情况必须只读 SQL 查证后如实填**(planner 只查得到本地开发库 0 行,**而那不是生产库,证明不了任何事**,承 P0-39)· **#9 混引擎搁置 → 单篮子单引擎**(引擎标篮子、成员继承,归因由成员级改**篮子级**;留门一句「要开就升 `K8-V` 骨架版本」,⛔ 不预建列 / 不预留分支)· **#10 P3-49 按 K8 走「信实盘别信回测」**(判据来源写死 = 选股时钟实盘数据,⛔ 不立回测战役;雷区对照只作知情登记、不作否决依据)。planner 上一轮裁的「熔断锚点」问题**随 #8 作废**;§2.9-A 表拆行、§2.9-C 五条标已拍板;§八 第 19 项补熔断退役的后果告知。
