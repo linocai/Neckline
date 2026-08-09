@@ -199,6 +199,8 @@ def test_card_json_key_shape_is_stable():
         "scripts_unavailable_reason", "verification_spec", "verification_text",
         "invalidation_spec", "invalidation_text", "risks", "disclaimer",
         "fingerprint", "discipline_labels", "narrative", "llm_stage", "degraded", "notes",
+        # V2.2-③-E(spec v3):引擎归属三键(裁定 #9 单篮子单引擎,成员继承)。
+        "engine_code", "engine_version", "skeleton_version",
     }
     assert set(j["members"][0]) == {
         "ts_code", "name", "role_llm", "role_mech", "role_conflict", "reason",

@@ -94,7 +94,10 @@ logger = logging.getLogger(__name__)
 # 第 ③ 条由「收盘 < MA20」单条改成复合条件(见 `verification_rules`),`members[]` 行
 # 里那一格从标量变成 `{ref_close, ma20}` 映射 —— **形状变了就 bump,这正是
 # `spec_version` 存在的意义**(条件集本身的版本另有 `VERIFICATION_RULESET_VERSION`)。
-CARD_SPEC_VERSION = "basket_card_v2"
+# V2.2-③:v2 → v3 = 新增引擎归属三键(engine_code/engine_version/skeleton_version,
+# 裁定 #9 单篮子单引擎;纯增量、老键一字未动 —— 「spec_version 恒随形状变化而变」
+# 的既定纪律,老卡照常按 v2 读回)。
+CARD_SPEC_VERSION = "basket_card_v3"
 VERIFY_SPEC_VERSION = "basket_verify_v2"
 INVALIDATE_SPEC_VERSION = "basket_invalidate_v2"
 
@@ -838,6 +841,12 @@ class BasketCard:
     llm_stage: str = LLM_DISABLED
     next_trade_date: Optional[str] = None
     notes: Tuple[str, ...] = ()
+    # V2.2-③-E(裁定 #9 单篮子单引擎):篮子级引擎归属,成员继承 —— 卡上每票的
+    # 「唯一主引擎及准确版本」(K8 §四)由这三键 + 成员节共同表达,⛔ 成员节不
+    # 另存一份引擎字段。老卡(v2 及以前)没有这三键 = 「当时没有引擎归属概念」。
+    engine_code: Optional[str] = None
+    engine_version: Optional[str] = None
+    skeleton_version: Optional[str] = None
 
     @property
     def degraded(self) -> bool:
@@ -861,6 +870,10 @@ class BasketCard:
             "name": self.name,
             "driver": self.driver,
             "driver_kind": self.driver_kind,
+            # 1b 引擎归属(V2.2-③-E,裁定 #9:篮子标、成员继承)
+            "engine_code": self.engine_code,
+            "engine_version": self.engine_version,
+            "skeleton_version": self.skeleton_version,
             # 2 驱动证据与信息来源(每条带日期)
             "evidence": [
                 {"claim": e.claim, "source": e.source, "date": e.date,
@@ -1085,6 +1098,9 @@ def build_basket_card(
         llm_stage=llm_stage,
         next_trade_date=nd.strftime("%Y%m%d") if nd is not None else None,
         notes=tuple(notes),
+        engine_code=getattr(basket, "engine_code", None),
+        engine_version=getattr(basket, "engine_version", None),
+        skeleton_version=getattr(basket, "skeleton_version", None),
     )
 
 
@@ -1183,6 +1199,103 @@ def build_cards(
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# V2.2-③-E:交易资格四件套(K8 §十一)的**唯一判定实现**
+# ══════════════════════════════════════════════════════════════════════════
+# 四件套 = 上涨判断(卡 #6 三剧本)/ 入场区间(成员 entry_zone)/ 目标离场区间
+# (成员 exit_reference)/ 判断失效位置(卡 invalidation_spec)。消费方两处:
+#   · ⑥→⑦ 编排(`tier.enforce_plan_completeness`):四件齐是 **T1 的必要条件**,
+#     缺任一 → 降 T2(⛔ 不是拦截,系统只审计不代下单,§3.8);
+#   · ⑩ 开仓继承(`positions_entry.build_inherited_plan`):缺件 → 客户端与周复盘
+#     各出一条**警示**(照旧不拦截)。
+# 两处都从这里拿判据,⛔ 不各写一份。
+
+# 四件的机器码(稳定标识,⑨ 归因可 grep;顺序即 K8 §十一 原文顺序)。
+TRADE_PLAN_PIECES: Tuple[str, ...] = (
+    "upside_script", "entry_zone", "exit_reference", "invalidation",
+)
+TRADE_PLAN_PIECE_LABELS: Dict[str, str] = {
+    "upside_script": "上涨判断(三剧本)",
+    "entry_zone": "入场区间",
+    "exit_reference": "目标离场区间",
+    "invalidation": "判断失效位置",
+}
+
+
+def _scripts_present(card: Optional[Mapping[str, Any]]) -> bool:
+    scripts = (card or {}).get("scripts")
+    return isinstance(scripts, Mapping) and any(
+        str(v or "").strip() for v in scripts.values()
+    )
+
+
+def _invalidation_present(card: Optional[Mapping[str, Any]]) -> bool:
+    spec = (card or {}).get("invalidation_spec")
+    return isinstance(spec, Mapping) and bool(spec)
+
+
+def _zone_present(entry: Optional[Mapping[str, Any]], key: str) -> bool:
+    zone = (entry or {}).get(key)
+    if not isinstance(zone, Mapping):
+        return False
+    low = zone.get("low")
+    return isinstance(low, (int, float)) and not isinstance(low, bool)
+
+
+def member_trade_plan_missing(
+    card: Optional[Mapping[str, Any]], member_entry: Optional[Mapping[str, Any]],
+) -> List[str]:
+    """某一名成员视角的四件套缺件清单(⑩ 开仓继承的警示判据)。卡整体缺 →
+    四件全缺(`card=None` 时按「一件都没有」如实报,⛔ 不猜)。"""
+    missing: List[str] = []
+    if not _scripts_present(card):
+        missing.append("upside_script")
+    if not _zone_present(member_entry, "entry_zone"):
+        missing.append("entry_zone")
+    if not _zone_present(member_entry, "exit_reference"):
+        missing.append("exit_reference")
+    if not _invalidation_present(card):
+        missing.append("invalidation")
+    return missing
+
+
+def trade_plan_missing_pieces(card: Optional[Mapping[str, Any]]) -> List[str]:
+    """篮子视角的四件套缺件清单(T1 必要条件的判据;空列表 = 四件齐)。
+    成员级两件(入场/离场区间)要求**每一名成员**都有 —— 缺的按
+    `entry_zone:<ts_code>` 逐票列出(哪只缺一目了然,③-E「缺任一 → 不进 T1」)。"""
+    missing: List[str] = []
+    if not _scripts_present(card):
+        missing.append("upside_script")
+    members = (card or {}).get("members") or []
+    for m in members:
+        if not isinstance(m, Mapping):
+            continue
+        code = str(m.get("ts_code") or "?")
+        if not _zone_present(m, "entry_zone"):
+            missing.append(f"entry_zone:{code}")
+        if not _zone_present(m, "exit_reference"):
+            missing.append(f"exit_reference:{code}")
+    if not members:
+        missing.append("entry_zone")
+        missing.append("exit_reference")
+    if not _invalidation_present(card):
+        missing.append("invalidation")
+    return missing
+
+
+def trade_plan_missing_label(missing: Sequence[str]) -> str:
+    """缺件清单 → 人读文案(警示的单一文案源,客户端/周复盘/渲染共用)。"""
+    if not missing:
+        return ""
+    names: List[str] = []
+    for token in missing:
+        base = token.split(":", 1)[0]
+        label = TRADE_PLAN_PIECE_LABELS.get(base, base)
+        if label not in names:
+            names.append(label)
+    return "次日交易预案不完整,缺:" + "、".join(names)
+
+
 __all__ = [
     "CARD_SPEC_VERSION",
     "VERIFY_SPEC_VERSION",
@@ -1230,4 +1343,9 @@ __all__ = [
     "run_card_llm",
     "build_basket_card",
     "build_cards",
+    "TRADE_PLAN_PIECES",
+    "TRADE_PLAN_PIECE_LABELS",
+    "member_trade_plan_missing",
+    "trade_plan_missing_pieces",
+    "trade_plan_missing_label",
 ]

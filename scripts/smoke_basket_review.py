@@ -30,6 +30,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import zlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -93,13 +94,24 @@ class StubProvider:
         def flush():
             if seed_key and members and len(baskets) < self.max_baskets:
                 picked = members[: self.max_members]
+                # V2.2-③:引擎归属按篮子序**轮转 C→Z→Y**(⛔ 不是"挑一个最容易过的"):
+                # 三条引擎线的机械关阈值不同,轮转才能让冒烟真的走过三套分支;真实
+                # 模型是按语义选,桩只需给出**形状正确且确定性**的主张,机械对拍照跑。
+                engine = ("C", "Z", "Y")[len(baskets) % 3]
                 baskets.append({
                     "name": f"冒烟·{label}",
                     "driver": f"{label} 当日共振(冒烟桩,非真实驱动判断)",
                     "driver_kind": {"hot_industry": "theme", "surging_concept": "theme",
                                     "limit_cluster": "limit_cluster",
                                     "anomaly_cluster": "rotation"}.get(seed_kind, "theme"),
+                    "engine_code": engine,
                     "why_now": "冒烟桩:今天该组票同步放量",
+                    # ② 驱动关四问的另外三问(V2.2-③ 起同一次调用一并产出,
+                    # LLM 调用增量 = 0;桩缺答会让驱动关 degrade,那验的是别的分支)。
+                    "common_trait": "冒烟桩:同题材、同日放量",
+                    "persistence": "冒烟桩:资金承接尚未见衰减",
+                    "strengthen_and_invalidate": "冒烟桩:再出政策则强化,龙头炸板则证伪",
+                    "evidence_conflicts": "",
                     "seed_keys": [seed_key],
                     "members": [{"ts_code": c, "role": "leader" if i == 0 else "core",
                                  "reason": "冒烟桩理由"} for i, c in enumerate(picked)],
@@ -129,9 +141,23 @@ class StubProvider:
         user = next((m.content for m in messages if m.role == "user"), "")
         if "检索员" in system:
             self.search_calls += 1
-            body = {"driver_hint": "冒烟桩:该题材当日有资金与消息面共振",
-                    "evidence": [{"claim": "冒烟桩证据(非真实新闻,勿当事实)",
-                                  "source": "smoke_stub", "date": "2026-07-23", "url": ""}]}
+            # V2.2-③ 证据关按 `evidence_kind` 归并计独立份数(同来源同类只算一份)。
+            # **按种子键 crc32 奇偶给两种成色**:一半给 3 份不同类来源(够 C1 的
+            # `independent_evidence_min=3`)、一半只给 1 份 —— 让一次冒烟同时走通
+            # 「证据充分」与「证据不足 → 证据关 degrade」两条路(⛔ 不是为了让结果
+            # 好看而全给足;那样降级分支永远测不到)。
+            seed_line = next((ln for ln in user.splitlines() if "待查题材" in ln), user[:40])
+            rich = zlib.crc32(seed_line.encode("utf-8")) % 2 == 0
+            items = [{"claim": "冒烟桩:某部委发布产业扶持政策(非真实新闻,勿当事实)",
+                      "source": "smoke_stub_政策", "date": "2026-07-23", "url": ""}]
+            if rich:
+                items += [
+                    {"claim": "冒烟桩:上市公司公告签订重大合同(非真实新闻)",
+                     "source": "smoke_stub_公告", "date": "2026-07-22", "url": ""},
+                    {"claim": "冒烟桩:媒体报道产业链排产回升(非真实新闻)",
+                     "source": "smoke_stub_媒体", "date": "2026-07-21", "url": ""},
+                ]
+            body = {"driver_hint": "冒烟桩:该题材当日有资金与消息面共振", "evidence": items}
             return _Result("这是检索段的叙述。\n\n```json\n"
                            + json.dumps(body, ensure_ascii=False) + "\n```")
         self.reason_calls += 1
@@ -144,6 +170,54 @@ def _fmt(x: Any, pct: bool = False) -> str:
     if not isinstance(x, (int, float)) or isinstance(x, bool):
         return "—" if x is None else str(x)
     return f"{float(x) * 100:+.2f}%" if pct else f"{float(x):.4f}"
+
+
+def _print_gates(gate_out: Any, decision: Any, db: Path) -> None:
+    """六关判定 + ③b 逐行打印(**人工核对用**:每个候选卡在哪一关、差多少,
+    与定档篮的引擎归属,都要一眼看得出来 —— plan §五 ③ 验收原文的那三句)。"""
+    print(f"\n{'=' * 78}")
+    print(f"③ 六道关口(引擎线 {list(gate_out.engines)},骨架 {gate_out.skeleton_version})")
+    print(f"{'=' * 78}")
+    for key in sorted(gate_out.summaries):
+        s = gate_out.summaries[key]
+        head = (f"· {s.name or key}|{key}|引擎 {s.engine_code}×{s.engine_version}"
+                f"({s.engine_source})")
+        print(head + (f"  ⛔ 除名:{s.exclusion_reason}" if s.excluded else "  ✅ 留在正式候选"))
+        for c in s.checks:
+            who = f"[{c.ts_code}]" if c.ts_code else "[篮]"
+            gap = ""
+            if c.score is not None and c.threshold is not None:
+                gap = f"  读数 {c.score:g} / 阈值 {c.threshold:g}"
+            mark = {"pass": "过", "degrade": "降", "reject": "拒"}[c.verdict]
+            avail = "" if c.available else "  (判定输入缺失:不拦、但不给 T1)"
+            print(f"    {mark} {c.gate:9s}{who:14s} {c.reason}{gap}{avail}")
+        if s.removed_members:
+            print(f"    ⚠ 位置关对拍出篮:{[(r.ts_code, r.reason) for r in s.removed_members]}")
+
+    print(f"\n{'-' * 78}\n③b 今日未定档披露(名 / 分 / 卡在哪一关 / 差多少 / 原因码)")
+    if not decision.dropped:
+        print("  今日无未定档篮子(**已算过**)。")
+    for d in decision.dropped:
+        print(f"  · {d.name or d.basket_key}|机械分 {d.mech_score:.3f}|关 {d.gate or '—'}"
+              f"|{d.gate_detail or '—'}|`{d.reason}`")
+
+    print(f"\n{'-' * 78}\n定档篮(每个成员继承篮子引擎;库里读回)")
+    conn = sqlite3.connect(str(db))
+    try:
+        rows = conn.execute(
+            "SELECT b.basket_key, b.name, b.tier, b.engine_code, b.engine_version, "
+            "b.skeleton_version, GROUP_CONCAT(m.ts_code) FROM baskets b "
+            "LEFT JOIN basket_members m ON m.basket_id = b.id GROUP BY b.id "
+            "ORDER BY b.tier, b.basket_key"
+        ).fetchall()
+        n_gate_rows = conn.execute("SELECT COUNT(*) FROM gate_evaluations").fetchone()[0]
+    finally:
+        conn.close()
+    if not rows:
+        print("  今日无篮子定档(**合法输出**:门槛制下没有候选过关就是空档)。")
+    for bk, name, tier, ec, ev, sk, members in rows:
+        print(f"  · T{tier} {name}|{bk}|engine {ec}×{ev}|skeleton {sk}|成员 {members}")
+    print(f"\n  gate_evaluations 留痕 {n_gate_rows} 行。")
 
 
 def _print_nine(review: br.BasketReview) -> None:
@@ -244,17 +318,54 @@ def main() -> int:
     logger.info("临时库 %s(真实 parquet 只读,真实库全程不写)", db)
 
     try:
-        # —— 前置:激活 K8 骨架包(V2.2-①:K4 包已被 engine_api 闸作废)——————————
+        # —— 前置:激活 K8 骨架包 + 三条引擎线(V2.2-③:六道关口按引擎包阈值分支,
+        # 零运行引擎 = 当日不产任何候选 —— 冒烟必须四线齐)——————————————————
+        packs_dir = Path(__file__).resolve().parent.parent / "packs"
         if get_active_pack(db_path=db) is None:
-            doc = load_pack_file(Path(__file__).resolve().parent.parent / "packs" / "K8-skeleton.json")
+            doc = load_pack_file(packs_dir / "K8-skeleton.json")
             p = activate_pack(doc["manifest"], doc["config"], via="smoke", db_path=db)
-            logger.info("[前置] 隔离库激活策略包 %s", p.pack_version)
+            logger.info("[前置] 隔离库激活骨架包 %s", p.pack_version)
+        from neckline.selection.pack import get_active_engines
+        if not get_active_engines(db_path=db):
+            for fname in ("C1.json", "Z1.json", "Y1.json"):
+                doc = load_pack_file(packs_dir / fname)
+                p = activate_pack(doc["manifest"], doc["config"], via="smoke", db_path=db)
+                logger.info("[前置] 隔离库激活引擎包 %s(线 %s)", p.pack_version, p.line_code)
 
-        # —— ④ 市场扫描层 ————————————————————————————————————————
+        # —— ④ 市场扫描层(V2.2 起含 ② 行情状态 + ③-C 落地起跳两张预计算表)————
         logger.info("=== ④ 扫描层批算(D0=%s)===", d0)
         logger.info("  cluster %s", cluster.refresh_limit_clusters([d0], db_path=db))
         logger.info("  corr    %s", corr.refresh_corr_matrix([d0], db_path=db))
         logger.info("  leader  %s", leader.refresh_leader_structure([d0], db_path=db))
+        try:
+            from neckline.scan.regime_store import refresh_market_regime
+            logger.info("  regime  %s", refresh_market_regime([d0], db_path=db))
+        except Exception:  # noqa: BLE001  缺行由六关按「不拦不给 T1」披露
+            logger.warning("  regime 批算失败(六关按缺行处理)", exc_info=True)
+        # 🔴 **`industry_strength_daily` 必须排在 landing 之前**(顺序不是摆设):
+        #   · ③ 板块关吃它的**名次 + 近 5 日强度日**;
+        #   · ⑤ 位置关的**判据 4 RS5**(相对所属行业中位 5 日超额)也读它 ——
+        #     该表为空时全市场 `c4.rs5=na` → `c4` 永远判不出 → **`liftoff_confirmed`
+        #     整个市场恒为 0 → T1 结构性不可达**(每行都诚实写着 na,但没人汇总,
+        #     是一次**静默的系统级降级**)。生产靠 16:05 日更保证它先落地;隔离库是
+        #     真库副本、该表可能为空,故这里先补算 D0 及其前 4 个交易日。
+        try:
+            from neckline.calendar import prev_trading_day
+            from neckline.report.industry_strength_store import refresh_industry_strength
+            win, cur = [d0], d0
+            for _ in range(4):
+                cur = prev_trading_day(cur)
+                win.append(cur)
+            logger.info("  strength %s", refresh_industry_strength(
+                sorted(win), db_path=db, parquet_dir=settings.parquet_dir))
+        except Exception:  # noqa: BLE001
+            logger.warning("  行业强度补算失败(板块关 unavailable + 位置关 RS5 恒 na)",
+                           exc_info=True)
+        try:
+            from neckline.scan.landing_store import refresh_landing_states
+            logger.info("  landing %s", refresh_landing_states([d0], db_path=db))
+        except Exception:  # noqa: BLE001
+            logger.warning("  landing 批算失败(位置关按缺行处理)", exc_info=True)
         seed_set = generate_seeds(d0, db_path=db)
         if seed_set is None or not seed_set.all_seeds():
             logger.error("D0=%s 没有种子,换一天试试。", d0)
@@ -277,9 +388,30 @@ def main() -> int:
             logger.error("⑤ 没产出篮子(notes=%s),冒烟到此为止。", result.notes)
             return 1
 
-        # —— ⑥ Tier 定档 + 事务 1 ————————————————————————————————
-        logger.info("=== ⑥ Tier 分层引擎(离线,不调 LLM)===")
-        decision = tr.score_and_tier(result, d0, db_path=db, use_llm=False)
+        # —— ③ 六道关口 + ⑥ Tier 定档(V2.2 门槛制)——————————————————————
+        logger.info("=== ③ 六道关口 + ⑥ Tier 分层引擎(门槛制,离线不调 LLM)===")
+        from neckline.selection import gates as gt
+        gate_out = gt.evaluate_day(result, d0, db_path=db)
+        logger.info("  关口:候选 %d,除名 %d,引擎线 %s;留痕 %d 行",
+                    len(gate_out.summaries), len(gate_out.excluded_summaries()),
+                    list(gate_out.engines),
+                    gt.save_gate_evaluations(gate_out, db_path=db))
+        # ⚠ 传**对拍前**的 result(被除名候选只活在 summaries 里,⑥ 靠它出 ③b)。
+        decision = tr.score_and_tier(result, d0, db_path=db, use_llm=False,
+                                     gates_outcome=gate_out)
+        result = decision.gated_result
+
+        # —— ⑦ 卡先构建(四件套判定要看卡;事务 2 仍在事务 1 之后)—————————————
+        logger.info("=== ⑦ 篮子卡构建(use_llm=False)===")
+        tentative_kept = [b for b in result.baskets
+                          if b.basket_key in decision.tier_by_basket_key()]
+        tier_by_key_obj = {d.basket_key: d for d in decision.decisions}
+        cards = bc.build_cards(tentative_kept, d0, db_path=db, use_llm=False,
+                               tier_by_basket_key=tier_by_key_obj)
+        missing_by_key = {c.basket_key: bc.trade_plan_missing_pieces(c.to_card_json())
+                          for c in cards}
+        decision = tr.enforce_plan_completeness(decision, missing_by_key)
+
         tier_by_key = {d.basket_key: d.tier for d in decision.decisions}
         hist_by_key = {
             d.basket_key: {"basket_key": d.basket_key, "tier": d.tier,
@@ -289,25 +421,34 @@ def main() -> int:
                            "pack_version": decision.pack_version}
             for d in decision.decisions
         }
-        # `AggregateResult` 是 frozen dataclass:溢出未定档的篮子要用 `replace` 剔掉,
+        # `AggregateResult` 是 frozen dataclass:未定档的篮子要用 `replace` 剔掉,
         # 不能就地赋值(`baskets.tier` NOT NULL,⑥ 的 `dropped` 今日不落库)。
         kept = [b for b in result.baskets if b.basket_key in tier_by_key]
         result = dataclasses.replace(result, baskets=tuple(kept))
         stats1 = save_tier_decision(result, tier_by_basket_key=tier_by_key,
                                     tier_history_by_basket_key=hist_by_key, db_path=db, via="smoke")
-        logger.info("  定档 %s(溢出 %d);事务 1 落库 %s",
+        logger.info("  定档 %s(③b %d);事务 1 落库 %s",
                     # V2.1-②:按引擎现役档位统计(⛔ 别写死 —— 写死 3 会打印一个恒为 0 的幽灵档)
                     {f"T{t}": sum(1 for d in decision.decisions if d.tier == t) for t in tr.TIERS},
                     len(getattr(decision, "dropped", []) or []),
                     {k: v for k, v in stats1.items() if k != "frozen_conflicts"})
+        _print_gates(gate_out, decision, db)
 
-        # —— ⑦ 冻卡 + 事务 2 ————————————————————————————————————
-        logger.info("=== ⑦ 篮子卡冻结(use_llm=False)===")
+        # —— ⑦ 事务 2:落卡(tier 机械字段对齐最终裁定)—————————————————————
         refs = load_baskets_for_date(d0, db_path=db)
         id_by_key = {r.basket_key: r.basket_id for r in refs}
-        tier_by_key_obj = {d.basket_key: d for d in decision.decisions}
-        cards = bc.build_cards(result.baskets, d0, db_path=db, use_llm=False,
-                               tier_by_basket_key=tier_by_key_obj)
+        dec_by_key = {d.basket_key: d for d in decision.decisions}
+        final_cards = []
+        for c in cards:
+            d = dec_by_key.get(c.basket_key)
+            if d is None:
+                continue
+            if (c.tier, c.rank_in_tier, c.rank_mech) != (d.tier, d.rank_in_tier, d.rank_mech):
+                c = dataclasses.replace(c, tier=d.tier, rank_in_tier=d.rank_in_tier,
+                                        rank_mech=d.rank_mech,
+                                        tier_breakdown=dict(d.breakdown or {}))
+            final_cards.append(c)
+        cards = final_cards
         by_id = {id_by_key[c.basket_key]: c.to_card_json() for c in cards
                  if c.basket_key in id_by_key}
         meta = {id_by_key[c.basket_key]: {"stop_pct": c.stop_pct,

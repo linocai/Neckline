@@ -68,12 +68,15 @@ def save_dropped_handoff(
     """落一行(`INSERT OR REPLACE`,`trade_date` 主键)。**`dropped` 允许空序列**
     (= 跑了零溢出,与"没跑"必须能分开——靠"有没有这一行"区分,不是数组是否为空)。
 
-    ⚠ 只存 `basket_key`/`reason`/`mech_score` 三项(`DroppedBasket` 的全部字段)——
-    不臆造 `name`(溢出篮没有冻结的名字,报告层历来的兜底是拿 `basket_key` 顶上,
-    见 `report/basket_daily.py::build_basket_daily`,本函数不改这条既有行为)。
+    V2.2-③ 起 `DroppedBasket` 多了 `name`/`gate`/`gate_detail`(③b 升级为
+    「名 / 分 / 卡在哪一关、差多少 / 原因码」),照存;老行没有这些键 → 读回取
+    默认(`name` 空时报告层兜底拿 `basket_key` 顶上,既有行为不变)。
     """
     payload = [
-        {"basket_key": d.basket_key, "reason": d.reason, "mech_score": d.mech_score}
+        {"basket_key": d.basket_key, "reason": d.reason, "mech_score": d.mech_score,
+         "name": getattr(d, "name", "") or "",
+         "gate": getattr(d, "gate", None),
+         "gate_detail": getattr(d, "gate_detail", None)}
         for d in dropped
     ]
     init_schema(db_path)
@@ -120,6 +123,9 @@ def load_dropped_handoff(
                 basket_key=str(it.get("basket_key") or ""),
                 reason=str(it.get("reason") or ""),
                 mech_score=float(it["mech_score"]),
+                name=str(it.get("name") or ""),
+                gate=(str(it["gate"]) if it.get("gate") else None),
+                gate_detail=(str(it["gate_detail"]) if it.get("gate_detail") else None),
             ))
         except (TypeError, ValueError, KeyError):
             logger.warning("[basket_dropped_handoff] trade_date=%s 一条记录解析失败,已跳过:%r",

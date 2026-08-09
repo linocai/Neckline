@@ -268,6 +268,13 @@ def build_inherited_plan(
     `buy_price`(⑪-D-B 闸②,2026-08-03):**必填关键字**,不给默认 —— 闸②是红线闸,
     "忘了传"等于静默把 `take_profit` kind 武装给一个没比过成交价的数字。三条空计划
     路径同样落武装态三件套(值必为未武装 + `no_exit_reference`),**键恒存在**。"""
+    # V2.2-③-E:交易资格四件套(K8 §十一)在**继承时校验**——判定唯一实现在
+    # `basket_card.member_trade_plan_missing`(与 T1 必要条件同一份判据,不各写)。
+    # 三键语义:`trade_plan_complete` True=四件齐 / False=有缺件 / None=无来源计划
+    # 可验(独立买入 —— 「没法验」不是「验过了不齐」,⛔ 不混);缺件清单
+    # `trade_plan_missing`;警示文案(⛔ 不是拦截)由 `plan_incomplete_notice()` 给。
+    from neckline.selection.basket_card import member_trade_plan_missing
+
     if source is None:
         return (
             {
@@ -278,12 +285,14 @@ def build_inherited_plan(
                 "exit_reference": None, "exit_reference_clamp": "absent",
                 **_arm_fields(None, buy_price, muted=False),
                 "verification_spec": None, "invalidation_spec": None, "risks": [],
+                "trade_plan_complete": None, "trade_plan_missing": [],
             },
             None, None,
         )
     if source.card is None:
         # 「没有行」(card_not_ready)与「有行但读不出」(card_corrupt)分流——判据原样
         # 转发自 basket_store 的唯一检测点(`source.card_corrupt`),⛔ 本函数不重判。
+        missing = member_trade_plan_missing(None, None)
         return (
             {
                 "available": False,
@@ -295,10 +304,12 @@ def build_inherited_plan(
                 "exit_reference": None, "exit_reference_clamp": "absent",
                 **_arm_fields(None, buy_price, muted=False),
                 "verification_spec": None, "invalidation_spec": None, "risks": [],
+                "trade_plan_complete": False, "trade_plan_missing": missing,
             },
             source.basket_id, source.card_version,
         )
     member_fields = _member_plan_fields(source.member_entry)
+    missing = member_trade_plan_missing(source.card, source.member_entry)
     plan = {
         "available": True, "reason": None,
         "source_basket_key": source.basket_key, "source_basket_name": source.basket_name,
@@ -308,8 +319,21 @@ def build_inherited_plan(
         "verification_spec": source.card.get("verification_spec"),
         "invalidation_spec": source.card.get("invalidation_spec"),
         "risks": list(source.card.get("risks") or []),
+        "trade_plan_complete": not missing, "trade_plan_missing": missing,
     }
     return plan, source.basket_id, source.card_version
+
+
+def plan_incomplete_notice(plan_json: Optional[Dict[str, Any]]) -> Optional[str]:
+    """四件套缺件的**警示**文案(⑩ 开仓响应 + ⑮ 客户端展示共用;⛔ 不是拦截 ——
+    系统只审计不代下单,§3.8)。`trade_plan_complete` 缺键(老计划,建于 V2.2-③
+    之前)或为 `None`(无来源计划可验)→ `None`,不拿今天的判据追认历史。"""
+    if not plan_json or plan_json.get("trade_plan_complete") is not False:
+        return None
+    from neckline.selection.basket_card import trade_plan_missing_label
+
+    label = trade_plan_missing_label(list(plan_json.get("trade_plan_missing") or []))
+    return label or "次日交易预案不完整(缺件清单未记录)"
 
 
 def create_position_plan_v1(
@@ -678,6 +702,8 @@ class BuyResult:
     # 🟡 Y7:`True` = 这次请求**没有开新仓**,是同一个 `idempotency_key` 的重放
     # (返回的是那笔既有仓的结果)。如实透出,别让"看起来成功了"掩盖"其实什么都没发生"。
     replayed: bool = False
+    # V2.2-③-E:四件套缺件警示(None = 四件齐或无来源计划可验;⛔ 不是拦截)。
+    plan_incomplete_notice: Optional[str] = None
 
 
 def find_position_by_idempotency_key(
@@ -737,6 +763,8 @@ def replay_buy(position_id: int, *, db_path: Optional[Path] = None) -> BuyResult
         # 请求根本没有成交。原样重算会拿新请求的价去比旧计划,像是在评价一笔并不存在的
         # 交易;留空 = 「本次没有新的成交可评」,如实。
         plan_deviation_notice=None,
+        # 四件套缺件警示**照重放**:它是开仓当时冻在计划 v1 里的事实,不随时间变。
+        plan_incomplete_notice=plan_incomplete_notice(plan_json),
         replayed=True,
     )
 
@@ -833,6 +861,7 @@ def record_buy(
         role=(source.role if source else None),
         plan_available=bool(plan_json.get("available")),
         plan_deviation_notice=deviation,
+        plan_incomplete_notice=plan_incomplete_notice(plan_json),
     )
 
 
@@ -868,6 +897,7 @@ __all__ = [
     "BuyResult",
     "find_source_basket_member",
     "build_inherited_plan",
+    "plan_incomplete_notice",
     "evaluate_exit_reference_arming",
     "exit_reference_arm_note",
     "create_position_plan_v1",

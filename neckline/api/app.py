@@ -588,6 +588,9 @@ def _shape_basket(ref, *, with_card: bool = True, card_version: Optional[int] = 
     return BasketOut(
         basketId=ref.basket_id, basketKey=ref.basket_key, name=ref.name,
         tradeDate=ref.trade_date, tier=ref.tier, memberCodes=list(ref.member_codes),
+        engineCode=getattr(ref, "engine_code", None),
+        engineVersion=getattr(ref, "engine_version", None),
+        skeletonVersion=getattr(ref, "skeleton_version", None),
         card=card_out, cardVersion=version, cardUnavailableReason=reason,
         tierHistory=(TierOut(
             basketId=ref.basket_id, tradeDate=th["trade_date"], tier=th["tier"],
@@ -1171,6 +1174,7 @@ def open_position(body: PositionOpenIn) -> PositionOpenOut:
         sourceBasketKey=result.source_basket_key, sourceBasketName=result.source_basket_name,
         tier=result.tier, role=result.role,
         planAvailable=result.plan_available, planDeviationNotice=result.plan_deviation_notice,
+        planIncompleteNotice=result.plan_incomplete_notice,
         replayed=result.replayed,
     )
 

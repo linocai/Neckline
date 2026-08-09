@@ -69,6 +69,7 @@ docstring 明确写了"5%=挂起项『次周单笔减半』;区别于§2.1已采
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
@@ -79,6 +80,8 @@ import polars as pl
 
 from neckline.calendar import CN_TZ, MARKET_CLOSE_TIME
 from neckline.review.parse import RawTrade
+
+logger = logging.getLogger(__name__)
 
 _EPS = 1e-9
 
@@ -791,6 +794,9 @@ class WeeklyReview:
     # v1.4-⑥-A:本周章程分段 + 切换清单(周内无切换 → segments 只有一段、switches 为空)。
     charter_segments: List[CharterSegment] = field(default_factory=list)
     charter_switches: List[CharterSwitch] = field(default_factory=list)
+    # V2.2-③-E:本周开仓里「继承计划四件套不齐」的**警示**清单(⛔ 不是违纪 ——
+    # 系统只审计不代下单,缺预案开仓是用户权利;周复盘的职责是让他看见)。
+    plan_warnings: List[str] = field(default_factory=list)
 
 
 def run_weekly_review(
@@ -992,6 +998,13 @@ def run_weekly_review(
             w_start, w_end, ledger_positions, time_exit_due
         )
 
+        # V2.2-③-E:四件套缺件警示(读**开仓当时冻结**的 `position_plans` v1,
+        # ⛔ 不拿今天的卡重判历史;台账读失败 → 该项诚实跳过,同上面几条的降级姿势)。
+        try:
+            review.plan_warnings = _collect_plan_warnings(w_start, w_end, db_path=db_path)
+        except Exception:  # noqa: BLE001
+            logger.warning("[reconcile] 本周四件套警示扫描失败(诚实跳过)", exc_info=True)
+
         review.stats = compute_weekly_stats(closed_week, open_count=sum(1 for rt in round_trips if not rt.closed))
         review.forced_review = is_forced_review(review.stats, total_capital)
         if review.forced_review:
@@ -1003,6 +1016,42 @@ def run_weekly_review(
         reviews.append(review)
 
     return reviews, rt_warnings
+
+
+def _collect_plan_warnings(
+    w_start: date, w_end: date, *, db_path: Optional[Path] = None,
+) -> List[str]:
+    """本周开仓且继承计划(`position_plans` v1)标了「四件套不齐」的仓 → 一条警示
+    (V2.2-③-E:开仓 + 周复盘两处各出一条,⛔ 不是拦截也不是违纪)。判据只读
+    **开仓当时冻结**的 v1 计划里的 `trade_plan_complete`/`trade_plan_missing` ——
+    老计划(建于本键之前)没有该键 = 当时没有四件套概念,不追认(「记录 ≠ 推断」)。"""
+    import json as _json
+
+    from neckline.db import connection, init_schema
+    from neckline.selection.basket_card import trade_plan_missing_label
+
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT p.ts_code, p.buy_date, pl.plan_json FROM positions p "
+            "JOIN position_plans pl ON pl.position_id = p.id AND pl.version = 1 "
+            "WHERE p.buy_date >= ? AND p.buy_date <= ? ORDER BY p.buy_date, p.ts_code",
+            (w_start.strftime("%Y%m%d"), w_end.strftime("%Y%m%d")),
+        ).fetchall()
+    out: List[str] = []
+    for ts_code, buy_date_s, plan_raw in rows:
+        try:
+            plan = _json.loads(plan_raw) if plan_raw else {}
+        except (ValueError, TypeError):
+            continue
+        if plan.get("trade_plan_complete") is not False:
+            continue
+        label = trade_plan_missing_label(list(plan.get("trade_plan_missing") or []))
+        out.append(
+            f"{ts_code} {buy_date_s} 开仓:{label or '次日交易预案不完整'}"
+            "(K8 §十一 交易资格四件套;警示,非违纪)"
+        )
+    return out
 
 
 def _cooldown_violation_in_week(msg: str, w_start: date, w_end: date) -> bool:
@@ -1110,6 +1159,9 @@ def weekly_review_dict(review: WeeklyReview) -> dict:
             }
             for sw in review.charter_switches
         ],
+        # V2.2-③-E:四件套缺件警示(新增可选键;老快照读回没有它,客户端
+        # `decodeIfPresent` 兜底 —— B 类冻结快照纪律)。
+        "planWarnings": list(review.plan_warnings),
         "roundTrips": [round_trip_dict(rt) for rt in review.round_trips],
         "closedRoundTrips": [round_trip_dict(rt) for rt in review.closed_round_trips],
         "planChecks": [plan_check_dict(c) for c in review.plan_checks],

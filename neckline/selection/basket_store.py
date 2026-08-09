@@ -60,7 +60,8 @@ logger = logging.getLogger(__name__)
 
 _BASKET_COLUMNS = (
     "trade_date, basket_key, name, driver, driver_kind, tier, pack_version, "
-    "engine_api_version, charter_version, via, evidence_status, created_at"
+    "engine_api_version, charter_version, via, evidence_status, created_at, "
+    "engine_code, engine_version, skeleton_version"
 )
 _MEMBER_COLUMNS = (
     "basket_id, ts_code, role_llm, role_mech, role_conflict, reason, is_primary, created_at"
@@ -137,11 +138,16 @@ def _save_baskets_on_conn(
     for b in result.baskets:
         tier = int(tier_by_basket_key[b.basket_key])
         cur = conn.execute(
-            f"INSERT OR IGNORE INTO baskets ({_BASKET_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT OR IGNORE INTO baskets ({_BASKET_COLUMNS}) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 b.trade_date, b.basket_key, b.name, b.driver, b.driver_kind,
                 tier, b.pack_version,
                 b.engine_api_version, b.charter_version, via, b.evidence_status, now,
+                # V2.2-③-E(裁定 #9):篮子级引擎归属三件套(gates.py 对拍后回填;
+                # 预置/测试替身没有这些属性 → NULL,与老行同语义「无归属概念」)。
+                getattr(b, "engine_code", None), getattr(b, "engine_version", None),
+                getattr(b, "skeleton_version", None),
             ),
         )
         basket_is_new = bool(cur.rowcount)
@@ -666,6 +672,10 @@ class BasketRef:
     name: str
     tier: int
     member_codes: Tuple[str, ...]
+    # V2.2-③-E:篮子级引擎归属(成员继承;老行/K8 前的篮子 = None,如实)。
+    engine_code: Optional[str] = None
+    engine_version: Optional[str] = None
+    skeleton_version: Optional[str] = None
 
 
 def load_baskets_for_date(
@@ -681,7 +691,8 @@ def load_baskets_for_date(
     无篮子 → 空列表(合法状态,如当日引擎没跑或今日无篮子达到定档标准)。
     """
     day = trade_date if isinstance(trade_date, str) else trade_date.strftime("%Y%m%d")
-    sql = "SELECT id, trade_date, basket_key, name, tier FROM baskets WHERE trade_date=?"
+    sql = ("SELECT id, trade_date, basket_key, name, tier, engine_code, engine_version, "
+           "skeleton_version FROM baskets WHERE trade_date=?")
     args: List[Any] = [day]
     if tiers:
         sql += " AND tier IN (" + ",".join("?" * len(tiers)) + ")"
@@ -700,6 +711,7 @@ def load_baskets_for_date(
                 basket_id=int(r[0]), trade_date=str(r[1]), basket_key=str(r[2]),
                 name=str(r[3]), tier=int(r[4]),
                 member_codes=tuple(str(m[0]) for m in members),
+                engine_code=r[5], engine_version=r[6], skeleton_version=r[7],
             ))
     return out
 
@@ -714,7 +726,8 @@ def load_basket(basket_id: int, *, db_path: Optional[Path] = None) -> Optional[B
     init_schema(db_path)
     with connection(db_path) as conn:
         r = conn.execute(
-            "SELECT id, trade_date, basket_key, name, tier FROM baskets WHERE id=?",
+            "SELECT id, trade_date, basket_key, name, tier, engine_code, engine_version, "
+            "skeleton_version FROM baskets WHERE id=?",
             (int(basket_id),),
         ).fetchone()
         if r is None:
@@ -726,6 +739,7 @@ def load_basket(basket_id: int, *, db_path: Optional[Path] = None) -> Optional[B
     return BasketRef(
         basket_id=int(r[0]), trade_date=str(r[1]), basket_key=str(r[2]),
         name=str(r[3]), tier=int(r[4]), member_codes=tuple(str(m[0]) for m in members),
+        engine_code=r[5], engine_version=r[6], skeleton_version=r[7],
     )
 
 

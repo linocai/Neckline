@@ -75,8 +75,14 @@ _EXEC_HINT_LOOKBACK_CALENDAR_DAYS = 60
 # ⚠ V2.1-②:`below_quality_line` 的**码一字不改**(⑨ 按原因码归因,改码 = 历史归因
 # 断线),只改展示文案里的档位名(T3 下限 → T2 下限)。
 DROPPED_REASON_LABEL: Dict[str, str] = {
-    "capacity_overflow": "档位已满(分数够、今天位置装不下)",
-    "below_quality_line": "未过质量线(连 T2 下限都没到)",
+    "capacity_overflow": "档位已满(关口过了、位置装不下 —— 今天机会多到装不下)",
+    "below_quality_line": "未过质量线(连 T2 下限都没到 —— 今天没什么好货;V2.2 门槛制前的历史码)",
+    # —— V2.2-③(六道关口)新增码:每一个都指向不同的市场/系统结论,⛔ 不合并 ——
+    "evidence_degraded_out": "证据关降级超出 T2 上限(逻辑没被证据撑住)",
+    "mech_gate_rejected": "机械关硬否决(市场关/板块关不过)",
+    "members_all_removed": "位置关对拍后成员全部出篮",
+    "no_active_engine": "无运行中的引擎线(系统缺席,不是市场结论)",
+    "engine_unresolved": "引擎归属解析失败(LLM 未给且机械兜底无引擎可容纳)",
 }
 
 
@@ -95,6 +101,10 @@ _CARD_TOP_KEYS: Tuple[Tuple[str, str], ...] = (
     ("name", "name"),
     ("driver", "driver"),
     ("driver_kind", "driverKind"),
+    # V2.2-③-E:引擎归属三键(v3 卡新增;老卡缺键 → 契约面不出现,零删键)。
+    ("engine_code", "engineCode"),
+    ("engine_version", "engineVersion"),
+    ("skeleton_version", "skeletonVersion"),
     ("evidence", "evidence"),
     ("evidence_status", "evidenceStatus"),
     ("why_now", "whyNow"),
@@ -208,19 +218,24 @@ def card_to_public_dict(card: Optional[Mapping[str, Any]]) -> Optional[Dict[str,
 
 @dataclass(frozen=True)
 class DroppedBasketView:
-    """③b 一行。契约字段就三个(⑭-A 原文 `{name, mechScore, reason}`)——**没有
-    `basketId`**:它没进 `baskets` 表,给一个 id 会让客户端以为点得进去。"""
+    """③b 一行。**V2.2-③ 升级为「名 / 分 / 卡在哪一关、差多少 / 原因码」**(plan
+    ③-B 用途①);`gate`/`gateDetail` 是**新增可选键**(老快照读回没有它们 = 该版本
+    还没有关口概念,契约零删键)。**仍没有 `basketId`**:它没进 `baskets` 表,给一个
+    id 会让客户端以为点得进去。"""
 
     name: str
     mech_score: Optional[float]
     reason: str
+    gate: Optional[str] = None          # 卡在哪一关(market|driver|sector|core|position|evidence)
+    gate_detail: Optional[str] = None   # 差多少(机器原因码串,数值内嵌)
 
     @property
     def reason_label(self) -> str:
         return DROPPED_REASON_LABEL.get(self.reason, self.reason)
 
     def to_public_dict(self) -> Dict[str, Any]:
-        return {"name": self.name, "mechScore": self.mech_score, "reason": self.reason}
+        return {"name": self.name, "mechScore": self.mech_score, "reason": self.reason,
+                "gate": self.gate, "gateDetail": self.gate_detail}
 
 
 @dataclass
@@ -236,6 +251,10 @@ class BasketView:
     card: Optional[Dict[str, Any]] = None
     card_version: Optional[int] = None
     card_unavailable_reason: Optional[str] = None
+    # V2.2-③-E:篮子级引擎归属(成员继承;K8 前的历史行 = None,如实)。
+    engine_code: Optional[str] = None
+    engine_version: Optional[str] = None
+    skeleton_version: Optional[str] = None
     exec_hints: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     # V2.1-④ 百分制打分卡:`report/score_display.score_view()` 的**完整返回**
     # (`scorePercent` / `contributions` / `neutralFilledPercent` / `note`)。
@@ -255,6 +274,9 @@ class BasketView:
             "name": self.name,
             "tier": self.tier,
             "memberCodes": list(self.member_codes),
+            "engineCode": self.engine_code,
+            "engineVersion": self.engine_version,
+            "skeletonVersion": self.skeleton_version,
             "card": self.card,
             "cardVersion": self.card_version,
             "cardUnavailableReason": self.card_unavailable_reason,
@@ -524,6 +546,9 @@ def load_today_baskets(
             card=card,
             card_version=(card_row or {}).get("version") if card_row else None,
             card_unavailable_reason=(None if card else ("card_corrupt" if corrupt else "card_not_ready")),
+            engine_code=getattr(ref, "engine_code", None),
+            engine_version=getattr(ref, "engine_version", None),
+            skeleton_version=getattr(ref, "skeleton_version", None),
             score=score,
         ))
     return views
@@ -681,6 +706,8 @@ def build_basket_daily(
                           or getattr(d, "basket_key", "")),
                     mech_score=getattr(d, "mech_score", None),
                     reason=str(getattr(d, "reason", "") or ""),
+                    gate=getattr(d, "gate", None),
+                    gate_detail=getattr(d, "gate_detail", None),
                 )
                 for d in dropped
             ]

@@ -312,7 +312,9 @@ def test_eod_cross_check_unconfirmed_when_adj_factor_missing(isolated_env, caplo
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_card_shape_and_spec_versions_untouched_by_ex_rights_detector():
-    assert bc.CARD_SPEC_VERSION == "basket_card_v2"
+    # V2.2-③:卡形状 v2 → v3(新增引擎归属三键,纯增量;两个 **spec** 版本一字未动
+    # —— 本条守的是 ⑧ 吃的结构化 spec,不是卡顶层)。
+    assert bc.CARD_SPEC_VERSION == "basket_card_v3"
     assert bc.VERIFY_SPEC_VERSION == "basket_verify_v2"
     assert bc.INVALIDATE_SPEC_VERSION == "basket_invalidate_v2"
     mechs = [_mech("600000.SH")]

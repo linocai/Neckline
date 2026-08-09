@@ -381,15 +381,69 @@ def _run_basket_segment(
         # ⑤ 没产出篮子 → ⑥ 没跑过 → **`None`**,不是 `[]`(见 ③b 的两态纪律)。
         return None
 
+    # —— V2.2-③:六道关口(定档的闸,唯一实现 `selection/gates.py`)—————————
+    # 在 ⑥ 之前显式跑一遍并落 `gate_evaluations` 留痕(append-only 审计表;留痕
+    # 失败只 WARNING,不许连累 ⑤ 已经算好的东西)。⑥ 直接吃这份 outcome,不重跑。
+    from neckline.selection import gates as gt
+
+    gate_out = gt.evaluate_day(result, trade_date, db_path=db_path, parquet_dir=parquet_dir)
+    try:
+        gate_rows = gt.save_gate_evaluations(gate_out, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        gate_rows = 0
+        logger.warning("[evening] ③ gate_evaluations 留痕写入异常(已吞,不影响定档)",
+                       exc_info=True)
+    stats["gates"] = {
+        "candidates": len(gate_out.summaries),
+        "excluded": len(gate_out.excluded_summaries()),
+        "rows_written": gate_rows,
+        "engines": list(gate_out.engines),
+    }
+
+    # ⚠ 传**对拍前**的 `result`(⛔ 不是 `gate_out.result`):被关口除名的候选只活在
+    # `gate_out.summaries` 里,⑥ 靠遍历对拍前那批把它们转成 ③b 行 —— 传对拍后的会让
+    # 它们从报告里消失(§2.9-C-2)。`score_and_tier` 对此 fail loud,别绕过。
     decision = tr.score_and_tier(
         result, trade_date, db_path=db_path, parquet_dir=parquet_dir,
         provider=tier_provider, use_llm=use_llm, ledger=ledger, transport=transport,
+        gates_outcome=gate_out,
     )
-    # V2-⑯-D 补记:⑥ 一跑完就落跨进程交接表(`basket_dropped_handoff`,见该模块
-    # 头)——这是「⑥ 定档」这件事本身的既成事实,不依赖 ⑦ 卡生成是否成功(同
-    # baskets/tier_history 由事务 1 独立提交的既定姿势,"有篮子无卡"是合法中间态)。
-    # 整段包保险丝:这一步失败不许连累 ⑤⑥⑦ 已经算好的东西——本次调用仍会把
-    # `decision.dropped` 原样返回给调用方走内存路径,单进程行为不受影响。
+    # 关口对拍后的 result(成员已出篮、引擎三件套已回填)—— 自此一切落库/卡生成
+    # 都用它,⛔ 不再用对拍前的原 result。
+    result = decision.gated_result if decision.gated_result is not None else gate_out.result
+
+    # —— ⑦ 卡先在内存构建(V2.2-③-E:四件套判定要看卡;**事务 2 落库仍在事务 1
+    # 之后**,两个事务不合并、LLM 依旧不持任何事务)———————————————————————
+    # ⚠ 这与 V2-⑥ 裁定的「⑥【事务1】→ ⑦ build_card → ⑦【事务2】」相比,把
+    # build_card 提到了事务 1 之前 —— 是 ③-D「T1 必要条件含四件套齐」的直接推论:
+    # 四件套住卡上,不先看卡就落 tier = T1 冻结在一个没验过预案的档上。代价与
+    # 边界:卡构建整段包保险丝,炸了 → cards 为空 → 全部 T1 按「无预案」降 T2,
+    # 篮子照落库、「有篮子无卡」仍是合法中间态(同一 D0 重跑可补卡,tier 不回改)。
+    tentative_kept = [b for b in result.baskets
+                      if b.basket_key in decision.tier_by_basket_key()]
+    cards = []
+    try:
+        cards = bc.build_cards(
+            tentative_kept, trade_date, db_path=db_path, parquet_dir=parquet_dir,
+            use_llm=use_llm, provider=card_provider, ledger=ledger, transport=transport,
+            tier_by_basket_key={d.basket_key: d for d in decision.decisions},
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("[evening] ⑦ 卡构建整段异常(已吞)—— 本日无卡,T1 按「无预案」降档",
+                       exc_info=True)
+    card_json_by_key = {c.basket_key: c.to_card_json() for c in cards}
+
+    # —— ③-E:四件套齐 = T1 必要条件(缺任一 → 降 T2,⛔ 不是拦截)————————————
+    missing_by_key = {
+        key: bc.trade_plan_missing_pieces(card) for key, card in card_json_by_key.items()
+    }
+    decision = tr.enforce_plan_completeness(decision, missing_by_key)
+    # ⑥ 的 notes(③b 各原因码计数 + T1 四件套降档)并进链级 notes —— 否则「今晚有几个
+    # T1 因预案不齐降了档」只活在日志里,链的返回值(CLI / systemd 看的那份)说不出来。
+    notes.extend(decision.notes)
+
+    # V2-⑯-D 补记:⑥ 的最终裁定一出就落跨进程交接表(`basket_dropped_handoff`)——
+    # 不依赖 ⑦ 卡**落库**是否成功。整段包保险丝:失败不连累内存路径。
     try:
         from neckline.selection.basket_dropped_handoff import save_dropped_handoff
 
@@ -409,7 +463,7 @@ def _run_basket_segment(
         }
         for d in decision.decisions
     }
-    # `AggregateResult` 是 frozen dataclass:溢出未定档的篮子要用 `replace` 剔掉
+    # `AggregateResult` 是 frozen dataclass:未定档的篮子要用 `replace` 剔掉
     # (`baskets.tier` NOT NULL,⑥ 的 `dropped` 不落库,只随报告快照走)。
     kept = [b for b in result.baskets if b.basket_key in tier_by_key]
     result = _dc.replace(result, baskets=tuple(kept))
@@ -420,25 +474,38 @@ def _run_basket_segment(
 
     refs = load_baskets_for_date(trade_date, db_path=db_path)
     id_by_key = {r.basket_key: r.basket_id for r in refs}
-    cards = bc.build_cards(
-        result.baskets, trade_date, db_path=db_path, parquet_dir=parquet_dir,
-        use_llm=use_llm, provider=card_provider, ledger=ledger, transport=transport,
-        tier_by_basket_key={d.basket_key: d for d in decision.decisions},
-    )
-    by_id = {id_by_key[c.basket_key]: c.to_card_json() for c in cards if c.basket_key in id_by_key}
+    # 降档篮的卡是按**暂定 T1** 构建的 —— 落库前把 tier 机械字段对齐最终裁定
+    # (LLM 写的 tier_note 叙述不重生成,机械字段与留痕一致才是审计要求)。
+    dec_by_key = {d.basket_key: d for d in decision.decisions}
+    final_cards = []
+    for c in cards:
+        d = dec_by_key.get(c.basket_key)
+        if d is None:
+            continue   # 降档后 T2 满出局 → 无 baskets 行,卡不落(③b 已留痕)
+        if (c.tier, c.rank_in_tier, c.rank_mech) != (d.tier, d.rank_in_tier, d.rank_mech):
+            demote_note = (d.breakdown or {}).get("t1_demoted_reason")
+            c = _dc.replace(
+                c, tier=d.tier, rank_in_tier=d.rank_in_tier, rank_mech=d.rank_mech,
+                tier_breakdown=dict(d.breakdown or {}),
+                notes=c.notes + ((demote_note,) if demote_note else ()),
+            )
+        final_cards.append(c)
+    by_id = {id_by_key[c.basket_key]: c.to_card_json()
+             for c in final_cards if c.basket_key in id_by_key}
     meta = {
         id_by_key[c.basket_key]: {
             "stop_pct": c.stop_pct, "take_profit_retrace": c.take_profit_retrace,
             "charter_version": c.charter_version, "pack_version": c.pack_version,
             "engine_api_version": c.engine_api_version,
         }
-        for c in cards if c.basket_key in id_by_key
+        for c in final_cards if c.basket_key in id_by_key
     }
     stats["card"] = save_basket_cards(by_id, meta_by_basket_id=meta, db_path=db_path)
     stats["basket"] = {"baskets": len(result.baskets), "cards": len(by_id),
                        "dropped": len(decision.dropped)}
-    logger.info("[evening] ⑤⑥⑦:篮子 %d 个(溢出/未过线 %d),卡 %d 张",
-                len(result.baskets), len(decision.dropped), len(by_id))
+    logger.info("[evening] ③⑤⑥⑦:候选 %d → 篮子 %d 个(③b %d),卡 %d 张,关口留痕 %d 行",
+                len(gate_out.summaries), len(result.baskets), len(decision.dropped),
+                len(by_id), gate_rows)
     return list(decision.dropped)
 
 __all__ = [

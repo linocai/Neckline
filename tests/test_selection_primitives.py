@@ -698,6 +698,26 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
         "P3-33 挂账,⛔ 不许在代码里顺手改数、也不许顺手改包里的数。"
     ),
     ("tier.py", "TIER2_MIN_SCORE"): "T2 质量线的缺省回退值,同 TIER1_MIN_SCORE 那一条。",
+    # —— V2.2-③ 六道关口(gates.py):真判据阈值全部住引擎包 `gates.*`(键名契约
+    #    `pack._ENGINE_GATE_SCHEMA`,gates.py 零硬编阈值数字);这里剩下的四个是
+    #    引擎不变量 / 缺键回退值,不是可调策略参数。————————————————————————
+    ("gates.py", "T1_MAX_EVIDENCE_DEGRADES_DEFAULT"): (
+        "K8 §八 T1「零降级」的**缺键回退值**(权威住引擎包 tier_evidence.t1."
+        "max_evidence_degrades,三个首版包都显式给了 0;这里只兜历史行/测试替身"
+        "缺键的情况,同 tier.TIER1_MIN_SCORE 的回退值定位)。"
+    ),
+    ("gates.py", "T2_MAX_EVIDENCE_DEGRADES_DEFAULT"): (
+        "K8 §八 T2「至多一处降级」的缺键回退值,同上(权威在包 tier_evidence.t2)。"
+    ),
+    ("gates.py", "STRENGTH_DAYS_WINDOW"): (
+        "C1 板块关「近 5 日强度日」的窗口 5 —— 它是包键 `strength_days_min_5d` "
+        "键名语义的一部分(名字里就写着 5d),不是独立可调参数;真阈值(≥几天)"
+        "在包里。改窗口 = 改键名语义,要走 plan + 扩 _ENGINE_GATE_SCHEMA。"
+    ),
+    ("gates.py", "_EPS"): (
+        "浮点比较容差,工程不变量(同 primitives.py `_LIFT_EPS` / member_tags.py "
+        "`_EPS` 先例),非策略参数。"
+    ),
     # ⚠ `TIER3_MIN_SCORE` 于 V2.1-② 随 T3 全链退役而**删除**(不留影子档);
     # 反向 hasattr 守门在 `tests/test_selection_tier.py::test_tier3_min_score_is_retired`。
     # ⛔ 别在这份白名单里给它留一行"以防万一"——白名单是"允许存在"的登记,

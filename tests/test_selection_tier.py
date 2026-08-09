@@ -39,6 +39,7 @@ from neckline.scan import leader as leader_mod
 from neckline.scan import stage as stage_mod
 from neckline.selection import aggregate as ag
 from neckline.selection import basket_store
+from neckline.selection import gates as gates_mod
 from neckline.selection import pack as pack_mod
 from neckline.selection import tier as ti
 from tests.conftest import write_daily_fixture
@@ -105,6 +106,53 @@ def _basket(
 def _agg(baskets: Sequence[ag.BasketCandidate], notes: Sequence[str] = ()) -> ag.AggregateResult:
     return ag.AggregateResult(trade_date=D0_S, baskets=tuple(baskets), notes=tuple(notes),
                               pack_version="K7-pack-v1", charter_version="v1.3.3")
+
+
+# ── V2.2-③ 门槛制:六关判定的测试替身 ───────────────────────────────────────
+# 本文件测 **⑥ 的放位/打分/微调/落库**;六关判定本身(pass/degrade/reject 三态、
+# 引擎对拍、成员出篮)的真实现在 `tests/test_selection_gates.py`。这里直接构造
+# `BasketGateSummary`/`GateDayOutcome` 喂给 `score_and_tier(gates_outcome=…)` ——
+# 与 `pack=K7_PACK` 直接喂 Pack 替身同一姿势。
+
+def _summary(key: str, *, name: str = "", t1: bool = False, excluded: bool = False,
+             reason: str | None = None, gate: str | None = None, detail: str | None = None,
+             degrades: int = 0) -> gates_mod.BasketGateSummary:
+    return gates_mod.BasketGateSummary(
+        basket_key=key, name=name,
+        engine_code=None if excluded else "C", engine_version=None if excluded else "C1",
+        skeleton_version="K8-V0.5", engine_source=None if excluded else "llm",
+        excluded=excluded, exclusion_reason=reason, stuck_gate=gate, stuck_detail=detail,
+        evidence_degrades=degrades,
+        degraded_gates=tuple(gates_mod.EVIDENCE_GATES)[:degrades],
+        blocks_t1=not t1, all_members_liftoff=t1, regime_available=True,
+    )
+
+
+def _outcome(r: ag.AggregateResult, *, t1_keys: Sequence[str] = (),
+             excluded: Dict[str, str] | None = None,
+             degrades_by_key: Dict[str, int] | None = None) -> gates_mod.GateDayOutcome:
+    """默认:全部候选过六关、但 blocks_t1(缺 landing/regime 之类)→ 全 T2 资格
+    (与旧质量线时代"零数据篮子落 T2"的行为对齐,存量断言最小扰动)。
+    `t1_keys` 指定哪些篮子 T1 资格;`excluded` = {key: 除名原因码};
+    `degrades_by_key` = 证据关降级处数(>1 → 会被 ⑥ 判 evidence_degraded_out)。"""
+    excluded = excluded or {}
+    degrades_by_key = degrades_by_key or {}
+    summaries = {
+        b.basket_key: (
+            _summary(b.basket_key, name=b.name, excluded=True,
+                     reason=excluded[b.basket_key], gate="market",
+                     detail="test:excluded")
+            if b.basket_key in excluded else
+            _summary(b.basket_key, name=b.name, t1=b.basket_key in set(t1_keys),
+                     degrades=degrades_by_key.get(b.basket_key, 0))
+        )
+        for b in r.baskets
+    }
+    kept = tuple(b for b in r.baskets if b.basket_key not in excluded)
+    return gates_mod.GateDayOutcome(
+        trade_date=r.trade_date, result=replace(r, baskets=kept), summaries=summaries,
+        engines=("C",), skeleton_version="K8-V0.5",
+    )
 
 
 def _pack_from_file(filename: str) -> pack_mod.Pack:
@@ -405,43 +453,62 @@ class TestWeightsAndAccessLock:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestAssignTiers:
+    """V2.2-③-D 门槛制:目标档由**六关**给(`want_by_key`),分数只定档内序。"""
+
     def test_capacity_caps_are_never_exceeded(self):
         scored = [(f"k{i:02d}", 0.99 - i * 0.001) for i in range(30)]
-        placement, dropped = ti.assign_tiers(scored)
+        want = {k: 1 for k, _s in scored}      # 全部 T1 资格 → 2 进 T1、5 顺延 T2、余溢出
+        placement, dropped = ti.assign_tiers(scored, want)
         counts = {t: sum(1 for v in placement.values() if v[0] == t) for t in ti.TIERS}
         assert counts == ti.TIER_CAPACITY
         assert len(dropped) == 30 - sum(ti.TIER_CAPACITY.values())
         assert {d.reason for d in dropped} == {ti.DROP_CAPACITY_OVERFLOW}
 
-    def test_t1_is_empty_when_nothing_clears_the_bar(self):
-        """「上限非配额,允许 T1 为空」—— 市场混沌(全场平庸)时不许凑数。
-
-        V2.1-②:0.30 曾落 T3(默认 `tier3_min=0.25`),T3 退役后它够不到 `tier2_min`
-        → `below_quality_line`,**没有兜底档**。"""
-        placement, dropped = ti.assign_tiers([("a", 0.55), ("b", 0.50), ("c", 0.30)])
+    def test_t1_is_empty_when_no_basket_has_t1_qualification(self):
+        """「上限非配额,允许 T1 为空」—— 门槛制下 T1 资格由六关给;没有一个候选
+        六关全过时,T1 就是空的,**分数再高也不许凑数**(0.95 也进不了 T1)。"""
+        placement, dropped = ti.assign_tiers(
+            [("a", 0.95), ("b", 0.50)], {"a": 2, "b": 2})
         assert [placement[k][0] for k in ("a", "b")] == [2, 2]
         assert not [k for k, v in placement.items() if v[0] == 1]
-        assert "c" not in placement
-        assert [(d.basket_key, d.reason) for d in dropped] == [("c", ti.DROP_BELOW_QUALITY_LINE)]
+        assert dropped == []
 
-    def test_clearing_t1_bar_but_t1_full_cascades_down_not_squeezed_in(self):
+    def test_t1_qualified_but_t1_full_cascades_down_not_squeezed_in(self):
         scored = [("a", 0.95), ("b", 0.90), ("c", 0.85), ("d", 0.80)]
-        placement, _ = ti.assign_tiers(scored)
+        placement, _ = ti.assign_tiers(scored, {k: 1 for k, _s in scored})
         assert placement["a"][0] == 1 and placement["b"][0] == 1
         assert placement["c"][0] == 2 and placement["d"][0] == 2
 
+    def test_t2_qualification_never_promotes_into_t1(self):
+        """反方向也锁死:T2 资格的候选**分数第一**也只进 T2 —— 分数不再能把票
+        抬过任何一道关(门槛制在前)。"""
+        placement, _ = ti.assign_tiers(
+            [("best", 0.99), ("t1ok", 0.50)], {"best": 2, "t1ok": 1})
+        assert placement["best"][0] == 2
+        assert placement["t1ok"][0] == 1
+
     def test_rank_mech_is_one_based_within_tier(self):
-        placement, _ = ti.assign_tiers([("a", 0.95), ("b", 0.90), ("c", 0.50)])
+        placement, _ = ti.assign_tiers(
+            [("a", 0.95), ("b", 0.90), ("c", 0.50)], {"a": 1, "b": 1, "c": 2})
         assert placement["a"] == (1, 1) and placement["b"] == (1, 2)
         assert placement["c"] == (2, 1)
 
     def test_score_ties_broken_by_basket_key_not_row_order(self):
         """CLAUDE.md 铁律:并列由行序打散 = 不确定性。同分必须靠 `basket_key` 升序
         定死 —— 两种输入行序给出**同一个**结果。"""
-        a = ti.assign_tiers([("zzz", 0.7), ("aaa", 0.7)])[0]
-        b = ti.assign_tiers([("aaa", 0.7), ("zzz", 0.7)])[0]
+        want = {"zzz": 2, "aaa": 2}
+        a = ti.assign_tiers([("zzz", 0.7), ("aaa", 0.7)], want)[0]
+        b = ti.assign_tiers([("aaa", 0.7), ("zzz", 0.7)], want)[0]
         assert a == b
         assert a["aaa"][1] == 1 and a["zzz"][1] == 2
+
+    def test_missing_or_illegal_want_fails_loud(self):
+        """达不到 T2 的候选该由调用方先落 dropped —— 漏进放位是调用方 bug,
+        静默兜一个档等于把门槛制改回配额,必须炸。"""
+        with pytest.raises(ValueError, match="目标档"):
+            ti.assign_tiers([("a", 0.9)], {})
+        with pytest.raises(ValueError, match="目标档"):
+            ti.assign_tiers([("a", 0.9)], {"a": 3})
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -465,38 +532,61 @@ class TestScoreAndTier:
         _insert_stage(env.db_path, {"半导体": stage_mod.FERMENTATION,
                                     "煤炭": stage_mod.EBB, "纺织": stage_mod.OVERHEAT})
         r = _three_baskets()
-        a = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK)
-        b = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK)
+        keys = [b.basket_key for b in r.baskets]
+        a = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
+                              pack=K7_PACK, gates_outcome=_outcome(r, t1_keys=keys))
+        b = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
+                              pack=K7_PACK, gates_outcome=_outcome(r, t1_keys=keys))
         assert [(d.basket_key, d.tier, d.rank_in_tier, d.mech_score) for d in a.decisions] == \
                [(d.basket_key, d.tier, d.rank_in_tier, d.mech_score) for d in b.decisions]
         assert a.decisions[0].breakdown == b.decisions[0].breakdown
 
-    def test_stronger_basket_gets_the_better_tier_or_rank(self, isolated_env):
+    def test_stronger_basket_gets_the_better_rank_within_the_gated_tier(self, isolated_env):
+        """V2.2-③-D:门槛制在前 —— 档位由六关给,机械分只排**档内**先后。
+        三个候选全部 T1 资格时:分数前两名进 T1,第三名顺延 T2(不是按分数
+        跨过任何一道关)。"""
         env = isolated_env
         _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1},
                                        {"industry": "煤炭", "rank": 50},
                                        {"industry": "纺织", "rank": 99}])
         _insert_stage(env.db_path, {"半导体": stage_mod.FERMENTATION,
                                     "煤炭": stage_mod.EBB, "纺织": stage_mod.OVERHEAT})
-        res = ti.score_and_tier(_three_baskets(), D0, db_path=env.db_path,
-                                parquet_dir=env.parquet_dir, pack=K7_PACK)
-        order = [d.basket_key for d in res.decisions]
-        # V2.1-②:k-mid / k-weak 原先落 T3(纺织第 99 名 + overheat + 红牌),
-        # T3 退役后两者都够不到 `tier2_min` → 如实丢弃并留痕,⛔ 不给兜底档。
-        assert order == ["k-strong"]
-        assert res.decisions[0].tier == 1
-        assert {d.basket_key: d.reason for d in res.dropped} == {
-            "k-mid": ti.DROP_BELOW_QUALITY_LINE, "k-weak": ti.DROP_BELOW_QUALITY_LINE,
-        }
-        # 定档的那个分数**严格高于**被丢的那两个 —— "更强的拿更好的档"这句话仍成立
-        assert all(res.decisions[0].mech_score > d.mech_score for d in res.dropped)
+        r = _three_baskets()
+        res = ti.score_and_tier(r, D0, db_path=env.db_path,
+                                parquet_dir=env.parquet_dir, pack=K7_PACK,
+                                gates_outcome=_outcome(
+                                    r, t1_keys=[b.basket_key for b in r.baskets]))
+        assert [d.basket_key for d in res.decisions] == ["k-strong", "k-mid", "k-weak"]
+        assert [d.tier for d in res.decisions] == [1, 1, 2]
+        assert res.dropped == ()
+        # 档内序仍随分数走:强 > 中 > 弱。
+        scores = [d.mech_score for d in res.decisions]
+        assert scores[0] > scores[1] > scores[2]
+
+    def test_high_score_cannot_rescue_a_gate_excluded_basket(self, isolated_env):
+        """③-A 的机器判据(plan 测试清单点名):**机械分 0.95 的候选被关口除名 →
+        不进任何档**,只在 dropped 里留痕(名/分/关/原因码),⛔ 分数救不了它。"""
+        env = isolated_env
+        r = _three_baskets()
+        res = ti.score_and_tier(
+            r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(
+                r, t1_keys=["k-mid", "k-weak"],
+                excluded={"k-strong": gates_mod.EXCLUDE_MECH_GATE_REJECTED}),
+        )
+        assert "k-strong" not in {d.basket_key for d in res.decisions}
+        hit = next(d for d in res.dropped if d.basket_key == "k-strong")
+        assert hit.reason == gates_mod.EXCLUDE_MECH_GATE_REJECTED
+        assert hit.gate == "market" and hit.gate_detail
+        assert hit.name == "强" and hit.mech_score is not None
 
     def test_breakdown_explains_the_score(self, isolated_env):
         env = isolated_env
         _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1}])
+        r = _agg([_basket("k1", [_member("600001.SH", industry="半导体", rs_rank=2)])])
         res = ti.score_and_tier(
-            _agg([_basket("k1", [_member("600001.SH", industry="半导体", rs_rank=2)])]),
-            D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(r),
         )
         bd = res.decisions[0].breakdown
         assert set(bd["dims"]) == ti._TIER_SCORE_INPUTS
@@ -508,10 +598,11 @@ class TestScoreAndTier:
     def test_no_llm_text_leaks_into_the_breakdown(self, isolated_env):
         """`mech_breakdown_json` 是**机械分的解释**,不是 LLM 叙述的转存处。"""
         env = isolated_env
+        r = _agg([_basket("k1", [_member("600001.SH", reason="LLM 说它是龙头")],
+                      name="固态电池", driver="工信部发文")])
         res = ti.score_and_tier(
-            _agg([_basket("k1", [_member("600001.SH", reason="LLM 说它是龙头")],
-                          name="固态电池", driver="工信部发文")]),
-            D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(r),
         )
         blob = json.dumps(res.decisions[0].breakdown, ensure_ascii=False)
         for llm_text in ("固态电池", "工信部发文", "LLM 说它是龙头"):
@@ -531,9 +622,10 @@ class TestScoreAndTier:
 
     def test_k4_unavailable_note_propagates_to_card_density(self, isolated_env):
         env = isolated_env
+        r = _agg([_basket("k1", [_member("600001.SH")])], notes=("k4_unavailable",))
         res = ti.score_and_tier(
-            _agg([_basket("k1", [_member("600001.SH")])], notes=("k4_unavailable",)),
-            D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(r),
         )
         assert ti.FLAG_CARD_DENSITY_MISSING in res.decisions[0].breakdown["flags"]
 
@@ -543,8 +635,9 @@ class TestScoreAndTier:
         env = isolated_env
         doc = json.loads((_PACKS_DIR / "K8-skeleton.json").read_text(encoding="utf-8"))
         pack_mod.activate_pack(doc["manifest"], doc["config"], via="test", db_path=env.db_path)
-        res = ti.score_and_tier(_three_baskets(), D0, db_path=env.db_path,
-                                parquet_dir=env.parquet_dir)
+        r = _three_baskets()
+        res = ti.score_and_tier(r, D0, db_path=env.db_path,
+                                parquet_dir=env.parquet_dir, gates_outcome=_outcome(r))
         assert res.pack_version == "K8-V0.5"
 
     def test_overflowing_baskets_are_dropped_with_trace(self, isolated_env):
@@ -555,7 +648,8 @@ class TestScoreAndTier:
         env = isolated_env
         many = _agg([_basket(f"k{i:02d}", [_member(f"6000{i:02d}.SH")]) for i in range(20)])
         res = ti.score_and_tier(many, D0, db_path=env.db_path,
-                                parquet_dir=env.parquet_dir, pack=K7_PACK)
+                                parquet_dir=env.parquet_dir, pack=K7_PACK,
+                                gates_outcome=_outcome(many))
         by_tier = res.by_tier()
         assert by_tier[1] == []                                    # T1 空,没被凑数
         assert len(by_tier[2]) == ti.TIER_CAPACITY[2]
@@ -576,7 +670,9 @@ class TestScoreAndTier:
             for i in range(20)
         ])
         res = ti.score_and_tier(many, D0, db_path=env.db_path,
-                                parquet_dir=env.parquet_dir, pack=K7_PACK)
+                                parquet_dir=env.parquet_dir, pack=K7_PACK,
+                                gates_outcome=_outcome(
+                                    many, t1_keys=[b.basket_key for b in many.baskets]))
         assert all(d.mech_score >= ti.TIER1_MIN_SCORE for d in res.decisions)
         counts = {t: len(v) for t, v in res.by_tier().items()}
         assert counts == ti.TIER_CAPACITY
@@ -590,22 +686,26 @@ class TestPackSwapChangesTierOrder:
     断言权重差异真的改变了定档结果 —— 「插槽不是空架子」在 ⑥ 层面的兑现。"""
 
     def _input(self) -> ag.AggregateResult:
-        # A:板块弱、龙头极清晰;B:板块极强、龙头模糊。K7 把 leader_clarity 抬到
-        # 0.30、把 driver_freshness 压到 0.10,两者的相对位置因此会翻转。
+        # A:板块次强、龙头极清晰、行业过热;B:板块最强、龙头第 4、行业发酵。
+        # K4(freshness 恒中性 + leader 权重 0.25)下 A 在前;K7(六态真打分:
+        # overheat=0 惩罚 A、fermentation=1.0 抬 B)下 B 在前 —— 档内序随包翻转。
+        # (V2.2-③ 门槛制后档位归六关,换包改变的是**档内序**,这正是机械分仅存的职责。)
         return _agg([
             _basket("k-leader", [_member("600001.SH", industry="纺织", rs_rank=1)], name="龙头清晰"),
-            _basket("k-sector", [_member("600002.SH", industry="半导体", rs_rank=8)], name="板块最强"),
+            _basket("k-sector", [_member("600002.SH", industry="半导体", rs_rank=4)], name="板块最强"),
         ])
 
     def _run(self, env, pack) -> ti.TierResult:
-        return ti.score_and_tier(self._input(), D0, db_path=env.db_path,
-                                 parquet_dir=env.parquet_dir, pack=pack)
+        r = self._input()
+        return ti.score_and_tier(r, D0, db_path=env.db_path,
+                                 parquet_dir=env.parquet_dir, pack=pack,
+                                 gates_outcome=_outcome(r))
 
     def _seed(self, env):
         _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1},
-                                       {"industry": "纺织", "rank": 100}])
+                                       {"industry": "纺织", "rank": 2}])
         _insert_stage(env.db_path, {"半导体": stage_mod.FERMENTATION,
-                                    "纺织": stage_mod.EBB})
+                                    "纺织": stage_mod.OVERHEAT})
 
     def test_same_input_two_packs_different_order(self, isolated_env):
         env = isolated_env
@@ -655,7 +755,9 @@ def _two_in_one_tier() -> ag.AggregateResult:
 
 
 def _mech(env, r=None, **kw) -> ti.TierResult:
-    return ti.score_and_tier(r or _two_in_one_tier(), D0, db_path=env.db_path,
+    r = r if r is not None else _two_in_one_tier()
+    kw.setdefault("gates_outcome", _outcome(r))
+    return ti.score_and_tier(r, D0, db_path=env.db_path,
                              parquet_dir=env.parquet_dir, pack=K7_PACK, **kw)
 
 
@@ -853,7 +955,7 @@ class TestTransactionOne:
         env = isolated_env
         r = _three_baskets()
         res = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
-                                pack=K7_PACK)
+                                pack=K7_PACK, gates_outcome=_outcome(r))
         stats = ti.save_tier_result(r, res, db_path=env.db_path)
         assert stats["baskets_inserted"] == 3
         assert stats["members_inserted"] == 3
@@ -877,7 +979,7 @@ class TestTransactionOne:
         env = isolated_env
         r = _three_baskets()
         res = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
-                                pack=K7_PACK)
+                                pack=K7_PACK, gates_outcome=_outcome(r))
 
         def _boom(conn, rows):
             raise sqlite3.OperationalError("模拟 tier_history 写失败")
@@ -895,7 +997,7 @@ class TestTransactionOne:
         env = isolated_env
         r = _three_baskets()
         res = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
-                                pack=K7_PACK)
+                                pack=K7_PACK, gates_outcome=_outcome(r))
         ti.save_tier_result(r, res, db_path=env.db_path)
         frozen = _rows(env.db_path, "SELECT basket_key, tier FROM baskets ORDER BY basket_key")
 
@@ -924,14 +1026,14 @@ class TestTransactionOne:
         env = isolated_env
         one = _agg([_basket("k-frozen", [_member("600001.SH"), _member("600002.SH")])])
         res1 = ti.score_and_tier(one, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
-                                 pack=K7_PACK)
+                                 pack=K7_PACK, gates_outcome=_outcome(one))
         s1 = ti.save_tier_result(one, res1, db_path=env.db_path)
         assert s1["members_inserted"] == 2
 
         two = _agg([_basket("k-frozen", [_member("600001.SH"), _member("600002.SH"),
                                          _member("600003.SH")])])
         res2 = ti.score_and_tier(two, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
-                                 pack=K7_PACK)
+                                 pack=K7_PACK, gates_outcome=_outcome(two))
         with caplog.at_level(logging.WARNING):
             s2 = ti.save_tier_result(two, res2, db_path=env.db_path)
 
@@ -948,12 +1050,12 @@ class TestTransactionOne:
         env = isolated_env
         one = _agg([_basket("k-frozen", [_member("600001.SH"), _member("600002.SH")])])
         res1 = ti.score_and_tier(one, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
-                                 pack=K7_PACK)
+                                 pack=K7_PACK, gates_outcome=_outcome(one))
         ti.save_tier_result(one, res1, db_path=env.db_path)
 
         swapped = _agg([_basket("k-frozen", [_member("600001.SH"), _member("600009.SH")])])
         res2 = ti.score_and_tier(swapped, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
-                                 pack=K7_PACK)
+                                 pack=K7_PACK, gates_outcome=_outcome(swapped))
         s2 = ti.save_tier_result(swapped, res2, db_path=env.db_path)
         assert s2["members_inserted"] == 0
         codes = [r[0] for r in _rows(env.db_path,
@@ -983,7 +1085,7 @@ class TestTransactionOne:
         env = isolated_env
         many = _agg([_basket(f"k{i:02d}", [_member(f"6000{i:02d}.SH")]) for i in range(20)])
         res = ti.score_and_tier(many, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
-                                pack=K7_PACK)
+                                pack=K7_PACK, gates_outcome=_outcome(many))
         ti.save_tier_result(many, res, db_path=env.db_path)
         assert _rows(env.db_path, "SELECT COUNT(*) FROM baskets")[0][0] == len(res.decisions)
         written = {row[0] for row in _rows(env.db_path, "SELECT basket_key FROM baskets")}
@@ -1167,114 +1269,105 @@ class TestQualityLineResolution:
             ti.resolve_quality_lines(None)
 
 
-class TestAssignTiersQualityLineFloor:
-    """⑥-b-B:每一档都有下限,「上限非配额」这句话是对**全部现役档位**说的。
-    V2.1-② 起最低档 = T2,够不到 `tier2_min` 就是 `below_quality_line`,⛔ 无兜底档。"""
+class TestQualityLinesAreOnlyAnIntraTierMark:
+    """V2.2-③-D:质量线降级为「档内排序的辅助下限」= 纯展示标度(§七 P3-33 主体
+    作废的机器判据)—— 分数低于线**不再**把篮子拦在任何档外;`below_tier_line`
+    只是打给人看的标。`DROP_BELOW_QUALITY_LINE` 码保留(历史读回),新运行不产生。"""
 
-    def test_all_baskets_below_the_lowest_line_leave_every_tier_empty(self):
-        """一批分数 0.10~0.20 的篮子(全部低于默认 tier2_min=0.40)→ 每一档都空,
-        而不是被塞满(⑥-b 验收原文)。"""
-        scored = [(f"k{i:02d}", round(0.10 + i * 0.01, 2)) for i in range(11)]   # 0.10..0.20
-        placement, dropped = ti.assign_tiers(scored)
-        assert placement == {}
-        assert all(sum(1 for v in placement.values() if v[0] == t) == 0 for t in ti.TIERS)
-        assert len(dropped) == 11
-        assert {d.reason for d in dropped} == {ti.DROP_BELOW_QUALITY_LINE}
-
-    def test_below_quality_line_and_capacity_overflow_are_distinct_reason_codes(self):
-        """溢出摘要两种原因码必须分得开(⑥-b-C):同一批里**同时**制造「分数够、
-        位置满」与「分数不够」两种"没进来",断言两个原因码都出现且互不覆盖
-        对方的篮子。"""
-        # 8 个够 T1 线的篮子:T1(2)+T2(5)=7 个坑,第 8 个分数也够但位置满 →
-        # capacity_overflow;另外三个连 T2 线(0.40)都没过 → below_quality_line。
-        plenty = [(f"ok{i:02d}", round(0.90 - i * 0.001, 6)) for i in range(8)]
-        starved = [(f"bad{i:02d}", 0.05 + i * 0.01) for i in range(3)]
-        placement, dropped = ti.assign_tiers(plenty + starved)
-        by_reason = {d.basket_key: d.reason for d in dropped}
-        assert set(by_reason.values()) == {ti.DROP_CAPACITY_OVERFLOW, ti.DROP_BELOW_QUALITY_LINE}
-        overflow_keys = {k for k, r in by_reason.items() if r == ti.DROP_CAPACITY_OVERFLOW}
-        starved_keys = {k for k, r in by_reason.items() if r == ti.DROP_BELOW_QUALITY_LINE}
-        assert overflow_keys == {"ok07"}                       # 唯一一个"分数够、位置满"
-        assert starved_keys == {f"bad{i:02d}" for i in range(3)}
-        assert overflow_keys.isdisjoint(starved_keys)
-
-    def test_custom_quality_lines_change_eligibility(self):
-        """`assign_tiers` 吃自定义 `quality_lines`(不是只认模块默认)——验证
-        换包后两条线真的跟着变,不是摆设参数。"""
-        scored = [("a", 0.45)]
-        placement_default, dropped_default = ti.assign_tiers(scored)
-        assert placement_default == {"a": (2, 1)} and dropped_default == []   # 默认 tier2_min=0.40,达标
-
-        strict = {"tier1_min": 0.60, "tier2_min": 0.50}
-        placement_strict, dropped_strict = ti.assign_tiers(scored, quality_lines=strict)
-        assert placement_strict == {}
-        assert {d.reason for d in dropped_strict} == {ti.DROP_BELOW_QUALITY_LINE}
-
-    def test_retired_tier3_min_in_custom_lines_does_not_resurrect_a_third_tier(self):
-        """**防复活**:哪怕调用方硬塞一个 `tier3_min` 进 `quality_lines`,
-        `_eligible_tier` 也不许据此造出第三档 —— 0.30 只够 `tier3_min` 不够
-        `tier2_min` → 丢弃。"""
-        lines = {"tier1_min": 0.60, "tier2_min": 0.40, "tier3_min": 0.25}
-        placement, dropped = ti.assign_tiers([("a", 0.30)], quality_lines=lines)
-        assert placement == {}
-        assert [(d.basket_key, d.reason) for d in dropped] == [("a", ti.DROP_BELOW_QUALITY_LINE)]
-
-
-class TestScoreAndTierAllTiersEmpty:
-    def test_all_tiers_empty_is_a_legal_output(self, isolated_env):
-        """两档皆空是合法输出(⑥-b-B):篮子确实存在,只是一个都够不到(严格自定义
-        质量线拉满)——`score_and_tier` 应当如实产出「今日无篮子定档」,不抛异常、
-        不是 `no_baskets`(那是"根本没有篮子"的另一种情况)。"""
+    def test_low_score_no_longer_drops_a_gate_qualified_basket(self, isolated_env):
+        """零数据篮子(分数 ~0.5x 或更低)只要过了六关就进档 —— 与 V2.1 时代
+        「够不到 tier2_min 即丢弃」刻意相反,门槛制在前。"""
         env = isolated_env
+        many = _agg([_basket(f"k{i:02d}", [_member(f"6000{i:02d}.SH")]) for i in range(3)])
+        strict_pack = _pack_with_tier({
+            **K7_PACK.config["tier"],
+            "quality_lines": {"tier1_min": 0.99, "tier2_min": 0.98},   # 拉满也拦不住
+        })
+        res = ti.score_and_tier(many, D0, db_path=env.db_path,
+                                parquet_dir=env.parquet_dir, pack=strict_pack,
+                                gates_outcome=_outcome(many))
+        assert len(res.decisions) == 3 and res.dropped == ()
+        assert all(d.tier == 2 for d in res.decisions)
+        assert ti.DROP_BELOW_QUALITY_LINE not in {d.reason for d in res.dropped}
+
+    def test_below_tier_line_is_flagged_in_the_breakdown_not_enforced(self, isolated_env):
+        """分低于本档辅助线 → `breakdown.below_tier_line=True`(展示标度);
+        分高于线 → False。两种都**在档内**。"""
+        env = isolated_env
+        many = _agg([_basket(f"k{i:02d}", [_member(f"6000{i:02d}.SH")]) for i in range(2)])
         strict_pack = _pack_with_tier({
             **K7_PACK.config["tier"],
             "quality_lines": {"tier1_min": 0.99, "tier2_min": 0.98},
         })
+        loose_pack = _pack_with_tier({
+            **K7_PACK.config["tier"],
+            "quality_lines": {"tier1_min": 0.02, "tier2_min": 0.01},
+        }, version="loose-pack-v1")
+        strict = ti.score_and_tier(many, D0, db_path=env.db_path,
+                                   parquet_dir=env.parquet_dir, pack=strict_pack,
+                                   gates_outcome=_outcome(many))
+        loose = ti.score_and_tier(many, D0, db_path=env.db_path,
+                                  parquet_dir=env.parquet_dir, pack=loose_pack,
+                                  gates_outcome=_outcome(many))
+        assert all(d.breakdown["below_tier_line"] is True for d in strict.decisions)
+        assert all(d.breakdown["below_tier_line"] is False for d in loose.decisions)
+        # 标度不同,但**档位与档内序逐位相同** —— 线真的只是标,不是闸。
+        assert [(d.basket_key, d.tier, d.rank_in_tier) for d in strict.decisions] == \
+               [(d.basket_key, d.tier, d.rank_in_tier) for d in loose.decisions]
+
+
+class TestScoreAndTierAllTiersEmpty:
+    def test_all_tiers_empty_is_a_legal_output(self, isolated_env):
+        """两档皆空是合法输出:篮子确实存在,只是**证据关降级处数全部超出 T2 上限**
+        (③-A:证据关只降级,降到出局 = 退出正式候选、仍在 ③b 列名)——
+        `score_and_tier` 如实产出「今日无篮子定档」,不抛异常、不是 `no_baskets`
+        (那是"根本没有篮子"的另一种情况)。"""
+        env = isolated_env
         many = _agg([_basket(f"k{i:02d}", [_member(f"6000{i:02d}.SH")]) for i in range(5)])
-        res = ti.score_and_tier(many, D0, db_path=env.db_path,
-                                parquet_dir=env.parquet_dir, pack=strict_pack)
+        res = ti.score_and_tier(
+            many, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(
+                many, degrades_by_key={b.basket_key: 2 for b in many.baskets}),
+        )
         assert res.decisions == ()
         assert res.by_tier() == {1: [], 2: []}
         assert len(res.dropped) == 5
-        assert {d.reason for d in res.dropped} == {ti.DROP_BELOW_QUALITY_LINE}
+        assert {d.reason for d in res.dropped} == {ti.DROP_EVIDENCE_DEGRADED_OUT}
+        # ③b 升级件:每行都说得出名 / 分(卡在哪一关由 degraded_gates 给)。
+        assert all(d.name and d.mech_score is not None for d in res.dropped)
         assert "no_baskets" not in res.notes
-        assert "below_quality_line:5" in res.notes
-        assert res.quality_lines == {"tier1_min": 0.99, "tier2_min": 0.98}
+        assert "evidence_degraded_out:5" in res.notes
 
 
 class TestScoreAndTierMixedDropReasons:
-    def test_notes_report_both_reason_codes_separately_when_both_occur(self, isolated_env):
-        """`score_and_tier()` 的 `notes` 摘要也不许把两种"没进来"揉成一句话——
-        不只是 `assign_tiers` 的返回值要分得开(⑥-b-C)。"""
+    def test_notes_report_each_reason_code_separately_when_several_occur(self, isolated_env):
+        """`score_and_tier()` 的 `notes` 摘要不许把几种"没进来"揉成一句话——
+        (⑥-b-C 纪律在门槛制下的扩容:硬否决 / 证据降级出局 / 容量溢出三种码
+        同时出现时逐码分别计数。)"""
         env = isolated_env
-        _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1},
-                                       {"industry": "纺织", "rank": 99}])
-        _insert_stage(env.db_path, {"半导体": stage_mod.FERMENTATION,
-                                    "纺织": stage_mod.OVERHEAT})
-        write_daily_fixture(env, "daily", D0, [
-            {"ts_code": "600999.SH", "open": 11.0, "high": 11.0, "low": 11.0, "close": 11.0,
-             "pre_close": 10.0, "amount": 1e5},
-        ])
-        write_daily_fixture(env, "limit_derived", D0, [
-            {"ts_code": "600999.SH", "board": "MAIN", "status": "limit_up", "limit_pct": 0.1,
-             "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
-             "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1},
-        ])
-        # 10 个板块最强 + 龙头头名的篮子(全部够 T1 线)→ V2.1-② 只有 7 个坑,
-        # 3 个 capacity_overflow。
+        # 10 个全 T1 资格 → 7 个坑,3 个 capacity_overflow;
+        # 1 个机械关硬否决;1 个证据关降级出局。
         strong = [
             _basket(f"strong{i:02d}", [_member(f"6001{i:02d}.SH", industry="半导体", rs_rank=1)])
             for i in range(10)
         ]
-        # 板块最弱 + 一字板 + 红牌的篮子 → 连 T2 线都够不到,below_quality_line。
-        weak = _basket("k-weak", [_member("600999.SH", industry="纺织", k4_tag="A2")], name="弱")
-        res = ti.score_and_tier(_agg(strong + [weak]), D0, db_path=env.db_path,
-                                parquet_dir=env.parquet_dir, pack=K7_PACK)
+        vetoed = _basket("k-vetoed", [_member("600998.SH")], name="被市场关拒")
+        degraded = _basket("k-degraded", [_member("600999.SH")], name="证据不足")
+        r = _agg(strong + [vetoed, degraded])
+        res = ti.score_and_tier(
+            r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(
+                r, t1_keys=[b.basket_key for b in strong],
+                excluded={"k-vetoed": gates_mod.EXCLUDE_MECH_GATE_REJECTED},
+                degrades_by_key={"k-degraded": 2}),
+        )
         by_reason = {d.basket_key: d.reason for d in res.dropped}
-        assert len(res.dropped) == 4
-        assert by_reason.get("k-weak") == ti.DROP_BELOW_QUALITY_LINE
-        assert sum(1 for r in by_reason.values() if r == ti.DROP_CAPACITY_OVERFLOW) == 3
-        assert "below_quality_line:1" in res.notes
+        assert len(res.dropped) == 5
+        assert by_reason.get("k-vetoed") == gates_mod.EXCLUDE_MECH_GATE_REJECTED
+        assert by_reason.get("k-degraded") == ti.DROP_EVIDENCE_DEGRADED_OUT
+        assert sum(1 for x in by_reason.values() if x == ti.DROP_CAPACITY_OVERFLOW) == 3
+        assert "mech_gate_rejected:1" in res.notes
+        assert "evidence_degraded_out:1" in res.notes
         assert "capacity_overflow:3" in res.notes
 
 
@@ -1317,9 +1410,10 @@ class TestNeutralFilledWeightEndToEnd:
         """⑥-b-D 验收原文:三维缺数据 → 该值 = 那三维权重之和。"""
         env = isolated_env
         _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1}])
+        r = _agg([_basket("k1", [_member("600001.SH", industry="半导体")])])
         res = ti.score_and_tier(
-            _agg([_basket("k1", [_member("600001.SH", industry="半导体")])]),
-            D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(r),
         )
         bd = res.decisions[0].breakdown
         # driver_freshness(没喂阶段表)/ leader_clarity(没给 rs_rank)/
@@ -1338,12 +1432,13 @@ class TestNeutralFilledWeightEndToEnd:
         数值相同——`neutral_filled_weight` 必须靠 flags 分辨,不能靠数值。"""
         env = isolated_env
         _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1}])
+        r = _agg([
+            _basket("k-rank2", [_member("600001.SH", industry="半导体", rs_rank=2)]),
+            _basket("k-missing", [_member("600002.SH", industry="半导体", rs_rank=None)]),
+        ])
         res = ti.score_and_tier(
-            _agg([
-                _basket("k-rank2", [_member("600001.SH", industry="半导体", rs_rank=2)]),
-                _basket("k-missing", [_member("600002.SH", industry="半导体", rs_rank=None)]),
-            ]),
-            D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
+            gates_outcome=_outcome(r),
         )
         by_key = {d.basket_key: d.breakdown for d in res.decisions}
         rank2, missing = by_key["k-rank2"], by_key["k-missing"]

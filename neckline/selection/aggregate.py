@@ -46,6 +46,7 @@ import time
 import zlib
 from collections import Counter
 from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -278,6 +279,22 @@ class BasketCandidate:
     charter_version: str
     driver_kind_fallback: bool = False   # True = LLM 给的分类不合法,由种子类型兜底
     aux: Dict[str, Any] = field(default_factory=dict)   # 辅助证据(相关性等,机械算)
+    # —— V2.2-③(K8 六道关口):⑤ 那**一次** `basket_reason` 调用顺带产出的结构化
+    # 字段(成本算术铁律:三引擎并跑的 LLM 调用增量 = 0 次,⛔ 不新增调用)。
+    # `engine_code_llm` 是 LLM 的**主张**、不是结论 —— 结论(下面的引擎三件套)由
+    # `selection/gates.py` 机械对拍后经 `dataclasses.replace` 回填(§2.9-C-4:
+    # ⛔ 不静默采信 LLM)。四问缺答/矛盾识别缺席 → 驱动关/证据关按 degrade 处置
+    # (gates.py 的职责),⛔ 不在本层拒收(证据关只降级不除名,③-A)。
+    engine_code_llm: Optional[str] = None
+    common_trait: str = ""                 # 驱动关四问②:成员的共同特征(K8 §五-2)
+    persistence: str = ""                  # 驱动关四问③:逻辑的持续性
+    strengthen_and_invalidate: str = ""    # 驱动关四问④:什么会强化 / 证伪这个驱动
+    evidence_conflicts: str = ""           # 证据关 LLM 侧:矛盾识别(纯披露,不进判据)
+    # —— gates.py 机械对拍后的引擎归属(裁定 #9 单篮子单引擎,成员继承篮子引擎)——
+    engine_code: Optional[str] = None
+    engine_version: Optional[str] = None
+    skeleton_version: Optional[str] = None
+    engine_source: Optional[str] = None    # "llm" | "mech_fallback"(归属怎么来的)
 
 
 @dataclass(frozen=True)
@@ -703,12 +720,22 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
 
 股票篮子的定义:**由同一个主要驱动因素影响、预计次日具有相似方向或明显联动关系的一组股票。**
 
-你要做的四件事:
+你要做的六件事:
 1. **合并名称不同但实际驱动相同的题材**(例如某个行业种子和某个概念种子其实是同一件事);
 2. 给每个篮子命名,并用一句话说清**共同驱动**,再用一两句话说清**为什么是现在**;
 3. 从系统给出的成员清单里**挑 1 到 3 只**股票,说明**为什么是这几只而不是同题材其他票**;
 4. 给每个成员标一个角色:`leader`(高辨识度龙头)/ `core`(容量中军)/ `elastic`(弹性备选)。
 优先覆盖不同角色,但**不强制凑齐三个角色**;宁可一只,也不要为了凑数塞进弱相关的票。
+5. 给**每个篮子**标一个主引擎归属 `engine_code`(三选一;系统会拿机械数据对拍校验,
+标错不符合机械事实的篮子成员会被系统剔除):
+   · `C` = **已确认主线**里的核心股,健康回调结束后的再启动(主线逻辑与资金承接在延续);
+   · `Z` = **新形成方向**的核心股,方向形成早期、率先转强的右侧启动;
+   · `Y` = **中期平台**整理充分之后的核心启动(驱动是中期有效的,不要求当下最热)。
+6. 补齐驱动判断的另外三问(与"为什么是现在"并列,每问一两句、写不出就写空字符串,
+**不要编**):`common_trait`(这些成员的共同特征到底是什么)、`persistence`(这个逻辑
+凭什么还能延续)、`strengthen_and_invalidate`(接下来出现什么会强化它、出现什么会证伪它);
+另外若给出的各条证据之间**互相矛盾**,在 `evidence_conflicts` 里指出是哪几条打架、你如何取舍
+(没有矛盾就写空字符串)。
 
 硬约束(系统会做机械校验,违反的建议会被整条丢弃,不是提醒而是规则):
 · **成员只能从下面每颗种子给出的成员清单里选**。清单之外的任何代码都算凭空捏造,
@@ -735,7 +762,12 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
   {"name": "篮子名称(短标签)",
    "driver": "一句话说清共同驱动",
    "driver_kind": "theme|policy|event|commodity|overseas|rotation|limit_cluster 七选一",
+   "engine_code": "C|Z|Y 三选一(该篮子的主引擎归属)",
    "why_now": "为什么是现在(一两句话)",
+   "common_trait": "成员的共同特征(写不出就空字符串)",
+   "persistence": "逻辑的持续性(写不出就空字符串)",
+   "strengthen_and_invalidate": "什么会强化、什么会证伪(写不出就空字符串)",
+   "evidence_conflicts": "证据之间的矛盾与取舍(没有就空字符串)",
    "seed_keys": ["这个篮子合并了哪几颗种子的编号"],
    "members": [{"ts_code": "必须来自该种子的成员清单",
                 "role": "leader|core|elastic",
@@ -1052,6 +1084,21 @@ def _gate_proposal(
             name, raw.get("driver_kind"), kind,
         )
 
+    # —— V2.2-③:同一次调用顺带产出的关口字段(缺失/写错**不拒收**:engine_code
+    # 归 gates.py 机械兜底,四问缺答归驱动关 degrade —— 证据关只降级不除名,③-A)。
+    engine_raw = str(raw.get("engine_code") or "").strip().upper()
+    engine_code_llm = engine_raw if engine_raw in ("C", "Z", "Y") else None
+    if engine_raw and engine_code_llm is None:
+        logger.warning(
+            "[aggregate] 提案 %r 的 engine_code=%r 不在 C/Z/Y 内,交 gates.py 机械兜底",
+            name, raw.get("engine_code"),
+        )
+    conflicts_raw = raw.get("evidence_conflicts")
+    if isinstance(conflicts_raw, list):
+        evidence_conflicts = ";".join(str(x).strip() for x in conflicts_raw if str(x).strip())
+    else:
+        evidence_conflicts = str(conflicts_raw or "").strip()
+
     return BasketCandidate(
         trade_date=trade_date_s,
         basket_key=basket_key,
@@ -1071,7 +1118,17 @@ def _gate_proposal(
             "seed_labels": [ctx.label_for(seeds_by_key[k]) for k in seed_keys],
             "seed_kinds": seed_kinds,
             "corr_note": _corr_note([m.ts_code for m in members], ctx),
+            # V2.2-③:篮子成分池大小(所声明种子的**全部原始成分**并集,与
+            # `assign_primary` 的 lift 分母同口径)—— Z1 板块关 `cluster_members_min`
+            # (簇内协同成员数)的机械读数,gates.py 消费。
+            "seed_pool_size": len({c for k in seed_keys
+                                   for c in seeds_by_key[k].member_codes}),
         },
+        engine_code_llm=engine_code_llm,
+        common_trait=str(raw.get("common_trait") or "").strip(),
+        persistence=str(raw.get("persistence") or "").strip(),
+        strengthen_and_invalidate=str(raw.get("strengthen_and_invalidate") or "").strip(),
+        evidence_conflicts=evidence_conflicts,
     ), None
 
 
@@ -1183,14 +1240,9 @@ def assign_primary(
             )
             for m in b.members
         )
-        out.append(BasketCandidate(
-            trade_date=b.trade_date, basket_key=b.basket_key, name=b.name, driver=b.driver,
-            driver_kind=b.driver_kind, why_now=b.why_now, seed_keys=b.seed_keys,
-            members=members, evidence=b.evidence, evidence_status=b.evidence_status,
-            pack_version=b.pack_version, engine_api_version=b.engine_api_version,
-            charter_version=b.charter_version, driver_kind_fallback=b.driver_kind_fallback,
-            aux=b.aux,
-        ))
+        # `dataclasses.replace` 只改 members —— 其余字段(含 V2.2-③ 新增的关口/引擎
+        # 字段)原样保留;逐字段手抄在加新字段时会静默丢字段(施工期真踩过的坑型)。
+        out.append(dc_replace(b, members=members))
     return tuple(out)
 
 

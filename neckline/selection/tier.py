@@ -1,7 +1,33 @@
-"""③Tier 分层引擎(plan §五 V2-⑥;V2.1-② 起只剩两档)。把 ⑤ 产出的**篮子候选**定档 T1/T2。
+"""③Tier 分层引擎(plan §五 V2-⑥;V2.1-② 起只剩两档;**V2.2-③-D 起定档改门槛制**)。
+把 ⑤ 产出的**篮子候选**定档 T1/T2。
 
 **目标一句话**:定档**全机械、可完整复现**;LLM 只能在**同档内**微调次序并留痕,
 **不得跨档**(§2.8-C 第 1 条 —— 「LLM 不进排序」精确化 = 不进**机械分**)。
+
+════════════════════════════════════════════════════════════════════════════
+**V2.2-③-D 门槛制(K8 §八,🔴 换心脏;冷启动先读这一节)**
+
+- **定档的闸自此是六道关口**(`selection/gates.py`,唯一实现),不再是机械分:
+    · **T1** = 六关全过 且 全员 `landing_state=liftoff_confirmed` 且 `market_regime`
+      可得 且 **次日交易预案四件套齐**(四件套在 ⑦ 卡生成后由
+      `enforce_plan_completeness()` 补验 —— 缺任一 → 降 T2,⛔ 不是拦截);上限 ≤2,允许为空。
+    · **T2** = 机械关全过、证据关至多 `tier_evidence.t2.max_evidence_degrades`(引擎包)
+      处 degrade;上限 ≤5。
+    · 达不到 T2 → **退出正式候选**,进 `TierResult.dropped` → 报告 ③b
+      (名 / 分 / 卡在哪一关、差多少 / 原因码;**票永远不会从报告里消失**,§2.9-C-2)。
+- **机械分五维 / `_TIER_SCORE_INPUTS` 白名单锁 / `tier_history.mech_breakdown` /
+  V2.1-④ 百分制打分卡 —— 全部原样保留,⛔ 一个都不许删**(plan ③-D 原文):它们
+  **不再是定档的闸**,降级为「档内排序 + 展示标度」。删了会连带作废百分制卡与
+  ⑨ 归因的一整条标度。
+- **`quality_lines` 降级为档内排序的辅助下限**(§七 P3-33 主体随之作废):不再拦
+  任何篮子进出任何档(否则「tier2_min 取多少」仍是判定正确性问题,P3-33 就死不掉),
+  只在 `mech_breakdown_json.below_tier_line` 上做**展示标度**(分低于本档辅助线的
+  篮子被标出来给人看)。`DROP_BELOW_QUALITY_LINE` 码保留(历史归因读回 + 展示文案),
+  **新运行不再产生它**。
+- **容量 T1≤2 / T2≤5 / 合计 ≤7:V2.1-② 已改到位,本块零改动**(plan ③-D 如实登记)。
+- **缺 `market_regime` 行 = 市场关不拦,但该票不得进 T1**(② 已定;gates.py 的
+  `blocks_t1` 统一姿势把它推广到一切「判定输入取不到」的关口)。
+════════════════════════════════════════════════════════════════════════════
 
 **机械分五维**(维度选择与权重**读现役包**,代码里不许有第二份数字):
 
@@ -89,6 +115,7 @@ from neckline.report.sectors import DEFAULT_TOP_N, compute_sector_strength
 from neckline.scan import cluster as cluster_mod
 from neckline.scan import stage as stage_mod
 from neckline.selection import basket_store, engine_api
+from neckline.selection import gates as gates_mod
 from neckline.selection.pack import Pack, get_active_pack
 
 logger = logging.getLogger(__name__)
@@ -225,12 +252,16 @@ REJECT_SLOT_TAKEN = "slot_taken"           # 两条提案抢同一个名次(先�
 REJECT_DUPLICATE_KEY = "duplicate_key"     # 同一个篮子被提了两次(第二条丢弃)
 REJECT_MALFORMED = "malformed"             # 形状不对
 
-DROP_CAPACITY_OVERFLOW = "capacity_overflow"       # 分数够、位置满 → 机会多到装不下
+DROP_CAPACITY_OVERFLOW = "capacity_overflow"       # 关口过了、位置满 → 机会多到装不下
 # ⚠ **码字符串一字不改**(V2.1-②):⑨ 评价引擎按原因码归因,改码 = 历史归因断线。
-# 语义随 T3 退役由「连 tier3_min 都没过」收窄为「连 tier2_min 都没过」,展示文案
-# 在 `report/basket_daily.py::DROPPED_REASON_LABEL` 同步。
-DROP_BELOW_QUALITY_LINE = "below_quality_line"     # 连 tier2_min 都没过 → 今天没什么好货
-# ⚠ 两者是相反的市场结论(⑥-b-C),⛔ 不许合并成一个"未入选"。
+# **V2.2-③-D 起为历史码**:门槛制下质量线不再拦档(见模块头),新运行不再产生它;
+# 保留 = 历史报告读回 + `DROPPED_REASON_LABEL` 展示文案不断线。
+DROP_BELOW_QUALITY_LINE = "below_quality_line"     # 〔历史〕连 tier2_min 都没过
+# V2.2-③-D:证据关降级到出局(③-A:T1→T2→退出正式候选;仍在 ③b 列名)。
+DROP_EVIDENCE_DEGRADED_OUT = "evidence_degraded_out"
+# gates 侧的四个除名码(硬否决 / 引擎归属失败)直接沿用 `gates.EXCLUDE_*` 字面,
+# `DroppedBasket.reason` 与 ③b/⑨ 消费同一套码,⛔ 不在这里再抄一份字符串。
+# ⚠ 各码指向**不同的市场/系统结论**,⛔ 不许合并成一个"未入选"(⑥-b-C 纪律扩容)。
 
 TIER_RANK_SYSTEM_PROMPT = f"""你是 A 股短线交易系统里的「同档次序参谋」。
 
@@ -297,9 +328,16 @@ class TierDecision:
 
 @dataclass(frozen=True)
 class DroppedBasket:
+    """③b 一行的内存形状。V2.2-③ 起带「卡在哪一关、差多少」(`gate`/`gate_detail`,
+    机器可读原因码串已内嵌数值)与篮子名 —— 三个新字段全部**追加默认**,既有
+    `DroppedBasket(key, reason, score)` 位置构造(跨进程交接/测试)原样成立。"""
+
     basket_key: str
     reason: str
     mech_score: float
+    name: str = ""
+    gate: Optional[str] = None          # 卡在哪一关(gates.GATE_* 六码之一;None = 非关口原因)
+    gate_detail: Optional[str] = None   # 差多少(原因码串,数值内嵌)
 
 
 @dataclass(frozen=True)
@@ -326,6 +364,13 @@ class TierResult:
     # 是审计快照,不是可写配置。
     quality_lines: Dict[str, float] = field(default_factory=dict)
     notes: Tuple[str, ...] = ()
+    # V2.2-③:关口对拍后的 `AggregateResult`(成员已出篮、引擎三件套已回填、被除名
+    # 候选已摘除)。**落库/卡生成必须用它**,⛔ 不许再用调用方手里未对拍的原 result
+    # (那会把被移除的成员写回库 —— `save_tier_result` 已优先取它)。
+    gated_result: Optional[Any] = None
+    # 关口汇总(basket_key → gates.BasketGateSummary;含被除名候选)。报告/卡要
+    # 「卡在哪关」细节时从这里拿,⛔ 不重判。
+    gate_summaries: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def llm_adjusted(self) -> bool:
@@ -667,39 +712,27 @@ def neutral_filled_weight(flags: Sequence[str], weights: Mapping[str, float]) ->
     )
 
 
-def _eligible_tier(score: float, quality_lines: Mapping[str, float]) -> Optional[int]:
-    """score 够哪一档的线,就"想要"哪一档(是否真能进去还要看容量,见
-    `assign_tiers`)。**连 T2 线都够不到 → `None`**(V2.1-②:T3 已彻底退役,
-    够不到 `tier2_min` 就是 `DROP_BELOW_QUALITY_LINE`,⛔ 没有兜底档)。"""
-    if score >= quality_lines["tier1_min"] - _EPS:
-        return 1
-    if score >= quality_lines["tier2_min"] - _EPS:
-        return 2
-    return None
-
-
 def assign_tiers(
     scored: Sequence[Tuple[str, float]],
-    quality_lines: Mapping[str, float] = _DEFAULT_QUALITY_LINES,
+    want_by_key: Mapping[str, int],
 ) -> Tuple[Dict[str, Tuple[int, int]], List[DroppedBasket]]:
-    """机械定档。输入 `[(basket_key, mech_score), ...]`,输出
+    """门槛制放位(V2.2-③-D)。输入 `[(basket_key, mech_score), ...]` +
+    `want_by_key`(**六关给出的目标档**,1 = T1 资格、2 = T2 资格 —— 由
+    `score_and_tier` 从 `gates.BasketGateSummary` 推出;⛔ 分数在这里只定档内序,
+    「够不够格」不归它管,那正是门槛制与排序制的分界)。输出
     `({basket_key: (tier, rank_mech)}, dropped)`。
-
-    `quality_lines`:`{"tier1_min", "tier2_min"}` 两键(默认取
-    `_DEFAULT_QUALITY_LINES` = 引擎缺省值;`score_and_tier()` 会传现役包
-    `resolve_quality_lines()` 解出来的那份)。
 
     **确定性铁律**:先按 `(机械分降序, basket_key 升序)` 排定 —— 分数并列时靠
     `basket_key`(crc32 十六进制,跨进程可复现)打破,**不靠行序**(CLAUDE.md:
     `rank(method="ordinal")` 的并列由行序打散 = 不确定性)。
 
-    **上限非配额**:每档先看质量线(`_eligible_tier`),够格才进那一档;够格但该档
-    已满 → **向下顺延**到还有位子的档(不是把它挤进去,也不是丢掉);两档都满 →
-    今日不定档(`DROP_CAPACITY_OVERFLOW`,「分数够、位置满」)。**允许任何一档
-    为空**(V2-⑥-b-B):没有篮子够某档线时,那一档就是空的,不许拿别档凑数。
-    **连 T2 线都够不到 → 直接丢弃**(`DROP_BELOW_QUALITY_LINE`,「分数不够」),
-    连容量判断都不参与 —— 这与容量溢出是两种相反的市场结论,⛔ 不许合并
-    (V2-⑥-b-C)。
+    **上限非配额**:T1 资格但 T1 已满 → **向下顺延**到 T2(不是挤进去,也不是丢掉);
+    两档都满 → 今日不定档(`DROP_CAPACITY_OVERFLOW`,「关口过了、位置满」)。
+    **允许任何一档为空**(V2-⑥-b-B 原文在门槛制下照旧成立:没有篮子过某档的关,
+    那一档就是空的,不许拿别档凑数)。
+
+    `want_by_key` 缺键 / 取值不在 {1,2} → `ValueError` fail loud(那是调用方把
+    「达不到 T2 该走 ③b」的候选漏筛进来了 —— 静默兜一个档等于把门槛制改回配额)。
     """
     order = sorted(scored, key=lambda kv: (-kv[1], kv[0]))
     used = {t: 0 for t in TIERS}
@@ -707,11 +740,13 @@ def assign_tiers(
     out: Dict[str, Tuple[int, int]] = {}
     dropped: List[DroppedBasket] = []
     for key, score in order:
-        want = _eligible_tier(score, quality_lines)
-        if want is None:
-            dropped.append(DroppedBasket(basket_key=key, reason=DROP_BELOW_QUALITY_LINE,
-                                         mech_score=score))
-            continue
+        want = want_by_key.get(key)
+        if want not in TIERS:
+            raise ValueError(
+                f"assign_tiers:basket_key={key!r} 的目标档 {want!r} 不在 {TIERS} —— "
+                "达不到 T2 的候选应由调用方先落 dropped(evidence_degraded_out / 关口除名),"
+                "不进放位"
+            )
         placed = False
         for t in TIERS:
             if t < want:
@@ -905,6 +940,35 @@ def apply_llm_adjustments(
 # 编排入口
 # ══════════════════════════════════════════════════════════════════════════
 
+def _gate_breakdown(summary: Any) -> Dict[str, Any]:
+    """`gates.BasketGateSummary` → `mech_breakdown_json.gates` 节(审计快照,
+    ⑨ 归因与百分制卡的展示原料;⛔ 不进机械分 —— `_TIER_SCORE_INPUTS` 白名单不含它)。"""
+    if summary is None:
+        return {"available": False}
+    verdicts: Dict[str, str] = {}
+    rank = {gates_mod.VERDICT_PASS: 0, gates_mod.VERDICT_DEGRADE: 1, gates_mod.VERDICT_REJECT: 2}
+    for c in summary.checks:
+        cur = verdicts.get(c.gate)
+        if cur is None or rank[c.verdict] > rank[cur]:
+            verdicts[c.gate] = c.verdict
+    return {
+        "available": True,
+        "engine_code": summary.engine_code,
+        "engine_version": summary.engine_version,
+        "skeleton_version": summary.skeleton_version,
+        "engine_source": summary.engine_source,
+        "verdicts": verdicts,
+        "evidence_degrades": summary.evidence_degrades,
+        "degraded_gates": list(summary.degraded_gates),
+        "blocks_t1": summary.blocks_t1,
+        "all_members_liftoff": summary.all_members_liftoff,
+        "removed_members": [
+            {"ts_code": r.ts_code, "gate": r.gate, "reason": r.reason}
+            for r in summary.removed_members
+        ],
+    }
+
+
 def score_and_tier(
     result: Any,
     trade_date: date,
@@ -916,16 +980,30 @@ def score_and_tier(
     use_llm: bool = False,
     ledger: Optional[BudgetLedger] = None,
     transport: Optional[Any] = None,
+    gates_outcome: Optional[Any] = None,
+    engines: Optional[Mapping[str, Pack]] = None,
+    skeleton: Optional[Pack] = None,
 ) -> TierResult:
-    """⑥ 唯一编排入口:`AggregateResult` → 机械分 → 定档 → (可选)LLM 同档微调。
+    """⑥ 唯一编排入口(V2.2-③-D 门槛制):`AggregateResult` → **六道关口**(定档的
+    闸)→ 机械分(档内排序)→ 放位 → (可选)LLM 同档微调。
 
-    `pack`:默认取现役包(权重与 `stage_scores` 都只住包里)。**无现役包 → 抛**
-    —— 定档必须有权重,臆造一份默认权重等于在代码里藏第二套策略。
+    `pack`:默认取现役骨架包(五维权重与 `stage_scores` 都只住包里)。**无现役包 →
+    抛** —— 打分必须有权重,臆造一份默认权重等于在代码里藏第二套策略。
 
-    `use_llm`:默认 **False**(纯机械,零 LLM 调用)。⑭ 的管线会显式打开它并传
-    `provider`/`ledger`;单测与本地冒烟保持默认即可完全离线。传了 `provider` 但
-    `use_llm=False` 时**不会**调用 —— 两个开关刻意分开,免得"注入个桩"就意外走上
-    LLM 路径。
+    `result`:🔴 **必须是对拍前的那批候选**(= 喂给 `gates.evaluate_day` 的同一份)。
+    传 `gates_outcome.result`(对拍后)会让被关口除名的候选静默消失,本函数为此
+    fail loud —— 理由见下面 `missing_from_result` 那段。
+
+    `gates_outcome`:⑭ 管线里由 `evening.py` 先跑 `gates.evaluate_day()`(顺手落
+    `gate_evaluations` 留痕)再传进来;不传 → 本函数自己跑一遍(零 LLM、只读表)。
+    `engines`/`skeleton` 只在自己跑 gates 时透传(测试注入 Pack 替身的口子,照
+    `pack=` 的既有姿势)。
+
+    **⚠ 落库/卡生成必须用 `TierResult.gated_result`**(关口对拍后的 result:成员已
+    出篮、引擎三件套已回填)—— `save_tier_result` 已自动取它。
+
+    `use_llm`:默认 **False**(纯机械,零 LLM 调用)。传了 `provider` 但
+    `use_llm=False` 时**不会**调用 —— 两个开关刻意分开。
 
     **本函数不落库**(落库走 `save_tier_result()`,plan 的事务 1)。
     """
@@ -948,20 +1026,50 @@ def score_and_tier(
     if not result.baskets:
         return TierResult(trade_date=trade_date_s, llm_stage=LLM_NOT_NEEDED,
                           pack_version=pack_version, weights=weights,
-                          quality_lines=quality_lines,
+                          quality_lines=quality_lines, gated_result=result,
                           notes=tuple(notes + ["no_baskets"]))
 
+    # —— V2.2-③:六道关口(定档的闸,唯一实现 `gates.py`)——————————————————
+    if gates_outcome is None:
+        gates_outcome = gates_mod.evaluate_day(
+            result, trade_date, db_path=db_path, parquet_dir=parquet_dir,
+            engines=engines, skeleton=skeleton,
+        )
+    gated = gates_outcome.result
+    summaries = dict(gates_outcome.summaries)
+    notes.extend(gates_outcome.notes)
+
+    # 🔴 **`result` 必须是「喂给 gates 的那一批」= 对拍前的候选**(⛔ 不是
+    # `gates_outcome.result`)。被关口除名的候选**只存在于 `summaries` 里**,本函数
+    # 靠遍历 `result.baskets` 把它们转成 ③b 行;传对拍后的 result 进来 = 那些票在
+    # `baskets` 表里没有、在 ③b 里也没有 = **从报告里消失**,正是 §2.9-C-2 明令禁止的
+    # 那一种失败,而且**静默**。故这里 fail loud:少一票都要当场炸,别让它悄悄没。
+    missing_from_result = sorted(set(summaries) - {b.basket_key for b in result.baskets})
+    if missing_from_result:
+        raise ValueError(
+            f"score_and_tier:gates 汇总里有 {missing_from_result} 不在 result.baskets 里 —— "
+            "`result` 必须是**喂给 gates.evaluate_day 的那一批**(对拍前),传 "
+            "`gates_outcome.result`(对拍后)会让被关口除名的候选既不进 baskets 表、"
+            "也不进 ③b 未定档披露 = 票从报告里消失(§2.9-C-2 禁止)"
+        )
+
+    # 机械分(自此只做**档内排序 + 展示标度**):留在正式候选里的篮子按**对拍后**
+    # 的成员打(诚实——出篮的成员不该再抬分);被关口除名的按原成员打,只服务
+    # ③b 的「分」列(它们不进任何档,分数不再有判定含义)。
     k4_unavailable = "k4_unavailable" in tuple(getattr(result, "notes", ()) or ())
-    codes = sorted({m.ts_code for b in result.baskets for m in b.members})
+    kept_by_key = {b.basket_key: b for b in gated.baskets}
+    score_basket_of = {b.basket_key: kept_by_key.get(b.basket_key, b) for b in result.baskets}
+    codes = sorted({m.ts_code for b in score_basket_of.values() for m in b.members})
     fctx = build_feature_context(trade_date, codes, db_path=db_path, parquet_dir=parquet_dir)
 
-    scored: List[Tuple[str, float]] = []
+    score_by_key: Dict[str, float] = {}
     breakdowns: Dict[str, Dict[str, Any]] = {}
     for b in result.baskets:
-        row, flags = build_tier_row(b, fctx, stage_scores=stage_scores,
+        sb = score_basket_of[b.basket_key]
+        row, flags = build_tier_row(sb, fctx, stage_scores=stage_scores,
                                     k4_unavailable=k4_unavailable)
         score = mech_score(row, weights)
-        scored.append((b.basket_key, score))
+        score_by_key[b.basket_key] = score
         breakdowns[b.basket_key] = {
             "dims": {d: round(float(row[d]), 6) for d in sorted(_TIER_SCORE_INPUTS)},
             "weights": {d: round(float(weights[d]), 6) for d in sorted(weights)},
@@ -976,13 +1084,59 @@ def score_and_tier(
             "score": round(float(score), 6),
             "pack_version": pack_version,
             "engine_api_version": engine_api.ENGINE_API_VERSION,
+            # V2.2-③:六关判定快照(定档依据;⛔ 不进机械分)。
+            "gates": _gate_breakdown(summaries.get(b.basket_key)),
         }
 
-    score_by_key = dict(scored)
-    placement, dropped = assign_tiers(scored, quality_lines=quality_lines)
+    # —— 门槛制筛选:除名 → ③b;够 T2 才进放位;分数只定档内序 ————————————
+    dropped: List[DroppedBasket] = []
+    want_by_key: Dict[str, int] = {}
+    scored_eligible: List[Tuple[str, float]] = []
+    for b in result.baskets:
+        key = b.basket_key
+        s = summaries.get(key)
+        if s is None:
+            raise ValueError(
+                f"score_and_tier:gates 汇总缺 basket_key={key!r} —— "
+                "gates_outcome 与 result 不是同一批候选(调用方传串了)"
+            )
+        if s.excluded:
+            dropped.append(DroppedBasket(
+                basket_key=key, reason=s.exclusion_reason or "excluded",
+                mech_score=score_by_key[key], name=b.name,
+                gate=s.stuck_gate, gate_detail=s.stuck_detail,
+            ))
+            continue
+        if not s.t2_eligible:
+            detail = ";".join(
+                c.reason for c in s.checks if c.verdict == gates_mod.VERDICT_DEGRADE
+            )
+            first_gate = next(
+                (g for g in gates_mod.GATE_ORDER if g in s.degraded_gates), None)
+            dropped.append(DroppedBasket(
+                basket_key=key, reason=DROP_EVIDENCE_DEGRADED_OUT,
+                mech_score=score_by_key[key], name=b.name,
+                gate=first_gate, gate_detail=detail or "证据关降级超出 T2 上限",
+            ))
+            continue
+        want_by_key[key] = 1 if s.t1_eligible else 2
+        scored_eligible.append((key, score_by_key[key]))
+
+    placement, cap_dropped = assign_tiers(scored_eligible, want_by_key)
+    name_of = {b.basket_key: b.name for b in result.baskets}
+    dropped.extend(
+        replace(d, name=name_of.get(d.basket_key, "")) for d in cap_dropped
+    )
+
+    # 质量线降级为「档内排序的辅助下限」= 纯展示标度(模块头「V2.2-③-D 门槛制」节)。
+    for key, (t, _r) in placement.items():
+        line = quality_lines.get(f"tier{t}_min")
+        if line is not None:
+            breakdowns[key]["below_tier_line"] = bool(
+                score_by_key[key] < float(line) - _EPS)
+
     if dropped:
-        # V2-⑥-b-C:两种"没进来"是相反的市场结论,notes/日志都不许把它们揉成
-        # 一句话——逐原因码分别计数披露。
+        # ⑥-b-C 纪律扩容:每种"没进来"指向不同结论,notes/日志逐原因码分别计数披露。
         drop_counts: Dict[str, int] = {}
         for d in dropped:
             drop_counts[d.reason] = drop_counts.get(d.reason, 0) + 1
@@ -999,7 +1153,7 @@ def score_and_tier(
             mech_score=float(score_by_key[key]), breakdown=breakdowns[key],
             rank_mech=placement[key][1], rank_in_tier=placement[key][1],
         )
-        for key, _score in scored if key in placement
+        for key, _score in scored_eligible if key in placement
     ]
     by_tier: Dict[int, List[TierDecision]] = {t: [] for t in TIERS}
     for d in mech_decisions:
@@ -1040,7 +1194,7 @@ def score_and_tier(
         trade_date=trade_date_s, decisions=tuple(decisions), dropped=tuple(dropped),
         rejected_adjustments=tuple(rejected), llm_stage=llm_stage, llm_narrative=narrative,
         pack_version=pack_version, weights=weights, quality_lines=quality_lines,
-        notes=tuple(notes),
+        notes=tuple(notes), gated_result=gated, gate_summaries=summaries,
     )
 
 
@@ -1054,7 +1208,13 @@ def save_tier_result(
     ⚠ **只落定了档的篮子**:容量溢出的篮子(`tier_result.dropped`)今日不定档,
     `baskets.tier` 是 `NOT NULL`,给它们臆造一个 tier 才是错的。溢出留痕在
     `TierResult.dropped` 里,由报告层如实披露。
+
+    **V2.2-③**:落库基底优先取 `tier_result.gated_result`(关口对拍后的 result:
+    成员已出篮、引擎三件套已回填)—— 调用方传进来的 `agg_result` 若是对拍前的原
+    结果,直接用它会把已出篮的成员写回库。
     """
+    if tier_result.gated_result is not None:
+        agg_result = tier_result.gated_result
     tiers = tier_result.tier_by_basket_key()
     history = {
         d.basket_key: {
@@ -1082,6 +1242,97 @@ def _subset_result(agg_result: Any, kept: Sequence[Any]) -> Any:
     return replace(agg_result, baskets=tuple(kept))
 
 
+# 四件套缺件降档在 breakdown / 卡上留的原因码前缀(⑨ 归因可 grep;后接缺件清单)。
+T1_DEMOTED_PLAN_INCOMPLETE = "t1_demoted:plan_incomplete"
+
+
+def enforce_plan_completeness(
+    tier_result: TierResult,
+    missing_by_key: Mapping[str, Sequence[str]],
+) -> TierResult:
+    """③-E:**「次日交易预案四件套齐」是 T1 的必要条件**(上涨判断 / 入场区间 /
+    目标离场区间 / 判断失效位置)。四件套住 ⑦ 的卡上、卡在定档**之后**才生成,
+    故本函数由编排层(`report/evening.py`)在 ⑦ 卡构建完、**事务 1 落库之前**调用:
+
+    - `missing_by_key`:{basket_key: [缺哪几件]}(判定唯一实现 =
+      `basket_card.trade_plan_missing_pieces()`,本函数不重判)。**没进这张表的
+      T1 篮 = 没有卡产物 = 四件套整套缺**(卡生成失败/LLM 缺席时 T1 必须降档 ——
+      T1 的含义是「启动成立 + 预案完整可执行」,没有预案就没有 T1)。
+    - T1 且缺件 → **降 T2**(⛔ 不是拦截,§3.8:票照留、卡照出,客户端与周复盘各出
+      一条警示);T2 已满 → `DROP_CAPACITY_OVERFLOW` 出局(⛔ 不突破容量上限)。
+    - 非 T1 篮不受影响(四件套只是 T1 的必要条件,不是 T2 的)。
+
+    返回新 `TierResult`(降档后 T2 全档重排:先原 T2 按档内序、再降档篮按原 T1 档内
+    序;`rank_mech` 按 `(机械分降序, basket_key 升序)` 在**最终 T2 集合**上重排 ——
+    两个序都必须是 1..N 连续,`tier_history` 两列 NOT NULL 的可复现性要求)。
+    幂等:无 T1 或无缺件 → 原样返回。"""
+    t1 = [d for d in tier_result.decisions if d.tier == 1]
+    if not t1:
+        return tier_result
+    demote = [d for d in t1 if missing_by_key.get(d.basket_key, ("no_card",))]
+    if not demote:
+        return tier_result
+
+    keep_t1 = sorted((d for d in t1 if d not in demote), key=lambda d: d.rank_in_tier)
+    old_t2 = sorted((d for d in tier_result.decisions if d.tier == 2),
+                    key=lambda d: d.rank_in_tier)
+    others = [d for d in tier_result.decisions if d.tier not in (1, 2)]
+
+    new_decisions: List[TierDecision] = list(others)
+    for idx, d in enumerate(keep_t1, start=1):
+        new_decisions.append(replace(d, rank_in_tier=idx))
+
+    demoted_sorted = sorted(demote, key=lambda d: d.rank_in_tier)
+    final_t2 = old_t2 + [
+        replace(
+            d, tier=2,
+            breakdown={
+                **d.breakdown,
+                "t1_demoted_reason": (
+                    f"{T1_DEMOTED_PLAN_INCOMPLETE}:"
+                    + ",".join(missing_by_key.get(d.basket_key, ("no_card",)))
+                ),
+            },
+        )
+        for d in demoted_sorted
+    ]
+    cap = TIER_CAPACITY[2]
+    kept_t2, overflow = final_t2[:cap], final_t2[cap:]
+    # 最终 T2 集合上的机械序(确定性:分降序 → key 升序;LLM delta 随之重算)。
+    mech_order = {
+        d.basket_key: i
+        for i, d in enumerate(
+            sorted(kept_t2, key=lambda d: (-d.mech_score, d.basket_key)), start=1)
+    }
+    for idx, d in enumerate(kept_t2, start=1):
+        rm = mech_order[d.basket_key]
+        new_decisions.append(replace(d, rank_in_tier=idx, rank_mech=rm,
+                                     llm_rank_delta=rm - idx))
+
+    dropped = list(tier_result.dropped)
+    for d in overflow:
+        dropped.append(DroppedBasket(
+            basket_key=d.basket_key, reason=DROP_CAPACITY_OVERFLOW,
+            mech_score=d.mech_score,
+            gate=None,
+            gate_detail=f"{T1_DEMOTED_PLAN_INCOMPLETE} 降档后 T2 已满",
+        ))
+    notes = list(tier_result.notes)
+    notes.append(
+        f"{T1_DEMOTED_PLAN_INCOMPLETE}:{len(demote)}"
+        + (f"(其中 {len(overflow)} 个降档后 T2 满,capacity_overflow)" if overflow else "")
+    )
+    logger.warning(
+        "[tier] %s 有 %d 个 T1 篮四件套不齐,降 T2(缺件:%s)%s",
+        tier_result.trade_date, len(demote),
+        {d.basket_key: list(missing_by_key.get(d.basket_key, ("no_card",))) for d in demote},
+        f";{len(overflow)} 个因 T2 满出局" if overflow else "",
+    )
+    new_decisions.sort(key=lambda d: (d.tier, d.rank_in_tier))
+    return replace(tier_result, decisions=tuple(new_decisions), dropped=tuple(dropped),
+                   notes=tuple(notes))
+
+
 __all__ = [
     "DIM_SECTOR_STRENGTH",
     "DIM_DRIVER_FRESHNESS",
@@ -1107,6 +1358,8 @@ __all__ = [
     "REJECT_MALFORMED",
     "DROP_CAPACITY_OVERFLOW",
     "DROP_BELOW_QUALITY_LINE",
+    "DROP_EVIDENCE_DEGRADED_OUT",
+    "T1_DEMOTED_PLAN_INCOMPLETE",
     "FLAG_SECTOR_MISSING",
     "FLAG_STAGE_MISSING",
     "FLAG_STAGE_SCORES_ABSENT",
@@ -1132,4 +1385,5 @@ __all__ = [
     "apply_llm_adjustments",
     "score_and_tier",
     "save_tier_result",
+    "enforce_plan_completeness",
 ]

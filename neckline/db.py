@@ -1144,6 +1144,38 @@ CREATE TABLE IF NOT EXISTS landing_state_daily (
   computed_at      TEXT NOT NULL,
   PRIMARY KEY (trade_date, ts_code)
 );
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.2-③(2026-08,K8 §五 六道关口):关口判定留痕,**append-only**(每候选每关
+-- 一行;成员级关口〔核心/位置〕每候选每关每成员一行)。唯一写入口 =
+-- `neckline/selection/gates.py::save_gate_evaluations`(六关唯一实现同文件),
+-- 本表零 UPDATE/DELETE 路径(守门:`tests/test_v2_schema_guard.py` 的 append-only
+-- 文本扫描)。用途两条(plan §五 ③-B 原文):
+--   ① 报告 ③b「未定档披露」的升级版 —— 现在说得出**卡在哪一关、差多少**;
+--   ② ④ 周度「各因素对正确率的贡献」(K8 §十六 选股侧第 8 项)的**直接数据源**
+--      —— 没有这张表,那一项算不出来。
+-- `candidate_key` = ⑤ 的 basket_key(候选在被 ⑥ 落库拿到 basket_id 之前就可能被
+-- 关口除名,故键用篮子候选键、不用 basket_id —— 被硬否决的候选恰恰是最需要留痕的)。
+-- `verdict` 三态:pass|degrade|reject(③-A 二分:机械关只会 pass/reject,证据关只会
+-- pass/degrade;混出别的组合 = gates.py 有 bug)。⚠ `engine_code`/`engine_version`
+-- 在**引擎已解析**的行上一律填(plan 原注「成员级关口才有」写于裁定 #9 之前;单篮子
+-- 单引擎后篮子级关口同样按该篮引擎的阈值分支判,不填 = 归因丢信息,施工时如实扩)。
+CREATE TABLE IF NOT EXISTS gate_evaluations (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_date    TEXT NOT NULL,
+  candidate_key TEXT NOT NULL,   -- 篮子候选键(⑤ 的 basket_key)
+  ts_code       TEXT,            -- NULL = 篮子级关口(市场/驱动/板块/证据),非空 = 成员级(核心/位置)
+  gate          TEXT NOT NULL,   -- market|driver|sector|core|position|evidence
+  gate_kind     TEXT NOT NULL,   -- mech|llm
+  verdict       TEXT NOT NULL,   -- pass|degrade|reject
+  score         REAL,            -- 该关的定量读数(可空)
+  threshold     REAL,            -- 当次生效阈值(可空)
+  engine_code   TEXT,
+  engine_version TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_gate_eval_day ON gate_evaluations(trade_date, gate);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库
@@ -1268,6 +1300,15 @@ _COLUMN_MIGRATIONS = [
     # (用户 2026-08-09 裁定,详见 `selection/pack.py::get_active_engines` docstring)。
     ("selection_packs", "line_code", "TEXT NOT NULL DEFAULT 'LEGACY'"),
     ("selection_packs", "status", "TEXT NOT NULL DEFAULT 'running'"),
+    # V2.2-③-E(plan §五 ③-E,裁定 #9 单篮子单引擎):`baskets` 幂等补三列 ——
+    # 篮子级引擎归属(成员继承篮子引擎,`basket_members` ⛔ 不加引擎列)。三列均
+    # **可空、不回填**:老行(建于 K8 之前)NULL = 「当时没有引擎归属概念」,⛔ 不拿
+    # 今天的现役引擎去追认历史篮子(同 `llm_judgments.search_engine`「记录 ≠ 推断」
+    # 的既有纪律)。skeleton_version = 生成当时的骨架线版本口径指纹(与
+    # `market_regime_daily.skeleton_version` 同语义)。
+    ("baskets", "engine_code", "TEXT"),
+    ("baskets", "engine_version", "TEXT"),
+    ("baskets", "skeleton_version", "TEXT"),
     # V2-⑭-A(plan §五 V2-⑭-A「报告重构为篮子日报」):篮子日报快照。
     # **随报告一起冻住**(同 `intel_json`/`data_freshness_json` 既定惯例):今日篮子
     # (T1/T2/T3,每篮一张卡)+ ③b 未定档篮子(`capacity_overflow` /

@@ -650,24 +650,28 @@ def _render_dropped_baskets(bd: Optional[BasketDaily]) -> str:
         lines.append("今日无未定档篮子(**已算过**:既没有分数够却装不下的,也没有没过质量线的)。")
         lines.append("")
         return "\n".join(lines)
-    overflow = [d for d in bd.dropped if d.reason == "capacity_overflow"]
-    below = [d for d in bd.dropped if d.reason == "below_quality_line"]
-    other = [d for d in bd.dropped if d not in overflow and d not in below]
-    lines.append(f"今日 {len(bd.dropped)} 个篮子未定档 —— **两类原因指向相反的市场结论,分开看**:")
+    # V2.2-③:③b 升级为「名 / 分 / 卡在哪一关、差多少 / 原因码」(门槛制下的
+    # 未定档原因扩成多类,逐原因码计数披露,⛔ 不合并 —— 各码指向不同结论)。
+    by_reason: Dict[str, int] = {}
+    for d in bd.dropped:
+        by_reason[d.reason] = by_reason.get(d.reason, 0) + 1
+    lines.append(f"今日 {len(bd.dropped)} 个篮子未定档 —— **各原因码指向不同结论,分开看**:")
     lines.append("")
-    lines.append(f"- **档位已满(`capacity_overflow`,{len(overflow)} 个)**:"
-                 f"分数过了质量线、今天位置装不下 —— **今天机会多到装不下**。")
-    lines.append(f"- **未过质量线(`below_quality_line`,{len(below)} 个)**:"
-                 f"连 T2 下限都没到 —— **今天没什么好货**。")
-    if other:
-        lines.append(f"- 其它原因码({len(other)} 个):" + "、".join(sorted({d.reason for d in other})))
+    for reason in sorted(by_reason):
+        label = DROPPED_REASON_LABEL.get(reason, reason)
+        lines.append(f"- **`{reason}`({by_reason[reason]} 个)**:{label}")
     lines.append("")
-    lines.append("| 篮子名 | 机械分 | 原因码 | 原因 |")
-    lines.append("|---|---|---|---|")
+    lines.append("| 篮子名 | 机械分 | 卡在哪一关 | 差多少 | 原因码 |")
+    lines.append("|---|---|---|---|---|")
     for d in sorted(bd.dropped, key=lambda x: (x.reason, -(x.mech_score or 0.0), x.name)):
-        lines.append(f"| {d.name} | {_fmt_num(d.mech_score, '{:.3f}')} | `{d.reason}` | {d.reason_label} |")
+        gate = getattr(d, "gate", None) or "—"
+        detail = getattr(d, "gate_detail", None) or "—"
+        lines.append(
+            f"| {d.name} | {_fmt_num(d.mech_score, '{:.3f}')} | {gate} | {detail} | `{d.reason}` |"
+        )
     lines.append("")
-    lines.append("*本节只列名 / 分 / 原因码,**不出卡、无 basketId** —— 它们没有进 `baskets` 表。*")
+    lines.append("*本节只列名 / 分 / 关口 / 原因码,**不出卡、无 basketId** —— 它们没有进 "
+                 "`baskets` 表;机械分在门槛制下只是展示标度,不是定档依据。*")
     lines.append("")
     return "\n".join(lines)
 

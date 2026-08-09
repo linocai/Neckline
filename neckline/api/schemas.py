@@ -169,6 +169,11 @@ class BasketCardOut(BaseModel):
     name: str = ""
     driver: str = ""
     driverKind: str = ""
+    # V2.2-③-E(裁定 #9 单篮子单引擎):篮子级引擎归属,成员继承 —— 新增可选键,
+    # 老卡(v2 及以前)缺键 = 「当时没有引擎归属概念」,⛔ 不是 "engine 为空"。
+    engineCode: Optional[str] = None
+    engineVersion: Optional[str] = None
+    skeletonVersion: Optional[str] = None
     evidence: List[Dict[str, Any]] = Field(default_factory=list)
     # ⑤ 两段式流水的单侧故障披露:ok | search_unavailable | partial。
     # ⛔ 不是 `ok` 时客户端必须显式标注"取证不完整",不许静默当完整证据展示。
@@ -277,6 +282,12 @@ class BasketOut(BaseModel):
     tradeDate: str = ""
     tier: Optional[int] = None
     memberCodes: List[str] = Field(default_factory=list)
+    # V2.2-③-E(裁定 #9):篮子级引擎归属,**成员继承篮子引擎**(K8 §四「每票唯一
+    # 主引擎及准确版本」由这三键 + memberCodes 共同表达)。新增可选键;历史行 = null
+    # =「当时没有引擎归属概念」,⛔ 不回填猜测。
+    engineCode: Optional[str] = None
+    engineVersion: Optional[str] = None
+    skeletonVersion: Optional[str] = None
     card: Optional[BasketCardOut] = None
     cardVersion: Optional[int] = None
     cardUnavailableReason: Optional[str] = None
@@ -291,15 +302,21 @@ class BasketsListOut(BaseModel):
 
 
 class DroppedBasketOut(BaseModel):
-    """③b 一行(⑥-b-C)。**`reason` 两个码语义相反,⛔ 客户端不许合并成一句「未入选」**:
-    `capacity_overflow` = 分数够、位置满 →「今天机会多到装不下」;
-    `below_quality_line` = 连最低档下限都没过 →「今天没什么好货」(V2.1-② 起 = T2 下限,
-    历史报告里是 T3 下限;**码字符串一字未改** —— ⑨ 按原因码归因,改码 = 历史归因断线)。
+    """③b 一行(⑥-b-C;**V2.2-③ 升级为「名 / 分 / 卡在哪一关、差多少 / 原因码」**)。
+    **`reason` 各码语义不同,⛔ 客户端不许合并成一句「未入选」**:
+    `capacity_overflow` = 关口过了、位置满 →「今天机会多到装不下」;
+    `below_quality_line` = 历史码(V2.2 门槛制前的「连质量线都没过」,老快照仍会出现);
+    V2.2 新码见 `report/basket_daily.py::DROPPED_REASON_LABEL`(证据关降级出局 /
+    机械关硬否决 / 成员全出篮 / 引擎缺席两种)。**码字符串一经落库不改** —— ⑨ 按
+    原因码归因,改码 = 历史归因断线。
+    `gate`/`gateDetail`(新增可选键):卡在哪一关、差多少(老快照缺键,零删键)。
     **没有 `basketId`** —— 它没进 `baskets` 表,给一个 id 会让人以为点得进去。"""
 
     name: str = ""
     mechScore: Optional[float] = None
     reason: str = ""
+    gate: Optional[str] = None
+    gateDetail: Optional[str] = None
 
 
 class BasketVerificationOut(BaseModel):
@@ -644,6 +661,10 @@ class PositionOpenOut(BaseModel):
     # 「原盈亏结构已变」偏离提示(⑩-B:实际成交价与建仓观察区间明显偏离时的纯展示
     # 提示,不质问不阻断);无从比较(无 entry_zone)→ null,不是"未偏离"。
     planDeviationNotice: Optional[str] = None
+    # V2.2-③-E:交易资格四件套(K8 §十一)缺件**警示**(⛔ 不是拦截 —— 系统只审计
+    # 不代下单,§3.8)。null = 四件齐或无来源计划可验;非空 = 人话缺件清单
+    # (单一文案源 `basket_card.trade_plan_missing_label`)。
+    planIncompleteNotice: Optional[str] = None
     # v2.0.0(契约线审计 🟡 Y7):`true` = 本次请求**没有开新仓**,`positionId` 指的是同一个
     # `idempotencyKey` 之前已经开好的那笔。如实透出,别让"看起来成功了"掩盖"其实什么都没
     # 发生";客户端据此不必重复提示"已开仓"。老客户端忽略未知键,不受影响。
