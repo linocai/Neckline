@@ -1154,8 +1154,9 @@ def test_real_k8_skeleton_pack_matches_plan_value_changes():
     assert "close_max" not in hygiene                             # 刻意无上限,⛔ 别顺手加
     assert doc["config"]["seeds"]["industry_blacklist"] == {"industries": ["白酒"]}
     # config 结构承 K7 的 seeds+tier 两段,tier 权重/打分映射原样;V2.2-② 追加
-    # regime 段(行情状态五阈值,值与引擎默认逐位一致由 test_market_regime.py 锁)
-    assert set(doc["config"]) == {"seeds", "tier", "regime"}
+    # regime 段(行情状态五阈值,值与引擎默认逐位一致由 test_market_regime.py 锁);
+    # V2.2-③-C 追加 landing 段(落地起跳十二阈值,同款锁在 test_scan_landing.py)
+    assert set(doc["config"]) == {"seeds", "tier", "regime", "landing"}
     k7 = pack.load_pack_file(_K7_PACK_FILE)
     assert doc["config"]["tier"]["weights"] == k7["config"]["tier"]["weights"]
     assert doc["config"]["tier"]["stage_scores"] == k7["config"]["tier"]["stage_scores"]

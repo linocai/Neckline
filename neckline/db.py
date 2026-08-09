@@ -1120,6 +1120,30 @@ CREATE TABLE IF NOT EXISTS market_regime_daily (
   skeleton_version  TEXT NOT NULL,   -- 口径指纹(阈值住骨架包)
   computed_at       TEXT NOT NULL
 );
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.2-③-C(2026-08,K8 §二「落地起跳」):全市场逐票四态位置判据,EOD 预计算
+-- 落表、在线只读(P0-23 纪律;§3.11-B 点名的两张全市场级预计算表之二,§七 P4-50
+-- 登记的第二条「全市场逐票 × 多年回看」批算路径——上生产前必须隔离实测)。
+-- 同既有体例:新表追加在这里,⛔ 不进 `_COLUMN_MIGRATIONS`。判定唯一实现 =
+-- `neckline/scan/landing.py::decide_landing`,读写唯一通道 =
+-- `neckline/scan/landing_store.py`。`state` 恒非 NULL:判据缺数落 `none`
+-- (state_reason 逐条说明缺在哪),⛔ 不猜;当日整行**缺失**才是「没算过」,由
+-- 消费方按 `available=false` 披露(与 `market_regime_daily` 缺行同一套纪律)。
+-- 🔴 本表只产**注意力分层**,⛔ 不得被读成买入期望背书(§3.8-(b);雷区对照与
+-- 前向证伪义务见 `landing.py` 模块头与 §七 P3-49)。`platform_days` 等派生量
+-- 一律住 `metrics_json`,⛔ 不另起一张表(plan §五 ③-F)。
+-- ══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS landing_state_daily (
+  trade_date       TEXT NOT NULL,
+  ts_code          TEXT NOT NULL,
+  state            TEXT NOT NULL,  -- falling|landing_pending|liftoff_confirmed|high_extended|none
+  state_reason     TEXT NOT NULL,  -- 五项判据逐项通过/未通过的原因码串
+  metrics_json     TEXT NOT NULL,  -- 五项判据的原始读数(含 platform_days)
+  skeleton_version TEXT NOT NULL,
+  computed_at      TEXT NOT NULL,
+  PRIMARY KEY (trade_date, ts_code)
+);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

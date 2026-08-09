@@ -27,6 +27,8 @@
     python scripts/scan_layer.py bootstrap --from 20260101 --to 20260731
     python scripts/scan_layer.py regime                         # V2.2-② 行情状态三态(今天)
     python scripts/scan_layer.py regime --from 20260720 --to 20260807   # 区间回放
+    python scripts/scan_layer.py landing                        # V2.2-③-C 落地起跳四态(今天)
+    python scripts/scan_layer.py landing --from 20260720 --to 20260807  # 回填 + 逐日分布回放
     python scripts/scan_layer.py refresh --db /path.db --parquet-dir /path/parquet
 """
 
@@ -178,6 +180,41 @@ def cmd_regime(args: argparse.Namespace) -> int:
     return 0 if not stats["failed"] else 1
 
 
+def cmd_landing(args: argparse.Namespace) -> int:
+    """V2.2-③-C 落地起跳位置关:批算落 `landing_state_daily` + 逐日打印四态分布
+    (回放即验收:任取区间跑一遍,每天说得出四态 + none 的分布;refresh 与
+    bootstrap 回填共用本命令——按 `--from/--to/--year` 给区间即回填,同
+    `refresh`/`bootstrap` 一体的既有语义)。⚠ 全市场逐票 × 145 交易日回看,
+    生产机大区间回填前先按项目 CLAUDE.md「生产机性能探针纪律」隔离实测
+    (§七 P4-50,⛔ 不许跳过)。"""
+    from neckline.scan import landing as landing_mod
+    from neckline.scan import landing_store
+
+    days = resolve_days(args)
+    if not days:
+        logger.error("解析不出任何交易日(检查 --from/--to/--year 与 trade_cal 覆盖范围)")
+        return 1
+    t0 = datetime.now()
+    stats = landing_store.refresh_landing_states(days, db_path=args.db, parquet_dir=args.parquet_dir)
+    logger.info(
+        "landing_state_daily: 处理 %d 天 / 落 %d 行 / 失败 %d 天(耗时 %.1fs)",
+        stats["days"], stats["rows"], stats["failed"],
+        (datetime.now() - t0).total_seconds(),
+    )
+    for d in days:
+        counts = landing_store.landing_state_counts(d, db_path=args.db)
+        if not counts:
+            logger.warning("%s 无判定行(该日批算未产出/当日无 daily 数据,缺行 = 不知道)",
+                           d.strftime("%Y%m%d"))
+            continue
+        dist = " ".join(
+            f"{state}({landing_mod.STATE_LABELS.get(state, state)})={counts.get(state, 0)}"
+            for state in landing_mod.STATE_ORDER
+        )
+        logger.info("%s 四态分布:%s | 共 %d 行", d.strftime("%Y%m%d"), dist, sum(counts.values()))
+    return 0 if not stats["failed"] else 1
+
+
 def _add_common_args(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--db", type=Path, default=None, help="目标 SQLite 库(默认 settings.db_path)")
 
@@ -215,6 +252,17 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--parquet-dir", type=Path, default=None, help="Parquet 根目录(默认 settings.parquet_dir)")
     _add_common_args(g)
     g.set_defaults(func=cmd_regime)
+
+    ld = sub.add_parser(
+        "landing",
+        help="V2.2-③-C 落地起跳四态:批算落 landing_state_daily + 逐日分布回放(区间即回填)",
+    )
+    ld.add_argument("--from", dest="date_from", help="起始交易日 YYYYMMDD")
+    ld.add_argument("--to", dest="date_to", help="结束交易日 YYYYMMDD")
+    ld.add_argument("--year", type=int, help="整年")
+    ld.add_argument("--parquet-dir", type=Path, default=None, help="Parquet 根目录(默认 settings.parquet_dir)")
+    _add_common_args(ld)
+    ld.set_defaults(func=cmd_landing)
     return p
 
 

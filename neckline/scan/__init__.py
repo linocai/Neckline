@@ -20,6 +20,15 @@
                      引擎默认 + `skeleton_version='engine_default'`〕,`regime.py`
                      只算不写、`regime_store.py` 只管落表读表;对 `selection.pack`
                      仅 import 读入口〔权限锁,AST 守门〕)
+    · `landing.py` + `landing_store.py` → `landing_state_daily`(plan §五
+                     V2.2-③-C,K8 §二「落地起跳」;全市场逐票四态位置判据——
+                     下落/落地待确认/支撑确认起跳/高位加速,缺数落 none。⚠ 与
+                     regime 同为**判定**:十二个阈值读骨架包 `config.landing`
+                     〔无现役骨架线回退引擎默认 + skeleton_version='engine_default'〕;
+                     `landing.py` 只算不写、`landing_store.py` 只管落表读表。
+                     🔴 只产注意力分层,⛔ 不得读成买入期望背书;雷区对照与
+                     §七 P3-49 前向证伪义务见 `landing.py` 模块头。零 import
+                     `neckline.sentinel.*` 与 `report.score_display`〔守门单测〕)
     · `stage.py`   → `industry_stage_daily`(plan §五 V2-④b,K7 需求 1b;行业题材
                      阶段六态状态机——启动/发酵/过热/分歧回调/退潮/无题材,取代
                      `driver_freshness` 原先借用的 `stock_persist_days` 单调函数。

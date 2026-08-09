@@ -147,6 +147,15 @@ class TestFusesPerSegment:
         assert res.status[ev.SEG_SCAN] == ev.STATUS_OK
         assert res.bundle == "BUNDLE"
 
+    def test_landing_failure_does_not_fail_the_scan_segment(self, chain_stubs, monkeypatch):
+        """V2.2-③-C:落地起跳批算挂在 SEG_SCAN 里但**独立保险丝**(照 ② 行情状态
+        同款)—— 它炸了扫描段照常 ok、链照走;该日缺行由读侧如实披露。"""
+        monkeypatch.setattr("neckline.scan.landing_store.refresh_landing_states",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("landing 炸了")))
+        res = ev.run_evening_chain(D, use_llm=False)
+        assert res.status[ev.SEG_SCAN] == ev.STATUS_OK
+        assert res.bundle == "BUNDLE"
+
     def test_review_failure_does_not_stop_the_report(self, chain_stubs, monkeypatch):
         monkeypatch.setattr("neckline.review.basket_review.review_day",
                             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("复盘炸了")))

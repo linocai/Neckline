@@ -118,6 +118,104 @@
           "calibration": "pending"
         }
       }
+    },
+    "landing": {
+      "n_low": {
+        "value": 5,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §二「下跌或调整已经结束」——『不接下落』= 不允许仍在创新低,近端最低价窗口的工程首版翻译(plan §五 ③-C N_LOW)",
+          "calibration": "pending"
+        }
+      },
+      "n_back": {
+        "value": 20,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §二「下跌或调整已经结束」——前区间最低价回看窗口的工程首版翻译(plan §五 ③-C N_BACK)",
+          "calibration": "pending"
+        }
+      },
+      "low_tol": {
+        "value": 0.01,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §二「下跌或调整已经结束」——近端低点须高出前区间低点的比例下限的工程首版翻译(plan §五 ③-C LOW_TOL)",
+          "calibration": "pending"
+        }
+      },
+      "sup_tol": {
+        "value": 0.01,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §二「均线、平台、关键价位或筹码密集区形成支撑」——收盘价对支撑位下方容忍比例的工程首版翻译(plan §五 ③-C SUP_TOL)",
+          "calibration": "pending"
+        }
+      },
+      "platform_win": {
+        "value": 20,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §二「关键位置形成有效支撑」——平台下沿(近 N 日收盘 20% 分位)窗口的工程首版翻译(plan §五 ③-C PLATFORM_WIN)",
+          "calibration": "pending"
+        }
+      },
+      "sell_decay": {
+        "value": 0.90,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §二「抛压明显衰减」——近 5 日下跌日均成交额相对近 20 日均成交额上限的工程首版翻译(plan §五 ③-C SELL_DECAY)",
+          "calibration": "pending"
+        }
+      },
+      "panic_drop": {
+        "value": 0.05,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §二「抛压明显衰减」之排除恐慌大阴——近 5 日单日最大跌幅排除线的工程首版翻译(plan §五 ③-C 表判据 3『且近 5 日最大单日跌幅 ≥ −0.05』)",
+          "calibration": "pending"
+        }
+      },
+      "high_gap": {
+        "value": 0.03,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §二「当前仍处于启动早期」——距 60 日高点至少回撤比例的工程首版翻译(plan §五 ③-C HIGH_GAP)",
+          "calibration": "pending"
+        }
+      },
+      "lift_win": {
+        "value": 3,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §二「仍处于启动早期」+ §九排除项第 2 条(当日急拉/涨停/突破新高后临时追入)——近端累计涨幅窗口的工程首版翻译(plan §五 ③-C LIFT_WIN)",
+          "calibration": "pending"
+        }
+      },
+      "lift_max": {
+        "value": 0.12,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §二「仍处于启动早期」+ §九排除项第 2 条——近端累计涨幅上限的工程首版翻译(plan §五 ③-C LIFT_MAX)",
+          "calibration": "pending"
+        }
+      },
+      "platform_amp_win": {
+        "value": 20,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §七 Y1「中期平台完成后核心启动」——platform_days(近 N 日振幅 ≤ X 的连续天数)的滚动振幅窗口,plan §五 ③-F『platform_days 需要一个新原语』的工程首版参数",
+          "calibration": "pending"
+        }
+      },
+      "platform_amp_max": {
+        "value": 0.25,
+        "provenance": {
+          "source": "engineering_v1",
+          "basis": "K8 §七 Y1「中期平台完成后核心启动」——platform_days 判『平台』的振幅上限 X,与 plan §五 ③-F Y1 首版『平台振幅 ≤ 0.25』同源的工程首版参数",
+          "calibration": "pending"
+        }
+      }
     }
   }
 }

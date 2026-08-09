@@ -198,6 +198,25 @@ _REGIME_THRESHOLD_KEYS: frozenset = frozenset({
     "div_limit_drop",   # 高位分歧 C:涨停家数环比降幅下限
 })
 
+# —— V2.2-③-C 落地起跳位置关十二个判定阈值的键名白名单(骨架线 `config.landing`
+# 段)。引擎默认值与语义注释住 `neckline/scan/landing.py::LANDING_THRESHOLD_DEFAULTS`
+# (守门单测锁两处键集合相等,防漂);白名单住这里、校验姿势与 `_validate_regime`
+# 完全同款(理由同上:landing.py 已 import 本模块读入口,反向 import 成环)。————
+_LANDING_THRESHOLD_KEYS: frozenset = frozenset({
+    "n_low",             # 判据1:近端最低价窗口(交易日)
+    "n_back",            # 判据1:前区间最低价窗口(交易日)
+    "low_tol",           # 判据1:近端低点须高出前区间低点的比例下限
+    "sup_tol",           # 判据2:支撑位下方容忍比例
+    "platform_win",      # 判据2:平台下沿分位窗口(交易日)
+    "sell_decay",        # 判据3:下跌日均成交额 ÷ 20 日均成交额 上限
+    "panic_drop",        # 判据3:近 5 日单日最大跌幅排除线
+    "high_gap",          # 判据5:距 60 日高点至少回撤比例
+    "lift_win",          # 判据5:近端累计涨幅窗口(交易日)
+    "lift_max",          # 判据5:近端累计涨幅上限
+    "platform_amp_win",  # platform_days:滚动振幅窗口(交易日)
+    "platform_amp_max",  # platform_days:振幅上限 X
+})
+
 _EVIDENCE_REF_SEP = "; "   # `selection_packs.evidence_ref` 落库时的连接符(展示/grep 友好)
 
 # `config.tier.stage_scores` 键的合法集合(③-K7-D 定案:英文枚举码,唯一源
@@ -401,6 +420,35 @@ def _validate_regime(regime: Any) -> List[str]:
     return errors
 
 
+def _validate_landing(landing: Any) -> List[str]:
+    """`config.landing`(V2.2-③-C 新增可选段:落地起跳位置关十二个判定阈值,只住
+    骨架线)。**整段可选、子键各自独立可选**(照 `_validate_regime` 体例)——缺段/
+    缺键一律由 `scan/landing.py::resolve_landing_thresholds()` 逐键回退引擎默认
+    (+WARNING),不在这里猜。存在的键必须:①在 `_LANDING_THRESHOLD_KEYS` 白名单内
+    (键写错 = 激活时拒,⛔ 不许静默回退——②-D 同款陷阱);②叶子过
+    `_validate_provenance_leaf`(裁定 #4 同一道闸:五项判据全是 `engineering_v1`
+    工程首版,⛔ 不冒充审计结论);③`value` 是数值。"""
+    if not isinstance(landing, dict):
+        return ["config.landing 必须是对象(阈值键 → {value, provenance})"]
+    errors: List[str] = []
+    unknown = sorted(set(landing) - _LANDING_THRESHOLD_KEYS)
+    if unknown:
+        errors.append(
+            f"config.landing 出现白名单外的阈值键:{unknown}"
+            f"(仅允许 {sorted(_LANDING_THRESHOLD_KEYS)};键写错会静默回退引擎默认,"
+            "故在闸 1 当场拒 —— plan §五 ②-D 同款陷阱)"
+        )
+    for key in sorted(set(landing) & _LANDING_THRESHOLD_KEYS):
+        leaf = landing[key]
+        leaf_errors = _validate_provenance_leaf(f"config.landing.{key}", leaf)
+        errors.extend(leaf_errors)
+        if not leaf_errors:
+            value = leaf["value"]
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                errors.append(f"config.landing.{key}.value 必须是数值(得到 {value!r})")
+    return errors
+
+
 def _validate_provenance_leaf(path: str, leaf: Any) -> List[str]:
     """V2.2-① 闸 1:引擎包一个阈值叶子的 `{value, provenance}` 形状校验(裁定 #4
     的机器判据,形状定义见模块头)。`value` 允许任意 JSON(数值 / 布尔 / 数组——
@@ -600,6 +648,11 @@ def validate_config(config: Any, *, line_code: str = _LINE_DEFAULT) -> List[str]
     regime = config.get("regime")
     if regime is not None:
         errors.extend(_validate_regime(regime))
+
+    # V2.2-③-C:落地起跳位置关阈值段(可选;存在即校验形状,见 `_validate_landing`)。
+    landing = config.get("landing")
+    if landing is not None:
+        errors.extend(_validate_landing(landing))
     return errors
 
 
@@ -691,6 +744,12 @@ class Pack:
         `{value, provenance}` 叶子)。缺省返回空字典 —— 逐键回退引擎默认是
         `scan/regime.py::resolve_regime_thresholds()` 的职责,不在本访问器里猜。"""
         return dict(self.config.get("regime", {}))
+
+    def landing_config(self) -> Dict[str, Any]:
+        """`config.landing`(V2.2-③-C 新增可选段:落地起跳位置关十二个判定阈值,
+        每键 `{value, provenance}` 叶子)。缺省返回空字典 —— 逐键回退引擎默认是
+        `scan/landing.py::resolve_landing_thresholds()` 的职责,不在本访问器里猜。"""
+        return dict(self.config.get("landing", {}))
 
 
 def _row_to_pack(row: Tuple[Any, ...]) -> Pack:

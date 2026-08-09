@@ -200,11 +200,20 @@ def run_evening_chain(
             except Exception:  # noqa: BLE001  ② 与 ④/④b 无耦合,单独降级
                 logger.warning("[evening] ② 行情状态批算异常(已吞,不阻断扫描层)", exc_info=True)
                 rg = {}
+            # V2.2-③-C 落地起跳位置关(全市场逐票四态;同款独立保险丝——该日缺行
+            # 由读侧按「缺行 = 不知道,⛔ 不给 T1 也不拦」披露,⛔ 不落猜出来的行)。
+            try:
+                from neckline.scan.landing_store import refresh_landing_states
+
+                ld = refresh_landing_states([trade_date], db_path=db_path, parquet_dir=parquet_dir)
+            except Exception:  # noqa: BLE001  ③-C 与 ②/④/④b 无耦合,单独降级
+                logger.warning("[evening] ③-C 落地起跳批算异常(已吞,不阻断扫描层)", exc_info=True)
+                ld = {}
             seed_set = generate_seeds(trade_date, db_path=db_path, parquet_dir=parquet_dir)
             res.stats["scan"] = {
                 "cluster_rows": c.get("rows"), "corr_rows": r.get("rows"),
                 "leader_rows": l.get("rows"), "stage_rows": st.get("rows"),
-                "regime_rows": rg.get("rows"),
+                "regime_rows": rg.get("rows"), "landing_rows": ld.get("rows"),
                 "seeds": (seed_set.counts() if seed_set is not None else None),
             }
             if seed_set is None or not seed_set.all_seeds():
