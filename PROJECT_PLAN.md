@@ -464,9 +464,14 @@ Neckline/
 
 - **现役四线**:`V:K8-V0.5` / `C:C1` / `Z:Z1` / `Y:Y1`(每线唯一现役;`K4-pack-v1`/`K7-pack-v1`
   留档 `is_active=0`)。生产 SQLite **52 表**。熔断已整体退役(`/circuit` 404)。
-- **⛔ 唯一未完成项 = 章程 `v2.2-k8` 未激活**(现役仍 `v1.3.3`)。`activate_charter.py` 闸 2
-  **硬校验无 open 持仓**,生产 2 笔未清 —— **等用户清仓后一条命令即可**。⑤-B 熔断退役是纯代码,
-  已随本次部署生效,不受该闸约束。
+- ✅ **章程 `v2.2-k8` 已激活**(2026-08-10 01:33:55 UTC = 北京 09:33,**盘中**;用户当日自行清空
+  两笔持仓后 `open=0`,闸 2 **自然放行**,⛔ 未用任何豁免 / 覆盖)。**staged 两步都走完**:
+  `seed_charter_v22k8.py --confirm` 落行(自动备份 `integrity ok`)→ `activate_charter.py
+  --target v2.2-k8 --confirm` 四道闸全过。**diff 恰 4 字段、全在退出侧**;`stop_pct=0.05` /
+  三仓 / 拆墙**一字未动**(核心值核对逐项通过)。运行中服务实读确认:`take_profit_retrace=None`
+  · `max_hold_days=None` · `max_hold_days_profit=None` · `stop_pct=0.05` · `max_positions=3`。
+  ⚠ **`brain.py` 无缓存 → 无需重启,哨兵下一拍即按新章程**。
+  🔴 **自此 −5% 止损与时间退出的执行责任 100% 在用户手上**(§八 第 19 项已告知的代价)。
 - **🔴 今日 15:05–15:55 必办两件**(盘前部署时被迫后移,详见 §九 当日条):① **P0-23/P4-50
   `landing_metrics_daily` 生产隔离实测**;② `neckline-weekly.service` 配额占位值校准。
   **必须赶在 16:35 晚间链之前** —— 不达标还来得及关掉对应段。
