@@ -798,4 +798,14 @@ enum NKQA {
     /// ⛔ 同上:**只给 `@State` 当初值**,不夺走用户的点击。
     static let initialPositionsPane: String? =
         ProcessInfo.processInfo.environment["NECKLINE_INITIAL_POSITIONS_PANE"]
+    /// `NECKLINE_INITIAL_SETTINGS_GROUP=backend|llm|push|version` → 设置板块列表栏
+    /// **初始选中**那一组(V2.3.1 批 5)。⛔ 同上:只给 `@State` 当初值。
+    static let initialSettingsGroup: NKSettingsGroup? =
+        ProcessInfo.processInfo.environment["NECKLINE_INITIAL_SETTINGS_GROUP"]
+            .flatMap(NKSettingsGroup.init(rawValue:))
+    /// `NECKLINE_INITIAL_PROVIDER_FORM=1` → 设置 · Provider 屏开**编辑 Provider** 弹层
+    /// (取列表首个 Provider)。⚠ 它要等 `loadSettings()` 拿回注册表才有东西可编,
+    /// 故触发点在 `SettingsView.task` 里而不是 `NecklineApp.init()`。
+    static let initialProviderForm: Bool =
+        ProcessInfo.processInfo.environment["NECKLINE_INITIAL_PROVIDER_FORM"] == "1"
 }

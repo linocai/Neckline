@@ -57,8 +57,16 @@ enum NKDevCapture {
         guard parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]) else { return }
         // 保持左上角不动地改尺寸(AppKit 原点在左下,所以要把 y 往下补回去)。
         let old = window.frame
-        let newFrame = NSRect(x: old.origin.x, y: old.origin.y + old.height - h, width: w, height: h)
-        window.setFrame(newFrame, display: true)
+        var origin = NSPoint(x: old.origin.x, y: old.origin.y + old.height - h)
+        // 🔴 **要的高度大于当前窗口时,新原点会落到屏幕下方之外** —— `setFrame` 会把它
+        // 约束回屏内并**把高度截掉**,于是"截图基准漂了"这件事又回来了(V2.3.1 批 5
+        // 实打:要 1200×1340 拍到的还是 1200×860)。故:先把窗口贴到可视区顶端。
+        if let visible = (window.screen ?? NSScreen.main)?.visibleFrame {
+            origin.y = min(origin.y, visible.maxY - h)
+            origin.y = max(origin.y, visible.minY)
+            origin.x = min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - w))
+        }
+        window.setFrame(NSRect(origin: origin, size: CGSize(width: w, height: h)), display: true)
     }
 
     /// `NECKLINE_CAPTURE_PNG=<路径>` → 延迟 `NECKLINE_CAPTURE_DELAY` 秒(默认 6)后把
@@ -80,13 +88,44 @@ enum NKDevCapture {
     /// 渲染窗口自身。⚠ 取的是 `contentView.superview`(= `NSThemeFrame`,窗口的根视图),
     /// **不是** `contentView` —— 红绿灯挂在 `NSTitlebarContainerView` 上,它是 themeFrame 的
     /// 子视图、与 contentView 平级;只截 contentView 就把要验的那三颗按钮漏了。
+    ///
+    /// 🔴 **V2.3.1 批 5:弹层(`.sheet`)必须合成进来**。macOS 的 sheet 是**另一个
+    /// `NSWindow`**(`window.attachedSheet`),挂在主窗口上但不在它的视图树里 ——
+    /// 只渲主窗口拍出来是**一片灰**(主窗被 sheet 压暗了,而 sheet 本身不在图里),
+    /// 比"没有截图"更误导。故:主窗口 → 位图,再把 sheet 的位图按屏幕坐标差
+    /// 叠上去,得到与肉眼所见一致的一张图。
     @discardableResult
     static func capture(window: NSWindow, to path: String) -> Bool {
         guard let root = window.contentView?.superview else { return false }
         let bounds = root.bounds
         guard let rep = root.bitmapImageRepForCachingDisplay(in: bounds) else { return false }
         root.cacheDisplay(in: bounds, to: rep)
-        guard let png = rep.representation(using: .png, properties: [:]) else { return false }
+
+        var output: NSBitmapImageRep = rep
+        if let sheet = window.attachedSheet,
+           let sRoot = sheet.contentView?.superview,
+           let sRep = sRoot.bitmapImageRepForCachingDisplay(in: sRoot.bounds) {
+            sRoot.cacheDisplay(in: sRoot.bounds, to: sRep)
+            // 屏幕坐标差 → 主窗口坐标(AppKit 原点在左下,两者同一坐标系,直接相减)。
+            let origin = NSPoint(x: sheet.frame.origin.x - window.frame.origin.x,
+                                 y: sheet.frame.origin.y - window.frame.origin.y)
+            let scale = window.backingScaleFactor
+            if let merged = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: Int(bounds.width * scale), pixelsHigh: Int(bounds.height * scale),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
+                merged.size = bounds.size
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: merged)
+                rep.draw(in: bounds)
+                sRep.draw(in: NSRect(origin: origin, size: sRoot.bounds.size))
+                NSGraphicsContext.restoreGraphicsState()
+                output = merged
+            }
+        }
+
+        guard let png = output.representation(using: .png, properties: [:]) else { return false }
         do {
             try png.write(to: URL(fileURLWithPath: path))
             return true

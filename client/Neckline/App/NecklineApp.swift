@@ -41,11 +41,36 @@ struct NecklineApp: App {
             switch modalRaw {
             case "open": m.modal = .open
             case "note": m.modal = .note
+            // V2.3.1 批 5:补录清仓弹层(`close:<代码>`)。
+            case let s where s.hasPrefix("close:"):
+                let code = String(s.dropFirst("close:".count))
+                if !code.isEmpty { m.modal = .close(code: code) }
+                // 同族预填:`NECKLINE_INITIAL_CLOSE_PRICE` / `NECKLINE_INITIAL_CLOSE_REASON`
+                // (后者取**服务端英文码**,如 `STOP_LOSS`;不认识的码静默跳过)。
+                let e = ProcessInfo.processInfo.environment
+                if let p = e["NECKLINE_INITIAL_CLOSE_PRICE"], !p.isEmpty { m.closeSellPrice = p }
+                if let r = e["NECKLINE_INITIAL_CLOSE_REASON"], !r.isEmpty {
+                    m.closeReasonDraft = CloseReasonCode(rawValue: r)
+                }
             case let s where s.hasPrefix("tradeNote:"):
                 if let pid = Int(s.dropFirst("tradeNote:".count)) {
                     m.modal = .tradeNote(positionId: pid)
                 }
             default: break
+            }
+        }
+        // V2.3.1 批 5:补充说明弹层的**预填**(同 `NECKLINE_INITIAL_ALERT_TEXT` 体例:
+        // 只把用户本来要敲的东西先敲上,⛔ 不改任何提交逻辑)。三个都是**通用透传**,
+        // ⛔ 不在客户端硬编任何演示内容。
+        let env = ProcessInfo.processInfo.environment
+        if let c = env["NECKLINE_INITIAL_NOTE_CODE"], !c.isEmpty { m.noteForm.code = c }
+        if let t = env["NECKLINE_INITIAL_NOTE_TEXT"], !t.isEmpty { m.noteForm.voiceNote = t }
+        if let raw = env["NECKLINE_INITIAL_NOTE_LABELS"], !raw.isEmpty {
+            // 逗号分隔的**服务端英文码**(`THEME_SHIFT` 这套);不认识的码静默跳过。
+            for code in raw.split(separator: ",") {
+                if let l = NoteLabel(rawValue: String(code).trimmingCharacters(in: .whitespaces)) {
+                    m.noteForm.labels.insert(l)
+                }
             }
         }
         // ⚠ **数据到位之后才能触发的钩子**(`NECKLINE_INITIAL_BASKET_ID` /
