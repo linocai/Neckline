@@ -118,6 +118,15 @@
   内、且已是 camelCase(`to_public_dict()` 原样存档)。跑一次 `scripts/report.py`
   生成真报告后直接 `UPDATE reports SET candidates_json=…` 改 2~3 只候选即可拼出
   ok/vetoed/judgeSkipped 三态样例(v1.5-⑤ 验证过)。
+- 🔴 **出截图用 `defaults write` 配后端/token 时,⛔ 绝不许写宿主的 `top.linotsai.neckline` 域**
+  (2026-08-10 真踩,把用户**正式 macOS App** 打成"连不上、什么都没有"):那个 bundle id
+  **就是真 App 用的同一个 UserDefaults 域**,写进去 = 把假后端地址(`http://127.0.0.1:8013`)
+  与假 token 塞进用户天天在用的那个 App,而 `NK_BASE_URL_OVERRIDE` **压过默认 prod 基址**。
+  **正确姿势**:iOS 模拟器走 `xcrun simctl spawn <udid> defaults write …`(那是模拟器**容器内**的
+  域,与宿主无关);**macOS 侧要假数据就别用 `defaults`** —— 改用起一个本地后端 + 手动在设置屏
+  切换,或干脆只出 iOS 截图。**排障口诀**:用户报「换包后连不上/一片空白」→ **先
+  `defaults read <bundle_id> | grep NK_`**,看有没有被写脏。⚠ 假 token 比没有 token 更坏:
+  它让 App 看起来"配好了"却一直 401。
 - **模拟器截图被推送授权弹窗盖住时,别去点它(点不动)**:`UNUserNotificationCenter`
   的授权弹窗会挡住页面中部,而且**终止 App 甚至重装都不会让它消失**(它挂在
   SpringBoard 上);`xcrun simctl privacy` **不支持 notifications**。两步解:①
