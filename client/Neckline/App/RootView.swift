@@ -76,6 +76,14 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 1080, maxWidth: .infinity, minHeight: 640, maxHeight: .infinity)
+        // 🔴 **V2.3.1:内容必须顶到窗口最上沿**(§〇c 硬伤 1 的收尾一步)。
+        // `.windowStyle(.hiddenTitleBar)` 只是把系统标题栏**画成透明**,SwiftUI 仍然按
+        // 32pt 的标题栏**安全区**把内容整体往下推 —— 实测(自截图逐像素量):红绿灯落在
+        // 距顶 25(已由 `NKTrafficLightAligner` 对到 50pt 栏的中线),而工具栏自己却从 32
+        // 起、中线在 57,**两者差 32pt**,顶上白白空出一条 —— 看起来仍然像两条栏。
+        // ⛔ 别去改红绿灯的目标值来"对齐"这 32pt:那是把安全区的坑焊死进按钮坐标,
+        // 窗口一变(全屏 / 分屏)就再次错位。要顶的是内容。
+        .ignoresSafeArea(.container, edges: .top)
         .background(NK.pageBg)
         .overlay(alignment: .bottom) { toastOverlay.padding(.bottom, 24) }
         .task { model.bind(config: config); await model.refresh() }
@@ -130,19 +138,30 @@ struct NKSplitLayout<ListContent: View, DetailContent: View>: View {
         HStack(spacing: 0) {
             ScrollView {
                 list
+                    // 🔴 **V2.3.1 批 2:列表栏是「两套页边距」,不是一套**(§③ 必查钉子 1)。
+                    // 这里给的是**行**那一套(原型 86 行 `padding:0 10px`);标题区自己再补
+                    // `listHeaderExtraH`(6)凑到原型 82 行的 `18px 16px 10px`。
+                    // ⛔ 别为了"统一"把这里改成 16 —— 那会让每一行都往里缩 6。
                     .padding(.horizontal, NKSpace.listPadH)
-                    .padding(.vertical, NKSpace.listPadV)
+                    .padding(.top, NKSpace.listPadTop)
+                    .padding(.bottom, NKSpace.listPadBottom)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(width: Self.listWidth)
-            .background(NK.pageBg)
+            // 🔴 **V2.3.1:两栏底色分开**(§② 钉子 3)。列表栏 `#FCFCFD`(macOS 原型 81 行)
+            // 比详情栏 `#F6F6F8`(247 行)亮一档 —— 两栏同色时「选什么」与「看什么」糊成
+            // 一片,而且列表栏的**白色选中行**几乎浮不出来。⛔ 别再调回同一个值。
+            .background(NK.listBg)
 
             Divider().overlay(NK.hairline)
 
             ScrollView {
                 detail
-                    .padding(.horizontal, NKSpace.pagePad)
-                    .padding(.vertical, NKSpace.pagePad)
+                    // 原型四屏详情逐字相同的 `padding:22px 26px 40px`
+                    // (macOS 原型 250 / 645 / 709 / 828 行)。⚠ 横 26 ≠ 纵 22。
+                    .padding(.horizontal, NKSpace.pagePadWide)
+                    .padding(.top, NKSpace.pagePad)
+                    .padding(.bottom, NKSpace.pagePadBottom)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity)

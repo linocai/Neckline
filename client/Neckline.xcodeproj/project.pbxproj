@@ -17,6 +17,7 @@
 		35CBBACFC586E8AF1FB3E8BD /* DTODecodeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 911BA3F44C2149A8D313E904 /* DTODecodeTests.swift */; };
 		435E5084B57C5886250DA5E7 /* NKDisclosure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99024115FE5BD928E53F8DFB /* NKDisclosure.swift */; };
 		499CB305261279D9053C4B94 /* NKToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D2ECF5D1ADA2570A80AAF57 /* NKToolbar.swift */; };
+		6201E32C0723A5F0AA2D3BFE /* NKDevCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD6B509415333AD469D9833E /* NKDevCapture.swift */; };
 		707C60E3C786D27F3983B924 /* IntegrationSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09D5AFF89E79AD30E6F0B1F /* IntegrationSmokeTests.swift */; };
 		730CE8D10C7BDBCA711C9342 /* IntelSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4E1C3A5DD39EEB4270411BB /* IntelSectionView.swift */; };
 		73C14261E278D3CA8D6AFB8E /* AppConfigDefaultTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ECA7F173C89B027705A4FC0 /* AppConfigDefaultTests.swift */; };
@@ -82,6 +83,7 @@
 		B7692438CB8859E874A66E3E /* PushManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushManager.swift; sourceTree = "<group>"; };
 		BC33E699B9891551265741C6 /* Neckline.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Neckline.entitlements; sourceTree = "<group>"; };
 		CAE1DD2864459FE86E710600 /* NKGateViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NKGateViews.swift; sourceTree = "<group>"; };
+		CD6B509415333AD469D9833E /* NKDevCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NKDevCapture.swift; sourceTree = "<group>"; };
 		CE386C48FF2459211CE2D690 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		D4DE7B52DFD937FA105D0D80 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
 		D5E6F8707B8AC21038F80089 /* PositionExtras.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionExtras.swift; sourceTree = "<group>"; };
@@ -166,6 +168,7 @@
 		B1220EBFAFE006A81F668972 /* Components */ = {
 			isa = PBXGroup;
 			children = (
+				CD6B509415333AD469D9833E /* NKDevCapture.swift */,
 				99024115FE5BD928E53F8DFB /* NKDisclosure.swift */,
 				CAE1DD2864459FE86E710600 /* NKGateViews.swift */,
 				0AD326C8BC9BC4A64072A35D /* NKMemberCard.swift */,
@@ -321,6 +324,7 @@
 				C6A7800544ED3CD2E062F1E8 /* InfoCardView.swift in Sources */,
 				730CE8D10C7BDBCA711C9342 /* IntelSectionView.swift in Sources */,
 				8A9D9C1AF48200AC1E370EBF /* Models.swift in Sources */,
+				6201E32C0723A5F0AA2D3BFE /* NKDevCapture.swift in Sources */,
 				435E5084B57C5886250DA5E7 /* NKDisclosure.swift in Sources */,
 				ED9DDCD05025C3514AF2BFE0 /* NKGateViews.swift in Sources */,
 				BD327FFE691B6B0F77EF1B4F /* NKMemberCard.swift in Sources */,

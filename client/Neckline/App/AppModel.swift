@@ -537,6 +537,12 @@ final class AppModel {
            basketDaily.baskets.contains(where: { $0.basketId == bid }) {
             openedBasketId = bid
         }
+        // 持仓板块选仓钩子(V2.3.1 批 3):`NECKLINE_INITIAL_POSITION_ID=<id>`。
+        // ⚠ 同上,**必须在数据到位之后** —— `positions` 是 `refresh()` 拉回来的。
+        if let raw = env["NECKLINE_INITIAL_POSITION_ID"], let pid = Int(raw),
+           positions.contains(where: { $0.id == pid }) {
+            selectedPositionId = pid
+        }
         if let code = env["NECKLINE_INITIAL_INFOCARD_CODE"], !code.isEmpty, infoCardRequest == nil {
             // 从篮子成员里找这只票(候选管线已退役,成员才是新的入口)。
             for b in basketDaily.baskets {
@@ -682,7 +688,11 @@ final class AppModel {
     static func entryReasonText(basketName: String, member: BasketMember) -> String {
         let name = basketName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return "已按计划买入" }
+        // ⚠ `roleDisplay` 经 V2.3.1 §〇c 硬伤 2 收口后会**返回空串**(`role_mech=unknown`
+        // = 算不出,不是一种角色)—— 空串直接拼进去会留下一个孤零零的「· 」尾巴,
+        // 所以这里退回只写来源。⛔ 别为了凑格式补「未知角色」,那是把算不出讲成判断。
         let role = member.roleConflict ? "角色两说并存" : member.roleDisplay
+        guard !role.isEmpty else { return "来自篮子「\(name)」" }
         return "来自篮子「\(name)」· \(role)"
     }
 

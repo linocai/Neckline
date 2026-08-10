@@ -1,6 +1,6 @@
 //
 //  NKStopScale.swift
-//  Neckline — V2.3 视觉升级:止损刻度尺(规范 §05)
+//  Neckline — V2.3 视觉升级:止损刻度尺(规范 §05;V2.3.1 批 3 按原型 1012–1029 行改齐)
 //
 //  🔴 **刻度尺只是版式**:位置按价格**线性映射**,⛔ 不代表任何概率、不构成任何建议。
 //  它回答的唯一问题是「离止损线还有多远」—— 不看数字也知道。
@@ -10,6 +10,11 @@
 //  那会画出一条"已经跌穿一切"的假图。
 //
 //  ⚠ 峰值刻度**只在有回落止盈态时画**(`retraceState != nil`);没有 ≠ 峰值等于现价。
+//
+//  ⚠ **V2.3.1 批 3:刻度标签改成跟着刻度浮动**(原型 `transform:translateX(-50%)`)——
+//  V2.3.0 是底下一排固定顺序的读数(理由:价格挨得近时浮动标签会互相压住)。原型的
+//  判据优先(§五 〇a「对不上时以原型为准」),但**两端夹紧**:标签中心被 clamp 在
+//  `[labelHalf, w - labelHalf]` 内,否则最左的「止损」会被切掉半个字。
 //
 
 import SwiftUI
@@ -44,49 +49,69 @@ struct NKStopScale: View {
         return width * CGFloat(min(max(t, 0), 1))
     }
 
-    private let trackHeight: CGFloat = 6
-    private let tallTick: CGFloat = 18
-    private let shortTick: CGFloat = 12
+    // —— 原型 1013–1021 行的绝对坐标(容器高 44)——
+    private let blockHeight: CGFloat = 44
+    private let trackTop: CGFloat = 20
+    private let trackHeight: CGFloat = 5
+    /// 上排标签(止损 / 成本 / 峰值)的基线带:`top:0`,字高约 13。
+    private let topLabelCenterY: CGFloat = 6.5
+    /// 现价标签在**下方**(原型 `top:36`)。
+    private let priceLabelCenterY: CGFloat = 41
+    /// 标签半宽(clamp 用;「峰值 46.90」这类五六个字符在 11px 下约 56pt 宽)。
+    private let labelHalf: CGFloat = 30
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            GeometryReader { geo in
-                let w = geo.size.width
-                ZStack(alignment: .leading) {
-                    // 轨道底:破线时整条改红色浅底,否则中性底。
-                    Capsule()
-                        .fill(broken ? NK.down.opacity(0.14) : NK.hairline.opacity(0.7))
-                        .frame(height: trackHeight)
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .topLeading) {
+                // 轨道底(原型 1014:`top:20; height:5; radius:999; rgba(60,60,67,.07)`)。
+                Capsule().fill(NK.hairline.opacity(0.7))
+                    .frame(width: w, height: trackHeight)
+                    .offset(y: trackTop)
 
-                    // **安全区**:止损线 → 右端的涨色浅渐变。破线时不画(此刻没有安全区)。
-                    if !broken {
-                        let sx = x(stop, width: w)
-                        LinearGradient(
-                            colors: [NK.up.opacity(0.28), NK.up.opacity(0.06)],
-                            startPoint: .leading, endPoint: .trailing
-                        )
+                if broken {
+                    // 破线:轨道**浅红底**从左端铺到现价(原型 1139)—— 此刻没有安全区。
+                    Capsule().fill(NK.down.opacity(0.30))
+                        .frame(width: max(x(price, width: w), 0), height: trackHeight)
+                        .offset(y: trackTop)
+                } else {
+                    // **安全区** = 止损线 → 右端,由浅到深的涨色渐变
+                    // (原型 1015:`rgba(15,169,104,.25) → rgba(15,169,104,.55)`)。
+                    let sx = x(stop, width: w)
+                    LinearGradient(colors: [NK.up.opacity(0.25), NK.up.opacity(0.55)],
+                                   startPoint: .leading, endPoint: .trailing)
                         .frame(width: max(w - sx, 0), height: trackHeight)
                         .clipShape(Capsule())
-                        .offset(x: sx)
-                    }
-
-                    // 刻度(顺序 = 画的先后,后画的压在上面;止损与现价最高)。
-                    if let p = peak {
-                        tick(at: x(p, width: w), color: NK.textTertiary, width: 2, height: shortTick)
-                    }
-                    tick(at: x(cost, width: w), color: NK.textTertiary, width: 2, height: shortTick)
-                    tick(at: x(stop, width: w), color: NK.down, width: 3, height: tallTick)
-                    if hasPrice {
-                        tick(at: x(price, width: w), color: priceColor, width: 3, height: tallTick)
-                    }
+                        .offset(x: sx, y: trackTop)
                 }
-                .frame(height: tallTick, alignment: .center)
-            }
-            .frame(height: tallTick)
 
-            legend
+                // 刻度(顺序 = 画的先后,后画的压在上面;止损与现价最高)。
+                if let p = peak {
+                    tick(x(p, width: w), NK.textTertiary.opacity(0.75), w: 2, h: 15, top: 15)
+                    label(x(p, width: w), "峰值 \(NKFmt.price(p))", NK.textTertiary,
+                          bold: false, y: topLabelCenterY, width: w)
+                }
+                tick(x(cost, width: w), NK.textTertiary, w: 2, h: 15, top: 15)
+                label(x(cost, width: w), "成本 \(NKFmt.price(cost))", NK.textSecondary,
+                      bold: false, y: topLabelCenterY, width: w)
+
+                tick(x(stop, width: w), NK.down, w: 3, h: 17, top: 14)
+                label(x(stop, width: w), "止损 \(NKFmt.price(stop))", NK.down,
+                      bold: true, y: topLabelCenterY, width: w)
+
+                if hasPrice {
+                    tick(x(price, width: w), priceColor, w: 3, h: 23, top: 11)
+                    // 原型 1020:现价标签在**下方** `top:36`、`11/700`,与上排分开 —— 它是
+                    // 这条尺上唯一"会动"的那一个。
+                    label(x(price, width: w), "现价 \(NKFmt.price(price))", priceColor,
+                          bold: true, y: priceLabelCenterY, width: w)
+                }
+            }
+            .frame(width: w, height: blockHeight, alignment: .topLeading)
         }
-        .padding(.vertical, 2)
+        .frame(height: blockHeight)
+        // 原型 1012 行 `margin:0 4px` —— 两端各留 4,免得极值刻度贴着卡边。
+        .padding(.horizontal, 4)
     }
 
     private var priceColor: Color {
@@ -94,38 +119,26 @@ struct NKStopScale: View {
         return price >= cost ? NK.up : NK.amber
     }
 
-    private func tick(at cx: CGFloat, color: Color, width: CGFloat, height: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: width / 2)
+    private func tick(_ cx: CGFloat, _ color: Color, w: CGFloat, h: CGFloat,
+                      top: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 2)
             .fill(color)
-            .frame(width: width, height: height)
+            .frame(width: w, height: h)
             // `cx` 是刻度中心,减半个线宽才对齐。
-            .offset(x: cx - width / 2)
+            .offset(x: cx - w / 2, y: top)
     }
 
-    /// 四项读数一行(**固定语义顺序**:止损 / 成本 / 现价 / 峰值),各自着刻度色。
-    /// ⚠ 刻度标签**不跟着 x 位置浮动** —— 价格挨得近时浮动标签会互相压住,
-    /// 而"看不清哪个数是哪个"比"标签没对齐刻度"严重得多。
-    private var legend: some View {
-        HStack(alignment: .top, spacing: 14) {
-            legendItem("止损", NKFmt.price(stop), NK.down)
-            legendItem("成本", NKFmt.price(cost), NK.textSecondary)
-            if hasPrice {
-                legendItem("现价", NKFmt.price(price), priceColor)
-            } else {
-                legendItem("现价", "本次拉不到", NK.amber)
-            }
-            if let p = peak {
-                legendItem("峰值", NKFmt.price(p), NK.textSecondary)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func legendItem(_ title: String, _ value: String, _ color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).nkLabel().foregroundStyle(NK.textTertiary)
-            Text(value).font(NKFont.callout.monospacedDigit()).foregroundStyle(color)
-        }
+    /// 浮动刻度标签(原型 `transform:translateX(-50%)`);两端 clamp,免得被卡边切掉。
+    private func label(_ cx: CGFloat, _ text: String, _ color: Color,
+                       bold: Bool, y: CGFloat, width: CGFloat) -> some View {
+        let clamped = min(max(cx, labelHalf), max(width - labelHalf, labelHalf))
+        return Text(text)
+            .font(NKFont.caption.monospacedDigit())
+            .fontWeight(bold ? .bold : .regular)
+            .foregroundStyle(color)
+            .fixedSize()
+            .frame(width: labelHalf * 2)
+            .offset(x: clamped - labelHalf, y: y - 7)
     }
 }
 
@@ -136,22 +149,84 @@ struct NKStopScaleCard<Footer: View>: View {
     let cost: Double
     let price: Double
     var peak: Double? = nil
-    /// 卡底部的补充读数(距止损线 / 自峰值回落 / 回落止盈线 / 占总仓),由调用方给。
+    /// 卡底部的补充读数(距止损线 / 自峰值回落),由调用方给。
+    /// 🔴 原型第四格是「占总仓 35.3%」—— **本版不画**(§五 〇-4:分母
+    /// `Settings.total_capital` 从未下发,客户端写死 12 万 = 造第二份事实源)。
     @ViewBuilder var footer: Footer
 
     private var broken: Bool { price > 0 && price < stop }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: NKSpace.blockGap) {
+        VStack(alignment: .leading, spacing: 0) {
+            // 原型 1010 行:`11/700 ls .5 .40` + `margin-bottom:14`。
             Text("纪律位置").nkLabel().foregroundStyle(NK.textTertiary)
+                .padding(.bottom, 14)
             NKStopScale(stop: stop, cost: cost, price: price, peak: peak)
             footer
         }
-        .padding(NKSpace.cardPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, NKSpace.cardPad).padding(.horizontal, NKSpace.cardPadH)
         .background(RoundedRectangle(cornerRadius: NKRadius.card).fill(NK.cardBg))
         .overlay(
             RoundedRectangle(cornerRadius: NKRadius.card)
                 .stroke(broken ? NK.down : NK.hairline, lineWidth: broken ? 1 : 0.5)
         )
+    }
+}
+
+/// 列表行里的**迷你刻度条**(原型 923–935 行)。轨道 4px、三个标记:
+/// 止损左侧的红色危险段 + 成本细线 + 现价粗线。⛔ 它不是上面那把尺的缩小版 ——
+/// 峰值不画、标签走行内一行(左「止损 x」/ 右「现价 x · 距止损 y」)。
+struct NKStopMiniBar: View {
+    let stop: Double
+    let cost: Double
+    let price: Double
+
+    private var hasPrice: Bool { price > 0 }
+    private var broken: Bool { hasPrice && price <= stop }
+
+    private var domain: (lo: Double, hi: Double) {
+        var vs = [stop, cost]
+        if hasPrice { vs.append(price) }
+        let lo = vs.min() ?? 0
+        let hi = vs.max() ?? 1
+        let span = max(hi - lo, 0.0001)
+        let pad = span * 0.22
+        return (lo - pad, hi + pad)
+    }
+
+    private func x(_ v: Double, width: CGFloat) -> CGFloat {
+        let d = domain
+        let t = (v - d.lo) / max(d.hi - d.lo, 0.0001)
+        return width * CGFloat(min(max(t, 0), 1))
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .topLeading) {
+                Capsule().fill(NK.textTertiary.opacity(0.15))
+                    .frame(width: w, height: 4).offset(y: 4)
+                // 止损线**左侧**那一段 = 危险区(原型 925:`width:11%; #E5443B`)。
+                Capsule().fill(NK.down)
+                    .frame(width: max(x(stop, width: w), 0), height: 4).offset(y: 4)
+                // 止损标记(原型 926:1.5px,上下各出头 3)。
+                mark(x(stop, width: w), NK.textSecondary, w: 1.5, h: 10, top: 1)
+                mark(x(cost, width: w), NK.textTertiary.opacity(0.75), w: 1.5, h: 10, top: 1)
+                if hasPrice {
+                    // 现价(原型 928:2.5px,上下各出头 4)。
+                    mark(x(price, width: w), broken ? NK.down : NK.up, w: 2.5, h: 12, top: 0)
+                }
+            }
+            .frame(width: w, height: 12, alignment: .topLeading)
+        }
+        .frame(height: 12)
+    }
+
+    private func mark(_ cx: CGFloat, _ color: Color, w: CGFloat, h: CGFloat,
+                      top: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: w / 2).fill(color)
+            .frame(width: w, height: h)
+            .offset(x: cx - w / 2, y: top)
     }
 }

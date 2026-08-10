@@ -60,34 +60,23 @@ struct BasketCardPage: View {
                 titleBlock(card)                    // 标题 + 徽标 + 验证角标
                 scoreCard(card)                     // 百分制打分卡(总分 + 五维)
                 gatesCard                           // 🔴 六关判定(宫格)
-                driverCard(card)                    // ①② 共同驱动 / 证据链
-                whyNowCard(card)                    // ③ 为什么是现在
+                driverCard(card)                    // ①②③ 驱动 / 证据链 / 为什么是现在
                 membersSection(card)                // ④ 成员、角色与对拍分歧
                 scriptsCard(card)                   // ⑥ 次日强 / 平 / 弱三剧本
-                verificationCard(card)              // ⑦⑧ 验证 / 失效条件
-                risksCard(card)                     // ⑨ 主要风险
-                narrativeCard(card)                 // ⑩ LLM 叙述(原文整段)
-                closingCard(card)                   // ⑪ disclaimer + Tier 红线句
+                verificationCard(card)              // ⑦⑧ 验证 / 失效条件 + ⑨ 主要风险
+                narrativeCard(card)                 // ⑩ 叙述 + ⑪ disclaimer(收进披露区)
                 auditSection(card)                  // 审计视图(原始件下沉)
             }
         } else {
-            NKCard {
-                NKEmptyState(title: basket.cardUnavailableText ?? "本篮的卡还没生成",
-                             subtitle: "⛔ 这不是「篮子不存在」——篮子在,只是卡还没生成。",
-                             systemImage: "doc.badge.clock")
+            // 🔴 **卡未就绪也有完整的标题块**(原型 646–652 行):篮子是在的,
+            // 缺的只是 LLM 那半份 —— 连标题都不给,读者第一眼看到的就是"什么都没有"。
+            VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+                notReadyTitleBlock
+                cardNotReadyCard
+                if basket.scoreDisplayPercent != nil { scoreCardFallback }
+                gatesCard
+                membersFallback
             }
-            // 卡未就绪时,机械侧结果照常有效 —— 说清缺的是哪半份。
-            NKCard {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("缺的是 LLM 那半份").font(NKFont.headline).foregroundStyle(NK.textPrimary)
-                    Text("驱动、成员、六关、打分这些机械侧的结果照常有效,缺的是:证据链、"
-                         + "三剧本、验证与失效条件、逐只成员的位置关 / 核心关判定。")
-                        .font(NKFont.body).foregroundStyle(NK.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            gatesCard
-            membersFallback
         }
     }
 
@@ -95,14 +84,14 @@ struct BasketCardPage: View {
 
     @ViewBuilder
     private func titleBlock(_ card: BasketCard) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {   // 原型 253 行 margin-bottom:7
+            HStack(spacing: 7) {                    // 原型 253 行 gap:7
+                // 原型 254 行:Tier 与档内次序是**一枚**实心徽标「T1 第 1 位」,
+                // ⛔ 不是「T1」+「T1 第 1 位」两枚(同一件事写两遍)。
                 if let t = card.tier {
-                    NKChip(text: "T\(t)", tone: t == 1 ? .good : (t == 2 ? .warn : .neutral),
-                           filled: true)
+                    NKChip(text: card.rankInTier.map { "T\(t) 第 \($0) 位" } ?? "T\(t)",
+                           tone: t == 1 ? .good : (t == 2 ? .warn : .neutral), filled: true)
                 }
-                if let r = card.rankInTier, let t = card.tier { NKChip(text: "T\(t) 第 \(r) 位") }
-                if let v = card.version { NKChip(text: "卡 v\(v)") }
                 // V2.2-③-E 引擎徽标(裁定 #9:单篮子单引擎,成员继承 —— 徽标只出
                 // 现在篮子头上,⛔ 不在成员卡上重复画)。老卡缺这三键是常态。
                 // ⚠ 文案刻意写「选股引擎」而不是裸「引擎」:审计视图里已有
@@ -111,18 +100,79 @@ struct BasketCardPage: View {
                 if let ev = basket.engineVersionDisplay {
                     NKChip(text: "选股引擎 \(ev)", tone: .neutral)
                 }
+                if let v = card.version { NKChip(text: "卡 v\(v)") }
                 Spacer()
                 VerificationBadge(model: model, basketId: basket.basketId)
             }
             #if os(macOS)
             Text(basket.name.isEmpty ? basket.basketKey : basket.name)
-                .font(NKFont.title1).foregroundStyle(NK.textPrimary)
+                .font(NKFont.title1).tracking(-0.4).foregroundStyle(NK.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             #endif
-            if !card.driver.isEmpty {
-                Text(card.driver).font(NKFont.body).foregroundStyle(NK.textSecondary)
+            // ⚠ **驱动一句在这里不重复**:它是 ① 那张卡的正文(原型 341–343 行),
+            // 标题下再印一遍就是同一句话连着出现两次。
+        }
+    }
+
+    /// 卡未就绪时的标题块(原型 646–652):Tier 徽标 + 引擎 + 「今天还没判过」+
+    /// 大标题 + 驱动一句(这时 ① 那张卡不存在,驱动只能挂在这里)。
+    private var notReadyTitleBlock: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                if let t = basket.tier {
+                    NKChip(text: "T\(t)", tone: t == 1 ? .good : (t == 2 ? .warn : .neutral),
+                           filled: true)
+                }
+                if let ev = basket.engineVersionDisplay {
+                    NKChip(text: "选股引擎 \(ev)", tone: .neutral)
+                }
+                Spacer()
+                VerificationBadge(model: model, basketId: basket.basketId)
+            }
+            Text(basket.name.isEmpty ? basket.basketKey : basket.name)
+                .font(NKFont.title1).tracking(-0.4).foregroundStyle(NK.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// 「本篮的卡还没生成」(原型 654–662):琥珀描边卡 + 图标 + 两段文案。
+    /// ⛔ **不是空态图标居中那一套** —— 这不是"没有内容",是"缺了一半"。
+    private var cardNotReadyCard: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "doc.badge.clock").font(.system(size: 20, weight: .light))
+                .foregroundStyle(NK.amber).padding(.top, 1)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(basket.cardUnavailableText ?? "本篮的卡还没生成")
+                    .font(NKFont.headline).foregroundStyle(NK.textPrimary)
+                Text(cardNotReadyBody)
+                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                    .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20).padding(.vertical, 22)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: NKRadius.card).fill(NK.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: NKRadius.card)
+            .stroke(NK.amber.opacity(0.30), lineWidth: 0.5))
+    }
+
+    /// ⚠ 原因码原样带出来(`card_not_ready` / `card_corrupt` 是**服务端语义标识符**,
+    /// 排障时要能对上),⛔ 不改写成人话就把码丢了。
+    private var cardNotReadyBody: String {
+        let code = basket.cardUnavailableReason.map { "(\($0))" } ?? ""
+        return "⛔ 这不是「篮子不存在」—— 篮子在,只是 11 项卡还没生成\(code)。\n"
+            + "驱动、成员、六关、打分这些机械侧的结果照常有效,缺的是 LLM 那半份:"
+            + "证据链、三剧本、验证与失效条件、逐只成员的位置关 / 核心关判定。"
+    }
+
+    /// 卡未就绪时仍然有机械分(原型 664–676 行照样画打分卡)。
+    private var scoreCardFallback: some View {
+        NKCard {
+            BasketScoreCard(percent: basket.scoreDisplayPercent,
+                            contributions: basket.scoreDisplayContributions,
+                            compact: false, mechScore: basket.tierHistory?.mechScore)
         }
     }
 
@@ -134,7 +184,7 @@ struct BasketCardPage: View {
             VStack(alignment: .leading, spacing: 8) {
                 BasketScoreCard(percent: basket.scoreDisplayPercent,
                                 contributions: basket.scoreDisplayContributions,
-                                compact: false)
+                                compact: false, mechScore: card.mechScore)
                 // §2.8-C 红线:Tier = 注意力优先级,不是收益预测。
                 if let reason = card.tierReason, !reason.isEmpty {
                     Divider().overlay(NK.hairline)
@@ -171,54 +221,113 @@ struct BasketCardPage: View {
 
     // MARK: - ①② 驱动 / 证据链
 
+    /// ①②③ **一张卡三段**(原型 340–362 行:`gap:14` + 两条 `.5px` 分隔)。
+    /// ⛔ 别拆回三张卡 —— 这三段答的是同一个问题(这条驱动是什么 / 凭什么信 / 为什么是今天)。
     @ViewBuilder
     private func driverCard(_ card: BasketCard) -> some View {
         NKCard {
-            VStack(alignment: .leading, spacing: 8) {
-                if !card.driver.isEmpty {
-                    labeled("① 共同驱动", card.driver)
-                }
-                if !card.driverKind.isEmpty {
-                    Text("驱动类型:\(card.driverKind)").font(NKFont.caption)
-                        .foregroundStyle(NK.textTertiary)
+            VStack(alignment: .leading, spacing: 14) {
+                if !card.driver.isEmpty || !card.driverKind.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("① 共同驱动").nkLabel().foregroundStyle(NK.textTertiary)
+                        Text(driverText(card)).font(NKFont.body).lineSpacing(4)
+                            .foregroundStyle(NK.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Divider().overlay(NK.hairline)
-                HStack(spacing: 6) {
-                    Text("② 证据链").nkLabel().foregroundStyle(NK.textTertiary)
-                    // ⛔ `evidenceStatus != ok` 必须显式标注"取证不完整",不许静默当完整证据展示。
-                    if let note = card.evidenceIncompleteNote {
-                        Text(note).font(NKFont.caption).fontWeight(.semibold)
-                            .foregroundStyle(NK.amber)
-                    }
-                    Spacer()
-                }
-                if card.evidence.isEmpty {
-                    Text("本卡未附证据条目").font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                } else {
-                    ForEach(card.evidence) { e in
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("· \(e.claim)").font(NKFont.body).foregroundStyle(NK.textPrimary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Text([e.source, e.date].filter { !$0.isEmpty }.joined(separator: " · "))
-                                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 8) {
+                        Text("② 证据链").nkLabel().foregroundStyle(NK.textTertiary)
+                        // ⛔ `evidenceStatus != ok` 必须显式标注"取证不完整",不许静默当完整证据展示。
+                        if let note = card.evidenceIncompleteNote {
+                            NKChip(text: note, tone: .warn)
                         }
+                        Spacer(minLength: 0)
+                    }
+                    if card.evidence.isEmpty {
+                        Text("本卡未附证据条目").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(card.evidence) { e in
+                                // 原型 349 行:每条证据左侧一根 3px 竖条,⛔ 不是「·」。
+                                HStack(alignment: .top, spacing: 9) {
+                                    // 原型 `rgba(60,60,67,.14)`;`textTertiary` 是同一灰的 .40。
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(NK.textTertiary.opacity(0.35))
+                                        .frame(width: 3)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(e.claim).font(NKFont.callout).lineSpacing(3)
+                                            .foregroundStyle(NK.textPrimary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        Text([e.source, e.date].filter { !$0.isEmpty }
+                                            .joined(separator: " · "))
+                                            .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+                if !card.whyNow.isEmpty {
+                    Divider().overlay(NK.hairline)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("③ 为什么是现在").nkLabel().foregroundStyle(NK.textTertiary)
+                        Text(card.whyNow).font(NKFont.body).lineSpacing(4)
+                            .foregroundStyle(NK.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
         }
     }
 
-    @ViewBuilder
-    private func whyNowCard(_ card: BasketCard) -> some View {
-        if !card.whyNow.isEmpty {
-            NKCard { labeled("③ 为什么是现在", card.whyNow) }
-        }
+    /// 原型 342 行把驱动类型接在驱动正文后面(「…同步放量。驱动类型:产业事件 · 可证伪。」),
+    /// ⛔ 不另起一行小灰字 —— 它是这段话的一部分。
+    private func driverText(_ card: BasketCard) -> String {
+        guard !card.driverKind.isEmpty else { return card.driver }
+        guard !card.driver.isEmpty else { return "驱动类型:\(card.driverKind)。" }
+        return card.driver + "驱动类型:\(card.driverKind)。"
     }
 
     // MARK: - ④ 成员、角色与对拍分歧(**一等对象**)
 
+    /// 🔴 **macOS 上成员卡是"卡里的卡"**(原型 363–626 行):外面一张白卡
+    /// `padding:14px 14px 12px`,里面每个成员是一块 `radius 10` 的**无边框**区域,
+    /// 选中(= 展开)才有 `#FAFAFC` 底 + 内描边。⛔ 别让每个成员各自当一张独立白卡 ——
+    /// 那样四个成员 = 四张卡,与「④ 是一段」的信息结构不符。
+    /// iOS 保持既有的独立卡(手机上没有"外层容器"这一层可用宽度,批 7 另行核对)。
     @ViewBuilder
     private func membersSection(_ card: BasketCard) -> some View {
+        #if os(macOS)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("④ 成员 \(card.members.count) · 为什么这只票能进篮子")
+                    .nkLabel().foregroundStyle(NK.textTertiary)
+                if !card.roleConflicts.isEmpty {
+                    NKChip(text: "角色分歧 \(card.roleConflicts.count) 只", tone: .warn)
+                }
+                Spacer(minLength: 0)
+                Text("点开看逐只判定").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+            }
+            .padding(.horizontal, 4).padding(.bottom, 10)   // 原型 365 行 `padding:0 4px 10px`
+            if card.members.isEmpty {
+                NKEmptyState(title: "本卡未列成员", systemImage: "person.2")
+            } else {
+                ForEach(card.members) { m in
+                    NKMemberCard(model: model, member: m, basketName: card.name,
+                                 tradeDate: card.tradeDate.isEmpty ? model.report.tradeDate
+                                                                   : card.tradeDate)
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: NKRadius.card).fill(NK.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: NKRadius.card).stroke(NK.hairline, lineWidth: 0.5))
+        #else
         VStack(alignment: .leading, spacing: NKSpace.blockGap) {
             HStack(spacing: 6) {
                 Text("④ 成员 \(card.members.count) · 为什么这只票能进篮子")
@@ -239,19 +348,26 @@ struct BasketCardPage: View {
                 }
             }
         }
+        #endif
     }
 
-    /// 卡未就绪时的成员段:**只有代码**。⛔ 「现在没有」不等于「这几只票没通过」。
+    /// 卡未就绪时的成员段:**只有代码**(原型 699–705:代码是一排等宽小方块,
+    /// ⛔ 不是竖着一行一个)。「现在没有」不等于「这几只票没通过」。
     @ViewBuilder
     private var membersFallback: some View {
         if !basket.memberCodes.isEmpty {
             NKCard {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 10) {
                     Text("成员 \(basket.memberCodes.count) · 卡未就绪时只有代码")
-                        .font(NKFont.headline).foregroundStyle(NK.textPrimary)
-                    ForEach(basket.memberCodes, id: \.self) { c in
-                        Text(c).font(NKFont.callout.monospacedDigit())
-                            .foregroundStyle(NK.textSecondary)
+                        .nkLabel().foregroundStyle(NK.textTertiary)
+                    NKWrapRow(spacing: 8, lineSpacing: 8) {
+                        ForEach(basket.memberCodes, id: \.self) { c in
+                            Text(c).font(NKFont.callout.monospaced())
+                                .foregroundStyle(NK.textSecondary)
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .background(RoundedRectangle(cornerRadius: 6)
+                                    .fill(NK.chipNeutral))
+                        }
                     }
                     Text("名称、角色、位置关 / 核心关判定、三个参考件都随卡一起来 —— "
                          + "现在没有,不等于这几只票没通过。")
@@ -264,15 +380,19 @@ struct BasketCardPage: View {
 
     // MARK: - ⑥ 次日强 / 平 / 弱三剧本(**参考件**)
 
+    /// 原型 588–602 行:**三列并排**的强 / 平 / 弱,各自一块语义色浅底 + 描边。
+    /// ⛔ 别摞成三行 —— 三个剧本是**并列的可能性**,竖排会读成有先后。
     @ViewBuilder
     private func scriptsCard(_ card: BasketCard) -> some View {
         NKCard {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("⑥ 次日三剧本").font(NKFont.headline).foregroundStyle(NK.textPrimary)
+            VStack(alignment: .leading, spacing: 11) {
+                Text("⑥ 次日三剧本").nkLabel().foregroundStyle(NK.textTertiary)
                 if let s = card.scripts, !s.isEmpty {
-                    scriptRow("强", s.strong)
-                    scriptRow("平", s.flat)
-                    scriptRow("弱", s.weak)
+                    HStack(alignment: .top, spacing: 10) {
+                        scriptCell("强", s.strong, .good)
+                        scriptCell("平", s.flat, .neutral)
+                        scriptCell("弱", s.weak, .bad)
+                    }
                     NKReferenceNote()
                 } else {
                     Text(card.scriptsUnavailableReason ?? "本次未生成竞价剧本")
@@ -284,58 +404,54 @@ struct BasketCardPage: View {
     }
 
     @ViewBuilder
-    private func scriptRow(_ title: String, _ text: String?) -> some View {
-        if let t = text, !t.trimmingCharacters(in: .whitespaces).isEmpty {
-            HStack(alignment: .top, spacing: 8) {
-                Text(title).nkLabel().foregroundStyle(NK.textTertiary)
-                    .frame(width: 18, alignment: .leading)
-                Text(t).font(NKFont.body).foregroundStyle(NK.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
+    private func scriptCell(_ title: String, _ text: String?, _ tone: NKAxisTone) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(NKFont.caption).fontWeight(.bold)
+                .foregroundStyle(tone == .neutral ? NK.textSecondary : tone.color)
+            // ⚠ **没生成的那一档如实说**,⛔ 不留空格子(空格子读作"这种情况不会发生")。
+            Text(text?.trimmingCharacters(in: .whitespaces).isEmpty == false
+                 ? text! : "本次未生成这一档")
+                .font(NKFont.callout).lineSpacing(3)
+                .foregroundStyle(text?.isEmpty == false ? NK.textPrimary : NK.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12).padding(.vertical, 11)
+        .background(RoundedRectangle(cornerRadius: NKRadius.inner)
+            .fill(tone == .neutral ? NK.chipNeutral.opacity(0.7) : tone.color.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: NKRadius.inner)
+            .stroke(tone == .neutral ? NK.hairline : tone.color.opacity(0.20), lineWidth: 0.5))
     }
 
-    // MARK: - ⑦⑧ 验证 / 失效条件(结构化机器半份 + 人话半份)
+    // MARK: - ⑦⑧ 验证 / 失效条件 + ⑨ 主要风险(原型 604–618 行:**同一张卡两段**)
 
     @ViewBuilder
     private func verificationCard(_ card: BasketCard) -> some View {
         NKCard {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("⑦⑧ 验证与失效条件").font(NKFont.headline).foregroundStyle(NK.textPrimary)
-                if let t = card.verificationText, !t.isEmpty {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("⑦ 验证条件").nkLabel().foregroundStyle(NK.textTertiary)
-                        Text(t).font(NKFont.body).foregroundStyle(NK.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("⑦⑧ 验证与失效条件").nkLabel().foregroundStyle(NK.textTertiary)
+                    // 原型 607/608 行:验证 = 绿勾方块,失效 = 红叉方块 —— 两件事的**方向
+                    // 相反**,同色同形会读成一串并列条件。
+                    if let t = card.verificationText, !t.isEmpty {
+                        conditionRow(system: "checkmark", tone: .good, text: t)
                     }
-                }
-                if let t = card.invalidationText, !t.isEmpty {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("⑧ 失效条件").nkLabel().foregroundStyle(NK.textTertiary)
-                        Text(t).font(NKFont.body).foregroundStyle(NK.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                    if let t = card.invalidationText, !t.isEmpty {
+                        conditionRow(system: "xmark", tone: .bad, text: t)
                     }
+                    // CLAUDE.md 坑条:篮子 `falsified` ≠ 持仓该走。
+                    Text("失效说的是「这个驱动假设不成立了」,**不是**「手里的仓该卖了」——"
+                         + "该不该走由持仓纪律(止损 / 回落止盈 / 时间退出)管。")
+                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                // CLAUDE.md 坑条:篮子 `falsified` ≠ 持仓该走。
-                Text("失效说的是「这个驱动假设不成立了」,**不是**「手里的仓该卖了」——"
-                     + "该不该走由持仓纪律(止损 / 回落止盈 / 时间退出)管。")
-                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    // MARK: - ⑨ 主要风险
-
-    @ViewBuilder
-    private func risksCard(_ card: BasketCard) -> some View {
-        if !card.risks.isEmpty {
-            NKCard {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("⑨ 主要风险").font(NKFont.headline).foregroundStyle(NK.textPrimary)
-                    ForEach(card.risks, id: \.self) { r in
-                        Text("· \(r)").font(NKFont.body).foregroundStyle(NK.textSecondary)
+                if !card.risks.isEmpty {
+                    Divider().overlay(NK.hairline)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("⑨ 主要风险").nkLabel().foregroundStyle(NK.textTertiary)
+                        Text(card.risks.joined(separator: ";"))
+                            .font(NKFont.body).lineSpacing(4).foregroundStyle(NK.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -343,14 +459,33 @@ struct BasketCardPage: View {
         }
     }
 
-    // MARK: - ⑩ LLM 叙述(**原文整段**,§2.7)
+    private func conditionRow(system: String, tone: NKAxisTone, text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            RoundedRectangle(cornerRadius: NKRadius.badge)
+                .fill(tone.color.opacity(0.12))
+                .frame(width: 15, height: 15)
+                .overlay(Image(systemName: system)
+                    .font(.system(size: 8, weight: .bold)).foregroundStyle(tone.color))
+                .padding(.top, 1)
+            Text(text).font(NKFont.callout).lineSpacing(3).foregroundStyle(NK.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
 
+    // MARK: - ⑩ LLM 叙述(**原文整段**,§2.7)+ ⑪ disclaimer 收进披露区
+
+    /// ⚠ **恒在**:⑪ disclaimer 与 Tier 红线句住在这张卡的披露区里 —— 卡有没有叙述,
+    /// 那两句都得说得出口。`narrative` 为空时如实写「本卡未附叙述」,⛔ 不整张卡消失。
     @ViewBuilder
     private func narrativeCard(_ card: BasketCard) -> some View {
-        if !card.narrative.isEmpty || card.degraded {
-            NKCard {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("⑩ 叙述").font(NKFont.headline).foregroundStyle(NK.textPrimary)
+        NKCard {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("⑩ 叙述").nkLabel().foregroundStyle(NK.textTertiary)
+                    if !card.degraded, card.narrative.isEmpty {
+                        Text("本卡未附叙述").font(NKFont.caption)
+                            .foregroundStyle(NK.textTertiary)
+                    }
                     if card.degraded {
                         // `degraded=true` = **人话半份缺席、结构化半份照出**(不是"这张卡不可信")。
                         Text("本卡降级:人话半份缺席,上面的结构化内容照常有效")
@@ -358,33 +493,27 @@ struct BasketCardPage: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if !card.narrative.isEmpty {
-                        Text(card.narrative).font(NKFont.body).foregroundStyle(NK.textSecondary)
+                        // 原型 680 行 `13.5px; line-height:1.75` —— 整段叙述是这张卡里
+                        // 唯一要**读**的东西,行距刻意比别处松。
+                        Text(card.narrative).font(NKFont.body).lineSpacing(6)
+                            .foregroundStyle(NK.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    // 🔴 ⑪ 与 Tier 红线句在原型里就住在这个披露区(macOS 原型 683–687),
+                    // ⛔ 不是卡外面另起一段小灰字。文案一字未改。
                     NKDisclosure(summary: "参考、非指令") {
                         Text("参考、非指令 · 不进排序、不进哨兵、不改去留、不加分")
+                        if !card.disclaimer.isEmpty {
+                            Text(card.disclaimer).fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text("Tier / 档内次序 = 注意力优先级,不是收益预测 · T1 ≠ 最会涨 · 终选权在你")
+                            .fixedSize(horizontal: false, vertical: true)
                         if !card.llmStage.isEmpty { Text("生成阶段:\(card.llmStage)") }
                         ForEach(card.notes, id: \.self) { n in
                             Text("· \(n)").fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
-            }
-        }
-    }
-
-    // MARK: - ⑪ disclaimer(**原样透传不改写**)+ Tier 红线句
-
-    @ViewBuilder
-    private func closingCard(_ card: BasketCard) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !card.disclaimer.isEmpty {
-                Text(card.disclaimer).font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Text("Tier / 档内次序 = 注意力优先级,不是收益预测 · T1 ≠ 最会涨 · 终选权在你")
-                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

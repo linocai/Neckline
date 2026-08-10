@@ -193,6 +193,60 @@ func nkBoardLabel(_ raw: String) -> String {
     }
 }
 
+/// 簇内角色英文码 → 中文展示名(**唯一**展示层换算源,沿 `nkBoardLabel` 先例:
+/// 服务端只发英文码、中文在客户端换算、未识别值原样透传)。
+///
+/// 🔴 **V2.3.1 §〇c 硬伤 2**:V2.3.0 之前三处 `roleDisplay` 把服务端原值**原样返回**,
+/// 而生产实际发的是 `leader` / `core` / `elastic`(源 `neckline/selection/aggregate.py`)
+/// —— 界面上直接印英文。⚠ 既有单测**是绿的**,因为 fixture 直接喂了中文「龙头」/「跟随」:
+/// **绿的测试没有拦住线上印英文**,所以本函数的用例必须喂英文码。
+///
+/// 换算表(V2.3.1 §⑪,用户 2026-08-10 拍板,⛔ 不得重开):
+/// - `leader` → 龙头 · `core` → 跟随(macOS 原型 369 行 / A-workbench 376 行有据)
+/// - `elastic` → **弹性**(用户原话「elastic 就叫弹性」;`neckline/scan/leader.py` 口径 =
+///   簇内排除头名后的后一半,「弹性」是三者里最不带褒贬的一个)
+/// - `unknown` → **空串 → 整枚徽标不画**(⛔ 绝不画「未知」):服务端注释写死
+///   「`unknown` = 算不出,**不是一种角色**」,画出来就是把"没算出来"讲成了一种判断。
+///   空串由 `NKChip` 的「空文案整枚不画」规则天然吞掉。
+/// - 其余未识别值 → **原样透传**(⛔ 不瞎翻译成中文)
+func nkRoleLabel(_ raw: String) -> String {
+    let v = raw.trimmingCharacters(in: .whitespaces)
+    switch v {
+    case "leader": return "龙头"
+    case "core": return "跟随"
+    case "elastic": return "弹性"
+    case "unknown": return ""
+    default: return v
+    }
+}
+
+/// 单个角色码 → 中文;换算不出(`unknown` / 缺键)时给 `—`。
+/// 用于「两说并存」那种**必须并排摆出两个值**的场合(整枚不画会让两说变一说)。
+func nkRoleLabelOrDash(_ raw: String?) -> String {
+    let s = nkRoleLabel(raw ?? "")
+    return s.isEmpty ? "—" : s
+}
+
+/// 角色两说的展示串(**三处 `roleDisplay` 共用同一份实现**,⛔ 别再抄第四份)。
+///
+/// **冲突时两个都出现**(⛔ 不挑一个当正确答案),不冲突时只出一个。
+/// ⚠ 「换算成空」与「原值就为空」是**两回事**,判定刻意分开:
+/// - 原值是 `unknown`(算不出)→ 返回空串 → 整枚徽标不画;
+/// - 两个键**原值都没有**(老卡缺这两个键是常态)→ 沿用既有的「角色未判定」。
+func nkRoleDisplay(roleLlm: String?, roleMech: String?, roleConflict: Bool) -> String {
+    let rawLlm = (roleLlm ?? "").trimmingCharacters(in: .whitespaces)
+    let rawMech = (roleMech ?? "").trimmingCharacters(in: .whitespaces)
+    let llm = nkRoleLabel(rawLlm)
+    let mech = nkRoleLabel(rawMech)
+    if roleConflict {
+        return "LLM:\(llm.isEmpty ? "—" : llm) / 机械:\(mech.isEmpty ? "—" : mech)"
+    }
+    if !mech.isEmpty { return mech }
+    if !llm.isEmpty { return llm }
+    if !rawMech.isEmpty || !rawLlm.isEmpty { return "" }
+    return "角色未判定"
+}
+
 /*
  ⚠ **V2-⑮:候选族 Swift 类型整族退役**(⑭-C 对拍表 §六 A1 / 6.4-D1)。
    · `EntrySpec` —— 服务端 `report/candidates.py` 已随 ⑬-1 单票候选管线整链删除;
@@ -610,16 +664,9 @@ struct BasketMember: Codable, Equatable, Identifiable {
         tagsAbsent = try c.decodeIfPresent([String].self, forKey: .tagsAbsent) ?? []
     }
 
-    /// 角色两说的展示串。**冲突时两个都出现**(⛔ 不挑一个),不冲突时只出一个。
+    /// 角色两说的展示串(唯一实现 `nkRoleDisplay`,V2.3.1 §〇c 硬伤 2 收口)。
     var roleDisplay: String {
-        let llm = (roleLlm ?? "").trimmingCharacters(in: .whitespaces)
-        let mech = (roleMech ?? "").trimmingCharacters(in: .whitespaces)
-        if roleConflict {
-            return "LLM:\(llm.isEmpty ? "—" : llm) / 机械:\(mech.isEmpty ? "—" : mech)"
-        }
-        if !mech.isEmpty { return mech }
-        if !llm.isEmpty { return llm }
-        return "角色未判定"
+        nkRoleDisplay(roleLlm: roleLlm, roleMech: roleMech, roleConflict: roleConflict)
     }
 
     // —— V2.2-③-C/③-C2 位置关 / 核心关判定的**纯展示层换算**(沿 `nkBoardLabel` 先例:
@@ -1827,12 +1874,7 @@ struct InfoCardBasketPeer: Codable, Equatable, Identifiable {
 
     /// 角色两说并存(同 `BasketMember.roleDisplay`,⛔ 冲突时不挑一个当正确答案)。
     var roleDisplay: String {
-        let llm = (roleLlm ?? "").trimmingCharacters(in: .whitespaces)
-        let mech = (roleMech ?? "").trimmingCharacters(in: .whitespaces)
-        if roleConflict { return "LLM:\(llm.isEmpty ? "—" : llm) / 机械:\(mech.isEmpty ? "—" : mech)" }
-        if !mech.isEmpty { return mech }
-        if !llm.isEmpty { return llm }
-        return "角色未判定"
+        nkRoleDisplay(roleLlm: roleLlm, roleMech: roleMech, roleConflict: roleConflict)
     }
 }
 
@@ -1907,13 +1949,9 @@ struct InfoCardBasket: Codable, Equatable {
         }
     }
 
+    /// 角色两说并存(同 `BasketMember.roleDisplay`,⛔ 冲突时不挑一个当正确答案)。
     var roleDisplay: String {
-        let llm = (roleLlm ?? "").trimmingCharacters(in: .whitespaces)
-        let mech = (roleMech ?? "").trimmingCharacters(in: .whitespaces)
-        if roleConflict { return "LLM:\(llm.isEmpty ? "—" : llm) / 机械:\(mech.isEmpty ? "—" : mech)" }
-        if !mech.isEmpty { return mech }
-        if !llm.isEmpty { return llm }
-        return "角色未判定"
+        nkRoleDisplay(roleLlm: roleLlm, roleMech: roleMech, roleConflict: roleConflict)
     }
 }
 
@@ -3811,10 +3849,32 @@ struct MarketRegimeDay: Codable, Equatable {
 
     /// 五维里**没算出来**的那几维(`inputs.<dim>.available == false`)。
     /// 🔴 界面要把它说出口:缺维不是「这一维没问题」。
+    /// ⚠ 返回的是**服务端英文码**;要印到界面上一律过 `nkRegimeDimLabel`。
     var missingDims: [String] {
         (inputs.objectValue ?? [:])
             .filter { $0.value["available"]?.boolValue == false }
             .keys.sorted()
+    }
+
+    /// 中文展示名(界面用这个)。⚠ 未识别的码**原样透传**,⛔ 不瞎翻译。
+    var missingDimLabels: [String] { missingDims.map(nkRegimeDimLabel) }
+}
+
+/// 行情状态五维码 → 中文展示名(**唯一**展示层换算源,沿 `nkBoardLabel` /
+/// `nkRoleLabel` 先例:服务端只发英文码、中文在客户端换算、未识别值原样透传)。
+///
+/// 🔴 **不换算就是把 `moneyflow_migration` 这种机器标识符直接印在首屏上**
+/// (V2.3.1 批 2 实拍逮到,与 §〇c 硬伤 2「角色码印英文」同一个病)。
+/// 唯一源 = 服务端 `neckline/scan/regime.py` 顶部的 `DIM_*` 常量。
+func nkRegimeDimLabel(_ raw: String) -> String {
+    switch raw {
+    case "core_strength": return "核心资产强度"
+    case "breadth": return "赚钱效应宽度"
+    case "relative_strength": return "新老方向相对强度"
+    case "moneyflow_migration": return "资金流迁移"
+    case "t1t2_accuracy": return "T1/T2 命中率"
+    case "position_quota": return "仓位额度"
+    default: return raw
     }
 }
 
@@ -4083,4 +4143,8 @@ let nkTradeNoteMaxChars: Int = 500
 
 enum NKAxisTone: Equatable {
     case good, warn, bad, neutral
+    /// 交互蓝(`NK.accent`)。**不是一种判定**,只给"计数 / 版本"这类中性徽标用
+    /// (原型工具栏 39 行的篮子计数 `color:#0B6BCB; background:rgba(11,107,203,.12)`)。
+    /// ⛔ 别拿它标结论 —— 判定只有 good / warn / bad 三档。
+    case info
 }

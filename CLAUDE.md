@@ -199,8 +199,33 @@
   ⚠ 加新 `.swift` 文件必须 `xcodegen generate`(pbxproj 是显式文件引用,**没有** `PBXFileSystemSynchronizedRootGroup`)。
 - 🔴 **用户正式 macOS App 在跑时,⛔ 别指望启动 Debug 构建来截 macOS 图**:同 bundle id,
   LaunchServices 只会把**那个还在跑的旧版**切到前台 —— 截出来是旧版,**比没有截图更误导**。
-  且全屏 `screencapture` 会拍到用户桌面(不是你该留的东西)。按既定兜底走「iOS 截图 + 双端
-  `BUILD SUCCEEDED`」等价证据,macOS 版式留给用户换包后自己过目。
+  且全屏 `screencapture` 会拍到用户桌面(不是你该留的东西)。
+  ✅ **解法已实测通(2026-08-10,V2.3.1 立项):`ditto` 出构建产物 → `PlistBuddy` 改副本
+  `CFBundleIdentifier` 为 `top.linotsai.neckline.dev` + 改 `CFBundleName` → `codesign --force
+  --deep --sign -`(macOS 侧无 entitlements、非沙盒,ad-hoc 够用)→ `open` → 用
+  `CGWindowListCopyWindowInfo` 按 `kCGWindowOwnerName` 取窗口号 → `screencapture -x -o -l<num>`**。
+  本机**屏幕录制权限已授予**(判据:窗口 `kCGWindowName` 读得到),`-l` 只截那一个窗口、
+  **画面里没有用户桌面**。⚠ 顺带拆雷:dev bundle id **另一个 UserDefaults 域** → `defaults write`
+  配演示后端终于安全(⛔ 仍然绝不写无后缀的 `top.linotsai.neckline`;每次收尾
+  `defaults read top.linotsai.neckline | grep NK_` 自检为空)。「iOS 截图 + 双端 BUILD SUCCEEDED」
+  降级为**兜底**,⛔ 不再是 macOS 的默认结案方式。
+- 🔴 **`Text(String)` 不解析 Markdown,只有 `Text("字面量")` 解析**(V2.3.1 批 2 实拍逮到两处):
+  诚实披露文案里满是 `**没看**` / `**恒在**`,一旦把它改成 `+` 拼接、或传进一个 `String` 参数,
+  **星号会原样印在界面上**。要传参就把形参声明成 `LocalizedStringKey`;要拼接就先拼成一整条字面量。
+  ⚠ 这类回归**编译不报错、单测也测不出**,只有实拍看得见。
+- **服务端 `dict` 的 key ⛔ 不许直接进 `Text`**(V2.3.1 批 2:行情状态五维缺维在首屏印出
+  `moneyflow_migration`,与 V2.3.1 硬伤 2「角色码印英文」同一个病的第七处)。一律照 `nkBoardLabel`
+  先例补一个展示层换算函数、**未识别值原样透传**。见到 `.keys` / `objectValue` 直连界面就停一下。
+- **本地演示库里 `sentiment_json` / `sectors_json` 是 snake_case 原样透传**(客户端 CodingKeys 就是
+  `limit_up_count` 这套,`position_quota` 还必须是中文「满额/半额/休息」)。写成 camelCase 会**静默**
+  解不出来 → 界面显示「本次没有情绪仪表盘数据」,看起来像组件坏了。`basketDaily` 内部反而是 camelCase
+  —— **同一份报告快照里两种命名并存是既有事实,⛔ 别"统一"**。
+- **macOS 换包后图标没变,先怀疑缓存、⛔ 别重做图标资产**(2026-08-10 实证:装机包
+  `Assets.car` 10 条 mac 渲染项齐全、`AppIcon.icns` 抽出来就是新图,Dock 上却还是旧图)。
+  **可执行的验证链**:`assetutil --info <app>/Contents/Resources/Assets.car`(看 `RenditionName`
+  与 `PixelWidth` 齐不齐,**免 sudo**)+ `iconutil -c iconset <app>/Contents/Resources/AppIcon.icns`
+  抽位图目视。⛔ 「文件时间戳看着对」不算证据。刷新要 `sudo`(删 `iconservices.store` +
+  `lsregister -f` + `killall Dock`)→ 归**用户手动清单**。
 - **要让富状态(成员卡 / 六关宫格 / 刻度尺)出现在截图里,得先有数据**:走 `DB_PATH=<临时库>` 起一个隔离
   后端(`API_TOKEN` 需 **len≥16**,否则 lifespan fail-fast),临时库只从真库拷四张只读参考表、业务表手写
   假数据。⛔ **不碰 `data/neckline.db`**。内容纵向溢出时,与其死磕滚动,不如**把演示卡前面那几段砍短**

@@ -96,6 +96,9 @@ struct NKDisclosure<Content: View>: View {
 struct NKAuditSection<Content: View>: View {
     /// 里面装了什么,逐项列清(如「口径指纹、验证条件集、机械读数原始件」)。
     let contains: String
+    /// **窄栏用**(macOS 列表栏 376pt):收起态退回一行弱标,不画那枚虚线按钮 ——
+    /// 那枚按钮在窄栏里会比它旁边的真内容还显眼。⛔ 详情栏一律用默认(非 compact)。
+    var compact: Bool = false
     @ViewBuilder var content: Content
 
     @State private var expanded: Bool = NKQA.expandDisclosures
@@ -105,20 +108,43 @@ struct NKAuditSection<Content: View>: View {
             Button {
                 withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
             } label: {
+                if compact {
+                    HStack(spacing: 5) {
+                        Image(systemName: "list.bullet").font(.system(size: 9, weight: .medium))
+                        Text("审计视图 · \(contains)").font(NKFont.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 7, weight: .semibold))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(NK.textTertiary)
+                    .contentShape(Rectangle())
+                } else {
+                // 🔴 **V2.3.1 批 2:虚线描边的一枚"按钮",宽度只到内容为止**
+                // (macOS 原型 640–643 行:`padding:10px 14px; radius:9;
+                // border:.5px dashed rgba(60,60,67,.22); width:fit-content`)。
+                // V2.3.0 是一条通栏的裸文字行 —— 与它上面那一串卡片挨在一起时,
+                // 看起来像正文的最后一句,而不是一个可以点开的入口。
                 HStack(spacing: 6) {
-                    Image(systemName: "wrench.and.screwdriver")
-                        .font(.system(size: 10, weight: .medium))
-                    Text("审计视图").nkLabel()
-                    Text("· \(contains)")
-                        .font(NKFont.caption)
+                    Image(systemName: "list.bullet")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("审计视图 · \(contains)")
+                        .font(NKFont.callout).fontWeight(.semibold)
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 8, weight: .semibold))
-                    Spacer(minLength: 0)
                 }
-                .foregroundStyle(NK.textTertiary)
+                .foregroundStyle(NK.textSecondary)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: NKRadius.inner)
+                        .strokeBorder(NK.textTertiary.opacity(0.55),
+                                      style: StrokeStyle(lineWidth: 0.5, dash: [4, 3]))
+                )
                 .contentShape(Rectangle())
+                }
             }
             .buttonStyle(.plain)
 

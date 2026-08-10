@@ -127,9 +127,11 @@ struct InfoCardPageView: View {
                     }
                     // **角色两说并存**:冲突时两个都显示,⛔ 不挑一个当正确答案。
                     HStack(spacing: 4) {
+                        // ⚠ 两说并存这两枚也要换算(V2.3.1 §〇c 硬伤 2):原来直接插
+                        // 服务端原值 → 卡上印 `LLM:leader` / `机械:core`。
                         if card.basket.roleConflict {
-                            NKChip(text: "LLM:\(card.basket.roleLlm ?? "—")", tone: .warn)
-                            NKChip(text: "机械:\(card.basket.roleMech ?? "—")", tone: .warn)
+                            NKChip(text: "LLM:\(nkRoleLabelOrDash(card.basket.roleLlm))", tone: .warn)
+                            NKChip(text: "机械:\(nkRoleLabelOrDash(card.basket.roleMech))", tone: .warn)
                             Text("两说并存").font(NKFont.caption).foregroundStyle(NK.amber)
                         } else {
                             NKChip(text: card.basket.roleDisplay)

@@ -182,6 +182,65 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(unknown.roleDisplay, "角色未判定", "两个角色都空时如实说没判定,不留空白")
     }
 
+    // MARK: - V2.3.1 §〇c 硬伤 2:角色码中文换算(⛔ 界面不许印 leader / core / elastic)
+
+    /// 🔴 **本用例存在的理由 = 上面那条用例是绿的、却没拦住线上印英文**。
+    /// 它的 fixture 直接喂了中文「龙头」/「跟随」,而生产实际发的是
+    /// `leader` / `core` / `elastic`(源 `neckline/selection/aggregate.py`)——
+    /// **喂什么就测出什么**,喂中文等于把被测的那一步换算整个绕过去了。
+    /// ⛔ 以后凡是"服务端发码、客户端换中文"的东西,fixture 一律喂**码**。
+    func testRoleLabelTranslatesServerCodesToChinese() {
+        // §⑪ 换算表(用户 2026-08-10 拍板,⛔ 不得重开)
+        XCTAssertEqual(nkRoleLabel("leader"), "龙头")
+        XCTAssertEqual(nkRoleLabel("core"), "跟随")
+        XCTAssertEqual(nkRoleLabel("elastic"), "弹性", "用户原话「elastic 就叫弹性」")
+        XCTAssertEqual(nkRoleLabel("unknown"), "",
+                       "`unknown` = 算不出、不是一种角色 → 空串 → 由 NKChip 整枚不画,⛔ 不许画「未知」")
+        XCTAssertEqual(nkRoleLabel("brand_new_code"), "brand_new_code",
+                       "未识别值原样透传(沿 nkBoardLabel 先例),⛔ 不瞎翻译")
+    }
+
+    /// 三处 `roleDisplay` 共用同一份换算 —— 喂**英文码**验收(硬伤 2 的真实输入形状)。
+    func testRoleDisplayOnRealServerCodes() {
+        let leader = BasketMember(tsCode: "002812.SZ", name: "恩捷股份",
+                                  roleLlm: "leader", roleMech: "leader", roleConflict: false)
+        XCTAssertEqual(leader.roleDisplay, "龙头")
+
+        let elastic = BasketMember(tsCode: "300207.SZ", name: "欣旺达",
+                                   roleLlm: "elastic", roleMech: "elastic", roleConflict: false)
+        XCTAssertEqual(elastic.roleDisplay, "弹性")
+
+        // `unknown` → 空串 → 收起行整枚徽标不画(⛔ 不是「未知」也不是「角色未判定」:
+        // 后者留给"服务端根本没发这两个键"的老卡)。
+        let unknownRole = BasketMember(tsCode: "002074.SZ", name: "国轩高科",
+                                       roleLlm: nil, roleMech: "unknown", roleConflict: false)
+        XCTAssertEqual(unknownRole.roleDisplay, "")
+
+        // 冲突:两说并存,两边都换算成中文,⛔ 不挑一个当正确答案。
+        let conflict = BasketMember(tsCode: "300450.SZ", name: "先导智能",
+                                    roleLlm: "leader", roleMech: "core", roleConflict: true)
+        XCTAssertTrue(conflict.roleDisplay.contains("龙头"))
+        XCTAssertTrue(conflict.roleDisplay.contains("跟随"))
+        XCTAssertFalse(conflict.roleDisplay.contains("leader"), "⛔ 界面上不许出现英文码")
+        XCTAssertFalse(conflict.roleDisplay.contains("core"), "⛔ 界面上不许出现英文码")
+
+        // 「两说并存必须并排摆出两个值」的场合:换算不出时补 `—`,而不是整枚吞掉。
+        XCTAssertEqual(nkRoleLabelOrDash("unknown"), "—")
+        XCTAssertEqual(nkRoleLabelOrDash(nil), "—")
+        XCTAssertEqual(nkRoleLabelOrDash("core"), "跟随")
+    }
+
+    /// 进场理由预填:`unknown` 时**不留孤零零的「· 」尾巴**,也⛔ 不补「未知角色」。
+    func testEntryReasonTextOmitsRoleWhenUnknown() {
+        let unknownRole = BasketMember(tsCode: "002074.SZ", name: "国轩高科", roleMech: "unknown")
+        XCTAssertEqual(AppModel.entryReasonText(basketName: "固态电池", member: unknownRole),
+                       "来自篮子「固态电池」")
+
+        let leader = BasketMember(tsCode: "002812.SZ", name: "恩捷股份", roleMech: "leader")
+        XCTAssertEqual(AppModel.entryReasonText(basketName: "固态电池", member: leader),
+                       "来自篮子「固态电池」· 龙头")
+    }
+
     // MARK: - V2.2-③-C/③-C2 位置关 / 核心关三态展示层换算(裁定 #11/#12)
 
     /// `ok`/`weak`/`unfit` 三态的中文与着色 —— **纯展示层换算**(沿 `nkBoardLabel`

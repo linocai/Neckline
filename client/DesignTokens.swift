@@ -47,7 +47,19 @@ enum NK {
     /// **macOS 画布**。⚠ V2.3 由 `#FBFBFD` 改深一档 `#F6F6F8`:原值与白卡几乎无差,
     /// 卡片浮不起来(规范 §02「两处要注意」)。浮起靠 **白卡 + hairline 描边**,
     /// ⛔ **不加阴影** —— 阴影不参与动画是全局三禁之一,而且桌面密度下也不需要。
+    ///
+    /// ⚠ **这是三栏布局里「详情栏」那一栏的底色**(macOS 原型 247 行),
+    /// 列表栏另有 `listBg`(下)—— ⛔ 别把两栏又调成同一个值。
     static let pageBg     = Color(hex: 0xF6F6F8)
+    /// **macOS 列表栏底色**(V2.3.1 新增,全版**唯一**新增色令牌)。
+    ///
+    /// 🔴 **加它的理由**:原型两栏底色是**分开的** —— 列表栏 `#FCFCFD`(macOS 原型 81 行)
+    /// 比详情栏 `#F6F6F8`(247 行)亮一档,靠这一档明暗差 + `.5px` 竖分隔把「选什么」
+    /// 与「看什么」分成两个面。V2.3.0 两栏都吃 `pageBg`,**糊成一片**,列表栏里的白色
+    /// 选中行反而比底色还暗一点点,选中态几乎看不出来。
+    /// ⚠ V2.3 立的「色令牌一个没加、一个没改」在 V2.3.1 §② 收窄为:**只为这一处加一枚**,
+    /// ⛔ 其余色差(卡描边 `.12` vs 令牌 `.10` 等)一律就近对齐既有令牌,不再新增。
+    static let listBg     = Color(hex: 0xFCFCFD)
     /// iOS 画布**沿用不变**(手机上原本就分得开)。
     static let pageBgIOS  = Color(hex: 0xF3F4F7)
     static let fieldBg    = Color(hex: 0xF7F8FA)
@@ -83,12 +95,24 @@ enum NKRadius {
         #endif
     }()
     /// 卡内子块(嵌套在数据卡里的分组:关卡片 / 读数块 / 参考件块)。
+    /// ⚠ **六关宫格的格子也是这一档**(原型 `border-radius:9px`,macOS 原型 291 行)——
+    /// ⛔ 不是 `badge`(那是 4,§〇d 结转第 4 条点名过这处)。
     static let inner: CGFloat  = 9
     /// 按钮 / 折叠区。
     static let control: CGFloat = 8
-    /// 方徽标(六关格子 / Tier 角标)。⚠ V2.3 起徽标**默认不再是胶囊**,
-    /// 胶囊只留给仍然语义为"标签"的那几处(`NKChip` 的 `pill` 形态)。
-    static let badge: CGFloat  = 5
+    /// **成员卡**(`memCard()`,macOS 原型 1770 行 `border-radius:10px`)。
+    /// ⚠ 比数据卡(12)小一档、比卡内子块(9)大一档 —— 它是"卡里的卡",刻意介于两者之间。
+    static let memberCard: CGFloat = 10
+    /// **「硬」角标**那一枚微型标记(macOS 原型 296 行 `border-radius:3px`)。
+    /// ⚠ **⛔ 不是 `badge`(4)**:它只有 9px 字 + `padding:1px 4px`,4 的圆角在这个尺寸上
+    /// 已经把方角吃掉一半(§〇d 结转第 4 条:批 0 把 `badge` 由 5 收到 4 时**没有**覆盖它)。
+    static let hardTag: CGFloat = 3
+    /// 方徽标(全 App 徽标 = `NKChip` / 六关格子 / Tier 角标)。
+    /// ⚠ V2.3 起徽标**默认不再是胶囊**,胶囊只留给仍然语义为"标签"的那几处。
+    /// ⚠ **V2.3.1 由 5 收到 4**:规范 §04 给的是区间「徽标(方)**4–5**」,而六份原型里
+    /// 每一枚徽标的 inline style 都是 `border-radius:4px`(macOS 原型 253–258 / 367–376 …)
+    /// —— 按 §五 〇a「对不上时以原型为准」取下沿。
+    static let badge: CGFloat  = 4
     static let hero: CGFloat   = 20
     static let field: CGFloat  = 12
     static let glassBar: CGFloat = 26  // 底部玻璃标签栏(iOS,不变)
@@ -113,10 +137,22 @@ enum NKSpace {
     }()
     /// 详情区页边距·宽档(macOS 大标题区 / 首屏概览)。
     static let pagePadWide: CGFloat = 26
-    /// 列表栏页边距(macOS 三区布局的中栏):横 10 / 纵 16。
+    /// **macOS 详情栏底部留白**(原型每一屏都是 `padding:22px 26px 40px`,
+    /// macOS 原型 250 / 645 / 709 / 828 行四处逐字相同)—— 最后一张卡不贴着窗口底沿。
+    static let pagePadBottom: CGFloat = 40
+    /// 列表栏页边距(macOS 三区布局的中栏)。
+    /// **横 10 = 原型行容器 `padding:0 10px`**(macOS 原型 86 行);标题区另有
+    /// 一档 16(`padding:18px 16px 10px`,82 行)—— **两套页边距是原型的原样**,
+    /// 由标题区自己再补 6,⛔ 别把整栏统一成一个值。
     static let listPadH: CGFloat = 10
     static let listPadV: CGFloat = 16
-    /// 卡内边距:macOS 16 / iOS 18。
+    /// 列表栏标题区在 `listPadH` 之上补的那一档(10 + 6 = 16)。
+    static let listHeaderExtraH: CGFloat = 6
+    /// 列表栏上下:顶 18(原型 82 行)/ 底 20(原型 237 行末块 `padding:0 10px 20px`)。
+    static let listPadTop: CGFloat = 18
+    static let listPadBottom: CGFloat = 20
+    /// 卡内边距·**纵向**:macOS 16 / iOS 18。
+    /// ⚠ 横向另有一档 `cardPadH`(原型 `padding:16px 18px`,两个数**刻意不等**)。
     static let cardPad: CGFloat = {
         #if os(macOS)
         return 16
@@ -124,6 +160,8 @@ enum NKSpace {
         return 18
         #endif
     }()
+    /// 卡内边距·**横向** = 18(macOS 原型 264 行起每张数据卡都是 `padding:16px 18px`)。
+    static let cardPadH: CGFloat = 18
     /// 卡与卡之间。
     static let cardGap: CGFloat = 16
     /// 卡内块与块之间。
@@ -178,6 +216,12 @@ enum NKFont {
     /// 用 `.nkLabel()` 修饰符一次给全(见下)。
     static let label    = Font.system(size: 10.5, weight: .bold)
     static let labelTracking: CGFloat = 0.5
+    /// 10.5 / 600 / 无 tracking。**徽标专用**(`NKChip`,全 App 唯一徽标实现)。
+    /// ⚠ **不是第九档字阶** —— 字号与 `label` 是**同一档 10.5**(规范 §03 表里那一档),
+    /// 只是字重降到 600、不加 tracking:原型每一枚徽标都是 `font-size:10.5px;
+    /// font-weight:600`(macOS 原型 253–258 / 367–376),徽标是**贴在内容旁边的短标**,
+    /// 700 + tracking 会把它抢成小标题。⛔ 别拿它当通用字阶用,徽标之外一律走八档。
+    static let badge    = Font.system(size: 10.5, weight: .semibold)
 
     // —— 等宽档(审计视图 / 原始读数键名,**不算在八档里**:它答的是"这是机器标识符") ——
     /// 10 / 等宽。原始读数**键名**(`dist_to_ma20` 这类服务端语义标识符)。

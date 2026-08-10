@@ -64,6 +64,17 @@ struct NecklineApp: App {
                 .environmentObject(config)
                 .frame(minWidth: 1080, minHeight: 640)
         }
+        // 🔴 **V2.3.1 §〇c 硬伤 1:窗口壳只许有一条栏**。
+        // V2.3.0 漏了这一句 → 系统原生标题栏还在,自建的 50px `NKToolbar` 挂在它**下面**,
+        // 成了**两条栏**;`NKToolbar` 里那句红绿灯占位因此变成一段**纯空白**,而真正的
+        // 红绿灯在上面另一条栏里。原型是**一条**:红绿灯与 Logo / 板块胶囊同排
+        // (macOS 原型 23–27 行)。⚠ 隐藏标题栏之后有两件必须一起办,漏一件就是新的坏:
+        // ① **窗口拖动** —— 见 `NKToolbar` 的 `WindowDragGesture`(⛔ 不许用
+        //    `NSWindow.isMovableByWindowBackground`,那会让整个内容区都能拖窗,
+        //    列表点选会变成拖窗口);
+        // ② **红绿灯垂直居中** —— 见 `NKTrafficLightAligner`(系统把三颗按钮钉在标准
+        //    标题栏 28pt 的垂直中线,不是 50px 工具栏的中线)。
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1240, height: 780)
         #else

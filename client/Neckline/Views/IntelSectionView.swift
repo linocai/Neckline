@@ -26,7 +26,11 @@ struct IntelPackageView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: NKSpace.gap) {
+            // ⚠ **macOS 上段名进卡头**(原型 800–802 行:卡头就是「情报 · 复盘情报件」)——
+            // 与 ① / ⑤ 同一处理,一张卡不叠两层标题。iOS 保留卡外段头(批 7 再核)。
+            #if !os(macOS)
             NKSectionHeader(title: "情报")
+            #endif
             intelC1Card
             if let mf = report.sectorMoneyflow {
                 sectorMoneyflowCard(mf)
@@ -40,13 +44,30 @@ struct IntelPackageView: View {
     @ViewBuilder
     private var intelC1Card: some View {
         NKCard {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
+                    #if os(macOS)
+                    Text("情报 · 复盘情报件").font(NKFont.headline).foregroundStyle(NK.textPrimary)
+                    #else
                     Text("复盘情报件").font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
+                    #endif
                     Spacer()
                     Text("EOD 硬数据 · 强证据").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
                 if let intel = report.intel, intel.hasContent {
+                    #if os(macOS)
+                    // 原型 803–807 行:大盘量能与跌停**并排两格**(`gap:32`),读数 20/600。
+                    HStack(alignment: .top, spacing: 32) {
+                        if let mv = intel.marketVolume {
+                            bigMetric("大盘量能(沪深合计)", NKFmt.money(mv.totalAmountYi),
+                                      "亿 · 5日均 \(NKFmt.money(mv.ma5AmountYi)) 亿"
+                                      + (mv.sampleDays < 5 ? "(样本仅\(mv.sampleDays)日)" : ""))
+                        }
+                        bigMetric("跌停", "\(intel.limitDownTotalCount)", "只")
+                        Spacer(minLength: 0)
+                    }
+                    if !intel.limitUpLadder.isEmpty { ladderChart(intel.limitUpLadder) }
+                    #else
                     if let mv = intel.marketVolume {
                         metricRow("大盘量能(沪深合计)",
                                   "\(NKFmt.money(mv.totalAmountYi))亿 · 5日均\(NKFmt.money(mv.ma5AmountYi))亿"
@@ -56,6 +77,7 @@ struct IntelPackageView: View {
                         ladderRow(intel.limitUpLadder)
                     }
                     metricRow("跌停", "\(intel.limitDownTotalCount) 只")
+                    #endif
                     moversRow("涨幅榜", intel.gainers, tone: .good)
                     moversRow("跌幅榜", intel.losers, tone: .bad)
                     if !intel.topThemes.isEmpty {
@@ -83,6 +105,45 @@ struct IntelPackageView: View {
             }
         }
     }
+
+    #if os(macOS)
+    /// 原型 804 行:小标题 `11px .55` + 读数 `20/600 tabular` + 单位/补充 `11.5 .40`。
+    private func bigMetric(_ title: String, _ value: String, _ unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(value).font(NKFont.metric).foregroundStyle(NK.textPrimary)
+                Text(unit).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+            }
+        }
+    }
+
+    /// 涨停梯队柱状图(原型 809–815 行,`height:56`):每根柱上方是家数、下方是「N连板」,
+    /// 柱高按**本日最高一档归一**。⚠ 柱高只是版式,⛔ 不代表任何跨日比较。
+    private func ladderChart(_ ladder: [IntelLimitLadderRung]) -> some View {
+        let maxCount = max(1, ladder.map(\.count).max() ?? 1)
+        return VStack(alignment: .leading, spacing: 7) {
+            Text("涨停梯队").font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            HStack(alignment: .bottom, spacing: 10) {
+                ForEach(ladder) { r in
+                    VStack(spacing: 5) {
+                        Text("\(r.count)").font(NKFont.caption.monospacedDigit())
+                            .fontWeight(.semibold)
+                            .foregroundStyle(r.consecDays >= 4 ? NK.amber : NK.textPrimary)
+                        UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4)
+                            .fill(NK.amber.opacity(r.consecDays >= 4 ? 1.0
+                                                   : 0.35 + 0.1 * Double(r.consecDays)))
+                            .frame(height: max(4, 38 * CGFloat(r.count) / CGFloat(maxCount)))
+                        Text("\(r.consecDays)连板").font(NKFont.caption)
+                            .foregroundStyle(NK.textTertiary)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(height: 76, alignment: .bottom)
+        }
+    }
+    #endif
 
     private func moversRow(_ title: String, _ items: [IntelMover], tone: NKAxisTone) -> some View {
         Group {
