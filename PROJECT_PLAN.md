@@ -459,10 +459,19 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-09 · 🚀 V2.2.0 批 1 已上产(nk = `v2.2.0`,周日窗口部署,判据八条全绿)· 批 2(块③)本地开工中**。
-**全量套件 3166 passed / 3 skipped / 0 failed**(基线 3063 passed / **2 failed**)。
-**⚠ 首个真实运行是 2026-08-10(周一)16:05 日更 + 16:35 晚间链 —— 那一晚才是批 1 的真验收**
-(⑦「每批之间留一个完整交易日」;周日部署等于白拿一个干净观察日)。
+**2026-08-10 · 🚀🚀 V2.2.0 全六块已全部上产(nk = `v2.2.0`)+ macOS 换包 2.2.0 完成**。
+**全量套件 3579 passed / 3 skipped / 0 failed** · iOS 214 tests / 0 failures · 双端 BUILD SUCCEEDED。
+
+- **现役四线**:`V:K8-V0.5` / `C:C1` / `Z:Z1` / `Y:Y1`(每线唯一现役;`K4-pack-v1`/`K7-pack-v1`
+  留档 `is_active=0`)。生产 SQLite **52 表**。熔断已整体退役(`/circuit` 404)。
+- **⛔ 唯一未完成项 = 章程 `v2.2-k8` 未激活**(现役仍 `v1.3.3`)。`activate_charter.py` 闸 2
+  **硬校验无 open 持仓**,生产 2 笔未清 —— **等用户清仓后一条命令即可**。⑤-B 熔断退役是纯代码,
+  已随本次部署生效,不受该闸约束。
+- **🔴 今日 15:05–15:55 必办两件**(盘前部署时被迫后移,详见 §九 当日条):① **P0-23/P4-50
+  `landing_metrics_daily` 生产隔离实测**;② `neckline-weekly.service` 配额占位值校准。
+  **必须赶在 16:35 晚间链之前** —— 不达标还来得及关掉对应段。
+- **⚠ 本次部署越出了 ⑦ 的窗口(周一盘前),是用户知情后的明确决定**;代价是**批 1 失去了独立
+  验收** —— 今晚 16:05/16:35 那一跑将同时是六块的首跑,**出问题的归因难度显著上升**。
 
 - **本次动作 = 批 1 两块代码全部落地 + 三张老账结案**(builder-pro ×2,orchestrator 独立复核):
   ① `selection_packs` 单包制 → **四线注册表**(`line_code`/`status` 两列;唯一现役约束由「全表唯一」
@@ -1786,6 +1795,7 @@ get_active_pack()    : None      ← 实测
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-10 · 🚀🚀 **V2.2.0 批 2/3/4/5 一次性全部上产 + macOS 换包(用户明确授权「就现在、我知道哨兵会断」,⛔ 越出 ⑦ 部署窗口是用户知情决定)**。⚠ **窗口违例如实登记**:执行时间 **周一 09:00–09:05,盘前**,不属 ⑦ 允许的任何窗口(交易日 15:05–15:55 / 17:15 后 / 周末全天);orchestrator 已先行报明「哨兵会在开盘前断、且批 1 将失去独立验收」,用户逐条知情后仍要求立即执行 → 照办。**哨兵实际中断 5 秒**(09:03:18→09:03:23,早于 09:25:30 盘前 tick 22 分钟)。**顺序**:双备份(`preV22b2345-20260810-085832`,`integrity ok`)→ `sync_code.sh`(5 个关键文件 sha256 双向逐位对拍、`data/` 属主自检通过)→ **三条引擎线 `C1`/`Z1`/`Y1` 四道闸演练全过后激活**(⚠ **骨架包无需升版** —— 裁定 #11 返工删掉 `config.landing` 后,仓库文件与生产已激活行 `config_json` sha 逐位相同 `2f9641cc…`,原计划的 `K8-V0.6` 前置自动消解)→ 装 `neckline-weekly.{service,timer}` → restart。**验收全绿**:四线各一行现役(`V:K8-V0.5 / C:C1 / Z:Z1 / Y:Y1`,LEGACY 两行留档 `is_active=0`)· 表 47→**52**(+5:`landing_metrics_daily`/`gate_evaluations`/`selection_clock`/`trade_clock`/`trade_clock_events`;`landing_state_daily` 确认**从未上产**)· `holding_eod_check.max_hold_effective` 已放宽为可空(⑤ 补的那处 schema 迁移生效)· `/circuit` 与 `/circuit/unlock` 均 **404** 且 `positions.circuit={"locked":false,"episode":null}`(熔断退役 + 老客户端不炸)· `/clocks/selection`、`/market-regime`、`/eval/weekly` 均 200 · 零 failed unit · load 0.11。**⚠ 周度 timer 踩了 P0-45 同族的坑并当场修**:`systemctl enable` 后 `SubState=dead`、`NextElapse` 为空(enable 只建符号链接、不启动),补 `start` 后自检判据达标(`waiting` + `Sat 2026-08-15 09:00`)。**macOS 换包 2.1.0 → 2.2.0**:旧包 `ditto` 备份 `~/Lino/app_backups/Neckline-2.1.0-20260810-090427.app`(⛔ 非 `cp -R`)· Release build SUCCEEDED · `codesign --verify --deep --strict` 通过 · `ditto` 换包 · 启动进程在跑、零 error 日志。**⛔ 章程 `v2.2-k8` 仍未激活**(现役仍 `v1.3.3`)—— `activate_charter.py` 闸 2 硬校验无 open 持仓,生产 2 笔未清,等用户清仓。**🔴 两项部署前置被迫后移到收盘后窗口**(盘前跑重活会在开盘时飙 load,用户授权的是「哨兵可断」不是「压垮机器」):① **P0-23/P4-50 `landing_metrics_daily` 生产隔离实测**(全市场逐票 × 60 日回看,本项目第二条该量级批算)· ② `neckline-weekly.service` 的 `TimeoutStartSec`/`MemoryMax` 占位值校准。**两项都必须在今日 15:05–15:55 跑完** —— 那仍在 16:35 晚间链之前,不达标还来得及关掉对应段。
 - 2026-08-09 · 🔴 **用户裁定 #11:位置关不要机械层,判定直接交 LLM(推翻自己的裁定 #4 在位置关上的适用;施工图 §五 ③ 已改写,代码返工未开工)**。**触发** = K8 §二 对「落地起跳」只有五句定性零个数字,裁定 #4 授权的「工程侧翻译成首版定量」在立项时落成**十二个阈值 / 13 个子门**,施工后实测**连乘交集近乎为空**(`liftoff_confirmed` 全市场当日 1~2 / 5526,**14 个 D0 回放零 T1**)—— 用户判定这一关**本就不该量化**,原话「不要搞这个机械层了…这个地方的判定直接给到大模型」。**三条落点**:(a) **只限位置关**(市场关 / 板块关维持机械硬否决,它们读的是已预计算的客观量而非拍出来的阈值);(b) **位置关 = 证据关、只降级不除名** → **§2.0 第〇原则第 4 锁「LLM 不做闸门」完好无损**(用户在两条自己的裁定冲突时选的那一边);(c) **保留读数、删阈值与四态**,机械层只算事实不下结论。**⛔ LLM 调用增量仍是 0**(判定搭 `basket_reason` 那一次)。**改写落点**:§五 〇 第三轮裁定表 · ③ 节头 · ③-A 二分表 · ③-B ⑤ 行 · **③-C 整节重写**(原文折叠留档、⛔ 作废)· ③-D 的 T1/T2 判据 · ③-F 位置关行 · §2.9-C-1 · §3.11-B · 〇b-5 · ⑥ 契约 `BasketMemberOut` 行。**表改名** `landing_state_daily` → `landing_metrics_daily`(⚠ 原表**从未上产**,批 1 只部署了 ①②,故可干净重构、不受「停写留档不 DROP」约束)。**过程如实登记**:orchestrator 在向用户报「T1 几乎不可达」时**未同时说明那些数字出自施工图 ③-C、依据是用户自己的裁定 #4**,导致用户误以为是施工期自行量化 —— 报问题必须连同出处一起报;另,裁定 #4 授权的是「翻译成首版」,**未授权「翻译完不验联合通过率就往下建」**,派工前漏了这一步。
 - 2026-08-09 · 🚀 **V2.2.0 批 1 上产(nk,周日窗口,零市场影响;对外版号 `v2.1.0` → `v2.2.0`)**。顺序:双备份(`integrity ok`)→ `sync_code.sh`(6 个关键文件 sha256 双向逐位对拍、`data/` 属主自检通过)→ **`retire_legacy_packs.py --confirm`**(K7-pack-v1 `is_active 1→0`,总行数 2 前后不变 = **零 DELETE**,事件流追加 `deactivate`)→ **P0-23 隔离实测**(`User=neckline` 瞬态 unit,**⛔ 非 root `--scope`**;`ExecMainStatus=0` / **827ms** / **扛住 `MemoryMax=64M` 硬上限**,相对 scan unit 的 1400M 余量极大 → **配额不改**)→ **激活骨架线 `K8-V0.5`**(四道闸演练全过;**上闸前逐键对拍 K7:差异恰 3 键 = 排科创 + 排白酒 + 去退役键 `tier3_min`,`tier.weights`/`dims` 逐位相同** = 兑现「差异收敛为选股域收窄一处」判据)→ restart。**判据八条全绿**:`/health`=`v2.2.0` · 表 46→**47** · `selection_packs` 列 10→**12** · 索引换 per-line · 现役**恰 1 行**且 `line_code='V'` · `/market-regime` `available:true` · 排程未受影响(下次 08-10 16:05/16:35)· 零 failed unit · load 0.00。**回退自愈已验证**:激活后重算 20260806/07,`skeleton_version` 由 `engine_default` → **`K8-V0.5`**、`missing:skeleton_pack` 消失 = 阈值确实从包里读。⚠ **版本号三处同升**(`app.py::VERSION` + `project.yml` + `pbxproj`,守门单测锁恒等)—— **客户端本批不构建不换包**,换包仍归批 5。现场打出三条与既有记载冲突的事实,已进 `CLAUDE.md`:运维事实文件已拆(`nk` 归 `NB_info.md`)· **nk 上瞬态批算禁用 root `--scope`** · nk 是 4 vCPU/3.8G 非 2 vCPU/1.6G。
 - 2026-08-08 · 🧱 **V2.2.0 批 1 本地施工完工(块① 引擎注册表 + 块② 行情状态层;builder-pro ×2,⛔ 未部署)**。① `selection_packs` 单包制 → **四线注册表**(`line_code`/`status` 两列 + 唯一现役约束「全表唯一」改「**每线唯一**」)· 读侧四入口 · **`ENGINE_API_VERSION` 1→2**(两个回滚锚如设计作废,回滚绳改「代码 commit + DB 还原」)· 四个包文件(`K8-V0.5`/`C1`/`Z1`/`Y1`,阈值全带 `provenance`)· 新原语 `industry_blacklist`(**实测 `stock_basic.industry` 白酒取值 = 「白酒」19 只**)· `retire_legacy_packs.py`;**三张老账结案 P2-47 / P4-48 / P1-46** + P4-54 两处文案。② `market_regime_daily` 新表 + `scan/regime.py` 三态判定唯一实现 + 五维各带双位与独立保险丝 + **两道锁落成机器判据**(前视锁逐位断言 / 权限锁 AST)+ `SEG_SCAN` 挂链 + `scan_layer.py regime` + `GET /market-regime`(一律 200、零新增 reason)。**全量套件 3166 passed / 3 skipped / 0 failed**(基线 3063/2 failed),表 46→47、`selection_packs` 列 10→12,A8 探针可写命中集为空。**⛔ 未部署、零接触生产**;🔴 **⑦ 批 1 部署判据自相矛盾已实测证实、待用户裁定**(bump 后 `get_active_pack()` 对生产 LEGACY 行返 `None` → 与「当晚行为逐位相同」互斥)。完工验收全文 → `archive/V2.2.0_批1完工记录_20260808.md`。
