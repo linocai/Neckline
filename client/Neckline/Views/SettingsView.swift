@@ -51,8 +51,10 @@ struct SettingsView: View {
     @State private var tokenRevealed = false
     @State private var check: SelfCheckState = .idle
     @State private var deletingProvider: String? = nil
-    /// macOS 四组导航态(纯本地,不进 `AppModel` —— 它不跨板块、也不需要 QA 钩子)。
-    @State private var group: NKSettingsGroup = .backend
+    /// macOS 四组导航态(纯本地,不进 `AppModel` —— 它不跨板块)。
+    /// ⚠ 初值吃 QA 钩子 `NECKLINE_INITIAL_SETTINGS_GROUP`(⛔ 只给 `@State` 当初值,
+    /// 不夺走用户的点击 —— 同 `NECKLINE_INITIAL_RECEIPT` 先例)。
+    @State private var group: NKSettingsGroup = NKQA.initialSettingsGroup ?? .backend
 
     var body: some View {
         #if os(iOS)
@@ -67,9 +69,14 @@ struct SettingsView: View {
         .task {
             await model.loadSettings()
             await model.loadServerVersion()
+            // QA 钩子:注册表拿回来之后才谈得上"编辑第一个"(⛔ `init()` 里够不着)。
+            if NKQA.initialProviderForm, let p = model.providers.first, !model.showProviderForm {
+                model.beginEditProvider(p)
+            }
         }
         .sheet(isPresented: $model.showProviderForm) {
-            ProviderFormSheet(model: model).frame(width: 480, height: 580)
+            // 原型弹层宽 440(`Neckline 弹层.dc.html` 29 行 `width:440px`)。
+            ProviderFormSheet(model: model).frame(width: 440, height: 730)
         }
         .alert("删除 Provider", isPresented: Binding(get: { deletingProvider != nil },
                                                      set: { if !$0 { deletingProvider = nil } })) {
@@ -84,37 +91,67 @@ struct SettingsView: View {
         #endif
     }
 
+    // MARK: - macOS 列表栏(原型 1577–1616)
+    //
+    // 🔴 **原型的四行没有图标**(1582–1607 每一行只有「标题 + 右端读数」两段 + 次行说明)。
+    // V2.3.0 给每行挂了一枚 SF Symbol —— 376pt 栏里那枚图标把标题往里推 24pt,
+    // 与同栏其它板块(选股 / 持仓 / 复盘的列表行都无图标)也不是一套语言。
+
     #if os(macOS)
     private var groupListColumn: some View {
         VStack(alignment: .leading, spacing: NKSpace.rowGap) {
+            // 标题区 `padding:18px 16px 12px`(1578 行);栏本身给的是行那一套(横 10),
+            // 故这里再补 `listHeaderExtraH` 凑到 16(同批 2 三个板块的做法)。
             Text("设置").font(NKFont.title2).foregroundStyle(NK.textPrimary)
-                .padding(.horizontal, 6).padding(.bottom, 10)
+                .tracking(-0.3)
+                .padding(.horizontal, NKSpace.listHeaderExtraH)
+                .padding(.bottom, 12)
             ForEach(NKSettingsGroup.allCases) { g in
                 NKListRow(selected: group == g) { group = g } content: {
-                    HStack(spacing: 8) {
-                        Image(systemName: g.systemImage).font(.system(size: 12))
-                            .foregroundStyle(group == g ? NK.accent : NK.textTertiary)
-                            .frame(width: 16)
-                        VStack(alignment: .leading, spacing: 1) {
+                    VStack(alignment: .leading, spacing: 3) {   // 原型 margin-top:3
+                        HStack(spacing: 8) {                    // 原型 gap:8
                             Text(g.title).font(NKFont.body).fontWeight(.semibold)
                                 .foregroundStyle(NK.textPrimary)
-                            Text(groupCaption(g)).font(NKFont.caption)
-                                .foregroundStyle(NK.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 6)
+                            groupTrailing(g)
                         }
-                        Spacer(minLength: 0)
+                        Text(groupCaption(g)).font(NKFont.caption)
+                            .foregroundStyle(NK.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
         }
     }
 
+    /// 行右端的读数(原型 1586 / 1594 / 1602 / 1610 行各一种)。
+    @ViewBuilder
+    private func groupTrailing(_ g: NKSettingsGroup) -> some View {
+        switch g {
+        case .backend:
+            // 原型是一颗 6px 绿点。⚠ 它说的是**这一组配齐了没有**(地址 + token),
+            // ⛔ 不是"连得上" —— 连通性要点「连接自检」才知道,次行那句话说的也正是配置。
+            Circle().fill(config.hasToken ? NK.up : NK.amber).frame(width: 6, height: 6)
+        case .llm:
+            Text("\(model.providers.count)").font(NKFont.caption.monospacedDigit())
+                .foregroundStyle(NK.textTertiary)
+        case .push:
+            Text("\(enabledPushCount) / \(model.pushKindsDraft.count) 开")
+                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
+        case .version:
+            Text(appShortVersion).font(NKFont.caption.monospacedDigit())
+                .foregroundStyle(NK.textTertiary)
+        }
+    }
+
+    private var enabledPushCount: Int { model.pushKindsDraft.filter { $0.enabled }.count }
+
     private func groupCaption(_ g: NKSettingsGroup) -> String {
         switch g {
         case .backend:
             return "\(config.environment.label) · \(config.hasToken ? "token 已填" : "token 未填")"
         case .llm:
-            return "\(model.providers.count) 个 Provider · 自填制,key 只写不回显"
+            return "自填制 · key 只写不回显"
         case .push:
             return "按通知类型配,不按呈现分组配"
         case .version:
@@ -122,29 +159,387 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - macOS 详情栏(原型 1618–1745;⛔ 不再用 `Form(.grouped)`)
+    //
+    // 🔴 `Form(.grouped)` 的圆角 / 页边距 / 分隔线 / 段标题字号**全由系统定、改不了**,
+    // 逐项对不到原型的 inline style —— 故这四屏改用 `NKFormKit` 的 `NKFieldCard`。
+    // ⚠ iOS 侧仍走下面的 `form`(批 7 才做 iOS 逐屏比对),⛔ 别顺手一起切。
+
     @ViewBuilder
     private var groupDetail: some View {
-        Form {
+        VStack(alignment: .leading, spacing: NKSpace.cardGap) {
             switch group {
-            case .backend:
-                envSection
-                tokenSection
-                overrideSection
-                selfCheckSection
-            case .llm:
-                providersSection
-                routesSection
-            case .push:
-                pushSection
-            case .version:
-                footerSection
+            case .backend: connDetail
+            case .llm: providersDetail
+            case .push: pushDetail
+            case .version: versionDetail
             }
         }
-        .formStyle(.grouped)
-        .frame(maxWidth: 720, alignment: .leading)
+    }
+
+    /// 详情栏大标题(原型 1621 行 `26px/700; letter-spacing:-.4px`)+ 可选副标题。
+    @ViewBuilder
+    private func detailTitle(_ title: String, _ subtitle: LocalizedStringKey? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(NKFont.title1).foregroundStyle(NK.textPrimary).tracking(-0.4)
+            if let s = subtitle {
+                Text(s).font(NKFont.callout).lineSpacing(4)
+                    .foregroundStyle(NK.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // —— ① 后端连接与鉴权(原型 1618–1671)——————————————————————————————
+
+    @ViewBuilder
+    private var connDetail: some View {
+        detailTitle("后端连接与鉴权")
+
+        NKFieldCard {
+            NKFieldRow(v: 14, h: 18, alignment: .top) {
+                VStack(alignment: .leading, spacing: 9) {   // 原型 margin-bottom:9
+                    NKGroupLabel(text: "环境")
+                    NKSegmented(options: NKEnvironment.allCases.map { ($0, $0.shortLabel) },
+                                selection: $config.environment)
+                    NKInlineNote(text: "Dev 连本机 uvicorn(:8002);Prod 连云端 HTTPS。切换即时生效。",
+                                 tone: .neutral)
+                }
+            }
+            NKFieldSeparator()
+            NKFieldRow(v: 14, h: 18) {
+                NKFieldLabel(text: "生效 baseURL")
+                Text(config.resolvedBaseURL.absoluteString)
+                    .font(NKFont.callout.monospaced()).foregroundStyle(NK.textPrimary)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            NKFieldSeparator()
+            NKFieldRow(v: 14, h: 18, alignment: .top) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("baseURL 覆盖(可选)").font(NKFont.body)
+                        .foregroundStyle(NK.textPrimary.opacity(0.75))
+                    NKTextFieldBox(placeholder: "留空则用环境默认",
+                                   text: $config.baseURLOverride, mono: true)
+                    // 🔴 原型 1637 行这句是琥珀的 —— 它是**排障口诀**(CLAUDE.md 登记:
+                    // 「换包后连不上/一片空白」先来这里看有没有手填过老基址)。
+                    NKInlineNote(text: "⚠ 这一栏压过环境默认值 —— 换包后连不上,先来这里看有没有手填过老基址。",
+                                 tone: .warn)
+                }
+            }
+        }
+
+        NKFieldCard {
+            NKFieldRow(v: 16, h: 18, alignment: .top) {
+                VStack(alignment: .leading, spacing: 10) {
+                    NKGroupLabel(text: "鉴权 Token")
+                    HStack(spacing: 10) {
+                        // 🔴 **只写不回显的是 Provider 的 key,不是这个 token** ——
+                        // token 是用户自己填进本机 UserDefaults 的,给个眼睛按钮让他核对
+                        // 是对的(原型 1645 行画的就是这枚眼睛)。
+                        Group {
+                            if tokenRevealed {
+                                NKTextFieldBox(placeholder: "粘贴 API Token",
+                                               text: $config.apiToken, mono: true)
+                            } else {
+                                NKTextFieldBox(placeholder: "粘贴 API Token",
+                                               text: $config.apiToken, mono: true, secure: true)
+                            }
+                        }
+                        Button { tokenRevealed.toggle() } label: {
+                            Image(systemName: tokenRevealed ? "eye.slash" : "eye")
+                                .font(.system(size: 13))
+                                .foregroundStyle(NK.textSecondary)
+                                .frame(width: 30, height: 30)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    HStack(spacing: 7) {
+                        Image(systemName: config.hasToken
+                              ? "checkmark.circle" : "exclamationmark.triangle")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(config.hasToken ? NK.up : NK.amber)
+                        Text(config.hasToken ? "已填入" : "未填入")
+                            .font(NKFont.callout).fontWeight(.semibold)
+                            .foregroundStyle(config.hasToken ? NK.up : NK.amber)
+                        Spacer(minLength: 8)
+                        Text("仅存本机 UserDefaults,绝不提交进 git")
+                            .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    }
+                }
+            }
+        }
+
+        NKFieldCard {
+            NKFieldRow(v: 16, h: 18, alignment: .top) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 12) {
+                        NKOutlineButton(title: "连接自检", systemImage: "wifi",
+                                        busy: check == .running) {
+                            Task { await runSelfCheck() }
+                        }
+                        selfCheckResult
+                        Spacer(minLength: 0)
+                    }
+                    NKInlineNote(text: "GET /health(免鉴权)+ GET /positions(带 token)")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var selfCheckResult: some View {
+        switch check {
+        case .idle, .running:
+            EmptyView()
+        case .ok(let desc):
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle").font(.system(size: 13, weight: .semibold))
+                Text(desc).font(NKFont.callout)
+            }
+            .foregroundStyle(NK.up)
+        case .tokenError:
+            HStack(spacing: 6) {
+                Image(systemName: "xmark.circle").font(.system(size: 13, weight: .semibold))
+                Text("401 · Token 错或缺(/health 通但 /positions 被拒)").font(NKFont.callout)
+            }
+            .foregroundStyle(NK.down)
+        case .networkError(let m):
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle").font(.system(size: 13, weight: .semibold))
+                Text(m).font(NKFont.callout)
+            }
+            .foregroundStyle(NK.amber)
+        }
+    }
+
+    // —— ② LLM Provider 与任务路由(原型 1672–1706)————————————————————
+
+    @ViewBuilder
+    private var providersDetail: some View {
+        detailTitle("LLM Provider 与任务路由",
+                    "任意 OpenAI 兼容端点均可配 · key 只发一次,服务端从不回显明文")
+
+        if model.providers.isEmpty {
+            NKFieldCard {
+                NKFieldRow(v: 16, h: 18) {
+                    Text("还没有配置任何 Provider —— LLM 相关能力(篮子卡叙述 / 提醒解析)会走优雅降级,不崩。")
+                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        ForEach(model.providers) { p in
+            NKFieldCard {
+                NKFieldRow(v: 16, h: 18, alignment: .top) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(spacing: 8) {
+                            Text(p.name).font(NKFont.headline).foregroundStyle(NK.textPrimary)
+                            if !p.enabled { NKChip(text: "已停用") }
+                            if p.hasWebSearch { NKChip(text: "带联网检索", tone: .good) }
+                            Spacer(minLength: 6)
+                            // 🔴 **只回布尔,绝不回明文**(V2-② 硬纪律)。
+                            NKChip(text: p.keySet ? "key 已配" : "key 未配",
+                                   tone: p.keySet ? .good : .warn)
+                        }
+                        Text("\(p.model) · \(p.baseUrl)")
+                            .font(NKFont.caption.monospaced()).foregroundStyle(NK.textTertiary)
+                            .lineLimit(1).truncationMode(.middle)
+                            .padding(.top, 6)
+                        if let n = p.notes, !n.isEmpty {
+                            Text(n).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                                .padding(.top, 4)
+                        }
+                        // 原型 1683 行:`margin-top:12; padding-top:12; border-top:.5px`
+                        Rectangle().fill(NK.hairline).frame(height: 0.5).padding(.top, 12)
+                        HStack(spacing: 14) {
+                            Button("编辑") { model.beginEditProvider(p) }
+                                .buttonStyle(.plain).foregroundStyle(NK.accent)
+                                .font(NKFont.callout).fontWeight(.semibold)
+                            Spacer(minLength: 8)
+                            Button("删除") { deletingProvider = p.name }
+                                .buttonStyle(.plain).foregroundStyle(NK.down)
+                                .font(NKFont.callout).fontWeight(.semibold)
+                        }
+                        .padding(.top, 12)
+                    }
+                }
+            }
+        }
+        NKDashedButton(title: "新增 Provider", systemImage: "plus") { model.beginCreateProvider() }
+
+        NKFieldCard {
+            NKFieldRow(v: 14, h: 18) { NKGroupLabel(text: "任务路由") }
+            ForEach(model.llmRoutes.routes.keys.sorted(), id: \.self) { task in
+                NKFieldSeparator()
+                NKFieldRow(v: 10, h: 18) {
+                    // 任务名是**服务端登记的机器标识符**(`basket_card` / `daily_review`),
+                    // 等宽展示 = 说明"这是机器名",⛔ 不在客户端造一套中文任务名。
+                    Text(task).font(NKFont.callout.monospaced()).foregroundStyle(NK.textPrimary)
+                    Spacer(minLength: 8)
+                    NKInlineMenu(options: [("", "(不指定)")] + model.providers.map { ($0.name, $0.name) },
+                                 selection: routeBinding(task))
+                }
+            }
+            NKFieldSeparator()
+            NKFieldRow(v: 10, h: 18) {
+                Text("默认 Provider").font(NKFont.body)
+                    .foregroundStyle(NK.textPrimary.opacity(0.75))
+                Spacer(minLength: 8)
+                Text(model.llmRoutes.defaultProvider ?? "未设置")
+                    .font(NKFont.callout).fontWeight(.semibold)
+                    .foregroundStyle(model.llmRoutes.defaultProvider == nil ? NK.amber : NK.textPrimary)
+            }
+            NKFieldSeparator()
+            NKFieldRow(v: 12, h: 18) {
+                NKInlineNote(text: "路由未命中 → 回退默认 Provider,这是现役常态,不是没配好。")
+                Spacer(minLength: 8)
+                Button("保存") {
+                    Task {
+                        await model.saveRoutes(model.llmRoutes.routes,
+                                               defaultProvider: model.llmRoutes.defaultProvider)
+                    }
+                }
+                .buttonStyle(.plain).foregroundStyle(NK.accent)
+                .font(NKFont.callout).fontWeight(.semibold)
+            }
+        }
+    }
+
+    // —— ③ 锁屏推送(原型 1707–1732)——————————————————————————————————
+
+    @ViewBuilder
+    private var pushDetail: some View {
+        detailTitle("锁屏推送",
+                    "开关按**通知类型**配、不按呈现分组配 —— 关掉某一类不会连坐同组里别的事。三级只决定「怎么响」,类型决定「响不响」。")
+
+        if model.pushKindsDraft.isEmpty {
+            NKFieldCard {
+                NKFieldRow(v: 16, h: 18) {
+                    Text("尚未取到通知类型清单(服务端 notify_kinds 是唯一源;客户端不硬编)。")
+                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } else {
+            NKFieldCard {
+                // ⛔ **不硬编 kind 清单**:服务端发什么就渲染什么;未识别的 level 也自成一组。
+                ForEach(Array(orderedPushGroups.enumerated()),
+                        id: \.element.level) { idx, grp in
+                    if idx > 0 { NKFieldSeparator() }
+                    // 分组头:`padding:12px 18px 8px` + 按级着色的淡底(原型 1712 / 1717 / 1727)。
+                    NKFieldRow(v: 10, h: 18, background: pushLevelTint(grp.level)) {
+                        Text(nkPushLevelLabel(grp.level)).nkLabel()
+                            .foregroundStyle(pushLevelColor(grp.level))
+                    }
+                    ForEach(grp.kinds) { k in
+                        NKFieldSeparator()
+                        NKFieldRow(v: 11, h: 18) {
+                            Text(k.label).font(NKFont.body).foregroundStyle(
+                                pushEnabled(k.kind) ? NK.textPrimary : NK.textSecondary)
+                            Spacer(minLength: 8)
+                            NKSwitch(isOn: Binding(
+                                get: { pushEnabled(k.kind) },
+                                set: { model.setPushKind(k.kind, enabled: $0) }
+                            ))
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 12) {
+                NKInlineNote(text: "清单由服务端 notify_kinds 下发 —— 新增类型时这里会自动出现,客户端不硬编。")
+                Spacer(minLength: 8)
+                NKOutlineButton(title: "保存推送设置") { Task { await model.savePushSettings() } }
+            }
+        }
+    }
+
+    private func pushEnabled(_ kind: String) -> Bool {
+        model.pushKindsDraft.first(where: { $0.kind == kind })?.enabled ?? true
+    }
+
+    /// 三组的**呈现顺序 = 由重到轻**(原型 1712 紧急 → 1717 提示 → 1727 日常)。
+    ///
+    /// ⚠ 这是**展示层排序**,`PushSettings.groupedByLevel`(服务端出现顺序)原样不动 ——
+    /// 那个顺序是双端共用的模型层语义,⛔ 不为一屏的版式去改它。
+    /// **未识别的 level 排在三档之后、组间保持服务端相对顺序**(⛔ 不丢弃、也不假装它是某一级)。
+    private var orderedPushGroups: [(level: String, kinds: [PushKind])] {
+        let rank: [String: Int] = ["immediate": 0, "important": 1, "digest": 2]
+        return PushSettings(kinds: model.pushKindsDraft).groupedByLevel
+            .enumerated()
+            .sorted { a, b in
+                let ra = rank[a.element.level] ?? 3, rb = rank[b.element.level] ?? 3
+                return ra == rb ? a.offset < b.offset : ra < rb
+            }
+            .map { $0.element }
+    }
+
+    /// 三级各自的着色(原型 1712 红 / 1717 琥珀 / 1727 灰)。
+    /// ⚠ **未识别的 level 走灰档**(服务端将来加第四级时不会变成一片白),⛔ 不丢弃该组。
+    private func pushLevelColor(_ level: String) -> Color {
+        switch level {
+        case "immediate": return NK.down
+        case "important": return NK.amber
+        default: return NK.textSecondary
+        }
+    }
+
+    private func pushLevelTint(_ level: String) -> Color {
+        switch level {
+        case "immediate": return NK.down.opacity(0.05)
+        case "important": return NK.amber.opacity(0.05)
+        default: return NK.textTertiary.opacity(0.06)
+        }
+    }
+
+    // —— ④ 版本(原型 1733–1745)——————————————————————————————————————
+
+    @ViewBuilder
+    private var versionDetail: some View {
+        detailTitle("版本")
+        NKFieldCard {
+            versionRow("App 版本", appVersion)
+            NKFieldSeparator()
+            versionRow("服务端版本", model.serverVersion ?? "未知(未连通)")
+            NKFieldSeparator()
+            // 章程 / 选股包两行取**当日报告快照**里的版本号(⛔ 不在客户端硬编,
+            // 也⛔ 不在没取到时留白 —— 空白读作"没有",而事实是"这次没取到")。
+            versionRow("现役纪律章程", model.report.strategyVersion.isEmpty
+                       ? "未取得(本次没有报告)" : model.report.strategyVersion)
+            NKFieldSeparator()
+            versionRow("现役选股包", model.basketDaily.packVersion?.isEmpty == false
+                       ? (model.basketDaily.packVersion ?? "") : "未取得(本次没有篮子)")
+        }
+        if let note = versionMismatchNote {
+            NKInlineNote(text: LocalizedStringKey(note), tone: .warn)
+        }
+        NKNoteBlock(text: "服务端版本未知时这里沉默 —— 沉默不是「已确认一致」。两者不一致只提示、不拦功能。")
+    }
+
+    private func versionRow(_ title: String, _ value: String) -> some View {
+        NKFieldRow(v: 13, h: 18) {
+            Text(title).font(NKFont.body).foregroundStyle(NK.textPrimary.opacity(0.75))
+            Spacer(minLength: 8)
+            Text(value).font(NKFont.callout.monospacedDigit()).fontWeight(.semibold)
+                .foregroundStyle(NK.textPrimary)
+        }
     }
     #endif
 
+    private var appShortVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
+    /// 双端共用(macOS 路由行 / iOS `routesSection` 都靠它)。
+    private func routeBinding(_ task: String) -> Binding<String> {
+        Binding(get: { model.llmRoutes.routes[task] ?? "" },
+                set: { model.llmRoutes.routes[task] = $0 })
+    }
+
+    // MARK: - iOS 表单(⚠ **批 5 只做 macOS**;iOS 逐屏比对归批 7,这一整块原样不动)
+
+    #if os(iOS)
     private var form: some View {
         Form {
             envSection
@@ -380,11 +775,6 @@ struct SettingsView: View {
         }
     }
 
-    private func routeBinding(_ task: String) -> Binding<String> {
-        Binding(get: { model.llmRoutes.routes[task] ?? "" },
-                set: { model.llmRoutes.routes[task] = $0 })
-    }
-
     // MARK: - V2-⑪ 推送开关(**按 kind 动态渲染 + 按 level 分组**)
 
     private var pushSection: some View {
@@ -455,6 +845,7 @@ struct SettingsView: View {
             }
         }
     }
+    #endif
 
     private var appVersion: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
@@ -502,6 +893,126 @@ struct ProviderFormSheet: View {
     @Bindable var model: AppModel
 
     var body: some View {
+        #if os(macOS)
+        macBody
+        #else
+        iosBody
+        #endif
+    }
+
+    // MARK: - macOS(原型 `Neckline 弹层.dc.html` 188–235:第四个弹层)
+
+    #if os(macOS)
+    /// 🔴 **界面上永远只看得到「已配 / 未配」这个布尔**(V2-② 既有硬纪律):
+    /// 服务端只回 `keySet`,⛔ 不回明文、⛔ 也不回掩码位数(位数本身也是信息)。
+    private var keySet: Bool {
+        guard let n = model.providerForm.editingName else { return false }
+        return model.providers.first(where: { $0.name == n })?.keySet ?? false
+    }
+
+    private var macBody: some View {
+        NKSheetShell(
+            title: model.providerForm.isEditing ? "编辑 Provider" : "新增 Provider",
+            primaryTitle: "保存",
+            primaryDisabled: !model.providerForm.isValid,
+            onCancel: {
+                model.providerForm = ProviderForm()   // 安全态:key 草稿立即丢弃
+                model.showProviderForm = false
+            },
+            onPrimary: { Task { await model.submitProviderForm() } }
+        ) {
+            // —— 端点 ——
+            VStack(alignment: .leading, spacing: 8) {
+                NKGroupLabel(text: "端点")
+                NKFieldCard {
+                    NKFieldRow(v: 12, h: 15) {
+                        NKFieldLabel(text: "名称", width: 76)
+                        if model.providerForm.isEditing {
+                            Text(model.providerForm.name).font(NKFont.body)
+                                .foregroundStyle(NK.textSecondary)
+                            Spacer(minLength: 8)
+                            Text("创建后不可改").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                        } else {
+                            NKTextFieldBox(placeholder: "唯一名,如 glm",
+                                           text: $model.providerForm.name, bordered: false)
+                        }
+                    }
+                    NKFieldSeparator()
+                    NKFieldRow(v: 12, h: 15, alignment: .top) {
+                        NKFieldLabel(text: "Base URL", width: 76)
+                        NKTextFieldBox(placeholder: "https://api.example.com/v1/chat/completions",
+                                       text: $model.providerForm.baseUrl, mono: true, bordered: false)
+                    }
+                    NKFieldSeparator()
+                    NKFieldRow(v: 12, h: 15) {
+                        NKFieldLabel(text: "模型名", width: 76)
+                        NKTextFieldBox(placeholder: "如 glm-4-plus",
+                                       text: $model.providerForm.model, mono: true, bordered: false)
+                    }
+                }
+                // 原型 205 行:这条踩过的坑从 footer 里提出来贴到字段下方并着琥珀色。
+                NKInlineNote(text: "⚠ Base URL 要写**完整端点**(必须带 `/chat/completions`)—— 少写会拿真 key 打出 404。",
+                             tone: .warn)
+            }
+
+            // —— 凭据 ——
+            VStack(alignment: .leading, spacing: 8) {
+                NKGroupLabel(text: "凭据")
+                NKFieldCard {
+                    NKFieldRow(v: 12, h: 15) {
+                        NKTextFieldBox(placeholder: model.providerForm.isEditing
+                                       ? "填入新 key(留空 = 不改)" : "API key",
+                                       text: $model.providerForm.apiKey,
+                                       mono: true, secure: true, bordered: false)
+                        if model.providerForm.isEditing {
+                            NKChip(text: keySet ? "key 已配" : "key 未配",
+                                   tone: keySet ? .good : .warn)
+                        }
+                    }
+                }
+                NKInlineNote(text: "key 只发一次、**服务端从不回显明文**。界面上永远只看得到「已配 / 未配」这个布尔。")
+            }
+
+            // —— 能力 ——
+            VStack(alignment: .leading, spacing: 8) {
+                NKGroupLabel(text: "能力")
+                NKFieldCard {
+                    NKFieldRow(v: 12, h: 15) {
+                        Text("带联网检索").font(NKFont.body).foregroundStyle(NK.textPrimary)
+                        Spacer(minLength: 8)
+                        NKSwitch(isOn: $model.providerForm.hasWebSearch, width: 42, height: 25)
+                    }
+                    if model.providerForm.hasWebSearch {
+                        NKFieldSeparator()
+                        NKFieldRow(v: 12, h: 15) {
+                            NKFieldLabel(text: "检索引擎标识", width: 110)
+                            NKTextFieldBox(placeholder: "留空(可选)",
+                                           text: $model.providerForm.searchEngine, bordered: false)
+                        }
+                    }
+                    NKFieldSeparator()
+                    NKFieldRow(v: 12, h: 15) {
+                        Text("启用").font(NKFont.body).foregroundStyle(NK.textPrimary)
+                        Spacer(minLength: 8)
+                        NKSwitch(isOn: $model.providerForm.enabled, width: 42, height: 25)
+                    }
+                    NKFieldSeparator()
+                    NKFieldRow(v: 12, h: 15, alignment: .top) {
+                        NKFieldLabel(text: "备注", width: 76)
+                        NKTextFieldBox(placeholder: "可选", text: $model.providerForm.notes,
+                                       bordered: false)
+                    }
+                }
+            }
+
+            NKTintedNote(text: "⚠ 勾了「带联网检索」= 按 GLM 式 `web_search` 工具协议发请求。端点若不认这套协议,搜索会**静默 0 命中** —— 这是已登记的已知代价,不是 bug。\n检索引擎标识留空是对的:空 = 不发该字段。",
+                         tone: .warn)
+        }
+    }
+    #endif
+
+    #if os(iOS)
+    private var iosBody: some View {
         NavigationStack {
             Form {
                 Section {
@@ -574,4 +1085,5 @@ struct ProviderFormSheet: View {
             }
         }
     }
+    #endif
 }

@@ -69,14 +69,18 @@ struct PositionsView: View {
                 #if os(iOS)
                 sheetContent(item.kind)
                 #else
-                sheetContent(item.kind).frame(width: 460)
+                // 原型四个弹层同宽 **440**(`Neckline 弹层.dc.html` 29 / 74 / 136 / 189 行
+                // `width:440px`)。⛔ 别按内容各给一个宽度 —— 同一族弹层不同宽会很显眼。
+                // ⚠ **高度按内容各给一档**:原型四个弹层是内容高、彼此并不相等;
+                // 统一成一个高度会让短的那两个下半截空一大片。
+                sheetContent(item.kind).frame(width: 440, height: macSheetHeight(item.kind))
                 #endif
             }
             .sheet(isPresented: $model.showAlertComposer) {
                 #if os(iOS)
                 AlertComposerSheet(model: model)
                 #else
-                AlertComposerSheet(model: model).frame(width: 500, height: 660)
+                AlertComposerSheet(model: model).frame(width: 440, height: 760)
                 #endif
             }
     }
@@ -485,6 +489,18 @@ struct PositionsView: View {
         case .tradeNote(let positionId): TradeClockNoteSheet(model: model, positionId: positionId)
         }
     }
+
+    #if os(macOS)
+    /// 各弹层的内容高度(原型四张卡本来就不等高)。⚠ 内容超出时 `NKSheetShell` 内部
+    /// 的 `ScrollView` 兜住,⛔ 不会被裁掉。
+    private func macSheetHeight(_ kind: PositionModal) -> CGFloat {
+        switch kind {
+        case .close: return 590
+        case .note: return 660
+        case .open, .tradeNote: return 560
+        }
+    }
+    #endif
 }
 
 // MARK: - 仓位一行(列表态:名称 / D 徽标 / 代码·买价×量 / 现价 / 涨跌 / 止损线 / 距止损)
@@ -1194,6 +1210,90 @@ struct ClosePositionSheet: View {
     let code: String
 
     var body: some View {
+        #if os(macOS)
+        macBody
+        #else
+        iosBody
+        #endif
+    }
+
+    // MARK: - macOS(原型 `Neckline 弹层.dc.html` 29–72:第一个弹层)
+
+    #if os(macOS)
+    private var position: Position? { model.positions.first(where: { $0.code == code }) }
+
+    /// 已选那一枚**按语义着色**(原型 71 行原话:「已选那枚按语义着色(止损 = down)」)。
+    /// ⚠ 只有止损是红的 —— 其余八码是**中性的记账口径**,染色会把它们讲成好坏判断。
+    private func reasonTone(_ r: CloseReasonCode) -> NKAxisTone {
+        r == .stopLoss ? .bad : .info
+    }
+
+    private var macBody: some View {
+        NKSheetShell(title: "补录清仓", primaryTitle: "提交",
+                     onCancel: { model.dismissModal() },
+                     onPrimary: { Task { await model.submitClosePosition() } }) {
+            // 原型 37 行:标的头是一条灰底窄块(`padding:11px 14px; radius 10; bg .05`),
+            // ⛔ 不是白卡 —— 它是**系统已经知道的东西**,不参与输入。
+            HStack(spacing: 9) {
+                if let p = position {
+                    Text(p.name).font(NKFont.headline).foregroundStyle(NK.textPrimary)
+                    Text(p.code).font(NKFont.caption.monospacedDigit())
+                        .foregroundStyle(NK.textTertiary)
+                    Spacer(minLength: 8)
+                    Text("持有 \(p.qty) 股 · 成本 ¥\(NKFmt.price(p.buyPrice))")
+                        .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+                } else {
+                    // 该仓已不在列表里(极少数竞态)—— 如实说,⛔ 不留白。
+                    Text(code).font(NKFont.headline.monospacedDigit())
+                        .foregroundStyle(NK.textPrimary)
+                    Spacer(minLength: 8)
+                    Text("本次没取到这笔仓的持仓明细").font(NKFont.caption)
+                        .foregroundStyle(NK.amber)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14).padding(.vertical, 11)
+            .background(RoundedRectangle(cornerRadius: NKRadius.memberCard)
+                .fill(NK.textTertiary.opacity(0.12)))
+
+            NKFieldCard {
+                NKFieldRow(v: 13, h: 15) {
+                    NKFieldLabel(text: "卖出价", width: 110)
+                    NKTextFieldBox(placeholder: "成交价", text: $model.closeSellPrice,
+                                   mono: true, bordered: false, emphasized: true)
+                }
+                NKFieldSeparator()
+                NKFieldRow(v: 13, h: 15) {
+                    NKFieldLabel(text: "实付卖出费用", width: 110)
+                    NKTextFieldBox(placeholder: "可选,回填用真数", text: $model.closeSellFees,
+                                   mono: true, bordered: false)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 9) {
+                NKGroupLabel(text: "离场原因 · 可选,九码")
+                // 原型 53 行:`flex-wrap:wrap; gap:6` 的一排可点标签(⛔ 不是 `Picker` 下拉)。
+                NKWrapRow(spacing: 6, lineSpacing: 6) {
+                    ForEach(CloseReasonCode.allCases) { r in
+                        NKTagButton(text: r.label, selected: model.closeReasonDraft == r,
+                                    selectedTone: reasonTone(r)) {
+                            // 再点一次取消选中 → 回到「不选(按价格兜底判定)」。
+                            model.closeReasonDraft = (model.closeReasonDraft == r) ? nil : r
+                        }
+                    }
+                }
+                NKInlineNote(text: "不选也能提交 —— 服务端按 -5% 价格近似兜底判止损。用于周复盘归因与「连续 3 笔止损」计数,**不改任何纪律判定**。")
+            }
+
+            NKTintedNote(text: "卖出时间缺省今日。此处只记录真实成交,**系统不代下单**。\n⚠「达到参考区间」**不是止盈** —— 离场参考区间不是止盈线,回落止盈才是纪律。")
+        }
+    }
+    #endif
+
+    // MARK: - iOS(⚠ 批 5 不动;iOS 逐屏比对归批 7)
+
+    #if os(iOS)
+    private var iosBody: some View {
         PositionFormShell(title: "补录清仓", onCancel: { model.dismissModal() },
                           onSubmit: { Task { await model.submitClosePosition() } }) {
             Section {
@@ -1218,4 +1318,5 @@ struct ClosePositionSheet: View {
             }
         }
     }
+    #endif
 }

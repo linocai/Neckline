@@ -115,7 +115,11 @@ struct BasketDailyView: View {
         }
         .sheet(item: Binding(get: { model.infoCardRequest },
                              set: { if $0 == nil { model.dismissInfoCard() } })) { req in
-            InfoCardPageView(model: model, request: req).frame(width: 660, height: 740)
+            // 原型 `Neckline 信息卡与对账.dc.html` 36 行:信息卡是 **1200×820** 的整页
+            // (它是全 App 唯一放图的地方 —— 三张图 + 三组并排卡挤进 660 宽会全部塌成一列)。
+            // ⚠ sheet 受父窗口内缩,故取 1120:与 1200 画布同量级,两列排得开。
+            InfoCardPageView(model: model, request: req)
+                .frame(minWidth: 1120, maxWidth: 1120, minHeight: 700, maxHeight: .infinity)
         }
     }
 

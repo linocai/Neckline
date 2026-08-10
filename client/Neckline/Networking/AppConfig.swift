@@ -43,6 +43,15 @@ enum NKEnvironment: String, CaseIterable, Identifiable {
         case .prod: return "Prod · nk.linotsai.top"
         }
     }
+
+    /// 分段控件里的**短名**(macOS 原型 1623–1624 行两段就写 `Dev` / `Prod`)——
+    /// 地址在它下面那一行「生效 baseURL」里完整给出,段内再重复一遍会把控件撑爆。
+    var shortLabel: String {
+        switch self {
+        case .dev:  return "Dev"
+        case .prod: return "Prod"
+        }
+    }
 }
 
 /// 运行期可配置的后端连接。持久化到 UserDefaults;token 不入源码。
