@@ -278,7 +278,7 @@ struct AlertComposerSheet: View {
                                 .frame(width: 108, alignment: .leading)
                             // 🔴 服务端在这几句里写了 `**加粗**`(⑥ 行的「**有延迟**」),
                             // `Text(String)` 不解析 Markdown → 星号会原样上屏(实拍逮到)。
-                            Text(row.text.isEmpty ? "—" : nkServerMarkdown(row.text))
+                            Text(row.text.isEmpty ? AttributedString("—") : nkMarkdown(row.text))
                                 .font(NKFont.callout).lineSpacing(3)
                                 .fontWeight(idx == 6 ? .semibold : .regular)
                                 .foregroundStyle(NK.textPrimary)
@@ -410,7 +410,7 @@ struct AlertComposerSheet: View {
                         Text(row.title).nkLabel()
                             .foregroundStyle(NK.textTertiary)
                         // 同上(iOS 侧同一个 bug,一并修;iOS 实拍核对归批 7)。
-                        Text(row.text.isEmpty ? "—" : nkServerMarkdown(row.text))
+                        Text(row.text.isEmpty ? AttributedString("—") : nkMarkdown(row.text))
                             .font(NKFont.callout).foregroundStyle(NK.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

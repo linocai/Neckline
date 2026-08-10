@@ -25,7 +25,14 @@ import SwiftUI
 /// 把服务端字符串包成 `LocalizedStringKey` 才走 Markdown 解析。
 /// ⚠ **只用在"服务端确实在写 Markdown"的那几处**(确认卡七项);⛔ 别无差别套到
 /// 所有服务端字符串上 —— 那会让任何含 `*` / `[` 的正常文本被当成标记吃掉。
-func nkServerMarkdown(_ s: String) -> LocalizedStringKey { LocalizedStringKey(s) }
+// ⚠ **`nkServerMarkdown` 已并入 `SharedUI.swift::nkMarkdown(_:)`**(V2.3.1 合并期):
+// 批 4 与批 5 在两个 worktree 里**各自**为「服务端文案带 Markdown」加了一个函数,
+// 名字不同、用途相同。统一保留 `nkMarkdown`(返 `AttributedString`),理由:
+//   · `LocalizedStringKey(runtimeString)` 会把整串**当成本地化 key** 去查表,
+//     语义上是借道;而服务端文案里 `%` 遍地(百分比),走 key 那条路多一层风险。
+//   · `AttributedString(markdown:)` 有**明确的失败降级**:解析不了就原样返回纯文本
+//     (含那对没闭合的星号)—— 宁可看见星号,也不吞掉服务端的话。
+// ⛔ 别再起第三个同用途函数。
 
 // MARK: - 弹层壳(四个弹层共用:标题条 + 内容区)
 
