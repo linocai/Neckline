@@ -175,6 +175,37 @@
   把该属性改 `decodeIfPresent` + 默认值,**下一版**服务端才可删键(顺序反了就炸,
   v1.5.0 老四件套退役据此走「键保留 + 过渡文案」)。
 
+### V2.3 前端视觉整改新增坑(2026-08-10 实战)
+
+- **⛔ 视图里不再写裸 `.system(size:)`** —— 字阶收在 `NKFont` 八档 + 两数字档(`DesignTokens.swift`)。
+  V2.3 之前散着 **22 个字号档 / 455 个调用点**,散着写就必然漂回去。**例外只有图标**
+  (`Image(systemName:).font(.system(size:))` 不属字阶)。`label` 档要 tracking,用 `.nkLabel()` 一次给全。
+- **`NKChip(text:)` 传空串会渲染成一枚没字的灰胶囊**(截图核对时逮到):它既不是「没有」也不是
+  「没看」,只是噪声、还看起来像界面坏了。现已在组件内 `text.isEmpty → EmptyView()`。
+  ⚠ 真要说「这一项没取到」得**用一句话说出口**,⛔ 别指望一枚空徽标能暗示什么。
+- **iPhone 402pt 宽度放不下「名称 + 代码 + 角色 + 两枚判定徽标 + RS + chevron」一行**:会把名称挤成两行、
+  把徽标压成**竖排单字**(「位 置 合 适」)。成员卡收起行因此 **iOS 分两行 / macOS(详情栏 ≥700pt)仍一行**。
+  ⚠ 这类挤压**编译不报错、单测也测不出**,只有实拍看得见 —— 新增横向密集行一律先出一张 iPhone 截图。
+- 🔴 **「占总仓 %」的分母客户端拿不到**:唯一源是服务端 `Settings.total_capital`(默认 12 万,`.env` 的
+  `TOTAL_CAPITAL` 可覆盖),而它**从未下发**(`schemas.py`/`app.py` 零出现)。⛔ 别在客户端写死 12 万 ——
+  那是给一个钉死的领域常量造第二份事实源,用户改了 `.env` 界面就一直说谎。要占比先让服务端发这个数。
+- 🔴 **六关的「判不出」是篮级、不是格级**:`gates.py` 对判不出的关发的是 `VERDICT_PASS + available=False
+  + blocks_t1=True`,而 `tier.py::_gate_breakdown` **只把 `verdicts` 与篮级 `blocks_t1` 写进冻结卡** ——
+  「是哪一关判不出」契约里查不到。宫格格级只画 pass/degrade/reject,缺键 → 「未记录」灰格
+  (⛔ 绝不渲染成「过」)。要格级得服务端先把逐关 `available` 落进冻结卡。
+- **`xcodegen generate` 会顺手修好 project 级 `MARKETING_VERSION` 漂移**:本次重跑发现 pbxproj 的
+  **project 级**停在 `2.0.0`、app target 却是 `2.2.0`。守门单测 `test_client_version_governance.py`
+  **只比 app target**(project 级块 `PRODUCT_NAME = "$(TARGET_NAME)"` 被刻意排除)→ 这处漂移**一直是绿的**。
+  ⚠ 加新 `.swift` 文件必须 `xcodegen generate`(pbxproj 是显式文件引用,**没有** `PBXFileSystemSynchronizedRootGroup`)。
+- 🔴 **用户正式 macOS App 在跑时,⛔ 别指望启动 Debug 构建来截 macOS 图**:同 bundle id,
+  LaunchServices 只会把**那个还在跑的旧版**切到前台 —— 截出来是旧版,**比没有截图更误导**。
+  且全屏 `screencapture` 会拍到用户桌面(不是你该留的东西)。按既定兜底走「iOS 截图 + 双端
+  `BUILD SUCCEEDED`」等价证据,macOS 版式留给用户换包后自己过目。
+- **要让富状态(成员卡 / 六关宫格 / 刻度尺)出现在截图里,得先有数据**:走 `DB_PATH=<临时库>` 起一个隔离
+  后端(`API_TOKEN` 需 **len≥16**,否则 lifespan fail-fast),临时库只从真库拷四张只读参考表、业务表手写
+  假数据。⛔ **不碰 `data/neckline.db`**。内容纵向溢出时,与其死磕滚动,不如**把演示卡前面那几段砍短**
+  (演示库改一行的事)—— 比临时建 iPad 更快,iPad 上 `.sheet` 是定高 form sheet、照样看不到底部。
+
 ## 周复盘对账(阶段4D)
 
 - **`review_col_map` 必须同时驱动"格式判定"与"列取值"**:`parse.py::_detect_format`

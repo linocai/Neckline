@@ -2237,37 +2237,13 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(log.contingencyScenarios[0].actionLabel, "持有")
     }
 
-    // MARK: - v1.2-A2 熔断纪律状态 DTO(**类型留、端点没了**,V2.2-⑤-B)
+    // ⚠ **熔断 DTO 解码测试已随两个类型于 v2.3.0 整组删除**（两步淘汰第二步）。
     //
-    // 🔴 熔断三件机制已整体退役(用户裁定 #8):`GET /circuit` / `POST /circuit/unlock`
-    // 服务端已删、客户端两个方法同批删 → 原来那三条「打端点」的解码测试没有目标了。
-    // ⚠ **但 `CircuitState` / `CircuitEpisode` 两个类型刻意留着**:服务端
-    // `PositionsOut.circuit` 本版仍恒发 `locked=false` 空态(〇b-3 零删键,用户 iPhone
-    // 何时换包不可控),删 DTO 与服务端删键同排 v2.3。故这里改成**纯解码断言**,
-    // 锁住"老客户端装着不换包也解得出"这条在线升级前提。
-
-    func testCircuitStateDTOStillDecodesEmptyState() throws {
-        // 服务端退役后恒发的那份空态。
-        let data = jsonData(#"{"locked": false, "episode": null}"#)
-        let state = try JSONDecoder().decode(CircuitState.self, from: data)
-        XCTAssertFalse(state.locked)
-        XCTAssertNil(state.episode)
-    }
-
-    /// 历史锁定态载荷仍解得出(库里那些老行、老快照不会因为机制退役就消失)。
-    func testCircuitEpisodeDTOStillDecodesHistoricalPayload() throws {
-        let data = jsonData("""
-        {"locked": true, "episode": {
-          "triggerReason": "consecutive_stops", "triggeredAt": "2026-07-22T15:05:00+00:00",
-          "triggerRefDate": "20260722", "basisTradesCount": 3, "basisWindow": "2026-07-20~2026-07-22",
-          "note": "基于台账 3 笔已补录成交判定连续止损触发。"
-        }}
-        """)
-        let state = try JSONDecoder().decode(CircuitState.self, from: data)
-        XCTAssertTrue(state.locked)
-        XCTAssertEqual(state.episode?.triggerReasonLabel, "连续止损")
-        XCTAssertEqual(state.episode?.basisTradesCount, 3)
-    }
+    // V2.2-⑤-B 退役机制时留下 `CircuitState` / `CircuitEpisode` 两个 DTO 与服务端
+    // `PositionsOut.circuit` 空态，为的是「老客户端装着不换包也解得出」。v2.3.0 逐版核实后
+    // 确认：历代客户端 `/positions` 一律解进 `PositionsListResponse { holdings }`，
+    // **从没有一版声明过 `circuit` 字段** —— 那条在线升级前提在这个键上并不存在，
+    // 故服务端删键、客户端删 DTO、这组测试一并删。⛔ 不是漏删。
 
     // MARK: - 2026-08-05 定向快修回归:真实生产 7 篮载荷(`engineApiVersion` 字段名对、类型不对)
     //

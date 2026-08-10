@@ -42,9 +42,9 @@ struct IntelPackageView: View {
         NKCard {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("复盘情报件").font(.system(size: 14, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                    Text("复盘情报件").font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                     Spacer()
-                    Text("EOD 硬数据 · 强证据").font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                    Text("EOD 硬数据 · 强证据").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
                 if let intel = report.intel, intel.hasContent {
                     if let mv = intel.marketVolume {
@@ -71,14 +71,14 @@ struct IntelPackageView: View {
                         bucketRow("涨跌停制度偏好", intel.limitRegimePreference)
                     }
                     if !intel.excludedBoardsNote.isEmpty {
-                        Text(intel.excludedBoardsNote).font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                        Text(intel.excludedBoardsNote).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                     if !intel.evidenceNote.isEmpty {
-                        Text(intel.evidenceNote).font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                        Text(intel.evidenceNote).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                 } else {
                     Text("复盘情报件暂无数据(旧报告 / 今晚 16:35 报告后自动出现)")
-                        .font(.system(size: 12)).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.callout).foregroundStyle(NK.textTertiary)
                 }
             }
         }
@@ -88,7 +88,7 @@ struct IntelPackageView: View {
         Group {
             if !items.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(title)(\(items.count))").font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.textSecondary)
+                    Text("\(title)(\(items.count))").font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.textSecondary)
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(items.prefix(10)) { m in
@@ -103,7 +103,7 @@ struct IntelPackageView: View {
 
     private func ladderRow(_ ladder: [IntelLimitLadderRung]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("涨停梯队").font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.textSecondary)
+            Text("涨停梯队").font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.textSecondary)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(ladder) { r in
@@ -116,19 +116,19 @@ struct IntelPackageView: View {
 
     private func themesBlock(_ themes: [IntelThemeItem]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("最强题材").font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.textSecondary)
+            Text("最强题材").font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.textSecondary)
             ForEach(themes.prefix(5)) { t in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(t.name).font(.system(size: 12, weight: .medium)).foregroundStyle(NK.textPrimary)
-                        Text(t.persistenceLabel).font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                        Text(t.name).font(NKFont.callout).fontWeight(.medium).foregroundStyle(NK.textPrimary)
+                        Text(t.persistenceLabel).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         if t.evidenceStrength == "constituent" {
-                            Text("参考").font(.system(size: 9)).foregroundStyle(NK.textTertiary)
+                            Text("参考").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         }
                     }
                     if !t.leaders.isEmpty {
                         Text(t.leaders.map { "\($0.name)\(NKFmt.signedPct($0.pctChg))" }.joined(separator: " · "))
-                            .font(.system(size: 10.5)).foregroundStyle(NK.textSecondary)
+                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                     }
                 }
             }
@@ -137,7 +137,7 @@ struct IntelPackageView: View {
 
     private func distributionRow(_ title: String, _ dist: [String: Int]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.textSecondary)
+            Text(title).font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.textSecondary)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(dist.sorted(by: { $0.key < $1.key }), id: \.key) { k, v in
@@ -150,7 +150,7 @@ struct IntelPackageView: View {
 
     private func bucketRow(_ title: String, _ buckets: [IntelBucketCount]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.textSecondary)
+            Text(title).font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.textSecondary)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(buckets) { b in
@@ -163,9 +163,9 @@ struct IntelPackageView: View {
 
     private func metricRow(_ label: String, _ value: String) -> some View {
         HStack {
-            Text(label).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+            Text(label).font(NKFont.caption).foregroundStyle(NK.textSecondary)
             Spacer()
-            Text(value).font(.system(size: 12, weight: .medium).monospacedDigit()).foregroundStyle(NK.textPrimary)
+            Text(value).font(NKFont.callout.monospacedDigit()).fontWeight(.medium).foregroundStyle(NK.textPrimary)
         }
     }
 
@@ -175,18 +175,18 @@ struct IntelPackageView: View {
         NKCard {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("板块资金流").font(.system(size: 14, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                    Text("板块资金流").font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                     Spacer()
-                    Text("拥挤情报 · 非选股信号").font(.system(size: 10)).foregroundStyle(NK.amber)
+                    Text("拥挤情报 · 非选股信号").font(NKFont.caption).foregroundStyle(NK.amber)
                 }
                 if !mf.available {
                     Text(mf.unavailableReason.isEmpty ? "本日板块资金流数据不可用" : mf.unavailableReason)
-                        .font(.system(size: 12)).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.callout).foregroundStyle(NK.textTertiary)
                 } else {
                     if !mf.topInflow.isEmpty { flowGroup("净流入 Top", mf.topInflow, tone: .good) }
                     if !mf.topOutflow.isEmpty { flowGroup("净流出 Top", mf.topOutflow, tone: .bad) }
                     if mf.topInflow.isEmpty && mf.topOutflow.isEmpty {
-                        Text("本日无板块资金流榜单数据").font(.system(size: 12)).foregroundStyle(NK.textTertiary)
+                        Text("本日无板块资金流榜单数据").font(NKFont.callout).foregroundStyle(NK.textTertiary)
                     }
                 }
             }
@@ -195,16 +195,16 @@ struct IntelPackageView: View {
 
     private func flowGroup(_ title: String, _ items: [SectorMoneyflowItem], tone: NKAxisTone) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.textSecondary)
+            Text(title).font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.textSecondary)
             ForEach(items.prefix(5)) { i in
                 HStack(spacing: 6) {
-                    Text(i.name).font(.system(size: 12)).foregroundStyle(NK.textPrimary)
+                    Text(i.name).font(NKFont.callout).foregroundStyle(NK.textPrimary)
                     if i.evidenceStrength == "constituent" {
-                        Text("参考").font(.system(size: 9)).foregroundStyle(NK.textTertiary)
+                        Text("参考").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                     Spacer()
                     Text("\(NKFmt.signedMoney(i.netInflowWan))万")
-                        .font(.system(size: 12).monospacedDigit()).foregroundStyle(tone.color)
+                        .font(NKFont.callout.monospacedDigit()).foregroundStyle(tone.color)
                 }
             }
         }
@@ -220,10 +220,10 @@ struct NewsAlertsCard: View {
     var body: some View {
         NKCard {
             VStack(alignment: .leading, spacing: 10) {
-                Text("消息面 · 减持 / 立案 / 暴雷 / 监管").font(.system(size: 14, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                Text("消息面 · 减持 / 立案 / 暴雷 / 监管").font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                 if scanStatuses.isEmpty {
                     Text("本次报告未包含消息面扫描状态(旧报告 / 尚未生成)")
-                        .font(.system(size: 12)).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.callout).foregroundStyle(NK.textTertiary)
                 } else {
                     // 硬要求:**必须先展示扫描状态,再展示命中条目**——"本次未扫描" /
                     // "N 只未及扫描" 绝不能被渲染成"确认无消息"。
@@ -232,10 +232,10 @@ struct NewsAlertsCard: View {
                     if alerts.isEmpty {
                         if scanStatuses.allSatisfy({ $0.scanned }) {
                             Text("以上来源均已扫描,当前无命中 = 确认无消息")
-                                .font(.system(size: 12)).foregroundStyle(NK.up)
+                                .font(NKFont.callout).foregroundStyle(NK.up)
                         } else {
                             Text("部分来源未扫描,当前无命中不代表「确认无消息」——见上方扫描状态")
-                                .font(.system(size: 12)).foregroundStyle(NK.amber)
+                                .font(NKFont.callout).foregroundStyle(NK.amber)
                         }
                     } else {
                         ForEach(alerts) { a in alertRow(a) }
@@ -249,15 +249,15 @@ struct NewsAlertsCard: View {
     private func scanStatusRow(_ s: NewsAlertScanStatus) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: s.scanned ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .font(.system(size: 13)).foregroundStyle(s.scanned ? NK.up : NK.amber)
+                .font(NKFont.body).foregroundStyle(s.scanned ? NK.up : NK.amber)
             VStack(alignment: .leading, spacing: 2) {
-                Text(s.sourceLabel).font(.system(size: 12, weight: .semibold)).foregroundStyle(NK.textPrimary)
-                Text(scanStatusText(s)).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                Text(s.sourceLabel).font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
+                Text(scanStatusText(s)).font(NKFont.caption).foregroundStyle(NK.textSecondary)
                 // v1.4-⑥-B:自选隔日轮扫披露 + v1.3.4 命中率诚实标注——**四个计数
                 // (codesFailed/codesSkipped/codesNoSearch/codesRotationDeferred)语义
                 // 各不相同,分开展示,不许合并成一个"没扫到"数字**。
                 if !rotationAndNoSearchText(s).isEmpty {
-                    Text(rotationAndNoSearchText(s)).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                    Text(rotationAndNoSearchText(s)).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
             }
         }
@@ -296,11 +296,11 @@ struct NewsAlertsCard: View {
     private func alertRow(_ a: NewsAlert) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Text(a.name).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
-                Text(a.code).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                Text(a.name).font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
+                Text(a.code).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 NKChip(text: a.categoryLabel, tone: .bad)
             }
-            Text(a.summary).font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+            Text(a.summary).font(NKFont.callout).foregroundStyle(NK.textSecondary)
         }
         .padding(.vertical, 2)
     }

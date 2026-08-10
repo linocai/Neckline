@@ -148,7 +148,7 @@ struct AlertComposerSheet: View {
         if parsed.degraded {
             Section {
                 Text("LLM 当前不可用,已给出可手填的结构化表单 —— **不是静默失败**。")
-                    .font(.system(size: 12)).foregroundStyle(NK.amber)
+                    .font(NKFont.callout).foregroundStyle(NK.amber)
                 if let form = parsed.manualForm {
                     NKJSONTable(value: form)
                 }
@@ -158,7 +158,7 @@ struct AlertComposerSheet: View {
         }
         if !parsed.narrative.isEmpty {
             Section {
-                Text(parsed.narrative).font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                Text(parsed.narrative).font(NKFont.callout).foregroundStyle(NK.textSecondary)
                 NKReferenceNote()
             } header: {
                 Text("模型的复述(只展示,不进判据)")
@@ -169,10 +169,10 @@ struct AlertComposerSheet: View {
                 // 七项**逐项**展示 —— ⛔ 一项都不许省。
                 ForEach(Array(card.rows.enumerated()), id: \.offset) { _, row in
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(row.title).font(.system(size: 10.5, weight: .bold))
+                        Text(row.title).nkLabel()
                             .foregroundStyle(NK.textTertiary)
                         Text(row.text.isEmpty ? "—" : row.text)
-                            .font(.system(size: 12.5)).foregroundStyle(NK.textPrimary)
+                            .font(NKFont.callout).foregroundStyle(NK.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -184,15 +184,15 @@ struct AlertComposerSheet: View {
         } else if !parsed.ok {
             Section {
                 Text("没能解析成可执行的规则:\(parsed.reason)")
-                    .font(.system(size: 12)).foregroundStyle(NK.down)
+                    .font(NKFont.callout).foregroundStyle(NK.down)
             }
         }
         if !parsed.matches.isEmpty {
             Section {
                 ForEach(parsed.matches) { m in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(m.subjectLabel).font(.system(size: 12.5, weight: .semibold))
-                        Text(m.condition).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                        Text(m.subjectLabel).font(NKFont.callout).fontWeight(.semibold)
+                        Text(m.condition).font(NKFont.caption).foregroundStyle(NK.textSecondary)
                     }
                 }
             } header: {

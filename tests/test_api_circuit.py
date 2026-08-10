@@ -5,7 +5,7 @@
 
   · `GET /circuit` / `POST /circuit/unlock` → **404**(⑤-B 第 4 项:两条端点删,`GET /circuit`
     **没有替代端点** —— 提醒走推送与看板事件,不走状态查询);
-  · `PositionsOut.circuit.locked` **恒 false**(⑤-B 第 5 项:零删键铁律,老客户端解码不炸的
+  · `PositionsOut` **已无 `circuit` 键**(v2.3.0 两步淘汰第二步;V2.2 曾恒发空态一版,老客户端解码不炸的
     机器判据;真删键排 v2.3);
   · 连续 3 笔止损 → `POST /positions/{id}/close` 的**返回值逐字段不变**、`circuit_breaker`
     表**零新增行**(⑤-B 第 9 项:只推提醒,⛔ 不建行、不锁、不改任何返回值语义);
@@ -68,13 +68,16 @@ def test_circuit_endpoints_are_gone_404(client, AUTH):
     assert client.post("/api/v1/circuit/unlock", headers=AUTH).status_code == 404
 
 
-def test_positions_out_circuit_key_survives_and_is_always_false(client, AUTH):
-    """⑤-B 第 5 项:**键不删**(零删键铁律,`CircuitStateOut` 在 2.0.0/2.1.0 是必需解码),
-    但恒 `locked=false` / `episode=null`。这就是"老客户端解码不炸"的机器判据。"""
+def test_positions_out_has_no_circuit_key_anymore(client, AUTH):
+    """**v2.3.0 两步淘汰第二步**:`circuit` 键已物理删除。
+
+    ⚠ 与 V2.2 那一版**方向相反**(当时断言"键必须还在、恒 false")。改判据的依据是逐版
+    核实:历代客户端 `/positions` 一律解进 `PositionsListResponse {holdings}`,**从没有
+    一版声明过 `circuit`** —— 2.0.0 那台 iPhone 读的是独立端点 `GET /circuit`(自 V2.2 起
+    404,与本键无关)。⛔ 别把它读成「零删键铁律可以不守」。"""
     body = client.get("/api/v1/positions", headers=AUTH).json()
-    assert "circuit" in body
-    assert body["circuit"]["locked"] is False
-    assert body["circuit"].get("episode") is None
+    assert "circuit" not in body
+    assert "holdings" in body
 
 
 def test_close_with_reason_round_trips_to_db(client, AUTH, api_env):
@@ -98,7 +101,7 @@ def test_close_reason_optional(client, AUTH, api_env):
 
 def test_three_stop_losses_change_nothing_observable(client, AUTH, api_env):
     """🔴 **零状态**:连续 3 笔止损跑完 —— 清仓返回值逐字段不变、`circuit_breaker` 零新增行、
-    `PositionsOut.circuit` 仍是空态、`GET /circuit` 仍 404。**留下的只有一条事件与一条推送**。"""
+    `PositionsOut` 仍无 `circuit` 键、`GET /circuit` 仍 404。**留下的只有一条事件与一条推送**。"""
     for i, d in enumerate(("20260720", "20260721", "20260722")):
         pid = _open(client, AUTH, code=f"60000{i + 1}.SH")
         r = _close(client, AUTH, pid, 90.0, d, reason="STOP_LOSS")
@@ -108,7 +111,7 @@ def test_three_stop_losses_change_nothing_observable(client, AUTH, api_env):
     with connection(api_env.db_path) as conn:
         assert conn.execute("SELECT count(*) FROM circuit_breaker").fetchone()[0] == 0
 
-    assert client.get("/api/v1/positions", headers=AUTH).json()["circuit"]["locked"] is False
+    assert "circuit" not in client.get("/api/v1/positions", headers=AUTH).json()
     assert client.get("/api/v1/circuit", headers=AUTH).status_code == 404
 
 

@@ -38,10 +38,10 @@ struct NKSectionHeader: View {
 
     var body: some View {
         HStack {
-            Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(NK.textPrimary)
+            Text(title).font(NKFont.headline).foregroundStyle(NK.textPrimary)
             Spacer()
             if let t = trailing {
-                Text(t).font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                Text(t).font(NKFont.callout).foregroundStyle(NK.textSecondary)
             }
         }
     }
@@ -55,11 +55,20 @@ struct NKChip: View {
     var filled: Bool = false
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(filled ? Color.white : tone.color)
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill(filled ? tone.color : tone.color.opacity(0.12)))
+        // 🔴 **空文案 → 整枚不画**(V2.3 截图核对时逮到):`depthLabel` 这类展示层换算在
+        // 服务端没给该字段时会返回空串,原来会渲染成**一枚没有字的灰色胶囊** —— 它既不是
+        // 「没有」也不是「没看」,只是一团噪声,而且看起来像界面坏了。
+        // ⚠ 这**不是**在藏信息:真要说「这一项没取到」得用一句话说出口(本项目一贯做法),
+        // ⛔ 不能靠一枚空徽标暗示。
+        if text.isEmpty {
+            EmptyView()
+        } else {
+            Text(text)
+                .font(NKFont.caption).fontWeight(.semibold)
+                .foregroundStyle(filled ? Color.white : tone.color)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Capsule().fill(filled ? tone.color : tone.color.opacity(0.12)))
+        }
     }
 }
 
@@ -87,7 +96,7 @@ struct NKReferenceNote: View {
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "info.circle").font(.system(size: 9))
-            Text(text).font(.system(size: 9.5))
+            Text(text).font(NKFont.caption)
         }
         .foregroundStyle(NK.textTertiary)
     }
@@ -105,11 +114,11 @@ struct NKJSONTable: View {
                 // 按字典序,**确定性** —— 顺序不能每次刷新都跳。
                 ForEach(value.sortedKeys, id: \.self) { k in
                     HStack(alignment: .top, spacing: 8) {
-                        Text(k).font(.system(size: 10.5).monospaced())
+                        Text(k).font(NKFont.monoKey)
                             .foregroundStyle(NK.textTertiary)
                         Spacer(minLength: 8)
                         Text(obj[k]?.displayText ?? "—")
-                            .font(.system(size: 10.5).monospaced())
+                            .font(NKFont.monoKey)
                             .foregroundStyle(NK.textSecondary)
                             .multilineTextAlignment(.trailing)
                             .fixedSize(horizontal: false, vertical: true)
@@ -117,12 +126,12 @@ struct NKJSONTable: View {
                 }
             } else if let arr = value.arrayValue {
                 ForEach(Array(arr.enumerated()), id: \.offset) { _, item in
-                    Text("· \(item.displayText)").font(.system(size: 10.5).monospaced())
+                    Text("· \(item.displayText)").font(NKFont.monoKey)
                         .foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Text(value.displayText).font(.system(size: 10.5).monospaced())
+                Text(value.displayText).font(NKFont.monoKey)
                     .foregroundStyle(NK.textSecondary)
             }
         }
@@ -136,12 +145,12 @@ struct RetreatBrakeBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 16, weight: .bold))
+                .font(NKFont.headline)
             VStack(alignment: .leading, spacing: 3) {
                 Text("退潮红色刹车 · 今日计划作废、禁开新仓")
-                    .font(.system(size: 13.5, weight: .bold))
+                    .font(NKFont.body).fontWeight(.bold)
                 if !reason.isEmpty {
-                    Text(reason).font(.system(size: 12)).opacity(0.9)
+                    Text(reason).font(NKFont.callout).opacity(0.9)
                 }
             }
             Spacer()
@@ -152,6 +161,35 @@ struct RetreatBrakeBanner: View {
     }
 }
 
+/// **通栏刹车条**(V2.3:压在工具栏 / 大标题下方,⛔ **不进卡片流**)。
+///
+/// 🔴 它管的是「**今天整份计划**」,不是某一篮 —— 所以既不是卡片、也不属于任何一个
+/// 板块,由 `RootView` 的壳统一挂。⚠ **刹车激活时篮子仍然全部列出、点得开**:
+/// 作废的是计划,不是数据;**补录开仓按钮同样不灰化**(硬拦 = 帮用户瞒报)。
+struct RetreatBrakeBar: View {
+    let reason: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(NKFont.body).fontWeight(.bold)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("退潮红色刹车 · 今日计划作废、禁开新仓")
+                    .font(NKFont.body).fontWeight(.bold)
+                if !reason.isEmpty {
+                    Text(reason).font(NKFont.caption).opacity(0.92)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, NKSpace.pagePad)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(NK.alertGrad)
+    }
+}
+
 // MARK: - 漏录兜底提示条(§五 v1.1-B.4/E.3:一句提示,非弹窗打扰,补录后自动消失)
 
 struct MissedEntryHintBanner: View {
@@ -159,7 +197,7 @@ struct MissedEntryHintBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "info.circle.fill").font(.system(size: 14, weight: .semibold))
-            Text(text).font(.system(size: 12.5)).fixedSize(horizontal: false, vertical: true)
+            Text(text).font(NKFont.callout).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .foregroundStyle(NK.amber)
@@ -182,26 +220,26 @@ struct DataFreshnessBanner: View {
             VStack(alignment: .leading, spacing: 6) {
                 if freshness.stale {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("板块数据已过期").font(.system(size: 13, weight: .bold))
-                        Text(sectorText).font(.system(size: 12)).opacity(0.9)
-                        Text("「当日暴起板块」与「题材持续天数」本日不可信").font(.system(size: 11)).opacity(0.85)
+                        Text("板块数据已过期").font(NKFont.body).fontWeight(.bold)
+                        Text(sectorText).font(NKFont.callout).opacity(0.9)
+                        Text("「当日暴起板块」与「题材持续天数」本日不可信").font(NKFont.caption).opacity(0.85)
                     }
                 }
                 if freshness.industryStrengthStale == true {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("行业强度数据未就绪").font(.system(size: 13, weight: .bold))
-                        Text(industryText).font(.system(size: 12)).opacity(0.9)
-                        Text("排序缺行业维度、题材持续天数不可用").font(.system(size: 11)).opacity(0.85)
+                        Text("行业强度数据未就绪").font(NKFont.body).fontWeight(.bold)
+                        Text(industryText).font(NKFont.callout).opacity(0.9)
+                        Text("排序缺行业维度、题材持续天数不可用").font(NKFont.caption).opacity(0.85)
                     }
                 }
                 if freshness.scanLayerStale == true {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("市场扫描层未就绪").font(.system(size: 13, weight: .bold))
-                        Text(scanText).font(.system(size: 12)).opacity(0.9)
+                        Text("市场扫描层未就绪").font(NKFont.body).fontWeight(.bold)
+                        Text(scanText).font(NKFont.callout).opacity(0.9)
                         // 扫描层没跑 → 今日无种子 → 今日无篮子;而「今天没有篮子」与
                         // 「今天没看」必须能分开,这一行就是把它们分开的那句话。
                         Text("今日篮子若为空,可能是**没看**而不是**今天真没有**")
-                            .font(.system(size: 11)).opacity(0.85)
+                            .font(NKFont.caption).opacity(0.85)
                     }
                 }
             }
@@ -261,10 +299,10 @@ struct DataFreshnessDetail: View {
     @ViewBuilder
     private func row(title: String, date: String?, lag: Int?, stale: Bool?, present: Bool) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Text(title).font(.system(size: 11, weight: .bold)).foregroundStyle(NK.textTertiary)
+            Text(title).font(NKFont.caption).fontWeight(.bold).foregroundStyle(NK.textTertiary)
             Spacer(minLength: 8)
             Text(text(date: date, lag: lag, stale: stale, present: present))
-                .font(.system(size: 11)).multilineTextAlignment(.trailing)
+                .font(NKFont.caption).multilineTextAlignment(.trailing)
                 .foregroundStyle(tone(stale: stale, present: present).color)
         }
     }
@@ -289,7 +327,7 @@ struct ToastView: View {
     let toast: Toast
     var body: some View {
         Text(toast.message)
-            .font(.system(size: 13, weight: .medium))
+            .font(NKFont.body).fontWeight(.medium)
             .foregroundStyle(.white)
             .padding(.horizontal, 16).padding(.vertical, 10)
             .background(Capsule().fill(toast.isError ? NK.down : Color.black.opacity(0.82)))
@@ -308,9 +346,9 @@ struct NKEmptyState: View {
     var body: some View {
         VStack(spacing: 8) {
             Image(systemName: systemImage).font(.system(size: 32)).foregroundStyle(NK.textTertiary)
-            Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(NK.textSecondary)
+            Text(title).font(NKFont.body).fontWeight(.medium).foregroundStyle(NK.textSecondary)
             if let s = subtitle {
-                Text(s).font(.system(size: 12)).foregroundStyle(NK.textTertiary)
+                Text(s).font(NKFont.callout).foregroundStyle(NK.textTertiary)
                     .multilineTextAlignment(.center)
             }
         }
@@ -319,21 +357,48 @@ struct NKEmptyState: View {
     }
 }
 
-// MARK: - 品牌 Logo(◆ 简化几何标记,呼应"颈线"技术形态)
+// MARK: - 品牌 Logo(颈线折线的极简抽象,与 App 图标同源)
+//
+// ⚠ **V2.3 起底色 = `NK.brand`(已改红橙)+ 折线换成图标那一条**(规范 §07)。
+// 🔴 **图标按尺寸分三档、不是同一张图缩放**;`NKLogo` 只用得到最小那两档:
+//   · `size > 20` —— 实线颈线 + 两侧颈线点(对应图标 128 档的意思);
+//   · `size <= 20` —— **简化版**:只留四拐点的粗折线(对应图标 64 及以下档)。
+// ⛔ 别给 `NKLogo` 加突破点圆环:那是 256 以上档的元素,20~38px 上糊成一团。
 
 struct NKLogo: View {
     var size: CGFloat = 27
+
+    /// 四拐点折线:左平台 → 回踩 → 站上颈线 → 突破拉升。**与图标 64 档同一条**。
+    private var necklinePath: Path {
+        Path { p in
+            p.move(to: CGPoint(x: size * 0.16, y: size * 0.575))
+            p.addLine(to: CGPoint(x: size * 0.31, y: size * 0.60))
+            p.addLine(to: CGPoint(x: size * 0.41, y: size * 0.72))
+            p.addLine(to: CGPoint(x: size * 0.53, y: size * 0.565))
+            p.addLine(to: CGPoint(x: size * 0.84, y: size * 0.27))
+        }
+    }
+
+    /// 颈线水位上的点(暗示"这条线之前一直在这儿")。小尺寸下整组不画。
+    private var necklineDots: some View {
+        ForEach([0.085, 0.205, 0.645, 0.755], id: \.self) { x in
+            Circle()
+                .fill(Color.white.opacity(0.55))
+                .frame(width: size * 0.055, height: size * 0.055)
+                .position(x: size * x, y: size * 0.565)
+        }
+    }
+
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.28).fill(NK.brand)
-            // 一道颈线折线(head-and-shoulders neckline breakout 的极简抽象)
-            Path { p in
-                p.move(to: CGPoint(x: size * 0.2, y: size * 0.62))
-                p.addLine(to: CGPoint(x: size * 0.42, y: size * 0.62))
-                p.addLine(to: CGPoint(x: size * 0.58, y: size * 0.32))
-                p.addLine(to: CGPoint(x: size * 0.8, y: size * 0.32))
-            }
-            .stroke(Color.white, style: StrokeStyle(lineWidth: max(1.4, size * 0.09), lineCap: .round, lineJoin: .round))
+            // 圆角 22.37% 连续曲率 —— 与图标 PNG 里烘进去的那一档对齐(⛔ 不是满幅方角)。
+            RoundedRectangle(cornerRadius: size * 0.2237, style: .continuous).fill(NK.brand)
+            if size > 20 { necklineDots }
+            necklinePath.stroke(
+                Color.white,
+                style: StrokeStyle(lineWidth: max(1.6, size * (size > 20 ? 0.095 : 0.125)),
+                                   lineCap: .round, lineJoin: .round)
+            )
         }
         .frame(width: size, height: size)
     }
@@ -397,18 +462,18 @@ struct MarketRegimeStrip: View {
     private func available(_ d: MarketRegimeDay) -> some View {
         VStack(alignment: .leading, spacing: compact ? 4 : 8) {
             HStack(spacing: 8) {
-                Text("行情状态").font(.system(size: 11, weight: .bold))
+                Text("行情状态").font(NKFont.caption).fontWeight(.bold)
                     .foregroundStyle(NK.textTertiary)
                 NKChip(text: d.displayLabel, tone: d.tone, filled: true)
                 if !d.tradeDate.isEmpty {
-                    Text(d.tradeDate).font(.system(size: 10.5).monospacedDigit())
+                    Text(d.tradeDate).font(NKFont.caption.monospacedDigit())
                         .foregroundStyle(NK.textTertiary)
                 }
                 Spacer()
                 if !d.skeletonVersion.isEmpty { NKChip(text: d.skeletonVersion) }
             }
             if !d.regimeReason.isEmpty {
-                Text(d.regimeReason).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                Text(d.regimeReason).font(NKFont.caption).foregroundStyle(NK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !compact {
@@ -418,11 +483,11 @@ struct MarketRegimeStrip: View {
             // 🔴 五维里没算出来的那几维要说出口:缺维**不是**「这一维没问题」。
             if !d.missingDims.isEmpty {
                 Text("本次未取得的判定输入:\(d.missingDims.joined(separator: "、")) —— 缺数 = 不知道,不猜")
-                    .font(.system(size: 10.5)).foregroundStyle(NK.amber)
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text("行情状态是市场结构的描述 · 不是买卖建议、不改变任何持仓判定")
-                .font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
         }
     }
 
@@ -430,7 +495,7 @@ struct MarketRegimeStrip: View {
     private func directionRow(_ title: String, _ items: [NKJSON], _ tone: NKAxisTone) -> some View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+                Text(title).nkLabel().foregroundStyle(NK.textTertiary)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(Array(items.enumerated()), id: \.offset) { _, it in
@@ -447,114 +512,16 @@ struct MarketRegimeStrip: View {
             Image(systemName: "questionmark.circle").font(.system(size: 13))
                 .foregroundStyle(NK.textTertiary)
             VStack(alignment: .leading, spacing: 2) {
-                Text("行情状态本次未取得").font(.system(size: 12, weight: .semibold))
+                Text("行情状态本次未取得").font(NKFont.callout).fontWeight(.semibold)
                     .foregroundStyle(NK.textSecondary)
                 // 服务端已把「批算没跑 / 非交易日 / 参数非法」分开写好,原样展示。
                 Text(regime.unavailableReason ?? "服务端未给原因")
-                    .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("⛔ 「没取到」不等于「今天没什么特别的」")
-                    .font(.system(size: 10)).foregroundStyle(NK.amber)
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
             }
             Spacer()
-        }
-    }
-}
-
-// MARK: - V2.2-③ 六关灯条(每篮一条;**机械关与证据关视觉上必须分得开**)
-//
-// 🔴 **二分是产品语义,不是配色偏好**(裁定 #6 / #11 / #12):
-//   · **机械关**(市场 / 板块)= 读客观预计算量 → **硬否决**,不过就没了;
-//   · **证据关**(驱动 / 核心 / 位置 / 证据)= LLM 组织证据 → **只降级**,
-//     最坏也只是「退出正式候选、仍在 ③b 列名」。
-// 两者混成一种灯 = 把「否决」与「扣分」讲成同一回事。故:机械关格子**加实心边框 +
-// 「硬」角标**,证据关格子留描边。
-//
-// 🔴 **`available == false` 绝不许渲染成「六关都过了」** —— 那是把「没看」讲成
-// 「没有问题」(§3.8)。
-
-struct GateLightBar: View {
-    let gates: BasketGates
-    /// 展开态多给一行「卡在哪一关 / 降了几档」。
-    var showDetail: Bool = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if gates.available {
-                lights
-                if showDetail { detailLines }
-            } else {
-                Text("六关判定:本份快照没有关口记录(⛔ 不等于六关都过了)")
-                    .font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private var lights: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 5) {
-                ForEach(gates.lights) { l in
-                    HStack(spacing: 3) {
-                        Circle().fill(l.tone.color).frame(width: 6, height: 6)
-                        Text(l.label).font(.system(size: 10, weight: .semibold))
-                        Text(l.verdictLabel).font(.system(size: 9.5))
-                            .foregroundStyle(l.tone.color)
-                        // 「硬」= 机械关(硬否决)。⛔ 别把它也挂到证据关上。
-                        if l.kind == .mechanical {
-                            Text("硬").font(.system(size: 8, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 3).padding(.vertical, 0.5)
-                                .background(Capsule().fill(NK.textSecondary))
-                        }
-                    }
-                    .foregroundStyle(NK.textSecondary)
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(l.kind == .mechanical ? l.tone.color.opacity(0.10) : Color.clear)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(l.tone.color.opacity(l.kind == .mechanical ? 0.55 : 0.28),
-                                    lineWidth: l.kind == .mechanical ? 1.2 : 0.8)
-                    )
-                }
-            }
-            .padding(.vertical, 1)
-        }
-    }
-
-    @ViewBuilder
-    private var detailLines: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("实心边框 + 「硬」= 机械关(市场 / 板块),不过 = 硬否决;"
-                 + "描边 = 证据关(驱动 / 核心 / 位置 / 证据),最坏只降级、仍在 ③b 列名")
-                .font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let g = gates.blockedGate {
-                Text("卡在:\(nkGateLabel(g))(\(nkGateKind(g).label))")
-                    .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(NK.amber)
-            }
-            if let n = gates.evidenceDegrades, n > 0 {
-                Text("证据关累计降 \(n) 档" + (gates.degradedGates.isEmpty ? ""
-                     : "(\(gates.degradedGates.map(nkGateLabel).joined(separator: "、")))"))
-                    .font(.system(size: 10.5)).foregroundStyle(NK.textSecondary)
-            }
-            // ⚠ 「不得进 T1」多半是某一关**判不出**,不是"被否决" —— 分开说。
-            if gates.blocksT1 {
-                Text("本篮不得进 T1(多为某一关判不出 —— 判不出 ≠ 判过了,也 ≠ 拦下来)")
-                    .font(.system(size: 10.5)).foregroundStyle(NK.amber)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if gates.positionUnfit {
-                Text("位置关有成员被判「不合适」(裁定 #11:退出正式候选,⛔ 非硬否决)")
-                    .font(.system(size: 10.5)).foregroundStyle(NK.textSecondary)
-            }
-            if gates.coreUnfit {
-                Text("核心关有成员被判「不是龙头」(裁定 #12:退出正式候选,⛔ 非硬否决)")
-                    .font(.system(size: 10.5)).foregroundStyle(NK.textSecondary)
-            }
         }
     }
 }

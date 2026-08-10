@@ -21,6 +21,29 @@ private enum SelfCheckState: Equatable {
     case networkError(String)
 }
 
+/// V2.3 macOS 三区布局:设置的**四组**(规范 §06「设置 = 四组」)。
+/// ⚠ 组名与原型逐字一致 —— 它们是用户认路的锚。
+enum NKSettingsGroup: String, CaseIterable, Identifiable {
+    case backend, llm, push, version
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .backend: return "后端连接与鉴权"
+        case .llm: return "LLM Provider 与任务路由"
+        case .push: return "锁屏推送"
+        case .version: return "版本"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .backend: return "network"
+        case .llm: return "brain"
+        case .push: return "bell.badge"
+        case .version: return "info.circle"
+        }
+    }
+}
+
 struct SettingsView: View {
     @Bindable var model: AppModel
     @ObservedObject var config: AppConfig
@@ -28,18 +51,99 @@ struct SettingsView: View {
     @State private var tokenRevealed = false
     @State private var check: SelfCheckState = .idle
     @State private var deletingProvider: String? = nil
+    /// macOS 四组导航态(纯本地,不进 `AppModel` —— 它不跨板块、也不需要 QA 钩子)。
+    @State private var group: NKSettingsGroup = .backend
 
     var body: some View {
         #if os(iOS)
         NavigationStack { form.navigationTitle("设置").navigationBarTitleDisplayMode(.inline) }
             .sheet(isPresented: $model.showProviderForm) { ProviderFormSheet(model: model) }
         #else
-        form
-            .sheet(isPresented: $model.showProviderForm) {
-                ProviderFormSheet(model: model).frame(width: 460, height: 560)
+        NKSplitLayout {
+            groupListColumn
+        } detail: {
+            groupDetail
+        }
+        .task {
+            await model.loadSettings()
+            await model.loadServerVersion()
+        }
+        .sheet(isPresented: $model.showProviderForm) {
+            ProviderFormSheet(model: model).frame(width: 480, height: 580)
+        }
+        .alert("删除 Provider", isPresented: Binding(get: { deletingProvider != nil },
+                                                     set: { if !$0 { deletingProvider = nil } })) {
+            Button("取消", role: .cancel) { deletingProvider = nil }
+            Button("删除", role: .destructive) {
+                if let n = deletingProvider { Task { await model.deleteProvider(name: n) } }
+                deletingProvider = nil
             }
+        } message: {
+            Text("将删除「\(deletingProvider ?? "")」及其已保存的 key。指向它的任务路由会失去目标,记得同步改路由表。")
+        }
         #endif
     }
+
+    #if os(macOS)
+    private var groupListColumn: some View {
+        VStack(alignment: .leading, spacing: NKSpace.rowGap) {
+            Text("设置").font(NKFont.title2).foregroundStyle(NK.textPrimary)
+                .padding(.horizontal, 6).padding(.bottom, 10)
+            ForEach(NKSettingsGroup.allCases) { g in
+                NKListRow(selected: group == g) { group = g } content: {
+                    HStack(spacing: 8) {
+                        Image(systemName: g.systemImage).font(.system(size: 12))
+                            .foregroundStyle(group == g ? NK.accent : NK.textTertiary)
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(g.title).font(NKFont.body).fontWeight(.semibold)
+                                .foregroundStyle(NK.textPrimary)
+                            Text(groupCaption(g)).font(NKFont.caption)
+                                .foregroundStyle(NK.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+    }
+
+    private func groupCaption(_ g: NKSettingsGroup) -> String {
+        switch g {
+        case .backend:
+            return "\(config.environment.label) · \(config.hasToken ? "token 已填" : "token 未填")"
+        case .llm:
+            return "\(model.providers.count) 个 Provider · 自填制,key 只写不回显"
+        case .push:
+            return "按通知类型配,不按呈现分组配"
+        case .version:
+            return "App 与服务端双版本行"
+        }
+    }
+
+    @ViewBuilder
+    private var groupDetail: some View {
+        Form {
+            switch group {
+            case .backend:
+                envSection
+                tokenSection
+                overrideSection
+                selfCheckSection
+            case .llm:
+                providersSection
+                routesSection
+            case .push:
+                pushSection
+            case .version:
+                footerSection
+            }
+        }
+        .formStyle(.grouped)
+        .frame(maxWidth: 720, alignment: .leading)
+    }
+    #endif
 
     private var form: some View {
         Form {
@@ -47,8 +151,14 @@ struct SettingsView: View {
             tokenSection
             overrideSection
             selfCheckSection
+            // ⚠ **Provider 注册表与任务路由不下放 iOS**(规范 §06:它们是**配置动作**,
+            // 手机上既难填又容易填错)。⛔ 不是"忘了做" —— 下面这一行把它说出口。
+            #if os(iOS)
+            desktopOnlyNote
+            #else
             providersSection
             routesSection
+            #endif
             pushSection
             #if os(iOS)
             devicePushSection
@@ -72,6 +182,21 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - 桌面场景说明(iOS)
+
+    #if os(iOS)
+    /// 🔴 **说出口,不留白**:手机上看不到 Provider 注册表 / 任务路由 / 交割单上传,
+    /// 是**刻意的**(配置动作留桌面)—— 不说,用户只会以为这版少了功能或者坏了。
+    private var desktopOnlyNote: some View {
+        Section {
+            Label("Provider 注册表与任务路由在 macOS 上配", systemImage: "desktopcomputer")
+                .font(NKFont.body).foregroundStyle(NK.textSecondary)
+        } footer: {
+            Text("它们是配置动作(填完整端点、粘 key、设路由),手机上既难填又容易填错;交割单上传同理。⛔ 这不是这一版少了功能。")
+        }
+    }
+    #endif
+
     // MARK: - 后端连接
 
     private var envSection: some View {
@@ -81,7 +206,7 @@ struct SettingsView: View {
             }
             LabeledContent("生效 baseURL") {
                 Text(config.resolvedBaseURL.absoluteString)
-                    .font(.system(size: 12.5).monospaced())
+                    .font(NKFont.body.monospaced())
                     .foregroundStyle(NK.textSecondary)
                     .lineLimit(1).truncationMode(.middle)
             }
@@ -102,7 +227,7 @@ struct SettingsView: View {
                         SecureField("粘贴 API Token", text: $config.apiToken)
                     }
                 }
-                .font(.system(size: 14).monospaced())
+                .font(NKFont.body.monospaced())
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -115,7 +240,7 @@ struct SettingsView: View {
             LabeledContent("当前状态") {
                 Label(config.hasToken ? "已填入" : "未填入",
                       systemImage: config.hasToken ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(NKFont.body).fontWeight(.semibold)
                     .foregroundStyle(config.hasToken ? NK.up : NK.amber)
             }
         } header: {
@@ -128,7 +253,7 @@ struct SettingsView: View {
     private var overrideSection: some View {
         Section {
             TextField("留空则用环境默认", text: $config.baseURLOverride)
-                .font(.system(size: 14).monospaced())
+                .font(NKFont.body.monospaced())
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -162,12 +287,12 @@ struct SettingsView: View {
             case .idle, .running:
                 EmptyView()
             case .ok(let desc):
-                Label(desc, systemImage: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(NK.up)
+                Label(desc, systemImage: "checkmark.circle.fill").font(NKFont.body).foregroundStyle(NK.up)
             case .tokenError:
                 Label("401 · Token 错或缺(/health 通但 /positions 被拒)", systemImage: "xmark.circle.fill")
-                    .font(.system(size: 13)).foregroundStyle(NK.down)
+                    .font(NKFont.body).foregroundStyle(NK.down)
             case .networkError(let m):
-                Label(m, systemImage: "exclamationmark.triangle.fill").font(.system(size: 13)).foregroundStyle(NK.amber)
+                Label(m, systemImage: "exclamationmark.triangle.fill").font(NKFont.body).foregroundStyle(NK.amber)
             }
         } header: {
             Text("连接自检")
@@ -182,12 +307,12 @@ struct SettingsView: View {
         Section {
             if model.providers.isEmpty {
                 Text("还没有配置任何 Provider —— LLM 相关能力(篮子卡叙述 / 问询台 / 提醒解析)会走优雅降级,不崩。")
-                    .font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
             }
             ForEach(model.providers) { p in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(p.name).font(.system(size: 13.5, weight: .semibold))
+                        Text(p.name).font(NKFont.body).fontWeight(.semibold)
                             .foregroundStyle(NK.textPrimary)
                         if !p.enabled { NKChip(text: "已停用") }
                         if p.hasWebSearch { NKChip(text: "带联网检索", tone: .good) }
@@ -197,19 +322,19 @@ struct SettingsView: View {
                                tone: p.keySet ? .good : .warn)
                     }
                     Text("\(p.model) · \(p.baseUrl)")
-                        .font(.system(size: 11).monospaced()).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.monoKey).foregroundStyle(NK.textTertiary)
                         .lineLimit(1).truncationMode(.middle)
                     if let n = p.notes, !n.isEmpty {
-                        Text(n).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                        Text(n).font(NKFont.caption).foregroundStyle(NK.textSecondary)
                     }
                     HStack(spacing: 14) {
                         Button("编辑") { model.beginEditProvider(p) }
                             .buttonStyle(.plain).foregroundStyle(NK.accent)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(NKFont.callout).fontWeight(.semibold)
                         Spacer()
                         Button("删除") { deletingProvider = p.name }
                             .buttonStyle(.plain).foregroundStyle(NK.down)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(NKFont.callout).fontWeight(.semibold)
                     }
                 }
                 .padding(.vertical, 2)
@@ -230,7 +355,7 @@ struct SettingsView: View {
         Section {
             if model.llmRoutes.routes.isEmpty {
                 Text("暂无任务路由(全部任务走默认 Provider)。")
-                    .font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
             }
             ForEach(model.llmRoutes.routes.keys.sorted(), id: \.self) { task in
                 Picker(task, selection: routeBinding(task)) {
@@ -266,13 +391,13 @@ struct SettingsView: View {
         Section {
             if model.pushKindsDraft.isEmpty {
                 Text("尚未取到通知类型清单(服务端 `notify_kinds` 是唯一源;客户端不硬编)。")
-                    .font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
             }
             // ⛔ **不硬编 kind 清单**:服务端发什么就渲染什么;未识别的 level 也自成一组。
             ForEach(PushSettings(kinds: model.pushKindsDraft).groupedByLevel, id: \.level) { group in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(nkPushLevelLabel(group.level))
-                        .font(.system(size: 11, weight: .bold)).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.caption).fontWeight(.bold).foregroundStyle(NK.textTertiary)
                     ForEach(group.kinds) { k in
                         Toggle(k.label, isOn: Binding(
                             get: { model.pushKindsDraft.first(where: { $0.kind == k.kind })?.enabled ?? true },
@@ -297,14 +422,14 @@ struct SettingsView: View {
         Section {
             LabeledContent("Device Token") {
                 Text(model.pushManager?.lastDeviceToken ?? "未注册")
-                    .font(.system(size: 12).monospaced())
+                    .font(NKFont.body.monospaced())
                     .foregroundStyle(model.pushManager?.lastDeviceToken == nil ? NK.textTertiary : NK.textSecondary)
                     .lineLimit(1).truncationMode(.middle)
                     .textSelection(.enabled)
             }
             if let err = model.pushManager?.registerError {
                 LabeledContent("注册错误") {
-                    Text(err).font(.system(size: 12.5)).foregroundStyle(NK.down).multilineTextAlignment(.trailing)
+                    Text(err).font(NKFont.callout).foregroundStyle(NK.down).multilineTextAlignment(.trailing)
                 }
             }
             Button {
@@ -326,7 +451,7 @@ struct SettingsView: View {
             LabeledContent("App 版本", value: appVersion)
             LabeledContent("服务端版本", value: model.serverVersion ?? "未知(未连通)")
             if let note = versionMismatchNote {
-                Text(note).font(.system(size: 11.5)).foregroundStyle(NK.amber)
+                Text(note).font(NKFont.caption).foregroundStyle(NK.amber)
             }
         }
     }
@@ -388,7 +513,7 @@ struct ProviderFormSheet: View {
                         #endif
                     TextField("Base URL,如 https://api.example.com/v1",
                               text: $model.providerForm.baseUrl)
-                        .font(.system(size: 13).monospaced())
+                        .font(NKFont.body.monospaced())
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -406,7 +531,7 @@ struct ProviderFormSheet: View {
                 Section {
                     SecureField(model.providerForm.isEditing ? "填入新 key(留空 = 不改)" : "API key",
                                 text: $model.providerForm.apiKey)
-                        .font(.system(size: 13).monospaced())
+                        .font(NKFont.body.monospaced())
                 } header: {
                     Text("凭据")
                 } footer: {

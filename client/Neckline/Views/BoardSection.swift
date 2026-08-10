@@ -19,27 +19,21 @@ struct BoardSection: View {
     @State private var pollTask: Task<Void, Never>? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: NKSpace.gap) {
+        VStack(alignment: .leading, spacing: NKSpace.blockGap) {
             HStack {
                 NKSectionHeader(title: "盘中动态 \(model.board.events.count)")
                 Spacer()
                 if !model.board.asof.isEmpty {
-                    Text("更新于 \(model.board.asof)").font(.system(size: 10.5))
+                    Text("更新于 \(model.board.asof)").font(NKFont.caption)
                         .foregroundStyle(NK.textTertiary)
                 }
             }
-            if model.board.retreatBrake.active {
-                RetreatBrakeBanner(reason: model.board.retreatBrake.reason)
-            } else {
-                NKCard {
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.seal.fill").foregroundStyle(NK.up)
-                        Text("运行正常 · 无退潮刹车").font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(NK.textPrimary)
-                        Spacer()
-                    }
-                }
-            }
+            // ⚠ **V2.3:这里只留一行状态,通栏刹车条已上移到壳**(`RootView`)——
+            // 刹车管的是「今天整份计划」,不是这一节;同一件事在一屏里画两遍,
+            // 醒目的那条反而会被当成重复内容跳过。
+            statusRow
+            Text("哨兵已落库的判决 · 只读,不产生任何新判断")
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
             if model.board.events.isEmpty {
                 NKCard {
                     NKEmptyState(title: "暂无哨兵事件",
@@ -51,9 +45,39 @@ struct BoardSection: View {
                     BoardEventRow(event: e)
                 }
             }
+            NKDisclosure(summary: "盘中关注池是代理样本,不是全市场") {
+                Text("关注池 = 持仓 + T1/T2 篮子成员 + 板块基准指数 + 昨日涨停(免费源限流取舍)。"
+                     + "⛔ 它不是全市场扫描 —— 没出现在这里,不等于全市场没发生。")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .task { await model.loadBoard(); startPolling() }
         .onDisappear { pollTask?.cancel() }
+    }
+
+    @ViewBuilder
+    private var statusRow: some View {
+        NKCard(padding: 12) {
+            HStack(spacing: 8) {
+                if model.board.retreatBrake.active {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(NK.down)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("退潮红色刹车已触发").font(NKFont.body).fontWeight(.semibold)
+                            .foregroundStyle(NK.down)
+                        if !model.board.retreatBrake.reason.isEmpty {
+                            Text(model.board.retreatBrake.reason).font(NKFont.caption)
+                                .foregroundStyle(NK.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                } else {
+                    Image(systemName: "checkmark.seal.fill").foregroundStyle(NK.up)
+                    Text("运行正常 · 无退潮刹车").font(NKFont.body)
+                        .foregroundStyle(NK.textPrimary)
+                }
+                Spacer(minLength: 0)
+            }
+        }
     }
 
     private func startPolling() {
@@ -88,13 +112,13 @@ private struct BoardEventRow: View {
                 NKChip(text: event.sentinel, tone: tone, filled: true)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        Text(event.name).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
-                        Text(event.code).font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                        Text(event.name).font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
+                        Text(event.code).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
-                    Text(event.verdict).font(.system(size: 12.5)).foregroundStyle(NK.textSecondary)
+                    Text(event.verdict).font(NKFont.callout).foregroundStyle(NK.textSecondary)
                 }
                 Spacer()
-                Text(event.ts).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                Text(event.ts).font(NKFont.caption).foregroundStyle(NK.textTertiary)
             }
         }
     }

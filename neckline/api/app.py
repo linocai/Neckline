@@ -47,7 +47,6 @@ from neckline.api.schemas import (
     BasketReviewOut,
     BasketsListOut,
     BasketVerificationOut,
-    CircuitStateOut,
     ConfirmationCardOut,
     ContingencyScenarioOut,
     CustomAlertOut,
@@ -208,7 +207,7 @@ logger = logging.getLogger(__name__)
 # ——`client/project.yml` 与 `pbxproj` 的 `MARKETING_VERSION` 必须同为 `2.0.0`
 # (守门单测 `tests/test_client_version_governance.py` 锁三处恒等,漏一处立刻红)。
 # ⚠ ⑭ 刻意没升它:提前升会让守门单测常年红,版号归 ⑮。
-VERSION = "v2.2.0"
+VERSION = "v2.3.0"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -978,17 +977,6 @@ def _locked_time_exit_day(buy_date: date, locked_date: Optional[str]) -> Optiona
     return pos_store.d_count(buy_date, d)
 
 
-def _retired_circuit_state() -> CircuitStateOut:
-    """**已退役的熔断态**(V2.2-⑤-B 第 5 项):恒 `locked=false` / `episode=null` 的空态。
-
-    🔴 **为什么还发这个键**:〇b-3 **零删键铁律** —— 用户 iPhone 何时换包不可控,而
-    `CircuitStateOut` 在 2.0.0 / 2.1.0 客户端是**必需解码**,停发 = 整份持仓解不出。
-    故本版**只掏空、不删键**,真删键排 v2.3(两步淘汰纪律:先发一版客户端把它改
-    `decodeIfPresent`,下一版服务端才可删)。
-
-    ⛔ **它不是"当前没锁"这条信息** —— 熔断机制已不存在,这里恒 false 是**兼容占位**。
-    ⛔ 别拿它当状态位复活任何锁定语义(§五 〇b-7)。"""
-    return CircuitStateOut(locked=False)
 
 
 
@@ -1080,8 +1068,8 @@ def list_positions() -> PositionsOut:
             k4DataUnavailable=snap.get("data_unavailable"),   # None=老快照未记录,如实透 null
             k4Advisory=k4_advisory, scenarioReviewPending=bool(snap.get("scenario_review")),
         ))
-    # V2.2-⑤-B:熔断已整体退役 → `circuit` 键**恒发空态**(零删键铁律,见 `_retired_circuit_state`)。
-    return PositionsOut(holdings=out, circuit=_retired_circuit_state())
+    # ✅ v2.3.0:`circuit` 键**已物理删除**(两步淘汰第二步,判据见 `schemas.py` 该节注释)。
+    return PositionsOut(holdings=out)
 
 
 # 补录预填区间的**保守下沿因子**(下限档金额 = `single_cap` × 本值)。**纯展示层因子,
@@ -1314,8 +1302,9 @@ def get_entry_snapshot(position_id: int) -> EntrySnapshotOut:
 #   · `GET /circuit` **没有替代端点** —— 提醒走推送与看板事件,**不走状态查询**。
 # 两条路径自此由 FastAPI 天然返 **404**(⛔ 别加一条返空态的兼容路由:那等于把"已退役"
 # 讲成"查得到、恰好没锁",又是一个看不出来的状态位)。
-# ⚠ **`PositionsOut.circuit` 这个键本版不删**(〇b-3 零删键铁律,`CircuitStateOut` 在
-# 2.0.0/2.1.0 客户端是**必需解码**)→ 恒发 `locked=false` 空态,真删键排 v2.3。
+# ✅ **`PositionsOut.circuit` 已于 v2.3.0 删键**(两步淘汰第二步):逐版核实历代客户端
+# 都只解 `PositionsListResponse { holdings }`,**从没有一版声明过这个字段**,故删它零风险
+# —— 零删键铁律没被破例,是核实之后发现这个键根本没有消费方。
 # ⚠ 客户端里那两条活调用由 ⑥ 删,本版先登记进
 # `tests/test_contract_crosscheck.py::PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15`。
 

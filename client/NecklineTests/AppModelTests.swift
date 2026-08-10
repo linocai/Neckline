@@ -742,14 +742,9 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(normalPriceVolume.isTopBillboard, "normal 级别即便是价量证据也不置顶")
     }
 
-    func testCircuitEpisodeTriggerReasonLabelMapping() {
-        let daily = CircuitEpisode(triggerReason: "daily_loss", triggeredAt: "", triggerRefDate: "",
-                                   basisTradesCount: 1, basisWindow: "", note: "")
-        XCTAssertEqual(daily.triggerReasonLabel, "单日净亏")
-        let unknown = CircuitEpisode(triggerReason: "some_future_reason", triggeredAt: "", triggerRefDate: "",
-                                     basisTradesCount: 0, basisWindow: "", note: "")
-        XCTAssertEqual(unknown.triggerReasonLabel, "some_future_reason")
-    }
+    // ⚠ **`testCircuitEpisodeTriggerReasonLabelMapping` 已随两个 DTO 于 v2.3.0 删除**
+    //（两步淘汰第二步：服务端 `PositionsOut.circuit` 删键 + 客户端删 `CircuitState`/
+    // `CircuitEpisode`，同一版落地）。⛔ 不是漏删测试。
 
     /// `DecisionLog` 保留为**只读归因**类型(v2.0.0 起零新增行);展示层派生仍需正确。
     func testDecisionLogIsBreathingTrialDerivation() {

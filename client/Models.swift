@@ -1055,6 +1055,19 @@ struct DroppedBasket: Codable, Equatable, Identifiable {
 
     var reasonLabel: String { nkDroppedReasonLabel(reason) }
     var reasonTone: NKAxisTone { nkDroppedReasonTone(reason) }
+
+    /// V2.3 信息层级:把「主句 · 补充」拆成两行(⛔ **不改字面**,只是换行位置)。
+    /// 主句着 `reasonTone`、补充走次级色 —— 一列九种原因挤成同色同字号的一坨,
+    /// 「系统缺席」那两码就淹在里面了,而它们恰恰是最该被看见的。
+    var reasonHeadline: String {
+        reasonLabel.components(separatedBy: " · ").first ?? reasonLabel
+    }
+    /// `nil` = 这个码没有补充句(如未识别码原样透传)。
+    var reasonDetail: String? {
+        let parts = reasonLabel.components(separatedBy: " · ")
+        guard parts.count > 1 else { return nil }
+        return parts.dropFirst().joined(separator: " · ")
+    }
     /// 「卡在哪一关」的人读名;nil = 老快照没有这个键(⛔ 不写「无」)。
     var gateLabel: String? { gate.map(nkGateLabel) }
     /// 该关是机械关(硬否决)还是证据关(只降级)—— nil = 不知道是哪一关。
@@ -2822,32 +2835,15 @@ struct DecisionTrack: Codable, Equatable {
     var rows: [DecisionTrackRow] = []
 }
 
-// MARK: - v1.2-A2 熔断纪律状态(§五 v1.2-E.3;§2.1 第 7 条纯提醒层——客户端只展示
-// 锁定态 + 灰化「开新仓」入口,绝不假装能拦下单,判定/阈值全在服务端)。
-
-struct CircuitEpisode: Codable, Equatable {
-    var triggerReason: String     // consecutive_stops | daily_loss
-    var triggeredAt: String
-    var triggerRefDate: String
-    var basisTradesCount: Int     // 诚实边界:判定所依据的台账已补录成交笔数
-    var basisWindow: String
-    var note: String              // 服务端文案,含「基于台账 N 笔已补录成交」,客户端直接展示不改写
-
-    var triggerReasonLabel: String {
-        switch triggerReason {
-        case "consecutive_stops": return "连续止损"
-        case "daily_loss": return "单日净亏"
-        default: return triggerReason
-        }
-    }
-}
-
-struct CircuitState: Codable, Equatable {
-    var locked: Bool
-    var episode: CircuitEpisode?
-
-    static let empty = CircuitState(locked: false, episode: nil)
-}
+// ⚠ **`CircuitEpisode` / `CircuitState` 两个 DTO 已于 v2.3.0 物理删除**(两步淘汰第二步)。
+//
+// 熔断三件机制在 V2.2-⑤-B 随用户裁定 #8 整体退役;当时按零删键铁律(〇b-3)让服务端
+// `PositionsOut.circuit` 恒发空态过渡一版,客户端两个 DTO 也一并留着。本版服务端删键、
+// 客户端删 DTO,**同一版落地**。
+// 🔴 **删得掉的判据**:历代客户端 `/positions` 一律解进 `PositionsListResponse { holdings }`,
+// **没有任何一版声明过 `circuit` 字段** —— 2.0.0 那台 iPhone 读的是**独立端点**
+// `GET /circuit`(自 V2.2 起 404,与本键无关)。⛔ 别把这条当成「零删键铁律可以不守」的先例。
+// ⛔ 更不许以任何名字把熔断状态位加回来(§五 〇b-7,用户裁定 #8:「我不需要你替我做决定」)。
 
 // MARK: - v1.1-B.3/v1.2-E.5 一键补录预填(区间双档,替换 v1.1 的单 `qty`)
 //

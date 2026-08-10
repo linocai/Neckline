@@ -55,20 +55,89 @@ struct ReviewView: View {
         }
         .task { await loadIfNeeded() }
         #else
-        ScrollView {
-            content.padding(NKSpace.pagePad).frame(maxWidth: 900)
-        }
-        .frame(maxWidth: .infinity)
-        .background(NK.pageBg)
-        .toolbar {
-            ToolbarItem {
-                Button { Task { await model.loadReviewOverview() } } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
+        // ⚠ **V2.3:macOS 改「列表栏 五页 + 详情栏」** —— 五页横排在段控里挤成五个
+        // 两字词,正是用户说的「五个页签分不清」;列表栏一页一行、每行下面跟着
+        // **「这一页答什么」**,才把选股钟 / 交易钟那两个不同的样本域讲清楚。
+        NKSplitLayout {
+            pageListColumn
+        } detail: {
+            currentPage
         }
         .task { await loadIfNeeded() }
         #endif
+    }
+
+    #if os(macOS)
+    private var pageListColumn: some View {
+        VStack(alignment: .leading, spacing: NKSpace.rowGap) {
+            HStack {
+                Text(AppTab.review.title).font(NKFont.title2).foregroundStyle(NK.textPrimary)
+                Spacer()
+                Button { Task { await model.loadReviewOverview() } } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.plain).foregroundStyle(NK.accent)
+            }
+            .padding(.horizontal, 6).padding(.bottom, 4)
+            Text("五页答五个不同的问题 · 只呈现证据,改选股包永远走人工门禁")
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                .padding(.horizontal, 6).padding(.bottom, 8)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(ReviewPage.allCases) { p in
+                NKListRow(selected: model.reviewPage == p) {
+                    model.reviewPage = p
+                } content: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: p.systemImage).font(.system(size: 12))
+                            .foregroundStyle(model.reviewPage == p ? NK.accent : NK.textTertiary)
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(p.title).font(NKFont.body).fontWeight(.semibold)
+                                    .foregroundStyle(NK.textPrimary)
+                                pageBadge(p)
+                            }
+                            // 🔴 「这一页答什么」——⛔ 别省:五个两字词分不清是原病。
+                            Text(p.question).font(NKFont.caption)
+                                .foregroundStyle(NK.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 页签上的计数徽标。**只在数得出来时才给** —— ⛔ 拿 0 冒充「算过了没有」。
+    @ViewBuilder
+    private func pageBadge(_ p: ReviewPage) -> some View {
+        switch p {
+        case .daily:
+            if model.basketDaily.reviewsAvailable, !model.basketDaily.reviews.isEmpty {
+                NKChip(text: "\(model.basketDaily.reviews.count)")
+            }
+        case .selectionClock:
+            if !model.selectionClocks.isEmpty {
+                NKChip(text: "\(model.selectionClocks.count) 结案")
+            }
+        case .reconcile:
+            if !model.reviewHasUploaded { NKChip(text: "未上传", tone: .warn) }
+        default: EmptyView()
+        }
+    }
+    #endif
+
+    @ViewBuilder
+    private var currentPage: some View {
+        switch model.reviewPage {
+        case .daily: dailyPage
+        case .selectionClock: selectionClockPage
+        case .tradeClock: tradeClockPage
+        case .cumulative: cumulativePage
+        case .reconcile: reconcilePage
+        }
     }
 
     /// 累计页 / 对账页(iOS)都吃这一份五段。**只在还没有时拉**——切页、切侧栏都不该
@@ -82,31 +151,18 @@ struct ReviewView: View {
         }
     }
 
+    /// iOS:段控 + **「这一页答什么」**一行(⛔ 别省那一行 —— 五个两字词分不清是原病)。
     @ViewBuilder
     private var content: some View {
-        VStack(alignment: .leading, spacing: NKSpace.gap) {
-            header
-            pagePicker
-            switch model.reviewPage {
-            case .daily: dailyPage
-            case .selectionClock: selectionClockPage
-            case .tradeClock: tradeClockPage
-            case .cumulative: cumulativePage
-            case .reconcile: reconcilePage
-            }
-        }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            #if os(macOS)
-            HStack(spacing: 8) {
-                NKLogo(size: 24)
-                Text(AppTab.review.title).font(NKFont.largeTitle).foregroundStyle(NK.textPrimary)
-            }
-            #endif
+        VStack(alignment: .leading, spacing: NKSpace.blockGap) {
             Text("复盘只呈现证据 · 改选股包永远走人工门禁(系统不自动回写策略)")
-                .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            pagePicker
+            Text(model.reviewPage.question)
+                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            currentPage
         }
     }
 
@@ -128,11 +184,20 @@ struct ReviewView: View {
 
     @ViewBuilder
     private var dailyPage: some View {
-        let daily = model.basketDaily
+        // 🔴 **读的是「回看那一天」的快照**(V2.3 结 P3-47):没选日期时它就是今天那份。
+        let daily = model.reviewDailyBasket
         VStack(alignment: .leading, spacing: NKSpace.gap) {
+            dailyDatePicker
             NKSectionHeader(title: "④ 昨日篮子复盘 \(daily.reviews.count)",
                             trailing: daily.reviewD0.map { "D0 \($0)" })
-            if !model.hasReportData {
+            if let err = model.reviewDailyError {
+                NKCard {
+                    NKEmptyState(title: "这一天没有可回看的复盘", subtitle: err,
+                                 systemImage: "calendar.badge.exclamationmark")
+                }
+            } else if model.reviewDailyLoading {
+                NKCard { NKEmptyState(title: "正在取那一天的报告…", systemImage: "hourglass") }
+            } else if model.reviewDailyDate == nil && !model.hasReportData {
                 NKCard {
                     NKEmptyState(title: "今日报告尚未生成",
                                  subtitle: "昨日复盘随每日报告一起冻结;今晚 16:35 出报告后自动显示。",
@@ -149,7 +214,7 @@ struct ReviewView: View {
                 NKCard {
                     HStack(spacing: 8) {
                         Image(systemName: "calendar.badge.clock").foregroundStyle(NK.textTertiary)
-                        Text("昨日无篮子可复盘").font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                        Text("昨日无篮子可复盘").font(NKFont.callout).foregroundStyle(NK.textSecondary)
                         Spacer()
                     }
                 }
@@ -157,6 +222,51 @@ struct ReviewView: View {
                 ForEach(daily.reviews) { r in
                     BasketReviewRow(review: r)
                 }
+            }
+        }
+    }
+
+    /// **回看某一天**(§七 P3-47 在 V2.3 结案)。
+    ///
+    /// 🔴 **复用 `GET /report?date=`,读的是那天冻结的报告快照** —— ⛔ 不新建
+    /// 「复盘历史」端点去现连 `basket_review_daily`:现连会绕开冻结件,让回看到的复盘
+    /// 与**当时那份报告**讲不同的话。
+    /// ⚠ 换日期**只影响这一页**;选股板块仍然是今天(⛔ 别把全 App 的"今天"换掉)。
+    private var dailyDatePicker: some View {
+        NKCard(padding: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: "calendar").font(.system(size: 12))
+                        .foregroundStyle(NK.accent)
+                    Text("回看").nkLabel().foregroundStyle(NK.textTertiary)
+                    DatePicker("", selection: Binding(
+                        get: {
+                            model.reviewDailyDate.flatMap(model.calendar.parseDate)
+                                ?? model.calendar.parseDate(model.report.tradeDate)
+                                ?? Date()
+                        },
+                        set: { d in
+                            Task { await model.loadReviewDaily(date: model.calendar.compactString(d)) }
+                        }), in: ...Date(), displayedComponents: .date)
+                        .labelsHidden()
+                        #if os(macOS)
+                        .datePickerStyle(.field)
+                        #else
+                        .datePickerStyle(.compact)
+                        #endif
+                    if model.reviewDailyDate != nil {
+                        Button { Task { await model.loadReviewDaily(date: nil) } } label: {
+                            Text("回到今天").font(NKFont.caption).fontWeight(.semibold)
+                        }
+                        .buttonStyle(.plain).foregroundStyle(NK.accent)
+                    }
+                    Spacer(minLength: 0)
+                }
+                Text(model.reviewDailyDate == nil
+                     ? "看的是最新那份报告(交易日 \(model.calendar.displayString(model.reviewDailyTradeDate)))"
+                     : "看的是 \(model.calendar.displayString(model.reviewDailyTradeDate)) 那份**冻结报告**里的复盘 —— 与当时看到的逐字相同")
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -173,7 +283,7 @@ struct ReviewView: View {
             NKSectionHeader(title: "选股时钟 · 已结案 \(model.selectionClocks.count)",
                             trailing: "D1 收盘验证一次即结案")
             Text("样本 = D0 当天全部 T1/T2 篮子,**与你买没买无关** · 结案 = 只结一次,之后不再改")
-                .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
             if model.selectionClocksLoading && model.selectionClocks.isEmpty {
                 NKCard { NKEmptyState(title: "正在取选股时钟…", systemImage: "hourglass") }
@@ -207,7 +317,7 @@ struct ReviewView: View {
         VStack(alignment: .leading, spacing: NKSpace.gap) {
             NKSectionHeader(title: "交易时钟 · 真实买入", trailing: "全部离场后结案")
             Text("启动的唯一条件是**你真的买了** · 与选股时钟的样本域不同:那边看「选得对不对」,这边看「做得怎么样」")
-                .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
             NKCard {
                 Button { model.view = .positions } label: {
@@ -215,9 +325,9 @@ struct ReviewView: View {
                         Image(systemName: "stopwatch").foregroundStyle(NK.accent)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("逐笔时钟与「补一条主观说明」在持仓卡里")
-                                .font(.system(size: 13, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                                .font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                             Text("每张持仓卡底部展开即可 · 系统不会替你写那句话")
-                                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                         }
                         Spacer()
                         Image(systemName: "chevron.right").font(.system(size: 12))
@@ -279,16 +389,16 @@ struct ReviewView: View {
                 .buttonStyle(.plain).foregroundStyle(NK.accent)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.reviewWeekAnchor == nil ? "本期窗口" : "所选窗口")
-                        .font(.system(size: 11, weight: .bold)).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.caption).fontWeight(.bold).foregroundStyle(NK.textTertiary)
                     Text(ov.weekStart.isEmpty && ov.weekEnd.isEmpty
                          ? "该周没有交易日" : "\(ov.weekStart) ~ \(ov.weekEnd)")
-                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                        .font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                 }
                 Spacer()
                 if !ov.weekKey.isEmpty { NKChip(text: ov.weekKey) }
                 if model.reviewWeekAnchor != nil {
                     Button { Task { await model.shiftReviewWeek(nil) } } label: {
-                        Text("回本周").font(.system(size: 11, weight: .semibold))
+                        Text("回本周").font(NKFont.caption).fontWeight(.semibold)
                     }
                     .buttonStyle(.plain).foregroundStyle(NK.accent)
                 }
@@ -311,20 +421,20 @@ struct ReviewView: View {
                     Text("一份能直接交给策略台的 markdown:窗口与样本量 / 校准报告全文 / "
                          + "画像两表 / 观察项清单 / 免责。攒够样本后由你带去策略台改包 —— "
                          + "系统不会自己改。")
-                        .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if let h = model.reviewHandoff {
                         handoffBody(h)
                     } else if model.reviewHandoffLoading {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
-                            Text("正在装配移交件…").font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                            Text("正在装配移交件…").font(NKFont.callout).foregroundStyle(NK.textSecondary)
                         }
                     } else {
                         Button { Task { await model.loadReviewHandoff() } } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "square.and.arrow.up").font(.system(size: 11))
-                                Text("导出校准移交件").font(.system(size: 12.5, weight: .semibold))
+                                Text("导出校准移交件").font(NKFont.callout).fontWeight(.semibold)
                             }
                         }
                         .buttonStyle(.plain).foregroundStyle(NK.accent)
@@ -341,7 +451,7 @@ struct ReviewView: View {
                 HStack(spacing: 6) {
                     NKChip(text: h.windowLabel)
                     if !h.generatedAt.isEmpty {
-                        Text("生成于 \(h.generatedAt)").font(.system(size: 10.5))
+                        Text("生成于 \(h.generatedAt)").font(NKFont.caption)
                             .foregroundStyle(NK.textTertiary)
                     }
                     Spacer()
@@ -360,7 +470,7 @@ struct ReviewView: View {
                               preview: SharePreview(h.suggestedFilename)) {
                         HStack(spacing: 4) {
                             Image(systemName: "square.and.arrow.up").font(.system(size: 11))
-                            Text("分享").font(.system(size: 12.5, weight: .semibold))
+                            Text("分享").font(NKFont.callout).fontWeight(.semibold)
                         }
                     }
                     .buttonStyle(.plain).foregroundStyle(NK.accent)
@@ -368,7 +478,7 @@ struct ReviewView: View {
                     Button { saveHandoff(h) } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.down.doc").font(.system(size: 11))
-                            Text("存为 .md").font(.system(size: 12.5, weight: .semibold))
+                            Text("存为 .md").font(NKFont.callout).fontWeight(.semibold)
                         }
                     }
                     .buttonStyle(.plain).foregroundStyle(NK.accent)
@@ -376,12 +486,12 @@ struct ReviewView: View {
                     Spacer()
                 }
                 DisclosureGroup("预览全文(\(h.markdown.count) 字)") {
-                    Text(h.markdown).font(.system(size: 11).monospaced())
+                    Text(h.markdown).font(NKFont.monoKey)
                         .foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
-                .font(.system(size: 11.5))
+                .font(NKFont.caption)
                 .foregroundStyle(NK.textSecondary)
             }
         } else {
@@ -445,33 +555,33 @@ struct BasketReviewRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Text(review.name.isEmpty ? review.basketKey : review.name)
-                        .font(.system(size: 13.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                        .font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                     if let t = review.tier { NKChip(text: "T\(t)") }
                     NKChip(text: review.depthLabel)
                     Spacer()
-                    Text("D0 \(review.d0)").font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                    Text("D0 \(review.d0)").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
                 if let text = review.llmText, !text.isEmpty {
                     // §2.7:LLM 叙述**原文整段呈现**,⛔ 不拆解塞回枚举卡片。
-                    Text(text).font(.system(size: 12.5)).foregroundStyle(NK.textSecondary)
+                    Text(text).font(NKFont.callout).foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                     NKReferenceNote()
                 } else if let skip = review.llmSkipReason, !skip.isEmpty {
                     // **未生成**(预算耗尽 / 降级)—— ⛔ 不拿空串冒充「生成了但没内容」。
                     Text("本篮未生成人话复盘:\(skip)")
-                        .font(.system(size: 11.5)).foregroundStyle(NK.amber)
+                        .font(NKFont.caption).foregroundStyle(NK.amber)
                 }
                 if review.degraded {
                     Text("本次复盘降级:人话半份缺席,机械判照出")
-                        .font(.system(size: 11)).foregroundStyle(NK.amber)
+                        .font(NKFont.caption).foregroundStyle(NK.amber)
                 }
                 if let obj = review.mech.objectValue, !obj.isEmpty {
                     Button { withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() } } label: {
                         HStack(spacing: 4) {
                             Text(expanded ? "收起机械判" : "展开机械判(九项)")
-                                .font(.system(size: 11.5, weight: .medium))
+                                .font(NKFont.caption).fontWeight(.medium)
                             Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 9))
+                                .font(NKFont.caption)
                         }
                     }
                     .buttonStyle(.plain).foregroundStyle(NK.accent)
@@ -524,17 +634,17 @@ private struct CalibrationSegmentCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("样本:\(d["nTradingDays"]?.intValue ?? 0) 个交易日 / "
                          + "\(d["nBaskets"]?.intValue ?? 0) 个篮子 · 分层 \(strata.count) 层")
-                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                        .font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                     // ⚠ 拼接串(非字面量)**不走 SwiftUI 的 Markdown 解析** → 这里不放
                     // `**` / 反引号,否则界面上会原样出现那些符号。
                     Text("分层维度:pack_version × verification_ruleset_version —— "
                          + "换包会开新分层,这正是它能当归因分界线的原因。")
-                        .font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                     // ⚠ `NKJSON` 不是 `Hashable`(它能装任意结构),故按下标做 id ——
                     // 产物里的 notes 顺序是确定的,下标当 id 稳定。
                     ForEach(Array((d["notes"]?.arrayValue ?? []).enumerated()), id: \.offset) { _, n in
-                        Text("⚠ \(n.displayText)").font(.system(size: 10.5))
+                        Text("⚠ \(n.displayText)").font(NKFont.caption)
                             .foregroundStyle(NK.amber).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -542,7 +652,7 @@ private struct CalibrationSegmentCard: View {
             if strata.isEmpty {
                 NKCard {
                     Text("算过了 · 本期无分层数据(窗口内没有可评的篮子)")
-                        .font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
                 }
             } else {
                 ForEach(Array(strata.enumerated()), id: \.offset) { _, s in
@@ -554,7 +664,7 @@ private struct CalibrationSegmentCard: View {
                 DisclosureGroup("展开校准产物全文(只读)") {
                     NKJSONTable(value: segment.detail)
                 }
-                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
             }
         }
     }
@@ -564,21 +674,21 @@ private struct CalibrationSegmentCard: View {
     private func placeboCard(_ arms: [NKJSON]) -> some View {
         NKCard {
             VStack(alignment: .leading, spacing: 6) {
-                Text("安慰剂对照臂").font(.system(size: 12.5, weight: .semibold))
+                Text("安慰剂对照臂").font(NKFont.callout).fontWeight(.semibold)
                     .foregroundStyle(NK.textPrimary)
                 if arms.isEmpty {
-                    Text("本期无对照臂数据").font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                    Text("本期无对照臂数据").font(NKFont.caption).foregroundStyle(NK.textSecondary)
                 } else {
                     ForEach(Array(arms.enumerated()), id: \.offset) { _, a in
                         VStack(alignment: .leading, spacing: 2) {
                             Text("包 \(a["packVersion"]?.stringValue ?? "—") · "
                                  + "\(a["nDays"]?.intValue ?? 0) 日 · 抽样 \(a["draws"]?.intValue ?? 0) 次")
-                                .font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                                .font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                             armRow("真实臂", a["real"])
                             armRow("随机篮臂", a["randomArm"])
                             armRow("满仓持有臂", a["buyAndHoldArm"])
                             if let note = a["note"]?.stringValue, !note.isEmpty {
-                                Text(note).font(.system(size: 10))
+                                Text(note).font(NKFont.caption)
                                     .foregroundStyle(NK.textTertiary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -592,14 +702,14 @@ private struct CalibrationSegmentCard: View {
     @ViewBuilder
     private func armRow(_ label: String, _ arm: NKJSON?) -> some View {
         HStack(spacing: 6) {
-            Text(label).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+            Text(label).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 .frame(width: 76, alignment: .leading)
             Text("中位 " + nkPctText(arm?["median"]?.doubleValue))
-                .font(.system(size: 10.5).monospacedDigit()).foregroundStyle(NK.textSecondary)
+                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
             Text("· 均值 " + nkPctText(arm?["mean"]?.doubleValue))
-                .font(.system(size: 10.5).monospacedDigit()).foregroundStyle(NK.textSecondary)
+                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
             Text("· n=\(arm?["n"]?.intValue ?? 0)")
-                .font(.system(size: 10.5).monospacedDigit()).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
             Spacer()
         }
     }
@@ -614,7 +724,7 @@ private struct StratumCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Text("包 \(stratum["packVersion"]?.stringValue ?? "—")")
-                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                        .font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                     NKChip(text: "条件集 \(stratum["rulesetVersion"]?.stringValue ?? "—")")
                     Spacer()
                     NKChip(text: "\(stratum["nDays"]?.intValue ?? 0) 日 / \(stratum["nBaskets"]?.intValue ?? 0) 篮")
@@ -640,22 +750,22 @@ private struct StratumCard: View {
             .sorted { (Int($0) ?? 0) < (Int($1) ?? 0) }
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Text("Tier 单调性").font(.system(size: 11, weight: .bold)).foregroundStyle(NK.textTertiary)
-                Text(monotonicText(t?["monotonic"])).font(.system(size: 11))
+                Text("Tier 单调性").font(NKFont.caption).fontWeight(.bold).foregroundStyle(NK.textTertiary)
+                Text(monotonicText(t?["monotonic"])).font(NKFont.caption)
                     .foregroundStyle(NK.textSecondary)
                 Spacer()
             }
             if tiers.isEmpty {
-                Text("本层无档位样本").font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                Text("本层无档位样本").font(NKFont.caption).foregroundStyle(NK.textSecondary)
             } else {
                 ForEach(tiers, id: \.self) { k in
                     Text("T\(k) \(nkPctText(med[k]?.doubleValue))(n=\(obs[k]?.intValue ?? 0))")
-                        .font(.system(size: 11).monospacedDigit()).foregroundStyle(NK.textSecondary)
+                        .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
                 }
             }
             // §2.8-C 红线:Tier = 注意力优先级,不是收益预测 —— 单调性只是观察。
             Text("Tier = 注意力优先级,不是收益预测;单调性只是送进策略线的一个观察")
-                .font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
         }
     }
 
@@ -669,18 +779,18 @@ private struct StratumCard: View {
         let v = stratum["verification"]
         let dist = v?["distribution"]?.objectValue ?? [:]
         VStack(alignment: .leading, spacing: 2) {
-            Text("验证率").font(.system(size: 11, weight: .bold)).foregroundStyle(NK.textTertiary)
+            Text("验证率").font(NKFont.caption).fontWeight(.bold).foregroundStyle(NK.textTertiary)
             Text("已验证 \(nkRatioText(v?["verified_rate"]?.doubleValue)) · "
                  + "被证伪 \(nkRatioText(v?["falsified_rate"]?.doubleValue))")
-                .font(.system(size: 11).monospacedDigit()).foregroundStyle(NK.textSecondary)
+                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
             if !dist.isEmpty {
                 Text("四态分布 " + dist.keys.sorted()
                         .map { "\($0) \(dist[$0]?.intValue ?? 0)" }.joined(separator: " · "))
-                    .font(.system(size: 10.5).monospacedDigit()).foregroundStyle(NK.textTertiary)
+                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
             }
             // `not_evaluated` **不进分母**:「今天还没判过」不是「判了是 unclear」。
             Text("not_evaluated \(v?["not_evaluated"]?.intValue ?? 0) 篮(不进分母)")
-                .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
         }
     }
 
@@ -688,15 +798,15 @@ private struct StratumCard: View {
     private var tradableRow: some View {
         let tr = stratum["tradable"]
         VStack(alignment: .leading, spacing: 2) {
-            Text("可交易收益").font(.system(size: 11, weight: .bold)).foregroundStyle(NK.textTertiary)
+            Text("可交易收益").font(NKFont.caption).fontWeight(.bold).foregroundStyle(NK.textTertiary)
             Text("中位 \(nkPctText(tr?["median"]?.doubleValue)) · "
                  + "均值 \(nkPctText(tr?["mean"]?.doubleValue)) · "
                  + "胜率 \(nkRatioText(tr?["win_rate"]?.doubleValue))")
-                .font(.system(size: 11).monospacedDigit()).foregroundStyle(NK.textSecondary)
+                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
             Text("成交 \(tr?["member_fills"]?.intValue ?? 0) 笔 · "
                  + "买不进 \(tr?["member_not_filled"]?.intValue ?? 0) 笔 · "
                  + "窗口未走完 \(tr?["member_unfinished"]?.intValue ?? 0) 笔(后两类不进均值)")
-                .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -713,7 +823,7 @@ private struct ProfileSegmentCard: View {
             NKCard {
                 if segment.items.isEmpty {
                     // ⚠ 「算过了但本期没有分组」与上面的「没跑过」讲的是两回事。
-                    Text("算过了 · 本期无可展示的分组").font(.system(size: 12))
+                    Text("算过了 · 本期无可展示的分组").font(NKFont.callout)
                         .foregroundStyle(NK.textSecondary)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
@@ -736,22 +846,22 @@ private struct ProfileRowView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text("\(row.dimension) · \(row.bucket)")
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(NK.textPrimary)
+                    .font(NKFont.callout).fontWeight(.medium).foregroundStyle(NK.textPrimary)
                 Spacer()
                 NKChip(text: "样本 \(row.sampleN)", tone: row.isLowConfidence ? .warn : .neutral)
             }
             Text("窗口 \(row.windowStart) ~ \(row.windowEnd)")
-                .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
             if row.isLowConfidence {
-                Text("样本不足,不给结论").font(.system(size: 10.5, weight: .semibold))
+                Text("样本不足,不给结论").nkLabel()
                     .foregroundStyle(NK.amber)
             } else {
                 ForEach(row.metricKeys, id: \.self) { k in
                     HStack {
-                        Text(k).font(.system(size: 10.5).monospaced()).foregroundStyle(NK.textTertiary)
+                        Text(k).font(NKFont.monoKey).foregroundStyle(NK.textTertiary)
                         Spacer()
                         Text(row.raw[k]?.displayText ?? "—")
-                            .font(.system(size: 10.5).monospaced()).foregroundStyle(NK.textSecondary)
+                            .font(NKFont.monoKey).foregroundStyle(NK.textSecondary)
                     }
                 }
             }
@@ -779,7 +889,7 @@ private struct ReconcileSegmentCard: View {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: "tray").foregroundStyle(NK.textTertiary)
                             Text(segment.note ?? "本周尚未上传交割单")
-                                .font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                                .font(NKFont.callout).foregroundStyle(NK.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 0)
                         }
@@ -787,7 +897,7 @@ private struct ReconcileSegmentCard: View {
                     if showUploadHint {
                         Text("交割单上传请在 macOS 端做(拖入 .xlsx → 自动对账);"
                              + "iPhone 上只做只读查看。")
-                            .font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                            .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -805,38 +915,38 @@ private struct ReconcileSegmentCard: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("第 \(segment.detail["week"]?.stringValue ?? segment.asOf) 周")
-                    .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                    .font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                 if result?["forcedReview"]?.boolValue == true {
                     NKChip(text: "触发强制复盘", tone: .bad, filled: true)
                 }
                 Spacer()
                 if let g = segment.detail["generatedAt"]?.stringValue, !g.isEmpty {
-                    Text(g).font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                    Text(g).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
             }
-            Text("违纪清单 \(violations.count) 条").font(.system(size: 11, weight: .bold))
+            Text("违纪清单 \(violations.count) 条").font(NKFont.caption).fontWeight(.bold)
                 .foregroundStyle(NK.textTertiary)
             if violations.isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.seal.fill").foregroundStyle(NK.up)
-                    Text("本周未发现违纪").font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                    Text("本周未发现违纪").font(NKFont.callout).foregroundStyle(NK.textSecondary)
                 }
             } else {
                 ForEach(Array(violations.enumerated()), id: \.offset) { _, v in
                     HStack(alignment: .top, spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10))
                             .foregroundStyle(NK.down).padding(.top, 2)
-                        Text(v).font(.system(size: 12)).foregroundStyle(NK.textPrimary)
+                        Text(v).font(NKFont.callout).foregroundStyle(NK.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
             if let m = segment.detail["material"]?.stringValue, !m.isEmpty {
                 DisclosureGroup("复盘材料") {
-                    Text(m).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                    Text(m).font(NKFont.caption).foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
             }
         }
     }
@@ -852,7 +962,7 @@ private struct ObservationSegmentCard: View {
                      emptyIcon: "questionmark.circle") {
             if segment.items.isEmpty {
                 NKCard {
-                    Text("本期无登记的观察项").font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                    Text("本期无登记的观察项").font(NKFont.callout).foregroundStyle(NK.textSecondary)
                 }
             } else {
                 ForEach(segment.items.map(ReviewObservation.init(raw:))) { o in
@@ -860,22 +970,22 @@ private struct ObservationSegmentCard: View {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 6) {
                                 NKChip(text: o.obsId)
-                                Text(o.title).font(.system(size: 12.5, weight: .semibold))
+                                Text(o.title).font(NKFont.callout).fontWeight(.semibold)
                                     .foregroundStyle(NK.textPrimary)
                                 Spacer()
                             }
                             if !o.question.isEmpty {
-                                Text(o.question).font(.system(size: 11.5))
+                                Text(o.question).font(NKFont.caption)
                                     .foregroundStyle(NK.textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             if !o.evidenceNeeded.isEmpty {
                                 Text("需要的证据:\(o.evidenceNeeded)")
-                                    .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             if !o.status.isEmpty {
-                                Text("状态:\(o.status)").font(.system(size: 10.5))
+                                Text("状态:\(o.status)").font(NKFont.caption)
                                     .foregroundStyle(NK.amber)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -903,7 +1013,7 @@ private struct SelectionClockRow: View {
                 HStack(spacing: 6) {
                     NKChip(text: "T\(clock.coveredTier)",
                            tone: clock.coveredTier == 1 ? .good : .warn, filled: true)
-                    Text("篮子 #\(clock.basketId)").font(.system(size: 13, weight: .semibold))
+                    Text("篮子 #\(clock.basketId)").font(NKFont.body).fontWeight(.semibold)
                         .foregroundStyle(NK.textPrimary)
                     Spacer()
                     NKChip(text: clock.tierAccuracyLabel, tone: clock.tierAccuracyTone)
@@ -918,22 +1028,22 @@ private struct SelectionClockRow: View {
                 }
                 // 「D0 无行情状态行」与「行情状态是 X」讲不同的话。
                 if let r = clock.regimeAtD0 {
-                    Text("D0 行情状态:\(r)").font(.system(size: 11))
+                    Text("D0 行情状态:\(r)").font(NKFont.caption)
                         .foregroundStyle(NK.textSecondary)
                 } else {
                     Text("D0 当天无行情状态判定行(缺行 = 不知道,不猜)")
-                        .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
                 if let why = clock.untriggeredReason, !why.isEmpty {
-                    Text("未触发:\(why)").font(.system(size: 11)).foregroundStyle(NK.amber)
+                    Text("未触发:\(why)").font(NKFont.caption).foregroundStyle(NK.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 DisclosureGroup("展开 D1 九项验证(K8 §十四,只读冻结件)", isExpanded: $expanded) {
                     NKJSONTable(value: clock.mech)
                 }
-                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                 Text("结案于 \(clock.closedAt) · 骨架 \(clock.skeletonVersion) · 验证条件集 \(clock.verificationRulesetVersion)")
-                    .font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -951,7 +1061,7 @@ private struct ClockScoreboardCard: View {
                 DisclosureGroup("展开本期归因产物(只读)") {
                     NKJSONTable(value: segment.detail)
                 }
-                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
             }
         }
     }
@@ -982,7 +1092,7 @@ private struct IterationSegmentCard: View {
             if rows.isEmpty {
                 NKCard {
                     Text("算过了 · 本期没有可分类的因素(窗口内没有结案样本)")
-                        .font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
                 }
             } else {
                 ForEach(rows) { r in
@@ -995,10 +1105,10 @@ private struct IterationSegmentCard: View {
                                 } else if let label = r.klassLabel {
                                     NKChip(text: label, tone: r.klassTone, filled: true)
                                 }
-                                Text(r.factor).font(.system(size: 12, weight: .semibold).monospaced())
+                                Text(r.factor).font(NKFont.body.monospaced()).fontWeight(.semibold)
                                     .foregroundStyle(NK.textPrimary)
                                 Spacer()
-                                Text("n=\(r.n)").font(.system(size: 11).monospacedDigit())
+                                Text("n=\(r.n)").font(NKFont.caption.monospacedDigit())
                                     .foregroundStyle(NK.textSecondary)
                             }
                             HStack(spacing: 6) {
@@ -1015,7 +1125,7 @@ private struct IterationSegmentCard: View {
                             }
                             if !r.suggestion.isEmpty {
                                 // 服务端把「缺哪两个数、该怎么定」整句写好了 —— **原样展示**。
-                                Text(r.suggestion).font(.system(size: 11))
+                                Text(r.suggestion).font(NKFont.caption)
                                     .foregroundStyle(NK.textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -1026,16 +1136,16 @@ private struct IterationSegmentCard: View {
             NKCard {
                 VStack(alignment: .leading, spacing: 4) {
                     if let t = thresholds {
-                        Text("本期分界线").font(.system(size: 11, weight: .bold))
+                        Text("本期分界线").font(NKFont.caption).fontWeight(.bold)
                             .foregroundStyle(NK.textTertiary)
                         NKJSONTable(value: t)
                     }
                     if let d = segment.detail["disclaimer"]?.stringValue, !d.isEmpty {
-                        Text(d).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                        Text(d).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Text("改包唯一通道是你带材料去策略台 —— 系统不会自己改选股包。")
-                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.textSecondary)
+                        .font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -1048,23 +1158,23 @@ private struct IterationSegmentCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 12)).foregroundStyle(NK.amber)
+                        .font(NKFont.callout).foregroundStyle(NK.amber)
                     Text("四分类的分界线还没定 —— 等你拍板")
-                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                        .font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                     Spacer()
                 }
                 Text("统计量**已经算出来了**(下面每行的 n / 正确率 / 相对基线 / 安慰剂对照都是真的),缺的只是两个数:")
-                    .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 VStack(alignment: .leading, spacing: 3) {
                     numbered("min_n", "低于它一律判「观察:样本不足」——「多少样本算够」")
                     numbered("retire_min_n", "判「淘汰:持续失效」所需的最低样本量——「差多少算失效」")
                 }
                 Text("K8 §十七 只给了四个类别的定性描述,没有给这两个数。定好之后经四道闸写进骨架包 `config.iteration`,本段会自动开始给分类。**⛔ 系统不会替你选这两个数。**")
-                    .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("⛔ 这**不是**「本期没有建议」,也**不是**「都判成观察」——是这两个数还没有人定。")
-                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(NK.amber)
+                    .font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.amber)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1072,9 +1182,9 @@ private struct IterationSegmentCard: View {
 
     private func numbered(_ key: String, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Text(key).font(.system(size: 11, weight: .bold).monospaced())
+            Text(key).font(NKFont.monoKey).fontWeight(.bold)
                 .foregroundStyle(NK.accent)
-            Text(text).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+            Text(text).font(NKFont.caption).foregroundStyle(NK.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

@@ -604,38 +604,17 @@ class PositionOut(BaseModel):
     scenarioReviewPending: bool = False
 
 
-# —— v1.2-A2 熔断纪律状态(§2.1 第 7 条 / plan §五 v1.2-A2)——————————————————————
-#
-# 诚实边界(§2.1 第 7 条):熔断只能基于**用户已补录进台账**的成交判定——判定所依据
-# 的数据与时效随状态一起下发(`basisTradesCount`「基于台账 N 笔已补录成交」+
-# `basisWindow` 时窗 + `note`)。锁定态 = 派生(`circuit_breaker.unlocked_at IS NULL`)。
-
-class CircuitEpisodeOut(BaseModel):
-    triggerReason: str            # consecutive_stops | daily_loss(客户端展示层换算)
-    triggeredAt: str
-    triggerRefDate: str           # 'YYYYMMDD' 触发所在交易日
-    basisTradesCount: int         # 参与判定的台账已补录成交笔数(诚实边界)
-    basisWindow: str              # 判据时窗(展示口径,如 '2026-07-22' 或 '2026-07-20~2026-07-22')
-    note: str                     # 诚实边界文案(含「基于台账 N 笔已补录成交」)
-
-
-class CircuitStateOut(BaseModel):
-    """🔴 **已退役(V2.2-⑤-B,用户裁定 #8「熔断整体删除」):`locked` 恒 `false`、
-    `episode` 恒 `null`,下一版(v2.3)删键。**
-
-    保留纯粹是**零删键铁律**(§五 〇b-3):用户 iPhone 何时换包不可控,本类型在 2.0.0 /
-    2.1.0 客户端是**必需解码**,停发 = 整份持仓解不出。⛔ 别把恒 false 读成「当前没锁」
-    —— 锁这个东西已经不存在了(锁定态 / 次日只减不加 / 强制复盘解锁三件机制全删)。
-    ⛔ 也别拿它复活任何自动状态位(§五 〇b-7:用户明确说了不要程序替他做决定)。"""
-    locked: bool
-    episode: Optional[CircuitEpisodeOut] = None   # 恒 null(V2.2-⑤-B 起熔断已无 episode 概念)
-
+# ⚠ **`CircuitEpisodeOut` / `CircuitStateOut` 已于 v2.3.0 物理删除**（两步淘汰第二步）：
+# 熔断三件机制在 V2.2-⑤-B 随用户裁定 #8 整体退役，`PositionsOut.circuit` 当时按零删键
+# 铁律（〇b-3）恒发空态过渡一版；本版连键带类型一起删。
+# 🔴 **删得掉的判据是逐版核实过的**：历代客户端 `/positions` 一律解进
+# `PositionsListResponse { holdings }`，**没有任何一版声明过 `circuit` 字段**（2.0.0 那台
+# iPhone 读的是**独立端点** `GET /circuit`，该端点自 V2.2 起 404，与本键无关）。
+# ⛔ 别把这条当成「零删键铁律可以不守」的先例 —— 它守住了，只是核实之后发现
+# 这个键从来没有消费方。
 
 class PositionsOut(BaseModel):
     holdings: List[PositionOut] = Field(default_factory=list)
-    # v1.2-A2 原为今日计划面内嵌熔断状态。**V2.2-⑤-B 起恒发空态**(见 `CircuitStateOut`
-    # docstring 与 `app.py::_retired_circuit_state`),端点不再查任何锁定态。
-    circuit: CircuitStateOut = Field(default_factory=lambda: CircuitStateOut(locked=False))
 
 
 class EntrySuggestionOut(BaseModel):
@@ -1534,7 +1513,7 @@ __all__ = [
     "ProfileOut", "PackOut", "PacksListOut", "EvalWeeklyOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
-    "EntrySuggestionOut", "CircuitEpisodeOut", "CircuitStateOut",
+    "EntrySuggestionOut",
     "PushKindOut", "PushSettingsOut", "SettingsOut", "SettingsProviderOut", "SettingsPushIn", "DeviceRegisterIn",
     "ConfirmationCardOut", "CustomAlertOut", "AlertsListOut", "AlertConditionIn",
     "AlertCreateIn", "AlertUpdateIn", "AlertParseIn", "AlertParseOut",

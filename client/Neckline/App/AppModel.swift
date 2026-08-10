@@ -72,6 +72,30 @@ enum ReviewPage: String, CaseIterable, Identifiable {
         case .reconcile: return "对账"
         }
     }
+
+    /// 🔴 **「这一页答什么」**(V2.3:用户原话「五个页签分不清」的解法)。
+    /// ⚠ 这不是装饰文案 —— **选股钟 / 交易钟的样本域根本不同**,这两句话就是把它们
+    /// 分开的那条线:一个问「选得对不对」(与你买没买无关)、一个问「做得怎么样」
+    /// (只在你真的买了之后存在)。⛔ 别改写成对仗好听但讲不清域的句子。
+    var question: String {
+        switch self {
+        case .daily: return "昨天那批篮子后来怎么样了"
+        case .selectionClock: return "这批票选得对不对 · 样本 = D0 全部 T1/T2,与你买没买无关"
+        case .tradeClock: return "这笔买卖做得怎么样 · 只在你真的买了之后存在"
+        case .cumulative: return "这套选股长期成绩如何"
+        case .reconcile: return "我实际的成交与计划 / 章程对不对得上"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .daily: return "calendar"
+        case .selectionClock: return "scope"
+        case .tradeClock: return "clock.arrow.circlepath"
+        case .cumulative: return "chart.bar.doc.horizontal"
+        case .reconcile: return "doc.text.magnifyingglass"
+        }
+    }
 }
 
 /// 开仓录入草稿(⑩-A **极简录入**:票 + 价 + 量 + 日期;其余由服务端自动关联)。
@@ -184,6 +208,13 @@ final class AppModel {
     var report: ReportSnapshot = .empty(reason: "not_loaded")
     var reportLoading = false
 
+    /// **本机上一次成功刷新的时刻**(V2.3 工具栏「刷新按钮上直接显示上次更新时刻」)。
+    /// ⚠ 这是**客户端**的钟,回答「我上次去问是什么时候」——⛔ **不是** `report.generatedAt`
+    /// (那是服务端出报告的时刻,两者可以差好几个小时:16:35 出的报告,你 21:00 才打开)。
+    /// 两个时刻**刻意不合并**:合并了就分不清「数据旧」和「我很久没刷」。
+    /// `nil` = 本次启动还没成功刷新过,展示层如实留空,⛔ 不拿"现在"冒充。
+    var lastRefreshedAt: Date? = nil
+
     /// 每篮的验证状态(⑧ 三路读法),按需懒加载 —— 报告快照里的卡是 D0 冻结件,
     /// 验证状态是**实时**的,两者不是一回事。
     var basketVerifications: [Int: BasketVerification] = [:]
@@ -195,6 +226,9 @@ final class AppModel {
     // —— 持仓 ——
     var positions: [Position] = []
     var positionsLoading = false
+    /// V2.3 macOS 三区布局:详情栏当前显示的那一笔(`nil` = 还没选)。
+    /// ⚠ 纯导航态,**不参与任何判定**;iOS 上走推入式详情、不读它。
+    var selectedPositionId: Int? = nil
     var loadError: String? = nil
     /// 每笔仓的计划版本(⑩-B),按需懒加载。
     var positionPlans: [Int: [PositionPlan]] = [:]
@@ -253,6 +287,60 @@ final class AppModel {
     // 一遍(同一份数据画两遍就会在两处看到可能不同步的两个版本,同 ② 持仓体检那条)。
     var reviewOverview: ReviewOverview? = nil
     var reviewOverviewLoading = false
+
+    // —— 复盘板块 · 每日页「回看某一天」(V2.3 结 §七 P3-47;K8 §十五 硬需求)——
+    //
+    // 🔴 **复用 `GET /report?date=`,⛔ 不新建「复盘历史」端点去现连 `basket_review_daily`**
+    // (P3-47 原文点名):现连会绕开冻结快照 —— 回看到的复盘就会与**当时那份报告**
+    // 讲不同的话,而「回看当时看到的东西」正是这个功能存在的理由。
+    //
+    // ⚠ **刻意另存一份快照,⛔ 不覆盖 `report`**:`report` 是全 App 的"今天",选股板块
+    // 也在读它;把它换成三天前那份,用户切回选股会看到三天前的篮子却毫不知情。
+    /// `nil` = 看今天(直接读 `report`)。
+    var reviewDailyDate: String? = nil
+    var reviewDailyReport: ReportSnapshot? = nil
+    var reviewDailyLoading = false
+    /// 该日查无报告等诚实空态(服务端 `no_report` 等),⛔ 不弹成通用错误。
+    var reviewDailyError: String? = nil
+
+    /// 每日页当前该读哪一份篮子日报:选了日期就读那一份,没选就读今天。
+    var reviewDailyBasket: BasketDaily {
+        (reviewDailyReport ?? report).basketDaily
+    }
+
+    /// 每日页当前这一份报告的交易日(展示用)。
+    var reviewDailyTradeDate: String {
+        (reviewDailyReport ?? report).tradeDate
+    }
+
+    /// 切到某一天(`nil` = 回到今天)。**只动复盘每日页那一份快照。**
+    func loadReviewDaily(date: String?) async {
+        reviewDailyError = nil
+        guard let date else {
+            reviewDailyDate = nil
+            reviewDailyReport = nil
+            return
+        }
+        reviewDailyDate = date
+        guard let client = clientProvider() else {
+            reviewDailyError = "未配置后端连接"
+            return
+        }
+        reviewDailyLoading = true
+        defer { reviewDailyLoading = false }
+        do {
+            let snap = try await client.fetchReport(date: date)
+            reviewDailyReport = snap
+            // 🔴 **降级快照要如实说**:服务端给了 200 但 `degraded=true`(那天没报告)
+            // 与"拉取失败"是两回事,⛔ 不合并成一句。
+            if snap.degraded {
+                reviewDailyError = "该交易日没有报告快照(\(snap.reason))—— ⛔ 不等于那天没有篮子"
+            }
+        } catch {
+            reviewDailyReport = nil
+            reviewDailyError = "没取到该日报告:\(error.localizedDescription)"
+        }
+    }
     /// 累计页看的是哪一周(`YYYYMMDD`,该周任意一天;`nil` = 本周)。
     /// ⚠ **必须能翻周**:周度校准产物是**周六离线作业**落的,周一到周五看"本周"永远是
     /// 「尚未生成」—— 没有翻周入口 = 用户永远看不到上周那份已经算好的成绩单。
@@ -431,6 +519,9 @@ final class AppModel {
         }
         reportLoading = false
         positionsLoading = false
+        // ⚠ **一路都没连上时不打这个时间戳**:那会让工具栏显示「刚刚更新过」,
+        // 而实际上什么都没拿到 —— 又一次把「没看」讲成「看过了」。
+        if loadError == nil { lastRefreshedAt = Date() }
         // 持仓计划要靠它才能算合并敞口 + 展示计划继承卡,随主刷新一起拉(每仓一次)。
         await loadAllPositionPlans()
         applyQAHooksAfterRefresh()

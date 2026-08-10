@@ -107,9 +107,12 @@ def test_no_circuit_locked_state_anywhere_in_server(needle):
 #
 # 🔴 **两组针脚分开写**,因为它们防的是两件不同的事:
 #   ① `model.circuit` / `circuitReview` / 两条活调用 —— 「机制没删干净」;
-#   ② `CircuitState` / `CircuitEpisode` —— **刻意保留**(服务端 `PositionsOut.circuit`
-#      恒发空态、〇b-3 零删键),所以它们**不在**禁用清单里。⛔ 别顺手把它们也加进来:
-#      那会逼下一个人删掉两个还必须解得出的 DTO。
+#   ② `CircuitState` / `CircuitEpisode` —— **v2.3.0 起也进禁用清单**(两步淘汰第二步
+#      已完成:服务端 `PositionsOut.circuit` 删键 + 客户端删 DTO,**同一版**落地)。
+#      ⚠ V2.2 时它们**刻意保留**过一版,理由是「老客户端装着不换包也解得出」;v2.3.0
+#      逐版核实后确认那条前提在这个键上并不存在 —— 历代客户端 `/positions` 一律解进
+#      `PositionsListResponse { holdings }`,**从没有一版声明过 `circuit`**(2.0.0 那台
+#      iPhone 读的是独立端点 `GET /circuit`,自 V2.2 起 404,与本键无关)。
 _FORBIDDEN_IN_CLIENT = (
     "model.circuit",          # 状态位(横幅 / 灰化都读它)
     "circuitReview",          # 强制复盘解锁弹层 + 它的 modal case
@@ -119,6 +122,8 @@ _FORBIDDEN_IN_CLIENT = (
     "unlockCircuit",          # POST /circuit/unlock 活调用
     "confirmCircuitReview",   # 解锁动作
     "/api/v1/circuit",        # 路径字面量(含 /unlock)
+    "CircuitState",           # v2.3.0 删:DTO 本体(两步淘汰第二步)
+    "CircuitEpisode",         # v2.3.0 删:DTO 本体(两步淘汰第二步)
 )
 
 
@@ -133,14 +138,25 @@ def test_circuit_machinery_is_gone_from_the_client_too(needle):
     )
 
 
-def test_circuit_dtos_are_deliberately_kept_in_the_client():
-    """🔴 **反向锁**(与上一条方向相反,同等重要):`CircuitState` / `CircuitEpisode`
-    两个 DTO **必须还在**。服务端 `PositionsOut.circuit` 本版仍恒发 `locked=false`
-    空态(〇b-3 零删键:用户 iPhone 何时换包不可控),删 DTO 与服务端删键**同排 v2.3**。
-    ⛔ 谁把上面那条守门理解成"把 Circuit 相关的东西全删光",这条会当场拦住他。"""
+def test_circuit_dtos_are_gone_from_the_client_and_the_key_from_the_contract():
+    """🔴 **两步淘汰第二步的机器判据**(v2.3.0):客户端两个 DTO 删干净 **且** 服务端
+    `PositionsOut` 不再声明 `circuit` 键 —— 两件事必须**同一版**落地,只做一半就会出现
+    「服务端还发着一个谁都不解的键」或「客户端解一个永远不来的键」。
+
+    ⚠ 这条**方向与 V2.2 那一版相反**:当时守的是「两个 DTO 必须还在」(零删键铁律
+    〇b-3,怕老客户端解不出)。v2.3.0 逐版核实后确认:历代客户端 `/positions` 一律解进
+    `PositionsListResponse {holdings}`,**没有任何一版声明过 `circuit` 字段**,那条顾虑
+    在这个键上不成立。⛔ 别把它读成「零删键铁律可以不守」—— 铁律守住了,只是核实之后
+    发现这个键根本没有消费方。"""
     models = (_ROOT / "client" / "Models.swift").read_text(encoding="utf-8")
-    assert "struct CircuitState" in models
-    assert "struct CircuitEpisode" in models
+    assert "struct CircuitState" not in models
+    assert "struct CircuitEpisode" not in models
+    schemas = (_ROOT / "neckline" / "api" / "schemas.py").read_text(encoding="utf-8")
+    assert "class CircuitStateOut" not in schemas
+    assert "class CircuitEpisodeOut" not in schemas
+    # `PositionsOut` 里不再有 circuit 字段声明(注释里提它是必要留痕,故只切该类的块)。
+    body = schemas.split("class PositionsOut(BaseModel):", 1)[1].split("\nclass ", 1)[0]
+    assert "circuit" not in body, f"`PositionsOut` 仍声明了 circuit:{body!r}"
 
 
 def test_forced_review_line_is_not_collaterally_deleted():

@@ -50,10 +50,10 @@ struct ReviewWorkbenchView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             // ⚠ 它现在是复盘板块的**第三页**,不再是一个独立板块 → 标题降一级、改名。
-            Text("复盘 · 交割单对账").font(.system(size: 17, weight: .semibold))
+            Text("复盘 · 交割单对账").font(NKFont.title3)
                 .foregroundStyle(NK.textPrimary)
             Text("拖入券商交割单 xlsx,对照当周计划与纪律章程生成违纪清单")
-                .font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                .font(NKFont.callout).foregroundStyle(NK.textSecondary)
         }
     }
 
@@ -67,12 +67,12 @@ struct ReviewWorkbenchView: View {
                 VStack(spacing: 8) {
                     if model.reviewUploading {
                         ProgressView().controlSize(.small)
-                        Text("解析对账中…").font(.system(size: 13, weight: .medium)).foregroundStyle(NK.textSecondary)
+                        Text("解析对账中…").font(NKFont.body).fontWeight(.medium).foregroundStyle(NK.textSecondary)
                     } else {
                         Image(systemName: "tray.and.arrow.down.fill").font(.system(size: 28))
                             .foregroundStyle(isTargeted ? NK.accent : NK.textTertiary)
                         Text("把交割单 .xlsx 拖到这里(可一次拖多份)")
-                            .font(.system(size: 13, weight: .medium)).foregroundStyle(NK.textSecondary)
+                            .font(NKFont.body).fontWeight(.medium).foregroundStyle(NK.textSecondary)
                     }
                 }
             }
@@ -127,16 +127,16 @@ struct ReviewWorkbenchView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(NK.amber)
-                            Text("解析提示 \(all.count) 条").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                            Text("解析提示 \(all.count) 条").font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                             Spacer()
                             Image(systemName: warningsExpanded ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         }
                     }
                     .buttonStyle(.plain)
                     if warningsExpanded {
                         ForEach(all, id: \.self) { w in
-                            Text(w).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                            Text(w).font(NKFont.caption).foregroundStyle(NK.textSecondary)
                         }
                     }
                 }
@@ -165,7 +165,7 @@ struct ReviewWorkbenchView: View {
                     let selected = entry.week == (model.reviewSelectedWeek ?? model.reviewWeeks.first?.week)
                     Button { model.reviewSelectedWeek = entry.week } label: {
                         HStack(spacing: 5) {
-                            Text(entry.week).font(.system(size: 12, weight: .semibold))
+                            Text(entry.week).font(NKFont.callout).fontWeight(.semibold)
                             if entry.result.forcedReview {
                                 Image(systemName: "exclamationmark.circle.fill").font(.system(size: 10))
                             }
@@ -197,7 +197,7 @@ struct ReviewWorkbenchView: View {
                 NKCard {
                     VStack(alignment: .leading, spacing: 6) {
                         NKSectionHeader(title: "复盘材料")
-                        Text(entry.material).font(.system(size: 13)).foregroundStyle(NK.textPrimary)
+                        Text(entry.material).font(NKFont.body).foregroundStyle(NK.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -217,14 +217,14 @@ struct ReviewWorkbenchView: View {
                 if violations.isEmpty {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.seal.fill").foregroundStyle(NK.up)
-                        Text("本周未发现违纪").font(.system(size: 12.5)).foregroundStyle(NK.textSecondary)
+                        Text("本周未发现违纪").font(NKFont.callout).foregroundStyle(NK.textSecondary)
                     }
                 } else {
                     ForEach(Array(violations.enumerated()), id: \.offset) { _, v in
                         HStack(alignment: .top, spacing: 6) {
                             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10))
                                 .foregroundStyle(NK.down).padding(.top, 2)
-                            Text(v).font(.system(size: 12)).foregroundStyle(NK.textPrimary)
+                            Text(v).font(NKFont.callout).foregroundStyle(NK.textPrimary)
                         }
                     }
                 }
@@ -275,9 +275,9 @@ private struct ForcedReviewBanner: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.octagon.fill").font(.system(size: 16, weight: .bold))
             VStack(alignment: .leading, spacing: 3) {
-                Text("触发强制复盘").font(.system(size: 13.5, weight: .bold))
+                Text("触发强制复盘").font(NKFont.body).fontWeight(.bold)
                 if !reason.isEmpty {
-                    Text(reason).font(.system(size: 12)).opacity(0.9)
+                    Text(reason).font(NKFont.callout).opacity(0.9)
                 }
             }
             Spacer()
@@ -299,15 +299,15 @@ private struct CharterVersionCard: View {
         NKCard {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("本周章程").font(.system(size: 13, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                    Text("本周章程").font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                     Spacer()
                     Text(result.strategyVersion.isEmpty ? "未知(旧数据)" : "\(result.strategyVersion)(周初标签)")
-                        .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                 }
                 if result.charterSwitches.isEmpty {
                     if !result.charterSegments.isEmpty {
                         Text("本周未发生章程切换,全周按 \(result.strategyVersion) 判定 \(result.charterSegments.first?.tradeCount ?? 0) 笔")
-                            .font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
+                            .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                 } else {
                     ForEach(result.charterSwitches) { sw in
@@ -315,16 +315,16 @@ private struct CharterVersionCard: View {
                             Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 10.5)).foregroundStyle(NK.amber)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text("\(sw.at) 章程切换 \(sw.fromVersion) → \(sw.toVersion)")
-                                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
+                                    .font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                                 if !sw.note.isEmpty {
-                                    Text(sw.note).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                                    Text(sw.note).font(NKFont.caption).foregroundStyle(NK.textSecondary)
                                 }
                             }
                         }
                     }
                     ForEach(result.charterSegments) { seg in
                         Text("· \(seg.version) 判定 \(seg.tradeCount) 笔(\(seg.start ?? "周初") 起)")
-                            .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                            .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                 }
             }
@@ -361,8 +361,8 @@ private struct ReviewStatsCard: View {
 
     private func stat(_ label: String, _ value: String, tone: NKAxisTone = .neutral) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
-            Text(value).font(.system(size: 15, weight: .semibold).monospacedDigit())
+            Text(label).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+            Text(value).font(NKFont.headline.monospacedDigit())
                 .foregroundStyle(tone == .neutral ? NK.textPrimary : tone.color)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -380,11 +380,11 @@ private struct PlanCheckRow: View {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text(check.name).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
-                            Text(check.tsCode).font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                            Text(check.name).font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
+                            Text(check.tsCode).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         }
                         Text("\(check.tradeDate) · ¥\(String(format: "%.2f", check.price)) × \(check.qty) 股 = ¥\(String(format: "%.0f", check.amount))")
-                            .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                     }
                     Spacer()
                 }
@@ -407,24 +407,24 @@ private struct RoundTripRow: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(trip.name).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
-                        Text(trip.tsCode).font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                        Text(trip.name).font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
+                        Text(trip.tsCode).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                     Text("买入 \(trip.buyDate) · ¥\(String(format: "%.2f", trip.buyPrice)) × \(trip.qty) 股")
-                        .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                     if trip.closed, let sellDate = trip.sellDate, let sellPrice = trip.sellPrice {
                         Text("卖出 \(sellDate) · ¥\(String(format: "%.2f", sellPrice))")
-                            .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                     } else {
-                        Text("仍持仓(本次上传数据范围内未见卖出)").font(.system(size: 11.5)).foregroundStyle(NK.amber)
+                        Text("仍持仓(本次上传数据范围内未见卖出)").font(NKFont.caption).foregroundStyle(NK.amber)
                     }
                 }
                 Spacer()
                 if let pnl = trip.netPnl, let pct = trip.pnlPct {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(NKFmt.signedMoney(pnl)).font(.system(size: 13, weight: .semibold).monospacedDigit())
+                        Text(NKFmt.signedMoney(pnl)).font(NKFont.body.monospacedDigit()).fontWeight(.semibold)
                             .foregroundStyle(pnl >= 0 ? NK.up : NK.down)
-                        Text(NKFmt.signedPct(pct * 100)).font(.system(size: 11).monospacedDigit())
+                        Text(NKFmt.signedPct(pct * 100)).font(NKFont.caption.monospacedDigit())
                             .foregroundStyle(pnl >= 0 ? NK.up : NK.down)
                     }
                 }
@@ -446,10 +446,10 @@ private struct StopDisciplineRow: View {
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        Text(entry.roundTrip.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(NK.textPrimary)
-                        Text(entry.roundTrip.tsCode).font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                        Text(entry.roundTrip.name).font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
+                        Text(entry.roundTrip.tsCode).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
-                    Text(entry.note).font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                    Text(entry.note).font(NKFont.callout).foregroundStyle(NK.textSecondary)
                 }
                 Spacer()
             }

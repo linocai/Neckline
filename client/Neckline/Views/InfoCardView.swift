@@ -64,7 +64,7 @@ struct InfoCardPageView: View {
                 NKCard {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("加载信息卡…").font(.system(size: 12.5)).foregroundStyle(NK.textSecondary)
+                        Text("加载信息卡…").font(NKFont.callout).foregroundStyle(NK.textSecondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
                 }
@@ -91,12 +91,12 @@ struct InfoCardPageView: View {
         VStack(alignment: .leading, spacing: 2) {
             #if os(macOS)
             HStack(spacing: 6) {
-                Text(request.name).font(NKFont.stockName).foregroundStyle(NK.textPrimary)
-                Text(request.code).font(.system(size: 12)).foregroundStyle(NK.textTertiary)
+                Text(request.name).font(NKFont.title3).foregroundStyle(NK.textPrimary)
+                Text(request.code).font(NKFont.callout).foregroundStyle(NK.textTertiary)
             }
             #endif
             Text("交易日 \(model.calendar.displayString(request.tradeDate))")
-                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
         }
     }
 
@@ -113,7 +113,7 @@ struct InfoCardPageView: View {
                     unavailableRow(card.basket.unavailableText ?? "篮子信息暂不可用")
                 } else {
                     HStack(spacing: 6) {
-                        Text(card.basket.name).font(.system(size: 13.5, weight: .semibold))
+                        Text(card.basket.name).font(NKFont.body).fontWeight(.semibold)
                             .foregroundStyle(NK.textPrimary)
                         if let t = card.basket.tier { NKChip(text: "T\(t)") }
                         if card.basket.isPrimary { NKChip(text: "主归属", tone: .good) }
@@ -130,30 +130,30 @@ struct InfoCardPageView: View {
                         if card.basket.roleConflict {
                             NKChip(text: "LLM:\(card.basket.roleLlm ?? "—")", tone: .warn)
                             NKChip(text: "机械:\(card.basket.roleMech ?? "—")", tone: .warn)
-                            Text("两说并存").font(.system(size: 10)).foregroundStyle(NK.amber)
+                            Text("两说并存").font(NKFont.caption).foregroundStyle(NK.amber)
                         } else {
                             NKChip(text: card.basket.roleDisplay)
                         }
                         Spacer()
                     }
                     if !card.basket.roleReason.isEmpty {
-                        Text(card.basket.roleReason).font(.system(size: 11.5))
+                        Text(card.basket.roleReason).font(NKFont.caption)
                             .foregroundStyle(NK.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if !card.basket.peers.isEmpty {
                         Divider().overlay(NK.hairline)
-                        Text("同篮其他成员").font(.system(size: 10.5, weight: .bold))
+                        Text("同篮其他成员").nkLabel()
                             .foregroundStyle(NK.textTertiary)
                         ForEach(card.basket.peers) { p in
                             HStack(spacing: 6) {
-                                Text(p.name).font(.system(size: 12)).foregroundStyle(NK.textPrimary)
-                                Text(p.tsCode).font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                                Text(p.name).font(NKFont.callout).foregroundStyle(NK.textPrimary)
+                                Text(p.tsCode).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                                 Spacer()
-                                Text(p.roleDisplay).font(.system(size: 10.5))
+                                Text(p.roleDisplay).font(NKFont.caption)
                                     .foregroundStyle(p.roleConflict ? NK.amber : NK.textSecondary)
                                 if let rs = p.rsRank {
-                                    Text("RS #\(rs)").font(.system(size: 10.5).monospacedDigit())
+                                    Text("RS #\(rs)").font(NKFont.caption.monospacedDigit())
                                         .foregroundStyle(NK.textTertiary)
                                 }
                             }
@@ -176,17 +176,17 @@ struct InfoCardPageView: View {
                         HStack(alignment: .top, spacing: 6) {
                             NKChip(text: t.label, tone: t.axisTone)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(t.text).font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                                Text(t.text).font(NKFont.caption).foregroundStyle(NK.textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                 if !t.source.isEmpty {
-                                    Text(t.source).font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
+                                    Text(t.source).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                                 }
                             }
                         }
                     }
                     if !card.tagsAbsent.isEmpty {
                         Text("判不了的标注:\(card.tagsAbsent.joined(separator: "、"))(数据缺失,**不等于**没命中)")
-                            .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                            .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                     NKReferenceNote()
                 }
@@ -196,8 +196,8 @@ struct InfoCardPageView: View {
 
     private func metricRow(_ label: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(label).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
-            Text(text).font(.system(size: 12)).foregroundStyle(NK.textPrimary)
+            Text(label).nkLabel().foregroundStyle(NK.textTertiary)
+            Text(text).font(NKFont.callout).foregroundStyle(NK.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -229,7 +229,7 @@ struct InfoCardPageView: View {
                 HStack {
                     NKSectionHeader(title: "RS 线(相对大盘)")
                     Spacer()
-                    Text("基准 \(card.rsBenchmark)").font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                    Text("基准 \(card.rsBenchmark)").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
                 if !card.rsAvailable || card.rsLine.isEmpty {
                     unavailableRow(card.rsUnavailableReason ?? "无数据")
@@ -250,7 +250,7 @@ struct InfoCardPageView: View {
                     NKSectionHeader(title: "行业分歧线")
                     Spacer()
                     if !card.industry.isEmpty {
-                        Text(card.industry).font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                        Text(card.industry).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                 }
                 if !card.industryDivergenceAvailable || card.industryDivergenceLine.isEmpty {
@@ -260,7 +260,7 @@ struct InfoCardPageView: View {
                     // "同一屏里两条线不撞色",不承载额外语义)。
                     IndexLineChartView(points: card.industryDivergenceLine, color: NK.amber)
                 }
-                Text(card.industryDivergenceNote).font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                Text(card.industryDivergenceNote).font(NKFont.caption).foregroundStyle(NK.textTertiary)
             }
         }
     }
@@ -298,8 +298,8 @@ struct InfoCardPageView: View {
 
     private func metric(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
-            Text(value).font(.system(size: 13, weight: .semibold).monospacedDigit()).foregroundStyle(NK.textPrimary)
+            Text(label).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+            Text(value).font(NKFont.body.monospacedDigit()).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -317,14 +317,14 @@ struct InfoCardPageView: View {
                             NKChip(text: flag.sectionLabel, tone: flag.sectionTone, filled: true)
                             VStack(alignment: .leading, spacing: 1) {
                                 HStack(spacing: 5) {
-                                    Text(flag.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(NK.textPrimary)
-                                    Text(flag.level == "strong" ? "强" : "普通").font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                                    Text(flag.label).font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
+                                    Text(flag.level == "strong" ? "强" : "普通").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                                     if flag.evidenceStrength == "constituent" {
-                                        Text("参考").font(.system(size: 9)).foregroundStyle(NK.textTertiary)
+                                        Text("参考").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                                     }
                                 }
                                 if !flag.evidence.isEmpty {
-                                    Text(flag.evidence).font(.system(size: 11)).foregroundStyle(NK.textSecondary)
+                                    Text(flag.evidence).font(NKFont.caption).foregroundStyle(NK.textSecondary)
                                 }
                             }
                         }
@@ -344,12 +344,12 @@ struct InfoCardPageView: View {
                 if !card.news.scanned {
                     unavailableRow(card.news.unavailableReason ?? "本次未扫描")
                 } else if card.news.items.isEmpty {
-                    Text("已扫描,当前无命中 = 确认无消息").font(.system(size: 12)).foregroundStyle(NK.up)
+                    Text("已扫描,当前无命中 = 确认无消息").font(NKFont.callout).foregroundStyle(NK.up)
                 } else {
                     ForEach(card.news.items) { item in
                         HStack(alignment: .top, spacing: 6) {
                             NKChip(text: item.categoryLabel, tone: .bad)
-                            Text(item.summary).font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                            Text(item.summary).font(NKFont.callout).foregroundStyle(NK.textSecondary)
                         }
                     }
                 }
@@ -367,20 +367,20 @@ struct InfoCardPageView: View {
                     NKSectionHeader(title: "龙虎榜")
                     Spacer()
                     Text("近 5 日查到 \(card.topList.lookbackDaysCovered) 天,命中 \(card.topList.lookbackHitDays) 天")
-                        .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
                 if card.topList.onListToday {
                     HStack(spacing: 10) {
                         NKChip(text: "今日上榜", tone: .warn, filled: true)
                         if let net = card.topList.netAmount {
-                            Text("净额 \(NKFmt.signedMoney(net))").font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                            Text("净额 \(NKFmt.signedMoney(net))").font(NKFont.callout).foregroundStyle(NK.textSecondary)
                         }
                         if let rate = card.topList.netRate {
-                            Text("净占比 \(NKFmt.signedPct(rate * 100))").font(.system(size: 12)).foregroundStyle(NK.textSecondary)
+                            Text("净占比 \(NKFmt.signedPct(rate * 100))").font(NKFont.callout).foregroundStyle(NK.textSecondary)
                         }
                     }
                 } else {
-                    Text(card.topList.reason ?? "今日未上榜").font(.system(size: 12)).foregroundStyle(NK.textTertiary)
+                    Text(card.topList.reason ?? "今日未上榜").font(NKFont.callout).foregroundStyle(NK.textTertiary)
                 }
             }
         }
@@ -412,7 +412,7 @@ struct InfoCardPageView: View {
     private func unavailableRow(_ reason: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "info.circle").font(.system(size: 11)).foregroundStyle(NK.textTertiary)
-            Text(reason).font(.system(size: 11.5)).foregroundStyle(NK.textTertiary)
+            Text(reason).font(NKFont.caption).foregroundStyle(NK.textTertiary)
         }
     }
 }
@@ -481,7 +481,7 @@ private struct KLineChartView: View {
     private func legendDot(_ color: Color, _ label: String) -> some View {
         HStack(spacing: 3) {
             Circle().fill(color).frame(width: 6, height: 6)
-            Text(label).font(.system(size: 9.5)).foregroundStyle(NK.textTertiary)
+            Text(label).font(NKFont.caption).foregroundStyle(NK.textTertiary)
         }
     }
 }

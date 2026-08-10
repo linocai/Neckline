@@ -42,7 +42,7 @@ struct PositionPlanSection: View {
                 HStack(spacing: 6) {
                     Image(systemName: "doc.text.below.ecg").font(.system(size: 11))
                     Text(expanded ? "收起持仓计划" : headerTitle)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(NKFont.callout).fontWeight(.medium)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
                 }
             }
@@ -65,7 +65,7 @@ struct PositionPlanSection: View {
             if !plan.available {
                 // **合法结果**(独立买入 / 卡未就绪),行照落 —— ⛔ 不省略整条记录。
                 Text(plan.unavailableText ?? "这笔仓没有可继承的计划内容")
-                    .font(.system(size: 11.5)).foregroundStyle(NK.amber)
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
             } else {
                 if let d = plan.driver, !d.isEmpty {
                     piece("共同驱动", d)
@@ -77,10 +77,10 @@ struct PositionPlanSection: View {
                         plan.exitReferenceClamp)
                 if !plan.risks.isEmpty {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("主要风险").font(.system(size: 10.5, weight: .bold))
+                        Text("主要风险").nkLabel()
                             .foregroundStyle(NK.textTertiary)
                         ForEach(plan.risks, id: \.self) { r in
-                            Text("· \(r)").font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                            Text("· \(r)").font(NKFont.caption).foregroundStyle(NK.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -109,20 +109,20 @@ struct PositionPlanSection: View {
                 }
             )) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("触达离场参考时通知我").font(.system(size: 12))
+                    Text("触达离场参考时通知我").font(NKFont.callout)
                         .foregroundStyle(NK.textPrimary)
                     Text("只影响这一票 · 关掉不会连坐其它持仓")
-                        .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
             }
             .toggleStyle(.switch)
             if !plan.exitReferenceArmed {
                 Text(plan.exitReferenceArmedNote ?? "本票的触达提醒未启用")
-                    .font(.system(size: 10.5)).foregroundStyle(NK.amber)
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text("离场参考是你计划里的参考位,**不是止盈线** —— 纪律仍是回落止盈,是否离场由你判断。")
-                .font(.system(size: 10)).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -130,14 +130,14 @@ struct PositionPlanSection: View {
     @ViewBuilder
     private func refLine(_ title: String, _ value: String?, _ clamp: String) -> some View {
         HStack(spacing: 6) {
-            Text(title).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
+            Text(title).nkLabel().foregroundStyle(NK.textTertiary)
             if let v = value {
-                Text(v).font(.system(size: 12, weight: .medium).monospacedDigit())
+                Text(v).font(NKFont.callout.monospacedDigit()).fontWeight(.medium)
                     .foregroundStyle(NK.textPrimary)
             } else {
                 // ⛔ 不许把 nil 显示成 0 或空白。
                 Text(clamp.isEmpty ? "本次不可用" : "本次不可用(\(clamp))")
-                    .font(.system(size: 11.5)).foregroundStyle(NK.amber)
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
             }
             Spacer()
         }
@@ -145,8 +145,8 @@ struct PositionPlanSection: View {
 
     private func piece(_ label: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(label).font(.system(size: 10.5, weight: .bold)).foregroundStyle(NK.textTertiary)
-            Text(text).font(.system(size: 12)).foregroundStyle(NK.textPrimary)
+            Text(label).nkLabel().foregroundStyle(NK.textTertiary)
+            Text(text).font(NKFont.callout).foregroundStyle(NK.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -185,7 +185,7 @@ struct TradeClockSection: View {
                 HStack(spacing: 6) {
                     Image(systemName: "stopwatch").font(.system(size: 11))
                     Text(expanded ? "收起交易时钟" : headerTitle)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(NKFont.callout).fontWeight(.medium)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10))
                 }
             }
@@ -225,24 +225,24 @@ struct TradeClockSection: View {
                 if c.final == nil {
                     // 「还没结案」与「结案了但八项算不出」必须分得开(服务端 docstring)。
                     Text("还在跟踪中 · 八项结案验证要等全部离场后才有")
-                        .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 } else if let f = c.final {
                     DisclosureGroup("展开结案八项验证(K8 §十四,只读)") {
                         NKJSONTable(value: f)
                     }
-                    .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                 }
                 if c.userNotes.isEmpty {
                     Text("你还没为这笔仓写过主观说明 —— 系统**不会**替你猜(§七 P3-28)")
-                        .font(.system(size: 11)).foregroundStyle(NK.amber)
+                        .font(NKFont.caption).foregroundStyle(NK.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(c.userNotes) { e in
                             HStack(alignment: .top, spacing: 6) {
-                                Text(e.eventDate).font(.system(size: 10).monospaced())
+                                Text(e.eventDate).font(NKFont.monoKey)
                                     .foregroundStyle(NK.textTertiary)
-                                Text(e.userNote ?? "").font(.system(size: 11.5))
+                                Text(e.userNote ?? "").font(NKFont.caption)
                                     .foregroundStyle(NK.textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -252,19 +252,19 @@ struct TradeClockSection: View {
                 Button { model.beginTradeClockNote(positionId: position.id) } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "square.and.pencil").font(.system(size: 11))
-                        Text("补一条主观说明").font(.system(size: 12.5, weight: .semibold))
+                        Text("补一条主观说明").font(NKFont.callout).fontWeight(.semibold)
                     }
                 }
                 .buttonStyle(.plain).foregroundStyle(NK.accent)
             }
         } else if absent {
             Text("这笔仓没有交易时钟(**不是**读取失败):时钟只在 V2.2-④ 之后的实际买入上建立。")
-                .font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("读取交易时钟…").font(.system(size: 11)).foregroundStyle(NK.textTertiary)
+                Text("读取交易时钟…").font(NKFont.caption).foregroundStyle(NK.textTertiary)
             }
         }
     }
@@ -294,27 +294,27 @@ struct TradeClockNoteSheet: View {
                     NKCard {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("补充系统看不到的那部分原因")
-                                .font(.system(size: 13.5, weight: .semibold))
+                                .font(NKFont.body).fontWeight(.semibold)
                                 .foregroundStyle(NK.textPrimary)
                             Text("机器能记的(价格 / 时间 / 触发的条件)它自己会记。这里写的是**只有你知道的那半份**:为什么在这个位置动手、当时在担心什么。⛔ 系统不会替你猜、也不会改写你写的话。")
-                                .font(.system(size: 11.5)).foregroundStyle(NK.textSecondary)
+                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                             TextEditor(text: $text)
-                                .font(.system(size: 13))
+                                .font(NKFont.body)
                                 .frame(minHeight: 140)
                                 .overlay(RoundedRectangle(cornerRadius: NKRadius.field)
                                     .stroke(over ? NK.down : NK.hairline, lineWidth: 1))
                             HStack {
                                 Text("纯追加 · 不改任何既有记录")
-                                    .font(.system(size: 10.5)).foregroundStyle(NK.textTertiary)
+                                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                                 Spacer()
                                 Text("\(text.count)/\(nkTradeNoteMaxChars)")
-                                    .font(.system(size: 10.5).monospacedDigit())
+                                    .font(NKFont.caption.monospacedDigit())
                                     .foregroundStyle(over ? NK.down : NK.textTertiary)
                             }
                             if over {
                                 Text("超过上限了 —— 服务端会拒收(422)。⛔ 系统不会替你截断:截一半还装作收下了,那是把你写的话改掉。")
-                                    .font(.system(size: 11)).foregroundStyle(NK.down)
+                                    .font(NKFont.caption).foregroundStyle(NK.down)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }

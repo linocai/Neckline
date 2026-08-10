@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  body { margin:0; background:#F2F2F5; -webkit-font-smoothing:antialiased; }
+  a { color:#0B6BCB; text-decoration:none; }
+  a:hover { color:#0a5aa8; }
+</style>
+</helmet>
+<div style="font-family:-apple-system,'SF Pro Text','PingFang SC','Helvetica Neue',sans-serif; padding:44px 48px 64px; background:#F2F2F5; min-height:100vh; box-sizing:border-box">
+
+  <div style="max-width:1080px; margin:0 auto">
+
+    <div style="margin-bottom:36px">
+      <div style="font-size:30px; font-weight:700; color:#1D1D1F; letter-spacing:-.5px">Neckline 应用图标</div>
+      <div style="font-size:13px; color:rgba(60,60,67,.55); margin-top:6px; line-height:1.6; max-width:660px">三个方向,同一套语义:颈线 = 一条横着的压力位,价格从下方把它顶穿。<br/><b style="color:#1D1D1F">已定案:A · 红橙底</b> —— 底色用现役令牌 <span style="font-family:ui-monospace,'SF Mono',Menlo,monospace">NK.alertGrad</span>(#E5443B → #E8910A),白线,零新增色。<br/>B / C 保留作对照:它们的 #0E3E6E 与 #0A2E52 <b>是新增色</b>(accent 蓝压暗后的同色相变体)。</div>
+    </div>
+
+    <div style="background:#fff; border:.5px solid rgba(60,60,67,.12); border-radius:16px; padding:22px 26px; margin-bottom:24px; display:flex; gap:26px; align-items:center">
+      <div style="flex:none; display:flex; align-items:flex-end; gap:16px">
+        <div style="display:flex; flex-direction:column; align-items:center; gap:7px">
+          <img src="current-appicon-1024.png" alt="现役 App 图标" style="width:104px; height:104px; display:block; box-shadow:0 6px 16px rgba(0,0,0,.18)" />
+          <div style="font-size:9.5px; color:rgba(60,60,67,.40)">1024</div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:7px">
+          <img src="current-appicon-1024.png" alt="现役 App 图标 32" style="width:32px; height:32px; display:block" />
+          <div style="font-size:9.5px; color:rgba(60,60,67,.40)">32</div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:7px">
+          <img src="current-appicon-1024.png" alt="现役 App 图标 16" style="width:16px; height:16px; display:block" />
+          <div style="font-size:9.5px; color:rgba(60,60,67,.40)">16</div>
+        </div>
+      </div>
+      <div>
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px">
+          <div style="font-size:10.5px; font-weight:700; color:rgba(60,60,67,.55); background:rgba(60,60,67,.08); border-radius:5px; padding:2px 7px">现状</div>
+          <div style="font-size:15px; font-weight:600; color:#1D1D1F">现役 App 图标</div>
+          <div style="font-size:11px; color:rgba(60,60,67,.40); font-family:ui-monospace,'SF Mono',Menlo,monospace">AppIcon.appiconset/icon_1024.png</div>
+        </div>
+        <div style="font-size:12.5px; color:rgba(60,60,67,.65); line-height:1.7">三个方向与它共用的只剩<b>颈线折线</b>这一条(A 换了色相、B 压暗了蓝底、C 连折线都换成了柱子)—— 底色都不再是现役的绿蓝品牌渐变。<br/><b style="color:#E8910A">但它是满幅方角</b>:macOS 不会替你切圆角,Dock 里它会是一整排圆角方块中唯一的硬方块。折线也偏左下、上方留了一大片空。三个方向都把圆角(22.4% 连续曲率)与视觉重心修掉了。</div>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:24px">
+
+      <div style="background:#fff; border:.5px solid rgba(60,60,67,.12); border-radius:16px; padding:24px 24px 20px">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:18px">
+          <div style="font-size:10.5px; font-weight:700; color:#fff; background:#1D1D1F; border-radius:5px; padding:2px 7px">A</div>
+          <div style="font-size:15px; font-weight:600; color:#1D1D1F">突破 · 红橙</div>
+          <div style="font-size:10px; font-weight:600; color:#fff; background:#0FA968; border-radius:4px; padding:2px 6px">已选</div>
+          <div style="font-size:10px; font-weight:600; color:#0FA968; background:rgba(15,169,104,.12); border-radius:4px; padding:2px 6px">零新增色</div>
+        </div>
+        <div style="display:grid; place-items:center; padding:8px 0 20px">
+          <div style="width:200px; height:200px; border-radius:45px; background:linear-gradient(160deg,#E5443B 0%,#E8910A 100%); box-shadow:0 14px 32px rgba(229,68,59,.30), inset 0 1.5px 0 rgba(255,255,255,.35); position:relative; overflow:hidden">
+            <div style="position:absolute; inset:0; background:linear-gradient(180deg,rgba(255,255,255,.16) 0%,rgba(255,255,255,0) 46%)"></div>
+            <svg width="200" height="200" viewBox="0 0 200 200" fill="none" style="position:relative">
+              <path d="M34 118 H166" stroke="#fff" stroke-opacity=".42" stroke-width="7" stroke-linecap="round" stroke-dasharray="0.1 18"/>
+              <path d="M34 138 L62 122 L84 146 L108 118 L132 84 L166 60" stroke="#fff" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="108" cy="118" r="12" fill="#fff"/>
+              <circle cx="108" cy="118" r="18.5" stroke="#E5443B" stroke-width="8"/>
+            </svg>
+          </div>
+        </div>
+        <div style="font-size:12px; color:rgba(60,60,67,.65); line-height:1.6">虚线是颈线,实线是价格路径,交点是突破那一刻。底色 = <span style="font-family:ui-monospace,'SF Mono',Menlo,monospace">NK.alertGrad</span>。<br/><span style="color:#E8910A">一处要知会</span>:这条渐变在 App 内的既有语义是「退潮刹车 / 高危提醒」,当品牌色后,那些红橙横幅的独占性会弱一点 —— 不影响功能,只是提一句。</div>
+        <div style="display:flex; align-items:flex-end; gap:14px; margin-top:18px; padding-top:16px; border-top:.5px solid rgba(60,60,67,.08)">
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px">
+            <div style="width:64px; height:64px; border-radius:14.5px; background:linear-gradient(160deg,#E5443B,#E8910A); position:relative; overflow:hidden">
+              <svg width="64" height="64" viewBox="0 0 200 200" fill="none"><path d="M34 118 H166" stroke="#fff" stroke-opacity=".42" stroke-width="9" stroke-linecap="round" stroke-dasharray="0.1 22"/><path d="M34 138 L62 122 L84 146 L108 118 L132 84 L166 60" stroke="#fff" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/><circle cx="108" cy="118" r="13" fill="#fff"/><circle cx="108" cy="118" r="20" stroke="#E5443B" stroke-width="9"/></svg>
+            </div>
+            <div style="font-size:9.5px; color:rgba(60,60,67,.40)">64</div>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px">
+            <div style="width:32px; height:32px; border-radius:7.2px; background:linear-gradient(160deg,#E5443B,#E8910A); overflow:hidden">
+              <svg width="32" height="32" viewBox="0 0 200 200" fill="none"><path d="M34 138 L62 122 L84 146 L108 118 L132 84 L166 60" stroke="#fff" stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div style="font-size:9.5px; color:rgba(60,60,67,.40)">32</div>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px">
+            <div style="width:16px; height:16px; border-radius:3.6px; background:linear-gradient(160deg,#E5443B,#E8910A); overflow:hidden">
+              <svg width="16" height="16" viewBox="0 0 200 200" fill="none"><path d="M34 138 L84 146 L132 84 L166 60" stroke="#fff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div style="font-size:9.5px; color:rgba(60,60,67,.40)">16</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="background:#fff; border:.5px solid rgba(60,60,67,.12); border-radius:16px; padding:24px 24px 20px">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:18px">
+          <div style="font-size:10.5px; font-weight:700; color:#fff; background:#1D1D1F; border-radius:5px; padding:2px 7px">B</div>
+          <div style="font-size:15px; font-weight:600; color:#1D1D1F">台阶</div>
+          <div style="font-size:10px; font-weight:600; color:#E8910A; background:rgba(232,145,10,.12); border-radius:4px; padding:2px 6px">新增 1 色</div>
+        </div>
+        <div style="display:grid; place-items:center; padding:8px 0 20px">
+          <div style="width:200px; height:200px; border-radius:45px; background:linear-gradient(160deg,#0E3E6E 0%,#0B6BCB 100%); box-shadow:0 14px 32px rgba(11,107,203,.28), inset 0 1.5px 0 rgba(255,255,255,.30); position:relative; overflow:hidden">
+            <div style="position:absolute; inset:0; background:linear-gradient(180deg,rgba(255,255,255,.14) 0%,rgba(255,255,255,0) 46%)"></div>
+            <svg width="200" height="200" viewBox="0 0 200 200" fill="none" style="position:relative">
+              <path d="M36 132 H92" stroke="#fff" stroke-width="15" stroke-linecap="round"/>
+              <path d="M92 132 L112 86" stroke="#16A06A" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M112 86 H164" stroke="#0FA968" stroke-width="15" stroke-linecap="round"/>
+            </svg>
+          </div>
+        </div>
+        <div style="font-size:12px; color:rgba(60,60,67,.65); line-height:1.6">现役 Logo 的精修版:抬高对比、加粗到小尺寸也立得住,突破段染成涨色。</div>
+        <div style="display:flex; align-items:flex-end; gap:14px; margin-top:18px; padding-top:16px; border-top:.5px solid rgba(60,60,67,.08)">
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px">
+            <div style="width:64px; height:64px; border-radius:14.5px; background:linear-gradient(160deg,#0E3E6E,#0B6BCB); overflow:hidden">
+              <svg width="64" height="64" viewBox="0 0 200 200" fill="none"><path d="M36 132 H92" stroke="#fff" stroke-width="18" stroke-linecap="round"/><path d="M92 132 L112 86" stroke="#16A06A" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/><path d="M112 86 H164" stroke="#0FA968" stroke-width="18" stroke-linecap="round"/></svg>
+            </div>
+            <div style="font-size:9.5px; color:rgba(60,60,67,.40)">64</div>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px">
+            <div style="width:32px; height:32px; border-radius:7.2px; background:linear-gradient(160deg,#0E3E6E,#0B6BCB); overflow:hidden">
+              <svg width="32" height="32" viewBox="0 0 200 200" fill="none"><path d="M36 132 H92" stroke="#fff" stroke-width="24" stroke-linecap="round"/><path d="M92 132 L112 86" stroke="#16A06A" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/><path d="M112 86 H164" stroke="#0FA968" stroke-width="24" stroke-linecap="round"/></svg>
+            </div>
+            <div style="font-size:9.5px; color:rgba(60,60,67,.40)">32</div>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px">
+            <div style="width:16px; height:16px; border-radius:3.6px; background:linear-gradient(160deg,#0E3E6E,#0B6BCB); overflow:hidden">
+              <svg width="16" height="16" viewBox="0 0 200 200" fill="none"><path d="M36 134 H90" stroke="#fff" stroke-width="30" stroke-linecap="round"/><path d="M92 134 L114 84" stroke="#16A06A" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/><path d="M114 84 H164" stroke="#0FA968" stroke-width="30" stroke-linecap="round"/></svg>
+            </div>
+            <div style="font-size:9.5px; color:rgba(60,60,67,.40)">16</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="background:#fff; border:.5px solid rgba(60,60,67,.12); border-radius:16px; padding:24px 24px 20px">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:18px">
+          <div style="font-size:10.5px; font-weight:700; color:#fff; background:#1D1D1F; border-radius:5px; padding:2px 7px">C</div>
+          <div style="font-size:15px; font-weight:600; color:#1D1D1F">刻度</div>
+          <div style="font-size:10px; font-weight:600; color:#E8910A; background:rgba(232,145,10,.12); border-radius:4px; padding:2px 6px">新增 1 色</div>
+        </div>
+        <div style="display:grid; place-items:center; padding:8px 0 20px">
+          <div style="width:200px; height:200px; border-radius:45px; background:#0A2E52; box-shadow:0 14px 32px rgba(10,46,82,.32), inset 0 1.5px 0 rgba(255,255,255,.22); position:relative; overflow:hidden">
+            <div style="position:absolute; inset:0; background:linear-gradient(155deg,rgba(22,160,106,.34) 0%,rgba(11,107,203,.10) 52%,rgba(0,0,0,0) 100%)"></div>
+            <svg width="200" height="200" viewBox="0 0 200 200" fill="none" style="position:relative">
+              <rect x="36" y="112" width="128" height="10" rx="5" fill="#fff" fill-opacity=".26"/>
+              <rect x="47" y="128" width="14" height="34" rx="7" fill="#fff" fill-opacity=".34"/>
+              <rect x="76" y="118" width="14" height="44" rx="7" fill="#fff" fill-opacity=".46"/>
+              <rect x="105" y="96" width="14" height="66" rx="7" fill="#0FA968"/>
+              <rect x="134" y="64" width="14" height="98" rx="7" fill="#16A06A"/>
+            </svg>
+          </div>
+        </div>
+        <div style="font-size:12px; color:rgba(60,60,67,.65); line-height:1.6">四根柱子逐级顶穿颈线。深底、不用渐变,在深色 Dock 上更沉得住。</div>
+        <div style="display:flex; align-items:flex-end; gap:14px; margin-top:18px; padding-top:16px; border-top:.5px solid rgba(60,60,67,.08)">
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px">
+            <div style="width:64px; height:64px; border-radius:14.5px; background:#0A2E52; overflow:hidden; position:relative">
+              <div style="position:absolute; inset:0; background:linear-gradient(155deg,rgba(22,160,106,.34),rgba(0,0,0,0) 70%)"></div>
+              <svg width="64" height="64" viewBox="0 0 200 200" fill="none" style="position:relative"><rect x="36" y="112" width="128" height="12" rx="6" fill="#fff" fill-opacity=".26"/><rect x="47" y="128" width="15" height="34" rx="7.5" fill="#fff" fill-opacity=".34"/><rect x="76" y="118" width="15" height="44" rx="7.5" fill="#fff" fill-opacity=".46"/><rect x="105" y="96" width="15" height="66" rx="7.5" fill="#0FA968"/><rect x="134" y="64" width="15" height="98" rx="7.5" fill="#16A06A"/></svg>
+            </div>
+            <div style="font-size:9.5px; color:rgba(60,60,67,.40)">64</div>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px">
+            <div style="width:32px; height:32px; border-radius:7.2px; background:#0A2E52; overflow:hidden">
+              <svg width="32" height="32" viewBox="0 0 200 200" fill="none"><rect x="30" y="108" width="140" height="16" rx="8" fill="#fff" fill-opacity=".30"/><rect x="44" y="126" width="20" height="38" rx="10" fill="#fff" fill-opacity=".40"/><rect x="90" y="94" width="20" height="70" rx="10" fill="#0FA968"/><rect x="136" y="60" width="20" height="104" rx="10" fill="#16A06A"/></svg>
+            </div>
+            <div style="font-size:9.5px; color:rgba(60,60,67,.40)">32</div>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px">
+            <div style="width:16px; height:16px; border-radius:3.6px; background:#0A2E52; overflow:hidden">
+              <svg width="16" height="16" viewBox="0 0 200 200" fill="none"><rect x="26" y="104" width="148" height="22" rx="11" fill="#fff" fill-opacity=".34"/><rect x="40" y="128" width="26" height="38" rx="13" fill="#fff" fill-opacity=".42"/><rect x="132" y="56" width="26" height="110" rx="13" fill="#16A06A"/></svg>
+            </div>
+            <div style="font-size:9.5px; color:rgba(60,60,67,.40)">16</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div style="margin-top:36px; background:#fff; border:.5px solid rgba(60,60,67,.12); border-radius:16px; padding:24px 26px">
+      <div style="font-size:11px; font-weight:700; letter-spacing:.5px; color:rgba(60,60,67,.40); margin-bottom:16px">放进 Dock 看看</div>
+      <div style="border-radius:20px; padding:14px 20px; background:linear-gradient(180deg,rgba(58,58,64,.86),rgba(38,38,44,.90)); box-shadow:inset 0 .5px 0 rgba(255,255,255,.18), 0 10px 26px rgba(0,0,0,.24); display:flex; align-items:flex-end; gap:14px; justify-content:center">
+        <div style="width:52px; height:52px; border-radius:11.8px; background:linear-gradient(160deg,#3B82F6,#1D4ED8)"></div>
+        <div style="width:52px; height:52px; border-radius:11.8px; background:linear-gradient(160deg,#6B7280,#374151)"></div>
+        <img src="current-appicon-1024.png" alt="现役" style="width:56px; height:56px; display:block; box-shadow:0 4px 10px rgba(0,0,0,.28)" />
+        <div style="width:56px; height:56px; border-radius:12.6px; background:linear-gradient(160deg,#E5443B,#E8910A); overflow:hidden; box-shadow:0 4px 10px rgba(0,0,0,.28)">
+          <svg width="56" height="56" viewBox="0 0 200 200" fill="none"><path d="M34 118 H166" stroke="#fff" stroke-opacity=".42" stroke-width="9" stroke-linecap="round" stroke-dasharray="0.1 22"/><path d="M34 138 L62 122 L84 146 L108 118 L132 84 L166 60" stroke="#fff" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/><circle cx="108" cy="118" r="13" fill="#fff"/><circle cx="108" cy="118" r="20" stroke="#E5443B" stroke-width="9"/></svg>
+        </div>
+        <div style="width:56px; height:56px; border-radius:12.6px; background:linear-gradient(160deg,#0E3E6E,#0B6BCB); overflow:hidden; box-shadow:0 4px 10px rgba(0,0,0,.28)">
+          <svg width="56" height="56" viewBox="0 0 200 200" fill="none"><path d="M36 132 H92" stroke="#fff" stroke-width="18" stroke-linecap="round"/><path d="M92 132 L112 86" stroke="#16A06A" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/><path d="M112 86 H164" stroke="#0FA968" stroke-width="18" stroke-linecap="round"/></svg>
+        </div>
+        <div style="width:56px; height:56px; border-radius:12.6px; background:#0A2E52; overflow:hidden; position:relative; box-shadow:0 4px 10px rgba(0,0,0,.28)">
+          <div style="position:absolute; inset:0; background:linear-gradient(155deg,rgba(22,160,106,.34),rgba(0,0,0,0) 70%)"></div>
+          <svg width="56" height="56" viewBox="0 0 200 200" fill="none" style="position:relative"><rect x="36" y="112" width="128" height="12" rx="6" fill="#fff" fill-opacity=".26"/><rect x="47" y="128" width="15" height="34" rx="7.5" fill="#fff" fill-opacity=".34"/><rect x="76" y="118" width="15" height="44" rx="7.5" fill="#fff" fill-opacity=".46"/><rect x="105" y="96" width="15" height="66" rx="7.5" fill="#0FA968"/><rect x="134" y="64" width="15" height="98" rx="7.5" fill="#16A06A"/></svg>
+        </div>
+        <div style="width:52px; height:52px; border-radius:11.8px; background:linear-gradient(160deg,#A78BFA,#6D28D9)"></div>
+        <div style="width:52px; height:52px; border-radius:11.8px; background:linear-gradient(160deg,#E5E7EB,#9CA3AF)"></div>
+      </div>
+      <div style="font-size:11.5px; color:rgba(60,60,67,.55); margin-top:14px; line-height:1.7">左起第三个是现役图标(绿蓝、方角)。<b>A</b> 按你的选择换成了红橙,与现役图标<b>不再共用色相</b> —— 留下的血缘是那条颈线折线;好处是在这排冷色里一眼就找得到,零新增色。<b>B</b> 的色系离现役最近(同为蓝底),折线走法也一致。<b>C</b> 连母题都换了(折线 → 柱子),辨识度最高、离现役最远。</div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1180,&quot;height&quot;:1000}}"></script>
+</body>
+</html>

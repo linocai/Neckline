@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  body { margin:0; background:#fff; -webkit-font-smoothing:antialiased; }
+  a { color:#0B6BCB; text-decoration:none; }
+  a:hover { color:#0a5aa8; }
+  code { font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:.92em; background:rgba(60,60,67,.06); border-radius:4px; padding:1px 5px; }
+</style>
+</helmet>
+<div style="font-family:-apple-system,'SF Pro Text','PingFang SC','Helvetica Neue',sans-serif; background:#fff; color:#1D1D1F">
+  <div style="max-width:880px; margin:0 auto; padding:64px 56px 100px">
+
+    <div style="padding-bottom:30px; border-bottom:2px solid #1D1D1F">
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:18px">
+        <img src="AppIcon.appiconset/icon_128.png" alt="Neckline" style="width:38px; height:38px; display:block" />
+        <div style="font-size:12px; font-weight:700; letter-spacing:1.2px; color:rgba(60,60,67,.45)">NECKLINE · 视觉规范交接</div>
+      </div>
+      <div style="font-size:40px; font-weight:800; letter-spacing:-1px; line-height:1.15">前端视觉升级 · 落地规范</div>
+      <div style="font-size:15px; color:rgba(60,60,67,.60); margin-top:12px; line-height:1.7; max-width:640px">给 SwiftUI 侧的落地口径。⛔ 本文只管<b style="color:#1D1D1F">呈现</b> —— 一个判定、一个阈值、一句披露文案都不改。信息架构(三板块 + 设置沉底)、段名(①②③③b④⑤)、诚实披露纪律全部按现状执行。</div>
+      <div style="font-size:12.5px; color:rgba(60,60,67,.45); margin-top:14px; font-variant-numeric:tabular-nums">2026-08-10 · 对应 <code>client/DesignTokens.swift</code></div>
+    </div>
+
+    <div style="margin-top:48px">
+      <div style="font-size:11px; font-weight:700; letter-spacing:1px; color:rgba(60,60,67,.45); margin-bottom:14px">01 — 这次改了什么</div>
+      <div style="font-size:24px; font-weight:700; letter-spacing:-.4px; margin-bottom:20px">六条决定</div>
+      <div style="display:flex; flex-direction:column; gap:2px">
+        <div style="display:flex; gap:18px; padding:15px 0; border-top:.5px solid rgba(60,60,67,.14)">
+          <div style="width:26px; flex:none; font-size:13px; font-weight:700; color:rgba(60,60,67,.35); font-variant-numeric:tabular-nums">01</div>
+          <div style="width:150px; flex:none; font-size:14.5px; font-weight:600">窗口用满</div>
+          <div style="flex:1; font-size:14px; color:rgba(60,60,67,.70); line-height:1.65">内容不再硬性居中在 900px。macOS 改三区:统一工具栏 / 列表栏 376 固定 / 详情栏自适应。左侧导航栏整个去掉,四个板块进工具栏,设置沉底成右端齿轮。</div>
+        </div>
+        <div style="display:flex; gap:18px; padding:15px 0; border-top:.5px solid rgba(60,60,67,.14)">
+          <div style="width:26px; flex:none; font-size:13px; font-weight:700; color:rgba(60,60,67,.35); font-variant-numeric:tabular-nums">02</div>
+          <div style="width:150px; flex:none; font-size:14.5px; font-weight:600">字阶收口</div>
+          <div style="flex:1; font-size:14px; color:rgba(60,60,67,.70); line-height:1.65">原来散着 9.5 到 34px 十七个字号。收成八档 + 两档数字档,全部走 <code>NKFont</code> 常量,⛔ 视图里不再写裸 <code>.system(size:)</code>。</div>
+        </div>
+        <div style="display:flex; gap:18px; padding:15px 0; border-top:.5px solid rgba(60,60,67,.14)">
+          <div style="width:26px; flex:none; font-size:13px; font-weight:700; color:rgba(60,60,67,.35); font-variant-numeric:tabular-nums">03</div>
+          <div style="width:150px; flex:none; font-size:14.5px; font-weight:600">披露折叠</div>
+          <div style="flex:1; font-size:14px; color:rgba(60,60,67,.70); line-height:1.65">「没看≠没有」「参考、非指令」「⛔ 不是 0 分」这类文案<b style="color:#1D1D1F">一字不改</b>,收进卡片底部的 ⓘ 披露折叠区,正常态只留一行标记。用户裁定。</div>
+        </div>
+        <div style="display:flex; gap:18px; padding:15px 0; border-top:.5px solid rgba(60,60,67,.14)">
+          <div style="width:26px; flex:none; font-size:13px; font-weight:700; color:rgba(60,60,67,.35); font-variant-numeric:tabular-nums">04</div>
+          <div style="width:150px; flex:none; font-size:14.5px; font-weight:600">原始件下沉</div>
+          <div style="flex:1; font-size:14px; color:rgba(60,60,67,.70); line-height:1.65"><code>NKJSONTable</code> 那类等宽键值表不再摊在主界面,收进「审计视图」入口。主界面只留结论 + 少量关键读数(位置关 / 核心关各四项)。</div>
+        </div>
+        <div style="display:flex; gap:18px; padding:15px 0; border-top:.5px solid rgba(60,60,67,.14)">
+          <div style="width:26px; flex:none; font-size:13px; font-weight:700; color:rgba(60,60,67,.35); font-variant-numeric:tabular-nums">05</div>
+          <div style="width:150px; flex:none; font-size:14.5px; font-weight:600">个股是一等对象</div>
+          <div style="flex:1; font-size:14px; color:rgba(60,60,67,.70); line-height:1.65">篮子列表行下面直接列成员;篮子卡里成员是可展开卡,答的是「这只票为什么能进篮子」:进篮理由 + 位置关 / 核心关判定与读数 + 三个参考件 + K7 标注。</div>
+        </div>
+        <div style="display:flex; gap:18px; padding:15px 0; border-top:.5px solid rgba(60,60,67,.14); border-bottom:.5px solid rgba(60,60,67,.14)">
+          <div style="width:26px; flex:none; font-size:13px; font-weight:700; color:rgba(60,60,67,.35); font-variant-numeric:tabular-nums">06</div>
+          <div style="width:150px; flex:none; font-size:14.5px; font-weight:600">弹层退役</div>
+          <div style="flex:1; font-size:14px; color:rgba(60,60,67,.70); line-height:1.65">macOS 上篮子卡从 700×780 的 <code>.sheet</code> 改成右详情栏。iOS 保留 sheet(手机并排放不下),层级关系一致。</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:52px">
+      <div style="font-size:11px; font-weight:700; letter-spacing:1px; color:rgba(60,60,67,.45); margin-bottom:14px">02 — 色</div>
+      <div style="font-size:24px; font-weight:700; letter-spacing:-.4px; margin-bottom:8px">令牌一个没加,一个没改</div>
+      <div style="font-size:14px; color:rgba(60,60,67,.60); line-height:1.7; margin-bottom:22px"><code>DesignTokens.swift</code> 原样使用。唯一的变化是<b style="color:#1D1D1F">品牌标识改用 <code>NK.alertGrad</code></b>(用户选定的红橙),那也是既有令牌 —— 不是新色。</div>
+
+      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:22px">
+        <div><div style="height:60px; border-radius:9px; background:#0FA968; margin-bottom:8px"></div><div style="font-size:12.5px; font-weight:600">NK.up</div><div style="font-size:11.5px; color:rgba(60,60,67,.50); font-variant-numeric:tabular-nums">#0FA968</div><div style="font-size:11px; color:rgba(60,60,67,.45); margin-top:2px">涨 / 满额 / 盈利 / 过</div></div>
+        <div><div style="height:60px; border-radius:9px; background:#E5443B; margin-bottom:8px"></div><div style="font-size:12.5px; font-weight:600">NK.down</div><div style="font-size:11.5px; color:rgba(60,60,67,.50); font-variant-numeric:tabular-nums">#E5443B</div><div style="font-size:11px; color:rgba(60,60,67,.45); margin-top:2px">跌 / 破线 / 刹车 / 否决</div></div>
+        <div><div style="height:60px; border-radius:9px; background:#E8910A; margin-bottom:8px"></div><div style="font-size:12.5px; font-weight:600">NK.amber</div><div style="font-size:11.5px; color:rgba(60,60,67,.50); font-variant-numeric:tabular-nums">#E8910A</div><div style="font-size:11px; color:rgba(60,60,67,.45); margin-top:2px">半额 / 警示 / 降级</div></div>
+        <div><div style="height:60px; border-radius:9px; background:#0B6BCB; margin-bottom:8px"></div><div style="font-size:12.5px; font-weight:600">NK.accent</div><div style="font-size:11.5px; color:rgba(60,60,67,.50); font-variant-numeric:tabular-nums">#0B6BCB</div><div style="font-size:11px; color:rgba(60,60,67,.45); margin-top:2px">交互 / 主按钮 / 选中</div></div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:22px">
+        <div><div style="height:44px; border-radius:9px; background:#1D1D1F; margin-bottom:8px"></div><div style="font-size:12px; font-weight:600">textPrimary</div><div style="font-size:11px; color:rgba(60,60,67,.50); font-variant-numeric:tabular-nums">#1D1D1F</div></div>
+        <div><div style="height:44px; border-radius:9px; background:rgba(60,60,67,.55); margin-bottom:8px"></div><div style="font-size:12px; font-weight:600">textSecondary</div><div style="font-size:11px; color:rgba(60,60,67,.50)">3C3C43 · 55%</div></div>
+        <div><div style="height:44px; border-radius:9px; background:rgba(60,60,67,.40); margin-bottom:8px"></div><div style="font-size:12px; font-weight:600">textTertiary</div><div style="font-size:11px; color:rgba(60,60,67,.50)">3C3C43 · 40%</div></div>
+        <div><div style="height:44px; border-radius:9px; background:rgba(60,60,67,.10); margin-bottom:8px"></div><div style="font-size:12px; font-weight:600">hairline</div><div style="font-size:11px; color:rgba(60,60,67,.50)">3C3C43 · 10%</div></div>
+      </div>
+
+      <div style="padding:18px 20px; border-radius:12px; background:#FAFAFB; border:.5px solid rgba(60,60,67,.12)">
+        <div style="font-size:13px; font-weight:700; margin-bottom:10px">两处要注意</div>
+        <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.7"><b style="color:#1D1D1F">底色改深一档。</b> macOS 画布 <code>NK.pageBg</code> #FBFBFD 与白卡几乎无差,卡片浮不起来。规范改用 <b>#F6F6F8</b> 作画布、白卡 + <code>hairline</code> 描边、⛔ 不加阴影。iOS 沿用 <code>pageBgIOS</code> #F3F4F7 不变。</div>
+        <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.7; margin-top:10px"><b style="color:#E8910A">alertGrad 现在身兼两职。</b> 它既是品牌标识色,又是「退潮刹车 / 高危提醒」的既有语义色。⚠ 后果:那两条红橙横幅的独占性会弱一点。已知代价,用户拍板接受。</div>
+      </div>
+    </div>
+
+    <div style="margin-top:52px">
+      <div style="font-size:11px; font-weight:700; letter-spacing:1px; color:rgba(60,60,67,.45); margin-bottom:14px">03 — 字</div>
+      <div style="font-size:24px; font-weight:700; letter-spacing:-.4px; margin-bottom:8px">八档 + 两档数字档</div>
+      <div style="font-size:14px; color:rgba(60,60,67,.60); line-height:1.7; margin-bottom:22px">⚠ 我给的那几份 mock 里还有少量字号漂移(12.5 / 11.5 之类),落地时一律向下表就近对齐,<b style="color:#1D1D1F">以本表为准</b>。数字一律 <code>.monospacedDigit()</code>。</div>
+
+      <div style="border:.5px solid rgba(60,60,67,.14); border-radius:12px; overflow:hidden">
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; padding:11px 18px; background:#FAFAFB; border-bottom:.5px solid rgba(60,60,67,.12); font-size:11px; font-weight:700; letter-spacing:.5px; color:rgba(60,60,67,.45)">
+          <div>令牌</div><div>样例</div><div style="text-align:right">规格</div>
+        </div>
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; align-items:center; padding:13px 18px; border-bottom:.5px solid rgba(60,60,67,.08)"><div style="font-size:12.5px; font-family:ui-monospace,'SF Mono',Menlo,monospace; color:rgba(60,60,67,.65)">heroNumber</div><div style="font-size:32px; font-weight:600; letter-spacing:-1px; font-variant-numeric:tabular-nums">74.2</div><div style="text-align:right; font-size:12px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums">32 / 600 / 数字</div></div>
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; align-items:center; padding:13px 18px; border-bottom:.5px solid rgba(60,60,67,.08)"><div style="font-size:12.5px; font-family:ui-monospace,'SF Mono',Menlo,monospace; color:rgba(60,60,67,.65)">title1</div><div style="font-size:26px; font-weight:700; letter-spacing:-.4px">固态电池 · 中试线落地</div><div style="text-align:right; font-size:12px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums">26 / 700</div></div>
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; align-items:center; padding:13px 18px; border-bottom:.5px solid rgba(60,60,67,.08)"><div style="font-size:12.5px; font-family:ui-monospace,'SF Mono',Menlo,monospace; color:rgba(60,60,67,.65)">title2</div><div style="font-size:22px; font-weight:700; letter-spacing:-.3px">选股</div><div style="text-align:right; font-size:12px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums">22 / 700</div></div>
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; align-items:center; padding:13px 18px; border-bottom:.5px solid rgba(60,60,67,.08)"><div style="font-size:12.5px; font-family:ui-monospace,'SF Mono',Menlo,monospace; color:rgba(60,60,67,.65)">metric</div><div style="font-size:20px; font-weight:600; letter-spacing:-.3px; font-variant-numeric:tabular-nums">38.2%</div><div style="text-align:right; font-size:12px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums">20 / 600 / 数字</div></div>
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; align-items:center; padding:13px 18px; border-bottom:.5px solid rgba(60,60,67,.08)"><div style="font-size:12.5px; font-family:ui-monospace,'SF Mono',Menlo,monospace; color:rgba(60,60,67,.65)">title3</div><div style="font-size:17px; font-weight:600; letter-spacing:-.2px">③ 今日篮子 2</div><div style="text-align:right; font-size:12px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums">17 / 600</div></div>
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; align-items:center; padding:13px 18px; border-bottom:.5px solid rgba(60,60,67,.08)"><div style="font-size:12.5px; font-family:ui-monospace,'SF Mono',Menlo,monospace; color:rgba(60,60,67,.65)">headline</div><div style="font-size:15px; font-weight:600">情绪与市场语境</div><div style="text-align:right; font-size:12px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums">15 / 600</div></div>
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; align-items:center; padding:13px 18px; border-bottom:.5px solid rgba(60,60,67,.08)"><div style="font-size:12.5px; font-family:ui-monospace,'SF Mono',Menlo,monospace; color:rgba(60,60,67,.65)">body</div><div style="font-size:13px; line-height:1.6">隔膜龙头,本轮硫化物中试线设备招标的直接供应方。</div><div style="text-align:right; font-size:12px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums">13 / 400</div></div>
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; align-items:center; padding:13px 18px; border-bottom:.5px solid rgba(60,60,67,.08)"><div style="font-size:12.5px; font-family:ui-monospace,'SF Mono',Menlo,monospace; color:rgba(60,60,67,.65)">callout</div><div style="font-size:12px; color:rgba(60,60,67,.55)">002812.SZ · 买入 ¥42.30 × 1000</div><div style="text-align:right; font-size:12px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums">12 / 400</div></div>
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; align-items:center; padding:13px 18px; border-bottom:.5px solid rgba(60,60,67,.08)"><div style="font-size:12.5px; font-family:ui-monospace,'SF Mono',Menlo,monospace; color:rgba(60,60,67,.65)">caption</div><div style="font-size:11px; color:rgba(60,60,67,.55)">参考、非指令 · 不进排序、不进哨兵、不改去留、不加分</div><div style="text-align:right; font-size:12px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums">11 / 400</div></div>
+        <div style="display:grid; grid-template-columns:132px 1fr 108px; align-items:center; padding:13px 18px"><div style="font-size:12.5px; font-family:ui-monospace,'SF Mono',Menlo,monospace; color:rgba(60,60,67,.65)">label</div><div style="font-size:10.5px; font-weight:700; letter-spacing:.5px; color:rgba(60,60,67,.45)">六关判定</div><div style="text-align:right; font-size:12px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums">10.5 / 700 / +.5</div></div>
+      </div>
+
+      <div style="margin-top:18px; padding:16px 18px; border-radius:12px; background:#FAFAFB; border:.5px solid rgba(60,60,67,.12); font-size:13px; color:rgba(60,60,67,.70); line-height:1.7"><b style="color:#1D1D1F">9.5px 那一档整个删掉。</b> 原来大量披露文案挂在 9.5,既看不清也压不住信息量。折叠之后它们统一走 <code>caption</code> 11px —— 折叠本身已经完成了降级,不需要再靠缩字号。</div>
+    </div>
+
+    <div style="margin-top:52px">
+      <div style="font-size:11px; font-weight:700; letter-spacing:1px; color:rgba(60,60,67,.45); margin-bottom:14px">04 — 间距与圆角</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px">
+        <div>
+          <div style="font-size:15px; font-weight:600; margin-bottom:12px">圆角</div>
+          <div style="display:flex; flex-direction:column; gap:9px; font-size:13.5px; color:rgba(60,60,67,.70)">
+            <div style="display:flex"><div style="width:140px; flex:none">数据卡 macOS</div><div style="font-weight:600; color:#1D1D1F">12</div><div style="margin-left:10px; font-size:12px; color:rgba(60,60,67,.45)">原 18,桌面密度下太圆</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">数据卡 iOS</div><div style="font-weight:600; color:#1D1D1F">18</div><div style="margin-left:10px; font-size:12px; color:rgba(60,60,67,.45)">不变</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">卡内子块</div><div style="font-weight:600; color:#1D1D1F">9</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">按钮 / 折叠区</div><div style="font-weight:600; color:#1D1D1F">8</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">徽标(方)</div><div style="font-weight:600; color:#1D1D1F">4–5</div><div style="margin-left:10px; font-size:12px; color:rgba(60,60,67,.45)">原来全是胶囊</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">底部玻璃栏 iOS</div><div style="font-weight:600; color:#1D1D1F">26</div><div style="margin-left:10px; font-size:12px; color:rgba(60,60,67,.45)">glassBar,不变</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">sheet 顶</div><div style="font-weight:600; color:#1D1D1F">28</div><div style="margin-left:10px; font-size:12px; color:rgba(60,60,67,.45)">不变</div></div>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:15px; font-weight:600; margin-bottom:12px">间距</div>
+          <div style="display:flex; flex-direction:column; gap:9px; font-size:13.5px; color:rgba(60,60,67,.70)">
+            <div style="display:flex"><div style="width:140px; flex:none">详情区页边距</div><div style="font-weight:600; color:#1D1D1F">22 / 26</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">列表栏页边距</div><div style="font-weight:600; color:#1D1D1F">10 / 16</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">卡内边距</div><div style="font-weight:600; color:#1D1D1F">16 / 18</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">卡间距</div><div style="font-weight:600; color:#1D1D1F">16</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">卡内块间距</div><div style="font-weight:600; color:#1D1D1F">12</div></div>
+            <div style="display:flex"><div style="width:140px; flex:none">列表行间距</div><div style="font-weight:600; color:#1D1D1F">1–2</div><div style="margin-left:10px; font-size:12px; color:rgba(60,60,67,.45)">靠选中态分隔</div></div>
+          </div>
+          <div style="margin-top:16px; font-size:15px; font-weight:600; margin-bottom:12px">分层密度</div>
+          <div style="font-size:13px; color:rgba(60,60,67,.70); line-height:1.65">用户裁定「概览宽松、明细紧凑」:列表栏与概览卡走上面的宽松档;成员读数、六关格子、键值行走紧凑档(行高 ≤ 22)。</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:52px">
+      <div style="font-size:11px; font-weight:700; letter-spacing:1px; color:rgba(60,60,67,.45); margin-bottom:14px">05 — 组件</div>
+      <div style="font-size:24px; font-weight:700; letter-spacing:-.4px; margin-bottom:22px">五个新件的规格</div>
+
+      <div style="display:flex; flex-direction:column; gap:16px">
+
+        <div style="border:.5px solid rgba(60,60,67,.14); border-radius:12px; overflow:hidden">
+          <div style="padding:14px 18px; background:#FAFAFB; border-bottom:.5px solid rgba(60,60,67,.12); display:flex; align-items:baseline; gap:10px">
+            <div style="font-size:15px; font-weight:600">NKDisclosure</div>
+            <div style="font-size:12.5px; color:rgba(60,60,67,.55)">披露折叠</div>
+          </div>
+          <div style="padding:18px">
+            <div style="padding:14px 16px; border-radius:12px; border:.5px solid rgba(60,60,67,.12); margin-bottom:14px">
+              <div style="font-size:13px; color:rgba(60,60,67,.70); margin-bottom:11px">…卡片正文…</div>
+              <div style="display:flex; align-items:center; gap:5px; width:fit-content">
+                <div style="width:13px; height:13px; border-radius:50%; border:1px solid rgba(60,60,67,.30); display:grid; place-items:center; font-size:8.5px; font-weight:700; color:rgba(60,60,67,.55)">i</div>
+                <div style="font-size:11px; color:rgba(60,60,67,.55)">披露 · 1 项按中性分计入</div>
+              </div>
+              <div style="margin-top:8px; padding:10px 12px; border-radius:8px; background:#FAFAFB; border:.5px solid rgba(60,60,67,.08); font-size:11px; color:rgba(60,60,67,.55); line-height:1.6">`*` = 该维今天没算出来、按中性分 0.5 计入(**不是表现好**)</div>
+            </div>
+            <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.7">收起态一行:13px 圆圈 <code>i</code> + 11px 灰字,前缀恒为「披露 · 」,后面一句话说清<b style="color:#1D1D1F">里面有几条、是什么性质</b>。展开区 <code>#FAFAFB</code> 底 + hairline 描边,内容 11px。<br/><b style="color:#E8910A">异常态圈变琥珀</b>(有降级 / 缺数时),正常态灰圈 —— 让用户一眼看出这次的披露要不要点开。</div>
+          </div>
+        </div>
+
+        <div style="border:.5px solid rgba(60,60,67,.14); border-radius:12px; overflow:hidden">
+          <div style="padding:14px 18px; background:#FAFAFB; border-bottom:.5px solid rgba(60,60,67,.12); display:flex; align-items:baseline; gap:10px">
+            <div style="font-size:15px; font-weight:600">NKStopScale</div>
+            <div style="font-size:12.5px; color:rgba(60,60,67,.55)">止损刻度尺</div>
+          </div>
+          <div style="padding:18px">
+            <div style="position:relative; height:44px; margin:0 4px 16px">
+              <div style="position:absolute; left:0; right:0; top:20px; height:5px; border-radius:999px; background:rgba(60,60,67,.07)"></div>
+              <div style="position:absolute; left:11%; right:0; top:20px; height:5px; border-radius:999px; background:linear-gradient(90deg,rgba(15,169,104,.25),rgba(15,169,104,.55))"></div>
+              <div style="position:absolute; left:0; top:14px; width:3px; height:17px; border-radius:2px; background:#E5443B"></div>
+              <div style="position:absolute; left:0; top:0; font-size:10px; font-weight:600; color:#E5443B; font-variant-numeric:tabular-nums">止损 40.19</div>
+              <div style="position:absolute; left:24%; top:15px; width:2px; height:15px; border-radius:2px; background:rgba(60,60,67,.40)"></div>
+              <div style="position:absolute; left:24%; top:0; font-size:10px; color:rgba(60,60,67,.55); font-variant-numeric:tabular-nums; transform:translateX(-50%)">成本 42.30</div>
+              <div style="position:absolute; left:53%; top:11px; width:3px; height:23px; border-radius:2px; background:#0FA968"></div>
+              <div style="position:absolute; left:53%; top:36px; font-size:11px; font-weight:700; color:#0FA968; font-variant-numeric:tabular-nums; transform:translateX(-50%)">现价 44.86</div>
+              <div style="position:absolute; left:78%; top:15px; width:2px; height:15px; border-radius:2px; background:rgba(60,60,67,.30)"></div>
+              <div style="position:absolute; left:78%; top:0; font-size:10px; color:rgba(60,60,67,.40); font-variant-numeric:tabular-nums; transform:translateX(-50%)">峰值 46.90</div>
+            </div>
+            <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.7">四个刻度:<b style="color:#1D1D1F">止损线</b>(红,3px,最高)· <b style="color:#1D1D1F">成本</b>(灰 2px)· <b style="color:#1D1D1F">现价</b>(涨跌色 3px,标签在下方)· <b style="color:#1D1D1F">峰值</b>(灰 2px,有回落止盈才画)。轨道从止损线到右端着涨色浅渐变 = 安全区。<br/>破线时:现价标记落到止损线左侧,整条轨道改红色浅底,卡片描边 1px <code>NK.down</code>。<br/>⚠ 刻度尺只是<b style="color:#1D1D1F">版式</b> —— 位置按价格线性映射,⛔ 不代表任何概率或建议。</div>
+          </div>
+        </div>
+
+        <div style="border:.5px solid rgba(60,60,67,.14); border-radius:12px; overflow:hidden">
+          <div style="padding:14px 18px; background:#FAFAFB; border-bottom:.5px solid rgba(60,60,67,.12); display:flex; align-items:baseline; gap:10px">
+            <div style="font-size:15px; font-weight:600">GateLightBar / GateGrid</div>
+            <div style="font-size:12.5px; color:rgba(60,60,67,.55)">六关</div>
+          </div>
+          <div style="padding:18px">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px">
+              <div style="display:flex; gap:3px; align-items:center">
+                <div style="width:7px; height:7px; border-radius:2px; background:#0FA968; box-shadow:0 0 0 1.5px rgba(15,169,104,.30)"></div>
+                <div style="width:7px; height:7px; border-radius:50%; background:#0FA968"></div>
+                <div style="width:7px; height:7px; border-radius:2px; background:#0FA968; box-shadow:0 0 0 1.5px rgba(15,169,104,.30)"></div>
+                <div style="width:7px; height:7px; border-radius:50%; background:#E8910A"></div>
+                <div style="width:7px; height:7px; border-radius:50%; background:#0FA968"></div>
+                <div style="width:7px; height:7px; border-radius:50%; background:#0FA968"></div>
+              </div>
+              <div style="font-size:11px; color:rgba(60,60,67,.55)">六关 · 核心关降级</div>
+              <div style="width:20px"></div>
+              <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px; flex:1; max-width:330px">
+                <div style="border:1.5px solid rgba(15,169,104,.55); background:rgba(15,169,104,.08); border-radius:9px; padding:7px 6px; text-align:center"><div style="font-size:11px; font-weight:600">市场关 <span style="font-size:8.5px; font-weight:700; color:#fff; background:rgba(60,60,67,.50); border-radius:3px; padding:1px 3px">硬</span></div><div style="font-size:13px; font-weight:600; color:#0FA968; margin-top:2px">过</div></div>
+                <div style="border:.5px solid rgba(60,60,67,.15); border-radius:9px; padding:7px 6px; text-align:center"><div style="font-size:11px; font-weight:600">驱动关</div><div style="font-size:13px; font-weight:600; color:#0FA968; margin-top:2px">过</div></div>
+                <div style="border:.5px solid rgba(232,145,10,.45); background:rgba(232,145,10,.06); border-radius:9px; padding:7px 6px; text-align:center"><div style="font-size:11px; font-weight:600">核心关</div><div style="font-size:13px; font-weight:600; color:#E8910A; margin-top:2px">降级</div></div>
+              </div>
+            </div>
+            <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.7">两种形态,顺序恒为 <code>nkGateOrder</code>(市场 → 驱动 → 板块 → 核心 → 位置 → 证据),⛔ 不按字典序。<br/><b style="color:#1D1D1F">灯条</b>(列表行 / iOS 卡)7px 点:<b>机械关画方角 + 外环</b>、<b>证据关画圆点</b> —— 硬否决与只降级在最小尺寸下也分得开。<br/><b style="color:#1D1D1F">宫格</b>(详情栏,macOS 6 列 / iOS 3×2):机械关实心 1.5px 边框 + 底色 + 「硬」角标,证据关 .5px 描边。<br/>「判不出」= 灰点 / 灰底格 + 文案「判不出」,⛔ 绝不留白、绝不渲染成「过」。<code>available == false</code> 时整条替换成「本份快照没有关口记录(⛔ 不等于六关都过了)」。</div>
+          </div>
+        </div>
+
+        <div style="border:.5px solid rgba(60,60,67,.14); border-radius:12px; overflow:hidden">
+          <div style="padding:14px 18px; background:#FAFAFB; border-bottom:.5px solid rgba(60,60,67,.12); display:flex; align-items:baseline; gap:10px">
+            <div style="font-size:15px; font-weight:600">NKMemberCard</div>
+            <div style="font-size:12.5px; color:rgba(60,60,67,.55)">成员卡 · 为什么这只票能进篮子</div>
+          </div>
+          <div style="padding:18px">
+            <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.75"><b style="color:#1D1D1F">收起行</b>(44px):名称 · 代码 · 角色徽标 · 两枚判定徽标(位置 / 核心)· RS 名次。<b style="color:#E8910A">只有标题行是开关</b> —— 点开后正文、读数、按钮都不能收起卡片,否则选不了文字、也点不了按钮。<br/><b style="color:#1D1D1F">展开区</b>依次:进篮理由(body)→ 板块 / 行业 lift / K4 标签 chips → 位置关卡片 → 核心关卡片 → 三个参考件 → K7 标注件 → 买入补录 / 信息卡。<br/>每张关卡片 = 关名 label + 三态实心徽标 + LLM 理由(body)+ 分隔线 + 四项原始读数(等宽键名 9.5→10 + 数值 12.5/600)。<br/><b style="color:#1D1D1F">三态映射</b>走 <code>nkVerdictLabel</code>:合适 / 勉强 / 不合适 → up / amber / down。判定为 <code>nil</code> 时<b>整块不显示</b>,⛔ 不写「未判定」这种看起来像结论的占位。<br/><b style="color:#E8910A">角色两说并存</b>:<code>roleConflict</code> 时收起行显示「角色两说」琥珀徽标,展开区用一个琥珀底块并列摆出机械判与 LLM 判,⛔ 不挑一个当正确答案。</div>
+          </div>
+        </div>
+
+        <div style="border:.5px solid rgba(60,60,67,.14); border-radius:12px; overflow:hidden">
+          <div style="padding:14px 18px; background:#FAFAFB; border-bottom:.5px solid rgba(60,60,67,.12); display:flex; align-items:baseline; gap:10px">
+            <div style="font-size:15px; font-weight:600">NKToolbar</div>
+            <div style="font-size:12.5px; color:rgba(60,60,67,.55)">macOS 统一工具栏 · 50px</div>
+          </div>
+          <div style="padding:18px">
+            <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.75">左起:红绿灯 → Logo + 字标 → 分隔线 → <b style="color:#1D1D1F">三个板块胶囊</b>(选中 = 白底 + 1px 投影 + .5px 描边)。<br/>右起:齿轮(设置,⛔ 不做成第四个胶囊 —— 它是入口不是板块)← 刷新按钮(<code>NK.accent</code> 实心,<b style="color:#1D1D1F">按钮上直接显示上次更新时刻</b>)← 降级告警(有才出现,琥珀底,可点)← 交易日 · 章程 · 选股包 ← 行情状态(色点 + 标签)。<br/><b style="color:#E5443B">退潮刹车激活时</b>:行情状态胶囊翻成 <code>NK.down</code> 实底白字,并在工具栏下方压一条通栏刹车条(⛔ 不进卡片流)。</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div style="margin-top:52px">
+      <div style="font-size:11px; font-weight:700; letter-spacing:1px; color:rgba(60,60,67,.45); margin-bottom:14px">06 — 布局</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:28px">
+        <div>
+          <div style="font-size:15px; font-weight:600; margin-bottom:12px">macOS</div>
+          <div style="border:.5px solid rgba(60,60,67,.14); border-radius:9px; overflow:hidden; margin-bottom:14px">
+            <div style="height:26px; background:#FAFAFB; border-bottom:.5px solid rgba(60,60,67,.12); display:flex; align-items:center; padding:0 10px; font-size:10px; color:rgba(60,60,67,.50)">工具栏 50</div>
+            <div style="display:flex; height:112px">
+              <div style="width:38%; border-right:.5px solid rgba(60,60,67,.12); background:#FCFCFD; display:grid; place-items:center; font-size:10.5px; color:rgba(60,60,67,.50); text-align:center; line-height:1.5">列表栏<br/>376 固定</div>
+              <div style="flex:1; background:#F6F6F8; display:grid; place-items:center; font-size:10.5px; color:rgba(60,60,67,.50); text-align:center; line-height:1.5">详情栏<br/>自适应</div>
+            </div>
+          </div>
+          <div style="font-size:13px; color:rgba(60,60,67,.70); line-height:1.7">窗口最小 1080×640,目标常用宽度 <b style="color:#1D1D1F">1200(半屏)</b>。<br/>⚠ 内容列必须带 <code>min-height:0</code>,否则纵向 flex 下不收缩、两栏都不滚(踩过)。<br/>每个板块都是同一套「列表 + 详情」骨架:选股 = 篮子 / 持仓 = 仓位 / 复盘 = 五页 / 设置 = 四组。</div>
+        </div>
+        <div>
+          <div style="font-size:15px; font-weight:600; margin-bottom:12px">iOS · 402×874</div>
+          <div style="border:.5px solid rgba(60,60,67,.14); border-radius:9px; overflow:hidden; margin-bottom:14px">
+            <div style="height:22px; background:#FAFAFB; border-bottom:.5px solid rgba(60,60,67,.12); display:flex; align-items:center; padding:0 10px; font-size:10px; color:rgba(60,60,67,.50)">状态栏 + 大标题 58</div>
+            <div style="height:82px; background:#F3F4F7; display:grid; place-items:center; font-size:10.5px; color:rgba(60,60,67,.50)">内容 · 16 页边距</div>
+            <div style="height:34px; background:#FAFAFB; border-top:.5px solid rgba(60,60,67,.12); display:grid; place-items:center; font-size:10px; color:rgba(60,60,67,.50)">玻璃 TabBar 26 · 底部留 40</div>
+          </div>
+          <div style="font-size:13px; color:rgba(60,60,67,.70); line-height:1.7">定位 = <b style="color:#1D1D1F">盘中速查 + 推送落地页</b>。<br/>「左列表 + 右详情」在手机上拆成推入式详情(持仓)与 sheet(篮子卡)。<br/>详情页动作按钮<b style="color:#1D1D1F">吸底</b>,盘中单手够得到。<br/>桌面场景不下放:交割单上传、Provider 注册表、任务路由 —— iOS 只读或不显示。</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:52px">
+      <div style="font-size:11px; font-weight:700; letter-spacing:1px; color:rgba(60,60,67,.45); margin-bottom:14px">07 — 图标</div>
+      <div style="display:flex; gap:28px; align-items:flex-start">
+        <div style="flex:none; display:flex; align-items:flex-end; gap:16px">
+          <div style="text-align:center"><img src="AppIcon.appiconset/icon_128.png" alt="128" style="width:128px; height:128px; display:block; box-shadow:0 6px 18px rgba(0,0,0,.16)" /><div style="font-size:10px; color:rgba(60,60,67,.45); margin-top:7px">128</div></div>
+          <div style="text-align:center"><img src="AppIcon.appiconset/icon_64.png" alt="64" style="width:64px; height:64px; display:block" /><div style="font-size:10px; color:rgba(60,60,67,.45); margin-top:7px">64</div></div>
+          <div style="text-align:center"><img src="AppIcon.appiconset/icon_32.png" alt="32" style="width:32px; height:32px; display:block" /><div style="font-size:10px; color:rgba(60,60,67,.45); margin-top:7px">32</div></div>
+          <div style="text-align:center"><img src="AppIcon.appiconset/icon_16.png" alt="16" style="width:16px; height:16px; display:block" /><div style="font-size:10px; color:rgba(60,60,67,.45); margin-top:7px">16</div></div>
+        </div>
+        <div style="flex:1">
+          <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.75">交付件 <code>AppIcon.appiconset/</code>:七个 PNG + <code>Contents.json</code>,整目录替换即可。<br/>底色 <code>NK.alertGrad</code>,白色颈线折线,突破点 = 白点 + 红橙环。<b style="color:#1D1D1F">圆角 22.37% 连续曲率已烘进 PNG</b> —— 现役图标是满幅方角,在 Dock 里是一排圆角方块中唯一的硬方块。<br/><b style="color:#E8910A">按尺寸分三档</b>,不是同一张图缩放:256 以上完整(虚线颈线 + 突破点);128 保留虚线颈线、去掉突破点;64 及以下换实线颈线 + 简化到四拐点的粗折线,16 只剩折线。<br/>App 内的 <code>NKLogo</code> 同步换成红橙底 + 同一条折线(20px 档用简化版)。</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:52px">
+      <div style="font-size:11px; font-weight:700; letter-spacing:1px; color:rgba(60,60,67,.45); margin-bottom:14px">08 — 落地前要先解决的</div>
+      <div style="font-size:24px; font-weight:700; letter-spacing:-.4px; margin-bottom:8px">两处交施工侧决断</div>
+      <div style="font-size:14px; color:rgba(60,60,67,.60); line-height:1.7; margin-bottom:20px">这两处 mock 里画了、但现有契约支撑不了。<b style="color:#1D1D1F">怎么处理由施工 agent 判断</b> —— 是补上支撑、还是降级成现有契约说得出口的样子,两条路都行,唯一不许的是照原样实现:那会做出一个看起来在工作、其实观察不到任何东西的假成功面。第三条是我会话早期报错的一条 bug,一并撤回留档。</div>
+      <div style="display:flex; flex-direction:column; gap:12px">
+        <div style="border:.5px solid rgba(232,145,10,.35); border-radius:12px; padding:16px 18px; background:rgba(232,145,10,.04)">
+          <div style="display:flex; align-items:center; gap:9px; margin-bottom:7px">
+            <div style="font-size:10.5px; font-weight:700; color:#fff; background:#E8910A; border-radius:4px; padding:2px 7px">本地存储</div>
+            <div style="font-size:14.5px; font-weight:600">「已在券商挂 -5% 条件单」勾选</div>
+          </div>
+          <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.7">现在是 <code>@State private var checkedLocally</code>,刷新即丢 —— 用户当面提的第一个反人类点。mock 里画了勾选时间戳 +「本机记录,换机不同步」。落地需要按 <code>positionId</code> 存 UserDefaults(⛔ 别写进服务端:它记的是「我在券商那边做了什么」,不是系统能核实的事实)。</div>
+        </div>
+        <div style="border:.5px solid rgba(11,107,203,.30); border-radius:12px; padding:16px 18px; background:rgba(11,107,203,.03)">
+          <div style="display:flex; align-items:center; gap:9px; margin-bottom:7px">
+            <div style="font-size:10.5px; font-weight:700; color:#fff; background:#0B6BCB; border-radius:4px; padding:2px 7px">需新增端点</div>
+            <div style="font-size:14.5px; font-weight:600">批算进度(报告未生成时)</div>
+          </div>
+          <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.7"><code>dataFreshness</code> 挂在报告快照上,没报告就没这个字段 —— 此刻 ⑤ 只能显示「本次连数据新鲜度都没查到」。想显示「16:05 批算跑到哪了」,得加一个不依赖报告快照的批算状态端点。<b style="color:#1D1D1F">状态屏里那条流水线是排程表(读 timer 的固定时刻),不是实时状态</b>,别把它实现成进度条。</div>
+        </div>
+        <div style="border:.5px solid rgba(60,60,67,.18); border-radius:12px; padding:16px 18px">
+          <div style="display:flex; align-items:center; gap:9px; margin-bottom:7px">
+            <div style="font-size:10.5px; font-weight:700; color:rgba(60,60,67,.55); background:rgba(60,60,67,.10); border-radius:4px; padding:2px 7px">已核实无需处理</div>
+            <div style="font-size:14.5px; font-weight:600">拼接串里的 Markdown</div>
+          </div>
+          <div style="font-size:13.5px; color:rgba(60,60,67,.70); line-height:1.7">我在会话早期报过一条「界面上会显示裸 <code>**</code>」的 bug,<b style="color:#E5443B">那是我看错了,撤回</b>。<br/>规则本身成立:SwiftUI 只对<b style="color:#1D1D1F">字面量</b> <code>Text</code> 解析 Markdown,<code>+</code> 拼接出来的 <code>String</code> 走另一个重载、不解析。但全仓扫过,<b style="color:#1D1D1F">带 <code>**</code> 的 <code>Text</code> 无一例外都是字面量</b>(<code>PositionsView</code> 合并敞口那句、<code>ReviewView</code> 选股钟那句、<code>DataFreshnessBanner</code>「可能是**没看**而不是**今天真没有**」、<code>BasketScoreCard</code>「(**不是表现好**)」等),现在就是粗体渲染,正确。<br/>而唯一那处拼接串(<code>ReviewView::CalibrationSegmentCard</code>)已经带着注释<b style="color:#1D1D1F">刻意不放 <code>**</code></b> —— 那条坑记在 <code>ReviewView.swift</code>,不在 <code>SharedUI</code>。<br/>⛔ 新增文案时守住这条:拼接串里别放 <code>**</code> 或反引号。⛔ 也别把现有字面量改成 <code>Text</code> 拼接 + <code>.fontWeight(.bold)</code> —— 那才会把粗体弄没。</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:52px; padding-top:26px; border-top:.5px solid rgba(60,60,67,.14)">
+      <div style="font-size:11px; font-weight:700; letter-spacing:1px; color:rgba(60,60,67,.45); margin-bottom:14px">附 — 交付件清单</div>
+      <div style="display:flex; flex-direction:column; gap:8px; font-size:13.5px; color:rgba(60,60,67,.70)">
+        <div style="display:flex; gap:16px"><div style="width:230px; flex:none; font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:12.5px; color:#1D1D1F">Neckline macOS.dc.html</div><div>四板块完整原型,可点</div></div>
+        <div style="display:flex; gap:16px"><div style="width:230px; flex:none; font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:12.5px; color:#1D1D1F">Neckline iOS.dc.html</div><div>八屏(锁屏推送 / 持仓 / 持仓详情 / 选股 / 篮子卡 / 复盘 / 补录开仓 / 设置)</div></div>
+        <div style="display:flex; gap:16px"><div style="width:230px; flex:none; font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:12.5px; color:#1D1D1F">Neckline 状态.dc.html</div><div>退潮刹车激活 / 报告未生成 两个全屏态</div></div>
+        <div style="display:flex; gap:16px"><div style="width:230px; flex:none; font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:12.5px; color:#1D1D1F">Neckline 弹层.dc.html</div><div>补录清仓 / 补充说明七标签 / 新建提醒七项确认卡 / Provider 增改</div></div>
+        <div style="display:flex; gap:16px"><div style="width:230px; flex:none; font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:12.5px; color:#1D1D1F">Neckline 信息卡与对账.dc.html</div><div>信息卡整页 · 对账工作台已上传态</div></div>
+        <div style="display:flex; gap:16px"><div style="width:230px; flex:none; font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:12.5px; color:#1D1D1F">Neckline Icon.dc.html</div><div>三个图标方向 + 现状对照 + Dock 实景</div></div>
+        <div style="display:flex; gap:16px"><div style="width:230px; flex:none; font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:12.5px; color:#1D1D1F">AppIcon.appiconset/</div><div>七个 PNG + Contents.json,整目录替换</div></div>
+        <div style="display:flex; gap:16px"><div style="width:230px; flex:none; font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:12.5px; color:#1D1D1F">current-baseline.dc.html</div><div>升级前的 macOS 选股屏,留作对照</div></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:940,&quot;height&quot;:1100}}"></script>
+</body>
+</html>
