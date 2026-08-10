@@ -124,6 +124,61 @@ struct NKNoteBlock: View {
     }
 }
 
+/// 🔴 **服务端文案里的 `**加粗**` / 反引号 → 真的加粗 / 等宽**(V2.3.1 批 4 新增)。
+///
+/// **`Text(String)` 不解析 Markdown,只有 `Text("字面量")` 解析**(§五 〇d 第 7 条)——
+/// 而服务端有大量文案本来就是按 markdown 写的(周度校准 `disclaimer`、四分类
+/// `suggestion`、安慰剂 `note`、校准段 `unavailableReason` …),V2.3.1 批 4 实拍
+/// 逮到「对照口径:两臂都\*\*不设最高追价上限\*\*」这类**星号原样上屏**。
+///
+/// ⚠ **只做渲染,⛔ 不改一个字**:解析失败(markdown 语法坏了)→ 原样返回纯文本,
+/// 绝不吞内容。⛔ 也别拿它去"清洗"星号 —— 那是删信息,不是渲染。
+/// ⚠ `inlineOnlyPreservingWhitespace` = 只认行内语法,保留原文的换行与空白
+/// (默认策略会把软换行吃掉,把两段并成一段)。
+func nkMarkdown(_ s: String) -> AttributedString {
+    (try? AttributedString(
+        markdown: s,
+        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+        ?? AttributedString(s)
+}
+
+/// **一格读数**(原型 1454–1459 / 1494–1496:`11px .55` 标题 + `20/600 tabular` 数值)。
+/// 与 `NKMetricsGrid`(等宽键值,答"这个数是怎么来的")**刻意不同**:这一档是给人看的
+/// 概览读数,⛔ 别把它俩合并。
+struct NKStatCell: View {
+    let title: String
+    let value: String
+    var tone: NKAxisTone = .neutral
+    /// 数值下面那一行更细的口径(如「2 笔 / 判定 2 笔」)。**缺就不写**,⛔ 不占位。
+    var footnote: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            Text(value).font(NKFont.metric)
+                .foregroundStyle(tone == .neutral ? NK.textPrimary : tone.color)
+            if let f = footnote, !f.isEmpty {
+                Text(f).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// **三列读数网格**(原型 1453 / 1493 行 `repeat(3,1fr); gap:18px 20px`)。
+struct NKStatGrid<Content: View>: View {
+    var columns: Int = 3
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 20,
+                                                     alignment: .topLeading),
+                                 count: columns),
+                  alignment: .leading, spacing: 18) { content }
+    }
+}
+
 struct NKSectionHeader: View {
     let title: String
     var trailing: String? = nil

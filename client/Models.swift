@@ -3597,6 +3597,26 @@ struct ReviewSegment: Codable, Equatable {
     var found: Bool? { detail["found"]?.boolValue }
     /// 该段可直接渲染的一句话(服务端给的空态说明,如「本周尚未上传交割单 —— …」)。
     var note: String? { detail["note"]?.stringValue }
+
+    /// **对账段里那份已落库的周报**(`detail.result`)解成强类型;`found == false` → `nil`。
+    ///
+    /// 🔴 **为什么加它**(V2.3.1 批 4):macOS 对账工作台原来**只认「本次上传的返回值」**
+    /// (`AppModel.reviewWeeks` 唯一写入点是 `uploadReviewFiles`)—— 重启 App 就说
+    /// 「还没有对账数据 · 把每周的券商交割单拖到上面」,而**同一份数据 iPhone 那边
+    /// (累计页对账段)照样看得到**。那是把**「没看」讲成了「没有」**,正是本项目一贯
+    /// 要分开的那两件事。⛔ **零新增网络调用**:这份 JSON 本来就在 `/review/overview`
+    /// 的响应里,这里只是把它解出来。
+    /// ⚠ 解不出(老产物缺键 / 形状变了)→ `nil`,调用方照旧走空态,⛔ 不抛、不半渲染。
+    var weeklyEntry: WeeklyReviewEntry? {
+        guard available, found == true, let result = detail["result"] else { return nil }
+        guard let data = try? JSONEncoder().encode(result),
+              let decoded = try? JSONDecoder().decode(ReviewWeeklyResult.self, from: data)
+        else { return nil }
+        let week = detail["week"]?.stringValue ?? asOf
+        return WeeklyReviewEntry(week: week.isEmpty ? decoded.week : week,
+                                 result: decoded,
+                                 material: detail["material"]?.stringValue ?? "")
+    }
 }
 
 /// 复盘板块「累计」页的聚合读(V2.1-⑤,`GET /review/overview`)。
@@ -3875,6 +3895,86 @@ func nkRegimeDimLabel(_ raw: String) -> String {
     case "t1t2_accuracy": return "T1/T2 命中率"
     case "position_quota": return "仓位额度"
     default: return raw
+    }
+}
+
+/// **行情状态三态码 → 中文**(展示层换算,同 `nkBoardLabel` / `nkRegimeDimLabel` 先例;
+/// 唯一源 = 服务端 `neckline/scan/regime.py::REGIME_LABELS`)。**未识别值原样透传**。
+///
+/// 🔴 **为什么另要一个**:`/market-regime` 会**下发** `regimeLabel`(行情状态条走那条),
+/// 但**选股时钟的 `regimeAtD0` 只有裸码** —— V2.3.0 直接 `Text("D0 行情状态:\(r)")`,
+/// 界面上印出 `trend_continuation`(硬伤 2 的**第九处**,V2.3.1 批 4 实拍逮到)。
+func nkRegimeLabel(_ raw: String) -> String {
+    switch raw {
+    case "trend_continuation": return "趋势延续"
+    case "high_divergence": return "高位分歧"
+    case "rotation_confirmed": return "切换确认"
+    default: return raw
+    }
+}
+
+/// **安慰剂对照判定码 → 中文**(唯一源 `neckline/eval/iteration.py` 的 `EDGE_*`)。
+/// ⚠ `inconclusive` 与 `unavailable` **刻意分开**:一个是「算过了、样本没到结论线」、
+/// 一个是「这一层压根没有对照臂产物」—— ⛔ 别合并成一句「无」。未识别值原样透传。
+func nkPlaceboEdgeLabel(_ raw: String) -> String {
+    switch raw {
+    case "better": return "优于随机"
+    case "worse": return "劣于随机"
+    case "inconclusive": return "样本未到结论线"
+    case "unavailable": return "本层无对照臂"
+    default: return raw
+    }
+}
+
+/// **交易时钟六项的项码 → 中文**(K8 §十六;唯一源 `neckline/eval/iteration.py::TRADE_ITEMS`)。
+///
+/// ⚠ **原型那六格(买点偏离中位 / 持有天数中位 / 止损执行率 …)在契约里不存在** ——
+/// 那是理想化 mock。这里给的是**真的那六项**,⛔ 不为了对上原型的字面去造六个新指标。
+func nkTradeClockItemLabel(_ raw: String) -> String {
+    switch raw {
+    case "thesis_accuracy": return "原始判断正确率"
+    case "plan_consistency": return "入场与预案一致性"
+    case "exit_quality_on_thesis": return "判断成立时的离场质量"
+    case "exit_quality_on_decay": return "上涨效率下降时的离场"
+    case "stop_quality_on_failure": return "判断失效时的止损质量"
+    case "user_pick_vs_all": return "实际选择 vs 全部候选"
+    default: return raw
+    }
+}
+
+/// **画像维度码 → 中文**(唯一源 `neckline/profile/common.py` 顶部的 `DIM_*`)。
+/// ⚠ `entry_style`(几何口径:买入价相对建仓区间)与 `entry_label`(用户自述的七枚标签)
+/// **刻意是两个维度**,⛔ 别合成一句「入场方式」——它们回答的是不同的问题。
+/// **未识别值原样透传**。
+func nkProfileDimensionLabel(_ raw: String) -> String {
+    switch raw {
+    case "theme": return "常买题材"
+    case "role": return "常买角色"
+    case "entry_style": return "入场方式 · 几何口径"
+    case "entry_label": return "入场方式 · 你自述"
+    case "tier": return "常选 Tier"
+    case "missed_role": return "常被忽略的角色"
+    default: return raw
+    }
+}
+
+/// **画像分组值 → 中文**(值的词表**随维度不同**,故必须带着维度一起换算)。
+/// `theme` 的值本来就是中文行业名 → 原样;其余按各自词表;**未识别值原样透传**。
+func nkProfileValueLabel(dimension: String, value: String) -> String {
+    switch dimension {
+    case "role", "missed_role":
+        return value == "independent" ? "独立买入" : nkRoleLabelOrDash(value)
+    case "tier":
+        return value == "independent" ? "独立买入" : "T\(value)"
+    case "entry_style":
+        switch value {
+        case "within_zone": return "区间内"
+        case "chased_above": return "追高"
+        case "below_zone": return "更低吸"
+        case "no_reference": return "无区间可比"
+        default: return value
+        }
+    default: return value
     }
 }
 

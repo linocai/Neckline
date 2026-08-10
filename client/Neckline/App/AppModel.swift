@@ -1182,11 +1182,30 @@ final class AppModel {
     func loadReviewOverview(week: String? = nil) async {
         guard let client = clientProvider() else { return }
         reviewOverviewLoading = true
-        do { reviewOverview = try await client.fetchReviewOverview(week: week ?? reviewWeekAnchor) }
+        do {
+            reviewOverview = try await client.fetchReviewOverview(week: week ?? reviewWeekAnchor)
+            hydrateReviewWeeks()
+        }
         catch let e as APIError {
             if case .noToken = e {} else { showToast(e.errorDescription ?? "累计复盘拉取失败", isError: true) }
         } catch { showToast("累计复盘拉取失败", isError: true) }
         reviewOverviewLoading = false
+    }
+
+    /// 🔴 **把服务端已有的那一周对账并进工作台**(V2.3.1 批 4)。
+    ///
+    /// 原来 `reviewWeeks` 的**唯一**写入点是 `uploadReviewFiles` —— 于是重启 App 后
+    /// macOS 对账工作台一律说「还没有对账数据 · 把交割单拖到上面」,**而同一份数据
+    /// iPhone 那边(累计页对账段)照样看得到**:那是把**「没看」讲成了「没有」**,
+    /// 正是本项目一贯要分开的那两件事。
+    /// ⛔ **零新增网络调用**:`/review/overview` 的对账段本来就带着整份 `result`。
+    /// ⚠ **按周去重、本次上传优先**:刚上传的那一份比服务端上一次落盘的更新。
+    private func hydrateReviewWeeks() {
+        guard let entry = reviewOverview?.reconcile.weeklyEntry else { return }
+        if !reviewWeeks.contains(where: { $0.week == entry.week }) {
+            reviewWeeks = (reviewWeeks + [entry]).sorted { $0.week > $1.week }
+        }
+        if reviewSelectedWeek == nil { reviewSelectedWeek = entry.week }
     }
 
     /// 累计页翻周:`delta = -1` 上一周 / `+1` 下一周 / `nil` 回到本周。
