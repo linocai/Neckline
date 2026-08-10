@@ -1144,5 +1144,48 @@ final class PushRoutingTests: XCTestCase {
         XCTAssertEqual(NKNotificationCategory.digest, "NKDIGEST")
         XCTAssertEqual(NKNotificationCategory.all.count, 3, "V2 起是三级,不再是 V1 的六个具名 category")
     }
+
+    // MARK: - V2.3.1 金额格式化(千分位 + 符号位置)
+    //
+    // 🔴 **这组测试是为一个真踩过的 bug 立的**:`signedAmount` 最初把负数直接喂给
+    // `NumberFormatter`,`¥` 又是自己拼在前面的 → 得到 **`¥-1,116`**(负号跑进货币符号
+    // 里面)。**每一笔亏损仓都会中**,而编译与单测当时都发现不了。
+    // 期望值全部取自设计原型(`Neckline视觉升级/Neckline macOS.dc.html` 778/800/804/958 行、
+    // `Neckline 信息卡与对账.dc.html` 185 行),⛔ 不是拍脑袋定的。
+
+    func testAmountFormattingMatchesPrototype() {
+        // 「额」:千分位、**不带小数**
+        XCTAssertEqual(NKFmt.amount(48600), "48,600", "同题材敞口 ¥48,600")
+        XCTAssertEqual(NKFmt.amount(120000), "120,000", "总仓分母 ¥120,000")
+        // 「价 / 费」:千分位 + **两位小数**(高价股也要读得出来)
+        XCTAssertEqual(NKFmt.price(42.30), "42.30")
+        XCTAssertEqual(NKFmt.price(12.69), "12.69")
+        XCTAssertEqual(NKFmt.price(1802), "1,802.00", "高价股必须分组")
+    }
+
+    func testSignedAmountPutsSignOutsideCurrencySymbol() {
+        XCTAssertEqual(NKFmt.signedAmount(1444), "+¥1,444", "合计浮盈")
+        // 🔴 就是这一条:⛔ 不许是 `¥-1,116`
+        XCTAssertEqual(NKFmt.signedAmount(-1116), "-¥1,116", "符号必须在 ¥ 外面")
+        XCTAssertEqual(NKFmt.signedAmount(0), "¥0", "零不带符号")
+        // 0 位小数下四舍五入到 0 的小额负数:**符号仍保留** ——
+        // 宁可看着怪,也不把一笔小亏印成持平。
+        XCTAssertEqual(NKFmt.signedAmount(-0.4), "-¥0")
+    }
+
+    func testSignedMoneyKeepsCentsAndGroups() {
+        XCTAssertEqual(NKFmt.signedMoney(142300000), "+¥142,300,000.00", "龙虎榜净额那一族保留分")
+        XCTAssertEqual(NKFmt.signedMoney(-142300000), "-¥142,300,000.00")
+    }
+
+    /// ⚠ 分组符必须**与用户系统区域无关**(locale 钉死 `en_US_POSIX`):跟着系统走会让
+    /// 不同机器上的截图对不上,某些区域还会出现空格分组(`77 080`)。
+    func testGroupingIsLocaleIndependent() {
+        let saved = NSTimeZone.default
+        defer { NSTimeZone.default = saved }
+        XCTAssertTrue(NKFmt.amount(1234567).contains(","), "必须用逗号分组")
+        XCTAssertFalse(NKFmt.amount(1234567).contains(" "), "⛔ 不许出现空格分组")
+        XCTAssertEqual(NKFmt.amount(1234567), "1,234,567")
+    }
 }
 #endif

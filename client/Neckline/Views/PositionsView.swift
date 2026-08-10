@@ -270,10 +270,10 @@ struct PositionsView: View {
     /// `Settings.total_capital` 从未下发,客户端写死 12 万 = 造第二份事实源)。
     private var summaryStrip: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            summaryItem("合计成本", "¥" + NKFmt.price(totalCost), NK.textPrimary)
+            summaryItem("合计成本", "¥" + NKFmt.amount(totalCost), NK.textPrimary)
             Rectangle().fill(NK.hairline).frame(width: 0.5, height: 24)
                 .alignmentGuide(.firstTextBaseline) { $0[.top] + 12 }
-            summaryItem("合计浮盈", NKFmt.signedMoney(totalPnl),
+            summaryItem("合计浮盈", NKFmt.signedAmount(totalPnl),
                         totalPnl >= 0 ? NK.up : NK.down)
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 3) {
@@ -359,7 +359,7 @@ struct PositionsView: View {
                     Text("同题材合并敞口 \(merged.count) 组")
                         .font(NKFont.caption).fontWeight(.bold).foregroundStyle(NK.amber)
                     Spacer(minLength: 6)
-                    Text("¥\(NKFmt.price(total))")
+                    Text("¥\(NKFmt.amount(total))")
                         .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
                 }
                 Text("它们一起涨、一起跌,**不是**完全分散的两笔仓位。")
@@ -711,7 +711,7 @@ struct PositionDetailPage: View {
                     VStack(alignment: .trailing, spacing: 5) {
                         Text("¥\(NKFmt.price(position.price))")
                             .font(NKFont.heroNumber).tracking(-1).foregroundStyle(NK.textPrimary)
-                        Text("\(NKFmt.signedPct(position.pnlPct)) · \(NKFmt.signedMoney(position.pnlAmount))")
+                        Text("\(NKFmt.signedPct(position.pnlPct)) · \(NKFmt.signedAmount(position.pnlAmount))")
                             .font(NKFont.headline.monospacedDigit())
                             .foregroundStyle(position.pnlPct >= 0 ? NK.up : NK.down)
                     }

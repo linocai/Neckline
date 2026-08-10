@@ -350,8 +350,8 @@ private struct ReviewStatsCard: View {
                     stat("盈亏比", stats.profitLossRatio.map { String(format: "%.2f", $0) } ?? "∞")
                 }
                 HStack(spacing: 0) {
-                    stat("净盈亏", NKFmt.signedMoney(stats.realizedPnl), tone: stats.realizedPnl >= 0 ? .good : .bad)
-                    stat("实现亏损", NKFmt.signedMoney(stats.realizedLoss), tone: .bad)
+                    stat("净盈亏", NKFmt.signedAmount(stats.realizedPnl), tone: stats.realizedPnl >= 0 ? .good : .bad)
+                    stat("实现亏损", NKFmt.signedAmount(stats.realizedLoss), tone: .bad)
                     stat("费用", String(format: "¥%.0f", stats.totalFees))
                     stat("未平仓", "\(stats.openCount)")
                 }
@@ -422,7 +422,7 @@ private struct RoundTripRow: View {
                 Spacer()
                 if let pnl = trip.netPnl, let pct = trip.pnlPct {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(NKFmt.signedMoney(pnl)).font(NKFont.body.monospacedDigit()).fontWeight(.semibold)
+                        Text(NKFmt.signedAmount(pnl)).font(NKFont.body.monospacedDigit()).fontWeight(.semibold)
                             .foregroundStyle(pnl >= 0 ? NK.up : NK.down)
                         Text(NKFmt.signedPct(pct * 100)).font(NKFont.caption.monospacedDigit())
                             .foregroundStyle(pnl >= 0 ? NK.up : NK.down)

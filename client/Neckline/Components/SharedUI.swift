@@ -508,7 +508,47 @@ struct NKLogo: View {
 // MARK: - 数字格式化
 
 enum NKFmt {
-    static func price(_ v: Double) -> String { String(format: "%.2f", v) }
+    /// 🔴 **千分位分组器**(V2.3.1 补批 1 漏网的全局钉子)。
+    ///
+    /// 原型全篇金额都是分组的(`¥48,600` / `+¥1,444` / `¥120,000`,macOS 原型 800/778/804 行),
+    /// 而 V2.3.0/V2.3.1 落地一路是 `String(format:"%.2f")` → `¥77080.00`。**四位数以上不分组,
+    /// 读数时要一位一位数** —— 这是四个板块共 27 个调用点同时中招的一处系统性偏差。
+    ///
+    /// ⚠ **locale 钉死 `en_US_POSIX`**:分组符必须是逗号且**与用户系统区域无关** ——
+    /// 跟着系统走会让不同机器上的截图对不上,也会让某些区域出现空格分组(`77 080`)。
+    private static func grouped(_ v: Double, decimals: Int) -> String {
+        let f = NumberFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.numberStyle = .decimal
+        f.usesGroupingSeparator = true
+        f.groupingSeparator = ","
+        f.groupingSize = 3
+        f.minimumFractionDigits = decimals
+        f.maximumFractionDigits = decimals
+        return f.string(from: NSNumber(value: v)) ?? String(format: "%.\(decimals)f", v)
+    }
+
+    /// **股价 / 费用**:两位小数 + 千分位(高价股 `¥1,802.00` 也读得出来)。
+    /// ⚠ 与下面的 `amount` **刻意分档**:价要小数(¥42.30 与 ¥42.3 是不同的信息),
+    /// 额不要(合计成本精确到分对决策毫无用处,却把数字拉长一截)。
+    static func price(_ v: Double) -> String { grouped(v, decimals: 2) }
+
+    /// **金额**(合计成本 / 同题材敞口 / 总仓分母):千分位、**不带小数**。
+    /// 原型 800 行 `¥48,600`、804 行 `¥120,000` —— ⛔ 别加回 `.00`。
+    static func amount(_ v: Double) -> String { grouped(v, decimals: 0) }
+
+    /// **带符号金额**(合计浮盈 / 单笔浮盈 / 周复盘净盈亏):千分位、**不带小数**。
+    /// 原型 778 行 `+¥1,444`、856 行 `+¥2,560`、958 行 `-¥1,116`。
+    /// 🔴 **符号必须在 `¥` 外面**(原型 958 行 `-¥1,116`)。⛔ 别把负数直接喂给 formatter ——
+    /// 那会得到 **`¥-1,116`**(负号跑进货币符号里面),而且**每一笔亏损仓都会中**,
+    /// 编译与单测都发现不了。故:取绝对值格式化、符号自己加。
+    /// ⚠ `-0.4` 这类 0 位小数下四舍五入到 0 的值,**符号仍保留**(`-¥0`)——
+    /// 宁可看着怪,也不把一笔小亏印成持平。
+    static func signedAmount(_ v: Double) -> String {
+        let sign = v > 0 ? "+" : (v < 0 ? "-" : "")
+        return sign + "¥" + grouped(abs(v), decimals: 0)
+    }
+
     static func pct(_ v: Double) -> String { String(format: "%.2f%%", v) }
     /// **比例**(0.05)→ 展示百分数("5%");非整百分点保留小数("5.5%"),不四舍五入
     /// 成 "6%" 骗人。章程口径指纹(止损比例 / 回落止盈比例)专用——与 `pct(_:)`
@@ -526,9 +566,13 @@ enum NKFmt {
         let sign = v > 0 ? "+" : ""
         return "\(sign)\(String(format: "%.2f", v))%"
     }
+    /// **带符号金额 · 保留分**(龙虎榜净额那一族:信息卡原型 185 行
+    /// `净额 +¥142,300,000.00` —— 那一屏的原型自己就带两位小数)。
+    /// ⚠ 与 `signedAmount` 的区别**只在小数位**,别混用:持仓侧一律 `signedAmount`。
     static func signedMoney(_ v: Double) -> String {
-        let sign = v > 0 ? "+" : ""
-        return "\(sign)¥\(String(format: "%.2f", v))"
+        // 同 `signedAmount`:符号在 `¥` 外面(⛔ 直接喂负数会得到 `¥-142,300,000.00`)。
+        let sign = v > 0 ? "+" : (v < 0 ? "-" : "")
+        return sign + "¥" + grouped(abs(v), decimals: 2)
     }
     /// 无符号、一位小数(v1.3-⑥「情报」板块的亿/万元量级数字,如大盘量能/板块资金流,
     /// 不需要 `price` 的两位小数精度)。
