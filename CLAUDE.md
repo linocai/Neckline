@@ -352,11 +352,12 @@
   跑隔离进程,别拿常驻服务当小白鼠);② 别用「抬 `MemoryMax`」糊算法成本问题(1400M 都不够);
   ③ **重活别放常驻 `neckline.service`**——它与盘中哨兵同进程,`MemoryHigh` 先节流会让进程陷进回收
   死循环(`memory.events.high` 飙升、`oom_kill=0`)= **卡死不报错**,盘中点一次就拖累哨兵。
-- **生产机性能探针纪律**(2026-07-29 立规,2 vCPU/1.6G 箱经不起折腾):探针/压测**只在收盘后
-  15:00 之后跑,且避开 16:00–17:00**(16:05 日更 + 16:35 报告窗口);一律
-  `systemd-run --scope -p MemoryMax=… -p CPUQuota=…` 隔离单进程、**串行**,别并行开多个、
-  更别拿常驻 `neckline.service` 当小白鼠;跑完 `pgrep -af` 确认无残留 + `reset-failed` + 看 load 回落。
-  **判据:`load > 4` 立即停手**(07-29 探针在**交易时段**把 load 推到 65)。
+- ✅ **「生产机性能探针纪律」已于 2026-08-11 整条删除(用户裁定)** —— 原规定探针/压测只在
+  收盘后 15:00 之后跑、避开 16:00–17:00、串行、`load > 4` 立即停手。**开发期不看时钟**:
+  部署 / 重启 / 跑实测随时可做。用户原话:「**我们开发期就是开发期,投入使用了再要注意开盘
+  时间的问题**」。⛔ **不得以任何形式恢复**(包括"顺手加一句稳妥起见避开开盘");真正投入
+  使用后若要重新设限,那是**新的一次裁定**,不是把这条翻出来。
+  ⚠ 与之无关、**仍然有效**的是收尾卫生:跑完 `pgrep -af` 确认无残留 + `systemctl reset-failed`。
 - **等远端长任务:`systemd-run` 记得 `--no-block`,ssh 一律带 keepalive**(2026-08-05 连踩两次)。
   ① `systemd-run` 跑 `Type=oneshot` **默认阻塞到 ExecStart 退出**,一次 29 分钟的链会把"启动命令"
   变成 29 分钟前台调用;② 几十分钟零输出的 ssh 守候会被 NAT/防火墙静默掐断,**既不报错也不返回**
@@ -399,9 +400,9 @@
   **已失效**,一律改查 `NB_info.md`。
 - 🔴 **nk 上跑瞬态批算/探针,必须用 `User=neckline`+`Group=neckline` 的 systemd 瞬态 service
   (或 `sudo -u neckline`),⛔ 不许用 root 的 `systemd-run --scope`** —— 会把行情文件写成 root 属主、
-  导致服务写入失败(`NB_info.md` 登记)。⚠ **本文「生产机性能探针纪律」那条写的正是 `--scope`,那是
-  hz 时代的写法,在 nk 上照抄就是事故**;要资源隔离就 `systemd-run --unit=… --property=User=neckline
-  --property=MemoryMax=…`(2026-08-09 V2.2 批 1 实操验证)。
+  导致服务写入失败(`NB_info.md` 登记)。⚠ **本仓与归档件里凡出现 `systemd-run --scope` 的写法都是
+  hz 时代的,在 nk 上照抄就是事故**;要资源隔离就 `systemd-run --unit=… --property=User=neckline
+  --property=Group=neckline --property=MemoryMax=…`(2026-08-09 V2.2 批 1 + 2026-08-11 weekly 实测两次验证)。
 - ⚠ **nk 是 4 vCPU / 3.8 GiB,不是「2 vCPU / 1.6G」** —— 本文多处 P0-23 叙事里的那台小箱子是 **hz 老机**;
   搬算术前先认清在说哪台。P0-23 的**方法论**(上产前隔离实测、别抬内存糊算法)仍然全部有效。
 - ⚠ **`systemd-run` 的 `Memory peak` 读数不可轻信**(2026-08-09 实测报 512K,Python 起步都不止):

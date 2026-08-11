@@ -23,11 +23,11 @@
     python scripts/industry_strength.py bootstrap                     # 全年份 Pass1 + Pass2(本地/小库)
     python scripts/industry_strength.py bootstrap --recent-days 250 --end 20260728   # ⑩-D 退路
 
-**🔴 生产机跑法(探针纪律,2026-07-29 立规,逐条守)**:只在**收盘后 15:00 之后**且
-**避开 16:00–17:00**(16:05 日更 + 16:35 报告窗口);一律
-`systemd-run --scope -p MemoryMax=600M -p CPUQuota=100%` 隔离**单进程、串行**,别并行开
-多个、更别拿常驻 `neckline.service` 当小白鼠;每块之间看一次 `free -m` 与 `load`;
-**`load > 4` 立即停手**。跑前 `sqlite3 .backup` + `cp -p` **双备份**(建表 + 批量写 =
+**生产机跑法**:✅ **时段不设限制**(2026-08-11 用户裁定,原「探针纪律」——只在收盘后
+15:00 之后、避开 16:00–17:00、串行、`load > 4` 立即停手 —— **已整条删除**,⛔ 不得恢复)。
+在 nk 上要资源隔离用 `systemd-run --unit=… --property=User=neckline
+--property=Group=neckline --property=MemoryMax=…`(⛔ **不用 root 的 `--scope`**,
+会把行情文件写成 root 属主)。跑前 `sqlite3 .backup` + `cp -p` **双备份**(建表 + 批量写 =
 迁移级动作);跑后 `PRAGMA integrity_check` + 业务表行数逐表比对。
 """
 
