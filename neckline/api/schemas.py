@@ -346,6 +346,26 @@ class DroppedBasketOut(BaseModel):
     gateDetail: Optional[str] = None
 
 
+class OutCandidateOut(BaseModel):
+    """③b 的**另一类行**:V2.3.2-②-B 的**股票级 OUT**(K8 §十-11 四项 = 股票 /
+    主引擎+版本 / 出局关口 / 理由)。
+
+    ⚠ **与 `DroppedBasketOut` 刻意不合并**:那一类是**篮子级**的「档位已满 · 未定档」
+    (`capacity_overflow`)—— K8 §八 的 OUT 适用状态里**没有**"位置满",它不是 OUT;
+    这一类才是 K8 §六 意义上的 OUT。⛔ 客户端两段分开渲染,别合成一张表。
+    `outReason` 与 `droppedBaskets.reason` **共用同一套原因码**(`DROPPED_REASON_LABEL`),
+    ⛔ 不另起第二套词表。**没有 `basketId`** —— 它没进 `baskets` 表。"""
+
+    tsCode: str = ""
+    name: str = ""
+    role: Optional[str] = None
+    engineCode: Optional[str] = None
+    engineVersion: Optional[str] = None
+    outGate: Optional[str] = None
+    outReason: str = ""
+    outDetail: Optional[str] = None
+
+
 class BasketVerificationOut(BaseModel):
     """⑧ 的「当前状态」三路读法(**A 类**)。三个位分别回答不同问题,⛔ 不许合并:
     `state` = 四态之一(verified/partial/unclear/falsified);
@@ -400,9 +420,15 @@ class BasketDailyOut(BaseModel):
     baskets: List[BasketOut] = Field(default_factory=list)
     basketsAvailable: bool = False
     basketsUnavailableReason: Optional[str] = None
+    # ⛔ `droppedBaskets*` 三键**原样保留、一个不删**(契约只增不删):它们现在只装
+    # 「档位已满 · 未定档」那一类(`capacity_overflow`),**不是 OUT**。
     droppedBaskets: List[DroppedBasketOut] = Field(default_factory=list)
     droppedBasketsAvailable: bool = False
     droppedBasketsUnavailableReason: Optional[str] = None
+    # V2.3.2-②-B:③b 的第二类行 —— **股票级 OUT**(K8 §六 候选三态之一)。
+    outCandidates: List[OutCandidateOut] = Field(default_factory=list)
+    outCandidatesAvailable: bool = False
+    outCandidatesUnavailableReason: Optional[str] = None
     reviews: List[BasketReviewOut] = Field(default_factory=list)
     reviewsAvailable: bool = False
     reviewsUnavailableReason: Optional[str] = None
@@ -1507,7 +1533,8 @@ __all__ = [
     "NewsAlertOut", "NewsAlertScanStatusOut", "ReportOut",
     # V2-⑭-B 篮子族
     "BasketMemberOut", "BasketCardOut", "ScoreContribOut", "TierOut", "BasketOut", "BasketsListOut",
-    "DroppedBasketOut", "BasketVerificationOut", "BasketReviewOut", "BasketDailyOut",
+    "DroppedBasketOut", "OutCandidateOut",
+    "BasketVerificationOut", "BasketReviewOut", "BasketDailyOut",
     # V2-⑭-B 计划继承 / 建仓快照 / 画像 / 策略包 / 评价
     "PositionPlanOut", "PositionPlansOut", "PositionPlanCreateIn", "EntrySnapshotOut",
     "ProfileOut", "PackOut", "PacksListOut", "EvalWeeklyOut",

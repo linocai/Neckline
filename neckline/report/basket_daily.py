@@ -256,6 +256,36 @@ class DroppedBasketView:
                 "gate": self.gate, "gateDetail": self.gate_detail}
 
 
+@dataclass(frozen=True)
+class OutCandidateView:
+    """③b 的**另一类行**:V2.3.2-②-B 的**股票级 OUT**(K8 §十-11 四项:股票 /
+    主引擎+版本 / 出局关口 / 理由)。
+
+    ⚠ 与 `DroppedBasketView` **刻意不合并**:那一类是**篮子级**的「档位已满 · 未定档」
+    (`capacity_overflow` —— K8 §八 的 OUT 适用状态里**没有**"位置满",它不是 OUT);
+    这一类才是 K8 §六 意义上的 OUT。两段互不串,⛔ 别为了"少一个列表"合起来。
+    **仍没有 `basketId`**:它没进 `baskets` 表(同 `DroppedBasketView` 的理由)。"""
+
+    ts_code: str
+    name: str = ""
+    role: Optional[str] = None
+    engine_code: Optional[str] = None
+    engine_version: Optional[str] = None
+    out_gate: Optional[str] = None
+    out_reason: str = ""
+    out_detail: Optional[str] = None
+
+    @property
+    def reason_label(self) -> str:
+        return DROPPED_REASON_LABEL.get(self.out_reason, self.out_reason)
+
+    def to_public_dict(self) -> Dict[str, Any]:
+        return {"tsCode": self.ts_code, "name": self.name, "role": self.role,
+                "engineCode": self.engine_code, "engineVersion": self.engine_version,
+                "outGate": self.out_gate, "outReason": self.out_reason,
+                "outDetail": self.out_detail}
+
+
 @dataclass
 class BasketView:
     """③ 一篮。`card=None` 且 `card_unavailable_reason='card_not_ready'` = 篮子在、
@@ -361,6 +391,11 @@ class BasketDaily:
     dropped: List[DroppedBasketView] = field(default_factory=list)
     dropped_available: bool = False
     dropped_unavailable_reason: Optional[str] = None
+    # V2.3.2-②-B:③b 的第二类行(**股票级 OUT**)。三件套照 `dropped*` 既有体例 ——
+    # 空数组只有在 `available=True` 时才等于"今天没有 OUT"。
+    out_candidates: List[OutCandidateView] = field(default_factory=list)
+    out_candidates_available: bool = False
+    out_candidates_unavailable_reason: Optional[str] = None
     reviews: List[BasketReviewView] = field(default_factory=list)
     reviews_available: bool = False
     reviews_unavailable_reason: Optional[str] = None
@@ -393,9 +428,14 @@ class BasketDaily:
             "baskets": [b.to_public_dict() for b in self.baskets],
             "basketsAvailable": self.baskets_available,
             "basketsUnavailableReason": self.baskets_unavailable_reason,
+            # ⛔ `droppedBaskets*` 三键**原样保留、一个不删**(契约只增不删;老客户端
+            # 靠它们渲染 ③b —— 删键 = 老包当场空掉)。
             "droppedBaskets": [d.to_public_dict() for d in self.dropped],
             "droppedBasketsAvailable": self.dropped_available,
             "droppedBasketsUnavailableReason": self.dropped_unavailable_reason,
+            "outCandidates": [o.to_public_dict() for o in self.out_candidates],
+            "outCandidatesAvailable": self.out_candidates_available,
+            "outCandidatesUnavailableReason": self.out_candidates_unavailable_reason,
             "reviews": [r.to_public_dict() for r in self.reviews],
             "reviewsAvailable": self.reviews_available,
             "reviewsUnavailableReason": self.reviews_unavailable_reason,
@@ -412,6 +452,7 @@ def empty_basket_daily(trade_date: date, reason: str) -> BasketDaily:
         trade_date=trade_date,
         baskets_available=False, baskets_unavailable_reason=reason,
         dropped_available=False, dropped_unavailable_reason=reason,
+        out_candidates_available=False, out_candidates_unavailable_reason=reason,
         reviews_available=False, reviews_unavailable_reason=reason,
         notes=[reason],
     )
@@ -737,6 +778,32 @@ def build_basket_daily(
             out.dropped_unavailable_reason = "未定档篮子装配异常(详见服务端日志),本段未取得。"
             out.notes.append(out.dropped_unavailable_reason)
 
+    # ③b 的第二类行:股票级 OUT(V2.3.2-②-B,K8 §六 OUT 是一等状态)
+    # ⚠ **不看 `dropped` 参数**:OUT 清单是 ⑥ 落表的审计账本,读表即可 —— 与「本次
+    # 有没有跑 Tier 引擎」是两个问题。⛔ 但零行≠今天没有 OUT:三件套的 `available`
+    # 只表示"这张表读成功了",读失败照样如实标未取得(§七 P0-39 同一条纪律)。
+    try:
+        from neckline.selection.basket_store import load_out_candidates
+
+        rows = load_out_candidates(trade_date, db_path=db_path)
+        out.out_candidates = [
+            OutCandidateView(
+                ts_code=str(r.get("ts_code") or ""), name=str(r.get("name") or ""),
+                role=r.get("role"), engine_code=r.get("engine_code"),
+                engine_version=r.get("engine_version"), out_gate=r.get("out_gate"),
+                out_reason=str(r.get("out_reason") or ""), out_detail=r.get("out_detail"),
+            )
+            for r in rows
+        ]
+        out.out_candidates_available = True
+    except Exception:  # noqa: BLE001
+        logger.warning("[basket_daily] 股票级 OUT 清单读取异常,该段降级", exc_info=True)
+        out.out_candidates = []
+        out.out_candidates_available = False
+        out.out_candidates_unavailable_reason = (
+            "股票级 OUT 清单读取异常(详见服务端日志),本段未取得。")
+        out.notes.append(out.out_candidates_unavailable_reason)
+
     # ④ 昨日篮子复盘
     try:
         out.reviews, out.review_d0 = load_yesterday_reviews(trade_date, db_path=db_path)
@@ -762,6 +829,8 @@ def basket_daily_from_snapshot(payload: Optional[Mapping[str, Any]]) -> Dict[str
         "basketsUnavailableReason": "该报告生成于篮子日报上线之前,无篮子快照。",
         "droppedBaskets": [], "droppedBasketsAvailable": False,
         "droppedBasketsUnavailableReason": "该报告生成于篮子日报上线之前,无未定档篮子快照。",
+        "outCandidates": [], "outCandidatesAvailable": False,
+        "outCandidatesUnavailableReason": "该报告生成于篮子日报上线之前,无 OUT 清单快照。",
         "reviews": [], "reviewsAvailable": False,
         "reviewsUnavailableReason": "该报告生成于篮子日报上线之前,无复盘快照。",
         "reviewD0": None, "packVersion": None, "notes": [],
@@ -771,6 +840,7 @@ def basket_daily_from_snapshot(payload: Optional[Mapping[str, Any]]) -> Dict[str
 __all__ = [
     "DROPPED_REASON_LABEL",
     "BasketDaily", "BasketReviewView", "BasketView", "DroppedBasketView",
+    "OutCandidateView",
     "basket_daily_from_snapshot", "build_basket_daily", "card_member_to_public_dict",
     "card_to_public_dict", "empty_basket_daily", "load_today_baskets", "load_yesterday_reviews",
 ]

@@ -106,6 +106,7 @@ def render_markdown(
     parts.append(_render_holding_check(holding_k4_check or []))
     parts.append(_render_today_baskets(basket_daily))
     parts.append(_render_dropped_baskets(basket_daily))
+    parts.append(_render_out_candidates(basket_daily))
     parts.append(_render_basket_reviews(basket_daily))
     parts.append(_render_data_freshness(sector_freshness, industry_freshness, scan_freshness,
                                         basket_daily, news_alerts))
@@ -693,6 +694,53 @@ def _render_dropped_baskets(bd: Optional[BasketDaily]) -> str:
     return "\n".join(lines)
 
 
+# —— ③b 的第二类行:股票级 OUT(V2.3.2-②-B,K8 §六 / §十-11)————————————————
+#    ⚠ 与上面那一节**刻意分开两段**:那一节现在只装「档位已满 · 未定档」
+#    (`capacity_overflow` —— K8 §八 的 OUT 适用状态里没有"位置满",它不是 OUT)。
+
+def _render_out_candidates(bd: Optional[BasketDaily]) -> str:
+    lines = ["### ③b-2 今日 OUT 清单(股票级)", ""]
+    if bd is None or not bd.out_candidates_available:
+        reason = ((bd.out_candidates_unavailable_reason if bd is not None else None)
+                  or "本次未取得 OUT 清单。")
+        lines.append(f"⚠ **本段未取得**:{reason}")
+        lines.append("")
+        lines.append("*(「未取得」≠「今日无 OUT」——⛔ 不许把两者读成一句话。)*")
+        lines.append("")
+        return "\n".join(lines)
+    if not bd.out_candidates:
+        lines.append("今日无 OUT 候选(**已算过**:没有票在六道关口上被判出局)。")
+        lines.append("")
+        return "\n".join(lines)
+    by_reason: Dict[str, int] = {}
+    for o in bd.out_candidates:
+        by_reason[o.out_reason] = by_reason.get(o.out_reason, 0) + 1
+    lines.append(f"今日 {len(bd.out_candidates)} 只票判 OUT —— "
+                 f"**各原因码指向不同结论,分开看**:")
+    lines.append("")
+    for reason in sorted(by_reason):
+        label = DROPPED_REASON_LABEL.get(reason, reason)
+        lines.append(f"- **`{reason}`({by_reason[reason]} 只)**:{label}")
+    lines.append("")
+    lines.append("| 股票 | 主引擎 | 出局关口 | 理由 | 原因码 |")
+    lines.append("|---|---|---|---|---|")
+    for o in sorted(bd.out_candidates, key=lambda x: (x.out_reason, x.ts_code)):
+        who = f"{o.name}({o.ts_code})" if o.name else o.ts_code
+        engine = "、".join(x for x in (o.engine_code, o.engine_version) if x) or "—"
+        # ⚠ `out_detail` 可能带**模型写的自由中文**(证据关三值的理由),里面出现一个
+        # `|` 就会把整张表切歪 —— 逐格转义(同上一节那条坑)。
+        lines.append(
+            f"| {_md_cell(who)} | {_md_cell(engine)} | {_md_cell(o.out_gate)} | "
+            f"{_md_cell(o.out_detail)} | `{o.out_reason}` |"
+        )
+    lines.append("")
+    lines.append("*OUT 是 K8 §六 的三个候选状态之一(T1 / T2 / OUT),**不是"
+                 "「这票不行」** —— 它只说明今天它没走完六道关口。⛔ 与上一节的"
+                 "「档位已满 · 未定档」不是一回事:那些篮子关口全过了,只是位置装不下。*")
+    lines.append("")
+    return "\n".join(lines)
+
+
 # —— ④ 昨日篮子复盘(T1/T2 详复盘)——————————————————————————————————————
 #    数据 = ⑨ 落 `basket_review_daily` 的九项机械判 + LLM 解释 + ⑧ 的验证状态。
 #    ⚠ V2.1-②:新数据 `depth` 恒 `full`;历史 `depth='brief'` 的行**照常渲染**
@@ -850,6 +898,7 @@ def _render_data_freshness(
         for key, ok, reason in (
             ("今日篮子", bd.baskets_available, bd.baskets_unavailable_reason),
             ("未定档篮子", bd.dropped_available, bd.dropped_unavailable_reason),
+            ("OUT 清单", bd.out_candidates_available, bd.out_candidates_unavailable_reason),
             ("昨日复盘", bd.reviews_available, bd.reviews_unavailable_reason),
         ):
             if not ok:

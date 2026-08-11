@@ -1320,6 +1320,41 @@ CREATE TABLE IF NOT EXISTS threshold_shadow_evals (
 );
 CREATE INDEX IF NOT EXISTS idx_threshold_shadow_day
   ON threshold_shadow_evals(trade_date, threshold_key);
+
+-- ═══ V2.3.2-②-B OUT 一等状态:D0 **股票级** OUT 清单,**append-only** ═════════
+-- K8 §六 定死候选状态只有三个:T1 / T2 / **OUT**。③b 那一节自此装**两类行**:
+--   · **OUT 行**(关口未过 / 引擎缺席)—— 本表,**股票级**,一票一行;
+--   · **未定档行**(`capacity_overflow`)—— **不是 OUT**(K8 §八 的 OUT 适用状态里
+--     没有"位置满"),维持篮子级,仍走 `basket_dropped_handoff` / `droppedBaskets`。
+-- 🔴 这条分类**直接决定 OUT 研究影子对照的样本域**:溢出篮**不进**影子对照
+--    (它们没被判"不够格",混进去会污染错杀分析)。
+--
+-- **为什么非要一张表**(两条现有路径都取不全 OUT 票):
+--   · `basket_dropped_handoff.dropped_json` **不含成员代码**(且它自称"只是搬运工、
+--     不是审计账本",`INSERT OR REPLACE` 整行覆写);
+--   · `gate_evaluations` 的成员级行**只在篮子跑到关口层时才有** —— `no_active_engine`
+--     / `engine_unresolved` 两种早退候选**零成员行**。
+-- ⛔ 别去改 `basket_dropped_handoff` 的语义来凑合。
+--
+-- 唯一写入实现 `neckline/selection/basket_store.py::save_out_candidates`
+-- (零 UPDATE / 零 DELETE / 零 INSERT OR REPLACE;同日重跑靠 UNIQUE 幂等)。
+CREATE TABLE IF NOT EXISTS out_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  d0_date TEXT NOT NULL,
+  basket_key TEXT NOT NULL,
+  ts_code TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  role TEXT,                         -- leader | core | elastic(LLM 主张,展示用)
+  engine_code TEXT,
+  engine_version TEXT,
+  skeleton_version TEXT,
+  out_gate TEXT,                     -- 卡在哪一关(gates.GATE_* 六码之一;NULL = 非关口原因)
+  out_reason TEXT NOT NULL,          -- ③b 原因码(与 droppedBaskets 同一套码,⛔ 不另起)
+  out_detail TEXT,                   -- 差多少 / 模型理由(原因码串,数值已内嵌)
+  created_at TEXT NOT NULL,
+  UNIQUE(d0_date, basket_key, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_out_candidates_day ON out_candidates(d0_date);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

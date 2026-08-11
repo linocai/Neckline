@@ -80,6 +80,7 @@ struct BasketDailyView: View {
                         // ⛔ 两段一个字没删,只是挪到篮子后面(macOS 侧另有安排,别跟着改)。
                         basketsSection
                         droppedSection
+                        outSection
                         holdingCheckupPointer
                         IntelPackageView(report: model.report)
                     }
@@ -154,6 +155,7 @@ struct BasketDailyView: View {
                 reviewReceiptRow
                 basketsListSection
                 droppedListSection
+                outListSection
             }
         }
     }
@@ -164,7 +166,7 @@ struct BasketDailyView: View {
         if model.board.retreatBrake.active { return "今日计划已作废 · 篮子仍然列出,点得开" }
         // 报告未生成时原型副标题是「今晚 16:35 出计划」(状态原型 231 行)。
         if model.report.degraded { return "今晚 16:35 出计划" }
-        return "今日 \(daily.baskets.count) 篮定档 · \(daily.droppedBaskets.count) 篮未定档"
+        return "今日 \(daily.baskets.count) 篮定档 · \(daily.droppedBaskets.count) 篮未定档 · \(daily.outCandidates.count) 只 OUT"
     }
 
     /// 「今日概览」入口行(选中 = 详情栏显示概览)。**两行**(原型 87–95):
@@ -329,10 +331,20 @@ struct BasketDailyView: View {
         VStack(alignment: .leading, spacing: NKSpace.rowGap) {
             // 原型 233 行:与 T1 / T2 同一种分组头(⛔ 不是 `title3` 那一档 —— 段名在
             // 原型里是**弱标**,17px 会把它抢成页面标题)。
-            NKGroupHeader("③b 今日未定档篮子 \(daily.droppedBaskets.count)")
+            NKGroupHeader("③b 档位已满 · 未定档 \(daily.droppedBaskets.count)")
                 .padding(.horizontal, NKSpace.listHeaderExtraH)
                 .padding(.top, 16).padding(.bottom, 7)
             droppedRows
+        }
+    }
+
+    @ViewBuilder
+    private var outListSection: some View {
+        VStack(alignment: .leading, spacing: NKSpace.rowGap) {
+            NKGroupHeader("③b-2 今日 OUT \(daily.outCandidates.count)")
+                .padding(.horizontal, NKSpace.listHeaderExtraH)
+                .padding(.top, 16).padding(.bottom, 7)
+            outRows
         }
     }
     #endif
@@ -758,12 +770,43 @@ struct BasketDailyView: View {
     }
 
     // MARK: - ③b 未定档篮子(**零溢出时这一节仍在**)
+    //
+    // 🔴 V2.3.2-②-A:③b 自此装**两类行,⛔ 不许合并**——
+    //   · 本节 = **未定档**(`capacity_overflow`):关口全过了、只是位置装不下。
+    //     **它不是 OUT**(K8 §八 的 OUT 适用状态里没有"位置满")。
+    //   · 下一节 = **OUT**(股票级):在六道关口上被判出局的票。
+    // 两者混成一张表,用户就分不清"今天机会太多"和"这票没过关"了。
 
     @ViewBuilder
     private var droppedSection: some View {
         VStack(alignment: .leading, spacing: NKSpace.blockGap) {
-            NKSectionHeader(title: "③b 今日未定档篮子 \(daily.droppedBaskets.count)")
+            NKSectionHeader(title: "③b 档位已满 · 未定档 \(daily.droppedBaskets.count)")
             droppedRows
+        }
+    }
+
+    // MARK: - ③b-2 今日 OUT 清单(股票级;V2.3.2-②-B)
+
+    @ViewBuilder
+    private var outSection: some View {
+        VStack(alignment: .leading, spacing: NKSpace.blockGap) {
+            NKSectionHeader(title: "③b-2 今日 OUT \(daily.outCandidates.count)")
+            outRows
+        }
+    }
+
+    @ViewBuilder
+    private var outRows: some View {
+        if !daily.outCandidatesAvailable {
+            unavailableRow(title: "本次没跑 OUT 清单",
+                           detail: daily.outCandidatesUnavailableReason.map { "原因:\($0)" }
+                               ?? "这一段本次未取到(不是「今天没有 OUT」)")
+        } else if daily.outCandidates.isEmpty {
+            unavailableRow(title: "算过了 · 今日无 OUT 候选", detail: nil, tone: .neutral)
+        } else {
+            ForEach(daily.outCandidates) { o in
+                OutCandidateRow(item: o)
+            }
         }
     }
 
@@ -1199,10 +1242,71 @@ private struct DroppedBasketRow: View {
     private var droppedSubline: String? {
         var parts: [String] = []
         if let g = dropped.gateLabel {
-            let kind = dropped.gateKind.map { "(\($0.label))" } ?? ""
+            // 🔴 同 `OutCandidateRow` 那条:走 `nkGateEnforcementNote`,⛔ 不用
+            // `dropped.gateKind.label` —— 市场关 / 板块关的 `*_unfit` 印成「硬否决」是说反。
+            let kind = nkGateEnforcementNote(gate: dropped.gate, reason: dropped.reason)
+                .map { "(\($0))" } ?? ""
             parts.append("卡在 \(g)\(kind)")
         }
         if let d = dropped.reasonDetail, !d.isEmpty { parts.append(d) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// ③b-2 的一行:**股票级 OUT**(V2.3.2-②-B;K8 §十-11 四项 = 股票 / 主引擎+版本 /
+/// 出局关口 / 理由)。
+///
+/// ⚠ **刻意分两行**(CLAUDE.md 402pt 那条坑):iPhone 上「名称+代码 + 角色 + 引擎 +
+/// 关口 + 原因」挤一行会把名称压成两行、把中文徽标压成竖排单字。首行只放
+/// **票 + 出局结论**,其余全部收进次行。
+private struct OutCandidateRow: View {
+    let item: OutCandidate
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(item.display).font(NKFont.callout)
+                    .foregroundStyle(NK.textSecondary)
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 6)
+                // 🔴 `bad` = **系统自己缺席**(引擎没跑 / 归属解析失败),不是市场结论。
+                if item.reasonTone == .bad {
+                    NKChip(text: "系统缺席", tone: .bad, filled: true)
+                }
+                Text(item.reasonHeadline).font(NKFont.caption).fontWeight(.semibold)
+                    .foregroundStyle(item.reasonTone.color)
+                    .lineLimit(1).fixedSize()
+            }
+            if let sub = subline {
+                Text(sub).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // 服务端的原因码串 / 模型理由。**原样展示,⛔ 不改写** —— 下沉审计视图。
+            if let detail = item.outDetail, !detail.isEmpty {
+                NKAuditSection(contains: "出局判定原始件", compact: true) {
+                    Text(detail).font(NKFont.monoKey).foregroundStyle(NK.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 「角色 · 主引擎 C1 · 卡在 板块关(机械关 · 硬否决)」——有哪段写哪段。
+    /// ⛔ 缺的段一律不写(⛔ 不写「无」,那会看起来像"确实没有引擎/关口")。
+    private var subline: String? {
+        var parts: [String] = []
+        if let r = item.role, !r.isEmpty { parts.append(nkRoleLabel(r)) }
+        if let e = item.engineLabel { parts.append("主引擎 \(e)") }
+        if let g = item.gateLabel {
+            // 🔴 走 `nkGateEnforcementNote`,⛔ 不直接印 `nkGateKind(...).label`:
+            // 市场关 / 板块关自 V2.3.2-① 起是半机械半证据的,只看关别会把
+            // `market_unfit` / `sector_unfit` 讲成「硬否决」——正好说反(实拍逮到过)。
+            let kind = nkGateEnforcementNote(gate: item.outGate, reason: item.outReason)
+                .map { "(\($0))" } ?? ""
+            parts.append("卡在 \(g)\(kind)")
+        }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }

@@ -382,6 +382,8 @@ FROZEN_SNAPSHOT_DTOS = (
     # `TradeClockEvent` / `TradeClockNoteResult` —— 切块器用 `^struct <Name>\b`,
     # `\b` 保证不会切到同前缀邻居(下面 `test_dto_slicer_...` 是这条的守门)。
     "SelectionClock", "TradeClock", "TradeClockEvent",
+    # —— V2.3.2-②-B:③b 的第二类行(股票级 OUT),随 `basketDaily` 冻结快照走 ——
+    "OutCandidate",
 )
 
 # ⚠ **同前缀陷阱**(CLAUDE.md 明写的坑):`Models.swift` 里 `struct BasketEvidence`

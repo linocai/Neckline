@@ -1121,6 +1121,76 @@ struct DroppedBasket: Codable, Equatable, Identifiable {
     var gateKind: NKGateKind? { gate.map(nkGateKind) }
 }
 
+/// ③b 的**另一类行**:V2.3.2-②-B 的**股票级 OUT**(K8 §六 候选三态 T1/T2/OUT 之一)。
+///
+/// ⚠ **与 `DroppedBasket` 刻意不合并、界面分两段渲染**:那一类是**篮子级**的
+/// 「档位已满 · 未定档」(`capacity_overflow` —— K8 §八 的 OUT 适用状态里**没有**
+/// "位置满",它不是 OUT);这一类才是 OUT。⛔ 别为了"少一张表"合起来。
+///
+/// `outReason` 与 `DroppedBasket.reason` **共用同一套原因码**(`nkDroppedReasonLabel`),
+/// ⛔ 不另起第二套词表。**没有 basketId** —— 它没进 `baskets` 表,给一个 id 会让人
+/// 以为点得进去。
+struct OutCandidate: Codable, Equatable, Identifiable {
+    var tsCode: String = ""
+    var name: String = ""
+    /// `leader|core|elastic`(LLM 主张);nil = 没给。中文换算走 `nkRoleLabel`。
+    var role: String? = nil
+    var engineCode: String? = nil
+    var engineVersion: String? = nil
+    /// 出局关口(`market|driver|sector|core|position|evidence`);nil = 非关口原因
+    /// (如引擎缺席)。
+    var outGate: String? = nil
+    var outReason: String = ""
+    /// 差多少 / 模型理由(服务端原因码串,数值内嵌)。**原样展示**,⛔ 不改写。
+    var outDetail: String? = nil
+
+    // ⚠ 同一只票可能在同一天的**多个** OUT 篮里出现(篮子间成员可重叠),
+    // 只拿 tsCode 当 id 会让 ForEach 撞 key —— 把关口与原因码一起算进去。
+    var id: String { "\(tsCode)|\(outReason)|\(outGate ?? "")" }
+
+    enum CodingKeys: String, CodingKey {
+        case tsCode, name, role, engineCode, engineVersion, outGate, outReason, outDetail
+    }
+
+    init(tsCode: String = "", name: String = "", role: String? = nil,
+         engineCode: String? = nil, engineVersion: String? = nil, outGate: String? = nil,
+         outReason: String = "", outDetail: String? = nil) {
+        self.tsCode = tsCode; self.name = name; self.role = role
+        self.engineCode = engineCode; self.engineVersion = engineVersion
+        self.outGate = outGate; self.outReason = outReason; self.outDetail = outDetail
+    }
+
+    // 🔴 手写 `init(from:)` + 全字段 `decodeIfPresent`(V2-⑮ 起的硬要求):合成
+    // `Decodable` 对**非 Optional 属性「有默认值也不容忍缺键」** —— 老快照缺一个键
+    // 就整份报告解不出来。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tsCode = try c.decodeIfPresent(String.self, forKey: .tsCode) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        role = try c.decodeIfPresent(String.self, forKey: .role)
+        engineCode = try c.decodeIfPresent(String.self, forKey: .engineCode)
+        engineVersion = try c.decodeIfPresent(String.self, forKey: .engineVersion)
+        outGate = try c.decodeIfPresent(String.self, forKey: .outGate)
+        outReason = try c.decodeIfPresent(String.self, forKey: .outReason) ?? ""
+        outDetail = try c.decodeIfPresent(String.self, forKey: .outDetail)
+    }
+
+    var reasonLabel: String { nkDroppedReasonLabel(outReason) }
+    var reasonTone: NKAxisTone { nkDroppedReasonTone(outReason) }
+    var reasonHeadline: String {
+        reasonLabel.components(separatedBy: " · ").first ?? reasonLabel
+    }
+    /// 「卡在哪一关」的人读名;nil = 非关口原因(⛔ 不写「无」)。
+    var gateLabel: String? { outGate.map(nkGateLabel) }
+    /// 展示串:有名字就「名称(代码)」,没有就裸代码。
+    var display: String { name.isEmpty ? tsCode : "\(name)(\(tsCode))" }
+    /// 引擎三件套的一行展示;nil = 没登记(⛔ 不写「无」)。
+    var engineLabel: String? {
+        let bits = [engineCode, engineVersion].compactMap { $0 }.filter { !$0.isEmpty }
+        return bits.isEmpty ? nil : bits.joined(separator: " · ")
+    }
+}
+
 /// ③b 原因码的展示层换算(**⛔ 不许合并**,每个码指向不同的结论)。
 /// 🔴 **唯一源是服务端 `report/basket_daily.py::DROPPED_REASON_LABEL`**;这里是
 /// 中文短句镜像(界面要一行放得下,服务端那份带括号补充给 markdown 报告用)。
@@ -1186,6 +1256,25 @@ enum NKGateKind: Equatable {
         case .unknown:    return "未知关口"
         }
     }
+}
+
+/// 「卡在 X 关」后面那句括注的**正确**写法(V2.3.2-① 之后必须走这里,⛔ 不许直接
+/// 印 `nkGateKind(gate).label`)。
+///
+/// 🔴 **只看关别会说反**:V2.3.2-① 起市场关 / 板块关是**半机械半证据**的 —— 同一道关
+/// 既可能因 `source=audited` 的硬门 reject(原因码 `mech_gate_rejected`),也可能因
+/// LLM 三值判 `unfit`(原因码 `market_unfit` / `sector_unfit`)。后者印成
+/// 「机械关 · 硬否决」是**把"只降级"讲成了"硬除名"**,正好说反 —— 实拍逮到过。
+///
+/// ⛔ **修的是这句文案,不是 `nkGateKind` 的关级二分** —— 那个二分**不能动**:
+/// 把 market/sector 挪进证据关会反过来把四项 audited 的硬否决讲成只降级
+/// (服务端 `MECH_GATES`/`EVIDENCE_GATES` 是关级的,守门单测两侧对拍)。
+func nkGateEnforcementNote(gate: String?, reason: String) -> String? {
+    guard let g = gate, !g.isEmpty else { return nil }
+    if reason == "market_unfit" || reason == "sector_unfit" {
+        return "按证据判 · 只降级"
+    }
+    return nkGateKind(g).label
 }
 
 /// 六关码的固定展示顺序(= 服务端 `GATE_ORDER`)。⛔ 别按字典序排 —— 那会把
@@ -1445,6 +1534,11 @@ struct BasketDaily: Codable, Equatable {
     var droppedBaskets: [DroppedBasket] = []
     var droppedBasketsAvailable: Bool = false
     var droppedBasketsUnavailableReason: String? = nil
+    /// V2.3.2-②-B:③b 的第二类行(**股票级 OUT**)。三件套照 `droppedBaskets*` 体例
+    /// —— 空数组**只有在 `available == true` 时**才等于"今天没有 OUT"。
+    var outCandidates: [OutCandidate] = []
+    var outCandidatesAvailable: Bool = false
+    var outCandidatesUnavailableReason: String? = nil
     var reviews: [BasketReview] = []
     var reviewsAvailable: Bool = false
     var reviewsUnavailableReason: String? = nil
@@ -1455,6 +1549,7 @@ struct BasketDaily: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case tradeDate, baskets, basketsAvailable, basketsUnavailableReason
         case droppedBaskets, droppedBasketsAvailable, droppedBasketsUnavailableReason
+        case outCandidates, outCandidatesAvailable, outCandidatesUnavailableReason
         case reviews, reviewsAvailable, reviewsUnavailableReason
         case reviewD0, packVersion, notes
     }
@@ -1462,6 +1557,8 @@ struct BasketDaily: Codable, Equatable {
     init(tradeDate: String = "", baskets: [Basket] = [], basketsAvailable: Bool = false,
          basketsUnavailableReason: String? = nil, droppedBaskets: [DroppedBasket] = [],
          droppedBasketsAvailable: Bool = false, droppedBasketsUnavailableReason: String? = nil,
+         outCandidates: [OutCandidate] = [], outCandidatesAvailable: Bool = false,
+         outCandidatesUnavailableReason: String? = nil,
          reviews: [BasketReview] = [], reviewsAvailable: Bool = false,
          reviewsUnavailableReason: String? = nil, reviewD0: String? = nil,
          packVersion: String? = nil, notes: [String] = []) {
@@ -1471,6 +1568,9 @@ struct BasketDaily: Codable, Equatable {
         self.droppedBaskets = droppedBaskets
         self.droppedBasketsAvailable = droppedBasketsAvailable
         self.droppedBasketsUnavailableReason = droppedBasketsUnavailableReason
+        self.outCandidates = outCandidates
+        self.outCandidatesAvailable = outCandidatesAvailable
+        self.outCandidatesUnavailableReason = outCandidatesUnavailableReason
         self.reviews = reviews; self.reviewsAvailable = reviewsAvailable
         self.reviewsUnavailableReason = reviewsUnavailableReason
         self.reviewD0 = reviewD0; self.packVersion = packVersion; self.notes = notes
@@ -1488,6 +1588,11 @@ struct BasketDaily: Codable, Equatable {
                                                         forKey: .droppedBasketsAvailable) ?? false
         droppedBasketsUnavailableReason = try c.decodeIfPresent(
             String.self, forKey: .droppedBasketsUnavailableReason)
+        outCandidates = try c.decodeIfPresent([OutCandidate].self, forKey: .outCandidates) ?? []
+        outCandidatesAvailable = try c.decodeIfPresent(
+            Bool.self, forKey: .outCandidatesAvailable) ?? false
+        outCandidatesUnavailableReason = try c.decodeIfPresent(
+            String.self, forKey: .outCandidatesUnavailableReason)
         reviews = try c.decodeIfPresent([BasketReview].self, forKey: .reviews) ?? []
         reviewsAvailable = try c.decodeIfPresent(Bool.self, forKey: .reviewsAvailable) ?? false
         reviewsUnavailableReason = try c.decodeIfPresent(String.self,

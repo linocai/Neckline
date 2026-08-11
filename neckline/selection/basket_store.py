@@ -772,6 +772,115 @@ def load_tier_history(basket_id: int, *, db_path: Optional[Path] = None) -> Opti
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# V2.3.2-②-B:OUT 一等状态(D0 **股票级** OUT 清单)
+#
+# K8 §六:候选状态只有 T1 / T2 / **OUT** 三个。③b 这一节自此装**两类行**,⛔ 不合并:
+#   · **OUT 行**(关口未过 / 引擎缺席)—— 本表,**股票级**;
+#   · **未定档行**(`capacity_overflow`)—— **不是 OUT**(K8 §八 的 OUT 适用状态里没有
+#     "位置满"),维持篮子级,仍走 `basket_dropped_handoff` / `droppedBaskets`。
+# 🔴 这条分类**直接决定 OUT 研究影子对照的样本域**:溢出篮**不进**影子对照。
+#
+# ⚠ **命名口径**(planner 定案,⛔ 不重开):`③b` 是报告的**节号**,`OUT` 是候选的
+# **状态**,两者不是同义词。用户可见文案统一说「OUT」;既有内部标识与既有契约键
+# `droppedBaskets` / `dropped*` **一律不改名**(客户端删/改键有两步淘汰纪律,为一次
+# 纯改名走两个版本不值;且原因码一经落库不改)。
+# ══════════════════════════════════════════════════════════════════════════
+
+OUT_CANDIDATES_TABLE = "out_candidates"
+
+_OUT_COLUMNS = (
+    "d0_date, basket_key, ts_code, name, role, engine_code, engine_version, "
+    "skeleton_version, out_gate, out_reason, out_detail, created_at"
+)
+
+# ⛔ **不是 OUT** 的出局原因码:位置满(K8 §八 的 OUT 四条适用状态里没有它)。
+# ⚠ 这里刻意只列**一个**码而不是"列出哪些算 OUT" —— 新增的出局码默认**是** OUT,
+# 漏登记的后果是"多进一条 OUT"(吵),反过来会让一票 OUT 静默消失(漏审)。
+NON_OUT_REASONS = frozenset({"capacity_overflow"})
+
+
+def is_out_reason(reason: str) -> bool:
+    """该出局原因码是不是 K8 意义上的 OUT(⛔ 「位置满」不是)。"""
+    return str(reason or "") not in NON_OUT_REASONS
+
+
+def save_out_candidates(
+    trade_date: Any,
+    dropped: Sequence[Any],
+    baskets_by_key: Mapping[str, Any],
+    *,
+    engine_by_key: Optional[Mapping[str, Any]] = None,
+    db_path: Optional[Path] = None,
+) -> int:
+    """把当日**股票级** OUT 清单落 `out_candidates`。返回新增行数。
+
+    `dropped`:⑥ 的 `TierResult.dropped`(篮子级,带原因码 / 关 / 差多少);
+    `baskets_by_key`:**对拍前**那批候选(`basket_key → BasketCandidate`)——
+      🔴 必须是对拍前的,被关口除名的候选只活在那份里;传对拍后的会让 OUT 票全空。
+    `engine_by_key`:`basket_key → gates.BasketGateSummary`(取引擎三件套;缺则留空)。
+
+    **append-only + 幂等**:靠 `UNIQUE(d0_date, basket_key, ts_code)` 去重
+    (`INSERT OR IGNORE`)—— 同日重跑不产生重复行,也**不覆盖**既有行
+    (⛔ 零 UPDATE / 零 DELETE / 零 INSERT OR REPLACE:「上一次怎么判的」本身是审计对象)。
+    """
+    day = trade_date if isinstance(trade_date, str) else trade_date.strftime("%Y%m%d")
+    now = _now()
+    summaries = engine_by_key or {}
+    rows: List[Tuple[Any, ...]] = []
+    for d in dropped:
+        reason = str(getattr(d, "reason", "") or "")
+        if not is_out_reason(reason):
+            continue                       # 位置满 → 未定档行,不是 OUT
+        key = str(getattr(d, "basket_key", "") or "")
+        basket = baskets_by_key.get(key)
+        if basket is None:
+            logger.warning(
+                "[basket_store] OUT 清单:篮子 %r 在对拍前候选里查无此篮 —— "
+                "该篮的成员本次记不下来(调用方可能传了对拍后的 result)", key)
+            continue
+        s = summaries.get(key)
+        for m in getattr(basket, "members", ()) or ():
+            rows.append((
+                day, key, str(getattr(m, "ts_code", "") or ""),
+                str(getattr(m, "name", "") or ""),
+                getattr(m, "role_llm", None),
+                getattr(s, "engine_code", None) if s is not None else None,
+                getattr(s, "engine_version", None) if s is not None else None,
+                getattr(s, "skeleton_version", None) if s is not None else None,
+                getattr(d, "gate", None), reason, getattr(d, "gate_detail", None),
+                now,
+            ))
+    if not rows:
+        return 0
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        cur = conn.executemany(
+            f"INSERT OR IGNORE INTO {OUT_CANDIDATES_TABLE} ({_OUT_COLUMNS}) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows,
+        )
+        return int(cur.rowcount or 0)
+
+
+def load_out_candidates(
+    trade_date: Any, *, db_path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """读某个 D0 的股票级 OUT 清单(确定性排序:`basket_key` → `ts_code`)。
+
+    ⚠ **零行有两种相反成因**(今天真没有 OUT / 这一段压根没跑)—— 本函数只答"表里
+    有什么",「跑没跑过」由调用方按 ③b 既有的三件套(`available` + 原因)自己披露,
+    ⛔ 别把空列表当成"今天没有 OUT"(§七 P0-39 同一条纪律)。"""
+    day = trade_date if isinstance(trade_date, str) else trade_date.strftime("%Y%m%d")
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT id, {_OUT_COLUMNS} FROM {OUT_CANDIDATES_TABLE} "
+            "WHERE d0_date=? ORDER BY basket_key, ts_code", (day,),
+        ).fetchall()
+    keys = ["id"] + [c.strip() for c in _OUT_COLUMNS.split(",")]
+    return [dict(zip(keys, r)) for r in rows]
+
+
 __all__ = [
     "save_baskets",
     "save_tier_history",
@@ -784,4 +893,9 @@ __all__ = [
     "load_basket_card",
     "BasketRef",
     "load_baskets_for_date",
+    "OUT_CANDIDATES_TABLE",
+    "NON_OUT_REASONS",
+    "is_out_reason",
+    "save_out_candidates",
+    "load_out_candidates",
 ]

@@ -366,7 +366,7 @@ def _run_basket_segment(
     from neckline.selection import basket_card as bc
     from neckline.selection import tier as tr
     from neckline.selection.basket_store import (
-        load_baskets_for_date, save_basket_cards, save_tier_decision,
+        load_baskets_for_date, save_basket_cards, save_out_candidates, save_tier_decision,
     )
 
     kwargs: Dict[str, Any] = {}
@@ -439,6 +439,11 @@ def _run_basket_segment(
         "engines": list(gate_out.engines),
     }
 
+    # 🔴 V2.3.2-②-B:**对拍前**那批候选的成员在这里留一份引用 —— 下面 `result` 会被
+    # 换成对拍后的版本,而股票级 OUT 清单要的正是「被关口除名的那些篮子里都有谁」,
+    # 那些篮子只活在对拍前这一份里(同下面那条 ⚠ 的理由)。
+    pre_gate_by_key = {b.basket_key: b for b in result.baskets}
+
     # ⚠ 传**对拍前**的 `result`(⛔ 不是 `gate_out.result`):被关口除名的候选只活在
     # `gate_out.summaries` 里,⑥ 靠遍历对拍前那批把它们转成 ③b 行 —— 传对拍后的会让
     # 它们从报告里消失(§2.9-C-2)。`score_and_tier` 对此 fail loud,别绕过。
@@ -492,6 +497,20 @@ def _run_basket_segment(
             "[evening] ⑥ dropped 跨进程交接表写入异常(已吞,不影响本次内存路径)",
             exc_info=True,
         )
+
+    # —— V2.3.2-②-B:股票级 OUT 清单(K8 §六 OUT 是一等状态)————————————————
+    # ⚠ 与上面那张交接表**不是一回事**:那张是篮子级的搬运工(整行覆写),这张是
+    # 股票级的审计账本(append-only)。⛔ 「位置满」不进这张表(K8 §八 的 OUT 适用
+    # 状态里没有它)。整段独立包保险丝:失败只 WARNING,⛔ 不连累定档与报告。
+    try:
+        stats["out_candidates"] = save_out_candidates(
+            trade_date, decision.dropped, pre_gate_by_key,
+            engine_by_key=gate_out.summaries, db_path=db_path,
+        )
+    except Exception:  # noqa: BLE001
+        stats["out_candidates"] = 0
+        logger.warning("[evening] ②-B 股票级 OUT 清单写入异常(已吞,不影响定档与报告)",
+                       exc_info=True)
     tier_by_key = {d.basket_key: d.tier for d in decision.decisions}
     hist_by_key = {
         d.basket_key: {
