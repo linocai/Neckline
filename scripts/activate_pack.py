@@ -108,7 +108,38 @@ def _describe_diff(active: Optional["pack.Pack"], new_manifest: Dict[str, Any], 
     marker = "  ← 改动" if old_dims != new_dims else ""
     lines.append("—— tier.dims(影响 ⑥ Tier 分层引擎机械分维度选择)——")
     lines.append(f"    {old_dims} → {new_dims}{marker}")
+
+    # V2.3.2-④-A:骨架线的两个新段也要在闸 3 的 diff 里露面 —— 否则「演练输出里
+    # 的 diff 恰为哪两段」这条验收根本看不出来(它们不在上面三块里)。
+    for section, note in (
+        ("regime", "影响 ② 行情状态层五个判定阈值"),
+        ("iteration", "影响 ⑨ 四分类样本门槛(min_n / retire_min_n)"),
+        ("threshold_governance", "关口闸门模式**对账表**(不是开关;闸 1 会与引擎包逐条对拍)"),
+    ):
+        old_sec = old_config.get(section) or {}
+        new_sec = new_config.get(section) or {}
+        if not old_sec and not new_sec:
+            continue
+        lines.append("")
+        lines.append(f"—— config.{section}({note})——")
+        for key in sorted(set(old_sec) | set(new_sec)):
+            o, n = old_sec.get(key), new_sec.get(key)
+            mark = "  ← 改动" if o != n else ""
+            lines.append(f"    {key}: {_brief(o)} → {_brief(n)}{mark}")
     return lines
+
+
+def _brief(v: Any) -> str:
+    """叶子的一行摘要(带 provenance 的叶子只显示 value + source,整片 JSON 摊开
+    会让 diff 变成没人读得完的一堵墙)。"""
+    if isinstance(v, dict):
+        if "value" in v:
+            src = ((v.get("provenance") or {}).get("source")) if isinstance(
+                v.get("provenance"), dict) else None
+            return f"{v['value']!r}" + (f"({src})" if src else "")
+        if "mode" in v:
+            return f"{v['mode']!r}"
+    return "(无)" if v is None else repr(v)
 
 
 def run(file: Path, db_path: Path, confirm: bool) -> int:
@@ -132,6 +163,32 @@ def run(file: Path, db_path: Path, confirm: bool) -> int:
         for e in errors:
             print(f"    {e}", file=sys.stderr)
         return 2
+    # ---- 闸 1 的第二半(V2.3.2-④-A):关口闸门模式**对账表** × 现役引擎包逐条一致 ----
+    # 🔴 对账表**不是第二个事实源**:模式仍由引擎包叶子的 `provenance.source` 唯一决定。
+    # 这一步只负责让**一次悄悄的 provenance 改动**过不了闸 —— 有人把某条阈值从
+    # `engineering_v1` 改成 `audited`(= 悄悄恢复机械硬否决)却没同步这张表,当场拒。
+    # 这是策略线裁定 1「零自动升级」的物理落点。
+    governance = (config or {}).get("threshold_governance")
+    if governance:
+        from neckline.selection.gates import check_threshold_governance
+
+        engines = pack.get_active_engines(db_path)
+        if not engines:
+            # ⚠ 现役引擎线为空(全新库 / bootstrap 顺序是"先骨架后引擎")—— 无从对拍。
+            # **如实说跳过,⛔ 不静默当通过**:这句话必须打出来,否则一次空库激活会让
+            # 人以为对账表已经核过了。
+            print("⚠ 闸 1 对账:现役引擎线为空,本次**跳过**关口闸门模式对拍 —— "
+                  "⛔ 这不代表对得上;引擎线激活后请重跑一次本脚本的演练确认。")
+        else:
+            gov_errors = check_threshold_governance(governance, engines)
+            if gov_errors:
+                print("错误:关口闸门模式对账表与现役引擎包不一致 —— 拒绝激活:",
+                      file=sys.stderr)
+                for e in gov_errors:
+                    print(f"    {e}", file=sys.stderr)
+                return 2
+            print(f"闸 1 对账:{len(governance)} 条关口闸门模式与现役引擎包逐条一致。")
+
     print(f"闸 1 通过:{file} 的 manifest/config schema 合法。")
 
     # ---- 闸 2:原语注册表防御性复核 + engine_api_version 兼容(闸1已核对过,

@@ -1150,7 +1150,7 @@ def test_real_k8_skeleton_pack_matches_plan_value_changes():
     (实测 industry 取值 = 「白酒」)/ close_min 维持 2.0 且**刻意无价格上限**。"""
     doc = pack.load_pack_file(_K8_SKELETON_FILE)
     assert pack.validate_pack_doc(doc) == []
-    assert doc["manifest"]["pack_version"] == "K8-V0.5"   # ⛔ `V0.5` 禁简写(三线命名纪律)
+    assert doc["manifest"]["pack_version"] == "K8-V0.6"   # ⛔ `V0.6` 禁简写(三线命名纪律)
     assert doc["manifest"]["line_code"] == "V"
     assert doc["manifest"]["engine_api_version"] == 2
     hygiene = doc["config"]["seeds"]["stock_hygiene"]
@@ -1160,9 +1160,12 @@ def test_real_k8_skeleton_pack_matches_plan_value_changes():
     assert doc["config"]["seeds"]["industry_blacklist"] == {"industries": ["白酒"]}
     # config 结构承 K7 的 seeds+tier 两段,tier 权重/打分映射原样;V2.2-② 追加
     # regime 段(行情状态五阈值,值与引擎默认逐位一致由 test_market_regime.py 锁);
-    # ⚠ **`config.landing` 段已随裁定 #11 整体删除**(位置关不再有机械判定):
-    # 骨架包 config 回到 seeds + tier + regime 三段。⛔ 不得恢复第四段。
-    assert set(doc["config"]) == {"seeds", "tier", "regime"}
+    # ⚠ **`config.landing` 段已随裁定 #11 整体删除**(位置关不再有机械判定),
+    # ⛔ 不得恢复;V2.3.2-④-A 另加 iteration(四分类分界线)+ threshold_governance
+    # (关口闸门模式**对账表**,不是开关)两段。
+    assert set(doc["config"]) == {"seeds", "tier", "regime", "iteration",
+                                  "threshold_governance"}
+    assert "landing" not in doc["config"]
     k7 = pack.load_pack_file(_K7_PACK_FILE)
     assert doc["config"]["tier"]["weights"] == k7["config"]["tier"]["weights"]
     assert doc["config"]["tier"]["stage_scores"] == k7["config"]["tier"]["stage_scores"]

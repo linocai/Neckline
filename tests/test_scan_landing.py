@@ -197,8 +197,10 @@ def test_old_landing_state_daily_table_no_longer_declared(isolated_env):
 def test_skeleton_pack_has_no_landing_section():
     doc = json.loads(SKELETON_FILE.read_text(encoding="utf-8"))
     assert "landing" not in doc["config"], "裁定 #11 后骨架包不应再携带 config.landing(十二阈值已全部删除)"
-    assert set(doc["config"]) == {"seeds", "tier", "regime"}, "本次改动只删 landing 段,其余三段不动"
-    assert doc["manifest"]["pack_version"] == "K8-V0.5", "manifest.pack_version 不动"
+    # ⚠ V2.3.2-④-A 又追加了两段(iteration / threshold_governance)——本测试只管
+    # 「landing 段不许回来」,故断言改成**不含 landing** 而不是钉死整个段集合。
+    assert "landing" not in set(doc["config"])
+    assert doc["manifest"]["pack_version"] == "K8-V0.6", "V2.3.2-④-A 升 K8-V0.6"
 
 
 # ══════════════════════════════════════════════════════════════════════════

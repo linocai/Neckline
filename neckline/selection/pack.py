@@ -194,6 +194,16 @@ _ENGINE_GATE_SCHEMA: Dict[str, frozenset] = {
 # 故不走 `_validate_provenance_leaf`(同 `config.engine.applies_to` 的既有体例:人话
 # 字段不自报来源)。⛔ 白名单只此**两关两键**,要再加"不走闸的键"必须先想清楚它是不是
 # 真的不进判据。形状要求 = **非空字符串**。
+# V2.3.2-④-A:`config.iteration` 的键白名单(K8.md §十七 的两个样本门槛)。
+# ⚠ **值的唯一源在包里**(30 / 80),⛔ 本模块不写默认值 —— `eval/iteration.py` 有一条
+# 「模块内不许出现阈值默认值」的守门单测,这条纪律在这里同样成立。
+_ITERATION_KEYS: frozenset = frozenset({"min_n", "retire_min_n"})
+
+# `config.threshold_governance` 的 mode 词表(= `gates.ENFORCEMENT_*` 两值)。
+# ⚠ 刻意写成字面量而不是 import `gates` —— gates 反向 import 本模块,会成环;
+# 两处一致性由 `tests/test_selection_pack.py` 的对拍守门保证。
+_GOVERNANCE_MODES: frozenset = frozenset({"hard", "evidence"})
+
 _QUALITATIVE_GATE_KEYS: Dict[str, frozenset] = {
     "position": frozenset({"guidance"}),
     "core": frozenset({"guidance"}),
@@ -427,6 +437,84 @@ def _validate_regime(regime: Any) -> List[str]:
     return errors
 
 
+def _validate_iteration(iteration: Any) -> List[str]:
+    """`config.iteration`(V2.3.2-④-A 新增可选段:四分类样本门槛 30 / 80,只住骨架线)。
+
+    🔴 **非做不可的理由**:骨架线 config **放行任何未知顶层键**(只禁 `engine` 段)——
+    一个拼错的段名(`iterations`)会**静默**让四分类退回「未拍板」,而那与"还没配"
+    **长得一模一样**(`build_iteration_report` 两种情形都出 `thresholds.available=false`)。
+    故段名一旦出现就当场校验;⛔ 别指望运行期能看出来。
+
+    与 `_validate_regime` 的差别(刻意):**两个键都必需**(缺一个 = 四分类没法跑),
+    `value` 必须是**非负整数**(不是数值),且 `retire_min_n >= min_n`
+    (与 `eval/iteration.py::IterationThresholds.from_pack_config` 的交叉校验同口径)。"""
+    if not isinstance(iteration, dict):
+        return ["config.iteration 必须是对象(min_n / retire_min_n → {value, provenance})"]
+    errors: List[str] = []
+    unknown = sorted(set(iteration) - _ITERATION_KEYS)
+    if unknown:
+        errors.append(
+            f"config.iteration 出现白名单外的键:{unknown}"
+            f"(仅允许 {sorted(_ITERATION_KEYS)};键写错会让四分类静默退回「未拍板」,"
+            "与「还没配」长得一模一样,故在闸 1 当场拒 —— plan §五 ④-A)")
+    values: Dict[str, int] = {}
+    for key in sorted(_ITERATION_KEYS):
+        if key not in iteration:
+            errors.append(f"config.iteration.{key} 缺失(两个键都必需)")
+            continue
+        leaf_errors = _validate_provenance_leaf(f"config.iteration.{key}", iteration[key])
+        errors.extend(leaf_errors)
+        if leaf_errors:
+            continue
+        value = iteration[key]["value"]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            errors.append(f"config.iteration.{key}.value 必须是非负整数(得到 {value!r})")
+        else:
+            values[key] = value
+    if len(values) == len(_ITERATION_KEYS) and values["retire_min_n"] < values["min_n"]:
+        errors.append(
+            f"config.iteration.retire_min_n({values['retire_min_n']}) 必须 ≥ "
+            f"min_n({values['min_n']}) —— 淘汰门槛比观察门槛还低说不通")
+    return errors
+
+
+def _validate_threshold_governance(governance: Any) -> List[str]:
+    """`config.threshold_governance`(V2.3.2-④-A 新增可选段:关口闸门模式**对账表**)。
+
+    🔴 **它不是第二个事实源、更不是开关**:闸门模式仍由引擎包叶子的
+    `provenance.source` **唯一决定**(唯一实现 `gates.py::enforcement_of`)。这张表只
+    负责一件事 —— **让一次悄悄的 provenance 改动过不了闸 1**(裁定 1「零自动升级」的
+    物理落点)。⛔ 别让任何运行期代码去读它做判断。
+
+    本函数只校验**形状**(纯函数,无 I/O)。与三个现役引擎包的**逐条一致性**由
+    `gates.py::check_threshold_governance` 做 —— 它要读引擎包,而 `pack.py` ⛔ 不能
+    import `gates`(gates 反向 import 本模块,会成环)。两处都挂在闸 1 上。"""
+    if not isinstance(governance, dict):
+        return ["config.threshold_governance 必须是对象(`<引擎>.<关>.<键>` → {mode, basis})"]
+    errors: List[str] = []
+    for key in sorted(governance):
+        entry = governance[key]
+        if len(str(key).split(".")) != 3:
+            errors.append(
+                f"config.threshold_governance 的键 {key!r} 形状不对 —— "
+                "必须是 `<引擎版本>.<关>.<阈值键>` 三段(如 C1.sector.industry_rank_max)")
+            continue
+        if not isinstance(entry, dict) or set(entry) != {"mode", "basis"}:
+            errors.append(
+                f"config.threshold_governance.{key} 必须恰为 {{mode, basis}} 两键"
+                f"(得到 {sorted(entry) if isinstance(entry, dict) else type(entry).__name__})")
+            continue
+        if entry["mode"] not in _GOVERNANCE_MODES:
+            errors.append(
+                f"config.threshold_governance.{key}.mode 必须是 "
+                f"{sorted(_GOVERNANCE_MODES)} 之一(得到 {entry['mode']!r})")
+        if not str(entry.get("basis") or "").strip():
+            errors.append(
+                f"config.threshold_governance.{key}.basis 不能为空 —— "
+                "每条都要写清依据(裁定几、为什么),否则这张表就退化成一堆没人敢动的字面量")
+    return errors
+
+
 def _validate_provenance_leaf(path: str, leaf: Any) -> List[str]:
     """V2.2-① 闸 1:引擎包一个阈值叶子的 `{value, provenance}` 形状校验(裁定 #4
     的机器判据,形状定义见模块头)。`value` 允许任意 JSON(数值 / 布尔 / 数组——
@@ -637,6 +725,13 @@ def validate_config(config: Any, *, line_code: str = _LINE_DEFAULT) -> List[str]
     regime = config.get("regime")
     if regime is not None:
         errors.extend(_validate_regime(regime))
+    # V2.3.2-④-A:四分类分界线 + 关口闸门模式对账表(均可选;存在即校验形状)。
+    iteration = config.get("iteration")
+    if iteration is not None:
+        errors.extend(_validate_iteration(iteration))
+    governance = config.get("threshold_governance")
+    if governance is not None:
+        errors.extend(_validate_threshold_governance(governance))
     return errors
 
 

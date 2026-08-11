@@ -634,6 +634,62 @@ def _enforcement(engine: Pack, section: str, key: str) -> str:
     return enforcement_of(_gate_leaf(engine, section, key))
 
 
+def check_threshold_governance(
+    governance: Mapping[str, Any], engines: Mapping[str, Pack],
+) -> List[str]:
+    """骨架包 `config.threshold_governance` **对账表** × 三个现役引擎包的逐条一致性
+    (V2.3.2-④-A 闸 1 的第二半;形状校验在 `pack._validate_threshold_governance`)。
+
+    🔴 **这张表不是第二个事实源**:闸门模式仍由 `provenance.source` 唯一决定
+    (`enforcement_of`)。它只负责**让一次悄悄的 provenance 改动过不了闸 1** ——
+    有人把某条阈值从 `engineering_v1` 改成 `audited`(= 悄悄恢复机械硬否决)却没同步
+    改这张表,激活当场被拒。这是裁定 1「零自动升级」的物理落点。
+
+    住在 `gates.py` 而不是 `pack.py`:`enforcement_of` 是**全仓唯一实现**,而 `pack.py`
+    ⛔ 不能 import `gates`(gates 反向 import pack,会成环)。
+
+    返回错误串列表(空 = 对得上)。`engines` 按 `pack_version`(C1/Z1/Y1)对号入座 ——
+    ⚠ 用版本号而不是引擎码,**引擎升版就必须重新过一遍这张表**,那正是我们要的。"""
+    errors: List[str] = []
+    by_version = {pk.pack_version: pk for pk in engines.values()}
+    seen: set = set()
+    for key in sorted(governance):
+        entry = governance[key]
+        if not isinstance(entry, Mapping) or "mode" not in entry:
+            continue                       # 形状错误已由 pack 侧报过,这里不重复报
+        parts = str(key).split(".")
+        if len(parts) != 3:
+            continue
+        version, gate, leaf_key = parts
+        pk = by_version.get(version)
+        if pk is None:
+            errors.append(
+                f"对账表 {key}:现役引擎线里没有版本 {version}"
+                f"(现役 {sorted(by_version)})—— 引擎升过版就必须同步这张表")
+            continue
+        leaf = _gate_leaf(pk, gate, leaf_key)
+        if leaf is None:
+            errors.append(f"对账表 {key}:引擎包 {version} 里没有这个阈值叶子")
+            continue
+        actual = enforcement_of(leaf)
+        if actual != entry["mode"]:
+            errors.append(
+                f"对账表 {key}:表里写 {entry['mode']!r},但按 provenance.source 推出来是 "
+                f"{actual!r} —— **两处必须一致才过闸 1**(有人改了 provenance 却没改表,"
+                f"或反过来;恢复硬否决的唯一通道是裁定 6 的七项提交 → 用户确认 → 新引擎版本)")
+        seen.add((version, gate, leaf_key))
+    # 反向:引擎包里有、对账表里漏登记的 —— 同样拒(漏一条 = 那条阈值没人盯着)
+    for version, pk in sorted(by_version.items()):
+        for gate, leaf_key in GOVERNED_THRESHOLD_KEYS:
+            if _gate_leaf(pk, gate, leaf_key) is None:
+                continue
+            if (version, gate, leaf_key) not in seen:
+                errors.append(
+                    f"对账表缺登记:{version}.{gate}.{leaf_key} 在引擎包里存在却没进表 "
+                    "—— 漏登记的那条阈值就没人盯着它的 provenance 有没有被改过")
+    return errors
+
+
 def _tier_evidence_max(engine: Pack, tier_key: str, default: int) -> int:
     leaf = ((engine.config.get("engine") or {}).get("tier_evidence") or {}).get(tier_key, {})
     v = leaf.get("max_evidence_degrades") if isinstance(leaf, Mapping) else None
@@ -1530,6 +1586,7 @@ __all__ = [
     "VERDICT_PASS", "VERDICT_DEGRADE", "VERDICT_REJECT",
     "ENFORCEMENT_HARD", "ENFORCEMENT_EVIDENCE", "PROVENANCE_SOURCE_AUDITED",
     "GOVERNED_THRESHOLD_KEYS", "NOT_APPLICABLE_PREFIX", "enforcement_of",
+    "describe_evidence_thresholds", "check_threshold_governance",
     "ENGINE_SOURCE_LLM", "ENGINE_SOURCE_MECH_FALLBACK",
     "EXCLUDE_NO_ACTIVE_ENGINE", "EXCLUDE_ENGINE_UNRESOLVED",
     "EXCLUDE_MECH_GATE_REJECTED", "EXCLUDE_MEMBERS_ALL_REMOVED",

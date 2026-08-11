@@ -1,17 +1,21 @@
 {
   "manifest": {
-    "pack_version": "K8-V0.5",
+    "pack_version": "K8-V0.6",
     "name": "K8 系统骨架包(股票池 + 梯度)",
-    "date": "2026-08-09",
+    "date": "2026-08-11",
     "engine_api_version": 2,
     "line_code": "V",
-    "evidence_ref": ["K8_STRATEGY_ARCH.md"],
+    "evidence_ref": [
+      "K8_STRATEGY_ARCH.md"
+    ],
     "notes": [
       "config 结构承 K7-pack-v1 一字不改(seeds+tier 两段),只改值三处(plan §五 ① 原文):",
       "① seeds.stock_hygiene.allowed_boards → [MAIN, GEM](K8 §三 排除科创板,纯包配置零代码改动);",
       "② 新增 seeds.industry_blacklist.industries=[白酒](K8 §三;实测 stock_basic.industry 白酒股取值 = 「白酒」共 19 只,「红黄酒」「啤酒」是不同归类值不受累);",
       "③ seeds.stock_hygiene.close_min 维持 2.0,且**全仓刻意无价格上限**(K8 §三「股价不限,允许 100 元及以上」= 确认现状零改动)——⛔ 别顺手加 close_max,这里没写就是不设。",
-      "另:K7-pack-v1 里的退役键 tier.quality_lines.tier3_min 本包不再携带(V2.1-② T3 全链退役后它受理但不生效,引擎侧见到必打 WARNING——新包再抄一遍等于每晚制造一条假警报;零行为差异)。"
+      "另:K7-pack-v1 里的退役键 tier.quality_lines.tier3_min 本包不再携带(V2.1-② T3 全链退役后它受理但不生效,引擎侧见到必打 WARNING——新包再抄一遍等于每晚制造一条假警报;零行为差异)。",
+      "V2.3.2 升 K8-V0.6(骨架线;⚠ 禁简写 V0.6 —— 与满篇 v 字头只差一个大小写)。引擎线 C1/Z1/Y1 **一字不动**:①-A 的闸门模式判据刻意做成「从既有 provenance 推」,正是为了不必为一次治理改判去升三条引擎线。",
+      "新增两段:① config.iteration = 四分类样本门槛 30 / 80(K8.md §十七,用户确认);② config.threshold_governance = **对账表不是开关** —— 闸门模式仍由 provenance.source 唯一决定,这张表只负责让一次悄悄的 provenance 改动过不了闸 1(裁定 1「零自动升级」的物理落点)。"
     ]
   },
   "config": {
@@ -20,11 +24,16 @@
         "close_min": 2.0,
         "amount_ma20_min": 20000,
         "require_ma20": true,
-        "allowed_boards": ["MAIN", "GEM"],
+        "allowed_boards": [
+          "MAIN",
+          "GEM"
+        ],
         "exclude_st": true
       },
       "industry_blacklist": {
-        "industries": ["白酒"]
+        "industries": [
+          "白酒"
+        ]
       },
       "non_new_stock": {
         "min_days": 120
@@ -37,7 +46,12 @@
         "min_lift": 2.0
       },
       "intel_rank_priority": {
-        "dims": ["industry_rank", "industry_stage_score", "leader_rs_rank", "yellow_card_count"]
+        "dims": [
+          "industry_rank",
+          "industry_stage_score",
+          "leader_rs_rank",
+          "yellow_card_count"
+        ]
       },
       "hot_industry_seed": {
         "max_rank": 10,
@@ -57,13 +71,19 @@
     },
     "tier": {
       "weights": {
-        "sector_strength": 0.30,
-        "leader_clarity": 0.30,
-        "driver_freshness": 0.10,
-        "tradability": 0.20,
-        "card_density": 0.10
+        "sector_strength": 0.3,
+        "leader_clarity": 0.3,
+        "driver_freshness": 0.1,
+        "tradability": 0.2,
+        "card_density": 0.1
       },
-      "dims": ["sector_strength", "driver_freshness", "leader_clarity", "tradability", "card_density"],
+      "dims": [
+        "sector_strength",
+        "driver_freshness",
+        "leader_clarity",
+        "tradability",
+        "card_density"
+      ],
       "stage_scores": {
         "ignition": 0.6,
         "fermentation": 1.0,
@@ -73,8 +93,8 @@
         "none": 0.2
       },
       "quality_lines": {
-        "tier1_min": 0.60,
-        "tier2_min": 0.40
+        "tier1_min": 0.6,
+        "tier2_min": 0.4
       }
     },
     "regime": {
@@ -95,7 +115,7 @@
         }
       },
       "div_core_drop": {
-        "value": 0.30,
+        "value": 0.3,
         "provenance": {
           "source": "engineering_v1",
           "basis": "K8 §一 高位分歧之「主线核心」走弱——核心强度较 5 日均值下降分位下限的工程首版翻译(plan §五 ② DIV_CORE_DROP)",
@@ -111,12 +131,74 @@
         }
       },
       "div_limit_drop": {
-        "value": 0.30,
+        "value": 0.3,
         "provenance": {
           "source": "engineering_v1",
           "basis": "K8 §一 高位分歧之涨停家数萎缩——涨停家数环比降幅下限的工程首版翻译(plan §五 ② DIV_LIMIT_DROP)",
           "calibration": "pending"
         }
+      }
+    },
+    "iteration": {
+      "min_n": {
+        "value": 30,
+        "provenance": {
+          "source": "audited",
+          "ref": "whynotme/K8.md §十七(V0.6,用户确认)"
+        }
+      },
+      "retire_min_n": {
+        "value": 80,
+        "provenance": {
+          "source": "audited",
+          "ref": "whynotme/K8.md §十七(V0.6,用户确认)"
+        }
+      }
+    },
+    "threshold_governance": {
+      "C1.market.primary_regimes": {
+        "mode": "evidence",
+        "basis": "已拍板 #4:本就只降级不机械除名(PASS + blocks_t1),V2.3.2 零改动"
+      },
+      "C1.market.high_divergence_min_breadth_pctile": {
+        "mode": "evidence",
+        "basis": "策略线裁定 1(用户已确认):未经用户确认的市场/板块阈值退出机械硬否决,降为证据输入由 LLM 判断,只能降级不能机械除名"
+      },
+      "C1.market.rotation_confirmed_blocks_t1": {
+        "mode": "evidence",
+        "basis": "已拍板 #4:本就只降级不机械除名(PASS + blocks_t1),V2.3.2 零改动"
+      },
+      "C1.sector.industry_rank_max": {
+        "mode": "hard",
+        "basis": "策略线裁定 2(用户已确认):该阈值 provenance.source=audited,保留机械硬否决"
+      },
+      "C1.sector.strength_days_min_5d": {
+        "mode": "evidence",
+        "basis": "策略线裁定 1(用户已确认):未经用户确认的市场/板块阈值退出机械硬否决,降为证据输入由 LLM 判断,只能降级不能机械除名"
+      },
+      "Z1.market.primary_regimes": {
+        "mode": "evidence",
+        "basis": "已拍板 #4:本就只降级不机械除名(PASS + blocks_t1),V2.3.2 零改动"
+      },
+      "Z1.market.trend_continuation_required_stages": {
+        "mode": "hard",
+        "basis": "策略线裁定 2(用户已确认):该阈值 provenance.source=audited,保留机械硬否决"
+      },
+      "Z1.sector.stage_allowed": {
+        "mode": "hard",
+        "basis": "策略线裁定 2(用户已确认):该阈值 provenance.source=audited,保留机械硬否决"
+      },
+      "Z1.sector.cluster_members_min": {
+        "mode": "evidence",
+        "basis": "策略线裁定 1(用户已确认):未经用户确认的市场/板块阈值退出机械硬否决,降为证据输入由 LLM 判断,只能降级不能机械除名"
+      },
+      "Y1.market.primary_regimes": {
+        "mode": "evidence",
+        "basis": "已拍板 #4:本就只降级不机械除名(PASS + blocks_t1),V2.3.2 零改动"
+      },
+      "Y1.sector.industry_rank_max": {
+        "mode": "hard",
+        "basis": "策略线裁定 2(用户已确认):该阈值 provenance.source=audited,保留机械硬否决"
       }
     }
   }

@@ -165,13 +165,13 @@ class TestGatedEveningFlow:
         rows = _rows(env.db_path,
                      "SELECT basket_key, tier, engine_code, engine_version, skeleton_version "
                      "FROM baskets")
-        assert rows == [("k1", 1, "C", "C1", "K8-V0.5")]
+        assert rows == [("k1", 1, "C", "C1", "K8-V0.6")]
         assert stats["gates"]["rows_written"] > 0
         assert _rows(env.db_path, "SELECT COUNT(*) FROM gate_evaluations")[0][0] > 0
         card = json.loads(_rows(env.db_path, "SELECT card_json FROM basket_cards")[0][0])
         assert card["tier"] == 1
         assert (card["engine_code"], card["engine_version"], card["skeleton_version"]) == \
-            ("C", "C1", "K8-V0.5")
+            ("C", "C1", "K8-V0.6")
         assert bc.trade_plan_missing_pieces(card) == []
 
     def test_incomplete_plan_demotes_t1_to_t2_not_blocked(self, isolated_env, monkeypatch):

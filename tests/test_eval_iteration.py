@@ -110,13 +110,39 @@ class TestThresholdsAreNotOurs:
         assert (th.min_n, th.retire_min_n) == (20, 40)
         assert th.provenance["min_n"]["source"] == "engineering_v1"
 
-    def test_the_shipped_skeleton_pack_has_no_iteration_section_yet(self):
-        """**现状的机器判据**:`packs/K8-skeleton.json` 里**没有** `config.iteration`
-        —— 那两个数还没有人拍板。⛔ 谁想"临时补一个"就会撞红这条。"""
+    def test_the_shipped_skeleton_pack_now_carries_the_user_decided_lines(self):
+        """✅ **2026-08-11 用户拍板 30 / 80(K8.md §十七),V2.3.2-④-A 进包**。
+
+        ⚠ 本测试**原先断言的是「包里还没有这一段」** —— 那是拍板前的守门:防止有人
+        "临时补一个"默认值。拍板做完了,守门因此**翻面**:现在锁的是「这两个数确实
+        来自包、且 provenance 是 `audited`(= 用户确认过的,不是工程首版)」。
+        ⛔ 别把这条改回去 —— 两个方向是同一个目的的两个阶段,不是重复。"""
         import json
 
         doc = json.loads((_ROOT / "packs" / "K8-skeleton.json").read_text(encoding="utf-8"))
-        assert it.CONFIG_SECTION not in doc["config"]
+        section = doc["config"][it.CONFIG_SECTION]
+        assert section["min_n"]["value"] == 30
+        assert section["retire_min_n"]["value"] == 80
+        for key in it.THRESHOLD_KEYS:
+            prov = section[key]["provenance"]
+            assert prov["source"] == "audited", "⛔ 用户拍板的数不许标成 engineering_v1"
+            assert "K8.md" in prov["ref"] and "十七" in prov["ref"]
+        th, problems = it.IterationThresholds.from_pack_config(doc["config"])
+        assert problems == [] and th is not None
+        assert (th.min_n, th.retire_min_n) == (30, 80)
+
+    def test_a_pack_without_the_section_still_refuses_to_classify(self):
+        """🔴 **那条纪律本身不能丢**:包里没有 `config.iteration` → 一行都不分类
+        (⛔ 不猜、⛔ 不用默认值、⛔ 不静默降级成 observe)。这里人为造一个没有该段的包。"""
+        import json
+
+        doc = json.loads((_ROOT / "packs" / "K8-skeleton.json").read_text(encoding="utf-8"))
+        doc["config"].pop(it.CONFIG_SECTION)
+        th, problems = it.IterationThresholds.from_pack_config(doc["config"])
+        assert th is None and problems == []          # 缺段不是错误,是"还没拍板"
+        rows = it.classify_factors([_stat(500, -0.3)], th)
+        assert [r["klass"] for r in rows] == [None]
+        assert {r["klassStatus"] for r in rows} == {it.THRESHOLDS_UNDECIDED}
 
 
 class TestPendingIsNotAClass:

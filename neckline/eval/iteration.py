@@ -29,6 +29,25 @@ K8 §十七 给的是**纯定性**的四句话 —— 「保留:持续有效 / �
 任何表。守门单测 AST 断言。唯一出口 = 复盘板块的**移交件**(`review/handoff.py`),
 用户带着它去策略台 → 新引擎包 → 四道闸 → `C2`/`Z2`/`Y2`。
 
+════════════════════════════════════════════════════════════════════════════
+🔴 **有效样本单位 = `D0 日期 × 篮子 × 引擎版本`**(K8.md §十七;V2.3.2-④-B 钉死)
+════════════════════════════════════════════════════════════════════════════
+
+即:**一个篮子在一个 D0 上算一个样本**,⛔ 不是一只票算一个、也⛔ 不是一次关口判定
+算一个。现状**天然等于**这个定义,三条支撑事实(⛔ 别在别处重新发明一套计数):
+
+    · `selection_clock` **一篮一行**(`basket_id UNIQUE`,`db.py` DDL 注释原文
+      「一篮一次,UNIQUE 即『只结一次案』」)→ `n = len(members)` 数的就是篮子数;
+    · `stratum_of()` 的四元键已含**引擎码 × 引擎版本** → 分层天然按引擎版本切开;
+    · 裁定 #9 **单篮子单引擎** → 一个篮子不会同时属于两个引擎,不存在重复计。
+
+⚠ **成员多的篮子不会被重复计**:唯一可能按成员展开的是 `gate` 维(核心关 / 位置关是
+成员级判定),`_gate_factor_rows` 因此**按 `basket_id` 显式去重**。⛔ 删掉那段去重 =
+成员多的篮子在 `gate` 维上被数很多次,而它看起来只是"样本变多了"。
+
+⛔ **不为"混引擎篮子"预建代码**:裁定 #9 之下那个场景不可达,写了也验不了。
+(以上四条由 `tests/test_eval_iteration.py` 的守门单测正面钉死。)
+
 **⛔ 不新造统计口径**(plan ④-C 原文):
     · 「正确率」= `selection/verification_rules.STATE_SCORES`(既有登记项:verified=1 /
       partial=0.5 / falsified=0,unclear 不进分母)—— ⛔ 本模块不定义第二套。
@@ -45,7 +64,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from neckline.eval.metrics import LEGACY_ENGINE
-from neckline.selection.verification_rules import STATE_SCORES, STATES, accuracy_from_counts
+from neckline.selection.verification_rules import (
+    STATE_FALSIFIED,
+    STATE_SCORES,
+    STATES,
+    accuracy_from_counts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +93,25 @@ THRESHOLDS_UNDECIDED = "thresholds_undecided"
 #: 分界线在,但这一行的读数算不出(⛔ 与"样本不足"分开:算不出 ≠ 样本少)。
 STAT_UNAVAILABLE = "stat_unavailable"
 KLASS_DECIDED = "decided"
+#: V2.3.2-④-C:样本够、读数也够淘汰,**但失败集中在单一行情状态** → 不给 `retire`,
+#: 降为 `observe`。⛔ 这不是第五类,是「这一步先别下全局结论」。
+KLASS_FAILURES_CONCENTRATED = "failures_concentrated_in_single_regime"
+
+#: V2.3.2-⑧-3(2026-08-11 策略线裁定,用户已确认,⛔ 不得重开):
+#: **失败样本中至少 70% 落在同一种行情状态,视为集中在单一行情状态**。
+#: · 分母 = 该因素的**全部失败样本**;
+#: · 行情状态取 **D0 当时保存的**三态(`selection_clock.regime_at_d0`),⛔ 不用当前重算值;
+#: · 70% 只表示失败具有明显状态集中性,**⛔ 不表示该因素无效**;
+#: · 🔴 状态集中时**⛔ 不直接提出全局淘汰** —— 应优先研究该因素在对应行情状态下的
+#:   降权或停用,且仍受 `retire_min_n` 门槛约束、并由用户最终确认。
+#: ⚠ 这个数是**裁定给的**,不是工程侧选的(K8.md §十七 原文只有「集中在单一行情状态」
+#: 这句定性描述,把它翻成 70% 是 2026-08-11 由用户拍板的)。
+REGIME_CONCENTRATION_RATIO = 0.70
+
+#: 「失败样本」= `tier_accuracy` 判为 `falsified` 的那些(⛔ 不新造统计口径:
+#: 四态词表与计分的唯一源仍是 `selection/verification_rules.STATE_SCORES`,
+#: 其中 `falsified` 计 0.0 —— 它就是这套词表里"失败"的那一态)。
+#: ⚠ `partial`(0.5)**不算失败**、`unclear` 本就不进分母。
 
 #: 分界线在骨架包里的落点(形状 = `config.regime` 同款 provenance 叶子)。
 CONFIG_SECTION = "iteration"
@@ -199,6 +242,36 @@ def stratum_of(closure: Mapping[str, Any]) -> Tuple[str, str, str, str]:
 def _mech_item(closure: Mapping[str, Any], key: str) -> Dict[str, Any]:
     v = (closure.get("mech") or {}).get(key)
     return dict(v) if isinstance(v, Mapping) else {}
+
+
+#: `regime_at_d0` 为空时的哨兵串(D0 当天 `market_regime_daily` 缺行 —— 该列可空,
+#: 「如实,⛔ 不填默认态」)。⚠ 它**不是**第四种行情状态。
+_REGIME_UNKNOWN = "(未登记)"
+
+
+def failure_regime_counts(closures: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
+    """**失败样本**按 D0 当时保存的行情状态分桶(V2.3.2-④-C / ⑧-3 的判据原料)。
+
+    · 「失败样本」= `tier_accuracy == 'falsified'`(⛔ 不新造统计口径:四态词表的唯一源
+      仍是 `verification_rules`;`partial` 不算失败、`unclear` 本就不进分母);
+    · 状态取 **`regime_at_d0`**(D0 当时保存的那一份),⛔ 不用当前重算值(⑧-3 逐字)。"""
+    out: Dict[str, int] = {}
+    for c in closures:
+        if _state_of(c) != STATE_FALSIFIED:
+            continue
+        regime = c.get("regime_at_d0")
+        key = str(regime) if regime else _REGIME_UNKNOWN
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
+def _failures_concentrated(st: "FactorStat") -> bool:
+    """⑧-3:该因素的失败样本是否**集中在单一行情状态**(≥ 70%)。
+
+    🔴 **没有失败样本 → `False`(= 不拦)**:一个"零失败但正确率低于基线"的因素
+    (全是 partial)谈不上"失败集中",拦它反而是拿不存在的证据挡一条结论。"""
+    conc = st.regime_concentration
+    return conc is not None and conc >= REGIME_CONCENTRATION_RATIO
 
 
 def _state_of(closure: Mapping[str, Any]) -> Optional[str]:
@@ -423,10 +496,41 @@ class FactorStat:
     distribution: Dict[str, int]
     placebo_edge: str = EDGE_UNAVAILABLE
     evidence: Dict[str, Any] = field(default_factory=dict)
+    # V2.3.2-④-C:**失败样本**(`tier_accuracy='falsified'`)按 **D0 当时保存的**
+    # 行情状态分桶(`selection_clock.regime_at_d0`)。⛔ 不用当前重算值(⑧-3 逐字)。
+    # ⚠ 键 `None` 用哨兵串 `_REGIME_UNKNOWN` 表示「D0 当天没有行情状态行」——
+    # 它**照样进分母**(⑧-3:分母 = 全部失败样本),只是不归任何一个状态。
+    failure_regimes: Dict[str, int] = field(default_factory=dict)
 
     @property
     def factor(self) -> str:
         return f"{self.dimension}={self.value}"
+
+    @property
+    def failure_samples(self) -> int:
+        """全部失败样本数(⑧-3 的**分母**)。"""
+        return sum(self.failure_regimes.values())
+
+    @property
+    def regime_concentration(self) -> Optional[float]:
+        """失败样本里**最集中的那个行情状态**占的比例。`None` = 没有失败样本(算不出)。
+
+        ⚠ 状态未知的失败样本**照样在分母里**(⑧-3:分母 = 全部失败样本),因此
+        「一半失败样本查不到状态」会如实把集中度压下去 —— 这是诚实,不是 bug。"""
+        total = self.failure_samples
+        if total <= 0:
+            return None
+        known = {k: v for k, v in self.failure_regimes.items() if k != _REGIME_UNKNOWN}
+        return (max(known.values()) / total) if known else 0.0
+
+    @property
+    def dominant_failure_regime(self) -> Optional[str]:
+        """失败样本最集中的那个状态(并列取字典序小的,确定性)。"""
+        known = {k: v for k, v in self.failure_regimes.items() if k != _REGIME_UNKNOWN}
+        if not known:
+            return None
+        top = max(known.values())
+        return sorted(k for k, v in known.items() if v == top)[0]
 
     def to_dict(self) -> Dict[str, Any]:
         sk, ec, ev, rs = self.stratum
@@ -437,6 +541,13 @@ class FactorStat:
             "accuracy": self.accuracy, "baselineAccuracy": self.baseline_accuracy,
             "delta": self.delta, "distribution": dict(self.distribution),
             "placeboEdge": self.placebo_edge, "evidence": dict(self.evidence),
+            # V2.3.2-④-C:失败样本的状态分布 + 集中度(⑧-3 的判据原料)。
+            # **⛔ 只出读数,结论在 `classify_factors`** —— 摊在这里是为了让移交件里
+            # 「为什么这条没给淘汰」查得到底。
+            "failureRegimes": dict(self.failure_regimes),
+            "failureSamples": self.failure_samples,
+            "regimeConcentration": self.regime_concentration,
+            "dominantFailureRegime": self.dominant_failure_regime,
         }
 
 
@@ -564,6 +675,9 @@ def collect_factor_stats(
                     delta=(None if (acc is None or base_acc is None) else acc - base_acc),
                     distribution=_counts(members), placebo_edge=edge,
                     evidence={"packVersion": pack, "stratumSamples": len(rows)},
+                    # ④-C:失败样本的 D0 状态分布 —— `classify_factors` 只看 `FactorStat`,
+                    # 拿不到原始结案件,故必须在这里就把它算好带上去。
+                    failure_regimes=failure_regime_counts(members),
                 ))
     return out
 
@@ -622,6 +736,23 @@ def classify_factors(
                 f"正确率高于本层基线 {st.delta:+.3f},且安慰剂对照判「优于随机同规模篮子」"
                 f"—— 按 K8「保留:持续有效」")
             status = KLASS_DECIDED
+        elif (st.n >= thresholds.retire_min_n and st.delta < 0
+                and st.placebo_edge != EDGE_BETTER
+                and _failures_concentrated(st)):
+            # —— V2.3.2-④-C(⑧-3 拍板):**淘汰前的行情状态集中度检查** ————————
+            # 🔴 样本够、读数也够淘汰,**但失败 ≥70% 落在同一种行情状态** → ⛔ 不给
+            # `retire`,降为 `observe`。⑧-3 逐字:「状态集中时**不直接提出全局淘汰**,
+            # 应优先研究该因素**在对应行情状态下的降权或停用**」。
+            # ⚠ 两道闸**先后次序写死**:先看 n(上面那个 `and`),再看集中度。
+            conc = st.regime_concentration or 0.0
+            klass, why = KLASS_OBSERVE, (
+                f"样本 {st.n} ≥ retire_min_n={thresholds.retire_min_n} 且正确率低于基线 "
+                f"{st.delta:+.3f},**但 {st.failure_samples} 个失败样本里有 "
+                f"{conc:.0%} 落在同一种行情状态**({st.dominant_failure_regime})—— "
+                f"达到 {REGIME_CONCENTRATION_RATIO:.0%} 集中度线,按 K8 §十七 "
+                f"**不提全局淘汰**;⛔ 这不表示该因素无效,应优先研究它在该状态下的"
+                f"降权或停用(仍需你最终确认)")
+            status = KLASS_FAILURES_CONCENTRATED
         elif (st.n >= thresholds.retire_min_n and st.delta < 0
                 and st.placebo_edge != EDGE_BETTER):
             klass, why = KLASS_RETIRE, (
