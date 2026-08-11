@@ -162,6 +162,109 @@ def _sim_one(t: ClosedTrade, pm: dict, ld: set, cal: list, cal_idx: dict, *,
     return None
 
 
+def _sim_one_h(t: ClosedTrade, pm: dict, ld: set, cal: list, cal_idx: dict, *,
+               base_hold: Optional[int] = None, retrace: Optional[float] = None,
+               stop: float = 0.05, v1: bool = False, v2: bool = False,
+               v2_gate: float = 0.08, v2_wide: float = 0.08,
+               hard_cap: Optional[int] = None,
+               horizon: Optional[int] = None) -> Optional[ReTrade]:
+    """**判分模拟器 · 地平线版**(§七 **P0-56**,2026-08-11 新增)。
+
+    🔴 **为什么是一个新函数,而不是就地改 `_sim_one`**:`_sim_one` 是**审计基准**,
+    被 `tests/test_eval_exit_sim.py::TestFrozenPairing::test_source_is_byte_identical`
+    **逐字冻结**,那条守门的原话是「判分口径是审计基准,改它必须走**新版本 + 重新对拍**,
+    ⛔ 不许就地改」。本函数就是那个「新版本」;**冻结那份一个字节都没动**,
+    K4 / K7 时代历史样本的判分口径因此可证明零改动。
+
+    **与 `_sim_one` 的三处差异(全部只在新章程口径下才生效)**:
+
+    1. `base_hold=None` → **永不因持有天数退出**(章程已按 §2.1 第 2 条退役时间退出,
+       与 `momentum.py::_time_exit` 第三档同口径,⛔ 不拿默认天数顶上);
+    2. `retrace=None` → **永不因回落退出**(回落止盈同批退役);
+    3. `horizon` → **评分地平线**(`SCORING_HORIZON_DAYS`,用户 2026-08-11 拍板 15 个
+       交易日):两档退役后只剩 −5% 止损,一笔没跌到止损的单子会一直持有、判分没有终点,
+       故由它收口。触发时 `reason` 记 **`horizon`**,⛔ **不记 `time`** —— `time` 是
+       「纪律说该走」、`horizon` 是「测量窗口到头了」,把后者写成前者等于在成绩单里
+       把用户已经删掉的时间退出又讲了一遍。
+
+    ⚠ **`horizon` 排在止损 / 回落 / 时间退出之后判**:第 15 天同时踩到止损与地平线时,
+    记的必须是 `stop`(纪律真的触发了),⛔ 不能被测量窗口盖掉。
+
+    ✅ **重新对拍**:`horizon=None` 时本函数与 `_sim_one` **逐字段全等**,由
+    `TestHorizonVersionPairing` 在随机造数上锁死 —— 新版本没有偷偷改动老口径。
+    """
+    p = pm.get(t.ts_code)
+    if p is None or t.buy_date not in cal_idx:
+        return None
+    k0 = cal_idx[t.buy_date]
+    buy_price = t.buy_price
+    peak = buy_price
+    eff_max = base_hold
+    exempt = False
+    pidx = p["idx"]
+    for k in range(k0, len(cal)):
+        d = cal[k]
+        j = pidx.get(d)
+        cl = p["c"][j] if j is not None else None
+        lo = p["l"][j] if j is not None else None
+        if cl is not None and cl > peak:
+            peak = cl
+        if d == t.buy_date:
+            continue                         # 买入当日 T+1 未满,不可卖
+        held = k - k0 + 1
+        band = retrace
+        if v2 and peak >= buy_price * (1 + v2_gate):
+            band = v2_wide
+        reason: Optional[str] = None
+        if j is not None:
+            stop_price = buy_price * (1 - stop)
+            if (cl is not None and cl <= stop_price) or (lo is not None and lo <= stop_price):
+                reason = "stop"
+            elif band is not None and peak > 0 and cl is not None and cl <= peak * (1 - band):
+                reason = "retrace"
+        if reason is None and base_hold is not None and held >= base_hold:
+            if v1 and held == base_hold and not exempt and eff_max == base_hold:
+                if j is not None:
+                    sell_fee_est = BROKER._sell_fees(t.shares * cl)
+                    net_float = t.shares * (cl - buy_price) - t.buy_fees - sell_fee_est
+                    if net_float > 0:
+                        exempt = True
+                        eff_max = hard_cap
+                if not exempt:
+                    reason = "time"
+            elif held >= eff_max:
+                reason = "time"
+        if reason is None and horizon is not None and held >= horizon:
+            reason = "horizon"
+        if reason:
+            nk = k + 1
+            if nk >= len(cal):
+                px = round((cl if cl is not None else buy_price) * (1 - SLIP), 2)
+                return ReTrade(t, d, px, "end", exempt, len(trading_days_between(t.buy_date, d)))
+            nd = cal[nk]
+            nj = pidx.get(nd)
+            if nj is not None and (t.ts_code, nd) not in ld:
+                px = round(p["o"][nj] * (1 - SLIP), 2)
+                return ReTrade(t, nd, px, reason, exempt, len(trading_days_between(t.buy_date, nd)))
+            continue
+    return None
+
+
+def _pick_sim(score_kw: Dict[str, Any]):
+    """按 kw 的形状选判分实现 —— **唯一一处分派**(⛔ 调用方别各写一遍 if)。
+
+    · 章程**有**时间退出(`base_hold` 非 None、无 `horizon`)→ **冻结版 `_sim_one`**,
+      历史样本的判分口径因此**逐字节不变**(K4 / K7 时代的成绩单仍可比)。
+    · 章程**没有**时间退出(`v2.2-k8` 起)→ **地平线版 `_sim_one_h`**。
+
+    🔴 判据取 `horizon` 在不在,**不取 `base_hold is None`**:`score_kw_from_charter`
+    只在两档退役时才挂 `horizon`,两者本应同时成立;但万一有人手捏一份
+    `base_hold=None` 却没给 `horizon` 的 kw,落到冻结版会当场 `TypeError`
+    (`held >= None`)——**那正是我们要的**:配错就炸,⛔ 别悄悄兜住。
+    """
+    return _sim_one_h if score_kw.get("horizon") is not None else _sim_one
+
+
 #: 公开别名 —— 新代码用 `sim_one`,`_sim_one` 保留是为了 research 三处的既有写法
 #: (`h9._sim_one(...)`)一字不改地继续工作。两者是**同一个函数对象**。
 sim_one = _sim_one
@@ -180,6 +283,23 @@ _CHARTER_TO_SIM_KW: Tuple[Tuple[str, str], ...] = (
     ("stop_pct", "stop"),
 )
 
+#: 🔴 **评分地平线(交易日)—— 2026-08-11 用户拍板 `15`,§七 P0-56 的最后一件**。
+#:
+#: **它是什么**:回看审计时「一个篮子的成绩算到第几天为止」。⛔ **它不是交易纪律**,
+#: 不改变任何人的操作,也**不下发给客户端**、不进哨兵、不进任何在线判据。
+#:
+#: **为什么需要它**:`v2.2-k8` 把时间退出(`max_hold_days=5`)与浮盈硬上限
+#: (`max_hold_days_profit=15`)双双退役后,判分只剩 −5% 止损这一条退出 —— 一笔没跌到
+#: 止损的单子会**一直持有**,判分没有终点。此前这个终点是那两个字段**白送**的。
+#:
+#: **为什么是 15**:那正是退役前的**实际有效地平线**(`hard_cap=15`)。取它,新样本与
+#: `K4-pack` / `K7-pack` 时代的历史样本**仍在同一把尺子上**;换任何别的数,分层成绩单
+#: 里的历史对照全部作废(⚠ 这是选它的**主要理由**,不是"15 有什么道理")。
+#:
+#: ⛔ **改这个数 = 换掉成绩单的尺子** —— 必须像换包一样走用户拍板,并在变更日志里写明
+#: 「自某日起的样本与之前不可直接比较」。⛔ 别在别处抄一份字面量。
+SCORING_HORIZON_DAYS = 15
+
 
 def score_kw_from_charter(db_path: Optional[Path] = None) -> Dict[str, Any]:
     """把**现役章程**的纪律参数翻成 `_sim_one` 的关键字参数(生产侧判分的唯一入口)。
@@ -195,6 +315,14 @@ def score_kw_from_charter(db_path: Optional[Path] = None) -> Dict[str, Any]:
         time_exit_only_if_unprofitable → v1        (浮盈续命开关)
         max_hold_days_profit         → hard_cap    (浮盈单硬上限;未配置 → 退回 base_hold)
 
+    **`max_hold_days` / `take_profit_retrace` 可以是 `None`**(§七 **P0-56**):`v2.2-k8` 起
+    这两档已按 §2.1 第 2 条**刻意退役**,`None` = **没有这一档**,与 `momentum.py::_time_exit`
+    的第三档、`precall.py::has_time_exit_clause` 同一口径。此时判分改由**评分地平线**
+    (`SCORING_HORIZON_DAYS`)收口 —— ⛔ **绝不许把 5 / 0.08 写回 `strategy_versions`**
+    「补全」它,那等于把用户明令退役的机械纪律静默复活。
+
+    **`stop_pct` 仍是必需**:两档退役后,止损是判分仅存的纪律退出,没有它判分没有意义。
+
     **无现役章程 → `ValueError` fail loud**:判分没有纪律参数就没有意义,静默套一个
     默认值等于伪造审计口径(项目里「没有」与「没看」必须分得开)。
     """
@@ -206,25 +334,14 @@ def score_kw_from_charter(db_path: Optional[Path] = None) -> Dict[str, Any]:
             "score_kw_from_charter:策略大脑无现役版本,判分参数没有单一源 —— "
             "拒绝套用默认值(伪造审计口径比算不出更糟)"
         )
-    missing = [k for k, _ in _CHARTER_TO_SIM_KW if cfg.get(k) is None]
-    if missing:
-        # 🔴 **这条信息以前写的是「现役章程 config 缺必需字段」,是误导的**(§七 P0-56)。
-        # `v2.2-k8` 起 `max_hold_days` / `take_profit_retrace` 恒 `None` 是 **V2.2-⑤ 按
-        # §2.1 第 2 条刻意退役**的结果 —— **章程是对的,过时的是本函数**。V2.2-⑤ 把
-        # 「`None` = 没有这一档」推到了 `momentum.py` / `precall.py` / `holding.py` /
-        # `holding_k4_check.py` / `reconcile.py` / `basket_card.py` 等处,**唯独漏了判分引擎**。
-        # ⛔ **绝不许照字面去"补全"章程**(把 5 / 0.08 写回 `strategy_versions`)——
-        # 那等于把用户明令退役的机械止盈与时间退出**静默复活**,是本条最危险的误修方向。
+    kw: Dict[str, Any] = {sim_key: cfg.get(cfg_key) for cfg_key, sim_key in _CHARTER_TO_SIM_KW}
+    if kw["stop"] is None:
         raise ValueError(
-            f"score_kw_from_charter:判分引擎尚未适配「章程退役了 {missing}」这一情形"
-            "(§七 P0-56)。⛔ 这不是章程配错 —— `None` = 该档已按 §2.1 第 2 条退役,"
-            "⛔ 别把数值写回 strategy_versions 去"
-            "「修」它(那会静默复活已退役的机械纪律)。缺的是判分侧的评分地平线口径。"
+            "score_kw_from_charter:现役章程没有 `stop_pct` —— 时间退出与回落止盈退役之后,"
+            "止损是判分**仅存的**纪律退出,没有它这份判分不代表任何纪律口径"
         )
-
-    kw: Dict[str, Any] = {sim_key: cfg[cfg_key] for cfg_key, sim_key in _CHARTER_TO_SIM_KW}
-    kw["base_hold"] = int(kw["base_hold"])
-    kw["retrace"] = float(kw["retrace"])
+    kw["base_hold"] = None if kw["base_hold"] is None else int(kw["base_hold"])
+    kw["retrace"] = None if kw["retrace"] is None else float(kw["retrace"])
     kw["stop"] = float(kw["stop"])
     v1 = bool(cfg.get("time_exit_only_if_unprofitable") or False)
     hard_cap = cfg.get("max_hold_days_profit")
@@ -232,32 +349,35 @@ def score_kw_from_charter(db_path: Optional[Path] = None) -> Dict[str, Any]:
     # 浮盈续命没开、或没配硬上限 → `hard_cap` 退回 `base_hold`,使 `_sim_one` 的
     # `eff_max` 分支与「无差别时间退出」逐位等价(K1 行为)。
     kw["hard_cap"] = int(hard_cap) if (v1 and hard_cap is not None) else kw["base_hold"]
+    # 🔴 **只有在章程不设时间退出时才挂地平线**(P0-56 定案)。章程有时间退出的历史口径
+    # **一个字节都不受影响** —— `horizon` 缺席 → `_sim_one` 的地平线分支永不进入,
+    # K1 / v1.3 两档的逐位不变护栏因此原样成立(§3.11-E「放宽后必须跑逐位不变护栏」)。
+    if kw["base_hold"] is None:
+        kw["horizon"] = SCORING_HORIZON_DAYS
     return kw
 
 
 def forward_span_days(kw: Dict[str, Any]) -> int:
     """判分要向前看几个交易日 —— **唯一一处**推导(⛔ 调用方别再各写一遍)。
 
-    取 `hard_cap`(浮盈硬上限)优先、否则 `base_hold`(时间退出档)。
+    取值次序:`hard_cap`(浮盈硬上限)→ `base_hold`(时间退出档)→ `horizon`(评分地平线,
+    章程不设时间退出时由 `score_kw_from_charter` 挂上)。**三者皆无才报错。**
 
-    🔴 **两者皆 `None` → `ValueError` fail loud,⛔ 不拿 `1` 顶上**(§七 P0-56)。
-    原先三处调用方各写着 `int(kw.get("hard_cap") or kw.get("base_hold") or 1)`,那个
-    `1` 是一个**静默哨兵位**:章程把两档退役之后,它会把评分地平线悄悄取成 **1 个
-    交易日** —— 判分照跑、数字照出、报告照落盘,**看不出错**。§3.11-E 明文否决过
-    哨兵位(原话「哨兵位是"看不出来"的病」);那条讲的是 `9999`,而 `1` 是同一个病。
-
-    ⚠ **「不设时间退出之后,判分该向前看多远」是一个尚未裁定的量** —— 它此前是
-    `max_hold_days` / `max_hold_days_profit` 白送的(5 / 15),两档退役后就没有来源了。
-    ⛔ **不许在这里替用户定这个数**(🔴 定性需求不许自行定量)。
+    🔴 **⛔ 永不拿 `1` 顶上**(§七 P0-56)。原先三处调用方各写着
+    `int(kw.get("hard_cap") or kw.get("base_hold") or 1)`,那个 `1` 是一个**静默哨兵位**:
+    章程把两档退役之后,它会把前向窗口悄悄取成 **1 个交易日** —— 判分照跑、数字照出、
+    报告照落盘,**看不出错**。§3.11-E 明文否决过哨兵位(原话「哨兵位是"看不出来"的病」);
+    那条讲的是 `9999`,而 `1` 是同一个病。
     """
-    for key in ("hard_cap", "base_hold"):
+    for key in ("hard_cap", "base_hold", "horizon"):
         v = kw.get(key)
         if v is not None:
             return int(v)
     raise ValueError(
-        "forward_span_days:`hard_cap` 与 `base_hold` 皆为 None —— 现役章程已退役时间退出,"
-        "判分的评分地平线没有来源(§七 P0-56)。⛔ 拒绝默认成 1 个交易日:"
-        "那会让判分在一个几乎必然「还没走完」的窗口上出数,且看不出来。"
+        "forward_span_days:`hard_cap` / `base_hold` / `horizon` 三者皆为 None —— 前向窗口"
+        "没有来源(§七 P0-56)。⛔ 拒绝默认成 1 个交易日:那会让判分在一个几乎必然"
+        "「还没走完」的窗口上出数,且看不出来。走 `score_kw_from_charter()` 拿 kw 就不会"
+        "落到这里(它在章程无时间退出时会挂 `horizon=SCORING_HORIZON_DAYS`)。"
     )
 
 
@@ -397,7 +517,7 @@ def fill_and_score(
     t = ClosedTrade(ts_code=code, buy_date=t1, sell_date=t1, shares=shares,
                     buy_price=buy_price, sell_price=buy_price, buy_fees=buy_fees,
                     sell_fees=0.0, reason="")
-    rt = _sim_one(t, pm, ld, cal, cal_idx, **score_kw)
+    rt = _pick_sim(score_kw)(t, pm, ld, cal, cal_idx, **score_kw)
     if rt is None:
         # `_sim_one` 走完整段日历都没解出退出:要么价缺失,要么**前向窗口还没走完**。
         # 两种都不是"收益为 0",调用方必须按「算不出」处理(`metrics` 单独计数)。
@@ -489,6 +609,7 @@ __all__ = [
     "BROKER", "SLIP", "EPS",
     "ReTrade", "_sim_one", "sim_one",
     "score_kw_from_charter", "notional_from_charter", "forward_span_days",
+    "SCORING_HORIZON_DAYS",
     "FillScore", "fill_and_score",
     "FILL_OK", "FILL_NOT_BUYABLE", "FILL_NO_T1", "FILL_T1_SUSPENDED",
     "FILL_ABOVE_CEILING", "FILL_UNRESOLVED",

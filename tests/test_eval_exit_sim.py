@@ -246,6 +246,84 @@ class TestFrozenPairing:
         assert compared >= 300, f"造数退化(只比了 {compared} 条)"
         assert {"stop", "retrace", "time"} <= seen_reasons, f"退出分支覆盖不足:{seen_reasons}"
 
+    def test_horizon_version_is_bit_identical_when_horizon_absent(self):
+        """🔴 **P0-56 要求的「重新对拍」**:地平线版 `_sim_one_h` 在 `horizon=None` 时
+        与**冻结版** `_sim_one` 逐字段全等。
+
+        冻结守门(`test_source_is_byte_identical`)的原话是「改判分口径必须走**新版本 +
+        重新对拍**,⛔ 不许就地改」。上一条对拍证明冻结件没被动;**这一条证明新版本
+        没有借着"顺手"改动老口径** —— 两条合起来才是那句话的完整意思。"""
+        rng = random.Random(20260811)          # 固定种子:失败可复现
+        seen_reasons, compared = set(), 0
+        for _ in range(400):
+            case = _make_case(rng)
+            if case is None:
+                continue
+            t, pm, ld, cal, cal_idx, kw = case
+            a = exit_sim._sim_one(t, pm, ld, cal, cal_idx, **kw)
+            b = exit_sim._sim_one_h(t, pm, ld, cal, cal_idx, **kw)   # horizon 缺席
+            assert _fields(a) == _fields(b), (
+                f"新版本与冻结版在老口径上不等价:kw={kw} code={t.ts_code} buy={t.buy_date}")
+            compared += 1
+            if a is not None:
+                seen_reasons.add(a.reason)
+        assert compared >= 300, f"造数退化(只比了 {compared} 条)"
+        assert {"stop", "retrace", "time"} <= seen_reasons, f"退出分支覆盖不足:{seen_reasons}"
+
+    def test_horizon_fires_and_is_never_labelled_time(self):
+        """🔴 **地平线的行为契约**(§七 P0-56,用户 2026-08-11 拍板 15 个交易日)。
+
+        造一段**一路平价**的行情:不触止损、不触回落,章程两档皆退役(`base_hold=None`
+        / `retrace=None`)—— 若没有地平线,这笔单会一直持有到日历末端、判分永远出不来。
+
+        三条断言:① 地平线**真的收口**;② `held == 15`(不是 14 也不是 16);
+        ③ 🔴 `reason == "horizon"`,**⛔ 不是 `"time"`** —— 那两件事必须分得开:
+        `time` 是纪律说该走,`horizon` 只是测量窗口到头。写成 `time` 等于在成绩单里
+        把用户已经删掉的时间退出又讲了一遍。"""
+        cal = _CAL[:40]
+        cal_idx = {d: i for i, d in enumerate(cal)}
+        code = "H1.SZ"
+        n = len(cal)
+        pm = {code: {"idx": {d: i for i, d in enumerate(cal)},
+                     "o": [10.0] * n, "l": [9.99] * n, "c": [10.0] * n}}
+        t = ClosedTrade(ts_code=code, buy_date=cal[0], sell_date=cal[0], shares=1000,
+                        buy_price=10.0, sell_price=10.0, buy_fees=5.0, sell_fees=0.0, reason="")
+        kw = dict(base_hold=None, retrace=None, stop=0.05, v1=False,
+                  hard_cap=None, horizon=exit_sim.SCORING_HORIZON_DAYS)
+        rt = exit_sim._sim_one_h(t, pm, {}, cal, cal_idx, **kw)
+        assert rt is not None, "地平线没收口 —— 平价单会一直持有,判分永远出不来"
+        assert rt.reason == "horizon", f"记成了 {rt.reason!r} —— ⛔ 地平线不许写成 time"
+        assert rt.held_sessions == exit_sim.SCORING_HORIZON_DAYS + 1  # 含买卖两端
+
+        # 反向:没有地平线(horizon 缺席)→ 这笔单确实解不出退出(证明上面那条不是白给的)
+        kw_no = dict(kw); kw_no.pop("horizon")
+        assert exit_sim._sim_one_h(t, pm, {}, cal, cal_idx, **kw_no) is None
+
+    def test_stop_wins_over_horizon_on_the_same_day(self):
+        """⚠ **顺序是判据的一部分**:第 15 天同时踩到止损与地平线 → 必须记 `stop`。
+
+        纪律真的触发了,⛔ 不能被测量窗口盖掉 —— 否则成绩单会把一次真实止损
+        讲成「持有到期」,把最该看见的那类失败藏起来。"""
+        cal = _CAL[:40]
+        cal_idx = {d: i for i, d in enumerate(cal)}
+        code = "H2.SZ"
+        n = len(cal)
+        # ⚠ `held = k - k0 + 1` 且 k0=0 → **`held==15` 落在 `cal[14]`**(不是 cal[15])。
+        # 地平线判据是 `held >= horizon`,所以要制造"同一天"必须打在 14 这一格。
+        c = [10.0] * n
+        c[14] = 9.0                     # 第 15 个持有交易日收盘跌破 -5%
+        low = [9.99] * n
+        low[14] = 9.0
+        pm = {code: {"idx": {d: i for i, d in enumerate(cal)},
+                     "o": [10.0] * n, "l": low, "c": c}}
+        t = ClosedTrade(ts_code=code, buy_date=cal[0], sell_date=cal[0], shares=1000,
+                        buy_price=10.0, sell_price=10.0, buy_fees=5.0, sell_fees=0.0, reason="")
+        rt = exit_sim._sim_one_h(t, pm, {}, cal, cal_idx, base_hold=None, retrace=None,
+                                 stop=0.05, hard_cap=None,
+                                 horizon=exit_sim.SCORING_HORIZON_DAYS)
+        assert rt is not None and rt.reason == "stop", (
+            f"记成了 {rt.reason if rt else None!r} —— 止损被地平线盖掉了")
+
     def test_end_branch_and_delay_branches_covered(self):
         """`end`(数据末端强平)+ 跌停卖不出顺延 + 停牌顺延三条窄分支,单独造数覆盖。"""
         frozen = _FROZEN["_sim_one"]
@@ -359,13 +437,47 @@ class TestScoreKwFromCharter:
         with pytest.raises(ValueError, match="single_cap"):
             exit_sim.notional_from_charter()
 
-    def test_missing_required_field_fails_loud(self, monkeypatch):
+    def test_missing_stop_pct_fails_loud(self, monkeypatch):
+        """🔴 **两档退役之后,`stop_pct` 是判分仅存的纪律退出** —— 它缺席才是真错。
+
+        ⚠ 本测试**原先断言的是 `take_profit_retrace` 缺席也要抛**(§七 P0-56 之前的契约)。
+        那个契约已作废:`v2.2-k8` 按 §2.1 第 2 条**刻意退役**了回落止盈与时间退出,
+        `None` = 「没有这一档」是**正确状态**,不是配置缺失。见下面两条。"""
         monkeypatch.setattr(
             "neckline.strategy.brain.active_config",
-            lambda db_path=None: {"stop_pct": 0.05, "max_hold_days": 5},
+            lambda db_path=None: {"max_hold_days": 5, "take_profit_retrace": 0.08},
         )
-        with pytest.raises(ValueError, match="take_profit_retrace"):
+        with pytest.raises(ValueError, match="stop_pct"):
             exit_sim.score_kw_from_charter()
+
+    def test_retired_exit_clauses_are_not_an_error_they_get_a_horizon(self, monkeypatch):
+        """🔴 **P0-56 的核心契约**:章程退役两档 → ⛔ 不抛,改挂**评分地平线**。
+
+        ⛔ 这里断言的是「不抛」+「挂上 15」两件事。若有人为了"稳妥"把 `raise` 加回来,
+        整条周度判分链会重新变成静默瘫痪(生产上真发生过,见 P0-56)。"""
+        monkeypatch.setattr(
+            "neckline.strategy.brain.active_config",
+            lambda db_path=None: {"stop_pct": 0.05, "max_hold_days": None,
+                                  "take_profit_retrace": None, "max_hold_days_profit": None},
+        )
+        kw = exit_sim.score_kw_from_charter()
+        assert kw["base_hold"] is None and kw["retrace"] is None
+        assert kw["stop"] == 0.05
+        assert kw["horizon"] == exit_sim.SCORING_HORIZON_DAYS == 15
+        # 前向窗口有来源了 —— ⛔ 不再落到那个「拿 1 顶上」的静默哨兵位
+        assert exit_sim.forward_span_days(kw) == 15
+
+    def test_charter_with_time_exit_gets_no_horizon(self, monkeypatch):
+        """反向:章程**有**时间退出时 `horizon` **必须缺席** —— 那是历史口径逐位
+        不变的前提(`_pick_sim` 据此选冻结版 `_sim_one`)。"""
+        monkeypatch.setattr(
+            "neckline.strategy.brain.active_config",
+            lambda db_path=None: {"stop_pct": 0.05, "max_hold_days": 5,
+                                  "take_profit_retrace": 0.08},
+        )
+        kw = exit_sim.score_kw_from_charter()
+        assert "horizon" not in kw
+        assert exit_sim._pick_sim(kw) is exit_sim._sim_one
 
 
 # ══════════════════════════════════════════════════════════════════════════
