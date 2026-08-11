@@ -209,3 +209,32 @@ class TestContractOnlyGrows:
         assert out_side & dropped_side == set()
         assert out_side | dropped_side == set(codes)
         assert dropped_side == {ti.DROP_CAPACITY_OVERFLOW}
+
+
+def test_out_candidate_row_stays_402pt_safe():
+    """🔴 **③b-2 那一行在 iPhone 402pt 上的版式契约,钉成机器判据。**
+
+    **为什么要这条**:V2.3.2 ⑥ 出图时,③b-2 整节在 iPhone 视口里落在**第二屏**
+    (它前面有 行情状态卡 + ① 情绪卡 + ④ 昨日复盘卡 + ③ 的 T1/T2 两个空态),
+    砍了三轮演示数据仍顶不上首屏 → **本版没有 ③b-2 的 iPhone 实拍**(macOS 那张是全的)。
+    ⚠ 用户 2026-08-11 裁定:**⛔ 不许用 iPad 模拟器**(本项目只有 macOS 与 iOS 两个平台),
+    装不下就如实认缺口 + 靠单测兜底 —— **这条就是那个兜底**。
+
+    **它保护的是什么**(CLAUDE.md 402pt 那条坑的具体形态):首行是「票名(代码)」+
+    右对齐「出局结论」的横向密集行。**名称必须截断、徽标必须永不换行** ——
+    少了 `lineLimit(1)` 名称会撑成两行;少了 `fixedSize()` 中文徽标会被压成竖排单字
+    (「位 置 关 判 定 不 合 适」)。两种回归**编译不报错、跑不出来、只有实拍看得见**。
+    """
+    src = (Path(__file__).resolve().parent.parent
+           / "client" / "Neckline" / "Views" / "BasketDailyView.swift"
+           ).read_text(encoding="utf-8")
+    block = src.split("private struct OutCandidateRow: View {", 1)[1].split("\n}\n", 1)[0]
+
+    # ① 首行两件:名称截断 + 结论不换行不压缩
+    assert ".lineLimit(1).truncationMode(.tail)" in block, "票名少了截断 → 会撑成两行"
+    assert ".lineLimit(1).fixedSize()" in block, "出局结论少了 fixedSize → 中文会被压成竖排单字"
+    # ② 结构必须是「首行只放两件、其余收进次行」(⛔ 别把 role/引擎/关口搬回首行)
+    head = block.split("if let sub = subline", 1)[0]
+    for banned in ("item.role", "item.engineLabel", "item.gateLabel"):
+        assert banned not in head, f"{banned} 被搬回首行了 —— 402pt 上会把这一行挤爆"
+    assert "subline" in block and "nkGateEnforcementNote" in block

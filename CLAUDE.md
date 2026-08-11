@@ -132,12 +132,15 @@
   `NECKLINE_INITIAL_MODAL` 切初始 tab/弹层(iOS 用 `SIMCTL_CHILD_` 前缀传入 launch;
   env 需要 UserDefaults 的项如后端环境/token 用 `xcrun simctl spawn <udid> defaults
   write <bundle_id> <key> <value>` 提前写入);macOS 原生截图被沙盒挡时,拿"iOS 截图 +
-  双端 `xcodebuild` BUILD SUCCEEDED"当等价证据,不死磕。**页面内容纵向溢出 iPhone 视口
-  且需要看到滚动才可见的部分**(如候选卡多行 chips、长表单末尾字段):临时
-  `xcrun simctl create` 一台 iPad(`TARGETED_DEVICE_FAMILY` 含 "2" 时是原生 iPad
-  布局、非缩放兼容模式),同样点尺寸下可见内容显著更多,比试图裁剪测试数据凑
-  首屏更可靠(v1.4-⑧/v1.5-⑤ 验证过;**用完 `simctl delete` 收掉临时设备**,
-  别留常驻);仍不够时才认截图缺口、靠单测兜底,不死磕。
+  双端 `xcodebuild` BUILD SUCCEEDED"当等价证据,不死磕。
+  🔴 **⛔ 一律不许用 iPad 模拟器,任何用途都不许**(2026-08-11 用户当场裁定,V2.3.2 ⑥
+  出图时下达)—— **本项目只有 macOS 与 iOS 两个平台,没有 iPadOS**;拿 iPad 出的图
+  不代表任何一个真实端。~~原文:内容纵向溢出 iPhone 视口时临时 `simctl create` 一台
+  iPad 看更多内容(v1.4-⑧ / v1.5-⑤ 验证过)~~ —— **该做法已作废,⛔ 不得再援引**。
+  **页面内容纵向溢出 iPhone 视口时,只有两条路**:① **把演示数据前面几段砍短**
+  (演示库改一行的事);② 砍不动就**如实认截图缺口 + 靠单测兜底**(体例:
+  `tests/test_out_candidates.py::test_out_candidate_row_stays_402pt_safe` —— 把那一行的
+  `lineLimit`/`fixedSize`/两行结构钉成机器判据),并把缺口挂进 §七。⛔ 不死磕、⛔ 不换设备。
 - **本地零 LLM key 时,LLM 参考件/K4 派发警示截图靠写库伪造,不必等真 key**:候选
   `llmJudgment` 走独立 `llm_judgments` 表联查(**不在** `candidates_json` 内,塞
   `llm_judgment` 键无效,改用 `report_store.save_llm_judgment(...)` 插行);
@@ -270,7 +273,11 @@
 - **要让富状态(成员卡 / 六关宫格 / 刻度尺)出现在截图里,得先有数据**:走 `DB_PATH=<临时库>` 起一个隔离
   后端(`API_TOKEN` 需 **len≥16**,否则 lifespan fail-fast),临时库只从真库拷四张只读参考表、业务表手写
   假数据。⛔ **不碰 `data/neckline.db`**。内容纵向溢出时,与其死磕滚动,不如**把演示卡前面那几段砍短**
-  (演示库改一行的事)—— 比临时建 iPad 更快,iPad 上 `.sheet` 是定高 form sheet、照样看不到底部。
+  (演示库改一行的事)。⚠ **⛔ 不许换 iPad**(2026-08-11 用户裁定,见上文该条);砍不动就认缺口 + 单测兜底。
+  ⚠ **砍短也有天花板**(V2.3.2 ⑥ 实证):选股屏 ③b-2 前面固定压着 行情状态卡 + ① 情绪卡 +
+  ④ 昨日复盘卡 + ③ 的 T1/T2 两个空态 —— **把情绪置空反而更高**(空态卡比填满的还大)、
+  把 `basketsAvailable` 由 false 翻 true 也只是把一张大卡换成两个空态,三轮砍下来仍在第二屏。
+  这类"结构性压着"的段落**直接认缺口**,别再试第四轮。
 - 🔴 **演示库里凡「服务端枚举码」字段,必须喂真词表值,⛔ 别喂中文**(V2.3.1 批 3 / 批 4 / 批 5
   **连踩三次**):喂中文等于把**展示层换算这一整类 bug 全部屏蔽** —— `*_clamp` 印
   `rejected_not_above_close`、画像行印 `role · leader`、信息卡印 `pullback_leader`,三次都是

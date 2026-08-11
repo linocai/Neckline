@@ -342,12 +342,17 @@ struct PositionsView: View {
     }
 
     /// 「是哪几件」——⛔ 只数**已经在列表里的那两种醒目态**,不新造任何判定。
+    /// ⚠ V2.3.2-⑤ 实拍逮到:这里原来写死「已破止损 N」,而同一屏的卡上已经改口叫
+    /// 「已破警戒线」—— 同一件事一屏两个名字。称呼统一走 `stopLineShortLabel`
+    /// (⛔ 别写死成其一:章程回滚到强制条件单口径时,两处必须一起回去)。
     private var pendingDetail: String {
         let exit = model.positions.filter(\.isExitDay).count
-        let broken = model.positions.filter(\.hasBrokenStop).count
+        let brokenList = model.positions.filter(\.hasBrokenStop)
         var parts: [String] = []
         if exit > 0 { parts.append("今日离场 \(exit)") }
-        if broken > 0 { parts.append("已破止损 \(broken)") }
+        if let first = brokenList.first {
+            parts.append("已破\(first.stopLineShortLabel) \(brokenList.count)")
+        }
         return parts.isEmpty ? "无待处理" : parts.joined(separator: " · ")
     }
 
@@ -1420,7 +1425,9 @@ struct OpenPositionSheet: View {
                 Text("可选补充")
             } footer: {
                 if let range = model.entrySuggestionRange {
-                    Text("参考手数区间 \(range.qtyLow)–\(range.qtyHigh) 股(¥\(NKFmt.price(range.capFloor))–¥\(NKFmt.price(range.capCeil)),上限 = 违纪判定线、**非推荐值**),预计止损价 ¥\(NKFmt.price(range.stopLine))(按现役配置,提交后以实际返回值为准)。")
+                    // ⚠ 这仍是**字面量 + 插值**(`LocalizedStringKey`),`**非推荐值**` 照常
+                    // 解析成粗体;⛔ 别把整句先拼成 `String` 再传进来(那才会把星号印上屏)。
+                    Text("参考手数区间 \(range.qtyLow)–\(range.qtyHigh) 股(¥\(NKFmt.price(range.capFloor))–¥\(NKFmt.price(range.capCeil)),上限 = 违纪判定线、**非推荐值**),预计\(range.stopLineLabel) ¥\(NKFmt.price(range.stopLine))(按现役配置,提交后以实际返回值为准)。")
                 } else {
                     Text("实付费用留空时,D5 净浮盈判向走默认佣金率估算并诚实标注为估算;周复盘对账建议回填真数。")
                 }
