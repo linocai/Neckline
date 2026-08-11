@@ -127,6 +127,9 @@
   切换,或干脆只出 iOS 截图。**排障口诀**:用户报「换包后连不上/一片空白」→ **先
   `defaults read <bundle_id> | grep NK_`**,看有没有被写脏。⚠ 假 token 比没有 token 更坏:
   它让 App 看起来"配好了"却一直 401。
+  🔴 **这一步是「读一眼」,⛔ 不是「清空」**:该域里**本来就该有** `NK_API_TOKEN`(用户自己填的
+  真 token,打生产返 200)—— 要找的是**多出来的 `NK_BASE_URL_OVERRIDE`**。⛔ 见 `NK_` 就删 =
+  把用户的鉴权也一起删了。
 - **模拟器截图被推送授权弹窗盖住时,别去点它(点不动)**:`UNUserNotificationCenter`
   的授权弹窗会挡住页面中部,而且**终止 App 甚至重装都不会让它消失**(它挂在
   SpringBoard 上);`xcrun simctl privacy` **不支持 notifications**。两步解:①
@@ -203,12 +206,23 @@
   ✅ **解法已实测通(2026-08-10,V2.3.1 立项):`ditto` 出构建产物 → `PlistBuddy` 改副本
   `CFBundleIdentifier` 为 `top.linotsai.neckline.dev` + 改 `CFBundleName` → `codesign --force
   --deep --sign -`(macOS 侧无 entitlements、非沙盒,ad-hoc 够用)→ `open` → 用
-  `CGWindowListCopyWindowInfo` 按 `kCGWindowOwnerName` 取窗口号 → `screencapture -x -o -l<num>`**。
-  本机**屏幕录制权限已授予**(判据:窗口 `kCGWindowName` 读得到),`-l` 只截那一个窗口、
-  **画面里没有用户桌面**。⚠ 顺带拆雷:dev bundle id **另一个 UserDefaults 域** → `defaults write`
-  配演示后端终于安全(⛔ 仍然绝不写无后缀的 `top.linotsai.neckline`;每次收尾
-  `defaults read top.linotsai.neckline | grep NK_` 自检为空)。「iOS 截图 + 双端 BUILD SUCCEEDED」
-  降级为**兜底**,⛔ 不再是 macOS 的默认结案方式。
+  `open` → **App 自己截自己的窗口**(`NKDevCapture.swift`,DEBUG-only)。
+  🔴 **⛔ 别用 `screencapture -l<windowid>`**:V2.3.1 批 1 实测它会**在会话中途对任何 App 失效**
+  (拿 Xcode 窗口对照测过)。⚠ **「窗口标题读得到 = 有屏幕录制权限」这个判据在 macOS 26 上不成立**
+  —— `CGWindowListCopyWindowInfo` 仍读得到 27/31 个标题、`CGPreflightScreenCaptureAccess()` 仍返
+  `true`,但 `SCShareableContent` 报 **`displays=0`**。**要判权限就查 `SCShareableContent.displays` 非空。**
+  ⚠ 截**弹层**时 App 自截必须把 `attachedSheet` 合成进来(sheet 是另一个 `NSWindow`,否则截出一片灰);
+  ⚠ `kill -9` 反复杀 dev 变体会留下**损坏的 Saved Application State** → 下次启动卡在 `talagent`、
+  窗口永不出现(进程活着、0% CPU、日志为空,极易误判成截图链坏了);解:
+  `rm -rf ~/Library/Saved\ Application\ State/<bundle id>.savedState` +
+  `defaults write <bundle id> ApplePersistenceIgnoreState -bool YES`。
+  ⚠ 顺带拆雷:dev bundle id **另一个 UserDefaults 域** → `defaults write` 配演示后端终于安全。
+  🔴 **宿主域自检只查一个键:`defaults read top.linotsai.neckline NK_BASE_URL_OVERRIDE`
+  必须报 does not exist**。⛔ **绝不许 `grep NK_` 判空、更不许「不为空当场清掉」** ——
+  该域里的 `NK_API_TOKEN` **就是用户从设置屏亲手填的真 token**(2026-08-10 实测:拿它打生产
+  `/positions` 返 HTTP 200),照 `grep NK_` 清空 = **把用户正式 App 的鉴权当场清掉、之后一直 401**,
+  比原本要防的那颗雷更狠。要防的雷**只有一颗**:`NK_BASE_URL_OVERRIDE` 被写进宿主域。
+  「iOS 截图 + 双端 BUILD SUCCEEDED」降级为**兜底**,⛔ 不再是 macOS 的默认结案方式。
 - 🔴 **`Text(String)` 不解析 Markdown,只有 `Text("字面量")` 解析**(V2.3.1 批 2 实拍逮到两处):
   诚实披露文案里满是 `**没看**` / `**恒在**`,一旦把它改成 `+` 拼接、或传进一个 `String` 参数,
   **星号会原样印在界面上**。要传参就把形参声明成 `LocalizedStringKey`;要拼接就先拼成一整条字面量。
@@ -230,6 +244,26 @@
   后端(`API_TOKEN` 需 **len≥16**,否则 lifespan fail-fast),临时库只从真库拷四张只读参考表、业务表手写
   假数据。⛔ **不碰 `data/neckline.db`**。内容纵向溢出时,与其死磕滚动,不如**把演示卡前面那几段砍短**
   (演示库改一行的事)—— 比临时建 iPad 更快,iPad 上 `.sheet` 是定高 form sheet、照样看不到底部。
+- 🔴 **演示库里凡「服务端枚举码」字段,必须喂真词表值,⛔ 别喂中文**(V2.3.1 批 3 / 批 4 / 批 5
+  **连踩三次**):喂中文等于把**展示层换算这一整类 bug 全部屏蔽** —— `*_clamp` 印
+  `rejected_not_above_close`、画像行印 `role · leader`、信息卡印 `pullback_leader`,三次都是
+  **实拍看不出来**、把种子换成真码后当场现形。判据:该字段服务端发什么码,种子就写什么码。
+- 🔴 **`.hiddenTitleBar` 之后有四件事必须一起做**(V2.3.1 批 1):① 红绿灯仍被系统钉在标准标题栏
+  28pt 中线,要跟自建 50pt 栏对齐得手动挪 `standardWindowButton(_:)` 的 frame;② **拖窗只挂那一条栏**
+  (`.gesture(WindowDragGesture())`)—— ⛔ **不许 `isMovableByWindowBackground = true`**,那会让列表、
+  卡片处处能拖窗,一次没点准的点选就把窗口拖跑,**编译与单测都发现不了**;③ 内容要
+  `.ignoresSafeArea(.container, edges: .top)`,否则 SwiftUI 仍按 32pt 安全区把内容下推、顶上白一条;
+  ④ UserDefaults 里的 `NSWindow Frame …` **不再生效**,截图基准要靠 env 钉死。
+- **金额格式化分两档,且符号在 `¥` 外**(V2.3.1):`NKFmt.price` 两位小数 + 千分位(股价 / 费用)·
+  `NKFmt.amount` 无小数 + 千分位(合计成本 / 敞口)· `NKFmt.signedAmount` 符号在 ¥ 外。
+  ⛔ 别把负数直接喂 `NumberFormatter` 再自己拼 `¥` —— 会得到 **`¥-1,116`**(负号跑进货币符号里面),
+  **每一笔亏损仓都会中**,编译与单测都发现不了(已立 4 条单测钉死,期望值取自原型行号)。
+  locale 钉死 `en_US_POSIX`:跟系统区域走会让不同机器的截图对不上,某些区域还会空格分组。
+- **改双端共用件时,⛔ 别只改一个平台的调用点**(V2.3.1 批 7 实拍逮到):批 2 改了「① 情绪与市场语境」
+  的共用件却只改 macOS 调用点 → **iOS 上那个标题出现了两次**。判据:动共用件后,**两个平台各出一张实拍**。
+- **`xcrun simctl launch <udid> <bid> K=V` 会把 `K=V` 当启动参数**,不是环境变量 ——
+  必须写 `SIMCTL_CHILD_K=V xcrun simctl launch …`(V2.3.1 批 7 订正:此前误判成
+  `NECKLINE_SKIP_PUSH_PROMPT=1` 失效,其实是传参姿势错了)。
 
 ## 周复盘对账(阶段4D)
 
