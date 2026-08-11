@@ -436,3 +436,32 @@ def test_weekly_unit_timeout_is_strictly_above_the_llm_budget():
               if ln.strip().startswith("TimeoutStartSec=")]
     assert len(values) == 1, values
     assert values[0] > REVIEW_BUDGET_SECONDS, (values[0], REVIEW_BUDGET_SECONDS)
+
+
+def test_report_unit_quota_debt_is_settled_with_real_readings():
+    """✅ **③-A 的配额欠账已于 2026-08-11 V2.3.2 批 6 部署时销案**(`neckline-report.
+    service`)。本条锁的是「销案是有读数撑着的」——⛔ 不是"删掉那段欠账文字就算销了"。
+
+    🔴 **`0.13s`/`0.16s` 这两个数为什么必须留在文件里**:③-A 在**整段实测里是空转的**
+    (那天 `out_candidates` 还是 0 行)—— 只看整段墙钟根本量不到它。它的成本是**另外
+    单独量的**(合成 OUT 清单 N=100 / N=500、`persist=False` 只读),而"对 N 几乎平坦"
+    正是 P0-23 那句"不构成新的全市场级批算路径"从纸面推断变成实测结论的地方。
+    删掉这两个数,销案就退回成一句没有依据的断言。
+
+    ⚠ 同时锁住「轻负载登记」那句:本次实测跑在**只有 1 个篮子**的晚上,
+    ⛔ 不许被后人读成"2400/1000M 已经在忙日上量准了"。"""
+    head = (_ROOT / "deploy" / "neckline-report.service").read_text(encoding="utf-8")
+    body = [ln.strip() for ln in head.splitlines()]
+
+    assert "为什么本次不改数" not in head, "③-A 欠账已销案,这句话不该还在"
+    assert "生产隔离实测复核" in head
+    # ③-A 的增量读数(单独量的那次)—— 销案的唯一依据
+    assert "N=100 → 0.13s" in head and "N=500 → 0.16s" in head
+    assert "对 N 几乎平坦" in head
+    # 整段读数 + 内存反证(压低 MemoryMax,`MemoryPeak` 读数不可信)
+    assert "整段墙钟 65s" in head
+    assert "400M 扛住" in head and "256M 被 OOM-kill" in head
+    # 轻负载登记:⛔ 别把这次实测读成"忙日也够"
+    assert "只有 1 个篮子" in head and "本次没有回答" in head
+    # 配额本身:本次结论是**两个都不动**
+    assert "TimeoutStartSec=2400" in body and "MemoryMax=1000M" in body

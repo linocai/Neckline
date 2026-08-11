@@ -20,21 +20,41 @@
 # 读回。三态(没跑 ⑥ / 跑了零溢出 / 跑了有溢出)与单进程路径逐位同构,详见
 # PROJECT_PLAN §五 V2-⑯-D 补记。
 #
-# 🔴 **欠账(必须在 V2.3.2 第 ⑥ 块部署时销掉;2026-08-11 复审整改登记)**:
-#    V2.3.2-③-A 给 `SEG_REVIEW` 段**加了一段**(OUT 研究影子对照 D1 机械记录,
-#    `review/out_shadow.py::record_day`),而**本文件的 `TimeoutStartSec` / `MemoryMax`
-#    一个字没动** —— 那两个数是加这一段**之前**定的。
-#    **为什么本次不改数**:③-A 的代码还没上过 nk,没法在 nk 上量它;凭感觉调这两个数
-#    正是 P0-23 明令禁止的做法。
-#    **P0-23 核对结论 = 不构成新的全市场级批算路径**:样本 = 当日 OUT 票数(量级几十),
-#    取数 = 逐票点查 D1 当日行 + 已有 EOD 只读表,**无全市场扫描、无多年回看**;
-#    ⚠ 但 `record_day` 在**未注入 `day`** 时会自建一份只含 OUT 票的 `DayMarket`
-#    (生产路径就是这条,见 `out_shadow.py` 模块头)—— 那是一次真实的行情装配,
-#    要量的就是它。
-#    **部署时必须**:① 在 nk 上隔离实测一次带 ③-A 的完整 `--segments review,report`
-#    (`systemd-run --unit=… --property=User=neckline --property=Group=neckline
-#    --property=MemoryMax=…`,⛔ 不用 root 的 `--scope`);② 按实测复核 2400 / 1000M
-#    这两个数;③ 把读数写回本文件头,并删掉这段欠账。
+# ✅ **配额已于 2026-08-11 V2.3.2 第 ⑥ 块部署时生产隔离实测复核,欠账销案。结论:
+#    `TimeoutStartSec=2400` / `MemoryMax=1000M` **两个数都不动** —— ③-A 的增量约等于零。**
+#
+#    **要量的是什么**:V2.3.2-③-A 给 `SEG_REVIEW` 段加了一段(OUT 研究影子对照 D1 机械
+#    记录,`review/out_shadow.py::record_day`),而这两个数是加它**之前**定的。
+#    ⚠ `record_day` 在**未注入 `day`** 时会自建一份只含 OUT 票的 `DayMarket`(生产路径
+#    就是这条,见 `out_shadow.py` 模块头)—— 那是一次真实的行情装配,要量的就是它。
+#
+#    **实测条件**:nk 上 `systemd-run --unit=… --property=Type=oneshot
+#    --property=User=neckline --property=Group=neckline --property=MemoryMax=…` 瞬态
+#    service(⛔ 未用 root 的 `--scope` —— 那会把行情文件写成 root 属主);
+#    命令 = `evening.py --segments review,report`(⛔ 去掉 `--notify`:探针不该给用户
+#    推一条重复报告;那一步是一次 APNs 调用,不影响量级)。
+#
+#    **读数**:
+#      · **整段墙钟 65s**(两跑一致:20:23:51→20:24:56 与 20:27:28→20:28:33),CPU 5.1s;
+#        其中**两次 LLM 流式调用占了约 63s**(⑨ 复盘 43.3s + 报告渲染 ~20s),机械部分 ~2s。
+#        ⚠ 实测那天只有 **1 个篮子**,墙钟随篮子数走 —— 这是**轻负载样本**,见下面的登记。
+#      · **内存**:峰值读数 312.2M / 294.0M;按纪律压低 `MemoryMax` 反证 ——
+#        **400M 扛住**(`Result=success`)/ **256M 被 OOM-kill**(`Result=oom-kill`,
+#        status 9)→ 真峰值落在 **(256M, 400M]**。
+#      · **③-A 的增量单独量过**(合成 OUT 清单、`persist=False`、只读不写库):
+#        **N=100 → 0.13s;N=500 → 0.16s**,进程 maxrss 80.8M / 82.1M(含 import)。
+#        🔴 **对 N 几乎平坦** —— 成本在"读那一天的行情分区"这件固定开销上,不在票数上。
+#        P0-23 核对结论(不构成新的全市场级批算路径)由此**被实测证实**,不再是纸面推断。
+#
+#    **为什么两个数都不动**:③-A 的增量 ≈ 0.2s / ≈ 0 内存,动不了 2400 / 1000M 的量级;
+#    而 2400 / 1000M 本身**不是本次实测的对象**(它们是加 ③-A 之前为整段定的)。
+#    ⚠ **登记(⛔ 别当成"已经量准了")**:本次实测跑在**只有 1 个篮子**的轻负载晚上,
+#    `out_candidates` 当时还是 0 行(第一次带新代码的晚间链尚未跑)→ ③-A 那一段在
+#    **整段实测里是空转的**,它的成本是另外单独量的(上面第三条)。**「2400 / 1000M 对
+#    一个 5~7 篮的忙日够不够」这个问题,本次没有回答** —— 已挂 PROJECT_PLAN §七 backlog,
+#    ⛔ 不在这里凭感觉调。
+#
+#    🔴 **改这两个数必须重新实测**(P0-23 纪律),⛔ 别凭感觉调。
 #
 # 安装:sudo cp /opt/neckline/deploy/neckline-report.service /etc/systemd/system/ && sudo systemctl daemon-reload
 # ⛔ 无 [Install]:由 neckline-evening.target 拉起。
