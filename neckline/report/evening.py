@@ -304,6 +304,26 @@ def run_evening_chain(
         except Exception:  # noqa: BLE001
             logger.warning("[evening] ④-B 交易时钟对账失败(已吞,不阻断链)", exc_info=True)
 
+        # —— V2.3.2-③-A OUT 研究影子对照(**旁路**,与复盘 / 结案互不牵连)————————
+        # K8 §十四:被判 OUT 的票 D1 走成什么样 —— 六道关口有没有错杀(§七 P3-49 的
+        # **漏选侧**证据)。⛔ 不进 T1/T2、不启交易时钟、不计入正式样本、不增加用户
+        # 手工填写(结构性保证 + AST 守门在 `review/out_shadow.py`)。
+        # ⚠ 独立 try/except:炸了只 WARNING,⛔ 不许连累复盘或结案(同 ④-B 体例)。
+        # ⚠ `record_day` 自己也永不抛异常,这层是双保险。
+        try:
+            from neckline.review.out_shadow import record_day as record_out_shadow
+
+            ores = record_out_shadow(trade_date, db_path=db_path, parquet_dir=parquet_dir)
+            res.stats["out_shadow"] = {
+                "d0": ores.d0, "candidates": ores.candidates,
+                "inserted": ores.inserted, "existing": ores.existing,
+            }
+            res.notes.extend(ores.notes)
+            logger.info("[evening] ③-A OUT 研究影子对照:%s", res.stats["out_shadow"])
+        except Exception:  # noqa: BLE001
+            logger.warning("[evening] ③-A OUT 研究影子对照失败(已吞,不阻断链)",
+                           exc_info=True)
+
     # —— 报告落库(链的最后一段)————————————————————————————————————
     if SEG_REPORT in wanted:
         try:

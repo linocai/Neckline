@@ -141,6 +141,41 @@ def step_calibration(anchor: date, db_path: Path, parquet_dir: Optional[Path], *
             list(report.degraded))
 
 
+def step_out_shadow_review(anchor: date, db_path: Path) -> str:
+    """步 4:OUT 研究影子对照的**周度 LLM 集中复核**(V2.3.2-③-B;K8 §十四)。
+
+    🔴 **这是本版唯一新增的一次 LLM 调用**(一次管八只,⛔ 不逐票调用)——
+    它顶到 `neckline-weekly.service::TimeoutStartSec` 与 `REVIEW_BUDGET_SECONDS`
+    的关系上,unit 文件头有专门一节写这件事,改配额前先读那一节。
+
+    ⛔ **只出研究结论**:不改 OUT 身份、不进 T1/T2、不计入正式样本、不产生任何交易
+    动作(K8 §十四 逐字)。`provider=None`(无 key)→ 只出机械读数,不算失败。"""
+    from neckline.llm.budget import BudgetLedger
+    from neckline.llm.factory import get_provider
+    from neckline.llm.router import TASK_REVIEW
+    from neckline.review import out_shadow
+
+    lo, hi = calibration.week_bounds(anchor)
+    if lo is None:
+        return f"{anchor} 所在那一周没有交易日,本周无 OUT 复核窗口(如实跳过)"
+    try:
+        provider = get_provider(TASK_REVIEW, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        provider = None
+        logger.warning("  ⚠ OUT 复核:LLM provider 取不到,本期只出机械读数", exc_info=True)
+    res = out_shadow.review_week(
+        anchor, lo, hi, provider=provider, ledger=BudgetLedger(), db_path=db_path)
+    for n in res.notes:
+        logger.warning("  ⚠ %s", n)
+    scope = res.scope
+    return (f"OUT 研究影子对照复核 {res.window[0]}→{res.window[1]}:"
+            f"窗口内 OUT {res.universe} 只,复核 {res.reviewed} 只"
+            f"({scope.top_n if scope else 0} 最强 + {scope.random_n if scope else 0} 随机"
+            f"{',已扩大' if (scope and scope.expanded) else ''}),"
+            f"明显错杀 {res.obvious_miskill} 只;LLM 段 {res.llm_stage}"
+            f"{'(已落表)' if res.persisted else '(本周行已存在,未覆盖)'}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -151,6 +186,8 @@ def main() -> int:
     parser.add_argument("--no-tradable", action="store_true", help="跳过可交易收益判分")
     parser.add_argument("--skip-profile", action="store_true", help="跳过步 1 画像批算")
     parser.add_argument("--skip-clocks", action="store_true", help="跳过步 3a 交易时钟对账")
+    parser.add_argument("--skip-out-review", action="store_true",
+                        help="跳过步 4 OUT 研究影子对照周度复核(唯一一次 LLM 调用)")
     parser.add_argument("--db", dest="db", help="SQLite 路径(缺省 settings.db_path)")
     parser.add_argument("--parquet-dir", dest="parquet_dir", help="parquet 根目录(缺省 settings)")
     args = parser.parse_args()
@@ -195,6 +232,16 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         logger.error("步 2/3b 周度校准报告失败:%s: %s", type(exc).__name__, exc, exc_info=True)
         failures.append("calibration")
+
+    if args.skip_out_review:
+        logger.info("步 4 OUT 研究影子对照复核:--skip-out-review,跳过")
+    else:
+        try:
+            logger.info("步 4 %s", step_out_shadow_review(anchor, db_path))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("步 4 OUT 研究影子对照复核失败:%s: %s",
+                         type(exc).__name__, exc, exc_info=True)
+            failures.append("out_shadow_review")
 
     if failures:
         # 🔴 让 `ExecMainStatus` 说真话:任一步失败即非零退出(§铁律「timer 跑过 ≠

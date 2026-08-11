@@ -235,12 +235,24 @@ class TestUnitFiles:
         # ① 占位值不许回来(3600 = "实际上没有超时";1400M 比实测需要多 3.5 倍)
         assert "TimeoutStartSec=3600" not in body, "3600 是占位值,一小时超时等于没有超时"
         assert "MemoryMax=1400M" not in body, "1400M 是占位值,真泄漏时兜不住"
-        assert "TimeoutStartSec=900" in body and "MemoryMax=800M" in body
+        assert "MemoryMax=800M" in body
+        # 🔴 **2026-08-11 V2.3.2-③-B 起 `TimeoutStartSec` 不再是 900**:③-B 给本作业
+        # 加了一次周度 LLM 调用,而 900 **恰等于** `REVIEW_BUDGET_SECONDS` —— 「预算
+        # 耗尽」与「systemd SIGTERM」会落在同一秒。守门因此从"钉住 900"改成钉住那条
+        # **不变量**(> 预算上限),数值本身留给实测收敛。
+        # ⛔ 别把它改回 `== 900`(那正是要防的那颗雷)。
+        # ⚠ 不变量的正面守门在 `tests/test_out_shadow.py::
+        #   test_weekly_unit_timeout_is_strictly_above_the_llm_budget`,这里只锁"别退回去"。
+        assert "TimeoutStartSec=900" not in body, "900 恰等于 REVIEW_BUDGET_SECONDS,是雷"
 
         # ② 实测读数与选值理由必须留在文件里(否则下一个人无从判断该不该动它)
         assert "已生产隔离实测校准" in head
         assert "400M 扛住" in head and "256M 被 OOM-kill" in head, "反证读数是选值的唯一依据"
         assert "改这两个数必须重新实测" in head
+        # ③-B 的欠账必须写在文件里:1800 是**推算的保守上界,不是实测值**,
+        # 部署时必须在 nk 上实测收敛。⛔ 这句话被删掉 = 欠账被悄悄销了。
+        assert "不是重新实测出来的" in head
+        assert "部署时必须" in head
 
         # ③ nk 上不许用 root `--scope`(会把行情文件写成 root 属主)—— 这条恒有效
         assert "systemd-run" in head and "--scope" in head

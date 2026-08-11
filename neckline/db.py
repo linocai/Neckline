@@ -1355,6 +1355,64 @@ CREATE TABLE IF NOT EXISTS out_candidates (
   UNIQUE(d0_date, basket_key, ts_code)
 );
 CREATE INDEX IF NOT EXISTS idx_out_candidates_day ON out_candidates(d0_date);
+
+-- ═══ V2.3.2-③-A OUT 研究影子对照:D1 前向读数,**append-only** ═══════════════
+-- K8 §十四:被判 OUT 的票在 D1 实际走成什么样(六项读数)。⛔ **不进 T1/T2、不启
+-- 交易时钟、不计入正式样本、不增加用户手工填写**(K8 §十四 逐字)——结构性保证由
+-- `neckline/review/out_shadow.py` 的零 import / 零写表守门单测钉死。
+--
+-- ⚠ **与阈值影子(`threshold_shadow_evals`)是两件完全不同的事,⛔ 不许混名**:
+--   · 本表单位 = **OUT 票 × D1**,问「被判 OUT 的票是不是被错杀」;
+--   · 那张表单位 = 候选 × 阈值键,问「这条待定阈值该不该恢复成硬门」。
+--
+-- 🔴 **主键刻意是 `(d0_date, ts_code)`、⛔ 不含 `basket_key`**:同一票在同一 D0 可能
+--    出现在多个 OUT 篮(篮子间成员可重叠),但 **D1 读数是这只票的属性** —— 存两份
+--    就是两个事实源。`out_gate`/`out_reason` 取**确定性的第一条**(按 `basket_key`
+--    升序),全部出局记录另存进 `support_and_invalidation_json` 的 `all_out_records`
+--    键(⛔ 别用"最后写入的赢"这种非确定性写法)。
+-- ⚠ `rel_strength` 存的是**板块基准**那一个(⑧-1:板块为主、指数为辅);两个基准的
+--    完整读数都在 json 里。
+CREATE TABLE IF NOT EXISTS out_shadow_daily (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  d0_date TEXT NOT NULL,
+  ts_code TEXT NOT NULL,
+  d1_date TEXT NOT NULL,
+  pct_chg REAL,                      -- K8 §十四 ①涨跌幅(小数,同 member_return 口径)
+  high REAL,                         -- ②最高价
+  low REAL,                          -- ③最低价
+  close_state TEXT,                  -- ④收盘状态(复用 ⑨ 可买性同名口径的四码)
+  rel_strength REAL,                 -- ⑤相对强弱(**板块基准**;指数基准在 json 里)
+  support_and_invalidation_json TEXT NOT NULL DEFAULT '{}',   -- ⑥支撑与失效原始数据
+  out_gate TEXT,
+  out_reason TEXT,
+  engine_code TEXT,
+  engine_version TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(d0_date, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_out_shadow_d0 ON out_shadow_daily(d0_date);
+
+-- ═══ V2.3.2-③-B 周度 OUT 集中复核的**跨周状态**(⑧-2 拍板),**append-only** ═══
+-- 🔴 **为什么必须落表**:⑧-2 的扩大 / 恢复判据是「**连续 2 次**周度复核」——跨周状态
+--    用内存计数器必然丢;而**用库里的计数器同样错**:重跑一次周报就会把它推进一格
+--    (§六 那条教训的同款)。故本表按 `week_anchor` **一周一行**(UNIQUE),
+--    「连续几次」由读**最近两行**现算 —— **重跑同一周只会命中已有行(INSERT OR
+--    IGNORE),永远推不动连续计数**。
+-- ⛔ 本表只改**研究复核范围**:不改 OUT 身份、不进 T1/T2、不计入正式样本。
+CREATE TABLE IF NOT EXISTS out_shadow_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  week_anchor TEXT NOT NULL UNIQUE,  -- 该周的锚日(YYYYMMDD),一周一行
+  window_from TEXT NOT NULL,
+  window_to TEXT NOT NULL,
+  scope_top INTEGER NOT NULL,        -- 本次复核了几只「表现最强」(5 或 10)
+  scope_random INTEGER NOT NULL,     -- 本次复核了几只「随机」(3 或 5)
+  expanded INTEGER NOT NULL DEFAULT 0,   -- 1 = 本次处于扩大态
+  reviewed_count INTEGER NOT NULL DEFAULT 0,
+  obvious_miskill_count INTEGER NOT NULL DEFAULT 0,  -- ⑧-2 五条同时满足的只数
+  result_json TEXT NOT NULL DEFAULT '{}',
+  llm_stage TEXT,
+  created_at TEXT NOT NULL
+);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

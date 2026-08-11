@@ -46,6 +46,34 @@
 #
 #    🔴 **改这两个数必须重新实测**(同一条 P0-23 纪律),⛔ 别凭感觉调。
 #
+# 🔴🔴 **2026-08-11 V2.3.2 批 3(③-B)追加:900 已经不安全,本次上调到 1800** —— 读完再改。
+#
+#    **雷是什么**:③-B 给本作业加了**步 4 = 唯一的一次周度 LLM 调用**(OUT 研究影子
+#    对照集中复核,一次管八只)。它花的时间记在 `llm/budget.py::LEDGER_REVIEW` 这本账
+#    上,而那本账的上限 `REVIEW_BUDGET_SECONDS = 15*60 = 900s` —— **恰好等于本 unit
+#    原来的 `TimeoutStartSec=900`**。两个 900 含义完全不同却数值相等:于是「LLM 预算
+#    刚好耗尽」与「systemd 发 SIGTERM」会**落在同一秒**,作业被 kill 在它本该优雅降级
+#    的那一刻,而且现场看起来像"LLM 挂了"而不是"我们把超时配平了"。
+#
+#    **本次取值 1800 的算术**(⛔ 不是拍脑袋,但**也不是新的实测值**,见下面的欠账):
+#      · LLM 段上界 = `REVIEW_BUDGET_SECONDS` = **900s**(预算账自己的天花板);
+#      · 非 LLM 段 = 2026-08-11 实测 **14.28s**,该次实测同时登记了「窗口成熟后估计
+#        上界约 100~150s」;
+#      · 900 + 150 ≈ **1050s** 是本作业的推算上界 → 取 **1800s ≈ 1.7×** 留余量。
+#    判据本身也已钉成机器判据:`tests/test_out_shadow.py` 正面守门
+#    **`TimeoutStartSec` 必须 > `REVIEW_BUDGET_SECONDS`** —— 谁把它调回 900 谁的测试红。
+#
+#    🔴 **欠账(必须在 V2.3.2 第 ⑥ 块部署时销掉)**:1800 是**按已有实测数推的安全上界,
+#    不是重新实测出来的**。③-B 的代码在写这行字的时候还没上过 nk,没法在 nk 上量它。
+#    **部署时必须**:① 代码上产后在 nk 上隔离实测一次带步 4 的完整周度作业墙钟
+#    (`systemd-run --unit=… --property=User=neckline --property=Group=neckline
+#    --property=MemoryMax=…`,⛔ 不用 root 的 `--scope`);② 按实测把 1800 收敛到
+#    「实测上界 × 6~9 倍」那个既有选值口径上;③ 把读数写回本文件头。
+#    ⚠ 在实测之前,**1800 只是"不会踩中 900 那颗雷"的保守值**,⛔ 别把它当校准值引用。
+#
+#    ⚠ `MemoryMax=800M` 本次**未动**:步 4 只多读几十行影子行 + 一次 LLM 调用,
+#    不构成新的全市场级批算路径(P0-23 核对结论);但同一次部署实测要顺带量一下峰值。
+#
 # 安装:
 #   sudo cp /opt/neckline/deploy/neckline-weekly.{service,timer} /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now neckline-weekly.timer
@@ -64,5 +92,8 @@ WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
 ExecStart=/opt/neckline/.venv/bin/python scripts/weekly.py
 # ✅ 2026-08-11 生产隔离实测校准值(理由与读数见文件头,⛔ 改它必须重新实测)。
-TimeoutStartSec=900
+# ⚠ `TimeoutStartSec` 已于同日 V2.3.2 批 3 由 900 上调到 1800(理由见文件头那一节:
+#   900 恰等于 `REVIEW_BUDGET_SECONDS`,③-B 加了一次 LLM 调用后必然踩雷)。
+#   🔴 1800 是推算的保守上界,**部署时必须在 nk 上实测并收敛**。
+TimeoutStartSec=1800
 MemoryMax=800M

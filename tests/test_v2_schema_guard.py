@@ -252,7 +252,8 @@ _APPEND_ONLY_TABLES = ("user_actions", "basket_verification", "selection_pack_ac
                        # V2.3.2 三张新审计表(plan §五 ⑨):阈值影子 / OUT 股票级清单 /
                        # OUT 研究影子对照。⛔ 三张都只增不改 —— 「上一次怎么判的」
                        # 本身就是审计对象,覆盖掉就没了。
-                       "threshold_shadow_evals", "out_candidates")
+                       "threshold_shadow_evals", "out_candidates", "out_shadow_daily",
+                       "out_shadow_reviews")
 # 追加表禁 UPDATE/DELETE;**`INSERT OR REPLACE` 也算改写**(= 先删后插),Y1 一并补上
 # ——「只 INSERT」这条纪律不是靠动词第一个单词是 INSERT 就算数的。
 _FORBIDDEN_APPEND_SQL = tuple(
