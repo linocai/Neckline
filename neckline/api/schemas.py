@@ -588,6 +588,15 @@ class PositionOut(BaseModel):
     price: float                 # 哨兵最近一拍 / EOD 兜底;拉不到 → 0.0
     status: str
     stopLine: float              # = buy×(1−stop_pct) 派生(读现役 config,§2.1 单一常量)
+    # —— V2.3.2-⑤(K8.md §十九):`stopLine` 这条线**现在是「亏损警戒线」**——————————
+    # 🔴 **数值口径一字未变**:仍是 `buy×(1−stop_pct)`,`stop_pct` 仍是 0.05、仍是唯一源。
+    # 变的是它**触发什么**:`lossWarningAction == "review"` = 到线只发**亏损警戒**、由用户
+    # 完成离场决策,**系统不触发任何自动卖出**(K8.md §十三 逐字)。
+    # ⚠ **两位都可能是 `null`** = 现役章程**没有声明过**这个语义(`v2.2-k8` 及以前的行里
+    # 就没有这两个字段)—— ⛔ 不是"声明为强制条件单",也⛔ 不许拿 `stop_pct` 顶上去。
+    # 客户端据此决定这条线叫「亏损警戒线」还是「止损线」(`decodeIfPresent`,缺键 → 老文案)。
+    lossWarningPct: Optional[float] = None
+    lossWarningAction: Optional[str] = None
     stopOrderChecked: bool = False   # 用户自证「已挂 -5% 条件单」(真对账在 4D 周复盘)
     # —— v1.1-B.1 持仓生命周期派生字段(服务端算好,客户端不重算日历)——————————
     dCount: int = 1              # D 计数(买入日=D1,交易日历口径,单一源 positions.d_count)
@@ -668,6 +677,10 @@ class EntrySuggestionOut(BaseModel):
     capFloor: float              # 下限档金额 = single_cap × 展示层因子(见 app.py)
     capCeil: float               # 上限档金额 = single_cap(违纪判定上限,读现役 config)
     stopLine: float              # 现价×(1−stop_pct)派生(读现役 config)
+    # V2.3.2-⑤:同 `PositionOut` —— 这条线在 `lossWarningAction=="review"` 下是
+    # 「亏损警戒线」(数值口径不变,系统永不代下单);`null` = 现役章程未声明该语义。
+    lossWarningPct: Optional[float] = None
+    lossWarningAction: Optional[str] = None
 
 
 class PositionOpenIn(BaseModel):

@@ -46,7 +46,7 @@ import sqlite3
 from datetime import date, datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from neckline.db import connection, init_schema
 
@@ -492,35 +492,83 @@ def active_config(db_path: Optional[Path] = None) -> Dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-#  §2.1 第 1 条的止损口径:「强制条件单」 vs 「止损警戒 + 离场决策」(V2.2-⑤)
+#  §2.1 第 1 条的止损口径:「强制条件单」 vs 「亏损警戒 + 离场决策」(V2.2-⑤ / V2.3.2-⑤)
 # ══════════════════════════════════════════════════════════════════════════
 #
-# 🔴 **为什么按版本号声明,而不是从 config 推**:`v2.2-k8` 与 `v1.3.3` 的 `stop_pct`
-# **都是 0.05**(§五 ⑤ 明写「值与唯一源地位一字不动,改的是它触发什么」)—— 这个差异
-# **只活在 §2.1 的条文里,config 里没有任何字段编码它**。故只能声明式登记,体例照
-# `scripts/activate_charter.py::_CORE_EXPECTATIONS`(同样是"章程语义按版本名钉死")。
+# 🔴 **V2.3.2-⑤ 起判据换成「先读 config,读不到才回退白名单」**(K8.md §十九 给了对外
+# 语义字段:`loss_warning_pct=0.05` + `loss_warning_action="review"`)。
 #
-# ⚠ **默认方向 = 强制条件单(更严)**:名单外的任何版本(含将来新加的)一律按「破线
-# 未走 = 违纪」判。新章程若也走 K8 的警戒口径,**必须显式加进这个名单** —— 漏加的
-# 后果是"多记一条违纪"(吵),不是"少记一条违纪"(静默漏审),方向刻意选前者。
+# **原来为什么只能声明式**:`v2.2-k8` 与 `v1.3.3` 的 `stop_pct` **都是 0.05**,差异
+# **只活在 §2.1 的条文里,config 里没有任何字段编码它** —— 那时除了按版本名钉死没有
+# 第二条路。**现在有了**:`v2.3-k8` 起 `loss_warning_action` 就是那个字段,章程自己
+# 说得清自己是什么口径,不必再靠一份跟着版本号长的名单。
 #
-# ⚠ **这条名单是 staged 的物理落点**:§2.1 前置提示写死「`v2.2-k8` 激活前本节其余全文
-# 一字有效、⛔ 不得按 K8 口径实现或解释」。⑤ 的代码部署即生效、章程却要等用户清仓才
-# 激活 —— 若把口径改成无条件,部署当天就等于提前把 §2.1 第 1 条按 K8 解释了。
+# ⚠ **白名单 `STOP_ADVISORY_CHARTERS` ⛔ 不删**:它是**给老行用**的 —— `v2.2-k8` 那行
+# 的 config 里没有这两个字段(落行时还不存在),回退到名单才判得对。⛔ 也别往里加
+# `v2.3-k8`:新行走 config 路径,加进名单等于给同一件事留两个事实源。
+#
+# ⚠ **默认方向 = 强制条件单(更严)**:config 里读不出、又不在名单里的版本(含将来
+# 新加的)一律按「破线未走 = 违纪」判。漏登记的后果是"多记一条违纪"(吵),不是"少记
+# 一条违纪"(静默漏审),方向刻意选前者。
+#
+# ⚠ **这条判据是 staged 的物理落点**:§2.1 前置提示写死「`v2.2-k8` 激活前本节其余全文
+# 一字有效」。⑤ 的代码部署即生效、章程却要等用户清仓才激活 —— 判据永远问「**当时
+# governing 的那版**章程怎么说」,故部署当天不会提前把 §2.1 第 1 条按 K8 解释。
 STOP_ADVISORY_CHARTERS = frozenset({"v2.2-k8"})
 
+#: `loss_warning_action` 取该值 = 「亏损警戒 + 由用户完成离场决策」(K8.md §十九 逐字)。
+#: ⛔ 系统在任何取值下都不得自动卖出;本常量只区分"警戒口径"与"强制条件单口径"。
+LOSS_WARNING_ACTION_REVIEW = "review"
 
-def stop_is_advisory(version: Optional[str]) -> bool:
-    """该章程版本的 −5% 是「止损警戒 + 离场决策」(True)还是「强制条件单」(False)。
-    版本未知(None / 纯 legacy 库)→ **False**(保守:按强制条件单口径审计)。"""
+
+def _loss_warning_action_of(config: Any) -> Optional[str]:
+    """从一份 config(`dict` 或 `MomentumConfig` 之类的对象)里取 `loss_warning_action`。
+    取不到 / 不是字符串 → `None` = **该章程没有声明过**(⛔ 不是"声明为强制条件单")。"""
+    if config is None:
+        return None
+    if isinstance(config, Mapping):
+        val = config.get("loss_warning_action")
+    else:
+        val = getattr(config, "loss_warning_action", None)
+    return val if isinstance(val, str) and val else None
+
+
+def stop_is_advisory(
+    version: Optional[str],
+    config: Any = None,
+    *,
+    db_path: Optional[Path] = None,
+) -> bool:
+    """该章程版本的 −5% 是「亏损警戒 + 离场决策」(True)还是「强制条件单」(False)。
+
+    判据三级,**顺序即优先级**(V2.3.2-⑤):
+      1. **`config` 里的 `loss_warning_action`**(`== "review"` → True)。调用方手上
+         已经有那版 config 时一律走这条 —— 判定与取数在同一份对象上,不会错版本。
+      2. `db_path` 显式给出时,按版本名去那个库里读该行 config,同判据。
+         ⚠ **`db_path=None` 时刻意不读库**:`neckline/db.py` 有它自己那份未被测试夹具
+         重写的 `settings`,`None` 会静默连到真实项目库(CLAUDE.md「测试隔离」条)。
+      3. 回退版本白名单 `STOP_ADVISORY_CHARTERS`(**给老行用**:`v2.2-k8` 的 config
+         里没有这两个字段)。
+    三级都答不上(版本未知 / 纯 legacy 库)→ **False**(保守:按强制条件单口径审计)。
+    """
+    action = _loss_warning_action_of(config)
+    if action is None and db_path is not None and version:
+        row = get_version(version, db_path=db_path)
+        if row is not None:
+            action = _loss_warning_action_of(row.rule.get("config") or {})
+    if action is not None:
+        return action == LOSS_WARNING_ACTION_REVIEW
     return version in STOP_ADVISORY_CHARTERS
 
 
 def active_stop_is_advisory(db_path: Optional[Path] = None) -> bool:
     """现役章程的止损口径(哨兵 / 端点文案侧的取数入口;判据同 `stop_is_advisory`)。
-    无现役版本(异常状态)→ False(与全项目"无现役版本时保守兜底"的既有姿势一致)。"""
+    无现役版本(异常状态)→ False(与全项目"无现役版本时保守兜底"的既有姿势一致)。
+    ⚠ 现役行的 config **就在手上**,直接传进去走判据 1,⛔ 不再让它去库里查第二遍。"""
     v = get_active(db_path=db_path)
-    return stop_is_advisory(v.version if v is not None else None)
+    if v is None:
+        return False
+    return stop_is_advisory(v.version, v.rule.get("config") or {})
 
 
 def list_versions(db_path: Optional[Path] = None) -> List[StrategyVersion]:
@@ -539,5 +587,6 @@ __all__ = [
     "StrategyVersion", "save_version", "activate_version", "get_version",
     "get_active", "config_active_at", "config_governing_for_week", "config_governing_at",
     "activations_between", "activation_history", "active_config", "list_versions",
-    "STOP_ADVISORY_CHARTERS", "stop_is_advisory", "active_stop_is_advisory",
+    "STOP_ADVISORY_CHARTERS", "LOSS_WARNING_ACTION_REVIEW",
+    "stop_is_advisory", "active_stop_is_advisory",
 ]

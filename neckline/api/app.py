@@ -207,7 +207,7 @@ logger = logging.getLogger(__name__)
 # ——`client/project.yml` 与 `pbxproj` 的 `MARKETING_VERSION` 必须同为 `2.0.0`
 # (守门单测 `tests/test_client_version_governance.py` 锁三处恒等,漏一处立刻红)。
 # ⚠ ⑭ 刻意没升它:提前升会让守门单测常年红,版号归 ⑮。
-VERSION = "v2.3.1"
+VERSION = "v2.3.2"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -897,8 +897,31 @@ def _active_momentum_config() -> "MomentumConfig":
 
 
 def _stop_line(buy_price: float, stop_pct: float) -> float:
-    """派生止损线 = 买入价 ×(1−stop_pct)(读现役 config,§2.1 单一常量,不硬编 0.95)。"""
+    """派生止损线 = 买入价 ×(1−stop_pct)(读现役 config,§2.1 单一常量,不硬编 0.95)。
+
+    ⚠ **V2.3.2-⑤:这条线在 `loss_warning_action=="review"` 的章程下叫「亏损警戒线」**
+    —— **算法与数值一字未改**(`stop_pct` 仍是唯一源),变的只是它触发什么:到线只发
+    亏损警戒、由用户完成离场决策,**系统不代下单、更不自动卖出**(K8.md §十三)。
+    对外语义由 `_loss_warning()` 随契约下发,客户端据此决定这条线怎么称呼。"""
     return round(buy_price * (1 - stop_pct), 2)
+
+
+def _loss_warning() -> Tuple[Optional[float], Optional[str]]:
+    """现役章程的对外退出语义 `(loss_warning_pct, loss_warning_action)`(V2.3.2-⑤)。
+
+    **唯一源同 `_active_config`** = 现役 `strategy_versions` config。老章程行没有这两个
+    字段 → `(None, None)` = **该章程没有声明过这个语义**;⛔ 不拿 `stop_pct` 顶上去,
+    也⛔ 不在这里替它推断成"强制条件单"(那是客户端缺键时的展示层默认,不是服务端结论)。
+    """
+    from neckline.strategy import brain
+
+    cfg = brain.active_config(db_path=_db())
+    pct = cfg.get("loss_warning_pct")
+    action = cfg.get("loss_warning_action")
+    return (
+        float(pct) if isinstance(pct, (int, float)) and not isinstance(pct, bool) else None,
+        action if isinstance(action, str) and action else None,
+    )
 
 
 def _retrace_state(
@@ -992,7 +1015,8 @@ def list_positions() -> PositionsOut:
     prices = _resolve_prices(codes)
     stop_pct, max_hold, _single_cap, tpr = _active_config()
     cfg = _active_momentum_config()
-    # V2.2-⑤:现役章程的止损口径(强制条件单 / 止损警戒),只换 `todayAction` 文案口吻。
+    lw_pct, lw_action = _loss_warning()   # V2.3.2-⑤:对外退出语义(整批一次读,逐行同值)
+    # V2.2-⑤:现役章程的止损口径(强制条件单 / 亏损警戒),只换 `todayAction` 文案口吻。
     from neckline.strategy import brain as _brain
     stop_advisory = _brain.active_stop_is_advisory(db_path=_db())
     # v1.3-② 持仓 K4 牌:读最近一份 16:35 体检快照嵌 k4Advisory[] + scenarioReviewPending
@@ -1055,7 +1079,9 @@ def list_positions() -> PositionsOut:
             id=h.id, code=h.ts_code, name=names.get(h.ts_code, h.ts_code),
             buyPrice=h.buy_price, qty=h.qty, entryReason=h.note or "",
             buyDate=h.buy_date, price=price,
-            status=h.status, stopLine=stop_line, stopOrderChecked=False,
+            status=h.status, stopLine=stop_line,
+            lossWarningPct=lw_pct, lossWarningAction=lw_action,
+            stopOrderChecked=False,
             dCount=dcount, maxHoldDays=max_hold,
             distToStopPct=(round(dist, 4) if dist is not None else None),
             retraceState=retrace,
@@ -1089,12 +1115,14 @@ def entry_suggestion(code: str = "", price: float = 0.0) -> EntrySuggestionOut:
     现价×(1−`stop_pct`)。price≤0 → 两档手数均 0、stopLine=0(防除零)。补录/清仓写入仍走
     既有 `POST /positions` / `POST /positions/{id}/close`(不改)。"""
     stop_pct, _max_hold, single_cap, _tpr = _active_config()
+    lw_pct, lw_action = _loss_warning()   # V2.3.2-⑤:同 `/positions`,这条线的对外语义
     cap_ceil = float(single_cap)
     cap_floor = cap_ceil * _ENTRY_SUGGESTION_FLOOR_FRAC
     if price <= 0:
         return EntrySuggestionOut(
             code=code, price=price, qtyLow=0, qtyHigh=0,
             capFloor=cap_floor, capCeil=cap_ceil, stopLine=0.0,
+            lossWarningPct=lw_pct, lossWarningAction=lw_action,
         )
     return EntrySuggestionOut(
         code=code, price=price,
@@ -1102,6 +1130,7 @@ def entry_suggestion(code: str = "", price: float = 0.0) -> EntrySuggestionOut:
         qtyHigh=int(math.floor(cap_ceil / price / 100) * 100),
         capFloor=cap_floor, capCeil=cap_ceil,
         stopLine=_stop_line(price, stop_pct),
+        lossWarningPct=lw_pct, lossWarningAction=lw_action,
     )
 
 

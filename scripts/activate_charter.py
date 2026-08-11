@@ -15,6 +15,13 @@
 **风险登记全文在落行脚本 `scripts/oneoff/seed_charter_v22k8.py` 的 changelog 与
 PROJECT_PLAN §五 ⑤ / §八 第 19 项,⛔ 不得删、不得摘要。**
 
+🔴🔴 **V2.3.2-⑤:白名单再加 `v2.3-k8`(K8.md §十九 退出字段语义)**。它**只加两个字段**
+(`loss_warning_pct=0.05` / `loss_warning_action="review"`),`stop_pct=0.05` 值一字不动、
+降为**兼容只读**(「执行器不得用其触发自动卖出」K8.md §十九 逐字)。**改的仍是退出侧语义**
+→ **窄豁免对它同样必然不成立**(守门单测正面钉死 `v2.2-k8 → v2.3-k8` 的 `_exemption_verdict()`
+返 `False`:`loss_warning_*` 不在入场侧白名单里,条件 (a) 就过不去)。风险登记全文在
+`scripts/oneoff/seed_charter_v23k8.py` 的 changelog,⛔ 不得删、不得摘要。
+
 ⚠ **目标闸是白名单,不是黑名单**(2026-07-27 独立审计 🟡-2 修复):原实现只黑名单拒
 `v1.2`,审计实测 `--target K2 --confirm` 在清仓后**真能把废弃研究臂激活成现役章程**
 (exit=0、`is_active` 变 K2)——K2/K4 的 config 是 K1 旧值(回落 5%/2 万/5 仓),激活后
@@ -79,7 +86,10 @@ _TARGET_VERSION = "v1.3.3"
 # 唯一合法回退目标(其余字段两版逐字段相同)——回退也须走本切换器四道闸,不许手改 DB。
 # **V2.2-⑤ 加 `v2.2-k8`**(K8 §十三 持仓原则;用户裁定 #5)。**回滚目标 = `v1.3.3`**,
 # 已在名单内 —— 回滚同样走本切换器四道闸,SOP 见 `archive/交接与日志/SOP_章程回滚_20260730.md`。
-_ALLOWED_TARGETS = ("v1.3", "v1.3.3", "v2.2-k8")
+# **V2.3.2-⑤ 加 `v2.3-k8`**(K8.md §十九 退出字段语义:`loss_warning_pct` /
+# `loss_warning_action` 两个新字段;`stop_pct=0.05` 值一字不动)。**回滚目标 = `v2.2-k8`**,
+# 已在名单内 —— 回滚同样走本切换器四道闸,SOP 同上。
+_ALLOWED_TARGETS = ("v1.3", "v1.3.3", "v2.2-k8", "v2.3-k8")
 
 # —— 闸 3:核心值核对(**凡激活必做**,不再只对 v1.3 做)。{版本: {config 键: 期望值}} ——
 # 目的是「防激活到错误/未改的行」:即使目标在白名单里,只要它的退出/仓位核心值不是章程
@@ -125,6 +135,26 @@ _CORE_EXPECTATIONS = {
         "single_cap": 40000.0,                # 三仓章程一字不动(K8 沉默 ≠ 废除)
         "max_positions": 3,
         "forbid_high_elasticity": False,      # 纪律域一字不动(排科创板是选股域,归块 ①)
+    },
+    # —— V2.3.2-⑤ `v2.3-k8`(K8.md §十九 退出字段语义)—————————————————————————
+    # ⚠ **本版与 `v2.2-k8` 只差两个新增字段**,其余八项逐字重复在此,是刻意的:核心值
+    # 核对的职责就是"防激活到未改对的行" —— 谁把 `stop_pct` 顺手改成 None、或把 v2.2-k8
+    # 退掉的四档偷偷补回来,这里当场拦下。
+    # 🔴 **两个新值是本版唯一的语义差,也是"激活到了正确那一行"的判据**:`0.05` 与
+    # `"review"` 都是 K8.md §十九 逐字给的数,⛔ 工程侧一个都没发明。
+    # 🔴 `loss_warning_action="review"` = **亏损警戒 + 由用户完成离场决策**,
+    # ⛔ 系统在任何取值下都不得自动卖出(K8.md §十三 逐字)。
+    "v2.3-k8": {
+        "loss_warning_pct": 0.05,             # 亏损警戒线(K8.md §十九)
+        "loss_warning_action": "review",      # ⛔ 不触发系统自动卖出(K8.md §十三)
+        "take_profit_retrace": None,          # 承 v2.2-k8:回落止盈已退役
+        "max_hold_days": None,                # 承 v2.2-k8:时间退出档已退役
+        "max_hold_days_profit": None,         # 承 v2.2-k8:浮盈硬上限已退役
+        "time_exit_only_if_unprofitable": False,
+        "stop_pct": 0.05,                     # **值一字不动**(降为兼容只读字段)
+        "single_cap": 40000.0,                # 三仓章程一字不动
+        "max_positions": 3,
+        "forbid_high_elasticity": False,      # 纪律域一字不动
     },
 }
 # —— 闸 2 窄豁免(2026-07-27 用户授权)——————————————————————————————————————

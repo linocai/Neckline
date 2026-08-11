@@ -174,9 +174,13 @@ def test_card_json_has_all_eleven_blueprint_items():
     assert j["risks"] == ["补贴细则落地节奏可能慢于预期", "板块昨日已大涨,追高风险"]
     # 11 disclaimer(固定文案)
     assert j["disclaimer"] == bc.BASKET_CARD_DISCLAIMER
-    # 口径指纹五项 + 动态纪律标签
+    # 口径指纹七项 + 动态纪律标签
     assert j["fingerprint"] == {
         "stop_pct": 0.05, "take_profit_retrace": 0.08, "charter_version": "v1.3.3",
+        # V2.3.2-⑤:对外退出语义两项(K8.md §十九)。这张测试卡是**手搓**的、没喂这两位
+        # → `None` = **该章程没有声明过这个语义**,⛔ 不是"读失败"。`stop_pct` 仍是 0.05
+        # 且**与它们并列**(只加不删,两步淘汰第一步)。
+        "loss_warning_pct": None, "loss_warning_action": None,
         "pack_version": "K7-pack-v1", "engine_api_version": ag.engine_api.ENGINE_API_VERSION,
         # ⑦-b:条件集版本(与跟形状的 spec_version 分开,⑨ 按它分层归因)
         "verification_ruleset_version": bc.VERIFICATION_RULESET_VERSION,

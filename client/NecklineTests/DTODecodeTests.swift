@@ -187,6 +187,11 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(card.risks, ["订单证伪"])
         XCTAssertEqual(card.fingerprint.charterVersion, "v1.3.3")
         XCTAssertEqual(card.fingerprint.packVersion, "K7-pack-v1")
+        // V2.3.2-⑤:**老卡**(这份 fixture 的 `fingerprint` 里没有这两键)→ nil,
+        // ⛔ 不炸、⛔ 不当"配置丢了" —— 冻结快照不回填新键(CLAUDE.md 两类论)。
+        XCTAssertNil(card.fingerprint.lossWarningPct)
+        XCTAssertNil(card.fingerprint.lossWarningAction)
+        XCTAssertEqual(card.fingerprint.stopPct, 0.05, "⛔ 本版只加键不删键(两步淘汰第一步)")
         // `tierBreakdown` 的键是**五维维度名**,原样透传(⛔ 不 camel 化、不改名)。
         XCTAssertEqual(card.tierBreakdown["driver_freshness"]?.doubleValue, 0.9)
         XCTAssertEqual(card.verificationSpec["min_up_ratio"]?.doubleValue, 0.5)
@@ -1272,6 +1277,63 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(p.todayAction, "持有中(D2/D5)")
         XCTAssertFalse(p.isExitDay)
         XCTAssertEqual(p.todayActionTone, .neutral)
+        // V2.3.2-⑤:这份 fixture **没有**这两键(= 老服务端 / 老章程未声明)→ nil,
+        // 展示层退回「止损线」老文案。⛔ 不许把缺键当成"声明为强制条件单"以外的任何东西。
+        XCTAssertNil(p.lossWarningPct)
+        XCTAssertNil(p.lossWarningAction)
+        XCTAssertFalse(p.isLossWarningCharter)
+        XCTAssertEqual(p.stopLineLabel, "止损线")
+        XCTAssertEqual(p.stopLineShortLabel, "止损线")
+        XCTAssertNil(p.lossWarningDisclosure)
+    }
+
+    /// V2.3.2-⑤(K8.md §十九):`loss_warning_action = review` 治下,这条线叫「亏损警戒线」。
+    /// 🔴 **数值口径一字未变**:`stopLine` / `hasBrokenStop` / `distToStopPctServer` 全部照旧,
+    /// 变的只是称呼与那句披露 —— 本例同时正面断言"数没变"。
+    func testPositionUnderLossWarningCharter() async throws {
+        let json = jsonData("""
+        {"holdings": [
+          {"id": 9, "code": "600519.SH", "name": "贵州茅台", "buyPrice": 1500.0, "qty": 100,
+           "entryReason": "", "buyDate": "20260716", "price": 1400.0, "status": "holding",
+           "stopLine": 1425.0, "lossWarningPct": 0.05, "lossWarningAction": "review",
+           "stopOrderChecked": false,
+           "dCount": 2, "maxHoldDays": null, "distToStopPct": -0.0179, "retraceState": null,
+           "todayAction": "止损警戒:现价已跌破止损线,离场决策在你(系统不代下单)"}
+        ]}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let p = try await client.fetchPositions()[0]
+        XCTAssertEqual(p.lossWarningPct, 0.05)
+        XCTAssertEqual(p.lossWarningAction, "review")
+        XCTAssertTrue(p.isLossWarningCharter)
+        XCTAssertEqual(p.stopLineLabel, "亏损警戒线")
+        XCTAssertEqual(p.stopLineShortLabel, "警戒线")   // 紧凑位三字,版式不变
+        XCTAssertEqual(p.lossWarningDisclosure,
+                       "到线(−5%)只发亏损警戒,离场决策在你 —— 系统不代下单、不自动卖出")
+        // 🔴 判定与数值一字未动
+        XCTAssertEqual(p.stopLine, 1425.0)
+        XCTAssertTrue(p.hasBrokenStop)                  // 1400 <= 1425,与口径无关
+        XCTAssertEqual(p.distToStopPctServer, -0.0179)
+    }
+
+    /// 非 `review` 的取值(将来某版章程若换口径)→ 退回「止损线」。⛔ 别写死成亏损警戒。
+    func testPositionWithNonReviewActionFallsBackToStopWording() async throws {
+        let json = jsonData("""
+        {"holdings": [
+          {"id": 10, "code": "600001.SH", "name": "甲", "buyPrice": 10.0, "qty": 100,
+           "entryReason": "", "buyDate": "20260716", "price": 9.9, "status": "holding",
+           "stopLine": 9.5, "lossWarningPct": 0.05, "lossWarningAction": "hard_stop",
+           "stopOrderChecked": false, "dCount": 1, "maxHoldDays": 5,
+           "distToStopPct": 0.04, "retraceState": null, "todayAction": ""}
+        ]}
+        """)
+        MockURLProtocol.handler = { _ in (200, json) }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let p = try await client.fetchPositions()[0]
+        XCTAssertFalse(p.isLossWarningCharter)
+        XCTAssertEqual(p.stopLineLabel, "止损线")
+        XCTAssertNil(p.lossWarningDisclosure)
     }
 
     /// price=0(拉不到实时价)不可与"跌停 0 元"混淆——`hasLivePrice` 必须为 false。
@@ -1998,6 +2060,24 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(s.capFloor, 20000.0)
         XCTAssertEqual(s.capCeil, 40000.0)
         XCTAssertEqual(s.stopLine, 47.5)
+        // V2.3.2-⑤:这份 fixture 没发 `lossWarningAction` → nil,称呼退回「止损线」。
+        XCTAssertNil(s.lossWarningAction)
+        XCTAssertEqual(s.stopLineLabel, "止损线")
+    }
+
+    /// V2.3.2-⑤:`/entry-suggestion` 在亏损警戒口径下,预计线改叫「亏损警戒线」(数值不变)。
+    func testDecodeEntrySuggestionUnderLossWarningCharter() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"ok": true, "code": "600001.SH", "price": 50.0,
+             "qtyLow": 400, "qtyHigh": 800, "capFloor": 20000.0, "capCeil": 40000.0,
+             "stopLine": 47.5, "lossWarningPct": 0.05, "lossWarningAction": "review"}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let s = try await client.entrySuggestion(code: "600001.SH", price: 50.0)
+        XCTAssertEqual(s.stopLine, 47.5)                 // 数值口径一字未变
+        XCTAssertEqual(s.stopLineLabel, "亏损警戒线")
     }
 
     // MARK: - 4D 周复盘工作台(样例对照 tests/test_api_review.py::test_upload_and_get_roundtrip)

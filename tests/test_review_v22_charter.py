@@ -13,9 +13,15 @@
 
 ⚠ **判据来源刻意不同,别套错**:
   · 时间退出侧 = **config 里读得出来**(`max_hold_days is None`);
-  · 止损侧 = **config 里读不出来** —— `stop_pct` 两版**都是 0.05**(§五 ⑤ 明写「值与唯一源
-    地位一字不动,改的是它触发什么」),差异只活在 §2.1 的条文里,故按版本号声明式登记
-    (`brain.STOP_ADVISORY_CHARTERS`,体例同 `activate_charter._CORE_EXPECTATIONS`)。
+  · 止损侧(V2.2 那一版)= **config 里读不出来** —— `stop_pct` 两版**都是 0.05**
+    (§五 ⑤ 明写「值与唯一源地位一字不动,改的是它触发什么」),差异只活在 §2.1 的
+    条文里,故按版本号声明式登记(`brain.STOP_ADVISORY_CHARTERS`)。
+
+🔧 **V2.3.2-⑤ 更新**:止损侧现在**config 里读得出来了** —— `v2.3-k8` 起章程带
+`loss_warning_action`(K8.md §十九),`brain.stop_is_advisory` 改成「先读 config、
+读不到才回退版本白名单」。**白名单不删**:它就是给 `v2.2-k8` 这种没有该字段的**老行**
+用的。本文件 `v2.2-k8` 的既有断言**一字不动**(它走的仍是白名单那条路),末尾另加一组
+`v2.3-k8` 的:同样的周复盘结论,判据换成 config。
 """
 
 from __future__ import annotations
@@ -229,3 +235,48 @@ class TestStopWordingIsCharterDriven:
         pos, q = self._pos_and_quote()
         assert "条件单" in judge_position_low_open(pos, q, 0.05)
         assert "离场决策在你" in judge_position_low_open(pos, q, 0.05, advisory=True)
+
+
+# ======================================================================
+#  ⑤ V2.3.2-⑤:`v2.3-k8` 治下同样的结论,但判据换成 config
+# ======================================================================
+
+_V23K8_CFG = dict(_K8_CFG, loss_warning_pct=0.05, loss_warning_action="review")
+
+
+def _seed_v23k8(env) -> None:
+    """落三版章程,并把激活时间线重写成「`v2.3-k8` 从 2026-01-01 起治权」。"""
+    brain.save_version("v1.3.3", {"config": dict(_V133_CFG), "lineage": "K1"},
+                       "测试:v1.3.3", activate=False, db_path=env.db_path)
+    brain.save_version("v2.2-k8", {"config": dict(_K8_CFG), "lineage": "K1"},
+                       "测试:v2.2-k8", activate=False, db_path=env.db_path)
+    brain.save_version("v2.3-k8", {"config": dict(_V23K8_CFG), "lineage": "K1"},
+                       "测试:v2.3-k8", activate=False, db_path=env.db_path)
+    set_activation_timeline(env.db_path, [("v2.3-k8", "2026-01-01T02:00:00+00:00")],
+                            active="v2.3-k8")
+
+
+class TestV23K8UsesConfigNotTheWhitelist:
+    def test_breach_still_counted_but_not_a_violation(self, isolated_env):
+        """`v2.3-k8` 治下:破线未走 —— 统计照旧、**不进违纪清单**(与 `v2.2-k8` 同结论)。
+        🔴 但判据来源不同:这一版**读得到** `loss_warning_action='review'`,
+        ⛔ 它并**不在** `STOP_ADVISORY_CHARTERS` 里(下面正面断言)。"""
+        assert "v2.3-k8" not in brain.STOP_ADVISORY_CHARTERS
+        _seed_v23k8(isolated_env)
+        wk = _week(isolated_env, _BREACH_TRADES, date(2026, 7, 22))
+        kinds = [k for _rt, k, _n in wk.stop_discipline]
+        assert STOP_BREACHED in kinds, "破线未走的笔数统计被一起删了 —— 体检不能停"
+        assert not any("止损" in m and "违纪" in m for m in wk.discipline_violations)
+
+    def test_note_says_warning_not_violation(self, isolated_env):
+        _seed_v23k8(isolated_env)
+        wk = _week(isolated_env, _BREACH_TRADES, date(2026, 7, 22))
+        assert any("止损警戒" in n and "不计违纪" in n for n in wk.charter_notes), wk.charter_notes
+
+    def test_config_predicate_is_the_one_that_fired(self, isolated_env):
+        """判据本身:`v2.3-k8` 走 config 路径为 True;拿掉那个字段就退回白名单 → False
+        (因为 `v2.3-k8` 刻意不在白名单里)。这条把「是 config 在起作用」钉死。"""
+        cfg_with = dict(_V23K8_CFG)
+        cfg_without = {k: v for k, v in _V23K8_CFG.items() if k != "loss_warning_action"}
+        assert brain.stop_is_advisory("v2.3-k8", cfg_with) is True
+        assert brain.stop_is_advisory("v2.3-k8", cfg_without) is False

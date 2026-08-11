@@ -308,6 +308,9 @@ private struct OkResponse: Decodable { let ok: Bool }
 private struct EntrySuggestionResponse: Decodable {
     let ok: Bool; let code: String; let price: Double
     let qtyLow: Int; let qtyHigh: Int; let capFloor: Double; let capCeil: Double; let stopLine: Double
+    /// V2.3.2-⑤:这条预计线的对外语义;老服务端不发 → nil = 未声明(合成 `Decodable`
+    /// 对 `Optional` 属性天然容忍缺键,这里不必手写 `init(from:)`)。
+    let lossWarningAction: String?
 }
 
 // ⚠ 「无请求体 POST 占位」`EmptyBody` 已删:它的唯一使用者是 `POST /circuit/unlock`,
@@ -546,7 +549,8 @@ actor APIClient {
         let data = try await get("/api/v1/positions/entry-suggestion?code=\(code)&price=\(priceStr)")
         let r = try JSONDecoder().decode(EntrySuggestionResponse.self, from: data)
         return EntrySuggestionRange(code: r.code, price: r.price, qtyLow: r.qtyLow, qtyHigh: r.qtyHigh,
-                                    capFloor: r.capFloor, capCeil: r.capCeil, stopLine: r.stopLine)
+                                    capFloor: r.capFloor, capCeil: r.capCeil, stopLine: r.stopLine,
+                                    lossWarningAction: r.lossWarningAction)
     }
 
     // —— V2-⑩-B 计划继承 + 建仓快照 ————————————————————————————————————

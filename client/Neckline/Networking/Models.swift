@@ -431,6 +431,12 @@ struct BasketScripts: Codable, Equatable {
 struct BasketFingerprint: Codable, Equatable {
     var stopPct: Double? = nil
     var takeProfitRetrace: Double? = nil
+    /// V2.3.2-⑤(K8.md §十九):对外退出语义 —— 「−5% 触发的是什么」。
+    /// `lossWarningAction == "review"` = **亏损警戒 + 由你完成离场决策**,系统永不代下单。
+    /// ⚠ **老卡上为 `nil` 是正常的**:`card_json` 是冻结快照(`INSERT OR IGNORE` 永不覆盖),
+    /// 新键不回填历史卡 —— ⛔ 别渲染成「配置丢了」。`stopPct` 本版**保留不删**(两步淘汰)。
+    var lossWarningPct: Double? = nil
+    var lossWarningAction: String? = nil
     var charterVersion: String? = nil
     var packVersion: String? = nil
     /// 服务端契约是 int(`neckline/db.py` 三处 `engine_api_version INTEGER`,`selection/
@@ -441,14 +447,18 @@ struct BasketFingerprint: Codable, Equatable {
     var verificationRulesetVersion: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case stopPct, takeProfitRetrace, charterVersion, packVersion
+        case stopPct, takeProfitRetrace, lossWarningPct, lossWarningAction
+        case charterVersion, packVersion
         case engineApiVersion, verificationRulesetVersion
     }
 
-    init(stopPct: Double? = nil, takeProfitRetrace: Double? = nil, charterVersion: String? = nil,
+    init(stopPct: Double? = nil, takeProfitRetrace: Double? = nil,
+         lossWarningPct: Double? = nil, lossWarningAction: String? = nil,
+         charterVersion: String? = nil,
          packVersion: String? = nil, engineApiVersion: Int? = nil,
          verificationRulesetVersion: String? = nil) {
         self.stopPct = stopPct; self.takeProfitRetrace = takeProfitRetrace
+        self.lossWarningPct = lossWarningPct; self.lossWarningAction = lossWarningAction
         self.charterVersion = charterVersion; self.packVersion = packVersion
         self.engineApiVersion = engineApiVersion
         self.verificationRulesetVersion = verificationRulesetVersion
@@ -458,6 +468,8 @@ struct BasketFingerprint: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         stopPct = try c.decodeIfPresent(Double.self, forKey: .stopPct)
         takeProfitRetrace = try c.decodeIfPresent(Double.self, forKey: .takeProfitRetrace)
+        lossWarningPct = try c.decodeIfPresent(Double.self, forKey: .lossWarningPct)
+        lossWarningAction = try c.decodeIfPresent(String.self, forKey: .lossWarningAction)
         charterVersion = try c.decodeIfPresent(String.self, forKey: .charterVersion)
         packVersion = try c.decodeIfPresent(String.self, forKey: .packVersion)
         // B 类冻结快照字段(`basket_cards.card_json` 写入当时冻住,`INSERT OR IGNORE`
@@ -2596,6 +2608,13 @@ struct Position: Codable, Equatable, Identifiable {
     var price: Double        // 哨兵最近一拍 / EOD 兜底;拉不到 → 0.0(不可与"跌停 0 元"混淆,UI 需判断)
     var status: String
     var stopLine: Double     // 服务端派生 = buy×0.95(§2.1 单一常量),客户端不重算
+    // —— V2.3.2-⑤(K8.md §十九):这条线的**对外语义**——————————————————————————
+    /// 🔴 **数值口径一字未变**(仍是 `buy×(1−stop_pct)`),变的是它触发什么:
+    /// `lossWarningAction == "review"` = 到线只发**亏损警戒**、离场决策在你,系统不代下单。
+    /// **nil = 现役章程没有声明过这个语义**(老章程行里就没有这两个字段)→ 展示层退回
+    /// 「止损线」老文案,⛔ 不许当成"声明为强制条件单"、也⛔ 不许拿它当"配置丢了"。
+    var lossWarningPct: Double? = nil
+    var lossWarningAction: String? = nil
     var stopOrderChecked: Bool
     // —— §五 v1.1-B.1/E.1 持仓生命周期派生字段(服务端算好,客户端不重算日历/阈值)——
     var dCount: Int = 1              // D 计数(买入日=D1,唯一源 sentinel/positions.py::d_count)
@@ -2646,6 +2665,7 @@ struct Position: Codable, Equatable, Identifiable {
     /// 默认值只影响 memberwise init、不影响解码,同 `Candidate` 这一版的处理姿势)。
     enum CodingKeys: String, CodingKey {
         case id, code, name, buyPrice, qty, entryReason, buyDate, price, status, stopLine, stopOrderChecked
+        case lossWarningPct, lossWarningAction
         case dCount, maxHoldDays, retraceState, todayAction
         case distToStopPctServer = "distToStopPct"
         case maxHoldDaysEffective, timeExitState, buyFees, sellFees, k4Advisory, scenarioReviewPending
@@ -2654,6 +2674,7 @@ struct Position: Codable, Equatable, Identifiable {
 
     init(id: Int, code: String, name: String, buyPrice: Double, qty: Int, entryReason: String,
          buyDate: String, price: Double, status: String, stopLine: Double, stopOrderChecked: Bool,
+         lossWarningPct: Double? = nil, lossWarningAction: String? = nil,
          dCount: Int = 1, maxHoldDays: Int? = 5, distToStopPctServer: Double? = nil,
          retraceState: RetraceState? = nil, todayAction: String = "",
          maxHoldDaysEffective: Int? = 5, timeExitState: String = "holding",
@@ -2664,6 +2685,7 @@ struct Position: Codable, Equatable, Identifiable {
         self.id = id; self.code = code; self.name = name; self.buyPrice = buyPrice; self.qty = qty
         self.entryReason = entryReason; self.buyDate = buyDate; self.price = price; self.status = status
         self.stopLine = stopLine; self.stopOrderChecked = stopOrderChecked
+        self.lossWarningPct = lossWarningPct; self.lossWarningAction = lossWarningAction
         self.dCount = dCount; self.maxHoldDays = maxHoldDays; self.distToStopPctServer = distToStopPctServer
         self.retraceState = retraceState; self.todayAction = todayAction
         self.maxHoldDaysEffective = maxHoldDaysEffective; self.timeExitState = timeExitState
@@ -2686,6 +2708,10 @@ struct Position: Codable, Equatable, Identifiable {
         status = try c.decode(String.self, forKey: .status)
         stopLine = try c.decode(Double.self, forKey: .stopLine)
         stopOrderChecked = try c.decode(Bool.self, forKey: .stopOrderChecked)
+        // V2.3.2-⑤:老服务端不发这两键 / 老章程行发 null,两种情况都 → nil = 未声明。
+        // 这里**不必**像 `maxHoldDays` 那样区分「缺键 vs 显式 null」——两者语义相同。
+        lossWarningPct = try c.decodeIfPresent(Double.self, forKey: .lossWarningPct)
+        lossWarningAction = try c.decodeIfPresent(String.self, forKey: .lossWarningAction)
         dCount = try c.decodeIfPresent(Int.self, forKey: .dCount) ?? 1
         // 🔴 **「缺键」与「显式 null」在这里语义相反,必须分开**(V2.2-⑤):
         //   · **缺键** = 真·老服务端 / 老 fixture(v1.1 之前根本没有这个字段)→ 按当时
@@ -2740,6 +2766,33 @@ struct Position: Codable, Equatable, Identifiable {
     var hasBrokenStop: Bool {
         guard hasLivePrice else { return false }
         return price <= stopLine
+    }
+
+    // —— V2.3.2-⑤ 退出字段语义换血(K8.md §十三 / §十九)———————————————————————
+    //
+    // 🔴 **纯展示层换算,零判定**:`stopLine` 的数值、`hasBrokenStop` 的判据、刻度尺的
+    // 几何**一个都没动**。这里只回答「这条线该叫什么、到线之后谁来决定」。
+    // ⛔ 别把它写成固定文案 —— 章程回滚到强制条件单口径时,界面必须跟着回去。
+
+    /// 现役章程是否声明了「亏损警戒 + 由用户完成离场决策」(K8.md §十九 的 `review`)。
+    /// **未声明(nil)→ false**:退回老文案,⛔ 不替一版没说过这话的章程发言。
+    var isLossWarningCharter: Bool { lossWarningAction == "review" }
+
+    /// 这条线的称呼:亏损警戒口径 →「亏损警戒线」;否则 →「止损线」。
+    var stopLineLabel: String { isLossWarningCharter ? "亏损警戒线" : "止损线" }
+
+    /// 紧凑位专用的**三字**称呼(「警戒线」/「止损线」)。⚠ 存在的唯一理由是 iPhone
+    /// 402pt 宽度:列表卡那一行是「状态徽标 + 线价位 + 现价 + 距线百分比」的横向密集行,
+    /// 把「止损线」换成「亏损警戒线」多两个字就可能把它挤成两行(CLAUDE.md 有案底,
+    /// **编译与单测都发现不了**)。全称版留给详情卡与那句披露。
+    var stopLineShortLabel: String { isLossWarningCharter ? "警戒线" : "止损线" }
+
+    /// 亏损警戒口径下必须说出口的那句(否则 nil,不啰嗦)。
+    /// ⚠ 这是**语义披露**,不是操作建议 —— 系统永不代下单、永不自动卖出。
+    var lossWarningDisclosure: String? {
+        guard isLossWarningCharter else { return nil }
+        let pct = lossWarningPct.map { String(format: "−%.0f%%", $0 * 100) } ?? "章程比例"
+        return "到线(\(pct))只发亏损警戒,离场决策在你 —— 系统不代下单、不自动卖出"
     }
 
     // —— §五 v1.1-E.1/v1.3-⑥-A 展示层派生(纯视觉强度选择,文案本身来自服务端
@@ -3014,6 +3067,12 @@ struct EntrySuggestionRange: Codable, Equatable {
     var capFloor: Double
     var capCeil: Double
     var stopLine: Double
+    /// V2.3.2-⑤:同 `Position` —— 这条预计线的对外语义(`"review"` = 亏损警戒 + 离场
+    /// 决策在你)。**nil = 现役章程未声明** → 展示层退回「预计止损线」老文案。
+    var lossWarningAction: String? = nil
+
+    /// 这条预计线的称呼(与 `Position.stopLineLabel` 同判据,⛔ 别写死成其一)。
+    var stopLineLabel: String { lossWarningAction == "review" ? "亏损警戒线" : "止损线" }
 }
 
 // ⚠ V2.1-① 起「问询台」一族类型(`ChatRole`/`ChatMessage`/`InquiryVerdict`/

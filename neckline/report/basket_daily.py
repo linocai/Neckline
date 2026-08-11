@@ -179,6 +179,10 @@ _CARD_MEMBER_KEYS: Tuple[Tuple[str, str], ...] = (
 _CARD_FINGERPRINT_KEYS: Tuple[Tuple[str, str], ...] = (
     ("stop_pct", "stopPct"),
     ("take_profit_retrace", "takeProfitRetrace"),
+    # V2.3.2-⑤(K8.md §十九):对外退出语义。`stopPct` **保留不删**(两步淘汰第一步:
+    # 本版只加键;服务端删键要等下一版客户端先把该属性改成可选,CLAUDE.md 铁律)。
+    ("loss_warning_pct", "lossWarningPct"),
+    ("loss_warning_action", "lossWarningAction"),
     ("charter_version", "charterVersion"),
     ("pack_version", "packVersion"),
     ("engine_api_version", "engineApiVersion"),

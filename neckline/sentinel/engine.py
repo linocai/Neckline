@@ -445,15 +445,18 @@ def run_tick(
         active_rule = brain.get_active(db_path=db_path)
         stop_pct = _DEFAULT_STOP_PCT
         take_profit_retrace = None
-        # V2.2-⑤:现役章程的止损口径(强制条件单 / 止损警戒),判据单一源 `brain`。
+        # V2.2-⑤:现役章程的止损口径(强制条件单 / 亏损警戒),判据单一源 `brain`。
         # 只换 `check_stop_approach` 的文案口吻,**判定与阈值一字未动**;`v2.2-k8` 激活前
         # 恒 False = 与 V2.2 之前逐字节相同(§2.1 前置提示:激活前本节全文一字有效)。
-        stop_advisory = brain.stop_is_advisory(active_rule.version if active_rule else None)
+        # V2.3.2-⑤:现役行的 config **就在 `active_rule` 上**,直接传进判据(⛔ 别让它
+        # 再去库里查一遍;判据优先级见 `brain.stop_is_advisory` docstring)。
         if active_rule is not None:
             cfg = active_rule.rule.get("config", {}) or {}
+            stop_advisory = brain.stop_is_advisory(active_rule.version, cfg)
             stop_pct = cfg.get("stop_pct") or _DEFAULT_STOP_PCT
             take_profit_retrace = cfg.get("take_profit_retrace")
         else:
+            stop_advisory = brain.stop_is_advisory(None)
             logger.warning("策略大脑无现役版本,持仓哨兵止损线退回兜底值 %.0f%%(非正常状态)", stop_pct * 100)
 
         member_map = load_member_map(parquet_dir=parquet_dir)

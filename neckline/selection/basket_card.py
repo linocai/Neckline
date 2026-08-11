@@ -214,6 +214,31 @@ def resolve_charter_pcts(db_path: Optional[Path] = None) -> Tuple[Optional[float
     return _ratio(cfg.get("stop_pct")), _ratio(cfg.get("take_profit_retrace"))
 
 
+def resolve_loss_warning(db_path: Optional[Path] = None) -> Tuple[Optional[float], Optional[str]]:
+    """现役章程的**对外退出语义**指纹 `(loss_warning_pct, loss_warning_action)`
+    (K8.md §十九,`v2.3-k8` 起;V2.3.2-⑤)。
+
+    **唯一源同 `resolve_charter_pcts`** = 现役 `strategy_versions` config。老章程行
+    (`v2.2-k8` 及以前)没有这两个字段 → 两位都是 `None` = **该章程没有声明过这个语义**,
+    ⛔ 不是"声明为强制条件单",更不拿 `stop_pct` 的值顶上去 —— 顶上去就等于替一版没说过
+    这话的章程发言。读库失败同样返 `(None, None)`,不掀翻卡生成(与上面同一姿势)。
+
+    ⚠ 它**不参与任何判定**:止损价仍由 `stop_pct` 算(⑤ 明写「值与唯一源地位一字不动」),
+    这两位只进卡的口径指纹,供事后回看「这张卡是在哪套对外语义下产出的」。
+    """
+    try:
+        cfg = brain.active_config(db_path=db_path)
+    except Exception:  # noqa: BLE001
+        logger.warning("[basket_card] 读现役章程 config 失败,退出语义指纹本次为空", exc_info=True)
+        return None, None
+    pct = cfg.get("loss_warning_pct")
+    action = cfg.get("loss_warning_action")
+    return (
+        float(pct) if isinstance(pct, (int, float)) and not isinstance(pct, bool) else None,
+        action if isinstance(action, str) and action else None,
+    )
+
+
 def discipline_labels(stop_pct: Optional[float], take_profit_retrace: Optional[float]) -> List[str]:
     """卡上的纪律标签(**动态生成**,plan 明文:「缺指纹就退化成不带数字的说法,
     禁把『−5%』『8%』写进模板」)。章程一改,标签跟着走。"""
@@ -858,6 +883,11 @@ class BasketCard:
     risks: Tuple[str, ...] = ()
     stop_pct: Optional[float] = None
     take_profit_retrace: Optional[float] = None
+    # V2.3.2-⑤:对外退出语义指纹(K8.md §十九)。⚠ 与 `stop_pct` **并列而不是取代**它
+    # ——`stop_pct` 仍是止损价的唯一算料,这两位只回答「−5% 触发的是什么」。老卡没有
+    # 这两键是**正常的**(冻结快照不回填),⛔ 别渲染成"配置丢了"。
+    loss_warning_pct: Optional[float] = None
+    loss_warning_action: Optional[str] = None
     charter_version: Optional[str] = None
     pack_version: Optional[str] = None
     engine_api_version: Optional[int] = None
@@ -934,6 +964,10 @@ class BasketCard:
             "fingerprint": {
                 "stop_pct": self.stop_pct,
                 "take_profit_retrace": self.take_profit_retrace,
+                # V2.3.2-⑤(K8.md §十九):对外退出语义。`stop_pct` **保留不删**
+                # (客户端两步淘汰第一步:本版只加键,服务端删键是下一版的事)。
+                "loss_warning_pct": self.loss_warning_pct,
+                "loss_warning_action": self.loss_warning_action,
                 "charter_version": self.charter_version,
                 "pack_version": self.pack_version,
                 "engine_api_version": self.engine_api_version,
@@ -1002,6 +1036,8 @@ def build_basket_card(
     llm_stage: str = LLM_DISABLED,
     stop_pct: Optional[float] = None,
     take_profit_retrace: Optional[float] = None,
+    loss_warning_pct: Optional[float] = None,
+    loss_warning_action: Optional[str] = None,
     version: int = 1,
     with_tags: bool = True,
     next_trade_date: Optional[date] = None,
@@ -1121,6 +1157,8 @@ def build_basket_card(
         risks=risks,
         stop_pct=stop_pct,
         take_profit_retrace=take_profit_retrace,
+        loss_warning_pct=loss_warning_pct,
+        loss_warning_action=loss_warning_action,
         charter_version=getattr(basket, "charter_version", None),
         pack_version=getattr(basket, "pack_version", None),
         engine_api_version=getattr(basket, "engine_api_version", None),
@@ -1162,6 +1200,7 @@ def build_cards(
         return []
     ledger = ledger or BudgetLedger()
     stop_pct, tpr = resolve_charter_pcts(db_path)
+    lw_pct, lw_action = resolve_loss_warning(db_path)      # V2.3.2-⑤ 对外退出语义指纹
     labels = discipline_labels(stop_pct, tpr)
 
     codes: List[str] = []
@@ -1219,7 +1258,8 @@ def build_cards(
             out.append(build_basket_card(
                 b, trade_date, tier_decision=decision, mechs=member_mechs,
                 tag_batch=tag_batch, payload=payload, narrative=narrative, llm_stage=stage,
-                stop_pct=stop_pct, take_profit_retrace=tpr, version=version,
+                stop_pct=stop_pct, take_profit_retrace=tpr,
+                loss_warning_pct=lw_pct, loss_warning_action=lw_action, version=version,
                 with_tags=with_tags, next_trade_date=nd, notes=notes,
             ))
         except Exception:  # noqa: BLE001 —— 一张卡炸了不牵连其余(「有篮子无卡」合法)
@@ -1359,6 +1399,7 @@ __all__ = [
     "MemberCardEntry",
     "BasketCard",
     "resolve_charter_pcts",
+    "resolve_loss_warning",
     "discipline_labels",
     "build_member_mech",
     "build_verification_spec",

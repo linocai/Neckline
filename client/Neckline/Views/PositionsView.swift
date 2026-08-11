@@ -599,7 +599,10 @@ struct PositionListRow: View {
                         // ⚠ 底行那句「已破止损线 ¥35.09」保留:那里带的是**线的价位**,
                         // 这里只报状态,两处不重复(⛔ 别把价位也搬上来)。
                         if position.hasBrokenStop {
-                            NKChip(text: "已破止损线", tone: .bad, filled: true)
+                            // V2.3.2-⑤:这条线叫什么由现役章程决定(「警戒线」/「止损线」,
+                            // 都是三字 → 版式一字不动)。⛔ 别写死成其一:章程回滚到强制
+                            // 条件单口径时,界面必须跟着回去。
+                            NKChip(text: "已破\(position.stopLineShortLabel)", tone: .bad, filled: true)
                         }
                         if position.timeExitKind == .suspendedHold {
                             NKChip(text: "判向挂起", tone: .warn)
@@ -634,19 +637,20 @@ struct PositionListRow: View {
                                   price: position.price)
                     HStack(spacing: 6) {
                         if position.hasBrokenStop {
-                            Text("已破止损线 ¥\(NKFmt.price(position.stopLine))")
+                            Text("已破\(position.stopLineShortLabel) ¥\(NKFmt.price(position.stopLine))")
                                 .font(NKFont.caption.monospacedDigit()).fontWeight(.semibold)
                                 .foregroundStyle(NK.down)
                         } else {
-                            Text("止损 \(NKFmt.price(position.stopLine))")
+                            Text("\(position.isLossWarningCharter ? "警戒" : "止损") \(NKFmt.price(position.stopLine))")
                                 .font(NKFont.caption.monospacedDigit())
                                 .foregroundStyle(NK.textTertiary)
                         }
                         Spacer(minLength: 4)
                         if let dist = position.distToStopPctServer {
+                            // ⚠ 两字位:「距警戒」/「距止损」等宽,横向密集行版式不变。
                             Text(position.hasBrokenStop
-                                 ? "距止损 \(NKFmt.signedPct(dist * 100))"
-                                 : "现价 \(NKFmt.price(position.price)) · 距止损 \(NKFmt.signedPct(dist * 100))")
+                                 ? "距\(position.isLossWarningCharter ? "警戒" : "止损") \(NKFmt.signedPct(dist * 100))"
+                                 : "现价 \(NKFmt.price(position.price)) · 距\(position.isLossWarningCharter ? "警戒" : "止损") \(NKFmt.signedPct(dist * 100))")
                                 .font(NKFont.caption.monospacedDigit())
                                 .fontWeight(position.hasBrokenStop ? .semibold : .regular)
                                 .foregroundStyle(dist <= 0 ? NK.down
@@ -805,6 +809,13 @@ struct PositionDetailPage: View {
                 Text(disclosure).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // 🔴 V2.3.2-⑤(K8.md §十三 / §十九):−5% 那条线现在是**亏损警戒线** ——
+            // 数值口径一字未变,变的是它触发什么。⛔ 这句必须说出口:界面上只把
+            // 「止损」改成「警戒」而不解释,用户会以为系统悄悄放松了纪律。
+            if let warning = position.lossWarningDisclosure {
+                Text(warning).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -855,7 +866,8 @@ struct PositionDetailPage: View {
                 // 每格 `flex:1`(名 `11 .55` 在上、数 `16/600` 在下)。
                 HStack(alignment: .top, spacing: 10) {
                     if let dist = position.distToStopPctServer {
-                        statItem("距止损线", NKFmt.signedPct(dist * 100),
+                        // V2.3.2-⑤:「距警戒线」/「距止损线」等宽,四格版式一字不动。
+                        statItem("距\(position.stopLineShortLabel)", NKFmt.signedPct(dist * 100),
                                  dist <= 0 ? NK.down : (dist <= 0.02 ? NK.amber : NK.up))
                     }
                     if let rs = position.retraceState {
@@ -879,9 +891,10 @@ struct PositionDetailPage: View {
                 NKDisclosure(summary: "刻度尺是版式,不是判断") {
                     // 🔴 `Text(String)` 不解析 Markdown(只有字面量解析)——`+` 拼接会把
                     // `**` 原样印上屏(§〇d 结转第 7 条)。整句必须是**一条字面量**。
-                    Text("四个刻度按价格**线性映射**到轨道上 —— 它只回答「离止损线还有多远」,⛔ 不代表任何概率、不构成任何建议。")
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("止损线由服务端按现役章程派生(客户端不重算);峰值只在有回落止盈态时才画。")
+                    // ⚠ V2.3.2-⑤ 要按章程换这条线的称呼,故走 `LocalizedStringKey`
+                    // (**两条完整字面量二选一**,⛔ 不许拼接、⛔ 不许传 `String` 进去)。
+                    Text(scaleExplainLine).fixedSize(horizontal: false, vertical: true)
+                    Text("这条线由服务端按现役章程派生(客户端不重算);峰值只在有回落止盈态时才画。")
                         .fixedSize(horizontal: false, vertical: true)
                     Text("「回落止盈线」与「占总仓」两格**本次不画**:前者的比例、后者的总仓分母都**没有下发到客户端**,在这里写死一个数就是造第二份事实源。")
                         .fixedSize(horizontal: false, vertical: true)
@@ -889,6 +902,15 @@ struct PositionDetailPage: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// 刻度尺那句解释里这条线的称呼随现役章程走(V2.3.2-⑤)。
+    /// 🔴 **两条完整字面量二选一**,⛔ 绝不拼接:`Text` 只对**字面量**解析 Markdown,
+    /// 把 `**线性映射**` 拼进 `String` 会把星号原样印上屏(CLAUDE.md 有案底,实拍才看得见)。
+    private var scaleExplainLine: LocalizedStringKey {
+        position.isLossWarningCharter
+            ? "四个刻度按价格**线性映射**到轨道上 —— 它只回答「离亏损警戒线还有多远」,⛔ 不代表任何概率、不构成任何建议。"
+            : "四个刻度按价格**线性映射**到轨道上 —— 它只回答「离止损线还有多远」,⛔ 不代表任何概率、不构成任何建议。"
     }
 
     /// 原型 1024 行:名 `11px rgba(.55)` 在上,数 `16/600 tabular` 在下(`margin-top:2`)。
@@ -1329,7 +1351,8 @@ struct OpenPositionSheet: View {
             .foregroundStyle(NK.accent)
             .padding(.bottom, 9)
             if let r = model.entrySuggestionRange {
-                autoRow("预计止损线", "¥\(NKFmt.price(r.stopLine))", tone: .bad,
+                // V2.3.2-⑤:这条线的称呼随现役章程走(⛔ 别写死「止损线」)。
+                autoRow("预计\(r.stopLineLabel)", "¥\(NKFmt.price(r.stopLine))", tone: .bad,
                         note: "按现役章程 -5%")
                 autoRow("参考手数", "\(r.qtyLow) – \(r.qtyHigh) 股",
                         note: "¥\(NKFmt.amount(r.capFloor)) – ¥\(NKFmt.amount(r.capCeil))")

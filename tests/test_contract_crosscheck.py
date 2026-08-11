@@ -597,3 +597,55 @@ def test_client_note_limit_mirrors_the_single_source():
         f"客户端 `nkTradeNoteMaxChars` = {line},服务端 `USER_NOTE_MAX_CHARS` = "
         f"{USER_NOTE_MAX_CHARS} —— 两处必须相等(唯一源在领域层,客户端那份只是镜像)。"
     )
+
+
+# —— V2.3.2-⑤ 退出字段语义(K8.md §十九):契约**只加不删**的三处机器判据 ——————————
+#
+# 🔴 少任何一头的后果都是静默的:界面上仍写着「止损线」,而用户的章程早已改成
+# 「亏损警戒 + 离场决策在你」—— 那是**系统替一版没说过这话的章程发言**,⛔ 看不出是 bug。
+_LOSS_WARNING_KEYS = ("lossWarningPct", "lossWarningAction")
+
+
+def test_server_declares_loss_warning_on_both_stop_line_endpoints():
+    """`stopLine` 出现在哪两个 DTO 上,这两键就必须出现在哪两个 DTO 上
+    (§五 V2.3.2 ⑤-B 第 4 条「`stopLine` 那两处同步补一句文案」的机器判据)。"""
+    schemas = _strip_comments(
+        (_ROOT / "neckline" / "api" / "schemas.py").read_text(encoding="utf-8"))
+    for cls in ("class PositionOut(BaseModel):", "class EntrySuggestionOut(BaseModel):"):
+        block = schemas.split(cls, 1)[1].split("\nclass ", 1)[0]
+        assert "stopLine:" in block, f"{cls} 里找不到 `stopLine` —— 这条守门锚错了地方"
+        for key in _LOSS_WARNING_KEYS:
+            assert f"{key}:" in block, f"服务端 `{cls}` 没有声明 `{key}`"
+
+
+def test_card_fingerprint_converter_maps_loss_warning_and_keeps_stop_pct():
+    """冻结卡指纹 snake→camel 的**唯一转换点**必须带这两键,且 `stopPct` **不许删**
+    (两步淘汰第一步:本版只加键;服务端删键要等下一版客户端先改可选,CLAUDE.md 铁律)。"""
+    from neckline.report.basket_daily import _CARD_FINGERPRINT_KEYS, card_to_public_dict
+
+    m = dict(_CARD_FINGERPRINT_KEYS)
+    assert m["stop_pct"] == "stopPct", "⛔ 本版不许删 `stopPct`"
+    assert m["loss_warning_pct"] == "lossWarningPct"
+    assert m["loss_warning_action"] == "lossWarningAction"
+    out = card_to_public_dict({"fingerprint": {
+        "stop_pct": 0.05, "loss_warning_pct": 0.05, "loss_warning_action": "review"}})
+    assert out["fingerprint"] == {
+        "stopPct": 0.05, "lossWarningPct": 0.05, "lossWarningAction": "review"}
+    # 老卡缺键 → 该键**不出现**(⛔ 不是补 null:「这一版卡没有这个概念」≠「有但为空」)
+    assert card_to_public_dict({"fingerprint": {"stop_pct": 0.05}})["fingerprint"] == {"stopPct": 0.05}
+
+
+def test_client_declares_loss_warning_on_every_dto_that_carries_stop_line():
+    """客户端半边:凡带 `stopLine` / 止损比例的 DTO 都要能读出**这条线现在是什么**。
+
+    ⚠ `lossWarningAction` 三处都要(它是**称呼与披露的判据**);`lossWarningPct` 只在
+    要显示那个百分数的两处(`Position` 的披露句、`BasketFingerprint` 的口径指纹)——
+    `EntrySuggestionRange` 只换称呼、不印比例,**刻意不接**,⛔ 别为了对称加一个没人读的字段。
+    三处一律**可选属性**(老服务端 / 老卡缺键 → nil,⛔ 不炸)。"""
+    models = _MODELS.read_text(encoding="utf-8")
+    for owner in ("struct Position:", "struct EntrySuggestionRange", "struct BasketFingerprint"):
+        block = models.split(owner, 1)[1].split("\n}\n", 1)[0]
+        assert "var lossWarningAction: String? = nil" in block, f"{owner} 少了 lossWarningAction"
+    assert "var lossWarningPct: Double? = nil" in models
+    # 展示层换算走单一判据(⛔ 别在视图里各写一份 `== "review"`)
+    assert 'var isLossWarningCharter: Bool { lossWarningAction == "review" }' in models

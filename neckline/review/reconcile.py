@@ -986,7 +986,10 @@ def run_weekly_review(
             sell_at = rt.sell_instant
             rt_cfg, rt_ver = _cfg_at(sell_at) if sell_at is not None else (None, None)
             if rt_cfg is not None and rt_cfg.stop_pct is not None:
-                advisory = brain.stop_is_advisory(rt_ver)
+                # V2.3.2-⑤:判据优先读**那版 config** 的 `loss_warning_action`
+                # (`rt_cfg` 正是卖出时刻 governing 的那版,⛔ 别换成"今天的章程");
+                # 老行(`v2.2-k8`)config 里没这字段 → 自动回退版本白名单。
+                advisory = brain.stop_is_advisory(rt_ver, rt_cfg)
                 kind, note = classify_stop_discipline(rt, rt_cfg.stop_pct, advisory=advisory)
                 review.stop_discipline.append((rt, kind, note))
                 if advisory and rt_ver and rt_ver not in advisory_weeks:

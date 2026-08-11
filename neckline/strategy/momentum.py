@@ -14,6 +14,10 @@
     · 时间退出（1.4）：持有满 max_hold_days 交易日 → 卖出（印证「4–7 自然日打平」）。
     · 冷却（1.7）：某票**亏损**卖出后 cooldown_days 交易日内不再买入。
 
+⚠ **`loss_warning_pct` / `loss_warning_action`(V2.3.2-⑤)不是退出机制** —— 它们是
+「−5% 对外触发什么」的语义声明(K8.md §十九),本引擎与 `eval/exit_sim.py` 的判分链
+**一行都不读**,回测行为与它们无关。
+
 仓位纪律（1.8/§2.1）：单笔 ≤ single_cap、最多 max_positions 只、总敞口 ≤
 max_exposure_frac×初始资金。次周单笔减半（P10 挂起项）作可选开关，供验证性回测。
 """
@@ -82,6 +86,18 @@ class MomentumConfig:
     # 新分支只在 time_exit_only_if_unprofitable=True 且 max_hold_days_profit 非空时进入。
     max_hold_days_profit: Optional[int] = None     # 浮盈单硬上限(交易日);None=不启用浮盈豁免=K1 行为
     time_exit_only_if_unprofitable: bool = False   # 时间退出仅对非浮盈单;False=无差别时间退出=K1 行为
+    # —— V2.3.2-⑤ 退出字段语义换血(K8.md §十九;`v2.3-k8` 起)————————————————————
+    # 🔴 **这两个字段是「对外语义」,回测/判分链一行都不读它们**:`_exit_reason` /
+    # `exit_sim.py` 继续只认 `stop_pct`(那是**回测口径**)。它们回答的是另一个问题 ——
+    # 「−5% 触发的是什么」:`loss_warning_action="review"` = **亏损警戒 + 由用户完成离场
+    # 决策**,⛔ 系统**不得**据此触发任何自动卖出(K8.md §十三 逐字)。
+    # ⚠ **默认 `None` = 该章程没有声明过这个语义**(⛔ 不是"声明为强制条件单"):老 config
+    # 加载吃默认 → K1 六年回测与 `stop_is_advisory` 的老行为**逐位不变**(护栏
+    # `tests/test_v13_exit_guardrail.py` + `brain.STOP_ADVISORY_CHARTERS` 白名单回退)。
+    # ⛔ `stop_pct` 的字段名 / 默认值 `0.05` / 单一源地位**一字不动** —— 本版改的是它
+    # **触发什么**,不是把 0.05 搬家,更不是在这里抄第二份(§五 ⑤-B / 〇b 红线 7)。
+    loss_warning_pct: Optional[float] = None       # 亏损警戒线(K8 §十九 = 0.05);None=该章程未声明
+    loss_warning_action: Optional[str] = None      # 警戒后的动作;"review"=交用户决策,⛔ 永不自动卖出
     # —— 仓位纪律 ——
     single_cap: float = 20000.0
     max_positions: int = 5
