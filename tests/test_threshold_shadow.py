@@ -69,11 +69,12 @@ def _member(code: str, *, industry: Optional[str] = "半导体") -> ag.BasketMem
 
 
 def _basket(key: str, *, engine: str = "C", codes=("600001.SH",),
-            market: str = "", sector: str = "", pool: int = 8) -> ag.BasketCandidate:
+            market: str = "", sector: str = "", pool: int = 8,
+            industry: Optional[str] = "半导体") -> ag.BasketCandidate:
     return ag.BasketCandidate(
         trade_date=D0_S, basket_key=key, name=key, driver="共同驱动",
         driver_kind="theme", why_now="为什么是现在", seed_keys=("s-1",),
-        members=tuple(_member(c) for c in codes), evidence=_EV3,
+        members=tuple(_member(c, industry=industry) for c in codes), evidence=_EV3,
         evidence_status=ag.EVIDENCE_OK, pack_version="K8-V0.5",
         engine_api_version=ag.engine_api.ENGINE_API_VERSION, charter_version="v1.3.3",
         engine_code_llm=engine, common_trait="共同特征", persistence="持续性",
@@ -313,6 +314,82 @@ class TestThresholdReport:
         j = rep["joint"]
         assert j["wouldPass"] <= j["determinable"] <= j["candidates"] == 2
 
+    def test_joint_pass_rate_denominator_is_the_recall_candidates_not_the_determinable(
+            self, isolated_env):
+        """🔴🔴 **裁定 3 逐字**:「单关及联合通过率的分母采用**进入市场关、板块关之前的
+        召回候选或篮子**」。⛔ **不是** `determinable`。
+
+        **为什么这条最要命**(2026-08-11 复审 🟠-4):`joint.passRate` 是唯一一个会被拿去
+        支持「恢复机械硬否决」的数(裁定 4 的 ≥20% 晋级线)。拿 `determinable` 当分母,
+        「3 只拟判通过 / 10 只判得出 / 共 60 个候选」会报 **30% / `sample_availability_ok`**;
+        按裁定的分母只有 **5%**。判不出的候选**计入分母、不计入分子**。"""
+        env = isolated_env
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength(env.db_path, days, 3, True)
+        _insert_regime(env.db_path, "trend_continuation")
+        # k1 判得出(强度表齐);k2/k3 的成员**没有行业归属** → 板块关那条读数取不到
+        # → 联合拟判 `None`(判不出)。这正是要考的场景。
+        r = _agg([_basket("k1", engine="C"),
+                  _basket("k2", engine="C", industry=None),
+                  _basket("k3", engine="C", industry=None)])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        ts.save_threshold_shadow(out, regime="trend_continuation", db_path=env.db_path)
+
+        j = tc.build_threshold_report(D0_S, D0_S, db_path=env.db_path)["joint"]
+        assert j["candidates"] == 3 and j["determinable"] < 3 and j["undetermined"] > 0
+        assert j["passRate"] == pytest.approx(j["wouldPass"] / j["candidates"])
+        # 诊断读数另出一份,且**明确写着不许拿它对 20% 那条线**
+        assert j["passRateAmongDeterminable"] == pytest.approx(
+            j["wouldPass"] / j["determinable"])
+        assert j["passRateAmongDeterminable"] > j["passRate"]
+        assert "20%" in j["denominatorNote"]
+        assert j["band"] == tc._band_of(j["passRate"])
+
+    def test_only_降级_thresholds_never_enter_the_joint_and(self, isolated_env):
+        """🔴 **复审 🟠-3**:`market.primary_regimes` 与 `rotation_confirmed_blocks_t1`
+        在任何代码路径下**只降级、从不否决**(裁定 2 / 已拍板 #4)——「不给 T1」**≠**
+        「本可否决」。把它们算进联合 AND,任一高位分歧日每个 C1 候选的 `primary_regimes`
+        拟判恒 False → `joint.passRate` 长期 <10%、`band=unacceptable_too_strict`,
+        裁定 4 的 ≥20% 晋级线**永远达不到**(结构性压死,而且看不出来)。"""
+        env = isolated_env
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength(env.db_path, days, 3, True)
+        # 高位分歧 + 广度 0.75(C1 那条 evidence 阈值**过**)——但 C1 的主场只有
+        # trend_continuation → `primary_regimes` 拟判 False。
+        _insert_regime(env.db_path, "high_divergence", breadth_pctile=0.75)
+        r = _agg([_basket("k1", engine="C")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        ts.save_threshold_shadow(out, regime="high_divergence", db_path=env.db_path)
+
+        rep = tc.build_threshold_report(D0_S, D0_S, db_path=env.db_path)
+        per = rep["perThreshold"]
+        assert per["market.primary_regimes"]["wouldPass"] == 0      # 拟判确实是 False
+        assert per["market.primary_regimes"]["jointMember"] is False
+        assert per["market.rotation_confirmed_blocks_t1"]["jointMember"] is False
+        assert per["sector.strength_days_min_5d"]["jointMember"] is True
+        assert per["market.high_divergence_min_breadth_pctile"]["jointMember"] is True
+        # ⛔ 那条恒假的读数**不许**把联合拟判拖成 False
+        assert rep["joint"]["wouldPass"] == 1 and rep["joint"]["passRate"] == 1.0
+        assert "不进联合 AND" in rep["joint"]["advisoryNote"]
+
+    def test_the_denominator_gap_is_disclosed_rather_than_papered_over(self, isolated_env):
+        """🟡-2:关口层**之前**就早退的两类(`no_active_engine` / `engine_unresolved`)
+        零影子行 → `candidates` 仍不是严格的「召回全体」。⛔ 不许把这个缺口藏起来。"""
+        env = isolated_env
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength(env.db_path, days, 3, True)
+        _insert_regime(env.db_path, "trend_continuation")
+        r = _agg([_basket("k1", engine="C")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        ts.save_threshold_shadow(out, regime="trend_continuation", db_path=env.db_path)
+        rep = tc.build_threshold_report(D0_S, D0_S, db_path=env.db_path)
+        gap = rep["denominatorGap"]
+        assert "no_active_engine" in gap and "engine_unresolved" in gap
+        assert "召回全体" in gap
+
     def test_undetermined_is_never_counted_as_a_pass_or_a_fail(self, isolated_env):
         """「算不出」是第三态:⛔ 既不进分子、也不当 False 拉低通过率。"""
         env = isolated_env
@@ -382,7 +459,11 @@ def test_llm_call_count_is_still_exactly_two_after_adding_two_more_gates():
              and n.func.attr == "chat"
              and isinstance(n.func.value, ast.Name) and n.func.value.id == "provider"]
     assert len(calls) == 2, [n.lineno for n in calls]
-    for mod in ("selection/threshold_shadow.py", "eval/threshold_calibration.py"):
+    # 🔴 **路径 A(2026-08-11 用户裁定)之后这条尤其要守**:市场关 / 板块关的三值
+    # 自此**恒定生效**(不再是"机械阈值不过才问"),⛔ 但那**不是**多问一次 ——
+    # `gates.py` 只是消费 ⑤ 已经带回来的字段。这里把 `gates.py` 也扫进来。
+    for mod in ("selection/threshold_shadow.py", "eval/threshold_calibration.py",
+                "selection/gates.py"):
         sub = ast.parse((_NECKLINE_DIR / mod).read_text(encoding="utf-8"))
         assert not [n for n in ast.walk(sub)
                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)

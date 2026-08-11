@@ -63,7 +63,12 @@ def _member(code: str = CODE, *, position: str = ag.POSITION_OK,
 
 def _basket(key: str = "k1", *, name: str = "篮",
             position: str = ag.POSITION_OK,
-            core: str = ag.CORE_OK) -> ag.BasketCandidate:
+            core: str = ag.CORE_OK,
+            market: str = ag.MARKET_OK,
+            sector: str = ag.SECTOR_OK) -> ag.BasketCandidate:
+    """⚠ V2.3.2 路径A:市场关 / 板块关的三值是**恒定生效**的必需输入(⑤ 那一次调用
+    带回来的)—— 默认给 `ok`,同 `position` / `core` 的既有姿势。留空 = 「判不出」,
+    该篮子恒 `blocks_t1`,那是另一类测试要的世界。"""
     return ag.BasketCandidate(
         trade_date=D0_S, basket_key=key, name=name, driver="共同驱动",
         driver_kind="theme", why_now="为什么是现在", seed_keys=("s-1",),
@@ -73,6 +78,7 @@ def _basket(key: str = "k1", *, name: str = "篮",
         charter_version="v1.3.3", engine_code_llm="C",
         common_trait="共同特征", persistence="持续性", strengthen_and_invalidate="强化与证伪",
         aux={"seed_pool_size": 8},
+        market_verdict=market, sector_verdict=sector,
     )
 
 

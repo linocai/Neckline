@@ -247,16 +247,40 @@ class TestBuildBasketDaily:
                                     with_exec_hints=False)
         assert out.dropped_available is True and out.dropped == []
 
-    def test_dropped_two_reason_codes_are_kept_apart(self, isolated_env):
+    def test_dropped_keeps_only_the_non_out_rows(self, isolated_env):
+        """🔴 **plan §五 ②-B 验收 ①(2026-08-11 复审整改前这条是空转的)**:
+        `droppedBaskets` **恰装非 OUT 的那些**(`is_out_reason()` 唯一源,当前只有
+        `capacity_overflow`),OUT 码的行**移给 ③b-2 逐股列名**。
+
+        ⛔ 不窄化的后果:客户端与 Markdown 的段头都写「档位已满 · 未定档」,却混着
+        「模型判它不是龙头」那些票 —— **界面在说谎**,而且同一批票在 ③b 与 ③b-2 **双列**。"""
         _seed_basket(isolated_env, ["600001.SH"], key="k1")
         out = bd.build_basket_daily(
             D0, dropped=[_Dropped("k9", "capacity_overflow", 0.71),
-                         _Dropped("k8", "below_quality_line", 0.11)],
+                         _Dropped("k8", "below_quality_line", 0.11),
+                         _Dropped("k7", "market_unfit", 0.62)],
             db_path=isolated_env.db_path, with_exec_hints=False,
         )
-        assert {d.reason for d in out.dropped} == {"capacity_overflow", "below_quality_line"}
-        pub = out.to_public_dict()["droppedBaskets"]
-        assert all("basketId" not in d for d in pub), "溢出篮没进 baskets 表,不许给 id"
+        assert [d.reason for d in out.dropped] == ["capacity_overflow"]
+        assert out.dropped_out_moved == 2
+        pub = out.to_public_dict()
+        assert [d["reason"] for d in pub["droppedBaskets"]] == ["capacity_overflow"]
+        # ⛔ 三键一个不删(契约只增不删):窄的是内容,不是契约
+        for k in ("droppedBaskets", "droppedBasketsAvailable",
+                  "droppedBasketsUnavailableReason"):
+            assert k in pub, k
+        assert all("basketId" not in d for d in pub["droppedBaskets"]), \
+            "溢出篮没进 baskets 表,不许给 id"
+
+    def test_moving_rows_out_is_disclosed_when_the_out_section_is_empty(self, isolated_env):
+        """🔴 **两段不许同时丢东西**:③b 把 OUT 行移走了,而 ③b-2 一行都没有 →
+        那批票在整份报告里**彻底看不见**,必须在 notes 里说出口(⛔ 不许静默)。"""
+        out = bd.build_basket_daily(
+            D0, dropped=[_Dropped("k7", "market_unfit", 0.62)],
+            db_path=isolated_env.db_path, with_exec_hints=False,
+        )
+        assert out.dropped == [] and out.dropped_out_moved == 1
+        assert any("没有展示" in n for n in out.notes), out.notes
 
 
 class TestZeroBasketHonesty:
@@ -567,20 +591,25 @@ class TestDroppedSection:
         md = _render(bd.build_basket_daily(D0, dropped=[], db_path=isolated_env.db_path,
                                            with_exec_hints=False))
         assert "### ③b 今日未定档篮子" in md
-        assert "今日无未定档篮子" in md
+        assert "今日无「档位已满 · 未定档」的篮子" in md
+        # ⛔ 「本节零行」不许被读成「今天没有票被判 OUT」——那是下一节的事
+        assert "关口出局的票在下一节 ③b-2 逐股列名" in md
 
-    def test_two_reason_codes_are_never_merged_into_one_sentence(self, isolated_env):
+    def test_the_two_sections_never_merge_and_never_double_list(self, isolated_env):
+        """🔴 V2.3.2-②-A:③b(档位已满)与 ③b-2(股票级 OUT)**指向相反的市场结论**。
+        ⛔ 同一批票不许双列 —— ③b 里出现 OUT 码就是"上一节在说谎"的直接证据。"""
         daily = bd.build_basket_daily(
             D0, dropped=[_Dropped("k9", "capacity_overflow", 0.71),
-                         _Dropped("k8", "below_quality_line", 0.11)],
+                         _Dropped("k8", "market_unfit", 0.11)],
             db_path=isolated_env.db_path, with_exec_hints=False,
         )
         md = _render(daily)
-        section = md.split("### ③b 今日未定档篮子")[1].split("## ④")[0]
-        assert "capacity_overflow" in section and "below_quality_line" in section
+        section = md.split("### ③b 今日未定档篮子")[1].split("### ③b-2")[0]
+        assert "capacity_overflow" in section
+        assert "market_unfit" not in section, "⛔ OUT 码不许留在「档位已满」那一节"
         assert "今天机会多到装不下" in section
-        assert "今天没什么好货" in section
-        assert "未入选" not in section, "⛔ 两个原因码不许被合并成一句「未入选」"
+        assert "未入选" not in section, "⛔ 各原因码不许被合并成一句「未入选」"
+        assert "### ③b-2 今日 OUT 清单(股票级)" in md
 
     def test_not_computed_says_so_instead_of_pretending_zero(self, isolated_env):
         md = _render(bd.build_basket_daily(D0, dropped=None, db_path=isolated_env.db_path,

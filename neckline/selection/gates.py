@@ -34,13 +34,21 @@
 
 唯一实现 `enforcement_of()`(⛔ 全仓不许有第二处,AST 守门)。**本版实际改判三项**:
 `C1.market.high_divergence_min_breadth_pctile` · `C1.sector.strength_days_min_5d` ·
-`Z1.sector.cluster_members_min` —— 它们**不再 reject**,verdict 由 ⑤ 那一次调用顺带
-产出的篮子级三值(`market_verdict` / `sector_verdict`)决定,后果与位置关 / 核心关
-**逐字相同**(`ok` 过 / `weak` 降一档 / `unfit` 退出正式候选但仍在 ③b 列名)。
+`Z1.sector.cluster_members_min` —— 它们**不再 reject**。
 **四项 audited 继续硬否决**(裁定 2 / 已拍板 #3):`C1/Y1.sector.industry_rank_max`、
 `Z1.market.trend_continuation_required_stages`、`Z1.sector.stage_allowed`。
 ⚠ `market.primary_regimes` 与 `C1.market.rotation_confirmed_blocks_t1` 本就只降级
 (`PASS + blocks_t1`),**本版零改动**(已拍板 #4)。
+
+🔴 **2026-08-11 用户裁定(路径 A):市场关 / 板块关的 LLM 三值结论必须恒定生效**,
+覆盖 C1、Z1、Y1 和三种行情状态;**机械读数只作为 prompt 证据输入,不作为调用或消费
+LLM 结论的前置条件**;已确认的机械硬否决阈值**独立执行**;⛔ **禁止模型已输出 `unfit`
+却被静默丢弃**。落地 = 两关各只有两个出口:audited 硬否决就地 `return`,**其余一律**
+走 `_llm_gate_verdict()`(ok 过 / weak 降一档 / unfit 退出正式候选但仍在 ③b 列名)。
+⚠ **⛔ 不得退回「机械阈值没过才问 LLM」那种上诉法庭结构** —— 2026-08-11 reviewer
+把三引擎 × 三行情状态九格全跑了一遍,那种结构下 `unfit` **全部为假**
+(`Y1.market` 主场含三态、`Y1.sector` 只有一条 audited,格子里根本问不到模型)。
+守门 = `tests/test_selection_gates.py::TestPathAVerdictAlwaysApplies` 的九格矩阵。
 ⛔ **不得把任何一关改回机械硬否决**,包括"顺手补一条及格线" —— 恢复的唯一通道 =
 裁定 6 的七项提交 → 用户确认 → **新引擎版本**里改 provenance(零自动升级)。
 ⚠ 第 4 锁「LLM 不做闸门」仍然完好:`verdict` 永不为 `reject`,「退出」发生在定档层。
@@ -217,6 +225,25 @@ GOVERNED_THRESHOLD_KEYS: Tuple[Tuple[str, str], ...] = (
 # 当分母会把它稀释成一个好看的数)。⑤-E 出通过率时按适用域分母,靠的就是这个前缀。
 NOT_APPLICABLE_PREFIX = "not_applicable:"
 
+# 🔴 **「本来就只降级、从不否决」的两条**(裁定 2 / 已拍板 #4,⛔ 不重开):
+# `market.primary_regimes`(非主场 → `PASS + blocks_t1`)与
+# `C1.market.rotation_confirmed_blocks_t1`(切换确认 → `PASS + blocks_t1`)——
+# 它们在**任何**代码路径下都不会产出 `VERDICT_REJECT`。
+#
+# 影子台账照样给它们出读数(背景信息,①-E 的 `perThreshold` 要列),但
+# **⛔ 它们不进「联合通过率」那个 AND**:联合通过率问的是「若把待定阈值恢复成
+# **硬门**,还剩多少候选」,而这两条压根不是硬门候选 ——「不给 T1」≠「本可否决」。
+# 把它们算进 AND 会让任一高位分歧日的每个 C1 候选拟判恒 False,
+# `joint.passRate` 长期 `<10%`、`band=unacceptable_too_strict`,
+# 裁定 4 的「≥20% 才通过样本可用性检查」那条晋级线**永远达不到**(结构性压死)。
+# ⚠ 判据刻意写成「列出不进 AND 的那两条」而不是「列出进 AND 的那三条」:将来若
+# 某条 audited 阈值被降回 evidence,它**应该**进 AND(它确实是硬门候选),
+# 白名单式写法会漏掉它。
+ADVISORY_THRESHOLD_KEYS: frozenset = frozenset({
+    f"{GATE_MARKET}.primary_regimes",
+    f"{GATE_MARKET}.rotation_confirmed_blocks_t1",
+})
+
 # tier_evidence 缺键时的引擎默认(K8 §八:T1 零降级 / T2 至多一处;包里给了以包为准)。
 T1_MAX_EVIDENCE_DEGRADES_DEFAULT = 0
 T2_MAX_EVIDENCE_DEGRADES_DEFAULT = 1
@@ -296,9 +323,17 @@ def independent_evidence_kinds(evidence: Sequence[Any]) -> Tuple[Tuple[str, ...]
 
 @dataclass(frozen=True)
 class GateCheck:
-    """一次关口判定(= `gate_evaluations` 一行)。`available=False` = 判定输入取不到
-    (verdict 恒 pass + blocks_t1,「不知道」既不是「过了」也不是「拦下」——
-    但它挡 T1)。`reason` 是机器可读原因码串,数值已内嵌(③b「差多少」直接用它)。"""
+    """一次关口判定(= `gate_evaluations` 一行)。`available=False` = 判定依据有取不到的
+    (「不知道」既不是「过了」也不是「拦下」—— 但它挡 T1)。`reason` 是机器可读原因码串,
+    数值已内嵌(③b「差多少」直接用它)。
+
+    ⚠ **V2.3.2 路径 A 起,`available=False` 不再蕴含 `verdict=pass`**(市场关 / 板块关
+    的两种成因分开看):① **LLM 三值缺席** → 判定真的没人给过 → `PASS + blocks_t1`
+    (老语义,一字不动);② **机械读数缺一项、但 LLM 已经给了三值** → 判定**有**依据
+    (模型看到的就是「未取到」并据此判的),读数缺席如实标 `available=False` + 挡 T1,
+    但 `weak`/`unfit` 照样生效 → verdict 可以是 `degrade`。
+    🔴 ⛔ **不许因为读数缺一项就把已经给出的 `unfit` 吞掉** —— 那正是 2026-08-11 用户
+    裁定明令禁止的「模型已输出 `unfit` 却被静默丢弃」。"""
 
     gate: str
     verdict: str
@@ -747,23 +782,44 @@ def _basket_stages(ctx: GateContext, industries: Sequence[str]) -> Tuple[Tuple[s
     return stages, ""
 
 
-def _evidence_verdict_check(
-    gate: str, *, basket: Any, ev: Dict[str, Any], head: str,
+def _llm_gate_verdict(
+    gate: str, *, basket: Any, ev: Dict[str, Any],
+    notes: Sequence[str] = (), evidence_miss: Sequence[str] = (),
+    unavailable: Sequence[str] = (), blocks_t1: bool = False,
     score: Optional[float] = None, threshold: Optional[float] = None,
 ) -> GateCheck:
-    """一条 **`enforcement=evidence`** 的阈值没过 → 判定交 ①-C 的 LLM 三值
-    (V2.3.2-①-C;⛔ **机械侧永不 reject**,裁定 1「只能降低候选等级,不能机械除名」)。
+    """市场关 / 板块关的 **evidence 半边**:LLM 三值裁决(①-C)。
+
+    🔴 **2026-08-11 用户裁定(路径 A),⛔ 不得打折**:
+
+        市场关、板块关的 LLM 三值结论**必须恒定生效**,覆盖 C1、Z1、Y1 和三种行情状态。
+        机械读数只作为 prompt 证据输入,**不作为调用或消费 LLM 结论的前置条件**。
+        已确认的机械硬否决阈值独立执行;未经确认的阈值交由 LLM 判断。
+        **禁止模型已输出 `unfit` 却被静默丢弃。**
+
+    落地 = **本函数是两关的唯一出口**(audited 硬否决在调用方就地 `return` 掉,那是
+    「独立执行」的那一半)。⛔ 绝不许再退回到「机械阈值没过才问 LLM」那种上诉法庭
+    结构 —— 那会让 `Y1.market`(主场含三态)、`Y1.sector`(只有一条 audited)等格子
+    **永远问不到模型**,九格矩阵实测全部 `unfit=False`(2026-08-11 reviewer 实跑)。
 
     三值后果与位置关 / 核心关**逐字相同**:`ok` → 该关 pass;`weak` → `VERDICT_DEGRADE`
     (计入 `evidence_degrades`,降一档);`unfit` → 退出正式候选(OUT),**仍在 ③b 列名**。
+    🔴 `verdict` **永不为 `reject`**(第 4 锁);「退出」发生在定档层(`t2_eligible=False`)。
 
-    🔴 **LLM 没给 / 给错 / 整段解析失败 → `available=False + blocks_t1=True`**
+    🔴 **LLM 没给 / 给错 / 整段解析失败 → `PASS + available=False + blocks_t1=True`**
     (⛔ 不默认 `ok`:让模型的沉默换来 T1,等于拿"没有依据"当依据;⛔ 也不像位置 /
     核心关那样兜底成 `weak` —— 那两关兜底成 weak 是因为**读数本身还在**、只是判定缺席,
-    这里连"这条待定阈值该不该拦"都没人答过,如实标「判不出」才诚实)。
+    这里连"这一关该怎么判"都没人答过,如实标「判不出」才诚实)。
 
-    `head` = 机器可读的读数串(③b「差多少」直接用它),数值已内嵌。"""
+    🔴 **`unavailable`(机械读数缺项)⛔ 不许吃掉已经给出的三值**:读数缺席如实标
+    `available=False` + 挡 T1,但 `weak`/`unfit` 照常生效 —— 模型看到的就是「未取到」
+    并据此判的,把它的结论按下不表就是路径A 明令禁止的那件事。
+
+    参数:`notes` = 机械侧读数摘要(过了的那些,进 reason 供 ③b 展示);
+    `evidence_miss` = evidence 阈值没过的那些;`unavailable` = 读数取不到的原因码;
+    `blocks_t1` = 机械侧自带的挡 T1(非主场 / `rotation_confirmed_blocks_t1`,已拍板 #4)。"""
     verdicts = MARKET_VERDICTS if gate == GATE_MARKET else SECTOR_VERDICTS
+    ok_value = verdicts[0]
     unfit_value = MARKET_UNFIT if gate == GATE_MARKET else SECTOR_UNFIT
     raw = str(getattr(basket, f"{gate}_verdict", "") or "").strip().lower()
     reason_text = str(getattr(basket, f"{gate}_reason", "") or "").strip()
@@ -771,10 +827,21 @@ def _evidence_verdict_check(
     ev = dict(ev)
     ev.update({
         "enforcement": ENFORCEMENT_EVIDENCE,
-        "evidence_threshold_miss": head,
         f"{gate}_verdict_raw": raw,
         f"{gate}_reason": reason_text,
     })
+    if evidence_miss:
+        ev["evidence_threshold_miss"] = ";".join(evidence_miss)
+    if unavailable:
+        # ⚠ 与 `verdict_missing` 分开两个键:一个是「机械读数缺项」、一个是
+        # 「模型没给判定」,④ 归因要分得开(混成一句就查不出是哪种缺席)。
+        ev["readings_unavailable"] = list(unavailable)
+
+    head = ";".join(x for x in (list(unavailable) + list(evidence_miss) + list(notes)) if x)
+    if not head:
+        head = f"{gate}.mech_ok"
+    readings_missing = bool(unavailable)
+
     if raw not in verdicts:
         ev["verdict_missing"] = True
         return GateCheck(gate, VERDICT_PASS, score=score, threshold=threshold,
@@ -785,12 +852,15 @@ def _evidence_verdict_check(
     reason_code = f"{head};{gate}.{raw}[llm]"
     if reason_text:
         reason_code += f":{reason_text}"
-    if raw == (MARKET_VERDICTS[0] if gate == GATE_MARKET else SECTOR_VERDICTS[0]):  # ok
+    if raw == ok_value:
         return GateCheck(gate, VERDICT_PASS, score=score, threshold=threshold,
+                         available=not readings_missing,
+                         blocks_t1=blocks_t1 or readings_missing,
                          reason=reason_code, evidence=ev)
     ev["unfit"] = raw == unfit_value
     return GateCheck(gate, VERDICT_DEGRADE, score=score, threshold=threshold,
-                     blocks_t1=True, reason=reason_code, evidence=ev)
+                     available=not readings_missing, blocks_t1=True,
+                     reason=reason_code, evidence=ev)
 
 
 def _gate_unfit(check: GateCheck) -> bool:
@@ -804,71 +874,88 @@ def _market_gate(
     """① 市场关:读 `market_regime_daily.regime`,按引擎 `gates.market` 三态分支取门槛;
     缺行 = 不拦但不给 T1(plan ③-B 原文)。
 
-    🔴 **V2.3.2-①-B 起本关是"半机械半证据"**:`source=audited` 的叶子
-    (`Z1.market.trend_continuation_required_stages`)继续硬否决、行为一字不动;
-    `engineering_v1` 的叶子(`high_divergence_min_breadth_pctile`)**不再 reject**,
-    改由 ①-C 的篮子级 LLM 三值裁决(`basket.market_verdict`)。
-    ⚠ `primary_regimes` 与 `rotation_confirmed_blocks_t1` 本就只降级不除名
-    (`PASS + blocks_t1`),**本版零改动**(已拍板 #4)。"""
-    if ctx.regime_row is None:
-        return GateCheck(GATE_MARKET, VERDICT_PASS, available=False, blocks_t1=True,
-                         reason="missing:market_regime")
-    regime = str(ctx.regime_row.get("regime") or "")
-    primary = _gate_value(engine, "market", "primary_regimes") or []
-    ev: Dict[str, Any] = {"regime": regime, "primary_regimes": list(primary)}
-    if regime in primary:
-        return GateCheck(GATE_MARKET, VERDICT_PASS, reason=f"market.regime={regime}:primary",
-                         evidence=ev)
+    🔴 **V2.3.2 路径A 起本关是"两半并行"的**(2026-08-11 用户裁定,⛔ 不得打折):
+      · **硬否决半边**(`source=audited`,如 `Z1.market.trend_continuation_required_stages`)
+        ——**独立执行**,不过就地 `return VERDICT_REJECT`,行为一字不动;
+      · **证据半边** —— 机械读数(主场态 / 广度分位 / 阶段态)**只作为 prompt 证据输入**,
+        判定一律由 `_llm_gate_verdict()` 消费 ⑤ 那一次调用带回的 `basket.market_verdict`,
+        **恒定生效**,⛔ 不以「某条机械阈值有没有没过」为前置条件。
+    ⚠ `primary_regimes` 与 `rotation_confirmed_blocks_t1` 仍然**只降级不除名**
+    (它们只贡献 `blocks_t1`,已拍板 #4 一字不动)—— 但它们**不再短路掉 LLM 三值**。
+    🔴 本函数**只有两个出口**:audited 硬否决,或 `_llm_gate_verdict`。⛔ 不许再加第三个
+    `return GateCheck(...)` —— 每加一个都是一条「模型说了不算」的暗道。"""
+    ev: Dict[str, Any] = {}
+    unavailable: List[str] = []
+    notes: List[str] = []
+    evidence_miss: List[str] = []
+    blocks_t1 = False
+    score: Optional[float] = None
+    threshold: Optional[float] = None
 
-    # 非主场:按引擎包声明的分支键逐条判(键名契约 = _ENGINE_GATE_SCHEMA)。
-    if regime == "high_divergence":
-        thr = _gate_value(engine, "market", "high_divergence_min_breadth_pctile")
-        if isinstance(thr, (int, float)) and not isinstance(thr, bool):
+    if ctx.regime_row is None:
+        unavailable.append("missing:market_regime")
+    else:
+        regime = str(ctx.regime_row.get("regime") or "")
+        primary = _gate_value(engine, "market", "primary_regimes") or []
+        ev.update({"regime": regime, "primary_regimes": list(primary)})
+        breadth_thr = _gate_value(engine, "market", "high_divergence_min_breadth_pctile")
+        has_breadth_thr = (isinstance(breadth_thr, (int, float))
+                           and not isinstance(breadth_thr, bool))
+        req_stages = _gate_value(engine, "market", "trend_continuation_required_stages")
+        has_req_stages = isinstance(req_stages, list) and bool(req_stages)
+        if regime in primary:
+            notes.append(f"market.regime={regime}:primary")
+        elif regime == "high_divergence" and has_breadth_thr:
+            thr = float(breadth_thr)
             p = ctx.regime_breadth_pctile
             if p is None:
-                return GateCheck(GATE_MARKET, VERDICT_PASS, available=False, blocks_t1=True,
-                                 reason="missing:breadth_pctile", evidence=ev)
-            ev["breadth_pctile"] = p
-            if p >= float(thr) - _EPS:
-                return GateCheck(GATE_MARKET, VERDICT_PASS, score=p, threshold=float(thr),
-                                 reason=f"market.breadth_pctile={p:.4f}>={float(thr):.4f}",
-                                 evidence=ev)
-            head = f"market.breadth_pctile={p:.4f}<{float(thr):.4f}"
-            if _enforcement(engine, "market", "high_divergence_min_breadth_pctile") == ENFORCEMENT_HARD:
-                ev["enforcement"] = ENFORCEMENT_HARD
-                return GateCheck(GATE_MARKET, VERDICT_REJECT, score=p, threshold=float(thr),
-                                 reason=head, evidence=ev)
-            return _evidence_verdict_check(GATE_MARKET, basket=basket, ev=ev, head=head,
-                                           score=p, threshold=float(thr))
-    if regime == "rotation_confirmed" and _gate_value(engine, "market", "rotation_confirmed_blocks_t1") is True:
-        return GateCheck(GATE_MARKET, VERDICT_PASS, blocks_t1=True,
-                         reason="market.rotation_confirmed_blocks_t1", evidence=ev)
-    if regime == "trend_continuation":
-        required = _gate_value(engine, "market", "trend_continuation_required_stages")
-        if isinstance(required, list) and required:
+                unavailable.append("missing:breadth_pctile")
+            else:
+                ev["breadth_pctile"] = p
+                score, threshold = p, thr
+                if p >= thr - _EPS:
+                    notes.append(f"market.breadth_pctile={p:.4f}>={thr:.4f}")
+                else:
+                    head = f"market.breadth_pctile={p:.4f}<{thr:.4f}"
+                    if _enforcement(engine, "market",
+                                    "high_divergence_min_breadth_pctile") == ENFORCEMENT_HARD:
+                        ev["enforcement"] = ENFORCEMENT_HARD
+                        return GateCheck(GATE_MARKET, VERDICT_REJECT, score=p, threshold=thr,
+                                         reason=head, evidence=ev)
+                    evidence_miss.append(head)
+        elif (regime == "rotation_confirmed"
+              and _gate_value(engine, "market", "rotation_confirmed_blocks_t1") is True):
+            notes.append("market.rotation_confirmed_blocks_t1")
+            blocks_t1 = True
+        elif regime == "trend_continuation" and has_req_stages:
+            required = req_stages
             if not ctx.stage_available:
-                return GateCheck(GATE_MARKET, VERDICT_PASS, available=False, blocks_t1=True,
-                                 reason="missing:industry_stage", evidence=ev)
-            stages = sorted({s for s in (ctx.stage_of.get(i) for i in industries) if s})
-            ev["stages"] = stages
-            if not stages:
-                return GateCheck(GATE_MARKET, VERDICT_PASS, available=False, blocks_t1=True,
-                                 reason="missing:member_industry_stage", evidence=ev)
-            if set(stages) & set(required):
-                return GateCheck(GATE_MARKET, VERDICT_PASS,
-                                 reason=f"market.stage∈{sorted(required)}", evidence=ev)
-            head = f"market.stage={stages}∉{sorted(required)}"
-            # `Z1.market.trend_continuation_required_stages` 是 audited(已拍板 #3)
-            # → 继续硬否决,行为一字不动;判据仍走 `enforcement_of`,⛔ 不硬编引擎名。
-            if _enforcement(engine, "market", "trend_continuation_required_stages") == ENFORCEMENT_HARD:
-                ev["enforcement"] = ENFORCEMENT_HARD
-                return GateCheck(GATE_MARKET, VERDICT_REJECT, reason=head, evidence=ev)
-            return _evidence_verdict_check(GATE_MARKET, basket=basket, ev=ev, head=head)
+                unavailable.append("missing:industry_stage")
+            else:
+                stages = sorted({s for s in (ctx.stage_of.get(i) for i in industries) if s})
+                ev["stages"] = stages
+                if not stages:
+                    unavailable.append("missing:member_industry_stage")
+                elif set(stages) & set(required):
+                    notes.append(f"market.stage∈{sorted(required)}")
+                else:
+                    head = f"market.stage={stages}∉{sorted(required)}"
+                    # `Z1.market.trend_continuation_required_stages` 是 audited(已拍板 #3)
+                    # → 继续硬否决,行为一字不动;判据仍走 `enforcement_of`,⛔ 不硬编引擎名。
+                    if _enforcement(engine, "market",
+                                    "trend_continuation_required_stages") == ENFORCEMENT_HARD:
+                        ev["enforcement"] = ENFORCEMENT_HARD
+                        return GateCheck(GATE_MARKET, VERDICT_REJECT, reason=head, evidence=ev)
+                    evidence_miss.append(head)
+        else:
+            # 非主场且引擎包没为该态声明分支 → 机械侧不拦但不给 T1(保守方向与「缺行」
+            # 一致:该引擎的主场前提不成立,但包没说要拒 —— ⛔ 不替包发明一条拒绝规则)。
+            notes.append(f"market.non_primary_regime:{regime}")
+            blocks_t1 = True
 
-    # 非主场且引擎包没为该态声明分支 → 不拦但不给 T1(保守方向与「缺行」一致:
-    # 该引擎的主场前提不成立,但包没说要拒 —— ⛔ 不替包发明一条拒绝规则)。
-    return GateCheck(GATE_MARKET, VERDICT_PASS, blocks_t1=True,
-                     reason=f"market.non_primary_regime:{regime}", evidence=ev)
+    return _llm_gate_verdict(GATE_MARKET, basket=basket, ev=ev, notes=notes,
+                             evidence_miss=evidence_miss, unavailable=unavailable,
+                             blocks_t1=blocks_t1, score=score, threshold=threshold)
 
 
 def _sector_gate(
@@ -884,14 +971,21 @@ def _sector_gate(
     **不再 reject**,改由 ①-C 的篮子级 LLM 三值裁决(`basket.sector_verdict`)。
 
     🔴 **evidence 项一律"记账不早退"**:硬门(audited)照旧遇拒即返,但 evidence 项
-    没过时**只记进 `evidence_fails` 继续往下跑** —— 早退会把后面的 audited 硬门跳过去,
+    没过时**只记进 `evidence_miss` 继续往下跑** —— 早退会把后面的 audited 硬门跳过去,
     那是把一道该拦的关悄悄关掉(⛔ 比不改还糟)。
     ⚠ `strength_days_min_5d` 的读数**已从 `industry_rank_max` 的通过分支里解耦出来**
     (见 `_best_strength_days` docstring):它现在按**全部成员行业**算,与影子台账同一
-    个来源;否则它的单关通过率分母会悄悄变成「名次已过的那批」。"""
+    个来源;否则它的单关通过率分母会悄悄变成「名次已过的那批」。
+
+    🔴 **V2.3.2 路径A(2026-08-11 用户裁定)**:本关同样是"两半并行" —— audited 硬门
+    独立执行(不过就地 `return REJECT`),**其余一律走 `_llm_gate_verdict()`**,
+    LLM 三值**恒定生效**。⛔ 尤其:①「机械读数取不到」**不再短路返回**(那会把模型
+    已经给出的 `unfit` 一起吃掉,路径A 明令禁止);②「四条阈值全过」也照样问模型
+    (`Y1.sector` 只有一条 audited,老结构下它的 `sector_unfit` **永不可达**)。"""
     ev: Dict[str, Any] = {"industries": list(industries), "seed_pool_size": pool_size}
     unavailable: List[str] = []
-    evidence_fails: List[str] = []
+    notes: List[str] = []
+    evidence_miss: List[str] = []
     score: Optional[float] = None
     threshold: Optional[float] = None
 
@@ -912,7 +1006,9 @@ def _sector_gate(
                     ev["enforcement"] = ENFORCEMENT_HARD
                     return GateCheck(GATE_SECTOR, VERDICT_REJECT, score=score,
                                      threshold=threshold, reason=head, evidence=ev)
-                evidence_fails.append(head)
+                evidence_miss.append(head)
+            else:
+                notes.append(f"sector.industry_rank={best_rank}<={int(rank_max)}")
 
     # —— ③-2 近 5 日强度日(C1=3,engineering_v1 → 证据模式)——
     sdays_min = _gate_value(engine, "sector", "strength_days_min_5d")
@@ -929,7 +1025,9 @@ def _sector_gate(
                     ev["enforcement"] = ENFORCEMENT_HARD
                     return GateCheck(GATE_SECTOR, VERDICT_REJECT, score=float(best_days),
                                      threshold=float(sdays_min), reason=head, evidence=ev)
-                evidence_fails.append(head)
+                evidence_miss.append(head)
+            else:
+                notes.append(f"sector.strength_days_5d={best_days}>={int(sdays_min)}")
 
     # —— ③-3 行业阶段态(Z1,audited → 硬否决,行为一字不动)——
     stage_allowed = _gate_value(engine, "sector", "stage_allowed")
@@ -944,7 +1042,9 @@ def _sector_gate(
                 if _enforcement(engine, "sector", "stage_allowed") == ENFORCEMENT_HARD:
                     ev["enforcement"] = ENFORCEMENT_HARD
                     return GateCheck(GATE_SECTOR, VERDICT_REJECT, reason=head, evidence=ev)
-                evidence_fails.append(head)
+                evidence_miss.append(head)
+            else:
+                notes.append(f"sector.stage∈{sorted(stage_allowed)}")
 
     # —— ③-4 簇成员数(Z1=3,engineering_v1 → 证据模式)——
     cluster_min = _gate_value(engine, "sector", "cluster_members_min")
@@ -957,22 +1057,13 @@ def _sector_gate(
                 ev["enforcement"] = ENFORCEMENT_HARD
                 return GateCheck(GATE_SECTOR, VERDICT_REJECT, score=float(pool_size),
                                  threshold=float(cluster_min), reason=head, evidence=ev)
-            evidence_fails.append(head)
+            evidence_miss.append(head)
+        else:
+            notes.append(f"sector.cluster_members={pool_size}>={int(cluster_min)}")
 
-    # 「判不出」优先于「证据项没过」:连输入都取不到时,让 LLM 去裁一个它也看不到读数
-    # 的东西没有意义(缺数姿势六关统一,⛔ 不因本版改判而动摇)。
-    if unavailable:
-        if evidence_fails:
-            ev["evidence_threshold_miss"] = ";".join(evidence_fails)
-        return GateCheck(GATE_SECTOR, VERDICT_PASS, available=False, blocks_t1=True,
-                         score=score, threshold=threshold,
-                         reason=";".join(unavailable), evidence=ev)
-    if evidence_fails:
-        return _evidence_verdict_check(GATE_SECTOR, basket=basket, ev=ev,
-                                       head=";".join(evidence_fails),
-                                       score=score, threshold=threshold)
-    return GateCheck(GATE_SECTOR, VERDICT_PASS, score=score, threshold=threshold,
-                     reason="sector.ok", evidence=ev)
+    return _llm_gate_verdict(GATE_SECTOR, basket=basket, ev=ev, notes=notes,
+                             evidence_miss=evidence_miss, unavailable=unavailable,
+                             score=score, threshold=threshold)
 
 
 def collect_threshold_readings(
@@ -1585,7 +1676,8 @@ __all__ = [
     "GATE_KIND_MECH", "GATE_KIND_LLM", "GATE_KIND_OF", "GATE_LABELS",
     "VERDICT_PASS", "VERDICT_DEGRADE", "VERDICT_REJECT",
     "ENFORCEMENT_HARD", "ENFORCEMENT_EVIDENCE", "PROVENANCE_SOURCE_AUDITED",
-    "GOVERNED_THRESHOLD_KEYS", "NOT_APPLICABLE_PREFIX", "enforcement_of",
+    "GOVERNED_THRESHOLD_KEYS", "NOT_APPLICABLE_PREFIX", "ADVISORY_THRESHOLD_KEYS",
+    "enforcement_of",
     "describe_evidence_thresholds", "check_threshold_governance",
     "ENGINE_SOURCE_LLM", "ENGINE_SOURCE_MECH_FALLBACK",
     "EXCLUDE_NO_ACTIVE_ENGINE", "EXCLUDE_ENGINE_UNRESOLVED",

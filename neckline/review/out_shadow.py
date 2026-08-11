@@ -17,8 +17,14 @@
 (单位 = OUT 票 × D1)。两者不共表、不共命名前缀、不共产物段。
 
 **口径复用,⛔ 不新建第二套**:涨跌幅 / 收盘状态 / 相对强弱一律取 ⑨ 日复盘
-(`review/basket_review.py`)**已登记的同名机械判**;行情读 D1 当日 `daily`
-(复盘段本就已加载 `day.bars`,本模块**复用注入的那一份**,⛔ 不另扫一遍 parquet)。
+(`review/basket_review.py`)**已登记的同名机械判**;行情读 D1 当日 `daily`。
+
+⚠ **`day` 是"可注入、但生产路径刻意不注入"**(2026-08-11 复审订正,⛔ 别"修"回去):
+复盘段那份 `DayMarket` 是按**篮子成员**装配的,**不含 OUT 票的行** —— 复用它会让
+几乎全部 OUT 票记成 `close_state='no_bar'` + 六项读数全空,整个错杀分析当场作废。
+故 `report/evening.py` **不传 `day=`**,由 `record_day` 自建一份只含 OUT 票的
+`DayMarket`(逐票点查、几十行量级,P0-23 结论仍是"不构成全市场级批算路径")。
+`day=` 参数保留给 CLI / 回放 / 单测注入用。
 
 **样本域**:`out_candidates`(②-B)—— 它天然已排除 `capacity_overflow`
 (「档位已满 · 未定档」**不是 OUT**:那些篮子关口全过了,只是位置装不下,
@@ -36,7 +42,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -197,9 +203,11 @@ def record_day(
     **契约:永不抛异常**(同 `selection_clock.close_day`)—— 它是复盘段的**旁路**,
     炸了只 WARNING,⛔ 不许掀翻当日复盘或结案。
 
-    `day`:调用方(⑨ 复盘段)已经装配好的 `DayMarket`。**传进来就复用**,⛔ 不另扫
-    一遍 parquet;不传则自建(CLI / 回放路径)。
-    ⚠ 注入的 `day` 是按**篮子成员**装配的,可能不含 OUT 票的行 —— 那些票如实记
+    `day`:调用方已经装配好的 `DayMarket`,传进来就复用;**不传则按 OUT 票自建**。
+    🔴 **生产路径(`report/evening.py`)刻意不传** —— 复盘段那份是按**篮子成员**装配的、
+    不含 OUT 票,复用它会把几乎全部 OUT 票记成 `close_state='no_bar'`。⛔ 别为了
+    "省一次装配"给它接上 `day=res.day`(模块头已登记这条,2026-08-11 复审订正)。
+    ⚠ 若调用方确实注入了一份不含某些 OUT 票的 `day`,那些票如实记
     `close_state='no_bar'` + 读数 `None`,⛔ 不猜(缺数 = 不知道)。"""
     res = OutShadowRunResult(d1=_d(d1) if d1 is not None else "")
     try:
@@ -369,6 +377,29 @@ TOP_RS_QUANTILE = 0.20         # 「D1 相对强弱进入当日 OUT 前 20%」
 # 「其余关口出局的**不算**」(这两关正是 ③ 要验的那两关)。
 MISKILL_GATES = frozenset({"core", "position"})
 
+# 🔴 只有**真的跑成了**的那一周才计进「连续 N 次」(⑧-2 状态机的输入)。
+LLM_STAGE_OK = "ok"
+
+
+def week_anchor_of(x: Any) -> str:
+    """任意一天 → 它所在 **ISO 周的周一**(`YYYYMMDD`)。
+
+    🔴 **`out_shadow_reviews.week_anchor` 的 UNIQUE 必须真的是「一周一行」**
+    (2026-08-11 复审整改;⑧-2 逐字:「⛔ 重跑周报不得推进连续计数」)。
+    **原来的洞**:落表用的是调用方传进来的**裸日期**,而 `scripts/weekly.py::_target_week()`
+    的缺省是 `date.today() - timedelta(days=7)` —— **跑周报那天不同,anchor 就不同**。
+    于是「周六跑一次、周日又跑一次」会落**两行**:同一份样本、同一个
+    `obvious_miskill_count`,凭一周的发现就把范围扩到 `10+5`(恢复方向同理被提前触发)。
+    UNIQUE 锁的是日期,不是「哪一周」,`INSERT OR IGNORE` 那道保险因此形同虚设。
+
+    **为什么用纯日期函数而不是 `week_bounds()` 的首个交易日**:归一必须只依赖 anchor
+    本身(与 `date_from`/`date_to`、与当周有没有交易日、与库里有没有数据都无关),
+    才能跨进程 / 跨重跑逐位可复现 —— 同 §六「轮转靠纯日期函数、⛔ 不靠库里的计数器」。"""
+    d = x if isinstance(x, date) else datetime.strptime(str(x), "%Y%m%d").date()
+    if isinstance(d, datetime):
+        d = d.date()
+    return _d(d - timedelta(days=d.weekday()))
+
 
 def _crc32_key(d0: str, ts_code: str) -> int:
     """「三只随机」的确定性抽样键(plan ③-B 逐字:`zlib.crc32(f"{d0}|{ts_code}")`)。
@@ -445,45 +476,65 @@ class ReviewScope:
 
 
 def resolve_scope(history: Sequence[Mapping[str, Any]]) -> ReviewScope:
-    """按**最近两次**周度复核结果决定本周范围(⑧-2 拍板的状态机)。
+    """按**最近两次真的跑成了的**周度复核结果决定本周范围(⑧-2 拍板的状态机)。
 
     · 未扩大 + **连续 2 次每次 ≥2 只**明显错杀 → 扩大为 `10 + 5`;
     · 已扩大 + **连续 2 次均 <2 只** → 恢复 `5 + 3`;
     · 其余 → 维持上一次的状态。
 
     🔴 **`history` 必须是"每周一行"的表行(⛔ 不是计数器)**:重跑同一周只会命中
-    已有行(`INSERT OR IGNORE`),**永远推不动连续计数**。这正是 §六「库里的计数器
-    会被重跑推进一格」那条教训的落点。"""
-    recent = list(history)[-CONSECUTIVE_WEEKS:]
-    was_expanded = bool(history[-1].get("expanded")) if history else False
+    已有行(`INSERT OR IGNORE` + `week_anchor` 已归一到 ISO 周一,见 `week_anchor_of`),
+    **永远推不动连续计数**。这正是 §六「库里的计数器会被重跑推进一格」那条教训的落点。
+
+    🔴 **只有 `llm_stage='ok'` 的周计进「连续 N 次」**(2026-08-11 复审整改;
+    §七 **P0-39** 同款病:`available` 不许挂在"读表成功"上)。
+    **原来的洞**:`provider is None` / `parse_failed` / `call_failed:*` /
+    `budget_exhausted` 四种情形下第 2/3/5 条全是 `None` → 五条 AND 恒假 →
+    `obvious_miskill_count=0` **照样落表**。处于扩大态时连续两周 key 失效,第三周就会
+    **自动恢复 `5+3`** —— 把「这两周根本没查」讲成了「这两周查过、没发现错杀」。
+    **处置 = 跳过**(⛔ 不是打断、也不是推进):非 ok 的周既不计入连续、也不清零,
+    状态原地不动,等下一次真的跑成了再说。"""
+    hist = list(history)
+    was_expanded = bool(hist[-1].get("expanded")) if hist else False
+    # ⚠ `was_expanded` 取**最后一行**(不论 ok 与否)—— 那是"当前处于哪个状态";
+    # 而"连续几次"只数真的跑成了的那些行。两者是不同的问题,⛔ 别用同一个子集。
+    scored = [r for r in hist if str(r.get("llm_stage") or "") == LLM_STAGE_OK]
+    skipped = len(hist) - len(scored)
+    skip_note = f";另有 {skipped} 周 LLM 段未跑成、已跳过(不推进也不打断)" if skipped else ""
+    recent = scored[-CONSECUTIVE_WEEKS:]
     if len(recent) < CONSECUTIVE_WEEKS:
         return ReviewScope(
             SCOPE_TOP_EXPANDED if was_expanded else SCOPE_TOP_DEFAULT,
             SCOPE_RANDOM_EXPANDED if was_expanded else SCOPE_RANDOM_DEFAULT,
             was_expanded,
-            f"历史不足 {CONSECUTIVE_WEEKS} 次,维持{'扩大' if was_expanded else '默认'}范围")
+            f"有效历史不足 {CONSECUTIVE_WEEKS} 次,"
+            f"维持{'扩大' if was_expanded else '默认'}范围{skip_note}")
     counts = [int(r.get("obvious_miskill_count") or 0) for r in recent]
     if not was_expanded and all(c >= MISKILL_TRIGGER for c in counts):
         return ReviewScope(SCOPE_TOP_EXPANDED, SCOPE_RANDOM_EXPANDED, True,
                            f"连续 {CONSECUTIVE_WEEKS} 次每次 ≥{MISKILL_TRIGGER} 只明显错杀"
-                           f"({counts})→ 临时扩大复核范围")
+                           f"({counts})→ 临时扩大复核范围{skip_note}")
     if was_expanded and all(c < MISKILL_TRIGGER for c in counts):
         return ReviewScope(SCOPE_TOP_DEFAULT, SCOPE_RANDOM_DEFAULT, False,
                            f"连续 {CONSECUTIVE_WEEKS} 次均 <{MISKILL_TRIGGER} 只明显错杀"
-                           f"({counts})→ 恢复默认范围")
+                           f"({counts})→ 恢复默认范围{skip_note}")
     return ReviewScope(
         SCOPE_TOP_EXPANDED if was_expanded else SCOPE_TOP_DEFAULT,
         SCOPE_RANDOM_EXPANDED if was_expanded else SCOPE_RANDOM_DEFAULT,
-        was_expanded, f"维持{'扩大' if was_expanded else '默认'}范围(近两次 {counts})")
+        was_expanded,
+        f"维持{'扩大' if was_expanded else '默认'}范围(近两次有效 {counts}){skip_note}")
 
 
 def load_review_history(
     *, before: Optional[str] = None, limit: int = 8, db_path: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
-    """按 `week_anchor` 升序读既往周度复核行(`before` 排除本周及以后)。"""
+    """按 `week_anchor` 升序读既往周度复核行(`before` 排除本周及以后)。
+
+    ⚠ **`llm_stage` 必须一起 SELECT** —— `resolve_scope` 靠它区分「查过、没发现错杀」
+    与「压根没查成」(2026-08-11 复审整改)。⛔ 别为了少一列把它去掉。"""
     init_schema(db_path)
-    sql = (f"SELECT week_anchor, expanded, obvious_miskill_count, reviewed_count "
-           f"FROM {REVIEWS_TABLE}")
+    sql = (f"SELECT week_anchor, expanded, obvious_miskill_count, reviewed_count, "
+           f"llm_stage FROM {REVIEWS_TABLE}")
     args: List[Any] = []
     if before:
         sql += " WHERE week_anchor < ?"
@@ -492,8 +543,43 @@ def load_review_history(
     args.append(int(limit))
     with connection(db_path) as conn:
         rows = conn.execute(sql, tuple(args)).fetchall()
-    keys = ["week_anchor", "expanded", "obvious_miskill_count", "reviewed_count"]
+    keys = ["week_anchor", "expanded", "obvious_miskill_count", "reviewed_count",
+            "llm_stage"]
     return [dict(zip(keys, r)) for r in reversed(rows)]
+
+
+def engine_criteria(
+    engine_version: Optional[str], *, db_path: Optional[Path] = None,
+) -> Dict[str, str]:
+    """一个引擎版本的**定性口径三段**(⑧-2 条件 2「按该票**主引擎原本的口径**判」的原料)。
+
+    🔴 **2026-08-11 复审整改**:原来的 context block 只给了 `主引擎 C·C1` 这个**版本号**,
+    ⛔ **一段引擎口径都没有** —— 模型被要求「按该票主引擎原本的口径」判支撑/转强/入场
+    信号,手上却只有一个代号。结果条件 2 长期判不出 → 五条 AND 恒假 → `obvious_miskill`
+    恒 0 → 扩大分支永不触发,而产物看起来像「查过了、没有错杀」。
+
+    三段直接取引擎包里现成的定性文字(⛔ 不新造口径、⛔ 不把阈值摊给模型当硬门):
+    `config.engine.applies_to` · `gates.position.guidance` · `gates.core.guidance`。
+    取不到(版本已非现役 / 读库失败)→ 各段留空,调用方如实写「未取到」。"""
+    out = {"appliesTo": "", "position": "", "core": ""}
+    if not engine_version:
+        return out
+    try:
+        from neckline.selection.pack import get_pack
+
+        pk = get_pack(str(engine_version), db_path)
+    except Exception:  # noqa: BLE001
+        logger.warning("[out_shadow] 引擎包 %r 读取失败,条件 2 的口径段留空",
+                       engine_version, exc_info=True)
+        return out
+    if pk is None:
+        return out
+    eng = (pk.config.get("engine") or {}) if isinstance(pk.config, Mapping) else {}
+    gates_cfg = eng.get("gates") or {}
+    out["appliesTo"] = str(eng.get("applies_to") or "")
+    out["position"] = str((gates_cfg.get("position") or {}).get("guidance") or "")
+    out["core"] = str((gates_cfg.get("core") or {}).get("guidance") or "")
+    return out
 
 
 def mechanical_miskill_gates(
@@ -539,7 +625,16 @@ OUT 身份、不会计入正式样本、不会产生任何交易动作。请据�
 第 1 条和第 4 条系统已经机械判过、结果写在每只票的读数里(照用,不必重判)。
 **你负责第 2、3、5 条**,并给出最终的「明显错杀」结论。
 
-判不准就judged 成 false 并说明缺什么,⛔ 不要为了给出结论而猜。
+**第 2 条的"引擎口径"在每只票下面给了**(该引擎的适用场景 + 位置关口径 + 核心关口径,
+都是定性描述)—— 按那几句判,⛔ 不要套一个通用的技术分析模板。
+
+🔴 **第 3 条要特别注意**:被判 OUT 的票**没有生成过篮子卡**,所以系统里**不存在**
+一条"原判断的失效位"价格 —— 你只能拿「原始出局理由」那句话对照 D1 的支撑/失效原始
+数据来判。**判不出就把 `invalidation_untriggered` 写成 `null`**(不是 false),
+⛔ 不要凭空猜一个失效价位。三个布尔字段都可以写 `null`。
+
+判不准就写 `null` 并说明缺什么,⛔ 不要为了给出结论而猜,也⛔ 不要用 false 冒充"判不出"
+(false = "我判了,不满足";null = "我判不出")。
 读数里写「未取到」的项就是真的没取到,⛔ 不要把它当成 0 或默认值。
 
 语义红线:你的产出是**研究结论**,不是买卖建议。⛔ 不得使用"推荐买入""建议买入"
@@ -574,10 +669,16 @@ OUT 身份、不会计入正式样本、不会产生任何交易动作。请据�
 def _review_context_block(
     picks: Sequence[Tuple[str, Mapping[str, Any], Mapping[str, Any]]],
     *, window: Tuple[str, str], scope: ReviewScope,
+    criteria_of: Optional[Mapping[str, Mapping[str, str]]] = None,
 ) -> str:
-    """一次调用管八只的 user 消息(**日期锚在首行**,时效纪律走 system prompt)。"""
+    """一次调用管八只的 user 消息(**日期锚在首行**,时效纪律走 system prompt)。
+
+    `criteria_of`:`engine_version → engine_criteria()` 的三段定性口径 ——
+    ⑧-2 条件 2「按该票**主引擎原本的口径**判」的判据材料。⛔ 不传 = 每只票写「未取到」,
+    ⚠ 那会让条件 2 长期判不出、五条 AND 结构性判死(2026-08-11 复审逮到的原状)。"""
     from neckline.llm.prompt_context import date_anchor_line
 
+    criteria_of = criteria_of or {}
     lines = [date_anchor_line(), ""]
     lines.append(f"复核窗口:{window[0]} → {window[1]};本次范围 = "
                  f"{scope.top_n} 只表现最强 + {scope.random_n} 只随机({scope.reason})。")
@@ -595,6 +696,11 @@ def _review_context_block(
         for rec in (detail.get("all_out_records") or [])[:3]:
             if rec.get("out_detail"):
                 lines.append(f"   原始出局理由:{rec['out_detail']}")
+        # ⑧-2 条件 2 的判据材料:该票**主引擎原本的口径**(三段定性,⛔ 不是阈值)。
+        crit = criteria_of.get(str(row.get("engine_version") or "")) or {}
+        lines.append(f"   主引擎口径·适用场景:{crit.get('appliesTo') or '未取到'}")
+        lines.append(f"   主引擎口径·位置关:{crit.get('position') or '未取到'}")
+        lines.append(f"   主引擎口径·核心关:{crit.get('core') or '未取到'}")
         pct = _fmt_rs(row.get("pct_chg"))
         hi = _fmt_num(row.get("high"))
         lo = _fmt_num(row.get("low"))
@@ -613,6 +719,8 @@ def _review_context_block(
         lines.append(f"   机械已判:第1条(核心关/位置关出局)= {cond1};"
                      f"第4条(进当日 OUT 前 20%)= {cond4}")
         lines.append("")
+    lines.append("⚠ 上面**没有**任何一条「原判断的失效位」价格 —— OUT 票不生成篮子卡,"
+                 "系统里就不存在这个数。第 3 条判不出就写 `null`,⛔ 别猜。")
     lines.append("请据此逐票给出第 2、3、5 条的判断与最终「明显错杀」结论。")
     return "\n".join(lines)
 
@@ -639,6 +747,9 @@ class WeekReviewResult:
     llm_stage: str = "not_run"
     narrative: str = ""
     per_stock: List[Dict[str, Any]] = field(default_factory=list)
+    # 五条 AND 里**每一条各有几只判不出**(⛔ 别只看 `obvious_miskill`:某条结构性
+    # 判不出时,「0 只错杀」讲的是"没查成"而不是"没错杀")。
+    undetermined_by_condition: Dict[str, int] = field(default_factory=dict)
     persisted: bool = False
     notes: List[str] = field(default_factory=list)
 
@@ -662,8 +773,10 @@ def review_week(
     里出现"结论:否决"会**静默翻转**真结论,CLAUDE.md v1.5.1 案底)。
 
     🔴 **重跑同一周不推进连续计数**:落表按 `week_anchor` UNIQUE + `INSERT OR IGNORE`,
-    「连续几次」由读**最近两行**现算(⛔ 库里不存计数器)。"""
-    anchor = _d(week_anchor)
+    「连续几次」由读**最近两行**现算(⛔ 库里不存计数器)。
+    ⚠ `week_anchor` **先归一到 ISO 周一**(`week_anchor_of`)才落表 —— 不归一的话
+    「周六跑一次、周日再跑一次」是两个不同的日期、落两行,UNIQUE 白设(2026-08-11 复审)。"""
+    anchor = week_anchor_of(week_anchor)
     res = WeekReviewResult(week_anchor=anchor, window=(_d(date_from), _d(date_to)))
     try:
         rows = list_out_shadow(date_from, date_to, db_path=db_path)
@@ -706,6 +819,13 @@ def review_week(
             picks.append((bucket, r, mech))
     res.reviewed = len(picks)
 
+    # ⑧-2 条件 2 的判据材料:逐个用到的引擎版本取一次定性口径(⛔ 不逐票读库)。
+    criteria_of: Dict[str, Dict[str, str]] = {}
+    for _, r, _m in picks:
+        v = str(r.get("engine_version") or "")
+        if v and v not in criteria_of:
+            criteria_of[v] = engine_criteria(v, db_path=db_path)
+
     parsed: Optional[List[Dict[str, Any]]] = None
     if provider is None:
         res.llm_stage = "no_provider"
@@ -713,7 +833,7 @@ def review_week(
     else:
         res.llm_stage, res.narrative, parsed = _run_review_llm(
             picks, window=res.window, scope=scope, provider=provider,
-            ledger=ledger, transport=transport)
+            ledger=ledger, transport=transport, criteria_of=criteria_of)
     verdicts = {str(v.get("ts_code") or ""): v for v in (parsed or [])}
 
     for bucket, r, mech in picks:
@@ -742,6 +862,23 @@ def review_week(
             },
         })
     res.obvious_miskill = sum(1 for x in res.per_stock if x["obviousMiskill"])
+    # 🔴 **哪一条把 AND 判死了,必须说出口**(2026-08-11 复审整改):五条 AND 是 ⑧-2
+    # 逐字定死的(⛔ 不许改成加权),但「某一条**结构性**判不出」与「查过了、真没错杀」
+    # 在 `obvious_miskill_count=0` 上长得一模一样。逐条统计判不出的只数,进产物 +
+    # notes —— ⛔ 不许让它静悄悄把结论判死。
+    res.undetermined_by_condition = {
+        k: sum(1 for x in res.per_stock if x["conditions"].get(k) is None)
+        for k in ("c1_gate_is_core_or_position", "c2_engine_signal",
+                  "c3_invalidation_untriggered", "c4_in_top_rs_quantile",
+                  "c5_overturns_original_reason")
+    }
+    for cond, label in (("c2_engine_signal", "条件 2(引擎口径的支撑/转强/入场信号)"),
+                        ("c3_invalidation_untriggered", "条件 3(原失效位未触发)")):
+        n = res.undetermined_by_condition.get(cond, 0)
+        if n and res.reviewed and n == res.reviewed:
+            res.notes.append(
+                f"⚠ {label}本期 {n}/{res.reviewed} 只**全部判不出** —— 五条 AND 因此"
+                f"结构性判死,`明显错杀 0 只`**不等于**「查过了、没有错杀」")
 
     if persist:
         res.persisted = _save_week_review(res, db_path=db_path)
@@ -752,6 +889,7 @@ def _run_review_llm(
     picks: Sequence[Tuple[str, Mapping[str, Any], Mapping[str, Any]]],
     *, window: Tuple[str, str], scope: ReviewScope,
     provider: Any, ledger: Optional[Any], transport: Optional[Any],
+    criteria_of: Optional[Mapping[str, Mapping[str, str]]] = None,
 ) -> Tuple[str, str, Optional[List[Dict[str, Any]]]]:
     """**唯一的一次** LLM 调用(八只一起)。返回 `(段状态, 叙述, 逐票结论 or None)`。"""
     import time
@@ -769,7 +907,8 @@ def _run_review_llm(
             _BatchSubject(f"out-review-{window[0]}-{window[1]}"),
             provider=provider, transport=transport,
             system_prompt=OUT_REVIEW_SYSTEM_PROMPT,
-            context_block=_review_context_block(picks, window=window, scope=scope),
+            context_block=_review_context_block(picks, window=window, scope=scope,
+                                                criteria_of=criteria_of),
             # 🔴 先剥 JSON 再解析 verdict(v1.5.1 案底:标签后面挂内容会静默翻转结论)
             narrative_splitter=split_narrative_and_reference_json,
         )
@@ -820,7 +959,11 @@ def _save_week_review(res: WeekReviewResult, *, db_path: Optional[Path]) -> bool
                  json.dumps({"perStock": res.per_stock,
                              "scopeReason": res.scope.reason if res.scope else "",
                              "narrative": res.narrative,
-                             "universe": res.universe},
+                             "universe": res.universe,
+                             # 🔴 逐条判不出计数一起冻进快照:没有它,事后看到
+                             # `obvious_miskill_count=0` 分不清"没错杀"还是"没查成"。
+                             "undeterminedByCondition": res.undetermined_by_condition,
+                             "notes": list(res.notes)},
                             ensure_ascii=False, sort_keys=True),
                  res.llm_stage, _now()),
             )
@@ -838,7 +981,8 @@ __all__ = [
     "record_day", "load_out_shadow", "list_out_shadow",
     "SCOPE_TOP_DEFAULT", "SCOPE_RANDOM_DEFAULT", "SCOPE_TOP_EXPANDED",
     "SCOPE_RANDOM_EXPANDED", "EXPANDED_TOTAL", "CONSECUTIVE_WEEKS", "MISKILL_TRIGGER",
-    "TOP_RS_QUANTILE", "MISKILL_GATES",
+    "TOP_RS_QUANTILE", "MISKILL_GATES", "LLM_STAGE_OK",
+    "week_anchor_of", "engine_criteria",
     "rank_by_strength", "top_rs_cutoff", "pick_review_sample", "resolve_scope",
     "load_review_history", "mechanical_miskill_gates",
     "review_week", "OUT_REVIEW_SYSTEM_PROMPT",

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace as dc_replace
 from datetime import date
 from pathlib import Path
 from typing import Dict, Optional, Sequence
@@ -128,11 +129,16 @@ def _member(code: str, *, industry: Optional[str] = None,
 def _basket(key: str, members, *, name: str = "篮", engine: Optional[str] = None,
             evidence=_EV3, evidence_status: str = ag.EVIDENCE_OK,
             answers: bool = True, pool: Optional[int] = 8,
-            market: Optional[str] = None, sector: Optional[str] = None,
+            market: Optional[str] = ag.MARKET_OK, sector: Optional[str] = ag.SECTOR_OK,
             market_reason: str = "", sector_reason: str = "") -> ag.BasketCandidate:
     """⚠ V2.3.2-①-C:`market` / `sector` = ⑤ 那一次调用带回的**篮子级**三值。
-    `None` = 模型压根没给 → 下游必须按「判不出」处理(不拦但不给 T1),
-    ⛔ **不是** ok、⛔ 也不像位置/核心关那样兜成 weak。"""
+    `None` / `""` = 模型压根没给 → 下游必须按「判不出」处理(不拦但不给 T1),
+    ⛔ **不是** ok、⛔ 也不像位置/核心关那样兜成 weak。
+
+    🔴 **默认给 `ok`(与 `_member()` 的 `position=ok` / `core=ok` 同姿势)**:
+    V2.3.2 路径A 之后市场关 / 板块关的三值是**恒定生效**的必需输入 —— 默认留空会让
+    每一个 `_basket()` 都恒 `blocks_t1`,把无关的测试全部染成"判不出"。要测「模型没给」
+    显式传 `market=None`。"""
     return ag.BasketCandidate(
         trade_date=D0_S, basket_key=key, name=name, driver="共同驱动",
         driver_kind="theme", why_now="为什么是现在" if answers else "",
@@ -152,6 +158,24 @@ def _basket(key: str, members, *, name: str = "篮", engine: Optional[str] = Non
 def _agg(baskets) -> ag.AggregateResult:
     return ag.AggregateResult(trade_date=D0_S, baskets=tuple(baskets),
                               pack_version="K8-V0.5", charter_version="v1.3.3")
+
+
+def _engine_with_sector(base: pack_mod.Pack, **leaves: int) -> pack_mod.Pack:
+    """现役包的副本 + 追加几条 **`engineering_v1`(= evidence)** 的板块关阈值。
+
+    存在的唯一理由:三个现役包里 evidence 项**恰好都排在 audited 之后**
+    (`_sector_gate` 的四段序 = rank → strength_days → stage → cluster),于是
+    「evidence 项早退会跳过后面的 audited 硬门」这个场景在现役包上**根本触发不了**,
+    守门单测因此空转(2026-08-11 复审逮到)。⛔ 这个包只服务于该守门,不代表任何现役配置。"""
+    import copy
+
+    cfg = copy.deepcopy(base.config)
+    sector = cfg.setdefault("engine", {}).setdefault("gates", {}).setdefault("sector", {})
+    for key, value in leaves.items():
+        sector[key] = {"value": value, "provenance": {
+            "source": "engineering_v1", "ref": "tests/test_selection_gates.py(守门造包)",
+            "calibration": "pending"}}
+    return dc_replace(base, config=cfg)
 
 
 def _insert_regime(db_path: Path, regime: str, *, breadth_pctile=None) -> None:
@@ -258,15 +282,38 @@ class TestEvidenceKinds:
 class TestMarketGate:
     def test_primary_regime_passes(self, isolated_env):
         _insert_regime(isolated_env.db_path, "trend_continuation")
-        c = gt._market_gate(C1, _ctx(isolated_env, []), [])
+        b = _basket("k1", [_member("600001.SH")], engine="C")   # market=ok(默认)
+        c = gt._market_gate(C1, _ctx(isolated_env, []), [], basket=b)
         assert c.verdict == gt.VERDICT_PASS and not c.blocks_t1 and c.available
+
+    def test_primary_regime_without_a_verdict_is_undetermined(self, isolated_env):
+        """🔴 **路径A**:主场态**不再自动放行** —— 三值恒定生效,模型没给 =「判不出」
+        (⛔ 不默认 ok:让模型的沉默换来 T1,等于拿"没有依据"当依据)。"""
+        _insert_regime(isolated_env.db_path, "trend_continuation")
+        b = _basket("k1", [_member("600001.SH")], engine="C", market=None)
+        c = gt._market_gate(C1, _ctx(isolated_env, []), [], basket=b)
+        assert c.verdict == gt.VERDICT_PASS
+        assert c.available is False and c.blocks_t1 is True
+        assert "missing:market_verdict" in c.reason
 
     def test_missing_regime_row_does_not_block_but_bars_t1(self, isolated_env):
         """② 已定:缺行 = 不拦,但该票不得进 T1(⛔ 别写反)。"""
         c = gt._market_gate(C1, _ctx(isolated_env, []), [])
         assert c.verdict == gt.VERDICT_PASS
         assert c.available is False and c.blocks_t1 is True
-        assert c.reason == "missing:market_regime"
+        assert "missing:market_regime" in c.reason
+
+    def test_missing_regime_row_still_lets_an_unfit_verdict_through(self, isolated_env):
+        """🔴🔴 **路径A 明令**:⛔ 禁止模型已输出 `unfit` 却被静默丢弃。
+        机械读数缺席(这里连行情状态行都没有)**不许**把已经给出的三值吃掉 ——
+        读数缺席如实标 `available=False` + 挡 T1,但 `unfit` 照常生效。"""
+        b = _basket("k1", [_member("600001.SH")], engine="C", market=ag.MARKET_UNFIT,
+                    market_reason="没有行情状态也看得出大盘不适配这个引擎")
+        c = gt._market_gate(C1, _ctx(isolated_env, []), [], basket=b)
+        assert gt._gate_unfit(c) is True                 # ⛔ 不许被 unavailable 吃掉
+        assert c.verdict == gt.VERDICT_DEGRADE           # ⛔ 永不 reject(第 4 锁)
+        assert c.available is False and c.blocks_t1 is True
+        assert "missing:market_regime" in c.reason
 
     def test_c1_high_divergence_breadth_below_threshold_no_longer_rejects(self, isolated_env):
         """🔴 **V2.3.2-①-B 改判**(策略线裁定 1,用户已确认):
@@ -305,14 +352,28 @@ class TestMarketGate:
 
     def test_c1_high_divergence_breadth_above_threshold_passes(self, isolated_env):
         _insert_regime(isolated_env.db_path, "high_divergence", breadth_pctile=0.75)
-        c = gt._market_gate(C1, _ctx(isolated_env, []), [])
+        b = _basket("k1", [_member("600001.SH")], engine="C")
+        c = gt._market_gate(C1, _ctx(isolated_env, []), [], basket=b)
         assert c.verdict == gt.VERDICT_PASS and not c.blocks_t1
 
+    def test_breadth_above_threshold_still_obeys_a_weak_verdict(self, isolated_env):
+        """🔴 **路径A**:机械阈值过了**不等于**这一关过了 —— 三值仍然说了算
+        (`weak` → 降一档)。⛔ 机械读数只是 prompt 证据,不是 LLM 结论的前置条件。"""
+        _insert_regime(isolated_env.db_path, "high_divergence", breadth_pctile=0.75)
+        b = _basket("k1", [_member("600001.SH")], engine="C", market=ag.MARKET_WEAK,
+                    market_reason="广度够但结构分化")
+        c = gt._market_gate(C1, _ctx(isolated_env, []), [], basket=b)
+        assert c.verdict == gt.VERDICT_DEGRADE and c.blocks_t1
+        assert gt._gate_unfit(c) is False
+
     def test_c1_rotation_confirmed_passes_but_blocks_t1(self, isolated_env):
-        """C1 `rotation_confirmed_blocks_t1`:切换确认下不产 T1 —— 不是 reject。"""
+        """C1 `rotation_confirmed_blocks_t1`:切换确认下不产 T1 —— 不是 reject。
+        ⚠ 已拍板 #4「只降级」一字不动:即使模型判 `ok`,`blocks_t1` 照样立着。"""
         _insert_regime(isolated_env.db_path, "rotation_confirmed")
-        c = gt._market_gate(C1, _ctx(isolated_env, []), [])
+        b = _basket("k1", [_member("600001.SH")], engine="C")
+        c = gt._market_gate(C1, _ctx(isolated_env, []), [], basket=b)
         assert c.verdict == gt.VERDICT_PASS and c.blocks_t1
+        assert "market.rotation_confirmed_blocks_t1" in c.reason
 
     def test_z1_trend_continuation_requires_stage(self, isolated_env):
         env = isolated_env
@@ -343,8 +404,32 @@ class TestSectorGate:
 
     def test_c1_rank_and_strength_days_pass(self, isolated_env):
         self._seed_strength(isolated_env, rank=3, strength=True)
-        c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8)
+        b = _basket("k1", [_member("600001.SH")], engine="C")
+        c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8, basket=b)
         assert c.verdict == gt.VERDICT_PASS and c.available
+
+    def test_all_mechanical_thresholds_pass_still_obeys_an_unfit_verdict(self, isolated_env):
+        """🔴🔴 **路径A 的核心一条**:四条机械阈值全过,模型仍可判 `unfit`。
+        老结构下这条走不到 `_llm_gate_verdict` —— 「机械阈值没过才问 LLM」那种上诉
+        法庭结构里,`sector_unfit` 在 `Y1`(只有一条 audited)上**永不可达**。"""
+        self._seed_strength(isolated_env, rank=3, strength=True)
+        b = _basket("k1", [_member("600001.SH")], engine="C", sector=ag.SECTOR_UNFIT,
+                    sector_reason="这个板块只是被指数带起来的")
+        c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8, basket=b)
+        assert gt._gate_unfit(c) is True
+        assert c.verdict == gt.VERDICT_DEGRADE and c.verdict != gt.VERDICT_REJECT
+        assert "这个板块只是被指数带起来的" in c.reason
+
+    def test_unavailable_readings_never_swallow_a_given_verdict(self, isolated_env):
+        """🔴🔴 **复审 🟠-2**:`unavailable` 分支原来会**先返回**,把已经给出的 `unfit`
+        一起吃掉。路径A 下这是明令禁止的。"""
+        # 不 seed 强度表 → 名次与强度日都取不到(`missing:industry_strength`)
+        b = _basket("k1", [_member("600001.SH")], engine="C", sector=ag.SECTOR_UNFIT,
+                    sector_reason="读数没取到,但板块本身明显不适配")
+        c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8, basket=b)
+        assert gt._gate_unfit(c) is True
+        assert c.available is False and c.blocks_t1 is True
+        assert "missing:industry_strength" in c.reason
 
     def test_c1_rank_too_low_rejects_with_gap(self, isolated_env):
         self._seed_strength(isolated_env, rank=30, strength=True)
@@ -398,13 +483,28 @@ class TestSectorGate:
 
     def test_hard_gate_rejection_never_skips_a_later_audited_gate(self, isolated_env):
         """🔴 evidence 项没过时**记账不早退**:否则它后面那道 audited 硬门会被跳过去
-        —— 那是把一道该拦的关悄悄关掉(比不改还糟)。这里 Z1 的簇成员数(evidence)
-        不够 **且** 阶段态(audited)不合 → 必须仍然是硬否决。"""
+        —— 那是把一道该拦的关悄悄关掉(比不改还糟)。
+
+        🔴🔴 **2026-08-11 复审整改:这条原来是空转的**。它用的是现役 Z1,而 Z1 的
+        evidence 项(`cluster_members_min`,`_sector_gate` 第 ④ 段)**排在** audited 的
+        `stage_allowed`(第 ③ 段)**之后** —— 早退根本轮不到发生,断言必绿。
+        三个现役包全都如此(C1 的 evidence 也在 audited 之后)。
+
+        **现在造一个真的能触发早退的包**:`strength_days_min_5d`(engineering_v1,第 ②
+        段)排在 `stage_allowed`(audited,第 ③ 段)**之前**,且两条都不过 →
+        必须仍然是硬否决(而不是被 evidence 那条先带走)。"""
+        mixed = _engine_with_sector(Z1, strength_days_min_5d=3)
+        self._seed_strength(isolated_env, rank=3, strength=False)   # 强度日 0 < 3(evidence 不过)
         ctx = _ctx(isolated_env, [], stage_of={"半导体": stage_mod.EBB}, stage_available=True)
         b = _basket("k1", [_member("600001.SH")], engine="Z", sector=ag.SECTOR_OK)
-        c = gt._sector_gate(Z1, ctx, ["半导体"], pool_size=1, basket=b)
-        assert c.verdict == gt.VERDICT_REJECT
+        c = gt._sector_gate(mixed, ctx, ["半导体"], pool_size=8, basket=b)
+        assert c.verdict == gt.VERDICT_REJECT, "⛔ evidence 项不许把后面的 audited 硬门带走"
         assert "stage" in c.reason
+        # 反向:同一个包、同一份 evidence 缺口,把 audited 那条改成过 → 才轮到 LLM 三值
+        ctx_ok = _ctx(isolated_env, [], stage_of={"半导体": stage_mod.IGNITION},
+                      stage_available=True)
+        c2 = gt._sector_gate(mixed, ctx_ok, ["半导体"], pool_size=8, basket=b)
+        assert c2.verdict == gt.VERDICT_PASS and "strength_days" in c2.reason
 
     def test_no_strength_table_bars_t1_not_reject(self, isolated_env):
         c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8)
@@ -615,6 +715,102 @@ class TestEvidenceClassGates:
         c = gt._evidence_gate(Z1, _basket("k", [_member("600001.SH")], evidence=tech3))
         assert c.verdict == gt.VERDICT_DEGRADE
         assert "no_news_policy_source" in c.reason
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑤b 路径 A:市场关 / 板块关的 LLM 三值**恒定生效**(九格矩阵)
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestPathAVerdictAlwaysApplies:
+    """🔴🔴 **2026-08-11 用户裁定(路径 A)的机器判据**,⛔ 不得打折:
+
+        市场关、板块关的 LLM 三值结论**必须恒定生效,覆盖 C1、Z1、Y1 和三种行情状态**。
+        机械读数只作为 prompt 证据输入,**不作为调用或消费 LLM 结论的前置条件**。
+        已确认的机械硬否决阈值独立执行;未经确认的阈值交由 LLM 判断。
+        **禁止模型已输出 `unfit` 却被静默丢弃。**
+
+    **为什么必须是九格矩阵**:整改前的结构是「机械阈值不过 → 才问 LLM」,reviewer 把
+    3 引擎 × 3 行情状态九格全跑了一遍,**`unfit` 全部为假**:
+      · `Y1.market.primary_regimes` 含三态 → 永远走「主场」分支,问不到模型;
+      · `Y1.sector` 只有一条 audited → 过了就直接 `sector.ok`,也问不到模型;
+      · `market_unfit` 只有 C1 在高位分歧 + 广度 <0.6 那**一格**可达。
+    单点测试(某一格能生效)看不出这种结构性缺口 —— **只有把九格铺开才看得见**。"""
+
+    REGIMES = ("trend_continuation", "high_divergence", "rotation_confirmed")
+
+    def _world(self, env, regime: str) -> gt.GateContext:
+        """一个**四项 audited 硬门全过**的世界(⛔ 硬否决会抢先,那样测不到三值):
+        行业名次 1(≤10 / ≤30 都过)· 阶段 `ignition`(Z1 的两处 audited 都允许)·
+        广度 0.75(C1 高位分歧那条 evidence 也过 —— 刻意让机械侧**无可挑剔**)。"""
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength_days(env.db_path, days, {"半导体": 1}, {"半导体": True})
+        _insert_regime(env.db_path, regime, breadth_pctile=0.75)
+        return _ctx(env, [], stage_of={"半导体": stage_mod.IGNITION}, stage_available=True)
+
+    def _summary(self, env, ctx, code: str, **verdicts) -> gt.BasketGateSummary:
+        b = _basket("k1", [_member("600001.SH", industry="半导体")], engine=code, **verdicts)
+        out = gt.evaluate_day(_agg([b]), D0, db_path=env.db_path, engines=ENGINES,
+                              skeleton=SKELETON, context=ctx)
+        return out.summaries["k1"]
+
+    @pytest.mark.parametrize("code", ["C", "Z", "Y"])
+    @pytest.mark.parametrize("regime", REGIMES)
+    def test_market_unfit_takes_effect_in_every_cell(self, isolated_env, code, regime):
+        ctx = self._world(isolated_env, regime)
+        s = self._summary(isolated_env, ctx, code, market=ag.MARKET_UNFIT,
+                          market_reason="大盘不适配这个引擎")
+        assert s.market_unfit is True, f"{code} × {regime}:模型判 unfit 却被静默丢弃"
+        assert s.any_unfit and not s.t2_eligible and not s.t1_eligible
+        # 🔴 ⛔ 这**不是**机械除名:verdict 永不 reject,「退出」发生在定档层
+        assert s.excluded is False
+        assert all(c.verdict != gt.VERDICT_REJECT for c in s.checks)
+
+    @pytest.mark.parametrize("code", ["C", "Z", "Y"])
+    @pytest.mark.parametrize("regime", REGIMES)
+    def test_sector_unfit_takes_effect_in_every_cell(self, isolated_env, code, regime):
+        ctx = self._world(isolated_env, regime)
+        s = self._summary(isolated_env, ctx, code, sector=ag.SECTOR_UNFIT,
+                          sector_reason="板块只是被指数带起来的")
+        assert s.sector_unfit is True, f"{code} × {regime}:模型判 unfit 却被静默丢弃"
+        assert s.any_unfit and not s.t2_eligible and not s.t1_eligible
+        assert s.excluded is False
+        assert all(c.verdict != gt.VERDICT_REJECT for c in s.checks)
+
+    @pytest.mark.parametrize("code", ["C", "Z", "Y"])
+    @pytest.mark.parametrize("regime", REGIMES)
+    def test_weak_degrades_in_every_cell_even_when_mechanics_are_flawless(
+            self, isolated_env, code, regime):
+        """机械侧**无可挑剔**的那一格里,`weak` 照样降一档 —— 这正是「机械读数不作为
+        消费 LLM 结论的前置条件」那句话的机器判据。"""
+        ctx = self._world(isolated_env, regime)
+        s = self._summary(isolated_env, ctx, code, market=ag.MARKET_WEAK,
+                          sector=ag.SECTOR_WEAK)
+        assert set(s.degraded_gates) >= {gt.GATE_MARKET, gt.GATE_SECTOR}
+        assert s.any_unfit is False and s.t1_eligible is False
+
+    @pytest.mark.parametrize("code", ["C", "Z", "Y"])
+    @pytest.mark.parametrize("regime", REGIMES)
+    def test_ok_still_passes_in_every_cell(self, isolated_env, code, regime):
+        """反向:三值恒定生效**不等于**恒定降级 —— `ok` 那一路必须还是过的
+        (⛔ 否则这次整改就把六关变成了一道谁都过不去的墙)。"""
+        ctx = self._world(isolated_env, regime)
+        s = self._summary(isolated_env, ctx, code)          # market/sector 默认 ok
+        assert s.any_unfit is False and not s.degraded_gates and s.excluded is False
+        market = next(c for c in s.checks if c.gate == gt.GATE_MARKET)
+        sector = next(c for c in s.checks if c.gate == gt.GATE_SECTOR)
+        assert market.verdict == gt.VERDICT_PASS and sector.verdict == gt.VERDICT_PASS
+        assert market.available and sector.available
+        # ⚠ C1 在切换确认态仍然 `blocks_t1`(已拍板 #4「只降级」一字不动)——
+        # 那不是本次整改带来的,⛔ 别把它读成"路径 A 把 T1 掐了"。
+        blocked = (code == "C" and regime == "rotation_confirmed")
+        assert s.t1_eligible is (not blocked)
+
+    def test_the_matrix_is_actually_nine_cells(self):
+        """⛔ 别把矩阵悄悄缩水成一格:三引擎 × 三行情状态 = 9,一个都不许少。"""
+        assert len(ENGINES) == 3 and len(self.REGIMES) == 3
+        assert set(self.REGIMES) == {"trend_continuation", "high_divergence",
+                                     "rotation_confirmed"}
 
 
 # ══════════════════════════════════════════════════════════════════════════

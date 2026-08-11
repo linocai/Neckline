@@ -224,8 +224,16 @@ class TestMiskillCriteria:
 
 class TestScopeStateMachine:
     def _hist(self, *rows):
-        return [{"week_anchor": f"2024040{i}", "expanded": e, "obvious_miskill_count": c}
-                for i, (e, c) in enumerate(rows, start=1)]
+        """`rows` = `(expanded, miskill_count)` 或 `(expanded, miskill_count, llm_stage)`。
+        ⚠ 缺省 `llm_stage='ok'` = 那一周**真的跑成了** —— 非 ok 的周由
+        `test_weeks_where_the_llm_never_ran_are_skipped_not_counted` 专门覆盖。"""
+        out = []
+        for i, row in enumerate(rows, start=1):
+            e, c = row[0], row[1]
+            stage = row[2] if len(row) > 2 else os_mod.LLM_STAGE_OK
+            out.append({"week_anchor": f"2024040{i}", "expanded": e,
+                        "obvious_miskill_count": c, "llm_stage": stage})
+        return out
 
     def test_two_consecutive_weeks_with_two_or_more_expands(self):
         """⑧-2:**连续 2 次、每次 ≥2 只** → 扩大为 `10 + 5`。"""
@@ -244,6 +252,32 @@ class TestScopeStateMachine:
     def test_mixed_history_holds_the_current_state(self):
         s = os_mod.resolve_scope(self._hist((1, 0), (1, 4)))
         assert s.expanded is True and (s.top_n, s.random_n) == (10, 5)
+
+    def test_weeks_where_the_llm_never_ran_are_skipped_not_counted(self):
+        """🔴🔴 **§七 P0-39 同款病**(2026-08-11 复审整改):`provider is None` /
+        `parse_failed` / `call_failed:*` / `budget_exhausted` 四种情形下第 2/3/5 条全是
+        `None` → 五条 AND 恒假 → `obvious_miskill_count=0` **照样落表**。
+        原来 `resolve_scope` 只读那一列 → 处于扩大态时**连续两周 key 失效,第三周自动
+        恢复 `5+3`** —— 把「这两周根本没查」讲成了「这两周查过、没发现错杀」。
+
+        **正确行为 = 跳过**:非 ok 的周既不推进连续计数、也不打断它,状态原地不动。"""
+        # 扩大态 + 连续两周 LLM 没跑成 → ⛔ 不许恢复
+        s = os_mod.resolve_scope(self._hist((1, 0, "no_provider"),
+                                            (1, 0, "call_failed:Timeout")))
+        assert s.expanded is True and (s.top_n, s.random_n) == (10, 5)
+        assert "跳过" in s.reason
+        # 反向:同样两周但真的跑成了 → 恢复(证明上面那条不是"永远不恢复")
+        back = os_mod.resolve_scope(self._hist((1, 0), (1, 0)))
+        assert back.expanded is False and (back.top_n, back.random_n) == (5, 3)
+        # 扩大方向同理:两周没跑成的 ≥2 只**不算数**(它们本来也不该有 miskill 计数)
+        hold = os_mod.resolve_scope(self._hist((0, 3, "parse_failed"),
+                                               (0, 3, "budget_exhausted")))
+        assert hold.expanded is False and (hold.top_n, hold.random_n) == (5, 3)
+
+    def test_a_failed_week_does_not_break_a_run_of_good_weeks(self):
+        """「跳过」**不是「打断」**:好周 → 没跑成的周 → 好周,连续 2 次仍然成立。"""
+        s = os_mod.resolve_scope(self._hist((0, 2), (0, 0, "no_provider"), (0, 3)))
+        assert (s.top_n, s.random_n, s.expanded) == (10, 5, True)
 
     def test_numbers_come_from_the_ruling(self):
         """⑧-1/⑧-2 给死的数照抄,⛔ 工程侧一个都不许发明。"""
@@ -274,6 +308,27 @@ class TestWeeklyReviewPersistence:
         assert again.persisted is False                 # 命中已有行,什么都没改
         hist = os_mod.load_review_history(db_path=env.db_path)
         assert len(hist) == 1                           # ⛔ 重跑没有多出一行
+
+    def test_rerunning_the_same_week_from_a_different_day_still_makes_one_row(
+            self, isolated_env):
+        """🔴🔴 **上一条恰好绕开的那个洞**(2026-08-11 复审整改):它两次都传**同一个**
+        anchor,于是 `week_anchor` UNIQUE 当然命中。可 `scripts/weekly.py::_target_week()`
+        的缺省是 `date.today() - timedelta(days=7)` —— **跑周报那天不同,anchor 就不同**,
+        UNIQUE 锁的是日期不是「哪一周」→ 周六跑一次、周日再跑一次会落**两行**:
+        同一份样本、同一个 `obvious_miskill_count`,凭一周的发现就把范围扩到 `10+5`。
+
+        修法 = 落表前把 anchor 归一到 ISO 周一(`week_anchor_of`)。"""
+        env = isolated_env
+        self._seed_week(env, ["600001.SH", "600002.SH"])
+        monday, saturday, sunday = date(2024, 4, 8), date(2024, 4, 13), date(2024, 4, 14)
+        assert (os_mod.week_anchor_of(saturday) == os_mod.week_anchor_of(sunday)
+                == os_mod.week_anchor_of(monday) == "20240408")
+        first = os_mod.review_week(saturday, D0, D0, provider=None, db_path=env.db_path)
+        again = os_mod.review_week(sunday, D0, D0, provider=None, db_path=env.db_path)
+        assert first.persisted is True and again.persisted is False
+        hist = os_mod.load_review_history(db_path=env.db_path)
+        assert len(hist) == 1, "⛔ 同一周换个跑法不许多出一行"
+        assert hist[0]["week_anchor"] == "20240408"     # 归一到 ISO 周一
 
     def test_no_provider_still_produces_mechanical_readings(self, isolated_env):
         """无 key → 只出机械读数(第 2/3/5 条未判),**不算失败**;

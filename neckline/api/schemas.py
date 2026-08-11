@@ -354,7 +354,12 @@ class OutCandidateOut(BaseModel):
     (`capacity_overflow`)—— K8 §八 的 OUT 适用状态里**没有**"位置满",它不是 OUT;
     这一类才是 K8 §六 意义上的 OUT。⛔ 客户端两段分开渲染,别合成一张表。
     `outReason` 与 `droppedBaskets.reason` **共用同一套原因码**(`DROPPED_REASON_LABEL`),
-    ⛔ 不另起第二套词表。**没有 `basketId`** —— 它没进 `baskets` 表。"""
+    ⛔ 不另起第二套词表。**没有 `basketId`** —— 它没进 `baskets` 表。
+
+    ⚠ **`basketKey` 必须发**(2026-08-11 复审整改):同一只票可能在同一天的**多个**
+    OUT 篮里出局(篮子间成员可重叠,`out_candidates` 主键就含 `basket_key`)——
+    不发它,客户端 `Identifiable.id` 会撞主键、Markdown 会出两行一模一样的记录。
+    ⛔ 它**不是** `basketId`(点不进去),只是消歧标识。"""
 
     tsCode: str = ""
     name: str = ""
@@ -364,6 +369,7 @@ class OutCandidateOut(BaseModel):
     outGate: Optional[str] = None
     outReason: str = ""
     outDetail: Optional[str] = None
+    basketKey: Optional[str] = None
 
 
 class BasketVerificationOut(BaseModel):
@@ -420,8 +426,11 @@ class BasketDailyOut(BaseModel):
     baskets: List[BasketOut] = Field(default_factory=list)
     basketsAvailable: bool = False
     basketsUnavailableReason: Optional[str] = None
-    # ⛔ `droppedBaskets*` 三键**原样保留、一个不删**(契约只增不删):它们现在只装
-    # 「档位已满 · 未定档」那一类(`capacity_overflow`),**不是 OUT**。
+    # ⛔ `droppedBaskets*` 三键**原样保留、一个不删**(契约只增不删)。
+    # ⚠ **V2.3.2-②-A 起内容已窄化**为「非 OUT 的未定档行」——判据 =
+    # `selection/basket_store.py::is_out_reason()`(唯一源;当前 `NON_OUT_REASONS`
+    # 只含 `capacity_overflow`)。OUT 票改由下面的 `outCandidates` 逐股给出,
+    # ⛔ 两段不许合并、也不许同一批票双列。**键没删、语义窄了**。
     droppedBaskets: List[DroppedBasketOut] = Field(default_factory=list)
     droppedBasketsAvailable: bool = False
     droppedBasketsUnavailableReason: Optional[str] = None

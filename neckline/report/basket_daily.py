@@ -264,7 +264,12 @@ class OutCandidateView:
     ⚠ 与 `DroppedBasketView` **刻意不合并**:那一类是**篮子级**的「档位已满 · 未定档」
     (`capacity_overflow` —— K8 §八 的 OUT 适用状态里**没有**"位置满",它不是 OUT);
     这一类才是 K8 §六 意义上的 OUT。两段互不串,⛔ 别为了"少一个列表"合起来。
-    **仍没有 `basketId`**:它没进 `baskets` 表(同 `DroppedBasketView` 的理由)。"""
+    **仍没有 `basketId`**:它没进 `baskets` 表(同 `DroppedBasketView` 的理由)。
+
+    ⚠ **`basket_key` 是身份的一部分,必须下发**(2026-08-11 复审整改):同一只票可能在
+    同一天的**多个** OUT 篮里出局(篮子间成员可重叠),不发这个键会让客户端
+    `ForEach` 主键碰撞、Markdown 出两行**一模一样**的记录。⛔ 它**不是** `basketId`
+    (点不进去),只是消歧用的篮子标识。"""
 
     ts_code: str
     name: str = ""
@@ -274,6 +279,7 @@ class OutCandidateView:
     out_gate: Optional[str] = None
     out_reason: str = ""
     out_detail: Optional[str] = None
+    basket_key: Optional[str] = None
 
     @property
     def reason_label(self) -> str:
@@ -283,7 +289,7 @@ class OutCandidateView:
         return {"tsCode": self.ts_code, "name": self.name, "role": self.role,
                 "engineCode": self.engine_code, "engineVersion": self.engine_version,
                 "outGate": self.out_gate, "outReason": self.out_reason,
-                "outDetail": self.out_detail}
+                "outDetail": self.out_detail, "basketKey": self.basket_key}
 
 
 @dataclass
@@ -391,6 +397,11 @@ class BasketDaily:
     dropped: List[DroppedBasketView] = field(default_factory=list)
     dropped_available: bool = False
     dropped_unavailable_reason: Optional[str] = None
+    # 🔴 V2.3.2-②-A:本次有多少个**关口出局**的篮子被移出本节、改由 ③b-2 逐股列名。
+    # ⛔ 只作**内部自检**(不进契约):它存在的唯一理由是「两段不许同时丢东西」——
+    # 若 ③b-2 那一段本身没取得,这个数 >0 就说明**有一批票在报告里彻底看不见了**,
+    # 必须在 notes 里说出口(⛔ 不许静默)。
+    dropped_out_moved: int = 0
     # V2.3.2-②-B:③b 的第二类行(**股票级 OUT**)。三件套照 `dropped*` 既有体例 ——
     # 空数组只有在 `available=True` 时才等于"今天没有 OUT"。
     out_candidates: List[OutCandidateView] = field(default_factory=list)
@@ -430,6 +441,9 @@ class BasketDaily:
             "basketsUnavailableReason": self.baskets_unavailable_reason,
             # ⛔ `droppedBaskets*` 三键**原样保留、一个不删**(契约只增不删;老客户端
             # 靠它们渲染 ③b —— 删键 = 老包当场空掉)。
+            # ⚠ V2.3.2-②-A 起**内容已窄化**为「非 OUT 的未定档行」
+            # (`basket_store.NON_OUT_REASONS`,当前 = `capacity_overflow` 一个码);
+            # OUT 票改由 `outCandidates` 逐股给出。**键没删、语义窄了**。
             "droppedBaskets": [d.to_public_dict() for d in self.dropped],
             "droppedBasketsAvailable": self.dropped_available,
             "droppedBasketsUnavailableReason": self.dropped_unavailable_reason,
@@ -757,7 +771,20 @@ def build_basket_daily(
         )
     else:
         try:
+            from neckline.selection.basket_store import is_out_reason
+
             name_by_key = {b.basket_key: b.name for b in out.baskets}
+            # 🔴 V2.3.2-②-A(2026-08-11 复审整改):本节自此**只装非 OUT 的未定档行**
+            # (`basket_store.NON_OUT_REASONS`,当前只有 `capacity_overflow`)。
+            # ⚠ **为什么必须窄化**:客户端与 Markdown 的段头都写「档位已满 · 未定档」,
+            # 而 OUT 票同时已在 ③b-2 逐股列出 —— 不窄化就是①把「模型判它不是龙头」
+            # 讲成「机会多到装不下」(界面在说谎)、②同一批票**双列**。
+            # ⛔ 键**一个不删**(`droppedBaskets*` 三件套原样保留),窄的只是内容。
+            # ⚠ 老客户端(≤2.3.1,不认 `outCandidates`)因此在 ③b 看不到关口出局篮 ——
+            # 这是**刻意的过渡代价**:报告 Markdown 的 ③b-2 仍逐股列全,且 V2.3.2 ⑥ 会
+            # 双端换包。⛔ 别为了照顾老包把「档位已满」这个字面留在混装的列表上。
+            kept = [d for d in dropped if not is_out_reason(str(getattr(d, "reason", "") or ""))]
+            moved = len(list(dropped)) - len(kept)
             out.dropped = [
                 DroppedBasketView(
                     name=(getattr(d, "name", None)
@@ -768,9 +795,10 @@ def build_basket_daily(
                     gate=getattr(d, "gate", None),
                     gate_detail=getattr(d, "gate_detail", None),
                 )
-                for d in dropped
+                for d in kept
             ]
             out.dropped_available = True
+            out.dropped_out_moved = moved
         except Exception:  # noqa: BLE001
             logger.warning("[basket_daily] 未定档篮子装配异常,该段降级", exc_info=True)
             out.dropped = []
@@ -792,6 +820,7 @@ def build_basket_daily(
                 role=r.get("role"), engine_code=r.get("engine_code"),
                 engine_version=r.get("engine_version"), out_gate=r.get("out_gate"),
                 out_reason=str(r.get("out_reason") or ""), out_detail=r.get("out_detail"),
+                basket_key=r.get("basket_key"),
             )
             for r in rows
         ]
@@ -803,6 +832,15 @@ def build_basket_daily(
         out.out_candidates_unavailable_reason = (
             "股票级 OUT 清单读取异常(详见服务端日志),本段未取得。")
         out.notes.append(out.out_candidates_unavailable_reason)
+
+    # 🔴 两段不许同时丢东西:③b 已把关口出局的篮子移给 ③b-2,若 ③b-2 这一段没取得
+    # (或一行都没有),那批票就在整份报告里**彻底看不见** —— 必须说出口,⛔ 不许静默。
+    if out.dropped_out_moved and (not out.out_candidates_available or not out.out_candidates):
+        out.notes.append(
+            f"⚠ 本次有 {out.dropped_out_moved} 个篮子因关口未过 / 引擎缺席归入 OUT,"
+            f"已从 ③b「档位已满 · 未定档」移出;但 ③b-2 股票级 OUT 清单本次"
+            f"{'未取得' if not out.out_candidates_available else '零行'} —— "
+            f"这批票本报告**没有展示**(⛔ 不等于今天没有 OUT)。")
 
     # ④ 昨日篮子复盘
     try:

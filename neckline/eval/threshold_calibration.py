@@ -32,12 +32,28 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from neckline.selection.gates import NOT_APPLICABLE_PREFIX
+from neckline.selection.gates import ADVISORY_THRESHOLD_KEYS, NOT_APPLICABLE_PREFIX
 from neckline.selection.threshold_shadow import load_threshold_shadow
 
 logger = logging.getLogger(__name__)
 
 SPEC_VERSION = "threshold_calibration_v1"
+
+# 🔴 **联合 AND 只吃「若恢复硬门就真的会否决」的阈值**(2026-08-11 复审整改)。
+# `market.primary_regimes` 与 `C1.market.rotation_confirmed_blocks_t1` 在任何代码路径
+# 下都只产 `PASS + blocks_t1`(裁定 2 / 已拍板 #4)——「不给 T1」**≠**「本可否决」。
+# 把它们算进 AND 的后果:任一高位分歧日,每个 C1 候选的 `primary_regimes` 拟判恒 False
+# → `joint.passRate` 长期 <10% → `band=unacceptable_too_strict` → 裁定 4 的
+# 「≥20% 才通过样本可用性检查」那条晋级线**永远达不到**(结构性压死,而且看不出来)。
+# ⚠ 它们照样出现在 `perThreshold` 里(背景读数,裁定 4 第 1 项要的就是逐条读数),
+# 只是标 `jointMember=false`。判据唯一源在 `gates.ADVISORY_THRESHOLD_KEYS`,⛔ 别在这里
+# 抄第二份名单。
+ADVISORY_NOTE = (
+    "标 `jointMember=false` 的两条(`market.primary_regimes` / "
+    "`market.rotation_confirmed_blocks_t1`)在任何代码路径下**只降级、从不否决**"
+    "(裁定 2 / 已拍板 #4)—— 它们只作背景读数,⛔ **不进联合 AND**:"
+    "「不给 T1」不是「本可否决」,算进去会把联合通过率结构性压死。"
+)
 
 # 裁定 4 的判读口径(⛔ **工程侧不许改写这三句**,原样进产物文案)。
 BAND_UNACCEPTABLE = 0.10
@@ -63,6 +79,11 @@ DISCLAIMER = (
 
 def _is_not_applicable(row: Mapping[str, Any]) -> bool:
     return str(row.get("unavailable_reason") or "").startswith(NOT_APPLICABLE_PREFIX)
+
+
+def _is_joint_member(row: Mapping[str, Any]) -> bool:
+    """该影子行的阈值键要不要进「联合通过率」那个 AND(见 `ADVISORY_NOTE`)。"""
+    return str(row.get("threshold_key") or "") not in ADVISORY_THRESHOLD_KEYS
 
 
 def _rate(hits: int, denom: int) -> Optional[float]:
@@ -100,32 +121,53 @@ def _joint_verdict(rows: Sequence[Mapping[str, Any]]) -> Optional[bool]:
 
     三值(Kleene,与 `selection/verification_rules.combine_side` 同一哲学,⛔ 不新造):
     任一条「本可否决」→ `False`;全部适用条都「本可通过」→ `True`;
-    一条都判不出 → `None`(**算不出 ≠ 不通过**,⛔ 不许把它计进分子或当 False)。"""
+    一条都判不出 → `None`(**算不出 ≠ 不通过**,⛔ 不许把它计进分子或当 False)。
+
+    ⚠ **只 AND 真正的硬门候选**(`_is_joint_member`):`primary_regimes` /
+    `rotation_confirmed_blocks_t1` 这两条只降级、从不否决,进 AND 会把结果结构性压死。"""
     determinable = [r for r in rows
-                    if not _is_not_applicable(r) and r.get("would_pass") is not None]
+                    if _is_joint_member(r) and not _is_not_applicable(r)
+                    and r.get("would_pass") is not None]
     if not determinable:
         return None
     return all(int(r["would_pass"]) == 1 for r in determinable)
 
 
 def _joint_section(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
-    """裁定 4 第 2 项:市场关与板块关的联合通过率。**分母 = 进关候选数**。"""
+    """裁定 4 第 2 项:市场关与板块关的联合通过率。
+
+    🔴 **分母 = 进关候选全体**(裁定 3 逐字:「单关及联合通过率的分母采用**进入市场关、
+    板块关之前的召回候选或篮子**」)—— ⛔ **不是** `determinable`。
+    **为什么这条最要命**:`passRate` 是唯一一个会被拿去支持「恢复机械硬否决」的数
+    (裁定 4 的 ≥20% 晋级线)。拿 `determinable` 当分母,60 个候选里 50 个判不出、
+    剩 10 个里 3 个拟判通过,会报出 **30% / `sample_availability_ok`**;按裁定的分母
+    只有 **5%**。⛔ 判不出的候选**计入分母、不计入分子**。
+    `passRateAmongDeterminable` 只作**诊断读数**(看有多少票被"判不出"吃掉),
+    ⛔ **不许拿它去对 20% 那条线**。`band` 只吃 `passRate`。"""
     by_candidate: Dict[Tuple[str, str], List[Mapping[str, Any]]] = {}
     for r in rows:
         by_candidate.setdefault((str(r["trade_date"]), str(r["candidate_key"])), []).append(r)
     verdicts = {k: _joint_verdict(v) for k, v in by_candidate.items()}
     determinable = [v for v in verdicts.values() if v is not None]
     hits = [v for v in determinable if v]
-    rate = _rate(len(hits), len(determinable))
+    candidates = len(verdicts)
+    rate = _rate(len(hits), candidates)
+    # 「一个都判不出」= 什么都没量到 → 如实标样本不足,⛔ 不报一个 0.0% 冒充结论。
+    insufficient = candidates == 0 or not determinable
     return {
-        "candidates": len(verdicts),
+        "candidates": candidates,
         "determinable": len(determinable),
-        "undetermined": len(verdicts) - len(determinable),
+        "undetermined": candidates - len(determinable),
         "wouldPass": len(hits),
-        "passRate": rate,
-        "sampleInsufficient": len(determinable) == 0,
-        "band": _band_of(rate),
+        "passRate": None if insufficient else rate,
+        "passRateAmongDeterminable": _rate(len(hits), len(determinable)),
+        "denominatorNote": (
+            "分母 = 进关候选全体(裁定 3);判不出的候选**计入分母、不计入分子**。"
+            "`passRateAmongDeterminable` 只作诊断,⛔ 不许拿它去对 20% 那条晋级线。"),
+        "sampleInsufficient": insufficient,
+        "band": "sample_insufficient" if insufficient else _band_of(rate),
         "bandRules": BAND_RULES_TEXT,
+        "advisoryNote": ADVISORY_NOTE,
     }
 
 
@@ -158,10 +200,11 @@ def _final_tier_impact(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     for r in tiered:
         by_candidate.setdefault((str(r["trade_date"]), str(r["candidate_key"])), []).append(r)
 
-    per_rule: Dict[str, Dict[str, int]] = {}
+    per_rule: Dict[str, Dict[str, Any]] = {}
     for r in tiered:
         k = str(r["threshold_key"])
-        slot = per_rule.setdefault(k, {"tieredRows": 0, "wouldBeRejected": 0})
+        slot = per_rule.setdefault(
+            k, {"tieredRows": 0, "wouldBeRejected": 0, "jointMember": _is_joint_member(r)})
         slot["tieredRows"] += 1
         if not _is_not_applicable(r) and r.get("would_pass") == 0:
             slot["wouldBeRejected"] += 1
@@ -225,9 +268,20 @@ def build_threshold_report(
         "denominatorRule": (
             "分母 = 进入市场关、板块关**之前**的召回候选或篮子(含后来被硬门拒掉的、"
             "含最终判 OUT 的)。⛔ 绝不使用「最终 T1/T2 的历史快照」当分母。"),
+        # ⚠ **`candidates` 是「进关候选」,不是「召回全体」**(①-E 的已知缺口,如实披露)。
         "candidates": len(candidates),
+        "denominatorGap": (
+            "⚠ 本表的 `candidates` = **进到关口层的**候选;在关口层**之前**就早退的两类"
+            "(`no_active_engine` = 当日零运行引擎 / `engine_unresolved` = LLM 没给引擎且"
+            "机械兜底也找不到)**零影子行** —— 它们连一条待定阈值都没被算过,因此这个分母"
+            "**仍不是严格意义上的「召回全体」**。⛔ 引用本表通过率时要连这句一起引;"
+            "要补齐这个缺口得先让早退候选也产出读数,那是另一件事。"),
         # ① 每条规则的单关通过率
-        "perThreshold": {k: _tally(by_key[k]) for k in sorted(by_key)},
+        "perThreshold": {
+            k: dict(_tally(by_key[k]),
+                    jointMember=(k not in ADVISORY_THRESHOLD_KEYS))
+            for k in sorted(by_key)},
+        "advisoryNote": ADVISORY_NOTE,
         # ② 市场关与板块关的联合通过率(两关 AND)
         "joint": _joint_section(rows),
         # ③ C / Z / Y 各引擎结果
@@ -243,5 +297,5 @@ def build_threshold_report(
 
 __all__ = [
     "SPEC_VERSION", "BAND_UNACCEPTABLE", "BAND_SAMPLE_OK", "BAND_RULES_TEXT",
-    "HISTORICAL_D0_DISCLAIMER", "DISCLAIMER", "build_threshold_report",
+    "HISTORICAL_D0_DISCLAIMER", "DISCLAIMER", "ADVISORY_NOTE", "build_threshold_report",
 ]

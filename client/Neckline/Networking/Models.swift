@@ -1143,21 +1143,27 @@ struct OutCandidate: Codable, Equatable, Identifiable {
     var outReason: String = ""
     /// 差多少 / 模型理由(服务端原因码串,数值内嵌)。**原样展示**,⛔ 不改写。
     var outDetail: String? = nil
+    /// 出局时所在的篮子标识。**⛔ 不是 basketId**(点不进去),只用于消歧。
+    var basketKey: String? = nil
 
-    // ⚠ 同一只票可能在同一天的**多个** OUT 篮里出现(篮子间成员可重叠),
-    // 只拿 tsCode 当 id 会让 ForEach 撞 key —— 把关口与原因码一起算进去。
-    var id: String { "\(tsCode)|\(outReason)|\(outGate ?? "")" }
+    // 🔴 同一只票可能在同一天的**多个** OUT 篮里出现(篮子间成员可重叠,服务端
+    // `out_candidates` 的主键就含 `basket_key`)。⚠ 只拿 `tsCode|outReason|outGate`
+    // 当 id **挡不住碰撞**:同码同关同因、只是篮子不同的两行会撞 ForEach 主键
+    // (2026-08-11 复审逮到)。⛔ 别把 basketKey 从这里拿掉。
+    var id: String { "\(tsCode)|\(outReason)|\(outGate ?? "")|\(basketKey ?? "")" }
 
     enum CodingKeys: String, CodingKey {
         case tsCode, name, role, engineCode, engineVersion, outGate, outReason, outDetail
+        case basketKey
     }
 
     init(tsCode: String = "", name: String = "", role: String? = nil,
          engineCode: String? = nil, engineVersion: String? = nil, outGate: String? = nil,
-         outReason: String = "", outDetail: String? = nil) {
+         outReason: String = "", outDetail: String? = nil, basketKey: String? = nil) {
         self.tsCode = tsCode; self.name = name; self.role = role
         self.engineCode = engineCode; self.engineVersion = engineVersion
         self.outGate = outGate; self.outReason = outReason; self.outDetail = outDetail
+        self.basketKey = basketKey
     }
 
     // 🔴 手写 `init(from:)` + 全字段 `decodeIfPresent`(V2-⑮ 起的硬要求):合成
@@ -1173,6 +1179,7 @@ struct OutCandidate: Codable, Equatable, Identifiable {
         outGate = try c.decodeIfPresent(String.self, forKey: .outGate)
         outReason = try c.decodeIfPresent(String.self, forKey: .outReason) ?? ""
         outDetail = try c.decodeIfPresent(String.self, forKey: .outDetail)
+        basketKey = try c.decodeIfPresent(String.self, forKey: .basketKey)
     }
 
     var reasonLabel: String { nkDroppedReasonLabel(outReason) }

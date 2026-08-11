@@ -15,9 +15,10 @@
    (§铁律「任何一段异常都不许让当日无报告」)。
 2. **③ 三档全部可空是合法输出**(⑥-b-B):「今日 T1 为空」如实写出来,⛔ 不许为了让
    报告好看而放宽任何一条质量线,也⛔ 不许把空档位藏起来。
-3. **③b 的两个原因码分开写**(⑥-b-C):`capacity_overflow`(机会多到装不下)与
-   `below_quality_line`(今天没什么好货)是**相反的市场结论**,合并成「未入选」就把
-   两件事讲成了一件;零溢出时**这一节仍在**(节在 = 算过了)。
+3. **③b 与 ③b-2 是两节,⛔ 不许合并**(⑥-b-C / V2.3.2-②-A):③b 只装「档位已满 ·
+   未定档」(`capacity_overflow` = 机会多到装不下),③b-2 装**股票级 OUT**(关口未过 /
+   引擎缺席)。两者是**相反的市场结论**,合并成「未入选」就把两件事讲成了一件;
+   零行时**两节都仍在**(节在 = 算过了)。窄化在服务端 `basket_daily` 做,本模块不重滤。
 
 **语义红线(§2.8-C,每处文案自查)**:排序 / Tier = **注意力优先级,不是收益预测**;
 禁「推荐买入 / 建议买入 / 看好 / 值得买」;参考件每处带「参考、非指令」;离场参考
@@ -652,7 +653,10 @@ def _render_one_basket(b: Any) -> str:
 #    ⛔ 永远分开写。
 
 def _render_dropped_baskets(bd: Optional[BasketDaily]) -> str:
-    lines = ["### ③b 今日未定档篮子", ""]
+    # ⚠ 段标题带上「档位已满」:V2.3.2-②-A 之后本节**只装**这一类,标题不说清楚,
+    # 下一节那句「⛔ 与上一节的『档位已满』不是一回事」就没有对照物(客户端段头写的
+    # 就是这几个字,两端刻意同字面)。
+    lines = ["### ③b 今日未定档篮子(档位已满)", ""]
     if bd is None or not bd.dropped_available:
         reason = (bd.dropped_unavailable_reason if bd is not None else None) or "本次未取得未定档篮子信息。"
         lines.append(f"⚠ **本段未取得**:{reason}")
@@ -661,7 +665,8 @@ def _render_dropped_baskets(bd: Optional[BasketDaily]) -> str:
         lines.append("")
         return "\n".join(lines)
     if not bd.dropped:
-        lines.append("今日无未定档篮子(**已算过**:既没有分数够却装不下的,也没有没过质量线的)。")
+        lines.append("今日无「档位已满 · 未定档」的篮子(**已算过**:没有分数够却装不下的)。"
+                     "⚠ 这**不代表**今天没有票被判 OUT —— 关口出局的票在下一节 ③b-2 逐股列名。")
         lines.append("")
         return "\n".join(lines)
     # V2.2-③:③b 升级为「名 / 分 / 卡在哪一关、差多少 / 原因码」(门槛制下的
@@ -695,8 +700,11 @@ def _render_dropped_baskets(bd: Optional[BasketDaily]) -> str:
 
 
 # —— ③b 的第二类行:股票级 OUT(V2.3.2-②-B,K8 §六 / §十-11)————————————————
-#    ⚠ 与上面那一节**刻意分开两段**:那一节现在只装「档位已满 · 未定档」
-#    (`capacity_overflow` —— K8 §八 的 OUT 适用状态里没有"位置满",它不是 OUT)。
+#    ⚠ 与上面那一节**刻意分开两段**:那一节自 V2.3.2-②-A 起**只装非 OUT 的未定档行**
+#    (判据 = `selection/basket_store.py::is_out_reason()`,当前只有 `capacity_overflow`
+#    —— K8 §八 的 OUT 适用状态里没有"位置满",它不是 OUT)。
+#    🔴 窄化是**服务端在 `basket_daily` 里做的**,本渲染器只是照单渲染;
+#    ⛔ 别在这里再滤一遍(两处滤 = 两个事实源)。
 
 def _render_out_candidates(bd: Optional[BasketDaily]) -> str:
     lines = ["### ③b-2 今日 OUT 清单(股票级)", ""]
@@ -722,16 +730,19 @@ def _render_out_candidates(bd: Optional[BasketDaily]) -> str:
         label = DROPPED_REASON_LABEL.get(reason, reason)
         lines.append(f"- **`{reason}`({by_reason[reason]} 只)**:{label}")
     lines.append("")
-    lines.append("| 股票 | 主引擎 | 出局关口 | 理由 | 原因码 |")
-    lines.append("|---|---|---|---|---|")
-    for o in sorted(bd.out_candidates, key=lambda x: (x.out_reason, x.ts_code)):
+    # ⚠ 「所属篮子」这一列**不是装饰**:同一只票可能在同一天的多个 OUT 篮里出局,
+    # 不带它就会出现两行**一模一样**的记录(看起来像重复渲染的 bug)。
+    lines.append("| 股票 | 所属篮子 | 主引擎 | 出局关口 | 理由 | 原因码 |")
+    lines.append("|---|---|---|---|---|---|")
+    for o in sorted(bd.out_candidates,
+                    key=lambda x: (x.out_reason, x.ts_code, x.basket_key or "")):
         who = f"{o.name}({o.ts_code})" if o.name else o.ts_code
         engine = "、".join(x for x in (o.engine_code, o.engine_version) if x) or "—"
         # ⚠ `out_detail` 可能带**模型写的自由中文**(证据关三值的理由),里面出现一个
         # `|` 就会把整张表切歪 —— 逐格转义(同上一节那条坑)。
         lines.append(
-            f"| {_md_cell(who)} | {_md_cell(engine)} | {_md_cell(o.out_gate)} | "
-            f"{_md_cell(o.out_detail)} | `{o.out_reason}` |"
+            f"| {_md_cell(who)} | {_md_cell(o.basket_key)} | {_md_cell(engine)} | "
+            f"{_md_cell(o.out_gate)} | {_md_cell(o.out_detail)} | `{o.out_reason}` |"
         )
     lines.append("")
     lines.append("*OUT 是 K8 §六 的三个候选状态之一(T1 / T2 / OUT),**不是"

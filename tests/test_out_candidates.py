@@ -174,3 +174,38 @@ class TestContractOnlyGrows:
 
         fields = set(OutCandidateOut.model_fields)
         assert {"tsCode", "engineCode", "engineVersion", "outGate", "outReason"} <= fields
+
+    def test_basket_key_is_shipped_so_the_same_stock_in_two_baskets_is_distinguishable(self):
+        """🔴 **复审 🟡-7**:同一只票可能在同一天的**多个** OUT 篮里出局
+        (`out_candidates` 主键就含 `basket_key`)。不下发这个键 → 客户端
+        `Identifiable.id`(`tsCode|outReason|outGate`)**撞主键**、Markdown 出两行
+        一模一样的记录。契约**只增**这一个键,老客户端不受影响。"""
+        from neckline.api.schemas import OutCandidateOut
+
+        assert "basketKey" in OutCandidateOut.model_fields
+        pub = bd_mod.OutCandidateView(ts_code="600001.SH", out_reason="market_unfit",
+                                      basket_key="kA").to_public_dict()
+        assert pub["basketKey"] == "kA"
+        # 客户端那一侧:`id` 必须把 basketKey 算进去(⛔ 别把它拿掉)
+        models = (Path(__file__).resolve().parent.parent
+                  / "client" / "Neckline" / "Networking" / "Models.swift"
+                  ).read_text(encoding="utf-8")
+        block = models.split("struct OutCandidate:")[1].split("\nstruct ")[0]
+        assert "case basketKey" in block
+        assert "basketKey = try c.decodeIfPresent(String.self, forKey: .basketKey)" in block
+        id_line = next(ln for ln in block.splitlines() if "var id: String" in ln)
+        assert "basketKey" in id_line, id_line
+
+    def test_out_candidates_are_exactly_what_dropped_baskets_no_longer_carries(self):
+        """🔴 **plan §五 ②-B 验收 ①ff**:两段的成员集合由**同一个判据**互补切分 ——
+        `is_out_reason()` 真 → ③b-2(股票级 OUT);假 → ③b(档位已满 · 未定档)。
+        ⛔ 不许有第三种归属,也⛔ 不许有码两边都进(那就是双列)。"""
+        codes = [ti.DROP_CAPACITY_OVERFLOW, ti.DROP_POSITION_UNFIT, ti.DROP_CORE_UNFIT,
+                 ti.DROP_MARKET_UNFIT, ti.DROP_SECTOR_UNFIT, ti.DROP_EVIDENCE_DEGRADED_OUT,
+                 ti.DROP_BELOW_QUALITY_LINE,
+                 "mech_gate_rejected", "no_active_engine", "engine_unresolved"]
+        out_side = {c for c in codes if store.is_out_reason(c)}
+        dropped_side = {c for c in codes if not store.is_out_reason(c)}
+        assert out_side & dropped_side == set()
+        assert out_side | dropped_side == set(codes)
+        assert dropped_side == {ti.DROP_CAPACITY_OVERFLOW}

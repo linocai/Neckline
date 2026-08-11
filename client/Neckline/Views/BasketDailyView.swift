@@ -817,7 +817,11 @@ struct BasketDailyView: View {
                            detail: daily.droppedBasketsUnavailableReason.map { "原因:\($0)" }
                                ?? "这一段本次未取到(不是「今天零溢出」)")
         } else if daily.droppedBaskets.isEmpty {
-            unavailableRow(title: "算过了 · 今日零未定档篮子", detail: nil, tone: .neutral)
+            // ⚠ 服务端自 V2.3.2-②-A 起只把**非 OUT** 的未定档行放进这一段 → 空 =
+            // 「没有装不下的」,**不等于**「今天没有票被判 OUT」(那要看 ③b-2)。
+            // ⛔ 别把这行文案写成「今天没有票被刷掉」。
+            unavailableRow(title: "算过了 · 今日没有装不下的篮子",
+                           detail: "关口出局的票看下一节 ③b-2", tone: .neutral)
         } else {
             // E2:**每个原因码语义不同,分开展示**(V2.2-③ 起共 9 码,
             // 「位置不合适」「无引擎线」「档位已满」讲的是完全不同的三件事)。
