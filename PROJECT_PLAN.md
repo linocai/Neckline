@@ -460,7 +460,7 @@ Neckline/
 ## 四、当前状态
 
 **2026-08-11 · 🧹 仓库整理完工 + 🎨 V2.3.1 九批全完工 · macOS 已换包 2.3.1 ·
-🔴 服务端仍未部署(生产对外仍 `v2.2.0`)**。
+✅ **服务端已上产 `v2.3.1`**(2026-08-11 11:49:38 CST)。
 **Python 3581 passed / 3 skipped / 0 failed** · **iOS NecklineTests 218 tests / 0 failures** ·
 **双端 BUILD SUCCEEDED** · 工作区干净。
 
@@ -482,17 +482,18 @@ Neckline/
 就是错的,已改指 `packs/K8-skeleton.json`;② 8 个单测按路径读 `packs/` 与 `client/Models.swift`,
 移动会当场打断,已全部改到新路径(**字符串重写抓不到 `Path` 分段拼法,是跑闸才逮出来的**)。
 
-### 🔴 服务端:两处改动已在仓库、**未上产**
+### ✅ 服务端已上产(2026-08-11 11:49:38 CST,午盘休市窗口)
 
-`neckline/api/app.py::VERSION` = `v2.3.1`(仓库)vs 生产 `v2.2.0`;
-`PositionsOut.circuit` **删键**(两步淘汰第二步)也在仓库未上。
-**中间态是安全的**:新客户端不解 `circuit`,老服务端多发它 → 客户端忽略未知键。
-🔴 **部署窗口**:交易日 **15:05–15:55** 或 **17:15 之后**,或**周末全天**;
-⛔ **永不 16:00–17:00**(`neckline.service` 与盘中哨兵同进程,重启 = 掐掉实时监控)。
-⚠ **上产前必须重出 `sync_code.sh` DRY_RUN 并逐条核对删除项** —— 整理挪了 45 个文件,
-`--delete` 会把生产上的旧路径清掉,原先那次「74 文件零删除」的验证已作废。
+`neckline/api/app.py::VERSION` = **`v2.3.1`**(公网已复核);`PositionsOut.circuit`
+**删键**(V2.3.0 就欠着的两步淘汰第二步)同批上,`/positions` 已返 `{"holdings":[]}`、
+`circuit` 键消失,`GET /circuit` 404。**服务端与客户端自此同为 2.3.1,不再有版本不一致提示。**
+双备份 `neckline.db.{bak,cpbak}-preV231-20260811-114830` 在 `/opt/neckline/data/backups/`。
 ⚠ **`sync_code.sh` / `sync_data.sh` 的默认 HOST 仍是 hz 老机 `118.178.122.194`**,
-必须显式 `NECKLINE_DEPLOY_HOST=114.66.0.38`(根治建议:改成空值 fail-closed,见 §七)。
+每次部署必须显式 `NECKLINE_DEPLOY_HOST=114.66.0.38`(根治 = 改空值 fail-closed,§七 **P4-55**)。
+🔴 **部署窗口(下次仍照此)**:交易日 **15:05–15:55** 或 **17:15 之后**,或**周末全天**;
+⛔ **永不 16:00–17:00**(`neckline.service` 与盘中哨兵同进程,重启 = 掐掉实时监控)。
+⚠ 本次走的是**午盘休市 11:30–13:00**(用户当日裁定):市场已休、无实时行情可监控,
+重启零代价,且留足 70 分钟余量。**这是一次逐案判断,⛔ 不改写上面那条窗口规则。**
 
 ### 🔴 一笔没销的老账(**不是 V2.3.1 产生的**)
 
@@ -1449,6 +1450,7 @@ iOS 行情状态条右端缺「降级 N 项」(跨段传参)· 系统 `DatePicke
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-11 · 🚀 **V2.3.1 服务端上产 nk(`v2.2.0` → `v2.3.1`),午盘休市窗口 11:49:38 CST**。本版服务端只有两处:`app.py::VERSION` 一行 + `PositionsOut.circuit` **删键**(V2.3.0 就欠着的两步淘汰第二步,连 `CircuitStateOut`/`CircuitEpisodeOut` 两个类型一起删)。**序**:双备份 `neckline.db.{bak,cpbak}-preV231-20260811-114830`(`.backup` 0.356s / `integrity_check=ok` / 两份与活库同为 58,515,456 B)→ rsync(**显式** `NECKLINE_DEPLOY_HOST=114.66.0.38`,⚠ 脚本默认仍指 hz 老机,见 P4-55)→ 属主/setgid 复原 + 清 stale `.pyc` → sha256 对拍**双方逐位相同** → restart。**验证**:`ActiveEnterTimestamp` 刷新到 11:49:38 · `NRestarts=0` · `ExecMainStatus=0` · journal warning 级以上**零条** · 公网 `/api/v1/health` = **`v2.3.1`** · 裸 `/health` 404(前缀设计)· `/positions` 返 `{"holdings":[]}`、**`circuit` 键已消失** · `GET /circuit` 404 · 无 token 401。**同批带上仓库整理的 9 处删除**(7 个退役件永久移出生产 + 2 个 Swift 换位),逐项核实到位;`/opt/neckline/deploy/` 自此与 `/etc/systemd/system/neckline*` 一一对应。**NPM 上另外四个站未受影响**(nas 200 / mt 200 / web 401 鉴权正常,容器 Up 2 days 未重启,`systemctl --failed` 空)。`~/Lino/NB_info.md` 已同步(版号 + 周度 unit 从未跑过 + 两处 1:1 巡检判据)。**回滚绳**:代码回 `e2d1cbb` + rsync + restart;DB 双备份在 `/opt/neckline/data/backups/`。
 - 2026-08-11 · 🧹 **仓库整理:退役件全进 `archive/`,现役目录只留在跑的东西(A+B+C2+C3 四档)**。`archive/` 分六层(施工图/review报告/对照表/交接与日志/deploy_retired/packs_retired),移动牵动 **204 处路径引用 / 41 个文件**,逐个 grep 验零残留;`PROJECT_PLAN.md` **2535 → 1641 行(−35%)**(V2.2.0 852 行 + V2.3.0 转存根 → `archive/施工图/`);`deploy/` 清掉三件退役物后**与 nk 上安装的 10 个 unit 一一对应**(1:1 本身即防误装闸门);两个 LEGACY 包移进 `archive/packs_retired/`;`client/` 根上两个裸 `.swift` 归位(`Components/` 与 `Networking/`)+ `xcodegen generate`,顺手把 project 级 `MARKETING_VERSION` 从长期漂着的 `2.0.0` 对齐到 **2.3.1**(守门单测不比这一处,故一直是绿的);删 19M 缓存(`__pycache__`×21 / `.pytest_cache` / `.DS_Store`)。⚠ **顺带修掉两处真问题**:① `scan_layer.py`/`daily_update.py` 的补救提示让运维激活 **K4-pack** —— 那是 V2.2-① 起已 LEGACY、闸 2 会硬拒的包,**该提示自 V2.2 起就是错的**,改指 `packs/K8-skeleton.json`;② 8 个单测按路径读 `packs/` 与 `client/Models.swift`,**字符串重写抓不到 `Path` 分段拼法**,是跑闸才逮出来的。**验收**:Python **3581 passed / 3 skipped / 0 failed** · iOS **218 tests / 0 failures** · 双端 **BUILD SUCCEEDED** · 旧路径 grep 全 0。布局规则与三条「别改回去」已入 `CLAUDE.md`「仓库布局」节。**⛔ 本次零服务端行为改动、未部署。**
 - 2026-08-10 · 🎯 **V2.3.1 批 2 完工(macOS 选股板块逐屏对到原型 inline style;⛔ 只动 `client/**`、未改版号、未部署)**。**六屏实拍**(五张 1200×860 + 成员卡展开态附图 1200×1410 同宽):篮子卡 / 卡未就绪篮 / 今日概览 / 昨日回执 / 报告未生成 / 成员卡。**列表栏**:两套页边距(标题区 18/16/10 vs 行 0/10/4)· `pick()` 选中态换**白底 + 1.5px 实蓝描边 + 轻投影**(原 1px 半透明蓝在 `#FCFCFD` 上几乎看不出)· T1/T2/③b 三个分组头统一成 `NKGroupHeader`(⛔ 不再用 `title3` 17)· 篮子行灯条由「六点各挂关名」改**六点 + 一句摘要**、成员区移到选中框外、成员行加 5px 状态点 · ③b 去白卡壳收成两行。**详情栏**:`22px 26px 40px` 页边距 · 卡内边距分 `16/18` 两档(新 `cardPadH`)· **六关宫格整块重画**(居中三行 / radius **9** / `padding 9×8` / 机械关 1.5px 实边框 + 底色 +「硬」角标 radius **3** / 证据关 .5px 描边 +「证据」灰角标;§〇d 第 4 条点名的两处单独定值)· 「不得进 T1」由折叠区提到宫格下方琥珀条 · ①②③ 并成一张卡、证据条改 3px 竖条 · **成员卡改「卡里的卡」**(外层白卡 `14/14/12`,内层 `memCard()` radius 10 无边框、展开态 `#FAFAFB` + 1px 蓝内描边)· 三个参考件 / 关卡片改白底描边块 · 动作按钮改「蓝实底 + 描边」双按钮 · ⑥ 三剧本改三列并排 · ⑦⑧⑨ 并卡 + 绿勾红叉 · ⑩ 与 ⑪ disclaimer 合并、Tier 红线句收进披露区(**与原型 685 行同位**)· 审计视图收起态改虚线按钮(窄栏另给 `compact`)。**新增三件**:`nkRegimeDimLabel`(🔴 硬伤 2 的**第七处**:行情状态五维缺维在首屏直接印 `moneyflow_migration` 这类服务端英文常量,沿 `nkBoardLabel` 先例换算、未识别原样透传)· `NKGroupHeader` · `NKWrapRow`(`flex-wrap` 等价 `Layout`,⛔ 不再拿横向 `ScrollView` 顶替 —— 桌面上超宽的项**看不见也不知道有**)。**② 持仓体检入口卡在 macOS 今日概览撤掉**(原型没有,列表栏那行右端写死「①·情报·⑤」;工具栏就有持仓胶囊)· **⑤ 那条通栏红橙告警横幅收进 ⑤ 卡内的琥珀块**(原型无横幅;过期项行内标红 + 卡内提示 + 工具栏「降级 N 项」三处仍都说得出口)。**新增 QA 钩子 `NECKLINE_INITIAL_RECEIPT=1`**(只给 `@State` 当初值)。**五处判「刻意不同」**:持仓占比(〇-4)· 六关判不出是篮级(〇-3)· 排程表四个时刻同样着色、⛔ 不画原型那颗「16:05 进行中」光晕(〇-2)· 缺数维斜纹 → 半透明琥珀 + 虚线描边(SwiftUI 无 `repeating-linear-gradient`)· 一批字号就近对齐令牌。**施工期新逮两条通用坑已入 §五 〇d**:`Text(String)` 不解析 Markdown(`**加粗**` 星号上屏)· 演示库 `sentiment_json`/`sectors_json` 是 snake_case + 中文额度,写错会**静默**解不出。**验收**:Python **3581 passed / 3 skipped / 0 failed** · iOS **214 tests / 0 failures** · 双端 **BUILD SUCCEEDED** · 宿主域自检 `defaults read top.linotsai.neckline NK_BASE_URL_OVERRIDE` = **does not exist**(⛔ 只查这一个键,`NK_API_TOKEN` 是用户真 token)。**六屏逐项对照表全文 → `archive/对照表/V2.3.1_批2对照表_20260810.md`**;完工摘要 → §五 ③。
 
