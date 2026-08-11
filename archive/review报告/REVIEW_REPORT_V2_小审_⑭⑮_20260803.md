@@ -1,7 +1,7 @@
 # REVIEW REPORT · V2 小审:⑭ 篮子日报/契约总装 + ⑮ 客户端双端改版(2026-08-03)
 
 - **审计人**:@reviewer(契约/数据线,增量小审;①–⑬ 已清账不重审,判定线另有分工)。
-- **对照件**:PROJECT_PLAN §五 V2-⑭/⑮ 规格与完工记录、`archive/V2_契约三方对拍_20260803.md`、CLAUDE.md。
+- **对照件**:PROJECT_PLAN §五 V2-⑭/⑮ 规格与完工记录、`archive/对照表/V2_契约三方对拍_20260803.md`、CLAUDE.md。
 - **方法**:从零读代码不信自述;⑭ 服务端(evening.py / basket_daily.py / render.py / pipeline / store / schemas / app / test_contract_crosscheck.py)逐文件亲读;⑮ 客户端以 file:line 级事实清单 + 承重点亲手复核(key 采集链、幂等键轮换、未知 kind 降级、B 类 DTO 解码面);对拍表与代码抽核;卡键覆盖用脚本逐键 diff。真实 db 与生产零接触。
 - **基线复核**:本机实跑 `python -m pytest tests/ -q` = **2890 passed + 2 skipped**,与交办一致(挂钟脆弱用例本轮时段通过);Swift 179 过 + 12 skip 取完工记录 + 测试文件存在性证据,未在本环境亲跑 xcodebuild(既有环境限制)。
 

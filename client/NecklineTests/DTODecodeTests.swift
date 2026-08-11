@@ -2252,7 +2252,7 @@ final class DTODecodeTests: XCTestCase {
     // `aggregate.py` 的 pydantic 字段同为 `int`)——`typeMismatch` 顺着 `BasketCard.
     // init(from:)` 里 `fingerprint` 那一路抛穿,拖炸**整份** `ReportResponse`(Mac 实证
     // 2026-08-05 晚,当日报告解不出、今日计划整页退回空态;iPhone 同代码同炸)。V2 契约
-    // 三方对拍(`archive/V2_契约三方对拍_20260803.md` §4.2/§4.3)当时只核对了 `fingerprint`
+    // 三方对拍(`archive/对照表/V2_契约三方对拍_20260803.md` §4.2/§4.3)当时只核对了 `fingerprint`
     // 的**字段名**,没核对每个键的**值类型**,这一类"名对型不对"的坑因此没被挡住
     // (已在该文件 §七 补登记一条)。
     //

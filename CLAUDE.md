@@ -3,7 +3,7 @@
 > 全局规范见 `~/.claude/CLAUDE.md`;系统线权威 `PROJECT_PLAN.md`、策略线权威
 > `STRATEGY_LAB.md`(产品决策/参数/验收标准/变更日志全在那两份)。本文件只记
 > Neckline **专属的工程坑**:每坑只留判据 + 规则 + 指针,事故叙事全文在
-> `archive/`(总索引:`archive/变更日志_详版_20260719-20260728.md`)。数据源坑的
+> `archive/`(总索引:`archive/交接与日志/变更日志_详版_20260719-20260728.md`)。数据源坑的
 > 权威原文在 `/Users/linotsai/Lino/LinoN/CLAUDE.md`(前作)。
 >
 > ⚠ **策略研究档案已于 2026-08-08 整体迁出本仓**(K8 立项后本仓只留回测引擎与生产
@@ -32,6 +32,33 @@
   冒烟:`python scripts/smoke_sentinel.py`。
 - `scripts/oneoff/` 是已执行完毕的一次性脚本(charter 落行/bootstrap/数据修缮),
   留档审计用;现役脚本全在 `scripts/` 顶层。
+
+## 仓库布局(2026-08-11 整理定案,⛔ 别把下面几处"改回去")
+
+**一句话:现役目录里只放还在跑的东西,退役件一律进 `archive/`。**
+
+- **`archive/` 分六层**:`施工图/` · `review报告/` · `对照表/` · `交接与日志/` ·
+  `deploy_retired/` · `packs_retired/`。⚠ 动 archive 里任何文件名/位置,必须同步全仓
+  路径引用(2026-08-11 那次移动牵动 **204 处**,分布在 41 个文件里,含 4 个运行时模块
+  的注释、8 个单测、2 个客户端 Swift)。**判据:改完对每个文件 grep 旧路径必须全返 0。**
+- 🔴 **`deploy/` 与 nk 上 `/etc/systemd/system/neckline*` 一一对应**(10 个 unit +
+  `npm-custom-http.conf` + `npm-le-deploy-hook.sh`)。**这个 1:1 本身就是防误装闸门** ——
+  多出来一个文件就意味着「有个没装的东西躺在这里等人 `enable`」。退役的三件
+  (`nginx-neckline-nk.conf` 作废独占式模板 / `nginx-neckline.conf` hz 时代 /
+  `neckline-report.timer` nk 上 not-found)已进 `archive/deploy_retired/`。
+- 🔴 **`packs/` 只放现役**:`K8-skeleton.json` + `C1/Z1/Y1.json`。两个 LEGACY 包
+  (`K4-pack.json` / `K7-pack.json`)在 `archive/packs_retired/`,**仍被 5 个单测当负例
+  守门读取**(`test_selection_{pack,tier,gates,verification_rules}.py` /
+  `test_activate_pack_script.py`)—— 它们按 `_RETIRED_PACK_FILES` 集合分派路径,
+  ⛔ **别把 `_PACKS_DIR` 整个改指 archive**(现役包还在原处)。
+- **`client/` 根上不放 `.swift`**:`DesignTokens.swift` 在 `Neckline/Components/`
+  (与其余 `NK*` 设计件同处)、`Models.swift` 在 `Neckline/Networking/`(与解它的
+  `APIClient.swift` 同处)。⚠ **契约守门单测按路径读 `Models.swift`**
+  (`test_contract_crosscheck.py` / `test_v1_retirement_guard.py` / `test_circuit.py`),
+  再挪必须同步改那 4 处。⚠ 移动 `.swift` 与新增一样,**必须 `xcodegen generate`**。
+- **`PROJECT_PLAN.md` §五 只留当前版本全文**,历版一律「存根 + 指向
+  `archive/施工图/`」。存根里必须带 **⚑ 交叉引用约定**一行,交代正文其余各节的旧指针
+  该往哪读(体例见 V2.0.0 / V2.2.0 两段存根)。
 
 ## 钉死的领域常量(单一事实源,改动前先找源头,别在新文件里抄一份)
 
@@ -390,7 +417,7 @@
 ## 新机 `nk` 公网入口(V2-⑯-G 定案,碰 nginx / 证书前必读)
 
 - **判「配置里有没有 `ln`」必须先剥注释行**(⑰ 现场踩):`npm-custom-http.conf` 文件头**自己就写着**
-  「绝不接管 ln.linotsai.top」这句护栏注释,裸 grep 每次都红。`deploy/preflight_a_route.sh` 已修成
+  「绝不接管 ln.linotsai.top」这句护栏注释,裸 grep 每次都红。`archive/deploy_retired/preflight_a_route.sh` 已修成
   `grep -vE '^\s*#'` 后再判。**一个对自己的注释报警的闸门等于没有闸门** —— 真出现
   `server_name ln...` 那天,人只会当它又是那条老误报。
 - **80/443 归用户既有的 `nginx-proxy-manager` 容器**(还反代着 `nas`/`mt`/`web` + 一个 IP 站,
@@ -399,7 +426,7 @@
 - **三条会当场炸掉那四个站的写法**:① 在 custom include 里写 `default_server`(与 NPM 的
   `conf.d/default.conf` 重复声明 → `nginx -t` 直接挂);② 建 `custom/server_proxy.conf`
   (会被注入**每一个** proxy host);③ 在这里写 `map` 等 http 级指令。
-  ⛔ `deploy/nginx-neckline-nk.conf` 是**作废的独占式模板**,搬进 NPM 正好踩中 ①。
+  ⛔ `archive/deploy_retired/nginx-neckline-nk.conf` 是**作废的独占式模板**,搬进 NPM 正好踩中 ①。
 - **改完的铁律**:`docker exec nginx-proxy-manager nginx -t` **过了才** `nginx -s reload`;
   reload 后跑新机 `/root/npm-backup-20260804/regress.sh` 与 `regress.baseline.txt` 逐行对照。
 - **证书两个目录别搞混**:宿主 `/etc/letsencrypt`(我们的 LE 证书)≠ 容器内 `/etc/letsencrypt`
@@ -558,13 +585,13 @@
 - 跨线协作:纪律章程唯一源在 PROJECT_PLAN §2.1(策略线只引用);策略过门+用户批准后,
   激活/部署归系统线;`research/*.md` 不可变档案归策略线;本坑清单两线共用。
 - **V2 文档层级(防第三份权威;2026-08-05 V2 收官后的常态口径)**:**现行口径权威只有
-  `PROJECT_PLAN.md`** —— V2 施工图全文已归档 `archive/V2.0.0_施工图_20260805归档.md`(**查施工
+  `PROJECT_PLAN.md`** —— V2 施工图全文已归档 `archive/施工图/V2.0.0_施工图_20260805归档.md`(**查施工
   细节去那儿,但它不追改后续裁定**,已知两处:单 LLM 常态、⑫ 周度 unit → §七 P3-42);根目录
   `新版本量化交易APP与选股架构.md` = 产品语义蓝图(可读、不可当施工口径),`archive/V2架构设计稿_*.md`
   **作废不得引用**。**选股策略包**(`selection_packs`)与**纪律章程**(`strategy_versions`)是两条版本线、两张表、两套激活流程,**永不混用**。
-  ⚠ **V2.1 同款(2026-08-07 立项)**:`archive/V2.1前瞻规划_20260807立项归档.md` 已转写进 PROJECT_PLAN
+  ⚠ **V2.1 同款(2026-08-07 立项)**:`archive/交接与日志/V2.1前瞻规划_20260807立项归档.md` 已转写进 PROJECT_PLAN
   §五 V2.1.0,**归档件不追改后续裁定、⛔ 不得当施工口径**(文首已列四处被纠正的出入)。
-  ⚠ **V2.1 施工图自 2026-08-09 起也归档**(`archive/V2.1.0_施工图_20260809归档.md`):**批 1 六块已上产
+  ⚠ **V2.1 施工图自 2026-08-09 起也归档**(`archive/施工图/V2.1.0_施工图_20260809归档.md`):**批 1 六块已上产
   (`v2.1.0`)= V2.2 地基;批 2〔`K7-pack-v2` 发版激活〕⛔ 作废永不执行;批 3〔周度 unit〕并入 V2.2 第 ④ 块**。
 - **三条版本线(2026-08-09 K8 入仓起,冷启动必读,写号前先分清是哪条)**:① **系统线 `v` 字头**
   (`v2.2.0`,权威 `PROJECT_PLAN.md`)② **纪律章程**(`strategy_versions` 表行,现役 `v1.3.3`,权威

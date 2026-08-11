@@ -111,7 +111,7 @@ _CHANGELOG = (
     "可比性**,⛔ 不许拿旧基线给新章程背书。"
     "⑦ **staged 生效**:用户清空全部 open 持仓(切换器闸 2 硬校验)+ 明确确认后,才由 "
     "`activate_charter.py --target v2.2-k8 --confirm` 激活;**激活前一律仍按 v1.3.3 执行**。"
-    "回滚目标 = v1.3.3(已在切换器白名单),SOP 见 `archive/SOP_章程回滚_20260730.md`。"
+    "回滚目标 = v1.3.3(已在切换器白名单),SOP 见 `archive/交接与日志/SOP_章程回滚_20260730.md`。"
     "证据链:PROJECT_PLAN §1.3 / §2.1 / §2.9-A / §五 ⑤ / §八 第 19 项;需求原件 K8_STRATEGY_ARCH.md §十三。"
 )
 

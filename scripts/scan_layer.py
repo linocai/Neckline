@@ -88,7 +88,7 @@ def run_batch(days: List[date], *, db_path: Optional[Path], parquet_dir: Optiona
     if seed_set is None:
         logger.warning(
             "[seeds] %s 无现役策略包 —— 今日不产出驱动种子(不影响三张事实表的批算结果,"
-            "先跑 `python scripts/activate_pack.py --file packs/K4-pack.json --confirm`)",
+            "先跑 `python scripts/activate_pack.py --file packs/K8-skeleton.json --confirm`)",
             last_day,
         )
     else:

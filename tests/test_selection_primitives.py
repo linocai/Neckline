@@ -497,7 +497,7 @@ def test_intel_rank_priority_descending_dim_missing_value_still_sorts_last():
 
 def test_intel_rank_priority_k7_pack_dims_ordering_end_to_end():
     """用 K7-pack 排序键的真实四维顺序(`industry_rank`→`industry_stage_score`→
-    `leader_rs_rank`→`yellow_card_count`,`packs/K7-pack.json` 原样)跑一次端到
+    `leader_rs_rank`→`yellow_card_count`,`archive/packs_retired/K7-pack.json` 原样)跑一次端到
     端排序,证明混合 asc/desc 时整体排序仍正确(不是只有单维度测试才对)。"""
     k7_dims = ["industry_rank", "industry_stage_score", "leader_rs_rank", "yellow_card_count"]
     entries = [

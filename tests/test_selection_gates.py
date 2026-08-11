@@ -42,10 +42,17 @@ from tests.conftest import insert_trade_cal
 D0 = date(2024, 4, 8)
 D0_S = "20240408"
 _PACKS_DIR = Path(__file__).resolve().parent.parent / "packs"
+# ⚠ 2026-08-11 仓库整理:两个 LEGACY 包已移进 `archive/packs_retired/`(见 test_selection_tier.py 同注)。
+_RETIRED_PACKS_DIR = Path(__file__).resolve().parent.parent / "archive" / "packs_retired"
+_RETIRED_PACK_FILES = {"K4-pack.json", "K7-pack.json"}
+
+
+def _pack_file(filename: str) -> Path:
+    return (_RETIRED_PACKS_DIR if filename in _RETIRED_PACK_FILES else _PACKS_DIR) / filename
 
 
 def _pack(filename: str) -> pack_mod.Pack:
-    doc = json.loads((_PACKS_DIR / filename).read_text(encoding="utf-8"))
+    doc = json.loads(_pack_file(filename).read_text(encoding="utf-8"))
     m, c = doc["manifest"], doc["config"]
     return pack_mod.Pack(
         pack_version=m["pack_version"], name=m["name"],

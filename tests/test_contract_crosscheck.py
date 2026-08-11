@@ -3,7 +3,7 @@
 
 对拍的三方:`api/schemas.py` 声明 → `api/app.py` 转发 → Swift `Models.swift` /
 `APIClient.swift` 解码。**逐字段对照表**是人读件,落
-`archive/V2_契约三方对拍_20260803.md`;本文件只装**能机器判的那几条**:
+`archive/对照表/V2_契约三方对拍_20260803.md`;本文件只装**能机器判的那几条**:
 
 1. **客户端调用面 ⊆ 服务端路由面** —— 客户端**任意 Swift 文件**里出现的每一个
    `/api/v1/...` 路径,服务端都必须真有那条路由。**这是 Y5 的防复发闸**:当前仓库
@@ -18,7 +18,7 @@
 
 ⚠ **本文件不是 review**:它是施工块内的自查(⑭-C 原文),不等于独立复审。
 
-**V2.1-⑧(2026-08-08)收口的四处**(人读件 = `archive/V2.1_契约对拍_20260808.md` 三张表):
+**V2.1-⑧(2026-08-08)收口的四处**(人读件 = `archive/对照表/V2.1_契约对拍_20260808.md` 三张表):
 ① 删除面 —— 问询台三条端点进 `test_deleted_v1_endpoints_have_no_server_route`(①  已落);
 ② 新增面 —— `/review/{overview,handoff}` 两条进路由面自检,④ 的 4 个只读新键两侧对拍;
 ③ **零新增 reason 的显式断言** —— 拿 V2.0.0 收官快照当分界线,闭包测试守不住的那一半
@@ -48,7 +48,7 @@ import pytest
 _ROOT = Path(__file__).resolve().parent.parent
 _CLIENT_DIR = _ROOT / "client"
 _API_CLIENT = _ROOT / "client" / "Neckline" / "Networking" / "APIClient.swift"
-_MODELS = _ROOT / "client" / "Models.swift"
+_MODELS = _ROOT / "client" / "Neckline" / "Networking" / "Models.swift"
 
 # Swift 里的路径字面量:`"/api/v1/positions/\(id)/close"` → `/api/v1/positions/{}/close`
 _PATH_LITERAL = re.compile(r'"(/api/v1[^"]*)"')

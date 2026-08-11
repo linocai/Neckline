@@ -229,5 +229,5 @@ def test_ruleset_is_not_a_pack_key():
                   "verify_ruleset", "close_below_ref_and_ma20"):
         assert token not in pack_src, f"pack.py 出现了 {token!r} —— 条件集不许进包(⑦-b-A)"
     for name in ("K4-pack.json", "K7-pack.json"):
-        text = (_REPO / "packs" / name).read_text(encoding="utf-8")
+        text = (_REPO / "archive" / "packs_retired" / name).read_text(encoding="utf-8")
         assert "min_members_hit" not in text and "ruleset" not in text

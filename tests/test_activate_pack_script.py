@@ -28,8 +28,9 @@ import activate_pack as activate_pack_script  # noqa: E402
 from neckline.selection import engine_api, pack, primitives  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_K4_PACK_FILE = _REPO_ROOT / "packs" / "K4-pack.json"
-_K7_PACK_FILE = _REPO_ROOT / "packs" / "K7-pack.json"
+# ⚠ 两个 LEGACY 包已于 2026-08-11 仓库整理时移进 `archive/packs_retired/`(只做负例守门)。
+_K4_PACK_FILE = _REPO_ROOT / "archive" / "packs_retired" / "K4-pack.json"
+_K7_PACK_FILE = _REPO_ROOT / "archive" / "packs_retired" / "K7-pack.json"
 _K8_SKELETON_FILE = _REPO_ROOT / "packs" / "K8-skeleton.json"
 _C1_FILE = _REPO_ROOT / "packs" / "C1.json"
 _Z1_FILE = _REPO_ROOT / "packs" / "Z1.json"
@@ -139,7 +140,7 @@ def test_run_rejects_incompatible_engine_api_version(tmp_path: Path):
 
 
 def test_run_rejects_real_k7_pack_file_rollback_anchor_is_dead(tmp_path: Path, capsys):
-    """🔴 V2.2-① 反向守门(plan §五 ① 原文):仓库里真的 `packs/K7-pack.json` 走
+    """🔴 V2.2-① 反向守门(plan §五 ① 原文):仓库里真的 `archive/packs_retired/K7-pack.json` 走
     闸**必须被拒**——把「回滚锚已作废」钉成机器判据,⛔ 不留一条自己都不信的绳;
     K4 同理。⛔ 修这条红的唯一合法方式是改测试,**不许**去改那两个冻结的历史包
     文件(那正好把守门连档案一起销毁)。"""

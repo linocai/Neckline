@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # A 路割接前提自检(plan §五 V2-⑯-G;判据全文与"不成立时怎么办"见
-# `deploy/A路割接前提自检清单.md` —— **本脚本只是那份清单里"机器可判"的那几条**,
+# `archive/deploy_retired/A路割接前提自检清单.md` —— **本脚本只是那份清单里"机器可判"的那几条**,
 # 不能替代人读清单)。
 #
 # **在新机上跑**(部分判据需要 sudo 读 nginx 全量配置):
-#   sudo bash /opt/neckline/deploy/preflight_a_route.sh
+#   sudo bash /opt/neckline/archive/deploy_retired/preflight_a_route.sh
 #
 # 退出码:0 = 全过;1 = 有判据不通过(⛔ **停手**,别"先割了再说")。
 #

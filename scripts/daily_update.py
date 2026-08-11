@@ -222,7 +222,7 @@ def update_scan_layer(target: date) -> None:
         if seed_set is None:
             logger.warning(
                 "[scan_layer] %s 无现役策略包 —— 今日不产出驱动种子(先跑 "
-                "`python scripts/activate_pack.py --file packs/K4-pack.json --confirm`)",
+                "`python scripts/activate_pack.py --file packs/K8-skeleton.json --confirm`)",
                 target,
             )
         else:

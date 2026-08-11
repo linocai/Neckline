@@ -30,10 +30,11 @@ targets:
     deploymentTarget:
       iOS: "26.0"
       macOS: "26.0"
+    # ⚠ 2026-08-11 仓库整理:`DesignTokens.swift` 与 `Models.swift` 原先裸在 `client/` 根上,
+    # 已分别归位到 `Neckline/Components/`(与其余 NK* 设计件同处)与 `Neckline/Networking/`
+    # (与解它的 `APIClient.swift` 同处)。`- path: Neckline` 递归收全,故不再单列两行。
     sources:
       - path: Neckline
-      - path: DesignTokens.swift
-      - path: Models.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: top.linotsai.neckline

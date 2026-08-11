@@ -47,6 +47,14 @@ from tests.conftest import write_daily_fixture
 D0 = date(2024, 4, 8)
 D0_S = "20240408"
 _PACKS_DIR = Path(__file__).resolve().parent.parent / "packs"
+# ⚠ 2026-08-11 仓库整理:两个 LEGACY 包已移进 `archive/packs_retired/`,`packs/` 只留
+# 现役骨架线与三条引擎线。按文件名分派,⛔ 别把 `_PACKS_DIR` 整个改指 archive(现役包还在原处)。
+_RETIRED_PACKS_DIR = Path(__file__).resolve().parent.parent / "archive" / "packs_retired"
+_RETIRED_PACK_FILES = {"K4-pack.json", "K7-pack.json"}
+
+
+def _pack_file(filename: str) -> Path:
+    return (_RETIRED_PACKS_DIR if filename in _RETIRED_PACK_FILES else _PACKS_DIR) / filename
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -166,7 +174,7 @@ def _outcome(r: ag.AggregateResult, *, t1_keys: Sequence[str] = (),
 def _pack_from_file(filename: str) -> pack_mod.Pack:
     """直接把仓库里的**真实包文件**做成 `Pack` 只读视图(不经 DB)。⑥ 的「换包 →
     序跟着变」必须拿真包比,拿手捏的假权重比等于自己跟自己玩。"""
-    doc = json.loads((_PACKS_DIR / filename).read_text(encoding="utf-8"))
+    doc = json.loads(_pack_file(filename).read_text(encoding="utf-8"))
     m, c = doc["manifest"], doc["config"]
     return pack_mod.Pack(
         pack_version=m["pack_version"], name=m["name"],

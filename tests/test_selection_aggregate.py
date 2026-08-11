@@ -157,7 +157,7 @@ def _run(env, seed_set: SeedSet, *, search=None, reason=None, ledger=None, **kw)
 # 故 `_run()` 统一在真正跑编排之前**补齐两处默认值,`INSERT OR IGNORE` 语义**
 # (已有的行——含测试故意写的"脏"行,如 ST 名/无行业——一律不覆盖):
 #   ① 一个与 `seed_set.pack_version` 同名的现役包,三原语参数**照抄
-#      `packs/K4-pack.json` 的现值**(不是另拟一套"宽松测试值"——那样会让测试环境
+#      `archive/packs_retired/K4-pack.json` 的现值**(不是另拟一套"宽松测试值"——那样会让测试环境
 #      的卫生线判据与生产实际用的阈值不是同一回事)。
 #   ② 种子成分里出现过、`stock_basic` 里还没有的码,补一行"干净"默认(非 ST /
 #      主板 / 早已上市)。

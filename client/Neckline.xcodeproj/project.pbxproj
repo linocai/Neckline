@@ -24,11 +24,11 @@
 		7FC2D9D596F2FCACD7B2FA05 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D4D8B9C826C8F3E8D74BF23 /* SettingsView.swift */; };
 		81EC7670CE052326E5AF3DC3 /* BasketCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63700FA175FC48677C401C67 /* BasketCardView.swift */; };
 		83EB77417C2A9B3AE3266127 /* NKFormKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D992070DC2C2CD6DDF3BD3F9 /* NKFormKit.swift */; };
-		8A9D9C1AF48200AC1E370EBF /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0BBABA72F92C8117ACD41E /* Models.swift */; };
-		9B003EF3A758FDFDC3FEE58E /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5673E3EE875B18B1B650342 /* DesignTokens.swift */; };
 		9BC5CB7C5FD9513683F4E4D1 /* BasketDailyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 581182CED4C6109290DA84E3 /* BasketDailyView.swift */; };
 		A1A4C298677F524146F0AF02 /* StaticTradingCalendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0AE1E9D0EC8D59A1EF69F45 /* StaticTradingCalendar.swift */; };
+		A95E60B60DE6A07CDB6DD7DA /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53B123024CC94ED7E02FF66F /* DesignTokens.swift */; };
 		AB52CA616EFD21F6EA0C4967 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A75B75043B9190B8F306FF1D /* Assets.xcassets */; };
+		BB9BA962D41A09249682E47E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6356B9E146F48D22D524B8B6 /* Models.swift */; };
 		BD327FFE691B6B0F77EF1B4F /* NKMemberCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AD326C8BC9BC4A64072A35D /* NKMemberCard.swift */; };
 		C694247DCAC7BC1C103955A0 /* NKStopOrderLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 179135308F69EDF94A3B203C /* NKStopOrderLedger.swift */; };
 		C6A7800544ED3CD2E062F1E8 /* InfoCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A90418AEA32F7C299080AF /* InfoCardView.swift */; };
@@ -58,12 +58,13 @@
 		0AD326C8BC9BC4A64072A35D /* NKMemberCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NKMemberCard.swift; sourceTree = "<group>"; };
 		179135308F69EDF94A3B203C /* NKStopOrderLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NKStopOrderLedger.swift; sourceTree = "<group>"; };
 		1AE91C1C1F16155E79F87794 /* NoteSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteSheet.swift; sourceTree = "<group>"; };
-		2D0BBABA72F92C8117ACD41E /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4077CE80BC54331F1A0225D2 /* NecklineTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NecklineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		53B123024CC94ED7E02FF66F /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		581182CED4C6109290DA84E3 /* BasketDailyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BasketDailyView.swift; sourceTree = "<group>"; };
 		58E32D24CA427022EEC9C9A9 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		5DD9017BB093BA4BC511379F /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
+		6356B9E146F48D22D524B8B6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		63700FA175FC48677C401C67 /* BasketCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BasketCardView.swift; sourceTree = "<group>"; };
 		6995CFD51E96AA2443EC4E3A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		6A997AA8B113E10CE7B48C1E /* BoardSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardSection.swift; sourceTree = "<group>"; };
@@ -92,7 +93,6 @@
 		E0AE1E9D0EC8D59A1EF69F45 /* StaticTradingCalendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StaticTradingCalendar.swift; sourceTree = "<group>"; };
 		E12098656A3D01DB4B4D5843 /* URLGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLGateTests.swift; sourceTree = "<group>"; };
 		F09D5AFF89E79AD30E6F0B1F /* IntegrationSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationSmokeTests.swift; sourceTree = "<group>"; };
-		F5673E3EE875B18B1B650342 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		FB50F6958E9E0102B8D0841F /* ReviewWorkbenchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewWorkbenchView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -100,8 +100,6 @@
 		202ABB56067EF350BA571BA4 = {
 			isa = PBXGroup;
 			children = (
-				F5673E3EE875B18B1B650342 /* DesignTokens.swift */,
-				2D0BBABA72F92C8117ACD41E /* Models.swift */,
 				22700A0DE7FDCAAFCCB23546 /* Neckline */,
 				D1CBE04025F8AE3FBEB1772D /* NecklineTests */,
 				E98B16CC67AAB178AB4F5775 /* Products */,
@@ -137,6 +135,7 @@
 			children = (
 				88CE7120D9B217DAD934B14B /* APIClient.swift */,
 				58E32D24CA427022EEC9C9A9 /* AppConfig.swift */,
+				6356B9E146F48D22D524B8B6 /* Models.swift */,
 			);
 			path = Networking;
 			sourceTree = "<group>";
@@ -170,6 +169,7 @@
 		B1220EBFAFE006A81F668972 /* Components */ = {
 			isa = PBXGroup;
 			children = (
+				53B123024CC94ED7E02FF66F /* DesignTokens.swift */,
 				CD6B509415333AD469D9833E /* NKDevCapture.swift */,
 				99024115FE5BD928E53F8DFB /* NKDisclosure.swift */,
 				D992070DC2C2CD6DDF3BD3F9 /* NKFormKit.swift */,
@@ -323,10 +323,10 @@
 				81EC7670CE052326E5AF3DC3 /* BasketCardView.swift in Sources */,
 				9BC5CB7C5FD9513683F4E4D1 /* BasketDailyView.swift in Sources */,
 				FB4C33C48625D4934F6074BD /* BoardSection.swift in Sources */,
-				9B003EF3A758FDFDC3FEE58E /* DesignTokens.swift in Sources */,
+				A95E60B60DE6A07CDB6DD7DA /* DesignTokens.swift in Sources */,
 				C6A7800544ED3CD2E062F1E8 /* InfoCardView.swift in Sources */,
 				730CE8D10C7BDBCA711C9342 /* IntelSectionView.swift in Sources */,
-				8A9D9C1AF48200AC1E370EBF /* Models.swift in Sources */,
+				BB9BA962D41A09249682E47E /* Models.swift in Sources */,
 				6201E32C0723A5F0AA2D3BFE /* NKDevCapture.swift in Sources */,
 				435E5084B57C5886250DA5E7 /* NKDisclosure.swift in Sources */,
 				83EB77417C2A9B3AE3266127 /* NKFormKit.swift in Sources */,

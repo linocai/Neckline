@@ -3,7 +3,7 @@
 //  Neckline — 后端 REST 客户端(FastAPI,§五 阶段4A → **V2.0.0 契约换血,V2-⑮**)
 //
 //  端点契约见 `neckline/api/schemas.py` + `neckline/api/app.py`(逐字段对齐,不猜);
-//  逐字段对照表见 `archive/V2_契约三方对拍_20260803.md`。
+//  逐字段对照表见 `archive/对照表/V2_契约三方对拍_20260803.md`。
 //
 //    GET  /api/v1/health                        → 免鉴权,{status,version}
 //    GET  /api/v1/report/latest · /report?date= → ReportOut(**V2:candidates 已删,
@@ -168,8 +168,8 @@ private struct ReportResponse: Decodable {
     /// 实测真发 `"sentiment": {}`,`SentimentSnapshot` 九个非可选字段缺键必抛
     /// `keyNotFound`,且此前唯独这一行没接 `try?` → 整份 `ReportResponse` 解码被拖炸,
     /// 与当晚 `engineApiVersion` 同一种炸法(§4.2/§4.3 型别核对未覆盖到的口子,已补登
-    /// `archive/V2_契约三方对拍_20260803.md` §七;新对照表见
-    /// `archive/V2_契约类型核对_20260805.md`)。真实响应回归 fixture 见
+    /// `archive/对照表/V2_契约三方对拍_20260803.md` §七;新对照表见
+    /// `archive/对照表/V2_契约类型核对_20260805.md`)。真实响应回归 fixture 见
     /// `DTODecodeTests.swift::testDecodeEmptyReportRealShapeSentimentIsEmptyObjectNotNull`。
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)

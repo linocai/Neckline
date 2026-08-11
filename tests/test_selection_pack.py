@@ -17,8 +17,11 @@ import pytest
 from neckline.selection import engine_api, pack, primitives
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_K4_PACK_FILE = _REPO_ROOT / "packs" / "K4-pack.json"
-_K7_PACK_FILE = _REPO_ROOT / "packs" / "K7-pack.json"
+# ⚠ 两个 LEGACY 包已于 2026-08-11 仓库整理时移进 `archive/packs_retired/`(V2.2-① 起
+# 它们只做**负例守门**,不再是可激活的现役包)。⛔ 别"顺手"改回 `packs/` —— 那个目录
+# 现在只放现役骨架线与三条引擎线。
+_K4_PACK_FILE = _REPO_ROOT / "archive" / "packs_retired" / "K4-pack.json"
+_K7_PACK_FILE = _REPO_ROOT / "archive" / "packs_retired" / "K7-pack.json"
 _K8_SKELETON_FILE = _REPO_ROOT / "packs" / "K8-skeleton.json"
 _ENGINE_PACK_FILES = {
     "C": _REPO_ROOT / "packs" / "C1.json",
@@ -420,7 +423,7 @@ def test_v1_manifests_are_incompatible_now():
 
 
 def test_legacy_rollback_anchors_are_dead_and_gate_says_so():
-    """仓库里真的 `packs/K4-pack.json` / `packs/K7-pack.json` 走组合校验**必须被拒**
+    """仓库里真的 `archive/packs_retired/K4-pack.json` / `archive/packs_retired/K7-pack.json` 走组合校验**必须被拒**
     —— 把「回滚锚已作废」钉成机器判据(⛔ 有人把这两个文件"顺手升级"到
     engine_api_version=2 来让测试变绿,就把这道守门连同历史档案一起销毁了,
     所以同时断言文件内容仍是历史原样)。"""
@@ -475,7 +478,7 @@ def test_load_pack_file_raises_on_missing_file(tmp_path: Path):
 
 
 def test_real_k4_pack_file_is_schema_valid_and_matches_d6_d7_decisions():
-    """D7 定案:`packs/K4-pack.json`,`pack_version = "K4-pack-v1"`。本测试直接读
+    """D7 定案:`archive/packs_retired/K4-pack.json`,`pack_version = "K4-pack-v1"`。本测试直接读
     仓库里那份真实文件(不是测试夹具里另造的一份),防止它腐化成"字段值早就漂移"
     的僵尸文件。V2.2-① 起它是**冻结历史档案**:schema 层仍逐字受理,组合校验被
     engine_api 闸拒(那是另一条守门的职责,见 `test_legacy_rollback_anchors_...`)。"""
@@ -511,7 +514,7 @@ def test_k4_pack_config_still_drives_primitives_identically_without_activation(t
 
 
 def test_real_k7_pack_file_is_schema_valid_and_matches_plan_decisions():
-    """③-K7-E 定案:`packs/K7-pack.json`,`pack_version = "K7-pack-v1"`。本测试
+    """③-K7-E 定案:`archive/packs_retired/K7-pack.json`,`pack_version = "K7-pack-v1"`。本测试
     直接读仓库里那份真实文件,防止它腐化成"字段值早就漂移"的僵尸文件(同
     K4-pack 那条测试的既有纪律;V2.2-① 起同为冻结历史档案,不再走组合校验)。"""
     doc = pack.load_pack_file(_K7_PACK_FILE)
@@ -833,7 +836,7 @@ def test_slot_is_really_consumed_not_an_empty_shell(tmp_path: Path):
 # V2-③-K7 补的「真实版本」单测(承 V2-③ 完工记录登记的测试局限:「插槽真被
 # 消费」当时只能在原语 + 包层面用**合成**迷你包代理验证,待 ④/⑥ 落地后应在
 # 各自块内用真实种子集/Tier 序重跑——④ 已完工,`generate_seeds()` 已存在;
-# 本测试改用仓库里两份**真实**包文件 `packs/K4-pack.json`/`packs/K7-pack.json`
+# 本测试改用仓库里两份**真实**包文件 `archive/packs_retired/K4-pack.json`/`archive/packs_retired/K7-pack.json`
 # 驱动 `intel_rank_priority`,证明"排序 dims/参数确实不同"这一半不再是代理
 # 验证。「换包 → 种子集跟着变」那半已在 `tests/test_scan_seeds.py::
 # test_generate_seeds_identical_under_real_k4_and_k7_pack_files` 用同样两份

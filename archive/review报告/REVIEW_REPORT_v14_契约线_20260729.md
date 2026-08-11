@@ -5,7 +5,7 @@
 - 测试证据:Python 全量 `pytest tests/ -q` → **1677 passed + 2 skipped**(37.9s,与基线一致);
   Swift `xcodebuild test`(iOS Simulator,LinoJ-iPhone16Pro)→ **168 tests / 13 skipped / 0 failures, TEST SUCCEEDED**。
   macOS 侧 `xcodebuild test` 因 `TEST_HOST` 只适配 iOS 布局跑不了——与 §九 2026-07-29 既有记录一致,非本次新问题。
-- 输入材料:`archive/v1.4_A2B3口径切换对拍_20260724.md`、`archive/v1.4_排序键切换对照_20260724.md`(已抽查,见 §四)。
+- 输入材料:`archive/对照表/v1.4_A2B3口径切换对拍_20260724.md`、`archive/对照表/v1.4_排序键切换对照_20260724.md`(已抽查,见 §四)。
 
 ## 〇 结论一句话
 
@@ -20,7 +20,7 @@
 - **证据**:真库 K4 行 `rule_json["k4_advisory"]["intel_order"]` = `["B2双金叉","A1换手","B4追强","B3题材23","B1堆积","A3年线下涨停","A2题材≥4天"]`;
   `grep -rn "intel_order" neckline/ scripts/ tests/` **零命中**。K4 标注的实际展示顺序 = `_evaluate_hits` 的发射顺序
   (A1→A3→A3b→B1→B2→B4→A2/B3,[`neckline/report/holding_k4_check.py:465-484`]),与 DB 声明的展示优先级**不同**。
-- **为什么算缺口**:需求 3 补充([`archive/交接_系统线升级需求_20260725.md:72-76`])明写六节含 `intel_order`(展示排序)且
+- **为什么算缺口**:需求 3 补充([`archive/交接与日志/交接_系统线升级需求_20260725.md:72-76`])明写六节含 `intel_order`(展示排序)且
   「实现情报包直接读这条 DB 记录」;§七 📌-22 明写「v1.4 是**把这六节用足**」。六节里五节都有消费方
   (hard_cut/avoid_flag → `_evaluate_hits`+`load_k4_sections`;exec_hint → `report/exec_hint.py`;circuit_breaker →
   `sentinel/circuit.py` 常量镜像;note = 纯档案),唯独 `intel_order` 落空。

@@ -70,7 +70,7 @@ class TestReportRoundtrip:
 
 
 class TestV1FrozenSnapshotSurvivesRerun:
-    """🟡 Y-1(小审 2026-08-03,`archive/REVIEW_REPORT_V2_小审_⑭⑮_20260803.md`)守门:
+    """🟡 Y-1(小审 2026-08-03,`archive/review报告/REVIEW_REPORT_V2_小审_⑭⑮_20260803.md`)守门:
     `INSERT OR REPLACE`(整行先删后插)叠加 ⑬-11 起 `watchlist_json` 不进列清单 + ⑭
     起 `candidates` 恒传 `[]`,会让重跑历史日期的 `scripts/report.py` 把 V1 冻结的
     `candidates_json`/`watchlist_json` 快照永久清空(V2 已删候选管线与自选体检,两者

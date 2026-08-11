@@ -221,7 +221,7 @@ class TestSwitcherGates:
         assert [v.version for v in brain.list_versions(db_path=db) if v.is_active] == ["v2.2-k8"]
 
     def test_rollback_target_v133_still_allowed(self, isolated_env):
-        """回滚目标 = `v1.3.3`,仍在白名单、仍走四道闸(SOP:archive/SOP_章程回滚_20260730.md)。"""
+        """回滚目标 = `v1.3.3`,仍在白名单、仍走四道闸(SOP:archive/交接与日志/SOP_章程回滚_20260730.md)。"""
         db = isolated_env.db_path
         _seed_through_v133(db)
         assert seed_charter_v22k8.land_charter(db, confirm=True) == 0
