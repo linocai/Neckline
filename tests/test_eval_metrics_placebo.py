@@ -10,6 +10,7 @@ Tier 单调性 / 共振率 / 验证率在造数上算对;买不进的 0 **不进
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -563,6 +564,57 @@ class TestPlaceboReport:
 # ══════════════════════════════════════════════════════════════════════════
 # 周度校准报告
 # ══════════════════════════════════════════════════════════════════════════
+
+class TestDegradedIsMachineJudgeable:
+    """🔴 §七 **P0-56** 回归守门:`build_report` 永不抛异常,所以"这份报告哪几段是
+    炸掉的"**必须另有一处机器可判**,否则退出码会替一次被掏空的跑背书
+    (2026-08-11 生产实证:三段全废、日志末行仍是「全部步骤成功」+ `ExecMainStatus=0`)。"""
+
+    def test_placebo_blowup_is_recorded_in_degraded_not_just_notes(self, isolated_env, monkeypatch):
+        """安慰剂对照臂炸掉 → `degraded` 里必须有 `placebo`。
+
+        ⛔ 不许只往 `notes` 里塞一句就算数:`notes` 是给人读的散文,里面还混着
+        「样本不足」这类**正常**提示,机器没法拿它当判据。"""
+        env = isolated_env
+        monkeypatch.setattr(calibration, "run_placebo",
+                            lambda *a, **kw: (_ for _ in ()).throw(ValueError("对照臂炸了")))
+        insert_trade_cal(env, business_days(date(2026, 7, 1), 40))
+        _seed(env, review_mech=json.dumps(_mech()), state=vr.STATE_VERIFIED)
+        rep = calibration.build_report("20260701", "20260731", db_path=env.db_path,
+                                       parquet_dir=env.parquet_dir, with_placebo=True,
+                                       with_tradable=False)
+        assert "placebo" in rep.degraded
+        assert "degraded" in rep.to_dict(), "降级必须落进产物 JSON,不能只活在内存里"
+        assert rep.to_dict()["degraded"] == rep.degraded
+
+    def test_clean_run_leaves_degraded_empty(self, isolated_env):
+        """反向:没有段炸掉就不许平白标降级(⛔ 别把守门做成恒红)。"""
+        env = isolated_env
+        insert_trade_cal(env, business_days(date(2026, 7, 1), 40))
+        _seed(env, review_mech=json.dumps(_mech()), state=vr.STATE_VERIFIED)
+        rep = calibration.build_report("20260701", "20260731", db_path=env.db_path,
+                                       parquet_dir=env.parquet_dir, with_placebo=False,
+                                       with_tradable=False)
+        assert rep.degraded == []
+
+    def test_tradable_scoring_failure_surfaces_even_though_evaluate_never_raises(
+            self, isolated_env, monkeypatch):
+        """🔴 **比上面那条低一层的降级**:`evaluate` 对可交易判分自带保险丝 ——
+        炸了只 `warning` + 在 `fill_reasons` 打 `scoring_failed`,**自己不抛**。
+
+        2026-08-11 生产复测就漏在这里:那一跑 `degraded` 只有 `placebo`,可交易
+        判分同样全废却无人吭声,分层成绩单少了一整维而退出码毫无反应。"""
+        env = isolated_env
+        monkeypatch.setattr(metrics, "score_tradable",
+                            lambda *a, **kw: (_ for _ in ()).throw(ValueError("判分炸了")))
+        insert_trade_cal(env, business_days(date(2026, 7, 1), 40))
+        _seed(env, review_mech=json.dumps(_mech()), state=vr.STATE_VERIFIED)
+        rep = calibration.build_report("20260701", "20260731", db_path=env.db_path,
+                                       parquet_dir=env.parquet_dir, with_placebo=False,
+                                       with_tradable=True)
+        assert "tradable" in rep.degraded, (
+            "可交易判分整段失败却没进 degraded —— 成绩单少一维而退出码不变红(P0-56)")
+
 
 class TestCalibrationReport:
     def test_empty_range_is_a_note_not_an_exception(self, isolated_env):

@@ -186,6 +186,17 @@ def build_report(
         rep.notes.append(f"分层成绩单计算失败:{type(exc).__name__}: {exc}")
         rep.degraded.append("strata")
 
+    # 🔴 **P0-56 收尾:比上面那个 except 低一层的降级**。`evaluate` 对「可交易收益判分」
+    # 自带保险丝(炸了只 `logger.warning` + 在 `fill_reasons` 里打 `scoring_failed`,
+    # 然后拿一个空 `TradableResult` 继续)—— 它**自己不抛**,所以上面的 except 永远抓不到。
+    # 不把它往上带,分层成绩单就会**少一整维**而退出码毫无反应:2026-08-11 生产复测
+    # 实证过这一幕 —— 那一跑 `degraded` 只有 `placebo`,可交易判分同样全废却无人吭声。
+    # ⚠ `with_tradable=False` 时 `fill_reasons` 是空的,不会误报。
+    if any((s.tradable or {}).get("fill_reasons", {}).get("scoring_failed")
+           for s in rep.strata):
+        rep.notes.append("可交易收益判分整段失败(逐层见 `tradable.fill_reasons.scoring_failed`)")
+        rep.degraded.append("tradable")
+
     if with_placebo:
         try:
             rep.placebo = run_placebo(records, draws=draws, db_path=db_path,
