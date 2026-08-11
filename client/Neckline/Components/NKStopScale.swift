@@ -60,9 +60,44 @@ struct NKStopScale: View {
     /// 标签半宽(clamp 用;「峰值 46.90」这类五六个字符在 11px 下约 56pt 宽)。
     private let labelHalf: CGFloat = 30
 
+    /// 🔴 **上排标签防重叠**(V2.3.1 批 7 实拍逮到:`peak == cost` 时两个标签**压在一起**,
+    /// 渲染成「戏卒 36.94」这种谁也读不出的字形 —— 而 `peak == cost` 正是**买入后一路没涨过**
+    /// 这一常见情形的必然结果,不是极端数据)。
+    ///
+    /// **做法 = 沿横轴推开,⛔ 不是丢掉一个标签**(丢了就会出现一根没有名字的刻度线),
+    /// 也 ⛔ 不往上叠一层(那要改整块的高度,而高度在 `GeometryReader` 外面定死,
+    /// 拿不到宽度就算不出该加多少)。按优先级 **止损 > 成本 > 峰值** 依次放,与已放的
+    /// 有横向重叠就往右挪(挪不下再往左),最后仍 clamp 在轨道两端内。
+    /// ⚠ 返回值顺序固定 `[止损, 成本, 峰值]`,调用点按下标取 —— 改顺序两处一起改。
+    private func topLabelCenters(w: CGFloat) -> [CGFloat] {
+        var wanted: [CGFloat] = [x(stop, width: w), x(cost, width: w)]
+        if let p = peak { wanted.append(x(p, width: w)) }
+        let span = labelHalf * 2 - 2
+        var placed: [CGFloat] = []
+        var out: [CGFloat] = []
+        for target in wanted {
+            var c = clampX(target, width: w)
+            var guardCount = 0
+            while let hit = placed.first(where: { abs($0 - c) < span }), guardCount < 8 {
+                c = hit + span                       // 先往右让
+                if c > w - labelHalf { c = hit - span }  // 右边到头了就往左
+                c = clampX(c, width: w)
+                guardCount += 1
+            }
+            placed.append(c)
+            out.append(c)
+        }
+        return out
+    }
+
+    private func clampX(_ cx: CGFloat, width: CGFloat) -> CGFloat {
+        min(max(cx, labelHalf), max(width - labelHalf, labelHalf))
+    }
+
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
+            let lc = topLabelCenters(w: w)
             ZStack(alignment: .topLeading) {
                 // 轨道底(原型 1014:`top:20; height:5; radius:999; rgba(60,60,67,.07)`)。
                 Capsule().fill(NK.hairline.opacity(0.7))
@@ -86,25 +121,26 @@ struct NKStopScale: View {
                 }
 
                 // 刻度(顺序 = 画的先后,后画的压在上面;止损与现价最高)。
+                // ⚠ 标签的层号来自 `topLabelLevels`,顺序**必须**与那里一致:止损 / 成本 / 峰值。
                 if let p = peak {
                     tick(x(p, width: w), NK.textTertiary.opacity(0.75), w: 2, h: 15, top: 15)
-                    label(x(p, width: w), "峰值 \(NKFmt.price(p))", NK.textTertiary,
-                          bold: false, y: topLabelCenterY, width: w)
+                    label(lc[2], "峰值 \(NKFmt.price(p))", NK.textTertiary,
+                          bold: false, y: topLabelCenterY)
                 }
                 tick(x(cost, width: w), NK.textTertiary, w: 2, h: 15, top: 15)
-                label(x(cost, width: w), "成本 \(NKFmt.price(cost))", NK.textSecondary,
-                      bold: false, y: topLabelCenterY, width: w)
+                label(lc[1], "成本 \(NKFmt.price(cost))", NK.textSecondary,
+                      bold: false, y: topLabelCenterY)
 
                 tick(x(stop, width: w), NK.down, w: 3, h: 17, top: 14)
-                label(x(stop, width: w), "止损 \(NKFmt.price(stop))", NK.down,
-                      bold: true, y: topLabelCenterY, width: w)
+                label(lc[0], "止损 \(NKFmt.price(stop))", NK.down,
+                      bold: true, y: topLabelCenterY)
 
                 if hasPrice {
                     tick(x(price, width: w), priceColor, w: 3, h: 23, top: 11)
                     // 原型 1020:现价标签在**下方** `top:36`、`11/700`,与上排分开 —— 它是
-                    // 这条尺上唯一"会动"的那一个。
-                    label(x(price, width: w), "现价 \(NKFmt.price(price))", priceColor,
-                          bold: true, y: priceLabelCenterY, width: w)
+                    // 这条尺上唯一"会动"的那一个(下排只有它,不参与上排的推挤)。
+                    label(clampX(x(price, width: w), width: w), "现价 \(NKFmt.price(price))",
+                          priceColor, bold: true, y: priceLabelCenterY)
                 }
             }
             .frame(width: w, height: blockHeight, alignment: .topLeading)
@@ -128,17 +164,17 @@ struct NKStopScale: View {
             .offset(x: cx - w / 2, y: top)
     }
 
-    /// 浮动刻度标签(原型 `transform:translateX(-50%)`);两端 clamp,免得被卡边切掉。
+    /// 浮动刻度标签(原型 `transform:translateX(-50%)`)。
+    /// ⚠ `cx` 已由 `topLabelCenters` 推挤 + clamp 过,这里不再二次夹紧。
     private func label(_ cx: CGFloat, _ text: String, _ color: Color,
-                       bold: Bool, y: CGFloat, width: CGFloat) -> some View {
-        let clamped = min(max(cx, labelHalf), max(width - labelHalf, labelHalf))
-        return Text(text)
+                       bold: Bool, y: CGFloat) -> some View {
+        Text(text)
             .font(NKFont.caption.monospacedDigit())
             .fontWeight(bold ? .bold : .regular)
             .foregroundStyle(color)
             .fixedSize()
             .frame(width: labelHalf * 2)
-            .offset(x: clamped - labelHalf, y: y - 7)
+            .offset(x: cx - labelHalf, y: y - 7)
     }
 }
 

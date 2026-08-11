@@ -127,11 +127,12 @@ struct NKToolbar: View {
     @ViewBuilder
     private var regimePill: some View {
         if model.board.retreatBrake.active {
-            // 退潮刹车:唯一翻成**实底白字**的状态(§⑦ 全屏状态那一批的同款口径)。
-            Text("退潮刹车").font(NKFont.callout).fontWeight(.semibold)
-                .foregroundStyle(.white)
-                .padding(.leading, 10).padding(.trailing, 10).padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: NKRadius.control).fill(NK.down))
+            // 退潮刹车:唯一翻成**实底白字**的状态(`Neckline 状态.dc.html` 57–60 行:
+            // 与常态**同一个壳**〔gap 6 / padding 4-10-4-8 / radius 7〕,只是色点换白、
+            // 底色换 `#E5443B`、字重 700)。⚠ V2.3.0 少了那颗白点、且左右内边距被拉平成
+            // 10/10 —— 三种状态的胶囊形状必须一致,否则"翻红"看起来像换了个别的控件。
+            regimeShell(dot: .white, text: "退潮刹车",
+                        textColor: .white, bg: NK.down, bold: true)
         } else if let d = model.marketRegime.day, model.marketRegime.available {
             regimeShell(dot: d.tone.color, text: d.displayLabel,
                         textColor: NK.textPrimary, bg: d.tone.color.opacity(0.08))
@@ -144,10 +145,11 @@ struct NKToolbar: View {
     }
 
     private func regimeShell(dot: Color, text: String,
-                             textColor: Color, bg: Color) -> some View {
+                             textColor: Color, bg: Color, bold: Bool = false) -> some View {
         HStack(spacing: 6) {
             Circle().fill(dot).frame(width: 6, height: 6)
-            Text(text).font(NKFont.callout).fontWeight(.semibold).foregroundStyle(textColor)
+            Text(text).font(NKFont.callout).fontWeight(bold ? .bold : .semibold)
+                .foregroundStyle(textColor)
         }
         .padding(.leading, 8).padding(.trailing, 10).padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: NKRadius.control).fill(bg))

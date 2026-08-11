@@ -415,15 +415,28 @@ final class AppModel {
 
     // MARK: - 派生(纯逻辑,单测覆盖)
 
-    /// 退潮刹车激活时的状态提示(§2.4「今日计划作废、禁开新仓」)。
+    /// 退潮刹车激活时的**依据一句**(= 刹车条的次行);`nil` = 未触发。
     /// **只警示、不硬拦** —— 开仓录入是补记用户已在券商完成的真实操作(审计台账),
     /// 硬拦会变成帮用户瞒报真实操作。
+    ///
+    /// 🔴 **V2.3.1 批 6:去掉了原来那句「退潮红色刹车已触发 · 今日计划作废、不建议开新仓」
+    /// 前缀** —— 刹车条的**标题**逐字就是这句话(`RetreatBrakeBar` 的第一行,原型
+    /// `Neckline 状态.dc.html` 82 行),前缀让同一句话在同一条栏里连着出现两遍(实拍逮到)。
+    /// ⛔ 别再把它加回来:次行的职责是「凭什么这么判」,不是把标题重说一遍。
+    /// ⚠ 依据为空时返回**空串而不是 nil** —— 刹车条照样要出现(`nil` 的语义是"没刹车")。
     var retreatWarning: String? {
         guard board.retreatBrake.active else { return nil }
-        let base = "退潮红色刹车已触发 · 今日计划作废、不建议开新仓"
-        guard !board.retreatBrake.reason.isEmpty else { return base }
-        return base + "(依据:\(board.retreatBrake.reason))"
+        return board.retreatBrake.reason
     }
+
+    /// **跨板块的「打开持仓板块的哪一屏」请求**(V2.3.1 批 6)。
+    ///
+    /// 取值 = `PositionsPane` 的 `case` 名(`"board"` / `"alerts"` / `"position"`)——
+    /// ⚠ 用字符串而不是那个枚举:`PositionsPane` 住在 `PositionsView.swift`(视图层),
+    /// `AppModel` 反向 import 视图类型会把依赖方向倒过来。
+    /// 消费方 `PositionsView` 收到后**立刻置回 `nil`**(它是一次性请求,不是状态)。
+    /// ⛔ 别拿它当"当前选中的是哪一屏"用 —— 那个仍然住在 `PositionsView` 自己的 `@State` 里。
+    var positionsPaneRequest: String? = nil
 
     var hasReportData: Bool { !report.degraded && !report.tradeDate.isEmpty }
     var quota: PositionQuota? { report.sentiment.map { PositionQuota($0.positionQuota) } }

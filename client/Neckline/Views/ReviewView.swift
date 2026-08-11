@@ -312,15 +312,31 @@ struct ReviewView: View {
         }
     }
 
+    /// 五枚**胶囊页签**(iOS 原型 564–570 行:`radius:999; padding:6px 14px; 13px`,
+    /// 选中 = `#0B6BCB` 实底白字 + 600、未选 = `rgba(60,60,67,.07)` 底 `.75` 字)。
+    ///
+    /// ⚠ **⛔ 不用系统 `Picker(.segmented)`**:它的选中态是"白底浮起"、整条还有一层灰槽,
+    /// 与原型的"蓝实底胶囊"是两种视觉语言;而且五个两字词在 402pt 上会被系统均分成
+    /// 五个等宽格,长短不一的页签(「每日」vs「选股钟」)看起来像排版没对齐。
+    /// 横向可滚:五枚排不下时能划出来,⛔ 不缩字号。
     private var pagePicker: some View {
-        Picker("", selection: Binding(get: { model.reviewPage },
-                                      set: { model.reviewPage = $0 })) {
-            ForEach(ReviewPage.allCases) { p in
-                Text(p.title).tag(p)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {                       // 原型 564 行 gap:6
+                ForEach(ReviewPage.allCases) { p in
+                    let on = model.reviewPage == p
+                    Button { model.reviewPage = p } label: {
+                        Text(p.title).font(NKFont.body)
+                            .fontWeight(on ? .semibold : .regular)
+                            .foregroundStyle(on ? Color.white : NK.textPrimary.opacity(0.75))
+                            .padding(.horizontal, 14).padding(.vertical, 6)
+                            .background(Capsule().fill(on ? NK.accent : NK.chipNeutral))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
+            .padding(.horizontal, 2)
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
     }
 
     // MARK: - 每日:④ 昨日篮子复盘(自选股板块整段迁入;**三态逐字保留**)
@@ -954,6 +970,23 @@ struct ReviewPageTitle: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        // 🔴 **iOS 上收成一行**(V2.3.1 批 7 结转的已知欠账 ①):手机上这一页顶上已经有
+        // **系统大标题「复盘」+ 五枚页签 + 一句「这一页答什么」**,再来一个 26px 的页标题
+        // 就是**第三层标题**,一屏之内三级标题连着出现。iOS 原型 576–579 行给的是
+        // 「`15/700` 段头 + 右端 `11 .40` 的口径」**一行**。
+        // ⛔ macOS 不跟着改:那边列表栏与详情栏是两个面,26px 是详情栏的**唯一**标题。
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title).font(NKFont.headline).foregroundStyle(NK.textPrimary)
+            Spacer(minLength: 8)
+            if !subtitle.isEmpty {
+                Text(subtitle).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 2)
+        #else
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(NKFont.title1).tracking(-0.4).foregroundStyle(NK.textPrimary)
             if !subtitle.isEmpty {
@@ -961,6 +994,7 @@ struct ReviewPageTitle: View {
                     .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
             }
         }
+        #endif
     }
 }
 

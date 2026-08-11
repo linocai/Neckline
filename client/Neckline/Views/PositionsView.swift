@@ -88,8 +88,13 @@ struct PositionsView: View {
     // MARK: - iOS:列表 → 推入式详情
 
     #if os(iOS)
+    /// 推入栈。**只为了让 QA 钩子能把详情页推出来**(见 `applyQAPush`);正常路径由
+    /// `NavigationLink(value:)` 自己维护,行为逐字节不变。
+    @State private var navPath: [Int] = []
+    @State private var didApplyQAPush = false
+
     private var platformBody: some View {
-        NavigationStack {
+        NavigationStack(path: $navPath) {
             ScrollView {
                 VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                     summaryStrip
@@ -104,11 +109,8 @@ struct PositionsView: View {
             .background(NK.pageBgIOS)
             .navigationTitle(AppTab.positions.title)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { Task { await model.refresh() } } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
+                // iOS 原型 90–93 行:右上是**蓝底胶囊 + 上次刷新时刻**,⛔ 不是裸箭头。
+                ToolbarItem(placement: .primaryAction) { NKRefreshPill(model: model) }
             }
             .refreshable { await model.refresh() }
             .navigationDestination(for: Int.self) { pid in
@@ -122,6 +124,18 @@ struct PositionsView: View {
                 }
             }
         }
+        // ⚠ 持仓是 `refresh()` 异步拉回来的 —— `.task` 那一次多半还没有数据,
+        // 所以再挂一个 `onChange`(v1.4-⑧「数据到位之后再触发」的同款先例)。
+        .task { applyQAPush() }
+        .onChange(of: model.positions.count) { _, _ in applyQAPush() }
+    }
+
+    /// 只推一次(`didApplyQAPush` 闩住)—— ⛔ 否则每次刷新都把用户拽回详情页。
+    private func applyQAPush() {
+        guard !didApplyQAPush, navPath.isEmpty, let pid = NKQA.initialPositionId,
+              model.positions.contains(where: { $0.id == pid }) else { return }
+        didApplyQAPush = true
+        navPath = [pid]
     }
     #endif
 
@@ -133,6 +147,18 @@ struct PositionsView: View {
             listColumn
         } detail: {
             detailPane
+        }
+        // V2.3.1 批 6:刹车条那枚「看哪几条触发了」跨板块过来的一次性请求
+        // (`AppModel.positionsPaneRequest`)。**收到就置回 `nil`** —— 它是请求不是状态,
+        // 留着会把用户后续的手动选择一直覆盖回去。
+        .onChange(of: model.positionsPaneRequest) { _, req in
+            guard let req else { return }
+            switch req {
+            case "board": pane = .board
+            case "alerts": pane = .alerts
+            default: pane = .position
+            }
+            model.positionsPaneRequest = nil
         }
     }
 
@@ -287,14 +313,30 @@ struct PositionsView: View {
                 Text(pendingDetail).font(NKFont.caption).foregroundStyle(NK.textTertiary)
             }
         }
+        // 🔴 **iOS 上它是一张白卡**(iOS 原型 105 行 `padding:13px 14px; radius:16;
+        // background:#fff; border:.5px rgba(60,60,67,.10)`)—— 手机上没有 macOS 那条
+        // 竖分隔栏来界定"这是一栏的汇总",裸放在页底色上会读成一段浮字。
+        // ⛔ macOS 侧仍是列表栏顶的一条裸行(批 3 已按 macOS 原型 865–870 行定案)。
+        #if os(iOS)
+        .padding(.horizontal, 14).padding(.vertical, 13)
+        .background(RoundedRectangle(cornerRadius: 16).fill(NK.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(NK.hairline, lineWidth: 0.5))
+        #else
         .padding(.top, 8)
         .overlay(alignment: .top) { Rectangle().fill(NK.hairline).frame(height: 0.5) }
         .padding(.top, 7)
+        #endif
     }
 
     private func summaryItem(_ title: String, _ value: String, _ color: Color) -> some View {
         VStack(alignment: .leading, spacing: 3) {   // 原型 867 行 margin-top:3
+            // iOS 原型 106 行 `19px/600` → 数字档 `metric`(20)就近;macOS 原型 866 行
+            // 是 `15/600`(列表栏窄,20 会把三格挤散)。
+            #if os(iOS)
+            Text(value).font(NKFont.metric).foregroundStyle(color)
+            #else
             Text(value).font(NKFont.headline.monospacedDigit()).foregroundStyle(color)
+            #endif
             Text(title).font(NKFont.caption).foregroundStyle(NK.textTertiary)
         }
     }
@@ -551,6 +593,14 @@ struct PositionListRow: View {
                         // (`dBadgeText` 单点判断),⛔ 不拿 D5 顶上冒充有上限。
                         NKChip(text: position.dBadgeText, tone: dBadgeTone,
                                filled: dBadgeTone == .bad)
+                        // 🔴 **破线要在名字旁边说一次**(iOS 原型 148 行:徽标位放的就是
+                        // 「已破止损线」这类**状态**)。V2.3.0 只在卡底那行红字里写 ——
+                        // 一屏三张卡时,最要紧的那张与其它两张在**头部完全一样**。
+                        // ⚠ 底行那句「已破止损线 ¥35.09」保留:那里带的是**线的价位**,
+                        // 这里只报状态,两处不重复(⛔ 别把价位也搬上来)。
+                        if position.hasBrokenStop {
+                            NKChip(text: "已破止损线", tone: .bad, filled: true)
+                        }
                         if position.timeExitKind == .suspendedHold {
                             NKChip(text: "判向挂起", tone: .warn)
                         }
@@ -976,24 +1026,34 @@ struct PositionDetailPage: View {
     // MARK: - 动作
 
     #if os(iOS)
-    /// 吸底动作条(盘中单手够得到)。
+    /// 吸底动作条(盘中单手够得到)。iOS 原型 305–308 行:
+    /// **补录清仓在左、`flex:1`、`#E5443B` 实底白字**;说明在右、`flex:none`、`.5px` 描边;
+    /// 两枚 `padding:13; radius:14; 15/600`,条自身 `padding:10px 16px 44px` + `.5px` 上边线。
+    /// ⛔ V2.3.0 把两枚做成等宽淡底、且把补录清仓排在右边 —— 主次反了:这一屏是推送落地页,
+    /// 用户来这儿多半就是要记那一笔。
     private var actionBar: some View {
         HStack(spacing: 10) {
-            Button { model.beginNote(code: position.code, positionId: position.id) } label: {
-                Text("补充说明").font(NKFont.body).fontWeight(.semibold)
-                    .frame(maxWidth: .infinity).padding(.vertical, 11)
-                    .background(RoundedRectangle(cornerRadius: NKRadius.control).fill(NK.chipNeutral))
-            }
-            .buttonStyle(.plain).foregroundStyle(NK.textSecondary)
             Button { model.openCloseSheet(code: position.code) } label: {
-                Text("补录清仓").font(NKFont.body).fontWeight(.semibold)
-                    .frame(maxWidth: .infinity).padding(.vertical, 11)
-                    .background(RoundedRectangle(cornerRadius: NKRadius.control).fill(NK.down.opacity(0.12)))
+                Text("补录清仓").font(NKFont.headline)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity).padding(.vertical, 13)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(NK.down))
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).foregroundStyle(NK.down)
+            .buttonStyle(.plain)
+            Button { model.beginNote(code: position.code, positionId: position.id) } label: {
+                Text("说明").font(NKFont.headline)
+                    .foregroundStyle(NK.textSecondary)
+                    .padding(.horizontal, 18).padding(.vertical, 13)
+                    .overlay(RoundedRectangle(cornerRadius: 14)
+                        .stroke(NK.textTertiary.opacity(0.5), lineWidth: 0.5))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, NKSpace.pagePad).padding(.vertical, 10)
+        .padding(.horizontal, NKSpace.pagePad).padding(.top, 10).padding(.bottom, 10)
         .background(.ultraThinMaterial)
+        .overlay(alignment: .top) { Rectangle().fill(NK.hairline).frame(height: 0.5) }
     }
     #endif
 
@@ -1166,6 +1226,147 @@ struct OpenPositionSheet: View {
     @Bindable var model: AppModel
 
     var body: some View {
+        #if os(iOS)
+        iosBody
+        #else
+        macBody
+        #endif
+    }
+
+    // MARK: - iOS(`Neckline iOS.dc.html` 645–733:第 7 屏)
+    //
+    // 🔴 **V2.3.1 批 7:iOS 这一屏从 `Form(.grouped)` 换成 `NKFormKit`**(批 5 为 macOS
+    // 建的那套,当时登记「iOS 侧原样保留 `Form`,归批 7」)。理由与批 5 逐字相同:
+    // `Form` 的圆角 / 页边距 / 分隔线 / 段标题字号**全由系统定、改不了**,而原型这一屏
+    // 是「一张 radius 16 的白卡 + 定宽 70 的标签列 + 通栏 `.5px` 细线」。
+    // ⚠ **只换外观**:三个字段的绑定、提交动作、幂等键一个字没动。
+
+    #if os(iOS)
+    private var iosBody: some View {
+        NKSheetShell(title: "补录开仓", primaryTitle: "提交",
+                     onCancel: { model.dismissModal() },
+                     onPrimary: { Task { await model.submitOpenPosition() } }) {
+            // 原型 656 行 `12.5 .55 / 1.6`:先说清"你只补机器不知道的"。
+            Text("三字段即可提交。来源篮子 / Tier / 角色 / 市场快照由系统自动关联,止损线由服务端按现役章程派生 —— **系统自动记录,你只补机器不知道的**。")
+                .font(NKFont.callout).lineSpacing(4).foregroundStyle(NK.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 2)
+
+            // 原型 658–678 行:白卡四行,标签列**定宽 70**、值 `16/600 tabular`。
+            NKFieldCard {
+                entryRow("代码") {
+                    TextField("如 600519.SH", text: $model.entryForm.code)
+                        .textInputAutocapitalization(.characters)
+                }
+                NKFieldSeparator()
+                entryRow("买入价") {
+                    TextField("必填", text: $model.entryForm.price).keyboardType(.decimalPad)
+                }
+                NKFieldSeparator()
+                entryRow("数量") {
+                    TextField("股", text: $model.entryForm.qty).keyboardType(.numberPad)
+                }
+                NKFieldSeparator()
+                NKFieldRow(v: 14, h: 16) {
+                    NKFieldLabel(text: "买入日", width: 70)
+                    Spacer(minLength: 8)
+                    DatePicker("", selection: $model.entryForm.buyDate, in: ...Date(),
+                               displayedComponents: .date)
+                        .labelsHidden()
+                }
+            }
+
+            // 原型 680–689 行的蓝块「系统自动带出」。
+            // 🔴 **只画服务端真给了的那两项**(`entrySuggestionRange` = 预计止损线 + 参考手数)
+            // —— 原型还画了「来源篮子」「Tier / 角色」,那两项在**提交之前**客户端一个字都
+            // 拿不到(它们是服务端提交时按当日报告关联的),画出来就是编。
+            autoFilledBlock
+
+            NKGroupLabel(text: "可选补充")
+            NKFieldCard {
+                entryRow("名称") { TextField("可选", text: $model.entryForm.name) }
+                NKFieldSeparator()
+                entryRow("进场理由") { TextField("可选", text: $model.entryForm.reason) }
+                NKFieldSeparator()
+                entryRow("实付费用") {
+                    TextField("可选 · 含佣金 / 过户费", text: $model.entryForm.buyFees)
+                        .keyboardType(.decimalPad)
+                }
+            }
+            Text("留空照样提交。实付费用留空时,D5 净浮盈判向走默认佣金率估算并**诚实标注为估算**;周复盘对账建议回填真数。")
+                .font(NKFont.caption).lineSpacing(3).foregroundStyle(NK.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 2)
+
+            // 原型 700 行:结尾那句红线(⛔ 一字不改)。
+            Text("此处只记录你已在券商完成的真实操作。**系统不代下单。**")
+                .font(NKFont.caption).lineSpacing(3).foregroundStyle(NK.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 2)
+        }
+    }
+
+    private func entryRow<F: View>(_ label: String, @ViewBuilder field: () -> F) -> some View {
+        NKFieldRow(v: 14, h: 16) {                    // 原型 659 行 `padding:14px 16px`
+            NKFieldLabel(text: label, width: 70)            // 原型 660 行 `width:70px`
+            field()
+                .textFieldStyle(.plain)
+                .font(NKFont.headline.monospacedDigit())   // 原型 661 行 `16/600 tabular` 就近取 15
+                .foregroundStyle(NK.textPrimary)
+        }
+    }
+
+    /// 🔴 **没有 `entrySuggestionRange` 时如实说"还没算"**(它要先填代码 + 价格才拉得到),
+    /// ⛔ 不画一个空的蓝块假装系统已经带出来了。
+    @ViewBuilder
+    private var autoFilledBlock: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("系统自动带出").font(NKFont.callout).fontWeight(.bold)
+            }
+            .foregroundStyle(NK.accent)
+            .padding(.bottom, 9)
+            if let r = model.entrySuggestionRange {
+                autoRow("预计止损线", "¥\(NKFmt.price(r.stopLine))", tone: .bad,
+                        note: "按现役章程 -5%")
+                autoRow("参考手数", "\(r.qtyLow) – \(r.qtyHigh) 股",
+                        note: "¥\(NKFmt.amount(r.capFloor)) – ¥\(NKFmt.amount(r.capCeil))")
+                Text("上限 = 违纪判定线,**非推荐值**。提交后以服务端实际返回为准。")
+                    .font(NKFont.caption).lineSpacing(3).foregroundStyle(NK.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 7)
+            } else {
+                Text("填好代码与买入价之后,这里会带出**预计止损线**与**参考手数区间**。来源篮子 / Tier / 角色由服务端在提交时关联 —— 客户端此刻拿不到,⛔ 不猜。")
+                    .font(NKFont.caption).lineSpacing(3).foregroundStyle(NK.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16).padding(.vertical, 14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(NK.accent.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(NK.accent.opacity(0.20), lineWidth: 0.5))
+    }
+
+    private func autoRow(_ label: String, _ value: String,
+                         tone: NKAxisTone = .neutral, note: String? = nil) -> some View {
+        HStack(spacing: 8) {                          // 原型 683 行 gap:8 / padding:5px 0
+            Text(label).font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                .frame(width: 88, alignment: .leading)
+            Text(value).font(NKFont.body).fontWeight(.semibold)
+                .monospacedDigit()
+                .foregroundStyle(tone == .neutral ? NK.textPrimary : tone.color)
+            if let n = note {
+                Text(n).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 5)
+    }
+    #endif
+
+    private var macBody: some View {
         PositionFormShell(title: "补录开仓", onCancel: { model.dismissModal() },
                           onSubmit: { Task { await model.submitOpenPosition() } }) {
             Section {

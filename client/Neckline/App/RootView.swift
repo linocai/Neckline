@@ -101,10 +101,21 @@ struct RootView: View {
     #endif
 
     /// 通栏刹车条(双端共用)。⛔ 不进卡片流、不属于任何板块。
+    ///
+    /// 「看哪几条触发了」去的是**持仓 · 盘中动态**:那里有刹车依据 + 哨兵已落库的全部
+    /// 事件(含黄色预警那条)。⚠ 原型画的是一张「三个条件族 · 逐条阈值读数」明细卡 ——
+    /// 契约(`RetreatBrake` 只有 `{active, reason}`)一个读数都没发,⛔ 不编,见对照表。
     @ViewBuilder
     private var brakeBar: some View {
         if let warning = model.retreatWarning {
-            RetreatBrakeBar(reason: warning)
+            RetreatBrakeBar(reason: warning, actionTitle: "看哪几条触发了") {
+                model.view = .positions
+                #if os(macOS)
+                // ⚠ 只在 macOS 设:iOS 的持仓页是**一整页顺序排下来**(盘中动态就在页内),
+                // 没有"选哪一屏"这回事;设了就没人消费、`positionsPaneRequest` 会一直挂着。
+                model.positionsPaneRequest = "board"
+                #endif
+            }
         }
     }
 

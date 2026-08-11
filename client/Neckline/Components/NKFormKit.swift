@@ -9,8 +9,9 @@
 //  全由系统定),逐项对不到原型的 inline style。⛔ 不是"嫌 `Form` 不好看",是它
 //  的这些值**改不了**。
 //
-//  ⚠ **iOS 侧继续用 `Form`**(批 7 才做 iOS 逐屏比对):本文件的组件全部 `#if os(macOS)`
-//  之外也能编,但**目前只有 macOS 分支在用**。⛔ 别顺手把 iOS 也切过来 —— 那属于批 7。
+//  ⚠ **V2.3.1 批 7 起 iOS 也在用**(补录开仓那一屏,`Neckline iOS.dc.html` 645–733):
+//  本文件从来没有 `#if os(macOS)` 守卫,组件本身双端都能编。**尚未切过来的 iOS 弹层**
+//  (补录清仓 / 补充说明 / 新建提醒)仍在 `Form`,原型没画那三屏 —— 见批 7 对照表登记。
 //
 
 import SwiftUI
@@ -67,7 +68,12 @@ struct NKSheetShell<Content: View>: View {
                 .padding(NKSheet.contentPad)
             }
         }
+        // iOS 弹层底色沿用 iOS 画布(`#F3F4F7`,iOS 原型 647 行);macOS 用桌面画布。
+        #if os(iOS)
+        .background(NK.pageBgIOS)
+        #else
         .background(NK.pageBg)
+        #endif
     }
 
     private var titleBar: some View {

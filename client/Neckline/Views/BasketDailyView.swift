@@ -73,8 +73,15 @@ struct BasketDailyView: View {
                     } else {
                         compactOverviewCard
                         reviewPointer
+                        // 🔴 **③ 今日篮子排在 ② 与情报之前**(iOS 原型 349–441 行的顺序:
+                        // 行情状态 + 情绪 → 昨日回执 → ③ 篮子 → 篮子卡)。V2.3.0 把
+                        // ② 持仓体检入口与整块「情报」塞在概览卡里、压在篮子上面 ——
+                        // iPhone 上要**划过两屏**才看得到今天的篮子,而它才是这一页的主角。
+                        // ⛔ 两段一个字没删,只是挪到篮子后面(macOS 侧另有安排,别跟着改)。
                         basketsSection
                         droppedSection
+                        holdingCheckupPointer
+                        IntelPackageView(report: model.report)
                     }
                     freshnessSection      // ⑤ **恒在**(在 degraded 分支之外)
                 }
@@ -85,11 +92,8 @@ struct BasketDailyView: View {
             // ⛔ 别在这里再写一个字面量,同屏两个名字是改名最容易漏的那一处。
             .navigationTitle(AppTab.baskets.title)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { Task { await model.refresh() } } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
+                // iOS 原型 316–319 行:右上是**蓝底胶囊 + 上次刷新时刻**,⛔ 不是裸箭头。
+                ToolbarItem(placement: .primaryAction) { NKRefreshPill(model: model) }
             }
             .refreshable { await model.refresh() }
         }
@@ -132,7 +136,11 @@ struct BasketDailyView: View {
             VStack(alignment: .leading, spacing: 2) {   // 原型 84 行 margin-top:2
                 Text(AppTab.baskets.title).font(NKFont.title2).tracking(-0.3)
                     .foregroundStyle(NK.textPrimary)
-                Text(listSubtitle).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                // 退潮刹车时这一句翻**红 + 600**(状态原型 83 行 `11.5px #E5443B; 600`)——
+                // 「计划作废」是这一栏此刻最要紧的一句,灰字会被当成普通计数说明扫过去。
+                Text(listSubtitle).font(NKFont.caption)
+                    .fontWeight(model.board.retreatBrake.active ? .semibold : .regular)
+                    .foregroundStyle(model.board.retreatBrake.active ? NK.down : NK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, NKSpace.listHeaderExtraH).padding(.bottom, 10)
@@ -151,6 +159,9 @@ struct BasketDailyView: View {
     }
 
     private var listSubtitle: String {
+        // 退潮刹车优先(状态原型 83 行)——「篮子仍然列出、点得开」是这一屏必须当面说的
+        // 那句话:作废的是计划,不是数据。
+        if model.board.retreatBrake.active { return "今日计划已作废 · 篮子仍然列出,点得开" }
         // 报告未生成时原型副标题是「今晚 16:35 出计划」(状态原型 231 行)。
         if model.report.degraded { return "今晚 16:35 出计划" }
         return "今日 \(daily.baskets.count) 篮定档 · \(daily.droppedBaskets.count) 篮未定档"
@@ -605,8 +616,7 @@ struct BasketDailyView: View {
                 MissedEntryHintBanner(text: model.report.missedEntryHint)
             }
             sentimentSection
-            holdingCheckupPointer
-            IntelPackageView(report: model.report)
+            // ⚠ ② 持仓体检与「情报」**已挪到篮子后面**(见 `iosBody`),⛔ 别搬回来。
         }
     }
 
@@ -636,12 +646,21 @@ struct BasketDailyView: View {
             }
         }
         #else
+        // 🔴 **iOS 上⛔ 不再另起一个段头**(V2.3.1 批 7 实拍逮到):批 2 把段名「① 情绪与
+        // 市场语境」搬进了 `SentimentCard` 的卡头(macOS 原型 736–739),而 iOS 这个调用点
+        // 仍然在卡外面写了一遍 —— 手机上同一张卡**连着出现两个一模一样的标题**。
+        // ⚠ 这正是「双端共用件改了却只在一端核对过」的典型:编译不报错、单测也测不出。
         VStack(alignment: .leading, spacing: NKSpace.blockGap) {
-            NKSectionHeader(title: "① 情绪与市场语境")
             if let s = model.report.sentiment {
                 SentimentCard(sentiment: s, sectors: [])
             } else {
-                NKCard { NKEmptyState(title: "本次没有情绪仪表盘数据", systemImage: "gauge") }
+                NKCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("① 情绪与市场语境").font(NKFont.headline)
+                            .foregroundStyle(NK.textPrimary)
+                        NKEmptyState(title: "本次没有情绪仪表盘数据", systemImage: "gauge")
+                    }
+                }
             }
             if !model.report.sectors.isEmpty {
                 SectorChipsRow(sectors: model.report.sectors)
@@ -1023,6 +1042,18 @@ private struct BasketListRow: View {
                             Text("\(n) 只").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         }
                     }
+                    // 退潮刹车时每一行都带这一句(状态原型 133 行:`padding:6px 9px;
+                    // radius:7; background:rgba(229,68,59,.08); 10.5/600 #E5443B`)。
+                    // 🔴 **作废的是计划,不是数据** —— 卡、六关、逐只判定照常可读,
+                    // ⛔ 别把行灰掉、更别把它从列表里拿掉。
+                    if model.board.retreatBrake.active {
+                        Text("今日计划作废 —— 这篮的卡与判定照常可读")
+                            .font(NKFont.badge).foregroundStyle(NK.down)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 9).padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: NKRadius.control)
+                                .fill(NK.down.opacity(0.08)))
+                    }
                 }
             }
             // 🔴 **成员区在选中框外面**(原型 148 行:它是 `pick()` 那个 div 的**兄弟**,
@@ -1032,6 +1063,16 @@ private struct BasketListRow: View {
                 .padding(.leading, 10).padding(.trailing, 4)
                 .padding(.top, 3).padding(.bottom, 6)
         }
+        // 🔴 **iOS 上一篮就是一张白卡**(iOS 原型 364 行 `padding:15; radius:18;
+        // background:#fff; border:.5px rgba(60,60,67,.10)`)——手机上没有 macOS 那条
+        // 「列表栏 vs 详情栏」的分栏,裸行摞在页底色上分不出哪几行属于同一篮。
+        // ⛔ macOS 侧不跟着改:那边靠 `pick()` 的选中态分隔,加卡会让整栏变成一摞盒子。
+        #if os(iOS)
+        .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(NK.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(NK.hairline, lineWidth: 0.5))
+        #endif
     }
 
     private var memberCount: Int? {

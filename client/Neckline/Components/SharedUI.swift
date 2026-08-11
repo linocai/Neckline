@@ -294,6 +294,45 @@ struct NKJSONTable: View {
     }
 }
 
+// MARK: - iOS 刷新胶囊(V2.3.1 批 7)
+
+#if os(iOS)
+/// **蓝底刷新胶囊**(iOS 原型 90–93 / 316–319 行:`padding:6px 12px; radius:999;
+/// background:#0B6BCB` + 11px 图标 + `12/600` 白字的**上次刷新时刻**)。
+///
+/// 🔴 **按钮上直接写时刻**,与 macOS 工具栏那枚同一口径(`NKToolbar.refreshButton`):
+/// 盘中最常问的是「我看的这份是几点的」——⛔ 一枚裸箭头答不了。
+/// ⚠ 还没成功刷新过就写「刷新」二字,⛔ 不拿"现在"冒充。
+struct NKRefreshPill: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        Button { Task { await model.refresh() } } label: {
+            HStack(spacing: 5) {
+                if model.reportLoading {
+                    ProgressView().controlSize(.mini).tint(.white)
+                } else {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
+                }
+                Text(model.lastRefreshedAt.map(NKRefreshPill.hhmm) ?? "刷新")
+                    .font(NKFont.callout.monospacedDigit()).fontWeight(.semibold)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Capsule().fill(NK.accent))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(model.reportLoading)
+    }
+
+    private static let fmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"; return f
+    }()
+    static func hhmm(_ d: Date) -> String { fmt.string(from: d) }
+}
+#endif
+
 // MARK: - 退潮红色刹车横幅(§2.4「今日计划作废、禁开新仓」,最高优先级视觉)
 
 struct RetreatBrakeBanner: View {
@@ -322,27 +361,79 @@ struct RetreatBrakeBanner: View {
 /// 🔴 它管的是「**今天整份计划**」,不是某一篮 —— 所以既不是卡片、也不属于任何一个
 /// 板块,由 `RootView` 的壳统一挂。⚠ **刹车激活时篮子仍然全部列出、点得开**:
 /// 作废的是计划,不是数据;**补录开仓按钮同样不灰化**(硬拦 = 帮用户瞒报)。
+///
+/// 版式 = `Neckline 状态.dc.html` **79–86 行**:`padding:14px 18px; gap:14`,24px 三角
+/// 图标 + `16/700` 白标题 + `12.5 rgba(255,255,255,.90)` 次行 + 右端一枚半透明白按钮。
+/// ⚠ **`action` 缺省 = 不画那枚按钮**(iOS 推送落地页那类窄场景);给了才画。
 struct RetreatBrakeBar: View {
+    /// 原型 79 行 `linear-gradient(100deg,#E5443B 0%,#E8910A 130%)`:**近水平**、且橙色
+    /// 端点落在 **130%**(= 右端仍偏红,⛔ 不是"左红右全橙")。
+    /// ⚠ **不是新色令牌**:两个色值与 `NK.alertGrad` 逐字相同,只有起止点几何不同 ——
+    /// `alertGrad` 的 `topLeading→bottomTrailing` 是给方形块用的,拉到 1200×72 的通栏上
+    /// 会把橙色提前吃满。⛔ 别把这两个色值改成别的颜色。
+    private static let barGrad = LinearGradient(
+        colors: [Color(hex: 0xE5443B), Color(hex: 0xE8910A)],
+        startPoint: UnitPoint(x: 0, y: 0), endPoint: UnitPoint(x: 1.3, y: 0.6))
+
     let reason: String
+    /// 「看哪几条触发了」。⚠ 契约只发 `{active, reason}` —— 这枚按钮**去的是盘中动态**
+    /// (那里有刹车依据 + 哨兵已落库的事件),⛔ 不是原型里那张「三个条件族」明细卡:
+    /// 逐条阈值读数客户端一个字都没有,画出来就是编。
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
+
     var body: some View {
-        HStack(alignment: .top, spacing: 9) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(NKFont.body).fontWeight(.bold)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .center, spacing: 14) {   // 原型 79 行 gap:14
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 24, weight: .regular))   // 原型 80 行 24×24 线性三角
+            VStack(alignment: .leading, spacing: 3) {        // 原型 83 行 margin-top:3
+                // 原型 82 行 `16px/700; letter-spacing:-.2` —— 字阶就近取 `title3`(17)。
                 Text("退潮红色刹车 · 今日计划作废、禁开新仓")
-                    .font(NKFont.body).fontWeight(.bold)
+                    .font(NKFont.title3).fontWeight(.bold).tracking(-0.2)
+                    .fixedSize(horizontal: false, vertical: true)
                 if !reason.isEmpty {
-                    Text(reason).font(NKFont.caption).opacity(0.92)
+                    // 原型 83 行 `12.5px; color:rgba(255,255,255,.90); line-height:1.5`。
+                    Text(reason).font(NKFont.callout).opacity(0.90).lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // 🔴 **iPhone 402pt 上按钮换到文案下面**(CLAUDE.md 登记的 402pt 挤压坑):
+                // 一行放「24 图标 + 两行标题 + 一枚 110pt 的按钮」会把标题挤成竖排单字。
+                // ⛔ 桌面别跟着改 —— 1200pt 上按钮就该在右端(原型 87 行 `flex:none`)。
+                #if os(iOS)
+                actionButton.padding(.top, 10)
+                #endif
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+            #if os(macOS)
+            actionButton
+            #endif
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, NKSpace.pagePad)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 18).padding(.vertical, 14)   // 原型 79 行 `padding:14px 18px`
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(NK.alertGrad)
+        .background(Self.barGrad)
+        // 原型 79 行 `box-shadow:0 2px 12px rgba(229,68,59,.28)`。⚠ 恒定阴影、不参与动画
+        // (全局三禁管的是"逐帧重算模糊"),这条栏是全 App 优先级最高的视觉。
+        .shadow(color: NK.down.opacity(0.28), radius: 6, y: 2)
+    }
+
+    /// 原型 87 行:`padding:7px 14px; radius:8; background:rgba(255,255,255,.20);
+    /// border:.5px solid rgba(255,255,255,.35); 12.5/600 #fff`。
+    @ViewBuilder
+    private var actionButton: some View {
+        if let title = actionTitle, let act = action {
+            Button(action: act) {
+                Text(title).font(NKFont.callout).fontWeight(.semibold)
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: NKRadius.control)
+                        .fill(Color.white.opacity(0.20)))
+                    .overlay(RoundedRectangle(cornerRadius: NKRadius.control)
+                        .stroke(Color.white.opacity(0.35), lineWidth: 0.5))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+        }
     }
 }
 
@@ -434,32 +525,58 @@ struct DataFreshnessBanner: View {
 struct DataFreshnessDetail: View {
     let freshness: DataFreshness
 
+    /// 🔴 **V2.3.1 批 6:改成原型的「色点 + 定宽标题 + 右端读数」行表**
+    /// (macOS 原型 786–788 行:`padding:9px 0; gap:10`,7px 语义色圆点 + `12.5px #1D1D1F`
+    /// **定宽 130** 的标题 + `flex:1` + 右端 `12px` 读数,行间 `.5px rgba(60,60,67,.06)`,
+    /// **末行无分隔**)。V2.3.0 是"标题 11 灰粗 + 右端同色读数"的两列版式,三行看不出
+    /// 哪一路好哪一路坏 —— 那颗点才是一眼能扫的那个信号。
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 0) {
             row(title: "概念板块日更",
                 date: freshness.sectorDataDate, lag: freshness.sectorLagDays,
-                stale: freshness.stale, present: true)
+                stale: freshness.stale, present: true, last: false)
             row(title: "行业强度日更",
                 date: freshness.industryStrengthDate, lag: freshness.industryStrengthLagDays,
                 stale: freshness.industryStrengthStale,
                 present: freshness.industryStrengthLagDays != nil || freshness.industryStrengthDate != nil
-                    || freshness.industryStrengthStale != nil)
+                    || freshness.industryStrengthStale != nil, last: false)
             row(title: "市场扫描层批算",
                 date: freshness.scanLayerDate, lag: freshness.scanLayerLagDays,
                 stale: freshness.scanLayerStale,
                 present: freshness.scanLayerLagDays != nil || freshness.scanLayerDate != nil
-                    || freshness.scanLayerStale != nil)
+                    || freshness.scanLayerStale != nil, last: true)
         }
     }
 
+    /// ⚠ 标题定宽 130 只在 macOS 生效:iPhone 402pt 减去卡内边距后,130 的定宽标题会把
+    /// 右端读数(「最新至 20260809 · 落后 1 个交易日」)挤成两三行(CLAUDE.md 已登记的
+    /// 402pt 挤压坑)。手机上标题按内容宽、读数靠右自适应。
     @ViewBuilder
-    private func row(title: String, date: String?, lag: Int?, stale: Bool?, present: Bool) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(title).font(NKFont.caption).fontWeight(.bold).foregroundStyle(NK.textTertiary)
-            Spacer(minLength: 8)
-            Text(text(date: date, lag: lag, stale: stale, present: present))
-                .font(NKFont.caption).multilineTextAlignment(.trailing)
-                .foregroundStyle(tone(stale: stale, present: present).color)
+    private func row(title: String, date: String?, lag: Int?, stale: Bool?,
+                     present: Bool, last: Bool) -> some View {
+        let t = tone(stale: stale, present: present)
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 10) {         // 原型 786 行 gap:10
+                Circle().fill(t.color).frame(width: 7, height: 7)
+                    .padding(.top, 4)                      // 与 12pt 文字的视觉中线对齐
+                Text(title).font(NKFont.callout).foregroundStyle(NK.textPrimary)
+                    #if os(macOS)
+                    .frame(width: 130, alignment: .leading)   // 原型 786 行 width:130px
+                    #endif
+                Spacer(minLength: 8)
+                Text(text(date: date, lag: lag, stale: stale, present: present))
+                    .font(NKFont.callout.monospacedDigit())
+                    // 正常那两行是**中性灰**(原型 786/787);出问题的那一行才着色 + 加粗
+                    // (原型 788 行 `font-weight:600; color:#E8910A`)。
+                    .fontWeight(t == .good ? .regular : .semibold)
+                    .foregroundStyle(t == .good ? NK.textSecondary : t.color)
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 9)                          // 原型 786 行 padding:9px 0
+            if !last {
+                Rectangle().fill(NK.hairline.opacity(0.6)).frame(height: 0.5)
+            }
         }
     }
 
@@ -655,6 +772,16 @@ struct MarketRegimeStrip: View {
         // macOS 原型 897 行)。⛔ 详情栏那一档(非 compact)仍是白卡,别一起改。
         Group {
             if compact {
+                #if os(iOS)
+                // 🔴 **iOS 上 compact 是一张白卡**(iOS 原型 98 行 `padding:10px 14px;
+                // radius:14; background:#fff; border:.5px rgba(60,60,67,.10)`)——
+                // 手机上整页就是一列卡,灰块会读成"这块坏了 / 这块被禁用了"。
+                inner
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(NK.cardBg))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(NK.hairline, lineWidth: 0.5))
+                #else
                 inner
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12).padding(.vertical, 10)
@@ -662,6 +789,7 @@ struct MarketRegimeStrip: View {
                         .fill(NK.textTertiary.opacity(0.055)))
                     .overlay(RoundedRectangle(cornerRadius: NKRadius.inner)
                         .stroke(NK.hairline, lineWidth: 0.5))
+                #endif
             } else {
                 NKCard { inner }
             }
@@ -682,15 +810,28 @@ struct MarketRegimeStrip: View {
         VStack(alignment: .leading, spacing: compact ? 4 : 10) {
             // 原型 713–717 行:左「行情状态」弱标 + 实心状态徽标,右端**日期 · 骨架版本**
             // 合成一句 `10.5 .40 tabular`(⛔ 不是日期在左、版本徽标在右两处分开)。
-            HStack(spacing: 8) {
-                Text("行情状态").nkLabel().foregroundStyle(NK.textTertiary)
-                NKChip(text: d.displayLabel, tone: d.tone, filled: true)
-                Spacer(minLength: 6)
-                if !metaLine(d).isEmpty {
-                    Text(metaLine(d)).font(NKFont.caption.monospacedDigit())
-                        .foregroundStyle(NK.textTertiary)
+            // 🔴 **iOS compact 的头一行是原型的「色点 + 状态名 + 弱标」**(iOS 原型 99–101:
+            // 7px 语义色圆点 + `13.5/600` 状态名 + `11.5 .40` 的「行情状态」四个字)——
+            // ⛔ 不是实心徽标:手机上这一条本身就窄,徽标会把它抢成一枚"按钮"。
+            #if os(iOS)
+            if compact {
+                HStack(spacing: 8) {
+                    Circle().fill(d.tone.color).frame(width: 7, height: 7)
+                    Text(d.displayLabel).font(NKFont.body).fontWeight(.semibold)
+                        .foregroundStyle(NK.textPrimary)
+                    Text("行情状态").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    Spacer(minLength: 6)
+                    if !metaLine(d).isEmpty {
+                        Text(metaLine(d)).font(NKFont.caption.monospacedDigit())
+                            .foregroundStyle(NK.textTertiary)
+                    }
                 }
+            } else {
+                regimeHeadRow(d)
             }
+            #else
+            regimeHeadRow(d)
+            #endif
             if !d.regimeReason.isEmpty {
                 Text(d.regimeReason).font(compact ? NKFont.caption : NKFont.body)
                     .lineSpacing(compact ? 0 : 4)
@@ -728,6 +869,20 @@ struct MarketRegimeStrip: View {
                     Text("行情状态是市场结构的描述 · 不是买卖建议、不改变任何持仓判定")
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+        }
+    }
+
+    /// macOS(与 iOS 非 compact)那一档的头行:弱标 + 实心状态徽标 + 右端日期 · 骨架版本
+    /// (macOS 原型 713–717 行)。
+    private func regimeHeadRow(_ d: MarketRegimeDay) -> some View {
+        HStack(spacing: 8) {
+            Text("行情状态").nkLabel().foregroundStyle(NK.textTertiary)
+            NKChip(text: d.displayLabel, tone: d.tone, filled: true)
+            Spacer(minLength: 6)
+            if !metaLine(d).isEmpty {
+                Text(metaLine(d)).font(NKFont.caption.monospacedDigit())
+                    .foregroundStyle(NK.textTertiary)
             }
         }
     }
@@ -803,6 +958,14 @@ enum NKQA {
     static let initialSettingsGroup: NKSettingsGroup? =
         ProcessInfo.processInfo.environment["NECKLINE_INITIAL_SETTINGS_GROUP"]
             .flatMap(NKSettingsGroup.init(rawValue:))
+    /// `NECKLINE_INITIAL_POSITION_ID=<id>` → **iOS** 持仓板块直接推入那一笔的详情页
+    /// (V2.3.1 批 7:持仓详情是 `NavigationStack` 推进去的一页,`NECKLINE_INITIAL_TAB`
+    /// 只切得到 tab、切不到推入页)。⚠ 同名环境变量在 macOS 上由
+    /// `AppModel.applyQAHooksAfterRefresh()` 消费(那边是列表选中,不是推入)——
+    /// **两端读同一个变量、语义各按平台的导航形态**,⛔ 别为 iOS 另起一个名字。
+    /// ⛔ 仍然只给初值 / 只推一次:推进去之后返回键照常可用,不夺走用户的导航。
+    static let initialPositionId: Int? =
+        ProcessInfo.processInfo.environment["NECKLINE_INITIAL_POSITION_ID"].flatMap(Int.init)
     /// `NECKLINE_INITIAL_PROVIDER_FORM=1` → 设置 · Provider 屏开**编辑 Provider** 弹层
     /// (取列表首个 Provider)。⚠ 它要等 `loadSettings()` 拿回注册表才有东西可编,
     /// 故触发点在 `SettingsView.task` 里而不是 `NecklineApp.init()`。
