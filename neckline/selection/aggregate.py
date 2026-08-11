@@ -409,6 +409,56 @@ K8_CORE_CRITERIA = (
     "本关问的是龙头,不是容量中军,二者在 A 股常常不是同一只票。"
 )
 
+# ══════════════════════════════════════════════════════════════════════════
+# ① 市场关 / ③ 板块关的 **evidence 半边** LLM 判定件 —— V2.3.2-①-C(策略线裁定 1)
+#
+# 未经用户确认的市场关 / 板块关阈值(`source=engineering_v1 + calibration=pending`)
+# **全部退出机械硬否决**,降为证据输入:机械侧只出读数 + 拟判影子,判定交大模型,
+# **只能降低候选等级、不能机械除名**。四项 `source=audited` 的叶子继续硬否决
+# (裁定 2),二分判据的唯一实现 = `gates.py::enforcement_of()`。
+#
+# 🔴 **成本铁律**:两关判定**搭 `basket_reason` 那一次调用**,⛔ **LLM 增量恒为 0**
+# (本模块 `provider.chat(...)` 调用点恒为 2 个,AST 守门数死)。
+#
+# ⚠ 与位置关 / 核心关的**唯一实质差别**:那两关兜底成 `weak`(读数还在、只是判定
+# 缺席);这两关的缺席兜底是**空串 = 判不出**(`available=False + blocks_t1=True`)
+# —— 连"这条待定阈值该不该拦"都没人答过,兜成 weak 等于替模型编了一个判断。
+# ══════════════════════════════════════════════════════════════════════════
+
+MARKET_OK = "ok"        # 大盘环境适配该引擎 → 市场关 pass
+MARKET_WEAK = "weak"    # 勉强适配 → 市场关 degrade(降一档)
+MARKET_UNFIT = "unfit"  # 不适配 → 退出正式候选,**仍在 ③b 列名**
+MARKET_VERDICTS: Tuple[str, ...] = (MARKET_OK, MARKET_WEAK, MARKET_UNFIT)
+# 🔴 兜底 = **空串**(= 判不出),⛔ 不是 ok、⛔ 也不是 weak。见上面那段 ⚠。
+MARKET_VERDICT_FALLBACK = ""
+MARKET_REASON_FALLBACK = "market.verdict_missing:LLM 未给市场关判定,按「判不出」处理(不拦但不给 T1)"
+
+SECTOR_OK = "ok"
+SECTOR_WEAK = "weak"
+SECTOR_UNFIT = "unfit"
+SECTOR_VERDICTS: Tuple[str, ...] = (SECTOR_OK, SECTOR_WEAK, SECTOR_UNFIT)
+SECTOR_VERDICT_FALLBACK = ""
+SECTOR_REASON_FALLBACK = "sector.verdict_missing:LLM 未给板块关判定,按「判不出」处理(不拦但不给 T1)"
+
+# K8.md §五-1「市场关」原文(⛔ 逐字,不改写不缩写)—— prompt 里给 LLM 的第 ① 样。
+K8_MARKET_CRITERIA = "读取行情状态,确认主线强弱、资金迁移和候选风格的适配性。"
+
+# K8.md §五-3「板块关」原文(⛔ 逐字)—— prompt 里给 LLM 的第 ① 样。
+K8_SECTOR_CRITERIA = (
+    "确认板块具备:\n"
+    "  · 多只相关股票协同;\n"
+    "  · 龙头、核心和弹性标的层级;\n"
+    "  · 资金持续性;\n"
+    "  · 从个股异动向方向性机会的扩散。"
+)
+
+# K8.md §五「关口判定方式」里直接管着本节的两条(⛔ 逐字)—— 写进 prompt,让模型
+# 知道**它现在拿到的这些阈值是证据不是硬门**(否则它会以为自己在复核一道已经拦过的关)。
+K8_GATE_ENFORCEMENT_RULES = (
+    "市场关和板块关只有在具体阈值经过用户确认、单关通过率与联合通过率完成验证后,"
+    "才允许机械硬否决;未经确认的市场、板块指标作为证据输入,由 LLM 判断。"
+)
+
 # 读数键名契约的**唯一源在 `selection/core_metrics.py`**(写侧),这里只做别名引用
 # —— ⛔ 不在本模块抄第二份键名表(与位置关 `POSITION_METRIC_GROUPS` 住 aggregate 的
 # 历史分工不同:核心读数的写侧是本包内的新模块,契约理应跟着写侧走)。
@@ -557,6 +607,14 @@ class BasketCandidate:
     persistence: str = ""                  # 驱动关四问③:逻辑的持续性
     strengthen_and_invalidate: str = ""    # 驱动关四问④:什么会强化 / 证伪这个驱动
     evidence_conflicts: str = ""           # 证据关 LLM 侧:矛盾识别(纯披露,不进判据)
+    # —— V2.3.2-①-C 市场关 / 板块关的 **evidence 半边**判定(裁定 1)——————————
+    # **篮子级**(⛔ 不是成员级:这两关判的是"这个篮子所处的大盘 / 板块环境",与
+    # 篮子里具体哪只票无关)。`""` = 本次没走过该判定 → `gates.py` 按
+    # `available=False + blocks_t1=True` 处理(⛔ 不默认 ok、⛔ 不兜成 weak)。
+    market_verdict: str = ""               # ok|weak|unfit
+    market_reason: str = ""
+    sector_verdict: str = ""               # ok|weak|unfit
+    sector_reason: str = ""
     # —— gates.py 机械对拍后的引擎归属(裁定 #9 单篮子单引擎,成员继承篮子引擎)——
     engine_code: Optional[str] = None
     engine_version: Optional[str] = None
@@ -719,6 +777,17 @@ class MechContext:
     cluster_amount_share_of: Dict[Tuple[str, str], float] = field(default_factory=dict)
     cluster_size_of: Dict[str, int] = field(default_factory=dict)
     cluster_available: bool = False
+    # —— V2.3.2-①-C 市场关 / 板块关读数(裁定 1)————————————————————————————
+    # 🔴 **这是 `gates.GateContext` 那个对象本身**(由 `evening.py` 先 `build_gate_context()`
+    # 拿到再注入),⛔ 不是另读一遍的副本 —— 模型看到的读数必须与关口用的读数**是同
+    # 一份对象**,否则存下来的是"事后那一份",留痕就白留了(与位置关 `⛔ 本模块不另读
+    # 一遍` 同一条纪律)。
+    # ⚠ **鸭子类型接收**:`aggregate.py` ⛔ 不许 import `gates.py`(gates 反向 import
+    # 本模块,会成环)。只读它的 `regime_row` / `regime_breadth_pctile` / `industry_rank`
+    # / `strength_days_5d` / `stage_of` 几个属性,取不到就当"本次未取得"。
+    # ⚠ 三条引擎线的**待定阈值数值**也从它身上读(`evidence_thresholds`),⛔ 本模块
+    # 不自己判哪条是 evidence —— 那个判据的唯一实现在 `gates.enforcement_of()`。
+    gate_ctx: Optional[Any] = None
 
     def display(self, code: str) -> str:
         name = self.names.get(code)
@@ -1108,6 +1177,14 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
    · `ok` = 它就是它那一群(同行业)里的**龙头**;
    · `weak` = 勉强算、或者说不清它是不是龙头(该票会被降一档);
    · `unfit` = 它不是核心地位,只是跟风(该票所在篮子退出正式候选,但**仍会在报告里列名并写明你的理由**)。
+9. 给**每个篮子**判一次**市场关**和一次**板块关**(下面两节给了判断标准与读数),
+产出 `market_verdict` / `market_reason` 与 `sector_verdict` / `sector_reason`
+(三值语义与上面两关相同:`ok` 过 / `weak` 降一档 / `unfit` 退出正式候选但仍列名):
+   · 这两关是**篮子级**判断(问的是"这个篮子所处的大盘环境 / 板块环境合不合适"),
+     ⛔ 不要逐票判;
+   · 读数里给的阈值**是参考线不是硬门** —— 它们尚未经过验证,系统不会拿它们自动否决谁;
+     该不该因为某条读数降级,由你判断并在理由里说清楚;
+   · 判不准就给 `weak` 并说明缺什么,⛔ 不要为了让篮子留下而给 `ok`。
 
 **读数里写「未取到」的项就是真的没取到**,请据实说明不确定性,⛔ 不要把它当成 0 或默认值。
 位置与核心两项判不准就各给 `weak` 并说明缺什么,⛔ 不要为了让票留下而给 `ok`。
@@ -1143,6 +1220,10 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
    "persistence": "逻辑的持续性(写不出就空字符串)",
    "strengthen_and_invalidate": "什么会强化、什么会证伪(写不出就空字符串)",
    "evidence_conflicts": "证据之间的矛盾与取舍(没有就空字符串)",
+   "market_verdict": "ok|weak|unfit 三选一(该篮子的市场关判定)",
+   "market_reason": "一句话说清市场关判定的依据",
+   "sector_verdict": "ok|weak|unfit 三选一(该篮子的板块关判定)",
+   "sector_reason": "一句话说清板块关判定的依据",
    "seed_keys": ["这个篮子合并了哪几颗种子的编号"],
    "members": [{"ts_code": "必须来自该种子的成员清单",
                 "role": "leader|core|elastic",
@@ -1180,6 +1261,8 @@ def build_reason_context(
     不是容量核心);② `gates.core.guidance`;③ 该票的行业域读数 + 缺项披露。
     **同一次调用**里一并产出,⛔ LLM 增量仍是 0。"""
     lines = [date_anchor_line(ref_date=ctx.trade_date, name_tomorrow=True), ""]
+    lines.extend(_market_prompt_block(ctx))
+    lines.extend(_sector_prompt_block(ctx))
     lines.extend(_position_prompt_block(ctx))
     lines.extend(_core_prompt_block(ctx))
     for seed in seeds:
@@ -1187,6 +1270,7 @@ def build_reason_context(
         ev = evidence_by_seed.get(seed.seed_key)
         lines.append(f"── 种子编号 {seed.seed_key}|类型 {seed.seed_kind}|名称 {ctx.label_for(seed)}")
         lines.append(f"   机械依据:{seed.evidence}")
+        lines.append(f"   板块读数:{_sector_metrics_line(seed, ctx)}")
         if ev is None or ev.status != EVIDENCE_OK:
             why = (ev.skip_reason if ev is not None else "not_run") or "unknown"
             lines.append(f"   联网证据:**本次未取得**(原因:{why})——请勿据此编造消息面,"
@@ -1269,6 +1353,113 @@ def _position_metrics_line(code: str, ctx: MechContext) -> str:
     miss = (ctx.position_metrics_missing_of.get(code) or "").strip()
     if miss:
         line += f";(未取到的项与原因:{miss})"
+    return line
+
+
+def _gate_attr(ctx: MechContext, name: str, default: Any = None) -> Any:
+    """从注入的 `gates.GateContext` 上鸭子类型取一个属性(没注入 / 没这个属性 → 默认)。
+    ⛔ 本模块不 import `gates`(会成环),故一律走 `getattr`。"""
+    gc = ctx.gate_ctx
+    return default if gc is None else getattr(gc, name, default)
+
+
+def _market_prompt_block(ctx: MechContext) -> List[str]:
+    """市场关(evidence 半边)判断标准段 —— **全局一份**(V2.3.2-①-C)。
+
+    四样:① K8.md §五-1 原文;② §五「关口判定方式」里"未经确认的指标作为证据输入"
+    那两条;③ D0 行情状态三态读数 + 广度分位;④ 各引擎的主场声明与**待定阈值数值**,
+    并逐条明示「本项当前是证据、不是硬门」。
+
+    ⛔ **这一段里不许出现"没过就否决"这类措辞** —— 待定阈值自此只是读数与参考线,
+    拦不拦由模型判(裁定 1「只能降低候选等级,不能机械除名」)。"""
+    regime_row = _gate_attr(ctx, "regime_row")
+    pctile = _gate_attr(ctx, "regime_breadth_pctile")
+    thresholds = _gate_attr(ctx, "evidence_thresholds") or {}
+
+    lines = [
+        "── 市场关判断标准 —— 给**每个篮子**判一次 market_verdict(篮子级,不是逐票)",
+        "【K8 原文】" + K8_MARKET_CRITERIA,
+        "【判定方式(K8 原文)】" + K8_GATE_ENFORCEMENT_RULES,
+    ]
+    if regime_row is None:
+        lines.append("⚠ 今日**行情状态表没有当日行**(引擎没跑 / 没数据)——"
+                     "⛔ 不要凭空假设今天是哪一态,据实说明不确定性即可。")
+    else:
+        regime = str(regime_row.get("regime") or "") or "未取到"
+        lines.append(f"【今日行情状态】{regime}"
+                     f"(三态:trend_continuation 趋势延续 / high_divergence 高位分歧 / "
+                     f"rotation_confirmed 切换确认)")
+        lines.append("【板块广度分位】"
+                     + (f"{float(pctile):.4f}" if isinstance(pctile, (int, float))
+                        and not isinstance(pctile, bool) else "**本次未取得**"))
+    if thresholds:
+        lines.append("【各引擎的市场关待定阈值(🔴 **本项当前是证据、不是硬门** ——"
+                     "阈值未经用户确认,只作参考线,由你判断)】")
+        for code in sorted(thresholds):
+            items = (thresholds[code] or {}).get("market") or {}
+            if not items:
+                continue
+            body = "、".join(f"{k}={items[k]!r}" for k in sorted(items))
+            lines.append(f"  · {code}:{body}")
+    else:
+        lines.append("【各引擎的市场关待定阈值】**本次未取得**(引擎线读取失败)——"
+                     "只按上面 K8 原文与行情状态判断,并在理由里注明缺这一条。")
+    lines.append("")
+    return lines
+
+
+def _sector_prompt_block(ctx: MechContext) -> List[str]:
+    """板块关(evidence 半边)判断标准段 —— **全局一份**;逐颗种子的读数在种子行里
+    (`_sector_metrics_line`)。⛔ 同样不许出现"没过就否决"这类措辞。"""
+    thresholds = _gate_attr(ctx, "evidence_thresholds") or {}
+    lines = [
+        "── 板块关判断标准 —— 给**每个篮子**判一次 sector_verdict(篮子级,不是逐票)",
+        "【K8 原文】" + K8_SECTOR_CRITERIA,
+    ]
+    if thresholds:
+        lines.append("【各引擎的板块关待定阈值(🔴 **本项当前是证据、不是硬门**)】")
+        any_line = False
+        for code in sorted(thresholds):
+            items = (thresholds[code] or {}).get("sector") or {}
+            if not items:
+                continue
+            any_line = True
+            body = "、".join(f"{k}={items[k]!r}" for k in sorted(items))
+            lines.append(f"  · {code}:{body}")
+        if not any_line:
+            lines.append("  · (三条引擎线的板块关阈值本版全部经用户确认,无待定项)")
+    else:
+        lines.append("【各引擎的板块关待定阈值】**本次未取得**(引擎线读取失败)。")
+    lines.append("⚠ 下面每颗种子行里的「板块读数」中,**行业强度名次已由一道经用户确认的"
+                 "硬门判过**,列在这里只作背景;要你判的是其余读数合起来说明的板块状态。")
+    lines.append("")
+    return lines
+
+
+def _sector_metrics_line(seed: DriverSeed, ctx: MechContext) -> str:
+    """一颗种子的板块关读数(逐颗种子一行,①-C 原文)。
+
+    **缺项一律如实说「未取到」**,⛔ 不填 0、不填默认值。
+    ⚠ `seed_pool_size` 这里给的是**该种子自己的原始成分数**;篮子真正用的那个数是
+    「所声明各颗种子成分的并集」(见 `_gate_proposal` 的 `aux.seed_pool_size`)——
+    合并多颗种子时会更大。⛔ 两者别当成同一个数。"""
+    pool_size = len({c for c in seed.member_codes if c}) or None
+    rank_of = _gate_attr(ctx, "industry_rank") or {}
+    sdays_of = _gate_attr(ctx, "strength_days_5d") or {}
+    available = bool(_gate_attr(ctx, "industry_available", False))
+    window = int(_gate_attr(ctx, "strength_days_window", 0) or 0)
+    inds = sorted({ctx.industry_of.get(c) for c in seed.member_codes
+                   if ctx.industry_of.get(c)})
+    if not inds:
+        return "**本次未取得**(该种子成员无行业归属)"
+    parts: List[str] = []
+    for ind in inds:
+        rank = rank_of.get(ind)
+        rank_s = str(rank) if (available and rank is not None) else "未取到"
+        days_s = str(sdays_of.get(ind, 0)) if window > 0 else "未取到"
+        parts.append(f"{ind}(行业强度名次 {rank_s}、近5日强度日 {days_s})")
+    line = "、".join(parts)
+    line += f";该种子原始成分数 {pool_size if pool_size is not None else '未取到'}"
     return line
 
 
@@ -1514,6 +1705,27 @@ def _parse_core_verdict(
     )
 
 
+def _parse_market_verdict(raw: Mapping[str, Any], *, name: str) -> Tuple[str, str]:
+    """篮子项 → `(market_verdict, market_reason)`(V2.3.2-①-C,裁定 1)。
+
+    **同一个解析器**(`_parse_member_verdict`),只换兜底值:这两关缺席兜底成
+    **空串 = 判不出**,⛔ 不是 `weak` —— 见本文件 ①-C 那段 ⚠ 的理由。"""
+    return _parse_member_verdict(
+        raw, field_prefix="market", verdicts=MARKET_VERDICTS,
+        fallback=MARKET_VERDICT_FALLBACK, fallback_reason=MARKET_REASON_FALLBACK,
+        code="(篮子级)", name=name,
+    )
+
+
+def _parse_sector_verdict(raw: Mapping[str, Any], *, name: str) -> Tuple[str, str]:
+    """篮子项 → `(sector_verdict, sector_reason)`(V2.3.2-①-C,裁定 1)。"""
+    return _parse_member_verdict(
+        raw, field_prefix="sector", verdicts=SECTOR_VERDICTS,
+        fallback=SECTOR_VERDICT_FALLBACK, fallback_reason=SECTOR_REASON_FALLBACK,
+        code="(篮子级)", name=name,
+    )
+
+
 def _gate_proposal(
     proposal: Any,
     *,
@@ -1672,6 +1884,11 @@ def _gate_proposal(
     else:
         evidence_conflicts = str(conflicts_raw or "").strip()
 
+    # —— V2.3.2-①-C:市场关 / 板块关的篮子级三值(缺失/写错**不拒收**,同上一条纪律;
+    # 兜底是空串「判不出」,后果由 gates.py 按 `available=False + blocks_t1` 处理)——
+    market_verdict, market_reason = _parse_market_verdict(raw, name=name)
+    sector_verdict, sector_reason = _parse_sector_verdict(raw, name=name)
+
     return BasketCandidate(
         trade_date=trade_date_s,
         basket_key=basket_key,
@@ -1702,6 +1919,8 @@ def _gate_proposal(
         persistence=str(raw.get("persistence") or "").strip(),
         strengthen_and_invalidate=str(raw.get("strengthen_and_invalidate") or "").strip(),
         evidence_conflicts=evidence_conflicts,
+        market_verdict=market_verdict, market_reason=market_reason,
+        sector_verdict=sector_verdict, sector_reason=sector_reason,
     ), None
 
 
@@ -1859,8 +2078,16 @@ def aggregate_baskets(
     ledger: Optional[BudgetLedger] = None,
     transport: Optional[Any] = None,
     max_seeds: int = MAX_SEEDS_AGGREGATED,
+    gate_context: Optional[Any] = None,
 ) -> AggregateResult:
     """驱动聚合层唯一编排入口:种子 → (检索段 → 推理段) → 两道机械闸 → 篮子候选。
+
+    `gate_context`(V2.3.2-①-C):调用方先 `gates.build_gate_context(...)` 拿到的那个
+    对象,注入后 ⑤ 的 prompt 用它出市场关 / 板块关读数,**⑥ 再把同一个对象传给
+    `gates.evaluate_day(context=...)`** —— 🔴 模型看到的读数与关口用的读数必须是**同
+    一份对象**,⛔ 不许 ⑤ 里另读一遍表(那会存下"事后那一份",留痕就白留了)。
+    **鸭子类型接收**:本模块 ⛔ 不 import `gates`(会成环)。不传 = 这两关的读数段
+    如实写「本次未取得」,判定按「判不出」处理(不拦但不给 T1)。
 
     **永不抛异常**(§五铁律:任何一段异常都不许让当日无报告)——最坏情况返回一个
     空篮子集 + 如实的 `notes`。
@@ -1896,6 +2123,7 @@ def aggregate_baskets(
         ledger = ledger or BudgetLedger()
         all_codes = sorted({c for s in seeds for c in s.member_codes})
         ctx = build_mech_context(trade_date, all_codes, db_path=db_path, parquet_dir=parquet_dir)
+        ctx.gate_ctx = gate_context      # ①-C:⑤ 与 ⑥ 吃**同一份** GateContext
 
         # —— ⑤-b(2026-08-02 planner 裁定):成员卫生线闸 —————————————————
         # 落点定死在"装配给 LLM 看的成员清单"之前(`MAX_MEMBERS_IN_CONTEXT` 截断
@@ -2100,6 +2328,11 @@ __all__ = [
     "POSITION_VERDICT_FALLBACK", "POSITION_REASON_FALLBACK",
     "CORE_OK", "CORE_WEAK", "CORE_UNFIT", "CORE_VERDICTS",
     "CORE_VERDICT_FALLBACK", "CORE_REASON_FALLBACK",
+    "MARKET_OK", "MARKET_WEAK", "MARKET_UNFIT", "MARKET_VERDICTS",
+    "MARKET_VERDICT_FALLBACK", "MARKET_REASON_FALLBACK",
+    "SECTOR_OK", "SECTOR_WEAK", "SECTOR_UNFIT", "SECTOR_VERDICTS",
+    "SECTOR_VERDICT_FALLBACK", "SECTOR_REASON_FALLBACK",
+    "K8_MARKET_CRITERIA", "K8_SECTOR_CRITERIA", "K8_GATE_ENFORCEMENT_RULES",
     "K8_CORE_CRITERIA", "CORE_METRIC_GROUPS", "CORE_METRIC_KEYS",
     "resolve_core_metrics",
     "EvidenceItem",

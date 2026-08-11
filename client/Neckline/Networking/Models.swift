@@ -1139,6 +1139,11 @@ func nkDroppedReasonLabel(_ raw: String) -> String {
     case "position_unfit": return "位置关判定不合适 · 落地起跳位置不对(非硬否决)"
     // 🔴 裁定 #12:核心关同款交 LLM。「不是龙头」≠「这票不行」。
     case "core_unfit": return "核心关判定不是龙头 · 同行业里不占核心地位(非硬否决)"
+    // 🔴 V2.3.2-①:市场关 / 板块关里**未经用户确认的阈值**已退出机械硬否决、降为
+    // 证据输入,判定交 LLM。⚠ 与上面的 `mech_gate_rejected` **别读成一回事**:
+    // 那个是「客观量没过一道确认过的硬门」,这两个是「模型看了读数觉得环境不适配」。
+    case "market_unfit": return "市场关判定不适配 · 大盘环境与该引擎不合(非硬否决)"
+    case "sector_unfit": return "板块关判定不适配 · 板块状态撑不住这个篮子(非硬否决)"
     case "members_all_removed": return "成员级机械关对拍后成员全部出篮"
     // 🔴 下面两码是**系统缺席**,不是市场结论 —— ⛔ 别读成「今天没好票」。
     case "no_active_engine": return "无运行中的引擎线 · 系统缺席(不是市场结论)"

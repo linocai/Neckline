@@ -127,7 +127,12 @@ def _member(code: str, *, industry: Optional[str] = None,
 
 def _basket(key: str, members, *, name: str = "篮", engine: Optional[str] = None,
             evidence=_EV3, evidence_status: str = ag.EVIDENCE_OK,
-            answers: bool = True, pool: Optional[int] = 8) -> ag.BasketCandidate:
+            answers: bool = True, pool: Optional[int] = 8,
+            market: Optional[str] = None, sector: Optional[str] = None,
+            market_reason: str = "", sector_reason: str = "") -> ag.BasketCandidate:
+    """⚠ V2.3.2-①-C:`market` / `sector` = ⑤ 那一次调用带回的**篮子级**三值。
+    `None` = 模型压根没给 → 下游必须按「判不出」处理(不拦但不给 T1),
+    ⛔ **不是** ok、⛔ 也不像位置/核心关那样兜成 weak。"""
     return ag.BasketCandidate(
         trade_date=D0_S, basket_key=key, name=name, driver="共同驱动",
         driver_kind="theme", why_now="为什么是现在" if answers else "",
@@ -139,6 +144,8 @@ def _basket(key: str, members, *, name: str = "篮", engine: Optional[str] = Non
         persistence="逻辑持续性" if answers else "",
         strengthen_and_invalidate="强化与证伪" if answers else "",
         aux={"seed_pool_size": pool} if pool is not None else {},
+        market_verdict=market or "", market_reason=market_reason,
+        sector_verdict=sector or "", sector_reason=sector_reason,
     )
 
 
@@ -160,6 +167,24 @@ def _insert_regime(db_path: Path, regime: str, *, breadth_pctile=None) -> None:
             "VALUES (?,?,?,?,?,?,?,?)",
             (D0_S, regime, "test", json.dumps(inputs), "[]", "[]", "K8-V0.5", "now"),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _insert_stage(db_path: Path, stage_by_industry: Dict[str, str]) -> None:
+    """`industry_stage_daily` 一行(体例照 `test_selection_tier.py::_insert_stage`)。"""
+    from neckline.db import init_schema
+
+    init_schema(db_path=db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        for industry, st in stage_by_industry.items():
+            conn.execute(
+                f"INSERT OR REPLACE INTO {stage_mod.TABLE} ({stage_mod._COLUMNS}) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (D0_S, industry, st, 1, 2, 3, 20, "测试行", stage_mod.SPEC_FINGERPRINT, "now"),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -243,12 +268,40 @@ class TestMarketGate:
         assert c.available is False and c.blocks_t1 is True
         assert c.reason == "missing:market_regime"
 
-    def test_c1_high_divergence_breadth_below_threshold_rejects(self, isolated_env):
+    def test_c1_high_divergence_breadth_below_threshold_no_longer_rejects(self, isolated_env):
+        """🔴 **V2.3.2-①-B 改判**(策略线裁定 1,用户已确认):
+        `C1.market.high_divergence_min_breadth_pctile` 的 `provenance.source` 是
+        `engineering_v1 + calibration=pending` —— **未经用户确认的阈值不得机械硬否决**,
+        降为证据输入,判定交 LLM。⛔ 不得改回 reject(恢复的唯一通道 = 裁定 6 的七项
+        提交 → 用户确认 → 新引擎版本)。
+
+        这里没给 LLM 三值 → 「判不出」:不拦,但不给 T1。"""
         _insert_regime(isolated_env.db_path, "high_divergence", breadth_pctile=0.40)
         c = gt._market_gate(C1, _ctx(isolated_env, []), [])
-        assert c.verdict == gt.VERDICT_REJECT
+        assert c.verdict != gt.VERDICT_REJECT
+        assert c.verdict == gt.VERDICT_PASS
+        assert c.available is False and c.blocks_t1 is True
         assert c.score == pytest.approx(0.40) and c.threshold == pytest.approx(0.60)
-        assert "breadth_pctile" in c.reason      # ③b「差多少」数值内嵌
+        assert "breadth_pctile" in c.reason      # ③b「差多少」数值仍然内嵌
+        assert "missing:market_verdict" in c.reason
+
+    @pytest.mark.parametrize("verdict,expected,unfit", [
+        (ag.MARKET_OK, gt.VERDICT_PASS, False),
+        (ag.MARKET_WEAK, gt.VERDICT_DEGRADE, False),
+        (ag.MARKET_UNFIT, gt.VERDICT_DEGRADE, True),
+    ])
+    def test_evidence_threshold_verdict_comes_from_the_llm(self, isolated_env, verdict,
+                                                           expected, unfit):
+        """①-C 三值后果(与位置关 / 核心关逐字相同):`ok` 过 / `weak` 降一档 /
+        `unfit` 退出正式候选。🔴 **`verdict` 永不为 `reject`** —— 「退出」发生在定档层。"""
+        _insert_regime(isolated_env.db_path, "high_divergence", breadth_pctile=0.40)
+        b = _basket("k1", [_member("600001.SH")], engine="C", market=verdict,
+                    market_reason="大盘广度撑不住这个引擎")
+        c = gt._market_gate(C1, _ctx(isolated_env, []), [], basket=b)
+        assert c.verdict == expected
+        assert c.verdict != gt.VERDICT_REJECT
+        assert gt._gate_unfit(c) is unfit
+        assert "大盘广度撑不住这个引擎" in c.reason
 
     def test_c1_high_divergence_breadth_above_threshold_passes(self, isolated_env):
         _insert_regime(isolated_env.db_path, "high_divergence", breadth_pctile=0.75)
@@ -299,22 +352,73 @@ class TestSectorGate:
         assert c.verdict == gt.VERDICT_REJECT
         assert c.score == 30.0 and c.threshold == 10.0
 
-    def test_c1_not_enough_strength_days_rejects(self, isolated_env):
+    def test_c1_not_enough_strength_days_no_longer_rejects(self, isolated_env):
+        """🔴 **V2.3.2-①-B 改判**(裁定 1):`C1.sector.strength_days_min_5d` 是
+        `engineering_v1 + pending` → 退出机械硬否决,判定交 LLM。⛔ 不得改回。"""
         self._seed_strength(isolated_env, rank=3, strength=False)
         c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8)
-        assert c.verdict == gt.VERDICT_REJECT
+        assert c.verdict != gt.VERDICT_REJECT
+        assert c.available is False and c.blocks_t1 is True
         assert "strength_days" in c.reason
+        assert "missing:sector_verdict" in c.reason
+
+    def test_c1_strength_days_miss_is_judged_by_the_llm_when_it_answers(self, isolated_env):
+        self._seed_strength(isolated_env, rank=3, strength=False)
+        b = _basket("k1", [_member("600001.SH")], engine="C", sector=ag.SECTOR_OK,
+                    sector_reason="板块刚启动,强度日还没积累出来")
+        c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8, basket=b)
+        assert c.verdict == gt.VERDICT_PASS and c.available and not c.blocks_t1
+        assert "板块刚启动" in c.reason
+
+    def test_audited_rank_gate_still_hard_rejects_even_with_an_ok_verdict(self, isolated_env):
+        """🔴 **反向守门(已拍板 #3)**:`C1.sector.industry_rank_max` 的
+        `provenance.source` 是 `audited` → **继续机械硬否决**,⛔ LLM 说 `ok` 也翻不了案。
+        这条与上面那条一起,正是 ①-A「按 source 二分」的正反两面。"""
+        self._seed_strength(isolated_env, rank=30, strength=True)
+        b = _basket("k1", [_member("600001.SH")], engine="C", sector=ag.SECTOR_OK)
+        c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8, basket=b)
+        assert c.verdict == gt.VERDICT_REJECT
+        assert "industry_rank" in c.reason
+
+    def test_audited_stage_gate_still_hard_rejects_even_with_an_ok_verdict(self, isolated_env):
+        """同上,`Z1.sector.stage_allowed`(audited)。"""
+        ctx = _ctx(isolated_env, [], stage_of={"半导体": stage_mod.EBB}, stage_available=True)
+        b = _basket("k1", [_member("600001.SH")], engine="Z", sector=ag.SECTOR_OK)
+        c = gt._sector_gate(Z1, ctx, ["半导体"], pool_size=8, basket=b)
+        assert c.verdict == gt.VERDICT_REJECT
+        assert "stage" in c.reason
+
+    def test_audited_market_stage_gate_still_hard_rejects(self, isolated_env):
+        """同上,`Z1.market.trend_continuation_required_stages`(audited)。"""
+        _insert_regime(isolated_env.db_path, "trend_continuation")
+        ctx = _ctx(isolated_env, [], stage_of={"纺织": stage_mod.EBB}, stage_available=True)
+        b = _basket("k1", [_member("600001.SH")], engine="Z", market=ag.MARKET_OK)
+        c = gt._market_gate(Z1, ctx, ["纺织"], basket=b)
+        assert c.verdict == gt.VERDICT_REJECT
+
+    def test_hard_gate_rejection_never_skips_a_later_audited_gate(self, isolated_env):
+        """🔴 evidence 项没过时**记账不早退**:否则它后面那道 audited 硬门会被跳过去
+        —— 那是把一道该拦的关悄悄关掉(比不改还糟)。这里 Z1 的簇成员数(evidence)
+        不够 **且** 阶段态(audited)不合 → 必须仍然是硬否决。"""
+        ctx = _ctx(isolated_env, [], stage_of={"半导体": stage_mod.EBB}, stage_available=True)
+        b = _basket("k1", [_member("600001.SH")], engine="Z", sector=ag.SECTOR_OK)
+        c = gt._sector_gate(Z1, ctx, ["半导体"], pool_size=1, basket=b)
+        assert c.verdict == gt.VERDICT_REJECT
+        assert "stage" in c.reason
 
     def test_no_strength_table_bars_t1_not_reject(self, isolated_env):
         c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8)
         assert c.verdict == gt.VERDICT_PASS and c.available is False and c.blocks_t1
 
-    def test_z1_cluster_too_small_rejects(self, isolated_env):
+    def test_z1_cluster_too_small_no_longer_rejects(self, isolated_env):
+        """🔴 **V2.3.2-①-B 改判**(裁定 1):`Z1.sector.cluster_members_min` 是
+        `engineering_v1 + pending` → 退出机械硬否决,判定交 LLM。⛔ 不得改回。"""
         ctx = _ctx(isolated_env, [], stage_of={"半导体": stage_mod.IGNITION},
                    stage_available=True)
         c = gt._sector_gate(Z1, ctx, ["半导体"], pool_size=2)
-        assert c.verdict == gt.VERDICT_REJECT
-        assert c.score == 2.0 and c.threshold == 3.0
+        assert c.verdict != gt.VERDICT_REJECT
+        assert c.available is False and c.blocks_t1 is True
+        assert "cluster_members" in c.reason
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -572,15 +676,22 @@ class TestEvaluateDay:
 
     def test_mech_gate_reject_is_a_hard_veto(self, isolated_env):
         """机械关 reject → 硬否决(③-A 正向);证据关同场景只降级(反向在
-        TestEvidenceClassGates 与 tier 测里锁)。"""
+        TestEvidenceClassGates 与 tier 测里锁)。
+
+        ⚠ **V2.3.2-①-B 后本条换了抓手**:原来用 C1 高位分歧广度分位构造,那条阈值
+        已按裁定 1 退出硬否决 —— 改用**仍然 audited** 的 `C1.sector.industry_rank_max`
+        (已拍板 #3)。⛔ 别把抓手换回任何 `engineering_v1` 的阈值。"""
         env = isolated_env
-        _insert_regime(env.db_path, "high_divergence", breadth_pctile=0.10)   # C1 → reject
-        r = _agg([_basket("k1", [_member("600001.SH")], engine="C")])
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength_days(env.db_path, days, {"半导体": 30}, {"半导体": True})
+        _insert_regime(env.db_path, "trend_continuation")
+        r = _agg([_basket("k1", [_member("600001.SH", industry="半导体")], engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         s = out.summaries["k1"]
         assert s.excluded and s.exclusion_reason == gt.EXCLUDE_MECH_GATE_REJECTED
-        assert s.stuck_gate == gt.GATE_MARKET
-        assert "breadth_pctile" in (s.stuck_detail or "")
+        assert s.stuck_gate == gt.GATE_SECTOR
+        assert "industry_rank" in (s.stuck_detail or "")
         assert out.result.baskets == ()
 
     def test_evidence_degrade_does_not_exclude_at_gate_level(self, isolated_env):
@@ -653,18 +764,23 @@ class TestGateEvaluationsTable:
         assert len(rows) == 12
 
     def test_rejected_candidates_leave_rows_too(self, isolated_env):
-        """硬否决的候选**恰恰最需要留痕**(③b 与 ④ 归因的原料)。"""
+        """硬否决的候选**恰恰最需要留痕**(③b 与 ④ 归因的原料)。
+
+        ⚠ 抓手同上,V2.3.2-①-B 后换成仍然 audited 的 `sector.industry_rank_max`。"""
         env = isolated_env
-        _insert_regime(env.db_path, "high_divergence", breadth_pctile=0.10)
-        r = _agg([_basket("k1", [_member("600001.SH")], engine="C")])
+        days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
+        insert_trade_cal(env, days)
+        _insert_strength_days(env.db_path, days, {"半导体": 30}, {"半导体": True})
+        _insert_regime(env.db_path, "trend_continuation")
+        r = _agg([_basket("k1", [_member("600001.SH", industry="半导体")], engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         assert out.result.baskets == ()
         gt.save_gate_evaluations(out, db_path=env.db_path)
         rows = gt.load_gate_evaluations(D0, db_path=env.db_path, candidate_key="k1")
-        market = [r0 for r0 in rows if r0["gate"] == gt.GATE_MARKET]
-        assert market and market[0]["verdict"] == gt.VERDICT_REJECT
-        assert market[0]["score"] == pytest.approx(0.10)
-        assert market[0]["threshold"] == pytest.approx(0.60)
+        sector = [r0 for r0 in rows if r0["gate"] == gt.GATE_SECTOR]
+        assert sector and sector[0]["verdict"] == gt.VERDICT_REJECT
+        assert sector[0]["score"] == pytest.approx(30.0)
+        assert sector[0]["threshold"] == pytest.approx(10.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -698,14 +814,19 @@ class TestHighScoreCannotBeatTheGates:
         assert hit.mech_score is not None and hit.mech_score >= 0.4   # 分数不低,仍然出局
 
     def test_market_gate_rejection_is_also_a_hard_veto_regardless_of_score(self, isolated_env):
-        """第二个抓手(市场关):C1 在高位分歧下广度分位不够 → 硬否决。"""
+        """第二个抓手(市场关):Z1 在趋势延续下行业阶段不在允许集 → 硬否决。
+
+        ⚠ **V2.3.2-①-B 后换了抓手**:原来用 C1 高位分歧广度分位,那条已按裁定 1
+        退出硬否决;改用仍然 audited 的 `Z1.market.trend_continuation_required_stages`
+        (已拍板 #3)。⛔ 别换回任何 `engineering_v1` 的阈值。"""
         env = isolated_env
         days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
         insert_trade_cal(env, days)
         _insert_strength_days(env.db_path, days, {"半导体": 1}, {"半导体": True})
-        _insert_regime(env.db_path, "high_divergence", breadth_pctile=0.10)
+        _insert_regime(env.db_path, "trend_continuation")
+        _insert_stage(env.db_path, {"半导体": stage_mod.EBB})
         r = _agg([_basket("k-hot", [_member("600001.SH", industry="半导体", rs_rank=1)],
-                          engine="C", name="高分候选")])
+                          engine="Z", name="高分候选")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         res = ti.score_and_tier(r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir,
                                 pack=_pack("K7-pack.json"), gates_outcome=out)

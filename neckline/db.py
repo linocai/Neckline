@@ -1283,6 +1283,43 @@ CREATE TABLE IF NOT EXISTS trade_clock_events (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_trade_clock_events ON trade_clock_events(trade_clock_id, event_date);
+
+-- ═══ V2.3.2-①-D 阈值影子台账(策略线裁定 5 的落点),**append-only** ═══════════
+-- 「这条**待定**阈值若按硬门跑,本可通过 / 本可否决」的逐候选逐阈值留痕。
+-- 唯一写入实现 `neckline/selection/threshold_shadow.py`(零 UPDATE / 零 DELETE /
+-- 零 INSERT OR REPLACE;同日重跑 = 追加新批次,`created_at` 区分)。
+--
+-- 🔴 **⛔ 不许拿它回写当时的正式选股结论**(裁定 5):本表只增不改、只读不写回
+-- `baskets` / `tier_history` / `basket_cards` / `selection_clock`。
+--
+-- ⚠ **与「OUT 研究影子对照」(`out_shadow_daily`)是两件完全不同的事,⛔ 不许混名**:
+--   · 本表单位 = 候选 × 阈值键,问「这条阈值该不该恢复成硬门」;
+--   · 那张表单位 = OUT 票 × D1,问「被判 OUT 的票是不是被错杀」。
+--
+-- ⚠ 只对 `enforcement=evidence` 的阈值出行;`audited` 那四项的判定已在
+--   `gate_evaluations` 里,再写一份 = 两个事实源。
+-- ⚠ `unavailable_reason` 以 `not_applicable:` 开头 = 该规则今天**不适用**(如
+--   `high_divergence_min_breadth_pctile` 只在高位分歧态适用),**不是缺数** ——
+--   ①-E 出通过率时按适用域取分母,⛔ 不拿全体候选把它稀释成一个好看的数。
+CREATE TABLE IF NOT EXISTS threshold_shadow_evals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_date TEXT NOT NULL,
+  candidate_key TEXT NOT NULL,       -- = baskets.basket_key(进关之前的召回候选)
+  engine_code TEXT,
+  engine_version TEXT,
+  skeleton_version TEXT,
+  threshold_key TEXT NOT NULL,       -- `<gate>.<key>` 全称,如 sector.cluster_members_min
+  reading REAL,                      -- 机械读数(类别型阈值恒 NULL)
+  threshold_value REAL,              -- 门槛值(类别型阈值恒 NULL)
+  would_pass INTEGER,                -- 1/0 = 若按硬门跑的拟判;NULL = 算不出或不适用
+  unavailable_reason TEXT NOT NULL DEFAULT '',
+  llm_verdict TEXT,                  -- 该关 evidence 半边的 LLM 三值(ok|weak|unfit;NULL = 没给)
+  regime TEXT,                       -- D0 行情状态(适用域分母靠它,NULL = 当日无行)
+  final_tier INTEGER,                -- 该候选当日最终定档(1/2;NULL = OUT / 未定档)
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_threshold_shadow_day
+  ON threshold_shadow_evals(trade_date, threshold_key);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

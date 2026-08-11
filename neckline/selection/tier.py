@@ -278,6 +278,13 @@ DROP_POSITION_UNFIT = "position_unfit"
 # 完全不同的复盘结论,合并成一个"未入选"就把 ④ 周度按关口归因的分辨率抹平了。
 # ⛔ 同样**不是硬否决**:票就在 ③b 里,逐条写明是哪只成员、模型的理由是什么。
 DROP_CORE_UNFIT = "core_unfit"
+# 🔴 V2.3.2-①-C(策略线裁定 1):市场关 / 板块关的 **evidence 半边**被 LLM 判 `unfit`
+# → 退出正式候选。⚠ 与 `DROP_MECH_GATE_REJECTED`(= `gates.EXCLUDE_MECH_GATE_REJECTED`)
+# **刻意分开**:后者是「客观量没过一道经用户确认的硬门」,这两个是「模型看了读数觉得
+# 这个大盘 / 板块环境不适配」—— ④ 按码归因要分得开(前者指向"尺子",后者指向"判断")。
+# ⛔ 同样**不是机械除名**:关口层 `verdict` 永不为 `reject`,「退出」发生在定档层。
+DROP_MARKET_UNFIT = "market_unfit"
+DROP_SECTOR_UNFIT = "sector_unfit"
 # gates 侧的四个除名码(硬否决 / 引擎归属失败)直接沿用 `gates.EXCLUDE_*` 字面,
 # `DroppedBasket.reason` 与 ③b/⑨ 消费同一套码,⛔ 不在这里再抄一份字符串。
 # ⚠ 各码指向**不同的市场/系统结论**,⛔ 不许合并成一个"未入选"(⑥-b-C 纪律扩容)。
@@ -988,6 +995,18 @@ def _gate_breakdown(summary: Any) -> Dict[str, Any]:
             for c in summary.checks
             if c.gate == gates_mod.GATE_POSITION and c.ts_code
         },
+        # 🔴 V2.3.2-①-C:市场关 / 板块关的 evidence 半边同款(判定是模型输出)。
+        # ⚠ 篮子级,故只有一个三值、没有逐票映射。
+        "market_unfit": bool(getattr(summary, "market_unfit", False)),
+        "market_verdict": next(
+            ((c.evidence or {}).get("market_verdict") for c in summary.checks
+             if c.gate == gates_mod.GATE_MARKET and (c.evidence or {}).get("market_verdict")),
+            None),
+        "sector_unfit": bool(getattr(summary, "sector_unfit", False)),
+        "sector_verdict": next(
+            ((c.evidence or {}).get("sector_verdict") for c in summary.checks
+             if c.gate == gates_mod.GATE_SECTOR and (c.evidence or {}).get("sector_verdict")),
+            None),
         # 🔴 裁定 #12:核心关同款(判定是模型输出而不是可回放的数字)。
         "core_unfit": bool(getattr(summary, "core_unfit", False)),
         "core_verdicts": {
@@ -1141,11 +1160,28 @@ def score_and_tier(
             ))
             continue
         if not s.t2_eligible:
-            # 🔴 裁定 #11/#12:核心关 `unfit`、位置关 `unfit`、「证据关降级超上限」
-            # 是**三种**不同的出局,⛔ 不合并(④ 周度按关口归因要分得开)。两个
-            # 成员级判定优先于"降级处数超了"—— 它们说得清卡在**哪一只**成员上;
-            # 两者同时 unfit 时按 `GATE_ORDER` 报靠前的那一关(④核心 在 ⑤位置 之前),
+            # 🔴 裁定 #11/#12 + V2.3.2-①-C:市场关 / 板块关 / 核心关 / 位置关四个
+            # `unfit`,加上「证据关降级超上限」,是**五种**不同的出局,⛔ 不合并
+            # (④ 周度按关口归因要分得开)。四个具名判定优先于"降级处数超了"——
+            # 它们说得清卡在**哪一关 / 哪一只成员**上;多个同时 unfit 时按
+            # `GATE_ORDER` 报靠前的那一关(①市场 → ③板块 → ④核心 → ⑤位置),
             # 纯确定性,⛔ 不按"谁更重要"拍脑袋。
+            if getattr(s, "market_unfit", False):
+                dropped.append(DroppedBasket(
+                    basket_key=key, reason=DROP_MARKET_UNFIT,
+                    mech_score=score_by_key[key], name=b.name,
+                    gate=gates_mod.GATE_MARKET,
+                    gate_detail=(s.market_unfit_detail or "市场关判定 unfit"),
+                ))
+                continue
+            if getattr(s, "sector_unfit", False):
+                dropped.append(DroppedBasket(
+                    basket_key=key, reason=DROP_SECTOR_UNFIT,
+                    mech_score=score_by_key[key], name=b.name,
+                    gate=gates_mod.GATE_SECTOR,
+                    gate_detail=(s.sector_unfit_detail or "板块关判定 unfit"),
+                ))
+                continue
             if getattr(s, "core_unfit", False):
                 dropped.append(DroppedBasket(
                     basket_key=key, reason=DROP_CORE_UNFIT,
@@ -1415,6 +1451,8 @@ __all__ = [
     "DROP_EVIDENCE_DEGRADED_OUT",
     "DROP_POSITION_UNFIT",
     "DROP_CORE_UNFIT",
+    "DROP_MARKET_UNFIT",
+    "DROP_SECTOR_UNFIT",
     "T1_DEMOTED_PLAN_INCOMPLETE",
     "FLAG_SECTOR_MISSING",
     "FLAG_STAGE_MISSING",

@@ -82,12 +82,15 @@ def _agg(baskets) -> ag.AggregateResult:
                               pack_version="K8-V0.5", charter_version="v1.3.3")
 
 
-def _seed_t1_world(env) -> None:
-    """把 C1 六关全过 + T1 资格所需的机械世界一次喂齐。"""
+def _seed_t1_world(env, *, industry_rank: int = 1) -> None:
+    """把 C1 六关全过 + T1 资格所需的机械世界一次喂齐。
+
+    `industry_rank`:调大到 `> C1.sector.industry_rank_max`(=10)即可构造一次
+    **仍然有效的机械硬否决**(该阈值 `provenance.source=audited`,已拍板 #3)。"""
     _activate_all_lines(env.db_path)
     days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
     insert_trade_cal(env, days)
-    _insert_strength_days(env.db_path, days, {"半导体": 1}, {"半导体": True})
+    _insert_strength_days(env.db_path, days, {"半导体": industry_rank}, {"半导体": True})
     _insert_regime(env.db_path, "trend_continuation")
     # 卡的机械锚(收盘 + 涨跌停)。⚠ **两样缺一不可**:
     #   · `stock_basic` —— `basket_card.build_member_mech` 经 `load_stock_meta` 取
@@ -206,21 +209,23 @@ class TestGatedEveningFlow:
         """机械关硬否决的候选:不落 `baskets`、进返回的 dropped(③b)与跨进程
         交接表 —— **没消失**。
 
-        ⚠ 裁定 #11 后**位置关不再硬否决**,这条改用市场关构造(C1 在高位分歧下
-        广度分位不够 → reject)。"""
+        ⚠ 裁定 #11 后**位置关不再硬否决**,这条曾改用市场关广度分位构造;
+        ⚠ **V2.3.2-①-B 后再换一次**:广度分位那条也已按裁定 1 退出硬否决 ——
+        改用仍然 `audited` 的 `C1.sector.industry_rank_max`(已拍板 #3)。
+        ⛔ 别把抓手换回任何 `engineering_v1` 的阈值。"""
         env = isolated_env
         _activate_all_lines(env.db_path)
-        _insert_regime(env.db_path, "high_divergence", breadth_pctile=0.10)
-        dropped, _stats, _notes = _run_segment(env, _agg([_basket(name="弱广度篮")]),
+        _seed_t1_world(env, industry_rank=30)
+        dropped, _stats, _notes = _run_segment(env, _agg([_basket(name="弱板块篮")]),
                                                monkeypatch, use_llm=False)
         assert [d.reason for d in dropped] == [gt.EXCLUDE_MECH_GATE_REJECTED]
-        assert dropped[0].gate == gt.GATE_MARKET and dropped[0].name == "弱广度篮"
+        assert dropped[0].gate == gt.GATE_SECTOR and dropped[0].name == "弱板块篮"
         assert _rows(env.db_path, "SELECT COUNT(*) FROM baskets")[0][0] == 0
         from neckline.selection.basket_dropped_handoff import load_dropped_handoff
 
         back = load_dropped_handoff(D0, db_path=env.db_path)
         assert back is not None and back[0].reason == gt.EXCLUDE_MECH_GATE_REJECTED
-        assert back[0].gate == gt.GATE_MARKET and back[0].name == "弱广度篮"
+        assert back[0].gate == gt.GATE_SECTOR and back[0].name == "弱板块篮"
 
     def test_position_unfit_basket_exits_candidacy_but_lands_in_3b(self, isolated_env,
                                                                    monkeypatch):

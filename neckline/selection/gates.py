@@ -26,6 +26,25 @@
 线**,含「行业内前 X%」这类,用户明确否决),判定交 LLM(⛔ 只降级不除名)。簇内
 `rs_rank` **降级为补充读数,缺席不挡任何档**。
 
+🔴 **2026-08-11 策略线裁定 1(V2.3.2-①):市场关 / 板块关自此是"半机械半证据"的**
+—— 二分不再按「关」走,而是按**该关的每一个阈值叶子**走:
+
+    provenance.source == "audited"  → hard      机械硬否决(行为一字不改)
+    其余(engineering_v1 等)        → evidence  机械只出读数 + 拟判影子,判定交 LLM
+
+唯一实现 `enforcement_of()`(⛔ 全仓不许有第二处,AST 守门)。**本版实际改判三项**:
+`C1.market.high_divergence_min_breadth_pctile` · `C1.sector.strength_days_min_5d` ·
+`Z1.sector.cluster_members_min` —— 它们**不再 reject**,verdict 由 ⑤ 那一次调用顺带
+产出的篮子级三值(`market_verdict` / `sector_verdict`)决定,后果与位置关 / 核心关
+**逐字相同**(`ok` 过 / `weak` 降一档 / `unfit` 退出正式候选但仍在 ③b 列名)。
+**四项 audited 继续硬否决**(裁定 2 / 已拍板 #3):`C1/Y1.sector.industry_rank_max`、
+`Z1.market.trend_continuation_required_stages`、`Z1.sector.stage_allowed`。
+⚠ `market.primary_regimes` 与 `C1.market.rotation_confirmed_blocks_t1` 本就只降级
+(`PASS + blocks_t1`),**本版零改动**(已拍板 #4)。
+⛔ **不得把任何一关改回机械硬否决**,包括"顺手补一条及格线" —— 恢复的唯一通道 =
+裁定 6 的七项提交 → 用户确认 → **新引擎版本**里改 provenance(零自动升级)。
+⚠ 第 4 锁「LLM 不做闸门」仍然完好:`verdict` 永不为 `reject`,「退出」发生在定档层。
+
 **「退出正式候选」≠「从报告里消失」**(§2.9-C-2):被本模块除名的候选一律进
 `TierResult.dropped` → 报告 ③b(名 / 分 / 卡在哪一关、差多少 / 原因码)。
 
@@ -100,15 +119,21 @@ from neckline.scan import stage as stage_mod
 from neckline.scan.regime import SKELETON_VERSION_FALLBACK
 from neckline.scan.regime_store import load_market_regime
 # 位置关三值的**唯一源**在 ⑤(判定就发生在那一次调用里),这里只消费,⛔ 不抄第二份。
+# 🆕 V2.3.2-①-C:市场关 / 板块关的**篮子级**三值同源同构(与位置/核心关刻意同字面,
+# 但是四个独立判定,⛔ 不许合并、不许拿一个的兜底解释另一个)。
 from neckline.selection.aggregate import (
     CORE_OK,
     CORE_UNFIT,
     CORE_VERDICT_FALLBACK,
     CORE_VERDICTS,
+    MARKET_UNFIT,
+    MARKET_VERDICTS,
     POSITION_OK,
     POSITION_UNFIT,
     POSITION_VERDICT_FALLBACK,
     POSITION_VERDICTS,
+    SECTOR_UNFIT,
+    SECTOR_VERDICTS,
 )
 from neckline.selection.pack import Pack, get_active_engines, get_active_skeleton
 
@@ -167,6 +192,30 @@ EXCLUDE_MECH_GATE_REJECTED = "mech_gate_rejected"    # 篮子级机械关(市场
 # ⚠ 裁定 #11 后**当前没有触发源**(唯一的成员级机械关〔位置关〕已改判为证据关);
 # 码与通路保留给未来真的出现成员级机械关时用,⛔ 别据此把位置关改回硬否决。
 EXCLUDE_MEMBERS_ALL_REMOVED = "members_all_removed"  # 成员级机械关对拍后成员全部出篮
+
+# —— V2.3.2-①-A:市场关 / 板块关的**闸门模式二分**(唯一判据 = provenance.source)——
+ENFORCEMENT_HARD = "hard"          # 机械硬否决(仅 `source=audited` 的叶子)
+ENFORCEMENT_EVIDENCE = "evidence"  # 证据模式:机械只出读数 + 拟判,判定交 LLM
+PROVENANCE_SOURCE_AUDITED = "audited"
+
+# 影子台账与闸门模式判定要遍历的**市场关 / 板块关阈值键全集**(确定性序)。
+# ⚠ 必须与 `pack._ENGINE_GATE_SCHEMA` 的 market/sector 两节逐键相等 —— 守门单测正面对拍
+# (漏一个键 = 那条阈值悄悄不进影子台账,`①-E` 的通过率就少一维且**看不出来**)。
+GOVERNED_THRESHOLD_KEYS: Tuple[Tuple[str, str], ...] = (
+    (GATE_MARKET, "primary_regimes"),
+    (GATE_MARKET, "high_divergence_min_breadth_pctile"),
+    (GATE_MARKET, "rotation_confirmed_blocks_t1"),
+    (GATE_MARKET, "trend_continuation_required_stages"),
+    (GATE_SECTOR, "industry_rank_max"),
+    (GATE_SECTOR, "strength_days_min_5d"),
+    (GATE_SECTOR, "stage_allowed"),
+    (GATE_SECTOR, "cluster_members_min"),
+)
+
+# 影子行的 `unavailable_reason` 前缀:**「这条规则今天不适用」≠「算不出」**
+# (①-D 的 ⚠:`high_divergence_min_breadth_pctile` 只在高位分歧态适用,拿全体候选
+# 当分母会把它稀释成一个好看的数)。⑤-E 出通过率时按适用域分母,靠的就是这个前缀。
+NOT_APPLICABLE_PREFIX = "not_applicable:"
 
 # tier_evidence 缺键时的引擎默认(K8 §八:T1 零降级 / T2 至多一处;包里给了以包为准)。
 T1_MAX_EVIDENCE_DEGRADES_DEFAULT = 0
@@ -276,6 +325,29 @@ class MemberRemoval:
 
 
 @dataclass(frozen=True)
+class ThresholdReading:
+    """一条 **`enforcement=evidence`** 阈值叶子在本候选上的读数与拟判
+    (V2.3.2-①-D `threshold_shadow_evals` 的唯一原料;裁定 5 的落点)。
+
+    🔴 **计算与「硬门有没有先拒」完全解耦**:现行 `_sector_gate` 里
+    `strength_days_min_5d` 曾嵌在 `industry_rank_max` 通过之后的分支里 —— 照原样接线,
+    行业名次被硬门拒掉的候选就**根本不会产生强度日读数**,该条的单关通过率分母会悄悄
+    变成「名次已过的那批」,与裁定 3 写死的分母(「进入市场关、板块关**之前**的召回
+    候选或篮子」)不是同一个东西,**而且看不出来**。故读数一律由
+    `collect_threshold_readings()` 独立算一遍,硬门照旧先拒、只是读数照算照存。
+
+    `would_pass` = 该阈值**若按硬门运行**的拟判(`True`/`False`/`None`=算不出或不适用);
+    `unavailable_reason` 以 `not_applicable:` 开头 = 规则本身今天不适用(⛔ 不是缺数)。"""
+
+    threshold_key: str                       # `<gate>.<key>` 全称,如 `sector.cluster_members_min`
+    gate: str
+    reading: Optional[float] = None          # 该阈值对应的机械读数(类别型阈值恒 None)
+    threshold_value: Optional[float] = None  # 数值型阈值的门槛(类别型恒 None)
+    would_pass: Optional[bool] = None
+    unavailable_reason: str = ""
+
+
+@dataclass(frozen=True)
 class BasketGateSummary:
     """一个篮子候选的六关判定汇总(⑥ 门槛制定档的直接输入)。"""
 
@@ -307,6 +379,19 @@ class BasketGateSummary:
     # —— 「不是龙头」与「位置不对」指向完全不同的复盘结论(④ 周度按关口归因要分得开)。
     core_unfit: bool = False
     core_unfit_detail: str = ""
+    # 🆕 V2.3.2-①-C:市场关 / 板块关的 **evidence 半边**被 LLM 判 `unfit` → 该候选
+    # 退出正式候选(OUT),**仍在 ③b 列名**。⛔ 与上面两格**分开四格、不合并** ——
+    # 「大盘不适配」「板块不适配」「不是龙头」「位置不对」指向完全不同的复盘结论
+    # (④ 周度按关口归因要分得开)。⛔ 这不是机械除名:`verdict` 永不为 `reject`,
+    # 「退出」发生在定档层(`t2_eligible=False`)。
+    market_unfit: bool = False
+    market_unfit_detail: str = ""
+    sector_unfit: bool = False
+    sector_unfit_detail: str = ""
+    # 🆕 V2.3.2-①-D:本候选在**该引擎全部 evidence 阈值**上的读数与拟判(影子台账原料)。
+    # ⚠ 与 `checks` 是两件事:`checks` 是"这一关最终怎么判的",本项是"每条待定阈值
+    # 若按硬门跑本可通过/本可否决" —— 后者才是裁定 4 五项通过率的分子分母来源。
+    threshold_readings: Tuple[ThresholdReading, ...] = ()
     regime_available: bool = False
     t1_max_evidence_degrades: int = T1_MAX_EVIDENCE_DEGRADES_DEFAULT
     t2_max_evidence_degrades: int = T2_MAX_EVIDENCE_DEGRADES_DEFAULT
@@ -323,8 +408,7 @@ class BasketGateSummary:
         1.4% 的票判得出),`core_verdict = ok` 是 T1 的必要条件。"""
         return (
             not self.excluded
-            and not self.position_unfit
-            and not self.core_unfit
+            and not self.any_unfit
             and self.evidence_degrades <= self.t1_max_evidence_degrades
             and not self.degraded_gates
             and not self.blocks_t1
@@ -332,12 +416,20 @@ class BasketGateSummary:
         )
 
     @property
+    def any_unfit(self) -> bool:
+        """四个 `unfit` 标里有任意一个立起来(V2.3.2-①-C 起从两格扩到四格)。
+        ⛔ 四格**分开存**是刻意的(④ 归因要分得开),这里只做「要不要退出正式候选」
+        这一个问题的归并。"""
+        return bool(self.position_unfit or self.core_unfit
+                    or self.market_unfit or self.sector_unfit)
+
+    @property
     def t2_eligible(self) -> bool:
-        """③-D 的 T2:机械关全过 且 证据关(**含核心关 / 位置关**)降级处数 ≤ 引擎
-        T2 上限。任一成员核心或位置 `unfit` → 退出正式候选(⛔ 但票仍进 ③b,不消失)。"""
+        """③-D 的 T2:机械关全过 且 证据关(**含核心关 / 位置关 / 🆕 市场关与板块关的
+        evidence 半边**)降级处数 ≤ 引擎 T2 上限。任一 `unfit` → 退出正式候选
+        (⛔ 但票仍进 ③b,不消失)。"""
         return (not self.excluded
-                and not self.position_unfit
-                and not self.core_unfit
+                and not self.any_unfit
                 and self.evidence_degrades <= self.t2_max_evidence_degrades)
 
 
@@ -377,6 +469,32 @@ class GateContext:
     stage_of: Dict[str, str] = field(default_factory=dict)
     stage_available: bool = False
     skeleton_version: str = SKELETON_VERSION_FALLBACK
+    # 🆕 V2.3.2-①-C:三条引擎线的市场关 / 板块关**待定阈值**(`enforcement=evidence`
+    # 的那些),形状 `{engine_code: {gate: {key: value}}}`。⑤ 的 prompt 靠它明示
+    # 「本项当前是证据、不是硬门」。⛔ 只放 evidence 项 —— audited 的四项是硬门,
+    # 摊给模型看会让它以为那几条也归它判。
+    evidence_thresholds: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
+
+
+def describe_evidence_thresholds(
+    engines: Mapping[str, Pack],
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """三条引擎线的 `enforcement=evidence` 市场关 / 板块关阈值 → prompt 用的描述件。
+
+    ⚠ 判据只有 `enforcement_of()` 一处(①-A);本函数只是把它的结果按引擎摊平,
+    ⛔ 不在这里另判一次 source。"""
+    out: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for code, pk in engines.items():
+        per_gate: Dict[str, Dict[str, Any]] = {}
+        for gate, key in GOVERNED_THRESHOLD_KEYS:
+            leaf = _gate_leaf(pk, gate, key)
+            if leaf is None or enforcement_of(leaf) == ENFORCEMENT_HARD:
+                continue
+            per_gate.setdefault(gate, {})[key] = (
+                leaf.get("value") if isinstance(leaf, Mapping) else None)
+        if per_gate:
+            out[code] = per_gate
+    return out
 
 
 def build_gate_context(
@@ -386,6 +504,7 @@ def build_gate_context(
     db_path: Optional[Path] = None,
     parquet_dir: Optional[Path] = None,   # noqa: ARG001  —— 签名对齐管线;当前六关全部只读表
     skeleton: Optional[Pack] = None,
+    engines: Optional[Mapping[str, Pack]] = None,
 ) -> GateContext:
     """装配六关所需的机械数据(**只读表**,P0-23 纪律:regime / industry_strength /
     stage 全是 EOD 预计算产物,本函数零现算、零 parquet 扫描)。
@@ -453,6 +572,13 @@ def build_gate_context(
     except Exception:  # noqa: BLE001
         logger.warning("[gates] 行业阶段表读取失败,阶段分支 unavailable", exc_info=True)
 
+    # —— ①-C:待定阈值描述件(给 ⑤ 的 prompt 用;取不到只是 prompt 少一段)——
+    try:
+        eng = engines if engines is not None else get_active_engines(db_path)
+        ctx.evidence_thresholds = describe_evidence_thresholds(eng)
+    except Exception:  # noqa: BLE001
+        logger.warning("[gates] 引擎线待定阈值读取失败,⑤ prompt 少这一段", exc_info=True)
+
     return ctx
 
 
@@ -460,13 +586,52 @@ def build_gate_context(
 # 引擎阈值读取(键名契约 = pack._ENGINE_GATE_SCHEMA;缺键 = 该引擎不设这道分支)
 # ══════════════════════════════════════════════════════════════════════════
 
+def _gate_leaf(engine: Pack, section: str, key: str) -> Any:
+    """`config.engine.gates.<section>.<key>` 的**整片叶子**(含 provenance);缺键 → `None`。
+    `enforcement_of()` 要看 provenance,故与只取 `.value` 的 `_gate_value` 分开两个函数。"""
+    return ((engine.config.get("engine") or {}).get("gates") or {}).get(section, {}).get(key)
+
+
 def _gate_value(engine: Pack, section: str, key: str) -> Any:
     """`config.engine.gates.<section>.<key>.value`;缺键/形状不对 → `None`
     (闸 1 已在激活时校验过形状,这里的宽容只服务于测试替身与历史行)。"""
-    leaf = ((engine.config.get("engine") or {}).get("gates") or {}).get(section, {}).get(key)
+    leaf = _gate_leaf(engine, section, key)
     if isinstance(leaf, Mapping):
         return leaf.get("value")
     return None
+
+
+def enforcement_of(leaf: Any) -> str:
+    """一个**市场关 / 板块关**阈值叶子 → 闸门模式(V2.3.2-①-A,**全仓唯一实现**)。
+
+    🔴 **唯一判据 = `provenance.source == "audited"`**(策略线裁定 1 / 2,用户已确认):
+    `audited` → `hard`(机械硬否决,行为一字不改);其余(`engineering_v1` 等)→
+    `evidence`(机械侧只出读数 + 拟判影子,判定交 LLM,**只能降低候选等级、不能机械除名**)。
+
+    **为什么不需要第三个枚举值 / 新开关**:裁定 2 列的六条本身就是按 `source` 二分的
+    —— 四项 `audited`(`C1.sector.industry_rank_max` / `Y1.sector.industry_rank_max` /
+    `Z1.market.trend_continuation_required_stages` / `Z1.sector.stage_allowed`)留硬否决,
+    其余 `engineering_v1 + calibration=pending` 降证据。**逐条核对过、无一例外**。
+
+    🔴 **默认方向 = `evidence`**(读不到 provenance / 形状异常):误判成 evidence 的后果是
+    「多留一个候选」(吵),误判成 hard 的后果是「静默除名」(漏审)—— 方向刻意选前者。
+    ⚠ 与 `brain.stop_is_advisory` 的保守默认**方向相反**,⛔ 别抄错。
+
+    ⛔ **全仓不许有第二处按 `source` 判闸门模式的代码**(AST 守门单测扫)。
+    恢复硬否决的唯一通道 = 裁定 6 的七项提交 → 用户确认 → 在**新引擎版本**里把该叶子
+    写成 `source: audited` + `ref` 指向提交件(⛔ 零自动升级)。"""
+    if not isinstance(leaf, Mapping):
+        return ENFORCEMENT_EVIDENCE
+    prov = leaf.get("provenance")
+    if not isinstance(prov, Mapping):
+        return ENFORCEMENT_EVIDENCE
+    if str(prov.get("source") or "").strip() == PROVENANCE_SOURCE_AUDITED:
+        return ENFORCEMENT_HARD
+    return ENFORCEMENT_EVIDENCE
+
+
+def _enforcement(engine: Pack, section: str, key: str) -> str:
+    return enforcement_of(_gate_leaf(engine, section, key))
 
 
 def _tier_evidence_max(engine: Pack, tier_key: str, default: int) -> int:
@@ -487,9 +652,108 @@ def _basket_industries(members: Sequence[Any]) -> List[str]:
 # 逐关判定(纯函数,吃 GateContext + 引擎包)
 # ══════════════════════════════════════════════════════════════════════════
 
-def _market_gate(engine: Pack, ctx: GateContext, industries: Sequence[str]) -> GateCheck:
-    """① 市场关(机械):读 `market_regime_daily.regime`,按引擎 `gates.market`
-    三态分支取门槛;缺行 = 不拦但不给 T1(plan ③-B 原文)。"""
+def _regime_of(ctx: GateContext) -> Optional[str]:
+    if ctx.regime_row is None:
+        return None
+    return str(ctx.regime_row.get("regime") or "") or None
+
+
+def _best_industry_rank(ctx: GateContext, industries: Sequence[str]) -> Tuple[Optional[int], str]:
+    """本篮最好的(最小的)行业强度名次。`(None, 原因码)` = 算不出。"""
+    if not ctx.industry_available:
+        return None, "missing:industry_strength"
+    ranks = [ctx.industry_rank[i] for i in industries if i in ctx.industry_rank]
+    if not ranks:
+        return None, "missing:industry_strength"
+    return min(ranks), ""
+
+
+def _best_strength_days(ctx: GateContext, industries: Sequence[str]) -> Tuple[Optional[int], str]:
+    """本篮各行业里最高的「近 5 日强度日数」。`(None, 原因码)` = 算不出。
+
+    🔴 **口径刻意取全部成员行业、⛔ 不只取「名次已过的那批」**(①-D 的施工要求):
+    这条阈值问的是「这个篮子的板块近期强不强」,而不是「名次过了之后再看强不强」——
+    后者会让它的单关通过率分母变成名次关的子集,与裁定 3 写死的分母对不上。
+    ⚠ 同一个函数同时服务判定侧与影子侧,**一份读数一个来源**(⛔ 不许两处各算一遍)。"""
+    if ctx.strength_days_window <= 0:
+        return None, "missing:strength_days"
+    if not industries:
+        return None, "missing:strength_days"
+    return max(ctx.strength_days_5d.get(i, 0) for i in industries), ""
+
+
+def _basket_stages(ctx: GateContext, industries: Sequence[str]) -> Tuple[Tuple[str, ...], str]:
+    if not ctx.stage_available:
+        return (), "missing:industry_stage"
+    stages = tuple(sorted({s for s in (ctx.stage_of.get(i) for i in industries) if s}))
+    if not stages:
+        return (), "missing:member_industry_stage"
+    return stages, ""
+
+
+def _evidence_verdict_check(
+    gate: str, *, basket: Any, ev: Dict[str, Any], head: str,
+    score: Optional[float] = None, threshold: Optional[float] = None,
+) -> GateCheck:
+    """一条 **`enforcement=evidence`** 的阈值没过 → 判定交 ①-C 的 LLM 三值
+    (V2.3.2-①-C;⛔ **机械侧永不 reject**,裁定 1「只能降低候选等级,不能机械除名」)。
+
+    三值后果与位置关 / 核心关**逐字相同**:`ok` → 该关 pass;`weak` → `VERDICT_DEGRADE`
+    (计入 `evidence_degrades`,降一档);`unfit` → 退出正式候选(OUT),**仍在 ③b 列名**。
+
+    🔴 **LLM 没给 / 给错 / 整段解析失败 → `available=False + blocks_t1=True`**
+    (⛔ 不默认 `ok`:让模型的沉默换来 T1,等于拿"没有依据"当依据;⛔ 也不像位置 /
+    核心关那样兜底成 `weak` —— 那两关兜底成 weak 是因为**读数本身还在**、只是判定缺席,
+    这里连"这条待定阈值该不该拦"都没人答过,如实标「判不出」才诚实)。
+
+    `head` = 机器可读的读数串(③b「差多少」直接用它),数值已内嵌。"""
+    verdicts = MARKET_VERDICTS if gate == GATE_MARKET else SECTOR_VERDICTS
+    unfit_value = MARKET_UNFIT if gate == GATE_MARKET else SECTOR_UNFIT
+    raw = str(getattr(basket, f"{gate}_verdict", "") or "").strip().lower()
+    reason_text = str(getattr(basket, f"{gate}_reason", "") or "").strip()
+
+    ev = dict(ev)
+    ev.update({
+        "enforcement": ENFORCEMENT_EVIDENCE,
+        "evidence_threshold_miss": head,
+        f"{gate}_verdict_raw": raw,
+        f"{gate}_reason": reason_text,
+    })
+    if raw not in verdicts:
+        ev["verdict_missing"] = True
+        return GateCheck(gate, VERDICT_PASS, score=score, threshold=threshold,
+                         available=False, blocks_t1=True,
+                         reason=f"{head};missing:{gate}_verdict", evidence=ev)
+
+    ev[f"{gate}_verdict"] = raw
+    reason_code = f"{head};{gate}.{raw}[llm]"
+    if reason_text:
+        reason_code += f":{reason_text}"
+    if raw == (MARKET_VERDICTS[0] if gate == GATE_MARKET else SECTOR_VERDICTS[0]):  # ok
+        return GateCheck(gate, VERDICT_PASS, score=score, threshold=threshold,
+                         reason=reason_code, evidence=ev)
+    ev["unfit"] = raw == unfit_value
+    return GateCheck(gate, VERDICT_DEGRADE, score=score, threshold=threshold,
+                     blocks_t1=True, reason=reason_code, evidence=ev)
+
+
+def _gate_unfit(check: GateCheck) -> bool:
+    """该关的 evidence 半边是否被 LLM 判 `unfit`(⛔ 只看留痕,不重解析一遍)。"""
+    return bool((check.evidence or {}).get("unfit"))
+
+
+def _market_gate(
+    engine: Pack, ctx: GateContext, industries: Sequence[str], *, basket: Any = None,
+) -> GateCheck:
+    """① 市场关:读 `market_regime_daily.regime`,按引擎 `gates.market` 三态分支取门槛;
+    缺行 = 不拦但不给 T1(plan ③-B 原文)。
+
+    🔴 **V2.3.2-①-B 起本关是"半机械半证据"**:`source=audited` 的叶子
+    (`Z1.market.trend_continuation_required_stages`)继续硬否决、行为一字不动;
+    `engineering_v1` 的叶子(`high_divergence_min_breadth_pctile`)**不再 reject**,
+    改由 ①-C 的篮子级 LLM 三值裁决(`basket.market_verdict`)。
+    ⚠ `primary_regimes` 与 `rotation_confirmed_blocks_t1` 本就只降级不除名
+    (`PASS + blocks_t1`),**本版零改动**(已拍板 #4)。"""
     if ctx.regime_row is None:
         return GateCheck(GATE_MARKET, VERDICT_PASS, available=False, blocks_t1=True,
                          reason="missing:market_regime")
@@ -513,9 +777,13 @@ def _market_gate(engine: Pack, ctx: GateContext, industries: Sequence[str]) -> G
                 return GateCheck(GATE_MARKET, VERDICT_PASS, score=p, threshold=float(thr),
                                  reason=f"market.breadth_pctile={p:.4f}>={float(thr):.4f}",
                                  evidence=ev)
-            return GateCheck(GATE_MARKET, VERDICT_REJECT, score=p, threshold=float(thr),
-                             reason=f"market.breadth_pctile={p:.4f}<{float(thr):.4f}",
-                             evidence=ev)
+            head = f"market.breadth_pctile={p:.4f}<{float(thr):.4f}"
+            if _enforcement(engine, "market", "high_divergence_min_breadth_pctile") == ENFORCEMENT_HARD:
+                ev["enforcement"] = ENFORCEMENT_HARD
+                return GateCheck(GATE_MARKET, VERDICT_REJECT, score=p, threshold=float(thr),
+                                 reason=head, evidence=ev)
+            return _evidence_verdict_check(GATE_MARKET, basket=basket, ev=ev, head=head,
+                                           score=p, threshold=float(thr))
     if regime == "rotation_confirmed" and _gate_value(engine, "market", "rotation_confirmed_blocks_t1") is True:
         return GateCheck(GATE_MARKET, VERDICT_PASS, blocks_t1=True,
                          reason="market.rotation_confirmed_blocks_t1", evidence=ev)
@@ -533,9 +801,13 @@ def _market_gate(engine: Pack, ctx: GateContext, industries: Sequence[str]) -> G
             if set(stages) & set(required):
                 return GateCheck(GATE_MARKET, VERDICT_PASS,
                                  reason=f"market.stage∈{sorted(required)}", evidence=ev)
-            return GateCheck(
-                GATE_MARKET, VERDICT_REJECT,
-                reason=f"market.stage={stages}∉{sorted(required)}", evidence=ev)
+            head = f"market.stage={stages}∉{sorted(required)}"
+            # `Z1.market.trend_continuation_required_stages` 是 audited(已拍板 #3)
+            # → 继续硬否决,行为一字不动;判据仍走 `enforcement_of`,⛔ 不硬编引擎名。
+            if _enforcement(engine, "market", "trend_continuation_required_stages") == ENFORCEMENT_HARD:
+                ev["enforcement"] = ENFORCEMENT_HARD
+                return GateCheck(GATE_MARKET, VERDICT_REJECT, reason=head, evidence=ev)
+            return _evidence_verdict_check(GATE_MARKET, basket=basket, ev=ev, head=head)
 
     # 非主场且引擎包没为该态声明分支 → 不拦但不给 T1(保守方向与「缺行」一致:
     # 该引擎的主场前提不成立,但包没说要拒 —— ⛔ 不替包发明一条拒绝规则)。
@@ -545,77 +817,205 @@ def _market_gate(engine: Pack, ctx: GateContext, industries: Sequence[str]) -> G
 
 def _sector_gate(
     engine: Pack, ctx: GateContext, industries: Sequence[str], pool_size: Optional[int],
+    *, basket: Any = None,
 ) -> GateCheck:
-    """③ 板块关(机械):行业强度名次 / 近 5 日强度日 / 阶段态 / 簇成员数,按引擎
-    包声明的键逐条判(哪个键在包里,哪条就生效)。"""
+    """③ 板块关:行业强度名次 / 近 5 日强度日 / 阶段态 / 簇成员数,按引擎包声明的键
+    逐条判(哪个键在包里,哪条就生效)。
+
+    🔴 **V2.3.2-①-B 起本关是"半机械半证据"**:`source=audited` 的两项
+    (`C1/Y1.sector.industry_rank_max`、`Z1.sector.stage_allowed`)继续硬否决、行为
+    一字不动;`engineering_v1` 的两项(`strength_days_min_5d`、`cluster_members_min`)
+    **不再 reject**,改由 ①-C 的篮子级 LLM 三值裁决(`basket.sector_verdict`)。
+
+    🔴 **evidence 项一律"记账不早退"**:硬门(audited)照旧遇拒即返,但 evidence 项
+    没过时**只记进 `evidence_fails` 继续往下跑** —— 早退会把后面的 audited 硬门跳过去,
+    那是把一道该拦的关悄悄关掉(⛔ 比不改还糟)。
+    ⚠ `strength_days_min_5d` 的读数**已从 `industry_rank_max` 的通过分支里解耦出来**
+    (见 `_best_strength_days` docstring):它现在按**全部成员行业**算,与影子台账同一
+    个来源;否则它的单关通过率分母会悄悄变成「名次已过的那批」。"""
     ev: Dict[str, Any] = {"industries": list(industries), "seed_pool_size": pool_size}
     unavailable: List[str] = []
+    evidence_fails: List[str] = []
     score: Optional[float] = None
     threshold: Optional[float] = None
 
+    # —— ③-1 行业强度名次(C1=10 / Y1=30,两项均 audited → 硬否决,行为一字不动)——
     rank_max = _gate_value(engine, "sector", "industry_rank_max")
-    sdays_min = _gate_value(engine, "sector", "strength_days_min_5d")
     if isinstance(rank_max, (int, float)) and not isinstance(rank_max, bool):
-        ranks = {i: ctx.industry_rank[i] for i in industries if i in ctx.industry_rank}
-        if not ctx.industry_available or not ranks:
-            unavailable.append("missing:industry_strength")
+        best_rank, why = _best_industry_rank(ctx, industries)
+        if best_rank is None:
+            unavailable.append(why)
         else:
-            best_ind = min(ranks, key=lambda i: (ranks[i], i))
-            ev["industry_rank"] = {i: ranks[i] for i in sorted(ranks)}
-            score = float(ranks[best_ind])
+            ev["industry_rank"] = {i: ctx.industry_rank[i]
+                                   for i in sorted(industries) if i in ctx.industry_rank}
+            score = float(best_rank)
             threshold = float(rank_max)
-            qualified = [i for i in ranks if ranks[i] <= int(rank_max)]
-            if not qualified:
-                return GateCheck(
-                    GATE_SECTOR, VERDICT_REJECT, score=score, threshold=threshold,
-                    reason=f"sector.industry_rank={int(ranks[best_ind])}>{int(rank_max)}",
-                    evidence=ev)
-            if isinstance(sdays_min, (int, float)) and not isinstance(sdays_min, bool):
-                if ctx.strength_days_window <= 0:
-                    unavailable.append("missing:strength_days")
-                else:
-                    ev["strength_days_5d"] = {
-                        i: ctx.strength_days_5d.get(i, 0) for i in sorted(qualified)
-                    }
-                    ok = [i for i in qualified
-                          if ctx.strength_days_5d.get(i, 0) >= int(sdays_min)]
-                    if not ok:
-                        best_days = max(ctx.strength_days_5d.get(i, 0) for i in qualified)
-                        return GateCheck(
-                            GATE_SECTOR, VERDICT_REJECT,
-                            score=float(best_days), threshold=float(sdays_min),
-                            reason=f"sector.strength_days_5d={best_days}<{int(sdays_min)}",
-                            evidence=ev)
+            if best_rank > int(rank_max):
+                head = f"sector.industry_rank={best_rank}>{int(rank_max)}"
+                if _enforcement(engine, "sector", "industry_rank_max") == ENFORCEMENT_HARD:
+                    ev["enforcement"] = ENFORCEMENT_HARD
+                    return GateCheck(GATE_SECTOR, VERDICT_REJECT, score=score,
+                                     threshold=threshold, reason=head, evidence=ev)
+                evidence_fails.append(head)
 
+    # —— ③-2 近 5 日强度日(C1=3,engineering_v1 → 证据模式)——
+    sdays_min = _gate_value(engine, "sector", "strength_days_min_5d")
+    if isinstance(sdays_min, (int, float)) and not isinstance(sdays_min, bool):
+        best_days, why = _best_strength_days(ctx, industries)
+        if best_days is None:
+            unavailable.append(why)
+        else:
+            ev["strength_days_5d"] = {i: ctx.strength_days_5d.get(i, 0)
+                                      for i in sorted(industries)}
+            if best_days < int(sdays_min):
+                head = f"sector.strength_days_5d={best_days}<{int(sdays_min)}"
+                if _enforcement(engine, "sector", "strength_days_min_5d") == ENFORCEMENT_HARD:
+                    ev["enforcement"] = ENFORCEMENT_HARD
+                    return GateCheck(GATE_SECTOR, VERDICT_REJECT, score=float(best_days),
+                                     threshold=float(sdays_min), reason=head, evidence=ev)
+                evidence_fails.append(head)
+
+    # —— ③-3 行业阶段态(Z1,audited → 硬否决,行为一字不动)——
     stage_allowed = _gate_value(engine, "sector", "stage_allowed")
     if isinstance(stage_allowed, list) and stage_allowed:
-        if not ctx.stage_available:
-            unavailable.append("missing:industry_stage")
+        stages, why = _basket_stages(ctx, industries)
+        if why:
+            unavailable.append(why)
         else:
-            stages = sorted({s for s in (ctx.stage_of.get(i) for i in industries) if s})
-            ev["stages"] = stages
-            if not stages:
-                unavailable.append("missing:member_industry_stage")
-            elif not (set(stages) & set(stage_allowed)):
-                return GateCheck(
-                    GATE_SECTOR, VERDICT_REJECT,
-                    reason=f"sector.stage={stages}∉{sorted(stage_allowed)}", evidence=ev)
+            ev["stages"] = list(stages)
+            if not (set(stages) & set(stage_allowed)):
+                head = f"sector.stage={sorted(stages)}∉{sorted(stage_allowed)}"
+                if _enforcement(engine, "sector", "stage_allowed") == ENFORCEMENT_HARD:
+                    ev["enforcement"] = ENFORCEMENT_HARD
+                    return GateCheck(GATE_SECTOR, VERDICT_REJECT, reason=head, evidence=ev)
+                evidence_fails.append(head)
 
+    # —— ③-4 簇成员数(Z1=3,engineering_v1 → 证据模式)——
     cluster_min = _gate_value(engine, "sector", "cluster_members_min")
     if isinstance(cluster_min, (int, float)) and not isinstance(cluster_min, bool):
         if pool_size is None:
             unavailable.append("missing:seed_pool_size")
         elif pool_size < int(cluster_min):
-            return GateCheck(
-                GATE_SECTOR, VERDICT_REJECT, score=float(pool_size), threshold=float(cluster_min),
-                reason=f"sector.cluster_members={pool_size}<{int(cluster_min)}", evidence=ev)
+            head = f"sector.cluster_members={pool_size}<{int(cluster_min)}"
+            if _enforcement(engine, "sector", "cluster_members_min") == ENFORCEMENT_HARD:
+                ev["enforcement"] = ENFORCEMENT_HARD
+                return GateCheck(GATE_SECTOR, VERDICT_REJECT, score=float(pool_size),
+                                 threshold=float(cluster_min), reason=head, evidence=ev)
+            evidence_fails.append(head)
 
+    # 「判不出」优先于「证据项没过」:连输入都取不到时,让 LLM 去裁一个它也看不到读数
+    # 的东西没有意义(缺数姿势六关统一,⛔ 不因本版改判而动摇)。
     if unavailable:
+        if evidence_fails:
+            ev["evidence_threshold_miss"] = ";".join(evidence_fails)
         return GateCheck(GATE_SECTOR, VERDICT_PASS, available=False, blocks_t1=True,
                          score=score, threshold=threshold,
                          reason=";".join(unavailable), evidence=ev)
+    if evidence_fails:
+        return _evidence_verdict_check(GATE_SECTOR, basket=basket, ev=ev,
+                                       head=";".join(evidence_fails),
+                                       score=score, threshold=threshold)
     return GateCheck(GATE_SECTOR, VERDICT_PASS, score=score, threshold=threshold,
                      reason="sector.ok", evidence=ev)
+
+
+def collect_threshold_readings(
+    engine: Pack, ctx: GateContext, industries: Sequence[str], pool_size: Optional[int],
+) -> Tuple[ThresholdReading, ...]:
+    """本候选在该引擎**全部 `enforcement=evidence` 阈值**上的读数与拟判(①-D 唯一实现)。
+
+    🔴 **与关口判定完全解耦**:本函数不看「前面哪道硬门先拒了」,对每条 evidence 阈值
+    照算照存 —— 这正是裁定 3 写死的分母(「进入市场关、板块关**之前**的召回候选」)
+    唯一能落地的方式。⛔ 别为了省几行把它塞回 `_sector_gate` 的分支里。
+
+    ⚠ **只对 evidence 叶子出行**:`audited` 那四项的判定已经在 `gate_evaluations` 里,
+    再写一份 = 两个事实源。
+
+    ⚠ **`not_applicable:` ≠ 缺数**:`high_divergence_min_breadth_pctile` 只在高位分歧态
+    适用,`rotation_confirmed_blocks_t1` 只在切换确认态适用 —— 不适用的日子照样出行
+    (行数可预测 = 候选数 × 该引擎 evidence 阈值数),但拟判为 `None` 且原因码带
+    `not_applicable:` 前缀,①-E 据此按**适用域**出分母,⛔ 不拿全体候选把它稀释。"""
+    regime = _regime_of(ctx)
+    out: List[ThresholdReading] = []
+
+    def _add(gate: str, key: str, **kw: Any) -> None:
+        out.append(ThresholdReading(threshold_key=f"{gate}.{key}", gate=gate, **kw))
+
+    def _na(gate: str, key: str) -> None:
+        why = (f"{NOT_APPLICABLE_PREFIX}regime={regime}" if regime
+               else "missing:market_regime")
+        _add(gate, key, unavailable_reason=why)
+
+    for gate, key in GOVERNED_THRESHOLD_KEYS:
+        leaf = _gate_leaf(engine, gate, key)
+        if leaf is None:
+            continue                                  # 该引擎不设这道分支
+        if enforcement_of(leaf) == ENFORCEMENT_HARD:
+            continue                                  # audited:判定已在 gate_evaluations 里
+        value = leaf.get("value") if isinstance(leaf, Mapping) else None
+
+        if key == "primary_regimes":
+            if regime is None:
+                _add(gate, key, unavailable_reason="missing:market_regime")
+            else:
+                _add(gate, key, would_pass=regime in (value or []))
+        elif key == "high_divergence_min_breadth_pctile":
+            if regime != "high_divergence":
+                _na(gate, key)
+            elif not isinstance(value, (int, float)) or isinstance(value, bool):
+                _add(gate, key, unavailable_reason="missing:threshold_value")
+            elif ctx.regime_breadth_pctile is None:
+                _add(gate, key, threshold_value=float(value),
+                     unavailable_reason="missing:breadth_pctile")
+            else:
+                p = float(ctx.regime_breadth_pctile)
+                _add(gate, key, reading=p, threshold_value=float(value),
+                     would_pass=p >= float(value) - _EPS)
+        elif key == "rotation_confirmed_blocks_t1":
+            if value is not True:
+                _add(gate, key, unavailable_reason=f"{NOT_APPLICABLE_PREFIX}flag_off")
+            elif regime != "rotation_confirmed":
+                _na(gate, key)
+            else:
+                # 「若按硬门跑」= 切换确认态直接否决 → 拟判恒为「本可否决」。
+                _add(gate, key, would_pass=False)
+        elif key == "trend_continuation_required_stages":
+            if regime != "trend_continuation":
+                _na(gate, key)
+            else:
+                stages, why = _basket_stages(ctx, industries)
+                if why:
+                    _add(gate, key, unavailable_reason=why)
+                else:
+                    _add(gate, key, would_pass=bool(set(stages) & set(value or [])))
+        elif key == "industry_rank_max":
+            best, why = _best_industry_rank(ctx, industries)
+            if best is None:
+                _add(gate, key, unavailable_reason=why)
+            else:
+                _add(gate, key, reading=float(best), threshold_value=float(value),
+                     would_pass=best <= int(value))
+        elif key == "strength_days_min_5d":
+            best_days, why = _best_strength_days(ctx, industries)
+            if best_days is None:
+                _add(gate, key, unavailable_reason=why)
+            else:
+                _add(gate, key, reading=float(best_days), threshold_value=float(value),
+                     would_pass=best_days >= int(value))
+        elif key == "stage_allowed":
+            stages, why = _basket_stages(ctx, industries)
+            if why:
+                _add(gate, key, unavailable_reason=why)
+            else:
+                _add(gate, key, would_pass=bool(set(stages) & set(value or [])))
+        elif key == "cluster_members_min":
+            if pool_size is None:
+                _add(gate, key, threshold_value=float(value),
+                     unavailable_reason="missing:seed_pool_size")
+            else:
+                _add(gate, key, reading=float(pool_size), threshold_value=float(value),
+                     would_pass=pool_size >= int(value))
+    return tuple(out)
 
 
 def _position_member_check(engine: Pack, member: Any) -> Tuple[GateCheck, bool]:
@@ -809,6 +1209,11 @@ class _EngineEval:
     position_unfit_detail: str = ""
     core_unfit: bool = False                 # 任一成员 `core_verdict='unfit'`(裁定 #12)
     core_unfit_detail: str = ""
+    market_unfit: bool = False               # 市场关 evidence 半边被判 `unfit`(①-C)
+    market_unfit_detail: str = ""
+    sector_unfit: bool = False               # 板块关 evidence 半边被判 `unfit`(①-C)
+    sector_unfit_detail: str = ""
+    threshold_readings: Tuple[ThresholdReading, ...] = ()
 
 
 def _evaluate_under_engine(basket: Any, engine: Pack, ctx: GateContext) -> _EngineEval:
@@ -819,8 +1224,8 @@ def _evaluate_under_engine(basket: Any, engine: Pack, ctx: GateContext) -> _Engi
         pool_size = raw_pool
 
     checks: List[GateCheck] = []
-    market = _market_gate(engine, ctx, industries)
-    sector = _sector_gate(engine, ctx, industries, pool_size)
+    market = _market_gate(engine, ctx, industries, basket=basket)
+    sector = _sector_gate(engine, ctx, industries, pool_size, basket=basket)
     checks.append(market)
     checks.append(_driver_gate(basket))
     checks.append(sector)
@@ -853,13 +1258,23 @@ def _evaluate_under_engine(basket: Any, engine: Pack, ctx: GateContext) -> _Engi
         position_unfit_detail=";".join(pos_unfit_notes),
         core_unfit=bool(core_unfit_notes),
         core_unfit_detail=";".join(core_unfit_notes),
+        market_unfit=_gate_unfit(market), market_unfit_detail=market.reason,
+        sector_unfit=_gate_unfit(sector), sector_unfit_detail=sector.reason,
+        # 🔴 读数**独立算一遍**,与上面两关"哪道硬门先拒了"无关(①-D 分母口径)。
+        threshold_readings=collect_threshold_readings(engine, ctx, industries, pool_size),
     )
 
 
 def _fits(ev: _EngineEval) -> bool:
     """机械兜底的「该引擎装得下这个篮子」判据:**篮子级机械关(市场/板块)不拒**。
     ⛔ 不看证据关 —— 证据关只降级,不该影响归属(裁定 #11 后位置关也在其中,
-    故位置判定**不参与**引擎归属选择:LLM 判位置不佳不代表该篮该换个引擎)。"""
+    故位置判定**不参与**引擎归属选择:LLM 判位置不佳不代表该篮该换个引擎)。
+
+    ⚠ **V2.3.2-①-B 登记:本判据随之变松,这是预期效果不是 bug**。三项
+    (`high_divergence_min_breadth_pctile` / `strength_days_min_5d` /
+    `cluster_members_min`)退出硬否决之后,能让本判据返回 `False` 的只剩四项
+    `source=audited` 的叶子 → 机械兜底会更容易给出一个归属。裁定 1 的预期后果就是
+    「联合门槛变松、T1/T2 数量可能上升」,⛔ 别为了"收紧回去"给它补一条及格线。"""
     return ev.mech_reject_check is None and bool(ev.kept_members)
 
 
@@ -968,6 +1383,11 @@ def evaluate_day(
             position_unfit_detail=ev.position_unfit_detail,
             core_unfit=ev.core_unfit,
             core_unfit_detail=ev.core_unfit_detail,
+            market_unfit=ev.market_unfit,
+            market_unfit_detail=ev.market_unfit_detail,
+            sector_unfit=ev.sector_unfit,
+            sector_unfit_detail=ev.sector_unfit_detail,
+            threshold_readings=ev.threshold_readings,
             regime_available=ctx.regime_row is not None,
             t1_max_evidence_degrades=_tier_evidence_max(
                 engine_pack, "t1", T1_MAX_EVIDENCE_DEGRADES_DEFAULT),
@@ -1108,11 +1528,14 @@ __all__ = [
     "GATE_ORDER", "MECH_GATES", "EVIDENCE_GATES", "MEMBER_LEVEL_GATES",
     "GATE_KIND_MECH", "GATE_KIND_LLM", "GATE_KIND_OF", "GATE_LABELS",
     "VERDICT_PASS", "VERDICT_DEGRADE", "VERDICT_REJECT",
+    "ENFORCEMENT_HARD", "ENFORCEMENT_EVIDENCE", "PROVENANCE_SOURCE_AUDITED",
+    "GOVERNED_THRESHOLD_KEYS", "NOT_APPLICABLE_PREFIX", "enforcement_of",
     "ENGINE_SOURCE_LLM", "ENGINE_SOURCE_MECH_FALLBACK",
     "EXCLUDE_NO_ACTIVE_ENGINE", "EXCLUDE_ENGINE_UNRESOLVED",
     "EXCLUDE_MECH_GATE_REJECTED", "EXCLUDE_MEMBERS_ALL_REMOVED",
     "classify_evidence_kind", "independent_evidence_kinds",
-    "GateCheck", "MemberRemoval", "BasketGateSummary", "GateDayOutcome", "GateContext",
-    "build_gate_context", "evaluate_day",
+    "GateCheck", "MemberRemoval", "ThresholdReading", "BasketGateSummary",
+    "GateDayOutcome", "GateContext",
+    "build_gate_context", "evaluate_day", "collect_threshold_readings",
     "save_gate_evaluations", "load_gate_evaluations",
 ]

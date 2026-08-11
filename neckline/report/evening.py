@@ -378,9 +378,25 @@ def _run_basket_segment(
         kwargs["reason_provider"] = reason_provider
     elif not use_llm:
         kwargs["reason_provider"] = None
+    # —— V2.3.2-①-C:**先**装配六关上下文,⑤ 与 ⑥ 吃同一份 ——————————————————
+    # 🔴 顺序是判据的一部分:模型看到的市场关 / 板块关读数必须与关口用的读数**是同一
+    # 份对象**,⛔ 不许 ⑤ 里另读一遍表(那会存下"事后那一份",留痕就白留了 —— 与位置关
+    # 「⛔ 本模块不另读一遍」同一条纪律)。整段包保险丝:装不出只是这两关的读数缺席
+    # (prompt 如实写「本次未取得」、gates 侧 `available=False` 不拦但不给 T1),
+    # ⛔ 绝不让当日无篮子。
+    from neckline.selection import gates as gt
+
+    gate_ctx = None
+    try:
+        gate_ctx = gt.build_gate_context(
+            trade_date, (), db_path=db_path, parquet_dir=parquet_dir)
+    except Exception:  # noqa: BLE001
+        logger.warning("[evening] ③ 六关上下文装配失败(市场关/板块关本次无读数可喂,"
+                       "按「判不出」如实披露)", exc_info=True)
+
     result = agg.aggregate_baskets(
         trade_date, seed_set=seed_set, db_path=db_path, parquet_dir=parquet_dir,
-        ledger=ledger, transport=transport, **kwargs,
+        ledger=ledger, transport=transport, gate_context=gate_ctx, **kwargs,
     )
     notes.extend(result.notes)
     stats["aggregate"] = {"baskets": len(result.baskets), "rejected": len(result.rejected),
@@ -406,9 +422,10 @@ def _run_basket_segment(
     # —— V2.2-③:六道关口(定档的闸,唯一实现 `selection/gates.py`)—————————
     # 在 ⑥ 之前显式跑一遍并落 `gate_evaluations` 留痕(append-only 审计表;留痕
     # 失败只 WARNING,不许连累 ⑤ 已经算好的东西)。⑥ 直接吃这份 outcome,不重跑。
-    from neckline.selection import gates as gt
-
-    gate_out = gt.evaluate_day(result, trade_date, db_path=db_path, parquet_dir=parquet_dir)
+    # ⚠ `context=gate_ctx` 就是上面喂给 ⑤ prompt 的**那一个对象**(①-C 的硬要求);
+    # 装配失败时传 `None`,`evaluate_day` 会自己再建一份(退化路径,如实登记)。
+    gate_out = gt.evaluate_day(result, trade_date, db_path=db_path, parquet_dir=parquet_dir,
+                               context=gate_ctx)
     try:
         gate_rows = gt.save_gate_evaluations(gate_out, db_path=db_path)
     except Exception:  # noqa: BLE001
@@ -523,6 +540,26 @@ def _run_basket_segment(
         for c in final_cards if c.basket_key in id_by_key
     }
     stats["card"] = save_basket_cards(by_id, meta_by_basket_id=meta, db_path=db_path)
+
+    # —— V2.3.2-①-D:阈值影子台账(裁定 5)————————————————————————————————
+    # 🔴 **必须排在 ⑥ 定档之后**:裁定 4 的第五项「对最终 T1/T2 数量的影响」要
+    # `final_tier`。⚠ 分母是**全部进关候选**(`gate_out.summaries` 全体,含被硬门拒掉
+    # 与最终 OUT 的)—— ⛔ 绝不许拿"最终 T1/T2 的历史快照"当分母(裁定 3 明令)。
+    # 整段独立包保险丝:旁路件失败只 WARNING,⛔ 不许掀翻晚间链。
+    try:
+        from neckline.selection.threshold_shadow import save_threshold_shadow
+
+        regime_row = getattr(gate_ctx, "regime_row", None) if gate_ctx else None
+        stats["threshold_shadow"] = save_threshold_shadow(
+            gate_out, tier_by_candidate=tier_by_key,
+            regime=(str(regime_row.get("regime") or "") or None) if regime_row else None,
+            db_path=db_path,
+        )
+    except Exception:  # noqa: BLE001
+        stats["threshold_shadow"] = 0
+        logger.warning("[evening] ①-D 阈值影子台账写入异常(已吞,不影响定档与报告)",
+                       exc_info=True)
+
     stats["basket"] = {"baskets": len(result.baskets), "cards": len(by_id),
                        "dropped": len(decision.dropped)}
     logger.info("[evening] ③⑤⑥⑦:候选 %d → 篮子 %d 个(③b %d),卡 %d 张,关口留痕 %d 行",
