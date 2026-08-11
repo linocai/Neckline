@@ -17,16 +17,34 @@
 # 验收看 `ExecMainStatus=0` **且** `ExecMainStartTimestamp` 是本次那一跑
 # (§铁律:`Result=success` 不够 —— `reset-failed` 会把 Result 抹回 success)。
 #
-# ⚠ **`TimeoutStartSec` / `MemoryMax` 待生产隔离实测校准**(§七 P0-23 纪律:新增全表
-#    扫描路径上产前必须在生产机上单独计时 + 量峰值)。下面两个是**先填的占位**:
-#      · 本作业最重的一段是 `eval/calibration` 的安慰剂对照臂(`PLACEBO_DRAWS=200` ×
-#        每日成员数次判分 + 一次前复权面板装配),与 LLM 无关,墙钟主要花在判分上;
-#      · 实测在 nk 上必须用 `systemd-run --unit=… --property=User=neckline
-#        --property=Group=neckline --property=MemoryMax=…` 的**瞬态 service**,
-#        ⛔ 不许用 root 的 `--scope`(会把行情文件写成 root 属主);
-#      · `Memory peak` 读数不可轻信(cgroup 对已在页缓存的文件页不重复计费)——
-#        **要可信上界就压低 `MemoryMax` 反证**(扛住 = 真上界)。
-#    实测后在**同一次提交**里把这两个数改成实测值 + 写明理由。
+# ✅ **`TimeoutStartSec` / `MemoryMax` 已生产隔离实测校准(2026-08-11)** —— 占位值销案。
+#
+#    **实测条件**:nk 上 `systemd-run --unit=… --property=User=neckline
+#    --property=Group=neckline --property=MemoryMax=…` 瞬态 service(⛔ 未用 root 的
+#    `--scope` —— 那会把行情文件写成 root 属主);窗口 `--week 20260808`
+#    (= 20260803→20260807,4 个交易日 / 22 篮),与周六首跑逐位相同。
+#
+#    **读数**:
+#      · **墙钟 14.28s**(14:14:42.92 → 14:14:57.20),CPU 39.2s;安慰剂对照臂**真跑满**
+#        (1 层 / 4 日 / `draws=200`),`degraded=[]`、`ExecMainStatus=0`。
+#      · **内存**:`MemoryPeak` 读数**不可信**(cgroup 对已在页缓存的文件页不重复计费,
+#        本次直接 `[not set]`)→ 按纪律**压低 `MemoryMax` 反证**:
+#        **400M 扛住**(`Result=success`)/ **256M 被 OOM-kill**(`Result=oom-kill`,
+#        status 9)→ 真峰值落在 **(256M, 400M]**。
+#
+#    **⚠ 这个墙钟是下界,不是上界**:实测那一跑 `member_unfinished=49` —— 前向窗口
+#    (地平线 15 个交易日)还没走完,`_sim_one_h` 的内层只走了 4~6 天就到数据末端。
+#    等窗口成熟,内层要走满 15 天,迭代数约 3~4 倍;再叠加更忙的一周(篮子数翻倍)
+#    → 估计上界约 100~150s。**下面两个数按这个估计留余量,不是照 14s 卡着填的。**
+#
+#    **选值理由**:
+#      · `TimeoutStartSec=900`(15 分钟)≈ 估计上界的 6~9 倍。⛔ 不再用 3600 ——
+#        那是占位值,一个小时的超时等于"实际上没有超时",真挂死也要等一小时才发现。
+#      · `MemoryMax=800M` = **实测扛住值 400M 的 2 倍**。⛔ 不填 400M(那是边缘,
+#        换一周数据就可能 OOM);⛔ 也不再用 1400M(比实测需要多 3.5 倍,
+#        真泄漏时兜不住)。nk 是 3.8 GiB,800M 占比安全。
+#
+#    🔴 **改这两个数必须重新实测**(同一条 P0-23 纪律),⛔ 别凭感觉调。
 #
 # 安装:
 #   sudo cp /opt/neckline/deploy/neckline-weekly.{service,timer} /etc/systemd/system/
@@ -45,6 +63,6 @@ Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
 ExecStart=/opt/neckline/.venv/bin/python scripts/weekly.py
-# 待实测校准(见文件头);先按「比晚间批算段宽裕一档」填。
-TimeoutStartSec=3600
-MemoryMax=1400M
+# ✅ 2026-08-11 生产隔离实测校准值(理由与读数见文件头,⛔ 改它必须重新实测)。
+TimeoutStartSec=900
+MemoryMax=800M

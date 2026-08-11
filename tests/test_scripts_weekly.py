@@ -221,9 +221,26 @@ class TestUnitFiles:
         assert any(ln.startswith("TimeoutStartSec=") for ln in body)
         assert any(ln.startswith("MemoryMax=") for ln in body)
 
-    def test_the_pending_calibration_note_is_still_there(self):
-        """两个资源上限**待生产隔离实测校准**(§七 P0-23)—— 实测前那句提示不许被删掉,
-        否则占位值会被后人当成量过的结论。"""
+    def test_quotas_are_measured_not_placeholders(self):
+        """✅ **2026-08-11 已生产隔离实测校准**,占位值销案(§七 P0-23)。
+
+        ⚠ 本测试**原先断言的是「待校准那句提示还在」** —— 那是实测前的守门:防止有人
+        把提示删掉、让占位值被后人当成量过的结论。实测做完了,守门因此**翻面**:
+        现在锁的是「占位值不许回来」+「读数与理由必须留在文件里」。
+
+        ⛔ 别把这条改回去 —— 两个方向的守门是同一个目的的两个阶段,不是重复。"""
         head = _SERVICE.read_text(encoding="utf-8")
-        assert "待生产隔离实测校准" in head or "待实测校准" in head
-        assert "systemd-run" in head and "--scope" in head   # nk 上不许用 root --scope
+        body = _lines(_SERVICE)
+
+        # ① 占位值不许回来(3600 = "实际上没有超时";1400M 比实测需要多 3.5 倍)
+        assert "TimeoutStartSec=3600" not in body, "3600 是占位值,一小时超时等于没有超时"
+        assert "MemoryMax=1400M" not in body, "1400M 是占位值,真泄漏时兜不住"
+        assert "TimeoutStartSec=900" in body and "MemoryMax=800M" in body
+
+        # ② 实测读数与选值理由必须留在文件里(否则下一个人无从判断该不该动它)
+        assert "已生产隔离实测校准" in head
+        assert "400M 扛住" in head and "256M 被 OOM-kill" in head, "反证读数是选值的唯一依据"
+        assert "改这两个数必须重新实测" in head
+
+        # ③ nk 上不许用 root `--scope`(会把行情文件写成 root 属主)—— 这条恒有效
+        assert "systemd-run" in head and "--scope" in head
