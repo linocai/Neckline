@@ -36,7 +36,7 @@ import logging
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -101,15 +101,23 @@ def step_trade_clocks(as_of: date, db_path: Path, parquet_dir: Optional[Path]) -
 
 def step_calibration(anchor: date, db_path: Path, parquet_dir: Optional[Path], *,
                      out_dir: Path, draws: int, with_placebo: bool,
-                     with_tradable: bool) -> str:
+                     with_tradable: bool) -> Tuple[str, List[str]]:
     """步 2 + 步 3b:周度校准报告落盘(**自带 V2.2-④ 的双时钟成绩单与四分类建议**)。
 
     ⚠ 落盘命名由 `calibration.write_report` 定死(`calibration_{from}_{to}.{md,json}`)
     —— `review/handoff.py` 与 `/eval/weekly` 都按这个约定**读产物**,⛔ 不另起一套。
+
+    **返回 `(摘要, 降级段列表)`**。🔴 第二项是 §七 **P0-56** 加的:`build_report`
+    「永不抛异常、炸了只记 note」——这个设计本身没问题(一段炸了不该拖垮另一段),
+    **但它此前让整个作业以 `exit 0` 收场** —— 安慰剂对照臂、可交易判分、分层成绩单
+    全炸掉,日志末行仍是「周度作业完成(全部步骤成功)」。铁律说「验收看
+    `ExecMainStatus=0` 且本次时间戳」,那个绿灯于是盖在一次被掏空的跑上。
+    ⛔ **别把这里改回只返回摘要** —— 报告照落盘(有多少算多少)、退出码照说真话,
+    两件事都要。
     """
     lo, hi = calibration.week_bounds(anchor)
     if lo is None:
-        return f"{anchor} 所在那一周没有交易日,本周无校准窗口(如实跳过,不算失败)"
+        return (f"{anchor} 所在那一周没有交易日,本周无校准窗口(如实跳过,不算失败)", [])
     report = calibration.build_report(
         lo, hi, db_path=db_path, parquet_dir=parquet_dir,
         with_tradable=with_tradable, with_placebo=with_placebo, draws=int(draws),
@@ -122,11 +130,15 @@ def step_calibration(anchor: date, db_path: Path, parquet_dir: Optional[Path], *
     if not th.get("available"):
         logger.warning("  ⚠ 四分类分界线未配置 —— 本期只出统计量、**不给分类**"
                        "(骨架包 `config.iteration` 待用户拍板)")
+    if report.degraded:
+        logger.error("  🔴 本期有 %d 段**没跑成**:%s —— 报告已落盘但内容不完整,"
+                     "本步按失败计(§七 P0-56)", len(report.degraded), ", ".join(report.degraded))
     return (f"周度校准报告 {report.date_from}→{report.date_to}:"
             f"{report.n_trading_days} 个交易日 / {report.n_baskets} 篮 / "
             f"{len(report.strata)} 层;选股时钟结案 "
             f"{(it.get('samples') or {}).get('selectionClock', 0)} 篮、"
-            f"建议 {len(it.get('suggestions') or [])} 行 → {paths['markdown']}")
+            f"建议 {len(it.get('suggestions') or [])} 行 → {paths['markdown']}",
+            list(report.degraded))
 
 
 def main() -> int:
@@ -172,9 +184,14 @@ def main() -> int:
             failures.append("trade_clock")
 
     try:
-        logger.info("步 2/3b %s", step_calibration(
+        summary, degraded = step_calibration(
             anchor, db_path, parquet_dir, out_dir=out_dir, draws=args.draws,
-            with_placebo=not args.no_placebo, with_tradable=not args.no_tradable))
+            with_placebo=not args.no_placebo, with_tradable=not args.no_tradable)
+        logger.info("步 2/3b %s", summary)
+        # 🔴 P0-56:`build_report` 不抛异常,所以"段炸掉"到不了上面那个 except ——
+        # 必须在这里显式并进 `failures`,否则退出码会替一次被掏空的跑背书。
+        if degraded:
+            failures.append("calibration(降级段:" + ", ".join(degraded) + ")")
     except Exception as exc:  # noqa: BLE001
         logger.error("步 2/3b 周度校准报告失败:%s: %s", type(exc).__name__, exc, exc_info=True)
         failures.append("calibration")

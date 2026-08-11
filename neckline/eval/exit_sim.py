@@ -208,7 +208,19 @@ def score_kw_from_charter(db_path: Optional[Path] = None) -> Dict[str, Any]:
         )
     missing = [k for k, _ in _CHARTER_TO_SIM_KW if cfg.get(k) is None]
     if missing:
-        raise ValueError(f"score_kw_from_charter:现役章程 config 缺必需字段 {missing}")
+        # 🔴 **这条信息以前写的是「现役章程 config 缺必需字段」,是误导的**(§七 P0-56)。
+        # `v2.2-k8` 起 `max_hold_days` / `take_profit_retrace` 恒 `None` 是 **V2.2-⑤ 按
+        # §2.1 第 2 条刻意退役**的结果 —— **章程是对的,过时的是本函数**。V2.2-⑤ 把
+        # 「`None` = 没有这一档」推到了 `momentum.py` / `precall.py` / `holding.py` /
+        # `holding_k4_check.py` / `reconcile.py` / `basket_card.py` 等处,**唯独漏了判分引擎**。
+        # ⛔ **绝不许照字面去"补全"章程**(把 5 / 0.08 写回 `strategy_versions`)——
+        # 那等于把用户明令退役的机械止盈与时间退出**静默复活**,是本条最危险的误修方向。
+        raise ValueError(
+            f"score_kw_from_charter:判分引擎尚未适配「章程退役了 {missing}」这一情形"
+            "(§七 P0-56)。⛔ 这不是章程配错 —— `None` = 该档已按 §2.1 第 2 条退役,"
+            "⛔ 别把数值写回 strategy_versions 去"
+            "「修」它(那会静默复活已退役的机械纪律)。缺的是判分侧的评分地平线口径。"
+        )
 
     kw: Dict[str, Any] = {sim_key: cfg[cfg_key] for cfg_key, sim_key in _CHARTER_TO_SIM_KW}
     kw["base_hold"] = int(kw["base_hold"])
@@ -221,6 +233,32 @@ def score_kw_from_charter(db_path: Optional[Path] = None) -> Dict[str, Any]:
     # `eff_max` 分支与「无差别时间退出」逐位等价(K1 行为)。
     kw["hard_cap"] = int(hard_cap) if (v1 and hard_cap is not None) else kw["base_hold"]
     return kw
+
+
+def forward_span_days(kw: Dict[str, Any]) -> int:
+    """判分要向前看几个交易日 —— **唯一一处**推导(⛔ 调用方别再各写一遍)。
+
+    取 `hard_cap`(浮盈硬上限)优先、否则 `base_hold`(时间退出档)。
+
+    🔴 **两者皆 `None` → `ValueError` fail loud,⛔ 不拿 `1` 顶上**(§七 P0-56)。
+    原先三处调用方各写着 `int(kw.get("hard_cap") or kw.get("base_hold") or 1)`,那个
+    `1` 是一个**静默哨兵位**:章程把两档退役之后,它会把评分地平线悄悄取成 **1 个
+    交易日** —— 判分照跑、数字照出、报告照落盘,**看不出错**。§3.11-E 明文否决过
+    哨兵位(原话「哨兵位是"看不出来"的病」);那条讲的是 `9999`,而 `1` 是同一个病。
+
+    ⚠ **「不设时间退出之后,判分该向前看多远」是一个尚未裁定的量** —— 它此前是
+    `max_hold_days` / `max_hold_days_profit` 白送的(5 / 15),两档退役后就没有来源了。
+    ⛔ **不许在这里替用户定这个数**(🔴 定性需求不许自行定量)。
+    """
+    for key in ("hard_cap", "base_hold"):
+        v = kw.get(key)
+        if v is not None:
+            return int(v)
+    raise ValueError(
+        "forward_span_days:`hard_cap` 与 `base_hold` 皆为 None —— 现役章程已退役时间退出,"
+        "判分的评分地平线没有来源(§七 P0-56)。⛔ 拒绝默认成 1 个交易日:"
+        "那会让判分在一个几乎必然「还没走完」的窗口上出数,且看不出来。"
+    )
 
 
 def notional_from_charter(db_path: Optional[Path] = None) -> float:
@@ -450,7 +488,7 @@ def build_price_maps(
 __all__ = [
     "BROKER", "SLIP", "EPS",
     "ReTrade", "_sim_one", "sim_one",
-    "score_kw_from_charter", "notional_from_charter",
+    "score_kw_from_charter", "notional_from_charter", "forward_span_days",
     "FillScore", "fill_and_score",
     "FILL_OK", "FILL_NOT_BUYABLE", "FILL_NO_T1", "FILL_T1_SUSPENDED",
     "FILL_ABOVE_CEILING", "FILL_UNRESOLVED",

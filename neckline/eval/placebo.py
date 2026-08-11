@@ -38,7 +38,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from neckline.calendar import next_trading_day, trading_days_between
 from neckline.eval.exit_sim import (
-    PriceMaps, build_price_maps, fill_and_score, notional_from_charter, score_kw_from_charter,
+    PriceMaps, build_price_maps, fill_and_score, forward_span_days, notional_from_charter,
+    score_kw_from_charter,
 )
 from neckline.eval.metrics import BasketRecord, _mean, _median, verdict
 
@@ -397,7 +398,7 @@ def run_placebo(
             todays = sorted(by_day[day], key=lambda r: r.basket_key)
             shape = [len(r.members) for r in todays]
             domain = resolve(d0, db_path, parquet_dir)
-            span = int(kw.get("hard_cap") or kw.get("base_hold") or 1) + 2
+            span = forward_span_days(kw) + 2
             codes = sorted(set(domain.codes) | {c for r in todays for c in r.members})
             pmaps = build_price_maps(codes, d0, d0 + timedelta(days=2 * span + 20),
                                      parquet_dir=parquet_dir)

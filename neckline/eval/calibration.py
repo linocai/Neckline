@@ -61,6 +61,11 @@ class CalibrationReport:
     #: V2.2-④:双时钟成绩单 + 四分类修改建议(`eval/iteration.build_iteration_report`
     #: 的原样产物)。**空 dict = 本期没跑到 / 算不出**,⛔ 不拿空段冒充"没有建议"。
     iteration: Dict[str, Any] = field(default_factory=dict)
+    #: 🔴 **本期哪些段是"抛异常没跑成"**(§七 P0-56)。与 `notes` 刻意分开:`notes` 是
+    #: 给人读的散文(里面也混着"样本不足"这类**正常**提示),`degraded` 是**机器判据** ——
+    #: 调用方据此让退出码说真话。⚠ **空列表 ≠ 一切正常**,只表示"没有段炸掉";
+    #: 「跑了真没有」与「压根没跑」的区分仍看各段自己的产物是否为空(P0-39 同款纪律)。
+    degraded: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -72,6 +77,8 @@ class CalibrationReport:
             "placebo": [p.to_dict() for p in self.placebo],
             "honesty": dict(self.honesty), "notes": list(self.notes),
             "iteration": dict(self.iteration),
+            # 🔴 落进产物,让"这份报告哪几段是炸掉的"在 JSON 里也机器可判(§七 P0-56)。
+            "degraded": list(self.degraded),
             "disclaimer": DISCLAIMER,
         }
 
@@ -153,6 +160,7 @@ def build_report(
     except Exception as exc:  # noqa: BLE001
         logger.warning("[calibration] 面板装配失败", exc_info=True)
         rep.notes.append(f"面板装配失败:{type(exc).__name__}: {exc}")
+        rep.degraded.append("panel")
         return rep
 
     rep.n_baskets = len(records)
@@ -167,6 +175,7 @@ def build_report(
         except Exception as exc:  # noqa: BLE001
             logger.warning("[calibration] 双时钟 / 四分类段计算失败(空篮子路径)", exc_info=True)
             rep.notes.append(f"双时钟 / 四分类段计算失败:{type(exc).__name__}: {exc}")
+            rep.degraded.append("iteration")
         return rep
 
     try:
@@ -175,6 +184,7 @@ def build_report(
     except Exception as exc:  # noqa: BLE001
         logger.warning("[calibration] 分层成绩单计算失败", exc_info=True)
         rep.notes.append(f"分层成绩单计算失败:{type(exc).__name__}: {exc}")
+        rep.degraded.append("strata")
 
     if with_placebo:
         try:
@@ -183,6 +193,7 @@ def build_report(
         except Exception as exc:  # noqa: BLE001
             logger.warning("[calibration] 安慰剂对照臂计算失败", exc_info=True)
             rep.notes.append(f"安慰剂对照臂计算失败:{type(exc).__name__}: {exc}")
+            rep.degraded.append("placebo")
 
     # —— V2.2-④:双时钟成绩单 + 四分类建议(整段包保险丝,炸了只记 note)————
     try:
@@ -190,6 +201,7 @@ def build_report(
     except Exception as exc:  # noqa: BLE001
         logger.warning("[calibration] 双时钟 / 四分类段计算失败", exc_info=True)
         rep.notes.append(f"双时钟 / 四分类段计算失败:{type(exc).__name__}: {exc}")
+        rep.degraded.append("iteration")
 
     if rep.n_trading_days < MIN_CONCLUSION_DAYS:
         rep.notes.append(

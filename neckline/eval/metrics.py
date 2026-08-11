@@ -43,7 +43,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from neckline.calendar import next_trading_day, trading_days_between
 from neckline.db import connection, init_schema
 from neckline.eval.exit_sim import (
-    PriceMaps, build_price_maps, fill_and_score, notional_from_charter, score_kw_from_charter,
+    PriceMaps, build_price_maps, fill_and_score, forward_span_days, notional_from_charter,
+    score_kw_from_charter,
 )
 from neckline.selection import verification_rules as vr
 
@@ -474,7 +475,7 @@ def score_tradable(
         d0s = sorted({r.d0 for r in records})
         start = date(int(d0s[0][:4]), int(d0s[0][4:6]), int(d0s[0][6:]))
         last = date(int(d0s[-1][:4]), int(d0s[-1][4:6]), int(d0s[-1][6:]))
-        span = int(kw.get("hard_cap") or kw.get("base_hold") or 1) + FORWARD_SLACK_DAYS
+        span = forward_span_days(kw) + FORWARD_SLACK_DAYS
         # 用自然日粗放外扩再由交易日历收敛(交易日 ≈ 自然日 × 5/7,乘 2 富余)
         price_maps = build_price_maps(codes, start, last + timedelta(days=2 * span + 10),
                                       parquet_dir=parquet_dir)
@@ -725,7 +726,7 @@ def forward_window_ready(d0: Any, *, score_kw: Optional[Mapping[str, Any]] = Non
     **不是**"算不出",而是"这个数还在变" —— 调用方据此在报告里如实标注。
     """
     kw = dict(score_kw or score_kw_from_charter(db_path=db_path))
-    need = int(kw.get("hard_cap") or kw.get("base_hold") or 1) + FORWARD_SLACK_DAYS
+    need = forward_span_days(kw) + FORWARD_SLACK_DAYS
     d = d0 if isinstance(d0, date) else date(int(d0[:4]), int(d0[4:6]), int(d0[6:]))
     end = as_of or date.today()
     if end <= d:

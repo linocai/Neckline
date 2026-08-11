@@ -39,8 +39,13 @@ def weekly():
     return _load()
 
 
-def _run(weekly, monkeypatch, argv, *, fail=()):
-    """跑一次 `main()`,把三步各自换成"记一笔 / 抛"的桩。返回 `(exit_code, 跑过的步)`。"""
+def _run(weekly, monkeypatch, argv, *, fail=(), degraded=()):
+    """跑一次 `main()`,把三步各自换成"记一笔 / 抛"的桩。返回 `(exit_code, 跑过的步)`。
+
+    ⚠ `step_calibration` 的契约是 **`(摘要, 降级段列表)`**(§七 P0-56),与另两步的
+    「返回一句摘要」刻意不同 —— 因为 `build_report` 永不抛异常,段炸掉走不到 except,
+    只能靠这第二项把真相带上来。`degraded=` 用来构造那种「没抛异常但被掏空」的跑。
+    """
     ran = []
 
     def _mk(name):
@@ -48,6 +53,8 @@ def _run(weekly, monkeypatch, argv, *, fail=()):
             ran.append(name)
             if name in fail:
                 raise RuntimeError(f"{name} 炸了")
+            if name == "calibration":
+                return (f"{name} ok", list(degraded))
             return f"{name} ok"
         return _fn
 
@@ -84,6 +91,25 @@ class TestExitSemantics:
     def test_skip_flags_skip_without_failing(self, weekly, monkeypatch):
         code, ran = _run(weekly, monkeypatch, ["--skip-profile", "--skip-clocks"])
         assert code == 0 and ran == ["calibration"]
+
+    # ── 🔴 P0-56 回归守门:段被掏空但没抛异常,退出码必须说真话 ────────────────
+    def test_degraded_segments_exit_one_even_though_nothing_raised(
+            self, weekly, monkeypatch):
+        """🔴 **P0-56 的真实形状**:`build_report` 永不抛异常 —— 安慰剂对照臂炸了只记
+        note、报告照落盘、`step_calibration` 正常返回。**生产上真的发生过**:
+        `v2.2-k8` 激活后判分引擎对现役章程恒抛 `ValueError`,三段全废,而日志末行
+        仍是「周度作业完成(全部步骤成功)」、`ExecMainStatus=0`。
+
+        铁律说「验收看 `ExecMainStatus=0` 且本次时间戳」—— 所以那个绿灯**必须**
+        因降级而变红,否则铁律本身被架空。⛔ 别把这条改成"只警告不改退出码"。"""
+        code, ran = _run(weekly, monkeypatch, [], degraded=("placebo", "strata"))
+        assert ran == ["profile", "clocks", "calibration"], "降级不该打断任何一步"
+        assert code == 1, "有段没跑成却返 0 —— 绿灯盖在一次被掏空的跑上(P0-56)"
+
+    def test_no_degradation_still_exits_zero(self, weekly, monkeypatch):
+        """反向:没有降级段就不许平白变红(⛔ 别把守门做成"永远失败")。"""
+        code, _ = _run(weekly, monkeypatch, [], degraded=())
+        assert code == 0
 
     def test_default_target_week_is_the_previous_full_week(self, weekly):
         """周六 09:00 触发时「本周」的周末还没到 —— 取上一周才是走完的窗口。"""
