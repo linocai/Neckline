@@ -1132,7 +1132,35 @@ prompt 必须明说「判不出就写 `null`」,⛔ 不许让它静悄悄把 AND
 - **[P1-8] → V2.0.0 第 ③ / ⑥ / ⑨ 块(部分吸收,部分仍挂账)** · 启发式阈值待实盘校准:`intel_candidates.py` 的 `INDUSTRY_GATE_MIN_LIFT=2.0` / `QUOTA_PER_PERMANENT_BOARD=2`、熔断的 3 笔连亏与单日 −4000 元、盘前校准各阈值 —— 全是启发式,零实盘样本。**怎么修**:攒 1–2 个月实盘 + 周复盘数据后**一次性回看这一组**(哪个挡多了 / 放多了),不要逐个单独拍。~~归 v1.4+~~ → **V2 处置**:① **选股侧阈值**(行业闸 lift、卫生线、Tier 权重)全部进**策略包 config**(③),校准路径 = ⑨ 评价引擎周度报告 → 策略线出新包 → 四道闸激活,**不再是"改代码里的数"**;② `QUOTA_PER_PERMANENT_BOARD` 随五常驻删除**作废**(裁定 #9);③ **熔断的 3 笔 / −4000 与盘前校准阈值仍是政策值、仍挂账**(住命名常量,不进包也不进章程),本条为这三项继续保留。**⚠ V2.2 扩容(2026-08-09)**:K8 的**三引擎首版阈值 + 落地起跳位置关五项阈值**一并进本条这一组(细目登记在 **P3-34 (c)(d)**,本条只记「它们属于同一组、要一次性回看」);**校准路径已改** —— 不再是「攒 1–2 个月再一次性回看代码里的数」,而是 **选股时钟攒样本 → 周度四分类建议 → 用户确认 → 引擎升版(`C2`/`Z2`/`Y2`)走四道闸**(K8 §十七 自带的迭代机制)。⛔ 仍然:**不要逐个单独拍**、**不许自行改数**。
 
 - **[P1-36] ④ 扫描层两条「三路等价」守门单测在全量套件下偶发失败、单独跑恒绿(V2-⑪ 施工期两次复现,2026-08-03 新挂;⑪ 完工记录「块外发现」的落点 —— 原文只写了"已挂账"但没有账本,在此补上)**。**症状**:`tests/test_scan_cluster.py::test_bulk_vs_day_by_day_vs_readback_are_identical` 与 `tests/test_scan_corr.py::test_bulk_vs_day_by_day_vs_readback` 在 `pytest tests/ -q` 全量下**偶发** failed,**单独跑恒 pass**;⑪ 开工基线首跑复现一次、施工期又复现一次,重跑即过,**与 ⑪ 零关联**(⑪ 一行没碰 `neckline/scan/`)。
-  - 🆕 **第三例(2026-08-09 V2.2 ⑥ 收尾时 orchestrator 复跑撞上,换了一个文件、同一个病)**:
+  - ✅ **第三例已结案(2026-08-11,@builder-pro 专查;根因 = 本条 2026-08-03 定案的同一族,第 4 次现身)**。
+    **根因**:`report/render.py:87` 的报告头第一行就印着 `*生成时间(UTC):{generated_at} · …*`,而
+    `pipeline.py:290` 的 `generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")` 是
+    **秒精度墙钟**;该用例连着跑两次 `build_report` 后**裸比 markdown 全文**,只要两次调用跨过一个整秒
+    边界就红 → **失败率 ≈ 两次调用间隔 ÷ 1 秒**,故孤立跑(机器闲、间隔短)约 2~3%、全量跑(机器忙、
+    间隔被拉长)约 25%。**这正是 `computed_at` 那个病换了个名字**(`generated_at`)、换了个载体
+    (markdown 正文而非表列),2026-08-03 修了两个 scan 测试却**没把体例推广到报告侧**,于是它活到今天。
+    **两个成因都被排除,不是 (a) 也不是 (b)**:脱离 pytest 的探针连跑 200 轮 ×2 分支(HEAD `adfe773`
+    与 V2.3.2 立项点 `7deabb0`),裸比 `raw_fails=4/200` 与 `6/200`、**归一化掉 `generated_at` 后
+    `normalized_fails=0/200`** —— 报告生成本身**确实**逐位可复现,既无夹具污染、也无排序/hash/浮点
+    不确定性。⚠ **本条原先猜的「三例有一处共享的不确定源(`rank(ordinal)` 并列 / 字典集合迭代序 /
+    浮点累加顺序)」这个假设已被证伪** —— 三例的共性不是"共享不确定源",是**共享同一个坏体例:
+    拿含墙钟审计戳的产物做整体相等比较**。
+    **既有还是新引入**:**既有**。裸比那行由 `1161441`(V2-⑬-1)写下,报告头的戳自 `5b7f321`(阶段2.5)
+    起一直在 —— 与 V2.3.2 无关,`7deabb0` 上同样复现(6/200)。
+    **修法(⛔ 未改生产代码一行)**:`tests/conftest.py` 新增唯一实现 `markdown_modulo_generated_at()`
+    (按 bundle 自己那串戳**逐字替换**成占位符,⛔ 不按正则猜行),三处调用点改用它;并新增
+    `test_replay_is_identical_even_across_a_second_boundary` —— 把 `pipeline_mod.datetime` 钉成
+    「每次 `now()` 前进 1 秒」,**让跨秒边界必然发生**,同时断言「裸比必定不等」(⛔ 防归一化退化成空操作)。
+    **顺带修掉一条假绿**:同文件 `test_build_report_end_to_end_replays_several_historical_dates` 的
+    `len(set(snapshots)) == 3` 原先把三天的 markdown 直接进 set —— 三次调用的戳本就各不相同,
+    **哪怕报告是罐头答案该断言也恒成立**;现已先归一化再进 set(实测三天内容确实互不相同,断言现在是真的)。
+    **判据**:全量套件连跑 10 轮 **3748 passed / 0 failed**(+1 = 新增回归用例);目标两文件连跑 200 轮零失败;
+    变异测试(往 `render.py` 注入随机串)两条用例**双双变红** → 归一化没有削弱断言。
+    **全仓已扫干净**:AST 扫「相等比较 × 墙钟戳」全部命中点,`scan_leader`/`scan_stage`/`scan_cluster`/
+    `scan_corr`/`scan_landing`/`industry_strength_store` 均已带排除 —— 其中本条 2026-08-03 结案时
+    「留档不改」的 `test_scan_leader.py`,**当天在 leader 侧真复现后就已补上** `.drop("computed_at")`
+    (见该用例 docstring 自述),那笔欠账早已销掉。**报告侧那条是本族最后一个没设防的**。
+  - 🆕 ~~**第三例(2026-08-09 V2.2 ⑥ 收尾时 orchestrator 复跑撞上,换了一个文件、同一个病)**~~(原文留痕,诊断已被上条推翻):
     `tests/test_report_consistency.py::TestHistoricalReplayAcrossMultipleDays::test_replay_of_the_same_day_twice_is_identical`
     —— **同一次交回后连跑三次:第 1 次 failed、第 2 次 passed、单独跑 passed**。已核实**仓库无
     `pytest-randomly`/`xdist`、无 `addopts`** → **执行顺序是确定的**,故「顺序随机」这个解释被排除,
@@ -1387,6 +1415,7 @@ prompt 必须明说「判不出就写 `null`」,⛔ 不许让它静悄悄把 AND
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
 
+- 2026-08-11 · 🐛 **§七 P1-36「第三例」查清并结案:间歇红的根因 = 报告头那个秒精度 `generated_at`(⛔ 未改生产代码一行 / 未部署 / 未升版号 / 未碰 `strategy_versions`)**。`test_replay_of_the_same_day_twice_is_identical` 裸比 markdown 全文,而 `render.py:87` 的报告头第一行就印着 `generated_at`(`pipeline.py:290`,`timespec="seconds"`)→ **两次 `build_report` 跨过整秒边界即红,失败率 ≈ 间隔 ÷ 1 秒**(孤立 2~3% / 全量 25%)。**既有非新引入**(裸比那行始于 `1161441`,戳始于阶段2.5 `5b7f321`;`7deabb0` 上同样复现)。**报告本身没有不确定性**:探针连跑 200 轮 ×2 分支,归一化后 `normalized_fails=0`。**这是 `computed_at` 那族的第 4 次现身**,2026-08-03 只修了 scan 侧、没推广到报告侧;本条原先猜的「三例共享一处不确定源(`rank(ordinal)`/迭代序/浮点)」**已被证伪**。修法:`conftest.py` 唯一实现 `markdown_modulo_generated_at()` + 三处调用点 + **新增回归用例把跨秒钉成必然**(钉死墙钟 + 断言"裸比必定不等",防归一化退化成空操作);**顺带修掉一条假绿**(`len(set(snapshots))==3` 原先靠戳恒成立)。判据:全量 ×10 轮 **3748 passed / 0 failed**、目标文件 ×200 轮零失败、变异测试双双变红。CLAUDE.md「测试隔离」补一条族规。
 - 2026-08-11 · 🏗 **V2.3.2 批 ①–④ 施工(补记一行,⛔ 未部署 / 未升版号 / 未激活任何包与章程)**。① **关口判定改判**:`gates.py::enforcement_of()` 按 `provenance.source` 二分(**全仓唯一实现**,AST 守门),三项 `engineering_v1` 退出机械硬否决(`C1.market.high_divergence_min_breadth_pctile` / `C1.sector.strength_days_min_5d` / `Z1.sector.cluster_members_min`)、四项 `audited` 一字不动;新表 `threshold_shadow_evals`(append-only)+ 新模块 `selection/threshold_shadow.py` / `eval/threshold_calibration.py`,读数由 `collect_threshold_readings()` **独立算一遍**(⛔ 不塞回硬门分支,否则分母悄悄变成「名次已过的那批」);⑤ 的 prompt 加市场关 / 板块关两块,`evening.py` 把**同一个 `ctx`** 先喂 prompt 再喂 `evaluate_day`(⛔ 不另读一遍表)。② **OUT 升为一等状态**:新表 `out_candidates`(`UNIQUE(d0,篮,票)`,**早退候选的成员也进表** —— 这正是建表的理由)+ 契约 `outCandidates` 三件套 + 客户端 ③b 分两段渲染 + 两个新原因码 `market_unfit` / `sector_unfit`。③ **OUT 研究影子对照**:③-A 新表 `out_shadow_daily` + `review/out_shadow.py::record_day`(挂 `SEG_REVIEW`,独立 try/except;**零 import 交易时钟 / 持仓侧、零写正式结论表**,AST 守门);③-B 周度集中复核(**一次调用管八只**、`crc32` 抽样、`out_shadow_reviews` 一周一行)。④ **四分类 30/80**:骨架包 → `K8-V0.6`(新增 `config.iteration` + `config.threshold_governance` 对账表),`pack.py` 加 `_validate_iteration` / `_validate_threshold_governance` 两道闸,有效样本单位 = `D0×篮子×引擎版本`(结构性核实 + 守门钉死),`classify_factors()` 判 `retire` 前先查行情状态集中度(≥70% 落同一状态 → 降为 `observe`)。
 - 2026-08-11 · 🔧 **V2.3.2 批 ①–④ 复审整改(独立 reviewer 11 条 + 🔴 用户新裁定「路径 A」;⛔ 未部署 / 未升版号 / 未碰章程)**。**路径 A 原文**:「市场关、板块关的 LLM 三值结论**必须恒定生效**,覆盖 C1、Z1、Y1 和三种行情状态;机械读数只作为 prompt 证据输入,**不作为调用或消费 LLM 结论的前置条件**;已确认的机械硬否决阈值独立执行;**禁止模型已输出 `unfit` 却被静默丢弃**」→ 全文落 §五 **⑧-0**。**真因**:批 ① 把三值做成了「机械阈值不过时的上诉法庭」,reviewer 实跑 3 引擎 × 3 行情状态**九格全部 `unfit=False`**(`Y1.market` 主场含三态、`Y1.sector` 只有一条 audited,**根本问不到模型**)。**改法**:`_market_gate`/`_sector_gate` **各只剩两个出口** —— audited 硬否决就地 `return`(行为一字不动)+ 其余一律走新的 `_llm_gate_verdict()`;`unavailable` ⛔ 不再吞掉已给出的三值(`GateCheck.available=False` 自此**不再蕴含** `verdict=pass`,两种成因写进 docstring);代价登记:三值成为**必需输入**,模型没给 → 该关 `blocks_t1`(⛔ 不默认 ok)。**守门**九格矩阵 × 4 组断言,实测把结构还原成老样子 **18 条里 15 条当场变红**。**另 10 条**:🔴 `droppedBaskets` 按 ②-B 验收①**窄化**为「非 OUT 行」(判据 `is_out_reason()` 唯一源;不窄化 = 界面把「模型判它不是龙头」讲成「机会多到装不下」且同批票**双列**)+ 移走却没人接住时**必须在 notes 说出口** · 🔴 周报 `week_anchor` **归一到 ISO 周一**(原来锁的是裸日期,`_target_week()` 换天重跑就落两行、凭一周发现扩到 10+5)· 🟠 联合通过率**剔除**两条只降级的阈值(`primary_regimes`/`rotation_confirmed_blocks_t1` 进 AND 会让 20% 晋级线**永远达不到**)· 🟠 `joint.passRate` 分母改回裁定 3 的「进关候选全体」(`passRateAmongDeterminable` 降为诊断,⛔ 不许拿它对 20% 线)· 🟠 「LLM 没跑」不再被记成「没发现错杀」(`resolve_scope` 只数 `llm_stage='ok'` 的周,非 ok **跳过**;原状:扩大态连续两周 key 失效 → 第三周**自动恢复**,§七 P0-39 同款病)· 🟠 ⑧-2 条件 2/3 补齐判据材料(引擎 `applies_to` + 位置/核心关 `guidance` 进 prompt;条件 3 明说「系统里不存在原失效位、判不出写 `null`」)+ **逐条判不出计数**进产物与快照 · 🟡 契约补 `basketKey`(同票在两篮 OUT 会撞 `ForEach` 主键 / Markdown 出两行一模一样)· 🟡 三处自证式注释改成与实现一致 · 🟡 `neckline-weekly.service` 文件头那笔算术**订正**(「LLM 段上界 = 900s」是错的:`exhausted()` 是调用前检查、每跑新建账本、只有一次调用 → **预算账对这次调用零上界**;1800 保留但降为保守值)· 🟡 `neckline-report.service` **登记欠账**(③-A 加了一段而配额没动)· 🟡 `out_shadow` 模块头「复用注入的 `day`」说反了(生产刻意不注入 —— 复用会把 OUT 票全记成 `no_bar`,**改文字不改实现**)。**两条空转的守门补成真测试**:`test_hard_gate_rejection_never_skips_a_later_audited_gate`(现役三包 evidence 项恰好都排在 audited 之后 → 早退也绿;现造一个 `engineering_v1` 排在 `audited` 之前的包)· 重跑周报那条(原来两次传同一 anchor,恰好绕开洞)。**🟡-1 保持现状 + 登记**:`_best_strength_days` 判定域一并放宽到全域(拆两个域 = 两个事实源;晋级回 audited 那天**必须先决定用哪个域**)。**测试 3745 passed / 3 skipped / 0 failed**(复审基线 3696,只增不减)· iOS NecklineTests **218 / 0 failures** · 双端 BUILD SUCCEEDED · **LLM 调用增量仍恒为 0**(守门已把 `gates.py` 一并扫进 `provider.chat` 计数)。
 - 2026-08-11 · ✅ **V2.3.2 三处待拍板当日全部解锁(策略线裁定,经用户确认)**,全文落 §五 V2.3.2 **⑧**,**P3-58 随之销案**、③-B 与 ④-C 解锁:① **「表现最强」= D1 相对强弱降序 + D1 最高涨幅同分排序**(板块为主基准、市场指数为辅;🔴 **只看 D1、不设前向窗口** —— OUT 影子的职责就是验 D1 有没有错杀,与选股时钟一致、D1 收盘即结案;⚠「单纯涨幅高但弱于板块的不列为优先错杀」是**选相对强弱而非涨跌幅的目的说明**,⛔ 不是再叠一道涨幅过滤器);② **「明显错杀」= 五条同时满足**(D0 因**核心关或位置关**出局 · D1 出现**对应引擎原本要求的**支撑/转强/入场信号 · D1 未触发原失效位 · D1 相对强弱进当日 OUT **前 20%** · LLM 确认盘面**直接推翻**原出局理由),**连续 2 次周度复核 × 每次 ≥2 只**触发扩大 `5+3 → 10+5`(当周 OUT 不足 15 只则全查),连续 2 次 <2 只恢复;🔴 只改研究复核范围,⛔ 不改 OUT 身份、不进 T1/T2、不计正式样本;⚠ 连续计数**必须落表**,⛔ 重跑周报不得推进它;③ **「集中在单一行情状态」= 失败样本 ≥70% 落同一状态**(分母 = 全部失败样本,状态取 **D0 当时保存的**三态),🔴 **状态集中⛔ 不直接提全局淘汰** ——优先研究该因素在对应状态下的降权或停用,且仍受 `n≥80` 门槛 + 用户最终确认约束。

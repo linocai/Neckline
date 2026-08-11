@@ -666,9 +666,35 @@ def source_code_only(path: Path) -> str:
     return _ast.unparse(tree)
 
 
+def markdown_modulo_generated_at(bundle) -> str:
+    """把报告 markdown 里的 `generated_at` 审计戳换成占位符,供「同一天重跑两次
+    逐字节一致」这类**可复现性**断言使用(唯一实现,⛔ 别在各测试里各抄一份)。
+
+    🔴 **这不是"把断言放宽",是在修一个写错了的前提**:`render.py` 报告头第一行
+    就印着 `*生成时间(UTC):{generated_at} · …*`(自阶段2.5 起一直如此),而
+    `pipeline.build_report` 里 `generated_at = datetime.now(timezone.utc)
+    .isoformat(timespec="seconds")` 是**秒精度墙钟**。两次背靠背 `build_report`
+    只要跨过一个整秒边界,裸比全文就红 —— 失败概率 ≈ 两次调用的间隔 ÷ 1 秒,于是
+    **孤立跑几乎不红、全量跑(机器忙、间隔被拉长)间歇红**。这正是它当初能被写下
+    并活到今天的原因:每次复查都"跑一遍绿了"。
+
+    归一化**按 bundle 自己那一串 `generated_at` 逐字替换**,⛔ 不按正则去猜那一行
+    —— 除这个戳以外的任何不确定性(排序不稳、hash 盐、别的时间派生值)照样会让
+    断言红,断言强度一分没降。
+    """
+    stamp = bundle.generated_at
+    assert stamp and stamp in bundle.markdown, (
+        "报告头不再包含 `generated_at` 审计戳 —— 本归一化已成空操作,"
+        "「重跑逐字节一致」的断言会退化成裸比全文。请同步修正本函数与调用方,"
+        f"⛔ 别直接删掉调用(generated_at={stamp!r})。"
+    )
+    return bundle.markdown.replace(stamp, "<GENERATED_AT>")
+
+
 __all__ = [
     "fake_settings",
     "isolated_env",
+    "markdown_modulo_generated_at",
     "source_code_only",
     "insert_trade_cal",
     "business_days",

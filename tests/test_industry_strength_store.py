@@ -612,7 +612,9 @@ def test_fuse_report_degrades_without_crash_and_is_reproducible(isolated_env, mo
     `yellow_card_count → base_score → code`)——候选榜已删,锚改成 markdown 全文;
     排序键的确定性守门本体随 `test_intel_candidates.py` 一并退役,V2 的等价守门在
     `tests/test_selection_tier.py`(机械分三路等价 + 确定性 tie-break)。"""
-    from tests.conftest import seed_active_rule_v1, seed_synthetic_market
+    from tests.conftest import (
+        markdown_modulo_generated_at, seed_active_rule_v1, seed_synthetic_market,
+    )
     import neckline.report.pipeline as pipeline_mod
 
     monkeypatch.setattr(pipeline_mod, "get_provider", lambda *a, **kw: None)
@@ -625,7 +627,9 @@ def test_fuse_report_degrades_without_crash_and_is_reproducible(isolated_env, mo
     b2 = pipeline_mod.build_report(
         dates[-1], parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path, save=False,
     )
-    assert b1.markdown == b2.markdown   # 可复现
+    # 可复现。⚠ 归一化掉报告头的秒精度 `generated_at` 再比 —— 裸比全文会跨整秒边界
+    # 间歇红(与 `test_report_consistency.py` 同一个根因,§七 P1-36)。
+    assert markdown_modulo_generated_at(b1) == markdown_modulo_generated_at(b2)
     assert b1.industry_freshness.unavailable and b1.industry_freshness.stale
     assert "行业强度数据未就绪" in b1.markdown
     assert b1.industry_freshness.to_public_dict()["industryStrengthLagDays"] == -1
