@@ -239,6 +239,28 @@
   `stale` + 行业强度三键 + 扫描层三键)—— 写错一个**非 Optional** 键,客户端合成 `Decodable`
   整份解不出来 → 徽标显示「没查到」,看起来像组件坏了(本批实拍逮到)。
 
+## V2.4.0 P4 施工实打的四个新坑(发版治理;碰激活脚本 / 版号 / 开发库之前先读)
+
+- 🔴 **四线(`K8-V0.8` + `C2/Z2/Y2`)必须原子激活,这是物理理由不是洁癖**:骨架包
+  `config.threshold_governance` 那 11 条键**按 `pack_version` 对号入座**,`K8-V0.8` 里写的是
+  `C2.*/Z2.*/Y2.*` → `C1/Z1/Y1` 仍现役时单独激活 `K8-V0.8`,闸 1 对账**当场拒**(实测)。
+  入口 `scripts/activate_pack_set.py` + `pack.activate_pack_set()`;⛔ **别一条条 `activate_pack.py` 走**。
+  **回滚同一条路反着跑一次**(`--file <K8-V0.7> --file C1/Z1/Y1`),⚠ **`K8-V0.7` 文件本仓已没有**
+  → `git show v2.3.3:packs/K8-skeleton.json` 取回。
+- 🔴 **`_activate_one(conn, …)` 刻意不 commit / 不清缓存 / 不 `init_schema`**:那三件事归调用方。
+  「谁提交」只能有一个答案 —— 批量里某一包自己 commit 了,后面那包失败就回滚不掉,留下**半激活状态**。
+  ⚠ python `sqlite3` 的 `connection()` 上下文管理器**异常时不 commit = 自动回滚**,原子性靠的就是它;
+  ⛔ 别在 `_activate_one` 里加任何 `conn.commit()`。
+- 🔴 **`bootstrap_dev_db.py` 读参考库⛔ 不用 `ATTACH`**:`sqlite3.connect()` 默认没开 URI,
+  `ATTACH 'file:…?mode=ro'` 那种写法**根本不生效**(会被当字面文件名),而 `--reference-db` 指的往往
+  正是权威库 `data/neckline.db`。正解 = 另开一条 `sqlite3.connect(uri=True, mode=ro)` 独立只读连接读进内存。
+  参考表是**四张白名单**(`trade_cal`/`strategy_versions`/`stock_basic`/`namechange`),
+  ⛔ `app_settings`/`llm_providers`(api_key)与业务表一张都不许拷。
+- 🔴 **章程 config 一个数都不许在新脚本里手抄**:`v2.3-k8` 由 `scripts/oneoff/` 那条既有落行链
+  (`charter_v1_3` → `charter_v1_3_3` → `seed_charter_v22k8` → `seed_charter_v23k8`)**从 K1 派生**,
+  与 `tests/test_charter_v23k8.py` 同一条链。**引用 `oneoff/` 是刻意的**(它们是那四版 config 的唯一实现);
+  派生不出来就**非零退出说清楚**,⛔ 不静默造一个默认章程。守门:脚本源码里不许出现 `0.05`/`single_cap` 等字样。
+
 ## D1 集合竞价确认层(`neckline/auction/`,V2.3.3 起;碰它之前先读)
 
 - 🔴 **`baskets.engine_code` 是线码 `C`/`Z`/`Y`,`engine_version` 才是 `C1`/`Z1`/`Y1`**
@@ -352,11 +374,14 @@
   返 404 的端点必须检查要不要加新 case,别指望 fallback 猜对文案(watchlist
   `not_found` 被误显示成"持仓已清"踩过;**同一个 reason 字符串复用已有 case 不算
   "没加",只有新字符串才需要新 case**,v1.4-⑦-A `decisions/{id}/track` 验证过)。
-- **`NecklineTests` 只在 iOS Simulator destination 跑得动**:`-destination
-  'platform=macOS'` 下 `xcodebuild test` 报 `Could not find test host`(`TEST_HOST`
-  按 iOS bundle 布局配置,与 macOS `.app/Contents/MacOS/` 嵌套路径不符,既有工程
-  设置、与代码改动无关);`build`(非 test)双平台都能跑,验收走「双端 build +
-  iOS Simulator test」组合,不必强求 macOS test 绿(v1.4-⑦ 验证过)。
+- ✅ ~~**`NecklineTests` 只在 iOS Simulator destination 跑得动**~~ —— **V2.4.0 P4.1 已修好,
+  macOS `xcodebuild test` 现在真的跑得起来**(实测 `Executed 228 tests, 10 skipped, 0 failures`;
+  iOS 侧 239,差的 11 条是 iOS-only 用例)。**病灶**:xcodegen 给 `bundle.unit-test` 自动生成的
+  `TEST_HOST` 是 iOS 布局 `Neckline.app/Neckline`,macOS 可执行文件在 `Neckline.app/Contents/MacOS/Neckline`。
+  **修法**:`client/project.yml` 的 `NecklineTests.settings.base` 加**按 SDK 条件**的
+  `"TEST_HOST[sdk=macosx*]"`,**iOS 那条一字不动** → `xcodegen generate`。
+  🔴 **⛔ 不许只手改 pbxproj**(下次 generate 冲掉);守门 `tests/test_v240_p4_release.py` 双向锁。
+  **验收自此是「双端 build + 双端 test」**,⛔ 不再拿「iOS test + 双端 build」当等价证据。
 - **服务端字段与客户端既有计算属性撞名**(如 `distToStopPct` 小数 vs 百分比):
   CodingKeys 显式改名解码(`distToStopPctServer`),不改旧属性既有语义(有单测锁)。
 - **Swift `Encodable` 合成对 Optional 属性一律走 `encodeIfPresent`(nil→省略键)**,
@@ -409,6 +434,9 @@
 - **`xcodegen generate` 会顺手修好 project 级 `MARKETING_VERSION` 漂移**:本次重跑发现 pbxproj 的
   **project 级**停在 `2.0.0`、app target 却是 `2.2.0`。守门单测 `test_client_version_governance.py`
   **只比 app target**(project 级块 `PRODUCT_NAME = "$(TARGET_NAME)"` 被刻意排除)→ 这处漂移**一直是绿的**。
+  ✅ **V2.4.0 P4.4 补上了那两处盲点**(`tests/test_v240_p4_release.py`):pbxproj **全部** `MARKETING_VERSION`
+  必须同值(含 project 级)+ `project.yml` **两处**(顶层 base 与 app target)必须同值。
+  **升版号要改三个文件、四处数**:`app.py::VERSION` · `project.yml` ×2 · 然后 `xcodegen generate`。
   ⚠ 加新 `.swift` 文件必须 `xcodegen generate`(pbxproj 是显式文件引用,**没有** `PBXFileSystemSynchronizedRootGroup`)。
 - 🔴 **用户正式 macOS App 在跑时,⛔ 别指望启动 Debug 构建来截 macOS 图**:同 bundle id,
   LaunchServices 只会把**那个还在跑的旧版**切到前台 —— 截出来是旧版,**比没有截图更误导**。
@@ -817,10 +845,10 @@
   ⚠ **V2.1 施工图自 2026-08-09 起也归档**(`archive/施工图/V2.1.0_施工图_20260809归档.md`):**批 1 六块已上产
   (`v2.1.0`)= V2.2 地基;批 2〔`K7-pack-v2` 发版激活〕⛔ 作废永不执行;批 3〔周度 unit〕并入 V2.2 第 ④ 块**。
 - **三条版本线(2026-08-09 K8 入仓起,冷启动必读,写号前先分清是哪条)**:① **系统线 `v` 字头**
-  (**仓库与生产同为 `v2.3.3`** —— 2026-08-12 10:58:06 CST 上产,权威 `PROJECT_PLAN.md`;
-  ⚠ **`v2.4.0` 已于 2026-08-12 立项**,施工图 = §五 V2.4.0,需求原件 = 根目录
-  `V2.4.0_AUDIT_REMEDIATION.md`;🔴 **P0 + P1 + P2 + P3 已完工但未部署、未升版号**(`VERSION` 仍 `v2.3.3`,
-  三处同升是 P4 的活),**P4 未开工** —— ⛔ 别把「P0–P3 做完了」当成「v2.4.0 上产了」)
+  (🔴 **仓库 `v2.4.0`(已打 tag)/ 生产仍 `v2.3.3`** —— 2026-08-12 P4 完工;权威 `PROJECT_PLAN.md`;
+  需求原件 = 根目录 `V2.4.0_AUDIT_REMEDIATION.md`;**P0–P4 五段全部完工、各自独立提交**,
+  🔴 **⛔ 未部署 / 未激活 / 未换包 / 未 push** —— 生产 `/health` 现在仍返 `v2.3.3`,
+  ⛔ 别把「打了 tag」当成「上产了」;上产照 §五 V2.4.0 **P4.6-实测** 那张表跑)
   ② **纪律章程**(`strategy_versions` 表行,现役 **`v2.3-k8`**,权威 §2.1,切换器 `activate_charter.py`)
   ③ **K8 选股线**(权威需求 = **`~/Lino/whynotme/K8.md`** —— 🔴 **该原件已升 `V0.8`**,注册表
   `V:K8-V0.8 / C:C2 / Z:Z2 / Y:Y2`;**库里现役仍是 `K8-V0.7` + `C1/Z1/Y1`** —— V2.4.0 P1 **只出了四个包文件**,
@@ -831,8 +859,10 @@
   (这条纪律不因这次对齐而失效:两者随时可能再次不同)。
   ⚠ **V2.4.0 P2 起竞价两张表各多了几列可空机械列**(`quote_quality_json` /
   `critical_data_quality` / `context_data_quality` / `quality_detail_json`),
-  `basket_stage_handoff` 多了 `seed_count` / `seed_summary` —— **老行一律 NULL = 「旧版本
-  未细分 / 当时没记」,⛔ 不得默认成「正常」或 `0`**(客户端已按这条画「旧版本未细分」)。
+  `basket_stage_handoff` 多了 `seed_count` / `seed_summary`,**P4.3 又给
+  `selection_pack_activation_log` 加了 `batch_id`** —— **V2.4.0 迁移合计 7 个可空列、0 张新表、0 处删列**;
+  **老行一律 NULL = 「旧版本未细分 / 当时没记 / 不属于任何原子批次」,⛔ 不得默认成「正常」或 `0`**
+  (客户端已按这条画「旧版本未细分」;老库迁移演练守门 `test_v240_p4_release.py`)。
   ⛔ **`V0.x` 禁简写**(与满篇 `v` 字头只差一个大小写);⛔ 引擎升级写 `C2`/`Z2`/`Y2`,**不写「K8 v2」**。
   ⚠ **还有第四、第五个"版本号"、但它们不是版本线**:冻结卡形状版本 `CARD_SPEC_VERSION`
   (现 **`basket_card_v5`**,V2.4.0 P1.5+ 随 `tier_breakdown.gates` 三处形状变更 bump)与选股时钟机械段形状版本

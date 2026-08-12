@@ -119,6 +119,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1016,85 +1018,225 @@ def activate_pack(
     切换器那种"核心值核对"概念(章程的核心值是固定拍板的几个数,包的参数本就
     是每次都可能不同的调参对象),`scripts/activate_pack.py` 的闸 1-3 已经把
     「schema 合法 + 原语白名单 + engine_api 兼容 + 人读 diff」都过了一遍,本函数
-    只管落库这一步的原子性与幂等性。"""
+    只管落库这一步的原子性与幂等性。
+
+    🔴 **V2.4.0 P4.3 起本函数是 `_activate_one()` 的薄壳**(§3.14-F):事务体抽出去
+    给四线原子激活 `activate_pack_set()` 复用,**行为逐位不变**(单测正面锁死)。
+    ⛔ 别把激活逻辑复制第二份 —— 那正是「两个入口慢慢长歪」的经典起点。"""
     errors = validate_pack_doc({"manifest": manifest, "config": config})
     if errors:
         raise ValueError("包 schema 校验未通过,拒绝激活:" + "; ".join(errors))
 
     pack_version = manifest["pack_version"]
-    line_code = manifest_line_code(manifest)
     init_schema(db_path)
+    with connection(db_path) as conn:
+        # `batch_id=None`:单包激活**不属于任何原子批次**(⛔ 不编一个假批次号)。
+        _activate_one(conn, manifest, config, via=via, batch_id=None)
+
+    _invalidate_active_cache(db_path)
+    activated = get_pack(pack_version, db_path=db_path)
+    assert activated is not None and activated.is_active
+    return activated
+
+
+def _activate_one(
+    conn: sqlite3.Connection,
+    manifest: Dict[str, Any],
+    config: Dict[str, Any],
+    *,
+    via: str,
+    batch_id: Optional[str] = None,
+) -> str:
+    """**在调用方给的连接与事务里**落一个包的登记 + 切换(V2.4.0 P4.3 从
+    `activate_pack` 抽出,§3.14-F)。返回该包的 `pack_version`。
+
+    🔴 **本函数刻意不 commit、不清缓存、不 `init_schema`** —— 那三件事归调用方:
+    单包走 `activate_pack`,四线原子批走 `activate_pack_set`。**「谁提交」这件事只
+    能有一个答案**,否则批量激活里某一包自己 commit 了,后面那包失败就回滚不掉,
+    留下**半激活状态**(正是 P4.3 要根除的东西)。
+
+    `batch_id`:属于同一次原子批次的事件共享一个,单包激活传 `None`(落库 NULL)。
+
+    行为语义(逐条对齐 `activate_pack` 的 docstring 1–4 条,一字未改):同版本号
+    内容不同 → `ValueError`(append-only);目标已是**同线**现役 → 幂等 no-op、不追加
+    事件;否则同线旧行先 deactivate 再 activate,**其它线一概不碰**。"""
+    errors = validate_pack_doc({"manifest": manifest, "config": config})
+    if errors:
+        # 防御性复核(调用方本就该先校验过):批量入口的"四包全部通过校验后才切换"
+        # 是在**进事务之前**做的,这里是第二道,防有人日后直接调本函数。
+        raise ValueError("包 schema 校验未通过,拒绝激活:" + "; ".join(errors))
+
+    pack_version = manifest["pack_version"]
+    line_code = manifest_line_code(manifest)
     manifest_json = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
     config_json = json.dumps(config, ensure_ascii=False, sort_keys=True)
     evidence_ref_text = _join_evidence_ref(list(manifest["evidence_ref"]))
     now = _now()
 
-    with connection(db_path) as conn:
-        existing = conn.execute(
-            "SELECT manifest_json, config_json FROM selection_packs WHERE pack_version=?",
-            (pack_version,),
-        ).fetchone()
-        if existing is not None:
-            if existing[0] != manifest_json or existing[1] != config_json:
-                raise ValueError(
-                    f"pack_version={pack_version!r} 已存在但内容不同"
-                    "(append-only,不可覆盖已登记的包;如需改动请换一个新的 pack_version)。"
-                )
-        else:
-            # `status` 刻意不出现在 INSERT 列里 —— 只由 DDL `DEFAULT 'running'` 落位
-            # (本版无任何 status 切换入口,见 `get_active_engines` docstring 的裁定)。
-            conn.execute(
-                "INSERT INTO selection_packs "
-                "(pack_version, name, engine_api_version, manifest_json, config_json, "
-                " evidence_ref, is_active, created_at, activated_at, line_code) "
-                "VALUES (?,?,?,?,?,?,0,?,NULL,?)",
-                (
-                    pack_version, manifest["name"], manifest["engine_api_version"],
-                    manifest_json, config_json, evidence_ref_text, now, line_code,
-                ),
+    existing = conn.execute(
+        "SELECT manifest_json, config_json FROM selection_packs WHERE pack_version=?",
+        (pack_version,),
+    ).fetchone()
+    if existing is not None:
+        if existing[0] != manifest_json or existing[1] != config_json:
+            raise ValueError(
+                f"pack_version={pack_version!r} 已存在但内容不同"
+                "(append-only,不可覆盖已登记的包;如需改动请换一个新的 pack_version)。"
             )
+    else:
+        # `status` 刻意不出现在 INSERT 列里 —— 只由 DDL `DEFAULT 'running'` 落位
+        # (本版无任何 status 切换入口,见 `get_active_engines` docstring 的裁定)。
+        conn.execute(
+            "INSERT INTO selection_packs "
+            "(pack_version, name, engine_api_version, manifest_json, config_json, "
+            " evidence_ref, is_active, created_at, activated_at, line_code) "
+            "VALUES (?,?,?,?,?,?,0,?,NULL,?)",
+            (
+                pack_version, manifest["name"], manifest["engine_api_version"],
+                manifest_json, config_json, evidence_ref_text, now, line_code,
+            ),
+        )
 
-        # 🔴 V2.2-①:现役查找与切换**必须按 line_code 分线**(plan 点名的陷阱 #1)——
-        # 全表口径下"激活 C1"会把骨架线 V 踢下去,闸全过、库不报错,**静默**。
-        prior_row = conn.execute(
-            "SELECT pack_version FROM selection_packs WHERE is_active=1 AND line_code=?",
-            (line_code,),
-        ).fetchone()
-        prior_version = prior_row[0] if prior_row is not None else None
+    # 🔴 V2.2-①:现役查找与切换**必须按 line_code 分线**(plan 点名的陷阱 #1)——
+    # 全表口径下"激活 C1"会把骨架线 V 踢下去,闸全过、库不报错,**静默**。
+    prior_row = conn.execute(
+        "SELECT pack_version FROM selection_packs WHERE is_active=1 AND line_code=?",
+        (line_code,),
+    ).fetchone()
+    prior_version = prior_row[0] if prior_row is not None else None
 
-        if prior_version != pack_version:
-            if prior_version is not None:
-                # WHERE 带 line_code 双保险(pack_version 本身 UNIQUE,加线号是防
-                # "prior 查询与 UPDATE 之间语义漂移"的一致性钉子,plan 陷阱 #1 同源)。
-                conn.execute(
-                    "UPDATE selection_packs SET is_active=0 WHERE pack_version=? AND line_code=?",
-                    (prior_version, line_code),
-                )
-                conn.execute(
-                    "INSERT INTO selection_pack_activation_log (pack_version, action, via, note, at) "
-                    "VALUES (?,?,?,?,?)",
-                    (prior_version, "deactivate", via, f"由 {pack_version} 取代", now),
-                )
+    if prior_version != pack_version:
+        if prior_version is not None:
+            # WHERE 带 line_code 双保险(pack_version 本身 UNIQUE,加线号是防
+            # "prior 查询与 UPDATE 之间语义漂移"的一致性钉子,plan 陷阱 #1 同源)。
             conn.execute(
-                "UPDATE selection_packs SET is_active=1, activated_at=? WHERE pack_version=?",
-                (now, pack_version),
+                "UPDATE selection_packs SET is_active=0 WHERE pack_version=? AND line_code=?",
+                (prior_version, line_code),
             )
             conn.execute(
-                "INSERT INTO selection_pack_activation_log (pack_version, action, via, note, at) "
-                "VALUES (?,?,?,?,?)",
-                (pack_version, "activate", via, "", now),
+                "INSERT INTO selection_pack_activation_log "
+                "(pack_version, action, via, note, at, batch_id) "
+                "VALUES (?,?,?,?,?,?)",
+                (prior_version, "deactivate", via, f"由 {pack_version} 取代", now, batch_id),
             )
-        # else: 目标已是现役 —— 幂等 no-op,不追加事件。
+        conn.execute(
+            "UPDATE selection_packs SET is_active=1, activated_at=? WHERE pack_version=?",
+            (now, pack_version),
+        )
+        conn.execute(
+            "INSERT INTO selection_pack_activation_log "
+            "(pack_version, action, via, note, at, batch_id) "
+            "VALUES (?,?,?,?,?,?)",
+            (pack_version, "activate", via, "", now, batch_id),
+        )
+    # else: 目标已是现役 —— 幂等 no-op,不追加事件。
+    return pack_version
 
-    # 缓存失效:**整库清**(该 db 下所有线的桶一起清,plan 陷阱 #2 给的两个合法
-    # 选项之一;选整库而不是按线,因为便宜且绝不会漏 —— 激活只动一条线,但"少清"
-    # 的代价是静默读旧,"多清"的代价只是一次 json.loads)。
+
+def _invalidate_active_cache(db_path: Optional[Path]) -> None:
+    """缓存失效:**整库清**(该 db 下所有线的桶一起清,plan 陷阱 #2 给的两个合法
+    选项之一;选整库而不是按线,因为便宜且绝不会漏 —— 单包激活只动一条线,但"少清"
+    的代价是静默读旧,"多清"的代价只是一次 json.loads)。
+
+    ⚠ V2.4.0 P4.3 抽成独立函数:四线原子激活一次动四条线,**必须整库清一次**
+    (施工图 P4.3 末条),而"整库清"这件事只能有一份实现。"""
     db_key = _db_cache_key(db_path)
     for key in [k for k in _ACTIVE_PACK_CACHE if k[0] == db_key]:
         _ACTIVE_PACK_CACHE.pop(key, None)
-    activated = get_pack(pack_version, db_path=db_path)
-    assert activated is not None and activated.is_active
-    return activated
+
+
+@dataclass(frozen=True)
+class PackSetActivation:
+    """`activate_pack_set()` 的结果(P4.3 要求「输出旧版本集合和新版本集合」)。
+
+    `before`/`after` 是**整表现役快照**(`line_code → pack_version`),不只是本批
+    动过的那几条 —— 「没动的那两条线现在是谁」同样是运维要核对的事实。"""
+
+    batch_id: str
+    before: Dict[str, str]
+    after: Dict[str, str]
+    activated: Tuple[str, ...]          # 本批按落库顺序的 pack_version
+
+
+def _active_map(db_path: Optional[Path]) -> Dict[str, str]:
+    """`{line_code: pack_version}` 现役快照(按 `_LINE_CODES` 确定性排序)。"""
+    actives = {p.line_code: p.pack_version for p in list_packs(db_path=db_path) if p.is_active}
+    order = {code: i for i, code in enumerate(_LINE_CODES)}
+    return dict(sorted(actives.items(), key=lambda kv: order.get(kv[0], len(order))))
+
+
+def activate_pack_set(
+    docs: List[Dict[str, Any]],
+    *,
+    via: str = "cli-set",
+    db_path: Optional[Path] = None,
+    batch_id: Optional[str] = None,
+) -> PackSetActivation:
+    """**四线原子激活**(V2.4.0 P4.3;K8 §十九「激活与回滚」逐字:骨架与三引擎是
+    协调升级,不能分别激活后留下临时混合态)。
+
+    `docs` = `load_pack_file()` 返回的那种 `{"manifest":…, "config":…}` 列表。
+
+    铁律(逐条对应施工图 P4.3):
+      * **一个 SQLite 事务**:`with connection(...)` 里连调 `_activate_one`,
+        任一包抛错 → 整个事务不 commit → **四线全部维持原值**,⛔ 不留半激活状态。
+      * **全部通过校验后才切换**:schema / 原语白名单 / `engine_api_version` /
+        线号唯一性**全在进事务之前**跑完(闸门本身在 `scripts/activate_pack_set.py`,
+        本函数只再核一遍 schema 与线号唯一性 —— 它是库侧最后一道)。
+      * **共享 `batch_id`**:本批写进 `selection_pack_activation_log` 的每一条事件
+        (含被取代的旧包那条 `deactivate`)都带同一个批次号。
+      * **持仓章程不参与本事务**:本模块全程不 import `strategy.brain`、不碰
+        `strategy_versions`(既有纪律,§五 V2-③「插槽边界」)—— 这条由 import 结构
+        保证,不靠自觉。
+
+    ⛔ **同一条线不许在一批里出现两次**:那等于"批内自己把自己顶掉",事件流会写出
+    一条谁也解释不清的 deactivate。fail loud。"""
+    if not docs:
+        raise ValueError("activate_pack_set:docs 为空,没有要激活的包(fail loud,不静默 no-op)")
+
+    errors: List[str] = []
+    for i, doc in enumerate(docs):
+        for e in validate_pack_doc(doc):
+            errors.append(f"docs[{i}]:{e}")
+    if errors:
+        raise ValueError("包 schema 校验未通过,拒绝激活(**四包全部通过才切换**):" + "; ".join(errors))
+
+    by_line: Dict[str, Dict[str, Any]] = {}
+    for doc in docs:
+        line = manifest_line_code(doc["manifest"])
+        if line in by_line:
+            raise ValueError(
+                f"activate_pack_set:同一条线 {line!r} 在一批里出现两次"
+                f"({by_line[line]['manifest']['pack_version']} / {doc['manifest']['pack_version']})"
+                " —— 批内自己顶掉自己,拒绝执行。"
+            )
+        by_line[line] = doc
+
+    if batch_id is None:
+        batch_id = f"set-{uuid.uuid4().hex[:12]}"
+
+    init_schema(db_path)
+    before = _active_map(db_path)
+
+    # 落库顺序按 `_LINE_CODES` 钉死(V → C → Z → Y → LEGACY),**与结果无关但可复现**:
+    # 四条线互不干扰(每条只碰自己 line_code 的行),且全在**同一个事务**里,
+    # 外部观察者永远看不到中间态。⛔ 别改成依赖 `docs` 传入顺序 —— 那会让事件流的
+    # id 次序随调用方漂,审计时对不上。
+    order = {code: i for i, code in enumerate(_LINE_CODES)}
+    ordered = sorted(by_line.items(), key=lambda kv: order.get(kv[0], len(order)))
+
+    activated: List[str] = []
+    with connection(db_path) as conn:
+        for _line, doc in ordered:
+            activated.append(
+                _activate_one(conn, doc["manifest"], doc["config"], via=via, batch_id=batch_id)
+            )
+
+    _invalidate_active_cache(db_path)
+    after = _active_map(db_path)
+    return PackSetActivation(
+        batch_id=batch_id, before=before, after=after, activated=tuple(activated),
+    )
 
 
 __all__ = [
@@ -1111,4 +1253,6 @@ __all__ = [
     "get_active_engines",
     "get_active_pack",
     "activate_pack",
+    "activate_pack_set",
+    "PackSetActivation",
 ]

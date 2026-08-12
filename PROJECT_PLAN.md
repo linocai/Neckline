@@ -628,122 +628,105 @@ Neckline/
 
 ## 四、当前状态
 
-**2026-08-12 · 🔴 V2.4.0 **P0 + P1 + P2 + P3 已完工、未部署**;P4 全部未开工。**
-生产 `nk` 仍是 `v2.3.3`(四批合计**零部署、零 rsync、零重启、零激活、零换包、零 push**);
-仓库 `VERSION` 仍是 `v2.3.3`(**版号三处同升是 P4 的活**);现役四线仍是
-`C1`/`Z1`/`Y1`/`K8-V0.7`(新四包**只出了文件**,⛔ 未激活)。本节是 P3 完工快照,
-前三版(P0 / P1 / P2 完工快照)已归 §九 2026-08-12 各条。
+**2026-08-12 · 🔴 V2.4.0 **五段(P0/P1/P2/P3/P4)全部完工 + 已打 `v2.4.0` tag**;
+⛔ **未部署 / 未激活 / 未换包 / 未 push**,等用户指令。**
+仓库 `VERSION` = **`v2.4.0`**(三处同升 + tag `v2.4.0` 打在 P4 那个 commit 上);
+生产 `nk` 仍是 **`v2.3.3`**(五批合计**零 rsync、零重启、零激活、零换包、零 push**);
+生产现役四线仍是 `C1`/`Z1`/`Y1`/`K8-V0.7`(新四包**只出了文件 + 演练激活过临时库**,⛔ 生产未激活);
+章程恒 `v2.3-k8`(本版 `activate_charter.py` 对生产库一次都没跑)。
+本节是 **P4 完工快照**,前四版(P0/P1/P2/P3 完工快照)已归 §九 2026-08-12 各条。
 
-### ✅ P3 实际读数(每格是读数,不是"照做了")
+### ✅ P4 实际读数(每格是读数,不是"照做了")
 
 | 项 | 实际读数 |
 |---|---|
-| **全量单测** | **4201 passed / 3 skipped / 0 failed**,**连跑两次**读数相同(113.49s / 见下)。P3 开工基线 = 4143 passed / 3 skipped |
-| **用例增减** | `--collect-only` 对拍:**删 0 / 增 58 / 净 +58**(4146 → 4204)。58 = 新验收文件 `tests/test_v240_p3_frontend.py` **55** + `test_exit_reference_gates.py` **1**(逐字骨架仍带三个数)+ `test_selection_basket_card.py` **1**(章程读到了但没配回落止盈)+ `test_db_isolation_guardrail` 按文件参数化的 **1**(新模块 `strategy/charter_copy.py`)。**改动过的旧断言 5 条全部在原处写明被 P3 哪一条取代**(3 条 Python + 1 条 Swift + 1 条时间退出文案),⛔ 无一条删掉换绿 |
-| **P3 验收 10 条** | **全绿**(逐条读数见下表)。守门 55 条按验收编号分组,**四条"只有实拍看得见"的(4/7/8/9)另有实拍佐证** |
-| **双端构建 / 客户端单测** | macOS `** BUILD SUCCEEDED **` · iOS `** BUILD SUCCEEDED **` · iOS Simulator `** TEST SUCCEEDED **`,**239 executed / 10 skipped / 0 failed** |
-| **实拍** | **11 张**(`A1/A2/B1/C1/D1/D2/D3/D4/E3/F1/F2`),六组全覆盖:A 选股首页(降级态 / 空态齐全态)· B 篮子卡默认层 · C 竞价弹层 · D 持仓(iOS 列表 / iOS 详情 / **旧章程回放** / macOS 列表)· E 数据新鲜度三态里的两态 + 网络失败 · F macOS 选股 1024 与 1440。**每一张都对照 `.dc.html` 右列逐项核过**,对不上的三处当场修(见「实拍逮到的三处」) |
-| **真库 / 宿主域** | `data/neckline.db` md5 全程 `7ca02c7d…` 未变(演示库另建在 scratchpad);宿主 `top.linotsai.neckline` 的 `NK_BASE_URL_OVERRIDE` **does not exist**(用户自己填的 `NK_API_TOKEN` **一个字没动**);macOS 走 dev 变体自截;跑完 `pgrep` 无残留 |
+| **全量单测** | **4251 passed / 3 skipped / 0 failed**,**连跑两次**读数相同(113.53s / 114.47s)。P4 开工基线 = **4201 passed / 3 skipped**(本机实跑,123.62s) |
+| **用例增减** | `--collect-only` 逐条对拍(HEAD 起临时 worktree):**删 0 / 增 50 / 净 +50**(4204 → 4254)。50 = `test_activate_pack_set.py` **23** + `test_bootstrap_dev_db.py` **14** + `test_v240_p4_release.py` **10** + `test_db_isolation_guardrail` 按文件参数化的 **3**(三个新测试文件各一)。🔴 **旧断言改动 0 条、删除 0 条** —— P4 只加不改 |
+| 🔴 **macOS `xcodebuild test`** | **真的跑起来了**:`** TEST SUCCEEDED **`,**228 executed / 10 skipped / 0 failed**。这正是 P4.1 的目的(此前恒报 `Could not find test host`)。⚠ 与 iOS 的 239 差 **11 条 = `PushRoutingTests`**(`PushManager` 整文件 `#if os(iOS)`,macOS 不开推送)—— **平台差异,不是缺口** |
+| **双端构建 / 客户端单测** | macOS `** BUILD SUCCEEDED **` + `** TEST SUCCEEDED **`(228)· iOS `** BUILD SUCCEEDED **` + `** TEST SUCCEEDED **`(**239 executed / 10 skipped / 0 failed**) |
+| **四线原子激活演练** | ✅ **正例**:与生产同构的演练库(`K8-V0.7`+`C1/Z1/Y1`)→ dry-run 零写库(md5 前后相同)→ `--confirm` 一次切四线,**8 条事件共享 `batch_id=set-dd2baf5c3d7f`**,`PRAGMA integrity_check=ok`。✅ **反证**:同一库上**单独**激活 `K8-V0.8` **被闸 1 对账当场拒**(rc=2,四线原值不动)。✅ **失败回滚负例**:第 3 条线(Z)中途失败 → 四线**全部维持原值 + 零新增事件 + 前两包的 INSERT 也一并回滚**;第 4 条线失败同样整批回滚 |
+| **P4.7 回滚绳演练** | ✅ **「只回滚策略包集合」真跑通**:`K8-V0.8`+`C2/Z2/Y2` → `K8-V0.7`+`C1/Z1/Y1` 反向再跑一次同一个脚本即可(闸 1 对账自动对上旧引擎集合);回滚是**追加 8 条事件**,历史一行没抹 |
+| **老库迁移演练** | ✅ 用 **`v2.3.3` tag 里那份 `_SCHEMA`** 造真老库 → 塞 8 张表的历史行 → 跑今天的 `init_schema` → **历史行逐表逐列逐位不变**,7 个新列全部 `NULL`。**反向探针**:把 `batch_id` 改成 `NOT NULL DEFAULT` 后这条守门**当场变红**(证明它不是空转),改回即绿 |
+| **版号三处** | `app.py::VERSION = "v2.4.0"` · `client/project.yml` **两处**(顶层 base + app target)= `2.4.0` · pbxproj **四处**(含 project 级)= `2.4.0`;`xcodegen generate` 跑过,`git diff` 只见预期变化 |
+| **tag** | `git tag -l` = `v2.0.0` / `v2.3.3` / **`v2.4.0`**(annotated,打在 P4 那个 commit 上);⛔ **`v2.0.0` 一动没动**;⛔ **未 push** |
+| **真库** | `data/neckline.db` md5 全程 **`7ca02c7d99a01f4226442a3edb085c9b`** 未变(演练库全在 scratchpad);跑完 `pgrep` 无残留 |
 
-### 🔴 P3 干了什么(一句话:**让每一句话都由「那一行的章程」派生,让默认界面只回答"买什么、在哪买、什么时候不成立"**)
+### 🔴 P4 干了什么(一句话:**让 v2.4.0 可验证、可复现、可发布、可回滚**)
 
-- **P3.1 持仓语义单一来源**:新模块 `neckline/strategy/charter_copy.py`(线名 / 动作短语 /
-  无回落止盈 / 无时间退出 / 离场参考披露 五句的唯一源),`api/app.py`、`sentinel/holding.py`、
-  `sentinel/precall.py`、`selection/basket_card.py` 全部改读它。🔴 **顺手修了一处真 bug**:
-  advisory 分支此前只换了前缀口吻(「止损警戒:」),**线本身仍叫「止损线」**;
-  刻度尺上那根红刻度**更是一处都没换过**(V2.3.2-⑤ 改了徽标 / 四格 / 解释句,**独独漏了尺**)。
-  客户端新增 `Position.takeProfitRetrace`(与 `lossWarningPct` 同一次读库,零新增查询)——
-  「有没有回落止盈这项纪律」自此是**独立字段**,⛔ 不再拿 `retraceState.triggered == false` 反推。
-- **P3.2 离场参考推送**:⛔ 零新增 kind;内部 key `take_profit` 一字未改,对外统一显示
-  「**离场参考提醒**」。事件文案收进 `charter_copy.exit_reference_reached_copy()`,
-  照施工图逐字骨架 +**保留三个数**。§2.8-C-3 前提③ 的版本裁定已在正文标注(planner 已落)。
-- **P3.3 选股首页信息层级**:iOS 默认首屏收成四件;④ 复盘入口 / ② 持仓体检入口两张跳转卡**删**
-  (两者早已是独立 Tab),完整 IntelPackage → 「研究材料」折叠区,① 六格情绪 → 市场状态行点开,
-  ⑤ 完整新鲜度卡 → **工具栏三态徽标**(`NKFreshnessBadge`,新组件),③b/③b-2 → **一行紧凑统计入口**
-  (「首要原因」按 `nkGateOrder` 归并,**零发明**)。**macOS 列表栏同步减法**(F 组):
-  「今日概览」「昨日回执」两行撤下,换成竞价一行 + 市场状态一行 + 统计入口 + 研究材料。
-- **P3.4 篮子默认卡**:默认层收成 5 件(Tier/名/引擎 · 一句话驱动 · **首选成员块** · 为什么是现在 ·
-  一条主要风险);六关宫格 / 机械评分 / LLM 原始叙述 / 完整证据链**整体下沉进「审计」折叠区**
-  (四个既有函数原样复用,**内容一字未改**);新增一级展开「解释」(全部成员 · 预期上涨路径 ·
-  最强支持证据 · **主要反证** · 验证与失效条件)。新组件 `NKMemberScaleBar`(按价格线性映射)。
-- **P3.5 竞价减法**:打开后**默认先给逐篮结论**(块 3 → 块 4 → 块 5),块 1 / 块 2 折进
-  「数据审计」/「市场背景」两个具名折叠区,**块名与块序原样保留**(审计锚);
-  `proxySampleNote` 折进市场背景(**折叠可以、消失不行**,守门保留);触发失效的那一篮**整圈描红**。
-- **P3.6 加载边界**:`refresh()` 拆成 `refreshSelection` / `refreshPositions` / `refreshReview` /
-  `refreshSettings` + `ensureLoaded(_:)`(首访门控)+ `refresh(for:)`(工具栏只刷当前 Tab)。
-  `board` 按 P0 校正**不在任何一路**(客户端零调用)。`ReviewView` 自己那两份拉取逻辑收口进 AppModel。
-- **P3.7 Swift 减重**:`Networking/Models.swift`(5633 行)**逐字**拆成
-  `Networking/Models/{Shared,Basket,Report,Position,Review,Auction}Models.swift`
-  (拆分脚本对拼回来的全文做过比对;切点全在顶层 `// MARK:` 之前的空行上)。
-  🔴 **十个守门单测按文件名读它** —— 全部改走新的统一入口 `tests/client_sources.py`
-  (带**哨兵自检**:六份各留一个只可能出现在它里面的类型,缺一当场红)。
+- **P4.1 macOS 测试宿主**:`client/project.yml` 的 `NecklineTests.settings.base` 加**按 SDK 条件**的
+  `"TEST_HOST[sdk=macosx*]" = "$(BUILT_PRODUCTS_DIR)/Neckline.app/Contents/MacOS/Neckline"`,
+  **iOS 那条自动值一字不动** → `xcodegen generate`。`git diff` **只有那两行**(Debug/Release 各一),
+  scheme 与目标依赖零变化。守门 `tests/test_v240_p4_release.py` 三条(yml 侧 / pbxproj 侧 / **iOS 反向**)。
+- **P4.2 开发库可复现**:新增 `scripts/bootstrap_dev_db.py`。**必填 `--db-path`**(⛔ 无默认值)、
+  拒绝 `settings.db_path` / 仓库 `data/` / `/opt/neckline`;`--reference-db` 只拷**四张只读参考表**
+  (`trade_cal`/`strategy_versions`/`stock_basic`/`namechange`),⛔ 凭据表与业务表一张不碰(反向断言:
+  假 api_key 与假持仓**一行都没过去**);章程 `v2.3-k8` **由既有落行链从 K1 派生**(⛔ 脚本里一个数没手抄,
+  守门扫源码);四线走 P4.3 的原子激活。**幂等**:重跑零新增事件。
+- **P4.3 四线原子激活**:`pack.activate_pack` 的事务体抽成 `_activate_one(conn, …)`(**不 commit / 不清缓存 /
+  不 `init_schema`**,那三件事归调用方),`activate_pack` 变薄壳;新增 `activate_pack_set(docs, …)` 在
+  **一个** `with connection(...)` 里连调四次 + 共享 `batch_id`;新增 `scripts/activate_pack_set.py`
+  (闸 1–4 逐包照跑,🔴 **闸 1 的对账表比对的是「本批激活后的引擎集合」** —— 拿激活前的库去对账,
+  `K8-V0.8` 永远对不上)。迁移列 `selection_pack_activation_log.batch_id`(可空)。
+- **P4.4 版本治理**:三处同升 + `xcodegen generate`;🔴 **补上既有守门的两处盲点** ——
+  `project.yml` 顶层 base(守门只比 app target)与 pbxproj **project 级**块(`CLAUDE.md` 记着它曾静默
+  停在 `2.0.0` 而守门一直是绿的),现在两处都有机器判据。annotated tag `v2.4.0`,⛔ 未 push。
+- **P4.5 自动验收集**:七条命令写进 §五 P4.5(可逐条跑);`git diff --check` 与**老库迁移演练**
+  已收进 `tests/test_v240_p4_release.py`,故跑一次全量就带上了它们。
+- **P4.6 / P4.7 只写文档**:§五 新增 **P4.6-实测**(13 步按本次真实改动逐步核对,标出 ⑤⑦⑩⑬ 四步差异
+  + 两条新增步)与 **P4.7-实测**(五层回滚绳,逐条注明演练结果)。⛔ **一步都没在生产上执行。**
 
-### 🎯 P3 验收 10 条逐条读数
+### 🎯 P4 验收逐条读数
 
-| # | 判据 | 读数 |
+| 节 | 施工图判据 | 读数 |
 |---|---|---|
-| 1 | K8 UI / 推送 / 新卡搜不到旧纪律措辞 | ✅ 五句**含注释与 docstring**全仓 0 命中(为此改写了 3 处历史叙述);推送名 = 「离场参考提醒」 |
-| 2 | K8 持仓不显示机械时间退出 | ✅ 实拍:`todayAction` = 「持有中(D3;**本版无机械时间退出 —— D 计数只作记录**)」,无任何 `Dn/Dm` |
-| 3 | 旧章程仍显示旧规则(**反向**) | ✅ 实拍 `D4_legacy_charter`:把演示库章程切到 `v1.3.3` → 「止损线」/「止损 56.05」/「距止损线」/「**回落止盈 8.0%**」,K8 那五句一句不出现 |
-| 4 | iPhone 393×852 首屏见第一个 T1/T2 篮子 | ✅ 实拍 `A1_home`(**393 宽的 `Neckline-393` 模拟器**,不是 402):**即便顶上还压着一条降级块**,T1 第一张卡整卡在标签栏之上 |
-| 5 | 默认态不展示六关 / 原始 LLM / 完整证据链 | ✅ 实拍 `B1_basket_card`:默认层五件一屏放下,三样在「审计视图」折叠里(守门按符号双向断言:默认层没有 + 审计层还在) |
-| 6 | OUT / 未定档为空时不画大面积空卡 | ✅ 实拍 `A2_empty_fresh`:零溢出时仍是**一行**「未定档 0 · OUT 0」+ chevron |
-| 7 | 正常新鲜度只显示紧凑徽标;降级显著披露 | ✅ 实拍两态:齐全 = 绿「数据齐」+ 顶部无块;降级 = 琥珀「数据 1」+ 首页顶部整块说清后果 |
-| 8 | macOS 1024 / 1440 无截断 | ✅ 实拍 `F1`/`F2` 两个宽度逐处核过 |
-| 9 | 大字体 / 长中文 / 空态 / 网络失败 / 旧报告完成截图验证 | 🟡 **四项做了、一项没做**:空态 ✅ · 网络失败 ✅ · 旧章程 ✅ · 长中文 ✅(演示数据刻意写长句)· **大字体(动态字号)没拍** —— 如实认,见「认下的缺口 3」 |
-| 10 | 不因精简而删除历史 DTO 字段 | ✅ 11 个"被折叠走"的字段逐个断言仍在;服务端 schema 同查 |
-
-### 🔍 实拍逮到的三处(**编译不报错、单测也测不出**)
-
-1. **首选成员块「入场区间」被截成 `¥30.60 ~ ¥31…`** —— 三格等分在 393pt 上每格约 110pt,
-   而 `¥30.60 ~ ¥31.95` 在 15/600 下约 120pt。改用新的 `compactRangeText`(去两个 `¥`、
-   分隔符换短破折号,设计参考同款)。**一个看不出上沿是多少的区间比不写更糟。**
-2. **刻度尺三个标签会互相压住** —— 「警戒线」比老的「止损」宽一个汉字,而 `labelHalf` 是写死的 30。
-   改成按 `stopLabel` 字数派生。(同 V2.3.1 批 7 那次「戏卒 36.94」的病。)
-3. **持仓 / 复盘 Tab 上那枚新鲜度徽标显示「没查到」** —— P3.6 之后进这两个 Tab **不会**顺带拉报告,
-   而灰徽标的含义是「查了没查到」。改成**报告没拉到时整枚不画**;报告**拉到了**而里面没有
-   新鲜度那一节,才是真的第三态。
+| P4.1 | 重生工程 / macOS build / **macOS test 真正执行** / iOS build / 新增守门 / scheme 与依赖不变 | ✅ 六条全绿(test 计数 228) |
+| P4.2 | 必填 `--db-path` / 拒生产路径 / 初始化四包 + 章程 / 输出四条 pack line + 章程 / 幂等 / 测试全用临时目录 / 不拷业务数据与凭据 | ✅ 七条全绿(14 例守门) |
+| P4.3 | 一个事务 / 全过才切 / 任一失败全回滚 / 共享 batch id / 输出旧新集合 / dry-run / 必须 `--confirm` / 章程不参与 | ✅ 八条全绿(23 例守门,含两条失败回滚负例) |
+| P4.4 | 三处一致 / 重生 pbxproj / 版本治理测试 / 全量绿 / 工作区干净 / release commit / annotated tag / ⛔ 不动 `v2.0.0` | ✅ 八条全绿 |
+| P4.5 | 基线全绿且**不靠删测试 / 扩 skip / 放宽断言** | ✅ 删 0 改 0,净 +50 |
+| P4.6 | 上产 13 步**只准备不执行** | ✅ 文档到位,⛔ 零执行 |
+| P4.7 | 回滚绳**只写文档** | ✅ 文档到位;其中「只回滚包」那条**顺手真演练了** |
 
 ### ⚠ 认下的缺口 / 如实登记(**不是 bug,是代价或取舍**)
 
-1. 🔴 **事件文案不是施工图那句的逐字复制,是「逐字骨架 + 三个数」** —— 施工图 P3.2 给的
-   `现价已触达你计划中的离场参考区间;这不是止盈信号,是否离场由你判断。` **一个词没改、词序没动**,
-   只在两个自然位置插进现价与区间上下沿。**理由**:⑪-B 三句式要求「讲清发生了什么」,
-   拿掉数字这条立即级推送就成了一句无法核对的空话。**已立正面用例锁住"数字必须在"。**
-   **这是偏离施工图字面的一处,如实记在这里。**
-2. **「时间退出没有条款」这句话只在持仓界面改口** —— 盘后 markdown 报告(`report/render.py`)
-   与周复盘(`review/reconcile.py`)仍用章程术语「无时间退出条款」。那是**审计面**,读者在核对
-   章程条款本身;P3.1 的文案表管的是持仓界面。**没顺手统一,是刻意的。**
-3. **动态字号(大字体)那一项没拍** —— `simctl` 的 `ui appearance` 只管明暗,改动态字号要走
-   Accessibility Inspector / 手点设置,而 `CLAUDE.md` 明载**本环境点不动模拟器**。
-   ⛔ 没换设备、⛔ 没编一张图充数。→ §七 **P3-79**。
-4. **竞价弹层的两个折叠区、篮子卡的两个展开层、市场状态行展开后的 ① 情绪,都没有"展开态"实拍** ——
-   同一条原因(点不动),已由守门单测按符号锁住"内容在里面、且不在默认层"。
-5. **`已在券商挂 -5% 条件单` 那个自证勾选框仍在,措辞未改** —— `v2.3-k8` 下已无条件单义务,
-   界面上仍在"催勾"读起来像旧章程的残留。但它是**周复盘对账的输入**(`stopOrderChecked`),
-   不在 P3.1 文案表里,改它牵动对账语义 → **没动,挂 §七 P3-80**。
-6. **网络失败态显示的是「暂无数据 · 策略引擎已在跑」** —— 拉失败时 `report` 停在默认值
-   (`degraded=true`),视图走的是「报告未生成」那张卡。**这是 P3 之前就有的行为**,P3.6 没有改变它;
-   如实记一笔,不在本批处理。
-7. **P0 / P1 / P2 / V2.3.3 遗留的缺口原样保留、本批一件没动**:`v2.3.3` tag 未 push ·
-   §七 P1-78 竞价取样域 · P4-74 · P4-67 · P4-68 · P2 那 9 条如实登记。
+1. 🔴 **`v2.3.3` 与 `v2.4.0` 两个 tag 都在本地、都没 push**(P0 留下的账,本批照旧不 push ——
+   任务边界写死「tag 与 commit 都不推」)。⚠ 回滚绳 ② 依赖 `v2.3.3` tag,**本机在就够用**;
+   要防"本机没了"得 push 一次,那是用户的下一条指令。
+2. **P4.8+(§七 P4-74 内存实测)本批没做** —— 它明写要在 **nk 上**做隔离实测(`systemd-run
+   --property=User=neckline`),而本批**零服务器动作**。已挂进 P4.6-实测 的 **+A 步**。
+3. **macOS 与 iOS 的客户端用例数差 11**(228 vs 239)= `PushRoutingTests`(`PushManager` 整文件
+   `#if os(iOS)`)。**平台差异,不是 macOS 少跑了什么** —— 但如实记一笔,免得下次看见两个数字起疑。
+4. **`bootstrap_dev_db.py` 的章程派生链 import 了 `scripts/oneoff/` 里四个脚本** ——
+   与 `CLAUDE.md`「`oneoff/` 是留档目录」的字面有张力。**刻意如此**:那四个脚本是那四版 config 的
+   唯一实现,复制一份到新脚本里就是造第二个事实源(`tests/test_charter_v23k8.py` 早就这么用)。
+   已在脚本模块头写明理由。
+5. **`bootstrap_dev_db.py` 直接调 `pack.activate_pack_set()` 库函数,没走 `activate_pack_set.py` 的四道闸** ——
+   它服务的是**临时开发库**,而四个包文件本身的过闸性由 `tests/test_activate_pack_set.py` 每次全量跑时验。
+   🔴 **生产激活必须走脚本**(P4.6-实测 第 7 步),⛔ 别拿 bootstrap 去打生产(它本来就拒绝生产路径)。
+6. **P0 / P1 / P2 / P3 / V2.3.3 遗留的缺口原样保留、本批一件没动**:§七 P1-78 竞价取样域 ·
+   P3-79 大字体实拍 · P3-80 条件单勾选框 · P4-67 / P4-68 · P2 那 9 条如实登记。
+7. **P4.6 的 13 步一步都没执行**(任务边界)—— 包括第 2 步的生产库备份。**部署时从第 1 步开始跑。**
 
-### 🔒 回滚绳(本版**未上产**,回滚只在本地)
+### 🔒 回滚绳(本版**未上产**;完整可执行版 → §五 V2.4.0 **P4.7-实测**)
 
-1. **代码**:`git revert` P3 那一个提交;P0 / P1 / P2 / P3 **各自独立提交**,可分别回退。
-   ⚠ P3.7 拆了文件 —— revert 会把 `Models.swift` 整份还原,**回退后必须 `xcodegen generate`**。
-2. **数据库**:🔴 **本批一行数据都没动过**(演示库另建在 scratchpad,`data/neckline.db` md5 前后一致)
-   → **不需要还原**。P3 **零迁移、零新列**。
-3. **策略包 / 章程**:一个字没碰(`C1/Z1/Y1` + `K8-V0.7` 仍现役,章程仍 `v2.3-k8`)。
-4. **客户端**:未换包(macOS 上装的仍是 2.3.3,iOS 未装机)→ **不需要回滚**。
-5. **生产 `nk`**:**一个字节都没碰**。
+1. **代码 / tag**:`git tag -a v2.4.0` 打在 P4 那个 commit 上;**P0/P1/P2/P3/P4 各自独立提交**,
+   可分别 `git revert`。整版退回 = `git checkout v2.3.3`(指 `0cb5d00`)。
+   ⚠ revert P3 会把 `Models.swift` 整份还原 → **必须 `xcodegen generate`**。
+2. **四个包文件**:`packs/{K8-skeleton,C2,Z2,Y2}.json` 仍**只是文件**;要退回旧四包,
+   `C1/Z1/Y1.json` 在原处,**`K8-V0.7` 得 `git show v2.3.3:packs/K8-skeleton.json` 取回**(本仓已没有)。
+3. **数据库**:🔴 **本批对 `data/neckline.db` 一行没动**(md5 前后一致)→ 不需要还原。
+   生产库尚未迁移(未部署);迁移是 **7 个可空列、0 张新表、0 处删列**,⛔ 不需要删列回滚。
+4. **章程**:一个字没碰(仍 `v2.3-k8`,`activate_charter.py` 对生产库零调用)。
+5. **客户端**:未换包(macOS 上装的仍是 2.3.3,iOS 未装机)→ 不需要回滚。
+6. **生产 `nk`**:**一个字节都没碰**。
 
 **待办总入口 = §七 Backlog**;**K8 需求原件 = `~/Lino/whynotme/K8.md`(V0.8)**;
 需求原件 = 根目录 `V2.4.0_AUDIT_REMEDIATION.md`;施工口径 = §五 V2.4.0;
-**P3 呈现口径 = `design_handoff_p3_frontend_reduction/`**(交接包,冲突以施工图为准);
+**上产照 §五 V2.4.0 「P4.6-实测」那张表跑,回滚照「P4.7-实测」**;
 工程坑清单与**仓库布局规则**在 `CLAUDE.md`;**nk 运维事实 = `~/Lino/NB_info.md`**。
-🔴 **P0 / P1 / P2 / P3 已各自独立完成 + 独立验证 + 独立提交;P4 尚未开工。**
-🔴 **P3 改了持仓纪律的全部对外文案(高危区邻接)—— 建议叫一次 review。**
+🔴 **P0 / P1 / P2 / P3 / P4 已各自独立完成 + 独立验证 + 独立提交;tag 已打。**
+🔴 **⛔ 未部署 / 未激活 / 未换包 / 未 push —— 生产 `/health` 现在仍返 `v2.3.3`。下一步等用户指令。**
+🔴 **P4 碰了发版脚本与版本治理(高危区)—— 建议叫一次 review 再部署。**
 
 
 > 📁 **本节自 2026-07-28 起为快照制**:每次会话交接**替换**本节全文,不追加;历史价值内容归 §九 一行 + `archive/` 详版。v1.0 → v1.3.5 的历史交接账本 → `archive/交接与日志/当前状态_历史账本_20260719-20260728.md`;v1.4 → v1.5.2 的收官快照 → `archive/施工图/v1.5_施工图_20260802归档.md` 文末附录;**V2.0.0 上线初期的快照 → `archive/施工图/V2.0.0_施工图_20260805归档.md` 文末附录**;**V2.2.0 上产快照(2026-08-10 上午)→ §九 当日条**;**V2.3.0 → §九 2026-08-10 条 + §五(旧-V2.3.0)**;**V2.3.1 完工与上产快照 → §九 2026-08-11 各条 + §五(旧-V2.3.1)**;**V2.3.2 完工与上产快照 → §九 2026-08-11 各条 + §五(旧-V2.3.2)存根**;**V2.3.3 复审整改快照 → §九 2026-08-12 条**;**V2.4.0 P0 完工快照 → §九 2026-08-12 条**。
@@ -1533,6 +1516,33 @@ P0 的 D1 竞价 / 持仓警戒 / 离场参考 / 临时提醒**回归**测试 ·
 API DTO 解码测试 · **历史报告 fixture 解码测试** · `git diff --check` ·
 schema append-only / UPDATE 白名单守门。
 
+**验收集落点(2026-08-12 P4 完工,逐条可跑)**:
+
+```bash
+# ① 全量(基线口径,连跑两次读数必须一致)
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests -q -p no:cacheprovider
+# ② 本版四段的专项守门(逐段独立可跑)
+.venv/bin/python -m pytest tests/test_v240_p0_retirement_guard.py tests/test_v240_p1_selection.py \
+    tests/test_v240_p2_auction.py tests/test_v240_p3_frontend.py tests/test_v240_p4_release.py -q
+# ③ P4 的三个新专项
+.venv/bin/python -m pytest tests/test_activate_pack_set.py tests/test_bootstrap_dev_db.py \
+    tests/test_client_version_governance.py -q
+# ④ 客户端三条(P4.1 之后 macOS test 这条才真的跑得起来)
+cd client && xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' build
+cd client && xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' test
+cd client && xcodebuild -project Neckline.xcodeproj -scheme Neckline \
+    -destination 'platform=iOS Simulator,name=iPhone 17' build test
+# ⑤ 临时 DB 可复现(P4.2;⛔ --db-path 指临时目录)
+.venv/bin/python scripts/bootstrap_dev_db.py --db-path /tmp/dev.db --reference-db data/neckline.db
+# ⑥ 四线原子激活演练(P4.3;不带 --confirm 零写库)
+.venv/bin/python scripts/activate_pack_set.py --db /tmp/dev.db
+# ⑦ 工作区卫生
+git diff --check
+```
+
+⚠ **`git diff --check` 与老库迁移演练已收进 `tests/test_v240_p4_release.py`**,故 ① 一条就带上了它们;
+单独列在这里是给部署现场用的。
+
 #### P4.6 上产顺序(13 步,⛔ 不许跳步、不许并行)
 
 1. 停止选股 / 竞价定时任务进入新批次。
@@ -1555,6 +1565,29 @@ schema append-only / UPDATE 白名单守门。
 ⚠ **nk 上跑瞬态批算一律 `systemd-run --property=User=neckline --property=Group=neckline`,
 ⛔ 不用 root `--scope`**。
 
+#### P4.6-实测 上产清单(**2026-08-12 P4 完工时按本次实际改动逐步核对过的版本**;部署照这份跑)
+
+> 上面 13 步是立项时写的骨架;下面这份是**核对过 P0→P4 真实改动之后**的可执行版
+> —— 差异只在 ⑤⑦⑩⑬ 四步与"新增的两步",步序与编号刻意不动,便于两份对读。
+
+| 步 | 本次实际怎么做(命令 / 判据) | 与骨架的差异 |
+|---|---|---|
+| 1 | `systemctl stop neckline-selection.timer neckline-auction.timer`(以 nk 上真实 timer 名为准,`systemctl list-timers 'neckline*'` 先列)。**⛔ 不 stop `neckline.service`**(它是常驻 API + 哨兵,第 5 步才重启) | 同 |
+| 2 | 双备份:`sudo -u neckline sqlite3 /opt/neckline/data/neckline.db ".backup '<db>.bak-<戳>'"` + `cp -p` 出 `.cpbak`;**两份各自** `PRAGMA integrity_check` **并各自读回复核** | 同 |
+| 3 | 记现役四线 + 章程:`SELECT line_code,pack_version FROM selection_packs WHERE is_active=1;` + `SELECT version,activated_at FROM strategy_versions WHERE is_active=1;` + `curl -s https://nk.linotsai.top/api/v1/health`。**预期 = `V:K8-V0.7 / C:C1 / Z:Z1 / Y:Y1` + `v2.3-k8` + `v2.3.3`** | 同 |
+| 4 | **在生产副本上演练迁移**:`cp` 出副本 → `DB_PATH=<副本> .venv/bin/python -c "from neckline.db import init_schema; init_schema()"` → `integrity_check` + **既有表行数逐表一致** + 七个新列 `notnull=0` 且无 DEFAULT + 老行读回全 NULL。🔴 **本版迁移 = 7 个可空列,0 张新表,0 处删列**(P2.4 四 + P2.5 二 + **P4.3 `selection_pack_activation_log.batch_id`**);⚠ **不是施工图 §C 写的「4+1」** —— P2.5 那两列是后加的,已在 §九 P2 条如实登记 | **改**:列数 4+1 → **7** |
+| 5 | `NECKLINE_DEPLOY_HOST=114.66.0.38 bash scripts/sync_code.sh`(🔴 **默认 HOST 仍是 hz 老机**,§七 P4-55)→ 属主 / setgid 复原 + 清 `.pyc` → `systemctl restart neckline.service` → `curl /api/v1/health` 应返 **`v2.4.0`** | 同 |
+| 6 | **先用旧包做健康检查**(这一步就是「回滚只回滚包」的可行性证明):此刻现役仍是 `C1/Z1/Y1 + K8-V0.7`,跑一次 `scripts/report.py <上一交易日>` 或 `scripts/smoke_auction.py`,确认 v2.4.0 代码在旧包下照常出报告 | 同 |
+| 7 | **四线原子激活**:`sudo -u neckline .venv/bin/python scripts/activate_pack_set.py --db /opt/neckline/data/neckline.db`(先 dry-run 看「旧版本集合 → 新版本集合」两行 + 闸 1 对账那句)→ 复核无误再 `--confirm`。🔴 **⛔ 不许一条一条 `activate_pack.py` 走** —— `C1/Z1/Y1` 仍现役时单独激活 `K8-V0.8` **必被闸 1 对账当场拒**(骨架包那 11 条键写的是 `C2/Z2/Y2`),这是物理理由不是洁癖(机器判据:`tests/test_activate_pack_set.py::test_single_pack_activation_of_new_skeleton_is_rejected_by_gate1`) | **新**:骨架里没有这条脚本,本次落地 |
+| 8 | `SELECT version,activated_at FROM strategy_versions WHERE is_active=1;` 必须**仍是 `v2.3-k8` 且 `activated_at` 与第 3 步逐字节相同**(⛔ 章程不参与第 7 步那个事务)。另查 `SELECT DISTINCT batch_id FROM selection_pack_activation_log WHERE batch_id IS NOT NULL;` **应恰好一个新批次号、对应 8 条事件** | **加**:batch_id 复核 |
+| 9 | 冻结 / 合成数据跑一轮:`scripts/report.py <日期>` + `scripts/smoke_auction.py` + `scripts/smoke_sentinel.py` | 同 |
+| 10 | **连续多拍 sentinel smoke**,确认**不再新增** `retreat_metrics` 行与 `invalidation`/`retreat` 事件。🔴 **心跳证据换人(§七 P1-75)**:`retreat_metrics` 已停写 → 判「哨兵还活着」改看 ① `sentinel_events` 当日 `sentinel='capture'` 行 · ② journal 里 tick 的周期日志 · ③(仅交易日早晨)`auction_reports` 当日行。⛔ **别再拿「`retreat_metrics` 35 秒 +1」当判据** —— 它现在恒不成立,会把正常读成故障 | **改**:心跳判据整条换 |
+| 11 | 检查 OUT / 成员移除 / 阈值影子 / 竞价质量字段:`out_candidates`(股票级,含 `removed_members` 那一路)· `threshold_shadow_evals` · `auction_verdicts.{critical,context}_data_quality` · `auction_reports.quote_quality_json` | 同 |
+| 12 | **NPM 回归**(输出重定向到**本次专属新文件**,§七 P4-73)→ 由 **`v2.4.0` tag 构建** macOS 包 → `ditto` 备份现装 → `ditto` 装新(⛔ 不用 `cp -R`) | 同 |
+| 13 | **下一交易日**验收:第一份真实竞价(看 `quote_quality_json` 里 `src_time − captured_at` 的分布 —— 🔴 **裁定 #2 要的那份实测数据就是它**)· 第一份 D0 选股报告(看 `comparison_domain` / `peer_count` 分布 —— 🔴 **裁定 #1 要求上产后首周回看的就是它**)· 持仓有效提醒(`PositionOut.alerts` 真的挂在 `/positions` 上) | **加**:两项裁定要的实测口径 |
+| +A | **P4.8+ 内存实测**(§七 P4-74):排在第 5 步之后、第 13 步之前,`systemd-run --unit=… --property=User=neckline --property=Group=neckline --property=MemoryMax=…` 压低反证取上界;达标才决定动不动 `neckline.service` 配额,**动了把读数写回 unit 文件头** | 新 |
+| +B | **⛔ 本版无新增 systemd unit**(`deploy/` 与 nk 的 10 个 unit 1:1 维持)—— 部署后 `ls /etc/systemd/system/neckline*` 应仍是 10 个,多一个就是有人手装了东西 | 新 |
+
 #### P4.7 回滚
 
 **优先「只回滚策略包集合」**:`K8-V0.8 → K8-V0.7` · `C2/Z2/Y2 → C1/Z1/Y1`;
@@ -1565,6 +1598,16 @@ schema append-only / UPDATE 白名单守门。
 
 - **新增 SQLite 列是增量兼容列,⛔ 不需要删列回滚。**
 - 🔴 **⛔ 不得删除 v2.4.0 已生成的审计记录来伪造回滚。**
+
+#### P4.7-实测 回滚绳(**2026-08-12 P4 完工时逐条演练过**;⛔ 别照记忆回滚,照这张表)
+
+| 层 | 怎么退回去(命令 / 判据) | 演练结果 |
+|---|---|---|
+| **① 只回滚策略包**(**首选**) | `sudo -u neckline .venv/bin/python scripts/activate_pack_set.py --db <生产库> --file <K8-V0.7 文件> --file packs/C1.json --file packs/Z1.json --file packs/Y1.json --confirm`。⚠ **`K8-V0.7` 的文件本仓已经没有了**(`packs/K8-skeleton.json` 自 P1 起就是 V0.8)→ 先 `git show v2.3.3:packs/K8-skeleton.json > /tmp/K8-V0.7.json` 取回来。**产品代码可暂留 v2.4.0**(旧包兼容行为是 P1.6 的硬要求) | ✅ **已在演练库真跑通**(新集合 → 旧集合,闸 1 对账对上 `C1/Z1/Y1`,8 条新事件、共享新 batch_id);回滚是**追加事件**,历史一行没抹 |
+| **② 代码** | `git checkout v2.3.3`(tag 指 `0cb5d00`)→ `NECKLINE_DEPLOY_HOST=114.66.0.38 bash scripts/sync_code.sh` → 重启 → `/health` 返 `v2.3.3`。⚠ P0–P3 各自独立提交,也可 `git revert <单个提交>` 精确回退;**revert P3 会把 `Models.swift` 整份还原 → 必须 `xcodegen generate`** | 未演练(需要真机部署),但 tag 与四个提交边界都在 |
+| **③ 数据库** | 恢复第 2 步那两份备份之一;⛔ **不删列**(7 个新列全是可空增量列,v2.3.3 代码读不到它们也照常跑 —— 机器判据 `tests/test_v240_p4_release.py::test_v240_new_columns_are_all_nullable_without_default`) | ✅ 老库迁移演练已证明历史行逐位不变 |
+| **④ 章程** | **一个字都不用动** —— 本版 `activate_charter.py` 一次都没跑,现役恒 `v2.3-k8` | ✅ 单测正面锁死(`test_charter_is_not_part_of_this_transaction`) |
+| **⑤ macOS 客户端** | `ditto` 把第 12 步备份的 2.3.3 包装回去(⛔ 不用 `cp -R`);图标若仍是旧图见 §八 第 34 项 | 未演练(本版未换包) |
 
 #### P4.8+ (补)顺带收掉的两笔账(**都与 P0 强相关**)
 
@@ -1594,9 +1637,9 @@ schema append-only / UPDATE 白名单守门。
 | 篮子卡 prompt 快照守门(锁 `CARD_SYSTEM_PROMPT` / `BASKET_REASON_SYSTEM_PROMPT` 内容) | 🔴 **必红**(P1.2 / P1.5+ 改 prompt) | 逐条更新期望值;**保留 `TIMELINESS_RULES` 内嵌那条断言不动** |
 | 任何断言 `CARD_SPEC_VERSION == "basket_card_v4"` 的用例 | 🔴 **必红** | 改 `v5`;**另加**「老 v4 卡仍能读回 + 四件套判据老卡兼容」正面用例 |
 | `test_contract_crosscheck.py`(键集对拍 + B 类 DTO 手写 `init(from:)`) | 🔴 **必红**(P0.5+ / P2.3 / P2.5 新增键) | 服务端与客户端**同一次提交**改完;新 DTO 名进手写 `init` 清单,⚠ 先自检两两不互为前缀 |
-| `test_client_version_governance.py` | 三处同升即绿 | 一次提交里一起动 |
+| `test_client_version_governance.py` | 三处同升即绿 | 一次提交里一起动。✅ **P4 实际:绿**;另补 `test_v240_p4_release.py` 两条把它看不见的两处(pbxproj **project 级** / `project.yml` 顶层 base)也钉死 |
 | `tests/test_v2_schema_guard.py::test_eighteen_new_tables_is_the_declared_count` | **不红**(本版零新表) | 无需改 |
-| `tests/test_activate_pack_script.py` | 🟡 **可能红**(抽 `_activate_one` + 新脚本) | 保证 `activate_pack` 行为逐位不变的正面用例**先写再改** |
+| `tests/test_activate_pack_script.py` | 🟡 **可能红**(抽 `_activate_one` + 新脚本) | 保证 `activate_pack` 行为逐位不变的正面用例**先写再改**。✅ **P4 实际:一条没红**(19 例全绿);正面锁另立 `tests/test_activate_pack_set.py::TestActivatePackUnchanged` 6 例 |
 | `tests/test_selection_pack.py`(schema 校验) | 🟡 **可能红**(新增可选 `formal_policy`) | 加「旧包无该键仍合法 + 新键枚举校验」两条 |
 
 ### B、如实登记(**不是能力问题,是数据现实 / 刻意取舍**;⛔ 别当 bug 去「修」)
@@ -1909,7 +1952,7 @@ schema append-only / UPDATE 白名单守门。
 ### 🟡 P1 · 已知错判 / 噪音(有明确修法)
 
 - **[P1-78] 🟡 P0 缩编关注池的连带:竞价层两处取样域显著变小,「对照不足」由常态变近乎必然(2026-08-12 V2.4.0 P0 完工时新挂;🔴 **是 P0.4-8 的必然连带,不是切歪,⛔ 别当 bug 去「修」成偷偷把样本接回来**)**。**事实**:P0 按 P0.4-8 删掉了关注池里两份**退潮专用**测量样本(主线切片 / 昨日涨停宽度)→ `wu.codes` 由约 200 只降到**上界 29 只**(持仓 ≤3 + T1/T2 成员 ≤21 + 板块指数 ≤5)。而 `auction/collect.py::build_watchlist` 把 `wu.codes` 尾接进抓取清单,当作**两个取样域**:① K8 §二十 第 5 组「当前观察范围内的竞价强势股」;② 板块对照股(`stock_basic.industry` 同行业 ≥ `SECTOR_PEER_MIN=3` 才出中位数)。**后果**:29 只票里凑够 3 只同行业对照股的概率很低 → `rel_to_sector` 大多恒 `None` + `sector_benchmark_source=unavailable`,「竞价强势股」那一组也几乎没有取样面。**为什么仍然照做**:那两份样本进池的**唯一理由**就是给退潮判级当分母,而退潮判级是本版明令撤销的能力;P0.4-8 逐字点名要删的就是它们。**竞价层照常出报告**(`None` + 原因码是它既有的诚实降级路径,`CLAUDE.md` 早已登记「对照不足是真实早晨的常态」)。**怎么修(将来,⛔ 需要一次拍板)**:给竞价层配一份**自己的**对照股取样域(比如 D0 篮子成员所属行业的同行业票),⛔ **不是**把退潮样本接回关注池 —— 那等于让一个已撤销的能力借尸还魂;也⛔ **不许**发明「取前 N 只」之类的截断数(K8 没给)。**先看数据**:上产后记一周`sector_benchmark_source` 的分布,拿真数字来定。
-- **[P1-75] 🟡 P0 之后「盘中哨兵还活着」的心跳证据换人 —— 部署核查清单必须同步改(2026-08-12 V2.4.0 立项时新挂;**不是缺陷,是退役的副作用**)**。**事实**:V2.3.3 及以前,部署后确认哨兵存活用的是「`retreat_metrics` 35 秒内 +1」(§四 部署后必查五项里就是这么写的);**V2.4.0 P0 停写这张表**之后,那条判据**恒不成立** —— 若不改清单,下一次部署会把「正常」读成「哨兵没起来」,或者更糟:**读成正常的旧习惯让人不再验证**。**换成什么**:① `sentinel_events` 的 `sentinel='capture'` 当日行(存拍旁路仍在跑)· ② journal 里 tick 的周期日志 · ③ 9:26 那一段的 `auction_reports` 当日行(仅交易日早晨适用)。**怎么修**:P0 完工记录里写死新判据,并同步改 §五 V2.4.0 P4.6 的部署核查项。⚠ **⛔ 不许为了"有个心跳"把 `retreat_metrics` 留着继续写** —— 那正是 P0 要断的那条链。
+- **[P1-75] 🟡 P0 之后「盘中哨兵还活着」的心跳证据换人 —— 部署核查清单必须同步改(2026-08-12 V2.4.0 立项时新挂;**不是缺陷,是退役的副作用**)**。**事实**:V2.3.3 及以前,部署后确认哨兵存活用的是「`retreat_metrics` 35 秒内 +1」(§四 部署后必查五项里就是这么写的);**V2.4.0 P0 停写这张表**之后,那条判据**恒不成立** —— 若不改清单,下一次部署会把「正常」读成「哨兵没起来」,或者更糟:**读成正常的旧习惯让人不再验证**。**换成什么**:① `sentinel_events` 的 `sentinel='capture'` 当日行(存拍旁路仍在跑)· ② journal 里 tick 的周期日志 · ③ 9:26 那一段的 `auction_reports` 当日行(仅交易日早晨适用)。**怎么修**:P0 完工记录里写死新判据,并同步改 §五 V2.4.0 P4.6 的部署核查项。✅ **2026-08-12 P4 已办**:新判据三条已写进 §五 V2.4.0 **P4.6-实测 第 10 步**(`sentinel_events` 的 `capture` 行 · journal tick 日志 · 交易日早晨的 `auction_reports` 当日行),并明写「⛔ 别再拿『`retreat_metrics` 35 秒 +1』当判据」。**本条待下一次真部署照新清单跑过即可结案。**⚠ **⛔ 不许为了"有个心跳"把 `retreat_metrics` 留着继续写** —— 那正是 P0 要断的那条链。
 
 - **[P1-46] 🟡 → V2.2.0 第 ① 块(顺带修)** · 周末日期炸弹测试 ×2(2026-08-09 用户裁定入册待办;同日 V2.2 立项时改判 —— 本版要长期跑全量套件,留着这两条红会持续磨损「零失败」的信噪比,成本又极低,故并入 ① 一起做) · `test_api_positions.py::test_buy_date_historical_trading_day_written_through` 与 `test_fix_position_buy_dates.py::test_unchanged_position_does_not_bump_updated_at` 直连 `date.today()`,**逢周末/非交易日全量套件必红 2 条**(近期基线里的"2 failed"即它),长期磨损"零失败"信噪比。修法 = A7 冻结时钟体例照搬(`frozen_clock` fixture 先例);A 组修理时已列全仓同款清单(A7 完工记录),可顺带扫尾。来源 = V2.1-① 施工时拆的待办卡。
 - **[P1-26] ✅ 已结案(2026-07-29 v1.4.1 热修上云)** —— **信息卡端点在生产要 14 秒,而客户端默认超时 12 秒 → 用户实际体验是「信息卡总是加载失败」**。**修法 = 取数层按 `year=` 裁剪分区(修法①)**:`market_data._scan_table` 加 `years=` 参数,由 `get_market_slice`(单日→1 个年目录)/ `get_stock_history` / `scan_table_range`(区间→覆盖年份)传入;`strategy/features.market_state_labels` 的起点由写死 `date(2019,1,1)` 改为按 MA 窗口回看。**纯 I/O 优化、结果逐位不变**(`TestYearPartitionPruning` 5 条等价单测锁死),合法性依据是结构性的:分区路径由 `day_file_path` 按 `trade_date.year` 生成,`year=YYYY` 目录里只可能有该年的行。客户端 `fetchInfoCard` 同步 `timeout: 60`(照问询台惯例)。**公网实测**:修前 **14.15 / 13.98 / 13.89s**、3 次调用 `memory.events high` **+8945**;修后**冷调 3.05s、热调 2.33 / 2.25s**(**6.2 倍**)、连打 6 次 `high` **恒 0**、`MemoryCurrent` 从 440MB(≈`MemoryHigh`,已在节流)降到 287MB。**⚠ 顺带收窄了脏分区的传染半径**(已如实改写守门单测而非删断言):v1.3.5 那条「历史脏分区不会自愈」现在只对**跨到脏那年**的读成立。~~原文:根因是 `_load_single_code_panel` 全 glob~~ —— **诊断只对了一半**:单票面板确实全 glob,但真正的大头是 `compute_sentiment` 一次请求做 **5 次**全市场横截面(每次全 glob 1592 个 footer),连同单票面板 2 次 + 大盘线 1 次 = **8 次全 glob**;所以修在 `_scan_table` 这一层(而不是只修 `_load_single_code_panel`)才对。
@@ -2276,6 +2319,8 @@ schema append-only / UPDATE 白名单守门。
 ## 九、变更日志(一行制;详版全文 → `archive/交接与日志/变更日志_详版_20260719-20260728.md`)
 
 > **记录纪律(2026-07-28 起)**:每次动作只记**一行**(日期 · 标题级摘要)。事故复盘、完工验收、长记录一律写 `archive/` 独立文件,此处一行 + 链接,同一件事全文只存在一处。2026-07-28 之前的 54 条详版全文见上述归档文件(原样未改)。
+
+- 2026-08-12 · 🔴 **V2.4.0 P4 完工 + 已打 `v2.4.0` tag(@builder-pro,独立提交;⛔ 零部署 / 零 rsync / 零重启 / 零真库改动 / 零激活 / 零换包 / 零 push)** —— **测试、复现、版本发布与回滚:让 v2.4.0 可验证、可复现、可发布、可回滚**。**P4.1** 从**源文件** `client/project.yml` 给 `NecklineTests` 加按 SDK 条件的 `"TEST_HOST[sdk=macosx*]"`(iOS 那条自动值一字不动)→ `xcodegen generate` → 🔴 **macOS `xcodebuild test` 第一次真的跑起来:`TEST SUCCEEDED`,228 executed / 10 skipped / 0 failed**(此前恒报 `Could not find test host`;`git diff` 只有 Debug/Release 各一行,scheme 与依赖零变化)。⚠ 与 iOS 的 239 差 **11 条 = `PushRoutingTests`**(`PushManager` 整文件 `#if os(iOS)`),**平台差异不是缺口**。**P4.2** 新增 `scripts/bootstrap_dev_db.py`:**必填 `--db-path`(⛔ 无默认值)** + 拒绝 `settings.db_path` / 仓库 `data/` / `/opt/neckline`;`--reference-db` 只拷**四张只读参考表**,⛔ 凭据表(`llm_providers.api_key`)与业务表一张不碰(**反向断言**:假 key 与假持仓一行都没过去);🔴 **参考库⛔ 不用 `ATTACH`**(python `sqlite3` 默认没开 URI,`file:…?mode=ro` 根本不生效,而 `--reference-db` 指的往往正是权威库)→ 另开独立只读连接;章程 `v2.3-k8` **由 `scripts/oneoff/` 那条既有落行链从 K1 派生**,🔴 **脚本里一个章程数值都没手抄**(守门扫源码);幂等重跑零新增事件。**P4.3** `activate_pack` 的事务体抽成 `_activate_one(conn,…)`(**刻意不 commit / 不清缓存 / 不 `init_schema`** —— 「谁提交」只能有一个答案,否则批里某包自己 commit 了后面失败就回滚不掉),`activate_pack` 变**薄壳、行为逐位不变**(6 条正面锁);新增 `pack.activate_pack_set()` + `scripts/activate_pack_set.py`,一个事务连切四线 + **共享 `batch_id`**;🔴 **闸 1 的对账表比对的是「本批激活后的引擎集合」**(拿激活前的库去对账 `K8-V0.8` 永远对不上);迁移列 `selection_pack_activation_log.batch_id`(可空)。**P4.4** 版号三处同升(`app.py::VERSION` + `project.yml` **两处** + `xcodegen generate` 重生 pbxproj 四处);🔴 **补上既有守门的两处盲点** —— pbxproj **project 级**块(`CLAUDE.md` 记着它曾静默停在 `2.0.0` 而守门一直是绿的)与 `project.yml` 顶层 base。**P4.5** 七条验收命令写进 §五 P4.5;`git diff --check` 与**老库迁移演练**收进单测。**P4.6 / P4.7 只写文档 ⛔ 零执行**:新增 **P4.6-实测**(13 步按本次真实改动逐步核对,标出 ⑤⑦⑩⑬ 四步差异 + 两条新增步;🔴 **迁移合计 7 个可空列**〔不是施工图 §C 的「4+1」〕· **四线原子激活在第 7 步** · **心跳证据换成 `sentinel_events` 的 `capture` 行 + journal tick**,§七 P1-75)与 **P4.7-实测**(五层回滚绳逐条注明演练结果)。**读数**:Python **4251 passed / 3 skipped / 0 failed**(**连跑两次**,113.53s / 114.47s;基线 4201)· 用例 `--collect-only` 起 worktree 逐条对拍 **删 0 / 增 50 / 净 +50**,🔴 **旧断言改动 0 条**(P4 只加不改)· macOS `BUILD SUCCEEDED` + `TEST SUCCEEDED`(228)· iOS `BUILD SUCCEEDED` + `TEST SUCCEEDED`(**239 / 0**)· **四线原子激活演练**:正例(dry-run md5 零变 → `--confirm` 8 条事件共享 batch_id → `integrity_check=ok`)+ **反证**(`C1/Z1/Y1` 仍现役时单独激活 `K8-V0.8` **被闸 1 当场拒**,四线原值不动)+ **失败回滚负例两条**(第 3 条线 / 第 4 条线中途失败 → 四线全部维持原值、零新增事件、前面几包的 INSERT 一并回滚)· **P4.7「只回滚策略包集合」真跑通**(反向再跑一次同一个脚本;回滚是追加事件,历史一行没抹)· **老库迁移演练**(用 `v2.3.3` tag 那份 `_SCHEMA` 造真老库 → 历史行逐表逐列逐位不变、7 个新列全 NULL;**反向探针**把 `batch_id` 改成 `NOT NULL DEFAULT` 后守门当场变红,证明它不是空转)· `data/neckline.db` md5 全程 `7ca02c7d…` 未变 · `git tag -l` = `v2.0.0`/`v2.3.3`/**`v2.4.0`**(annotated,⛔ `v2.0.0` 一动没动)。**如实登记 7 条(全文 → §四)**,其中两条最该看:① **两个 tag 都没 push**(任务边界);② **P4.8+〔§七 P4-74 内存实测〕本批没做** —— 它要在 nk 上跑,已挂进 P4.6-实测 的 +A 步。**⚠ 施工全程没有出现「非要一个数才写得下去」的地方 —— 五棒下来零新阈值。**🔴 **V2.4.0 五段全部完工;⛔ 未部署 / 未激活 / 未换包 / 未 push,生产 `/health` 仍返 `v2.3.3`。本批碰了发版脚本与版本治理(高危区),建议叫一次 review 再部署。**
 
 - 2026-08-12 · 🔴 **V2.4.0 P3 完工(@builder-pro,独立提交;⛔ 零部署 / 零真库改动 / 零迁移 / 零激活 / 零换包 / 零 push)** —— **持仓语义修复与前端减法:让每一句话都由「那一行的章程」派生,让默认界面只回答「买什么、在哪买、什么时候不成立」**。**呈现口径 = 用户提供的设计交接包 `design_handoff_p3_frontend_reduction/`**(冲突以施工图为准,本批冲突 1 处、已逐条报出)。**P3.1** 新模块 `neckline/strategy/charter_copy.py` = 持仓文案唯一源(线名 / 动作短语 / 无回落止盈 / 无时间退出 / 离场参考披露),`api/app.py`+`sentinel/{holding,precall}.py`+`selection/basket_card.py` 全部改读它;🔴 **顺手修两处真 bug**:advisory 分支此前只换了前缀口吻、**线本身仍叫「止损线」**,而**刻度尺上那根红刻度一处都没换过**(V2.3.2-⑤ 改了徽标 / 四格 / 解释句,独独漏了尺);新增契约字段 `PositionOut.takeProfitRetrace`(与 `lossWarningPct` 同一次读库,**零新增查询**)——「有没有回落止盈这项纪律」自此是独立字段,⛔ 不再拿 `retraceState.triggered == false` 反推。**P3.2** ⛔ 零新增 kind、内部 key `take_profit` 一字未改,对外统一显示「**离场参考提醒**」;事件文案收进 `charter_copy.exit_reference_reached_copy()` = 施工图**逐字骨架 + 保留三个数**(⚠ **偏离施工图字面的唯一一处,已立正面用例锁住「数字必须在」**)。**P3.3** iOS 首屏收成四件(竞价一行 / 市场状态与数据置信度 / T1T2 篮子 / 一行紧凑统计入口),④ 复盘入口与 ② 持仓体检入口两张跳转卡**删**(两者早已是独立 Tab),IntelPackage → 「研究材料」折叠区,① 六格情绪 → 市场状态行点开,⑤ 完整新鲜度卡 → **工具栏三态徽标**(新组件 `NKFreshnessBadge`,🔴 三态**不合并**),③b/③b-2 → 一行统计入口(「首要原因」按 `nkGateOrder` 归并,**零发明**);**macOS 列表栏同步减法**(交接包 F 组:「今日概览」「昨日回执」两行撤下)。**P3.4** 篮子默认层收成 5 件 + 新增**首选成员块**(入场区间 / 失效位 / 现价 + 刻度条 `NKMemberScaleBar`),六关宫格 / 机械评分 / LLM 原始叙述 / 完整证据链**整体下沉审计层**(四个既有函数原样复用、内容一字未改),新增一级展开「解释」。**P3.5** 竞价打开后**默认先给逐篮结论**,块 1/块 2 折进「数据审计」/「市场背景」两个具名折叠区(**块名与块序原样保留** = 审计锚,`proxySampleNote` **折叠可以、消失不行**),触发失效的那一篮**整圈描红**。**P3.6** `refresh()` 拆四个板块级 + `ensureLoaded`(首访门控)+ `refresh(for:)`(工具栏只刷当前 Tab);`board` 按 **P0 校正**不在任何一路。**P3.7** `Models.swift`(5633 行)**逐字**拆六份进 `Networking/Models/`,🔴 **十个按文件名读它的守门**全改走新入口 `tests/client_sources.py`(**带哨兵自检**:六份各留一个专属类型,缺一当场红 —— 拆分最大的风险是「缺席断言静默变成真」)。**读数**:Python **4201 passed / 3 skipped / 0 failed**(**连跑两次**,113.49s / 110.16s;基线 4143)· 用例 `--collect-only` **删 0 / 增 58 / 净 +58**(改动过的 5 条旧断言**全部在原处写明被 P3 哪一条取代**)· **P3 验收 10 条**:9 条全绿、第 9 条**五项做到四项**(大字体没拍,→ §七 **P3-79**)· 双端 `BUILD SUCCEEDED` + iOS `TEST SUCCEEDED` **239 / 0** · **实拍 11 张、六组全覆盖**并逐项对照 `.dc.html` 右列 · `data/neckline.db` md5 前后一致、宿主域 `NK_BASE_URL_OVERRIDE` 全程 does not exist、macOS 走 dev 变体自截。🔍 **实拍逮到三处编译与单测都发现不了的**:入场区间被截 / 刻度尺标签互相压住 / 持仓页那枚新鲜度徽标把「这个 Tab 没拉过」说成「查了没查到」——三处均已修。**新挂 §七 P3-79(大字体实拍)/ P3-80(条件单自证勾选框措辞过时,⛔ 不许顺手改:它是周复盘对账的输入)。⚠ 施工全程没有出现「非要一个数才写得下去」的地方 —— 零新阈值(唯一新增的 `labelHalf` 派生式是纯版式量)。P4 未开工;🔴 本批改了持仓纪律的全部对外文案(高危区邻接),建议叫一次 review。**
 

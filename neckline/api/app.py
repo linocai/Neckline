@@ -217,7 +217,14 @@ logger = logging.getLogger(__name__)
 # ——`client/project.yml` 与 `pbxproj` 的 `MARKETING_VERSION` 必须同为 `2.0.0`
 # (守门单测 `tests/test_client_version_governance.py` 锁三处恒等,漏一处立刻红)。
 # ⚠ ⑭ 刻意没升它:提前升会让守门单测常年红,版号归 ⑮。
-VERSION = "v2.3.3"
+# V2.4.0(P4.4,2026-08-12):可信度与减法版(P0 退役盘中通用证伪 + 代理池退潮刹车 /
+# P1 选股关口与 Tier 语义 / P2 竞价数据可靠性 / P3 持仓语义与前端三层收敛 / P4 发布治理)。
+# **三处同一次提交动**:本行 + `client/project.yml` **两处** `MARKETING_VERSION`
+# (顶层 base + app target,刻意重复;守门只比 app target,故两处都得手动改)+
+# `xcodegen generate` 重生 pbxproj。⚠ 改完必须跑一次 `xcodegen generate` ——
+# 它顺手修好 project 级漂移,而守门看不见那一处。
+# ⚠ 本行改动**不构成部署**:生产 `/health` 要到真正 rsync + 重启之后才返 v2.4.0。
+VERSION = "v2.4.0"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————

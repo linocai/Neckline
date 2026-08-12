@@ -9,7 +9,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "2.3.3"
+    MARKETING_VERSION: "2.4.0"
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: HX73DFL88G
     CODE_SIGN_STYLE: Automatic
@@ -44,7 +44,7 @@ targets:
         # 同时含 `PRODUCT_NAME = Neckline;` 与 `MARKETING_VERSION`」——xcodegen 不把顶层 base
         # 下放到 target 块,只写顶层,该块就没有 MARKETING_VERSION、守门直接挂。
         # 重复值必须与顶层一致(单测同时断言两处相等,漂了会红)。
-        MARKETING_VERSION: "2.3.3"
+        MARKETING_VERSION: "2.4.0"
         # 推送 entitlement 仅 iOS 应用(真机/模拟器);macOS 不开推送(平台分叉,同 LinoN 姿势)。
         "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Neckline/Neckline.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Neckline/Neckline.entitlements
@@ -72,6 +72,14 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: top.linotsai.neckline.tests
         GENERATE_INFOPLIST_FILE: YES
+        # 🔴 V2.4.0 P4.1:macOS 测试宿主修复(施工图 §3.14-H)。
+        # xcodegen 给 `bundle.unit-test` 自动生成的 TEST_HOST 是 **iOS bundle 布局**
+        # (`Neckline.app/Neckline`),而 macOS 可执行文件在 `Neckline.app/Contents/MacOS/Neckline`
+        # → `-destination 'platform=macOS'` 下 `xcodebuild test` 报 `Could not find test host`。
+        # 只按 macosx SDK 条件覆盖,**iOS 那条自动值一字不动**(iOS 侧本来就是对的)。
+        # ⛔ 不许只手改生成后的 pbxproj —— 下一次 `xcodegen generate` 会原样冲掉。
+        # 守门:`tests/test_client_test_host.py`(project.yml 与 pbxproj 双向断言)。
+        "TEST_HOST[sdk=macosx*]": "$(BUILT_PRODUCTS_DIR)/Neckline.app/Contents/MacOS/Neckline"
 
 schemes:
   Neckline:

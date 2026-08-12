@@ -1700,6 +1700,13 @@ _COLUMN_MIGRATIONS = [
     # ⚠ 可空不给默认:老行 NULL = **当时没记这一位**,⛔ 不拿 `0` 冒充「一个种子都没有」。
     ("basket_stage_handoff", "seed_count", "INTEGER"),
     ("basket_stage_handoff", "seed_summary", "TEXT"),
+    # ── V2.4.0 P4.3(2026-08-12):四线原子激活的**批次号**。
+    # 一次 `activate_pack_set`(K8-V0.8 + C2/Z2/Y2)写进去的 8 条事件共享同一个
+    # `batch_id`,单包激活(`activate_pack`)与所有历史行一律 NULL。
+    # 🔴 **可空、无默认**:NULL = 「这条事件不属于任何原子批次」,⛔ 不拿空串冒充。
+    # ⚠ 本表在 `_APPEND_ONLY_TABLES` 里 —— **加列不违反 append-only**(不是
+    # UPDATE/DELETE),写入仍只 INSERT(守门单测扫本表的 SQL 动词)。
+    ("selection_pack_activation_log", "batch_id", "TEXT"),
 ]
 
 
