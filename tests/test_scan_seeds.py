@@ -266,7 +266,7 @@ def test_generate_seeds_under_real_k8_skeleton_pack_file(isolated_env):
     twin_result = seeds.generate_seeds(D0, db_path=env.db_path, parquet_dir=env.parquet_dir)
 
     assert skeleton_result is not None and twin_result is not None
-    assert skeleton_result.pack_version == "K8-V0.7"   # 真实骨架包确实被真实激活过
+    assert skeleton_result.pack_version == "K8-V0.8"   # 真实骨架包确实被真实激活过
     assert twin_result.pack_version == "scan-seed-twin"
 
     counts = skeleton_result.counts()

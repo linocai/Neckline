@@ -41,7 +41,11 @@ def _engine(version: str) -> pack_mod.Pack:
     )
 
 
-ENGINES = {"C": _engine("C1"), "Z": _engine("Z1"), "Y": _engine("Y1")}
+# 🔴 **V2.4.0 P1.8+:骨架包升 `K8-V0.8` 时对账表随之改指 `C2`/`Z2`/`Y2`** ——
+# 对账表按 **`pack_version`** 对号入座(`gates.check_threshold_governance` 的刻意设计:
+# **引擎升过版就必须重新过一遍这张表**),所以本组测试的"现役引擎"也必须是新的那三条。
+# ⛔ 别把它改回 C1/Z1/Y1 去"迁就"—— 那会让「升版必须同步对账表」这条闸失效。
+ENGINES = {"C": _engine("C2"), "Z": _engine("Z2"), "Y": _engine("Y2")}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -101,37 +105,37 @@ class TestGateOneThresholdGovernance:
         """🔴🔴 **这张表存在的全部理由**:有人把某条阈值从 `engineering_v1` 改成
         `audited`(= **悄悄恢复机械硬否决**)却没同步对账表 → 闸 1 当场拒,并**指名
         是哪一条**。这是裁定 1「零自动升级」的物理落点。"""
-        tampered = {k: _engine(k + "1") for k in ("C", "Z", "Y")}
+        tampered = {k: _engine(k + "2") for k in ("C", "Z", "Y")}
         leaf = (tampered["C"].config["engine"]["gates"]["sector"]["strength_days_min_5d"])
         leaf["provenance"] = {"source": "audited", "ref": "偷偷改的"}
         errors = gt.check_threshold_governance(
             _skel()["config"]["threshold_governance"], tampered)
         assert len(errors) == 1
-        assert "C1.sector.strength_days_min_5d" in errors[0]
+        assert "C2.sector.strength_days_min_5d" in errors[0]
         assert "'evidence'" in errors[0] and "'hard'" in errors[0]
 
     def test_a_wrong_entry_in_the_table_is_also_rejected(self):
         """反方向:表里写错(把 evidence 写成 hard)同样拒 —— plan ④ 验收 ④ 点名。"""
         doc = _skel()
-        doc["config"]["threshold_governance"]["C1.sector.strength_days_min_5d"]["mode"] = "hard"
+        doc["config"]["threshold_governance"]["C2.sector.strength_days_min_5d"]["mode"] = "hard"
         errors = gt.check_threshold_governance(
             doc["config"]["threshold_governance"], ENGINES)
-        assert any("C1.sector.strength_days_min_5d" in e for e in errors), errors
+        assert any("C2.sector.strength_days_min_5d" in e for e in errors), errors
 
     def test_an_unlisted_engine_leaf_is_rejected(self):
         """漏登记同样拒:引擎包里有、对账表里没有 = 那条阈值没人盯着它的 provenance。"""
         doc = _skel()
-        doc["config"]["threshold_governance"].pop("Y1.sector.industry_rank_max")
+        doc["config"]["threshold_governance"].pop("Y2.sector.industry_rank_max")
         errors = gt.check_threshold_governance(
             doc["config"]["threshold_governance"], ENGINES)
-        assert any("对账表缺登记" in e and "Y1.sector.industry_rank_max" in e
+        assert any("对账表缺登记" in e and "Y2.sector.industry_rank_max" in e
                    for e in errors), errors
 
     def test_shape_errors_are_caught_by_the_pure_validator(self):
         for mutate, fragment in (
-            (lambda g: g.__setitem__("C1.sector.industry_rank_max", {"mode": "hard"}), "两键"),
-            (lambda g: g["C1.sector.industry_rank_max"].__setitem__("mode", "soft"), "mode 必须是"),
-            (lambda g: g["C1.sector.industry_rank_max"].__setitem__("basis", "  "), "basis 不能为空"),
+            (lambda g: g.__setitem__("C2.sector.industry_rank_max", {"mode": "hard"}), "两键"),
+            (lambda g: g["C2.sector.industry_rank_max"].__setitem__("mode", "soft"), "mode 必须是"),
+            (lambda g: g["C2.sector.industry_rank_max"].__setitem__("basis", "  "), "basis 不能为空"),
             (lambda g: g.__setitem__("乱写", {"mode": "hard", "basis": "x"}), "三段"),
         ):
             doc = _skel()

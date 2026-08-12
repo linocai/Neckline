@@ -69,9 +69,12 @@ struct NKMemberCard: View {
             gateCard(title: "位置关 · 落地起跳",
                      label: member.positionVerdictLabel, tone: member.positionVerdictTone,
                      reason: member.positionReason, metrics: member.positionMetrics)
-            gateCard(title: "核心关 · 行业龙头",
+            // V2.4.0 P1.2:核心关自此是**角色感知**的(leader/core/elastic 三把尺),
+            // ⛔ 标题不再写「行业龙头」—— 那正是被 §2.10-A 取代的"一把尺"。
+            gateCard(title: "核心关 · 核心资格",
                      label: member.coreVerdictLabel, tone: member.coreVerdictTone,
-                     reason: member.coreReason, metrics: member.coreMetrics)
+                     reason: member.coreReason, metrics: member.coreMetrics,
+                     domain: member.comparisonDomainLabel)
             // 🔴 两关**一关都没判出来**时要说出口(原型 577–580 行的整段):
             // ⛔ 不是"判过了没问题",是这次根本没判出来。
             unjudgedNote
@@ -225,7 +228,8 @@ struct NKMemberCard: View {
     /// **判定 nil → 整块不显示**(⛔ 不写「未判定」)。
     @ViewBuilder
     private func gateCard(title: String, label: String?, tone: NKAxisTone,
-                          reason: String?, metrics: NKJSON?) -> some View {
+                          reason: String?, metrics: NKJSON?,
+                          domain: String? = nil) -> some View {
         if let l = label {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {                       // 原型 390 行 gap:8
@@ -236,6 +240,14 @@ struct NKMemberCard: View {
                 if let r = reason, !r.isEmpty {
                     Text(r).font(NKFont.callout).lineSpacing(3)
                         .foregroundStyle(NK.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // V2.4.0 P1.3:比较域一行(**跟谁比**)。⚠ 与下面的读数宫格分开:
+                // 读数六项恒按**行业**算,比较域可能是驱动域 —— 混在一起会被读成
+                // 「这些名次是驱动域内的名次」,那是假的。
+                if let d = domain, !d.isEmpty {
+                    Text("比较域 · \(d)").font(NKFont.caption)
+                        .foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let m = metrics, let obj = m.objectValue, !obj.isEmpty {
@@ -381,6 +393,16 @@ struct NKMemberCard: View {
 struct NKMetricsGrid: View {
     let value: NKJSON
 
+    /// 🔴 **V2.4.0 P1.3:比较域五字段⛔ 不进读数宫格** —— 它们不是"读数"而是"这次拿它
+    /// 跟谁比"的元数据(由 `NKMemberCard` 单独一行渲染)。尤其 `peer_codes` 是个数组,
+    /// 塞进 `lineLimit(1)` 的格子里只会被截成一串看不懂的碎码。
+    private static let excludedKeys: Set<String> = [
+        "comparison_domain", "comparison_domain_key", "peer_codes", "peer_count",
+        "domain_fallback_reason",
+    ]
+
+    private var keys: [String] { value.sortedKeys.filter { !Self.excludedKeys.contains($0) } }
+
     #if os(macOS)
     private let columns = Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4)
     #else
@@ -389,7 +411,7 @@ struct NKMetricsGrid: View {
 
     var body: some View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: NKSpace.denseGap) {
-            ForEach(value.sortedKeys, id: \.self) { k in
+            ForEach(keys, id: \.self) { k in
                 VStack(alignment: .leading, spacing: 0) {
                     Text(k).font(NKFont.monoKey).foregroundStyle(NK.textTertiary)
                         .lineLimit(1).minimumScaleFactor(0.8)

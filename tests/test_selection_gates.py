@@ -130,7 +130,10 @@ def _basket(key: str, members, *, name: str = "篮", engine: Optional[str] = Non
             evidence=_EV3, evidence_status: str = ag.EVIDENCE_OK,
             answers: bool = True, pool: Optional[int] = 8,
             market: Optional[str] = ag.MARKET_OK, sector: Optional[str] = ag.SECTOR_OK,
-            market_reason: str = "", sector_reason: str = "") -> ag.BasketCandidate:
+            market_reason: str = "", sector_reason: str = "",
+            market_counter: Sequence[str] = (), sector_counter: Sequence[str] = (),
+            market_missing: Sequence[str] = (),
+            sector_missing: Sequence[str] = ()) -> ag.BasketCandidate:
     """⚠ V2.3.2-①-C:`market` / `sector` = ⑤ 那一次调用带回的**篮子级**三值。
     `None` / `""` = 模型压根没给 → 下游必须按「判不出」处理(不拦但不给 T1),
     ⛔ **不是** ok、⛔ 也不像位置/核心关那样兜成 weak。
@@ -138,7 +141,11 @@ def _basket(key: str, members, *, name: str = "篮", engine: Optional[str] = Non
     🔴 **默认给 `ok`(与 `_member()` 的 `position=ok` / `core=ok` 同姿势)**:
     V2.3.2 路径A 之后市场关 / 板块关的三值是**恒定生效**的必需输入 —— 默认留空会让
     每一个 `_basket()` 都恒 `blocks_t1`,把无关的测试全部染成"判不出"。要测「模型没给」
-    显式传 `market=None`。"""
+    显式传 `market=None`。
+
+    🔴 **V2.4.0 P1.5:判 `unfit` 的用例必须同时给 `*_counter` 与 `*_reason`** ——
+    四条件(数据可用 · 反证非空 · 理由非空 · 模型没报 missing)缺一,`gates` 会把
+    `unfit` 夹成 `weak`(刻意的保守方向)。要测**夹逼本身**就故意不给反证。"""
     return ag.BasketCandidate(
         trade_date=D0_S, basket_key=key, name=name, driver="共同驱动",
         driver_kind="theme", why_now="为什么是现在" if answers else "",
@@ -152,6 +159,8 @@ def _basket(key: str, members, *, name: str = "篮", engine: Optional[str] = Non
         aux={"seed_pool_size": pool} if pool is not None else {},
         market_verdict=market or "", market_reason=market_reason,
         sector_verdict=sector or "", sector_reason=sector_reason,
+        market_counter_evidence=tuple(market_counter), market_missing=tuple(market_missing),
+        sector_counter_evidence=tuple(sector_counter), sector_missing=tuple(sector_missing),
     )
 
 
@@ -303,17 +312,26 @@ class TestMarketGate:
         assert c.available is False and c.blocks_t1 is True
         assert "missing:market_regime" in c.reason
 
-    def test_missing_regime_row_still_lets_an_unfit_verdict_through(self, isolated_env):
-        """🔴🔴 **路径A 明令**:⛔ 禁止模型已输出 `unfit` 却被静默丢弃。
-        机械读数缺席(这里连行情状态行都没有)**不许**把已经给出的三值吃掉 ——
-        读数缺席如实标 `available=False` + 挡 T1,但 `unfit` 照常生效。"""
+    def test_missing_regime_row_clamps_unfit_to_weak_and_says_so(self, isolated_env):
+        """🔴 **V2.4.0 P1.5 取代了原 `test_missing_regime_row_still_lets_an_unfit_
+        verdict_through`**(那条断言「读数缺席也不许把 `unfit` 吃掉」)——
+        K8 §五 关口判定方式末段明写:**由数据缺失或模型保守输出形成的 `unfit` 转为
+        `unknown/unavailable`,不得 OUT**;审计规格 P1 验收 9 同款。
+
+        ⚠ **路径A「⛔ 不许静默丢弃」那一半仍然完好并在此加强钉死**:夹逼**不是静默** ——
+        `verdict` 仍然降级、原始三值与夹逼原因都留在 `evidence` 与 `reason` 里。"""
         b = _basket("k1", [_member("600001.SH")], engine="C", market=ag.MARKET_UNFIT,
-                    market_reason="没有行情状态也看得出大盘不适配这个引擎")
+                    market_reason="没有行情状态也看得出大盘不适配这个引擎",
+                    market_counter=["主线指数连续三日缩量下行"])
         c = gt._market_gate(C1, _ctx(isolated_env, []), [], basket=b)
-        assert gt._gate_unfit(c) is True                 # ⛔ 不许被 unavailable 吃掉
-        assert c.verdict == gt.VERDICT_DEGRADE           # ⛔ 永不 reject(第 4 锁)
+        assert gt._gate_unfit(c) is False                # 夹成 weak → ⛔ 不整篮 OUT
+        assert c.verdict == gt.VERDICT_DEGRADE           # 仍然降一档(⛔ 不是当没看见)
         assert c.available is False and c.blocks_t1 is True
         assert "missing:market_regime" in c.reason
+        # ⛔ 不许静默:夹逼原因 + 夹逼前的原始三值都必须留痕
+        assert c.evidence["unfit_clamped_to_weak"] == ["data_unavailable"]
+        assert c.evidence["market_verdict_before_clamp"] == ag.MARKET_UNFIT
+        assert "unfit_clamped" in c.reason
 
     def test_c1_high_divergence_breadth_below_threshold_no_longer_rejects(self, isolated_env):
         """🔴 **V2.3.2-①-B 改判**(策略线裁定 1,用户已确认):
@@ -340,10 +358,12 @@ class TestMarketGate:
     def test_evidence_threshold_verdict_comes_from_the_llm(self, isolated_env, verdict,
                                                            expected, unfit):
         """①-C 三值后果(与位置关 / 核心关逐字相同):`ok` 过 / `weak` 降一档 /
-        `unfit` 退出正式候选。🔴 **`verdict` 永不为 `reject`** —— 「退出」发生在定档层。"""
+        `unfit` 退出正式候选。🔴 **`verdict` 永不为 `reject`** —— 「退出」发生在定档层。
+        ⚠ V2.4.0 P1.5:`unfit` 那一格补上了反证(四条件之一),⛔ 否则会被夹成 weak。"""
         _insert_regime(isolated_env.db_path, "high_divergence", breadth_pctile=0.40)
         b = _basket("k1", [_member("600001.SH")], engine="C", market=verdict,
-                    market_reason="大盘广度撑不住这个引擎")
+                    market_reason="大盘广度撑不住这个引擎",
+                    market_counter=["主线指数连续三日缩量下行"])
         c = gt._market_gate(C1, _ctx(isolated_env, []), [], basket=b)
         assert c.verdict == expected
         assert c.verdict != gt.VERDICT_REJECT
@@ -414,20 +434,27 @@ class TestSectorGate:
         法庭结构里,`sector_unfit` 在 `Y1`(只有一条 audited)上**永不可达**。"""
         self._seed_strength(isolated_env, rank=3, strength=True)
         b = _basket("k1", [_member("600001.SH")], engine="C", sector=ag.SECTOR_UNFIT,
-                    sector_reason="这个板块只是被指数带起来的")
+                    sector_reason="这个板块只是被指数带起来的",
+                    sector_counter=["同板块其余成员当日全部下跌"])
         c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8, basket=b)
         assert gt._gate_unfit(c) is True
         assert c.verdict == gt.VERDICT_DEGRADE and c.verdict != gt.VERDICT_REJECT
         assert "这个板块只是被指数带起来的" in c.reason
 
-    def test_unavailable_readings_never_swallow_a_given_verdict(self, isolated_env):
-        """🔴🔴 **复审 🟠-2**:`unavailable` 分支原来会**先返回**,把已经给出的 `unfit`
-        一起吃掉。路径A 下这是明令禁止的。"""
+    def test_unavailable_readings_clamp_the_verdict_but_never_swallow_it(self, isolated_env):
+        """🔴 **V2.4.0 P1.5 改判**(原名 `..._never_swallow_a_given_verdict`):
+        复审 🟠-2 立的那条「`unavailable` 分支不许先返回、把 `unfit` 一起吃掉」
+        **仍然成立**(三值照旧被读到、照旧降级、照旧留痕);变的只有**后果** ——
+        数据不可用时的 `unfit` 按 K8 §五 转成保守档,⛔ 不整篮 OUT(P1 验收 9)。"""
         # 不 seed 强度表 → 名次与强度日都取不到(`missing:industry_strength`)
         b = _basket("k1", [_member("600001.SH")], engine="C", sector=ag.SECTOR_UNFIT,
-                    sector_reason="读数没取到,但板块本身明显不适配")
+                    sector_reason="读数没取到,但板块本身明显不适配",
+                    sector_counter=["同板块其余成员当日全部下跌"])
         c = gt._sector_gate(C1, _ctx(isolated_env, []), ["半导体"], pool_size=8, basket=b)
-        assert gt._gate_unfit(c) is True
+        assert gt._gate_unfit(c) is False                  # 夹成 weak → ⛔ 不 OUT
+        assert c.verdict == gt.VERDICT_DEGRADE             # ⛔ 但绝不是"当没看见"
+        assert c.evidence["sector_verdict_before_clamp"] == ag.SECTOR_UNFIT
+        assert c.evidence["unfit_clamped_to_weak"] == ["data_unavailable"]
         assert c.available is False and c.blocks_t1 is True
         assert "missing:industry_strength" in c.reason
 
@@ -547,20 +574,28 @@ class TestPositionGate:
         assert check.verdict == gt.VERDICT_DEGRADE and unfit is True
         assert "已在加速段" in check.reason
 
-    def test_missing_verdict_falls_back_to_weak_not_ok(self):
-        """🔴 LLM 没给判定 → **保守按 weak + 留痕**,⛔ 不静默当 ok
-        (「没判」与「判过、没问题」是两件事)。"""
+    def test_missing_verdict_is_unknown_not_weak(self):
+        """🔴 **V2.4.0 P1.1 取代了原 `test_missing_verdict_falls_back_to_weak_not_ok`**
+        (那条断言「漏答 → 兜底 weak → 计入降级数」)—— K8 §五 逐字:「缺失不构成负面
+        证据。模型没有回答时记录为 `unknown/unavailable`,**不得转成 `weak` 后参与
+        降级数量计算**」。
+
+        被取代的**那一半仍然有效并在此保留**:⛔ 绝不静默当 ok(「没判」与「判过、
+        没问题」是两件事)—— 它照旧挡 T1。"""
         check, unfit = gt._position_member_check(
             C1, _member("600001.SH", position=None, position_reason=""))
-        assert check.verdict == gt.VERDICT_DEGRADE and not unfit
-        assert check.evidence["position_verdict"] == ag.POSITION_VERDICT_FALLBACK
-        assert check.evidence["verdict_fallback"] is True
+        assert check.verdict == gt.VERDICT_PASS and not unfit   # ⛔ 不拦
+        assert check.available is False and check.blocks_t1 is True   # ⛔ 但不给 T1
+        assert check.evidence["position_verdict"] == ""          # 判不出 = 空
+        assert check.evidence["verdict_missing"] is True
+        assert "missing:position_verdict" in check.reason
 
-    def test_out_of_enum_verdict_also_falls_back_to_weak(self):
+    def test_out_of_enum_verdict_is_also_unknown(self):
         check, _unfit = gt._position_member_check(
             C1, _member("600001.SH", position="excellent"))
-        assert check.evidence["position_verdict"] == ag.POSITION_WEAK
+        assert check.evidence["position_verdict"] == ""
         assert check.evidence["position_verdict_raw"] == "excellent"
+        assert check.verdict == gt.VERDICT_PASS and check.available is False
 
     def test_ok_without_any_reading_does_not_block_but_bars_t1(self):
         """读数整份缺席 → `available=False` + 挡 T1:让模型在**零读数**下给的 ok
@@ -615,17 +650,22 @@ class TestCoreGate:
         assert check.verdict == gt.VERDICT_DEGRADE and unfit is True
         assert "只是同行业跟风票" in check.reason
 
-    def test_missing_verdict_falls_back_to_weak_not_ok(self):
+    def test_missing_verdict_is_unknown_not_weak(self):
+        """🔴 **V2.4.0 P1.1 取代原 `..._falls_back_to_weak_not_ok`**(与位置关同款,
+        理由逐字见那一条):漏答 = `unknown`,挡 T1、保 T2、**不计入降级数**。"""
         check, unfit = gt._core_member_check(
             C1, _member("600001.SH", core=None, core_reason=""))
-        assert check.verdict == gt.VERDICT_DEGRADE and not unfit
-        assert check.evidence["core_verdict"] == ag.CORE_VERDICT_FALLBACK
-        assert check.evidence["verdict_fallback"] is True
+        assert check.verdict == gt.VERDICT_PASS and not unfit
+        assert check.available is False and check.blocks_t1 is True
+        assert check.evidence["core_verdict"] == ""
+        assert check.evidence["verdict_missing"] is True
+        assert "missing:core_verdict" in check.reason
 
-    def test_out_of_enum_verdict_also_falls_back_to_weak(self):
+    def test_out_of_enum_verdict_is_also_unknown(self):
         check, _unfit = gt._core_member_check(C1, _member("600001.SH", core="leader!"))
-        assert check.evidence["core_verdict"] == ag.CORE_WEAK
+        assert check.evidence["core_verdict"] == ""
         assert check.evidence["core_verdict_raw"] == "leader!"
+        assert check.verdict == gt.VERDICT_PASS and check.available is False
 
     def test_ok_without_any_reading_does_not_block_but_bars_t1(self):
         """读数整份缺席 → `available=False` + 挡 T1(⛔ 但不拦:缺数 = 不知道)。
@@ -757,11 +797,14 @@ class TestPathAVerdictAlwaysApplies:
     @pytest.mark.parametrize("code", ["C", "Z", "Y"])
     @pytest.mark.parametrize("regime", REGIMES)
     def test_market_unfit_takes_effect_in_every_cell(self, isolated_env, code, regime):
+        """⚠ V2.4.0 P1.5:`unfit` 现在**必须带反证与理由**才成立(四条件)——
+        本用例照此补齐,九格矩阵的原判据(「模型判 unfit 不许被静默丢弃」)一字未改。"""
         ctx = self._world(isolated_env, regime)
         s = self._summary(isolated_env, ctx, code, market=ag.MARKET_UNFIT,
-                          market_reason="大盘不适配这个引擎")
+                          market_reason="大盘不适配这个引擎",
+                          market_counter=["主线指数连续三日缩量下行"])
         assert s.market_unfit is True, f"{code} × {regime}:模型判 unfit 却被静默丢弃"
-        assert s.any_unfit and not s.t2_eligible and not s.t1_eligible
+        assert s.basket_level_unfit and not s.t2_eligible and not s.t1_eligible
         # 🔴 ⛔ 这**不是**机械除名:verdict 永不 reject,「退出」发生在定档层
         assert s.excluded is False
         assert all(c.verdict != gt.VERDICT_REJECT for c in s.checks)
@@ -771,9 +814,10 @@ class TestPathAVerdictAlwaysApplies:
     def test_sector_unfit_takes_effect_in_every_cell(self, isolated_env, code, regime):
         ctx = self._world(isolated_env, regime)
         s = self._summary(isolated_env, ctx, code, sector=ag.SECTOR_UNFIT,
-                          sector_reason="板块只是被指数带起来的")
+                          sector_reason="板块只是被指数带起来的",
+                          sector_counter=["同板块只有它一只在动,其余全绿"])
         assert s.sector_unfit is True, f"{code} × {regime}:模型判 unfit 却被静默丢弃"
-        assert s.any_unfit and not s.t2_eligible and not s.t1_eligible
+        assert s.basket_level_unfit and not s.t2_eligible and not s.t1_eligible
         assert s.excluded is False
         assert all(c.verdict != gt.VERDICT_REJECT for c in s.checks)
 
@@ -824,7 +868,7 @@ class TestEvaluateDay:
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         b = out.result.baskets[0]
         assert (b.engine_code, b.engine_version, b.engine_source) == ("C", "C1", "llm")
-        assert b.skeleton_version == "K8-V0.7"
+        assert b.skeleton_version == "K8-V0.8"
         s = out.summaries["k1"]
         assert not s.excluded and s.engine_code == "C"
 
@@ -835,31 +879,64 @@ class TestEvaluateDay:
         b = out.result.baskets[0]
         assert b.engine_code == "C" and b.engine_source == "mech_fallback"
 
-    def test_position_gate_never_removes_a_member(self, isolated_env):
-        """🔴 裁定 11-b 的正面判据:位置关**只降级不除名** —— 哪怕模型判 `unfit`,
-        成员照样留在篮子里(⛔ 不出篮),候选也不在关口层被 excluded;
-        「退出正式候选」发生在定档层,且票仍在 ③b 列名。"""
+    def test_member_unfit_removes_only_that_member_and_keeps_the_basket(self, isolated_env):
+        """🔴 **V2.4.0 P1.4 取代了原 `test_position_gate_never_removes_a_member`**
+        (那条断言「哪怕模型判 unfit,成员照样留在篮子里 + 整篮退出正式候选」——
+        正是审计规格 P1 点名的「一只备选拖死一篮」)。
+
+        新判据 = K8 §六 / §八:**只移除该成员**,篮子仍有有效成员就继续定档。
+        ⚠ 裁定 11-b 的「位置关永不硬否决」**仍然完好**:`verdict` 只有 pass/degrade,
+        `excluded` 仍为 False —— 变的是**成员集**,不是"把整个候选机械 reject 掉"。"""
         env = isolated_env
         r = _agg([_basket("k1", [_member("600001.SH"),
                                  _member("600002.SH", position=ag.POSITION_UNFIT)],
                           engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         b = out.result.baskets[0]
-        assert [m.ts_code for m in b.members] == ["600001.SH", "600002.SH"]
+        assert [m.ts_code for m in b.members] == ["600001.SH"]     # 只剩合格的那只
         s = out.summaries["k1"]
-        assert s.removed_members == ()          # ⛔ 一个成员都没被摘掉
-        assert not s.excluded                    # ⛔ 关口层不除名
+        assert [(r_.ts_code, r_.gate) for r_ in s.removed_members] == [
+            ("600002.SH", gt.GATE_POSITION)]
+        assert s.kept_member_codes == ("600001.SH",)
+        assert not s.excluded                                       # ⛔ 关口层不除名
         assert s.position_unfit is True and "600002.SH" in s.position_unfit_detail
-        assert not s.t1_eligible and not s.t2_eligible   # 退出正式候选(定档层执行)
+        assert all(c.verdict != gt.VERDICT_REJECT for c in s.checks)
+        # 🔴 篮子**照常定档**(旧行为下这里会因 `position_unfit` 而 `t2_eligible=False`)
+        # ⚠ 本夹具没有 regime / 强度表 → T1 另有缺项,「剩下的成员全过就能 T1」由
+        # `TestP1MemberLevelOut::test_leader_ok_elastic_unfit_keeps_the_basket` 钉死。
+        assert s.t2_eligible
 
-    def test_all_members_unfit_still_keeps_the_basket_at_gate_level(self, isolated_env):
+    def test_all_members_unfit_takes_the_whole_basket_out(self, isolated_env):
+        """🔴 **P1.4 的另一半**(取代原 `..._still_keeps_the_basket_at_gate_level`):
+        K8 §六 第 ④ 条 —— **全部成员均被成员级关口移除** → 篮子退出正式候选。"""
         env = isolated_env
         r = _agg([_basket("k1", [_member("600001.SH", position=ag.POSITION_UNFIT)],
                           engine="C")])
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
-        assert len(out.result.baskets) == 1      # 篮子还在(⛔ 不是 members_all_removed)
-        assert out.summaries["k1"].excluded is False
-        assert out.summaries["k1"].position_unfit is True
+        assert out.result.baskets == ()          # 一个有效成员都不剩
+        s = out.summaries["k1"]
+        assert s.excluded is True
+        assert s.exclusion_reason == gt.EXCLUDE_MEMBERS_ALL_REMOVED
+        assert s.stuck_gate == gt.GATE_POSITION and "600001.SH" in (s.stuck_detail or "")
+        assert s.position_unfit is True
+        # ⛔ 仍然不是硬否决(第 4 锁):没有任何一关判 reject
+        assert all(c.verdict != gt.VERDICT_REJECT for c in s.checks)
+
+    def test_core_and_position_unfit_on_one_member_yields_one_primary_reason(self, isolated_env):
+        """P1 验收 4:同一成员核心关与位置关**同时** unfit → **一条**成员级 OUT,
+        主原因按固定 `GATE_ORDER`(核心关在位置关之前);⛔ 全部理由仍在 `checks` 里。"""
+        env = isolated_env
+        r = _agg([_basket("k1", [_member("600001.SH"),
+                                 _member("600002.SH", position=ag.POSITION_UNFIT,
+                                         core=ag.CORE_UNFIT)], engine="C")])
+        out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
+        s = out.summaries["k1"]
+        assert len(s.removed_members) == 1
+        assert s.removed_members[0].gate == gt.GATE_CORE      # GATE_ORDER 里核心在前
+        # 两关的判定行**一条不少**(可追溯)
+        gone = [c for c in s.checks if c.ts_code == "600002.SH"]
+        assert {c.gate for c in gone} == {gt.GATE_CORE, gt.GATE_POSITION}
+        assert s.core_unfit and s.position_unfit
 
     def test_no_active_engines_means_no_candidates_today(self, isolated_env):
         """零运行引擎 = 当日不产任何候选(pack.get_active_line 既定语义);候选
@@ -1087,7 +1164,11 @@ _AGG_PATH = Path(__file__).resolve().parent.parent / "neckline" / "selection" / 
 class TestRulingElevenMachineCriteria:
     def test_unfit_candidate_must_not_disappear_from_section_3b(self, isolated_env):
         """🔴 **本裁定最该有的一条**:位置关判 `unfit` 的票 **⛔ 不得从 ③b 消失**
-        —— 只降级不除名(§2.9-C-2「退出正式候选 ≠ 从报告里消失」)。"""
+        (§2.9-C-2「退出正式候选 ≠ 从报告里消失」)。
+
+        ⚠ **V2.4.0 P1.4 改了「怎么出局」但没改这一条**:唯一成员被移除 → 全员移除 →
+        整篮 OUT,原因码由 `position_unfit` 变成 `members_all_removed`,**关口与模型
+        那句理由照旧写在 ③b 上**。⛔ 票消失才是要防的那件事,那一半一字未改。"""
         env = isolated_env
         days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
         insert_trade_cal(env, days)
@@ -1105,7 +1186,8 @@ class TestRulingElevenMachineCriteria:
         assert len(res.dropped) == 1
         hit = res.dropped[0]
         assert hit.basket_key == "k-unfit" and hit.name == "位置不合适篮"   # ⛔ 没消失
-        assert hit.reason == ti.DROP_POSITION_UNFIT       # 与"证据关降级超上限"分开
+        assert hit.reason == gt.EXCLUDE_MEMBERS_ALL_REMOVED  # 与"证据关降级超上限"分开
+        assert hit.reason != ti.DROP_EVIDENCE_DEGRADED_OUT
         assert hit.gate == gt.GATE_POSITION
         assert "600001.SH" in (hit.gate_detail or "")
         assert "加速段" in (hit.gate_detail or "")          # 模型那句理由也在 ③b 上
@@ -1193,7 +1275,10 @@ class TestRulingElevenMachineCriteria:
 class TestRulingTwelveMachineCriteria:
     def test_core_unfit_candidate_must_not_disappear_from_section_3b(self, isolated_env):
         """🔴 **本裁定最该有的一条**:核心关判 `unfit` 的票 **⛔ 不得从 ③b 消失**
-        —— 只降级不除名(§2.9-C-2「退出正式候选 ≠ 从报告里消失」)。"""
+        (§2.9-C-2「退出正式候选 ≠ 从报告里消失」)。
+
+        ⚠ 与位置关那条同款:V2.4.0 P1.4 之后唯一成员被移除 → 整篮 `members_all_removed`,
+        **关口仍记核心关、模型理由照旧上 ③b**。"""
         env = isolated_env
         days = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3), date(2024, 4, 4), D0]
         insert_trade_cal(env, days)
@@ -1211,9 +1296,9 @@ class TestRulingTwelveMachineCriteria:
         assert len(res.dropped) == 1
         hit = res.dropped[0]
         assert hit.basket_key == "k-core-unfit" and hit.name == "不是龙头篮"  # ⛔ 没消失
-        assert hit.reason == ti.DROP_CORE_UNFIT           # 与位置关 / 证据关分开三码
-        assert hit.reason != ti.DROP_POSITION_UNFIT
-        assert hit.gate == gt.GATE_CORE
+        assert hit.reason == gt.EXCLUDE_MEMBERS_ALL_REMOVED
+        assert hit.reason != ti.DROP_EVIDENCE_DEGRADED_OUT
+        assert hit.gate == gt.GATE_CORE                   # ⛔ 关口仍分得清是哪一关
         assert "600001.SH" in (hit.gate_detail or "")
         assert "跟风" in (hit.gate_detail or "")           # 模型那句理由也在 ③b 上
 

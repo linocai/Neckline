@@ -100,7 +100,7 @@ def test_non_legacy_lines_are_untouched(tmp_path: Path):
     db = _mk_db(tmp_path, with_skeleton=True)
     rep = retire_legacy_packs(db, confirm=True)
     assert [r["pack_version"] for r in rep.retired] == ["K7-pack-v1"]
-    assert pack.get_active_skeleton(db).pack_version == "K8-V0.7"
+    assert pack.get_active_skeleton(db).pack_version == "K8-V0.8"
     assert pack.get_active_line("LEGACY", db) is None   # LEGACY 线已无现役
     # 骨架线的事件流里没有多出任何 deactivate。
     log = _rows(db, "SELECT pack_version, action FROM selection_pack_activation_log ORDER BY id")

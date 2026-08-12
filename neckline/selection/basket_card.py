@@ -114,7 +114,19 @@ logger = logging.getLogger(__name__)
 # ⚠ 库里 v3 老卡照常读回:`_upside_path_present()` 的判据是 **`upside_path` 或
 # 老 `scripts` 任一格非空** 的 OR(冻结卡 `INSERT OR IGNORE` 永不回填新键,只读新键
 # 会让昨天冻的那批篮子今天开仓时全部"缺上涨判断" = 凭空多一条假警示)。
-CARD_SPEC_VERSION = "basket_card_v4"
+# 🔴 **v4 已于 2026-08-12 上产**(V2.3.3)→ V2.4.0 P1.5+ 改了 `tier_breakdown.gates`
+# 的形状,因此**必须** bump 到 v5。形状变更**恰好三处**(`tier.py::_gate_breakdown`):
+#   ① 增**逐关 `gate_available`** 映射 —— 格级「判不出」终于查得到(补上 `CLAUDE.md`
+#      明载的「六关的判不出是篮级不是格级」那个缺口;老形状里 `unknown` 长得跟 `pass`
+#      一模一样,界面上是把「没看」讲成了「没问题」);
+#   ② 增逐关 `gate_support` / `gate_counter_evidence` / `gate_missing`(P1.5+ 结构化
+#      检查的留痕,P3.4 审计层的原料);
+#   ③ 增 `t2_formal_policy` / `has_unavailable`(这一档当时按哪套 T2 规则定的、有没有
+#      判不出的关)。⚠ `removed_members` 键**早就在**(v3 起),只是 P1.4 之后才真的
+#      会非空 —— 那不是形状变更,别把它算成第四处。
+# ⚠ 老 v4 / v3 卡照常读回:新键缺席时消费方按老形状读(`_upside_path_present()` 的
+# OR 体例),⛔ 不许让昨天冻的卡今天全部"缺件"。
+CARD_SPEC_VERSION = "basket_card_v5"
 VERIFY_SPEC_VERSION = "basket_verify_v2"
 INVALIDATE_SPEC_VERSION = "basket_invalidate_v2"
 

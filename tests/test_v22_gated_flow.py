@@ -171,13 +171,13 @@ class TestGatedEveningFlow:
         rows = _rows(env.db_path,
                      "SELECT basket_key, tier, engine_code, engine_version, skeleton_version "
                      "FROM baskets")
-        assert rows == [("k1", 1, "C", "C1", "K8-V0.7")]
+        assert rows == [("k1", 1, "C", "C1", "K8-V0.8")]
         assert stats["gates"]["rows_written"] > 0
         assert _rows(env.db_path, "SELECT COUNT(*) FROM gate_evaluations")[0][0] > 0
         card = json.loads(_rows(env.db_path, "SELECT card_json FROM basket_cards")[0][0])
         assert card["tier"] == 1
         assert (card["engine_code"], card["engine_version"], card["skeleton_version"]) == \
-            ("C", "C1", "K8-V0.7")
+            ("C", "C1", "K8-V0.8")
         assert bc.trade_plan_missing_pieces(card) == []
 
     def test_incomplete_plan_demotes_t1_to_t2_not_blocked(self, isolated_env, monkeypatch):
@@ -233,24 +233,29 @@ class TestGatedEveningFlow:
         assert back is not None and back[0].reason == gt.EXCLUDE_MECH_GATE_REJECTED
         assert back[0].gate == gt.GATE_SECTOR and back[0].name == "弱板块篮"
 
-    def test_position_unfit_basket_exits_candidacy_but_lands_in_3b(self, isolated_env,
-                                                                   monkeypatch):
-        """🔴 裁定 #11 在**整条编排链**上的机器判据:位置关判 `unfit` → 不落
-        `baskets`,但 ③b 与跨进程交接表里**名 / 分 / 关 / 原因码 / 模型理由**齐全
-        —— 票没消失,只是退出正式候选。"""
+    def test_only_member_unfit_takes_the_single_member_basket_out_and_lands_in_3b(
+            self, isolated_env, monkeypatch):
+        """🔴 裁定 #11 在**整条编排链**上的机器判据 —— **V2.4.0 P1.4 改了原因码**:
+
+        这个篮子只有一名成员,该成员被位置关判 `unfit` → **成员级移除** → 全员被移除
+        → 整篮退出正式候选,原因码由 `position_unfit` 变成 `members_all_removed`。
+        ⚠ 被取代的只有那个码:**「票没消失、③b 与跨进程交接表里名 / 分 / 关 / 理由齐全」
+        这一整条判据一字未改**,那才是这条测试真正守的东西。
+        (多成员篮"只摘一只、篮子还在"的正面守门在
+        `tests/test_v240_p1_selection.py::TestP1MemberLevelOut`。)"""
         env = isolated_env
         _seed_t1_world(env)
         dropped, _stats, _notes = _run_segment(
             env, _agg([_basket(name="位置不合适篮", position=ag.POSITION_UNFIT)]),
             monkeypatch, use_llm=False)
-        assert [d.reason for d in dropped] == [ti.DROP_POSITION_UNFIT]
+        assert [d.reason for d in dropped] == [gt.EXCLUDE_MEMBERS_ALL_REMOVED]
         assert dropped[0].gate == gt.GATE_POSITION and dropped[0].name == "位置不合适篮"
         assert CODE in (dropped[0].gate_detail or "")
         assert _rows(env.db_path, "SELECT COUNT(*) FROM baskets")[0][0] == 0
         from neckline.selection.basket_dropped_handoff import load_dropped_handoff
 
         back = load_dropped_handoff(D0, db_path=env.db_path)
-        assert back is not None and back[0].reason == ti.DROP_POSITION_UNFIT
+        assert back is not None and back[0].reason == gt.EXCLUDE_MEMBERS_ALL_REMOVED
         # 关口留痕照写:位置关行是 LLM 关、且读数与理由都在
         rows = _rows(env.db_path,
                      "SELECT gate_kind, verdict, evidence_json FROM gate_evaluations "

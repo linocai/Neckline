@@ -125,9 +125,14 @@ def _agg(baskets: Sequence[ag.BasketCandidate], notes: Sequence[str] = ()) -> ag
 def _summary(key: str, *, name: str = "", t1: bool = False, excluded: bool = False,
              reason: str | None = None, gate: str | None = None, detail: str | None = None,
              degrades: int = 0, position_unfit: bool = False,
-             position_detail: str = "") -> gates_mod.BasketGateSummary:
-    """⚠ 裁定 #11:`all_members_liftoff` 已删(T1 不再要求任何机械态枚举);
-    位置关的「退出正式候选」由 `position_unfit` 表达,**⛔ 不是 excluded**。"""
+             position_detail: str = "", kept: Sequence[str] = ("600001.SH",),
+             t2_formal_policy: str = "") -> gates_mod.BasketGateSummary:
+    """⚠ 裁定 #11:`all_members_liftoff` 已删(T1 不再要求任何机械态枚举)。
+
+    🔴 **V2.4.0 P1.6:`kept_member_codes` 必须给**(K8 §八 T2「至少保留一个有效成员」)
+    —— 真实 `evaluate_day` 每条汇总都带它,这个替身此前漏了(那时 T2 判据不看它)。
+    ⚠ **`position_unfit` 自 P1.4 起不再让整篮出局**(它降为「本篮有成员被移除」的留痕
+    位):要造"整篮走人"的替身,请用 `kept=()`(全员被移除)或 `excluded=True`。"""
     return gates_mod.BasketGateSummary(
         basket_key=key, name=name,
         engine_code=None if excluded else "C", engine_version=None if excluded else "C1",
@@ -137,25 +142,38 @@ def _summary(key: str, *, name: str = "", t1: bool = False, excluded: bool = Fal
         degraded_gates=tuple(sorted(gates_mod.EVIDENCE_GATES))[:degrades],
         blocks_t1=not t1, position_unfit=position_unfit,
         position_unfit_detail=position_detail, regime_available=True,
+        kept_member_codes=tuple(kept), t2_formal_policy=t2_formal_policy,
     )
 
 
 def _outcome(r: ag.AggregateResult, *, t1_keys: Sequence[str] = (),
              excluded: Dict[str, str] | None = None,
              degrades_by_key: Dict[str, int] | None = None,
-             position_unfit_keys: Sequence[str] = ()) -> gates_mod.GateDayOutcome:
+             position_unfit_keys: Sequence[str] = (),
+             all_removed_keys: Sequence[str] = ()) -> gates_mod.GateDayOutcome:
     """默认:全部候选过六关、但 blocks_t1(缺 landing/regime 之类)→ 全 T2 资格
     (与旧质量线时代"零数据篮子落 T2"的行为对齐,存量断言最小扰动)。
     `t1_keys` 指定哪些篮子 T1 资格;`excluded` = {key: 除名原因码};
-    `degrades_by_key` = 证据关降级处数(>1 → 会被 ⑥ 判 evidence_degraded_out)。"""
+    `degrades_by_key` = 证据关降级处数(>1 → 会被 ⑥ 判 evidence_degraded_out)。
+
+    🔴 **V2.4.0 P1.4**:`position_unfit_keys` 自此只立**留痕位**(篮子照常定档);
+    要造「整篮出局」用 `all_removed_keys`(= 全员被成员级关口移除 → `excluded` +
+    `members_all_removed`)。⛔ 两者别再混用 —— 那正是被 P1.4 推翻的连坐语义。"""
     excluded = excluded or {}
     degrades_by_key = degrades_by_key or {}
+    all_removed = set(all_removed_keys)
     summaries = {
         b.basket_key: (
             _summary(b.basket_key, name=b.name, excluded=True,
                      reason=excluded[b.basket_key], gate="market",
                      detail="test:excluded")
             if b.basket_key in excluded else
+            _summary(b.basket_key, name=b.name, excluded=True, kept=(),
+                     reason=gates_mod.EXCLUDE_MEMBERS_ALL_REMOVED,
+                     gate=gates_mod.GATE_POSITION,
+                     detail="600001.SH:position.unfit[C]:已在加速段",
+                     position_unfit=True)
+            if b.basket_key in all_removed else
             _summary(b.basket_key, name=b.name, t1=b.basket_key in set(t1_keys),
                      degrades=degrades_by_key.get(b.basket_key, 0),
                      position_unfit=b.basket_key in set(position_unfit_keys),
@@ -164,7 +182,8 @@ def _outcome(r: ag.AggregateResult, *, t1_keys: Sequence[str] = (),
         )
         for b in r.baskets
     }
-    kept = tuple(b for b in r.baskets if b.basket_key not in excluded)
+    kept = tuple(b for b in r.baskets
+                 if b.basket_key not in excluded and b.basket_key not in all_removed)
     return gates_mod.GateDayOutcome(
         trade_date=r.trade_date, result=replace(r, baskets=kept), summaries=summaries,
         engines=("C",), skeleton_version="K8-V0.5",
@@ -654,7 +673,7 @@ class TestScoreAndTier:
         r = _three_baskets()
         res = ti.score_and_tier(r, D0, db_path=env.db_path,
                                 parquet_dir=env.parquet_dir, gates_outcome=_outcome(r))
-        assert res.pack_version == "K8-V0.7"
+        assert res.pack_version == "K8-V0.8"
 
     def test_overflowing_baskets_are_dropped_with_trace(self, isolated_env):
         """20 个**零数据**篮子(每一维都降级取中性分)→ 分数全是同一个平庸值,
@@ -1386,46 +1405,59 @@ class TestScoreAndTierMixedDropReasons:
         assert "evidence_degraded_out:1" in res.notes
         assert "capacity_overflow:3" in res.notes
 
-    def test_position_unfit_is_its_own_reason_code_not_merged(self, isolated_env):
-        """🔴 裁定 #11:位置关 `unfit` 出局 ≠ 证据关降级超上限 —— 两个原因码指向
-        完全不同的复盘结论(④ 周度按关口归因要分得开),⛔ 不许合并。"""
+    def test_all_members_removed_is_its_own_reason_code_not_merged(self, isolated_env):
+        """🔴 **V2.4.0 P1.4 取代了原 `test_position_unfit_is_its_own_reason_code_not_merged`**
+        (那条断言「位置关 `unfit` → 整篮出局 `position_unfit`」,而 P1.4 把成员级
+        `unfit` 的后果改成**只移除该成员**;整篮出局自此只发生在**全员被移除**时,
+        原因码 = `members_all_removed`)。
+
+        被取代的**那一半仍然有效并在此保留**:整篮出局 ≠ 证据关降级超上限 ——
+        两个原因码指向完全不同的复盘结论(④ 周度按关口归因要分得开),⛔ 不许合并。"""
         env = isolated_env
-        unfit = _basket("k-unfit", [_member("600001.SH")], name="位置不合适")
+        unfit = _basket("k-unfit", [_member("600001.SH")], name="成员全被摘掉")
         degraded = _basket("k-degraded", [_member("600999.SH")], name="证据不足")
         r = _agg([unfit, degraded])
         res = ti.score_and_tier(
             r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
-            gates_outcome=_outcome(r, position_unfit_keys=["k-unfit"],
+            gates_outcome=_outcome(r, all_removed_keys=["k-unfit"],
                                    degrades_by_key={"k-degraded": 2}),
         )
         by_key = {d.basket_key: d for d in res.dropped}
         assert res.decisions == ()
-        assert by_key["k-unfit"].reason == ti.DROP_POSITION_UNFIT
+        assert by_key["k-unfit"].reason == gates_mod.EXCLUDE_MEMBERS_ALL_REMOVED
         assert by_key["k-degraded"].reason == ti.DROP_EVIDENCE_DEGRADED_OUT
         # ③b 上说得出卡在哪一关、是哪只成员、模型给的理由
         assert by_key["k-unfit"].gate == gates_mod.GATE_POSITION
         assert "600001.SH" in (by_key["k-unfit"].gate_detail or "")
-        assert by_key["k-unfit"].name == "位置不合适"          # ⛔ 票没从 ③b 消失
-        assert "position_unfit:1" in res.notes
+        assert by_key["k-unfit"].name == "成员全被摘掉"        # ⛔ 票没从 ③b 消失
+        assert "members_all_removed:1" in res.notes
 
-    def test_position_unfit_never_enters_any_tier_even_with_a_high_score(self, isolated_env):
-        """反向:同一个候选把 `position_unfit` 摘掉就进得了档 —— 证明出局确实是
-        位置判定造成的,不是分数或别的关。"""
+    def test_member_unfit_alone_no_longer_drops_the_basket(self, isolated_env):
+        """🔴 **P1.4 的正面守门**(取代原
+        `test_position_unfit_never_enters_any_tier_even_with_a_high_score` ——
+        那条断言的正是被推翻的「一只备选拖死一篮」)。
+
+        `position_unfit` 自此只是**留痕位**:篮子只要还剩有效成员就照常定档,
+        可以是 T1。⛔ 别把这两格加回 `t1/t2_eligible`。"""
         env = isolated_env
         _insert_strength(env.db_path, [{"industry": "半导体", "rank": 1}])
         b = _basket("k-hot", [_member("600001.SH", industry="半导体", rs_rank=1)], name="高分")
         r = _agg([b])
-        blocked = ti.score_and_tier(
+        kept = ti.score_and_tier(
             r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
             gates_outcome=_outcome(r, t1_keys=["k-hot"], position_unfit_keys=["k-hot"]))
-        assert blocked.decisions == ()
-        assert blocked.dropped[0].reason == ti.DROP_POSITION_UNFIT
-        assert blocked.dropped[0].mech_score is not None and blocked.dropped[0].mech_score > 0.4
+        assert [d.tier for d in kept.decisions] == [1]
+        assert kept.dropped == ()
+        # 留痕位仍然写进冻结快照(④ 归因要查得到"这一篮今天摘过人")
+        assert kept.decisions[0].breakdown["gates"]["position_unfit"] is True
 
-        ok = ti.score_and_tier(
+        # 反向:全员被移除才整篮出局,且分数不是原因(高分照样出局)
+        gone = ti.score_and_tier(
             r, D0, db_path=env.db_path, parquet_dir=env.parquet_dir, pack=K7_PACK,
-            gates_outcome=_outcome(r, t1_keys=["k-hot"]))
-        assert [d.tier for d in ok.decisions] == [1]
+            gates_outcome=_outcome(r, t1_keys=["k-hot"], all_removed_keys=["k-hot"]))
+        assert gone.decisions == ()
+        assert gone.dropped[0].reason == gates_mod.EXCLUDE_MEMBERS_ALL_REMOVED
+        assert gone.dropped[0].mech_score is not None and gone.dropped[0].mech_score > 0.4
 
 
 class TestNeutralFilledWeight:

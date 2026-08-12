@@ -213,6 +213,18 @@ _TIER_EVIDENCE_TIERS: Tuple[str, ...] = ("t1", "t2")
 _TIER_EVIDENCE_LEAF_KEYS: frozenset = frozenset({
     "max_evidence_degrades",                    # 该档允许证据关降级的处数上限(K8 §八)
 })
+# —— 🔴 V2.4.0 P1.6:T2 的**正式定档策略**(可选键,只有 t2 段能写)————————————
+# `no_hard_fail` = 该引擎的正式定档**不吃** `max_evidence_degrades`(那个数降为影子
+# 规则,只统计"若按旧规则会不会 OUT");**缺键 = 旧行为**(C1/Z1/Y1 一字不动 →
+# 回滚可复现,已拍板 #8)。
+# ⚠ 它**不是阈值叶子**:形状是**枚举字符串**,⛔ 不走 `_validate_provenance_leaf`
+# (同 `gates.<关>.guidance` 的既有体例 —— 它不是一个"从 K8 定性边界翻译出来的数",
+# 而是一个"按哪套规则定档"的开关)。
+# 🔴 **正因为可选 + 旧包行为逐位不变,`ENGINE_API_VERSION` 保持 2**(§3.14-G):
+# 升代际会当场废掉「旧四包仍可激活」这条回滚绳,⛔ 别"顺手"升。
+_TIER_EVIDENCE_POLICY_KEY = "formal_policy"
+_TIER_EVIDENCE_POLICY_TIERS: frozenset = frozenset({"t2"})
+_TIER_EVIDENCE_POLICY_VALUES: frozenset = frozenset({"no_hard_fail"})
 _PROVENANCE_SOURCES: Tuple[str, ...] = ("audited", "engineering_v1")
 
 # —— V2.2-② 行情状态层五个判定阈值的键名白名单(骨架线 `config.regime` 段)。
@@ -645,16 +657,32 @@ def _validate_engine_config(config: Dict[str, Any], line_code: str) -> List[str]
             if not isinstance(body, dict):
                 errors.append(f"config.engine.tier_evidence.{tier_key} 必须是对象")
                 continue
-            unknown_keys = sorted(set(body) - _TIER_EVIDENCE_LEAF_KEYS)
+            allowed_keys = set(_TIER_EVIDENCE_LEAF_KEYS)
+            if tier_key in _TIER_EVIDENCE_POLICY_TIERS:
+                allowed_keys.add(_TIER_EVIDENCE_POLICY_KEY)
+            unknown_keys = sorted(set(body) - allowed_keys)
             if unknown_keys:
                 errors.append(
                     f"config.engine.tier_evidence.{tier_key} 出现白名单外的阈值键:"
-                    f"{unknown_keys}(允许:{sorted(_TIER_EVIDENCE_LEAF_KEYS)})"
+                    f"{unknown_keys}(允许:{sorted(allowed_keys)})"
                 )
             for key in sorted(set(body) & _TIER_EVIDENCE_LEAF_KEYS):
                 errors.extend(
                     _validate_provenance_leaf(f"config.engine.tier_evidence.{tier_key}.{key}", body[key])
                 )
+            # V2.4.0 P1.6:定档策略键 —— 枚举字符串,⛔ 不过 provenance 闸(见常量注释)。
+            if _TIER_EVIDENCE_POLICY_KEY in body:
+                path = f"config.engine.tier_evidence.{tier_key}.{_TIER_EVIDENCE_POLICY_KEY}"
+                if tier_key not in _TIER_EVIDENCE_POLICY_TIERS:
+                    errors.append(
+                        f"{path} 只允许写在 {sorted(_TIER_EVIDENCE_POLICY_TIERS)} 段"
+                        "(T1 由结构条件定档,不吃这个开关,K8 §八)")
+                elif body[_TIER_EVIDENCE_POLICY_KEY] not in _TIER_EVIDENCE_POLICY_VALUES:
+                    errors.append(
+                        f"{path} 取值非法:{body[_TIER_EVIDENCE_POLICY_KEY]!r}"
+                        f"(仅允许 {sorted(_TIER_EVIDENCE_POLICY_VALUES)};"
+                        "⛔ 缺键才是「沿用旧行为」,别写第二个值 —— 加一个策略值等于给"
+                        "定档发明一条新规则,那要用户拍板)")
     return errors
 
 

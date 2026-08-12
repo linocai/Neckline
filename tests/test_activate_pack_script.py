@@ -242,7 +242,7 @@ def test_dry_run_diff_against_active_skeleton_shows_changes(tmp_path: Path, caps
     rc = activate_pack_script.run(_K8_SKELETON_FILE, db_path, confirm=False)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "[V 线] 现役 old-skel-v1 → 目标 K8-V0.7" in out
+    assert "[V 线] 现役 old-skel-v1 → 目标 K8-V0.8" in out
     assert "← 改动" in out
     # dry-run 不写库:old-skel-v1 仍是 V 线唯一现役。
     actives = [p.pack_version for p in pack.list_packs(db_path=db_path) if p.is_active]
@@ -258,7 +258,7 @@ def test_confirm_activates_and_per_line_uniqueness_assertion_holds(tmp_path: Pat
     rc = activate_pack_script.run(_K8_SKELETON_FILE, db_path, confirm=True)
     assert rc == 0
     actives = [p.pack_version for p in pack.list_packs(db_path=db_path) if p.is_active]
-    assert actives == ["K8-V0.7"]
+    assert actives == ["K8-V0.8"]
 
 
 def test_confirm_four_lines_coexist_each_uniquely_active(tmp_path: Path):
@@ -268,7 +268,7 @@ def test_confirm_four_lines_coexist_each_uniquely_active(tmp_path: Path):
     for f in _NEW_PACK_FILES:
         assert activate_pack_script.run(f, db_path, confirm=True) == 0
     actives = {p.line_code: p.pack_version for p in pack.list_packs(db_path=db_path) if p.is_active}
-    assert actives == {"V": "K8-V0.7", "C": "C1", "Z": "Z1", "Y": "Y1"}
+    assert actives == {"V": "K8-V0.8", "C": "C1", "Z": "Z1", "Y": "Y1"}
     engines = pack.get_active_engines(db_path=db_path)
     assert list(engines) == ["C", "Z", "Y"]
 
@@ -283,7 +283,7 @@ def test_confirm_first_activation_writes_one_log_row(tmp_path: Path):
         rows = conn.execute("SELECT pack_version, action FROM selection_pack_activation_log").fetchall()
     finally:
         conn.close()
-    assert rows == [("K8-V0.7", "activate")]
+    assert rows == [("K8-V0.8", "activate")]
 
 
 def test_confirm_switching_packs_writes_two_log_rows(tmp_path: Path):
@@ -326,8 +326,8 @@ def test_confirm_engine_activation_leaves_other_lines_untouched(tmp_path: Path):
         ).fetchall()
     finally:
         conn.close()
-    assert rows == [("K8-V0.7", "activate"), ("C1", "activate")]
-    assert pack.get_active_skeleton(db_path).pack_version == "K8-V0.7"
+    assert rows == [("K8-V0.8", "activate"), ("C1", "activate")]
+    assert pack.get_active_skeleton(db_path).pack_version == "K8-V0.8"
 
 
 def test_confirm_reactivating_already_active_is_noop_and_returns_zero(tmp_path: Path):

@@ -278,9 +278,11 @@ func nkK4SectionTone(_ raw: String) -> NKAxisTone {
 }
 
 /// V2.2-③-C / ③-C2 位置关 / 核心关判定三态展示层换算(裁定 #11/#12:机械层只出
-/// 读数,判定交 LLM,只降级不除名)。`ok` = 判定合适 / 是那一群的龙头;
-/// `weak` = 勉强、降一档;`unfit` = 不合适 / 不是龙头、退出正式候选(**⛔ 不是
-/// 硬否决**——票仍在 ③b 列名,理由见 `positionReason`/`coreReason`)。
+/// 读数,判定交 LLM)。`ok` = 按它那个角色的判据站得住(**V2.4.0 P1.2 起核心关是
+/// 角色感知的,⛔ 不再是"所有角色都得是龙头"**);`weak` = 勉强、降一档;
+/// `unfit` = 有明确反证 → 🔴 **V2.4.0 P1.4:只把这一只成员移出篮子** + 单独列进
+/// ③b 的 OUT 清单,**篮子仍在**(⛔ 不是硬否决、⛔ 也不再连坐整篮;
+/// 理由见 `positionReason`/`coreReason`)。
 /// 位置关与核心关**同构**(裁定 #12 与 #11 同款处理),共用同一套三态换算。
 /// 沿 `nkBoardLabel` 先例:服务端只发英文码,未识别值原样透传、不静默瞎翻译。
 func nkVerdictLabel(_ raw: String) -> String {
@@ -560,6 +562,34 @@ struct BasketMember: Codable, Equatable, Identifiable {
     var coreVerdict: String? = nil
     var coreReason: String? = nil
     var coreMetrics: NKJSON? = nil
+
+    /// 🔴 **V2.4.0 P1.3:比较域五字段**(与读数同住 `coreMetrics`,服务端唯一实现
+    /// `selection/core_metrics.py::resolve_comparison_domain`)。
+    /// **「跟谁比」与「读数按什么算」是两件事**:读数六项**恒按行业算**,比较域可能是
+    /// 驱动域 —— ⛔ 别把它们读成同一群(展示上因此单独一行,不混进读数宫格)。
+    /// ⚠ **`peerCodes` 刻意不上屏**:驱动域就是那张成员清单,行业域动辄几十上百只,
+    /// 铺在卡上没人读得完;完整名单在服务端审计记录里(`gate_evaluations`)。
+    var comparisonDomainLabel: String? {
+        guard let obj = coreMetrics?.objectValue else { return nil }
+        // ⚠ 三态:driver / industry / **null = 没有可用的比较域**(⛔ 不是"没记录")
+        let raw = obj["comparison_domain"]?.stringValue
+        let hasKey = obj["comparison_domain"] != nil
+        guard hasKey else { return nil }                   // 老卡没有这五个字段
+        let name: String
+        switch raw {
+        case "driver": name = "同一主要驱动的候选成员域"
+        case "theme": name = "同一题材 / 方向"
+        case "industry": name = "同行业"
+        case nil, .some(""): name = "没有可用的比较域"
+        default: name = raw ?? ""                          // 未识别码原样透传,⛔ 不瞎翻译
+        }
+        var bits = [name]
+        if let key = obj["comparison_domain_key"]?.stringValue, !key.isEmpty {
+            bits.append(key)
+        }
+        if let n = obj["peer_count"]?.intValue { bits.append("同域 \(n) 只") }
+        return bits.joined(separator: " · ")
+    }
     /// 机械面板原样透传(⑦ `MemberMech.to_dict()`,自由结构)。
     var mech: NKJSON = .object([:])
     var entryZone: BasketPriceBand? = nil
@@ -1215,7 +1245,12 @@ func nkDroppedReasonLabel(_ raw: String) -> String {
     // 那个是「客观量没过一道确认过的硬门」,这两个是「模型看了读数觉得环境不适配」。
     case "market_unfit": return "市场关判定不适配 · 大盘环境与该引擎不合(非硬否决)"
     case "sector_unfit": return "板块关判定不适配 · 板块状态撑不住这个篮子(非硬否决)"
-    case "members_all_removed": return "成员级机械关对拍后成员全部出篮"
+    // 🔴 V2.4.0 P1.4 新增的**成员级** OUT 码:只摘掉这一只、**篮子还在**(K8 §八)。
+    // ⚠ 与上面两条**篮子级**的 `core_unfit` / `position_unfit` 别读成一回事:
+    // 那两条是「整篮走了、成员被连带列出」,这两条是「只有这一只被摘掉」。
+    case "member_core_unfit": return "核心关判定该成员不适合 · 只摘掉这一只,篮子仍在"
+    case "member_position_unfit": return "位置关判定位置不合适 · 只摘掉这一只,篮子仍在"
+    case "members_all_removed": return "成员级关口判定后成员全部出篮 · 篮子因此整体 OUT"
     // 🔴 下面两码是**系统缺席**,不是市场结论 —— ⛔ 别读成「今天没好票」。
     case "no_active_engine": return "无运行中的引擎线 · 系统缺席(不是市场结论)"
     case "engine_unresolved": return "引擎归属解析失败 · 无引擎可容纳"
@@ -1334,6 +1369,12 @@ struct BasketGates: Equatable {
     var available: Bool = false
     /// `gate 码 → verdict 码`(每关取**最严**的那一条,服务端已归并)。
     var verdicts: [String: String] = [:]
+    /// 🔴 **V2.4.0 P1.5+(`basket_card_v5`)新增**:`gate 码 → 这一关判得出来吗`。
+    /// `false` = **判不出**(数据缺失 / 模型漏答)—— 服务端把它记成 `pass + available=false`,
+    /// 老形状(v4 及更早)里它长得**跟「过」一模一样**,格子上是把「没看」讲成了「没问题」。
+    /// ⚠ 老卡没有这个键 → 该关取 `nil` = **不知道判没判得出**,按老形状只画 verdict
+    /// (⛔ 不许猜成 `true`:那等于替老卡编一个"判得出"的结论)。
+    var gateAvailable: [String: Bool] = [:]
     var engineCode: String? = nil
     var engineVersion: String? = nil
     /// 证据关累计降了几档(服务端 `evidence_degrades`)。
@@ -1342,7 +1383,8 @@ struct BasketGates: Equatable {
     var degradedGates: [String] = []
     /// **该篮不得进 T1**(⚠ 与「被否决」不是一回事:多半是某一关**判不出**)。
     var blocksT1: Bool = false
-    /// 位置关 / 核心关有成员被判 `unfit`(裁定 #11 / #12:退出正式候选,⛔ 非硬否决)。
+    /// 位置关 / 核心关**有成员被移除**(V2.4.0 P1.4:成员级 OUT —— 只摘掉那一只,
+    /// 篮子仍在;⛔ 不再是"整篮退出正式候选")。
     var positionUnfit: Bool = false
     var coreUnfit: Bool = false
 
@@ -1361,28 +1403,43 @@ struct BasketGates: Equatable {
         for (k, v) in (obj["verdicts"]?.objectValue ?? [:]) {
             if let s = v.stringValue { verdicts[k] = s }
         }
+        for (k, v) in (obj["gate_available"]?.objectValue ?? [:]) {
+            if let b = v.boolValue { gateAvailable[k] = b }
+        }
     }
 
-    /// 灯条一格。`verdict == nil` = **这一关这份快照里没有记录**,⛔ 不是「过了」。
+    /// 灯条一格。`verdict == nil` = **这一关这份快照里没有记录**,⛔ 不是「过了」;
+    /// `available == false` = **这一关判不出**(V2.4.0 起服务端逐关下发)——
+    /// 🔴 它在服务端的 verdict 也是 `pass`,⛔ 绝不许照着 verdict 画成「过」。
     struct Light: Identifiable, Equatable {
         let gate: String
         let verdict: String?
+        let available: Bool?
         var id: String { gate }
         var label: String { nkGateLabel(gate) }
         var kind: NKGateKind { nkGateKind(gate) }
-        var verdictLabel: String { verdict.map(nkGateVerdictLabel) ?? "未记录" }
-        var tone: NKAxisTone { verdict.map(nkGateVerdictTone) ?? .neutral }
+        /// 「判不出」优先于 verdict:那一格的 `pass` 只是"没拦",不是"过了"。
+        var isUnknown: Bool { available == false }
+        var verdictLabel: String {
+            if isUnknown { return "判不出" }
+            return verdict.map(nkGateVerdictLabel) ?? "未记录"
+        }
+        var tone: NKAxisTone {
+            if isUnknown { return .neutral }
+            return verdict.map(nkGateVerdictTone) ?? .neutral
+        }
     }
 
     /// 六格,**恒定六格、恒定顺序**(缺记录的那格如实标「未记录」,⛔ 不隐藏 ——
     /// 隐藏会让「这一关没判」看起来像「这一关不存在」)。
     var lights: [Light] {
-        nkGateOrder.map { Light(gate: $0, verdict: verdicts[$0]) }
+        nkGateOrder.map { Light(gate: $0, verdict: verdicts[$0], available: gateAvailable[$0]) }
     }
 
-    /// 「卡在哪一关」= 按管线顺序第一道非 pass 的关;全过 → nil。
+    /// 「卡在哪一关」= 按管线顺序第一道**非 pass 或判不出**的关;全过 → nil。
+    /// ⚠ V2.4.0:判不出的关也算"卡住" —— 它挡 T1,把它当"过了"会让这一行说谎。
     var blockedGate: String? {
-        nkGateOrder.first { (verdicts[$0] ?? "pass") != "pass" }
+        nkGateOrder.first { (verdicts[$0] ?? "pass") != "pass" || gateAvailable[$0] == false }
     }
 }
 

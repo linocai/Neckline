@@ -1290,18 +1290,22 @@ class TestPositionGatePromptAndParsing:
         ("ok", ag.POSITION_OK), ("WEAK", ag.POSITION_WEAK), (" unfit ", ag.POSITION_UNFIT),
     ])
     def test_three_values_parse_case_insensitively(self, raw, expected):
-        verdict, _reason = ag._parse_position_verdict(
+        verdict, _reason, *_rest = ag._parse_position_check(
             {"position_verdict": raw, "position_reason": "理由"}, code="600001.SH", name="篮")
         assert verdict == expected
 
     @pytest.mark.parametrize("member_raw", [{}, {"position_verdict": "excellent"},
                                             {"position_verdict": ""}])
-    def test_missing_or_bogus_verdict_falls_back_to_weak_with_a_trace(self, member_raw):
-        """🔴 ⛔ 不静默当 ok:「模型没判」与「判过、没问题」是两件事,合并成后者
-        等于替它下结论。⛔ 也不整条拒收(位置关是证据关,只降级不除名)。"""
-        verdict, reason = ag._parse_position_verdict(
+    def test_missing_or_bogus_verdict_is_unknown_with_a_trace(self, member_raw):
+        """🔴 **V2.4.0 P1.1 取代原 `..._falls_back_to_weak_with_a_trace`**:漏答 /
+        枚举外取值 = `unknown`(空串),⛔ 不再兜底成 `weak` —— K8 §五「缺失不构成
+        负面证据…不得转成 weak 后参与降级数量计算」。
+
+        被取代的**那两半仍然有效并保留**:⛔ 不静默当 ok;⛔ 也不整条拒收。"""
+        verdict, reason, *_rest = ag._parse_position_check(
             dict(member_raw), code="600001.SH", name="篮")
-        assert verdict == ag.POSITION_WEAK
+        assert verdict == ""
+        assert verdict != ag.POSITION_OK and verdict != ag.POSITION_WEAK
         assert "verdict_missing" in reason
 
     def test_verdict_readings_and_missing_ride_along_to_the_member_row(self, isolated_env):
@@ -1390,8 +1394,10 @@ class TestCoreGatePromptAndParsing:
         ctx = _core_ctx()
         seeds = [_seed("s1", members=("600001.SH",))]
         text = ag.build_reason_context(seeds, {"s1": ("600001.SH",)}, {}, ctx)
-        assert "核心关(龙头识别)判断标准" in text                       # ① 判断标准
-        assert "是不是**龙头**" in text or "是不是龙头" in text
+        assert "核心关(**角色感知**的核心资格)判断标准" in text          # ① 判断标准
+        # 🔴 V2.4.0 P1.2:三个角色三把尺(⛔ 不再是"所有角色都要自证龙头")
+        assert "**leader**" in text and "**core**" in text and "**elastic**" in text
+        assert "⛔ 不要求它证明自己是龙头" in text
         assert "新方向里率先转强的那一只" in text                          # ② 引擎定性准则
         assert "核心读数:" in text                                        # ③ 该票读数
         # 🔴 两个分母都必须进 prompt(没有它们,「第 2 名」是 2/4 还是 2/40 读不出),
@@ -1401,20 +1407,26 @@ class TestCoreGatePromptAndParsing:
         assert text.count("「行业成员数」= 当日该行业有行情的票数") == 1
         assert "amount_unavailable" in text                               # 缺项原因如实透传
 
-    def test_prompt_has_no_pass_line_and_no_capacity_wording(self):
-        """🔴 裁定 12-b / 12-c 的 prompt 侧守门:**零阈值**(⛔ 含「行业内前 X%」)
-        且**朝龙头对齐**(⛔ 不许把市值 / 流通盘 / 容量 / 承接引导加回来 —— 那是
-        用户在「龙头 vs K8 §五-4 的容量核心」之间否掉的那一半)。"""
+    def test_prompt_has_no_pass_line_and_no_capacity_reading(self):
+        """🔴 **裁定 12-b 一字不改 + 12-c 的边界按 V2.4.0 P1.2 重划**。
+
+        · **零阈值**(⛔ 含「行业内前 X%」)—— 12-b 原样保留;
+        · 🔴 **「容量核心 / 承接」自此允许出现在 prompt 里**(K8 §五-4 对 `core` 角色的
+          原话,§2.10-A 取代了 12-c 的"一把尺"表述)——**取代了原
+          `test_prompt_has_no_pass_line_and_no_capacity_wording` 里那两个禁词**;
+        · **⛔ 但机械侧仍然零容量读数**(12-c 的另一半):`市值` / `流通盘` /
+          `机构持仓` 这类**读数**一个都不许出现,且必须有一句边界把它说死。"""
         lines = ag._core_prompt_block(_core_ctx())
         # ⚠ **先剥掉禁令行再判**(CLAUDE.md 登记过的坑:一个对自己的注释/禁令报警的
-        # 闸门等于没有闸门 —— 这段 prompt 自己就写着「⛔ 不要用市值大小…」)。
+        # 闸门等于没有闸门 —— 这段 prompt 自己就写着「⛔ …不提供市值 / 流通盘…」)。
         positive = "\n".join(ln for ln in lines if "⛔" not in ln)
         for banned in ("前 3", "前3", "≤ 3", "<= 3", "前 10%", "前10%", "及格",
-                       "至少排到", "市值", "流通盘", "容量核心", "承接", "机构持仓"):
+                       "至少排到", "市值", "流通盘", "机构持仓"):
             assert banned not in positive, banned
         # 闸自己的守门:剥禁令这一步不许把正面文案也剥光
-        assert "龙头" in positive and "率先" in positive
-        assert any("不要用市值大小" in ln for ln in lines)   # 反向引导必须在(prompt 是背带)
+        assert "龙头" in positive and "率先转强" in positive
+        # 反向引导必须在(prompt 是背带):机械侧不提供容量类读数这句话
+        assert any("不提供" in ln and "市值" in ln for ln in lines)
 
     def test_missing_readings_are_stated_not_faked(self):
         ctx = _core_ctx()
@@ -1437,16 +1449,19 @@ class TestCoreGatePromptAndParsing:
         ("ok", ag.CORE_OK), ("WEAK", ag.CORE_WEAK), (" unfit ", ag.CORE_UNFIT),
     ])
     def test_three_values_parse_case_insensitively(self, raw, expected):
-        verdict, _reason = ag._parse_core_verdict(
+        verdict, _reason, *_rest = ag._parse_core_check(
             {"core_verdict": raw, "core_reason": "理由"}, code="600001.SH", name="篮")
         assert verdict == expected
 
     @pytest.mark.parametrize("member_raw", [{}, {"core_verdict": "leader"},
                                             {"core_verdict": ""}])
-    def test_missing_or_bogus_verdict_falls_back_to_weak_with_a_trace(self, member_raw):
-        verdict, reason = ag._parse_core_verdict(
+    def test_missing_or_bogus_verdict_is_unknown_with_a_trace(self, member_raw):
+        """🔴 V2.4.0 P1.1 取代原 `..._falls_back_to_weak_with_a_trace`(理由逐字见
+        位置关那一条):漏答 = `unknown`,⛔ 不再兜成 `weak`。"""
+        verdict, reason, *_rest = ag._parse_core_check(
             dict(member_raw), code="600001.SH", name="篮")
-        assert verdict == ag.CORE_WEAK
+        assert verdict == ""
+        assert verdict != ag.CORE_WEAK
         assert "verdict_missing" in reason
 
     def test_core_and_position_verdicts_are_two_independent_fields(self):
@@ -1454,8 +1469,8 @@ class TestCoreGatePromptAndParsing:
         (⛔ 不许用一个字段解释另一个 —— 「位置对」与「是龙头」是两件事)。"""
         raw = {"position_verdict": "ok", "position_reason": "回撤到位",
                "core_verdict": "unfit", "core_reason": "只是跟风"}
-        assert ag._parse_position_verdict(raw, code="c", name="n") == ("ok", "回撤到位")
-        assert ag._parse_core_verdict(raw, code="c", name="n") == ("unfit", "只是跟风")
+        assert ag._parse_position_check(raw, code="c", name="n")[:2] == ("ok", "回撤到位")
+        assert ag._parse_core_check(raw, code="c", name="n")[:2] == ("unfit", "只是跟风")
 
     def test_verdict_readings_and_missing_ride_along_to_the_member_row(self, isolated_env):
         """🔴 本节最该有的一条:判定 + 当次读数 + 缺项原因一路带到成员行
@@ -1537,9 +1552,11 @@ def test_core_metrics_reader_is_fused_and_honest(isolated_env, caplog):
     with _mock.patch("neckline.selection.core_metrics.compute_core_metrics",
                      side_effect=RuntimeError("行情炸了")):
         with caplog.at_level(logging.WARNING):
-            metrics, missing, present = ag._load_core_metrics(
+            metrics, missing, present, peers = ag._load_core_metrics(
                 D0, ["600001.SH"], db_path=isolated_env.db_path)
-    assert (metrics, missing, present) == ({}, {}, False)
+    # V2.4.0 P1.3:第四个返回值 = 比较域 ③ 的成员名单;炸了同样如实返回空,
+    # ⛔ 不猜一个行业名单出来。
+    assert (metrics, missing, present, peers) == ({}, {}, False, {})
     assert "compute_core_metrics" in caplog.text       # 报错时说得出该找哪个符号
 
 

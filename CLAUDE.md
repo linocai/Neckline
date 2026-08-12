@@ -46,7 +46,10 @@
   多出来一个文件就意味着「有个没装的东西躺在这里等人 `enable`」。退役的三件
   (`nginx-neckline-nk.conf` 作废独占式模板 / `nginx-neckline.conf` hz 时代 /
   `neckline-report.timer` nk 上 not-found)已进 `archive/deploy_retired/`。
-- 🔴 **`packs/` 只放现役**:`K8-skeleton.json` + `C1/Z1/Y1.json`。两个 LEGACY 包
+- 🔴 **`packs/` 只放现役 + 待激活**:`K8-skeleton.json`(自 V2.4.0 P1 起文件内容 = `K8-V0.8`)+
+  `C1/Z1/Y1.json`(**库里现役**)+ `C2/Z2/Y2.json`(**已出文件、未激活**,P4.3 才原子激活)。
+  ⚠ **「文件 ≠ 现役」**:查现役一律以 `selection_packs` 为准;要从文件重装 V0.7 得
+  `git checkout v2.3.3 -- packs/K8-skeleton.json`。两个 LEGACY 包
   (`K4-pack.json` / `K7-pack.json`)在 `archive/packs_retired/`,**仍被 5 个单测当负例
   守门读取**(`test_selection_{pack,tier,gates,verification_rules}.py` /
   `test_activate_pack_script.py`)—— 它们按 `_RETIRED_PACK_FILES` 集合分派路径,
@@ -162,6 +165,32 @@
   (`PositionAlert.ts` = `sentinel_events.pushed_at`)。展示层换算 `nkAlertTimeLabel` 走
   `ISO8601DateFormatter` → 本地 `HH:mm`,**解析失败原样返回那串 ISO**(⛔ 不显示空、⛔ 不编一个时间);
   locale 钉死 `en_US_POSIX`(同 `NKFmt`)。⚠ 老 `BoardSection` 一直是直接印原串,**不是回归,是补上**。
+
+## V2.4.0 P1 施工实打的五个新坑(选股关口与 Tier 语义;碰 `selection/` 之前先读)
+
+- 🔴 **`unfit` 有两个级别、⛔ 不是同一件事**:**成员级**(核心关 / 位置关 → 只把那一只移出篮子 +
+  写股票级 OUT,**篮子还在**)· **篮子级**(市场关 / 板块关 → 整篮 OUT)。判据在
+  `BasketGateSummary.basket_level_unfit`(只含 market/sector);`any_unfit` 自 P1.4 起**降为纯留痕
+  聚合、⛔ 不再参与定档**。🔴 **动成员级移除必须同时改 `save_out_candidates`** —— 它现在有**两个
+  来源**(整篮 OUT 全体 + 存活篮子的 `removed_members`),漏了第二个,被摘的票**既不在篮里也不在
+  OUT 清单里 = 凭空消失**,而报告上看不出来。
+- 🔴 **「判不出」与「有疑点」在计数上必须分开**:漏答 = `PASS + available=False + blocks_t1=True`
+  (**不进 `degraded_gates` / `evidence_degrades`**),`weak` 才计入降级。⛔ 别把兜底改回 `weak`
+  ——「模型漏答」叠上 `max_evidence_degrades=1` 就能把整篮送进 OUT,那正是 V2.4.0 要拆的雷。
+  ⚠ 落库枚举仍只有 `ok|weak|unfit`,第三态由**空串 + `available=False`** 表达(⛔ 别扩枚举)。
+- 🔴 **比较域(`comparison_domain`)与读数口径**不是一回事:读数六项**恒按行业算**,比较域可能是
+  driver 域 —— 顺位只有 **driver → industry**(2026-08-12 裁定 #1:题材域**永不产出**、
+  ⛔ `ths_member` 一行不许进判定路径)。⚠ **prompt 里那份是种子级切片、落库那份是篮子级并集**
+  (篮子要到模型答完才存在),两者各自写清 `comparison_domain_key`,⛔ 别"统一"。
+- 🔴 **`unfit` 的四条件夹逼只管市场关 / 板块关**(K8 §五 逐字),⛔ 不许推广到成员两关。
+  夹逼**不是静默丢弃**:`unfit_clamped_to_weak`(原因列表)与 `*_verdict_before_clamp` 必须留痕
+  —— 老扁平输出没有 `counter_evidence`,**每次都会被夹一下,那是刻意的保守方向**,⛔ 别当 bug 修。
+- **旧包行为不变 = 只锁那一条 pack 开关**(`tier_evidence.t2.formal_policy`):P1.1–P1.5 是**代码语义**、
+  对所有包生效;只有 T2 的 `max_evidence_degrades` 硬判据按包分叉(缺键 = 旧行为)。
+  ⛔ 别把成员级 OUT 也做成"新包才有"——那是把 bug 修复挂在版本号上。⚠ 升 `ENGINE_API_VERSION`
+  会当场废掉「旧四包仍可激活」这条回滚绳(§3.14-G),**⛔ 不许顺手升**。
+- ⚠ **对账表 `config.threshold_governance` 按 `pack_version` 对号入座**:引擎升版(`C1→C2`)必须同步
+  改骨架包里那 11 条键,否则闸 1 当场拒 —— 这**正是**四线要原子激活的物理理由,别以为是 bug。
 
 ## D1 集合竞价确认层(`neckline/auction/`,V2.3.3 起;碰它之前先读)
 
@@ -320,10 +349,11 @@
 - 🔴 **「占总仓 %」的分母客户端拿不到**:唯一源是服务端 `Settings.total_capital`(默认 12 万,`.env` 的
   `TOTAL_CAPITAL` 可覆盖),而它**从未下发**(`schemas.py`/`app.py` 零出现)。⛔ 别在客户端写死 12 万 ——
   那是给一个钉死的领域常量造第二份事实源,用户改了 `.env` 界面就一直说谎。要占比先让服务端发这个数。
-- 🔴 **六关的「判不出」是篮级、不是格级**:`gates.py` 对判不出的关发的是 `VERDICT_PASS + available=False
-  + blocks_t1=True`,而 `tier.py::_gate_breakdown` **只把 `verdicts` 与篮级 `blocks_t1` 写进冻结卡** ——
-  「是哪一关判不出」契约里查不到。宫格格级只画 pass/degrade/reject,缺键 → 「未记录」灰格
-  (⛔ 绝不渲染成「过」)。要格级得服务端先把逐关 `available` 落进冻结卡。
+- ✅ ~~**六关的「判不出」是篮级、不是格级**~~ —— **V2.4.0 P1.5+ 已补上**:`_gate_breakdown` 落了逐关
+  `gate_available`(`basket_card_v5`),宫格自此画**第四态「判不出」**。🔴 **那一关服务端 verdict
+  就是 `pass`(不拦但不给 T1)—— ⛔ 绝不许照 verdict 画成「过」**,那是把「没看」讲成「没问题」。
+  ⚠ **老 v4 及更早的卡没有这一节** → 退回老写法(只画 verdict),⛔ 不给老卡猜格级结论;
+  「快照里没这一关的键」的**「未记录」灰格与「判不出」是两回事**,⛔ 不许合并。
 - **`xcodegen generate` 会顺手修好 project 级 `MARKETING_VERSION` 漂移**:本次重跑发现 pbxproj 的
   **project 级**停在 `2.0.0`、app target 却是 `2.2.0`。守门单测 `test_client_version_governance.py`
   **只比 app target**(project 级块 `PRODUCT_NAME = "$(TARGET_NAME)"` 被刻意排除)→ 这处漂移**一直是绿的**。
@@ -737,18 +767,19 @@
 - **三条版本线(2026-08-09 K8 入仓起,冷启动必读,写号前先分清是哪条)**:① **系统线 `v` 字头**
   (**仓库与生产同为 `v2.3.3`** —— 2026-08-12 10:58:06 CST 上产,权威 `PROJECT_PLAN.md`;
   ⚠ **`v2.4.0` 已于 2026-08-12 立项**,施工图 = §五 V2.4.0,需求原件 = 根目录
-  `V2.4.0_AUDIT_REMEDIATION.md`;🔴 **P0 已完工但未部署、未升版号**(`VERSION` 仍 `v2.3.3`,
-  三处同升是 P4 的活),**P1–P4 未开工** —— ⛔ 别把「P0 做完了」当成「v2.4.0 上产了」)
+  `V2.4.0_AUDIT_REMEDIATION.md`;🔴 **P0 + P1 已完工但未部署、未升版号**(`VERSION` 仍 `v2.3.3`,
+  三处同升是 P4 的活),**P2–P4 未开工** —— ⛔ 别把「P0/P1 做完了」当成「v2.4.0 上产了」)
   ② **纪律章程**(`strategy_versions` 表行,现役 **`v2.3-k8`**,权威 §2.1,切换器 `activate_charter.py`)
   ③ **K8 选股线**(权威需求 = **`~/Lino/whynotme/K8.md`** —— 🔴 **该原件已升 `V0.8`**,注册表
-  `V:K8-V0.8 / C:C2 / Z:Z2 / Y:Y2`;**库里现役仍是 `K8-V0.7` + `C1/Z1/Y1`**,四线升版是 V2.4.0 P1/P4.3 的活,
+  `V:K8-V0.8 / C:C2 / Z:Z2 / Y:Y2`;**库里现役仍是 `K8-V0.7` + `C1/Z1/Y1`** —— V2.4.0 P1 **只出了四个包文件**,
+  **原子激活是 P4.3 的活**,
   ⛔ 别把「原件写着 V0.8」当成「已经激活」)—— 它自己又分**骨架**与**引擎各自独立**。
   ✅ **骨架线包文件与 DB 已于 2026-08-12 11:00:38 CST 对齐 = `K8-V0.7`**(四线现役
   `C1`/`Z1`/`Y1`/`K8-V0.7`)—— 查现役**一律以 `selection_packs` 为准,⛔ 别读文件**
   (这条纪律不因这次对齐而失效:两者随时可能再次不同)。
   ⛔ **`V0.x` 禁简写**(与满篇 `v` 字头只差一个大小写);⛔ 引擎升级写 `C2`/`Z2`/`Y2`,**不写「K8 v2」**。
   ⚠ **还有第四、第五个"版本号"、但它们不是版本线**:冻结卡形状版本 `CARD_SPEC_VERSION`
-  (现 **`basket_card_v4`**,V2.3.3 随卡 #6 换问题 bump)与选股时钟机械段形状版本
+  (现 **`basket_card_v5`**,V2.4.0 P1.5+ 随 `tier_breakdown.gates` 三处形状变更 bump)与选股时钟机械段形状版本
   `CLOCK_MECH_SPEC_VERSION`(现 **`selection_clock_mech_v2`**,V2.3.3 随第十项 bump)
   —— **一旦上产,再改形状必须 bump**(`basket_card.py:91-105` / `selection_clock.py` 模块头)。
   ⚠ 本仓 `K8_STRATEGY_ARCH.md` 是 **V0.5 旧快照、⛔ 不得当口径**(§七 P4-60),它缺四样:

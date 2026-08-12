@@ -17,14 +17,26 @@
 的那一刻**。⚠ **`≤3` 这个数本身没问题**(provenance = `audited`,H10 十二格审计),
 错的是把它架在簇内口径上;挪到行业域后同一个「3」意思完全变了,**⛔ 不许直接搬**。
 
-**「那一群」= 行业(⛔ 不是概念、⛔ 不是涨停簇)**:`stock_basic.industry`,一只票
-恰好一个行业、100% 覆盖(110 个行业/日)。⛔ **不用概念板块** —— 一只票挂多个概念,
-「它的板块」无唯一答案;且 `CLAUDE.md` 明令概念板块只做展示、**不当判据源**(行业
-一对一 vs 概念多对多是两个量,别把两套搞混)。
+**「那一群」的取数域自 V2.4.0 P1.3 起是 `comparison_domain`(比较域)**:K8 §五-4 的
+顺位是 ① 同一主要驱动的候选成员域 → ② 同一题材 / 方向 → ③ 传统行业分类。
+🔴 **2026-08-12 用户裁定 #1(逐字)**:「本版只实现『共同驱动域 → 行业域』。题材域
+明确记录 `theme_domain_not_implemented`,⛔ 不得使用 `ths_member` 参与判定。」
+→ 本模块只产出 ①③ 两层,② 层**永不产出**(唯一实现 `resolve_comparison_domain()`)。
+⛔ **概念板块 `ths_member` 一行都不许进判定路径**(`CLAUDE.md` v1.4-② 定案:概念板块
+只做展示、不再是任何判据的数据源 —— 这条纪律因裁定 #1 完好无损);⛔ 也不许拿
+`driver_kind=theme` 的种子成分顶替(候选 C 未被选中)。
 
-**要的是「龙头」,不是 K8 §五-4 的「容量核心」**(裁定 12-c):二者在 A 股常常**不是
-同一只票**(龙头多为弹性小盘,容量核心多为机构重仓大票)。⛔ **不许把市值 / 流通盘 /
-容量 / 承接类的量加回读数或 prompt** —— 那是被否掉的那一半。
+**③ 层的读数(`industry_*` 六项)口径一字未动**:`stock_basic.industry`,一只票恰好
+一个行业、100% 覆盖(110 个行业/日)。P1.3 明写「现有强度 / 辨识度 / 名次读数**原样
+保留**」—— 比较域只是**多告诉 LLM 一句「你该拿它跟谁比、那一群有多大」**(五个审计
+字段),⛔ **不改这六个读数的分母**(改了它们就名不副实,`industry_rs_rank_20d` 却按
+驱动域算 = 又一处同名不同物)。
+
+**要的是角色感知的核心资格,不再是「所有角色都得是龙头」**(V2.4.0 §2.10-A 取代
+2026-08-09 裁定 12-c 的"一把尺"):`leader` 要率先转强、`core` 是容量核心 / 资金态度
+代表、`elastic` 只需相关 + 位置合理 + 弹性突出。⛔ 但**机械侧仍然零容量读数**
+(裁定 12-c 的这一半没变):`core` 那句「容量核心」是让 LLM 用它已有的证据说事,
+**不是**让本模块新增市值 / 流通盘 / 承接类的量。⛔ 别"顺手补一个流通市值"。
 
 **成本纪律(裁定 #12 明令)**:核心关读数**只需要候选成员那几只**,⛔ **不许为它新建
 第三张全市场预计算表**。本模块按需现算:一次 20 交易日的 `daily` 年分区扫描(约
@@ -54,7 +66,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import polars as pl
 
@@ -102,7 +114,10 @@ CORE_METRIC_GROUPS: Tuple[Tuple[str, Tuple[Tuple[str, str], ...]], ...] = (
 # 读数口径说明(**整段 prompt 里出现一次**;⛔ 里面一个阈值 / 及格线都没有,
 # 只解释「这个数是什么、分母是谁」——裁定 #12 的 🔴 分母条款靠这一段落地)。
 CORE_METRIC_LEGEND = (
-    "读数口径:「那一群」= 该票所属**行业**(一票一行业,100% 覆盖);"
+    "读数口径:下面六项**一律按该票所属行业算**(一票一行业,100% 覆盖);"
+    "「比较域」那一行说的是**该拿它跟谁比**(K8 §五-4 顺位:同一主要驱动的候选成员域 → "
+    "同行业),两者**可能不是同一群** —— 比较域是 driver 时,名次读数仍是行业口径,"
+    "请据此换算、⛔ 不要把行业名次当成驱动域内的名次;"
     "「行业成员数」= 当日该行业有行情的票数,也是「当日名次」与「成交额占比」的分母;"
     "「20日可比数」= 其中 20 日收益算得出来的票数,是「20日名次」的分母"
     "(⚠ 两个分母**不一样**,停牌 / 次新凑不满 20 根 bar 的票排不进 20 日名次);"
@@ -125,6 +140,135 @@ INDUSTRY_METRIC_KEYS: Tuple[str, ...] = tuple(
     k for k in CORE_METRIC_KEYS
     if k not in CLUSTER_METRIC_KEYS and k not in STOCK_METRIC_KEYS
 )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 比较域(V2.4.0 P1.3;K8 §五-4「核心比较域按以下顺序确定」+ 2026-08-12 裁定 #1)
+#
+# 🔴 **五个审计字段恒落库、恒进 prompt**(裁定 #1 原文)——LLM 与事后审计都必须看得
+# 见「这次是拿它跟谁比的、那一群有多大」。它们**不进 `CORE_METRIC_KEYS`**:那份是
+# **数值读数**的键名契约(三分法守门按它对拍),比较域是**描述这次比较的元数据**,
+# 混进去会让「读数」这个词同时指两种东西。
+#
+# 🔴 **回退触发条件是定义、不是阈值**(P1.3 逐字):「除自己以外的同域成员数 = 0」
+# 才回退下一层 —— 自己跟自己比 = 没有比较域。⛔ **不许设 `peer_count ≥ N` 这类门槛**
+# (够不够比由 LLM 看着 `peer_count` 判,审计规格 P1.3 末句「不增加机械及格线」)。
+# ⚠ 上产后首周要回看 `peer_count` 分布,**⛔ 不因分布难看就加门槛**(裁定 #1 末句)。
+# ══════════════════════════════════════════════════════════════════════════
+
+COMPARISON_DOMAIN_DRIVER = "driver"      # ① 同一主要驱动的候选成员域(篮子合并前的呈现全集)
+COMPARISON_DOMAIN_THEME = "theme"        # ② 同一题材 / 方向 —— 🔴 **本版永不产出**(裁定 #1)
+COMPARISON_DOMAIN_INDUSTRY = "industry"  # ③ 传统行业分类(`stock_basic.industry`)
+COMPARISON_DOMAINS: Tuple[str, ...] = (
+    COMPARISON_DOMAIN_DRIVER, COMPARISON_DOMAIN_THEME, COMPARISON_DOMAIN_INDUSTRY,
+)
+
+# `domain_fallback_reason` 的取值(**只此三种**,⛔ 不许再编第四种):
+DOMAIN_FALLBACK_NONE = ""                                    # 没回退 —— 用的就是 ① 驱动域
+# ① 无同域成员 → ② 本版未实现(裁定 #1)→ 落到 ③ 行业域。
+# ⚠ 「① 为什么没用上」不另设字段:`comparison_domain=industry` + 本原因码 **只可能**
+# 由「驱动域除自己外 0 只」触发(那是唯一的回退触发条件),不存在第二种读法。
+DOMAIN_FALLBACK_THEME_NOT_IMPLEMENTED = "theme_domain_not_implemented"
+# ①③ 都没有同域成员(该票无行业映射 / 行业内当日只有它自己)—— **第三态**:
+# 「没有比较域」既不是 driver 也不是 industry,`comparison_domain` 落 `None`。
+# ⚠ 前缀刻意与上一条相同:按 `theme_domain_not_implemented` 过滤能同时捞到两者。
+DOMAIN_FALLBACK_NO_COMPARABLE_DOMAIN = "theme_domain_not_implemented;no_comparable_domain"
+
+# 五个审计字段的键名(唯一源;写侧 = 本模块,读侧 = `aggregate` 的 prompt 装配与
+# `gates` 的留痕)。⛔ 不许改名、不许在别处抄第二份。
+DOMAIN_AUDIT_KEYS: Tuple[str, ...] = (
+    "comparison_domain", "comparison_domain_key", "peer_codes", "peer_count",
+    "domain_fallback_reason",
+)
+
+
+DOMAIN_LABELS: Dict[Optional[str], str] = {
+    COMPARISON_DOMAIN_DRIVER: "同一主要驱动的候选成员域",
+    COMPARISON_DOMAIN_THEME: "同一题材/方向",
+    COMPARISON_DOMAIN_INDUSTRY: "同行业(传统行业分类)",
+    None: "**没有可用的比较域**",
+}
+
+
+def format_comparison_domain(
+    metrics: Any, *, list_codes: bool = False, codes_hint: str = "",
+) -> str:
+    """比较域五字段 → prompt 里的一行人读串(**唯一格式化点**)。
+
+    `list_codes=False`(prompt 缺省):只写「域 · 标识 · 同域成员数 · 回退原因」——
+      🔴 **刻意不逐一列码**:驱动域的成员就是这颗种子上面那份清单(`codes_hint` 明说
+      这一点),行业域动辄几十上百只,逐行列出去会把上下文撑爆而模型什么也做不了。
+      **完整 `peer_codes` 恒落 `gate_evaluations.evidence_json`**(K8 §五-4 要的「保存
+      同域成员」在审计侧一条不缺),这是 prompt 体积与审计完整性的刻意分工。
+    `list_codes=True`:逐一列码(诊断 / 单测用)。
+    """
+    if not isinstance(metrics, Mapping):
+        return "**本次未取得**"
+    domain = metrics.get("comparison_domain")
+    key = metrics.get("comparison_domain_key")
+    count = metrics.get("peer_count")
+    why = str(metrics.get("domain_fallback_reason") or "")
+    bits = [DOMAIN_LABELS.get(domain, str(domain))]
+    if key:
+        bits.append(f"标识 {key}")
+    bits.append(f"同域成员 {count if count is not None else '未取到'} 只(不含它自己)")
+    if list_codes:
+        codes = metrics.get("peer_codes") or []
+        bits.append("成员 " + ("、".join(str(c) for c in codes) if codes else "无"))
+    elif codes_hint and domain == COMPARISON_DOMAIN_DRIVER:
+        bits.append(codes_hint)
+    if why:
+        bits.append(f"回退原因 {why}")
+    return ";".join(bits)
+
+
+def resolve_comparison_domain(
+    code: str,
+    *,
+    driver_peer_codes: Sequence[str] = (),
+    driver_domain_key: str = "",
+    industry: Optional[str] = None,
+    industry_peer_codes: Sequence[str] = (),
+) -> Dict[str, Any]:
+    """这只票**这一次**的比较域 → 五个审计字段(**全仓唯一实现**,⛔ 不抄第二份)。
+
+    `driver_peer_codes`:该篮子**合并前各 seed 的 presented member universe**(并集)
+      —— 🔴 K8 §五-4 原文「不使用最终入篮的一至三只股票形成自证循环」,故 ⛔ **不许
+      传最终成员**。`driver_domain_key` = 该域的标识(种子编号,多颗用 `+` 连,升序)。
+    `industry_peer_codes`:同行业**当日有行情行**的成员码(与 `industry_member_count`
+      同一个横截面 —— 两个数必须来自同一份数据,否则「N 只里的第 3 名」对不上)。
+
+    **`peer_codes` / `peer_count` 一律不含自己**(「除自己以外的同域成员数」是回退
+    判据的字面口径);故 `peer_count` = `industry_member_count − 1`(自己有行情时)。
+    """
+    me = str(code or "")
+    driver_peers = tuple(sorted({c for c in driver_peer_codes if c and c != me}))
+    if driver_peers:
+        return {
+            "comparison_domain": COMPARISON_DOMAIN_DRIVER,
+            "comparison_domain_key": str(driver_domain_key or ""),
+            "peer_codes": list(driver_peers),
+            "peer_count": len(driver_peers),
+            "domain_fallback_reason": DOMAIN_FALLBACK_NONE,
+        }
+    # ② 同一题材 / 方向:🔴 **本版整层跳过**(裁定 #1)—— ⛔ 不得使用 `ths_member`
+    # 参与判定、⛔ 也不得用 `driver_kind=theme` 的种子成分顶替(候选 C 未被选中)。
+    industry_peers = tuple(sorted({c for c in industry_peer_codes if c and c != me}))
+    if industry and industry_peers:
+        return {
+            "comparison_domain": COMPARISON_DOMAIN_INDUSTRY,
+            "comparison_domain_key": industry,
+            "peer_codes": list(industry_peers),
+            "peer_count": len(industry_peers),
+            "domain_fallback_reason": DOMAIN_FALLBACK_THEME_NOT_IMPLEMENTED,
+        }
+    return {
+        "comparison_domain": None,
+        "comparison_domain_key": industry or None,
+        "peer_codes": [],
+        "peer_count": 0,
+        "domain_fallback_reason": DOMAIN_FALLBACK_NO_COMPARABLE_DOMAIN,
+    }
 
 
 # —— `missing` 的原因码词汇(唯一定义;喂 LLM 时原样透传,让它知道"没取到"具体是
@@ -160,6 +304,11 @@ class CoreMetricsResult:
     metrics: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     missing: Dict[str, Dict[str, str]] = field(default_factory=dict)
     available: bool = False
+    # V2.4.0 P1.3:行业 → **当日有行情行**的该行业成员码(升序)。比较域 ③ 的
+    # `peer_codes` 取自这里 —— 与 `industry_member_count` **同一个横截面**(⛔ 别改成
+    # 从 `stock_basic` 全量映射取:那份含停牌/未上市的票,会让「N 只里的第 3 名」
+    # 的 N 与列出来的成员对不上,而且看不出来)。
+    industry_peers: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
 
 
 def _recent_trading_days_before(d: date, n: int) -> List[date]:
@@ -270,11 +419,13 @@ def compute_core_metrics(
     `_scan_table(years=…)` **年分区裁剪**(P1-26 既有修法,⛔ 不全 glob)。
 
     返回 `CoreMetricsResult`;`metrics[code]` 只含**真的算出来的**键,算不出的进
-    `missing[code]`(键 → 原因码),**⛔ 不填 0**。
+    `missing[code]`(键 → 原因码),**⛔ 不填 0**。`industry_peers` 是比较域 ③ 的
+    成员名单(V2.4.0 P1.3),与 `industry_member_count` 同一个横截面。
     """
     wanted = sorted({c for c in codes if c})
     out_metrics: Dict[str, Dict[str, Any]] = {c: {} for c in wanted}
     out_missing: Dict[str, Dict[str, str]] = {c: {} for c in wanted}
+    out_peers: Dict[str, Tuple[str, ...]] = {}
     if not wanted:
         return CoreMetricsResult()
 
@@ -294,7 +445,7 @@ def compute_core_metrics(
             elif c in consec_missing:
                 out_missing[c]["consec_limit_up_days"] = consec_missing[c]
         return CoreMetricsResult(metrics=out_metrics, missing=out_missing,
-                                 available=available)
+                                 available=available, industry_peers=dict(out_peers))
 
     try:
         industry_of = load_industry_map(db_path)
@@ -354,6 +505,11 @@ def compute_core_metrics(
         r["industry"]: int(r["n"])
         for r in day.group_by("industry").agg(pl.len().alias("n")).iter_rows(named=True)
     }
+    # —— V2.4.0 P1.3:比较域 ③ 的成员名单(**与上面那个分母同一个横截面**)——
+    peers_acc: Dict[str, List[str]] = {}
+    for _ts, _ind in zip(day["ts_code"].to_list(), day["industry"].to_list()):
+        peers_acc.setdefault(_ind, []).append(_ts)
+    out_peers.update({k: tuple(sorted(v)) for k, v in peers_acc.items()})
     # —— 当日涨跌幅行业内名次 ——
     day_ranked = _rank_within_industry(day, "ret_1d", "industry_ret_rank_1d")
     ret_rank_1d = dict(zip(day_ranked["ts_code"].to_list(),
@@ -471,6 +627,11 @@ def merge_cluster_supplement(
 __all__ = [
     "CORE_METRIC_GROUPS", "CORE_METRIC_KEYS", "CORE_METRIC_LEGEND",
     "INDUSTRY_METRIC_KEYS", "CLUSTER_METRIC_KEYS", "STOCK_METRIC_KEYS",
+    "COMPARISON_DOMAIN_DRIVER", "COMPARISON_DOMAIN_THEME", "COMPARISON_DOMAIN_INDUSTRY",
+    "COMPARISON_DOMAINS", "DOMAIN_AUDIT_KEYS",
+    "DOMAIN_FALLBACK_NONE", "DOMAIN_FALLBACK_THEME_NOT_IMPLEMENTED",
+    "DOMAIN_FALLBACK_NO_COMPARABLE_DOMAIN", "DOMAIN_LABELS",
+    "resolve_comparison_domain", "format_comparison_domain",
     "REASON_INDUSTRY_UNMAPPED", "REASON_NO_DAILY_ROW", "REASON_INSUFFICIENT_HISTORY",
     "REASON_INDUSTRY_TOO_SMALL", "REASON_AMOUNT_UNAVAILABLE",
     "REASON_LIMIT_DATA_UNAVAILABLE", "REASON_DAILY_DATA_UNAVAILABLE",

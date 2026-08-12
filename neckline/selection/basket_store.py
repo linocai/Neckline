@@ -799,6 +799,39 @@ _OUT_COLUMNS = (
 # 漏登记的后果是"多进一条 OUT"(吵),反过来会让一票 OUT 静默消失(漏审)。
 NON_OUT_REASONS = frozenset({"capacity_overflow"})
 
+# —— 🔴 V2.4.0 P1.4:**成员级** OUT 的原因码(K8 §八「成员级 OUT 适用于:单一成员的
+# 核心关明确 `unfit` / 位置关明确 `unfit`」)————————————————————————————————
+# 🔴 **与篮子级的 `core_unfit` / `position_unfit` 刻意用不同的码**:两者指向完全不同
+# 的事实 ——「整篮走了、这只票是被连带列出来的」 vs 「**只有这一只**被摘掉、篮子还在」。
+# 复用同一个码会让 ⑨ 归因与 OUT 研究影子对照把两个人群混成一堆,**而且看不出来**
+# (v2.3.3 的历史行用的正是旧含义,跨版本一混就再也分不开)。
+# ⚠ 码一经落库不改字面;新增码必须同步 `report/basket_daily.py::DROPPED_REASON_LABEL`
+# 与客户端 `nkDroppedReasonLabel`,否则界面上会原样印出这串英文。
+MEMBER_OUT_REASON_CORE = "member_core_unfit"
+MEMBER_OUT_REASON_POSITION = "member_position_unfit"
+MEMBER_OUT_REASON_BY_GATE: Mapping[str, str] = {
+    "core": MEMBER_OUT_REASON_CORE,
+    "position": MEMBER_OUT_REASON_POSITION,
+}
+
+
+@dataclass(frozen=True)
+class _BareMember:
+    """只有代码、没有名称 / 角色的成员占位(`save_out_candidates` 的兜底路径用)。
+    ⚠ 只在"被移除成员在对拍前候选里查无此票"这种异常路径出现 —— 宁可记一行裸码,
+    也 ⛔ 不让一只被移除的票从 OUT 清单里消失。"""
+
+    ts_code: str
+    name: str = ""
+    role_llm: Optional[str] = None
+
+
+def member_out_reason(gate: str) -> str:
+    """成员级出篮的关口码 → OUT 原因码。未登记的关按 `member_<关>_unfit` 构造
+    (确定性,⛔ 不落到一个含糊的兜底码上 —— 那会让新关口的出局静默混进老码里)。"""
+    g = str(gate or "").strip() or "unknown"
+    return MEMBER_OUT_REASON_BY_GATE.get(g, f"member_{g}_unfit")
+
 
 def is_out_reason(reason: str) -> bool:
     """该出局原因码是不是 K8 意义上的 OUT(⛔ 「位置满」不是)。"""
@@ -815,10 +848,19 @@ def save_out_candidates(
 ) -> int:
     """把当日**股票级** OUT 清单落 `out_candidates`。返回新增行数。
 
+    🔴 **V2.4.0 P1.4 起本函数有两个来源,⛔ 缺一不可**:
+      ① **整篮 OUT** 的全部成员(v2.3.3 既有行为,原因码 = 篮子级的那个);
+      ② **存活篮子里被成员级关口移除的成员**(新增,来源 = 各 `summary.removed_members`,
+         原因码 = `member_out_reason(关)`)。
+    ⚠ **漏了 ② 的后果是"凭空消失"**:那只票既不在篮子里(被移除)、也不在 OUT 清单里
+    (只写整篮 dropped)—— 报告上完全看不出它去哪了。这是 P1.4 最容易踩的一处。
+    ⚠ 同一票在同一篮里只写一行(成员级优先);跨篮各写各的(主键含 `basket_key`)。
+
     `dropped`:⑥ 的 `TierResult.dropped`(篮子级,带原因码 / 关 / 差多少);
     `baskets_by_key`:**对拍前**那批候选(`basket_key → BasketCandidate`)——
       🔴 必须是对拍前的,被关口除名的候选只活在那份里;传对拍后的会让 OUT 票全空。
-    `engine_by_key`:`basket_key → gates.BasketGateSummary`(取引擎三件套;缺则留空)。
+    `engine_by_key`:`basket_key → gates.BasketGateSummary`(取引擎三件套 **+ 来源 ②**;
+      🔴 **不传就没有来源 ②** —— 成员级 OUT 会整批丢失,故生产调用方必须传)。
 
     **append-only + 幂等**:靠 `UNIQUE(d0_date, basket_key, ts_code)` 去重
     (`INSERT OR IGNORE`)—— 同日重跑不产生重复行,也**不覆盖**既有行
@@ -828,6 +870,45 @@ def save_out_candidates(
     now = _now()
     summaries = engine_by_key or {}
     rows: List[Tuple[Any, ...]] = []
+    written: set = set()                   # (basket_key, ts_code):成员级优先,篮级补齐
+
+    def _row(key: str, member: Any, s: Any, gate: Any, reason: str, detail: Any) -> None:
+        code = str(getattr(member, "ts_code", "") or "")
+        rows.append((
+            day, key, code, str(getattr(member, "name", "") or ""),
+            getattr(member, "role_llm", None),
+            getattr(s, "engine_code", None) if s is not None else None,
+            getattr(s, "engine_version", None) if s is not None else None,
+            getattr(s, "skeleton_version", None) if s is not None else None,
+            gate, reason, detail, now,
+        ))
+        written.add((key, code))
+
+    # —— 来源 ②:成员级 OUT(**存活篮子也有**,这正是 P1.4 的新事实)——————————
+    for key in sorted(summaries):
+        s = summaries[key]
+        removals = getattr(s, "removed_members", ()) or ()
+        if not removals:
+            continue
+        basket = baskets_by_key.get(key)
+        members_by_code = {
+            str(getattr(m, "ts_code", "") or ""): m
+            for m in (getattr(basket, "members", ()) or ())
+        }
+        for r in removals:
+            code = str(getattr(r, "ts_code", "") or "")
+            member = members_by_code.get(code)
+            if member is None:
+                # 篮子查不到该成员(调用方传了对拍后的 result)—— 如实记一行**裸码**,
+                # ⛔ 不静默丢:一只被移除的票没进 OUT 清单 = 它凭空消失了。
+                logger.warning(
+                    "[basket_store] OUT 清单:篮子 %r 的被移除成员 %s 在对拍前候选里"
+                    "查无此票,名称 / 角色本次留空(调用方可能传了对拍后的 result)", key, code)
+            _row(key, member if member is not None else _BareMember(code), s,
+                 getattr(r, "gate", None), member_out_reason(getattr(r, "gate", "")),
+                 getattr(r, "reason", None))
+
+    # —— 来源 ①:整篮 OUT 的全部成员(v2.3.3 既有行为,一字未动)————————————
     for d in dropped:
         reason = str(getattr(d, "reason", "") or "")
         if not is_out_reason(reason):
@@ -841,16 +922,9 @@ def save_out_candidates(
             continue
         s = summaries.get(key)
         for m in getattr(basket, "members", ()) or ():
-            rows.append((
-                day, key, str(getattr(m, "ts_code", "") or ""),
-                str(getattr(m, "name", "") or ""),
-                getattr(m, "role_llm", None),
-                getattr(s, "engine_code", None) if s is not None else None,
-                getattr(s, "engine_version", None) if s is not None else None,
-                getattr(s, "skeleton_version", None) if s is not None else None,
-                getattr(d, "gate", None), reason, getattr(d, "gate_detail", None),
-                now,
-            ))
+            if (key, str(getattr(m, "ts_code", "") or "")) in written:
+                continue                   # 已按成员级原因写过(那条更具体)
+            _row(key, m, s, getattr(d, "gate", None), reason, getattr(d, "gate_detail", None))
     if not rows:
         return 0
     init_schema(db_path)
@@ -895,6 +969,10 @@ __all__ = [
     "load_baskets_for_date",
     "OUT_CANDIDATES_TABLE",
     "NON_OUT_REASONS",
+    "MEMBER_OUT_REASON_CORE",
+    "MEMBER_OUT_REASON_POSITION",
+    "MEMBER_OUT_REASON_BY_GATE",
+    "member_out_reason",
     "is_out_reason",
     "save_out_candidates",
     "load_out_candidates",

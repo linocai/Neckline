@@ -18,12 +18,18 @@
   🔴 **2026-08-09 用户裁定 #11**:位置关由机械关改判为**证据关**(判定交 LLM、只降级
   不除名),**T1 不再要求任何机械态枚举** —— 原文那套「T1 要 `liftoff_confirmed`」
   整体作废,⛔ 别照原文改回:那正是把 T1 掐成近乎不可达的那一条(实测全市场当日
-  `liftoff_confirmed` 仅 1~2 / 5526、14 个 D0 回放零 T1)。位置 `unfit` → 出局码
-  `DROP_POSITION_UNFIT`(与 `DROP_EVIDENCE_DEGRADED_OUT` **不合并**)。
+  `liftoff_confirmed` 仅 1~2 / 5526、14 个 D0 回放零 T1)。
   🔴 **2026-08-09 用户裁定 #12(同款)**:**核心关也退出机械闸** —— 原 `leader_rs_rank
   ≤ 3` 读的是簇内口径(入场券 = 当天必须涨停),全市场只有 1.4% 判得出;机械侧改出
-  行业域读数、判定交 LLM(**零阈值、零及格线**,含「行业内前 X%」这类)。核心
-  `unfit` → 出局码 `DROP_CORE_UNFIT`(与上面两个码**都不合并**)。
+  行业域读数、判定交 LLM(**零阈值、零及格线**,含「行业内前 X%」这类)。
+  🔴 **V2.4.0 P1.4 改了这两关 `unfit` 的后果**:由「整篮出局(`DROP_POSITION_UNFIT` /
+  `DROP_CORE_UNFIT`)」改成**只移除那一只成员** + 写股票级 OUT(新码
+  `basket_store.MEMBER_OUT_REASON_*`),**篮子剩人就继续定档、可以是 T1**;
+  全员被移除才整篮出局(`gates.EXCLUDE_MEMBERS_ALL_REMOVED`)。
+  ⚠ **两个老码一字不删**(历史快照与 ⑨ 归因按码读回),但**新运行不再产生它们**
+  —— 本模块的出局归因里已经没有这两个分支,⛔ 别加回去:那会把「摘过一只成员」
+  讲成「这一篮因此出局」,而真实原因(市场 / 板块 unfit,或旧包下证据关降级超上限)
+  被盖掉。**T1/T2 的定档判据全部住在 `gates.BasketGateSummary`**,本模块只读它。
 - **机械分五维 / `_TIER_SCORE_INPUTS` 白名单锁 / `tier_history.mech_breakdown` /
   V2.1-④ 百分制打分卡 —— 全部原样保留,⛔ 一个都不许删**(plan ③-D 原文):它们
   **不再是定档的闸**,降级为「档内排序 + 展示标度」。删了会连带作废百分制卡与
@@ -973,10 +979,34 @@ def _gate_breakdown(summary: Any) -> Dict[str, Any]:
         return {"available": False}
     verdicts: Dict[str, str] = {}
     rank = {gates_mod.VERDICT_PASS: 0, gates_mod.VERDICT_DEGRADE: 1, gates_mod.VERDICT_REJECT: 2}
+    removed_codes = {r.ts_code for r in summary.removed_members}
+    # 🔴 **V2.4.0 P1.5+ 形状变更 ①(`basket_card_v5` bump 的三个理由之一)**:
+    # 逐关 `available` 映射 —— 补上 `CLAUDE.md` 明载的那个已知缺口(「六关的判不出是
+    # **篮级**不是格级」),宫格自此能画第三态。**`False` = 这一关判不出**
+    # (⛔ 不是「过了」:老形状只有 `verdicts`,`unknown` 在那里长得跟 `pass` 一模一样,
+    # 界面上是把「没看」讲成了「没问题」)。
+    gate_available: Dict[str, bool] = {}
+    # 🔴 形状变更 ②:逐关 `support` / `counter_evidence` / `missing`(P3.4 审计层原料)。
+    # ⚠ 成员级两关按**成员**归并成一个数组(每条前缀成员码),⛔ 不丢掉是谁说的。
+    gate_support: Dict[str, List[str]] = {}
+    gate_counter: Dict[str, List[str]] = {}
+    gate_missing: Dict[str, List[str]] = {}
     for c in summary.checks:
+        # ⚠ **被移除的成员不进这份快照的归并**(P1.4:它已不是这个篮子的成员了;
+        # 它的完整判定在 `gate_evaluations` 与 `out_candidates` 里,一条不少)。
+        if c.ts_code is not None and c.ts_code in removed_codes:
+            continue
         cur = verdicts.get(c.gate)
         if cur is None or rank[c.verdict] > rank[cur]:
             verdicts[c.gate] = c.verdict
+        gate_available[c.gate] = gate_available.get(c.gate, True) and bool(c.available)
+        ev = c.evidence or {}
+        prefix = f"{c.ts_code}:" if c.ts_code else ""
+        for key, bucket in (("support", gate_support), ("counter_evidence", gate_counter),
+                            ("missing", gate_missing)):
+            items = [f"{prefix}{x}" for x in (ev.get(key) or []) if str(x).strip()]
+            if items:
+                bucket.setdefault(c.gate, []).extend(items)
     return {
         "available": True,
         "engine_code": summary.engine_code,
@@ -984,12 +1014,27 @@ def _gate_breakdown(summary: Any) -> Dict[str, Any]:
         "skeleton_version": summary.skeleton_version,
         "engine_source": summary.engine_source,
         "verdicts": verdicts,
+        # —— V2.4.0 P1.5+ 三处形状变更(`basket_card_v4 → v5` 的全部理由)——————
+        "gate_available": gate_available,
+        "gate_support": {g: gate_support[g] for g in sorted(gate_support)},
+        "gate_counter_evidence": {g: gate_counter[g] for g in sorted(gate_counter)},
+        "gate_missing": {g: gate_missing[g] for g in sorted(gate_missing)},
+        # 🔴 P1.6:T2 正式定档策略(`no_hard_fail` = 新引擎线;空 = 旧包旧行为)——
+        # 冻结进卡是为了让「这一档当时按哪套规则定的」事后查得出来。
+        "t2_formal_policy": getattr(summary, "t2_formal_policy", ""),
+        "has_unavailable": bool(getattr(summary, "has_unavailable", False)),
         "evidence_degrades": summary.evidence_degrades,
         "degraded_gates": list(summary.degraded_gates),
         "blocks_t1": summary.blocks_t1,
         # 🔴 裁定 #11:位置关的判定是**模型输出**而不是可回放的数字 —— 快照里逐票
         # 记下它给的三值,归因链才接得上(全量读数与理由在 `gate_evaluations`)。
+        # ⚠ **V2.4.0 P1.4 起这一格的含义是「本篮有成员因位置关被移除」**,
+        # ⛔ 不再是「整篮因此退出正式候选」(被移除的是那一只,篮子可能照样 T1)。
         "position_unfit": bool(getattr(summary, "position_unfit", False)),
+        # ⚠ **逐票映射刻意含被移除的成员**(它们的 `unfit` 正是移除原因,冻结卡是唯一
+        # 的历史快照,丢了就只剩 `gate_evaluations` 一处能查);而上面归并出来的
+        # `verdicts` / `gate_available` **不含**它们(那两项描述的是"剩下这个篮子")。
+        # 🔴 两者口径不同是刻意的,⛔ 别"统一" —— 谁被移除、为什么,看 `removed_members`。
         "position_verdicts": {
             c.ts_code: (c.evidence or {}).get("position_verdict")
             for c in summary.checks
@@ -1160,12 +1205,19 @@ def score_and_tier(
             ))
             continue
         if not s.t2_eligible:
-            # 🔴 裁定 #11/#12 + V2.3.2-①-C:市场关 / 板块关 / 核心关 / 位置关四个
-            # `unfit`,加上「证据关降级超上限」,是**五种**不同的出局,⛔ 不合并
-            # (④ 周度按关口归因要分得开)。四个具名判定优先于"降级处数超了"——
-            # 它们说得清卡在**哪一关 / 哪一只成员**上;多个同时 unfit 时按
-            # `GATE_ORDER` 报靠前的那一关(①市场 → ③板块 → ④核心 → ⑤位置),
-            # 纯确定性,⛔ 不按"谁更重要"拍脑袋。
+            # 🔴 **V2.4.0 P1.4:核心关 / 位置关的成员级 `unfit` 不再让整篮出局** ——
+            # 那两只已经在 `gates` 里被移出篮子(股票级 OUT 由 `save_out_candidates`
+            # 落账),篮子只要还剩人就继续定档;**全员被移除**那条走上面的
+            # `s.excluded`(`members_all_removed`),压根到不了这里。
+            # 🔴 **因此这里⛔ 不再按 `core_unfit`/`position_unfit` 归因** ——
+            # 那两格自此只是「本篮摘过人」的留痕位,而**这个篮子进不了 T2 的真实原因
+            # 另有其人**(市场关 / 板块关 unfit,或旧包下证据关降级超上限)。
+            # 照旧按它们报 = 把「摘过一只成员」讲成「这一篮因此出局」,**归因当场撒谎**。
+            # ⚠ 两个码本身**一字不删**(`DROP_CORE_UNFIT`/`DROP_POSITION_UNFIT` 仍导出):
+            # 历史快照里有它们、⑨ 归因还要按码读,删码 = 历史归因断线。
+            # ⚠ 三种出局(市场 / 板块 / 证据关降级超上限)仍然**分开报**,⛔ 不合并
+            # (④ 周度按关口归因要分得开);市场与板块同时 unfit 时按 `GATE_ORDER`
+            # 报靠前的那一关(①市场 → ③板块),纯确定性,⛔ 不拍脑袋。
             if getattr(s, "market_unfit", False):
                 dropped.append(DroppedBasket(
                     basket_key=key, reason=DROP_MARKET_UNFIT,
@@ -1180,22 +1232,6 @@ def score_and_tier(
                     mech_score=score_by_key[key], name=b.name,
                     gate=gates_mod.GATE_SECTOR,
                     gate_detail=(s.sector_unfit_detail or "板块关判定 unfit"),
-                ))
-                continue
-            if getattr(s, "core_unfit", False):
-                dropped.append(DroppedBasket(
-                    basket_key=key, reason=DROP_CORE_UNFIT,
-                    mech_score=score_by_key[key], name=b.name,
-                    gate=gates_mod.GATE_CORE,
-                    gate_detail=(s.core_unfit_detail or "核心关判定 unfit"),
-                ))
-                continue
-            if getattr(s, "position_unfit", False):
-                dropped.append(DroppedBasket(
-                    basket_key=key, reason=DROP_POSITION_UNFIT,
-                    mech_score=score_by_key[key], name=b.name,
-                    gate=gates_mod.GATE_POSITION,
-                    gate_detail=(s.position_unfit_detail or "位置关判定 unfit"),
                 ))
                 continue
             detail = ";".join(
