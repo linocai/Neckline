@@ -333,109 +333,15 @@ struct NKRefreshPill: View {
 }
 #endif
 
-// MARK: - 退潮红色刹车横幅(§2.4「今日计划作废、禁开新仓」,最高优先级视觉)
-
-struct RetreatBrakeBanner: View {
-    let reason: String
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(NKFont.headline)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("退潮红色刹车 · 今日计划作废、禁开新仓")
-                    .font(NKFont.body).fontWeight(.bold)
-                if !reason.isEmpty {
-                    Text(reason).font(NKFont.callout).opacity(0.9)
-                }
-            }
-            Spacer()
-        }
-        .foregroundStyle(.white)
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.alertGrad))
-    }
-}
-
-/// **通栏刹车条**(V2.3:压在工具栏 / 大标题下方,⛔ **不进卡片流**)。
-///
-/// 🔴 它管的是「**今天整份计划**」,不是某一篮 —— 所以既不是卡片、也不属于任何一个
-/// 板块,由 `RootView` 的壳统一挂。⚠ **刹车激活时篮子仍然全部列出、点得开**:
-/// 作废的是计划,不是数据;**补录开仓按钮同样不灰化**(硬拦 = 帮用户瞒报)。
-///
-/// 版式 = `Neckline 状态.dc.html` **79–86 行**:`padding:14px 18px; gap:14`,24px 三角
-/// 图标 + `16/700` 白标题 + `12.5 rgba(255,255,255,.90)` 次行 + 右端一枚半透明白按钮。
-/// ⚠ **`action` 缺省 = 不画那枚按钮**(iOS 推送落地页那类窄场景);给了才画。
-struct RetreatBrakeBar: View {
-    /// 原型 79 行 `linear-gradient(100deg,#E5443B 0%,#E8910A 130%)`:**近水平**、且橙色
-    /// 端点落在 **130%**(= 右端仍偏红,⛔ 不是"左红右全橙")。
-    /// ⚠ **不是新色令牌**:两个色值与 `NK.alertGrad` 逐字相同,只有起止点几何不同 ——
-    /// `alertGrad` 的 `topLeading→bottomTrailing` 是给方形块用的,拉到 1200×72 的通栏上
-    /// 会把橙色提前吃满。⛔ 别把这两个色值改成别的颜色。
-    private static let barGrad = LinearGradient(
-        colors: [Color(hex: 0xE5443B), Color(hex: 0xE8910A)],
-        startPoint: UnitPoint(x: 0, y: 0), endPoint: UnitPoint(x: 1.3, y: 0.6))
-
-    let reason: String
-    /// 「看哪几条触发了」。⚠ 契约只发 `{active, reason}` —— 这枚按钮**去的是盘中动态**
-    /// (那里有刹车依据 + 哨兵已落库的事件),⛔ 不是原型里那张「三个条件族」明细卡:
-    /// 逐条阈值读数客户端一个字都没有,画出来就是编。
-    var actionTitle: String? = nil
-    var action: (() -> Void)? = nil
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {   // 原型 79 行 gap:14
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 24, weight: .regular))   // 原型 80 行 24×24 线性三角
-            VStack(alignment: .leading, spacing: 3) {        // 原型 83 行 margin-top:3
-                // 原型 82 行 `16px/700; letter-spacing:-.2` —— 字阶就近取 `title3`(17)。
-                Text("退潮红色刹车 · 今日计划作废、禁开新仓")
-                    .font(NKFont.title3).fontWeight(.bold).tracking(-0.2)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !reason.isEmpty {
-                    // 原型 83 行 `12.5px; color:rgba(255,255,255,.90); line-height:1.5`。
-                    Text(reason).font(NKFont.callout).opacity(0.90).lineSpacing(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                // 🔴 **iPhone 402pt 上按钮换到文案下面**(CLAUDE.md 登记的 402pt 挤压坑):
-                // 一行放「24 图标 + 两行标题 + 一枚 110pt 的按钮」会把标题挤成竖排单字。
-                // ⛔ 桌面别跟着改 —— 1200pt 上按钮就该在右端(原型 87 行 `flex:none`)。
-                #if os(iOS)
-                actionButton.padding(.top, 10)
-                #endif
-            }
-            Spacer(minLength: 8)
-            #if os(macOS)
-            actionButton
-            #endif
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 18).padding(.vertical, 14)   // 原型 79 行 `padding:14px 18px`
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Self.barGrad)
-        // 原型 79 行 `box-shadow:0 2px 12px rgba(229,68,59,.28)`。⚠ 恒定阴影、不参与动画
-        // (全局三禁管的是"逐帧重算模糊"),这条栏是全 App 优先级最高的视觉。
-        .shadow(color: NK.down.opacity(0.28), radius: 6, y: 2)
-    }
-
-    /// 原型 87 行:`padding:7px 14px; radius:8; background:rgba(255,255,255,.20);
-    /// border:.5px solid rgba(255,255,255,.35); 12.5/600 #fff`。
-    @ViewBuilder
-    private var actionButton: some View {
-        if let title = actionTitle, let act = action {
-            Button(action: act) {
-                Text(title).font(NKFont.callout).fontWeight(.semibold)
-                    .padding(.horizontal, 14).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: NKRadius.control)
-                        .fill(Color.white.opacity(0.20)))
-                    .overlay(RoundedRectangle(cornerRadius: NKRadius.control)
-                        .stroke(Color.white.opacity(0.35), lineWidth: 0.5))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .fixedSize()
-        }
-    }
-}
+// ⛔ **V2.4.0 P0:`RetreatBrakeBanner` 与 `RetreatBrakeBar` 两个组件已整体删除。**
+//
+// P0.1 表那两行:「全 App 顶部退潮红条 = 删」+「作废当日计划 / 停止开新仓的交易
+// 动作语义 = 删」。
+// ⚠ 两者原本就一死一活:`RetreatBrakeBar`(通栏条)挂在 `RootView` 壳上,
+// `RetreatBrakeBanner` **早已零调用点**(两份逐字相同的文案并存,本身就是漂移风险)。
+// 🔴 ⛔ 不许换个名字("风险条"/"观察条"/"提示条")把壳层横幅接回来 —— 那正是
+// 审计规格 P0.7 末段点名的第二种假完成。今日篮子页面唯一保留的那条静态小提示
+// 见 `NKCopy.intradaySelfObserve`(`DesignTokens.swift`),**低强调、无状态、不可点击**。
 
 // MARK: - 漏录兜底提示条(§五 v1.1-B.4/E.3:一句提示,非弹窗打扰,补录后自动消失)
 

@@ -1,4 +1,18 @@
-"""退潮哨兵逐拍指标台账(`retreat_metrics` 表,v1.1-H2 双级制重构)。三职责:
+"""⛔ **DEPRECATED(V2.4.0 P0 退役)—— 生产链零调用,`retreat_metrics` 已停写。**
+
+    · 三个函数(`record_retreat_metrics` / `load_prev_tick_triggered` /
+      `load_same_time_zaban_baseline`)**全部只服务退潮判级**,该判级已整体退役
+      (见 `sentinel/retreat.py` 模块头)。
+    · 🔴 **表 `retreat_metrics` 只停写、⛔ 不 DROP、⛔ 不删列、⛔ 不删历史行** ——
+      「不通过删历史行让界面看起来修好了」是 P0.5 的明文红线。历史行照旧可读。
+    · ⚠ **心跳证据换人**:此前部署核查拿「`retreat_metrics` 每拍 +1」当「盘中哨兵
+      还活着」的证据,停写后**换判据** = `sentinel_events` 的 `sentinel='capture'`
+      行 + journal 的 tick 日志。
+    · **为什么文件还在**:既有单测把它当行为基准读 + 回滚绳(§3.14-A)。
+
+以下为退役前的原文说明(**历史留痕,行为已从生产链断开**):
+
+退潮哨兵逐拍指标台账(`retreat_metrics` 表,v1.1-H2 双级制重构)。三职责:
     1. `record_retreat_metrics` —— 每个盘中 tick 落一行(全量指标 + 判级 + 触发
        路径),供事后给红色刹车算命中率成绩单。
     2. `load_prev_tick_triggered` —— 读同一交易日"上一拍"(hhmm 严格更小的最近

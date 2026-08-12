@@ -1,13 +1,37 @@
-"""证伪哨兵单测(plan §2.4 第4条)。逐条覆盖 `invalidation_spec` 的四个子条件——
-低开不回 / 跌破VWAP / 量能过低 / 量能过高,以及多条同时命中时全部列出。"""
+"""⛔ **DEPRECATED:被测对象已于 V2.4.0 P0 从生产链断开**(`sentinel/invalidation.py`)。
+
+本文件**一条用例都不删、断言一字未改** —— 它记录的是「通用盘中证伪」退役前的**行为
+基准**,是回滚绳的一部分(§3.14-A / A 表处置)。⛔ 它证明不了、也不再声称该判定还在
+生产链上跑;那件事由**另一组守门**负责:
+`tests/test_v240_p0_retirement_guard.py`(AST 扫 `engine.py` 调用点数 = 0)+
+`tests/test_sentinel_engine.py::TestP0RetiredIntradayJudgements`(整拍级反向断言)。
+
+**唯一的改动**:`WatchTarget.invalidation_spec` 字段随退役从生产类上摘除
+(P0.4-9),故本文件改用一个**本地 duck-typed 替身** `_RetiredTarget` 构造入参 ——
+`check_invalidation` 本就只要求 `.ts_code`/`.name`/`.invalidation_spec` 三个属性。
+🔴 **⛔ 不许因为"测试要用"就把那个字段加回生产 `WatchTarget`。**
+
+以下为原文说明:证伪哨兵单测(plan §2.4 第4条)。逐条覆盖 `invalidation_spec` 的
+四个子条件——低开不回 / 跌破VWAP / 量能过低 / 量能过高,以及多条同时命中时全部列出。
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Dict
 
-from neckline.sentinel.universe import WatchTarget
 from neckline.sentinel.invalidation import check_invalidation
 from neckline.sentinel.quotes import Quote
+
+
+@dataclass(frozen=True)
+class _RetiredTarget:
+    """`check_invalidation` 的 duck-typed 入参替身(见文件头)。**只住在测试里**。"""
+    ts_code: str
+    name: str
+    invalidation_spec: Dict[str, Any]
+    basket_key: str = ""
 
 D = datetime(2026, 7, 20)
 
@@ -38,12 +62,13 @@ _DEFAULT_SPEC = {
 }
 
 
-def _candidate(spec=None) -> WatchTarget:
+def _candidate(spec=None) -> _RetiredTarget:
     """V2-⑬-1:证伪哨兵的判定对象由 `Candidate` 换成 `WatchTarget`(T1/T2 篮子成员),
-    **判定逻辑与阈值一行未改**,故本文件的用例全部原样保留、只换构造。"""
+    **判定逻辑与阈值一行未改**,故本文件的用例全部原样保留、只换构造。
+    ⚠ V2.4.0 P0:生产 `WatchTarget` 已不带 `invalidation_spec`,这里换本地替身。"""
     from neckline.sentinel.invalidation import invalidation_spec
 
-    return WatchTarget(
+    return _RetiredTarget(
         ts_code="600001.SH", name="示例甲",
         invalidation_spec=(invalidation_spec() if spec is None else spec),
         basket_key="B1",

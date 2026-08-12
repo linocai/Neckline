@@ -172,8 +172,10 @@ def main() -> int:
             logger.info("合成持仓:%s(%s) 买入价%.2f 买入日%s", p["ts_code"], p["label"], p["buy_price"], p["buy_date"])
 
         wu = load_watch_universe(today, db_path=tmp_db, parquet_dir=None)
-        logger.info("关注池:T1/T2 篮子成员%d只 + 持仓%d只 + 昨日涨停股代理样本%d只,共去重%d只代码",
-                    len(wu.targets), len(wu.positions), len(wu.breadth_extra_codes), len(wu.codes))
+        # ⛔ V2.4.0 P0:昨日涨停股代理样本(退潮宽度)与主线切片已随退潮判级退役,
+        # 关注池只剩「持仓 + T1/T2 成员 + 板块基准指数」三段。
+        logger.info("关注池:T1/T2 篮子成员%d只 + 持仓%d只 + 板块基准指数%d支,共去重%d只代码",
+                    len(wu.targets), len(wu.positions), len(wu.index_codes), len(wu.codes))
 
         rows = _daily_rows_lookup(today, wu.codes)
         missing = [c for c in wu.codes if c not in rows]
@@ -191,34 +193,17 @@ def main() -> int:
                 now, channels=[channel], db_path=tmp_db, parquet_dir=None,
                 quotes_fn=lambda codes, _q=quotes_at_cp: {c: _q[c] for c in codes if c in _q},
             )
-            bs = result.breadth_snapshot
-            if result.retreat_alert:
-                retreat_state = "红色刹车"
-            elif result.retreat_warning:
-                retreat_state = "黄色预警"
-            elif result.retreat_active:
-                retreat_state = "已闩锁(更早红色)"
-            else:
-                retreat_state = "未触发"
+            # ⛔ V2.4.0 P0:退潮判级与通用盘中证伪已退役 —— 本汇总行不再有
+            # 「关注池宽度 / 退潮状态 / 证伪信号」三段,`TickResult` 上也不再有那几个位。
             logger.info(
-                "%s 汇总:拉到%d/%d只行情;关注池宽度(样本%d只)涨停%d/跌停%d/炸板率%.0f%%;"
-                "退潮%s;证伪信号%d个;持仓告警%d个;本拍推送%d条(去重跳过%d条)",
+                "%s 汇总:拉到%d/%d只行情;持仓告警%d个;本拍推送%d条(去重跳过%d条)",
                 cp.label, result.quotes_fetched, result.watched_codes,
-                bs.sample_size if bs else 0, bs.limit_up_count if bs else 0,
-                bs.limit_down_count if bs else 0, (bs.zaban_rate * 100) if bs else 0.0,
-                retreat_state,
-                len(result.invalidation_signals), len(result.holding_alerts),
+                len(result.holding_alerts),
                 len(result.pushed_events), result.skipped_duplicate,
             )
-            for inv in result.invalidation_signals:
-                logger.info("  [证伪] %s(%s):%s", inv.name, inv.ts_code, inv.reason_text)
             for alert in result.holding_alerts:
                 for key, reason in alert.alerts.items():
                     logger.info("  [持仓·%s] %s:%s", key, alert.ts_code, reason)
-            if result.retreat_alert:
-                logger.info("  [退潮·红色刹车] %s", result.retreat_alert.reason_text)
-            elif result.retreat_warning:
-                logger.info("  [退潮·黄色预警] %s", result.retreat_warning)
 
         logger.info("=== 冒烟结束 ===")
         return 0

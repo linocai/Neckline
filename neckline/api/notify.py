@@ -114,6 +114,11 @@ def push_event(
     category 已不足以区分去哪儿,这是 V2 与 V1「category 即路由」的关键差异)。"""
     level = notify_kinds.level_of(kind)           # 未登记 → 抛,见 docstring
     category = notify_kinds.CATEGORY_OF_LEVEL[level]
+    # ⛔ V2.4.0 P0:退役 kind 一律拒发(`notify_kinds.RETIRED_KINDS` 单一源)。闸门放在
+    # **唯一扇出路径**上,而不是逐个措辞函数里 —— 措辞函数漏掉一个就是一条真推送。
+    # ⚠ 排在开关闸**之前**:退役与用户把开关打开与否无关,开着也发不出去。
+    if kind in notify_kinds.RETIRED_KINDS:
+        return NotifyOutcome(skipped_reason=f"kind_retired:{kind}", kind=kind, level=level)
     if not push_kind_enabled(kind, db_path=db_path):
         return NotifyOutcome(skipped_reason=f"kind_off:{kind}", kind=kind, level=level)
     if not apns.settings.has_apns_config:
@@ -151,8 +156,18 @@ def push_report_ready(
 def push_retreat_brake(
     reason: str, *, db_path: Optional[Path] = None, transport: Optional[Any] = None,
 ) -> NotifyOutcome:
-    """退潮红色刹车(kind=`retreat`,**立即**级)。`reason` = 退潮哨兵的刹车文案。"""
-    body = "今日计划作废、禁开新仓。" + (f" 依据:{reason}" if reason else "")
+    """⛔ **DEPRECATED(V2.4.0 P0 退役)—— 生产链零调用,恒被 `push_event` 拒发。**
+
+    退潮红色刹车(kind=`retreat`,**立即**级)。`reason` = 退潮哨兵的刹车文案。
+
+    **为什么留着这个函数**:① `KIND_RETREAT ∈ RETIRED_KINDS` 的拒发行为要有一条
+    能真调到的路径去验(`tests/test_notify.py`);② 回滚绳的一部分(§3.14-A)。
+    **唯一调用点 `api/app.py::_sentinel_loop` 已整段删除** —— P0.7 判据 #3 扫的就是
+    「本函数在 `neckline/**` 里除自身定义与 `__all__` 外零引用」。
+    """
+    # ⛔ V2.4.0 P0:原文案(作废当日计划 + 停止开新仓)已按 P0.7 判据 #2 从全仓清除。
+    # 本函数恒被 `push_event` 的退役闸拒发,这句话到不了任何人手机上。
+    body = "退潮红色刹车(该能力已于 v2.4.0 退役)。" + (f" 依据:{reason}" if reason else "")
     return push_event(
         KIND_RETREAT, "退潮红色刹车", body + _OPEN_APP_NOW,
         db_path=db_path, transport=transport,
@@ -287,7 +302,9 @@ def push_consecutive_stops_notice(
 
     🔴 **裁定 #8 原话**:「**我不需要你替我做决定;这个程序永远是提醒 —— 连续三笔止损
     真的发生了,那也是提醒**」。故本函数的文案是**纯告知**:
-      · ⛔ **禁指令词** —— 不许出现「停止开仓」/「只减不加」/「禁开新仓」/「解锁」;
+      · ⛔ **禁指令词** —— 不许出现任何命令用户停手 / 限制仓位 / 解锁之类的祈使句
+        (**逐词的黑名单唯一源 = 守门单测里的 `_BANNED` 元组**,见本段末行;
+        ⛔ 别在这里抄第二份 —— 抄了就是两份口径,还会撞上 P0.7 判据 #2 的全仓文案扫描);
       · ⛔ 不暗示任何自动状态(没有锁、没有灰化、没有强制复盘);
       · 只陈述事实 + 诚实边界(「基于台账 N 笔已补录成交」,漏录则失灵)。
     守门单测 `tests/test_circuit.py` 按禁用词逐条扫这段文案。

@@ -13,21 +13,40 @@ import XCTest
 @MainActor
 final class AppModelTests: XCTestCase {
 
-    // MARK: - 退潮警示(§2.4「今日计划作废、禁开新仓」只警示不硬拦)
+    // MARK: - ⛔ V2.4.0 P0:退潮警示两条用例已退役(施工纪律 4:写明被谁取代)
+    //
+    // 原 `testRetreatWarningPresentWhenBrakeActive` / `testRetreatWarningNilWhenBrakeInactive`
+    // 断言的是 `AppModel.board` + `AppModel.retreatWarning` 这条派生链(刹车激活 →
+    // 壳层红条拿到依据一句)。**被 P0.1 表那两行取代**:「代理关注池 →『大盘退潮』= 删」
+    // +「全 App 顶部退潮红条 = 删」—— 那两个属性已从 `AppModel` 上物理删除,断言对象不存在。
+    //
+    // 取而代之的机器判据在服务端守门里(`tests/test_v240_p0_retirement_guard.py`):
+    // `TestClientBoardSurfaceGone`(剥注释后扫符号零引用)+ `TestNoDedicatedBoardPolling`。
+    // ⚠ **DTO 解码用例照旧全留**(`DTODecodeTests` 的 `testDecodeBoard*`):P0.6-8 要求
+    // 旧响应仍能宽松解码,那是**兼容能力**、不是"还在用"。
 
-    func testRetreatWarningPresentWhenBrakeActive() {
-        let model = AppModel()
-        model.board = BoardSnapshot(tradeDate: "20260717", asof: "",
-                                    retreatBrake: RetreatBrake(active: true, reason: "炸板率飙升"),
-                                    events: [])
-        XCTAssertNotNil(model.retreatWarning)
-        XCTAssertTrue(model.retreatWarning!.contains("炸板率飙升"))
+    // MARK: - V2.4.0 P0.5+:持仓提醒新通道(原「盘中动态」页上属于本持仓的那部分)
+
+    func testPositionAlertsDecodeAndLabel() {
+        let a = PositionAlert(eventKey: "stop_approach", verdict: "距警戒线 1.2%",
+                              ts: "2026-08-12T02:10:00+00:00", level: "critical")
+        XCTAssertEqual(a.label, "逼近/触发亏损警戒线")
+        XCTAssertEqual(a.id, "stop_approach|2026-08-12T02:10:00+00:00")
     }
 
-    func testRetreatWarningNilWhenBrakeInactive() {
-        let model = AppModel()
-        model.board = BoardSnapshot.empty
-        XCTAssertNil(model.retreatWarning)
+    /// ⛔ 服务端枚举码不许直接进 `Text`;**未识别值原样透传**(⛔ 不吞掉一条真实提醒)。
+    func testUnknownPositionAlertKeyPassesThroughVerbatim() {
+        XCTAssertEqual(nkPositionAlertLabel("brand_new_key"), "brand_new_key")
+    }
+
+    /// 老服务端不发 `alerts` 键 → 空数组(与「今天没有提醒」同形,如实为空)。
+    func testPositionWithoutAlertsKeyDecodesToEmpty() throws {
+        let json = Data("""
+        {"id":1,"code":"600001.SH","name":"甲","buyPrice":10.0,"qty":100,"entryReason":"",
+         "buyDate":"20260810","price":10.5,"status":"open","stopLine":9.5,"stopOrderChecked":false}
+        """.utf8)
+        let p = try JSONDecoder().decode(Position.self, from: json)
+        XCTAssertEqual(p.alerts, [])
     }
 
     // MARK: - 仓位额度三态映射(唯一事实源 = 后端字面量,客户端只穷举匹配)
@@ -1107,9 +1126,18 @@ final class PushRoutingTests: XCTestCase {
         XCTAssertEqual(PushManager.targetTab(forKind: "report_ready"), .baskets)
     }
 
-    func testRetreatKindRoutesToBaskets() {
-        XCTAssertEqual(PushManager.targetTab(forKind: "retreat"), .baskets,
-                       "退潮 = 今日计划整体作废,指向选股面")
+    /// ⛔ **V2.4.0 P0**:原 `testRetreatKindRoutesToBaskets` 断言 `"retreat"` 路由到
+    /// 选股面。**被 P0.1 表「退潮 APNs / Bark / 系统推送 = 删」取代** —— 该 kind 已进
+    /// 服务端 `RETIRED_KINDS`、永不再有新推送,把一条只可能是换包前遗留的旧通知路由
+    /// 到某个板块,只会让人以为那个能力还在。**改成反向断言:不路由**(通知本身照常显示)。
+    func testRetiredRetreatKindNoLongerRoutes() {
+        XCTAssertNil(PushManager.targetTab(forKind: "retreat"))
+    }
+
+    /// ⚠ 反向同查:退役只影响那一个 kind,别的一行行为不变(防误伤)。
+    func testRetirementDoesNotAffectOtherKindRouting() {
+        XCTAssertEqual(PushManager.targetTab(forKind: "report_ready"), .baskets)
+        XCTAssertEqual(PushManager.targetTab(forKind: "stop_approach"), .positions)
     }
 
     /// 持仓线各 kind **各自独立**指向持仓板块 —— ⛔ 不因为同属一个 category 就连坐。

@@ -84,6 +84,7 @@ struct BasketDailyView: View {
                         // iPhone 上要**划过两屏**才看得到今天的篮子,而它才是这一页的主角。
                         // ⛔ 两段一个字没删,只是挪到篮子后面(macOS 侧另有安排,别跟着改)。
                         basketsSection
+                        intradayNoticeRow      // 🔴 P0.2:全 App 唯一一条盘中小提示
                         droppedSection
                         outSection
                         holdingCheckupPointer
@@ -155,11 +156,9 @@ struct BasketDailyView: View {
             VStack(alignment: .leading, spacing: 2) {   // 原型 84 行 margin-top:2
                 Text(AppTab.baskets.title).font(NKFont.title2).tracking(-0.3)
                     .foregroundStyle(NK.textPrimary)
-                // 退潮刹车时这一句翻**红 + 600**(状态原型 83 行 `11.5px #E5443B; 600`)——
-                // 「计划作废」是这一栏此刻最要紧的一句,灰字会被当成普通计数说明扫过去。
+                // ⛔ V2.4.0 P0:原先这一句在退潮刹车时翻红加粗,那一档随退潮退役删除。
                 Text(listSubtitle).font(NKFont.caption)
-                    .fontWeight(model.board.retreatBrake.active ? .semibold : .regular)
-                    .foregroundStyle(model.board.retreatBrake.active ? NK.down : NK.textSecondary)
+                    .foregroundStyle(NK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, NKSpace.listHeaderExtraH).padding(.bottom, 10)
@@ -172,6 +171,7 @@ struct BasketDailyView: View {
             } else {
                 reviewReceiptRow
                 basketsListSection
+                intradayNoticeRow      // 🔴 P0.2:全 App 唯一一条盘中小提示
                 droppedListSection
                 outListSection
             }
@@ -179,9 +179,7 @@ struct BasketDailyView: View {
     }
 
     private var listSubtitle: String {
-        // 退潮刹车优先(状态原型 83 行)——「篮子仍然列出、点得开」是这一屏必须当面说的
-        // 那句话:作废的是计划,不是数据。
-        if model.board.retreatBrake.active { return "今日计划已作废 · 篮子仍然列出,点得开" }
+        // ⛔ V2.4.0 P0:原先排在最前的退潮分支已删(退潮判级退役,那个状态不会再出现)。
         // 报告未生成时原型副标题是「今晚 16:35 出计划」(状态原型 231 行)。
         if model.report.degraded { return "今晚 16:35 出计划" }
         return "今日 \(daily.baskets.count) 篮定档 · \(daily.droppedBaskets.count) 篮未定档 · \(daily.outCandidates.count) 只 OUT"
@@ -914,6 +912,25 @@ struct BasketDailyView: View {
         return "\(daily.reviews.count) 篮已复盘 · 在「复盘 · 每日」查看"
     }
 
+    // MARK: - 🔴 P0.2 盘中小提示(**全 App 唯一一条**,V2.4.0)
+
+    /// 唯一保留的盘中小提示 —— 文案单一源 `NKCopy.intradaySelfObserve`
+    /// (`DesignTokens.swift`,那里逐条写了展示规则与七种禁止的变形)。
+    ///
+    /// **落点 = T1/T2 篮子列表之后**(= D0 预案区域之下)。🔴 选「下方」不是随意:
+    /// 首屏必须先看到第一个 T1/T2 篮子,放上方会把它挤下去。
+    /// **形态 = 普通辅助文字**:⛔ 无底色、⛔ 无图标、⛔ 不可点击、⛔ 不带任何计数或状态,
+    /// **⛔ 不依赖实时行情、不发任何请求**(它是一个字符串常量,连 `model` 都不读)。
+    /// ⚠ 双端各渲染一次(iOS 在 `iosBody`、macOS 在 `listColumn`),同一平台只出现一次。
+    private var intradayNoticeRow: some View {
+        Text(NKCopy.intradaySelfObserve)
+            .font(NKFont.caption)
+            .foregroundStyle(NK.textTertiary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, NKSpace.listHeaderExtraH)
+    }
+
     // MARK: - ⑤ 数据新鲜度与降级披露(**恒在**:降级必须诚实披露)
 
     @ViewBuilder
@@ -1114,18 +1131,8 @@ private struct BasketListRow: View {
                             Text("\(n) 只").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         }
                     }
-                    // 退潮刹车时每一行都带这一句(状态原型 133 行:`padding:6px 9px;
-                    // radius:7; background:rgba(229,68,59,.08); 10.5/600 #E5443B`)。
-                    // 🔴 **作废的是计划,不是数据** —— 卡、六关、逐只判定照常可读,
-                    // ⛔ 别把行灰掉、更别把它从列表里拿掉。
-                    if model.board.retreatBrake.active {
-                        Text("今日计划作废 —— 这篮的卡与判定照常可读")
-                            .font(NKFont.badge).foregroundStyle(NK.down)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 9).padding(.vertical, 6)
-                            .background(RoundedRectangle(cornerRadius: NKRadius.control)
-                                .fill(NK.down.opacity(0.08)))
-                    }
+                    // ⛔ V2.4.0 P0:原先每一行在退潮刹车时都带一句淡红底说明,
+                    // 随退潮判级退役整段删除(P0.1 表那一行)。
                 }
             }
             // 🔴 **成员区在选中框外面**(原型 148 行:它是 `pick()` 那个 div 的**兄弟**,

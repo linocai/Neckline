@@ -133,9 +133,10 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
         let kind = (info[kNKKindKey] as? String) ?? ""
         if let tab = Self.targetTab(forKind: kind) {
             model?.view = tab
+            // ⛔ V2.4.0 P0:原先 `.positions` 分支顺带 `loadBoard()` 刷一次盘中动态,
+            // 那一路已删;持仓提醒随 `refresh()` 的 `/positions` 一起拉。
             switch tab {
-            case .baskets: await model?.refresh()
-            case .positions: await model?.loadBoard()
+            case .baskets, .positions: await model?.refresh()
             default: break
             }
         }
@@ -149,9 +150,13 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
     /// 展示层映射**,⛔ 不硬编一份"有哪些 kind"的清单去过滤(未登记的 kind 走
     /// `default` → `nil` = 不跳转,通知照常展示)。
     static func targetTab(forKind kind: String) -> AppTab? {
+        // ⛔ **V2.4.0 P0:`"retreat"` 这一路由已删** —— 该 kind 已进服务端
+        // `notify_kinds.RETIRED_KINDS`,**永不再有新推送**;把一条只可能来自"换包前
+        // 遗留在通知中心的旧通知"路由到今日篮子,只会让人以为那个能力还在。
+        // 未知 kind 走 `default` → 不跳转,通知本身照常显示(⛔ 不吞、不崩)。
         switch kind {
-        // 选股线:报告就绪 / 退潮红色刹车(今日计划整体作废)→ 今日篮子
-        case "report_ready", "retreat": return .baskets
+        // 选股线:报告就绪 → 今日篮子
+        case "report_ready": return .baskets
         // 持仓线(80% 注意力都在这):熔断 / 时间退出 / K4 派发 / 止损逼近 / 触达离场参考 /
         // 板块跳水 / ⑪-A 四监测 / NL 临时提醒 —— 全部指向持仓板块。
         case "circuit", "d5exit", "holding_alert", "precall",

@@ -105,19 +105,30 @@ def test_report_push_sends_when_on(api_env, apns_configured):
     assert out.sent == 2 and out.failed == 0        # 全部 kind 默认开
 
 
-def test_retreat_push_gated_off(api_env, apns_configured):
-    db = api_env.db_path
-    upsert_device("tok1", db_path=db)
-    _set_kind(db, notify_kinds.KIND_RETREAT, False)
-    out = notify.push_retreat_brake("炸板率飙升", db_path=db, transport=_ok_transport)
-    assert out.sent == 0 and out.skipped_reason == "kind_off:retreat"
+# 🔴 **V2.4.0 P0(施工纪律 4:写明被谁取代)**:原两条用例是
+#   · `test_retreat_push_gated_off` —— 开关关掉 → `skipped_reason == "kind_off:retreat"`;
+#   · `test_retreat_push_sends_when_on` —— 开关开着 → `sent == 1`。
+# 后者**被 P0.1 表「退潮 APNs / Bark / 系统推送 = 删」取代**:`KIND_RETREAT` 已进
+# `notify_kinds.RETIRED_KINDS`,`push_event` 在**开关闸之前**就拒发 —— 开着也发不出去。
+# 两条合并成下面这一条,正反两面都断言(开 / 关都必须是 `kind_retired:`,
+# ⛔ 不许退化成"关着所以没发"这种看起来也绿的假证据)。
 
 
-def test_retreat_push_sends_when_on(api_env, apns_configured):
+@pytest.mark.parametrize("enabled", [True, False])
+def test_retired_retreat_kind_is_refused_regardless_of_switch(api_env, apns_configured, enabled):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
+    _set_kind(db, notify_kinds.KIND_RETREAT, enabled)
     out = notify.push_retreat_brake("炸板率飙升", db_path=db, transport=_ok_transport)
-    assert out.sent == 1
+    assert out.sent == 0
+    assert out.skipped_reason == "kind_retired:retreat"
+
+
+def test_non_retired_kinds_are_unaffected_by_the_retirement_gate(api_env, apns_configured):
+    """退役闸**只拦 `RETIRED_KINDS`** —— 别的 kind 一行行为不变(防误伤)。"""
+    upsert_device("tok1", db_path=api_env.db_path)
+    out = notify.push_report_ready("2026-07-17", db_path=api_env.db_path, transport=_ok_transport)
+    assert out.sent == 1 and out.skipped_reason == ""
 
 
 def test_no_devices_skips(api_env, apns_configured):

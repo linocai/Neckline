@@ -103,7 +103,8 @@ LEVEL_LABEL: Dict[str, str] = {
 
 # —— V1 六类白名单迁移(kind 串按 plan ⑪-B 原文逐字)————————————————————
 KIND_REPORT_READY = "report_ready"      # 16:35 盘后报告就绪
-KIND_RETREAT = "retreat"                # 退潮红色刹车
+# ⛔ 已退役(V2.4.0 P0):契约与开关保留,生产链零调用。见下方 `RETIRED_KINDS`。
+KIND_RETREAT = "retreat"                # 退潮红色刹车(⛔ 已退役)
 KIND_PRECALL = "precall"                # 9:26 盘前校准汇总
 KIND_D5EXIT = "d5exit"                  # 时间退出(D5 / 浮盈硬上限)
 KIND_CIRCUIT = "circuit"                # 熔断提醒
@@ -141,6 +142,25 @@ ALL_KINDS: Tuple[str, ...] = (
     KIND_SECTOR_DIVE,
 )
 
+# ══════════════════════════════════════════════════════════════════════════
+# 退役 kind(V2.4.0 P0)——**与 `ALL_KINDS` 并列的第二张表,不是从它里面删**
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 **`ALL_KINDS` 是冻结元组、本版一字未动**(动它要用户单独拍板,见模块头;
+# `tests/test_notify_kinds.py` 按精确集合锁死)。退役走**加一张表**:
+#
+#   · **契约保留**:`GET /settings` 仍下发该 kind 行(`retired=True`),
+#     `PUT /settings/push` 仍要求给全 `ALL_KINDS` —— **旧客户端读写不受影响**
+#     (P0.5「`push_retreat` 设置字段继续接受读写」)。
+#   · **生产链拒发**:`api/notify.py::push_event` 见到退役 kind 直接返
+#     `skipped_reason="kind_retired:<kind>"`,**一条都发不出去**。
+#   · **新客户端隐藏开关**:设置屏按服务端下发的 `retired` 位过滤 ——
+#     ⛔ **不在客户端硬编码 `"retreat"` 黑名单**(那是第二份事实源,§3.14-B)。
+#
+# ⚠ 退役 ≠ 删除:`LEVEL_OF_KIND` / `KIND_LABEL` / `LEGACY_COLUMN_OF_KIND` 里
+# 该 kind 的行**一律留着**,历史事件与老库开关照旧读得出。
+RETIRED_KINDS: frozenset = frozenset({KIND_RETREAT})
+
 # —— 分级归属(蓝图 5.5 逐条对照;每一条都在下面标了依据,⛔ 不许凭手感改)————
 #
 #   立即       蓝图原文:自定义价格条件 / 逼近或触发止损 / 快速跳水 / 涨跌停打开 /
@@ -149,7 +169,8 @@ ALL_KINDS: Tuple[str, ...] = (
 #   盘后汇总   蓝图原文:普通波动 / 轻微技术变化 / 一般板块分歧
 #
 LEVEL_OF_KIND: Dict[str, str] = {
-    # 「重大交易风险」——红色刹车 = 今日计划整体作废、全天禁开新仓。
+    # 「重大交易风险」——红色刹车(⛔ 已于 V2.4.0 P0 退役,原动作语义见
+    # `sentinel/retreat.py` 模块头;那几句文案已按 P0.7 判据 #2 全仓清除)。
     KIND_RETREAT: LEVEL_IMMEDIATE,
     # 「重大交易风险」——熔断 = 今日停开新仓、次日只减不加。
     KIND_CIRCUIT: LEVEL_IMMEDIATE,

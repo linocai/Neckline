@@ -1,4 +1,15 @@
-"""退潮哨兵单测(plan §2.4 第2条 + v1.1-H2 双级制重构)。分两层:
+"""⛔ **DEPRECATED:被测对象已于 V2.4.0 P0 从生产链断开**(`sentinel/retreat.py`)。
+
+本文件**一条用例都不删、断言一字未改** —— 它记录的是退役前的**行为基准**,
+是回滚绳的一部分(§3.14-A / A 表处置:「保留这些文件,另加一组『生产链零调用』
+守门,⛔ 不许删测试换绿」)。
+⛔ 它证明不了、也不再声称该判定还在生产链上跑;那件事由
+`tests/test_v240_p0_retirement_guard.py`(AST 扫 `engine.py` 调用点数 = 0 +
+推送链零引用)与 `tests/test_sentinel_engine.py::TestP0RetiredIntradayJudgements`
+(整拍级反向断言)负责。
+
+以下为原文说明:
+退潮哨兵单测(plan §2.4 第2条 + v1.1-H2 双级制重构)。分两层:
     · `compute_breadth_snapshot` —— 关注池代理样本的涨停/跌停/炸板统计(未变)。
     · `evaluate_retreat` —— 双级制判级纯函数,覆盖四条修法各分支:同时段对比命中/
       缺基线静默、持续性 2 拍、早盘梯度、黄升红两条路径、重启保守。

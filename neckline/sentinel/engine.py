@@ -1,18 +1,33 @@
 """单拍编排(plan 阶段3)。`run_tick(now, ...)` 是哨兵一次轮询要做的全部事情:
-组装关注池 → 批量拉价 → 四哨兵判定 → 防重 → 推送 → 落账。`scripts/sentinel.py`
+组装关注池 → 批量拉价 → **持仓哨兵**判定 → 防重 → 推送 → 落账。`scripts/sentinel.py`
 的主循环只是反复调用本函数;`scripts/smoke_sentinel.py` 也调用同一个函数(喂
 合成的历史日行情)——**同一份编排代码**,不是"正式跑一套、测试再写一套"。
 
+🔴 **V2.4.0 P0 换血:两段盘中判决整段删除(撤销判断权,不是调阈值)**
+
+    · **退潮哨兵**(代理关注池 → 「大盘退潮」→ 一条**全局刹车 + 停止开新仓**的
+      交易动作语义)—— 删。
+      测量样本是**代理关注池**不是全市场、「昨日同时段」不是同一批票、约 60s 一拍的
+      「连续两拍」只代表两分钟、红事件全天闩锁不因修复翻转 —— **测量范围与动作权限
+      不匹配**(审计规格 P0.1)。
+    · **证伪哨兵**(瞬时跌破 VWAP / 低开未翻红 / 折算量比异常 → 一条**剔除类**
+      盘中判决)—— 删。
+      所有 T1/T2 成员共用**一套全局常量**而非每票 D0 冻结条件;事件当日按固定
+      `event_key` 闩锁,后续站回 VWAP / 翻红都不会翻转前端结论。
+
+    **产品决定(审计规格 P0 定位逐字)**:用户自行观察盘中分时;系统保留 D0 冻结预案
+    与必要的持仓纪律提示,**不再据普通盘中波动出「证伪」判决,不再据代理关注池出
+    全局「退潮刹车 / 停止开新仓」**。
+    ⛔ **不许以任何形式复活**:不许改名叫「风险」「观察」,不许换成分数 / 状态机 /
+    交通灯,不许新建 `intraday_current_state` 之类替代表。
+    ⚠ `sentinel/{invalidation,retreat,retreat_store,mainline}.py` **文件仍在**(回滚 +
+    历史行为留档),但**本模块对它们零 import** —— 判据是「生产入口有没有它」,不是
+    「文件在哪」(§3.14-A);守门单测 AST 扫本文件的调用点数必须为 0。
+
 **原则守护(§2.4 铁律,写进编排顺序本身,不是靠人记住)**:
-    1. 退潮哨兵先判——一旦当日已触发红色刹车(`sentinel_events` 表里已有
-       `(trade_date,"retreat","","brake")`,不论是今天哪一拍触发的)→ ⚠ **V2-⑬-1 起
-       买点哨兵已退役**(它 100% 由 K1 per-code `entry_spec` 驱动,V2 无单票买点计划),
-       退潮红色刹车因此只剩「不产生任何新的开仓许可信号」这一层语义上的保证 ——
-       系统本就不再产生开仓信号。持仓哨兵与证伪哨兵不受退潮影响——管理已有仓位的
-       风险、和把已经变坏的关注目标标记"剔除勿进",在退潮当日依然是有意义的信息。
-    2. 拉不到行情(quotes 缺该票)→ 对应哨兵该票直接跳过(已在各哨兵纯函数
+    1. 拉不到行情(quotes 缺该票)→ 对应哨兵该票直接跳过(已在各哨兵纯函数
        内部处理,`quote=None` 时返回 None),不是"当没发生"而是"没有意见"。
-    3. 无篮子(V2 引擎未跑过 / 今日无篮子定档)/ 无持仓 都是合法状态,只是那部分
+    2. 无篮子(V2 引擎未跑过 / 今日无篮子定档)/ 无持仓 都是合法状态,只是那部分
        哨兵没有对象可判,不报错。
 """
 
@@ -23,13 +38,13 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from neckline import custom_alerts as custom_alerts_store
 from neckline import notify_kinds
 from neckline.db import connection
 from neckline.report.sectors import load_member_map
-from neckline.sentinel import attention, basket_verify, capture, mainline
+from neckline.sentinel import attention, basket_verify, capture
 from neckline.sentinel import custom as custom_alerts_tick
 from neckline.sentinel.channels import (
     LEVEL_CRITICAL,
@@ -46,22 +61,8 @@ from neckline.sentinel.holding import (
     evaluate_holding,
 )
 from neckline.sentinel.intraday import is_intraday_now
-from neckline.sentinel.invalidation import InvalidationSignal, check_invalidation
 from neckline.sentinel.positions import Position
 from neckline.sentinel.quotes import Quote, get_quotes
-from neckline.sentinel.retreat import (
-    SAME_TIME_WINDOW_MIN,
-    MarketBreadthSnapshot,
-    RetreatAlert,
-    RetreatMetrics,
-    compute_breadth_snapshot,
-    evaluate_retreat,
-)
-from neckline.sentinel.retreat_store import (
-    load_prev_tick_triggered,
-    load_same_time_zaban_baseline,
-    record_retreat_metrics,
-)
 from neckline.sentinel.universe import (
     DEFAULT_BREADTH_CAP,
     WatchUniverse,
@@ -75,26 +76,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_STOP_PCT = 0.05  # 仅当大脑无现役版本(异常状态)时的兜底,不是本模块拍的值
 
-# 退潮"重启后首拍不触发红色"保守闸(修法2)。记录本进程已跑过退潮判定的交易日;
-# 某日的首拍(含进程午间重启后的首拍)`allow_red=False`——只允许黄色,不落全天
-# 闩锁的红色刹车。理由:红色是高危不可逆动作(全天禁开新仓),重启后的首拍上一拍
-# 内存态不可信,宁可延后一拍(60s)也不误闩。跨日续跑时每日首拍同样保守(当日首拍
-# 本就无"上一拍"可对,且首拍即 ≥2 条同拍属极端,延后一拍代价可忽略)。
-_RETREAT_WARMED_DATES: set = set()
-
-
-def _consume_retreat_first_tick(trade_date: date) -> bool:
-    """返回本进程内该交易日是否为**首拍**(True→本拍红色降级为黄色)。有副作用:
-    调用即把该日标记为已热身。测试可用 `reset_retreat_process_state()` 复位。"""
-    key = trade_date.strftime("%Y%m%d")
-    first = key not in _RETREAT_WARMED_DATES
-    _RETREAT_WARMED_DATES.add(key)
-    return first
-
-
-def reset_retreat_process_state() -> None:
-    """清空"已热身交易日"记忆(单测隔离用;等价于进程刚重启)。"""
-    _RETREAT_WARMED_DATES.clear()
+# ⛔ V2.4.0 P0:退潮"重启后首拍不触发红色"的进程态闸(`_RETREAT_WARMED_DATES` /
+# `_consume_retreat_first_tick` / `reset_retreat_process_state`)随退潮判级整段删除
+# —— 没有判级就没有"首拍是否允许升红"这个问题。
 
 
 @dataclass
@@ -120,11 +104,10 @@ class TickResult:
     # —— 2026-08-03 用户拍板旁路(离场参考区间触达,驱动 APNs `take_profit` kind)
     #    的观测位。同样不参与任何纪律判定;为空不影响四哨兵与熔断。———————————
     exit_reference_hits: List[str] = field(default_factory=list)  # 命中的 ts_code
-    retreat_active: bool = False
-    retreat_alert: Optional[RetreatAlert] = None       # 仅红色刹车时非空(驱动 APNs/通道推送)
-    retreat_warning: Optional[str] = None              # 黄色预警文案(只进看板,不推送)
-    breadth_snapshot: Optional[MarketBreadthSnapshot] = None
-    invalidation_signals: List[InvalidationSignal] = field(default_factory=list)
+    # ⛔ V2.4.0 P0:`retreat_active` / `retreat_alert` / `retreat_warning` /
+    # `breadth_snapshot` / `invalidation_signals` **五个观测位整体删除** —— 不是置成
+    # 恒 False / 恒空,而是让"这一拍出没出退潮或证伪结论"这个问题在类型上不存在。
+    # 留一个恒 False 的位就是「前端隐藏、后台仍在判」的温床(P0.4-9 红线)。
     holding_alerts: List[HoldingAlert] = field(default_factory=list)
     pushed_events: List[str] = field(default_factory=list)
     skipped_duplicate: int = 0
@@ -136,26 +119,9 @@ def _candidate_return(quote: Optional[Quote]) -> Optional[float]:
     return quote.price / quote.pre_close - 1
 
 
-def _hot_sector_peer_returns(sample_codes: Iterable[str], quotes: Dict[str, Quote]) -> Dict[str, float]:
-    """退潮哨兵「主线板块跳水」样本里**有报价那部分**的收益率,用已经拉到的行情算,
-    不额外拉价。
-
-    ⚠ **样本源的三代变迁(判定逻辑与 `sector_dive` 阈值一行未改)**:
-    · V1 = 「关注池里命中今日热门板块标签的**候选**」(候选机械生成);
-    · V2-⑬-1 一度换成 **T1/T2 篮子成员全体** —— 那是 LLM 挑出来的,**一个纪律
-      触发器的样本组成被 LLM 塑形**(V2 review 判定线 🟡-4);
-    · V2-⑧-F = ④ 机械种子成分 ∩ 关注池机械成分(拆掉 LLM 塑形,但对拍量出这条路
-      **近乎失效** —— ∩ 池把样本压成了"最抗跌的一群");
-    · **V2-⑧-G(现行)= ④ 每颗机械种子按 `crc32` 取前 K 的配额切片**,派生与估计量
-      都在 `sentinel/mainline.py`(为什么不经篮子、为什么不 ∩ 池、为什么 per-seed,
-      见该模块头)。本函数只负责"有报价的才算",⛔ 不新增任何阈值、不做任何平均
-      ——**平均怎么取是 `mainline.estimate` 的事**(⑧-G-C:每条主线一票)。"""
-    rets: Dict[str, float] = {}
-    for code in sample_codes:
-        r = _candidate_return(quotes.get(code))
-        if r is not None:
-            rets[code] = r
-    return rets
+# ⛔ V2.4.0 P0:`_hot_sector_peer_returns`(退潮「主线板块跳水」样本的收益率)随退潮
+# 判级一并删除。⚠ **别与下面的 `_position_sector_peer_returns` 混** —— 那是**持仓哨兵**
+# 的 `sector_dive`(某只**持仓**所属概念板块的同伴收益率),P0.3 明令保留,一行未动。
 
 
 def _position_sector_peer_returns(
@@ -352,95 +318,23 @@ def run_tick(
         record_pushed(trade_date, sentinel, ts_code, event_key, payload=payload, db_path=db_path)
         result.pushed_events.append(f"{sentinel}:{ts_code or '-'}:{event_key}")
 
-    # —— 1) 退潮哨兵(先判,决定买点哨兵是否本拍抑制;双级制见 retreat.py 模块头)——
-    hhmm = now.strftime("%H%M")
-    breadth_snapshot = compute_breadth_snapshot(trade_date, quotes, meta)
-    result.breadth_snapshot = breadth_snapshot
-    # —— V2-⑧-G:「主线板块跳水」样本 = ④ 每颗机械种子按 crc32 取前 K 的**配额切片**
-    #    (派生 + 池位配额都在关注池组装期完成,见 `sentinel/universe.py` 模块头
-    #    「容量与配额」与 `sentinel/mainline.py`)。⛔ **不经篮子**;派生失败在
-    #    `universe` 那层已降级成"空样本 + 原因码",这里拿到什么算什么,⛔ 不回退到
-    #    任何 LLM 相关样本(回退等于把刚拆掉的塑形又接回来)。
-    mainline_sample = wu.mainline_sample
-    hot_peer_rets = _hot_sector_peer_returns(mainline_sample.codes, quotes)
-    # ⑧-G-C:**每条主线一票**(先种子内均值、再种子间均值);pooled 只作审计对照。
-    hot_est = mainline.estimate(mainline_sample, hot_peer_rets)
-    hot_avg = hot_est.per_seed_avg
-    metrics = RetreatMetrics(
-        trade_date=trade_date, hhmm=hhmm, sample_size=breadth_snapshot.sample_size,
-        limit_up_count=breadth_snapshot.limit_up_count, limit_down_count=breadth_snapshot.limit_down_count,
-        zaban_count=breadth_snapshot.zaban_count, zaban_rate=breadth_snapshot.zaban_rate,
-        hot_sector_avg_chg=hot_avg,
-        # ⑧-F 立、⑧-G 扩的留痕:触发与否都落样本构成(codes + 逐颗种子切片 + 样本量)
-        # 与**两个口径的读数**,让"样本没被 LLM 塑形"「两口径讲不讲同一句话」都事后
-        # 可审计。`quoted` = 实际参与均值的只数(有报价的那部分)。
-        hot_sector_sample_detail={**mainline_sample.payload(), **hot_est.payload()},
-        # ⑧-G-D 追加要求(review 判定线 🟡-N1 一并处理):昨日涨停宽度代理样本的
-        # 需求量 vs 实际采纳量,同样触发与否都落。
-        breadth_extra_sample_detail=wu.breadth_extra_payload(),
-    )
+    # —— 1) 退潮哨兵 ⛔ 已删(V2.4.0 P0)———————————————————————————————————
+    #     原第 1 段(宽度快照 → 主线切片估计 → `evaluate_retreat` 判级 → 逐拍
+    #     `record_retreat_metrics` → 红色刹车推送 / 黄色预警落看板)**整段删除**。
+    #     `retreat_metrics` 表**只读保留、不再有新行**;历史行一行不动。
+    #     ⚠ **心跳证据换人**:此前"盘中哨兵还活着"看的是 `retreat_metrics` 每拍 +1,
+    #     现在看 `sentinel_events` 的 `sentinel='capture'` 行 + journal 的 tick 日志。
+    #
+    # —— 2) 证伪哨兵 ⛔ 已删(V2.4.0 P0)———————————————————————————————————
+    #     原第 2 段(遍历 `wu.targets` 调 `check_invalidation` → 剔除类判决推送)
+    #     **整段删除**;`sentinel='invalidation'` 不再有新事件。
+    #     🔴 **别把它与 D0 冻结的「判断失效位置」搞混**:那是卡上的 `invalidation_spec` /
+    #     `close_below_stop_line`(交易资格四件套第 4 件)与竞价层的
+    #     `auction/mech.py::hit_invalidation`,**两者都是明令保留的能力,一行未动**。
+    #
+    #     编号 1)/2) 的空位刻意保留,便于对照旧日志与历史 review 记录。
 
-    retreat_active = already_pushed(trade_date, "retreat", "", "brake", db_path=db_path)
-    if retreat_active:
-        # 当日已闩锁红色:仍逐拍落指标(审计连续性 / 成绩单),不再判级、不再推送。
-        record_retreat_metrics(metrics, triggered=[], tier="red_latched", red_via=[], db_path=db_path)
-    else:
-        prev_triggered = load_prev_tick_triggered(trade_date, hhmm, db_path=db_path)
-        baseline = load_same_time_zaban_baseline(
-            trade_date, hhmm, window_min=SAME_TIME_WINDOW_MIN, db_path=db_path
-        )
-        first_tick = _consume_retreat_first_tick(trade_date)
-        decision = evaluate_retreat(
-            breadth_snapshot,
-            now_time=now.time(),
-            same_time_zaban_baseline=baseline,
-            hot_sector_avg_chg=hot_avg,
-            hot_sector_sample=hot_est.quoted,
-            prev_tick_triggered=prev_triggered,
-            allow_red=not first_tick,
-        )
-        record_retreat_metrics(
-            metrics, triggered=decision.triggered, tier=decision.tier,
-            red_via=decision.red_via, db_path=db_path,
-        )
-        event_payload = {
-            "metrics": metrics.metric_payload(),
-            "triggered": decision.triggered,
-            "red_via": decision.red_via,
-        }
-        if decision.is_red:
-            retreat_active = True
-            result.retreat_alert = RetreatAlert(reasons=decision.reasons)
-            _maybe_push(
-                "retreat", "", "brake",
-                "退潮刹车:今日计划作废、禁开新仓",
-                decision.reason_text, LEVEL_CRITICAL, payload_extra=event_payload,
-            )
-        elif decision.is_yellow:
-            # 黄色预警:只落看板事件(event_key="warn",一天首次),不推送、不抑制买点。
-            result.retreat_warning = decision.reason_text
-            if not already_pushed(trade_date, "retreat", "", "warn", db_path=db_path):
-                record_pushed(
-                    trade_date, "retreat", "", "warn",
-                    payload={"body": "【黄色预警】" + decision.reason_text, **event_payload},
-                    db_path=db_path,
-                )
-    result.retreat_active = retreat_active
-
-    # —— 2) 证伪哨兵(不受退潮抑制——"剔除勿进"任何时候都是有效信息)——————————
-    # ⚠ **V2-⑬-1**:判定对象 = D0 冻结的 T1/T2 篮子成员(`wu.targets`),不再是 V1 候选;
-    # 判定逻辑与阈值一行未改(证伪 spec 本就是零入参全局常量)。**买点哨兵已退役**
-    # (原第 2 段),编号顺延不重排 —— 其余段落的序号沿用历史编号,便于对照旧日志。
-    for t in wu.targets:
-        inv = check_invalidation(t, quotes.get(t.ts_code), prev5.get(t.ts_code, 0.0), now)
-        if inv is not None:
-            result.invalidation_signals.append(inv)
-            _maybe_push(
-                "invalidation", t.ts_code, "trigger",
-                f"剔除勿进:{t.name}({t.ts_code})", inv.reason_text, LEVEL_WARN,
-            )
-
-    # —— 4) 持仓哨兵(不受退潮抑制——管理已有仓位任何时候都要做)——————————————
+    # —— 4) 持仓哨兵(P0.3 明令保留:管理已有仓位任何时候都要做)———————————————
     if wu.positions:
         active_rule = brain.get_active(db_path=db_path)
         stop_pct = _DEFAULT_STOP_PCT

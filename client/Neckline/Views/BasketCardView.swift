@@ -58,7 +58,6 @@ struct BasketCardPage: View {
         if let card = basket.card {
             VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                 titleBlock(card)                    // 标题 + 徽标 + 验证角标
-                brakeNoticeCard                     // 退潮刹车时那张红描边卡(⛔ 只在刹车时出现)
                 scoreCard(card)                     // 百分制打分卡(总分 + 五维)
                 gatesCard                           // 🔴 六关判定(宫格)
                 driverCard(card)                    // ①②③ 驱动 / 证据链 / 为什么是现在
@@ -73,7 +72,6 @@ struct BasketCardPage: View {
             // 缺的只是 LLM 那半份 —— 连标题都不给,读者第一眼看到的就是"什么都没有"。
             VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                 notReadyTitleBlock
-                brakeNoticeCard
                 cardNotReadyCard
                 if basket.scoreDisplayPercent != nil { scoreCardFallback }
                 gatesCard
@@ -103,10 +101,7 @@ struct BasketCardPage: View {
                     NKChip(text: "选股引擎 \(ev)", tone: .neutral)
                 }
                 if let v = card.version { NKChip(text: "卡 v\(v)") }
-                // 退潮刹车(状态原型 116 行:Tier 徽标旁边**再挂一枚红实底**)。
-                if model.board.retreatBrake.active {
-                    NKChip(text: "今日计划作废", tone: .bad, filled: true)
-                }
+                // ⛔ V2.4.0 P0:原先这里还挂一枚退潮红实底徽标,已随退潮刹车退役删除。
                 Spacer()
                 VerificationBadge(model: model, basketId: basket.basketId)
             }
@@ -132,9 +127,7 @@ struct BasketCardPage: View {
                 if let ev = basket.engineVersionDisplay {
                     NKChip(text: "选股引擎 \(ev)", tone: .neutral)
                 }
-                if model.board.retreatBrake.active {
-                    NKChip(text: "今日计划作废", tone: .bad, filled: true)
-                }
+                // ⛔ V2.4.0 P0:退潮红实底徽标已删(同上)。
                 Spacer()
                 VerificationBadge(model: model, basketId: basket.basketId)
             }
@@ -144,71 +137,15 @@ struct BasketCardPage: View {
         }
     }
 
-    // MARK: - 退潮刹车时的那张红描边卡(`Neckline 状态.dc.html` 118–125 行)
-
-    /// 🔴 **作废的是今日的开仓计划,不是这张卡**。
-    ///
-    /// 卡片本身是 D0 冻结件 —— 驱动、证据链、六关判定、逐只成员读数描述的是**昨天收盘
-    /// 那一刻的结构**,不因为今天盘中退潮而变假。所以刹车时这张卡照常全文可读,只是
-    /// 顶上多这一块把「今天别按它开仓」说出口。
-    ///
-    /// 🔴 **「仍要补录开仓」永不灰化**(V2.2-⑤-B 已拆过一次熔断):补录是**记账动作**,
-    /// 记的是用户已经在券商完成的操作。硬拦 = 帮用户瞒报。⛔ 任何人不许给它加条件。
-    @ViewBuilder
-    private var brakeNoticeCard: some View {
-        if model.board.retreatBrake.active {
-            VStack(alignment: .leading, spacing: 0) {
-                // ⚠ 整条**字面量**才解析 Markdown(`Text(String)` 不解析,§五 〇d 第 7 条)。
-                Text("刹车作废的是**今日的开仓计划**,不是这张卡。驱动、证据链、六关判定、逐只成员的位置关 / 核心关读数全部照常有效 —— 它们描述的是昨天收盘那一刻的结构,不因为今天盘中退潮而变假。")
-                    .font(NKFont.body).lineSpacing(5)      // 原型 119 行 13.5/1.7
-                    .foregroundStyle(NK.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("要看的是**持仓**:退潮刹车不改变任何持仓判定,止损线、回落止盈、时间退出各自照旧跑。系统只提醒,不代下单。")
-                    .font(NKFont.callout).lineSpacing(4)   // 原型 120 行 12.5 .65/1.65
-                    .foregroundStyle(NK.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 10)
-                HStack(spacing: 9) {                       // 原型 121 行 gap:9
-                    brakeButton("去看持仓 \(model.positions.count) 笔", filled: true) {
-                        model.view = .positions
-                    }
-                    brakeButton("仍要补录开仓", filled: false) {
-                        model.view = .positions
-                        model.beginPositionEntryFlow()
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.top, 14)
-                Text("补录是记账动作 —— 记的是你已经在券商完成的操作。⛔ 这个按钮任何情况下都不灰化。")
-                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 9)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, NKSpace.cardPad).padding(.horizontal, NKSpace.cardPadH)
-            .background(RoundedRectangle(cornerRadius: NKRadius.card).fill(NK.cardBg))
-            // 原型 118 行:白卡 + **红描边**(`.5px rgba(229,68,59,.30)`),⛔ 不是红底 ——
-            // 红底那一档留给通栏刹车条,一屏里两块大红会互相抢。
-            .overlay(RoundedRectangle(cornerRadius: NKRadius.card)
-                .stroke(NK.down.opacity(0.30), lineWidth: 0.5))
-        }
-    }
-
-    /// 原型 122/123 行:`padding:8px 15px; radius:8; 12.5/600` —— 蓝实底 / 描边两档。
-    private func brakeButton(_ title: String, filled: Bool,
-                             action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title).font(NKFont.callout).fontWeight(.semibold)
-                .foregroundStyle(filled ? Color.white : NK.textSecondary)
-                .padding(.horizontal, 15).padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: NKRadius.control)
-                    .fill(filled ? NK.accent : Color.clear))
-                .overlay(RoundedRectangle(cornerRadius: NKRadius.control)
-                    .stroke(filled ? Color.clear : NK.textTertiary.opacity(0.5), lineWidth: 0.5))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
+    // ⛔ **V2.4.0 P0:`brakeNoticeCard` 与 `brakeButton` 已整体删除。**
+    //
+    // P0.1 表那两行:「代理关注池 →『大盘退潮』= 删」+「作废当日计划 / 停止开新仓的
+    // 交易动作语义 = 删」。
+    // ⚠ 那张卡里真正有价值的两句话**已不再需要**:①「作废的是今日的开仓计划、不是这张卡」
+    // —— 现在压根不会有那回事;②「补录开仓永不灰化」—— 该纪律仍然成立,
+    // 落点在 `NKMemberCard` 与持仓页的补录入口(它们本来就无条件可点),⛔ 不需要一张
+    // 只在某个已退役状态下才出现的卡来重申。
+    // 🔴 ⛔ 不许换名接回来(「风险提示卡」/「观察卡」)——审计规格 P0.7 第二种假完成。
 
     /// 「本篮的卡还没生成」(原型 654–662):琥珀描边卡 + 图标 + 两段文案。
     /// ⛔ **不是空态图标居中那一套** —— 这不是"没有内容",是"缺了一半"。

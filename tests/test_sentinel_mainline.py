@@ -12,23 +12,30 @@
 
 另锁死三条不变量:`sector_dive` 两个阈值一字未动;`breadth_cap` 一字未动;样本不足
 → 不触发 + 如实披露。
+
+🔴 **V2.4.0 P0 换血(施工纪律 4:旧断言必须写明被谁取代,⛔ 不删测试换绿)**
+
+`sentinel/mainline.py` **文件保留**(行为基准 + 回滚绳,§3.14-A),故**纯函数级用例
+一条不动**;被删的只有「经 `run_tick` / `load_watch_universe` 走整拍」的那一批 ——
+它们断言的是**已被撤销判断权**的行为,P0.1 表「代理关注池 →『大盘退潮』= 删」。
+逐条取代关系写在各处 `⛔ V2.4.0 P0` 注释里。
+
+⚠ **被取代 ≠ 判据作废**:「样本即判据 → 样本组成不得沾 LLM」这条纪律由**仍然活着**的
+`test_guard_signature_has_no_basket_entrance`(签名里没有篮子入口)继续锁死,
+比原先那条"整拍级逐位相同"更强:**切片压根读不到篮子表**。
 """
 
 from __future__ import annotations
 
 import ast
 import inspect
-import json
 from collections import Counter
-from datetime import date, datetime, time
+from datetime import date, time
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import business_days, insert_stock_basic, insert_trade_cal, write_daily_fixture
-
 from neckline.data.board import Board, classify_by_code
-from neckline.db import connection
 from neckline.scan.seeds import (
     ANOMALY_CLUSTER,
     HOT_INDUSTRY,
@@ -38,10 +45,6 @@ from neckline.scan.seeds import (
     SeedSet,
 )
 from neckline.sentinel import mainline, retreat, universe
-from neckline.sentinel.engine import reset_retreat_process_state, run_tick
-from neckline.sentinel.positions import open_position
-from neckline.sentinel.quotes import Quote
-from neckline.sentinel.universe import load_watch_universe
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 
@@ -216,201 +219,64 @@ class TestMinMainlineSample:
         ]
         assert ("neckline.report.industry_strength", "_MIN_MEMBERS", rhs[0].id) in imported
 
-    def test_below_min_does_not_trigger_even_on_a_crash(self, isolated_env, monkeypatch):
-        """整拍级:样本 4 只(< 5)时,哪怕全线 −5%,主线跳水一路**不判**。"""
-        report_day, today = _prepare_day(isolated_env)
-        _patch_seeds(monkeypatch, _seed_set(hot=[_ALL]))         # 一颗种子 → 切片最多 K=4 只
-        r = run_tick(datetime.combine(today, time(10, 30)), db_path=isolated_env.db_path,
-                     parquet_dir=isolated_env.parquet_dir, quotes_fn=_quotes)
-        s = _recorded_sample(isolated_env, today)
-        assert s["size"] == 4 and s["quoted"] == 4
-        assert s["per_seed_avg"] == pytest.approx(-0.05)          # 读数算得出来
-        assert r.retreat_warning is None or "主线跳水" not in r.retreat_warning
-        assert s["min_sample"] == mainline.MIN_MAINLINE_SAMPLE     # 留痕带门槛,可审计
+    def test_below_min_does_not_trigger_even_on_a_crash(self):
+        """样本 4 只(< 5)时,哪怕全线 −5%,主线跳水一路**不判**。
 
-
-# ══════════════════════════════════════════════════════════════════════════
-# ⑧-G-D 池位配额:有界必需项全进 + 两份测量样本各有保底
-# ══════════════════════════════════════════════════════════════════════════
-
-_LIMIT_UP_STRESS = 200          # 「涨停 > 180 只」压力用例(⑧-F 登记的残留耦合 ②b 现场)
-
-
-def _stress_pool(env, monkeypatch, *, basket_codes, n_seeds=30):
-    """极端涨停日 + 大切片:两份测量样本同时想要超过自己保底的池位。"""
-    days = business_days(date(2026, 7, 1), 5)
-    insert_trade_cal(env, days)
-    report_day, today = days[-2], days[-1]
-    limit_ups = [f"9{i:05d}.SZ" for i in range(_LIMIT_UP_STRESS)]
-    write_daily_fixture(env, "limit_derived", report_day, [
-        {"ts_code": c, "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
-         "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
-         "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1}
-        for c in limit_ups
-    ])
-    seeds = [[f"6{s:02d}{i:03d}.SH" for i in range(20)] for s in range(n_seeds)]
-    _patch_seeds(monkeypatch, _seed_set(hot=seeds))
-    insert_stock_basic(env, [{"ts_code": c, "name": c, "market": "主板"}
-                             for c in ["600001.SH", "600002.SH", "600003.SH"] + basket_codes])
-    for code in ("600001.SH", "600002.SH", "600003.SH"):
-        open_position(code, 10.0, 100, report_day, db_path=env.db_path)
-    _seed_basket(env, report_day, basket_codes)
-    mainline.reset_seed_cache()
-    return report_day, today
-
-
-def _seed_basket(env, report_day, codes, *, tier=1, key="k1"):
-    if not codes:
-        return
-    with connection(env.db_path) as conn:
-        cur = conn.execute(
-            "INSERT INTO baskets (trade_date, basket_key, name, driver, driver_kind, tier,"
-            " pack_version, engine_api_version, charter_version, via, evidence_status, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (report_day.strftime("%Y%m%d"), key, f"篮{key}", "驱动", "theme", tier, "K4-pack-v1",
-             1, "v1.3.3", "auto", "ok", "2026-08-02T00:00:00+08:00"),
+        ⚠ **原用例走的是整拍级**(`run_tick` → 读 `retreat_metrics` 留痕)。V2.4.0 P0
+        撤销了退潮判级、`retreat_metrics` 停写,整拍级已无从断言 —— **改成纯函数级**
+        直接问 `retreat.evaluate_retreat`(该模块保留作行为基准)。
+        **被验的不变量一字未改**:样本不足下限 → 主线跳水不进 `triggered`。
+        """
+        empty = retreat.MarketBreadthSnapshot(
+            trade_date=D0, sample_size=0, limit_up_count=0, limit_down_count=0,
+            zaban_count=0, zaban_rate=0.0)
+        below = retreat.evaluate_retreat(
+            empty, now_time=time(10, 30), same_time_zaban_baseline=None,
+            hot_sector_avg_chg=-0.05, hot_sector_sample=mainline.MIN_MAINLINE_SAMPLE - 1,
+            prev_tick_triggered=[], allow_red=True,
         )
-        bid = int(cur.lastrowid)
-        for c in codes:
-            conn.execute(
-                "INSERT INTO basket_members (basket_id, ts_code, role_llm, role_mech,"
-                " role_conflict, reason, is_primary, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                (bid, c, "core", None, 0, "理由", 1, "2026-08-02T00:00:00+08:00"),
-            )
+        assert retreat.COND_SECTOR_DIVE not in below.triggered
+        # 反向:样本恰好到下限 → 同一个读数就该判(证明上面不是"永远不判")
+        at_min = retreat.evaluate_retreat(
+            empty, now_time=time(10, 30), same_time_zaban_baseline=None,
+            hot_sector_avg_chg=-0.05, hot_sector_sample=mainline.MIN_MAINLINE_SAMPLE,
+            prev_tick_triggered=[], allow_red=True,
+        )
+        assert retreat.COND_SECTOR_DIVE in at_min.triggered
 
 
-class TestPoolQuota:
-    def test_extreme_limit_up_day_keeps_every_floor(self, isolated_env, monkeypatch):
-        """造 200 只涨停的极端日:持仓 / 篮子成员 / 指数 / 两份测量样本的保底量
-        **一个不少**,且总量不越 `breadth_cap`。"""
-        basket = ["600101.SH", "600102.SH", "600103.SH"]
-        report_day, today = _stress_pool(isolated_env, monkeypatch, basket_codes=basket)
-        wu = load_watch_universe(today, db_path=isolated_env.db_path,
-                                 parquet_dir=isolated_env.parquet_dir)
-        pool = set(wu.codes)
-        mandatory = {"600001.SH", "600002.SH", "600003.SH"} | set(basket) | set(wu.index_codes)
-        assert len(wu.codes) == len(pool) <= universe.DEFAULT_BREADTH_CAP
-        # ① 有界必需项无条件全进
-        assert {"600001.SH", "600002.SH", "600003.SH"} <= pool          # 持仓 ≤3
-        assert set(basket) <= pool                                      # T1/T2 成员 ≤21
-        assert wu.index_codes and set(wu.index_codes) <= pool           # 板块指数 ≤5
-        # ② 两份测量样本各拿到自己的保底(两边都想要更多 → 各自压在保底上)
-        assert wu.mainline_sample.size == universe.MAINLINE_SLICE_QUOTA_FLOOR
-        assert len(wu.breadth_extra_codes) == universe.PREV_LIMIT_UP_QUOTA_FLOOR
-        # ⚠ `mainline_codes` 是"**新占**池位"的那部分:本例持仓落在种子成分里,被
-        # crc32 选中的那些不必再占位(池子欠填几个,**不是**样本少了几只)——两个量
-        # 的差恰是重叠数,这正是"样本只看机械输入"的推论。
-        overlap = set(wu.mainline_sample.codes) & set(mandatory)
-        assert overlap, "本例特意让持仓落在种子成分里,应当至少有一只被 crc32 选中"
-        assert len(wu.mainline_codes) == wu.mainline_sample.size - len(overlap)
-        # ③ 样本 ⊆ 池(有报价才算得出收益率,这条不变量必须由构造保证)
-        assert set(wu.mainline_sample.codes) <= pool
-        # ④ 压缩走**逐颗种子轮转**:30 颗种子一颗都没掉队(掉队 = 改了 per-seed 权重)
-        assert wu.mainline_sample.seed_count == 30
-        assert wu.mainline_sample.restricted_from == 30 * mainline.MAINLINE_SAMPLE_PER_SEED
+# ══════════════════════════════════════════════════════════════════════════
+# ⑧-G-D 池位配额 —— ⛔ **整节已于 V2.4.0 P0 退役**
+# ══════════════════════════════════════════════════════════════════════════
+#
+# **取代关系(施工纪律 4)**:原 `TestPoolQuota`(5 例)与
+# `TestBreadthExtraSampleTraceability`(2 例)断言的是「剩余池位如何在主线切片与
+# 昨日涨停宽度样本之间按保底分配」「压缩后的需求量 vs 实际量如何落
+# `retreat_metrics.breadth_extra_sample_json`」—— **这两份样本与那张表的写入
+# 都已被 P0.1 表「代理关注池 →『大盘退潮』= 删」整体撤销**,配额函数
+# (`_measurement_budget` / `_mainline_quota`)与留痕字段一并删除,断言对象不存在了。
+#
+# **没有随之作废、且仍被守住的**:
+#   · `breadth_cap` 一字不动 —— 下面 `TestBreadthCapUnchanged` 接手;
+#   · 「样本即判据 → 样本组成不得沾 LLM」—— 由
+#     `TestDerive::test_guard_signature_has_no_basket_entrance` 继续锁死(更强:
+#     `derive_mainline_sample` 的签名里根本没有篮子入口);
+#   · `sector_dive` 两个阈值不动 —— `test_guard_sector_dive_thresholds_unchanged`。
 
-    def test_basket_member_count_does_not_move_either_measurement_sample(
-            self, isolated_env, monkeypatch):
-        """**⑧-F 登记的残留耦合 ②b 的回归判据**:篮子成员既有界又保底,就不再与任何
-        测量样本抢位 —— LLM 在任何极端日都挪不动测量样本(⑧-G-D 第 3 条)。"""
-        def run(basket_codes):
-            with connection(isolated_env.db_path) as conn:
-                conn.execute("DELETE FROM basket_members")
-                conn.execute("DELETE FROM baskets")
-                conn.execute("DELETE FROM positions")
-            mainline.reset_seed_cache()
-            report_day, today = _stress_pool(
-                isolated_env, monkeypatch, basket_codes=basket_codes)
-            wu = load_watch_universe(today, db_path=isolated_env.db_path,
-                                     parquet_dir=isolated_env.parquet_dir)
-            return wu
 
-        few = run(["600101.SH"])
-        # ⚠ 挑**最难的一种**:21 只顶格,且**故意与两份样本重叠** —— 既有切片里的码
-        # (600000xx),也有昨日涨停名单里的码(9000xx),还换了个板块(300xxx)。
-        # 「已经在池里的码不占额度」这种看似聪明的省池位写法会在这里露馅。
-        many = run([f"600{i:03d}.SH" for i in range(7)]        # 落在种子成分里
-                   + [f"9{i:05d}.SZ" for i in range(7)]        # 落在昨日涨停名单里
-                   + [f"3001{i:02d}.SZ" for i in range(7)])    # 无关的第三个板块
-        assert len(many.basket_codes) == 21 and len(few.basket_codes) == 1
-        assert many.index_codes != few.index_codes             # 连指数数量都变了
-        # …两份测量样本却**逐位相同**
-        assert many.mainline_sample.codes == few.mainline_sample.codes
-        assert many.mainline_sample.payload() == few.mainline_sample.payload()
-        assert many.breadth_extra_codes == few.breadth_extra_codes
-        # 池总量仍不越上限(重叠只让池子欠填,不会撑爆)
-        for wu in (few, many):
-            assert len(set(wu.codes)) == len(wu.codes) <= universe.DEFAULT_BREADTH_CAP
-
+class TestBreadthCapUnchanged:
     def test_breadth_cap_is_unchanged(self):
-        """⑧-G-D:⛔ 不许自行抬 `breadth_cap`(会改盘中轮询量与限流风险面)。"""
+        """⑧-G-D:⛔ 不许自行抬 `breadth_cap`(会改盘中轮询量与限流风险面)。
+
+        ⚠ 原断言还有第二句 `MAINLINE_SLICE_QUOTA_FLOOR + PREV_LIMIT_UP_QUOTA_FLOOR
+        + MANDATORY_POOL_RESERVE == 200`(三个配额常量正好把池分完)。那三个常量已随
+        两份测量样本删除,该恒等式**被 P0.1「代理关注池 →『大盘退潮』= 删」取代**;
+        这里改为正面断言它们**确实不在了**,防日后有人"顺手"把配额机器接回来。
+        """
         assert universe.DEFAULT_BREADTH_CAP == 200
-        assert (universe.MAINLINE_SLICE_QUOTA_FLOOR + universe.PREV_LIMIT_UP_QUOTA_FLOOR
-                + universe.MANDATORY_POOL_RESERVE) == universe.DEFAULT_BREADTH_CAP
-
-    def test_quota_gives_leftover_to_whoever_needs_it(self):
-        """"谁不够用谁的实际量,余量归对方"(⑧-G-D 第 2 条),纯函数级三种局面。"""
-        budget = universe.DEFAULT_BREADTH_CAP - universe.MANDATORY_POOL_RESERVE
-        # 两边都想要更多 → 各自压在保底
-        assert universe._mainline_quota(budget, 120, 200) == universe.MAINLINE_SLICE_QUOTA_FLOOR
-        # 涨停很少 → 主线吃到余量(不止保底),但仍给对方留够它的实际需要
-        assert universe._mainline_quota(budget, 160, 20) == budget - 20
-        assert universe._mainline_quota(budget, 150, 20) == 150      # 只拿实际需要
-        # 切片很小 → 只拿实际需要,余量归涨停
-        assert universe._mainline_quota(budget, 40, 200) == 40
-
-    def test_slice_enters_the_pool_on_its_own_without_being_a_limit_up(
-            self, isolated_env, monkeypatch):
-        """切片是**专属来源**:不借"昨日涨停"那条路也能进池(⑧-G-B)。"""
-        days = business_days(date(2026, 7, 1), 5)
-        insert_trade_cal(isolated_env, days)
-        report_day, today = days[-2], days[-1]
-        _patch_seeds(monkeypatch, _seed_set(hot=[_ALL]))
-        wu = load_watch_universe(today, db_path=isolated_env.db_path,
-                                 parquet_dir=isolated_env.parquet_dir)
-        assert wu.breadth_extra_codes == []                    # 当日无涨停名单
-        assert set(_ALL) <= set(wu.codes) and set(wu.mainline_codes) == set(_ALL)
-
-
-class TestBreadthExtraSampleTraceability:
-    """⑧-G-D 追加要求(review 判定线 🟡-N1 一并处理,2026-08-03):昨日涨停宽度代理
-    样本的『需求量 vs 实际采纳量』每拍落 `retreat_metrics.breadth_extra_sample_json`
-    (体例照 `hot_sector_sample_json` 的姊妹字段),防日后审计炸板率的人把池配额压后
-    的实际样本量(如 71)误当成"当天全部涨停股"。"""
-
-    def test_recorded_json_reports_needed_vs_actual_on_a_truncated_day(
-            self, isolated_env, monkeypatch):
-        basket = ["600101.SH", "600102.SH", "600103.SH"]
-        report_day, today = _stress_pool(isolated_env, monkeypatch, basket_codes=basket)
-        run_tick(datetime.combine(today, time(10, 30)), db_path=isolated_env.db_path,
-                 parquet_dir=isolated_env.parquet_dir, quotes_fn=_quotes)
-        with connection(isolated_env.db_path) as conn:
-            row = conn.execute(
-                "SELECT breadth_extra_sample_json FROM retreat_metrics WHERE trade_date=?",
-                (today.strftime("%Y%m%d"),),
-            ).fetchone()
-        recorded = json.loads(row[0])
-        # 200 只涨停的压力日,`restrict` 把它压到保底 71 —— 需求量(200)必须留痕,
-        # 不能只看 `size`(71),否则日后审计会把 71 误当成"当天全部涨停股"。
-        assert recorded["size"] == universe.PREV_LIMIT_UP_QUOTA_FLOOR == 71
-        assert recorded["restricted_from"] == _LIMIT_UP_STRESS == 200
-        assert len(recorded["codes"]) == universe.PREV_LIMIT_UP_QUOTA_FLOOR
-
-    def test_recorded_json_leaves_restricted_from_none_when_not_truncated(
-            self, isolated_env):
-        """未截断时 `restricted_from` 留 `None`(⛔ 不是"截断到 0"),与
-        `hot_sector_sample_json.restricted_from` 同款语义。"""
-        report_day, today = _prepare_day(isolated_env, codes=_ALL, with_limit_up=True)
-        run_tick(datetime.combine(today, time(10, 30)), db_path=isolated_env.db_path,
-                 parquet_dir=isolated_env.parquet_dir, quotes_fn=_quotes)
-        with connection(isolated_env.db_path) as conn:
-            row = conn.execute(
-                "SELECT breadth_extra_sample_json FROM retreat_metrics WHERE trade_date=?",
-                (today.strftime("%Y%m%d"),),
-            ).fetchone()
-        recorded = json.loads(row[0])
-        assert recorded["restricted_from"] is None
-        assert recorded["size"] == len(_ALL) == len(recorded["codes"])
+        for gone in ("MANDATORY_POOL_RESERVE", "MAINLINE_SLICE_QUOTA_FLOOR",
+                     "PREV_LIMIT_UP_QUOTA_FLOOR", "_measurement_budget", "_mainline_quota"):
+            assert not hasattr(universe, gone), gone
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -515,123 +381,22 @@ class TestDerive:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 整拍级:换掉 LLM 的成员选择 → 样本逐位不变(⑧-F 核心判据,⑧-G 继续锁死)
+# 整拍级(⑧-F 核心判据)—— ⛔ **整节已于 V2.4.0 P0 退役**
 # ══════════════════════════════════════════════════════════════════════════
-
-_ALL = ["600201.SH", "600202.SH", "600203.SH", "600204.SH"]
-_ALL8 = _ALL + ["600205.SH", "600206.SH", "600207.SH", "600208.SH"]
-
-
-def _prepare_day(env, *, codes=None, with_limit_up=False):
-    codes = codes or _ALL
-    days = business_days(date(2026, 7, 1), 30)
-    report_day, today = days[-2], days[-1]
-    insert_trade_cal(env, days)
-    insert_stock_basic(env, [{"ts_code": c, "name": c, "market": "主板"} for c in codes])
-    for d in days:
-        if d >= today:
-            continue
-        write_daily_fixture(env, "daily", d, [
-            {"ts_code": c, "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0,
-             "pre_close": 10.0, "vol": 1000.0, "amount": 10000.0} for c in codes
-        ])
-    if with_limit_up:
-        write_daily_fixture(env, "limit_derived", report_day, [
-            {"ts_code": c, "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
-             "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
-             "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1}
-            for c in codes
-        ])
-    reset_retreat_process_state()
-    return report_day, today
-
-
-def _quotes(codes):
-    return {c: Quote(code=c.split(".")[0], name=c, price=9.5, pre_close=10.0, open=9.8,
-                     high=9.9, low=9.5, volume=1000.0, amount=950000.0, ts="", source="sina")
-            for c in codes}
-
-
-def _recorded_sample(env, today) -> dict:
-    with connection(env.db_path) as conn:
-        row = conn.execute(
-            "SELECT hot_sector_sample_json FROM retreat_metrics WHERE trade_date=?",
-            (today.strftime("%Y%m%d"),),
-        ).fetchone()
-    return json.loads(row[0])
-
-
-class TestSampleIsUnchangedByLlmSelection:
-    def _run(self, env, monkeypatch, basket_codes):
-        mainline.reset_seed_cache()
-        report_day, today = _prepare_day(env, codes=_ALL8)
-        _patch_seeds(monkeypatch, _seed_set(hot=[_ALL8[:4], _ALL8[4:]]))
-        _seed_basket(env, report_day, basket_codes)
-        run_tick(datetime.combine(today, time(10, 30)), db_path=env.db_path,
-                 parquet_dir=env.parquet_dir, quotes_fn=_quotes)
-        return _recorded_sample(env, today)
-
-    def test_swapping_basket_members_leaves_the_sample_bit_identical(
-            self, isolated_env, monkeypatch):
-        """⑧-F 的核心判据(⑧-G 后依然成立,而且更强:切片压根不读篮子表)。
-        两次运行只差「LLM 挑了哪些成员」,样本构成必须逐位相同。"""
-        a = self._run(isolated_env, monkeypatch, ["600201.SH"])
-        with connection(isolated_env.db_path) as conn:
-            conn.execute("DELETE FROM basket_members")
-            conn.execute("DELETE FROM baskets")
-            conn.execute("DELETE FROM retreat_metrics")
-            conn.execute("DELETE FROM sentinel_events")
-        b = self._run(isolated_env, monkeypatch, ["600203.SH", "600204.SH", "600205.SH"])
-        assert a["codes"] == b["codes"] == sorted(_ALL8)
-        assert a["seed_slices"] == b["seed_slices"]
-        assert a["per_seed_avg"] == b["per_seed_avg"]
-        assert a["size"] == b["size"] == 8
-
-    def test_a_basket_member_picked_by_crc32_still_enters_the_sample(
-            self, isolated_env, monkeypatch):
-        """⚠ 排除的是「LLM 这条路」,不是「LLM 碰过的票」(⑧-G-G 第 1 条)——
-        一只票被 crc32 选中就进样本,**与它是不是篮子成员无关**;⑧-F 时代
-        「只靠篮子进池的码不进样本」那条口径已被 ⑧-G 的配额切片取代。"""
-        s = self._run(isolated_env, monkeypatch, ["600202.SH"])
-        assert "600202.SH" in s["codes"]
-        assert set(s["sources"].values()) == {mainline.SOURCE_MAINLINE_SLICE}
-
-
-class TestTrailAndInsufficientSample:
-    def test_trail_row_carries_the_sample_composition_every_tick(
-            self, isolated_env, monkeypatch):
-        report_day, today = _prepare_day(isolated_env, codes=_ALL8)
-        _patch_seeds(monkeypatch, _seed_set(hot=[_ALL8[:4]], concept=[_ALL8[4:]]))
-        mainline.reset_seed_cache()
-        run_tick(datetime.combine(today, time(10, 30)), db_path=isolated_env.db_path,
-                 parquet_dir=isolated_env.parquet_dir, quotes_fn=_quotes)
-        s = _recorded_sample(isolated_env, today)
-        assert s["size"] == 8 and s["quoted"] == 8
-        assert s["seed_counts"] == {HOT_INDUSTRY: 1, SURGING_CONCEPT: 1}
-        assert [x["seed_kind"] for x in s["seed_slices"]] == [HOT_INDUSTRY, SURGING_CONCEPT]
-        assert s["per_seed_k"] == mainline.MAINLINE_SAMPLE_PER_SEED
-        assert s["pack_version"] == "K4-pack-v1"
-        assert s["unavailable_reason"] is None
-        assert s["per_seed_avg"] == pytest.approx(-0.05)
-        assert s["pooled_avg"] == pytest.approx(-0.05)
-
-    def test_insufficient_sample_does_not_trigger_and_is_disclosed(
-            self, isolated_env, monkeypatch):
-        """样本不足(无现役包 → 无种子)→ 主线跳水一路**不判**(即使全池都在暴跌),
-        并把原因如实落进留痕。⛔ 不回退到篮子成员样本、不用小样本硬判。"""
-        report_day, today = _prepare_day(isolated_env, codes=_ALL8, with_limit_up=True)
-        monkeypatch.setattr("neckline.scan.seeds.generate_seeds", lambda *a, **k: None)
-        mainline.reset_seed_cache()
-        r = run_tick(datetime.combine(today, time(10, 30)), db_path=isolated_env.db_path,
-                     parquet_dir=isolated_env.parquet_dir, quotes_fn=_quotes)
-        assert r.retreat_alert is None
-        assert r.retreat_warning is None or "主线跳水" not in r.retreat_warning
-        s = _recorded_sample(isolated_env, today)
-        assert s["size"] == 0
-        assert s["unavailable_reason"] == mainline.REASON_NO_ACTIVE_PACK
-        with connection(isolated_env.db_path) as conn:
-            avg_chg = conn.execute(
-                "SELECT hot_sector_avg_chg FROM retreat_metrics WHERE trade_date=?",
-                (today.strftime("%Y%m%d"),),
-            ).fetchone()[0]
-        assert avg_chg is None      # 诚实"无数据",不是 0.0
+#
+# **取代关系(施工纪律 4)**:原 `TestSampleIsUnchangedByLlmSelection`(2 例)与
+# `TestTrailAndInsufficientSample`(2 例)都要跑一遍 `run_tick`、再从
+# `retreat_metrics.hot_sector_sample_json` 把样本构成读回来对拍。P0.1 表
+# 「代理关注池 →『大盘退潮』= 删」撤销了退潮判级,`retreat_metrics` **停写**,
+# 那条留痕不再产生 —— 断言的数据源不存在了。
+#
+# **它们要守的两条不变量都还有人守,且更靠上游**:
+#   ① 「换掉 LLM 的成员选择 → 样本逐位不变」→
+#      `TestDerive::test_guard_signature_has_no_basket_entrance`
+#      (`derive_mainline_sample` 的签名里**根本没有**篮子/成员/目标入口,
+#      比"跑两遍比对结果"更强:结构上就读不到);
+#   ② 「样本不足 → 不触发 + 如实披露」→ 上游的
+#      `TestMinMainlineSample::test_below_min_does_not_trigger_even_on_a_crash`
+#      (改成纯函数级问 `retreat.evaluate_retreat`)+ `TestDerive` 里
+#      `no_active_pack` / `seed_failed` / `no_mainline_seeds` / `no_pool_quota`
+#      四条原因码用例(**一条未动**)。

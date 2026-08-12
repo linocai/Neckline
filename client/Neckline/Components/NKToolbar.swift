@@ -93,11 +93,7 @@ struct NKToolbar: View {
                     // 原型 39 行:蓝底方徽标,⛔ 不是一个裸数字。走全 App 唯一徽标实现。
                     NKChip(text: "\(basketCount)", tone: .info)
                 }
-                // 退潮刹车时持仓那枚带一颗红点(原型 43 行 6px 圆点)——
-                // 与刹车条同时出现,不是替代关系。
-                if tab == .positions, model.board.retreatBrake.active {
-                    Circle().fill(NK.down).frame(width: 6, height: 6)
-                }
+                // ⛔ V2.4.0 P0:原先退潮刹车时持仓那枚带一颗红点,随退潮判级退役删除。
             }
             // 原型 nav() 1789 行 `padding:5px 11px 5px 9px`(左 9 / 右 11,刻意不对称:
             // 左边挨着图标、右边挨着文字或计数徽标)。
@@ -118,7 +114,8 @@ struct NKToolbar: View {
 
     private var basketCount: Int { model.report.basketDaily.baskets.count }
 
-    // MARK: - 行情状态(色点 + 标签);退潮刹车时翻成 NK.down 实底白字
+    // MARK: - 行情状态(色点 + 标签)
+    // ⛔ V2.4.0 P0:原先还有第四档「退潮刹车 → 实底白字」,随退潮判级退役删除。
 
     /// 原型 57–60 行:**一枚带底色的胶囊**(`gap:6; padding:4px 10px 4px 8px; radius:7;
     /// background: 语义色 8% alpha`)+ 6px 色点 + `12px/600 #1D1D1F` 文案。
@@ -126,14 +123,7 @@ struct NKToolbar: View {
     /// 没有底色就沉进了工具栏的其它灰字里。
     @ViewBuilder
     private var regimePill: some View {
-        if model.board.retreatBrake.active {
-            // 退潮刹车:唯一翻成**实底白字**的状态(`Neckline 状态.dc.html` 57–60 行:
-            // 与常态**同一个壳**〔gap 6 / padding 4-10-4-8 / radius 7〕,只是色点换白、
-            // 底色换 `#E5443B`、字重 700)。⚠ V2.3.0 少了那颗白点、且左右内边距被拉平成
-            // 10/10 —— 三种状态的胶囊形状必须一致,否则"翻红"看起来像换了个别的控件。
-            regimeShell(dot: .white, text: "退潮刹车",
-                        textColor: .white, bg: NK.down, bold: true)
-        } else if let d = model.marketRegime.day, model.marketRegime.available {
+        if let d = model.marketRegime.day, model.marketRegime.available {
             regimeShell(dot: d.tone.color, text: d.displayLabel,
                         textColor: NK.textPrimary, bg: d.tone.color.opacity(0.08))
         } else {

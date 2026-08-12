@@ -1,7 +1,24 @@
-"""单拍编排单测(plan 阶段3)。整条链路(关注池→拉价(注入)→四哨兵→防重→推送)
+"""单拍编排单测(plan 阶段3)。整条链路(关注池→拉价(注入)→持仓哨兵→防重→推送)
 用 `isolated_env` 隔离 + `quotes_fn` 注入合成行情,不联网、不碰真实项目数据。
-重点断言编排顺序的两条铁律:①非交易时段整拍跳过;②退潮生效后买点哨兵本拍
-整体抑制,证伪/持仓哨兵不受影响;以及防重跨拍生效(同一事件第二拍不再推)。"""
+
+🔴 **V2.4.0 P0 换血(施工纪律 4:旧断言必须写明被谁取代,⛔ 不删测试换绿)**:
+
+    · 原 `TestRetreatDoesNotSuppressInvalidationOrHolding`(退潮不抑制证伪)
+      与 `TestRetreatTwoTierEngineWiring`(黄/红双级制、首拍保守闸、逐拍落指标)
+      **整体被下方 `TestP0RetiredIntradayJudgements` 取代** —— 被取代的原因不是
+      "断言写错了",而是**它们断言的那两项功能已被撤销判断权**:
+      P0.1 表「瞬时跌破 VWAP / 低开暂未翻红 / 通用折算量比异常 / 个股『剔除勿进』
+      盘中事件 / 代理关注池 →『大盘退潮』/『今日计划作废、禁开新仓』/ 退潮推送」
+      **七行全部 = 删**。
+    · 新类是**反向断言**:同样的输入(命中旧阈值的行情)喂进 `run_tick`,断言
+      **什么都不产生** —— 这才是「生产判断删除 100%」的机器证据(P0.7 判据 #1/#6),
+      也覆盖 P0.8 验收用例 1–7。
+    · `TestV2Bypasses::test_bypass_failure_never_breaks_the_tick` 原断言
+      `result.breadth_snapshot is not None` 改为断言 `TickResult` **不再有这个属性**
+      —— 同一条 P0.1「代理关注池 →『大盘退潮』= 删」。
+
+保留不动的:①非交易时段整拍跳过;②持仓哨兵读现役章程 `stop_pct`;③空态不崩;
+④ ⑧-B 两条旁路(存拍 / 篮子验证)。"""
 
 from __future__ import annotations
 
@@ -13,8 +30,7 @@ from tests.conftest import business_days, insert_stock_basic, insert_trade_cal, 
 
 from neckline.report import store
 from neckline.sentinel.channels import PushChannel
-from neckline.sentinel.dedup import already_pushed
-from neckline.sentinel.engine import reset_retreat_process_state, run_tick
+from neckline.sentinel.engine import run_tick
 from neckline.sentinel.positions import open_position
 from neckline.sentinel.quotes import Quote
 
@@ -79,38 +95,10 @@ def _save_report(settings, report_day: date):
     )
 
 
-def _seed_mainline_sample(settings, monkeypatch, report_day: date, codes):
-    """**V2-⑧-G(取代 ⑧-F 的口径)**:把「主线板块跳水」的样本喂成配额切片 = ④ 每颗
-    机械种子按 `crc32` 取前 K 只,由 `universe` 直接并进关注池(⛔ 不再是 T1/T2 篮子
-    成员、也**不再** ∩ 关注池 —— 见 `sentinel/mainline.py` 模块头)。
-
-    只需 stub ④ 的种子生成(那是读五张表的重活,单测不铺全套),把 `codes` **按每颗
-    ≤K 只切成多颗种子**喂进去;`derive_mainline_sample` 的 crc32 采样 / 池配额 /
-    per-seed 估计量全是**生产那一份**,没有被 stub 掉。
-
-    ⚠ 两处与 ⑧-F 版夹具的刻意不同(**只改夹具,不改任何断言**):
-    ① **不再写 `limit_derived` 把这些码伪装成 D0 涨停** —— ⑧-G 起切片自己就是一条
-       进池路径,不必借昨日涨停那条路,顺带证明池位配额真的接上了;
-    ② **codes 要跨多颗种子**:单颗种子最多贡献 K(=4)只,而 ⑧-G-E 的准入下限是
-       `MIN_MAINLINE_SAMPLE`(=5),一颗种子的切片**永远够不到下限**(这是裁定后的
-       正确行为,不是夹具凑数)。
-    """
-    from neckline.scan.seeds import HOT_INDUSTRY, DriverSeed, SeedSet
-    from neckline.sentinel import mainline
-
-    k = mainline.MAINLINE_SAMPLE_PER_SEED
-    chunks = [tuple(codes[i:i + k]) for i in range(0, len(codes), k)]
-    seed_set = SeedSet(
-        trade_date=report_day.strftime("%Y%m%d"), pack_version="K4-pack-v1",
-        hot_industry=tuple(
-            DriverSeed(seed_key=f"s{i}", seed_kind=HOT_INDUSTRY, label=f"测试行业{i}",
-                       member_codes=chunk)
-            for i, chunk in enumerate(chunks)
-        ),
-    )
-    monkeypatch.setattr("neckline.scan.seeds.generate_seeds",
-                        lambda *a, **k_: seed_set)
-    mainline.reset_seed_cache()
+# ⛔ V2.4.0 P0:夹具 `_seed_mainline_sample`(把「主线板块跳水」样本喂成 ④ 机械种子的
+# crc32 配额切片)随退潮判级一并删除 —— 它构造的输入已无消费方。
+# ⚠ 该夹具的**方法论**(样本即判据 → 样本组成不得沾 LLM)没有失效,记在
+# `sentinel/mainline.py` 模块头;要再做无偏取样回那里读。
 
 
 class TestSkipsOutsideTradingHours:
@@ -126,53 +114,21 @@ class TestSkipsOutsideTradingHours:
         assert result.skipped_non_trading is True
 
 
-class TestRetreatDoesNotSuppressInvalidationOrHolding:
-    """⚠ **V2-⑬-1**:退潮红色刹车原本抑制的是**买点哨兵**,而买点哨兵已随 K1
-    `entry_spec` 一并退役 —— 编排里已无「开仓许可信号」这类产物。本类因此改为锁死
-    剩下那半句纪律:**退潮不抑制证伪与持仓**(管理已有风险任何时候都要做)。"""
+class TestP0RetiredIntradayJudgements:
+    """🔴 **V2.4.0 P0 反向断言:两项盘中判决已撤销判断权**(P0.8 验收用例 1–7)。
 
-    def test_retreat_active_does_not_block_invalidation(self, isolated_env):
-        days = business_days(date(2026, 7, 1), 30)
-        report_day, today = days[-2], days[-1]
-        _setup_calendar_and_history(isolated_env, "600001.SH", report_day, today, vol=15000.0)
-        seed_active_rule_v1(isolated_env)
-        _save_report(isolated_env, report_day)
-        _seed_basket_members(isolated_env, report_day, ["600001.SH"])
-        insert_stock_basic(isolated_env, [{"ts_code": "600001.SH", "name": "示例甲", "market": "主板"}])
-
-        now = datetime.combine(today, time(10, 30))
-
-        def quotes_fn(codes):
-            # 低开 -3% 且截至此刻未翻红 → 命中证伪(退潮当日照样该报)
-            return {
-                "600001.SH": Quote(
-                    code="600001", name="示例甲", price=9.75, pre_close=10.0, open=9.7, high=9.8, low=9.7,
-                    volume=60000.0, amount=9.75 * 60000 * 100 * 0.95, ts="", source="sina",
-                )
-            }
-
-        # 预先手工记一条今日已触发的退潮刹车事件,模拟"更早一拍已经触发"
-        from neckline.sentinel.dedup import record_pushed
-
-        record_pushed(today, "retreat", "", "brake", db_path=isolated_env.db_path)
-
-        cap = _CapturingChannel()
-        result = run_tick(
-            now, channels=[cap], db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir,
-            quotes_fn=quotes_fn,
-        )
-        assert result.retreat_active is True
-        # 证伪不受退潮抑制——"剔除勿进"任何时候都是有效信息(编排注释原文)
-        assert "600001.SH" in {s.ts_code for s in result.invalidation_signals}
-
-
-class TestRetreatTwoTierEngineWiring:
-    """v1.1-H2 双级制在编排层的接线:黄色只落看板不推送不抑制买点;红色(≥2 条件同拍
-    或连续 2 拍)推送 + 抑制买点 + 闩锁;进程首拍红色降级为黄色(保守闸)。"""
+    **取代关系(施工纪律 4)**:本类整体取代原
+    `TestRetreatDoesNotSuppressInvalidationOrHolding` 与 `TestRetreatTwoTierEngineWiring`
+    —— 那两类断言的是「证伪在退潮日照样报」「黄色只落看板、红色推送并闩锁、首拍
+    保守降级、每拍落 `retreat_metrics`」,而 P0.1 表把这些行为**逐行判为删**。
+    ⚠ 被删的行为不再有"正确值"可断言,唯一还能断言的是**它不再发生** —— 所以这里
+    喂的行情**刻意仍命中旧阈值**(低开 / 破 VWAP / 极端量比 / 全池跌停),
+    断言 `sentinel_events` 与 `retreat_metrics` **一行都不长**。
+    """
 
     def _crash_quotes(self, price=9.0):
-        """关注池全线暴跌:主板 pre_close=10 → down 限价 9.0。price=9.0 即跌停;
-        return=-10% 拖主线跳水。任一 codes 都给同一构造。"""
+        """关注池全线暴跌(主板 pre_close=10 → 跌停价 9.0):旧口径下这是
+        「跌停家数 ≥5 + 主线跳水」两条件同拍,**旧代码会升红色刹车**。"""
         def fn(codes):
             return {
                 c: Quote(
@@ -183,111 +139,164 @@ class TestRetreatTwoTierEngineWiring:
             }
         return fn
 
-    def test_first_tick_yellow_then_next_tick_red_escalation(self, isolated_env):
-        reset_retreat_process_state()
-        days = business_days(date(2026, 7, 1), 30)
-        report_day, today = days[-2], days[-1]
-        insert_trade_cal(isolated_env, days)
-        x_codes = [f"60010{i}.SH" for i in range(6)]  # 6 只 → 跌停家数 6≥5 + 主线跳水,两条件同拍
-        _save_report(isolated_env, report_day)
-        _seed_basket_members(isolated_env, report_day, x_codes)
-        insert_stock_basic(isolated_env, [{"ts_code": c, "name": c, "market": "主板"} for c in x_codes])
-
-        qn = self._crash_quotes()
-
-        # —— 首拍(10:30):≥2 条件本会红,但进程首拍保守 → 只黄色,不推送、不闩锁 ——
-        cap1 = _CapturingChannel()
-        r1 = run_tick(
-            datetime.combine(today, time(10, 30)), channels=[cap1],
-            db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=qn,
-        )
-        assert r1.retreat_active is False
-        assert r1.retreat_warning is not None
-        assert r1.retreat_alert is None
-        assert not any("退潮刹车" in m[0] for m in cap1.messages)  # 黄色不推送
-        assert already_pushed(today, "retreat", "", "warn", db_path=isolated_env.db_path) is True
-        assert already_pushed(today, "retreat", "", "brake", db_path=isolated_env.db_path) is False
-
-        # —— 次拍(10:31):非首拍 + ≥2 条件同拍 → 红色刹车,推送 + 闩锁 ——
-        cap2 = _CapturingChannel()
-        r2 = run_tick(
-            datetime.combine(today, time(10, 31)), channels=[cap2],
-            db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=qn,
-        )
-        assert r2.retreat_active is True
-        assert r2.retreat_alert is not None
-        assert any("退潮刹车" in m[0] for m in cap2.messages)
-        assert already_pushed(today, "retreat", "", "brake", db_path=isolated_env.db_path) is True
-
-    def test_yellow_single_condition_does_not_suppress_entry_or_push(self, isolated_env, monkeypatch):
-        reset_retreat_process_state()
-        days = business_days(date(2026, 7, 1), 30)
-        report_day, today = days[-2], days[-1]
-        _setup_calendar_and_history(isolated_env, "600001.SH", report_day, today, vol=200000.0)
-        # ⚠ **V2-⑧-G:样本数由 3 改 5**(唯一原因:⑧-G-E 加了最小样本量下限
-        # `MIN_MAINLINE_SAMPLE`=5,n=3 起该路不判)。**本用例的断言一字未改**,改的是
-        # 喂进去的数据规模 —— 行为按 planner 裁定变了,夹具跟着变。
-        x_codes = ["600201.SH", "600202.SH", "600203.SH", "600204.SH", "600205.SH"]
-        _save_report(isolated_env, report_day)
-        # ⚠ V2-⑧-G:主线样本 = ④ 每颗机械种子的 crc32 配额切片(不再是 T1/T2 篮子成员,
-        # 也不再 ∩ 关注池)。600001.SH 是持仓票、不在种子成分里,故不进主线跳水样本
-        # —— 与原用例意图一致。篮子仍种(关注池/证伪哨兵照旧盯它们),但**它不是主线
-        # 样本的来源**。
-        _seed_basket_members(isolated_env, report_day, x_codes)
-        _seed_mainline_sample(isolated_env, monkeypatch, report_day, x_codes)
-        open_position("600001.SH", 10.0, 100, report_day, db_path=isolated_env.db_path)
-        insert_stock_basic(
-            isolated_env, [{"ts_code": c, "name": c, "market": "主板"} for c in ["600001.SH"] + x_codes]
-        )
-
-        def quotes_fn(codes):
-            out = {}
-            for c in codes:
-                if c == "600001.SH":
-                    out[c] = Quote(
-                        code="600001", name="Y", price=10.2, pre_close=10.0, open=10.0, high=10.3, low=10.0,
-                        volume=60000.0, amount=10.2 * 60000 * 100 * 0.95, ts="", source="sina",
-                    )
-                else:
-                    out[c] = Quote(  # -5%:够主线跳水(≤-3%),不够跌停(>9.0)
-                        code=c.split(".")[0], name=c, price=9.5, pre_close=10.0, open=9.8, high=9.9, low=9.5,
-                        volume=1000.0, amount=9.5 * 1000 * 100, ts="", source="sina",
-                    )
-            return out
-
-        cap = _CapturingChannel()
-        r = run_tick(
-            datetime.combine(today, time(10, 30)), channels=[cap],
-            db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=quotes_fn,
-        )
-        assert r.retreat_warning is not None and "主线跳水" in r.retreat_warning
-        assert r.retreat_active is False          # 黄色不闩锁
-        assert r.retreat_alert is None
-        assert not any("退潮刹车" in m[0] for m in cap.messages)   # 黄色不推退潮刹车
-        assert already_pushed(today, "retreat", "", "warn", db_path=isolated_env.db_path) is True
-        assert already_pushed(today, "retreat", "", "brake", db_path=isolated_env.db_path) is False
-
-    def test_metrics_row_recorded_each_tick_even_empty(self, isolated_env):
-        reset_retreat_process_state()
+    def _sentinel_rows(self, isolated_env, today, sentinel: str) -> int:
         import sqlite3
 
-        days = business_days(date(2026, 7, 1), 10)
-        insert_trade_cal(isolated_env, days)
-        today = days[-1]
-        run_tick(
-            datetime.combine(today, time(10, 30)),
-            db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir, quotes_fn=lambda codes: {},
-        )
         conn = sqlite3.connect(str(isolated_env.db_path))
         try:
             row = conn.execute(
-                "SELECT hhmm, tier, sample_size FROM retreat_metrics WHERE trade_date=?",
+                "SELECT COUNT(*) FROM sentinel_events WHERE trade_date=? AND sentinel=?",
+                (today.strftime("%Y%m%d"), sentinel),
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(row[0])
+
+    def _retreat_metric_rows(self, isolated_env, today) -> int:
+        import sqlite3
+
+        conn = sqlite3.connect(str(isolated_env.db_path))
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM retreat_metrics WHERE trade_date=?",
                 (today.strftime("%Y%m%d"),),
             ).fetchone()
         finally:
             conn.close()
-        assert row is not None
-        assert row[0] == "1030" and row[1] == "none" and row[2] == 0
+        return int(row[0])
+
+    def _seed_member(self, isolated_env, code="600001.SH", vol=15000.0):
+        days = business_days(date(2026, 7, 1), 30)
+        report_day, today = days[-2], days[-1]
+        _setup_calendar_and_history(isolated_env, code, report_day, today, vol=vol)
+        seed_active_rule_v1(isolated_env)
+        _save_report(isolated_env, report_day)
+        _seed_basket_members(isolated_env, report_day, [code])
+        insert_stock_basic(isolated_env, [{"ts_code": code, "name": "示例甲", "market": "主板"}])
+        return report_day, today
+
+    def _run(self, isolated_env, today, quotes_fn, hhmm=(10, 30)):
+        cap = _CapturingChannel()
+        result = run_tick(
+            datetime.combine(today, time(*hhmm)), channels=[cap],
+            db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir,
+            quotes_fn=quotes_fn,
+        )
+        return result, cap
+
+    # —— P0.8 用例 1:瞬时跌破 VWAP —————————————————————————————————————————
+    def test_vwap_break_produces_no_sentinel_event(self, isolated_env):
+        _report_day, today = self._seed_member(isolated_env)
+
+        def quotes_fn(codes):
+            # 现价 9.90 < 当日 VWAP(amount/volume/100 ≈ 10.30):旧口径命中「跌破VWAP」。
+            return {"600001.SH": Quote(
+                code="600001", name="示例甲", price=9.90, pre_close=10.0, open=10.0, high=10.6,
+                low=9.85, volume=60000.0, amount=10.30 * 60000 * 100, ts="", source="sina",
+            )}
+
+        result, cap = self._run(isolated_env, today, quotes_fn)
+        assert not hasattr(result, "invalidation_signals")
+        assert self._sentinel_rows(isolated_env, today, "invalidation") == 0
+        assert cap.messages == []
+
+    # —— P0.8 用例 2:低开 4% 且未翻红 ———————————————————————————————————————
+    def test_low_open_not_recovered_produces_no_invalidation(self, isolated_env):
+        _report_day, today = self._seed_member(isolated_env)
+
+        def quotes_fn(codes):
+            # 低开 -4%(旧阈 low_open_pct=-2%)且现价仍 < 昨收:旧口径必命中「剔除勿进」。
+            return {"600001.SH": Quote(
+                code="600001", name="示例甲", price=9.65, pre_close=10.0, open=9.6, high=9.7,
+                low=9.55, volume=60000.0, amount=9.6 * 60000 * 100, ts="", source="sina",
+            )}
+
+        result, cap = self._run(isolated_env, today, quotes_fn)
+        assert self._sentinel_rows(isolated_env, today, "invalidation") == 0
+        assert result.pushed_events == []
+        assert cap.messages == []
+
+    # —— P0.8 用例 3:折算量比极高 / 极低 ——————————————————————————————————
+    @pytest.mark.parametrize("volume,label", [(1.0, "地量"), (5_000_000.0, "天量")])
+    def test_extreme_volume_ratio_produces_no_intraday_verdict(self, isolated_env, volume, label):
+        _report_day, today = self._seed_member(isolated_env)
+
+        def quotes_fn(codes):
+            return {"600001.SH": Quote(
+                code="600001", name="示例甲", price=10.1, pre_close=10.0, open=10.0, high=10.2,
+                low=10.0, volume=volume, amount=10.05 * volume * 100, ts="", source="sina",
+            )}
+
+        _result, cap = self._run(isolated_env, today, quotes_fn)
+        assert self._sentinel_rows(isolated_env, today, "invalidation") == 0, label
+        assert cap.messages == []
+
+    # —— P0.8 用例 4:代理关注池命中旧退潮阈值 ——————————————————————————————
+    def test_proxy_pool_crash_produces_no_warning_brake_or_push(self, isolated_env):
+        days = business_days(date(2026, 7, 1), 30)
+        report_day, today = days[-2], days[-1]
+        insert_trade_cal(isolated_env, days)
+        x_codes = [f"60010{i}.SH" for i in range(6)]   # 6 只全跌停 = 旧口径「≥2 条件同拍」
+        _save_report(isolated_env, report_day)
+        _seed_basket_members(isolated_env, report_day, x_codes)
+        insert_stock_basic(isolated_env, [{"ts_code": c, "name": c, "market": "主板"} for c in x_codes])
+        qn = self._crash_quotes()
+
+        # 连跑两拍:旧口径下第二拍必升红色刹车(首拍保守闸只降级一次)。
+        for hhmm in ((10, 30), (10, 31)):
+            result, cap = self._run(isolated_env, today, qn, hhmm=hhmm)
+            # `TickResult` 上这四个位已随判级删除(⛔ 不是置成恒 False)。
+            for gone in ("retreat_active", "retreat_alert", "retreat_warning", "breadth_snapshot"):
+                assert not hasattr(result, gone), gone
+            assert cap.messages == []
+        assert self._sentinel_rows(isolated_env, today, "retreat") == 0
+        assert self._retreat_metric_rows(isolated_env, today) == 0
+
+    # —— P0.8 用例 5 / 6:库里预置当天旧行 → 新链路既不消费也不回写 ————————————
+    def test_preexisting_legacy_rows_are_left_untouched_and_drive_nothing(self, isolated_env):
+        """⚠ **取代原 `test_retreat_active_does_not_block_invalidation`**:那条断言
+        「今日已有 retreat/brake 行时证伪照报」,而两者都已退役。这里改断言
+        **预置的旧行既不被读成状态、也不被删掉**(P0.5 末条:⛔ 不通过删历史行
+        让界面看起来修好了)。"""
+        from neckline.sentinel.dedup import record_pushed
+
+        _report_day, today = self._seed_member(isolated_env)
+        record_pushed(today, "retreat", "", "brake", payload={"body": "旧刹车"},
+                      db_path=isolated_env.db_path)
+        record_pushed(today, "invalidation", "600001.SH", "trigger", payload={"body": "旧证伪"},
+                      db_path=isolated_env.db_path)
+
+        def quotes_fn(codes):
+            return {"600001.SH": Quote(
+                code="600001", name="示例甲", price=9.65, pre_close=10.0, open=9.6, high=9.7,
+                low=9.55, volume=60000.0, amount=9.6 * 60000 * 100, ts="", source="sina",
+            )}
+
+        result, _cap = self._run(isolated_env, today, quotes_fn)
+        # 旧行**照旧在库里**(只读保留),且**没有新增**。
+        assert self._sentinel_rows(isolated_env, today, "retreat") == 1
+        assert self._sentinel_rows(isolated_env, today, "invalidation") == 1
+        # 旧行不构成任何本拍状态 —— 连能承载它的字段都没有了。
+        assert not hasattr(result, "retreat_active")
+
+    # —— P0.8 用例 7:跑多拍不长新行 ————————————————————————————————————————
+    def test_many_ticks_add_no_invalidation_retreat_or_metric_rows(self, isolated_env):
+        _report_day, today = self._seed_member(isolated_env)
+
+        def quotes_fn(codes):
+            return {"600001.SH": Quote(
+                code="600001", name="示例甲", price=9.65, pre_close=10.0, open=9.6, high=9.7,
+                low=9.55, volume=1.0, amount=9.6 * 100, ts="", source="sina",
+            )}
+
+        before_inv = self._sentinel_rows(isolated_env, today, "invalidation")
+        before_ret = self._sentinel_rows(isolated_env, today, "retreat")
+        before_metrics = self._retreat_metric_rows(isolated_env, today)
+        for m in range(30, 36):     # 6 拍 = 6 个 60s tick
+            self._run(isolated_env, today, quotes_fn, hhmm=(10, m))
+        assert self._sentinel_rows(isolated_env, today, "invalidation") - before_inv == 0
+        assert self._sentinel_rows(isolated_env, today, "retreat") - before_ret == 0
+        assert self._retreat_metric_rows(isolated_env, today) - before_metrics == 0
 
 
 class TestHoldingSentinelReadsActiveRuleStopPct:
@@ -412,6 +421,10 @@ class TestV2Bypasses:
         monkeypatch.setattr(basket_verify, "run_intraday_verification", _boom)
         result = run_tick(now, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir,
                           quotes_fn=self._quotes_fn("600001.SH", 10.5))
-        assert result.quotes_fetched == 1 and result.breadth_snapshot is not None
+        # ⚠ 原断言是 `result.breadth_snapshot is not None`(旁路炸了、退潮宽度快照
+        # 照样算出来)。**被 P0.1 表「代理关注池 →『大盘退潮』= 删」取代** —— 现在
+        # `TickResult` 连这个位都没有了,改断言「拉价照常成功 + 该位确实不存在」。
+        assert result.quotes_fetched == 1
+        assert not hasattr(result, "breadth_snapshot")
         assert result.captured_ticks == 0 and result.basket_states == {}
         capture.reset_capture_state()

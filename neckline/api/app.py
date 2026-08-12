@@ -82,6 +82,7 @@ from neckline.api.schemas import (
     OkOut,
     PackOut,
     PacksListOut,
+    PositionAlertOut,
     PositionCloseIn,
     PositionOpenIn,
     PositionOpenOut,
@@ -269,8 +270,9 @@ def _is_preopen(now: datetime) -> bool:
 
 
 async def _sentinel_loop(stop_event: asyncio.Event) -> None:
-    """交易时段每 60s 调 `run_tick`(阻塞活 run in thread,不卡事件循环);退潮首次触发
-    → APNs 刹车推送(白名单四类之一)。**v1.1-A**:开盘前 9:20–9:30 收紧到 30s 一探并跑
+    """交易时段每 60s 调 `run_tick`(阻塞活 run in thread,不卡事件循环)。
+    ⛔ **V2.4.0 P0:原「退潮首次触发 → APNs 刹车推送」一路已删**(退潮判级退役)。
+    **v1.1-A**:开盘前 9:20–9:30 收紧到 30s 一探并跑
     `run_precall_tick`(盘前校准 + D5 扫描,当日只跑一次,内部自防重),9:26 汇总 / D5 推送
     经 `notify` 白名单入口。**现有 9:35 起 intraday 判逻辑一字不改**。非交易时段优雅待机
     (每 5min 探一次,不空转)。
@@ -295,11 +297,10 @@ async def _sentinel_loop(stop_event: asyncio.Event) -> None:
         interval = _SENTINEL_IDLE_POLL_SEC
         if is_intraday_now(now):
             try:
-                result = await asyncio.to_thread(run_tick, now, db_path=_db())
-                if result.retreat_alert is not None:
-                    await asyncio.to_thread(
-                        notify.push_retreat_brake, result.retreat_alert.reason_text, db_path=_db()
-                    )
+                # ⛔ V2.4.0 P0:原「退潮首次触发 → `push_retreat_brake` APNs 刹车推送」
+                # 那两行**已删除** —— `run_tick` 不再判退潮,`TickResult` 也不再有
+                # `retreat_alert` 这个位。⛔ 不许以任何形式接回来。
+                await asyncio.to_thread(run_tick, now, db_path=_db())
             except Exception:  # noqa: BLE001  单拍异常绝不能拖垮轮询
                 logger.warning("哨兵一拍异常(已吞,继续轮询)", exc_info=True)
             interval = _SENTINEL_LUNCH_POLL_SEC if time(11, 30) <= now.time() < time(13, 0) else _SENTINEL_POLL_SEC
@@ -779,8 +780,18 @@ _SENTINEL_LABEL.update({"circuit": "连续止损提醒"})
 
 @app.get(f"{API_PREFIX}/board", dependencies=[Depends(require_token)])
 def board() -> BoardOut:
-    """当日盘中看板(§2.4 拍板:买点/证伪/持仓只进看板,不进 APNs)。数据源 = 当日
-    `sentinel_events` 表聚合,**看板只读、不触发任何新判断**。"""
+    """⚠ **LEGACY AUDIT(V2.4.0 P0 起)—— 端点保留一个兼容周期,新客户端零调用。**
+
+    ① 端点**不删**:已装的 2.3.x iPhone 包在换包前仍会拉它,删了就是 404
+       (下一个破坏性 API 大版本再统一清理,P0.5);
+    ② **不再作为任何产品状态来源**:v2.4.0 客户端不请求本端点、不据它画任何东西;
+    ③ 返回的仍是**历史行**:退潮判级与通用盘中证伪已退役,`retreatBrake.active`
+       在新链路下**永远不会再被置为 true**,`sentinel='invalidation'` 也不再有新行 ——
+       但**部署当日库里可能已有当天早些时候写下的旧行**,本端点照实返回,
+       ⛔ **不通过删历史行让界面「看起来修好了」**(P0.5 末条)。
+
+    当日盘中看板。数据源 = 当日 `sentinel_events` 表聚合,**只读、不触发任何新判断**。
+    """
     trade_date = date.today()
     brake = dedup.retreat_brake_state(trade_date, db_path=_db())
     retreat = RetreatBrakeOut(active=bool(brake), reason=(brake or {}).get("reason", "") if brake else "")
@@ -1036,6 +1047,56 @@ def _locked_time_exit_day(buy_date: date, locked_date: Optional[str]) -> Optiona
 
 
 
+# —— V2.4.0 P0.5+ 持仓提醒的新下发通道 ——————————————————————————————————————
+#
+# 🔴 **它是 P0.3「先迁移再删页面」的落点**:亏损警戒 / 离场参考 / 板块跳水这三类提醒
+# 此前**只经 `GET /board`** 下发,而 P0 要求新客户端零调用 `/board` —— 不先把通道换掉
+# 就删页面 = **静默弄丢仍然有效的持仓提醒**(P0.3 末段明令)。
+# ⛔ **不新建端点、不新建表、不新建取数实现** —— 复用 `dedup.load_events_for_date`。
+#
+# `eventKey` → 展示层强调档。口径与哨兵推送当时用的 `channels` 级别同源
+# (`engine.py::_level_by_key`),⛔ 不是新判定、⛔ 不在客户端另定一套。
+# ⚠ 未登记的 event_key 落 `info`(如实中性,不冒充紧急,也不吞掉)。
+_POSITION_ALERT_LEVEL: Dict[str, str] = {
+    "stop_approach": "critical",
+    "sector_dive": "warn",
+    "take_profit": "info",
+    "exit_reference": "info",
+}
+
+
+def _today_position_alerts(trade_date: date) -> Dict[str, List[PositionAlertOut]]:
+    """当日 `sentinel='holding'` 事件按 `ts_code` 分组(时间升序,`load_events_for_date`
+    已按 `pushed_at, id` 排好,这里只保序分桶)。
+
+    ⛔ **只取 `holding`**:`invalidation` / `retreat` 自 V2.4.0 P0 起已停写(库里可能还有
+    历史行,**一律不进本通道**);`precall` 归竞价报告;`attention` / `custom_alert` 各有
+    自己的入口(⑪-A 四监测走 APNs、NL 临时提醒走 `/alerts`),混进来就是把刚删掉的
+    聚合页面换个地方重建。
+    读库异常 → 空 dict(持仓卡是每日最常看的一屏,**绝不因为一条提醒读不到就掀翻它**)。
+    """
+    try:
+        events = dedup.load_events_for_date(trade_date, db_path=_db())
+    except Exception:  # noqa: BLE001 —— 可选情报的保险丝(§铁律)
+        logger.warning("[positions] 读当日持仓提醒失败(按无提醒处理,不影响持仓列表)", exc_info=True)
+        return {}
+    out: Dict[str, List[PositionAlertOut]] = {}
+    for e in events:
+        if e.get("sentinel") != "holding":
+            continue
+        code = e.get("ts_code") or ""
+        if not code:
+            continue
+        key = e.get("event_key", "")
+        out.setdefault(code, []).append(PositionAlertOut(
+            eventKey=key,
+            verdict=(e.get("payload") or {}).get("body", ""),
+            ts=e.get("pushed_at", ""),
+            level=_POSITION_ALERT_LEVEL.get(key, "info"),
+        ))
+    return out
+
+
 @app.get(f"{API_PREFIX}/positions", dependencies=[Depends(require_token)])
 def list_positions() -> PositionsOut:
     from neckline.report.holding_store import load_latest_checks_by_position, locked_time_exit_map
@@ -1062,6 +1123,9 @@ def list_positions() -> PositionsOut:
     # **绝不掀翻持仓列表**(持仓卡是每日最常看的一屏)。
     stale_map = _resolve_price_stale(codes)
     today = date.today()
+    # V2.4.0 P0.5+:今日持仓提醒的新下发通道(原先只经 `GET /board`,而新客户端零调用它)。
+    # 一次读当日全部事件、在内存里按 ts_code 分组 —— ⛔ 不逐持仓查一遍库。
+    alerts_by_code = _today_position_alerts(today)
     out: List[PositionOut] = []
     for h in holdings:
         price = prices.get(h.ts_code, 0.0) or 0.0
@@ -1125,6 +1189,7 @@ def list_positions() -> PositionsOut:
             priceStale=(stale.to_public_dict() if stale is not None else None),
             k4DataUnavailable=snap.get("data_unavailable"),   # None=老快照未记录,如实透 null
             k4Advisory=k4_advisory, scenarioReviewPending=bool(snap.get("scenario_review")),
+            alerts=alerts_by_code.get(h.ts_code, []),
         ))
     # ✅ v2.3.0:`circuit` 键**已物理删除**(两步淘汰第二步,判据见 `schemas.py` 该节注释)。
     return PositionsOut(holdings=out)
@@ -1496,6 +1561,8 @@ def get_settings() -> SettingsOut:
             PushKindOut(
                 kind=k, level=notify_kinds.level_of(k),
                 label=notify_kinds.KIND_LABEL[k], enabled=st.push_kinds[k],
+                # V2.4.0 P0:退役位随契约下发,客户端据此隐藏开关(⛔ 不硬编黑名单)。
+                retired=(k in notify_kinds.RETIRED_KINDS),
             )
             for k in notify_kinds.ALL_KINDS
         ]),

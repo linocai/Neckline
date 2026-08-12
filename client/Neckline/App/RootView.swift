@@ -14,7 +14,8 @@
 //  ⚠ **前身 = D8 四板块**(今日篮子 / 持仓 / 问询台 / 设置 + macOS 独有的周复盘工作台):
 //    问询台整链退役(V2.1-①)、「今日篮子」改名「选股」、周复盘工作台**升为复盘板块**
 //    并进 iOS(V2.1-⑦)—— 上传交割单仍是桌面场景,iOS 侧只读展示。
-//  V1 的「盘中看板」不再是 tab,内容并入持仓板块(见 `BoardSection`)。
+//  ⛔ **V2.4.0 P0:「盘中看板 / 盘中动态」整块退役** —— V1 它是独立 tab、V2 并入
+//  持仓板块作为一节,本版整个删掉(审计规格 P0)。持仓相关提醒改随 `/positions` 下发。
 //
 
 import SwiftUI
@@ -54,9 +55,8 @@ struct RootView: View {
                 .tag(AppTab.settings)
         }
         .tint(NK.accent)
-        // 🔴 刹车条挂在**壳**上、盖在 TabView 顶部:它管的是今天整份计划,不属于任何
-        // 一个板块 —— ⛔ 别退回到各板块自己画一条(那样切板块它就消失了)。
-        .safeAreaInset(edge: .top, spacing: 0) { brakeBar }
+        // ⛔ **V2.4.0 P0**:原先挂在这里的**通栏退潮刹车条**已整体删除(P0.1 表
+        // 「全 App 顶部退潮红条 = 删」)。⛔ 不许换个名字再挂一条壳层横幅回来。
         .overlay(alignment: .bottom) { toastOverlay.padding(.bottom, 90) }
         .task { model.bind(config: config); await model.refresh() }
     }
@@ -68,7 +68,7 @@ struct RootView: View {
     private var macShell: some View {
         VStack(spacing: 0) {
             NKToolbar(model: model)
-            brakeBar
+            // ⛔ V2.4.0 P0:通栏退潮刹车条已删(见 iOS 分支同款注释)。
             content
                 // 🔴 **两处 `maxHeight: .infinity` 缺一不可**(规范 §06 踩过的坑的 SwiftUI
                 // 等价物):内容区不吃满高度时,内层 `ScrollView` 拿不到可滚区间 ——
@@ -99,25 +99,6 @@ struct RootView: View {
         }
     }
     #endif
-
-    /// 通栏刹车条(双端共用)。⛔ 不进卡片流、不属于任何板块。
-    ///
-    /// 「看哪几条触发了」去的是**持仓 · 盘中动态**:那里有刹车依据 + 哨兵已落库的全部
-    /// 事件(含黄色预警那条)。⚠ 原型画的是一张「三个条件族 · 逐条阈值读数」明细卡 ——
-    /// 契约(`RetreatBrake` 只有 `{active, reason}`)一个读数都没发,⛔ 不编,见对照表。
-    @ViewBuilder
-    private var brakeBar: some View {
-        if let warning = model.retreatWarning {
-            RetreatBrakeBar(reason: warning, actionTitle: "看哪几条触发了") {
-                model.view = .positions
-                #if os(macOS)
-                // ⚠ 只在 macOS 设:iOS 的持仓页是**一整页顺序排下来**(盘中动态就在页内),
-                // 没有"选哪一屏"这回事;设了就没人消费、`positionsPaneRequest` 会一直挂着。
-                model.positionsPaneRequest = "board"
-                #endif
-            }
-        }
-    }
 
     @ViewBuilder
     private var toastOverlay: some View {

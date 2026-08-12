@@ -154,6 +154,18 @@ def seed_synthetic_basket(d0: date, tmp_db: Path, *, codes: List[str]) -> Option
     return key
 
 
+def _daily_codes(trade_date: date, *, limit: int = 8,
+                 parquet_dir: Optional[Path] = None) -> List[str]:
+    """D0 当日 `daily` 分区里前 `limit` 只代码(按 `ts_code` 升序,**确定性**)。
+
+    只服务于合成篮子(见 `seed_synthetic_basket`)——⛔ 它不是任何取样口径,
+    别拿它当"样本"用。当日无行 → 空列表,调用方按"合成不了"处理。"""
+    df = get_market_slice(trade_date, table="daily", parquet_dir=parquet_dir)
+    if df.is_empty():
+        return []
+    return sorted(df["ts_code"].to_list())[:limit]
+
+
 def _daily_rows_lookup(trade_date: date, codes: List[str],
                        parquet_dir: Optional[Path] = None) -> Dict[str, dict]:
     df = get_market_slice(trade_date, table="daily", parquet_dir=parquet_dir)
@@ -201,8 +213,13 @@ def main() -> int:
         from neckline.sentinel.universe import load_watch_universe
 
         if not baskets and not args.no_seed_basket:
-            wu0 = load_watch_universe(d1, db_path=tmp_db, parquet_dir=None)
-            seed_synthetic_basket(d0, tmp_db, codes=list(wu0.codes))
+            # 🔴 **V2.4.0 P0 起合成成员不能再取自关注池**:池已缩编成
+            # 「持仓 + T1/T2 成员 + 板块指数」,而这条分支的前提恰恰是**零篮子**,
+            # 本地开发库又常常零持仓 → `wu.codes` 空 → 合成篮子静默跳过 →
+            # **闸 2 一行都走不到,而冒烟看起来照常"跑通"**(实测踩到)。
+            # 改为直接从 D0 的 `daily` 分区取前几只有行的票 —— 合成篮子要的本来就是
+            # 「有日线可造 MemberMech 的代码」,与关注池无关。
+            seed_synthetic_basket(d0, tmp_db, codes=_daily_codes(d0))
             baskets = load_baskets_for_date(d0, tiers=(1, 2), db_path=tmp_db)
 
         # 合成竞价快照:凡在 `daily` 里有行的代码都给一份;指数没有行 → 拉不到(见模块头)

@@ -2458,7 +2458,13 @@ struct ReportSnapshot: Equatable {
     }
 }
 
-// MARK: - 4A.3 盘中看板
+// MARK: - 4A.3 盘中看板 —— ⚠ **LEGACY(V2.4.0 P0:现役界面零引用)**
+//
+// 下面四个类型服务于 `GET /api/v1/board`。**V2.4.0 起客户端不再请求该端点、
+// 不再据它画任何东西**(P0.1 表:盘中动态页 / 退潮红条 / 运行正常绿灯 / 60s 轮询,
+// 四行全删)。⛔ **但类型本身不删**(P0.6-8):历史 fixture 与旧服务响应仍要能解,
+// 解不出来会让整份响应炸掉 —— 宽松解码是兜底,不是"还在用"。
+// 🔴 **守门单测按符号扫「视图层零引用」** —— 它们只允许出现在网络层与测试里。
 
 struct RetreatBrake: Codable, Equatable {
     var active: Bool
@@ -2467,6 +2473,11 @@ struct RetreatBrake: Codable, Equatable {
 
 /// 哨兵事件中文标签,后端 `_SENTINEL_LABEL` 唯一源(客户端不重译)。v1.1-G.3 补
 /// `precall`/`d5exit` 两枚举(盘前校准 / D5 时间退出,标签字面见 `api/app.py::_SENTINEL_LABEL`)。
+/// ⚠ V2.4.0 P0:`entry`(买点哨兵,V2-⑬-1 退役)与 `invalidation`(通用盘中证伪,
+/// 本版退役)**不再有新事件**,枚举值保留只为解旧 fixture / 历史行 —— ⛔ 别删
+/// (删了老数据解不出),也⛔ 别据它画新界面。
+/// 🔴 这里的 `invalidation` 是**通用盘中证伪**(义 ①);D0 卡上的「判断失效位置」
+/// (`BasketCard.invalidationSpec`)与竞价层的 `hitInvalidation` 是另外两个东西,一行未动。
 enum SentinelKind: String, Codable {
     case entry = "买点"
     case invalidation = "证伪"
@@ -2500,6 +2511,76 @@ struct BoardSnapshot: Codable, Equatable {
 }
 
 // MARK: - 4A.4 持仓(审计台账,永不代下单)
+
+/// 今日**该持仓自己的**一条哨兵提醒(V2.4.0 P0.5+;服务端 `PositionAlertOut`)。
+///
+/// 逐字段透传服务端已落库的事实,**客户端不重判、不加工**:
+///   · `eventKey` —— 事件键(`stop_approach` / `take_profit` / `sector_dive` /
+///     `exit_reference`);展示名走 `label`(⛔ 服务端枚举码不许直接进 `Text`,
+///     体例同 `nkBoardLabel`,**未识别值原样透传**)。
+///   · `verdict` —— 落库当时那句话原文。
+///   · `ts` —— 落库时刻(UTC ISO 串,同 `BoardEvent.ts`)。
+///   · `level` —— 展示层强调档(`critical` / `warn` / `info`),由服务端按 `eventKey`
+///     机械派生,⛔ 客户端别另定一套。
+struct PositionAlert: Codable, Equatable, Identifiable {
+    var eventKey: String
+    var verdict: String
+    var ts: String
+    var level: String
+
+    var id: String { "\(eventKey)|\(ts)" }
+
+    enum CodingKeys: String, CodingKey { case eventKey, verdict, ts, level }
+
+    init(eventKey: String, verdict: String = "", ts: String = "", level: String = "info") {
+        self.eventKey = eventKey; self.verdict = verdict; self.ts = ts; self.level = level
+    }
+
+    /// ⚠ B 类以外也一律手写(V2-⑮ 起的通例):合成 `Decodable` 对非 Optional 属性
+    /// **有默认值也不容忍缺键**。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        eventKey = try c.decodeIfPresent(String.self, forKey: .eventKey) ?? ""
+        verdict = try c.decodeIfPresent(String.self, forKey: .verdict) ?? ""
+        ts = try c.decodeIfPresent(String.self, forKey: .ts) ?? ""
+        level = try c.decodeIfPresent(String.self, forKey: .level) ?? "info"
+    }
+
+    /// 事件键的展示层换算。**未识别值原样透传**(服务端日后加新 event_key 时,
+    /// 界面照样把它显示出来,⛔ 不静默吞掉一条真实提醒)。
+    var label: String { nkPositionAlertLabel(eventKey) }
+
+    /// 落库时刻的展示串:UTC ISO → **本地 `HH:mm`**。
+    /// ⚠ **解析不出就原样返回那串 ISO**(⛔ 不显示空、⛔ 不编一个时间)——
+    /// 一个看不懂但真实的时刻,好过一个看起来漂亮却可能错的时刻。
+    var timeLabel: String { nkAlertTimeLabel(ts) }
+}
+
+/// UTC ISO8601(带时区)→ 本地 `HH:mm`;**解析失败原样返回入参**。
+/// ⚠ 服务端 `sentinel_events.pushed_at` 是 `datetime.now(timezone.utc).isoformat(timespec="seconds")`
+/// = `2026-08-12T07:23:12+00:00`,25 个字符直接上屏又长又不像时刻。
+func nkAlertTimeLabel(_ raw: String) -> String {
+    if raw.isEmpty { return "" }
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime]
+    guard let d = iso.date(from: raw) else { return raw }
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")   // 同 `NKFmt` 的口径:⛔ 不跟系统区域漂
+    f.dateFormat = "HH:mm"
+    return f.string(from: d)
+}
+
+/// `PositionAlert.eventKey` → 人读名。⛔ 服务端 `dict` 的 key / 枚举码不许直接进 `Text`
+/// (CLAUDE.md 那条「角色码印英文」的同款病);未识别值**原样返回**。
+func nkPositionAlertLabel(_ raw: String) -> String {
+    switch raw {
+    case "stop_approach": return "逼近/触发亏损警戒线"
+    case "take_profit": return "回落止盈"
+    case "sector_dive": return "所属板块跳水"
+    case "exit_reference": return "触达离场参考区间"
+    default: return raw
+    }
+}
 
 /// 回落止盈状态(§五 v1.1-B.1,服务端 `_retrace_state` 算好下发:峰值 / 回落幅度 /
 /// 是否触发——判定复用 `sentinel/holding.py::check_take_profit`,客户端只展示,不重算阈值)。
@@ -2638,6 +2719,17 @@ struct Position: Codable, Equatable, Identifiable {
     // `setScenarioOutcome` 均已物理删除(见 `APIClient.swift:555`)。本字段现在纯只读
     // 展示「挑出来」,不再有任何写回动作,别被这句话误导去把调用接回来。
     var scenarioReviewPending: Bool = false
+    /// **V2.4.0 P0.5+:今日该持仓自己的哨兵提醒**(源 `sentinel_events` 的
+    /// `sentinel='holding'` 行,服务端随 `/positions` 一起下发)。
+    ///
+    /// 🔴 **它是「先迁移再删页面」的落点,不是「盘中动态页换了个地方」**:亏损警戒 /
+    /// 离场参考 / 板块跳水此前**只经 `GET /board`** 下发,而 V2.4.0 客户端零调用该端点 ——
+    /// 直接删页面就会静默弄丢这些仍然有效的提醒(P0.3 末段明令)。
+    /// ⛔ **只画该持仓自己的事件**:⛔ 无市场级行、⛔ 无「运行正常」绿灯、⛔ 无轮询
+    /// (随 `refreshPositions()` / `refresh()` 一起拉,**不新增任何请求**)、
+    /// ⛔ 客户端不做任何二次裁定(服务端落库时那句话原样展示)。
+    /// ⚠ 老服务端不发这个键 → 空数组(与"今天没有提醒"同形,如实为空,不编)。
+    var alerts: [PositionAlert] = []
 
     /// 显式 CodingKeys(`distToStopPctServer` 与服务端字面 `distToStopPct` 改了名——避免
     /// 和下面既有的、语义不同的客户端计算属性 `distToStopPct` 撞名;其余字段名与 JSON
@@ -2652,6 +2744,7 @@ struct Position: Codable, Equatable, Identifiable {
         case distToStopPctServer = "distToStopPct"
         case maxHoldDaysEffective, timeExitState, buyFees, sellFees, k4Advisory, scenarioReviewPending
         case priceStale, k4DataUnavailable, timeExitLockedDay, timeExitLockedLateDays
+        case alerts
     }
 
     init(id: Int, code: String, name: String, buyPrice: Double, qty: Int, entryReason: String,
@@ -2663,7 +2756,8 @@ struct Position: Codable, Equatable, Identifiable {
          buyFees: Double? = nil, sellFees: Double? = nil,
          priceStale: PriceStale? = nil, k4DataUnavailable: Bool? = nil,
          timeExitLockedDay: Int? = nil, timeExitLockedLateDays: Int = 0,
-         k4Advisory: [K4Advisory] = [], scenarioReviewPending: Bool = false) {
+         k4Advisory: [K4Advisory] = [], scenarioReviewPending: Bool = false,
+         alerts: [PositionAlert] = []) {
         self.id = id; self.code = code; self.name = name; self.buyPrice = buyPrice; self.qty = qty
         self.entryReason = entryReason; self.buyDate = buyDate; self.price = price; self.status = status
         self.stopLine = stopLine; self.stopOrderChecked = stopOrderChecked
@@ -2675,6 +2769,7 @@ struct Position: Codable, Equatable, Identifiable {
         self.priceStale = priceStale; self.k4DataUnavailable = k4DataUnavailable
         self.timeExitLockedDay = timeExitLockedDay; self.timeExitLockedLateDays = timeExitLockedLateDays
         self.k4Advisory = k4Advisory; self.scenarioReviewPending = scenarioReviewPending
+        self.alerts = alerts
     }
 
     init(from decoder: Decoder) throws {
@@ -2726,6 +2821,7 @@ struct Position: Codable, Equatable, Identifiable {
         timeExitLockedLateDays = try c.decodeIfPresent(Int.self, forKey: .timeExitLockedLateDays) ?? 0
         k4Advisory = try c.decodeIfPresent([K4Advisory].self, forKey: .k4Advisory) ?? []
         scenarioReviewPending = try c.decodeIfPresent(Bool.self, forKey: .scenarioReviewPending) ?? false
+        alerts = try c.decodeIfPresent([PositionAlert].self, forKey: .alerts) ?? []
     }
 
     var hasLivePrice: Bool { price > 0 }
@@ -3078,15 +3174,23 @@ struct PushKind: Codable, Equatable, Identifiable {
     var level: String
     var label: String
     var enabled: Bool
+    /// **V2.4.0 P0:退役位,唯一源在服务端** `notify_kinds.RETIRED_KINDS`(随 `/settings` 下发)。
+    /// `true` = 该 kind 已退役、服务端永不再发这类推送 → **设置屏隐藏这一行开关**。
+    /// 🔴 ⛔ **客户端不许硬编码一份退役 kind 黑名单** —— 那是第二份事实源(§3.14-B)。
+    /// ⚠ **隐藏只发生在渲染层**:这一行仍留在 `pushKindsDraft` 里,`PUT /settings/push`
+    /// 照旧把它一起发回去(服务端要求给全 `ALL_KINDS`,少一个键就 422)。
+    /// ⚠ 老服务端不发这个键 → `decodeIfPresent` 兜底 `false` = 「没退役」,与旧行为一致。
+    var retired: Bool
 
     var id: String { kind }
     /// 未识别 `level` 原样透传(**照常显示**,⛔ 不静默丢弃这一行)。
     var levelLabel: String { nkPushLevelLabel(level) }
 
-    enum CodingKeys: String, CodingKey { case kind, level, label, enabled }
+    enum CodingKeys: String, CodingKey { case kind, level, label, enabled, retired }
 
-    init(kind: String, level: String, label: String, enabled: Bool) {
-        self.kind = kind; self.level = level; self.label = label; self.enabled = enabled
+    init(kind: String, level: String, label: String, enabled: Bool, retired: Bool = false) {
+        self.kind = kind; self.level = level; self.label = label
+        self.enabled = enabled; self.retired = retired
     }
 
     init(from decoder: Decoder) throws {
@@ -3097,6 +3201,7 @@ struct PushKind: Codable, Equatable, Identifiable {
         let rawLabel = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
         label = rawLabel.isEmpty ? kind : rawLabel
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        retired = try c.decodeIfPresent(Bool.self, forKey: .retired) ?? false
     }
 }
 
@@ -3127,10 +3232,18 @@ struct PushSettings: Codable, Equatable {
 
     /// 按 `level` 分组(**服务端出现过的每一个 level 都成一组**,含未识别的;
     /// 组内保持服务端顺序)。⛔ 不按硬编的三级过滤 —— 那等于把未知 level 静默丢掉。
+    /// 按 level 分组的**可见清单**。
+    ///
+    /// 🔴 **V2.4.0 P0:`retired == true` 的行在这里被过滤掉** —— 服务端已退役该 kind、
+    /// 永不再发这类推送,留一个开关只会让用户以为"关了就不会收到、开着就会收到"。
+    /// ⚠ **只在渲染层过滤**:`kinds`(= `pushKindsDraft`)里那一行**照旧留着**,
+    /// `enabledMap` 仍把它一起发回服务端(`PUT /settings/push` 要求给全 `ALL_KINDS`,
+    /// 少一个键就 422)。⛔ 别顺手把它从 `kinds` 里删掉。
+    /// 🔴 判据来自服务端下发的 `retired` 位,⛔ **不是客户端硬编码的 kind 黑名单**。
     var groupedByLevel: [(level: String, kinds: [PushKind])] {
         var order: [String] = []
         var bucket: [String: [PushKind]] = [:]
-        for k in kinds {
+        for k in kinds where !k.retired {
             if bucket[k.level] == nil { order.append(k.level) }
             bucket[k.level, default: []].append(k)
         }

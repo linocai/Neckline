@@ -541,15 +541,26 @@ class ReportOut(BaseModel):
     reason: str = ""
 
 
-# —— 4A.3 盘中看板 ————————————————————————————————————————————————————
+# —— 4A.3 盘中看板 —— ⚠ **LEGACY AUDIT(V2.4.0 P0 起)** ————————————————————
+#
+# 下面三个 DTO 服务于 `GET /api/v1/board`,该端点保留一个兼容周期供**已装 2.3.x
+# 客户端**使用;**v2.4.0 客户端零调用**,且它们**不驱动任何 v2.4.0 界面**。
+# 🔴 `retreatBrake.active` 在新生产链下**永不再被置 true**(退潮判级已退役);
+# `sentinel='invalidation'` 也不再有新行 —— 但**历史行照实返回**,
+# ⛔ 不通过删历史行让界面「看起来修好了」(P0.5)。
+# ⛔ **不删这三个类**:删了老 App 会 404 / 解不出;清理留给下一个破坏性 API 大版本。
 
 class RetreatBrakeOut(BaseModel):
+    """⚠ LEGACY AUDIT:新链路恒 `active=False`;非 false 只可能来自历史行。"""
     active: bool
     reason: str = ""
 
 
 class BoardEventOut(BaseModel):
-    sentinel: str                # 买点(entry) / 证伪(invalidation) / 持仓(holding)
+    """⚠ LEGACY AUDIT:`sentinel` 取值里的 `invalidation`(通用盘中证伪)与
+    `retreat`(退潮)自 V2.4.0 P0 起**不再有新行**,只剩历史;`holding` 类事件仍在
+    产生,但新客户端改从 `PositionOut.alerts` 读(P0.5+),不再走本端点。"""
+    sentinel: str                # 买点(entry) / 证伪(invalidation,⛔ 已退役) / 持仓(holding)
     code: str
     name: str
     eventKey: str
@@ -558,6 +569,7 @@ class BoardEventOut(BaseModel):
 
 
 class BoardOut(BaseModel):
+    """⚠ LEGACY AUDIT —— 见本节抬头。"""
     tradeDate: str
     asof: str = ""
     retreatBrake: RetreatBrakeOut
@@ -565,6 +577,32 @@ class BoardOut(BaseModel):
 
 
 # —— 4A.4 持仓 ————————————————————————————————————————————————————————
+
+class PositionAlertOut(BaseModel):
+    """今日**该持仓自己的**一条哨兵提醒(V2.4.0 P0.5+)。
+
+    源 = 当日 `sentinel_events` 里 `sentinel='holding'` 且 `ts_code` 等于本持仓的行,
+    逐字段透传,**服务端不重判、客户端不二次裁定**:
+
+    · `eventKey` —— 既有事件键,现役四种:`stop_approach`(逼近/触发亏损警戒线)/
+      `take_profit`(回落止盈,由现役章程的 `take_profit_retrace` 驱动;`v2.3-k8` 下
+      该配置为空 → 恒不触发)/ `sector_dive`(所属板块跳水)/ `exit_reference`
+      (触达离场参考区间)。⚠ **未识别的键原样透传**,展示层自己兜底,
+      ⛔ 服务端不在这里建第二份中文映射之外的白名单。
+    · `verdict` —— 事件落库时那句话(`payload.body`)原文,⛔ 不改写、不加工。
+    · `ts` —— 落库时刻(`sentinel_events.pushed_at`,UTC ISO 串,同 `BoardEventOut.ts`)。
+    · `level` —— 展示层强调档,由 `eventKey` 机械派生(⛔ 不是新判定):
+      `critical`(stop_approach)/ `warn`(sector_dive)/ `info`(其余)。
+      口径与哨兵推送时用的 `channels` 级别同源,⛔ 别在客户端另定一套。
+
+    🔴 **⛔ 这里只画事实,不画状态**:没有「运行正常」、没有事件数量以外的汇总、
+    没有市场级行 —— 那些正是 P0 撤销掉的东西。
+    """
+    eventKey: str
+    verdict: str = ""
+    ts: str = ""
+    level: str = "info"
+
 
 class K4AdvisoryOut(BaseModel):
     """K4 持仓牌单条命中(plan §五 v1.3-②)。服务端在 16:35 EOD 面板上对持仓票重算 K4
@@ -649,6 +687,16 @@ class PositionOut(BaseModel):
     # 该持仓是否有关联决策日志(via position_id)含非空情景树待每日对照(②-D 提醒;勾选仍走
     # 既有 POST /decisions/{id}/scenario-outcome,本字段只做「挑出来」,无新写路径)。
     scenarioReviewPending: bool = False
+    # —— V2.4.0 P0.5+:今日该持仓自己的哨兵提醒(**纯增量键**,旧客户端不解也不崩)——
+    # 🔴 **它是 P0.3「先迁移再删页面」的落点,不是「盘中动态页换了个地方」**:
+    # 亏损警戒 / 离场参考 / 板块跳水这三类提醒此前**只经 `GET /board` 下发**,而 P0
+    # 要求新客户端零调用 `/board` —— 直接删页面 = 静默弄丢仍然有效的持仓提醒。
+    # 取数 = 当日 `sentinel_events` 中 `sentinel='holding'` 且 `ts_code` 匹配本持仓的行
+    # (复用 `sentinel/dedup.py::load_events_for_date`,⛔ 不新建取数实现)。
+    # ⛔ **只取 `holding`**:`invalidation` / `retreat` 已停写,`precall` 归竞价报告。
+    # ⛔ 无市场级行、⛔ 无「运行正常」绿灯、⛔ 无轮询(随 `/positions` 一起拉)、
+    # ⛔ 客户端不做任何二次裁定 —— 只按时间列出服务端已经落库的事实。
+    alerts: List["PositionAlertOut"] = Field(default_factory=list)
 
 
 # ⚠ **`CircuitEpisodeOut` / `CircuitStateOut` 已于 v2.3.0 物理删除**（两步淘汰第二步）：
@@ -891,6 +939,13 @@ class PushKindOut(BaseModel):
     level: str
     label: str
     enabled: bool
+    # —— V2.4.0 P0:退役位(唯一源 `notify_kinds.RETIRED_KINDS`)————————————————
+    # `True` = 该 kind 已退役,服务端**永不再发这类推送**,新客户端**隐藏这一行开关**。
+    # 🔴 **行仍然下发、`PUT /settings/push` 仍要求给全 `ALL_KINDS`** —— 旧客户端照旧
+    # 读写这个开关不受影响(P0.5「`push_retreat` 设置字段继续接受读写」)。
+    # ⛔ **客户端不许硬编码一份退役 kind 黑名单** —— 那是第二份事实源(§3.14-B);
+    #    也⛔ 不许把退役行从 `kinds` 里删掉:删了旧客户端下一次 PUT 就缺键 422。
+    retired: bool = False
 
 
 class PushSettingsOut(BaseModel):
@@ -1724,7 +1779,7 @@ __all__ = [
     # V2-⑭-B 计划继承 / 建仓快照 / 画像 / 策略包 / 评价
     "PositionPlanOut", "PositionPlansOut", "PositionPlanCreateIn", "EntrySnapshotOut",
     "ProfileOut", "PackOut", "PacksListOut", "EvalWeeklyOut",
-    "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut",
+    "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut", "PositionAlertOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "EntrySuggestionOut",
     "PushKindOut", "PushSettingsOut", "SettingsOut", "SettingsProviderOut", "SettingsPushIn", "DeviceRegisterIn",

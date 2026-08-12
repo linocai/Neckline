@@ -41,7 +41,6 @@
 		EB18B7D4374EA05AD70C0D9C /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE386C48FF2459211CE2D690 /* AppModel.swift */; };
 		ECFCB610389F542E1496563A /* PositionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F9C5BF6E9D9D111073B296 /* PositionsView.swift */; };
 		ED9DDCD05025C3514AF2BFE0 /* NKGateViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAE1DD2864459FE86E710600 /* NKGateViews.swift */; };
-		FB4C33C48625D4934F6074BD /* BoardSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A997AA8B113E10CE7B48C1E /* BoardSection.swift */; };
 		FE0DC5D1335F2F673834AB37 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0C09A262074F0F512BCF821 /* AppModelTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -69,7 +68,6 @@
 		6356B9E146F48D22D524B8B6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		63700FA175FC48677C401C67 /* BasketCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BasketCardView.swift; sourceTree = "<group>"; };
 		6995CFD51E96AA2443EC4E3A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		6A997AA8B113E10CE7B48C1E /* BoardSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardSection.swift; sourceTree = "<group>"; };
 		6D2ECF5D1ADA2570A80AAF57 /* NKToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NKToolbar.swift; sourceTree = "<group>"; };
 		7ECA7F173C89B027705A4FC0 /* AppConfigDefaultTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfigDefaultTests.swift; sourceTree = "<group>"; };
 		87F9C5BF6E9D9D111073B296 /* PositionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionsView.swift; sourceTree = "<group>"; };
@@ -191,7 +189,6 @@
 				3898E7E869DA2334523E590C /* AuctionCardView.swift */,
 				63700FA175FC48677C401C67 /* BasketCardView.swift */,
 				581182CED4C6109290DA84E3 /* BasketDailyView.swift */,
-				6A997AA8B113E10CE7B48C1E /* BoardSection.swift */,
 				B0A90418AEA32F7C299080AF /* InfoCardView.swift */,
 				A4E1C3A5DD39EEB4270411BB /* IntelSectionView.swift */,
 				1AE91C1C1F16155E79F87794 /* NoteSheet.swift */,
@@ -326,7 +323,6 @@
 				41B73669DE3F5F2F0685B236 /* AuctionCardView.swift in Sources */,
 				81EC7670CE052326E5AF3DC3 /* BasketCardView.swift in Sources */,
 				9BC5CB7C5FD9513683F4E4D1 /* BasketDailyView.swift in Sources */,
-				FB4C33C48625D4934F6074BD /* BoardSection.swift in Sources */,
 				A95E60B60DE6A07CDB6DD7DA /* DesignTokens.swift in Sources */,
 				C6A7800544ED3CD2E062F1E8 /* InfoCardView.swift in Sources */,
 				730CE8D10C7BDBCA711C9342 /* IntelSectionView.swift in Sources */,

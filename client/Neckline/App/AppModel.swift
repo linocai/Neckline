@@ -10,9 +10,10 @@
 //  ⚠ **前身 = D8 四板块**(今日篮子 / 持仓 / 问询台 / 设置):问询台整链退役(V2.1-①)、
 //  「今日篮子」改名「选股」、原 macOS 独有的「周复盘工作台」升为**复盘板块**(V2.1-⑦)。
 //
-//  ⚠ V1 的「盘中看板」不再是独立 tab:它的内容(退潮刹车 + 哨兵事件)**并入持仓板块**
-//  作为一节 —— V2 的注意力分配是 80/15/5(持仓 80%),盘中动态本来就是为解释持仓服务的。
-//  ⛔ 不是删掉数据,是换了挂载点(`BoardSection`)。
+//  🔴 **V2.4.0 P0:「盘中动态」整节退役** —— V1 它是独立 tab、V2 并入持仓板块作为一节,
+//  V2.4.0 **整个删掉**(审计规格 P0:撤销盘中通用证伪与代理池退潮刹车的交易判断权)。
+//  ⚠ **删的是聚合页面,不是有效提醒**:持仓亏损警戒 / 离场参考 / 板块跳水改由
+//  `Position.alerts` 随 `/positions` 一起下发(P0.5+),⛔ 不新增任何请求或轮询。
 //
 
 import Foundation
@@ -247,9 +248,9 @@ final class AppModel {
     var infoCardLoading = false
     var infoCardError: String? = nil
 
-    // —— 盘中动态(并入持仓板块的一节,不再是独立 tab)——
-    var board: BoardSnapshot = .empty
-    var boardLoading = false
+    // ⛔ **V2.4.0 P0**:`board` / `boardLoading` 两个状态位已删(P0.1 表
+    // 「独立『盘中动态』页面与事件列表 = 删」)。持仓相关提醒改由
+    // `Position.alerts` 随 `/positions` 一起下发(P0.5+),⛔ 不留任何 `/board` 状态。
 
     // ⚠ V2.1-① 起「问询台」+「问询历史」两节(11 个属性 + 4 个方法)已随问询台
     // 整链退役删除——见 `tests/test_v21_retirement_guard.py::test_inquiry_desk_is_gone`。
@@ -430,23 +431,14 @@ final class AppModel {
 
     // MARK: - 派生(纯逻辑,单测覆盖)
 
-    /// 退潮刹车激活时的**依据一句**(= 刹车条的次行);`nil` = 未触发。
-    /// **只警示、不硬拦** —— 开仓录入是补记用户已在券商完成的真实操作(审计台账),
-    /// 硬拦会变成帮用户瞒报真实操作。
-    ///
-    /// 🔴 **V2.3.1 批 6:去掉了原来那句「退潮红色刹车已触发 · 今日计划作废、不建议开新仓」
-    /// 前缀** —— 刹车条的**标题**逐字就是这句话(`RetreatBrakeBar` 的第一行,原型
-    /// `Neckline 状态.dc.html` 82 行),前缀让同一句话在同一条栏里连着出现两遍(实拍逮到)。
-    /// ⛔ 别再把它加回来:次行的职责是「凭什么这么判」,不是把标题重说一遍。
-    /// ⚠ 依据为空时返回**空串而不是 nil** —— 刹车条照样要出现(`nil` 的语义是"没刹车")。
-    var retreatWarning: String? {
-        guard board.retreatBrake.active else { return nil }
-        return board.retreatBrake.reason
-    }
+    // ⛔ **V2.4.0 P0**:派生状态 `retreatWarning`(退潮刹车激活时的依据一句)已删 ——
+    // 退潮判级退役后服务端**永不再产生 active 状态**,留一个恒 nil 的派生位就是
+    // 「前端隐藏、后台仍在判」的错觉来源。
 
     /// **跨板块的「打开持仓板块的哪一屏」请求**(V2.3.1 批 6)。
     ///
-    /// 取值 = `PositionsPane` 的 `case` 名(`"board"` / `"alerts"` / `"position"`)——
+    /// 取值 = `PositionsPane` 的 `case` 名(`"alerts"` / `"position"`;
+    /// ⛔ **V2.4.0 P0 起没有 `"board"` 了** —— 那一屏整个删掉了)——
     /// ⚠ 用字符串而不是那个枚举:`PositionsPane` 住在 `PositionsView.swift`(视图层),
     /// `AppModel` 反向 import 视图类型会把依赖方向倒过来。
     /// 消费方 `PositionsView` 收到后**立刻置回 `nil`**(它是一次性请求,不是状态)。
@@ -499,9 +491,10 @@ final class AppModel {
 
     // MARK: - 刷新
 
-    /// 主刷新:报告 + 持仓 + 盘中动态 + **行情状态** + 临时提醒(五者并发)。
-    /// 盘中动态也在此拉一份是刻意的 —— 「退潮红色刹车禁开新仓」的警示要在用户点
-    /// 「开仓」之前就可见。
+    /// 主刷新:报告 + 持仓 + **行情状态** + 临时提醒 + 竞价小报告(五者并发)。
+    /// ⛔ **V2.4.0 P0:原第三路 `boardTask`(拉 `/board` 给壳层刹车条用)已删** ——
+    /// 刹车条与盘中动态页一并退役;持仓提醒随 `/positions` 那一路下发(P0.5+),
+    /// **不新增任何请求**。
     /// ⚠ **行情状态取代了原来那一路熔断态**(V2.2-⑤-B 熔断整体退役):两者形似而
     /// 语义相反 —— 熔断是**状态锁**(会改变行为),行情状态是**纯展示**(⛔ 零动作)。
     func refresh() async {
@@ -514,14 +507,13 @@ final class AppModel {
         loadError = nil
         async let reportTask: Result<ReportSnapshot, Error> = fetchResult { try await client.fetchReportLatest() }
         async let positionsTask: Result<[Position], Error> = fetchResult { try await client.fetchPositions() }
-        async let boardTask: Result<BoardSnapshot, Error> = fetchResult { try await client.fetchBoard() }
         async let regimeTask: Result<MarketRegime, Error> = fetchResult { try await client.fetchMarketRegime() }
         async let alertsTask: Result<[CustomAlert], Error> = fetchResult { try await client.fetchAlerts() }
         // V2.3.3-⑤ 竞价小报告:**404 是常态**(一天里只有 9:26 之后才有),
         // 故与其它五路并列拉、失败一律不弹错 —— 三态的分派在下面 switch 里。
         async let auctionTask: Result<AuctionPayload, Error> = fetchResult { try await client.fetchAuction() }
-        let (reportResult, positionsResult, boardResult, regimeResult, alertsResult, auctionResult) =
-            await (reportTask, positionsTask, boardTask, regimeTask, alertsTask, auctionTask)
+        let (reportResult, positionsResult, regimeResult, alertsResult, auctionResult) =
+            await (reportTask, positionsTask, regimeTask, alertsTask, auctionTask)
 
         switch reportResult {
         case .success(let r): self.report = r
@@ -530,10 +522,6 @@ final class AppModel {
         switch positionsResult {
         case .success(let p): self.positions = p
         case .failure(let e): handleLoadFailure(e, context: "持仓")
-        }
-        switch boardResult {
-        case .success(let b): self.board = b
-        case .failure: break   // 盘中动态降级不弹错(主内容是篮子 + 持仓,它只为警示条服务)
         }
         switch regimeResult {
         case .success(let r): self.marketRegime = r
@@ -690,20 +678,9 @@ final class AppModel {
         }
     }
 
-    // MARK: - 盘中动态(并入持仓板块的一节)
-
-    func loadBoard() async {
-        guard let client = clientProvider() else { return }
-        boardLoading = true
-        do {
-            self.board = try await client.fetchBoard()
-        } catch let e as APIError {
-            if case .noToken = e {} else { showToast(e.errorDescription ?? "盘中动态拉取失败", isError: true) }
-        } catch {
-            showToast("盘中动态拉取失败", isError: true)
-        }
-        boardLoading = false
-    }
+    // ⛔ **V2.4.0 P0**:`loadBoard()` 已删(P0.1 表「60 秒客户端 `/board` 专用轮询 = 删」)。
+    // `APIClient.fetchBoard()` **保留**(历史 fixture 与旧服务响应仍要能解),但
+    // **现役视图与 AppModel 零调用** —— 守门单测按调用点扫。
 
     // MARK: - 开仓 / 清仓(审计台账,永不代下单)
 

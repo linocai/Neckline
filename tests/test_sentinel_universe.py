@@ -1,7 +1,14 @@
-"""关注池组装单测(plan 阶段3)。覆盖:①从盘后报告读候选(含 entry_spec/
-invalidation_spec 完整往返)+ 持仓 + 昨日涨停股三路合并去重;②报告缺失时优雅
-降级为空候选(不崩,不是"报告本身没有候选");③前5日均量;④股票元数据(板块/
-ST/上市日)查询;⑤新股豁免窗口判定。"""
+"""关注池组装单测(plan 阶段3)。覆盖:①持仓 + T1/T2 篮子成员 + 板块基准指数三路
+合并去重;②报告 / 篮子缺失时优雅降级(不崩);③前5日均量;④股票元数据(板块/
+ST/上市日)查询;⑤新股豁免窗口判定。
+
+🔴 **V2.4.0 P0 换血(施工纪律 4:旧断言必须写明被谁取代,⛔ 不删测试换绿)**:
+关注池的**两份退潮专用测量样本**(主线切片 / 昨日涨停宽度)与配额机器已随退潮判级
+退役 —— P0.1 表「代理关注池 →『大盘退潮』= 删」。受影响的用例逐条在原处标了
+取代关系:`breadth_extra` 两条 + `TestPrevLimitUpSortOrder` 两条整体退役,
+「四类来源」改成「三类来源」,`WatchTarget.invalidation_spec` 断言改成反向断言。
+**关注池本身仍要活着**(持仓 + T1/T2 成员 + 板块指数),那几条用例一字未动。
+"""
 
 from __future__ import annotations
 
@@ -11,10 +18,8 @@ import pytest
 
 from tests.conftest import business_days, insert_stock_basic, insert_trade_cal, write_daily_fixture
 
-import neckline.sentinel.universe as universe
 from neckline.data.board import Board
 from neckline.report import store
-from neckline.sentinel import mainline
 from neckline.sentinel.positions import open_position
 from neckline.sentinel.universe import (
     is_new_stock_exempt,
@@ -35,10 +40,14 @@ def _save_report(settings, trade_date: date):
 
 class TestLoadWatchUniverse:
     def test_targets_built_from_prior_trading_day_baskets(self, isolated_env):
-        """**V2-⑬-1**:证伪哨兵的判定对象由「昨晚候选」换成「D0 冻结的 T1/T2 篮子成员」
-        —— `WatchTarget` 逐位带上码 / 名 / 全局证伪 spec / 所属篮子。"""
-        from neckline.sentinel.invalidation import invalidation_spec
+        """`WatchTarget` 逐位带上码 / 名 / 所属篮子。
 
+        ⚠ 原用例还断言 `wu.targets[0].invalidation_spec == invalidation_spec()`
+        (全局常量那一份挂在每个目标上)。**被 P0.1 表「个股『剔除勿进』盘中事件 = 删」
+        取代** —— 通用盘中证伪退役,该字段从生产 `WatchTarget` 上摘除(P0.4-9),
+        改成**反向断言**:字段确实不在了(防有人"顺手"加回来)。
+        🔴 ⛔ 别与卡上 D0 冻结的 `invalidation_spec`(判断失效位置)搞混,那个一行未动。
+        """
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         report_day, today = days[-2], days[-1]
@@ -52,8 +61,7 @@ class TestLoadWatchUniverse:
         assert [t.ts_code for t in wu.targets] == ["600001.SH"]
         assert wu.targets[0].name == "示例甲"
         assert wu.targets[0].basket_key == "k1"
-        # 证伪 spec 是**全局常量那一份**(零入参),不是 per-code 重算出来的
-        assert wu.targets[0].invalidation_spec == invalidation_spec()
+        assert not hasattr(wu.targets[0], "invalidation_spec")
 
     def test_no_baskets_degrades_to_empty_targets_not_crash(self, isolated_env):
         days = business_days(date(2026, 7, 13), 5)
@@ -86,105 +94,24 @@ class TestLoadWatchUniverse:
         assert wu.codes.count("600001.SH") == 1
         assert set(wu.codes) == {"600001.SH", "600002.SH"}
 
-    def test_breadth_extra_codes_from_prior_limit_up_capped(self, isolated_env):
-        """review 判定线 🟡-N1(2026-08-03,PROJECT_PLAN §五 ⑧-G-D 第②条):截断序
-        改判为 `crc32(ts_code)` 升序 —— 不再优先保留连板数高的(旧序与被测量的量
-        相关,见 `_load_prev_limit_up_codes` docstring)。"""
-        days = business_days(date(2026, 7, 13), 5)
-        insert_trade_cal(isolated_env, days)
-        report_day, today = days[-2], days[-1]
-        codes = [f"60000{i}.SH" for i in range(3)]
-        rows = [
-            {
-                "ts_code": c, "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
-                "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
-                "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": i,
-            }
-            for i, c in enumerate(codes)
-        ]
-        write_daily_fixture(isolated_env, "limit_derived", report_day, rows)
 
-        wu = load_watch_universe(
-            today, breadth_cap=2, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir
-        )
-        assert len(wu.breadth_extra_codes) == 2
-        # crc32(ts_code) 升序取前 2:恰好保留 600000/600001(连板数最低的两只)、
-        # 排除连板数最高的 600002 —— 与旧行为(保留连板数最高的两只)相反,直接
-        # 证明截断不再与 `consec_limit_up_days` 相关。
-        expect = sorted(codes, key=mainline.crc_rank)[:2]
-        assert expect == ["600000.SH", "600001.SH"]  # 锁死本用例的前提,序变了要重算
-        assert wu.breadth_extra_codes == expect
-        # ⑧-G-D 追加要求:需求量(3)vs 实际采纳量(2)必须留痕,不能只看 `size`。
-        assert wu.breadth_extra_needed == 3
-        assert wu.breadth_extra_payload() == {"codes": expect, "size": 2, "restricted_from": 3}
-
-    def test_breadth_extra_needed_equals_size_when_not_restricted(self, isolated_env):
-        """需求量 ≤ 池位预算时不截断:`restricted_from` 留 `None`(⛔ 不是"截断到
-        0" —— 与 `mainline.MainlineSample` 的 `restricted_from` 语义同款)。"""
-        days = business_days(date(2026, 7, 13), 5)
-        insert_trade_cal(isolated_env, days)
-        report_day, today = days[-2], days[-1]
-        write_daily_fixture(isolated_env, "limit_derived", report_day, [
-            {"ts_code": "600001.SH", "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
-             "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
-             "is_limit_down": False, "is_zaban": False, "consec_limit_up_days": 1},
-        ])
-
-        wu = load_watch_universe(today, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
-        assert wu.breadth_extra_needed == 1
-        assert wu.breadth_extra_codes == ["600001.SH"]
-        assert wu.breadth_extra_payload() == {"codes": ["600001.SH"], "size": 1, "restricted_from": None}
-
-
-class TestPrevLimitUpSortOrder:
-    """review 判定线 🟡-N1(2026-08-03,PROJECT_PLAN §五 ⑧-G-D 第②条同一件事):
-    `_load_prev_limit_up_codes` 的截断序 = **确定性**(不吃 parquet 行序)+ **无偏**
-    (不与 `consec_limit_up_days` 相关,该量经本项目 ⑦-K7 审计证实是双尾放大器
-    ——次日跌停约 3× 于同簇其余成员,而这份样本正好喂 `retreat.compute_breadth_
-    snapshot` 算跌停数/炸板率)。"""
-
-    @staticmethod
-    def _rows(codes, consec_by_code):
-        return [
-            {
-                "ts_code": c, "board": "MAIN", "status": "limit_up", "limit_pct": 0.10,
-                "limit_up_price": 11.0, "limit_down_price": 9.0, "is_limit_up": True,
-                "is_limit_down": False, "is_zaban": False,
-                "consec_limit_up_days": consec_by_code[c],
-            }
-            for c in codes
-        ]
-
-    def test_order_is_crc_rank_ascending_not_consec_descending(self, isolated_env):
-        codes = [f"6{i:05d}.SH" for i in range(40)]
-        # consec 与代码索引强相关(索引越大连板数越高):若排序仍偏向"连板高优先",
-        # 结果前几名会集中在索引大的那一段,crc32 序应当反证这一点。
-        consec = {c: i for i, c in enumerate(codes)}
-        report_day = date(2026, 7, 13)
-        write_daily_fixture(isolated_env, "limit_derived", report_day, self._rows(codes, consec))
-
-        result = universe._load_prev_limit_up_codes(report_day, parquet_dir=isolated_env.parquet_dir)
-        assert set(result) == set(codes)
-        assert result == sorted(codes, key=mainline.crc_rank)
-        # 反证:consec 降序排列的结果与 crc32 序不同(不是同一个排列)
-        assert result != sorted(codes, key=lambda c: -consec[c])
-
-    def test_two_loads_after_partition_row_shuffle_are_bit_identical(self, isolated_env):
-        """⚠ 重写分区(行序打乱,模拟数据修缮/回填)后重读,结果必须逐位相同 ——
-        crc32 只看代码字符串、不吃 parquet 行序,这正是 🟡-N1 点名的可复现性破口
-        (旧实现的并列由行序打散,重写分区会静默换一批样本)。"""
-        codes = [f"6{i:05d}.SH" for i in range(30)]
-        consec = {c: 1 for c in codes}   # 全部并列(现实中绝大多数涨停股 consec=1)
-        report_day = date(2026, 7, 13)
-
-        write_daily_fixture(isolated_env, "limit_derived", report_day, self._rows(codes, consec))
-        first = universe._load_prev_limit_up_codes(report_day, parquet_dir=isolated_env.parquet_dir)
-
-        shuffled = list(reversed(codes))     # 模拟重写分区后行序被打乱
-        write_daily_fixture(isolated_env, "limit_derived", report_day, self._rows(shuffled, consec))
-        second = universe._load_prev_limit_up_codes(report_day, parquet_dir=isolated_env.parquet_dir)
-
-        assert first == second == sorted(codes, key=mainline.crc_rank)
+# ══════════════════════════════════════════════════════════════════════════
+# ⛔ **以下三条用例已于 V2.4.0 P0 退役**(施工纪律 4:写明被谁取代)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# · `test_breadth_extra_codes_from_prior_limit_up_capped`
+# · `test_breadth_extra_needed_equals_size_when_not_restricted`
+# · `TestPrevLimitUpSortOrder`(2 例:crc32 升序 / 重写分区后逐位相同)
+#
+# 三者断言的都是**昨日涨停宽度代理样本**(`breadth_extra_*` /
+# `_load_prev_limit_up_codes`)的取样与截断行为。该样本进池的**唯一理由**是给退潮
+# 判级当分母,而 P0.1 表「代理关注池 →『大盘退潮』= 删」把那条判级整体撤销 ——
+# 样本、需求量留痕、截断函数一并删除,断言对象不存在了。
+#
+# **没有随之作废的**:「截取顺序不得与被测量的量相关」这条采样纪律仍记在
+# `sentinel/mainline.py` 模块头,`crc_rank` 仍是全项目 crc32 排序的唯一实现
+# (`tests/test_sentinel_mainline.py::TestCrc32SamplingKey` 一字未动地守着它)。
+# 下一次要做无偏截断,回那里取,⛔ 别另抄一份。
 
 
 class TestLoadPrev5AvgVolume:
@@ -286,7 +213,8 @@ class TestIsNewStockExempt:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# V2-⑧-A 关注池改组:持仓 + T1/T2 篮子成员 + 相关板块指数 + 昨日涨停;自选池退役
+# 关注池组成:持仓 + T1/T2 篮子成员 + 相关板块指数(V2-⑧-A 改组,**V2.4.0 P0 缩编**)
+# ⚠ 自选池 V2-⑬-11 退役;**昨日涨停宽度样本 V2.4.0 P0 退役**(见上方退役说明)。
 # ══════════════════════════════════════════════════════════════════════════
 
 def _seed_basket(settings, d0: date, codes, *, tier: int, key: str) -> int:
@@ -311,9 +239,13 @@ def _seed_basket(settings, d0: date, codes, *, tier: int, key: str) -> int:
 
 
 class TestV2WatchPoolComposition:
-    """plan §五 V2-⑧-A 验收:**四类来源齐、去重、上限、自选池不再进**。"""
+    """关注池验收:**三类来源齐、去重、上限、退役来源不再进**。
 
-    def test_four_sources_present_and_deduped(self, isolated_env):
+    ⚠ 原名 `test_four_sources_present_and_deduped`(四类 = 持仓 / T1T2 成员 / 板块指数
+    / 昨日涨停)。第四类**被 P0.1 表「代理关注池 →『大盘退潮』= 删」取代**,
+    本用例随之改为**三类齐 + 昨日涨停这一路确实不再进池**的正反双断言。"""
+
+    def test_three_sources_present_and_deduped_and_limit_up_no_longer_enters(self, isolated_env):
         days = business_days(date(2026, 7, 13), 5)
         insert_trade_cal(isolated_env, days)
         report_day, today = days[-2], days[-1]
@@ -336,14 +268,17 @@ class TestV2WatchPoolComposition:
 
         wu = load_watch_universe(today, db_path=isolated_env.db_path,
                                  parquet_dir=isolated_env.parquet_dir)
-        # ① 持仓 ② T1/T2 篮子成员(T3 不进)③ 板块指数 ④ 昨日涨停 —— 四类齐
-        # (V1 候选那一类已随 ⑬-1 删除,不再是关注池来源)
+        # ① 持仓 ② T1/T2 篮子成员(T3 不进)③ 板块指数 —— 三类齐
+        # (V1 候选那一类随 ⑬-1 删除;昨日涨停那一类随 V2.4.0 P0 删除)
         assert "600003.SH" in wu.codes
         assert set(wu.basket_codes) == {"600001.SH", "300001.SZ", "600002.SH"}
         assert "600004.SH" not in wu.codes
         assert wu.index_codes == ["000001.SH", "399006.SZ"]     # 沪主板 + 创业板,确定性排序
         assert set(wu.index_codes) <= set(wu.codes)
-        assert wu.breadth_extra_codes == ["700001.SH"]
+        # 反向:夹具里那只**昨日涨停**票(700001.SH)确实不再进池,`WatchUniverse`
+        # 上也不再有承载它的字段 —— 这就是「代理池宽度样本已退役」的机器判据。
+        assert "700001.SH" not in wu.codes
+        assert not hasattr(wu, "breadth_extra_codes")
         # 去重:codes 无重复
         assert len(wu.codes) == len(set(wu.codes))
         assert [b.tier for b in wu.baskets] == [1, 2]
@@ -392,9 +327,13 @@ class TestV2WatchPoolComposition:
         assert wu.baskets == [] and wu.basket_codes == []
         assert wu.codes == ["600003.SH"]
 
-    def test_index_codes_do_not_pollute_retreat_breadth_sample(self, isolated_env):
-        """指数进了关注池,但**退潮宽度样本不受影响** —— `compute_breadth_snapshot`
-        对查无 `stock_basic` 元数据的代码结构上就跳过(⑧-D:纪律判定零改动)。"""
+    def test_index_codes_do_not_pollute_breadth_sample(self, isolated_env):
+        """指数进了关注池,但**宽度统计不受影响** —— `compute_breadth_snapshot` 对查无
+        `stock_basic` 元数据的代码结构上就跳过。
+
+        ⚠ V2.4.0 P0:该函数所属的退潮判级已退役、生产链零调用;本用例**保留为行为
+        基准**(`retreat.py` 是回滚绳的一部分),同时它守的那条"指数不该进任何宽度分母"
+        的口径对将来任何新的宽度统计仍然适用。"""
         from neckline.sentinel.quotes import Quote
         from neckline.sentinel.retreat import compute_breadth_snapshot
 

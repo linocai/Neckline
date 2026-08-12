@@ -673,3 +673,72 @@ def test_client_declares_loss_warning_on_every_dto_that_carries_stop_line():
     assert "var lossWarningPct: Double? = nil" in models
     # 展示层换算走单一判据(⛔ 别在视图里各写一份 `== "review"`)
     assert 'var isLossWarningCharter: Bool { lossWarningAction == "review" }' in models
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.4.0 P0 新增的两组契约键(P0.5+ 持仓提醒通道 / P0 退役位)
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_position_alerts_channel_is_declared_on_both_sides():
+    """🔴 **P0.5+ 的对拍**:持仓亏损警戒 / 离场参考此前**只经 `GET /board`** 下发,
+    而 V2.4.0 客户端零调用该端点 —— 通道必须整条换过来,**服务端声明了、客户端也解得出**。
+
+    这条抓的正是「删页面时把有效提醒一起弄丢」那个洞:键掉了不会报错,只会**静默
+    少一条提醒**,而「今天没有提醒」本身是合法状态,⛔ 看不出是 bug。"""
+    schemas = (_ROOT / "neckline" / "api" / "schemas.py").read_text(encoding="utf-8")
+    server_pos = schemas.split("class PositionOut(BaseModel):", 1)[1].split("\nclass ", 1)[0]
+    assert "alerts:" in server_pos, "服务端 `PositionOut` 没有声明 `alerts`"
+    server_alert = schemas.split("class PositionAlertOut(BaseModel):", 1)[1].split("\nclass ", 1)[0]
+    client_alert = _dto_body("PositionAlert")
+    assert client_alert, "客户端缺 `struct PositionAlert`"
+    for key in ("eventKey", "verdict", "ts", "level"):
+        assert f"{key}:" in server_alert, f"服务端 `PositionAlertOut` 缺 `{key}`"
+        assert key in client_alert, f"客户端 `PositionAlert` 没有解 `{key}`"
+    assert "alerts" in _dto_body("Position"), "客户端 `Position` 没有解 `alerts`"
+    # ⛔ 枚举码不许直接进 `Text` —— 必须有展示层换算(体例同 `nkBoardLabel`)。
+    assert "func nkPositionAlertLabel(" in _MODELS.read_text(encoding="utf-8")
+
+
+def test_position_alert_dto_hand_writes_init_from_decoder():
+    """A 类也手写(V2-⑮ 起的通例):合成 `Decodable` 对非 Optional 属性
+    **有默认值也不容忍缺键** —— 老服务端不发这个数组时会整份持仓解不出。"""
+    body = _dto_body("PositionAlert")
+    assert "init(from decoder: Decoder)" in body
+
+
+def test_retired_push_kind_flag_is_declared_on_both_sides():
+    """**P0 退役位**:`RETIRED_KINDS` 是服务端单一源,经 `/settings` 下发。
+    🔴 客户端**不许硬编码一份退役 kind 黑名单**(§3.14-B:那是第二份事实源)——
+    这条同时反向断言「客户端源码里不出现 `"retreat"` 这个字面量黑名单」。"""
+    schemas = (_ROOT / "neckline" / "api" / "schemas.py").read_text(encoding="utf-8")
+    block = schemas.split("class PushKindOut(BaseModel):", 1)[1].split("\nclass ", 1)[0]
+    assert "retired:" in block, "服务端 `PushKindOut` 没有声明 `retired`"
+    client = _dto_body("PushKind")
+    assert "retired" in client, "客户端 `PushKind` 没有解 `retired`"
+    # 反向:**现役客户端代码**里不许出现 `"retreat"` 这个 kind 字面量 —— 一旦出现,
+    # 十有八九就是有人把退役判断硬编回了客户端(第二份事实源)。
+    # ⚠ **剥掉行注释再扫**:一条写着「这一路由已删」的说明是留给下一个人的,不是黑名单;
+    # 逼注释绕开自己要说的那个词 = `CLAUDE.md`「对自己的注释报警的闸门等于没有闸门」。
+    # ⚠ 测试目录不在扫描域(`DTODecodeTests` 的 fixture 必须原样带这个 kind)。
+    hits = []
+    for path in sorted((_ROOT / "client" / "Neckline").rglob("*.swift")):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            idx = line.find("//")
+            code = line if idx < 0 else line[:idx]
+            if '"retreat"' in code:
+                hits.append(f"{path.name}:{i}")
+    assert hits == [], f"客户端硬编了退役 kind 字面量:{hits}"
+
+
+def test_settings_kinds_still_carry_every_registered_kind_including_retired():
+    """🔴 **退役行仍要下发**:`PUT /settings/push` 要求给全 `ALL_KINDS`,
+    服务端 GET 若把退役行摘掉,旧客户端下一次 PUT 就缺键 422。
+    隐藏**只发生在客户端渲染层**(`PushSettings.groupedByLevel` 过滤 `retired`)。"""
+    from neckline import notify_kinds
+
+    app_src = (_ROOT / "neckline" / "api" / "app.py").read_text(encoding="utf-8")
+    assert "for k in notify_kinds.ALL_KINDS" in app_src
+    assert notify_kinds.RETIRED_KINDS <= set(notify_kinds.ALL_KINDS)
+    models = _MODELS.read_text(encoding="utf-8")
+    assert "for k in kinds where !k.retired" in models, (
+        "客户端应在 `groupedByLevel`(渲染层)过滤退役行,⛔ 不是从 `kinds` 里删掉")

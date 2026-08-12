@@ -67,12 +67,12 @@ def _log_tick(n: int, now: datetime, result) -> None:
     if result.skipped_non_trading:
         logger.info("第%d拍 %s:非交易时段,跳过。", n, now.strftime("%H:%M:%S"))
         return
+    # ⛔ V2.4.0 P0:「退潮%s;证伪%d」两段随两个哨兵退役从本行删除。
     logger.info(
-        "第%d拍 %s:关注%d只/拉到%d只行情;退潮%s;证伪%d/持仓%d个信号;"
+        "第%d拍 %s:关注%d只/拉到%d只行情;持仓%d个信号;"
         "本拍推送%d条(去重跳过%d条)",
         n, now.strftime("%H:%M:%S"), result.watched_codes, result.quotes_fetched,
-        "已触发" if result.retreat_active else "未触发",
-        len(result.invalidation_signals), len(result.holding_alerts),
+        len(result.holding_alerts),
         len(result.pushed_events), result.skipped_duplicate,
     )
 

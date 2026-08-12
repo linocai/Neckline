@@ -41,9 +41,11 @@ import SwiftUI
 ///
 /// ⚠ **刻意住在这一屏的 `@State` 里、不进 `AppModel`**(同 `BasketDailyView.receiptSelected`
 /// 先例):它是列表栏的本地选中态,不是跨板块的应用状态。
+/// ⛔ **V2.4.0 P0:`case board`(盘中动态)已删** —— 那一屏整个退役了(P0.1 表
+/// 「独立『盘中动态』页面与事件列表 = 删」)。持仓相关提醒改由 `Position.alerts`
+/// 随 `/positions` 一起下发,画在持仓行与持仓详情里(P0.5+)。
 enum PositionsPane: Equatable {
     case position
-    case board
     case alerts
 }
 
@@ -52,8 +54,8 @@ struct PositionsView: View {
 
     /// ⚠ 初值走 QA 钩子(缺环境变量恒 `.position`,正常路径逐字节不变)—— 见 `NKQA`。
     @State private var pane: PositionsPane = {
+        // ⛔ V2.4.0 P0:`"board"` 取值已删 —— 那一屏不存在了,落 default 回持仓。
         switch NKQA.initialPositionsPane {
-        case "board": return .board
         case "alerts": return .alerts
         default: return .position
         }
@@ -102,7 +104,7 @@ struct PositionsView: View {
                     mergedExposureSection
                     positionsListSection
                     alertsSection
-                    BoardSection(model: model)
+                    // ⛔ V2.4.0 P0:原先排在这里的 `BoardSection`(盘中动态)整节已删。
                 }
                 .padding(NKSpace.pagePad)
             }
@@ -148,13 +150,13 @@ struct PositionsView: View {
         } detail: {
             detailPane
         }
-        // V2.3.1 批 6:刹车条那枚「看哪几条触发了」跨板块过来的一次性请求
-        // (`AppModel.positionsPaneRequest`)。**收到就置回 `nil`** —— 它是请求不是状态,
-        // 留着会把用户后续的手动选择一直覆盖回去。
+        // 跨板块过来的一次性请求(`AppModel.positionsPaneRequest`)。**收到就置回 `nil`**
+        // —— 它是请求不是状态,留着会把用户后续的手动选择一直覆盖回去。
+        // ⛔ V2.4.0 P0:唯一发起方(壳层刹车条的「看哪几条触发了」)已删,`"board"` 这个
+        // 取值随之删除;通道本身**保留**(`"alerts"` / `"position"` 仍有用)。
         .onChange(of: model.positionsPaneRequest) { _, req in
             guard let req else { return }
             switch req {
-            case "board": pane = .board
             case "alerts": pane = .alerts
             default: pane = .position
             }
@@ -165,8 +167,6 @@ struct PositionsView: View {
     @ViewBuilder
     private var detailPane: some View {
         switch pane {
-        case .board:
-            BoardSection(model: model)
         case .alerts:
             alertsSection
         case .position:
@@ -198,7 +198,7 @@ struct PositionsView: View {
             }
             .padding(.horizontal, NKSpace.listHeaderExtraH).padding(.bottom, 10)
 
-            boardRow
+            // ⛔ V2.4.0 P0:原先排在这里的「盘中动态」入口行(`boardRow`)已删。
             alertsRow
             // ⚠ 行情状态条**原型的持仓栏里没有**(856–983 行全文),它是 V2.3.0 起的既有
             // 诚实披露资产 —— 本批只把 compact 分支收成与合并敞口块同一种"窄块"形状,
@@ -211,40 +211,10 @@ struct PositionsView: View {
         }
     }
 
-    /// 「盘中动态」入口行(原型 875–884)。两行:图标 + 标题 + 右端状态徽标;
-    /// 次行是本次哨兵的实际读数,缩进到标题下沿。
-    private var boardRow: some View {
-        NKListRow(selected: pane == .board) {
-            pane = .board
-        } content: {
-            VStack(alignment: .leading, spacing: 3) {   // 原型 883 行 margin-top:3
-                HStack(spacing: 8) {
-                    Image(systemName: "waveform.path.ecg").font(.system(size: 13))
-                        .foregroundStyle(NK.textSecondary).frame(width: 13)
-                    Text("盘中动态").font(NKFont.callout).fontWeight(.semibold)
-                        .foregroundStyle(NK.textPrimary)
-                    Spacer(minLength: 6)
-                    if model.board.retreatBrake.active {
-                        NKChip(text: "退潮刹车", tone: .bad, filled: true)
-                    } else {
-                        NKChip(text: "运行正常", tone: .good)
-                    }
-                }
-                Text(boardRowCaption).font(NKFont.caption)
-                    .foregroundStyle(NK.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 21)          // 原型 883 行 padding-left:21
-            }
-        }
-    }
-
-    /// 次行摘要。🔴 **只由已经拉回来的看板字段拼**,⛔ 一个数都不新造。
-    private var boardRowCaption: String {
-        var parts = ["\(model.board.events.count) 条哨兵事件"]
-        parts.append(model.board.retreatBrake.active ? "退潮刹车已触发" : "无退潮刹车")
-        if !model.board.asof.isEmpty { parts.append("更新于 \(model.board.asof)") }
-        return parts.joined(separator: " · ")
-    }
+    // ⛔ **V2.4.0 P0:`boardRow` 与 `boardRowCaption` 已整体删除。**
+    // P0.1 表那两行:「独立『盘中动态』页面与事件列表 = 删」+「那枚『一切正常』绿灯 = 删」。
+    // ⚠ 那枚绿灯正是审计规格 P0.1 点名的病:**没有 brake 就显示「一切正常」**,
+    // 分不清真正常 / 行情过期 / 服务停摆 / 本拍无数据 —— ⛔ 不许换个说法接回来。
 
     /// 「临时提醒」入口行(原型 886–893)。右端是**计数**,不是徽标。
     private var alertsRow: some View {
@@ -631,6 +601,12 @@ struct PositionListRow: View {
                     }
                 }
             }
+            // 🔴 V2.4.0 P0.5+:收起行只说**有几条**,详情里才逐条列(P0.5+ 原文)。
+            // ⚠ 一行文字,⛔ 无底色 / 无图标 / 不可单独点击 —— 它不是一个新的状态位。
+            if !position.alerts.isEmpty {
+                Text("今日有 \(position.alerts.count) 条提醒")
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
+            }
             // 停牌 / 无数据显式标注 —— **绝不静默把老价当今日价**。
             if let stale = position.priceStale {
                 Text("价格为 \(model.calendar.displayString(stale.lastCloseDate)) 最后成交价(\(stale.reasonLabel))· 复牌当日重判")
@@ -721,6 +697,7 @@ struct PositionDetailPage: View {
             }
             ForEach(topBillboardK4) { hit in K4AdvisoryBanner(hit: hit) }
             headerBlock
+            todayAlertsCard            // 🔴 V2.4.0 P0.5+:今日该持仓自己的哨兵提醒
             if let stale = position.priceStale {
                 // 原型 1183–1196 行:拉不到今日行情时,主位是一张**居中**的「—」卡
                 // (说清最后成交日 + K4 有没有体检),后面跟一块常开的灰底说明。
@@ -739,6 +716,55 @@ struct PositionDetailPage: View {
             #if os(macOS)
             macActionRow
             #endif
+        }
+    }
+
+    // MARK: - 🔴 今日提醒(V2.4.0 P0.5+:原「盘中动态」页上属于本持仓的那部分)
+
+    /// 今日该持仓自己的哨兵提醒,**按时间列出**。
+    ///
+    /// 🔴 **它不是「盘中动态页换了个地方」**:只画**这一只票自己的**事件 ——
+    /// ⛔ 无市场级行、⛔ 无「运行正常」绿灯、⛔ 无事件以外的汇总或状态、⛔ 无轮询
+    /// (随 `/positions` 一起拉,不新增任何请求)、⛔ 不做任何二次裁定
+    /// (服务端落库时那句话原样展示)。
+    /// ⚠ **空数组 → 整块不画**:「今天没有提醒」与「一切正常」是两回事,
+    /// ⛔ 不许画一句「暂无异常」冒充后者。
+    @ViewBuilder
+    private var todayAlertsCard: some View {
+        if !position.alerts.isEmpty {
+            NKCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    NKSectionHeader(title: "今日提醒 \(position.alerts.count)")
+                    ForEach(position.alerts) { a in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 7) {
+                                NKChip(text: a.label, tone: alertTone(a.level),
+                                       filled: a.level == "critical")
+                                Spacer(minLength: 4)
+                                if !a.timeLabel.isEmpty {
+                                    Text(a.timeLabel).font(NKFont.caption.monospacedDigit())
+                                        .foregroundStyle(NK.textTertiary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            if !a.verdict.isEmpty {
+                                Text(a.verdict).font(NKFont.callout).lineSpacing(3)
+                                    .foregroundStyle(NK.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `level` → 徽标色调。**未识别值走中性**(⛔ 不冒充紧急,也⛔ 不冒充正常)。
+    private func alertTone(_ level: String) -> NKAxisTone {
+        switch level {
+        case "critical": return .bad
+        case "warn": return .warn
+        default: return .info
         }
     }
 

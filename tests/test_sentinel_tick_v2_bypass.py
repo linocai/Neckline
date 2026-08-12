@@ -27,7 +27,7 @@ from neckline.sentinel import custom as cu
 from neckline.sentinel import engine as sentinel_engine
 from neckline.sentinel.channels import PushChannel
 from neckline.sentinel.dedup import already_pushed, load_events_for_date
-from neckline.sentinel.engine import reset_retreat_process_state, run_tick
+from neckline.sentinel.engine import run_tick
 from neckline.sentinel.positions import open_position
 from neckline.sentinel.quotes import Quote
 
@@ -105,7 +105,6 @@ def tick_env(isolated_env):
     insert_stock_basic(isolated_env, [
         {"ts_code": c, "name": c, "market": "主板"} for c in codes
     ])
-    reset_retreat_process_state()
     return _TickEnv(isolated_env, report_day, today)
 
 
@@ -484,12 +483,16 @@ class TestBypassFailuresNeverTouchDiscipline:
         assert r.holding_alerts                                       # 纪律判定照旧
         assert r.skipped_non_trading is False
 
-    def test_bypasses_do_not_change_retreat_or_invalidation_paths(self, tick_env):
-        """旁路存在与否,退潮 / 证伪两条路径的结果一模一样(结构性对拍)。
-        ⚠ V2-⑬-1:买点哨兵已退役,原三条路径变两条。"""
+    def test_bypasses_do_not_resurrect_retired_intraday_judgements(self, tick_env):
+        """⚠ **原用例**断言「旁路存在与否,退潮 / 证伪两条路径的结果一模一样」
+        (`r.retreat_active is False and r.retreat_alert is None` / `invalidation_signals == []`)。
+        **被 P0.1 表那七行取代** —— 两条路径已整体退役,`TickResult` 上连承载它们的
+        字段都没有了。改成**更强的反向断言**:跑一拍之后,那几个位一个都不许"长回来"
+        (旁路或将来任何人给 `TickResult` 补一个恒 False 的位 = 半退役,当场红)。"""
         now = datetime.combine(tick_env.today, time(10, 30))
         qf = lambda codes: {"600001.SH": _q("600001.SH", 9.9)}  # noqa: E731
         r = run_tick(now, db_path=tick_env.db_path, parquet_dir=tick_env.parquet_dir,
                      quotes_fn=qf, notifier=_FakeNotifier())
-        assert r.retreat_active is False and r.retreat_alert is None
-        assert r.invalidation_signals == []
+        for gone in ("retreat_active", "retreat_alert", "retreat_warning",
+                     "breadth_snapshot", "invalidation_signals"):
+            assert not hasattr(r, gone), gone
