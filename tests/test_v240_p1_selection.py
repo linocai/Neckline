@@ -726,8 +726,8 @@ class TestP1SingleImplementation:
         """新原因码必须两侧都有中文标签(⛔ 别让界面印英文码)。"""
         from neckline.report.basket_daily import DROPPED_REASON_LABEL
 
-        client = (_ROOT / "client" / "Neckline" / "Networking" / "Models.swift").read_text(
-            encoding="utf-8")
+        from tests.client_sources import models_text
+        client = models_text()   # V2.4.0 P3.7:DTO 已拆六份,统一入口读
         for code in (bs.MEMBER_OUT_REASON_CORE, bs.MEMBER_OUT_REASON_POSITION):
             assert code in DROPPED_REASON_LABEL, code
             assert f'case "{code}"' in client, code
@@ -757,8 +757,8 @@ class TestP1SingleImplementation:
         node = old["gates"]
         assert "gate_available" not in node          # 老形状本来就没有
         # 客户端侧:缺键 → `gateAvailable` 空表 → 该关只按 verdict 画(⛔ 不猜成判不出)
-        client = (_ROOT / "client" / "Neckline" / "Networking" / "Models.swift").read_text(
-            encoding="utf-8")
+        from tests.client_sources import models_text
+        client = models_text()   # V2.4.0 P3.7:DTO 已拆六份,统一入口读
         block = client.split("struct BasketGates", 1)[1].split("\n}", 1)[0]
         assert 'obj["gate_available"]?.objectValue ?? [:]' in block
         assert "var gateAvailable: [String: Bool] = [:]" in block

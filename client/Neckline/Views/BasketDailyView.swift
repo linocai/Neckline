@@ -53,6 +53,11 @@ struct BasketDailyView: View {
     private var daily: BasketDaily { model.basketDaily }
     private var selectedBasket: Basket? { model.openedBasketId.flatMap { model.basket(byID: $0) } }
 
+    /// V2.4.0 P3.3:市场状态行点开 = ① 六格情绪仪表盘(**iOS/macOS 共用这一位状态**)。
+    @State private var marketStatusExpanded = false
+    /// V2.4.0 P3.3:一行紧凑统计入口点开 = ③b/③b-2 完整清单。
+    @State private var statsExpanded = false
+
     var body: some View {
         #if os(iOS)
         iosBody
@@ -67,6 +72,15 @@ struct BasketDailyView: View {
     private var iosBody: some View {
         NavigationStack {
             ScrollView {
+                // 🔴 **V2.4.0 P3.3:默认首屏只留四件**(施工图 P3.3 逐字):
+                //   竞价一行摘要 · 今日市场状态与数据置信度 · T1/T2 篮子 · 一行紧凑统计入口。
+                // 移出主信息流(**不是删**,数据源与文案一字未改,只是换了挂载点):
+                //   ④ 昨日复盘入口 → 复盘 Tab(已是独立 Tab,不必在这里另开一条捷径)·
+                //   ② 持仓体检入口 → 持仓 Tab(同上)·
+                //   完整 IntelPackage → 折叠区「研究材料」·
+                //   ① 六格情绪仪表盘 → 市场状态行点开 ·
+                //   ⑤ 完整数据新鲜度卡 → 工具栏徽标,降级才展开 ·
+                //   ③b/③b-2 完整清单 → 统计入口点开。
                 VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                     // 🔴 **V2.3.3-⑤ 竞价卡是这一页的第一张卡**(D1 早晨 9:26 之后才有内容;
                     // 没有就整张不画,⛔ 不画空卡)。**刻意放在 `degraded` 分支之外**:
@@ -76,21 +90,18 @@ struct BasketDailyView: View {
                     if model.report.degraded {
                         reportNotReadyCard
                     } else {
-                        compactOverviewCard
-                        reviewPointer
-                        // 🔴 **③ 今日篮子排在 ② 与情报之前**(iOS 原型 349–441 行的顺序:
-                        // 行情状态 + 情绪 → 昨日回执 → ③ 篮子 → 篮子卡)。V2.3.0 把
-                        // ② 持仓体检入口与整块「情报」塞在概览卡里、压在篮子上面 ——
-                        // iPhone 上要**划过两屏**才看得到今天的篮子,而它才是这一页的主角。
-                        // ⛔ 两段一个字没删,只是挪到篮子后面(macOS 侧另有安排,别跟着改)。
+                        marketStatusRow                          // 2. 今日市场状态与数据置信度
+                        if !model.report.missedEntryHint.isEmpty {
+                            MissedEntryHintBanner(text: model.report.missedEntryHint)
+                        }
+                        degradedTopNotice                        // 降级时才有的琥珀块(E)
+                        // 🔴 **③ 今日篮子排在最前**(P3.3 首屏目标:iPhone 393×852 首屏
+                        // 能看到第一个 T1/T2 篮子)。
                         basketsSection
                         intradayNoticeRow      // 🔴 P0.2:全 App 唯一一条盘中小提示
-                        droppedSection
-                        outSection
-                        holdingCheckupPointer
-                        IntelPackageView(report: model.report)
+                        compactStatsRow                          // 4. 一行紧凑统计入口
+                        researchMaterialsDisclosure               // 折叠区「研究材料」= 完整 IntelPackage
                     }
-                    freshnessSection      // ⑤ **恒在**(在 degraded 分支之外)
                 }
                 .padding(NKSpace.pagePad)
             }
@@ -100,9 +111,24 @@ struct BasketDailyView: View {
             .navigationTitle(AppTab.baskets.title)
             .toolbar {
                 // iOS 原型 316–319 行:右上是**蓝底胶囊 + 上次刷新时刻**,⛔ 不是裸箭头。
-                ToolbarItem(placement: .primaryAction) { NKRefreshPill(model: model) }
+                // 🔴 P3.3-E:数据新鲜度徽标挪进工具栏(与刷新胶囊并排),完整 ⑤ 段
+                // 收进 `showFreshnessSheet`。
+                ToolbarItem(placement: .primaryAction) {
+                    HStack(spacing: 8) {
+                        // ⚠ **报告还没拉到时整枚不画**(同 `NKToolbar.freshnessBadge` 那条):
+                        // 网络没通 / 还没拉过 ≠「查了没查到」——后者是报告**拉到了**、
+                        // 里面就是没有新鲜度那一节,两件事在界面上必须讲不同的话。
+                        if !model.report.tradeDate.isEmpty {
+                            NKFreshnessBadge(freshness: model.report.dataFreshness) {
+                                model.showFreshnessSheet = true
+                            }
+                        }
+                        NKRefreshPill(model: model)
+                    }
+                }
             }
-            .refreshable { await model.refresh() }
+            // 🔴 V2.4.0 P3.6:下拉刷新只拉选股板块(⛔ 不再顺带拉持仓 / 盘中看板)。
+            .refreshable { await model.refreshSelection() }
         }
         .sheet(item: Binding(get: { selectedBasket },
                              set: { if $0 == nil { model.dismissBasket() } })) { basket in
@@ -116,6 +142,21 @@ struct BasketDailyView: View {
         // 这里再兜一层:没有 payload 就什么都不呈现(⛔ 不弹一个空壳)。
         .sheet(isPresented: $model.showAuctionSheet) {
             if let a = model.auction { AuctionReportPage(model: model, payload: a) }
+        }
+        // V2.4.0 P3.3-E:数据新鲜度完整 ⑤ 段(工具栏徽标点开)。⚠ 复用既有
+        // `freshnessSection`(iOS 分支)——一个字段都不少,只是换了呈现入口。
+        .sheet(isPresented: $model.showFreshnessSheet) {
+            NavigationStack {
+                ScrollView { freshnessSection.padding(NKSpace.pagePad) }
+                    .background(NK.pageBgIOS)
+                    .navigationTitle("数据新鲜度")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("关闭") { model.showFreshnessSheet = false }
+                        }
+                    }
+            }
         }
     }
     #endif
@@ -145,6 +186,22 @@ struct BasketDailyView: View {
                     .frame(minWidth: 760, maxWidth: 860, minHeight: 640, maxHeight: .infinity)
             }
         }
+        // 🔴 **V2.4.0 P3.3-E:macOS 也必须接这个弹层** —— 工具栏那枚新鲜度徽标两端共用
+        // (`NKToolbar` 只在 macOS 上出现),点了没落点 = 一枚点不动的徽标,比不放更糟。
+        // ⚠ 内容与 iOS 那份是**同一个** `freshnessSection`,⛔ 不另画一份 ⑤ 段。
+        .sheet(isPresented: $model.showFreshnessSheet) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("数据新鲜度").font(NKFont.title3).foregroundStyle(NK.textPrimary)
+                    Spacer(minLength: 12)
+                    Button("关闭") { model.showFreshnessSheet = false }
+                }
+                .padding(.horizontal, NKSpace.pagePad).padding(.vertical, 14)
+                ScrollView { freshnessSection.padding(NKSpace.pagePad) }
+            }
+            .frame(minWidth: 620, maxWidth: 720, minHeight: 420, maxHeight: .infinity)
+            .background(NK.pageBg)
+        }
     }
 
     // —— 列表栏 ——
@@ -163,17 +220,29 @@ struct BasketDailyView: View {
             }
             .padding(.horizontal, NKSpace.listHeaderExtraH).padding(.bottom, 10)
 
-            overviewRow
+            // 🔴 **V2.4.0 P3.3(F 组):macOS 列表栏与 iOS 首屏同一套减法** ——
+            //   标题 → 竞价一行 → 市场状态一行 → T1/T2 篮子行 → 一行统计入口 → 盘中提示。
+            // ⚠ 「今日概览」与「昨日回执」两行**从列表栏撤下**(设计交接包 F 逐字):
+            //   概览的五段各自有了新落点 —— 竞价卡 / 行情状态 → 上面两行、① 情绪 →
+            //   市场状态行点开、⑤ 新鲜度 → 工具栏徽标、情报 → 「研究材料」折叠区;
+            //   昨日回执 → 复盘 Tab · 每日页(它自己的副标题一直就写着去那儿看)。
+            //   ⛔ 别把它们搬回来:同一份数据两处画会看到两个可能不同步的版本。
+            // ⚠ **`overviewDetail` 仍在**(详情栏在"今天一篮都没有"时的回退态),
+            //   ⛔ 不是删了那段内容,是删了这条冗余入口。
             if model.report.degraded {
                 // 报告未生成:列表栏没有篮子可列 —— 原型(`Neckline 状态.dc.html` 240–246)
                 // 给的是一块**居中的空态**,⛔ 不是一片白。
                 notReadyListPlaceholder
             } else {
-                reviewReceiptRow
+                AuctionSummaryCard(model: model)
+                    .padding(.horizontal, NKSpace.listHeaderExtraH)
+                marketStatusRow
+                    .padding(.horizontal, NKSpace.listHeaderExtraH)
                 basketsListSection
+                compactStatsRow
                 intradayNoticeRow      // 🔴 P0.2:全 App 唯一一条盘中小提示
-                droppedListSection
-                outListSection
+                researchMaterialsDisclosure
+                    .padding(.horizontal, NKSpace.listHeaderExtraH)
             }
         }
     }
@@ -375,6 +444,16 @@ struct BasketDailyView: View {
 
     // MARK: - 详情栏 / iOS 概览(两端共用的「今日概览」内容)
 
+    /// V2.4.0 P3.3/P3.6(F 组):详情栏没有手动选中任何篮子 / 回执时,**默认显示
+    /// T1 第一篮的篮子卡**(不再是「今日概览」三张卡)——T1 空则退 T2 第一个;
+    /// **没有篮子时才回退到概览**(既有 `overviewRow` 入口仍可手动点回概览)。
+    private var firstDisplayedBasket: Basket? {
+        for tier in daily.displayTiers {
+            if let first = daily.baskets(tier: tier).first { return first }
+        }
+        return nil
+    }
+
     #if os(macOS)
     @ViewBuilder
     private var detailColumn: some View {
@@ -384,6 +463,8 @@ struct BasketDailyView: View {
             reportNotReadyDetail
         } else if receiptSelected {
             reviewReceiptDetail
+        } else if let first = firstDisplayedBasket {
+            BasketCardPage(model: model, basket: first)
         } else {
             VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                 Text("今日概览").font(NKFont.title1).tracking(-0.4)
@@ -644,30 +725,147 @@ struct BasketDailyView: View {
         }
     }
 
-    // MARK: - iOS 概览卡(桌面版「今日概览」在手机上压成一张卡)
-
-    #if os(iOS)
-    @ViewBuilder
-    private var compactOverviewCard: some View {
-        VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-            if !model.report.tradeDate.isEmpty {
-                Text(metaLine).font(NKFont.caption.monospacedDigit())
-                    .foregroundStyle(NK.textSecondary)
-            }
-            MarketRegimeStrip(regime: model.marketRegime, compact: true)
-            if !model.report.missedEntryHint.isEmpty {
-                MissedEntryHintBanner(text: model.report.missedEntryHint)
-            }
-            sentimentSection
-            // ⚠ ② 持仓体检与「情报」**已挪到篮子后面**(见 `iosBody`),⛔ 别搬回来。
-        }
-    }
+    // ⚠ **`compactOverviewCard`(桌面「今日概览」压成一张卡)已拆**(V2.4.0 P3.3):
+    // `metaLine` 挪进 `marketStatusRow` 头顶一行;`MarketRegimeStrip(compact)` + 仓位
+    // 额度 + 数据置信度合并进 `marketStatusRow` 本体;`sentimentSection`(①)改成点开
+    // `marketStatusRow` 才展开,⛔ 不再默认铺开占一屏。`missedEntryHint` banner 仍在
+    // `iosBody` 里原样保留(未挪动)。
 
     private var metaLine: String {
         "交易日 \(model.calendar.displayString(model.report.tradeDate)) · 章程 \(model.report.strategyVersion)"
             + (daily.packVersion.map { " · 选股包 \($0)" } ?? "")
     }
-    #endif
+
+    // MARK: - 🔴 P3.3 默认层②:今日市场状态与数据置信度(一行卡,点开展开 ①)
+
+    /// 一行:7px 状态点 + 状态名 + 仓位额度实心徽标 + 右端「数据置信度 / 可用 · 降级 N」。
+    /// 点开展开完整 ①(六格情绪仪表盘)+ 非 compact 版 `MarketRegimeStrip`
+    /// (增强/减弱方向 · 缺维披露),内容与原「① 情绪与市场语境」逐字相同,只是
+    /// 从**默认展开**改成**点开才展开**。
+    private var marketStatusRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !model.report.tradeDate.isEmpty {
+                Text(metaLine).font(NKFont.caption.monospacedDigit())
+                    .foregroundStyle(NK.textSecondary)
+            }
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) { marketStatusExpanded.toggle() }
+            } label: {
+                HStack(spacing: 10) {
+                    if let d = model.marketRegime.day, model.marketRegime.available {
+                        Circle().fill(d.tone.color).frame(width: 7, height: 7)
+                        Text(d.displayLabel).font(NKFont.body).fontWeight(.semibold)
+                            .foregroundStyle(NK.textPrimary)
+                    } else {
+                        Circle().fill(NK.textTertiary).frame(width: 7, height: 7)
+                        Text("行情状态未取得").font(NKFont.body).fontWeight(.semibold)
+                            .foregroundStyle(NK.textSecondary)
+                    }
+                    if let q = model.quota { NKChip(text: q.label, tone: q.tone, filled: true) }
+                    Spacer(minLength: 6)
+                    Text(dataConfidenceText).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                        .multilineTextAlignment(.trailing)
+                    Image(systemName: marketStatusExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(NK.textTertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if marketStatusExpanded {
+                MarketRegimeStrip(regime: model.marketRegime)
+                sentimentSection
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .background(RoundedRectangle(cornerRadius: NKRadius.card).fill(NK.cardBg))
+        .overlay(RoundedRectangle(cornerRadius: NKRadius.card).stroke(NK.hairline, lineWidth: 0.5))
+    }
+
+    /// 「数据置信度 / 可用 · 降级 N」—— 与工具栏 `NKFreshnessBadge` 同一把尺
+    /// (`stale`/`industryStrengthStale`/`scanLayerStale` 三件),⛔ 不新造判据。
+    private var dataConfidenceText: String {
+        guard let f = model.report.dataFreshness else { return "数据置信度 · 没查到" }
+        var n = 0
+        if f.stale { n += 1 }
+        if f.industryStrengthStale == true { n += 1 }
+        if f.scanLayerStale == true { n += 1 }
+        return n > 0 ? "数据置信度 · 可用 · 降级 \(n)" : "数据置信度 · 可用"
+    }
+
+    // MARK: - 🔴 P3.3-E:首页顶部降级块(有落后项时才显示;三张表都当日 → 不画)
+
+    /// **显著披露**(施工图 P3.3 末条):有落后项时首页顶部一条琥珀块说清后果,
+    /// ⛔ 不能只靠工具栏那枚小徽标。内容与既有 `DataFreshnessBanner` 完全相同
+    /// (`needsBanner` 覆盖板块 / 行业强度 / 扫描层三件独立故障),只是挪到首页顶部。
+    @ViewBuilder
+    private var degradedTopNotice: some View {
+        if let f = model.report.dataFreshness, f.needsBanner {
+            DataFreshnessBanner(freshness: f)
+        }
+    }
+
+    // MARK: - 🔴 P3.3 默认层④:一行紧凑统计入口(未定档 / OUT / 数据降级)
+
+    /// 「未定档 3 · OUT 12 · 数据降级 1 项」+ chevron。**首要原因**按 `nkGateOrder`
+    /// 最靠前的那一关归并(与成员级 OUT 主原因同一把尺,零发明)。点开展开完整
+    /// ③b/③b-2 清单(既有 `droppedSection`/`outSection`,内容一字未改)。
+    /// ⚠ **零溢出时这一行仍在**(E2 不变)—— 三项数字可以都是 0,但这一行不整段消失。
+    private var compactStatsRow: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) { statsExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(compactStatsSummary)
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 6)
+                    Image(systemName: statsExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(NK.textTertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, NKSpace.listHeaderExtraH).padding(.vertical, 4)
+            if statsExpanded {
+                VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+                    droppedSection
+                    outSection
+                }
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    private var compactStatsSummary: String {
+        var parts = ["未定档 \(daily.droppedBaskets.count)", "OUT \(daily.outCandidates.count)"]
+        let degraded = [daily.droppedBasketsAvailable, daily.outCandidatesAvailable]
+            .filter { !$0 }.count
+        if degraded > 0 { parts.append("数据降级 \(degraded) 项") }
+        var line = parts.joined(separator: " · ")
+        if let reason = compactStatsPrimaryGateReason { line += " · 首要原因:\(reason)" }
+        return line
+    }
+
+    /// 「首要原因」= `nkGateOrder`(K8 §五 六关顺序,与服务端 `GATE_ORDER` 同一把尺)
+    /// 里最靠前、且在 ③b/③b-2 里出现过的那一关。**零发明**:不新造归并规则,直接复用
+    /// 成员级 OUT 主原因已经在用的同一份顺序表。
+    private var compactStatsPrimaryGateReason: String? {
+        let gates = Set(daily.droppedBaskets.compactMap(\.gate) + daily.outCandidates.compactMap(\.outGate))
+        guard let top = nkGateOrder.first(where: { gates.contains($0) }) else { return nil }
+        return nkGateLabel(top)
+    }
+
+    // MARK: - 折叠区「研究材料」(完整 IntelPackage,P3.3)
+
+    /// ⚠ **一字未删**:`IntelPackageView` 原样传入,只是从默认流挪进折叠区。
+    private var researchMaterialsDisclosure: some View {
+        NKDisclosure(summary: "研究材料 · 复盘情报件 / 板块资金流 / 消息面") {
+            IntelPackageView(report: model.report)
+        }
+    }
 
     // MARK: - ① 情绪与市场语境
 
@@ -712,28 +910,10 @@ struct BasketDailyView: View {
         #endif
     }
 
-    // MARK: - ②(持仓体检:指过去,不重画)
-
-    private var holdingCheckupPointer: some View {
-        NKCard {
-            Button { model.view = .positions } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "chart.line.uptrend.xyaxis").foregroundStyle(NK.accent)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("② 持仓体检").font(NKFont.body).fontWeight(.semibold)
-                            .foregroundStyle(NK.textPrimary)
-                        Text("持仓 \(model.positions.count) 笔 · 在「持仓」板块查看(先管住手里的)")
-                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.system(size: 11))
-                        .foregroundStyle(NK.textTertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-    }
+    // ⚠ **`holdingCheckupPointer`(② 持仓体检入口卡)已删**(V2.4.0 P3.3):
+    // 持仓已是独立 Tab(工具栏 / TabBar 一直可达),选股页里再放一张"跳转卡"是
+    // 冗余导航 —— 数据(`model.positions.count` 等)从没在这张卡之外的地方消失,
+    // 这不是删数据,是删一个如今多余的快捷方式。
 
     // MARK: - ③ 今日篮子(iOS:卡片流)
 
@@ -891,34 +1071,11 @@ struct BasketDailyView: View {
         .overlay(RoundedRectangle(cornerRadius: NKRadius.inner).stroke(NK.hairline, lineWidth: 0.5))
     }
 
-    // MARK: - ④(昨日篮子复盘已迁往复盘板块 · 每日页;这里只留一行入口,⛔ 不重画)
+    // MARK: - ④(昨日篮子复盘已迁往复盘板块 · 每日页)
     //
-    // 同 ② 持仓体检那条:**同一份数据画两遍只会让用户在两处看到可能不同步的两个版本**。
-    // 数据源没变(仍是 `model.basketDaily.reviews`,随报告冻结),换的是挂载点。
-
-    private var reviewPointer: some View {
-        NKCard {
-            Button {
-                model.view = .review
-                model.reviewPage = .daily
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: AppTab.review.systemImage).foregroundStyle(NK.accent)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("④ 昨日篮子复盘").font(NKFont.body).fontWeight(.semibold)
-                            .foregroundStyle(NK.textPrimary)
-                        Text(reviewPointerCaption)
-                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.system(size: 11))
-                        .foregroundStyle(NK.textTertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-    }
+    // ⚠ **iOS 入口卡 `reviewPointer` 已删**(V2.4.0 P3.3):复盘已是独立 Tab,
+    // 在选股页再放一张跳转卡是冗余导航(同 `holdingCheckupPointer` 那条理由)。
+    // `reviewPointerCaption` **保留**——macOS `reviewReceiptRow` 仍在用它。
 
     /// ⚠ 入口这一行也得**三态分开说**(⛔ 不许统一成「\(n) 篮」):本次没跑复盘 /
     /// 昨日无篮子可复盘 / 有 —— 详细三态在复盘板块每日页逐字保留,这里是它的缩写。
@@ -1187,7 +1344,7 @@ private struct BasketListRow: View {
                         // 5px 状态点 = **位置关 / 核心关两关取最差**;两关都没判 → 灰
                         // (原型 150/156/162/168 行四行分别是绿 / 红 / 绿 / 灰)。
                         // ⚠ 纯展示层聚合,读的就是同一行右边那两枚判定 —— ⛔ 不另算判据。
-                        Circle().fill(memberDotColor(m)).frame(width: 5, height: 5)
+                        Circle().fill(nkMemberDotColor(m)).frame(width: 5, height: 5)
                         Text(m.name.isEmpty ? m.tsCode : m.name)
                             .font(NKFont.caption).fontWeight(.medium)
                             .foregroundStyle(NK.textPrimary).lineLimit(1)
@@ -1197,10 +1354,23 @@ private struct BasketListRow: View {
                             NKChip(text: m.roleDisplay)
                         }
                         Spacer(minLength: 0)
+                        // 🔴 V2.4.0 P3.3(F 组):**macOS 列表栏成员行右端由 RS 名次换成
+                        // 入场区间**——扫一眼就知道每只票的可执行价位,不必再点进卡详情。
+                        // iOS 保留 RS 名次(手机行更窄,入场区间两个数字容易把行挤爆)。
+                        #if os(macOS)
+                        if let range = m.entryZone?.compactRangeText {
+                            Text(range).font(NKFont.caption.monospacedDigit())
+                                .foregroundStyle(NK.textTertiary)
+                        } else if let rs = m.rsRank {
+                            Text("RS #\(rs)").font(NKFont.caption.monospacedDigit())
+                                .foregroundStyle(NK.textTertiary)
+                        }
+                        #else
                         if let rs = m.rsRank {
                             Text("RS #\(rs)").font(NKFont.caption.monospacedDigit())
                                 .foregroundStyle(NK.textTertiary)
                         }
+                        #endif
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)   // 原型 `memRow()`
                 }
@@ -1229,15 +1399,8 @@ private struct BasketListRow: View {
 
     /// 两关取最差:任一 `bad` → 红;任一 `warn` → 琥珀;两关都 `good` → 绿;
     /// **一关都没判出来 → 灰**(⛔ 不默认成绿:那是把"没判"讲成"没问题")。
-    private func memberDotColor(_ m: BasketMember) -> Color {
-        let tones = [m.positionVerdictLabel.map { _ in m.positionVerdictTone },
-                     m.coreVerdictLabel.map { _ in m.coreVerdictTone }].compactMap { $0 }
-        if tones.isEmpty { return NK.textTertiary.opacity(0.7) }
-        if tones.contains(.bad) { return NK.down }
-        if tones.contains(.warn) { return NK.amber }
-        if tones.contains(.good) { return NK.up }
-        return NK.textTertiary.opacity(0.7)
-    }
+    // ⚠ **`memberDotColor` 已提成共享自由函数 `nkMemberDotColor`**(V2.4.0 P3.4):
+    // 首选成员块底部那三颗点与这里必须同一把尺,⛔ 别在任何一侧再抄一份回来。
 }
 
 // MARK: - ③b 一行

@@ -276,8 +276,12 @@ def test_store_read_path_is_the_only_source(api_env):
 # `rejected_not_above_close` / `role · leader`,客户端直接印上界面。⚠ 那类回归
 # **实拍才看得见**,而实拍不是每次都出 —— 所以把"每个码都有 case"钉成机器判据。
 
-def _swift_switch_cases(func_name: str, *, file: str = "Networking/Models.swift") -> set:
-    text = (_CLIENT / file).read_text(encoding="utf-8")
+def _swift_switch_cases(func_name: str, *, file: str | None = None) -> set:
+    # 🔴 V2.4.0 P3.7:DTO 已拆成 `Networking/Models/*.swift` 六份 —— 缺省读**拼接后
+    # 的全量 DTO 文本**(带哨兵自检),⛔ 不再按单一文件名读(读不到的文件里当然
+    # 也搜不到 case,那会让「每个码都有 case」这条静默变成假绿)。
+    from tests.client_sources import models_text
+    text = models_text() if file is None else (_CLIENT / file).read_text(encoding="utf-8")
     assert f"func {func_name}(" in text, f"客户端缺换算函数 `{func_name}`"
     body = text.split(f"func {func_name}(", 1)[1].split("\n}", 1)[0]
     return set(re.findall(r'case "([a-z0-9_:]+)"', body))
@@ -309,7 +313,8 @@ def test_risk_kind_labels_cover_every_risk_constant():
 def test_llm_stage_labels_cover_every_stage_including_the_prefixed_one():
     """`call_failed:<原因>` 带冒号后缀,故走 `hasPrefix` 而不是 `case` —— 这条把
     「前缀分支还在」一并钉住(删了它界面上会印 `call_failed:TimeoutError`)。"""
-    text = (_CLIENT / "Networking" / "Models.swift").read_text(encoding="utf-8")
+    from tests.client_sources import models_text
+    text = models_text()   # V2.4.0 P3.7:DTO 已拆六份,统一入口读
     body = text.split("func nkAuctionLlmStageLabel(", 1)[1].split("\n}", 1)[0]
     assert 'hasPrefix("call_failed")' in body
     codes = {v for k, v in vars(auction).items()
@@ -397,9 +402,12 @@ def test_no_client_text_concatenates_markdown_with_plus():
 def test_manual_note_text_lives_only_on_the_server():
     """🔴 小纸条的文案本体是**服务端常量**(K8 §二十 逐字)—— 客户端原样透传,
     ⛔ 不许自己写一份(两份就会漂,而 K8 说的是"固定内容")。"""
-    for f in ("Views/AuctionCardView.swift", "Networking/Models.swift"):
-        src = (_CLIENT / f).read_text(encoding="utf-8")
-        assert "虚拟开盘价是否稳定" not in src, f"{f} 里抄了一份小纸条文案"
+    from tests.client_sources import models_text
+    srcs = {"Views/AuctionCardView.swift": (_CLIENT / "Views" / "AuctionCardView.swift")
+            .read_text(encoding="utf-8"),
+            "Networking/Models/*.swift": models_text()}   # V2.4.0 P3.7:拆六份后整体扫
+    for name, src in srcs.items():
+        assert "虚拟开盘价是否稳定" not in src, f"{name} 里抄了一份小纸条文案"
 
 
 # ══════════════════════════════════════════════════════════════════════════

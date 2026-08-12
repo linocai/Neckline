@@ -85,6 +85,7 @@ from neckline.sentinel.universe import (
     load_watch_universe,
 )
 from neckline.strategy import brain
+from neckline.strategy import charter_copy
 from neckline.strategy.momentum import MomentumConfig
 
 logger = logging.getLogger(__name__)
@@ -298,8 +299,11 @@ def judge_position_low_open(
     `STOP_APPROACH_BUFFER`(单一源)。**系统永不代下单**,只提醒确认券商条件单。
 
     `advisory`(V2.2-⑤,口径与 `holding.check_stop_approach` 同源同参名):True = `v2.2-k8`
-    的「止损警戒 + 离场决策」口吻;缺省 False → 文案**逐字不变**(条件单口径)。
-    ⚠ **判定与阈值一字未动**,只换这句话在说什么。"""
+    的「止损警戒 + 触发后由你复核原判断」口吻;缺省 False → 文案**逐字不变**(条件单口径)。
+    ⚠ **判定与阈值一字未动**,只换这句话在说什么。
+    🔴 V2.4.0 P3.1:advisory 分支的线名 / 动作短语统一走 `charter_copy` 单一源
+    (与 `holding.check_stop_approach` 同一处 bug 一起修:此前 advisory 分支这条线
+    仍叫「止损线」,只有前缀口吻换了)。"""
     if quote.open <= 0 or position.buy_price <= 0:
         return None
     stop_line = position.buy_price * (1 - stop_pct)
@@ -310,8 +314,9 @@ def judge_position_low_open(
     if quote.open <= stop_line + _EPS * position.buy_price:
         if advisory:
             return (
-                f"止损警戒:集合竞价开盘{quote.open:.2f}已跌破止损线{stop_line:.2f}"
-                f"(-{stop_pct:.0%}),离场决策在你(系统不代下单)。"
+                f"止损警戒:集合竞价开盘{quote.open:.2f}已跌破{charter_copy.stop_line_label(True)}"
+                f"{stop_line:.2f}(-{stop_pct:.0%}),{charter_copy.stop_action_phrase(True)}"
+                f"(系统不代下单)。"
             )
         return (
             f"集合竞价开盘{quote.open:.2f}已跌破止损线{stop_line:.2f}(-{stop_pct:.0%}),"
@@ -319,8 +324,9 @@ def judge_position_low_open(
         )
     if advisory:
         return (
-            f"止损警戒:集合竞价开盘{quote.open:.2f}逼近止损线{stop_line:.2f}"
-            f"(-{stop_pct:.0%}),当前较买入价{drawdown:.1%},离场决策在你。"
+            f"止损警戒:集合竞价开盘{quote.open:.2f}逼近{charter_copy.stop_line_label(True)}"
+            f"{stop_line:.2f}(-{stop_pct:.0%}),当前较买入价{drawdown:.1%},"
+            f"{charter_copy.stop_action_phrase(True)}。"
         )
     return (
         f"集合竞价开盘{quote.open:.2f}逼近止损线{stop_line:.2f}(-{stop_pct:.0%}),"

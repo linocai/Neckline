@@ -999,8 +999,15 @@ def _today_action(
 
     **v1.4-①-B `suspended_hold`**:当日无 EOD 行且尚未定格 → 判向挂起。文案**最优先**
     (它就是为了盖掉那句「按计划离场」——催用户去卖一只卖不掉的票正是 P0-2 的病根),
-    且必须说清「D 计数照走、判向挂着、复牌当日再定」。"""
+    且必须说清「D 计数照走、判向挂着、复牌当日再定」。
+
+    🔴 **V2.4.0 P3.1**:advisory 分支的「这条线叫什么 / 触发后怎么办」统一走
+    `neckline.strategy.charter_copy` 单一源——修此前遗留的一处真 bug:advisory 分支
+    曾经仍把这条线叫「止损线」、说「离场决策在你」,K8.md §十九 要求 review 口径下
+    这条线叫「亏损警戒线」、触发后说「触发后由你复核原判断」(逐字)。
+    """
     from neckline.sentinel.precall import HARD_CAP_EXIT, PROFIT_EXEMPT, SUSPENDED_HOLD, TIME_EXIT_NEXT_DAY
+    from neckline.strategy import charter_copy
 
     if time_exit_state == SUSPENDED_HOLD:
         return (f"停牌/无当日行情,时间退出判向挂起(D{d_count} 照常累计,"
@@ -1014,18 +1021,27 @@ def _today_action(
     if dist_to_stop_pct is not None:
         # V2.2-⑤:止损口径由现役章程决定(⛔ 判定与阈值一字未动,只换这句话在说什么)。
         if dist_to_stop_pct <= 0:
-            return ("止损警戒:现价已跌破止损线,离场决策在你(系统不代下单)"
+            return (f"止损警戒:现价已跌破{charter_copy.stop_line_label(True)},"
+                    f"{charter_copy.stop_action_phrase(True)}(系统不代下单)"
                     if stop_advisory else
                     "现价已跌破止损线,若条件单未成交请立即人工确认(系统不代下单)")
         if dist_to_stop_pct <= 0.02:
-            return (f"止损警戒:距止损线 {dist_to_stop_pct:.1%},离场决策在你"
+            return (f"止损警戒:距{charter_copy.stop_line_label(True)} {dist_to_stop_pct:.1%},"
+                    f"{charter_copy.stop_action_phrase(True)}"
                     if stop_advisory else f"距止损线 {dist_to_stop_pct:.1%},盯紧条件单")
     if time_exit_state == PROFIT_EXEMPT:
         return f"浮盈豁免时间退出,交回落止盈+止损管到硬上限(D{d_count}/D{eff_max})"
     # V2.2-⑤:章程无时间退出条款 → **不编一个 D 上限出来**(`eff_max is None`),
     # 如实说明持有天数只是计数、不指向任何离场日。
+    # 🔴 V2.4.0 P3.1:这句话走 `charter_copy.TIME_EXIT_DISABLED_COPY` 单一源
+    # (K8.md §十三 逐字「本版无机械时间退出 —— D 计数只作记录」)——⛔ 别在这里
+    # 再拍一份措辞:客户端 `Position.timeExitDisclosure` 与这句同屏出现(横幅 +
+    # 卡底那行),两处措辞不同就是「一屏两个名字」(V2.3.2-⑤ 实拍逮到过)。
+    # ⚠ **只改持仓界面这一面**:盘后 markdown 报告(`report/render.py`)与周复盘
+    # (`review/reconcile.py`)仍用章程术语「无时间退出条款」——那是**审计面**、
+    # 读者是在核对章程条款本身,P3.1 没动它们,⛔ 别顺手"统一"过去。
     if eff_max is None:
-        return f"持有中(D{d_count};本版章程无时间退出条款,D 计数只作记录)"
+        return f"持有中(D{d_count};{charter_copy.TIME_EXIT_DISABLED_COPY})"
     return f"持有中(D{d_count}/D{eff_max})"
 
 
@@ -1179,6 +1195,7 @@ def list_positions() -> PositionsOut:
             buyDate=h.buy_date, price=price,
             status=h.status, stopLine=stop_line,
             lossWarningPct=lw_pct, lossWarningAction=lw_action,
+            takeProfitRetrace=tpr,   # V2.4.0 P3.1:现役章程口径指纹,零新增读库(见 schemas.py)
             stopOrderChecked=False,
             dCount=dcount, maxHoldDays=max_hold,
             distToStopPct=(round(dist, 4) if dist is not None else None),

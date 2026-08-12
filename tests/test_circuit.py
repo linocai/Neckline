@@ -148,7 +148,8 @@ def test_circuit_dtos_are_gone_from_the_client_and_the_key_from_the_contract():
     `PositionsListResponse {holdings}`,**没有任何一版声明过 `circuit` 字段**,那条顾虑
     在这个键上不成立。⛔ 别把它读成「零删键铁律可以不守」—— 铁律守住了,只是核实之后
     发现这个键根本没有消费方。"""
-    models = (_ROOT / "client" / "Neckline" / "Networking" / "Models.swift").read_text(encoding="utf-8")
+    from tests.client_sources import models_text
+    models = models_text()   # V2.4.0 P3.7:DTO 已拆六份,统一入口读
     assert "struct CircuitState" not in models
     assert "struct CircuitEpisode" not in models
     schemas = (_ROOT / "neckline" / "api" / "schemas.py").read_text(encoding="utf-8")

@@ -26,6 +26,12 @@ struct NKStopScale: View {
     let price: Double
     /// 峰值。`nil` = 本次没有回落止盈态,**不画**这一刻度。
     var peak: Double? = nil
+    /// 🔴 **V2.4.0 P3.1:这根刻度叫什么由调用方按**那一笔的**章程给**
+    /// (`Position.stopLineShortLabel` → 「警戒线」/「止损线」)。**缺省 `"止损"` =
+    /// 老口径逐字不变**,⛔ 别在组件里读章程 —— 组件拿不到、也不该拿到那条纪律。
+    /// ⚠ 同一屏上这条线的称呼此前已经统一走 `stopLineShortLabel`(徽标 / 四格 / 那句
+    /// 解释),**只有这把尺上的标签漏了** —— 一屏两个名字正是 V2.3.2-⑤ 实拍逮到的病。
+    var stopLabel: String = "止损"
 
     private var hasPrice: Bool { price > 0 }
     /// 破线 = 现价已低于止损线(有现价才谈得上破线)。
@@ -57,8 +63,12 @@ struct NKStopScale: View {
     private let topLabelCenterY: CGFloat = 6.5
     /// 现价标签在**下方**(原型 `top:36`)。
     private let priceLabelCenterY: CGFloat = 41
-    /// 标签半宽(clamp 用;「峰值 46.90」这类五六个字符在 11px 下约 56pt 宽)。
-    private let labelHalf: CGFloat = 30
+    /// 标签半宽(clamp 与「推开多远」共用;「峰值 46.90」这类**两字 + 五字符数字**在
+    /// 11px 下约 56pt 宽 → 半宽 30 带一点余量)。
+    /// ⚠ **V2.4.0 P3.1**:`stopLabel` 可能变成三个字(「警戒线」),每多一个汉字就多
+    /// 半个字宽(11px CJK 字宽 ≈ 字号)——**不加这一项,三字标签会与「成本」压在一起**
+    /// (V2.3.1 批 7 那次「戏卒 36.94」是同一个病)。**纯版式量,⛔ 不是任何判据。**
+    private var labelHalf: CGFloat { 30 + CGFloat(max(stopLabel.count - 2, 0)) * 5.5 }
 
     /// 🔴 **上排标签防重叠**(V2.3.1 批 7 实拍逮到:`peak == cost` 时两个标签**压在一起**,
     /// 渲染成「戏卒 36.94」这种谁也读不出的字形 —— 而 `peak == cost` 正是**买入后一路没涨过**
@@ -132,7 +142,7 @@ struct NKStopScale: View {
                       bold: false, y: topLabelCenterY)
 
                 tick(x(stop, width: w), NK.down, w: 3, h: 17, top: 14)
-                label(lc[0], "止损 \(NKFmt.price(stop))", NK.down,
+                label(lc[0], "\(stopLabel) \(NKFmt.price(stop))", NK.down,
                       bold: true, y: topLabelCenterY)
 
                 if hasPrice {
@@ -185,6 +195,8 @@ struct NKStopScaleCard<Footer: View>: View {
     let cost: Double
     let price: Double
     var peak: Double? = nil
+    /// V2.4.0 P3.1:这根红刻度的名字(缺省 `"止损"` = 老口径逐字不变),原样透传给尺。
+    var stopLabel: String = "止损"
     /// 卡底部的补充读数(距止损线 / 自峰值回落),由调用方给。
     /// 🔴 原型第四格是「占总仓 35.3%」—— **本版不画**(§五 〇-4:分母
     /// `Settings.total_capital` 从未下发,客户端写死 12 万 = 造第二份事实源)。
@@ -197,7 +209,7 @@ struct NKStopScaleCard<Footer: View>: View {
             // 原型 1010 行:`11/700 ls .5 .40` + `margin-bottom:14`。
             Text("纪律位置").nkLabel().foregroundStyle(NK.textTertiary)
                 .padding(.bottom, 14)
-            NKStopScale(stop: stop, cost: cost, price: price, peak: peak)
+            NKStopScale(stop: stop, cost: cost, price: price, peak: peak, stopLabel: stopLabel)
             footer
         }
         .frame(maxWidth: .infinity, alignment: .leading)

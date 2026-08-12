@@ -282,12 +282,16 @@ struct NKMemberCard: View {
             refLine(title: "最高追价", value: member.maxChase.map { "¥\(NKFmt.price($0))" },
                     clamp: member.maxChaseClamp, reason: member.maxChaseUnavailableReason,
                     extra: nil, divider: true)
-            // ⛔ **不许写成「止盈线」**(§2.8-C 语义红线):回落止盈才是纪律。
+            // ⛔ **不许写成「止盈线」**(§2.8-C 语义红线):离场参考是计划参考,
+            // 不是止盈信号,是否离场由用户判断(V2.4.0 P3.2 版本裁定,取代原来那句
+            // 把回落止盈说成"才是纪律"的旧措辞 —— `v2.3-k8` 起没有那条机械纪律,
+            // 继续那样写就是撒谎;⛔ 别抄回来,守门单测按字面量扫全客户端含注释)。
             refLine(title: "离场参考区间", value: member.exitReference?.rangeText,
                     clamp: member.exitReferenceClamp,
                     reason: member.exitReferenceUnavailableReason, extra: nil, divider: true)
-            Text("离场参考不是止盈线 —— 回落止盈才是纪律。参考、非指令:不进排序、不进哨兵、"
-                 + "不改去留、不加分。")
+            // ⚠ **一整条字面量,⛔ 不用 `+` 拼接**(即便当前无 Markdown 字符,拼接的产物
+            // 是 `String` 而非字面量,`Text(String)` 不解析 Markdown——同一条坑的前置预防)。
+            Text("离场参考是计划参考,不是止盈信号 —— 是否离场由你判断。参考、非指令:不进排序、不进哨兵、不改去留、不加分。")
                 .font(NKFont.caption).lineSpacing(2).foregroundStyle(NK.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 9)

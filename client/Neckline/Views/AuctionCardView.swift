@@ -192,23 +192,53 @@ struct AuctionReportPage: View {
     @Bindable var model: AppModel
     let payload: AuctionPayload
 
+    // 🔴 **V2.4.0 P3.5:打开后默认先给逐篮结论**(施工图 P3.5 逐字)——
+    // `basketsBlock`(块 3)挪到最前;块 1「数据状态」+ 块 2「市场与主线概览」折进
+    // 「市场背景」/「数据审计」两个具名折叠区,内容**一字不少**。
+    // ⚠ **块名与块序是审计锚**(1 数据状态 / 2 市场与主线概览 / 3 篮子与逐票结论 /
+    // 4 异常与风险 / 5 APP 人工观察小纸条)——各块内部的「N · 标题」编号原样保留,
+    // 变的只是默认先展示第 3 块,⛔ 别把编号也删了。
     var body: some View {
         VStack(spacing: 0) {
             headerBar
             ScrollView {
                 VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-                    dataStatusBlock
-                    marketBlock
-                    basketsBlock
-                    risksBlock
-                    manualNoteBlock
-                    proxyNoteBlock
+                    basketsBlock                 // 块 3(默认可见)
+                    risksBlock                   // 块 4(默认可见)
+                    manualNoteBlock               // 块 5(默认可见,恒发恒显)
+                    proxyNoteBlock                // 恒发恒显:不是买入指令 + 任务边界
+                    marketBackgroundDisclosure    // 折叠:块 2 + 竞价强势股的代理样本说明
+                    dataAuditDisclosure           // 折叠:块 1
                     if !payload.notes.isEmpty { notesBlock }
                 }
                 .padding(NKSpace.pagePad)
             }
         }
         .background(NK.pageBgIOS)
+    }
+
+    /// 「市场背景」= 指数竞价 · 主线概览 · 竞价强势股 · 代理样本说明 ·
+    /// 「市场锚点只解释资金方向,不取得交易资格」(块 2 原样 + `proxyNoteBlock`
+    /// 里与市场锚点相关的那句,⛔ 内容一字不少,只是从默认可见改成点开可见)。
+    private var marketBackgroundDisclosure: some View {
+        NKDisclosure(summary: "市场背景 · 指数竞价 / 主线概览 / 竞价强势股 / 代理样本说明") {
+            marketBlock
+            if !payload.proxySampleNote.isEmpty {
+                // 🔴 **`proxySampleNote` 仍必须能被看到**(K8 要求的诚实披露,守门单测
+                // 保留)——折叠可以、消失不行,这里就是它折叠后的落点。
+                Text(payload.proxySampleNote)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// 「数据审计」= 覆盖率 · 冻结时刻 · 缺失清单 · 跨源冲突恒空口径 · 全部逐票指标 ·
+    /// 历史统计(块 1 原样;逐票指标 / 历史统计仍分别嵌在各篮结论卡自己的「逐票读数」
+    /// 折叠里,⛔ 不强行搬家拆散篮子与它自己的数据)。
+    private var dataAuditDisclosure: some View {
+        NKDisclosure(summary: "数据审计 · 覆盖率 / 冻结时刻 / 缺失清单 / 跨源冲突口径") {
+            dataStatusBlock
+        }
     }
 
     private var headerBar: some View {
@@ -481,14 +511,12 @@ struct AuctionReportPage: View {
         }
     }
 
-    /// 🔴 **恒发恒显**:竞价强势股是盘中关注池的代理样本,不是全市场竞价排行。
+    /// 🔴 **恒发恒显,不折叠**:「不是买入指令」+ 任务边界是每次打开都该看到的话。
+    /// ⚠ `proxySampleNote`(代理样本那句)V2.4.0 起挪进 `marketBackgroundDisclosure`
+    /// ——它是「竞价强势股」这份市场锚点数据自己的诚实披露,折叠可以、消失不行,
+    /// 与市场背景块住在一起比单独留在主流程里更贴切它描述的对象。
     private var proxyNoteBlock: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if !payload.proxySampleNote.isEmpty {
-                Text(payload.proxySampleNote).font(NKFont.caption)
-                    .foregroundStyle(NK.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
             Text("竞价结论只说明竞价反映出的信息,不等于买入指令。")
                 .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -519,6 +547,11 @@ struct AuctionVerdictCard: View {
     let verdict: AuctionVerdict
     @State private var expanded: Bool = NKQA.expandDisclosures
 
+    /// V2.4.0 P3.5:触发失效的那一篮整圈描红——`hitInvalidation` 是机械事实、走独立
+    /// 警报通道(不受 LLM 缺席、不受三道夹逼闸影响),默认层就该一眼看见,不必点开
+    /// 「命中失效位」那句才知道。
+    private var hasHitInvalidation: Bool { !verdict.hitInvalidation.isEmpty }
+
     var body: some View {
         NKCard {
             VStack(alignment: .leading, spacing: 9) {
@@ -547,6 +580,12 @@ struct AuctionVerdictCard: View {
                 footNote
             }
         }
+        // 🔴 触发失效的那一篮整圈描红(设计参考:`1px rgba(229,68,59,.35)` ≈
+        // `NK.down.opacity(0.35)`)——叠在 `NKCard` 自己的 hairline 描边之上。
+        .overlay(
+            RoundedRectangle(cornerRadius: NKRadius.card)
+                .stroke(hasHitInvalidation ? NK.down.opacity(0.35) : Color.clear, lineWidth: 1)
+        )
     }
 
     /// 篮子头行:名 + 等级 + 引擎 + 结论徽标 + 数据质量。

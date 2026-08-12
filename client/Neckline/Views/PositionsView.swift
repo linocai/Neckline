@@ -114,7 +114,8 @@ struct PositionsView: View {
                 // iOS 原型 90–93 行:右上是**蓝底胶囊 + 上次刷新时刻**,⛔ 不是裸箭头。
                 ToolbarItem(placement: .primaryAction) { NKRefreshPill(model: model) }
             }
-            .refreshable { await model.refresh() }
+            // 🔴 V2.4.0 P3.6:下拉刷新只拉持仓板块(⛔ 不再顺带拉选股 / 竞价)。
+            .refreshable { await model.refreshPositions() }
             .navigationDestination(for: Int.self) { pid in
                 if let p = model.position(byID: pid) {
                     PositionDetailPage(model: model, position: p)
@@ -891,7 +892,9 @@ struct PositionDetailPage: View {
     private var stopScaleCard: some View {
         NKStopScaleCard(stop: position.stopLine, cost: position.buyPrice,
                         price: position.hasLivePrice ? position.price : 0,
-                        peak: position.retraceState?.peak) {
+                        peak: position.retraceState?.peak,
+                        // V2.4.0 P3.1:尺上那根红刻度的名字随**这一笔的**章程走。
+                        stopLabel: position.stopScaleMarkLabel) {
             VStack(alignment: .leading, spacing: 6) {
                 // 原型 1023 行:`margin-top:18; padding-top:14` + 一条 `.5px` 上边线,
                 // 每格 `flex:1`(名 `11 .55` 在上、数 `16/600` 在下)。
@@ -905,6 +908,11 @@ struct PositionDetailPage: View {
                         statItem("自峰值回落", NKFmt.pct(rs.retracePct * 100),
                                  rs.triggered ? NK.down : NK.textPrimary)
                     }
+                    // 🔴 V2.4.0 P3.1:第三格「持有 D{n}」取代原型第三 / 四格「回落止盈 N%」
+                    // 「占总仓 N%」——前者由下面的 `retraceDisabledDisclosure` 一句话说清
+                    // (v2.3-k8 常态是「没有」,不是一个百分比),后者的分母仍未下发(见
+                    // `mergedExposureSection` 同条纪律)。`dCount` 恒有值,不必 `if let`。
+                    statItem("持有", "D\(position.dCount)", NK.textPrimary)
                     Spacer(minLength: 0)
                 }
                 .padding(.top, 14)
@@ -915,6 +923,13 @@ struct PositionDetailPage: View {
                 if let rs = position.retraceState, rs.triggered {
                     Text("回落止盈已触发 —— 系统只提醒,不代下单。")
                         .font(NKFont.caption).foregroundStyle(NK.down)
+                } else if let line = position.retraceRuleLine {
+                    // 🔴 V2.4.0 P3.1:这条纪律**必须主动说出口** ——
+                    // `retraceState.triggered == false` 答不出"这项纪律存不存在",
+                    // 沉默会被读成"还没触发"而不是"根本没有这项纪律"。
+                    // ⚠ **两向都说真话**:老章程配了比例就把比例写出来(「回落止盈 8.0%」),
+                    // `v2.3-k8` 没配就写「本版无机械回落止盈」——⛔ 不许一句话通吃。
+                    Text(line).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
                 // ⚠ 刻度尺只是版式:位置按价格线性映射,⛔ 不代表任何概率或建议。
                 // 🔴 原型第四格「占总仓 35.3%」**本版不画**(§五 〇-4),这里把为什么
@@ -1542,7 +1557,7 @@ struct ClosePositionSheet: View {
                 NKInlineNote(text: "不选也能提交 —— 服务端按 -5% 价格近似兜底判止损。用于周复盘归因与「连续 3 笔止损」计数,**不改任何纪律判定**。")
             }
 
-            NKTintedNote(text: "卖出时间缺省今日。此处只记录真实成交,**系统不代下单**。\n⚠「达到参考区间」**不是止盈** —— 离场参考区间不是止盈线,回落止盈才是纪律。")
+            NKTintedNote(text: "卖出时间缺省今日。此处只记录真实成交,**系统不代下单**。\n⚠「达到参考区间」**不是止盈** —— 离场参考是计划参考,不是止盈信号,是否离场由你判断。")
         }
     }
     #endif

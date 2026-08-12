@@ -378,6 +378,10 @@ final class AppModel {
     /// 竞价小报告五块的弹层开关(收起态那张卡点开)。
     var showAuctionSheet = false
 
+    /// V2.4.0 P3.3-E:数据新鲜度⑤段完整内容的弹层开关(工具栏徽标点开)。
+    /// ⚠ **纯导航态**,不参与任何判定 —— 与 `showAuctionSheet` 同一种落法。
+    var showFreshnessSheet = false
+
     // —— V2.2-④ 双时钟 ——
     //
     // 选股时钟:**覆盖 D0 全部 T1/T2,与买没买无关**(K8 §十四)——⛔ 文案别写成
@@ -489,39 +493,76 @@ final class AppModel {
         var id: Int { basketId }
     }
 
-    // MARK: - 刷新
+    // MARK: - 刷新(V2.4.0 P3.6:板块级刷新)
+    //
+    // 🔴 **原单体 `refresh()` 已拆成四个板块级函数**(施工图 P3.6 表逐字;`board` 按
+    // P0 校正落在 `refreshPositions()` 的注释里,不再是独立请求 —— P0 之后
+    // `/board` 客户端零调用,持仓事件随 `/positions` 一起下发)。
+    //   `refreshSelection()` → report / regime / auction(选股板块)
+    //   `refreshPositions()` → positions(**含 P0.5+ 持仓事件**)/ 持仓相关派生
+    //   `refreshReview()`    → 当前选中的 review page(⑤ 段 + 选股时钟结案表)
+    //   `refreshSettings()`  → settings / provider / push kinds(薄壳,复用既有 `loadSettings()`)
+    // **要求**:首次进入 Tab 时加载(`ensureLoaded`)· 工具栏刷新只刷当前 Tab
+    // (`refresh(for:)`)· 深链打开某篮 / 某持仓时自动补拉依赖 · 保持既有
+    // empty/loading/error/degraded 三态。
+    //
+    // ⚠ **行情状态取代了原来那一路熔断态**(V2.2-⑤-B 熔断整体退役):两者形似而
+    // 语义相反 —— 熔断是**状态锁**(会改变行为),行情状态是**纯展示**(⛔ 零动作)。
+    // ⚠ `marketRegime` 是**跨板块共用组件**(`MarketRegimeStrip` 在选股与持仓两页都
+    // compact 展示)——`refreshSelection()`/`refreshPositions()` 各自独立请求一次,
+    // 与「选股页移除持仓入口后不再拉完整持仓和盘中看板」那条纪律不冲突:那条纪律管的是
+    // **重数据**(持仓全量 / 已退役的 `/board`),行情状态是一次轻量请求,双向可见。
 
-    /// 主刷新:报告 + 持仓 + **行情状态** + 临时提醒 + 竞价小报告(五者并发)。
-    /// ⛔ **V2.4.0 P0:原第三路 `boardTask`(拉 `/board` 给壳层刹车条用)已删** ——
-    /// 刹车条与盘中动态页一并退役;持仓提醒随 `/positions` 那一路下发(P0.5+),
-    /// **不新增任何请求**。
-    /// ⚠ **行情状态取代了原来那一路熔断态**(V2.2-⑤-B 熔断整体退役):两者形似而
-    /// 语义相反 —— 熔断是**状态锁**(会改变行为),行情状态是**纯展示**(⛔ 零动作)。
-    func refresh() async {
+    /// 已首次加载过的板块(`ensureLoaded` 用来判断"要不要在首次进入 Tab 时拉一次")。
+    private var loadedBoards: Set<AppTab> = []
+
+    /// 首次进入某板块时加载(已加载过则跳过)。深链 / QA 钩子设置的初始 Tab 走这条路
+    /// (`RootView.task`),保证不管从哪个 Tab 启动都只拉那个 Tab 需要的数据。
+    func ensureLoaded(_ tab: AppTab) async {
+        guard !loadedBoards.contains(tab) else { return }
+        loadedBoards.insert(tab)
+        await refresh(for: tab)
+    }
+
+    /// 工具栏 / 下拉刷新走这条(**不受 `loadedBoards` 门控**,用户主动要求就真的去拉)。
+    func refresh(for tab: AppTab) async {
+        switch tab {
+        case .baskets: await refreshSelection()
+        case .positions: await refreshPositions()
+        case .review: await refreshReview()
+        case .settings: await refreshSettings()
+        }
+    }
+
+    /// 当前选中 Tab 是否在加载中(工具栏 / 刷新胶囊按它决定要不要转圈,⛔ 不再统一读
+    /// `reportLoading` —— 那只是选股板块自己的加载位,持仓板块转圈时它不该也转)。
+    var isLoadingCurrentTab: Bool {
+        switch view {
+        case .baskets: return reportLoading
+        case .positions: return positionsLoading
+        case .review: return reviewOverviewLoading || selectionClocksLoading
+        case .settings: return settingsLoading
+        }
+    }
+
+    /// 选股板块:report / 行情状态 / 竞价小报告(三者并发)。
+    func refreshSelection() async {
         guard let client = clientProvider() else {
             loadError = "未配置后端连接"
             return
         }
         reportLoading = true
-        positionsLoading = true
         loadError = nil
         async let reportTask: Result<ReportSnapshot, Error> = fetchResult { try await client.fetchReportLatest() }
-        async let positionsTask: Result<[Position], Error> = fetchResult { try await client.fetchPositions() }
         async let regimeTask: Result<MarketRegime, Error> = fetchResult { try await client.fetchMarketRegime() }
-        async let alertsTask: Result<[CustomAlert], Error> = fetchResult { try await client.fetchAlerts() }
         // V2.3.3-⑤ 竞价小报告:**404 是常态**(一天里只有 9:26 之后才有),
-        // 故与其它五路并列拉、失败一律不弹错 —— 三态的分派在下面 switch 里。
+        // 故与其它两路并列拉、失败一律不弹错 —— 三态的分派在下面 switch 里。
         async let auctionTask: Result<AuctionPayload, Error> = fetchResult { try await client.fetchAuction() }
-        let (reportResult, positionsResult, regimeResult, alertsResult, auctionResult) =
-            await (reportTask, positionsTask, regimeTask, alertsTask, auctionTask)
+        let (reportResult, regimeResult, auctionResult) = await (reportTask, regimeTask, auctionTask)
 
         switch reportResult {
         case .success(let r): self.report = r
         case .failure(let e): handleLoadFailure(e, context: "报告")
-        }
-        switch positionsResult {
-        case .success(let p): self.positions = p
-        case .failure(let e): handleLoadFailure(e, context: "持仓")
         }
         switch regimeResult {
         case .success(let r): self.marketRegime = r
@@ -531,10 +572,6 @@ final class AppModel {
             self.marketRegime = MarketRegime(
                 available: false,
                 unavailableReason: "本次没连上服务端,行情状态未取得(\(e.localizedDescription))")
-        }
-        switch alertsResult {
-        case .success(let a): self.alerts = a
-        case .failure: break   // 同上,静默降级
         }
         // 竞价三态分派(⛔ 别把三者压成一个 `try?`):
         switch auctionResult {
@@ -548,13 +585,67 @@ final class AppModel {
             self.auctionCorrupt = (e as? APIError) == .auctionCorrupt
         }
         reportLoading = false
-        positionsLoading = false
-        // ⚠ **一路都没连上时不打这个时间戳**:那会让工具栏显示「刚刚更新过」,
-        // 而实际上什么都没拿到 —— 又一次把「没看」讲成「看过了」。
         if loadError == nil { lastRefreshedAt = Date() }
-        // 持仓计划要靠它才能算合并敞口 + 展示计划继承卡,随主刷新一起拉(每仓一次)。
+        applyQAHooksAfterRefresh()
+    }
+
+    /// 持仓板块:positions(**含 P0.5+ 随行下发的持仓事件**)+ 临时提醒 + 持仓计划。
+    /// ⛔ **不拉 `/board`**(P0 之后客户端零调用;施工图 P3.6 原文把 `board` 列在这里是
+    /// 与 P0 冲突的一处笔误,以 P0 为准,见施工图 P3.6 段落注)。
+    func refreshPositions() async {
+        guard let client = clientProvider() else {
+            loadError = "未配置后端连接"
+            return
+        }
+        positionsLoading = true
+        loadError = nil
+        async let positionsTask: Result<[Position], Error> = fetchResult { try await client.fetchPositions() }
+        async let alertsTask: Result<[CustomAlert], Error> = fetchResult { try await client.fetchAlerts() }
+        let (positionsResult, alertsResult) = await (positionsTask, alertsTask)
+
+        switch positionsResult {
+        case .success(let p): self.positions = p
+        case .failure(let e): handleLoadFailure(e, context: "持仓")
+        }
+        switch alertsResult {
+        case .success(let a): self.alerts = a
+        case .failure: break   // 静默降级:提醒列表不是持仓页的主角
+        }
+        positionsLoading = false
+        if loadError == nil { lastRefreshedAt = Date() }
+        // 持仓计划要靠它才能算合并敞口 + 展示计划继承卡,随持仓一起拉(每仓一次)。
         await loadAllPositionPlans()
         applyQAHooksAfterRefresh()
+    }
+
+    /// 复盘板块:五段汇总 + 选股时钟结案表(与 `ReviewView` 此前的 `loadIfNeeded()`/
+    /// `reloadBoard()` 是同一份逻辑,收口到这里、避免两处各写一份)。
+    /// ⚠ 「每日」页在没有单独选中某一天时读的是全局 `report`(`reviewDailyBasket`
+    /// 的既有 fallback)——正常路径下 `report` 已由 `refreshSelection()`(App 默认
+    /// 启动的 `.baskets` Tab)填过;万一直接从复盘板块冷启动(如 QA 钩子),这里补一次。
+    func refreshReview() async {
+        if reviewDailyDate == nil, report.tradeDate.isEmpty {
+            await refreshSelection()
+        }
+        await loadReviewOverview()
+        if selectionClocks.isEmpty && !selectionClocksLoading {
+            await loadSelectionClocks()
+        }
+    }
+
+    /// 设置板块:薄壳,复用既有 `loadSettings()`(该函数已经是「进设置页才拉」的
+    /// 独立数据源,本函数只是把它接进 P3.6 的统一板块级刷新入口)。
+    func refreshSettings() async {
+        await loadSettings()
+    }
+
+    /// ⚠ **仅供旧调用点过渡 / 单测复用**:等价于依次刷新选股 + 持仓两板块
+    /// (逐位对应 P3.6 之前 `refresh()` 的报告 + 持仓两路)。新代码一律用
+    /// `ensureLoaded(_:)` / `refresh(for:)` 按 Tab 精确刷新,⛔ 不要在新代码里
+    /// 加这个函数的新调用点。
+    func refresh() async {
+        await refreshSelection()
+        await refreshPositions()
     }
 
     /// 纯 QA/截图辅助(同 `NecklineApp` 的 `NECKLINE_INITIAL_TAB`/`NECKLINE_INITIAL_MODAL`

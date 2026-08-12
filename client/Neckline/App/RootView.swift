@@ -58,7 +58,11 @@ struct RootView: View {
         // ⛔ **V2.4.0 P0**:原先挂在这里的**通栏退潮刹车条**已整体删除(P0.1 表
         // 「全 App 顶部退潮红条 = 删」)。⛔ 不许换个名字再挂一条壳层横幅回来。
         .overlay(alignment: .bottom) { toastOverlay.padding(.bottom, 90) }
-        .task { model.bind(config: config); await model.refresh() }
+        // 🔴 V2.4.0 P3.6:只加载**当前 Tab**(默认 `.baskets`,QA 钩子可覆盖 ——
+        // `NecklineApp.init()` 里 `m.view = tab` 早于本 `.task` 执行)。
+        .task { model.bind(config: config); await model.ensureLoaded(model.view) }
+        // 切 Tab 首次到达时才拉那个 Tab 的数据;已加载过的 Tab 再切回来不重打请求。
+        .onChange(of: model.view) { _, tab in Task { await model.ensureLoaded(tab) } }
     }
     #endif
 
@@ -86,7 +90,9 @@ struct RootView: View {
         .ignoresSafeArea(.container, edges: .top)
         .background(NK.pageBg)
         .overlay(alignment: .bottom) { toastOverlay.padding(.bottom, 24) }
-        .task { model.bind(config: config); await model.refresh() }
+        // 🔴 V2.4.0 P3.6:同 iOS 分支 —— 只加载当前 Tab,切 Tab 首次到达才补拉。
+        .task { model.bind(config: config); await model.ensureLoaded(model.view) }
+        .onChange(of: model.view) { _, tab in Task { await model.ensureLoaded(tab) } }
     }
 
     @ViewBuilder

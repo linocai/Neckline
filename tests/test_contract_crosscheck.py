@@ -48,7 +48,10 @@ import pytest
 _ROOT = Path(__file__).resolve().parent.parent
 _CLIENT_DIR = _ROOT / "client"
 _API_CLIENT = _ROOT / "client" / "Neckline" / "Networking" / "APIClient.swift"
-_MODELS = _ROOT / "client" / "Neckline" / "Networking" / "Models.swift"
+# 🔴 **V2.4.0 P3.7**:`Models.swift` 已拆成 `Networking/Models/*.swift` 六份。
+# 本闸不再按文件名读 —— 走 `tests/client_sources.py` 的统一入口(带哨兵自检:
+# 扫描域缺一块就当场红,⛔ 不让缺席断言静默变成真)。
+from tests.client_sources import models_text as _models_text
 
 # Swift 里的路径字面量:`"/api/v1/positions/\(id)/close"` → `/api/v1/positions/{}/close`
 _PATH_LITERAL = re.compile(r'"(/api/v1[^"]*)"')
@@ -371,7 +374,7 @@ def test_v21_new_score_keys_are_declared_on_both_sides(model: str, struct: str, 
         assert key in client_block, f"客户端 `{struct}` 没有解 `{key}`"
     # 元素类型必须两侧都在(它不计入"键"数,但键没有它就是空壳)
     assert "class ScoreContribOut(BaseModel):" in schemas
-    assert "struct ScoreContribution" in _MODELS.read_text(encoding="utf-8")
+    assert "struct ScoreContribution" in _models_text()
 
 
 # —— 冻结快照类 DTO 的解码姿势(CLAUDE.md「落库快照两类论」)——————————————
@@ -419,7 +422,7 @@ _TOP_LEVEL_DECL = re.compile(r"^(?:struct|enum|final class|class|extension|proto
 
 def _dto_body(name: str) -> str:
     """取 `Models.swift` 里 `struct <name>` **这一个**类型的源码块(到下一个顶层声明为止)。"""
-    models = _MODELS.read_text(encoding="utf-8")
+    models = _models_text()
     m = re.search(rf"^struct {re.escape(name)}\b", models, re.M)
     if m is None:
         return ""
@@ -540,7 +543,7 @@ def test_landing_state_key_never_reaches_the_contract():
     又讲了一遍。(注释里提它是**必要的**留痕,故先剥注释再判,见 `_strip_comments`。)"""
     schemas = (_ROOT / "neckline" / "api" / "schemas.py").read_text(encoding="utf-8")
     assert "landingState" not in _strip_comments(schemas)
-    assert "landingState" not in _strip_comments(_MODELS.read_text(encoding="utf-8"))
+    assert "landingState" not in _strip_comments(_models_text())
     # 闸自己的守门:剥注释这一步不许把真声明也剥掉
     assert "positionVerdict:" in _strip_comments(schemas)
 
@@ -550,7 +553,7 @@ def test_v22_card_keys_are_ported_to_the_client_all_or_nothing():
     **别接一半**:引擎三件套与位置三件套同属 V2.2-③ 的卡形状(同一个
     `basket_card_v3`),接了其中任意一个就必须六个全接 —— 半份移植的后果是卡上
     某几格永远空着,而空着看起来像"这张卡没有这个数",⛔ 看不出是漏接。"""
-    models = _MODELS.read_text(encoding="utf-8")
+    models = _models_text()
     keys = _V22_CARD_TOP_KEYS + _V22_CARD_MEMBER_KEYS
     present = [k for k in keys if k in models]
     assert present == [] or len(present) == len(keys), (
@@ -571,7 +574,7 @@ def test_v22_card_keys_are_ported_to_the_client_all_or_nothing():
 def test_client_maps_every_dropped_reason_code_the_server_can_emit():
     from neckline.report.basket_daily import DROPPED_REASON_LABEL
 
-    body = _MODELS.read_text(encoding="utf-8")
+    body = _models_text()
     block = body.split("func nkDroppedReasonLabel(", 1)[1].split("\nfunc ", 1)[0]
     missing = [code for code in DROPPED_REASON_LABEL if f'case "{code}"' not in block]
     assert not missing, (
@@ -586,7 +589,7 @@ def test_client_maps_every_dropped_reason_code_the_server_can_emit():
 def test_client_gate_split_matches_the_server_constants():
     from neckline.selection.gates import EVIDENCE_GATES, GATE_ORDER, MECH_GATES
 
-    body = _MODELS.read_text(encoding="utf-8")
+    body = _models_text()
     order_line = body.split("let nkGateOrder: [String] = ", 1)[1].split("\n", 1)[0]
     for g in GATE_ORDER:
         assert f'"{g}"' in order_line, f"客户端 `nkGateOrder` 少了关口 `{g}`"
@@ -615,7 +618,7 @@ def test_client_gate_split_matches_the_server_constants():
 def test_client_note_limit_mirrors_the_single_source():
     from neckline.review.trade_clock import USER_NOTE_MAX_CHARS
 
-    body = _MODELS.read_text(encoding="utf-8")
+    body = _models_text()
     line = body.split("let nkTradeNoteMaxChars: Int = ", 1)[1].split("\n", 1)[0].strip()
     assert line == str(USER_NOTE_MAX_CHARS), (
         f"客户端 `nkTradeNoteMaxChars` = {line},服务端 `USER_NOTE_MAX_CHARS` = "
@@ -666,7 +669,7 @@ def test_client_declares_loss_warning_on_every_dto_that_carries_stop_line():
     要显示那个百分数的两处(`Position` 的披露句、`BasketFingerprint` 的口径指纹)——
     `EntrySuggestionRange` 只换称呼、不印比例,**刻意不接**,⛔ 别为了对称加一个没人读的字段。
     三处一律**可选属性**(老服务端 / 老卡缺键 → nil,⛔ 不炸)。"""
-    models = _MODELS.read_text(encoding="utf-8")
+    models = _models_text()
     for owner in ("struct Position:", "struct EntrySuggestionRange", "struct BasketFingerprint"):
         block = models.split(owner, 1)[1].split("\n}\n", 1)[0]
         assert "var lossWarningAction: String? = nil" in block, f"{owner} 少了 lossWarningAction"
@@ -696,7 +699,7 @@ def test_position_alerts_channel_is_declared_on_both_sides():
         assert key in client_alert, f"客户端 `PositionAlert` 没有解 `{key}`"
     assert "alerts" in _dto_body("Position"), "客户端 `Position` 没有解 `alerts`"
     # ⛔ 枚举码不许直接进 `Text` —— 必须有展示层换算(体例同 `nkBoardLabel`)。
-    assert "func nkPositionAlertLabel(" in _MODELS.read_text(encoding="utf-8")
+    assert "func nkPositionAlertLabel(" in _models_text()
 
 
 def test_position_alert_dto_hand_writes_init_from_decoder():
@@ -739,6 +742,6 @@ def test_settings_kinds_still_carry_every_registered_kind_including_retired():
     app_src = (_ROOT / "neckline" / "api" / "app.py").read_text(encoding="utf-8")
     assert "for k in notify_kinds.ALL_KINDS" in app_src
     assert notify_kinds.RETIRED_KINDS <= set(notify_kinds.ALL_KINDS)
-    models = _MODELS.read_text(encoding="utf-8")
+    models = _models_text()
     assert "for k in kinds where !k.retired" in models, (
         "客户端应在 `groupedByLevel`(渲染层)过滤退役行,⛔ 不是从 `kinds` 里删掉")

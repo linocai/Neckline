@@ -41,10 +41,20 @@ class TestPositionsEndpointUnderK8Charter:
         assert h["timeExitState"] == "holding"       # 没有判定点 → 永远到不了
         assert h["timeExitLockedDay"] is None and h["timeExitLockedLateDays"] == 0
         assert h["stopLine"] == 9.5                  # ⚠ stop_pct=0.05 一字未动
-        assert "无时间退出条款" in h["todayAction"]   # 如实说明,不编一个 D 上限
+        # 🔴 V2.4.0 P3.1 取代:原断言「无时间退出条款」(章程术语)→ K8.md §十三
+        # 逐字的人话「本版无机械时间退出 —— D 计数只作记录」,单一源
+        # `charter_copy.TIME_EXIT_DISABLED_COPY`。⚠ 仍是同一件事、同一个判据
+        # (`eff_max is None`),⛔ 不编一个 D 上限出来这条一字未变。
+        from neckline.strategy import charter_copy
+        assert charter_copy.TIME_EXIT_DISABLED_COPY in h["todayAction"]
 
     def test_stop_wording_switches_with_the_active_charter(self, client, AUTH, api_env, monkeypatch):
-        """现役是 `v2.2-k8` → `todayAction` 走「止损警戒 / 离场决策在你」。"""
+        """现役是 `v2.2-k8` → `todayAction` 走「止损警戒 / 触发后由你复核原判断」。
+
+        🔴 V2.4.0 P3.1 取代:原断言「离场决策在你」→「触发后由你复核原判断」
+        (K8.md §十九 逐字);新增断言这条线叫「亏损警戒线」——此前 `todayAction`
+        的 advisory 分支遗留一处真 bug,只换了前缀口吻,线本身仍叫「止损线」。
+        """
         import neckline.api.app as app_mod
         from neckline.sentinel.quotes import Quote
 
@@ -55,8 +65,10 @@ class TestPositionsEndpointUnderK8Charter:
             "600001.SH": Quote(code="600001.SH", name="", price=9.4, pre_close=10.0, open=9.4,
                                high=9.5, low=9.4, volume=0.0, amount=0.0, ts="", source="t")})
         h = client.get("/api/v1/positions", headers=AUTH).json()["holdings"][0]
-        assert "止损警戒" in h["todayAction"] and "离场决策在你" in h["todayAction"]
+        assert "止损警戒" in h["todayAction"] and "触发后由你复核原判断" in h["todayAction"]
+        assert "亏损警戒线" in h["todayAction"]
         assert "条件单" not in h["todayAction"]
+        assert "离场决策在你" not in h["todayAction"]
 
     def test_stop_wording_unchanged_before_activation(self, client, AUTH, api_env, monkeypatch):
         """🔴 **激活前逐字不变**(§2.1 前置提示):现役 `v1`(K1 口径)→ 仍是条件单文案。"""

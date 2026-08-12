@@ -1299,7 +1299,7 @@ final class DTODecodeTests: XCTestCase {
            "stopLine": 1425.0, "lossWarningPct": 0.05, "lossWarningAction": "review",
            "stopOrderChecked": false,
            "dCount": 2, "maxHoldDays": null, "distToStopPct": -0.0179, "retraceState": null,
-           "todayAction": "止损警戒:现价已跌破止损线,离场决策在你(系统不代下单)"}
+           "todayAction": "止损警戒:现价已跌破亏损警戒线,触发后由你复核原判断(系统不代下单)"}
         ]}
         """)
         MockURLProtocol.handler = { _ in (200, json) }
@@ -1310,8 +1310,10 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertTrue(p.isLossWarningCharter)
         XCTAssertEqual(p.stopLineLabel, "亏损警戒线")
         XCTAssertEqual(p.stopLineShortLabel, "警戒线")   // 紧凑位三字,版式不变
+        // 🔴 V2.4.0 P3.1 取代:原断言「离场决策在你」→「触发后由你复核原判断」
+        // (K8.md §十九 逐字,`charter_copy.ADVISORY_ACTION_PHRASE`)。
         XCTAssertEqual(p.lossWarningDisclosure,
-                       "到线(−5%)只发亏损警戒,离场决策在你 —— 系统不代下单、不自动卖出")
+                       "到线(−5%)只发亏损警戒,触发后由你复核原判断 —— 系统不代下单、不自动卖出")
         // 🔴 判定与数值一字未动
         XCTAssertEqual(p.stopLine, 1425.0)
         XCTAssertTrue(p.hasBrokenStop)                  // 1400 <= 1425,与口径无关
@@ -2717,7 +2719,12 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertNil(p.maxHoldDaysEffective)
         XCTAssertFalse(p.hasTimeExitRule)
         XCTAssertEqual(p.dBadgeText, "D7", "⛔ 不许出现 D7/D5 这种假上限")
-        XCTAssertTrue(p.timeExitDisclosure?.contains("无时间退出条款") ?? false)
+        // 🔴 V2.4.0 P3.1 取代:原断言「无时间退出条款」(章程术语)→ K8.md §十三
+        // 逐字的人话「本版无机械时间退出 —— D 计数只作记录」,与服务端
+        // `charter_copy.TIME_EXIT_DISABLED_COPY` 同一套词(两句会同屏出现)。
+        // ⚠ 判据(`maxHoldDaysEffective == nil`)与上面三条断言一字未动。
+        XCTAssertTrue(p.timeExitDisclosure?.contains("本版无机械时间退出") ?? false)
+        XCTAssertTrue(p.timeExitDisclosure?.contains("D 计数只作记录") ?? false)
         XCTAssertFalse(p.isExitDay)
     }
 

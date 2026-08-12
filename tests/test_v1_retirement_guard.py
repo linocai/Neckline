@@ -146,7 +146,8 @@ def test_13_1_permanent_board_dto_and_client_card_are_gone():
     # 那个 DTO 里」升级为「那个 DTO 压根不存在」—— 更强,不是更弱。
     assert not hasattr(schemas, "IntelRankOut")
 
-    models = (_ROOT / "client" / "Neckline" / "Networking" / "Models.swift").read_text(encoding="utf-8")
+    from tests.client_sources import models_text
+    models = models_text()   # V2.4.0 P3.7:DTO 已拆六份,统一入口读
     assert "struct PermanentBoardStatus" not in models
     assert "var permanentBoardStatus" not in models
 
@@ -286,7 +287,8 @@ def test_13_6_legacy_four_piece_keys_gone_from_contract_and_client():
         "`ReportOut.candidates` 应已换成 `basketDaily`(⑭-B)"
     assert "basketDaily" in schemas.ReportOut.model_fields
 
-    swift = (_ROOT / "client" / "Neckline" / "Networking" / "Models.swift").read_text(encoding="utf-8")
+    from tests.client_sources import models_text
+    swift = models_text()    # V2.4.0 P3.7:同上
     for gone in ("struct Candidate:", "struct IntelRank:", "struct LLMJudgment:",
                  "struct InfoCardSummary:", "struct EntrySpec:"):
         assert gone not in swift, f"`{gone}` 应已随 ⑮ 客户端换血删除"

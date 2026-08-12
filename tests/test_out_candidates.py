@@ -187,9 +187,8 @@ class TestContractOnlyGrows:
                                       basket_key="kA").to_public_dict()
         assert pub["basketKey"] == "kA"
         # 客户端那一侧:`id` 必须把 basketKey 算进去(⛔ 别把它拿掉)
-        models = (Path(__file__).resolve().parent.parent
-                  / "client" / "Neckline" / "Networking" / "Models.swift"
-                  ).read_text(encoding="utf-8")
+        from tests.client_sources import models_text
+        models = models_text()   # V2.4.0 P3.7:DTO 已拆六份,统一入口读
         block = models.split("struct OutCandidate:")[1].split("\nstruct ")[0]
         assert "case basketKey" in block
         assert "basketKey = try c.decodeIfPresent(String.self, forKey: .basketKey)" in block

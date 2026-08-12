@@ -296,20 +296,43 @@ class TestArmingEndToEnd:
 
 class TestExemptionPremiseThree:
     def test_copy_states_it_is_a_plan_reference_not_a_take_profit_line(self):
-        """§2.8-C-3 前提③ 原文要求文案「必须点明**这是你计划里的参考位、不是止盈线,
-        纪律仍是回落止盈**」。⑪-D 接线时核对发现原文案只说到「不是止盈信号」、
-        **没说「纪律仍是回落止盈」** → 已补齐;本例把这条前提锁成机器断言,别再让它
-        因为一次措辞润色悄悄失效(前提缺一 = 这条 kind 不再被允许推送)。"""
+        """§2.8-C-3 前提③ 原文要求文案「必须点明**这是你计划里的参考位、不是止盈线**」,
+        后半句还点名了回落止盈那条机械纪律;⑪-D 接线时核对发现原文案缺后半句 → 曾经补齐。
+
+        🔴 **V2.4.0 P3.2 取代**:`v2.3-k8` 已经没有那条机械纪律,继续断言那半句出现
+        就是在守护一句谎话 —— 版本裁定已把前提③ 后半句改写为「离场参考是计划参考、
+        不是止盈信号」(全文见 `PROJECT_PLAN.md` §五 V2.4.0 P3.2 与 §2.8-C-3 正文标注)。
+        前提①②④ 一字不变、仍然缺一即豁免失效,本例继续把"新"前提③ 锁成机器断言。
+
+        ⚠ **断言的是语义三件、不是某一条常量出现**:事件文案走施工图 P3.2 的逐字骨架
+        (`charter_copy.exit_reference_reached_copy`)——「**你计划中的**离场参考区间」
+        答「这是你计划里的参考位」、「**这不是止盈信号**」答「不是止盈线」、
+        「**是否离场由你判断**」答「纯告知不指令」。三件缺一即豁免失效。"""
         from tests.test_sentinel_holding import _position, _quote   # 复用既有构造
 
         from neckline.sentinel.holding import check_exit_reference_reached
 
         text = check_exit_reference_reached(_position(), _quote(14.0), 13.0, 15.0)
-        assert "你计划里的参考位" in text
-        assert "不是止盈信号" in text
-        assert "纪律仍是回落止盈" in text
+        assert "你计划中的离场参考区间" in text     # ① 这是你计划里的参考位
+        assert "这不是止盈信号" in text             # ② 不是止盈线
+        assert "是否离场由你判断" in text           # ③ 纯告知,决定权在用户
+        # 🔴 旧措辞一句都不许残留(两句并存 = 用户一屏看到两种纪律说法)
+        assert "纪律仍是回落止盈" not in text
+        assert "回落止盈" not in text
+        assert "你计划里的参考位" not in text
         for banned in ("建议", "该卖", "推荐", "目标价"):
             assert banned not in text
+
+    def test_copy_still_carries_the_actual_numbers(self):
+        """🔴 **逐字骨架 ≠ 丢掉数字**:⑪-B 三句式要求「讲清发生了什么」——
+        现价与区间上下沿是这条立即级推送唯一可核对的事实,⛔ 不许为了"照抄骨架"
+        把它们省掉(省掉之后用户收到的是一句无法验证的空话)。"""
+        from tests.test_sentinel_holding import _position, _quote
+
+        from neckline.sentinel.holding import check_exit_reference_reached
+
+        text = check_exit_reference_reached(_position(), _quote(14.0), 13.0, 15.0)
+        assert "14.00" in text and "13.00" in text and "15.00" in text
 
 
 # ══════════════════════════════════════════════════════════════════════════

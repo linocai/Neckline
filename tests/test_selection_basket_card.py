@@ -30,6 +30,7 @@ from neckline.selection import aggregate as ag
 from neckline.selection import basket_card as bc
 from neckline.selection import basket_store
 from neckline.selection import member_tags as mt
+from neckline.strategy import charter_copy as bc_charter_copy
 from tests.conftest import seed_active_rule_v1
 
 D0 = date(2024, 4, 8)
@@ -389,6 +390,14 @@ def test_discipline_labels_degrade_without_numbers_when_charter_missing(isolated
     assert j["members"][0]["mech"]["stop_price"] is None
     assert j["invalidation_spec"]["members"][0][bc.COND_CLOSE_BELOW_STOP_LINE] is None
     assert j["invalidation_spec"]["stop_pct"] is None
+
+
+def test_discipline_labels_says_no_mechanical_retrace_under_k8(isolated_env):
+    """V2.4.0 P3.1:章程**读到了**(`stop_pct` 有值)、只是没配回落止盈
+    (`v2.3-k8` 起的常态,K8.md §十三)→ 「本版无机械回落止盈」,⛔ 不是
+    「未配置比例」那句(那句是给"整份指纹都没读到"用的,见上一条用例的对照)。"""
+    assert bc.discipline_labels(0.05, None) == [
+        "章程止损 −5.0%", bc_charter_copy.RETRACE_DISABLED_COPY]
 
 
 def _docstring_free(path: Path):

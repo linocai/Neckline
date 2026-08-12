@@ -104,7 +104,12 @@ struct PositionPlanSection: View {
             NKDisclosure(summary: "参考、非指令") {
                 Text("参考、非指令 · 不进排序、不进哨兵、不改去留、不加分")
                     .fixedSize(horizontal: false, vertical: true)
-                Text("离场参考是你计划里的参考位,**不是止盈线** —— 纪律仍是回落止盈,是否离场由你判断。")
+                // 🔴 V2.4.0 P3.2:旧文案后半句(点名回落止盈那条机械纪律)已被版本裁定
+                // 取代 —— `v2.3-k8` 没有那条纪律,继续那样写就是撒谎。新文案与推送事件
+                // 文案(见下方开关副标题)、`sentinel/holding.py::check_exit_reference_reached`
+                // 三处同源。⚠ **一整条字面量**:`Text(String)` 不解析 Markdown,`**` 一旦
+                // 经拼接或 `String` 传参就会原样上屏(CLAUDE.md 有案底,只有实拍看得见)。
+                Text("离场参考是计划参考,**不是止盈信号** —— 是否离场由你判断。")
                     .fixedSize(horizontal: false, vertical: true)
                 Text("计划与实际偏离只是提示,**不质问、不阻断、不进任何判定**。")
                     .fixedSize(horizontal: false, vertical: true)
@@ -175,9 +180,11 @@ struct PositionPlanSection: View {
                 .toggleStyle(.switch)
                 .labelsHidden()
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("触达离场参考时通知我").font(NKFont.callout)
+                    // V2.4.0 P3.2:「提醒我」取代「通知我」——与推送事件本身的名称
+                    // 「离场参考提醒」用词一致(设置屏 / APNs 弹窗看到的是同一个词)。
+                    Text("触达离场参考时提醒我").font(NKFont.callout)
                         .foregroundStyle(NK.textPrimary)
-                    Text("只影响这一票 · 关掉不会连坐其它持仓")
+                    Text("推送名称「离场参考提醒」· 只影响这一票")
                         .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 }
                 Spacer(minLength: 0)

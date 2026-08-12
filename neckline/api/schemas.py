@@ -650,6 +650,14 @@ class PositionOut(BaseModel):
     # 客户端据此决定这条线叫「亏损警戒线」还是「止损线」(`decodeIfPresent`,缺键 → 老文案)。
     lossWarningPct: Optional[float] = None
     lossWarningAction: Optional[str] = None
+    # 🔴 **V2.4.0 P3.1 新增**:现役章程的 `take_profit_retrace`(与 `lossWarningPct` 同一次
+    # `_active_config()` 读出,零新增读库)。`null` = **该章程没有配置回落止盈**(`v2.3-k8`
+    # 起的常态,K8.md §十三)——客户端据此把「回落止盈」那一格显示成「本版无机械回落止盈」,
+    # 不再靠 `retraceState.triggered == false` 反推"没有这项纪律"(那个位只回答"触发了没有",
+    # 无法区分"没配置"与"配置了但还没触发",两者在展示层必须讲不同的话)。
+    # ⚠ **不参与任何判定** —— 判定仍在 `retraceState.triggered`(复用
+    # `sentinel/holding.py::check_take_profit`),本字段只是这条线该不该显示的文案指纹。
+    takeProfitRetrace: Optional[float] = None
     stopOrderChecked: bool = False   # 用户自证「已挂 -5% 条件单」(真对账在 4D 周复盘)
     # —— v1.1-B.1 持仓生命周期派生字段(服务端算好,客户端不重算日历)——————————
     dCount: int = 1              # D 计数(买入日=D1,交易日历口径,单一源 positions.d_count)

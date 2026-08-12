@@ -211,12 +211,18 @@ class TestStopWordingIsCharterDriven:
         assert "止损警戒" not in msg
 
     def test_advisory_wording_says_the_decision_is_yours(self):
+        """🔴 V2.4.0 P3.1 取代:原断言「离场决策在你」→「触发后由你复核原判断」
+        (K8.md §十九 逐字,`charter_copy.ADVISORY_ACTION_PHRASE`);同批修正
+        advisory 分支此前遗留的一处真 bug——这条线要叫「亏损警戒线」而不是「止损线」
+        (此前只有前缀口吻换了,线本身的称呼没跟着换)。"""
         from neckline.sentinel.holding import check_stop_approach
 
         pos, q = self._pos_and_quote()
         msg = check_stop_approach(pos, q, 0.05, advisory=True)
-        assert msg.startswith("止损警戒:") and "离场决策在你" in msg
+        assert msg.startswith("止损警戒:") and "触发后由你复核原判断" in msg
+        assert "亏损警戒线" in msg and "止损线" not in msg
         assert "条件单未成交请立即人工确认" not in msg
+        assert "离场决策在你" not in msg   # 旧措辞已被取代,不许悄悄两句并存
 
     def test_threshold_and_verdict_unchanged_by_wording(self):
         """🔴 **只换口吻,不换判定**:同一价位下"触不触发"两种口径完全一致。"""
@@ -230,11 +236,16 @@ class TestStopWordingIsCharterDriven:
             assert (a is None) == (b is None), price
 
     def test_precall_low_open_wording_follows_same_switch(self):
+        """🔴 V2.4.0 P3.1 取代:同 `check_stop_approach` 那条,advisory 分支
+        「离场决策在你」→「触发后由你复核原判断」,线名跟着 `charter_copy` 走。"""
         from neckline.sentinel.precall import judge_position_low_open
 
         pos, q = self._pos_and_quote()
         assert "条件单" in judge_position_low_open(pos, q, 0.05)
-        assert "离场决策在你" in judge_position_low_open(pos, q, 0.05, advisory=True)
+        advisory_msg = judge_position_low_open(pos, q, 0.05, advisory=True)
+        assert "触发后由你复核原判断" in advisory_msg
+        assert "亏损警戒线" in advisory_msg
+        assert "离场决策在你" not in advisory_msg
 
 
 # ======================================================================

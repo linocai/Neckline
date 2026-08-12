@@ -20,7 +20,7 @@
 //   2. **三个参考件各带 `*Clamp` + `*UnavailableReason`**:夹逼拒收时值是 `nil` 且原因
 //      非空 —— ⛔ 不许把 `nil` 显示成 `0` 或空白了事。
 //   3. **`exitReference` 不是止盈线**(§2.8-C 语义红线),文案里不许这么写:
-//      回落止盈才是纪律,离场参考只是卡上的一个参考位。
+//      离场参考是计划参考、不是止盈信号,是否离场由用户判断(V2.4.0 P3.2)。
 //   4. **`disclaimer` 原样透传不改写**;每处参考件带「参考、非指令」且**四不**
 //      (不进排序 / 不进哨兵 / 不改去留 / 不加分)。
 //   5. `narrative` **原文整段呈现**(§2.7),⛔ 不拆解塞回枚举卡片。
@@ -53,19 +53,26 @@ struct BasketCardPage: View {
         #endif
     }
 
+    // 🔴 **V2.4.0 P3.4:默认/解释/审计三层**(K8.md §十「报告信息层级」,施工图
+    // P3.4 逐字;字段分组的权威映射见 `neckline/selection/basket_card.py`
+    // `BasketCard.to_card_json()` 前的注释块,⛔ 两处分组口径必须一致,改一处改两处)。
+    //
+    // 默认层只答「买什么、在哪买、什么时候不成立」五件事;六关 / 机械分 / 原始 LLM
+    // 叙述**不得继续占用默认层**(它们把 ⑥ 挤到第二屏正是现役 v4/v5 卡的病灶)。
+    // ⚠ **这是纯展示层收敛**:`card_json` 一个字段都没删,`gatesCard`/`scoreCard`/
+    // `narrativeCard` 三个既有函数原样保留、只是挪进 `auditSection` 调用。
     @ViewBuilder
     private var content: some View {
         if let card = basket.card {
             VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-                titleBlock(card)                    // 标题 + 徽标 + 验证角标
-                scoreCard(card)                     // 百分制打分卡(总分 + 五维)
-                gatesCard                           // 🔴 六关判定(宫格)
-                driverCard(card)                    // ①②③ 驱动 / 证据链 / 为什么是现在
-                membersSection(card)                // ④ 成员、角色与对拍分歧
-                upsidePathCard(card)               // ⑥ 预期上涨路径
-                verificationCard(card)              // ⑦⑧ 验证 / 失效条件 + ⑨ 主要风险
-                narrativeCard(card)                 // ⑩ 叙述 + ⑪ disclaimer(收进披露区)
-                auditSection(card)                  // 审计视图(原始件下沉)
+                titleBlock(card)                    // ① Tier / 篮子名 / 引擎版本
+                driverOneLineCard(card)              // ② 一句话共同驱动
+                preferredMemberCard(card)            // ③ 首选成员 + 角色 + 入场区间 + 失效位置
+                whyNowCard(card)                     // ④ 为什么是现在
+                primaryRiskCard(card)                // ⑤ 一条主要风险或待确认项
+                referenceDisclosure(card)            // 「i 参考、非指令」+ Tier 红线句(常显)
+                explainDisclosure(card)              // 一级展开「解释」
+                auditSection(card)                   // 二级展开「审计」(原始件下沉)
             }
         } else {
             // 🔴 **卡未就绪也有完整的标题块**(原型 646–652 行):篮子是在的,
@@ -188,7 +195,246 @@ struct BasketCardPage: View {
         }
     }
 
-    // MARK: - 打分卡(V2.1-④ 百分制,**纯展示层**)
+    // MARK: - 🔴 P3.4 默认层 ②③④⑤(K8.md §十 末段逐字)
+
+    /// ② 一句话共同驱动(不含证据链 / 为什么是现在 —— 那两段分别挪进③④与「解释」层)。
+    @ViewBuilder
+    private func driverOneLineCard(_ card: BasketCard) -> some View {
+        if !card.driver.isEmpty || !card.driverKind.isEmpty {
+            NKCard {
+                Text(driverText(card)).font(NKFont.body).lineSpacing(4)
+                    .foregroundStyle(NK.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// ④ 为什么是现在。
+    @ViewBuilder
+    private func whyNowCard(_ card: BasketCard) -> some View {
+        if !card.whyNow.isEmpty {
+            NKCard {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("为什么是现在").nkLabel().foregroundStyle(NK.textTertiary)
+                    Text(card.whyNow).font(NKFont.body).lineSpacing(4)
+                        .foregroundStyle(NK.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// ⑤ 一条主要风险或待确认项(⛔ 不是全部——`risks.first`;其余移进「解释」层的
+    /// 验证与失效条件旁边,一字不丢)。
+    @ViewBuilder
+    private func primaryRiskCard(_ card: BasketCard) -> some View {
+        if let first = card.risks.first {
+            NKCard {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("待确认").nkLabel().foregroundStyle(NK.amber)
+                    Text(first).font(NKFont.body).lineSpacing(4)
+                        .foregroundStyle(NK.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// 「i 参考、非指令」+ Tier 红线句 —— **常显的小披露**,不折进「解释」/「审计」两层
+    /// (它答的不是"这张卡的证据",是"这张卡的效力边界",每次都该被看见一次)。
+    /// `disclaimer` / `llmStage` / `notes` 也在这里 —— 都是**关于这张卡本身**的话,
+    /// 不是关于某一票的解释材料。
+    @ViewBuilder
+    private func referenceDisclosure(_ card: BasketCard) -> some View {
+        NKDisclosure(summary: "参考、非指令") {
+            Text("参考、非指令 · 不进排序、不进哨兵、不改去留、不加分")
+            if !card.disclaimer.isEmpty {
+                Text(card.disclaimer).fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Tier / 档内次序 = 注意力优先级,不是收益预测 · T1 ≠ 最会涨 · 终选权在你")
+                .fixedSize(horizontal: false, vertical: true)
+            if !card.llmStage.isEmpty { Text("生成阶段:\(card.llmStage)") }
+            ForEach(card.notes, id: \.self) { n in
+                Text("· \(n)").fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: - 🔴 P3.4 默认层 ③:首选成员块
+
+    /// 首选成员 = `is_primary` 那一个,缺席时取第一个(卡上成员从不为空数组之外的
+    /// 别的东西——`card.members.isEmpty` 时整块不画,回退态见 `membersFallback`)。
+    private func preferredMember(_ card: BasketCard) -> BasketMember? {
+        card.members.first(where: \.isPrimary) ?? card.members.first
+    }
+
+    /// D0 收盘价(= 卡上语境里的「现价」)。机械面板原样透传,⛔ 不是实时行情
+    /// (篮子卡是 D0 冻结件,这里显示的是生成那天的收盘参考价)。
+    private func memberClose(_ m: BasketMember) -> Double? { m.mech.objectValue?["close"]?.doubleValue }
+
+    /// 「失效位」= `mech.stop_price`(= `close×(1−stop_pct)`,系统按现役章程算,
+    /// 与 `invalidation_spec.members[].close_below_stop_line` 同一个数、同一个唯一源
+    /// ——`CLAUDE.md`「invalidation 三处同名不同物」②:D0 冻结的判断失效位置)。
+    /// ⛔ 不是 `exitReference`(那是目标离场区间,完全另一件事)。
+    private func memberStopPrice(_ m: BasketMember) -> Double? { m.mech.objectValue?["stop_price"]?.doubleValue }
+
+    /// 现价相对入场区间的位置(纯算术派生,⛔ 不发明新阈值——只回答"在/上/下")。
+    private func memberPositionNote(_ m: BasketMember) -> String? {
+        guard let close = memberClose(m), close > 0,
+              let low = m.entryZone?.low, let high = m.entryZone?.high,
+              low > 0, high > 0 else { return nil }
+        if close > high {
+            return "现价已高于入场区间上沿 \(String(format: "%.1f", (close - high) / high * 100))%"
+        }
+        if close < low {
+            return "现价已低于入场区间下沿 \(String(format: "%.1f", (low - close) / low * 100))%"
+        }
+        return "现价在入场区间内"
+    }
+
+    @ViewBuilder
+    private func preferredMemberCard(_ card: BasketCard) -> some View {
+        if let m = preferredMember(card) {
+            NKCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Text("首选成员").nkLabel().foregroundStyle(NK.textTertiary)
+                        Spacer(minLength: 0)
+                        if m.roleConflict {
+                            NKChip(text: "角色两说", tone: .warn)
+                        } else if !m.roleDisplay.isEmpty {
+                            NKChip(text: m.roleDisplay)
+                        }
+                        if m.isPrimary { NKChip(text: "主归属", tone: .good) }
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        // ⛔ 视图里不写裸 `.system(size:)`(CLAUDE.md V2.3 字阶纪律)——
+                        // 设计交接包要的 `20/600` 恰好就是 `NKFont.metric` 那一档。
+                        Text(m.name).font(NKFont.metric).tracking(-0.3)
+                            .foregroundStyle(NK.textPrimary).lineLimit(1)
+                        Text(m.tsCode).font(NKFont.callout.monospacedDigit())
+                            .foregroundStyle(NK.textTertiary).lineLimit(1)
+                        Spacer(minLength: 6)
+                        if let rs = m.rsRank {
+                            Text("RS #\(rs)").font(NKFont.caption.monospacedDigit())
+                                .foregroundStyle(NK.textSecondary)
+                        }
+                        #if os(macOS)
+                        // macOS 详情栏够宽,多带一项行业 lift(iOS 402pt 放不下三项数字)。
+                        if let lift = m.industryLift {
+                            Text(String(format: "行业 lift %.2f", lift))
+                                .font(NKFont.caption.monospacedDigit())
+                                .foregroundStyle(NK.textTertiary)
+                        }
+                        #endif
+                    }
+                    Divider().overlay(NK.hairline.opacity(0.8))
+                    HStack(alignment: .top, spacing: 12) {
+                        // ⚠ **入场区间那一格用 `compactRangeText`(去 `¥`、短破折号)**:
+                        // 三格等分下 `¥30.60 ~ ¥31.95` 在 393pt 上会被截成 `¥30.60 ~ ¥31…`
+                        // (V2.4.0 P3 实拍逮到)。⛔ **不靠 `layoutPriority` 加宽这一格** ——
+                        // 三格都是 `maxWidth:.infinity`,给谁高优先级谁就吃掉全部空间。
+                        memberStatCell("入场区间", m.entryZone?.compactRangeText, NK.textPrimary)
+                        memberStatCell("失效位",
+                                       memberStopPrice(m).map { NKFmt.price($0) }, NK.down)
+                        memberStatCell("现价", memberClose(m).map { NKFmt.price($0) }, NK.textPrimary)
+                        #if os(macOS)
+                        if let note = memberPositionNote(m) {
+                            memberStatCell("位置", note, NK.amber)
+                        }
+                        #endif
+                    }
+                    if let stop = memberStopPrice(m), let zone = m.entryZone,
+                       let low = zone.low, let high = zone.high, stop > 0, low > 0, high > 0 {
+                        NKMemberScaleBar(invalidation: stop, entryLow: low, entryHigh: high,
+                                         price: memberClose(m) ?? 0)
+                    }
+                    HStack(spacing: 8) {
+                        if card.members.count > 1 {
+                            Text("另 \(card.members.count - 1) 只成员")
+                                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                            // 其余成员各一颗状态点(位置关 / 核心关取最差)——**与列表行
+                            // 那一颗同一把尺**(`nkMemberDotColor` 单一源)。⚠ 它只说
+                            // 「那几只里有没有黄 / 红」,⛔ 不代表任何结论,点开「解释」才是全貌。
+                            HStack(spacing: 3) {
+                                ForEach(card.members.filter { $0.tsCode != m.tsCode }) { other in
+                                    Circle().fill(nkMemberDotColor(other))
+                                        .frame(width: 5, height: 5)
+                                }
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        Text("解释 ›").font(NKFont.caption).fontWeight(.semibold)
+                            .foregroundStyle(NK.accent)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 首选成员块的一格读数。`value == nil` 时如实说「本次不可用」(⛔ 不显示成 0/空白)。
+    private func memberStatCell(_ title: String, _ value: String?, _ tone: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+            Text(value ?? "本次不可用")
+                .font(NKFont.headline.monospacedDigit())
+                .foregroundStyle(value != nil ? tone : NK.amber)
+                .lineLimit(1).minimumScaleFactor(0.85)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - 一级展开「解释」(K8.md §十:全部成员及角色 / 预期上涨路径 / 最强支持证据 /
+    // 主要反证 / 验证和失效条件)
+
+    @ViewBuilder
+    private func explainDisclosure(_ card: BasketCard) -> some View {
+        NKDisclosure(summary: "全部成员及角色 · 预期上涨路径 · 支持证据 · 反证 · 验证与失效条件") {
+            membersSection(card)
+            upsidePathCard(card)
+            strongestEvidenceBlock(card)
+            counterEvidenceBlock(card)
+            verificationCard(card)
+        }
+    }
+
+    /// 「最强支持证据」——取 `evidence` 首条(检索环节已按相关性排列,⛔ 客户端不二次排序)。
+    @ViewBuilder
+    private func strongestEvidenceBlock(_ card: BasketCard) -> some View {
+        if let top = card.evidence.first {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("最强支持证据").nkLabel().foregroundStyle(NK.textTertiary)
+                Text(top.claim).font(NKFont.callout).lineSpacing(3)
+                    .foregroundStyle(NK.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text([top.source, top.date].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+            }
+        }
+    }
+
+    /// 「主要反证」——取自六关判定留痕的 `gate_counter_evidence`(P1.5+ 已产出,
+    /// `tier.py::_gate_breakdown` 按关归并、成员级两关按成员码前缀区分是谁说的)。
+    /// ⛔ 这不是新字段,是既有 `tierBreakdown.gates.gate_counter_evidence` 的解释层取材。
+    @ViewBuilder
+    private func counterEvidenceBlock(_ card: BasketCard) -> some View {
+        let items = (card.tierBreakdown.objectValue?["gates"]?.objectValue?["gate_counter_evidence"]?
+            .objectValue ?? [:])
+            .sorted { $0.key < $1.key }
+            .flatMap { gate, arr in (arr.arrayValue ?? []).compactMap(\.stringValue).map { (gate, $0) } }
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("主要反证").nkLabel().foregroundStyle(NK.textTertiary)
+                ForEach(Array(items.enumerated()), id: \.offset) { _, pair in
+                    Text("· [\(nkGateLabel(pair.0))] \(pair.1)")
+                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    // MARK: - 打分卡(V2.1-④ 百分制,**纯展示层**;二级展开「审计」的机械评分与贡献项)
 
     @ViewBuilder
     private func scoreCard(_ card: BasketCard) -> some View {
@@ -231,65 +477,48 @@ struct BasketCardPage: View {
         NKCard { GateGrid(gates: basket.gates) }
     }
 
-    // MARK: - ①② 驱动 / 证据链
+    // MARK: - 完整证据链(二级展开「审计」原料;P3.4 起不再占默认层)
+    //
+    // 🔴 原「①②③ 驱动/证据链/为什么是现在」一张卡三段已拆:①③ 挪进默认层的
+    // `driverOneLineCard`/`whyNowCard`(为什么是现在仍是**决策**信息,不是审计材料),
+    // 本函数只留②「完整证据链」,原样一字不改地下沉进 `auditSection`
+    // ——「最强支持证据」(解释层)只取首条,**完整清单仍在这里**。
 
-    /// ①②③ **一张卡三段**(原型 340–362 行:`gap:14` + 两条 `.5px` 分隔)。
-    /// ⛔ 别拆回三张卡 —— 这三段答的是同一个问题(这条驱动是什么 / 凭什么信 / 为什么是今天)。
     @ViewBuilder
-    private func driverCard(_ card: BasketCard) -> some View {
+    private func evidenceChainCard(_ card: BasketCard) -> some View {
         NKCard {
-            VStack(alignment: .leading, spacing: 14) {
-                if !card.driver.isEmpty || !card.driverKind.isEmpty {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("① 共同驱动").nkLabel().foregroundStyle(NK.textTertiary)
-                        Text(driverText(card)).font(NKFont.body).lineSpacing(4)
-                            .foregroundStyle(NK.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Text("完整证据链").nkLabel().foregroundStyle(NK.textTertiary)
+                    // ⛔ `evidenceStatus != ok` 必须显式标注"取证不完整",不许静默当完整证据展示。
+                    if let note = card.evidenceIncompleteNote {
+                        NKChip(text: note, tone: .warn)
                     }
+                    Spacer(minLength: 0)
                 }
-                Divider().overlay(NK.hairline)
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 8) {
-                        Text("② 证据链").nkLabel().foregroundStyle(NK.textTertiary)
-                        // ⛔ `evidenceStatus != ok` 必须显式标注"取证不完整",不许静默当完整证据展示。
-                        if let note = card.evidenceIncompleteNote {
-                            NKChip(text: note, tone: .warn)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    if card.evidence.isEmpty {
-                        Text("本卡未附证据条目").font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                    } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(card.evidence) { e in
-                                // 原型 349 行:每条证据左侧一根 3px 竖条,⛔ 不是「·」。
-                                HStack(alignment: .top, spacing: 9) {
-                                    // 原型 `rgba(60,60,67,.14)`;`textTertiary` 是同一灰的 .40。
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(NK.textTertiary.opacity(0.35))
-                                        .frame(width: 3)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(e.claim).font(NKFont.callout).lineSpacing(3)
-                                            .foregroundStyle(NK.textPrimary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                        Text([e.source, e.date].filter { !$0.isEmpty }
-                                            .joined(separator: " · "))
-                                            .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                                    }
-                                    Spacer(minLength: 0)
+                if card.evidence.isEmpty {
+                    Text("本卡未附证据条目").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(card.evidence) { e in
+                            // 原型 349 行:每条证据左侧一根 3px 竖条,⛔ 不是「·」。
+                            HStack(alignment: .top, spacing: 9) {
+                                // 原型 `rgba(60,60,67,.14)`;`textTertiary` 是同一灰的 .40。
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(NK.textTertiary.opacity(0.35))
+                                    .frame(width: 3)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(e.claim).font(NKFont.callout).lineSpacing(3)
+                                        .foregroundStyle(NK.textPrimary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text([e.source, e.date].filter { !$0.isEmpty }
+                                        .joined(separator: " · "))
+                                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                                 }
-                                .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 0)
                             }
-                        }
-                    }
-                }
-                if !card.whyNow.isEmpty {
-                    Divider().overlay(NK.hairline)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("③ 为什么是现在").nkLabel().foregroundStyle(NK.textTertiary)
-                        Text(card.whyNow).font(NKFont.body).lineSpacing(4)
-                            .foregroundStyle(NK.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             }
@@ -442,13 +671,18 @@ struct BasketCardPage: View {
                         .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if !card.risks.isEmpty {
+                // 🔴 P3.4:`risks.first` 已挪进默认层 `primaryRiskCard`(⑤),
+                // 这里只列**其余**风险 —— 一条不少,只是不再全堆在默认层。
+                let moreRisks = Array(card.risks.dropFirst())
+                if !moreRisks.isEmpty {
                     Divider().overlay(NK.hairline)
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("⑨ 主要风险").nkLabel().foregroundStyle(NK.textTertiary)
-                        Text(card.risks.joined(separator: ";"))
-                            .font(NKFont.body).lineSpacing(4).foregroundStyle(NK.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Text("⑨ 其余风险").nkLabel().foregroundStyle(NK.textTertiary)
+                        ForEach(moreRisks, id: \.self) { r in
+                            Text("· \(r)").font(NKFont.body).lineSpacing(4)
+                                .foregroundStyle(NK.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             }
@@ -469,47 +703,35 @@ struct BasketCardPage: View {
         }
     }
 
-    // MARK: - ⑩ LLM 叙述(**原文整段**,§2.7)+ ⑪ disclaimer 收进披露区
+    // MARK: - ⑩ LLM 原始叙述(**原文整段**,§2.7;二级展开「审计」原料)
+    //
+    // 🔴 P3.4:⑪ disclaimer 已挪进默认层的 `referenceDisclosure`(常显小披露,
+    // 不必点开审计层才看得到「参考、非指令」)——本函数只留 ⑩ 叙述本体 + 降级说明。
 
-    /// ⚠ **恒在**:⑪ disclaimer 与 Tier 红线句住在这张卡的披露区里 —— 卡有没有叙述,
-    /// 那两句都得说得出口。`narrative` 为空时如实写「本卡未附叙述」,⛔ 不整张卡消失。
+    /// `narrative` 为空且未降级 → 如实写「本卡未附叙述」,⛔ 不整张卡消失。
     @ViewBuilder
     private func narrativeCard(_ card: BasketCard) -> some View {
         NKCard {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("⑩ 叙述").nkLabel().foregroundStyle(NK.textTertiary)
-                    if !card.degraded, card.narrative.isEmpty {
-                        Text("本卡未附叙述").font(NKFont.caption)
-                            .foregroundStyle(NK.textTertiary)
-                    }
-                    if card.degraded {
-                        // `degraded=true` = **人话半份缺席、结构化半份照出**(不是"这张卡不可信")。
-                        Text("本卡降级:人话半份缺席,上面的结构化内容照常有效")
-                            .font(NKFont.caption).foregroundStyle(NK.amber)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if !card.narrative.isEmpty {
-                        // 原型 680 行 `13.5px; line-height:1.75` —— 整段叙述是这张卡里
-                        // 唯一要**读**的东西,行距刻意比别处松。
-                        Text(card.narrative).font(NKFont.body).lineSpacing(6)
-                            .foregroundStyle(NK.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    // 🔴 ⑪ 与 Tier 红线句在原型里就住在这个披露区(macOS 原型 683–687),
-                    // ⛔ 不是卡外面另起一段小灰字。文案一字未改。
-                    NKDisclosure(summary: "参考、非指令") {
-                        Text("参考、非指令 · 不进排序、不进哨兵、不改去留、不加分")
-                        if !card.disclaimer.isEmpty {
-                            Text(card.disclaimer).fixedSize(horizontal: false, vertical: true)
-                        }
-                        Text("Tier / 档内次序 = 注意力优先级,不是收益预测 · T1 ≠ 最会涨 · 终选权在你")
-                            .fixedSize(horizontal: false, vertical: true)
-                        if !card.llmStage.isEmpty { Text("生成阶段:\(card.llmStage)") }
-                        ForEach(card.notes, id: \.self) { n in
-                            Text("· \(n)").fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("⑩ LLM 原始叙述").nkLabel().foregroundStyle(NK.textTertiary)
+                if !card.degraded, card.narrative.isEmpty {
+                    Text("本卡未附叙述").font(NKFont.caption)
+                        .foregroundStyle(NK.textTertiary)
                 }
+                if card.degraded {
+                    // `degraded=true` = **人话半份缺席、结构化半份照出**(不是"这张卡不可信")。
+                    Text("本卡降级:人话半份缺席,上面的结构化内容照常有效")
+                        .font(NKFont.caption).foregroundStyle(NK.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !card.narrative.isEmpty {
+                    // 原型 680 行 `13.5px; line-height:1.75` —— 整段叙述是这张卡里
+                    // 唯一要**读**的东西,行距刻意比别处松。
+                    Text(card.narrative).font(NKFont.body).lineSpacing(6)
+                        .foregroundStyle(NK.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 
@@ -517,7 +739,14 @@ struct BasketCardPage: View {
 
     @ViewBuilder
     private func auditSection(_ card: BasketCard) -> some View {
-        NKAuditSection(contains: "口径指纹、验证条件集、机械读数原始件") {
+        NKAuditSection(contains: "六关宫格、机械评分、LLM 原始叙述、口径指纹、验证条件集、机械读数原始件") {
+            // 🔴 P3.4:六关宫格 / 机械评分与贡献项 / LLM 原始叙述**不得继续占用默认层**
+            // (现役 v4/v5 卡把 ⑥ 挤到第二屏的病灶正是这三样)——三个既有函数原样复用,
+            // 只是从默认流挪进这个折叠区,内容一字未改。
+            gatesCard
+            evidenceChainCard(card)
+            scoreCard(card)
+            narrativeCard(card)
             NKAuditGroup(title: "口径指纹") {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -569,5 +798,60 @@ struct BasketCardPage: View {
             Text(text).font(NKFont.body).foregroundStyle(NK.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+// MARK: - 首选成员块的刻度条(P3.4「默认层 ③」专用)
+//
+// 🔴 **按价格线性映射,⛔ 不代表任何概率或建议**(同 `NKStopScale`/`NKStopMiniBar`
+// 既有纪律)——红段 = 失效位以下、蓝段 = 入场区间、黑刻度 = 现价。与持仓页
+// `NKStopScale` 是**同一套读法**、但形状不同(这里画的是一个**区间**而非单点成本),
+// 故另起一个轻量组件,不强行复用止损尺(那是给"止损点 + 成本点"设计的两点几何)。
+struct NKMemberScaleBar: View {
+    let invalidation: Double
+    let entryLow: Double
+    let entryHigh: Double
+    /// 现价。`0`(或更小)= 本次拉不到 → 不画黑刻度(同项目一贯"没有 ≠ 0"纪律)。
+    let price: Double
+
+    private var domain: (lo: Double, hi: Double) {
+        var vs = [invalidation, entryLow, entryHigh]
+        if price > 0 { vs.append(price) }
+        let lo = vs.min() ?? 0
+        let hi = vs.max() ?? 1
+        let span = max(hi - lo, 0.0001)
+        let pad = span * 0.12
+        return (lo - pad, hi + pad)
+    }
+
+    private func x(_ v: Double, _ w: CGFloat) -> CGFloat {
+        let d = domain
+        let t = (v - d.lo) / max(d.hi - d.lo, 0.0001)
+        return w * CGFloat(min(max(t, 0), 1))
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .topLeading) {
+                Capsule().fill(NK.hairline.opacity(0.7)).frame(width: w, height: 5).offset(y: 1)
+                // 红段:定义域左端 → 失效位。
+                Capsule().fill(NK.down.opacity(0.32))
+                    .frame(width: max(x(invalidation, w), 0), height: 5).offset(y: 1)
+                // 蓝段:入场区间。
+                let ex = x(entryLow, w), eh = x(entryHigh, w)
+                Capsule().fill(NK.accent.opacity(0.45))
+                    .frame(width: max(eh - ex, 0), height: 5)
+                    .offset(x: ex, y: 1)
+                if price > 0 {
+                    RoundedRectangle(cornerRadius: 1.5).fill(NK.textPrimary)
+                        .frame(width: 3, height: 11)
+                        .offset(x: x(price, w) - 1.5, y: -2)
+                }
+            }
+            .frame(width: w, height: 9, alignment: .topLeading)
+        }
+        .frame(height: 9)
+        .padding(.horizontal, 2)
     }
 }

@@ -55,10 +55,10 @@
   `test_activate_pack_script.py`)—— 它们按 `_RETIRED_PACK_FILES` 集合分派路径,
   ⛔ **别把 `_PACKS_DIR` 整个改指 archive**(现役包还在原处)。
 - **`client/` 根上不放 `.swift`**:`DesignTokens.swift` 在 `Neckline/Components/`
-  (与其余 `NK*` 设计件同处)、`Models.swift` 在 `Neckline/Networking/`(与解它的
-  `APIClient.swift` 同处)。⚠ **契约守门单测按路径读 `Models.swift`**
-  (`test_contract_crosscheck.py` / `test_v1_retirement_guard.py` / `test_circuit.py`),
-  再挪必须同步改那 4 处。⚠ 移动 `.swift` 与新增一样,**必须 `xcodegen generate`**。
+  (与其余 `NK*` 设计件同处)、DTO 在 `Neckline/Networking/`(与解它的 `APIClient.swift` 同处)。
+  🔴 **`Models.swift` 已于 V2.4.0 P3.7 拆成 `Networking/Models/*.swift` 六份** ——
+  **守门单测不再按文件名读**,统一入口 `tests/client_sources.py`(带哨兵自检)。
+  ⚠ 移动 / 新增 `.swift` **必须 `xcodegen generate`**。
 - **`PROJECT_PLAN.md` §五 只留当前版本全文**,历版一律「存根 + 指向
   `archive/施工图/`」。存根里必须带 **⚑ 交叉引用约定**一行,交代正文其余各节的旧指针
   该往哪读(体例见 V2.0.0 / V2.2.0 两段存根)。
@@ -211,6 +211,33 @@
 - **闸 1 读 `critical_quality`、⛔ 不回退 `data_quality`**:两位在新链路上恒等(一处赋值),
   但**取不到就当不 ok**(默认拒)—— 回退等于把收窄前的旧判据偷偷放回来。⚠ **市场级**那一列
   刻意**没有**收窄(它不驱动任何闸,收窄会让"零篮子的早晨"凭空变成「关键域数据不足」)。
+
+## V2.4.0 P3 施工实打的五个新坑(持仓文案与前端减法;碰客户端之前先读)
+
+- 🔴 **改一条线的称呼要把「所有印它的地方」列全,⛔ 别只改看得见的那几处**:V2.3.2-⑤ 把
+  −5% 改口叫「警戒线」,改了徽标 / 四格 / 那句解释,**独独漏了 `NKStopScale` 上那根红刻度**
+  —— 一屏两个名字整整活了一个版本;同批还漏了 advisory 分支的**线名本身**(只换了前缀
+  「止损警戒:」)。**判据**:改称呼时 grep 那个**旧词**(「止损」)而不是新词,逐个看该不该换。
+  ⚠ 换成三字词会撑破按两字算的版式常量(`labelHalf`),标签互相压住 —— **实拍才看得见**。
+- 🔴 **`Models.swift` 已于 P3.7 拆成 `Networking/Models/{Shared,Basket,Report,Position,Review,Auction}Models.swift`**
+  —— **守门读客户端 DTO 一律走 `tests/client_sources.py`**(`models_text()` / `networking_swift_text()` /
+  `type_block()`),⛔ 别再按文件名读。**拆分的唯一真风险是缺席断言静默变成真**(读不到的文件里
+  当然也搜不到),故该模块每次读取都跑**哨兵自检**:六份各留一个专属类型,少一个当场红。
+  ⛔ **新增 DTO 文件必须落在 `Networking/Models/` 下**,否则它不在扫描域里。
+- 🔴 **P3.6 之后「进某个 Tab」不再顺带拉别的板块的数据** —— 工具栏上那些**跨板块常显**的东西
+  (数据新鲜度徽标 / metaLine)会因此进入「本板块没拉过」的状态。⛔ **别把它画成"查了没查到"**:
+  三态徽标只在 `report.tradeDate` 非空(报告真拉到过)时才画;「拉到了、里面就是没有那一节」
+  才是真的第三态。⚠ 反过来也 ⛔ 别隐藏成"正常"。
+- **三格等分的读数行在 393pt 上每格约 110pt**:`¥30.60 ~ ¥31.95` 这种**两个价**的串在 15/600 下
+  约 120pt,会被截成 `¥30.60 ~ ¥31…`。格位专用紧凑串走 `EntryZone.compactRangeText`
+  (去 `¥`、短破折号);句子里、明细行里仍用 `rangeText`。⛔ **别靠 `layoutPriority` 加宽某一格**
+  —— 几格都是 `maxWidth:.infinity` 时,给谁高优先级谁就吃掉全部空间。
+- **本项目「实拍」只有一条路:`xcrun simctl io screenshot` + QA env 钩子**(点不动界面),
+  因此**每一种要看的状态都得能由数据或钩子造出来**;折叠区展开态、动态字号这两类拍不到 ——
+  ⛔ 不换设备、⛔ 不编图,改由守门单测按符号锁住 + 挂 §七(P3-79)。
+  ⚠ 演示库里 `data_freshness_json` 的键名必须照服务端真契约(`sectorDataDate` / `sectorLagDays` /
+  `stale` + 行业强度三键 + 扫描层三键)—— 写错一个**非 Optional** 键,客户端合成 `Decodable`
+  整份解不出来 → 徽标显示「没查到」,看起来像组件坏了(本批实拍逮到)。
 
 ## D1 集合竞价确认层(`neckline/auction/`,V2.3.3 起;碰它之前先读)
 
@@ -792,8 +819,8 @@
 - **三条版本线(2026-08-09 K8 入仓起,冷启动必读,写号前先分清是哪条)**:① **系统线 `v` 字头**
   (**仓库与生产同为 `v2.3.3`** —— 2026-08-12 10:58:06 CST 上产,权威 `PROJECT_PLAN.md`;
   ⚠ **`v2.4.0` 已于 2026-08-12 立项**,施工图 = §五 V2.4.0,需求原件 = 根目录
-  `V2.4.0_AUDIT_REMEDIATION.md`;🔴 **P0 + P1 已完工但未部署、未升版号**(`VERSION` 仍 `v2.3.3`,
-  三处同升是 P4 的活),**P2–P4 未开工** —— ⛔ 别把「P0/P1 做完了」当成「v2.4.0 上产了」)
+  `V2.4.0_AUDIT_REMEDIATION.md`;🔴 **P0 + P1 + P2 + P3 已完工但未部署、未升版号**(`VERSION` 仍 `v2.3.3`,
+  三处同升是 P4 的活),**P4 未开工** —— ⛔ 别把「P0–P3 做完了」当成「v2.4.0 上产了」)
   ② **纪律章程**(`strategy_versions` 表行,现役 **`v2.3-k8`**,权威 §2.1,切换器 `activate_charter.py`)
   ③ **K8 选股线**(权威需求 = **`~/Lino/whynotme/K8.md`** —— 🔴 **该原件已升 `V0.8`**,注册表
   `V:K8-V0.8 / C:C2 / Z:Z2 / Y:Y2`;**库里现役仍是 `K8-V0.7` + `C1/Z1/Y1`** —— V2.4.0 P1 **只出了四个包文件**,

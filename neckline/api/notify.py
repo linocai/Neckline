@@ -437,7 +437,11 @@ def push_holding_risk_alert(
     本函数只补⑪-B 三句式缺的第三句「要不要打开APP」,不改事实本身(`reason` 已经
     讲清「发生了什么 / 触碰了哪条计划」)。**系统永不代交易动作**(§3.8):即便止损
     已跌破、即便已触达离场参考,本函数不追加任何"该卖了 / 建议减仓 / 建议止盈"式
-    表述——离场参考是参考、回落止盈才是纪律,语义红线不因走了 APNs 通道而松动。"""
+    表述——离场参考是参考、系统不代下单,语义红线不因走了 APNs 通道而松动。
+    ⚠ V2.4.0 P3.2:原文这里还有半句把回落止盈说成"才是纪律",已随版本裁定删除
+    (`v2.3-k8` 起没有那条机械纪律,继续那样写就是撒谎;全文见 `charter_copy.py`
+    模块头 + `PROJECT_PLAN.md` §五 V2.4.0 P3.2)。⛔ **别把那半句抄回来** ——
+    守门单测按字面量扫全仓(含注释),抄回来当场红。"""
     if kind not in (KIND_STOP_APPROACH, KIND_TAKE_PROFIT, KIND_SECTOR_DIVE):
         raise ValueError(f"push_holding_risk_alert 只接受持仓三事件 kind,收到 {kind!r}")
     body = reason.rstrip("。") + "。" + _OPEN_APP_NOW

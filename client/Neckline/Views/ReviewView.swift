@@ -47,13 +47,16 @@ struct ReviewView: View {
             .navigationTitle(AppTab.review.title)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button { Task { await model.loadReviewOverview() } } label: {
+                    // 🔴 V2.4.0 P3.6:显式刷新走 `refresh(for:)`(不受首访门控,真的重拉)。
+                    Button { Task { await model.refresh(for: .review) } } label: {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
             }
         }
-        .task { await loadIfNeeded() }
+        // 首次进入「复盘」Tab 才拉(`AppModel.ensureLoaded` 按板块门控,与 `RootView`
+        // 的 Tab 切换钩子共用同一份"已加载过就不重拉"逻辑,不在本页另写一份)。
+        .task { await model.ensureLoaded(.review) }
         #else
         // ⚠ **V2.3:macOS 改「列表栏 五页 + 详情栏」** —— 五页横排在段控里挤成五个
         // 两字词,正是用户说的「五个页签分不清」;列表栏一页一行、每行下面跟着
@@ -63,7 +66,7 @@ struct ReviewView: View {
         } detail: {
             currentPage
         }
-        .task { await loadIfNeeded() }
+        .task { await model.ensureLoaded(.review) }
         #endif
     }
 
@@ -77,10 +80,10 @@ struct ReviewView: View {
                     Text(AppTab.review.title).font(NKFont.title2).tracking(-0.3)
                         .foregroundStyle(NK.textPrimary)
                     Spacer(minLength: 0)
-                    // ⚠ 原型没有这枚刷新(它是静态 mock)。**复盘五段 / 双时钟 / 选股时钟
-                    // 是与 `model.refresh()` 无关的独立数据源**(工具栏那枚只拉报告 /
-                    // 持仓 / 盘中 / 行情状态)—— 去掉它,复盘页就只能靠重启 App 刷新。
-                    Button { Task { await reloadBoard() } } label: {
+                    // 🔴 V2.4.0 P3.6:复盘板块自己的刷新走 `model.refresh(for: .review)`
+                    // ——五段 / 双时钟 / 选股时钟结案表已收口进 `AppModel.refreshReview()`,
+                    // ⛔ 不在本页再另写一份"拉哪几样"。
+                    Button { Task { await model.refresh(for: .review) } } label: {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 11, weight: .semibold))
                     }
@@ -124,11 +127,9 @@ struct ReviewView: View {
         }
     }
 
-    /// 复盘板块自己的刷新:五段 + 选股时钟结案件 + 当天复盘快照三条线一起拉。
-    private func reloadBoard() async {
-        await model.loadReviewOverview()
-        await model.loadSelectionClocks()
-    }
+    // ⚠ **`reloadBoard()` 已删**(V2.4.0 P3.6):五段 + 选股时钟结案件的拉取逻辑
+    // 收口进 `AppModel.refreshReview()`,本页两处调用点(iOS 工具栏 / macOS 列表栏)
+    // 都直接走 `model.refresh(for: .review)`,不在视图层另存一份"拉哪几样"。
 
     /// 页签右端的读数。**只在数得出来时才给** —— ⛔ 拿 0 冒充「算过了没有」。
     /// ⚠ 原型五行**刻意是三种形状**(徽标 / 纯文字 / 一个点):徽标是「要你处理的」、
@@ -286,16 +287,9 @@ struct ReviewView: View {
         }
     }
 
-    /// 累计页 / 对账页(iOS)都吃这一份五段。**只在还没有时拉**——切页、切侧栏都不该
-    /// 重打一次网络(⛔ 也别做自动轮询:这是回看件,不是盘中数据)。手动刷新在工具栏。
-    private func loadIfNeeded() async {
-        if model.reviewOverview == nil { await model.loadReviewOverview() }
-        // V2.2-④-A 选股时钟结案列表:与五段是两条独立数据源(一条读周度落盘产物、
-        // 一条读 `selection_clock` 结案行)—— ⛔ 别为了"少一次请求"把它并进 overview。
-        if model.selectionClocks.isEmpty && !model.selectionClocksLoading {
-            await model.loadSelectionClocks()
-        }
-    }
+    // ⚠ **`loadIfNeeded()` 已删**(V2.4.0 P3.6):「只在还没有时拉」这条纪律现在由
+    // `AppModel.ensureLoaded(.review)` 的 `loadedBoards` 门控统一承担(与其余三板块
+    // 同一套机制),⛔ 不在本页再判一次 `reviewOverview == nil`。
 
     /// iOS:段控 + **「这一页答什么」**一行(⛔ 别省那一行 —— 五个两字词分不清是原病)。
     @ViewBuilder

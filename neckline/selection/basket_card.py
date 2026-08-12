@@ -92,6 +92,7 @@ from neckline.selection import member_tags as mt
 from neckline.selection import verification_rules as vr
 from neckline.sentinel.universe import load_stock_meta
 from neckline.strategy import brain
+from neckline.strategy import charter_copy
 
 logger = logging.getLogger(__name__)
 
@@ -265,11 +266,25 @@ def resolve_loss_warning(db_path: Optional[Path] = None) -> Tuple[Optional[float
 
 def discipline_labels(stop_pct: Optional[float], take_profit_retrace: Optional[float]) -> List[str]:
     """卡上的纪律标签(**动态生成**,plan 明文:「缺指纹就退化成不带数字的说法,
-    禁把『−5%』『8%』写进模板」)。章程一改,标签跟着走。"""
+    禁把『−5%』『8%』写进模板」)。章程一改,标签跟着走。
+
+    🔴 **V2.4.0 P3.1:`take_profit_retrace is None` 要分两种成因,不能用同一句话**
+    (K8.md §十三:`v2.3-k8` 起这是**常态**,不是数据缺失):
+      · `stop_pct is not None`(章程指纹**读到了**,只是没有这项机械纪律)→
+        `charter_copy.RETRACE_DISABLED_COPY`「本版无机械回落止盈」——这是在**确认**
+        没有这项纪律,不是"不知道";
+      · `stop_pct is None`(**整份**章程指纹都没读到,读库失败或历史空行)→ 仍是
+        旧措辞「回落止盈(现役章程未配置比例)」——这是在承认"这次没查到",
+        两者语气必须不同,合并会把"不知道"讲成"确认没有"。
+    """
     stop = (f"章程止损 −{stop_pct:.1%}" if stop_pct is not None
             else "章程止损(现役章程未配置比例)")
-    tpr = (f"回落止盈 {take_profit_retrace:.1%}" if take_profit_retrace is not None
-           else "回落止盈(现役章程未配置比例)")
+    if take_profit_retrace is not None:
+        tpr = f"回落止盈 {take_profit_retrace:.1%}"
+    elif stop_pct is not None:
+        tpr = charter_copy.RETRACE_DISABLED_COPY
+    else:
+        tpr = "回落止盈(现役章程未配置比例)"
     return [stop, tpr]
 
 
@@ -645,7 +660,7 @@ CARD_SYSTEM_PROMPT = """你是「颈线」系统的盘后篮子参谋。系统�
 · `exit_low` / `exit_high` 是本轮上涨的压力位参考,**不受涨跌停约束**(可能几个交易日后才触及),
 但 `exit_low` **必须严格高于资料里给出的该票「今日收盘价」**——压力位按定义在现价之上,
 不高于收盘的会被系统丢弃、不展示给用户;且必须满足 `exit_low ≤ exit_high`。
-它不是止盈线——回落止盈是系统纪律,独立生效、不受你的判断影响。
+它不是止盈线——是否在这个区间离场由用户判断,系统不会因为价格到了这里就自动执行止盈。
 · `verification` / `invalidation` 两段人话**必须与资料里给出的机械阈值同频**,不得给出与之矛盾的
 说法;那些阈值是盘中自动判定用的,你写的是同一件事的人话版本。
 · 某一项确实无法给出合理数字时,**宁可该字段写 null,也不要编造**。
@@ -935,6 +950,36 @@ class BasketCard:
         """人话半份缺席 = 降级(**结构化半份照出**,plan 的降级规格)。"""
         return self.llm_stage != LLM_OK
 
+    # ══════════════════════════════════════════════════════════════════════
+    # V2.4.0 P3.4:默认/解释/审计三层的字段分组(K8.md §十「报告信息层级」)
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # 🔴 **本节是纯展示层分组的单一权威映射,⛔ 不改变 `to_card_json()` 输出一个字节**
+    # (施工图 P3.4:「服务端字段一个不删」)——客户端 `BasketCardPage`(`BasketCardView.
+    # swift`)按这张映射把同一份 `card_json` 拆进三层视图,本类**不**为分层新增字段、
+    # **不**新建 `spec_version`。下次改字段分组前先改这张表,别让 Swift 那边照着一份
+    # 只存在于脑子里的口径去猜。
+    #
+    #   默认层(5 项,K8 §十 末段逐字):
+    #     ① `tier` / `rank_in_tier` / `name` + `engine_code`/`engine_version`
+    #     ② `driver`(一句话,不含 `evidence`/`why_now`)
+    #     ③ 首选成员(`members[0]` 或 `is_primary` 那一个)的
+    #        `role_llm`/`role_mech` · `entry_zone` · `exit_reference`(失效位置)
+    #     ④ `why_now`
+    #     ⑤ `risks[0]`(一条主要风险,或 `notes` 里第一条「待确认」)
+    #
+    #   一级展开「解释」:
+    #     `members`(全部成员及角色)· `upside_path` · `evidence`(证据链,标"最强支持
+    #     证据"时取首条)· `tier_breakdown.gates.gate_counter_evidence`(主要反证,
+    #     `tier.py::_gate_breakdown` P1.5+ 已产出,是"审计层原料"也是本层的取材源)·
+    #     `verification_text` / `invalidation_text`(验证与失效条件)
+    #
+    #   二级展开「审计」:
+    #     `tier_breakdown.gates`(六关宫格,含 `gate_available`/`verdicts`)·
+    #     `evidence`(完整证据链原文)· `tier_breakdown` 五维贡献 + `mech_score` ·
+    #     `narrative`(LLM 原始叙述)· `verification_spec`/`invalidation_spec`(阈值
+    #     来源)· `fingerprint`(版本指纹)· `members[].mech`/`position_metrics`/
+    #     `core_metrics`(原始机械读数)
     def to_card_json(self) -> Dict[str, Any]:
         """`basket_cards.card_json` 的内容(蓝图 4.6 全项 + 结构化 spec + disclaimer)。
 

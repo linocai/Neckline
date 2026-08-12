@@ -41,6 +41,7 @@ from typing import Dict, List, Optional
 
 from neckline.sentinel.positions import Position
 from neckline.sentinel.quotes import Quote
+from neckline.strategy import charter_copy
 
 # 止损预警提前量(百分点)——回撤达到 stop_pct-此值 即预警,不等真正跌破才吭声
 # (**未回测,启发式**,与 report.sentiment 的既有诚实标注风格一致)。
@@ -74,10 +75,15 @@ def check_stop_approach(
 
     **`advisory`(V2.2-⑤,§2.9-A「−5% 由强制条件单改为止损警戒 + 离场决策」)**:
       · `False`(缺省 = `v1.3.3` 及之前的章程)→ 文案**逐字不变**,仍指向券商条件单。
-      · `True`(`v2.2-k8` 起,判据单一源 `brain.stop_is_advisory`)→ 改「止损警戒」口吻,
-        点明**离场决策在用户**。⚠ **阈值与判定逻辑一字未动** —— `stop_pct=0.05` 仍是同
-        一个唯一源、同一条线、同一个提前量;改的只是它触发的那句话在说什么(§五 ⑤ 工程
-        细节 2)。⛔ 别把它读成"止损放松了":系统本来就不代下单,变的是纪律归属。
+      · `True`(`v2.2-k8` 起,判据单一源 `brain.stop_is_advisory`)→ 改「亏损警戒」口吻,
+        点明**触发后由用户复核原判断**。⚠ **阈值与判定逻辑一字未动** —— `stop_pct=0.05`
+        仍是同一个唯一源、同一条线、同一个提前量;改的只是它触发的那句话在说什么
+        (§五 ⑤ 工程细节 2)。⛔ 别把它读成"止损放松了":系统本来就不代下单,变的是纪律归属。
+      · 🔴 **V2.4.0 P3.1:这条线的称呼与触发后那句话统一走 `charter_copy` 单一源**
+        (`stop_line_label` / `stop_action_phrase`)——修此前遗留的一处真 bug:
+        advisory 分支曾经仍把这条线叫「止损线」(只有前缀「止损警戒:」换了口吻,
+        线本身的称呼没跟着换),K8.md §十九 要求 review 口径下这条线**全程**叫
+        「亏损警戒线」。
     """
     if quote.price <= 0 or position.buy_price <= 0:
         return None
@@ -89,18 +95,23 @@ def check_stop_approach(
     if quote.price <= stop_line + _EPS * position.buy_price:
         if advisory:
             return (
-                f"止损警戒:现价{quote.price:.2f}已跌破止损线{stop_line:.2f}(-{stop_pct:.0%}),"
-                f"离场决策在你(系统不代下单/撤单)"
+                f"止损警戒:现价{quote.price:.2f}已跌破{charter_copy.stop_line_label(True)}"
+                f"{stop_line:.2f}(-{stop_pct:.0%}),{charter_copy.stop_action_phrase(True)}"
+                f"(系统不代下单/撤单)"
             )
+        # ⚠ **逐字不变**(缺省 `advisory=False`,`v2.2-k8` 激活前恒此):§2.1 前置提示
+        # 「激活前本节其余全文一字有效」的落点,⛔ 不许改一个字。
         return (
             f"现价{quote.price:.2f}已跌破止损线{stop_line:.2f}(-{stop_pct:.0%}),"
             f"若券商条件单未成交请立即人工确认(系统不代下单/撤单)"
         )
     if advisory:
         return (
-            f"止损警戒:现价{quote.price:.2f}逼近止损线{stop_line:.2f}(-{stop_pct:.0%}),"
-            f"当前浮亏{drawdown:.1%},离场决策在你"
+            f"止损警戒:现价{quote.price:.2f}逼近{charter_copy.stop_line_label(True)}"
+            f"{stop_line:.2f}(-{stop_pct:.0%}),当前浮亏{drawdown:.1%},"
+            f"{charter_copy.stop_action_phrase(True)}"
         )
+    # ⚠ 逐字不变(同上)。
     return f"现价{quote.price:.2f}逼近止损线{stop_line:.2f}(-{stop_pct:.0%}),当前浮亏{drawdown:.1%}"
 
 
@@ -151,24 +162,26 @@ def check_exit_reference_reached(
 
     **语义**:现价进入区间下沿即算"触达"(`quote.price >= exit_low`,不要求越过
     `exit_high`)——同 `check_take_profit`/`check_stop_approach` 单阈值触发一碰线
-    就提醒的既有姿势。**文案只中性陈述"触达",不建议卖出**(离场参考是参考、回落
-    止盈才是纪律;同 `basket_card.py` `CARD_SYSTEM_PROMPT`「不得使用止盈线/目标价/
+    就提醒的既有姿势。**文案只中性陈述"触达",不建议卖出**(离场参考是参考、不是
+    止盈线;同 `basket_card.py` `CARD_SYSTEM_PROMPT`「不得使用止盈线/目标价/
     建议买入」这类措辞的同一条语义红线)。
 
     ⚠ **文案不是随便写的,它是 §2.8-C-3 记名豁免的前提③**(2026-08-03 ⑪-D 接线时
-    补齐):原文要求「纯告知型文案,禁指令词,**必须点明「这是你计划里的参考位、
-    不是止盈线,纪律仍是回落止盈」**」。四条前提**缺一即豁免失效** —— 也就是说,
-    改这段话之前先回去读那一节;把「纪律仍是回落止盈」这半句删掉,这条 kind 就
-    不再被允许推送了。"""
+    补齐,2026-08-12 V2.4.0 P3.2 版本裁定改写):原文要求「纯告知型文案,禁指令词,
+    必须点明『这是你计划里的参考位、不是止盈线』」,**后半句原本还点名了回落止盈那条
+    机械纪律** —— 🔴 `v2.3-k8` **已经没有那条纪律**,继续那样写就是对用户撒谎。
+    **自 V2.4.0 起后半句改为『离场参考是计划参考、不是止盈信号』**(版本裁定全文见
+    `PROJECT_PLAN.md` §五 V2.4.0 P3.2 与 §2.8-C-3 正文标注);前提①②④ 一字不变、
+    仍然缺一即豁免失效。
+
+    🔴 **本函数不再自己拼这句话**:文案唯一源 = `charter_copy.exit_reference_reached_copy`
+    (施工图 P3.2 的逐字骨架 + 三个数)。本函数只负责**判「触没触达」**——
+    ⛔ 别把措辞搬回来,那样服务端会出现第二份事实源。"""
     if quote.price <= 0 or exit_low <= 0 or exit_high <= 0 or exit_low > exit_high:
         return None
     if quote.price + _EPS < exit_low:
         return None
-    return (
-        f"现价{quote.price:.2f}已触达来源篮子的离场参考区间"
-        f"[{exit_low:.2f}, {exit_high:.2f}]——这是你计划里的参考位、不是止盈信号,"
-        f"纪律仍是回落止盈;是否离场由您判断"
-    )
+    return charter_copy.exit_reference_reached_copy(quote.price, exit_low, exit_high)
 
 
 def evaluate_holding(

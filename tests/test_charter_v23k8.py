@@ -358,6 +358,10 @@ _STOP_PCT_CONSUMERS = {
     # —— 单一源本身 / 建表注释 ——
     "neckline/strategy/brain.py",
     "neckline/db.py",
+    # V2.4.0 P3.1:持仓语义文案单一源。**不读** `stop_pct`(docstring 提到它只是为了
+    # 讲清"数值口径一字不动,本模块只产文案"这条边界)——文件级白名单按字面出现登记,
+    # 不因为"只是注释"就豁免(与上面 `api/schemas.py`「契约字段注释」同一条纪律)。
+    "neckline/strategy/charter_copy.py",
     # —— 章程落行与切换脚本(核对表里逐字重复 0.05,正是"防改坏"的闸)——
     "scripts/activate_charter.py",
     "scripts/oneoff/charter_v1_3.py",
@@ -563,7 +567,8 @@ class TestContractOnlyAdds:
     def test_client_dto_decodes_both_new_keys(self):
         """客户端 `BasketFingerprint` / `Position` 都必须 `decodeIfPresent` 这两键
         (老卡 / 老服务端缺键 → nil,⛔ 不炸、⛔ 不当"配置丢了")。"""
-        src = (_ROOT / "client/Neckline/Networking/Models.swift").read_text(encoding="utf-8")
+        from tests.client_sources import models_text
+        src = models_text()   # V2.4.0 P3.7:DTO 已拆六份,统一入口读
         for owner in ("struct BasketFingerprint", "struct Position:"):
             block = src.split(owner, 1)[1].split("\n}\n", 1)[0]
             # ⚠ 按**解码那一行**钉,不是"这个词在块里出现过" —— 后者在有人把它改成

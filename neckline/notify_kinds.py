@@ -214,7 +214,9 @@ KIND_LABEL: Dict[str, str] = {
     KIND_HOLDING_DECOUPLED: "持仓转独立弱势",
     KIND_MARKET_SHOCK: "大盘突变",
     KIND_STOP_APPROACH: "止损逼近/触发",
-    KIND_TAKE_PROFIT: "触达离场参考区间",
+    # V2.4.0 P3.2:对外统一显示「离场参考提醒」(设置屏推送开关的人读名跟这走)——
+    # 内部 kind 串 `take_profit` 保留作兼容,⛔ 不改(见模块头「不另拟新名」说明)。
+    KIND_TAKE_PROFIT: "离场参考提醒",
     KIND_SECTOR_DIVE: "所属板块跳水",
 }
 

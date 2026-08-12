@@ -697,8 +697,8 @@ class TestGuards:
     def test_quote_freshness_labels_are_all_translated_client_side(self):
         """新加的四族枚举码**会直接进契约** —— 少一个就会在界面上印出机器标识符
         (`CLAUDE.md` 连踩三次的那类 bug)。"""
-        models = (_REPO / "client" / "Neckline" / "Networking" / "Models.swift").read_text(
-            encoding="utf-8")
+        from tests.client_sources import models_text
+        models = models_text()   # V2.4.0 P3.7:DTO 已拆六份,统一入口读
 
         def cases(fn: str) -> set:
             body = models.split(f"func {fn}(")[1].split("\n}")[0]
@@ -711,8 +711,8 @@ class TestGuards:
     def test_old_reports_never_default_to_normal_on_the_client(self):
         """🔴 施工图 §五 P2.3 逐字:「旧报告没有这些字段时显示『旧版本未细分』,
         ⛔ **不得默认成正常**」。判据落在展示层换算与色调两处。"""
-        models = (_REPO / "client" / "Neckline" / "Networking" / "Models.swift").read_text(
-            encoding="utf-8")
+        from tests.client_sources import models_text
+        models = models_text()   # V2.4.0 P3.7:DTO 已拆六份,统一入口读
         fn = models.split("func nkAuctionDomainQualityLabel(")[1].split("\n}")[0]
         assert "旧版本未细分" in fn
         view = (_REPO / "client" / "Neckline" / "Views" / "AuctionCardView.swift").read_text(

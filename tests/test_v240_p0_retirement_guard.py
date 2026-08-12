@@ -37,7 +37,8 @@ _NECKLINE = _ROOT / "neckline"
 _CLIENT = _ROOT / "client" / "Neckline"
 _SCRIPTS = _ROOT / "scripts"
 _ENGINE = _NECKLINE / "sentinel" / "engine.py"
-_MODELS_SWIFT = _CLIENT / "Networking" / "Models.swift"
+# V2.4.0 P3.7:`Models.swift` 已拆六份 → 统一入口(带哨兵自检)。
+from tests.client_sources import models_text as _models_text
 
 
 def _py_sources(*roots: Path) -> List[Path]:
@@ -202,7 +203,7 @@ class TestRetiredCopyIsGoneEverywhere:
         ③ 清仓原因码 `INVALIDATION` =「证伪离场」;
         ④ **P0.2 那条小提示本身**就写着「不作盘中证伪或全局刹车」。
         本条正面断言 ②③④ 都还在 —— 只扫「不该有的没有」会漏掉「该有的被误删了」。"""
-        models = _MODELS_SWIFT.read_text(encoding="utf-8")
+        models = _models_text()
         assert "驱动假设已证伪" in models
         assert "证伪离场" in models
         assert _P0_NOTICE in (_CLIENT / "Components" / "DesignTokens.swift").read_text(encoding="utf-8")

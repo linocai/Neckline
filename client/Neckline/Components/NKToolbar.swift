@@ -55,10 +55,10 @@ struct NKToolbar: View {
 
             Spacer(minLength: 12)
 
-            // 右:行情状态 ← 交易日·章程·选股包 ← 降级告警 ← 刷新 ← 齿轮
+            // 右:行情状态 ← 交易日·章程·选股包 ← 数据新鲜度徽标 ← 刷新 ← 齿轮
             regimePill
             metaLine
-            degradeBadge
+            freshnessBadge
             refreshButton
             gearButton
         }
@@ -170,47 +170,34 @@ struct NKToolbar: View {
         return parts
     }
 
-    /// 降级告警:**有才出现**,可点(点进选股板块的 ⑤ 数据新鲜度段)。
+    /// 🔴 V2.4.0 P3.3-E:数据新鲜度**三态**徽标(取代原「有才出现」的降级告警 ——
+    /// 那条只覆盖了"降级"一态,「三张表都当日」与「本次没查到」两态此前在工具栏上
+    /// 完全不可见)。点开跳选股板块并展开完整 ⑤ 段。
+    ///
+    /// ⚠ **报告还没拉过时整枚不画**(`tradeDate` 为空):P3.6 之后进持仓 / 复盘 Tab
+    /// **不会**顺带拉报告 —— 此时画一枚灰色「没查到」是把「这个 Tab 没拉过」说成
+    /// 「查了没查到」,方向正相反的一种谎。⛔ 别改成「拉不到就当新鲜」,
+    /// 报告**拉过之后** `dataFreshness == nil` 才是真的第三态,那一枚照画。
     @ViewBuilder
-    private var degradeBadge: some View {
-        let n = degradeCount
-        if n > 0 {
-            // 原型 63–66 行:`gap:5; padding:4px 9px; radius:7; background:rgba(232,145,10,.10)`
-            // + 11px 三角图标 + `11.5/600 #E8910A`。⛔ 去胶囊。
-            Button { model.view = .baskets } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "exclamationmark.triangle").font(.system(size: 11, weight: .medium))
-                    Text("降级 \(n) 项").font(NKFont.caption).fontWeight(.semibold)
-                }
-                .foregroundStyle(NK.amber)
-                .padding(.horizontal, 9).padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: NKRadius.control)
-                    .fill(NK.amber.opacity(0.10)))
-                .contentShape(Rectangle())
+    private var freshnessBadge: some View {
+        if !model.report.tradeDate.isEmpty {
+            NKFreshnessBadge(freshness: model.report.dataFreshness) {
+                model.view = .baskets
+                model.showFreshnessSheet = true
             }
-            .buttonStyle(.plain)
         }
-    }
-
-    /// ⚠ 只数**已知为真**的三件(板块 / 行业强度 / 扫描层);`nil` 是「没查到」——
-    /// 它由 ⑤ 那一段如实说出口,⛔ 不在这里当成"降级"也不当成"正常"。
-    private var degradeCount: Int {
-        guard let f = model.report.dataFreshness else { return 0 }
-        var n = 0
-        if f.stale { n += 1 }
-        if f.industryStrengthStale == true { n += 1 }
-        if f.scanLayerStale == true { n += 1 }
-        return n
     }
 
     // MARK: - 刷新(按钮上直接显示上次更新时刻)+ 齿轮
 
     private var refreshButton: some View {
-        Button { Task { await model.refresh() } } label: {
+        // 🔴 V2.4.0 P3.6:`refresh(for: model.view)` 只刷**当前 Tab**——三个板块
+        // 各自的工具栏按钮语义不同了,⛔ 不再是"刷新报告/持仓/盘中动态"一把梭。
+        Button { Task { await model.refresh(for: model.view) } } label: {
             // 原型 67–70 行:`gap:5; padding:5px 10px; radius:7; background:#0B6BCB` +
             // 11px 图标 + `11.5/600 #fff`。⛔ 去胶囊。
             HStack(spacing: 5) {
-                if model.reportLoading {
+                if model.isLoadingCurrentTab {
                     ProgressView().controlSize(.mini).tint(.white)
                 } else {
                     Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
@@ -225,8 +212,8 @@ struct NKToolbar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(model.reportLoading)
-        .help("刷新报告 / 持仓 / 盘中动态;按钮上是本机上次成功刷新的时刻")
+        .disabled(model.isLoadingCurrentTab)
+        .help("刷新当前板块;按钮上是本机上次成功刷新的时刻")
     }
 
     /// 🔴 **齿轮是入口不是板块** —— ⛔ 别把它做成第四个胶囊。

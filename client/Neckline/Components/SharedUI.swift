@@ -307,9 +307,12 @@ struct NKRefreshPill: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        Button { Task { await model.refresh() } } label: {
+        // 🔴 V2.4.0 P3.6:`refresh(for: model.view)` 按**当前 Tab** 分派——这枚胶囊
+        // 分别嵌在选股 / 持仓两页各自的 iOS 工具栏里,`model.view` 此刻必然等于
+        // 该页所属的 Tab,天然按板块分派、无需按调用点传参。
+        Button { Task { await model.refresh(for: model.view) } } label: {
             HStack(spacing: 5) {
-                if model.reportLoading {
+                if model.isLoadingCurrentTab {
                     ProgressView().controlSize(.mini).tint(.white)
                 } else {
                     Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
@@ -323,7 +326,7 @@ struct NKRefreshPill: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .disabled(model.reportLoading)
+        .disabled(model.isLoadingCurrentTab)
     }
 
     private static let fmt: DateFormatter = {
@@ -497,6 +500,67 @@ struct DataFreshnessDetail: View {
     private func tone(stale: Bool?, present: Bool) -> NKAxisTone {
         guard present else { return .warn }
         return stale == true ? .bad : .good
+    }
+}
+
+// MARK: - 成员状态点取色(位置关 / 核心关取最差;两关都没判 → 灰)
+//
+// 🔴 **V2.4.0 P3.4 把它从 `BasketListRow` 里提出来**:首选成员块底部那三颗点与列表行
+// 里每只票前面那一颗**必须是同一把尺** —— 各写一份就会出现「列表里是绿的、卡上是灰的」
+// 这种看不出是 bug 的分叉。⚠ 纯展示层聚合,读的就是那两枚判定,⛔ 不另算判据。
+func nkMemberDotColor(_ m: BasketMember) -> Color {
+    let tones = [m.positionVerdictLabel.map { _ in m.positionVerdictTone },
+                 m.coreVerdictLabel.map { _ in m.coreVerdictTone }].compactMap { $0 }
+    if tones.isEmpty { return NK.textTertiary.opacity(0.7) }
+    if tones.contains(.bad) { return NK.down }
+    if tones.contains(.warn) { return NK.amber }
+    if tones.contains(.good) { return NK.up }
+    return NK.textTertiary.opacity(0.7)
+}
+
+// MARK: - V2.4.0 P3.3-E:数据新鲜度工具栏徽标(⑤ 段正常时收成这一枚,降级才展开)
+//
+// 🔴 **三态不合并**(施工图 P3.3 末条逐字):
+//   · 三张表都当日 → 绿徽标「数据齐」;
+//   · 有落后项 → 琥珀徽标「数据 N」(N = `stale`/`industryStrengthStale`/
+//     `scanLayerStale` 三件里为真的项数,与既有 `NKToolbar.degradeCount` 同一把尺);
+//   · `dataFreshness == nil`(本次连新鲜度都没查到)→ 灰徽标「没查到」,
+//     ⛔ **这不等于「数据新鲜」**,不许并进「数据齐」那一态。
+// 点开都是完整 ⑤ 段(一个字段都不少)—— 本组件只负责"收成一行",点开逻辑由调用方
+// (`BasketDailyView`)接 `action` 弹出既有 `freshnessSection`,不重新实现一份。
+struct NKFreshnessBadge: View {
+    let freshness: DataFreshness?
+    let action: () -> Void
+
+    private var degradeCount: Int {
+        guard let f = freshness else { return 0 }
+        var n = 0
+        if f.stale { n += 1 }
+        if f.industryStrengthStale == true { n += 1 }
+        if f.scanLayerStale == true { n += 1 }
+        return n
+    }
+
+    private var state: (dot: Color, text: String) {
+        guard let _ = freshness else { return (NK.textTertiary, "没查到") }
+        let n = degradeCount
+        return n > 0 ? (NK.amber, "数据 \(n)") : (NK.up, "数据齐")
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Circle().fill(state.dot).frame(width: 5, height: 5)
+                Text(state.text).font(NKFont.caption).fontWeight(.semibold)
+            }
+            .foregroundStyle(state.dot)
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(Capsule().fill(state.dot.opacity(0.12)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(freshness == nil ? "本次没查到数据新鲜度 —— 不等于数据新鲜"
+              : (degradeCount > 0 ? "有 \(degradeCount) 项数据落后,点开看完整披露" : "板块 / 行业强度 / 扫描层三张表都当日"))
     }
 }
 
