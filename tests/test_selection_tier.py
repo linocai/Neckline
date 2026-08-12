@@ -654,7 +654,7 @@ class TestScoreAndTier:
         r = _three_baskets()
         res = ti.score_and_tier(r, D0, db_path=env.db_path,
                                 parquet_dir=env.parquet_dir, gates_outcome=_outcome(r))
-        assert res.pack_version == "K8-V0.6"
+        assert res.pack_version == "K8-V0.7"
 
     def test_overflowing_baskets_are_dropped_with_trace(self, isolated_env):
         """20 个**零数据**篮子(每一维都降级取中性分)→ 分数全是同一个平庸值,

@@ -189,7 +189,7 @@ def _seed_basket_with_card(db, d: date, codes, *, tier: int = 1, key: str = "k1"
         name="机器人执行器", driver="人形机器人量产提速", driver_kind="theme",
         evidence=(), evidence_status="ok", why_now="订单落地时点靠近",
         members=tuple(members), tier=tier, rank_in_tier=1, rank_mech=1, mech_score=80.0,
-        tier_breakdown={}, tier_reason="", tier_note="", scripts={},
+        tier_breakdown={}, tier_reason="", tier_note="", upside_path="沿 5 日线台阶式抬升",
         verification_spec=bc.build_verification_spec(key, d, mechs),
         invalidation_spec=bc.build_invalidation_spec(key, d, mechs, stop_pct=0.05),
     ).to_card_json()

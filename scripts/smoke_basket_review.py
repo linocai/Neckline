@@ -262,9 +262,13 @@ def _print_nine(review: br.BasketReview) -> None:
     print(f"{'=' * 78}")
 
     a = m["auction_vs_script"]
-    print(f"① 竞价 vs 剧本:{'可判' if a['available'] else '算不出(' + str(a['unavailable_reason']) + ')'}")
-    print(f"   竞价/开盘中位 {_fmt(a['gap_median'], True)}(来源 {a['source']})→ 落「{a['branch']}」分支")
-    print(f"   卡上该分支剧本:{'有' if a['script_present'] else '无'};卡上共有分支 {a['scripts_branches_on_card']}")
+    print(f"① 竞价 vs 上涨判断:{'可判' if a['available'] else '算不出(' + str(a['unavailable_reason']) + ')'}")
+    # ⚠ **机械分档 `branch` 一字未动**(V2.3.3-①):它回答的是「当天竞价实际落在
+    # 强 / 平 / 弱哪一档」,是机械描述,**不是剧本**。换掉的只有取文本那一步 ——
+    # 🔴 `scripts_branches_on_card` 这个键**已随三剧本一起退役**,换成
+    # `upside_path_present`(⛔ 别再读老键:V2.3.3 批 ① 改完漏了这一处,本脚本当场 KeyError)。
+    print(f"   竞价/开盘中位 {_fmt(a['gap_median'], True)}(来源 {a['source']})→ 落「{a['branch']}」分档")
+    print(f"   卡上的预期上涨路径:{'有' if a['upside_path_present'] else '无'}")
     for code, row in a["per_member"].items():
         print(f"     · {code}:{_fmt(row['gap'], True)} → {row['branch']}")
 

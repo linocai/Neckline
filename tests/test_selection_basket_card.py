@@ -109,7 +109,7 @@ def _mech(code: str = "600000.SH", **over: Any) -> bc.MemberMech:
 
 def _payload(**over: Any) -> Dict[str, Any]:
     base: Dict[str, Any] = {
-        "scripts": {"strong": "高开怎么做", "flat": "平开怎么做", "weak": "低开怎么做"},
+        "upside_path": "补贴细则落地推动订单预期,先修复缺口再沿 5 日线台阶式抬升,到前高一带算走完",
         "entries": [{"ts_code": "600000.SH", "low": 9.8, "high": 10.2, "max_chase": 10.5,
                      "exit_low": 12.0, "exit_high": 13.5, "why": "回踩昨日实体中枢"}],
         "verification": "次日若多数成员站上今日收盘并守住 MA20,说明驱动被跟随。",
@@ -160,8 +160,11 @@ def test_card_json_has_all_eleven_blueprint_items():
     assert j["tier"] == 1 and j["rank_in_tier"] == 1 and j["rank_mech"] == 1
     assert j["mech_score"] == pytest.approx(0.82) and j["tier_breakdown"]["dims"]
     assert j["tier_reason"] == "龙头更清晰" and j["tier_note"] == "T1 第一位合理"
-    # 6 次日强 / 平 / 弱三剧本
-    assert set(j["scripts"]) == {"strong", "flat", "weak"} and all(j["scripts"].values())
+    # 6 预期上涨路径(V2.3.3-①:一段话,不分支)
+    assert j["upside_path"] and "台阶式抬升" in j["upside_path"]
+    assert j["upside_path_unavailable_reason"] is None
+    # 🔴 老两键**已停发**(〇-6:客户端 `decodeIfPresent` → 直接停发,不走两步淘汰)
+    assert "scripts" not in j and "scripts_unavailable_reason" not in j
     # 7 建仓观察区间 + 最高追价
     assert m["entry_zone"] == {"low": 9.8, "high": 10.2, "why": "回踩昨日实体中枢"}
     assert m["max_chase"] == 10.5
@@ -199,8 +202,10 @@ def test_card_json_key_shape_is_stable():
         "spec_version", "version", "basket_key", "trade_date", "next_trade_date",
         "name", "driver", "driver_kind", "evidence", "evidence_status", "why_now",
         "members", "role_conflicts", "tier", "rank_in_tier", "rank_mech", "mech_score",
-        "tier_breakdown", "tier_reason", "tier_note", "scripts",
-        "scripts_unavailable_reason", "verification_spec", "verification_text",
+        "tier_breakdown", "tier_reason", "tier_note",
+        # V2.3.3-①:`scripts` / `scripts_unavailable_reason` **停发**,换成下面两键。
+        "upside_path", "upside_path_unavailable_reason",
+        "verification_spec", "verification_text",
         "invalidation_spec", "invalidation_text", "risks", "disclaimer",
         "fingerprint", "discipline_labels", "narrative", "llm_stage", "degraded", "notes",
         # V2.2-③-E(spec v3):引擎归属三键(裁定 #9 单篮子单引擎,成员继承)。
@@ -585,8 +590,8 @@ def test_llm_absent_still_yields_structured_half():
     """plan 的降级规格:**结构化半份照出、LLM 半份缺席如实标注**。"""
     j = _card(payload=None, llm_stage=bc.LLM_NO_PROVIDER, narrative="").to_card_json()
     assert j["degraded"] is True and j["llm_stage"] == bc.LLM_NO_PROVIDER
-    assert j["scripts"] is None
-    assert j["scripts_unavailable_reason"] == "本次未生成竞价剧本(no_provider)"
+    assert j["upside_path"] is None
+    assert j["upside_path_unavailable_reason"] == "本次未生成预期上涨路径(no_provider)"
     assert j["verification_text"] is None and j["invalidation_text"] is None
     assert j["risks"] == []
     # …但机械件一项不少
@@ -641,9 +646,9 @@ def test_json_is_stripped_before_narrative_is_kept():
     p = _StubProvider(_reply(_payload(), narrative="叙述部分。"))
     narrative, payload, stage = bc.run_card_llm("ctx", provider=p, ledger=BudgetLedger())
     assert stage == bc.LLM_OK
-    assert "```json" not in narrative and "scripts" not in narrative
+    assert "```json" not in narrative and "upside_path" not in narrative
     assert narrative.strip() == "叙述部分。"
-    assert payload["scripts"]["strong"] == "高开怎么做"
+    assert payload["upside_path"].startswith("补贴细则落地")
 
 
 def test_basket_card_module_does_not_reuse_verdict_parser():
@@ -661,14 +666,49 @@ def test_basket_card_module_does_not_reuse_verdict_parser():
     assert "selection.tier" not in code and "from neckline.selection import tier" not in code
 
 
-def test_scripts_keys_always_present_when_partially_filled():
-    j = _card(payload=_payload(scripts={"strong": "只有强开的说法"})).to_card_json()
-    assert j["scripts"] == {"strong": "只有强开的说法", "flat": None, "weak": None}
+def test_upside_path_is_one_paragraph_not_branches():
+    """V2.3.3-①:卡 #6 只收 `upside_path` 一段话。**老 `scripts` 三格即使还在
+    payload 里也一个字都不进新卡** —— 兼容发生在读侧(`_upside_path_present` 的 OR),
+    ⛔ 不在写侧回捞老键(那会让新卡里长出一个本版已经不问的东西)。"""
+    j = _card(payload=_payload(upside_path="沿缺口上沿反复确认后拾级而上")).to_card_json()
+    assert j["upside_path"] == "沿缺口上沿反复确认后拾级而上"
+    legacy = dict(_payload()); legacy.pop("upside_path")
+    legacy["scripts"] = {"strong": "高开怎么做", "flat": None, "weak": None}
+    j2 = _card(payload=legacy).to_card_json()
+    assert j2["upside_path"] is None and "scripts" not in j2
 
 
-def test_all_empty_scripts_collapse_to_none():
-    j = _card(payload=_payload(scripts={"strong": "  ", "flat": None, "weak": ""})).to_card_json()
-    assert j["scripts"] is None and j["scripts_unavailable_reason"]
+def test_blank_upside_path_collapses_to_none():
+    j = _card(payload=_payload(upside_path="   ")).to_card_json()
+    assert j["upside_path"] is None and j["upside_path_unavailable_reason"]
+
+
+def test_trade_plan_first_piece_accepts_both_v4_and_v3_card_shapes():
+    """🔴 老卡兼容是硬要求(V2.3.3-①):`basket_cards` 是 `INSERT OR IGNORE` 的冻结件,
+    新键**永不回填** —— 今天开仓读的可能是昨天冻的那张 v3 卡。只认 `upside_path` 会让
+    昨天那批篮子今天全部"缺上涨判断",凭空多一条假警示。"""
+    base = _card().to_card_json()
+    entry = base["members"][0]
+
+    v4 = dict(base)                                     # 新卡:只有 upside_path
+    assert v4["upside_path"]
+    assert bc.trade_plan_missing_pieces(v4) == []
+    assert bc.member_trade_plan_missing(v4, entry) == []
+
+    v3 = dict(base)                                     # 老卡:只有 scripts 三格
+    v3.pop("upside_path"); v3.pop("upside_path_unavailable_reason")
+    v3["scripts"] = {"strong": "高开怎么做", "flat": None, "weak": None}
+    assert bc.trade_plan_missing_pieces(v3) == []
+    assert bc.member_trade_plan_missing(v3, entry) == []
+
+    blank = dict(base)                                  # 两键都空 → 恰缺第 1 件
+    blank["upside_path"] = None
+    blank["scripts"] = {"strong": "  ", "flat": None, "weak": ""}
+    assert bc.trade_plan_missing_pieces(blank) == ["upside_script"]
+    assert bc.member_trade_plan_missing(blank, entry) == ["upside_script"]
+    # 🔴 判据码字符串一字不改(它已写进历史 plan_json);只有中文标签换了。
+    assert "upside_script" in bc.TRADE_PLAN_PIECES
+    assert bc.TRADE_PLAN_PIECE_LABELS["upside_script"] == "上涨判断(预期上涨路径)"
 
 
 # ══════════════════════════════════════════════════════════════════════════

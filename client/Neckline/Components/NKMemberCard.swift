@@ -86,8 +86,10 @@ struct NKMemberCard: View {
     @ViewBuilder
     private var unjudgedNote: some View {
         if member.positionVerdictLabel == nil && member.coreVerdictLabel == nil {
-            Text("这只票**没有位置关与核心关的判定** —— 不是判过了没问题,"
-                 + "是这次根本没判出来。缺数 = 不知道,不猜。")
+            // 🔴 **⛔ 别用 `+` 拼**(同 `BasketCardView` 那处,V2.3.3 批 ⑦ 一并修):
+            // `"a" + "b"` → `String` → `Text(String)` **不解析 Markdown**,四个星号会
+            // 原样印在屏幕上。要拼就拼成**一整条字面量**。
+            Text("这只票**没有位置关与核心关的判定** —— 不是判过了没问题,是这次根本没判出来。缺数 = 不知道,不猜。")
                 .font(NKFont.callout).lineSpacing(4).foregroundStyle(NK.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)

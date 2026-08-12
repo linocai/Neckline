@@ -33,6 +33,13 @@ from neckline import user_actions
 from neckline.api import notify
 from neckline.api.deps import require_api_token_ready, require_token
 from neckline.api.schemas import (
+    AuctionDataStatusOut,
+    AuctionIndexGapOut,
+    AuctionMarketOverviewOut,
+    AuctionMemberRowOut,
+    AuctionOut,
+    AuctionRiskOut,
+    AuctionVerdictOut,
     BoardEventOut,
     BoardOut,
     AlertConditionIn,
@@ -207,7 +214,7 @@ logger = logging.getLogger(__name__)
 # ——`client/project.yml` 与 `pbxproj` 的 `MARKETING_VERSION` 必须同为 `2.0.0`
 # (守门单测 `tests/test_client_version_governance.py` 锁三处恒等,漏一处立刻红)。
 # ⚠ ⑭ 刻意没升它:提前升会让守门单测常年红,版号归 ⑮。
-VERSION = "v2.3.2"
+VERSION = "v2.3.3"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -271,7 +278,13 @@ async def _sentinel_loop(stop_event: asyncio.Event) -> None:
     **V2-⑧-B 挂了两条旁路分支**(存拍,各自独立 try/except,**不改任何轮询节奏、
     不影响四哨兵与盘前校准的成败**):09:25–09:30 竞价快照;15:05–15:35 当日存拍一次性
     落盘 + 记 `capture_status`。盘中每一拍的分钟报价累计在 `run_tick` 内部完成(用的就是
-    那一拍已经拉到的行情,零额外网络)。"""
+    那一拍已经拉到的行情,零额外网络)。
+
+    **V2.3.3-④ 第三条盘前旁路**:09:26–09:29 **D1 集合竞价确认层**
+    (`neckline/auction/`,K8.md §二十)—— 同样独立 try/except、当日一次、内部自防重。
+    ⚠ 它**会调 LLM**,故有 **9:29 硬截止**(`auction/pipeline.py`):最迟 9:29 返回,
+    9:30 的 intraday 第一拍不受影响。⛔ **不新增 systemd unit**(跑在本常驻进程里)。"""
+    from neckline.auction import pipeline as auction_pipeline
     from neckline.sentinel import capture
     from neckline.sentinel.engine import run_tick
     from neckline.sentinel.precall import run_precall_tick
@@ -318,6 +331,25 @@ async def _sentinel_loop(stop_event: asyncio.Event) -> None:
                     )
                 except Exception:  # noqa: BLE001
                     logger.warning("竞价快照采集异常(已吞,存拍是旁路)", exc_info=True)
+            # V2.3.3-④ 旁路:9:26 **D1 集合竞价确认层**(当日一次,内部自防重)。
+            # **独立 try**,与盘前校准 / 竞价存拍的成败互不影响;**9:29 硬截止**保证
+            # 最迟 9:29 返回 → 9:30 的 intraday 第一拍不受影响。
+            # ⚠ 顺序:precall(9:25:30)→ capture(9:25–9:30)→ auction(9:26–9:29);
+            # preopen 轮询 30s 一探,9:26:00 那一拍进本分支,前两者各自 dedup 跳过、零重复。
+            if auction_pipeline.is_auction_window(now):
+                try:
+                    ar = await asyncio.to_thread(
+                        auction_pipeline.run_auction_pipeline, now,
+                        db_path=_db(), parquet_dir=_parquet_dir(),
+                    )
+                    # 门槛单一源 = `AuctionRunResult.should_push`(veto / 命中失效位 /
+                    # LLM 非 ok)。⛔ 不许"平静的早晨也发一条"。
+                    if ar.ran and ar.should_push:
+                        await asyncio.to_thread(
+                            notify.push_auction_summary, ar.counts, db_path=_db(),
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.warning("竞价确认层异常(已吞,竞价层是旁路)", exc_info=True)
             interval = _SENTINEL_PREOPEN_POLL_SEC
         elif capture.is_flush_window(now):
             # V2-⑧-B 旁路:15:05 之后把当日内存累计一次性落盘(D4 拍板)+ 记
@@ -2070,6 +2102,215 @@ def market_regime(
             unavailableReason="行情状态层尚无任何判定行(D0 盘后批算还没跑过)。",
         )
     return MarketRegimeOut(available=True, day=_regime_row_out(row))
+
+
+# —— V2.3.3-⑤ D1 集合竞价确认层(`GET /auction[?date=]`,K8.md §二十)———————————
+#
+# **两个全新 reason,客户端 `mapReason` 必须各加一个 case**(⛔ 别指望 fallback:
+# 404 的 fallback 是 `.notHolding`「持仓已清」,那句话与竞价报告毫无关系):
+#   · `auction_not_ready`(**404**)—— 当日 `auction_reports` **无行** = 竞价层没跑过
+#     / 还没到 9:26。文案方向「今天的竞价报告还没生成」。
+#   · `auction_corrupt` (**500**)—— **有行但读不出**(json 列解不出 / 内容键全缺)。
+#     文案方向「竞价报告数据损坏,需要排查」。
+#     ⛔ **两者必须分开**(B1 定案原文):混成一类 = 客户端永远重试、永远显示"还没生成",
+#     而那份报告是**冻结件**(`INSERT OR IGNORE` 永不覆盖)→ 坏了就是永久坏的
+#     = 静默永久失败。
+#
+# 🔴 **「有行但 `baskets_covered=0`」是 200,不是 404**(〇b-6,§七 P0-39 同款病):
+# 「竞价层没跑」与「跑过了、D0 当天就没有 T1/T2 篮子」是两种相反的成因,
+# ⛔ 不许混成一句「今天没有竞价报告」。后者走 200 + `basketsUnavailableReason` 说出口。
+#
+# 🔴 **为什么这里 404 而 `/market-regime` 一律 200**:`market_regime_daily` 是**日更
+# 只读表的区间查询**(缺行 = 那天没批算);竞价报告是**冻结件点查**,与 `basket_cards`
+# 同族 → 照 B1。**这是刻意的不同,⛔ 别"统一"。**
+#
+# ⛔ **零现算、零写库**:本端点只 SELECT(常驻服务与盘中哨兵同进程,P0-23)。
+REASON_AUCTION_NOT_READY = "auction_not_ready"
+REASON_AUCTION_CORRUPT = "auction_corrupt"
+
+#: 市场级报告的**内容键**:判"读不出"用「**有其一**」而不是「都要有」
+#: (CLAUDE.md B1 定案:各消费方吃不同键子集,且误判代价不对称 —— 判错 = 好数据看不到
+#: 且不可自愈)。
+_AUCTION_REPORT_CONTENT_KEYS = ("index_gaps_json", "market_anchors_json", "risks_json",
+                               "missing_codes_json", "conflict_codes_json", "notes_json")
+
+
+def _auction_llm_unavailable_reason(llm_stage: str) -> str:
+    """LLM 段缺席时的**一句人话**(⛔ 不把 `llm_stage` 这个枚举码直接当文案印出去)。
+
+    ⚠ 「9:29 到了模型还没回」是**设计内**的(硬截止是结构性保证,不是故障)——
+    文案必须这么说,⛔ 别写成"出错了"。"""
+    if llm_stage.startswith("call_failed"):
+        return f"本次 LLM 调用失败({llm_stage}),竞价结论全部按『待解释』记录。"
+    return {
+        "pending": "机械段已落库,LLM 解释还没回来(本次报告尚未结案)。",
+        "pending_explanation": "9:29 硬截止到达时 LLM 还没回,本次没有市场概览"
+                               "(设计内:迟到的结论一律丢弃,⛔ 不拿 9:30 之后的话冒充 9:29)。",
+        "provider_none": "未配置可用的 LLM provider,本次只有机械层的数据报告与失效警报。",
+        "parse_failed": "LLM 输出里没有可解析的结构化段,本次结论全部按『待解释』记录。",
+        "budget_exhausted": "推理预算账已耗尽,本次没有发起竞价解释调用。",
+        "ok": "本次 LLM 没有给出市场概览这一段。",
+    }.get(llm_stage, f"本次没有市场概览(LLM 段状态:{llm_stage or '未记录'})。")
+
+
+def _shape_auction_member(m: Any) -> AuctionMemberRowOut:
+    """`members_json` 一条 → 契约(snake→camel 的**唯一转换点**)。
+
+    🔴 `hitInvalidation` / `gapUpDeviation` 的 `None` 原样保留 —— 它是「**没判**」
+    (锚失效 / 卡上无冻结价位 / 开盘价未发布 / 有篮无卡 / 没抓到),⛔ 不许折成
+    `False`「没问题」。⚠ 两个 `*UndeterminedReason` 是那个 `None` 的**可查原因码**,
+    一并原样透传;老行没有这两个键 → `None`(客户端说「原因未记录」,仍不说「无异常」)。"""
+    d = dict(m or {})
+    return AuctionMemberRowOut(
+        tsCode=str(d.get("ts_code") or ""), name=str(d.get("name") or ""),
+        role=d.get("role"),
+        auctionPrice=d.get("auction_price"), preClose=d.get("pre_close"),
+        gapPct=d.get("gap_pct"), auctionVolume=d.get("auction_volume"),
+        auctionAmount=d.get("auction_amount"), volVsPrev5Frac=d.get("vol_vs_prev5_frac"),
+        relToSector=d.get("rel_to_sector"), relToIndex=d.get("rel_to_index"),
+        # 🔴 裁定 P3-70:两个读数各自带上「减的是哪一支 / 哪一组」与「没有时为什么」;
+        # 老行(整改前冻的 `members_json`)没有这些键 → 缺省 `unavailable` / `None`,
+        # 客户端照实说「原因未记录」,⛔ 仍不许渲染成 0 或「持平」。
+        relToSectorSource=str(d.get("rel_to_sector_source") or "unavailable"),
+        relToSectorReason=d.get("rel_to_sector_reason"),
+        sectorPeerCodes=[str(c) for c in (d.get("sector_peer_codes") or [])],
+        sectorIndexCode=d.get("sector_index_code"),
+        sectorBenchmarkGapPct=d.get("sector_benchmark_gap_pct"),
+        industry=d.get("industry"),
+        indexBenchmarkCode=d.get("index_benchmark_code"),
+        indexBenchmarkGapPct=d.get("index_benchmark_gap_pct"),
+        relToIndexReason=d.get("rel_to_index_reason"),
+        hitInvalidation=d.get("hit_invalidation"), gapUpDeviation=d.get("gap_up_deviation"),
+        hitInvalidationUndeterminedReason=d.get("hit_invalidation_undetermined_reason"),
+        gapUpDeviationUndeterminedReason=d.get("gap_up_deviation_undetermined_reason"),
+        anchorStale=bool(d.get("anchor_stale")),
+        planFit=str(d.get("plan_fit") or "unknown"),
+        dataQuality=str(d.get("data_quality") or "insufficient"),
+        volumeNote=d.get("volume_note"),
+    )
+
+
+#: 篮子级的 json 列;某一列**读不出**时该段退化成空 + 在 `notes` 里如实点名。
+_AUCTION_VERDICT_JSON_COLS = ("members_json", "sector_sync_json", "rel_strength_json",
+                              "history_json", "hit_invalidation_json", "plan_consistency_json",
+                              "reasons_json", "llm_fields_json")
+
+
+def _shape_auction_verdict(row: Dict[str, Any]) -> AuctionVerdictOut:
+    return AuctionVerdictOut(
+        basketId=int(row.get("basket_id") or 0),
+        basketKey=str(row.get("basket_key") or ""), name=str(row.get("name") or ""),
+        coveredTier=int(row.get("covered_tier") or 0),
+        engineCode=row.get("engine_code"), engineVersion=row.get("engine_version"),
+        skeletonVersion=str(row.get("skeleton_version") or ""),
+        regimeAtD0=row.get("regime_at_d0"),
+        dataQuality=str(row.get("data_quality") or "insufficient"),
+        verdict=str(row.get("verdict") or "pending_explanation"),
+        verdictRaw=row.get("verdict_raw"), clampedBy=row.get("clamped_by"),
+        reasons=[str(r) for r in (row.get("reasons_json") or [])],
+        members=[_shape_auction_member(m) for m in (row.get("members_json") or [])],
+        sectorSync=dict(row.get("sector_sync_json") or {}),
+        relStrength=dict(row.get("rel_strength_json") or {}),
+        history=dict(row.get("history_json") or {}),
+        planConsistency=dict(row.get("plan_consistency_json") or {}),
+        hitInvalidation=[str(c) for c in (row.get("hit_invalidation_json") or [])],
+        manualNoteAttached=bool(row.get("manual_note_attached")),
+        llmStage=str(row.get("llm_stage") or ""),
+    )
+
+
+@app.get(f"{API_PREFIX}/auction", dependencies=[Depends(require_token)])
+def get_auction(date: str = "") -> AuctionOut:
+    """D1 集合竞价确认层的**竞价小报告五块**(V2.3.3-⑤,K8.md §二十)。
+
+    `date` 缺省 = 今天(D1)。**三态**见上方常量块:无行 404 `auction_not_ready` /
+    读不出 500 `auction_corrupt` / 有行 200(**含 `baskets_covered=0`**)。
+
+    🔴 **竞价结论只说明竞价反映出的信息,不等于买入指令**(K8 §二十 逐字)——
+    本端点纯只读,⛔ 不接任何交易动作。
+    """
+    from neckline.auction import AUCTION_MANUAL_NOTE, AUCTION_PROXY_SAMPLE_NOTE
+    from neckline.auction import store as auction_store
+
+    day = date if (len(date) == 8 and date.isdigit()) else date_cls.today().strftime("%Y%m%d")
+    row = auction_store.load_report(day, db_path=_db())
+    if row is None:
+        # 「当日无行」= 竞价层**没跑过**(还没到 9:26 / 非交易日 / 服务当时没起)。
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"ok": False, "reason": REASON_AUCTION_NOT_READY})
+    corrupt_cols = list(row.get("_corrupt_columns") or [])
+    content_all_missing = all(row.get(k) is None for k in _AUCTION_REPORT_CONTENT_KEYS)
+    if corrupt_cols or content_all_missing:
+        logger.error("[auction] 当日竞价报告读不出(date=%s,坏列=%s,内容键全缺=%s)",
+                     day, corrupt_cols, content_all_missing)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail={"ok": False, "reason": REASON_AUCTION_CORRUPT})
+
+    notes = [str(n) for n in (row.get("notes_json") or [])]
+    verdict_rows = auction_store.load_verdicts(day, db_path=_db())
+    for vr in verdict_rows:
+        bad = [c for c in (vr.get("_corrupt_columns") or []) if c in _AUCTION_VERDICT_JSON_COLS]
+        if bad:
+            # ⚠ **一篮读不出不升级成整份 500**(同 `_shape_basket` 对坏卡的既有取舍):
+            # 市场段与其余篮子都是好数据,500 会把它们一起藏起来。但**必须当面点名**
+            # ——⛔ 不许静默退化成空段(那才是把"读不出"讲成"本来就没有")。
+            notes.append(f"篮子 {vr.get('basket_key') or vr.get('basket_id')} 的"
+                         f"{'、'.join(bad)} 读不出,该段本次为空(需要排查,⛔ 不是"
+                         f"「本来就没有」)。")
+
+    llm_stage = str(row.get("llm_stage") or "")
+    overview_text = row.get("market_overview")
+    market = AuctionMarketOverviewOut(
+        indexGaps=[AuctionIndexGapOut(tsCode=str(v.get("ts_code") or c),
+                                      name=str(v.get("name") or ""), gapPct=v.get("gap_pct"))
+                   for c, v in (row.get("index_gaps_json") or {}).items()],
+        anchors=[AuctionIndexGapOut(tsCode=str(a.get("ts_code") or ""),
+                                    name=str(a.get("name") or ""), gapPct=a.get("gap_pct"))
+                 for a in (row.get("market_anchors_json") or [])],
+        text=overview_text,
+        # 🔴 `text=nil` 必须配一句原因(⛔ 不冒充"没内容")。
+        textUnavailableReason=(None if overview_text
+                               else _auction_llm_unavailable_reason(llm_stage)),
+        # 🟡-1:LLM 对「市场锚点」那批标的的一句解释(K8 §二十:锚点只解释资金方向、
+        # 不取得交易资格)。⚠ 它落在 `auction_reports.anchors_note` 这一列 ——
+        # ⛔ 别再让它「模型写了、解析了、然后整条丢掉」。
+        anchorsNote=row.get("anchors_note"),
+    )
+    baskets = [_shape_auction_verdict(vr) for vr in verdict_rows]
+    covered = int(row.get("baskets_covered") or 0)
+    reason: Optional[str] = None
+    if not baskets:
+        reason = (
+            f"跑过了,但 D0({row.get('d0_date') or '未记录'})当天没有 T1/T2 篮子 —— "
+            f"本次没有可验证的交易假设(⛔ 不是竞价层没跑:没跑是 404)。"
+            if covered == 0 else
+            f"当日报告记着 {covered} 篮,但篮子级明细一行都读不到(需要排查)。"
+        )
+    return AuctionOut(
+        tradeDate=str(row.get("trade_date") or day),
+        d0Date=str(row.get("d0_date") or ""),
+        dataStatus=AuctionDataStatusOut(
+            source=str(row.get("source") or "unknown"),
+            capturedAt=str(row.get("captured_at") or ""),
+            requestedCodes=int(row.get("requested_codes") or 0),
+            fetchedCodes=int(row.get("fetched_codes") or 0),
+            missingCodes=[str(c) for c in (row.get("missing_codes_json") or [])],
+            conflictCodes=[str(c) for c in (row.get("conflict_codes_json") or [])],
+            dataQuality=str(row.get("data_quality") or "insufficient"),
+        ),
+        marketOverview=market,
+        baskets=baskets,
+        basketsUnavailableReason=reason,
+        risks=[AuctionRiskOut(kind=str(r.get("kind") or ""), text=str(r.get("text") or ""))
+               for r in (row.get("risks_json") or []) if isinstance(r, dict)],
+        # 小纸条:**挂了才发**,文案本体是服务端常量(K8 §二十 逐字)——
+        # ⛔ 客户端不许自己写这段字(同 `BASKET_CARD_DISCLAIMER` 既有体例)。
+        manualNote=(AUCTION_MANUAL_NOTE if row.get("manual_note_attached") else None),
+        # 🔴 **恒发**:竞价强势股是关注池的代理样本,不是全市场竞价排行(§五 ⑨-B-2)。
+        proxySampleNote=AUCTION_PROXY_SAMPLE_NOTE,
+        llmStage=llm_stage,
+        notes=notes,
+    )
 
 
 # —— V2.1-⑤ 复盘板块:聚合读 + 校准移交件 ————————————————————————————————

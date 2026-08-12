@@ -7,6 +7,11 @@ K8 §十四 四条规则,逐条落成机器判据::
     · **用户是否买入不影响样本**          → 本模块**零 import 持仓**(见下「结构性保证」)
     · D1 验证完成后**结案**               → `INSERT OR IGNORE`,`basket_id` UNIQUE
 
+🔴 **`mech_json` 顶层的第十个键 `auction_review` ⛔ 不属于 §十四 的九项**(V2.3.3-⑥):
+    它来自 **K8 §二十「事后研究与复盘」**,是 D1 集合竞价确认层的事后复盘,与九项
+    **同处一个 dict、但不是同一个清单** —— 混进去会让「九项」这个数字变成一句谎话
+    (`MECH_ITEM_KEYS` 因此仍然**恰好九个**,守门单测正面钉死这一点)。
+
 **九项验证内容**(K8 §十四 原文顺序即 `mech_json` 顶层键顺序)::
 
     ① regime_at_d0                D0 行情状态及增强与减弱方向
@@ -69,7 +74,8 @@ logger = logging.getLogger(__name__)
 TABLE = "selection_clock"
 
 #: `mech_json` 的**形状**版本(形状变了就 bump;条件集版本是另一回事,那个跟卡走)。
-CLOCK_MECH_SPEC_VERSION = "selection_clock_mech_v1"
+#: 🔴 **v1 → v2(V2.3.3-⑥)**:顶层多了第十个键 `auction_review`(K8 §二十 事后复盘)。
+CLOCK_MECH_SPEC_VERSION = "selection_clock_mech_v2"
 
 #: 九项键(顺序 = K8 §十四 原文顺序,⛔ 不许重排、不许增减)。
 MECH_ITEM_KEYS: Tuple[str, ...] = (
@@ -106,6 +112,28 @@ UNTRIGGERED_UNKNOWN = "unknown"                          # 判不了(⛔ 不猜�
 #    `verification_rules.STATE_SCORES` 那份**已登记的**既有换算,不在这里再造一份。
 TIER_ACCURACY_NOT_EVALUATED = "not_evaluated"   # 当日那一拍没跑过(运维缺口 ≠ 策略失败)
 TIER_ACCURACY_UNKNOWN = "unknown"               # 连"有没有跑过"都读不出
+
+# —— 第十项:竞价确认层的事后复盘标签(**K8 §二十 逐字六个**,V2.3.3-⑥)——————
+#
+# 🔴 **零新指标**:「D1 结果对不对」读的是上面那个**既有** `tier_accuracy` 四态
+# (源 `selection/verification_rules.STATE_SCORES`)—— ⛔ 本块不另定义"D1 结果好不好",
+# 一行判分逻辑都不写。
+AUCTION_LABEL_CORRECT_CONFIRM = "correct_confirm"
+AUCTION_LABEL_WRONG_CONFIRM = "wrong_confirm"
+AUCTION_LABEL_NEUTRAL_SAMPLE = "neutral_sample"     # 中性结论无对错,不论 D1 结果
+AUCTION_LABEL_CORRECT_VETO = "correct_veto"
+AUCTION_LABEL_WRONG_VETO = "wrong_veto"
+AUCTION_LABEL_DATA_MISSING = "data_missing"
+AUCTION_LABELS: Tuple[str, ...] = (
+    AUCTION_LABEL_CORRECT_CONFIRM, AUCTION_LABEL_WRONG_CONFIRM, AUCTION_LABEL_NEUTRAL_SAMPLE,
+    AUCTION_LABEL_CORRECT_VETO, AUCTION_LABEL_WRONG_VETO, AUCTION_LABEL_DATA_MISSING,
+)
+
+# 🔴 `data_missing` **必须带分因**(§七 P0-39 同款病):「竞价层没跑」与「D1 结果本身
+# 没判出来」是两种**相反**的成因 —— 混成一个标签 = 把系统缺席讲成了实质性判断。
+AUCTION_UNDETERMINED_NO_ROW = "no_auction_row"          # 那天竞价层根本没跑到这一篮
+AUCTION_UNDETERMINED_PENDING = "pending_explanation"    # 跑了,但 9:29 前 LLM 没回
+AUCTION_UNDETERMINED_D1_UNCLEAR = "d1_result_unclear"   # 竞价有结论,是 D1 结果没判出来
 
 
 def _d(x: Any) -> str:
@@ -475,6 +503,97 @@ def derive_tier_accuracy(driver_item: Mapping[str, Any]) -> Optional[str]:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 第十项:D1 集合竞价确认层的**事后复盘**(K8 §二十,V2.3.3-⑥)
+# ⛔ **不属于 §十四 的九项**(见模块头);零新 LLM、零新指标。
+# ══════════════════════════════════════════════════════════════════════════
+
+def judge_auction_review(
+    basket_id: Any, tier_accuracy: Optional[str], *, db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """竞价结论 × D1 结果 → **六个标签之一**(K8 §二十 逐字)。
+
+    素材两样,**都是既有的**:
+      · 竞价结论 ← `auction_verdicts` 按 `basket_id` **点查**(逐篮一次,⛔ 零扫描);
+      · 「D1 结果对不对」 ← 本模块**已经算好**的 `tier_accuracy` 四态
+        (源 `selection/verification_rules.STATE_SCORES`)。
+
+    🔴 **三段互不回写**(K8 §二十 末段):本函数**只读** `auction_verdicts`,
+    ⛔ 不写它、⛔ 不把竞价结论回写进任何正式选股结论表 —— 它只是把两边的既有结论
+    **摆在一起**贴一个标签。
+
+    ⚠ 依赖方向 `review → auction` 不成环(`auction → sentinel → selection` 那条链上
+    没有 `review`);反向 `auction/** import review/**` 有守门单测正面禁止。
+    """
+    try:
+        from neckline.auction import VERDICT_CONFIRM, VERDICT_NEUTRAL, VERDICT_VETO
+        from neckline.auction import store as auction_store
+
+        row = auction_store.load_verdict_for_basket(int(basket_id or 0), db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 —— 保险丝:算炸了只让这一项 error,九项照出
+        logger.warning("[selection_clock] 竞价事后复盘读取失败(basket_id=%s)", basket_id,
+                       exc_info=True)
+        return _missing(f"竞价结论读取失败:{type(exc).__name__}",
+                        label=AUCTION_LABEL_DATA_MISSING,
+                        undetermined_reason=AUCTION_UNDETERMINED_NO_ROW,
+                        source_note="K8.md §二十", error=f"{type(exc).__name__}: {exc}")
+
+    base: Dict[str, Any] = {
+        # 🔴 出处标注是硬要求(§五 ⑥-A):这一项**不属于 §十四 的九项**。
+        "source": "auction_verdicts",
+        "source_note": "K8.md §二十",
+        "not_one_of_the_nine": True,
+        "basket_id": int(basket_id or 0),
+        "tier_accuracy": tier_accuracy,
+    }
+    if row is None:
+        # 「那天竞价层没跑到这一篮」——⛔ 与「跑了但没解释」「D1 结果没判出来」分开。
+        base.update(available=False,
+                    unavailable_reason="该篮没有竞价结论行(当天竞价层没跑 / 没覆盖到它)",
+                    label=AUCTION_LABEL_DATA_MISSING,
+                    undetermined_reason=AUCTION_UNDETERMINED_NO_ROW,
+                    verdict=None, verdict_raw=None, clamped_by=None)
+        return base
+    verdict = str(row.get("verdict") or "")
+    base.update(verdict=verdict, verdict_raw=row.get("verdict_raw"),
+                clamped_by=row.get("clamped_by"),
+                auction_data_quality=row.get("data_quality"),
+                llm_stage=row.get("llm_stage"))
+    if verdict == VERDICT_NEUTRAL:
+        # K8 §二十:**中性结论无对错**,不论 D1 结果 —— ⛔ 别拿 D1 结果给它判对错。
+        base.update(available=True, unavailable_reason=None,
+                    label=AUCTION_LABEL_NEUTRAL_SAMPLE, undetermined_reason=None)
+        return base
+    if verdict not in (VERDICT_CONFIRM, VERDICT_VETO):
+        # `pending_explanation`(9:29 前 LLM 没回,**设计内**)或别的没认出来的值。
+        base.update(available=False,
+                    unavailable_reason="竞价结论是「待解释」(9:29 硬截止前 LLM 未返回)",
+                    label=AUCTION_LABEL_DATA_MISSING,
+                    undetermined_reason=AUCTION_UNDETERMINED_PENDING)
+        return base
+    # 🔴 「D1 结果对不对」**只认 `verified` / `falsified` 两态** —— `partial`/`unclear`/
+    # `not_evaluated`/`None` 都是「没判出来」,⛔ 不许挑一边当结论(那需要一条"多少算对"
+    # 的线,而那是定量决策)。
+    from neckline.selection import verification_rules as vr
+
+    if tier_accuracy == vr.STATE_VERIFIED:
+        base.update(available=True, unavailable_reason=None, undetermined_reason=None,
+                    label=(AUCTION_LABEL_CORRECT_CONFIRM if verdict == VERDICT_CONFIRM
+                           else AUCTION_LABEL_WRONG_VETO))
+        return base
+    if tier_accuracy == vr.STATE_FALSIFIED:
+        base.update(available=True, unavailable_reason=None, undetermined_reason=None,
+                    label=(AUCTION_LABEL_WRONG_CONFIRM if verdict == VERDICT_CONFIRM
+                           else AUCTION_LABEL_CORRECT_VETO))
+        return base
+    base.update(available=False,
+                unavailable_reason=f"D1 结果没判出来(tier_accuracy={tier_accuracy!r}),"
+                                   f"竞价结论本身是有的 —— 两者⛔ 不许混成一句",
+                label=AUCTION_LABEL_DATA_MISSING,
+                undetermined_reason=AUCTION_UNDETERMINED_D1_UNCLEAR)
+    return base
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 一篮的结案件
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -595,6 +714,19 @@ def build_closure(
         "state": tier_acc,
         "note": "四态原样保留;折成「正确率」是周度侧的事,⛔ 本列不压成 0/1",
     }
+    # —— 第十个键(K8 §二十;⛔ **不属于**上面九项)——————————————————————————
+    # 独立保险丝:它算炸了只让这一项 error,九项照出。
+    try:
+        mech["auction_review"] = judge_auction_review(
+            getattr(ref, "basket_id", None), tier_acc, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[selection_clock] 竞价事后复盘失败(basket_id=%s),该项标 error",
+                       getattr(ref, "basket_id", None), exc_info=True)
+        mech["auction_review"] = _missing(f"该项计算失败:{type(exc).__name__}",
+                                          label=AUCTION_LABEL_DATA_MISSING,
+                                          undetermined_reason=AUCTION_UNDETERMINED_NO_ROW,
+                                          source_note="K8.md §二十",
+                                          error=f"{type(exc).__name__}: {exc}")
 
     regime_item = mech.get("regime_at_d0") or {}
     return ClockClosure(
@@ -874,6 +1006,12 @@ __all__ = [
     "UNTRIGGERED_NO_ENTRY_ZONE", "UNTRIGGERED_NO_D1_BAR", "UNTRIGGERED_ZONE_NOT_REACHED",
     "UNTRIGGERED_UNKNOWN",
     "TIER_ACCURACY_NOT_EVALUATED", "TIER_ACCURACY_UNKNOWN",
+    # V2.3.3-⑥ 第十项(K8 §二十;⛔ 不属于 §十四 的九项)
+    "AUCTION_LABELS", "AUCTION_LABEL_CORRECT_CONFIRM", "AUCTION_LABEL_WRONG_CONFIRM",
+    "AUCTION_LABEL_NEUTRAL_SAMPLE", "AUCTION_LABEL_CORRECT_VETO", "AUCTION_LABEL_WRONG_VETO",
+    "AUCTION_LABEL_DATA_MISSING", "AUCTION_UNDETERMINED_NO_ROW",
+    "AUCTION_UNDETERMINED_PENDING", "AUCTION_UNDETERMINED_D1_UNCLEAR",
+    "judge_auction_review",
     "judge_regime_at_d0", "judge_driver_persistence", "judge_sector_sync",
     "judge_core_strength", "judge_entry_zone_triggered", "judge_liftoff_signal",
     "judge_intraday_support_and_close",

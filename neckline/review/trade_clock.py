@@ -396,12 +396,20 @@ def build_final(
             "missing_pieces": plan.get("missing_pieces") or plan.get("missing") or [],
             "source_basket_id": clock.get("basket_id"),
         },
-        # ③ 预期路径(卡上三剧本;⛔ 不在结案时重写它)
+        # ③ 预期路径(卡上的上涨判断;⛔ 不在结案时重写它)
+        # ⚠ **三路 OR 是刻意的**:`entry_plan_json` 是**开仓当时**冻住的历史快照,
+        # 库里同时存在三种形状 —— ① `upside_script`(⑩ 继承时已展平的四件套码,
+        # 🔴 该码字符串一字不改)· ② `upside_path`(V2.3.3 起的卡键)· ③ `scripts`
+        # (V2.3.3 之前那张卡的三剧本形状)。少一路就会让某一代老仓假装缺件。
         "expected_path": {
-            "available": bool(_plan_piece(plan, "upside_script") or plan.get("scripts")),
-            "unavailable_reason": None if (plan.get("upside_script") or plan.get("scripts"))
-            else "计划里没有上涨判断(三剧本)",
-            "upside_script": plan.get("upside_script") or plan.get("scripts"),
+            "available": bool(_plan_piece(plan, "upside_script")
+                              or plan.get("upside_path") or plan.get("scripts")),
+            "unavailable_reason": None if (plan.get("upside_script")
+                                           or plan.get("upside_path")
+                                           or plan.get("scripts"))
+            else "计划里没有上涨判断(预期上涨路径)",
+            "upside_script": (plan.get("upside_script") or plan.get("upside_path")
+                              or plan.get("scripts")),
         },
         # ④ 驱动、结构与支撑(D0 冻结的驱动 + 失效位置)
         "driver_structure_support": {

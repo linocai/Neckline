@@ -25,6 +25,9 @@ TASK_SCRIPT = "script"                  # 明早证伪剧本
 TASK_REVIEW = "review"                  # 盘后复盘解释
 TASK_PROFILE = "profile"                # 画像总结
 TASK_NL_ALERT = "nl_alert"              # 自然语言临时提醒解析
+# V2.3.3-③(K8.md §二十 D1 集合竞价确认层):9:26—9:29 一次调用覆盖**全部篮子**,
+# 解释竞价对 D0 假设投出的第一次票。**不联网**(资料由机械层冻结后原样喂入)。
+TASK_AUCTION = "auction"                # 集合竞价确认层解释
 
 ALL_TASKS = (
     TASK_DRIVER_SEARCH,
@@ -35,6 +38,7 @@ ALL_TASKS = (
     TASK_REVIEW,
     TASK_PROFILE,
     TASK_NL_ALERT,
+    TASK_AUCTION,
 )
 
 # 默认路由的「检索类」集合(plan 原文明确点名 driver_search/news_scan 两项)。
@@ -91,7 +95,14 @@ STREAM_GENERATION_BUDGET_ALLOWANCE_SECONDS: float = 600.0
 
 # 「大上下文 + 长结构化生成」的任务集合 = 开流式的那一批。⛔ 检索类
 # (`DEFAULT_SEARCH_TASKS`)与轻量解析类(`TASK_NL_ALERT`/`TASK_PROFILE`)不在其中。
-LONG_CONTEXT_TASKS = (TASK_BASKET_REASON, TASK_TIER_RANK, TASK_SCRIPT, TASK_REVIEW)
+# ⚠ V2.3.3-③ 把 `TASK_AUCTION` 加进来(4 → 5):它一次把全部篮子的逐票读数 + 板块
+# 协同 + 相对强弱 + 历史对照塞进同一个 prompt,是标准的「大上下文 + 长结构化生成」。
+# 🔴 加进本元组 = `use_streaming_for_task()` 与 `read_timeout_for_task()` **两项同路
+# 接线**(它们读的就是这一个元组)—— 只接一半就是 P0-40/P0-44 的原病复发路径。
+# ⚠ 竞价层真正的天花板不是这里的 chunk 间隔,而是 **9:29 硬截止**
+# (`auction/pipeline.py`):流式下单次调用的墙钟无固定上限是刻意的,兜不住 9:29。
+LONG_CONTEXT_TASKS = (TASK_BASKET_REASON, TASK_TIER_RANK, TASK_SCRIPT, TASK_REVIEW,
+                      TASK_AUCTION)
 
 
 def use_streaming_for_task(task: Optional[str]) -> bool:
@@ -164,6 +175,7 @@ __all__ = [
     "TASK_REVIEW",
     "TASK_PROFILE",
     "TASK_NL_ALERT",
+    "TASK_AUCTION",
     "ALL_TASKS",
     "DEFAULT_SEARCH_TASKS",
     "STREAM_CHUNK_GAP_TIMEOUT_SECONDS",

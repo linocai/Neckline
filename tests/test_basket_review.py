@@ -66,8 +66,14 @@ def _mech(code, *, close=10.0, ma20=9.2, limit_up=11.0, limit_down=9.0, stop_pri
                          limit_up=limit_up, limit_down=limit_down, stop_price=stop_price)
 
 
-def _card(codes, *, roles=None, rs_ranks=None, max_chase=None, scripts=None, mechs=None):
-    """一张够 ⑨ 读的最小卡(形状与 ⑦ 真卡一致的那几个键)。"""
+def _card(codes, *, roles=None, rs_ranks=None, max_chase=None, upside_path=None,
+          scripts=None, mechs=None):
+    """一张够 ⑨ 读的最小卡(形状与 ⑦ 真卡一致的那几个键)。
+
+    V2.3.3-①:默认出 **v4 形状**(卡 #6 = `upside_path` 一段话)。显式传 `scripts=`
+    则出 **v3 老卡形状**(三剧本、无 `upside_path`)—— 冻结卡永不回填新键,老卡回退
+    那条路必须有真夹具走过,不能只靠嘴上说兼容。
+    """
     ms = mechs or [_mech(c) for c in codes]
     members = []
     for i, c in enumerate(codes):
@@ -89,8 +95,8 @@ def _card(codes, *, roles=None, rs_ranks=None, max_chase=None, scripts=None, mec
         "spec_version": bc.CARD_SPEC_VERSION, "version": 1,
         "driver": "某共同驱动", "driver_kind": "theme", "why_now": "因为今天",
         "members": members,
-        "scripts": scripts if scripts is not None else {
-            "strong": "强开怎么看", "flat": "平开怎么看", "weak": "弱开怎么看"},
+        **({"scripts": scripts} if scripts is not None
+           else {"upside_path": upside_path or "订单落地后沿 5 日线台阶式抬升,到前高一带算走完"}),
         "tier": 1, "rank_in_tier": 1, "rank_mech": 1, "mech_score": 0.72,
         "tier_breakdown": {"dims": {"sector": 0.8, "fresh": 0.7}},
         "verification_spec": bc.build_verification_spec("bk", D0, ms),
@@ -154,7 +160,10 @@ class TestAuctionVsScript:
         out = br.judge_auction_vs_script(["A.SZ"], _card(["A.SZ"]), day)
         assert out["source"] == "auction_snapshot"
         assert out["gap_median"] == pytest.approx(0.05)
-        assert out["branch"] == "strong" and out["script_text"] == "强开怎么看"
+        assert out["branch"] == "strong"
+        assert out["script_text"] == "订单落地后沿 5 日线台阶式抬升,到前高一带算走完"
+        assert out["upside_path_present"] is True
+        assert out["script_text_source"] == "upside_path"
 
     def test_falls_back_to_daily_open_and_says_so(self):
         day = _day(bars=[_bar("A.SZ", open_=10.5, pre_close=10.0)])
@@ -167,11 +176,27 @@ class TestAuctionVsScript:
         assert out["available"] is False and out["gap_median"] is None
         assert out["unavailable_reason"]
 
-    def test_missing_script_branch_is_reported(self):
+    def test_v3_legacy_card_falls_back_to_the_branch_script(self):
+        """V2.3.3-①:v3 老卡没有 `upside_path` → 回退取 `scripts[branch]`。
+
+        ⚠ 机械分档 `script_branch()` 一字未动:竞价 +5% 仍落 `strong` 档。老卡上只写了
+        `flat` 那一格 → 该档没原文,如实 `script_present is False`,⛔ 不拿别档的话顶替。
+        """
         day = _day(bars=[_bar("A.SZ", open_=10.5, pre_close=10.0)])
         out = br.judge_auction_vs_script(["A.SZ"], _card(["A.SZ"], scripts={"flat": "只有平开"}), day)
         assert out["branch"] == "strong" and out["script_present"] is False
-        assert out["scripts_branches_on_card"] == ["flat"]
+        assert out["script_text"] is None and out["upside_path_present"] is False
+        # 落 `flat` 档时,老卡那一格的原文照常取得回来(兼容不是空话)。
+        day2 = _day(bars=[_bar("A.SZ", open_=10.0, pre_close=10.0)])
+        out2 = br.judge_auction_vs_script(["A.SZ"], _card(["A.SZ"], scripts={"flat": "只有平开"}), day2)
+        assert out2["branch"] == "flat" and out2["script_text"] == "只有平开"
+        # 🔴 复审 🟡-5:**取到了原文 ≠ 卡上有 `upside_path`**。这张是 v3 老卡,
+        # `upside_path_present` 必须是 `False` —— 否则将来做「V2.3.3 前后有多少篮子
+        # 真的有预期上涨路径」这类归因时,老卡的三剧本会被一起算进去,
+        # 而 `basket_review_daily.mech_json` 是**冻结快照、不可回改**。
+        assert out2["script_present"] is True
+        assert out2["upside_path_present"] is False
+        assert out2["script_text_source"] == "legacy_scripts"
 
 
 # ══════════════════════════════════════════════════════════════════════════

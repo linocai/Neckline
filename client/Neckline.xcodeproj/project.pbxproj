@@ -15,6 +15,7 @@
 		3389852D1E11367EA42682FB /* NKStopScale.swift in Sources */ = {isa = PBXBuildFile; fileRef = B33B057A2E66042B15089049 /* NKStopScale.swift */; };
 		350843D3F43D4290B260FEDA /* ReviewWorkbenchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB50F6958E9E0102B8D0841F /* ReviewWorkbenchView.swift */; };
 		35CBBACFC586E8AF1FB3E8BD /* DTODecodeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 911BA3F44C2149A8D313E904 /* DTODecodeTests.swift */; };
+		41B73669DE3F5F2F0685B236 /* AuctionCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3898E7E869DA2334523E590C /* AuctionCardView.swift */; };
 		435E5084B57C5886250DA5E7 /* NKDisclosure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99024115FE5BD928E53F8DFB /* NKDisclosure.swift */; };
 		499CB305261279D9053C4B94 /* NKToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D2ECF5D1ADA2570A80AAF57 /* NKToolbar.swift */; };
 		6201E32C0723A5F0AA2D3BFE /* NKDevCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD6B509415333AD469D9833E /* NKDevCapture.swift */; };
@@ -59,6 +60,7 @@
 		179135308F69EDF94A3B203C /* NKStopOrderLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NKStopOrderLedger.swift; sourceTree = "<group>"; };
 		1AE91C1C1F16155E79F87794 /* NoteSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteSheet.swift; sourceTree = "<group>"; };
 		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3898E7E869DA2334523E590C /* AuctionCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuctionCardView.swift; sourceTree = "<group>"; };
 		4077CE80BC54331F1A0225D2 /* NecklineTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NecklineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		53B123024CC94ED7E02FF66F /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		581182CED4C6109290DA84E3 /* BasketDailyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BasketDailyView.swift; sourceTree = "<group>"; };
@@ -186,6 +188,7 @@
 		C8379EC068BA7176CCB52DBA /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				3898E7E869DA2334523E590C /* AuctionCardView.swift */,
 				63700FA175FC48677C401C67 /* BasketCardView.swift */,
 				581182CED4C6109290DA84E3 /* BasketDailyView.swift */,
 				6A997AA8B113E10CE7B48C1E /* BoardSection.swift */,
@@ -320,6 +323,7 @@
 				E2DC292F96B25CA6ECFC5D6F /* APIClient.swift in Sources */,
 				2D7C50E9D88B18651A9771EF /* AppConfig.swift in Sources */,
 				EB18B7D4374EA05AD70C0D9C /* AppModel.swift in Sources */,
+				41B73669DE3F5F2F0685B236 /* AuctionCardView.swift in Sources */,
 				81EC7670CE052326E5AF3DC3 /* BasketCardView.swift in Sources */,
 				9BC5CB7C5FD9513683F4E4D1 /* BasketDailyView.swift in Sources */,
 				FB4C33C48625D4934F6074BD /* BoardSection.swift in Sources */,
@@ -412,7 +416,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3.2;
+				MARKETING_VERSION = 2.3.3;
 				PRODUCT_BUNDLE_IDENTIFIER = top.linotsai.neckline;
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;
@@ -496,7 +500,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2.3.2;
+				MARKETING_VERSION = 2.3.3;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -565,7 +569,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2.3.2;
+				MARKETING_VERSION = 2.3.3;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -597,7 +601,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3.2;
+				MARKETING_VERSION = 2.3.3;
 				PRODUCT_BUNDLE_IDENTIFIER = top.linotsai.neckline;
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;

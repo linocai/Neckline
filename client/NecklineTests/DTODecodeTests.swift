@@ -125,7 +125,7 @@ final class DTODecodeTests: XCTestCase {
                         "tier": 1, "rankInTier": 1, "rankMech": 2, "mechScore": 8.4,
                         "tierBreakdown": {"driver_freshness": 0.9, "leader_clarity": 0.8},
                         "tierReason": "驱动新鲜 + 龙头清晰",
-                        "scripts": {"strong": "强开跟随", "flat": "平开观察", "weak": "弱开放弃"},
+                        "upsidePath": "订单落地后先修复缺口,再沿 5 日线台阶式抬升,走到前高一带算走完",
                         "verificationSpec": {"min_up_ratio": 0.5}, "verificationText": "过半成员翻红",
                         "invalidationSpec": {"max_down_ratio": 0.5}, "invalidationText": "过半成员跌破",
                         "risks": ["订单证伪"], "disclaimer": "以上均为参考,不构成任何操作建议。",
@@ -183,7 +183,8 @@ final class DTODecodeTests: XCTestCase {
         let card = try XCTUnwrap(daily.baskets[0].card)
         XCTAssertEqual(card.driver, "算力订单落地")
         XCTAssertNil(card.evidenceIncompleteNote, "evidenceStatus=ok 时不标「取证不完整」")
-        XCTAssertEqual(card.scripts?.strong, "强开跟随")
+        XCTAssertEqual(card.upsidePath,
+                       "订单落地后先修复缺口,再沿 5 日线台阶式抬升,走到前高一带算走完")
         XCTAssertEqual(card.risks, ["订单证伪"])
         XCTAssertEqual(card.fingerprint.charterVersion, "v1.3.3")
         XCTAssertEqual(card.fingerprint.packVersion, "K7-pack-v1")
@@ -344,7 +345,7 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(card.disclaimer, "", "缺键 → 默认值,不是解码失败")
         XCTAssertNil(card.specVersion)
         XCTAssertTrue(card.risks.isEmpty)
-        XCTAssertNil(card.scripts)
+        XCTAssertNil(card.upsidePath)
         // V2.2-③-E/③-C/③-C2 九键同样是纯新增 —— 老卡缺键必须解得出来,⛔ 不崩、
         // 也⛔ 兜成"未判定"这种看起来像结论的占位(三键都该是 nil)。
         XCTAssertNil(card.engineCode)
@@ -2785,6 +2786,350 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertFalse(r.thresholdsUndecided)
         XCTAssertEqual(r.klassLabel, "淘汰:持续失效")
         XCTAssertEqual(r.klassTone, .bad)
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  V2.3.3-⑤ D1 集合竞价确认层(`GET /auction`,K8.md §二十)
+    // ══════════════════════════════════════════════════════════════════
+
+    func testDecodeAuctionFiveBlocks() async throws {
+        MockURLProtocol.handler = { _ in
+            (200, jsonData("""
+            {"tradeDate": "20260811", "d0Date": "20260810",
+             "dataStatus": {"source": "sina", "capturedAt": "2026-08-11T09:26:30+08:00",
+                            "requestedCodes": 6, "fetchedCodes": 5,
+                            "missingCodes": ["300001.SZ"], "conflictCodes": [],
+                            "dataQuality": "degraded"},
+             "marketOverview": {"indexGaps": [{"tsCode": "000001.SH", "name": "上证综指", "gapPct": 0.004}],
+                                "anchors": [{"tsCode": "600111.SH", "name": "锚点股", "gapPct": 0.031}],
+                                "text": "指数普遍高开", "textUnavailableReason": null,
+                                "anchorsNote": "锚点只解释资金方向"},
+             "baskets": [{"basketId": 7, "basketKey": "k1", "name": "测试篮", "coveredTier": 1,
+                          "engineCode": "Z", "engineVersion": "Z1", "skeletonVersion": "K8-V0.7",
+                          "regimeAtD0": "trend_continuation", "dataQuality": "ok",
+                          "verdict": "neutral", "verdictRaw": "confirm",
+                          "clampedBy": "clamped_by_single_strong",
+                          "reasons": ["只有一只竞价强股"],
+                          "members": [{"tsCode": "600000.SH", "name": "浦发银行", "role": "leader",
+                                       "auctionPrice": 10.5, "preClose": 10.0, "gapPct": 0.05,
+                                       "auctionVolume": 12000, "auctionAmount": 126000,
+                                       "volVsPrev5Frac": 0.08, "relToSector": 0.012,
+                                       "relToIndex": 0.046, "hitInvalidation": false,
+                                       "gapUpDeviation": true, "anchorStale": false,
+                                       "planFit": "above_max_chase", "dataQuality": "ok",
+                                       "volumeNote": "竞价放量"}],
+                          "sectorSync": {"up_count": 3}, "relStrength": {},
+                          "history": {"history_days_available": 2}, "planConsistency": {},
+                          "hitInvalidation": ["600000.SH"], "manualNoteAttached": true,
+                          "llmStage": "ok"}],
+             "basketsUnavailableReason": null,
+             "risks": [{"kind": "hit_invalidation", "text": "1 只命中 D0 失效位。"}],
+             "manualNote": "APP 观察:……", "proxySampleNote": "竞价强势股取自关注池",
+             "llmStage": "ok", "notes": []}
+            """))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let a = try await client.fetchAuction()
+        XCTAssertEqual(MockURLProtocol.lastRequest?.url?.path, "/api/v1/auction")
+        XCTAssertEqual(a.dataStatus.coverageText, "5/6")
+        XCTAssertEqual(a.dataStatus.dataQualityLabel, "有缺失")
+        XCTAssertEqual(a.neutralCount, 1)
+        XCTAssertEqual(a.confirmCount, 0)
+        XCTAssertEqual(a.hitInvalidationCodes, ["600000.SH"])
+        // 🔴 「模型说了什么 vs 系统最终讲了什么」两者都要在,且被夹逼过必须能说出口。
+        let b = a.baskets[0]
+        XCTAssertEqual(b.verdictLabel, "中性")
+        XCTAssertEqual(b.verdictRaw, "confirm")
+        XCTAssertTrue(b.clampText?.contains("只有一只竞价强股") ?? false)
+        XCTAssertEqual(b.historyDaysAvailable, 2)
+        // 🔴 枚举码全部走展示层换算(⛔ 不许把码印上界面)。
+        XCTAssertEqual(b.members[0].statusText, "已超最高追价")
+        XCTAssertEqual(b.members[0].roleLabel, nkRoleLabel("leader"))
+    }
+
+    /// 🔴 **B 类冻结快照**:老行没有的键必须**照样解得出**(手写 `init(from:)` 的意义)。
+    /// ⛔ 合成 `Decodable` 会让「装了新 App 的用户翻昨天那份报告」整条解不出。
+    func testAuctionDecodesWithMissingKeys() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3}]}
+        """)
+        let a = try JSONDecoder().decode(AuctionPayload.self, from: data)
+        XCTAssertEqual(a.tradeDate, "20260811")
+        XCTAssertEqual(a.d0Date, "")
+        XCTAssertEqual(a.baskets.count, 1)
+        XCTAssertEqual(a.baskets[0].verdict, "pending_explanation")
+        XCTAssertEqual(a.baskets[0].members, [])
+        XCTAssertNil(a.manualNote)
+        XCTAssertEqual(a.proxySampleNote, "")
+    }
+
+    /// 逐票三态布尔:`null` = **没判**(⛔ 不是 `false`「没问题」)。
+    func testAuctionMemberTristateBooleanStaysNil() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3, "members": [
+          {"tsCode": "600000.SH", "hitInvalidation": null, "gapUpDeviation": null,
+           "anchorStale": true, "dataQuality": "insufficient"}]}]}
+        """)
+        let a = try JSONDecoder().decode(AuctionPayload.self, from: data)
+        let m = a.baskets[0].members[0]
+        XCTAssertNil(m.hitInvalidation)
+        XCTAssertNil(m.gapUpDeviation)
+        XCTAssertTrue(m.anchorStale)
+        // 关键字段缺失 → 「中性｜数据不足」(K8 §二十 逐字)
+        XCTAssertEqual(m.statusText, "中性｜数据不足")
+    }
+
+    // MARK: - 🔴 用户裁定 P3-70(2026-08-12):两条独立读数 + 第三态
+
+    /// 🔴 两条读数**分开解、分开画**,各自带上「减的是哪一支 / 哪一组」。
+    func testAuctionRelStrengthDecodesBothPathsSeparately() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3, "members": [
+          {"tsCode": "600000.SH", "gapPct": 0.05, "relToSector": 0.02, "relToIndex": 0.046,
+           "relToSectorSource": "peer_median",
+           "sectorPeerCodes": ["600100.SH", "600101.SH", "600102.SH"],
+           "sectorBenchmarkGapPct": 0.03, "industry": "半导体",
+           "indexBenchmarkCode": "000001.SH", "indexBenchmarkGapPct": 0.004,
+           "dataQuality": "ok"}]}]}
+        """)
+        let m = try JSONDecoder().decode(AuctionPayload.self, from: data).baskets[0].members[0]
+        XCTAssertEqual(m.relToSectorSource, "peer_median")
+        XCTAssertEqual(m.sectorPeerCodes.count, 3)
+        XCTAssertEqual(m.industry, "半导体")
+        XCTAssertEqual(m.indexBenchmarkCode, "000001.SH")
+        XCTAssertFalse(m.relToSectorMissing)
+        XCTAssertFalse(m.relToIndexMissing)
+        // 两句话各自说清减的是什么,且**是两个不同的基准**
+        XCTAssertTrue(m.relToSectorText.contains("同行业「半导体」3 只中位"), m.relToSectorText)
+        XCTAssertTrue(m.relToIndexText.contains("市场指数 000001.SH"), m.relToIndexText)
+        XCTAssertNotEqual(m.relToSectorText, m.relToIndexText)
+        // 🔴 `Text(String)` 不解析 Markdown → 这两句里一个 `*` 都不许有
+        XCTAssertFalse(m.relToSectorText.contains("*"))
+        XCTAssertFalse(m.relToIndexText.contains("*"))
+    }
+
+    /// 🔴 **第三态**:`null` = 没有这个读数 —— ⛔ 绝不许渲染成 0 或「持平」。
+    /// 科创板那条尤其:`board_excluded` + ⛔ 不 fallback 到别的指数。
+    func testAuctionRelStrengthNullIsAThirdStateNotZero() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3, "members": [
+          {"tsCode": "688001.SH", "gapPct": 0.05, "relToSector": null, "relToIndex": null,
+           "relToSectorSource": "unavailable", "relToSectorReason": "data_insufficient",
+           "relToIndexReason": "board_excluded", "indexBenchmarkCode": null,
+           "dataQuality": "ok"}]}]}
+        """)
+        let m = try JSONDecoder().decode(AuctionPayload.self, from: data).baskets[0].members[0]
+        XCTAssertNil(m.relToSector)
+        XCTAssertNil(m.relToIndex)
+        XCTAssertTrue(m.relToSectorMissing && m.relToIndexMissing)
+        XCTAssertTrue(m.relToSectorText.contains("未取得"), m.relToSectorText)
+        // 🔴 定向复审 🔵-1:那个 3 是**服务端裁定值**,客户端不许硬编 —— 传进来才有数字,
+        // 没传进来就说一句不带数字的话(⛔ 不猜)。
+        let withMin = m.relToSectorText(sectorPeerMin: 3)
+        XCTAssertTrue(withMin.contains("有效板块对照股不足 3 只"), withMin)
+        XCTAssertFalse(m.relToSectorText.contains("3 只"),
+                       "⛔ 服务端没下发下限时不许凭空印一个数:\(m.relToSectorText)")
+        XCTAssertTrue(m.relToSectorText.contains("不是「持平」"), m.relToSectorText)
+        XCTAssertTrue(m.relToIndexText.contains("科创板"), m.relToIndexText)
+        // ⛔ 一个 0 都不许出现在这两句里(那正是「没有」被讲成「持平」的样子)
+        XCTAssertFalse(m.relToSectorText.contains("0.00%"))
+        XCTAssertFalse(m.relToIndexText.contains("0.00%"))
+    }
+
+    /// 老行(整改前冻的 B 类快照)没有这些键 → 缺省值 + 「原因未记录」,
+    /// ⛔ 仍不许讲成「持平」。
+    func testAuctionRelStrengthOldRowsDegradeHonestly() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3, "members": [
+          {"tsCode": "600000.SH", "gapPct": 0.05, "dataQuality": "ok"}]}]}
+        """)
+        let m = try JSONDecoder().decode(AuctionPayload.self, from: data).baskets[0].members[0]
+        XCTAssertEqual(m.relToSectorSource, "unavailable")
+        XCTAssertTrue(m.sectorPeerCodes.isEmpty)
+        XCTAssertTrue(m.relToSectorText.contains("原因未记录"), m.relToSectorText)
+        XCTAssertTrue(m.relToIndexText.contains("未取得"), m.relToIndexText)
+    }
+
+    // MARK: - 🔴 用户裁定 P3-69(2026-08-12):历史样本充足与否由服务端判
+
+    /// 🔴 「历史样本不足」标志与文案**只由服务端下发**,客户端零门槛。
+    func testAuctionHistorySufficiencyComesFromTheServer() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3, "history": {
+          "history_days_available": 3, "history_lookback_trading_days": 20,
+          "history_lookback_days": 60, "history_min_sample_for_comparison": 15,
+          "history_sample_sufficient": false,
+          "history_insufficient_note": "当期有效样本不足 15 天,按「历史样本不足」处理。",
+          "history_lookback_note": "这一项回看最近 20 个有效交易日的竞价快照"}}]}
+        """)
+        let b = try JSONDecoder().decode(AuctionPayload.self, from: data).baskets[0]
+        XCTAssertEqual(b.historyDaysAvailable, 3)
+        XCTAssertEqual(b.historyLookbackTradingDays, 20)
+        XCTAssertEqual(b.historyLookbackDays, 60)
+        XCTAssertEqual(b.historySampleSufficient, false)
+        XCTAssertTrue(b.historyInsufficientNote?.contains("历史样本不足") ?? false)
+    }
+
+    /// `n ≥ 15` → 服务端标 `true` 且**不发**那句不足文案。
+    func testAuctionHistorySufficientHidesTheInsufficientNote() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3, "history": {
+          "history_days_available": 18, "history_sample_sufficient": true}}]}
+        """)
+        let b = try JSONDecoder().decode(AuctionPayload.self, from: data).baskets[0]
+        XCTAssertEqual(b.historySampleSufficient, true)
+        XCTAssertNil(b.historyInsufficientNote)
+    }
+
+    /// 老行没有 `history_sample_sufficient` → `nil` → 界面**什么都不说**
+    /// (⛔ 不许默认成"够"或"不够" —— 那是替服务端下一个它没下过的判断)。
+    func testAuctionHistorySufficiencyIsNilOnOldRows() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3,
+          "history": {"history_days_available": 2}}]}
+        """)
+        let b = try JSONDecoder().decode(AuctionPayload.self, from: data).baskets[0]
+        XCTAssertNil(b.historySampleSufficient)
+        XCTAssertNil(b.historyInsufficientNote)
+        // 老行也没有逐票段 → 空(⛔ 不许凭空造一条"够了"的记录)
+        XCTAssertTrue(b.historyPerMember.isEmpty)
+        XCTAssertNil(b.historyFor("600000.SH"))
+    }
+
+    // MARK: - 🔴 定向复审 🔴-1 / 🟡-1 / 🔵-1 / 🔵-2 / 🔵-3(2026-08-12)
+
+    /// 🔴 **逐票的历史样本**:一只 20 天、一只 2 天同篮 —— 界面必须看得出**是哪一只**不够,
+    /// 且不够的那只要**逐日列出原始值**(裁定 P3-69 原文「只展示原始值」)。
+    func testAuctionHistoryIsPerMemberAndNamesTheShortOne() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3, "history": {
+          "history_days_available": 2, "history_days_available_basis": "min_per_member",
+          "history_sample_sufficient": false,
+          "history_insufficient_codes": ["600000.SH"],
+          "history_days_per_member": [
+            {"ts_code": "600519.SH", "days_available": 20, "sample_sufficient": true,
+             "comparison_readings": {"auction_volume": {"min": 4000, "median": 5000,
+                                                        "max": 6000, "observed": 20},
+                                     "gap_pct": {"min": 0.01, "median": 0.02,
+                                                 "max": 0.03, "observed": 20}}},
+            {"ts_code": "600000.SH", "days_available": 2, "sample_sufficient": false}],
+          "per_member": {"600000.SH": [
+            {"trade_date": "2026-08-07", "auction_volume": 7777, "auction_amount": 50000,
+             "gap_pct": 0.01},
+            {"trade_date": "2026-08-10", "auction_volume": 8888, "auction_amount": 50000,
+             "gap_pct": 0.012}]}}}]}
+        """)
+        let b = try JSONDecoder().decode(AuctionPayload.self, from: data).baskets[0]
+        XCTAssertEqual(b.historyDaysAvailable, 2, "篮级 = 逐票最小值")
+        XCTAssertEqual(b.historyInsufficientCodes, ["600000.SH"])
+        XCTAssertEqual(b.historyPerMember.count, 2)
+
+        let long = b.historyFor("600519.SH")
+        XCTAssertEqual(long?.daysAvailable, 20)
+        XCTAssertEqual(long?.sampleSufficient, true)
+        // 🟡-1 的客户端一半:够样本时给的是**对照读数**,不是一句空口许可
+        XCTAssertTrue(long?.noteText.contains("可作历史比较") ?? false, long?.noteText ?? "")
+        XCTAssertTrue(long?.noteText.contains("中位") ?? false, long?.noteText ?? "")
+
+        let short = b.historyFor("600000.SH")
+        XCTAssertEqual(short?.daysAvailable, 2)
+        XCTAssertEqual(short?.sampleSufficient, false)
+        XCTAssertTrue(short?.noteText.contains("样本不足") ?? false, short?.noteText ?? "")
+        // 🔵-3:「只展示原始值」那半句要在界面上真的落地
+        XCTAssertTrue(short?.noteText.contains("2026-08-07") ?? false, short?.noteText ?? "")
+        XCTAssertTrue(short?.noteText.contains("7,777") ?? false, short?.noteText ?? "")
+        // 🔴 `Text(String)` 不解析 Markdown → 这些整句里一个 `*` 都不许有
+        XCTAssertFalse(short?.noteText.contains("*") ?? true)
+        XCTAssertFalse(long?.noteText.contains("*") ?? true)
+    }
+
+    /// 「一天都没有」⛔ 不许被讲成「跟平时一样」(「没有」≠「不满足」)。
+    func testAuctionHistoryZeroDaysSaysThereIsNothingToCompare() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3, "history": {
+          "history_days_available": 0, "history_sample_sufficient": false,
+          "history_days_per_member": [
+            {"ts_code": "600000.SH", "days_available": 0, "sample_sufficient": false}]}}]}
+        """)
+        let b = try JSONDecoder().decode(AuctionPayload.self, from: data).baskets[0]
+        let h = b.historyFor("600000.SH")
+        XCTAssertTrue(h?.noteText.contains("一条历史竞价快照都没有") ?? false, h?.noteText ?? "")
+        XCTAssertTrue(h?.noteText.contains("不是「跟平时一样」") ?? false, h?.noteText ?? "")
+    }
+
+    /// 🔵-1:板块对照股下限**从服务端读**(`relStrength.sector_peer_min`),⛔ 客户端零硬编。
+    func testAuctionSectorPeerMinComesFromTheServer() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3,
+          "relStrength": {"sector_peer_min": 3, "sector_peer_pool_note": "取自关注池"}}]}
+        """)
+        let b = try JSONDecoder().decode(AuctionPayload.self, from: data).baskets[0]
+        XCTAssertEqual(b.sectorPeerMin, 3)
+        XCTAssertEqual(b.sectorPeerPoolNote, "取自关注池")
+        // 全仓不许再出现那句硬编的中文(唯一源在服务端)
+        XCTAssertEqual(nkAuctionRelReasonLabel("data_insufficient", sectorPeerMin: 3),
+                       "有效板块对照股不足 3 只")
+        XCTAssertFalse(nkAuctionRelReasonLabel("data_insufficient").contains("3"),
+                       "⛔ 服务端没下发下限时不许印一个自己拍的数")
+    }
+
+    /// 🔵-2:老行**有值、却没有来源码** → ⛔ 不许印成「+1.42%(对照:未取得 未记录)」
+    /// (有值又说没取到,自相矛盾)。如实说这是旧口径的值。
+    func testAuctionOldRowWithValueButNoSourceIsNotSelfContradictory() throws {
+        let data = jsonData("""
+        {"tradeDate": "20260811", "baskets": [{"basketId": 3, "members": [
+          {"tsCode": "600000.SH", "gapPct": 0.05, "relToSector": 0.0142,
+           "dataQuality": "ok"}]}]}
+        """)
+        let m = try JSONDecoder().decode(AuctionPayload.self, from: data).baskets[0].members[0]
+        XCTAssertEqual(m.relToSectorSource, "unavailable")
+        let text = m.relToSectorText(sectorPeerMin: 3)
+        XCTAssertTrue(text.contains("1.42%"), text)
+        XCTAssertFalse(text.contains("未取得"), "⛔ 有值就别说「未取得」:\(text)")
+        XCTAssertTrue(text.contains("旧口径"), text)
+    }
+
+    /// 🔵-7:「整张行业表都没读到」(系统缺席)与「这一只票没登记行业」是两句话。
+    func testAuctionIndustryMapUnavailableIsItsOwnReason() throws {
+        XCTAssertNotEqual(nkAuctionRelReasonLabel("industry_map_unavailable"),
+                          nkAuctionRelReasonLabel("no_industry"))
+        XCTAssertTrue(nkAuctionRelReasonLabel("industry_map_unavailable").contains("系统缺席"))
+    }
+
+    /// 🔴 404 `auction_not_ready` 与 500 `auction_corrupt` **必须映射成两个不同的错误**
+    /// (⛔ 不吃 404 fallback「持仓已清」;⛔ 不把 500 降格成"还没生成")。
+    func testAuctionReasonsMapToTheirOwnCases() async throws {
+        MockURLProtocol.handler = { _ in
+            (404, jsonData(#"{"detail": {"ok": false, "reason": "auction_not_ready"}}"#))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        do {
+            _ = try await client.fetchAuction(date: "20260811")
+            XCTFail("应当抛 auctionNotReady")
+        } catch let e as APIError {
+            XCTAssertEqual(e, .auctionNotReady)
+            XCTAssertNotEqual(e, .notHolding, "⛔ 不许吃 404 fallback「持仓已清」")
+        }
+        MockURLProtocol.handler = { _ in
+            (500, jsonData(#"{"detail": {"ok": false, "reason": "auction_corrupt"}}"#))
+        }
+        do {
+            _ = try await client.fetchAuction()
+            XCTFail("应当抛 auctionCorrupt")
+        } catch let e as APIError {
+            XCTAssertEqual(e, .auctionCorrupt)
+            XCTAssertNotEqual(e, .auctionNotReady, "⛔ 「读不出」与「还没生成」必须分开")
+        }
+    }
+
+    /// 三态在 `AppModel` 里就分好:404 → 不画卡(`auction == nil` 且 `corrupt == false`)。
+    @MainActor
+    func testAuctionNotReadyLeavesTheCardUnpainted() async throws {
+        XCTAssertEqual(nkAuctionVerdictLabel("pending_explanation"), "待解释")
+        XCTAssertEqual(nkAuctionVerdictLabel("something_new"), "something_new",
+                       "未识别值必须原样透传")
+        XCTAssertEqual(nkAuctionLlmStageLabel("call_failed:TimeoutError"), "调用失败")
+        XCTAssertEqual(nkAuctionGapText(nil), "算不出", "⛔ 不拿 0 冒充平开")
     }
 
 }

@@ -7,6 +7,8 @@
     步 1  画像批算            —— 复用 `neckline/profile/{preference,capability,store}`
     步 2  周度校准报告落盘     —— 复用 `neckline/eval/calibration.{build_report,write_report}`
     步 3  双时钟对账 + 归因    —— V2.2-④ 新增:交易时钟对账 → 校准产物自带 `iteration` 段
+    步 4  OUT 研究影子对照复核 —— V2.3.2-③-B:**本作业唯一一次 LLM 调用**
+    步 5  竞价周度机械聚合     —— V2.3.3-⑥-B:🔴 **零 LLM**(读两张表 + 一次分组)
 
 **为什么没有第四步「对账」**:周复盘对账的必需输入(券商交割单)**只能由用户手动给**
 (§八 第 7 项)—— 排了 timer 也补不出没上传的那一份。没有交割单那周的答案是:输出画像
@@ -101,7 +103,7 @@ def step_trade_clocks(as_of: date, db_path: Path, parquet_dir: Optional[Path]) -
 
 def step_calibration(anchor: date, db_path: Path, parquet_dir: Optional[Path], *,
                      out_dir: Path, draws: int, with_placebo: bool,
-                     with_tradable: bool) -> Tuple[str, List[str]]:
+                     with_tradable: bool, with_auction: bool = True) -> Tuple[str, List[str]]:
     """步 2 + 步 3b:周度校准报告落盘(**自带 V2.2-④ 的双时钟成绩单与四分类建议**)。
 
     ⚠ 落盘命名由 `calibration.write_report` 定死(`calibration_{from}_{to}.{md,json}`)
@@ -120,7 +122,8 @@ def step_calibration(anchor: date, db_path: Path, parquet_dir: Optional[Path], *
         return (f"{anchor} 所在那一周没有交易日,本周无校准窗口(如实跳过,不算失败)", [])
     report = calibration.build_report(
         lo, hi, db_path=db_path, parquet_dir=parquet_dir,
-        with_tradable=with_tradable, with_placebo=with_placebo, draws=int(draws),
+        with_tradable=with_tradable, with_placebo=with_placebo,
+        with_auction=with_auction, draws=int(draws),
     )
     paths = calibration.write_report(report, out_dir)
     for n in report.notes:
@@ -176,6 +179,43 @@ def step_out_shadow_review(anchor: date, db_path: Path) -> str:
             f"{'(已落表)' if res.persisted else '(本周行已存在,未覆盖)'}")
 
 
+def step_auction_eval(anchor: date, db_path: Path) -> str:
+    """步 5:D1 集合竞价确认层的**周度机械聚合**(V2.3.3-⑥-B;K8 §二十 末段)。
+
+    🔴 **零 LLM 调用**(与步 4 刻意相反):它只读两张 SQLite 表 + 做一次分组 ——
+    `neckline-weekly.service::TimeoutStartSec` 刚由 1800 调到 3000(V2.3.2 批 ⑥ 实测),
+    再塞一次 LLM 会立刻破配额账,故本步**永远不许**加模型调用。
+
+    ⚠ 六个标签不在这里判:它们是 D1 收盘时由 `review/selection_clock.py` 的**第十项**
+    判好、冻进 `selection_clock.mech_json` 的 —— 本步只**数**(⛔ 不重判)。
+
+    ⚠ **同一份产物已随步 2 落盘**(`calibration.build_report` 的 `auction` 段,同一个
+    函数、同一个窗口 → 逐位相同)。本步存在的意义是让它在 journal 里**有一句可核**
+    + 让"这一步跑没跑成"有独立的退出码信号。`--skip-auction-eval` 两处一起关。
+
+    🔴 **⛔ 零自动回写**:不改 K8、不改选股包、不改任何阈值(K8 §二十 末段逐字)。
+    """
+    from neckline.eval.auction_eval import build_auction_section
+
+    lo, hi = calibration.week_bounds(anchor)
+    if lo is None:
+        return f"{anchor} 所在那一周没有交易日,本周无竞价聚合窗口(如实跳过)"
+    section = build_auction_section(lo, hi, db_path=db_path)
+    overall = section.get("overall") or {}
+    counts = overall.get("counts") or {}
+    focus = overall.get("focus") or {}
+    th = section.get("thresholds") or {}
+    if not th.get("available"):
+        logger.warning("  ⚠ 竞价聚合:样本分界线未配置 —— 本期**只输出观察**、不提任何建议"
+                       "(骨架包 `config.iteration` 待用户拍板)")
+    return (f"竞价周度聚合 {lo}→{hi}:样本 {overall.get('n', 0)} 个 / "
+            f"{len(section.get('byCell') or [])} 个 (行情状态 × 等级 × 引擎 × 版本) 单元格;"
+            f"正确确认 {counts.get('correct_confirm', 0)} / 错误确认 {focus.get('wrong_confirm', 0)} / "
+            f"中性 {counts.get('neutral_sample', 0)} / 正确否决 {counts.get('correct_veto', 0)} / "
+            f"错误否决 {focus.get('wrong_veto', 0)} / 数据缺失 {counts.get('data_missing', 0)};"
+            f"样本量闸 {overall.get('gate')}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -188,6 +228,8 @@ def main() -> int:
     parser.add_argument("--skip-clocks", action="store_true", help="跳过步 3a 交易时钟对账")
     parser.add_argument("--skip-out-review", action="store_true",
                         help="跳过步 4 OUT 研究影子对照周度复核(唯一一次 LLM 调用)")
+    parser.add_argument("--skip-auction-eval", action="store_true",
+                        help="跳过步 5 竞价周度机械聚合(**同时**让校准产物不带 auction 段)")
     parser.add_argument("--db", dest="db", help="SQLite 路径(缺省 settings.db_path)")
     parser.add_argument("--parquet-dir", dest="parquet_dir", help="parquet 根目录(缺省 settings)")
     args = parser.parse_args()
@@ -223,7 +265,8 @@ def main() -> int:
     try:
         summary, degraded = step_calibration(
             anchor, db_path, parquet_dir, out_dir=out_dir, draws=args.draws,
-            with_placebo=not args.no_placebo, with_tradable=not args.no_tradable)
+            with_placebo=not args.no_placebo, with_tradable=not args.no_tradable,
+            with_auction=not args.skip_auction_eval)
         logger.info("步 2/3b %s", summary)
         # 🔴 P0-56:`build_report` 不抛异常,所以"段炸掉"到不了上面那个 except ——
         # 必须在这里显式并进 `failures`,否则退出码会替一次被掏空的跑背书。
@@ -242,6 +285,16 @@ def main() -> int:
             logger.error("步 4 OUT 研究影子对照复核失败:%s: %s",
                          type(exc).__name__, exc, exc_info=True)
             failures.append("out_shadow_review")
+
+    if args.skip_auction_eval:
+        logger.info("步 5 竞价周度机械聚合:--skip-auction-eval,跳过")
+    else:
+        try:
+            logger.info("步 5 %s", step_auction_eval(anchor, db_path))
+        except Exception as exc:  # noqa: BLE001 —— 一步失败另一步照跑
+            logger.error("步 5 竞价周度机械聚合失败:%s: %s",
+                         type(exc).__name__, exc, exc_info=True)
+            failures.append("auction_eval")
 
     if failures:
         # 🔴 让 `ExecMainStatus` 说真话:任一步失败即非零退出(§铁律「timer 跑过 ≠

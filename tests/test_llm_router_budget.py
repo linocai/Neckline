@@ -32,9 +32,20 @@ class _Row(NamedTuple):
 
 def test_all_tasks_declared_count_and_uniqueness():
     """plan 原文九项任务常量,**V2.1-① 起 `TASK_INQUIRY` 退役 → 八项**(问询台整链
-    退役,§五①原文四处摘除清单之一);不许漏项也不许有重复字符串。"""
-    assert len(router.ALL_TASKS) == 8
-    assert len(set(router.ALL_TASKS)) == 8
+    退役,§五①原文四处摘除清单之一);**V2.3.3-③ 新增 `TASK_AUCTION` → 九项**
+    (D1 集合竞价确认层,出处 K8.md **§二十**:9:26—9:29 一次调用覆盖全部篮子)。
+    不许漏项也不许有重复字符串。
+
+    ⛔ **别改成 `>= 8`** —— 这条闸的意义全在"加不进来":新增一个 LLM 任务是要
+    连预算账、流式分级、prompt_context 三处一起想清楚的事,不是顺手加个字符串。"""
+    assert len(router.ALL_TASKS) == 9
+    assert len(set(router.ALL_TASKS)) == 9
+    assert router.TASK_AUCTION in router.ALL_TASKS
+    # 🔴 两项**同路接线**的正面断言(只接一半 = §七 P0-40/P0-44 原病复发):
+    assert router.TASK_AUCTION in router.LONG_CONTEXT_TASKS
+    assert router.use_streaming_for_task(router.TASK_AUCTION) is True
+    assert router.read_timeout_for_task(router.TASK_AUCTION) == \
+        router.STREAM_CHUNK_GAP_TIMEOUT_SECONDS
 
 
 def test_explicit_route_always_wins_even_if_provider_nonexistent():

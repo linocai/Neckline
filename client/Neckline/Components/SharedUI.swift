@@ -966,6 +966,11 @@ enum NKQA {
     /// ⛔ 仍然只给初值 / 只推一次:推进去之后返回键照常可用,不夺走用户的导航。
     static let initialPositionId: Int? =
         ProcessInfo.processInfo.environment["NECKLINE_INITIAL_POSITION_ID"].flatMap(Int.init)
+    // ⚠ **`NECKLINE_INITIAL_AUCTION_SHEET=1`(V2.3.3-⑤ 竞价小报告弹层)不在本枚举里**:
+    // 它要等 `refresh()` 把报告拉回来才有东西可开,故消费点在
+    // `AppModel.applyQAHooksAfterRefresh()`(同 `NECKLINE_INITIAL_INFOCARD_CODE` 先例)——
+    // 本枚举里的钩子都是**同步可读的初值**,⛔ 别把异步那一族搬进来。
+
     /// `NECKLINE_INITIAL_PROVIDER_FORM=1` → 设置 · Provider 屏开**编辑 Provider** 弹层
     /// (取列表首个 Provider)。⚠ 它要等 `loadSettings()` 拿回注册表才有东西可编,
     /// 故触发点在 `SettingsView.task` 里而不是 `NecklineApp.init()`。

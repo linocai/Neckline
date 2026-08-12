@@ -90,7 +90,7 @@ def render_markdown(
     parts.append("")
     parts.append(
         "> **排序 / Tier = 注意力优先级,不是收益预测**;T1 ≠ 最会涨,终选权在你。"
-        "本报告的一切 LLM 产出(篮子叙述 / 竞价剧本 / 复盘解释)都是**参考件、非指令**;"
+        "本报告的一切 LLM 产出(篮子叙述 / 预期上涨路径 / 复盘解释)都是**参考件、非指令**;"
         "纪律只住纪律章程,系统永不下单。"
     )
     parts.append("")
@@ -611,14 +611,27 @@ def _render_one_basket(b: Any) -> str:
                 lines.append(f"    - {code}:{h.get('text') or ''}(来源 `{h.get('source') or '?'}`)")
         lines.append("")
 
-    scripts = card.get("scripts")
-    if isinstance(scripts, Mapping) and any(scripts.values()):
-        lines.append("- 次日竞价剧本(**参考、非指令**):")
-        for key, label in (("strong", "强"), ("flat", "平"), ("weak", "弱")):
-            if scripts.get(key):
-                lines.append(f"    - **{label}**:{scripts[key]}")
+    # V2.3.3-①:卡 #6 由三剧本换成「预期上涨路径」(K8.md §十 第 8 项 / §十一 第 1 项)。
+    # 开盘那一刻怎么办归次日 9:26 的竞价确认层,这里只讲路径。
+    upside = str(card.get("upsidePath") or "").strip()
+    if upside:
+        lines.append(f"- 预期上涨路径(**参考、非指令**):{upside}")
     else:
-        lines.append(f"- 次日竞价剧本:未生成({card.get('scriptsUnavailableReason') or '原因未记录'})。")
+        # ⚠ **回放 V2.3.3 之前的某天**时,这一行会写「未生成」——而那天其实是**生成
+        # 了的、只是形状不同**(v3 老卡的三剧本)。⛔ 不许让读者把"那天没做"与"那一版
+        # 的卡长得不一样"混成一句(复审 🔵-7)。判据取卡自己的 `specVersion`
+        # (`card_to_public_dict` 逐键映射里有它),**不猜日期**、也不看已停发的
+        # `scripts` 键(它自 V2.3.3 起就不在契约面上了)。
+        from neckline.selection.basket_card import CARD_SPEC_VERSION
+
+        spec = str(card.get("specVersion") or "")
+        legacy_note = ("(这是 V2.3.3 之前的 `%s` 老卡:那一版问的是「明早强 / 平 / 弱"
+                       "三剧本」,三段原文仍在冻结卡里,只是不再进本节)" % spec
+                       if spec and spec != CARD_SPEC_VERSION else "")
+        lines.append(
+            f"- 预期上涨路径:未生成({card.get('upsidePathUnavailableReason') or '原因未记录'})。"
+            f"{legacy_note}"
+        )
     lines.append("")
 
     if card.get("verificationText"):
@@ -758,7 +771,7 @@ def _render_out_candidates(bd: Optional[BasketDaily]) -> str:
 #    (本节按行渲染、不按 depth 分组,天然宽容)。markdown 段标题一字未动(审计锚)。
 
 _MECH_ITEM_LABEL = {
-    "auction_vs_script": "竞价 vs 剧本", "open_direction": "开盘方向", "mfe_mae": "MFE / MAE",
+    "auction_vs_script": "竞价 vs 上涨判断", "open_direction": "开盘方向", "mfe_mae": "MFE / MAE",
     "member_alignment": "成员齐动", "leader_pull": "龙头带动", "buyability": "可买性",
     "verification_timing": "验证时点", "close_rs": "收盘相对强度", "tier_vs_outcome": "Tier vs 结果",
 }
@@ -783,8 +796,13 @@ def _mech_item_summary(key: str, item: Mapping[str, Any]) -> str:
     每项取该项自己最要紧的那两三个数,不是笼统一句"正常"。"""
     if key == "auction_vs_script":
         branch = item.get("branch")
-        hit = "卡上有该分支剧本" if item.get("script_present") else "卡上无该分支剧本"
-        return f"竞价中位 {_pct(item.get('gap_median'))} → 落「{branch or '?'}」分支({hit})"
+        # ⚠ 这里读的是 `script_present`(**取到原文了没有**),⛔ 不是
+        # `upside_path_present`(那个只看新键 `upside_path`)—— 两者对 v3 老卡刻意
+        # 给出不同答案,V2.3.3 复审 🟡-5 拆开的就是这一对。
+        hit = "卡上有上涨判断" if item.get("script_present") else "卡上无上涨判断"
+        if item.get("script_text_source") == "legacy_scripts":
+            hit += "(v3 老卡的三剧本)"
+        return f"竞价中位 {_pct(item.get('gap_median'))} → 落「{branch or '?'}」档({hit})"
     if key == "open_direction":
         aligned = item.get("aligned")
         aligned_txt = "一致" if aligned else ("背离" if aligned is False else "无法比较")

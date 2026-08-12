@@ -368,6 +368,10 @@ _STOP_PCT_CONSUMERS = {
     "scripts/smoke_basket_review.py",
     "scripts/smoke_basket_verify.py",
     "scripts/smoke_profile.py",
+    # V2.3.3-④ 竞价层冒烟:D0 零篮子时**往临时 DB 副本**合成一张卡,`stop_pct` 只是
+    # 喂给 `build_invalidation_spec` 造那张合成卡的失效位。**不触发任何卖出动作、
+    # 不碰真实库**(整份复制到 tmp 再写),与上面三条冒烟同类。
+    "scripts/smoke_auction.py",
 }
 
 #: §五 ⑤-B 原文点名的四类语义消费方(**必须全部在册**,防有人"精简"白名单时把它们删掉)。

@@ -68,6 +68,11 @@ struct BasketDailyView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+                    // 🔴 **V2.3.3-⑤ 竞价卡是这一页的第一张卡**(D1 早晨 9:26 之后才有内容;
+                    // 没有就整张不画,⛔ 不画空卡)。**刻意放在 `degraded` 分支之外**:
+                    // 竞价报告是 **D1 早晨**的独立产物,与 D0 晚上那份盘后报告在不在**无关**
+                    // ——把它塞进 else 分支会让"昨晚报告没跑"顺手把今早的竞价确认也藏掉。
+                    AuctionSummaryCard(model: model)
                     if model.report.degraded {
                         reportNotReadyCard
                     } else {
@@ -106,6 +111,11 @@ struct BasketDailyView: View {
                              set: { if $0 == nil { model.dismissInfoCard() } })) { req in
             InfoCardPageView(model: model, request: req)
         }
+        // V2.3.3-⑤ 竞价小报告五块。⚠ `auction == nil` 时**开不起来**(卡都不画),
+        // 这里再兜一层:没有 payload 就什么都不呈现(⛔ 不弹一个空壳)。
+        .sheet(isPresented: $model.showAuctionSheet) {
+            if let a = model.auction { AuctionReportPage(model: model, payload: a) }
+        }
     }
     #endif
 
@@ -125,6 +135,14 @@ struct BasketDailyView: View {
             // ⚠ sheet 受父窗口内缩,故取 1120:与 1200 画布同量级,两列排得开。
             InfoCardPageView(model: model, request: req)
                 .frame(minWidth: 1120, maxWidth: 1120, minHeight: 700, maxHeight: .infinity)
+        }
+        // V2.3.3-⑤ 竞价小报告五块(macOS 也走 sheet:五块是**一次读完**的东西,
+        // 塞进详情栏会把「今日概览」挤没)。
+        .sheet(isPresented: $model.showAuctionSheet) {
+            if let a = model.auction {
+                AuctionReportPage(model: model, payload: a)
+                    .frame(minWidth: 760, maxWidth: 860, minHeight: 640, maxHeight: .infinity)
+            }
         }
     }
 
@@ -364,6 +382,10 @@ struct BasketDailyView: View {
             VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                 Text("今日概览").font(NKFont.title1).tracking(-0.4)
                     .foregroundStyle(NK.textPrimary)
+                // 🔴 **V2.3.3-⑤ 竞价卡 = 概览里的第一张卡**(施工图写「今日概览之前」,
+                // 落地取"标题之后的第一张卡" —— 把一张卡摆到屏标题上面在 macOS 详情栏
+                // 里读起来像界面坏了;位置语义"最靠前"一样成立)。没有报告就整张不画。
+                AuctionSummaryCard(model: model)
                 // 🔴 V2.2-② 行情状态条。**纯展示、零动作**;`available=false` 时如实说
                 // 「本段未取得」,⛔ 不静默省略。⚠ 它**不是**「① 情绪与市场语境」的替代 ——
                 // 两者一个讲市场结构、一个讲情绪读数,段名各自保留(段名是审计锚)。
@@ -460,6 +482,9 @@ struct BasketDailyView: View {
         VStack(alignment: .leading, spacing: NKSpace.cardGap) {
             Text("今日概览").font(NKFont.title1).tracking(-0.4)
                 .foregroundStyle(NK.textPrimary)
+            // 竞价报告是 **D1 早晨**的独立产物 —— 昨晚那份盘后报告没跑,不该顺手把今早
+            // 的竞价确认也藏掉(同 iOS 侧把它放在 `degraded` 分支之外的理由)。
+            AuctionSummaryCard(model: model)
             notReadyCardMac
             freshnessSection
         }

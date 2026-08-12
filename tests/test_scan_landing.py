@@ -200,7 +200,7 @@ def test_skeleton_pack_has_no_landing_section():
     # ⚠ V2.3.2-④-A 又追加了两段(iteration / threshold_governance)——本测试只管
     # 「landing 段不许回来」,故断言改成**不含 landing** 而不是钉死整个段集合。
     assert "landing" not in set(doc["config"])
-    assert doc["manifest"]["pack_version"] == "K8-V0.6", "V2.3.2-④-A 升 K8-V0.6"
+    assert doc["manifest"]["pack_version"] == "K8-V0.7", "V2.3.3-⑦ 升 K8-V0.7"
 
 
 # ══════════════════════════════════════════════════════════════════════════

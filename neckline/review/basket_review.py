@@ -3,7 +3,10 @@
 
 **⑨-A 机械判九项**(蓝图 4.8,`mech_json` 的九个顶层键,顺序即本模块函数顺序)::
 
-    ① auction_vs_script    竞价 vs 剧本(竞价高开幅度落在卡上哪一条分支剧本里)
+    ① auction_vs_script    竞价 vs 上涨判断(竞价高开幅度落在强/平/弱哪一档 + 卡上
+                           那段上涨判断的原文;V2.3.3-① 起卡 #6 是「预期上涨路径」
+                           一段话,**机械分档 `script_branch()` 一字未动**,换的只有
+                           取文本那一步,v3 老卡回退取 `scripts[branch]`)
     ② open_direction       开盘首方向(高/平/低开 × 收盘相对开盘的日内方向)
     ③ mfe_mae              分时 MFE / MAE(**有存拍才有时刻**,缺存拍走 EOD 近似并标注)
     ④ member_alignment     成员同向率(共振的直接证据)
@@ -80,7 +83,6 @@ EPS = 1e-9
 #: 本模块消费的 LLM 任务(② 的任务常量单一源;调用方一律从这里取,别抄字符串)。
 REVIEW_TASK = TASK_REVIEW
 
-_SCRIPT_BRANCHES = ("strong", "flat", "weak")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -333,18 +335,34 @@ def judge_auction_vs_script(codes: Sequence[str], card: Optional[Mapping[str, An
 
     med = _median(gaps)
     branch = script_branch(med)
+    # V2.3.3-①:**机械分档一字未动**(`script_branch()` 回答的是「当天竞价实际落在
+    # 强/平/弱哪一档」,是机械描述,不是剧本)。换的只有**取文本那一步** —— 卡 #6 由
+    # 三剧本换成「预期上涨路径」一段话,新卡取 `upside_path`,**v3 老卡回退**取
+    # `scripts[branch]`(冻结卡永不回填新键,只读新键会让历史复盘凭空少一段原文)。
+    upside = str((card or {}).get("upside_path") or "").strip() if isinstance(card, Mapping) else ""
     scripts = (card or {}).get("scripts") if isinstance(card, Mapping) else None
     scripts = scripts if isinstance(scripts, Mapping) else {}
-    text = scripts.get(branch) if branch else None
+    text = upside or ((scripts.get(branch) or None) if branch else None)
     return {
         "available": med is not None,
         "unavailable_reason": None if med is not None else "全体成员当日竞价与开盘价都取不到",
         "source": src,
         "gap_median": med,
         "branch": branch,
+        # ⚠ **两个键讲两件事,⛔ 别再让它们同值**(V2.3.3 复审 🟡-5):
+        #   · `script_present` = 「这一档**取到原文了没有**」(新键或老卡任一,现语义);
+        #   · `upside_path_present` = 「卡上有没有**新键 `upside_path`**」——
+        #     ⛔ 只看新键。原先它 = `bool(text)`,于是一张 v3 老卡只要当天那一档有原文
+        #     就被记成「有 upside_path」;而 `basket_review_daily.mech_json` 是**写入
+        #     当时冻住**的 B 类快照、不可回改,将来做「V2.3.3 前后有多少篮子真的有预期
+        #     上涨路径」这类归因时,老卡的三剧本会被一起算进去,且**永远查不出来**。
         "script_present": bool(text),
         "script_text": text or None,
-        "scripts_branches_on_card": [b for b in _SCRIPT_BRANCHES if scripts.get(b)],
+        "upside_path_present": bool(upside),
+        # 取到的这段原文是从哪个键来的(`upside_path` 新键 / `scripts[branch]` 老卡 /
+        # 没取到)—— 有了它,归因时不必再靠两个布尔互相推断。
+        "script_text_source": ("upside_path" if upside
+                               else ("legacy_scripts" if text else None)),
         "per_member": per,
     }
 
@@ -870,12 +888,12 @@ def build_review_context(review: "BasketReview", card: Optional[Mapping[str, Any
         return "算不出" if x is None else f"{float(x) * 100:+.{nd}f}%"
 
     a = m.get("auction_vs_script") or {}
-    lines.append(f"① 竞价 vs 剧本:竞价/开盘中位 {pct(a.get('gap_median'))},"
-                 f"落在卡上「{a.get('branch') or '判不了'}」分支;"
-                 f"{'卡上写了这条分支的剧本' if a.get('script_present') else '卡上这条分支没有剧本文字'}"
+    lines.append(f"① 竞价 vs 上涨判断:竞价/开盘中位 {pct(a.get('gap_median'))},"
+                 f"落在「{a.get('branch') or '判不了'}」档;"
+                 f"{'卡上写了上涨判断' if a.get('script_present') else '卡上没有上涨判断文字'}"
                  f"(取值来源 {a.get('source')})")
     if a.get("script_text"):
-        lines.append(f"   D0 写的这条剧本原文:{a['script_text']}")
+        lines.append(f"   D0 写的上涨判断原文:{a['script_text']}")
 
     o = m.get("open_direction") or {}
     lines.append(f"② 开盘首方向:跳空中位 {pct(o.get('gap_median'))}({o.get('gap_dir') or '?'}),"

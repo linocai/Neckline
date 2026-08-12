@@ -824,7 +824,7 @@ class TestEvaluateDay:
         out = gt.evaluate_day(r, D0, db_path=env.db_path, engines=ENGINES, skeleton=SKELETON)
         b = out.result.baskets[0]
         assert (b.engine_code, b.engine_version, b.engine_source) == ("C", "C1", "llm")
-        assert b.skeleton_version == "K8-V0.6"
+        assert b.skeleton_version == "K8-V0.7"
         s = out.summaries["k1"]
         assert not s.excluded and s.engine_code == "C"
 

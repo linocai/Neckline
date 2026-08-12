@@ -203,6 +203,45 @@ def push_precall_summary(
     )
 
 
+def push_auction_summary(
+    counts: dict, *,
+    db_path: Optional[Path] = None, transport: Optional[Any] = None,
+) -> NotifyOutcome:
+    """9:26—9:29 **D1 集合竞价确认**汇总(V2.3.3-④,K8.md §二十)。
+
+    🔴 **kind 复用 `KIND_PRECALL`,⛔ 不新开 kind**(2026-08-11 用户拍板):新 kind 要动
+    `app_settings` 加列 + 迁移 + 设置屏,且 `ALL_KINDS` 是冻结元组、加一个要用户单独拍板。
+    ⚠ **已知代价、如实登记**(§五 ⑨-B-4):9:26 盘前校准汇总与竞价确认汇总**共用一个
+    开关** —— 用户关掉 `precall` 会**同时关掉两条**。这是那条拍板的**字面结果、不是遗漏**;
+    要拆开需用户单独拍一个新 kind。
+
+    `counts` 键:`confirm` / `neutral` / `veto` / `pending_explanation` /
+    `hit_invalidation` / `llm_stage`(**唯一源 = `auction/pipeline.py::AuctionRunResult.
+    counts`**)。⚠ `llm_stage` 是**字符串**混在 counts 里,措辞按它决定加不加那句
+    「本次 LLM 未给出解释」—— 同 `push_precall_summary` 的 counts 位置。
+
+    **推送门槛不在这里**(单一源是 `AuctionRunResult.should_push`):`_sentinel_loop`
+    判完才调本函数。⛔ 不许"平静的早晨也发一条"。
+
+    **纯提醒层**(§3.8):只发文字,绝不代下单。文案里 ⛔ 不得出现「建议买入 / 可以买」
+    这类措辞 —— 系统只审计不代下单。
+    """
+    c = int(counts.get("confirm", 0))
+    n = int(counts.get("neutral", 0))
+    v = int(counts.get("veto", 0))
+    h = int(counts.get("hit_invalidation", 0))
+    stage = str(counts.get("llm_stage", "") or "")
+    body = f"集合竞价确认:{c} 篮确认、{n} 篮中性、{v} 篮否决;{h} 只命中 D0 失效位。"
+    if stage != "ok":
+        body += "(本次 LLM 未给出解释,已按『待解释』记录)"
+    # K8 §二十 逐字,**恒带**:竞价结论不是买入指令。
+    body += "竞价结论只说明竞价反映出的信息,不等于买入指令。"
+    return push_event(
+        KIND_PRECALL, "集合竞价确认", body,
+        db_path=db_path, transport=transport,
+    )
+
+
 # v1.3 两档时间退出状态码(= `PositionOut.timeExitState` 契约 / `sentinel/precall.py` 常量,
 # 唯一源在那两处;此处按字面量引用以免 notify → precall 重耦合,与 CLOSE_REASON Literal 惯例同)。
 _KIND_TIME_EXIT = "time_exit_next_day"
@@ -399,6 +438,8 @@ __all__ = [
     "push_report_ready",
     "push_retreat_brake",
     "push_precall_summary",
+    # 措辞层(V2.3.3-④ 新增;kind 复用 KIND_PRECALL,**零新 kind**)
+    "push_auction_summary",
     "push_d5_exit",
     "push_consecutive_stops_notice",
     "push_holding_alert",

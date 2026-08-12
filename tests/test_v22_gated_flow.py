@@ -125,7 +125,7 @@ class _CardStub:
 
     def chat(self, messages, *, enable_search=True, search_query=None, transport=None):
         payload = {
-            "scripts": {"strong": "高开", "flat": "平开", "weak": "低开"},
+            "upside_path": "订单落地推动价格沿 5 日线台阶式抬升,到前高一带算走完",
             "entries": [{"ts_code": CODE, "low": 9.8, "high": 10.2, "max_chase": 10.5,
                          "exit_low": 12.0, "exit_high": 13.5, "why": "回踩中枢"}],
             "verification": "验证人话", "invalidation": "失效人话",
@@ -171,13 +171,13 @@ class TestGatedEveningFlow:
         rows = _rows(env.db_path,
                      "SELECT basket_key, tier, engine_code, engine_version, skeleton_version "
                      "FROM baskets")
-        assert rows == [("k1", 1, "C", "C1", "K8-V0.6")]
+        assert rows == [("k1", 1, "C", "C1", "K8-V0.7")]
         assert stats["gates"]["rows_written"] > 0
         assert _rows(env.db_path, "SELECT COUNT(*) FROM gate_evaluations")[0][0] > 0
         card = json.loads(_rows(env.db_path, "SELECT card_json FROM basket_cards")[0][0])
         assert card["tier"] == 1
         assert (card["engine_code"], card["engine_version"], card["skeleton_version"]) == \
-            ("C", "C1", "K8-V0.6")
+            ("C", "C1", "K8-V0.7")
         assert bc.trade_plan_missing_pieces(card) == []
 
     def test_incomplete_plan_demotes_t1_to_t2_not_blocked(self, isolated_env, monkeypatch):
@@ -315,7 +315,7 @@ class TestEnforcePlanCompleteness:
 
 class TestTradePlanPieces:
     _COMPLETE = {
-        "scripts": {"strong": "s", "flat": "f", "weak": "w"},
+        "upside_path": "沿 5 日线台阶式抬升到前高",
         "invalidation_spec": {"spec_version": "x", "conditions": []},
         "members": [{"ts_code": CODE,
                      "entry_zone": {"low": 9.8, "high": 10.2, "why": ""},
@@ -326,7 +326,7 @@ class TestTradePlanPieces:
         assert bc.trade_plan_missing_pieces(self._COMPLETE) == []
 
     def test_each_piece_is_reported_individually(self):
-        card = {**self._COMPLETE, "scripts": None,
+        card = {**self._COMPLETE, "upside_path": None,
                 "members": [{"ts_code": CODE, "entry_zone": None,
                              "exit_reference": {"low": 12.0, "high": 13.5}}]}
         missing = bc.trade_plan_missing_pieces(card)
@@ -371,7 +371,7 @@ class TestPlanIncompleteNotice:
         incomplete = SourceBasketMember(
             basket_id=1, basket_key="k1", basket_name="篮", driver="驱动", tier=1,
             role_llm="leader", role_mech=None, role_conflict=False,
-            card_version=1, card={**card, "scripts": None}, member_entry=member_entry,
+            card_version=1, card={**card, "upside_path": None}, member_entry=member_entry,
         )
         plan2, _b, _v = build_inherited_plan(incomplete, buy_price=10.0)
         assert plan2["trade_plan_complete"] is False

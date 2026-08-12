@@ -126,8 +126,10 @@ _CARD_TOP_KEYS: Tuple[Tuple[str, str], ...] = (
     ("tier_breakdown", "tierBreakdown"),
     ("tier_reason", "tierReason"),
     ("tier_note", "tierNote"),
-    ("scripts", "scripts"),
-    ("scripts_unavailable_reason", "scriptsUnavailableReason"),
+    # V2.3.3-①:卡 #6 换问题 —— `scripts` / `scripts_unavailable_reason` 两键**停发**,
+    # 换成「预期上涨路径」两键。老 v3 卡缺新键 → 契约面不出现(逐键映射天然如此)。
+    ("upside_path", "upsidePath"),
+    ("upside_path_unavailable_reason", "upsidePathUnavailableReason"),
     ("verification_spec", "verificationSpec"),
     ("verification_text", "verificationText"),
     ("invalidation_spec", "invalidationSpec"),

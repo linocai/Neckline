@@ -217,8 +217,11 @@ class BasketCardOut(BaseModel):
     tierBreakdown: Dict[str, Any] = Field(default_factory=dict)
     tierReason: Optional[str] = None
     tierNote: Optional[str] = None
-    scripts: Optional[Dict[str, Any]] = None
-    scriptsUnavailableReason: Optional[str] = None
+    # V2.3.3-①(K8.md §十 第 8 项):卡 #6 由三剧本换成「预期上涨路径」**一段话**。
+    # 🔴 `scripts` / `scriptsUnavailableReason` 两键**直接停发**(客户端本就是
+    # `decodeIfPresent`,停发安全);老 v3 卡里那两键仍在 `card_json` 里,只是不进契约。
+    upsidePath: Optional[str] = None
+    upsidePathUnavailableReason: Optional[str] = None
     # 喂 ⑧ 哨兵的结构化 spec(机器半份),同样原样透传。
     verificationSpec: Dict[str, Any] = Field(default_factory=dict)
     verificationText: Optional[str] = None
@@ -1549,6 +1552,167 @@ class MarketRegimeOut(BaseModel):
     days: List[MarketRegimeDayOut] = Field(default_factory=list)
 
 
+# —— V2.3.3-⑤ D1 集合竞价确认层(`GET /auction[?date=]`,K8.md §二十)———————————
+#
+# 🔴 **三态与 `/market-regime` 刻意不同**(⛔ 别"统一"):行情状态是**日更只读表的区间
+# 查询**(缺行 = 那天没批算,200 + `available=false` 更合适);竞价小报告是**冻结件
+# 点查**,与 `basket_cards` 同族 → 照 B1 的三态办:
+#   · 当日无行(竞价层没跑过 / 还没到 9:26)→ **404 `auction_not_ready`**;
+#   · 有行但 json 解不出 → **500 `auction_corrupt`**(⛔ 不降格成 404:混成一类 =
+#     客户端永远重试、永远显示"还没生成" = 静默永久失败);
+#   · 有行(**含 `baskets_covered=0`**)→ **200** + `basketsUnavailableReason` 说出口。
+# 🔴 「没跑」与「跑了没有」必须分得开(§七 P0-39 同款病),⛔ 不许混成一句
+# 「今天没有竞价报告」。
+#
+# 🔴 **一律发枚举码,中文换算在客户端**(`verdict` / `clampedBy` / `dataQuality` /
+# `planFit` / `risk.kind` 五族)—— CLAUDE.md 连踩三次的坑(`role · leader` /
+# `pullback_leader` 都是把码直接印上界面造成的)。
+#
+# ⚠ `sectorSync` / `relStrength` / `history` / `planConsistency` 四段**原样透传**领域层
+# 形状(同 `ReviewSegmentOut.detail` / `SelectionClockOut.mech` 既定惯例);它们来自
+# `auction_verdicts` 的 json 列 = **B 类冻结快照** → 客户端 DTO 必须手写 `init(from:)`
+# 做 `decodeIfPresent`(CLAUDE.md V2-⑮ 铁律)。
+
+class AuctionDataStatusOut(BaseModel):
+    """小报告第 1 块「数据状态」。`dataQuality` 三态是**结构性判据**(全有 / 全无 /
+    其余),⛔ 不是百分比阈值。⚠ `conflictCodes` **结构性恒空**:`sentinel/quotes.py`
+    是「主源失败才降备源」、不同时拉两源 → 没有第二个读数可以跟第一个打架
+    (§七 P4-66;字段留着是因为 K8 §二十 要求报"冲突状态")。"""
+
+    source: str = "unknown"
+    capturedAt: str = ""
+    requestedCodes: int = 0
+    fetchedCodes: int = 0
+    missingCodes: List[str] = Field(default_factory=list)
+    conflictCodes: List[str] = Field(default_factory=list)
+    dataQuality: str = "insufficient"
+
+
+class AuctionIndexGapOut(BaseModel):
+    tsCode: str
+    name: str = ""
+    gapPct: Optional[float] = None
+
+
+class AuctionMarketOverviewOut(BaseModel):
+    """小报告第 2 块「市场与主线概览」。`text` 为 `null` = **LLM 没给**(⛔ 不冒充
+    "没内容"),配 `textUnavailableReason` 说出口。`anchors` = 竞价强势股 = **市场锚点**,
+    K8 §二十:「只解释资金方向,**不取得交易资格**」。"""
+
+    indexGaps: List[AuctionIndexGapOut] = Field(default_factory=list)
+    anchors: List[AuctionIndexGapOut] = Field(default_factory=list)
+    text: Optional[str] = None
+    textUnavailableReason: Optional[str] = None
+    anchorsNote: Optional[str] = None
+
+
+class AuctionMemberRowOut(BaseModel):
+    """逐票明细(键表 = §五 ②-F,与 `members_json` 逐字对应的 camelCase)。
+
+    🔴 `hitInvalidation` / `gapUpDeviation` 是**三态**:`true` 命中 / `false` 看过了
+    没命中 / `null` **没判**(锚失效 / 卡上无冻结价位 / 开盘价未发布 / 有篮无卡 /
+    没抓到)。⛔ `null` 不是 `false`「没问题」—— 客户端必须把这两态讲成不同的话。
+    ⚠ `null` 时**必配一个原因码**(`hitInvalidationUndeterminedReason` /
+    `gapUpDeviationUndeterminedReason`,唯一源 `auction.UNDETERMINED_CODES`);
+    老行(V2.3.3 复审整改**之前**冻的 `members_json`)可能只有 `null` 没有原因码 ——
+    那时客户端照实说「没判(原因未记录)」,⛔ 仍不许说成「无异常」。"""
+
+    tsCode: str
+    name: str = ""
+    role: Optional[str] = None
+    auctionPrice: Optional[float] = None
+    preClose: Optional[float] = None
+    gapPct: Optional[float] = None
+    auctionVolume: Optional[float] = None
+    auctionAmount: Optional[float] = None
+    volVsPrev5Frac: Optional[float] = None
+    # 🔴 **两条独立路径**(用户裁定 P3-70,2026-08-12):`relToSector` 减的是**板块基准**
+    # (板块指数 → 取不到 → ≥3 只同行业对照股中位数)、`relToIndex` 减的是**市场指数**
+    # (沪主板 / 深主板 / 创业板 / 北证50;**科创板按 K8 §三 排除**)。⛔ 禁止同源同值。
+    # 🔴 `null` = **没有这个读数**,⛔ 不是 0、⛔ 不是「持平」—— 必配一个 `*Reason` 原因码
+    # (唯一源 `auction.REL_UNDETERMINED_CODES`),客户端必须画**第三态**。
+    relToSector: Optional[float] = None
+    relToIndex: Optional[float] = None
+    relToSectorSource: str = "unavailable"
+    relToSectorReason: Optional[str] = None
+    sectorPeerCodes: List[str] = Field(default_factory=list)
+    sectorIndexCode: Optional[str] = None
+    sectorBenchmarkGapPct: Optional[float] = None
+    industry: Optional[str] = None
+    indexBenchmarkCode: Optional[str] = None
+    indexBenchmarkGapPct: Optional[float] = None
+    relToIndexReason: Optional[str] = None
+    hitInvalidation: Optional[bool] = None
+    gapUpDeviation: Optional[bool] = None
+    hitInvalidationUndeterminedReason: Optional[str] = None
+    gapUpDeviationUndeterminedReason: Optional[str] = None
+    anchorStale: bool = False
+    planFit: str = "unknown"
+    dataQuality: str = "insufficient"
+    volumeNote: Optional[str] = None
+
+
+class AuctionVerdictOut(BaseModel):
+    """小报告第 3 块「篮子与逐票结论」一篮一条。
+
+    🔴 `verdictRaw`(夹逼**前**模型原话)与 `verdict`(夹逼后)**两者都发**:不同的
+    那些行**就是**「模型说了什么 vs 系统最终讲了什么」的账,⛔ 不许只发一个。
+    `clampedBy` 非空 = 被机械夹逼闸改过 —— 客户端必须说出口(⛔ 不许静默)。"""
+
+    basketId: int
+    basketKey: str = ""
+    name: str = ""
+    coveredTier: int = 0
+    engineCode: Optional[str] = None
+    engineVersion: Optional[str] = None
+    skeletonVersion: str = ""
+    regimeAtD0: Optional[str] = None
+    dataQuality: str = "insufficient"
+    verdict: str = "pending_explanation"
+    verdictRaw: Optional[str] = None
+    clampedBy: Optional[str] = None
+    reasons: List[str] = Field(default_factory=list)
+    members: List[AuctionMemberRowOut] = Field(default_factory=list)
+    sectorSync: Dict[str, Any] = Field(default_factory=dict)
+    relStrength: Dict[str, Any] = Field(default_factory=dict)
+    history: Dict[str, Any] = Field(default_factory=dict)
+    planConsistency: Dict[str, Any] = Field(default_factory=dict)
+    hitInvalidation: List[str] = Field(default_factory=list)
+    manualNoteAttached: bool = False
+    llmStage: str = ""
+
+
+class AuctionRiskOut(BaseModel):
+    """小报告第 4 块「异常与风险」一条。`kind` 是枚举码(唯一源
+    `neckline/auction/__init__.py` 的 `RISK_*`),中文换算在客户端。"""
+
+    kind: str = ""
+    text: str = ""
+
+
+class AuctionOut(BaseModel):
+    """`GET /auction` 响应 = K8 §二十 的**竞价小报告五块**。
+
+    🔴 `proxySampleNote` **恒发**(§五 ⑨-B-2):竞价强势股取自盘中关注池 = **代理样本**,
+    不是全市场竞价排行 —— 这句话必须印在小报告上,⛔ 不许只写在代码注释里。
+    🔴 `manualNote` 只在**挂了**的时候发,文案本体是服务端常量
+    (`auction.AUCTION_MANUAL_NOTE`,K8 §二十 逐字)—— ⛔ 客户端不许自己写这段字。
+    🔴 `basketsUnavailableReason`:`baskets` 为空时**必须**说出口(〇b-6)——
+    「跑过了、D0 当天就没有 T1/T2 篮子」与「竞价层根本没跑」(那是 404)是两件事。"""
+
+    tradeDate: str
+    d0Date: str = ""
+    dataStatus: AuctionDataStatusOut = Field(default_factory=AuctionDataStatusOut)
+    marketOverview: AuctionMarketOverviewOut = Field(default_factory=AuctionMarketOverviewOut)
+    baskets: List[AuctionVerdictOut] = Field(default_factory=list)
+    basketsUnavailableReason: Optional[str] = None
+    risks: List[AuctionRiskOut] = Field(default_factory=list)
+    manualNote: Optional[str] = None
+    proxySampleNote: str = ""
+    llmStage: str = ""
+    notes: List[str] = Field(default_factory=list)
+
+
 __all__ = [
     "OkOut",
     "InfoCardSnapshotOut", "InfoCardNewsItemOut", "InfoCardNewsOut", "InfoCardTopListOut",
@@ -1572,6 +1736,9 @@ __all__ = [
     "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
     # V2.2-② 行情状态层
     "MarketRegimeDayOut", "MarketRegimeOut",
+    # V2.3.3-⑤ D1 集合竞价确认层
+    "AuctionDataStatusOut", "AuctionIndexGapOut", "AuctionMarketOverviewOut",
+    "AuctionMemberRowOut", "AuctionVerdictOut", "AuctionRiskOut", "AuctionOut",
     # V2.2-④ 双时钟
     "SelectionClockOut", "SelectionClocksOut", "TradeClockOut", "TradeClockEventOut",
     "TradeClockNoteIn", "TradeClockNoteOut",

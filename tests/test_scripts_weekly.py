@@ -61,6 +61,12 @@ def _run(weekly, monkeypatch, argv, *, fail=(), degraded=()):
     monkeypatch.setattr(weekly, "step_profile", _mk("profile"))
     monkeypatch.setattr(weekly, "step_trade_clocks", _mk("clocks"))
     monkeypatch.setattr(weekly, "step_calibration", _mk("calibration"))
+    # ⚠ 步 4 / 步 5 也换成桩,但**不进 `ran`** —— 上面那些断言锁的是前三步的顺序与
+    # 「一步失败另一步照跑」,把新步塞进 `ran` 会让它们全部要改一遍(而它们守的东西
+    # 没变)。真正的理由是**测试隔离**:不打桩这两步会去读**真实项目库**
+    # (`settings.db_path`,CLAUDE.md「测试隔离」条明写的那类泄漏)。
+    monkeypatch.setattr(weekly, "step_out_shadow_review", lambda *a, **kw: "out_review stub")
+    monkeypatch.setattr(weekly, "step_auction_eval", lambda *a, **kw: "auction_eval stub")
     monkeypatch.setattr(sys, "argv", ["weekly.py", *argv])
     return weekly.main(), ran
 

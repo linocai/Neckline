@@ -61,6 +61,10 @@ class CalibrationReport:
     #: V2.2-④:双时钟成绩单 + 四分类修改建议(`eval/iteration.build_iteration_report`
     #: 的原样产物)。**空 dict = 本期没跑到 / 算不出**,⛔ 不拿空段冒充"没有建议"。
     iteration: Dict[str, Any] = field(default_factory=dict)
+    #: V2.3.3-⑥-B:D1 集合竞价确认层的**周度机械聚合**(`eval/auction_eval` 的原样产物;
+    #: 🔴 零 LLM、零新指标、零新阈值)。同上:**空 dict = 本期没跑到 / 算不出**,
+    #: ⛔ 不拿空段冒充「本期没有竞价样本」。
+    auction: Dict[str, Any] = field(default_factory=dict)
     #: 🔴 **本期哪些段是"抛异常没跑成"**(§七 P0-56)。与 `notes` 刻意分开:`notes` 是
     #: 给人读的散文(里面也混着"样本不足"这类**正常**提示),`degraded` 是**机器判据** ——
     #: 调用方据此让退出码说真话。⚠ **空列表 ≠ 一切正常**,只表示"没有段炸掉";
@@ -77,6 +81,7 @@ class CalibrationReport:
             "placebo": [p.to_dict() for p in self.placebo],
             "honesty": dict(self.honesty), "notes": list(self.notes),
             "iteration": dict(self.iteration),
+            "auction": dict(self.auction),
             # 🔴 落进产物,让"这份报告哪几段是炸掉的"在 JSON 里也机器可判(§七 P0-56)。
             "degraded": list(self.degraded),
             "disclaimer": DISCLAIMER,
@@ -136,6 +141,24 @@ def build_iteration_section(
     )
 
 
+def _attach_auction_section(rep: "CalibrationReport", lo: str, hi: str, *,
+                            db_path: Optional[Path]) -> None:
+    """V2.3.3-⑥-B 竞价段。**整段包保险丝**:炸了只记 note + 进 `degraded`,
+    ⛔ 不掀翻整份周报(同 `iteration` 段的既有体例)。
+
+    🔴 它是**纯机械聚合**:读两张 SQLite 表 + 一次分组,**零 LLM 调用**
+    (`neckline-weekly.service` 的 `TimeoutStartSec` / `MemoryMax` 因此本版不动)。
+    """
+    from neckline.eval.auction_eval import build_auction_section
+
+    try:
+        rep.auction = build_auction_section(lo, hi, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[calibration] 竞价周度聚合失败", exc_info=True)
+        rep.notes.append(f"竞价周度聚合失败:{type(exc).__name__}: {exc}")
+        rep.degraded.append("auction")
+
+
 def build_report(
     date_from: Any,
     date_to: Any,
@@ -144,6 +167,7 @@ def build_report(
     parquet_dir: Optional[Path] = None,
     with_tradable: bool = True,
     with_placebo: bool = True,
+    with_auction: bool = True,
     draws: int = PLACEBO_DRAWS,
     now: Optional[date] = None,
 ) -> CalibrationReport:
@@ -176,6 +200,10 @@ def build_report(
             logger.warning("[calibration] 双时钟 / 四分类段计算失败(空篮子路径)", exc_info=True)
             rep.notes.append(f"双时钟 / 四分类段计算失败:{type(exc).__name__}: {exc}")
             rep.degraded.append("iteration")
+        # 同理:本期没有**新冻的篮子**不等于没有**已结案**的选股时钟(结案是 D1 的事,
+        # 落在上一个 D0 上)—— 竞价段在这条早退路径上也要装配一次。
+        if with_auction:
+            _attach_auction_section(rep, lo, hi, db_path=db_path)
         return rep
 
     try:
@@ -213,6 +241,10 @@ def build_report(
         logger.warning("[calibration] 双时钟 / 四分类段计算失败", exc_info=True)
         rep.notes.append(f"双时钟 / 四分类段计算失败:{type(exc).__name__}: {exc}")
         rep.degraded.append("iteration")
+
+    # —— V2.3.3-⑥-B:竞价确认层的周度机械聚合(同上,整段包保险丝)————————
+    if with_auction:
+        _attach_auction_section(rep, lo, hi, db_path=db_path)
 
     if rep.n_trading_days < MIN_CONCLUSION_DAYS:
         rep.notes.append(
@@ -374,6 +406,11 @@ def render_markdown(report: CalibrationReport) -> str:
     out.append("")
 
     out.extend(render_iteration_section(r.iteration))
+    # V2.3.3-⑥-B:竞价确认层复盘(**排版唯一源在 `eval/auction_eval`**,
+    # ⛔ 不在这里另写一份表格)。
+    from neckline.eval.auction_eval import render_auction_section
+
+    out.extend(render_auction_section(r.auction))
     return "\n".join(out)
 
 

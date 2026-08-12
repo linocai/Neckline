@@ -1413,6 +1413,122 @@ CREATE TABLE IF NOT EXISTS out_shadow_reviews (
   llm_stage TEXT,
   created_at TEXT NOT NULL
 );
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.3.3-②(K8.md §二十 D1 集合竞价确认层):9:26—9:29 冻结一次竞价结果的**市场级**
+-- 报告。一日一行(`trade_date` UNIQUE = D1)。唯一实现 = `neckline/auction/store.py`。
+--
+-- 🔴 **两阶段写**:9:26 机械段先 `INSERT OR IGNORE`(`llm_stage='pending'`),LLM 回来
+--    或 9:29 硬截止之后**只 UPDATE 下面这几列**:
+--      `market_overview` / `anchors_note` / `risks_json` / `manual_note_attached` /
+--      `llm_stage` / `llm_elapsed_ms` / `notes_json` / `updated_at`
+--    —— **机械列永不改**(守门单测锁 UPDATE 语句的列集合,
+--    `tests/test_v233_auction_guards.py`;它同时对**非字面量 SQL** 与
+--    `DELETE FROM auction_*` 报红,扫描域含 `neckline/**` 与 `scripts/**`)。
+-- 🔴 **本表刻意不进 `_APPEND_ONLY_TABLES`**:它是**有生命周期的对象**(先落机械段、
+--    后补结论),与 `trade_clock` 同族同处置,与 `basket_cards` / `selection_clock`
+--    的 `INSERT OR IGNORE` 冻结体例**刻意不同**。⛔ 别"统一"。上面那条列白名单守门
+--    就是这条例外的**代偿闸门** —— 缺了它,不进 append-only 这一步就是个后门。
+-- ⛔ **事后不许补跑**(K8「报告发出后结束、不持续观察 9:30 以后的价格」):窗口外
+--    调用 `run_auction_pipeline` 一律 `skipped_reason='not_auction_window'` + **零落库**。
+-- ⚠ **「没跑」与「跑了没有」必须分得开**(§七 P0-39 同款病):当日**无行** = 竞价层
+--    没跑过(端点 404 `auction_not_ready`);**有行但 `baskets_covered=0`** = 跑过了、
+--    D0 当天就没有 T1/T2 篮子(200 + 篮子段空 + 说出口)。
+-- ══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS auction_reports (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_date          TEXT NOT NULL UNIQUE,  -- D1(YYYYMMDD)= 竞价发生那天
+  d0_date             TEXT NOT NULL,         -- 被验证的 D0(= prev_trading_day(D1))
+  -- 小报告第 1 块「数据状态」(K8 §二十)
+  source              TEXT NOT NULL,         -- sina | tencent | mixed | unknown(逐票 Quote.source 汇总;
+                                             -- unknown = 一条都没抓到,⛔ 不拿主源名冒充)
+  captured_at         TEXT NOT NULL,         -- 🔴 **真正拉完价的那一刻**(ISO 秒精度,北京时间)
+                                             -- ⛔ 不是轮询那一拍的 `now`:precall + capture +
+                                             -- 组清单可能吃掉几分钟,慢的早晨会写下一份用开盘后
+                                             -- 价格却自称 9:26 冻结的报告(复审 🟡-2)。
+                                             -- 越窗 → `data_quality` 降级 → 闸 1 夹成中性。
+  requested_codes     INTEGER NOT NULL,
+  fetched_codes       INTEGER NOT NULL,
+  missing_codes_json  TEXT NOT NULL,         -- ["600xxx.SH", …] 拉不到的
+  conflict_codes_json TEXT NOT NULL,         -- 跨源冲突;⚠ **当前结构性恒空**:`sentinel/quotes.py`
+                                             -- 是「主源失败才降备源」、**不同时拉两源**,故无从冲突。
+                                             -- 字段留着是因为 K8 §二十 要求报"冲突状态";
+                                             -- ⛔ 不为它加第二次网络请求(9:26 那一刻多一次限流
+                                             -- 风险,代价远大于收益)。见 §五 ⑨-B-3 / §七 P4-66。
+  data_quality        TEXT NOT NULL,         -- ok | degraded | insufficient(市场级;结构性判据,⛔ 非百分比)
+  -- 小报告第 2 块「市场与主线概览」
+  index_gaps_json     TEXT NOT NULL,         -- {"000001.SH":{"gap_pct":…}, "399001.SZ":…, "399006.SZ":…}
+  market_anchors_json TEXT NOT NULL,         -- 竞价强势股(**代理样本**,不是全市场竞价排行)
+  market_overview     TEXT,                  -- LLM 一段话;NULL = 未生成(⛔ 不冒充"没内容")
+  anchors_note        TEXT,                  -- LLM 对「竞价强势股 = 市场锚点」那批标的的一句解释
+                                             -- (K8 §二十:锚点只解释资金方向、**不取得交易资格**)。
+                                             -- ⚠ 属 LLM 段白名单;NULL = 未生成。
+                                             -- 🔴 它是 ③-B 契约里 LLM **必须**输出的键 ——
+                                             -- 缺这一列 = 模型每次都生成它、然后被编排层丢掉,
+                                             -- 界面那个分支永远不执行且没有任何东西会报错(复审 🟡-1)。
+  -- 小报告第 4 块「异常与风险」
+  risks_json          TEXT NOT NULL,         -- [{"kind":…,"text":…}] 机械异常 + LLM 补充
+  -- 小报告第 5 块「APP 人工观察小纸条」:存的是"挂没挂",文案本体是代码常量单一源
+  manual_note_attached INTEGER NOT NULL DEFAULT 0,   -- = 逐篮 manual_note_attached 的 OR,写侧一处算
+  -- LLM 段状态
+  llm_stage           TEXT NOT NULL,         -- pending | ok | pending_explanation | provider_none
+                                             -- | parse_failed | call_failed:* | budget_exhausted
+  llm_elapsed_ms      INTEGER,
+  baskets_covered     INTEGER NOT NULL DEFAULT 0,
+  notes_json          TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+
+-- 篮子级:一篮一行。🔴 **`basket_id` UNIQUE 的形状刻意对齐 `selection_clock`** ——
+-- K8.md §二十 末段把样本单位写死为 **`D0 日期 × 篮子 × 引擎版本`**,而
+-- `selection_clock.basket_id UNIQUE` 正是这个定义的物理承载 → 周度聚合可直接复用
+-- `eval/iteration.stratum_of()`,**零新统计代码**。
+-- ⛔ **别把本表改成一票一行** —— 那会让"样本量"在不改任何统计代码的情况下悄悄变成
+-- 另一个量(成员多的篮子权重变大),而 30/80 是按**篮子数**拍板的。
+-- 同为**两阶段写**;第二阶段只准 UPDATE:`verdict` / `verdict_raw` / `clamped_by` /
+-- `reasons_json` / `llm_fields_json` / `manual_note_attached` / `llm_stage` / `updated_at`。
+CREATE TABLE IF NOT EXISTS auction_verdicts (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  basket_id             INTEGER NOT NULL UNIQUE,
+  trade_date            TEXT NOT NULL,       -- D1
+  d0_date               TEXT NOT NULL,
+  basket_key            TEXT NOT NULL,
+  name                  TEXT NOT NULL,
+  covered_tier          INTEGER NOT NULL,    -- D0 原始等级(1|2)
+  engine_code           TEXT,                -- 归因分层键;老篮子为 NULL(如实)
+  engine_version        TEXT,
+  skeleton_version      TEXT NOT NULL,
+  regime_at_d0          TEXT,                -- 周度聚合维度;NULL = 当日 market_regime_daily 无行(如实)
+  -- 机械层(第一次写,永不改)
+  data_quality          TEXT NOT NULL,       -- 篮级 ok | degraded | insufficient
+  members_json          TEXT NOT NULL,       -- 逐票明细(键表见 §五 ②-F;🔴 一律发枚举码)
+  sector_sync_json      TEXT NOT NULL,       -- 同向数 / 强弱分布 / 所属上市板块对照指数读数
+                                             -- (⛔ 那一组不是「板块基准」:主板票落到的就是
+                                             --  市场指数本身;板块基准见 rel_strength_json)
+  rel_strength_json     TEXT NOT NULL,       -- 候选 vs 板块 / vs 市场指数
+  history_json          TEXT NOT NULL,       -- 自身历史对照(history_days_available + 逐日原始值)
+  hit_invalidation_json TEXT NOT NULL,       -- ["600xxx.SH", …] 命中 D0 冻结失效位(机械事实)
+                                             -- 🔴 这是**独立警报通道**:机械段第一次写就落库,
+                                             -- 恒定出现在第 4 块与推送里,**不受 LLM 缺席 /
+                                             -- 三道夹逼闸影响** —— 也正因如此,闸 1「数据缺失
+                                             -- 只能形成中性」才可以无例外执行。
+  plan_consistency_json TEXT NOT NULL,       -- 逐票 plan_fit 五态汇总
+  -- LLM 层(第二次写)
+  verdict               TEXT NOT NULL,       -- confirm | neutral | veto | pending_explanation
+                                             -- ⛔ 全仓禁止出现 qualified / wait / cancelled(K8 明令)
+  verdict_raw           TEXT,                -- 夹逼**前**模型原话的三值;NULL = 模型没给
+  clamped_by            TEXT,                -- NULL | clamped_by_data_quality | clamped_by_single_strong
+                                             -- | clamped_by_missing_strong_evidence | clamped_by_y1_low_weight
+  reasons_json          TEXT NOT NULL,       -- 一至两条白话理由(K8 §二十)
+  llm_fields_json       TEXT NOT NULL,       -- 模型结构化字段原样存档(= 闸 2/3 的输入,可回溯)
+  manual_note_attached  INTEGER NOT NULL DEFAULT 0,
+  llm_stage             TEXT NOT NULL,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auction_verdicts_date ON auction_verdicts(trade_date);
+CREATE INDEX IF NOT EXISTS idx_auction_verdicts_d0   ON auction_verdicts(d0_date);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

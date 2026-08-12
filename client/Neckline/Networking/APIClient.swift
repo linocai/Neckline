@@ -82,6 +82,13 @@ enum APIError: Error, LocalizedError, Equatable {
     // 这辈子不会来 = 静默永久失败。⛔ **不进任何静默重试路径**(重试永远不会好)。
     case cardCorrupt
     case noBasePlan          // 400 这笔仓没有可继承的计划基线
+    // —— V2.3.3-⑤ D1 集合竞价确认层的两个全新 reason(⛔ 不吃 fallback)——————————
+    // 404 当日 `auction_reports` **无行** = 竞价层没跑过 / 还没到 9:26。
+    // ⛔ 不建 case 的话 404 fallback 会显示「持仓已清」(v1.4 `watchlist` 有案底)。
+    case auctionNotReady
+    // **500** 有行但**读不出**。⛔ **与上一条必须分开**:混成一类 = 客户端永远重试、
+    // 永远显示"还没生成",而那份报告是冻结件、坏了不会自己好 = 静默永久失败。
+    case auctionCorrupt
     // —— 409 / 422 的四个 reason(② / ⑪ 端点接线带来的)——————————————————————
     case alreadyExists       // 409 POST /settings/providers 同名 provider
     case duplicateAlert      // 409 POST /alerts 同标的 + 规则逐字节相同
@@ -106,6 +113,8 @@ enum APIError: Error, LocalizedError, Equatable {
         case .cardNotReady:     return "本篮的卡还没生成"
         case .cardCorrupt:      return "这张卡的数据损坏了,需要排查"
         case .noBasePlan:       return "这笔仓没有可继承的计划基线"
+        case .auctionNotReady:  return "今天的竞价报告还没生成"
+        case .auctionCorrupt:   return "竞价报告数据损坏,需要排查"
         case .alreadyExists:    return "同名 Provider 已存在(请改用「编辑」)"
         case .duplicateAlert:   return "已有一条一模一样的提醒(未重复创建)"
         case .invalidRule:      return "提醒规则不在支持的条件范围内"
@@ -863,6 +872,22 @@ actor APIClient {
         return try JSONDecoder().decode(MarketRegime.self, from: data)
     }
 
+    /// **D1 集合竞价确认层**的竞价小报告(V2.3.3-⑤,K8.md §二十)。`date` 缺省 = 今天。
+    ///
+    /// 🔴 **三态,调用方必须分开处理**(⛔ 别 `try?` 一把吞掉):
+    ///   · `.auctionNotReady`(404)= **今天还没跑到 9:26 / 竞价层没跑过** → 合法空态,
+    ///     **不画那张卡**(⛔ 不画空卡,那是噪声);
+    ///   · `.auctionCorrupt`(500)= 有行但读不出 → **需要人排查**,⛔ 不进静默重试;
+    ///   · 200 = 跑过了。⚠ **`baskets` 为空也是 200**(D0 当天没有 T1/T2 篮子),
+    ///     那时 `basketsUnavailableReason` 会把原因说出口 —— ⛔ 别把它读成"没跑"。
+    ///
+    /// 🔴 **竞价结论只说明竞价反映出的信息,不等于买入指令**(K8 §二十 逐字)。
+    func fetchAuction(date: String? = nil) async throws -> AuctionPayload {
+        let path = "/api/v1/auction" + ((date?.isEmpty == false) ? "?date=\(date!)" : "")
+        let data = try await get(path)
+        return try JSONDecoder().decode(AuctionPayload.self, from: data)
+    }
+
     /// 复盘板块「累计」页五段。`week` = 该周任意一天 `YYYYMMDD`(缺省本周)。
     func fetchReviewOverview(week: String? = nil, asOf: String? = nil) async throws -> ReviewOverview {
         var query: [String] = []
@@ -1020,6 +1045,13 @@ actor APIClient {
         // 需要排查」;写成「还没生成」= 让用户白等一张永远不会来的卡。
         case "card_corrupt": return .cardCorrupt
         case "no_base_plan": return .noBasePlan
+        // —— V2.3.3-⑤ 竞价确认层两个全新 reason ——————————————————————————————
+        // 404「今天还没跑到 9:26 / 竞价层没跑过」——**合法空态**,调用方据此**不画那张卡**
+        // (⛔ 不弹错误、⛔ 不画一张空卡)。
+        case "auction_not_ready": return .auctionNotReady
+        // 500「有行但读不出」——⛔ 与上一条分开:那份报告是冻结件,**不会自己好**,
+        // 当成「还没生成」= 让客户端永远重试一份永远不来的报告。
+        case "auction_corrupt": return .auctionCorrupt
         // —— 409 / 422 ————————————————————————————————————————————————
         case "already_exists": return .alreadyExists
         case "duplicate_alert": return .duplicateAlert

@@ -1150,7 +1150,7 @@ def test_real_k8_skeleton_pack_matches_plan_value_changes():
     (实测 industry 取值 = 「白酒」)/ close_min 维持 2.0 且**刻意无价格上限**。"""
     doc = pack.load_pack_file(_K8_SKELETON_FILE)
     assert pack.validate_pack_doc(doc) == []
-    assert doc["manifest"]["pack_version"] == "K8-V0.6"   # ⛔ `V0.6` 禁简写(三线命名纪律)
+    assert doc["manifest"]["pack_version"] == "K8-V0.7"   # ⛔ `V0.7` 禁简写(三线命名纪律)
     assert doc["manifest"]["line_code"] == "V"
     assert doc["manifest"]["engine_api_version"] == 2
     hygiene = doc["config"]["seeds"]["stock_hygiene"]

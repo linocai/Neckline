@@ -11,7 +11,14 @@ LLM 数字。**
     4. 成员、角色与比较结果     ← ⑤(成员 + 角色对拍分歧)+ 机械价量 + ⑦-K7 标注
     5. Tier 及分层理由         ← ⑥(duck-typed 传入:tier / 机械分 / 五维 breakdown /
                                  同档微调理由)
-    6. 次日强 / 平 / 弱三剧本   ← **⑦ 的 LLM**(TASK_SCRIPT,不联网)
+    6. 预期上涨路径            ← **⑦ 的 LLM**(TASK_SCRIPT,不联网)
+                                 出处 K8.md **§十 第 8 项「预期上涨路径」**(D0 盘后
+                                 十一项产物之一)+ **§十一 第 1 项「上涨判断:驱动与
+                                 预期运行路径」**(下单资格四件之一)。V2.3.3 批 ① 由
+                                 「次日强 / 平 / 弱三剧本」**换问题、不换槽位**:同一次
+                                 `TASK_SCRIPT` 调用,LLM 调用数增量 = 0。**开盘那一刻
+                                 怎么办由次日 9:26 的竞价确认层负责**(`neckline/auction/`),
+                                 ⛔ 不再由这张卡出分支指引。
     7. 建仓观察区间 + 最高追价  ← ⑦ 的 LLM 给数字,**过夹逼闸**(见下)
     8. 篮子验证条件(结构化 + 人话双份)← 结构化由 ⑦ 机械算(⑧ 唯一判据源),人话 LLM
     9. 篮子失效条件(结构化 + 人话双份)← 同上
@@ -102,7 +109,12 @@ logger = logging.getLogger(__name__)
 # ⛔ 不另 bump v4/v5**:v3 本身**一天都没上过产**(V2.2 批 2 未部署),同一个未发版
 # 形状里再 bump 只会造出一个没有任何卡携带的幽灵版本号。规则不变 ——
 # **一旦 v3 上产,再改形状必须 bump**。
-CARD_SPEC_VERSION = "basket_card_v3"
+# 🔴 **v3 已于 2026-08-11 上产** → V2.3.3 批 ① 换卡 #6 的形状(`scripts` 三格 →
+# `upside_path` 一段话)因此**必须** bump 到 v4,上面那条规则原样兑现。
+# ⚠ 库里 v3 老卡照常读回:`_upside_path_present()` 的判据是 **`upside_path` 或
+# 老 `scripts` 任一格非空** 的 OR(冻结卡 `INSERT OR IGNORE` 永不回填新键,只读新键
+# 会让昨天冻的那批篮子今天开仓时全部"缺上涨判断" = 凭空多一条假警示)。
+CARD_SPEC_VERSION = "basket_card_v4"
 VERIFY_SPEC_VERSION = "basket_verify_v2"
 INVALIDATE_SPEC_VERSION = "basket_invalidate_v2"
 
@@ -599,9 +611,7 @@ CARD_SYSTEM_PROMPT = """你是「颈线」系统的盘后篮子参谋。系统�
 第二部分:一个 ```json 围栏代码块,严格是下面这个形状(不要多余字段,不要在围栏外重复):
 
 ```json
-{"scripts": {"strong": "次日高开或强势开盘时怎么看、怎么做的分支指引",
-             "flat": "次日平开时的分支指引",
-             "weak": "次日低开或走弱时的分支指引"},
+{"upside_path": "一段话:驱动怎么推动价格、预期沿什么结构与节奏往上走、走到哪算走完",
  "entries": [{"ts_code": "股票代码",
               "low": 数字, "high": 数字,
               "max_chase": 数字,
@@ -614,6 +624,9 @@ CARD_SYSTEM_PROMPT = """你是「颈线」系统的盘后篮子参谋。系统�
 ```
 
 硬约束:
+· `upside_path` 讲的是**路径**——驱动怎么推动价格、预期沿什么结构与什么节奏往上走、走到哪算走完。
+**⛔ 不许写成"明早高开怎么办 / 低开怎么办"的分支指引**:开盘那一刻的解释由**次日 9:26 的集合竞价
+确认层**负责,不是这里的事。**一段话,不分支。**
 · `entries` 只能包含资料里列出的成员代码,**多一个都会被系统整条丢弃**。
 · `low` / `high` / `max_chase` **必须落在资料给出的该票「次日涨跌停参考价」闭区间内**,
 超出的会被系统丢弃、不展示给用户;且必须满足 `low ≤ high ≤ max_chase`。
@@ -877,7 +890,11 @@ class BasketCard:
     tier_reason: Optional[str] = None
     tier_note: Optional[str] = None
     narrative: str = ""
-    scripts: Optional[Dict[str, Optional[str]]] = None
+    # V2.3.3-①(K8.md §十 第 8 项 / §十一 第 1 项):卡 #6 由「次日强 / 平 / 弱三剧本」
+    # 换成「预期上涨路径」**一段话**。⚠ 四件套判据码 `upside_script` 字符串**没有跟着
+    # 改**(它已写进历史 `position_plans.plan_json` / `trade_clock.entry_plan_json`,
+    # 改了会让旧行假装缺件)—— 只有卡键与中文标签变了。
+    upside_path: Optional[str] = None
     verification_text: Optional[str] = None
     invalidation_text: Optional[str] = None
     risks: Tuple[str, ...] = ()
@@ -947,10 +964,12 @@ class BasketCard:
             "tier_breakdown": dict(self.tier_breakdown or {}),
             "tier_reason": self.tier_reason,
             "tier_note": self.tier_note,
-            # 6 次日强 / 平 / 弱三剧本
-            "scripts": self.scripts,
-            "scripts_unavailable_reason": (None if self.scripts else
-                                           f"本次未生成竞价剧本({self.llm_stage})"),
+            # 6 预期上涨路径(V2.3.3-①;⛔ `scripts` / `scripts_unavailable_reason`
+            #   两键**直接停发**,不走两步淘汰 —— 客户端 `BasketCard.scripts` 本就是
+            #   `decodeIfPresent`,停发安全。老 v3 卡里那两键照常读得回来。)
+            "upside_path": self.upside_path,
+            "upside_path_unavailable_reason": (None if self.upside_path else
+                                               f"本次未生成预期上涨路径({self.llm_stage})"),
             # 8 / 9 验证与失效:结构化(机器) + 人话(LLM)双份
             "verification_spec": self.verification_spec,
             "verification_text": self.verification_text,
@@ -1011,17 +1030,17 @@ def _clean_text(v: Any) -> Optional[str]:
     return v.strip() if isinstance(v, str) and v.strip() else None
 
 
-def _clean_scripts(payload: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Optional[str]]]:
-    """三剧本:`strong`/`flat`/`weak` 三键**恒存在**(缺的那格写 `None`,不省略键)
-    —— 冻结快照里"这一格没有"必须能被表达,省略键会让读侧分不清"没生成"与"生成了
-    空串"。三格全空 → 整个 `scripts` 记 `None`(= 本次没有剧本)。"""
+def _clean_upside_path(payload: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """预期上涨路径(V2.3.3-①,K8.md §十 第 8 项):**一段话,不分支**。空 / 非字符串
+    → `None`(= 本次没生成),读侧据此出 `upside_path_unavailable_reason`。
+
+    ⚠ 这里**只读 `upside_path` 一个键**:老三剧本 `scripts` 是**冻结卡上的历史形状**,
+    不是本次 LLM 的合法产物 —— 兼容发生在**读侧**(`_upside_path_present()` 的 OR),
+    ⛔ 不在写侧回捞老键(那会让新卡里出现一个本版已经不问的东西)。
+    """
     if not isinstance(payload, Mapping):
         return None
-    raw = payload.get("scripts")
-    if not isinstance(raw, Mapping):
-        return None
-    out = {k: _clean_text(raw.get(k)) for k in ("strong", "flat", "weak")}
-    return out if any(v for v in out.values()) else None
+    return _clean_text(payload.get("upside_path"))
 
 
 def build_basket_card(
@@ -1151,7 +1170,7 @@ def build_basket_card(
         tier_reason=getattr(tier_decision, "llm_reason", None) if tier_decision is not None else None,
         tier_note=_clean_text(payload.get("tier_note")) if isinstance(payload, Mapping) else None,
         narrative=narrative or "",
-        scripts=_clean_scripts(payload),
+        upside_path=_clean_upside_path(payload),
         verification_text=_clean_text(payload.get("verification")) if isinstance(payload, Mapping) else None,
         invalidation_text=_clean_text(payload.get("invalidation")) if isinstance(payload, Mapping) else None,
         risks=risks,
@@ -1280,19 +1299,32 @@ def build_cards(
 # 两处都从这里拿判据,⛔ 不各写一份。
 
 # 四件的机器码(稳定标识,⑨ 归因可 grep;顺序即 K8 §十一 原文顺序)。
+# 🔴 **`upside_script` 这个字符串一字不改**(V2.3.3-①,〇-2):它已写进历史
+# `position_plans.plan_json` 与 `trade_clock.entry_plan_json`,改了会让旧行**假装缺件**
+# (④ 按码归因当场断线)。V2.3.3 只换了它背后问的问题与下面那个中文标签。
 TRADE_PLAN_PIECES: Tuple[str, ...] = (
     "upside_script", "entry_zone", "exit_reference", "invalidation",
 )
 TRADE_PLAN_PIECE_LABELS: Dict[str, str] = {
-    "upside_script": "上涨判断(三剧本)",
+    "upside_script": "上涨判断(预期上涨路径)",
     "entry_zone": "入场区间",
     "exit_reference": "目标离场区间",
     "invalidation": "判断失效位置",
 }
 
 
-def _scripts_present(card: Optional[Mapping[str, Any]]) -> bool:
-    scripts = (card or {}).get("scripts")
+def _upside_path_present(card: Optional[Mapping[str, Any]]) -> bool:
+    """卡上有没有「上涨判断」这一件(四件套第 1 件的判据)。
+
+    🔴 **判据是 OR,不是只读新键**(V2.3.3-① 硬要求):`basket_cards` 是
+    `INSERT OR IGNORE` 的冻结件,**新键永不回填** —— 今天开仓读的可能是昨天冻的那张
+    **v3 老卡**(它只有 `scripts` 三格)。只认 `upside_path` 会让昨天那批篮子今天
+    全部"缺上涨判断",凭空多一条假警示。**新键优先、老键兜底。**
+    """
+    c = card or {}
+    if str(c.get("upside_path") or "").strip():
+        return True
+    scripts = c.get("scripts")          # v3 及更早的老卡形状
     return isinstance(scripts, Mapping) and any(
         str(v or "").strip() for v in scripts.values()
     )
@@ -1317,7 +1349,7 @@ def member_trade_plan_missing(
     """某一名成员视角的四件套缺件清单(⑩ 开仓继承的警示判据)。卡整体缺 →
     四件全缺(`card=None` 时按「一件都没有」如实报,⛔ 不猜)。"""
     missing: List[str] = []
-    if not _scripts_present(card):
+    if not _upside_path_present(card):
         missing.append("upside_script")
     if not _zone_present(member_entry, "entry_zone"):
         missing.append("entry_zone")
@@ -1333,7 +1365,7 @@ def trade_plan_missing_pieces(card: Optional[Mapping[str, Any]]) -> List[str]:
     成员级两件(入场/离场区间)要求**每一名成员**都有 —— 缺的按
     `entry_zone:<ts_code>` 逐票列出(哪只缺一目了然,③-E「缺任一 → 不进 T1」)。"""
     missing: List[str] = []
-    if not _scripts_present(card):
+    if not _upside_path_present(card):
         missing.append("upside_script")
     members = (card or {}).get("members") or []
     for m in members:

@@ -63,7 +63,7 @@ struct BasketCardPage: View {
                 gatesCard                           // 🔴 六关判定(宫格)
                 driverCard(card)                    // ①②③ 驱动 / 证据链 / 为什么是现在
                 membersSection(card)                // ④ 成员、角色与对拍分歧
-                scriptsCard(card)                   // ⑥ 次日强 / 平 / 弱三剧本
+                upsidePathCard(card)               // ⑥ 预期上涨路径
                 verificationCard(card)              // ⑦⑧ 验证 / 失效条件 + ⑨ 主要风险
                 narrativeCard(card)                 // ⑩ 叙述 + ⑪ disclaimer(收进披露区)
                 auditSection(card)                  // 审计视图(原始件下沉)
@@ -239,7 +239,7 @@ struct BasketCardPage: View {
         let code = basket.cardUnavailableReason.map { "(\($0))" } ?? ""
         return "⛔ 这不是「篮子不存在」—— 篮子在,只是 11 项卡还没生成\(code)。\n"
             + "驱动、成员、六关、打分这些机械侧的结果照常有效,缺的是 LLM 那半份:"
-            + "证据链、三剧本、验证与失效条件、逐只成员的位置关 / 核心关判定。"
+            + "证据链、预期上涨路径、验证与失效条件、逐只成员的位置关 / 核心关判定。"
     }
 
     /// 卡未就绪时仍然有机械分(原型 664–676 行照样画打分卡)。
@@ -453,50 +453,32 @@ struct BasketCardPage: View {
         }
     }
 
-    // MARK: - ⑥ 次日强 / 平 / 弱三剧本(**参考件**)
+    // MARK: - ⑥ 预期上涨路径(**参考件**)
 
-    /// 原型 588–602 行:**三列并排**的强 / 平 / 弱,各自一块语义色浅底 + 描边。
-    /// ⛔ 别摞成三行 —— 三个剧本是**并列的可能性**,竖排会读成有先后。
+    /// V2.3.3-①(K8.md §十 第 8 项 / §十一 第 1 项):由「次日强 / 平 / 弱三剧本」换成
+    /// **一段话**的预期上涨路径 —— 驱动怎么推动价格、沿什么结构与节奏往上走、走到哪算走完。
+    /// ⛔ 三列并排的 `scriptCell` 已删:开盘那一刻怎么办由**次日 9:26 的竞价确认层**负责。
+    /// ⛔ 取不到时**不留空胶囊 / 空格子**,用一句琥珀色的话说出口(CLAUDE.md 空徽标坑)。
     @ViewBuilder
-    private func scriptsCard(_ card: BasketCard) -> some View {
+    private func upsidePathCard(_ card: BasketCard) -> some View {
         NKCard {
             VStack(alignment: .leading, spacing: 11) {
-                Text("⑥ 次日三剧本").nkLabel().foregroundStyle(NK.textTertiary)
-                if let s = card.scripts, !s.isEmpty {
-                    HStack(alignment: .top, spacing: 10) {
-                        scriptCell("强", s.strong, .good)
-                        scriptCell("平", s.flat, .neutral)
-                        scriptCell("弱", s.weak, .bad)
-                    }
+                Text("⑥ 预期上涨路径").nkLabel().foregroundStyle(NK.textTertiary)
+                let path = (card.upsidePath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !path.isEmpty {
+                    Text(path)
+                        .font(NKFont.callout).lineSpacing(3)
+                        .foregroundStyle(NK.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     NKReferenceNote()
                 } else {
-                    Text(card.scriptsUnavailableReason ?? "本次未生成竞价剧本")
+                    Text(card.upsidePathUnavailableReason ?? "本次未生成预期上涨路径")
                         .font(NKFont.caption).foregroundStyle(NK.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
-    }
-
-    @ViewBuilder
-    private func scriptCell(_ title: String, _ text: String?, _ tone: NKAxisTone) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(NKFont.caption).fontWeight(.bold)
-                .foregroundStyle(tone == .neutral ? NK.textSecondary : tone.color)
-            // ⚠ **没生成的那一档如实说**,⛔ 不留空格子(空格子读作"这种情况不会发生")。
-            Text(text?.trimmingCharacters(in: .whitespaces).isEmpty == false
-                 ? text! : "本次未生成这一档")
-                .font(NKFont.callout).lineSpacing(3)
-                .foregroundStyle(text?.isEmpty == false ? NK.textPrimary : NK.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12).padding(.vertical, 11)
-        .background(RoundedRectangle(cornerRadius: NKRadius.inner)
-            .fill(tone == .neutral ? NK.chipNeutral.opacity(0.7) : tone.color.opacity(0.06)))
-        .overlay(RoundedRectangle(cornerRadius: NKRadius.inner)
-            .stroke(tone == .neutral ? NK.hairline : tone.color.opacity(0.20), lineWidth: 0.5))
     }
 
     // MARK: - ⑦⑧ 验证 / 失效条件 + ⑨ 主要风险(原型 604–618 行:**同一张卡两段**)
@@ -516,8 +498,10 @@ struct BasketCardPage: View {
                         conditionRow(system: "xmark", tone: .bad, text: t)
                     }
                     // CLAUDE.md 坑条:篮子 `falsified` ≠ 持仓该走。
-                    Text("失效说的是「这个驱动假设不成立了」,**不是**「手里的仓该卖了」——"
-                         + "该不该走由持仓纪律(止损 / 回落止盈 / 时间退出)管。")
+                    // 🔴 **⛔ 别用 `+` 把这句拼起来**(V2.3.3 批 ⑦ 实拍逮到):`"a" + "b"`
+                    // 的结果是 `String`,`Text(String)` **不解析 Markdown** → `**不是**`
+                    // 的四个星号会**原样印在屏幕上**。要拼就拼成**一整条字面量**。
+                    Text("失效说的是「这个驱动假设不成立了」,**不是**「手里的仓该卖了」——该不该走由持仓纪律(止损 / 回落止盈 / 时间退出)管。")
                         .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

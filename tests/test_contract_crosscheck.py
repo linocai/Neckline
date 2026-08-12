@@ -238,6 +238,10 @@ SERVER_REASONS = {
     # ——「卡有行但读不出」。⚠ 本集合的名字叫「服务端 reason」不叫「404 reason」,
     # 状态码不是它的判据;客户端 `send()` 的 500 分支已接进 `mapReason`,闭包照旧成立。
     "card_corrupt",
+    # V2.3.3-⑤ D1 集合竞价确认层(K8.md §二十)新增两个,**照 B1 的三态分派**:
+    # 404「当日无行 = 竞价层没跑过」/ 500「有行但读不出」。⛔ 两者必须分开 ——
+    # 合并 = 客户端永远重试、永远显示"还没生成",而报告是冻结件、坏了不会自己好。
+    "auction_not_ready", "auction_corrupt",
 }
 
 # ⑮ 待加 `mapReason` case 的字符串。
@@ -298,25 +302,36 @@ _V20_REASON_SURFACE = frozenset({
 })
 
 
-def test_v21_changes_the_reason_surface_by_exactly_nothing():
-    """🔴 **V2.1 零新增 reason** 的显式断言(⑧ 对拍表三张表共用的表头结论之一)。
+# 🔴 **V2.3.3 起的新分界线**(2026-08-11):V2.1 / V2.2 / V2.3.x 一路「零新增 reason」,
+# 到 V2.3.3-⑤ 因为新端点 `GET /auction` **第一次**动了 reason 面 —— 加的两条按 B1
+# 三态分派(404 没跑过 / 500 读不出)。
+# ⚠ 本条不是"把老断言删掉",而是**把分界线往前挪一格**:老快照仍在(上面
+# `_V20_REASON_SURFACE`),新增面**逐条枚举**,任何计划外的第三条照样会红。
+_V233_ADDED_REASONS = frozenset({"auction_not_ready", "auction_corrupt"})
+
+
+def test_reason_surface_equals_v20_snapshot_plus_the_declared_v233_additions():
+    """🔴 **reason 面只许按登记增长**(原「V2.1 零新增 reason」那条的接任者)。
 
     上面两条闭包测试只保证「服务端 reason ↔ 客户端 `mapReason`」两侧对得上;它们
-    **不会**因为 V2.1 悄悄多引入一个 reason 而红(只要客户端同批加了 case 就仍闭合)。
-    本条锁的是另一件事:**这一版根本没动过 reason 面** —— 它是 ⑧「零删键 / 零新增
-    reason」那句话在代码里的落点,也是「老 2.0.0 客户端装着不换包也不会看到错话」
-    这条在线升级前提的依据。
+    **不会**因为悄悄多引入一个 reason 而红(只要客户端同批加了 case 就仍闭合)。
+    本条锁的是另一件事:**新增了哪几条必须是写下来的那几条** —— 它也是「老客户端
+    装着不换包会不会看到错话」这条在线升级前提的依据(新增 reason = 老客户端吃
+    fallback,必须是**有意**为之)。
 
-    ⚠ 真要在后续版本新增 reason,正确做法是**同时**更新 `SERVER_REASONS`、客户端
-    `mapReason` **和**这份 V2.0.0 快照旁边的说明(把本条改成新的分界线),
-    ⛔ 不是把本条删掉。
+    ⚠ 再新增,正确做法仍是**同时**更新 `SERVER_REASONS`、客户端 `mapReason` **和**
+    这里的新增清单(把分界线再挪一格),⛔ 不是把本条删掉。
     """
-    assert SERVER_REASONS == set(_V20_REASON_SURFACE), (
-        "V2.1 的对拍结论是「零新增 reason」,但 `SERVER_REASONS` 与 V2.0.0 快照不一致。\n"
-        f"  V2.1 多出来的:{sorted(SERVER_REASONS - _V20_REASON_SURFACE)}\n"
-        f"  V2.1 少掉的(⛔ 删 reason = 老客户端的 case 变死码,更要当心):"
-        f"{sorted(_V20_REASON_SURFACE - SERVER_REASONS)}"
+    expected = set(_V20_REASON_SURFACE) | set(_V233_ADDED_REASONS)
+    assert SERVER_REASONS == expected, (
+        "reason 面与「V2.0.0 快照 + 已登记的 V2.3.3 新增」不一致。\n"
+        f"  多出来的(没登记就加 = 老客户端会吃 fallback 文案):"
+        f"{sorted(SERVER_REASONS - expected)}\n"
+        f"  少掉的(⛔ 删 reason = 老客户端的 case 变死码,更要当心):"
+        f"{sorted(expected - SERVER_REASONS)}"
     )
+    # V2.0.0 那份快照本身**一条都不许少**(新增是往上加,不是换一批)。
+    assert set(_V20_REASON_SURFACE) <= SERVER_REASONS
     # reason 侧闭包必须处在**最严状态**(欠账清单为空)才谈得上「零新增 reason」被守住。
     assert not PENDING_MAP_REASON_CASES_FOR_15
     # ⚠ **路由侧欠账清单 V2.2-⑤-B 曾非空(那两条熔断端点),⑥ 已还清 → 重新清空**。
@@ -384,6 +399,15 @@ FROZEN_SNAPSHOT_DTOS = (
     "SelectionClock", "TradeClock", "TradeClockEvent",
     # —— V2.3.2-②-B:③b 的第二类行(股票级 OUT),随 `basketDaily` 冻结快照走 ——
     "OutCandidate",
+    # —— V2.3.3-⑤ 竞价确认层七件 ——
+    # **真 B 类两件**:`AuctionVerdict` 解的是 `auction_verdicts` 的 json 列、
+    # `AuctionMemberRow` 解的是其中的 `members_json` —— 都是**写入当时冻住**的行,
+    # 服务端升级永远不会给它们补新键。
+    # 其余五件是每次响应重拼的 A 类,手写 `init(from:)` 是**白拿的保险**
+    # (CLAUDE.md:A 类手写不亏);一并收进本闸,省得将来有人把某一件改回合成 Codable。
+    # ⚠ 七个名字**两两不互为前缀**(切块器按 `^struct <Name>\b` 定位)。
+    "AuctionVerdict", "AuctionMemberRow", "AuctionPayload", "AuctionDataStatus",
+    "AuctionMarketOverview", "AuctionRiskItem", "AuctionIndexGap",
 )
 
 # ⚠ **同前缀陷阱**(CLAUDE.md 明写的坑):`Models.swift` 里 `struct BasketEvidence`

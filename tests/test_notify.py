@@ -50,14 +50,19 @@ def _ok_transport(url, headers, body):
 
 def test_push_entrypoints_are_exactly_the_declared_set():
     """扇出路径守门(V2-⑪ 取代 V1「六类」断言,2026-08-03 再加一个持仓三事件旁路
-    入口):`notify.__all__` = 一条 `push_event` + 九个措辞函数,**不给第十一个
-    入口留位置**。加入口 = 改这条断言 = 过一次人眼。"""
+    入口;**V2.3.3-④ 再加一个竞价确认汇总**):`notify.__all__` = 一条 `push_event`
+    + 十个措辞函数,**不给第十二个入口留位置**。加入口 = 改这条断言 = 过一次人眼。
+
+    ⚠ `push_auction_summary` 是**措辞层**新增,**kind 复用 `KIND_PRECALL`、零新 kind**
+    (§五 〇-5 用户拍板)—— 所以 `test_notify_kinds.py` 的 `ALL_KINDS` 精确集合**不动**。
+    """
     assert set(notify.__all__) == {
         "NotifyOutcome", "push_event",
         "push_report_ready", "push_retreat_brake", "push_precall_summary",
         "push_d5_exit", "push_consecutive_stops_notice", "push_holding_alert",
         "push_attention_alert", "push_custom_alert",
         "push_holding_risk_alert",
+        "push_auction_summary",
     }
 
 

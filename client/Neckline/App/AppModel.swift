@@ -362,6 +362,21 @@ final class AppModel {
     // `available == false` = **我们今天没算出来**,⛔ 不许当成"没风险"。
     var marketRegime: MarketRegime = .empty
 
+    // —— V2.3.3-⑤ D1 集合竞价确认层(**纯展示、⛔ 零动作**;K8.md §二十)——
+    //
+    // 🔴 **三态在这里就分好**,⛔ 别让视图层去猜:
+    //   · `auction == nil` **且** `auctionCorrupt == false` = 今天还没跑到 9:26 /
+    //     竞价层没跑过(404 合法空态)→ **不画那张卡**(⛔ 不画空卡,那是噪声);
+    //   · `auctionCorrupt == true` = 有行但读不出(500)→ 画一行「需要排查」,
+    //     ⛔ **不许显示成"还没生成"**(那份报告是冻结件、坏了不会自己好 = 让用户白等);
+    //   · `auction != nil` = 跑过了。⚠ 它的 `baskets` 为空**也是跑过了**
+    //     (D0 当天没有 T1/T2 篮子),原因在 `basketsUnavailableReason` 里。
+    // 🔴 **竞价结论只说明竞价反映出的信息,不等于买入指令**(K8 §二十 逐字)。
+    var auction: AuctionPayload? = nil
+    var auctionCorrupt = false
+    /// 竞价小报告五块的弹层开关(收起态那张卡点开)。
+    var showAuctionSheet = false
+
     // —— V2.2-④ 双时钟 ——
     //
     // 选股时钟:**覆盖 D0 全部 T1/T2,与买没买无关**(K8 §十四)——⛔ 文案别写成
@@ -502,8 +517,11 @@ final class AppModel {
         async let boardTask: Result<BoardSnapshot, Error> = fetchResult { try await client.fetchBoard() }
         async let regimeTask: Result<MarketRegime, Error> = fetchResult { try await client.fetchMarketRegime() }
         async let alertsTask: Result<[CustomAlert], Error> = fetchResult { try await client.fetchAlerts() }
-        let (reportResult, positionsResult, boardResult, regimeResult, alertsResult) =
-            await (reportTask, positionsTask, boardTask, regimeTask, alertsTask)
+        // V2.3.3-⑤ 竞价小报告:**404 是常态**(一天里只有 9:26 之后才有),
+        // 故与其它五路并列拉、失败一律不弹错 —— 三态的分派在下面 switch 里。
+        async let auctionTask: Result<AuctionPayload, Error> = fetchResult { try await client.fetchAuction() }
+        let (reportResult, positionsResult, boardResult, regimeResult, alertsResult, auctionResult) =
+            await (reportTask, positionsTask, boardTask, regimeTask, alertsTask, auctionTask)
 
         switch reportResult {
         case .success(let r): self.report = r
@@ -530,6 +548,17 @@ final class AppModel {
         case .success(let a): self.alerts = a
         case .failure: break   // 同上,静默降级
         }
+        // 竞价三态分派(⛔ 别把三者压成一个 `try?`):
+        switch auctionResult {
+        case .success(let a):
+            self.auction = a
+            self.auctionCorrupt = false
+        case .failure(let e):
+            self.auction = nil
+            // 只有 500 `auction_corrupt` 才是"坏了要排查";404 / 网络不通都属于
+            // 「今天还没有这份报告」——⛔ 不许拿一句错误提示占住选股屏顶部。
+            self.auctionCorrupt = (e as? APIError) == .auctionCorrupt
+        }
         reportLoading = false
         positionsLoading = false
         // ⚠ **一路都没连上时不打这个时间戳**:那会让工具栏显示「刚刚更新过」,
@@ -555,6 +584,13 @@ final class AppModel {
         if let raw = env["NECKLINE_INITIAL_POSITION_ID"], let pid = Int(raw),
            positions.contains(where: { $0.id == pid }) {
             selectedPositionId = pid
+        }
+        // 竞价小报告弹层钩子(V2.3.3-⑤):`NECKLINE_INITIAL_AUCTION_SHEET=1`。
+        // ⚠ **必须在数据到位之后** —— 报告是 `refresh()` 拉回来的,`NecklineApp.init()`
+        // 里的同步钩子够不着(v1.4-⑧ `NECKLINE_INITIAL_INFOCARD_CODE` 立的先例)。
+        // ⛔ 没拉到就不开(开一个空弹层等于把"没有"演成"有")。
+        if env["NECKLINE_INITIAL_AUCTION_SHEET"] == "1", auction != nil {
+            showAuctionSheet = true
         }
         if let code = env["NECKLINE_INITIAL_INFOCARD_CODE"], !code.isEmpty, infoCardRequest == nil {
             // 从篮子成员里找这只票(候选管线已退役,成员才是新的入口)。
