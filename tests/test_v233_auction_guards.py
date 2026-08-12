@@ -139,16 +139,20 @@ def test_auction_package_writes_none_of_the_four_formal_result_tables():
 # 3. 🔴 机械列永不 UPDATE(两张新表不进 `_APPEND_ONLY_TABLES` 的**代偿闸门**)
 # ══════════════════════════════════════════════════════════════════════════
 
+#: ⚠ **V2.4.0 P2.4 的四个新列全部登记在这里**(`quote_quality_json` +
+#: `critical_data_quality` / `context_data_quality` / `quality_detail_json`)——
+#: 它们是机械冻结列,⛔ 一个都不许出现在 LLM 白名单里(§3.14-E 逐字)。
 _MECHANICAL_REPORT_COLUMNS = (
     "trade_date", "d0_date", "source", "captured_at", "requested_codes", "fetched_codes",
     "missing_codes_json", "conflict_codes_json", "data_quality", "index_gaps_json",
-    "market_anchors_json", "baskets_covered", "created_at",
+    "market_anchors_json", "baskets_covered", "quote_quality_json", "created_at",
 )
 _MECHANICAL_VERDICT_COLUMNS = (
     "basket_id", "trade_date", "d0_date", "basket_key", "name", "covered_tier",
     "engine_code", "engine_version", "skeleton_version", "regime_at_d0", "data_quality",
     "members_json", "sector_sync_json", "rel_strength_json", "history_json",
-    "hit_invalidation_json", "plan_consistency_json", "created_at",
+    "hit_invalidation_json", "plan_consistency_json",
+    "critical_data_quality", "context_data_quality", "quality_detail_json", "created_at",
 )
 
 

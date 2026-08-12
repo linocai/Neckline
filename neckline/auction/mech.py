@@ -59,6 +59,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from neckline.auction import (
+    CRIT_FROZEN_ANCHOR,
+    CRIT_MARKET_BENCHMARK,
+    CRIT_MEMBER_QUOTE,
+    CRIT_SECTOR_BENCHMARK,
+    DQ_DEGRADED,
     DQ_INSUFFICIENT,
     NOTE_INDUSTRY_MAP_UNAVAILABLE,
     PLAN_FIT_ABOVE_MAX_CHASE,
@@ -79,6 +84,9 @@ from neckline.auction import (
     RISK_GAP_UP_DEVIATION,
     RISK_HIT_INVALIDATION,
     RISK_INVALIDATION_UNDETERMINED,
+    RISK_QUOTE_INVALID,
+    RISK_SOURCE_DEGRADED,
+    RISK_SOURCE_CONFLICT,
     SECTOR_BENCH_PEER_MEDIAN,
     SECTOR_BENCH_UNAVAILABLE,
     SECTOR_PEER_MIN,
@@ -88,8 +96,10 @@ from neckline.auction import (
     UNDET_NO_QUOTE,
     UNDET_NO_REF_CLOSE,
     UNDET_NO_STOP_LINE,
+    UNDET_QUOTE_INVALID,
 )
 from neckline.auction.collect import AuctionSnapshot, gap_pct_of
+from neckline.auction.quality import detect_conflict, worse_of
 from neckline.calendar import trading_days_between
 from neckline.selection.basket_store import BasketRef, load_basket_card
 from neckline.sentinel.precall import (
@@ -232,6 +242,22 @@ class MemberReading:
     data_quality: str = DQ_INSUFFICIENT
     #: 竞价量能附注原文(`precall.judge_auction_volume` 的既有文案,阈值一字未改)。
     volume_note: Optional[str] = None
+    # ── 🔴 V2.4.0 P2.1 / P2.2:这条读数**从哪来、是不是今天的、两源打不打架** ──────
+    #: 双源核验后的可用状态(`fresh` | `insufficient` | `conflict`)。
+    quote_freshness: str = ""
+    #: 七项校验的主因状态(`QUOTE_STATUSES` 之一)。空串 = 老快照没记这一位。
+    quote_status: str = ""
+    #: 选用的那一源(`sina` / `tencent`)。⛔ `None` 不是"新浪",是**两源都没读数**。
+    quote_source: Optional[str] = None
+    #: 源自带的时刻(归一后)。⚠ 与 `captured_at`(本机抓取时刻)是**两个不同的量**。
+    quote_ts: Optional[str] = None
+    #: 主源不可用、改用了备源(K8 §二十「记录来源降级」)。⛔ 不许静默换源。
+    source_degraded: bool = False
+    #: 结论性冲突码(`CONFLICT_*`);`None` = 没冲突**或**没有第二个读数可比。
+    #: ⚠ 后者要靠 `quote_freshness` / `validation_errors` 分辨,⛔ 别把 `None` 读成"已核对"。
+    source_conflict: Optional[str] = None
+    #: 七项校验里**失败了哪几项**(两源并集)。空 = 全过(或老快照没记)。
+    validation_errors: List[str] = field(default_factory=list)
 
     @property
     def has_undetermined_invalidation(self) -> bool:
@@ -262,6 +288,11 @@ class MemberReading:
             "anchor_stale": bool(self.anchor_stale),
             "plan_fit": self.plan_fit, "data_quality": self.data_quality,
             "volume_note": self.volume_note,
+            "quote_freshness": self.quote_freshness, "quote_status": self.quote_status,
+            "quote_source": self.quote_source, "quote_ts": self.quote_ts,
+            "source_degraded": bool(self.source_degraded),
+            "source_conflict": self.source_conflict,
+            "validation_errors": list(self.validation_errors),
         }
 
 
@@ -277,7 +308,19 @@ class BasketMech:
     engine_version: Optional[str] = None
     skeleton_version: str = ""
     regime_at_d0: Optional[str] = None
+    #: 🔴 **V2.4.0 P2.3 起本字段 = 关键域质量**(K8 §二十「数据质量分域」;
+    #: 施工图 §五 P2.3「对外字段 `data_quality` 保留,兼容含义改为『关键域质量』」)。
+    #: ⚠ V2.3.3 及更早的行里它是**整体**质量 —— 老行靠 `critical_data_quality` 为
+    #: NULL 分辨(客户端显示「旧版本未细分」,⛔ 不得默认成正常)。
     data_quality: str = DQ_INSUFFICIENT
+    #: 关键域质量(= `data_quality`,显式命名的那一份)。**只有它夹逼结论**。
+    critical_quality: str = DQ_INSUFFICIENT
+    #: 上下文域质量。🔴 **降级只降置信度 + 披露缺失,⛔ 不夹逼篮子结论**
+    #: —— 「一只无关指数缺失导致整篮强制中性」正是本版要修的病。
+    context_quality: str = DQ_INSUFFICIENT
+    #: 两域的**逐项账**(哪些码进了关键域 / 上下文域、各自缺了什么、冲突在哪)。
+    #: 落 `auction_verdicts.quality_detail_json`。
+    quality_detail: Dict[str, Any] = field(default_factory=dict)
     members: List[MemberReading] = field(default_factory=list)
     sector_sync: Dict[str, Any] = field(default_factory=dict)
     rel_strength: Dict[str, Any] = field(default_factory=dict)
@@ -296,8 +339,20 @@ class MarketMech:
     requested_codes: int = 0
     fetched_codes: int = 0
     missing_codes: List[str] = field(default_factory=list)
+    #: 🔴 V2.4.0 P2.1:抓到了、但七项校验没过的码(⛔ 与 `missing_codes` 分开)。
+    invalid_codes: List[str] = field(default_factory=list)
     conflict_codes: List[str] = field(default_factory=list)
+    #: ⚠ **市场级 `data_quality` 仍是「整体覆盖率读数」,刻意没有收窄成关键域**
+    #: (设计判断,如实登记):它不驱动任何夹逼闸(闸 1 读的是**篮子级**的),而
+    #: 「跑过了、D0 当天就没有 T1/T2 篮子」那一早市场级质量本来就该照常判 ok ——
+    #: 收窄会让那种早晨凭空变成「关键域数据不足」。分域读数见下面两个字段。
     data_quality: str = DQ_INSUFFICIENT
+    #: 🔴 报告级分域质量 = **各篮子取更差的那个**;`None` = **本次没有篮子**,
+    #: 关键域无从谈起(⛔ 不拿 `ok` 冒充,也⛔ 不拿 `insufficient` 吓人)。
+    critical_quality: Optional[str] = None
+    context_quality: Optional[str] = None
+    #: 逐票双源核验的完整账(落 `auction_reports.quote_quality_json`)。
+    quote_quality: Dict[str, Any] = field(default_factory=dict)
     index_gaps: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     anchors: List[Dict[str, Any]] = field(default_factory=list)
     risks: List[Dict[str, str]] = field(default_factory=list)
@@ -434,6 +489,70 @@ def sector_benchmark_of(
                            industry=industry, peer_codes=tuple(c for c, _g in peers))
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 🔴 三态判定的**唯一实现**(V2.4.0 P2.2 抽出:逐票读数与双源冲突判定共用一份)
+#
+# ⚠ 抽出来的理由不是"复用",是**语义必须完全一致**:双源冲突判的是「一源触发、
+#    另一源不触发」,而 `precall` 的两个 judge 在「真没命中 / 卡上没这个价位 /
+#    `open<=0` / 锚失效」四种情况下都返回 `None` —— 拿 `is not None` 去比两源,
+#    会把「一边判不了」讲成「两边看法不同」(`CLAUDE.md`「三态字段」那条坑)。
+#    前置条件必须判在调用方,而调用方现在有两个,所以它得有一份。
+# ══════════════════════════════════════════════════════════════════════════
+
+def hit_invalidation_tristate(
+    script: Optional[MemberScript], q: Any,
+) -> Tuple[Optional[bool], Optional[str]]:
+    """`(命中 D0 冻结失效位?, 没判的原因码)`。
+
+    `True` 命中 / `False` 看过了没命中 / `None` **没判**(⛔ `None` 绝不是「没问题」)。
+    判据取 D0 **冻结**值,判断本身复用 `precall.judge_low_open_falsify`,⛔ 不抄第二份。
+    """
+    if q is None:
+        return None, UNDET_NO_QUOTE
+    if script is None:
+        return None, UNDET_NO_MEMBER_SCRIPT
+    if member_anchor_stale(script, q):
+        # 锚失效(疑似除权除息)→ 一律不判:除权日开盘价比冻结止损线低一大截是
+        # **尺度问题不是破位**(`precall` 的既定纪律)。
+        return None, UNDET_ANCHOR_STALE
+    if script.stop_line is None:
+        return None, UNDET_NO_STOP_LINE
+    if not _positive(getattr(q, "open", None)):
+        return None, UNDET_NO_OPEN_PRICE
+    return (judge_low_open_falsify(script, q) is not None), None
+
+
+def gap_up_deviation_tristate(
+    script: Optional[MemberScript], q: Any,
+) -> Tuple[Optional[bool], Optional[str]]:
+    """`(高开已偏离 D0 冻结锚?, 没判的原因码)`。三态语义同上。"""
+    if q is None:
+        return None, UNDET_NO_QUOTE
+    if script is None:
+        return None, UNDET_NO_MEMBER_SCRIPT
+    if member_anchor_stale(script, q):
+        return None, UNDET_ANCHOR_STALE
+    if script.ref_close is None:
+        return None, UNDET_NO_REF_CLOSE
+    if not _positive(getattr(q, "open", None)):
+        return None, UNDET_NO_OPEN_PRICE
+    return (judge_gap_up_invalidate(script, q) is not None), None
+
+
+def plan_entered_tristate(
+    q: Any, entry_zone: Optional[Mapping[str, Any]], max_chase: Optional[float],
+) -> Optional[bool]:
+    """`True` 进入或突破 D0 预案区间 / `False` 还在区间下方 / `None` **判不了**
+    (卡上没给区间 or 价拿不到)。K8 §二十 冲突第 ③ 类的判据,**零阈值**:
+    每个边界都是 D0 那天已经过完夹逼闸的数字,这里只做比较。"""
+    if q is None:
+        return None
+    fit = plan_fit_of(getattr(q, "price", None), entry_zone, max_chase)
+    if fit == PLAN_FIT_UNKNOWN:
+        return None
+    return fit != PLAN_FIT_BELOW_ZONE
+
+
 def _member_entry_of(card: Optional[Mapping[str, Any]], code: str) -> Dict[str, Any]:
     for m in ((card or {}).get("members") or []):
         if isinstance(m, Mapping) and m.get("ts_code") == code:
@@ -466,11 +585,34 @@ def build_member_reading(
         name=(entry.get("name") or (meta.name if meta is not None else "") or code),
         role=(entry.get("role_llm") or None),
     )
-    if q is None:
-        # 拉不到 = insufficient(默认值),⛔ 不是"无异常"。两项失效判定同样是**没判**,
-        # 原因码如实标 `no_quote`(⛔ 不留一个光秃秃的 `None`)。
-        reading.hit_invalidation_undetermined_reason = UNDET_NO_QUOTE
-        reading.gap_up_deviation_undetermined_reason = UNDET_NO_QUOTE
+    # 🔴 V2.4.0 P2.1/P2.2:先把「这条读数从哪来、是不是今天的」记上 —— 它在
+    # 「读数能不能用」之前,也在任何判定之前。
+    qq = (snap.quote_quality or {}).get(code)
+    if qq is not None:
+        reading.quote_freshness = qq.freshness
+        reading.quote_status = qq.status
+        reading.quote_source = qq.chosen_source
+        reading.quote_ts = qq.src_ts
+        reading.source_degraded = bool(qq.source_degraded)
+        reading.source_conflict = qq.conflict
+        reading.validation_errors = list(qq.errors)
+    usable = snap.is_usable(code)
+    if q is None or not usable:
+        # 🔴 **两种成因,两个原因码**(⛔ 不折平):
+        #   · `no_quote`      两源都没拉到 —— 网络 / 限流问题;
+        #   · `quote_invalid` 抓到了、但七项校验没过(过期 / 时间戳解不出 / 字段无效)
+        #     —— ⛔ **不拿它去判失效位**:用昨天的收盘价跟 D0 冻结止损线比,必然
+        #     得到一条看起来很像真的假警报,那比不判更糟。
+        # ⚠ 逐票读数(价 / 量 / 额 / 涨跌幅)在这一支上**一律不填** —— 原始数字没有
+        #    丢,它在 `quote_quality[code].checks` 里逐字留着(K8:两源原始读数全部留存);
+        #    ⛔ 但不许让一份不合格的读数从这里"洗白"成今天的竞价读数。
+        # ⚠ 判据取**逐票账里有没有读数**,⛔ 不取 `q is None`:不合格的读数根本
+        #    不会进 `snap.quotes`(那是刻意的 —— 免得它被派生成"今天的"涨跌幅),
+        #    所以那时 `q` 也是 `None`。两种成因靠 `checks` 有没有内容分辨。
+        had_reading = bool(qq is not None and qq.checks)
+        why = UNDET_QUOTE_INVALID if had_reading else UNDET_NO_QUOTE
+        reading.hit_invalidation_undetermined_reason = why
+        reading.gap_up_deviation_undetermined_reason = why
         return reading
     price = getattr(q, "price", None)
     pre_close = getattr(q, "pre_close", None)
@@ -528,39 +670,17 @@ def build_member_reading(
         reading.rel_to_sector = reading.gap_pct - sb.value
 
     # 🔴 **三态,⛔ 不许把「没判」折成 `False`「没问题」**(V2.3.3 复审 🔴-1)。
-    # `precall` 的两个 judge 在**三种**情况下都返回 `None`:① 真的没命中;② 卡上没有
-    # 该价位;③ `quote.open <= 0`(行情源还没发开盘价)。`is not None` 会把 ②③ 一起
-    # 折成 `False` —— 那时小报告会对这只票明确说「未触发失效位」,而真相是**一个字都
-    # 没核对过**。所以「判不判得了」的前置条件搬到这里,`judge_*` 的 `None` 只承载 ①。
-    if script is None:
-        reading.hit_invalidation_undetermined_reason = UNDET_NO_MEMBER_SCRIPT
-        reading.gap_up_deviation_undetermined_reason = UNDET_NO_MEMBER_SCRIPT
-    else:
-        stale = member_anchor_stale(script, q)
-        reading.anchor_stale = bool(stale)
-        if stale:
-            # 锚失效(疑似除权除息)→ 一律不判(同 `precall` 的既定纪律:那是**错的
-            # 比较**,除权日开盘价比冻结止损线低一大截是尺度问题,不是破位)。
-            reading.hit_invalidation_undetermined_reason = UNDET_ANCHOR_STALE
-            reading.gap_up_deviation_undetermined_reason = UNDET_ANCHOR_STALE
-        else:
-            # 🔴 判据取 D0 **冻结**值,复用 `precall` 的同一个纯函数,⛔ 不抄第二份、
-            # ⛔ 不盘前重算。⚠ `precall` 的两个 judge 吃的是 `quote.open`,而竞价快照
-            # 里 9:25 撮合后 `open` 与 `price` 同源(见 `quotes.py`);此处仍走那两个
-            # 函数,阈值与边界语义因此逐字一致。
-            can_open = _positive(getattr(q, "open", None))
-            if script.stop_line is None:
-                reading.hit_invalidation_undetermined_reason = UNDET_NO_STOP_LINE
-            elif not can_open:
-                reading.hit_invalidation_undetermined_reason = UNDET_NO_OPEN_PRICE
-            else:
-                reading.hit_invalidation = judge_low_open_falsify(script, q) is not None
-            if script.ref_close is None:
-                reading.gap_up_deviation_undetermined_reason = UNDET_NO_REF_CLOSE
-            elif not can_open:
-                reading.gap_up_deviation_undetermined_reason = UNDET_NO_OPEN_PRICE
-            else:
-                reading.gap_up_deviation = judge_gap_up_invalidate(script, q) is not None
+    # `precall` 的两个 judge 在**四种**情况下都返回 `None`:① 真的没命中;② 卡上没有
+    # 该价位;③ `quote.open <= 0`(行情源还没发开盘价);④ 锚失效。`is not None` 会把
+    # ②③④ 一起折成 `False` —— 那时小报告会对这只票明确说「未触发失效位」,而真相是
+    # **一个字都没核对过**。所以「判不判得了」的前置条件搬到调用方,`judge_*` 的
+    # `None` 只承载 ① —— 唯一实现 = 上面那两个 `*_tristate`(V2.4.0 P2.2 抽出,
+    # 双源冲突判定吃的是**同一份**,⛔ 不许在那边另写一遍前置条件)。
+    reading.anchor_stale = bool(script is not None and member_anchor_stale(script, q))
+    reading.hit_invalidation, reading.hit_invalidation_undetermined_reason = (
+        hit_invalidation_tristate(script, q))
+    reading.gap_up_deviation, reading.gap_up_deviation_undetermined_reason = (
+        gap_up_deviation_tristate(script, q))
 
     reading.plan_fit = plan_fit_of(reading.auction_price, entry.get("entry_zone"),
                                    entry.get("max_chase"))
@@ -886,14 +1006,31 @@ def build_mech(
             history_index=history_index, db_path=db_path,
         ))
 
+    # 🔴 P2.3:报告级分域质量 = **各篮子取更差的那个**;没有篮子 → `None`
+    # (关键域无从谈起,⛔ 不拿 `ok` 冒充、也⛔ 不拿 `insufficient` 吓人)。
+    crit = context = None
+    if baskets:
+        crit = baskets[0].critical_quality
+        context = baskets[0].context_quality
+        for bm in baskets[1:]:
+            crit = worse_of(crit, bm.critical_quality)
+            context = worse_of(context, bm.context_quality)
+    # 逐票冲突码汇总:`snap.conflicts`(④/① 类)∪ 成员级补判出来的(②/③ 类)。
+    conflict_codes = list(dict.fromkeys(
+        list(snap.conflicts)
+        + [r.ts_code for bm in baskets for r in bm.members if r.source_conflict]))
     market = MarketMech(
         source=snap.source,
         captured_at=snap.captured_at.isoformat(timespec="seconds"),
         requested_codes=len(snap.requested),
         fetched_codes=len(snap.quotes),
         missing_codes=list(snap.missing),
-        conflict_codes=list(snap.conflicts),
+        invalid_codes=list(snap.invalid),
+        conflict_codes=conflict_codes,
         data_quality=snap.quality_of(snap.requested),
+        critical_quality=crit,
+        context_quality=context,
+        quote_quality={c: qq.to_dict() for c, qq in (snap.quote_quality or {}).items()},
         index_gaps={c: {"ts_code": c,
                         "name": (snap.meta[c].name if c in snap.meta else c),
                         "gap_pct": snap.gap_of(c)} for c in MARKET_INDEX_CODES},
@@ -941,10 +1078,12 @@ def _build_basket_mech(
         for code in b.member_codes
     ]
     bench_codes = [snap.benchmark_of[c] for c in b.member_codes if c in snap.benchmark_of]
-    # 样本域 = 该篮判定所需的全部标的(成员 + 其板块基准指数 + 三支市场指数)。
-    from neckline.auction.collect import MARKET_INDEX_CODES
-
-    domain = list(dict.fromkeys(list(b.member_codes) + bench_codes + list(MARKET_INDEX_CODES)))
+    # 🔴 V2.4.0 P2.2:需要 D0 卡的两类冲突(② 失效位 / ③ 预案区间)在这里补判 ——
+    # `collect` 那一层拿不到卡,只判了 ④ 身份 / ① 方向。
+    _attach_member_conflicts(readings, snap, scripts_by_code=scripts_by_code, card=card)
+    # 🔴 V2.4.0 P2.3:关键域 / 上下文域(K8 §二十「数据质量分域」)。
+    critical, context, detail = basket_quality_domains(
+        b, snap, readings, bench_codes=bench_codes)
     return BasketMech(
         basket_id=b.basket_id,
         basket_key=b.basket_key,
@@ -954,7 +1093,12 @@ def _build_basket_mech(
         engine_version=b.engine_version,
         skeleton_version=b.skeleton_version or "",
         regime_at_d0=regime_at_d0,
-        data_quality=snap.quality_of(domain),
+        # 🔴 P2.3:`data_quality` 的含义**收窄为关键域**(施工图 §五 P2.3 逐字)——
+        # 闸 1「数据缺失只能形成中性」自此只看关键域,一只无关指数缺失⛔ 不再夹整篮。
+        data_quality=critical,
+        critical_quality=critical,
+        context_quality=context,
+        quality_detail=detail,
         members=readings,
         sector_sync=sector_sync_of(readings, snap, bench_codes=bench_codes),
         rel_strength=rel_strength_of(readings),
@@ -963,6 +1107,132 @@ def _build_basket_mech(
         plan_consistency=plan_consistency_of(readings),
         notes=notes,
     )
+
+
+def _attach_member_conflicts(
+    readings: Sequence[MemberReading],
+    snap: AuctionSnapshot,
+    *,
+    scripts_by_code: Mapping[str, MemberScript],
+    card: Optional[Mapping[str, Any]],
+) -> None:
+    """🔴 **需要 D0 卡的两类跨源冲突**(K8 §二十 ② 失效位 / ③ 预案区间),就地补在
+    逐票读数上(原地改 `readings`)。
+
+    **为什么不在 `collect` 里一起判**:那一层的身份是「组清单 → 拉一次价 → 冻结,
+    ⛔ 不判定」,而且它**拿不到冻结卡**(卡在 `basket_cards` 里、按篮子读)。
+    ④ 身份 / ① 方向两类不需要卡,已经在那边判完 —— 这里只补另外两类,
+    ⛔ 不重复覆盖已经判出来的码(`clamped_by` 那套"只记第一个"的同一体例)。
+
+    ⚠ **只对两源都新鲜的成员判**(K8 原文:「双源**均有效**但出现结论性冲突时」);
+    只有一源 → 没有第二个读数可以打架,⛔ 那不是"已核对无冲突"。
+    """
+    for r in readings:
+        if r.source_conflict:
+            continue                     # collect 已判出 ④/①,⛔ 不覆盖
+        qq = (snap.quote_quality or {}).get(r.ts_code)
+        dual = (snap.dual_quotes or {}).get(r.ts_code)
+        if qq is None or dual is None or dual.primary is None or dual.backup is None:
+            continue
+        if not all(c.ok for c in qq.checks) or len(qq.checks) < 2:
+            continue
+        script = scripts_by_code.get(r.ts_code)
+        entry = _member_entry_of(card, r.ts_code)
+        zone, chase = entry.get("entry_zone"), entry.get("max_chase")
+        conflict = detect_conflict(
+            dual.primary, dual.backup,
+            invalidation_of=lambda q, s=script: hit_invalidation_tristate(s, q)[0],
+            plan_entered_of=lambda q, z=zone, mc=chase: plan_entered_tristate(q, z, mc),
+        )
+        if conflict:
+            r.source_conflict = conflict
+
+
+def basket_quality_domains(
+    b: BasketRef,
+    snap: AuctionSnapshot,
+    readings: Sequence[MemberReading],
+    *,
+    bench_codes: Sequence[str],
+) -> Tuple[str, str, Dict[str, Any]]:
+    """🔴 **数据质量分域**(V2.4.0 P2.3,K8 §二十 逐字)→ `(关键域, 上下文域, 逐项账)`。
+
+    **关键域**(非 `ok` → confirm/veto 夹成 neutral):
+      ① 篮子成员自身竞价数据;
+      ② 每只成员**实际使用的**市场基准 —— ⚠「实际使用的」= `market_index_of` 真给了
+         一支的那些。科创板按 K8 §三 排除 → 它**没有**市场基准,⛔ 那不是"缺失";
+      ③ **实际用于**相对板块计算的板块基准 —— ⚠ 只有 `peer_median` 真的算出来时,
+         那组对照股才算"实际用于";**对照不足**(§七 P1-78,关注池缩编后近乎必然)
+         意味着**压根没用上任何板块基准** → ⛔ 不进关键域、不夹整篮;
+      ④ D0 失效判断所需的**冻结锚** —— 判据取自失效位三态的原因码
+         (有篮无卡 / 锚失效 / 卡上没冻结失效位 → 这一位不可用)。
+
+    **上下文域**(降级只降置信度 + 披露缺失,⛔ 不夹逼结论):其他市场指数 ·
+    **未实际用于**当前成员计算的对照股 · 所属上市板块对照指数 · 市场锚点。
+    ⚠ 历史比较与前五日量能背景**不是代码**,它们的缺席由 `history` / `volume_note`
+    自己如实说;这里只收得进"有代码可查"的那几类。
+
+    🔴 **⛔ 不许用无关字段缺失掩盖已有的失效事实**:两域都不碰
+    `hit_invalidation_codes` —— 那条走独立警报通道(§五 ②-G),恒定进第 4 块与推送。
+    """
+    from neckline.auction.collect import MARKET_INDEX_CODES
+
+    members = list(dict.fromkeys(b.member_codes))
+    used_market: List[str] = []
+    used_sector: List[str] = []
+    anchor_missing: List[Dict[str, str]] = []
+    for r in readings:
+        idx = (snap.market_index_of or {}).get(r.ts_code)
+        if idx:
+            used_market.append(idx)
+        if r.rel_to_sector_source == SECTOR_BENCH_PEER_MEDIAN:
+            used_sector.extend(r.sector_peer_codes)
+        # ④ 冻结锚:判据**只取那三个"锚 / 卡"类原因码** —— 行情类原因
+        # (没抓到 / 读数不合格 / 开盘价没发)属于 ① 成员自身,⛔ 不在这里重复计一次。
+        if r.hit_invalidation_undetermined_reason in (
+                UNDET_NO_MEMBER_SCRIPT, UNDET_ANCHOR_STALE, UNDET_NO_STOP_LINE):
+            anchor_missing.append({"ts_code": r.ts_code,
+                                   "reason": r.hit_invalidation_undetermined_reason})
+
+    critical_codes = list(dict.fromkeys(members + used_market + used_sector))
+    context_codes = [c for c in dict.fromkeys(
+        list(MARKET_INDEX_CODES) + list(bench_codes)
+        + [c for r in readings for c in r.sector_peer_codes]
+        + list(snap.strong_anchor_codes)) if c not in set(critical_codes)]
+
+    critical = snap.quality_of(critical_codes)
+    # ⚠ 上下文域**为空**时 `quality_of` 按既定纪律判 `insufficient`(「没有可判的东西」
+    # 与「判过了都好」必须分得开)—— 那不会夹逼任何结论,只是如实说"这一域没东西可查"。
+    context = snap.quality_of(context_codes)
+    if anchor_missing:
+        # 冻结锚拿不到 = **失效判断做不了** → 关键域至少降级(K8 §二十 把它列进关键域)。
+        critical = worse_of(critical, DQ_DEGRADED)
+    member_conflicts = [{"ts_code": r.ts_code, "conflict": r.source_conflict}
+                        for r in readings if r.source_conflict]
+    if member_conflicts:
+        # 「双源均新鲜但结论性冲突」→ ⛔ 不能高置信输出(K8 §二十)。
+        critical = worse_of(critical, DQ_DEGRADED)
+    detail: Dict[str, Any] = {
+        "critical": {
+            "quality": critical,
+            "codes": critical_codes,
+            "missing": [c for c in critical_codes if not snap.is_usable(c)],
+            "components": {
+                CRIT_MEMBER_QUOTE: members,
+                CRIT_MARKET_BENCHMARK: list(dict.fromkeys(used_market)),
+                CRIT_SECTOR_BENCHMARK: list(dict.fromkeys(used_sector)),
+                CRIT_FROZEN_ANCHOR: anchor_missing,
+            },
+            "conflicts": member_conflicts,
+        },
+        "context": {
+            "quality": context,
+            "codes": context_codes,
+            "missing": [c for c in context_codes if not snap.is_usable(c)],
+        },
+        "captured_in_window": bool(snap.captured_in_window),
+    }
+    return critical, context, detail
 
 
 def _regime_at(d0: date, *, db_path: Optional[Path]) -> Optional[str]:
@@ -992,6 +1262,24 @@ def _mechanical_risks(market: MarketMech, baskets: Sequence[BasketMech]) -> List
         risks.append({"kind": RISK_DATA_MISSING,
                       "text": f"{len(market.missing_codes)} 个标的本次没抓到竞价数据"
                               f"(覆盖 {market.fetched_codes}/{market.requested_codes})。"})
+    # 🔴 V2.4.0 P2.1:「抓到了、但这份读数不能用」必须自己有一条 —— ⛔ 不许并进
+    # 上面那条「没抓到」:一份**上一交易日的缓存行情**长得跟正常读数一模一样,
+    # 沉默会让人以为那一格是好的。
+    if market.invalid_codes:
+        risks.append({"kind": RISK_QUOTE_INVALID,
+                      "text": f"{len(market.invalid_codes)} 个标的抓到了读数、但没通过"
+                              f"七项校验(源日期 / 源时间 / 必要字段 / 单位),本次一律"
+                              f"不当作今天的竞价结果使用:{'、'.join(market.invalid_codes)}。"})
+    if market.conflict_codes:
+        risks.append({"kind": RISK_SOURCE_CONFLICT,
+                      "text": f"{len(market.conflict_codes)} 个标的两源出现结论性冲突"
+                              f"(方向 / 失效位 / 预案区间 / 身份),⛔ 不能高置信输出:"
+                              f"{'、'.join(market.conflict_codes)}。"})
+    degraded_src = [r.ts_code for b in baskets for r in b.members if r.source_degraded]
+    if degraded_src:
+        risks.append({"kind": RISK_SOURCE_DEGRADED,
+                      "text": f"{len(degraded_src)} 只的主源读数不可用,本次改用备源"
+                              f"(来源已降级,如实记录):{'、'.join(degraded_src)}。"})
     hit = [c for b in baskets for c in b.hit_invalidation_codes]
     if hit:
         risks.append({"kind": RISK_HIT_INVALIDATION,
@@ -1043,6 +1331,8 @@ _UNDET_TEXT: Dict[str, str] = {
     UNDET_NO_STOP_LINE: "卡上没冻结失效位价格",
     UNDET_NO_REF_CLOSE: "卡上没冻结 D0 收盘锚",
     UNDET_NO_OPEN_PRICE: "行情源还没发出开盘价",
+    UNDET_QUOTE_INVALID: "抓到的读数没通过七项校验(源日期 / 源时间 / 必要字段 / 单位)"
+                         ",本次不拿它判",
 }
 
 
@@ -1136,13 +1426,22 @@ def short_summary(mech: AuctionMech) -> str:
     lines: List[str] = []
     lines.append(f"【数据状态】来源 {m.source};冻结时刻 {m.captured_at};"
                  f"覆盖 {m.fetched_codes}/{m.requested_codes};"
-                 f"缺失 {len(m.missing_codes)} 个;冲突 {len(m.conflict_codes)} 个;"
-                 f"数据质量 {m.data_quality}(市场级)。")
+                 f"缺失 {len(m.missing_codes)} 个;读数不合格 {len(m.invalid_codes)} 个;"
+                 f"跨源冲突 {len(m.conflict_codes)} 个;"
+                 f"数据质量 {m.data_quality}(市场级整体覆盖率读数)。")
     if m.missing_codes:
         # ⚠ **不截断**(同 ⑨-A 第 5 行对竞价强势股的既定理由):截断需要一个 K8 没给
         # 的数,而「模型看到的就是系统看到的全部」更诚实。量级上限 = 抓取清单本身
         # (`DEFAULT_BREADTH_CAP`),不会失控。
-        lines.append(f"   缺失代码:{'、'.join(m.missing_codes)}")
+        lines.append(f"   缺失代码(两源都没拉到):{'、'.join(m.missing_codes)}")
+    if m.invalid_codes:
+        # 🔴 V2.4.0 P2.1:「抓到了、但这份读数不能用」必须说出口 —— 沉默会让模型
+        # 把那一格当成"好的"。
+        lines.append(f"   读数不合格(抓到了但没通过七项校验,本次⛔ 不当今天的竞价结果用):"
+                     f"{'、'.join(m.invalid_codes)}")
+    if m.conflict_codes:
+        lines.append(f"   跨源冲突(两源都新鲜但结论相反,⛔ 不能高置信输出):"
+                     f"{'、'.join(m.conflict_codes)}")
     lines.append("【市场对照指数竞价】" + "；".join(
         f"{v.get('name') or c} {_pct(v.get('gap_pct'))}" for c, v in m.index_gaps.items()
     ))
@@ -1165,7 +1464,12 @@ def short_summary(mech: AuctionMech) -> str:
                      f"引擎 {b.engine_code or '未记录'} {b.engine_version or ''};"
                      f"骨架 {b.skeleton_version or '未记录'};"
                      f"D0 行情状态 {b.regime_at_d0 or '当日无记录'};"
-                     f"数据质量 {b.data_quality}(篮级)。")
+                     # 🔴 V2.4.0 P2.3:两域**分开报**,并把「哪一域才夹结论」写死在
+                     # 摘要里 —— ⛔ 别让模型以为上下文域缺失也得转中性。
+                     f"关键域质量 {b.critical_quality}、上下文域质量 {b.context_quality}"
+                     f"(🔴 只有**关键域**非 ok 才必须转中性;上下文域降级**只降低置信度**"
+                     f"并在理由或风险里披露缺失项,⛔ 不改变结论)。")
+        lines.extend(_quality_domain_lines(b))
         for r in b.members:
             lines.append(
                 f"   · {r.ts_code} {r.name}|角色 {r.role or '未记录'}"
@@ -1214,6 +1518,40 @@ def short_summary(mech: AuctionMech) -> str:
         if b.notes:
             lines.append(f"   机械层备注:{'、'.join(b.notes)}")
     return "\n".join(lines)
+
+
+def _quality_domain_lines(b: "BasketMech") -> List[str]:
+    """短摘要里「关键域 / 上下文域各缺了什么」那一段(V2.4.0 P2.3)。
+
+    🔴 **缺了什么必须点名**:只报一个 `degraded` 三态,模型没法判断"这次缺的到底
+    重不重要" —— 而这恰恰是本版把域拆开的全部意义。
+    """
+    d = b.quality_detail or {}
+    crit = d.get("critical") or {}
+    ctx = d.get("context") or {}
+    out: List[str] = []
+    cm = list(crit.get("missing") or ())
+    anchors = list(((crit.get("components") or {}).get(CRIT_FROZEN_ANCHOR)) or ())
+    conflicts = list(crit.get("conflicts") or ())
+    if cm or anchors or conflicts:
+        parts: List[str] = []
+        if cm:
+            parts.append(f"关键域没有可用读数的:{'、'.join(cm)}")
+        if anchors:
+            parts.append("拿不到 D0 冻结锚(失效判断做不了)的:"
+                         + "、".join(f"{a.get('ts_code')}({_UNDET_TEXT.get(a.get('reason') or '', '原因未记录')})"
+                                     for a in anchors))
+        if conflicts:
+            parts.append("两源结论性冲突的:"
+                         + "、".join(f"{c.get('ts_code')}({c.get('conflict')})" for c in conflicts))
+        out.append("   关键域缺口:" + ";".join(parts))
+    else:
+        out.append("   关键域缺口:无。")
+    xm = list(ctx.get("missing") or ())
+    if xm:
+        out.append(f"   上下文域缺口(⛔ 只降低置信度、不改变结论,但要在理由或风险里"
+                   f"披露):{'、'.join(xm)}")
+    return out
 
 
 def _undetermined_clause(r: MemberReading) -> str:
@@ -1294,6 +1632,8 @@ __all__ = [
     "HISTORY_MIN_SAMPLE_FOR_COMPARISON",
     "plan_fit_of", "build_member_reading", "sector_benchmark_of", "sector_sync_of",
     "rel_strength_of",
+    "hit_invalidation_tristate", "gap_up_deviation_tristate", "plan_entered_tristate",
+    "basket_quality_domains",
     "plan_consistency_of", "history_window_days", "scan_history_index", "history_of",
     "load_history", "build_mech", "short_summary",
 ]

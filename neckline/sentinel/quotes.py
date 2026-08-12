@@ -323,4 +323,83 @@ def get_quote(code: str, transport: Optional[Any] = None) -> Optional[Quote]:
     return get_quotes([code], transport=transport).get(code)
 
 
-__all__ = ["Quote", "to_symbol", "get_quotes", "get_quote"]
+# —— 🔴 V2.4.0 P2.2:有界**双源核验**(K8 §二十「主备源」)——————————————————————
+
+@dataclass(frozen=True)
+class DualQuote:
+    """同一只代码的**两源原始读数**。🔴 **两个都留痕,⛔ 不许只存胜出的那一个**
+    (K8 §二十 逐字:「两个来源的原始读数全部留存」)。
+
+    `primary` = 新浪(主源)· `backup` = 腾讯(备源);拉不到 / 解不出 → `None`。
+    ⚠ **本类不做任何"谁赢"的判定**:七项校验与冲突判定住 `neckline/auction/quality.py`
+    (`sentinel/` 是「纯规则、零 LLM」的包,而"哪一源可用"是竞价层的语义)。
+    """
+
+    code: str
+    primary: Optional[Quote] = None
+    backup: Optional[Quote] = None
+
+    @property
+    def any_quote(self) -> Optional[Quote]:
+        """任取一份**存在**的读数(⚠ 不代表它通过了校验 —— 那是 `quality.py` 的事)。"""
+        return self.primary if self.primary is not None else self.backup
+
+
+def get_quotes_dual(
+    codes: List[str], transport: Optional[Any] = None
+) -> Dict[str, DualQuote]:
+    """🔴 **双源批量并行**:新浪一次批量 + 腾讯一次批量,返回**两源逐票原始读数**。
+
+    与 `get_quotes()` 的区别只有一个:那个是「主源失败**才**降备源」(省一次请求),
+    这个是「**两源都拉**」—— 因为 K8 §二十 要求对 T1/T2 成员及实际使用的关键基准
+    做**有界双源核验**,而核验需要两个可以互相打架的读数。
+
+    🔴 **⛔ 不允许逐票网络请求**(9:26 那一刻的限流面必须可控):仍走既有
+    `_CHUNK_SIZE=400` 分块,每块**两次**请求。相对现役竞价抓取(1 次新浪 + 缺票时
+    1 次腾讯)**净增 1 次 HTTP 请求 / 早晨**。
+
+    🔴 **`get_quotes()` 行为逐位不变**(单测锁死):本函数是**新增**路径,
+    ⛔ 没有改写那一个;普通上下文股票继续走「主源失败才降备源」。
+
+    ⚠ **有界在调用面,不在本函数**:本函数老老实实拉 `codes` 全部,"哪些码值得双源"
+    由调用方(`auction/collect.py`)决定 —— ⛔ 这里**不设「取前 N 个」的截断**
+    (那需要一个 K8 没给的数,§五 P2.2 明写)。
+
+    任一源全挂 / 单票解析失败 → 那一侧为 `None`,整体不崩(实时源不可靠是常态)。
+    """
+    if not codes:
+        return {}
+    sym_to_code: Dict[str, str] = {}
+    symbols: List[str] = []
+    for c in codes:
+        sym = to_symbol(c)
+        sym_to_code[sym] = c
+        symbols.append(sym)
+
+    primary: Dict[str, Quote] = {}
+    backup: Dict[str, Quote] = {}
+    for batch in _chunks(symbols, _CHUNK_SIZE):
+        sina_raw = _fetch_sina(batch, transport)
+        tencent_raw = _fetch_tencent(batch, transport)
+        for sym in batch:
+            code = sym_to_code[sym]
+            sb = sina_raw.get(sym)
+            if sb is not None:
+                q = _parse_sina(sym, sb)
+                if q is not None:
+                    primary[code] = q
+            tb = tencent_raw.get(sym)
+            if tb is not None:
+                q = _parse_tencent(sym, tb)
+                if q is not None:
+                    backup[code] = q
+
+    return {
+        sym_to_code[s]: DualQuote(code=sym_to_code[s],
+                                  primary=primary.get(sym_to_code[s]),
+                                  backup=backup.get(sym_to_code[s]))
+        for s in dict.fromkeys(symbols)
+    }
+
+
+__all__ = ["Quote", "DualQuote", "to_symbol", "get_quotes", "get_quote", "get_quotes_dual"]

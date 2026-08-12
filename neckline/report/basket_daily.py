@@ -424,6 +424,24 @@ class BasketDaily:
     reviews_unavailable_reason: Optional[str] = None
     review_d0: Optional[str] = None
     pack_version: Optional[str] = None
+    # ── 🔴 V2.4.0 P2.5:「正式空结果」与「系统缺席」严格分开(K8 §十)────────────
+    # · **合法空结果**(扫描与 LLM 都成功、模型明确返回空篮子)→ `baskets_available=True`
+    #   + 空列表 → 报告说「今天没有形成正式篮子」;
+    # · **系统缺席**(provider 不存在 / 预算耗尽 / 调用失败 / 解析失败 / 超时)→
+    #   `baskets_available=False` + 下面这四位 → 报告说「**选股解释未完成**」,
+    #   ⛔ **不能显示「今天没有机会」**。
+    # 🔴 判读逻辑的唯一实现仍是 `selection/basket_stage_handoff.py::stage_verdict`
+    # (P0-39 定案),本节只是把它**下发到契约**,⛔ 不在 `report/` 或 `api/` 再推一遍。
+    #: ⑤ 推理段状态码(`ok` / `no_provider` / `budget_exhausted` / `call_failed:*` /
+    #: `parse_failed` / `segment_failed:*` …)。`None` = 段状态表**无行** = 不知道跑没跑。
+    selection_stage: Optional[str] = None
+    #: 系统缺席时的原因码(= `BasketStageVerdict.reason_code`);跑过了 → `None`。
+    selection_unavailable_reason: Optional[str] = None
+    #: 🔴 机械 seed 数量与简短摘要 —— **只在系统缺席时才有意义**,而且
+    #: ⛔ **未解释 seed 不是第四种候选状态**:它不冒充 T2、不进 OUT、不进选股时钟。
+    #: `None` / 空串 = 当时没记这一位(⛔ 不拿 `0` 冒充「一个种子都没有」)。
+    unexplained_seed_count: Optional[int] = None
+    unexplained_seed_summary: Optional[str] = None
     notes: List[str] = field(default_factory=list)
 
     def by_tier(self) -> Dict[int, List[BasketView]]:
@@ -467,6 +485,11 @@ class BasketDaily:
             "reviewsUnavailableReason": self.reviews_unavailable_reason,
             "reviewD0": self.review_d0,
             "packVersion": self.pack_version,
+            # V2.4.0 P2.5:四位**可选**字段(老快照没有 → 客户端 `decodeIfPresent` 兜底)。
+            "selectionStage": self.selection_stage,
+            "selectionUnavailableReason": self.selection_unavailable_reason,
+            "unexplainedSeedCount": self.unexplained_seed_count,
+            "unexplainedSeedSummary": self.unexplained_seed_summary,
             "notes": list(self.notes),
         }
 
@@ -689,8 +712,20 @@ def load_yesterday_reviews(
     return views, d0
 
 
+def _load_stage_verdict(trade_date: date, *, db_path: Optional[Path]) -> Optional[Any]:
+    """读一次 ⑤ 的段状态(主键点查)。整段包保险丝:查表异常 → 按「无行」处理
+    (读侧永远不比"没有这张表"更糟)。**全 `build_basket_daily` 只读这一次。**"""
+    try:
+        from neckline.selection.basket_stage_handoff import load_stage_verdict
+
+        return load_stage_verdict(trade_date, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        logger.warning("[basket_daily] ⑤ 段状态查表异常,今日篮子段按未取得处理", exc_info=True)
+        return None
+
+
 def _zero_basket_verdict(
-    trade_date: date, *, db_path: Optional[Path],
+    trade_date: date, *, db_path: Optional[Path], verdict: Optional[Any] = None,
 ) -> Tuple[bool, Optional[str]]:
     """③ 在**零篮子**时的三态判读(§七 P0-39)。返回 `(available, unavailable_reason)`。
 
@@ -706,21 +741,24 @@ def _zero_basket_verdict(
     本函数只负责把它翻译成契约字段 + 人话。整段包保险丝:查表异常 → 按"无行"处理
     (读侧永远不比"没有这张表"更糟)。
     """
-    verdict = None
-    try:
-        from neckline.selection.basket_stage_handoff import load_stage_verdict
-
-        verdict = load_stage_verdict(trade_date, db_path=db_path)
-    except Exception:  # noqa: BLE001
-        logger.warning("[basket_daily] ⑤ 段状态查表异常,今日篮子段按未取得处理", exc_info=True)
+    if verdict is None:
+        verdict = _load_stage_verdict(trade_date, db_path=db_path)
     if verdict is None:
         return False, (
             "本次未运行驱动聚合/定档引擎(读历史报告 / 只出报告),今日篮子信息本报告未取得。"
         )
     if verdict.engine_ran:
         return True, None
+    # 🔴 V2.4.0 P2.5(K8 §十):这一句必须说成「**选股解释未完成**」,
+    # ⛔ 不许写成、也⛔ 不许被读成「今天没有机会」——「系统缺席」与「今天真没有」
+    # 是两件相反的事。机械 seed 数量与摘要另由 `unexplainedSeed*` 两位下发。
+    seeds = ""
+    n = getattr(verdict, "seed_count", None)
+    if n is not None:
+        seeds = f"机械层当时看到 {n} 个候选方向,已保留摘要;"
     return False, (
-        f"聚合/定档引擎本次未运行(原因:{verdict.reason_code}),今日篮子信息本报告未取得。"
+        f"选股解释未完成(原因:{verdict.reason_code}):本次没有生成正式 T1/T2 与 OUT。"
+        f"{seeds}⛔ 这不是「今天没有机会」,是这一段没有跑成。"
     )
 
 
@@ -742,6 +780,18 @@ def build_basket_daily(
     """
     out = BasketDaily(trade_date=trade_date)
 
+    # 🔴 V2.4.0 P2.5:⑤ 的段状态**读一次**,同时供 ③ 的三态判读与四位新契约字段用
+    # (主键点查,⛔ 不重复查两遍)。判读逻辑本身仍在 `basket_stage_handoff`。
+    stage = _load_stage_verdict(trade_date, db_path=db_path)
+    if stage is not None:
+        out.selection_stage = stage.reason_stage or None
+        out.selection_unavailable_reason = stage.reason_code
+        if not stage.engine_ran:
+            # ⚠ 只在**系统缺席**时下发机械 seed 留痕:引擎跑过的日子,零篮子是真结论,
+            # 再报一句"机械层看到 N 个方向"只会把用户往"其实还是有机会"上引。
+            out.unexplained_seed_count = stage.seed_count
+            out.unexplained_seed_summary = (stage.seed_summary or None)
+
     # ③ 今日篮子
     try:
         out.baskets = load_today_baskets(trade_date, db_path=db_path)
@@ -752,7 +802,7 @@ def build_basket_daily(
             out.baskets_available = True
         else:
             out.baskets_available, out.baskets_unavailable_reason = _zero_basket_verdict(
-                trade_date, db_path=db_path,
+                trade_date, db_path=db_path, verdict=stage,
             )
     except Exception:  # noqa: BLE001
         logger.warning("[basket_daily] 今日篮子读取异常,该段降级留空", exc_info=True)

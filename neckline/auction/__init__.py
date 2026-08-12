@@ -41,8 +41,11 @@ review 不在那条链上、不成环)。三条方向全部有 AST 守门
 `qualified` / `wait` / `cancelled` 等盘中交易状态;竞价结论只说明竞价反映出的信息,
 **不等于买入指令**。
 
-**五个模块**(职责定死,⛔ 不许合并 `mech.py` 与 `llm.py`):
+**六个模块**(职责定死,⛔ 不许合并 `mech.py` 与 `llm.py`):
     · `collect.py`  冻结抓取(组装清单 → 拉一次价 → 冻结);⛔ 不判定、不落库、不写 parquet
+    · `quality.py`  **V2.4.0 P2.1/P2.2 新增**:逐条行情的七项校验 + 双源核验(纯函数,
+                    零 IO、零 DB、零 LLM)—— 它只回答「这条读数能不能当今天 9:25 的
+                    竞价结果用」,⛔ 不回答任何市场问题
     · `mech.py`     机械层六条职责;🔴 ⛔ **不出任何结论**、零 LLM、除四个裁定值外零阈值
     · `llm.py`      一次调用覆盖全部篮子 + 输出契约 + **三道机械夹逼闸**
     · `store.py`    两张表的两阶段读写(机械列永不 UPDATE)
@@ -76,6 +79,95 @@ DQ_OK = "ok"
 DQ_DEGRADED = "degraded"
 DQ_INSUFFICIENT = "insufficient"
 
+# ── 🔴 V2.4.0 P2.3:数据质量**分域**(K8 §二十「数据质量分域」逐字)————————————
+# 「一只无关指数缺失导致整篮强制中性」是 V2.4.0 要修的第 ② 个病:域太宽,
+# 什么都算「关键」。K8 把它拆成两域,**只有关键域**才夹逼结论:
+#   · 关键域 = 篮子成员自身竞价数据 · 每只成员**实际使用的**市场基准 ·
+#     **实际用于**相对板块计算的板块基准 · D0 失效判断所需的冻结锚;
+#   · 上下文域 = 其他市场指数 · **未实际用于**当前成员计算的对照股 · 市场锚点 ·
+#     历史比较 · 前五日量能背景。
+# 关键域非 `ok` → confirm/veto 夹成 neutral;上下文域降级**只降置信度 + 披露缺失**。
+# 🔴 **⛔ 不许用无关字段缺失掩盖已有的失效事实**:机械失效警报走独立通道
+# (`hit_invalidation_json`),不受任何一域的质量影响。
+DOMAIN_CRITICAL = "critical"
+DOMAIN_CONTEXT = "context"
+QUALITY_DOMAINS = (DOMAIN_CRITICAL, DOMAIN_CONTEXT)
+
+#: 🔴 关键域里的**四类组成**(逐票留痕用的分量码,K8 §二十 逐条)。
+#: ⚠ `frozen_anchor` 不是一个"代码",它是卡上冻结的 `close_below_stop_line` ——
+#: 拿不到它就判不了「有没有触发 D0 失效位」,故 K8 把它划进关键域。
+CRIT_MEMBER_QUOTE = "member_quote"
+CRIT_MARKET_BENCHMARK = "market_benchmark"
+CRIT_SECTOR_BENCHMARK = "sector_benchmark"
+CRIT_FROZEN_ANCHOR = "frozen_anchor"
+CRITICAL_COMPONENTS = (CRIT_MEMBER_QUOTE, CRIT_MARKET_BENCHMARK,
+                       CRIT_SECTOR_BENCHMARK, CRIT_FROZEN_ANCHOR)
+
+# ── 🔴 V2.4.0 P2.1:逐条竞价行情的**七项校验**结果(单一源,K8 §二十 逐字)————
+# 🔴 **⛔ 不得发明「5 分钟新鲜度」之类的新阈值**(审计规格 P2.1 明文):时间判据
+# 只用 K8 已规定的**交易日**与 **9:25 / 9:26—9:29 边界** —— 「可接受区间」=
+# `[09:25:00, captured_at]`,而 `captured_at` 本就被 `AUCTION_WINDOW_START/END`
+# 约束在 `[09:26, 09:29)`(现役常量,一字不改)。
+#
+# 🔴 **`future_timestamp` 走零容差**(2026-08-12 **用户裁定 #2**,出处
+# `PROJECT_PLAN.md` §五 D 节;⛔ 这不是工程侧默认值):
+#     「竞价时间戳先执行零容差:源时间与本机存在任何偏差即降级为中性。
+#       若实盘出现误判,再由我确认容差秒数,**施工 Agent 不得自行设定**。」
+# ⚠ 落点是 `src_time > captured_at`(K8 原文「源时间**不晚于**本地抓取时间」)——
+# 源时间**早于**抓取时刻是正常的,⛔ 别把它也判成偏差。
+# ⚠ 上产后第一周每早记 `src_time − captured_at` 的分布,出现误判**拿数据来问用户**;
+# ⛔ build 不许自己定 1s / 3s / 5s。
+QS_FRESH = "fresh"
+QS_WRONG_TRADE_DATE = "wrong_trade_date"
+QS_BEFORE_FINAL_AUCTION = "before_final_auction"
+QS_FUTURE_TIMESTAMP = "future_timestamp"
+QS_TIMESTAMP_UNPARSEABLE = "timestamp_unparseable"
+QS_REQUIRED_FIELD_MISSING = "required_field_missing"
+QS_MALFORMED = "malformed"
+QUOTE_STATUSES = (
+    QS_FRESH, QS_WRONG_TRADE_DATE, QS_BEFORE_FINAL_AUCTION, QS_FUTURE_TIMESTAMP,
+    QS_TIMESTAMP_UNPARSEABLE, QS_REQUIRED_FIELD_MISSING, QS_MALFORMED,
+)
+
+# ── 🔴 V2.4.0 P2.2:双源核验后**这一只代码**的可用状态(K8 §二十「主备源」逐条)——
+#   · `fresh`        至少一源通过**全部**七项校验,且两源没有结论性冲突;
+#   · `degraded`     读数**可以用**、但七项里有非致命项没过(目前只有一种:源还没
+#                    发出开盘价)—— 读数照出、样本域降级,⛔ 不当"没有";
+#   · `insufficient` 双源(或唯一源)都踩了**致命项** → 这一格**没有可用读数**;
+#   · `conflict`     双源都新鲜、但出现**结论性冲突** → ⛔ 不能高置信输出。
+#
+# 🔴 **为什么要有 `degraded` 这一档**(施工实打,⛔ 别"简化"回三态):K8 第 ⑤ 项把
+# 「开盘价 / 现价 / 前收盘价」并列成"必要字段",但三者在本系统里的**后果完全不同** ——
+# 现价与前收盘是竞价涨跌幅的分子分母(缺了整条读数都算不出),而开盘价只被
+# 「有没有触发 D0 失效位」这一项用,而那一项**本来就有自己的第三态**
+# (`UNDET_NO_OPEN_PRICE`,V2.3.3 复审 🔴-1 立的)。把三者一视同仁地判成"整条不可用",
+# 等于用一个新病(把好的价量额一起扔掉)换掉一个老病。
+#
+# ⚠ `degraded` / `insufficient` 与 `DQ_*` 字面相同是刻意的(它们就是那一格的三态),
+# 但**语义层级不同**:这几个是逐票的,`DQ_*` 是样本域的。
+QF_FRESH = QS_FRESH
+QF_DEGRADED = DQ_DEGRADED
+QF_INSUFFICIENT = DQ_INSUFFICIENT
+QF_CONFLICT = "conflict"
+QUOTE_FRESHNESS_CODES = (QF_FRESH, QF_DEGRADED, QF_INSUFFICIENT, QF_CONFLICT)
+
+#: 双源**结论性冲突**的四类(K8 §二十 逐字,🔴 **⛔ 零新百分比阈值**)。
+#: ⚠ 「方向相反」用 `> 0` / `< 0` 的**自然分界**(带 `_EPS` 浮点容差),⛔ 不是阈值;
+#: 「触发 / 不触发」「进 / 不进区间」都拿 **D0 卡上冻结的价位**比,同样零新数。
+CONFLICT_DIRECTION_OPPOSITE = "direction_opposite"          # ① 两源涨跌方向相反
+CONFLICT_INVALIDATION_DISAGREE = "invalidation_disagree"    # ② 一源触发 D0 失效位、另一源不触发
+CONFLICT_PLAN_ZONE_DISAGREE = "plan_zone_disagree"          # ③ 一源进入/突破预案区间、另一源不进入
+CONFLICT_IDENTITY_MISMATCH = "identity_mismatch"            # ④ 代码 / 前收 / 交易日不一致
+CONFLICT_CODES = (
+    CONFLICT_DIRECTION_OPPOSITE, CONFLICT_INVALIDATION_DISAGREE,
+    CONFLICT_PLAN_ZONE_DISAGREE, CONFLICT_IDENTITY_MISMATCH,
+)
+
+#: 主源(新浪)/ 备源(腾讯)的角色码。⚠ `Quote.source` 存的是**源的名字**
+#: (`sina` / `tencent`),这两个码存的是**它在本次核验里的角色** —— 两者不是一回事。
+QUOTE_ROLE_PRIMARY = "primary"
+QUOTE_ROLE_BACKUP = "backup"
+
 # ── 🔴 「没判」的原因码(逐票 `hit_invalidation` / `gap_up_deviation` 的**第三态**)——
 # 这两项是**三态**:`True`(命中)/ `False`(看过了、没命中)/ `None`(**没判**)。
 # 🔴 ⛔ **`None` 绝不许折成 `False`「没问题」** —— 那是把「一个字都没核对」讲成
@@ -88,9 +180,14 @@ UNDET_ANCHOR_STALE = "anchor_stale"            # 冻结锚今日失效(疑似除
 UNDET_NO_STOP_LINE = "no_stop_line"            # 卡上没冻结 `close_below_stop_line`
 UNDET_NO_REF_CLOSE = "no_ref_close"            # 卡上没冻结 `ref_close`(D0 收盘锚)
 UNDET_NO_OPEN_PRICE = "no_open_price"          # 行情源还没发开盘价(`quote.open <= 0`)
+#: 🔴 V2.4.0 P2.1:抓到了读数,但它**没通过七项校验**(过期 / 时间戳解不出 / 必要字段
+#: 无效 …)→ **不拿它去判失效位**。拿上一交易日的收盘价跟 D0 冻结止损线比,必然
+#: 得到一条**看起来很像真的假警报** —— 那比不判更糟。⛔ 与 `no_quote` 分开:
+#: 「没抓到」和「抓到了一份不能用的」排障方向完全相反。
+UNDET_QUOTE_INVALID = "quote_invalid"
 UNDETERMINED_CODES = (
     UNDET_NO_QUOTE, UNDET_NO_MEMBER_SCRIPT, UNDET_ANCHOR_STALE,
-    UNDET_NO_STOP_LINE, UNDET_NO_REF_CLOSE, UNDET_NO_OPEN_PRICE,
+    UNDET_NO_STOP_LINE, UNDET_NO_REF_CLOSE, UNDET_NO_OPEN_PRICE, UNDET_QUOTE_INVALID,
 )
 
 # ── 🔴 相对强弱的两条**独立路径**(用户裁定 P3-70,2026-08-12)————————————————
@@ -155,6 +252,14 @@ LLM_CALL_FAILED = "call_failed"                  # 实际落库为 `call_failed:
 # ── 异常与风险的种类码(小报告第 4 块;🔴 一律发码,中文换算在客户端)————————
 RISK_DATA_MISSING = "data_missing"
 RISK_SOURCE_CONFLICT = "source_conflict"
+#: 🔴 V2.4.0 P2.1:**抓到了、但这条读数没通过七项校验**(过期 / 时间戳解不出 / 必要
+#: 字段无效 / 单位转换后为负 …)。⛔ 别并进 `RISK_DATA_MISSING` —— 「没抓到」与
+#: 「抓到了一份不能用的」是两种成因,后者尤其危险:**它长得跟正常读数一模一样**
+#: (上一交易日的缓存行情被当成今天的竞价结果,正是本版要修的第 ① 个病)。
+RISK_QUOTE_INVALID = "quote_invalid"
+#: 🔴 V2.4.0 P2.2:主源不可用、**本次改用了备源**(K8 §二十「记录来源降级」)。
+#: ⚠ 这不是故障 —— 备源新鲜时用备源正是设计;但 ⛔ 不许**静默**换源。
+RISK_SOURCE_DEGRADED = "source_degraded"
 RISK_SINGLE_STRONG = "single_strong"
 RISK_GAP_UP_DEVIATION = "gap_up_deviation"
 RISK_HIT_INVALIDATION = "hit_invalidation"
@@ -200,8 +305,18 @@ __all__ = [
     "CLAMPED_BY_DATA_QUALITY", "CLAMPED_BY_SINGLE_STRONG",
     "CLAMPED_BY_MISSING_STRONG_EVIDENCE", "CLAMPED_BY_Y1_LOW_WEIGHT", "CLAMP_CODES",
     "DQ_OK", "DQ_DEGRADED", "DQ_INSUFFICIENT",
+    "DOMAIN_CRITICAL", "DOMAIN_CONTEXT", "QUALITY_DOMAINS",
+    "CRIT_MEMBER_QUOTE", "CRIT_MARKET_BENCHMARK", "CRIT_SECTOR_BENCHMARK",
+    "CRIT_FROZEN_ANCHOR", "CRITICAL_COMPONENTS",
+    "QS_FRESH", "QS_WRONG_TRADE_DATE", "QS_BEFORE_FINAL_AUCTION", "QS_FUTURE_TIMESTAMP",
+    "QS_TIMESTAMP_UNPARSEABLE", "QS_REQUIRED_FIELD_MISSING", "QS_MALFORMED", "QUOTE_STATUSES",
+    "QF_FRESH", "QF_DEGRADED", "QF_INSUFFICIENT", "QF_CONFLICT", "QUOTE_FRESHNESS_CODES",
+    "CONFLICT_DIRECTION_OPPOSITE", "CONFLICT_INVALIDATION_DISAGREE",
+    "CONFLICT_PLAN_ZONE_DISAGREE", "CONFLICT_IDENTITY_MISMATCH", "CONFLICT_CODES",
+    "QUOTE_ROLE_PRIMARY", "QUOTE_ROLE_BACKUP",
     "UNDET_NO_QUOTE", "UNDET_NO_MEMBER_SCRIPT", "UNDET_ANCHOR_STALE",
-    "UNDET_NO_STOP_LINE", "UNDET_NO_REF_CLOSE", "UNDET_NO_OPEN_PRICE", "UNDETERMINED_CODES",
+    "UNDET_NO_STOP_LINE", "UNDET_NO_REF_CLOSE", "UNDET_NO_OPEN_PRICE",
+    "UNDET_QUOTE_INVALID", "UNDETERMINED_CODES",
     "SECTOR_BENCH_SECTOR_INDEX", "SECTOR_BENCH_PEER_MEDIAN", "SECTOR_BENCH_UNAVAILABLE",
     "SECTOR_BENCH_SOURCES", "SECTOR_PEER_MIN",
     "REL_UNDET_NO_MEMBER_GAP", "REL_UNDET_BOARD_EXCLUDED", "REL_UNDET_NO_BOARD_META",
@@ -212,7 +327,8 @@ __all__ = [
     "PLAN_FIT_BELOW_ZONE", "PLAN_FIT_UNKNOWN", "PLAN_FIT_CODES",
     "LLM_PENDING", "LLM_OK", "LLM_PENDING_EXPLANATION", "LLM_NO_PROVIDER",
     "LLM_PARSE_FAILED", "LLM_BUDGET_EXHAUSTED", "LLM_CALL_FAILED",
-    "RISK_DATA_MISSING", "RISK_SOURCE_CONFLICT", "RISK_SINGLE_STRONG",
+    "RISK_DATA_MISSING", "RISK_SOURCE_CONFLICT", "RISK_QUOTE_INVALID",
+    "RISK_SOURCE_DEGRADED", "RISK_SINGLE_STRONG",
     "RISK_GAP_UP_DEVIATION", "RISK_HIT_INVALIDATION", "RISK_ANCHOR_STALE",
     "RISK_INVALIDATION_UNDETERMINED",
     "RISK_AUCTION_VOLUME", "RISK_EVIDENCE_CONFLICT", "RISK_VERDICT_CLAMPED", "RISK_LLM", "RISK_LLM_NOTE",

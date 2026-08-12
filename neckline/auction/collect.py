@@ -46,12 +46,14 @@ from neckline.auction import (
     DQ_INSUFFICIENT,
     DQ_OK,
     NOTE_INDUSTRY_MAP_UNAVAILABLE,
+    QF_FRESH,
     REL_UNDET_BOARD_EXCLUDED,
     REL_UNDET_NO_BOARD_META,
 )
+from neckline.auction.quality import QuoteQuality, resolve_dual
 from neckline.calendar import prev_trading_day
 from neckline.data.board import Board
-from neckline.sentinel.quotes import Quote, get_quotes
+from neckline.sentinel.quotes import DualQuote, Quote, get_quotes, get_quotes_dual
 from neckline.sentinel.universe import (
     BOARD_BENCHMARK_INDEX,
     DEFAULT_BREADTH_CAP,
@@ -149,9 +151,25 @@ class AuctionSnapshot:
     #: 非空 = **拉价前复判窗口已关**,本次一条价都没拉、⛔ 零落库(〇b-4 同一条纪律)。
     fetch_skipped_reason: str = ""
     requested: Tuple[str, ...] = ()        # 抓取清单(去重后,确定性顺序)
+    #: **选用的**那一份读数(双源核验后的胜出者)。⚠ 只装通过七项校验的
+    #: (V2.4.0 P2.1 起)—— 不合格的原始读数仍在 `quote_quality` 里逐字留痕,
+    #: ⛔ 但不许拿它去派生「今天的竞价涨跌幅」。
     quotes: Mapping[str, Quote] = field(default_factory=dict)
-    missing: Tuple[str, ...] = ()          # 清单里但拉不到的
-    conflicts: Tuple[str, ...] = ()        # 跨源冲突;⚠ 结构性恒空,见模块 DDL 注释与 §七 P4-66
+    missing: Tuple[str, ...] = ()          # 清单里、**两源都没拉到**的
+    #: 🔴 V2.4.0 P2.1:抓到了读数、但**七项校验没过**(过期 / 时间戳解不出 / 字段无效)。
+    #: ⛔ 与 `missing` 分开:「没抓到」与「抓到了一份昨天的」排障方向完全相反,
+    #: 而后者尤其危险 —— 它长得跟正常读数一模一样。
+    invalid: Tuple[str, ...] = ()
+    #: 🔴 V2.4.0 P2.2:逐票**双源核验**的完整账(两源原始读数 + 七项校验 + 冲突码)。
+    #: 落 `auction_reports.quote_quality_json`。
+    quote_quality: Mapping[str, QuoteQuality] = field(default_factory=dict)
+    #: 两源的**原始 `Quote` 对象**(只在内存里传,⛔ 不落库 —— 落库的是上面那份账)。
+    #: `mech.py` 要拿它做需要 D0 卡的两类冲突判定(② 失效位 / ③ 预案区间)。
+    dual_quotes: Mapping[str, DualQuote] = field(default_factory=dict)
+    #: 跨源冲突。⚠ **V2.4.0 P2.2 起真的会有值**(V2.3.3 时代它结构性恒空,§七 P4-66
+    #: 已改判)—— 本层只装**不需要 D0 卡**的两类(④ 身份不一致 / ① 方向相反);
+    #: 需要卡的两类(② 失效位 / ③ 预案区间)在 `mech.py` 逐成员判(那里才有冻结卡)。
+    conflicts: Tuple[str, ...] = ()
     baskets: Tuple[BasketRef, ...] = ()    # D0 的 T1/T2 篮子(含成员与引擎归属四键)
     index_codes: Tuple[str, ...] = ()      # 三支市场指数 + 各板块基准指数(去重)
     benchmark_of: Mapping[str, str] = field(default_factory=dict)   # 个股 → 其板块基准指数
@@ -199,7 +217,26 @@ class AuctionSnapshot:
             return None
         return (self.captured_at - self.fetch_started_at).total_seconds()
 
+    def is_usable(self, code: str) -> bool:
+        """这一格**有没有可用读数**(V2.4.0 P2.1)。
+
+        🔴 判据是「双源核验后 `freshness != insufficient`」,**⛔ 不是「`code in quotes`」**
+        —— 那正是本版要修的第 ① 个病:上一交易日的缓存行情**也在 `quotes` 里**,
+        而且长得跟正常读数一模一样。
+        ⚠ 没有 `quote_quality` 条目(老快照 / 手工构造的替身)→ 退回「有读数就算可用」,
+        这是**兼容**路径,不是判据(新链路每一只都会有条目)。
+        """
+        qq = (self.quote_quality or {}).get(code)
+        if qq is None:
+            return code in self.quotes
+        return bool(qq.usable) and code in self.quotes
+
     def gap_of(self, code: str) -> Optional[float]:
+        """竞价涨跌幅。🔴 **不可用的读数一律返回 `None`**(V2.4.0 P2.1)——
+        拿昨天的收盘价算出「今天涨了 7%」并印在界面上,是本版明令要掐掉的那件事。
+        原始读数没有丢:它在 `quote_quality[code].checks` 里逐字留着。"""
+        if not self.is_usable(code):
+            return None
         q = self.quotes.get(code)
         if q is None:
             return None
@@ -208,21 +245,28 @@ class AuctionSnapshot:
     def quality_of(self, codes: "Tuple[str, ...] | List[str]") -> str:
         """某个样本域的数据质量三态(**结构性判据,⛔ 不是百分比阈值**)。
 
-            insufficient = 样本域里一条都没抓到(fetched == 0)
-            ok           = fetched == requested 且 跨源冲突为空 且 captured_at 在窗内
-            degraded     = 其余(有缺失 / 有冲突 / 抓取时刻越窗)
+            insufficient = 样本域里一条**可用读数**都没有
+            ok           = 每一格都可用 且 跨源冲突为空 且 captured_at 在窗内
+            degraded     = 其余(有缺失 / 有不合格读数 / 有冲突 / 抓取时刻越窗)
 
         ⚠ 样本域**为空**(例如 D0 一个篮子都没有)也判 `insufficient` —— 「没有可判的
         东西」与「判过了都好」必须分得开(§七 P0-39 同款纪律)。
+        ⚠ **V2.4.0 P2.1 起判据由「抓到没有」换成「可用不可用」**:过期 / 时间戳解不出 /
+        必要字段无效的读数**算作没有** —— 旧判据会把一份昨天的行情算成"抓到了"。
         """
         want = [c for c in dict.fromkeys(codes)]
         if not want:
             return DQ_INSUFFICIENT
-        got = [c for c in want if c in self.quotes]
+        got = [c for c in want if self.is_usable(c)]
         if not got:
             return DQ_INSUFFICIENT
         conflicted = set(self.conflicts) & set(want)
-        if len(got) == len(want) and not conflicted and self.captured_in_window:
+        # 🔴 「可以用」与「七项全过」是两档:缺开盘价的读数**照用**,但样本域降级
+        # (⛔ 别把它判成 `ok`,那会让「源还没发开盘价」这件事在质量上完全消失)。
+        # ⚠ 没有逐票账的兼容路径(老快照 / 手工替身)按老口径走「有读数就算全过」。
+        qq = self.quote_quality or {}
+        all_fresh = all((c not in qq) or qq[c].freshness == QF_FRESH for c in want)
+        if len(got) == len(want) and all_fresh and not conflicted and self.captured_in_window:
             return DQ_OK
         return DQ_DEGRADED
 
@@ -291,11 +335,24 @@ def collect_auction_snapshot(
     parquet_dir: Optional[Path] = None,
     breadth_cap: int = DEFAULT_BREADTH_CAP,
     quotes_fn: Optional[Callable[[List[str]], Dict[str, Quote]]] = None,
+    dual_quotes_fn: Optional[Callable[[List[str]], Dict[str, DualQuote]]] = None,
     now_fn: Optional[Callable[[], datetime]] = None,
 ) -> AuctionSnapshot:
-    """拉一次价并冻结。`quotes_fn` 可覆盖(默认 `sentinel.quotes.get_quotes`)——
-    合成竞价快照冒烟(`scripts/smoke_auction.py`)据此注入,不改一行编排,同
-    `precall.run_precall_tick` 的既有体例。
+    """拉一次价并冻结。
+
+    🔴 **V2.4.0 P2.2 起走双源**(`sentinel.quotes.get_quotes_dual`):新浪一次批量 +
+    腾讯一次批量,**净增 1 次 HTTP 请求 / 早晨**(此前是「1 次新浪 + 缺票时 1 次腾讯」)。
+    K8 §二十 要求对 T1/T2 成员及实际使用的关键基准做**有界双源核验**,而核验需要两个
+    可以互相打架的读数 —— V2.3.3 ⑨-B-3「⛔ 不加第二次网络请求」的旧取舍**已被推翻**
+    (§五 P2.2 抬头写明出处,§七 P4-66 改判)。⛔ 别再照旧注释办事。
+    ⚠ **有界在语义层,不在请求层**:两次批量请求覆盖同一份(本就有界的)抓取清单 ——
+    ⛔ 逐票请求是明令禁止的(9:26 那一刻的限流面必须可控);而**冲突判定**只对篮子
+    成员与它们实际用到的基准做(见 `mech.py`)。
+
+    `dual_quotes_fn` / `quotes_fn` 都可覆盖(合成竞价冒烟 `scripts/smoke_auction.py`
+    与单测据此注入,不改一行编排,同 `precall.run_precall_tick` 的既有体例)。
+    ⚠ **只给 `quotes_fn` = 单源替身**:那时备源恒缺席、跨源冲突结构性为空 ——
+    这是替身的局限,**不是"已核对无冲突"**(逐票账里 `checks` 只有一条,一眼看得出)。
 
     🔴 **`now_fn` 是"真实时钟",`now` 是"那一拍的名义时刻"**(V2.3.3 复审 🟡-2):
     `captured_at` 一律取 **`fetch()` 返回之后**的 `now_fn()`,`fetch_started_at` 取
@@ -357,7 +414,8 @@ def collect_auction_snapshot(
             trade_date=trade_date, d0_date=prev_trading_day(trade_date),
             captured_at=fetch_started_at, fetch_started_at=fetch_started_at,
             fetch_skipped_reason=SKIP_WINDOW_CLOSED,
-            requested=tuple(requested), quotes={}, missing=tuple(requested), conflicts=(),
+            requested=tuple(requested), quotes={}, missing=tuple(requested),
+            invalid=(), quote_quality={}, conflicts=(),
             baskets=tuple(wu.baskets), index_codes=tuple(index_codes),
             benchmark_of=benchmark_of,
             market_index_of=mkt_index_of, market_index_undetermined=mkt_index_undet,
@@ -367,17 +425,47 @@ def collect_auction_snapshot(
             notes=tuple(notes + [SKIP_WINDOW_CLOSED]),
         )
 
-    fetch = quotes_fn or (lambda codes: get_quotes(codes))
-    quotes: Dict[str, Quote] = {}
+    # 🔴 **双源批量抓取**(P2.2)。`quotes_fn`(单源替身)仍受支持:那时备源恒缺席。
+    if dual_quotes_fn is not None:
+        fetch_dual = dual_quotes_fn
+    elif quotes_fn is not None:
+        def fetch_dual(cs: List[str]) -> Dict[str, DualQuote]:
+            single = dict(quotes_fn(cs) or {})
+            return {c: DualQuote(code=c, primary=single.get(c)) for c in cs}
+    else:
+        fetch_dual = get_quotes_dual
+
+    duals: Dict[str, DualQuote] = {}
     if requested:
         try:
-            quotes = dict(fetch(requested) or {})
+            duals = dict(fetch_dual(requested) or {})
         except Exception:  # noqa: BLE001
             logger.warning("[auction] 竞价批量拉价失败,本次快照为空(如实标 insufficient)",
                            exc_info=True)
             notes.append("quotes_fetch_failed")
     # 🔴 **冻结时刻 = 真正拉完价的这一刻**(⛔ 不是轮询那一拍的 `now`)。
     captured_at = clock()
+
+    # 🔴 **七项校验 + 双源归一**(P2.1 / P2.2)。判定纯函数住 `quality.py`,
+    # 本层只负责「每一只都过一遍、把账收起来」。
+    # ⚠ 这里只做**不需要 D0 卡**的两类冲突(④ 身份 / ① 方向);需要卡的两类
+    # (② 失效位 / ③ 预案区间)在 `mech.py` 逐成员判 —— 那里才拿得到冻结卡。
+    quotes: Dict[str, Quote] = {}
+    quote_quality: Dict[str, QuoteQuality] = {}
+    dual_by_code: Dict[str, DualQuote] = {}
+    for code in requested:
+        d = duals.get(code) or DualQuote(code=code)
+        dual_by_code[code] = d
+        chosen, qq = resolve_dual(code, d, trade_date=trade_date, captured_at=captured_at)
+        quote_quality[code] = qq
+        if chosen is not None and qq.usable:
+            quotes[code] = chosen
+    degraded_sources = [c for c, qq in quote_quality.items() if qq.source_degraded and qq.usable]
+    if degraded_sources:
+        # K8 §二十:「主源过期、备用源有效时使用备用源,并**记录来源降级**」。
+        logger.info("[auction] %d 只改用备源(主源不可用 / 未通过校验):%s",
+                    len(degraded_sources), "、".join(sorted(degraded_sources)[:20]))
+        notes.append(f"source_degraded:{len(degraded_sources)}")
     if not (AUCTION_WINDOW_START <= captured_at.time() < AUCTION_WINDOW_END):
         # 拉价**跨过了**窗口右端:报告照常落库(机械事实与失效警报不能丢),但
         # `captured_in_window` 为假 → `data_quality` 降级 → 闸 1 把结论夹成中性。
@@ -394,15 +482,25 @@ def collect_auction_snapshot(
         prev5 = {}
         notes.append("prev5_volume_unavailable")
 
-    missing = tuple(c for c in requested if c not in quotes)
+    # 🔴 「两源都没拉到」与「拉到了但不合格」**分成两栏**(⛔ 别合并):
+    # 前者是网络 / 限流问题,后者是数据本身有问题 —— 排障方向完全相反。
+    missing = tuple(c for c in requested if not quote_quality.get(c, None)
+                    or not quote_quality[c].checks)
+    invalid = tuple(c for c in requested
+                    if c not in missing and not quote_quality[c].usable)
+    conflicts = tuple(c for c in requested if quote_quality.get(c) is not None
+                      and quote_quality[c].conflict)
     basket_member_set = set(basket_codes)
     index_set = set(index_codes)
     # 第 5 组:竞价强势股(代理样本)= 抓到了、gap>0、不属于任何 T1/T2 篮、不是指数。
     # ⚠ **不截断**(§五 ⑨-A 第 5 行);排序按 gap 降序 + 代码升序做**确定性 tie-break**
     # (CLAUDE.md:进判据 / 排序的名次必须先排定确定性 tie-break)。
+    # 🔴 V2.4.0 P2.1:**只收可用读数**(⛔ 别拿一份昨天的行情当"今天的竞价强势股")。
     anchors: List[Tuple[float, str]] = []
     for code in requested:
         if code in basket_member_set or code in index_set:
+            continue
+        if code in invalid or code in missing:
             continue
         g = gap_pct_of(getattr(quotes.get(code), "price", None),
                        getattr(quotes.get(code), "pre_close", None))
@@ -418,10 +516,12 @@ def collect_auction_snapshot(
         requested=tuple(requested),
         quotes=quotes,
         missing=missing,
-        # ⚠ 跨源冲突**结构性不可达**:`sentinel/quotes.py` 是「主源失败才降备源」、
-        # **不同时拉两源** → 没有第二个读数可以跟第一个打架。字段留着是因为 K8 §二十
-        # 要求报"冲突状态";⛔ 不为它加第二次网络请求(§七 P4-66)。
-        conflicts=(),
+        invalid=invalid,
+        quote_quality=quote_quality,
+        dual_quotes=dual_by_code,
+        # 🔴 **V2.4.0 P2.2 起真的会有值**:双源批量核验已上线,§七 P4-66 改判
+        # (旧注释「结构性不可达 / ⛔ 不加第二次请求」已作废,⛔ 别照它办事)。
+        conflicts=conflicts,
         baskets=tuple(wu.baskets),
         index_codes=tuple(index_codes),
         benchmark_of=benchmark_of,

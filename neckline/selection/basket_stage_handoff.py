@@ -86,11 +86,17 @@ class BasketStageVerdict:
     notes: Tuple[str, ...]
     engine_ran: bool
     reason_code: Optional[str]
+    # 🔴 V2.4.0 P2.5(K8 §十):**系统缺席时保留机械候选数量与简短摘要**。
+    # ⚠ `None` / 空串 = **当时没记这一位**(老行 / ⑤ 早返回),⛔ 不拿 `0` 冒充
+    # 「一个种子都没有」——「没有」与「没看」必须分得开(§3.8 的同一条)。
+    # 🔴 未解释 seed **不是第四种候选状态**:⛔ 不冒充 T2、⛔ 不进 OUT、⛔ 不进选股时钟。
+    seed_count: Optional[int] = None
+    seed_summary: str = ""
 
 
 def stage_verdict(
     *, search_stage: str, reason_stage: str, basket_count: int, notes: Sequence[str],
-    trade_date: str = "",
+    trade_date: str = "", seed_count: Optional[int] = None, seed_summary: str = "",
 ) -> BasketStageVerdict:
     """「⑤ 到底跑成了没有」的**唯一判读实现**。
 
@@ -107,29 +113,32 @@ def stage_verdict(
     炸在编排层)。**未知码保守判没跑成** —— 认不出来的状态不许当成"知道没有"。
     """
     notes_t = tuple(str(n) for n in notes)
+    seeds = (seed_count, seed_summary)
     for n in notes_t:
         if n.startswith(NOTE_AGGREGATE_FAILED_PREFIX):
-            return _verdict(trade_date, search_stage, reason_stage, basket_count, notes_t, n)
+            return _verdict(trade_date, search_stage, reason_stage, basket_count, notes_t, n, seeds)
     if NOTE_NO_ACTIVE_PACK in notes_t:
         return _verdict(trade_date, search_stage, reason_stage, basket_count, notes_t,
-                        "no_active_pack")
+                        "no_active_pack", seeds)
     if reason_stage == STAGE_OK or reason_stage == STAGE_NO_SEEDS:
-        return _verdict(trade_date, search_stage, reason_stage, basket_count, notes_t, None)
+        return _verdict(trade_date, search_stage, reason_stage, basket_count, notes_t, None, seeds)
     known = (
         reason_stage in (STAGE_NO_PROVIDER, STAGE_BUDGET_EXHAUSTED, STAGE_PARSE_FAILED)
         or reason_stage.startswith(STAGE_CALL_FAILED)
         or reason_stage.startswith(STAGE_SEGMENT_FAILED_PREFIX)
     )
     return _verdict(trade_date, search_stage, reason_stage, basket_count, notes_t,
-                    reason_stage if known else f"unknown_stage:{reason_stage}")
+                    reason_stage if known else f"unknown_stage:{reason_stage}", seeds)
 
 
 def _verdict(trade_date: str, search_stage: str, reason_stage: str, basket_count: int,
-             notes: Tuple[str, ...], reason_code: Optional[str]) -> BasketStageVerdict:
+             notes: Tuple[str, ...], reason_code: Optional[str],
+             seeds: Tuple[Optional[int], str] = (None, "")) -> BasketStageVerdict:
     return BasketStageVerdict(
         trade_date=trade_date, search_stage=str(search_stage), reason_stage=str(reason_stage),
         basket_count=int(basket_count), notes=notes,
         engine_ran=(reason_code is None), reason_code=reason_code,
+        seed_count=seeds[0], seed_summary=str(seeds[1] or ""),
     )
 
 
@@ -142,18 +151,29 @@ def save_stage_handoff(
     `baskets`/`notes` 四项,便于编排层在整段炸掉时传一个合成对象进来)。
     """
     payload_notes = [str(n) for n in (getattr(result, "notes", None) or ())]
+    # 🔴 V2.4.0 P2.5:duck-typed 读两位新字段 —— 编排层在整段炸掉时传的是一个
+    # **合成对象**(`SimpleNamespace`),它没有这两位 → `None` / 空串 = 「没记」,
+    # ⛔ 不拿 `0` 冒充「一个种子都没有」。
+    raw_count = getattr(result, "seed_count", None)
+    try:
+        seed_count = None if raw_count is None else int(raw_count)
+    except (TypeError, ValueError):
+        seed_count = None
+    seed_summary = str(getattr(result, "seed_summary", "") or "")
     init_schema(db_path)
     with connection(db_path) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO basket_stage_handoff "
-            "(trade_date, search_stage, reason_stage, basket_count, notes_json, created_at) "
-            "VALUES (?,?,?,?,?,?)",
+            "(trade_date, search_stage, reason_stage, basket_count, notes_json, "
+            "seed_count, seed_summary, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (
                 _day(trade_date),
                 str(getattr(result, "search_stage", "") or ""),
                 str(getattr(result, "reason_stage", "") or ""),
                 len(getattr(result, "baskets", None) or ()),
                 json.dumps(payload_notes, ensure_ascii=False),
+                seed_count, seed_summary,
                 _now(),
             ),
         )
@@ -170,7 +190,8 @@ def load_stage_verdict(
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
-            "SELECT search_stage, reason_stage, basket_count, notes_json "
+            "SELECT search_stage, reason_stage, basket_count, notes_json, "
+            "seed_count, seed_summary "
             "FROM basket_stage_handoff WHERE trade_date=?",
             (_day(trade_date),),
         ).fetchone()
@@ -188,9 +209,14 @@ def load_stage_verdict(
         count = int(row[2])
     except (TypeError, ValueError):
         count = 0
+    try:
+        seed_count = None if row[4] is None else int(row[4])
+    except (TypeError, ValueError):
+        seed_count = None
     return stage_verdict(
         trade_date=_day(trade_date), search_stage=str(row[0] or ""),
         reason_stage=str(row[1] or ""), basket_count=count, notes=notes,
+        seed_count=seed_count, seed_summary=str(row[5] or ""),
     )
 
 

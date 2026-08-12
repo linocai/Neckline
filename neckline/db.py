@@ -1450,12 +1450,17 @@ CREATE TABLE IF NOT EXISTS auction_reports (
   requested_codes     INTEGER NOT NULL,
   fetched_codes       INTEGER NOT NULL,
   missing_codes_json  TEXT NOT NULL,         -- ["600xxx.SH", …] 拉不到的
-  conflict_codes_json TEXT NOT NULL,         -- 跨源冲突;⚠ **当前结构性恒空**:`sentinel/quotes.py`
-                                             -- 是「主源失败才降备源」、**不同时拉两源**,故无从冲突。
-                                             -- 字段留着是因为 K8 §二十 要求报"冲突状态";
-                                             -- ⛔ 不为它加第二次网络请求(9:26 那一刻多一次限流
-                                             -- 风险,代价远大于收益)。见 §五 ⑨-B-3 / §七 P4-66。
+  conflict_codes_json TEXT NOT NULL,         -- 跨源冲突。🔴 **V2.4.0 P2.2 起真的会有值**:
+                                             -- `get_quotes_dual()` 双源批量核验已上线(净增 1 次
+                                             -- HTTP 请求 / 早晨),四类结论性冲突见
+                                             -- `auction/__init__.py::CONFLICT_CODES`。
+                                             -- ⚠ V2.3.3 时代「结构性恒空、⛔ 不加第二次请求」的
+                                             -- 旧口径**已被 K8 §二十「有界双源核验」推翻**
+                                             -- (§五 P2.2 抬头写明出处,§七 P4-66 改判)。
   data_quality        TEXT NOT NULL,         -- ok | degraded | insufficient(市场级;结构性判据,⛔ 非百分比)
+                                             -- ⚠ 市场级这一列**仍是整体覆盖率读数**,刻意没有收窄
+                                             -- 成关键域(它不驱动任何夹逼闸);篮子级那一列才收窄了。
+                                             -- 分域读数见 quote_quality_json 与 auction_verdicts 的三新列。
   -- 小报告第 2 块「市场与主线概览」
   index_gaps_json     TEXT NOT NULL,         -- {"000001.SH":{"gap_pct":…}, "399001.SZ":…, "399006.SZ":…}
   market_anchors_json TEXT NOT NULL,         -- 竞价强势股(**代理样本**,不是全市场竞价排行)
@@ -1502,6 +1507,10 @@ CREATE TABLE IF NOT EXISTS auction_verdicts (
   regime_at_d0          TEXT,                -- 周度聚合维度;NULL = 当日 market_regime_daily 无行(如实)
   -- 机械层(第一次写,永不改)
   data_quality          TEXT NOT NULL,       -- 篮级 ok | degraded | insufficient
+                                             -- 🔴 **V2.4.0 P2.3 起本列 = 关键域质量**(含义收窄,
+                                             -- 施工图 §五 P2.3);V2.3.3 及更早的行里它是**整体**质量
+                                             -- —— 老行靠 `critical_data_quality` 为 NULL 分辨
+                                             -- (客户端显示「旧版本未细分」,⛔ 不得默认成正常)。
   members_json          TEXT NOT NULL,       -- 逐票明细(键表见 §五 ②-F;🔴 一律发枚举码)
   sector_sync_json      TEXT NOT NULL,       -- 同向数 / 强弱分布 / 所属上市板块对照指数读数
                                              -- (⛔ 那一组不是「板块基准」:主板票落到的就是
@@ -1672,6 +1681,25 @@ _COLUMN_MIGRATIONS = [
     # `baskets` 表**(`baskets.tier` NOT NULL,溢出篮无档可填),报告快照是它唯一的
     # 落点;不存 = 历史回放永远看不到"那天有多少好货装不下"。
     ("reports", "basket_daily_json", "TEXT NOT NULL DEFAULT '{}'"),
+    # ── V2.4.0 P2.4(2026-08-12):竞价层数据可靠性。**全部可空、旧行保持 NULL**。
+    # 🔴 **NULL 的含义是「这一版还没有分域 / 逐票核验这个概念」,⛔ 不是「正常」**
+    # (施工图 §五 P2.3 逐字:旧报告没有这些字段时显示「旧版本未细分」,
+    #  ⛔ 不得默认成正常)—— 所以刻意**不给 DEFAULT**,老行读回来就是 NULL。
+    # 🔴 四列**全部是机械冻结列**:⛔ 不得加进 `auction/store.py` 的
+    # `LLM_UPDATABLE_*_COLUMNS` 白名单(守门单测锁死)。
+    # ⛔ **不重写 v2.3.3 的历史竞价报告**(〇-5「历史只读」)。
+    ("auction_reports", "quote_quality_json", "TEXT"),      # 逐票七项校验 + 双源原始读数
+    ("auction_verdicts", "critical_data_quality", "TEXT"),  # 关键域质量(= 收窄后的 data_quality)
+    ("auction_verdicts", "context_data_quality", "TEXT"),   # 上下文域质量(⛔ 不夹逼结论)
+    ("auction_verdicts", "quality_detail_json", "TEXT"),    # 两域逐项账(缺了什么、冲突在哪)
+    # ── V2.4.0 P2.5(2026-08-12):⑤ 段状态表补两位「机械 seed」留痕。
+    # 🔴 **为什么必须落表**:K8 §十 要求「系统缺席时保留机械候选数量和简短摘要」,
+    # 而 ⑯-D 之后 ⑤ 与报告段可能跑在**两个进程**里 —— 内存传不过去,报告层又
+    # ⛔ 零现算(P0-23)。这张表本来就是 P0-39 为「跨进程读段状态」建的,落在这里
+    # 是同一个理由的延长线,⛔ 不另起一张表。
+    # ⚠ 可空不给默认:老行 NULL = **当时没记这一位**,⛔ 不拿 `0` 冒充「一个种子都没有」。
+    ("basket_stage_handoff", "seed_count", "INTEGER"),
+    ("basket_stage_handoff", "seed_summary", "TEXT"),
 ]
 
 

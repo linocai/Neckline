@@ -693,6 +693,14 @@ class AggregateResult:
     search_stage: str = STAGE_NO_SEEDS
     reason_stage: str = STAGE_NO_SEEDS
     reason_narrative: str = ""
+    # 🔴 V2.4.0 P2.5(K8 §十「正式空结果与系统缺席严格分开」):**机械 seed 的数量与
+    # 简短摘要**。LLM 缺席时报告要显示「选股解释未完成」并**保留机械候选数量和简短
+    # 摘要** —— 那两个数只有这一层知道。
+    # ⚠ `None` = **本次没记这一位**(⑤ 早返回 / 老行),⛔ 不拿 `0` 冒充「一个种子都没有」。
+    # 🔴 未解释 seed **不是第四种候选状态**(K8 §十 末句):它⛔ 不进 `baskets`、
+    # ⛔ 不进 OUT、⛔ 不进关口与定档流程,只是一句"机械层当时看到了这么多方向"。
+    seed_count: Optional[int] = None
+    seed_summary: str = ""
     pack_version: str = ""
     charter_version: str = CHARTER_UNKNOWN
     notes: Tuple[str, ...] = ()
@@ -2299,12 +2307,18 @@ def aggregate_baskets(
         pack_version = seed_set.pack_version
         charter_version = _resolve_charter_version(db_path)
         seeds = _select_seeds(seed_set, max_seeds)
+        # 🔴 V2.4.0 P2.5:机械 seed 的**数量与简短摘要**在这里定格 —— 后面任何一段
+        # 缺席(推理段 / 整段异常)都要带着它返回,报告才讲得出「选股解释未完成,
+        # 但机械层当时看到了这些方向」(K8 §十)。
+        seed_count = len(seed_set.all_seeds())
+        seed_summary = _seed_summary_text(seed_set)
         if not seeds:
             notes.append("empty_seed_set")
             return AggregateResult(trade_date=trade_date_s, pack_version=pack_version,
-                                   charter_version=charter_version, notes=tuple(notes))
-        if len(seed_set.all_seeds()) > len(seeds):
-            notes.append(f"seeds_truncated:{len(seeds)}/{len(seed_set.all_seeds())}")
+                                   charter_version=charter_version, notes=tuple(notes),
+                                   seed_count=seed_count, seed_summary=seed_summary)
+        if seed_count > len(seeds):
+            notes.append(f"seeds_truncated:{len(seeds)}/{seed_count}")
 
         ledger = ledger or BudgetLedger()
         all_codes = sorted({c for s in seeds for c in s.member_codes})
@@ -2377,6 +2391,9 @@ def aggregate_baskets(
                 hygiene_rejected=hygiene.rejected,
                 search_stage=search_stage, reason_stage=reason_stage, reason_narrative=narrative,
                 pack_version=pack_version, charter_version=charter_version, notes=tuple(notes),
+                # 🔴 P2.5:**推理段缺席正是那条要保留 seed 摘要的路径**(K8 §十
+                # 「系统缺席时保留机械候选数量和简短摘要」)。
+                seed_count=seed_count, seed_summary=seed_summary,
             )
 
         # —— 机械闸 ————————————————————————————————————————————————
@@ -2403,11 +2420,42 @@ def aggregate_baskets(
             evidence_by_seed=evidence_by_seed, search_stage=search_stage,
             reason_stage=reason_stage, reason_narrative=narrative,
             pack_version=pack_version, charter_version=charter_version, notes=tuple(notes),
+            seed_count=seed_count, seed_summary=seed_summary,
         )
     except Exception as exc:  # noqa: BLE001 —— 保险丝:聚合层塌了也不许当日无报告
         logger.error("[aggregate] %s 驱动聚合整体失败,当日无篮子(不阻断报告)", trade_date_s, exc_info=True)
         notes.append(f"aggregate_failed:{type(exc).__name__}")
         return AggregateResult(trade_date=trade_date_s, notes=tuple(notes))
+
+
+#: 四类种子的中文标签(**展示层换算,服务端这一处是唯一源**;⛔ 码不直接印给用户)。
+_SEED_KIND_LABEL: Dict[str, str] = {
+    seeds_mod.HOT_INDUSTRY: "热点行业",
+    seeds_mod.SURGING_CONCEPT: "异动概念",
+    seeds_mod.LIMIT_CLUSTER: "涨停簇",
+    seeds_mod.ANOMALY_CLUSTER: "异动簇",
+}
+
+
+def _seed_summary_text(seed_set: Any) -> str:
+    """机械 seed 的**简短摘要**(V2.4.0 P2.5,K8 §十)。
+
+    形状 = 「四类各几个」+「方向标签清单」。🔴 **⛔ 不截断**(同竞价强势股那条既定
+    理由:截断需要一个 K8 没给的数);量级上限由 ④ 扫描层的种子生成本身兜着。
+    ⚠ 它只是**机械层当时看到了哪些方向**的留痕 —— ⛔ 不是候选、不是推荐、
+    ⛔ 不进任何判定路径。
+    """
+    try:
+        counts = seed_set.counts()
+        all_seeds = seed_set.all_seeds()
+    except Exception:  # noqa: BLE001 —— 留痕不许连累主流程
+        return ""
+    head = " · ".join(f"{_SEED_KIND_LABEL.get(k, k)} {n}" for k, n in counts.items())
+    labels = [str(getattr(s, "label", "") or "").strip() for s in all_seeds]
+    labels = [x for x in labels if x]
+    if not labels:
+        return head
+    return f"{head};方向:{'、'.join(labels)}"
 
 
 def _resolve_provider(task: str, db_path: Optional[Path]) -> Optional[LLMProvider]:

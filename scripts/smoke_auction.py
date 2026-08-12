@@ -15,8 +15,19 @@ open / pre_close / vol** 合成一份「集合竞价快照」,再注入一个**�
 **合成方法(诚实标注局限)**:同 `smoke_precall.synthesize_auction_quote` —— `price`/`open`
 取当日真实开盘价(即竞价撮合价)、`pre_close` 取真实昨收、竞价量按 `AUCTION_VOL_FRAC`
 比例合成。⚠ **三支市场指数与板块基准指数在 `daily` 里没有行**(它们是指数不是个股)→
-本冒烟里它们一律「拉不到」,数据质量因此必然是 `degraded` —— **这是合成环境的局限,
-不是代码故障**(生产走 `sentinel/quotes.py` 真拉,指数是有报价的)。
+本冒烟里它们一律「拉不到」—— **这是合成环境的局限,不是代码故障**(生产走
+`sentinel/quotes.py` 真拉,指数是有报价的)。
+
+🔴 **V2.4.0 P2 起本冒烟的表现变了,如实记在这里**(施工图 §五 P2 DoD 明令要写):
+  · **`ts` 必须是能解析的 D1 时刻**:P2.1 的七项校验会看它 —— 老版本合成的
+    `ts="集合竞价 合成"` 现在一律判 `timestamp_unparseable` → **整份快照零可用读数**,
+    冒烟会变成空跑。故合成时钉成 `<D1> 09:25:03`(落在 K8 给的 `[09:25, captured_at]` 内)。
+  · **走 `dual_quotes_fn` 双源注入**:`quotes_fn`(单源)也仍然支持,但那样备源恒缺席、
+    跨源冲突结构性为空 —— **验不到 P2.2**。本脚本因此给每只票造两源读数,并**刻意**把
+    第一只成员的**主源**造成"昨天的",让「主源过期 → 用备源 → 记来源降级」这条路真的走一遍。
+  · **数据质量分两域报**:市场级 `data_quality` 仍是整体覆盖率读数;**篮子级**那一列
+    自 P2.3 起 = **关键域**质量。合成环境里指数拉不到,而指数**正是**成员实际使用的
+    市场基准 → 关键域必然 `degraded` → 闸 1 恒命中。⛔ **别为了让冒烟"好看"去改判据。**
 """
 
 from __future__ import annotations
@@ -27,7 +38,7 @@ import logging
 import shutil
 import sys
 import tempfile
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -41,7 +52,7 @@ from neckline.config import settings  # noqa: E402
 from neckline.data.market_data import get_market_slice  # noqa: E402
 from neckline.llm.base import LLMResult  # noqa: E402
 from neckline.report.pipeline import build_report  # noqa: E402
-from neckline.sentinel.quotes import Quote  # noqa: E402
+from neckline.sentinel.quotes import DualQuote, Quote  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("smoke_auction")
@@ -51,15 +62,29 @@ logger = logging.getLogger("smoke_auction")
 AUCTION_VOL_FRAC = 0.02
 
 
-def synthesize_auction_quote(row: dict) -> Quote:
-    """一行真实 `daily` EOD → 一个「集合竞价快照」`Quote`。⚠ 竞价阶段 `open == price`。"""
+#: 合成读数的源时刻(**必须落在 K8 给的 `[09:25, captured_at]` 内**,否则 P2.1 的
+#: 七项校验会判 `before_final_auction` / `timestamp_unparseable`,整份快照零可用读数)。
+SYNTHETIC_SRC_TIME = "09:25:03"
+
+
+def synthesize_auction_quote(row: dict, *, trade_date: date,
+                             source: str = "synthetic-sina",
+                             stale: bool = False) -> Quote:
+    """一行真实 `daily` EOD → 一个「集合竞价快照」`Quote`。⚠ 竞价阶段 `open == price`。
+
+    🔴 `ts` **必须是能解析的 D1 时刻**(V2.4.0 P2.1):老版本合成的「集合竞价 合成」
+    现在会被判 `timestamp_unparseable` → 那一格没有可用读数 → 冒烟空跑。
+    ⚠ `stale=True` 时刻意造成**上一交易日**的时刻 —— 用来把「主源过期 → 用备源 →
+    记来源降级」这条 P2.2 的路径真的走一遍(⛔ 只在合成里这么干)。
+    """
     open_ = float(row["open"] or 0.0)
+    day = (trade_date - timedelta(days=1)) if stale else trade_date
     return Quote(
         code=row["ts_code"].split(".")[0], name=row["ts_code"], price=round(open_, 2),
         pre_close=float(row["pre_close"] or 0.0), open=open_, high=open_, low=open_,
         volume=float(row["vol"] or 0.0) * AUCTION_VOL_FRAC,
         amount=float(row["amount"] or 0.0) * 1000.0 * AUCTION_VOL_FRAC,
-        ts="集合竞价 合成", source="synthetic-auction",
+        ts=f"{day:%Y-%m-%d} {SYNTHETIC_SRC_TIME}", source=source,
     )
 
 
@@ -226,9 +251,24 @@ def main() -> int:
         wu = load_watch_universe(d1, db_path=tmp_db, parquet_dir=None)
         want = list(dict.fromkeys([c for b in baskets for c in b.member_codes] + list(wu.codes)))
         rows = _daily_rows_lookup(d1, want)
-        quotes = {code: synthesize_auction_quote(rows[code]) for code in rows}
-        logger.info("合成竞价快照 %d/%d 只(指数与停牌票没有 daily 行,属合成环境局限)",
-                    len(quotes), len(want))
+        # 🔴 V2.4.0 P2.2:**造两源**,否则备源恒缺席、双源核验一行都走不到。
+        # ⚠ 第一只篮子成员的**主源**刻意造成"昨天的" —— 让「主源过期 → 用备源 →
+        #    记来源降级」这条路径真的被走一遍(⛔ 只在合成里这么干)。
+        member_codes = [c for b in baskets for c in b.member_codes]
+        stale_primary = next((c for c in member_codes if c in rows), None)
+        duals: Dict[str, DualQuote] = {}
+        for code in rows:
+            duals[code] = DualQuote(
+                code=code,
+                primary=synthesize_auction_quote(rows[code], trade_date=d1,
+                                                 source="synthetic-sina",
+                                                 stale=(code == stale_primary)),
+                backup=synthesize_auction_quote(rows[code], trade_date=d1,
+                                                source="synthetic-tencent"),
+            )
+        logger.info("合成竞价快照 %d/%d 只 × 两源(指数与停牌票没有 daily 行,属合成环境局限);"
+                    "刻意把 %s 的主源造成上一交易日,验「来源降级」",
+                    len(duals), len(want), stale_primary or "(无)")
 
         provider = None if args.no_provider else FakeAuctionProvider([b.basket_key for b in baskets])
         now = datetime.combine(d1, time(9, 26, 30))
@@ -236,7 +276,7 @@ def main() -> int:
                     auction_pipeline.AUCTION_HARD_DEADLINE)
         res = auction_pipeline.run_auction_pipeline(
             now, db_path=tmp_db, parquet_dir=None,
-            quotes_fn=lambda codes, _q=quotes: {c: _q[c] for c in codes if c in _q},
+            dual_quotes_fn=lambda codes, _d=duals: {c: _d[c] for c in codes if c in _d},
             provider=provider,
             # ⚠ 冒烟按"刚进窗口"的余量算,不受运行墙钟影响(否则跑到 9:29 之后就永远超时)
             now_fn=lambda: now,
@@ -252,17 +292,33 @@ def main() -> int:
                     res.should_push)
 
         rep = auction_store.load_report(d1, db_path=tmp_db)
-        logger.info("auction_reports:数据质量=%s 覆盖=%s/%s 篮子数=%s 冻结时刻=%s",
+        logger.info("auction_reports:市场级整体数据质量=%s 覆盖=%s/%s 篮子数=%s 冻结时刻=%s",
                     rep["data_quality"], rep["fetched_codes"], rep["requested_codes"],
                     rep["baskets_covered"], rep["captured_at"])
+        # 🔴 V2.4.0 P2.1/P2.2:逐票双源核验的账 —— 打出来才知道那几条新路径有没有真走到。
+        qq = rep.get("quote_quality_json") or {}
+        by_fresh: Dict[str, int] = {}
+        degraded_src = [c for c, d in qq.items() if d.get("source_degraded")]
+        conflicts = [c for c, d in qq.items() if d.get("conflict")]
+        for d in qq.values():
+            by_fresh[d.get("freshness") or "?"] = by_fresh.get(d.get("freshness") or "?", 0) + 1
+        logger.info("  [P2 双源核验] 逐票 %d 条;freshness 分布=%s;来源降级 %d 只%s;"
+                    "结论性冲突 %d 只%s", len(qq), by_fresh, len(degraded_src),
+                    (f"({'、'.join(sorted(degraded_src)[:5])})" if degraded_src else ""),
+                    len(conflicts), (f"({'、'.join(sorted(conflicts)[:5])})" if conflicts else ""))
         for r in (rep.get("risks_json") or []):
             logger.info("  [异常与风险 %s] %s", r.get("kind"), r.get("text"))
         for v in auction_store.load_verdicts(d1, db_path=tmp_db):
-            logger.info("  [篮子 %s|%s] T%s 引擎%s 数据质量%s → verdict=%s(模型原话=%s,"
-                        "夹逼=%s)小纸条=%s",
+            logger.info("  [篮子 %s|%s] T%s 引擎%s 关键域=%s 上下文域=%s → verdict=%s"
+                        "(模型原话=%s,夹逼=%s)小纸条=%s",
                         v["basket_key"], v["name"], v["covered_tier"], v["engine_version"],
-                        v["data_quality"], v["verdict"], v["verdict_raw"], v["clamped_by"],
+                        v["critical_data_quality"], v["context_data_quality"],
+                        v["verdict"], v["verdict_raw"], v["clamped_by"],
                         bool(v["manual_note_attached"]))
+            qd = v.get("quality_detail_json") or {}
+            logger.info("    关键域缺:%s;上下文域缺:%s",
+                        (qd.get("critical") or {}).get("missing") or "无",
+                        (qd.get("context") or {}).get("missing") or "无")
             # 🔴 用户裁定 P3-69 / P3-70(2026-08-12)的两组读数**打出来**:
             # 历史样本够不够(机械判据 n ≥ 15)+ 相对板块 / 相对市场**分别**减的是什么。
             h = v.get("history_json") or {}

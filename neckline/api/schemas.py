@@ -446,6 +446,18 @@ class BasketDailyOut(BaseModel):
     reviewsUnavailableReason: Optional[str] = None
     reviewD0: Optional[str] = None
     packVersion: Optional[str] = None
+    # ── 🔴 V2.4.0 P2.5:「正式空结果」与「系统缺席」严格分开(K8 §十)───────────
+    # · `basketsAvailable=true` + 空数组 = **今天没有形成正式篮子**(合法输出);
+    # · `basketsAvailable=false` + 下面四位 = **选股解释未完成** ——
+    #   ⛔ 界面绝不许把它说成「今天没有机会」。
+    # 🔴 判读逻辑唯一实现 = `selection/basket_stage_handoff.py::stage_verdict`
+    # (P0-39 定案),本组字段只是把它**下发到契约**,⛔ 不在客户端再推一遍。
+    selectionStage: Optional[str] = None
+    selectionUnavailableReason: Optional[str] = None
+    #: 🔴 **未解释 seed 不是第四种候选状态**(K8 §十 末句):⛔ 不冒充 T2 / OUT、
+    #: ⛔ 不进选股时钟样本。`null` = 当时没记这一位(⛔ 不拿 `0` 冒充「一个都没有」)。
+    unexplainedSeedCount: Optional[int] = None
+    unexplainedSeedSummary: Optional[str] = None
     notes: List[str] = Field(default_factory=list)
 
 
@@ -1628,19 +1640,74 @@ class MarketRegimeOut(BaseModel):
 # `auction_verdicts` 的 json 列 = **B 类冻结快照** → 客户端 DTO 必须手写 `init(from:)`
 # 做 `decodeIfPresent`(CLAUDE.md V2-⑮ 铁律)。
 
+class AuctionQuoteCheckOut(BaseModel):
+    """**一源**对一只代码的原始读数 + 七项校验结果(V2.4.0 P2.1/P2.2)。
+
+    🔴 **两源都发**(K8 §二十:「两个来源的原始读数全部留存」)—— ⛔ 不许只发
+    胜出的那一个:界面上要能回答「备源当时说的是什么」。"""
+
+    role: str = ""                 # primary(新浪)| backup(腾讯)
+    source: str = ""               # sina | tencent
+    status: str = ""               # `auction.QUOTE_STATUSES` 之一
+    errors: List[str] = Field(default_factory=list)
+    tsRaw: str = ""
+    tsParsed: Optional[str] = None
+    price: Optional[float] = None
+    preClose: Optional[float] = None
+    open: Optional[float] = None
+    volume: Optional[float] = None
+    amount: Optional[float] = None
+
+
+class AuctionQualityDetailOut(BaseModel):
+    """逐票双源核验的一条账(V2.4.0 P2.2)。`freshness` ∈ `fresh|insufficient|conflict`。
+
+    🔴 `sourceDegraded=true` = **主源不可用、本次用的是备源**(K8 §二十「记录来源
+    降级」)—— ⛔ 不许静默换源。`conflict` 非空 = 两源给出**相反的结论**,
+    ⛔ 不能高置信输出。"""
+
+    tsCode: str = ""
+    freshness: str = ""
+    status: str = ""
+    chosenRole: Optional[str] = None
+    chosenSource: Optional[str] = None
+    sourceDegraded: bool = False
+    conflict: Optional[str] = None
+    errors: List[str] = Field(default_factory=list)
+    checks: List[AuctionQuoteCheckOut] = Field(default_factory=list)
+
+
 class AuctionDataStatusOut(BaseModel):
     """小报告第 1 块「数据状态」。`dataQuality` 三态是**结构性判据**(全有 / 全无 /
-    其余),⛔ 不是百分比阈值。⚠ `conflictCodes` **结构性恒空**:`sentinel/quotes.py`
-    是「主源失败才降备源」、不同时拉两源 → 没有第二个读数可以跟第一个打架
-    (§七 P4-66;字段留着是因为 K8 §二十 要求报"冲突状态")。"""
+    其余),⛔ 不是百分比阈值。
+
+    🔴 **V2.4.0 P2.2 起 `conflictCodes` 真的会有值**:`get_quotes_dual()` 双源批量
+    核验已上线(净增 1 次 HTTP 请求 / 早晨)。V2.3.3 时代「结构性恒空、⛔ 不加第二次
+    请求」的旧口径**已被 K8 §二十「有界双源核验」推翻**(§七 P4-66 改判)。
+
+    🔴 **V2.4.0 P2.3 分域**:`criticalDataQuality` / `contextDataQuality` 为 `null`
+    时**必须显示「旧版本未细分」**,⛔ 不得默认成正常(施工图 §五 P2.3 逐字)。
+    ⚠ `dataQuality`(市场级)**仍是整体覆盖率读数**,刻意没有收窄成关键域 ——
+    它不驱动任何夹逼闸,而「跑过了、D0 当天就没有 T1/T2 篮子」那一早本来就该判 ok。
+    夹逼闸看的是**篮子级**的 `AuctionVerdictOut.criticalDataQuality`。"""
 
     source: str = "unknown"
     capturedAt: str = ""
     requestedCodes: int = 0
     fetchedCodes: int = 0
     missingCodes: List[str] = Field(default_factory=list)
+    #: 🔴 V2.4.0 P2.1:抓到了、但七项校验没过的码。⛔ 与 `missingCodes` 分开 ——
+    #: 「没抓到」与「抓到了一份昨天的」排障方向完全相反。
+    invalidCodes: List[str] = Field(default_factory=list)
     conflictCodes: List[str] = Field(default_factory=list)
     dataQuality: str = "insufficient"
+    criticalDataQuality: Optional[str] = None
+    contextDataQuality: Optional[str] = None
+    #: 逐票双源核验账。老报告没有这一列 → 空数组 + 两个分域字段为 `null`,
+    #: 客户端据此说「旧版本未细分」。
+    qualityDetails: List[AuctionQualityDetailOut] = Field(default_factory=list)
+    #: 全域出现过的校验失败码(去重、确定性顺序)。空 = 全过**或**老报告没记。
+    validationErrors: List[str] = Field(default_factory=list)
 
 
 class AuctionIndexGapOut(BaseModel):
@@ -1705,6 +1772,16 @@ class AuctionMemberRowOut(BaseModel):
     planFit: str = "unknown"
     dataQuality: str = "insufficient"
     volumeNote: Optional[str] = None
+    # ── 🔴 V2.4.0 P2.1/P2.2:这条读数**从哪来、是不是今天的、两源打不打架** ──────
+    # ⚠ 空串 / `null` = **老快照没记这一位**(V2.4.0 之前冻的 `members_json`),
+    # ⛔ 客户端不许把它渲染成「校验通过」。
+    quoteFreshness: str = ""            # fresh | insufficient | conflict
+    quoteStatus: str = ""               # `auction.QUOTE_STATUSES` 之一
+    quoteSource: Optional[str] = None   # sina | tencent;`null` = 两源都没读数
+    quoteTimestamp: Optional[str] = None  # **源自带**的时刻(⚠ 不是 capturedAt)
+    sourceDegraded: bool = False        # 主源不可用 → 本次用了备源(⛔ 不静默)
+    sourceConflict: Optional[str] = None  # `auction.CONFLICT_CODES` 之一
+    validationErrors: List[str] = Field(default_factory=list)
 
 
 class AuctionVerdictOut(BaseModel):
@@ -1722,7 +1799,15 @@ class AuctionVerdictOut(BaseModel):
     engineVersion: Optional[str] = None
     skeletonVersion: str = ""
     regimeAtD0: Optional[str] = None
+    #: 🔴 **V2.4.0 P2.3 起本字段 = 关键域质量**(含义收窄,施工图 §五 P2.3);
+    #: V2.3.3 及更早的行里它是**整体**质量 —— 靠 `criticalDataQuality` 为 `null` 分辨。
     dataQuality: str = "insufficient"
+    #: 🔴 `null` = **旧版本未细分**,⛔ 不得默认成正常(施工图 §五 P2.3 逐字)。
+    criticalDataQuality: Optional[str] = None
+    #: 上下文域质量。🔴 降级**只降置信度 + 披露缺失,⛔ 不夹逼结论**。
+    contextDataQuality: Optional[str] = None
+    #: 两域的逐项账(哪些码进了哪一域、各自缺了什么、冲突在哪)。原样透传领域层形状。
+    qualityDetail: Dict[str, Any] = Field(default_factory=dict)
     verdict: str = "pending_explanation"
     verdictRaw: Optional[str] = None
     clampedBy: Optional[str] = None
@@ -1794,6 +1879,7 @@ __all__ = [
     # V2.3.3-⑤ D1 集合竞价确认层
     "AuctionDataStatusOut", "AuctionIndexGapOut", "AuctionMarketOverviewOut",
     "AuctionMemberRowOut", "AuctionVerdictOut", "AuctionRiskOut", "AuctionOut",
+    "AuctionQuoteCheckOut", "AuctionQualityDetailOut",
     # V2.2-④ 双时钟
     "SelectionClockOut", "SelectionClocksOut", "TradeClockOut", "TradeClockEventOut",
     "TradeClockNoteIn", "TradeClockNoteOut",

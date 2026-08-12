@@ -82,7 +82,7 @@ from neckline.auction import store as astore
 from neckline.calendar import is_trading_day
 from neckline.llm.budget import BudgetLedger
 from neckline.sentinel.dedup import already_pushed, record_pushed
-from neckline.sentinel.quotes import Quote
+from neckline.sentinel.quotes import DualQuote, Quote
 from neckline.sentinel.universe import DEFAULT_BREADTH_CAP
 
 logger = logging.getLogger(__name__)
@@ -167,6 +167,10 @@ def run_auction_pipeline(
     parquet_dir: Optional[Path] = None,
     breadth_cap: int = DEFAULT_BREADTH_CAP,
     quotes_fn: Optional[Callable[[List[str]], Dict[str, Quote]]] = None,
+    #: 🔴 V2.4.0 P2.2:双源批量抓取的注入点(缺省 = `sentinel.quotes.get_quotes_dual`)。
+    #: ⚠ 只给 `quotes_fn`(单源替身)时备源恒缺席、跨源冲突结构性为空 —— 那是替身的
+    #: 局限,**不是"已核对无冲突"**(逐票账里 `checks` 只有一条,一眼看得出)。
+    dual_quotes_fn: Optional[Callable[[List[str]], Dict[str, DualQuote]]] = None,
     provider: Optional[Any] = None,
     provider_factory: Optional[Callable[[], Any]] = None,
     ledger: Optional[BudgetLedger] = None,
@@ -201,7 +205,8 @@ def run_auction_pipeline(
     clock = now_fn or datetime.now
     snap = ac.collect_auction_snapshot(
         trade_date, now, db_path=db_path, parquet_dir=parquet_dir,
-        breadth_cap=breadth_cap, quotes_fn=quotes_fn, now_fn=clock,
+        breadth_cap=breadth_cap, quotes_fn=quotes_fn, dual_quotes_fn=dual_quotes_fn,
+        now_fn=clock,
     )
     if snap.fetch_skipped_reason:
         # 🔴 真到拉价那一刻窗口已关 → **零落库**(〇b-4:补跑会拿 9:30 之后的价格冒充

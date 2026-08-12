@@ -306,7 +306,16 @@ class TestZeroBasketHonesty:
         out = bd.build_basket_daily(D0, db_path=isolated_env.db_path, with_exec_hints=False)
         assert out.baskets_available is False
         assert "no_provider" in (out.baskets_unavailable_reason or "")
-        assert "未运行" in (out.baskets_unavailable_reason or "")
+        # ⚠ 旧断言是 `"未运行" in ...`,**自 V2.4.0 P2.5 起被下面这两条取代**:
+        # K8 §十 要求这一句必须说成「**选股解释未完成**」并且明确否掉「今天没有机会」
+        # (施工图 §五 P2.5)。「未运行」那三个字过于中性,用户读不出"这是系统缺席"。
+        assert "选股解释未完成" in (out.baskets_unavailable_reason or "")
+        assert "今天没有机会" in (out.baskets_unavailable_reason or "")
+        # 🔴 P2.5 的三位契约字段:段状态 + 缺席原因;这一天没有 seed 留痕 → 恒 `None`
+        # (⛔ 不拿 `0` 冒充「一个种子都没有」)。
+        assert out.selection_stage == "no_provider"
+        assert out.selection_unavailable_reason == "no_provider"
+        assert out.unexplained_seed_count is None
         section = self._section(isolated_env)
         assert "本段未取得" in section
         assert self._LEGAL_OUTPUT_SENTENCE not in section, (

@@ -1602,6 +1602,16 @@ struct BasketDaily: Codable, Equatable {
     var reviewsUnavailableReason: String? = nil
     var reviewD0: String? = nil
     var packVersion: String? = nil
+    /// 🔴 V2.4.0 P2.5:「正式空结果」与「系统缺席」严格分开(K8 §十)。
+    /// · `basketsAvailable == true` + 空数组 = **今天没有形成正式篮子**(合法输出);
+    /// · `basketsAvailable == false` + 这四位 = **选股解释未完成** ——
+    ///   ⛔ 界面绝不许把它说成「今天没有机会」。
+    /// 🔴 `unexplainedSeed*` **不是第四种候选状态**:⛔ 不当 T2 / OUT 画、⛔ 不给它
+    /// 任何"可以买"的语气 —— 它只说明"机械层当时看到了这些方向,但没人解释过"。
+    var selectionStage: String? = nil
+    var selectionUnavailableReason: String? = nil
+    var unexplainedSeedCount: Int? = nil
+    var unexplainedSeedSummary: String? = nil
     var notes: [String] = []
 
     enum CodingKeys: String, CodingKey {
@@ -1610,6 +1620,8 @@ struct BasketDaily: Codable, Equatable {
         case outCandidates, outCandidatesAvailable, outCandidatesUnavailableReason
         case reviews, reviewsAvailable, reviewsUnavailableReason
         case reviewD0, packVersion, notes
+        case selectionStage, selectionUnavailableReason
+        case unexplainedSeedCount, unexplainedSeedSummary
     }
 
     init(tradeDate: String = "", baskets: [Basket] = [], basketsAvailable: Bool = false,
@@ -1657,7 +1669,41 @@ struct BasketDaily: Codable, Equatable {
                                                          forKey: .reviewsUnavailableReason)
         reviewD0 = try c.decodeIfPresent(String.self, forKey: .reviewD0)
         packVersion = try c.decodeIfPresent(String.self, forKey: .packVersion)
+        selectionStage = try c.decodeIfPresent(String.self, forKey: .selectionStage)
+        selectionUnavailableReason = try c.decodeIfPresent(
+            String.self, forKey: .selectionUnavailableReason)
+        unexplainedSeedCount = try c.decodeIfPresent(Int.self, forKey: .unexplainedSeedCount)
+        unexplainedSeedSummary = try c.decodeIfPresent(
+            String.self, forKey: .unexplainedSeedSummary)
         notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
+    }
+
+    /// 🔴 **选股解释未完成**(V2.4.0 P2.5,K8 §十「系统缺席」)—— 界面据此把 ③ 节
+    /// 画成「这一段没有跑成」,⛔ 绝不许画成「今天没有机会」。
+    /// 判据 = 服务端已经判好的 `selectionUnavailableReason` 非空,⛔ 客户端不再推一遍。
+    var selectionUnexplained: Bool {
+        (selectionUnavailableReason?.isEmpty == false) && !basketsAvailable
+    }
+
+    /// 系统缺席时展示层的那一句原因。
+    /// ⚠ **⛔ 不复读服务端那句散文**:标题已经写着「选股解释未完成」,再把整句原文
+    /// 塞进副标题会印成「选股解释未完成 / 原因:选股解释未完成(原因:no_provider)…」
+    /// (实拍逮到)。这里改用**结构化的原因码**重述一遍,信息一个字没少。
+    /// ⚠ 原因码可能带后缀(`call_failed:<原因>`)→ **未识别值原样透传**。
+    var selectionUnavailableDetail: String? {
+        guard selectionUnexplained, let code = selectionUnavailableReason, !code.isEmpty else {
+            return nil
+        }
+        return "原因码 \(code) —— 本次没有生成正式 T1/T2 与 OUT;"
+            + "这不是「今天没有机会」,是这一段没有跑成。"
+    }
+
+    /// 系统缺席时那一句「机械层当时看到了什么」。**没记就返回 `nil`**(⛔ 不拿 0 冒充)。
+    var unexplainedSeedText: String? {
+        guard selectionUnexplained, let n = unexplainedSeedCount else { return nil }
+        let tail = (unexplainedSeedSummary?.isEmpty == false) ? "(\(unexplainedSeedSummary!))" : ""
+        return "机械层当时看到 \(n) 个候选方向\(tail);它们没有被解释过,"
+            + "⛔ 不是候选、不构成任何买入依据。"
     }
 
     /// 某一档的篮子。**空档位如实显示「今日 T1 为空」,⛔ 不隐藏**(E1)。
@@ -4641,6 +4687,8 @@ func nkAuctionRiskKindLabel(_ raw: String) -> String {
     switch raw {
     case "data_missing": return "数据缺失"
     case "source_conflict": return "跨源冲突"
+    case "quote_invalid": return "读数未通过校验"
+    case "source_degraded": return "改用了备用源"
     case "single_strong": return "单只强势"
     case "gap_up_deviation": return "高开偏离计划"
     case "hit_invalidation": return "触发 D0 失效位"
@@ -4708,6 +4756,61 @@ func nkAuctionSectorBenchSourceLabel(_ raw: String) -> String {
     }
 }
 
+/// **逐票双源核验状态码 → 中文**(唯一源 `auction.QUOTE_FRESHNESS_CODES`,V2.4.0 P2.2)。
+///
+/// 🔴 空串 = **老快照没记这一位**(V2.4.0 之前冻的 `members_json`)——
+/// ⛔ 绝不许渲染成「校验通过」:那是把「没看」讲成「看过了没事」。**未识别值原样透传**。
+func nkAuctionQuoteFreshnessLabel(_ raw: String) -> String {
+    switch raw {
+    case "fresh": return "读数合格"
+    case "degraded": return "读数可用但有缺项"
+    case "insufficient": return "读数不可用"
+    case "conflict": return "两源结论冲突"
+    case "": return "本次未记录"
+    default: return raw
+    }
+}
+
+/// **七项校验的失败码 → 中文**(唯一源 `auction/quality.py::VALIDATION_ERROR_CODES`)。
+/// **未识别值原样透传**(⛔ 不许把码直接印上屏)。
+func nkAuctionValidationErrorLabel(_ raw: String) -> String {
+    switch raw {
+    case "code_mismatch": return "拿回来的代码与要的那一只对不上"
+    case "wrong_trade_date": return "源日期不是今天(疑似上一交易日的缓存行情)"
+    case "future_timestamp": return "源时间晚于本机抓取时刻"
+    case "before_final_auction": return "源时间早于 9:25 最终撮合"
+    case "timestamp_unparseable": return "源时间戳解不出来"
+    case "required_field_missing": return "现价或前收盘价无效"
+    case "open_price_missing": return "源还没发出开盘价"
+    case "price_relation_inconsistent": return "价格关系自相矛盾"
+    case "negative_volume": return "成交量为负"
+    case "negative_amount": return "成交额为负"
+    default: return raw
+    }
+}
+
+/// **跨源结论性冲突码 → 中文**(唯一源 `auction.CONFLICT_CODES`,V2.4.0 P2.2)。
+/// 🔴 出现任意一条 = 两个行情源对**同一件事**给出了相反的结论 → ⛔ 不能高置信输出。
+/// **未识别值原样透传**。
+func nkAuctionConflictLabel(_ raw: String) -> String {
+    switch raw {
+    case "direction_opposite": return "两源涨跌方向相反"
+    case "invalidation_disagree": return "一源触发 D0 失效位、另一源不触发"
+    case "plan_zone_disagree": return "一源进了预案区间、另一源没进"
+    case "identity_mismatch": return "两源的代码 / 前收 / 交易日对不上"
+    default: return raw
+    }
+}
+
+/// **数据质量分域码 → 中文**(V2.4.0 P2.3)。
+///
+/// 🔴 `nil` = **旧版本未细分**(施工图 §五 P2.3 逐字:旧报告没有这些字段时显示
+/// 「旧版本未细分」,⛔ **不得默认成正常**)—— 这个函数就是那条纪律的落点。
+func nkAuctionDomainQualityLabel(_ raw: String?) -> String {
+    guard let v = raw, !v.isEmpty else { return "旧版本未细分" }
+    return nkAuctionDataQualityLabel(v)
+}
+
 /// **LLM 段状态码 → 中文**(唯一源 `neckline/auction/__init__.py` 的 `LLM_*`)。
 ///
 /// ⚠ `pending_explanation` 是**设计内**的:9:29 硬截止到了模型还没回,迟到的结论
@@ -4726,28 +4829,138 @@ func nkAuctionLlmStageLabel(_ raw: String) -> String {
     }
 }
 
-/// 小报告第 1 块「数据状态」。⚠ `conflictCodes` **结构性恒空**(实时行情链路是
-/// 「主源失败才降备源」、不同时拉两源)—— ⛔ 别把"恒空"读成"已核对无冲突"。
+/// **一源**对一只代码的原始读数 + 七项校验结果(V2.4.0 P2.1/P2.2)。
+/// 🔴 两源都在(K8 §二十:「两个来源的原始读数全部留存」)—— 界面要能回答
+/// 「备源当时说的是什么」。
+struct AuctionQuoteCheck: Decodable, Equatable, Identifiable {
+    var role: String = ""
+    var source: String = ""
+    var status: String = ""
+    var errors: [String] = []
+    var tsRaw: String = ""
+    var tsParsed: String? = nil
+    var price: Double? = nil
+    var preClose: Double? = nil
+    var open: Double? = nil
+    var volume: Double? = nil
+    var amount: Double? = nil
+
+    var id: String { role + "|" + source }
+
+    enum CodingKeys: String, CodingKey {
+        case role, source, status, errors, tsRaw, tsParsed, price, preClose, open, volume, amount
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        role = try c.decodeIfPresent(String.self, forKey: .role) ?? ""
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        errors = try c.decodeIfPresent([String].self, forKey: .errors) ?? []
+        tsRaw = try c.decodeIfPresent(String.self, forKey: .tsRaw) ?? ""
+        tsParsed = try c.decodeIfPresent(String.self, forKey: .tsParsed)
+        price = try c.decodeIfPresent(Double.self, forKey: .price)
+        preClose = try c.decodeIfPresent(Double.self, forKey: .preClose)
+        open = try c.decodeIfPresent(Double.self, forKey: .open)
+        volume = try c.decodeIfPresent(Double.self, forKey: .volume)
+        amount = try c.decodeIfPresent(Double.self, forKey: .amount)
+    }
+
+    /// 「主源 / 备源」——⛔ 不印 `primary` / `backup` 这两个码。
+    var roleLabel: String {
+        switch role {
+        case "primary": return "主源"
+        case "backup": return "备源"
+        default: return role
+        }
+    }
+    /// 这一源当时说了什么 + 校验结果一句。**未通过的项逐条点名**,⛔ 不含糊。
+    var summaryText: String {
+        let ts = (tsParsed?.isEmpty == false) ? tsParsed! : (tsRaw.isEmpty ? "源时间未记录" : tsRaw)
+        let verdict = errors.isEmpty
+            ? "七项校验全过"
+            : errors.map(nkAuctionValidationErrorLabel).joined(separator: ";")
+        return "\(roleLabel)(\(source.isEmpty ? "未记录" : source))\(ts) —— \(verdict)"
+    }
+}
+
+/// 逐票双源核验的一条账(V2.4.0 P2.2)。
+/// 🔴 `sourceDegraded` = **主源不可用、本次用的是备源**(⛔ 不许静默换源);
+/// `conflict` 非空 = 两源结论相反 → ⛔ 不能高置信输出。
+struct AuctionQualityDetail: Decodable, Equatable, Identifiable {
+    var tsCode: String = ""
+    var freshness: String = ""
+    var status: String = ""
+    var chosenRole: String? = nil
+    var chosenSource: String? = nil
+    var sourceDegraded: Bool = false
+    var conflict: String? = nil
+    var errors: [String] = []
+    var checks: [AuctionQuoteCheck] = []
+
+    var id: String { tsCode }
+
+    enum CodingKeys: String, CodingKey {
+        case tsCode, freshness, status, chosenRole, chosenSource, sourceDegraded
+        case conflict, errors, checks
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tsCode = try c.decodeIfPresent(String.self, forKey: .tsCode) ?? ""
+        freshness = try c.decodeIfPresent(String.self, forKey: .freshness) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        chosenRole = try c.decodeIfPresent(String.self, forKey: .chosenRole)
+        chosenSource = try c.decodeIfPresent(String.self, forKey: .chosenSource)
+        sourceDegraded = try c.decodeIfPresent(Bool.self, forKey: .sourceDegraded) ?? false
+        conflict = try c.decodeIfPresent(String.self, forKey: .conflict)
+        errors = try c.decodeIfPresent([String].self, forKey: .errors) ?? []
+        checks = try c.decodeIfPresent([AuctionQuoteCheck].self, forKey: .checks) ?? []
+    }
+
+    var freshnessLabel: String { nkAuctionQuoteFreshnessLabel(freshness) }
+    var conflictLabel: String? { conflict.map(nkAuctionConflictLabel) }
+    /// 只有**值得说出口**的那些才画:不合格 / 冲突 / 换过源。全好的那些不占版面。
+    var worthShowing: Bool { freshness != "fresh" || sourceDegraded || conflict != nil }
+}
+
+/// 小报告第 1 块「数据状态」。
+///
+/// 🔴 **V2.4.0 P2.2 起 `conflictCodes` 真的会有值**:双源批量核验已上线。
+/// V2.3.3 时代「结构性恒空」的旧口径已被 K8 §二十「有界双源核验」推翻。
+/// 🔴 **P2.3 分域**:`criticalDataQuality` / `contextDataQuality` 为 `nil` 时
+/// 必须显示「旧版本未细分」,⛔ 不得默认成正常。
 struct AuctionDataStatus: Decodable, Equatable {
     var source: String = "unknown"
     var capturedAt: String = ""
     var requestedCodes: Int = 0
     var fetchedCodes: Int = 0
     var missingCodes: [String] = []
+    var invalidCodes: [String] = []
     var conflictCodes: [String] = []
     var dataQuality: String = "insufficient"
+    var criticalDataQuality: String? = nil
+    var contextDataQuality: String? = nil
+    var qualityDetails: [AuctionQualityDetail] = []
+    var validationErrors: [String] = []
 
     enum CodingKeys: String, CodingKey {
         case source, capturedAt, requestedCodes, fetchedCodes, missingCodes, conflictCodes, dataQuality
+        case invalidCodes, criticalDataQuality, contextDataQuality, qualityDetails, validationErrors
     }
 
     init(source: String = "unknown", capturedAt: String = "", requestedCodes: Int = 0,
          fetchedCodes: Int = 0, missingCodes: [String] = [], conflictCodes: [String] = [],
-         dataQuality: String = "insufficient") {
+         dataQuality: String = "insufficient", invalidCodes: [String] = [],
+         criticalDataQuality: String? = nil, contextDataQuality: String? = nil,
+         qualityDetails: [AuctionQualityDetail] = [], validationErrors: [String] = []) {
         self.source = source; self.capturedAt = capturedAt
         self.requestedCodes = requestedCodes; self.fetchedCodes = fetchedCodes
         self.missingCodes = missingCodes; self.conflictCodes = conflictCodes
-        self.dataQuality = dataQuality
+        self.dataQuality = dataQuality; self.invalidCodes = invalidCodes
+        self.criticalDataQuality = criticalDataQuality
+        self.contextDataQuality = contextDataQuality
+        self.qualityDetails = qualityDetails; self.validationErrors = validationErrors
     }
 
     init(from decoder: Decoder) throws {
@@ -4757,11 +4970,23 @@ struct AuctionDataStatus: Decodable, Equatable {
         requestedCodes = try c.decodeIfPresent(Int.self, forKey: .requestedCodes) ?? 0
         fetchedCodes = try c.decodeIfPresent(Int.self, forKey: .fetchedCodes) ?? 0
         missingCodes = try c.decodeIfPresent([String].self, forKey: .missingCodes) ?? []
+        invalidCodes = try c.decodeIfPresent([String].self, forKey: .invalidCodes) ?? []
         conflictCodes = try c.decodeIfPresent([String].self, forKey: .conflictCodes) ?? []
         dataQuality = try c.decodeIfPresent(String.self, forKey: .dataQuality) ?? "insufficient"
+        criticalDataQuality = try c.decodeIfPresent(String.self, forKey: .criticalDataQuality)
+        contextDataQuality = try c.decodeIfPresent(String.self, forKey: .contextDataQuality)
+        qualityDetails = try c.decodeIfPresent([AuctionQualityDetail].self, forKey: .qualityDetails) ?? []
+        validationErrors = try c.decodeIfPresent([String].self, forKey: .validationErrors) ?? []
     }
 
     var dataQualityLabel: String { nkAuctionDataQualityLabel(dataQuality) }
+    /// 🔴 两域各一句。`nil` → 「旧版本未细分」(⛔ 不得默认成正常)。
+    var criticalQualityLabel: String { nkAuctionDomainQualityLabel(criticalDataQuality) }
+    var contextQualityLabel: String { nkAuctionDomainQualityLabel(contextDataQuality) }
+    /// 这份报告到底有没有分域信息(老报告恒 `false` → 界面要说「旧版本未细分」)。
+    var hasDomainSplit: Bool { criticalDataQuality != nil || contextDataQuality != nil }
+    /// 值得单独列出来的逐票账(不合格 / 冲突 / 换过源)。
+    var notableQualityDetails: [AuctionQualityDetail] { qualityDetails.filter(\.worthShowing) }
     /// 「抓到几个 / 要几个」一句(⛔ 不省略分母 —— 覆盖率是这块的重点)。
     var coverageText: String { "\(fetchedCodes)/\(requestedCodes)" }
 }
@@ -4861,6 +5086,15 @@ struct AuctionMemberRow: Decodable, Equatable, Identifiable {
     var planFit: String = "unknown"
     var dataQuality: String = "insufficient"
     var volumeNote: String? = nil
+    /// 🔴 V2.4.0 P2.1/P2.2:这条读数**从哪来、是不是今天的、两源打不打架**。
+    /// ⚠ 空串 / `nil` = **老快照没记这一位**,⛔ 不许渲染成「校验通过」。
+    var quoteFreshness: String = ""
+    var quoteStatus: String = ""
+    var quoteSource: String? = nil
+    var quoteTimestamp: String? = nil
+    var sourceDegraded: Bool = false
+    var sourceConflict: String? = nil
+    var validationErrors: [String] = []
 
     var id: String { tsCode }
 
@@ -4872,6 +5106,8 @@ struct AuctionMemberRow: Decodable, Equatable, Identifiable {
         case relToIndexReason
         case hitInvalidationUndeterminedReason, gapUpDeviationUndeterminedReason
         case anchorStale, planFit, dataQuality, volumeNote
+        case quoteFreshness, quoteStatus, quoteSource, quoteTimestamp
+        case sourceDegraded, sourceConflict, validationErrors
     }
 
     init(from decoder: Decoder) throws {
@@ -4906,6 +5142,35 @@ struct AuctionMemberRow: Decodable, Equatable, Identifiable {
         planFit = try c.decodeIfPresent(String.self, forKey: .planFit) ?? "unknown"
         dataQuality = try c.decodeIfPresent(String.self, forKey: .dataQuality) ?? "insufficient"
         volumeNote = try c.decodeIfPresent(String.self, forKey: .volumeNote)
+        quoteFreshness = try c.decodeIfPresent(String.self, forKey: .quoteFreshness) ?? ""
+        quoteStatus = try c.decodeIfPresent(String.self, forKey: .quoteStatus) ?? ""
+        quoteSource = try c.decodeIfPresent(String.self, forKey: .quoteSource)
+        quoteTimestamp = try c.decodeIfPresent(String.self, forKey: .quoteTimestamp)
+        sourceDegraded = try c.decodeIfPresent(Bool.self, forKey: .sourceDegraded) ?? false
+        sourceConflict = try c.decodeIfPresent(String.self, forKey: .sourceConflict)
+        validationErrors = try c.decodeIfPresent([String].self, forKey: .validationErrors) ?? []
+    }
+
+    /// 🔴 这条读数的**来源与校验**一句(V2.4.0 P2.1/P2.2)。**没什么可说时返回 `nil`**
+    /// (读数合格、没换源、没冲突)——⛔ 但只要有一样不对,就必须说出口。
+    var quoteProvenanceNote: String? {
+        var parts: [String] = []
+        if !quoteFreshness.isEmpty && quoteFreshness != "fresh" {
+            parts.append(nkAuctionQuoteFreshnessLabel(quoteFreshness))
+        }
+        if sourceDegraded {
+            parts.append("主源不可用,本次用的是备源(\(quoteSource ?? "未记录"))")
+        }
+        if let cf = sourceConflict, !cf.isEmpty {
+            parts.append(nkAuctionConflictLabel(cf))
+        }
+        if !validationErrors.isEmpty {
+            parts.append("校验未过:" + validationErrors.map(nkAuctionValidationErrorLabel)
+                .joined(separator: "、"))
+        }
+        guard !parts.isEmpty else { return nil }
+        let ts = (quoteTimestamp?.isEmpty == false) ? "源时间 \(quoteTimestamp!);" : ""
+        return ts + parts.joined(separator: ";")
     }
 
     /// 逐票行右端那枚判定徽标的文字。**关键字段缺失 → 「中性｜数据不足」**
@@ -5012,6 +5277,11 @@ struct AuctionVerdict: Decodable, Equatable, Identifiable {
     var hitInvalidation: [String] = []
     var manualNoteAttached: Bool = false
     var llmStage: String = ""
+    /// 🔴 V2.4.0 P2.3 分域质量。`nil` = **旧版本未细分**(⛔ 不得默认成正常)。
+    /// ⚠ 只有**关键域**会把结论夹成中性;上下文域降级只降置信度 + 披露缺失。
+    var criticalDataQuality: String? = nil
+    var contextDataQuality: String? = nil
+    var qualityDetail: NKJSON = .object([:])
 
     var id: Int { basketId }
 
@@ -5020,6 +5290,7 @@ struct AuctionVerdict: Decodable, Equatable, Identifiable {
         case regimeAtD0, dataQuality, verdict, verdictRaw, clampedBy, reasons, members
         case sectorSync, relStrength, history, planConsistency, hitInvalidation
         case manualNoteAttached, llmStage
+        case criticalDataQuality, contextDataQuality, qualityDetail
     }
 
     init(from decoder: Decoder) throws {
@@ -5045,10 +5316,26 @@ struct AuctionVerdict: Decodable, Equatable, Identifiable {
         hitInvalidation = try c.decodeIfPresent([String].self, forKey: .hitInvalidation) ?? []
         manualNoteAttached = try c.decodeIfPresent(Bool.self, forKey: .manualNoteAttached) ?? false
         llmStage = try c.decodeIfPresent(String.self, forKey: .llmStage) ?? ""
+        criticalDataQuality = try c.decodeIfPresent(String.self, forKey: .criticalDataQuality)
+        contextDataQuality = try c.decodeIfPresent(String.self, forKey: .contextDataQuality)
+        qualityDetail = try c.decodeIfPresent(NKJSON.self, forKey: .qualityDetail) ?? .object([:])
     }
 
     var verdictLabel: String { nkAuctionVerdictLabel(verdict) }
     var dataQualityLabel: String { nkAuctionDataQualityLabel(dataQuality) }
+    /// 🔴 两域各一句。`nil` → 「旧版本未细分」——⛔ 绝不许当成「正常」
+    /// (V2.3.3 及更早的行里 `dataQuality` 是**整体**质量,不是关键域)。
+    var criticalQualityLabel: String { nkAuctionDomainQualityLabel(criticalDataQuality) }
+    var contextQualityLabel: String { nkAuctionDomainQualityLabel(contextDataQuality) }
+    var hasDomainSplit: Bool { criticalDataQuality != nil || contextDataQuality != nil }
+    /// 关键域缺了哪些码(审计层展示用);没有分域信息 → 空数组。
+    var criticalMissingCodes: [String] {
+        (qualityDetail["critical"]?["missing"]?.arrayValue ?? []).compactMap(\.stringValue)
+    }
+    /// 上下文域缺了哪些码。🔴 它们**不改变结论**,但必须披露。
+    var contextMissingCodes: [String] {
+        (qualityDetail["context"]?["missing"]?.arrayValue ?? []).compactMap(\.stringValue)
+    }
     /// 引擎归属一句(`engineVersion` 优先;老篮子两个都为空 → `nil`,如实不写)。
     var engineText: String? {
         if let v = engineVersion, !v.isEmpty { return v }

@@ -303,9 +303,17 @@ struct BasketDailyView: View {
             // ⛔ 别当成"漏了"再加回来:同一句话在一屏里说两遍,反而没人读。
             if !daily.basketsAvailable {
                 // E3:**「本次没取到」与「今天真没有」讲不同的话**。
-                unavailableRow(title: "本次没取到今日篮子",
-                               detail: daily.basketsUnavailableReason.map { "原因:\($0)" }
+                // 🔴 V2.4.0 P2.5(K8 §十):**系统缺席**要说成「选股解释未完成」——
+                // ⛔ 绝不许写成、也⛔ 不许被读成「今天没有机会」。
+                unavailableRow(title: daily.selectionUnexplained ? "选股解释未完成" : "本次没取到今日篮子",
+                               detail: daily.selectionUnavailableDetail
+                                   ?? daily.basketsUnavailableReason.map { "原因:\($0)" }
                                    ?? "这一段本次未取到(不是「今天没有篮子」)")
+                if let seeds = daily.unexplainedSeedText {
+                    Text(seeds).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, NKSpace.cardPadH)
+                }
             } else {
                 // 🔴 档位清单 = **现役两档 ∪ 本份快照实际出现的档位**(V2.1-② 移交 ⑦ 的
                 // 硬约束,判据与理由见 `BasketDaily.displayTiers`)——⛔ 既不许写死
@@ -740,10 +748,18 @@ struct BasketDailyView: View {
                 .fixedSize(horizontal: false, vertical: true)
             if !daily.basketsAvailable {
                 NKCard {
-                    NKEmptyState(title: "本次没取到今日篮子",
-                                 subtitle: daily.basketsUnavailableReason.map { "原因:\($0)" }
-                                     ?? "这一段本次未取到(不是「今天没有篮子」)",
-                                 systemImage: "exclamationmark.icloud")
+                    VStack(alignment: .leading, spacing: 8) {
+                        // 🔴 V2.4.0 P2.5(K8 §十):**系统缺席 ≠ 今天没有机会**。
+                        NKEmptyState(title: daily.selectionUnexplained ? "选股解释未完成" : "本次没取到今日篮子",
+                                     subtitle: daily.selectionUnavailableDetail
+                                         ?? daily.basketsUnavailableReason.map { "原因:\($0)" }
+                                         ?? "这一段本次未取到(不是「今天没有篮子」)",
+                                     systemImage: "exclamationmark.icloud")
+                        if let seeds = daily.unexplainedSeedText {
+                            Text(seeds).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             } else {
                 ForEach(daily.displayTiers, id: \.self) { tier in

@@ -58,7 +58,13 @@ class _Mech:
     basket_key: str = "k1"
     engine_code: Optional[str] = "C"
     engine_version: Optional[str] = "C1"
+    #: ⚠ **V2.4.0 P2.3 起闸 1 读的是 `critical_quality`,不再读 `data_quality`**
+    #: (施工图 §五 P2.3:判据由「整体」收窄到「关键域」)。两位在真链路上恒等
+    #: (`_build_basket_mech` 一处赋值),夹具照样两位都给 —— 但**闸只看后者**。
+    #: 🔴 另有一条正面用例钉死「夹具只给 `data_quality` 时闸 1 照样夹」(默认拒)。
     data_quality: str = DQ_OK
+    critical_quality: str = DQ_OK
+    context_quality: str = DQ_OK
     hit_invalidation_codes: List[str] = field(default_factory=list)
 
 
@@ -152,7 +158,13 @@ def test_system_prompt_carries_k8_boundaries_and_bans_intraday_states():
     for frag in ("不改变 D0 的行情状态", "不从竞价排行中临时增加交易标的",
                  "报告发出后结束本次任务", "不持续观察 9:30 以后的价格",
                  "竞价结论只说明竞价反映出的信息", "不等于买入指令",
-                 "数据缺失只能形成中性", "只有一只竞价强股时保持中性",
+                 # ⚠ 「数据缺失只能形成中性」这句自 V2.4.0 P2.3 起**被下一条取代**:
+                 # 判据收窄成「关键域」,上下文域缺失只降置信度(K8 §二十「数据质量
+                 # 分域」;施工图 §五 P2.3)。旧断言若原样保留,会把"域过严"这个
+                 # 正被修的病重新钉死在 prompt 里。
+                 "关键域数据缺失或冲突只能形成中性",
+                 "上下文域缺失只降低置信度,不改变结论",
+                 "只有一只竞价强股时保持中性",
                  "一致且明确的负面证据"):
         assert frag in p, frag
     assert "`qualified`、`wait`、`cancelled`" in p
@@ -205,13 +217,48 @@ def test_unrecognized_verdict_code_becomes_pending_not_neutral():
 
 @pytest.mark.parametrize("dq", [DQ_DEGRADED, DQ_INSUFFICIENT])
 def test_gate1_data_quality_forces_neutral_without_exception(dq):
-    """闸 1(K8 §二十「数据缺失只能形成中性」,**无例外**)。
+    """闸 1(K8 §二十「**关键域**数据缺失或冲突只能形成中性」,**无例外**)。
     ⚠ 之所以敢无例外:「命中 D0 失效位」走 §五 ②-G 的独立警报通道,恒定输出,
-    被夹成 neutral 时那条信息**一个字都没丢**。"""
+    被夹成 neutral 时那条信息**一个字都没丢**。
+    ⚠ **V2.4.0 P2.3 起判据源 = `critical_quality`**(施工图 §五 P2.3);
+    ⛔ 只把 `data_quality` 设成不 ok **不再**触发这道闸(那正是"域过严"被修掉的地方)。"""
     for raw in (VERDICT_CONFIRM, VERDICT_VETO):
-        v, by = al.clamp_verdict(_fields(verdict=raw),
-                                 _Mech(data_quality=dq, hit_invalidation_codes=["600000.SH"]))
+        v, by = al.clamp_verdict(
+            _fields(verdict=raw),
+            _Mech(data_quality=dq, critical_quality=dq,
+                  hit_invalidation_codes=["600000.SH"]))
         assert (v, by) == (VERDICT_NEUTRAL, CLAMPED_BY_DATA_QUALITY)
+
+
+def test_gate1_reads_the_critical_domain_and_ignores_the_context_domain():
+    """🔴 **V2.4.0 P2.3 的正反两例**(施工图 §五 P2.3 + P2 验收 4/5):
+    上下文域降级 ⛔ 不夹逼结论;关键域降级**照夹**。
+    这条用例取代了旧口径「整份 `data_quality` 不 ok 就夹」——「一只无关指数缺失导致
+    整篮强制中性」正是本版要修的第 ② 个病。"""
+    # 上下文域 degraded、关键域 ok → **不夹**
+    assert al.clamp_verdict(
+        _fields(verdict=VERDICT_CONFIRM),
+        _Mech(critical_quality=DQ_OK, context_quality=DQ_DEGRADED)) == (VERDICT_CONFIRM, None)
+    # 关键域 degraded、上下文域 ok → **照夹**
+    assert al.clamp_verdict(
+        _fields(verdict=VERDICT_CONFIRM),
+        _Mech(critical_quality=DQ_DEGRADED, context_quality=DQ_OK)) == (
+        VERDICT_NEUTRAL, CLAMPED_BY_DATA_QUALITY)
+
+
+def test_gate1_defaults_to_clamping_when_the_critical_domain_is_missing_entirely():
+    """🔴 **默认拒**:一个连 `critical_quality` 都没有的对象,⛔ 不许拿到 confirm / veto。
+    (⛔ 刻意**不回退**到 `data_quality` —— 回退等于把收窄前的旧判据偷偷放回来。)"""
+
+    class _NoCritical:
+        basket_key = "k1"
+        engine_code = "C"
+        engine_version = "C1"
+        data_quality = DQ_OK          # 老形状:只有这一位
+        hit_invalidation_codes: List[str] = []
+
+    assert al.clamp_verdict(_fields(verdict=VERDICT_CONFIRM), _NoCritical()) == (
+        VERDICT_NEUTRAL, CLAMPED_BY_DATA_QUALITY)
 
 
 def test_gate1_lets_everything_through_when_data_quality_is_ok():
@@ -276,12 +323,14 @@ def test_gate_order_is_one_two_three_and_only_the_first_hit_is_recorded():
     # 同时命中闸 1(数据不 ok)与闸 3(Y1 veto 无证据)→ 记闸 1 的码
     assert al.clamp_verdict(
         _fields(verdict=VERDICT_VETO),
-        _Mech(engine_code="Y", engine_version="Y1", data_quality=DQ_DEGRADED)) == (
+        _Mech(engine_code="Y", engine_version="Y1",
+              data_quality=DQ_DEGRADED, critical_quality=DQ_DEGRADED)) == (
         VERDICT_NEUTRAL, CLAMPED_BY_DATA_QUALITY)
     # 同时命中闸 1 与闸 2 → 同样记闸 1 的码
     assert al.clamp_verdict(
         _fields(auction_strong_codes=["600000.SH"]),
-        _Mech(engine_code="Z", engine_version="Z1", data_quality=DQ_INSUFFICIENT)) == (
+        _Mech(engine_code="Z", engine_version="Z1",
+              data_quality=DQ_INSUFFICIENT, critical_quality=DQ_INSUFFICIENT)) == (
         VERDICT_NEUTRAL, CLAMPED_BY_DATA_QUALITY)
 
 
@@ -295,7 +344,7 @@ def test_c1_has_no_dedicated_gate():
 
 
 @pytest.mark.parametrize("raw,mech", [
-    (VERDICT_CONFIRM, _Mech(data_quality=DQ_DEGRADED)),
+    (VERDICT_CONFIRM, _Mech(data_quality=DQ_DEGRADED, critical_quality=DQ_DEGRADED)),
     (VERDICT_VETO, _Mech(engine_code="Y", engine_version="Y1")),
     (VERDICT_CONFIRM, _Mech(engine_code="Z", engine_version="Z1")),
 ])
@@ -392,7 +441,9 @@ def _bundle():
         market=MarketMech(source="sina", captured_at="2026-08-11T09:26:30",
                           requested_codes=4, fetched_codes=4, data_quality=DQ_OK),
         baskets=[BasketMech(basket_id=1, basket_key="k1", name="篮一", covered_tier=1,
-                            engine_code="C1", data_quality=DQ_OK)],
+                            engine_code="C1", data_quality=DQ_OK,
+                            # V2.4.0 P2.3:闸 1 读关键域 —— 夹具补上这一位。
+                            critical_quality=DQ_OK, context_quality=DQ_OK)],
     )
 
 

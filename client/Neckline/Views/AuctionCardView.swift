@@ -157,6 +157,14 @@ func nkAuctionDQTone(_ raw: String) -> NKAxisTone {
     }
 }
 
+/// 分域质量 → 语义色(V2.4.0 P2.3)。
+/// 🔴 `nil`(旧版本未细分)走 `.warn` —— ⛔ **绝不许走 `.neutral`**:那等于把
+/// 「当时没记这一位」画成「一切正常」(施工图 §五 P2.3:⛔ 不得默认成正常)。
+func nkAuctionDomainTone(_ raw: String?) -> NKAxisTone {
+    guard let v = raw, !v.isEmpty else { return .warn }
+    return nkAuctionDQTone(v)
+}
+
 /// 竞价结论 → 语义色。⚠ `pending_explanation` 走 `.warn`(**没解释**,不是中性)。
 func nkAuctionVerdictTone(_ raw: String) -> NKAxisTone {
     switch raw {
@@ -245,6 +253,7 @@ struct AuctionReportPage: View {
                 }
                 Text("冻结时刻 \(payload.dataStatus.capturedAt.isEmpty ? "未记录" : payload.dataStatus.capturedAt)")
                     .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
+                domainQualityRow
                 if !payload.dataStatus.missingCodes.isEmpty {
                     // ⚠ **⛔ 不用 `+` 拼字符串**(V2.3.1 那条坑的体例):`Text(String)`
                     // 不解析 Markdown,而 `+` 的产物一定是 `String`。要拼就拼成**一整条
@@ -253,23 +262,89 @@ struct AuctionReportPage: View {
                         .font(NKFont.caption).foregroundStyle(NK.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                // ⚠ 「跨源冲突恒空」是**结构性事实**(行情链路主源失败才降备源、不同时拉
-                // 两源)—— 必须说出口,⛔ 别让读者把"恒空"读成"已核对无冲突"。
+                // 🔴 V2.4.0 P2.1:「抓到了、但读数不能用」必须自己占一行 ——
+                // ⛔ 别并进上面那条「没抓到」:一份上一交易日的缓存行情长得跟正常读数
+                // 一模一样,沉默会让人以为那一格是好的。
+                if !payload.dataStatus.invalidCodes.isEmpty {
+                    Text("抓到了但**读数不合格**(本次不当今天的竞价结果用):\(nkJoinCapped(payload.dataStatus.invalidCodes, cap: 12))")
+                        .font(NKFont.caption).foregroundStyle(NK.down)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // 🔴 **V2.4.0 P2.2 起真的会有跨源冲突**:双源批量核验已上线。
                 // ⚠ **拆成两个 `Text` 而不是三元表达式**:带 `**加粗**` 的字面量必须让
                 // Swift 稳稳推断成 `LocalizedStringKey`,三元的两个分支放一起是那条坑的
                 // 灰色地带(推成 `String` 就会把四个星号原样印在屏幕上)。
                 if payload.dataStatus.conflictCodes.isEmpty {
-                    Text("跨源冲突:本次为空。⚠ 行情链路是「主源失败才降备源」、不同时拉两源 —— 这一项**结构性恒空**,不等于「已核对无冲突」。")
+                    Text("跨源冲突:本次为空(两源已交叉核验)。")
                         .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text("跨源冲突:\(payload.dataStatus.conflictCodes.joined(separator: "、"))")
-                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    Text("跨源冲突:\(payload.dataStatus.conflictCodes.joined(separator: "、")) —— ⛔ 不能高置信输出。")
+                        .font(NKFont.caption).foregroundStyle(NK.down)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                qualityDetailRows
                 Text("LLM 段:\(payload.llmStageLabel)")
                     .font(NKFont.caption)
                     .foregroundStyle(payload.llmStage == "ok" ? NK.textTertiary : NK.amber)
+            }
+        }
+    }
+
+    /// 🔴 **关键域 / 上下文域分开画**(V2.4.0 P2.3,K8 §二十「数据质量分域」)。
+    ///
+    /// 🔴 老报告没有分域信息 → 两枚徽标都写「旧版本未细分」,并**当面说出**它不等于
+    /// 正常(施工图 §五 P2.3 逐字:⛔ 不得默认成正常)。
+    @ViewBuilder
+    private var domainQualityRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("关键域").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                NKChip(text: payload.dataStatus.criticalQualityLabel,
+                       tone: nkAuctionDomainTone(payload.dataStatus.criticalDataQuality))
+                Text("上下文域").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                NKChip(text: payload.dataStatus.contextQualityLabel,
+                       tone: nkAuctionDomainTone(payload.dataStatus.contextDataQuality))
+                Spacer(minLength: 0)
+            }
+            if payload.dataStatus.hasDomainSplit {
+                Text("只有**关键域**(成员自身 + 它实际用到的市场基准与板块基准 + D0 冻结锚)会把结论夹成中性;上下文域缺失只降低置信度并在风险里披露。")
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("这份报告生成于分域上线之前,**没有**关键域 / 上下文域的记录 —— 这不等于「数据正常」,只是当时没记这一位。")
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// 逐票双源核验里**值得说出口**的那几条(不合格 / 冲突 / 换过源)。全好的不占版面。
+    @ViewBuilder
+    private var qualityDetailRows: some View {
+        let rows = payload.dataStatus.notableQualityDetails
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("逐票双源核验(只列有问题的)")
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                ForEach(rows) { d in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(d.tsCode).font(NKFont.caption.monospacedDigit())
+                                .foregroundStyle(NK.textSecondary)
+                            NKChip(text: d.freshnessLabel,
+                                   tone: d.freshness == "fresh" ? .neutral : .warn)
+                            if d.sourceDegraded { NKChip(text: "已换备源", tone: .warn) }
+                            if let cf = d.conflictLabel { NKChip(text: cf, tone: .bad) }
+                            Spacer(minLength: 0)
+                        }
+                        ForEach(d.checks) { c in
+                            Text(c.summaryText)
+                                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
             }
         }
     }
@@ -462,6 +537,7 @@ struct AuctionVerdictCard: View {
                     Text(ct).font(NKFont.caption).foregroundStyle(NK.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                domainQualityBlock
                 if !verdict.hitInvalidation.isEmpty {
                     Text("🔴 命中 D0 冻结的明确失效位:\(verdict.hitInvalidation.joined(separator: "、"))")
                         .font(NKFont.callout).foregroundStyle(NK.down)
@@ -502,8 +578,44 @@ struct AuctionVerdictCard: View {
         HStack(spacing: 5) {
             NKChip(text: verdict.verdictLabel,
                    tone: nkAuctionVerdictTone(verdict.verdict), filled: true)
-            NKChip(text: verdict.dataQualityLabel, tone: nkAuctionDQTone(verdict.dataQuality))
+            // 🔴 V2.4.0 P2.3:这一枚自此是**关键域**质量(⛔ 不再是"整体")。
+            // 老行没有分域列 → 「旧版本未细分」+ 琥珀色,⛔ 不画成绿的。
+            NKChip(text: verdict.criticalQualityLabel,
+                   tone: nkAuctionDomainTone(verdict.criticalDataQuality))
             if verdict.manualNoteAttached { NKChip(text: "有小纸条", tone: .warn) }
+        }
+    }
+
+    /// 🔴 两域各一行 + 各自缺了什么(V2.4.0 P2.3)。
+    /// **上下文域降级⛔ 不改变结论** —— 这句话必须写在界面上,否则用户会以为
+    /// "有缺失就该转中性"(那正是本版拆域前的旧行为)。
+    @ViewBuilder
+    private var domainQualityBlock: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text("关键域").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                NKChip(text: verdict.criticalQualityLabel,
+                       tone: nkAuctionDomainTone(verdict.criticalDataQuality))
+                Text("上下文域").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                NKChip(text: verdict.contextQualityLabel,
+                       tone: nkAuctionDomainTone(verdict.contextDataQuality))
+                Spacer(minLength: 0)
+            }
+            if !verdict.criticalMissingCodes.isEmpty {
+                Text("关键域没有可用读数:\(nkJoinCapped(verdict.criticalMissingCodes, cap: 10)) —— 这一篮的确认 / 否决会被夹成中性。")
+                    .font(NKFont.caption).foregroundStyle(NK.down)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !verdict.contextMissingCodes.isEmpty {
+                Text("上下文域缺:\(nkJoinCapped(verdict.contextMissingCodes, cap: 10)) —— 只降低置信度,**不改变结论**。")
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !verdict.hasDomainSplit {
+                Text("这一篮生成于分域上线之前,**没有**关键域 / 上下文域的记录 —— 不等于「数据正常」。")
+                    .font(NKFont.caption).foregroundStyle(NK.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -650,6 +762,13 @@ struct AuctionMemberRowView: View {
                 // 这一格是**空的**,必须说出口(V2.3.3 复审 🔴-1:原先它被折成
                 // `false`「没问题」,用户与 LLM 都看不出来)。
                 Text(note).font(NKFont.caption).foregroundStyle(NK.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // 🔴 V2.4.0 P2.1/P2.2:这条读数的**来源与校验**。全好时返回 `nil`(不占版面);
+            // 只要过期 / 换过源 / 两源打架,就必须当面说出来 —— 一份上一交易日的缓存
+            // 行情看起来跟正常读数一模一样,沉默就等于替它背书。
+            if let pv = member.quoteProvenanceNote {
+                Text(pv).font(NKFont.caption).foregroundStyle(NK.down)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let n = member.volumeNote, !n.isEmpty {

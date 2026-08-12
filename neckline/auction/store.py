@@ -49,12 +49,17 @@ LLM_UPDATABLE_VERDICT_COLUMNS: Tuple[str, ...] = (
     "manual_note_attached", "llm_stage", "updated_at",
 )
 
+#: ⚠ **V2.4.0 P2.4 新增的四列全部是机械冻结列**(`quote_quality_json` +
+#: `critical_data_quality` / `context_data_quality` / `quality_detail_json`)——
+#: 它们只在**第一次机械落库**时写,⛔ 一个都不许进上面两条 LLM 白名单。
 _REPORT_COLUMNS: Tuple[str, ...] = (
     "trade_date", "d0_date", "source", "captured_at", "requested_codes", "fetched_codes",
     "missing_codes_json", "conflict_codes_json", "data_quality", "index_gaps_json",
     "market_anchors_json", "market_overview", "anchors_note", "risks_json",
     "manual_note_attached",
-    "llm_stage", "llm_elapsed_ms", "baskets_covered", "notes_json", "created_at", "updated_at",
+    "llm_stage", "llm_elapsed_ms", "baskets_covered", "notes_json",
+    "quote_quality_json",
+    "created_at", "updated_at",
 )
 _VERDICT_COLUMNS: Tuple[str, ...] = (
     "basket_id", "trade_date", "d0_date", "basket_key", "name", "covered_tier",
@@ -62,7 +67,9 @@ _VERDICT_COLUMNS: Tuple[str, ...] = (
     "members_json", "sector_sync_json", "rel_strength_json", "history_json",
     "hit_invalidation_json", "plan_consistency_json", "verdict", "verdict_raw",
     "clamped_by", "reasons_json", "llm_fields_json", "manual_note_attached",
-    "llm_stage", "created_at", "updated_at",
+    "llm_stage",
+    "critical_data_quality", "context_data_quality", "quality_detail_json",
+    "created_at", "updated_at",
 )
 
 
@@ -105,7 +112,11 @@ def save_mechanical(mech: Any, *, db_path: Optional[Path] = None) -> bool:
                 None,                       # market_overview:LLM 段,NULL = 未生成
                 None,                       # anchors_note:同上
                 _j(list(m.risks)), 0,
-                LLM_PENDING, None, len(mech.baskets), _j(list(mech.notes)), now, now,
+                LLM_PENDING, None, len(mech.baskets), _j(list(mech.notes)),
+                # 🔴 P2.4:逐票七项校验 + **两源原始读数**(K8:两个来源的原始读数全部留存)。
+                # ⚠ 老行是 NULL = 「这一版还没有逐票核验这个概念」,⛔ 不是「都合格」。
+                _j(dict(getattr(m, "quote_quality", None) or {})),
+                now, now,
             ),
         )
         inserted = cur.rowcount > 0
@@ -123,7 +134,14 @@ def save_mechanical(mech: Any, *, db_path: Optional[Path] = None) -> bool:
                     # 🔴 机械段落库时结论恒为「待解释」——「还没解释」与「解释过了是中性」
                     # 必须分得开(K8 §二十 原文:LLM 不可用时其余结论标记为"待解释")。
                     VERDICT_PENDING_EXPLANATION, None, None, _j([]), _j({}), 0,
-                    LLM_PENDING, now, now,
+                    LLM_PENDING,
+                    # 🔴 P2.4 分域质量(机械冻结列)。⚠ `data_quality` 那一列自
+                    # V2.4.0 起**就是** `critical_quality` —— 这里显式再落一份的
+                    # 唯一理由是:老行那一列是**整体**质量,靠这一列为 NULL 才分得开。
+                    getattr(b, "critical_quality", None),
+                    getattr(b, "context_quality", None),
+                    _j(dict(getattr(b, "quality_detail", None) or {})),
+                    now, now,
                 ),
             )
     return inserted
@@ -212,10 +230,11 @@ def finalize_verdict(
 # ══════════════════════════════════════════════════════════════════════════
 
 _JSON_REPORT_COLS = ("missing_codes_json", "conflict_codes_json", "index_gaps_json",
-                     "market_anchors_json", "risks_json", "notes_json")
+                     "market_anchors_json", "risks_json", "notes_json",
+                     "quote_quality_json")
 _JSON_VERDICT_COLS = ("members_json", "sector_sync_json", "rel_strength_json", "history_json",
                       "hit_invalidation_json", "plan_consistency_json", "reasons_json",
-                      "llm_fields_json")
+                      "llm_fields_json", "quality_detail_json")
 
 
 def _row_to_dict(cols: Sequence[str], row: Sequence[Any], json_cols: Sequence[str]) -> Dict[str, Any]:

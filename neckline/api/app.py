@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, time
 from datetime import date as date_cls
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 
@@ -38,6 +38,8 @@ from neckline.api.schemas import (
     AuctionMarketOverviewOut,
     AuctionMemberRowOut,
     AuctionOut,
+    AuctionQualityDetailOut,
+    AuctionQuoteCheckOut,
     AuctionRiskOut,
     AuctionVerdictOut,
     BoardEventOut,
@@ -2254,13 +2256,72 @@ def _shape_auction_member(m: Any) -> AuctionMemberRowOut:
         planFit=str(d.get("plan_fit") or "unknown"),
         dataQuality=str(d.get("data_quality") or "insufficient"),
         volumeNote=d.get("volume_note"),
+        # 🔴 V2.4.0 P2.1/P2.2:老快照(V2.4.0 之前冻的 `members_json`)没有这几个键
+        # → 空串 / `None`,客户端照实说「本次没记这一位」,⛔ 不许渲染成「校验通过」。
+        quoteFreshness=str(d.get("quote_freshness") or ""),
+        quoteStatus=str(d.get("quote_status") or ""),
+        quoteSource=d.get("quote_source"),
+        quoteTimestamp=d.get("quote_ts"),
+        sourceDegraded=bool(d.get("source_degraded")),
+        sourceConflict=d.get("source_conflict"),
+        validationErrors=[str(e) for e in (d.get("validation_errors") or [])],
     )
 
 
 #: 篮子级的 json 列;某一列**读不出**时该段退化成空 + 在 `notes` 里如实点名。
 _AUCTION_VERDICT_JSON_COLS = ("members_json", "sector_sync_json", "rel_strength_json",
                               "history_json", "hit_invalidation_json", "plan_consistency_json",
-                              "reasons_json", "llm_fields_json")
+                              "reasons_json", "llm_fields_json", "quality_detail_json")
+
+#: 数据质量三态的**坏度序**(`ok < degraded < insufficient`)。⚠ 只在这里排一次序,
+#: 领域层的同款在 `auction/quality.py::worse_of` —— 两处由守门单测对拍。
+_DQ_RANK = {"ok": 0, "degraded": 1, "insufficient": 2}
+
+
+def _worst_quality(values: Sequence[Any]) -> Optional[str]:
+    """一组分域质量取**最差**的那一个;全为 `None`(老行 / 没有篮子)→ `None`。
+
+    🔴 `None` **不许被当成 `ok`**(施工图 §五 P2.3:旧报告没有这些字段时显示
+    「旧版本未细分」,⛔ 不得默认成正常)。
+    """
+    vals = [str(v) for v in values if v]
+    if not vals:
+        return None
+    return max(vals, key=lambda v: _DQ_RANK.get(v, 2))
+
+
+def _shape_auction_quality_details(payload: Any) -> List[AuctionQualityDetailOut]:
+    """`auction_reports.quote_quality_json` → 契约(snake→camel 的**唯一转换点**)。
+
+    ⚠ 老报告该列是 NULL → 空数组(客户端据此说「旧版本未细分」);
+    ⛔ 不许因为"空"就把分域质量默认成正常。
+    """
+    if not isinstance(payload, Mapping):
+        return []
+    out: List[AuctionQualityDetailOut] = []
+    for code in sorted(payload.keys()):
+        d = payload.get(code)
+        if not isinstance(d, Mapping):
+            continue
+        checks = [
+            AuctionQuoteCheckOut(
+                role=str(c.get("role") or ""), source=str(c.get("source") or ""),
+                status=str(c.get("status") or ""),
+                errors=[str(e) for e in (c.get("errors") or [])],
+                tsRaw=str(c.get("ts_raw") or ""), tsParsed=c.get("ts_parsed"),
+                price=c.get("price"), preClose=c.get("pre_close"), open=c.get("open"),
+                volume=c.get("volume"), amount=c.get("amount"),
+            )
+            for c in (d.get("checks") or []) if isinstance(c, Mapping)
+        ]
+        out.append(AuctionQualityDetailOut(
+            tsCode=str(d.get("ts_code") or code), freshness=str(d.get("freshness") or ""),
+            status=str(d.get("status") or ""), chosenRole=d.get("chosen_role"),
+            chosenSource=d.get("chosen_source"),
+            sourceDegraded=bool(d.get("source_degraded")), conflict=d.get("conflict"),
+            errors=[str(e) for e in (d.get("errors") or [])], checks=checks,
+        ))
+    return out
 
 
 def _shape_auction_verdict(row: Dict[str, Any]) -> AuctionVerdictOut:
@@ -2272,6 +2333,11 @@ def _shape_auction_verdict(row: Dict[str, Any]) -> AuctionVerdictOut:
         skeletonVersion=str(row.get("skeleton_version") or ""),
         regimeAtD0=row.get("regime_at_d0"),
         dataQuality=str(row.get("data_quality") or "insufficient"),
+        # 🔴 V2.4.0 P2.3:两列**原样透传**,`None` = 旧行(V2.3.3 及更早)没有分域
+        # 概念 → 客户端显示「旧版本未细分」,⛔ 不得默认成正常。
+        criticalDataQuality=row.get("critical_data_quality"),
+        contextDataQuality=row.get("context_data_quality"),
+        qualityDetail=dict(row.get("quality_detail_json") or {}),
         verdict=str(row.get("verdict") or "pending_explanation"),
         verdictRaw=row.get("verdict_raw"), clampedBy=row.get("clamped_by"),
         reasons=[str(r) for r in (row.get("reasons_json") or [])],
@@ -2344,6 +2410,20 @@ def get_auction(date: str = "") -> AuctionOut:
         anchorsNote=row.get("anchors_note"),
     )
     baskets = [_shape_auction_verdict(vr) for vr in verdict_rows]
+    # 🔴 V2.4.0 P2.1/P2.2/P2.3:数据状态块的分域质量与逐票核验账。
+    # ⚠ **两个 `None` 的含义刻意不同**:老报告(V2.3.3 及更早)整份没有分域列 →
+    #   客户端说「旧版本未细分」;新报告但当日零篮子 → 关键域无从谈起。两者都
+    #   ⛔ 不得默认成正常;区分靠 `qualityDetails` 有没有内容(老报告恒空)。
+    quality_details = _shape_auction_quality_details(row.get("quote_quality_json"))
+    invalid_codes = sorted({d.tsCode for d in quality_details
+                            if d.freshness == "insufficient" and d.checks})
+    validation_errors: List[str] = []
+    for d in quality_details:
+        for e in d.errors:
+            if e not in validation_errors:
+                validation_errors.append(e)
+    critical_dq = _worst_quality([vr.get("critical_data_quality") for vr in verdict_rows])
+    context_dq = _worst_quality([vr.get("context_data_quality") for vr in verdict_rows])
     covered = int(row.get("baskets_covered") or 0)
     reason: Optional[str] = None
     if not baskets:
@@ -2362,8 +2442,16 @@ def get_auction(date: str = "") -> AuctionOut:
             requestedCodes=int(row.get("requested_codes") or 0),
             fetchedCodes=int(row.get("fetched_codes") or 0),
             missingCodes=[str(c) for c in (row.get("missing_codes_json") or [])],
+            invalidCodes=invalid_codes,
             conflictCodes=[str(c) for c in (row.get("conflict_codes_json") or [])],
             dataQuality=str(row.get("data_quality") or "insufficient"),
+            # 🔴 V2.4.0 P2.3:报告级分域质量 = **各篮子取更差的那个**;
+            # `None` = 老报告没有分域概念 **或** 本次没有篮子(关键域无从谈起)——
+            # 两者都由客户端说成「旧版本未细分」/「本次没有篮子」,⛔ 不得默认成正常。
+            criticalDataQuality=critical_dq,
+            contextDataQuality=context_dq,
+            qualityDetails=quality_details,
+            validationErrors=validation_errors,
         ),
         marketOverview=market,
         baskets=baskets,
