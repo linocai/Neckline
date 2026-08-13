@@ -286,6 +286,11 @@ class InfoCardBasket:
     role_conflict: bool = False        # 对拍分歧:LLM 角色与机械角色不一致
     role_reason: str = ""
     is_primary: bool = False
+    #: 🔴 裁定 ⑤:主归属的确认状态(`confirmed` / `pending_confirmation`)。
+    #: ⚠ **空串有两种成因,⛔ 别折平**:老 v4 卡没有这一键(「未记录」),
+    #: 或者这一行压根不是主归属行(`is_primary=False`)—— 后者由 `is_primary` 自己说清。
+    primary_status: str = ""
+    primary_pending_reason: Optional[str] = None
     industry: Optional[str] = None
     industry_lift: Optional[float] = None
     # ③ 同篮其他成员
@@ -300,6 +305,8 @@ class InfoCardBasket:
             "roleLlm": self.role_llm, "roleMech": self.role_mech,
             "roleConflict": self.role_conflict, "roleReason": self.role_reason,
             "isPrimary": self.is_primary,
+            "primaryStatus": self.primary_status,
+            "primaryPendingReason": self.primary_pending_reason,
             "industry": self.industry, "industryLift": self.industry_lift,
             "peers": [p.to_public_dict() for p in self.peers],
         }
@@ -808,6 +815,9 @@ def build_basket_context(
         role_conflict=bool(chosen_member.get("role_conflict")),
         role_reason=chosen_member.get("reason") or "",
         is_primary=bool(chosen_member.get("is_primary")),
+        # 裁定 ⑤:老 v4 卡没有这一键 → 空串 =「未记录」,⛔ 不猜成 `confirmed`。
+        primary_status=str(chosen_member.get("primary_status") or ""),
+        primary_pending_reason=chosen_member.get("primary_pending_reason"),
         industry=chosen_member.get("industry"), industry_lift=chosen_member.get("industry_lift"),
         peers=peers,
     )

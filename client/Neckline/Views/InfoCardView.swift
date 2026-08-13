@@ -184,8 +184,11 @@ struct InfoCardPageView: View {
                 HStack(spacing: 8) {
                     Text("所属篮子").nkLabel().foregroundStyle(NK.textTertiary)
                     Spacer(minLength: 6)
+                    // 🔴 裁定 ⑤:三态(已确认 / 归属待确认 / 老卡未记录)。
                     if card.basket.available && card.basket.isPrimary {
-                        NKChip(text: "主归属", tone: .good)
+                        NKChip(text: NKPrimaryStatus.chipText(card.basket.primaryStatus),
+                               tone: NKPrimaryStatus.isPending(card.basket.primaryStatus) ? .warn
+                                   : (NKPrimaryStatus.isRecorded(card.basket.primaryStatus) ? .good : .info))
                     }
                 }
                 .padding(.bottom, 11)

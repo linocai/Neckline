@@ -143,11 +143,43 @@ MIN_LIFT_SAMPLE_SIZE = _INDUSTRY_STRENGTH_MIN_MEMBERS
 # 这个既有的、⑤ 原有的"算不出"路径分开——后者语义更早、不特指小样本,不套这个原因码。
 LIFT_REASON_SAMPLE_TOO_SMALL = "sample_too_small"
 
-# 主归属决定路径(⑤-c 新增字段 `primary_reason`,只标在 `is_primary=1` 的那一行):
-# 正常路径 = 在达标篮之间按 lift 比出来的;兜底路径 = 该票全部候选篮都不达标,退化
-# 到确定性兜底(成员数降序 → basket_key 升序)。
-PRIMARY_REASON_LIFT = "highest_lift"
-PRIMARY_REASON_FALLBACK = "fallback_no_qualified_lift"
+# 主归属决定路径(`primary_reason`,只标在 `is_primary=1` 的那一行)。
+#
+# 🔴 **2026-08-12 用户裁定 ⑤ 逐字**:「主归属**依次根据**:当前直接驱动 → 股票在该方向
+# 的代表性 → 板块与核心协同 → 预期路径匹配度,**由策略判断确定**。**小簇和大概念没有
+# 天然优先级。**小簇必须是**具有直接驱动和真实多股协同的独立方向**,不能只是标签重合
+# 或临时同涨。**Lift 仅作辅助证据;样本不少于 5 只时才计算,但不得单独决定主篮子。**
+# **无法确定时标记「归属待确认」,技术兜底结果不得影响策略等级。**」
+#
+# → **`highest_lift` 这条路径自此作废**(⛔ 不许恢复):机械侧不再拿 lift 排序决定归属。
+#   ⚠ 常量本身**保留不删**:它已写进历史 `basket_cards.card_json` 的
+#   `members[].primary_reason`,删了会让旧卡上那个值查无出处。
+PRIMARY_REASON_LIFT = "highest_lift"           # ⛔ 作废路径(仅供读旧卡时识别)
+PRIMARY_REASON_FALLBACK = "fallback_no_qualified_lift"   # 确定性技术兜底(值一字不改)
+#: 🔴 裁定 ⑤ 新增:该票**只出现在这一个篮子里** → 归属无歧义,不需要"策略判断"。
+PRIMARY_REASON_SOLE_BASKET = "sole_basket"
+#: 🔴 裁定 ⑤ 新增:同票多篮,由**策略侧(LLM)**明确认领的那一篮。
+PRIMARY_REASON_LLM = "llm_strategy_judgment"
+
+# —— 主归属的**确认状态**(裁定 ⑤ 的第三态,`primary_status`)————————————————
+#: 归属是**策略结论**(唯一篮 / 策略侧明确认领)。
+PRIMARY_STATUS_CONFIRMED = "confirmed"
+#: 🔴 **「归属待确认」** —— 同票多篮而策略侧没给出唯一认领(漏答 / 没认领 / 多篮同时
+#: 认领)。这时 `is_primary` 仍然唯一(库与卡都要求恰好一行),但那一位是
+#: **技术兜底的产物,不是策略结论**。⛔ 绝不许把它读成「系统判定归这一篮」。
+PRIMARY_STATUS_PENDING = "pending_confirmation"
+
+#: `primary_status = pending_confirmation` 时的**可查原因码**(⛔ 一个 `None` 只许
+#: 承载一种含义 —— `CLAUDE.md`「三态字段」那条纪律)。
+PRIMARY_PENDING_NO_CLAIM = "no_primary_claim"        # 多篮候选,一篮都没认领
+PRIMARY_PENDING_MULTI_CLAIM = "multiple_primary_claims"   # 多篮同时认领,策略侧自相矛盾
+PRIMARY_PENDING_REASONS = (PRIMARY_PENDING_NO_CLAIM, PRIMARY_PENDING_MULTI_CLAIM)
+
+#: LLM 对「这一篮是不是该票的主篮子」的三态认领(prompt 的 `primary_claim`)。
+PRIMARY_CLAIM_YES = "yes"
+PRIMARY_CLAIM_NO = "no"
+PRIMARY_CLAIM_UNSURE = "unsure"
+PRIMARY_CLAIMS = (PRIMARY_CLAIM_YES, PRIMARY_CLAIM_NO, PRIMARY_CLAIM_UNSURE)
 
 # 章程版本取不到时的占位(V2 红线:现役章程恒 v1.3.3,生产不会走到这里;测试用
 # 空库时会。**不写空串冒充"没有章程"**——「没有」与「没看」必须能分开)。
@@ -576,9 +608,22 @@ class BasketMemberCandidate:
     # 「算不出」≠「等于 0」——`industry_lift is None` 本身可能因多种原因(无行业 /
     # 全市场查无该行业 / 本条新增的样本量不足),只有最后一种才附这个原因码。
     lift_reason: Optional[str] = None
-    # ⑤-c:只在 `is_primary=1` 的那一行上有意义,标注主归属是靠 lift 比出来的
-    # 还是走了确定性兜底(`PRIMARY_REASON_LIFT` / `PRIMARY_REASON_FALLBACK`)。
+    # 只在 `is_primary=1` 的那一行上有意义,标注主归属是怎么定下来的
+    # (`PRIMARY_REASON_SOLE_BASKET` / `PRIMARY_REASON_LLM` / `PRIMARY_REASON_FALLBACK`;
+    #  `PRIMARY_REASON_LIFT` 自裁定 ⑤ 起**不再产出**,只在旧卡上出现)。
     primary_reason: Optional[str] = None
+    # 🔴 **裁定 ⑤:主归属的确认状态**(只在 `is_primary=1` 那一行上有意义)。
+    # `confirmed` = 策略结论(唯一篮 / 策略侧明确认领);
+    # `pending_confirmation` = **「归属待确认」** —— `is_primary` 那一位是技术兜底的
+    # 产物,⛔ 不是策略结论。⚠ 空串 = 这一行不是主归属行(⛔ 别读成"没确认")。
+    primary_status: str = ""
+    # `primary_status == pending_confirmation` 时的可查原因码(`PRIMARY_PENDING_*`)。
+    primary_pending_reason: Optional[str] = None
+    # —— 裁定 ⑤:策略侧对「这一篮是不是该票主篮子」的认领(`yes|no|unsure`)——————
+    # ⚠ 空串 = 模型**这一格没答**(与显式 `unsure` 分开:一个是漏答、一个是答了"说不准")。
+    # ⛔ 它**只是证据**:真正的归属由 `assign_primary` 汇总全部候选篮之后才定。
+    primary_claim: str = ""
+    primary_claim_reason: str = ""
     rs_rank: Optional[int] = None
     name: str = ""
     # ⑤-b:K4 安检的 avoid_flag 标(hard_cut 命中已在装配阶段被剔,不会走到这里;
@@ -1259,7 +1304,23 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
    · `elastic` 只需与主要驱动直接相关 + 位置结构合理 + 弹性突出,**⛔ 不要求它是龙头**;
    · 🔴 **⛔ 不许把「不是龙头」当成 `unfit`** —— `unfit` 只用于**有明确反证**的那种
      (比如它与这个驱动其实无关、或者它明显只是尾随炒作);说不清就给 `weak`,判不出就给 `unknown`。
-9. 给**每个篮子**判一次**市场关**和一次**板块关**(下面两节给了判断标准与读数),
+9. 🔴 给**你选中的每一只成员**认领一次**主篮子归属**,产出 `primary_claim`
+(`yes` = 这一篮就是它的主篮子 / `no` = 不是 / `unsure` = 说不准),并在
+`primary_claim_reason` 里用一句话说清依据。**依次按这四条判,顺序不可颠倒**:
+   ① **当前直接驱动** —— 今天真正在推它的是哪一件事;
+   ② **它在这个方向上的代表性** —— 它是不是这个方向讲得出口的那一只;
+   ③ **板块与核心的协同** —— 这个方向的核心与板块是不是真的在一起动;
+   ④ **预期路径匹配度** —— 它接下来的走法与这个篮子的假设合不合。
+   · 🔴 **小簇和大概念没有天然优先级**:⛔ 不许因为一个篮子成分少就判它更"聚焦",
+     也 ⛔ 不许因为一个篮子成分多就判它更"主流"。
+   · 🔴 **小簇要成为一个独立方向,必须有直接驱动 + 真实的多股协同** ——
+     只是标签重合、或者今天恰好一起涨,**不算**一个方向。
+   · 🔴 读数里那个 `industry_lift`(行业富集倍数)**只是辅助证据**:样本不足 5 只时
+     系统压根不算它(会写「样本不足」)。⛔ **不许单独拿它决定主篮子。**
+   · ⚠ 一只票只出现在一个篮子里时,归属没有歧义,你写 `yes` 或留空都行。
+   · 🔴 **说不准就写 `unsure`**:系统会把它标成「归属待确认」并走一个可复现的技术兜底,
+     ⛔ **那个兜底不会改变任何篮子的等级** —— 所以硬凑一个 `yes` 只会让记录失真。
+10. 给**每个篮子**判一次**市场关**和一次**板块关**(下面两节给了判断标准与读数),
 产出 `market_check` 与 `sector_check`:
    · 这两关是**篮子级**判断(问的是"这个篮子所处的大盘环境 / 板块环境合不合适"),
      ⛔ 不要逐票判;
@@ -1317,6 +1378,8 @@ BASKET_REASON_SYSTEM_PROMPT = """你是「颈线」系统的盘后选股参谋�
    "members": [{"ts_code": "必须来自该种子的成员清单",
                 "role": "leader|core|elastic",
                 "reason": "为什么是这只而不是同题材其他票",
+                "primary_claim": "yes|no|unsure(这一篮是不是它的主篮子)",
+                "primary_claim_reason": "一句话说清依据(按驱动→代表性→协同→路径的顺序)",
                 "position_check": {"verdict": "ok|weak|unfit|unknown", "support": [],
                                    "counter_evidence": [], "missing": [], "reason": "依据"},
                 "core_check": {"verdict": "ok|weak|unfit|unknown", "support": [],
@@ -1876,6 +1939,33 @@ def _parse_core_check(
     )
 
 
+def _parse_primary_claim(
+    member_raw: Mapping[str, Any], *, code: str, name: str,
+) -> Tuple[str, str]:
+    """成员项 → `(primary_claim, primary_claim_reason)`(2026-08-12 用户裁定 ⑤)。
+
+    🔴 **三态之外还有第四种情形,⛔ 不许折平**:
+        · `yes` / `no` / `unsure` —— 模型明确答了(`unsure` = 它看过、说不准);
+        · **空串** —— 模型**这一格没答**(漏答)。
+
+    ⚠ 漏答与 `unsure` 在下游走**同一条兜底路径**(都不构成"认领"),但在留痕上必须
+    分得开 —— 「漏答」是模型行为问题,「说不准」是它对这只票的真实判断。
+    ⚠ 认领**不合法的枚举值**(拼错 / 写中文)按**漏答**处理并 WARNING,
+    ⛔ 不猜成 `yes` —— 猜一个认领等于替策略侧下结论。
+    """
+    raw_claim = str(member_raw.get("primary_claim") or "").strip().lower()
+    reason = str(member_raw.get("primary_claim_reason") or "").strip()
+    if not raw_claim:
+        return "", reason
+    if raw_claim not in PRIMARY_CLAIMS:
+        logger.warning(
+            "[aggregate] 提案 %r 的成员 %s 的 primary_claim=%r 不在 %s 内,"
+            "按**没答**处理(⛔ 不猜成 yes)", name, code, raw_claim, PRIMARY_CLAIMS,
+        )
+        return "", reason
+    return raw_claim, reason
+
+
 def _parse_market_check(
     raw: Mapping[str, Any], *, name: str,
 ) -> Tuple[str, str, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]:
@@ -1953,8 +2043,10 @@ def _gate_proposal(
         return None, RejectedProposal(
             REJECT_MEMBER_COUNT, f"成员数 {len(members_raw)} 不在 [{MIN_MEMBERS},{MAX_MEMBERS}]", raw
         )
-    # (code, role, reason, 位置关五件套, 核心关五件套)
-    parsed_members: List[Tuple[str, str, str, _GateCheckTuple, _GateCheckTuple]] = []
+    # (code, role, reason, 位置关五件套, 核心关五件套, 主归属认领两件套)
+    parsed_members: List[
+        Tuple[str, str, str, _GateCheckTuple, _GateCheckTuple, Tuple[str, str]]
+    ] = []
     codes_seen: set = set()
     for m in members_raw:
         if not isinstance(m, dict):
@@ -1964,6 +2056,7 @@ def _gate_proposal(
         reason = str(m.get("reason") or "").strip()
         pos_check = _parse_position_check(m, code=code, name=name)
         core_check = _parse_core_check(m, code=code, name=name)
+        primary_claim = _parse_primary_claim(m, code=code, name=name)
         if not code:
             return None, RejectedProposal(REJECT_MALFORMED, "成员缺 ts_code", raw)
         if code in codes_seen:
@@ -1975,7 +2068,7 @@ def _gate_proposal(
             # 角色是三值枚举、prompt 里逐字给过;写不对就没法跟机械侧对拍(对拍闸
             # 会失去意义),故按 malformed 拒收而不是猜一个角色塞进去。
             return None, RejectedProposal(REJECT_BAD_ROLE, f"{code} 的角色 {role!r} 不在 {ROLES}", raw)
-        parsed_members.append((code, role, reason, pos_check, core_check))
+        parsed_members.append((code, role, reason, pos_check, core_check, primary_claim))
 
     # —— 闸 3:**成员白名单闸**(plan §五 V2-⑤ 第 1 道)———————————————————
     allowed: set = set()
@@ -2014,7 +2107,7 @@ def _gate_proposal(
     driver_universe = tuple(sorted(allowed))
     driver_domain_key = "+".join(seed_keys)
     members: List[BasketMemberCandidate] = []
-    for (code, role, reason, pos_check, core_check) in parsed_members:
+    for (code, role, reason, pos_check, core_check, primary_claim) in parsed_members:
         pos_verdict, pos_reason, pos_support, pos_counter, pos_missing = pos_check
         core_verdict, core_reason, core_support, core_counter, core_miss = core_check
         role_mech, rs_rank = _resolve_mech_role(code, ctx, prefer_cluster_keys=seed_keys)
@@ -2046,6 +2139,9 @@ def _gate_proposal(
             core_metrics=core_metrics, core_metrics_missing=core_missing,
             core_support=core_support, core_counter_evidence=core_counter,
             core_missing=core_miss,
+            # 裁定 ⑤:策略侧对主篮子的**认领**(证据,不是结论)——
+            # 真正的归属要等 `assign_primary` 看过该票的**全部**候选篮才定。
+            primary_claim=primary_claim[0], primary_claim_reason=primary_claim[1],
         ))
 
     seed_kinds = [seeds_by_key[k].seed_kind for k in seed_keys]
@@ -2127,31 +2223,42 @@ def assign_primary(
     seeds_by_key: Mapping[str, DriverSeed],
     ctx: MechContext,
 ) -> Tuple[BasketCandidate, ...]:
-    """同一票可以留在多个篮子里(蓝图 4.2「同一股票可以保留多个题材标签」),但
-    **`is_primary=1` 唯一**:取**行业闸 lift 最高**的那篮(plan §五 V2-⑤「主归属
-    规则」,复用 v1.3.1 行业闸 lift 先例,防「挂靠票占位」重演)。
+    """同一票可以留在多个篮子里,但 **`is_primary=1` 唯一**。
 
-    lift 的"板内"分母 = 该篮**所声明种子的全部原始成分**的并集(不是最终 1-3 只
-    成员!)——v1.3.1 那道闸问的就是"这只票的行业在这个板块里是否真的富集",分母
-    必须是板块成员集合;拿 3 个成员算占比毫无统计意义。
+    🔴 **2026-08-12 用户裁定 ⑤ 重写了这件事的做法(逐字)**:「主归属**依次根据**:
+    当前直接驱动 → 股票在该方向的代表性 → 板块与核心协同 → 预期路径匹配度,
+    **由策略判断确定**。**小簇和大概念没有天然优先级。**小簇必须是**具有直接驱动和
+    真实多股协同的独立方向**,不能只是标签重合或临时同涨。**Lift 仅作辅助证据;
+    样本不少于 5 只时才计算,但不得单独决定主篮子。****无法确定时标记「归属待确认」,
+    技术兜底结果不得影响策略等级。**」
 
-    **⑤-c(2026-08-02 planner 裁定)最小成分数门槛**:该并集(下称"篮子成分池")
-    大小 < `MIN_LIFT_SAMPLE_SIZE` 的篮子,其 lift **不参与主归属比较**——涨停簇
-    成分池常只 2–5 只,lift 在这个样本量级下会失真(实测 70~90 倍),与 v1.3.1
-    先例〔成分池以百计〕不是一个统计量级。**主归属规则因此改写为三段**:
-        ① 一票的候选篮里,**只要有 ≥1 个达标篮**,主归属只在达标篮之间按
-           lift 比(不达标篮完全不参与比较,无论其原始 lift 数值多高)。
-        ② 一票的候选篮**全部不达标** → 退化到确定性兜底:按
-           `(该篮成分池大小降序, basket_key 升序)` 取一个(可复现、不拍脑袋)。
-        ③ 篮子本身**不因不达标被剔**——门槛只影响"主归属归谁",不影响"成不成篮"。
-    **确定性 tie-break**(达标篮之间):lift 降序 → `basket_key` 升序。lift 算不出
-    (该票无行业 / 全市场查无该行业占比)记 `-inf`,输给任何有数的篮 —— 但**不写
-    0**,`industry_lift` 字段仍留 `None`(「算不出」与「算出来是 0」必须分得开;
-    这与"成分池不达标"是两种不同的"算不出"原因,`lift_reason` 只标后者)。"""
+    → 落地成**三条路径**(机械侧只汇总,⛔ 不再拿 lift 排序决定归属):
+
+        ① **`sole_basket`**  —— 该票只出现在一个篮子里 = 归属无歧义,不需要策略判断;
+        ② **`llm_strategy_judgment`** —— 同票多篮,策略侧(LLM)**恰好认领一篮**
+           (`primary_claim == "yes"`),按四条顺序给了理由;
+        ③ **技术兜底 + 「归属待确认」** —— 同票多篮而策略侧没给出唯一认领
+           (一篮都没认领 / 多篮同时认领)。`is_primary` 仍然唯一(库与卡都要求恰好
+           一行),但那一位标 `primary_status = pending_confirmation` + 可查原因码,
+           🔴 **⛔ 绝不许被读成「系统判定归这一篮」**。
+
+    **兜底的确定性规则一字未改**:`(该篮成分池大小降序, basket_key 升序)` —— 可复现、
+    不拍脑袋。⚠ 保留它是因为「库里必须恰好一行 `is_primary=1`」是硬约束,**不是**因为
+    它是个好判据;它的产物一律标「待确认」。
+
+    **lift 降级为辅助证据**(裁定 ⑤ 逐字):`industry_lift` 照旧算、照旧进卡、照旧喂
+    prompt,`MIN_LIFT_SAMPLE_SIZE = 5`(用户给的那个数)以下不算 —— 但它
+    **⛔ 不再参与任何归属排序**。`PRIMARY_REASON_LIFT` 这条路径自此不再产出。
+
+    🔴 **技术兜底不得影响策略等级 —— 这是结构性保证,不是自觉**:`is_primary` /
+    `primary_status` / `primary_reason` / `industry_lift` **不出现在任何定档路径**
+    (`selection/tier.py` 与 `gates.py` 的关口判定),守门单测正反双向锁。
+    """
     if not baskets:
         return ()
 
     # 每篮的成分池(其所声明种子的全部原始成分并集)与「行业 → lift」表。
+    # ⚠ 成分池仍然要算:它既是 lift 的分母,也是兜底那一路的确定性排序键。
     universe_by_basket: Dict[str, List[str]] = {}
     lift_by_basket: Dict[str, Dict[str, float]] = {}
     for b in baskets:
@@ -2164,8 +2271,9 @@ def assign_primary(
         universe_by_basket[b.basket_key] = universe
         lift_by_basket[b.basket_key] = industry_lift_map(universe, ctx.industry_of, ctx.market_shares)
 
-    # ⑤-c:该篮成分池是否达标(>= MIN_LIFT_SAMPLE_SIZE)。
-    qualified_of: Dict[str, bool] = {
+    # 裁定 ⑤:「样本不少于 5 只时才计算」——`MIN_LIFT_SAMPLE_SIZE` 是用户给的那个数。
+    # ⚠ 它现在**只决定"这个 lift 值算不算得出来"**,⛔ 不再决定"归属归谁"。
+    lift_sample_ok: Dict[str, bool] = {
         bk: len(u) >= MIN_LIFT_SAMPLE_SIZE for bk, u in universe_by_basket.items()
     }
 
@@ -2175,57 +2283,78 @@ def assign_primary(
             return None
         return lift_by_basket.get(basket_key, {}).get(ind)
 
-    # code -> 该票出现的全部 (lift_or_None, basket_key, 该篮是否达标)。
-    occurrences: Dict[str, List[Tuple[Optional[float], str, bool]]] = {}
+    # code -> 该票出现的全部 (basket_key, 该篮里这一行的认领)。
+    occurrences: Dict[str, List[Tuple[str, str]]] = {}
     for b in baskets:
-        qualified = qualified_of[b.basket_key]
         for m in b.members:
             occurrences.setdefault(m.ts_code, []).append(
-                (_lift(b.basket_key, m.ts_code), b.basket_key, qualified)
+                (b.basket_key, str(getattr(m, "primary_claim", "") or ""))
             )
 
     primary_of: Dict[str, str] = {}
     primary_reason_of: Dict[str, str] = {}
+    primary_status_of: Dict[str, str] = {}
+    primary_pending_reason_of: Dict[str, str] = {}
     for code, occ in occurrences.items():
-        qualified_occ = [(lift, bk) for lift, bk, q in occ if q]
-        if qualified_occ:
-            # 只在达标篮之间比:lift 降序 → basket_key 升序(纯确定性)。lift 算不出
-            # 记 -inf 参与比较,不写 0。
-            chosen = sorted(
-                qualified_occ, key=lambda t: (-(t[0] if t[0] is not None else _NEG_INF), t[1])
-            )[0]
-            primary_of[code] = chosen[1]
-            primary_reason_of[code] = PRIMARY_REASON_LIFT
-        else:
-            # 全部不达标 → 确定性兜底:(该篮成分池大小降序, basket_key 升序)。
-            fallback = sorted(
-                ((len(universe_by_basket[bk]), bk) for _lift_v, bk, _q in occ),
-                key=lambda t: (-t[0], t[1]),
-            )[0]
-            primary_of[code] = fallback[1]
-            primary_reason_of[code] = PRIMARY_REASON_FALLBACK
+        if len(occ) == 1:
+            # ① 只有一个候选篮 —— 归属没有歧义,⛔ 不需要也不该标「待确认」。
+            primary_of[code] = occ[0][0]
+            primary_reason_of[code] = PRIMARY_REASON_SOLE_BASKET
+            primary_status_of[code] = PRIMARY_STATUS_CONFIRMED
+            continue
+        claimed = sorted(bk for bk, claim in occ if claim == PRIMARY_CLAIM_YES)
+        if len(claimed) == 1:
+            # ② 策略侧恰好认领一篮 —— 这就是裁定要的「由策略判断确定」。
+            primary_of[code] = claimed[0]
+            primary_reason_of[code] = PRIMARY_REASON_LLM
+            primary_status_of[code] = PRIMARY_STATUS_CONFIRMED
+            continue
+        # ③ 无法确定 → 技术兜底 + 「归属待确认」。
+        # 🔴 两种成因分开记(⛔ 一个原因码只许承载一种含义):
+        pending = (PRIMARY_PENDING_MULTI_CLAIM if len(claimed) > 1
+                   else PRIMARY_PENDING_NO_CLAIM)
+        fallback = sorted(
+            ((len(universe_by_basket.get(bk, ())), bk) for bk, _claim in occ),
+            key=lambda t: (-t[0], t[1]),
+        )[0]
+        primary_of[code] = fallback[1]
+        primary_reason_of[code] = PRIMARY_REASON_FALLBACK
+        primary_status_of[code] = PRIMARY_STATUS_PENDING
+        primary_pending_reason_of[code] = pending
+        logger.info(
+            "[aggregate] %s 同时落在 %d 个篮子而策略侧没给出唯一认领(%s)—— "
+            "标「归属待确认」,`is_primary` 走确定性技术兜底 %s;"
+            "⛔ 这一位不是策略结论,也不影响任何篮子的等级。",
+            code, len(occ), pending, fallback[1],
+        )
 
     out: List[BasketCandidate] = []
     for b in baskets:
-        qualified = qualified_of[b.basket_key]
-        # 🔴 **只改这四格,其余字段一律 `dc_replace` 原样带过**(V2.2-③-C 施工期真
+        sample_ok = lift_sample_ok[b.basket_key]
+        # 🔴 **只改这几格,其余字段一律 `dc_replace` 原样带过**(V2.2-③-C 施工期真
         # 踩:这里原本是**逐字段手抄构造** `BasketMemberCandidate(...)`,新增的位置关
         # 四字段没抄进来 → 全篮成员的 `position_verdict` 被静默重置成默认值 → 六关
         # 侧全员回退成 `weak`、读数全丢,**日志一行警告都没有、界面上看起来像模型
-        # 判的**。与下面那句对篮子级的告诫是同一条:逐字段手抄在加新字段时会静默丢
-        # 字段,⛔ 别再改回手抄。⚠ 裁定 #12 的核心关四字段(`core_verdict` /
-        # `core_reason` / `core_metrics` / `core_metrics_missing`)同样只靠这一句
-        # `dc_replace` 原样带过 —— 同一个坑一改回手抄就会同时吞掉八个字段。
+        # 判的**。逐字段手抄在加新字段时会静默丢字段,⛔ 别再改回手抄。
         members = tuple(
             dc_replace(
                 m,
                 is_primary=1 if primary_of.get(m.ts_code) == b.basket_key else 0,
-                # 不达标篮:lift 不参与比较、也不展示数值(「算不出」≠「等于 0」,
-                # 承 ⑤ 既有姿势;这里"算不出"的原因是样本太小,标 `lift_reason`)。
-                industry_lift=(_lift(b.basket_key, m.ts_code) if qualified else None),
-                lift_reason=(None if qualified else LIFT_REASON_SAMPLE_TOO_SMALL),
+                # 样本不足的篮:lift 算不出、也不展示数值(「算不出」≠「等于 0」)。
+                # ⚠ 裁定 ⑤ 之后它只是**辅助证据**,⛔ 不参与归属排序。
+                industry_lift=(_lift(b.basket_key, m.ts_code) if sample_ok else None),
+                lift_reason=(None if sample_ok else LIFT_REASON_SAMPLE_TOO_SMALL),
                 primary_reason=(
                     primary_reason_of.get(m.ts_code)
+                    if primary_of.get(m.ts_code) == b.basket_key else None
+                ),
+                # ⚠ 非主归属行留**空串**(⛔ 别写 `confirmed`,那会让每一行都自称"已确认")。
+                primary_status=(
+                    primary_status_of.get(m.ts_code, "")
+                    if primary_of.get(m.ts_code) == b.basket_key else ""
+                ),
+                primary_pending_reason=(
+                    primary_pending_reason_of.get(m.ts_code)
                     if primary_of.get(m.ts_code) == b.basket_key else None
                 ),
             )

@@ -84,6 +84,7 @@ from neckline.api.schemas import (
     OkOut,
     PackOut,
     PacksListOut,
+    PortfolioAlertOut,
     PositionAlertOut,
     PositionCloseIn,
     PositionOpenIn,
@@ -1096,10 +1097,52 @@ def _locked_time_exit_day(buy_date: date, locked_date: Optional[str]) -> Optiona
 #                    **就是持仓代码**,不是全局刹车;APNs 是一次性打扰(可被开关掐掉、
 #                    划走就没了),**不是"入口"**。
 # ⚠ `attention/sector_bid_fade`(scope = 指数码)与 `market_shock`(scope = 空)
-#   匹配不到任何持仓 → 结构性不出现在本通道;**如实登记 → §七 P1-81**,⛔ 不假装它们在。
+#   匹配不到任何持仓 → 结构性不出现在本通道。
+#   ✅ **2026-08-12 用户裁定 ② 已给它们指定落点** = 下面的**组合环境提醒**(§七 P1-81 销案);
+#   裁定原文明写「⛔ 也不重复塞进单票详情」,故本通道**另加一道按 kind 的显式排除**
+#   (`_PORTFOLIO_ONLY_KINDS`)—— ⚠ 排除不是"补上原本会漏进来的东西":scope 那两条
+#   结构性理由**仍然成立**,这一道是**把裁定写成机器判据**,让它不因将来某次改 scope 而失效。
 _POSITION_ALERT_SENTINELS: FrozenSet[str] = frozenset({
     "holding", "attention", "circuit", "precall",
 })
+
+# —— 组合环境提醒:两类**只走顶部那一段**的事件(2026-08-12 用户裁定 ②)——————————
+#
+# 🔴 **裁定原文(逐字,⛔ 不许加减)**:「两类提醒统一落在**持仓页顶部的「组合环境提醒」**。
+# `sector_bid_fade` **按板块展示,并列出受影响持仓**;`market_shock` 作为**全组合提醒**。
+# 二者均使用**黄色**提醒,**只提供环境证据,不给交易指令,不影响选股等级和交易资格,
+# 也不重复塞进单票详情**。」
+#
+# ⚠ 这里用 `payload.kind`(事件落库时冻结的那个码)判,**⛔ 不用 `event_key`** ——
+#   `fade` / `shock` 两个键短得没有辨识度,而 `kind` 就是 `notify_kinds` 的正式码。
+#   老行缺 `kind` 时退回 `event_key` 反查(见 `_portfolio_kind_of`),⛔ 不静默丢事件。
+_PORTFOLIO_ONLY_KINDS: FrozenSet[str] = frozenset({
+    notify_kinds.KIND_SECTOR_BID_FADE, notify_kinds.KIND_MARKET_SHOCK,
+})
+
+#: 老行缺 `payload.kind` 时的 `event_key` → kind 反查(两类各一个静态键,历史去重键
+#: ⛔ 一个字都不许改 —— 改了同一件事在老库与新库里就去重不到一起)。
+_PORTFOLIO_EVENT_KEY_KIND: Dict[str, str] = {
+    "fade": notify_kinds.KIND_SECTOR_BID_FADE,
+    "shock": notify_kinds.KIND_MARKET_SHOCK,
+}
+
+#: kind → 展示范围。`sector` = 按板块展示 + 列受影响持仓;`portfolio` = 全组合。
+_PORTFOLIO_SCOPE_KIND: Dict[str, str] = {
+    notify_kinds.KIND_SECTOR_BID_FADE: "sector",
+    notify_kinds.KIND_MARKET_SHOCK: "portfolio",
+}
+
+# 🔴 **展示强调档 = `warn`(黄色),两类同档 —— 这是 2026-08-12 用户裁定 ③ 的原话**
+# (「`sector_bid_fade` 与 `market_shock` 在组合环境提醒中统一按 `warn` 展示」),
+# ⛔ **不是工程侧按同族项推出来的默认值**(`_POSITION_ALERT_LEVEL` 后四条才是那种)。
+# ⚠ 同一份裁定同时确认了 `_POSITION_ALERT_LEVEL` 现有四条新增项**一个字节不动**:
+#   「`position_low_open = critical`;`consecutive_stops = warn`;`decoupled = warn`;
+#    `basket* = warn`」。
+_PORTFOLIO_ALERT_LEVEL: Dict[str, str] = {
+    notify_kinds.KIND_SECTOR_BID_FADE: "warn",
+    notify_kinds.KIND_MARKET_SHOCK: "warn",
+}
 
 # 🔴 **退役两类:显式列出来当反向断言用**(守门单测拿它与白名单做交集必须为空)。
 # ⛔ 它**不是**过滤器 —— 过滤器是上面那张白名单;这张表只是让"退役的进不来"
@@ -1117,6 +1160,9 @@ _RETIRED_ALERT_SENTINELS: FrozenSet[str] = frozenset({"retreat", "invalidation"}
 #     此刻的价位;与 `sector_dive`(环境性)同族 → `warn`。
 #   · `decoupled` / `basket<id>` —— ⑪-A 四监测在 `notify_kinds.LEVEL_OF_KIND` 里
 #     就是「重要不紧急」(今天要处理、不必打断手头的事)→ `warn`。
+# ✅ **2026-08-12 用户裁定 ③ 已逐条确认这四条,原话**:「`position_low_open = critical`;
+#   `consecutive_stops = warn`;`decoupled = warn`;`basket* = warn`。」
+#   🔴 它们自此**不再是"工程侧按同族项推的默认值",而是用户裁定值** —— 要改得再拍一次板。
 # ⚠ 未登记的 event_key 落 `info`(如实中性,不冒充紧急,也不吞掉)。
 _POSITION_ALERT_LEVEL: Dict[str, str] = {
     "stop_approach": "critical",
@@ -1153,8 +1199,11 @@ def _today_position_alerts(trade_date: date) -> Dict[str, List[PositionAlertOut]
     `retreat` 自 V2.4.0 P0 起已停写(库里仍有历史行),它们**不在白名单里 = 结构上
     进不来**;换成"排除这两个"的写法,日后再退役一类就会静默漏进来。
     ⚠ 仍然**只画该持仓自己的行**:`ts_code` 为空的市场级行(`market_shock`)由
-    `if not code` 天然排除;`sector_bid_fade` 的 scope 是指数码,匹配不到任何持仓
-    (→ §七 P1-81 如实登记,⛔ 不在这里给它编一个落点)。
+    `if not code` 天然排除;`sector_bid_fade` 的 scope 是指数码,匹配不到任何持仓。
+    🔴 **2026-08-12 用户裁定 ② 之后又多了一道显式排除**(`_PORTFOLIO_ONLY_KINDS`):
+    那两类的落点是**持仓页顶部的组合环境提醒**,裁定原文「⛔ 也不重复塞进单票详情」。
+    ⚠ 这一道**不是**在补一个原本会漏进来的洞(scope 那两条理由仍然成立),
+    而是把裁定写成机器判据 —— 将来谁改了 scope,这里也不会静默把它们塞回单票。
     读库异常 → 空 dict(持仓卡是每日最常看的一屏,**绝不因为一条提醒读不到就掀翻它**)。
     """
     try:
@@ -1166,6 +1215,8 @@ def _today_position_alerts(trade_date: date) -> Dict[str, List[PositionAlertOut]
     for e in events:
         if e.get("sentinel") not in _POSITION_ALERT_SENTINELS:
             continue
+        if _portfolio_kind_of(e) in _PORTFOLIO_ONLY_KINDS:
+            continue                     # 裁定 ②:这两类只走组合环境提醒
         code = e.get("ts_code") or ""
         if not code:
             continue
@@ -1175,6 +1226,58 @@ def _today_position_alerts(trade_date: date) -> Dict[str, List[PositionAlertOut]
             verdict=(e.get("payload") or {}).get("body", ""),
             ts=e.get("pushed_at", ""),
             level=_position_alert_level(key),
+        ))
+    return out
+
+
+def _portfolio_kind_of(event: Mapping[str, Any]) -> str:
+    """一条 `sentinel_events` 行的**组合环境提醒 kind**(不是这两类 → 空串)。
+
+    优先取 `payload.kind`(落库时冻结的正式码);老行缺这一键时按 `event_key` 反查
+    (只对 `sentinel='attention'` 生效 —— `fade` / `shock` 两个键太短,别的哨兵
+    将来撞上就麻烦了)。⛔ 反查表里那两个键是**历史去重键,一个字都不许改**。
+    """
+    if event.get("sentinel") != "attention":
+        return ""
+    kind = str((event.get("payload") or {}).get("kind") or "")
+    if kind:
+        return kind
+    return _PORTFOLIO_EVENT_KEY_KIND.get(str(event.get("event_key") or ""), "")
+
+
+def _today_portfolio_alerts(trade_date: date) -> List[PortfolioAlertOut]:
+    """当日**组合环境提醒**(2026-08-12 用户裁定 ②;§七 P1-81 的落点)。
+
+    🔴 **只读、只透传**:源是 `sentinel_events` 已冻结的那几行,服务端
+    ⛔ 不重判、⛔ 不按"现在的持仓"重算受影响清单、⛔ 不合成任何"环境正常"。
+    ⚠ **受影响持仓取事件当时冻结的那一批**(`payload.metrics.holders`);
+    这一键缺席 = `affectedRecorded=False`(第三态「本次未记录」),
+    ⛔ 不折平成「没有受影响的持仓」。
+    读库异常 → 空列表(同 `_today_position_alerts`:持仓这一屏绝不因它掀翻)。
+    """
+    try:
+        events = dedup.load_events_for_date(trade_date, db_path=_db())
+    except Exception:  # noqa: BLE001 —— 可选情报的保险丝(§铁律)
+        logger.warning("[positions] 读当日组合环境提醒失败(按无提醒处理)", exc_info=True)
+        return []
+    out: List[PortfolioAlertOut] = []
+    for e in events:
+        kind = _portfolio_kind_of(e)
+        if kind not in _PORTFOLIO_ONLY_KINDS:
+            continue
+        payload = e.get("payload") or {}
+        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else None
+        holders = metrics.get("holders") if metrics is not None else None
+        recorded = isinstance(holders, list)
+        out.append(PortfolioAlertOut(
+            kind=kind,
+            scopeKind=_PORTFOLIO_SCOPE_KIND.get(kind, "portfolio"),
+            scopeCode=str(e.get("ts_code") or ""),
+            verdict=str(payload.get("body") or ""),
+            ts=str(e.get("pushed_at") or ""),
+            level=_PORTFOLIO_ALERT_LEVEL.get(kind, "warn"),
+            affectedCodes=[str(c) for c in holders] if recorded else [],
+            affectedRecorded=recorded,
         ))
     return out
 
@@ -1275,7 +1378,10 @@ def list_positions() -> PositionsOut:
             alerts=alerts_by_code.get(h.ts_code, []),
         ))
     # ✅ v2.3.0:`circuit` 键**已物理删除**(两步淘汰第二步,判据见 `schemas.py` 该节注释)。
-    return PositionsOut(holdings=out)
+    # 🔴 组合环境提醒(裁定 ②):与逐持仓那份**读同一次库的结果**在语义上是两段,
+    # 但取数走各自的过滤器 —— ⛔ 别为了"省一次读库"把两者合成一个循环:
+    # 那会让「不重复塞进单票详情」这条裁定失去一个独立可读的落点。
+    return PositionsOut(holdings=out, portfolioAlerts=_today_portfolio_alerts(today))
 
 
 # 补录预填区间的**保守下沿因子**(下限档金额 = `single_cap` × 本值)。**纯展示层因子,
@@ -2546,8 +2652,11 @@ def get_auction(date: str = "") -> AuctionOut:
         # 小纸条:**挂了才发**,文案本体是服务端常量(K8 §二十 逐字)——
         # ⛔ 客户端不许自己写这段字(同 `BASKET_CARD_DISCLAIMER` 既有体例)。
         manualNote=(AUCTION_MANUAL_NOTE if row.get("manual_note_attached") else None),
-        # 🔴 **恒发**:竞价强势股是关注池的代理样本,不是全市场竞价排行(§五 ⑨-B-2)。
+        # 🔴 **恒发**:竞价强势股只在竞价观察池内排序,不是全市场竞价排行(§五 ⑨-B-2)。
         proxySampleNote=AUCTION_PROXY_SAMPLE_NOTE,
+        # 🔴 裁定 ①:**当天那一份**观察范围的自述。空串 = v2.4.0 之前落的报告
+        # (那时没有独立观察池)—— ⛔ 客户端不许读成「范围正常」。
+        observationScopeNote=str((row.get("observation_json") or {}).get("scope_note") or ""),
         llmStage=llm_stage,
         notes=notes,
     )

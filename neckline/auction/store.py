@@ -59,6 +59,8 @@ _REPORT_COLUMNS: Tuple[str, ...] = (
     "manual_note_attached",
     "llm_stage", "llm_elapsed_ms", "baskets_covered", "notes_json",
     "quote_quality_json",
+    # 🔴 裁定 ①(2026-08-12):独立观察池的账 + 观察范围自述。**机械冻结列**。
+    "observation_json",
     "created_at", "updated_at",
 )
 _VERDICT_COLUMNS: Tuple[str, ...] = (
@@ -116,6 +118,9 @@ def save_mechanical(mech: Any, *, db_path: Optional[Path] = None) -> bool:
                 # 🔴 P2.4:逐票七项校验 + **两源原始读数**(K8:两个来源的原始读数全部留存)。
                 # ⚠ 老行是 NULL = 「这一版还没有逐票核验这个概念」,⛔ 不是「都合格」。
                 _j(dict(getattr(m, "quote_quality", None) or {})),
+                # 🔴 裁定 ①:观察范围是**当天那一份**,不落库次日就说不准了。
+                # ⚠ 老行 NULL = 「这一版还没有独立观察池」,⛔ 不是「范围正常」。
+                _j(dict(getattr(m, "observation", None) or {})),
                 now, now,
             ),
         )
@@ -231,7 +236,7 @@ def finalize_verdict(
 
 _JSON_REPORT_COLS = ("missing_codes_json", "conflict_codes_json", "index_gaps_json",
                      "market_anchors_json", "risks_json", "notes_json",
-                     "quote_quality_json")
+                     "quote_quality_json", "observation_json")
 _JSON_VERDICT_COLS = ("members_json", "sector_sync_json", "rel_strength_json", "history_json",
                       "hit_invalidation_json", "plan_consistency_json", "reasons_json",
                       "llm_fields_json", "quality_detail_json")

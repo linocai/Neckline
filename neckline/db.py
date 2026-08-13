@@ -1712,6 +1712,16 @@ _COLUMN_MIGRATIONS = [
     # ⚠ 本表在 `_APPEND_ONLY_TABLES` 里 —— **加列不违反 append-only**(不是
     # UPDATE/DELETE),写入仍只 INSERT(守门单测扫本表的 SQL 动词)。
     ("selection_pack_activation_log", "batch_id", "TEXT"),
+    # ── 2026-08-12 用户裁定 ①(§七 P1-78 销案):竞价层的**独立观察池**留痕。
+    # 存的是「今天在哪一批票里看竞价」的账 + 那句**观察范围自述**
+    # (`auction/observation.py::ObservationPool.to_dict()`)。
+    # 🔴 **为什么必须落表**:裁定原文要求「竞价强势股 …… **明确标注观察范围,
+    # 不冒充全市场排名**」——范围是**当天那一份**,不是一句能写死在代码里的常量;
+    # 报告是隔天也要读得懂的冻结件,范围不落库 = 那句话次日就说不准了。
+    # 🔴 **可空、无默认**:NULL = 「这一版还没有独立观察池这个概念」(v2.4.0 之前的
+    # 全部历史行),⛔ 不是「观察池是空的」,更⛔ 不是「取样域正常」。
+    # 🔴 **机械冻结列**:⛔ 不得加进 `auction/store.py` 的 `LLM_UPDATABLE_*_COLUMNS`。
+    ("auction_reports", "observation_json", "TEXT"),
 ]
 
 

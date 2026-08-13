@@ -14,8 +14,8 @@
 //      iOS 改**推入式详情**(列表 → 详情页),动作按钮吸底、盘中单手够得到。
 //    · **止损刻度尺 `NKStopScale` 是这一屏的主角**:成本 / 现价 / 止损线三点一线,
 //      不看数字也知道离线多远;破线那张卡整圈描红。
-//    · 「已在券商挂 -5% 条件单」勾选**改为按 `positionId` 落 UserDefaults**
-//      (规范 §08 第 1 条;⛔ 不写服务端,见 `NKStopOrderLedger`)。
+//    · ⛔ **「已在券商挂 -5% 条件单」那个自证勾选框已于 2026-08-12 按用户裁定 ④ 删除**
+//      (`v2.3-k8` 下用户已无挂条件单的义务);本机账本组件随之物理删除。
 //    · 退潮刹车条**已上移到壳**(`RootView`),⛔ 本页不再画一条。
 //
 //  🔴 **「占总仓 %」本页一律不显示 —— 契约里没有这个分母**(V2.3 施工期核实):
@@ -100,6 +100,8 @@ struct PositionsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NKSpace.cardGap) {
                     summaryStrip
+                    // 🔴 裁定 ②:组合环境提醒在**持仓页顶部**(⛔ 不塞进单票详情)。
+                    portfolioEnvSection
                     MarketRegimeStrip(regime: model.marketRegime, compact: true)
                     mergedExposureSection
                     positionsListSection
@@ -199,6 +201,9 @@ struct PositionsView: View {
             }
             .padding(.horizontal, NKSpace.listHeaderExtraH).padding(.bottom, 10)
 
+            // 🔴 裁定 ②:组合环境提醒在**持仓页顶部**(双端同一个共用件 ——
+            // `CLAUDE.md`「改双端共用件时⛔ 别只改一个平台的调用点」)。
+            portfolioEnvSection
             // ⛔ V2.4.0 P0:原先排在这里的「盘中动态」入口行(`boardRow`)已删。
             alertsRow
             // ⚠ 行情状态条**原型的持仓栏里没有**(856–983 行全文),它是 V2.3.0 起的既有
@@ -367,6 +372,84 @@ struct PositionsView: View {
 
     /// 原型 897–908 行:一整块**琥珀淡底**(`rgba(232,145,10,.07)` + `.5px` 同色描边,
     /// `radius 9 / padding 10px 12px`),⛔ 不是白卡 —— 它是提示,不是数据卡。
+    // MARK: - 组合环境提醒(2026-08-12 用户裁定 ②;§七 P1-81 的落点)
+
+    /// 持仓页**顶部**的板块级 / 市场级环境证据。
+    ///
+    /// 🔴 **裁定原文(逐字)**:「两类提醒统一落在持仓页顶部的「组合环境提醒」。
+    /// `sector_bid_fade` 按板块展示,并列出受影响持仓;`market_shock` 作为全组合提醒。
+    /// 二者均使用黄色提醒,只提供环境证据,不给交易指令,不影响选股等级和交易资格,
+    /// 也不重复塞进单票详情。」
+    ///
+    /// ⚠ **空数组 → 整块不画**(同 `todayAlertsCard` 的既定姿势):⛔ 不合成
+    /// 「环境正常」那种话 —— 分不清"真没事"与"这一拍没数据",正是 P0 撤销掉的那枚绿灯。
+    /// ⚠ 受影响持仓走**事件冻结的那一批**;`affectedRecorded == false` 是**第三态**
+    /// (本次未记录),⛔ 不许画成「没有受影响的持仓」。
+    @ViewBuilder
+    private var portfolioEnvSection: some View {
+        let items = model.portfolioAlerts
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 7) {
+                    Text("组合环境提醒 \(items.count) 条")
+                        .font(NKFont.caption).fontWeight(.bold).foregroundStyle(NK.amber)
+                    Spacer(minLength: 6)
+                }
+                ForEach(items) { a in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(portfolioAlertTitle(a))
+                            .font(NKFont.caption).fontWeight(.semibold)
+                            .foregroundStyle(NK.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !a.verdict.isEmpty {
+                            Text(a.verdict).font(NKFont.caption).lineSpacing(3)
+                                .foregroundStyle(NK.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text(portfolioAlertAffectedLine(a))
+                            .font(NKFont.caption.monospacedDigit())
+                            .foregroundStyle(NK.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("只是**环境证据**,不是交易指令;它不改变选股等级,也不改变交易资格。")
+                    .font(NKFont.caption).lineSpacing(3).foregroundStyle(NK.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: NKRadius.inner)
+                .fill(NK.amber.opacity(0.07)))
+            .overlay(RoundedRectangle(cornerRadius: NKRadius.inner)
+                .stroke(NK.amber.opacity(0.22), lineWidth: 0.5))
+            .padding(.horizontal, 2).padding(.top, 12).padding(.bottom, 4)
+        }
+    }
+
+    /// 标题行:板块那一类带**板块名**,全组合那一类明写「全组合」。
+    /// 🔴 **按 `scopeKind` 分支,⛔ 不拿 `affectedCodes` 空不空去猜**。
+    private func portfolioAlertTitle(_ a: PortfolioAlert) -> String {
+        let when = a.timeLabel.isEmpty ? "" : " · \(a.timeLabel)"
+        if a.scopeKind == "sector" {
+            let where_ = a.scopeCode.isEmpty ? "" : " · \(a.scopeLabel)"
+            return "\(a.label)\(where_)\(when)"
+        }
+        return "\(a.label) · 全组合\(when)"
+    }
+
+    /// 受影响持仓那一行(**三态**):板块类列码 / 没记就说没记 / 全组合类说「全部持仓」。
+    private func portfolioAlertAffectedLine(_ a: PortfolioAlert) -> String {
+        if a.scopeKind != "sector" { return "受影响:当前全部持仓" }
+        if !a.affectedRecorded { return "受影响持仓:本次未记录" }
+        if a.affectedCodes.isEmpty { return "受影响持仓:记了,但当时一笔都没有" }
+        let named = a.affectedCodes.map { code -> String in
+            if let p = model.positions.first(where: { $0.code == code }) { return "\(p.name) \(code)" }
+            return code
+        }
+        return "受影响持仓 \(a.affectedCodes.count) 笔:" + named.joined(separator: "、")
+    }
+
     /// 顶行 `11/700` 琥珀标题 + 右端合计金额;次行一句白话;展开后列代码。
     ///
     /// 🔴 原型展开行末尾是「占总仓 40.5%(总仓分母 ¥120,000)」—— **本版不画占比**
@@ -659,10 +742,14 @@ struct PositionDetailPage: View {
     @Bindable var model: AppModel
     let position: Position
 
-    /// 「已在券商挂 -5% 条件单」——**本机记录**,按 `positionId` 落 UserDefaults。
-    /// ⚠ 初值从账本读(V2.3 之前是 `@State false`,刷新即丢)。
-    @State private var stopOrderChecked: Bool = false
-    @State private var stopOrderLabel: String? = nil
+    // 🔴 **2026-08-12 用户裁定 ④:「已在券商挂 -5% 条件单」那个自证复选框现役版本删除。**
+    // 连同它的两个 `@State`(`stopOrderChecked` / `stopOrderLabel`)、`syncStopOrder()`
+    // 与本机账本 `NKStopOrderLedger.swift` **整体物理删除** —— ⛔ 不留一个恒 false 的位
+    // (P0 那条「退役观测位要物理删」的同一条纪律)。
+    // ⚠ 服务端 `stopOrderChecked` 键**按红线只停采不删**(它一直是硬编码 `False`),
+    //   客户端 DTO 那一位随之改成 `decodeIfPresent`(两版淘汰的第一步)。
+    // ⚠ 对账侧**一行未动**:`review/reconcile.py::classify_stop_discipline` 从来只吃
+    //   `pnl_pct` + 章程 `stop_pct`,从未读过这个勾(详见 §七 P3-80 结案段)。
 
     /// 服务端 K4 命中里「该置顶醒目」的子集(level=strong ∧ evidenceStrength=price_volume;
     /// 弱证据即便标了 strong 也只降级展示,守 §2.4 铁律「证伪只用价量结构」)。
@@ -671,8 +758,6 @@ struct PositionDetailPage: View {
 
     var body: some View {
         content
-            .onAppear(perform: syncStopOrder)
-            .onChange(of: position.id) { _, _ in syncStopOrder() }
             #if os(iOS)
             .navigationTitle(position.name)
             .navigationBarTitleDisplayMode(.inline)
@@ -720,7 +805,7 @@ struct PositionDetailPage: View {
             } else {
                 stopScaleCard          // 🔴 纪律位置(刻度尺是主角)
             }
-            brokerOrderCard            // 已在券商挂 -5% 条件单(本机记录)
+            // ⛔ 裁定 ④:`brokerOrderCard`(已在券商挂 -5% 条件单)整块已删。
             k4Section
             // ⑩-B 计划继承卡 + ⑪-D-D per-position 触达提醒开关。
             NKCard { PositionPlanSection(model: model, position: position) }
@@ -980,60 +1065,12 @@ struct PositionDetailPage: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - 已在券商挂 -5% 条件单(**本机记录**,⛔ 不写服务端)
-
-    private var brokerOrderCard: some View {
-        // 原型 1031–1046 行:整卡可点,左边是一枚 **15×15 / radius 4** 的自绘勾选框
-        // (勾上 = `#0FA968` 实底白勾;没勾 = 白底 + `inset 1.2px rgba(60,60,67,.28)`),
-        // 右边 `13px` 文案 + `10.5 .40` 的勾选时刻。⛔ 不是 SF Symbols 那个 `checkmark.square`。
-        NKCard {
-            Button {
-                stopOrderChecked.toggle()
-                NKStopOrderLedger.setChecked(stopOrderChecked, positionId: position.id)
-                stopOrderLabel = NKStopOrderLedger.checkedLabel(positionId: position.id)
-            } label: {
-                HStack(alignment: .center, spacing: 11) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: NKRadius.badge)
-                            .fill(stopOrderChecked ? NK.up : NK.cardBg)
-                        if !stopOrderChecked {
-                            RoundedRectangle(cornerRadius: NKRadius.badge)
-                                .strokeBorder(NK.textSecondary.opacity(0.5), lineWidth: 1.2)
-                        }
-                        if stopOrderChecked {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
-                        }
-                    }
-                    .frame(width: 15, height: 15)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("已在券商挂 -5% 条件单")
-                            .font(NKFont.body).foregroundStyle(NK.textPrimary)
-                        if let label = stopOrderLabel {
-                            Text("\(label) · 本机记录,换机不同步")
-                                .font(NKFont.caption.monospacedDigit())
-                                .foregroundStyle(NK.textTertiary)
-                        } else if position.hasBrokenStop {
-                            // 没勾 + 已破线 = 这一格此刻最该被看见。
-                            Text("还没勾 —— 这一票已破线").font(NKFont.caption)
-                                .foregroundStyle(NK.amber)
-                        } else {
-                            Text("本机记录,换机不同步 · 勾不勾**不改变任何判定**")
-                                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private func syncStopOrder() {
-        stopOrderChecked = NKStopOrderLedger.isChecked(positionId: position.id)
-        stopOrderLabel = NKStopOrderLedger.checkedLabel(positionId: position.id)
-    }
+    // ⛔ **裁定 ④:`brokerOrderCard` 与 `syncStopOrder()` 已整体删除**(2026-08-12)。
+    // 那张卡此前是「已在券商挂 -5% 条件单」的自证勾选框 + 破线时的一句催勾;
+    // `v2.3-k8` 把 −5% 由「强制条件单」改判「亏损警戒 + 由你复核原判断」之后,
+    // **用户已经没有挂条件单的义务**,催勾那句话与同一屏上的口径正面别扭。
+    // 🔴 它**不曾**参与任何判定:勾只落本机 UserDefaults,从不上行;周复盘对账读的是
+    // 成交价推出来的 `pnl_pct`,与这个勾零关系。
 
     // MARK: - K4 持仓牌
 

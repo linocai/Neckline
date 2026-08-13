@@ -98,6 +98,8 @@
   `BarkChannel(url).send(...)` 一次验协议。
 - **盘中"关注池"是代理样本,不是全市场**(免费源限流取舍;V2-⑧-A 起 = 持仓 +
   T1/T2 篮子成员 + 候选〔⑬-1 前的残留〕+ 板块基准指数 + 昨日涨停,**自选池已退役**)。
+  🔴 **自 2026-08-12 用户裁定 ① 起它只服务持仓与关注提醒** —— **竞价层另有一份独立观察池**
+  (`auction/observation.py`),⛔ 别再拿 `wu.codes` 当竞价取样域(详见本文该节)。
   不够灵敏的备选是低频全市场轮询叠加,不是提主循环频率——取舍见
   `sentinel/retreat.py` docstring,改前先读。
 - **给关注池加非股票代码(指数/ETF)前先看两处**:① `quotes.to_symbol` 必须让
@@ -261,6 +263,33 @@
   与 `tests/test_charter_v23k8.py` 同一条链。**引用 `oneoff/` 是刻意的**(它们是那四版 config 的唯一实现);
   派生不出来就**非零退出说清楚**,⛔ 不静默造一个默认章程。守门:脚本源码里不许出现 `0.05`/`single_cap` 等字样。
 
+## 2026-08-12 用户五条裁定落地后的五个新坑(碰竞价取样域 / 持仓页顶部 / 主归属之前先读)
+
+- 🔴 **竞价取样域 = `auction/observation.py` 的独立观察池,`wu.codes` 只服务持仓与关注提醒(裁定 ①)**:
+  两者**彻底分开**,⛔ 别把观察池回接进关注池、也⛔ 别再拿 `wu.codes` 当取样域(守门按 `collect.py`
+  取样段切文本正反锁)。观察池按 K8 三层取(主驱动 → 题材 → 行业),🔴 **第 ② 层结构性缺席**
+  (与裁定 #1 冲突,如实标 `theme_domain_not_implemented`;`auction/**` 里 `ths_member` 零出现)。
+  ⚠ `wu.codes` **仍进抓取清单**(持仓票要有报价)—— 「在清单里」≠「是取样域」,两件事。
+- 🔴 **观察池「完整取样、不设上限」是裁定原文,⛔ 别因为怕慢去发明截断 N**:实测(2026-08-13 盘后真源)
+  最坏 3487 只 → 双源 18 次请求 **5.91s**,只占 9:26—9:29 窗口的 **3.3%**。真有一天顶不住 →
+  **停手挂 §七 请用户拍板**,⛔ 不自己定一个数。⚠ 改了取样域**必须同步改 `smoke_auction.py` 的合成清单**
+  —— 否则池里几十只票一只都没报价,`peer_median` 那条分支在冒烟里永远走不到而退出码照样 0。
+- 🔴 **`sector_bid_fade` / `market_shock` 只走「组合环境提醒」(持仓页顶部),⛔ 不许塞进单票详情**
+  (裁定 ②)。判别走 `payload.kind`(⛔ 不是 `event_key`,`fade`/`shock` 太短);受影响持仓取
+  **事件冻结的 `metrics.holders`**、⛔ 不按现在的持仓重算;`affectedRecorded=False` 是**第三态
+  「本次未记录」**,⛔ 不折平成「没有受影响的持仓」。**结构性保证**:这两个 kind 的字面量在
+  `selection/**` / `auction/**` / `eval/**` **零出现** = 「不影响选股等级和交易资格」。
+- 🔴 **哨兵文案一旦获得新的下发通道,里面的 Markdown 会当场变成屏幕上的星号**:
+  `attention.check_sector_bid_fade` 的 `what_happened` 里躺着 `**是板块基准指数…**` ——
+  它此前**没有 App 落点**所以从没露过,裁定 ② 给它安了落点当天就成了 bug。**判据**:
+  给任何既有 `sentinel_events` 文案接新通道之前,先扫一遍那段字里有没有 `**`。
+  ⚠ **老行改不了**(冻结件⛔ 不重写)—— 只能修生成侧 + 认下老行那几条。
+- 🔴 **主归属由策略判断(裁定 ⑤),`is_primary` 只是「库里必须恰好一行」的硬约束**:三路径
+  `sole_basket` / `llm_strategy_judgment` / **技术兜底 + `primary_status=pending_confirmation`**;
+  `highest_lift` **不再产出**(留着只为读旧卡),lift 降级为辅助证据(`MIN_LIFT_SAMPLE_SIZE=5` 只决定它算不算得出)。
+  ⛔ **兜底那一位绝不许读成策略结论**:`tier.py` 对 `is_primary`/`primary_status`/`primary_reason`/`industry_lift`
+  **四符号零引用**(守门锁);客户端徽标画**三态**(已确认 / 归属待确认 / 老卡未记录,⛔ 不给老卡猜 confirmed)。
+
 ## D1 集合竞价确认层(`neckline/auction/`,V2.3.3 起;碰它之前先读)
 
 - 🔴 **`baskets.engine_code` 是线码 `C`/`Z`/`Y`,`engine_version` 才是 `C1`/`Z1`/`Y1`**
@@ -304,7 +333,9 @@
   ⛔ 别去"修"**;现役恒走 ②「≥3 只同行业(`stock_basic.industry`)对照股中位数」,
   `sector_benchmark_source` 如实落码。⛔ **禁止用市场指数顶替板块基准**(结构性保证:取样域
   `snap.industry_of` 只由 `stock_basic` 派生,指数进不去 + `index_codes` 显式排除 + 正反两条守门)。
-  ⚠ 对照股取自**关注池 = 代理样本**,「对照不足」是真实早晨的常态,不是故障。
+  🔴 **⚠ 「对照股取自关注池」这句自 2026-08-12 用户裁定 ① 起已作废** —— 取样域换成了竞价层
+  **自己的独立观察池**(行业层是该行业**全部成分股**),「对照不足」不再是常态;
+  ⛔ 别照旧注释办事,也别把旧版那条「中位数偏向强票」的偏差警告改回来(它不再成立)。
 - **合成竞价冒烟里指数必然「拉不到」**:`daily` 分区只有个股,三支市场指数没有行 →
   `data_quality` 恒 `degraded` → 闸 1 恒命中。**这是合成环境的局限,不是代码故障**
   (生产走 `sentinel/quotes.py` 真拉,指数有报价)。⚠ 本地开发库常无现役骨架包 →
@@ -860,7 +891,8 @@
   ⚠ **V2.4.0 P2 起竞价两张表各多了几列可空机械列**(`quote_quality_json` /
   `critical_data_quality` / `context_data_quality` / `quality_detail_json`),
   `basket_stage_handoff` 多了 `seed_count` / `seed_summary`,**P4.3 又给
-  `selection_pack_activation_log` 加了 `batch_id`** —— **V2.4.0 迁移合计 7 个可空列、0 张新表、0 处删列**;
+  `selection_pack_activation_log` 加了 `batch_id`**,**2026-08-12 裁定 ① 又给
+  `auction_reports` 加了 `observation_json`** —— **V2.4.0 迁移合计 8 个可空列、0 张新表、0 处删列**;
   **老行一律 NULL = 「旧版本未细分 / 当时没记 / 不属于任何原子批次」,⛔ 不得默认成「正常」或 `0`**
   (客户端已按这条画「旧版本未细分」;老库迁移演练守门 `test_v240_p4_release.py`)。
   ⛔ **`V0.x` 禁简写**(与满篇 `v` 字头只差一个大小写);⛔ 引擎升级写 `C2`/`Z2`/`Y2`,**不写「K8 v2」**。

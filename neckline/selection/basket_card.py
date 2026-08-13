@@ -127,6 +127,12 @@ logger = logging.getLogger(__name__)
 #      会非空 —— 那不是形状变更,别把它算成第四处。
 # ⚠ 老 v4 / v3 卡照常读回:新键缺席时消费方按老形状读(`_upside_path_present()` 的
 # OR 体例),⛔ 不许让昨天冻的卡今天全部"缺件"。
+# ⚠ **2026-08-12 用户裁定 ⑤ 的两键(`members[].primary_status` /
+# `primary_pending_reason`)并入同一个 v5,⛔ 不 bump v6** —— 照上面 v3 那条
+# **一字不改的既定纪律**:v5 **一天都没上过产**(V2.4.0 整版未部署),同一个未发版
+# 形状里再 bump 只会造出一个没有任何卡携带的幽灵版本号。规则不变 ——
+# **一旦 v5 上产,再改形状必须 bump**。
+# ⚠ 老 v4 及更早的卡没有这两键 → 消费方按「没记」处理(⛔ 不给老卡猜一个 confirmed)。
 CARD_SPEC_VERSION = "basket_card_v5"
 VERIFY_SPEC_VERSION = "basket_verify_v2"
 INVALIDATE_SPEC_VERSION = "basket_invalidate_v2"
@@ -835,6 +841,13 @@ class MemberCardEntry:
     rs_rank: Optional[int]
     k4_tag: Optional[str]
     mech: MemberMech
+    #: 🔴 裁定 ⑤:主归属的**确认状态**(只在 `is_primary=1` 那一行上有意义)。
+    #: `confirmed` = 策略结论 · `pending_confirmation` = **「归属待确认」**
+    #: (`is_primary` 那一位是技术兜底的产物,⛔ 不是策略结论)· 空串 = 这一行不是主归属行。
+    #: ⚠ 老 v4 及更早的卡**没有这一键** → 消费方按「没记」处理,⛔ 别猜成 `confirmed`。
+    primary_status: str = ""
+    #: 「待确认」的可查原因码(`no_primary_claim` / `multiple_primary_claims`)。
+    primary_pending_reason: Optional[str] = None
     # V2.2-③-C 位置关(裁定 #11:判定交 LLM、只降级不除名)。`position_metrics` 是
     # **当次喂给模型的那份读数原样** —— 卡是 D0 冻结件,存在这里 = 事后复核「它拿
     # 什么下的判断」不必回头猜(与 `gate_evaluations.evidence_json` 互为两处留痕)。
@@ -875,6 +888,9 @@ class MemberCardEntry:
             "industry_lift": self.industry_lift,
             "lift_reason": self.lift_reason,
             "primary_reason": self.primary_reason,
+            # 🔴 裁定 ⑤:「归属待确认」必须在卡上看得见(⛔ 不许只留在日志里)。
+            "primary_status": self.primary_status,
+            "primary_pending_reason": self.primary_pending_reason,
             "rs_rank": self.rs_rank,
             "k4_tag": self.k4_tag,
             "position_verdict": self.position_verdict,
@@ -1209,6 +1225,8 @@ def build_basket_card(
             industry=getattr(m, "industry", None),
             industry_lift=getattr(m, "industry_lift", None),
             lift_reason=getattr(m, "lift_reason", None),
+            primary_status=str(getattr(m, "primary_status", "") or ""),
+            primary_pending_reason=getattr(m, "primary_pending_reason", None),
             primary_reason=getattr(m, "primary_reason", None),
             rs_rank=getattr(m, "rs_rank", None),
             k4_tag=getattr(m, "k4_tag", None),

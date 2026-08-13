@@ -90,19 +90,21 @@ final class IntegrationSmokeTests: XCTestCase {
     func testPositionOpenCloseRoundTripRealRequest() async throws {
         try await skipUnlessDevServerReachable()
         let client = makeClient()
-        let before = try await client.fetchPositions()
+        // ⚠ 裁定 ②:`fetchPositions()` 自此返回 `PositionsSnapshot{holdings, portfolioAlerts}`
+        // —— 持仓那一半取 `.holdings`。
+        let before = try await client.fetchPositions().holdings
 
         let opened = try await client.openPosition(code: "000001.SZ", name: "平安银行(集成测试)",
                                                     buyPrice: 10.0, qty: 100,
                                                     entryReason: "IntegrationSmokeTests 真请求闭环")
         XCTAssertEqual(opened.stopLine, 9.5, accuracy: 0.001, "-5% 单一止损常量派生")
 
-        let afterOpen = try await client.fetchPositions()
+        let afterOpen = try await client.fetchPositions().holdings
         XCTAssertEqual(afterOpen.count, before.count + 1)
         XCTAssertTrue(afterOpen.contains { $0.id == opened.positionId })
 
         try await client.closePosition(id: opened.positionId, sellPrice: 10.3)
-        let afterClose = try await client.fetchPositions()
+        let afterClose = try await client.fetchPositions().holdings
         XCTAssertFalse(afterClose.contains { $0.id == opened.positionId }, "清仓后不应再出现在持仓列表")
 
         // 二次关闭同一笔 → 404 not_holding(对齐后端契约,真实网络往返验证,非 mock)。

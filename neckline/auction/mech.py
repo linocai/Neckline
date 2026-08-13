@@ -175,16 +175,17 @@ LISTING_BOARD_BENCHMARK_NOTE = (
 #: 同 `AUCTION_PROXY_SAMPLE_NOTE` 的既定纪律:代理样本必须**印在报告上**,
 #: ⛔ 不许只写在代码注释里 —— 否则「对照不足」会被读成「这个板块没别的票在动」。
 #: 🔴 ⛔ 这段字里不许有 Markdown。
+# 🔴 **2026-08-12 用户裁定 ① 之后这段话整段改写**:取样域由「盘中关注池(上界 29 只、
+# 偏向当天最强的一批票)」换成竞价层**自己的独立观察池** —— 行业层是该行业的**全部
+# 成分股**(完整取样),所以旧版那条「中位数系统性偏高」的偏差警告**不再成立**,
+# 一并删除。⛔ 别照旧文案改回去:留着一句已经不成立的偏差警告,和藏起一条真的偏差
+# 一样有害。⚠ 「凑不满 3 只」仍会出现(该行业当天可用读数不够),但它不再是常态。
 SECTOR_PEER_POOL_NOTE = (
-    f"「板块对照股」取自系统的盘中关注池(持仓 + T1/T2 篮子成员 + 板块基准指数 + 昨日涨停),"
-    f"按同行业(股票基础资料的行业口径)挑出、并排除本篮成员;凑不满 {SECTOR_PEER_MIN} 只就"
-    f"如实标「对照不足」,不改用市场指数顶替。它是「代理样本」,不是该行业的全部成分股。"
-    # 🔵-9:池子本身偏向当天最强的一批票(昨日涨停 + 已入选的篮子成员),
-    # 中位数因此系统性偏高 → 「相对板块」系统性偏低。⛔ 这层偏差必须说出口,
-    # 否则读者会把「跑输板块」当成关于这只票的中性事实。
-    f"⚠ 这个池子偏向当天最强的一批票(昨日涨停、已入选篮子的成员都在里面),"
-    f"取出来的中位数会系统性偏高,「相对板块」因而系统性偏低 —— 读到「跑输板块」时,"
-    f"要记得分母是一批强票,不是该行业的平均水平。"
+    f"「板块对照股」取自系统当天的「竞价观察池」,按同行业(股票基础资料的行业口径)"
+    f"挑出、并排除本篮成员;凑不满 {SECTOR_PEER_MIN} 只就如实标「对照不足」,"
+    f"不改用市场指数顶替。"
+    f"观察池的行业层是该行业的全部成分股(没有截断),因此这个中位数是该行业当天"
+    f"可取得读数的中位水平,不是一批强票的中位水平。"
 )
 
 
@@ -353,6 +354,10 @@ class MarketMech:
     context_quality: Optional[str] = None
     #: 逐票双源核验的完整账(落 `auction_reports.quote_quality_json`)。
     quote_quality: Dict[str, Any] = field(default_factory=dict)
+    #: 🔴 **独立观察池的账 + 那句「观察范围」自述**(2026-08-12 用户裁定 ①,
+    #: 落 `auction_reports.observation_json`)。⚠ 空 dict = **这一版还没有独立
+    #: 观察池这个概念**(老行)或本次组池失败,⛔ 不是「观察范围正常」。
+    observation: Dict[str, Any] = field(default_factory=dict)
     index_gaps: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     anchors: List[Dict[str, Any]] = field(default_factory=list)
     risks: List[Dict[str, str]] = field(default_factory=list)
@@ -1031,6 +1036,8 @@ def build_mech(
         critical_quality=crit,
         context_quality=context,
         quote_quality={c: qq.to_dict() for c, qq in (snap.quote_quality or {}).items()},
+        # 🔴 裁定 ①:观察范围随产物走(⛔ 不是一句写死在代码里的常量)。
+        observation=snap.observation.to_dict() if snap.observation is not None else {},
         index_gaps={c: {"ts_code": c,
                         "name": (snap.meta[c].name if c in snap.meta else c),
                         "gap_pct": snap.gap_of(c)} for c in MARKET_INDEX_CODES},
@@ -1445,13 +1452,18 @@ def short_summary(mech: AuctionMech) -> str:
     lines.append("【市场对照指数竞价】" + "；".join(
         f"{v.get('name') or c} {_pct(v.get('gap_pct'))}" for c, v in m.index_gaps.items()
     ))
+    # 🔴 裁定 ①:观察范围必须随产物说出口(⛔ 不许只写在代码注释里)。
+    scope_note = str((m.observation or {}).get("scope_note") or "")
+    if scope_note:
+        lines.append("【竞价观察范围】" + scope_note)
     if m.anchors:
-        lines.append("【竞价强势股(市场锚点,**代理样本、不取得交易资格**)】" + "；".join(
-            f"{a.get('name') or a['ts_code']}({a['ts_code']}) {_pct(a.get('gap_pct'))}"
-            for a in m.anchors
-        ))
+        lines.append("【竞价强势股(观察范围内的市场锚点,**不是全市场排行、不取得交易资格**)】"
+                     + "；".join(
+                         f"{a.get('name') or a['ts_code']}({a['ts_code']}) {_pct(a.get('gap_pct'))}"
+                         for a in m.anchors
+                     ))
     else:
-        lines.append("【竞价强势股】本次关注池里没有高开且不属于任何 T1/T2 篮的标的。")
+        lines.append("【竞价强势股】本次观察池里没有高开且不属于任何 T1/T2 篮的标的。")
 
     if not mech.baskets:
         lines.append("")

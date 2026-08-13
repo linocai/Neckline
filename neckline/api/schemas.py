@@ -130,6 +130,12 @@ class BasketMemberOut(BaseModel):
     industryLift: Optional[float] = None
     liftReason: Optional[str] = None
     primaryReason: Optional[str] = None
+    # 🔴 **2026-08-12 用户裁定 ⑤**:主归属的**确认状态**与「归属待确认」原因码。
+    # `confirmed` = 策略结论 · `pending_confirmation` = **技术兜底的产物,⛔ 不是策略结论**。
+    # ⚠ **`None` / 空串 = 这张卡没记**(老 `basket_card_v4` 及更早)——
+    # ⛔ 客户端不许当成 `confirmed`,那是把「没记」讲成「策略确认过了」。
+    primaryStatus: Optional[str] = None
+    primaryPendingReason: Optional[str] = None
     rsRank: Optional[int] = None
     k4Tag: Optional[str] = None
     # —— V2.2-③-C 位置关(**2026-08-09 用户裁定 #11**:位置关由机械关改判为证据关,
@@ -593,8 +599,11 @@ class BoardOut(BaseModel):
 class PositionAlertOut(BaseModel):
     """今日**该持仓自己的**一条哨兵提醒(V2.4.0 P0.5+)。
 
-    源 = 当日 `sentinel_events` 里 `sentinel='holding'` 且 `ts_code` 等于本持仓的行,
-    逐字段透传,**服务端不重判、客户端不二次裁定**:
+    源 = 当日 `sentinel_events` 里 `sentinel` 属于**白名单四类**
+    (`holding` / `attention` / `circuit` / `precall`,V2.4.0 复审 🔴-1 裁定 A)
+    且 `ts_code` 等于本持仓的行,逐字段透传,**服务端不重判、客户端不二次裁定**。
+    ⚠ **两类环境事件不走这里**(2026-08-12 用户裁定 ②):`sector_bid_fade` /
+    `market_shock` 落在 `PositionsOut.portfolioAlerts`,裁定原文「⛔ 也不重复塞进单票详情」。
 
     · `eventKey` —— 既有事件键,现役四种:`stop_approach`(逼近/触发亏损警戒线)/
       `take_profit`(回落止盈,由现役章程的 `take_profit_retrace` 驱动;`v2.3-k8` 下
@@ -614,6 +623,47 @@ class PositionAlertOut(BaseModel):
     verdict: str = ""
     ts: str = ""
     level: str = "info"
+
+
+class PortfolioAlertOut(BaseModel):
+    """今日**组合环境提醒**一条(V2.4.0 复审挂账 P1-81 的落点,**2026-08-12 用户裁定 ②**)。
+
+    🔴 **裁定原文(逐字)**:「两类提醒统一落在**持仓页顶部的「组合环境提醒」**。
+    `sector_bid_fade` **按板块展示,并列出受影响持仓**;`market_shock` 作为**全组合提醒**。
+    二者均使用**黄色**提醒,**只提供环境证据,不给交易指令,不影响选股等级和交易资格,
+    也不重复塞进单票详情**。」
+
+    源 = 当日 `sentinel_events` 里 `sentinel='attention'` 且 `payload.kind` 属于
+    `_PORTFOLIO_ONLY_KINDS` 的行,逐字段透传 —— **服务端不重判、客户端不二次裁定**:
+
+    · `kind` —— `sector_bid_fade` | `market_shock`(`notify_kinds` 的码,⛔ 不发中文)。
+    · `scopeKind` —— `sector`(按板块)| `portfolio`(全组合)。🔴 客户端**先按它分支**,
+      ⛔ 别拿 `affectedCodes` 空不空去猜是哪一类:全组合那一类**本来就不列码**。
+    · `scopeCode` —— 板块基准指数码(`sector` 那一类)/ 空串(`portfolio`)。
+      中文换算在客户端展示层(照 `nkBoardLabel` 先例,未识别值原样透传)。
+    · `verdict` —— 事件落库时那句话(`payload.body`)原文,⛔ 不改写、不加工。
+    · `ts` —— 落库时刻(`sentinel_events.pushed_at`,UTC ISO 串)。
+    · `level` —— 恒 `warn`(裁定 ③ 逐字:「二者均使用黄色提醒」),⛔ 不是新判定。
+    · `affectedCodes` —— **受影响持仓**(冻结在事件 `payload.metrics.holders` 里的那一批,
+      = 检测那一刻真正落在这个板块下的持仓码)。⛔ 服务端**不按现在的持仓重算** ——
+      那会把「当时受影响的」讲成「现在还在的」。
+    · `affectedRecorded` —— 🔴 **三态的第三态**:`False` = 这条事件的 payload 里
+      **压根没记**受影响持仓(老行 / 老版本)。⛔ 别把它与「记了、但是空的」折平,
+      也 ⛔ 别把「没记」画成「没有受影响的持仓」。
+
+    🔴 **⛔ 只画环境证据,不画指令**:没有「该不该动」、没有状态机、没有红绿灯 ——
+    那些正是 P0 撤销掉的东西。**本模型不参与任何选股等级 / 交易资格判定**
+    (结构性:它只在 `/positions` 响应里出现,`selection/**` 与 `auction/**` 零引用,
+    守门单测正反双向锁)。
+    """
+    kind: str
+    scopeKind: str = "portfolio"
+    scopeCode: str = ""
+    verdict: str = ""
+    ts: str = ""
+    level: str = "warn"
+    affectedCodes: List[str] = Field(default_factory=list)
+    affectedRecorded: bool = False
 
 
 class K4AdvisoryOut(BaseModel):
@@ -658,7 +708,17 @@ class PositionOut(BaseModel):
     # ⚠ **不参与任何判定** —— 判定仍在 `retraceState.triggered`(复用
     # `sentinel/holding.py::check_take_profit`),本字段只是这条线该不该显示的文案指纹。
     takeProfitRetrace: Optional[float] = None
-    stopOrderChecked: bool = False   # 用户自证「已挂 -5% 条件单」(真对账在 4D 周复盘)
+    # ⛔ **已停用的自证位**(2026-08-12 用户裁定 ④:客户端那个「已在券商挂 -5% 条件单」
+    # 复选框**现役版本删除**)。
+    # 🔴 **它从来就没有对账消费方**:`app.py` 恒发字面量 `False`(既不读库也不读请求),
+    #    没有 DB 列、没有写入端点;`review/reconcile.py::classify_stop_discipline` 的输入
+    #    只有回合 `pnl_pct` + 现役章程 `stop_pct` + `advisory`,**一次都没读过这个位**。
+    #    ⚠ 本行原注释写的「真对账在 4D 周复盘」是**一句从未兑现的承诺**,已就地订正
+    #    (§七 P3-80 结案段记了这次订正的出处)。
+    # 🔴 **键保留是红线要求**(⛔ 停采不删):已装老客户端(2.3.x)对它是 `try c.decode`
+    #    硬解码,服务端删键会让老包整份持仓解不出 —— 淘汰顺序永远是「先发一版客户端改
+    #    `decodeIfPresent` → 下一版服务端才可删键」,本版正是那"先发的一版"。
+    stopOrderChecked: bool = False
     # —— v1.1-B.1 持仓生命周期派生字段(服务端算好,客户端不重算日历)——————————
     dCount: int = 1              # D 计数(买入日=D1,交易日历口径,单一源 positions.d_count)
     # 现役 max_hold_days(读 config,不硬编);= 非浮盈时间退出档。
@@ -730,6 +790,12 @@ class PositionOut(BaseModel):
 
 class PositionsOut(BaseModel):
     holdings: List[PositionOut] = Field(default_factory=list)
+    #: 🔴 **组合环境提醒**(2026-08-12 用户裁定 ②,§七 P1-81 的落点)。
+    #: 它是**持仓页顶部**那一段,与逐持仓的 `PositionOut.alerts` **刻意分开**:
+    #: 板块级 / 市场级的事件匹配不到任何一笔持仓码,塞进单票详情就会把一条环境判断
+    #: 复述 N 遍(裁定原文「⛔ 也不重复塞进单票详情」)。
+    #: ⚠ 空数组 = 今天没有这两类事件,⛔ 客户端不许因此合成一句「环境正常」。
+    portfolioAlerts: List[PortfolioAlertOut] = Field(default_factory=list)
 
 
 class EntrySuggestionOut(BaseModel):
@@ -1256,6 +1322,9 @@ class InfoCardBasketOut(BaseModel):
     roleConflict: bool = False
     roleReason: str = ""
     isPrimary: bool = False
+    # 🔴 裁定 ⑤:同 `BasketMemberOut` 的两位(⛔ `None`/空串 = 老卡没记,不是 confirmed)。
+    primaryStatus: Optional[str] = None
+    primaryPendingReason: Optional[str] = None
     industry: Optional[str] = None
     industryLift: Optional[float] = None
     peers: List[InfoCardBasketPeerOut] = Field(default_factory=list)
@@ -1848,8 +1917,12 @@ class AuctionRiskOut(BaseModel):
 class AuctionOut(BaseModel):
     """`GET /auction` 响应 = K8 §二十 的**竞价小报告五块**。
 
-    🔴 `proxySampleNote` **恒发**(§五 ⑨-B-2):竞价强势股取自盘中关注池 = **代理样本**,
-    不是全市场竞价排行 —— 这句话必须印在小报告上,⛔ 不许只写在代码注释里。
+    🔴 `proxySampleNote` **恒发**(§五 ⑨-B-2):竞价强势股只在竞价层**自己的观察池**里
+    排序,不是全市场竞价排行 —— 这句话必须印在小报告上,⛔ 不许只写在代码注释里。
+    🔴 `observationScopeNote`(2026-08-12 用户裁定 ①)= **当天那一份**观察范围的自述
+    (多少只、来自哪几层、题材层为什么缺席)。⚠ **空串 = 这份报告是 v2.4.0 之前落的**
+    (那时还没有独立观察池这个概念)—— ⛔ 客户端不许把它读成「范围正常」或
+    「范围就是全市场」;两句话分工是刻意的:上面那句恒定,这一句随天变。
     🔴 `manualNote` 只在**挂了**的时候发,文案本体是服务端常量
     (`auction.AUCTION_MANUAL_NOTE`,K8 §二十 逐字)—— ⛔ 客户端不许自己写这段字。
     🔴 `basketsUnavailableReason`:`baskets` 为空时**必须**说出口(〇b-6)——
@@ -1864,6 +1937,7 @@ class AuctionOut(BaseModel):
     risks: List[AuctionRiskOut] = Field(default_factory=list)
     manualNote: Optional[str] = None
     proxySampleNote: str = ""
+    observationScopeNote: str = ""
     llmStage: str = ""
     notes: List[str] = Field(default_factory=list)
 
@@ -1880,6 +1954,7 @@ __all__ = [
     "PositionPlanOut", "PositionPlansOut", "PositionPlanCreateIn", "EntrySnapshotOut",
     "ProfileOut", "PackOut", "PacksListOut", "EvalWeeklyOut",
     "RetreatBrakeOut", "BoardEventOut", "BoardOut", "K4AdvisoryOut", "PositionAlertOut",
+    "PortfolioAlertOut",
     "PositionOut", "PositionsOut", "PositionOpenIn", "PositionOpenOut", "PositionCloseIn",
     "EntrySuggestionOut",
     "PushKindOut", "PushSettingsOut", "SettingsOut", "SettingsProviderOut", "SettingsPushIn", "DeviceRegisterIn",

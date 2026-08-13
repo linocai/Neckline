@@ -305,7 +305,12 @@ struct BasketCardPage: View {
                         } else if !m.roleDisplay.isEmpty {
                             NKChip(text: m.roleDisplay)
                         }
-                        if m.isPrimary { NKChip(text: "主归属", tone: .good) }
+                        // 🔴 裁定 ⑤:三态(已确认 / 归属待确认 / 老卡未记录)。
+                        if m.isPrimary {
+                            NKChip(text: NKPrimaryStatus.chipText(m.primaryStatus),
+                                   tone: NKPrimaryStatus.isPending(m.primaryStatus) ? .warn
+                                       : (NKPrimaryStatus.isRecorded(m.primaryStatus) ? .good : .info))
+                        }
                     }
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         // ⛔ 视图里不写裸 `.system(size:)`(CLAUDE.md V2.3 字阶纪律)——

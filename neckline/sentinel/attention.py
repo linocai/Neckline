@@ -440,9 +440,13 @@ def check_sector_bid_fade(
         kind=KIND_SECTOR_BID_FADE,
         scope=index_code, event_key="fade",
         title=f"板块承接减弱:{index_code}",
+        # 🔴 **⛔ 这句话里不许有 Markdown**(`CLAUDE.md` 两条守门的同一个病,第三个现场):
+        # 2026-08-12 用户裁定 ② 之后它**真的会下发给客户端**(`/positions` 的
+        # `portfolioAlerts[].verdict`),而客户端拿到的是 `String` → `Text(String)`
+        # **不解析 Markdown** → `**…**` 的星号会原样印在屏幕上。要强调就用「」。
         what_happened=(
             f"{who} 所属板块的基准指数 {index_code} 现报 {_pct(r)}、自日内高点回落 "
-            f"{back:.1%}(**是板块基准指数,不是板块 ETF** —— 本项目没有 ETF 成分数据源)"
+            f"{back:.1%}(「是板块基准指数,不是板块 ETF」—— 本项目没有 ETF 成分数据源)"
         ),
         plan_touched="板块承接是这批持仓共同的环境前提,承接减弱时个股的跟随性会变差",
         metrics={"index_ret": round(r, 6), "retrace_from_high": round(back, 6),

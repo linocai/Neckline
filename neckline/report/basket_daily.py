@@ -159,6 +159,11 @@ _CARD_MEMBER_KEYS: Tuple[Tuple[str, str], ...] = (
     ("industry_lift", "industryLift"),
     ("lift_reason", "liftReason"),
     ("primary_reason", "primaryReason"),
+    # 🔴 裁定 ⑤:主归属的确认状态 + 「待确认」原因码。⚠ `_pick` 只在**键存在**时
+    # 才写出来 —— 老 v4 卡因此**根本不发这两键**,客户端据此画「未记录」而不是
+    # 「已确认」(⛔ 不给老卡猜一个策略结论)。
+    ("primary_status", "primaryStatus"),
+    ("primary_pending_reason", "primaryPendingReason"),
     ("rs_rank", "rsRank"),
     ("k4_tag", "k4Tag"),
     # V2.2-③-C 位置关(裁定 #11):判定 + 理由 + **当次读数**三件一起发。

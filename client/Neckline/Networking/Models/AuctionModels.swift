@@ -967,12 +967,16 @@ struct AuctionPayload: Decodable, Equatable {
     var risks: [AuctionRiskItem] = []
     var manualNote: String? = nil
     var proxySampleNote: String = ""
+    /// 🔴 **当天那一份**竞价观察范围的自述(2026-08-12 用户裁定 ①)。
+    /// ⚠ **空串 = 这份报告是 v2.4.0 之前落的**(那时还没有独立观察池这个概念),
+    /// ⛔ 不许读成「范围正常」,也 ⛔ 不许读成「范围就是全市场」。
+    var observationScopeNote: String = ""
     var llmStage: String = ""
     var notes: [String] = []
 
     enum CodingKeys: String, CodingKey {
         case tradeDate, d0Date, dataStatus, marketOverview, baskets, basketsUnavailableReason
-        case risks, manualNote, proxySampleNote, llmStage, notes
+        case risks, manualNote, proxySampleNote, observationScopeNote, llmStage, notes
     }
 
     init(from decoder: Decoder) throws {
@@ -987,6 +991,7 @@ struct AuctionPayload: Decodable, Equatable {
         risks = try c.decodeIfPresent([AuctionRiskItem].self, forKey: .risks) ?? []
         manualNote = try c.decodeIfPresent(String.self, forKey: .manualNote)
         proxySampleNote = try c.decodeIfPresent(String.self, forKey: .proxySampleNote) ?? ""
+        observationScopeNote = try c.decodeIfPresent(String.self, forKey: .observationScopeNote) ?? ""
         llmStage = try c.decodeIfPresent(String.self, forKey: .llmStage) ?? ""
         notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
     }

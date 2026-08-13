@@ -208,7 +208,20 @@ private struct BoardResponse: Decodable {
     let events: [BoardEvent]
 }
 
-private struct PositionsListResponse: Decodable { let holdings: [Position] }
+private struct PositionsListResponse: Decodable {
+    let holdings: [Position]
+    /// 🔴 组合环境提醒(2026-08-12 用户裁定 ②)。**缺键 = 老服务端**(2.4.0 之前),
+    /// 按空数组处理 —— ⛔ 空数组不等于「环境正常」,只是「今天没有这两类事件」。
+    let portfolioAlerts: [PortfolioAlert]?
+}
+
+/// `/positions` 的完整快照:持仓 + 组合环境提醒。
+/// ⚠ 两段**刻意分开**:板块级 / 市场级事件匹配不到任何一笔持仓码(裁定 ② 原文
+/// 「⛔ 也不重复塞进单票详情」)。
+struct PositionsSnapshot {
+    var holdings: [Position]
+    var portfolioAlerts: [PortfolioAlert]
+}
 
 struct OpenPositionRequest: Encodable {
     let code: String
@@ -514,9 +527,10 @@ actor APIClient {
     }
 
     // —— 4A.4 持仓(审计台账;系统永不自动下单,§3.8)——
-    func fetchPositions() async throws -> [Position] {
+    func fetchPositions() async throws -> PositionsSnapshot {
         let data = try await get("/api/v1/positions")
-        return try JSONDecoder().decode(PositionsListResponse.self, from: data).holdings
+        let r = try JSONDecoder().decode(PositionsListResponse.self, from: data)
+        return PositionsSnapshot(holdings: r.holdings, portfolioAlerts: r.portfolioAlerts ?? [])
     }
 
     /// 开仓录入(补录用户已在券商完成的真实操作)。

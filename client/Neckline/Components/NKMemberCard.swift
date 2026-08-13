@@ -122,7 +122,13 @@ struct NKMemberCard: View {
                     Text(member.tsCode).font(NKFont.caption.monospacedDigit())
                         .foregroundStyle(NK.textTertiary).lineLimit(1)
                     roleBadge
-                    if member.isPrimary { NKChip(text: "主归属", tone: .good) }
+                    // 🔴 裁定 ⑤:主归属是**三态** —— 已确认(绿)/ 归属待确认(黄)/
+                    // 老卡未记录(中性)。⛔ 别把「技术兜底选出来的那一篮」画成策略结论。
+                    if member.isPrimary {
+                        NKChip(text: NKPrimaryStatus.chipText(member.primaryStatus),
+                               tone: NKPrimaryStatus.isPending(member.primaryStatus) ? .warn
+                                   : (NKPrimaryStatus.isRecorded(member.primaryStatus) ? .good : .info))
+                    }
                     #if os(macOS)
                     Spacer(minLength: 6)
                     verdictBadges

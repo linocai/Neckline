@@ -875,8 +875,8 @@ struct SettingsView: View {
             return
         }
         do {
-            let positions = try await client.fetchPositions()
-            check = .ok("health ok · positions ok(\(positions.count) 持仓)")
+            let snapshot = try await client.fetchPositions()
+            check = .ok("health ok · positions ok(\(snapshot.holdings.count) 持仓)")
         } catch APIError.unauthorized, APIError.noToken {
             check = .tokenError
         } catch let e as APIError {

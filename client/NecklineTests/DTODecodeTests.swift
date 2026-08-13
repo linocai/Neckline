@@ -1261,7 +1261,7 @@ final class DTODecodeTests: XCTestCase {
         """)
         MockURLProtocol.handler = { _ in (200, json) }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let positions = try await client.fetchPositions()
+        let positions = try await client.fetchPositions().holdings
         XCTAssertEqual(positions.count, 1)
         let p = positions[0]
         XCTAssertEqual(p.code, "600519.SH")
@@ -1304,7 +1304,7 @@ final class DTODecodeTests: XCTestCase {
         """)
         MockURLProtocol.handler = { _ in (200, json) }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let p = try await client.fetchPositions()[0]
+        let p = try await client.fetchPositions().holdings[0]
         XCTAssertEqual(p.lossWarningPct, 0.05)
         XCTAssertEqual(p.lossWarningAction, "review")
         XCTAssertTrue(p.isLossWarningCharter)
@@ -1333,7 +1333,7 @@ final class DTODecodeTests: XCTestCase {
         """)
         MockURLProtocol.handler = { _ in (200, json) }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let p = try await client.fetchPositions()[0]
+        let p = try await client.fetchPositions().holdings[0]
         XCTAssertFalse(p.isLossWarningCharter)
         XCTAssertEqual(p.stopLineLabel, "止损线")
         XCTAssertNil(p.lossWarningDisclosure)
@@ -1352,7 +1352,7 @@ final class DTODecodeTests: XCTestCase {
         """)
         MockURLProtocol.handler = { _ in (200, json) }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let p = try await client.fetchPositions()[0]
+        let p = try await client.fetchPositions().holdings[0]
         XCTAssertFalse(p.hasLivePrice)
         XCTAssertFalse(p.hasBrokenStop)      // 无实时价不误判破线
         XCTAssertNil(p.distToStopPct)
@@ -1374,7 +1374,7 @@ final class DTODecodeTests: XCTestCase {
         """)
         MockURLProtocol.handler = { _ in (200, json) }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let p = try await client.fetchPositions()[0]
+        let p = try await client.fetchPositions().holdings[0]
         XCTAssertEqual(p.dCount, 5)
         XCTAssertTrue(p.isExitDay)
         XCTAssertEqual(p.retraceState?.triggered, true)
@@ -1408,7 +1408,7 @@ final class DTODecodeTests: XCTestCase {
         """)
         MockURLProtocol.handler = { _ in (200, json) }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let p = try await client.fetchPositions()[0]
+        let p = try await client.fetchPositions().holdings[0]
         XCTAssertEqual(p.maxHoldDaysEffective, 15)
         XCTAssertEqual(p.timeExitKind, .profitExempt)
         XCTAssertFalse(p.isExitDay, "浮盈豁免不是离场日")
@@ -1438,7 +1438,7 @@ final class DTODecodeTests: XCTestCase {
         """)
         MockURLProtocol.handler = { _ in (200, json) }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let p = try await client.fetchPositions()[0]
+        let p = try await client.fetchPositions().holdings[0]
         XCTAssertEqual(p.k4Advisory.count, 2)
         XCTAssertTrue(p.k4Advisory[0].isTopBillboard, "价量结构强证据应置顶")
         XCTAssertFalse(p.k4Advisory[1].isTopBillboard, "成分类弱证据即便 strong 也不置顶,只标「参考」")
@@ -1459,7 +1459,7 @@ final class DTODecodeTests: XCTestCase {
         """)
         MockURLProtocol.handler = { _ in (200, json) }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let p = try await client.fetchPositions()[0]
+        let p = try await client.fetchPositions().holdings[0]
         XCTAssertEqual(p.maxHoldDaysEffective, 5, "缺键兜底到 maxHoldDays,不是硬编 5")
         XCTAssertEqual(p.k4Advisory, [])
         XCTAssertFalse(p.scenarioReviewPending)
@@ -1494,7 +1494,7 @@ final class DTODecodeTests: XCTestCase {
         """)
         MockURLProtocol.handler = { _ in (200, json) }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let p = try await client.fetchPositions()[0]
+        let p = try await client.fetchPositions().holdings[0]
         XCTAssertEqual(p.priceStale?.staleDays, 3)
         XCTAssertEqual(p.priceStale?.lastCloseDate, "20260722")
         XCTAssertEqual(p.priceStale?.reason, "suspended")
@@ -1521,7 +1521,7 @@ final class DTODecodeTests: XCTestCase {
         """)
         MockURLProtocol.handler = { _ in (200, json) }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
-        let p = try await client.fetchPositions()[0]
+        let p = try await client.fetchPositions().holdings[0]
         XCTAssertEqual(p.timeExitLockedDay, 7)
         XCTAssertEqual(p.timeExitLockedLateDays, 2)
     }

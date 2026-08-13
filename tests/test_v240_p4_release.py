@@ -135,6 +135,8 @@ _NEW_COLUMNS_V240: Tuple[Tuple[str, str], ...] = (
     ("basket_stage_handoff", "seed_count"),
     ("basket_stage_handoff", "seed_summary"),
     ("selection_pack_activation_log", "batch_id"),
+    # 🔴 2026-08-12 用户裁定 ①:竞价独立观察池的账 + 观察范围自述(**第 8 个可空列**)。
+    ("auction_reports", "observation_json"),
 )
 # DoD 逐字点名的三类历史件 + 上面那些被加了列的表 —— 一起塞行、一起验。
 _HISTORY_TABLES: Tuple[str, ...] = (

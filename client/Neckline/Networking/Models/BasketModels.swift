@@ -210,6 +210,12 @@ struct BasketMember: Codable, Equatable, Identifiable {
     var industryLift: Double? = nil
     var liftReason: String? = nil
     var primaryReason: String? = nil
+    /// 🔴 **裁定 ⑤:主归属的确认状态**(`confirmed` / `pending_confirmation`)。
+    /// ⚠ **`nil` 与空串是「这张卡没记」**(老 `basket_card_v4` 及更早),
+    /// ⛔ 不许当成 `confirmed` —— 那是把「没记」讲成「策略确认过了」。
+    var primaryStatus: String? = nil
+    /// 「归属待确认」的可查原因码(`no_primary_claim` / `multiple_primary_claims`)。
+    var primaryPendingReason: String? = nil
     var rsRank: Int? = nil
     var k4Tag: String? = nil
     // —— V2.2-③-C 位置关(裁定 #11:机械层只出读数,判定交 LLM,只降级不除名)——
@@ -273,6 +279,7 @@ struct BasketMember: Codable, Equatable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case tsCode, name, roleLlm, roleMech, roleConflict, reason, isPrimary
         case industry, industryLift, liftReason, primaryReason, rsRank, k4Tag
+        case primaryStatus, primaryPendingReason
         case positionVerdict, positionReason, positionMetrics
         case coreVerdict, coreReason, coreMetrics
         case mech
@@ -285,7 +292,8 @@ struct BasketMember: Codable, Equatable, Identifiable {
     init(tsCode: String = "", name: String = "", roleLlm: String? = nil, roleMech: String? = nil,
          roleConflict: Bool = false, reason: String = "", isPrimary: Bool = false,
          industry: String? = nil, industryLift: Double? = nil, liftReason: String? = nil,
-         primaryReason: String? = nil, rsRank: Int? = nil, k4Tag: String? = nil,
+         primaryReason: String? = nil, primaryStatus: String? = nil,
+         primaryPendingReason: String? = nil, rsRank: Int? = nil, k4Tag: String? = nil,
          positionVerdict: String? = nil, positionReason: String? = nil,
          positionMetrics: NKJSON? = nil, coreVerdict: String? = nil, coreReason: String? = nil,
          coreMetrics: NKJSON? = nil,
@@ -299,6 +307,7 @@ struct BasketMember: Codable, Equatable, Identifiable {
         self.roleConflict = roleConflict; self.reason = reason; self.isPrimary = isPrimary
         self.industry = industry; self.industryLift = industryLift; self.liftReason = liftReason
         self.primaryReason = primaryReason; self.rsRank = rsRank; self.k4Tag = k4Tag
+        self.primaryStatus = primaryStatus; self.primaryPendingReason = primaryPendingReason
         self.positionVerdict = positionVerdict; self.positionReason = positionReason
         self.positionMetrics = positionMetrics
         self.coreVerdict = coreVerdict; self.coreReason = coreReason; self.coreMetrics = coreMetrics
@@ -324,6 +333,9 @@ struct BasketMember: Codable, Equatable, Identifiable {
         industryLift = try c.decodeIfPresent(Double.self, forKey: .industryLift)
         liftReason = try c.decodeIfPresent(String.self, forKey: .liftReason)
         primaryReason = try c.decodeIfPresent(String.self, forKey: .primaryReason)
+        // 裁定 ⑤:缺键 = 老卡没记(⛔ 不补一个 confirmed)。
+        primaryStatus = try c.decodeIfPresent(String.self, forKey: .primaryStatus)
+        primaryPendingReason = try c.decodeIfPresent(String.self, forKey: .primaryPendingReason)
         rsRank = try c.decodeIfPresent(Int.self, forKey: .rsRank)
         k4Tag = try c.decodeIfPresent(String.self, forKey: .k4Tag)
         positionVerdict = try c.decodeIfPresent(String.self, forKey: .positionVerdict)
@@ -1389,5 +1401,34 @@ struct BasketDaily: Codable, Equatable {
     /// 并集两头都对:现役档保证「今日 T2 为空」这句诚实披露不消失,实际档保证老报告照出。
     var displayTiers: [Int] {
         Array(Set(Self.liveTiers).union(baskets.compactMap { $0.tier })).sorted()
+    }
+}
+
+/// 主归属的**确认状态**三态展示(2026-08-12 用户裁定 ⑤)。
+///
+/// 🔴 **三态刻意分开,⛔ 不许折平**:
+///   · `confirmed`            → 「主归属」(策略结论);
+///   · `pending_confirmation` → **「归属待确认」**(`is_primary` 那一位是技术兜底的
+///     产物,不是策略结论;它**不影响任何篮子的等级**);
+///   · `nil` / 空串           → 「主归属(未记录确认状态)」—— 老 `basket_card_v4`
+///     及更早的卡没有这一键,⛔ 不许猜成「已确认」。
+enum NKPrimaryStatus {
+    static let confirmed = "confirmed"
+    static let pending = "pending_confirmation"
+
+    /// 徽标文案。⚠ 只在 `isPrimary == true` 的行上调用。
+    static func chipText(_ raw: String?) -> String {
+        switch (raw ?? "") {
+        case pending: return "归属待确认"
+        case confirmed: return "主归属"
+        default: return "主归属(未记录确认状态)"
+        }
+    }
+
+    /// 「待确认」是黄的,「已确认」是绿的,「没记」是中性的 —— ⛔ 别把三态画成两态。
+    static func isPending(_ raw: String?) -> Bool { (raw ?? "") == pending }
+    static func isRecorded(_ raw: String?) -> Bool {
+        let v = raw ?? ""
+        return v == pending || v == confirmed
     }
 }

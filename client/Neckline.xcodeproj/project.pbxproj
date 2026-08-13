@@ -33,7 +33,6 @@
 		A95E60B60DE6A07CDB6DD7DA /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53B123024CC94ED7E02FF66F /* DesignTokens.swift */; };
 		AB52CA616EFD21F6EA0C4967 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A75B75043B9190B8F306FF1D /* Assets.xcassets */; };
 		BD327FFE691B6B0F77EF1B4F /* NKMemberCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AD326C8BC9BC4A64072A35D /* NKMemberCard.swift */; };
-		C694247DCAC7BC1C103955A0 /* NKStopOrderLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 179135308F69EDF94A3B203C /* NKStopOrderLedger.swift */; };
 		C6A7800544ED3CD2E062F1E8 /* InfoCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A90418AEA32F7C299080AF /* InfoCardView.swift */; };
 		CBBD1F2E43E0044CDD17CDE0 /* ReviewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77C393228A954DE690B08BDE /* ReviewModels.swift */; };
 		CCCBAE520CB8795277F18C90 /* PushManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7692438CB8859E874A66E3E /* PushManager.swift */; };
@@ -64,7 +63,6 @@
 		0AD326C8BC9BC4A64072A35D /* NKMemberCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NKMemberCard.swift; sourceTree = "<group>"; };
 		147CEB81991D3CEBBD6B53F4 /* SharedModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedModels.swift; sourceTree = "<group>"; };
 		16A03FF89D312B2EA2ECA0DE /* AuctionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuctionModels.swift; sourceTree = "<group>"; };
-		179135308F69EDF94A3B203C /* NKStopOrderLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NKStopOrderLedger.swift; sourceTree = "<group>"; };
 		1AE91C1C1F16155E79F87794 /* NoteSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteSheet.swift; sourceTree = "<group>"; };
 		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		35048A24D5A56D3EF4D89DEF /* ReportModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportModels.swift; sourceTree = "<group>"; };
@@ -198,7 +196,6 @@
 				D992070DC2C2CD6DDF3BD3F9 /* NKFormKit.swift */,
 				CAE1DD2864459FE86E710600 /* NKGateViews.swift */,
 				0AD326C8BC9BC4A64072A35D /* NKMemberCard.swift */,
-				179135308F69EDF94A3B203C /* NKStopOrderLedger.swift */,
 				B33B057A2E66042B15089049 /* NKStopScale.swift */,
 				6D2ECF5D1ADA2570A80AAF57 /* NKToolbar.swift */,
 				D4DE7B52DFD937FA105D0D80 /* SharedUI.swift */,
@@ -356,7 +353,6 @@
 				83EB77417C2A9B3AE3266127 /* NKFormKit.swift in Sources */,
 				ED9DDCD05025C3514AF2BFE0 /* NKGateViews.swift in Sources */,
 				BD327FFE691B6B0F77EF1B4F /* NKMemberCard.swift in Sources */,
-				C694247DCAC7BC1C103955A0 /* NKStopOrderLedger.swift in Sources */,
 				3389852D1E11367EA42682FB /* NKStopScale.swift in Sources */,
 				499CB305261279D9053C4B94 /* NKToolbar.swift in Sources */,
 				E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */,

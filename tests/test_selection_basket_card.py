@@ -218,6 +218,9 @@ def test_card_json_key_shape_is_stable():
     assert set(j["members"][0]) == {
         "ts_code", "name", "role_llm", "role_mech", "role_conflict", "reason",
         "is_primary", "industry", "industry_lift", "lift_reason", "primary_reason",
+        # 🔴 2026-08-12 用户裁定 ⑤:主归属的**确认状态**与「待确认」原因码。
+        # ⚠ 并入 `basket_card_v5`(该形状一天都没上过产,同 v3 那次的既定纪律)。
+        "primary_status", "primary_pending_reason",
         "rs_rank", "k4_tag",
         # V2.2-③-C(裁定 #11):位置关判定 + 理由 + **当次读数**(卡是冻结件,
         # 存读数 = 事后复核「模型拿什么下的判断」不必回头猜)。

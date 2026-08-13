@@ -20,13 +20,22 @@ docstring 里的既有理由:让存拍与纪律外壳彻底解耦)。代价 = **
        加指数(当天没有创业板票 → 创业板指就不在池里),改它会同时改掉哨兵与存拍的
        关注池;**竞价层自己多要这三个码**,零副作用;
     4. 候选所属板块的基准指数 ← `BOARD_BENCHMARK_INDEX`(同 `universe.py` 唯一源);
-    5. 竞价强势股(**代理样本**)← 关注池里 `gap_pct > 0` 且**不属于任何 T1/T2 篮**的
-       标的 —— ⚠ **不截断**(§五 ⑨-A 第 5 行:截断需要一个 K8 没给的数;且关注池本身
-       就是代理样本,不是全市场明细)。⚠ 第 5 组不是"再拉一批码":`gap_pct` 只有拉完价
-       才知道,所以它是**同一次抓取结果里的一个子集**,不多打一次请求。
+    5. 竞价强势股 ← **竞价层自己的独立观察池**里 `gap_pct > 0` 且**不属于任何 T1/T2
+       篮**的标的 —— ⚠ **不截断**(§五 ⑨-A 第 5 行:截断需要一个 K8 没给的数)。
+       ⚠ 第 5 组不是"再拉一批码":`gap_pct` 只有拉完价才知道,所以它是**同一次抓取
+       结果里的一个子集**,不多打一次请求。
+
+🔴 **独立观察池(2026-08-12 用户裁定 ①,§七 P1-78 的落点)**:竞价层**不再**把
+`wu.codes` 当取样域 —— 盘中关注池(上界 29 只)只服务持仓与关注提醒,竞价层按 K8
+比较域顺序**另建**一份「同一主驱动 → 同题材方向 → 传统行业」的完整观察池
+(唯一实现 `auction/observation.py`,⛔ 本模块不抄一份组装逻辑)。
+🔴 **两个取样域自此都读观察池**:① 第 5 组「竞价强势股」;② `rel_to_sector` 的板块
+对照股(`snap.industry_of` 只由观察池派生)。⛔ **绝不许把观察池回接进 `wu.codes`** ——
+那正是裁定要拆开的东西。
+⚠ `wu.codes` 本身**仍然进抓取清单**(持仓票要有报价),但它**不再是任何取样域**。
 
 🔴 **「板块对照股」已由用户拍板落地(裁定 P3-70,2026-08-12)**:板块基准走
-「≥3 只有效**板块对照股**竞价涨跌幅的中位数」,取数域 = 关注池里与该票**同行业**
+「≥3 只有效**板块对照股**竞价涨跌幅的中位数」,取数域 = **观察池**里与该票**同行业**
 (`stock_basic.industry`,本仓钉死的行业口径)且**不属于本篮**的票 —— 本模块负责把
 `industry_of`(个股 → 行业)冻进快照,判定与中位数在 `mech.py`。
 ⚠ 原「降级为板块基准指数、逐股对照本版不做 → §七 P3-65」那半条**已销案**;
@@ -50,6 +59,7 @@ from neckline.auction import (
     REL_UNDET_BOARD_EXCLUDED,
     REL_UNDET_NO_BOARD_META,
 )
+from neckline.auction.observation import ObservationPool, build_observation_pool
 from neckline.auction.quality import QuoteQuality, resolve_dual
 from neckline.calendar import prev_trading_day
 from neckline.data.board import Board
@@ -184,8 +194,13 @@ class AuctionSnapshot:
     industry_of: Mapping[str, str] = field(default_factory=dict)
     meta: Mapping[str, StockMeta] = field(default_factory=dict)
     prev5_avg_volume: Mapping[str, float] = field(default_factory=dict)
-    #: 关注池里 `gap_pct > 0` 且不属于任何 T1/T2 篮的标的(市场锚点,**代理样本、不截断**)。
+    #: **独立观察池**里 `gap_pct > 0` 且不属于任何 T1/T2 篮的标的(市场锚点,**不截断**)。
+    #: 🔴 裁定 ①:取样域是 `observation`,**⛔ 不是 `wu.codes`** —— 排序范围随
+    #: `observation.scope_note` 一起下发,⛔ 不冒充全市场竞价排行。
     strong_anchor_codes: Tuple[str, ...] = ()
+    #: 🔴 竞价层这一早晨的**独立观察池**(2026-08-12 用户裁定 ①)。它是两个取样域的
+    #: 唯一来源(竞价强势股 / 板块对照股),并携带「观察范围」的自述文案。
+    observation: ObservationPool = field(default_factory=ObservationPool)
     notes: Tuple[str, ...] = ()
 
     @property
@@ -273,13 +288,19 @@ class AuctionSnapshot:
 
 def build_watchlist(
     wu: WatchUniverse, *, meta: Optional[Mapping[str, StockMeta]] = None,
+    observation: Optional[ObservationPool] = None,
 ) -> Tuple[List[str], Dict[str, str], List[str], Dict[str, str], Dict[str, str]]:
     """抓取清单(去重、**确定性顺序**)+ 个股→板块基准指数 + 指数码清单
     + 🔴 个股→**市场指数**(独立路径,裁定 P3-70)+ 拿不到市场指数的原因码。
 
-    顺序 = 「篮子成员(按篮子顺序)→ 三支市场指数 → 各板块基准指数 → 关注池其余」。
-    ⚠ 关注池其余那一段是第 5 组「竞价强势股」的**取样域**:它们本来就已经在
-    `wu.codes` 里(持仓 / 昨日涨停 / 主线切片),并入清单不额外多打一次请求。
+    顺序 = 「篮子成员(按篮子顺序)→ 三支市场指数 → 各板块基准指数 →
+    **独立观察池** → 关注池其余」。
+
+    🔴 **2026-08-12 用户裁定 ①:观察池与 `wu.codes` 是两件事**。
+    · `observation`(`auction/observation.build_observation_pool` 的产物)是竞价层
+      **自己**的取样域,按 K8 比较域顺序完整取数、**不设 29 只上限**;
+    · `wu.codes` 仍然进抓取清单(持仓票要有报价),但它**不再是任何取样域** ——
+      🔴 竞价强势股与板块对照股两处都改读观察池,⛔ 别再拿 `wu.codes` 当样本。
     ⚠ **市场指数映射不新增任何抓取码**:它落在的那几支(上证 / 深证 / 创业板 / 北证50)
     与板块基准指数是同一批码,清单逐位不变 —— 分开的是**语义与算法**,不是请求量。
     """
@@ -321,6 +342,10 @@ def build_watchlist(
         elif mi_reason:
             mkt_index_undetermined[code] = mi_reason
     for c in index_codes:
+        _add(c)
+    # 🔴 裁定 ①:观察池排在 `wu.codes` **之前** —— 顺序本身不影响结果(去重后是并集),
+    # 但它把「谁才是取样域」写在了清单的形状里。
+    for c in (observation.codes if observation is not None else ()):
         _add(c)
     for c in wu.codes:
         _add(c)
@@ -381,27 +406,49 @@ def collect_auction_snapshot(
         meta = {}
         notes.append("stock_meta_unavailable")
 
-    requested, benchmark_of, index_codes, mkt_index_of, mkt_index_undet = build_watchlist(
-        wu, meta=meta)
-
-    # 🔴 **板块对照股的取数域**(裁定 P3-70 ②):`stock_basic.industry` —— 本仓钉死的
-    # 行业口径(唯一读取实现 `report/industry_strength.py::load_industry_map`,
-    # 与 `stock_persist_days` 同一口径),⛔ 不在本包另造一套板块分类。
-    # ⚠ 只留**抓取清单里的个股**:指数不在 `stock_basic` 里,天然进不来 ——
-    #    这正是「⛔ 禁止用市场指数代替板块基准」的结构性保证。
+    # 🔴 **行业口径**(裁定 P3-70 ② 的取数口径 + 裁定 ① 观察池第 ③ 层的取样源):
+    # `stock_basic.industry` —— 本仓钉死的行业口径(唯一读取实现
+    # `report/industry_strength.py::load_industry_map`,与 `stock_persist_days` 同一口径),
+    # ⛔ 不在本包另造一套板块分类。
     try:
         from neckline.report.industry_strength import load_industry_map
 
         _all_industry = load_industry_map(db_path)
-        wanted = set(requested)
-        industry_of = {c: ind for c, ind in _all_industry.items() if c in wanted}
+        industry_map_ok = True
     except Exception:  # noqa: BLE001 —— 可选情报的保险丝(§铁律)
-        logger.warning("[auction] 查行业口径失败,本次无板块对照股基准", exc_info=True)
-        industry_of = {}
+        logger.warning("[auction] 查行业口径失败,本次无观察池行业层、无板块对照股基准",
+                       exc_info=True)
+        _all_industry = {}
+        industry_map_ok = False
         # 🔴 这条 note 是**逐票原因码分岔的判据**(复审 🔵-7):整张表读不到 = 系统缺席,
         # 逐票落 `industry_map_unavailable`,⛔ 不与「这一只票真没登记行业」(`no_industry`)
         # 讲成同一句话。字面量单一源在 `auction/__init__.py`。
         notes.append(NOTE_INDUSTRY_MAP_UNAVAILABLE)
+
+    # 🔴 **独立观察池**(2026-08-12 用户裁定 ①):竞价层自己的取样域,
+    # 按 K8 比较域顺序完整取数、**不设 29 只上限**,⛔ 与 `wu.codes` 彻底分开。
+    try:
+        observation = build_observation_pool(
+            wu.baskets, d0_date=prev_trading_day(trade_date),
+            industry_of_all=_all_industry, industry_map_available=industry_map_ok,
+            db_path=db_path,
+        )
+    except Exception:  # noqa: BLE001 —— 可选情报的保险丝(§铁律)
+        logger.warning("[auction] 组装独立观察池失败,本次两个取样域都为空(如实标未取得)",
+                       exc_info=True)
+        observation = ObservationPool()
+        notes.append("observation_pool_unavailable")
+
+    requested, benchmark_of, index_codes, mkt_index_of, mkt_index_undet = build_watchlist(
+        wu, meta=meta, observation=observation)
+
+    # 🔴 **板块对照股的取数域 = 观察池**(裁定 ①):`industry_of` 只留**观察池里的个股**。
+    # ⚠ **⛔ 不是 `requested`** —— `requested` 里还有 `wu.codes`(持仓票),
+    #    把它们算进对照股 = 把「我手上这几只」当成「这个行业在怎么走」。
+    # ⚠ 指数不在 `stock_basic` 里,天然进不来 —— 这正是「⛔ 禁止用市场指数代替板块基准」
+    #    的结构性保证(再叠一层 `snap.index_codes` 显式排除在 `mech.py`)。
+    _observed = set(observation.codes)
+    industry_of = {c: ind for c, ind in _all_industry.items() if c in _observed}
 
     # 🔴 **拉价前复判窗口**(复审 🟡-2 第一层):组清单本身要读关注池 / 元数据,
     # 加上同一拍里排在前面的 precall 与 capture,到这里可能已经 9:30 了。
@@ -422,6 +469,7 @@ def collect_auction_snapshot(
             industry_of=industry_of,
             meta=meta, prev5_avg_volume={},
             strong_anchor_codes=(),
+            observation=observation,
             notes=tuple(notes + [SKIP_WINDOW_CLOSED]),
         )
 
@@ -508,12 +556,15 @@ def collect_auction_snapshot(
                       and quote_quality[c].conflict)
     basket_member_set = set(basket_codes)
     index_set = set(index_codes)
-    # 第 5 组:竞价强势股(代理样本)= 抓到了、gap>0、不属于任何 T1/T2 篮、不是指数。
+    # 第 5 组:竞价强势股 = 抓到了、gap>0、不属于任何 T1/T2 篮、不是指数。
+    # 🔴 **取样域 = 独立观察池**(2026-08-12 用户裁定 ①),**⛔ 不是 `requested`、
+    #    更不是 `wu.codes`** —— 裁定原文「竞价强势股只在该独立观察池内排序,并明确
+    #    标注观察范围,不冒充全市场排名」。范围自述随产物下发(`observation.scope_note`)。
     # ⚠ **不截断**(§五 ⑨-A 第 5 行);排序按 gap 降序 + 代码升序做**确定性 tie-break**
     # (CLAUDE.md:进判据 / 排序的名次必须先排定确定性 tie-break)。
     # 🔴 V2.4.0 P2.1:**只收可用读数**(⛔ 别拿一份昨天的行情当"今天的竞价强势股")。
     anchors: List[Tuple[float, str]] = []
-    for code in requested:
+    for code in observation.codes:
         if code in basket_member_set or code in index_set:
             continue
         if code in invalid or code in missing:
@@ -547,6 +598,7 @@ def collect_auction_snapshot(
         meta=meta,
         prev5_avg_volume=prev5,
         strong_anchor_codes=tuple(code for _g, code in anchors),
+        observation=observation,
         notes=tuple(notes),
     )
 

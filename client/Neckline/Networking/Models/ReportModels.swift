@@ -395,6 +395,10 @@ struct InfoCardBasket: Codable, Equatable {
     var roleConflict: Bool = false
     var roleReason: String = ""
     var isPrimary: Bool = false
+    /// 🔴 裁定 ⑤:主归属的确认状态。`nil` / 空串 = **这张卡没记**(老 `basket_card_v4`
+    /// 及更早),⛔ 不许当成 `confirmed`。
+    var primaryStatus: String? = nil
+    var primaryPendingReason: String? = nil
     var industry: String? = nil
     var industryLift: Double? = nil
     var peers: [InfoCardBasketPeer] = []
@@ -403,19 +407,23 @@ struct InfoCardBasket: Codable, Equatable {
         case available, unavailableReason, basketId, basketKey, name, tier
         case driver, driverKind, whyNow, roleLlm, roleMech, roleConflict, roleReason
         case isPrimary, industry, industryLift, peers
+        case primaryStatus, primaryPendingReason
     }
 
     init(available: Bool = false, unavailableReason: String? = nil, basketId: Int? = nil,
          basketKey: String = "", name: String = "", tier: Int? = nil, driver: String = "",
          driverKind: String = "", whyNow: String = "", roleLlm: String? = nil,
          roleMech: String? = nil, roleConflict: Bool = false, roleReason: String = "",
-         isPrimary: Bool = false, industry: String? = nil, industryLift: Double? = nil,
+         isPrimary: Bool = false, primaryStatus: String? = nil,
+         primaryPendingReason: String? = nil,
+         industry: String? = nil, industryLift: Double? = nil,
          peers: [InfoCardBasketPeer] = []) {
         self.available = available; self.unavailableReason = unavailableReason
         self.basketId = basketId; self.basketKey = basketKey; self.name = name; self.tier = tier
         self.driver = driver; self.driverKind = driverKind; self.whyNow = whyNow
         self.roleLlm = roleLlm; self.roleMech = roleMech; self.roleConflict = roleConflict
         self.roleReason = roleReason; self.isPrimary = isPrimary; self.industry = industry
+        self.primaryStatus = primaryStatus; self.primaryPendingReason = primaryPendingReason
         self.industryLift = industryLift; self.peers = peers
     }
 
@@ -435,6 +443,9 @@ struct InfoCardBasket: Codable, Equatable {
         roleConflict = try c.decodeIfPresent(Bool.self, forKey: .roleConflict) ?? false
         roleReason = try c.decodeIfPresent(String.self, forKey: .roleReason) ?? ""
         isPrimary = try c.decodeIfPresent(Bool.self, forKey: .isPrimary) ?? false
+        // 裁定 ⑤:缺键 = 老卡没记(⛔ 不补一个 confirmed)。
+        primaryStatus = try c.decodeIfPresent(String.self, forKey: .primaryStatus)
+        primaryPendingReason = try c.decodeIfPresent(String.self, forKey: .primaryPendingReason)
         industry = try c.decodeIfPresent(String.self, forKey: .industry)
         industryLift = try c.decodeIfPresent(Double.self, forKey: .industryLift)
         peers = try c.decodeIfPresent([InfoCardBasketPeer].self, forKey: .peers) ?? []

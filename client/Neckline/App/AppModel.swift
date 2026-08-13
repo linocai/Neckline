@@ -226,6 +226,10 @@ final class AppModel {
 
     // —— 持仓 ——
     var positions: [Position] = []
+    /// 🔴 **组合环境提醒**(2026-08-12 用户裁定 ②):板块级 / 市场级的环境证据,
+    /// 落在**持仓页顶部**那一段。⚠ 空数组 = 今天没有这两类事件,
+    /// ⛔ **不许据此画一句「环境正常」** —— 那正是 P0 撤销掉的状态机。
+    var portfolioAlerts: [PortfolioAlert] = []
     var positionsLoading = false
     /// V2.3 macOS 三区布局:详情栏当前显示的那一笔(`nil` = 还没选)。
     /// ⚠ 纯导航态,**不参与任何判定**;iOS 上走推入式详情、不读它。
@@ -599,12 +603,14 @@ final class AppModel {
         }
         positionsLoading = true
         loadError = nil
-        async let positionsTask: Result<[Position], Error> = fetchResult { try await client.fetchPositions() }
+        async let positionsTask: Result<PositionsSnapshot, Error> = fetchResult { try await client.fetchPositions() }
         async let alertsTask: Result<[CustomAlert], Error> = fetchResult { try await client.fetchAlerts() }
         let (positionsResult, alertsResult) = await (positionsTask, alertsTask)
 
         switch positionsResult {
-        case .success(let p): self.positions = p
+        case .success(let p):
+            self.positions = p.holdings
+            self.portfolioAlerts = p.portfolioAlerts
         case .failure(let e): handleLoadFailure(e, context: "持仓")
         }
         switch alertsResult {

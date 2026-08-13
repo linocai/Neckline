@@ -597,18 +597,28 @@ def _semi_baijiu_ctx() -> ag.MechContext:
     return ctx
 
 
-def _basket_stub(key: str, name: str, seed_keys: Sequence[str], member_codes: Sequence[str]) -> ag.BasketCandidate:
+def _basket_stub(key: str, name: str, seed_keys: Sequence[str], member_codes: Sequence[str],
+                 *, primary_claim: str = "") -> ag.BasketCandidate:
+    """⚠ `primary_claim`(2026-08-12 用户裁定 ⑤)= **策略侧对这一篮的认领**;
+    缺省空串 = 模型没答 → 下游按「归属待确认」走技术兜底。"""
     return ag.BasketCandidate(
         trade_date=D0_S, basket_key=key, name=name, driver="d", driver_kind="theme",
         why_now="w", seed_keys=tuple(seed_keys),
-        members=tuple(ag.BasketMemberCandidate(c, "leader", None, 0, "r") for c in member_codes),
+        members=tuple(ag.BasketMemberCandidate(c, "leader", None, 0, "r",
+                                               primary_claim=primary_claim)
+                      for c in member_codes),
         evidence=(), evidence_status=ag.EVIDENCE_OK, pack_version="p",
         engine_api_version=1, charter_version="v1.3.3",
     )
 
 
 class TestPrimaryAttribution:
-    def test_same_code_two_baskets_exactly_one_primary_and_it_is_the_higher_lift(self, isolated_env):
+    def test_same_code_two_baskets_exactly_one_primary_and_it_is_pending(self, isolated_env):
+        """🔴 **2026-08-12 用户裁定 ⑤ 取代了本用例的旧断言**:原名
+        `..._and_it_is_the_higher_lift`,断言的是「主归属落在 lift 更高的那一篮」——
+        裁定原文「Lift 仅作辅助证据 …… **不得单独决定主篮子**」把那条规则整条废掉。
+        现在断言的是:同票多篮而模型没认领 → `is_primary` 仍然唯一(库的硬约束),
+        但它标**「归属待确认」**,且 lift 照旧算得出来(它降级为辅助证据,没有消失)。"""
         env = isolated_env
         ss = _two_basket_env(env)
         payloads = [
@@ -623,9 +633,17 @@ class TestPrimaryAttribution:
         assert len(r.baskets) == 2
         flags = [(b.name, b.members[0].is_primary) for b in r.baskets]
         assert sum(f for _n, f in flags) == 1, flags
-        assert by_name["A篮"].members[0].is_primary == 1
-        assert by_name["B篮"].members[0].is_primary == 0
-        # lift 落在成员行上,可审计
+        primary = next(b for b in r.baskets if b.members[0].is_primary == 1)
+        other = next(b for b in r.baskets if b.members[0].is_primary == 0)
+        # 🔴 裁定 ⑤:没有认领 → 技术兜底 + 「归属待确认」+ 可查原因码。
+        assert primary.members[0].primary_status == ag.PRIMARY_STATUS_PENDING
+        assert primary.members[0].primary_reason == ag.PRIMARY_REASON_FALLBACK
+        assert primary.members[0].primary_pending_reason == ag.PRIMARY_PENDING_NO_CLAIM
+        # ⚠ 非主归属行的三格一律留空(⛔ 不许每行都自称"已确认")。
+        assert other.members[0].primary_status == ""
+        assert other.members[0].primary_reason is None
+        assert other.members[0].primary_pending_reason is None
+        # lift 仍落在成员行上、仍可审计 —— 它只是不再决定归属。
         assert by_name["A篮"].members[0].industry_lift > by_name["B篮"].members[0].industry_lift
 
     def test_code_in_single_basket_is_primary(self, isolated_env):
@@ -665,36 +683,85 @@ class TestPrimaryAttribution:
         basket = _basket_stub("k1", "小簇", ["s-small"], ["600001.SH"])
         out = ag.assign_primary([basket], seeds_by_key, ctx)
         m = out[0].members[0]
-        assert m.is_primary == 1   # 唯一候选,兜底也落它身上(篮子不因不达标被剔)
+        assert m.is_primary == 1   # 唯一候选(篮子不因样本不足被剔)
         assert m.industry_lift is None
         assert m.lift_reason == ag.LIFT_REASON_SAMPLE_TOO_SMALL
-        assert m.primary_reason == ag.PRIMARY_REASON_FALLBACK
+        # 🔴 **2026-08-12 用户裁定 ⑤ 取代了这一行的旧断言**(原为
+        # `PRIMARY_REASON_FALLBACK`):只出现在一个篮子里 = 归属**没有歧义**,
+        # ⛔ 不该被标成"技术兜底" —— 兜底那条路只为「同票多篮而策略侧没认领」留着。
+        assert m.primary_reason == ag.PRIMARY_REASON_SOLE_BASKET
+        assert m.primary_status == ag.PRIMARY_STATUS_CONFIRMED
+        assert m.primary_pending_reason is None
 
-    def test_primary_falls_on_qualified_basket_despite_smaller_baskets_higher_raw_lift(self):
-        """**验收核心场景**:一票跨「小簇篮(不达标)+ 大概念篮(达标)」→ 主归属
-        落在达标的那个,即便小簇篮的原始 lift 数值更高——正是 ⑤ 完工记录疏漏 ③
-        报告的失真场景的回归(涨停簇成分池小 → lift 虚高 → 挂靠票占位)。"""
+    def test_small_cluster_has_no_structural_disadvantage_against_big_concept(self):
+        """🔴 **2026-08-12 用户裁定 ⑤ 整条取代了本用例的旧版本**。
+
+        旧版名 `test_primary_falls_on_qualified_basket_despite_smaller_baskets_higher_raw_lift`,
+        断言的是「一票跨〔小簇篮(成分不达标)+ 大概念篮(达标)〕→ 主归属**必然**落在
+        大概念篮」。裁定原文废掉了这条规则:「**小簇和大概念没有天然优先级。**……
+        Lift 仅作辅助证据 …… **不得单独决定主篮子**」。
+
+        现在锁的是两件事:
+          ① 策略侧认领**小簇篮**时,主归属就落在小簇篮 —— ⛔ 不存在"大的天然赢";
+          ② lift 的可算不可算(`MIN_LIFT_SAMPLE_SIZE = 5`,用户给的那个数)照旧留痕,
+             但它**不改变**归属结果。
+        """
         ctx = _semi_baijiu_ctx()
-        small = _seed("s-small", members=("600001.SH", "600002.SH", "600010.SH"))   # 3 只,不达标
-        big = _seed("s-big", members=("600001.SH", "600011.SH", "600012.SH", "600013.SH", "600014.SH"))  # 5 只,达标
+        small = _seed("s-small", members=("600001.SH", "600002.SH", "600010.SH"))   # 3 只,lift 算不出
+        big = _seed("s-big", members=("600001.SH", "600011.SH", "600012.SH", "600013.SH", "600014.SH"))  # 5 只
         seeds_by_key = {"s-small": small, "s-big": big}
-        small_basket = _basket_stub("k-small", "小簇篮", ["s-small"], ["600001.SH"])
-        big_basket = _basket_stub("k-big", "大概念篮", ["s-big"], ["600001.SH"])
 
-        # 先佐证"如果不设门槛"小簇篮的原始 lift 确实更高(证明这条回归测的正是失真,
-        # 不是随便挑的两个数)。
+        # 佐证:不设门槛时小簇篮的原始 lift 确实更高(这正是旧规则想压住的那个失真;
+        # 裁定之后它既不让小簇赢、也不让小簇输 —— 它压根不参与归属)。
         small_lift = ag.industry_lift_map(list(small.member_codes), ctx.industry_of, ctx.market_shares)
         big_lift = ag.industry_lift_map(list(big.member_codes), ctx.industry_of, ctx.market_shares)
         assert small_lift["半导体"] > big_lift["半导体"]
 
-        out = ag.assign_primary([small_basket, big_basket], seeds_by_key, ctx)
+        out = ag.assign_primary(
+            [_basket_stub("k-small", "小簇篮", ["s-small"], ["600001.SH"], primary_claim="yes"),
+             _basket_stub("k-big", "大概念篮", ["s-big"], ["600001.SH"], primary_claim="no")],
+            seeds_by_key, ctx,
+        )
         by_key = {b.basket_key: b.members[0] for b in out}
-        assert by_key["k-big"].is_primary == 1
-        assert by_key["k-small"].is_primary == 0
-        assert by_key["k-big"].primary_reason == ag.PRIMARY_REASON_LIFT
-        assert by_key["k-big"].industry_lift is not None
+        # ① 策略认领小簇篮 → 归它,且是**策略结论**不是兜底。
+        assert by_key["k-small"].is_primary == 1
+        assert by_key["k-big"].is_primary == 0
+        assert by_key["k-small"].primary_reason == ag.PRIMARY_REASON_LLM
+        assert by_key["k-small"].primary_status == ag.PRIMARY_STATUS_CONFIRMED
+        # ② lift 的留痕不变:小簇篮样本不足 → None + 原因码;大概念篮算得出。
         assert by_key["k-small"].industry_lift is None
         assert by_key["k-small"].lift_reason == ag.LIFT_REASON_SAMPLE_TOO_SMALL
+        assert by_key["k-big"].industry_lift is not None
+
+    def test_multiple_claims_are_pending_not_first_wins(self):
+        """两篮**同时**认领同一只票 = 策略侧自相矛盾 → 「归属待确认」+ 专属原因码。
+        ⛔ **不许"取第一个认领的"** —— 那会把一次自相矛盾静默讲成一个结论。"""
+        ctx = _semi_baijiu_ctx()
+        seeds_by_key = {"s-x": _seed("s-x", members=("600001.SH", "600002.SH", "600010.SH")),
+                        "s-y": _seed("s-y", members=("600001.SH", "600011.SH"))}
+        out = ag.assign_primary(
+            [_basket_stub("k-a", "甲", ["s-x"], ["600001.SH"], primary_claim="yes"),
+             _basket_stub("k-b", "乙", ["s-y"], ["600001.SH"], primary_claim="yes")],
+            seeds_by_key, ctx,
+        )
+        primary = next(m for b in out for m in b.members if m.is_primary == 1)
+        assert primary.primary_status == ag.PRIMARY_STATUS_PENDING
+        assert primary.primary_pending_reason == ag.PRIMARY_PENDING_MULTI_CLAIM
+        assert primary.primary_reason == ag.PRIMARY_REASON_FALLBACK
+
+    def test_unsure_claim_is_pending_not_a_claim(self):
+        """`unsure` 是「我看过、说不准」—— 它**不构成认领**,同票多篮时照走待确认。"""
+        ctx = _semi_baijiu_ctx()
+        seeds_by_key = {"s-x": _seed("s-x", members=("600001.SH", "600002.SH", "600010.SH")),
+                        "s-y": _seed("s-y", members=("600001.SH", "600011.SH"))}
+        out = ag.assign_primary(
+            [_basket_stub("k-a", "甲", ["s-x"], ["600001.SH"], primary_claim="unsure"),
+             _basket_stub("k-b", "乙", ["s-y"], ["600001.SH"], primary_claim="no")],
+            seeds_by_key, ctx,
+        )
+        primary = next(m for b in out for m in b.members if m.is_primary == 1)
+        assert primary.primary_status == ag.PRIMARY_STATUS_PENDING
+        assert primary.primary_pending_reason == ag.PRIMARY_PENDING_NO_CLAIM
 
     def test_all_candidate_baskets_unqualified_falls_back_by_universe_size_then_key(self):
         """全部候选篮都不达标 → 确定性兜底(**成分池大小降序 → basket_key 升序**),
@@ -718,6 +785,8 @@ class TestPrimaryAttribution:
         assert by_key["zzz-large"].is_primary == 1   # 成分池 3 > 2,即便字典序更靠后
         assert by_key["aaa-small"].is_primary == 0
         assert by_key["zzz-large"].primary_reason == ag.PRIMARY_REASON_FALLBACK
+        # 🔴 裁定 ⑤:兜底的产物一律「归属待确认」(⛔ 不冒充策略结论)。
+        assert by_key["zzz-large"].primary_status == ag.PRIMARY_STATUS_PENDING
         assert by_key["aaa-small"].primary_reason is None   # 只标在 is_primary=1 的那一行
         assert by_key["zzz-large"].industry_lift is None and by_key["aaa-small"].industry_lift is None
 

@@ -249,7 +249,22 @@ def main() -> int:
 
         # 合成竞价快照:凡在 `daily` 里有行的代码都给一份;指数没有行 → 拉不到(见模块头)
         wu = load_watch_universe(d1, db_path=tmp_db, parquet_dir=None)
-        want = list(dict.fromkeys([c for b in baskets for c in b.member_codes] + list(wu.codes)))
+        # 🔴 **2026-08-12 用户裁定 ①:竞价层的取样域改成独立观察池** —— 合成清单必须
+        # 跟着走,否则观察池里那几十只票**一只都没有报价**,「≥3 只同行业对照股中位数」
+        # 那条分支在冒烟里永远走不到,而冒烟照样退出码 0(§CLAUDE.md「改完真跑一遍,
+        # ⛔ 别只看退出码」的同一条)。
+        try:
+            from neckline.auction.observation import build_observation_pool
+            from neckline.report.industry_strength import load_industry_map
+
+            _pool = build_observation_pool(
+                baskets, d0_date=d0, industry_of_all=load_industry_map(tmp_db), db_path=tmp_db)
+            pool_codes = list(_pool.codes)
+        except Exception:  # noqa: BLE001 —— 冒烟里组不出池就退回旧清单,如实打一行
+            logger.warning("组不出观察池,合成清单退回「篮子成员 + 关注池」", exc_info=True)
+            pool_codes = []
+        want = list(dict.fromkeys(
+            [c for b in baskets for c in b.member_codes] + pool_codes + list(wu.codes)))
         rows = _daily_rows_lookup(d1, want)
         # 🔴 V2.4.0 P2.2:**造两源**,否则备源恒缺席、双源核验一行都走不到。
         # ⚠ 第一只篮子成员的**主源**刻意造成"昨天的" —— 让「主源过期 → 用备源 →

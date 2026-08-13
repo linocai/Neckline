@@ -143,6 +143,11 @@ from neckline.selection.aggregate import (
     POSITION_OK,
     POSITION_UNFIT,
     POSITION_VERDICTS,
+    # 🔴 裁定 ⑤:技术兜底的主归属要标「归属待确认」——这三个码的**唯一源**在
+    # `aggregate.py`,⛔ 本模块不抄第二份字面量。
+    PRIMARY_PENDING_NO_CLAIM,
+    PRIMARY_REASON_FALLBACK,
+    PRIMARY_STATUS_PENDING,
     SECTOR_UNFIT,
     SECTOR_VERDICTS,
     SECTOR_WEAK,
@@ -1729,8 +1734,13 @@ def evaluate_day(
 def _repair_primary(baskets: List[Any]) -> List[Any]:
     """成员出篮可能带走某只票的 `is_primary=1` 行(它的主篮把它删了,别的篮还留着
     它)。留一只「无主归属」的票会让 ⑩ 开仓来源与 ⑨ 归因少一条主线索 —— 按
-    `basket_key` 升序把第一个仍持有该票的篮提升为主归属(确定性;`primary_reason`
-    沿用兜底码,登记于交回)。"""
+    `basket_key` 升序把第一个仍持有该票的篮提升为主归属(确定性)。
+
+    🔴 **2026-08-12 用户裁定 ⑤:这条路径产出的归属是「技术兜底」,必须标「归属待确认」**
+    (`primary_status = pending_confirmation` + 原因码 `no_primary_claim`)——
+    策略侧从来没有为"原主篮被摘掉之后该归谁"表过态。⛔ 不许让它看起来像策略结论。
+    ⚠ `primary_reason` 的**字面值一字不改**(`fallback_no_qualified_lift`):它已写进
+    历史 `basket_cards.card_json`,改了旧卡上那个值就查无出处。"""
     has_primary: Dict[str, bool] = {}
     appears: Dict[str, List[Tuple[str, int, int]]] = {}
     for bi, b in enumerate(baskets):
@@ -1746,11 +1756,16 @@ def _repair_primary(baskets: List[Any]) -> List[Any]:
         _key, bi, mi = sorted(appears[code])[0]
         b = out[bi]
         members = list(b.members)
-        members[mi] = dc_replace(members[mi], is_primary=1,
-                                 primary_reason="fallback_no_qualified_lift")
+        members[mi] = dc_replace(
+            members[mi], is_primary=1,
+            primary_reason=PRIMARY_REASON_FALLBACK,
+            # 裁定 ⑤:技术兜底的产物一律「归属待确认」,⛔ 不冒充策略结论。
+            primary_status=PRIMARY_STATUS_PENDING,
+            primary_pending_reason=PRIMARY_PENDING_NO_CLAIM,
+        )
         out[bi] = dc_replace(b, members=tuple(members))
         logger.warning("[gates] %s 的主归属篮成员被位置对拍移除,按 basket_key 升序"
-                       "提升 %s 为主归属(确定性兜底)", code, _key)
+                       "提升 %s 为主归属(**技术兜底 → 归属待确认**,不是策略结论)", code, _key)
     return out
 
 

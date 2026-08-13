@@ -153,6 +153,84 @@ func nkPositionAlertLabel(_ raw: String) -> String {
     }
 }
 
+/// 今日**组合环境提醒**一条(服务端 `PortfolioAlertOut`;2026-08-12 用户裁定 ②)。
+///
+/// 🔴 **它与 `PositionAlert` 是两段,⛔ 不是同一个东西**:板块级 / 市场级事件匹配不到
+/// 任何一笔持仓码,塞进单票详情会把一条环境判断复述 N 遍 —— 裁定原文「⛔ 也不重复
+/// 塞进单票详情」。它只出现在**持仓页顶部**。
+///   · `kind` —— `sector_bid_fade` | `market_shock`(服务端码;展示名走 `label`)。
+///   · `scopeKind` —— `sector`(按板块 + 列受影响持仓)| `portfolio`(全组合)。
+///     🔴 **先按它分支**,⛔ 别拿 `affectedCodes` 空不空去猜是哪一类。
+///   · `affectedRecorded` —— **第三态**:`false` = 这条事件压根没记受影响持仓
+///     (老行 / 老版本),⛔ 不许画成「没有受影响的持仓」。
+///   · `level` —— 恒 `warn`(裁定 ③:两类统一黄色)。
+struct PortfolioAlert: Codable, Equatable, Identifiable {
+    var kind: String
+    var scopeKind: String
+    var scopeCode: String
+    var verdict: String
+    var ts: String
+    var level: String
+    var affectedCodes: [String]
+    var affectedRecorded: Bool
+
+    var id: String { "\(kind)|\(scopeCode)|\(ts)" }
+
+    enum CodingKeys: String, CodingKey {
+        case kind, scopeKind, scopeCode, verdict, ts, level, affectedCodes, affectedRecorded
+    }
+
+    init(kind: String, scopeKind: String = "portfolio", scopeCode: String = "",
+         verdict: String = "", ts: String = "", level: String = "warn",
+         affectedCodes: [String] = [], affectedRecorded: Bool = false) {
+        self.kind = kind; self.scopeKind = scopeKind; self.scopeCode = scopeCode
+        self.verdict = verdict; self.ts = ts; self.level = level
+        self.affectedCodes = affectedCodes; self.affectedRecorded = affectedRecorded
+    }
+
+    /// ⚠ 手写解码(V2-⑮ 起的通例):合成 `Decodable` 对非 Optional 属性
+    /// **有默认值也不容忍缺键**。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        scopeKind = try c.decodeIfPresent(String.self, forKey: .scopeKind) ?? "portfolio"
+        scopeCode = try c.decodeIfPresent(String.self, forKey: .scopeCode) ?? ""
+        verdict = try c.decodeIfPresent(String.self, forKey: .verdict) ?? ""
+        ts = try c.decodeIfPresent(String.self, forKey: .ts) ?? ""
+        level = try c.decodeIfPresent(String.self, forKey: .level) ?? "warn"
+        affectedCodes = try c.decodeIfPresent([String].self, forKey: .affectedCodes) ?? []
+        affectedRecorded = try c.decodeIfPresent(Bool.self, forKey: .affectedRecorded) ?? false
+    }
+
+    var label: String { nkPortfolioAlertLabel(kind) }
+    var timeLabel: String { nkAlertTimeLabel(ts) }
+    /// 板块那一类的标题后缀 = 基准指数的人读名(未识别值原样透传)。
+    var scopeLabel: String { nkMarketIndexLabel(scopeCode) }
+}
+
+/// `PortfolioAlert.kind` → 人读名。⛔ 服务端枚举码不许直接进 `Text`;未识别值**原样返回**。
+func nkPortfolioAlertLabel(_ raw: String) -> String {
+    switch raw {
+    case "sector_bid_fade": return "板块承接减弱"
+    case "market_shock": return "大盘突变"
+    default: return raw
+    }
+}
+
+/// 指数码 → 人读名(展示层换算,体例同 `nkBoardLabel`;**未识别值原样透传**)。
+/// ⚠ 服务端下发的是 `sentinel/universe.py` 那批基准指数码,这里只做显示换算,
+/// ⛔ 客户端不重推板块、也不据此做任何判定。
+func nkMarketIndexLabel(_ raw: String) -> String {
+    switch raw.uppercased() {
+    case "000001.SH": return "上证综指"
+    case "399001.SZ": return "深证成指"
+    case "399006.SZ": return "创业板指"
+    case "000688.SH": return "科创50"
+    case "899050.BJ": return "北证50"
+    default: return raw
+    }
+}
+
 /// 回落止盈状态(§五 v1.1-B.1,服务端 `_retrace_state` 算好下发:峰值 / 回落幅度 /
 /// 是否触发——判定复用 `sentinel/holding.py::check_take_profit`,客户端只展示,不重算阈值)。
 struct RetraceState: Codable, Equatable {
@@ -256,7 +334,12 @@ struct Position: Codable, Equatable, Identifiable {
     /// "没有这项纪律"(那个位只回答"触发了没有",无法区分"没配置"与"配置了但还没
     /// 触发",两者必须讲不同的话)。⚠ **不参与任何判定**,只是文案指纹。
     var takeProfitRetrace: Double? = nil
-    var stopOrderChecked: Bool
+    /// ⛔ **已停用的自证位**(2026-08-12 用户裁定 ④):界面上那个「已在券商挂 -5% 条件单」
+    /// 复选框**已删**,本属性因此**没有任何读者**。
+    /// 🔴 **键不删是刻意的**:服务端一直硬编码 `false` 下发,而已装的老客户端
+    /// (2.3.x)是 `try c.decode` **硬解码** —— 服务端删键会让老包整份持仓解不出。
+    /// 淘汰顺序照 `CLAUDE.md`:**先发这一版把它改成 `decodeIfPresent`**,下一版服务端才可删键。
+    var stopOrderChecked: Bool = false
     // —— §五 v1.1-B.1/E.1 持仓生命周期派生字段(服务端算好,客户端不重算日历/阈值)——
     var dCount: Int = 1              // D 计数(买入日=D1,唯一源 sentinel/positions.py::d_count)
     /// 现役 `max_hold_days`(读 config,不硬编 5)。
@@ -364,7 +447,8 @@ struct Position: Codable, Equatable, Identifiable {
         price = try c.decode(Double.self, forKey: .price)
         status = try c.decode(String.self, forKey: .status)
         stopLine = try c.decode(Double.self, forKey: .stopLine)
-        stopOrderChecked = try c.decode(Bool.self, forKey: .stopOrderChecked)
+        // ⛔ 裁定 ④:停用位,缺键即 `false`(两版淘汰的第一步,见属性上的说明)。
+        stopOrderChecked = try c.decodeIfPresent(Bool.self, forKey: .stopOrderChecked) ?? false
         // V2.3.2-⑤:老服务端不发这两键 / 老章程行发 null,两种情况都 → nil = 未声明。
         // 这里**不必**像 `maxHoldDays` 那样区分「缺键 vs 显式 null」——两者语义相同。
         lossWarningPct = try c.decodeIfPresent(Double.self, forKey: .lossWarningPct)

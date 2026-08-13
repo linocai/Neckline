@@ -229,6 +229,13 @@ struct AuctionReportPage: View {
                 Text(payload.proxySampleNote)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // 🔴 裁定 ①:**当天那一份**观察范围(多少只、来自哪几层)。
+            // ⚠ 空串 = 老报告没有这个概念 —— ⛔ 不补一句「范围正常」,也不留白误导:
+            //   这一版的报告一定有,老版一定没有,两者由这句话在不在直接分得开。
+            if !payload.observationScopeNote.isEmpty {
+                Text(payload.observationScopeNote)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
