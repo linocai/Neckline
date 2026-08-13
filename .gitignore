@@ -3,27 +3,27 @@
 __pycache__/
 *.pyc
 .DS_Store
-data/*.db
-data/*.db-*
-data/parquet/
-data/reports/
+Backend/data/*.db
+Backend/data/*.db-*
+Backend/data/parquet/
+Backend/data/reports/
 .pytest_cache/
 scratchpad/
 *.egg-info/
-research/_cache/
+Backend/research/_cache/
 
-# —— 阶段4C 客户端(client/):Xcode / SwiftPM 产物 + 本地密钥 ——
+# —— App:Xcode / SwiftPM 产物 + 本地密钥 ——
 *.p8
 LocalSecrets.plist
-client/**/LocalSecrets.plist
+App/**/LocalSecrets.plist
 *.xcuserstate
 xcuserdata/
 DerivedData/
-client/**/build/
+App/**/build/
 *.xcworkspace/xcuserdata/
 .swiftpm/
 Package.resolved
 
 # 本地 dev DB 的施工期回退备份(高危块前 cp -p / sqlite3 .backup 产物)。
 # 生产回退绳在 ECS /opt/neckline/data/ 下,与此无关。
-data/*.bak-*
+Backend/data/*.bak-*
