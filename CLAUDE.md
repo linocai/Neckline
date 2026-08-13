@@ -656,6 +656,11 @@
   搬算术前先认清在说哪台。P0-23 的**方法论**(上产前隔离实测、别抬内存糊算法)仍然全部有效。
 - ⚠ **`systemd-run` 的 `Memory peak` 读数不可轻信**(2026-08-09 实测报 512K,Python 起步都不止):
   cgroup 对已在页缓存里的文件页不重复计费。**要可信上界就压低 `MemoryMax` 反证**(扛住 = 真上界)。
+- 🔴 **nk 上 `fs.protected_regular=2`:⛔ 别把「拷一份生产库出来演练」落在 `/tmp`**(2026-08-13 上产演练真踩,
+  §七 P4-79)。把 `neckline` 属主的 db `cp -p` 进 `/tmp` 再以 **root** 写,SQLite 报
+  **`attempt to write a readonly database`** —— **不是权限位、不是 WAL、不是 immutable**:该 sysctl 禁止**任何进程
+  (含 root)**以写方式打开**粘滞全局可写目录**里**属于他人**的普通文件。**判据**:`/tmp` 是 `drwxrwxrwt` 且文件属主
+  不是自己。**解**:演练件放 `/root/<dir>/`(非粘滞),或落地后 `chown` 给要跑它的用户。只影响临时脚手架,服务本身不受影响。
 - **Neckline 的生产机是新机 `nk`(114.66.0.38)/ `https://nk.linotsai.top`**;**hz 老机上的
   Neckline 已 stop + disable 留档**(⛔ 只停不删:五个 unit 文件 + `/opt/neckline` + `.env`/`.p8`/
   `data/` 全在)。hz 上其余四类业务照常在跑,**别把 hz 当"已退役机器"整体处置**。
