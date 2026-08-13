@@ -75,7 +75,8 @@ struct BoardSnapshot: Codable, Equatable {
 ///
 /// 逐字段透传服务端已落库的事实,**客户端不重判、不加工**:
 ///   · `eventKey` —— 事件键(`stop_approach` / `take_profit` / `sector_dive` /
-///     `exit_reference`);展示名走 `label`(⛔ 服务端枚举码不许直接进 `Text`,
+///     `exit_reference` / `position_low_open` / `consecutive_stops` / `decoupled` /
+///     `basket<id>`);展示名走 `label`(⛔ 服务端枚举码不许直接进 `Text`,
 ///     体例同 `nkBoardLabel`,**未识别值原样透传**)。
 ///   · `verdict` —— 落库当时那句话原文。
 ///   · `ts` —— 落库时刻(UTC ISO 串,同 `BoardEvent.ts`)。
@@ -131,13 +132,24 @@ func nkAlertTimeLabel(_ raw: String) -> String {
 
 /// `PositionAlert.eventKey` → 人读名。⛔ 服务端 `dict` 的 key / 枚举码不许直接进 `Text`
 /// (CLAUDE.md 那条「角色码印英文」的同款病);未识别值**原样返回**。
+///
+/// 🔴 **V2.4.0 复审 🔴-1(裁定 A)补四条**:服务端取数口径由「只取 `holding`」
+/// 扩成白名单 `{holding, attention, circuit, precall}`,于是这四个 event_key 会真的
+/// 出现在持仓卡上 —— 少一条映射 = 界面上印一串英文码。
+/// ⚠ `basket<篮子 id>` 是**动态键**(`attention/basket_peers_weak`),精确 `switch`
+///   逮不到 → 单独走前缀分支,⛔ 别把它写死成 `basket12` 这种。
 func nkPositionAlertLabel(_ raw: String) -> String {
     switch raw {
     case "stop_approach": return "逼近/触发亏损警戒线"
     case "take_profit": return "回落止盈"
     case "sector_dive": return "所属板块跳水"
     case "exit_reference": return "触达离场参考区间"
-    default: return raw
+    case "position_low_open": return "竞价低开逼近/跌破亏损警戒线"
+    case "consecutive_stops": return "连续止损提醒"
+    case "decoupled": return "从跟随板块转为独立弱势"
+    default:
+        if raw.hasPrefix("basket") { return "同篮成员集体转弱" }
+        return raw
     }
 }
 

@@ -103,11 +103,48 @@ class TestProductionChainDetached:
         "push_retreat_brake",            # 退潮 APNs
     )
 
+    #: 被禁函数**自己的定义所在文件**(退役件本体,P0.4 明令「留文件断链路」)。
+    #: 它们内部互相调用是允许的 —— 断的是**生产链**,不是把模块拆坏。
+    _RETIRED_MODULES = (
+        _NECKLINE / "sentinel" / "invalidation.py",
+        _NECKLINE / "sentinel" / "retreat.py",
+        _NECKLINE / "sentinel" / "retreat_store.py",
+        _NECKLINE / "sentinel" / "mainline.py",
+    )
+
     def test_run_tick_never_calls_invalidation_or_retreat(self):
         tree = ast.parse(_ENGINE.read_text(encoding="utf-8"))
         called = _called_names(tree)
         for name in self._BANNED_CALLS:
             assert called.count(name) == 0, f"engine.py 仍在调用已退役的 {name}"
+
+    @pytest.mark.parametrize("name", _BANNED_CALLS)
+    def test_no_production_caller_anywhere(self, name: str):
+        """🔴 **V2.4.0 复审 🟡-5:扫描域从「一个文件」扩到 `neckline/**` + `scripts/**`**。
+
+        病:这条判据叫「生产判断删除 100%」,实现却只 AST 扫 `sentinel/engine.py`
+        **一个文件** —— 复审在 `api/app.py::board()` 里插一行**真调用**
+        `evaluate_retreat(...)`,守门 **38 passed**。而同文件的判据 #3
+        (`push_retreat_brake`)本来就是全 `neckline/**` + `scripts/**` 扫的,
+        两条口径不一致 = 一条形同虚设。
+        ⚠ 豁免仅限**退役件自身**(它们内部当然还互相调),⛔ 不许往名单里加别的文件。
+        """
+        callers = []
+        for path in _py_sources(_NECKLINE, _SCRIPTS):
+            if path in self._RETIRED_MODULES:
+                continue
+            if name in _called_names(ast.parse(path.read_text(encoding="utf-8"))):
+                callers.append(str(path.relative_to(_ROOT)))
+        assert callers == [], f"已退役的 {name} 仍被调用于:{callers}"
+
+    def test_the_exemption_list_only_contains_the_retired_files_themselves(self):
+        """**反向校验豁免名单**(体例同 `test_llm_router_budget.py` 的豁免名单反查):
+        名单里每一项都必须真的存在,且必须真的是那四个退役件之一 ——
+        否则「豁免」会变成偷偷放行任意文件的后门。"""
+        assert len(self._RETIRED_MODULES) == 4
+        for p in self._RETIRED_MODULES:
+            assert p.exists(), f"豁免名单里的 {p} 不存在(P0.4「留文件断链路」被破坏?)"
+            assert p.parent == _NECKLINE / "sentinel"
 
     def test_engine_imports_nothing_from_the_retired_modules(self):
         """⛔ 连 import 都不许留 —— 留着 import 就是给"顺手接回来"留门。"""
@@ -323,12 +360,56 @@ class TestClientBoardSurfaceGone:
             assert symbol not in code, f"AppModel 仍有 {symbol}"
 
 
+#: 🔴 **V2.4.0 复审 🟡-5:判据 #5 的白名单**(客户端里允许存在的"等一会儿"),
+#: 每一条**带理由**。名单外命中一律红 —— 判据从"有没有那个纳秒字面量"改成
+#: "有没有在等时间",因为病的名字是**「专用轮询」**,不是「那个字面量」。
+#: 复审实证:插 `while true { try? await Task.sleep(for: .seconds(60)) }`,老守门 38 passed。
+_CLIENT_SLEEP_ALLOWLIST = {
+    # 2.4 秒的一次性 Toast 自动消失(⛔ 不是轮询:没有循环、不发请求)。
+    ("App/AppModel.swift", "Task.sleep"),
+    # DEBUG-only 的 macOS 自截图:等窗口画完再拍 / 拍完退出(整文件 `#if DEBUG`)。
+    ("Components/NKDevCapture.swift", "DispatchQueue.main.asyncAfter"),
+}
+
+#: 会"等时间"的 Swift 写法(⛔ 别只写一种:P0.7 #5 的失明就是只认一个纳秒字面量)。
+_SLEEP_PATTERNS = ("Task.sleep", "Timer.scheduledTimer", "DispatchQueue.main.asyncAfter",
+                   "Task.sleep(for:", "AsyncTimerSequence", "Timer.publish")
+
+
 class TestNoDedicatedBoardPolling:
     def test_no_sixty_second_client_loop(self):
-        """P0.7 #5:全客户端不许再有 60 秒轮询(纳秒字面量)。"""
+        """P0.7 #5:全客户端不许再有 60 秒轮询(纳秒字面量)。**保留这条**——
+        它是"那一个具体轮询"的精确判据,下面那条是"任何轮询"的语义判据,两条并存。"""
         hits = [str(p.relative_to(_ROOT)) for p in _swift_sources()
                 if "60_000_000_000" in p.read_text(encoding="utf-8")]
         assert hits == [], f"仍有 60s 轮询:{hits}"
+
+    def test_every_client_wait_is_on_the_allowlist(self):
+        """🔴 **复审 🟡-5:改扫语义**——剥注释后,任何"等时间"的写法都必须在白名单里。
+
+        老判据只 grep `60_000_000_000` 一个纳秒字面量:换成
+        `try? await Task.sleep(for: .seconds(60))` 就**整条溜过去**(复审注入实测 38 passed)。
+        P0.7 #5 的合同是「**专用轮询**删除 100%」,不是「那个字面量删掉」。
+        ⚠ 白名单按 `(文件, 写法)` 记,每条都在 `_CLIENT_SLEEP_ALLOWLIST` 上方写了理由;
+        新增一条**必须先说清它不是轮询**。"""
+        hits = []
+        for path in _swift_sources():
+            rel = str(path.relative_to(_CLIENT))
+            code = _strip_swift_comments(path.read_text(encoding="utf-8"))
+            for pat in _SLEEP_PATTERNS:
+                if pat in code and (rel, pat) not in _CLIENT_SLEEP_ALLOWLIST:
+                    hits.append(f"{rel} —— {pat}")
+        assert hits == [], (
+            f"客户端出现了不在白名单上的「等时间」写法:{hits}\n"
+            f"P0.7 #5 要求专用轮询删除 100%;真不是轮询,把它连同理由加进 "
+            f"`_CLIENT_SLEEP_ALLOWLIST`。")
+
+    def test_the_sleep_allowlist_is_not_stale(self):
+        """**反向校验白名单**:每一条都必须真的还在(否则名单会慢慢变成一张
+        "谁也不敢删的旧纸",下次真有人加轮询时看着像已批准过)。"""
+        for rel, pat in _CLIENT_SLEEP_ALLOWLIST:
+            code = _strip_swift_comments((_CLIENT / rel).read_text(encoding="utf-8"))
+            assert pat in code, f"白名单里的 {rel} —— {pat} 已经不存在了,请把它删掉"
 
     def test_no_client_call_site_for_the_board_endpoint(self):
         """`APIClient.fetchBoard` 可以留(历史 fixture / 兼容解码用),但

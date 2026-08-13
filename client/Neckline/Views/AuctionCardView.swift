@@ -300,24 +300,58 @@ struct AuctionReportPage: View {
                         .font(NKFont.caption).foregroundStyle(NK.down)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                // 🔴 **V2.4.0 P2.2 起真的会有跨源冲突**:双源批量核验已上线。
-                // ⚠ **拆成两个 `Text` 而不是三元表达式**:带 `**加粗**` 的字面量必须让
-                // Swift 稳稳推断成 `LocalizedStringKey`,三元的两个分支放一起是那条坑的
-                // 灰色地带(推成 `String` 就会把四个星号原样印在屏幕上)。
-                if payload.dataStatus.conflictCodes.isEmpty {
-                    Text("跨源冲突:本次为空(两源已交叉核验)。")
-                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text("跨源冲突:\(payload.dataStatus.conflictCodes.joined(separator: "、")) —— ⛔ 不能高置信输出。")
-                        .font(NKFont.caption).foregroundStyle(NK.down)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                crossSourceRow
                 qualityDetailRows
                 Text("LLM 段:\(payload.llmStageLabel)")
                     .font(NKFont.caption)
                     .foregroundStyle(payload.llmStage == "ok" ? NK.textTertiary : NK.amber)
             }
+        }
+    }
+
+    /// 🔴 **跨源冲突那一行必须随「本次到底核验了没有」变化**(V2.4.0 复审 🔴-2)。
+    ///
+    /// 老版本(V2.3.3)在这里说的是「这一项**结构性恒空**,不等于『已核对无冲突』」;
+    /// P2 上线双源核验后把它换成了一句**无条件的正面断言**「两源已交叉核验」——
+    /// 而**备源整体失败的早晨**(腾讯 404 / 限流)`conflictCodes` 照样为空、
+    /// `sourceDegraded` 为 false、逐票核验区 `worthShowing == false` 什么都不画,
+    /// 屏幕上唯一那句话却说核验过了。**Python 侧在五处说的是相反的话**
+    /// (`quality.py::detect_conflict` 逐字:只有一源 → 没有第二个读数可以打架,
+    /// ⛔ 不是"已核对")—— 守门当时停在了屏幕前一层。
+    ///
+    /// 🔴 判别式**不在客户端**:服务端 `crossVerified` 逐格落库,这里只数个数。
+    /// 四种状态各说各的话,⛔ 不许任何一种借用另一种的措辞:
+    ///   ① 老报告(没有逐票账)→ 当年那一栏结构性恒空,如实说;
+    ///   ② 有冲突 → 点名 + ⛔ 不能高置信输出;
+    ///   ③ 无冲突且**一格都没对拍成** → 说清「没得比」,⛔ 不说"已核验";
+    ///   ④ 无冲突且对拍过 → 说**几格**对拍过、还有几格只有一个源。
+    @ViewBuilder
+    private var crossSourceRow: some View {
+        let ds = payload.dataStatus
+        let verified = ds.crossVerifiedCount
+        let total = ds.quotedCodeCount
+        // ⚠ **每个分支各自一条完整字面量**(⛔ 不用三元、⛔ 不用 `+` 拼):
+        // `Text(String)` 不解析 Markdown,拼出来的 `**加粗**` 会把星号原样上屏。
+        if !ds.conflictCodes.isEmpty {
+            Text("跨源冲突:\(ds.conflictCodes.joined(separator: "、")) —— ⛔ 不能高置信输出。")
+                .font(NKFont.caption).foregroundStyle(NK.down)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if !ds.hasDualSourceLedger {
+            Text("跨源冲突:这份报告生成于双源核验上线之前 —— 那时这一项**结构性恒空**,⛔ 不等于「已核对无冲突」。")
+                .font(NKFont.caption).foregroundStyle(NK.amber)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if verified == 0 {
+            Text("跨源冲突:本次为空,但**一只都没完成两源对拍**(备源整体缺席,或备源读数不合格)—— 是「没得比」,⛔ 不是「已核对无冲突」。")
+                .font(NKFont.caption).foregroundStyle(NK.amber)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if verified == total {
+            Text("跨源冲突:本次为空 —— \(verified)/\(total) 只**全部完成两源对拍**。")
+                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text("跨源冲突:本次为空 —— 只有 \(verified)/\(total) 只完成了两源对拍;其余那些**本次只有一个源给出有效读数**,没有可对拍的第二个数。")
+                .font(NKFont.caption).foregroundStyle(NK.amber)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

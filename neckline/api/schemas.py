@@ -1672,7 +1672,13 @@ class AuctionQualityDetailOut(BaseModel):
 
     🔴 `sourceDegraded=true` = **主源不可用、本次用的是备源**(K8 §二十「记录来源
     降级」)—— ⛔ 不许静默换源。`conflict` 非空 = 两源给出**相反的结论**,
-    ⛔ 不能高置信输出。"""
+    ⛔ 不能高置信输出。
+
+    🔴 **`crossVerified`(复审 🔴-2 新增)= 这一格真的做过两源对拍**。
+    ⛔ **别拿 `conflict == null` 当"核验过了没冲突"**:只有一源、或有一源读数不合格时
+    `conflict` **同样**是 `null`,那时的含义是「**没得比**」。判别式单一源在
+    `auction/quality.py::_is_cross_verified`(与触发 `detect_conflict` 的那个 `if`
+    是同一个函数);⚠ 老行没有这一键 → `False` = 保守的「没核验过」,⛔ 不在读侧重推。"""
 
     tsCode: str = ""
     freshness: str = ""
@@ -1681,6 +1687,7 @@ class AuctionQualityDetailOut(BaseModel):
     chosenSource: Optional[str] = None
     sourceDegraded: bool = False
     conflict: Optional[str] = None
+    crossVerified: bool = False
     errors: List[str] = Field(default_factory=list)
     checks: List[AuctionQuoteCheckOut] = Field(default_factory=list)
 

@@ -480,7 +480,17 @@ class TestP1BasketLevelOutBoundary:
 
 class TestP1OldPacksUnchanged:
     """🔴 **回滚绳的第三条**(代码 tag + DB 备份 + **旧四包仍可激活**)全靠这一族。
-    ⛔ 这里的断言一条都不许"为了让新行为好看"而放宽。"""
+    ⛔ 这里的断言一条都不许"为了让新行为好看"而放宽。
+
+    🔴 **⚠ 类名会骗人 —— 它锁的只有「那一条 pack 开关」**(2026-08-12 独立复审 🟡-3
+    指出,用户裁定 B 采纳):按包分叉的**只有** `tier_evidence.t2.formal_policy`;
+    **P1.1 / P1.4 / P1.5 是代码级语义、对所有包生效**,C1/Z1/Y1 同样吃到 ——
+    因为那三条修的是 **bug**(成员凭空消失 / 缺失当负证据),⛔ 把 bug 修复挂在
+    版本号上等于留一个已知的错误档位。
+    **实际后果**:「只回滚策略包」**回不到 v2.3.3 的选股行为**,要真回去必须走
+    回滚绳 ②(`git checkout v2.3.3`)—— 详见 `PROJECT_PLAN.md` §五 前提 #8 收窄段
+    与 P4.7-实测 ① 行。⚠ 同一件事的正面演示就在本文件的
+    `test_old_pack_drop_reason_is_the_real_one_not_the_removal_marker`。"""
 
     def test_10_old_packs_carry_no_formal_policy_key(self):
         for pk in (C1, Z1, Y1):

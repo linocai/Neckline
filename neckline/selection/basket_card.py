@@ -264,7 +264,12 @@ def resolve_loss_warning(db_path: Optional[Path] = None) -> Tuple[Optional[float
     )
 
 
-def discipline_labels(stop_pct: Optional[float], take_profit_retrace: Optional[float]) -> List[str]:
+def discipline_labels(
+    stop_pct: Optional[float],
+    take_profit_retrace: Optional[float],
+    *,
+    advisory: bool = False,
+) -> List[str]:
     """卡上的纪律标签(**动态生成**,plan 明文:「缺指纹就退化成不带数字的说法,
     禁把『−5%』『8%』写进模板」)。章程一改,标签跟着走。
 
@@ -276,9 +281,19 @@ def discipline_labels(stop_pct: Optional[float], take_profit_retrace: Optional[f
       · `stop_pct is None`(**整份**章程指纹都没读到,读库失败或历史空行)→ 仍是
         旧措辞「回落止盈(现役章程未配置比例)」——这是在承认"这次没查到",
         两者语气必须不同,合并会把"不知道"讲成"确认没有"。
+
+    🔴 **V2.4.0 复审 🟡-4:这条线叫什么也随章程走**(`advisory`,单一源
+    `strategy/charter_copy.stop_line_label`)。此前这里恒印「章程止损」,而
+    `v2.3-k8`(`loss_warning_action="review"`)下同一屏别处已经叫「亏损警戒线」——
+    一屏两个名字。⚠ **这一处比界面上的其它称呼更急**:它的输出进 `to_card_json()`,
+    而冻结卡是 `INSERT OR IGNORE`、**永不回填** —— 上产后每天冻的卡都会把旧称呼
+    **永久写死**,事后修不回来。
+    ⚠ `advisory` 默认 `False` = **老章程口径逐字不变**(与 `stop_is_advisory` 三级
+    判据答不上时的保守兜底同向);历史卡仍说历史真话。
     """
-    stop = (f"章程止损 −{stop_pct:.1%}" if stop_pct is not None
-            else "章程止损(现役章程未配置比例)")
+    line = charter_copy.stop_line_label(advisory)
+    stop = (f"章程{line} −{stop_pct:.1%}" if stop_pct is not None
+            else f"章程{line}(现役章程未配置比例)")
     if take_profit_retrace is not None:
         tpr = f"回落止盈 {take_profit_retrace:.1%}"
     elif stop_pct is not None:
@@ -1052,7 +1067,16 @@ class BasketCard:
                 # 日后回看会把两套条件集的成绩混成一锅。**条件或阈值一改就 bump。**
                 "verification_ruleset_version": VERIFICATION_RULESET_VERSION,
             },
-            "discipline_labels": discipline_labels(self.stop_pct, self.take_profit_retrace),
+            # 🔴 复审 🟡-4:线名随**这张卡当时那版章程**走(⛔ 不是"现役")——
+            # 判据单一源 `brain.stop_is_advisory`,手上就有那版的 config 片段,
+            # 直接走它的判据 1(⛔ 不再去库里查第二遍、⛔ 不在这里另立一套判据)。
+            "discipline_labels": discipline_labels(
+                self.stop_pct, self.take_profit_retrace,
+                advisory=brain.stop_is_advisory(
+                    self.charter_version,
+                    {"loss_warning_action": self.loss_warning_action},
+                ),
+            ),
             # 降级如实披露
             "narrative": self.narrative,
             "llm_stage": self.llm_stage,
@@ -1277,7 +1301,9 @@ def build_cards(
     ledger = ledger or BudgetLedger()
     stop_pct, tpr = resolve_charter_pcts(db_path)
     lw_pct, lw_action = resolve_loss_warning(db_path)      # V2.3.2-⑤ 对外退出语义指纹
-    labels = discipline_labels(stop_pct, tpr)
+    # 🔴 复审 🟡-4:喂给 LLM 的那份纪律描述也得叫对名字 —— 这里的 `stop_pct` / `tpr`
+    # 取自**现役**章程,故 advisory 也取现役(判据单一源 `brain.active_stop_is_advisory`)。
+    labels = discipline_labels(stop_pct, tpr, advisory=brain.active_stop_is_advisory(db_path=db_path))
 
     codes: List[str] = []
     for b in baskets:

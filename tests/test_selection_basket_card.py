@@ -189,7 +189,10 @@ def test_card_json_has_all_eleven_blueprint_items():
         # ⑦-b:条件集版本(与跟形状的 spec_version 分开,⑨ 按它分层归因)
         "verification_ruleset_version": bc.VERIFICATION_RULESET_VERSION,
     }
-    assert j["discipline_labels"] == ["章程止损 −5.0%", "回落止盈 8.0%"]
+    # ⚠ 「章程止损」→「章程止损线」:**被 V2.4.0 复审 🟡-4 取代**(施工纪律 4)——
+    #   线名改由单一源 `charter_copy.stop_line_label(advisory)` 派生,强制条件单口径
+    #   下它就是「止损线」。语义一字未变;冻结卡是快照,历史行不受影响。
+    assert j["discipline_labels"] == ["章程止损线 −5.0%", "回落止盈 8.0%"]
     assert j["spec_version"] == bc.CARD_SPEC_VERSION and j["version"] == 1
     assert j["degraded"] is False and j["llm_stage"] == bc.LLM_OK
 
@@ -376,7 +379,7 @@ def test_stop_price_follows_charter_change(isolated_env):
     mechs = bc.build_member_mech({"600000.SH": 10.0}, D0, stop_pct=stop_pct,
                                  db_path=isolated_env.db_path)
     assert mechs["600000.SH"].stop_price == pytest.approx(9.2)
-    assert bc.discipline_labels(stop_pct, tpr) == ["章程止损 −8.0%", "回落止盈 10.0%"]
+    assert bc.discipline_labels(stop_pct, tpr) == ["章程止损线 −8.0%", "回落止盈 10.0%"]
 
 
 def test_discipline_labels_degrade_without_numbers_when_charter_missing(isolated_env):
@@ -384,7 +387,7 @@ def test_discipline_labels_degrade_without_numbers_when_charter_missing(isolated
     stop_pct, tpr = bc.resolve_charter_pcts(isolated_env.db_path)
     assert (stop_pct, tpr) == (None, None)
     assert bc.discipline_labels(stop_pct, tpr) == [
-        "章程止损(现役章程未配置比例)", "回落止盈(现役章程未配置比例)"]
+        "章程止损线(现役章程未配置比例)", "回落止盈(现役章程未配置比例)"]
     j = _card(stop_pct=None, take_profit_retrace=None,
               mechs={"600000.SH": _mech(stop_price=None)}).to_card_json()
     assert j["members"][0]["mech"]["stop_price"] is None
@@ -397,7 +400,10 @@ def test_discipline_labels_says_no_mechanical_retrace_under_k8(isolated_env):
     (`v2.3-k8` 起的常态,K8.md §十三)→ 「本版无机械回落止盈」,⛔ 不是
     「未配置比例」那句(那句是给"整份指纹都没读到"用的,见上一条用例的对照)。"""
     assert bc.discipline_labels(0.05, None) == [
-        "章程止损 −5.0%", bc_charter_copy.RETRACE_DISABLED_COPY]
+        "章程止损线 −5.0%", bc_charter_copy.RETRACE_DISABLED_COPY]
+    # 🔴 复审 🟡-4 正向:`v2.3-k8`(advisory)口径下线名随章程换,⛔ 不再恒印「止损」。
+    assert bc.discipline_labels(0.05, None, advisory=True) == [
+        "章程亏损警戒线 −5.0%", bc_charter_copy.RETRACE_DISABLED_COPY]
 
 
 def _docstring_free(path: Path):
@@ -432,7 +438,7 @@ def test_no_hardcoded_discipline_numbers_in_source():
     import re
 
     _, consts = _docstring_free(_REPO / "neckline" / "selection" / "basket_card.py")
-    banned = [re.compile(p) for p in (r"−\s*\d+(\.\d+)?%", r"章程止损\s*−?\s*\d",
+    banned = [re.compile(p) for p in (r"−\s*\d+(\.\d+)?%", r"章程止损线?\s*−?\s*\d",
                                       r"回落止盈\s*\d")]
     for node in consts:
         v = node.value
@@ -563,7 +569,7 @@ def test_structured_thresholds_reach_the_llm_context():
     assert "9.20" in ctx          # MA20
     assert "[9.00, 11.00]" in ctx  # 次日涨跌停闭区间(夹逼的锚)
     assert bc.VERIFY_SPEC_VERSION in ctx and bc.INVALIDATE_SPEC_VERSION in ctx
-    assert "章程止损 −5.0%" in ctx
+    assert "章程止损线 −5.0%" in ctx
     # 日期锚(`prompt_context` 唯一实现)必须在第一行
     assert ctx.splitlines()[0].startswith("今天是")
     assert "证据" in ctx and "2024-04-07" in ctx

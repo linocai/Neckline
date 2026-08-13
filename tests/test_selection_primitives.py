@@ -632,6 +632,13 @@ _ENGINE_CONSTANT_WHITELIST: Dict[Tuple[str, str], str] = {
         "引擎兼容版本号,单一源判据——包声明的 engine_api_version 是拿来核对"
         "这个数的,不是来源自它,版本号本身不是策略参数。"
     ),
+    ("pack.py", "_BATCH_ID_HEX_LEN"): (
+        "原子激活批次号(`set-<12 位十六进制>`)的**长度**,V2.4.0 复审 🔵-4 登记。"
+        "⛔ 它不进任何判据、不参与任何比较,也不是可配项——只决定 `journalctl` 与 "
+        "`SELECT DISTINCT batch_id` 里那串标识符有多长;与 ENGINE_API_VERSION 同族"
+        "(工程标识,非策略参数)。此前它是写死在 f-string 里的裸 `[:12]`,连格式都"
+        "没有守门锁,提成常量 + `_BATCH_ID_RE` 才有得锁。"
+    ),
     ("primitives.py", "_LIFT_EPS"): (
         "浮点比较容差,工程不变量(同 sentinel/holding.py `_EPS` / "
         "intel_candidates.py `_INDUSTRY_GATE_EPS` 先例:裸 >=/<= 比较除法产生的"

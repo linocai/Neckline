@@ -78,7 +78,9 @@ targets:
         # → `-destination 'platform=macOS'` 下 `xcodebuild test` 报 `Could not find test host`。
         # 只按 macosx SDK 条件覆盖,**iOS 那条自动值一字不动**(iOS 侧本来就是对的)。
         # ⛔ 不许只手改生成后的 pbxproj —— 下一次 `xcodegen generate` 会原样冲掉。
-        # 守门:`tests/test_client_test_host.py`(project.yml 与 pbxproj 双向断言)。
+        # 守门:`tests/test_v240_p4_release.py` A 组(project.yml 与 pbxproj 双向断言
+        # + iOS 反向)。⚠ 复审 🔵-9 订正:此前这里写的是一个**不存在**的文件名
+        # `tests/test_client_test_host.py` —— 按名字 grep 会以为根本没有守门。
         "TEST_HOST[sdk=macosx*]": "$(BUILT_PRODUCTS_DIR)/Neckline.app/Contents/MacOS/Neckline"
 
 schemes:

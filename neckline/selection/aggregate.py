@@ -2307,9 +2307,13 @@ def aggregate_baskets(
         pack_version = seed_set.pack_version
         charter_version = _resolve_charter_version(db_path)
         seeds = _select_seeds(seed_set, max_seeds)
-        # 🔴 V2.4.0 P2.5:机械 seed 的**数量与简短摘要**在这里定格 —— 后面任何一段
-        # 缺席(推理段 / 整段异常)都要带着它返回,报告才讲得出「选股解释未完成,
-        # 但机械层当时看到了这些方向」(K8 §十)。
+        # 🔴 V2.4.0 P2.5:机械 seed 的**数量与简短摘要**在这里定格 —— **种子拿到之后**
+        # 的每一条返回路径都带着它,报告才讲得出「选股解释未完成,但机械层当时看到了
+        # 这些方向」(K8 §十)。
+        # ⚠ **复审 🔵-8 订正**:此前这段注释写的是「整段异常也带着它返回」,而下面那条
+        #   `except Exception` 兜底 `return` **并不带** —— 那时连"种子是不是拿到了"都
+        #   不知道,`None` = **当时没记**(诚实的三态),⛔ 不是 0。行为本身是对的,
+        #   夸大的是这句注释。
         seed_count = len(seed_set.all_seeds())
         seed_summary = _seed_summary_text(seed_set)
         if not seeds:

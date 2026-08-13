@@ -37,7 +37,20 @@ _MACOS_TEST_HOST_KEY = "TEST_HOST[sdk=macosx*]"
 _MACOS_TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Neckline.app/Contents/MacOS/Neckline"
 _IOS_TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Neckline.app/Neckline"
 
-_EXPECTED_VERSION = "2.4.0"
+def _expected_marketing_version() -> str:
+    """🔵 **复审 🔵-10:从 `app.py::VERSION` 反推,⛔ 不在守门里写死版号**。
+
+    写死的后果不是"多改一行",而是**每次升版都得动守门测试** —— 而"为变绿改守门"
+    正是 P4.5 明令禁止的习惯;久了没人分得清哪次是升版、哪次是把守门放宽了。
+    本条只留**一致性**断言:客户端两处 = pbxproj 四处 = `app.py::VERSION` 去掉 `v`。
+    """
+    from neckline.api.app import VERSION
+
+    assert VERSION.startswith("v"), f"`app.py::VERSION` 形状变了:{VERSION!r}"
+    return VERSION[1:]
+
+
+_EXPECTED_VERSION = _expected_marketing_version()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -99,9 +112,15 @@ def test_every_marketing_version_in_pbxproj_is_the_same():
     已是 `2.2.0` —— 既有守门刻意排除了 project 级块,**那处漂移一直是绿的**。
     `xcodegen generate` 会顺手修好它,本条负责让"忘了重跑生成器"当场红。"""
     versions = re.findall(r"MARKETING_VERSION = ([\d.]+);", _PBXPROJ.read_text(encoding="utf-8"))
-    assert versions and set(versions) == {_EXPECTED_VERSION}, (
+    assert set(versions) == {_EXPECTED_VERSION}, (
         f"pbxproj 里出现了不止一种 MARKETING_VERSION:{sorted(set(versions))}"
     )
+    # 🔵 **复审 🔵-11:只断集合会漏掉「整处丢失」** —— 某次生成把 project 级那处
+    # 删掉,`set()` 仍是单元素、断言照绿,而那**正是 P4.4 要堵的盲点换了个形状**。
+    # 四处 = project 级 Debug/Release + app target Debug/Release。
+    assert len(versions) == 4, (
+        f"pbxproj 的 MARKETING_VERSION 应恰好 4 处(project 级 2 + app target 2),"
+        f"实得 {len(versions)} 处:{versions} —— 少一处 = 有一块没被版本治理覆盖")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -243,14 +262,20 @@ def test_v240_new_columns_are_all_nullable_without_default():
 # D. 工作区卫生
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_git_diff_check_reports_no_whitespace_errors():
-    """P4.5 验收集里那条 `git diff --check`(行尾空白 / 冲突标记)。"""
+@pytest.mark.parametrize("extra", [[], ["--cached"]])
+def test_git_diff_check_reports_no_whitespace_errors(extra):
+    """P4.5 验收集里那条 `git diff --check`(行尾空白 / 冲突标记)。
+
+    🔵 **复审 🔵-12:补 `--cached`** —— 裸 `git diff --check` 只看**工作区**,
+    `git add` 过之后那份改动就从它眼皮底下消失了(而 commit 前的最后一刻,
+    改动恰恰都在暂存区)。两种都跑一遍。"""
     try:
-        proc = subprocess.run(["git", "diff", "--check"], cwd=_REPO_ROOT,
+        proc = subprocess.run(["git", "diff", "--check", *extra], cwd=_REPO_ROOT,
                               capture_output=True, text=True)
     except FileNotFoundError:  # pragma: no cover
         pytest.skip("无 git")
-    assert proc.returncode == 0, f"git diff --check 有问题:\n{proc.stdout}"
+    assert proc.returncode == 0, (
+        f"git diff --check {' '.join(extra)} 有问题:\n{proc.stdout}")
 
 
 def test_release_scripts_exist_and_are_top_level():

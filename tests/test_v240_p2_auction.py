@@ -639,6 +639,46 @@ class TestGuards:
         # 正面钉死:落点就是 `src > captured_at` 这一条裸比较
         assert "if src > captured_at:" in src
 
+    def test_zero_tolerance_cannot_be_smuggled_in_through_the_call_site(self):
+        """🔵 **复审 🔵-3:守门此前只扫 `quality.py` 一个文件、只禁四个字面名** ——
+        `collect.py` 往 `captured_at` 上**加几秒**再传进去,同样是给容差,而守门全绿。
+        裁定 #2 原话是「施工 Agent **不得自行设定**」容差秒数,那就得覆盖**调用点**。
+
+        判据两条:① 全 `neckline/auction/**` 的**真代码**里不许出现
+        `timedelta(seconds=` / `total_seconds() >` 这类"给富余"的表达式;
+        ② `captured_at` **传进 `validate_quote` / `resolve_dual` 时必须是裸名字**,
+        ⛔ 不许是任何算术表达式。"""
+        import ast as _ast
+
+        auction_dir = _REPO / "neckline" / "auction"
+        for path in sorted(auction_dir.rglob("*.py")):
+            src = path.read_text(encoding="utf-8")
+            tree = _ast.parse(src)
+            code_only = "\n".join(
+                _ast.dump(n) for n in _ast.walk(tree)
+                if isinstance(n, (_ast.Compare, _ast.BinOp, _ast.Assign, _ast.Call))
+            )
+            for banned in ("timedelta(seconds", "TOLERANCE", "SLACK_SEC", "GRACE_SEC"):
+                assert banned not in code_only, \
+                    f"{path.name} 的真代码里出现了容差:{banned}"
+            # ② 调用点:传给**做时间比较的那两个函数**的 `captured_at=` 必须是裸名字
+            #    或裸属性。⚠ 只盯这两个入口 —— `MarketMech(captured_at=…isoformat())`
+            #    那种是**格式化落库**,与判据无关,一把梭会把它一起判违规。
+            for node in _ast.walk(tree):
+                if not isinstance(node, _ast.Call):
+                    continue
+                fn = node.func
+                name = fn.attr if isinstance(fn, _ast.Attribute) else getattr(fn, "id", "")
+                if name not in ("validate_quote", "resolve_dual"):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg != "captured_at":
+                        continue
+                    assert isinstance(kw.value, (_ast.Name, _ast.Attribute)), (
+                        f"{path.name}:{node.lineno} 给 `{name}(captured_at=)` 传了一个表达式 "
+                        f"({_ast.dump(kw.value)[:80]}) —— 那是在调用点偷偷加容差,"
+                        f"用户裁定 #2 明令「施工 Agent 不得自行设定」。")
+
     def test_get_quotes_behaviour_is_untouched_by_the_dual_source_addition(self):
         """🔴 §五 P2.2:「普通上下文股票**仍走**『主源失败才降备源』(现役
         `get_quotes` 行为,**一字不动**)」。P2.2 是**新增**一条路径,⛔ 不是改写老的。"""

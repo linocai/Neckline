@@ -76,6 +76,28 @@ logger = logging.getLogger(__name__)
 #: 浮点容差(`CLAUDE.md`「纪律阈值比较一律加 `_EPS`」)。⛔ **不是判据阈值**。
 _EPS = 1e-9
 
+
+def _as_market_naive(dt: datetime) -> datetime:
+    """把 `captured_at` 归一成**北京时间的 naive** 值(复审 🟡-8)。
+
+    🔴 **为什么必须归一**:`parse_quote_ts` 解出来的源时间恒 naive(源串里没有时区),
+    而调用方给的 `captured_at` **两种都可能** —— 生产路径 `api/app.py:305` 走
+    `datetime.now()`(naive),但同一个 `app.py` 另外三处用的是 `datetime.now(CN_TZ)`
+    (aware,本仓房规就是那一套)。裸 `src > captured_at` 撞上 aware 值会抛
+    `TypeError: can't compare offset-naive and offset-aware datetimes`,而
+    `collect_auction_snapshot` 的 `resolve_dual` 循环**没有包 try/except** →
+    异常一路逃到 lifespan 的兜底 `except` → **每天早晨静默零落库**。
+
+    ⚠ **aware 值按 `CN_TZ` 换算后再剥时区**,⛔ 不是直接 `replace(tzinfo=None)`:
+    直接剥会把一个 UTC 时刻当成北京时刻用(差 8 小时 → 整份快照全判 `future_timestamp`)。
+    时区单一源 = `neckline.calendar.CN_TZ`(`CLAUDE.md`:⛔ 不在新模块里再写一份 `+8`)。
+    """
+    if dt.tzinfo is None:
+        return dt
+    from neckline.calendar import CN_TZ
+
+    return dt.astimezone(CN_TZ).replace(tzinfo=None)
+
 #: 集合竞价结果的**最早可接受源时间** = 9:25(K8 §二十 给的边界,⛔ 不是本项目发明的数)。
 #: 🔴 **单一源复用 `sentinel/capture.AUCTION_CAPTURE_START`** —— 同一个 9:25 撮合时刻,
 #: ⛔ 不在本包再写一份 `time(9, 25)`(那就是第二份事实源)。
@@ -232,6 +254,9 @@ def validate_quote(
     """
     if quote is None:
         return None
+    # 复审 🟡-8:aware `captured_at` 会让下面那个裸 `>` 抛 `TypeError`,而调用链上
+    # 没人接得住它 → 整层静默零落库。边界处归一,⛔ 别把这件事推给每个调用方。
+    captured_at = _as_market_naive(captured_at)
     errors: List[str] = []
 
     price = _f(getattr(quote, "price", None))
@@ -379,6 +404,21 @@ def detect_conflict(
 # 双源归一:谁可用、要不要记来源降级、有没有冲突
 # ══════════════════════════════════════════════════════════════════════════
 
+def _is_cross_verified(checks: Sequence[QuoteCheck]) -> bool:
+    """这一格**到底有没有真的做过两源对拍**(复审 🔴-2 的判别式,单一源就是本函数)。
+
+    🔴 定义 = **`detect_conflict` 实际跑起来的那个条件**:两源都返回了读数(所以
+    `checks` 恰好两条),**且两侧七项都过**。`resolve_dual` 里那个 `if` 直接调它,
+    ⛔ 两处不许各写一遍 —— 那正是"守门停在屏幕前一层"的复发路径。
+
+    ⛔ **「只有一源」「有一源不合格」都不算核验过**:那时 `conflict` 恒 `None`,
+    而 `None` 的含义是「**没得比**」,不是「比过了没冲突」(`detect_conflict` 的
+    docstring 逐字写着这句话)。把它们讲成"已交叉核验"就是把「没判」折成「没问题」——
+    本项目连续三版栽在同一族病上。
+    """
+    return len(checks) == 2 and all(c.ok for c in checks)
+
+
 @dataclass(frozen=True)
 class QuoteQuality:
     """一只代码经**双源核验**后的完整账。🔴 **两源原始读数全在 `checks` 里**。"""
@@ -399,12 +439,30 @@ class QuoteQuality:
         return self.freshness != QF_INSUFFICIENT
 
     @property
+    def cross_verified(self) -> bool:
+        """🔴 **本次真的做过两源对拍**(复审 🔴-2)。判别式单一源 = `_is_cross_verified`,
+        与 `resolve_dual` 里触发 `detect_conflict` 的那个 `if` **是同一个函数**。
+
+        消费方读它来回答「跨源冲突为空,到底是**比过了没冲突**,还是**压根没得比**」——
+        `conflict is None` 答不了这个问题(两种情况下它都是 `None`)。
+        """
+        return _is_cross_verified(self.checks)
+
+    @property
     def status(self) -> str:
-        """胜出那一侧的七项校验状态;两源都不合格 → 主源那一侧的状态(没有主源就取备源)。"""
+        """胜出那一侧的七项校验状态;两源都不合格 → 主源那一侧的状态(没有主源就取备源)。
+
+        🔴 **一条读数都没有时返回 `""` = 「本次没记这一位」**(复审 🟡-7)。
+        ⛔ 旧写法兜底成 `timestamp_unparseable`,那是在**报告一次证明没发生过的校验失败**
+        (压根没有时间戳可解析),而这一位会顺着 `mech.py` 进 `members_json` ——
+        那是 `INSERT OR IGNORE` 的冻结审计行,**永不重写**,等于把一句假话写死在账上。
+        「没拉到」与「拉到了但不合格」必须分得开(本模块 `validate_quote` 的
+        docstring 逐字写着这条,⛔ 不许折平)——客户端对 `""` 已有正确标签「本次未记录」。
+        """
         for c in self.checks:
             if c.role == self.chosen_role:
                 return c.status
-        return self.checks[0].status if self.checks else QS_TIMESTAMP_UNPARSEABLE
+        return self.checks[0].status if self.checks else ""
 
     @property
     def src_ts(self) -> Optional[str]:
@@ -428,6 +486,10 @@ class QuoteQuality:
             "ts_code": self.ts_code, "freshness": self.freshness,
             "chosen_role": self.chosen_role, "chosen_source": self.chosen_source,
             "source_degraded": bool(self.source_degraded), "conflict": self.conflict,
+            # 🔴 复审 🔴-2:落库留痕,展示层据此决定「说不说『已交叉核验』」。
+            # ⚠ 老行(v2.4.0 复审整改之前落的)没有这一键 → 消费方读不到时**当 False**
+            #   (保守方向:不声称核验过),⛔ 不许在读侧重新推一遍。
+            "cross_verified": bool(self.cross_verified),
             "status": self.status, "errors": list(self.errors),
             "checks": [c.to_dict() for c in self.checks],
         }
@@ -461,7 +523,9 @@ def resolve_dual(
     checks = tuple(c for c in (cp, cb) if c is not None)
 
     conflict: Optional[str] = None
-    if cp is not None and cb is not None and cp.ok and cb.ok:
+    # 🔴 复审 🔴-2:这个 `if` 与 `QuoteQuality.cross_verified` **共用同一个判别式** ——
+    # 「有没有对拍过」与「对拍出没出冲突」从此不可能各说各话。
+    if _is_cross_verified(checks):
         conflict = detect_conflict(primary, backup, invalidation_of=invalidation_of,
                                    plan_entered_of=plan_entered_of)
 

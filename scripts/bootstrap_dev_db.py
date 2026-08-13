@@ -116,9 +116,22 @@ def _copy_reference_tables(db_path: Path, reference_db: Path) -> List[str]:
 
     列名按**源表实际列**逐列点名(⛔ 不用 `SELECT *` + 隐式列序):目标库可能因
     `_MIGRATE_COLUMNS` 多出源库没有的列,靠列序对齐迟早错位且看不出来。
-    参考库缺某张表 / 某列 → 如实跳过并打印,⛔ 不静默。"""
+    参考库缺某张表 / 某列 → 如实跳过并打印,⛔ 不静默。
+
+    🔴 **V2.4.0 复审 🟡-1:`strategy_versions` 的 `is_active` 是"本库自己的状态",
+    ⛔ 不是参考数据**。`INSERT OR REPLACE` 把它连同源库的现役标记一起拷进来 ——
+    第二次跑就会出现**两行 `is_active=1`**(第一次跑激活的 `v2.3-k8` + 参考库带来的
+    那一行),而 `brain.get_active()` 用 `ORDER BY created_at DESC LIMIT 1` 把它遮住,
+    `strategy_versions` 也没有 `selection_packs` 那种部分唯一索引,库层静默接受 ——
+    于是「今天用的是哪版章程」变成「看 `created_at` 谁大」。P4.2 逐字要求「可以重复
+    运行且结果幂等」,这一条当时不成立。
+    **修法**:拷之前记下本库的现役版本,拷完**按它把标记复原**(本库原本没有现役行
+    → 保留参考库带来的那一个,但仍收敛成恰好一行)。
+    """
     notes: List[str] = []
     init_schema(db_path)
+    prior_active = brain.get_active(db_path=db_path)
+    prior_active_version = prior_active.version if prior_active is not None else None
     src = sqlite3.connect(f"file:{reference_db}?mode=ro", uri=True)
     try:
         have = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -150,8 +163,36 @@ def _copy_reference_tables(db_path: Path, reference_db: Path) -> List[str]:
                 if dropped:
                     note += f"(源库多出的列本库没有,已跳过:{dropped})"
                 notes.append(note)
+            notes.extend(_restore_single_active_charter(dst, prior_active_version))
     finally:
         src.close()
+    return notes
+
+
+def _restore_single_active_charter(conn, prior_active_version: Optional[str]) -> List[str]:
+    """把 `strategy_versions.is_active` 收敛回**恰好一行**(复审 🟡-1 的落点)。
+
+    · 本库拷之前就有现役行 → 复原成那一行(参考库带来的标记是**别人库的状态**);
+    · 本库拷之前没有现役行 → 留下参考库标记的那一行(派生链要靠它当祖先),
+      多于一行时按 `version` 升序取第一个 —— **确定性**的收敛,⛔ 不按 `created_at`
+      (那正是 `get_active()` 用来遮住这个洞的那个排序)。
+    ⚠ 一行都没有(参考库里根本没有章程行)→ 不动、如实记一笔,由 `_ensure_charter` 报错。
+    """
+    notes: List[str] = []
+    actives = [r[0] for r in conn.execute(
+        "SELECT version FROM strategy_versions WHERE is_active=1 ORDER BY version")]
+    if not actives:
+        notes.append("⚠ 拷完之后库里没有任何现役章程行 —— 交给下一步如实报错")
+        return notes
+    keep = prior_active_version if prior_active_version in actives else actives[0]
+    if actives == [keep]:
+        return notes                      # 本来就恰好一行,零动作
+    conn.execute("UPDATE strategy_versions SET is_active=0 WHERE version<>?", (keep,))
+    conn.execute("UPDATE strategy_versions SET is_active=1 WHERE version=?", (keep,))
+    notes.append(
+        f"⚠ 参考表把 is_active 一起拷了进来 → 现役行有 {len(actives)} 个 {actives};"
+        f"已收敛回本库自己的现役版本 {keep}(复审 🟡-1:现役标记不是参考数据)"
+    )
     return notes
 
 
@@ -248,6 +289,23 @@ def bootstrap(db_path: Path, reference_db: Optional[Path]) -> int:
     if {k: active_packs.get(k) for k in expected} != expected:
         print(f"错误:激活后的四线现役集合不是预期的 {expected}:{active_packs}", file=sys.stderr)
         return 3
+    # 🔴 复审 🟡-1:**裸计数**自检 —— 必须排在下面那条 `active_charter.version` **之前**。
+    # `brain.get_active()` 用 `ORDER BY created_at DESC LIMIT 1`,两行现役时它照样返回
+    # 一个"看起来正常"的答案 —— 先问「到底有几行」,再谈「那一行是不是目标」。
+    # ⛔ 别用 `get_active()` 复查自己;直接数行(`strategy_versions` 没有
+    # `selection_packs` 那种部分唯一索引,库层不会拦,这条自检就是那道闸)。
+    with connection(db_path) as conn:
+        rows = [r[0] for r in conn.execute(
+            "SELECT version FROM strategy_versions WHERE is_active=1 ORDER BY version")]
+    if len(rows) != 1:
+        print(
+            f"错误:`strategy_versions` 里现役行有 {len(rows)} 个:{rows}(必须恰好 1)。\n"
+            "      P4.2 要求可重复运行且结果幂等;多于一行 = 「今天用的是哪版章程」\n"
+            "      退化成「看 created_at 谁大」。",
+            file=sys.stderr,
+        )
+        return 3
+    print(f"  现役章程行计数:{len(rows)}(恰好 1 ✓)")
     if active_charter is None or active_charter.version != _TARGET_CHARTER:
         print(f"错误:激活后的现役章程不是 {_TARGET_CHARTER}", file=sys.stderr)
         return 3

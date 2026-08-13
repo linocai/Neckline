@@ -437,6 +437,22 @@ def collect_auction_snapshot(
 
     duals: Dict[str, DualQuote] = {}
     if requested:
+        # 🔵 **复审 🔵-7:「有界」双源是在语义层限界、不在取数层**。今天关注池上界
+        # 29 只 ≪ `quotes._CHUNK_SIZE=400` → 每早**净 +1 次**请求(实测:1–400 码 = 2 次)。
+        # 哪天关注池过 400,「+1」会**静默变成 +N**(每块两次)。
+        # ⚠ **只警告、⛔ 不 assert**:这一段的异常会一路逃到 lifespan 兜底 →
+        #   「竞价确认层异常(已吞)」= 整层零落库(🟡-8 那个坑的同一个出口)。
+        #   限界本身由守门单测 `test_v240_review_remediation` 侧盯着关注池上界。
+        from neckline.sentinel.quotes import _CHUNK_SIZE as _QUOTE_CHUNK_SIZE
+
+        if len(requested) > _QUOTE_CHUNK_SIZE:
+            logger.warning(
+                "[auction] 本次请求 %d 只 > 单块上限 %d —— 双源核验的「+1 次请求 / 早晨」"
+                "已变成每块两次,共约 %d 次。这是取数层的量,⛔ 不是故障;"
+                "要维持有界,先收关注池上界。",
+                len(requested), _QUOTE_CHUNK_SIZE,
+                2 * ((len(requested) + _QUOTE_CHUNK_SIZE - 1) // _QUOTE_CHUNK_SIZE),
+            )
         try:
             duals = dict(fetch_dual(requested) or {})
         except Exception:  # noqa: BLE001

@@ -204,11 +204,21 @@ class TestHistoricalCharterStillTellsTheTruth:
 
     def test_retrace_label_keeps_the_number_when_the_charter_has_one(self):
         """历史章程配了 `take_profit_retrace` → 仍然显示那个百分比,
-        ⛔ 不被「本版无机械回落止盈」盖掉。"""
+        ⛔ 不被「本版无机械回落止盈」盖掉。
+
+        ⚠ **期望值第 0 项由「章程止损」改成「章程止损线」——被 V2.4.0 复审 🟡-4 取代**
+        (施工纪律 4:旧断言必须显式说明为何被取代)。原因:线名此前是这里**手写的一句
+        ad-hoc 文案**,与 `charter_copy.stop_line_label` 那个单一源没有关系;🟡-4 要求
+        它随章程派生(`v2.3-k8` 下必须叫「亏损警戒线」),于是强制口径下它取
+        `stop_line_label(False)` = 「止损线」。**语义一字未变**、多的只是那个「线」字,
+        而它与全项目其余各处的叫法从此一致。⚠ 已冻结的历史卡是 `INSERT OR IGNORE`
+        的快照,**一个字都不会被改**。"""
         from neckline.selection.basket_card import discipline_labels
 
-        assert discipline_labels(0.05, 0.08) == ["章程止损 −5.0%", "回落止盈 8.0%"]
+        assert discipline_labels(0.05, 0.08) == ["章程止损线 −5.0%", "回落止盈 8.0%"]
         assert charter_copy.retrace_disabled_copy(0.08) is None
+        # 正向:advisory 口径下改叫「亏损警戒线」,两者都出自同一个单一源。
+        assert discipline_labels(0.05, 0.08, advisory=True)[0] == "章程亏损警戒线 −5.0%"
 
     def test_client_says_the_old_percentage_for_historical_charters(self):
         """🔴 **两向都说真话**(V2.4.0 P3 实拍逮到的缺口):老章程配了 8% 就把

@@ -15,6 +15,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,10 +73,21 @@ class TestGuardrails:
             bootstrap_dev_db.main()
         assert e.value.code != 0
 
-    def test_refuses_the_authoritative_db(self, capsys):
-        rc = bootstrap_dev_db.bootstrap(settings.db_path, None)
-        assert rc == 2
-        assert "settings.db_path" in capsys.readouterr().err
+    def test_refuses_the_authoritative_db(self):
+        """🔴 **V2.4.0 复审 🟡-2:⛔ 绝不拿真库当实弹靶子**。
+
+        旧写法是 `bootstrap(settings.db_path, None)` —— **真的把 bootstrap 瞄准
+        `data/neckline.db`**,靠被测的那道护栏自己拦住。护栏一旦被削弱或调序,
+        跑一次 `pytest` 就会在权威库上 `init_schema` + `activate_pack_set(K8-V0.8,
+        C2, Z2, Y2)` + 激活章程 `v2.3-k8` = **一次静默的真激活**,正是本次发版明令
+        推迟的那件事。「测试自己就是那颗雷」和"改不改代码"无关,越早拆越好。
+
+        ✅ 改成断**纯判据函数** `_is_protected_db`(零副作用、不开文件、不写一个字节),
+        再由下面 `test_protected_paths_never_reach_the_writing_path` 用一个
+        **不存在但被同一条护栏拦住**的路径去走真正的 `bootstrap()` 分支。
+        """
+        reason = bootstrap_dev_db._is_protected_db(settings.db_path)
+        assert reason is not None and "settings.db_path" in reason
 
     def test_refuses_paths_under_repo_data_dir(self, capsys):
         rc = bootstrap_dev_db.bootstrap(_REPO_ROOT / "data" / "whatever.db", None)
@@ -86,6 +98,21 @@ class TestGuardrails:
         rc = bootstrap_dev_db.bootstrap(Path("/opt/neckline/data/neckline.db"), None)
         assert rc == 2
         assert "/opt/neckline" in capsys.readouterr().err
+
+    def test_protected_paths_never_reach_the_writing_path(self, tmp_path: Path, capsys):
+        """`bootstrap()` 的**拒绝分支**照样要被真的走一遍(🟡-2 改法的另一半)——
+        但靶子是一个**长得像权威库、却不是它**的路径:把模块里那份 `settings` 换成
+        替身(`Settings` 是 frozen dataclass,⛔ 不能 `setattr` 单字段 —— 这是
+        `conftest.py` 文件头写明的既有姿势),`db_path` 指到 `tmp_path` 下一个
+        **不存在**的文件。护栏判据是路径相等,与文件在不在无关,照样命中;而
+        **万一护栏失效,写坏的也只是 tmp**。"""
+        fake = tmp_path / "looks-like-prod" / "neckline.db"
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(bootstrap_dev_db, "settings", SimpleNamespace(db_path=fake))
+            rc = bootstrap_dev_db.bootstrap(fake, None)
+        assert rc == 2
+        assert "settings.db_path" in capsys.readouterr().err
+        assert not fake.exists(), "拒绝必须发生在创建文件之前"
 
     def test_temp_path_is_allowed(self, tmp_path: Path):
         assert bootstrap_dev_db._is_protected_db(tmp_path / "dev.db") is None
@@ -204,3 +231,52 @@ def test_running_twice_is_idempotent(tmp_path: Path, reference_db: Path):
     finally:
         conn.close()
     assert brain.get_active(db_path=dev).version == "v2.3-k8"
+
+
+def test_running_repeatedly_never_leaves_two_active_charters(tmp_path: Path, reference_db: Path):
+    """🔴 **V2.4.0 复审 🟡-1 的机器判据 —— 断的是「裸计数」,⛔ 不是 `get_active()`**。
+
+    病:`_copy_reference_tables` 用 `INSERT OR REPLACE` 把 `strategy_versions` 连
+    `is_active` 一起拷过来 → 第二次跑就有**两行现役**(第一次跑激活的 `v2.3-k8` +
+    参考库带来的 `K1`);`activate_charter` 见「已是现役」早退,`brain.get_active()`
+    的 `ORDER BY created_at DESC LIMIT 1` 把它遮住,`strategy_versions` 又没有
+    `selection_packs` 那种部分唯一索引 —— 库层静默接受。
+    结果:「今天用的是哪版章程」= 「看 `created_at` 谁大」。
+
+    ⚠ 原守门 `test_running_twice_is_idempotent` 断的是 `get_active().version` 与事件数,
+    **恰好是被那个 `LIMIT 1` 遮住的两样**,所以它当时全绿。这条改断裸计数。"""
+    dev = tmp_path / "dev.db"
+    for run in (1, 2, 3):
+        assert bootstrap_dev_db.bootstrap(dev, reference_db) == 0, f"第 {run} 次跑失败"
+        conn = sqlite3.connect(str(dev))
+        try:
+            rows = [r[0] for r in conn.execute(
+                "SELECT version FROM strategy_versions WHERE is_active=1 ORDER BY version")]
+        finally:
+            conn.close()
+        assert rows == ["v2.3-k8"], f"第 {run} 次跑之后现役行 = {rows}(必须恰好一行 v2.3-k8)"
+
+
+def test_self_check_fails_loud_when_two_rows_are_active(tmp_path: Path, reference_db: Path, capsys):
+    """**反向探针**:人为造出两行现役 → 那条裸计数自检必须**当场非零退出**。
+
+    没有这条,上面那条绿了也证明不了自检在工作(它可能只是因为归一化恰好生效)。
+    ⚠ 探针要把**上游两道自愈**都掐掉才测得到自检本身:① 归一化只在带
+    `--reference-db` 时跑 → 这次不带;② `activate_charter.activate` 会
+    `activate_version` 顺手把标记收敛掉 → 用桩换成"什么都不做的成功"。
+    剩下的唯一一道就是自检 —— 它必须红。"""
+    dev = tmp_path / "dev.db"
+    assert bootstrap_dev_db.bootstrap(dev, reference_db) == 0
+    conn = sqlite3.connect(str(dev))
+    try:
+        conn.execute("UPDATE strategy_versions SET is_active=1 WHERE version='K1'")
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(bootstrap_dev_db.activate_charter, "activate",
+                   lambda *a, **k: 0)      # 掐掉自愈,只留自检
+        rc = bootstrap_dev_db.bootstrap(dev, None)
+    assert rc == 3
+    err = capsys.readouterr().err
+    assert "现役行有 2 个" in err and "恰好 1" in err

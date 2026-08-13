@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, time
 from datetime import date as date_cls
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 
@@ -1079,25 +1079,82 @@ def _locked_time_exit_day(buy_date: date, locked_date: Optional[str]) -> Optiona
 # 就删页面 = **静默弄丢仍然有效的持仓提醒**(P0.3 末段明令)。
 # ⛔ **不新建端点、不新建表、不新建取数实现** —— 复用 `dedup.load_events_for_date`。
 #
-# `eventKey` → 展示层强调档。口径与哨兵推送当时用的 `channels` 级别同源
-# (`engine.py::_level_by_key`),⛔ 不是新判定、⛔ 不在客户端另定一套。
+# 🔴 **V2.4.0 复审 🔴-1 整改(用户裁定 A,2026-08-12):取数口径由「只取 `holding`」
+# 改成**正面白名单**四类。**⛔ 白名单不是黑名单** —— 退役的两类(`retreat` /
+# `invalidation`)不是"没写进来",是**结构上进不来**(守门双向锁:四类都在 + 退役两类
+# 一个都不许混进来)。
+#
+# 为什么是这四类(逐条出处,⛔ 不是手感):
+#   · `holding`   —— P0.5+ 原文就写着,亏损警戒 / 离场参考 / 板块跳水。
+#   · `circuit`   —— `consecutive_stops`(连续三笔止损)是 **K8 §十三 明写的能力**,
+#                    `GET /circuit` 的 docstring 白纸黑字「没有替代端点 —— 提醒走推送
+#                    与看板事件」,页面删掉之后那两条腿断了一条。
+#   · `precall`   —— `position_low_open`(9:26 集合竞价开盘已逼近/跌破亏损警戒线)
+#                    **根本没有推送 kind**(`precall.py::_record` 只落库不推),
+#                    页面删掉 = 它在任何界面上都不存在。
+#   · `attention` —— `basket_peers_weak` / `holding_decoupled` 两类的 `scope`
+#                    **就是持仓代码**,不是全局刹车;APNs 是一次性打扰(可被开关掐掉、
+#                    划走就没了),**不是"入口"**。
+# ⚠ `attention/sector_bid_fade`(scope = 指数码)与 `market_shock`(scope = 空)
+#   匹配不到任何持仓 → 结构性不出现在本通道;**如实登记 → §七 P1-81**,⛔ 不假装它们在。
+_POSITION_ALERT_SENTINELS: FrozenSet[str] = frozenset({
+    "holding", "attention", "circuit", "precall",
+})
+
+# 🔴 **退役两类:显式列出来当反向断言用**(守门单测拿它与白名单做交集必须为空)。
+# ⛔ 它**不是**过滤器 —— 过滤器是上面那张白名单;这张表只是让"退役的进不来"
+# 这件事有一个**可被机器检查的名字**。
+_RETIRED_ALERT_SENTINELS: FrozenSet[str] = frozenset({"retreat", "invalidation"})
+
+# `eventKey` → 展示层强调档。**这是"这条提醒在持仓卡上有多醒目",不是推送分级**
+# (推送分级的唯一源是 `notify_kinds.LEVEL_OF_KIND`,管的是"响不响、怎么响")——
+# 两者刻意分开:`sector_dive` / `take_profit` 在推送侧是立即级,在这一屏上不是。
+# ⚠ **前四条是 P0.5+ 已发布的判定,本次一个字节没动**;后四条随复审 🔴-1 补,
+#   逐条对齐已有同族项:
+#   · `position_low_open` —— 说的就是 `stop_approach` 那条**同一根亏损警戒线**
+#     (同一个 `stop_pct`、同一句"逼近/跌破"),故同档 `critical`。
+#   · `consecutive_stops` —— 讲的是**已经发生的三笔**这个行为模式,不是手上这一笔
+#     此刻的价位;与 `sector_dive`(环境性)同族 → `warn`。
+#   · `decoupled` / `basket<id>` —— ⑪-A 四监测在 `notify_kinds.LEVEL_OF_KIND` 里
+#     就是「重要不紧急」(今天要处理、不必打断手头的事)→ `warn`。
 # ⚠ 未登记的 event_key 落 `info`(如实中性,不冒充紧急,也不吞掉)。
 _POSITION_ALERT_LEVEL: Dict[str, str] = {
     "stop_approach": "critical",
     "sector_dive": "warn",
     "take_profit": "info",
     "exit_reference": "info",
+    # —— 复审 🔴-1 补齐(裁定 A)——————————————————————————————————————
+    "position_low_open": "critical",
+    "consecutive_stops": "warn",
+    "decoupled": "warn",
 }
+
+#: `attention/basket_peers_weak` 的 `event_key` 是 **`basket<篮子 id>`**(动态)——
+#: 精确匹配的 dict 逮不到它。⛔ 别为此把 `event_key` 改成静态串:那是历史去重键,
+#: 改了会让同一件事在老库与新库里去重不到一起。
+_POSITION_ALERT_LEVEL_PREFIX: Dict[str, str] = {"basket": "warn"}
+
+
+def _position_alert_level(event_key: str) -> str:
+    """`event_key` → 展示强调档。精确表优先,再试前缀表,都不认 → `info`。"""
+    if event_key in _POSITION_ALERT_LEVEL:
+        return _POSITION_ALERT_LEVEL[event_key]
+    for pre, lvl in _POSITION_ALERT_LEVEL_PREFIX.items():
+        if event_key.startswith(pre):
+            return lvl
+    return "info"
 
 
 def _today_position_alerts(trade_date: date) -> Dict[str, List[PositionAlertOut]]:
-    """当日 `sentinel='holding'` 事件按 `ts_code` 分组(时间升序,`load_events_for_date`
+    """当日**四类**哨兵事件按 `ts_code` 分组(时间升序,`load_events_for_date`
     已按 `pushed_at, id` 排好,这里只保序分桶)。
 
-    ⛔ **只取 `holding`**:`invalidation` / `retreat` 自 V2.4.0 P0 起已停写(库里可能还有
-    历史行,**一律不进本通道**);`precall` 归竞价报告;`attention` / `custom_alert` 各有
-    自己的入口(⑪-A 四监测走 APNs、NL 临时提醒走 `/alerts`),混进来就是把刚删掉的
-    聚合页面换个地方重建。
+    🔴 **正面白名单 `_POSITION_ALERT_SENTINELS`,⛔ 不是黑名单**:`invalidation` /
+    `retreat` 自 V2.4.0 P0 起已停写(库里仍有历史行),它们**不在白名单里 = 结构上
+    进不来**;换成"排除这两个"的写法,日后再退役一类就会静默漏进来。
+    ⚠ 仍然**只画该持仓自己的行**:`ts_code` 为空的市场级行(`market_shock`)由
+    `if not code` 天然排除;`sector_bid_fade` 的 scope 是指数码,匹配不到任何持仓
+    (→ §七 P1-81 如实登记,⛔ 不在这里给它编一个落点)。
     读库异常 → 空 dict(持仓卡是每日最常看的一屏,**绝不因为一条提醒读不到就掀翻它**)。
     """
     try:
@@ -1107,7 +1164,7 @@ def _today_position_alerts(trade_date: date) -> Dict[str, List[PositionAlertOut]
         return {}
     out: Dict[str, List[PositionAlertOut]] = {}
     for e in events:
-        if e.get("sentinel") != "holding":
+        if e.get("sentinel") not in _POSITION_ALERT_SENTINELS:
             continue
         code = e.get("ts_code") or ""
         if not code:
@@ -1117,7 +1174,7 @@ def _today_position_alerts(trade_date: date) -> Dict[str, List[PositionAlertOut]
             eventKey=key,
             verdict=(e.get("payload") or {}).get("body", ""),
             ts=e.get("pushed_at", ""),
-            level=_POSITION_ALERT_LEVEL.get(key, "info"),
+            level=_position_alert_level(key),
         ))
     return out
 
@@ -2343,6 +2400,10 @@ def _shape_auction_quality_details(payload: Any) -> List[AuctionQualityDetailOut
             status=str(d.get("status") or ""), chosenRole=d.get("chosen_role"),
             chosenSource=d.get("chosen_source"),
             sourceDegraded=bool(d.get("source_degraded")), conflict=d.get("conflict"),
+            # 🔴 复审 🔴-2:落库当时算好的那一位,**原样透传**。
+            # ⚠ 老行没有这一键 → `False`(保守:不声称核验过),
+            #   ⛔ 不在这里用 `checks` 重新推一遍 —— 那就是第二份判别式。
+            crossVerified=bool(d.get("cross_verified")),
             errors=[str(e) for e in (d.get("errors") or [])], checks=checks,
         ))
     return out

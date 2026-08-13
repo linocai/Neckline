@@ -294,6 +294,12 @@ struct AuctionQuoteCheck: Decodable, Equatable, Identifiable {
 /// 逐票双源核验的一条账(V2.4.0 P2.2)。
 /// 🔴 `sourceDegraded` = **主源不可用、本次用的是备源**(⛔ 不许静默换源);
 /// `conflict` 非空 = 两源结论相反 → ⛔ 不能高置信输出。
+///
+/// 🔴 **`crossVerified`(V2.4.0 复审 🔴-2)= 这一格真的做过两源对拍**。
+/// ⛔ **别把 `conflict == nil` 读成「核验过了没冲突」**:只有一源、或有一源读数不合格
+/// 时它**同样**是 `nil`,那时的含义是「没得比」。服务端判别式单一源
+/// (`auction/quality.py::_is_cross_verified`),客户端**只展示、不重推**;
+/// 老报告没有这一键 → `false` = 保守的「没核验过」。
 struct AuctionQualityDetail: Decodable, Equatable, Identifiable {
     var tsCode: String = ""
     var freshness: String = ""
@@ -302,6 +308,7 @@ struct AuctionQualityDetail: Decodable, Equatable, Identifiable {
     var chosenSource: String? = nil
     var sourceDegraded: Bool = false
     var conflict: String? = nil
+    var crossVerified: Bool = false
     var errors: [String] = []
     var checks: [AuctionQuoteCheck] = []
 
@@ -309,7 +316,7 @@ struct AuctionQualityDetail: Decodable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case tsCode, freshness, status, chosenRole, chosenSource, sourceDegraded
-        case conflict, errors, checks
+        case conflict, crossVerified, errors, checks
     }
 
     init(from decoder: Decoder) throws {
@@ -321,6 +328,7 @@ struct AuctionQualityDetail: Decodable, Equatable, Identifiable {
         chosenSource = try c.decodeIfPresent(String.self, forKey: .chosenSource)
         sourceDegraded = try c.decodeIfPresent(Bool.self, forKey: .sourceDegraded) ?? false
         conflict = try c.decodeIfPresent(String.self, forKey: .conflict)
+        crossVerified = try c.decodeIfPresent(Bool.self, forKey: .crossVerified) ?? false
         errors = try c.decodeIfPresent([String].self, forKey: .errors) ?? []
         checks = try c.decodeIfPresent([AuctionQuoteCheck].self, forKey: .checks) ?? []
     }
@@ -394,6 +402,14 @@ struct AuctionDataStatus: Decodable, Equatable {
     var hasDomainSplit: Bool { criticalDataQuality != nil || contextDataQuality != nil }
     /// 值得单独列出来的逐票账(不合格 / 冲突 / 换过源)。
     var notableQualityDetails: [AuctionQualityDetail] { qualityDetails.filter(\.worthShowing) }
+    /// 🔴 **V2.4.0 复审 🔴-2**:本次真的完成两源对拍的格数 / 总格数。
+    /// ⛔ **「跨源冲突为空」不等于「已交叉核验」** —— 备源整体失败的早晨
+    /// `conflictCodes` 照样为空、逐票核验区什么都不画,那时 `crossVerifiedCount == 0`。
+    /// 这两个数就是让那句披露**随实际状态变化**的判别式(⛔ 客户端不重推,只数)。
+    var crossVerifiedCount: Int { qualityDetails.filter(\.crossVerified).count }
+    var quotedCodeCount: Int { qualityDetails.count }
+    /// 这份报告里到底有没有逐票核验账(老报告恒空 → 那一栏当年**结构性恒空**)。
+    var hasDualSourceLedger: Bool { !qualityDetails.isEmpty }
     /// 「抓到几个 / 要几个」一句(⛔ 不省略分母 —— 覆盖率是这块的重点)。
     var coverageText: String { "\(fetchedCodes)/\(requestedCodes)" }
 }

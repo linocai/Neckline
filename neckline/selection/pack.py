@@ -149,6 +149,12 @@ _LINE_CODES: Tuple[str, ...] = ("V", "C", "Z", "Y", "LEGACY")
 _ENGINE_LINE_CODES: Tuple[str, ...] = ("C", "Z", "Y")   # get_active_engines 的确定性序
 _LINE_DEFAULT = "LEGACY"
 
+#: 原子激活批次号的形状(P4.3)。🔵 **复审 🔵-4:这里的 12 不是阈值、不进任何判据**,
+#: 只是批次名的长度(48 bit 随机,`journalctl` 与 `SELECT DISTINCT batch_id` 里一眼看得完)。
+#: ⛔ 别把它读成"证据数量 / 样本量"那一族的数;⛔ 也别把两处长度改成不一样。
+_BATCH_ID_HEX_LEN = 12
+_BATCH_ID_RE = re.compile(r"^set-[0-9a-f]{%d}$" % _BATCH_ID_HEX_LEN)
+
 # —— V2.2-① 引擎阈值键名白名单(「白名单制」在引擎线上的落地,⛔ 不绑 PRIMITIVES,
 # 理由见模块头)。五个关口段名 = plan §五 ① schema 原文;段内键名 = ③-F 三引擎
 # 首版阈值表逐条对应的机器名。要新玩法(新阈值键)先来这里登记,再发包 —— 与
@@ -1213,7 +1219,11 @@ def activate_pack_set(
         by_line[line] = doc
 
     if batch_id is None:
-        batch_id = f"set-{uuid.uuid4().hex[:12]}"
+        # 🔵 **复审 🔵-4:这个 `12` 没有任何领域出处** —— 它**不是判据、不参与任何比较**,
+        # 只是「一次原子激活的批次名」的长度,取 12 位十六进制(48 bit)纯粹是为了在
+        # `journalctl` 与 `SELECT DISTINCT batch_id` 里一眼看得完。⛔ 别把它当阈值读。
+        # 格式由 `_BATCH_ID_RE` 锁住(守门单测按它断言),换长度要连守门一起换。
+        batch_id = f"set-{uuid.uuid4().hex[:_BATCH_ID_HEX_LEN]}"
 
     init_schema(db_path)
     before = _active_map(db_path)

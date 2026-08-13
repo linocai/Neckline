@@ -1448,7 +1448,12 @@ CREATE TABLE IF NOT EXISTS auction_reports (
                                              -- 价格却自称 9:26 冻结的报告(复审 🟡-2)。
                                              -- 越窗 → `data_quality` 降级 → 闸 1 夹成中性。
   requested_codes     INTEGER NOT NULL,
-  fetched_codes       INTEGER NOT NULL,
+  fetched_codes       INTEGER NOT NULL,    -- 🔵 **V2.4.0 复审 🔵-6:这一列的语义在 P2 变过**
+                                             -- —— `snap.quotes` 自 P2 起只装**通过七项校验**的
+                                             -- 读数,于是它从「抓到几个」变成「几个**能用**」。
+                                             -- 🔴 **版本判别列 = `quote_quality_json IS NULL`**
+                                             -- (= v2.3.3 及更早的口径);⛔ 别拿两个版本的数直接比。
+                                             -- 同理下面的市场级 `data_quality`。
   missing_codes_json  TEXT NOT NULL,         -- ["600xxx.SH", …] 拉不到的
   conflict_codes_json TEXT NOT NULL,         -- 跨源冲突。🔴 **V2.4.0 P2.2 起真的会有值**:
                                              -- `get_quotes_dual()` 双源批量核验已上线(净增 1 次

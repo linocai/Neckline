@@ -704,7 +704,19 @@ struct PositionDetailPage: View {
                 // (说清最后成交日 + K4 有没有体检),后面跟一块常开的灰底说明。
                 // ⛔ 这一屏**不画刻度尺** —— 用陈旧价画一条"离止损还有多远"就是假图。
                 noQuoteCard(stale)
-                NKNoteBlock(text: "时间退出判向挂起 = 停牌期间不推进 D 计数、不触发离场判定;复牌当日按当日收盘重判。⛔ 名单拉不到时如实标 unknown,不猜成停牌。")
+                // 🔴 **V2.4.0 复审整改顺带**(最终 DoD 第 15 条的第三处,复审只点名了两处):
+                // 这句话讲的是「时间退出**判向**怎么挂起」—— 而 `v2.3-k8` 的
+                // `max_hold_days = nil`,**根本没有时间退出这项纪律**,那就没有"判向"可挂起。
+                // 老章程下它仍是真话,所以⛔ 不是删掉,而是**按既有唯一判据
+                // `hasTimeExitRule`(`maxHoldDaysEffective != nil`)分档** ——
+                // 与 `timeExitDisclosure` / `dBadgeText` 同一个判据,⛔ 不新立一套。
+                // ⚠ 无条款时**不补一句新话**:头部 `timeExitDisclosure` 已经在说
+                // 「本版无机械时间退出 —— D 计数只作记录」了,这里再说一遍是啰嗦。
+                if position.hasTimeExitRule {
+                    NKNoteBlock(text: "时间退出判向挂起 = 停牌期间不推进 D 计数、不触发离场判定;复牌当日按当日收盘重判。⛔ 名单拉不到时如实标 unknown,不猜成停牌。")
+                } else {
+                    NKNoteBlock(text: "停牌 / 无当日行情期间不推进 D 计数;复牌当日按当日收盘重算。⛔ 名单拉不到时如实标 unknown,不猜成停牌。")
+                }
             } else {
                 stopScaleCard          // 🔴 纪律位置(刻度尺是主角)
             }
