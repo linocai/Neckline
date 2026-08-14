@@ -155,7 +155,9 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
    `deploy@114.66.0.38:/opt/neckline`; public health reports `v2.4.2`, the API has zero restarts, and both
    timers are active. Rollback artifacts are under `/opt/neckline-release-backups/v2.4.2-pre-20260814-132448/`
    plus the two `neckline.db.*-v242-20260814-132448` backups. macOS V2.4.1 is preserved under
-   `/Users/linotsai/Lino/app_backups/`; no iOS device was touched.
+   `/Users/linotsai/Lino/app_backups/`; no iOS device was touched. Build 5 additionally has source/file/online-DB
+   backups under `/opt/neckline-release-backups/v2.4.2-b5-hotfix-pre-20260814-172520/`, and the replaced macOS
+   Build 3 is under `/Users/linotsai/Lino/app_backups/v2.4.2-b3-pre-b5-20260814-175936/`.
 
 ## 8. Milestone index and backlog
 
