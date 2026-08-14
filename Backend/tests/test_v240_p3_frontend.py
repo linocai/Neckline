@@ -412,7 +412,7 @@ class TestAuctionReduction:
         # 先切到 `AuctionReportPage` 这个 struct 再找,⛔ 别用全文首个匹配。
         page = _slice_between(_swift_code_only(_AUCTION_CARD),
                               "struct AuctionReportPage", "struct AuctionVerdictCard")
-        body = _decl_slice(page, "var body: some View")
+        body = _decl_slice(page, "private var reportContent: some View")
         pos = _order_of(body, ["basketsBlock", "risksBlock", "manualNoteBlock",
                                "marketBackgroundDisclosure", "dataAuditDisclosure"])
         assert all(p >= 0 for p in pos), pos

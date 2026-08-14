@@ -317,7 +317,7 @@ def test_card_shape_and_spec_versions_untouched_by_ex_rights_detector():
     # (`tier_breakdown.gates` 增逐关 `gate_available` / 结构化三件套 /
     # `t2_formal_policy`,v4 已上产 → 形状变了必须 bump)。
     # 两个 **spec** 版本仍一字未动 —— 本条守的是 ⑧ 吃的结构化 spec,不是卡顶层。
-    assert bc.CARD_SPEC_VERSION == "basket_card_v5"
+    assert bc.CARD_SPEC_VERSION == "basket_card_v6"
     assert bc.VERIFY_SPEC_VERSION == "basket_verify_v2"
     assert bc.INVALIDATE_SPEC_VERSION == "basket_invalidate_v2"
     mechs = [_mech("600000.SH")]

@@ -345,6 +345,7 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(card.members[0].tsCode, "600001.SH")
         XCTAssertEqual(card.disclaimer, "", "缺键 → 默认值,不是解码失败")
         XCTAssertNil(card.specVersion)
+        XCTAssertNil(card.generationSource, "老冻结卡缺键时不可猜测生成来源")
         XCTAssertTrue(card.risks.isEmpty)
         XCTAssertNil(card.upsidePath)
         // V2.2-③-E/③-C/③-C2 九键同样是纯新增 —— 老卡缺键必须解得出来,⛔ 不崩、

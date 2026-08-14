@@ -121,10 +121,8 @@ import polars as pl
 from neckline.data.market_data import get_market_slice
 from neckline.llm.base import ChatMessage, LLMProvider
 from neckline.llm.budget import LEDGER_REASON, BudgetLedger
-from neckline.llm.factory import get_provider
 from neckline.llm.json_block import split_narrative_and_reference_json
 from neckline.llm.prompt_context import TIMELINESS_RULES, date_anchor_line
-from neckline.llm.router import TASK_TIER_RANK
 from neckline.report.industry_strength_store import load_industry_strength
 from neckline.report.sectors import DEFAULT_TOP_N, compute_sector_strength
 from neckline.scan import cluster as cluster_mod
@@ -1073,8 +1071,8 @@ def score_and_tier(
     db_path: Optional[Path] = None,
     parquet_dir: Optional[Path] = None,
     pack: Optional[Pack] = None,
-    provider: Any = None,
-    use_llm: bool = False,
+    provider: Any = None,  # legacy signature; ignored by the V2.4.2 path
+    use_llm: bool = False,  # legacy signature; ignored by the V2.4.2 path
     ledger: Optional[BudgetLedger] = None,
     transport: Optional[Any] = None,
     gates_outcome: Optional[Any] = None,
@@ -1287,34 +1285,16 @@ def score_and_tier(
     for t in TIERS:
         by_tier[t].sort(key=lambda d: d.rank_mech)
 
+    # V2.4.2: full deep reasoning has already produced the human explanation
+    # before the six gates.  A second Tier call made order opaque and repeated
+    # cost.  Legacy helpers above remain readable for historical data, but new
+    # runs always emit deterministic ordering and neutral legacy fields.
     llm_stage = LLM_NOT_NEEDED
     narrative = ""
     rejected: List[RejectedAdjustment] = []
     decisions: List[TierDecision] = sorted(mech_decisions, key=lambda d: (d.tier, d.rank_in_tier))
-
-    adjustable = any(len(v) > 1 for v in by_tier.values())
-    if use_llm and adjustable:
-        ledger = ledger or BudgetLedger()
-        if provider is None:
-            try:
-                provider = get_provider(TASK_TIER_RANK, db_path=db_path)
-            except Exception:  # noqa: BLE001
-                logger.warning("[tier] 取 %s 的 provider 失败,微调段按缺席处理",
-                               TASK_TIER_RANK, exc_info=True)
-                provider = None
-        names = {b.basket_key: b.name for b in result.baskets}
-        narrative, proposals, llm_stage = run_tier_rank(
-            by_tier, names, trade_date, provider=provider, ledger=ledger, transport=transport,
-        )
-        if proposals is None:
-            notes.append(f"tier_rank_unadjusted:{llm_stage}")
-        else:
-            adjusted, rejected = apply_llm_adjustments(by_tier, proposals)
-            decisions = sorted(adjusted, key=lambda d: (d.tier, d.rank_in_tier))
-            if rejected:
-                notes.append(f"tier_rank_rejected:{len(rejected)}")
-    elif use_llm:
-        notes.append("tier_rank_not_needed")
+    if use_llm or provider is not None:
+        notes.append("tier_rank_retired:mechanical_order")
 
     return TierResult(
         trade_date=trade_date_s, decisions=tuple(decisions), dropped=tuple(dropped),

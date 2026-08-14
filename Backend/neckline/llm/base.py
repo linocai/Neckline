@@ -61,6 +61,13 @@ class LLMResult:
     # 哪个引擎"。无此概念的供应商(如 Kimi 的内置 `$web_search`,协议层没有可选
     # 引擎参数)同样恒 `None`。
     search_engine: Optional[str] = None
+    # V2.4.2: provider 返回的真实用量。所有字段均直接来自上游响应；没有就明确
+    # 标记为 unavailable，调用方不得按字符数或 prompt 长度猜 token。
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    raw_usage: Dict[str, Any] = field(default_factory=dict)
+    usage_unavailable: bool = True
 
 
 def search_coverage_line(hit_count: int) -> str:

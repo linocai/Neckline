@@ -32,7 +32,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_connection
 
 logger = logging.getLogger(__name__)
 
@@ -137,9 +137,15 @@ def load_threshold_shadow(
         sql += " AND threshold_key=?"
         args.append(threshold_key)
     sql += " ORDER BY id ASC"
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        raw = conn.execute(sql, tuple(args)).fetchall()
+    try:
+        with readonly_connection(db_path) as conn:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (TABLE,)
+            ).fetchone():
+                return []
+            raw = conn.execute(sql, tuple(args)).fetchall()
+    except FileNotFoundError:
+        return []
     keys = ["id"] + [c.strip() for c in _COLUMNS.split(",")]
     return [dict(zip(keys, r)) for r in raw]
 

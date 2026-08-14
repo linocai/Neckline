@@ -127,7 +127,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from neckline.config import settings
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_connection
 from neckline.scan.stage import STAGE_ORDER
 from neckline.selection import engine_api
 from neckline.selection.primitives import PRIMITIVES, validate_params
@@ -877,23 +877,49 @@ def _row_to_pack(row: Tuple[Any, ...]) -> Pack:
     )
 
 
+def _pack_select_columns(columns: set[str]) -> str:
+    """Build a legacy-safe Pack projection without repairing the schema."""
+    defaults = {"line_code": "'LEGACY'", "status": "'running'"}
+    return ", ".join(
+        name if name in columns else f"{defaults[name]} AS {name}"
+        for name in _PACK_COLUMNS.replace(" ", "").split(",")
+    )
+
+
 def list_packs(db_path: Optional[Path] = None) -> List[Pack]:
     """全部包版本,按 `created_at` 升序(append-only 历史,同 `brain.list_versions`
     体例)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(
-            f"SELECT {_PACK_COLUMNS} FROM selection_packs ORDER BY created_at ASC"
-        ).fetchall()
+    try:
+        with readonly_connection(db_path) as conn:
+            columns = {
+                str(column[1])
+                for column in conn.execute("PRAGMA table_info(selection_packs)")
+            }
+            if not columns:
+                return []
+            rows = conn.execute(
+                f"SELECT {_pack_select_columns(columns)} FROM selection_packs ORDER BY created_at ASC"
+            ).fetchall()
+    except FileNotFoundError:
+        return []
     return [_row_to_pack(r) for r in rows]
 
 
 def get_pack(pack_version: str, db_path: Optional[Path] = None) -> Optional[Pack]:
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute(
-            f"SELECT {_PACK_COLUMNS} FROM selection_packs WHERE pack_version=?", (pack_version,)
-        ).fetchone()
+    try:
+        with readonly_connection(db_path) as conn:
+            columns = {
+                str(column[1])
+                for column in conn.execute("PRAGMA table_info(selection_packs)")
+            }
+            if not columns:
+                return None
+            row = conn.execute(
+                f"SELECT {_pack_select_columns(columns)} FROM selection_packs WHERE pack_version=?",
+                (pack_version,),
+            ).fetchone()
+    except FileNotFoundError:
+        return None
     return _row_to_pack(row) if row is not None else None
 
 
@@ -915,19 +941,32 @@ def get_active_line(line_code: str, db_path: Optional[Path] = None) -> Optional[
     `'v'`/`'c1'` 之类静默查空)。"""
     if line_code not in _LINE_CODES:
         raise ValueError(f"line_code 取值非法:{line_code!r}(仅允许 {list(_LINE_CODES)})")
-    init_schema(db_path)
     key = _cache_key(db_path, line_code)
-    with connection(db_path) as conn:
-        # 取两行只为**能发现异常**(🔵 B3,per-line 版):库级 partial unique index
-        # `(line_code, is_active)` 之后「同线两行现役」已经进不来,但索引换代前的老库
-        # 可能有历史遗留 —— 那时候静默取一行等于让「今天这条线用的是哪个包」看运气
-        # (包版本是判定输入与归因分层键)。`pack_version DESC` 是确定性 tie-break。
-        rows = conn.execute(
-            f"SELECT {_PACK_COLUMNS} FROM selection_packs "
-            "WHERE is_active=1 AND line_code=? "
-            "ORDER BY created_at DESC, pack_version DESC LIMIT 2",
-            (line_code,),
-        ).fetchall()
+    try:
+        with readonly_connection(db_path) as conn:
+            columns = {
+                str(column[1])
+                for column in conn.execute("PRAGMA table_info(selection_packs)")
+            }
+            if not columns:
+                _ACTIVE_PACK_CACHE.pop(key, None)
+                return None
+            # Legacy pack rows predate the multi-line registry. They remain a
+            # readable LEGACY line; a missing line_code is never repaired here.
+            line_expr = "COALESCE(line_code, 'LEGACY')" if "line_code" in columns else "'LEGACY'"
+            status_expr = "status" if "status" in columns else "'running'"
+            rows = conn.execute(
+                "SELECT pack_version, name, engine_api_version, manifest_json, config_json, "
+                "evidence_ref, is_active, created_at, activated_at, "
+                f"{line_expr} AS line_code, {status_expr} AS status "
+                "FROM selection_packs "
+                f"WHERE is_active=1 AND {line_expr}=? "
+                "ORDER BY created_at DESC, pack_version DESC LIMIT 2",
+                (line_code,),
+            ).fetchall()
+    except FileNotFoundError:
+        _ACTIVE_PACK_CACHE.pop(key, None)
+        return None
     if len(rows) > 1:
         logger.warning(
             "[pack] selection_packs 线 %s 出现 %d 行 is_active=1(只可能来自手工 SQL / "

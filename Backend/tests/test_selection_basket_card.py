@@ -213,7 +213,8 @@ def test_card_json_key_shape_is_stable():
         "invalidation_spec", "invalidation_text", "risks", "disclaimer",
         "fingerprint", "discipline_labels", "narrative", "llm_stage", "degraded", "notes",
         # V2.2-③-E(spec v3):引擎归属三键(裁定 #9 单篮子单引擎,成员继承)。
-        "engine_code", "engine_version", "skeleton_version",
+            "engine_code", "engine_version", "skeleton_version",
+            "generation_source",
     }
     assert set(j["members"][0]) == {
         "ts_code", "name", "role_llm", "role_mech", "role_conflict", "reason",
@@ -849,7 +850,7 @@ def test_build_cards_is_offline_by_default(isolated_env, monkeypatch):
     assert cards[0].degraded is True
 
 
-def test_build_cards_with_llm_and_per_basket_fuse(isolated_env, monkeypatch):
+def test_build_cards_uses_deep_reason_material_without_per_card_llm(isolated_env, monkeypatch):
     monkeypatch.setattr(mt, "load_tag_panel_rows",
                         lambda codes, *a, **k: {c: {"close": 10.0, "ma20": 9.2} for c in codes})
     seed_active_rule_v1(isolated_env)
@@ -858,13 +859,17 @@ def test_build_cards_with_llm_and_per_basket_fuse(isolated_env, monkeypatch):
         [_basket("b1"), _basket("b2")], D0, provider=p, use_llm=True,
         tier_by_basket_key={"b1": _FakeDecision(), "b2": _FakeDecision(tier=2, rank=1)},
         db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir,
+        deep_reasoning_by_basket_key={
+            "b1": {"narrative": "深研结论一", "card_material": _payload()},
+            "b2": {"narrative": "深研结论二", "card_material": _payload()},
+        },
     )
-    assert len(cards) == 2 and len(p.calls) == 2
+    assert len(cards) == 2 and p.calls == []
     assert all(c.llm_stage == bc.LLM_OK for c in cards)
+    assert all(c.generation_source == "deep_reason" for c in cards)
+    assert all(c.degraded is False for c in cards)
     assert cards[0].stop_pct == 0.05 and cards[0].tier == 1 and cards[1].tier == 2
-    # 上下文里带了结构化阈值(**先算 spec、再喂 LLM**)
-    user_msg = p.calls[0]["messages"][1].content
-    assert bc.VERIFY_SPEC_VERSION in user_msg
+    assert all("card_llm_retired:deep_reason_required" in c.notes for c in cards)
 
 
 def test_build_cards_survives_one_bad_basket(isolated_env, monkeypatch, caplog):

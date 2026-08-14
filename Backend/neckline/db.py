@@ -740,8 +740,12 @@ CREATE TABLE IF NOT EXISTS baskets (
   charter_version    TEXT NOT NULL,              -- 生成时的现役章程(口径指纹)
   via                TEXT NOT NULL DEFAULT 'auto',   -- auto | preseed
   evidence_status    TEXT NOT NULL DEFAULT 'ok',     -- ok | search_unavailable | partial
+  -- Empty string is the explicit legacy generation.  It is deliberately not
+  -- NULL: SQLite considers NULL values distinct in UNIQUE constraints, which
+  -- would let a legacy writer create duplicate frozen baskets.
+  selection_run_id   TEXT NOT NULL DEFAULT '',       -- V2.4.2 published generation; ''=legacy
   created_at         TEXT NOT NULL,
-  UNIQUE(trade_date, basket_key)
+  UNIQUE(trade_date, basket_key, selection_run_id)
 );
 
 -- 模型判断:篮子成员与角色(plan §五 V2-①/⑦),含机械/LLM 角色对拍分歧。role_conflict=1
@@ -1080,9 +1084,11 @@ CREATE INDEX IF NOT EXISTS idx_industry_stage_date ON industry_stage_daily(trade
 --   有行、非空数组   = 跑了,有溢出。
 -- 读写唯一实现:`neckline/selection/basket_dropped_handoff.py`。
 CREATE TABLE IF NOT EXISTS basket_dropped_handoff (
-  trade_date   TEXT PRIMARY KEY,
+  trade_date   TEXT NOT NULL,
+  selection_run_id TEXT NOT NULL DEFAULT '', -- V2.4.2 published generation; ''=legacy
   dropped_json TEXT NOT NULL,      -- [{basket_key, reason, mech_score}, ...],允许 []
-  created_at   TEXT NOT NULL
+  created_at   TEXT NOT NULL,
+  PRIMARY KEY(trade_date, selection_run_id)
 );
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -1203,6 +1209,7 @@ CREATE TABLE IF NOT EXISTS gate_evaluations (
   engine_code   TEXT,
   engine_version TEXT,
   evidence_json TEXT NOT NULL DEFAULT '{}',
+  selection_run_id TEXT NOT NULL DEFAULT '',
   created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_gate_eval_day ON gate_evaluations(trade_date, gate);
@@ -1351,8 +1358,9 @@ CREATE TABLE IF NOT EXISTS out_candidates (
   out_gate TEXT,                     -- 卡在哪一关(gates.GATE_* 六码之一;NULL = 非关口原因)
   out_reason TEXT NOT NULL,          -- ③b 原因码(与 droppedBaskets 同一套码,⛔ 不另起)
   out_detail TEXT,                   -- 差多少 / 模型理由(原因码串,数值已内嵌)
+  selection_run_id TEXT NOT NULL DEFAULT '', -- V2.4.2 published generation; ''=legacy
   created_at TEXT NOT NULL,
-  UNIQUE(d0_date, basket_key, ts_code)
+  UNIQUE(d0_date, basket_key, ts_code, selection_run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_out_candidates_day ON out_candidates(d0_date);
 
@@ -1676,6 +1684,10 @@ _COLUMN_MIGRATIONS = [
     ("baskets", "engine_code", "TEXT"),
     ("baskets", "engine_version", "TEXT"),
     ("baskets", "skeleton_version", "TEXT"),
+    ("baskets", "selection_run_id", "TEXT"),
+    ("gate_evaluations", "selection_run_id", "TEXT"),
+    ("out_candidates", "selection_run_id", "TEXT"),
+    ("basket_dropped_handoff", "selection_run_id", "TEXT"),
     # V2-⑭-A(plan §五 V2-⑭-A「报告重构为篮子日报」):篮子日报快照。
     # **随报告一起冻住**(同 `intel_json`/`data_freshness_json` 既定惯例):今日篮子
     # (T1/T2/T3,每篮一张卡)+ ③b 未定档篮子(`capacity_overflow` /
@@ -1894,6 +1906,128 @@ def _relax_holding_eod_check_notnull(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_selection_generation_tables(conn: sqlite3.Connection) -> None:
+    """Upgrade frozen final-fact keys from day-only to explicit generations.
+
+    A V2.4.2 run may publish a replacement snapshot on the same D0.  Keeping
+    the old day-only UNIQUE keys silently joined facts from separate runs, so
+    merely adding ``selection_run_id`` was not enough.  Preserve legacy rows
+    under the explicit empty generation while rebuilding only the two tables
+    whose old unique constraints cannot express the new identity.
+
+    The child basket tables key by immutable ``basket_id`` and have no SQLite
+    foreign-key declaration, so retaining IDs keeps historical cards/reviews
+    readable.  The savepoint makes a failed migration leave the original
+    table intact; repeated ``init_schema`` sees the new constraint and skips.
+    """
+    basket_sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='baskets'"
+    ).fetchone()
+    if basket_sql_row and "UNIQUE(trade_date, basket_key)" in str(basket_sql_row[0] or ""):
+        basket_tmp = "baskets__v242_generation"
+        conn.execute("SAVEPOINT v242_basket_generation")
+        try:
+            conn.execute(f"""
+                CREATE TABLE {basket_tmp} (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  trade_date TEXT NOT NULL, basket_key TEXT NOT NULL, name TEXT NOT NULL,
+                  driver TEXT NOT NULL, driver_kind TEXT NOT NULL, tier INTEGER NOT NULL,
+                  pack_version TEXT NOT NULL, engine_api_version INTEGER NOT NULL,
+                  charter_version TEXT NOT NULL, via TEXT NOT NULL DEFAULT 'auto',
+                  evidence_status TEXT NOT NULL DEFAULT 'ok',
+                  selection_run_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+                  engine_code TEXT, engine_version TEXT, skeleton_version TEXT,
+                  UNIQUE(trade_date, basket_key, selection_run_id)
+                )
+            """)
+            conn.execute(f"""
+                INSERT INTO {basket_tmp}(
+                  id,trade_date,basket_key,name,driver,driver_kind,tier,pack_version,
+                  engine_api_version,charter_version,via,evidence_status,selection_run_id,
+                  created_at,engine_code,engine_version,skeleton_version
+                )
+                SELECT id,trade_date,basket_key,name,driver,driver_kind,tier,pack_version,
+                       engine_api_version,charter_version,via,evidence_status,
+                       COALESCE(selection_run_id,''),created_at,engine_code,engine_version,
+                       skeleton_version
+                FROM baskets
+            """)
+            conn.execute("DROP TABLE baskets")
+            conn.execute(f"ALTER TABLE {basket_tmp} RENAME TO baskets")
+            conn.execute("RELEASE SAVEPOINT v242_basket_generation")
+        except sqlite3.Error:
+            conn.execute("ROLLBACK TO SAVEPOINT v242_basket_generation")
+            conn.execute("RELEASE SAVEPOINT v242_basket_generation")
+            raise
+
+    out_sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='out_candidates'"
+    ).fetchone()
+    if out_sql_row and "UNIQUE(d0_date, basket_key, ts_code)" in str(out_sql_row[0] or ""):
+        conn.execute("SAVEPOINT v242_out_generation")
+        try:
+            conn.execute("""
+                CREATE TABLE out_candidates__v242_generation (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  d0_date TEXT NOT NULL, basket_key TEXT NOT NULL, ts_code TEXT NOT NULL,
+                  name TEXT NOT NULL DEFAULT '', role TEXT, engine_code TEXT,
+                  engine_version TEXT, skeleton_version TEXT, out_gate TEXT,
+                  out_reason TEXT NOT NULL, out_detail TEXT,
+                  selection_run_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+                  UNIQUE(d0_date, basket_key, ts_code, selection_run_id)
+                )
+            """)
+            conn.execute("""
+                INSERT INTO out_candidates__v242_generation(
+                  id,d0_date,basket_key,ts_code,name,role,engine_code,engine_version,
+                  skeleton_version,out_gate,out_reason,out_detail,selection_run_id,created_at
+                )
+                SELECT id,d0_date,basket_key,ts_code,name,role,engine_code,engine_version,
+                       skeleton_version,out_gate,out_reason,out_detail,
+                       COALESCE(selection_run_id,''),created_at
+                FROM out_candidates
+            """)
+            conn.execute("DROP TABLE out_candidates")
+            conn.execute("ALTER TABLE out_candidates__v242_generation RENAME TO out_candidates")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_out_candidates_day ON out_candidates(d0_date)")
+            conn.execute("RELEASE SAVEPOINT v242_out_generation")
+        except sqlite3.Error:
+            conn.execute("ROLLBACK TO SAVEPOINT v242_out_generation")
+            conn.execute("RELEASE SAVEPOINT v242_out_generation")
+            raise
+
+    handoff_sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='basket_dropped_handoff'"
+    ).fetchone()
+    if handoff_sql_row and "PRIMARY KEY(trade_date, selection_run_id)" not in str(handoff_sql_row[0] or ""):
+        conn.execute("SAVEPOINT v242_handoff_generation")
+        try:
+            conn.execute("""
+                CREATE TABLE basket_dropped_handoff__v242_generation (
+                  trade_date TEXT NOT NULL, selection_run_id TEXT NOT NULL DEFAULT '',
+                  dropped_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                  PRIMARY KEY(trade_date, selection_run_id)
+                )
+            """)
+            conn.execute("""
+                INSERT INTO basket_dropped_handoff__v242_generation(
+                  trade_date,selection_run_id,dropped_json,created_at
+                )
+                SELECT trade_date,COALESCE(selection_run_id,''),dropped_json,created_at
+                FROM basket_dropped_handoff
+            """)
+            conn.execute("DROP TABLE basket_dropped_handoff")
+            conn.execute(
+                "ALTER TABLE basket_dropped_handoff__v242_generation "
+                "RENAME TO basket_dropped_handoff"
+            )
+            conn.execute("RELEASE SAVEPOINT v242_handoff_generation")
+        except sqlite3.Error:
+            conn.execute("ROLLBACK TO SAVEPOINT v242_handoff_generation")
+            conn.execute("RELEASE SAVEPOINT v242_handoff_generation")
+            raise
+
+
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     """对既有表做「缺列即补」的幂等迁移(见 `_COLUMN_MIGRATIONS` 注释)+ 依赖迁移列的索引
     (`_POST_MIGRATION_INDEXES`,必须在补列之后建)+ v1.2-A 激活戳一次性回填(幂等,见
@@ -1903,6 +2037,7 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    _migrate_selection_generation_tables(conn)
     for stmt in _POST_MIGRATION_INDEXES:
         try:
             conn.execute(stmt)
@@ -1945,12 +2080,43 @@ def connection(db_path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+@contextmanager
+def readonly_connection(db_path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
+    """Open an existing SQLite database without schema or migration side effects.
+
+    V2.4.2 API/report/review readers use this helper. It deliberately does not
+    create the parent directory, enable WAL, or call ``init_schema``. A missing
+    file is reported to the caller so it can choose its documented
+    empty/unavailable response; migration belongs to startup, controlled write
+    commands, or the RC migration procedure.
+    """
+    path = Path(db_path or settings.db_path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def init_schema(db_path: Optional[Path] = None) -> None:
     """建表(幂等,`IF NOT EXISTS`)+ 既有表缺列补齐(幂等 `ALTER TABLE`,见
     `_migrate_columns`)。backfill / init_calendar / 各 store 入口处调用。"""
     with connection(db_path) as conn:
         conn.executescript(_SCHEMA)
         _migrate_columns(conn)
+        # V2.4.2 选择运行账是独立、追加式审计域。它在这里随既有 schema 以同一
+        # 短事务初始化，避免 API 读路径为了查询运行态而执行任何 DDL。
+        try:
+            from neckline.selection.run_store import init_selection_run_schema_on_connection
+        except ImportError:
+            # Tests that intentionally replace this optional read-overlay module
+            # with a tiny stub must not make unrelated legacy schema setup fail.
+            # The real module is present in every V2.4.2 runtime.
+            init_selection_run_schema_on_connection = None
+        if init_selection_run_schema_on_connection is not None:
+            init_selection_run_schema_on_connection(conn)
 
 
-__all__ = ["get_connection", "connection", "init_schema"]
+__all__ = ["get_connection", "connection", "readonly_connection", "init_schema"]

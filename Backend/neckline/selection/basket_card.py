@@ -87,7 +87,6 @@ from neckline.llm.base import ChatMessage, LLMProvider
 from neckline.llm.budget import LEDGER_REASON, BudgetLedger
 from neckline.llm.json_block import split_narrative_and_reference_json
 from neckline.llm.prompt_context import TIMELINESS_RULES, date_anchor_line
-from neckline.llm.router import TASK_SCRIPT
 from neckline.selection import member_tags as mt
 from neckline.selection import verification_rules as vr
 from neckline.sentinel.universe import load_stock_meta
@@ -133,7 +132,7 @@ logger = logging.getLogger(__name__)
 # 形状里再 bump 只会造出一个没有任何卡携带的幽灵版本号。规则不变 ——
 # **一旦 v5 上产,再改形状必须 bump**。
 # ⚠ 老 v4 及更早的卡没有这两键 → 消费方按「没记」处理(⛔ 不给老卡猜一个 confirmed)。
-CARD_SPEC_VERSION = "basket_card_v5"
+CARD_SPEC_VERSION = "basket_card_v6"
 VERIFY_SPEC_VERSION = "basket_verify_v2"
 INVALIDATE_SPEC_VERSION = "basket_invalidate_v2"
 
@@ -975,6 +974,9 @@ class BasketCard:
     engine_code: Optional[str] = None
     engine_version: Optional[str] = None
     skeleton_version: Optional[str] = None
+    # V2.4.2: final cards are mechanically assembled from the one full deep
+    # reasoning result; no second per-card LLM script is allowed.
+    generation_source: Optional[str] = None
 
     @property
     def degraded(self) -> bool:
@@ -1032,6 +1034,7 @@ class BasketCard:
             "engine_code": self.engine_code,
             "engine_version": self.engine_version,
             "skeleton_version": self.skeleton_version,
+            "generation_source": self.generation_source,
             # 2 驱动证据与信息来源(每条带日期)
             "evidence": [
                 {"claim": e.claim, "source": e.source, "date": e.date,
@@ -1159,6 +1162,7 @@ def build_basket_card(
     next_trade_date: Optional[date] = None,
     min_members_hit: Optional[int] = None,
     notes: Sequence[str] = (),
+    generation_source: Optional[str] = None,
 ) -> BasketCard:
     """**纯装配**:已经拿到的机械数据 + (可选的)LLM 产出 → 一张 `BasketCard`。
     **不发起任何 LLM 调用、不落库、不读库**(除非 `mechs` 没传 —— 那时会为了不让
@@ -1286,6 +1290,7 @@ def build_basket_card(
         engine_code=getattr(basket, "engine_code", None),
         engine_version=getattr(basket, "engine_version", None),
         skeleton_version=getattr(basket, "skeleton_version", None),
+        generation_source=generation_source,
     )
 
 
@@ -1303,13 +1308,14 @@ def build_cards(
     close_of: Optional[Mapping[str, Optional[float]]] = None,
     with_tags: bool = True,
     version: int = 1,
+    deep_reasoning_by_basket_key: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> List[BasketCard]:
     """⑦ 的编排入口:一批篮子 → 一批卡(**不落库**,落库走
     `basket_store.save_basket_card()` 的【事务 2】)。
 
-    `use_llm`:默认 **False**(纯机械,零 LLM 调用)—— 与 ⑥ `score_and_tier` 同一
-    姿势:传了 `provider` 但没开 `use_llm` 也不会调用,免得"注入个桩"就意外上路。
-    ⑭ 的管线会显式打开并传 `provider`(`get_provider(TASK_SCRIPT)`)与 `ledger`。
+    V2.4.2 起卡片不再调用 `TASK_SCRIPT`。`provider`、`use_llm`、`ledger` 与
+    `transport` 仅保留签名兼容；唯一允许的人话原料由
+    `deep_reasoning_by_basket_key` 提供，并由本函数机械夹逼、白名单并冻结。
 
     **每篮各自包保险丝**:一张卡炸了不牵连其余(核心管线对可选情报输入必须包保险丝,
     项目 CLAUDE.md 铁律);整批共用一次机械 I/O(价量面板 / 龙头结构 / 元数据 / 章程)。
@@ -1359,28 +1365,31 @@ def build_cards(
         decision = (tier_by_basket_key or {}).get(key)
         notes: List[str] = []
         narrative, payload, stage = "", None, LLM_DISABLED
+        generation_source: Optional[str] = None
         try:
             member_mechs = {m.ts_code: mechs.get(m.ts_code) or MemberMech(ts_code=m.ts_code)
                             for m in (getattr(b, "members", ()) or ())}
-            if use_llm:
-                verify_preview = build_verification_spec(
-                    key, trade_date, list(member_mechs.values()), next_trade_date=nd)
-                invalidate_preview = build_invalidation_spec(
-                    key, trade_date, list(member_mechs.values()), next_trade_date=nd,
-                    stop_pct=stop_pct)
-                context = build_card_context(
-                    b, trade_date, member_mechs, verify_preview, invalidate_preview,
-                    tier_decision=decision, tag_batch=tag_batch if with_tags else None,
-                    discipline=labels,
-                )
-                narrative, payload, stage = run_card_llm(
-                    context, provider=provider, ledger=ledger, transport=transport)
+            deep = (deep_reasoning_by_basket_key or {}).get(key)
+            if isinstance(deep, Mapping):
+                raw_payload = deep.get("card_material", deep.get("payload"))
+                if isinstance(raw_payload, Mapping):
+                    payload = raw_payload
+                    narrative = str(deep.get("narrative") or payload.get("narrative") or "")
+                    # A deep-result payload is the single semantic source.  The
+                    # final card still validates every numeric/textual field.
+                    stage = LLM_OK
+                    generation_source = "deep_reason"
+                else:
+                    notes.append("deep_reason_card_material_unavailable")
+            if use_llm or provider is not None:
+                notes.append("card_llm_retired:deep_reason_required")
             out.append(build_basket_card(
                 b, trade_date, tier_decision=decision, mechs=member_mechs,
                 tag_batch=tag_batch, payload=payload, narrative=narrative, llm_stage=stage,
                 stop_pct=stop_pct, take_profit_retrace=tpr,
                 loss_warning_pct=lw_pct, loss_warning_action=lw_action, version=version,
                 with_tags=with_tags, next_trade_date=nd, notes=notes,
+                generation_source=generation_source,
             ))
         except Exception:  # noqa: BLE001 —— 一张卡炸了不牵连其余(「有篮子无卡」合法)
             logger.error("[basket_card] 篮子 %s 的卡生成整体失败,本篮无卡(篮子不回删)",

@@ -796,7 +796,8 @@ def _mech(env, r=None, **kw) -> ti.TierResult:
                              parquet_dir=env.parquet_dir, pack=K7_PACK, **kw)
 
 
-class TestLLMTuning:
+@pytest.mark.skip(reason="V2.4.2 retires Tier LLM calls; helpers remain read-compatible only")
+class TestRetiredLLMTuningCompatibility:
     def test_reorders_within_tier_and_leaves_a_trace(self, isolated_env):
         env = isolated_env
         base = _mech(env)
@@ -971,6 +972,27 @@ class TestLLMTuning:
                                 pack=K7_PACK, use_llm=True, provider=prov)
         assert prov.calls == [] and res.llm_stage == ti.LLM_NOT_NEEDED
         assert "tier_rank_not_needed" in res.notes
+
+
+class TestDeterministicTier:
+    def test_tier_never_calls_llm_even_with_legacy_arguments(self, isolated_env):
+        provider = _StubProvider(_adjust_reply([]))
+        result = _mech(isolated_env, use_llm=True, provider=provider, ledger=BudgetLedger())
+        assert provider.calls == []
+        assert result.llm_stage == ti.LLM_NOT_NEEDED
+        assert all(d.rank_in_tier == d.rank_mech for d in result.decisions)
+        assert all(d.llm_rank_delta == 0 and d.llm_reason is None for d in result.decisions)
+        assert "tier_rank_retired:mechanical_order" in result.notes
+
+    def test_legacy_adjustment_parser_is_not_an_orchestration_step(self, isolated_env):
+        base = _mech(isolated_env)
+        adjusted, rejected = ti.apply_llm_adjustments(
+            base.by_tier(), [{"basket_key": base.decisions[-1].basket_key, "rank_in_tier": 1}],
+        )
+        assert adjusted and rejected == []
+        provider = _StubProvider(_adjust_reply([]))
+        _mech(isolated_env, use_llm=True, provider=provider)
+        assert provider.calls == []
 
 
 # ══════════════════════════════════════════════════════════════════════════

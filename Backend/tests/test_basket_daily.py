@@ -172,6 +172,12 @@ class TestCardCamelConversion:
         assert m["tsCode"] == "600001.SH" and m["roleLlm"] == "leader"
         assert m["entryZoneClamp"] == "ok" and m["exitReferenceUnavailableReason"] is None
 
+    def test_generation_source_is_additive_and_old_cards_keep_it_absent(self):
+        current = _card_json(["600001.SH"])
+        current["generation_source"] = "deep_reason"
+        assert bd.card_to_public_dict(current)["generationSource"] == "deep_reason"
+        assert "generationSource" not in bd.card_to_public_dict(_card_json(["600001.SH"]))
+
     def test_int_flags_become_real_bools(self):
         """`role_conflict`/`is_primary` 在冻结件里是 0/1 整数;Swift 的 `Bool` 解
         `0`/`1` 会直接失败 —— 转换点必须做这件实事,不是美化。"""

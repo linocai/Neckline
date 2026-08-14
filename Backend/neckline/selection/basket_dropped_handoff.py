@@ -41,11 +41,12 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_connection
 from neckline.selection.tier import DroppedBasket
 
 logger = logging.getLogger(__name__)
@@ -55,15 +56,17 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _day(trade_date: date) -> str:
-    return trade_date.strftime("%Y%m%d")
+def _day(trade_date: date | str) -> str:
+    return trade_date if isinstance(trade_date, str) else trade_date.strftime("%Y%m%d")
 
 
 def save_dropped_handoff(
     trade_date: date,
     dropped: Sequence[DroppedBasket],
     *,
+    selection_run_id: Optional[str] = None,
     db_path: Optional[Path] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """落一行(`INSERT OR REPLACE`,`trade_date` 主键)。**`dropped` 允许空序列**
     (= 跑了零溢出,与"没跑"必须能分开——靠"有没有这一行"区分,不是数组是否为空)。
@@ -79,13 +82,19 @@ def save_dropped_handoff(
          "gate_detail": getattr(d, "gate_detail", None)}
         for d in dropped
     ]
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        conn.execute(
+    def _save(target: sqlite3.Connection) -> None:
+        target.execute(
             "INSERT OR REPLACE INTO basket_dropped_handoff "
-            "(trade_date, dropped_json, created_at) VALUES (?,?,?)",
-            (_day(trade_date), json.dumps(payload, ensure_ascii=False, sort_keys=True), _now()),
+            "(trade_date, selection_run_id, dropped_json, created_at) VALUES (?,?,?,?)",
+            (_day(trade_date), str(selection_run_id or ""),
+             json.dumps(payload, ensure_ascii=False, sort_keys=True), _now()),
         )
+    if conn is not None:
+        _save(conn)
+        return
+    init_schema(db_path)
+    with connection(db_path) as own:
+        _save(own)
 
 
 def load_dropped_handoff(
@@ -94,12 +103,21 @@ def load_dropped_handoff(
     """读回上面存的那一行。**无行 → `None`**(⑤⑥ 本次〔迄今〕没跑过,⛔ 不许猜成
     零溢出);解析异常 → 同样按 `None` 处理并 WARNING(读侧永远不比"没有这张表"更糟,
     绝不让一行解不出的脏数据把报告段拖垮)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute(
-            "SELECT dropped_json FROM basket_dropped_handoff WHERE trade_date=?",
-            (_day(trade_date),),
-        ).fetchone()
+    try:
+        with readonly_connection(db_path) as conn:
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(basket_dropped_handoff)")}
+            if not columns:
+                return None
+            sql = "SELECT dropped_json FROM basket_dropped_handoff WHERE trade_date=?"
+            args = [_day(trade_date)]
+            if "selection_run_id" in columns:
+                from neckline.selection.run_store import latest_published_run_id
+                run_id = latest_published_run_id(_day(trade_date), db_path=db_path)
+                sql += " AND COALESCE(selection_run_id,'')=?"
+                args.append(run_id or "")
+            row = conn.execute(sql, tuple(args)).fetchone()
+    except FileNotFoundError:
+        return None
     if row is None:
         return None
     try:

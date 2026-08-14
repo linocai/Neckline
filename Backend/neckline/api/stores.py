@@ -16,7 +16,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_connection
 
 
 def _now() -> str:
@@ -48,9 +48,15 @@ def upsert_device(token: str, platform: str = "ios", db_path: Optional[Path] = N
 
 def list_device_tokens(db_path: Optional[Path] = None) -> List[str]:
     """全部已注册 device token(16:00 报告 / 退潮刹车推送时遍历)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute("SELECT token FROM devices ORDER BY created_at").fetchall()
+    try:
+        with readonly_connection(db_path) as conn:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='devices'"
+            ).fetchone():
+                return []
+            rows = conn.execute("SELECT token FROM devices ORDER BY created_at").fetchall()
+    except FileNotFoundError:
+        return []
     return [r[0] for r in rows]
 
 
@@ -69,13 +75,19 @@ def load_inquiry_pool(trade_date: date, db_path: Optional[Path] = None) -> List[
     (`add_to_inquiry_pool` 已删),表里只剩 v1.1~v1.5.2 的历史行。唯一消费方 =
     `review/reconcile.py::check_plan_and_ledger` 的「计划内(问询台海选池)」判定
     —— 那是对历史成交的归因,**保留它是为了不改写历史周的 plan_status**。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(
-            "SELECT ts_code, name, reason, created_at FROM inquiry_pool "
-            "WHERE trade_date=? ORDER BY created_at, ts_code",
-            (_d(trade_date),),
-        ).fetchall()
+    try:
+        with readonly_connection(db_path) as conn:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='inquiry_pool'"
+            ).fetchone():
+                return []
+            rows = conn.execute(
+                "SELECT ts_code, name, reason, created_at FROM inquiry_pool "
+                "WHERE trade_date=? ORDER BY created_at, ts_code",
+                (_d(trade_date),),
+            ).fetchall()
+    except FileNotFoundError:
+        return []
     return [{"ts_code": r[0], "name": r[1], "reason": r[2], "created_at": r[3]} for r in rows]
 
 

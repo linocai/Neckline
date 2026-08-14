@@ -334,6 +334,10 @@ struct BasketDailyView: View {
             // ⚠ **③ 的段头与那句 Tier 红线在原型的列表栏里没有**(它们在篮子卡的
             // ⑩ 披露区里,macOS 原型 685 行逐字保留)—— 列表栏直接是 T1 / T2 分组头。
             // ⛔ 别当成"漏了"再加回来:同一句话在一屏里说两遍,反而没人读。
+            // V2.4.2:这是运行态覆盖，不改写下方已冻结的篮子内容；缺键的旧报告不显示。
+            if let status = daily.selectionStatusNotice {
+                unavailableRow(title: status.title, detail: status.detail)
+            }
             if !daily.basketsAvailable {
                 // E3:**「本次没取到」与「今天真没有」讲不同的话**。
                 // 🔴 V2.4.0 P2.5(K8 §十):**系统缺席**要说成「选股解释未完成」——
@@ -890,6 +894,10 @@ struct BasketDailyView: View {
             Text("Tier / 档内次序 = 注意力优先级,不是收益预测 · T1 ≠ 最会涨 · 终选权在你")
                 .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
+            // V2.4.2:有明确运行态才说，旧快照保持旧界面，绝不从旧字段猜状态。
+            if let status = daily.selectionStatusNotice {
+                unavailableRow(title: status.title, detail: status.detail)
+            }
             if !daily.basketsAvailable {
                 NKCard {
                     VStack(alignment: .leading, spacing: 8) {

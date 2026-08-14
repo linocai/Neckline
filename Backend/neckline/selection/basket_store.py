@@ -14,11 +14,11 @@
     ⑦ build_card()          → 调 LLM(慢、可失败)
     ⑦ 【事务 2】             → basket_cards(version=1)
 
-**刻意两个事务**:⑦ 的卡生成要调 LLM,跨 LLM 调用持 SQLite 事务是错的(慢、易
-超时、锁库)。故本模块提供 `save_tier_decision()`(事务 1)与 `save_basket_card()`
-/ `save_basket_cards()`(事务 2,V2-⑦ 落地)两个独立入口,**不提供把四张表并成
-一个事务的路径**。「有篮子、无卡」是**合法中间态**(事务 1 成功、⑦ 的 LLM 不可用 /
-预算耗尽 / 生成失败):不回删篮子、不抛异常,同一 D0 内可重跑补 `version=1`。
+**卡先建、再发布**:⑦ 的慢工作必须在事务外完成，不能持锁调用 LLM。历史调用者仍可
+使用 `save_tier_decision()` 与 `save_basket_cards()` 的两段兼容入口；V2.4.2 有
+`selection_run_id` 的新方向链则使用 `publish_selection_snapshot()`，把已经完成的
+篮子/成员/Tier/卡和 run published 标记放进同一短事务。故新链不再向读侧暴露
+「有篮子、无卡」半成品。
 
 **幂等与冻结(裁定定死)**:四张表一律 `INSERT OR IGNORE`,同日重跑 = no-op、
 **绝不覆盖既有行**(它们是 D0 冻结件)。⚠ 这与 v1.5 契约线 🟡-1「同日重跑要在写侧
@@ -50,7 +50,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_connection
 
 if TYPE_CHECKING:  # pragma: no cover - 仅供类型标注,运行期不 import(防循环)
     from neckline.selection.aggregate import AggregateResult
@@ -58,10 +58,25 @@ if TYPE_CHECKING:  # pragma: no cover - 仅供类型标注,运行期不 import(�
 logger = logging.getLogger(__name__)
 
 
+def _read_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    """Read-only schema probe; an absent legacy table is an empty result."""
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _has_table(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
+
+def _select_or_null(columns: set[str], name: str) -> str:
+    return name if name in columns else f"NULL AS {name}"
+
+
 _BASKET_COLUMNS = (
     "trade_date, basket_key, name, driver, driver_kind, tier, pack_version, "
     "engine_api_version, charter_version, via, evidence_status, created_at, "
-    "engine_code, engine_version, skeleton_version"
+    "engine_code, engine_version, skeleton_version, selection_run_id"
 )
 _MEMBER_COLUMNS = (
     "basket_id, ts_code, role_llm, role_mech, role_conflict, reason, is_primary, created_at"
@@ -126,6 +141,7 @@ def _save_baskets_on_conn(
     *,
     via: str,
     now: str,
+    selection_run_id: Optional[str] = None,
 ) -> Tuple[Dict[str, int], Dict[str, int], List[str]]:
     """事务内的实际写入。返回 `(stats, basket_id_by_key, frozen_conflicts)`。
 
@@ -139,7 +155,7 @@ def _save_baskets_on_conn(
         tier = int(tier_by_basket_key[b.basket_key])
         cur = conn.execute(
             f"INSERT OR IGNORE INTO baskets ({_BASKET_COLUMNS}) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 b.trade_date, b.basket_key, b.name, b.driver, b.driver_kind,
                 tier, b.pack_version,
@@ -148,6 +164,7 @@ def _save_baskets_on_conn(
                 # 预置/测试替身没有这些属性 → NULL,与老行同语义「无归属概念」)。
                 getattr(b, "engine_code", None), getattr(b, "engine_version", None),
                 getattr(b, "skeleton_version", None),
+                str(selection_run_id or ""),
             ),
         )
         basket_is_new = bool(cur.rowcount)
@@ -161,8 +178,9 @@ def _save_baskets_on_conn(
                 b.trade_date, b.basket_key,
             )
         row = conn.execute(
-            "SELECT id, tier FROM baskets WHERE trade_date=? AND basket_key=?",
-            (b.trade_date, b.basket_key),
+            "SELECT id, tier FROM baskets "
+            "WHERE trade_date=? AND basket_key=? AND selection_run_id=?",
+            (b.trade_date, b.basket_key, str(selection_run_id or "")),
         ).fetchone()
         basket_id = int(row[0])
         ids[b.basket_key] = basket_id
@@ -442,11 +460,15 @@ def next_card_version(basket_id: int, *, db_path: Optional[Path] = None) -> int:
     默认自增会让「同一 D0 内重跑补 version=1」变成"每重跑一次多一版",那不是幂等
     补写、而是把冻结件写成流水账。D0 路径请显式传 `version=1`。
     """
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute(
-            "SELECT MAX(version) FROM basket_cards WHERE basket_id=?", (int(basket_id),)
-        ).fetchone()
+    try:
+        with readonly_connection(db_path) as conn:
+            if not _has_table(conn, "basket_cards"):
+                return 1
+            row = conn.execute(
+                "SELECT MAX(version) FROM basket_cards WHERE basket_id=?", (int(basket_id),)
+            ).fetchone()
+    except FileNotFoundError:
+        return 1
     return int(row[0]) + 1 if row is not None and row[0] is not None else 1
 
 
@@ -500,6 +522,9 @@ def save_basket_card(
     )
     if conn is not None:
         return _save_basket_card_on_conn(conn, row)
+    # This is a controlled write entry. It may initialize an explicitly
+    # selected target before opening its write transaction; read helpers never
+    # share this path.
     init_schema(db_path)
     with connection(db_path) as own:
         return _save_basket_card_on_conn(own, row)
@@ -552,6 +577,7 @@ def save_basket_cards(
     stats: Dict[str, Any] = {"cards_inserted": 0, "cards_existing": 0, "frozen_conflicts": []}
     if not cards_by_basket_id:
         return stats
+    # Same controlled-write boundary as ``save_basket_card`` above.
     init_schema(db_path)
     with connection(db_path) as conn:
         for basket_id, card in cards_by_basket_id.items():
@@ -568,6 +594,129 @@ def save_basket_cards(
             stats["cards_inserted"] += one["cards_inserted"]
             stats["cards_existing"] += one["cards_existing"]
             stats["frozen_conflicts"].extend(one["frozen_conflicts"])
+    return stats
+
+
+def publish_selection_snapshot(
+    result: "AggregateResult",
+    *,
+    tier_by_basket_key: Mapping[str, int],
+    tier_history_by_basket_key: Mapping[str, Mapping[str, Any]],
+    cards_by_basket_key: Mapping[str, Any],
+    card_meta_by_basket_key: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    direction_id_by_basket_key: Optional[Mapping[str, str]] = None,
+    gate_outcome: Optional[Any] = None,
+    out_dropped: Optional[Sequence[Any]] = None,
+    out_baskets_by_key: Optional[Mapping[str, Any]] = None,
+    out_engine_by_key: Optional[Mapping[str, Any]] = None,
+    handoff_dropped: Optional[Sequence[Any]] = None,
+    selection_run_id: Optional[str] = None,
+    selection_state: str = "complete",
+    selection_state_text: str = "",
+    db_path: Optional[Path] = None,
+    via: str = "auto",
+) -> Dict[str, Any]:
+    """Atomically make one V2.4.2 selection generation visible.
+
+    Card construction has already completed before this function is called, so
+    no slow or fallible LLM work is held inside the SQLite transaction.  The
+    final basket/gate/OUT facts and the run's published terminal state instead
+    share one short transaction: any write failure leaves no newly-visible
+    basket, tier, or card fact for readers to observe.
+    """
+    _validate_tiers(result, tier_by_basket_key)
+    expected = {basket.basket_key for basket in result.baskets}
+    missing_history = sorted(expected - set(tier_history_by_basket_key))
+    missing_cards = sorted(expected - set(cards_by_basket_key))
+    unexpected_cards = sorted(set(cards_by_basket_key) - expected)
+    if missing_history or missing_cards or unexpected_cards:
+        raise ValueError(
+            "publish_selection_snapshot requires one tier history and one card for every published basket: "
+            f"missing_history={missing_history}, missing_cards={missing_cards}, unexpected_cards={unexpected_cards}"
+        )
+
+    stats: Dict[str, Any] = {
+        "baskets_inserted": 0, "baskets_existing": 0, "members_inserted": 0,
+        "tier_history_inserted": 0, "tier_history_existing": 0,
+        "cards_inserted": 0, "cards_existing": 0, "frozen_conflicts": [],
+    }
+    if not result.baskets:
+        return stats
+
+    init_schema(db_path)
+    now = _now()
+    with connection(db_path) as conn:
+        bstats, ids, bconflicts = _save_baskets_on_conn(
+            conn, result, tier_by_basket_key, via=via, now=now,
+            selection_run_id=selection_run_id,
+        )
+        rows = [
+            _tier_history_row(
+                tier_history_by_basket_key[basket.basket_key],
+                trade_date=basket.trade_date, basket_id=ids[basket.basket_key], now=now,
+            )
+            for basket in result.baskets
+        ]
+        hstats, hconflicts = _save_tier_history_on_conn(conn, rows)
+        for basket_key in sorted(expected):
+            meta = dict((card_meta_by_basket_key or {}).get(basket_key) or {})
+            one = save_basket_card(
+                ids[basket_key], cards_by_basket_key[basket_key], version=1,
+                stop_pct=meta.get("stop_pct"),
+                take_profit_retrace=meta.get("take_profit_retrace"),
+                charter_version=meta.get("charter_version"),
+                pack_version=meta.get("pack_version"),
+                engine_api_version=meta.get("engine_api_version"),
+                conn=conn,
+            )
+            stats["cards_inserted"] += one["cards_inserted"]
+            stats["cards_existing"] += one["cards_existing"]
+            stats["frozen_conflicts"].extend(one["frozen_conflicts"])
+        if selection_run_id:
+            # Gate and OUT rows are final facts too.  Leaving either outside
+            # this transaction leaks a newer processing run into clocks/report
+            # readers before its baskets/cards are publishable.
+            if gate_outcome is not None:
+                from neckline.selection.gates import save_gate_evaluations
+                stats["gate_rows_inserted"] = save_gate_evaluations(
+                    gate_outcome, selection_run_id=selection_run_id, db_path=db_path, conn=conn,
+                )
+            if out_dropped is not None:
+                stats["out_candidates_inserted"] = save_out_candidates(
+                    result.trade_date, out_dropped, out_baskets_by_key or {},
+                    engine_by_key=out_engine_by_key, selection_run_id=selection_run_id,
+                    db_path=db_path, conn=conn,
+                )
+            if handoff_dropped is not None:
+                from neckline.selection.basket_dropped_handoff import save_dropped_handoff
+                save_dropped_handoff(
+                    result.trade_date, handoff_dropped, selection_run_id=selection_run_id,
+                    db_path=db_path, conn=conn,
+                )
+            from neckline.selection.run_store import finish_run
+            from neckline.selection import run_store
+
+            for basket_key, direction_id in (direction_id_by_basket_key or {}).items():
+                if basket_key not in expected or not direction_id:
+                    continue
+                run_store.update_direction_disposition(
+                    selection_run_id, direction_id, final_disposition="basket_frozen",
+                    db_path=db_path, conn=conn,
+                )
+                run_store.add_event(
+                    selection_run_id, "basket_frozen", direction_id=direction_id,
+                    db_path=db_path, conn=conn,
+                )
+
+            finish_run(
+                selection_run_id, selection_state=selection_state,
+                text=selection_state_text, stop_reason="published", published=True,
+                db_path=db_path, conn=conn,
+            )
+    stats.update(bstats)
+    stats.update(hstats)
+    stats["frozen_conflicts"].extend(bconflicts + hconflicts)
+    _warn_conflicts("selection_publish", stats["frozen_conflicts"])
     return stats
 
 
@@ -634,15 +783,44 @@ def load_basket_card(
     生成」而那张卡这辈子不会来 = 静默永久失败。
     ⛔ **不许在读侧"重建"或跳过坏字段糊过去**(藏真数据不是诚实);检测到即打
     **ERROR**(不是 WARNING)—— 冻结件损坏是真数据事故,必须有人看见。"""
-    init_schema(db_path)
+    # Explicit-id readers must not become a backdoor to an older same-day
+    # generation (for example a stale client holding A's basket id after B was
+    # published).  Historical/legacy rows remain visible only until a V2.4.2
+    # generation owns that D0.
+    try:
+        with readonly_connection(db_path) as conn:
+            basket_columns = _read_columns(conn, "baskets")
+            card_columns = _read_columns(conn, "basket_cards")
+            if not card_columns:
+                return None
+            if basket_columns:
+                generation = _select_or_null(basket_columns, "selection_run_id")
+                basket_row = conn.execute(
+                    f"SELECT trade_date, {generation} FROM baskets WHERE id=?", (int(basket_id),)
+                ).fetchone()
+            else:
+                basket_row = None
+    except FileNotFoundError:
+        return None
+    if basket_row is not None:
+        from neckline.selection.run_store import latest_published_run_id
+        visible_run = latest_published_run_id(str(basket_row[0]), db_path=db_path)
+        if str(basket_row[1] or "") != str(visible_run or ""):
+            return None
+    select_columns = ["id"] + [
+        _select_or_null(card_columns, name.strip()) for name in _BASKET_CARD_COLUMNS.split(",")
+    ]
     sql = (
-        f"SELECT id, {_BASKET_CARD_COLUMNS} FROM basket_cards WHERE basket_id=?"
+        f"SELECT {', '.join(select_columns)} FROM basket_cards WHERE basket_id=?"
         + (" AND version=?" if version is not None else "")
         + " ORDER BY version DESC LIMIT 1"
     )
     args: Tuple[Any, ...] = (int(basket_id),) if version is None else (int(basket_id), int(version))
-    with connection(db_path) as conn:
-        row = conn.execute(sql, args).fetchone()
+    try:
+        with readonly_connection(db_path) as conn:
+            row = conn.execute(sql, args).fetchone()
+    except FileNotFoundError:
+        return None
     if row is None:
         return None
     keys = ["id"] + [c.strip() for c in _BASKET_CARD_COLUMNS.split(",")]
@@ -691,28 +869,42 @@ def load_baskets_for_date(
     无篮子 → 空列表(合法状态,如当日引擎没跑或今日无篮子达到定档标准)。
     """
     day = trade_date if isinstance(trade_date, str) else trade_date.strftime("%Y%m%d")
-    sql = ("SELECT id, trade_date, basket_key, name, tier, engine_code, engine_version, "
-           "skeleton_version FROM baskets WHERE trade_date=?")
-    args: List[Any] = [day]
-    if tiers:
-        sql += " AND tier IN (" + ",".join("?" * len(tiers)) + ")"
-        args.extend(int(t) for t in tiers)
-    sql += " ORDER BY tier, basket_key"
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(sql, tuple(args)).fetchall()
-        out: List[BasketRef] = []
-        for r in rows:
-            members = conn.execute(
-                "SELECT ts_code FROM basket_members WHERE basket_id=? ORDER BY ts_code",
-                (int(r[0]),),
-            ).fetchall()
-            out.append(BasketRef(
-                basket_id=int(r[0]), trade_date=str(r[1]), basket_key=str(r[2]),
-                name=str(r[3]), tier=int(r[4]),
-                member_codes=tuple(str(m[0]) for m in members),
-                engine_code=r[5], engine_version=r[6], skeleton_version=r[7],
-            ))
+    try:
+        with readonly_connection(db_path) as conn:
+            basket_columns = _read_columns(conn, "baskets")
+            if not basket_columns:
+                return []
+            select_columns = ["id", "trade_date", "basket_key", "name", "tier"] + [
+                _select_or_null(basket_columns, name)
+                for name in ("engine_code", "engine_version", "skeleton_version")
+            ]
+            sql = f"SELECT {', '.join(select_columns)} FROM baskets WHERE trade_date=?"
+            args: List[Any] = [day]
+            if "selection_run_id" in basket_columns:
+                from neckline.selection.run_store import latest_published_run_id
+                run_id = latest_published_run_id(day, db_path=db_path)
+                sql += " AND COALESCE(selection_run_id,'')=?"
+                args.append(run_id or "")
+            if tiers:
+                sql += " AND tier IN (" + ",".join("?" * len(tiers)) + ")"
+                args.extend(int(t) for t in tiers)
+            sql += " ORDER BY tier, basket_key"
+            rows = conn.execute(sql, tuple(args)).fetchall()
+            member_columns = _read_columns(conn, "basket_members")
+            out: List[BasketRef] = []
+            for r in rows:
+                members = conn.execute(
+                    "SELECT ts_code FROM basket_members WHERE basket_id=? ORDER BY ts_code",
+                    (int(r[0]),),
+                ).fetchall() if member_columns else []
+                out.append(BasketRef(
+                    basket_id=int(r[0]), trade_date=str(r[1]), basket_key=str(r[2]),
+                    name=str(r[3]), tier=int(r[4]),
+                    member_codes=tuple(str(m[0]) for m in members),
+                    engine_code=r[5], engine_version=r[6], skeleton_version=r[7],
+                ))
+    except FileNotFoundError:
+        return []
     return out
 
 
@@ -723,19 +915,31 @@ def load_basket(basket_id: int, *, db_path: Optional[Path] = None) -> Optional[B
     (`card_not_ready`,`load_basket_card` 返 `None`)是**两件不同的事**,
     ⛔ 调用方不许把两者合并成一个 404 reason:前者说系统丢了篮子,后者说卡还没做完。
     """
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        r = conn.execute(
-            "SELECT id, trade_date, basket_key, name, tier, engine_code, engine_version, "
-            "skeleton_version FROM baskets WHERE id=?",
-            (int(basket_id),),
-        ).fetchone()
-        if r is None:
-            return None
-        members = conn.execute(
-            "SELECT ts_code FROM basket_members WHERE basket_id=? ORDER BY ts_code",
-            (int(r[0]),),
-        ).fetchall()
+    try:
+        with readonly_connection(db_path) as conn:
+            basket_columns = _read_columns(conn, "baskets")
+            if not basket_columns:
+                return None
+            select_columns = ["id", "trade_date", "basket_key", "name", "tier"] + [
+                _select_or_null(basket_columns, name)
+                for name in ("engine_code", "engine_version", "skeleton_version", "selection_run_id")
+            ]
+            r = conn.execute(
+                f"SELECT {', '.join(select_columns)} FROM baskets WHERE id=?", (int(basket_id),)
+            ).fetchone()
+            if r is None:
+                return None
+            if "selection_run_id" in basket_columns:
+                from neckline.selection.run_store import latest_published_run_id
+                visible_run = latest_published_run_id(str(r[1]), db_path=db_path)
+                if str(r[8] or "") != str(visible_run or ""):
+                    return None
+            members = conn.execute(
+                "SELECT ts_code FROM basket_members WHERE basket_id=? ORDER BY ts_code",
+                (int(r[0]),),
+            ).fetchall() if _has_table(conn, "basket_members") else []
+    except FileNotFoundError:
+        return None
     return BasketRef(
         basket_id=int(r[0]), trade_date=str(r[1]), basket_key=str(r[2]),
         name=str(r[3]), tier=int(r[4]), member_codes=tuple(str(m[0]) for m in members),
@@ -748,16 +952,34 @@ def load_tier_history(basket_id: int, *, db_path: Optional[Path] = None) -> Opti
     使一篮一行)。`None` = 没有留痕 —— 只可能出现在事务 1 之外手工造数的库里。
 
     键保持 **snake_case**(领域形状),转 camel 是 API 层的事。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        r = conn.execute(
-            "SELECT trade_date, tier, mech_score, mech_breakdown_json, rank_in_tier, "
-            "rank_mech, llm_rank_delta, llm_reason, pack_version, created_at "
-            "FROM tier_history WHERE basket_id=? ORDER BY trade_date DESC LIMIT 1",
-            (int(basket_id),),
-        ).fetchone()
+    try:
+        with readonly_connection(db_path) as conn:
+            if not _has_table(conn, "tier_history"):
+                return None
+            r = conn.execute(
+                "SELECT trade_date, tier, mech_score, mech_breakdown_json, rank_in_tier, "
+                "rank_mech, llm_rank_delta, llm_reason, pack_version, created_at "
+                "FROM tier_history WHERE basket_id=? ORDER BY trade_date DESC LIMIT 1",
+                (int(basket_id),),
+            ).fetchone()
+            basket_columns = _read_columns(conn, "baskets")
+            if not basket_columns:
+                return None
+            generation = _select_or_null(basket_columns, "selection_run_id")
+            basket_row = conn.execute(
+                f"SELECT trade_date, {generation} FROM baskets WHERE id=?", (int(basket_id),)
+            ).fetchone()
+    except FileNotFoundError:
+        return None
     if r is None:
         return None
+    if basket_row is None:
+        return None
+    if "selection_run_id" in basket_columns:
+        from neckline.selection.run_store import latest_published_run_id
+        visible_run = latest_published_run_id(str(basket_row[0]), db_path=db_path)
+        if str(basket_row[1] or "") != str(visible_run or ""):
+            return None
     try:
         breakdown = json.loads(r[3]) if r[3] else {}
     except (json.JSONDecodeError, TypeError):
@@ -791,7 +1013,7 @@ OUT_CANDIDATES_TABLE = "out_candidates"
 
 _OUT_COLUMNS = (
     "d0_date, basket_key, ts_code, name, role, engine_code, engine_version, "
-    "skeleton_version, out_gate, out_reason, out_detail, created_at"
+    "skeleton_version, out_gate, out_reason, out_detail, selection_run_id, created_at"
 )
 
 # ⛔ **不是 OUT** 的出局原因码:位置满(K8 §八 的 OUT 四条适用状态里没有它)。
@@ -844,7 +1066,9 @@ def save_out_candidates(
     baskets_by_key: Mapping[str, Any],
     *,
     engine_by_key: Optional[Mapping[str, Any]] = None,
+    selection_run_id: Optional[str] = None,
     db_path: Optional[Path] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> int:
     """把当日**股票级** OUT 清单落 `out_candidates`。返回新增行数。
 
@@ -880,7 +1104,7 @@ def save_out_candidates(
             getattr(s, "engine_code", None) if s is not None else None,
             getattr(s, "engine_version", None) if s is not None else None,
             getattr(s, "skeleton_version", None) if s is not None else None,
-            gate, reason, detail, now,
+            gate, reason, detail, str(selection_run_id or ""), now,
         ))
         written.add((key, code))
 
@@ -927,13 +1151,17 @@ def save_out_candidates(
             _row(key, m, s, getattr(d, "gate", None), reason, getattr(d, "gate_detail", None))
     if not rows:
         return 0
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        cur = conn.executemany(
+    def _save(target: sqlite3.Connection) -> int:
+        cur = target.executemany(
             f"INSERT OR IGNORE INTO {OUT_CANDIDATES_TABLE} ({_OUT_COLUMNS}) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows,
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows,
         )
         return int(cur.rowcount or 0)
+    if conn is not None:
+        return _save(conn)
+    init_schema(db_path)
+    with connection(db_path) as own:
+        return _save(own)
 
 
 def load_out_candidates(
@@ -945,12 +1173,25 @@ def load_out_candidates(
     有什么",「跑没跑过」由调用方按 ③b 既有的三件套(`available` + 原因)自己披露,
     ⛔ 别把空列表当成"今天没有 OUT"(§七 P0-39 同一条纪律)。"""
     day = trade_date if isinstance(trade_date, str) else trade_date.strftime("%Y%m%d")
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(
-            f"SELECT id, {_OUT_COLUMNS} FROM {OUT_CANDIDATES_TABLE} "
-            "WHERE d0_date=? ORDER BY basket_key, ts_code", (day,),
-        ).fetchall()
+    try:
+        with readonly_connection(db_path) as conn:
+            columns = _read_columns(conn, OUT_CANDIDATES_TABLE)
+            if not columns:
+                return []
+            select_columns = ["id"] + [
+                _select_or_null(columns, name.strip()) for name in _OUT_COLUMNS.split(",")
+            ]
+            sql = f"SELECT {', '.join(select_columns)} FROM {OUT_CANDIDATES_TABLE} WHERE d0_date=?"
+            args: List[Any] = [day]
+            if "selection_run_id" in columns:
+                from neckline.selection.run_store import latest_published_run_id
+                run_id = latest_published_run_id(day, db_path=db_path)
+                sql += " AND COALESCE(selection_run_id,'')=?"
+                args.append(run_id or "")
+            sql += " ORDER BY basket_key, ts_code"
+            rows = conn.execute(sql, tuple(args)).fetchall()
+    except FileNotFoundError:
+        return []
     keys = ["id"] + [c.strip() for c in _OUT_COLUMNS.split(",")]
     return [dict(zip(keys, r)) for r in rows]
 
@@ -959,6 +1200,7 @@ __all__ = [
     "save_baskets",
     "save_tier_history",
     "save_tier_decision",
+    "publish_selection_snapshot",
     "next_card_version",
     "load_basket",
     "load_tier_history",

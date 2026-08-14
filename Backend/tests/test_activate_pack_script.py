@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import activate_pack as activate_pack_script  # noqa: E402
 
 from neckline.selection import engine_api, pack, primitives  # noqa: E402
+from neckline.db import init_schema  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 # ⚠ 两个 LEGACY 包已于 2026-08-11 仓库整理时移进 `archive/packs_retired/`(只做负例守门)。
@@ -204,7 +205,7 @@ def test_dry_run_writes_nothing_to_db_file(tmp_path: Path):
     # 先跑一次让 schema 就位(建表本身是合法的一次性写入,不算"演练模式的写"),
     # 再从这个"已初始化"的基线开始比较 MD5——这样测的是"演练模式本身不额外写",
     # 而不是"从来没有过任何文件"这种更弱的断言。
-    pack.get_active_pack(db_path=db_path)
+    init_schema(db_path)
     before = _md5(db_path)
 
     rc = activate_pack_script.run(_K8_SKELETON_FILE, db_path, confirm=False)
@@ -218,7 +219,7 @@ def test_dry_run_writes_nothing_to_db_file(tmp_path: Path):
 def test_dry_run_four_new_packs_all_pass_four_gates(pack_file: Path, tmp_path: Path, capsys):
     """V2.2-① 验收原文:四个新包文件走演练四道闸全绿且**一个都还没激活**。"""
     db_path = tmp_path / "n.db"
-    pack.get_active_pack(db_path=db_path)
+    init_schema(db_path)
     before = _md5(db_path)
     rc = activate_pack_script.run(pack_file, db_path, confirm=False)
     assert rc == 0

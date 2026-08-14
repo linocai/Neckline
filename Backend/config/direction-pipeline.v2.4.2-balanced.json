@@ -1,0 +1,18 @@
+{
+  "version": "v2.4.2-balanced-r1",
+  "deep_initial_limit": 20,
+  "triage_batch_size": 8,
+  "triage_concurrency": 1,
+  "deep_reason_batch_size": 2,
+  "fill_batch_size": 4,
+  "sufficient_candidate_count": 7,
+  "normal_before_reserve": true,
+  "coverage_industry_min": 6,
+  "coverage_seed_kind_min": 4,
+  "coverage_potential_czy_min": 2,
+  "selection_token_budget": 350000,
+  "selection_wall_seconds": 1500,
+  "max_total_deep": 32,
+  "max_fill_rounds": 3,
+  "cross_seed_merge_policy": "identity_only"
+}

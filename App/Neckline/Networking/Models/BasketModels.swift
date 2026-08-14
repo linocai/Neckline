@@ -437,6 +437,8 @@ struct BasketCard: Codable, Equatable {
     var disciplineLabels: [String] = []
     var narrative: String = ""
     var llmStage: String = ""
+    /// V2.4.2：叙述来源；老冻结卡缺键时保持 `nil`，不猜测生成路径。
+    var generationSource: String? = nil
     var degraded: Bool = false
     var notes: [String] = []
 
@@ -447,7 +449,7 @@ struct BasketCard: Codable, Equatable {
         case tier, rankInTier, rankMech, mechScore, tierBreakdown, tierReason, tierNote
         case upsidePath, upsidePathUnavailableReason
         case verificationSpec, verificationText, invalidationSpec, invalidationText
-        case risks, disclaimer, fingerprint, disciplineLabels, narrative, llmStage, degraded, notes
+        case risks, disclaimer, fingerprint, disciplineLabels, narrative, llmStage, generationSource, degraded, notes
     }
 
     init(specVersion: String? = nil, version: Int? = nil, basketKey: String = "",
@@ -463,7 +465,8 @@ struct BasketCard: Codable, Equatable {
          verificationText: String? = nil, invalidationSpec: NKJSON = .object([:]),
          invalidationText: String? = nil, risks: [String] = [], disclaimer: String = "",
          fingerprint: BasketFingerprint = BasketFingerprint(), disciplineLabels: [String] = [],
-         narrative: String = "", llmStage: String = "", degraded: Bool = false,
+         narrative: String = "", llmStage: String = "", generationSource: String? = nil,
+         degraded: Bool = false,
          notes: [String] = []) {
         self.specVersion = specVersion; self.version = version; self.basketKey = basketKey
         self.tradeDate = tradeDate; self.nextTradeDate = nextTradeDate; self.name = name
@@ -479,7 +482,8 @@ struct BasketCard: Codable, Equatable {
         self.invalidationSpec = invalidationSpec; self.invalidationText = invalidationText
         self.risks = risks; self.disclaimer = disclaimer; self.fingerprint = fingerprint
         self.disciplineLabels = disciplineLabels; self.narrative = narrative
-        self.llmStage = llmStage; self.degraded = degraded; self.notes = notes
+        self.llmStage = llmStage; self.generationSource = generationSource
+        self.degraded = degraded; self.notes = notes
     }
 
     /// **B 类冻结快照 → 全字段 `decodeIfPresent`**(⛔ 一个 `try c.decode` 都不许有):
@@ -524,6 +528,7 @@ struct BasketCard: Codable, Equatable {
         disciplineLabels = try c.decodeIfPresent([String].self, forKey: .disciplineLabels) ?? []
         narrative = try c.decodeIfPresent(String.self, forKey: .narrative) ?? ""
         llmStage = try c.decodeIfPresent(String.self, forKey: .llmStage) ?? ""
+        generationSource = try c.decodeIfPresent(String.self, forKey: .generationSource)
         degraded = try c.decodeIfPresent(Bool.self, forKey: .degraded) ?? false
         notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
     }
@@ -1297,6 +1302,9 @@ struct BasketDaily: Codable, Equatable {
     var selectionUnavailableReason: String? = nil
     var unexplainedSeedCount: Int? = nil
     var unexplainedSeedSummary: String? = nil
+    /// V2.4.2 运行态读时覆盖。旧载荷没有这两个键时不显示任何状态提示。
+    var selectionState: String? = nil
+    var selectionStateText: String? = nil
     var notes: [String] = []
 
     enum CodingKeys: String, CodingKey {
@@ -1307,6 +1315,7 @@ struct BasketDaily: Codable, Equatable {
         case reviewD0, packVersion, notes
         case selectionStage, selectionUnavailableReason
         case unexplainedSeedCount, unexplainedSeedSummary
+        case selectionState, selectionStateText
     }
 
     init(tradeDate: String = "", baskets: [Basket] = [], basketsAvailable: Bool = false,
@@ -1316,7 +1325,8 @@ struct BasketDaily: Codable, Equatable {
          outCandidatesUnavailableReason: String? = nil,
          reviews: [BasketReview] = [], reviewsAvailable: Bool = false,
          reviewsUnavailableReason: String? = nil, reviewD0: String? = nil,
-         packVersion: String? = nil, notes: [String] = []) {
+         packVersion: String? = nil, selectionState: String? = nil,
+         selectionStateText: String? = nil, notes: [String] = []) {
         self.tradeDate = tradeDate; self.baskets = baskets
         self.basketsAvailable = basketsAvailable
         self.basketsUnavailableReason = basketsUnavailableReason
@@ -1328,7 +1338,9 @@ struct BasketDaily: Codable, Equatable {
         self.outCandidatesUnavailableReason = outCandidatesUnavailableReason
         self.reviews = reviews; self.reviewsAvailable = reviewsAvailable
         self.reviewsUnavailableReason = reviewsUnavailableReason
-        self.reviewD0 = reviewD0; self.packVersion = packVersion; self.notes = notes
+        self.reviewD0 = reviewD0; self.packVersion = packVersion
+        self.selectionState = selectionState; self.selectionStateText = selectionStateText
+        self.notes = notes
     }
 
     init(from decoder: Decoder) throws {
@@ -1360,6 +1372,8 @@ struct BasketDaily: Codable, Equatable {
         unexplainedSeedCount = try c.decodeIfPresent(Int.self, forKey: .unexplainedSeedCount)
         unexplainedSeedSummary = try c.decodeIfPresent(
             String.self, forKey: .unexplainedSeedSummary)
+        selectionState = try c.decodeIfPresent(String.self, forKey: .selectionState)
+        selectionStateText = try c.decodeIfPresent(String.self, forKey: .selectionStateText)
         notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
     }
 
@@ -1389,6 +1403,25 @@ struct BasketDaily: Codable, Equatable {
         let tail = (unexplainedSeedSummary?.isEmpty == false) ? "(\(unexplainedSeedSummary!))" : ""
         return "机械层当时看到 \(n) 个候选方向\(tail);它们没有被解释过,"
             + "⛔ 不是候选、不构成任何买入依据。"
+    }
+
+    /// V2.4.2 运行态提示。只有服务端明确下发四态之一才展示；老载荷缺键或未知值
+    /// 都保持静默，不能由旧的 `selectionStage` / `basketsAvailable` 反推一个新状态。
+    var selectionStatusNotice: (title: String, detail: String)? {
+        let serverText = selectionStateText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch selectionState {
+        case "processing":
+            return ("今日选股正在整理", serverText?.isEmpty == false
+                    ? serverText! : "正在整理全部方向；以下保留最近一次已完成的选股结果。")
+        case "partial":
+            return ("今日选股部分完成", serverText?.isEmpty == false
+                    ? serverText! : "当前展示已完成且通过规则的结果，不代表所有方向已完成。")
+        case "unavailable":
+            return ("今日选股暂未完成", serverText?.isEmpty == false
+                    ? serverText! : "以下保留最近一次已完成的选股结果；这不代表今天没有机会。")
+        default:
+            return nil // complete / 老载荷 / 未知状态：不占用主界面
+        }
     }
 
     /// 某一档的篮子。**空档位如实显示「今日 T1 为空」,⛔ 不隐藏**(E1)。

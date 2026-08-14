@@ -117,7 +117,11 @@ def real_db_readonly_copy(tmp_path_factory: pytest.TempPathFactory) -> Path:
     if not DB_PATH.exists():
         pytest.skip(f"真实开发库不存在({DB_PATH}),此护栏用例需要真库现役 K1 行,本环境无法运行。")
     dest = tmp_path_factory.mktemp("real_db_copy") / "neckline_readonly_copy.db"
-    src_conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    # ``mode=ro`` alone may still participate in SQLite's WAL shared-memory
+    # coordination and update the working database's ``-shm`` sidecar.  The
+    # fixture only copies frozen facts, so immutable is both accurate and
+    # necessary to keep even test reads from touching operational state.
+    src_conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro&immutable=1", uri=True)
     try:
         dest_conn = sqlite3.connect(str(dest))
         try:

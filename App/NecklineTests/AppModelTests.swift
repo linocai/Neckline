@@ -381,6 +381,25 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(daily.baskets(tier: 3).map(\.basketId), [2])
     }
 
+    /// V2.4.2：仅由服务端明确下发的运行态产生提示；老载荷缺键与 complete 都不占界面。
+    func testBasketDailySelectionStatusNoticeIsExplicitAndUserFacing() {
+        XCTAssertNil(BasketDaily().selectionStatusNotice)
+        XCTAssertNil(BasketDaily(selectionState: "complete").selectionStatusNotice)
+        XCTAssertNil(BasketDaily(selectionState: "future_state").selectionStatusNotice)
+
+        let processing = BasketDaily(selectionState: "processing")
+        XCTAssertEqual(processing.selectionStatusNotice?.title, "今日选股正在整理")
+        XCTAssertTrue(processing.selectionStatusNotice?.detail.contains("最近一次已完成") == true)
+
+        let partial = BasketDaily(selectionState: "partial", selectionStateText: "已完成部分方向")
+        XCTAssertEqual(partial.selectionStatusNotice?.title, "今日选股部分完成")
+        XCTAssertEqual(partial.selectionStatusNotice?.detail, "已完成部分方向")
+
+        let unavailable = BasketDaily(selectionState: "unavailable")
+        XCTAssertEqual(unavailable.selectionStatusNotice?.title, "今日选股暂未完成")
+        XCTAssertTrue(unavailable.selectionStatusNotice?.detail.contains("没有机会") == true)
+    }
+
     // MARK: - V2-⑮ 从篮子成员一键补录(预填 code/name + 区间下沿,⛔ 不虚构数字)
 
     func testBeginPositionEntryFlowFromMemberPrefillsAndFetchesRange() async throws {

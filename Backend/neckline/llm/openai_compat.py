@@ -46,6 +46,53 @@ from neckline.llm.base import ChatMessage, LLMProvider, LLMResult, SearchHit
 logger = logging.getLogger(__name__)
 
 
+def _actual_usage(raw_responses: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize only provider-reported token usage.
+
+    A tool loop is several billable upstream requests, so an auditable result is
+    available only when *every* response reports a complete usage object.  This
+    deliberately does not fall back to character counts or token estimation.
+    """
+    usages: List[Dict[str, Any]] = []
+    for response in raw_responses:
+        raw = response.get("usage") if isinstance(response, dict) else None
+        if not isinstance(raw, dict):
+            # Keep an explicit empty slot for this upstream response.  Audit
+            # consumers can distinguish "no usage object" from an omitted
+            # archived response even when a preceding tool round had usage.
+            usages.append({})
+            return {"raw_usage": {"responses": usages}, "usage_unavailable": True}
+        usages.append(dict(raw))
+
+    if not usages:
+        return {"raw_usage": {"responses": []}, "usage_unavailable": True}
+
+    def integer(value: Any) -> Optional[int]:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int) and value >= 0:
+            return value
+        return None
+
+    prompt_values = [integer(item.get("prompt_tokens")) for item in usages]
+    completion_values = [integer(item.get("completion_tokens")) for item in usages]
+    total_values = [integer(item.get("total_tokens")) for item in usages]
+    if any(value is None for value in prompt_values + completion_values):
+        return {"raw_usage": {"responses": usages}, "usage_unavailable": True}
+    # A provider may omit total_tokens while still reporting the two actual
+    # components.  Adding those components is accounting, not estimation.
+    total = sum(total_values) if all(value is not None for value in total_values) else (
+        sum(prompt_values) + sum(completion_values)
+    )
+    return {
+        "prompt_tokens": sum(prompt_values),
+        "completion_tokens": sum(completion_values),
+        "total_tokens": total,
+        "raw_usage": {"responses": usages},
+        "usage_unavailable": False,
+    }
+
+
 class OpenAICompatProvider(LLMProvider):
     api_url: str = ""
     connect_timeout: float = 6.0
@@ -265,6 +312,7 @@ class OpenAICompatProvider(LLMProvider):
                 # 未开搜索时恒 None(没有引擎可言,不冒充"用了某个引擎");开了搜索
                 # 才读 `_search_engine_value()`(P1-7 基线捞的就是这个值)。
                 search_engine=(self._search_engine_value() if enable_search else None),
+                **_actual_usage(raw_responses),
             )
 
         return LLMResult(
@@ -396,6 +444,11 @@ class OpenAICompatProvider(LLMProvider):
             # 这一行是"万一将来开了也不丢东西"的保险,不是已验证过的路径。
             if obj.get("web_search"):
                 extra_top_level["web_search"] = obj["web_search"]
+            if isinstance(obj.get("usage"), dict):
+                # OpenAI-compatible SSE providers normally attach usage to the
+                # final chunk.  Preserve it verbatim so chat() can normalize it
+                # with the same rules as the non-streaming path.
+                extra_top_level["usage"] = obj["usage"]
             choices = obj.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
                 continue

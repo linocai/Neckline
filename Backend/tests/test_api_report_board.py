@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from datetime import date
+import sys
+from types import ModuleType
 
 import pytest
 
@@ -64,6 +66,32 @@ def test_report_latest(client, AUTH, api_env):
     # 有篮子无卡是**合法中间态**:`card=null` + 明确的原因码,⛔ 不是"篮子不存在"。
     assert b0["card"] is None and b0["cardUnavailableReason"] == "card_not_ready"
     assert bd["packVersion"] == "K4-pack-v1"
+
+
+def test_report_live_selection_state_overlays_without_changing_snapshot(client, AUTH, api_env,
+                                                                         monkeypatch):
+    """运行态是读时覆盖：processing 不能改写已发布篮子或报告 JSON。"""
+    d = date(2026, 7, 17)
+    frozen = _basket_daily()
+    _seed_report(api_env.db_path, d, basket_daily=frozen)
+    run_store = ModuleType("neckline.selection.run_store")
+    def _state(trade_date, *, db_path):
+        assert trade_date == "20260717"
+        return {
+            "selectionState": "processing",
+            "selectionStateText": "今日选股正在整理，以下为最近一次已完成结果。",
+        }
+
+    run_store.latest_publication_state = _state
+    monkeypatch.setitem(sys.modules, "neckline.selection.run_store", run_store)
+
+    body = client.get("/api/v1/report/latest", headers=AUTH).json()
+    daily = body["basketDaily"]
+    assert daily["selectionState"] == "processing"
+    assert daily["selectionStateText"].startswith("今日选股正在整理")
+    assert [(b["basketId"], b["name"], b["tier"]) for b in daily["baskets"]] == [(7, "固态电池", 1)]
+    # 数据库存的是 B 类冻结快照，覆盖层绝不能把运行态写回去。
+    assert report_store.load_report(d, db_path=api_env.db_path)["basket_daily"] == frozen
 
 
 def test_report_basket_daily_empty_snapshot_is_honest_about_not_looked(client, AUTH, api_env):

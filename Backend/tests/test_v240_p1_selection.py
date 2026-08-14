@@ -746,7 +746,7 @@ class TestP1SingleImplementation:
         """P1.5+:形状真的变了才 bump —— 三处新键必须都在 `_gate_breakdown` 的产出里。"""
         from neckline.selection.basket_card import CARD_SPEC_VERSION
 
-        assert CARD_SPEC_VERSION == "basket_card_v5"
+        assert CARD_SPEC_VERSION == "basket_card_v6"
         s = gt.BasketGateSummary(
             basket_key="k1",
             checks=(gt.GateCheck(gt.GATE_MARKET, gt.VERDICT_PASS, available=False,

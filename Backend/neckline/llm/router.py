@@ -28,6 +28,11 @@ TASK_NL_ALERT = "nl_alert"              # 自然语言临时提醒解析
 # V2.3.3-③(K8.md §二十 D1 集合竞价确认层):9:26—9:29 一次调用覆盖**全部篮子**,
 # 解释竞价对 D0 假设投出的第一次票。**不联网**(资料由机械层冻结后原样喂入)。
 TASK_AUCTION = "auction"                # 集合竞价确认层解释
+# V2.4.2 selection chain: cheap brief triage and full deep reasoning are
+# distinct billable purposes.  They intentionally do not reuse the retired
+# tier/card generation tasks.
+TASK_DIRECTION_TRIAGE = "direction_triage"
+TASK_DEEP_REASON = "deep_reason"
 
 ALL_TASKS = (
     TASK_DRIVER_SEARCH,
@@ -39,6 +44,8 @@ ALL_TASKS = (
     TASK_PROFILE,
     TASK_NL_ALERT,
     TASK_AUCTION,
+    TASK_DIRECTION_TRIAGE,
+    TASK_DEEP_REASON,
 )
 
 # 默认路由的「检索类」集合(plan 原文明确点名 driver_search/news_scan 两项)。
@@ -47,6 +54,15 @@ ALL_TASKS = (
 # 的 provider),现在连同问询台主体一起消失,不留影子档;`ALL_TASKS`/`__all__` 三处
 # 同步摘除,反向 hasattr 守门见 `tests/test_v21_retirement_guard.py`。
 DEFAULT_SEARCH_TASKS = (TASK_DRIVER_SEARCH, TASK_NEWS_SCAN)
+
+# The V2.4.2 selection pipeline has a deliberately small active task surface.
+# `basket_reason`, `tier_rank`, and `script` stay in ALL_TASKS so stored route
+# configuration and historical rows decode, but they are not new-flow steps.
+SELECTION_PIPELINE_TASKS = (
+    TASK_DRIVER_SEARCH,
+    TASK_DIRECTION_TRIAGE,
+    TASK_DEEP_REASON,
+)
 
 # —— 大上下文推理:流式 + chunk 间隔超时(§七 P0-44,2026-08-05 晚间生产实打)——
 # **P0-40 的病灶**:`OpenAICompatProvider.read_timeout=90.0` 那个数字是给**带联网
@@ -101,8 +117,11 @@ STREAM_GENERATION_BUDGET_ALLOWANCE_SECONDS: float = 600.0
 # 接线**(它们读的就是这一个元组)—— 只接一半就是 P0-40/P0-44 的原病复发路径。
 # ⚠ 竞价层真正的天花板不是这里的 chunk 间隔,而是 **9:29 硬截止**
 # (`auction/pipeline.py`):流式下单次调用的墙钟无固定上限是刻意的,兜不住 9:29。
-LONG_CONTEXT_TASKS = (TASK_BASKET_REASON, TASK_TIER_RANK, TASK_SCRIPT, TASK_REVIEW,
-                      TASK_AUCTION)
+# Tier/card task keys remain readable for historical configuration, but the
+# V2.4.2 path never invokes them.  Deep reasoning inherits the proven streaming
+# policy for structured long-form output; triage stays non-streaming and has no
+# search capability.
+LONG_CONTEXT_TASKS = (TASK_BASKET_REASON, TASK_REVIEW, TASK_AUCTION, TASK_DEEP_REASON)
 
 
 def use_streaming_for_task(task: Optional[str]) -> bool:
@@ -176,8 +195,11 @@ __all__ = [
     "TASK_PROFILE",
     "TASK_NL_ALERT",
     "TASK_AUCTION",
+    "TASK_DIRECTION_TRIAGE",
+    "TASK_DEEP_REASON",
     "ALL_TASKS",
     "DEFAULT_SEARCH_TASKS",
+    "SELECTION_PIPELINE_TASKS",
     "STREAM_CHUNK_GAP_TIMEOUT_SECONDS",
     "STREAM_GENERATION_BUDGET_ALLOWANCE_SECONDS",
     "LONG_CONTEXT_TASKS",

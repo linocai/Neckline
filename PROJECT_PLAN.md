@@ -1,67 +1,166 @@
 # Neckline project plan
 
-> Updated: 2026-08-14. This is the current control plane. Historical work is under `archive/`.
+> Updated: 2026-08-14. This is the only current control plane. Historical work is under `archive/`.
 
-## 1. Current goal
+## 1. Current goal and release boundary
 
-Operate **v2.4.1 Build 2** as the released macOS-first selection workbench, then begin the v2.4.2 backend cycle. The completed executable record is [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
+Deliver the **V2.4.2 selection-backend release candidate** through independent review → repair → RC
+gate, then release it after the user's explicit 2026-08-14 authorization. The release transaction covers
+production backup/migration/deployment, source publication on `main`, the `v2.4.2` tag, and replacement of
+the macOS app with Build 3. Do not install iOS; the user handles that step. Do not create a branch.
 
-## 2. Current state
+The baseline is `v2.4.1` Build 2. Its record is
+[V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
+`Backend/V2.4.2_BACKEND_MEMO.md` is user-provided discussion authority for this cycle only. Builder reads
+it on startup, absorbs its binding rules into code/tests, then deletes it. It is untracked and must not be
+committed as a second plan.
 
-- Production release line is `v2.4.1` / Build 2. The Backend was deployed and the local macOS application was replaced on 2026-08-14; public health reports `v2.4.1`.
-- The signed iOS archive is ready for the user to install. Codex did not install to an iPhone/iPad, upload to App Store Connect, or notarize/distribute through a third party.
-- Client: SwiftUI iOS and macOS in `App/`. Service: FastAPI in `Backend/`.
-- Strategy research, calibration, evaluations, and backtests remain in `/Users/linotsai/Lino/whynotme`; Neckline never imports it.
+## 2. Binding V2.4.2 decisions
 
-## 3. V2.4.1 binding decisions
+- Scope is the backend basket chain, audit/persistence/API contracts, SOP, and only additive Swift
+  compatibility plus honest status UI. V2.4.1 selection information architecture stays intact.
+- Direction visibility is not a cost quota. All `DriverSeed`s become queryable, deterministic
+  `DirectionBrief`s. Normalize/merge/brief creation makes **zero LLM calls**.
+- Remove `MAX_SEEDS_AGGREGATED=20` as aggregate-entry eligibility. `20` survives only as the configured
+  initial deep-research maximum.
+- New batch triage is short JSON, `enable_search=false`, and exactly
+  `deep|normal|reserve|unfit` plus a short reason. Missing input is server-clamped to `reserve`.
+- Malformed/absent triage batches are retryable reserve/unavailable records, never disappearance or `unfit`.
+- Queue selection is deterministic: triage, existing mechanical order, industry, seed type, and mechanical
+  potential C/Z/Y applicability. Record each coverage choice and fill round.
+- Search and full reasoning run only for queued directions. Fill stops at configured sufficiency, exhausted
+  reserves, or an exhausted wall/token budget.
+- The six-gate definition, thresholds, enforcement, existing T1≤2/T2≤5 capacities, and research boundary
+  remain unchanged.
+- `tier.py` is deterministic only: make no new `TASK_TIER_RANK` call. `basket_card.py` mechanically
+  assembles/freezes from full reasoning: make no new `TASK_SCRIPT` call.
+- Full reasoning is the sole producer of basket narrative, members/roles, engine claim, gate-side evidence,
+  price-plan candidates, risks, and human card material. Whitelist, clamps, gates, Tier, and spec assembly
+  remain mechanical authorities.
+- Every selection LLM call records task, batch, model/provider, search flag, wall duration,
+  prompt/completion/total tokens, raw usage, and `usage_unavailable`. Never infer tokens from characters.
+  Review accounting remains independent.
 
-- macOS only. Keep iPhone/iPad structure and behavior intact unless a shared DTO must decode an additive field.
-- Work directly on `main`; do not create a branch for this release.
-- Scope is the selection workbench: its sidebar, basket/member detail, Today Market, auction report, and Today Intel.
-- Sidebar = navigation, overview, and basket/member selection. The right pane = complete content. Its explicit destinations are **Today Market**, **Auction Report**, **a Basket**, and **Today Intel**.
-- A default destination must be visibly selected; do not fall back to a basket without matching sidebar state.
-- Every basket member is visible in a vertically scalable selector. Selecting one changes the detail below it.
-- Remove the basket price scale bar. Keep the three price references in selected-member detail.
-- Replace raw `industry_lift` with a human-comprehensible daily industry rank when the existing metrics provide it; raw lift is audit-only.
-- No new LLM call, prompt pass, or client-side generation. Reuse existing fields with deterministic human fallbacks.
-- User-facing default/detail layers must not expose internal keys, process stages, raw rule expressions, pack/engine versions, score internals, or project-document references. Audit data remains behind an explicit technical entry.
-- The auction report is a right-pane report, not a modal. Its user body is conclusions, baskets, member performance, risks, and manual observations; data-quality machinery moves to a folded technical appendix.
-- Today Intel is a right-pane destination, not a sidebar disclosure. It remains intelligence, not a stock-picking signal.
-- Holdings receives only the shared market-status humanization. Review is out of scope.
-- Release metadata is fixed at marketing version `2.4.1` and build number `2`; client and server marketing versions are synchronized. The subsequent production deployment was explicitly authorized on 2026-08-14.
+## 3. Confirmed facts and guarded configuration
 
-## 4. Delivery sequence and gates
+- Directly use only confirmed facts: `deep_initial_limit=20`, current Tier capacities, existing mechanical
+  and gate rules, and no Tier/card repeat LLM calls.
+- The user approved production package `Backend/config/direction-pipeline.v2.4.2-balanced.json`
+  (`v2.4.2-balanced-r1`) on 2026-08-14: initial/max deep `20/32`, triage/deep/fill batches `8/2/4`,
+  qualified target `7`, industry/seed-kind/potential-CZY coverage `6/4/2`, Token/wall stops
+  `350000/1500`, at most `3` fill rounds, normal before reserve, and identity-only merge.
+- Outside that approved versioned package, do not invent production defaults or silently alter its
+  batch, coverage, queue, merge, Token, wall-time, or fill values. `triage_concurrency=1` records the
+  current serial executor and must not be presented as implemented parallelism.
+- Versioned `direction_pipeline` explicitly validates every queue, coverage, and budget field. Missing/invalid
+  config returns `selectionState=unavailable`, preserves the prior published snapshot, and never falls back
+  to the legacy 20-seed path. Test fixtures supply every value explicitly.
+- Until a cross-seed merge policy is confirmed, only input-guaranteed duplicate seed identity removal runs.
+  Other apparent duplicates remain separate briefs with `merge_policy_unconfigured`; do not add fuzzy,
+  member-overlap, alias, or hidden numeric rules.
+- Without authorization to estimate tokens, `usage_unavailable` is a budget-accounting fault: save that call,
+  start no later calls in its selection phase, and terminate `unavailable` rather than claim compliance.
 
-1. **Build:** implement the execution record in focused app and additive-contract slices; preserve iOS and all selection logic.
-2. **Build verification:** run targeted unit/contract tests, macOS tests/build, backend suite, API smoke against a temporary/read-only target, and the screenshot matrix.
-3. **Independent review:** compare the diff and running macOS UI to the binding decisions; record findings in `archive/review报告/REVIEW_V2.4.1_20260813.md`.
-4. **Repair:** fix every confirmed blocking/high-severity review finding, then rerun affected tests and all release gates.
-5. **Release-candidate gate:** apply version/build through the single release helper, regenerate Xcode project, build/archive locally, and verify the signed artifact.
-6. **Release:** back up production and the installed app, deploy/restart/verify Backend, replace and launch the macOS app, produce the signed iOS archive without installing it, then commit/tag/push from `main`.
-
-## 5. Architecture boundary
+## 4. Target contract, trace, and publication
 
 ```text
-Neckline/Backend -- production API and frozen snapshots --> App (SwiftUI)
-Neckline/Backend -- read-only snapshot/artifact contract --> whynotme
+all seeds → DirectionBrief (mechanical) → batch triage → covered deep queue
+         → deep search → deep reason → existing six gates → deterministic Tier
+         → mechanical BasketCard → atomic published snapshot
 ```
 
-- v2.4.1 may make only additive display-contract changes in Backend: human basket names in auction risks and labeled tag-absence data.
-- No selection scoring, gate, data-processing, database schema, LLM-budget, or deployment change belongs in this release.
-- Historical frozen payloads must continue to decode; client fallbacks must never show an internal key or code in the default layer.
+- Add `selection_runs`: UUID `run_id`, trade date, version/config snapshot or fingerprint, lifecycle and
+  publication state, start/end/stop reason, budget snapshots, and totals.
+- Add `selection_directions`: composite run/direction identity, source seeds, brief, merge/triage/final
+  disposition. Add append-only `selection_direction_events` and `selection_llm_calls`; events reference
+  calls and record transition, reason, batch/fill round, and timestamp.
+- Shared states distinguish empty from absent:
+  `visible → merged → triage_* → deep_queued → research_* → reasoning_* → gate_* →`
+  `tiered|capacity_overflow → basket_frozen`, with explicit unavailable/retry causes.
+- Long mechanical/LLM work writes run audit progress outside SQLite transactions. One short publish
+  transaction writes terminal basket/tier/card/report facts and marks one run published.
+- `partial` may publish only fully reasoned and gated baskets after budget stop. `processing` and
+  `unavailable` never replace an earlier complete snapshot. Later same-day runs stay separately auditable
+  and do not overwrite published frozen facts.
+- `baskets`, `basket_members`, `gate_evaluations`, `out_candidates`, `tier_history`, and `basket_cards`
+  remain final-fact stores. Do not backfill/rewrite historical cards, Tier rows, or legacy handoffs.
+- Add optional report/basket-daily `selectionState` (`processing|complete|partial|unavailable`) and
+  `selectionStateText`; add optional card `generationSource=deep_reason`.
+- When deep reasoning has required card material, emit `llmStage=ok` and `degraded=false`. Deterministic
+  Tier writes retain `rankInTier`, `rankMech`, `llmRankDelta=0`, `llmReason=null`; history is unchanged.
 
-## 6. Current backlog after v2.4.1
+## 5. Executable build slices and ownership
 
-- **v2.4.2:** backend logic, data contracts, stability, and engineering improvements.
-- **v2.4.3:** end-to-end product review and final consistency pass.
-- Existing research backlog remains in the prior historical record; it is not active v2.4.1 scope.
+1. **Contracts/persistence — Backend core.** Own `db.py`, new `selection/{run_store,direction_inventory,
+   direction_merge,direction_brief,direction_triage,deep_queue,deep_research,deep_reason}.py`, and focused
+   fixtures/tests. First define DTOs, JSON/config schemas, migrations/indexes, append-only guards,
+   deterministic IDs, and read APIs. Migrations are additive/idempotent and use temporary DBs only.
+2. **LLM metering/routing — Backend LLM.** Own `llm/{base,openai_compat,router,factory,budget}.py` and tests.
+   Normalize usage for ordinary/tool-loop replies; add triage/deep-reason routes; isolate triage from search;
+   add real-token plus wall ledgers. Keep deprecated routes readable but remove their new-flow use.
+3. **Pipeline — Backend selection.** Own `selection/{aggregate,gates,tier,basket_card,basket_store,
+   engine_api}.py`, `scan/seeds.py`, and selection tests. Make `aggregate.py` a thin compatibility entry;
+   route all seeds through inventory/triage/queue; use deep search only for queues; consume deep reason once;
+   preserve six-gate behavior; make Tier/card pure downstream mechanics.
+4. **Publish/report/API — Backend integration.** Own `report/{evening,basket_daily,store}.py`,
+   `api/{app,schemas,stores}.py`, handoff readers, and API/report tests. Stage/publish atomically; overlay
+   live `processing` on the latest completed snapshot without changing its frozen content; make run audit
+   authenticated/non-default; keep old response shapes when additions are absent.
+5. **Client compatibility — App.** Own `Networking/Models/BasketModels.swift`,
+   `Views/BasketDailyView.swift`, and only needed `BasketCardView.swift` compatibility. Hand-decode optional
+   additions; show one concise processing/partial/unavailable status notice and none for complete. Keep
+   tokens, run IDs, batches, prompts, merge data, and potential engines off default pages.
+6. **SOP — Backend operations.** Own `scripts/daily_update.py`, `report/evening.py`,
+   `deploy/neckline-{daily,scan,basket,report}.service`, timers, README operator text, and verified one-offs.
+   Keep `daily → scan → basket → review/report` and three evening services. `evening.py --segments` is the
+   recovery entry; redirect/remove unused daily backdoors; archive a one-off only after no unit/import uses it.
+   Measure batch/fill peak wall time and memory before proposing a unit-limit change.
 
-## 7. Verification record
+## 6. Required verification matrix
 
-- RC metadata: `v2.4.1` / Build `2`, synchronized by `App/scripts/prepare_release_candidate.sh` across both `project.yml` marketing values, generated `pbxproj`, and Backend health version.
-- Final gate: Backend `3982 passed` (temporary-test data only); macOS `230 passed, 10 skipped`; Debug and Release builds succeeded. Temporary-database API smoke passed (`DB_PATH=/tmp/neckline_smoke_*.db`) and returned `v2.4.1`; no production database was written.
-- Backend deployment: production target `deploy@114.66.0.38:/opt/neckline`; service restarted at 2026-08-14 08:39 CST with a new PID, zero restart count, no failed units, no new journal warnings, SQLite `integrity_check=ok`, and successful direct/public authenticated API smoke. Public unauthenticated protected access correctly returned 401; the NPM routing regression baseline passed.
-- Production rollback: source and retired weekly-unit backup `/opt/neckline-release-backups/v2.4.1-pre-20260814-083622/`; two verified database backups `/opt/neckline/data/neckline.db.bak-v241-20260814-083622` and `/opt/neckline/data/neckline.db.cpbak-v241-20260814-083622`. The obsolete `neckline-weekly.timer` was disabled and removed after its migrated research workflow was confirmed outside Neckline.
-- macOS installation: `/Applications/Neckline.app` is signed, universal, version `2.4.1 (2)`, byte-matched to `/tmp/neckline-v241-rc.qrDQ1q/Neckline-v2.4.1-b2.xcarchive`, and launched successfully. The exact prior app is preserved at `/Users/linotsai/Lino/app_backups/Neckline-2.4.0-b1-20260814-083622-original.app`.
-- iOS handoff: signed archive `/tmp/neckline-v241-ios/Neckline-iOS-v2.4.1-b2.xcarchive` (version `2.4.1 (2)`, strict code-sign verification passed). No iOS device was modified.
-- Pre-release rollback anchor: `b3e3d8189f040bc6826916be979d5ff3082b9d64`. The release commit and annotated `v2.4.1` tag are the durable source release markers.
+- **Unit/config:** >20 seeds all receive a brief and terminal route; zero inventory LLM calls; exact
+  merge/no-policy behavior; triage search/JSON/missing clamps; malformed retry; deterministic coverage/fill;
+  initial 20; every missing-config path; actual/missing usage; wall/token exhaustion; independent review ledger.
+- **Selection regression:** deep research only for queues; no `TASK_TIER_RANK`/`TASK_SCRIPT`; full reason
+  survives whitelist/clamps/gates; every six-gate semantic test stays green; deterministic Tier/capacity;
+  complete cards are not falsely degraded.
+- **Data/publication:** fresh/legacy migration, repeated `init_schema`, same-day run-ID separation,
+  append-only events/calls, pre-publish failure preserving prior report, transaction rollback leaving no
+  partial facts, unchanged legacy-card/handoff decode, and temporary-DB/read-only-snapshot discipline.
+- **API/client:** V2.4.2 server with V2.4.1 client; old frozen payload with new client; all four states;
+  processing shows prior complete snapshot; partial shows valid baskets plus one notice; unavailable is not
+  presented as no opportunity; no Tier LLM badge; optional generation source is safely ignored.
+- Run `cd Backend && .venv/bin/python -m pytest -q`, authenticated temporary-DB API smoke, then
+  `cd App && xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' build`.
+  Capture macOS screenshots for all four states and old/new-card compatibility; capture equivalent iOS
+  simulator states if the existing test target supports them.
+
+## 7. Review, repair, RC, and rollback
+
+1. **RC ready before deployment (2026-08-14).** The fourth independent review approved the repaired
+   V2.4.2 selection pipeline (P0/P1/P2=0). Local RC metadata is `v2.4.2` Build 3; migration/recovery,
+   temporary-DB backend/API, and macOS/iOS build gates have passed. Same-day published generations isolate
+   basket, member, Tier, card, gate, OUT, and dropped-handoff facts; failed replacements retain the prior
+   published snapshot. Selection/API/report readers no longer initiate schema migration: un-migrated stores
+   are read-probed as legacy/empty, while schema writes are restricted to explicit startup/write/RC boundaries.
+   The prior local-db incident was schema-only with no business rows; it was not restored or modified.
+2. A separate reviewer inspects diff, migrations, task-call traces, temporary-DB publish rollback, API
+   payloads, and screenshots against sections 2–6. Record only actionable severity-ranked findings in
+   `archive/review报告/`; it is evidence, not a competing plan.
+3. Builder repairs every confirmed blocking/high finding, reruns affected tests, then the backend suite,
+   macOS build, temporary-DB smoke, and screenshots.
+4. RC gate rehearses migration and rollback: pre-upgrade SQLite backup, source/release artifact anchor,
+   `integrity_check`, unit syntax, explicit production-target confirmation, and known-good `v2.4.1` source.
+   The production configuration is approved and wired. Deployment authorization was granted on 2026-08-14;
+   execute only against the verified `deploy@114.66.0.38:/opt/neckline` target with a recoverable backup.
+
+## 8. Milestone index and backlog
+
+- **Now:** V2.4.2 RC uses approved balanced package `v2.4.2-balanced-r1`; the basket service is pinned to
+  that versioned file. The temporary memo was absorbed and removed; all verification uses explicit
+  temporary databases. The local operational DB remains frozen after the reviewer-observed schema-only incident.
+  The authorized production release transaction is in progress.
+- **Next:** after verified deployment, run the balanced package for the first
+  3–5 trading days, review actual `selection_llm_calls` Token totals, direction counts, fill rounds and stop
+  reasons before proposing `r2`; do not tune from one day or replace the file in place.
+- **Later:** V2.4.3 product-wide consistency review after the V2.4.2 observation window.

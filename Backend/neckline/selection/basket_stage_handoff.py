@@ -41,7 +41,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence, Tuple
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_connection
 from neckline.selection.aggregate import (
     STAGE_BUDGET_EXHAUSTED,
     STAGE_CALL_FAILED,
@@ -187,14 +187,28 @@ def load_stage_verdict(
     **无行 → `None`**(⑤ 本次〔迄今〕没跑过,⛔ 不许猜成"跑了、今天没有");解析
     异常同样按 `None` 处理并 WARNING —— 读侧永远不比"没有这张表"更糟。
     """
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute(
-            "SELECT search_stage, reason_stage, basket_count, notes_json, "
-            "seed_count, seed_summary "
-            "FROM basket_stage_handoff WHERE trade_date=?",
-            (_day(trade_date),),
-        ).fetchone()
+    try:
+        with readonly_connection(db_path) as conn:
+            columns = {
+                str(column[1])
+                for column in conn.execute("PRAGMA table_info(basket_stage_handoff)")
+            }
+            if not columns:
+                return None
+            select_columns = [
+                name if name in columns else f"NULL AS {name}"
+                for name in (
+                    "search_stage", "reason_stage", "basket_count", "notes_json",
+                    "seed_count", "seed_summary",
+                )
+            ]
+            row = conn.execute(
+                "SELECT " + ", ".join(select_columns)
+                + " FROM basket_stage_handoff WHERE trade_date=?",
+                (_day(trade_date),),
+            ).fetchone()
+    except FileNotFoundError:
+        return None
     if row is None:
         return None
     try:

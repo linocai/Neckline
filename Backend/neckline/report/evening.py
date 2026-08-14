@@ -120,6 +120,7 @@ def run_evening_chain(
     transport: Optional[Any] = None,
     ledger: Optional[Any] = None,
     save: bool = True,
+    direction_pipeline_config: Any = _UNSET,
 ) -> EveningChainResult:
     """跑 16:35 那条链(单进程串行)。**每段各自包保险丝** —— 任一段异常只记 WARNING
     并在结果里标 `failed`,链继续往下走,报告照出、缺席如实披露。
@@ -135,7 +136,7 @@ def run_evening_chain(
     `None`,各自走"人话半份缺席、结构化半份照出"的既定降级链,不崩。单测/离线冒烟传
     `False` 走纯机械路径。
     """
-    from neckline.llm.router import TASK_REVIEW, TASK_SCRIPT, TASK_TIER_RANK
+    from neckline.llm.router import TASK_REVIEW
 
     wanted = [s for s in CHAIN_SEGMENTS if s in set(segments)]
     res = EveningChainResult(trade_date=trade_date)
@@ -232,9 +233,13 @@ def run_evening_chain(
             res.dropped_baskets = _run_basket_segment(
                 trade_date, seed_set=seed_set, db_path=db_path, parquet_dir=parquet_dir,
                 use_llm=use_llm, search_provider=search_provider, reason_provider=reason_provider,
-                tier_provider=(tier_provider if tier_provider is not None else _provider(TASK_TIER_RANK)),
-                card_provider=(card_provider if card_provider is not None else _provider(TASK_SCRIPT)),
+                # V2.4.2 retires new Tier/card LLM calls.  Keep the legacy
+                # parameters in this public signature for callers compiled
+                # against V2.4.1, but never resolve a provider for either.
+                tier_provider=tier_provider,
+                card_provider=card_provider,
                 transport=transport, ledger=ledger, stats=res.stats, notes=res.notes,
+                direction_pipeline_config=direction_pipeline_config,
             )
             if not res.stats.get("basket", {}).get("baskets"):
                 res.status[SEG_BASKET] = STATUS_EMPTY
@@ -373,6 +378,7 @@ def _run_basket_segment(
     ledger: Optional[Any],
     stats: Dict[str, Any],
     notes: List[str],
+    direction_pipeline_config: Any = _UNSET,
 ) -> Optional[List[Any]]:
     """⑤ → ⑥(事务1)→ ⑦(事务2)。返回 ⑥ 的 `dropped`(③b 的数据源)。
 
@@ -386,7 +392,8 @@ def _run_basket_segment(
     from neckline.selection import basket_card as bc
     from neckline.selection import tier as tr
     from neckline.selection.basket_store import (
-        load_baskets_for_date, save_basket_cards, save_out_candidates, save_tier_decision,
+        load_baskets_for_date, publish_selection_snapshot, save_basket_cards,
+        save_out_candidates, save_tier_decision,
     )
 
     kwargs: Dict[str, Any] = {}
@@ -414,6 +421,8 @@ def _run_basket_segment(
         logger.warning("[evening] ③ 六关上下文装配失败(市场关/板块关本次无读数可喂,"
                        "按「判不出」如实披露)", exc_info=True)
 
+    if direction_pipeline_config is not _UNSET:
+        kwargs["direction_pipeline_config"] = direction_pipeline_config
     result = agg.aggregate_baskets(
         trade_date, seed_set=seed_set, db_path=db_path, parquet_dir=parquet_dir,
         ledger=ledger, transport=transport, gate_context=gate_ctx, **kwargs,
@@ -435,6 +444,15 @@ def _run_basket_segment(
         logger.warning("[evening] ⑤ 段状态留痕写入异常(已吞,不影响本次篮子生成)",
                        exc_info=True)
     if not result.baskets:
+        if (getattr(result, "selection_run_id", None)
+                and getattr(result, "selection_state", None) in {"complete", "partial"}):
+            from neckline.selection.run_store import finish_run
+            finish_run(
+                result.selection_run_id, selection_state=result.selection_state,
+                text=("今日深度研究已按预算结束，当前展示已完成判断的方向。"
+                      if result.selection_state == "partial" else ""),
+                stop_reason="no_gated_baskets", published=True, db_path=db_path,
+            )
         stats["basket"] = {"baskets": 0, "cards": 0}
         # ⑤ 没产出篮子 → ⑥ 没跑过 → **`None`**,不是 `[]`(见 ③b 的两态纪律)。
         return None
@@ -446,18 +464,46 @@ def _run_basket_segment(
     # 装配失败时传 `None`,`evaluate_day` 会自己再建一份(退化路径,如实登记)。
     gate_out = gt.evaluate_day(result, trade_date, db_path=db_path, parquet_dir=parquet_dir,
                                context=gate_ctx)
-    try:
-        gate_rows = gt.save_gate_evaluations(gate_out, db_path=db_path)
-    except Exception:  # noqa: BLE001
+    run_id = getattr(result, "selection_run_id", None)
+    if run_id:
+        # V2.4.2 gate rows are staged in memory and join the short final
+        # publication transaction below.  Audit progress still writes to the
+        # run trace, but report/clock final facts cannot leak mid-run.
         gate_rows = 0
-        logger.warning("[evening] ③ gate_evaluations 留痕写入异常(已吞,不影响定档)",
-                       exc_info=True)
+    else:
+        try:
+            gate_rows = gt.save_gate_evaluations(gate_out, db_path=db_path)
+        except Exception:  # noqa: BLE001
+            gate_rows = 0
+            logger.warning("[evening] ③ gate_evaluations 留痕写入异常(已吞,不影响定档)",
+                           exc_info=True)
     stats["gates"] = {
         "candidates": len(gate_out.summaries),
         "excluded": len(gate_out.excluded_summaries()),
         "rows_written": gate_rows,
         "engines": list(gate_out.engines),
     }
+    # V2.4.2 keeps the run trace keyed by the original mechanical direction,
+    # while gates/Tier speak basket keys.  Bridge those identities here, before
+    # the short publish transaction makes any final fact visible.
+    direction_by_basket = getattr(result, "direction_id_by_basket_key", {}) or {}
+    if run_id:
+        from neckline.selection import run_store
+
+        for basket_key, summary in gate_out.summaries.items():
+            direction_id = direction_by_basket.get(basket_key)
+            if not direction_id:
+                continue
+            transition = "gate_rejected" if summary.excluded else "six_gates_pass"
+            disposition = "gate_rejected" if summary.excluded else "six_gates_pass"
+            run_store.update_direction_disposition(
+                run_id, direction_id, final_disposition=disposition, db_path=db_path,
+            )
+            run_store.add_event(
+                run_id, transition, direction_id=direction_id,
+                reason=(summary.exclusion_reason or summary.stuck_gate or "") if summary.excluded else "",
+                db_path=db_path,
+            )
 
     # 🔴 V2.3.2-②-B:**对拍前**那批候选的成员在这里留一份引用 —— 下面 `result` 会被
     # 换成对拍后的版本,而股票级 OUT 清单要的正是「被关口除名的那些篮子里都有谁」,
@@ -469,28 +515,44 @@ def _run_basket_segment(
     # 它们从报告里消失(§2.9-C-2)。`score_and_tier` 对此 fail loud,别绕过。
     decision = tr.score_and_tier(
         result, trade_date, db_path=db_path, parquet_dir=parquet_dir,
-        provider=tier_provider, use_llm=use_llm, ledger=ledger, transport=transport,
+        provider=None, use_llm=False, ledger=ledger, transport=transport,
         gates_outcome=gate_out,
     )
     # 关口对拍后的 result(成员已出篮、引擎三件套已回填)—— 自此一切落库/卡生成
     # 都用它,⛔ 不再用对拍前的原 result。
     result = decision.gated_result if decision.gated_result is not None else gate_out.result
+    if run_id:
+        from neckline.selection import run_store
 
-    # —— ⑦ 卡先在内存构建(V2.2-③-E:四件套判定要看卡;**事务 2 落库仍在事务 1
-    # 之后**,两个事务不合并、LLM 依旧不持任何事务)———————————————————————
-    # ⚠ 这与 V2-⑥ 裁定的「⑥【事务1】→ ⑦ build_card → ⑦【事务2】」相比,把
-    # build_card 提到了事务 1 之前 —— 是 ③-D「T1 必要条件含四件套齐」的直接推论:
+        for item in decision.decisions:
+            direction_id = direction_by_basket.get(item.basket_key)
+            if direction_id:
+                run_store.update_direction_disposition(run_id, direction_id, final_disposition="tiered", db_path=db_path)
+                run_store.add_event(run_id, "tiered", direction_id=direction_id,
+                                    reason=f"T{item.tier}", db_path=db_path)
+        for item in decision.dropped:
+            direction_id = direction_by_basket.get(item.basket_key)
+            if direction_id:
+                transition = "capacity_overflow" if "capacity" in item.reason else "tier_rejected"
+                run_store.update_direction_disposition(run_id, direction_id, final_disposition=transition, db_path=db_path)
+                run_store.add_event(run_id, transition, direction_id=direction_id,
+                                    reason=item.reason, db_path=db_path)
+
+    # —— ⑦ 卡先在内存构建(V2.2-③-E:四件套判定要看卡;V2.4.2 将已完成卡与
+    # 篮子/Tier/run 标记一同短事务发布，LLM 依旧不持任何事务)——————————————
+    # ⚠ 这与旧路径的「⑥【事务1】→ ⑦ build_card → ⑦【事务2】」相比,把
+    # build_card 提到了最终发布事务之前 —— 是 ③-D「T1 必要条件含四件套齐」的直接推论:
     # 四件套住卡上,不先看卡就落 tier = T1 冻结在一个没验过预案的档上。代价与
-    # 边界:卡构建整段包保险丝,炸了 → cards 为空 → 全部 T1 按「无预案」降 T2,
-    # 篮子照落库、「有篮子无卡」仍是合法中间态(同一 D0 重跑可补卡,tier 不回改)。
+    # 边界:卡构建整段失败时，V2.4.2 不发布新的半成品；历史无 run 调用仍保留旧兼容语义。
     tentative_kept = [b for b in result.baskets
                       if b.basket_key in decision.tier_by_basket_key()]
     cards = []
     try:
         cards = bc.build_cards(
             tentative_kept, trade_date, db_path=db_path, parquet_dir=parquet_dir,
-            use_llm=use_llm, provider=card_provider, ledger=ledger, transport=transport,
+            use_llm=False, provider=None, ledger=ledger, transport=transport,
             tier_by_basket_key={d.basket_key: d for d in decision.decisions},
+            deep_reasoning_by_basket_key=result.deep_reasoning_by_basket_key,
         )
     except Exception:  # noqa: BLE001
         logger.warning("[evening] ⑦ 卡构建整段异常(已吞)—— 本日无卡,T1 按「无预案」降档",
@@ -508,29 +570,35 @@ def _run_basket_segment(
 
     # V2-⑯-D 补记:⑥ 的最终裁定一出就落跨进程交接表(`basket_dropped_handoff`)——
     # 不依赖 ⑦ 卡**落库**是否成功。整段包保险丝:失败不连累内存路径。
-    try:
-        from neckline.selection.basket_dropped_handoff import save_dropped_handoff
+    if not run_id:
+        try:
+            from neckline.selection.basket_dropped_handoff import save_dropped_handoff
 
-        save_dropped_handoff(trade_date, decision.dropped, db_path=db_path)
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "[evening] ⑥ dropped 跨进程交接表写入异常(已吞,不影响本次内存路径)",
-            exc_info=True,
-        )
+            save_dropped_handoff(trade_date, decision.dropped, db_path=db_path)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[evening] ⑥ dropped 跨进程交接表写入异常(已吞,不影响本次内存路径)",
+                exc_info=True,
+            )
 
     # —— V2.3.2-②-B:股票级 OUT 清单(K8 §六 OUT 是一等状态)————————————————
     # ⚠ 与上面那张交接表**不是一回事**:那张是篮子级的搬运工(整行覆写),这张是
     # 股票级的审计账本(append-only)。⛔ 「位置满」不进这张表(K8 §八 的 OUT 适用
     # 状态里没有它)。整段独立包保险丝:失败只 WARNING,⛔ 不连累定档与报告。
-    try:
-        stats["out_candidates"] = save_out_candidates(
-            trade_date, decision.dropped, pre_gate_by_key,
-            engine_by_key=gate_out.summaries, db_path=db_path,
-        )
-    except Exception:  # noqa: BLE001
+    if run_id:
+        # Same boundary as gate rows: this is a final report fact, not an
+        # incremental audit event.  The publisher records it atomically.
         stats["out_candidates"] = 0
-        logger.warning("[evening] ②-B 股票级 OUT 清单写入异常(已吞,不影响定档与报告)",
-                       exc_info=True)
+    else:
+        try:
+            stats["out_candidates"] = save_out_candidates(
+                trade_date, decision.dropped, pre_gate_by_key,
+                engine_by_key=gate_out.summaries, db_path=db_path,
+            )
+        except Exception:  # noqa: BLE001
+            stats["out_candidates"] = 0
+            logger.warning("[evening] ②-B 股票级 OUT 清单写入异常(已吞,不影响定档与报告)",
+                           exc_info=True)
     tier_by_key = {d.basket_key: d.tier for d in decision.decisions}
     hist_by_key = {
         d.basket_key: {
@@ -545,13 +613,6 @@ def _run_basket_segment(
     # (`baskets.tier` NOT NULL,⑥ 的 `dropped` 不落库,只随报告快照走)。
     kept = [b for b in result.baskets if b.basket_key in tier_by_key]
     result = _dc.replace(result, baskets=tuple(kept))
-    stats["tier"] = save_tier_decision(
-        result, tier_by_basket_key=tier_by_key,
-        tier_history_by_basket_key=hist_by_key, db_path=db_path, via="auto",
-    )
-
-    refs = load_baskets_for_date(trade_date, db_path=db_path)
-    id_by_key = {r.basket_key: r.basket_id for r in refs}
     # 降档篮的卡是按**暂定 T1** 构建的 —— 落库前把 tier 机械字段对齐最终裁定
     # (LLM 写的 tier_note 叙述不重生成,机械字段与留痕一致才是审计要求)。
     dec_by_key = {d.basket_key: d for d in decision.decisions}
@@ -568,17 +629,50 @@ def _run_basket_segment(
                 notes=c.notes + ((demote_note,) if demote_note else ()),
             )
         final_cards.append(c)
-    by_id = {id_by_key[c.basket_key]: c.to_card_json()
-             for c in final_cards if c.basket_key in id_by_key}
-    meta = {
-        id_by_key[c.basket_key]: {
+    cards_by_key = {c.basket_key: c.to_card_json() for c in final_cards}
+    meta_by_key = {
+        c.basket_key: {
             "stop_pct": c.stop_pct, "take_profit_retrace": c.take_profit_retrace,
             "charter_version": c.charter_version, "pack_version": c.pack_version,
             "engine_api_version": c.engine_api_version,
         }
-        for c in final_cards if c.basket_key in id_by_key
+        for c in final_cards
     }
-    stats["card"] = save_basket_cards(by_id, meta_by_basket_id=meta, db_path=db_path)
+    if run_id:
+        published = publish_selection_snapshot(
+            result, tier_by_basket_key=tier_by_key, tier_history_by_basket_key=hist_by_key,
+            cards_by_basket_key=cards_by_key, card_meta_by_basket_key=meta_by_key,
+            direction_id_by_basket_key=direction_by_basket,
+            gate_outcome=gate_out,
+            out_dropped=decision.dropped,
+            out_baskets_by_key=pre_gate_by_key,
+            out_engine_by_key=gate_out.summaries,
+            handoff_dropped=decision.dropped,
+            selection_run_id=run_id,
+            selection_state=getattr(result, "selection_state", None) or "complete",
+            selection_state_text=("今日深度研究已按预算结束，当前展示已完成判断的方向。"
+                                  if getattr(result, "selection_state", None) == "partial" else ""),
+            db_path=db_path, via="auto",
+        )
+        stats["tier"] = {key: value for key, value in published.items() if not key.startswith("cards_")}
+        stats["card"] = {key: value for key, value in published.items() if key.startswith("cards_") or key == "frozen_conflicts"}
+        stats["gates"]["rows_written"] = int(published.get("gate_rows_inserted", 0))
+        stats["out_candidates"] = int(published.get("out_candidates_inserted", 0))
+    else:
+        # Historical callers retain their already-frozen V2.4.1 two-transaction
+        # behavior. The new all-direction route is the only route that owns a
+        # selection run and therefore must use atomic publication above.
+        stats["tier"] = save_tier_decision(
+            result, tier_by_basket_key=tier_by_key,
+            tier_history_by_basket_key=hist_by_key, db_path=db_path, via="auto",
+        )
+        id_by_key = {ref.basket_key: ref.basket_id
+                     for ref in load_baskets_for_date(trade_date, db_path=db_path)}
+        stats["card"] = save_basket_cards(
+            {id_by_key[key]: card for key, card in cards_by_key.items() if key in id_by_key},
+            meta_by_basket_id={id_by_key[key]: meta for key, meta in meta_by_key.items() if key in id_by_key},
+            db_path=db_path,
+        )
 
     # —— V2.3.2-①-D:阈值影子台账(裁定 5)————————————————————————————————
     # 🔴 **必须排在 ⑥ 定档之后**:裁定 4 的第五项「对最终 T1/T2 数量的影响」要
@@ -599,11 +693,11 @@ def _run_basket_segment(
         logger.warning("[evening] ①-D 阈值影子台账写入异常(已吞,不影响定档与报告)",
                        exc_info=True)
 
-    stats["basket"] = {"baskets": len(result.baskets), "cards": len(by_id),
+    stats["basket"] = {"baskets": len(result.baskets), "cards": len(cards_by_key),
                        "dropped": len(decision.dropped)}
     logger.info("[evening] ③⑤⑥⑦:候选 %d → 篮子 %d 个(③b %d),卡 %d 张,关口留痕 %d 行",
                 len(gate_out.summaries), len(result.baskets), len(decision.dropped),
-                len(by_id), gate_rows)
+                len(cards_by_key), gate_rows)
     return list(decision.dropped)
 
 __all__ = [

@@ -224,9 +224,9 @@ logger = logging.getLogger(__name__)
 # (顶层 base + app target,刻意重复;守门只比 app target,故两处都得手动改)+
 # `xcodegen generate` 重生 pbxproj。⚠ 改完必须跑一次 `xcodegen generate` ——
 # 它顺手修好 project 级漂移,而守门看不见那一处。
-# V2.4.1 RC:版本只能通过 `App/scripts/prepare_release_candidate.sh` 与客户端一起切换。
+# V2.4.2 RC:版本只能通过 `App/scripts/prepare_release_candidate.sh` 与客户端一起切换。
 # ⚠ 本行改动**不构成部署**:生产 `/health` 要到真正 rsync + 重启之后才返此版本。
-VERSION = "v2.4.1"
+VERSION = "v2.4.2"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -414,7 +414,35 @@ def health() -> dict:
 
 # —— 4A.2 报告 ————————————————————————————————————————————————————————
 
-def _shape_basket_daily(payload) -> BasketDailyOut:
+def _selection_run_overlay(trade_date: date_cls) -> Dict[str, str]:
+    """读取 V2.4.2 选股运行态的 A 类覆盖层。
+
+    报告快照是 B 类冻结事实；正在运行、部分完成或不可用都不能回写它。核心
+    选择管线尚未安装（例如旧数据库或回放旧源码）时，宁可不发这两个可选字段，
+    也不把未知状态编成 ``complete``。
+    """
+    try:
+        from neckline.selection.run_store import latest_publication_state
+
+        raw = latest_publication_state(trade_date.strftime("%Y%m%d"), db_path=_db())
+    except ImportError:
+        return {}
+    except Exception:  # noqa: BLE001 - 状态覆盖不得让已发布快照无法读取
+        logger.warning("[report] 读取选股运行态覆盖失败，按无覆盖返回", exc_info=True)
+        return {}
+    if not isinstance(raw, Mapping):
+        return {}
+    state = raw.get("selectionState")
+    text = raw.get("selectionStateText")
+    if not isinstance(state, str) or not state:
+        return {}
+    out = {"selectionState": state}
+    if isinstance(text, str) and text:
+        out["selectionStateText"] = text
+    return out
+
+
+def _shape_basket_daily(payload, *, trade_date: Optional[date_cls] = None) -> BasketDailyOut:
     """报告落库的篮子日报快照 → 客户端契约。**同码不重写**:快照已是 camelCase
     (`report/basket_daily.py::BasketDaily.to_public_dict()`,与 `intel`/`sectorMoneyflow`
     的透传惯例一致),这里只做 pydantic 收口。
@@ -423,7 +451,11 @@ def _shape_basket_daily(payload) -> BasketDailyOut:
     三段全 `available=false` 的诚实占位,⛔ 不冒充「那天没有篮子」。"""
     from neckline.report.basket_daily import basket_daily_from_snapshot
 
-    return BasketDailyOut(**basket_daily_from_snapshot(payload))
+    shaped = basket_daily_from_snapshot(payload)
+    # 只在读 API 时叠一层运行态；不修改 `payload`，更不修改 reports 表里的冻结 JSON。
+    if trade_date is not None:
+        shaped.update(_selection_run_overlay(trade_date))
+    return BasketDailyOut(**shaped)
 
 
 def _shape_news_alert(a: Dict[str, Any], names: Dict[str, str]) -> NewsAlertOut:
@@ -471,7 +503,7 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
         sentiment=rep.get("sentiment", {}),
         sectors=rep.get("sectors", []),
         # V2-⑭-B:篮子日报三段取代已退役的 `candidates`(透传落库快照,随报告冻住)。
-        basketDaily=_shape_basket_daily(rep.get("basket_daily")),
+        basketDaily=_shape_basket_daily(rep.get("basket_daily"), trade_date=d),
         missedEntryHint=compute_missed_entry_hint(d, db_path=_db()),   # v1.1-B.4 实时算(补录后自动消失)
         intel=rep.get("intel", {}),                       # v1.3-③-C1,透传落库快照(同 sentiment 惯例)
         sectorMoneyflow=rep.get("sector_moneyflow", {}),   # v1.3-③-C2,透传落库快照

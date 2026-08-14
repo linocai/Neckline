@@ -44,6 +44,33 @@ class TestChatMessageWireFormat:
         assert api["name"] == "$web_search"
 
 
+def test_chat_normalizes_provider_reported_usage_without_estimation():
+    body = _openai_success_body("ok")
+    body["usage"] = {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}
+    provider = OpenAICompatProvider(
+        api_key="k", model="m", name="test", api_url="https://example.invalid/chat",
+    )
+    result = provider.chat(
+        [ChatMessage(role="user", content="hi")], enable_search=False,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)),
+    )
+    assert (result.prompt_tokens, result.completion_tokens, result.total_tokens) == (12, 8, 20)
+    assert result.usage_unavailable is False
+    assert result.raw_usage == {"responses": [body["usage"]]}
+
+
+def test_chat_marks_missing_provider_usage_unavailable():
+    provider = OpenAICompatProvider(
+        api_key="k", model="m", name="test", api_url="https://example.invalid/chat",
+    )
+    result = provider.chat(
+        [ChatMessage(role="user", content="hi")], enable_search=False,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=_openai_success_body("ok"))),
+    )
+    assert result.usage_unavailable is True
+    assert result.total_tokens is None
+
+
 class TestFactory:
     """V2-②(plan §五 V2-②/§3.10-B):`_PROVIDERS` 枚举退役,`get_provider()` 改为
     纯 DB 驱动(`llm_providers` 表自填制 + `app_settings.llm_task_routes`/
@@ -124,7 +151,7 @@ class TestFactory:
         settings_store.set_llm_routes({}, "glm", db_path=db)
         return get_provider(task, db_path=db)
 
-    @pytest.mark.parametrize("task", ["basket_reason", "tier_rank", "script", "review"])
+    @pytest.mark.parametrize("task", ["basket_reason", "deep_reason", "review"])
     def test_long_context_tasks_stream_with_chunk_gap_timeout(self, tmp_path, task):
         """⑤ 篮子聚合一次塞 20 颗种子 + 成员机械数据:2026-08-05 中午 3/3 次撞满 90s、
         当晚 3/3 次撞满 240s —— **抬数字这条路已被证伪**,推理类必须走流式,读超时
@@ -133,7 +160,7 @@ class TestFactory:
         assert p.use_streaming is True
         assert p.read_timeout == 90.0   # ⚠ 语义 = chunk 间隔,不是整段墙钟
 
-    @pytest.mark.parametrize("task", ["driver_search", "news_scan", "nl_alert",
+    @pytest.mark.parametrize("task", ["driver_search", "news_scan", "direction_triage", "tier_rank", "script", "nl_alert",
                                       "profile", None])
     def test_search_and_light_tasks_stay_non_streaming_at_the_validated_90s(self, tmp_path, task):
         """⛔ 检索类**刻意不开流式** —— GLM `web_search` tools 协议与流式的组合本项目

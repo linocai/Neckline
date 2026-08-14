@@ -107,7 +107,13 @@ ROLE_MECH_UNKNOWN = "unknown"
 MIN_MEMBERS = 1
 MAX_MEMBERS = 3
 
-# 一次聚合最多喂给 LLM 多少颗种子。**真正的governor 是 `BudgetLedger`**(检索段
+# 兼容旧调用方的显式上限。V2.4.2 起它不再是聚合入口的默认资格上限：默认路径
+# 必须先给全部种子建立机械方向记录，20 只属于已配置的新流水线的首批深研上限。
+# 保留该名字仅让历史回放/测试可显式要求一个有界输入，不能把它重新接成默认值。
+#
+# 旧注释中的「一次聚合最多」描述的是已经退役的入口行为；不要在新路径使用该值。
+#
+# 一次聚合最多喂给旧 LLM 多少颗种子。**真正的governor 是 `BudgetLedger`**(检索段
 # 每颗种子一次带联网调用,生产实测 30-60s+),这个上限只是"别把上百颗涨停簇种子
 # 一股脑塞进上下文"的工程护栏:④ 单日实测能产出 224 颗涨停簇种子,而 Tier 容量
 # 上限总共 T1≤2 + T2≤5 = 7 篮(V2.1-② T3 退役前是 17 篮),搜到第 20 颗以后的边际
@@ -748,6 +754,12 @@ class AggregateResult:
     seed_summary: str = ""
     pack_version: str = ""
     charter_version: str = CHARTER_UNKNOWN
+    # V2.4.2: optional run identity/status for the new all-direction pipeline.
+    # Legacy AggregateResult instances intentionally leave both absent.
+    selection_run_id: Optional[str] = None
+    selection_state: Optional[str] = None
+    deep_reasoning_by_basket_key: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    direction_id_by_basket_key: Dict[str, str] = field(default_factory=dict)
     notes: Tuple[str, ...] = ()
 
     @property
@@ -2370,7 +2382,7 @@ def assign_primary(
 # 编排入口
 # ══════════════════════════════════════════════════════════════════════════
 
-def _select_seeds(seed_set: SeedSet, limit: int = MAX_SEEDS_AGGREGATED) -> Tuple[DriverSeed, ...]:
+def _select_seeds(seed_set: SeedSet, limit: Optional[int] = None) -> Tuple[DriverSeed, ...]:
     """本次要聊的种子。`SeedSet.all_seeds()` 的次序本身就是确定的(热点行业 →
     暴起概念 → 涨停簇 → 异动簇,每类内部各自有序),题材类种子天然排在成百上千颗
     涨停簇之前,截断因此有意义而不是随机砍。**类内序是强弱序**(`scan/seeds.py::
@@ -2385,7 +2397,7 @@ def _select_seeds(seed_set: SeedSet, limit: int = MAX_SEEDS_AGGREGATED) -> Tuple
             continue
         seen.add(s.seed_key)
         out.append(s)
-        if len(out) >= limit:
+        if limit is not None and len(out) >= limit:
             break
     return tuple(out)
 
@@ -2400,8 +2412,15 @@ def aggregate_baskets(
     reason_provider: Any = _UNSET,
     ledger: Optional[BudgetLedger] = None,
     transport: Optional[Any] = None,
-    max_seeds: int = MAX_SEEDS_AGGREGATED,
+    max_seeds: Optional[int] = None,
     gate_context: Optional[Any] = None,
+    # V2.4.2 is opt-in at this compatibility boundary so direct historical
+    # callers can replay frozen V2.4.1 inputs.  Production evening orchestration
+    # always supplies this argument (including explicit None, which is
+    # unavailable rather than a fallback to the former first-20 path).
+    direction_pipeline_config: Any = _UNSET,
+    triage_provider: Any = _UNSET,
+    deep_reason_provider: Any = _UNSET,
 ) -> AggregateResult:
     """驱动聚合层唯一编排入口:种子 → (检索段 → 推理段) → 两道机械闸 → 篮子候选。
 
@@ -2497,6 +2516,183 @@ def aggregate_baskets(
             for s in seeds
         }
         seeds_by_key = {s.seed_key: s for s in seeds}
+
+        # —— V2.4.2: all-direction mechanical inventory → triage → bounded deep work —
+        # The caller explicitly opts into this branch.  Missing/invalid config is
+        # an unavailable run, never permission to revive an implicit first-20 cap.
+        if not isinstance(direction_pipeline_config, _Unset):
+            from neckline.llm.router import TASK_DEEP_REASON, TASK_DIRECTION_TRIAGE
+            from neckline.selection.direction_pipeline import run_direction_pipeline
+
+            def _qualified_after_gates(
+                proposals: Sequence[Mapping[str, Any]],
+                research_by_direction: Mapping[str, Mapping[str, Any]],
+            ) -> int:
+                """Count publishable candidates, never merely well-formed JSON.
+
+                This preview is deliberately side-effect free: it reuses the
+                existing whitelist, six-gate and deterministic Tier authorities
+                to decide whether a fill round is needed.  The final pass below
+                remains the only one that writes final facts.
+                """
+                preview_candidates: List[BasketCandidate] = []
+                preview_used: set = set()
+                preview_evidence: Dict[str, DriverEvidence] = {
+                    key: DriverEvidence(seed_key=key, status=EVIDENCE_SEARCH_UNAVAILABLE,
+                                        skip_reason="not_deep_researched")
+                    for key in seeds_by_key
+                }
+                for proposal in proposals:
+                    direction_id = str(proposal.get("directionId", proposal.get("direction_id", "")))
+                    raw_research = research_by_direction.get(direction_id)
+                    items: List[EvidenceItem] = []
+                    if isinstance(raw_research, Mapping):
+                        raw_items = raw_research.get("evidence", raw_research.get("items", ()))
+                        if isinstance(raw_items, list):
+                            for raw_item in raw_items:
+                                if isinstance(raw_item, Mapping):
+                                    claim = str(raw_item.get("claim") or "").strip()
+                                    source = str(raw_item.get("source") or "").strip()
+                                    ev_date = str(raw_item.get("date") or "").strip()
+                                    if claim and source and ev_date:
+                                        items.append(EvidenceItem(claim=claim, source=source, date=ev_date,
+                                                                  url=str(raw_item.get("url") or "").strip()))
+                    for seed_key in proposal.get("seed_keys", ()):
+                        if seed_key in preview_evidence:
+                            preview_evidence[seed_key] = DriverEvidence(
+                                seed_key=seed_key,
+                                status=EVIDENCE_OK if raw_research is not None else EVIDENCE_SEARCH_UNAVAILABLE,
+                                items=tuple(items),
+                                skip_reason="" if raw_research is not None else "not_deep_researched",
+                            )
+                    candidate, _rejected = _gate_proposal(
+                        proposal, trade_date_s=trade_date_s, seeds_by_key=seeds_by_key,
+                        presented_by_seed=presented_by_seed, evidence_by_seed=preview_evidence,
+                        ctx=ctx, pack_version=pack_version, charter_version=charter_version,
+                        used_keys=preview_used,
+                    )
+                    if candidate is not None:
+                        preview_used.add(candidate.basket_key)
+                        preview_candidates.append(candidate)
+                if not preview_candidates:
+                    return 0
+                from neckline.selection import gates as preview_gates
+                from neckline.selection import tier as preview_tier
+
+                preview = AggregateResult(
+                    trade_date=trade_date_s, baskets=tuple(preview_candidates),
+                    evidence_by_seed=preview_evidence, pack_version=pack_version,
+                    charter_version=charter_version,
+                )
+                gate_preview = preview_gates.evaluate_day(
+                    preview, trade_date, db_path=db_path, parquet_dir=parquet_dir, context=gate_context,
+                )
+                tier_preview = preview_tier.score_and_tier(
+                    preview, trade_date, db_path=db_path, parquet_dir=parquet_dir,
+                    provider=None, use_llm=False, gates_outcome=gate_preview,
+                )
+                return len(tier_preview.decisions)
+
+            if isinstance(triage_provider, _Unset):
+                triage_provider = _resolve_provider(TASK_DIRECTION_TRIAGE, db_path)
+            if isinstance(search_provider, _Unset):
+                search_provider = _resolve_provider(TASK_DRIVER_SEARCH, db_path)
+            if isinstance(deep_reason_provider, _Unset):
+                deep_reason_provider = _resolve_provider(TASK_DEEP_REASON, db_path)
+            outcome = run_direction_pipeline(
+                trade_date, seeds, config=direction_pipeline_config,
+                triage_provider=triage_provider, research_provider=search_provider,
+                reason_provider=deep_reason_provider, db_path=db_path, transport=transport,
+                qualification_callback=_qualified_after_gates,
+            )
+            if outcome.terminal:
+                return AggregateResult(
+                    trade_date=trade_date_s, pack_version=pack_version,
+                    charter_version=charter_version, seed_count=seed_count,
+                    seed_summary=seed_summary, search_stage=STAGE_NO_PROVIDER,
+                    reason_stage=STAGE_NO_PROVIDER, selection_run_id=outcome.run_id,
+                    selection_state="unavailable", notes=tuple(notes) + outcome.notes,
+                )
+
+            # Search records are one-per mechanical direction (identity-only
+            # merge today).  A successful search with no usable citations is
+            # intentionally EVIDENCE_OK + empty and will be rejected by the
+            # existing evidence gate rather than being silently allowed.
+            evidence_by_seed: Dict[str, DriverEvidence] = {}
+            for brief in outcome.briefs:
+                raw_research = outcome.research_by_direction_id.get(brief.direction_id)
+                items: List[EvidenceItem] = []
+                if isinstance(raw_research, Mapping):
+                    raw_items = raw_research.get("evidence", raw_research.get("items", ()))
+                    if isinstance(raw_items, list):
+                        for raw_item in raw_items:
+                            if not isinstance(raw_item, Mapping):
+                                continue
+                            claim = str(raw_item.get("claim") or "").strip()
+                            source = str(raw_item.get("source") or "").strip()
+                            ev_date = str(raw_item.get("date") or "").strip()
+                            if claim and source and ev_date:
+                                items.append(EvidenceItem(claim=claim, source=source, date=ev_date,
+                                                          url=str(raw_item.get("url") or "").strip()))
+                evidence_by_seed[brief.seed_key] = DriverEvidence(
+                    seed_key=brief.seed_key,
+                    status=EVIDENCE_OK if raw_research is not None else EVIDENCE_SEARCH_UNAVAILABLE,
+                    items=tuple(items),
+                    skip_reason="" if raw_research is not None else "not_deep_researched",
+                )
+
+            candidates: List[BasketCandidate] = []
+            rejected: List[RejectedProposal] = []
+            deep_material: Dict[str, Dict[str, Any]] = {}
+            direction_by_basket: Dict[str, str] = {}
+            used_keys: set = set()
+            for proposal in outcome.proposals:
+                candidate, rejected_item = _gate_proposal(
+                    proposal, trade_date_s=trade_date_s, seeds_by_key=seeds_by_key,
+                    presented_by_seed=presented_by_seed, evidence_by_seed=evidence_by_seed,
+                    ctx=ctx, pack_version=pack_version, charter_version=charter_version,
+                    used_keys=used_keys,
+                )
+                if rejected_item is not None:
+                    rejected.append(rejected_item)
+                    direction_id = str(proposal.get("directionId", proposal.get("direction_id", "")))
+                    if direction_id:
+                        from neckline.selection import run_store
+                        run_store.update_direction_disposition(
+                            outcome.run_id, direction_id, final_disposition="gate_rejected", db_path=db_path,
+                        )
+                        run_store.add_event(
+                            outcome.run_id, "gate_rejected", direction_id=direction_id,
+                            reason=rejected_item.reason, db_path=db_path,
+                        )
+                    continue
+                if candidate is None:
+                    continue
+                used_keys.add(candidate.basket_key)
+                candidates.append(candidate)
+                direction_id = str(proposal.get("directionId", proposal.get("direction_id", "")))
+                if direction_id:
+                    direction_by_basket[candidate.basket_key] = direction_id
+                    from neckline.selection import run_store
+                    run_store.update_direction_disposition(
+                        outcome.run_id, direction_id, final_disposition="gate_pass", db_path=db_path,
+                    )
+                    run_store.add_event(outcome.run_id, "gate_pass", direction_id=direction_id, db_path=db_path)
+                material = outcome.deep_material_by_direction_id.get(direction_id)
+                if isinstance(material, Mapping):
+                    deep_material[candidate.basket_key] = dict(material)
+            candidates = list(assign_primary(candidates, seeds_by_key, ctx))
+            return AggregateResult(
+                trade_date=trade_date_s, baskets=tuple(candidates), rejected=tuple(rejected),
+                hygiene_rejected=tuple(hygiene.rejected), evidence_by_seed=evidence_by_seed,
+                search_stage=STAGE_OK, reason_stage=STAGE_OK,
+                pack_version=pack_version, charter_version=charter_version,
+                seed_count=seed_count, seed_summary=seed_summary,
+                selection_run_id=outcome.run_id, selection_state=outcome.selection_state,
+                deep_reasoning_by_basket_key=deep_material,
+                direction_id_by_basket_key=direction_by_basket,
+                notes=tuple(notes) + outcome.notes,
+            )
 
         # —— 段一:检索 ————————————————————————————————————————————
         if isinstance(search_provider, _Unset):

@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from datetime import date, datetime
@@ -67,6 +68,10 @@ def main() -> int:
                         help="落库后触发 APNs 报告推送(受 kind=report_ready 开关)")
     parser.add_argument("--db", default=None, help="隔离库路径(冒烟用;缺省=真实库)")
     parser.add_argument("--parquet-dir", default=None, help="隔离 parquet 目录(冒烟用)")
+    parser.add_argument(
+        "--direction-pipeline-config", default=None,
+        help="V2.4.2 方向流水线 JSON 配置文件；未提供或不完整时选股如实显示不可用，不回退旧前20路径",
+    )
     args = parser.parse_args()
 
     ensure_data_dirs()
@@ -84,12 +89,26 @@ def main() -> int:
 
     db_path = Path(args.db) if args.db else None
     parquet_dir = Path(args.parquet_dir) if args.parquet_dir else None
+    direction_pipeline_config = None
+    if args.direction_pipeline_config:
+        try:
+            loaded = json.loads(Path(args.direction_pipeline_config).read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.error("方向流水线配置读取失败:%s", exc)
+            return 2
+        if not isinstance(loaded, dict):
+            logger.error("方向流水线配置必须是 JSON object。")
+            return 2
+        direction_pipeline_config = loaded
     logger.info("晚间链 %s:段 %s(llm=%s,save=%s)", trade_date, segments,
                 not args.no_llm, not args.no_save)
     try:
         res = run_evening_chain(
             trade_date, segments=segments, db_path=db_path, parquet_dir=parquet_dir,
             use_llm=not args.no_llm, save=not args.no_save,
+            # Passing explicit None is intentional: V2.4.2 cannot silently
+            # fall back to the historical first-20 aggregate route.
+            direction_pipeline_config=direction_pipeline_config,
         )
     except RuntimeError as e:
         logger.error("晚间链失败:%s", e)

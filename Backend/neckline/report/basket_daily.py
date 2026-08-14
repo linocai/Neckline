@@ -145,6 +145,9 @@ _CARD_TOP_KEYS: Tuple[Tuple[str, str], ...] = (
     ("discipline_labels", "disciplineLabels"),
     ("narrative", "narrative"),
     ("llm_stage", "llmStage"),
+    # V2.4.2:卡片的叙述来源是冻结事实的一部分。老卡没有该键时保持缺席，
+    # 不能在读侧猜成任何一种生成方式。
+    ("generation_source", "generationSource"),
     ("degraded", "degraded"),
     ("notes", "notes"),
 )
@@ -455,6 +458,10 @@ class BasketDaily:
     #: `None` / 空串 = 当时没记这一位(⛔ 不拿 `0` 冒充「一个种子都没有」)。
     unexplained_seed_count: Optional[int] = None
     unexplained_seed_summary: Optional[str] = None
+    # V2.4.2:运行态是 A 类的**读时覆盖层**，不是报告冻结快照的推断结果。
+    # None = 老快照或本次没有已知运行态，客户端必须不显示状态提示。
+    selection_state: Optional[str] = None
+    selection_state_text: Optional[str] = None
     notes: List[str] = field(default_factory=list)
 
     def by_tier(self) -> Dict[int, List[BasketView]]:
@@ -503,6 +510,8 @@ class BasketDaily:
             "selectionUnavailableReason": self.selection_unavailable_reason,
             "unexplainedSeedCount": self.unexplained_seed_count,
             "unexplainedSeedSummary": self.unexplained_seed_summary,
+            "selectionState": self.selection_state,
+            "selectionStateText": self.selection_state_text,
             "notes": list(self.notes),
         }
 

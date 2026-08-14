@@ -124,7 +124,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_connection
 from neckline.report.industry_strength_store import load_industry_strength
 from neckline.scan import stage as stage_mod
 # 「无骨架线现役」哨兵串与 regime 同一个字面(同一条纪律,不抄第二份)。
@@ -1774,11 +1774,13 @@ def _repair_primary(baskets: List[Any]) -> List[Any]:
 # ══════════════════════════════════════════════════════════════════════════
 
 _COLUMNS = ("trade_date, candidate_key, ts_code, gate, gate_kind, verdict, score, "
-            "threshold, engine_code, engine_version, evidence_json, created_at")
+            "threshold, engine_code, engine_version, evidence_json, selection_run_id, created_at")
 
 
 def save_gate_evaluations(
     outcome: GateDayOutcome, *, db_path: Optional[Path] = None,
+    selection_run_id: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> int:
     """把一天的关口判定行写进 `gate_evaluations`(**append-only**:同日重跑 = 追加
     新批次,`created_at` 区分;审计表不做覆盖 —— 「上一次怎么判的」本身是审计对象)。
@@ -1795,15 +1797,20 @@ def save_gate_evaluations(
             rows.append((
                 outcome.trade_date, key, c.ts_code, c.gate, c.gate_kind, c.verdict,
                 c.score, c.threshold, s.engine_code, s.engine_version,
-                json.dumps(ev, ensure_ascii=False, sort_keys=True), now,
+                json.dumps(ev, ensure_ascii=False, sort_keys=True), str(selection_run_id or ""), now,
             ))
     if not rows:
         return 0
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        conn.executemany(
-            f"INSERT INTO {TABLE} ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows,
+    def _save(target: sqlite3.Connection) -> None:
+        target.executemany(
+            f"INSERT INTO {TABLE} ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows,
         )
+    if conn is not None:
+        _save(conn)
+        return len(rows)
+    init_schema(db_path)
+    with connection(db_path) as own:
+        _save(own)
     return len(rows)
 
 
@@ -1813,15 +1820,31 @@ def load_gate_evaluations(
 ) -> List[Dict[str, Any]]:
     """读某日关口判定行(升序 id = 写入序;回放 / ④ 周度归因用)。"""
     day = trade_date if isinstance(trade_date, str) else _d(trade_date)
-    sql = (f"SELECT id, {_COLUMNS} FROM {TABLE} WHERE trade_date=?")
-    args: List[Any] = [day]
-    if candidate_key:
-        sql += " AND candidate_key=?"
-        args.append(candidate_key)
-    sql += " ORDER BY id ASC"
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(sql, tuple(args)).fetchall()
+    try:
+        with readonly_connection(db_path) as conn:
+            columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({TABLE})")}
+            if not columns:
+                return []
+            select_columns = ["id"] + [
+                name.strip() if name.strip() in columns else f"NULL AS {name.strip()}"
+                for name in _COLUMNS.split(",")
+            ]
+            sql = f"SELECT {', '.join(select_columns)} FROM {TABLE} WHERE trade_date=?"
+            args: List[Any] = [day]
+            # Final gate facts are a generation-scoped published snapshot. A
+            # legacy table without the new column remains readable as legacy.
+            if "selection_run_id" in columns:
+                from neckline.selection.run_store import latest_published_run_id
+                run_id = latest_published_run_id(day, db_path=db_path)
+                sql += " AND COALESCE(selection_run_id,'')=?"
+                args.append(run_id or "")
+            if candidate_key:
+                sql += " AND candidate_key=?"
+                args.append(candidate_key)
+            sql += " ORDER BY id ASC"
+            rows = conn.execute(sql, tuple(args)).fetchall()
+    except FileNotFoundError:
+        return []
     keys = ["id"] + [c.strip() for c in _COLUMNS.split(",")]
     out: List[Dict[str, Any]] = []
     for r in rows:

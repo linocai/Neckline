@@ -28,7 +28,7 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --segments basket
+ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --segments basket --direction-pipeline-config /opt/neckline/config/direction-pipeline.v2.4.2-balanced.json
 # LLM 段:检索 + 推理多次调用 × 读超时 × 重试。给足墙钟,别让慢调用被 systemd
 # 掐成"链断了"。
 # ⚠ **这个数字是按预算账的算术定的,不是拍脑袋的余量** —— 改读超时/预算常量前先重算:

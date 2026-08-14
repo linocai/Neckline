@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 # 三本账默认预算(秒)。晚间管线三段化(§3.10-D)后,各段各自 new 一个
 # `BudgetLedger`——**不是进程级全局单例**,全局单例会让"重跑一次报告"与"当天
@@ -48,6 +48,15 @@ class BudgetLedger:
 
     limits: Dict[str, float] = field(default_factory=_default_limits)
     spent: Dict[str, float] = field(default_factory=lambda: {k: 0.0 for k in _LEDGERS})
+    # Token limits have no production defaults in V2.4.2: the direction
+    # pipeline must supply its approved budget explicitly.  `None` means this
+    # generic legacy ledger does not enforce tokens, never that tokens are
+    # free or estimated.
+    token_limits: Dict[str, Optional[int]] = field(
+        default_factory=lambda: {k: None for k in _LEDGERS}
+    )
+    token_spent: Dict[str, int] = field(default_factory=lambda: {k: 0 for k in _LEDGERS})
+    usage_unavailable: Dict[str, bool] = field(default_factory=lambda: {k: False for k in _LEDGERS})
 
     def _check(self, ledger: str) -> None:
         if ledger not in self.limits:
@@ -63,6 +72,36 @@ class BudgetLedger:
 
     def exhausted(self, ledger: str) -> bool:
         return self.remaining(ledger) <= 0.0
+
+    def record_call(self, ledger: str, result: Any, wall_seconds: float) -> bool:
+        """Record wall time and actual provider usage for one completed call.
+
+        Returns false when the provider did not expose complete token usage.
+        That is an accounting fault for any caller enforcing a token budget;
+        it is intentionally not patched with an estimate.
+        """
+        self._check(ledger)
+        self.spend(ledger, wall_seconds)
+        total = getattr(result, "total_tokens", None)
+        unavailable = bool(getattr(result, "usage_unavailable", True))
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            unavailable = True
+        if unavailable:
+            self.usage_unavailable[ledger] = True
+            return False
+        self.token_spent[ledger] = self.token_spent.get(ledger, 0) + total
+        return True
+
+    def token_remaining(self, ledger: str) -> Optional[int]:
+        self._check(ledger)
+        limit = self.token_limits.get(ledger)
+        if limit is None:
+            return None
+        return max(0, int(limit) - self.token_spent.get(ledger, 0))
+
+    def token_exhausted(self, ledger: str) -> bool:
+        remaining = self.token_remaining(ledger)
+        return remaining is not None and remaining <= 0
 
 
 # —— 降级次序(定死,plan §五 V2-② / V2.1-②)————————————————————————————————

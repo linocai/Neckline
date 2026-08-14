@@ -18,6 +18,7 @@ import pytest
 
 from neckline.llm import budget
 from neckline.llm import router
+from neckline.llm.base import LLMResult
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -38,9 +39,16 @@ def test_all_tasks_declared_count_and_uniqueness():
 
     ⛔ **别改成 `>= 8`** —— 这条闸的意义全在"加不进来":新增一个 LLM 任务是要
     连预算账、流式分级、prompt_context 三处一起想清楚的事,不是顺手加个字符串。"""
-    assert len(router.ALL_TASKS) == 9
-    assert len(set(router.ALL_TASKS)) == 9
+    assert len(router.ALL_TASKS) == 11
+    assert len(set(router.ALL_TASKS)) == 11
     assert router.TASK_AUCTION in router.ALL_TASKS
+    assert router.TASK_DIRECTION_TRIAGE in router.ALL_TASKS
+    assert router.TASK_DEEP_REASON in router.ALL_TASKS
+    assert router.SELECTION_PIPELINE_TASKS == (
+        router.TASK_DRIVER_SEARCH, router.TASK_DIRECTION_TRIAGE, router.TASK_DEEP_REASON,
+    )
+    assert router.TASK_TIER_RANK not in router.SELECTION_PIPELINE_TASKS
+    assert router.TASK_SCRIPT not in router.SELECTION_PIPELINE_TASKS
     # 🔴 两项**同路接线**的正面断言(只接一半 = §七 P0-40/P0-44 原病复发):
     assert router.TASK_AUCTION in router.LONG_CONTEXT_TASKS
     assert router.use_streaming_for_task(router.TASK_AUCTION) is True
@@ -210,6 +218,24 @@ def test_spend_unknown_ledger_raises():
     ledger = budget.BudgetLedger()
     with pytest.raises(ValueError):
         ledger.spend("bogus_ledger", 1.0)
+
+
+def test_record_call_uses_only_actual_provider_tokens_and_wall_time():
+    ledger = budget.BudgetLedger(token_limits={"search": 50, "reason": 100, "review": None})
+    result = LLMResult(ok=True, total_tokens=24, prompt_tokens=10, completion_tokens=14,
+                       usage_unavailable=False)
+    assert ledger.record_call("reason", result, 1.25) is True
+    assert ledger.spent["reason"] == pytest.approx(1.25)
+    assert ledger.token_spent["reason"] == 24
+    assert ledger.token_remaining("reason") == 76
+    assert ledger.token_exhausted("reason") is False
+
+
+def test_record_call_marks_missing_usage_without_estimating_tokens():
+    ledger = budget.BudgetLedger()
+    assert ledger.record_call("reason", LLMResult(ok=True), 0.5) is False
+    assert ledger.usage_unavailable["reason"] is True
+    assert ledger.token_spent["reason"] == 0
 
 
 def test_degrade_order_is_only_t2_review_detail():

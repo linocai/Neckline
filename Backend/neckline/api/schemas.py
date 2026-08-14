@@ -240,6 +240,8 @@ class BasketCardOut(BaseModel):
     disciplineLabels: List[str] = Field(default_factory=list)
     narrative: str = ""
     llmStage: str = ""
+    # V2.4.2:新增可选来源；历史冻结卡缺键 = 当时未记录，不作猜测。
+    generationSource: Optional[str] = None
     degraded: bool = False
     notes: List[str] = Field(default_factory=list)
 
@@ -465,6 +467,9 @@ class BasketDailyOut(BaseModel):
     #: ⛔ 不进选股时钟样本。`null` = 当时没记这一位(⛔ 不拿 `0` 冒充「一个都没有」)。
     unexplainedSeedCount: Optional[int] = None
     unexplainedSeedSummary: Optional[str] = None
+    # V2.4.2 读时运行态覆盖。缺席不是 complete，而是「该快照没有此概念/本次未取到」。
+    selectionState: Optional[str] = None
+    selectionStateText: Optional[str] = None
     notes: List[str] = Field(default_factory=list)
 
 

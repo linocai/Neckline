@@ -162,7 +162,7 @@ def _rows(db_path: Path, sql: str) -> List[tuple]:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestGatedEveningFlow:
-    def test_complete_plan_keeps_t1_and_engine_columns_land(self, isolated_env, monkeypatch):
+    def test_legacy_card_provider_is_not_called_and_missing_plan_demotes_to_t2(self, isolated_env, monkeypatch):
         env = isolated_env
         _seed_t1_world(env)
         dropped, stats, _notes = _run_segment(
@@ -171,14 +171,14 @@ class TestGatedEveningFlow:
         rows = _rows(env.db_path,
                      "SELECT basket_key, tier, engine_code, engine_version, skeleton_version "
                      "FROM baskets")
-        assert rows == [("k1", 1, "C", "C1", "K8-V0.8")]
+        assert rows == [("k1", 2, "C", "C1", "K8-V0.8")]
         assert stats["gates"]["rows_written"] > 0
         assert _rows(env.db_path, "SELECT COUNT(*) FROM gate_evaluations")[0][0] > 0
         card = json.loads(_rows(env.db_path, "SELECT card_json FROM basket_cards")[0][0])
-        assert card["tier"] == 1
+        assert card["tier"] == 2
         assert (card["engine_code"], card["engine_version"], card["skeleton_version"]) == \
             ("C", "C1", "K8-V0.8")
-        assert bc.trade_plan_missing_pieces(card) == []
+        assert bc.trade_plan_missing_pieces(card)
 
     def test_incomplete_plan_demotes_t1_to_t2_not_blocked(self, isolated_env, monkeypatch):
         """③-E:四件套缺任一 → **不进 T1**(降 T2)+ 留痕;⛔ 不是拦截 ——
