@@ -10,7 +10,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "2.4.2"
-    CURRENT_PROJECT_VERSION: "3"
+    CURRENT_PROJECT_VERSION: "4"
     DEVELOPMENT_TEAM: HX73DFL88G
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: minimal
@@ -50,7 +50,9 @@ targets:
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Neckline/Neckline.entitlements
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: Neckline/Resources/Info.plist
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # iOS 会把通知标题栏使用的主 App 图标缓存到系统界面。V2.4.2 Build 4
+        # 改用新的 asset-set 名称，避免覆盖安装后继续显示旧缓存；图稿本身不变。
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV242
         ENABLE_PREVIEWS: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

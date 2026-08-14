@@ -12,7 +12,7 @@
      `NULL`。⚠ 判据是「老库上真跑一遍迁移」,⛔ 不是「读一眼 `_COLUMN_MIGRATIONS`
      说它看起来是可空的」。
   **D. 工作区卫生**:`git diff --check`(空白错误)。
-  **E. V2.4.2 RC 构建号**:客户端源、生成工程与服务版本一起锁定。
+  **E. V2.4.2 构建号与 iOS 图标缓存键**:客户端源、生成工程与服务版本一起锁定。
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from neckline.db import init_schema
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _PROJECT_YML = _REPO_ROOT.parent / "App" / "project.yml"
 _PBXPROJ = _REPO_ROOT.parent / "App" / "Neckline.xcodeproj" / "project.pbxproj"
+_ASSET_CATALOG = _REPO_ROOT.parent / "App" / "Neckline" / "Resources" / "Assets.xcassets"
 _APP_PY = _REPO_ROOT / "neckline" / "api" / "app.py"
 
 _MACOS_TEST_HOST_KEY = "TEST_HOST[sdk=macosx*]"
@@ -52,7 +53,8 @@ def _expected_marketing_version() -> str:
 
 
 _EXPECTED_VERSION = _expected_marketing_version()
-_EXPECTED_RC_BUILD = "3"
+_EXPECTED_RC_BUILD = "4"
+_EXPECTED_PRIMARY_ICON = "AppIconV242"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -125,16 +127,38 @@ def test_every_marketing_version_in_pbxproj_is_the_same():
         f"实得 {len(versions)} 处:{versions} —— 少一处 = 有一块没被版本治理覆盖")
 
 
-def test_v242_rc_build_number_is_synced_into_the_generated_project():
-    """V2.4.2 RC 固定为 Build 3；源文件和生成工程不能各自漂移。"""
+def test_v242_build_number_is_synced_into_the_generated_project():
+    """V2.4.2 iOS 图标快修为 Build 4；源文件和生成工程不能各自漂移。"""
     data = yaml.safe_load(_PROJECT_YML.read_text(encoding="utf-8"))
     source_build = str(data["settings"]["base"]["CURRENT_PROJECT_VERSION"])
     generated_builds = re.findall(
         r"CURRENT_PROJECT_VERSION = ([0-9]+);", _PBXPROJ.read_text(encoding="utf-8"))
     assert source_build == _EXPECTED_RC_BUILD
     assert generated_builds == [_EXPECTED_RC_BUILD, _EXPECTED_RC_BUILD], (
-        "pbxproj 的 Debug/Release 构建号应由 project.yml 生成并同为 Build 3:"
+        "pbxproj 的 Debug/Release 构建号应由 project.yml 生成并同为 Build 4:"
         f"{generated_builds}")
+
+
+def test_v242_ios_primary_icon_uses_the_cache_busted_asset_name():
+    """覆盖安装后通知栏不能继续命中旧的 `AppIcon` 系统缓存键。"""
+    data = yaml.safe_load(_PROJECT_YML.read_text(encoding="utf-8"))
+    target = data["targets"]["Neckline"]["settings"]["base"]
+    assert target["ASSETCATALOG_COMPILER_APPICON_NAME"] == _EXPECTED_PRIMARY_ICON
+    icon_set = _ASSET_CATALOG / f"{_EXPECTED_PRIMARY_ICON}.appiconset"
+    assert icon_set.is_dir()
+    contents = yaml.safe_load((icon_set / "Contents.json").read_text(encoding="utf-8"))
+    ios_icons = [
+        item for item in contents["images"]
+        if item.get("platform") == "ios" and item.get("size") == "1024x1024"
+    ]
+    assert ios_icons == [{
+        "idiom": "universal", "platform": "ios", "size": "1024x1024",
+        "filename": "icon_1024.png",
+    }]
+    generated = _PBXPROJ.read_text(encoding="utf-8")
+    assert generated.count(
+        f"ASSETCATALOG_COMPILER_APPICON_NAME = {_EXPECTED_PRIMARY_ICON};"
+    ) == 2
 
 
 # ══════════════════════════════════════════════════════════════════════════

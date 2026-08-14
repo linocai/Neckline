@@ -165,3 +165,20 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   3–5 trading days, review actual `selection_llm_calls` Token totals, direction counts, fill rounds and stop
   reasons before proposing `r2`; do not tune from one day or replace the file in place.
 - **Later:** V2.4.3 product-wide consistency review after the V2.4.2 observation window.
+
+## 9. V2.4.3 observation inbox
+
+- During the first 3–5 V2.4.2 trading days, classify each user report before changing code.
+- **Hotfix now:** crash, blocked core action, materially misleading output, missing/stale production result,
+  data-integrity risk, or a defect that prevents normal selection/holding/review use. Reproduce narrowly,
+  make the smallest safe fix on `main`, run the affected gate, and verify the deployed result.
+- **Record for V2.4.3:** wording, spacing, visual hierarchy, optional convenience, or other friction that does
+  not prevent a correct decision. Record the page, state, evidence/screenshot, user impact and desired outcome;
+  do not accumulate piecemeal UI patches during the observation window.
+- A six-gate/threshold/Tier change, new or changed LLM call, pipeline budget/config change, schema rewrite,
+  or production-data repair is never an informal hotfix. It requires an explicit decision and rollback plan.
+- **Hotfix 2026-08-14:** V2.4.2 Build 4 changes the primary icon asset-set name from `AppIcon` to
+  `AppIconV242`, forcing iOS notification chrome to stop reusing the pre-upgrade icon cache. The artwork and
+  notification logic are unchanged; iOS is packaged for user installation and macOS Build 3 stays installed.
+- Build numbers are monotonic installable-build identifiers, not reserved in advance. This client hotfix
+  consumes Build 4, so V2.4.3 is expected to start at Build 5.

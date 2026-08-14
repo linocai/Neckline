@@ -25,6 +25,32 @@ database snapshot is unchanged, which is the actual read-overlay contract.
 
 ---
 
+## [ERR-20260814-013] xcodegen-wrong-working-directory
+
+**Logged**: 2026-08-14T13:45:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+The iOS icon hotfix verification invoked `xcodegen generate` from `Backend/`, so the generator could not
+find `App/project.yml`.
+
+### Error
+
+```text
+No project spec found at /Users/linotsai/Lino/Neckline/Backend/project.yml
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T13:45:00+08:00
+- **Notes**: Run XcodeGen from `App/` as required by the repository instructions, then run Backend tests from
+  `Backend/` with an explicit temporary `DB_PATH`. The failed invocation changed no project or database file.
+
+---
+
 ## [ERR-20260813-005] stale-path-scan-shell-quoting
 
 **Logged**: 2026-08-13T15:29:00+08:00
