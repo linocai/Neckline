@@ -1768,6 +1768,7 @@ final class DTODecodeTests: XCTestCase {
                            {"name": "glm", "model": "glm-4", "hasWebSearch": true,
                             "keySet": false, "enabled": false}],
              "routes": {"basket_narrative": "deepseek", "nl_alert": "glm"},
+             "tavily": {"keySet": true},
              "push": {"kinds": [
                {"kind": "retreat", "level": "immediate", "label": "退潮红色刹车", "enabled": true},
                {"kind": "d5exit", "level": "important", "label": "时间退出", "enabled": false},
@@ -1786,6 +1787,7 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertFalse(s.providers[1].keySet)
         XCTAssertTrue(s.providers[1].hasWebSearch)
         XCTAssertEqual(s.routes["basket_narrative"], "deepseek")
+        XCTAssertTrue(s.tavily.keySet)
         XCTAssertEqual(s.reviewColMap, ["手续费": "费用合计"])
 
         // 按 kind 的开关:**服务端发什么就有什么**(⛔ 客户端不硬编清单)。
@@ -1931,6 +1933,40 @@ final class DTODecodeTests: XCTestCase {
         let r = try await client.fetchLLMRoutes()
         XCTAssertEqual(r.routes["nl_alert"], "glm")
         XCTAssertEqual(r.defaultProvider, "deepseek")
+    }
+
+    func testPutLLMRoutesDecodesSavedDefaultProvider() async throws {
+        MockURLProtocol.handler = { req in
+            XCTAssertEqual(req.httpMethod, "PUT")
+            let body = try XCTUnwrap(req.httpBodyOrStream())
+            let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(obj["defaultProvider"] as? String, "deepseek")
+            return (200, jsonData(#"{"routes": {}, "defaultProvider": "deepseek"}"#))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let saved = try await client.putLLMRoutes(routes: [:], defaultProvider: "deepseek")
+        XCTAssertEqual(saved.defaultProvider, "deepseek")
+    }
+
+    func testTavilyKeyIsWriteOnlyAndClearDecodesSafeStatus() async throws {
+        var requestCount = 0
+        MockURLProtocol.handler = { req in
+            requestCount += 1
+            if req.httpMethod == "PUT" {
+                let body = try XCTUnwrap(req.httpBodyOrStream())
+                let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+                XCTAssertEqual(obj["apiKey"] as? String, "tvly-test")
+                return (200, jsonData(#"{"keySet": true}"#))
+            }
+            XCTAssertEqual(req.httpMethod, "DELETE")
+            return (200, jsonData(#"{"keySet": false}"#))
+        }
+        let client = APIClient(baseURL: URL(string: "http://127.0.0.1:8002")!, token: "t", session: mockSession())
+        let saved = try await client.putTavilyKey("tvly-test")
+        let cleared = try await client.deleteTavilyKey()
+        XCTAssertTrue(saved.keySet)
+        XCTAssertFalse(cleared.keySet)
+        XCTAssertEqual(requestCount, 2)
     }
 
     // MARK: - V2-⑪-C 自然语言临时提醒(**只通知,永不交易**)

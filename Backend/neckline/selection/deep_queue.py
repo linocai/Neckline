@@ -93,6 +93,7 @@ def _category_values(brief: DirectionBrief) -> Tuple[Tuple[str, str], ...]:
 def build_deep_queue(
     briefs: Sequence[DirectionBrief], dispositions: Mapping[str, str], config: DirectionPipelineConfig,
     *, already_queued: Iterable[str] = (), queue_round: int = 0, limit: Optional[int] = None,
+    enforce_total_limit: bool = True,
 ) -> DeepQueue:
     """Pick a deterministic, covered queue without treating missing data as a rejection.
 
@@ -101,7 +102,8 @@ def build_deep_queue(
     """
     used = set(already_queued)
     cap = config.deep_initial_limit if limit is None else limit
-    cap = min(cap, config.max_total_deep - len(used))
+    if enforce_total_limit:
+        cap = min(cap, config.max_total_deep - len(used))
     if cap <= 0:
         return DeepQueue((), tuple(item.direction_id for item in briefs if item.direction_id not in used))
     items = [item for item in briefs if item.direction_id not in used and dispositions.get(item.direction_id) in {"deep", "normal", "reserve"}]

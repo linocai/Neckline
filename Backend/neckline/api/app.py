@@ -79,6 +79,8 @@ from neckline.api.schemas import (
     NewsAlertScanStatusOut,
     LLMRoutesIn,
     LLMRoutesOut,
+    TavilySettingsIn,
+    TavilySettingsOut,
     MarketRegimeDayOut,
     MarketRegimeOut,
     OkOut,
@@ -136,10 +138,12 @@ from neckline.settings_store import (
     delete_provider,
     get_app_settings,
     get_llm_routes,
+    get_tavily_api_key,
     list_providers_public,
     set_llm_routes,
     set_push_kinds,
     set_review_col_map,
+    set_tavily_api_key,
     update_provider,
 )
 
@@ -1779,6 +1783,7 @@ def get_settings() -> SettingsOut:
     return SettingsOut(
         providers=providers,
         routes=routes,
+        tavily=TavilySettingsOut(keySet=st.tavily_key_set),
         push=PushSettingsOut(kinds=[
             PushKindOut(
                 kind=k, level=notify_kinds.level_of(k),
@@ -1880,11 +1885,31 @@ def put_settings_llm_routes(body: LLMRoutesIn) -> LLMRoutesOut:
     风格)。`routes` 出现不认识的任务名 → 422(`reason="invalid_task"`)。"""
     try:
         set_llm_routes(body.routes, body.defaultProvider, db_path=_db())
+    except LookupError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             detail={"ok": False, "reason": "invalid_provider", "message": str(e)})
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                              detail={"ok": False, "reason": "invalid_task", "message": str(e)})
     routes, default_provider = get_llm_routes(db_path=_db())
     return LLMRoutesOut(routes=routes, defaultProvider=default_provider)
+
+
+@app.put(f"{API_PREFIX}/settings/tavily", dependencies=[Depends(require_token)])
+def put_settings_tavily(body: TavilySettingsIn) -> TavilySettingsOut:
+    """写入/替换 Tavily API key。明文只进 DB，不进入响应或日志。"""
+    if not body.apiKey.strip():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail={"ok": False, "reason": "invalid_tavily_key"})
+    set_tavily_api_key(body.apiKey, db_path=_db())
+    return TavilySettingsOut(keySet=bool(get_tavily_api_key(db_path=_db())))
+
+
+@app.delete(f"{API_PREFIX}/settings/tavily", dependencies=[Depends(require_token)])
+def delete_settings_tavily() -> TavilySettingsOut:
+    """显式清除 Tavily key；与“编辑时留空=不改”彻底分开。"""
+    set_tavily_api_key(None, db_path=_db())
+    return TavilySettingsOut(keySet=False)
 
 
 @app.put(f"{API_PREFIX}/settings/push", dependencies=[Depends(require_token)])

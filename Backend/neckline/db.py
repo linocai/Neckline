@@ -234,6 +234,9 @@ CREATE TABLE IF NOT EXISTS app_settings (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     llm_provider    TEXT,
     llm_api_key     TEXT,
+    -- V2.4.2 Build 6:外部联网检索与 LLM Provider 分离。Tavily key 与 LLM key
+    -- 同级保护:只写、绝不经 HTTP 回显明文；NULL=尚未配置。
+    tavily_api_key  TEXT,
     push_report     INTEGER NOT NULL DEFAULT 1,
     push_retreat    INTEGER NOT NULL DEFAULT 1,
     push_precall    INTEGER NOT NULL DEFAULT 1,
@@ -1651,6 +1654,9 @@ _COLUMN_MIGRATIONS = [
     # factory.py::get_provider`。
     ("app_settings", "llm_default_provider", "TEXT"),
     ("app_settings", "llm_task_routes", "TEXT NOT NULL DEFAULT '{}'"),
+    # V2.4.2 Build 6:DeepSeek 等纯推理模型通过独立 Tavily 检索层取得证据。
+    # 可空且不回填；生产 key 只能由设置端点显式写入，迁移绝不碰业务配置。
+    ("app_settings", "tavily_api_key", "TEXT"),
     # V2-⑪(plan §五 V2-⑪-B,D5):通知三级 × N kind —— 开关**按 kind 配**的落点。
     # 可空(NULL=从未配置=全部 kind 默认开);老库既有六列取值经 `_seed_push_kinds`
     # 一次性播种进来(见该函数),播种后 V1 六列停写留档。

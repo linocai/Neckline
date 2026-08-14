@@ -86,7 +86,7 @@ struct SettingsView: View {
                 deletingProvider = nil
             }
         } message: {
-            Text("将删除「\(deletingProvider ?? "")」及其已保存的 key。指向它的任务路由会失去目标,记得同步改路由表。")
+            Text("将删除「\(deletingProvider ?? "")」及其已保存的 key。系统会同时清除指向它的默认模型和任务路由。")
         }
         #endif
     }
@@ -151,7 +151,7 @@ struct SettingsView: View {
         case .backend:
             return "\(config.environment.label) · \(config.hasToken ? "token 已填" : "token 未填")"
         case .llm:
-            return "自填制 · key 只写不回显"
+            return "LLM 推理 + Tavily 联网检索"
         case .push:
             return "按通知类型配,不按呈现分组配"
         case .version:
@@ -319,7 +319,40 @@ struct SettingsView: View {
     @ViewBuilder
     private var providersDetail: some View {
         detailTitle("LLM Provider 与任务路由",
-                    "任意 OpenAI 兼容端点均可配 · key 只发一次,服务端从不回显明文")
+                    "LLM 负责推理，Tavily 统一负责联网检索；两种 key 都只写不回显")
+
+        NKFieldCard {
+            NKFieldRow(v: 14, h: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Tavily 联网搜索").font(NKFont.headline).foregroundStyle(NK.textPrimary)
+                    Text("免费账号先用 Basic 搜索；检索次数与 LLM Token 分开记账。")
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                }
+                Spacer(minLength: 8)
+                NKChip(text: model.settings.tavily.keySet ? "key 已配" : "key 未配",
+                       tone: model.settings.tavily.keySet ? .good : .warn)
+            }
+            NKFieldSeparator()
+            NKFieldRow(v: 12, h: 18) {
+                NKTextFieldBox(placeholder: model.settings.tavily.keySet
+                               ? "填入新 key（留空 = 不改）" : "Tavily API key",
+                               text: $model.tavilyKeyDraft, mono: true,
+                               secure: true, bordered: false)
+                Button("保存") { Task { await model.saveTavilyKey() } }
+                    .buttonStyle(.plain).foregroundStyle(NK.accent)
+                    .font(NKFont.callout).fontWeight(.semibold)
+                    .disabled(model.tavilyKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if model.settings.tavily.keySet {
+                    Button("清除") { Task { await model.clearTavilyKey() } }
+                        .buttonStyle(.plain).foregroundStyle(NK.down)
+                        .font(NKFont.callout).fontWeight(.semibold)
+                }
+            }
+            NKFieldSeparator()
+            NKFieldRow(v: 10, h: 18) {
+                NKInlineNote(text: "填写路径：设置 → LLM Provider 与任务路由 → Tavily 联网搜索。key 明文不会返回客户端。")
+            }
+        }
 
         if model.providers.isEmpty {
             NKFieldCard {
@@ -337,7 +370,6 @@ struct SettingsView: View {
                         HStack(spacing: 8) {
                             Text(p.name).font(NKFont.headline).foregroundStyle(NK.textPrimary)
                             if !p.enabled { NKChip(text: "已停用") }
-                            if p.hasWebSearch { NKChip(text: "带联网检索", tone: .good) }
                             Spacer(minLength: 6)
                             // 🔴 **只回布尔,绝不回明文**(V2-② 硬纪律)。
                             NKChip(text: p.keySet ? "key 已配" : "key 未配",
@@ -378,7 +410,7 @@ struct SettingsView: View {
                     // 等宽展示 = 说明"这是机器名",⛔ 不在客户端造一套中文任务名。
                     Text(task).font(NKFont.callout.monospaced()).foregroundStyle(NK.textPrimary)
                     Spacer(minLength: 8)
-                    NKInlineMenu(options: [("", "(不指定)")] + model.providers.map { ($0.name, $0.name) },
+                    NKInlineMenu(options: [("", "(不指定)")] + eligibleProviders.map { ($0.name, $0.name) },
                                  selection: routeBinding(task))
                 }
             }
@@ -387,13 +419,12 @@ struct SettingsView: View {
                 Text("默认 Provider").font(NKFont.body)
                     .foregroundStyle(NK.textPrimary.opacity(0.75))
                 Spacer(minLength: 8)
-                Text(model.llmRoutes.defaultProvider ?? "未设置")
-                    .font(NKFont.callout).fontWeight(.semibold)
-                    .foregroundStyle(model.llmRoutes.defaultProvider == nil ? NK.amber : NK.textPrimary)
+                NKInlineMenu(options: [("", "未设置")] + eligibleProviders.map { ($0.name, $0.name) },
+                             selection: defaultProviderBinding)
             }
             NKFieldSeparator()
             NKFieldRow(v: 12, h: 18) {
-                NKInlineNote(text: "路由未命中 → 回退默认 Provider,这是现役常态,不是没配好。")
+                NKInlineNote(text: "只有“已启用 + key 已配”的 Provider 可选；路由未命中时回退默认模型。")
                 Spacer(minLength: 8)
                 Button("保存") {
                     Task {
@@ -533,8 +564,35 @@ struct SettingsView: View {
 
     /// 双端共用(macOS 路由行 / iOS `routesSection` 都靠它)。
     private func routeBinding(_ task: String) -> Binding<String> {
-        Binding(get: { model.llmRoutes.routes[task] ?? "" },
-                set: { model.llmRoutes.routes[task] = $0 })
+        Binding(
+            get: {
+                let current = model.llmRoutes.routes[task] ?? ""
+                return eligibleProviderNames.contains(current) ? current : ""
+            },
+            set: {
+                if $0.isEmpty { model.llmRoutes.routes.removeValue(forKey: task) }
+                else { model.llmRoutes.routes[task] = $0 }
+            }
+        )
+    }
+
+    private var eligibleProviders: [Provider] {
+        model.providers.filter { $0.enabled && $0.keySet }
+    }
+
+    private var eligibleProviderNames: Set<String> {
+        Set(eligibleProviders.map(\.name))
+    }
+
+    private var defaultProviderBinding: Binding<String> {
+        Binding(
+            get: {
+                guard let current = model.llmRoutes.defaultProvider,
+                      eligibleProviderNames.contains(current) else { return "" }
+                return current
+            },
+            set: { model.llmRoutes.defaultProvider = $0.isEmpty ? nil : $0 }
+        )
     }
 
     // MARK: - iOS 表单(⚠ **批 5 只做 macOS**;iOS 逐屏比对归批 7,这一整块原样不动)
@@ -710,7 +768,6 @@ struct SettingsView: View {
                         Text(p.name).font(NKFont.body).fontWeight(.semibold)
                             .foregroundStyle(NK.textPrimary)
                         if !p.enabled { NKChip(text: "已停用") }
-                        if p.hasWebSearch { NKChip(text: "带联网检索", tone: .good) }
                         Spacer()
                         // **只回布尔,绝不回明文**。
                         NKChip(text: p.keySet ? "key 已配" : "key 未配",
@@ -740,7 +797,7 @@ struct SettingsView: View {
         } header: {
             Text("LLM Provider 注册表(自填制)")
         } footer: {
-            Text("任意 OpenAI 兼容端点均可配。key 只发一次、**服务端从不回显明文**;界面上只看得到「已配 / 未配」。⚠ 勾了「带联网检索」的端点必须真支持 GLM 式 `web_search` 工具协议,否则会发错协议。")
+            Text("任意 OpenAI 兼容端点均可配。key 只发一次、服务端从不回显明文；联网检索统一由桌面端设置里的 Tavily 提供。")
         }
     }
 
@@ -755,12 +812,12 @@ struct SettingsView: View {
             ForEach(model.llmRoutes.routes.keys.sorted(), id: \.self) { task in
                 Picker(task, selection: routeBinding(task)) {
                     Text("(不指定)").tag("")
-                    ForEach(model.providers) { p in Text(p.name).tag(p.name) }
+                    ForEach(eligibleProviders) { p in Text(p.name).tag(p.name) }
                 }
             }
-            LabeledContent("默认 Provider") {
-                Text(model.llmRoutes.defaultProvider ?? "未设置")
-                    .foregroundStyle(model.llmRoutes.defaultProvider == nil ? NK.amber : NK.textSecondary)
+            Picker("默认 Provider", selection: defaultProviderBinding) {
+                Text("未设置").tag("")
+                ForEach(eligibleProviders) { p in Text(p.name).tag(p.name) }
             }
             Button("保存任务路由") {
                 Task {
@@ -978,20 +1035,6 @@ struct ProviderFormSheet: View {
                 NKGroupLabel(text: "能力")
                 NKFieldCard {
                     NKFieldRow(v: 12, h: 15) {
-                        Text("带联网检索").font(NKFont.body).foregroundStyle(NK.textPrimary)
-                        Spacer(minLength: 8)
-                        NKSwitch(isOn: $model.providerForm.hasWebSearch, width: 42, height: 25)
-                    }
-                    if model.providerForm.hasWebSearch {
-                        NKFieldSeparator()
-                        NKFieldRow(v: 12, h: 15) {
-                            NKFieldLabel(text: "检索引擎标识", width: 110)
-                            NKTextFieldBox(placeholder: "留空(可选)",
-                                           text: $model.providerForm.searchEngine, bordered: false)
-                        }
-                    }
-                    NKFieldSeparator()
-                    NKFieldRow(v: 12, h: 15) {
                         Text("启用").font(NKFont.body).foregroundStyle(NK.textPrimary)
                         Spacer(minLength: 8)
                         NKSwitch(isOn: $model.providerForm.enabled, width: 42, height: 25)
@@ -1005,8 +1048,8 @@ struct ProviderFormSheet: View {
                 }
             }
 
-            NKTintedNote(text: "⚠ 勾了「带联网检索」= 按 GLM 式 `web_search` 工具协议发请求。端点若不认这套协议,搜索会**静默 0 命中** —— 这是已登记的已知代价,不是 bug。\n检索引擎标识留空是对的:空 = 不发该字段。",
-                         tone: .warn)
+            NKTintedNote(text: "Provider 只负责推理。联网检索统一由 Tavily 完成，不再向模型端点发送厂商私有搜索工具协议。",
+                         tone: .info)
         }
     }
     #endif
@@ -1050,20 +1093,12 @@ struct ProviderFormSheet: View {
                 }
 
                 Section {
-                    Toggle("带联网检索", isOn: $model.providerForm.hasWebSearch)
-                    if model.providerForm.hasWebSearch {
-                        TextField("检索引擎标识(可选)", text: $model.providerForm.searchEngine)
-                            #if os(iOS)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            #endif
-                    }
                     Toggle("启用", isOn: $model.providerForm.enabled)
                     TextField("备注(可选)", text: $model.providerForm.notes)
                 } header: {
                     Text("能力")
                 } footer: {
-                    Text("⚠ 勾了「带联网检索」= 按 GLM 式 `web_search` 工具协议发请求。端点若不认这套协议,搜索会静默 0 命中(这是已登记的已知代价,不是 bug)。")
+                    Text("Provider 只负责推理；联网检索统一由 macOS 设置里的 Tavily 提供。")
                 }
             }
             .formStyle(.grouped)

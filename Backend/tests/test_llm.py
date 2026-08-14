@@ -22,6 +22,7 @@ from neckline.llm.openai_compat import OpenAICompatProvider
 from neckline.llm.providers.glm import GLMProvider
 from neckline.llm.providers.kimi import KimiProvider
 from neckline.llm.router import TASK_BASKET_REASON, TASK_DRIVER_SEARCH
+from neckline.search.tavily import TavilyGroundedProvider
 
 
 def _openai_success_body(content: str, model: str = "glm-5.2") -> Dict[str, Any]:
@@ -88,25 +89,24 @@ class TestFactory:
         assert get_provider(db_path=self._db(tmp_path)) is None
 
     def test_route_to_nonexistent_provider_name_returns_none(self, tmp_path):
-        """路由永远优先(即便指向的名字当前不存在)——不悄悄跳过到默认值,见
-        `router.resolve_task_provider_name` 文档。"""
+        """写侧拒绝幽灵 Provider，避免默认模型看似保存、实际不可点击。"""
         db = self._db(tmp_path)
-        settings_store.set_llm_routes({"review": "ghost"}, None, db_path=db)
-        assert get_provider("review", db_path=db) is None
+        with pytest.raises(LookupError):
+            settings_store.set_llm_routes({"review": "ghost"}, None, db_path=db)
 
     def test_default_provider_without_key_returns_none(self, tmp_path):
         db = self._db(tmp_path)
         settings_store.create_provider("glm", "https://x", "glm-5.2", db_path=db)  # 未填 key
-        settings_store.set_llm_routes({}, "glm", db_path=db)
-        assert get_provider(db_path=db) is None
+        with pytest.raises(LookupError):
+            settings_store.set_llm_routes({}, "glm", db_path=db)
 
     def test_disabled_provider_returns_none_even_with_key(self, tmp_path):
         db = self._db(tmp_path)
         settings_store.create_provider(
             "glm", "https://x", "glm-5.2", api_key="sk-xxx", enabled=False, db_path=db,
         )
-        settings_store.set_llm_routes({}, "glm", db_path=db)
-        assert get_provider(db_path=db) is None
+        with pytest.raises(LookupError):
+            settings_store.set_llm_routes({}, "glm", db_path=db)
 
     def test_explicit_route_builds_generic_openai_compat_provider(self, tmp_path):
         """自填制:任意名字(不要求是"glm"/"kimi")、任意端点都能配成可用 provider,
@@ -121,19 +121,21 @@ class TestFactory:
         p = get_provider("review", db_path=db)
         assert type(p) is OpenAICompatProvider  # 不是 GLMProvider/KimiProvider 子类
         assert p.name == "my-custom-glm" and p.model == "glm-5.2"
-        assert p.has_web_search is True and p.search_engine == "search_pro"
+        assert p.has_web_search is False and p.search_engine is None
 
-    def test_search_task_without_route_falls_back_to_has_web_search_provider(self, tmp_path):
-        """默认路由(§3.10-B):检索类任务缺路由 → 挑一个 has_web_search 的启用行,
-        不是无脑用 `llm_default_provider`(那一行可能是纯推理 provider)。"""
+    def test_search_task_uses_default_llm_wrapped_by_tavily(self, tmp_path):
+        """默认模型负责读证据和推理，联网证据统一由 Tavily 独立取得。"""
         db = self._db(tmp_path)
         settings_store.create_provider("deepseek", "https://api.deepseek.com/x", "deepseek-chat",
                                         api_key="k1", db_path=db)
         settings_store.create_provider("glm", "https://open.bigmodel.cn/x", "glm-5.2", api_key="k2",
                                         has_web_search=True, search_engine="search_pro", db_path=db)
         settings_store.set_llm_routes({}, "deepseek", db_path=db)
+        settings_store.set_tavily_api_key("tvly-test", db_path=db)
         p = get_provider(TASK_DRIVER_SEARCH, db_path=db)
-        assert p is not None and p.name == "glm"
+        assert isinstance(p, TavilyGroundedProvider)
+        assert p.name == "deepseek"
+        assert p.inner.has_web_search is False and p.inner.search_engine is None
 
     def test_non_search_task_without_route_falls_back_to_default_provider(self, tmp_path):
         db = self._db(tmp_path)
@@ -149,7 +151,10 @@ class TestFactory:
         settings_store.create_provider("glm", "https://open.bigmodel.cn/x", "glm-5.2", api_key="k",
                                         has_web_search=True, search_engine="search_pro", db_path=db)
         settings_store.set_llm_routes({}, "glm", db_path=db)
-        return get_provider(task, db_path=db)
+        if task in ("driver_search", "news_scan"):
+            settings_store.set_tavily_api_key("tvly-test", db_path=db)
+        provider = get_provider(task, db_path=db)
+        return provider.inner if isinstance(provider, TavilyGroundedProvider) else provider
 
     @pytest.mark.parametrize("task", ["basket_reason", "deep_reason", "review"])
     def test_long_context_tasks_stream_with_chunk_gap_timeout(self, tmp_path, task):
@@ -315,9 +320,8 @@ class TestStreamingAssembly:
         assert seen["tools"][0]["type"] == "web_search"      # 搜索声明原样发出
         assert set(seen) == {"model", "messages", "stream", "tools"}
 
-    def test_search_tasks_are_never_streamed(self, tmp_path):
-        """⛔ 守门:`web_search` tools 协议 × 流式 = 本项目从未验证过的组合,
-        v1.3.4 案底说明它坏起来是**静默的**(`ok=True` + 0 条)。检索类必须恒非流式。"""
+    def test_search_tasks_wrap_non_streaming_llm_without_vendor_tools(self, tmp_path):
+        """检索类由 Tavily 包装，内部 LLM 非流式且不带厂商私有搜索工具。"""
         from neckline.llm import router
 
         for task in router.DEFAULT_SEARCH_TASKS:
@@ -327,15 +331,11 @@ class TestStreamingAssembly:
         settings_store.create_provider("glm", "https://x/chat/completions", "glm-5.2", api_key="k",
                                         has_web_search=True, search_engine="search_pro", db_path=db)
         settings_store.set_llm_routes({}, "glm", db_path=db)
-        seen: Dict[str, Any] = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen.update(json.loads(request.content))
-            return httpx.Response(200, json=_openai_success_body("ok"))
-
-        get_provider(TASK_DRIVER_SEARCH, db_path=db).chat(
-            [ChatMessage(role="user", content="hi")], transport=httpx.MockTransport(handler))
-        assert seen["stream"] is False and "tools" in seen
+        settings_store.set_tavily_api_key("tvly-test", db_path=db)
+        provider = get_provider(TASK_DRIVER_SEARCH, db_path=db)
+        assert isinstance(provider, TavilyGroundedProvider)
+        assert provider.inner.use_streaming is False
+        assert provider.inner.has_web_search is False
 
     # —— chunk 间隔超时:本次修复的**判据本身** ——————————————————————————
     def test_chunk_gap_timeout_retries_then_degrades_without_partial_content(self):

@@ -112,6 +112,7 @@ def run_evening_chain(
     parquet_dir: Optional[Path] = None,
     use_llm: bool = True,
     search_provider: Any = _UNSET,
+    research_client: Any = _UNSET,
     reason_provider: Any = _UNSET,
     tier_provider: Optional[LLMProvider] = None,
     card_provider: Optional[LLMProvider] = None,
@@ -121,6 +122,7 @@ def run_evening_chain(
     ledger: Optional[Any] = None,
     save: bool = True,
     direction_pipeline_config: Any = _UNSET,
+    selection_budget_mode: str = "enforce",
 ) -> EveningChainResult:
     """跑 16:35 那条链(单进程串行)。**每段各自包保险丝** —— 任一段异常只记 WARNING
     并在结果里标 `failed`,链继续往下走,报告照出、缺席如实披露。
@@ -233,6 +235,7 @@ def run_evening_chain(
             res.dropped_baskets = _run_basket_segment(
                 trade_date, seed_set=seed_set, db_path=db_path, parquet_dir=parquet_dir,
                 use_llm=use_llm, search_provider=search_provider, reason_provider=reason_provider,
+                research_client=research_client,
                 # V2.4.2 retires new Tier/card LLM calls.  Keep the legacy
                 # parameters in this public signature for callers compiled
                 # against V2.4.1, but never resolve a provider for either.
@@ -240,6 +243,7 @@ def run_evening_chain(
                 card_provider=card_provider,
                 transport=transport, ledger=ledger, stats=res.stats, notes=res.notes,
                 direction_pipeline_config=direction_pipeline_config,
+                selection_budget_mode=selection_budget_mode,
             )
             if not res.stats.get("basket", {}).get("baskets"):
                 res.status[SEG_BASKET] = STATUS_EMPTY
@@ -371,6 +375,7 @@ def _run_basket_segment(
     parquet_dir: Optional[Path],
     use_llm: bool,
     search_provider: Any,
+    research_client: Any = _UNSET,
     reason_provider: Any,
     tier_provider: Optional[LLMProvider],
     card_provider: Optional[LLMProvider],
@@ -379,6 +384,7 @@ def _run_basket_segment(
     stats: Dict[str, Any],
     notes: List[str],
     direction_pipeline_config: Any = _UNSET,
+    selection_budget_mode: str = "enforce",
 ) -> Optional[List[Any]]:
     """⑤ → ⑥(事务1)→ ⑦(事务2)。返回 ⑥ 的 `dropped`(③b 的数据源)。
 
@@ -423,6 +429,11 @@ def _run_basket_segment(
 
     if direction_pipeline_config is not _UNSET:
         kwargs["direction_pipeline_config"] = direction_pipeline_config
+        kwargs["selection_budget_mode"] = selection_budget_mode
+        if research_client is not _UNSET:
+            kwargs["research_client"] = research_client
+        elif not use_llm:
+            kwargs["research_client"] = None
     result = agg.aggregate_baskets(
         trade_date, seed_set=seed_set, db_path=db_path, parquet_dir=parquet_dir,
         ledger=ledger, transport=transport, gate_context=gate_ctx, **kwargs,

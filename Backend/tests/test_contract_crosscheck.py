@@ -234,7 +234,8 @@ def test_deleted_v1_endpoints_have_no_server_route():
 SERVER_REASONS = {
     "not_holding", "not_found", "not_trading_day", "future_buy_date",
     "report_not_found", "code_not_in_report", "already_exists",
-    "invalid_task", "invalid_push_kinds", "invalid_rule", "duplicate_alert",
+    "invalid_task", "invalid_provider", "invalid_tavily_key",
+    "invalid_push_kinds", "invalid_rule", "duplicate_alert",
     # V2-⑭-B 新增三个
     "basket_not_found", "card_not_ready", "no_base_plan",
     # B1(2026-08-04 planner 裁定,小审 🔵 B-3):唯一一个**用 500 承载**的业务 reason
@@ -311,6 +312,7 @@ _V20_REASON_SURFACE = frozenset({
 # ⚠ 本条不是"把老断言删掉",而是**把分界线往前挪一格**:老快照仍在(上面
 # `_V20_REASON_SURFACE`),新增面**逐条枚举**,任何计划外的第三条照样会红。
 _V233_ADDED_REASONS = frozenset({"auction_not_ready", "auction_corrupt"})
+_V242_BUILD6_ADDED_REASONS = frozenset({"invalid_provider", "invalid_tavily_key"})
 
 
 def test_reason_surface_equals_v20_snapshot_plus_the_declared_v233_additions():
@@ -325,7 +327,11 @@ def test_reason_surface_equals_v20_snapshot_plus_the_declared_v233_additions():
     ⚠ 再新增,正确做法仍是**同时**更新 `SERVER_REASONS`、客户端 `mapReason` **和**
     这里的新增清单(把分界线再挪一格),⛔ 不是把本条删掉。
     """
-    expected = set(_V20_REASON_SURFACE) | set(_V233_ADDED_REASONS)
+    expected = (
+        set(_V20_REASON_SURFACE)
+        | set(_V233_ADDED_REASONS)
+        | set(_V242_BUILD6_ADDED_REASONS)
+    )
     assert SERVER_REASONS == expected, (
         "reason 面与「V2.0.0 快照 + 已登记的 V2.3.3 新增」不一致。\n"
         f"  多出来的(没登记就加 = 老客户端会吃 fallback 文案):"

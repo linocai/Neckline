@@ -496,3 +496,167 @@ SyntaxError: Non-UTF-8 code starting with '\xe6' in file <stdin>, but no encodin
   literals, or keep the payload ASCII/escaped. The failed script made no repository or database change.
 
 ---
+
+## [ERR-20260814-018] tavily-fastfix-first-gate
+
+**Logged**: 2026-08-14T20:10:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The first Tavily/default-provider focused gate found the new grounding wrapper missing the repository's
+explicit prompt-context import and the generated Xcode project still carrying Build 5 after `project.yml`
+had moved to Build 6.
+
+### Error
+
+```text
+test_every_provider_chat_call_site_imports_prompt_context: neckline/search/tavily.py
+test_v242_build_number_is_synced_into_the_generated_project: ['5', '5'] != ['6', '6']
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T20:12:00+08:00
+- **Notes**: Added the explicit shared prompt-context import and regenerated the Xcode project from
+  `App/project.yml`; no production job, network search, LLM call, or operational database was touched.
+
+---
+
+## [ERR-20260814-019] async-xctassert-autoclosure
+
+**Logged**: 2026-08-14T20:18:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+Two new Tavily DTO tests awaited API calls directly inside XCTest assertion autoclosures, which Swift does
+not allow.
+
+### Error
+
+```text
+'async' call in an autoclosure that does not support concurrency
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T20:19:00+08:00
+- **Notes**: Await each response into a local value before making synchronous assertions. The failed build
+  performed no real network request because the tests use `MockURLProtocol`.
+
+---
+
+## [ERR-20260814-020] tavily-fastfix-full-regression-compatibility
+
+**Logged**: 2026-08-14T21:04:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The first full Backend regression found three compatibility gaps after the focused suite passed: two new
+API reasons were absent from the cross-client inventory, the internal evening segment's new search-client
+argument lacked a legacy-call default, and a retirement guard fixture referenced a Provider it never created.
+
+### Error
+
+```text
+10 failed, 4013 passed, 19 skipped
+invalid_provider / invalid_tavily_key unregistered
+_run_basket_segment() missing research_client
+legacy route GLM filtered as a stale Provider reference
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T21:08:00+08:00
+- **Notes**: Registered both reasons with matching Swift cases, defaulted the optional internal adapter to
+  `_UNSET`, and made the retirement fixture create an eligible GLM row before testing unknown-task removal.
+  The suite used an explicit temporary `DB_PATH`; no operational database or production job was touched.
+
+---
+
+## [ERR-20260814-021] backend-relative-path-after-workdir-change
+
+**Logged**: 2026-08-14T21:10:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+A focused verification command changed its working directory to `Backend/` but retained a root-relative
+`Backend/neckline/...` compile path.
+
+### Error
+
+```text
+FileNotFoundError: Backend/neckline/report/evening.py
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T21:11:00+08:00
+- **Notes**: Re-ran the compile check with `neckline/report/evening.py`. The adjacent pytest command still
+  ran against an explicit temporary DB and did not touch production state.
+
+---
+
+## [ERR-20260814-022] temp-test-cleanup-blocked-with-command
+
+**Logged**: 2026-08-14T21:22:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+A focused test command bundled a recursive temporary-directory cleanup into the same shell invocation, so the
+safety layer rejected the command before pytest started.
+
+### Error
+
+```text
+rm -f style commands are not permitted
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T21:23:00+08:00
+- **Notes**: Re-ran with a fresh `/tmp` database and left the disposable directory for system cleanup. The
+  focused suite passed 104 tests; no repository or production file was touched.
+
+---
+
+## [ERR-20260814-023] settings-smoke-read-default-from-wrong-response
+
+**Logged**: 2026-08-14T21:29:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The first Build 6 temporary API smoke expected `defaultProvider` inside the aggregate `/settings` response's
+route map, although the contract exposes it from `/settings/llm-routes`.
+
+### Error
+
+```text
+KeyError: 'defaultProvider'
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T21:30:00+08:00
+- **Notes**: Read the default Provider from its dedicated endpoint and retained aggregate `/settings` only for
+  the write-only Tavily status check. The failed assertion used an isolated temporary SQLite database and made
+  no external or production call.
+
+---

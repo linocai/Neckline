@@ -23,6 +23,7 @@ def test_settings_default(client, AUTH):
     body = r.json()
     assert body["providers"] == []
     assert body["routes"] == {}
+    assert body["tavily"] == {"keySet": False}
     # V2-⑪:push 从「六个具名布尔」换成「按 kind 的开关清单」(三级 × N kind,D5)。
     kinds = body["push"]["kinds"]
     assert [k["kind"] for k in kinds] == list(notify_kinds.ALL_KINDS)
@@ -48,10 +49,13 @@ def test_create_provider_key_not_leaked_and_runtime_effective(client, AUTH, api_
     assert "sk-secret" not in json.dumps(body)
     assert "sk-secret" not in client.get("/api/v1/settings/providers", headers=AUTH).text
 
-    # get_provider 现读 DB 生效(运行时,不重启);无显式路由时缺省 provider 为 None,
-    # 但检索类任务(TASK_DRIVER_SEARCH)缺路由会挑这个 has_web_search=True 的启用行。
-    p = get_provider(TASK_DRIVER_SEARCH, db_path=api_env.db_path)
+    # 默认模型可在运行时直接保存；历史 `hasWebSearch` 字段不再决定路由。
+    assert client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
+        "routes": {}, "defaultProvider": "glm",
+    }).status_code == 200
+    p = get_provider(db_path=api_env.db_path)
     assert p is not None and p.name == "glm" and p.model == "glm-5.2"
+    assert get_provider(TASK_DRIVER_SEARCH, db_path=api_env.db_path) is None
 
 
 def test_create_provider_duplicate_name_409(client, AUTH):
@@ -78,13 +82,38 @@ def test_update_provider_partial_only_touches_named_fields(client, AUTH, api_env
     assert got["baseUrl"] == "https://api.deepseek.com/chat/completions"  # 未传的字段不变
     assert got["keySet"] is True  # 没碰 apiKey,key 仍在
 
+    assert client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
+        "routes": {"basket_reason": "deepseek"}, "defaultProvider": "deepseek",
+    }).status_code == 200
+
     # 显式传空串清空 apiKey(视为清除,同既有 `_clean()` 纪律)
     r2 = client.put("/api/v1/settings/providers/deepseek", headers=AUTH, json={"apiKey": ""})
     assert r2.status_code == 200 and r2.json()["keySet"] is False
+    # 失去 key 的 Provider 与默认值/任务路由在同一事务失效。
+    assert client.get("/api/v1/settings/llm-routes", headers=AUTH).json() == {
+        "routes": {}, "defaultProvider": None,
+    }
 
-    # 立"deepseek"为默认 provider 后,无 key 应让 get_provider() 整体判不可用
-    client.put("/api/v1/settings/llm-routes", headers=AUTH, json={"routes": {}, "defaultProvider": "deepseek"})
+    # 无 key 的 Provider 不能被保存为默认模型，前后端不会制造“选了但实际不可用”。
+    invalid = client.put("/api/v1/settings/llm-routes", headers=AUTH,
+                         json={"routes": {}, "defaultProvider": "deepseek"})
+    assert invalid.status_code == 422 and invalid.json()["detail"]["reason"] == "invalid_provider"
     assert get_provider(db_path=api_env.db_path) is None
+
+
+def test_disabling_provider_atomically_clears_default_and_routes(client, AUTH):
+    assert client.post("/api/v1/settings/providers", headers=AUTH, json={
+        "name": "deepseek", "baseUrl": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-chat", "apiKey": "k1",
+    }).status_code == 201
+    assert client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
+        "routes": {"basket_reason": "deepseek"}, "defaultProvider": "deepseek",
+    }).status_code == 200
+    assert client.put("/api/v1/settings/providers/deepseek", headers=AUTH,
+                      json={"enabled": False}).status_code == 200
+    assert client.get("/api/v1/settings/llm-routes", headers=AUTH).json() == {
+        "routes": {}, "defaultProvider": None,
+    }
 
 
 def test_update_provider_not_found_404(client, AUTH):
@@ -93,10 +122,18 @@ def test_update_provider_not_found_404(client, AUTH):
 
 
 def test_delete_provider(client, AUTH):
-    client.post("/api/v1/settings/providers", headers=AUTH, json={"name": "temp", "baseUrl": "https://x", "model": "m"})
+    client.post("/api/v1/settings/providers", headers=AUTH, json={
+        "name": "temp", "baseUrl": "https://x", "model": "m", "apiKey": "k",
+    })
+    client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
+        "routes": {"basket_reason": "temp"}, "defaultProvider": "temp",
+    })
     assert client.delete("/api/v1/settings/providers/temp", headers=AUTH).status_code == 200
     assert client.delete("/api/v1/settings/providers/temp", headers=AUTH).status_code == 404
     assert client.get("/api/v1/settings/providers", headers=AUTH).json()["items"] == []
+    assert client.get("/api/v1/settings/llm-routes", headers=AUTH).json() == {
+        "routes": {}, "defaultProvider": None,
+    }
 
 
 def test_llm_routes_roundtrip_and_default_fallback(client, AUTH, api_env):
@@ -121,6 +158,39 @@ def test_llm_routes_unknown_task_422(client, AUTH):
     r = client.put("/api/v1/settings/llm-routes", headers=AUTH,
                     json={"routes": {"not_a_real_task": "x"}, "defaultProvider": None})
     assert r.status_code == 422 and r.json()["detail"]["reason"] == "invalid_task"
+
+
+def test_llm_routes_unknown_disabled_or_keyless_provider_422(client, AUTH):
+    for name, payload in (
+        ("missing", None),
+        ("keyless", {"name": "keyless", "baseUrl": "https://x", "model": "m"}),
+        ("disabled", {"name": "disabled", "baseUrl": "https://x", "model": "m",
+                      "apiKey": "k", "enabled": False}),
+    ):
+        if payload is not None:
+            assert client.post("/api/v1/settings/providers", headers=AUTH, json=payload).status_code == 201
+        r = client.put("/api/v1/settings/llm-routes", headers=AUTH,
+                       json={"routes": {}, "defaultProvider": name})
+        assert r.status_code == 422 and r.json()["detail"]["reason"] == "invalid_provider"
+
+
+def test_tavily_key_write_only_roundtrip_and_clear(client, AUTH, api_env):
+    secret = "tvly-secret-never-return"
+    r = client.put("/api/v1/settings/tavily", headers=AUTH, json={"apiKey": secret})
+    assert r.status_code == 200 and r.json() == {"keySet": True}
+    settings = client.get("/api/v1/settings", headers=AUTH)
+    assert settings.json()["tavily"] == {"keySet": True}
+    assert secret not in settings.text and secret not in r.text
+    assert settings_store.get_tavily_api_key(db_path=api_env.db_path) == secret
+
+    cleared = client.delete("/api/v1/settings/tavily", headers=AUTH)
+    assert cleared.status_code == 200 and cleared.json() == {"keySet": False}
+    assert settings_store.get_tavily_api_key(db_path=api_env.db_path) is None
+
+
+def test_tavily_whitespace_key_rejected(client, AUTH):
+    r = client.put("/api/v1/settings/tavily", headers=AUTH, json={"apiKey": "   "})
+    assert r.status_code == 422 and r.json()["detail"]["reason"] == "invalid_tavily_key"
 
 
 def test_put_push_toggles(client, AUTH):
@@ -163,6 +233,9 @@ def test_put_llm_routes_does_not_reset_push(client, AUTH):
     push 开关(各 setter 只 UPDATE 自己的列,同 `_ensure_row` 两步式纪律)。"""
     all_off = {k: False for k in notify_kinds.ALL_KINDS}
     client.put("/api/v1/settings/push", headers=AUTH, json={"kinds": all_off})
+    client.post("/api/v1/settings/providers", headers=AUTH, json={
+        "name": "x", "baseUrl": "https://x", "model": "m", "apiKey": "k",
+    })
     client.put("/api/v1/settings/llm-routes", headers=AUTH, json={"routes": {}, "defaultProvider": "x"})
     got = {k["kind"]: k["enabled"] for k in client.get("/api/v1/settings", headers=AUTH).json()["push"]["kinds"]}
     assert got == all_off
@@ -220,6 +293,8 @@ def test_key_never_logged(api_env, caplog):
     with caplog.at_level(logging.DEBUG):
         settings_store.create_provider("glm", "https://x", "glm-5.2", api_key="sk-topsecret-999", db_path=api_env.db_path)
         settings_store.update_provider("glm", api_key="sk-topsecret-999-v2", db_path=api_env.db_path)
+        settings_store.set_tavily_api_key("tvly-topsecret-999", db_path=api_env.db_path)
         settings_store.list_providers(db_path=api_env.db_path)
         settings_store.get_app_settings(db_path=api_env.db_path)
     assert "sk-topsecret-999" not in caplog.text
+    assert "tvly-topsecret-999" not in caplog.text

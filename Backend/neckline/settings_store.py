@@ -16,6 +16,8 @@
     · llm_task_routes / llm_default_provider —— V2-② 任务→Provider 路由(见
       `get_llm_routes`/`set_llm_routes`),`neckline.llm.factory.get_provider()`
       解析用。
+    · tavily_api_key —— V2.4.2 Build 6 独立联网检索凭据。它不是 LLM Provider
+      的能力位；只写不回显，HTTP 只返回 `keySet`。
     · llm_provider / llm_api_key —— **V1 遗留列,V2 起停写**(不 DROP,同项目
       "删表一律停写留档"纪律的列级版本)。单 provider 时代的 `set_llm`/
       `resolve_llm` 已随 V2-② 退役,被下方 Provider 注册表(`llm_providers` 表,
@@ -74,6 +76,7 @@ class AppSettings:
 
     push_kinds: Dict[str, bool]   # V2-⑪:全部 `ALL_KINDS` 已补齐(缺键取默认开)
     review_col_map: dict
+    tavily_key_set: bool
     updated_at: Optional[str]
 
 
@@ -190,11 +193,13 @@ def get_app_settings(db_path: Optional[Path] = None) -> AppSettings:
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
-            "SELECT push_kinds, review_col_map, updated_at FROM app_settings WHERE id=1"
+            "SELECT push_kinds, review_col_map, tavily_api_key, updated_at "
+            "FROM app_settings WHERE id=1"
         ).fetchone()
     if row is None:
         return AppSettings(
-            push_kinds=_decode_push_kinds(None), review_col_map={}, updated_at=None,
+            push_kinds=_decode_push_kinds(None), review_col_map={},
+            tavily_key_set=False, updated_at=None,
         )
     try:
         col_map = json.loads(row[1]) if row[1] else {}
@@ -203,8 +208,28 @@ def get_app_settings(db_path: Optional[Path] = None) -> AppSettings:
     return AppSettings(
         push_kinds=_decode_push_kinds(row[0]),
         review_col_map=col_map,
-        updated_at=row[2],
+        tavily_key_set=bool(_clean(row[2])),
+        updated_at=row[3],
     )
+
+
+def get_tavily_api_key(db_path: Optional[Path] = None) -> Optional[str]:
+    """服务端内部读取 Tavily 明文 key；HTTP 层禁止直接调用或序列化返回值。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute("SELECT tavily_api_key FROM app_settings WHERE id=1").fetchone()
+    return _clean(row[0]) if row else None
+
+
+def set_tavily_api_key(api_key: Optional[str], db_path: Optional[Path] = None) -> None:
+    """显式写入/清除 Tavily key。空白按未配置处理；任何日志都不得包含参数值。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        _ensure_row(conn)
+        conn.execute(
+            "UPDATE app_settings SET tavily_api_key=?, updated_at=? WHERE id=1",
+            (_clean(api_key), _now()),
+        )
 
 
 def set_review_col_map(col_map: dict, db_path: Optional[Path] = None) -> None:
@@ -313,6 +338,26 @@ def create_provider(
     return rec
 
 
+def _clear_provider_references(conn: sqlite3.Connection, name: str) -> None:
+    """在调用方现有事务内清掉指向不可用 Provider 的默认值与任务路由。"""
+    row = conn.execute(
+        "SELECT llm_task_routes, llm_default_provider FROM app_settings WHERE id=1"
+    ).fetchone()
+    if row is None:
+        return
+    try:
+        parsed = json.loads(row[0]) if row[0] else {}
+    except (json.JSONDecodeError, TypeError):
+        parsed = {}
+    routes = parsed if isinstance(parsed, dict) else {}
+    routes = {str(k): str(v) for k, v in routes.items() if str(v) != name}
+    default_provider = None if _clean(row[1]) == name else _clean(row[1])
+    conn.execute(
+        "UPDATE app_settings SET llm_task_routes=?, llm_default_provider=?, updated_at=? WHERE id=1",
+        (json.dumps(routes, ensure_ascii=False, sort_keys=True), default_provider, _now()),
+    )
+
+
 def update_provider(
     name: str,
     *,
@@ -364,6 +409,13 @@ def update_provider(
         cur = conn.execute(f"UPDATE llm_providers SET {', '.join(sets)} WHERE name=?", vals)
         if cur.rowcount == 0:
             return None
+        row = conn.execute(
+            "SELECT enabled, api_key FROM llm_providers WHERE name=?", (name,)
+        ).fetchone()
+        if row is not None and (not bool(row[0]) or not _clean(row[1])):
+            # Provider 一旦不再可调用，默认值与任务路由必须在同一事务失效，避免
+            # 设置页和运行时出现“仍选中、实际不可用”的中间态。
+            _clear_provider_references(conn, name)
     return get_provider_record(name, db_path=db_path)
 
 
@@ -375,7 +427,12 @@ def delete_provider(name: str, db_path: Optional[Path] = None) -> bool:
     init_schema(db_path)
     with connection(db_path) as conn:
         cur = conn.execute("DELETE FROM llm_providers WHERE name=?", (name,))
-        return cur.rowcount > 0
+        if cur.rowcount == 0:
+            return False
+        # 删除与引用清理必须在同一事务：不存在“provider 已没了但默认值/任务路由
+        # 仍指着幽灵名字”的中间态。未知/损坏 JSON 按空路由诚实降级。
+        _clear_provider_references(conn, name)
+        return True
 
 
 def get_llm_routes(db_path: Optional[Path] = None) -> Tuple[Dict[str, str], Optional[str]]:
@@ -395,6 +452,12 @@ def get_llm_routes(db_path: Optional[Path] = None) -> Tuple[Dict[str, str], Opti
         row = conn.execute(
             "SELECT llm_task_routes, llm_default_provider FROM app_settings WHERE id=1"
         ).fetchone()
+        provider_names = {
+            str(name) for name, enabled, api_key in conn.execute(
+                "SELECT name, enabled, api_key FROM llm_providers"
+            ).fetchall()
+            if bool(enabled) and bool(_clean(api_key))
+        }
     if row is None:
         return {}, None
     try:
@@ -410,7 +473,15 @@ def get_llm_routes(db_path: Optional[Path] = None) -> Tuple[Dict[str, str], Opti
     if unknown:
         logger.warning("llm_task_routes 含未知任务名 %s,读侧已过滤(不阻塞 GET/PUT)", unknown)
         routes = {k: v for k, v in routes.items() if k in ALL_TASKS}
-    return routes, _clean(row[1])
+    stale_tasks = sorted(k for k, provider in routes.items() if provider and provider not in provider_names)
+    if stale_tasks:
+        logger.warning("llm_task_routes 含不可用 Provider 的引用 %s,读侧已过滤", stale_tasks)
+        routes = {k: v for k, v in routes.items() if not v or v in provider_names}
+    default_provider = _clean(row[1])
+    if default_provider and default_provider not in provider_names:
+        logger.warning("llm_default_provider=%s 已不可用,读侧按未设置返回", default_provider)
+        default_provider = None
+    return routes, default_provider
 
 
 def set_llm_routes(
@@ -430,13 +501,32 @@ def set_llm_routes(
     bad = [t for t in routes if t not in ALL_TASKS]
     if bad:
         raise ValueError(f"未知任务名:{bad}(仅允许 {ALL_TASKS})")
-    payload = json.dumps({str(k): str(v) for k, v in routes.items()}, ensure_ascii=False)
     init_schema(db_path)
     with connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT name, enabled, api_key FROM llm_providers"
+        ).fetchall()
+        eligible = {
+            str(name) for name, enabled, api_key in rows
+            if bool(enabled) and bool(_clean(api_key))
+        }
+        normalized = {
+            str(k): str(v).strip() for k, v in routes.items() if str(v).strip()
+        }
+        requested = set(normalized.values())
+        default_clean = _clean(default_provider)
+        if default_clean:
+            requested.add(default_clean)
+        invalid = sorted(requested - eligible)
+        if invalid:
+            raise LookupError(
+                f"Provider 不存在、已停用或 key 未配置:{invalid};只能选择已启用且 key 已配的 Provider"
+            )
+        payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
         _ensure_row(conn)
         conn.execute(
             "UPDATE app_settings SET llm_task_routes=?, llm_default_provider=?, updated_at=? WHERE id=1",
-            (payload, _clean(default_provider), _now()),
+            (payload, default_clean, _now()),
         )
 
 
@@ -448,6 +538,8 @@ __all__ = [
     "get_push_kinds",
     "set_push_kinds",
     "push_kind_enabled",
+    "get_tavily_api_key",
+    "set_tavily_api_key",
     "set_review_col_map",
     "list_providers",
     "list_providers_public",

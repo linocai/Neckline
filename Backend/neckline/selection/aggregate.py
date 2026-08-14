@@ -2421,6 +2421,8 @@ def aggregate_baskets(
     direction_pipeline_config: Any = _UNSET,
     triage_provider: Any = _UNSET,
     deep_reason_provider: Any = _UNSET,
+    research_client: Any = _UNSET,
+    selection_budget_mode: str = "enforce",
 ) -> AggregateResult:
     """驱动聚合层唯一编排入口:种子 → (检索段 → 推理段) → 两道机械闸 → 篮子候选。
 
@@ -2595,15 +2597,20 @@ def aggregate_baskets(
 
             if isinstance(triage_provider, _Unset):
                 triage_provider = _resolve_provider(TASK_DIRECTION_TRIAGE, db_path)
-            if isinstance(search_provider, _Unset):
-                search_provider = _resolve_provider(TASK_DRIVER_SEARCH, db_path)
+            if isinstance(research_client, _Unset):
+                from neckline.search.tavily import TavilySearchClient
+                from neckline.settings_store import get_tavily_api_key
+
+                tavily_key = get_tavily_api_key(db_path=db_path)
+                research_client = TavilySearchClient(tavily_key) if tavily_key else None
             if isinstance(deep_reason_provider, _Unset):
                 deep_reason_provider = _resolve_provider(TASK_DEEP_REASON, db_path)
             outcome = run_direction_pipeline(
                 trade_date, seeds, config=direction_pipeline_config,
-                triage_provider=triage_provider, research_provider=search_provider,
+                triage_provider=triage_provider, research_client=research_client,
                 reason_provider=deep_reason_provider, db_path=db_path, transport=transport,
                 qualification_callback=_qualified_after_gates,
+                budget_mode=selection_budget_mode,
             )
             if outcome.terminal:
                 return AggregateResult(

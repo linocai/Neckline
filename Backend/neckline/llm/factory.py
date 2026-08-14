@@ -6,8 +6,7 @@
        providers/*`/`PUT /settings/llm-routes` 落库后下一次调用即生效,不重启,
        这条铁律与 V1 `resolve_llm()` 的"DB 覆盖现读"一脉相承)。
     2. 交给 `neckline.llm.router.resolve_task_provider_name()` 决定用哪个
-       provider **名字**(有路由用路由;检索类任务缺路由挑一个 has_web_search
-       的启用中 provider;其余缺路由回退 `llm_default_provider`)。
+       provider **名字**(有路由用路由,其余回退 `llm_default_provider`)。
     3. 按名字查行;行不存在 / `enabled=0` / `api_key` 未设 → 整体判「不可用」,
        返回 `None`(**全链路必须在无 key/被禁用下优雅降级跑通**,§2.0/§3.8 铁律
        一字不变,调用方——`judge.py`/`selection/aggregate.py`/`report/pipeline.py`
@@ -40,11 +39,12 @@ from neckline.config import Settings
 from neckline.llm.base import LLMProvider
 from neckline.llm.openai_compat import OpenAICompatProvider
 from neckline.llm.router import (
+    DEFAULT_SEARCH_TASKS,
     read_timeout_for_task,
     resolve_task_provider_name,
     use_streaming_for_task,
 )
-from neckline.settings_store import get_llm_routes, list_providers
+from neckline.settings_store import get_llm_routes, get_tavily_api_key, list_providers
 
 
 def get_provider(
@@ -61,13 +61,15 @@ def get_provider(
     row = next((r for r in rows if r.name == name), None)
     if row is None or not row.enabled or not row.api_key:
         return None
-    return OpenAICompatProvider(
+    provider = OpenAICompatProvider(
         api_key=row.api_key,
         model=row.model,
         name=row.name,
         api_url=row.base_url,
-        has_web_search=row.has_web_search,
-        search_engine=row.search_engine,
+        # 联网统一走 Tavily；即使历史行仍勾着 has_web_search，也绝不再把 GLM
+        # 专属 tools 形状发给 DeepSeek 或其它 OpenAI 兼容端点。
+        has_web_search=False,
+        search_engine=None,
         # §七 P0-40 → P0-44:按 task 类别分级。**分级判据的唯一实现在 router**,
         # 本层只负责把它接上;`task=None`(V1 遗留调用点)→ 不覆盖任何一项。
         # ⚠ 这是**所有 provider 的唯一出生地**,所以分级只需接这一处就全覆盖 ——
@@ -80,6 +82,14 @@ def get_provider(
         read_timeout=read_timeout_for_task(task),
         use_streaming=use_streaming_for_task(task),
     )
+    if task in DEFAULT_SEARCH_TASKS:
+        from neckline.search.tavily import TavilyGroundedProvider, TavilySearchClient
+
+        tavily_key = get_tavily_api_key(db_path=db_path)
+        if not tavily_key:
+            return None
+        return TavilyGroundedProvider(provider, TavilySearchClient(tavily_key))
+    return provider
 
 
 __all__ = ["get_provider"]

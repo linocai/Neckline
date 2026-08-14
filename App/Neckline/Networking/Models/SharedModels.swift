@@ -569,19 +569,27 @@ struct LLMRoutes: Codable, Equatable {
     }
 }
 
+/// 独立联网检索设置。API key 只写不回显，客户端只接收是否已配置。
+struct TavilySettings: Codable, Equatable {
+    var keySet: Bool = false
+}
+
 struct SettingsSnapshot: Codable, Equatable {
     var providers: [SettingsProvider] = []
     var routes: [String: String] = [:]
+    var tavily: TavilySettings = TavilySettings()
     var push: PushSettings = PushSettings()
     var reviewColMap: [String: String] = [:]     // 4D 周复盘交割单列映射
 
     static let empty = SettingsSnapshot()
 
-    enum CodingKeys: String, CodingKey { case providers, routes, push, reviewColMap }
+    enum CodingKeys: String, CodingKey { case providers, routes, tavily, push, reviewColMap }
 
     init(providers: [SettingsProvider] = [], routes: [String: String] = [:],
-         push: PushSettings = PushSettings(), reviewColMap: [String: String] = [:]) {
+         tavily: TavilySettings = TavilySettings(), push: PushSettings = PushSettings(),
+         reviewColMap: [String: String] = [:]) {
         self.providers = providers; self.routes = routes
+        self.tavily = tavily
         self.push = push; self.reviewColMap = reviewColMap
     }
 
@@ -589,6 +597,7 @@ struct SettingsSnapshot: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         providers = try c.decodeIfPresent([SettingsProvider].self, forKey: .providers) ?? []
         routes = try c.decodeIfPresent([String: String].self, forKey: .routes) ?? [:]
+        tavily = try c.decodeIfPresent(TavilySettings.self, forKey: .tavily) ?? TavilySettings()
         push = try c.decodeIfPresent(PushSettings.self, forKey: .push) ?? PushSettings()
         reviewColMap = try c.decodeIfPresent([String: String].self, forKey: .reviewColMap) ?? [:]
     }

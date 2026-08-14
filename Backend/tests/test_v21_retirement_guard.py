@@ -178,6 +178,10 @@ def test_retired_route_key_is_filtered_on_read(isolated_env):
 
     db_path = isolated_env.db_path
     init_schema(db_path)
+    settings_store.create_provider(
+        "GLM", "https://example.test/chat/completions", "glm-test",
+        api_key="test-key", db_path=db_path,
+    )
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute(

@@ -1,10 +1,9 @@
 """任务 → Provider 路由(plan §五 V2-② / §3.10-B)。**任务常量单一源**——新增任何
 消费某个 LLM 任务的模块,一律从本文件 import 任务常量,不许各处散抄字符串字面量。
 
-默认双 Agent 分工(裁定 #2):检索类任务缺显式路由时,优先落到「带联网搜索能力
-且已启用」的 provider;其余任务缺显式路由时回退 `app_settings.llm_default_provider`
-(用户预期填一个纯推理 provider,如 DeepSeek,但本模块不强制校验这一点——自填制
-下"谁是推理 provider"是配置事实,不是代码断言)。
+V2.4.2 Build 6 起联网检索统一由 Tavily 独立完成。任务路由只决定“由哪个 LLM
+读证据并推理”，不再把 `has_web_search` 当成默认模型资格；缺显式路由一律回退
+`app_settings.llm_default_provider`。
 
 本模块**不碰 DB / 不做 I/O**——`resolve_task_provider_name()` 是纯函数,输入已经
 是调用方(`neckline.llm.factory`)查好的 `routes`/`default_provider`/`rows`,方便
@@ -48,7 +47,8 @@ ALL_TASKS = (
     TASK_DEEP_REASON,
 )
 
-# 默认路由的「检索类」集合(plan 原文明确点名 driver_search/news_scan 两项)。
+# 外部 Tavily 包装的「检索类」集合。它不再触发 LLM Provider 自带搜索协议；
+# `factory.get_provider()` 仅用本集合决定是否包 TavilyGroundedProvider。
 # ⚠ **V2.1-① 起 `TASK_INQUIRY` 已随问询台整链退役从本元组移除**——它此前是
 # builder 推断收录(问询台 `provider.chat(enable_search=True, ...)` 需要搜索能力
 # 的 provider),现在连同问询台主体一起消失,不留影子档;`ALL_TASKS`/`__all__` 三处
@@ -169,19 +169,14 @@ def resolve_task_provider_name(
        也原样返回该名字,交给调用方统一走「不可用→None」,**不在这里悄悄跳过到
        默认值**:路由是用户显式配置,配错了要如实反映成"这个任务不可用",不能被
        "贴心地"绕过去用别的 provider(那样用户永远发现不了自己配错了)。
-    ② 缺路由 且 `task` 属于 `DEFAULT_SEARCH_TASKS` → 挑 `rows` 中第一个
-       `enabled and has_web_search` 的 provider(调用方需保证 `rows` 是稳定序,
-       如按 `id` 升序,使这一步确定性可复现)。找不到 → 落到③。
-    ③ 回退 `default_provider`(`app_settings.llm_default_provider`)。
+    ② 缺路由 → 回退 `default_provider`(`app_settings.llm_default_provider`)。
+
+    `has_web_search` 是历史兼容字段，V2.4.2 Build 6 后不参与任何路由判定。
     """
     if task:
         routed = routes.get(task)
         if routed:
             return routed
-    if task in DEFAULT_SEARCH_TASKS:
-        for row in rows:
-            if row.enabled and row.has_web_search:
-                return row.name
     return default_provider
 
 

@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 from neckline.llm.base import ChatMessage, LLMProvider
 from neckline.llm.json_block import split_narrative_and_reference_json
 from neckline.llm.prompt_context import date_anchor_line
-from neckline.llm.router import TASK_DEEP_REASON, TASK_DIRECTION_TRIAGE, TASK_DRIVER_SEARCH
+from neckline.llm.router import TASK_DEEP_REASON, TASK_DIRECTION_TRIAGE
 from neckline.scan.seeds import DriverSeed
 from neckline.selection.deep_queue import (
     DeepQueue,
@@ -25,6 +25,7 @@ from neckline.selection.deep_queue import (
     build_deep_queue,
 )
 from neckline.selection.deep_reason import DeepReasonResult, parse_deep_reason
+from neckline.selection.deep_research import request_for
 from neckline.selection.direction_brief import DirectionBrief, build_briefs
 from neckline.selection.direction_inventory import build_inventory
 from neckline.selection.direction_merge import merge_directions
@@ -36,7 +37,6 @@ _TRIAGE_SYSTEM = (
     "你只做方向初读。只返回 JSON，directions 中每项有 directionId、"
     "disposition(deep|normal|reserve|unfit) 与一句 reason。不得搜索、不得生成篮子或价格计划。"
 )
-_RESEARCH_SYSTEM = "为一个已进入深研队列的机械方向检索当日证据；只返回简短 JSON 证据。"
 _REASON_SYSTEM = (
     "你只对给定已检索方向作完整结构化判断。返回 JSON {directions:[...]}; 每项必须包含 "
     "directionId,name,driver,driver_kind,why_now,seed_keys,members,narrative，并可含现有六关输入和 card_material。"
@@ -132,11 +132,13 @@ def run_direction_pipeline(
     *,
     config: Optional[Mapping[str, Any]],
     triage_provider: Optional[LLMProvider],
-    research_provider: Optional[LLMProvider],
+    research_client: Optional[Any],
     reason_provider: Optional[LLMProvider],
     db_path: Optional[Path] = None,
     transport: Optional[Any] = None,
+    search_transport: Optional[Any] = None,
     qualification_callback: Optional[Callable[[Sequence[Mapping[str, Any]], Mapping[str, Mapping[str, Any]]], int]] = None,
+    budget_mode: str = "enforce",
 ) -> DirectionPipelineOutcome:
     """Run all visible directions through low-cost triage and bounded deep work.
 
@@ -165,10 +167,14 @@ def run_direction_pipeline(
             db_path=db_path, notes=(f"direction_pipeline_config:{exc}",),
         )
 
+    if budget_mode not in {"enforce", "observe_only"}:
+        raise ValueError("budget_mode must be enforce or observe_only")
     date_s = _trade_date(trade_date)
     inventory = build_inventory(seeds)
     merged = merge_directions(build_briefs(inventory.directions), policy=cfg.cross_seed_merge_policy)
-    run_id = run_store.create_run(date_s, dict(config or {}), db_path=db_path)
+    audit_config = dict(config or {})
+    audit_config["runtimeBudgetMode"] = budget_mode
+    run_id = run_store.create_run(date_s, audit_config, db_path=db_path)
     for brief in merged.directions:
         run_store.add_direction(
             run_id, direction_id=brief.direction_id, ordinal=brief.ordinal,
@@ -181,7 +187,7 @@ def run_direction_pipeline(
 
     if not merged.directions:
         return DirectionPipelineOutcome("complete", "", run_id=run_id, briefs=())
-    if triage_provider is None or research_provider is None or reason_provider is None:
+    if triage_provider is None or research_client is None or reason_provider is None:
         return _finish_unavailable(
             run_id, "今日选股关键研究服务不可用，保留上一份已完成结果。", "provider_unavailable",
             db_path=db_path, notes=("direction_pipeline_provider_unavailable",),
@@ -190,6 +196,12 @@ def run_direction_pipeline(
     disposition: Dict[str, str] = {}
     started_all = time.monotonic()
     tokens_used = 0
+
+    def budget_exhausted() -> bool:
+        return budget_mode == "enforce" and (
+            time.monotonic() - started_all >= cfg.selection_wall_seconds
+            or tokens_used >= cfg.selection_token_budget
+        )
     for batch_no, start in enumerate(range(0, len(merged.directions), cfg.triage_batch_size), start=1):
         batch = merged.directions[start:start + cfg.triage_batch_size]
         started = time.monotonic()
@@ -219,7 +231,7 @@ def run_direction_pipeline(
             run_store.add_event(run_id, f"triage_{item.disposition}", direction_id=item.direction_id,
                                 reason=item.reason, batch_no=batch_no, llm_call_id=call_id, db_path=db_path)
 
-    if time.monotonic() - started_all >= cfg.selection_wall_seconds or tokens_used >= cfg.selection_token_budget:
+    if budget_exhausted():
         return DirectionPipelineOutcome("partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。", run_id=run_id,
                                         briefs=merged.directions, notes=("selection_budget_exhausted_before_deep",))
 
@@ -235,6 +247,7 @@ def run_direction_pipeline(
         queue: DeepQueue = build_deep_queue(
             merged.directions, disposition, cfg, already_queued=queued, queue_round=fill_round,
             limit=None if fill_round == 0 else cfg.fill_batch_size,
+            enforce_total_limit=(budget_mode == "enforce"),
         )
         if not queue.entries:
             break
@@ -250,55 +263,59 @@ def run_direction_pipeline(
         # completed cohort independently useful and keeps partial publication
         # honest without increasing the configured call/token limits.
         for index in range(0, len(queue.entries), cfg.deep_reason_batch_size):
-            if time.monotonic() - started_all >= cfg.selection_wall_seconds or tokens_used >= cfg.selection_token_budget:
+            if budget_exhausted():
                 terminal_state, terminal_text = "partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。"
                 break
             group_entries = queue.entries[index:index + cfg.deep_reason_batch_size]
             researched = []
             for item in group_entries:
-                if time.monotonic() - started_all >= cfg.selection_wall_seconds or tokens_used >= cfg.selection_token_budget:
+                if budget_exhausted():
                     terminal_state, terminal_text = "partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。"
                     break
                 brief = brief_by_id[item.direction_id]
                 batch_no += 1
                 started = time.monotonic()
+                request = request_for(
+                    direction_id=brief.direction_id, label=brief.label, brief=brief.public_dict()
+                )
                 try:
-                    result = research_provider.chat(
-                        [ChatMessage(role="system", content=_RESEARCH_SYSTEM),
-                         ChatMessage(role="user", content=date_anchor_line(trade_date) + "\n" + json.dumps({"directionId": brief.direction_id, "label": brief.label, "brief": brief.public_dict()}, ensure_ascii=False))],
-                        enable_search=True, search_query=brief.label, transport=transport,
-                    )
+                    searched = research_client.search(request.query, transport=search_transport)
                 except Exception as exc:
                     run_store.add_event(run_id, "research_unavailable", direction_id=brief.direction_id,
                                         reason=f"research_call_failed:{type(exc).__name__}", batch_no=batch_no,
                                         fill_round=fill_round, db_path=db_path)
                     continue
-                call_id, tokens = _record_call(
-                    run_id, TASK_DRIVER_SEARCH, batch_no, research_provider, result, started,
-                    enable_search=True, db_path=db_path,
+                search_call_id = run_store.record_search_call(
+                    run_id, direction_id=brief.direction_id, batch_no=batch_no,
+                    provider=str(getattr(research_client, "provider", "tavily")),
+                    query=request.query,
+                    search_depth=str(getattr(research_client, "search_depth", "basic")),
+                    result_count=len(getattr(searched, "hits", ()) or ()),
+                    credits=getattr(searched, "credits", None),
+                    status="ok" if bool(getattr(searched, "ok", False)) else str(getattr(searched, "reason", "failed")),
+                    wall_ms=int(getattr(searched, "wall_ms", max(0, int((time.monotonic() - started) * 1000)))),
+                    request_id=getattr(searched, "request_id", None), db_path=db_path,
                 )
-                if tokens is None:
-                    return _finish_unavailable(
-                        run_id, "今日选股用量无法核验，保留上一份已完成结果。", "usage_unavailable",
-                        db_path=db_path, notes=("research_usage_unavailable",),
+                if not bool(getattr(searched, "ok", False)):
+                    run_store.add_event(
+                        run_id, "research_unavailable", direction_id=brief.direction_id,
+                        reason=f"search_call:{search_call_id}:{getattr(searched, 'reason', 'failed')}",
+                        batch_no=batch_no, fill_round=fill_round, db_path=db_path,
                     )
-                tokens_used += tokens
-                payload = _json_payload(getattr(result, "content", None))
-                research[brief.direction_id] = (
-                    payload if isinstance(payload, Mapping)
-                    else {"raw": getattr(result, "content", "")}
-                )
+                    continue
+                payload = searched.evidence_payload()
+                research[brief.direction_id] = payload
                 researched.append(brief)
                 run_store.add_event(
                     run_id, "research_complete", direction_id=brief.direction_id,
-                    batch_no=batch_no, fill_round=fill_round, llm_call_id=call_id,
+                    reason=f"search_call:{search_call_id}", batch_no=batch_no, fill_round=fill_round,
                     db_path=db_path,
                 )
             if terminal_state == "partial":
                 break
             if not researched:
                 continue
-            if time.monotonic() - started_all >= cfg.selection_wall_seconds or tokens_used >= cfg.selection_token_budget:
+            if budget_exhausted():
                 terminal_state, terminal_text = "partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。"
                 break
             group = researched
@@ -363,14 +380,16 @@ def run_direction_pipeline(
         if qualified >= cfg.sufficient_candidate_count:
             break
         fill_round += 1
-        if fill_round > cfg.max_fill_rounds or len(queued) >= cfg.max_total_deep:
+        if (budget_mode == "enforce"
+                and (fill_round > cfg.max_fill_rounds or len(queued) >= cfg.max_total_deep)):
             break
 
     return DirectionPipelineOutcome(
         terminal_state, terminal_text, run_id=run_id, briefs=merged.directions,
         proposals=tuple(proposals), deep_material_by_direction_id=material,
         research_by_direction_id=research,
-        notes=(f"direction_pipeline_run:{run_id}", f"direction_pipeline_deep:{len(queued)}"),
+        notes=(f"direction_pipeline_run:{run_id}", f"direction_pipeline_deep:{len(queued)}",
+               f"selection_budget_mode:{budget_mode}"),
     )
 
 

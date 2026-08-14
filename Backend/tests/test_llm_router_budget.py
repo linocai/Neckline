@@ -65,15 +65,15 @@ def test_explicit_route_always_wins_even_if_provider_nonexistent():
     assert name == "ghost"
 
 
-def test_search_task_without_route_picks_first_enabled_has_web_search_row():
+def test_search_task_without_route_uses_default_provider_not_legacy_search_flag():
     rows = [_Row("deepseek", True, False), _Row("kimi-like", False, True), _Row("glm-like", True, True)]
     name = router.resolve_task_provider_name(
         router.TASK_DRIVER_SEARCH, routes={}, default_provider="deepseek", rows=rows,
     )
-    assert name == "glm-like"  # kimi-like 虽 has_web_search 但 enabled=False,跳过
+    assert name == "deepseek"
 
 
-def test_search_task_without_any_has_web_search_row_falls_back_to_default():
+def test_search_task_without_legacy_search_row_still_uses_default():
     rows = [_Row("deepseek", True, False)]
     name = router.resolve_task_provider_name(
         router.TASK_NEWS_SCAN, routes={}, default_provider="deepseek", rows=rows,

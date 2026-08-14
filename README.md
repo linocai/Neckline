@@ -45,6 +45,24 @@ V2.4.2 的晚间选股链必须显式提供经确认的 `direction_pipeline` JSO
 调整；不得根据单日感觉改参数。配置缺失或无效时，系统仍会标为“选股不可用”并保留
 上一份冻结结果，不会回退到历史的前 20 条截断路径。
 
+联网研究统一使用 Tavily Basic，LLM Provider 本身不再承担联网能力。macOS 配置路径是
+“设置 → LLM Provider 与任务路由 → Tavily 联网搜索”；输入只写入服务端，客户端和
+API 只显示“已配置/未配置”，不回显 Key。默认模型也在同一页选择，只有已启用且已配置
+Key 的 Provider 可以保存为默认值；删除、停用或清空其 Key 会同时清掉相关默认值和任务
+路由，避免出现“界面选中但运行时不可用”。
+
+为量真实成本，CLI 提供一次性观察参数：
+
+```bash
+.venv/bin/python scripts/evening.py \
+  --direction-pipeline-config config/direction-pipeline.v2.4.2-balanced.json \
+  --observe-selection-cost
+```
+
+它只在用户明确授权的人工运行中使用：Token、墙钟和深研轮数继续如实记账但不强制截断；
+定时服务不带这个参数，日常生产仍执行均衡包的预算限制。观察模式不改变六关、Tier 容量、
+候选充足条件，也不授权自动重复顶层任务。
+
 ### SQLite schema 边界
 
 `init_schema()` 是受控写入口：仅允许 API 启动、明确的写入命令或 RC 迁移步骤在

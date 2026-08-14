@@ -87,6 +87,24 @@ CREATE TABLE IF NOT EXISTS selection_llm_calls (
   FOREIGN KEY(run_id) REFERENCES selection_runs(run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_selection_llm_calls_run ON selection_llm_calls(run_id, id);
+CREATE TABLE IF NOT EXISTS selection_search_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  direction_id TEXT,
+  batch_no INTEGER,
+  provider TEXT NOT NULL,
+  query TEXT NOT NULL,
+  search_depth TEXT,
+  result_count INTEGER NOT NULL,
+  credits INTEGER,
+  usage_unavailable INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  wall_ms INTEGER NOT NULL,
+  request_id TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(run_id) REFERENCES selection_runs(run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_selection_search_calls_run ON selection_search_calls(run_id, id);
 """
 
 
@@ -163,6 +181,30 @@ def record_llm_call(run_id: str, *, task: str, batch_no: Optional[int], provider
         cursor = conn.execute(
             "INSERT INTO selection_llm_calls(run_id,task,batch_no,provider,model,enable_search,wall_ms,prompt_tokens,completion_tokens,total_tokens,raw_usage_json,usage_unavailable,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (run_id, task, batch_no, provider, model, int(enable_search), wall_ms, prompt, completion, total, _json(usage), unavailable, _now()),
+        )
+        return int(cursor.lastrowid)
+
+
+def record_search_call(
+    run_id: str, *, direction_id: Optional[str], batch_no: Optional[int], provider: str,
+    query: str, search_depth: Optional[str], result_count: int, credits: Optional[int],
+    status: str, wall_ms: int, request_id: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> int:
+    """Record external-search credits separately from LLM tokens."""
+    usage_unavailable = int(
+        isinstance(credits, bool) or not isinstance(credits, int) or credits < 0
+    )
+    with connection(db_path) as conn:
+        cursor = conn.execute(
+            "INSERT INTO selection_search_calls("
+            "run_id,direction_id,batch_no,provider,query,search_depth,result_count,credits,"
+            "usage_unavailable,status,wall_ms,request_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                run_id, direction_id, batch_no, provider, query, search_depth,
+                max(0, int(result_count)), None if usage_unavailable else int(credits),
+                usage_unavailable, status, max(0, int(wall_ms)), request_id, _now(),
+            ),
         )
         return int(cursor.lastrowid)
 
@@ -267,6 +309,6 @@ def latest_publication_state(trade_date: str, *, db_path: Optional[Path] = None)
 
 
 __all__ = [
-    "init_selection_run_schema", "init_selection_run_schema_on_connection", "create_run", "add_direction", "add_event", "record_llm_call",
+    "init_selection_run_schema", "init_selection_run_schema_on_connection", "create_run", "add_direction", "add_event", "record_llm_call", "record_search_call",
     "update_direction_disposition", "finish_run", "latest_published_run_id", "latest_publication_state",
 ]

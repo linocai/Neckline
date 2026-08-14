@@ -1058,11 +1058,17 @@ class SettingsProviderOut(BaseModel):
     enabled: bool
 
 
+class TavilySettingsOut(BaseModel):
+    """独立检索凭据安全视图：只说明是否已配置，永不回 key 或掩码。"""
+    keySet: bool = False
+
+
 class SettingsOut(BaseModel):
     """V2-②起:`llmProvider`/`llmKeySet` 两字段由 `providers`/`routes` 取代
     (plan §五 V2-②「契约变更」)。"""
     providers: List[SettingsProviderOut] = Field(default_factory=list)
     routes: Dict[str, str] = Field(default_factory=dict)   # {任务名: provider 名}
+    tavily: TavilySettingsOut = Field(default_factory=TavilySettingsOut)
     push: PushSettingsOut
     reviewColMap: Dict[str, str] = Field(default_factory=dict)   # 4D 周复盘交割单列映射
 
@@ -1120,6 +1126,11 @@ class LLMRoutesIn(BaseModel):
     完整状态)。`routes` 的键须落在 `neckline.llm.router.ALL_TASKS`,否则 422。"""
     routes: Dict[str, str] = Field(default_factory=dict)
     defaultProvider: Optional[str] = None
+
+
+class TavilySettingsIn(BaseModel):
+    """只写凭据。清除使用 DELETE，避免空字符串同时承担“不改/清除”两种语义。"""
+    apiKey: str = Field(min_length=1)
 
 
 class SettingsPushIn(BaseModel):
@@ -1969,6 +1980,7 @@ __all__ = [
     "AlertCreateIn", "AlertUpdateIn", "AlertParseIn", "AlertParseOut",
     "ProviderOut", "ProvidersListOut", "ProviderCreateIn", "ProviderUpdateIn",
     "LLMRoutesOut", "LLMRoutesIn",
+    "TavilySettingsOut", "TavilySettingsIn",
     "SettingsReviewColMapIn",
     "WeeklyReviewOut", "ReviewUploadOut", "ReviewGetOut",
     # V2.2-② 行情状态层

@@ -277,6 +277,8 @@ final class AppModel {
     var settingsLoading = false
     var providers: [Provider] = []
     var llmRoutes: LLMRoutes = LLMRoutes()
+    /// Tavily key 草稿只存在于本次输入期间；成功或失败后都立即清空。
+    var tavilyKeyDraft = ""
     var providerForm = ProviderForm()
     var showProviderForm = false
     /// 推送开关草稿:**服务端发什么就渲染什么**(⛔ 不硬编 kind 清单)。
@@ -1240,7 +1242,6 @@ final class AppModel {
         }
         let f = providerForm
         let key = f.apiKey.trimmingCharacters(in: .whitespaces)
-        let engine = f.searchEngine.trimmingCharacters(in: .whitespaces)
         let notes = f.notes.trimmingCharacters(in: .whitespaces)
         do {
             if let editing = f.editingName {
@@ -1252,14 +1253,14 @@ final class AppModel {
                 // 这个字段"把它改回空 —— 要清除得整个 Provider 删了重建)。
                 let body = ProviderUpdateRequest(
                     baseUrl: f.baseUrl, model: f.model, apiKey: key.isEmpty ? nil : key,
-                    hasWebSearch: f.hasWebSearch, searchEngine: engine.isEmpty ? nil : engine,
+                    hasWebSearch: false, searchEngine: nil,
                     notes: notes.isEmpty ? nil : notes, enabled: f.enabled)
                 _ = try await client.updateProvider(name: editing, body)
             } else {
                 let body = ProviderCreateRequest(
                     name: f.name, baseUrl: f.baseUrl, model: f.model,
-                    apiKey: key.isEmpty ? nil : key, hasWebSearch: f.hasWebSearch,
-                    searchEngine: engine.isEmpty ? nil : engine,
+                    apiKey: key.isEmpty ? nil : key, hasWebSearch: false,
+                    searchEngine: nil,
                     notes: notes.isEmpty ? nil : notes, enabled: f.enabled)
                 _ = try await client.createProvider(body)
             }
@@ -1273,6 +1274,42 @@ final class AppModel {
         } catch {
             providerForm.apiKey = ""
             showToast("保存失败:\(error.localizedDescription)", isError: true)
+        }
+    }
+
+    func saveTavilyKey() async {
+        guard let client = clientProvider() else {
+            showToast("未配置后端连接", isError: true); return
+        }
+        let key = tavilyKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            showToast("请填写 Tavily API key", isError: true); return
+        }
+        do {
+            _ = try await client.putTavilyKey(key)
+            tavilyKeyDraft = ""
+            await loadSettings()
+            showToast("Tavily key 已保存")
+        } catch let e as APIError {
+            tavilyKeyDraft = ""
+            showToast(e.errorDescription ?? "保存失败", isError: true)
+        } catch {
+            tavilyKeyDraft = ""
+            showToast("保存失败:\(error.localizedDescription)", isError: true)
+        }
+    }
+
+    func clearTavilyKey() async {
+        guard let client = clientProvider() else { return }
+        do {
+            _ = try await client.deleteTavilyKey()
+            tavilyKeyDraft = ""
+            await loadSettings()
+            showToast("Tavily key 已清除")
+        } catch let e as APIError {
+            showToast(e.errorDescription ?? "清除失败", isError: true)
+        } catch {
+            showToast("清除失败:\(error.localizedDescription)", isError: true)
         }
     }
 

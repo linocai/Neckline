@@ -72,6 +72,10 @@ def main() -> int:
         "--direction-pipeline-config", default=None,
         help="V2.4.2 方向流水线 JSON 配置文件；未提供或不完整时选股如实显示不可用，不回退旧前20路径",
     )
+    parser.add_argument(
+        "--observe-selection-cost", action="store_true",
+        help="仅经用户明确授权的一次性观察模式：预算/墙钟/深研轮数只记账不截断；不会自动启用",
+    )
     args = parser.parse_args()
 
     ensure_data_dirs()
@@ -100,8 +104,9 @@ def main() -> int:
             logger.error("方向流水线配置必须是 JSON object。")
             return 2
         direction_pipeline_config = loaded
-    logger.info("晚间链 %s:段 %s(llm=%s,save=%s)", trade_date, segments,
-                not args.no_llm, not args.no_save)
+    logger.info("晚间链 %s:段 %s(llm=%s,save=%s,selection_budget_mode=%s)", trade_date, segments,
+                not args.no_llm, not args.no_save,
+                "observe_only" if args.observe_selection_cost else "enforce")
     try:
         res = run_evening_chain(
             trade_date, segments=segments, db_path=db_path, parquet_dir=parquet_dir,
@@ -109,6 +114,7 @@ def main() -> int:
             # Passing explicit None is intentional: V2.4.2 cannot silently
             # fall back to the historical first-20 aggregate route.
             direction_pipeline_config=direction_pipeline_config,
+            selection_budget_mode=("observe_only" if args.observe_selection_cost else "enforce"),
         )
     except RuntimeError as e:
         logger.error("晚间链失败:%s", e)

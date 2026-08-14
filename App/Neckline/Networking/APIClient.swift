@@ -94,6 +94,8 @@ enum APIError: Error, LocalizedError, Equatable {
     case duplicateAlert      // 409 POST /alerts 同标的 + 规则逐字节相同
     case invalidRule         // 422 提醒规则不合白名单
     case invalidTask         // 422 PUT /settings/llm-routes 未知任务名
+    case invalidProvider     // 422 默认/任务路由指向不可用 Provider
+    case invalidTavilyKey    // 422 Tavily key 为空白
     case invalidPushKinds    // 422 PUT /settings/push 缺键 / 未登记 kind
     case validation(String)  // 422 其它字段校验
     case server(Int, String)
@@ -119,6 +121,8 @@ enum APIError: Error, LocalizedError, Equatable {
         case .duplicateAlert:   return "已有一条一模一样的提醒(未重复创建)"
         case .invalidRule:      return "提醒规则不在支持的条件范围内"
         case .invalidTask:      return "路由表里有未知的任务名"
+        case .invalidProvider:  return "只能选择已启用且 key 已配置的 Provider"
+        case .invalidTavilyKey: return "Tavily API key 不能为空"
         case .invalidPushKinds: return "推送开关清单不完整或含未登记的通知类型"
         case .validation(let m): return "字段校验失败:\(m)"
         case .server(let c, let m): return "服务端错误 \(c):\(m)"
@@ -318,6 +322,9 @@ struct LLMRoutesRequest: Encodable {
     let routes: [String: String]
     let defaultProvider: String?
 }
+
+/// Tavily key 只写不回显；响应只含 `keySet`。
+struct TavilySettingsRequest: Encodable { let apiKey: String }
 
 // —— 设备注册 + 通用 ok 响应 ————————————————————————————————————————————————
 
@@ -765,10 +772,20 @@ actor APIClient {
 
     /// **全量覆盖式**写路由表。未知任务名 → 422 `invalid_task`。
     @discardableResult
-    func putLLMRoutes(routes: [String: String], defaultProvider: String?) async throws -> Bool {
+    func putLLMRoutes(routes: [String: String], defaultProvider: String?) async throws -> LLMRoutes {
         let body = LLMRoutesRequest(routes: routes, defaultProvider: defaultProvider)
         let data = try await put("/api/v1/settings/llm-routes", body: body)
-        return try JSONDecoder().decode(OkResponse.self, from: data).ok
+        return try JSONDecoder().decode(LLMRoutes.self, from: data)
+    }
+
+    func putTavilyKey(_ apiKey: String) async throws -> TavilySettings {
+        let data = try await put("/api/v1/settings/tavily", body: TavilySettingsRequest(apiKey: apiKey))
+        return try JSONDecoder().decode(TavilySettings.self, from: data)
+    }
+
+    func deleteTavilyKey() async throws -> TavilySettings {
+        let data = try await delete("/api/v1/settings/tavily")
+        return try JSONDecoder().decode(TavilySettings.self, from: data)
     }
 
     /// 按 `kind` 的推送开关,**全量覆盖式**写。⛔ 客户端不许硬编 kind 清单 —— 传的是
@@ -1071,6 +1088,8 @@ actor APIClient {
         case "duplicate_alert": return .duplicateAlert
         case "invalid_rule": return .invalidRule
         case "invalid_task": return .invalidTask
+        case "invalid_provider": return .invalidProvider
+        case "invalid_tavily_key": return .invalidTavilyKey
         case "invalid_push_kinds": return .invalidPushKinds
         default: return fallback
         }

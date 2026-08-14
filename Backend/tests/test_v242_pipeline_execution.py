@@ -4,8 +4,9 @@ import json
 import sqlite3
 from datetime import date
 
-from neckline.llm.base import LLMResult
+from neckline.llm.base import LLMResult, SearchHit
 from neckline.scan.seeds import DriverSeed
+from neckline.search.tavily import TavilySearchResponse
 from neckline.selection.direction_pipeline import run_direction_pipeline
 
 
@@ -48,8 +49,6 @@ class _Provider:
                 {"directionId": item["directionId"], "disposition": "deep", "reason": "机械方向完整"}
                 for item in request["directions"]
             ]}, usage=self.usage)
-        if self.kind == "search":
-            return _result({"evidence": [{"claim": "公告", "source": "交易所", "date": "2026-08-14"}]}, usage=self.usage)
         return _result({"directions": [
             {
                 "directionId": item["directionId"], "name": item["brief"]["label"],
@@ -76,6 +75,29 @@ class _TimedProvider(_Provider):
         return result
 
 
+class _Search:
+    provider = "tavily"
+    search_depth = "basic"
+
+    def __init__(self, *, clock=None, advance: float = 0):
+        self.clock = clock
+        self.advance = advance
+        self.calls = []
+
+    def search(self, query, *, transport=None):
+        self.calls.append((query, transport))
+        if self.clock is not None:
+            self.clock[0] += self.advance
+        return TavilySearchResponse(
+            ok=True, query=query,
+            hits=(SearchHit(
+                title="交易所公告", link="https://example.test/notice",
+                media="交易所", publish_date="2026-08-14", content="公开事件驱动",
+            ),),
+            credits=1, request_id=f"search-{len(self.calls)}", wall_ms=int(self.advance * 1000),
+        )
+
+
 def _seeds(n=21):
     return [DriverSeed(
         seed_key=f"s-{index}", seed_kind="hot_industry" if index % 2 else "limit_cluster",
@@ -88,20 +110,23 @@ def test_pipeline_sees_all_triages_without_search_and_only_deep_researches_initi
     from neckline.db import init_schema
 
     init_schema(isolated_env.db_path)
-    triage, search, reason = _Provider("triage"), _Provider("search"), _Provider("reason")
+    triage, search, reason = _Provider("triage"), _Search(), _Provider("reason")
     outcome = run_direction_pipeline(
         date(2026, 8, 14), _seeds(), config=_config(), triage_provider=triage,
-        research_provider=search, reason_provider=reason, db_path=isolated_env.db_path,
+        research_client=search, reason_provider=reason, db_path=isolated_env.db_path,
     )
     assert outcome.selection_state == "complete"
     assert len(outcome.briefs) == 21
     assert len(outcome.proposals) == 20
     assert len(triage.calls) == 1 and triage.calls[0][1] is False
-    assert len(search.calls) == 20 and all(call[1] is True for call in search.calls)
+    assert len(search.calls) == 20
     conn = sqlite3.connect(isolated_env.db_path)
     try:
         assert conn.execute("SELECT count(*) FROM selection_directions").fetchone()[0] == 21
         rows = conn.execute("SELECT task,enable_search,usage_unavailable FROM selection_llm_calls ORDER BY id").fetchall()
+        searches = conn.execute(
+            "SELECT provider,search_depth,credits,status FROM selection_search_calls ORDER BY id"
+        ).fetchall()
         linked = conn.execute(
             "SELECT count(*) FROM selection_direction_events WHERE transition IN "
             "('triage_deep','research_complete','reasoning_complete') AND llm_call_id IS NOT NULL"
@@ -109,9 +134,11 @@ def test_pipeline_sees_all_triages_without_search_and_only_deep_researches_initi
     finally:
         conn.close()
     assert rows[0] == ("direction_triage", 0, 0)
-    assert all(row[1] == 1 for row in rows[1:21])
+    assert all(row[1] == 0 for row in rows)
     assert rows[-1] == ("deep_reason", 0, 0)
-    assert linked == 61
+    assert len(searches) == 20
+    assert all(row == ("tavily", "basic", 1, "ok") for row in searches)
+    assert linked == 41
 
 
 def test_pipeline_stops_unavailable_when_actual_usage_is_missing(isolated_env):
@@ -121,7 +148,7 @@ def test_pipeline_stops_unavailable_when_actual_usage_is_missing(isolated_env):
     triage = _Provider("triage", usage=False)
     outcome = run_direction_pipeline(
         date(2026, 8, 14), _seeds(2), config=_config(), triage_provider=triage,
-        research_provider=_Provider("search"), reason_provider=_Provider("reason"), db_path=isolated_env.db_path,
+        research_client=_Search(), reason_provider=_Provider("reason"), db_path=isolated_env.db_path,
     )
     assert outcome.selection_state == "unavailable"
     conn = sqlite3.connect(isolated_env.db_path)
@@ -146,7 +173,7 @@ def test_missing_direction_config_is_unavailable_and_keeps_prior_published_state
 
     outcome = run_direction_pipeline(
         date(2026, 8, 14), _seeds(2), config=None,
-        triage_provider=None, research_provider=None, reason_provider=None,
+        triage_provider=None, research_client=None, reason_provider=None,
         db_path=isolated_env.db_path,
     )
 
@@ -172,7 +199,7 @@ def test_pipeline_fills_after_initial_twenty_until_real_qualification_callback_i
     from neckline.db import init_schema
 
     init_schema(isolated_env.db_path)
-    triage, search, reason = _Provider("triage"), _Provider("search"), _Provider("reason")
+    triage, search, reason = _Provider("triage"), _Search(), _Provider("reason")
     rounds = []
 
     def qualified(proposals, _research):
@@ -185,7 +212,7 @@ def test_pipeline_fills_after_initial_twenty_until_real_qualification_callback_i
     outcome = run_direction_pipeline(
         date(2026, 8, 14), _seeds(22),
         config=_config(sufficient_candidate_count=21, max_total_deep=22, max_fill_rounds=1),
-        triage_provider=triage, research_provider=search, reason_provider=reason,
+        triage_provider=triage, research_client=search, reason_provider=reason,
         qualification_callback=qualified, db_path=isolated_env.db_path,
     )
     assert outcome.selection_state == "complete"
@@ -211,7 +238,7 @@ def test_wall_budget_keeps_completed_reason_cohorts_instead_of_discarding_all_se
     clock = [0.0]
     monkeypatch.setattr(direction_pipeline.time, "monotonic", lambda: clock[0])
     triage = _TimedProvider("triage", clock)
-    search = _TimedProvider("search", clock, advance=1)
+    search = _Search(clock=clock, advance=1)
     reason = _TimedProvider("reason", clock, advance=1)
 
     outcome = run_direction_pipeline(
@@ -220,7 +247,7 @@ def test_wall_budget_keeps_completed_reason_cohorts_instead_of_discarding_all_se
             deep_initial_limit=20, deep_reason_batch_size=2,
             selection_wall_seconds=5, max_total_deep=4,
         ),
-        triage_provider=triage, research_provider=search, reason_provider=reason,
+        triage_provider=triage, research_client=search, reason_provider=reason,
         db_path=isolated_env.db_path,
     )
 
@@ -234,4 +261,38 @@ def test_wall_budget_keeps_completed_reason_cohorts_instead_of_discarding_all_se
         )]
     finally:
         conn.close()
-    assert tasks[:4] == ["direction_triage", "driver_search", "driver_search", "deep_reason"]
+    assert tasks == ["direction_triage", "deep_reason"]
+
+
+def test_observe_only_records_full_cost_without_enforcing_budget_or_deep_caps(isolated_env, monkeypatch):
+    from neckline.db import init_schema
+    from neckline.selection import direction_pipeline
+
+    init_schema(isolated_env.db_path)
+    clock = [0.0]
+    monkeypatch.setattr(direction_pipeline.time, "monotonic", lambda: clock[0])
+    triage = _TimedProvider("triage", clock, advance=2)
+    search = _Search(clock=clock, advance=2)
+    reason = _TimedProvider("reason", clock, advance=2)
+
+    outcome = run_direction_pipeline(
+        date(2026, 8, 14), _seeds(4),
+        config=_config(
+            selection_token_budget=1, selection_wall_seconds=1,
+            max_total_deep=1, max_fill_rounds=0, sufficient_candidate_count=99,
+        ),
+        triage_provider=triage, research_client=search, reason_provider=reason,
+        budget_mode="observe_only", db_path=isolated_env.db_path,
+    )
+
+    assert outcome.selection_state == "complete"
+    assert len(outcome.proposals) == 4
+    assert len(search.calls) == 4
+    conn = sqlite3.connect(isolated_env.db_path)
+    try:
+        config_json = conn.execute(
+            "SELECT config_json FROM selection_runs WHERE run_id=?", (outcome.run_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert json.loads(config_json)["runtimeBudgetMode"] == "observe_only"
