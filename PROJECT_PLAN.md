@@ -5,8 +5,9 @@
 ## 1. Current goal and release boundary
 
 V2.4.2 passed independent review → repair → RC and was released after the user's explicit 2026-08-14
-authorization. Production now runs V2.4.2 with the balanced pipeline package; macOS runs Build 3. The
-signed iOS archive is a user handoff and was not installed. Continue directly on `main`; do not create a branch.
+authorization. Production runs V2.4.2 with the balanced pipeline package; macOS currently runs Build 3.
+Build 5 is a tested hotfix RC pending production deployment and macOS replacement; iOS remains a user
+handoff and will not be installed. Continue directly on `main`; do not create a branch.
 
 The baseline is `v2.4.1` Build 2. Its record is
 [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
@@ -159,8 +160,9 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
 ## 8. Milestone index and backlog
 
 - **Now:** production V2.4.2 uses approved balanced package `v2.4.2-balanced-r1`; the basket service is pinned to
-  that versioned file. The temporary memo was absorbed and removed; all verification uses explicit
-  temporary databases. The local operational DB remains frozen after the reviewer-observed schema-only incident.
+  that versioned file. Build 5 interleaves configured two-direction search/reason cohorts so a later wall-budget
+  stop preserves completed deep work, and makes macOS show honest partial/unavailable empty states. Its gates are
+  Backend 4009 passed/19 skipped, macOS 231 passed/10 existing skips, iOS Debug build and signed macOS archive.
 - **Next:** run the balanced package for the first
   3–5 trading days, review actual `selection_llm_calls` Token totals, direction counts, fill rounds and stop
   reasons before proposing `r2`; do not tune from one day or replace the file in place.
@@ -180,5 +182,9 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
 - **Hotfix 2026-08-14:** V2.4.2 Build 4 changes the primary icon asset-set name from `AppIcon` to
   `AppIconV242`, forcing iOS notification chrome to stop reusing the pre-upgrade icon cache. The artwork and
   notification logic are unchanged; iOS is packaged for user installation and macOS Build 3 stays installed.
+- **Hotfix 2026-08-14:** the first production balanced run read all 190 directions and spent 125,315 measured
+  Tokens, but exhausted its wall budget after 13 searches before starting any deep reasoning, publishing a
+  misleading zero-basket partial result. Build 5 processes configured deep cohorts end-to-end and exposes the
+  server's selection-state notice in the macOS workbench; no budget, threshold, gate or LLM-call type changes.
 - Build numbers are monotonic installable-build identifiers, not reserved in advance. This client hotfix
-  consumes Build 4, so V2.4.3 is expected to start at Build 5.
+  consumes Build 5, so V2.4.3 is expected to start at Build 6.

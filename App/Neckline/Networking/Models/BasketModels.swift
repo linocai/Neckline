@@ -1424,6 +1424,21 @@ struct BasketDaily: Codable, Equatable {
         }
     }
 
+    /// 空档位的解释必须服从本次运行态。部分完成 / 正在处理 / 不可用时，空数组
+    /// 不能被说成“今天算过了且没有”；只有完整运行才有资格下这个结论。
+    var emptyTierDetail: String {
+        switch selectionState {
+        case "processing":
+            return "今天的方向仍在整理；当前空档位不是最终结论。"
+        case "partial":
+            return "本次预算结束时仍有方向未完成；已完成部分暂未形成这一档篮子。"
+        case "unavailable":
+            return "今天的选股没有完整跑成；当前空档位不是市场结论。"
+        default:
+            return "算过了，今天没有达到该档标准的篮子。"
+        }
+    }
+
     /// 某一档的篮子。**空档位如实显示「今日 T1 为空」,⛔ 不隐藏**(E1)。
     /// `tier == nil`(极旧快照 / 数据缺口)的篮子**不进任何档**,⛔ 别拿假档位塞进去。
     func baskets(tier: Int) -> [Basket] { baskets.filter { $0.tier == tier } }

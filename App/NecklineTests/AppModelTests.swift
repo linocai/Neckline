@@ -394,10 +394,13 @@ final class AppModelTests: XCTestCase {
         let partial = BasketDaily(selectionState: "partial", selectionStateText: "已完成部分方向")
         XCTAssertEqual(partial.selectionStatusNotice?.title, "今日选股部分完成")
         XCTAssertEqual(partial.selectionStatusNotice?.detail, "已完成部分方向")
+        XCTAssertTrue(partial.emptyTierDetail.contains("仍有方向未完成"))
 
         let unavailable = BasketDaily(selectionState: "unavailable")
         XCTAssertEqual(unavailable.selectionStatusNotice?.title, "今日选股暂未完成")
         XCTAssertTrue(unavailable.selectionStatusNotice?.detail.contains("没有机会") == true)
+        XCTAssertTrue(unavailable.emptyTierDetail.contains("不是市场结论"))
+        XCTAssertTrue(BasketDaily(selectionState: "complete").emptyTierDetail.contains("算过了"))
     }
 
     // MARK: - V2-⑮ 从篮子成员一键补录(预填 code/name + 区间下沿,⛔ 不虚构数字)

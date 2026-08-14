@@ -61,6 +61,21 @@ class _Provider:
         ]}, usage=self.usage)
 
 
+class _TimedProvider(_Provider):
+    def __init__(self, kind: str, clock, *, advance: float = 0):
+        super().__init__(kind)
+        self.clock = clock
+        self.advance = advance
+
+    def chat(self, messages, *, enable_search, search_query=None, transport=None):
+        result = super().chat(
+            messages, enable_search=enable_search,
+            search_query=search_query, transport=transport,
+        )
+        self.clock[0] += self.advance
+        return result
+
+
 def _seeds(n=21):
     return [DriverSeed(
         seed_key=f"s-{index}", seed_kind="hot_industry" if index % 2 else "limit_cluster",
@@ -183,3 +198,40 @@ def test_pipeline_fills_after_initial_twenty_until_real_qualification_callback_i
         ).fetchone()[0] == 2
     finally:
         conn.close()
+
+
+def test_wall_budget_keeps_completed_reason_cohorts_instead_of_discarding_all_searches(
+    isolated_env, monkeypatch,
+):
+    """A later search expiry must not erase already completed deep batches."""
+    from neckline.db import init_schema
+    from neckline.selection import direction_pipeline
+
+    init_schema(isolated_env.db_path)
+    clock = [0.0]
+    monkeypatch.setattr(direction_pipeline.time, "monotonic", lambda: clock[0])
+    triage = _TimedProvider("triage", clock)
+    search = _TimedProvider("search", clock, advance=1)
+    reason = _TimedProvider("reason", clock, advance=1)
+
+    outcome = run_direction_pipeline(
+        date(2026, 8, 14), _seeds(4),
+        config=_config(
+            deep_initial_limit=20, deep_reason_batch_size=2,
+            selection_wall_seconds=5, max_total_deep=4,
+        ),
+        triage_provider=triage, research_provider=search, reason_provider=reason,
+        db_path=isolated_env.db_path,
+    )
+
+    assert outcome.selection_state == "partial"
+    assert len(outcome.proposals) == 2
+    assert len(reason.calls) == 1
+    conn = sqlite3.connect(isolated_env.db_path)
+    try:
+        tasks = [row[0] for row in conn.execute(
+            "SELECT task FROM selection_llm_calls ORDER BY id"
+        )]
+    finally:
+        conn.close()
+    assert tasks[:4] == ["direction_triage", "driver_search", "driver_search", "deep_reason"]

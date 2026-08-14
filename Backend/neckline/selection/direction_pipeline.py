@@ -243,43 +243,65 @@ def run_direction_pipeline(
             run_store.add_event(run_id, "deep_queued", direction_id=item.direction_id, reason=item.coverage_reason,
                                 fill_round=fill_round, db_path=db_path)
         brief_by_id = {item.direction_id: item for item in merged.directions}
-        researched = []
-        for item in queue.entries:
+        # Complete one small research/reason cohort before starting the next.
+        # The old order searched the entire queue first and reasoned only at the
+        # end.  A wall-budget expiry could therefore discard many successful
+        # searches while publishing zero proposals.  Interleaving makes every
+        # completed cohort independently useful and keeps partial publication
+        # honest without increasing the configured call/token limits.
+        for index in range(0, len(queue.entries), cfg.deep_reason_batch_size):
             if time.monotonic() - started_all >= cfg.selection_wall_seconds or tokens_used >= cfg.selection_token_budget:
                 terminal_state, terminal_text = "partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。"
                 break
-            brief = brief_by_id[item.direction_id]
-            batch_no += 1
-            started = time.monotonic()
-            try:
-                result = research_provider.chat(
-                    [ChatMessage(role="system", content=_RESEARCH_SYSTEM),
-                     ChatMessage(role="user", content=date_anchor_line(trade_date) + "\n" + json.dumps({"directionId": brief.direction_id, "label": brief.label, "brief": brief.public_dict()}, ensure_ascii=False))],
-                    enable_search=True, search_query=brief.label, transport=transport,
+            group_entries = queue.entries[index:index + cfg.deep_reason_batch_size]
+            researched = []
+            for item in group_entries:
+                if time.monotonic() - started_all >= cfg.selection_wall_seconds or tokens_used >= cfg.selection_token_budget:
+                    terminal_state, terminal_text = "partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。"
+                    break
+                brief = brief_by_id[item.direction_id]
+                batch_no += 1
+                started = time.monotonic()
+                try:
+                    result = research_provider.chat(
+                        [ChatMessage(role="system", content=_RESEARCH_SYSTEM),
+                         ChatMessage(role="user", content=date_anchor_line(trade_date) + "\n" + json.dumps({"directionId": brief.direction_id, "label": brief.label, "brief": brief.public_dict()}, ensure_ascii=False))],
+                        enable_search=True, search_query=brief.label, transport=transport,
+                    )
+                except Exception as exc:
+                    run_store.add_event(run_id, "research_unavailable", direction_id=brief.direction_id,
+                                        reason=f"research_call_failed:{type(exc).__name__}", batch_no=batch_no,
+                                        fill_round=fill_round, db_path=db_path)
+                    continue
+                call_id, tokens = _record_call(
+                    run_id, TASK_DRIVER_SEARCH, batch_no, research_provider, result, started,
+                    enable_search=True, db_path=db_path,
                 )
-            except Exception as exc:
-                run_store.add_event(run_id, "research_unavailable", direction_id=brief.direction_id,
-                                    reason=f"research_call_failed:{type(exc).__name__}", batch_no=batch_no,
-                                    fill_round=fill_round, db_path=db_path)
+                if tokens is None:
+                    return _finish_unavailable(
+                        run_id, "今日选股用量无法核验，保留上一份已完成结果。", "usage_unavailable",
+                        db_path=db_path, notes=("research_usage_unavailable",),
+                    )
+                tokens_used += tokens
+                payload = _json_payload(getattr(result, "content", None))
+                research[brief.direction_id] = (
+                    payload if isinstance(payload, Mapping)
+                    else {"raw": getattr(result, "content", "")}
+                )
+                researched.append(brief)
+                run_store.add_event(
+                    run_id, "research_complete", direction_id=brief.direction_id,
+                    batch_no=batch_no, fill_round=fill_round, llm_call_id=call_id,
+                    db_path=db_path,
+                )
+            if terminal_state == "partial":
+                break
+            if not researched:
                 continue
-            call_id, tokens = _record_call(run_id, TASK_DRIVER_SEARCH, batch_no, research_provider, result, started,
-                                           enable_search=True, db_path=db_path)
-            if tokens is None:
-                return _finish_unavailable(run_id, "今日选股用量无法核验，保留上一份已完成结果。", "usage_unavailable",
-                                           db_path=db_path, notes=("research_usage_unavailable",))
-            tokens_used += tokens
-            payload = _json_payload(getattr(result, "content", None))
-            research[brief.direction_id] = payload if isinstance(payload, Mapping) else {"raw": getattr(result, "content", "")}
-            researched.append(brief)
-            run_store.add_event(run_id, "research_complete", direction_id=brief.direction_id, batch_no=batch_no,
-                                fill_round=fill_round, llm_call_id=call_id, db_path=db_path)
-        if terminal_state == "partial" or not researched:
-            break
-        for index in range(0, len(researched), cfg.deep_reason_batch_size):
             if time.monotonic() - started_all >= cfg.selection_wall_seconds or tokens_used >= cfg.selection_token_budget:
                 terminal_state, terminal_text = "partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。"
                 break
-            group = researched[index:index + cfg.deep_reason_batch_size]
+            group = researched
             batch_no += 1
             started = time.monotonic()
             try:

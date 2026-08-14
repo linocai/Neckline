@@ -25,6 +25,28 @@ database snapshot is unchanged, which is the actual read-overlay contract.
 
 ---
 
+## [ERR-20260814-014] ssh-nested-quote-diagnostics
+
+**Logged**: 2026-08-14T17:23:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+Two read-only production diagnostics embedded Python heredocs / shell variables through multiple SSH
+quote layers. The remote shell terminated the payload early, producing a Python syntax error and an
+unmatched-quote error before any database or API request ran.
+
+### Resolution
+
+- **Resolved**: 2026-08-14T17:23:00+08:00
+- **Notes**: Prefer one-line read-only `sqlite3` queries for remote audit facts. For authenticated API
+  shaping, use the locally configured app token without printing it and parse the response locally. Avoid
+  nested SSH heredocs for diagnostic payloads.
+
+---
+
 ## [ERR-20260814-013] xcodegen-wrong-working-directory
 
 **Logged**: 2026-08-14T13:45:00+08:00

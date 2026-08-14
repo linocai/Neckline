@@ -377,7 +377,7 @@ struct BasketDailyView: View {
             if baskets.isEmpty {
                 // E1:**空档位如实显示,⛔ 不隐藏**。
                 unavailableRow(title: "今日 T\(tier) 为空",
-                               detail: "算过了,今天没有达到该档标准的篮子", tone: .neutral)
+                               detail: daily.emptyTierDetail, tone: .neutral)
             } else {
                 ForEach(baskets) { b in
                     BasketListRow(model: model, basket: b,
@@ -934,7 +934,7 @@ struct BasketDailyView: View {
                 NKCard {
                     HStack(spacing: 8) {
                         Image(systemName: "tray").foregroundStyle(NK.textTertiary)
-                        Text("今日 T\(tier) 为空(算过了,今天没有达到该档标准的篮子)")
+                        Text("今日 T\(tier) 为空（\(daily.emptyTierDetail)）")
                             .font(NKFont.callout).foregroundStyle(NK.textSecondary)
                         Spacer()
                     }
@@ -1830,6 +1830,14 @@ private struct MacSelectionWorkbench: View {
                     model.selectSelectionDestination(.intel)
                 }
 
+                if let status = model.basketDaily.selectionStatusNotice {
+                    NKTintedNote(
+                        text: LocalizedStringKey("**\(status.title)**\n\(status.detail)"),
+                        tone: .warn
+                    )
+                    .padding(.horizontal, 16)
+                }
+
                 ForEach(model.basketDaily.displayTiers, id: \.self) { tier in
                     let tierBaskets = model.basketDaily.baskets(tier: tier)
                     VStack(alignment: .leading, spacing: 6) {
@@ -1840,7 +1848,7 @@ private struct MacSelectionWorkbench: View {
                         }
                         .padding(.horizontal, 16).padding(.top, 12)
                         if tierBaskets.isEmpty {
-                            Text("今天没有符合这一档的篮子").font(NKFont.callout)
+                            Text(model.basketDaily.emptyTierDetail).font(NKFont.callout)
                                 .foregroundStyle(NK.textSecondary).padding(.horizontal, 16)
                         } else {
                             ForEach(tierBaskets) { basket in
