@@ -660,3 +660,216 @@ KeyError: 'defaultProvider'
   no external or production call.
 
 ---
+
+## [ERR-20260814-024] production-health-probed-with-retired-domain
+
+**Logged**: 2026-08-14T21:34:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: deployment
+
+### Summary
+
+The Build 6 preflight initially probed `nk.linotsai.com`, copied from a stale execution summary, while the
+current App contract and production endpoint use `nk.linotsai.top`.
+
+### Error
+
+```text
+Could not resolve host / connection timed out
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T21:35:00+08:00
+- **Notes**: Re-anchored from `App/Neckline/Networking/AppConfig.swift`, verified the server's localhost API,
+  listener and reverse-proxy container, then resumed public checks only against `.top`. Deployment preflights
+  must derive the public endpoint from the current client source, never a compacted chat summary.
+
+---
+
+## [ERR-20260814-025] production-migration-missing-working-directory
+
+**Logged**: 2026-08-14T21:39:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: deployment
+
+### Summary
+
+The first explicit Build 6 production migration invoked the deployed virtualenv from the SSH login directory
+without changing to `/opt/neckline`, so Python could not import the application package.
+
+### Error
+
+```text
+ModuleNotFoundError: No module named 'neckline'
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T21:40:00+08:00
+- **Notes**: `set -e` stopped before schema mutation and before service restart; the old API process continued
+  serving normally. Re-ran only the migration/restart sequence after an explicit `cd /opt/neckline` and
+  verified the new column, database integrity, owner, service state and health endpoint. Production Python
+  maintenance commands must always set the systemd working directory explicitly.
+
+---
+
+## [ERR-20260814-026] secure-key-session-command-quoting
+
+**Logged**: 2026-08-14T21:43:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+The first attempt to start an SSH TTY `getpass` session for the production Tavily key used an invalid nested
+JavaScript/shell quote sequence, so the orchestration command failed to parse locally.
+
+### Error
+
+```text
+SyntaxError: Unexpected string
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T21:44:00+08:00
+- **Notes**: No remote command started and no credential was sent. Rebuilt the wrapper as a JavaScript template
+  literal while keeping the credential out of argv, then supplied it only to the no-echo TTY prompt.
+
+---
+
+## [ERR-20260814-027] macos-process-check-used-nonportable-regex
+
+**Logged**: 2026-08-14T21:47:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: deployment
+
+### Summary
+
+The post-install display check used a lazy `.*?` quantifier that macOS `pgrep`'s regular-expression engine
+does not support.
+
+### Error
+
+```text
+repetition-operator operand invalid
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T21:48:00+08:00
+- **Notes**: The signed Build 6 copy, version check and Build 5 backup had already succeeded. Replaced the
+  display-only check with `ps` plus a fixed-string path match; future macOS process checks must use POSIX ERE.
+
+---
+
+## [ERR-20260814-028] evening-job-guard-matched-own-ssh-command
+
+**Logged**: 2026-08-14T21:53:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: deployment
+
+### Summary
+
+The final production-run guard searched every process command line for `scripts/evening.py`; the SSH shell's
+own pending command contained that literal and falsely reported an existing job.
+
+### Error
+
+```text
+existing evening job; refusing second start
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T21:54:00+08:00
+- **Notes**: The transient unit remained inactive, so no report or model call started. Restricted the guard to
+  processes whose executable name is `python`, then created the single intended systemd unit. Long-running job
+  guards must match executable plus argv, not argv text across every shell process.
+
+---
+
+## [ERR-20260814-029] live-audit-null-label-sql-quoting
+
+**Logged**: 2026-08-14T22:33:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+A read-only live-audit query nested shell, Python and SQL quotes incorrectly, causing SQLite to interpret the
+fallback label `pending` as a column identifier.
+
+### Error
+
+```text
+sqlite3.OperationalError: no such column: pending
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T22:34:00+08:00
+- **Notes**: The query made no write and the production run continued normally. Re-ran grouping directly on
+  nullable disposition columns and let JSON represent pending rows as `null`, avoiding nested label quoting.
+
+---
+
+## [ERR-20260814-030] production-audit-used-stale-selection-run-column
+
+**Logged**: 2026-08-14T22:14:14+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+The first post-run read-only audit selected a nonexistent `selection_state` column from `selection_runs`.
+
+### Error
+
+```text
+sqlite3.OperationalError: no such column: selection_state
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-14T22:14:14+08:00
+- **Notes**: The query made no write. Read `PRAGMA table_info` first, then reran the audit using the actual
+  `lifecycle_state`, `publication_state`, `selection_state_text`, and `stop_reason` columns. Production audit
+  scripts must discover the deployed schema instead of relying on remembered field names.
+
+---
+
+## [ERR-20260814-031] tavily-rejected-one-character-query
+
+**Logged**: 2026-08-14T22:14:14+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+
+Tavily Basic rejected the one-character research query `铜` with HTTP 400 during the unrestricted production
+observation; the pipeline correctly recorded one unavailable direction and continued.
+
+### Error
+
+```text
+status=tavily_http_400, query=铜, credits=0, results=0
+```
+
+### Suggested Fix
+
+Before the next production observation, make the deterministic query builder include the direction label,
+member names/codes, date anchor, or another bounded context when the raw label is too short. Keep the original
+direction identity in the audit row and add a regression test proving a short label never emits an invalid
+one-character Tavily request.
+
+---

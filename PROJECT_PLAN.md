@@ -160,11 +160,19 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
    `/Users/linotsai/Lino/app_backups/`; no iOS device was touched. Build 5 additionally has source/file/online-DB
    backups under `/opt/neckline-release-backups/v2.4.2-b5-hotfix-pre-20260814-172520/`, and the replaced macOS
    Build 3 is under `/Users/linotsai/Lino/app_backups/v2.4.2-b3-pre-b5-20260814-175936/`.
+5. **Build 6 released (2026-08-14).** Commit `4fbf60d` is on `main`; production source/schema were backed up
+   under `/opt/neckline-release-backups/v2.4.2-b6-tavily-pre-20260814-191829/` before migration and restart.
+   `neckline.service` is active with zero restarts and public health at `https://nk.linotsai.top` reports
+   `v2.4.2`. The signed macOS `2.4.2 (6)` app is installed, with Build 5 preserved under
+   `/Users/linotsai/Lino/app_backups/v2.4.2-b5-pre-b6-20260814-192100/`. The user-installable iOS artifact is
+   `/tmp/neckline-v242-b6-rc.T9P3Fv/iOS-export/Neckline.ipa` (SHA-256
+   `c2a1300e6fd86ac5416d8b70f5cb72562ef4ffc00da70fa22829cd009fce878e`); no iOS device was touched.
 
 ## 8. Milestone index and backlog
 
-- **Now:** Build 6 keeps the approved balanced package and six-gate/Tier rules unchanged, removes native-provider
-  search routing, and gives search one Tavily-only adapter with separate credit accounting. Deep research reuses
+- **Released:** Build 6 keeps the approved balanced package and six-gate/Tier rules unchanged, removes native-provider
+  search routing from the V2.4.2 direction deep-research path, and gives that path one Tavily-only adapter with
+  separate credit accounting. Deep research reuses
   the search result for the reasoning call instead of paying for a redundant search LLM call. Provider routing
   is explicit-default-first; only enabled/keyed Providers are eligible, and deleting, disabling or clearing a
   Provider atomically removes its references. The one-off `--observe-selection-cost` mode disables only the
@@ -200,5 +208,22 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
 - **Hotfix 2026-08-14:** V2.4.2 Build 6 adds the Tavily-only search boundary, separate search-credit audit,
   DeepSeek-capable default routing, macOS Tavily credential entry, and the explicit one-off cost-observation
   switch. It does not change the balanced package, six gates, Tier capacity, or scheduled budget enforcement.
+- **Build 6 production observation (2026-08-14):** the one explicitly authorized unrestricted run
+  `3344faad-7b2e-44fc-995d-994c3906d44c` read all 190 directions and triaged them as 35 deep / 55 normal /
+  66 reserve / 34 unfit. It deep-queued all 156 eligible directions across fill rounds 0–34 and stopped with
+  `no_gated_baskets`, not a Token or wall-time cutoff. Selection used 102 measured LLM calls and 1,221,048
+  Tokens: triage 24 calls / 154,015; deep reasoning 78 calls / 1,067,033. Selection wall time was 2h43m52s;
+  the complete basket/review/report unit took 2h46m33s, exited 0, wrote the 20260814 report at 22:10:50 CST,
+  and sent one report APNs (`sent=1`, `failed=0`). Tavily made 156 calls, charged 109 Basic credits, and returned
+  523 results; 155 calls were OK and one one-character query (`铜`) returned HTTP 400 without charge.
+- **High-priority follow-up from that observation:** all 155 reasoned directions were rejected by the existing
+  mechanical gate and the remaining direction had unavailable research, so the published generation correctly
+  contains zero baskets/cards. Production warnings show DeepSeek frequently substituted concept codes/names or
+  member symbols for the exact mechanical `seed_keys`, and sometimes omitted member position/core judgments.
+  This is an output-contract integration defect, not evidence that 1.22M Tokens are an appropriate steady-state
+  budget. Also, three post-selection review/report calls still passed `enable_search=true` directly to DeepSeek
+  and received zero native search hits; their Token usage is not in `selection_llm_calls`. Route every genuinely
+  networked post-selection task through the same Tavily boundary and extend usage audit before the next cost
+  conclusion. Do not rerun, loosen gates, or change the balanced package without a new explicit user decision.
 - Build numbers are monotonic installable-build identifiers, not reserved in advance. This client hotfix
   consumes Build 6, so V2.4.3 is expected to start at Build 7.
