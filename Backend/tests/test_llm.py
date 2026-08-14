@@ -523,7 +523,10 @@ class TestOpenAICompatSharedDegradation:
         def handler(request):
             calls["n"] += 1
             if calls["n"] == 1:
-                return httpx.Response(429, headers={"Retry-After": "0"}, json={"error": "throttled"})
+                return httpx.Response(
+                    429, headers={"Retry-After": "0"},
+                    json={"error": {"code": "1302", "message": "rate limited"}},
+                )
             body = _openai_success_body("ok")
             body["usage"] = {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}
             return httpx.Response(200, json=body)
@@ -537,6 +540,25 @@ class TestOpenAICompatSharedDegradation:
         assert result.ok is True
         assert result.total_tokens == 5
         assert calls["n"] == 2
+
+    def test_1113_balance_error_does_not_retry(self):
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            return httpx.Response(
+                429, json={"error": {"code": "1113", "message": "balance exhausted"}},
+            )
+
+        p = GLMProvider(api_key="sk-xxx")
+        result = p.chat(
+            [ChatMessage(role="user", content="hi")],
+            enable_search=False,
+            transport=httpx.MockTransport(handler),
+        )
+        assert result.ok is False
+        assert result.reason == "上游 429/1113"
+        assert calls["n"] == 1
 
     def test_invalid_json_body_degrades(self):
         transport = httpx.MockTransport(lambda r: httpx.Response(200, content=b"not json at all"))

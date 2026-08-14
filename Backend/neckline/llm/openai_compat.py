@@ -59,6 +59,20 @@ class _RetryableUpstreamStatus(RuntimeError):
         self.retry_after_seconds = max(0.0, parsed)
 
 
+_RETRYABLE_UPSTREAM_CODES = {"1302", "1305"}
+
+
+def _upstream_business_code(response: Any) -> Optional[str]:
+    """Return the provider business code without retaining the error body."""
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - a non-JSON error remains a normal status failure
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return str(code) if code is not None else None
+
+
 def _actual_usage(raw_responses: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Normalize only provider-reported token usage.
 
@@ -337,9 +351,9 @@ class OpenAICompatProvider(LLMProvider):
         """一次 HTTP 往返(短读超时 + 每次全新连接重试,继承 LinoN deepseek.py 姿势)。
         返回 `(body, None)` 成功,或 `(None, 降级原因)`。
 
-        网络层异常(超时 / 连接断)与明确的 429 限流响应走现有重试次数；429 优先
-        尊重上游 `Retry-After`，缺失时短暂退避。其余非 200 与响应解析异常仍是已经
-        拿到的明确答复，当场降级、不重放。
+        网络层异常(超时 / 连接断)与明确的 1302/1305 限流业务码走现有重试次数；
+        限流优先尊重上游 `Retry-After`，缺失时短暂退避。余额不足 1113 等其他
+        429、其余非 200 与响应解析异常仍是已经拿到的明确答复，当场降级、不重放。
 
         `payload["stream"]` 决定走哪条:流式那条的读超时语义是 **chunk 间隔**,
         见 `__init__` 的 `read_timeout` 文档。"""
@@ -382,10 +396,12 @@ class OpenAICompatProvider(LLMProvider):
     def _attempt_post(self, client: Any, payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """非流式单次尝试。行为与 P0-44 之前完全一致(见 `_post` docstring)。"""
         resp = client.post(self.api_url, json=payload, headers=self._headers())
-        if resp.status_code == 429:
+        business_code = _upstream_business_code(resp) if resp.status_code != 200 else None
+        if resp.status_code == 429 and business_code in _RETRYABLE_UPSTREAM_CODES:
             raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
         if resp.status_code != 200:
-            return None, f"上游 {resp.status_code}"
+            suffix = f"/{business_code}" if business_code else ""
+            return None, f"上游 {resp.status_code}{suffix}"
         try:
             return resp.json(), None
         except Exception as e:  # noqa: BLE001
@@ -404,12 +420,14 @@ class OpenAICompatProvider(LLMProvider):
         循环(整次重来),⛔ 绝不把已累积的半截内容当结果返回 —— 半截 JSON 解出来
         可能正好是个"看着合法"的残缺篮子,那比干净地失败危险得多。"""
         with client.stream("POST", self.api_url, json=payload, headers=self._headers()) as resp:
-            if resp.status_code == 429:
+            if resp.status_code != 200:
                 resp.read()
+            business_code = _upstream_business_code(resp) if resp.status_code != 200 else None
+            if resp.status_code == 429 and business_code in _RETRYABLE_UPSTREAM_CODES:
                 raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
             if resp.status_code != 200:
-                resp.read()  # 流式响应必须先读完才能拿 body/关闭,与非流式取值口径一致
-                return None, f"上游 {resp.status_code}"
+                suffix = f"/{business_code}" if business_code else ""
+                return None, f"上游 {resp.status_code}{suffix}"
             return self._assemble_stream(resp.iter_lines())
 
     def _assemble_stream(self, lines: Iterable[str]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:

@@ -60,8 +60,9 @@ and the pipeline correctly but unhelpfully terminated as `usage_unavailable`.
 ### Resolution
 
 - **Resolved**: 2026-08-14T18:06:00+08:00
-- **Notes**: Only explicit 429 responses now enter the existing retry budget, honoring numeric `Retry-After`
-  or a short fallback delay. Other non-200 responses retain their prior immediate-degradation behavior.
+- **Notes**: Official provider documentation confirms HTTP 429 spans both retryable rate limits and non-retryable
+  account errors. Only business codes 1302/1305 enter the existing retry budget; balance error 1113 stops
+  immediately. Other non-200 responses retain their prior immediate-degradation behavior.
 
 ---
 

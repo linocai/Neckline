@@ -5,9 +5,9 @@
 ## 1. Current goal and release boundary
 
 V2.4.2 passed independent review → repair → RC and was released after the user's explicit 2026-08-14
-authorization. Production runs V2.4.2 with the balanced pipeline package; macOS currently runs Build 3.
-Build 5 is a tested hotfix RC pending production deployment and macOS replacement; iOS remains a user
-handoff and will not be installed. Continue directly on `main`; do not create a branch.
+authorization. Production runs V2.4.2 with the balanced pipeline package and Build 5 hotfix code; macOS runs
+Build 5. iOS remains a user handoff and was not installed. Today's replacement selection run is honestly
+unavailable until the upstream GLM balance is restored. Continue directly on `main`; do not create a branch.
 
 The baseline is `v2.4.1` Build 2. Its record is
 [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
@@ -161,8 +161,8 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
 
 - **Now:** production V2.4.2 uses approved balanced package `v2.4.2-balanced-r1`; the basket service is pinned to
   that versioned file. Build 5 interleaves configured two-direction search/reason cohorts so a later wall-budget
-  stop preserves completed deep work, retries explicit provider 429 throttles within the existing attempt budget,
-  and makes macOS show honest partial/unavailable empty states. Its gates are Backend 4010 passed/19 skipped,
+  stop preserves completed deep work, retries provider 1302/1305 throttles within the existing attempt budget,
+  and makes macOS show honest partial/unavailable empty states. Its gates are Backend 4011 passed/19 skipped,
   macOS 231 passed/10 existing skips, iOS Debug build and signed macOS archive.
 - **Next:** run the balanced package for the first
   3–5 trading days, review actual `selection_llm_calls` Token totals, direction counts, fill rounds and stop
@@ -187,7 +187,8 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   Tokens, but exhausted its wall budget after 13 searches before starting any deep reasoning, publishing a
   misleading zero-basket partial result. Build 5 processes configured deep cohorts end-to-end and exposes the
   server's selection-state notice in the macOS workbench. Its first live repair run proved the new ordering with
-  two deep-reason batches, then exposed a provider 429 that the HTTP layer did not retry; Build 5 now retries only
-  explicit 429 throttles. No budget, threshold, gate or LLM-call type changes.
+  two deep-reason batches, then exposed provider HTTP handling that did not distinguish rate limits from account
+  errors; Build 5 retries only 1302/1305 and stops immediately on balance error 1113. No budget, threshold, gate
+  or LLM-call type changes. Today's rerun remains unavailable until the upstream GLM balance is restored.
 - Build numbers are monotonic installable-build identifiers, not reserved in advance. This client hotfix
   consumes Build 5, so V2.4.3 is expected to start at Build 6.
