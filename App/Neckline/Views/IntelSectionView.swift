@@ -52,7 +52,7 @@ struct IntelPackageView: View {
                     Text("复盘情报件").font(NKFont.body).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
                     #endif
                     Spacer()
-                    Text("EOD 硬数据 · 强证据").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    Text("盘后市场数据").font(NKFont.callout).foregroundStyle(NK.textSecondary)
                 }
                 if let intel = report.intel, intel.hasContent {
                     #if os(macOS)
@@ -96,7 +96,13 @@ struct IntelPackageView: View {
                         Text(intel.excludedBoardsNote).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                     if !intel.evidenceNote.isEmpty {
-                        Text(intel.evidenceNote).font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                        DisclosureGroup("数据说明") {
+                            Text(intel.evidenceNote)
+                                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.top, 6)
+                        }
+                        .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                 } else {
                     Text("复盘情报件暂无数据(旧报告 / 今晚 16:35 报告后自动出现)")
@@ -149,7 +155,8 @@ struct IntelPackageView: View {
         Group {
             if !items.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(title)(\(items.count))").font(NKFont.caption).fontWeight(.semibold).foregroundStyle(NK.textSecondary)
+                    Text(items.count > 10 ? "\(title)（展示前 10 / 共 \(items.count)）" : "\(title)（\(items.count)）")
+                        .font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.textSecondary)
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(items.prefix(10)) { m in
@@ -215,7 +222,7 @@ struct IntelPackageView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(buckets) { b in
-                        NKChip(text: "\(b.label) \(b.count)(\(NKFmt.pct(b.pctOfTotal * 100)))")
+                        NKChip(text: "\(limitLabel(b.label)) \(b.count)(\(NKFmt.pct(b.pctOfTotal * 100)))")
                     }
                 }
             }
@@ -260,15 +267,25 @@ struct IntelPackageView: View {
             ForEach(items.prefix(5)) { i in
                 HStack(spacing: 6) {
                     Text(i.name).font(NKFont.callout).foregroundStyle(NK.textPrimary)
-                    if i.evidenceStrength == "constituent" {
-                        Text("参考").font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                    }
                     Spacer()
-                    Text("\(NKFmt.signedMoney(i.netInflowWan))万")
+                    Text(flowAmount(i.netInflowWan))
                         .font(NKFont.callout.monospacedDigit()).foregroundStyle(tone.color)
                 }
             }
         }
+    }
+
+    private func limitLabel(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "10cm": return "10%涨跌幅"
+        case "20cm": return "20%涨跌幅"
+        default: return raw
+        }
+    }
+
+    private func flowAmount(_ wan: Double) -> String {
+        let yi = wan / 10_000
+        return abs(yi) >= 1 ? String(format: "%+.2f亿元", yi) : String(format: "%+.0f万元", wan)
     }
 }
 

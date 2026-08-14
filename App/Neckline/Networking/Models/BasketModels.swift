@@ -191,6 +191,13 @@ struct BasketMemberTag: Codable, Equatable, Identifiable {
     }
 }
 
+/// 服务端为无法判定的标签提供的展示契约。`code` 仍可用于技术审计，默认层只读 `label`。
+struct BasketTagAbsence: Codable, Equatable, Identifiable {
+    var code: String = ""
+    var label: String = ""
+    var id: String { code }
+}
+
 /// 篮子卡上的一名成员(**B 类冻结快照**)。
 ///
 /// **两条展示纪律写死在类型注释里**:
@@ -273,6 +280,7 @@ struct BasketMember: Codable, Equatable, Identifiable {
     var tags: [BasketMemberTag] = []
     /// **判不了的标注码** —— 与「判过没命中」是两回事,⛔ 不许合并成"没有标注"。
     var tagsAbsent: [String] = []
+    var tagAbsences: [BasketTagAbsence] = []
 
     var id: String { tsCode }
 
@@ -286,7 +294,7 @@ struct BasketMember: Codable, Equatable, Identifiable {
         case entryZone, entryZoneClamp, entryZoneUnavailableReason
         case maxChase, maxChaseClamp, maxChaseUnavailableReason
         case exitReference, exitReferenceClamp, exitReferenceUnavailableReason
-        case tags, tagsAbsent
+        case tags, tagsAbsent, tagAbsences
     }
 
     init(tsCode: String = "", name: String = "", roleLlm: String? = nil, roleMech: String? = nil,
@@ -302,7 +310,8 @@ struct BasketMember: Codable, Equatable, Identifiable {
          maxChase: Double? = nil, maxChaseClamp: String = "",
          maxChaseUnavailableReason: String? = nil, exitReference: BasketPriceBand? = nil,
          exitReferenceClamp: String = "", exitReferenceUnavailableReason: String? = nil,
-         tags: [BasketMemberTag] = [], tagsAbsent: [String] = []) {
+         tags: [BasketMemberTag] = [], tagsAbsent: [String] = [],
+         tagAbsences: [BasketTagAbsence] = []) {
         self.tsCode = tsCode; self.name = name; self.roleLlm = roleLlm; self.roleMech = roleMech
         self.roleConflict = roleConflict; self.reason = reason; self.isPrimary = isPrimary
         self.industry = industry; self.industryLift = industryLift; self.liftReason = liftReason
@@ -317,7 +326,7 @@ struct BasketMember: Codable, Equatable, Identifiable {
         self.maxChaseUnavailableReason = maxChaseUnavailableReason
         self.exitReference = exitReference; self.exitReferenceClamp = exitReferenceClamp
         self.exitReferenceUnavailableReason = exitReferenceUnavailableReason
-        self.tags = tags; self.tagsAbsent = tagsAbsent
+        self.tags = tags; self.tagsAbsent = tagsAbsent; self.tagAbsences = tagAbsences
     }
 
     init(from decoder: Decoder) throws {
@@ -359,6 +368,7 @@ struct BasketMember: Codable, Equatable, Identifiable {
             String.self, forKey: .exitReferenceUnavailableReason)
         tags = try c.decodeIfPresent([BasketMemberTag].self, forKey: .tags) ?? []
         tagsAbsent = try c.decodeIfPresent([String].self, forKey: .tagsAbsent) ?? []
+        tagAbsences = try c.decodeIfPresent([BasketTagAbsence].self, forKey: .tagAbsences) ?? []
     }
 
     /// 角色两说的展示串(唯一实现 `nkRoleDisplay`,V2.3.1 §〇c 硬伤 2 收口)。

@@ -1,6 +1,6 @@
 """V2.4.0 **P4 发布治理**验收集(plan §五 V2.4.0 P4.1 / P4.4 / P4.5 / P4.6-4 / P4.7)。
 
-四组:
+五组:
   **A. P4.1 macOS 测试宿主守门**:`App/project.yml` 与生成后的 `pbxproj` 双向断言,
      且 **iOS 那条自动值一字未动**(修 macOS 不许连坐 iOS)。
   **B. P4.4 版本治理**:三处同为 `2.4.0`;🔴 **补上既有守门看不见的那两处**
@@ -12,6 +12,7 @@
      `NULL`。⚠ 判据是「老库上真跑一遍迁移」,⛔ 不是「读一眼 `_COLUMN_MIGRATIONS`
      说它看起来是可空的」。
   **D. 工作区卫生**:`git diff --check`(空白错误)。
+  **E. V2.4.1 RC 构建号**:客户端源、生成工程与服务版本一起锁定。
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ def _expected_marketing_version() -> str:
 
 
 _EXPECTED_VERSION = _expected_marketing_version()
+_EXPECTED_RC_BUILD = "2"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -121,6 +123,18 @@ def test_every_marketing_version_in_pbxproj_is_the_same():
     assert len(versions) == 4, (
         f"pbxproj 的 MARKETING_VERSION 应恰好 4 处(project 级 2 + app target 2),"
         f"实得 {len(versions)} 处:{versions} —— 少一处 = 有一块没被版本治理覆盖")
+
+
+def test_v241_rc_build_number_is_synced_into_the_generated_project():
+    """V2.4.1 RC 固定为 Build 2；源文件和生成工程不能各自漂移。"""
+    data = yaml.safe_load(_PROJECT_YML.read_text(encoding="utf-8"))
+    source_build = str(data["settings"]["base"]["CURRENT_PROJECT_VERSION"])
+    generated_builds = re.findall(
+        r"CURRENT_PROJECT_VERSION = ([0-9]+);", _PBXPROJ.read_text(encoding="utf-8"))
+    assert source_build == _EXPECTED_RC_BUILD
+    assert generated_builds == [_EXPECTED_RC_BUILD, _EXPECTED_RC_BUILD], (
+        "pbxproj 的 Debug/Release 构建号应由 project.yml 生成并同为 Build 2:"
+        f"{generated_builds}")
 
 
 # ══════════════════════════════════════════════════════════════════════════

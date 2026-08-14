@@ -191,6 +191,15 @@ enum PositionModal: Equatable {
     // 「强制复盘解锁」这件机制在产品面消失,⛔ 不许接回来。
 }
 
+/// macOS 选股工作台的唯一目的地。左侧导航和右侧内容必须由同一状态驱动，避免
+/// "右边展示了第一只篮子、左边却没有选中项" 的隐式回退。
+enum SelectionDestination: Equatable {
+    case market
+    case auction
+    case basket(Int)
+    case intel
+}
+
 struct Toast: Identifiable, Equatable {
     let id = UUID()
     let message: String
@@ -221,8 +230,12 @@ final class AppModel {
     var basketVerifications: [Int: BasketVerification] = [:]
     private var verificationLoading: Set<Int> = []
 
-    /// 展开中的篮子(卡详情页)。
+    /// 展开中的篮子(兼容 iOS sheet、旧深链和旧调用点)。macOS 展示只读
+    /// `selectionDestination`，两者通过 `selectBasket` / QA 钩子同步。
     var openedBasketId: Int? = nil
+    var selectionDestination: SelectionDestination = .market
+    /// macOS 信息卡深链/截图入口指定的成员；普通点击仍由详情页自身状态管理。
+    var selectionMemberCode: String? = nil
 
     // —— 持仓 ——
     var positions: [Position] = []
@@ -660,10 +673,29 @@ final class AppModel {
     /// 立下的先例。不影响正常用户路径(缺环境变量则不触发)。
     private func applyQAHooksAfterRefresh() {
         let env = ProcessInfo.processInfo.environment
+        #if os(macOS)
+        if let raw = env["NECKLINE_INITIAL_SELECTION_DESTINATION"] {
+            switch raw {
+            case "market": selectionDestination = .market
+            case "auction" where auction != nil: selectionDestination = .auction
+            case "intel": selectionDestination = .intel
+            default: break
+            }
+        }
+        #endif
         if let raw = env["NECKLINE_INITIAL_BASKET_ID"], let bid = Int(raw), openedBasketId == nil,
            basketDaily.baskets.contains(where: { $0.basketId == bid }) {
             openedBasketId = bid
+            selectionDestination = .basket(bid)
         }
+        #if os(macOS)
+        // 截图矩阵可按可读名称稳定定位，不依赖不同环境里的自增 id。
+        if let name = env["NECKLINE_INITIAL_BASKET_NAME"], openedBasketId == nil,
+           let basket = basketDaily.baskets.filter({ $0.name == name }).first {
+            openedBasketId = basket.basketId
+            selectionDestination = .basket(basket.basketId)
+        }
+        #endif
         // 持仓板块选仓钩子(V2.3.1 批 3):`NECKLINE_INITIAL_POSITION_ID=<id>`。
         // ⚠ 同上,**必须在数据到位之后** —— `positions` 是 `refresh()` 拉回来的。
         if let raw = env["NECKLINE_INITIAL_POSITION_ID"], let pid = Int(raw),
@@ -675,13 +707,17 @@ final class AppModel {
         // 里的同步钩子够不着(v1.4-⑧ `NECKLINE_INITIAL_INFOCARD_CODE` 立的先例)。
         // ⛔ 没拉到就不开(开一个空弹层等于把"没有"演成"有")。
         if env["NECKLINE_INITIAL_AUCTION_SHEET"] == "1", auction != nil {
+            #if os(macOS)
+            selectionDestination = .auction
+            #else
             showAuctionSheet = true
+            #endif
         }
         if let code = env["NECKLINE_INITIAL_INFOCARD_CODE"], !code.isEmpty, infoCardRequest == nil {
             // 从篮子成员里找这只票(候选管线已退役,成员才是新的入口)。
             for b in basketDaily.baskets {
                 if let m = b.card?.members.first(where: { $0.tsCode == code }) {
-                    openInfoCard(tradeDate: report.tradeDate, code: m.tsCode, name: m.name)
+                    openInfoCardForSelection(basketID: b.basketId, member: m)
                     return
                 }
             }
@@ -725,8 +761,30 @@ final class AppModel {
         verificationLoading.remove(id)
     }
 
-    func openBasket(id: Int) { openedBasketId = id }
-    func dismissBasket() { openedBasketId = nil }
+    func openBasket(id: Int) {
+        openedBasketId = id
+        selectionMemberCode = nil
+        #if os(macOS)
+        selectionDestination = .basket(id)
+        #endif
+    }
+
+    func dismissBasket() {
+        openedBasketId = nil
+        #if os(macOS)
+        selectionDestination = .market
+        #endif
+    }
+
+    func selectSelectionDestination(_ destination: SelectionDestination) {
+        selectionDestination = destination
+        if case let .basket(id) = destination {
+            openedBasketId = id
+        } else {
+            openedBasketId = nil
+            selectionMemberCode = nil
+        }
+    }
 
     func basket(byID id: Int) -> Basket? {
         basketDaily.baskets.first(where: { $0.basketId == id })
@@ -739,6 +797,16 @@ final class AppModel {
         infoCardError = nil
         infoCardRequest = InfoCardRequest(tradeDate: tradeDate, code: code, name: name)
         Task { await loadInfoCard() }
+    }
+
+    /// 信息卡深链必须同时定位到对应篮子和成员，避免请求成功却没有可见落点。
+    func openInfoCardForSelection(basketID: Int, member: BasketMember) {
+        #if os(macOS)
+        openedBasketId = basketID
+        selectionDestination = .basket(basketID)
+        selectionMemberCode = member.tsCode
+        #endif
+        openInfoCard(tradeDate: report.tradeDate, code: member.tsCode, name: member.name)
     }
 
     func loadInfoCard() async {

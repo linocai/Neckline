@@ -346,7 +346,7 @@ struct NKMemberCard: View {
     private var tagsBlock: some View {
         if !member.tags.isEmpty || !member.tagsAbsent.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                Text("成员标注件 · K7").nkLabel().foregroundStyle(NK.textTertiary)
+                Text("成员观察").nkLabel().foregroundStyle(NK.textTertiary)
                 ForEach(member.tags) { t in
                     HStack(alignment: .top, spacing: 5) {
                         NKChip(text: t.label, tone: t.axisTone)
@@ -355,7 +355,10 @@ struct NKMemberCard: View {
                     }
                 }
                 if !member.tagsAbsent.isEmpty {
-                    Text("判不了的标注:\(member.tagsAbsent.joined(separator: "、"))(数据缺失,**不等于**没命中)")
+                    let labels = member.tagAbsences.map(\.label).filter { !$0.isEmpty }
+                    Text(labels.isEmpty
+                         ? "部分标注暂无法判断（数据缺失，不代表未命中）"
+                         : "暂无法判断：\(labels.joined(separator: "、"))（数据缺失，不代表未命中）")
                         .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

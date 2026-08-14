@@ -326,10 +326,12 @@ class TestSelectionHomeInformationLayers:
         assert "researchMaterialsDisclosure" in ios
         disclosure = _decl_slice(code, "private var researchMaterialsDisclosure")
         assert "IntelPackageView(report: model.report)" in disclosure
-        # ⚠ macOS `detailColumn` 的「今日概览」**回退态**里那一处刻意保留 ——
-        # 它只在"今天一篮都没有"时才画(F 组:详情栏默认是 T1 第一篮的卡),
-        # ⛔ 别把它一起删掉,那会让零篮子的早晨连情报件都看不到。
-        assert code.count("IntelPackageView(") == 2
+        # V2.4.1 macOS 把情报件提升为右侧独立目的地；iOS 仍只在折叠资料内保留它。
+        assert code.count("IntelPackageView(") == 3
+        mac_start = code.index("private struct MacSelectionWorkbench")
+        mac_end = code.index("private struct MacTodayMarketPage", mac_start)
+        mac = code[mac_start:mac_end]
+        assert "case .intel" in mac and "IntelPackageView(report: model.report)" in mac
 
     def test_out_and_dropped_collapse_into_one_compact_row(self):
         """验收 6:OUT / 未定档默认只出**数量 + 首要原因**一行,点开才是完整清单。
@@ -498,6 +500,34 @@ class TestNoDTOFieldWasDeleted:
 
         for f in ("sentiment", "intel", "dataFreshness"):
             assert f in ReportOut.model_fields, f
+
+
+class TestV241MacOnlyRepairGuards:
+    def test_today_market_keeps_a_human_data_condition(self):
+        code = _BASKET_DAILY.read_text(encoding="utf-8")
+        page = code[code.index("private struct MacTodayMarketPage"):
+                    code.index("private struct MacBasketDetailPage")]
+        assert "dataCondition" in page
+        assert "市场、行业和扫描数据均已就绪" in page
+        assert "本次未取得完整数据状态，请稍后刷新" in page
+
+    def test_info_card_deep_link_selects_its_basket_and_member(self):
+        code = _APP_MODEL.read_text(encoding="utf-8")
+        hook = _decl_slice(code, "private func applyQAHooksAfterRefresh()")
+        assert "openInfoCardForSelection(basketID: b.basketId, member: m)" in hook
+        fn = _decl_slice(code, "func openInfoCardForSelection(")
+        for expected in ("selectionDestination = .basket(basketID)",
+                         "selectionMemberCode = member.tsCode"):
+            assert expected in fn
+
+    def test_auction_report_is_reworked_only_for_embedded_macos_presentation(self):
+        code = _AUCTION_CARD.read_text(encoding="utf-8")
+        start = code.index("struct AuctionReportPage: View")
+        end = code.index("private func gapColor", start)
+        page = code[start:end]
+        assert "if isMacPresentation" in page
+        assert "dataStatusBlock\n                marketBlock\n                basketsBlock" in page
+        assert "AuctionVerdictCard(verdict: b, macPresentation: isMacPresentation)" in page
 
 
 # ══════════════════════════════════════════════════════════════════════════

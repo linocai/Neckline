@@ -224,8 +224,9 @@ logger = logging.getLogger(__name__)
 # (顶层 base + app target,刻意重复;守门只比 app target,故两处都得手动改)+
 # `xcodegen generate` 重生 pbxproj。⚠ 改完必须跑一次 `xcodegen generate` ——
 # 它顺手修好 project 级漂移,而守门看不见那一处。
-# ⚠ 本行改动**不构成部署**:生产 `/health` 要到真正 rsync + 重启之后才返 v2.4.0。
-VERSION = "v2.4.0"
+# V2.4.1 RC:版本只能通过 `App/scripts/prepare_release_candidate.sh` 与客户端一起切换。
+# ⚠ 本行改动**不构成部署**:生产 `/health` 要到真正 rsync + 重启之后才返此版本。
+VERSION = "v2.4.1"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————

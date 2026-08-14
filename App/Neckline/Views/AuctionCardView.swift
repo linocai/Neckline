@@ -191,6 +191,8 @@ func nkAuctionGapText(_ v: Double?) -> String {
 struct AuctionReportPage: View {
     @Bindable var model: AppModel
     let payload: AuctionPayload
+    /// macOS 右栏使用报告内容本体，不再增加模态关闭按钮。
+    var embedded: Bool = false
 
     // 🔴 **V2.4.0 P3.5:打开后默认先给逐篮结论**(施工图 P3.5 逐字)——
     // `basketsBlock`(块 3)挪到最前;块 1「数据状态」+ 块 2「市场与主线概览」折进
@@ -202,19 +204,42 @@ struct AuctionReportPage: View {
         VStack(spacing: 0) {
             headerBar
             ScrollView {
-                VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-                    basketsBlock                 // 块 3(默认可见)
-                    risksBlock                   // 块 4(默认可见)
-                    manualNoteBlock               // 块 5(默认可见,恒发恒显)
-                    proxyNoteBlock                // 恒发恒显:不是买入指令 + 任务边界
-                    marketBackgroundDisclosure    // 折叠:块 2 + 竞价强势股的代理样本说明
-                    dataAuditDisclosure           // 折叠:块 1
-                    if !payload.notes.isEmpty { notesBlock }
-                }
+                reportContent
                 .padding(NKSpace.pagePad)
             }
         }
         .background(NK.pageBgIOS)
+    }
+
+    @ViewBuilder
+    private var reportContent: some View {
+        VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+            if isMacPresentation {
+                basketsBlock                 // 块 3(默认可见)
+                risksBlock                   // 块 4(默认可见)
+                manualNoteBlock               // 块 5(默认可见,恒发恒显)
+                proxyNoteBlock                // 恒发恒显:不是买入指令 + 任务边界
+                marketBackgroundDisclosure    // 折叠:块 2 + 竞价强势股的代理样本说明
+                dataAuditDisclosure           // 折叠:块 1
+            } else {
+                // iOS 保持原有 sheet 的阅读顺序与信息密度；本版不重排手机端报告。
+                dataStatusBlock
+                marketBlock
+                basketsBlock
+                risksBlock
+                manualNoteBlock
+                proxyNoteBlock
+            }
+            if !payload.notes.isEmpty { notesBlock }
+        }
+    }
+
+    private var isMacPresentation: Bool {
+        #if os(macOS)
+        embedded
+        #else
+        false
+        #endif
     }
 
     /// 「市场背景」= 指数竞价 · 主线概览 · 竞价强势股 · 代理样本说明 ·
@@ -243,7 +268,7 @@ struct AuctionReportPage: View {
     /// 历史统计(块 1 原样;逐票指标 / 历史统计仍分别嵌在各篮结论卡自己的「逐票读数」
     /// 折叠里,⛔ 不强行搬家拆散篮子与它自己的数据)。
     private var dataAuditDisclosure: some View {
-        NKDisclosure(summary: "数据审计 · 覆盖率 / 冻结时刻 / 缺失清单 / 跨源冲突口径") {
+        NKDisclosure(summary: "数据说明与技术附录") {
             dataStatusBlock
         }
     }
@@ -257,9 +282,11 @@ struct AuctionReportPage: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
-            Button("关闭") { model.showAuctionSheet = false }
-                .buttonStyle(.plain)
-                .font(NKFont.callout).foregroundStyle(NK.accent)
+            if !embedded {
+                Button("关闭") { model.showAuctionSheet = false }
+                    .buttonStyle(.plain)
+                    .font(NKFont.callout).foregroundStyle(NK.accent)
+            }
         }
         .padding(.horizontal, NKSpace.pagePad).padding(.vertical, 14)
         .background(NK.cardBg)
@@ -267,8 +294,10 @@ struct AuctionReportPage: View {
     }
 
     private var subtitle: String {
-        var parts = ["D1 \(payload.tradeDate)"]
-        if !payload.d0Date.isEmpty { parts.append("验证 D0 \(payload.d0Date)") }
+        var parts = isMacPresentation ? ["今日集合竞价"] : ["D1 \(payload.tradeDate)"]
+        if !payload.d0Date.isEmpty {
+            parts.append(isMacPresentation ? "对照昨日计划" : "验证 D0 \(payload.d0Date)")
+        }
         parts.append("9:26—9:29 冻结")
         return parts.joined(separator: " · ")
     }
@@ -481,7 +510,7 @@ struct AuctionReportPage: View {
         if payload.baskets.isEmpty {
             NKCard {
                 VStack(alignment: .leading, spacing: 6) {
-                    NKSectionHeader(title: "3 · 篮子与逐票结论")
+                    NKSectionHeader(title: isMacPresentation ? "篮子结论" : "3 · 篮子与逐票结论")
                     // 🔴 「跑过了、D0 没有 T1/T2」与「竞价层没跑」是两件事 —— 后者根本
                     // 到不了这一屏(端点 404、卡都不画)。这里如实说前者。
                     Text(payload.basketsUnavailableReason ?? "本次没有篮子级结论(服务端未给原因)。")
@@ -491,9 +520,11 @@ struct AuctionReportPage: View {
             }
         } else {
             VStack(alignment: .leading, spacing: NKSpace.rowGap) {
-                NKSectionHeader(title: "3 · 篮子与逐票结论",
+                NKSectionHeader(title: isMacPresentation ? "篮子结论" : "3 · 篮子与逐票结论",
                                 trailing: "\(payload.baskets.count) 篮")
-                ForEach(payload.baskets) { b in AuctionVerdictCard(verdict: b) }
+                ForEach(payload.baskets) { b in
+                    AuctionVerdictCard(verdict: b, macPresentation: isMacPresentation)
+                }
             }
         }
     }
@@ -503,15 +534,15 @@ struct AuctionReportPage: View {
     private var risksBlock: some View {
         NKCard {
             VStack(alignment: .leading, spacing: 8) {
-                NKSectionHeader(title: "4 · 异常与风险")
+                NKSectionHeader(title: isMacPresentation ? "需要留意的风险" : "4 · 异常与风险")
                 if payload.risks.isEmpty {
                     Text("机械层与模型本次都没有报出异常。")
                         .font(NKFont.body).foregroundStyle(NK.textSecondary)
                 } else {
-                    ForEach(payload.risks) { r in
+                    ForEach(displayRisks) { r in
                         HStack(alignment: .top, spacing: 8) {
-                            NKChip(text: r.kindLabel, tone: riskTone(r.kind))
-                            Text(r.text).font(NKFont.callout).foregroundStyle(NK.textPrimary)
+                            NKChip(text: r.label, tone: r.tone)
+                            Text(r.summary).font(NKFont.callout).foregroundStyle(NK.textPrimary)
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 0)
                         }
@@ -532,6 +563,65 @@ struct AuctionReportPage: View {
         }
     }
 
+    private struct DisplayRisk: Identifiable {
+        let id: String
+        let label: String
+        let summary: String
+        let tone: NKAxisTone
+    }
+
+    private var displayRisks: [DisplayRisk] {
+        guard isMacPresentation else {
+            return payload.risks.map {
+                DisplayRisk(id: $0.id, label: $0.kindLabel, summary: $0.text, tone: riskTone($0.kind))
+            }
+        }
+        var orderedSummaries: [String] = []
+        var prototypes: [String: DisplayRisk] = [:]
+        var counts: [String: Int] = [:]
+        for risk in payload.risks {
+            let summary = riskSummary(risk)
+            if prototypes[summary] == nil {
+                orderedSummaries.append(summary)
+                prototypes[summary] = DisplayRisk(
+                    id: risk.id,
+                    label: risk.kind == "llm_note" ? "补充提示" : risk.kindLabel,
+                    summary: summary,
+                    tone: riskTone(risk.kind)
+                )
+            }
+            counts[summary, default: 0] += 1
+        }
+        return orderedSummaries.compactMap { summary in
+            guard let risk = prototypes[summary] else { return nil }
+            let extras = (counts[summary] ?? 1) - 1
+            return DisplayRisk(
+                id: risk.id,
+                label: risk.label,
+                summary: extras > 0 ? "\(risk.summary)（另有 \(extras) 项同类提示）" : risk.summary,
+                tone: risk.tone
+            )
+        }
+    }
+
+    /// 报告首页只说用户能据此判断的事；内部规则名和原始证据留在技术附录。
+    private func riskSummary(_ risk: AuctionRiskItem) -> String {
+        switch risk.kind {
+        case "evidence_conflict", "source_conflict":
+            return "不同证据之间存在矛盾，建议暂缓判断并人工复核。"
+        case "data_missing", "llm_unavailable":
+            return "部分数据暂不可用，本条结论的参考价值下降。"
+        case "gap_up_deviation":
+            return "竞价位置偏离原计划区间，需要避免追高。"
+        case "hit_invalidation", "invalidation_undetermined":
+            return "失效条件需要重点核对后再作判断。"
+        case "verdict_clamped":
+            return "系统已将结论按更谨慎的口径处理。"
+        default:
+            return "发现一项需要留意的异常，详细依据可在技术附录查看。"
+        }
+    }
+
     // —— 第 5 块:APP 人工观察小纸条 ——
 
     @ViewBuilder
@@ -539,7 +629,7 @@ struct AuctionReportPage: View {
         if let note = payload.manualNote, !note.isEmpty {
             NKCard {
                 VStack(alignment: .leading, spacing: 8) {
-                    NKSectionHeader(title: "5 · APP 人工观察小纸条")
+                    NKSectionHeader(title: isMacPresentation ? "人工观察" : "5 · APP 人工观察小纸条")
                     // ⚠ 文案本体是**服务端下发**的固定字符串(K8 §二十 逐字),
                     // ⛔ 客户端不许自己写 —— 这里原样透传。
                     Text(note).font(NKFont.body).lineSpacing(4).foregroundStyle(NK.textPrimary)
@@ -586,7 +676,14 @@ private func gapColor(_ v: Double?) -> Color {
 
 struct AuctionVerdictCard: View {
     let verdict: AuctionVerdict
-    @State private var expanded: Bool = NKQA.expandDisclosures
+    let macPresentation: Bool
+    @State private var expanded: Bool
+
+    init(verdict: AuctionVerdict, macPresentation: Bool = false) {
+        self.verdict = verdict
+        self.macPresentation = macPresentation
+        _expanded = State(initialValue: macPresentation ? true : NKQA.expandDisclosures)
+    }
 
     /// V2.4.0 P3.5:触发失效的那一篮整圈描红——`hitInvalidation` 是机械事实、走独立
     /// 警报通道(不受 LLM 缺席、不受三道夹逼闸影响),默认层就该一眼看见,不必点开
@@ -600,25 +697,26 @@ struct AuctionVerdictCard: View {
                 if !verdict.reasons.isEmpty {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(Array(verdict.reasons.enumerated()), id: \.offset) { _, r in
-                            Text("· \(r)").font(NKFont.body).lineSpacing(3)
+                            Text("· \(macPresentation ? userReason(r) : r)").font(NKFont.body).lineSpacing(3)
                                 .foregroundStyle(NK.textPrimary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
-                // 🔴 被夹逼过必须说出口(⛔ 不许静默把模型的话换掉)。
-                if let ct = verdict.clampText {
-                    Text(ct).font(NKFont.caption).foregroundStyle(NK.amber)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                domainQualityBlock
                 if !verdict.hitInvalidation.isEmpty {
                     Text("🔴 命中 D0 冻结的明确失效位:\(verdict.hitInvalidation.joined(separator: "、"))")
                         .font(NKFont.callout).foregroundStyle(NK.down)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 membersBlock
-                footNote
+                if macPresentation {
+                    DisclosureGroup("数据说明与技术附录") {
+                        verdictTechnicalContent.padding(.top, 8)
+                    }
+                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                } else {
+                    verdictTechnicalContent
+                }
             }
         }
         // 🔴 触发失效的那一篮整圈描红(设计参考:`1px rgba(229,68,59,.35)` ≈
@@ -634,11 +732,11 @@ struct AuctionVerdictCard: View {
     private var head: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
-                Text(verdict.name.isEmpty ? verdict.basketKey : verdict.name)
+                Text(verdict.name.isEmpty ? (macPresentation ? "未命名篮子" : verdict.basketKey) : verdict.name)
                     .font(NKFont.headline).foregroundStyle(NK.textPrimary).lineLimit(1)
                 Text("T\(verdict.coveredTier)").font(NKFont.caption.monospacedDigit())
                     .foregroundStyle(NK.textTertiary)
-                if let e = verdict.engineText {
+                if !macPresentation, let e = verdict.engineText {
                     Text(e).font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
                 }
                 #if os(macOS)
@@ -658,12 +756,38 @@ struct AuctionVerdictCard: View {
         HStack(spacing: 5) {
             NKChip(text: verdict.verdictLabel,
                    tone: nkAuctionVerdictTone(verdict.verdict), filled: true)
-            // 🔴 V2.4.0 P2.3:这一枚自此是**关键域**质量(⛔ 不再是"整体")。
-            // 老行没有分域列 → 「旧版本未细分」+ 琥珀色,⛔ 不画成绿的。
-            NKChip(text: verdict.criticalQualityLabel,
-                   tone: nkAuctionDomainTone(verdict.criticalDataQuality))
-            if verdict.manualNoteAttached { NKChip(text: "有小纸条", tone: .warn) }
+            if !macPresentation {
+                NKChip(text: verdict.criticalQualityLabel,
+                       tone: nkAuctionDomainTone(verdict.criticalDataQuality))
+            }
+            if verdict.manualNoteAttached { NKChip(text: macPresentation ? "需要留意" : "有小纸条", tone: .warn) }
         }
+    }
+
+    private var verdictTechnicalContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let ct = verdict.clampText {
+                Text(ct).font(NKFont.caption).foregroundStyle(NK.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            domainQualityBlock
+            footNote
+        }
+    }
+
+    private func userReason(_ raw: String) -> String {
+        var text = raw
+        if text.hasPrefix("Z"), let range = text.range(of: "篮子") {
+            text.replaceSubrange(text.startIndex..<range.upperBound, with: "该篮子")
+        }
+        text = text
+            .replacingOccurrences(of: "above_zone_below_chase", with: "高于建仓区间、未超最高追价")
+            .replacingOccurrences(of: "above_max_chase", with: "已超最高追价")
+            .replacingOccurrences(of: "below_zone", with: "低于建仓区间")
+            .replacingOccurrences(of: "D0 冻结锚", with: "今早的竞价基准")
+        return text.contains("_")
+            ? "该篮子存在一项需要人工复核的条件，详细依据可在技术附录查看。"
+            : text
     }
 
     /// 🔴 两域各一行 + 各自缺了什么(V2.4.0 P2.3)。
@@ -707,7 +831,9 @@ struct AuctionVerdictCard: View {
                     withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 6) {
-                        Text("逐票读数 \(verdict.members.count)").nkLabel()
+                        Text(macPresentation ? "成员表现 \(verdict.members.count) 只" : "逐票读数 \(verdict.members.count)")
+                            .font(macPresentation ? NKFont.callout : NKFont.caption)
+                            .fontWeight(macPresentation ? .semibold : .regular)
                             .foregroundStyle(NK.textTertiary)
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")
                             .font(.system(size: 9, weight: .semibold))
@@ -813,8 +939,8 @@ struct AuctionMemberRowView: View {
                     .font(NKFont.callout.monospacedDigit()).fontWeight(.semibold)
                     .foregroundStyle(gapColor(member.gapPct))
                 #if os(macOS)
-                Spacer(minLength: 6)
                 metrics
+                Spacer(minLength: 6)
                 statusBadges
                 #else
                 Spacer(minLength: 0)
@@ -826,45 +952,8 @@ struct AuctionMemberRowView: View {
                 statusBadges
                 Spacer(minLength: 0)
             }
-            #endif
-            // 🔴 **相对板块 / 相对市场各占一行**(用户裁定 P3-70:两条独立路径,
-            // 禁止同源同值)。⚠ 402pt 上塞不进上面那一行 —— 每条都要带「减的是哪一支 /
-            // 哪一组」,横着排必然被挤成竖排单字(V2.3 成员卡踩过)。
-            // ⚠ **双端同一段**(改共用件只改一个平台 = V2.3.1 批 7 那个坑)。
             relStrengthBlock
-            // 🔴 `nil` = **没判**,与 `false`「没问题」讲成两句不同的话。
-            if member.anchorStale {
-                Text("冻结锚今日失效(疑似除权除息)—— 本票的失效位与高开偏离**没判**,不是「无异常」。")
-                    .font(NKFont.caption).foregroundStyle(NK.amber)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if let note = member.undeterminedNote {
-                // 🔴 锚没失效、但判据本身缺(卡上无冻结价位 / 开盘价未发布 / 有篮无卡)——
-                // 这一格是**空的**,必须说出口(V2.3.3 复审 🔴-1:原先它被折成
-                // `false`「没问题」,用户与 LLM 都看不出来)。
-                Text(note).font(NKFont.caption).foregroundStyle(NK.amber)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            // 🔴 V2.4.0 P2.1/P2.2:这条读数的**来源与校验**。全好时返回 `nil`(不占版面);
-            // 只要过期 / 换过源 / 两源打架,就必须当面说出来 —— 一份上一交易日的缓存
-            // 行情看起来跟正常读数一模一样,沉默就等于替它背书。
-            if let pv = member.quoteProvenanceNote {
-                Text(pv).font(NKFont.caption).foregroundStyle(NK.down)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let n = member.volumeNote, !n.isEmpty {
-                Text(n).font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            // 🔴 **「只展示原始值」那半句需求的落点**(定向复审 🔵-3):裁定 P3-69 原文是
-            // 「`n < 15`,标记『历史样本不足』,**只展示原始值**」—— 改前界面只有天数 +
-            // 三句话,原始值下发了却一个都不画 = 那半句需求没实现。
-            // ⚠ 这一段住在**收起的**「逐票读数」里,不会把首屏推下去。
-            if let h = history {
-                Text(h.noteText)
-                    .font(NKFont.caption.monospacedDigit())
-                    .foregroundStyle(h.sampleSufficient ? NK.textSecondary : NK.amber)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            #endif
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

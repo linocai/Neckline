@@ -389,22 +389,22 @@ def manual_note_attached(verdict: str, fields: Optional[BasketFields],
     return clamped_by is not None
 
 
-def clamp_risk_note(basket_key: str, raw: Optional[str], verdict: str,
+def clamp_risk_note(basket_name: str, raw: Optional[str], verdict: str,
                     clamped_by: Optional[str]) -> Optional[Dict[str, str]]:
     """🔴 **⛔ 禁止模型已输出的结论被静默丢弃**(同 V2.3.2 ⑧-0 路径 A 的裁定):
     每一次夹逼都必须留 `clamped_by` 码 **且**进小报告第 4 块「异常与风险」。"""
     if clamped_by is None:
         return None
     return {"kind": RISK_VERDICT_CLAMPED,
-            "text": f"篮子 {basket_key}:模型给的是「{raw or '未给'}」,"
+            "text": f"{basket_name or '该篮子'}:模型给的是「{raw or '未给'}」,"
                     f"经机械夹逼闸({clamped_by})后系统记为「{verdict}」。"}
 
 
-def evidence_conflict_note(basket_key: str, fields: Optional[BasketFields]) -> Optional[Dict[str, str]]:
+def evidence_conflict_note(basket_name: str, fields: Optional[BasketFields]) -> Optional[Dict[str, str]]:
     if fields is None or fields.evidence_conflict is not True:
         return None
     return {"kind": RISK_EVIDENCE_CONFLICT,
-            "text": f"篮子 {basket_key}:模型报告证据互相矛盾。"}
+            "text": f"{basket_name or '该篮子'}:模型报告证据互相矛盾。"}
 
 
 # ══════════════════════════════════════════════════════════════════════════

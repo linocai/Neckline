@@ -505,3 +505,19 @@ def test_info_card_summary_payload_excludes_60day_series():
     assert set(summary.keys()) == {"snapshot", "mildBand", "news", "topList"}
     for forbidden in ("kline", "rsLine", "industryDivergenceLine", "market", "k4Flags"):
         assert forbidden not in summary
+
+
+def test_info_card_public_payload_labels_absent_member_tags():
+    """V2.4.1 加法契约不能因缺失标签让信息卡端点在序列化时 500。"""
+    from neckline.selection import member_tags as mt
+
+    public = ic.InfoCard(
+        code="600000.SH", name="测试", trade_date="20260813", kline_available=False,
+        tags_absent=[mt.TAG_WARN_STREAK_TOP],
+    ).to_public_dict()
+
+    assert public["tagsAbsent"] == [mt.TAG_WARN_STREAK_TOP]
+    assert public["tagAbsences"] == [{
+        "code": mt.TAG_WARN_STREAK_TOP,
+        "label": mt.tag_label(mt.TAG_WARN_STREAK_TOP),
+    }]

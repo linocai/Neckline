@@ -320,11 +320,11 @@ def _finalize_with_llm(mech: Any, out: "al.AuctionLLMResult", res: AuctionRunRes
     for b in mech.baskets:
         fields = out.by_basket.get(b.basket_key)
         verdict, clamped_by = al.clamp_verdict(fields, b)
-        note = al.clamp_risk_note(b.basket_key, fields.verdict if fields else None,
+        note = al.clamp_risk_note(b.name, fields.verdict if fields else None,
                                   verdict, clamped_by)
         if note is not None:
             risks.append(note)
-        conflict = al.evidence_conflict_note(b.basket_key, fields)
+        conflict = al.evidence_conflict_note(b.name, fields)
         if conflict is not None:
             risks.append(conflict)
         manual = al.manual_note_attached(verdict, fields, clamped_by)

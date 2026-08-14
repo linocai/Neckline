@@ -212,6 +212,7 @@ final class DTODecodeTests: XCTestCase {
         XCTAssertEqual(m.tags.first?.code, "pullback_leader")
         XCTAssertTrue(m.tags.first!.text.contains("参考、非指令"), "标注件文案原样透传不改写")
         XCTAssertEqual(m.tagsAbsent, ["warn_streak_top"], "判不了的码与「判过没命中」是两回事")
+        XCTAssertEqual(m.tagAbsences, [], "旧快照缺少展示标签时仍应宽松解码")
 
         // 篮子在、卡没生成 = 合法中间态,⛔ 不是「篮子不存在」
         XCTAssertNil(daily.baskets[1].card)

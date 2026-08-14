@@ -29,17 +29,17 @@ import SwiftUI
 struct InfoCardPageView: View {
     @Bindable var model: AppModel
     let request: AppModel.InfoCardRequest
+    /// macOS 篮子工作台内嵌使用同一份内容，不再套一层模态标题栏。
+    var embedded: Bool = false
 
     var body: some View {
         #if os(macOS)
-        // 原型 38–48 行:整页是**自己的一扇窗**(标题条 + 关闭),不是 `NavigationStack`
-        // 的推入页 —— 故用与四个弹层同一套 `NKSheetShell` 壳,左侧位留空、右侧「关闭」。
         VStack(spacing: 0) {
-            infoCardTitleBar
+            if !embedded { infoCardTitleBar }
             ScrollView {
                 content
-                    .padding(.horizontal, NKSpace.pagePadWide)
-                    .padding(.top, NKSpace.pagePad)
+                    .padding(.horizontal, embedded ? 0 : NKSpace.pagePadWide)
+                    .padding(.top, embedded ? 0 : NKSpace.pagePad)
                     .padding(.bottom, NKSpace.pagePadBottom)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -101,7 +101,9 @@ struct InfoCardPageView: View {
                     NKEmptyState(title: "信息卡加载失败", subtitle: err, systemImage: "exclamationmark.triangle")
                 }
             } else if let card = model.infoCard {
-                basketCard(card)          // V2-⑬-N:所属篮子 / 本票角色 / 同篮对比
+                if !embedded {
+                    basketCard(card)      // 独立信息页保留所属篮子 / 本票角色 / 同篮对比
+                }
                 tagsCard(card)            // V2-⑬-N-K7:成员标注件(参考、非指令)
                 klineCard(card)
                 // 原型 158–184 行:RS 线与行业分歧线**并排两列**(K 线通栏)。
@@ -309,7 +311,7 @@ struct InfoCardPageView: View {
         if !card.tags.isEmpty || !card.tagsAbsent.isEmpty {
             NKCard {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("成员标注件 · K7").nkLabel().foregroundStyle(NK.textTertiary)
+                    Text("成员观察").nkLabel().foregroundStyle(NK.textTertiary)
                         .padding(.bottom, 12)
                     ForEach(Array(card.tags.enumerated()), id: \.offset) { idx, t in
                         if idx > 0 {
@@ -342,14 +344,17 @@ struct InfoCardPageView: View {
                         // (服务端 `tags_absent` 应改发 `{code,label}`)。
                         // ⚠ 这一句原来还写成 `Text("…\(插值)…**不等于**…")` —— `Text(String)`
                         // **不解析 Markdown**,星号会原样上屏(§五 〇d 第 7 条)。
-                        Text("判不了的标注 \(card.tagsAbsent.count) 项 —— 数据缺失,**不等于**没命中")
+                        Text("有 \(card.tagsAbsent.count) 项标注暂无法判断（数据缺失，不代表未命中）")
                             .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.top, 11)
-                        Text(card.tagsAbsent.joined(separator: " · "))
-                            .font(NKFont.monoKey).foregroundStyle(NK.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 3)
+                        let labels = card.tagAbsences.map(\.label).filter { !$0.isEmpty }
+                        if !labels.isEmpty {
+                            Text(labels.joined(separator: " · "))
+                                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.top, 3)
+                        }
                     }
                     NKReferenceNote().padding(.top, 9)
                 }
@@ -706,6 +711,7 @@ struct InfoCardPageView: View {
 
 private struct KLineChartView: View {
     let bars: [InfoCardKlineBar]
+    @State private var selectedDate: Date?
 
     private struct Point: Identifiable {
         let id: String
@@ -760,6 +766,11 @@ private struct KLineChartView: View {
                         .lineStyle(StrokeStyle(lineWidth: 1.5))
                         .interpolationMethod(.linear)
                 }
+                if let selected = selectedPoint {
+                    RuleMark(x: .value("选中日期", selected.date))
+                        .foregroundStyle(NK.textSecondary.opacity(0.45))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                }
             }
             .chartYScale(domain: .automatic(includesZero: false))
             .chartPlotStyle { $0.frame(height: 190) }
@@ -773,6 +784,16 @@ private struct KLineChartView: View {
                     AxisValueLabel()
                 }
             }
+            .chartXSelection(value: $selectedDate)
+
+            if let selected = selectedPoint {
+                Text("\(selected.bar.tradeDate)  开 \(NKFmt.price(selected.bar.open))  高 \(NKFmt.price(selected.bar.high))  低 \(NKFmt.price(selected.bar.low))  收 \(NKFmt.price(selected.bar.close))  量 \(NKFmt.money(selected.bar.vol))")
+                    .font(NKFont.callout.monospacedDigit()).foregroundStyle(NK.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("悬停或拖动查看单日开高低收与成交量")
+                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+            }
 
             // 原型 156 行的量柱**根本不是一张图**:它是一行 `flex` 的 div,
             // `align-items:flex-end` + 每根 `height:xx%`。
@@ -780,6 +801,11 @@ private struct KLineChartView: View {
             // —— 换成与原型同构的一排 `Rectangle`,既画得出来也更贴原型。
             volumeBand
         }
+    }
+
+    private var selectedPoint: Point? {
+        guard let selectedDate else { return nil }
+        return points.min { abs($0.date.timeIntervalSince(selectedDate)) < abs($1.date.timeIntervalSince(selectedDate)) }
     }
 }
 

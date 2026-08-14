@@ -365,6 +365,13 @@ def test_no_clamp_means_no_clamp_note():
     assert al.clamp_risk_note("k1", VERDICT_NEUTRAL, v, by) is None
 
 
+def test_user_risk_note_uses_display_name_not_internal_key():
+    note = al.evidence_conflict_note("医药商业合规转型", _fields(evidence_conflict=True))
+    assert note is not None
+    assert "医药商业合规转型" in note["text"]
+    assert "basket_key" not in note["text"]
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # ③-D 小纸条挂载判据
 # ══════════════════════════════════════════════════════════════════════════

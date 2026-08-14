@@ -225,6 +225,14 @@ def card_member_to_public_dict(m: Mapping[str, Any]) -> Dict[str, Any]:
         out["roleConflict"] = bool(m.get("role_conflict"))
     if "is_primary" in m:
         out["isPrimary"] = bool(m.get("is_primary"))
+    # 保留旧的原始码给审计/兼容层，并额外给默认展示层一个服务端唯一来源的中文标签。
+    from neckline.selection import member_tags as mt
+    absent = m.get("tags_absent") or []
+    if isinstance(absent, list):
+        out["tagAbsences"] = [
+            {"code": str(code), "label": mt.tag_label(str(code))}
+            for code in absent if str(code) in mt.ALL_TAG_CODES
+        ]
     return out
 
 

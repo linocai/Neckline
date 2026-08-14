@@ -30,6 +30,7 @@ from neckline.review import handoff as ho
 
 _ROOT = Path(__file__).resolve().parent.parent
 _PLAN = _ROOT.parent / "PROJECT_PLAN.md"
+_HISTORICAL_PLAN = _ROOT.parent / "archive/交接与日志/PROJECT_PLAN_v2.4.0_legacy_20260813.md"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -259,10 +260,11 @@ class TestObservations:
     def test_each_id_closes_with_the_backlog_in_section_seven(self, ob_id: str):
         """🔴 **清单与 Backlog 漂移当场报红**(plan 点名的守门)。
 
-        判据 = `PROJECT_PLAN.md` §七 里能 grep 到字面 `[P3-xx]`。§七 之外的提及
+        判据 = 对应版本的归档计划 §七 里能 grep 到字面 `[P3-xx]`。当前计划只保留
+        当前版本控制面，历史 backlog 已按文档收口规则归档。§七 之外的提及
         (如 §五 施工图正文)**不算** —— 观察项的身份是「Backlog 上一条待办」,
         不是「文档里被提过一次」。"""
-        text = _PLAN.read_text(encoding="utf-8")
+        text = _HISTORICAL_PLAN.read_text(encoding="utf-8")
         start = text.index("\n## 七、Backlog")
         end = text.index("\n## 八、", start)
         section7 = text[start:end]

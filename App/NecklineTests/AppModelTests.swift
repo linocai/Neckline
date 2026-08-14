@@ -13,6 +13,30 @@ import XCTest
 @MainActor
 final class AppModelTests: XCTestCase {
 
+    func testSelectionDestinationSynchronizesBasketCompatibilityState() {
+        let model = AppModel()
+        XCTAssertEqual(model.selectionDestination, .market)
+        model.selectSelectionDestination(.basket(42))
+        XCTAssertEqual(model.selectionDestination, .basket(42))
+        XCTAssertEqual(model.openedBasketId, 42)
+        model.selectSelectionDestination(.intel)
+        XCTAssertEqual(model.selectionDestination, .intel)
+        XCTAssertNil(model.openedBasketId)
+    }
+
+    func testInfoCardSelectionTargetsContainingBasketAndMember() {
+        let model = AppModel()
+        let member = BasketMember(tsCode: "600000.SH", name: "测试成员")
+        model.report.tradeDate = "20260813"
+
+        model.openInfoCardForSelection(basketID: 7, member: member)
+
+        XCTAssertEqual(model.selectionDestination, .basket(7))
+        XCTAssertEqual(model.openedBasketId, 7)
+        XCTAssertEqual(model.selectionMemberCode, "600000.SH")
+        XCTAssertEqual(model.infoCardRequest?.code, "600000.SH")
+    }
+
     // MARK: - ⛔ V2.4.0 P0:退潮警示两条用例已退役(施工纪律 4:写明被谁取代)
     //
     // 原 `testRetreatWarningPresentWhenBrakeActive` / `testRetreatWarningNilWhenBrakeInactive`

@@ -165,43 +165,7 @@ struct BasketDailyView: View {
 
     #if os(macOS)
     private var macBody: some View {
-        NKSplitLayout {
-            listColumn
-        } detail: {
-            detailColumn
-        }
-        .sheet(item: Binding(get: { model.infoCardRequest },
-                             set: { if $0 == nil { model.dismissInfoCard() } })) { req in
-            // 原型 `Neckline 信息卡与对账.dc.html` 36 行:信息卡是 **1200×820** 的整页
-            // (它是全 App 唯一放图的地方 —— 三张图 + 三组并排卡挤进 660 宽会全部塌成一列)。
-            // ⚠ sheet 受父窗口内缩,故取 1120:与 1200 画布同量级,两列排得开。
-            InfoCardPageView(model: model, request: req)
-                .frame(minWidth: 1120, maxWidth: 1120, minHeight: 700, maxHeight: .infinity)
-        }
-        // V2.3.3-⑤ 竞价小报告五块(macOS 也走 sheet:五块是**一次读完**的东西,
-        // 塞进详情栏会把「今日概览」挤没)。
-        .sheet(isPresented: $model.showAuctionSheet) {
-            if let a = model.auction {
-                AuctionReportPage(model: model, payload: a)
-                    .frame(minWidth: 760, maxWidth: 860, minHeight: 640, maxHeight: .infinity)
-            }
-        }
-        // 🔴 **V2.4.0 P3.3-E:macOS 也必须接这个弹层** —— 工具栏那枚新鲜度徽标两端共用
-        // (`NKToolbar` 只在 macOS 上出现),点了没落点 = 一枚点不动的徽标,比不放更糟。
-        // ⚠ 内容与 iOS 那份是**同一个** `freshnessSection`,⛔ 不另画一份 ⑤ 段。
-        .sheet(isPresented: $model.showFreshnessSheet) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("数据新鲜度").font(NKFont.title3).foregroundStyle(NK.textPrimary)
-                    Spacer(minLength: 12)
-                    Button("关闭") { model.showFreshnessSheet = false }
-                }
-                .padding(.horizontal, NKSpace.pagePad).padding(.vertical, 14)
-                ScrollView { freshnessSection.padding(NKSpace.pagePad) }
-            }
-            .frame(minWidth: 620, maxWidth: 720, minHeight: 420, maxHeight: .infinity)
-            .background(NK.pageBg)
-        }
+        MacSelectionWorkbench(model: model)
     }
 
     // —— 列表栏 ——
@@ -1807,3 +1771,439 @@ private struct SectorChipsRow: View {
         }
     }
 }
+
+#if os(macOS)
+// MARK: - V2.4.1 macOS 选股工作台
+
+/// macOS 专属工作台。它故意不复用旧的“概览 + 隐式首篮”组合：每一次右栏切换都由
+/// `AppModel.selectionDestination` 直接驱动，左栏也只做导航和概览。
+private struct MacSelectionWorkbench: View {
+    @Bindable var model: AppModel
+
+    private var baskets: [Basket] { model.basketDaily.baskets }
+
+    var body: some View {
+        NKSplitLayout {
+            sidebar
+        } detail: {
+            ScrollView {
+                destinationPage
+                    .frame(maxWidth: 980, alignment: .leading)
+                    .padding(.horizontal, 32)
+                    .padding(.vertical, 26)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .background(NK.pageBg)
+        }
+    }
+
+    private var sidebar: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("选股").font(NKFont.title2).foregroundStyle(NK.textPrimary)
+                    Text("查看今天的市场、篮子与情报").font(NKFont.callout)
+                        .foregroundStyle(NK.textSecondary)
+                }
+                .padding(.horizontal, 16).padding(.top, 18)
+
+                destinationRow(title: "今日市场", icon: "chart.line.uptrend.xyaxis",
+                               selected: model.selectionDestination == .market) {
+                    model.selectSelectionDestination(.market)
+                }
+                if model.auction != nil || model.auctionCorrupt {
+                    destinationRow(title: "竞价小报告", icon: "sunrise",
+                                   selected: model.selectionDestination == .auction) {
+                        model.selectSelectionDestination(.auction)
+                    }
+                }
+                destinationRow(title: "今日情报", icon: "newspaper",
+                               selected: model.selectionDestination == .intel) {
+                    model.selectSelectionDestination(.intel)
+                }
+
+                ForEach(model.basketDaily.displayTiers, id: \.self) { tier in
+                    let tierBaskets = model.basketDaily.baskets(tier: tier)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            NKChip(text: "T\(tier)", tone: tier == 1 ? .good : .warn, filled: true)
+                            Text(tier == 1 ? "最先看的一档" : "次一档")
+                                .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                        }
+                        .padding(.horizontal, 16).padding(.top, 12)
+                        if tierBaskets.isEmpty {
+                            Text("今天没有符合这一档的篮子").font(NKFont.callout)
+                                .foregroundStyle(NK.textSecondary).padding(.horizontal, 16)
+                        } else {
+                            ForEach(tierBaskets) { basket in
+                                basketNavigationRow(basket)
+                            }
+                        }
+                    }
+                }
+
+                if !model.basketDaily.outCandidates.isEmpty {
+                    Text(outCandidatesSummary)
+                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                        .padding(.horizontal, 16).padding(.vertical, 12)
+                }
+            }
+            .padding(.bottom, 20)
+        }
+    }
+
+    private func destinationRow(title: String, icon: String, selected: Bool,
+                                action: @escaping () -> Void) -> some View {
+        NKListRow(selected: selected, action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: icon).frame(width: 15).foregroundStyle(selected ? NK.accent : NK.textSecondary)
+                Text(title).font(NKFont.callout).fontWeight(selected ? .semibold : .regular)
+                    .foregroundStyle(NK.textPrimary)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 10)
+    }
+
+    private func basketNavigationRow(_ basket: Basket) -> some View {
+        let selected = model.selectionDestination == .basket(basket.basketId)
+        return VStack(alignment: .leading, spacing: 4) {
+            NKListRow(selected: selected) {
+                model.selectSelectionDestination(.basket(basket.basketId))
+            } content: {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(displayName(basket)).font(NKFont.body).fontWeight(.semibold)
+                            .foregroundStyle(NK.textPrimary).lineLimit(2)
+                        HStack(spacing: 6) {
+                            GateLightBar(gates: basket.gates)
+                            Text("\(memberCount(basket)) 只").font(NKFont.callout)
+                                .foregroundStyle(NK.textSecondary)
+                        }
+                    }
+                    Spacer(minLength: 4)
+                }
+            }
+            if let members = basket.card?.members, !members.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(members) { member in
+                        HStack(spacing: 7) {
+                            Circle().fill(nkMemberDotColor(member)).frame(width: 5, height: 5)
+                            Text(member.name.isEmpty ? "未命名成员" : member.name)
+                                .font(NKFont.callout).foregroundStyle(NK.textPrimary).lineLimit(1)
+                            Text(roleText(member)).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                            Spacer(minLength: 4)
+                            Text(member.tsCode).font(NKFont.caption.monospacedDigit())
+                                .foregroundStyle(NK.textSecondary)
+                        }
+                    }
+                }
+                .padding(.leading, 22).padding(.trailing, 14).padding(.bottom, 7)
+            }
+        }
+        .padding(.horizontal, 10)
+    }
+
+    @ViewBuilder
+    private var destinationPage: some View {
+        switch model.selectionDestination {
+        case .market:
+            MacTodayMarketPage(model: model)
+        case .auction:
+            if let auction = model.auction {
+                AuctionReportPage(model: model, payload: auction, embedded: true)
+            } else {
+                unavailablePage("竞价报告暂不可用", "今天还没有可查看的竞价报告。")
+            }
+        case let .basket(id):
+            if let basket = model.basket(byID: id) {
+                MacBasketDetailPage(model: model, basket: basket)
+            } else {
+                unavailablePage("篮子暂不可用", "这个篮子已不在当前报告中。")
+            }
+        case .intel:
+            VStack(alignment: .leading, spacing: 18) {
+                pageHeader("今日情报", subtitle: "市场复盘与风险扫描；不构成选股信号")
+                IntelPackageView(report: model.report)
+            }
+        }
+    }
+
+    private func unavailablePage(_ title: String, _ subtitle: String) -> some View {
+        NKCard { NKEmptyState(title: title, subtitle: subtitle, systemImage: "info.circle") }
+    }
+
+    private func pageHeader(_ title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(NKFont.title1).foregroundStyle(NK.textPrimary)
+            Text(subtitle).font(NKFont.body).foregroundStyle(NK.textSecondary)
+        }
+    }
+
+    private func displayName(_ basket: Basket) -> String {
+        basket.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名篮子" : basket.name
+    }
+    private func memberCount(_ basket: Basket) -> Int { basket.card?.members.count ?? basket.memberCodes.count }
+    private func roleText(_ member: BasketMember) -> String {
+        member.roleConflict ? "角色待确认" : (member.roleDisplay.isEmpty ? "角色待确认" : member.roleDisplay)
+    }
+
+    private var outCandidatesSummary: String {
+        let candidates = model.basketDaily.outCandidates
+        let chiefGate = nkGateOrder.first { gate in candidates.contains { $0.outGate == gate } }
+        let chiefReason: String
+        switch chiefGate {
+        case "market": chiefReason = "市场环境暂不匹配"
+        case "driver": chiefReason = "主线逻辑暂不清晰"
+        case "sector": chiefReason = "行业表现暂不支持"
+        case "core": chiefReason = "核心条件暂未满足"
+        case "position": chiefReason = "位置条件暂不合适"
+        case "evidence": chiefReason = "关键信息仍需确认"
+        default: chiefReason = "暂未形成入选条件"
+        }
+        return "另有 \(candidates.count) 只未进入篮子，主要因为\(chiefReason)。"
+    }
+}
+
+private struct MacTodayMarketPage: View {
+    @Bindable var model: AppModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("今日市场").font(NKFont.title1).foregroundStyle(NK.textPrimary)
+                Text("先看市场环境，再决定今天关注什么。行情状态不构成买卖建议。")
+                    .font(NKFont.body).foregroundStyle(NK.textSecondary)
+            }
+            MarketRegimeStrip(regime: model.marketRegime, userFacing: true)
+            dataCondition
+            if let sentiment = model.report.sentiment {
+                NKCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("情绪与市场语境").font(NKFont.headline).foregroundStyle(NK.textPrimary)
+                        HStack(spacing: 30) {
+                            metric("涨停", "\(sentiment.limitUpCount)", "家")
+                            metric("跌停", "\(sentiment.limitDownCount)", "家")
+                            metric("炸板率", NKFmt.pct(sentiment.zabanRate * 100), "")
+                            metric("最高连板", "\(sentiment.maxConsecLimitUp)", "板")
+                        }
+                        Text(sentiment.zabanRate >= 0.35
+                             ? "炸板率已高于风险线，追高时要更谨慎。"
+                             : "炸板率尚未高于风险线，仍需结合个股条件判断。")
+                            .font(NKFont.body).foregroundStyle(NK.textSecondary)
+                    }
+                }
+            } else {
+                NKCard { Text("今日情绪数据暂不可用。").font(NKFont.body).foregroundStyle(NK.textSecondary) }
+            }
+        }
+    }
+    private func metric(_ label: String, _ value: String, _ unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(NKFont.callout).foregroundStyle(NK.textSecondary)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value).font(NKFont.metric.monospacedDigit()).foregroundStyle(NK.textPrimary)
+                Text(unit).font(NKFont.callout).foregroundStyle(NK.textSecondary)
+            }
+        }
+    }
+
+    private var dataCondition: some View {
+        NKCard {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("数据状态").font(NKFont.headline).foregroundStyle(NK.textPrimary)
+                Text(dataConditionText).font(NKFont.body).foregroundStyle(NK.textSecondary)
+            }
+        }
+    }
+
+    private var dataConditionText: String {
+        guard let freshness = model.report.dataFreshness else {
+            return "本次未取得完整数据状态，请稍后刷新。"
+        }
+        var pending: [String] = []
+        if freshness.stale { pending.append("板块数据滞后") }
+        if freshness.industryStrengthStale == true { pending.append("行业强度未就绪") }
+        if freshness.scanLayerStale == true { pending.append("市场扫描未就绪") }
+        return pending.isEmpty
+            ? "市场、行业和扫描数据均已就绪。"
+            : "需要留意：" + pending.joined(separator: "、") + "。"
+    }
+}
+
+private struct MacBasketDetailPage: View {
+    @Bindable var model: AppModel
+    let basket: Basket
+    @State private var selectedCode = ""
+    @State private var showTechnical = false
+
+    private var members: [BasketMember] { basket.card?.members ?? [] }
+    private var selectedMember: BasketMember? {
+        members.first(where: { $0.tsCode == selectedCode }) ?? members.first
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            header
+            if members.isEmpty {
+                NKCard { Text("这只篮子的成员详情暂不可用，请稍后刷新。")
+                    .font(NKFont.body).foregroundStyle(NK.textSecondary) }
+            } else {
+                memberSelector
+                if let member = selectedMember { memberDetail(member) }
+            }
+        }
+        .onAppear { selectInitialMember() }
+        .onChange(of: basket.basketId) { _, _ in selectInitialMember() }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                if let tier = basket.tier { NKChip(text: "T\(tier)", tone: tier == 1 ? .good : .warn, filled: true) }
+                Text("关注优先级，不代表收益预测").font(NKFont.callout).foregroundStyle(NK.textSecondary)
+            }
+            Text(displayName).font(NKFont.title1).foregroundStyle(NK.textPrimary)
+            Text(introduction).font(NKFont.body).foregroundStyle(NK.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var memberSelector: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("篮子成员").font(NKFont.headline).foregroundStyle(NK.textPrimary)
+            VStack(spacing: 6) {
+                ForEach(members) { member in
+                    Button { selectedCode = member.tsCode } label: {
+                        HStack(spacing: 10) {
+                            Circle().fill(nkMemberDotColor(member)).frame(width: 7, height: 7)
+                            Text(member.name.isEmpty ? "未命名成员" : member.name).font(NKFont.body).fontWeight(.semibold)
+                            Text(member.tsCode).font(NKFont.callout.monospacedDigit()).foregroundStyle(NK.textSecondary)
+                            Spacer()
+                            Text(roleText(member)).font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                        }
+                        .foregroundStyle(NK.textPrimary).padding(.horizontal, 14).padding(.vertical, 11)
+                        .background(RoundedRectangle(cornerRadius: NKRadius.inner)
+                            .fill(member.tsCode == selectedCode ? NK.accent.opacity(0.08) : NK.cardBg))
+                        .overlay(RoundedRectangle(cornerRadius: NKRadius.inner)
+                            .stroke(member.tsCode == selectedCode ? NK.accent : NK.hairline, lineWidth: member.tsCode == selectedCode ? 1.2 : 0.5))
+                    }.buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func memberDetail(_ member: BasketMember) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            NKCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(member.name.isEmpty ? "未命名成员" : member.name).font(NKFont.title2)
+                            Text(member.tsCode).font(NKFont.callout.monospacedDigit()).foregroundStyle(NK.textSecondary)
+                        }
+                        Spacer()
+                        if let close = member.mech.objectValue?["close"]?.doubleValue {
+                            VStack(alignment: .trailing, spacing: 3) {
+                                Text("参考收盘价").font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                                Text(NKFmt.price(close)).font(NKFont.metric.monospacedDigit())
+                            }
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        NKChip(text: roleText(member), tone: member.roleConflict ? .warn : .neutral)
+                        Text(industryRank(member)).font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                    }
+                    if !member.reason.isEmpty {
+                        Text(member.reason).font(NKFont.body).foregroundStyle(NK.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            if let card = basket.card, !card.whyNow.isEmpty {
+                textCard("为什么是现在", card.whyNow, tone: NK.accent)
+            }
+            if let risk = basket.card?.risks.first, !risk.isEmpty {
+                textCard("待确认", userRiskText(risk), tone: NK.amber)
+            }
+            priceReferences(member)
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    model.openInfoCard(tradeDate: model.report.tradeDate, code: member.tsCode, name: member.name)
+                } label: {
+                    Label("查看详细分析", systemImage: "chart.xyaxis.line")
+                        .font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.accent)
+                }.buttonStyle(.plain)
+                if let request = model.infoCardRequest, request.code == member.tsCode {
+                    InfoCardPageView(model: model, request: request, embedded: true)
+                        .padding(.top, 4)
+                }
+            }
+            DisclosureGroup("技术与审计信息", isExpanded: $showTechnical) {
+                VStack(alignment: .leading, spacing: 10) {
+                    if !member.mech.sortedKeys.isEmpty { NKMetricsGrid(value: member.mech) }
+                    if let core = member.coreMetrics, !core.sortedKeys.isEmpty { NKMetricsGrid(value: core) }
+                }.padding(.top, 10)
+            }
+            .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+        }
+    }
+
+    private func textCard(_ title: String, _ text: String, tone: Color) -> some View {
+        NKCard {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(NKFont.headline).foregroundStyle(tone)
+                Text(text).font(NKFont.body).foregroundStyle(NK.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func priceReferences(_ member: BasketMember) -> some View {
+        NKCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("三个参考价位").font(NKFont.headline)
+                reference("建仓观察区间", member.entryZone?.compactRangeText ?? "暂不可用")
+                reference("最高追价", member.maxChase.map(NKFmt.price) ?? "暂不可用")
+                reference("离场参考区间", member.exitReference?.compactRangeText ?? "暂不可用")
+                Text("仅作计划参考，不构成交易指令。")
+                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+            }
+        }
+    }
+    private func reference(_ title: String, _ value: String) -> some View {
+        HStack { Text(title).font(NKFont.body).foregroundStyle(NK.textSecondary); Spacer(); Text(value).font(NKFont.headline.monospacedDigit()) }
+    }
+    private var displayName: String { basket.name.isEmpty ? "未命名篮子" : basket.name }
+    private var introduction: String {
+        let raw = basket.card?.driver.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleaned = raw.replacingOccurrences(of: "·policy", with: "")
+            .replacingOccurrences(of: " policy", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "这组标的由同一条市场线索组成，重点看成员的具体条件。" : cleaned
+    }
+    private func userRiskText(_ raw: String) -> String {
+        if raw.localizedCaseInsensitiveContains("avoid_flag") {
+            return "部分成员出现需要人工复核的风险提示；系统未自动否决，仍需结合实际情况判断。"
+        }
+        if raw.localizedCaseInsensitiveContains("data_missing") {
+            return "部分关键数据暂缺，本篮子的结论需要更谨慎地参考。"
+        }
+        return "发现一项需要进一步确认的风险提示，详细依据可在技术与审计信息中查看。"
+    }
+    private func selectInitialMember() {
+        if let requested = model.selectionMemberCode,
+           members.contains(where: { $0.tsCode == requested }) {
+            selectedCode = requested
+        } else if selectedCode.isEmpty || !members.contains(where: { $0.tsCode == selectedCode }) {
+            selectedCode = members.first?.tsCode ?? ""
+        }
+    }
+    private func roleText(_ member: BasketMember) -> String { member.roleConflict ? "角色待确认" : (member.roleDisplay.isEmpty ? "角色待确认" : member.roleDisplay) }
+    private func industryRank(_ member: BasketMember) -> String {
+        guard let metrics = member.coreMetrics?.objectValue,
+              let rank = metrics["industry_ret_rank_1d"]?.intValue,
+              let total = metrics["industry_member_count"]?.intValue else { return "行业今日表现暂不可用" }
+        return "行业今日表现第 \(rank) / \(total)"
+    }
+}
+#endif

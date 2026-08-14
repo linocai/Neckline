@@ -60,6 +60,7 @@ from neckline.report.industry_strength_store import (
     load_industry_strength,
 )
 from neckline.report.sentiment import compute_sentiment
+from neckline.selection import member_tags as mt
 from neckline.strategy.features import (
     SSE_INDEX,
     add_features,
@@ -362,6 +363,10 @@ class InfoCard:
             "basket": self.basket.to_public_dict(),
             "tags": [t.to_public_dict() for t in self.tags],
             "tagsAbsent": list(self.tags_absent),
+            "tagAbsences": [
+                {"code": code, "label": mt.tag_label(code)}
+                for code in self.tags_absent if code in mt.ALL_TAG_CODES
+            ],
         }
 
 

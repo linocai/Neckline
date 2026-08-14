@@ -499,6 +499,7 @@ struct InfoCard: Codable, Equatable {
     var tags: [BasketMemberTag] = []
     /// **判不了的标注码**(数据缺失)—— 与「判过没命中」是两回事,⛔ 不许合并成"没有标注"。
     var tagsAbsent: [String] = []
+    var tagAbsences: [BasketTagAbsence] = []
 
     enum CodingKeys: String, CodingKey {
         case code, name, tradeDate, klineAvailable, kline, klineUnavailableReason
@@ -506,7 +507,7 @@ struct InfoCard: Codable, Equatable {
         case industryDivergenceAvailable, industryDivergenceLine, industry
         case industryDivergenceNote, industryDivergenceUnavailableReason
         case snapshot, k4Flags, mildBand, news, topList, market
-        case basket, tags, tagsAbsent
+        case basket, tags, tagsAbsent, tagAbsences
     }
 
     init(code: String = "", name: String = "", tradeDate: String = "",
@@ -521,7 +522,7 @@ struct InfoCard: Codable, Equatable {
          mildBand: Bool = false, news: InfoCardNews = InfoCardNews(scanned: false),
          topList: InfoCardTopList = InfoCardTopList(), market: InfoCardMarket = InfoCardMarket(),
          basket: InfoCardBasket = InfoCardBasket(), tags: [BasketMemberTag] = [],
-         tagsAbsent: [String] = []) {
+         tagsAbsent: [String] = [], tagAbsences: [BasketTagAbsence] = []) {
         self.code = code; self.name = name; self.tradeDate = tradeDate
         self.klineAvailable = klineAvailable; self.kline = kline
         self.klineUnavailableReason = klineUnavailableReason
@@ -534,6 +535,7 @@ struct InfoCard: Codable, Equatable {
         self.snapshot = snapshot; self.k4Flags = k4Flags; self.mildBand = mildBand
         self.news = news; self.topList = topList; self.market = market
         self.basket = basket; self.tags = tags; self.tagsAbsent = tagsAbsent
+        self.tagAbsences = tagAbsences
     }
 
     init(from decoder: Decoder) throws {
@@ -568,6 +570,7 @@ struct InfoCard: Codable, Equatable {
         basket = try c.decodeIfPresent(InfoCardBasket.self, forKey: .basket) ?? InfoCardBasket()
         tags = try c.decodeIfPresent([BasketMemberTag].self, forKey: .tags) ?? []
         tagsAbsent = try c.decodeIfPresent([String].self, forKey: .tagsAbsent) ?? []
+        tagAbsences = try c.decodeIfPresent([BasketTagAbsence].self, forKey: .tagAbsences) ?? []
     }
 }
 

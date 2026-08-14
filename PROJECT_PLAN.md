@@ -1,66 +1,67 @@
 # Neckline project plan
 
-> Updated: 2026-08-13. This file records current state only. Historical construction logs and release audits are in `archive/`.
+> Updated: 2026-08-14. This is the current control plane. Historical work is under `archive/`.
 
-## 一、Current goal
+## 1. Current goal
 
-Maintain Neckline as a small, production-only application repository. Keep offline strategy research and backtesting in whynotme, with an explicit one-way runtime contract and no production dependency on research code.
+Operate **v2.4.1 Build 2** as the released macOS-first selection workbench, then begin the v2.4.2 backend cycle. The completed executable record is [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
 
-## 二、Current state
+## 2. Current state
 
-- Production release line: `v2.4.0`.
-- Active strategy contract: K8 / `K8-V0.8`, engines `C2`, `Z2`, `Y2`, charter `v2.3-k8`.
-- Client: SwiftUI iOS and macOS under `App/`.
-- Service: FastAPI, SQLite, Parquet, scheduled jobs, and systemd definitions under `Backend/`.
-- Backtest, evaluation, research panel, capability analysis, and weekly calibration code have moved to `/Users/linotsai/Lino/whynotme`.
+- Production release line is `v2.4.1` / Build 2. The Backend was deployed and the local macOS application was replaced on 2026-08-14; public health reports `v2.4.1`.
+- The signed iOS archive is ready for the user to install. Codex did not install to an iPhone/iPad, upload to App Store Connect, or notarize/distribute through a third party.
+- Client: SwiftUI iOS and macOS in `App/`. Service: FastAPI in `Backend/`.
+- Strategy research, calibration, evaluations, and backtests remain in `/Users/linotsai/Lino/whynotme`; Neckline never imports it.
 
-## 三、Architecture boundary
+## 3. V2.4.1 binding decisions
+
+- macOS only. Keep iPhone/iPad structure and behavior intact unless a shared DTO must decode an additive field.
+- Work directly on `main`; do not create a branch for this release.
+- Scope is the selection workbench: its sidebar, basket/member detail, Today Market, auction report, and Today Intel.
+- Sidebar = navigation, overview, and basket/member selection. The right pane = complete content. Its explicit destinations are **Today Market**, **Auction Report**, **a Basket**, and **Today Intel**.
+- A default destination must be visibly selected; do not fall back to a basket without matching sidebar state.
+- Every basket member is visible in a vertically scalable selector. Selecting one changes the detail below it.
+- Remove the basket price scale bar. Keep the three price references in selected-member detail.
+- Replace raw `industry_lift` with a human-comprehensible daily industry rank when the existing metrics provide it; raw lift is audit-only.
+- No new LLM call, prompt pass, or client-side generation. Reuse existing fields with deterministic human fallbacks.
+- User-facing default/detail layers must not expose internal keys, process stages, raw rule expressions, pack/engine versions, score internals, or project-document references. Audit data remains behind an explicit technical entry.
+- The auction report is a right-pane report, not a modal. Its user body is conclusions, baskets, member performance, risks, and manual observations; data-quality machinery moves to a folded technical appendix.
+- Today Intel is a right-pane destination, not a sidebar disclosure. It remains intelligence, not a stock-picking signal.
+- Holdings receives only the shared market-status humanization. Review is out of scope.
+- Release metadata is fixed at marketing version `2.4.1` and build number `2`; client and server marketing versions are synchronized. The subsequent production deployment was explicitly authorized on 2026-08-14.
+
+## 4. Delivery sequence and gates
+
+1. **Build:** implement the execution record in focused app and additive-contract slices; preserve iOS and all selection logic.
+2. **Build verification:** run targeted unit/contract tests, macOS tests/build, backend suite, API smoke against a temporary/read-only target, and the screenshot matrix.
+3. **Independent review:** compare the diff and running macOS UI to the binding decisions; record findings in `archive/review报告/REVIEW_V2.4.1_20260813.md`.
+4. **Repair:** fix every confirmed blocking/high-severity review finding, then rerun affected tests and all release gates.
+5. **Release-candidate gate:** apply version/build through the single release helper, regenerate Xcode project, build/archive locally, and verify the signed artifact.
+6. **Release:** back up production and the installed app, deploy/restart/verify Backend, replace and launch the macOS app, produce the signed iOS archive without installing it, then commit/tag/push from `main`.
+
+## 5. Architecture boundary
 
 ```text
-Neckline/Backend ── exports SQLite snapshot + read-only artifact contract ──▶ whynotme
-Neckline/App     ◀─ consumes production API ────────────────────────────────┘
+Neckline/Backend -- production API and frozen snapshots --> App (SwiftUI)
+Neckline/Backend -- read-only snapshot/artifact contract --> whynotme
 ```
 
-- Neckline does not import whynotme.
-- whynotme tasks require an explicit snapshot database path.
-- Research output may be read by Neckline as versioned JSON/Markdown artifacts; it does not become an online rule automatically.
-- Strategy or pack changes still require user confirmation and the existing versioned activation gates.
+- v2.4.1 may make only additive display-contract changes in Backend: human basket names in auction risks and labeled tag-absence data.
+- No selection scoring, gate, data-processing, database schema, LLM-budget, or deployment change belongs in this release.
+- Historical frozen payloads must continue to decode; client fallbacks must never show an internal key or code in the default layer.
 
-## 四、Completed consolidation
+## 6. Current backlog after v2.4.1
 
-- Root reduced to `AGENTS.md`, `App/`, `archive/`, `Backend/`, `PROJECT_PLAN.md`, and `README.md`.
-- Legacy `CLAUDE.md`, the former oversized plan, design handoff, and release remediation notes archived.
-- `client/` renamed to `App/`; Python service, scripts, tests, packs, deployment files, and local data consolidated under `Backend/`.
-- `neckline/backtest`, `neckline/eval`, `neckline/research`, backtest strategies, research scripts, and their tests migrated to whynotme.
-- Production API and review screens now consume only the shared lightweight research-artifact contract.
+- **v2.4.2:** backend logic, data contracts, stability, and engineering improvements.
+- **v2.4.3:** end-to-end product review and final consistency pass.
+- Existing research backlog remains in the prior historical record; it is not active v2.4.1 scope.
 
-## 五、Next engineering priorities
+## 7. Verification record
 
-1. Keep the v2.4.0 production behavior stable while the new repository layout settles.
-2. Validate deployment scripts from `Backend/` against a non-production target before the next release.
-3. Continue frontend reduction and usability work only when backed by current screenshots or explicit user direction.
-4. Let whynotme own all new experiments, calibration reports, and backtest history.
-
-## 六、Release discipline
-
-- Backend: full Python suite plus API smoke.
-- App: project generation consistency, macOS build/test, and iOS build/test where a simulator is available.
-- Cross-boundary: import scan proves Backend has zero `whynotme`, backtest, evaluation, or research imports.
-- Deployment: verify paths, unit files, schema migration on a copy, and rollback before touching production.
-
-## 七、Backlog
-
-- **[P3-32] 主归属 lift 与小簇/大概念对照**：继续积累分层证据；用户确认前不改当前规则。
-- **[P3-34] 工程重解读与首版阈值审计**：关注 `engineering_v1`、`platform_days` 与 C2/Z2/Y2 分层表现；只出建议，不自动改包。
-- **[P3-37] 退潮主线跳水灵敏度**：积累真实触发与误报样本，无论正负都进入复盘。
-- **[P3-49] 位置关读数口径**：等待足够样本后再判断窗口与读数是否需要调整。
-- **[P3-51] 主归属无法确定样本**：跟踪“归属待确认”比例及其后续表现。
-- **[P4-67] 正式投入与验证窗口**：正式投入使用锚点为 `2026-08-17`；第 15 个交易日重算为 `2026-09-04`。旧日期 `2026-08-26` 已被本裁定取代。
-
-## 八、Verification record
-
-- Pre-migration Neckline baseline: `4358 passed, 3 skipped`.
-- Research repository after migration: `338 passed, 3 skipped`.
-- Final production-only Backend suite: `3975 passed`.
-- App: macOS build succeeded; macOS tests `228 passed, 10 skipped` (real-backend integration cases); iOS Simulator build succeeded.
-- Snapshot boundary: a real SQLite snapshot was exported to whynotme and consumed by weekly calibration without an implicit production-database fallback.
+- RC metadata: `v2.4.1` / Build `2`, synchronized by `App/scripts/prepare_release_candidate.sh` across both `project.yml` marketing values, generated `pbxproj`, and Backend health version.
+- Final gate: Backend `3982 passed` (temporary-test data only); macOS `230 passed, 10 skipped`; Debug and Release builds succeeded. Temporary-database API smoke passed (`DB_PATH=/tmp/neckline_smoke_*.db`) and returned `v2.4.1`; no production database was written.
+- Backend deployment: production target `deploy@114.66.0.38:/opt/neckline`; service restarted at 2026-08-14 08:39 CST with a new PID, zero restart count, no failed units, no new journal warnings, SQLite `integrity_check=ok`, and successful direct/public authenticated API smoke. Public unauthenticated protected access correctly returned 401; the NPM routing regression baseline passed.
+- Production rollback: source and retired weekly-unit backup `/opt/neckline-release-backups/v2.4.1-pre-20260814-083622/`; two verified database backups `/opt/neckline/data/neckline.db.bak-v241-20260814-083622` and `/opt/neckline/data/neckline.db.cpbak-v241-20260814-083622`. The obsolete `neckline-weekly.timer` was disabled and removed after its migrated research workflow was confirmed outside Neckline.
+- macOS installation: `/Applications/Neckline.app` is signed, universal, version `2.4.1 (2)`, byte-matched to `/tmp/neckline-v241-rc.qrDQ1q/Neckline-v2.4.1-b2.xcarchive`, and launched successfully. The exact prior app is preserved at `/Users/linotsai/Lino/app_backups/Neckline-2.4.0-b1-20260814-083622-original.app`.
+- iOS handoff: signed archive `/tmp/neckline-v241-ios/Neckline-iOS-v2.4.1-b2.xcarchive` (version `2.4.1 (2)`, strict code-sign verification passed). No iOS device was modified.
+- Pre-release rollback anchor: `b3e3d8189f040bc6826916be979d5ff3082b9d64`. The release commit and annotated `v2.4.1` tag are the durable source release markers.

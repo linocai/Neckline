@@ -734,6 +734,8 @@ struct MarketRegimeStrip: View {
     let regime: MarketRegime
     /// 紧凑档(持仓页顶部一行);报告顶部用完整档(带增强 / 减弱方向)。
     var compact: Bool = false
+    /// 默认产品层只给结论；机器规则表达式仅允许显式技术入口使用。
+    var userFacing: Bool = true
 
     var body: some View {
         // 🔴 **compact 是列表栏里的一小块,不是数据卡**(V2.3.1 批 3):持仓列表栏 376pt
@@ -791,7 +793,7 @@ struct MarketRegimeStrip: View {
                         .foregroundStyle(NK.textPrimary)
                     Text("行情状态").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     Spacer(minLength: 6)
-                    if !metaLine(d).isEmpty {
+                    if !userFacing && !metaLine(d).isEmpty {
                         Text(metaLine(d)).font(NKFont.caption.monospacedDigit())
                             .foregroundStyle(NK.textTertiary)
                     }
@@ -802,7 +804,7 @@ struct MarketRegimeStrip: View {
             #else
             regimeHeadRow(d)
             #endif
-            if !d.regimeReason.isEmpty {
+            if !userFacing && !d.regimeReason.isEmpty {
                 Text(d.regimeReason).font(compact ? NKFont.caption : NKFont.body)
                     .lineSpacing(compact ? 0 : 4)
                     .foregroundStyle(compact ? NK.textSecondary : NK.textPrimary)
@@ -850,7 +852,7 @@ struct MarketRegimeStrip: View {
             Text("行情状态").nkLabel().foregroundStyle(NK.textTertiary)
             NKChip(text: d.displayLabel, tone: d.tone, filled: true)
             Spacer(minLength: 6)
-            if !metaLine(d).isEmpty {
+            if !userFacing && !metaLine(d).isEmpty {
                 Text(metaLine(d)).font(NKFont.caption.monospacedDigit())
                     .foregroundStyle(NK.textTertiary)
             }
@@ -881,14 +883,18 @@ struct MarketRegimeStrip: View {
             Image(systemName: "questionmark.circle").font(.system(size: 13))
                 .foregroundStyle(NK.textTertiary)
             VStack(alignment: .leading, spacing: 2) {
-                Text("行情状态本次未取得").font(NKFont.callout).fontWeight(.semibold)
+                Text(userFacing ? "行情状态暂不可用" : "行情状态本次未取得")
+                    .font(NKFont.callout).fontWeight(.semibold)
                     .foregroundStyle(NK.textSecondary)
-                // 服务端已把「批算没跑 / 非交易日 / 参数非法」分开写好,原样展示。
-                Text(regime.unavailableReason ?? "服务端未给原因")
+                Text(userFacing
+                     ? "市场状态暂不可用，请稍后刷新。"
+                     : (regime.unavailableReason ?? "服务端未给原因"))
                     .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("⛔ 「没取到」不等于「今天没什么特别的」")
-                    .font(NKFont.caption).foregroundStyle(NK.amber)
+                if !userFacing {
+                    Text("⛔ 「没取到」不等于「今天没什么特别的」")
+                        .font(NKFont.caption).foregroundStyle(NK.amber)
+                }
             }
             Spacer()
         }

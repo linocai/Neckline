@@ -55,10 +55,7 @@ struct NKToolbar: View {
 
             Spacer(minLength: 12)
 
-            // 右:行情状态 ← 交易日·章程·选股包 ← 数据新鲜度徽标 ← 刷新 ← 齿轮
-            regimePill
-            metaLine
-            freshnessBadge
+            // 右端只保留全局操作；选股状态属于选股工作台，不在工具栏重复。
             refreshButton
             gearButton
         }
@@ -89,10 +86,6 @@ struct NKToolbar: View {
                 Text(tab.title).font(NKFont.callout)
                     .fontWeight(active ? .semibold : .regular)
                     .foregroundStyle(active ? NK.textPrimary : NK.textSecondary)
-                if tab == .baskets, basketCount > 0 {
-                    // 原型 39 行:蓝底方徽标,⛔ 不是一个裸数字。走全 App 唯一徽标实现。
-                    NKChip(text: "\(basketCount)", tone: .info)
-                }
                 // ⛔ V2.4.0 P0:原先退潮刹车时持仓那枚带一颗红点,随退潮判级退役删除。
             }
             // 原型 nav() 1789 行 `padding:5px 11px 5px 9px`(左 9 / 右 11,刻意不对称:
@@ -111,8 +104,6 @@ struct NKToolbar: View {
         }
         .buttonStyle(.plain)
     }
-
-    private var basketCount: Int { model.report.basketDaily.baskets.count }
 
     // MARK: - 行情状态(色点 + 标签)
     // ⛔ V2.4.0 P0:原先还有第四档「退潮刹车 → 实底白字」,随退潮判级退役删除。

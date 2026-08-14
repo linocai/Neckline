@@ -206,6 +206,20 @@ def test_tag_objects_carry_text_label_tone_and_source():
         assert set(d) == {"code", "label", "tone", "text", "source"}
 
 
+def test_public_member_contract_adds_labels_for_absent_tags():
+    """默认展示层拿中文标签；旧 `tagsAbsent` 仍保留给兼容/审计。"""
+    from neckline.report.basket_daily import card_member_to_public_dict
+
+    public = card_member_to_public_dict({
+        "ts_code": "600000.SH", "tags_absent": [mt.TAG_WARN_STREAK_TOP],
+    })
+    assert public["tagsAbsent"] == [mt.TAG_WARN_STREAK_TOP]
+    assert public["tagAbsences"] == [{
+        "code": mt.TAG_WARN_STREAK_TOP,
+        "label": mt.tag_label(mt.TAG_WARN_STREAK_TOP),
+    }]
+
+
 def test_reference_only_suffix_is_single_sourced_in_module_text():
     """文案主体里**不许**自己再写一遍后缀(否则会出现"参考、非指令。参考、非指令。"
     这种双份,且改一处漏一处)——后缀只由 `tag_text()` 追加。"""

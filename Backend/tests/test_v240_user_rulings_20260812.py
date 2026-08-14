@@ -409,7 +409,8 @@ class TestRuling6GoLiveDate:
         assert days[-1] == date(2026, 9, 4), days[-1]
 
     def test_plan_records_the_recomputed_date_and_the_new_anchor(self):
-        plan = _text("PROJECT_PLAN.md")
+        # 当前 PROJECT_PLAN 是短控制面；该裁定属于 V2.4.0，随历史计划归档保存。
+        plan = (ROOT.parent / "archive/交接与日志/PROJECT_PLAN_v2.4.0_legacy_20260813.md").read_text(encoding="utf-8")
         assert "2026-09-04" in plan
         assert "2026-08-17" in plan
         # 🔴 旧日期 `2026-08-26` **可以留在原文里**(稳定 ID 与原文一律保留不删),

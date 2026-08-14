@@ -183,6 +183,7 @@ class BasketMemberOut(BaseModel):
     tags: List[Dict[str, Any]] = Field(default_factory=list)
     # 判不了的标注码 —— 与「判过没命中」是两回事,⛔ 不许合并成"没有标注"。
     tagsAbsent: List[str] = Field(default_factory=list)
+    tagAbsences: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class BasketCardOut(BaseModel):
@@ -1360,6 +1361,7 @@ class InfoCardOut(BaseModel):
     tags: List[InfoCardMemberTagOut] = Field(default_factory=list)
     # 判不了的标注码(数据缺失)—— 与「判过没命中」是两回事,⛔ 不许合并成"没有标注"。
     tagsAbsent: List[str] = Field(default_factory=list)
+    tagAbsences: List[Dict[str, str]] = Field(default_factory=list)
 
 
 # —— V2-⑪-C 自然语言临时提醒(`custom_alerts`)————————————————————————————
