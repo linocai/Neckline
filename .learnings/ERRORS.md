@@ -25,6 +25,72 @@ database snapshot is unchanged, which is the actual read-overlay contract.
 
 ---
 
+## [ERR-20260814-017] build-five-release-guard-still-pinned-to-four
+
+**Logged**: 2026-08-14T18:03:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The first post-429 full suite found the V2.4.2 release guard still expected Build 4 after the Build 5 RC bump.
+
+### Resolution
+
+- **Resolved**: 2026-08-14T18:06:00+08:00
+- **Notes**: Updated the single source expectation and its diagnostics to Build 5; focused 92 tests and the
+  full backend suite (4010 passed, 19 registered skips) then passed.
+
+---
+
+## [ERR-20260814-016] provider-429-bypassed-existing-retries
+
+**Logged**: 2026-08-14T17:52:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+
+The first live Build 5 rerun completed two interleaved deep-reason cohorts, then GLM returned HTTP 429. The
+OpenAI-compatible transport treated every non-200 as final, so the existing three-attempt policy was bypassed
+and the pipeline correctly but unhelpfully terminated as `usage_unavailable`.
+
+### Resolution
+
+- **Resolved**: 2026-08-14T18:06:00+08:00
+- **Notes**: Only explicit 429 responses now enter the existing retry budget, honoring numeric `Retry-After`
+  or a short fallback delay. Other non-200 responses retain their prior immediate-degradation behavior.
+
+---
+
+## [ERR-20260814-015] production-online-backup-directory-owner
+
+**Logged**: 2026-08-14T17:50:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+The production backup directory was created as root, so the `neckline` service user could not create the
+online SQLite backup inside it. Source archive and file-copy backup succeeded; the production database was
+not modified.
+
+### Suggested Fix
+
+Create the release backup directory as `neckline:neckline` with mode `0700` before invoking Python's SQLite
+backup API, then validate the resulting snapshot with `PRAGMA integrity_check` and hashes.
+
+### Resolution
+
+- **Resolved**: 2026-08-14T17:54:00+08:00
+- **Notes**: Corrected the directory owner/mode, created an 84,041,728-byte online snapshot, and verified
+  `PRAGMA integrity_check=ok` plus SHA-256 hashes. Future backup commands must set the directory owner first.
+
+---
+
 ## [ERR-20260814-014] ssh-nested-quote-diagnostics
 
 **Logged**: 2026-08-14T17:23:00+08:00

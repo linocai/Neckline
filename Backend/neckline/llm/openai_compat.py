@@ -46,6 +46,19 @@ from neckline.llm.base import ChatMessage, LLMProvider, LLMResult, SearchHit
 logger = logging.getLogger(__name__)
 
 
+class _RetryableUpstreamStatus(RuntimeError):
+    """A provider throttle response that may succeed on the existing retry path."""
+
+    def __init__(self, status_code: int, retry_after: Optional[str] = None) -> None:
+        super().__init__(f"上游 {status_code}")
+        self.status_code = status_code
+        try:
+            parsed = float(retry_after) if retry_after is not None else 2.0
+        except (TypeError, ValueError):
+            parsed = 2.0
+        self.retry_after_seconds = max(0.0, parsed)
+
+
 def _actual_usage(raw_responses: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Normalize only provider-reported token usage.
 
@@ -324,10 +337,9 @@ class OpenAICompatProvider(LLMProvider):
         """一次 HTTP 往返(短读超时 + 每次全新连接重试,继承 LinoN deepseek.py 姿势)。
         返回 `(body, None)` 成功,或 `(None, 降级原因)`。
 
-        **只有网络层异常才重试**(超时 / 连接断);「上游非 200」与「响应解析异常」
-        是**已经拿到一个明确答复**,当场降级、不重放 —— 这条分工是 P0-44 重构前
-        就有的(旧代码靠"状态码检查写在重试循环外面"表达),重构后由两个
-        `_attempt_*` 各自把这类结果**作为返回值**交回来表达,行为逐字节不变。
+        网络层异常(超时 / 连接断)与明确的 429 限流响应走现有重试次数；429 优先
+        尊重上游 `Retry-After`，缺失时短暂退避。其余非 200 与响应解析异常仍是已经
+        拿到的明确答复，当场降级、不重放。
 
         `payload["stream"]` 决定走哪条:流式那条的读超时语义是 **chunk 间隔**,
         见 `__init__` 的 `read_timeout` 文档。"""
@@ -349,6 +361,10 @@ class OpenAICompatProvider(LLMProvider):
                 break
             except Exception as e:  # noqa: BLE001  超时/网络/连接异常 → 换新连接重试
                 last_exc = e
+                retry_delay = (
+                    min(e.retry_after_seconds, self.read_timeout)
+                    if isinstance(e, _RetryableUpstreamStatus) else 0.0
+                )
                 # ⚠ 流式下把**这次已经流了多久**也打出来:它是判「是真卡死(≈ 一个
                 # chunk 间隔就死)还是生成太长(流了很久才断)」的唯一现场证据。
                 logger.warning(
@@ -356,6 +372,8 @@ class OpenAICompatProvider(LLMProvider):
                     self.name, attempt, self.max_attempts, time.monotonic() - started,
                     ",流式" if streaming else "", e,
                 )
+                if attempt < self.max_attempts and retry_delay:
+                    time.sleep(retry_delay)
         if outcome is None:
             reason = f"调用异常 {type(last_exc).__name__}" if last_exc is not None else "调用异常"
             return None, reason
@@ -364,6 +382,8 @@ class OpenAICompatProvider(LLMProvider):
     def _attempt_post(self, client: Any, payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """非流式单次尝试。行为与 P0-44 之前完全一致(见 `_post` docstring)。"""
         resp = client.post(self.api_url, json=payload, headers=self._headers())
+        if resp.status_code == 429:
+            raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
         if resp.status_code != 200:
             return None, f"上游 {resp.status_code}"
         try:
@@ -384,6 +404,9 @@ class OpenAICompatProvider(LLMProvider):
         循环(整次重来),⛔ 绝不把已累积的半截内容当结果返回 —— 半截 JSON 解出来
         可能正好是个"看着合法"的残缺篮子,那比干净地失败危险得多。"""
         with client.stream("POST", self.api_url, json=payload, headers=self._headers()) as resp:
+            if resp.status_code == 429:
+                resp.read()
+                raise _RetryableUpstreamStatus(429, resp.headers.get("Retry-After"))
             if resp.status_code != 200:
                 resp.read()  # 流式响应必须先读完才能拿 body/关闭,与非流式取值口径一致
                 return None, f"上游 {resp.status_code}"

@@ -161,8 +161,9 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
 
 - **Now:** production V2.4.2 uses approved balanced package `v2.4.2-balanced-r1`; the basket service is pinned to
   that versioned file. Build 5 interleaves configured two-direction search/reason cohorts so a later wall-budget
-  stop preserves completed deep work, and makes macOS show honest partial/unavailable empty states. Its gates are
-  Backend 4009 passed/19 skipped, macOS 231 passed/10 existing skips, iOS Debug build and signed macOS archive.
+  stop preserves completed deep work, retries explicit provider 429 throttles within the existing attempt budget,
+  and makes macOS show honest partial/unavailable empty states. Its gates are Backend 4010 passed/19 skipped,
+  macOS 231 passed/10 existing skips, iOS Debug build and signed macOS archive.
 - **Next:** run the balanced package for the first
   3–5 trading days, review actual `selection_llm_calls` Token totals, direction counts, fill rounds and stop
   reasons before proposing `r2`; do not tune from one day or replace the file in place.
@@ -185,6 +186,8 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
 - **Hotfix 2026-08-14:** the first production balanced run read all 190 directions and spent 125,315 measured
   Tokens, but exhausted its wall budget after 13 searches before starting any deep reasoning, publishing a
   misleading zero-basket partial result. Build 5 processes configured deep cohorts end-to-end and exposes the
-  server's selection-state notice in the macOS workbench; no budget, threshold, gate or LLM-call type changes.
+  server's selection-state notice in the macOS workbench. Its first live repair run proved the new ordering with
+  two deep-reason batches, then exposed a provider 429 that the HTTP layer did not retry; Build 5 now retries only
+  explicit 429 throttles. No budget, threshold, gate or LLM-call type changes.
 - Build numbers are monotonic installable-build identifiers, not reserved in advance. This client hotfix
   consumes Build 5, so V2.4.3 is expected to start at Build 6.

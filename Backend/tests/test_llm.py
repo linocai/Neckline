@@ -517,6 +517,27 @@ class TestOpenAICompatSharedDegradation:
         assert result.ok is False
         assert "500" in result.reason
 
+    def test_429_retries_on_existing_attempt_budget_then_succeeds(self):
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(429, headers={"Retry-After": "0"}, json={"error": "throttled"})
+            body = _openai_success_body("ok")
+            body["usage"] = {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}
+            return httpx.Response(200, json=body)
+
+        p = GLMProvider(api_key="sk-xxx")
+        result = p.chat(
+            [ChatMessage(role="user", content="hi")],
+            enable_search=False,
+            transport=httpx.MockTransport(handler),
+        )
+        assert result.ok is True
+        assert result.total_tokens == 5
+        assert calls["n"] == 2
+
     def test_invalid_json_body_degrades(self):
         transport = httpx.MockTransport(lambda r: httpx.Response(200, content=b"not json at all"))
         p = GLMProvider(api_key="sk-xxx")
