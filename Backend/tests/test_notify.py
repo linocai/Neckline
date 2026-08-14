@@ -105,6 +105,37 @@ def test_report_push_sends_when_on(api_env, apns_configured):
     assert out.sent == 2 and out.failed == 0        # 全部 kind 默认开
 
 
+@pytest.mark.parametrize(
+    ("state", "title_text", "body_text"),
+    [
+        ("partial", "选股部分完成", "仍有方向未完成"),
+        ("unavailable", "选股未完成", "不代表今天没有机会"),
+        ("processing", "选股仍在整理", "尚未形成最终结果"),
+    ],
+)
+def test_report_push_never_claims_selection_ready_when_it_is_not(
+    api_env, apns_configured, state, title_text, body_text,
+):
+    import json
+
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    captured = {}
+
+    def transport(url, headers, body):
+        captured.update(json.loads(body.decode() if isinstance(body, bytes) else body))
+        return apns.PushResult(ok=True, status=200, reason="ok")
+
+    out = notify.push_report_ready(
+        "2026-08-14", selection_state=state, db_path=db, transport=transport,
+    )
+    alert = captured["aps"]["alert"]
+    assert out.sent == 1
+    assert title_text in alert["title"]
+    assert body_text in alert["body"]
+    assert captured["selectionState"] == state
+
+
 # 🔴 **V2.4.0 P0(施工纪律 4:写明被谁取代)**:原两条用例是
 #   · `test_retreat_push_gated_off` —— 开关关掉 → `skipped_reason == "kind_off:retreat"`;
 #   · `test_retreat_push_sends_when_on` —— 开关开着 → `sent == 1`。

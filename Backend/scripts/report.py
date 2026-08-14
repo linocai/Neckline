@@ -92,7 +92,10 @@ def main() -> int:
             # 绝不因推送失败让报告任务失败)。
             try:
                 from neckline.api.notify import push_report_ready
-                outcome = push_report_ready(trade_date.strftime("%Y-%m-%d"))
+                selection_state = getattr(getattr(bundle, "basket_daily", None), "selection_state", None)
+                outcome = push_report_ready(
+                    trade_date.strftime("%Y-%m-%d"), selection_state=selection_state,
+                )
                 logger.info("APNs 报告推送:sent=%d failed=%d%s",
                             outcome.sent, outcome.failed,
                             f" skipped={outcome.skipped_reason}" if outcome.skipped_reason else "")

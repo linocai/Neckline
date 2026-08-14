@@ -138,17 +138,27 @@ def push_event(
 # ══════════════════════════════════════════════════════════════════════════
 
 def push_report_ready(
-    trade_date_disp: str, *, db_path: Optional[Path] = None, transport: Optional[Any] = None,
+    trade_date_disp: str, *, selection_state: Optional[str] = None,
+    db_path: Optional[Path] = None, transport: Optional[Any] = None,
 ) -> NotifyOutcome:
     """16:35 盘后报告就绪(kind=`report_ready`,**盘后汇总**级)。"""
+    state = str(selection_state or "").strip().lower()
+    if state == "partial":
+        title = "盘后报告已生成，选股部分完成"
+        body = f"{trade_date_disp} 报告可看；今日选股仍有方向未完成。{_OPEN_APP_NOW}"
+    elif state == "unavailable":
+        title = "盘后报告已生成，选股未完成"
+        body = f"{trade_date_disp} 报告可看；今日选股未完整跑成，不代表今天没有机会。{_OPEN_APP_NOW}"
+    elif state == "processing":
+        title = "盘后报告已生成，选股仍在整理"
+        body = f"{trade_date_disp} 报告可看；今日选股尚未形成最终结果。{_OPEN_APP_LATER}"
+    else:
+        title = "今日盘后报告已生成"
+        body = f"{trade_date_disp} 盘后报告与今日选股已就绪。{_OPEN_APP_LATER}"
     return push_event(
         KIND_REPORT_READY,
-        "今日盘后报告已生成",
-        # ⚠ V2.1-⑦:「今日篮子」→「今日选股」跟着板块改名(客户端 `AppTab.baskets.title`)。
-        # **只改文案** —— kind / 开关 / extra 一律不动(新增推送 kind 须用户拍板,
-        # 改一句话不触发那条纪律)。
-        f"{trade_date_disp} 盘后报告与今日选股已就绪。{_OPEN_APP_LATER}",
-        custom_extra={"tradeDate": trade_date_disp},
+        title, body,
+        custom_extra={"tradeDate": trade_date_disp, **({"selectionState": state} if state else {})},
         db_path=db_path, transport=transport,
     )
 

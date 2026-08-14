@@ -164,7 +164,7 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
 - **Now:** production V2.4.2 uses approved balanced package `v2.4.2-balanced-r1`; the basket service is pinned to
   that versioned file. Build 5 interleaves configured two-direction search/reason cohorts so a later wall-budget
   stop preserves completed deep work, retries provider 1302/1305 throttles within the existing attempt budget,
-  and makes macOS show honest partial/unavailable empty states. Its gates are Backend 4011 passed/19 skipped,
+  and makes macOS/push copy show honest partial/unavailable states. Its gates are Backend 4014 passed/19 skipped,
   macOS 231 passed/10 existing skips, iOS Debug build and signed macOS archive.
 - **Next:** run the balanced package for the first
   3–5 trading days, review actual `selection_llm_calls` Token totals, direction counts, fill rounds and stop
@@ -191,6 +191,7 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   server's selection-state notice in the macOS workbench. Its first live repair run proved the new ordering with
   two deep-reason batches, then exposed provider HTTP handling that did not distinguish rate limits from account
   errors; Build 5 retries only 1302/1305 and stops immediately on balance error 1113. No budget, threshold, gate
-  or LLM-call type changes. Today's rerun remains unavailable until the upstream GLM balance is restored.
+  or LLM-call type changes. Report-ready APNs now says selection is partial/unavailable/processing instead of
+  claiming it is ready. Today's rerun remains unavailable until the upstream GLM balance is restored.
 - Build numbers are monotonic installable-build identifiers, not reserved in advance. This client hotfix
   consumes Build 5, so V2.4.3 is expected to start at Build 6.
