@@ -4,10 +4,9 @@
 
 ## 1. Current goal and release boundary
 
-Deliver the **V2.4.2 selection-backend release candidate** through independent review → repair → RC
-gate, then release it after the user's explicit 2026-08-14 authorization. The release transaction covers
-production backup/migration/deployment, source publication on `main`, the `v2.4.2` tag, and replacement of
-the macOS app with Build 3. Do not install iOS; the user handles that step. Do not create a branch.
+V2.4.2 passed independent review → repair → RC and was released after the user's explicit 2026-08-14
+authorization. Production now runs V2.4.2 with the balanced pipeline package; macOS runs Build 3. The
+signed iOS archive is a user handoff and was not installed. Continue directly on `main`; do not create a branch.
 
 The baseline is `v2.4.1` Build 2. Its record is
 [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
@@ -137,7 +136,7 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
 
 ## 7. Review, repair, RC, and rollback
 
-1. **RC ready before deployment (2026-08-14).** The fourth independent review approved the repaired
+1. **Released (2026-08-14).** The fourth independent review approved the repaired
    V2.4.2 selection pipeline (P0/P1/P2=0). Local RC metadata is `v2.4.2` Build 3; migration/recovery,
    temporary-DB backend/API, and macOS/iOS build gates have passed. Same-day published generations isolate
    basket, member, Tier, card, gate, OUT, and dropped-handoff facts; failed replacements retain the prior
@@ -151,16 +150,18 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
    macOS build, temporary-DB smoke, and screenshots.
 4. RC gate rehearses migration and rollback: pre-upgrade SQLite backup, source/release artifact anchor,
    `integrity_check`, unit syntax, explicit production-target confirmation, and known-good `v2.4.1` source.
-   The production configuration is approved and wired. Deployment authorization was granted on 2026-08-14;
-   execute only against the verified `deploy@114.66.0.38:/opt/neckline` target with a recoverable backup.
+   Production was backed up, explicitly migrated, deployed and verified at
+   `deploy@114.66.0.38:/opt/neckline`; public health reports `v2.4.2`, the API has zero restarts, and both
+   timers are active. Rollback artifacts are under `/opt/neckline-release-backups/v2.4.2-pre-20260814-132448/`
+   plus the two `neckline.db.*-v242-20260814-132448` backups. macOS V2.4.1 is preserved under
+   `/Users/linotsai/Lino/app_backups/`; no iOS device was touched.
 
 ## 8. Milestone index and backlog
 
-- **Now:** V2.4.2 RC uses approved balanced package `v2.4.2-balanced-r1`; the basket service is pinned to
+- **Now:** production V2.4.2 uses approved balanced package `v2.4.2-balanced-r1`; the basket service is pinned to
   that versioned file. The temporary memo was absorbed and removed; all verification uses explicit
   temporary databases. The local operational DB remains frozen after the reviewer-observed schema-only incident.
-  The authorized production release transaction is in progress.
-- **Next:** after verified deployment, run the balanced package for the first
+- **Next:** run the balanced package for the first
   3–5 trading days, review actual `selection_llm_calls` Token totals, direction counts, fill rounds and stop
   reasons before proposing `r2`; do not tune from one day or replace the file in place.
 - **Later:** V2.4.3 product-wide consistency review after the V2.4.2 observation window.
