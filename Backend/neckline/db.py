@@ -126,6 +126,7 @@ CREATE INDEX IF NOT EXISTS idx_strategy_activation_log_at ON strategy_activation
 -- 确认没有",不能只看 `news_alerts` 表有没有那天的行——空行两种含义都成立。
 CREATE TABLE IF NOT EXISTS reports (
     trade_date            TEXT PRIMARY KEY,   -- 'YYYYMMDD'
+    report_date           TEXT NOT NULL DEFAULT '', -- 报告发布日;周日报告与 trade_date 分离
     generated_at          TEXT NOT NULL,      -- ISO8601
     strategy_version      TEXT NOT NULL,      -- 生成本报告时用的大脑版本号(strategy_versions.version)
     sentiment_json        TEXT NOT NULL,
@@ -1568,6 +1569,9 @@ _COLUMN_MIGRATIONS = [
     ("app_settings", "push_d5exit", "INTEGER NOT NULL DEFAULT 1"),
     # v1.1-C:自选体检快照(老报告行补列取默认 '[]',前向兼容,见 CREATE TABLE 注释)。
     ("reports", "watchlist_json", "TEXT NOT NULL DEFAULT '[]'"),
+    # V2.4.2 Sunday report-date correction:报告发布日与行情截止交易日是两件事。
+    # 老报告不猜发布日,空串由读侧回退到 trade_date;新报告显式写入。
+    ("reports", "report_date", "TEXT NOT NULL DEFAULT ''"),
     # v1.1-D:问询窗口修复——消费标记列,可空(NULL=待消费),老库补列后既有行均为
     # NULL,等同「历史遗留票下一次报告即可被消费」,不会丢票也不会误判已消费。
     ("inquiry_pool", "consumed_report_date", "TEXT"),

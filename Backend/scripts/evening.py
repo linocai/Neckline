@@ -114,6 +114,10 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("trade_date", nargs="?", default=None,
                         help="YYYYMMDD;缺省=最近一个交易日")
+    parser.add_argument(
+        "--report-date", default=None,
+        help="YYYYMMDD;报告标题/推送日期。周日定时自动取周日当天；行情仍读取 trade_date",
+    )
     parser.add_argument("--segments", default=",".join(CHAIN_SEGMENTS),
                         help=f"逗号分隔,取值 {'/'.join(CHAIN_SEGMENTS)};缺省=全链")
     parser.add_argument("--no-llm", action="store_true", help="纯机械路径,零 LLM 调用")
@@ -137,7 +141,7 @@ def main() -> int:
     args = parser.parse_args()
 
     ensure_data_dirs()
-    if args.trade_date and args.scheduled:
+    if (args.trade_date or args.report_date) and args.scheduled:
         logger.error("显式交易日与 --scheduled 不能同时使用。")
         return 2
     scheduled_today = None
@@ -151,6 +155,17 @@ def main() -> int:
             return 0
     else:
         trade_date = _default_trade_date()
+    try:
+        report_date = (
+            scheduled_today
+            if scheduled_today is not None
+            else datetime.strptime(args.report_date, "%Y%m%d").date()
+            if args.report_date
+            else trade_date
+        )
+    except ValueError:
+        logger.error("报告日期格式错误，必须是 YYYYMMDD。")
+        return 2
     if not is_trading_day(trade_date):
         logger.error("%s 不是交易日,无报告可生成。", trade_date)
         return 1
@@ -185,12 +200,14 @@ def main() -> int:
             logger.error("方向流水线配置必须是 JSON object。")
             return 2
         direction_pipeline_config = loaded
-    logger.info("晚间链 %s:段 %s(llm=%s,save=%s,selection_budget_mode=%s)", trade_date, segments,
+    logger.info("晚间链 报告日=%s 行情截止=%s:段 %s(llm=%s,save=%s,selection_budget_mode=%s)",
+                report_date, trade_date, segments,
                 not args.no_llm, not args.no_save,
                 "observe_only" if args.observe_selection_cost else "enforce")
     try:
         res = run_evening_chain(
-            trade_date, segments=segments, db_path=db_path, parquet_dir=parquet_dir,
+            trade_date, report_date=report_date, segments=segments,
+            db_path=db_path, parquet_dir=parquet_dir,
             use_llm=not args.no_llm, save=not args.no_save,
             # Passing explicit None is intentional: V2.4.2 cannot silently
             # fall back to the historical first-20 aggregate route.
@@ -208,11 +225,11 @@ def main() -> int:
 
     if res.bundle is not None and not args.no_save:
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        out_path = REPORTS_DIR / f"{trade_date.strftime('%Y%m%d')}.md"
+        out_path = REPORTS_DIR / f"{report_date.strftime('%Y%m%d')}.md"
         out_path.write_text(res.bundle.markdown, encoding="utf-8")
         logger.info("报告已写入 %s,并已落库 SQLite `reports` 表。", out_path)
         if args.notify:
-            _notify(trade_date, res.bundle)
+            _notify(report_date, res.bundle)
 
     # **失败段不吞成功退出码**:报告出了但某段炸了 → 退出码 3,systemd 那侧看得见
     # (`ExecMainStatus` 才是部署验收的判据,不是"timer 跑过了")。
@@ -222,14 +239,16 @@ def main() -> int:
     return 0
 
 
-def _notify(trade_date: date, bundle) -> None:
+def _notify(report_date: date, bundle) -> None:
     """APNs 推送(plan 4B.5)——**绝不因推送失败让链失败**,同 `scripts/report.py` 体例。"""
     try:
         from neckline.api.notify import push_report_ready
 
         selection_state = getattr(getattr(bundle, "basket_daily", None), "selection_state", None)
         outcome = push_report_ready(
-            trade_date.strftime("%Y-%m-%d"), selection_state=selection_state,
+            report_date.strftime("%Y-%m-%d"),
+            data_date_disp=bundle.trade_date.strftime("%Y-%m-%d"),
+            selection_state=selection_state,
         )
         logger.info("APNs 报告推送:sent=%d failed=%d%s", outcome.sent, outcome.failed,
                     f" skipped={outcome.skipped_reason}" if outcome.skipped_reason else "")

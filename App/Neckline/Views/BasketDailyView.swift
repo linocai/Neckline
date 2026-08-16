@@ -700,7 +700,11 @@ struct BasketDailyView: View {
     // `iosBody` 里原样保留(未挪动)。
 
     private var metaLine: String {
-        "交易日 \(model.calendar.displayString(model.report.tradeDate)) · 章程 \(model.report.strategyVersion)"
+        let reportDate = model.report.reportDate.isEmpty ? model.report.tradeDate : model.report.reportDate
+        let dateText = reportDate == model.report.tradeDate
+            ? "交易日 \(model.calendar.displayString(model.report.tradeDate))"
+            : "报告日 \(model.calendar.displayString(reportDate)) · 行情截至 \(model.calendar.displayString(model.report.tradeDate))"
+        return dateText + " · 章程 \(model.report.strategyVersion)"
             + (daily.packVersion.map { " · 选股包 \($0)" } ?? "")
     }
 

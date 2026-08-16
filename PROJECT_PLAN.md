@@ -4,13 +4,19 @@
 
 ## 1. Current goal and release boundary
 
-V2.4.2 Build 7 is released and is now in its 3–5 trading-day observation window. The 2026-08-14 report was
+V2.4.2 Build 8 is the report-date hotfix: Sunday is the visible report date while the preceding Friday remains
+the market-data and selection key. The 2026-08-14 market session is being explicitly rerun as the 2026-08-16
+report after the user corrected that distinction. The prior bounded report was
 explicitly backfilled on 2026-08-16 after the bounded pipeline fix. Weekday scheduling now runs Monday–Thursday
-after close and defers Friday's report to Sunday evening so weekend information can enter research. Do not rerun
+after close; Sunday publishes a Sunday-dated report using the immediately preceding Friday as its EOD data
+cutoff so weekend information can enter research. `report_date` is visible identity while `trade_date` remains
+the market/basket/detail key. Do not rerun
 a production report without a new explicit user instruction. Continue directly on `main`; do not create a branch.
 
-Build 7 is released; backend hotfix commit `09bd991` is on `main` with `4046 passed / 19 registered skips`,
-focused contract/publication regressions, Python compile, and `git diff --check` green. Production now runs
+Build 7 is released; Build 8 keeps the same `v2.4.2-balanced-r3` selection package and changes only report-date
+identity across the scheduler, persistence/API, notification, markdown, and client display. Its pre-deploy gates
+are backend `4050 passed / 19 registered skips`, macOS `233 passed / 10 registered integration skips`, Python
+compile, and `git diff --check`. Production runs
 `v2.4.2-balanced-r3`: the selection wall-clock cutoff is removed, undated Tavily evidence is preserved honestly,
 concept codes are resolved before search, and real qualification is checked after every deep cohort. The hotfix
 was deployed without starting or regenerating a report. The signed macOS `2.4.2 (7)` app remains installed and
@@ -185,9 +191,11 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
    under `/Users/linotsai/Lino/app_builds/Neckline-v2.4.2-b7-20260816-160112/`; the iOS IPA SHA-256 is
    `7f0b6c816b7dd225f9e5a83d6abd3229c2f997b65e56271190d2208df5617748`. No iOS device or report task was
    touched.
-7. **Friday-to-Sunday schedule and authorized backfill (2026-08-16).** Commits `cf2faf6` and `c223221` are on
-   `main`. The evening timer runs Mon–Thu at 16:35 and Sunday at 19:00 Asia/Shanghai; Sunday targets the preceding
-   Friday, non-trading targets exit cleanly, and a same-local-day report guard prevents duplicate LLM/APNs work.
+7. **Friday-data-to-Sunday-report schedule and authorized backfill (2026-08-16).** Commits `cf2faf6` and
+   `c223221` are on `main`. The evening timer runs Mon–Thu at 16:35 and Sunday at 19:00 Asia/Shanghai; Sunday uses
+   the preceding Friday only as its data cutoff, non-trading targets exit cleanly, and a same-local-day report
+   guard prevents duplicate LLM/APNs work. The later report-date correction makes the published report itself
+   Sunday-dated without changing any Friday-keyed market or selection fact.
    Pre-schedule source/unit backups are under
    `/opt/neckline-release-backups/v2.4.2-sunday-schedule-pre-20260816-161839/`. Before the explicitly authorized
    20260814 rerun, two consistent SQLite backups were written as
@@ -286,5 +294,5 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   mechanical/six-gate/Tier qualification after every two completed directions, stopping later deep work once
   seven publishable candidates exist. The 350,000 Token stop and the explicit 48/20/30 direction/fill bounds
   remain. Deployment did not run the pipeline or alter the existing report snapshot.
-- Build numbers are monotonic installable-build identifiers, not reserved in advance. This backend hotfix
-  consumes Build 7, so V2.4.3 is expected to start at Build 8.
+- Build numbers are monotonic installable-build identifiers, not reserved in advance. The report-date hotfix
+  consumes Build 8, so V2.4.3 is expected to start at Build 9.

@@ -517,6 +517,8 @@ class NewsAlertScanStatusOut(BaseModel):
 
 
 class ReportOut(BaseModel):
+    # 报告发布日；周日出报告时为周日。tradeDate 仍是行情/篮子事实所绑定的交易日。
+    reportDate: str = ""
     tradeDate: str
     generatedAt: str
     strategyVersion: str

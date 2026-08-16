@@ -831,6 +831,8 @@ struct DataFreshness: Codable, Equatable {
 /// 死代码,留着只会让「wire 字段清单」与「展示字段清单」两份各自漂。⑮ 顺手收掉。
 struct ReportSnapshot: Equatable {
     var tradeDate: String
+    /// 报告发布日。周日发布时为周日；tradeDate 仍是行情、篮子和详情查询的交易日锚。
+    var reportDate: String = ""
     var generatedAt: String
     var strategyVersion: String
     var sentiment: SentimentSnapshot?

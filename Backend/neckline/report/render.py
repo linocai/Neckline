@@ -66,6 +66,7 @@ _CATEGORY_LABEL = {
 def render_markdown(
     *,
     trade_date: date,
+    report_date: Optional[date] = None,
     strategy_version: str,
     generated_at: str,
     sentiment: SentimentDashboard,
@@ -80,11 +81,13 @@ def render_markdown(
     basket_daily: Optional[BasketDaily] = None,
 ) -> str:
     parts: List[str] = []
-    parts.append(f"# Neckline 篮子日报 · {trade_date.isoformat()}")
+    visible_report_date = report_date or trade_date
+    parts.append(f"# Neckline 篮子日报 · {visible_report_date.isoformat()}")
     parts.append("")
     pack = (basket_daily.pack_version if basket_daily is not None else None) or "(本报告无篮子卡,选股包版本不适用)"
     parts.append(
-        f"*生成时间(UTC):{generated_at} · 纪律章程版本:`{strategy_version}` · "
+        f"*行情数据截至:{trade_date.isoformat()} · 生成时间(UTC):{generated_at} · "
+        f"纪律章程版本:`{strategy_version}` · "
         f"选股包版本:`{pack}` · 16:00 后 A 股盘后数据稳定*"
     )
     parts.append("")

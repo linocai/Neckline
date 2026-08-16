@@ -69,6 +69,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ReportBundle:
     trade_date: date
+    report_date: date
     strategy_version: str
     generated_at: str
     sentiment: SentimentDashboard
@@ -127,6 +128,7 @@ def _scenario_review_position_ids(db_path: Optional[Path] = None) -> set:
 def build_report(
     trade_date: date,
     *,
+    report_date: Optional[date] = None,
     llm_provider: Optional[LLMProvider] = None,
     llm_transport: Optional[Any] = None,
     parquet_dir: Optional[Path] = None,
@@ -288,8 +290,10 @@ def build_report(
         )
 
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    visible_report_date = report_date or trade_date
     markdown = render_markdown(
         trade_date=trade_date,
+        report_date=visible_report_date,
         strategy_version=active.version,
         generated_at=generated_at,
         sentiment=sentiment,
@@ -307,6 +311,7 @@ def build_report(
     if save:
         store.save_report(
             trade_date,
+            report_date=visible_report_date,
             strategy_version=active.version,
             sentiment=_jsonable(sentiment),
             sectors=[_jsonable(s) for s in sector_scores],
@@ -342,6 +347,7 @@ def build_report(
 
     return ReportBundle(
         trade_date=trade_date,
+        report_date=visible_report_date,
         strategy_version=active.version,
         generated_at=generated_at,
         sentiment=sentiment,

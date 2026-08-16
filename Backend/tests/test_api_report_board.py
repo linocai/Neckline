@@ -32,10 +32,10 @@ def _basket_daily(**overrides) -> dict:
     return base
 
 
-def _seed_report(db, d: date, *, intel=None, sector_moneyflow=None, news_alerts_scan=None,
+def _seed_report(db, d: date, *, report_date=None, intel=None, sector_moneyflow=None, news_alerts_scan=None,
                  basket_daily=None):
     report_store.save_report(
-        d, strategy_version="v1",
+        d, report_date=report_date, strategy_version="v1",
         sentiment={"trade_date": d.isoformat(), "limit_up_count": 48, "limit_down_count": 41,
                    "zaban_rate": 0.37, "max_consec_limit_up": 3, "position_quota": "半额",
                    "quota_reason": "情绪中性"},
@@ -49,11 +49,12 @@ def _seed_report(db, d: date, *, intel=None, sector_moneyflow=None, news_alerts_
 
 
 def test_report_latest(client, AUTH, api_env):
-    _seed_report(api_env.db_path, date(2026, 7, 17))
+    _seed_report(api_env.db_path, date(2026, 7, 17), report_date=date(2026, 7, 19))
     r = client.get("/api/v1/report/latest", headers=AUTH)
     assert r.status_code == 200
     body = r.json()
     assert body["tradeDate"] == "20260717"
+    assert body["reportDate"] == "20260719"
     assert body["strategyVersion"] == "v1"
     assert body["sentiment"]["position_quota"] == "半额"
     assert body["sectors"][0]["board_age"] == 3

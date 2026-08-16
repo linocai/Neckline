@@ -105,6 +105,27 @@ def test_report_push_sends_when_on(api_env, apns_configured):
     assert out.sent == 2 and out.failed == 0        # 全部 kind 默认开
 
 
+def test_sunday_report_push_keeps_publication_and_market_dates_separate(api_env, apns_configured):
+    import json
+
+    db = api_env.db_path
+    upsert_device("tok1", db_path=db)
+    captured = {}
+
+    def transport(url, headers, body):
+        captured.update(json.loads(body.decode() if isinstance(body, bytes) else body))
+        return apns.PushResult(ok=True, status=200, reason="ok")
+
+    out = notify.push_report_ready(
+        "2026-08-16", data_date_disp="2026-08-14", db_path=db, transport=transport,
+    )
+    assert out.sent == 1
+    assert captured["aps"]["alert"]["title"].startswith("8月16日")
+    assert "行情截至 2026-08-14" in captured["aps"]["alert"]["body"]
+    assert captured["reportDate"] == "2026-08-16"
+    assert captured["tradeDate"] == "2026-08-14"
+
+
 @pytest.mark.parametrize(
     ("state", "title_text", "body_text"),
     [

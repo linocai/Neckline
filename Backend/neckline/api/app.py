@@ -501,6 +501,7 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
         for s in rep.get("news_alerts_scan", [])
     ]
     return ReportOut(
+        reportDate=rep.get("report_date") or td,
         tradeDate=td,
         generatedAt=rep.get("generated_at", ""),
         strategyVersion=rep.get("strategy_version", ""),
@@ -519,7 +520,7 @@ def _shape_report(rep: Dict[str, Any]) -> ReportOut:
 
 def _empty_report(reason: str) -> ReportOut:
     return ReportOut(
-        tradeDate="", generatedAt="", strategyVersion="",
+        reportDate="", tradeDate="", generatedAt="", strategyVersion="",
         sentiment={}, sectors=[], degraded=True, reason=reason,
     )
 

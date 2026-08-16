@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -137,28 +138,45 @@ def push_event(
 # 措辞层(V1 六类迁移):每个函数只拼文案 + 挑 kind,扇出一律交给 push_event
 # ══════════════════════════════════════════════════════════════════════════
 
+def _report_date_label(report_date_disp: str) -> str:
+    """ISO 报告日转人话标题；未知格式原样保留，不猜日期。"""
+    try:
+        value = datetime.strptime(report_date_disp, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return str(report_date_disp)
+    return f"{value.month}月{value.day}日"
+
+
 def push_report_ready(
-    trade_date_disp: str, *, selection_state: Optional[str] = None,
+    report_date_disp: str, *, data_date_disp: Optional[str] = None,
+    selection_state: Optional[str] = None,
     db_path: Optional[Path] = None, transport: Optional[Any] = None,
 ) -> NotifyOutcome:
     """16:35 盘后报告就绪(kind=`report_ready`,**盘后汇总**级)。"""
     state = str(selection_state or "").strip().lower()
+    report_label = _report_date_label(report_date_disp)
+    data_date = data_date_disp or report_date_disp
+    data_suffix = f"（行情截至 {data_date}）" if data_date != report_date_disp else ""
     if state == "partial":
-        title = "盘后报告已生成，选股部分完成"
-        body = f"{trade_date_disp} 报告可看；今日选股仍有方向未完成。{_OPEN_APP_NOW}"
+        title = f"{report_label}报告已生成，选股部分完成"
+        body = f"{report_date_disp} 报告可看{data_suffix}；今日选股仍有方向未完成。{_OPEN_APP_NOW}"
     elif state == "unavailable":
-        title = "盘后报告已生成，选股未完成"
-        body = f"{trade_date_disp} 报告可看；今日选股未完整跑成，不代表今天没有机会。{_OPEN_APP_NOW}"
+        title = f"{report_label}报告已生成，选股未完成"
+        body = f"{report_date_disp} 报告可看{data_suffix}；今日选股未完整跑成，不代表今天没有机会。{_OPEN_APP_NOW}"
     elif state == "processing":
-        title = "盘后报告已生成，选股仍在整理"
-        body = f"{trade_date_disp} 报告可看；今日选股尚未形成最终结果。{_OPEN_APP_LATER}"
+        title = f"{report_label}报告已生成，选股仍在整理"
+        body = f"{report_date_disp} 报告可看{data_suffix}；今日选股尚未形成最终结果。{_OPEN_APP_LATER}"
     else:
-        title = "今日盘后报告已生成"
-        body = f"{trade_date_disp} 盘后报告与今日选股已就绪。{_OPEN_APP_LATER}"
+        title = f"{report_label}盘后报告已生成"
+        body = f"{report_date_disp} 盘后报告与今日选股已就绪{data_suffix}。{_OPEN_APP_LATER}"
     return push_event(
         KIND_REPORT_READY,
         title, body,
-        custom_extra={"tradeDate": trade_date_disp, **({"selectionState": state} if state else {})},
+        custom_extra={
+            "reportDate": report_date_disp,
+            "tradeDate": data_date,
+            **({"selectionState": state} if state else {}),
+        },
         db_path=db_path, transport=transport,
     )
 

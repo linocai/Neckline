@@ -92,6 +92,7 @@ class EveningChainResult:
     三态分开(§3.8),⛔ 不许合并成一个 bool。"""
 
     trade_date: date
+    report_date: date
     status: Dict[str, str] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
     stats: Dict[str, Any] = field(default_factory=dict)
@@ -107,6 +108,7 @@ class EveningChainResult:
 def run_evening_chain(
     trade_date: date,
     *,
+    report_date: Optional[date] = None,
     segments: Sequence[str] = CHAIN_SEGMENTS,
     db_path: Optional[Path] = None,
     parquet_dir: Optional[Path] = None,
@@ -141,7 +143,7 @@ def run_evening_chain(
     from neckline.llm.router import TASK_REVIEW
 
     wanted = [s for s in CHAIN_SEGMENTS if s in set(segments)]
-    res = EveningChainResult(trade_date=trade_date)
+    res = EveningChainResult(trade_date=trade_date, report_date=report_date or trade_date)
     for seg in CHAIN_SEGMENTS:
         res.status[seg] = STATUS_OK if seg in wanted else STATUS_SKIPPED
 
@@ -356,7 +358,8 @@ def run_evening_chain(
                     )
                     dropped_for_report = None
             res.bundle = build_report(
-                trade_date, llm_provider=report_llm_provider, llm_transport=transport,
+                trade_date, report_date=res.report_date,
+                llm_provider=report_llm_provider, llm_transport=transport,
                 parquet_dir=parquet_dir, db_path=db_path, save=save,
                 dropped_baskets=dropped_for_report,
             )

@@ -60,6 +60,11 @@ def _render(**overrides) -> str:
 
 
 class TestSentimentSection:
+    def test_report_date_is_title_and_trade_date_is_disclosed_as_data_cutoff(self):
+        md = _render(report_date=date(2026, 3, 8))
+        assert md.startswith("# Neckline 篮子日报 · 2026-03-08")
+        assert "行情数据截至:2026-03-04" in md
+
     def test_contains_position_quota_and_metrics(self):
         md = _render()
         assert "情绪仪表盘" in md

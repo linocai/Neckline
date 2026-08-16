@@ -27,6 +27,7 @@ def _d(trade_date: date) -> str:
 def save_report(
     trade_date: date,
     *,
+    report_date: Optional[date] = None,
     strategy_version: str,
     sentiment: Dict[str, Any],
     sectors: List[Dict[str, Any]],
@@ -86,10 +87,11 @@ def save_report(
                 )
         conn.execute(
             "INSERT INTO reports "
-            "(trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
+            "(trade_date, report_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
             "intel_json, sector_moneyflow_json, news_alerts_scan_json, data_freshness_json, basket_daily_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(trade_date) DO UPDATE SET "
+            "report_date=excluded.report_date, "
             "generated_at=excluded.generated_at, "
             "strategy_version=excluded.strategy_version, "
             "sentiment_json=excluded.sentiment_json, "
@@ -104,6 +106,7 @@ def save_report(
             "basket_daily_json=excluded.basket_daily_json",
             (
                 _d(trade_date),
+                _d(report_date or trade_date),
                 now,
                 strategy_version,
                 json.dumps(sentiment, ensure_ascii=False),
@@ -156,7 +159,7 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
-            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
+            "SELECT trade_date, report_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
             "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json, "
             "data_freshness_json, basket_daily_json FROM reports WHERE trade_date=?",
             (_d(trade_date),),
@@ -165,22 +168,23 @@ def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Di
         return None
     return {
         "trade_date": row[0],
-        "generated_at": row[1],
-        "strategy_version": row[2],
-        "sentiment": json.loads(row[3]),
-        "sectors": json.loads(row[4]),
-        "candidates": json.loads(row[5]),
-        "markdown": row[6],
-        "watchlist": _parse_watchlist_json(row[7]),
-        "intel": _parse_intel_json(row[8]),
-        "sector_moneyflow": _parse_sector_moneyflow_json(row[9]),
-        "news_alerts_scan": _parse_news_alerts_scan_json(row[10]),
+        "report_date": row[1] or row[0],
+        "generated_at": row[2],
+        "strategy_version": row[3],
+        "sentiment": json.loads(row[4]),
+        "sectors": json.loads(row[5]),
+        "candidates": json.loads(row[6]),
+        "markdown": row[7],
+        "watchlist": _parse_watchlist_json(row[8]),
+        "intel": _parse_intel_json(row[9]),
+        "sector_moneyflow": _parse_sector_moneyflow_json(row[10]),
+        "news_alerts_scan": _parse_news_alerts_scan_json(row[11]),
         # v1.4-①-C:老报告行(建于本列之前)补列后取默认 '{}' → 读回空 dict,
         # 客户端按「空 = 该版本还没有新鲜度概念」处理,不是「新鲜」。
-        "data_freshness": _parse_json_field(row[11], {}),
+        "data_freshness": _parse_json_field(row[12], {}),
         # V2-⑭-A:篮子日报快照(老报告行补列后取默认 '{}' → 读回空 dict,
         # 客户端按「该版本还没有篮子日报概念」处理,不是「今天没有篮子」)。
-        "basket_daily": _parse_json_field(row[12], {}),
+        "basket_daily": _parse_json_field(row[13], {}),
     }
 
 
@@ -199,7 +203,7 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
-            "SELECT trade_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
+            "SELECT trade_date, report_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
             "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json, "
             "data_freshness_json, basket_daily_json FROM reports WHERE trade_date=?",
             (trade_date_str,),
@@ -208,22 +212,23 @@ def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> O
         return None
     return {
         "trade_date": row[0],
-        "generated_at": row[1],
-        "strategy_version": row[2],
-        "sentiment": json.loads(row[3]),
-        "sectors": json.loads(row[4]),
-        "candidates": json.loads(row[5]),
-        "markdown": row[6],
-        "watchlist": _parse_watchlist_json(row[7]),
-        "intel": _parse_intel_json(row[8]),
-        "sector_moneyflow": _parse_sector_moneyflow_json(row[9]),
-        "news_alerts_scan": _parse_news_alerts_scan_json(row[10]),
+        "report_date": row[1] or row[0],
+        "generated_at": row[2],
+        "strategy_version": row[3],
+        "sentiment": json.loads(row[4]),
+        "sectors": json.loads(row[5]),
+        "candidates": json.loads(row[6]),
+        "markdown": row[7],
+        "watchlist": _parse_watchlist_json(row[8]),
+        "intel": _parse_intel_json(row[9]),
+        "sector_moneyflow": _parse_sector_moneyflow_json(row[10]),
+        "news_alerts_scan": _parse_news_alerts_scan_json(row[11]),
         # v1.4-①-C:老报告行(建于本列之前)补列后取默认 '{}' → 读回空 dict,
         # 客户端按「空 = 该版本还没有新鲜度概念」处理,不是「新鲜」。
-        "data_freshness": _parse_json_field(row[11], {}),
+        "data_freshness": _parse_json_field(row[12], {}),
         # V2-⑭-A:篮子日报快照(老报告行补列后取默认 '{}' → 读回空 dict,
         # 客户端按「该版本还没有篮子日报概念」处理,不是「今天没有篮子」)。
-        "basket_daily": _parse_json_field(row[12], {}),
+        "basket_daily": _parse_json_field(row[13], {}),
     }
 
 

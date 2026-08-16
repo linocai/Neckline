@@ -84,6 +84,7 @@ final class DTODecodeTests: XCTestCase {
         let json = jsonData("""
         {
           "tradeDate": "20260717",
+          "reportDate": "20260719",
           "generatedAt": "2026-07-17T08:05:00+00:00",
           "strategyVersion": "v1.3.3",
           "sentiment": {
@@ -166,6 +167,7 @@ final class DTODecodeTests: XCTestCase {
 
         let report = try await client.fetchReportLatest()
         XCTAssertEqual(report.tradeDate, "20260717")
+        XCTAssertEqual(report.reportDate, "20260719")
         XCTAssertEqual(report.strategyVersion, "v1.3.3")
         XCTAssertFalse(report.degraded)
         XCTAssertEqual(report.sentiment?.positionQuota, "休息")

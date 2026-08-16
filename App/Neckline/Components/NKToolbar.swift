@@ -148,7 +148,7 @@ struct NKToolbar: View {
 
     private var metaParts: [String] {
         var parts: [String] = []
-        let d = model.report.tradeDate
+        let d = model.report.reportDate.isEmpty ? model.report.tradeDate : model.report.reportDate
         if d.count == 8 {
             parts.append("\(d.dropFirst(4).prefix(2))-\(d.suffix(2))")
         } else if !d.isEmpty {

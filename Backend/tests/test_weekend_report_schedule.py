@@ -6,6 +6,7 @@ import sqlite3
 import sys
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts import evening as evening_script
 
@@ -20,6 +21,57 @@ def test_sunday_slot_binds_exactly_to_the_immediately_preceding_friday():
 def test_weekday_slot_stays_on_that_calendar_day():
     assert evening_script._scheduled_trade_date(date(2026, 8, 17)) == date(2026, 8, 17)
     assert evening_script._scheduled_trade_date(date(2026, 8, 20)) == date(2026, 8, 20)
+
+
+def test_sunday_slot_passes_sunday_report_date_but_friday_trade_date(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_chain(trade_date, **kwargs):
+        captured["trade_date"] = trade_date
+        captured["report_date"] = kwargs["report_date"]
+        return SimpleNamespace(
+            status={segment: "ok" for segment in evening_script.CHAIN_SEGMENTS},
+            stats={}, notes=[], bundle=None,
+        )
+
+    monkeypatch.setattr(evening_script, "_today", lambda: date(2026, 8, 16))
+    monkeypatch.setattr(evening_script, "is_trading_day", lambda value: True)
+    monkeypatch.setattr(evening_script, "ensure_data_dirs", lambda: None)
+    monkeypatch.setattr(evening_script, "_report_generated_on_local_day", lambda *a, **k: False)
+    monkeypatch.setattr(evening_script, "run_evening_chain", fake_chain)
+    monkeypatch.setattr(sys, "argv", ["evening.py", "--scheduled", "--no-save", "--db", str(tmp_path / "x.db")])
+
+    assert evening_script.main() == 0
+    assert captured == {
+        "trade_date": date(2026, 8, 14),
+        "report_date": date(2026, 8, 16),
+    }
+
+
+def test_manual_backfill_can_name_the_publication_date_explicitly(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_chain(trade_date, **kwargs):
+        captured["trade_date"] = trade_date
+        captured["report_date"] = kwargs["report_date"]
+        return SimpleNamespace(
+            status={segment: "ok" for segment in evening_script.CHAIN_SEGMENTS},
+            stats={}, notes=[], bundle=None,
+        )
+
+    monkeypatch.setattr(evening_script, "is_trading_day", lambda value: True)
+    monkeypatch.setattr(evening_script, "ensure_data_dirs", lambda: None)
+    monkeypatch.setattr(evening_script, "run_evening_chain", fake_chain)
+    monkeypatch.setattr(sys, "argv", [
+        "evening.py", "20260814", "--report-date", "20260816", "--no-save",
+        "--db", str(tmp_path / "x.db"),
+    ])
+
+    assert evening_script.main() == 0
+    assert captured == {
+        "trade_date": date(2026, 8, 14),
+        "report_date": date(2026, 8, 16),
+    }
 
 
 def test_scheduled_holiday_is_clean_noop_and_never_falls_back(monkeypatch):

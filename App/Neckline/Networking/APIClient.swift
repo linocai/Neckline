@@ -138,6 +138,7 @@ private struct HealthResponse: Decodable { let status: String; let version: Stri
 
 private struct ReportResponse: Decodable {
     let tradeDate: String
+    let reportDate: String?
     let generatedAt: String
     let strategyVersion: String
     let sentiment: SentimentSnapshot?
@@ -155,7 +156,7 @@ private struct ReportResponse: Decodable {
     let dataFreshness: DataFreshness?
 
     enum CodingKeys: String, CodingKey {
-        case tradeDate, generatedAt, strategyVersion, sentiment, sectors, basketDaily
+        case tradeDate, reportDate, generatedAt, strategyVersion, sentiment, sectors, basketDaily
         case degraded, reason, missedEntryHint, intel, sectorMoneyflow, newsAlerts, newsAlertsScan
         case dataFreshness
     }
@@ -187,6 +188,7 @@ private struct ReportResponse: Decodable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         tradeDate = (try? c.decode(String.self, forKey: .tradeDate)) ?? ""
+        reportDate = try? c.decodeIfPresent(String.self, forKey: .reportDate)
         generatedAt = (try? c.decode(String.self, forKey: .generatedAt)) ?? ""
         strategyVersion = (try? c.decode(String.self, forKey: .strategyVersion)) ?? ""
         sentiment = try? c.decodeIfPresent(SentimentSnapshot.self, forKey: .sentiment)
@@ -456,7 +458,9 @@ actor APIClient {
 
     private static func decodeReport(_ data: Data) throws -> ReportSnapshot {
         let r = try JSONDecoder().decode(ReportResponse.self, from: data)
-        return ReportSnapshot(tradeDate: r.tradeDate, generatedAt: r.generatedAt,
+        return ReportSnapshot(tradeDate: r.tradeDate,
+                              reportDate: r.reportDate?.isEmpty == false ? r.reportDate! : r.tradeDate,
+                              generatedAt: r.generatedAt,
                               strategyVersion: r.strategyVersion, sentiment: r.sentiment,
                               sectors: r.sectors, basketDaily: r.basketDaily ?? BasketDaily(),
                               degraded: r.degraded, reason: r.reason,
