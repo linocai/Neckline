@@ -49,7 +49,10 @@ class DirectionBrief:
 
 def build_brief(item: DirectionSeed) -> DirectionBrief:
     evidence = dict(item.evidence)
-    industry = _first_text(evidence.get("industry"), evidence.get("anchor_industry"))
+    industry = _first_text(
+        evidence.get("industry"), evidence.get("anchor_industry"),
+        item.label if item.seed_kind == "hot_industry" else None,
+    )
     return DirectionBrief(
         direction_id=item.direction_id, ordinal=item.ordinal, seed_key=item.seed_key,
         seed_kind=item.seed_kind, label=item.label, member_codes=item.member_codes,

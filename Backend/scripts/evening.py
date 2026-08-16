@@ -74,7 +74,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--observe-selection-cost", action="store_true",
-        help="仅经用户明确授权的一次性观察模式：预算/墙钟/深研轮数只记账不截断；不会自动启用",
+        help="仅经用户明确授权的一次性观察模式：Token/墙钟只记账不截断；方向与补位上限仍强制；不会自动启用",
     )
     args = parser.parse_args()
 

@@ -15,6 +15,7 @@ class DirectionPipelineConfigError(ValueError):
 @dataclass(frozen=True)
 class DirectionPipelineConfig:
     version: str
+    mechanical_shortlist_limit: int
     deep_initial_limit: int
     triage_batch_size: int
     triage_concurrency: int
@@ -48,7 +49,8 @@ class DirectionPipelineConfig:
         if value.cross_seed_merge_policy != "identity_only":
             raise DirectionPipelineConfigError("only identity_only cross_seed_merge_policy is confirmed")
         int_fields = (
-            "triage_batch_size", "triage_concurrency", "deep_reason_batch_size", "fill_batch_size",
+            "mechanical_shortlist_limit", "triage_batch_size", "triage_concurrency",
+            "deep_reason_batch_size", "fill_batch_size",
             "sufficient_candidate_count", "coverage_industry_min", "coverage_seed_kind_min",
             "coverage_potential_czy_min", "selection_token_budget", "max_total_deep", "max_fill_rounds",
         )
@@ -57,6 +59,10 @@ class DirectionPipelineConfig:
             raise DirectionPipelineConfigError("direction_pipeline integer limits must be non-negative integers")
         if any(getattr(value, key) == 0 for key in ("triage_batch_size", "triage_concurrency", "deep_reason_batch_size", "fill_batch_size", "max_total_deep")):
             raise DirectionPipelineConfigError("direction_pipeline batch and total limits must be positive")
+        if value.mechanical_shortlist_limit < value.deep_initial_limit:
+            raise DirectionPipelineConfigError("mechanical_shortlist_limit must cover deep_initial_limit")
+        if value.max_total_deep > value.mechanical_shortlist_limit:
+            raise DirectionPipelineConfigError("max_total_deep cannot exceed mechanical_shortlist_limit")
         if not isinstance(value.normal_before_reserve, bool):
             raise DirectionPipelineConfigError("normal_before_reserve must be boolean")
         if not isinstance(value.selection_wall_seconds, (int, float)) or isinstance(value.selection_wall_seconds, bool) or value.selection_wall_seconds <= 0:
@@ -80,6 +86,23 @@ class DeepQueue:
     @property
     def direction_ids(self) -> Tuple[str, ...]:
         return tuple(entry.direction_id for entry in self.entries)
+
+
+def build_mechanical_shortlist(
+    briefs: Sequence[DirectionBrief], config: DirectionPipelineConfig,
+) -> DeepQueue:
+    """Select the bounded LLM-visible pool using existing mechanical order.
+
+    ``DirectionBrief.ordinal`` already carries each seed kind's deterministic
+    strength order from ``scan.seeds``.  The shared coverage pass prevents one
+    seed kind/industry/C-Z-Y hint from consuming the pool.  No new investment
+    threshold or LLM judgement is introduced here; directions outside the cap
+    remain visible as mechanical reserves.
+    """
+    return build_deep_queue(
+        briefs, {brief.direction_id: "normal" for brief in briefs}, config,
+        limit=config.mechanical_shortlist_limit, enforce_total_limit=False,
+    )
 
 
 def _category_values(brief: DirectionBrief) -> Tuple[Tuple[str, str], ...]:
@@ -139,4 +162,7 @@ def build_deep_queue(
     return DeepQueue(tuple(selected), remaining)
 
 
-__all__ = ["DirectionPipelineConfig", "DirectionPipelineConfigError", "QueueEntry", "DeepQueue", "build_deep_queue"]
+__all__ = [
+    "DirectionPipelineConfig", "DirectionPipelineConfigError", "QueueEntry",
+    "DeepQueue", "build_deep_queue", "build_mechanical_shortlist",
+]

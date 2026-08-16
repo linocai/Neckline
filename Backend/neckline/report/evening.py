@@ -458,12 +458,21 @@ def _run_basket_segment(
         if (getattr(result, "selection_run_id", None)
                 and getattr(result, "selection_state", None) in {"complete", "partial"}):
             from neckline.selection.run_store import finish_run
-            finish_run(
-                result.selection_run_id, selection_state=result.selection_state,
-                text=("今日深度研究已按预算结束，当前展示已完成判断的方向。"
-                      if result.selection_state == "partial" else ""),
-                stop_reason="no_gated_baskets", published=True, db_path=db_path,
-            )
+            if result.selection_state == "partial":
+                # An incomplete run with zero publishable baskets cannot prove
+                # that the market truly has no candidates.  Keep the previous
+                # frozen generation instead of replacing it with a false empty.
+                finish_run(
+                    result.selection_run_id, selection_state="unavailable",
+                    text="今日研究尚未形成完整篮子，继续展示上一份已完成结果。",
+                    stop_reason="partial_without_gated_baskets", published=False,
+                    db_path=db_path,
+                )
+            else:
+                finish_run(
+                    result.selection_run_id, selection_state="complete", text="",
+                    stop_reason="no_gated_baskets", published=True, db_path=db_path,
+                )
         stats["basket"] = {"baskets": 0, "cards": 0}
         # ⑤ 没产出篮子 → ⑥ 没跑过 → **`None`**,不是 `[]`(见 ③b 的两态纪律)。
         return None
@@ -661,8 +670,9 @@ def _run_basket_segment(
             handoff_dropped=decision.dropped,
             selection_run_id=run_id,
             selection_state=getattr(result, "selection_state", None) or "complete",
-            selection_state_text=("今日深度研究已按预算结束，当前展示已完成判断的方向。"
-                                  if getattr(result, "selection_state", None) == "partial" else ""),
+            selection_state_text=(getattr(result, "selection_state_text", "") or
+                                  ("今日深度研究尚未全部完成，当前只展示已完成判断的方向。"
+                                   if getattr(result, "selection_state", None) == "partial" else "")),
             db_path=db_path, via="auto",
         )
         stats["tier"] = {key: value for key, value in published.items() if not key.startswith("cards_")}

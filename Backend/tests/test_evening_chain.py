@@ -354,6 +354,35 @@ class TestStageHandoffWriteSide:
         self._seg(isolated_env, self._stub(reason="ok", search="ok"), monkeypatch)
         assert load_stage_verdict(D, db_path=isolated_env.db_path).engine_ran is True
 
+    def test_partial_zero_baskets_keeps_previous_published_generation(
+        self, isolated_env, monkeypatch,
+    ):
+        """未跑完不能冒充“今天确实没有篮子”并覆盖上一份有效快照。"""
+        from neckline.db import init_schema
+        from neckline.selection.run_store import (
+            create_run, finish_run, latest_published_run_id,
+        )
+
+        init_schema(isolated_env.db_path)
+        prior = create_run("20240408", {"version": "prior"}, run_id="prior", db_path=isolated_env.db_path)
+        finish_run(prior, selection_state="complete", published=True, db_path=isolated_env.db_path)
+        current = create_run(
+            "20240408", {"version": "partial"}, run_id="partial-empty", db_path=isolated_env.db_path,
+        )
+
+        result = self._stub(reason="ok", search="ok")
+        result.selection_run_id = current
+        result.selection_state = "partial"
+        self._seg(isolated_env, result, monkeypatch)
+
+        assert latest_published_run_id("20240408", db_path=isolated_env.db_path) == prior
+        import sqlite3
+        with sqlite3.connect(isolated_env.db_path) as conn:
+            assert conn.execute(
+                "SELECT publication_state,stop_reason,published_at FROM selection_runs WHERE run_id=?",
+                (current,),
+            ).fetchone() == ("unavailable", "partial_without_gated_baskets", None)
+
     def test_notes_are_carried_so_the_aggregate_fuse_is_not_read_as_no_seeds(
         self, isolated_env, monkeypatch
     ):

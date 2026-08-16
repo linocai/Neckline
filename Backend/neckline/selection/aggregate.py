@@ -758,6 +758,7 @@ class AggregateResult:
     # Legacy AggregateResult instances intentionally leave both absent.
     selection_run_id: Optional[str] = None
     selection_state: Optional[str] = None
+    selection_state_text: str = ""
     deep_reasoning_by_basket_key: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     direction_id_by_basket_key: Dict[str, str] = field(default_factory=dict)
     notes: Tuple[str, ...] = ()
@@ -1409,6 +1410,7 @@ def build_reason_context(
     presented_by_seed: Mapping[str, Tuple[str, ...]],
     evidence_by_seed: Mapping[str, DriverEvidence],
     ctx: MechContext,
+    *, include_output_instruction: bool = True,
 ) -> str:
     """推理段的 user 消息 = 日期锚 + **位置关判断标准** + 逐颗种子(机械依据 +
     检索证据 + 成员机械数据 + **该票的落地起跳读数**)。
@@ -1474,7 +1476,8 @@ def build_reason_context(
         if pair_note:
             lines.append(f"   成员间 20 日相关性(**只作辅助证据,单凭相关性不足以成篮**):{pair_note}")
         lines.append("")
-    lines.append("请据此给出今天的篮子。没有站得住的共同驱动就交空数组。")
+    if include_output_instruction:
+        lines.append("请据此给出今天的篮子。没有站得住的共同驱动就交空数组。")
     return "\n".join(lines)
 
 
@@ -1484,7 +1487,7 @@ def _position_prompt_block(ctx: MechContext) -> List[str]:
     ⛔ **这一段里不许出现任何阈值/及格线** —— 位置关自此零阈值,数字只以「该票读数」
     的形式出现在成员清单里,由模型自己权衡。"""
     lines = [
-        "── 位置关(落地起跳)判断标准 —— 给你选中的每一只成员判 position_verdict",
+        "── 位置关(落地起跳)判断标准 —— 给你选中的每一只成员判 position_check.verdict",
         "【K8 核心逻辑原文】" + K8_POSITION_CRITERIA,
     ]
     if ctx.engine_position_guidance:
@@ -1544,7 +1547,7 @@ def _market_prompt_block(ctx: MechContext) -> List[str]:
     thresholds = _gate_attr(ctx, "evidence_thresholds") or {}
 
     lines = [
-        "── 市场关判断标准 —— 给**每个篮子**判一次 market_verdict(篮子级,不是逐票)",
+        "── 市场关判断标准 —— 给**每个篮子**判一次 market_check.verdict(篮子级,不是逐票)",
         "【K8 原文】" + K8_MARKET_CRITERIA,
         "【判定方式(K8 原文)】" + K8_GATE_ENFORCEMENT_RULES,
     ]
@@ -1580,7 +1583,7 @@ def _sector_prompt_block(ctx: MechContext) -> List[str]:
     (`_sector_metrics_line`)。⛔ 同样不许出现"没过就否决"这类措辞。"""
     thresholds = _gate_attr(ctx, "evidence_thresholds") or {}
     lines = [
-        "── 板块关判断标准 —— 给**每个篮子**判一次 sector_verdict(篮子级,不是逐票)",
+        "── 板块关判断标准 —— 给**每个篮子**判一次 sector_check.verdict(篮子级,不是逐票)",
         "【K8 原文】" + K8_SECTOR_CRITERIA,
     ]
     if thresholds:
@@ -2595,6 +2598,33 @@ def aggregate_baskets(
                 )
                 return len(tier_preview.decisions)
 
+            def _deep_reason_context(
+                brief: Any, raw_research: Mapping[str, Any],
+            ) -> str:
+                """Reuse the authoritative gate/member prompt context per direction."""
+                items: List[EvidenceItem] = []
+                raw_items = raw_research.get("evidence", raw_research.get("items", ()))
+                if isinstance(raw_items, list):
+                    for raw_item in raw_items:
+                        if not isinstance(raw_item, Mapping):
+                            continue
+                        claim = str(raw_item.get("claim") or "").strip()
+                        source = str(raw_item.get("source") or "").strip()
+                        ev_date = str(raw_item.get("date") or "").strip()
+                        if claim and source and ev_date:
+                            items.append(EvidenceItem(
+                                claim=claim, source=source, date=ev_date,
+                                url=str(raw_item.get("url") or "").strip(),
+                            ))
+                evidence = DriverEvidence(
+                    seed_key=brief.seed_key, status=EVIDENCE_OK,
+                    items=tuple(items), provider="tavily",
+                )
+                return build_reason_context(
+                    [seeds_by_key[brief.seed_key]], presented_by_seed,
+                    {brief.seed_key: evidence}, ctx, include_output_instruction=False,
+                )
+
             if isinstance(triage_provider, _Unset):
                 triage_provider = _resolve_provider(TASK_DIRECTION_TRIAGE, db_path)
             if isinstance(research_client, _Unset):
@@ -2610,6 +2640,8 @@ def aggregate_baskets(
                 triage_provider=triage_provider, research_client=research_client,
                 reason_provider=deep_reason_provider, db_path=db_path, transport=transport,
                 qualification_callback=_qualified_after_gates,
+                allowed_members_by_seed=presented_by_seed,
+                reason_context_builder=_deep_reason_context,
                 budget_mode=selection_budget_mode,
             )
             if outcome.terminal:
@@ -2696,6 +2728,7 @@ def aggregate_baskets(
                 pack_version=pack_version, charter_version=charter_version,
                 seed_count=seed_count, seed_summary=seed_summary,
                 selection_run_id=outcome.run_id, selection_state=outcome.selection_state,
+                selection_state_text=outcome.selection_state_text,
                 deep_reasoning_by_basket_key=deep_material,
                 direction_id_by_basket_key=direction_by_basket,
                 notes=tuple(notes) + outcome.notes,

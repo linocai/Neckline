@@ -851,7 +851,7 @@ sqlite3.OperationalError: no such column: selection_state
 
 **Logged**: 2026-08-14T22:14:14+08:00
 **Priority**: medium
-**Status**: pending
+**Status**: resolved
 **Area**: backend
 
 ### Summary
@@ -871,5 +871,42 @@ Before the next production observation, make the deterministic query builder inc
 member names/codes, date anchor, or another bounded context when the raw label is too short. Keep the original
 direction identity in the audit row and add a regression test proving a short label never emits an invalid
 one-character Tavily request.
+
+### Resolution
+
+- **Resolved**: 2026-08-16T15:45:00+08:00
+- **Notes**: Build 7 appends the deterministic `A股 最新产业动态` context to every direction query and keeps
+  the direction label/optional industry intact. This adds no threshold and no extra search call; the regression
+  test pins `铜` to a valid multi-term query.
+
+---
+
+## [ERR-20260816-032] deployment-preflight-used-recalled-contract-names
+
+**Logged**: 2026-08-16T15:59:52+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+The first Build 7 production preflight recalled the balanced-config field and public health path instead of
+reading their deployed contracts, so two read-only checks failed even though the service remained healthy.
+
+### Error
+
+```text
+KeyError: 'config_version'
+GET https://nk.linotsai.top/health -> HTTP 404
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-16T15:59:52+08:00
+- **Notes**: The checks made no write. Read the config's actual `version` key and the API's declared
+  `/api/v1/health` route before continuing. Deployment checks must derive exact field/path names from the
+  checked-out contract rather than remembered summaries. Production SQLite is mode `600` and owned by
+  `neckline`; all deployment-time read-only SQLite checks must run through `sudo -u neckline sqlite3
+  -readonly`, not as the SSH `deploy` user.
 
 ---

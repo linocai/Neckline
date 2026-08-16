@@ -53,7 +53,7 @@ def _expected_marketing_version() -> str:
 
 
 _EXPECTED_VERSION = _expected_marketing_version()
-_EXPECTED_RC_BUILD = "6"
+_EXPECTED_RC_BUILD = "7"
 _EXPECTED_PRIMARY_ICON = "AppIconV242"
 
 
@@ -128,14 +128,14 @@ def test_every_marketing_version_in_pbxproj_is_the_same():
 
 
 def test_v242_build_number_is_synced_into_the_generated_project():
-    """V2.4.2 Tavily/默认模型快修为 Build 6；源文件和生成工程不能各自漂移。"""
+    """V2.4.2 后端篮子链快修为 Build 7；源文件和生成工程不能各自漂移。"""
     data = yaml.safe_load(_PROJECT_YML.read_text(encoding="utf-8"))
     source_build = str(data["settings"]["base"]["CURRENT_PROJECT_VERSION"])
     generated_builds = re.findall(
         r"CURRENT_PROJECT_VERSION = ([0-9]+);", _PBXPROJ.read_text(encoding="utf-8"))
     assert source_build == _EXPECTED_RC_BUILD
     assert generated_builds == [_EXPECTED_RC_BUILD, _EXPECTED_RC_BUILD], (
-        "pbxproj 的 Debug/Release 构建号应由 project.yml 生成并同为 Build 6:"
+        "pbxproj 的 Debug/Release 构建号应由 project.yml 生成并同为 Build 7:"
         f"{generated_builds}")
 
 

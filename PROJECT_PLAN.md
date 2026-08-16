@@ -1,15 +1,20 @@
 # Neckline project plan
 
-> Updated: 2026-08-14. This is the only current control plane. Historical work is under `archive/`.
+> Updated: 2026-08-16. This is the only current control plane. Historical work is under `archive/`.
 
 ## 1. Current goal and release boundary
 
-V2.4.2 passed independent review → repair → RC and was released after the user's explicit 2026-08-14
-authorization. Build 6 is the current authorized hotfix: production research is moving from GLM-native search
-to one Tavily Basic search layer plus a DeepSeek default LLM; macOS receives the corresponding write-only key
-and default-model controls. Marketing version stays V2.4.2 and iOS remains a user handoff. After deployment
-self-check, the user explicitly authorized one full replacement report run in observation mode to measure
-actual Token/search cost. Continue directly on `main`; do not create a branch.
+V2.4.2 is released. Build 7 is the current authorized backend hotfix after the first unrestricted production
+observation exposed two coupled defects: the observation switch removed the direction/fill cap and consumed
+nearly the full pool, while the deep-reason response contract let model-authored seed identities and invalid
+member shapes reach the mechanical gate. Marketing version stays V2.4.2; there is no frontend business change.
+Do not rerun a production report without a new explicit user instruction. Continue directly on `main`; do not
+create a branch.
+
+Local Build 7 verification is green: backend `4035 passed / 19 registered skips`, focused contract/
+publication regressions pass, `git diff --check` is clean, and the generated macOS project builds with
+marketing version `2.4.2` / Build `7`. No commit, push, production deploy, database mutation, package install,
+or report rerun has been performed in this hotfix turn.
 
 The baseline is `v2.4.1` Build 2. Its record is
 [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
@@ -47,10 +52,11 @@ committed as a second plan.
 
 - Directly use only confirmed facts: `deep_initial_limit=20`, current Tier capacities, existing mechanical
   and gate rules, and no Tier/card repeat LLM calls.
-- The user approved production package `Backend/config/direction-pipeline.v2.4.2-balanced.json`
-  (`v2.4.2-balanced-r1`) on 2026-08-14: initial/max deep `20/32`, triage/deep/fill batches `8/2/4`,
+- The user approved the repaired production package `Backend/config/direction-pipeline.v2.4.2-balanced.json`
+  (`v2.4.2-balanced-r2`) on 2026-08-16: all directions visible, mechanical shortlist `48`, initial/max deep
+  `20/30`, triage/deep/fill batches `8/2/5`,
   qualified target `7`, industry/seed-kind/potential-CZY coverage `6/4/2`, Token/wall stops
-  `350000/1500`, at most `3` fill rounds, normal before reserve, and identity-only merge.
+  `350000/1500`, at most `2` fill rounds, normal before reserve, and identity-only merge.
 - Outside that approved versioned package, do not invent production defaults or silently alter its
   batch, coverage, queue, merge, Token, wall-time, or fill values. `triage_concurrency=1` records the
   current serial executor and must not be presented as implemented parallelism.
@@ -178,9 +184,9 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   Provider atomically removes its references. The one-off `--observe-selection-cost` mode disables only the
   selection budget cutoffs while preserving measured usage, per-call timeout/retry, candidate sufficiency and
   pool-exhaustion stops; scheduled services never enable it.
-- **Next:** run the balanced package for the first
-  3–5 trading days, review actual `selection_llm_calls` Token totals, direction counts, fill rounds and stop
-  reasons before proposing `r2`; do not tune from one day or replace the file in place.
+- **Next:** after Build 7 is released, collect 3–5 trading days of the `r2` package and review actual
+  `selection_llm_calls` Token totals, shortlist/deep counts, fill rounds and stop reasons before any further
+  tuning; never initiate a report rerun without explicit user authorization.
 - **Later:** V2.4.3 product-wide consistency review after the V2.4.2 observation window.
 
 ## 9. V2.4.3 observation inbox
@@ -225,5 +231,14 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   and received zero native search hits; their Token usage is not in `selection_llm_calls`. Route every genuinely
   networked post-selection task through the same Tavily boundary and extend usage audit before the next cost
   conclusion. Do not rerun, loosen gates, or change the balanced package without a new explicit user decision.
-- Build numbers are monotonic installable-build identifiers, not reserved in advance. This client hotfix
-  consumes Build 6, so V2.4.3 is expected to start at Build 7.
+- **Authorized Build 7 hotfix (2026-08-16):** `v2.4.2-balanced-r2` keeps all directions visible but sends only
+  48 mechanically ordered/coverage-preserving directions to cheap triage, then researches 20 initially and at
+  most 30 after two five-direction fill rounds. Observation mode disables only Token/wall stops; it can no
+  longer remove direction/fill caps. Deep decisions are explicitly `candidate|not_candidate|uncertain`; the
+  server binds the exact seed key and presented-member whitelist, requires the existing market/sector/member
+  check shapes, and treats contract/provider failures as unavailable rather than gate rejects. A partial run
+  with zero publishable baskets preserves the previous valid snapshot. Tavily queries now always retain the
+  direction label and add fixed A-share research context, so one-character labels are not rejected. This changes
+  no six-gate/Tier threshold and does not authorize a production rerun.
+- Build numbers are monotonic installable-build identifiers, not reserved in advance. This backend hotfix
+  consumes Build 7, so V2.4.3 is expected to start at Build 8.

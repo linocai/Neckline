@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from neckline.scan.seeds import DriverSeed
 from neckline.selection.deep_queue import DirectionPipelineConfig, DirectionPipelineConfigError, build_deep_queue
+from neckline.selection.deep_reason import parse_deep_reason
+from neckline.selection.deep_research import request_for
 from neckline.selection.direction_brief import build_briefs
 from neckline.selection.direction_inventory import build_inventory
 from neckline.selection.direction_merge import merge_directions
@@ -19,7 +22,8 @@ BALANCED_CONFIG = BACKEND_ROOT / "config" / "direction-pipeline.v2.4.2-balanced.
 
 def _config(**changes):
     value = {
-        "version": "v1", "deep_initial_limit": 20, "triage_batch_size": 8, "triage_concurrency": 1,
+        "version": "v1", "mechanical_shortlist_limit": 30,
+        "deep_initial_limit": 20, "triage_batch_size": 8, "triage_concurrency": 1,
         "deep_reason_batch_size": 1, "fill_batch_size": 3, "sufficient_candidate_count": 7,
         "normal_before_reserve": True, "coverage_industry_min": 2, "coverage_seed_kind_min": 2,
         "coverage_potential_czy_min": 1, "selection_token_budget": 10_000,
@@ -38,6 +42,33 @@ def _seeds(n=24):
     ) for i in range(n)]
 
 
+def _check():
+    return {
+        "verdict": "ok", "support": ["公开事实"], "counter_evidence": [],
+        "missing": [], "reason": "已有公开证据",
+    }
+
+
+def _deep_candidate(brief):
+    return {
+        "directionId": brief.direction_id, "decision": "candidate",
+        "decisionReason": "驱动与成员均有公开证据", "name": brief.label,
+        "driver": "公开事件驱动", "driver_kind": "event", "why_now": "当日出现新证据",
+        "common_trait": "都直接受同一事件驱动", "persistence": "事件仍在验证窗口",
+        "strengthen_and_invalidate": "增量公告强化，事件撤回证伪", "evidence_conflicts": "",
+        "engine_code": "Z", "market_check": _check(), "sector_check": _check(),
+        # Deliberately hostile model-authored identity: the parser must discard
+        # it and bind the mechanical seed key below.
+        "seed_keys": ["模型擅自写的错误种子"],
+        "members": [{
+            "ts_code": brief.member_codes[0], "role": "core", "reason": "方向容量代表",
+            "primary_claim": "yes", "primary_claim_reason": "驱动、代表性与协同一致",
+            "position_check": _check(), "core_check": _check(),
+        }],
+        "narrative": "完整研究材料",
+    }
+
+
 def test_all_seeds_visible_and_only_exact_duplicates_removed():
     seeds = _seeds(23)
     inventory = build_inventory(seeds + [seeds[0]])
@@ -47,6 +78,22 @@ def test_all_seeds_visible_and_only_exact_duplicates_removed():
     merged = merge_directions(build_briefs(inventory.directions))
     assert len(merged.directions) == 23
     assert {x.merge_status for x in merged.directions} == {"merge_policy_unconfigured"}
+
+
+def test_hot_industry_label_is_preserved_as_mechanical_coverage_category():
+    seed = DriverSeed(
+        seed_key="industry-1", seed_kind="hot_industry", label="医药商业",
+        member_codes=("600001.SH",), evidence={"industry_rank": 1},
+    )
+    brief = build_briefs(build_inventory([seed]).directions)[0]
+    assert brief.industry == "医药商业"
+
+
+def test_tavily_query_never_emits_the_rejected_one_character_shape():
+    request = request_for(
+        direction_id="copper", label="铜", brief={"industry": None},
+    )
+    assert request.query == "铜 A股 最新产业动态"
 
 
 def test_config_has_no_hidden_defaults_and_confirmed_initial_limit():
@@ -62,12 +109,13 @@ def test_approved_balanced_production_config_is_exact_and_wired_to_basket_unit()
     raw = json.loads(BALANCED_CONFIG.read_text(encoding="utf-8"))
     config = DirectionPipelineConfig.from_mapping(raw)
     assert raw == {
-        "version": "v2.4.2-balanced-r1",
+        "version": "v2.4.2-balanced-r2",
+        "mechanical_shortlist_limit": 48,
         "deep_initial_limit": 20,
         "triage_batch_size": 8,
         "triage_concurrency": 1,
         "deep_reason_batch_size": 2,
-        "fill_batch_size": 4,
+        "fill_batch_size": 5,
         "sufficient_candidate_count": 7,
         "normal_before_reserve": True,
         "coverage_industry_min": 6,
@@ -75,8 +123,8 @@ def test_approved_balanced_production_config_is_exact_and_wired_to_basket_unit()
         "coverage_potential_czy_min": 2,
         "selection_token_budget": 350_000,
         "selection_wall_seconds": 1_500,
-        "max_total_deep": 32,
-        "max_fill_rounds": 3,
+        "max_total_deep": 30,
+        "max_fill_rounds": 2,
         "cross_seed_merge_policy": "identity_only",
     }
     assert config.max_total_deep == config.deep_initial_limit + config.fill_batch_size * config.max_fill_rounds
@@ -110,3 +158,60 @@ def test_malformed_triage_is_retryable_reserve_and_queue_is_covered_then_limited
     assert len(queue.entries) == 20
     assert len(queue.remaining_ids) == 4
     assert any(entry.coverage_reason.startswith("coverage:industry") for entry in queue.entries)
+
+
+def test_deep_contract_binds_mechanical_seed_and_survives_the_real_whitelist_gate():
+    from neckline.selection import aggregate as ag
+
+    seed = _seeds(1)[0]
+    brief = build_briefs(build_inventory([seed]).directions)[0]
+    parsed = parse_deep_reason(
+        _deep_candidate(brief), direction_id=brief.direction_id,
+        seed_key=brief.seed_key, allowed_member_codes=brief.member_codes,
+    )
+    proposal = parsed.to_legacy_proposal()
+    assert proposal["seed_keys"] == [seed.seed_key]
+    assert proposal["directionId"] == brief.direction_id
+    candidate, rejected = ag._gate_proposal(
+        proposal, trade_date_s="20260814", seeds_by_key={seed.seed_key: seed},
+        presented_by_seed={seed.seed_key: seed.member_codes},
+        evidence_by_seed={seed.seed_key: ag.DriverEvidence(
+            seed_key=seed.seed_key, status=ag.EVIDENCE_OK,
+            items=(ag.EvidenceItem("公开事件", "交易所", "2026-08-14"),),
+        )},
+        ctx=ag.MechContext(trade_date=date(2026, 8, 14)),
+        pack_version="test-pack", charter_version="test-charter", used_keys=set(),
+    )
+    assert rejected is None
+    assert candidate is not None and candidate.seed_keys == (seed.seed_key,)
+
+
+def test_deep_contract_keeps_valid_no_candidate_separate_from_system_failure():
+    seed = _seeds(1)[0]
+    brief = build_briefs(build_inventory([seed]).directions)[0]
+    parsed = parse_deep_reason(
+        {"directionId": brief.direction_id, "decision": "not_candidate",
+         "decisionReason": "公开证据不足以支持共同驱动"},
+        direction_id=brief.direction_id, seed_key=brief.seed_key,
+        allowed_member_codes=brief.member_codes,
+    )
+    assert parsed.decision == "not_candidate" and not parsed.is_candidate
+    with pytest.raises(ValueError, match="only candidate"):
+        parsed.to_legacy_proposal()
+
+
+@pytest.mark.parametrize("mutate,match", [
+    (lambda raw: raw.update({"members": []}), "1 to 3"),
+    (lambda raw: raw["members"][0].update({"ts_code": "999999.SZ"}), "whitelist"),
+    (lambda raw: raw["members"][0].pop("core_check"), "core_check"),
+])
+def test_deep_contract_rejects_shapes_that_previously_became_zero_basket_gate_rejects(mutate, match):
+    seed = _seeds(1)[0]
+    brief = build_briefs(build_inventory([seed]).directions)[0]
+    raw = _deep_candidate(brief)
+    mutate(raw)
+    with pytest.raises(ValueError, match=match):
+        parse_deep_reason(
+            raw, direction_id=brief.direction_id, seed_key=brief.seed_key,
+            allowed_member_codes=brief.member_codes,
+        )
