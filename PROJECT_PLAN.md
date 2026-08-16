@@ -9,12 +9,12 @@ explicitly backfilled on 2026-08-16 after the bounded pipeline fix. Weekday sche
 after close and defers Friday's report to Sunday evening so weekend information can enter research. Do not rerun
 a production report without a new explicit user instruction. Continue directly on `main`; do not create a branch.
 
-Build 7 is released from `main` commit `74bef27`: backend `4035 passed / 19 registered skips`, focused
-contract/publication regressions, `git diff --check`, and signed macOS/iOS Release archives are green.
-Production currently runs `v2.4.2-balanced-r2`; local hotfix package `v2.4.2-balanced-r3` removes the selection
-wall-clock cutoff, preserves undated Tavily evidence honestly, resolves concept codes before search, and checks
-real qualification after every deep cohort. It must not trigger or regenerate a report during deployment. The
-signed macOS `2.4.2 (7)` app remains installed and the iOS IPA remains user-installable.
+Build 7 is released; backend hotfix commit `09bd991` is on `main` with `4046 passed / 19 registered skips`,
+focused contract/publication regressions, Python compile, and `git diff --check` green. Production now runs
+`v2.4.2-balanced-r3`: the selection wall-clock cutoff is removed, undated Tavily evidence is preserved honestly,
+concept codes are resolved before search, and real qualification is checked after every deep cohort. The hotfix
+was deployed without starting or regenerating a report. The signed macOS `2.4.2 (7)` app remains installed and
+the iOS IPA remains user-installable.
 
 The baseline is `v2.4.1` Build 2. Its record is
 [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
@@ -36,7 +36,7 @@ committed as a second plan.
 - Queue selection is deterministic: triage, existing mechanical order, industry, seed type, and mechanical
   potential C/Z/Y applicability. Record each coverage choice and fill round.
 - Search and full reasoning run only for queued directions. Fill stops at configured sufficiency, exhausted
-  reserves, or an exhausted wall/token budget.
+  reserves, or the explicit Token/direction/fill limits; elapsed wall time is measured but is not a stop.
 - The six-gate definition, thresholds, enforcement, existing T1≤2/T2≤5 capacities, and research boundary
   remain unchanged.
 - `tier.py` is deterministic only: make no new `TASK_TIER_RANK` call. `basket_card.py` mechanically
@@ -193,6 +193,14 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
    20260814 rerun, two consistent SQLite backups were written as
    `/opt/neckline/data/neckline.db.bak{,2}-rerun-20260814-20260816-162149`; both pass `integrity_check` and share
    SHA-256 `e2f08273d17cdda94c15ab5f2029055b4b2d4dfcb193efafdc1d7193dee8607c`.
+8. **Balanced r3 hotfix deployed without rerun (2026-08-16).** Commit `09bd991` is on `main`; the replaced
+   selection/config/unit files are archived under
+   `/opt/neckline-release-backups/v2.4.2-r3-no-wall-pre-20260816-175222/`. Deployed hashes match the commit,
+   `neckline-basket.service` reports `TimeoutStartUSec=infinity`, the package validates as
+   `v2.4.2-balanced-r3`, public health remains `v2.4.2`, and the API remains active with `NRestarts=0`.
+   The production database retained the same size, mtime, and `neckline:neckline` owner across deployment;
+   basket/scan/report/target units stayed inactive. No report, LLM task, APNs notification, DB migration,
+   application build, or device installation ran.
 
 ## 8. Milestone index and backlog
 
@@ -201,10 +209,10 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   separate credit accounting. Deep research reuses
   the search result for the reasoning call instead of paying for a redundant search LLM call. Provider routing
   is explicit-default-first; only enabled/keyed Providers are eligible, and deleting, disabling or clearing a
-  Provider atomically removes its references. The one-off `--observe-selection-cost` mode disables only the
-  selection budget cutoffs while preserving measured usage, per-call timeout/retry, candidate sufficiency and
+  Provider atomically removes its references. The one-off `--observe-selection-cost` mode additionally disables
+  the Token cutoff while preserving measured usage, per-call timeout/retry, candidate sufficiency and
   pool-exhaustion stops; scheduled services never enable it.
-- **Next:** after deploying without a rerun, collect 3–5 trading days of the `r3` package and review actual
+- **Next:** collect 3–5 trading days of the deployed `r3` package and review actual
   `selection_llm_calls` Token totals,
   shortlist/deep counts, fill rounds and stop reasons before any further tuning; never initiate a report rerun
   without explicit user authorization. Route the remaining C4 post-selection news scan through Tavily before
@@ -272,5 +280,11 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   skip the same report at 19:00. Direction research used current Tavily results, but C4 still requested DeepSeek
   native search and received zero hits; fixing C4 requires only the post-selection report path, not another full
   selection rerun.
+- **Deployed r3 selection correction (2026-08-16):** remove the aggregate wall-clock stop and the systemd
+  90-minute basket timeout; preserve sourced Tavily results whose publisher omitted a date as T2-eligible
+  evidence; resolve mechanical concept codes to readable concept names before search; and re-run the unchanged
+  mechanical/six-gate/Tier qualification after every two completed directions, stopping later deep work once
+  seven publishable candidates exist. The 350,000 Token stop and the explicit 48/20/30 direction/fill bounds
+  remain. Deployment did not run the pipeline or alter the existing report snapshot.
 - Build numbers are monotonic installable-build identifiers, not reserved in advance. This backend hotfix
   consumes Build 7, so V2.4.3 is expected to start at Build 8.

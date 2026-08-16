@@ -1043,3 +1043,31 @@ sqlite3.OperationalError: no such column: provider_id
 - **See Also**: ERR-20260816-032
 
 ---
+
+## [ERR-20260816-038] deployment-config-verifier-assumed-wrapper-key
+
+**Logged**: 2026-08-16T17:53:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: config
+
+### Summary
+
+The post-deploy read-only verifier assumed the balanced package nested its fields under
+`direction_pipeline`, but the deployed JSON contract stores those fields at the top level.
+
+### Error
+
+```text
+KeyError: 'direction_pipeline'
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-16T17:53:00+08:00
+- **Notes**: The command had already copied and installed the service unit, but it did not start any service or
+  touch the report database. Re-run verification against the checked-in top-level JSON shape. Future deployment
+  checks must inspect the local config before composing the remote parser.
+- **See Also**: ERR-20260816-032
+
+---
