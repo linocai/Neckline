@@ -20,7 +20,8 @@
     python scripts/evening.py --segments scan,basket  # 只跑其中几段(⑯-D 分段跑的预演)
     python scripts/evening.py --no-llm              # 纯机械路径(离线冒烟 / 无 key 环境)
     python scripts/evening.py --no-save             # 不落 `reports` 表(调试)
-    python scripts/evening.py --notify              # 落库后触发 APNs(16:35 timer 用)
+    python scripts/evening.py --notify              # 落库后触发 APNs
+    python scripts/evening.py --scheduled           # 仅给 systemd:工作日=当天,周日=前一周五
 
 ⚠ **`--segments` 只挑跑哪几段,不改顺序**:传进去的集合会按 `CHAIN_SEGMENTS` 重排。
 """
@@ -31,7 +32,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -55,6 +56,22 @@ def _default_trade_date() -> date:
     return today if is_trading_day(today) else prev_trading_day(today)
 
 
+def _today() -> date:
+    """Clock seam for the scheduled-date contract and its regression tests."""
+    return date.today()
+
+
+def _scheduled_trade_date(today: date) -> date:
+    """Bind a timer slot to its intended session instead of a stale fallback.
+
+    Mon–Thu slots target that calendar day.  The Sunday slot targets the
+    immediately preceding Friday so weekend news can be included.  The caller
+    still checks ``is_trading_day`` and cleanly skips a holiday Friday; it must
+    never fall back to Thursday and regenerate an older report.
+    """
+    return today - timedelta(days=2) if today.weekday() == 6 else today
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -66,6 +83,10 @@ def main() -> int:
     parser.add_argument("--no-save", action="store_true", help="不落 reports 表/不写 md")
     parser.add_argument("--notify", action="store_true",
                         help="落库后触发 APNs 报告推送(受 kind=report_ready 开关)")
+    parser.add_argument(
+        "--scheduled", action="store_true",
+        help="仅给 systemd:周一至周四绑定当天,周日绑定前一周五;休市则成功跳过",
+    )
     parser.add_argument("--db", default=None, help="隔离库路径(冒烟用;缺省=真实库)")
     parser.add_argument("--parquet-dir", default=None, help="隔离 parquet 目录(冒烟用)")
     parser.add_argument(
@@ -79,8 +100,18 @@ def main() -> int:
     args = parser.parse_args()
 
     ensure_data_dirs()
-    trade_date = (datetime.strptime(args.trade_date, "%Y%m%d").date()
-                  if args.trade_date else _default_trade_date())
+    if args.trade_date and args.scheduled:
+        logger.error("显式交易日与 --scheduled 不能同时使用。")
+        return 2
+    if args.trade_date:
+        trade_date = datetime.strptime(args.trade_date, "%Y%m%d").date()
+    elif args.scheduled:
+        trade_date = _scheduled_trade_date(_today())
+        if not is_trading_day(trade_date):
+            logger.info("定时槽对应 %s，非交易日；安全跳过，不回退重跑旧报告。", trade_date)
+            return 0
+    else:
+        trade_date = _default_trade_date()
     if not is_trading_day(trade_date):
         logger.error("%s 不是交易日,无报告可生成。", trade_date)
         return 1

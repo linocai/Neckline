@@ -71,7 +71,7 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --segments review,report --notify
+ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments review,report --notify
 # ⑨ 复盘含 LLM(TASK_REVIEW)+ 报告渲染;墙钟以 LLM 为主。
 TimeoutStartSec=2400
 MemoryMax=1000M

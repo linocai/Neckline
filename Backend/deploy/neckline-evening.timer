@@ -1,14 +1,15 @@
-# Neckline 16:35 晚间链定时(plan §五 V2-⑯-D)。触发 `neckline-evening.target`,
+# Neckline 晚间链定时(plan §五 V2-⑯-D)。触发 `neckline-evening.target`,
 # 由它串起 scan → basket → report 三段。
 #
 # **时刻表**(总窗口按 ⑯-C 新机实测排,改点前先看那份计时表):
 #   16:05  neckline-daily.timer    拉当日 EOD → Parquet + industry_strength_daily
-#   16:35  本 timer                seg1 批算 → seg2 LLM → seg3 复盘+报告+APNs
+#   Mon-Thu 16:35 本 timer          当日 seg1 批算 → seg2 LLM → seg3 复盘+报告+APNs
+#   Sun 19:00 本 timer              明确绑定前一周五,纳入周末消息后再跑同一条链
 #   排在 16:35 的理由沿用 V1:TuShare 核心 EOD(daily/basic/adj)~15:35 后稳定,
 #   16:05 拉完给 30 分钟缓冲,报告才不会读到半份数据。
 #
-# 交易日门控在 `scripts/evening.py` 内(非交易日 `is_trading_day` 判否直接退出 1),
-# 故 timer 打 Mon-Fri、节假日脚本自退 —— 与 V1 `neckline-report.timer` 同体例。
+# 三个 service 都带 `--scheduled`:Mon-Thu 绑定当天,Sunday 只绑定前一周五。若该日休市,
+# 脚本成功跳过,绝不回退到更早交易日重复生成旧报告。人工补跑仍须显式传 YYYYMMDD。
 #
 # ⚠ **⑯ 交付时本 timer 刻意 *不* enable**:老机 v1.5.2 仍在跑、`neckline.db` 已连同
 # APNs device tokens 一并迁来,两台同时排程 = **同一条报告推两遍**。留到 ⑰ 双端换包
@@ -23,10 +24,11 @@
 # 安装见 neckline-evening.target 头部。
 
 [Unit]
-Description=Run Neckline evening chain at 16:35 on weekdays
+Description=Run Neckline evening chain Mon-Thu 16:35 and Sunday 19:00
 
 [Timer]
-OnCalendar=Mon-Fri 16:35 Asia/Shanghai
+OnCalendar=Mon-Thu 16:35 Asia/Shanghai
+OnCalendar=Sun 19:00 Asia/Shanghai
 Persistent=false
 Unit=neckline-evening.target
 

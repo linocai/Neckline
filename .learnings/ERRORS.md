@@ -910,3 +910,29 @@ GET https://nk.linotsai.top/health -> HTTP 404
   -readonly`, not as the SSH `deploy` user.
 
 ---
+
+## [ERR-20260816-033] local-gate-used-unavailable-system-python
+
+**Logged**: 2026-08-16T16:15:47+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+The weekend-schedule gate invoked bare `python` after its pytest step even though this workspace exposes Python
+through `Backend/.venv/bin/python`.
+
+### Error
+
+```text
+zsh: command not found: python
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-16T16:15:47+08:00
+- **Notes**: Focused tests had already passed and no production command ran. Re-ran compile and all later gates
+  with `.venv/bin/python`; backend commands in this repository must consistently use the project interpreter.
+
+---
