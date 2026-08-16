@@ -25,6 +25,68 @@ database snapshot is unchanged, which is the actual read-overlay contract.
 
 ---
 
+## [ERR-20260816-045] production-version-probe-used-nonexistent-api-path
+
+**Logged**: 2026-08-16T19:29:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+The Build 9 pre-deploy read-only probe tried `/opt/neckline/neckline/api/VERSION`; the runtime version file is
+`/opt/neckline/VERSION`, so the guarded remote command exited before its SQLite anchor queries.
+
+### Resolution
+
+- **Resolved**: 2026-08-16T19:29:00+08:00
+- **Notes**: The deployed Backend tree has no VERSION file; runtime version authority is
+  `/opt/neckline/neckline/api/app.py::VERSION` plus the public health response. The failed probes made no source,
+  database, report, service, or notification change; API remained active with zero restarts.
+
+---
+
+## [ERR-20260816-046] immediate-post-restart-health-probe-hit-startup-window
+
+**Logged**: 2026-08-16T19:31:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+The first public health request ran immediately after restarting the API and received 502 before Uvicorn finished
+application startup.
+
+### Resolution
+
+- **Resolved**: 2026-08-16T19:31:00+08:00
+- **Notes**: Service logs showed clean startup completion two seconds after restart; the bounded follow-up health
+  request returned HTTP 200 and the API had zero restarts. Future deploy probes should poll readiness briefly.
+
+---
+
+## [ERR-20260816-047] repair-cli-missed-project-root-bootstrap
+
+**Logged**: 2026-08-16T19:33:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+The first production invocation of `repair_report_card_plans.py` exited at import time with
+`ModuleNotFoundError: neckline` because the new direct script omitted the project-root `sys.path` bootstrap used
+by existing operational CLIs.
+
+### Resolution
+
+- **Resolved**: 2026-08-16T19:33:00+08:00
+- **Notes**: Add the same explicit root bootstrap as `scripts/evening.py` and a subprocess `--help` regression
+  test. The failed invocation made zero LLM calls and left database/card/report timestamps and versions unchanged.
+
+---
+
 ## [ERR-20260816-044] full-gate-found-new-charter-consumer-and-stale-build-guard
 
 **Logged**: 2026-08-16T20:10:00+08:00

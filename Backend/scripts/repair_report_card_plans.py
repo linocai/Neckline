@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
-from neckline.config import settings
-from neckline.llm.budget import LEDGER_REASON, BudgetLedger
-from neckline.llm.factory import get_provider
-from neckline.llm.router import TASK_SCRIPT
-from neckline.report.card_plan_repair import (
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from neckline.config import settings  # noqa: E402
+from neckline.llm.budget import LEDGER_REASON, BudgetLedger  # noqa: E402
+from neckline.llm.factory import get_provider  # noqa: E402
+from neckline.llm.router import TASK_SCRIPT  # noqa: E402
+from neckline.report.card_plan_repair import (  # noqa: E402
     CardRepair,
     apply_report_card_repairs,
     atomic_write_text,
@@ -26,10 +29,14 @@ from neckline.report.card_plan_repair import (
     patch_report_snapshot,
     repair_frozen_card,
 )
-from neckline.report.store import load_report_by_str
-from neckline.selection.basket_card import LLM_OK, run_card_llm, trade_plan_missing_pieces
-from neckline.selection.basket_store import load_basket_card, load_baskets_for_date
-from neckline.selection.run_store import latest_published_run_id
+from neckline.report.store import load_report_by_str  # noqa: E402
+from neckline.selection.basket_card import (  # noqa: E402
+    LLM_OK,
+    run_card_llm,
+    trade_plan_missing_pieces,
+)
+from neckline.selection.basket_store import load_basket_card, load_baskets_for_date  # noqa: E402
+from neckline.selection.run_store import latest_published_run_id  # noqa: E402
 
 
 def _args() -> argparse.Namespace:

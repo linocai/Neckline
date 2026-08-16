@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
+import sys
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +26,7 @@ from neckline.selection.basket_store import load_basket_card, save_basket_card
 
 D0 = date(2026, 8, 14)
 REPORT_DATE = date(2026, 8, 16)
+BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _old_card():
@@ -81,6 +85,15 @@ def _snapshot(card):
         "outCandidates": [], "outCandidatesAvailable": True,
         "reviews": [], "reviewsAvailable": True, "notes": [],
     }
+
+
+def test_repair_cli_bootstraps_backend_package_when_run_as_a_script():
+    result = subprocess.run(
+        [sys.executable, "scripts/repair_report_card_plans.py", "--help"],
+        cwd=BACKEND_ROOT, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0
+    assert "--expected-run-id" in result.stdout and "--apply" in result.stdout
 
 
 def test_repair_uses_only_frozen_anchors_and_completes_all_trade_plan_pieces():
