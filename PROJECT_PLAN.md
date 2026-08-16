@@ -11,10 +11,10 @@ member shapes reach the mechanical gate. Marketing version stays V2.4.2; there i
 Do not rerun a production report without a new explicit user instruction. Continue directly on `main`; do not
 create a branch.
 
-Local Build 7 verification is green: backend `4035 passed / 19 registered skips`, focused contract/
-publication regressions pass, `git diff --check` is clean, and the generated macOS project builds with
-marketing version `2.4.2` / Build `7`. No commit, push, production deploy, database mutation, package install,
-or report rerun has been performed in this hotfix turn.
+Build 7 is released from `main` commit `74bef27`: backend `4035 passed / 19 registered skips`, focused
+contract/publication regressions, `git diff --check`, and signed macOS/iOS Release archives are green.
+Production runs `v2.4.2-balanced-r2`; the signed macOS `2.4.2 (7)` app is installed and the iOS IPA is ready
+for user installation. The deployment did not run or regenerate any report.
 
 The baseline is `v2.4.1` Build 2. Its record is
 [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
@@ -173,6 +173,17 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
    `/Users/linotsai/Lino/app_backups/v2.4.2-b5-pre-b6-20260814-192100/`. The user-installable iOS artifact is
    `/tmp/neckline-v242-b6-rc.T9P3Fv/iOS-export/Neckline.ipa` (SHA-256
    `c2a1300e6fd86ac5416d8b70f5cb72562ef4ffc00da70fa22829cd009fce878e`); no iOS device was touched.
+6. **Build 7 released (2026-08-16).** Commit `74bef27` is on `main`. Before sync, production source was
+   archived under `/opt/neckline-release-backups/v2.4.2-b7-pipeline-pre-20260816-160112/` and two consistent
+   SQLite backups were written as `neckline.db.bak{,2}-v242-b7-20260816-160112`; both share SHA-256
+   `e2f08273d17cdda94c15ab5f2029055b4b2d4dfcb193efafdc1d7193dee8607c` and pass `integrity_check`.
+   Production source hashes match the commit, the API is active with `NRestarts=0`, public health is 200,
+   the database/report/latest-selection anchors are unchanged, and the existing daily/evening timers remain
+   scheduled for the next trading day. The signed macOS `2.4.2 (7)` app is installed with Build 6 preserved
+   under `/Users/linotsai/Lino/app_backups/v2.4.2-b6-pre-b7-20260816-160512/`. Persistent Release artifacts are
+   under `/Users/linotsai/Lino/app_builds/Neckline-v2.4.2-b7-20260816-160112/`; the iOS IPA SHA-256 is
+   `7f0b6c816b7dd225f9e5a83d6abd3229c2f997b65e56271190d2208df5617748`. No iOS device or report task was
+   touched.
 
 ## 8. Milestone index and backlog
 
@@ -231,7 +242,7 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   and received zero native search hits; their Token usage is not in `selection_llm_calls`. Route every genuinely
   networked post-selection task through the same Tavily boundary and extend usage audit before the next cost
   conclusion. Do not rerun, loosen gates, or change the balanced package without a new explicit user decision.
-- **Authorized Build 7 hotfix (2026-08-16):** `v2.4.2-balanced-r2` keeps all directions visible but sends only
+- **Released Build 7 hotfix (2026-08-16):** `v2.4.2-balanced-r2` keeps all directions visible but sends only
   48 mechanically ordered/coverage-preserving directions to cheap triage, then researches 20 initially and at
   most 30 after two five-direction fill rounds. Observation mode disables only Token/wall stops; it can no
   longer remove direction/fill caps. Deep decisions are explicitly `candidate|not_candidate|uncertain`; the
@@ -239,6 +250,6 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   check shapes, and treats contract/provider failures as unavailable rather than gate rejects. A partial run
   with zero publishable baskets preserves the previous valid snapshot. Tavily queries now always retain the
   direction label and add fixed A-share research context, so one-character labels are not rejected. This changes
-  no six-gate/Tier threshold and does not authorize a production rerun.
+  no six-gate/Tier threshold; the release deployment did not trigger a production rerun.
 - Build numbers are monotonic installable-build identifiers, not reserved in advance. This backend hotfix
   consumes Build 7, so V2.4.3 is expected to start at Build 8.
