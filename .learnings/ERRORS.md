@@ -1071,3 +1071,30 @@ KeyError: 'direction_pipeline'
 - **See Also**: ERR-20260816-032
 
 ---
+
+## [ERR-20260816-039] deployment-doc-backup-assumed-root-docs-existed
+
+**Logged**: 2026-08-16T17:57:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+An optional post-deploy documentation sync first tried to back up root-level repository docs that are not part
+of the production Backend-only layout.
+
+### Error
+
+```text
+cp: cannot stat '/opt/neckline/README.md': No such file or directory
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-16T17:57:00+08:00
+- **Notes**: The `&&` chain stopped before rsync, so production was unchanged. Keep repository-level README and
+  PROJECT_PLAN in Git rather than inventing new files in the Backend-only runtime root. Deployment scripts and
+  service documentation should derive their expected layout from the existing production tree before backup.
+
+---
