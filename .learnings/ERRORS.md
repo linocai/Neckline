@@ -168,6 +168,9 @@ so pytest exited before running any tests.
 - **Resolved**: 2026-08-16T20:05:00+08:00
 - **Notes**: Resolve current test paths with `rg --files tests` before composing selective suites; use the actual
   report consistency/store/weekend schedule files. No database or production action occurred.
+- **Recurrence**: A later display-only check again guessed `tests/test_report.py`; it also exited before tests.
+  The corrected suite was selected from `rg --files tests` and passed 110/110. Treat path discovery as mandatory,
+  not merely a post-failure recovery step.
 
 ---
 

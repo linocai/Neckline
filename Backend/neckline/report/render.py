@@ -580,7 +580,7 @@ def _render_one_basket(b: Any) -> str:
         zone = m.get("entryZone")
         zone_txt = (f"{_fmt_num(zone.get('low'))}~{_fmt_num(zone.get('high'))}" if isinstance(zone, dict)
                     else f"—({m.get('entryZoneUnavailableReason') or '不可得'})")
-        chase = (f"+{_fmt_num(m.get('maxChase'), '{:.1f}')}%" if m.get("maxChase") is not None
+        chase = (_fmt_num(m.get("maxChase")) if m.get("maxChase") is not None
                  else f"—({m.get('maxChaseUnavailableReason') or '不可得'})")
         exit_ref = m.get("exitReference")
         exit_txt = (f"{_fmt_num(exit_ref.get('low'))}~{_fmt_num(exit_ref.get('high'))}"

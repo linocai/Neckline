@@ -148,7 +148,8 @@ def test_apply_appends_card_and_patches_only_report_snapshot_atomically(isolated
     assert after["basket_daily"]["baskets"][0]["tier"] == 2
     assert after["basket_daily"]["baskets"][0]["cardVersion"] == 2
     assert after["basket_daily"]["baskets"][0]["card"]["members"][0]["entryZone"]["low"] == 9.8
-    assert "9.80~10.20" in after["markdown"] and "旧卡" not in after["markdown"]
+    assert "9.80~10.20" in after["markdown"] and "10.50" in after["markdown"]
+    assert "+10.5%" not in after["markdown"] and "旧卡" not in after["markdown"]
     assert load_basket_card(1, version=1, db_path=isolated_env.db_path)["card"] == old
     assert load_basket_card(1, db_path=isolated_env.db_path)["version"] == 2
 
