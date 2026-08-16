@@ -29,21 +29,9 @@ Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
 ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments basket --direction-pipeline-config /opt/neckline/config/direction-pipeline.v2.4.2-balanced.json
-# LLM 段:检索 + 推理多次调用 × 读超时 × 重试。给足墙钟,别让慢调用被 systemd
-# 掐成"链断了"。
-# ⚠ **这个数字是按预算账的算术定的,不是拍脑袋的余量** —— 改读超时/预算常量前先重算:
-#     检索账 20min(`SEARCH_BUDGET_SECONDS`)+ 一组超时溢出(90s × 3 = 4.5min)
-#   + 推理账 30min(`REASON_BUDGET_SECONDS`)+ 最后一次整段流式生成的悲观额度
-#     (`router.STREAM_GENERATION_BUDGET_ALLOWANCE_SECONDS` = 10min)
-#   ≈ 64.5min  → 取 **5400s(90min)**。
-# 「一组溢出 / 最后一次」= 预算是**发起调用前**检查的,所以最后一次调用可以整组
-# 跑完之后才发现账空。
-# **沿革**:① 2026-08-05 §七 P0-40 推理类读超时 90s → 240s,本值 3600 → **5400**;
-# ② 同日晚 §七 **P0-44** 推理类改**流式**,读超时语义变成 **chunk 间隔**(90s),
-# 单次生成不再有固定墙 —— 新算术 64.5min **比 P0-40 时的 66.5min 还宽**,故
-# **5400 不必再动**(值未变 = 不必 daemon-reload,本次只改了上面这段注释)。
-# ⛔ 别把它当"随便留的余量"往回调;`tests/test_llm_router_budget.py` 把它与预算
-# 常量钉在一起,改一个不改另一个会红。
-TimeoutStartSec=5400
+# 2026-08-16 用户明确取消选股总墙钟：晚间窗口充足，不得因为累计耗时把首批方向
+# 留在“已排队但未判断”。单次 HTTP/流式调用仍由 provider 自己的超时、重试和
+# systemd stop 操作约束；这里只取消整段累计时间截断。
+TimeoutStartSec=infinity
 # 内存画像轻(不做全表扫描,只读上一段落好的表 + 装配上下文)。
 MemoryMax=900M

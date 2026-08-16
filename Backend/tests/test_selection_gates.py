@@ -738,6 +738,19 @@ class TestEvidenceClassGates:
                                     evidence=(), evidence_status=ag.EVIDENCE_SEARCH_UNAVAILABLE))
         assert c.verdict == gt.VERDICT_PASS and c.available is False and c.blocks_t1
 
+    def test_driver_undated_tavily_evidence_is_kept_but_bars_t1(self):
+        evidence = (
+            ag.EvidenceItem(
+                claim="交易所披露扩产进展", source="交易所网站",
+                date=ag.EVIDENCE_DATE_UNDISCLOSED,
+            ),
+        )
+        c = gt._driver_gate(_basket("k", [_member("600001.SH")], evidence=evidence))
+        assert c.verdict == gt.VERDICT_PASS
+        assert c.available is True and c.blocks_t1 is True
+        assert c.evidence["undated_evidence_count"] == 1
+        assert "undated_evidence" in c.reason
+
     def test_evidence_three_kinds_pass_c1(self):
         assert gt._evidence_gate(C1, _basket("k", [_member("600001.SH")])).verdict == gt.VERDICT_PASS
 

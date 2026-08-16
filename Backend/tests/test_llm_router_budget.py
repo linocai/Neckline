@@ -140,24 +140,12 @@ def test_worst_case_streaming_generation_fits_inside_the_reason_budget():
     assert allowance >= 173.0 * 3, "额度没给够,遇上比中午慢三倍的晚高峰就会低估"
 
 
-def test_basket_unit_timeout_covers_the_new_budget_arithmetic():
-    """`deploy/neckline-basket.service` 的 `TimeoutStartSec` 是**按预算算术定的**,
-    不是随便留的余量。改读超时/流式额度而不改它 = 最坏情况下被 systemd 掐断
-    ("链断了"),这条把两者钉在一起,改一个不改另一个会红。"""
-    import re
-
+def test_basket_unit_has_no_aggregate_wall_timeout():
+    """晚间选股不再因累计用时被 systemd 截断；单次调用仍有 provider 保险丝。"""
     unit = (Path(__file__).resolve().parent.parent / "deploy" / "neckline-basket.service").read_text(
         encoding="utf-8")
-    m = re.search(r"^TimeoutStartSec=(\d+)", unit, re.MULTILINE)
-    assert m, "neckline-basket.service 没有 TimeoutStartSec"
-    worst_seconds = (
-        budget.SEARCH_BUDGET_SECONDS + 90.0 * 3   # 检索账 + 一组非流式超时溢出(检索类不流式)
-        + budget.REASON_BUDGET_SECONDS
-        + router.STREAM_GENERATION_BUDGET_ALLOWANCE_SECONDS  # 推理账 + 最后一次整段生成溢出
-    )
-    assert int(m.group(1)) >= worst_seconds, (
-        f"unit 超时 {m.group(1)}s < 预算算术最坏 {worst_seconds:.0f}s"
-    )
+    assert "TimeoutStartSec=infinity" in unit
+    assert "TimeoutStartSec=5400" not in unit
 
 
 def test_task_none_falls_back_to_default():

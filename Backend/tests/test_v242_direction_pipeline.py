@@ -27,7 +27,7 @@ def _config(**changes):
         "deep_reason_batch_size": 1, "fill_batch_size": 3, "sufficient_candidate_count": 7,
         "normal_before_reserve": True, "coverage_industry_min": 2, "coverage_seed_kind_min": 2,
         "coverage_potential_czy_min": 1, "selection_token_budget": 10_000,
-        "selection_wall_seconds": 600, "max_total_deep": 30, "max_fill_rounds": 3,
+        "max_total_deep": 30, "max_fill_rounds": 3,
         "cross_seed_merge_policy": "identity_only",
     }
     value.update(changes)
@@ -96,6 +96,26 @@ def test_tavily_query_never_emits_the_rejected_one_character_shape():
     assert request.query == "铜 A股 最新产业动态"
 
 
+def test_v242_pipeline_resolves_bare_concept_code_before_tavily_query():
+    from neckline.selection import aggregate as ag
+
+    seed = DriverSeed(
+        seed_key="cluster-1", seed_kind="limit_cluster", label="885756.TI",
+        member_codes=("003031.SZ",), evidence={"anchor_concept": "885756.TI"},
+    )
+    ctx = ag.MechContext(
+        trade_date=date(2026, 8, 14), index_names={"885756.TI": "芯片概念"},
+    )
+    resolved = ag._pipeline_seeds_with_readable_labels((seed,), ctx)[0]
+    assert resolved.label == "芯片概念"
+    assert resolved.seed_key == seed.seed_key
+    assert resolved.member_codes == seed.member_codes
+    brief = build_briefs(build_inventory((resolved,)).directions)[0]
+    assert request_for(
+        direction_id=brief.direction_id, label=brief.label, brief=brief.public_dict(),
+    ).query == "芯片概念 A股 最新产业动态"
+
+
 def test_config_has_no_hidden_defaults_and_confirmed_initial_limit():
     raw = _config()
     raw.pop("fill_batch_size")
@@ -109,7 +129,7 @@ def test_approved_balanced_production_config_is_exact_and_wired_to_basket_unit()
     raw = json.loads(BALANCED_CONFIG.read_text(encoding="utf-8"))
     config = DirectionPipelineConfig.from_mapping(raw)
     assert raw == {
-        "version": "v2.4.2-balanced-r2",
+        "version": "v2.4.2-balanced-r3",
         "mechanical_shortlist_limit": 48,
         "deep_initial_limit": 20,
         "triage_batch_size": 8,
@@ -122,7 +142,6 @@ def test_approved_balanced_production_config_is_exact_and_wired_to_basket_unit()
         "coverage_seed_kind_min": 4,
         "coverage_potential_czy_min": 2,
         "selection_token_budget": 350_000,
-        "selection_wall_seconds": 1_500,
         "max_total_deep": 30,
         "max_fill_rounds": 2,
         "cross_seed_merge_policy": "identity_only",
@@ -133,6 +152,12 @@ def test_approved_balanced_production_config_is_exact_and_wired_to_basket_unit()
         "--direction-pipeline-config "
         "/opt/neckline/config/direction-pipeline.v2.4.2-balanced.json"
     ) in unit
+
+
+def test_retired_wall_field_cannot_restore_a_time_cutoff():
+    raw = _config(selection_wall_seconds=1)
+    config = DirectionPipelineConfig.from_mapping(raw)
+    assert not hasattr(config, "selection_wall_seconds")
 
 
 def test_triage_has_no_search_and_missing_is_clamped_to_reserve():
@@ -184,6 +209,35 @@ def test_deep_contract_binds_mechanical_seed_and_survives_the_real_whitelist_gat
     )
     assert rejected is None
     assert candidate is not None and candidate.seed_keys == (seed.seed_key,)
+
+
+def test_tavily_hit_without_publication_date_is_evidence_not_zero_hits():
+    from neckline.selection import aggregate as ag
+
+    items = ag._pipeline_evidence_items({"evidence": [{
+        "claim": "交易所披露了扩产进展", "source": "example.test", "date": "",
+        "url": "https://example.test/notice",
+    }]})
+    assert len(items) == 1
+    assert items[0].date == ag.EVIDENCE_DATE_UNDISCLOSED
+
+    seed = _seeds(1)[0]
+    brief = build_briefs(build_inventory([seed]).directions)[0]
+    proposal = parse_deep_reason(
+        _deep_candidate(brief), direction_id=brief.direction_id,
+        seed_key=brief.seed_key, allowed_member_codes=brief.member_codes,
+    ).to_legacy_proposal()
+    candidate, rejected = ag._gate_proposal(
+        proposal, trade_date_s="20260814", seeds_by_key={seed.seed_key: seed},
+        presented_by_seed={seed.seed_key: seed.member_codes},
+        evidence_by_seed={seed.seed_key: ag.DriverEvidence(
+            seed_key=seed.seed_key, status=ag.EVIDENCE_OK, items=items,
+        )},
+        ctx=ag.MechContext(trade_date=date(2026, 8, 14)),
+        pack_version="test-pack", charter_version="test-charter", used_keys=set(),
+    )
+    assert rejected is None
+    assert candidate is not None
 
 
 def test_deep_contract_keeps_valid_no_candidate_separate_from_system_failure():

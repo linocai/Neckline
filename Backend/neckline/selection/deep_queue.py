@@ -27,7 +27,6 @@ class DirectionPipelineConfig:
     coverage_seed_kind_min: int
     coverage_potential_czy_min: int
     selection_token_budget: int
-    selection_wall_seconds: float
     max_total_deep: int
     max_fill_rounds: int
     cross_seed_merge_policy: str
@@ -65,8 +64,6 @@ class DirectionPipelineConfig:
             raise DirectionPipelineConfigError("max_total_deep cannot exceed mechanical_shortlist_limit")
         if not isinstance(value.normal_before_reserve, bool):
             raise DirectionPipelineConfigError("normal_before_reserve must be boolean")
-        if not isinstance(value.selection_wall_seconds, (int, float)) or isinstance(value.selection_wall_seconds, bool) or value.selection_wall_seconds <= 0:
-            raise DirectionPipelineConfigError("selection_wall_seconds must be positive")
         return value
 
 

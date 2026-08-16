@@ -18,7 +18,7 @@ def _config(**changes):
         "sufficient_candidate_count": 20, "normal_before_reserve": True,
         "coverage_industry_min": 1, "coverage_seed_kind_min": 1,
         "coverage_potential_czy_min": 0, "selection_token_budget": 100_000,
-        "selection_wall_seconds": 600, "max_total_deep": 20, "max_fill_rounds": 0,
+        "max_total_deep": 20, "max_fill_rounds": 0,
         "cross_seed_merge_policy": "identity_only",
     }
     config.update(changes)
@@ -338,10 +338,10 @@ def test_pipeline_fills_after_initial_twenty_until_real_qualification_callback_i
         conn.close()
 
 
-def test_wall_budget_keeps_completed_reason_cohorts_instead_of_discarding_all_searches(
+def test_elapsed_wall_time_never_truncates_selection(
     isolated_env, monkeypatch,
 ):
-    """A later search expiry must not erase already completed deep batches."""
+    """Selection has no aggregate time cutoff; only Tokens/direction caps stop it."""
     from neckline.db import init_schema
     from neckline.selection import direction_pipeline
 
@@ -349,22 +349,22 @@ def test_wall_budget_keeps_completed_reason_cohorts_instead_of_discarding_all_se
     clock = [0.0]
     monkeypatch.setattr(direction_pipeline.time, "monotonic", lambda: clock[0])
     triage = _TimedProvider("triage", clock)
-    search = _Search(clock=clock, advance=1)
-    reason = _TimedProvider("reason", clock, advance=1)
+    search = _Search(clock=clock, advance=10_000)
+    reason = _TimedProvider("reason", clock, advance=10_000)
 
     outcome = run_direction_pipeline(
         date(2026, 8, 14), _seeds(4),
         config=_config(
             deep_initial_limit=20, deep_reason_batch_size=2,
-            selection_wall_seconds=5, max_total_deep=4,
+            max_total_deep=4,
         ),
         triage_provider=triage, research_client=search, reason_provider=reason,
         db_path=isolated_env.db_path,
     )
 
-    assert outcome.selection_state == "partial"
-    assert len(outcome.proposals) == 2
-    assert len(reason.calls) == 1
+    assert outcome.selection_state == "complete"
+    assert len(outcome.proposals) == 4
+    assert len(reason.calls) == 2
     conn = sqlite3.connect(isolated_env.db_path)
     try:
         tasks = [row[0] for row in conn.execute(
@@ -372,7 +372,39 @@ def test_wall_budget_keeps_completed_reason_cohorts_instead_of_discarding_all_se
         )]
     finally:
         conn.close()
-    assert tasks == ["direction_triage", "deep_reason"]
+    assert tasks == ["direction_triage", "deep_reason", "deep_reason"]
+
+
+def test_each_completed_cohort_rechecks_sufficiency_and_stops_later_deep_work(isolated_env):
+    from neckline.db import init_schema
+
+    init_schema(isolated_env.db_path)
+    search = _Search()
+    reason = _Provider("reason")
+    outcome = run_direction_pipeline(
+        date(2026, 8, 14), _seeds(10),
+        config=_config(
+            deep_reason_batch_size=2, sufficient_candidate_count=3,
+            max_total_deep=10,
+        ),
+        triage_provider=_Provider("triage"), research_client=search,
+        reason_provider=reason, qualification_callback=lambda proposals, _research: len(proposals),
+        db_path=isolated_env.db_path,
+    )
+    assert outcome.selection_state == "complete"
+    assert len(outcome.proposals) == 4
+    assert len(search.calls) == 4
+    assert len(reason.calls) == 2
+    conn = sqlite3.connect(isolated_env.db_path)
+    try:
+        assert conn.execute(
+            "SELECT count(*) FROM selection_direction_events WHERE transition='deep_not_needed'"
+        ).fetchone()[0] == 6
+        assert conn.execute(
+            "SELECT count(*) FROM selection_direction_events WHERE transition='fill_evaluated'"
+        ).fetchone()[0] == 2
+    finally:
+        conn.close()
 
 
 def test_observe_only_ignores_cost_budget_but_still_enforces_direction_caps(isolated_env, monkeypatch):
@@ -390,7 +422,7 @@ def test_observe_only_ignores_cost_budget_but_still_enforces_direction_caps(isol
         date(2026, 8, 14), _seeds(35),
         config=_config(
             mechanical_shortlist_limit=35,
-            selection_token_budget=1, selection_wall_seconds=1,
+            selection_token_budget=1,
             max_total_deep=30, fill_batch_size=5, max_fill_rounds=2,
             sufficient_candidate_count=99,
         ),

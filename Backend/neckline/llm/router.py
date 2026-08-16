@@ -91,17 +91,10 @@ SELECTION_PIPELINE_TASKS = (
 # 出来的 provider 不受影响**(单测替身、`providers/{glm,kimi}.py` 参考实现)——
 # 这正是我们要的:类属性默认值(非流式 / 90.0)保持不变,既有行为逐字节不变。
 #
-# **预算与 unit 超时的账**(改这两个数字前先重算一遍,守门单测钉着):
-#   · 检索账 20min(`SEARCH_BUDGET_SECONDS`)+ 一组非流式超时溢出(90s × 3 = 4.5min)
-#   · 推理账 30min(`REASON_BUDGET_SECONDS`)+ 最后一次调用的整段生成溢出
-#   「一组溢出」= 预算是**发起调用前**检查的,最后一次调用可以整组超时后才发现账空。
-#   ⚠ **流式下单次调用的墙钟没有固定上限**(生成多长都合法),这是刻意的 —— 也正是
-#   本条要治的东西。它由三层兜住:① chunk 间隔 90s(卡死立刻掐)② 预算账如实记录
-#   实际耗时、下一次调用发起前就会判空 ③ `TimeoutStartSec` 外层封顶。按实测(中午
-#   173s、晚高峰更慢)给单次生成留 **10min** 的悲观额度,总账 ≈ 64.5min < 90min,
-#   **比 P0-40 时的 66.5min 还宽**,故 `deploy/neckline-basket.service` 的
-#   `TimeoutStartSec=5400` **不必再动**(值不变 = 不必 daemon-reload)。
-#   **观察判据**:journal 里 `流式生成完成:%.1fs` 那行若逼近 10min,回来重算这本账。
+# **单次调用保险丝**:流式生成的总墙钟没有固定上限(生成多长都合法),但 chunk 间隔
+# 仍是 90s——连续 90s 一个字都没有就按卡死处理。2026-08-16 用户明确取消晚间选股
+# 整段累计时间上限，`neckline-basket.service` 同步设为 `TimeoutStartSec=infinity`；
+# 不得再用这里的悲观额度反推出一个 selection/unit 总墙钟。
 STREAM_CHUNK_GAP_TIMEOUT_SECONDS: float = 90.0
 
 # 单次流式生成的悲观额度(**只用于预算算术与守门单测,不是运行时会去掐的超时**)。

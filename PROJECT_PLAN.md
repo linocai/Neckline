@@ -11,8 +11,10 @@ a production report without a new explicit user instruction. Continue directly o
 
 Build 7 is released from `main` commit `74bef27`: backend `4035 passed / 19 registered skips`, focused
 contract/publication regressions, `git diff --check`, and signed macOS/iOS Release archives are green.
-Production runs `v2.4.2-balanced-r2`; the signed macOS `2.4.2 (7)` app is installed and the iOS IPA is ready
-for user installation. The deployment did not run or regenerate any report.
+Production currently runs `v2.4.2-balanced-r2`; local hotfix package `v2.4.2-balanced-r3` removes the selection
+wall-clock cutoff, preserves undated Tavily evidence honestly, resolves concept codes before search, and checks
+real qualification after every deep cohort. It must not trigger or regenerate a report during deployment. The
+signed macOS `2.4.2 (7)` app remains installed and the iOS IPA remains user-installable.
 
 The baseline is `v2.4.1` Build 2. Its record is
 [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
@@ -51,12 +53,13 @@ committed as a second plan.
 - Directly use only confirmed facts: `deep_initial_limit=20`, current Tier capacities, existing mechanical
   and gate rules, and no Tier/card repeat LLM calls.
 - The user approved the repaired production package `Backend/config/direction-pipeline.v2.4.2-balanced.json`
-  (`v2.4.2-balanced-r2`) on 2026-08-16: all directions visible, mechanical shortlist `48`, initial/max deep
+  (`v2.4.2-balanced-r3`) on 2026-08-16: all directions visible, mechanical shortlist `48`, initial/max deep
   `20/30`, triage/deep/fill batches `8/2/5`,
   qualified target `7`, industry/seed-kind/potential-CZY coverage `6/4/2`, Token/wall stops
-  `350000/1500`, at most `2` fill rounds, normal before reserve, and identity-only merge.
+  `350000/none`, at most `2` fill rounds, normal before reserve, and identity-only merge. Qualification is
+  re-evaluated after each completed two-direction cohort so sufficient candidates stop later expensive work.
 - Outside that approved versioned package, do not invent production defaults or silently alter its
-  batch, coverage, queue, merge, Token, wall-time, or fill values. `triage_concurrency=1` records the
+  batch, coverage, queue, merge, Token, or fill values. `triage_concurrency=1` records the
   current serial executor and must not be presented as implemented parallelism.
 - Versioned `direction_pipeline` explicitly validates every queue, coverage, and budget field. Missing/invalid
   config returns `selectionState=unavailable`, preserves the prior published snapshot, and never falls back
@@ -201,7 +204,8 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   Provider atomically removes its references. The one-off `--observe-selection-cost` mode disables only the
   selection budget cutoffs while preserving measured usage, per-call timeout/retry, candidate sufficiency and
   pool-exhaustion stops; scheduled services never enable it.
-- **Next:** collect 3–5 trading days of the `r2` package and review actual `selection_llm_calls` Token totals,
+- **Next:** after deploying without a rerun, collect 3–5 trading days of the `r3` package and review actual
+  `selection_llm_calls` Token totals,
   shortlist/deep counts, fill rounds and stop reasons before any further tuning; never initiate a report rerun
   without explicit user authorization. Route the remaining C4 post-selection news scan through Tavily before
   treating its current-news coverage as equivalent to direction deep research.

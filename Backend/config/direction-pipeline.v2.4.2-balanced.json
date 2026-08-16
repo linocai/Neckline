@@ -1,5 +1,5 @@
 {
-  "version": "v2.4.2-balanced-r2",
+  "version": "v2.4.2-balanced-r3",
   "mechanical_shortlist_limit": 48,
   "deep_initial_limit": 20,
   "triage_batch_size": 8,
@@ -12,7 +12,6 @@
   "coverage_seed_kind_min": 4,
   "coverage_potential_czy_min": 2,
   "selection_token_budget": 350000,
-  "selection_wall_seconds": 1500,
   "max_total_deep": 30,
   "max_fill_rounds": 2,
   "cross_seed_merge_policy": "identity_only"

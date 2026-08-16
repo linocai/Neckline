@@ -244,14 +244,13 @@ def run_direction_pipeline(
             )
 
     disposition: Dict[str, str] = {}
-    started_all = time.monotonic()
     tokens_used = 0
 
-    def budget_exhausted() -> bool:
-        return budget_mode == "enforce" and (
-            time.monotonic() - started_all >= cfg.selection_wall_seconds
-            or tokens_used >= cfg.selection_token_budget
-        )
+    def token_budget_exhausted() -> bool:
+        # The user removed the aggregate wall-clock cutoff on 2026-08-16.
+        # Per-request network timeouts/retries still prevent a hung call; the
+        # selection-level stop now measures only provider-reported Tokens.
+        return budget_mode == "enforce" and tokens_used >= cfg.selection_token_budget
     for batch_no, start in enumerate(range(0, len(shortlisted), cfg.triage_batch_size), start=1):
         batch = shortlisted[start:start + cfg.triage_batch_size]
         started = time.monotonic()
@@ -298,7 +297,7 @@ def run_direction_pipeline(
             run_store.add_event(run_id, f"triage_{item.disposition}", direction_id=item.direction_id,
                                 reason=item.reason, batch_no=batch_no, llm_call_id=call_id, db_path=db_path)
 
-    if budget_exhausted():
+    if token_budget_exhausted():
         return DirectionPipelineOutcome("partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。", run_id=run_id,
                                         briefs=merged.directions, notes=("selection_budget_exhausted_before_deep",))
 
@@ -326,19 +325,19 @@ def run_direction_pipeline(
                                 fill_round=fill_round, db_path=db_path)
         brief_by_id = {item.direction_id: item for item in shortlisted}
         # Complete one small research/reason cohort before starting the next.
-        # The old order searched the entire queue first and reasoned only at the
-        # end.  A wall-budget expiry could therefore discard many successful
-        # searches while publishing zero proposals.  Interleaving makes every
-        # completed cohort independently useful and keeps partial publication
-        # honest without increasing the configured call/token limits.
+        # Search/reason one small cohort, then immediately run the real
+        # mechanical/gate/Tier qualification preview. Once enough publishable
+        # baskets exist, later queued directions are not researched merely to
+        # consume a preallocated slot.
+        target_reached = False
         for index in range(0, len(queue.entries), cfg.deep_reason_batch_size):
-            if budget_exhausted():
+            if token_budget_exhausted():
                 terminal_state, terminal_text = "partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。"
                 break
             group_entries = queue.entries[index:index + cfg.deep_reason_batch_size]
             researched = []
             for item in group_entries:
-                if budget_exhausted():
+                if token_budget_exhausted():
                     terminal_state, terminal_text = "partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。"
                     break
                 brief = brief_by_id[item.direction_id]
@@ -386,7 +385,7 @@ def run_direction_pipeline(
                 break
             if not researched:
                 continue
-            if budget_exhausted():
+            if token_budget_exhausted():
                 terminal_state, terminal_text = "partial", "今日深度研究已按预算结束，当前展示已完成判断的方向。"
                 break
             group = researched
@@ -484,33 +483,45 @@ def run_direction_pipeline(
                 run_store.add_event(run_id, "reasoning_complete", direction_id=brief.direction_id,
                                     reason=reason.decision_reason, batch_no=batch_no,
                                     fill_round=fill_round, llm_call_id=call_id, db_path=db_path)
+            # The aggregate entry supplies the real mechanical/gate/Tier
+            # preview. Evaluate after every completed cohort so sufficient
+            # baskets stop later expensive work immediately.
+            try:
+                qualified = (
+                    qualification_callback(tuple(proposals), research)
+                    if qualification_callback is not None else len(proposals)
+                )
+            except Exception as exc:
+                run_store.add_event(
+                    run_id, "qualification_unavailable",
+                    reason=f"qualification_failed:{type(exc).__name__}", fill_round=fill_round,
+                    db_path=db_path,
+                )
+                return _finish_unavailable(
+                    run_id, "今日机械判定服务异常，保留上一份已完成结果。",
+                    "qualification_unavailable", db_path=db_path,
+                    notes=(f"qualification_failed:{type(exc).__name__}",),
+                )
+            run_store.add_event(
+                run_id, "fill_evaluated", reason=(
+                    f"qualified:{qualified}/target:{cfg.sufficient_candidate_count}"
+                ), fill_round=fill_round, db_path=db_path,
+            )
+            if qualified >= cfg.sufficient_candidate_count:
+                target_reached = True
+                for skipped in queue.entries[index + len(group_entries):]:
+                    run_store.update_direction_disposition(
+                        run_id, skipped.direction_id, final_disposition="deep_not_needed", db_path=db_path,
+                    )
+                    run_store.add_event(
+                        run_id, "deep_not_needed", direction_id=skipped.direction_id,
+                        reason=f"qualified:{qualified}/target:{cfg.sufficient_candidate_count}",
+                        fill_round=fill_round, db_path=db_path,
+                    )
+                break
         if terminal_state == "partial":
             break
-        # The aggregate entry can supply the real mechanical/gate/Tier preview.
-        # Without it this compatibility primitive only knows whether full
-        # reasoning parsed; production aggregation always provides the callback.
-        try:
-            qualified = (
-                qualification_callback(tuple(proposals), research)
-                if qualification_callback is not None else len(proposals)
-            )
-        except Exception as exc:
-            run_store.add_event(
-                run_id, "qualification_unavailable",
-                reason=f"qualification_failed:{type(exc).__name__}", fill_round=fill_round,
-                db_path=db_path,
-            )
-            return _finish_unavailable(
-                run_id, "今日机械判定服务异常，保留上一份已完成结果。",
-                "qualification_unavailable", db_path=db_path,
-                notes=(f"qualification_failed:{type(exc).__name__}",),
-            )
-        run_store.add_event(
-            run_id, "fill_evaluated", reason=(
-                f"qualified:{qualified}/target:{cfg.sufficient_candidate_count}"
-            ), fill_round=fill_round, db_path=db_path,
-        )
-        if qualified >= cfg.sufficient_candidate_count:
+        if target_reached:
             break
         fill_round += 1
         if fill_round > cfg.max_fill_rounds or len(queued) >= cfg.max_total_deep:

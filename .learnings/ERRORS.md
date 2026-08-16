@@ -25,6 +25,84 @@ database snapshot is unchanged, which is the actual read-overlay contract.
 
 ---
 
+## [ERR-20260816-035] apply-patch-duplicate-file-sections
+
+**Logged**: 2026-08-16T17:20:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+A single `apply_patch` request targeted `aggregate.py` in two separate update sections, which the patch tool
+rejects before changing any file.
+
+### Error
+
+```text
+apply_patch verification failed: invalid patch: multiple operations target .../aggregate.py
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-16T17:20:00+08:00
+- **Notes**: No file was modified. Consolidate all hunks for the same file under one `Update File` section,
+  or apply separate patches sequentially.
+
+---
+
+## [ERR-20260816-036] service-comment-patch-context-was-incomplete
+
+**Logged**: 2026-08-16T17:22:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+The first narrow patch for `neckline-basket.service` omitted two comment lines that sit before
+`TimeoutStartSec`, so the full context block did not match.
+
+### Error
+
+```text
+apply_patch verification failed: Failed to find expected lines in .../neckline-basket.service
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-16T17:22:00+08:00
+- **Notes**: Read the exact numbered range first and replace the complete contiguous block. No service file was
+  modified by the failed attempt.
+
+---
+
+## [ERR-20260816-037] backend-workdir-used-root-relative-check-paths
+
+**Logged**: 2026-08-16T17:30:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+A verification command ran from `Backend/` but passed repository-root-prefixed paths to `rg`, so the `&&`
+chain stopped before compile or tests.
+
+### Error
+
+```text
+rg: Backend/neckline: No such file or directory
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-16T17:30:00+08:00
+- **Notes**: No test or production process started. Use `neckline/`, `tests/`, and `../README.md` from the
+  Backend working directory, or run root-prefixed checks from the repository root.
+
+---
+
 ## [ERR-20260814-017] build-five-release-guard-still-pinned-to-four
 
 **Logged**: 2026-08-14T18:03:00+08:00

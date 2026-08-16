@@ -137,6 +137,7 @@ from neckline.selection.aggregate import (
     CORE_OK,
     CORE_UNFIT,
     CORE_VERDICTS,
+    EVIDENCE_DATE_UNDISCLOSED,
     MARKET_UNFIT,
     MARKET_VERDICTS,
     MARKET_WEAK,
@@ -1392,8 +1393,11 @@ def _core_member_check(engine: Pack, member: Any) -> Tuple[GateCheck, bool]:
 
 
 def _driver_gate(basket: Any) -> GateCheck:
-    """② 驱动关(证据关):机械低保 = 驱动有 ≥1 条带日期的证据条目(检索缺席时
-    判不了 → 不拦不给 T1);LLM 侧 = 四问必答(K8 §五-2),缺任一 → degrade。"""
+    """② 驱动关(证据关):机械低保 = 驱动有 ≥1 条来源明确的证据条目。
+
+    Tavily 命中缺发布日期时保留证据但阻止 T1；这和零命中不是一回事。检索缺席
+    仍是判不了、不拦但不给 T1。LLM 侧四问缺任一则 degrade。
+    """
     ev: Dict[str, Any] = {"evidence_status": basket.evidence_status}
     if basket.evidence_status == "search_unavailable":
         return GateCheck(GATE_DRIVER, VERDICT_PASS, available=False, blocks_t1=True,
@@ -1401,6 +1405,11 @@ def _driver_gate(basket: Any) -> GateCheck:
     fails: List[str] = []
     n = len(basket.evidence)
     ev["evidence_count"] = n
+    undated = sum(
+        1 for item in basket.evidence
+        if str(getattr(item, "date", "") or "").strip() == EVIDENCE_DATE_UNDISCLOSED
+    )
+    ev["undated_evidence_count"] = undated
     if n < 1:
         fails.append("driver.evidence_count=0<1")
     answers = {
@@ -1416,6 +1425,12 @@ def _driver_gate(basket: Any) -> GateCheck:
     if fails:
         return GateCheck(GATE_DRIVER, VERDICT_DEGRADE, score=float(n), threshold=1.0,
                          reason=";".join(fails), evidence=ev)
+    if undated:
+        return GateCheck(
+            GATE_DRIVER, VERDICT_PASS, score=float(n), threshold=1.0,
+            reason=f"driver.ok_with_undated_evidence:{undated}/{n}", evidence=ev,
+            blocks_t1=True,
+        )
     return GateCheck(GATE_DRIVER, VERDICT_PASS, score=float(n), threshold=1.0,
                      reason="driver.ok", evidence=ev)
 

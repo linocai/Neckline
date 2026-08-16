@@ -568,9 +568,12 @@ def _load_core_metrics(
 
 @dataclass(frozen=True)
 class EvidenceItem:
-    """一条驱动证据。**`source` 与 `date` 都必须非空**(蓝图 4.6 第 2 项「驱动证据
-    与信息来源,每条带日期」;plan §五 V2-⑤「证据链(来源 + 日期)」)——两者缺一
-    的条目在 `_parse_evidence_items` 里直接丢弃,不补默认值、不写"未知"冒充。"""
+    """一条驱动证据。
+
+    旧的 LLM 检索契约仍要求 ``source`` / ``date`` 都非空。V2.4.2 Tavily 原始命中
+    有时只有来源页和正文、没有可核验发布日期；这种命中保留为
+    :data:`EVIDENCE_DATE_UNDISCLOSED`，明确阻止 T1，但不能再被误写成「零证据」。
+    """
 
     claim: str
     source: str
@@ -579,6 +582,9 @@ class EvidenceItem:
 
     def key(self) -> Tuple[str, str, str]:
         return (self.claim.strip(), self.source.strip(), self.date.strip())
+
+
+EVIDENCE_DATE_UNDISCLOSED = "日期未披露"
 
 
 @dataclass(frozen=True)
@@ -1029,6 +1035,13 @@ def build_mech_context(
     return ctx
 
 
+def _pipeline_seeds_with_readable_labels(
+    seeds: Sequence[DriverSeed], ctx: MechContext,
+) -> Tuple[DriverSeed, ...]:
+    """Resolve bare THS concept codes without changing mechanical identity."""
+    return tuple(dc_replace(seed, label=ctx.label_for(seed)) for seed in seeds)
+
+
 def _shortlist(codes: Sequence[str], ctx: MechContext, limit: int) -> Tuple[str, ...]:
     """把一颗种子的原始成分裁成"展示给 LLM 的成员清单"。
 
@@ -1198,6 +1211,40 @@ def _parse_evidence_items(payload: Optional[Dict[str, Any]]) -> Tuple[EvidenceIt
             continue
         seen.add(ev.key())
         out.append(ev)
+    return tuple(out)
+
+
+def _pipeline_evidence_items(payload: Any) -> Tuple[EvidenceItem, ...]:
+    """Convert the Tavily payload once for preview, reasoning and final gates.
+
+    Tavily can return a real URL/source/content hit without a machine-readable
+    publication date. Dropping those hits made a five-hit search look exactly
+    like a zero-hit search at the proposal gate. Keep the evidence and mark its
+    time quality explicitly; missing claim/source is still unusable and dropped.
+    """
+    if not isinstance(payload, Mapping):
+        return ()
+    raw_items = payload.get("evidence", payload.get("items", ()))
+    if not isinstance(raw_items, list):
+        return ()
+    out: List[EvidenceItem] = []
+    seen: set = set()
+    for raw_item in raw_items:
+        if not isinstance(raw_item, Mapping):
+            continue
+        claim = str(raw_item.get("claim") or "").strip()
+        source = str(raw_item.get("source") or "").strip()
+        if not claim or not source:
+            continue
+        ev_date = str(raw_item.get("date") or "").strip() or EVIDENCE_DATE_UNDISCLOSED
+        item = EvidenceItem(
+            claim=claim, source=source, date=ev_date,
+            url=str(raw_item.get("url") or "").strip(),
+        )
+        if item.key() in seen:
+            continue
+        seen.add(item.key())
+        out.append(item)
     return tuple(out)
 
 
@@ -2550,18 +2597,7 @@ def aggregate_baskets(
                 for proposal in proposals:
                     direction_id = str(proposal.get("directionId", proposal.get("direction_id", "")))
                     raw_research = research_by_direction.get(direction_id)
-                    items: List[EvidenceItem] = []
-                    if isinstance(raw_research, Mapping):
-                        raw_items = raw_research.get("evidence", raw_research.get("items", ()))
-                        if isinstance(raw_items, list):
-                            for raw_item in raw_items:
-                                if isinstance(raw_item, Mapping):
-                                    claim = str(raw_item.get("claim") or "").strip()
-                                    source = str(raw_item.get("source") or "").strip()
-                                    ev_date = str(raw_item.get("date") or "").strip()
-                                    if claim and source and ev_date:
-                                        items.append(EvidenceItem(claim=claim, source=source, date=ev_date,
-                                                                  url=str(raw_item.get("url") or "").strip()))
+                    items = _pipeline_evidence_items(raw_research)
                     for seed_key in proposal.get("seed_keys", ()):
                         if seed_key in preview_evidence:
                             preview_evidence[seed_key] = DriverEvidence(
@@ -2602,20 +2638,7 @@ def aggregate_baskets(
                 brief: Any, raw_research: Mapping[str, Any],
             ) -> str:
                 """Reuse the authoritative gate/member prompt context per direction."""
-                items: List[EvidenceItem] = []
-                raw_items = raw_research.get("evidence", raw_research.get("items", ()))
-                if isinstance(raw_items, list):
-                    for raw_item in raw_items:
-                        if not isinstance(raw_item, Mapping):
-                            continue
-                        claim = str(raw_item.get("claim") or "").strip()
-                        source = str(raw_item.get("source") or "").strip()
-                        ev_date = str(raw_item.get("date") or "").strip()
-                        if claim and source and ev_date:
-                            items.append(EvidenceItem(
-                                claim=claim, source=source, date=ev_date,
-                                url=str(raw_item.get("url") or "").strip(),
-                            ))
+                items = _pipeline_evidence_items(raw_research)
                 evidence = DriverEvidence(
                     seed_key=brief.seed_key, status=EVIDENCE_OK,
                     items=tuple(items), provider="tavily",
@@ -2635,8 +2658,13 @@ def aggregate_baskets(
                 research_client = TavilySearchClient(tavily_key) if tavily_key else None
             if isinstance(deep_reason_provider, _Unset):
                 deep_reason_provider = _resolve_provider(TASK_DEEP_REASON, db_path)
+            # Cluster seeds can carry a bare THS concept code as their scan
+            # label. Resolve it before inventory/triage/search so audit rows and
+            # Tavily queries say "芯片概念" instead of "885756.TI". Seed keys,
+            # member whitelists and raw anchor codes remain unchanged.
+            pipeline_seeds = _pipeline_seeds_with_readable_labels(seeds, ctx)
             outcome = run_direction_pipeline(
-                trade_date, seeds, config=direction_pipeline_config,
+                trade_date, pipeline_seeds, config=direction_pipeline_config,
                 triage_provider=triage_provider, research_client=research_client,
                 reason_provider=deep_reason_provider, db_path=db_path, transport=transport,
                 qualification_callback=_qualified_after_gates,
@@ -2660,19 +2688,7 @@ def aggregate_baskets(
             evidence_by_seed: Dict[str, DriverEvidence] = {}
             for brief in outcome.briefs:
                 raw_research = outcome.research_by_direction_id.get(brief.direction_id)
-                items: List[EvidenceItem] = []
-                if isinstance(raw_research, Mapping):
-                    raw_items = raw_research.get("evidence", raw_research.get("items", ()))
-                    if isinstance(raw_items, list):
-                        for raw_item in raw_items:
-                            if not isinstance(raw_item, Mapping):
-                                continue
-                            claim = str(raw_item.get("claim") or "").strip()
-                            source = str(raw_item.get("source") or "").strip()
-                            ev_date = str(raw_item.get("date") or "").strip()
-                            if claim and source and ev_date:
-                                items.append(EvidenceItem(claim=claim, source=source, date=ev_date,
-                                                          url=str(raw_item.get("url") or "").strip()))
+                items = _pipeline_evidence_items(raw_research)
                 evidence_by_seed[brief.seed_key] = DriverEvidence(
                     seed_key=brief.seed_key,
                     status=EVIDENCE_OK if raw_research is not None else EVIDENCE_SEARCH_UNAVAILABLE,
