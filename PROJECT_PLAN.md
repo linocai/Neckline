@@ -11,12 +11,12 @@ publish empty or post-clamp-incomplete material as `llmStage=ok`. A guarded main
 immutable card version and patch only one already-frozen report snapshot; it cannot call scan, selection, Tavily,
 Tier, report generation, or APNs. Production report reruns still require a new explicit user instruction.
 
-The authorized current-report repair target is report date `20260816`, market/selection date `20260814`, published
-run `4e651042-500f-46c4-9138-ba3b6acd72e8`, five T2 baskets and fifteen members. Preserve every basket/member/Tier,
-append card version 2, update only their card material inside `reports.basket_daily_json` and the matching Markdown
-section, and send no notification. Build 9 pre-deploy gates are backend `4061 passed / 19 registered skips`, macOS
-`233 passed / 10 registered integration skips`, Python compile, and `git diff --check`. Continue directly on
-`main`; do not create a branch. The next planned product cycle remains the V2.4.3 observation window.
+The authorized current-report repair target was report date `20260816`, market/selection date `20260814`, published
+run `4e651042-500f-46c4-9138-ba3b6acd72e8`, five T2 baskets and fifteen members. Build 9 is deployed: every original
+basket/member/Tier and card v1 is unchanged, five immutable card v2 rows were appended, and all 15 members now have
+entry, max-chase, and exit references in the frozen report snapshot. No selection/report rerun, Tavily call, Tier
+change, APNs, or application install occurred. Continue directly on `main`; do not create a branch. The next planned
+product cycle remains the V2.4.3 observation window.
 
 The baseline is `v2.4.1` Build 2. Its record is
 [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
@@ -221,6 +221,16 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
    `/Users/linotsai/Lino/app_backups/v2.4.2-b7-pre-b8-20260816-1812/`; Release archives and the user-installable
    iOS IPA are under `/Users/linotsai/Lino/app_builds/Neckline-v2.4.2-b8-20260816-1810/`, with IPA SHA-256
    `55c420b151891a8413c16368332f05a194804a90387d0d862bba2825fc2474a4`.
+10. **Build 9 card-plan hotfix and targeted repair (2026-08-16).** Commits `103a10f`, `3bbeaaf`, `730303e`,
+   and `ee12b9b` are on `main`. Future deep reasoning must return complete price-plan material using D0 close and
+   limit anchors; empty/incomplete material cannot publish as success. The guarded one-off appended card v2 for
+   all five baskets and patched only report `20260814` / publication `20260816`; latest API verifies 5 baskets,
+   15 members and 15/15 entry, chase and exit references. A follow-up no-LLM render corrected highest-chase prices
+   that the Markdown formatter had mislabeled as percentages. Pre-repair rollback is under
+   `/opt/neckline-release-backups/v2.4.2-b9-card-plan-pre-20260816-1932/`; pre-render rollback is under
+   `/opt/neckline-release-backups/v2.4.2-b9-card-plan-pre-markdown-rerender-20260816-1958/`. Both backup databases
+   pass `integrity_check`. Live-vs-backup comparison shows selection runs, baskets and members unchanged, exactly
+   five new card rows, and exactly one report row changed. `neckline.service` remains active with `NRestarts=0`.
 
 ## 8. Milestone index and backlog
 
@@ -312,5 +322,5 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   still attempted the retired model-native search path for current stock news, produced zero search hits for
   several names, and twice degraded on missing conclusion labels. Route this residual C4 path through Tavily in
   the next appropriate hotfix/V2.4.3 batch; do not rerun merely to rewrite those existing cards.
-- Build numbers are monotonic installable-build identifiers, not reserved in advance. The report-date hotfix
-  consumes Build 8, so V2.4.3 is expected to start at Build 9.
+- Build numbers are monotonic installable-build identifiers, not reserved in advance. The card-plan hotfix
+  consumes Build 9, so V2.4.3 is expected to start at Build 10.

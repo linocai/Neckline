@@ -1,5 +1,27 @@
 # Errors
 
+## [ERR-20260816-050] markdown-refresh-guard-scanned-unrelated-sections
+
+**Logged**: 2026-08-16T20:02:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+The first no-LLM Markdown refresh guard rejected the corrected report because it searched the entire report for
+percentage-shaped table cells. Other unrelated sections legitimately contain percentages, so the guard was
+broader than the basket section being changed.
+
+### Resolution
+
+- **Resolved**: 2026-08-16T20:03:00+08:00
+- **Notes**: The assertion fired before the SQLite update and file replacement; production stayed unchanged. The
+  corrected guard is scoped between `## ③ 今日篮子` and `### ③b`, then the refresh completed once. Verification
+  compares the database Markdown with the report file and checks the five basket tables only.
+
+---
+
 ## [ERR-20260814-001] api-overlay-test-compared-wire-defaults
 
 **Logged**: 2026-08-14T00:00:00+08:00
@@ -1320,5 +1342,7 @@ ReferenceError: release_stamp is not defined
 - **Resolved**: 2026-08-16T18:09:00+08:00
 - **Notes**: The command never reached production and no backup or database action had begun. Escape remote
   `${...}` expansion inside JavaScript template literals, or avoid template literals for remote shell scripts.
+- **Recurrence**: A later read-only source-hash comparison over-escaped remote `awk '$1'`; `awk` rejected it and
+  no state changed. The successful retry compared the two raw `sha256sum` lines without nested shell parsing.
 
 ---
