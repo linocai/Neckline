@@ -4,12 +4,10 @@
 
 ## 1. Current goal and release boundary
 
-V2.4.2 is released. Build 7 is the current authorized backend hotfix after the first unrestricted production
-observation exposed two coupled defects: the observation switch removed the direction/fill cap and consumed
-nearly the full pool, while the deep-reason response contract let model-authored seed identities and invalid
-member shapes reach the mechanical gate. Marketing version stays V2.4.2; there is no frontend business change.
-Do not rerun a production report without a new explicit user instruction. Continue directly on `main`; do not
-create a branch.
+V2.4.2 Build 7 is released and is now in its 3–5 trading-day observation window. The 2026-08-14 report was
+explicitly backfilled on 2026-08-16 after the bounded pipeline fix. Weekday scheduling now runs Monday–Thursday
+after close and defers Friday's report to Sunday evening so weekend information can enter research. Do not rerun
+a production report without a new explicit user instruction. Continue directly on `main`; do not create a branch.
 
 Build 7 is released from `main` commit `74bef27`: backend `4035 passed / 19 registered skips`, focused
 contract/publication regressions, `git diff --check`, and signed macOS/iOS Release archives are green.
@@ -184,6 +182,14 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
    under `/Users/linotsai/Lino/app_builds/Neckline-v2.4.2-b7-20260816-160112/`; the iOS IPA SHA-256 is
    `7f0b6c816b7dd225f9e5a83d6abd3229c2f997b65e56271190d2208df5617748`. No iOS device or report task was
    touched.
+7. **Friday-to-Sunday schedule and authorized backfill (2026-08-16).** Commits `cf2faf6` and `c223221` are on
+   `main`. The evening timer runs Mon–Thu at 16:35 and Sunday at 19:00 Asia/Shanghai; Sunday targets the preceding
+   Friday, non-trading targets exit cleanly, and a same-local-day report guard prevents duplicate LLM/APNs work.
+   Pre-schedule source/unit backups are under
+   `/opt/neckline-release-backups/v2.4.2-sunday-schedule-pre-20260816-161839/`. Before the explicitly authorized
+   20260814 rerun, two consistent SQLite backups were written as
+   `/opt/neckline/data/neckline.db.bak{,2}-rerun-20260814-20260816-162149`; both pass `integrity_check` and share
+   SHA-256 `e2f08273d17cdda94c15ab5f2029055b4b2d4dfcb193efafdc1d7193dee8607c`.
 
 ## 8. Milestone index and backlog
 
@@ -195,9 +201,10 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   Provider atomically removes its references. The one-off `--observe-selection-cost` mode disables only the
   selection budget cutoffs while preserving measured usage, per-call timeout/retry, candidate sufficiency and
   pool-exhaustion stops; scheduled services never enable it.
-- **Next:** after Build 7 is released, collect 3–5 trading days of the `r2` package and review actual
-  `selection_llm_calls` Token totals, shortlist/deep counts, fill rounds and stop reasons before any further
-  tuning; never initiate a report rerun without explicit user authorization.
+- **Next:** collect 3–5 trading days of the `r2` package and review actual `selection_llm_calls` Token totals,
+  shortlist/deep counts, fill rounds and stop reasons before any further tuning; never initiate a report rerun
+  without explicit user authorization. Route the remaining C4 post-selection news scan through Tavily before
+  treating its current-news coverage as equivalent to direction deep research.
 - **Later:** V2.4.3 product-wide consistency review after the V2.4.2 observation window.
 
 ## 9. V2.4.3 observation inbox
@@ -251,5 +258,15 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   with zero publishable baskets preserves the previous valid snapshot. Tavily queries now always retain the
   direction label and add fixed A-share research context, so one-character labels are not rejected. This changes
   no six-gate/Tier threshold; the release deployment did not trigger a production rerun.
+- **Build 7 bounded production observation (2026-08-16, report date 20260814):** the explicitly authorized
+  rerun read all 190 directions, mechanically shortlisted 48, triaged them as 11 deep / 21 normal / 13 reserve /
+  3 unfit, queued 20, and completed research/reasoning for 12 before the configured 1500-second selection wall
+  stop. It published a valid `partial` generation with one T2 `芯片概念` basket: 中瓷电子、华正新材、天洋新材.
+  Selection used 12 measured LLM calls / 216,804 Tokens (triage 30,506; deep reason 186,298) and 12 Tavily calls /
+  11 Basic credits. The full chain ran 29m23s, atomically wrote the report at 16:52:17 CST, passed database/API
+  verification, and sent one report APNs (`sent=1`, `failed=0`). The scheduled Sunday guard then proved it would
+  skip the same report at 19:00. Direction research used current Tavily results, but C4 still requested DeepSeek
+  native search and received zero hits; fixing C4 requires only the post-selection report path, not another full
+  selection rerun.
 - Build numbers are monotonic installable-build identifiers, not reserved in advance. This backend hotfix
   consumes Build 7, so V2.4.3 is expected to start at Build 8.

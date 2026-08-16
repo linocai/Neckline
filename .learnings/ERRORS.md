@@ -936,3 +936,32 @@ zsh: command not found: python
   with `.venv/bin/python`; backend commands in this repository must consistently use the project interpreter.
 
 ---
+
+## [ERR-20260816-034] provider-preflight-mixed-schema-discovery-with-stale-query
+
+**Logged**: 2026-08-16T16:22:24+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+A read-only production preflight printed the deployed `llm_providers` schema but then executed a statically
+prepared query using recalled column names from a different contract shape.
+
+### Error
+
+```text
+sqlite3.OperationalError: no such column: provider_id
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-16T16:22:24+08:00
+- **Notes**: No model call or write started and no credential value was printed. Rebuilt the query from the
+  discovered columns (`id/name/model/enabled/api_key`) and limited output to boolean key presence. Schema
+  discovery and a schema-dependent query must be separate commands; do not place a stale static query after
+  `PRAGMA table_info` and call that discovery.
+- **See Also**: ERR-20260816-032
+
+---
