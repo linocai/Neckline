@@ -25,6 +25,48 @@ database snapshot is unchanged, which is the actual read-overlay contract.
 
 ---
 
+## [ERR-20260816-048] production-selection-run-probe-guessed-finished-at
+
+**Logged**: 2026-08-16T19:30:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+A read-only anchor query guessed `selection_runs.finished_at`; the actual schema uses `ended_at` and
+`published_at`, so SQLite stopped that query after the report identity row had been read.
+
+### Resolution
+
+- **Resolved**: 2026-08-16T19:30:00+08:00
+- **Notes**: Inspect `PRAGMA table_info(selection_runs)` before querying operational columns. No production row,
+  report file, service, or notification was changed.
+
+---
+
+## [ERR-20260816-049] targeted-card-repair-inherited-null-allowed-prompt
+
+**Logged**: 2026-08-16T19:38:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: backend
+
+### Summary
+
+The first real card-only repair reached DeepSeek, prepared one in-memory card, then rejected the second because
+the model returned `exit_low=null`. The reused general card prompt allowed null when a value seemed unavailable,
+which conflicted with this repair's complete frozen price anchors and all-fields-required validator.
+
+### Resolution
+
+- **Resolved**: 2026-08-16T19:38:00+08:00
+- **Notes**: Add a repair-only final instruction requiring all five positive price fields whenever frozen close
+  and limit anchors exist. The failed batch never opened the write transaction: all five production cards stayed
+  at version 1 and the report/Markdown timestamps were unchanged.
+
+---
+
 ## [ERR-20260816-045] production-version-probe-used-nonexistent-api-path
 
 **Logged**: 2026-08-16T19:29:00+08:00

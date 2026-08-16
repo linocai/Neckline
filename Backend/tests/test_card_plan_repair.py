@@ -18,6 +18,7 @@ from neckline.report.card_plan_repair import (
     patch_report_markdown,
     patch_report_snapshot,
     repair_frozen_card,
+    TARGETED_REPAIR_SYSTEM_PROMPT,
 )
 from neckline.report.store import load_report, save_report
 from neckline.selection.basket_card import trade_plan_missing_pieces
@@ -94,6 +95,11 @@ def test_repair_cli_bootstraps_backend_package_when_run_as_a_script():
     )
     assert result.returncode == 0
     assert "--expected-run-id" in result.stdout and "--apply" in result.stdout
+
+
+def test_targeted_repair_prompt_forbids_null_when_frozen_price_anchors_exist():
+    assert "五个字段全部给出正数" in TARGETED_REPAIR_SYSTEM_PROMPT
+    assert "任何一个都不得为 null" in TARGETED_REPAIR_SYSTEM_PROMPT
 
 
 def test_repair_uses_only_frozen_anchors_and_completes_all_trade_plan_pieces():

@@ -28,6 +28,7 @@ from neckline.report.card_plan_repair import (  # noqa: E402
     patch_report_markdown,
     patch_report_snapshot,
     repair_frozen_card,
+    TARGETED_REPAIR_SYSTEM_PROMPT,
 )
 from neckline.report.store import load_report_by_str  # noqa: E402
 from neckline.selection.basket_card import (  # noqa: E402
@@ -80,7 +81,10 @@ def main() -> int:
         old_card = row["card"]
         old_version = int(row["version"])
         context = build_repair_context(old_card, trade_date=trade_day)
-        narrative, payload, stage = run_card_llm(context, provider=provider, ledger=ledger)
+        narrative, payload, stage = run_card_llm(
+            context, provider=provider, ledger=ledger,
+            system_prompt=TARGETED_REPAIR_SYSTEM_PROMPT,
+        )
         if stage != LLM_OK or payload is None:
             raise SystemExit(f"basket {ref.basket_id} card repair LLM failed: {stage}")
         new_card = repair_frozen_card(

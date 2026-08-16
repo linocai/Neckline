@@ -21,6 +21,7 @@ from neckline.db import connection, init_schema
 from neckline.report.basket_daily import BasketDaily, BasketView, card_to_public_dict
 from neckline.report.render import _render_today_baskets
 from neckline.selection.basket_card import (
+    CARD_SYSTEM_PROMPT,
     CLAMP_OK,
     EXIT_CLAMP_OK,
     LLM_OK,
@@ -31,6 +32,17 @@ from neckline.selection.basket_card import (
 )
 from neckline.selection.basket_store import append_basket_card_version_from_existing
 from neckline.selection.deep_reason import validate_card_material
+
+
+TARGETED_REPAIR_SYSTEM_PROMPT = CARD_SYSTEM_PROMPT + """
+
+【定向补录的额外硬约束】
+这是对一张已有冻结卡的缺项修复，不是普通降级生成。上下文所列每个成员都已有 D0 收盘价和
+次日涨跌停参考价，因此 entries 必须恰好覆盖全部成员，且 low、high、max_chase、exit_low、
+exit_high 五个字段全部给出正数，任何一个都不得为 null。仍须满足 low ≤ high ≤ max_chase、
+建仓与追价落在给定涨跌停闭区间、exit_low > D0 收盘价、exit_low ≤ exit_high。不要改变篮子、
+成员、角色、档位或证据。
+"""
 
 
 @dataclass(frozen=True)
@@ -263,4 +275,5 @@ def atomic_write_text(path: Path, text: str) -> None:
 __all__ = [
     "CardRepair", "apply_report_card_repairs", "atomic_write_text", "build_repair_context",
     "json_sha256", "patch_report_markdown", "patch_report_snapshot", "repair_frozen_card",
+    "TARGETED_REPAIR_SYSTEM_PROMPT",
 ]
