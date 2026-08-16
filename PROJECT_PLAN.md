@@ -5,22 +5,22 @@
 ## 1. Current goal and release boundary
 
 V2.4.2 Build 8 is the report-date hotfix: Sunday is the visible report date while the preceding Friday remains
-the market-data and selection key. The 2026-08-14 market session is being explicitly rerun as the 2026-08-16
-report after the user corrected that distinction. The prior bounded report was
+the market-data and selection key. The 2026-08-14 market session was explicitly rerun and published as the
+2026-08-16 report after the user corrected that distinction. The prior bounded report was
 explicitly backfilled on 2026-08-16 after the bounded pipeline fix. Weekday scheduling now runs Monday–Thursday
 after close; Sunday publishes a Sunday-dated report using the immediately preceding Friday as its EOD data
 cutoff so weekend information can enter research. `report_date` is visible identity while `trade_date` remains
 the market/basket/detail key. Do not rerun
 a production report without a new explicit user instruction. Continue directly on `main`; do not create a branch.
 
-Build 7 is released; Build 8 keeps the same `v2.4.2-balanced-r3` selection package and changes only report-date
+Build 8 is released; it keeps the same `v2.4.2-balanced-r3` selection package and changes only report-date
 identity across the scheduler, persistence/API, notification, markdown, and client display. Its pre-deploy gates
 are backend `4050 passed / 19 registered skips`, macOS `233 passed / 10 registered integration skips`, Python
-compile, and `git diff --check`. Production runs
+compile, and `git diff --check`. The signed macOS `2.4.2 (8)` app is installed and the iOS IPA remains
+user-installable. Production runs
 `v2.4.2-balanced-r3`: the selection wall-clock cutoff is removed, undated Tavily evidence is preserved honestly,
-concept codes are resolved before search, and real qualification is checked after every deep cohort. The hotfix
-was deployed without starting or regenerating a report. The signed macOS `2.4.2 (7)` app remains installed and
-the iOS IPA remains user-installable.
+concept codes are resolved before search, and real qualification is checked after every deep cohort. The next
+work is the agreed V2.4.3 observation window; do not tune from this single Sunday run alone.
 
 The baseline is `v2.4.1` Build 2. Its record is
 [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).
@@ -209,6 +209,22 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
    The production database retained the same size, mtime, and `neckline:neckline` owner across deployment;
    basket/scan/report/target units stayed inactive. No report, LLM task, APNs notification, DB migration,
    application build, or device installation ran.
+9. **Build 8 released and Sunday-dated report published (2026-08-16).** Commit `8e5380e` is on `main`.
+   Pre-deploy runtime is archived under
+   `/opt/neckline-release-backups/v2.4.2-b8-report-date-pre-20260816-1809/`; two consistent pre-run SQLite
+   backups are `/opt/neckline/data/neckline.db.bak{,2}-report-date-20260816-1809`, both pass
+   `integrity_check` and share SHA-256 `7a18525a7efd7b56325da1e120debe10d873012ae9d8e03bf3c79db9828f244d`.
+   The authorized run used report date `20260816` and market/selection date `20260814`, ran from 18:10:19 to
+   18:59:02 CST, and published five T2 baskets with three members each plus three capacity-overflow disclosures.
+   The report title is `Neckline 篮子日报 · 2026-08-16`, its header says `行情数据截至:2026-08-14`, API dates
+   are `reportDate=20260816` / `tradeDate=20260814`, and one APNs succeeded. The 19:00 scheduled chain skipped
+   all three segments and sent no duplicate notification. Selection audited six triage plus ten deep-reason
+   calls, 25 deep directions, 373,556 measured Tokens and 20 Tavily Basic searches; it stopped on the retained
+   350,000-Token budget with a truthful partial-state notice, not a wall-clock timeout. The signed macOS Build 8
+   is installed with Build 7 recoverable at
+   `/Users/linotsai/Lino/app_backups/v2.4.2-b7-pre-b8-20260816-1812/`; Release archives and the user-installable
+   iOS IPA are under `/Users/linotsai/Lino/app_builds/Neckline-v2.4.2-b8-20260816-1810/`, with IPA SHA-256
+   `55c420b151891a8413c16368332f05a194804a90387d0d862bba2825fc2474a4`.
 
 ## 8. Milestone index and backlog
 
@@ -294,5 +310,11 @@ all seeds → DirectionBrief (mechanical) → batch triage → covered deep queu
   mechanical/six-gate/Tier qualification after every two completed directions, stopping later deep work once
   seven publishable candidates exist. The 350,000 Token stop and the explicit 48/20/30 direction/fill bounds
   remain. Deployment did not run the pipeline or alter the existing report snapshot.
+- **Build 8 Sunday run observation (2026-08-16):** the r3 flow needed the first 20 plus one five-direction fill
+  cohort to produce five publishable T2 baskets; three more reached capacity overflow. Selection used 373,556
+  measured Tokens and 20 Tavily searches, so the 350,000 Token budget—not time—ended the run. Post-selection C4
+  still attempted the retired model-native search path for current stock news, produced zero search hits for
+  several names, and twice degraded on missing conclusion labels. Route this residual C4 path through Tavily in
+  the next appropriate hotfix/V2.4.3 batch; do not rerun merely to rewrite those existing cards.
 - Build numbers are monotonic installable-build identifiers, not reserved in advance. The report-date hotfix
   consumes Build 8, so V2.4.3 is expected to start at Build 9.

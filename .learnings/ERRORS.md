@@ -1098,3 +1098,55 @@ cp: cannot stat '/opt/neckline/README.md': No such file or directory
   service documentation should derive their expected layout from the existing production tree before backup.
 
 ---
+
+## [ERR-20260816-040] production-sqlite-json-path-was-overescaped
+
+**Logged**: 2026-08-16T18:08:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+A read-only production anchor query used a shell octal escape for the SQLite JSON path, but SQLite received the
+backslash literally and rejected the statement before execution.
+
+### Error
+
+```text
+Error: in prepare, unrecognized token: "\\"
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-16T18:08:00+08:00
+- **Notes**: No write or report task ran. Use simple scalar columns for deployment anchors; inspect JSON in a
+  separate, safely quoted command only when the JSON value is actually required.
+
+---
+
+## [ERR-20260816-041] local-template-expanded-remote-shell-variable
+
+**Logged**: 2026-08-16T18:09:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+A production-backup command embedded remote shell variables inside a JavaScript template literal, so the local
+orchestrator tried to resolve `release_stamp` before the SSH command could be sent.
+
+### Error
+
+```text
+ReferenceError: release_stamp is not defined
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-16T18:09:00+08:00
+- **Notes**: The command never reached production and no backup or database action had begun. Escape remote
+  `${...}` expansion inside JavaScript template literals, or avoid template literals for remote shell scripts.
+
+---
