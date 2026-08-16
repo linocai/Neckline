@@ -31,14 +31,17 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sqlite3
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neckline.calendar import is_trading_day, prev_trading_day  # noqa: E402
 from neckline.config import ensure_data_dirs, settings  # noqa: E402
+from neckline.db import readonly_connection  # noqa: E402
 from neckline.report.evening import (  # noqa: E402
     CHAIN_SEGMENTS,
     STATUS_FAILED,
@@ -72,6 +75,40 @@ def _scheduled_trade_date(today: date) -> date:
     return today - timedelta(days=2) if today.weekday() == 6 else today
 
 
+def _report_generated_on_local_day(
+    trade_date: date,
+    local_day: date,
+    db_path: Path | None = None,
+) -> bool:
+    """Read-only idempotency guard for a scheduled slot.
+
+    A manual Sunday backfill may already have regenerated Friday's report.  In
+    that case the 19:00 slot must not repeat the expensive chain or APNs.  The
+    guard checks only the frozen report timestamp and never initializes schema.
+    """
+    try:
+        with readonly_connection(db_path) as conn:
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='reports'"
+            ).fetchone() is None:
+                return False
+            row = conn.execute(
+                "SELECT generated_at FROM reports WHERE trade_date=?",
+                (trade_date.strftime("%Y%m%d"),),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        return False
+    if row is None or not row[0]:
+        return False
+    try:
+        generated = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if generated.tzinfo is None:
+        generated = generated.replace(tzinfo=timezone.utc)
+    return generated.astimezone(ZoneInfo("Asia/Shanghai")).date() == local_day
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -103,10 +140,12 @@ def main() -> int:
     if args.trade_date and args.scheduled:
         logger.error("显式交易日与 --scheduled 不能同时使用。")
         return 2
+    scheduled_today = None
     if args.trade_date:
         trade_date = datetime.strptime(args.trade_date, "%Y%m%d").date()
     elif args.scheduled:
-        trade_date = _scheduled_trade_date(_today())
+        scheduled_today = _today()
+        trade_date = _scheduled_trade_date(scheduled_today)
         if not is_trading_day(trade_date):
             logger.info("定时槽对应 %s，非交易日；安全跳过，不回退重跑旧报告。", trade_date)
             return 0
@@ -124,6 +163,17 @@ def main() -> int:
 
     db_path = Path(args.db) if args.db else None
     parquet_dir = Path(args.parquet_dir) if args.parquet_dir else None
+    if (
+        args.scheduled
+        and scheduled_today is not None
+        and _report_generated_on_local_day(trade_date, scheduled_today, db_path)
+    ):
+        logger.info(
+            "定时槽对应 %s，但该报告已在 %s 生成；整条链安全跳过，避免重复报告与推送。",
+            trade_date,
+            scheduled_today,
+        )
+        return 0
     direction_pipeline_config = None
     if args.direction_pipeline_config:
         try:
