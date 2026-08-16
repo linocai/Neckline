@@ -37,3 +37,30 @@ set `report_date=Sunday` and `trade_date=the immediately preceding Friday`.
   macOS display, repository documentation, and regression tests.
 
 ---
+
+## [LRN-20260816-002] architecture
+
+**Logged**: 2026-08-16T20:00:00+08:00
+**Priority**: high
+**Status**: promoted
+**Area**: backend
+
+### Summary
+
+When a later LLM stage is retired, every downstream field it used to own must become an explicit required output
+of the surviving call, with the exact mechanical anchors and a validator that rejects empty-success states.
+
+### Suggested Action
+
+For consolidated LLM calls, verify prompt schema, input sufficiency, parser contract, post-clamp completeness,
+and end-to-end frozen output together. Never treat “is a mapping” as evidence that required semantic material was
+actually generated.
+
+### Metadata
+
+- Source: production_regression
+- Related Files: Backend/neckline/selection/direction_pipeline.py, Backend/neckline/selection/deep_reason.py,
+  Backend/neckline/selection/basket_card.py
+- Tags: llm-contract, empty-success, frozen-card, mechanical-clamp
+
+---

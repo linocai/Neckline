@@ -50,6 +50,7 @@ def _check():
 
 
 def _deep_candidate(brief):
+    code = brief.member_codes[0]
     return {
         "directionId": brief.direction_id, "decision": "candidate",
         "decisionReason": "驱动与成员均有公开证据", "name": brief.label,
@@ -61,11 +62,20 @@ def _deep_candidate(brief):
         # it and bind the mechanical seed key below.
         "seed_keys": ["模型擅自写的错误种子"],
         "members": [{
-            "ts_code": brief.member_codes[0], "role": "core", "reason": "方向容量代表",
+            "ts_code": code, "role": "core", "reason": "方向容量代表",
             "primary_claim": "yes", "primary_claim_reason": "驱动、代表性与协同一致",
             "position_check": _check(), "core_check": _check(),
         }],
         "narrative": "完整研究材料",
+        "card_material": {
+            "upside_path": "驱动验证后沿均线逐步抬升",
+            "entries": [{"ts_code": code, "low": 9.8, "high": 10.2,
+                         "max_chase": 10.5, "exit_low": 11.2, "exit_high": 12.0,
+                         "why": "回踩当日实体中枢观察"}],
+            "verification": "多数成员守住支撑并继续放量",
+            "invalidation": "多数成员跌破机械失效条件",
+            "risks": ["事件兑现速度不及预期"], "tier_note": None,
+        },
     }
 
 
@@ -258,6 +268,8 @@ def test_deep_contract_keeps_valid_no_candidate_separate_from_system_failure():
     (lambda raw: raw.update({"members": []}), "1 to 3"),
     (lambda raw: raw["members"][0].update({"ts_code": "999999.SZ"}), "whitelist"),
     (lambda raw: raw["members"][0].pop("core_check"), "core_check"),
+    (lambda raw: raw.pop("card_material"), "card_material"),
+    (lambda raw: raw.update({"card_material": {}}), "card_material"),
 ])
 def test_deep_contract_rejects_shapes_that_previously_became_zero_basket_gate_rejects(mutate, match):
     seed = _seeds(1)[0]

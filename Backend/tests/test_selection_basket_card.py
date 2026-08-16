@@ -853,6 +853,10 @@ def test_build_cards_is_offline_by_default(isolated_env, monkeypatch):
 def test_build_cards_uses_deep_reason_material_without_per_card_llm(isolated_env, monkeypatch):
     monkeypatch.setattr(mt, "load_tag_panel_rows",
                         lambda codes, *a, **k: {c: {"close": 10.0, "ma20": 9.2} for c in codes})
+    monkeypatch.setattr(
+        bc, "build_member_mech",
+        lambda codes_close, *a, **k: {c: _mech(c) for c in codes_close},
+    )
     seed_active_rule_v1(isolated_env)
     p = _StubProvider(_reply(_payload()))
     cards = bc.build_cards(
@@ -870,6 +874,23 @@ def test_build_cards_uses_deep_reason_material_without_per_card_llm(isolated_env
     assert all(c.degraded is False for c in cards)
     assert cards[0].stop_pct == 0.05 and cards[0].tier == 1 and cards[1].tier == 2
     assert all("card_llm_retired:deep_reason_required" in c.notes for c in cards)
+
+
+@pytest.mark.parametrize("material", [None, {}, {"upside_path": "只有一句话"}])
+def test_build_cards_never_marks_missing_or_incomplete_deep_material_ok(
+    isolated_env, monkeypatch, material,
+):
+    monkeypatch.setattr(mt, "load_tag_panel_rows",
+                        lambda codes, *a, **k: {c: {"close": 10.0, "ma20": 9.2} for c in codes})
+    seed_active_rule_v1(isolated_env)
+    cards = bc.build_cards(
+        [_basket()], D0, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir,
+        deep_reasoning_by_basket_key={"b1": {"narrative": "声称完整", "card_material": material}},
+    )
+    assert len(cards) == 1
+    assert cards[0].llm_stage != bc.LLM_OK and cards[0].degraded is True
+    assert cards[0].generation_source is None
+    assert bc.trade_plan_missing_pieces(cards[0].to_card_json())
 
 
 def test_build_cards_survives_one_bad_basket(isolated_env, monkeypatch, caplog):

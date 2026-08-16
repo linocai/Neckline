@@ -45,12 +45,18 @@ _REASON_SYSTEM = (
     "不要凑篮子。not_candidate/uncertain 到此即可。candidate 还必须返回：name、driver、"
     "driver_kind(theme|policy|event|commodity|overseas|rotation|limit_cluster)、why_now、"
     "common_trait、persistence、strengthen_and_invalidate、evidence_conflicts(无矛盾填空串)、"
-    "engine_code(C|Z|Y)、narrative、market_check、sector_check、members 和可选 card_material。"
+    "engine_code(C|Z|Y)、narrative、market_check、sector_check、members 和 card_material。"
     "market_check/sector_check 以及每个成员的 position_check/core_check 形状均为"
     "{verdict:ok|weak|unfit|unknown,support:[],counter_evidence:[],missing:[],reason:''}。"
     "members 必须为 1 到 3 只且只能从该方向 brief.memberCodes 选择；每项必须含 ts_code、"
     "role(leader|core|elastic)、reason、primary_claim(yes|no|unsure)、"
     "primary_claim_reason、position_check、core_check。不得返回或猜测 seed_keys，"
+    "card_material 是 candidate 的必填对象，必须严格为"
+    "{upside_path:非空字符串,entries:[{ts_code,low,high,max_chase,exit_low,exit_high,why}],"
+    "verification:非空字符串,invalidation:非空字符串,risks:[非空字符串],"
+    "tier_note:字符串或null}；entries 必须恰好覆盖最终 members，每个价格必须是正数，"
+    "且 low<=high<=max_chase、exit_low<=exit_high。价格只能依据 mechanicalContext 里的"
+    "收盘价与次日涨跌停参考价生成；不要把最高追价写成百分比。"
     "种子身份由服务端绑定。不得使用推荐买入、目标价或收益承诺措辞。"
 )
 
@@ -475,10 +481,9 @@ def run_direction_pipeline(
                     )
                     continue
                 proposals.append(reason.to_legacy_proposal())
-                card_material = raw.get("card_material", raw.get("cardMaterial", {}))
                 material[brief.direction_id] = {
                     "narrative": reason.narrative,
-                    "card_material": card_material if isinstance(card_material, Mapping) else {},
+                    "card_material": dict(reason.card_material),
                 }
                 run_store.add_event(run_id, "reasoning_complete", direction_id=brief.direction_id,
                                     reason=reason.decision_reason, batch_no=batch_no,

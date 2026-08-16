@@ -25,6 +25,71 @@ database snapshot is unchanged, which is the actual read-overlay contract.
 
 ---
 
+## [ERR-20260816-044] full-gate-found-new-charter-consumer-and-stale-build-guard
+
+**Logged**: 2026-08-16T20:10:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: testing
+
+### Summary
+
+The first full backend gate found that the new report-repair module directly copied a charter persistence field,
+violating the consumer whitelist, and that the release test still expected Build 7 while the repository was
+already Build 8.
+
+### Resolution
+
+- **Resolved**: 2026-08-16T20:10:00+08:00
+- **Notes**: Card persistence metadata is now copied inside the existing whitelisted basket store, so the report
+  repair layer never reads discipline fields. The approved backend hotfix is Build 9 and release metadata/tests
+  are synchronized to it.
+
+---
+
+## [ERR-20260816-043] broad-gate-used-retired-test-filename
+
+**Logged**: 2026-08-16T20:05:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: testing
+
+### Summary
+
+A broadened pytest command referenced `tests/test_report_pipeline.py`, which does not exist in the current tree,
+so pytest exited before running any tests.
+
+### Resolution
+
+- **Resolved**: 2026-08-16T20:05:00+08:00
+- **Notes**: Resolve current test paths with `rg --files tests` before composing selective suites; use the actual
+  report consistency/store/weekend schedule files. No database or production action occurred.
+
+---
+
+## [ERR-20260816-042] empty-deep-card-material-was-published-as-success
+
+**Logged**: 2026-08-16T20:00:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+
+The V2.4.2 single-call deep-reason path described `card_material` as optional and accepted an empty mapping as a
+successful card source. All 15 members in the 2026-08-16 report therefore published without entry, chase, or
+exit references even though their mechanical price anchors existed.
+
+### Resolution
+
+- **Resolved**: 2026-08-16T20:00:00+08:00
+- **Notes**: Candidate deep responses now require a complete, exact-member `card_material` contract; their prompt
+  includes D0 close and next-day limit bands; final mechanical clamps can no longer leave an incomplete card at
+  `llmStage=ok`. A separate card-only maintenance command appends immutable versions and patches one frozen report
+  snapshot without selection, Tavily, Tier, report regeneration, or notification work.
+
+---
+
 ## [ERR-20260816-035] apply-patch-duplicate-file-sections
 
 **Logged**: 2026-08-16T17:20:00+08:00

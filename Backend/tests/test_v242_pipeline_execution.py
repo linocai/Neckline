@@ -40,6 +40,18 @@ def _check(verdict="ok"):
     }
 
 
+def _card_material(code):
+    return {
+        "upside_path": "驱动验证后沿均线逐步抬升",
+        "entries": [{"ts_code": code, "low": 9.8, "high": 10.2,
+                     "max_chase": 10.5, "exit_low": 11.2, "exit_high": 12.0,
+                     "why": "回踩当日实体中枢观察"}],
+        "verification": "多数成员守住支撑并继续放量",
+        "invalidation": "多数成员跌破机械失效条件",
+        "risks": ["事件兑现速度不及预期"], "tier_note": None,
+    }
+
+
 class _Provider:
     name = "stub"
     model = "stub-model"
@@ -73,7 +85,7 @@ class _Provider:
                     "position_check": _check(), "core_check": _check(),
                 }],
                 "narrative": "完整研究材料",
-                "card_material": {"upside_path": "验证后延续"},
+                "card_material": _card_material(item["brief"]["memberCodes"][0]),
             }
             for item in request["directions"]
         ]}, usage=self.usage)
@@ -107,6 +119,20 @@ class _MalformedReasonProvider(_Provider):
             "driver": "公开事件驱动", "driver_kind": "event", "why_now": "今日",
             "members": [], "narrative": "缺成员的坏结构",
         } for item in request["directions"]]})
+
+
+class _MissingCardMaterialProvider(_Provider):
+    def __init__(self):
+        super().__init__("reason")
+
+    def chat(self, messages, *, enable_search, search_query=None, transport=None):
+        result = super().chat(
+            messages, enable_search=enable_search, search_query=search_query, transport=transport,
+        )
+        payload = json.loads(result.content)
+        for item in payload["directions"]:
+            item.pop("card_material", None)
+        return _result(payload)
 
 
 class _Search:
@@ -248,6 +274,29 @@ def test_deep_contract_error_is_unavailable_does_not_refill_and_keeps_prior_snap
         assert conn.execute(
             "SELECT publication_state,stop_reason FROM selection_runs WHERE run_id=?", (outcome.run_id,)
         ).fetchone() == ("unavailable", "reasoning_contract_error")
+    finally:
+        conn.close()
+
+
+def test_missing_card_material_is_contract_error_not_empty_success(isolated_env):
+    from neckline.db import init_schema
+
+    init_schema(isolated_env.db_path)
+    outcome = run_direction_pipeline(
+        date(2026, 8, 14), _seeds(1), config=_config(),
+        triage_provider=_Provider("triage"), research_client=_Search(),
+        reason_provider=_MissingCardMaterialProvider(), db_path=isolated_env.db_path,
+    )
+    assert outcome.selection_state == "unavailable"
+    conn = sqlite3.connect(isolated_env.db_path)
+    try:
+        assert conn.execute(
+            "SELECT stop_reason FROM selection_runs WHERE run_id=?", (outcome.run_id,)
+        ).fetchone()[0] == "reasoning_contract_error"
+        assert conn.execute(
+            "SELECT count(*) FROM selection_direction_events "
+            "WHERE transition='reasoning_contract_error'"
+        ).fetchone()[0] == 1
     finally:
         conn.close()
 

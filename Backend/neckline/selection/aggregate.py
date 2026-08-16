@@ -2574,7 +2574,16 @@ def aggregate_baskets(
         # an unavailable run, never permission to revive an implicit first-20 cap.
         if not isinstance(direction_pipeline_config, _Unset):
             from neckline.llm.router import TASK_DEEP_REASON, TASK_DIRECTION_TRIAGE
+            from neckline.selection.basket_card import build_price_reference_mech
             from neckline.selection.direction_pipeline import run_direction_pipeline
+
+            # The sole deep-reason call must also produce the card's three price
+            # references.  Build their exact mechanical anchors once for the
+            # whole day; do not make the model infer limit bands from prose and
+            # do not re-read them once per direction.
+            deep_card_mechs = build_price_reference_mech(
+                ctx.close_of, trade_date, names=ctx.names, db_path=db_path,
+            )
 
             def _qualified_after_gates(
                 proposals: Sequence[Mapping[str, Any]],
@@ -2637,16 +2646,34 @@ def aggregate_baskets(
             def _deep_reason_context(
                 brief: Any, raw_research: Mapping[str, Any],
             ) -> str:
-                """Reuse the authoritative gate/member prompt context per direction."""
+                """Reuse gate/member context and append exact card price anchors."""
                 items = _pipeline_evidence_items(raw_research)
                 evidence = DriverEvidence(
                     seed_key=brief.seed_key, status=EVIDENCE_OK,
                     items=tuple(items), provider="tavily",
                 )
-                return build_reason_context(
+                context = build_reason_context(
                     [seeds_by_key[brief.seed_key]], presented_by_seed,
                     {brief.seed_key: evidence}, ctx, include_output_instruction=False,
                 )
+                lines = [context, "", "【candidate.card_material 价格锚(逐票原价，不是百分比)】"]
+                for code in presented_by_seed.get(brief.seed_key, ()):
+                    mech = deep_card_mechs.get(code)
+                    if mech is None:
+                        lines.append(f"  · {code}:本次未取得价格锚，不得猜数")
+                        continue
+                    close = f"{mech.close:.2f}" if mech.close is not None else "未取得"
+                    if mech.limit_down is not None and mech.limit_up is not None:
+                        band = f"[{mech.limit_down:.2f}, {mech.limit_up:.2f}]"
+                    else:
+                        band = f"未取得({mech.no_limit_reason or '原因未记录'})"
+                    lines.append(
+                        f"  · {code}:D0收盘={close};次日涨跌停参考价={band}"
+                    )
+                lines.append(
+                    "若决定 candidate，card_material.entries 必须恰好覆盖你最终选择的 members。"
+                )
+                return "\n".join(lines)
 
             if isinstance(triage_provider, _Unset):
                 triage_provider = _resolve_provider(TASK_DIRECTION_TRIAGE, db_path)

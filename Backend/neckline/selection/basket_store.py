@@ -560,6 +560,35 @@ def _save_basket_card_on_conn(conn: sqlite3.Connection, row: Tuple[Any, ...]) ->
     return stats
 
 
+def append_basket_card_version_from_existing(
+    basket_id: int,
+    card_json: Any,
+    *,
+    from_version: int,
+    to_version: int,
+    conn: sqlite3.Connection,
+) -> Dict[str, Any]:
+    """Append a repaired card while preserving the prior row's frozen metadata.
+
+    Narrow maintenance flows must not become new consumers of charter fields.
+    This store-level adapter copies the existing persistence metadata verbatim;
+    it never recalculates policy and still relies on the immutable-version
+    writer below.
+    """
+    row = conn.execute(
+        "SELECT stop_pct,take_profit_retrace,charter_version,pack_version,engine_api_version "
+        "FROM basket_cards WHERE basket_id=? AND version=?",
+        (int(basket_id), int(from_version)),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"basket {basket_id} source card version {from_version} is missing")
+    return save_basket_card(
+        basket_id, card_json, version=to_version,
+        stop_pct=row[0], take_profit_retrace=row[1], charter_version=row[2],
+        pack_version=row[3], engine_api_version=row[4], conn=conn,
+    )
+
+
 def save_basket_cards(
     cards_by_basket_id: Mapping[int, Any],
     *,
@@ -1205,6 +1234,7 @@ __all__ = [
     "load_basket",
     "load_tier_history",
     "save_basket_card",
+    "append_basket_card_version_from_existing",
     "save_basket_cards",
     "load_basket_card",
     "BasketRef",

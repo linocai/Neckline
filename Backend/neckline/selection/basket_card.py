@@ -76,7 +76,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -180,6 +180,7 @@ LLM_NO_PROVIDER = "no_provider"
 LLM_CALL_FAILED = "call_failed"
 LLM_BUDGET_EXHAUSTED = "budget_exhausted"
 LLM_PARSE_FAILED = "parse_failed"
+LLM_MATERIAL_INVALID = "material_invalid"
 LLM_DISABLED = "disabled"          # 调用方显式 `use_llm=False`(单测/离线冒烟)
 
 # —— 验证 / 失效结构化条件码与聚合规则:**唯一定义处 = `verification_rules.py`**
@@ -375,6 +376,23 @@ def build_member_mech(
             no_limit_reason=reason,
         )
     return out
+
+
+def build_price_reference_mech(
+    codes_close: Mapping[str, Optional[float]], trade_date: date, *,
+    names: Optional[Mapping[str, str]] = None, db_path: Optional[Path] = None,
+) -> Dict[str, MemberMech]:
+    """Build only the close/limit anchors needed by the consolidated LLM call.
+
+    The aggregate layer is intentionally forbidden from reading discipline
+    thresholds.  This narrow adapter keeps that boundary intact while still
+    giving deep reasoning the exact next-day price band required for card
+    material.  The full card builder later adds the charter-derived warning
+    line through its existing authority.
+    """
+    return build_member_mech(
+        codes_close, trade_date, stop_pct=None, names=names, db_path=db_path,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1373,24 +1391,44 @@ def build_cards(
             if isinstance(deep, Mapping):
                 raw_payload = deep.get("card_material", deep.get("payload"))
                 if isinstance(raw_payload, Mapping):
-                    payload = raw_payload
-                    narrative = str(deep.get("narrative") or payload.get("narrative") or "")
-                    # A deep-result payload is the single semantic source.  The
-                    # final card still validates every numeric/textual field.
-                    stage = LLM_OK
-                    generation_source = "deep_reason"
+                    from neckline.selection.deep_reason import validate_card_material
+
+                    try:
+                        payload = validate_card_material(
+                            raw_payload,
+                            member_codes=[m.ts_code for m in (getattr(b, "members", ()) or ())],
+                        )
+                        narrative = str(deep.get("narrative") or payload.get("narrative") or "")
+                        # A deep-result payload is the single semantic source.
+                        # The final card still validates every price against
+                        # mechanical close/limit anchors below.
+                        stage = LLM_OK
+                        generation_source = "deep_reason"
+                    except ValueError as exc:
+                        notes.append(f"deep_reason_card_material_invalid:{exc}")
+                        stage = LLM_MATERIAL_INVALID
                 else:
                     notes.append("deep_reason_card_material_unavailable")
             if use_llm or provider is not None:
                 notes.append("card_llm_retired:deep_reason_required")
-            out.append(build_basket_card(
+            card = build_basket_card(
                 b, trade_date, tier_decision=decision, mechs=member_mechs,
                 tag_batch=tag_batch, payload=payload, narrative=narrative, llm_stage=stage,
                 stop_pct=stop_pct, take_profit_retrace=tpr,
                 loss_warning_pct=lw_pct, loss_warning_action=lw_action, version=version,
                 with_tags=with_tags, next_trade_date=nd, notes=notes,
                 generation_source=generation_source,
-            ))
+            )
+            if stage == LLM_OK:
+                missing = trade_plan_missing_pieces(card.to_card_json())
+                if missing:
+                    card = replace(
+                        card, llm_stage=LLM_MATERIAL_INVALID,
+                        notes=tuple(card.notes) + (
+                            "deep_reason_card_material_rejected:" + ",".join(missing),
+                        ),
+                    )
+            out.append(card)
         except Exception:  # noqa: BLE001 —— 一张卡炸了不牵连其余(「有篮子无卡」合法)
             logger.error("[basket_card] 篮子 %s 的卡生成整体失败,本篮无卡(篮子不回删)",
                          key, exc_info=True)
@@ -1529,6 +1567,7 @@ __all__ = [
     "LLM_CALL_FAILED",
     "LLM_BUDGET_EXHAUSTED",
     "LLM_PARSE_FAILED",
+    "LLM_MATERIAL_INVALID",
     "LLM_DISABLED",
     "COND_CLOSE_AT_OR_ABOVE_REF",
     "COND_HOLDS_MA20",
@@ -1538,6 +1577,7 @@ __all__ = [
     "VERIFICATION_RULESET_VERSION",
     "CARD_SYSTEM_PROMPT",
     "MemberMech",
+    "build_price_reference_mech",
     "MemberCardEntry",
     "BasketCard",
     "resolve_charter_pcts",

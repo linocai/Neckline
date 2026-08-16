@@ -4,23 +4,19 @@
 
 ## 1. Current goal and release boundary
 
-V2.4.2 Build 8 is the report-date hotfix: Sunday is the visible report date while the preceding Friday remains
-the market-data and selection key. The 2026-08-14 market session was explicitly rerun and published as the
-2026-08-16 report after the user corrected that distinction. The prior bounded report was
-explicitly backfilled on 2026-08-16 after the bounded pipeline fix. Weekday scheduling now runs Monday–Thursday
-after close; Sunday publishes a Sunday-dated report using the immediately preceding Friday as its EOD data
-cutoff so weekend information can enter research. `report_date` is visible identity while `trade_date` remains
-the market/basket/detail key. Do not rerun
-a production report without a new explicit user instruction. Continue directly on `main`; do not create a branch.
+V2.4.2 Build 9 repairs the missing card price-plan regression without changing the approved selection package,
+six gates, Tier result, members, report identity, or schedule. The surviving full-reason call now treats
+`card_material` as a required candidate contract, receives exact D0 close and next-day limit anchors, and cannot
+publish empty or post-clamp-incomplete material as `llmStage=ok`. A guarded maintenance command may append a new
+immutable card version and patch only one already-frozen report snapshot; it cannot call scan, selection, Tavily,
+Tier, report generation, or APNs. Production report reruns still require a new explicit user instruction.
 
-Build 8 is released; it keeps the same `v2.4.2-balanced-r3` selection package and changes only report-date
-identity across the scheduler, persistence/API, notification, markdown, and client display. Its pre-deploy gates
-are backend `4050 passed / 19 registered skips`, macOS `233 passed / 10 registered integration skips`, Python
-compile, and `git diff --check`. The signed macOS `2.4.2 (8)` app is installed and the iOS IPA remains
-user-installable. Production runs
-`v2.4.2-balanced-r3`: the selection wall-clock cutoff is removed, undated Tavily evidence is preserved honestly,
-concept codes are resolved before search, and real qualification is checked after every deep cohort. The next
-work is the agreed V2.4.3 observation window; do not tune from this single Sunday run alone.
+The authorized current-report repair target is report date `20260816`, market/selection date `20260814`, published
+run `4e651042-500f-46c4-9138-ba3b6acd72e8`, five T2 baskets and fifteen members. Preserve every basket/member/Tier,
+append card version 2, update only their card material inside `reports.basket_daily_json` and the matching Markdown
+section, and send no notification. Build 9 pre-deploy gates are backend `4061 passed / 19 registered skips`, macOS
+`233 passed / 10 registered integration skips`, Python compile, and `git diff --check`. Continue directly on
+`main`; do not create a branch. The next planned product cycle remains the V2.4.3 observation window.
 
 The baseline is `v2.4.1` Build 2. Its record is
 [V2.4.1 execution record](archive/施工图/V2.4.1_执行计划_20260813.md).

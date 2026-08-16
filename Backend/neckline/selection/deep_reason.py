@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
@@ -29,6 +30,7 @@ class DeepReasonResult:
     engine_claim: Optional[str] = None
     gate_evidence: Mapping[str, Any] = field(default_factory=dict)
     price_plan_candidates: Mapping[str, Any] = field(default_factory=dict)
+    card_material: Mapping[str, Any] = field(default_factory=dict)
     risks: Tuple[str, ...] = ()
     raw: Mapping[str, Any] = field(default_factory=dict)
 
@@ -64,6 +66,59 @@ def _require_check(raw: Any, *, field: str) -> None:
         raise ValueError(f"{field} evidence fields must be arrays")
     if not isinstance(raw.get("reason"), str) or not raw["reason"].strip():
         raise ValueError(f"{field}.reason must be text")
+
+
+def validate_card_material(raw: Any, *, member_codes: Sequence[str]) -> Mapping[str, Any]:
+    """Validate the human-card payload emitted by the sole deep-reason call.
+
+    V2.4.2 retired the second per-card LLM call, so this object is no longer an
+    optional decoration: it is the only semantic source for the three price
+    references and the human-readable verification text.  Missing or empty
+    material is therefore a provider contract failure, never ``llmStage=ok``.
+    Mechanical limit/close clamps remain authoritative after this structural
+    validation.
+    """
+    if not isinstance(raw, Mapping) or not raw:
+        raise ValueError("card_material must be a non-empty object")
+    for key in ("upside_path", "verification", "invalidation"):
+        if not isinstance(raw.get(key), str) or not str(raw[key]).strip():
+            raise ValueError(f"card_material.{key} must be non-empty text")
+    risks = raw.get("risks")
+    if not isinstance(risks, list) or not risks or any(
+        not isinstance(item, str) or not item.strip() for item in risks
+    ):
+        raise ValueError("card_material.risks must contain non-empty text")
+    tier_note = raw.get("tier_note")
+    if tier_note is not None and (not isinstance(tier_note, str) or not tier_note.strip()):
+        raise ValueError("card_material.tier_note must be text or null")
+
+    entries = raw.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("card_material.entries must be a non-empty array")
+    expected = {str(code).strip() for code in member_codes if str(code).strip()}
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ValueError("card_material.entries items must be objects")
+        code = str(entry.get("ts_code") or "").strip()
+        if not code or code not in expected or code in seen:
+            raise ValueError("card_material.entries must exactly cover candidate members")
+        seen.add(code)
+        values = []
+        for key in ("low", "high", "max_chase", "exit_low", "exit_high"):
+            value = entry.get(key)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value)) or float(value) <= 0):
+                raise ValueError(f"card_material.entries[{code}].{key} must be a positive number")
+            values.append(float(value))
+        low, high, chase, exit_low, exit_high = values
+        if not low <= high <= chase or not exit_low <= exit_high:
+            raise ValueError(f"card_material.entries[{code}] price ordering is invalid")
+        if not isinstance(entry.get("why"), str) or not entry["why"].strip():
+            raise ValueError(f"card_material.entries[{code}].why must be non-empty text")
+    if seen != expected:
+        raise ValueError("card_material.entries must exactly cover candidate members")
+    return dict(raw)
 
 
 def parse_deep_reason(
@@ -133,6 +188,10 @@ def parse_deep_reason(
         raise ValueError("engine_code is invalid")
     _require_check(raw.get("market_check"), field="market_check")
     _require_check(raw.get("sector_check"), field="sector_check")
+    card_material = validate_card_material(
+        raw.get("card_material", raw.get("cardMaterial")),
+        member_codes=[str(member.get("ts_code") or "") for member in members],
+    )
     return DeepReasonResult(
         direction_id=direction_id, decision=decision, decision_reason=decision_reason,
         name=raw["name"].strip(), driver=raw["driver"].strip(),
@@ -143,9 +202,10 @@ def parse_deep_reason(
         engine_claim=raw.get("engineClaim") if isinstance(raw.get("engineClaim"), str) else None,
         gate_evidence=raw.get("gateEvidence") if isinstance(raw.get("gateEvidence"), Mapping) else {},
         price_plan_candidates=raw.get("pricePlanCandidates") if isinstance(raw.get("pricePlanCandidates"), Mapping) else {},
+        card_material=card_material,
         risks=tuple(str(item) for item in raw.get("risks", ()) if isinstance(item, (str, int, float))),
         raw=dict(raw),
     )
 
 
-__all__ = ["DEEP_DECISIONS", "DeepReasonResult", "parse_deep_reason"]
+__all__ = ["DEEP_DECISIONS", "DeepReasonResult", "parse_deep_reason", "validate_card_material"]
