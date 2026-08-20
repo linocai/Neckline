@@ -1,9 +1,20 @@
 """预案的落库与读回(V2.5.0 S10)。表 `k9_playbooks`,**append-only 版本化**。
 
 🔴 **⛔ 没有 UPDATE**(K9 §6.4 / §5.6.4:「用户修改产生新版本、原版本不变」):
-本模块只有 `INSERT`。用户改一次 → `version + 1` 的**新行**;
-9:26 与 10:00 两拍读的一律是 `max(version)`。守门单测扫本文件的 SQL:
-`UPDATE k9_playbooks` / `DELETE FROM k9_playbooks` 零命中。
+本模块只有 `INSERT`。用户改一次 → `version + 1` 的**新行**。守门单测扫本文件的
+SQL:`UPDATE k9_playbooks` / `DELETE FROM k9_playbooks` 零命中。
+
+🔴 **「用哪一版」与「谁定案」是两件事**(R2-03,落实 K9 §六「**D0 冻结**」+
+架构 §四「代入 D0**已冻结**的预案条件」):
+
+  · **9:26 那一拍**读 `load_latest` —— 到那一刻为止的最新版就是 D0 冻结那一版,
+    因为 `POST …/playbook` 有**冻结闸**:D1 一开始就拒绝再写新版本
+    (`api/app.py::post_stock_playbook`,`PlaybookFrozen`);
+  · **10:00 结算拍**读 `load_at_versions` —— 用 9:26 那一拍**记在
+    `k9_d1_verdicts.playbook_version` 里的那一版**,⛔ 不再取一次 `MAX(version)`。
+    这是第二道锁:就算有别的写入口(CLI / 回放 / 将来某个脚本)在两拍之间塞进
+    一个新版本,**权威那一拍代入的仍然是账上记着的那一版** ——
+    ⛔ 绝不允许出现「终值按 v2 求的、账上记着 v1」这种查不出来的污染。
 
 ⚠ **改版本会改变次日核对的判据**,所以每一版都带 `source` 与 `filled_by`
 —— 「这条件是模型给的还是我改的」在事后必须查得出。
@@ -124,6 +135,54 @@ def load_latest(
     return out
 
 
+def load_at_versions(
+    trade_date: date, versions: Mapping[str, int], *, db_path: Optional[Path] = None
+) -> Dict[str, Playbook]:
+    """🔴 **按点名的版本号**取预案(R2-03)——「用哪一版」的唯一取法。
+
+    `versions` = `{ts_code: version}`,通常来自 `k9_d1_verdicts.playbook_version`
+    (9:26 那一拍**冻在账上**的那一版)。10:00 结算拍用它,⛔ 不再取 `MAX(version)`:
+    裁定 10 锁住了「三分支的唯一权威是 10:00 这一拍」,但**没**锁住这一拍
+    「代入哪一版条件」—— 权威那一拍代入一份**在看过竞价之后才写下**的条件,
+    等于把 K9 §八 那三个比率的分母整个抽掉,而且在账上**查不出来**
+    (⚠ 三个比率的名字**刻意不写在这里** —— G14 绊线扫的就是那三个词,
+    它在等 S17 落 `scorecard/listing.py` 时被换成真判据)
+    (`playbook_version` 那一列还记着旧版号)。
+
+    ⚠ 点名的版本**不存在** → 那只票缺席(⛔ 不静默回退到最新版:回退正是本条要防的
+    那件事)。解析不过的行同 `load_latest`:跳过 + WARNING。
+    """
+    wanted = {c: int(v) for c, v in versions.items() if c}
+    if not wanted:
+        return {}
+    pairs = sorted(wanted.items())
+    placeholders = ",".join("(?,?)" for _ in pairs)
+    flat: List[Any] = []
+    for code, ver in pairs:
+        flat.extend((code, ver))
+    with readonly_tables(TABLE, db_path=db_path) as conn:   # 只读,R3-🔴-2
+        if conn is None:
+            return {}
+        rows = conn.execute(
+            f"SELECT {_SELECT} FROM {TABLE} WHERE trade_date=? "
+            f"AND (ts_code, version) IN (VALUES {placeholders}) ORDER BY ts_code",
+            (_d(trade_date), *flat),
+        ).fetchall()
+    out: Dict[str, Playbook] = {}
+    for r in rows:
+        try:
+            out[r[1]] = _row_to_playbook(r)
+        except PlaybookInvalid:
+            logger.warning("[playbook] %s %s v%s 的冻结预案解析不过,本次跳过这一只",
+                           r[0], r[1], r[2], exc_info=True)
+    missing = sorted(set(wanted) - set(out))
+    if missing:
+        logger.warning(
+            "[playbook] %s 有 %d 只点名的版本取不回来(%s)—— 这几只本次缺席,"
+            "⛔ 不回退到最新版", trade_date, len(missing), missing[:5])
+    return out
+
+
 def load_versions(
     trade_date: date, ts_code: str, *, db_path: Optional[Path] = None
 ) -> List[Playbook]:
@@ -195,6 +254,6 @@ def count_for_day(trade_date: date, *, db_path: Optional[Path] = None) -> int:
 
 __all__ = [
     "TABLE", "SOURCE_LLM", "SOURCE_USER",
-    "next_version", "save", "load_latest", "load_versions", "load_latest_range",
-    "count_for_day",
+    "next_version", "save", "load_latest", "load_at_versions", "load_versions",
+    "load_latest_range", "count_for_day",
 ]

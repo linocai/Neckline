@@ -160,7 +160,45 @@ def run_settle_tick(
         return res
     res.listing_size = len(listing)
     codes = [r["ts_code"] for r in listing]
-    playbooks: Mapping[str, Playbook] = pb_store.load_latest(d0, codes=codes, db_path=db_path)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 🔴 **代入哪一版预案:账上钉死的那一版**(R2-03)
+    # ══════════════════════════════════════════════════════════════════════
+    # 裁定 10 锁住了「三分支的唯一权威是这一拍」,**没**锁住这一拍「用哪一版条件」。
+    # 复审实测过反例:9:27 判待观察 → 9:45 改一版把成立门槛压到脚下 → 10:01 结算
+    # 吐 `confirmed/open30`,而 `k9_d1_verdicts.playbook_version` 仍记着 v1
+    # —— 权威那一拍代入了一份**在看过竞价之后**才写下的条件,且在账上查不出来。
+    #
+    # 两道锁(⛔ 缺一不可):
+    #   ① `POST …/playbook` 的**冻结闸**:D1 一开始就拒绝改写该交易日的预案
+    #      (`api/app.py::post_stock_playbook` → `PlaybookFrozen`);
+    #   ② **本段**:9:26 那一拍已经把 `playbook_version` 写进 `k9_d1_verdicts` 了,
+    #      结算拍就用账上那一版,⛔ 不再取一次 `MAX(version)`。
+    #      ⚠ 必须在 `ensure_rows` **之前**读 —— 那一步之后表里就分不出
+    #      「9:26 记的」与「刚补的骨架行」了。
+    frozen_rows = {r["ts_code"]: r for r in
+                   astore.load_verdicts(trade_date, strategy=strategy, db_path=db_path)}
+    pinned = {c: int(r["playbook_version"]) for c, r in frozen_rows.items()}
+    latest: Mapping[str, Playbook] = pb_store.load_latest(d0, codes=codes, db_path=db_path)
+    playbooks: Dict[str, Playbook] = dict(latest)
+    if pinned:
+        at_pinned = pb_store.load_at_versions(d0, pinned, db_path=db_path)
+        for code, version in sorted(pinned.items()):
+            pb = at_pinned.get(code)
+            if pb is None:
+                # 账上点名的那一版取不回来 → 这一只**本次缺席**,⛔ 不拿最新版顶替
+                # (顶替正是本条要防的那件事)。它留在 `decided_stage IS NULL`。
+                playbooks.pop(code, None)
+                res.notes.append(
+                    f"{code}:账上记着的预案 v{version} 取不回来,本次不结算这一只")
+                continue
+            playbooks[code] = pb
+            newer = latest.get(code)
+            if newer is not None and newer.version != version:
+                # 🔴 有人在 9:26 之后又写了一版 —— **说出来**,⛔ 不静默按旧版跑过去。
+                res.notes.append(
+                    f"{code}:预案在 9:26 之后被改写(账上 v{version} → 现有 "
+                    f"v{newer.version});本拍仍代入 D0 冻结的 v{version}")
     if not playbooks:
         res.skipped_reason = SKIP_NO_PLAYBOOK
         return res
@@ -177,7 +215,7 @@ def run_settle_tick(
     if snap.fetch_skipped_reason:
         # 拉价那一刻窗口已关 → **零落库**(⛔ 不拿 10:06 的价冒充 10:00 那一刻)。
         res.skipped_reason = snap.fetch_skipped_reason
-        res.notes = list(snap.notes)
+        res.notes.extend(snap.notes)      # ⚠ 追加:上面那段版本核对的话⛔ 不许被覆盖
         return res
 
     # 2. 建行(9:26 那一拍没跑成的日子,表里一行都没有)
@@ -188,9 +226,9 @@ def run_settle_tick(
         strategy=strategy, db_path=db_path,
     )
 
-    # 3. 取回 9:26 冻结的竞价读数(有就合并,没有就缺席 —— ⛔ 不重拉)
-    frozen_rows = {r["ts_code"]: r for r in
-                   astore.load_verdicts(trade_date, strategy=strategy, db_path=db_path)}
+    # 3. 9:26 冻结的竞价读数就在上面那份 `frozen_rows` 里(有就合并,没有就缺席
+    #    —— ⛔ 不重拉。`ensure_rows` 刚补出来的骨架行本来就没有竞价读数,
+    #    所以「在 `ensure_rows` 之前读」与「之后读」对这一项等价)。
 
     # 4. 只结算**还没定案**的(`decided_stage IS NULL`)。
     #    ⚠ 已在竞价定案的票连读数都不重算 —— 幂等靠 SQL,这里少做一步只是省事。
@@ -216,7 +254,7 @@ def run_settle_tick(
     res.rejected = sum(1 for o in outcomes if o.verdict is Verdict.REJECTED)
     res.observed = sum(1 for o in outcomes if o.verdict is Verdict.OBSERVED)
     res.data_quality = snap.quality_of(sorted(playbooks))
-    res.notes = list(snap.notes)
+    res.notes.extend(snap.notes)          # ⚠ 追加,⛔ 不覆盖(R2-03 的版本核对留言)
     record_pushed(trade_date, SETTLE_SENTINEL, "", EVENT_SETTLE,
                   payload={"counts": res.counts}, db_path=db_path)
     logger.info(

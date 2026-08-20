@@ -441,6 +441,80 @@ class TestSettleTick:
         assert after[alive]["decided_stage"] == "open30"
         assert res.unchanged == 1
 
+    def test_the_settle_tick_uses_the_version_pinned_at_the_auction_tick(self, d0d1):
+        """🔴 **R2-03 的第二道锁 —— 复审 CE-5 原样复现**。
+
+            9:27 判「待开盘后观察」 → 9:45 改一版把成立门槛压到脚下 → 10:01 结算
+
+        复审实测的结果是 `confirmed / open30`,而 `k9_d1_verdicts.playbook_version`
+        仍记着 v1 —— 裁定 10 说的「三分支的唯一权威是 10:00 这一拍」被抽掉了分母:
+        权威那一拍代入的是一份**在看过竞价之后**才写下的条件,且在账上查不出来。
+
+        修完之后:结算拍代入的仍然是**账上钉死的那一版**,终值 ⛔ 不被改写后的
+        条件带跑,而且「有人改过」这件事**说出来**(`res.notes`)。
+        """
+        env, d0, d1, codes = d0d1
+        target = codes[0]
+
+        # —— 9:27:竞价价 10.2,放弃分支(first30_low < 9.5)求不出 → 待观察 ——
+        qs = {c: quote(c, price=10.2, ts=f"{d1:%Y-%m-%d} 09:25:03") for c in codes}
+        auction_pipeline.run_checklist_tick(
+            at(d1, time(9, 27, 0)), db_path=env.db_path, parquet_dir=env.parquet_dir,
+            quotes_fn=lambda cs: {c: qs[c] for c in cs if c in qs},
+            now_fn=lambda: at(d1, time(9, 27, 10)))
+        rows = {r["ts_code"]: r for r in auction_store.load_verdicts(d1, db_path=env.db_path)}
+        assert rows[target]["verdict"] is None and rows[target]["decided_stage"] is None
+        assert rows[target]["playbook_version"] == 1
+
+        # —— 9:45:把成立门槛压到脚下(v2)——
+        pb_store.save(
+            make_playbook(target, trade_date=d0.strftime("%Y%m%d"),
+                          confirm_gap_max=99.0, confirm_low_min=0.01, version=2),
+            db_path=env.db_path)
+        assert pb_store.load_latest(d0, db_path=env.db_path)[target].version == 2
+
+        # —— 10:01:一组**按 v1 判不成立、按 v2 判成立**的读数 ——
+        #    v1 要 first30_low >= 10.5;这里 low=10.0 → v1 不成立、v2 成立。
+        prices = {c: (10.2, 10.6, 10.0, 10.1) for c in codes}
+        res = _settle(env, d1, codes, prices)
+
+        after = {r["ts_code"]: r for r in auction_store.load_verdicts(d1, db_path=env.db_path)}
+        assert after[target]["verdict"] == "observed", (
+            "结算拍代入了 9:26 之后才写下的 v2 —— 裁定 10 的分母被抽掉了")
+        assert after[target]["decided_stage"] == "open30"
+        # 账上记的版本 = 真正求值用的那一版(⛔ 两者不许对不上)。
+        assert after[target]["playbook_version"] == 1
+        # 🔴 「有人改过」必须**说出来**,⛔ 不静默按旧版跑过去。
+        assert any(target in n and "9:26 之后被改写" in n for n in res.notes), res.notes
+
+    def test_a_version_written_before_the_auction_tick_is_the_one_that_counts(self, d0d1):
+        """⚠ 反向自检:D0 盘后**正常改的**那一版(9:26 之前就在库里)照常生效。
+
+        闸门管的是「在看过今天的盘之后改」,⛔ 不是「预案从此不能改」——
+        K9 §6.4 的「最终确认由我盘后逐只过目、可修改」必须仍然成立。
+        """
+        env, d0, d1, codes = d0d1
+        target = codes[0]
+        # D0 盘后:用户把成立门槛改宽(v2),**在 9:26 那一拍之前**就落库了。
+        pb_store.save(
+            make_playbook(target, trade_date=d0.strftime("%Y%m%d"),
+                          confirm_gap_max=99.0, confirm_low_min=0.01, version=2),
+            db_path=env.db_path)
+        qs = {c: quote(c, price=10.2, ts=f"{d1:%Y-%m-%d} 09:25:03") for c in codes}
+        auction_pipeline.run_checklist_tick(
+            at(d1, time(9, 27, 0)), db_path=env.db_path, parquet_dir=env.parquet_dir,
+            quotes_fn=lambda cs: {c: qs[c] for c in cs if c in qs},
+            now_fn=lambda: at(d1, time(9, 27, 10)))
+        rows = {r["ts_code"]: r for r in auction_store.load_verdicts(d1, db_path=env.db_path)}
+        assert rows[target]["playbook_version"] == 2, "9:26 那一拍就该记 v2"
+
+        prices = {c: (10.2, 10.6, 10.0, 10.1) for c in codes}
+        res = _settle(env, d1, codes, prices)
+        after = {r["ts_code"]: r for r in auction_store.load_verdicts(d1, db_path=env.db_path)}
+        assert after[target]["verdict"] == "confirmed", "D0 盘后正常改的那一版没生效"
+        assert after[target]["playbook_version"] == 2
+        assert not [n for n in res.notes if "被改写" in n], res.notes
+
     def test_settle_merges_the_frozen_auction_readings(self, d0d1):
         """竞价那半从 9:26 冻结的读数取回来,⛔ 不重拉一个「现在的竞价价」。"""
         env, d0, d1, codes = d0d1

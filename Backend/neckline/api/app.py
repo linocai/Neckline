@@ -1241,6 +1241,15 @@ def _parse_day(raw: str) -> date_cls:
         raise HTTPException(status_code=422, detail="日期必须是 YYYYMMDD")
 
 
+def _today() -> date_cls:
+    """本机当天(上海时区,`CN_TZ` 是全仓唯一源)。
+
+    ⚠ 单测靠 **monkeypatch 本函数**注入「今天是哪天」—— ⛔ 不给端点加一个可以从
+    请求里传的日期参数:那等于把冻结闸的开关交到闸外面。
+    """
+    return datetime.now(CN_TZ).date()
+
+
 # —— V2.5.0 S9/S10:个股详情与预案修改入口 ————————————————————————————————
 
 
@@ -1312,7 +1321,20 @@ def post_stock_playbook(trade_date: str, ts_code: str, body: dict) -> dict:
 
     ⚠ 形态骨架**不可改**:用户能改的是方括号里的数,不是「哪个量跟谁比」
     (骨架是机械的,K9 §6.4 分工表)。
+
+    🔴 **冻结闸:D1 一开始就不许再改这一天的预案**(R2-03,落实 K9 §六「D0 **冻结**」
+    与 K9 §6.4「最终确认由我**盘后**逐只过目」)。窗口 = 从 D0 收盘到 **D1 零点**
+    (D0 是周五就含整个周末),`today >= next_trading_day(D0)` → **409**。
+
+    为什么必须挡住:裁定 10 说「三分支判定的唯一权威是 10:00 结算拍」——
+    复审实测过一条把这句话的分母整个抽掉的路径:9:27 判待观察 → **9:45 改一版**把
+    成立门槛压到脚下 → 10:01 结算吐 `confirmed`,而账上 `playbook_version` 还记着
+    v1。权威那一拍代入了一份**在看过竞价之后**才写下的条件,且事后查不出来。
+    ⚠ 这不是「不许改预案」,是「不许**在看过今天的盘之后**改**今天要核对的那一份**」
+    —— 明天的清单明天照常可以改。
+    ⛔ 返回明确原因,**不是静默忽略**:静默忽略会让用户以为自己改成功了。
     """
+    from neckline.calendar import next_trading_day
     from neckline.k9 import store as k9_store
     from neckline.playbook import fill as playbook_fill
     from neckline.playbook import model as pb_model
@@ -1320,6 +1342,16 @@ def post_stock_playbook(trade_date: str, ts_code: str, body: dict) -> dict:
     from neckline.playbook import store as pb_store
 
     day = _parse_day(trade_date)
+    d1 = next_trading_day(day)
+    today = _today()
+    if today >= d1:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"{trade_date} 的预案已在 D0 冻结,⛔ 不能再改:它要核对的那一天"
+                    f"({d1:%Y-%m-%d})已经开始了(今天 {today:%Y-%m-%d})。"
+                    "K9 §六 的窗口是「盘后逐只过目」—— 从 D0 收盘到 D1 零点;"
+                    "过了这条线再改,10:00 结算拍代入的就会是一份在看过竞价之后"
+                    "才写下的条件。要改请改**今天**这一天的清单。"))
     listing = {r["ts_code"]: r for r in k9_store.load_listing(day, db_path=_db())}
     entry = listing.get(ts_code)
     if entry is None:

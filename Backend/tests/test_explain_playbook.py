@@ -394,6 +394,16 @@ class TestFillValidation:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestUserEdit:
+    #: 🔴 **冻结闸的窗口**(R2-03):`POST …/playbook` 只在 D0 收盘到 D1 零点之间开着。
+    #: 这些用例改的是 `day` 这一天的预案,所以「今天」必须**就是 D0**。
+    #: ⚠ 靠 monkeypatch `app._today()` 注入 —— ⛔ 端点上没有、也不许有可以从请求里
+    #: 传日期的口子(那等于把闸门开在闸外面)。
+    @pytest.fixture(autouse=True)
+    def _pin_today_to_d0(self, monkeypatch):
+        from neckline.api import app as app_mod
+
+        monkeypatch.setattr(app_mod, "_today", lambda: date(2024, 4, 29))
+
     def _seed_listing(self, api_env, day: date) -> None:
         from neckline.k9.contract import Entry, Pattern, SeatKind, Shortlist, Tier
 
@@ -467,6 +477,53 @@ class TestUserEdit:
         r = client.post(f"/api/v1/selection/{day:%Y%m%d}/stock/600999.SH/playbook",
                         headers=AUTH, json={})
         assert r.status_code == 404
+
+    def test_editing_after_d1_has_started_is_refused_with_a_reason(
+        self, api_env, client, AUTH, monkeypatch,
+    ):
+        """🔴 **R2-03 的第一道锁**:D1 一开始就不许再改这一天的预案。
+
+        裁定 10 说「三分支判定的唯一权威是 10:00 结算拍」;若 D1 早上还能改预案,
+        那一拍代入的就可以是一份**在看过竞价之后**才写下的条件 ——
+        复审实测过 9:27 待观察 → 9:45 改版 → 10:01 `confirmed` 这条路径。
+
+        ⛔ 拒绝必须**说出原因**(不是静默忽略:静默会让用户以为改成功了)。
+        """
+        from neckline.api import app as app_mod
+
+        day = date(2024, 4, 29)
+        self._seed_listing(api_env, day)
+        first = playbook_fill.fill_one(
+            _pb_input(), trade_date=day,
+            provider=FakeProvider([_fill_content("p1")])).playbook
+        pb_store.save(first, db_path=api_env.db_path)
+
+        body = {"firstResistance": 99.0, "secondResistance": 99.5, "invalidation": 1.0,
+                "maxGapUpPct": 99.0, "first30FloorPrice": 0.1, "rejectPrice": 0.2}
+        # —— D1 早上 9:45(复审 CE-5 那一刻)——
+        monkeypatch.setattr(app_mod, "_today", lambda: date(2024, 4, 30))
+        r = client.post(f"/api/v1/selection/{day:%Y%m%d}/stock/600001.SH/playbook",
+                        headers=AUTH, json=body)
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert "已在 D0 冻结" in detail and "2024-04-30" in detail
+        # 🔴 **一个字都没写进去**(⛔ 不是「写了但不生效」)。
+        assert [v.version for v in
+                pb_store.load_versions(day, "600001.SH", db_path=api_env.db_path)] == [1]
+
+    def test_editing_tomorrows_listing_is_still_allowed(self, api_env, client, AUTH):
+        """⚠ 反向自检:闸门管的是「**今天要核对的那一份**」,⛔ 不是「预案从此不能改」。"""
+        day = date(2024, 4, 29)
+        self._seed_listing(api_env, day)
+        first = playbook_fill.fill_one(
+            _pb_input(), trade_date=day,
+            provider=FakeProvider([_fill_content("p1")])).playbook
+        pb_store.save(first, db_path=api_env.db_path)
+        body = {"firstResistance": 11.5, "secondResistance": 12.5, "invalidation": 9.4,
+                "maxGapUpPct": 3.0, "first30FloorPrice": 10.4, "rejectPrice": 9.7}
+        r = client.post(f"/api/v1/selection/{day:%Y%m%d}/stock/600001.SH/playbook",
+                        headers=AUTH, json=body)
+        assert r.status_code == 200 and r.json()["version"] == 2
 
     def test_stock_detail_reports_each_missing_piece_honestly(
         self, api_env, client, AUTH,
