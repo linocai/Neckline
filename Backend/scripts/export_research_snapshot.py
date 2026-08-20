@@ -6,8 +6,16 @@
 1. **SQLite 一致性快照**(`sqlite3.backup`,既有能力)—— 含 `sw_industry_classify` /
    `sw_industry_member` / `sw_industry_daily` / `fact_packs` / `k9_*` 全部表。
 2. **事实包 parquet 目录**(`--include-fact-packs --start --end`,S13 新增)——
-   把 `data/parquet/fact_pack/` 的指定区间**逐字节拷**出去,**保持
-   `year=YYYY/YYYYMMDD.parquet` 分区布局不变**,附**逐日 sha256** 的 manifest。
+   把 `data/parquet/fact_pack/` 的指定区间**逐字节拷**出去,**分区布局原样保持**
+   (源文件相对 parquet 根的路径是什么,目的地就是什么),附**逐日 sha256** 的 manifest。
+
+   🔴 **要拷哪几个文件由清单说了算,⛔ 不 glob**(R1-B1 之后布局变成
+   `fact_pack/version=<v>/year=YYYY/YYYYMMDD.parquet`,而遗留包还躺在
+   `fact_pack/year=YYYY/` 下)。本脚本逐日走 `facts.store.load_pack(...).path`
+   —— 它内部是 `resolve_pack_path`:带版本的路径在就用它,回落到遗留路径时
+   **要过 `content_fingerprint` 的 sha256 对拍**。⛔ 不许改回「文件在就用」:
+   遗留路径是「一天一个坑位」的旧布局,同一天若有过第二版,那个文件属于谁
+   在路径上根本看不出来 —— 拿一份对不上账的字节去标定,比少给两天糟得多。
 
 🔴 **为什么必须逐字节相同**(§5.13 逐字):标定要跑在与生产**完全一样**的事实包上,
 否则「联合通过率」这个数没有意义 —— 一边算出来的门槛拿到另一边就不是同一件事。
@@ -41,7 +49,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -112,23 +120,75 @@ def export_snapshot(
     return manifest
 
 
-def _day_files(parquet_dir: Path, start: str, end: str) -> List[Path]:
-    """`[start, end]`(闭区间,`YYYYMMDD` 串比较)内已有的 `fact_pack` 日分区文件,
-    按日期升序。**只 glob 区间覆盖到的年份**(同 `market_data._scan_table` 的纪律:
-    全 glob 要打开 1500+ 个 footer,§12 坑 1)。"""
-    table_root = parquet_dir / FACT_PACK_TABLE
-    if not table_root.is_dir():
-        return []
-    years = range(int(start[:4]), int(end[:4]) + 1)
-    out: List[Path] = []
-    for y in years:
-        year_dir = table_root / f"year={y}"
-        if not year_dir.is_dir():
+def _day_files(
+    parquet_dir: Path, start: str, end: str, *,
+    pack_version: str, db_path: Optional[Path] = None,
+) -> List[Tuple[str, Path]]:
+    """`[start, end]`(闭区间,`YYYYMMDD` 串比较)内**清单里有、磁盘上也真在**的
+    事实包文件:`[(YYYYMMDD, 源文件绝对路径)]`,按日期升序。
+
+    🔴 **驱动源是清单(`fact_packs` 表),⛔ 不是 glob**。R1-B1 把布局改成
+    `fact_pack/version=<v>/year=YYYY/…` 之后,原来那句
+    `table_root / f"year={y}" glob("*.parquet")` **一个文件都扫不到**,
+    区间内每一天都会被报进 `missingDates` —— 响亮,但完全是假的。
+    ⚠ 路径**只从 `facts.store` 取**(它自己的 docstring 就写着「⛔ 不在这里另拼
+    一套路径」):`FactPack.path` = `resolve_pack_path`,遗留布局的回落要过
+    `content_fingerprint` 的 sha256 对拍。
+
+    ⚠ 清单里有、文件不在的日子**不在返回值里** —— 那是真缺口,由调用方报进
+    `missingDates`(⛔ 不静默少给)。
+    """
+    from neckline.facts.store import PackNotFrozen, load_pack
+
+    out: List[Tuple[str, Path]] = []
+    for day in _manifest_days(start, end, pack_version=pack_version, db_path=db_path):
+        try:
+            pack = load_pack(
+                datetime.strptime(day, "%Y%m%d").date(),
+                pack_version=pack_version, parquet_dir=parquet_dir, db_path=db_path)
+        except PackNotFrozen:          # 清单行在这一刻消失了(并发裁剪)—— 当缺口
             continue
-        for f in year_dir.glob("*.parquet"):
-            if start <= f.stem <= end:
-                out.append(f)
-    return sorted(out, key=lambda p: p.stem)
+        path = pack.path
+        if path.exists():
+            out.append((day, path))
+    return out
+
+
+def _manifest_days(
+    start: str, end: str, *, pack_version: str, db_path: Optional[Path] = None
+) -> List[str]:
+    """清单(`fact_packs`)里落在 `[start, end]` 的交易日,升序。"""
+    from neckline.facts.store import list_packs
+
+    return sorted(row[0] for row in list_packs(pack_version=pack_version, db_path=db_path)
+                  if start <= row[0] <= end)
+
+
+def _disk_files(parquet_dir: Path, start: str, end: str) -> Dict[str, List[Path]]:
+    """磁盘上 `[start, end]` 内的 `fact_pack` 日分区文件:`{YYYYMMDD: [路径…]}`。
+
+    ⚠ **两种布局都扫**:R1-B1 之后是 `fact_pack/version=<v>/year=YYYY/`,
+    遗留包还躺在 `fact_pack/year=YYYY/` 下。⛔ 只扫一种 = 对另一种全盲
+    (那正是这次修的病:只扫遗留布局,新布局下一个文件都找不到)。
+    **只扫区间覆盖到的年份**(同 `market_data._scan_table` 的纪律:全 glob 要打开
+    1500+ 个 footer,§12 坑 1)。
+
+    ⚠ 它只用来找**孤儿**(清单里没有的文件)—— 要拷哪几个由清单说了算,见 `_day_files`。
+    """
+    table_root = parquet_dir / FACT_PACK_TABLE
+    out: Dict[str, List[Path]] = {}
+    if not table_root.is_dir():
+        return out
+    for y in range(int(start[:4]), int(end[:4]) + 1):
+        year_dirs = [table_root / f"year={y}"]
+        year_dirs += sorted(table_root.glob(f"version=*/year={y}"))
+        for year_dir in year_dirs:
+            if not year_dir.is_dir():
+                continue
+            for f in sorted(year_dir.glob("*.parquet")):
+                if start <= f.stem <= end:
+                    out.setdefault(f.stem, []).append(f)
+    return out
 
 
 def export_fact_packs(
@@ -146,39 +206,61 @@ def export_fact_packs(
     却不在):那才是真缺口;清单里就没有的日子是**那天根本没冻结过**,两者分开报。
     """
     from neckline.facts.pack import PACK_VERSION
-    from neckline.facts.store import list_packs
 
-    parquet_dir = Path(parquet_dir or settings.parquet_dir)
-    out_dir = destination_root / FACT_PACK_TABLE
-    files = _day_files(parquet_dir, start, end)
+    parquet_dir = Path(parquet_dir or settings.parquet_dir).resolve()
+    files = _day_files(parquet_dir, start, end,
+                       pack_version=PACK_VERSION, db_path=db_path)
 
     copied: List[Dict[str, object]] = []
-    for src in files:
-        rel = Path(f"year={src.parent.name.split('=')[-1]}") / src.name
-        dst = out_dir / rel
+    for day, src in files:
+        # ⚠ **源布局原样搬过去**(⛔ 不在这里重拼一次路径):`version=<v>/year=YYYY/`
+        # 与遗留的 `year=YYYY/` 都照抄,whynotme 侧用与生产完全相同的约定读。
+        rel = src.relative_to(parquet_dir)
+        dst = destination_root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         # 🔴 逐字节拷贝(⛔ 不重写 parquet):见模块头。
         shutil.copy2(src, dst)
         copied.append({
-            "date": src.stem,
-            "path": str(Path(FACT_PACK_TABLE) / rel),
+            "date": day,
+            "path": str(rel),
             "sha256": _sha256(dst),
             "bytes": dst.stat().st_size,
         })
 
+    frozen = set(_manifest_days(start, end, pack_version=PACK_VERSION, db_path=db_path))
+
+    # —— 孤儿:磁盘上有、清单里没有 —— ⛔ 不静默带走,也⛔ 不静默留下 ——————————
+    # ⚠ 照旧**拷走并报出来**(既有契约):标定方看见 `orphanDates` 非空,就知道
+    # 这份快照里有一份没有清单行给它作证的包。⛔ 别改成静默丢掉。
+    orphan_days: List[str] = []
+    for day, paths in sorted(_disk_files(parquet_dir, start, end).items()):
+        if day in frozen:
+            continue
+        orphan_days.append(day)
+        for src in paths:
+            rel = src.relative_to(parquet_dir)
+            dst = destination_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            copied.append({
+                "date": day,
+                "path": str(rel),
+                "sha256": _sha256(dst),
+                "bytes": dst.stat().st_size,
+            })
+
     have = {c["date"] for c in copied}
-    frozen = {row[0] for row in list_packs(pack_version=PACK_VERSION, db_path=db_path)
-              if start <= row[0] <= end}
     return {
         "packVersion": PACK_VERSION,
         "start": start,
         "end": end,
         "fileCount": len(copied),
         "files": copied,
-        # 清单里有、parquet 却拷不到 —— **真缺口**(多半是滚动裁剪已经删了那几天)。
+        # 清单里有、parquet 却拷不到 —— **真缺口**(多半是滚动裁剪已经删了那几天,
+        # 也可能是遗留布局的文件对不上 `content_fingerprint`)。⛔ 不静默少给。
         "missingDates": sorted(frozen - have),
         # 拷到了、清单里却没有 —— 孤儿文件,同样要说出口(⛔ 不静默带走)。
-        "orphanDates": sorted(have - frozen),
+        "orphanDates": sorted(orphan_days),
     }
 
 
