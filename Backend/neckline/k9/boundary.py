@@ -16,9 +16,17 @@
 | 9 | 当日冲高回落 | 当日涨幅 > `spikeFadeRetPct` **且** 最高涨幅 − 收盘涨幅 ≥ `spikeFadeGapPct` | 待标定 |
 
 🔴 **第 6 条只认 `suspend_flag == 'S'`**(裁定 12):`S` 在 `fp-2` 起专指**全天停牌**;
-盘中临时停牌是 `I`,那只票当天正常交易、有完整涨跌幅,⛔ 不排除。第 6 条的后半句
-「当日无 daily 行」是**结构性满足**的 —— 事实包的行就是当日 `daily` 的行,没交易的
-票压根不在包里(见 `facts/pack.py` 模块头)。
+盘中临时停牌是 `I`,那只票当天正常交易、有完整涨跌幅,⛔ 不排除。
+
+🔴 **第 6 条的后半句「当日无 daily 行」在这里**(2026-08-21 复审 R3-🔴-5 修复):
+事实包的行就是当日 `daily` 的行,全天没交易的票压根不在包里 —— 上一版据此把后半句
+称作「结构性满足」,但那只证明了**它们不会被误放进池子**,不等于它们在
+`k9_disposition` 里**有行**。§6 S6 要的是「覆盖全市场每一只票且 `excluded_by`
+可解释」,而那张表存在的全部理由就是回答「昨天为什么没选中这只票」。
+`apply()` 因此收一个必填的 `universe`(当日在市全集,`facts/universe.py`),
+把缺席的票逐只补成 `suspended` 行。
+⚠ 缺席票**只判得出这一条**:它当日没有任何行情行,除了「它没交易」之外我们不知道
+任何别的事,⛔ 不猜它是不是科创板 / ST / 次新。
 
 ⚠ **消息面排除不在这一层**(K9 §二 末段):爆雷 / 减持 / 立案 / 监管在**解释层**查,
 只对清单上的十几只票查公告,成本远低于全市场普查。⛔ 别把它挪进来。
@@ -29,8 +37,9 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import polars as pl
 
@@ -39,6 +48,8 @@ from neckline.k9 import ranks as ranks_mod
 from neckline.facts.pack import SUSPEND_HALTED
 from neckline.k9.contract import PackRange, to_percent_points
 from neckline.k9.params import BoundaryParams, IndustryParams
+
+logger = logging.getLogger(__name__)
 
 # —— 9 条排除项的**具名**理由(闭合集合,⛔ 不许现编字符串)——————————————————
 EXCL_STAR = "star_board"            # 1 科创板
@@ -108,20 +119,47 @@ def _liquidity_cut(pack: PackRange, window_days: int, bottom_pct: float) -> pl.D
     )
 
 
+def _absent_rows(codes: Sequence[str]) -> pl.DataFrame:
+    """当日**一行都没有**的票 → 第 6 条后半句「当日无 daily 行」= 全天停牌。"""
+    picked = sorted(set(codes))
+    return pl.DataFrame(
+        {"ts_code": picked, REASON_COLUMN: [EXCL_SUSPENDED] * len(picked)},
+        schema={"ts_code": pl.String, REASON_COLUMN: pl.String},
+    )
+
+
 def apply(
     pack: PackRange,
     *,
     boundary: BoundaryParams,
     industry: IndustryParams,
+    universe: Sequence[str],
 ) -> pl.DataFrame:
     """当日全市场 → `ts_code / excluded_by`(未被排除的票 `excluded_by` 为 null)。
 
-    返回的行 = 当日事实包的**全部**行(⛔ 不先过滤:全市场 disposition 要靠它,
-    §5.4.8 的「昨天为什么没选中这只涨停票」才有下文)。
+    返回的行 = **当日在市的每一只票**:事实包的全部行(⛔ 不先过滤)+ `universe`
+    里当日连一行行情都没有的那些(第 6 条后半句,补成 `suspended`)。
+    §5.4.8 的「昨天为什么没选中这只票」要对**全市场**答得上来,包括那些一整天
+    都没交易过的。
+
+    🔴 `universe` **必填**(`facts.universe.market_universe`,⛔ 不给默认值):
+    给它一个空默认等于让「覆盖全市场」这条承诺在调用方忘了传的时候安静退化成
+    「覆盖事实包」—— 那正是 R3-🔴-5 查出来的那次静默降级。
+    ⚠ `universe` 为空(`stock_basic` 还没抓过)时只剩事实包那一半,并打一条
+    WARNING;那属于上游数据缺口,归 `facts/completeness.py` 判「今天没跑成」。
     """
     today = pack.today
+    absent = sorted(set(universe) - set(today["ts_code"].to_list() if not today.is_empty() else []))
+    if absent:
+        logger.info(
+            "[k9] %s 全市场 disposition:%d 只票当日无 daily 行(全天停牌),"
+            "按第 6 条后半句补进 disposition", pack.as_of, len(absent))
+    if not universe:
+        logger.warning(
+            "[k9] %s 拿到的全市场票池是空的 —— disposition 本次只覆盖当日事实包的行,"
+            "「一只票都没交易过」的那些查不出答案", pack.as_of)
     if today.is_empty():
-        return pl.DataFrame(schema={"ts_code": pl.String, REASON_COLUMN: pl.String})
+        return _absent_rows(absent)
 
     excluded_codes = set(industry.excluded_l2_codes)
     liq = _liquidity_cut(pack, boundary.liquidity_window_days, boundary.liquidity_bottom_pct)
@@ -155,7 +193,10 @@ def apply(
         .otherwise(pl.lit(None, dtype=pl.String))
         .alias(REASON_COLUMN)
     )
-    return df.with_columns(verdict).select(["ts_code", REASON_COLUMN]).sort("ts_code")
+    scored = df.with_columns(verdict).select(["ts_code", REASON_COLUMN])
+    if absent:
+        scored = pl.concat([scored, _absent_rows(absent)], how="vertical")
+    return scored.sort("ts_code")
 
 
 def survivors(verdicts: pl.DataFrame) -> List[str]:

@@ -21,6 +21,7 @@ from datetime import date, timedelta
 import polars as pl
 import pytest
 
+from neckline.facts import store as fact_store
 from neckline.k9 import boundary as boundary_mod
 from neckline.k9 import industry_heat as heat_mod
 from neckline.k9 import params as P
@@ -87,13 +88,44 @@ class TestBoundary:
                 assert json.loads(r["recalled_patterns_json"]) == [], r["ts_code"]
                 assert r["seated"] == 0
 
-    def test_disposition_covers_every_stock_in_the_pack(self, market, tmp_path):
-        """§5.4.8:全市场逐票一行 —— 「昨天为什么没选中这只票」是一次查表。"""
+    def test_disposition_covers_the_whole_market_not_just_the_pack(self, market, tmp_path):
+        """🔴 §6 S6 末条 / R3-🔴-5:disposition 覆盖**当日在市的每一只票**。
+
+        判据口径是 `stock_basic` 全集,⛔ 不是事实包口径 —— 事实包只有当日 `daily`
+        有行的票,而这张表存在的全部理由就是回答「昨天为什么没选中它」,
+        对一只全天停牌的票答不上来等于它在最该说话的时候缺席。
+        """
         env, day = market
         res, _ = _compute(env, day, tmp_path)
-        assert {r["ts_code"] for r in res.disposition_rows} == set(k9_env.UNIVERSE)
+        from neckline.facts import universe as facts_universe
+        full = set(facts_universe.market_universe(day, db_path=env.db_path))
+        assert full == set(k9_env.UNIVERSE), "夹具自检:全集口径应当就是 stock_basic 全体"
+        assert {r["ts_code"] for r in res.disposition_rows} == full
         reasons = {r["excluded_by"] for r in res.disposition_rows} - {None}
         assert reasons <= set(boundary_mod.EXCLUSION_ORDER), "冒出了闭合集合之外的理由"
+
+    def test_a_stock_with_no_daily_row_at_all_still_has_a_disposition_row(
+        self, market, tmp_path,
+    ):
+        """K9 第一层第 6 条后半句「或当日无 daily 行」—— 上一版只在注释里成立。
+
+        `NO_DAILY_CODE` 当日在 `daily` 里**一行都没有**(§4.6 实测:2001 行全天停牌
+        无一进 daily,这就是它在真实数据里的样子),因此它不在事实包里。
+        修复前它在 `k9_disposition` 里**没有行**;现在必须有,且理由具名。
+        """
+        env, day = market
+        res, _ = _compute(env, day, tmp_path)
+        rows = {r["ts_code"]: r for r in res.disposition_rows}
+        assert k9_env.NO_DAILY_CODE in rows, "全天停牌的票在归因表里没有行 —— R3-🔴-5"
+        row = rows[k9_env.NO_DAILY_CODE]
+        assert row["excluded_by"] == boundary_mod.EXCL_SUSPENDED
+        assert json.loads(row["recalled_patterns_json"]) == []
+        assert row["seated"] == 0 and row["score"] is None and row["rank"] is None
+        # 它确实不在事实包里 —— 断言的是「union 生效」,不是「夹具漏铺了」。
+        pack = fact_store.load_pack(day, parquet_dir=env.parquet_dir, db_path=env.db_path)
+        assert k9_env.NO_DAILY_CODE not in set(pack.rows["ts_code"].to_list())
+        # 逐条边界计数也要认它(⛔ 两处记账各说各话)。
+        assert res.boundary_counts[boundary_mod.EXCL_SUSPENDED] >= 1
 
     def test_boundary_counts_are_per_rule_not_a_total(self, market, tmp_path):
         env, day = market

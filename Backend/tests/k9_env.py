@@ -68,6 +68,11 @@ ILLIQUID_CODE = "600101.SH"  # 7 流动性过弱
 SPIKE_CODE = "600111.SH"     # 9 冲高回落
 INTRADAY_HALT_CODE = "600121.SH"   # 裁定 12:盘中临时停牌 → **照常参与**
 FULL_HALT_CODE = "600131.SH"       # 6 全天停牌(人造异常行:它本不该出现在 daily)
+#: 6(后半句)**当日一行 daily 都没有** —— 这才是全天停牌在真实数据里的样子
+#: (§4.6 实测:150 个交易日 2001 行全天停牌,**0 行**出现在 daily)。
+#: 它平时正常交易、只在当日缺席,用来锁 R3-🔴-5:这种票在 `k9_disposition` 里
+#: **必须有行**,否则「昨天为什么没选中它」对它答不上来。
+NO_DAILY_CODE = "600141.SH"
 
 
 def _flat_codes() -> List[Tuple[str, str]]:
@@ -77,7 +82,8 @@ def _flat_codes() -> List[Tuple[str, str]]:
             out.append((f"6002{i}{j}.SH", l2))   # ⚠ 6002xx 段:与下面的边界反例码不重叠
     out.append(("600052.SH", "801125.SI"))
     for c in (STAR_CODE, BAIJIU_CODE, ST_CODE, NEW_CODE, LIMIT_UP_CODE, ONE_LINE_CODE,
-              ILLIQUID_CODE, SPIKE_CODE, INTRADAY_HALT_CODE, FULL_HALT_CODE):
+              ILLIQUID_CODE, SPIKE_CODE, INTRADAY_HALT_CODE, FULL_HALT_CODE,
+              NO_DAILY_CODE):
         out.append((c, "801099.SI" if c != BAIJIU_CODE else "801125.SI"))
     return out
 
@@ -271,6 +277,8 @@ def _seed_day(env, day: date, paths: Dict[str, List[Bar]], i: int, *, last: bool
     for code, bars in paths.items():
         if code == FULL_HALT_CODE and not last:
             continue                       # 全天停牌的票平时也在 daily 里(它只在当日停)
+        if code == NO_DAILY_CODE and last:
+            continue                       # 当日**一行都没有**:全天停牌在真实数据里的样子
         b = bars[i]
         prev = bars[i - 1].close if i > 0 else BASE_PRICE
         daily.append({
@@ -311,6 +319,8 @@ def _seed_day(env, day: date, paths: Dict[str, List[Bar]], i: int, *, last: bool
             {"ts_code": INTRADAY_HALT_CODE, "suspend_type": "S", "suspend_timing": "9:30-9:40"},
             # 全天停牌 —— 本不该出现在 daily(人造异常行,用来锁边界第 6 条)
             {"ts_code": FULL_HALT_CODE, "suspend_type": "S", "suspend_timing": None},
+            # 全天停牌的**常态**:当日 daily 里一行都没有(⛔ 不进 suspend_anomaly)
+            {"ts_code": NO_DAILY_CODE, "suspend_type": "S", "suspend_timing": None},
         ]
     _write_suspend(env, day, suspend)
 

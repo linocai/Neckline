@@ -40,6 +40,7 @@ import polars as pl
 from neckline.calendar import trading_days_between
 from neckline.facts import industry as facts_industry
 from neckline.facts import store as facts_store
+from neckline.facts import universe as facts_universe
 from neckline.k9 import boundary as boundary_mod
 from neckline.k9 import industry_heat as heat_mod
 from neckline.k9 import quota as quota_mod
@@ -166,7 +167,12 @@ def _disposition_rows(
     hits: Sequence[ChannelHit],
     allocation: quota_mod.Allocation,
 ) -> List[Dict[str, object]]:
-    """全市场逐票处置(§5.4.8)。**一行一只票**,覆盖当日事实包的全部行。
+    """全市场逐票处置(§5.4.8)。**一行一只票**,覆盖**当日在市的每一只票**。
+
+    🔴 「每一只票」按字面意思算(R3-🔴-5 修复):`verdicts` 已经是
+    「事实包的全部行 + 当日无 daily 行的那些」,后者由 `boundary.apply` 按第 6 条
+    后半句补成 `suspended`。⛔ 不许退回「覆盖当日事实包的全部行」—— 全天停牌的票
+    正是最需要这张表回答「昨天为什么没选中它」的那一类。
 
     ⚠ `news_excluded` 在解释层接入(S9)之前恒 **0** —— 「没有人被消息面剔除」在
     今天是**事实**(压根还没有人查公告)。S9 起它才开始区分「查过、没问题」。
@@ -229,12 +235,17 @@ def compute(
         trade_date, params=params, parquet_dir=parquet_dir, db_path=db_path)
 
     # —— K9 第一层 · 硬边界 ————————————————————————————————————————————————
-    verdicts = boundary_mod.apply(pack, boundary=params.boundary, industry=params.industry)
+    # ⚠ `universe` = 当日在市全集(`stock_basic` 口径)。事实包只装当日 `daily` 有行的
+    # 票,全天停牌的一只都不在里面 —— 而 §6 S6 要 disposition **覆盖全市场每一只票**
+    # (R3-🔴-5)。取数经事实层过一手,⛔ 不在 k9 里 import `market_data`(守门 G3)。
+    universe = facts_universe.market_universe(trade_date, db_path=db_path)
+    verdicts = boundary_mod.apply(
+        pack, boundary=params.boundary, industry=params.industry, universe=universe)
     pool_codes = boundary_mod.survivors(verdicts)
     counts = boundary_mod.counts(verdicts)
     logger.info(
-        "[k9] %s 硬边界:全市场 %d → 池内 %d;逐条 %s",
-        trade_date, verdicts.height, len(pool_codes), counts)
+        "[k9] %s 硬边界:全市场 %d(其中事实包 %d 行)→ 池内 %d;逐条 %s",
+        trade_date, verdicts.height, pack.today.height, len(pool_codes), counts)
 
     pool = _restrict(pack, pool_codes)
 
