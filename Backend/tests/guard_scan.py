@@ -41,6 +41,14 @@ from typing import Iterable, List, Optional, Set, Tuple
 
 #: 动态 import 的两个入口。`importlib.import_module` 与 `import_module` 裸名调用
 #: 都算(`from importlib import import_module` 是常见写法)。
+#:
+#: ⚠ **这是一份黑名单**,会漏 `imp` / `pkgutil.resolve_name` / `runpy.run_module` /
+#: `exec("import x")` 这些别的路子。⛔ 别指望把它补全 —— Python 变出一个模块的方法
+#: 数不清。真正兜住这一类的是白名单那条:
+#: `test_v250_scanner_guard.py::test_the_only_way_to_reach_a_module_is_an_import_statement`
+#: —— 「`neckline/**` 与 `scripts/**` 里取模块的唯一合法写法是 `import` 语句」,
+#: 动态 import 机制**整类**不许出现。本表留着,是为了在**别人的**扫描域(比如
+#: `tests/`)里也能看见那两种最常见的写法。
 _DYNAMIC_IMPORT_FUNCS = {"import_module", "__import__"}
 
 

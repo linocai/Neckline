@@ -160,6 +160,9 @@ def test_new_tables_are_created_on_an_empty_db(tmp_path, table):
 # ══════════════════════════════════════════════════════════════════════════
 
 #: 三个比率一旦出现,会长什么样(蛇形 / 驼峰 / 中文,三种写法都拦)。
+#: ⚠ **这是黑名单**,会漏一个换了叫法的实现(`hit_ratio`、`成功比`)。
+#: 但这条绊线的**主判据不是它** —— 是下面第一行那句「`scorecard/listing.py` 不许存在」:
+#: 三个比率的主体只能住在那个文件里(§5.8.2),文件一出现就红,叫什么名字都一样。
 _LISTING_RATE_TOKENS: Tuple[str, ...] = (
     "confirm_rate", "reject_rate", "observed_rate",
     "confirmRate", "rejectRate", "observedRate",

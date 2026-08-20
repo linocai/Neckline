@@ -19,6 +19,7 @@ G19/G21)全部压在一个 AST import 扫描器上。2026-08-21 三路复审实�
 
 from __future__ import annotations
 
+import ast
 import textwrap
 from pathlib import Path
 from typing import List
@@ -235,3 +236,73 @@ def test_reaches_survives_mutual_recursion(tmp_path):
         def load_x(): a()
     """), encoding="utf-8")
     assert guard_scan.reaches(bait, ("load_",), "init_schema") == []
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# F. 白名单反转:**取得一个模块对象的唯一合法方式是 `import` 语句**
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 **2026-08-21 第二轮自查**。`guard_scan` 收动态 import 的那半边靠的是
+# `_DYNAMIC_IMPORT_FUNCS = {"import_module", "__import__"}` —— **一张黑名单**,
+# 而 Python 拿到模块的路子远不止这两条:`imp` / `pkgutil.resolve_name` /
+# `runpy.run_module` / `exec("import x")` / `eval(...)`。逐个补进黑名单永远慢一步。
+#
+# 反过来立:**`neckline/**` 与 `scripts/**` 里,取得模块的唯一合法写法是 `import`
+# 语句本身。** 动态 import 机制**整类不许出现** —— 这样 G2 / G3 / G18 / G19 那几条
+# 「零 import」的断言就不必去猜下一种花招叫什么名字。
+#
+# ⚠ 全仓实测:这两棵树里 `importlib` / `pkgutil` / `runpy` / `__import__` /
+# `exec` / `eval` **一次都没出现过**,所以这条闸的代价是零 —— 立起来只是把
+# 「今天碰巧没有」变成「明天也不许有」。
+# ⚠ `tests/` **不在域内**:守门自己要用 `importlib.import_module` 去证明
+# 「旧路径必须 ImportError」(`test_v250_s1_retirement_guard.py`)。
+# ══════════════════════════════════════════════════════════════════════════
+
+#: 能在运行期变出一个模块 / 变出任意代码的东西。
+_DYNAMIC_IMPORT_MODULES = ("importlib", "imp", "pkgutil", "runpy")
+_CODE_EVAL_BUILTINS = ("exec", "eval", "compile", "__import__")
+
+
+def _dynamic_module_machinery(path: Path) -> List[str]:
+    hits: List[str] = []
+    for mod in guard_scan.imports(path):
+        root = mod.split(".", 1)[0]
+        if root in _DYNAMIC_IMPORT_MODULES:
+            hits.append(f"{path.name} → import {mod}")
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id in _CODE_EVAL_BUILTINS:
+            hits.append(f"{path.name}:{node.lineno} {node.func.id}(…)")
+    return hits
+
+
+def test_the_dynamic_machinery_detector_actually_detects(tmp_path):
+    """诱饵自检 —— 四种拿模块的路子都要看得见。"""
+    for src in (
+        "import importlib\n",
+        "from importlib import import_module\n",
+        "import runpy\n",
+        "x = __import__('httpx')\n",
+        "exec('import httpx')\n",
+    ):
+        bait = tmp_path / "bait.py"
+        bait.write_text(src, encoding="utf-8")
+        assert _dynamic_module_machinery(bait), src
+    clean = tmp_path / "clean.py"
+    clean.write_text("import httpx\nfrom neckline.llm import factory\n", encoding="utf-8")
+    assert _dynamic_module_machinery(clean) == []
+
+
+def test_the_only_way_to_reach_a_module_is_an_import_statement():
+    """🔴 **白名单**:⛔ 不许有任何运行期取模块 / 执行代码的机制。
+
+    这条不是洁癖:import 型守门(G2 / G3 / G18 / G19 …)的全部前提是「依赖写在
+    import 语句里,静态看得见」。有一处 `importlib.import_module(name)`,那个前提
+    就不成立了 —— 而它不会报错,只会让那几条闸对它失明。
+    """
+    hits: List[str] = []
+    for path in _SCANNED:
+        hits.extend(_dynamic_module_machinery(path))
+    assert hits == [], (
+        "出现了运行期取模块 / 执行代码的机制,import 型守门对它失明:\n" + "\n".join(hits))

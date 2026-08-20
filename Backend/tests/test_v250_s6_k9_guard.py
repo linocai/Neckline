@@ -104,18 +104,6 @@ def test_run_is_the_only_place_that_sees_all_four_channels():
 # G11 命名分离(裁定 1):上方机械空间 ≠ 第一压力位
 # ══════════════════════════════════════════════════════════════════════════
 
-#: 🔴 扫描域。复审实测(CE15):把「上方空间」种进 `App/project.yml` **全绿** ——
-#: `.yml` 不在这张表里。裁定 1 说的是「含混旧名**全仓**零命中」,而一张漏了工程配置、
-#: unit 文件与 entitlement 的表,守的是「全仓的一部分」。
-#: ⚠ 加后缀的代价近乎为零(这些文件加起来十来个),漏一类的代价是整条纪律对它失明。
-_TEXT_SUFFIXES = (
-    ".py", ".swift", ".md", ".json", ".sh",
-    ".yml", ".yaml", ".toml", ".cfg", ".txt",
-    ".service", ".timer", ".target",
-    ".plist", ".entitlements", ".pbxproj",
-)
-
-
 #: 允许出现含混旧名的**两个**文件,各有明确理由(⚠ 与 §6 S6 验收「全仓零命中」
 #: 的偏差,已登记 §14):
 #:   · `PROJECT_PLAN.md` —— §5.1 的措辞修订表逐字引用了**改之前**的原文,那正是
@@ -123,17 +111,52 @@ _TEXT_SUFFIXES = (
 #:   · 本文件 —— 要搜一个字符串,总得先写出它。
 _NAME_SCAN_ALLOW = {"PROJECT_PLAN.md", Path(__file__).name}
 
+#: ⛔ **二进制**(唯一的排除面)。⚠ 这不是「要扫哪些」的清单,是「扫不动哪些」的清单。
+_BINARY_SUFFIXES = (".png", ".jpg", ".jpeg", ".pdf", ".thumbnail", ".zip", ".ico")
+
 
 def _repo_files() -> List[Path]:
-    out: List[Path] = []
-    for suffix in _TEXT_SUFFIXES:
-        for p in _REPO.rglob(f"*{suffix}"):
-            parts = set(p.parts)
-            if parts & {"archive", ".git", ".venv", "__pycache__", "build",
-                        "DerivedData", ".build"}:
+    """扫描域 = **git 追踪的每一个文本文件**(减去 `archive/` 与二进制)。
+
+    🔴 **2026-08-21 第二轮自查:从「后缀白名单」反过来写。** 上一版是
+    `_TEXT_SUFFIXES = (".py", ".swift", ".md", ".json", ".sh")` —— 一张「要扫哪些」
+    的清单,而复审 CE15 的全部花招就是**挑一个没人列进去的后缀**(把「上方空间」
+    种进 `App/project.yml`,全绿)。第一轮修复的做法是把清单从 5 类补到 16 类 ——
+    那仍然是同一种判据,只是这次多想到了十一种。
+
+    现在反过来:**被 git 追踪的一切都在域里**,只有二进制被排除。裁定 1 说的是
+    「含混旧名**全仓**零命中」,判据的形状终于和这句话对上了 —— 明天有人加一种
+    新文件类型,它自动进域,⛔ 不需要谁记得回来改这张表。
+
+    ⚠ 走 `git ls-files` 而不是 `rglob`:`Backend/data/` 下有 9500 个 parquet(未追踪),
+    走文件系统会把它们全读一遍。取不到 git 时退回文件系统遍历并显式排除数据目录 ——
+    ⛔ 但域**不许因此变小到扫不出东西**,那由 `test_the_repo_scan_actually_reads_files`
+    看着。
+    """
+    import subprocess  # noqa: PLC0415
+
+    rel: List[str] = []
+    try:
+        out = subprocess.run(["git", "ls-files"], cwd=_REPO,
+                             capture_output=True, check=True)
+        rel = [line for line in out.stdout.decode("utf-8").splitlines() if line]
+    except (subprocess.CalledProcessError, FileNotFoundError):  # pragma: no cover
+        for path in _REPO.rglob("*"):
+            if not path.is_file():
                 continue
-            out.append(p)
-    return out
+            parts = set(path.parts)
+            if parts & {".git", ".venv", "__pycache__", "build", "DerivedData",
+                        ".build", ".pytest_cache", "data"}:
+                continue
+            rel.append(str(path.relative_to(_REPO)))
+    out_paths: List[Path] = []
+    for name in rel:
+        if name.startswith("archive/") or name.lower().endswith(_BINARY_SUFFIXES):
+            continue
+        path = _REPO / name
+        if path.is_file():
+            out_paths.append(path)
+    return out_paths
 
 
 def test_the_repo_scan_actually_reads_files():
@@ -141,17 +164,23 @@ def test_the_repo_scan_actually_reads_files():
     assert len(_repo_files()) > 100
 
 
-def test_the_repo_scan_reaches_the_config_and_unit_files():
-    """扫描域自检:**CE15 那几类文件真的进来了**。
+def test_the_repo_scan_is_not_an_extension_allowlist_any_more():
+    """扫描域自检:**CE15 那一类「挑一个没人列进去的后缀」的花招不许再成立**。
 
     ⛔ 不许只断言「文件总数够多」—— 那条断言在 `.yml` 漏掉的时候也是绿的
-    (Python 文件本来就上百个),它证明不了扫描域覆盖了该覆盖的类型。
+    (Python 文件本来就上百个)。这里断言的是「域里有多少**种**文件」。
     """
-    names = {p.name for p in _repo_files()}
+    files = _repo_files()
+    names = {p.name for p in files}
     assert "project.yml" in names, "工程配置不在扫描域里(CE15 就是从这儿绕过去的)"
-    suffixes = {p.suffix for p in _repo_files()}
-    for wanted in (".yml", ".service", ".entitlements", ".pbxproj"):
+    suffixes = {p.suffix for p in files}
+    for wanted in (".yml", ".service", ".target", ".timer", ".entitlements",
+                   ".pbxproj", ".plist", ".toml", ".conf", ".xcscheme", ".example"):
         assert wanted in suffixes, f"{wanted} 不在扫描域里"
+    assert len(suffixes) >= 15, (
+        f"域里只有 {len(suffixes)} 种后缀 —— 它又退回成一张后缀清单了?{sorted(suffixes)}")
+    # ⛔ 二进制确实被挡在外面(不然读文件会满屏乱码,扫描器迟早被人加 try/except 吞掉)。
+    assert not (suffixes & set(_BINARY_SUFFIXES))
 
 
 def test_the_old_ambiguous_name_is_gone_from_the_whole_repo():
@@ -219,26 +248,34 @@ def _col_under(node: ast.AST) -> str:
             return ""
 
 
-#: 「N 日最高」能落在哪些价格列上。
-_HIGH_LIKE_COLUMNS = ("high", "close")
+#: 取「窗口内最大值」的 polars 方法名。⚠ 这一半仍然是**黑名单**(polars 的 API 面
+#: 不封闭,`top_k(1)` / `sort().last()` 之类绕得过去)—— 但列名那一半已经反成白名单,
+#: 两者相乘之后要绕过去得同时换方法**和**躲开验收单,成本已经不是「换个列名」了。
+_WINDOW_MAX_METHODS = ("max", "rolling_max", "cum_max", "cummax")
 
 
 def _window_high_sites(path: Path) -> List[str]:
     """找「在一个窗口上取价格列极大值」的形状 —— 「N 日最高」的实现特征。
 
-    两种写法:`pl.col("high").max()`(group_by 之后的窗口)与
-    `pl.col("<列>").rolling_max(N)`。体例照同文件里给放量倍数写的
-    `_mean_over_vol_sites` —— G12 原来只有一个**列名字面量**的文本判据,
-    姊妹条款(裁定 15)用的却是真 AST(复审 M6 / 🟡-8 点名的就是这个落差)。
+    体例照同文件里给放量倍数写的 `_mean_over_vol_sites` —— G12 原来只有一个
+    **列名字面量**的文本判据,姊妹条款(裁定 15)用的却是真 AST(复审 M6 / 🟡-8
+    点名的就是这个落差)。
+
+    🔴 **2026-08-21 第二轮自查:列名从白名单反过来写。** 上一版是
+    `_HIGH_LIKE_COLUMNS = ("high", "close")` —— 只有这两列的窗口极值算数,
+    换一列(比如先 `alias` 成 `_hi2` 再取 max、或者对 `pre_close` 取窗口最高)就绕过去了。
+    现在**任何列**的窗口极值都进结果集,由下面那张**逐处写明理由**的验收单收口。
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     out: List[str] = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr in ("max", "rolling_max")):
+                and node.func.attr in _WINDOW_MAX_METHODS):
             continue
-        if _col_under(node.func.value) in _HIGH_LIKE_COLUMNS:
-            out.append(f"{path.name}:{node.lineno}")
+        col = _col_under(node.func.value)
+        if col:
+            out.append(f"{path.name}:{node.lineno} .{node.func.attr}() over "
+                       f"pl.col({col!r})")
     return out
 
 
@@ -248,11 +285,13 @@ def test_the_window_high_detector_actually_detects(tmp_path):
         'import polars as pl\nx = pl.col("high").max()\n',
         'import polars as pl\nx = pl.col("high").rolling_max(20)\n',
         'import polars as pl\nx = pl.col("close").shift(1).rolling_max(20).over("k")\n',
+        # ⚠ 换一个没人想到的列 —— 白名单反转之后这一条也必须命中
+        'import polars as pl\nx = pl.col("pre_close").cum_max()\n',
     ):
         p = tmp_path / "s.py"
         p.write_text(src, encoding="utf-8")
         assert _window_high_sites(p), src
-    # 反向:别的列 / 别的聚合⛔ 不许被判红。
+    # 反向:别的聚合⛔ 不许被判红(min / mean 不是「最高」)。
     p = tmp_path / "s.py"
     p.write_text('import polars as pl\nx = pl.col("low").min()\ny = pl.col("vol").mean()\n',
                  encoding="utf-8")
@@ -268,6 +307,10 @@ _KNOWN_WINDOW_HIGH_FILES: Dict[str, str] = {
         "过去 N 天**振幅**的窗口极差(高 − 低)÷ 低,与机械空间是两个量(§14 S6 ① 已登记)",
     "neckline/data/panel.py":
         "K8 研究面板遗留的 `rolling_max(20)`,不在 K9 机械链上(无 K9 消费方)",
+    "neckline/data/concept_data.py":
+        "取**最新交易日**(`max` over `trade_date`),是个日期不是价格",
+    "neckline/facts/limitmap.py":
+        "连板天数的最大值(`max` over `consec_limit_up_days`),不是价格极值",
 }
 
 
