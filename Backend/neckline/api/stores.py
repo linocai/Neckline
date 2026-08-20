@@ -1,6 +1,6 @@
 """API 层业务台账存取(plan 4A.4/4A.5):`devices`(APNs 注册)+ `inquiry_pool`
 (问询台海选票,已退役历史队列表,只留只读)。极简 CRUD,幂等——沿本项目
-既有 store 姿势(`report/store.py`/`sentinel/dedup.py`),stdlib sqlite3 直连,不引 ORM。
+既有 store 姿势(`report/store.py`/`dedup.py`),stdlib sqlite3 直连,不引 ORM。
 
 **V2.1-① 问询台整链退役**:本文件原有的 `inquiry_log`(问询记录档案,v1.4-⑦-B)一节
 ——`create_inquiry_log`/`list_inquiry_logs`/`get_inquiry_log`/`_row_to_inquiry_log`/

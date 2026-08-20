@@ -61,7 +61,7 @@ import polars as pl
 
 from neckline.data.market_data import get_market_slice
 from neckline.db import connection, init_schema
-from neckline.scan import cluster
+from neckline.facts import limitmap as cluster
 from neckline.scan.corr import PRICE_WINDOW_DAYS, load_return_window, trailing_window_start
 
 logger = logging.getLogger(__name__)

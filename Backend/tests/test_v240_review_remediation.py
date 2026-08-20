@@ -138,7 +138,7 @@ class TestPositionAlertsEndToEnd:
             "code": code, "buy_price": 100.0, "qty": 100}).json()["position_id"]
 
     def test_all_four_categories_reach_the_position_card(self, client, AUTH, api_env):
-        from neckline.sentinel import dedup
+        from neckline import dedup
 
         self._open(client, AUTH)
         today = date.today()
@@ -164,7 +164,7 @@ class TestPositionAlertsEndToEnd:
     def test_retired_rows_in_the_db_never_leak_through(self, client, AUTH, api_env):
         """🔴 库里**照旧留着**历史 `retreat` / `invalidation` 行(P0.5「不删历史行」),
         但它们**一条都不许出现在这个通道上**。"""
-        from neckline.sentinel import dedup
+        from neckline import dedup
 
         self._open(client, AUTH)
         today = date.today()
@@ -180,7 +180,7 @@ class TestPositionAlertsEndToEnd:
     def test_market_level_and_index_scoped_rows_match_no_position(self, client, AUTH, api_env):
         """`market_shock`(scope 空)与 `sector_bid_fade`(scope = 指数码)匹配不到任何
         持仓 —— **结构性**不出现,⚠ 已如实登记 §七 P1-81(⛔ 不在这里给它们编落点)。"""
-        from neckline.sentinel import dedup
+        from neckline import dedup
 
         self._open(client, AUTH)
         today = date.today()
@@ -194,7 +194,7 @@ class TestPositionAlertsEndToEnd:
 
     def test_alerts_are_scoped_to_their_own_position(self, client, AUTH, api_env):
         """⛔ 不是「盘中动态页换了个地方」:只画**该持仓自己的**事件。"""
-        from neckline.sentinel import dedup
+        from neckline import dedup
 
         self._open(client, AUTH, "600519.SH")
         self._open(client, AUTH, "000001.SZ")
@@ -219,7 +219,7 @@ class TestPositionAlertsEndToEnd:
 
 def _q(code="600519.SH", *, ts="2026-08-12 09:25:03", price=10.0, pre_close=10.0,
        open_=10.0, source="sina", volume=100.0, amount=1000.0):
-    from neckline.sentinel.quotes import Quote
+    from neckline.data.realtime import Quote
 
     return Quote(code=code.split(".")[0], name="测试", price=price, pre_close=pre_close,
                  open=open_, high=max(price, open_), low=min(price, open_),
@@ -235,7 +235,7 @@ class TestCrossVerifiedIsNotFaked:
 
     def test_both_sources_valid_counts_as_verified(self):
         from neckline.auction.quality import resolve_dual
-        from neckline.sentinel.quotes import DualQuote
+        from neckline.data.realtime import DualQuote
 
         _, qq = resolve_dual("600519.SH",
                              DualQuote(code="600519.SH", primary=_q(),
@@ -247,7 +247,7 @@ class TestCrossVerifiedIsNotFaked:
     def test_backup_missing_is_not_verified(self):
         """**备源整体失败的早晨** —— 这正是复审给的失败场景。"""
         from neckline.auction.quality import resolve_dual
-        from neckline.sentinel.quotes import DualQuote
+        from neckline.data.realtime import DualQuote
 
         _, qq = resolve_dual("600519.SH",
                              DualQuote(code="600519.SH", primary=_q(), backup=None),
@@ -260,7 +260,7 @@ class TestCrossVerifiedIsNotFaked:
         """备源回来了、但读数不合格(如带的是**上一交易日**的时间戳)——
         `detect_conflict` 压根没跑过。"""
         from neckline.auction.quality import resolve_dual
-        from neckline.sentinel.quotes import DualQuote
+        from neckline.data.realtime import DualQuote
 
         stale = _q(source="tencent", ts="2026-08-11 09:25:03")
         _, qq = resolve_dual("600519.SH",
@@ -271,7 +271,7 @@ class TestCrossVerifiedIsNotFaked:
 
     def test_no_quote_at_all_is_not_verified(self):
         from neckline.auction.quality import resolve_dual
-        from neckline.sentinel.quotes import DualQuote
+        from neckline.data.realtime import DualQuote
 
         _, qq = resolve_dual("999999.SZ", DualQuote(code="999999.SZ"),
                              trade_date=_D1, captured_at=_CAPTURED)
@@ -418,7 +418,7 @@ class TestDisciplineCopyFollowsCharter:
 class TestQuoteStatusThirdState:
     def test_empty_checks_reports_no_record_not_a_fake_failure(self):
         from neckline.auction.quality import resolve_dual
-        from neckline.sentinel.quotes import DualQuote
+        from neckline.data.realtime import DualQuote
 
         _, qq = resolve_dual("999999.SZ", DualQuote(code="999999.SZ"),
                              trade_date=_D1, captured_at=_CAPTURED)
@@ -429,7 +429,7 @@ class TestQuoteStatusThirdState:
         """**反向**:真的解不出时间戳时,那个码照旧要报出来(⛔ 别把真信号一起吞掉)。"""
         from neckline.auction import QS_TIMESTAMP_UNPARSEABLE
         from neckline.auction.quality import resolve_dual
-        from neckline.sentinel.quotes import DualQuote
+        from neckline.data.realtime import DualQuote
 
         _, qq = resolve_dual("600519.SH",
                              DualQuote(code="600519.SH", primary=_q(ts="集合竞价 合成")),
@@ -451,7 +451,7 @@ class TestAwareCapturedAtDoesNotKillTheLayer:
         而 `resolve_dual` 那个循环**没有包 try/except** —— 抛出去就是每天早晨静默零落库。"""
         from neckline.auction.quality import resolve_dual
         from neckline.calendar import CN_TZ
-        from neckline.sentinel.quotes import DualQuote
+        from neckline.data.realtime import DualQuote
 
         aware = _CAPTURED.replace(tzinfo=CN_TZ)
         _, qq = resolve_dual("600519.SH",
@@ -463,7 +463,7 @@ class TestAwareCapturedAtDoesNotKillTheLayer:
         """归一必须**等价**,⛔ 不是"能跑就行":同一时刻两种写法结论逐位相同。"""
         from neckline.auction.quality import resolve_dual
         from neckline.calendar import CN_TZ
-        from neckline.sentinel.quotes import DualQuote
+        from neckline.data.realtime import DualQuote
 
         dual = DualQuote(code="600519.SH", primary=_q(), backup=_q(source="tencent"))
         _, naive = resolve_dual("600519.SH", dual, trade_date=_D1, captured_at=_CAPTURED)
@@ -477,7 +477,7 @@ class TestAwareCapturedAtDoesNotKillTheLayer:
         from datetime import timezone
 
         from neckline.auction.quality import resolve_dual
-        from neckline.sentinel.quotes import DualQuote
+        from neckline.data.realtime import DualQuote
 
         utc = (_CAPTURED - timedelta(hours=8)).replace(tzinfo=timezone.utc)   # 同一时刻
         _, qq = resolve_dual("600519.SH",
@@ -490,7 +490,7 @@ class TestAwareCapturedAtDoesNotKillTheLayer:
         """⚠ 归一**不许**顺手放宽零容差(用户裁定 #2):源时间晚于抓取时刻仍然当场判失败。"""
         from neckline.auction.quality import resolve_dual
         from neckline.calendar import CN_TZ
-        from neckline.sentinel.quotes import DualQuote
+        from neckline.data.realtime import DualQuote
 
         future = _q(ts="2026-08-12 09:26:31")     # 比 captured_at 晚 1 秒
         _, qq = resolve_dual("600519.SH",

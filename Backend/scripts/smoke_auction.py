@@ -16,7 +16,7 @@ open / pre_close / vol** 合成一份「集合竞价快照」,再注入一个**�
 取当日真实开盘价(即竞价撮合价)、`pre_close` 取真实昨收、竞价量按 `AUCTION_VOL_FRAC`
 比例合成。⚠ **三支市场指数与板块基准指数在 `daily` 里没有行**(它们是指数不是个股)→
 本冒烟里它们一律「拉不到」—— **这是合成环境的局限,不是代码故障**(生产走
-`sentinel/quotes.py` 真拉,指数是有报价的)。
+`data/realtime.py` 真拉,指数是有报价的)。
 
 🔴 **V2.4.0 P2 起本冒烟的表现变了,如实记在这里**(施工图 §五 P2 DoD 明令要写):
   · **`ts` 必须是能解析的 D1 时刻**:P2.1 的七项校验会看它 —— 老版本合成的
@@ -52,7 +52,7 @@ from neckline.config import settings  # noqa: E402
 from neckline.data.market_data import get_market_slice  # noqa: E402
 from neckline.llm.base import LLMResult  # noqa: E402
 from neckline.report.pipeline import build_report  # noqa: E402
-from neckline.sentinel.quotes import DualQuote, Quote  # noqa: E402
+from neckline.data.realtime import DualQuote, Quote  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("smoke_auction")

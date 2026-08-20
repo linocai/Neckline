@@ -1,15 +1,19 @@
-"""哨兵事件防重(plan 阶段3 工程要求「状态防重推(同一事件不轰炸,推过记账;
-进程重启不重复推当日已推事件)」)。SQLite `sentinel_events` 表落库,天然跨进程
-重启存活——不是内存态去重(内存态在脚本重启后会清零,达不到"进程重启不重复推"
-的要求)。
+"""当日只跑一次的防重台账(V2.5.0 S1:自 `sentinel/dedup.py` 原样搬入)。
 
-去重粒度 `(trade_date, sentinel, ts_code, event_key)`:
-    · 买点哨兵:`ts_code` = 候选代码,`event_key` 固定 "trigger"(一天只提醒一次
-      "买点条件成立",不因盘中反复满足条件而重复推)。
-    · 证伪哨兵:同买点,`event_key` 固定 "trigger"。
-    · 持仓哨兵:`ts_code` = 持仓代码,`event_key` ∈ {"stop_approach","take_profit",
-      "sector_dive"}——同一票的三种风险是独立事件,各自最多推一次,不互相抑制。
-    · 退潮哨兵:市场级事件,无单票语义,`ts_code=""`,`event_key` 固定 "brake"。
+🔴 **包没了,表名留着**:`neckline/sentinel/` 整包已在 V2.5.0 S1 物理删除,本模块
+搬到 `neckline/` 顶层。SQLite 表名**仍是 `sentinel_events`,⛔ 不改名** ——
+改名 = 一次迁移风险换零产品价值(PROJECT_PLAN §3.2 定死)。读到"sentinel"这个词
+只应联想到"这张表历史上叫这个名字",不再有任何盘中哨兵语义。
+
+现役消费方(V2.5.0):`auction/pipeline.py` 的 9:26 竞价核对表当日防重(市场级 key
+`(trade_date, "auction", "", "tick")`),以及 S8 将接入的 10:00 结算拍。
+
+落 SQLite 而非内存态:天然跨进程重启存活 —— 内存态在服务重启后清零,达不到
+"进程重启不重复跑当日已跑的那一拍"的要求。
+
+去重粒度 `(trade_date, sentinel, ts_code, event_key)`。历史上的四类盘中哨兵取值
+(买点 / 证伪 / 持仓 / 退潮)已随整包退役,不再产生新行;`sentinel_events` 里的
+历史行按裁定 6 保留、只读、不迁移、不回填。
 """
 
 from __future__ import annotations

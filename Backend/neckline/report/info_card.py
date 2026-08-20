@@ -5,14 +5,14 @@
 表达,绝不用 `0`/`[]`/空字符串冒充"有数据但无内容"(§3.8)。
 
 **信息卡九件套**(对齐考官规格 §三 + 需求 8 第 3 点):① K 线序列(60 日,前复权,
-复用 `data.adjust.apply_qfq`)② RS 线(相对大盘 `strategy.features.SSE_INDEX`,60 日,
+复用 `data.adjust.apply_qfq`)② RS 线(相对大盘 `data.panel.SSE_INDEX`,60 日,
 起点归一 100)③ 行业分歧线(相对**行业成员中位数合成指数**,60 日,起点归一 100;
 **口径偏差显式登记**——考官线用申万二级指数,本模块用成员中位数合成,§三.7 已把
 "成员中位数合成"列为登记口径的合法实现)④ 快照数值 ⑤ 红黄牌(复用 ③ 已算好的
 `k4_flags` + `sections` 分区 + DB `evidence` 文字,不重算)⑥ 温和带标注(当日涨幅
 ∈[2%,3%])⑦ 消息面摘要(复用 `news_alerts`,扫描域仅持仓〔V2-⑬-11 起自选池已删〕,本版不
 扩域)⑧ 龙虎榜摘要(复用 `data.top_list`)⑨ 市场语境(复用情绪仪表盘 +
-`strategy.features.market_state_labels`,报告级构件,不逐候选重算)。
+`data.panel.market_state_labels`,报告级构件,不逐候选重算)。
 
 **两条消费路径,刻意分离**(不要把二者的数据来源搞混):
     · `build_info_card()` —— **`GET /report/{date}/info-card/{code}` endpoint 用**,
@@ -61,7 +61,7 @@ from neckline.report.industry_strength_store import (
 )
 from neckline.report.sentiment import compute_sentiment
 from neckline.selection import member_tags as mt
-from neckline.strategy.features import (
+from neckline.data.panel import (
     SSE_INDEX,
     add_features,
     market_state_labels,

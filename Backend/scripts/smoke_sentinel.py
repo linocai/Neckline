@@ -50,7 +50,7 @@ from neckline.report.pipeline import build_report  # noqa: E402
 from neckline.sentinel.channels import ConsoleChannel  # noqa: E402
 from neckline.sentinel.engine import run_tick  # noqa: E402
 from neckline.sentinel.positions import open_position  # noqa: E402
-from neckline.sentinel.quotes import Quote  # noqa: E402
+from neckline.data.realtime import Quote  # noqa: E402
 from neckline.sentinel.universe import load_watch_universe  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

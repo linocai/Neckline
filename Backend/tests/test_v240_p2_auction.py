@@ -58,7 +58,7 @@ from neckline.auction import pipeline as ap
 from neckline.auction import quality as aq
 from neckline.auction import store as astore
 from neckline.sentinel.precall import MemberScript
-from neckline.sentinel.quotes import DualQuote, Quote
+from neckline.data.realtime import DualQuote, Quote
 
 from tests.conftest import insert_stock_basic
 from tests.test_v233_auction_mech import _card_json, _seed_basket
@@ -682,7 +682,7 @@ class TestGuards:
     def test_get_quotes_behaviour_is_untouched_by_the_dual_source_addition(self):
         """🔴 §五 P2.2:「普通上下文股票**仍走**『主源失败才降备源』(现役
         `get_quotes` 行为,**一字不动**)」。P2.2 是**新增**一条路径,⛔ 不是改写老的。"""
-        from neckline.sentinel import quotes as qs
+        from neckline.data import realtime as qs
 
         src = Path(qs.__file__).read_text(encoding="utf-8")
         body = src.split("def get_quotes(")[1].split("def get_quote(")[0]
@@ -697,7 +697,7 @@ class TestGuards:
     def test_the_dual_path_never_requests_quotes_one_code_at_a_time(self):
         """🔴 §五 P2.2:「**双源批量并行**,⛔ 不允许逐票网络请求」
         (9:26 那一刻的限流面必须可控)。判据 = 仍走既有 `_CHUNK_SIZE` 分块。"""
-        from neckline.sentinel import quotes as qs
+        from neckline.data import realtime as qs
 
         dual = Path(qs.__file__).read_text(encoding="utf-8").split("def get_quotes_dual(")[1]
         assert "_chunks(symbols, _CHUNK_SIZE)" in dual

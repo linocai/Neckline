@@ -309,7 +309,7 @@ class TestNoTimeExitNeverFires:
     def test_take_profit_never_fires_when_none(self):
         """回落止盈在 `None` 下恒不触发(哨兵侧;既有 `Optional` 判空路径,代码零改动)。"""
         from neckline.sentinel.holding import check_take_profit
-        from neckline.sentinel.quotes import Quote
+        from neckline.data.realtime import Quote
 
         q = Quote(code="X", name="", price=5.0, pre_close=0.0, open=0.0, high=0.0,
                   low=0.0, volume=0.0, amount=0.0, ts="", source="t")

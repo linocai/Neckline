@@ -184,7 +184,8 @@ def run_evening_chain(
     seed_set = None
     if SEG_SCAN in wanted:
         try:
-            from neckline.scan import cluster, corr, leader
+            from neckline.facts import limitmap as cluster
+            from neckline.scan import corr, leader
             from neckline.scan.seeds import generate_seeds
             from neckline.scan.stage import refresh_industry_stage
 

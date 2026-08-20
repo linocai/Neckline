@@ -560,7 +560,7 @@ def _light_feature_rows(
         # 前复权价列集合与持仓面板**共用同一份声明**(同码不重写):它是「`daily` 表里
         # 哪几列是价格」这个数据事实,两处各写一份迟早漂。
         from neckline.report.holding_k4_check import _QFQ_PRICE_COLS as price_cols
-        from neckline.strategy.features import add_features, merge_limit_features
+        from neckline.data.panel import add_features, merge_limit_features
     except Exception:  # noqa: BLE001
         logger.warning("[basket_daily] 特征面板依赖导入失败,exec_hint 本次留空", exc_info=True)
         return {}

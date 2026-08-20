@@ -38,7 +38,7 @@ from neckline.data.market_data import get_market_slice  # noqa: E402
 from neckline.report.pipeline import build_report  # noqa: E402
 from neckline.sentinel.positions import open_position  # noqa: E402
 from neckline.sentinel.precall import run_precall_tick  # noqa: E402
-from neckline.sentinel.quotes import Quote  # noqa: E402
+from neckline.data.realtime import Quote  # noqa: E402
 from neckline.sentinel.universe import load_watch_universe  # noqa: E402
 from neckline.strategy import brain  # noqa: E402
 

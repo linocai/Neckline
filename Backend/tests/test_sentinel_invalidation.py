@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import Any, Dict
 
 from neckline.sentinel.invalidation import check_invalidation
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 
 @dataclass(frozen=True)

@@ -8,7 +8,7 @@ from datetime import date
 
 import pytest
 
-from neckline.sentinel.dedup import already_pushed, count_pushed_today, record_pushed
+from neckline.dedup import already_pushed, count_pushed_today, record_pushed
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 

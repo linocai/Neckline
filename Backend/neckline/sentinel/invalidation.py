@@ -62,7 +62,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from neckline.sentinel.intraday import elapsed_trading_minutes, intraday_vol_ratio, vwap_of
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 # 开盘头几分钟集合竞价延续 + 极早盘噪声大,VWAP/价格结构判断均不可靠,先按兵不动
 # (量能折算另有更严的 60min 阈,见 `intraday.EARLY_MINUTES_THRESHOLD`)。

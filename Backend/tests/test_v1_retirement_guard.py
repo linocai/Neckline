@@ -17,7 +17,7 @@
      守门迁移后的新家。
 
 ⚠ **`report/board_pool.py` 不是「五常驻」模块**(Plan ⑬-1 落点表里那一行是笔误,已回报):
-它是**板块池卫生线**(名称模式闸 + 成分数上限),V2 的 `scan/corr.py`/`scan/cluster.py`/
+它是**板块池卫生线**(名称模式闸 + 成分数上限),V2 的 `scan/corr.py`/`facts/limitmap.py`/
 `scan/seeds.py` 与 `report/intel.py`/`report/sector_moneyflow.py` 五处在用 —— 删了会
 把扫描层打断。真正的五常驻保底(`QUOTA_PER_PERMANENT_BOARD` / `_permanent_board_status`)
 住在已删除的 `report/intel_candidates.py` 里,已随该模块一并消失(见下面 ⑬-13 一条)。
@@ -162,7 +162,7 @@ def test_13_1_board_pool_survives_because_it_is_not_the_permanent_quota_module()
     """反向守门(Plan 落点表笔误的防线):`report/board_pool.py` **必须还在**且仍被
     V2 扫描层消费 —— 它是板块池卫生线,不是五常驻。"""
     assert (_PKG / "report" / "board_pool.py").exists()
-    consumers = {p for p in ("neckline/scan/corr.py", "neckline/scan/cluster.py",
+    consumers = {p for p in ("neckline/scan/corr.py", "neckline/facts/limitmap.py",
                              "neckline/scan/seeds.py", "neckline/report/intel.py",
                              "neckline/report/sector_moneyflow.py")}
     actual = set(_import_hits("neckline.report.board_pool"))

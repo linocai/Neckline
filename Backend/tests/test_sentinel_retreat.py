@@ -22,7 +22,7 @@ from datetime import date, time
 import pytest
 
 from neckline.data.board import Board
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 from neckline.sentinel.retreat import (
     COND_LIMIT_DOWN,
     COND_SECTOR_DIVE,

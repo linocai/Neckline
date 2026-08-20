@@ -207,7 +207,8 @@ def update_scan_layer(target: date) -> None:
     级别报警;真出异常(数据管线本身坏了)才升级。**依赖当日 `limit_derived`
     与 `industry_strength_daily` 已落盘**,故排在 `run_limit_derived` 与
     `update_industry_strength` 两者之后。"""
-    from neckline.scan import cluster, corr, leader, seeds
+    from neckline.facts import limitmap as cluster
+    from neckline.scan import corr, leader, seeds
 
     try:
         c_stats = cluster.refresh_limit_clusters([target])

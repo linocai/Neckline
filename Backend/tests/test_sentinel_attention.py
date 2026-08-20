@@ -18,7 +18,7 @@ from neckline.data.board import Board
 from neckline.db import connection
 from neckline.sentinel import attention as att
 from neckline.sentinel.positions import Position
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 from neckline.sentinel.universe import StockMeta
 
 pytestmark = pytest.mark.usefixtures("isolated_env")

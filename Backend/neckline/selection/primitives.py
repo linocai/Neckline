@@ -22,7 +22,7 @@
 
 **`inputs` 命名约定**:`<表名>.<列名>`,与 `_ALLOWED_FEATURES` 的模式一一对应
 (如 `industry_strength_daily.industry_rank`)。`daily*`(无点号,故意)同时覆盖
-`daily` 与 `daily_basic` 两张表;工程上由 `neckline/strategy/features.py::
+`daily` 与 `daily_basic` 两张表;工程上由 `neckline/data/panel.py::
 build_research_panel` 在 `daily` 基础上滚动计算出的派生列(`ma20` /
 `amount_ma20` / `days_since_listing` 等)记作 `daily.<派生列名>`——它们的源头
 数据仍是 `daily`,不为此另开一个白名单类目。`k4_advisory` 物理上是
@@ -571,7 +571,7 @@ def _limit_cluster_seed(
     `cluster_size`/`consecutive_days` 满足任一门槛即通过——同日多只共振,或
     已连续接力多天,都算"够格当种子"(两者不是同一件事:前者是"广度",后者是
     "持续性")。事实表本身已保证 `cluster_size>=2`(`cluster.MIN_CLUSTER_SIZE`
-    工程常量,见 `neckline/scan/cluster.py`);本原语的 `min_cluster_size` 让
+    工程常量,见 `neckline/facts/limitmap.py`);本原语的 `min_cluster_size` 让
     包可以把这道门槛抬得更高(如只要 >=3 只共振才算种子)。"""
     size = row.get("cluster_size")
     days = row.get("consecutive_days")

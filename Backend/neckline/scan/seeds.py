@@ -70,7 +70,7 @@ from neckline.report.board_pool import apply_hygiene, count_members
 from neckline.report.industry_strength import load_industry_map
 from neckline.report.industry_strength_store import load_industry_strength
 from neckline.report.sectors import load_index_names, load_member_map
-from neckline.scan import cluster
+from neckline.facts import limitmap as cluster
 from neckline.selection.pack import Pack, get_active_pack
 from neckline.selection.primitives import PRIMITIVES
 

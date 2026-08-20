@@ -56,7 +56,7 @@ class TestPositionsEndpointUnderK8Charter:
         的 advisory 分支遗留一处真 bug,只换了前缀口吻,线本身仍叫「止损线」。
         """
         import neckline.api.app as app_mod
-        from neckline.sentinel.quotes import Quote
+        from neckline.data.realtime import Quote
 
         self._activate_k8(api_env)
         client.post("/api/v1/positions", headers=AUTH,
@@ -73,7 +73,7 @@ class TestPositionsEndpointUnderK8Charter:
     def test_stop_wording_unchanged_before_activation(self, client, AUTH, api_env, monkeypatch):
         """🔴 **激活前逐字不变**(§2.1 前置提示):现役 `v1`(K1 口径)→ 仍是条件单文案。"""
         import neckline.api.app as app_mod
-        from neckline.sentinel.quotes import Quote
+        from neckline.data.realtime import Quote
         from tests.conftest import seed_active_rule_v1
 
         seed_active_rule_v1(api_env)

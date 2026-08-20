@@ -7,7 +7,7 @@
     · `is_auction_window(now)` = **交易日 且 `09:26:00 ≤ t < 09:29:00`**;时区 / 交易日
       判定唯一源 `neckline.calendar`(`CN_TZ` + `is_trading_day`),⛔ 别在新模块里
       再写一份 `timezone(timedelta(hours=8))`;
-    · 当日只跑一次:`sentinel/dedup.py`,市场级 key `(trade_date, "auction", "", "tick")`。
+    · 当日只跑一次:`dedup.py`,市场级 key `(trade_date, "auction", "", "tick")`。
       ⚠ **幂等次序照 `run_precall_tick`**:推送在函数**返回之后**由循环执行,「当日已跑」
       标记在返回**之前**落库 → 中途异常(标记未落)会被下一拍**干净重跑**
       (两张表都是 `INSERT OR IGNORE`,幂等)。
@@ -81,8 +81,8 @@ from neckline.auction import mech as am
 from neckline.auction import store as astore
 from neckline.calendar import is_trading_day
 from neckline.llm.budget import BudgetLedger
-from neckline.sentinel.dedup import already_pushed, record_pushed
-from neckline.sentinel.quotes import DualQuote, Quote
+from neckline.dedup import already_pushed, record_pushed
+from neckline.data.realtime import DualQuote, Quote
 from neckline.sentinel.universe import DEFAULT_BREADTH_CAP
 
 logger = logging.getLogger(__name__)
@@ -167,7 +167,7 @@ def run_auction_pipeline(
     parquet_dir: Optional[Path] = None,
     breadth_cap: int = DEFAULT_BREADTH_CAP,
     quotes_fn: Optional[Callable[[List[str]], Dict[str, Quote]]] = None,
-    #: 🔴 V2.4.0 P2.2:双源批量抓取的注入点(缺省 = `sentinel.quotes.get_quotes_dual`)。
+    #: 🔴 V2.4.0 P2.2:双源批量抓取的注入点(缺省 = `data.realtime.get_quotes_dual`)。
     #: ⚠ 只给 `quotes_fn`(单源替身)时备源恒缺席、跨源冲突结构性为空 —— 那是替身的
     #: 局限,**不是"已核对无冲突"**(逐票账里 `checks` 只有一条,一眼看得出)。
     dual_quotes_fn: Optional[Callable[[List[str]], Dict[str, DualQuote]]] = None,

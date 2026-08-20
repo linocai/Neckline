@@ -191,7 +191,7 @@ class TestStopWordingIsCharterDriven:
     @staticmethod
     def _pos_and_quote():
         from neckline.sentinel.positions import Position
-        from neckline.sentinel.quotes import Quote
+        from neckline.data.realtime import Quote
 
         pos = Position(id=1, ts_code="600519.SH", buy_price=10.0, qty=100,
                        buy_date="20260720", status="open",

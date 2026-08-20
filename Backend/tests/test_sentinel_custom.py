@@ -16,9 +16,9 @@ import pytest
 from neckline import custom_alerts as ca
 from neckline.calendar import CN_TZ
 from neckline.sentinel import custom as cu
-from neckline.sentinel.dedup import record_pushed
+from neckline.dedup import record_pushed
 from neckline.sentinel.positions import Position
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 
@@ -43,7 +43,7 @@ def frozen_clock(monkeypatch):
 
     ⛔ 不改生产代码来迁就测试:`record_pushed` 不加 `pushed_at` 形参,这里 patch
     模块级 `datetime` 名字(测试内 monkeypatch,进程外零影响)。"""
-    import neckline.sentinel.dedup as dedup_mod
+    import neckline.dedup as dedup_mod
 
     frozen_utc = MIDDAY.astimezone(timezone.utc)
 

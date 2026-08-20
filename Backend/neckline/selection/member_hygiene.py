@@ -56,7 +56,7 @@ from neckline.data.market_data import table_dir
 from neckline.selection.pack import Pack
 from neckline.selection.primitives import PRIMITIVES
 from neckline.sentinel.universe import load_stock_meta
-from neckline.strategy.features import build_research_panel
+from neckline.data.panel import build_research_panel
 
 logger = logging.getLogger(__name__)
 

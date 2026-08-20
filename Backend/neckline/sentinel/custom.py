@@ -47,7 +47,7 @@ from neckline.db import connection, init_schema
 from neckline.sentinel.attention import PEER_MIN_SAMPLE, PEER_WEAK_RET, intraday_return
 from neckline.sentinel.intraday import elapsed_trading_minutes, intraday_vol_ratio
 from neckline.sentinel.positions import Position
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 logger = logging.getLogger(__name__)
 

@@ -434,7 +434,7 @@ class TestMissedEntryHint:
     **不改评分**,纯只读旁路;GET /report 与 build_report 共用同一函数(单一源)。"""
 
     def _record_entry(self, db, trade_date, code="600001.SH"):
-        from neckline.sentinel.dedup import record_pushed
+        from neckline.dedup import record_pushed
         record_pushed(trade_date, "entry", code, "trigger", payload={"body": "买点确认"}, db_path=db)
 
     def test_hint_when_entry_fired_but_no_open(self, isolated_env):

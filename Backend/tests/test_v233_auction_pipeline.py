@@ -29,7 +29,7 @@ from neckline.auction import collect as ac
 from neckline.auction import pipeline as ap
 from neckline.auction import store as astore
 from neckline.llm.base import LLMResult
-from neckline.sentinel.dedup import already_pushed
+from neckline.dedup import already_pushed
 
 from tests.conftest import insert_stock_basic
 from tests.test_v233_auction_mech import _card_json, _q, _seed_basket

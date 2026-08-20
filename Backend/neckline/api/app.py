@@ -130,7 +130,7 @@ from neckline.config import ensure_data_dirs
 from neckline.llm.factory import get_provider
 from neckline.report import store as report_store
 from neckline import custom_alerts, notify_kinds
-from neckline.sentinel import dedup
+from neckline import dedup
 from neckline.sentinel import positions as pos_store
 from neckline.sentinel.intraday import is_intraday_now
 from neckline.settings_store import (
@@ -249,7 +249,7 @@ _PARQUET_DIR_OVERRIDE: Optional[Path] = None  # 隔离 parquet 目录(None → s
 # `api_env` **不重写** `neckline.config.settings`,不给注入点就会读到真实项目的
 # `data/reports/`(而那正是"一测就踩、断言全错还不报错"的那类泄漏)。
 _DATA_DIR_OVERRIDE: Optional[Path] = None     # 隔离 data 根(None → settings.data_dir)
-_QUOTES_FN: Optional[Callable[[List[str]], Dict[str, Any]]] = None  # 实时拉价(None → sentinel.quotes)
+_QUOTES_FN: Optional[Callable[[List[str]], Dict[str, Any]]] = None  # 实时拉价(None → data.realtime)
 
 # 哨兵轮询节奏
 _SENTINEL_POLL_SEC = 60
@@ -888,7 +888,7 @@ def _resolve_prices(codes: List[str]) -> Dict[str, float]:
         return {}
     fetch = _QUOTES_FN
     if fetch is None:
-        from neckline.sentinel.quotes import get_quotes
+        from neckline.data.realtime import get_quotes
         fetch = get_quotes
     try:
         quotes = fetch(codes)
@@ -915,7 +915,7 @@ def _resolve_quote_one(code: str) -> Optional[Any]:
     无网络 → `None`,不崩(开仓主流程不能因取不到实时价而失败)。"""
     fetch = _QUOTES_FN
     if fetch is None:
-        from neckline.sentinel.quotes import get_quotes
+        from neckline.data.realtime import get_quotes
         fetch = get_quotes
     try:
         quotes = fetch([code])
@@ -1023,7 +1023,7 @@ def _retrace_state(
     if price <= 0:
         return None
     from neckline.sentinel.holding import check_take_profit
-    from neckline.sentinel.quotes import Quote
+    from neckline.data.realtime import Quote
 
     q = Quote(code=position.ts_code, name="", price=price, pre_close=0.0, open=0.0,
               high=0.0, low=0.0, volume=0.0, amount=0.0, ts="", source="derived")

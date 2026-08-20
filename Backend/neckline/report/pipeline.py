@@ -100,7 +100,7 @@ def compute_missed_entry_hint(trade_date: date, db_path: Optional[Path] = None) 
     sentinel=`entry` 记录)但 `positions` 表当日无新增开仓 → 返回一句提示,否则空串。
     **不改评分**,纯只读旁路。GET /report 与 build_report 共用本函数(单一源),前者
     每次读时实时算(用户补录后自动消失)。"""
-    from neckline.sentinel.dedup import count_pushed_today
+    from neckline.dedup import count_pushed_today
     from neckline.sentinel.positions import count_opens_on
 
     entry_events = count_pushed_today(trade_date, sentinel="entry", db_path=db_path)

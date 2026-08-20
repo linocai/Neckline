@@ -77,7 +77,7 @@ def chain_stubs(monkeypatch):
         return "BUNDLE"
 
     monkeypatch.setattr("neckline.sentinel.basket_verify.run_eod_verification", _verify)
-    monkeypatch.setattr("neckline.scan.cluster.refresh_limit_clusters", _cluster)
+    monkeypatch.setattr("neckline.facts.limitmap.refresh_limit_clusters", _cluster)
     monkeypatch.setattr("neckline.scan.corr.refresh_corr_matrix", lambda *a, **k: {"rows": 1})
     monkeypatch.setattr("neckline.scan.leader.refresh_leader_structure", lambda *a, **k: {"rows": 1})
     monkeypatch.setattr("neckline.scan.stage.refresh_industry_stage", lambda *a, **k: {"rows": 1})
@@ -132,7 +132,7 @@ class TestFusesPerSegment:
         assert any("验证拍" in n for n in res.notes)
 
     def test_scan_failure_does_not_stop_the_chain(self, chain_stubs, monkeypatch):
-        monkeypatch.setattr("neckline.scan.cluster.refresh_limit_clusters",
+        monkeypatch.setattr("neckline.facts.limitmap.refresh_limit_clusters",
                             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("扫描炸了")))
         res = ev.run_evening_chain(D, use_llm=False)
         assert res.status[ev.SEG_SCAN] == ev.STATUS_FAILED

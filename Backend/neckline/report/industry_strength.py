@@ -36,7 +36,7 @@ import 研究代码——研究侧代码是既定研究产出物,不因产品化
 **无前视**:只读 ≤T 数据(§3.8)。`ret_1d` 直接用**原始**(未复权)`daily.close /
 daily.pre_close - 1` 算,不走 `apply_qfq`——qfq 对 `close`/`pre_close` 用同一行同一
 标量(`adj_factor/latest_adj_factor`)缩放,比值精确抵消(见 `data/adjust.py::qfq_expr`),
-故与 `strategy/features.py::add_features` 在 qfq 面板上算出的 `ret_1d` **数值相同**,
+故与 `data/panel.py::add_features` 在 qfq 面板上算出的 `ret_1d` **数值相同**,
 但不必装配 `build_research_panel` 的全特征集(ma5/10/20/vol_ma/limit_derived/
 daily_basic 等)——省去无关列的 I/O 与内存(全市场多年历史只取 4 列,见
 `_load_ret1d_panel`),这也是"持续天数需要看多远历史"允许**不设人为下限窗口**

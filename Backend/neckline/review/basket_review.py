@@ -107,10 +107,10 @@ class DayMarket:
 
 
 def _index_return(review_date: date, parquet_dir: Optional[Path]) -> Tuple[Optional[str], Optional[float]]:
-    """大盘当日收益(RS 的基准,与信息卡 RS 线同源 `strategy.features.SSE_INDEX`)。"""
+    """大盘当日收益(RS 的基准,与信息卡 RS 线同源 `data.panel.SSE_INDEX`)。"""
     try:
         from neckline.data.market_data import get_index_history
-        from neckline.strategy.features import SSE_INDEX
+        from neckline.data.panel import SSE_INDEX
 
         df = get_index_history(SSE_INDEX, review_date, review_date, parquet_dir=parquet_dir)
         if df.is_empty():
@@ -555,7 +555,7 @@ BUY_ONE_WORD = "one_word_board"       # 一字板(开=高=低=涨停),涨停里�
 
 def judge_buyability(codes: Sequence[str], card: Optional[Mapping[str, Any]],
                      day: DayMarket) -> Dict[str, Any]:
-    """⑥ 可买性。口径**对齐项目既有 `strategy/features.py::fwd_buyable`**(次日有成交
+    """⑥ 可买性。口径**对齐项目既有 `data/panel.py::fwd_buyable`**(次日有成交
     且非涨停);在此之上额外把「一字板」单独标出来(它是涨停里最极端的一种,复盘要
     分得开「涨停但盘中有量能买」与「一字根本没机会」)。
 

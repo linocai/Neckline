@@ -36,7 +36,7 @@ from neckline.data.market_data import get_index_history, get_market_slice
 from neckline.report.board_pool import apply_hygiene, count_members, invert_member_map
 from neckline.data.market_data import resolve_stock_names
 from neckline.report.sectors import DEFAULT_TOP_N, compute_sector_strength, load_index_names, load_member_map
-from neckline.strategy.features import SSE_INDEX
+from neckline.data.panel import SSE_INDEX
 
 logger = logging.getLogger(__name__)
 

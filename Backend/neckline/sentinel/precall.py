@@ -71,10 +71,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from neckline.calendar import is_trading_day
 from neckline.sentinel.basket_verify import anchor_mismatch
-from neckline.sentinel.dedup import already_pushed, record_pushed
+from neckline.dedup import already_pushed, record_pushed
 from neckline.sentinel.holding import STOP_APPROACH_BUFFER
 from neckline.sentinel.positions import Position, d_count
-from neckline.sentinel.quotes import Quote, get_quotes
+from neckline.data.realtime import Quote, get_quotes
 from neckline.selection import verification_rules as vr
 from neckline.selection.basket_store import BasketRef, load_basket_card
 from neckline.sentinel.universe import (
@@ -650,7 +650,7 @@ def run_precall_tick(
 ) -> PrecallResult:
     """跑一次盘前校准 tick(9:25:30,当日只跑一次)。**只落看板 + 返回待推项**,APNs
     推送由 `_sentinel_loop` 调 `notify` 完成(照退潮刹车两机制惯例)。`quotes_fn` 可覆盖
-    (默认 `sentinel.quotes.get_quotes`)——合成竞价快照冒烟(`scripts/smoke_precall.py`)
+    (默认 `data.realtime.get_quotes`)——合成竞价快照冒烟(`scripts/smoke_precall.py`)
     据此注入,不改一行编排。
 
     幂等/防重顺序刻意如此:所有 APNs 推送都在本函数**返回之后**由循环执行,而市场级

@@ -95,7 +95,7 @@ from neckline.sentinel.precall import (
     is_two_tier_time_exit,
     resolve_time_exit,
 )
-from neckline.strategy.features import add_features, merge_daily_basic, merge_limit_features
+from neckline.data.panel import add_features, merge_daily_basic, merge_limit_features
 from neckline.strategy.momentum_config import MomentumConfig
 
 logger = logging.getLogger(__name__)

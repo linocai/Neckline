@@ -78,7 +78,7 @@ from typing import Dict, Iterable, List, NamedTuple, Optional
 
 from neckline.data.limit_derived import compute_intraday_limit_prices
 from neckline.sentinel.mainline import MIN_MAINLINE_SAMPLE
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 from neckline.sentinel.universe import StockMeta, is_new_stock_exempt
 
 # —— 浮点容差(同 `sentinel/holding.py::_EPS`;阈值比较不写裸 >=/<=,防两配置值

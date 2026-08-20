@@ -10,7 +10,7 @@ from types import ModuleType
 import pytest
 
 from neckline.report import store as report_store
-from neckline.sentinel import dedup
+from neckline import dedup
 
 
 def _basket_daily(**overrides) -> dict:

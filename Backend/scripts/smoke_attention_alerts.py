@@ -47,7 +47,7 @@ from neckline.llm.base import LLMResult  # noqa: E402
 from neckline.sentinel import attention as att  # noqa: E402
 from neckline.sentinel import custom as cu  # noqa: E402
 from neckline.sentinel.positions import Position, open_position  # noqa: E402
-from neckline.sentinel.quotes import Quote  # noqa: E402
+from neckline.data.realtime import Quote  # noqa: E402
 from neckline.sentinel.universe import StockMeta  # noqa: E402
 
 OK = "✅"
@@ -295,7 +295,7 @@ def run_nl_alert(db_path: Path, day: date) -> int:
           f"{notify_kinds.level_of(notify_kinds.KIND_CUSTOM_ALERT)}(立即)")
 
     # 记一次命中(engine 里由 run_tick 做,这里手动等价一遍)
-    from neckline.sentinel.dedup import record_pushed
+    from neckline.dedup import record_pushed
 
     record_pushed(day, cu.SENTINEL_NAME, hit.alert.ts_code or "", hit.event_key,
                   payload={"alertId": hit.alert.id}, db_path=db_path)

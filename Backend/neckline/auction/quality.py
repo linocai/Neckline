@@ -69,7 +69,7 @@ from neckline.auction import (
     QUOTE_ROLE_PRIMARY,
 )
 from neckline.sentinel.capture import AUCTION_CAPTURE_START
-from neckline.sentinel.quotes import DualQuote, Quote
+from neckline.data.realtime import DualQuote, Quote
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def _as_market_naive(dt: datetime) -> datetime:
 #: ⛔ 不在本包再写一份 `time(9, 25)`(那就是第二份事实源)。
 AUCTION_RESULT_TIME_START: time = AUCTION_CAPTURE_START
 
-#: `Quote.ts` 归一后的格式。两源在 `sentinel/quotes.py` 里已经对齐成同一个形状
+#: `Quote.ts` 归一后的格式。两源在 `data/realtime.py` 里已经对齐成同一个形状
 #: (新浪 `parts[30] + " " + parts[31]`;腾讯 `_fmt_tencent_ts` 把 14 位数字串拆开)。
 #: ⚠ 第二个是**防御性**的次要形状(秒位缺失),⛔ 别再往下加更宽松的:解析越宽容,
 #: 「时间戳解不出」这个真信号就越容易被吞掉。
@@ -245,7 +245,7 @@ def validate_quote(
       ⑦ 单位转换后 volume/amount 非异常负数 → `negative_volume` / `negative_amount`
 
     🔴 **第 ⑥ 项的诚实边界(如实登记,⛔ 别当遗漏)**:两个免费源里只有腾讯自带一个
-    「涨跌幅」字段,而 `Quote` **从来没有携带过它**(`sentinel/quotes.py` 只装"源里
+    「涨跌幅」字段,而 `Quote` **从来没有携带过它**(`data/realtime.py` 只装"源里
     直接给的市场数据",涨跌幅一律由 `gap_pct_of(price, pre_close)` 派生)。所以本项
     落在**派生式所依赖的那组价格关系**上:`low ≤ open/price ≤ high`(两端都 >0 时才比)。
     ⛔ 之所以不去把源的涨跌幅字段抓进来对拍:那要给 `Quote` 加一个字段(牵动

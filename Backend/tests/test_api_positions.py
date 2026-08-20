@@ -70,7 +70,7 @@ def test_close_twice_404(client, AUTH):
 def test_price_injected_from_quotes(client, AUTH, monkeypatch):
     """持仓 price 由一拍实时价填(可注入 `_QUOTES_FN`)。"""
     import neckline.api.app as app_mod
-    from neckline.sentinel.quotes import Quote
+    from neckline.data.realtime import Quote
 
     q = Quote(code="600001.SH", name="甲", price=12.34, pre_close=12.0, open=12.0, high=12.5,
               low=11.9, volume=1000.0, amount=1_000_000.0, ts="", source="test")
@@ -110,7 +110,7 @@ def test_position_derived_with_live_price(client, AUTH, api_env, monkeypatch):
     """有实时价时 distToStopPct / retraceState 算出;price 高于买入且未回落 → 未触发。"""
     import neckline.api.app as app_mod
     from tests.conftest import seed_active_rule_v1
-    from neckline.sentinel.quotes import Quote
+    from neckline.data.realtime import Quote
     seed_active_rule_v1(api_env)
 
     q = Quote(code="600001.SH", name="甲", price=11.0, pre_close=10.0, open=10.0, high=11.2,
@@ -208,7 +208,7 @@ def _seed_two_tier(api_env, *, dcount: int, lock_state=None, lock_nf=None, buy_p
 
 
 def _quote(price: float):
-    from neckline.sentinel.quotes import Quote
+    from neckline.data.realtime import Quote
     return Quote(code="600001.SH", name="甲", price=price, pre_close=price, open=price,
                  high=price, low=price, volume=1000.0, amount=1e6, ts="", source="test")
 

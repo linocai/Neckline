@@ -13,7 +13,7 @@ from neckline.sentinel.holding import (
     evaluate_holding,
 )
 from neckline.sentinel.positions import Position
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 
 def _position(buy_price=10.0, qty=100) -> Position:

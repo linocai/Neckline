@@ -57,7 +57,7 @@ from neckline.notify_kinds import (
     KIND_SECTOR_BID_FADE,
 )
 from neckline.sentinel.positions import Position
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 from neckline.sentinel.universe import (
     BOARD_BENCHMARK_INDEX,
     MAIN_BOARD_INDEX_SH,

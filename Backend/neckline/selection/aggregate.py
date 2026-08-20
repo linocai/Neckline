@@ -807,7 +807,7 @@ def driver_slug(name: str, seed_keys: Sequence[str] = ()) -> str:
 
 def make_basket_key(trade_date_s: str, slug: str) -> str:
     """`crc32(trade_date|driver_slug)` 十六进制(跨进程可复现,§五铁律禁内置
-    `hash()`;与 `scan/cluster.py::make_cluster_key` 同一手法、不同命名空间)。"""
+    `hash()`;与 `facts/limitmap.py::make_cluster_key` 同一手法、不同命名空间)。"""
     return format(zlib.crc32(f"{trade_date_s}|{slug}".encode("utf-8")), "08x")
 
 

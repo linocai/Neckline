@@ -54,7 +54,7 @@ from neckline.sentinel.channels import (
     default_channels,
     push_all,
 )
-from neckline.sentinel.dedup import already_pushed, record_pushed
+from neckline.dedup import already_pushed, record_pushed
 from neckline.sentinel.holding import (
     HoldingAlert,
     check_exit_reference_reached,
@@ -62,7 +62,7 @@ from neckline.sentinel.holding import (
 )
 from neckline.sentinel.intraday import is_intraday_now
 from neckline.sentinel.positions import Position
-from neckline.sentinel.quotes import Quote, get_quotes
+from neckline.data.realtime import Quote, get_quotes
 from neckline.sentinel.universe import (
     DEFAULT_BREADTH_CAP,
     WatchUniverse,
@@ -229,7 +229,7 @@ def run_tick(
     quotes_fn: Optional[Callable[[List[str]], Dict[str, Quote]]] = None,
     notifier: Optional[Any] = None,
 ) -> TickResult:
-    """跑一拍。`quotes_fn` 可覆盖(默认 `sentinel.quotes.get_quotes`)——冒烟脚本
+    """跑一拍。`quotes_fn` 可覆盖(默认 `data.realtime.get_quotes`)——冒烟脚本
     用它注入"某历史日的合成盘中快照",不改一行编排逻辑。
 
     `notifier`(V2-⑪,2026-08-03 起再加持仓三事件旁路)可覆盖 `neckline.api.notify`

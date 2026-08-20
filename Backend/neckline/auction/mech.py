@@ -443,7 +443,7 @@ def sector_benchmark_of(
 
     **① 优先使用 D0 主要驱动对应的板块指数** —— 🔴 **本版取不到,故恒不走这条**:
     系统里的板块指数是同花顺板块指数(`ths_index`,代码形如 `700005.TI`),而 9:26 的
-    实时行情走 `sentinel/quotes.py`(新浪 / 腾讯),`to_symbol()` 只认 `.SH/.SZ/.BJ`
+    实时行情走 `data/realtime.py`(新浪 / 腾讯),`to_symbol()` 只认 `.SH/.SZ/.BJ`
     —— `.TI` 会被前缀启发式拉成 `sz700005`(**另一个标的**)。**这不是 bug,是数据现实**;
     ⛔ 但也**绝不许假装走了 ①**:`source` 如实标 `peer_median` / `unavailable`。
     (将来若出现可得的板块指数实时源,在这里补 ① 并把 `source` 标成 `sector_index`。)

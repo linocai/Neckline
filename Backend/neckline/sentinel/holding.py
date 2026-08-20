@@ -1,6 +1,6 @@
 """持仓哨兵(plan §2.4 第3条)。「持仓票放量跳水逼近止损线 / 触达回落止盈区 /
 所属板块跳水预警」——三条子检查相互独立(同一持仓可以同时命中多条,各自一个
-独立的防重 event_key,见 `neckline.sentinel.dedup` 模块头注释),互不抑制。
+独立的防重 event_key,见 `neckline.dedup` 模块头注释),互不抑制。
 
 **系统永不自动下单/撤单/改止损**(§3.8 铁律)——本模块只做提前预警,真正的
 -5% 止损由用户在券商侧的条件单执行;哪怕现价已经跌破止损线,本模块也只是
@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from neckline.sentinel.positions import Position
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 from neckline.strategy import charter_copy
 
 # 止损预警提前量(百分点)——回撤达到 stop_pct-此值 即预警,不等真正跌破才吭声

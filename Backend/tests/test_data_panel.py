@@ -8,7 +8,7 @@ from datetime import date
 
 import polars as pl
 
-from neckline.strategy.features import add_features, add_forward_returns, merge_limit_features
+from neckline.data.panel import add_features, add_forward_returns, merge_limit_features
 
 
 def _series(ts_code: str, closes, opens=None, highs=None, lows=None, vols=None, start=date(2024, 1, 1)):

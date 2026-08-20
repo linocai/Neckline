@@ -573,7 +573,7 @@ CREATE INDEX IF NOT EXISTS idx_holding_eod_check_trade_date ON holding_eod_check
 -- 若报告曾断跑导致一次性跳过第 N 天,如实记录【实际】offset(可能 >N)后立即令
 -- 该决策过期,不假装观测发生在第 N 天,也绝不让决策卡死在 pending(见该模块
 -- docstring `_offset`/`track_pending_decisions`)。close:当日 EOD 收盘(前复权
--- 口径同 `strategy.features.build_research_panel`)。ret_from_plan:相对
+-- 口径同 `data.panel.build_research_panel`)。ret_from_plan:相对
 -- `planned_price` 的累计收益;`planned_price` 缺失(NULL)时本列亦为 NULL,不臆造。
 CREATE TABLE IF NOT EXISTS decision_pending_track (
     decision_id     INTEGER NOT NULL,

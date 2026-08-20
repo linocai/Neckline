@@ -85,7 +85,7 @@ def test_update_scan_layer_warns_without_raising_when_no_active_pack(db_redirect
 def test_update_scan_layer_swallows_exceptions(db_redirected, monkeypatch, caplog):
     """真异常(如 cluster.py 内部炸了)只 WARNING,不向上抛(「尽力而为」纪律,
     不阻断 `daily_update.py` 主增量)。"""
-    import neckline.scan.cluster as cluster_mod
+    import neckline.facts.limitmap as cluster_mod
 
     def _boom(*args, **kwargs):
         raise RuntimeError("模拟数据管线故障")

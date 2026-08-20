@@ -334,7 +334,7 @@ class TestV2WatchPoolComposition:
         ⚠ V2.4.0 P0:该函数所属的退潮判级已退役、生产链零调用;本用例**保留为行为
         基准**(`retreat.py` 是回滚绳的一部分),同时它守的那条"指数不该进任何宽度分母"
         的口径对将来任何新的宽度统计仍然适用。"""
-        from neckline.sentinel.quotes import Quote
+        from neckline.data.realtime import Quote
         from neckline.sentinel.retreat import compute_breadth_snapshot
 
         insert_stock_basic(isolated_env, [{"ts_code": "600001.SH", "name": "甲", "market": "主板"}])

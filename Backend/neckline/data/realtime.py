@@ -1,4 +1,15 @@
-"""盘中实时源(plan 阶段 3 §2.4/§3.7,新浪主 / 腾讯备)。继承 LinoN 已踩平的坑
+"""实时行情源(V2.5.0 S1:自 `sentinel/quotes.py` 原样搬入 `data/`)。
+
+搬家理由(PROJECT_PLAN 裁定 7):盘中哨兵整块退役,但这块是承重墙 —— `Quote` /
+`DualQuote` / `to_symbol` 被 `auction/`(竞价冻结抓取与报价校验)与
+`review/parse.py`(交割单代码归一)消费,它本来就是**数据层**的东西,不是哨兵的。
+
+⚠ `to_symbol` 的**后缀优先不可退化**(§12 坑 7):前缀启发式对指数会静默拿错标的
+(`000001.SH` 上证综指会被判成 `sz000001` 平安银行)。单测已随文件一起搬到
+`tests/test_data_realtime.py`,⛔ 不许简化。
+
+以下为原模块头,内容未改 ——
+盘中实时源(plan 阶段 3 §2.4/§3.7,新浪主 / 腾讯备)。继承 LinoN 已踩平的坑
 (`/Users/linotsai/Lino/LinoN/backend/app/data/realtime.py`,权威见 LinoN CLAUDE.md
 「数据源坑」节),重写点:
 

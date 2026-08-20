@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from neckline.db import connection, init_schema
-from neckline.scan import cluster, corr, leader
+from neckline.facts import limitmap as cluster
+from neckline.scan import corr, leader
 
 _VALID_ROLES = {"leader", "core", "elastic", "unknown"}
 

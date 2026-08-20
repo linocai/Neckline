@@ -59,7 +59,7 @@ from neckline.data.market_data import scan_table_range
 from neckline.db import connection, init_schema
 from neckline.report.board_pool import apply_hygiene, count_members
 from neckline.report.sectors import load_index_names, load_member_map
-from neckline.scan import cluster
+from neckline.facts import limitmap as cluster
 
 logger = logging.getLogger(__name__)
 

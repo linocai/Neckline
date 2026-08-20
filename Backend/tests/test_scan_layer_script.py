@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import scan_layer as scan_layer_script  # noqa: E402
 
 from neckline.db import connection  # noqa: E402
-from neckline.scan import cluster  # noqa: E402
+from neckline.facts import limitmap as cluster  # noqa: E402
 from tests.conftest import insert_stock_basic, insert_trade_cal, write_daily_fixture  # noqa: E402
 
 D0 = date(2024, 6, 3)

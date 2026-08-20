@@ -26,10 +26,10 @@ from neckline.sentinel import attention as att
 from neckline.sentinel import custom as cu
 from neckline.sentinel import engine as sentinel_engine
 from neckline.sentinel.channels import PushChannel
-from neckline.sentinel.dedup import already_pushed, load_events_for_date
+from neckline.dedup import already_pushed, load_events_for_date
 from neckline.sentinel.engine import run_tick
 from neckline.sentinel.positions import open_position
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 

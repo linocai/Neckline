@@ -22,7 +22,7 @@ from tests.conftest import (
 
 from neckline.report import store
 from neckline.sentinel import precall
-from neckline.sentinel.dedup import already_pushed, load_events_for_date
+from neckline.dedup import already_pushed, load_events_for_date
 from neckline.sentinel.positions import Position, open_position
 from neckline.sentinel.precall import (
     D5EXIT_EVENT_KEY,
@@ -35,7 +35,7 @@ from neckline.sentinel.precall import (
     run_precall_tick,
     scan_d5_exits,
 )
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 
 def _quote(*, open_: float, pre_close: float = 9.5, price: float = None, volume: float = 0.0,

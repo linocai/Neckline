@@ -41,7 +41,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from neckline.sentinel.dedup import already_pushed, record_pushed
+from neckline.dedup import already_pushed, record_pushed
 from neckline.sentinel.intraday import FULL_DAY_MINUTES, elapsed_trading_minutes
 
 logger = logging.getLogger(__name__)
@@ -274,7 +274,7 @@ def run_auction_capture(
         if not wu.codes:
             return 0
         if quotes_fn is None:
-            from neckline.sentinel.quotes import get_quotes
+            from neckline.data.realtime import get_quotes
 
             quotes = get_quotes(wu.codes)
         else:
@@ -401,7 +401,7 @@ def load_capture_status(
     """读某日存拍状态(⑨ / 报告的数据新鲜度节用)。**没有台账 ≠ full**:返回
     `{"capture_status": "missing", "recorded": False}`,「没记过」与「记了是 missing」
     靠 `recorded` 分开。"""
-    from neckline.sentinel.dedup import load_events_for_date
+    from neckline.dedup import load_events_for_date
 
     for ev in load_events_for_date(trade_date, db_path=db_path):
         if ev.get("sentinel") == CAPTURE_SENTINEL and ev.get("event_key") == kind:

@@ -471,7 +471,7 @@ def check_entry_screens(
     """绿盘大阴线/距前高/次新/高弹题材/ST——复用 `neckline.strategy.signals` 同一份
     判定表达式(同码不重写),现役 config 未启用的过滤项天然不产生任何违纪(不硬编)。"""
     from neckline.strategy import signals as S
-    from neckline.strategy.features import build_research_panel
+    from neckline.data.panel import build_research_panel
 
     out: List[str] = []
     if not buy_trades:

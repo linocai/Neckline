@@ -9,7 +9,7 @@
 由 `report/pipeline.py::build_report` 在 `if save:` 块内、报告落库后调用一次
 (同 `holding_store.save_holding_eod_checks`/`news_alerts_store.save_news_alerts`
 的收尾姿势)。EOD 收盘价复用既有日线数据访问层
-`strategy.features.build_research_panel(trade_date, trade_date)`(前复权口径同
+`data.panel.build_research_panel(trade_date, trade_date)`(前复权口径同
 其它报告子模块),**不新建 Parquet 读取路径、不落 Parquet**——本追踪只落 SQLite
 (`decision_pending_track` 表,schema 见 `neckline.db`)。
 
@@ -46,7 +46,7 @@ import polars as pl
 from neckline import decision_log
 from neckline.calendar.trading_calendar import next_trading_day, trading_days_between
 from neckline.db import connection, init_schema
-from neckline.strategy.features import build_research_panel
+from neckline.data.panel import build_research_panel
 
 DECISION_PENDING_TRACK_DAYS = 5  # N,单一源(与 max_hold_days=5 / D5 时间退出同口径)
 

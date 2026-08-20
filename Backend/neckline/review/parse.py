@@ -16,7 +16,7 @@
       发生金额 / 资金余额 / 股份余额 / 股东代码 / 币种 / 合同编号。业务名称枚举:
       证券买入、证券卖出、银行转证券、指定交易。**证券代码等字段可能带零宽空格
       (U+200B)前缀,解析时 strip**;代码无交易所后缀,按 6/0/3/8-4-920 前缀补
-      .SH/.SZ/.BJ(复用 `neckline.sentinel.quotes.to_symbol`,它本身已复用
+      .SH/.SZ/.BJ(复用 `neckline.data.realtime.to_symbol`,它本身已复用
       `neckline.data.board.classify_by_code` 单一源,本模块不再另写一份前缀正则)。
 
 通用清洗:跳过非交易行(指定交易 / 银证转账等资金流水,非成交)、金额正负号由
@@ -43,7 +43,7 @@ from typing import Dict, List, Optional
 import polars as pl
 
 from neckline.data.market_data import load_namechange, load_stock_basic
-from neckline.sentinel.quotes import to_symbol
+from neckline.data.realtime import to_symbol
 
 # —— 规范字段(plan 4D.1 原文枚举,col_map 的 key 空间)——————————————————————
 CANONICAL_FIELDS = (
@@ -144,7 +144,7 @@ def clean_str(v: object) -> str:
 
 def normalize_ts_code(raw: str) -> str:
     """裸 6 位代码(可能带零宽空格)→ 带交易所后缀的 ts_code。**不写正则**——
-    复用 `neckline.sentinel.quotes.to_symbol`(已复用 `board.classify_by_code`
+    复用 `neckline.data.realtime.to_symbol`(已复用 `board.classify_by_code`
     单一源判定北交所前缀,§4D.1「勿另写正则」)。已带 `.SH/.SZ/.BJ` 后缀的原样
     规范化大写返回。"""
     s = clean_str(raw)

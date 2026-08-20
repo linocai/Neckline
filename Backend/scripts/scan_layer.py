@@ -44,7 +44,8 @@ from typing import List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neckline.config import ensure_data_dirs, settings  # noqa: E402
-from neckline.scan import cluster, corr, leader, seeds, verify  # noqa: E402
+from neckline.facts import limitmap as cluster
+from neckline.scan import corr, leader, seeds, verify  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("scan_layer")

@@ -61,13 +61,13 @@ def _fmt_row(p: Position) -> str:
 
 def _resolve_quote_for_cli(ts_code: str, buy_date):
     """CLI 侧的 best-effort 实时报价(同 `api/app.py::_resolve_quote_one` 姿势,
-    但没有 `_QUOTES_FN` 注入钩子——CLI 直接调 `sentinel.quotes.get_quote`)。只在
+    但没有 `_QUOTES_FN` 注入钩子——CLI 直接调 `data.realtime.get_quote`)。只在
     买入日=今天才取(历史补录不该被"此刻"行情污染快照);任何失败(含无网络)
     → `None`,不阻断记账。"""
     if buy_date != date.today():
         return None
     try:
-        from neckline.sentinel.quotes import get_quote
+        from neckline.data.realtime import get_quote
         return get_quote(ts_code)
     except Exception:  # noqa: BLE001
         logger.warning("CLI 开仓快照拉实时价失败(quote 落 None,不影响记账)", exc_info=True)

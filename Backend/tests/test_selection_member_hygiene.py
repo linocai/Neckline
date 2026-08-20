@@ -64,7 +64,7 @@ def _run(env, codes: Sequence[str], *, industry_of=None, close_of=None, pack=Non
 def _fake_liquidity_panel(rows: List[Dict[str, Any]]) -> pl.DataFrame:
     """`_load_liquidity_rows` 只 `select(["ts_code","ma20","amount_ma20"])`,伪造
     面板只需要这三列,免铺 20+ 交易日真实历史(`build_research_panel` 已在
-    `strategy/features.py` 自己的测试里覆盖,本文件不重复验证它的计算过程)。"""
+    `data/panel.py` 自己的测试里覆盖,本文件不重复验证它的计算过程)。"""
     return pl.DataFrame(rows, schema={"ts_code": pl.String, "ma20": pl.Float64, "amount_ma20": pl.Float64})
 
 

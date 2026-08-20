@@ -63,7 +63,7 @@ from neckline.auction.observation import ObservationPool, build_observation_pool
 from neckline.auction.quality import QuoteQuality, resolve_dual
 from neckline.calendar import prev_trading_day
 from neckline.data.board import Board
-from neckline.sentinel.quotes import DualQuote, Quote, get_quotes, get_quotes_dual
+from neckline.data.realtime import DualQuote, Quote, get_quotes, get_quotes_dual
 from neckline.sentinel.universe import (
     BOARD_BENCHMARK_INDEX,
     DEFAULT_BREADTH_CAP,
@@ -365,7 +365,7 @@ def collect_auction_snapshot(
 ) -> AuctionSnapshot:
     """拉一次价并冻结。
 
-    🔴 **V2.4.0 P2.2 起走双源**(`sentinel.quotes.get_quotes_dual`):新浪一次批量 +
+    🔴 **V2.4.0 P2.2 起走双源**(`data.realtime.get_quotes_dual`):新浪一次批量 +
     腾讯一次批量,**净增 1 次 HTTP 请求 / 早晨**(此前是「1 次新浪 + 缺票时 1 次腾讯」)。
     K8 §二十 要求对 T1/T2 成员及实际使用的关键基准做**有界双源核验**,而核验需要两个
     可以互相打架的读数 —— V2.3.3 ⑨-B-3「⛔ 不加第二次网络请求」的旧取舍**已被推翻**
@@ -491,7 +491,7 @@ def collect_auction_snapshot(
         # ⚠ **只警告、⛔ 不 assert**:这一段的异常会一路逃到 lifespan 兜底 →
         #   「竞价确认层异常(已吞)」= 整层零落库(🟡-8 那个坑的同一个出口)。
         #   限界本身由守门单测 `test_v240_review_remediation` 侧盯着关注池上界。
-        from neckline.sentinel.quotes import _CHUNK_SIZE as _QUOTE_CHUNK_SIZE
+        from neckline.data.realtime import _CHUNK_SIZE as _QUOTE_CHUNK_SIZE
 
         if len(requested) > _QUOTE_CHUNK_SIZE:
             logger.warning(

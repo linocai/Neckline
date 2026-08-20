@@ -39,7 +39,7 @@ from neckline.db import connection
 from neckline.selection import basket_card as bc
 from neckline.selection import verification_rules as vr
 from neckline.selection.basket_store import save_basket_card
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 from tests.conftest import insert_stock_basic
 

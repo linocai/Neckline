@@ -43,7 +43,7 @@ from neckline.selection.basket_store import save_basket_card  # noqa: E402
 from neckline.sentinel import basket_verify as bv  # noqa: E402
 from neckline.sentinel import basket_verify_store as bvs  # noqa: E402
 from neckline.sentinel import capture  # noqa: E402
-from neckline.sentinel.quotes import Quote  # noqa: E402
+from neckline.data.realtime import Quote  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("smoke_basket_verify")
@@ -55,7 +55,7 @@ CHECKPOINTS = [(9, 31), (10, 35), (13, 30), (14, 59)]
 def _real_ma20(code: str, d0: date) -> Optional[float]:
     """真实 MA20(最近 20 个交易日**前复权**收盘均值)。
 
-    ⚠ **必须走前复权**(`apply_qfq`,同 `strategy/features.py::add_features` 的口径):
+    ⚠ **必须走前复权**(`apply_qfq`,同 `data/panel.py::add_features` 的口径):
     拿原始价算 20 日均线,区间内有过除权的票会算出与现价差 30%+ 的"均线",冒烟一跑
     满屏 `falsified` —— 那是冒烟脚本的锅,不是状态机的。生产里 ⑦ 的 MA20 来自 ⑤ 的
     `MechContext` 前复权面板,本函数只是冒烟侧的等价粗算。

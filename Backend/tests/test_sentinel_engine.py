@@ -32,7 +32,7 @@ from neckline.report import store
 from neckline.sentinel.channels import PushChannel
 from neckline.sentinel.engine import run_tick
 from neckline.sentinel.positions import open_position
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 
@@ -258,7 +258,7 @@ class TestP0RetiredIntradayJudgements:
         「今日已有 retreat/brake 行时证伪照报」,而两者都已退役。这里改断言
         **预置的旧行既不被读成状态、也不被删掉**(P0.5 末条:⛔ 不通过删历史行
         让界面看起来修好了)。"""
-        from neckline.sentinel.dedup import record_pushed
+        from neckline.dedup import record_pushed
 
         _report_day, today = self._seed_member(isolated_env)
         record_pushed(today, "retreat", "", "brake", payload={"body": "旧刹车"},

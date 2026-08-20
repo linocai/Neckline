@@ -125,7 +125,7 @@ from neckline.llm.json_block import split_narrative_and_reference_json
 from neckline.llm.prompt_context import TIMELINESS_RULES, date_anchor_line
 from neckline.report.industry_strength_store import load_industry_strength
 from neckline.report.sectors import DEFAULT_TOP_N, compute_sector_strength
-from neckline.scan import cluster as cluster_mod
+from neckline.facts import limitmap as cluster_mod
 from neckline.scan import stage as stage_mod
 from neckline.selection import basket_store, engine_api
 from neckline.selection import gates as gates_mod

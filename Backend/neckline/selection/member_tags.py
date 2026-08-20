@@ -280,7 +280,7 @@ def load_tag_panel_rows(
     dict(调用方按"算不出"处理 → 相关标签 `absent`,不猜)。"""
     if not codes:
         return {}
-    from neckline.strategy.features import build_research_panel
+    from neckline.data.panel import build_research_panel
 
     try:
         panel = build_research_panel(trade_date, trade_date, with_forward=False,

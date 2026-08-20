@@ -14,7 +14,7 @@ import pytest
 from tests.conftest import insert_trade_cal
 
 from neckline.sentinel.intraday import elapsed_trading_minutes, intraday_vol_ratio, is_intraday_now, vwap_of
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 

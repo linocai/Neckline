@@ -16,7 +16,7 @@ import polars as pl
 import pytest
 
 from neckline.db import connection
-from neckline.scan import cluster
+from neckline.facts import limitmap as cluster
 from tests.conftest import (
     insert_stock_basic,
     insert_trade_cal,

@@ -780,7 +780,7 @@ class PositionOut(BaseModel):
     # 亏损警戒 / 离场参考 / 板块跳水这三类提醒此前**只经 `GET /board` 下发**,而 P0
     # 要求新客户端零调用 `/board` —— 直接删页面 = 静默弄丢仍然有效的持仓提醒。
     # 取数 = 当日 `sentinel_events` 中 `sentinel='holding'` 且 `ts_code` 匹配本持仓的行
-    # (复用 `sentinel/dedup.py::load_events_for_date`,⛔ 不新建取数实现)。
+    # (复用 `dedup.py::load_events_for_date`,⛔ 不新建取数实现)。
     # ⛔ **只取 `holding`**:`invalidation` / `retreat` 已停写,`precall` 归竞价报告。
     # ⛔ 无市场级行、⛔ 无「运行正常」绿灯、⛔ 无轮询(随 `/positions` 一起拉)、
     # ⛔ 客户端不做任何二次裁定 —— 只按时间列出服务端已经落库的事实。

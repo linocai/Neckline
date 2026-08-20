@@ -16,7 +16,7 @@ import pytest
 from tests.conftest import business_days, insert_stock_basic, insert_trade_cal, write_daily_fixture, write_flat_parquet
 
 from neckline.report.intel import SZ_INDEX, compute_intel
-from neckline.strategy.features import SSE_INDEX
+from neckline.data.panel import SSE_INDEX
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 

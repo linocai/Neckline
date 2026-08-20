@@ -1,7 +1,7 @@
 """盘中数据纯函数(plan 阶段3 §2.4/§3.7)。继承 LinoN
 `/Users/linotsai/Lino/LinoN/backend/app/data/intraday.py` 的四个函数,改接
 `neckline.calendar`(而非 LinoN 自己的 `app.calendar`)、`Quote` 换成本包的
-`neckline.sentinel.quotes.Quote`,逻辑不变。
+`neckline.data.realtime.Quote`,逻辑不变。
 
 本模块只吃「已拿到的数据」(Quote / prev5 均量数值),不自己拉价、不联网——
 拉价在 `quotes.py`,组装当日关注池在 `universe.py`,便于单测不联网 + 端点批量
@@ -28,7 +28,7 @@ from datetime import datetime, time
 from typing import Optional, Tuple
 
 from neckline.calendar import MARKET_CLOSE_TIME, is_trading_day
-from neckline.sentinel.quotes import Quote
+from neckline.data.realtime import Quote
 
 _OPEN = time(9, 30)
 # 收盘时刻的**唯一源**在 `neckline.calendar`(v1.4-⑥-A 起周复盘逐笔判章程也要用同一个
