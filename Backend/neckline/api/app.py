@@ -185,15 +185,30 @@ def _calibration_dir() -> Optional[Path]:
 
 #: 非窗口时段的待机探测间隔(PROJECT_PLAN §5.7.3「非窗口时段 5 分钟一探,不空转」)。
 _MORNING_IDLE_POLL_SEC = 300
-#: 开盘前收紧的探测间隔 —— 9:26–9:29 的核对表窗口只有 3 分钟,5 分钟一探会整窗错过。
-_MORNING_PREOPEN_POLL_SEC = 30
-_PREOPEN_START = time(9, 20)
-_PREOPEN_END = time(9, 30)
+#: 两个窗口附近收紧的探测间隔。
+#:
+#: 🔴 **为什么必须收紧,⛔ 不能只留 5 分钟一探**:两拍的窗口本身都比 5 分钟窄或等宽
+#: —— 核对表 9:26–9:29 **只有 3 分钟**,结算拍 10:00–10:05 **正好 5 分钟**。
+#: 5 分钟一探撞上等宽窗口时,相邻两次探测可以一次落在 9:59、下一次落在 10:04(赶上),
+#: 也可以一次落在 9:58、下一次落在 10:05:30(**整窗错过**)——「今天跑没跑过」
+#: 于是变成一道看运气的题。收紧到 30 秒后,两个窗口各自至少被探到 6 次。
+_MORNING_TIGHT_POLL_SEC = 30
+
+#: 收紧区间(**各自比窗口早开一点**,给「起 tick → 读清单 → 读预案」留出余量)。
+#: ⚠ 判据的单一源仍在两个 tick 自己那里(`is_auction_window` / `is_settle_window`)——
+#: 这里只决定**多久探一次**,⛔ 不决定跑不跑。
+_TIGHT_WINDOWS: Tuple[Tuple[time, time], ...] = (
+    (time(9, 20), time(9, 30)),      # 9:26–9:29 竞价核对表
+    (time(9, 55), time(10, 6)),      # 10:00–10:05 结算拍(裁定 10)
+)
 
 
-def _is_preopen(now: datetime) -> bool:
-    """开盘前收紧轮询窗口:交易日 且 09:20 ≤ now.time() < 09:30。"""
-    return is_trading_day(now.date()) and _PREOPEN_START <= now.time() < _PREOPEN_END
+def _is_tight_poll(now: datetime) -> bool:
+    """交易日 且 落在任一收紧区间内。"""
+    if not is_trading_day(now.date()):
+        return False
+    t = now.time()
+    return any(start <= t < end for start, end in _TIGHT_WINDOWS)
 
 
 async def _morning_loop(stop_event: asyncio.Event) -> None:
@@ -233,7 +248,7 @@ async def _morning_loop(stop_event: asyncio.Event) -> None:
             _morning_settle_tick(now)
         except Exception:  # noqa: BLE001
             logger.warning("[morning] 10:00 结算拍异常(已吞,不影响竞价拍)", exc_info=True)
-        interval = _MORNING_PREOPEN_POLL_SEC if _is_preopen(now) else _MORNING_IDLE_POLL_SEC
+        interval = _MORNING_TIGHT_POLL_SEC if _is_tight_poll(now) else _MORNING_IDLE_POLL_SEC
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:

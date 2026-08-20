@@ -183,6 +183,39 @@ def test_both_ticks_hang_off_the_morning_loop():
     assert hasattr(app_mod, "_morning_settle_tick")
 
 
+def test_the_poll_cadence_can_never_straddle_either_window():
+    """🔴 **5 分钟一探会整窗错过 10:00–10:05 那一拍**(它正好 5 分钟宽)。
+
+    这条闸把「今天跑没跑过」从一道看运气的题变回一条纪律:从每个窗口左端开始,
+    按实际的探测间隔往前走,断言**至少落进窗口内两次**。
+    ⚠ 判据的单一源仍在两个 tick 自己那里;这里只管「多久探一次」。"""
+    from datetime import date, datetime, timedelta
+
+    import neckline.api.app as app_mod
+    from neckline.auction import (
+        AUCTION_WINDOW_END, AUCTION_WINDOW_START,
+        SETTLE_WINDOW_END, SETTLE_WINDOW_START,
+    )
+
+    day = date(2026, 8, 20)
+    for start, end in ((AUCTION_WINDOW_START, AUCTION_WINDOW_END),
+                       (SETTLE_WINDOW_START, SETTLE_WINDOW_END)):
+        # 最坏起点:窗口左端**前一瞬**的那次探测(它还在窗口外)。
+        t = datetime.combine(day, start) - timedelta(seconds=1)
+        inside = 0
+        for _ in range(40):
+            step = (app_mod._MORNING_TIGHT_POLL_SEC
+                    if app_mod._is_tight_poll(t) else app_mod._MORNING_IDLE_POLL_SEC)
+            t = t + timedelta(seconds=step)
+            if datetime.combine(day, start) <= t < datetime.combine(day, end):
+                inside += 1
+            elif t >= datetime.combine(day, end):
+                break
+        assert inside >= 2, (
+            f"窗口 {start}–{end} 最坏情况下只被探到 {inside} 次 —— "
+            f"5 分钟一探撞上等宽窗口会整窗错过")
+
+
 def test_the_settle_tick_helper_never_pushes():
     """`_morning_settle_tick` 里**一行 `notify` 都没有**(G21 的接线侧)。"""
     src = (_PKG / "api" / "app.py").read_text(encoding="utf-8")
