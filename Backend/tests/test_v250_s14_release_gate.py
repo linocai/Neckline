@@ -707,10 +707,82 @@ def test_the_params_package_is_not_in_the_repo():
     example = _ROOT / "config" / "k9-params.example.json"
     assert example.exists(), "示例配置应当在(它是用户照着填的模板)"
     text = example.read_text(encoding="utf-8")
-    # 示例里**所有数值位**一律是待标定占位符,⛔ 没有任何真数字。
     assert "__TO_BE_CALIBRATED__" in text
-    numbers = re.findall(r":\s*(-?\d+(?:\.\d+)?)\s*[,}\n]", text)
-    assert not numbers, f"示例配置里出现了真数字:{numbers} —— ⛔ 那等于给了一组默认值"
+
+
+#: 🔴 示例配置里**唯一**允许的真值,连同出处。K9 §二 给定项(白酒 L2),
+#: ⛔ 不是待标定参数 —— §14 S5 已登记为唯一例外。
+_EXAMPLE_LEAF_ALLOW: Dict[str, Any] = {
+    "industry.excludedL2Codes[0]": "801125.SI",
+}
+
+
+def _json_leaves(node: Any, path: str = "") -> List[Tuple[str, Any]]:
+    """把一份 JSON 摊平成 `(路径, 叶子值)` 清单 —— **数组里的元素也算叶子**。"""
+    if isinstance(node, dict):
+        out: List[Tuple[str, Any]] = []
+        for key, value in node.items():
+            out.extend(_json_leaves(value, f"{path}.{key}" if path else str(key)))
+        return out
+    if isinstance(node, list):
+        out = []
+        for i, value in enumerate(node):
+            out.extend(_json_leaves(value, f"{path}[{i}]"))
+        return out
+    return [(path, node)]
+
+
+def _uncalibrated_offenders(doc: Any) -> List[str]:
+    from neckline.k9 import params as params_mod  # noqa: PLC0415
+
+    offenders: List[str] = []
+    for path, value in _json_leaves(doc):
+        if value == params_mod.TO_BE_CALIBRATED:
+            continue
+        if path in _EXAMPLE_LEAF_ALLOW and value == _EXAMPLE_LEAF_ALLOW[path]:
+            continue
+        offenders.append(f"{path} = {value!r}")
+    return offenders
+
+
+def test_the_example_leaf_detector_actually_detects():
+    r"""扫描器自检 —— **数组里的数**必须看得见。
+
+    复审 CE14:往示例配置里加 `"__probe": [0.4, 0.3, 0.3]`,原来那条正则
+    (`re.findall(r":\s*(-?\d+(?:\.\d+)?)\s*[,}\n]")`)**照绿** —— 它只认
+    `"k": 0.3` 这一种形状。而 §8 待标定表里恰好有权重类(三成分权重、形态内合成权重
+    4 组),天然可能写成数组。
+    """
+    from neckline.k9 import params as params_mod  # noqa: PLC0415
+
+    tbc = params_mod.TO_BE_CALIBRATED
+    assert _uncalibrated_offenders({"a": tbc}) == []
+    assert _uncalibrated_offenders({"__probe": [0.4, 0.3, 0.3]}) == [
+        "__probe[0] = 0.4", "__probe[1] = 0.3", "__probe[2] = 0.3"]
+    assert _uncalibrated_offenders({"deep": {"er": {"k": 10}}}) == ["deep.er.k = 10"]
+    assert _uncalibrated_offenders({"flag": False}) == ["flag = False"]
+
+
+def test_the_example_config_has_no_real_value_at_any_leaf():
+    """🔴 **裁定 5:⛔ 一个默认值都没有**。
+
+    判据是 **JSON 语义**而不是正则:`json.load` 之后递归到**每一个叶子**,
+    断言它要么是 `__TO_BE_CALIBRATED__`、要么在一份显式白名单里。
+    ⚠ 一份「大部分位置是占位符」的示例配置,与一份给了默认值的示例配置,
+    对下一个人来说是同一件东西。
+    """
+    import json  # noqa: PLC0415
+
+    example = _ROOT / "config" / "k9-params.example.json"
+    doc = json.loads(example.read_text(encoding="utf-8"))
+    offenders = _uncalibrated_offenders(doc)
+    assert offenders == [], (
+        "示例配置里出现了真值 —— ⛔ 那等于给了一组默认值:\n" + "\n".join(offenders))
+    # 正向:白名单里那一条**确实还在**(⛔ 白名单不许留一条指向空气的例外)。
+    leaves = dict(_json_leaves(doc))
+    for path, value in _EXAMPLE_LEAF_ALLOW.items():
+        assert leaves.get(path) == value, f"白名单条目 {path} 已不在示例配置里"
+    assert len(leaves) > 40, f"示例配置只摊出 {len(leaves)} 个叶子 —— 递归怕是断了"
 
 
 def test_every_params_field_still_has_no_default():

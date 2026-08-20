@@ -104,7 +104,16 @@ def test_run_is_the_only_place_that_sees_all_four_channels():
 # G11 命名分离(裁定 1):上方机械空间 ≠ 第一压力位
 # ══════════════════════════════════════════════════════════════════════════
 
-_TEXT_SUFFIXES = (".py", ".swift", ".md", ".json", ".sh")
+#: 🔴 扫描域。复审实测(CE15):把「上方空间」种进 `App/project.yml` **全绿** ——
+#: `.yml` 不在这张表里。裁定 1 说的是「含混旧名**全仓**零命中」,而一张漏了工程配置、
+#: unit 文件与 entitlement 的表,守的是「全仓的一部分」。
+#: ⚠ 加后缀的代价近乎为零(这些文件加起来十来个),漏一类的代价是整条纪律对它失明。
+_TEXT_SUFFIXES = (
+    ".py", ".swift", ".md", ".json", ".sh",
+    ".yml", ".yaml", ".toml", ".cfg", ".txt",
+    ".service", ".timer", ".target",
+    ".plist", ".entitlements", ".pbxproj",
+)
 
 
 #: 允许出现含混旧名的**两个**文件,各有明确理由(⚠ 与 §6 S6 验收「全仓零命中」
@@ -130,6 +139,19 @@ def _repo_files() -> List[Path]:
 def test_the_repo_scan_actually_reads_files():
     """扫描器自检:排除清单不能把整个仓库排空。"""
     assert len(_repo_files()) > 100
+
+
+def test_the_repo_scan_reaches_the_config_and_unit_files():
+    """扫描域自检:**CE15 那几类文件真的进来了**。
+
+    ⛔ 不许只断言「文件总数够多」—— 那条断言在 `.yml` 漏掉的时候也是绿的
+    (Python 文件本来就上百个),它证明不了扫描域覆盖了该覆盖的类型。
+    """
+    names = {p.name for p in _repo_files()}
+    assert "project.yml" in names, "工程配置不在扫描域里(CE15 就是从这儿绕过去的)"
+    suffixes = {p.suffix for p in _repo_files()}
+    for wanted in (".yml", ".service", ".entitlements", ".pbxproj"):
+        assert wanted in suffixes, f"{wanted} 不在扫描域里"
 
 
 def test_the_old_ambiguous_name_is_gone_from_the_whole_repo():
