@@ -149,4 +149,63 @@ echo "42) POST .../playbook(不在清单里 → 404;⛔ 不给不存在的票冻
 curl -s -o /dev/null -w "  status=%{http_code}\n" -X POST "${AUTH[@]}" "${JSON[@]}" \
   -d '{}' "$BASE/selection/20240430/stock/600001.SH/playbook"
 
+
+# —— V2.5.0 S11 · 交割单分析台(架构 §六:解析 / 装订 / 结论存档,🔴 零 LLM)————
+echo "43) GET /review/bindery?week=(没上传过交割单 → 200 + found=false,⛔ 不是 404):"
+curl -s "${AUTH[@]}" "$BASE/review/bindery?week=2026-W29" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+print('  found=%s binding=%r'%(d.get('found'), d.get('binding')))
+print('  reason:%s'%(d.get('unavailableReason') or ''))
+print('  ⚠ 「没有」不是「没取到」:装订的输入只能由用户上传,系统补不出来')"
+echo "43b) 无 token → 401:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "$BASE/review/bindery?week=2026-W29"
+echo "44) POST /review/conclusions(存一版结论,append-only):"
+curl -s "${AUTH[@]}" "${JSON[@]}" -X POST "$BASE/review/conclusions" \
+  -d '{"week":"2026-W29","title":"冒烟结论","body":"这是一条冒烟写入的结论。","tags":["smoke"]}' \
+  | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+print('  week=%s version=%s'%(d.get('week'), (d.get('latest') or {}).get('version')))"
+echo "44b) 再存一版 → version=2,且 v1 一个字不动:"
+curl -s "${AUTH[@]}" "${JSON[@]}" -X POST "$BASE/review/conclusions" \
+  -d '{"week":"2026-W29","title":"改口径","body":"复看之后改判。"}' >/dev/null
+curl -s "${AUTH[@]}" "$BASE/review/conclusions?week=2026-W29" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+vs=d.get('versions') or []
+print('  versions=%s'%[v['version'] for v in vs])
+print('  v1 标题仍是 %r(⛔ append-only,老版本不许被改)'%(vs[0]['title'] if vs else None))"
+echo "44c) 空 body → 422(⛔ 不静默截断、不静默接受):"
+curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "${JSON[@]}" -X POST \
+  "$BASE/review/conclusions" -d '{"week":"2026-W29","title":"t","body":""}'
+echo "44d) 检索(下周可检索;⚠ 每周只出**最新版**):"
+# ⚠ 中文 query 必须走 `-G --data-urlencode`:直接拼进 URL 会被服务端当成非法字符,
+#    curl 拿回空响应,而这一步会「安静地」变成一次 JSON 解析崩溃(踩过一次)。
+for Q in 复看 冒烟; do
+  printf "  q=%-4s " "$Q"
+  curl -s -G "${AUTH[@]}" --data-urlencode "q=$Q" "$BASE/review/conclusions" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+ms=d.get('matches') or []
+print('matches=%s'%[(m['week'],m['version']) for m in ms])"
+done
+echo "  ⚠ 「冒烟」只在 v1 里 → 命中为空是**对的**:检索只看每周最新版"
+echo "45) GET /review/overview —— 结论存档段(还没写 → available=true + found=false):"
+curl -s "${AUTH[@]}" "$BASE/review/overview?week=20990101" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+c=d.get('conclusions') or {}
+print('  available=%s found=%s'%(c.get('available'), (c.get('detail') or {}).get('found')))
+print('  ⛔ 「还没写结论」不等于「这周没问题」')"
+
+# —— V2.5.0 S13 · K8 只读追溯(裁定 6)————————————————————————————————————
+echo "46) GET /legacy/k8/baskets(只读追溯唯一入口;新库 → 从没跑过 K8):"
+curl -s "${AUTH[@]}" "$BASE/legacy/k8/baskets?date=20260724" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+print('  available=%s found=%s basketCount=%s'%(
+    d.get('available'), d.get('found'), (d.get('overview') or {}).get('basketCount')))
+print('  reason:%s'%(d.get('reason') or ''))"
+echo "46b) 写方法 → 405(路由只注册了 GET,⛔ 不是 404):"
+for M in POST PUT DELETE; do
+  printf "  %-6s " "$M"
+  curl -s -o /dev/null -w "status=%{http_code}\n" -X "$M" "${AUTH[@]}" "${JSON[@]}" "$BASE/legacy/k8/baskets"
+done
+echo "46c) 日期格式非法 → 422:"
+curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "$BASE/legacy/k8/baskets?date=2026-07-24"
+
 echo ">> 冒烟完成。"

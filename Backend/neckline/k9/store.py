@@ -276,6 +276,41 @@ def load_listing_codes(
         ]
 
 
+def load_listing_membership(
+    start: date, end: date, codes: Sequence[str], *, strategy: str = "K9",
+    db_path: Optional[Path] = None,
+) -> Dict[Tuple[str, str], Dict[str, object]]:
+    """`[start, end]` × `codes` 里**上过清单**的那些:`(trade_date, ts_code) → {rank,
+    patterns, primary_pattern, tier, seat_kind}`。键不存在 = 那天这只票不在清单上。
+
+    🔴 **一次查询**取全,⛔ 别按日循环 —— `init_schema()` 每次都要重跑整份 schema
+    脚本(S11 复盘装订的 40 天窗口会踩这个)。
+
+    ⚠ 它是**只读材料通道**:S11 的交割单分析台拿它回答「我买的这只,系统那天选没选」。
+    ⛔ 反方向不成立 —— `scorecard/**` 绝不许 import `neckline.review`(架构 §五:
+    三条成绩线互不进入对方的分子分母,守门单测锁死)。
+    """
+    wanted = [c for c in dict.fromkeys(codes) if c]
+    if not wanted or start > end:
+        return {}
+    init_schema(db_path)
+    placeholders = ",".join("?" for _ in wanted)
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT trade_date, ts_code, rank, patterns_json, primary_pattern, tier, seat_kind "
+            f"FROM {LISTING_TABLE} WHERE trade_date>=? AND trade_date<=? AND strategy=? "
+            f"AND ts_code IN ({placeholders}) ORDER BY trade_date, rank",
+            (_d(start), _d(end), strategy, *wanted),
+        ).fetchall()
+    return {
+        (r[0], r[1]): {
+            "rank": int(r[2]), "patterns": json.loads(r[3]),
+            "primary_pattern": r[4], "tier": r[5], "seat_kind": r[6],
+        }
+        for r in rows
+    }
+
+
 def load_listing(
     trade_date: date, *, strategy: str = "K9", db_path: Optional[Path] = None
 ) -> List[Dict[str, object]]:
@@ -378,6 +413,7 @@ __all__ = [
     "disposition_path", "new_run_id",
     "save_run", "save_channel_hits", "save_listing", "save_disposition",
     "mark_listing_finalized_by",
-    "load_disposition", "load_listing_codes", "load_listing", "load_run",
+    "load_disposition", "load_listing_codes", "load_listing",
+    "load_listing_membership", "load_run",
     "relaxed_streak_before", "load_relay_records",
 ]

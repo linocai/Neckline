@@ -1976,6 +1976,36 @@ CREATE TABLE IF NOT EXISTS k9_d1_verdicts (
 );
 CREATE INDEX IF NOT EXISTS idx_k9_d1_verdicts_stage
   ON k9_d1_verdicts(trade_date, decided_stage);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.5.0 S11:交割单分析台 · **结论存档**(架构 §六 第 3 件事,PROJECT_PLAN §5.9)
+-- ══════════════════════════════════════════════════════════════════════════
+--
+-- 「保存本周复盘结论,下周可检索」。装订好的材料由用户带到聊天框做对话与总结,
+-- **总结回存到这里** —— 系统不做对话(架构 §六「系统之外」)。
+--
+-- 🔴 **append-only 版本化**(同 `k9_playbooks` 的纪律):同一周改一次结论 = 写
+-- `version + 1` 的**新行**,⛔ 不覆盖上一版。理由不是洁癖:复盘结论是**下一周做决定
+-- 的依据**,「我上周到底是怎么想的」被静默改写之后就再也查不回来了。
+-- 应用层因此**没有** UPDATE / DELETE 这条 SQL(守门单测扫 `review/conclusions.py`)。
+--
+-- ⚠ 与 `reviews.material` 刻意不同:那一列是**系统算出来的**对账叙述(每次上传
+-- 交割单幂等覆盖);本表装的是**用户想出来的**结论,两者不许混在一列里。
+--
+-- ⛔ **本表与另外两条成绩线完全隔离**(架构 §五):它是「我的成绩」那条线的存档,
+-- `scorecard/**` 零 import `neckline.review`,交割单里的成交永远不进清单成绩或
+-- 覆盖率的分子分母。
+CREATE TABLE IF NOT EXISTS review_conclusions (
+  week        TEXT NOT NULL,        -- ISO 周 'YYYY-Www'(与 `reviews.week` 同键形)
+  version     INTEGER NOT NULL,     -- 1 起;每改一次 +1,⛔ 老版本一个字不动
+  title       TEXT NOT NULL,        -- 一句话标题(检索列表上看到的就是它)
+  body        TEXT NOT NULL,        -- 结论正文(从聊天框粘回来的那一段)
+  tags_json   TEXT NOT NULL,        -- 标签数组(检索用;空数组合法)
+  author      TEXT NOT NULL,        -- 谁写的('user' / 客户端标识)
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (week, version)
+);
+CREATE INDEX IF NOT EXISTS idx_review_conclusions_week ON review_conclusions(week);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

@@ -29,6 +29,13 @@ cp .env.example .env        # 已有 .env 时不要覆盖
 .venv/bin/python scripts/evening.py
 .venv/bin/python scripts/export_research_snapshot.py \
   --out /Users/linotsai/Lino/whynotme/artifacts/input/neckline.snapshot.db
+
+# V2.5.0 S13：连事实包 parquet 一起导（标定必须跑在与生产逐字节相同的事实包上）。
+# 事实包落在 --out 同级的 fact_pack/ 下，保持 year=YYYY/YYYYMMDD.parquet 布局；
+# manifest 带 packVersion、区间、Neckline 版本与逐日 sha256。⛔ 区间没有默认值。
+.venv/bin/python scripts/export_research_snapshot.py \
+  --out /Users/linotsai/Lino/whynotme/artifacts/input/neckline.snapshot.db \
+  --include-fact-packs --start 20260101 --end 20260724
 ```
 
 V2.4.2 的晚间选股链必须显式提供经确认的 `direction_pipeline` JSON 配置：

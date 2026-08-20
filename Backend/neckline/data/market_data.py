@@ -323,6 +323,46 @@ def get_stock_history(
     )
 
 
+def get_multi_stock_history(
+    codes: Sequence[str],
+    start: DateLike,
+    end: DateLike,
+    table: str = "daily",
+    columns: Optional[Sequence[str]] = None,
+    parquet_dir: Optional[Path] = None,
+) -> pl.DataFrame:
+    """**一次 glob 取多只票**的区间日线 `[start, end]`(闭区间),按 `[ts_code, trade_date]`
+    升序返回。`columns` 非空时做列投影(`ts_code`/`trade_date` 恒被带上)。
+
+    🔴 **它存在的唯一理由是 §12 坑 1 的那条账**:逐票调 `get_stock_history` = 每只票各
+    glob 一遍区间年份;15 只票 × 2 个年目录 ≈ 30 次 glob、上万个 parquet footer,
+    生产 2 vCPU 箱上就是十几秒(2026-07-29 信息卡端点 8 次全 glob → 18~20s 的同一条链)。
+    本函数把「哪些票」下沉成一个 `is_in` 过滤,**glob 只做一次**。
+    ⚠ 新增任何「一次要多只票的区间行情」的取数路径,一律走这里,⛔ 别在调用方写循环。
+
+    `codes` 为空 → 空 DataFrame(不 glob、不读盘)。表目录不存在 → 空 DataFrame
+    (与 `get_stock_history` 同款优雅降级)。
+    """
+    wanted = [to_ts_code(c) for c in codes]
+    if not wanted:
+        return pl.DataFrame()
+    sd, ed = _to_date(start), _to_date(end)
+    if sd > ed:
+        return pl.DataFrame()
+    lf = _scan_table(table, parquet_dir, years=_years_in_range(sd, ed))
+    if lf is None:
+        return pl.DataFrame()
+    lf = lf.filter(
+        pl.col("ts_code").is_in(wanted)
+        & (pl.col("trade_date") >= sd)
+        & (pl.col("trade_date") <= ed)
+    )
+    if columns:
+        keep = list(dict.fromkeys(["ts_code", "trade_date", *columns]))
+        lf = lf.select(keep)
+    return lf.sort(["ts_code", "trade_date"]).collect()
+
+
 def scan_table_range(table: str, start: DateLike, end: DateLike, parquet_dir: Optional[Path] = None) -> pl.DataFrame:
     """整表按 [start, end] 读(不按 ts_code 过滤,全市场该区间所有行)。供批量运算
     (如 backfill 侧的 limit_derived 连板计算)用,区别于按单票取历史的
@@ -440,6 +480,7 @@ __all__ = [
     "day_file_exists",
     "get_market_slice",
     "get_stock_history",
+    "get_multi_stock_history",
     "scan_table_range",
     "get_index_history",
     "load_stock_basic",

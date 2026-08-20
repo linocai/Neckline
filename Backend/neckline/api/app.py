@@ -42,6 +42,9 @@ from neckline.api.schemas import (
     ProvidersListOut,
     PushKindOut,
     PushSettingsOut,
+    ReviewBinderyOut,
+    ReviewConclusionIn,
+    ReviewConclusionsOut,
     ReviewGetOut,
     ReviewOverviewOut,
     ReviewSegmentOut,
@@ -682,8 +685,8 @@ def get_eval_weekly(week: str = "") -> EvalWeeklyOut:
             return EvalWeeklyOut(
                 weekStart=lo, weekEnd=hi, available=False,
                 unavailableReason=(
-                    f"本窗口({lo}→{hi})尚无周度校准产物 —— 周度作业("
-                    f"whynotme 离线周任务还没跑到这个窗口。"
+                    f"本窗口({lo}→{hi})尚无周度校准产物 —— **离线**周度校准作业"
+                    f"还没跑到这个窗口。"
                     f"**会自愈**:下一次周度作业跑完即有。⛔ 在线路径不补算(§七 P0-23)。"
                 ))
         return EvalWeeklyOut(
@@ -713,6 +716,145 @@ def review_by_week(week: str = "") -> ReviewGetOut:
         ok=True, found=True, week=rec["week"], generatedAt=rec["generatedAt"],
         result=rec["result"], material=rec.get("material") or "",
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.5.0 S11 · 交割单分析台(架构 §六,PROJECT_PLAN §5.9)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 **这一层无 LLM 调用**(架构 §六 逐字)。系统只做三件事:解析(`/review/upload`)、
+# **装订**(`/review/bindery`)、**结论存档**(`/review/conclusions`)。
+# 对话与总结在**系统之外** —— 用户把装订好的材料带到聊天框,总结用第三条端点存回来。
+#
+# 🔴 **三条成绩线互不进入对方的分子分母**(架构 §五):本段的一切都属于「我的成绩」
+# 那条线。它**读** `k9_*` 的报告 / 预案 / 清单当**材料**(架构 §六 明文要求),
+# 但 ⛔ 一个字都不往 `k9_*` 写;反方向 `scorecard/**` ⛔ 零 import `neckline.review`。
+
+
+@app.get(f"{API_PREFIX}/review/bindery", dependencies=[Depends(require_token)])
+def get_review_bindery(week: str = "", preSessions: int = -1, postSessions: int = -1) -> ReviewBinderyOut:
+    """行情材料装订:每笔回合前后的 K 线 + 买卖点标注 + 同期大盘 + 同期申万二级
+    + 当时那几天的报告与预案快照。
+
+    `week` = ISO 周 `YYYY-Www`(⚠ 与 `/review` 同键形)。`preSessions` / `postSessions`
+    缺省(< 0)时用 `bindery` 的模块常量 —— 它们是**上下文长度**不是策略参数
+    (同 `explain/input.py::KLINE_SESSIONS`),换个值不会让任何一笔成交变成另一笔。
+
+    **降级契约**(⛔ 一律不 404,同 `/review` 惯例):
+      · 缺 week / 那周没上传过交割单 → `found=False`(这是**「没有」**,输入只能由
+        用户给,系统查过表确实没有);
+      · 装订过程炸了 → `found=True` + `unavailableReason`(⛔ 不拿空材料冒充装订成功)。
+
+    🛑 **容量**:窗口内**全部票**走一次 parquet glob、行业 / 报告 / 预案 / 清单各走
+    一次区间 SQL(§12 坑 1:本端点跑在常驻 `neckline.service` 里)。⛔ 别在这里
+    按票或按日循环取数。
+    """
+    from neckline.review import bindery
+    from neckline.review.store import load_weekly_review
+
+    week = (week or "").strip()
+    if not week:
+        return ReviewBinderyOut(ok=True, found=False)
+    rec = load_weekly_review(week, db_path=_db())
+    if rec is None:
+        return ReviewBinderyOut(
+            ok=True, found=False, week=week,
+            unavailableReason="本周尚未上传交割单 —— 装订需要券商交割单,"
+                              "系统补不出没上传的那一份(上传在 macOS 端的复盘 · 对账页)。")
+
+    try:
+        review = _review_from_archive(week, rec["result"])
+        binding = bindery.bind_week(
+            review,
+            pre_sessions=bindery.PRE_SESSIONS if preSessions < 0 else preSessions,
+            post_sessions=bindery.POST_SESSIONS if postSessions < 0 else postSessions,
+            db_path=_db(),
+        )
+    except Exception as exc:  # noqa: BLE001  装订炸了不该 500,如实说这次没装成
+        logger.warning("[review] %s 装订异常(已降级)", week, exc_info=True)
+        return ReviewBinderyOut(
+            ok=True, found=True, week=week,
+            unavailableReason=f"本周材料本次未装订成功:{type(exc).__name__}(详见服务端日志)。")
+    return ReviewBinderyOut(
+        ok=True, found=True, week=week,
+        binding=binding.to_dict(),
+        markdown=bindery.render_binding_markdown(binding),
+    )
+
+
+def _review_from_archive(week: str, result: Dict[str, Any]):
+    """把 `reviews.result_json` 里冻住的那份 `weekly_review_dict()` 还原成
+    `WeeklyReview`(只还原装订用得到的那部分:周界 + `RoundTrip` 列表)。
+
+    🔴 **装订读的是存档那一份,⛔ 不重新解析交割单**:交割单文件不在服务端留存
+    (上传即解析即丢),而且「同一周装订两次得到不同材料」本身就是错的。
+    ⚠ 历史行可能带着 V2.4.x 的多余键(`planChecks` / `disciplineViolations` …),
+    这里**只挑要的**,多余键一律忽略(⛔ 不因为老行多几个键就炸)。
+    """
+    from neckline.review.reconcile import RoundTrip, WeeklyReview, week_range
+
+    def _day(raw):
+        return datetime.strptime(raw, "%Y%m%d").date() if raw else None
+
+    w_start, w_end = week_range(week)
+    trips = []
+    for r in (result or {}).get("roundTrips") or []:
+        trips.append(RoundTrip(
+            ts_code=r.get("tsCode", ""), name=r.get("name", ""),
+            buy_date=_day(r.get("buyDate")), buy_price=float(r.get("buyPrice") or 0.0),
+            qty=int(r.get("qty") or 0), fees=float(r.get("fees") or 0.0),
+            sell_date=_day(r.get("sellDate")),
+            sell_price=r.get("sellPrice"), closed=bool(r.get("closed")),
+        ))
+    review = WeeklyReview(week=week, week_start=w_start, week_end=w_end)
+    review.round_trips = trips
+    review.closed_round_trips = [rt for rt in trips if rt.closed]
+    return review
+
+
+@app.post(f"{API_PREFIX}/review/conclusions", dependencies=[Depends(require_token)])
+def post_review_conclusion(body: ReviewConclusionIn) -> ReviewConclusionsOut:
+    """存一版复盘结论(架构 §六 第 3 件事)。
+
+    🔴 **append-only**:每存一次写 `version + 1` 的新行,⛔ 老版本一个字不动 ——
+    复盘结论是下一周做决定的依据,被静默改写之后就再也查不回来了。
+    入参不合法 → **422 并把问题一次列全**(⛔ 不静默截断正文:截掉的恰恰是结尾那句
+    结论,而用户会以为存进去了)。
+    """
+    from neckline.review import conclusions
+
+    try:
+        saved = conclusions.save(
+            body.week, body.title, body.body,
+            tags=body.tags, author=body.author, db_path=_db())
+    except conclusions.ConclusionInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    versions = conclusions.load_versions(body.week, db_path=_db())
+    return ReviewConclusionsOut(
+        ok=True, week=body.week, latest=saved.to_dict(),
+        versions=[c.to_dict() for c in versions],
+    )
+
+
+@app.get(f"{API_PREFIX}/review/conclusions", dependencies=[Depends(require_token)])
+def get_review_conclusions(week: str = "", q: str = "", limit: int = 20) -> ReviewConclusionsOut:
+    """读结论存档。传 `week` → 那一周的最新版 + 全部版本;否则按 `q` 检索
+    (空 `q` = 最近几周各出最新版)——「下周可检索」的入口。
+
+    ⚠ `latest=None` = **那周还没写过结论**(⛔ 不是「这周没问题」)。
+    """
+    from neckline.review import conclusions
+
+    week = (week or "").strip()
+    if week:
+        versions = conclusions.load_versions(week, db_path=_db())
+        latest = versions[-1].to_dict() if versions else None
+        return ReviewConclusionsOut(
+            ok=True, week=week, latest=latest,
+            versions=[c.to_dict() for c in versions],
+        )
+    hits = conclusions.search(q, limit=limit, db_path=_db())
+    return ReviewConclusionsOut(ok=True, matches=[c.to_dict() for c in hits])
 
 
 # —— V2.2-② 行情状态层:只读端点 ————————————————————————————————————————
@@ -822,6 +964,32 @@ def _reconcile_segment(week_key: str) -> ReviewSegmentOut:
     )
 
 
+def _conclusions_segment(week_key: str) -> ReviewSegmentOut:
+    """结论存档段(V2.5.0 S11,架构 §六 第 3 件事)。
+
+    🔴 同对账段的三态读法:**`available=true` + `detail.found=false` 才是「这周还没写
+    结论」**(⛔ 不是 `available=false`)—— 结论只能由用户写,系统查过表确实没有那一行。
+    ⛔ 别把「还没写」渲染成「这周没问题」。
+    """
+    from neckline.review import conclusions
+
+    label = "结论存档"
+    versions = conclusions.load_versions(week_key, db_path=_db())
+    if not versions:
+        return ReviewSegmentOut(
+            available=True, label=label, asOf=week_key,
+            detail={"found": False, "week": week_key,
+                    "note": "本周还没写过复盘结论 —— 把装订好的材料带到聊天框得出结论后,"
+                            "用「结论存档」存回来。⛔ 「还没写」不等于「这周没问题」。"},
+        )
+    return ReviewSegmentOut(
+        available=True, label=label, asOf=week_key,
+        detail={"found": True, "week": week_key, "latest": versions[-1].to_dict(),
+                "versionCount": len(versions)},
+        items=[c.to_dict() for c in versions],
+    )
+
+
 def _observations_segment() -> ReviewSegmentOut:
     """观察项段:静态登记册(与 `PROJECT_PLAN.md` §七 Backlog 的闭合由守门单测钉死)。
     它**恒 available** —— 清单本身一直在,空不空是内容的事。"""
@@ -833,13 +1001,18 @@ def _observations_segment() -> ReviewSegmentOut:
 
 @app.get(f"{API_PREFIX}/review/overview", dependencies=[Depends(require_token)])
 def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
-    """复盘板块「累计」页的五段聚合读(V2.1-⑤)。
+    """复盘板块「累计」页的聚合读。V2.5.0 S11 起共**四段**:
+    校准 / 对账 / **结论存档** / 观察项。
 
-    `week` = 该周任意一天 `YYYYMMDD`(缺省本周);`asOf` = 画像期(缺省最近一期)。
+    `week` = 该周任意一天 `YYYYMMDD`(缺省本周);`asOf` 保留兼容位(画像段已随
+    `profile/` 在 S1 退役,⛔ 不再有消费方)。
 
-    **五段各自独立说"有 / 没有 / 没取到"**,⛔ 不许一个总开关罩住五段 —— 校准产物没
-    生成、画像没批算、这周没传交割单是三件互不相干的事。**每段各自包保险丝**:任一段
-    炸了只让那一段 `available=false`,其余四段照出(⛔ 不 500)。"""
+    **四段各自独立说"有 / 没有 / 没取到"**,⛔ 不许一个总开关罩住 —— 校准产物没生成、
+    这周没传交割单、这周还没写结论是三件互不相干的事。**每段各自包保险丝**:任一段
+    炸了只让那一段 `available=false`,其余三段照出(⛔ 不 500)。
+
+    ⚠ **装订材料刻意不在这里**:它要读 parquet 行情,属于「点一下才算」的动作,
+    单独走 `GET /review/bindery`(⛔ 别塞进这个每次进板块都会拉的聚合读,§12 坑 1)。"""
     out = ReviewOverviewOut()
     anchor = _week_anchor(week)
     try:
@@ -862,11 +1035,12 @@ def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
     for field_name, build in (
         ("calibration", lambda: _calibration_segment(lo, hi)),
         ("reconcile", lambda: _reconcile_segment(out.weekKey)),
+        ("conclusions", lambda: _conclusions_segment(out.weekKey)),
         ("observations", _observations_segment),
     ):
         try:
             setattr(out, field_name, build())
-        except Exception as exc:  # noqa: BLE001  段级保险丝:一段炸不连坐其余四段
+        except Exception as exc:  # noqa: BLE001  段级保险丝:一段炸不连坐其余三段
             logger.warning("[review] overview 的 %s 段装配异常(已降级为不可得)",
                            field_name, exc_info=True)
             setattr(out, field_name, ReviewSegmentOut(
@@ -1164,6 +1338,34 @@ def get_verdicts(trade_date: str) -> dict:
             for r in rows
         ],
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.5.0 S13 · K8 历史数据的只读追溯(裁定 6,PROJECT_PLAN §5.12)
+# ══════════════════════════════════════════════════════════════════════════
+
+@app.get(f"{API_PREFIX}/legacy/k8/baskets", dependencies=[Depends(require_token)])
+def get_legacy_k8_baskets(date: str = "") -> dict:
+    """**K8 只读追溯的唯一入口**(裁定 6:旧表保留、只读、不迁移、不回填)。
+
+    `date` = `YYYYMMDD`;缺省只回总览(库里有哪几天、共多少篮),供先定位再点查。
+
+    🔴 **只读**:领域实现 `neckline/legacy_k8.py` 走 `sqlite3` 的 `mode=ro` 连接,
+    且模块里结构上**只有 SELECT**(守门单测扫 `INSERT`/`UPDATE`/`DELETE`/`CREATE`/
+    `DROP`/`ALTER` 零命中)。⛔ 本路径不 `init_schema`、不建表、不回填。
+    写方法(POST/PUT/DELETE)未注册 → FastAPI 自动 **405**。
+
+    ⚠ **返回的是 K8 的语义,不是 K9 的**:`tier` / `driver` / `roleLlm` 这些字段属于
+    已退役的那条链,⛔ 不许被翻译成 K9 的 `pattern` / `seatKind`,也 ⛔ 不进任何成绩线。
+
+    ⚠ **一律 200,三态分开说**(⛔ 不 404):`available=false` = 这个库根本没有 K8
+    篮子表;`available=true, found=false` = 有 K8 历史但不是那一天。
+    """
+    from neckline import legacy_k8
+
+    raw = (date or "").strip()
+    day = _parse_day(raw) if raw else None
+    return legacy_k8.load_baskets(day, db_path=_db())
 
 
 __all__ = ["app", "VERSION", "API_PREFIX"]

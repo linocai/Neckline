@@ -4,6 +4,12 @@
 时间退出 / 止损纪律 / 计划台账核对 / 逐笔取章程 / 章程切换分段)共 14 组、约 1000 行
 断言**已随 K8 章程判据整块删除**(PROJECT_PLAN §5.9)—— 被测函数本身已不存在,
 ⛔ 不是把测试 skip 掉。留下的是 K9 §六 仍要的那部分:FIFO 回合闭合与 `WeeklyStats`。
+
+🔴 **V2.5.0 S11 收尾**:S1 那次删除**留下了空壳**——`TestStopDiscipline` /
+`TestEntryScreens` / `TestCharterSwitchReporting` 三个类只剩 helper 没有用例,
+外加 `_DueItem` / `_30k_trades` / `_week_of` 三个零引用 helper 与七块指向已退役概念的
+段旗。它们**一条断言都不跑**却长得像在跑,下一个人会以为止损纪律还在被测。
+本片一并清掉(⛔ 不是放宽:被测的东西早已不存在)。
 """
 
 from __future__ import annotations
@@ -118,33 +124,6 @@ class TestBuildRoundTrips:
         assert by_code["300750.SZ"].closed is False
 
 
-# ======================================================================
-#  止损纪律(对账三查②)
-# ======================================================================
-
-class TestStopDiscipline:
-    def _rt(self, buy=100.0, sell=94.0):
-        return RoundTrip(ts_code="600519.SH", name="贵州茅台", buy_date=date(2026, 7, 14),
-                          buy_price=buy, qty=100, fees=0.0, sell_date=date(2026, 7, 16),
-                          sell_price=sell, closed=True)
-
-
-# ======================================================================
-#  章程执行(对账三查③)
-# ======================================================================
-
-
-class TestEntryScreens:
-    @pytest.fixture
-    def market(self, isolated_env):
-        dates = seed_synthetic_market(isolated_env)
-        return isolated_env, dates
-
-
-# ======================================================================
-#  周统计 + 强制复盘
-# ======================================================================
-
 class TestWeeklyStats:
     def _rt(self, buy, sell, qty=100, fees=0.0):
         return RoundTrip(ts_code="X", name="X", buy_date=date(2026, 7, 13), buy_price=buy, qty=qty,
@@ -232,76 +211,17 @@ class TestIsoWeek:
 
 
 # ======================================================================
-#  计划内/计划外 + 持仓台账对账(对账三查①,直接单测,不经 run_weekly_review)
-# ======================================================================
-
-
-# ======================================================================
 #  端到端:run_weekly_review()
 # ======================================================================
 
 class TestRunWeeklyReview:
-
-
     def test_empty_trades_returns_empty(self, isolated_env):
         reviews, warnings = run_weekly_review([], db_path=isolated_env.db_path)
         assert reviews == [] and warnings == []
 
 
-# ======================================================================
-#  v1.2-A:历史洗白修复(按周取「当时现役」config)—— 命门反例 + 时间线双向
-# ======================================================================
-
-
-# ======================================================================
-#  审计 🟡-3(2026-07-27):激活时点不得洗白「刚结束的那一周」
-#  判据改「激活日 < week_start」(方案 (a),不依赖人的操作纪律)。
-#  ⚠ 时间锚:2026-07-20 是周一,2026-07-26 是周日 → 07-20~07-26 是一个完整 ISO 周;
-#     下一周是 07-27(周一)~08-02(周日)。
-# ======================================================================
-
-
-def _week_of(isolated_env, trades, day: date):
-    reviews, _ = run_weekly_review(
-        trades, db_path=isolated_env.db_path, parquet_dir=isolated_env.parquet_dir)
-    return next(r for r in reviews if r.week == iso_week_key(day))
-
-
-def _30k_trades(buy_day: date, sell_day: date):
-    """一笔 3 万买入 + 平仓(K1 2 万上限下违纪;v1.3 4 万上限下不违纪)。"""
-    return [
-        _trade(buy_day, "600519.SH", "buy", 300.0, 100, name="贵州茅台"),
-        _trade(sell_day, "600519.SH", "sell", 305.0, 100, name="贵州茅台"),
-    ]
-
-
-# ======================================================================
-#  审计 🔵-9:周复盘补「时间退出违纪」审计项(§2.1 第 2 条的周线兜底)
-#  —— 配合同批 🔴-1「D5 判一次定格」:系统说该走、台账显示没走 = 违纪,事后有人兜底。
-# ======================================================================
-
-class _DueItem:
-    """duck-typed HoldingK4Item(只喂 holding_store 落库需要的字段)。"""
-    def __init__(self, pid, td_state, d=5):
-        self.position_id, self.time_exit_state, self.d_count = pid, td_state, d
-        self.net_float, self.max_hold_effective = -10.0, 5
-        self.has_strong = self.scenario_review = False
-        self.time_exit_locked_state = td_state if td_state == "time_exit_next_day" else None
-        self.time_exit_locked_date = None
-        self.time_exit_locked_net_float = None
-    def hits_public(self):
-        return []
-
-
-# ======================================================================
-#  v1.4-⑥-A(§七 P1-4):周复盘章程**按成交时刻逐笔判** 🔴 碰纪律判定
-#  ⚠ 时间锚:2026-07-20 周一、07-26 周日;下一周 07-27(周一)~08-02(周日)。
-#     `activated_at` 落库是 **UTC** 戳,成交时刻是**北京时间**(UTC+8)。
-# ======================================================================
-
-
 class TestTradeInstant:
-    """`trade_instant`:交割单只有日期时按**该日收盘时刻**(北京时间)——⑥-A 定死口径。"""
+    """`trade_instant`:交割单只有日期时按**该日收盘时刻**(北京时间)——全包唯一时刻口径。"""
 
     def test_date_only_falls_back_to_market_close(self):
         from neckline.calendar import CN_TZ, MARKET_CLOSE_TIME
@@ -316,27 +236,10 @@ class TestTradeInstant:
 
         assert trade_instant(date(2026, 7, 27), time(10, 30)).time() == time(10, 30)
 
-    def test_day_close_instant_shares_the_same_source(self):
-        from neckline.review.reconcile import day_close_instant, trade_instant
+    def test_the_retired_charter_anchor_helper_is_gone(self):
+        """🔴 S11:`day_close_instant()` 已随 K8 日粒度章程判据删除(它只是
+        `trade_instant(d, None)` 的别名)。⛔ 不留没有调用方的别名 —— 它 docstring 里
+        那句「归属哪版章程」会让下一个人以为这里还在判章程。"""
+        from neckline.review import reconcile
 
-        assert day_close_instant(date(2026, 7, 27)) == trade_instant(date(2026, 7, 27))
-
-
-class TestCharterSwitchReporting:
-    """周报呈现:注明切换时刻 + 分段计数(plan §五-⑥-A「周报呈现」)。"""
-
-    def _switch_week(self, isolated_env):
-        _seed_charter_pair(isolated_env.db_path, "2026-07-29T10:00:00+00:00")   # 周三北京 18:00
-        trades = [
-            _trade(date(2026, 7, 27), "600519.SH", "buy", 300.0, 100),   # 切换前
-            _trade(date(2026, 7, 28), "600036.SH", "buy", 300.0, 100),   # 切换前
-            _trade(date(2026, 7, 30), "601398.SH", "buy", 300.0, 100),   # 切换后
-        ]
-        return _week_of(isolated_env, trades, date(2026, 7, 27))
-
-
-# ======================================================================
-#  v1.4 review 🟡-1(2026-07-29):**回滚 / 重激活不得改写历史周的判定**
-#  —— 时间轴事实源改 append-only 事件流(`strategy_activation_log`)后的端到端护栏。
-#     `reviews` 是幂等覆盖表,重传交割单即重算 —— 若回滚能改判,整段历史会**静默**翻案。
-# ======================================================================
+        assert not hasattr(reconcile, "day_close_instant")

@@ -138,6 +138,40 @@ def load_k9_report(
     return None if row is None else _k9_row(row)
 
 
+def load_k9_report_index(
+    start: date, end: date, *, db_path: Optional[Path] = None
+) -> Dict[str, Dict[str, Any]]:
+    """`[start, end]` 区间内每个交易日的报告**索引行**:`trade_date → {report_date,
+    state, headline, listing_size, params_package_version, pack_version, generated_at}`。
+
+    🔴 **刻意不带 `markdown` / `structured_json`**:S11 的复盘装订要「当时那几天的报告
+    快照」,窗口动辄 40 天;把 40 份 markdown 全塞进一个响应体是几百 KB 的无用负担,
+    而首行(`state` + `headline`)已经说清了那天系统在说什么。要全文按日走
+    `load_k9_report(trade_date)` 点查。
+
+    ⚠ 键不出现 = **那天没生成过报告**(⛔ 不是「那天没有清单」——后者是 `state='empty'`
+    的一行,它在这里是**存在**的)。调用方必须把两者分开说。
+    """
+    if start > end:
+        return {}
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT trade_date, report_date, state, headline, listing_size, "
+            f"params_package_version, pack_version, generated_at FROM {K9_TABLE} "
+            f"WHERE trade_date>=? AND trade_date<=? ORDER BY trade_date",
+            (_d(start), _d(end)),
+        ).fetchall()
+    return {
+        r[0]: {
+            "trade_date": r[0], "report_date": r[1], "state": r[2], "headline": r[3],
+            "listing_size": r[4], "params_package_version": r[5],
+            "pack_version": r[6], "generated_at": r[7],
+        }
+        for r in rows
+    }
+
+
 def latest_k9_report(*, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     """最新一份报告(按 `trade_date` 降序)。"""
     init_schema(db_path)
@@ -239,6 +273,6 @@ def load_llm_judgments(
 
 __all__ = [
     "K9_TABLE", "LEGACY_TABLE",
-    "save_k9_report", "load_k9_report", "latest_k9_report",
+    "save_k9_report", "load_k9_report", "load_k9_report_index", "latest_k9_report",
     "load_report", "load_report_by_str", "latest_report_date", "load_llm_judgments",
 ]

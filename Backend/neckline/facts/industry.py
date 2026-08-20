@@ -50,7 +50,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import polars as pl
 
@@ -252,6 +252,35 @@ def load_median_map(trade_date: date, *, db_path: Optional[Path] = None) -> Dict
     return {r.l2_code: r.median_ret for r in load_day(trade_date, db_path=db_path)}
 
 
+def load_series(
+    l2_codes: Sequence[str], start: date, end: date, *, db_path: Optional[Path] = None
+) -> Dict[str, List[Tuple[str, float, int]]]:
+    """几个二级行业在 `[start, end]` 的中位数序列:`l2_code → [(trade_date, median_ret,
+    member_count), …]`(按日升序)。**一次查询**取全,⛔ 别在调用方按日循环
+    —— `init_schema()` 在每次 `load_day` 里都会重跑整份 schema 脚本,循环 40 天就是
+    40 次全表建表检查(S11 复盘装订原本会踩这个)。
+
+    某个 `l2_code` / 某一天没有行 = **那天没冻结过事实包**(⛔ 不是「行业当天没涨跌」),
+    调用方须把「查不到」与「查到是 0」分开说。查无该行业 → 键不出现,⛔ 不给空列表冒充。
+    """
+    wanted = [c for c in dict.fromkeys(l2_codes) if c]
+    if not wanted or start > end:
+        return {}
+    init_schema(db_path)
+    placeholders = ",".join("?" for _ in wanted)
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT l2_code, trade_date, median_ret, member_count FROM {TABLE} "
+            f"WHERE trade_date>=? AND trade_date<=? AND l2_code IN ({placeholders}) "
+            f"ORDER BY l2_code, trade_date",
+            (_d(start), _d(end), *wanted),
+        ).fetchall()
+    out: Dict[str, List[Tuple[str, float, int]]] = {}
+    for r in rows:
+        out.setdefault(r[0], []).append((r[1], float(r[2]), int(r[3])))
+    return out
+
+
 __all__ = [
     "TABLE",
     "IndustryDay",
@@ -261,4 +290,5 @@ __all__ = [
     "save_day",
     "load_day",
     "load_median_map",
+    "load_series",
 ]

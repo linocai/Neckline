@@ -190,10 +190,13 @@ NoteLabelLiteral = Literal[
 # —— 4D 周复盘工作台 ————————————————————————————————————————————————————
 #
 # `result` 直接透传 `neckline.review.reconcile.weekly_review_dict()` 的完整快照
-# (roundTrips/planChecks/disciplineViolations/stopDiscipline/stats/forcedReview
-# 等,camelCase,该函数本身就是 API 响应与 `reviews.result_json` 落库共用的唯一
-# 形状源)——同 `ReportOut.sentiment/sectors` 的透传惯例(schemas.py 顶部约定),
-# 不在 API 层重复声明一套嵌套 pydantic 模型去镜像领域字段(同码不重写)。
+# (`roundTrips` / `closedRoundTrips` / `stats` / `forcedReview`,camelCase,该函数
+# 本身就是 API 响应与 `reviews.result_json` 落库共用的唯一形状源)——同透传惯例
+# (schemas.py 顶部约定),不在 API 层重复声明一套嵌套 pydantic 模型镜像领域字段。
+# ⚠ **V2.5.0 S1 起 `planChecks` / `disciplineViolations` / `stopDiscipline` /
+# `charterSegments` 等八个键已不再产出**(K8 章程判据整块退役)。`reviews` 表里
+# V2.4.x 及更早的**历史行**仍带着它们(写入当时冻住的快照),客户端按
+# `decodeIfPresent` 读即可;⛔ 不回填、不改写历史行(裁定 6)。
 
 class WeeklyReviewOut(BaseModel):
     week: str
@@ -210,20 +213,22 @@ class ReviewUploadOut(BaseModel):
 
 
 class ReviewSegmentOut(BaseModel):
-    """复盘板块「累计」页里的**一段**(V2.1-⑤)。五段各一份,形状统一。
+    """复盘板块「累计」页里的**一段**。V2.5.0 S11 起共**四段**
+    (校准 / 对账 / 结论存档 / 观察项),形状统一。
 
-    🔴 **每段各自带 `available` + `unavailableReason`,⛔ 不许拿一个总开关罩住五段** ——
-    校准产物没生成、画像没批算、这周没传交割单是**三件互不相干的事**,合成一句读者就
-    分不清哪个没有。三态读法(plan §五⑤ 验收原文「有 / 没有 / 没取到」):
+    🔴 **每段各自带 `available` + `unavailableReason`,⛔ 不许拿一个总开关罩住四段** ——
+    校准产物没生成、这周没传交割单、这周还没写结论是**三件互不相干的事**,合成一句
+    读者就分不清哪个没有。三态读法(plan §五⑤ 验收原文「有 / 没有 / 没取到」):
 
       · **有**   → `available=true` + 有内容;
       · **没有** → `available=true` + 空内容(该段自己的空态文案说清为什么空);
       · **没取到** → `available=false` + `unavailableReason`(⛔ 不许拿空数组冒充)。
 
-    ⚠ **画像段与对账段的空态刻意判得不一样,⛔ 别"统一"**:画像缺席 = **系统自己那一步
-    没跑**(周度批算未运行)→ 那是「没看」→ `available=false`;对账缺席 = 输入(券商
-    交割单)**只能由用户给**、系统查过表确实没有 → 那是「没有」→ `available=true` +
-    `detail.found=false`。两者给用户的动作完全不同(等系统 vs 去上传)。
+    ⚠ **校准段与对账 / 结论两段的空态刻意判得不一样,⛔ 别"统一"**:校准产物缺席 =
+    **系统自己那一步没跑**(周度离线作业未运行)→ 那是「没看」→ `available=false`;
+    对账与结论缺席 = 输入(券商交割单 / 用户写的结论)**只能由用户给**、系统查过表
+    确实没有 → 那是「没有」→ `available=true` + `detail.found=false`。
+    两者给用户的动作完全不同(等系统 vs 自己去做),⛔ 别合并。
 
     `items` / `detail` **原样透传**领域层形状(同 `WeeklyReviewOut.result` /
     `EvalWeeklyOut.result` 的既定惯例)—— 在 API 层再镜像一套嵌套模型只会多一处会漂的
@@ -238,11 +243,13 @@ class ReviewSegmentOut(BaseModel):
 
 
 class ReviewOverviewOut(BaseModel):
-    """复盘板块「累计」页的聚合读(V2.1-⑤,`GET /review/overview`)。
+    """复盘板块「累计」页的聚合读(`GET /review/overview`)。
 
-    **零现算**:五段全部读**已冻结 / 已落盘**的产物 —— 校准报告由离线周度作业算好落盘
-    (§七 P0-23:本端点与盘中哨兵同进程,重活进常驻服务 = 卡死不报错),画像读
-    `profile_*` 两表,对账读 `reviews` 表。⛔ 读不到就说读不到,**永不在线补算**。
+    **零现算**:四段全部读**已冻结 / 已落盘**的产物 —— 校准报告由离线周度作业算好落盘
+    (§七 P0-23:本端点与常驻服务同进程,重活进常驻服务 = 卡死不报错),对账读
+    `reviews` 表,结论读 `review_conclusions` 表。⛔ 读不到就说读不到,**永不在线补算**。
+    ⚠ **装订材料刻意不在这里**:它要读 parquet 行情,属于「点一下才算」的动作,
+    单独走 `GET /review/bindery`(⛔ 别把它塞进这个每次进板块都会拉的聚合读)。
 
     **包成绩单 = `calibration.detail.strata` 本身**(产物原文已按
     `pack_version × verification_ruleset_version` 分层)——⛔ 不另建第二份聚合,
@@ -256,12 +263,59 @@ class ReviewOverviewOut(BaseModel):
     weekKey: str = ""                       # ISO 周键(`YYYY-Www`),对账段按它取
     calibration: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
     reconcile: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
+    # V2.5.0 S11:结论存档段(架构 §六 第 3 件事)。同对账段的三态读法 ——
+    # `available=true` + `detail.found=false` = 「这周还没写结论」(⛔ 不是「没取到」)。
+    conclusions: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
     observations: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
     # 🔴 V2.5.0 S1:`preference` / `capability`(`profile/` 整包退役)与
     # `selectionClock` / `tradeClock` / `iterationSuggestions`(双时钟复盘退役)
     # 五段**已删除** —— 它们的数据源已随 K8 一起下线,留着只会让客户端每次都拿到
     # 一段 `available=false` 的空壳,把"这个功能没了"伪装成"这次没取到"。
     # 复盘板块的目标形态见 PROJECT_PLAN §5.9 / §5.11,S11 收口。
+
+
+class ReviewBinderyOut(BaseModel):
+    """行情材料装订(V2.5.0 S11,架构 §六 第 2 件事)。
+
+    🔴 **零 LLM、零写库**:这一层只取数与排版(架构 §六 逐字「这一层无 LLM 调用」)。
+    `binding` 原样透传 `review/bindery.py::WeekBinding.to_dict()`(同 `result` 透传
+    惯例,⛔ 不在 API 层镜像一套会漂的嵌套模型);`markdown` 是同一份材料的排版结果,
+    供用户**整段复制到聊天框**。
+
+    ⚠ **`found=False` 是「这周没上传过交割单」**(⛔ 不是 404、⛔ 不是「系统没跑」):
+    装订的输入只能由用户给,系统查过 `reviews` 表确实没有那一行。
+    ⚠ **`binding.gaps` 与逐笔的 `gaps` 必须原样呈现**:哪一段材料没取到、为什么,
+    是材料的一部分;⛔ 客户端不许把它折叠掉(那等于让缺失静默)。"""
+
+    ok: bool = True
+    found: bool = False
+    week: str = ""
+    binding: Optional[Dict[str, Any]] = None
+    markdown: str = ""
+    unavailableReason: Optional[str] = None
+
+
+class ReviewConclusionIn(BaseModel):
+    """存一版复盘结论(append-only:每存一次 = 新版本,⛔ 老版本一个字不动)。"""
+
+    week: str
+    title: str
+    body: str
+    tags: List[str] = Field(default_factory=list)
+    author: str = "user"
+
+
+class ReviewConclusionsOut(BaseModel):
+    """结论存档的读回。`latest` = 该周最新版;`versions` = 该周全部版本(升序);
+    `matches` = 检索命中(每周只出最新版,按周降序)。
+
+    ⚠ `latest=None` = **那周还没写过结论**(⛔ 别渲染成「这周没问题」)。"""
+
+    ok: bool = True
+    week: str = ""
+    latest: Optional[Dict[str, Any]] = None
+    versions: List[Dict[str, Any]] = Field(default_factory=list)
+    matches: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ReviewGetOut(BaseModel):
@@ -297,5 +351,8 @@ __all__ = [
     "ReviewUploadOut",
     "ReviewSegmentOut",
     "ReviewOverviewOut",
+    "ReviewBinderyOut",
+    "ReviewConclusionIn",
+    "ReviewConclusionsOut",
     "ReviewGetOut",
 ]

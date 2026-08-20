@@ -355,3 +355,155 @@ class TestNoOnlineRecompute:
                 }
                 assert "build_report" not in names, f"{node.name} 调了 build_report(P0-23 红线)"
         assert seen == targets, f"守门的函数清单过期了,少扫到:{sorted(targets - seen)}"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.5.0 S11 · 装订 / 结论存档两条新端点(架构 §六)
+# ══════════════════════════════════════════════════════════════════════════
+
+def _upload(client, AUTH) -> str:
+    r = client.post(
+        "/api/v1/review/upload", headers=AUTH,
+        files={"files": ("交割单.xlsx", _sample_workbook(), "application/octet-stream")},
+    )
+    assert r.status_code == 200
+    return r.json()["weeks"][0]["week"]
+
+
+class TestBinderyEndpoint:
+    def test_requires_auth(self, client):
+        assert client.get("/api/v1/review/bindery?week=2026-W29").status_code == 401
+
+    def test_week_without_a_statement_is_found_false_not_404(self, client, AUTH, review_env):
+        """装订的输入只能由用户给 —— 系统查过表确实没有,那是**「没有」**不是 404。"""
+        r = client.get("/api/v1/review/bindery?week=2099-W01", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["found"] is False and body["binding"] is None
+        assert "尚未上传交割单" in body["unavailableReason"]
+
+    def test_missing_week_param_is_found_false(self, client, AUTH, review_env):
+        r = client.get("/api/v1/review/bindery", headers=AUTH)
+        assert r.status_code == 200 and r.json()["found"] is False
+
+    def test_binds_the_archived_week_and_prints_its_gaps(self, client, AUTH, review_env):
+        """夹具库里没有行情 parquet → 材料必然有缺口,而缺口**必须被印出来**
+        (⛔ 不许用空列表冒充「查过了没有」)。"""
+        week = _upload(client, AUTH)
+        r = client.get(f"/api/v1/review/bindery?week={week}", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["found"] is True
+        binding = body["binding"]
+        assert binding["week"] == week
+        assert binding["roundTrips"], "存档里有回合,装订却一笔都没出"
+        rt = binding["roundTrips"][0]
+        assert rt["tsCode"] == "600519.SH"
+        assert [m["side"] for m in rt["marks"]] == ["buy", "sell"]
+        assert rt["gaps"], "没有行情分区却报了零缺口"
+        for g in rt["gaps"]:
+            assert g in body["markdown"], "缺口没进 markdown —— 复制到聊天框就看不见了"
+
+    def test_markdown_says_it_is_material_not_a_judgement(self, client, AUTH, review_env):
+        week = _upload(client, AUTH)
+        md = client.get(f"/api/v1/review/bindery?week={week}", headers=AUTH).json()["markdown"]
+        assert "回看材料" in md and "不是判断" in md
+
+
+class TestConclusionsEndpoint:
+    def test_requires_auth(self, client):
+        assert client.post("/api/v1/review/conclusions", json={}).status_code == 401
+        assert client.get("/api/v1/review/conclusions").status_code == 401
+
+    def test_save_then_read_back_and_append_a_second_version(self, client, AUTH, review_env):
+        body = {"week": "2026-W29", "title": "追高了", "body": "两笔都在冲高时进。",
+                "tags": ["追高"]}
+        r = client.post("/api/v1/review/conclusions", headers=AUTH, json=body)
+        assert r.status_code == 200 and r.json()["latest"]["version"] == 1
+
+        body2 = dict(body, title="改口径", body="复看之后改判:是方向不对。")
+        r2 = client.post("/api/v1/review/conclusions", headers=AUTH, json=body2)
+        assert r2.json()["latest"]["version"] == 2
+
+        g = client.get("/api/v1/review/conclusions?week=2026-W29", headers=AUTH)
+        payload = g.json()
+        assert payload["latest"]["version"] == 2
+        assert [c["version"] for c in payload["versions"]] == [1, 2]
+        assert payload["versions"][0]["title"] == "追高了", "⛔ 老版本一个字都不许动"
+
+    def test_invalid_body_is_422_with_every_problem_listed(self, client, AUTH, review_env):
+        r = client.post("/api/v1/review/conclusions", headers=AUTH,
+                        json={"week": "2026W29", "title": "", "body": ""})
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert "ISO 周" in detail and "title" in detail and "body" in detail
+
+    def test_oversized_body_is_refused_not_truncated(self, client, AUTH, review_env):
+        from neckline.review import conclusions as C
+
+        r = client.post("/api/v1/review/conclusions", headers=AUTH,
+                        json={"week": "2026-W29", "title": "t",
+                              "body": "x" * (C.MAX_BODY_CHARS + 1)})
+        assert r.status_code == 422 and "不静默截断" in r.json()["detail"]
+
+    def test_never_written_week_reads_back_as_null_not_an_empty_conclusion(
+            self, client, AUTH, review_env):
+        r = client.get("/api/v1/review/conclusions?week=2099-W01", headers=AUTH)
+        assert r.status_code == 200
+        assert r.json()["latest"] is None and r.json()["versions"] == []
+
+    def test_search_across_weeks(self, client, AUTH, review_env):
+        for week, title in (("2026-W29", "追高"), ("2026-W30", "等回踩")):
+            client.post("/api/v1/review/conclusions", headers=AUTH,
+                        json={"week": week, "title": title, "body": f"{title}的复盘。"})
+        hits = client.get("/api/v1/review/conclusions?q=回踩", headers=AUTH).json()["matches"]
+        assert [h["week"] for h in hits] == ["2026-W30"]
+        allrows = client.get("/api/v1/review/conclusions", headers=AUTH).json()["matches"]
+        assert [h["week"] for h in allrows] == ["2026-W30", "2026-W29"]
+
+
+class TestConclusionsInOverview:
+    def test_segment_says_not_written_yet_rather_than_unavailable(
+            self, client, AUTH, week_env):
+        """🔴 同对账段:输入只能由用户给,系统查过表确实没有 → 「没有」不是「没取到」。"""
+        seg = _overview(client, AUTH)["conclusions"]
+        assert seg["available"] is True
+        assert seg["detail"]["found"] is False
+        assert "不等于" in seg["detail"]["note"]
+
+    def test_segment_carries_the_latest_version_once_written(self, client, AUTH, week_env):
+        week = _overview(client, AUTH)["weekKey"]
+        client.post("/api/v1/review/conclusions", headers=AUTH,
+                    json={"week": week, "title": "本周结论", "body": "写下来了。"})
+        seg = _overview(client, AUTH)["conclusions"]
+        assert seg["detail"]["found"] is True
+        assert seg["detail"]["latest"]["title"] == "本周结论"
+        assert seg["detail"]["versionCount"] == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.5.0 S13 · K8 只读追溯入口(裁定 6)
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestLegacyK8Endpoint:
+    def test_requires_auth(self, client):
+        assert client.get("/api/v1/legacy/k8/baskets").status_code == 401
+
+    def test_fresh_database_says_never_ran_k8_rather_than_404(self, client, AUTH, api_env):
+        """⚠ 全新 Neckline 库**有** `baskets` 表(裁定 6:表保留只读,只是没有写路径)
+        但一行都没有 —— 那句话与「跑过、只是不是这一天」⛔ 不许合并。"""
+        r = client.get("/api/v1/legacy/k8/baskets?date=20260724", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["available"] is True and body["found"] is False
+        assert body["overview"]["basketCount"] == 0
+        assert "从没跑过 K8" in body["reason"]
+
+    def test_overview_without_a_date_is_also_200(self, client, AUTH, api_env):
+        r = client.get("/api/v1/legacy/k8/baskets", headers=AUTH)
+        assert r.status_code == 200
+        assert r.json()["date"] is None and r.json()["baskets"] == []
+
+    def test_bad_date_is_422(self, client, AUTH, api_env):
+        assert client.get("/api/v1/legacy/k8/baskets?date=2026-07-24",
+                          headers=AUTH).status_code == 422

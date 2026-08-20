@@ -15,7 +15,7 @@ import json
 import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from neckline.db import connection, init_schema
 from neckline.playbook.model import (
@@ -139,6 +139,40 @@ def load_versions(
     return out
 
 
+def load_latest_range(
+    start: date, end: date, codes: Sequence[str], *, db_path: Optional[Path] = None
+) -> Dict[Tuple[str, str], Playbook]:
+    """`[start, end]` × `codes` 的**最新版**预案:`(trade_date, ts_code) → Playbook`。
+
+    🔴 **一次查询**取全,⛔ 别在调用方按日循环调 `load_latest` —— `init_schema()` 在
+    每次调用里都会重跑整份 schema 脚本,40 天的复盘窗口就是 40 次全表建表检查
+    (S11 复盘装订原本会踩这个)。
+
+    解析不过的行同 `load_latest`:**跳过并 WARNING**,⛔ 不让一份坏预案掀翻整份材料。
+    """
+    wanted = [c for c in dict.fromkeys(codes) if c]
+    if not wanted or start > end:
+        return {}
+    init_schema(db_path)
+    placeholders = ",".join("?" for _ in wanted)
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT {_SELECT} FROM {TABLE} p WHERE p.trade_date>=? AND p.trade_date<=? "
+            f"AND p.ts_code IN ({placeholders}) AND p.version = "
+            f"(SELECT MAX(version) FROM {TABLE} q WHERE q.trade_date=p.trade_date "
+            f" AND q.ts_code=p.ts_code) ORDER BY p.trade_date, p.ts_code",
+            (_d(start), _d(end), *wanted),
+        ).fetchall()
+    out: Dict[Tuple[str, str], Playbook] = {}
+    for r in rows:
+        try:
+            out[(r[0], r[1])] = _row_to_playbook(r)
+        except PlaybookInvalid:
+            logger.warning("[playbook] %s %s 的冻结预案解析不过,本次跳过这一只",
+                           r[0], r[1], exc_info=True)
+    return out
+
+
 def count_for_day(trade_date: date, *, db_path: Optional[Path] = None) -> int:
     """当日有几只票冻了预案(去重后)。"""
     init_schema(db_path)
@@ -152,5 +186,6 @@ def count_for_day(trade_date: date, *, db_path: Optional[Path] = None) -> int:
 
 __all__ = [
     "TABLE", "SOURCE_LLM", "SOURCE_USER",
-    "next_version", "save", "load_latest", "load_versions", "count_for_day",
+    "next_version", "save", "load_latest", "load_versions", "load_latest_range",
+    "count_for_day",
 ]
