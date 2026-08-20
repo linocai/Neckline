@@ -6,7 +6,7 @@
 
 本文件锁四件事:
 
-1. **退役包零残留** —— `neckline/` 与 `scripts/` 内不得再 import
+1. **退役包零残留(§10 G19)** —— `neckline/` 与 `scripts/` 内不得再 import
    `neckline.sentinel` / `neckline.scan` / `neckline.selection` / `neckline.strategy` /
    `neckline.profile`,以及四个顶层退役模块。
 2. **两块承重墙搬到位且没有兼容 shim** —— `data/realtime.py` 与 `dedup.py` 必须在新家
@@ -94,6 +94,8 @@ def _hits(prefixes: Tuple[str, ...]) -> List[str]:
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_retired_packages_have_zero_import_sites():
+    """🔴 **§10 G19「退役对象零残留」的具名落点**(编号此前只在 §10 表里,
+    测试侧没有,于是「哪条守门实现在哪」要靠现场推理)。"""
     hits = _hits(RETIRED_PACKAGES)
     assert hits == [], "退役包仍被 import:\n" + "\n".join(hits)
 

@@ -8,6 +8,7 @@
 | 2 | 🔴 `coverage_all` 的整条计算路径读不到任何 §8 待标定参数 | §6 S4 验收 |
 | 3 | 漏检归因是**闭合枚举**,⛔ 代码里不许现编归因字符串 | §5.8.1 |
 | 4 | ⛔ 成绩线之间不合并:scorecard 存储层无「行业分 + 选票分」的合计字段(G13 的提前落位) | §5.8.2 |
+| G14 | 观察分支⛔ 不进三个比率 —— 主体归 S17,本文件放一条**绊线**(见文件末) | §10 G14 |
 
 ⚠ 第 4 条这一版只能守住**它现在有的东西**(覆盖率两张表)。清单成绩五指标的
 `listing.py` 归 S17,那时要把 G13 的断言补全到那张表上。
@@ -140,3 +141,60 @@ def test_new_tables_are_created_on_an_empty_db(tmp_path, table):
     finally:
         conn.close()
     assert got == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# G14 · 观察分支⛔ 不进三个比率的分子分母 —— **本条是绊线,不是判据**
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 三路复审都点了同一件事:**G14 是 §10 那 22 条里唯一没有任何具名测试的一条**。
+# 原因不是漏做,是它的主体不存在 —— 清单成绩五指标住 `scorecard/listing.py`,归 S17;
+# 全仓 grep `成立率 / confirm_rate / reject_rate / observed_rate` **零命中**,
+# `/api/v1/scoreboard/listing` 还被 `test_contract_crosscheck.py` 反向断言「现在就该
+# 不存在」。也就是说 G14 今天没有可断言的对象。
+#
+# ⛔ **但不许在 §10 表里留一条没人实现的**。处置:把它做成**绊线** ——
+# 断言那三个比率此刻确实还不存在;S17 把它们落下来的那天,本条当场红,
+# 提醒把真判据补上(`verdict='observed'` 的行不进任何一个比率的分子或分母)。
+# 已在 §10 表里逐字标注「随 S17 落地」。
+# ══════════════════════════════════════════════════════════════════════════
+
+#: 三个比率一旦出现,会长什么样(蛇形 / 驼峰 / 中文,三种写法都拦)。
+_LISTING_RATE_TOKENS: Tuple[str, ...] = (
+    "confirm_rate", "reject_rate", "observed_rate",
+    "confirmRate", "rejectRate", "observedRate",
+    "成立率", "错杀率", "兑现率",
+)
+
+
+def test_g14_the_observed_branch_is_representable_so_it_can_be_excluded_later():
+    """正向:「观察」必须是一个**能被点名的取值** —— 它是 G14 要排除的那一类。
+
+    ⛔ 若哪天有人把三分支压成 `成立 / 不成立` 两值,G14 就无从谈起了(要排除的那一
+    维被压掉了),这条会当场红。
+    """
+    from neckline.playbook.evaluate import Verdict  # noqa: PLC0415
+
+    assert {v.name for v in Verdict} == {"CONFIRMED", "REJECTED", "OBSERVED"}, (
+        f"三分支终值不再是三分支:{[v.name for v in Verdict]}")
+
+
+def test_g14_tripwire_the_three_listing_rates_have_not_landed_yet():
+    """🔴 **G14 的绊线**(§10 已标注「随 S17 落地」)。
+
+    S17 落 `scorecard/listing.py` 的那一刻本条会红。**那时请把它换成真判据**:
+    拿一份含 `verdict='observed'` 行的 `k9_d1_verdicts` 夹具,断言三个比率
+    **返回 `None` 而不是 0**,且观察行不进任何分子分母。
+    ⛔ 不要只是把这条删掉 —— 删掉就又回到「§10 表里有一条没人实现」。
+    """
+    assert not (_PKG / "scorecard" / "listing.py").exists(), (
+        "`scorecard/listing.py` 出现了 —— S17 落地了,请把 G14 换成真判据(见 docstring)")
+    hits: List[str] = []
+    for path in sorted(_PKG.rglob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        for token in _LISTING_RATE_TOKENS:
+            if token in src:
+                hits.append(f"{path.relative_to(_ROOT)} → {token}")
+    assert hits == [], (
+        "清单成绩的比率出现了,而 G14 的真判据还没补上:\n" + "\n".join(hits)
+        + "\n👉 请把「观察行不进任何分子分母」写成夹具断言,并删掉本条绊线。")
