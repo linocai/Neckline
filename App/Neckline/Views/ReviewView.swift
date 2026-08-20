@@ -134,8 +134,10 @@ struct ReviewView: View {
         #if os(macOS)
         uploadCard
         #else
-        NKNoteBlock(text: "上传交割单是**桌面场景**(要拖文件)—— 在 macOS 端的复盘 · 交割单页做。"
-                    + "这里能看到已经解析好的结果。")
+        // ⚠ **必须是单个字面量**:`NKNoteBlock.text` 是 `LocalizedStringKey`,
+        // 而 `"a" + "b"` 求值成 `String` —— 编译不过(且这一支只在 iOS 编译,
+        // macOS 那条构建线一行都看不到它,V2.5.0 就是这么漏过去的)。
+        NKNoteBlock(text: "上传交割单是**桌面场景**(要拖文件)—— 在 macOS 端的复盘 · 交割单页做。这里能看到已经解析好的结果。")
         #endif
         warningsCard
         if let entry = model.selectedReviewEntry {
