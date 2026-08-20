@@ -34,17 +34,21 @@ from neckline.k9.contract import PackRange
 #: 输出列名(⚠ 别叫 `volume_ratio` —— 那是形态 4 的另一个量,重名迟早出事)。
 COLUMN = "vol_multiple"
 
-#: 分母所需的**最少**历史天数比例。少于窗口一半的历史 → 该日整列判为不可用
-#: (⛔ 不拿 3 天均量冒充 20 日均量:那会让上线首几天所有票都「放量」)。
-_MIN_COVERAGE = 0.5
-
-
 def compute(pack: PackRange, *, ma_days: int) -> pl.DataFrame:
     """放量倍数 `ts_code → vol_multiple`(两列 DataFrame)。
 
-    历史不足(有效天数 < `ma_days` 的一半)或均量为 0 → 该票 `vol_multiple` 为
-    **null**,⛔ 不填 0、不填 1:「算不出来」与「没放量」是两件事,前者不该让一只
-    票通过 p3 的「尚未爆发」(< V)。所有门槛判定都必须先过 `is_not_null()`。
+    🔴 **满窗才给读数**:有效天数 **< `ma_days`** 或均量为 0 → 该票 `vol_multiple`
+    为 **null**,⛔ 不填 0、不填 1:「算不出来」与「没放量」是两件事,前者不该让
+    一只票通过 p3 的「尚未爆发」(< V)。所有门槛判定都必须先过 `is_not_null()`。
+
+    ⚠ **这里曾经有一个 `_MIN_COVERAGE = 0.5`**(2026-08-21 复审 H3 摘除):
+    它让「20 日窗口里只有 10 天历史」的票拿 **10 天均量**当分母,却和满窗的票
+    共用同一个 `vol_multiple` 名字与同一个门槛 V —— 实测两只票当日同为 250 手时
+    都拿到 2.5,而放量倍数正是 p1 / p3 的**分界**(裁定 15)。那个 0.5 不在 §8
+    待标定总表里、也不在 §14 S6 的登记里,是一个**未登记的自定量**;同组另外三处
+    (`p2._prev_close_and_ma` / `p3._window_sum` / `p4._cum_inflow`)全都要满窗,
+    只有它收半窗。现在与它们一致。
+    ⚠ 这是**去掉一个数**,不是发明一个 —— 口径影响已登记 §13.1 交用户过目。
     """
     return _multiple(pack, ma_days=ma_days)
 
@@ -62,8 +66,9 @@ def _multiple(pack: PackRange, *, ma_days: int) -> pl.DataFrame:
     if hist.is_empty():
         return today.select("ts_code").with_columns(
             pl.lit(None, dtype=pl.Float64).alias(COLUMN))
+    # 区间里连 `ma_days` 天都凑不齐 → 整列不可用(⛔ 不拿 3 天均量冒充 20 日均量)。
     sessions = int(hist["trade_date"].n_unique())
-    if sessions < max(1, int(ma_days * _MIN_COVERAGE)):
+    if sessions < ma_days:
         return today.select("ts_code").with_columns(
             pl.lit(None, dtype=pl.Float64).alias(COLUMN))
 
@@ -78,7 +83,8 @@ def _multiple(pack: PackRange, *, ma_days: int) -> pl.DataFrame:
             pl.col("_vol_ma").is_not_null()
             & (pl.col("_vol_ma") > 0)
             & pl.col("_vol_today").is_not_null()
-            & (pl.col("_days") >= max(1, int(ma_days * _MIN_COVERAGE)))
+            # 逐票满窗:窗口里缺过日子的票不给读数(与 p2 / p3 / p4 同一条纪律)。
+            & (pl.col("_days") >= ma_days)
         )
         .then(pl.col("_vol_today") / pl.col("_vol_ma"))
         .otherwise(None)

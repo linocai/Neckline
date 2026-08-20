@@ -127,6 +127,45 @@ class TestBoundary:
         # 逐条边界计数也要认它(⛔ 两处记账各说各话)。
         assert res.boundary_counts[boundary_mod.EXCL_SUSPENDED] >= 1
 
+    def test_a_short_history_stock_is_not_ranked_against_twenty_day_averages(
+        self, market, tmp_path,
+    ):
+        """🔴 复审 H4:第 7 条的「**20 日**平均成交额」上一版没有窗口长度过滤。
+
+        一只只有 11 天数据的票拿 11 天均值去和全市场的 20 日均值比分位,排出来的
+        名次没有意义 —— 而这条排除项决定它进不进池,方向还不确定(恰好放量 →
+        名次虚高不被排除;恰好缩量 → 被误排)。现在历史不足 → 均值为 null →
+        **不排除**,这才是 `_liquidity_cut` docstring 一直承诺的行为。
+        """
+        env, day = market
+        params = k9_env.params(env, tmp_path)
+        pack, _ = k9_run.build_pack_range(
+            day, params=params, parquet_dir=env.parquet_dir, db_path=env.db_path)
+        window = params.boundary.liquidity_window_days
+        assert window >= 4, "夹具自检:窗口太短这条构造不出「半窗」"
+
+        # 那只最不流动的票只留最近半个窗口的历史 —— 旧口径照样给它一个半窗均值,
+        # 于是它照样以「20 日均额」的名义参与分位、照样被排掉。
+        code = k9_env.ILLIQUID_CODE
+        days = sorted(pack.frame["trade_date"].unique().to_list())
+        keep_from = days[-(window // 2)]
+        thinned = pack.frame.filter(
+            (pl.col("ts_code") != code) | (pl.col("trade_date") >= keep_from))
+        thin_pack = type(pack)(as_of=pack.as_of, frame=thinned,
+                               pack_id=pack.pack_id, pack_version=pack.pack_version)
+        from neckline.facts import universe as facts_universe
+        full = facts_universe.market_universe(day, db_path=env.db_path)
+        verdicts = boundary_mod.apply(
+            thin_pack, boundary=params.boundary, industry=params.industry, universe=full)
+        got = {r["ts_code"]: r[boundary_mod.REASON_COLUMN]
+               for r in verdicts.iter_rows(named=True)}
+        assert got[code] != boundary_mod.EXCL_ILLIQUID, (
+            "历史不足的票⛔ 不该被第 7 条排除 ——「算不出来」不等于「流动性弱」")
+        # 对照:满窗时它确实是被第 7 条排掉的那一只。
+        assert {r["ts_code"]: r[boundary_mod.REASON_COLUMN] for r in boundary_mod.apply(
+            pack, boundary=params.boundary, industry=params.industry, universe=full,
+        ).iter_rows(named=True)}[code] == boundary_mod.EXCL_ILLIQUID
+
     def test_boundary_counts_are_per_rule_not_a_total(self, market, tmp_path):
         env, day = market
         res, _ = _compute(env, day, tmp_path)
@@ -256,6 +295,63 @@ class TestVolumeRulings:
         assert volume_mod.erupted(None, 2.0) is None
         assert volume_mod.erupted(1.9, 2.0) is False
         assert volume_mod.erupted(2.0, 2.0) is True
+
+    def test_a_half_window_of_history_gives_no_volume_multiple(self, market, tmp_path):
+        """🔴 复审 H3:这里曾经有个 `_MIN_COVERAGE = 0.5`(**未登记的自定量**)。
+
+        实测(`ma_days=20`):19 天历史与 10 天历史的票当日同为 250 手,**同样**拿到
+        `vol_multiple = 2.5` —— 后者的分母是 10 天均量。而放量倍数正是 p1 / p3 的
+        分界(裁定 15),这个数直接决定谁进哪个形态。现在与 p2 / p3 / p4 一致:
+        **满窗才给读数**。
+        """
+        env, day = market
+        params = k9_env.params(env, tmp_path)
+        pack, _ = k9_run.build_pack_range(
+            day, params=params, parquet_dir=env.parquet_dir, db_path=env.db_path)
+        ma = params.volume.ma_days
+        assert ma >= 4, "夹具自检:窗口太短这条构造不出「半窗」"
+
+        code = k9_env.P1_CODE
+        hist_days = sorted(pack.frame["trade_date"].unique().to_list())
+        # 只给这一只票留最近 (ma // 2) 天历史 + 当日 —— 恰好落在旧口径的「够一半」区间。
+        keep_from = hist_days[-(ma // 2 + 1)]
+        thinned = pack.frame.filter(
+            (pl.col("ts_code") != code) | (pl.col("trade_date") >= keep_from))
+        thin_pack = type(pack)(as_of=pack.as_of, frame=thinned,
+                               pack_id=pack.pack_id, pack_version=pack.pack_version)
+        got = {r["ts_code"]: r[volume_mod.COLUMN]
+               for r in volume_mod.compute(thin_pack, ma_days=ma).iter_rows(named=True)}
+        assert got[code] is None, "半窗历史⛔ 不许给读数(旧口径会给一个 10 天均量的倍数)"
+        assert got[k9_env.P2_CODE] == pytest.approx(1.5, rel=1e-6), "满窗的票照常有读数"
+
+    def test_the_volume_multiple_needs_the_whole_window_like_its_three_siblings(self):
+        """同组四处的纪律必须是同一条(⛔ 只有放量倍数收半窗 = 口径不一致)。
+
+        判据是**源码里没有那个常量**:它一旦回来,半窗的票又会和满窗的票共用同一个
+        `vol_multiple` 名字与同一个门槛 V。
+        """
+        from pathlib import Path
+
+        from tests import guard_scan
+
+        assert not hasattr(volume_mod, "_MIN_COVERAGE")
+        # ⚠ 判据走剥掉 docstring / 注释的**代码**:模块头留着「这里曾经有过什么」的
+        # 沿革说明,那是纪律的解释,⛔ 不该逼人为了凑绿把它删掉。
+        code = guard_scan.code_without_docstrings(Path(volume_mod.__file__))
+        assert "_MIN_COVERAGE" not in code, (
+            "`_MIN_COVERAGE` 回来了 —— 它是一个未登记的自定量(§8 待标定总表与 "
+            "§14 S6 登记里都没有它),⛔ 施工侧不许替它选值")
+        # 同组四处的判据形状:满窗才给读数。
+        for mod_path, needle in (
+            ("channels/p2_rebound.py", 'pl.col("_n") >= ma_days'),
+            ("channels/p3_riser.py", 'pl.col("_n") >= days'),
+            ("channels/p4_moneyflow.py", '_n"] >= days'),
+            ("boundary.py", 'pl.col("_n") >= window_days'),
+            ("volume.py", 'pl.col("_days") >= ma_days'),
+        ):
+            src = guard_scan.code_without_docstrings(
+                Path(volume_mod.__file__).parent / mod_path)
+            assert needle in src, f"{mod_path} 的「满窗才给读数」判据不见了"
 
 
 # ══════════════════════════════════════════════════════════════════════════

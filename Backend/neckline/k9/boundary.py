@@ -90,8 +90,15 @@ def _liquidity_cut(pack: PackRange, window_days: int, bottom_pct: float) -> pl.D
 
     ⚠ 分位在**当日全市场**上取,不是在某个子集上 —— K9 §二 原文就是「位于全市场后
     20%」(这是全链里唯一一处**刻意用全市场**做分母的地方,见 `k9/run.py` 模块头)。
-    历史不足 → 均值为 null → **不排除**(⛔ 「算不出来」不等于「流动性弱」,那会在
-    上线首几天把整个市场排干净)。
+
+    🔴 **满窗才给均值**(2026-08-21 复审 H4):K9 §二 第 7 条逐字是「**20 日**平均
+    成交额位于全市场后 20%」。上一版没有任何窗口长度过滤 —— 一只只有 11 天数据的票
+    拿 **11 天均值**去和 5500 只票的 20 日均值比分位,排出来的名次没有意义,而这条
+    排除项决定它进不进池;方向还不确定(3 天恰好放量 → 名次虚高不被排除;
+    3 天恰好缩量 → 被误排)。现在窗口内缺过日子的票**不进这张表**,于是
+    历史不足 → 均值为 null → **不排除** —— 这才是本 docstring 一直承诺的行为
+    (⛔ 「算不出来」不等于「流动性弱」,那会在上线首几天把整个市场排干净),
+    也与 p2 / p3 / p4 / 放量倍数四处的「满窗才给读数」同一条纪律。
 
     🔴 **走名次不走数值分位点**(`ranks.pct_rank`,并列取平均名次):
     `quantile()` 配 `<=` 在**大量并列**的分布上会一口气排掉远超 `bottom_pct` 的票
@@ -105,7 +112,10 @@ def _liquidity_cut(pack: PackRange, window_days: int, bottom_pct: float) -> pl.D
         hist.select(["ts_code", "amount"])
         .filter(pl.col("amount").is_not_null())
         .group_by("ts_code")
-        .agg(pl.col("amount").mean().alias("_amt_ma"))
+        .agg(pl.col("amount").mean().alias("_amt_ma"), pl.len().alias("_n"))
+        # 窗口内有缺日的票不给均值(⛔ 不拿 3 天均额冒充 20 日均额)
+        .filter(pl.col("_n") >= window_days)
+        .select(["ts_code", "_amt_ma"])
     )
     if avg.is_empty():
         return pl.DataFrame(schema={"ts_code": pl.String, "_illiquid": pl.Boolean})
