@@ -384,6 +384,27 @@ class TestCompleteness:
         _seed_day(env, limit_rows=[], suspend_rows=[])
         assert isinstance(_build(env), fact_pack.CompletePack)
 
+    def test_a_day_with_no_limit_ups_at_all_still_builds(self, isolated_env):
+        """「当日一只涨停都没有」是**合法的市场事实**,不是故障。
+
+        ⚠ 判据必须是「分区里有没有 `ts_code` 列」而不是 `is_empty()`:0 行的分区
+        可能只带一列 `trade_date`,拿它去 join 会抛「找不到 ts_code」——
+        那正是把一个平静的日子读成故障。"""
+        env = isolated_env
+        _seed_meta(env)
+        _seed_day(env)
+        from neckline.data.market_data import write_table_day
+        write_table_day("limit_derived", D0, pl.DataFrame(schema={"trade_date": pl.Date}),
+                        parquet_dir=env.parquet_dir)
+        built = _build(env)
+        assert isinstance(built, fact_pack.CompletePack)
+        rows = built.rows
+        assert rows.height == len(UNIVERSE)
+        assert rows["is_limit_up"].sum() == 0
+        assert rows["consec_limit_up_days"].sum() == 0
+        assert built.market["limitMap"]["limitUpCount"] == 0
+        assert built.market["limitMap"]["zabanRate"] is None
+
     def test_empty_sw_membership_is_a_gap(self, isolated_env):
         env = isolated_env
         insert_trade_cal(env, [D0, D1])

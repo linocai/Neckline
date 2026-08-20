@@ -1,0 +1,114 @@
+{
+  "packageVersion": "__TO_BE_CALIBRATED__",
+  "factPackVersion": "__TO_BE_CALIBRATED__",
+  "calibratedBy": "__TO_BE_CALIBRATED__",
+  "calibratedAt": "__TO_BE_CALIBRATED__",
+  "approvedBy": "__TO_BE_CALIBRATED__",
+  "approvedAt": "__TO_BE_CALIBRATED__",
+  "boundary": {
+    "newListingDays": "__TO_BE_CALIBRATED__",
+    "liquidityWindowDays": "__TO_BE_CALIBRATED__",
+    "liquidityBottomPct": "__TO_BE_CALIBRATED__",
+    "spikeFadeRetPct": "__TO_BE_CALIBRATED__",
+    "spikeFadeGapPct": "__TO_BE_CALIBRATED__"
+  },
+  "industry": {
+    "minMembers": "__TO_BE_CALIBRATED__",
+    "excludedL2Codes": [
+      "801125.SI"
+    ],
+    "heatAbsentPolicy": "__TO_BE_CALIBRATED__"
+  },
+  "channels": {
+    "p1": {
+      "strict": {
+        "ampWindowDays": "__TO_BE_CALIBRATED__",
+        "ampMaxPct": "__TO_BE_CALIBRATED__",
+        "minRetPct": "__TO_BE_CALIBRATED__",
+        "volMaDays": "__TO_BE_CALIBRATED__"
+      },
+      "relaxed": {
+        "ampWindowDays": "__TO_BE_CALIBRATED__",
+        "ampMaxPct": "__TO_BE_CALIBRATED__",
+        "minRetPct": "__TO_BE_CALIBRATED__",
+        "volMaDays": "__TO_BE_CALIBRATED__"
+      }
+    },
+    "p2": {
+      "strict": {
+        "normDropMin": "__TO_BE_CALIBRATED__",
+        "maDays": "__TO_BE_CALIBRATED__",
+        "minTurnover": "__TO_BE_CALIBRATED__"
+      },
+      "relaxed": {
+        "normDropMin": "__TO_BE_CALIBRATED__",
+        "maDays": "__TO_BE_CALIBRATED__",
+        "minTurnover": "__TO_BE_CALIBRATED__"
+      }
+    },
+    "p3": {
+      "strict": {
+        "longWindow": "__TO_BE_CALIBRATED__",
+        "shortWindow": "__TO_BE_CALIBRATED__",
+        "flatBand": "__TO_BE_CALIBRATED__"
+      },
+      "relaxed": {
+        "longWindow": "__TO_BE_CALIBRATED__",
+        "shortWindow": "__TO_BE_CALIBRATED__",
+        "flatBand": "__TO_BE_CALIBRATED__"
+      }
+    },
+    "p4": {
+      "strict": {
+        "dailyInflowRankPct": "__TO_BE_CALIBRATED__",
+        "cumDays": "__TO_BE_CALIBRATED__",
+        "cumInflowRankPct": "__TO_BE_CALIBRATED__",
+        "lagRankGap": "__TO_BE_CALIBRATED__"
+      },
+      "relaxed": {
+        "dailyInflowRankPct": "__TO_BE_CALIBRATED__",
+        "cumDays": "__TO_BE_CALIBRATED__",
+        "cumInflowRankPct": "__TO_BE_CALIBRATED__",
+        "lagRankGap": "__TO_BE_CALIBRATED__"
+      }
+    }
+  },
+  "ranking": {
+    "weights": {
+      "industryHeat": "__TO_BE_CALIBRATED__",
+      "patternStrength": "__TO_BE_CALIBRATED__",
+      "relay": "__TO_BE_CALIBRATED__"
+    },
+    "patternSubWeights": {
+      "p1": {
+        "volMultiple": "__TO_BE_CALIBRATED__",
+        "upsideRoomFar": "__TO_BE_CALIBRATED__",
+        "relStrength": "__TO_BE_CALIBRATED__"
+      },
+      "p2": {
+        "relStrengthShortfall": "__TO_BE_CALIBRATED__"
+      },
+      "p3": {
+        "shortWindowImprovement": "__TO_BE_CALIBRATED__",
+        "upsideRoomNear": "__TO_BE_CALIBRATED__"
+      },
+      "p4": {
+        "inflowRank": "__TO_BE_CALIBRATED__",
+        "volumeRatioRank": "__TO_BE_CALIBRATED__"
+      }
+    },
+    "relayLookbackDays": "__TO_BE_CALIBRATED__",
+    "relaySource": "__TO_BE_CALIBRATED__",
+    "relayScoring": "__TO_BE_CALIBRATED__",
+    "upsideRoomMechDays": "__TO_BE_CALIBRATED__"
+  },
+  "quota": {
+    "min": "__TO_BE_CALIBRATED__",
+    "max": "__TO_BE_CALIBRATED__",
+    "floorPerChannel": "__TO_BE_CALIBRATED__",
+    "overStrictConsecutiveDays": "__TO_BE_CALIBRATED__"
+  },
+  "explain": {
+    "maxBackfillRounds": "__TO_BE_CALIBRATED__"
+  }
+}

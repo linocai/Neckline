@@ -242,8 +242,12 @@ _LIMIT_COLS = ("limit_up_price", "limit_down_price", "is_limit_up", "is_limit_do
 
 def _select_optional(df: pl.DataFrame, cols: Tuple[str, ...]) -> pl.DataFrame:
     """按需取列;上游少给了哪一列就补 null(⛔ 不抛 —— 缺整张表才是缺口,那已在
-    `completeness` 判过了;缺某一列由 null 如实表达)。"""
-    if df.is_empty():
+    `completeness` 判过了;缺某一列由 null 如实表达)。
+
+    ⚠ 判据是**有没有 `ts_code` 列**,不是 `is_empty()`:稀疏表当日 0 行是**合法的
+    市场事实**(一只涨停都没有的日子),而 0 行的分区可能只带一列 `trade_date`。
+    拿它去 join 会抛「找不到 ts_code」—— 那正是把一个平静的日子读成故障。"""
+    if "ts_code" not in df.columns:
         return pl.DataFrame(schema={"ts_code": pl.String, **{c: pl.Float64 for c in cols}})
     keep = ["ts_code"] + [c for c in cols if c in df.columns]
     out = df.select(keep)
@@ -276,17 +280,14 @@ def build(
         )
 
     basic = _select_optional(_read_day("daily_basic", trade_date, parquet_dir), _DAILY_BASIC_COLS)
-    adj = _read_day("adj_factor", trade_date, parquet_dir)
-    adj = (
-        adj.select(["ts_code", "adj_factor"])
-        if (not adj.is_empty() and "adj_factor" in adj.columns)
-        else pl.DataFrame(schema={"ts_code": pl.String, "adj_factor": pl.Float64})
-    )
+    adj = _select_optional(_read_day("adj_factor", trade_date, parquet_dir), ("adj_factor",))
     flow = _select_optional(_read_day("moneyflow_dc", trade_date, parquet_dir), _MONEYFLOW_COLS)
     limits = _read_day("limit_derived", trade_date, parquet_dir)
     limits = (
         limits.select([c for c in ("ts_code", *_LIMIT_COLS) if c in limits.columns])
-        if not limits.is_empty()
+        # ⚠ 「当日一只涨停都没有」是**合法的市场事实**:`limit_derived` 是只存
+        # 「有信号」行的稀疏表,那天的分区可以是 0 行。⛔ 不许把它读成故障。
+        if "ts_code" in limits.columns
         else pl.DataFrame(schema={"ts_code": pl.String})
     )
 

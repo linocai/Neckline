@@ -284,21 +284,79 @@ def _identifiers(path: Path) -> Set[str]:
     return out
 
 
+def _numeric_threshold_assignments(path: Path, word: str) -> List[str]:
+    """找出「把一个含 `word` 的名字**赋成数字字面量**」的写法 —— 也就是硬编码门槛。
+
+    ⛔ 刻意不禁止 `min_members: int` 这类**注解**(参数 dataclass 的字段)与
+    `min_members=raw[...]` 这类**传参** —— 门槛住在参数包里正是本片要的结果,
+    禁掉它等于连正确的去处一起禁了。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: List[str] = []
+    for node in ast.walk(tree):
+        targets: List[ast.expr] = []
+        value = None
+        if isinstance(node, ast.Assign):
+            targets, value = list(node.targets), node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        if value is None:
+            continue
+        if not (isinstance(value, ast.Constant) and isinstance(value.value, (int, float))
+                and not isinstance(value.value, bool)):
+            continue
+        for t in targets:
+            name = getattr(t, "id", None) or getattr(t, "attr", "")
+            if word in name.upper():
+                try:
+                    where = str(path.relative_to(_ROOT))
+                except ValueError:          # 自检用的临时文件不在仓库里
+                    where = path.name
+                out.append(f"{where}:{node.lineno} {name} = {value.value!r}")
+    return out
+
+
 def test_the_hardcoded_min_members_threshold_is_gone_from_the_whole_tree():
     """🔴 遗留 1:`report/industry_strength.py::_MIN_MEMBERS = 5` 是 §8.2 第 16 项
     **待标定参数**的硬编码值。⛔ 它绝不允许活进 K9 路径 —— 「行业成员数不足则不产出
-    强度」直接决定哪些票拿不到相对强度、进不了形态召回,是**策略主张**,必须走参数包
-    (`params.industry.minMembers`,住 `k9/industry_heat.py`)。
+    强度」直接决定哪些票拿不到相对强度、进不了形态召回,是**策略主张**,必须走参数包。
+
+    本条锁两件事:
+    ① 全仓**没有任何**把「最小成员数」赋成数字的写法(那就是硬编码门槛);
+    ② 这个概念**只允许**出现在 `neckline/k9/`(读参数包的策略层)——
+       事实层 `facts/industry.py` 对每个有成员的二级行业都产出中位数,**无门槛**。
 
     ⚠ 与 `limitmap.MIN_CLUSTER_SIZE` 的分工:那一个判「这个簇**存不存在**」(孤身
     涨停按字面不构成共振),是工程不变量;本条判「哪些票拿不到行业强度」,是策略主张。
     ⛔ 别把这条豁免推广开。"""
-    hits = [
+    hardcoded: List[str] = []
+    for p in _SCANNED:
+        hardcoded.extend(_numeric_threshold_assignments(p, "MIN_MEMBER"))
+    assert hardcoded == [], "最小成员数门槛被硬编码回来了:\n" + "\n".join(hardcoded)
+
+    mentions = sorted(
         str(p.relative_to(_ROOT))
         for p in _SCANNED
-        if any("MIN_MEMBERS" in ident.upper() for ident in _identifiers(p))
-    ]
-    assert hits == [], f"最小成员数门槛又回到了生产代码里:{hits}"
+        if any("MIN_MEMBER" in ident.upper() for ident in _identifiers(p))
+    )
+    assert mentions == ["neckline/k9/params.py"], (
+        "最小成员数只允许作为**参数包字段**出现在策略层;它出现在这些地方:"
+        f"{mentions}")
+
+
+def test_the_numeric_threshold_detector_actually_detects():
+    """扫描器自检:一个永远绿的闸门等于没有闸门。"""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "sample.py"
+        p.write_text(
+            "_MIN_MEMBERS = 5\n"                     # ← 硬编码门槛,必须被抓到
+            "min_members: int\n"                     # ← dataclass 字段注解,⛔ 不许误伤
+            "x = f(min_members=cfg['minMembers'])\n"  # ← 从参数包传参,⛔ 不许误伤
+            "MIN_MEMBERS_NOTE = 'see plan'\n",       # ← 字符串不是门槛,⛔ 不许误伤
+            encoding="utf-8")
+        hits = _numeric_threshold_assignments(p, "MIN_MEMBER")
+        assert len(hits) == 1 and "_MIN_MEMBERS = 5" in hits[0], hits
 
 
 def test_the_identifier_scanner_is_not_vacuously_green():
