@@ -465,6 +465,18 @@ class TestRetentionAndReadOnly:
         assert fact_store.load_pack(
             D0, parquet_dir=env.parquet_dir, db_path=env.db_path).rows.height == len(UNIVERSE)
 
+    def test_freezing_leaves_no_staging_leftovers(self, isolated_env):
+        """写序用的临时目录必须收干净 —— 它在 `parquet_dir` 里面(`os.replace` 要求
+        同一文件系统),留着会在生产上慢慢漏磁盘。"""
+        env = isolated_env
+        _seed_meta(env)
+        for d in (D0, D1):
+            _seed_day(env, day=d)
+            _freeze(env, _build(env, d))
+        table_root = env.parquet_dir / fact_store.PARQUET_TABLE
+        assert not (table_root / ".staging").exists()
+        assert sorted(p.name for p in table_root.iterdir()) == ["year=2024"]
+
     def test_rows_is_a_fresh_copy_every_time(self, isolated_env):
         env = isolated_env
         _seed_meta(env)

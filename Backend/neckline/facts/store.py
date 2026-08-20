@@ -172,8 +172,12 @@ def freeze_pack(
             f"⛔ 冻结不可覆盖。口径变了请发新 pack_version")
 
     # —— 纪律 2:临时路径 → fsync → sha256 → os.replace ——————————————————————
+    # ⚠ 临时目录必须在**同一文件系统内**(`os.replace` 跨设备会抛),故落在
+    # `<parquet_dir>/fact_pack/.staging/<uuid>/` 而不是系统 /tmp。
+    # `.staging` 不匹配读侧的 `year=*` glob,对任何读路径不可见。
     root = parquet_dir or settings.parquet_dir
-    staging = table_dir(PARQUET_TABLE, root) / ".staging" / uuid.uuid4().hex
+    staging_root = table_dir(PARQUET_TABLE, root) / ".staging"
+    staging = staging_root / uuid.uuid4().hex
     staging.mkdir(parents=True, exist_ok=True)
     try:
         tmp_path = write_table_day(
@@ -188,6 +192,12 @@ def freeze_pack(
         os.replace(tmp_path, final_path)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+        # 顺手收掉空壳。⚠ 用 `rmdir` 而不是 `rmtree`:进程被 kill 在中间时
+        # `.staging` 里可能躺着**别的进程正在写**的那一份,⛔ 不许连它一起删。
+        try:
+            staging_root.rmdir()
+        except OSError:
+            pass
 
     # 行业事实与大表同一份装配结果,一并落表(重算幂等,见 industry.save_day)。
     industry_mod.save_day(pack.trade_date, list(pack.industry_rows), db_path=db_path)
