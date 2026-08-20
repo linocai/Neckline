@@ -54,8 +54,16 @@ RETIRED_MODULES: Tuple[str, ...] = (
     "neckline.llm.nl_alert",
 )
 
-#: 裁定 6 的只读留档表(表不删、不迁移、不回填)。这份清单是**验收单**,
-#: 不是"新表清单" —— 它们全部已无应用层写入方。
+#: 裁定 6 的只读留档表(表不删、不迁移、不回填)。这份清单是**验收单**,不是
+#: "新表清单";它同时是 `test_v250_s14_release_gate.py` 那条**按表名的写保护**判据的
+#: 单一源(⛔ 别在别处再抄一份)。
+#:
+#: ⚠ **一处例外,写清楚免得下一个人以为是漏网**:`sentinel_events` 在这份清单里是为了
+#: 「表不许被删」,**不是**「不许被写」—— 裁定 7 定死「包没了、表名留着」,当日防重
+#: 台账 `neckline/dedup.py` 搬家之后仍以它为唯一落点(见本文件末
+#: `test_dedup_still_writes_the_sentinel_events_table`)。除它之外,清单里的表**已全部
+#: 无应用层写入方**;`scripts/oneoff/` 三个 K8 一次性脚本是仅剩的反例,已登记 §13.1-B12
+#: 并由 S14 那条 `xfail(strict=True)` 显式挂着。
 LEGACY_READONLY_TABLES: Tuple[str, ...] = (
     "baskets", "basket_members", "basket_cards", "tier_history",
     "gate_evaluations", "out_candidates", "basket_dropped_handoff",

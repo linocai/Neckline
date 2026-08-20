@@ -285,6 +285,38 @@ def code_without_docstrings(path: Path) -> str:
     return "\n".join(kept)
 
 
+def string_constants(path: Path) -> List[Tuple[int, str]]:
+    """AST 里所有**非 docstring** 的字符串常量 `(行号, 值)`。
+
+    这是「源码里不许出现这句 SQL」这类判据的**正确形状**:
+      · 注释天然不在 AST 里 —— ⛔ 不会因为有人写了 `# ⛔ 不许 DELETE FROM baskets`
+        就把这条纪律自己判红;
+      · docstring 显式排除 —— 同一条理由;
+      · **相邻字面量已被解析器折成一个常量**,跨行拼的
+        `"INSERT OR IGNORE INTO x "  "(a,b) VALUES (?,?)"` 不会被切碎(而按行 grep
+        的判据会:它只看得见前半句,后半句里的表名就丢了)。
+    """
+    tree = _parse(path)
+    doc_ids: Set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            doc_ids.add(id(first.value))
+    out: List[Tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in doc_ids):
+            out.append((node.lineno, node.value))
+    return out
+
+
 def attribute_reads(path: Path) -> Set[str]:
     """这个文件**读**过哪些属性名(`x.foo` 里的 `foo`)。"""
     tree = _parse(path)
@@ -348,7 +380,8 @@ def module_functions(path: Path) -> List[Tuple[str, ast.AST]]:
     return out
 
 
-def reaches(path: Path, entry_prefixes: Iterable[str], target: str) -> List[str]:
+def reaches(path: Path, entry_prefixes: Iterable[str], target: str,
+            label: Optional[str] = None) -> List[str]:
     """哪些以 `entry_prefixes` 开头的函数,**经本文件内的调用链**走得到 `target`。
 
     只在**单个文件**内做闭包(跨文件的调用图不做:那需要真的解析别名与
@@ -378,7 +411,7 @@ def reaches(path: Path, entry_prefixes: Iterable[str], target: str) -> List[str]
             continue
         chain = walk(name, set())
         if chain:
-            out.append(f"{path.name}:{getattr(node, 'lineno', 0)} "
+            out.append(f"{label or path.name}:{getattr(node, 'lineno', 0)} "
                        f"{' → '.join(chain)}")
     return out
 
@@ -387,7 +420,7 @@ __all__ = [
     "module_parts", "package_parts", "resolve_relative", "literal_str",
     "imports", "imports_any", "import_hits",
     "unresolvable_relative_imports", "opaque_dynamic_imports",
-    "code_without_docstrings",
+    "code_without_docstrings", "string_constants",
     "attribute_reads", "subscript_keys", "touched_names", "touched_any",
     "called_names", "module_functions", "reaches",
 ]

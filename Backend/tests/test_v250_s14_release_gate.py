@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Tuple
 import pytest
 
 from neckline.db import init_schema
+from tests import guard_scan
 
 _ROOT = Path(__file__).resolve().parent.parent
 _DEPLOY = _ROOT / "deploy"
@@ -205,6 +206,38 @@ def test_init_schema_is_idempotent_on_a_fresh_db(tmp_path: Path):
 # B. 本版是**纯新增**:零 ALTER / 零 DROP 新增
 # ══════════════════════════════════════════════════════════════════════════
 
+#: 🔴 会改动既有数据的 SQL 动词。**大小写不敏感**、`DELETE` 在表里。
+#: 复审实测:原来的表只有 4 个**大写**关键字、`DELETE` 根本不在里面 —— 于是
+#: `db.py` 里一句小写 `update baskets set …`(CE8)与 `DELETE FROM baskets`(CE9)
+#: 双双照绿。裁定 6 的原文是「表不删、**不迁移、不回填**」,`DELETE` 正是「回填」的
+#: 反面动作,它不在关键字表里等于这条裁定少了一半。
+_MUTATING_KEYWORDS: Tuple[str, ...] = (
+    "ALTER TABLE", "DROP TABLE", "DROP INDEX", "UPDATE ", "DELETE FROM",
+)
+
+
+def _ddl_statements(src: str) -> List[str]:
+    """源码里所有会改动既有数据的 SQL 语句行(⚠ 先剥掉注释)。"""
+    out: List[str] = []
+    for line in src.splitlines():
+        code = line.split("--", 1)[0].split("#", 1)[0]
+        upper = code.upper()          # 🔴 大小写不敏感 —— SQL 关键字本来就是
+        for kw in _MUTATING_KEYWORDS:
+            if kw in upper:
+                out.append(re.sub(r"\s+", " ", code.strip()))
+                break
+    return sorted(out)
+
+
+def test_the_ddl_scanner_is_case_insensitive_and_knows_about_delete():
+    """扫描器自检:一个看不见小写、也看不见 `DELETE` 的判据等于半个判据。"""
+    assert _ddl_statements('conn.execute("update baskets set x=1")')
+    assert _ddl_statements('conn.execute("DELETE FROM baskets")')
+    assert _ddl_statements('conn.execute("alter table baskets add column z TEXT")')
+    # 反向:注释里讲清这条纪律⛔ 不许被判红。
+    assert _ddl_statements("# 本版⛔ 不 ALTER TABLE baskets") == []
+
+
 def test_v250_adds_no_new_column_migration_and_no_new_alter_or_drop():
     """🔴 **§9.2**:「本版所有 schema 变更是**纯新增**(新表 + 新 parquet 目录),
     ⛔ 不 ALTER、不 DROP、不 UPDATE 任何 K8 表」。
@@ -216,17 +249,7 @@ def test_v250_adds_no_new_column_migration_and_no_new_alter_or_drop():
     """
     old_src, new_src = _baseline_db_py(), _DB_PY.read_text(encoding="utf-8")
 
-    def ddl_statements(src: str) -> List[str]:
-        out = []
-        for line in src.splitlines():
-            code = line.split("--", 1)[0].split("#", 1)[0]
-            for kw in ("ALTER TABLE", "DROP TABLE", "DROP INDEX", "UPDATE "):
-                if kw in code:
-                    out.append(re.sub(r"\s+", " ", code.strip()))
-                    break
-        return sorted(out)
-
-    added = sorted(set(ddl_statements(new_src)) - set(ddl_statements(old_src)))
+    added = sorted(set(_ddl_statements(new_src)) - set(_ddl_statements(old_src)))
     assert not added, (
         f"🔴 本版新增了 ALTER / DROP / UPDATE 语句:{added} —— §9.2 定死本版是**纯新增**。"
         f"若确有必要,先改 PROJECT_PLAN §9.2,再改这条守门。")
@@ -247,6 +270,239 @@ def test_v250_new_tables_are_all_actually_new():
     actually_new = sorted(new_tables - old_tables)
     assert actually_new == sorted(V250_NEW_TABLES), (
         f"新表清单与 schema 对不上 —— schema 里实际新增:{actually_new}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# B'. 裁定 6 的真牙齿:K8 留档表**按表名**的写保护
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 复审实测:`ALTER TABLE baskets ADD COLUMN …` 写进 `neckline/k9/store.py`(CE7)、
+# `k9/store.py` 里 `DELETE FROM baskets` + `UPDATE positions SET …` —— **全绿**,
+# 因为上面那条判据只扫 `db.py` 一个文件。「K8 表只读」这件事在本版之前**只有 DROP
+# 一个方向有牙齿**(而 DROP 那条在 `test_v250_s1_retirement_guard.py`)。
+#
+# 判据形状:⛔ 不是笼统扫关键字(那会把 `db.py` 里 v2.4.2 就在的幂等迁移判红),
+# 而是**「写动词 + 留档表名」的组合**。表名清单走 `LEGACY_READONLY_TABLES` 这个
+# 现成的单一源,⛔ 不在这里再抄一份。
+# ══════════════════════════════════════════════════════════════════════════
+
+_LEGACY_WRITE_RE = re.compile(
+    r"\b(ALTER\s+TABLE|DELETE\s+FROM|INSERT\s+(?:OR\s+\w+\s+)?INTO|REPLACE\s+INTO|UPDATE)"
+    r"\s+(?:IF\s+EXISTS\s+)?[\"'`\[]?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+
+#: 🔴 **唯一一处有理由写留档表的地方**,连同理由。
+#: `sentinel_events`:裁定 7 定死「包没了、**表名留着**」—— 盘中哨兵整包退役,但
+#: 当日防重台账 `neckline/dedup.py` 搬家之后**仍然在写这张表**(`test_v250_s1_
+#: retirement_guard.py::test_dedup_still_writes_the_sentinel_events_table` 正向锁着
+#: 它)。它列在 `LEGACY_READONLY_TABLES` 里是为了「表不许被删」,**不是**「不许被写」。
+_LEGACY_WRITE_ALLOW: Dict[str, str] = {
+    "neckline/dedup.py::sentinel_events":
+        "裁定 7:哨兵包退役、表名留着,当日防重台账仍以它为唯一落点",
+}
+
+
+def _legacy_write_sites(paths: List[Path]) -> List[str]:
+    """哪些文件的**字符串常量**里出现了针对 K8 留档表的写语句。
+
+    走 `guard_scan.string_constants()`(AST)而不是按行 grep:
+      · 注释与 docstring 天然不进 —— 一条纪律总要写出它禁止的那句 SQL 才解释得清;
+      · **跨行拼的 SQL 已被解析器折成一个常量**,按行 grep 只看得见前半句,
+        `"INSERT OR IGNORE INTO sentinel_events "` 这种写法的表名就丢在第二行了。
+    """
+    from tests.test_v250_s1_retirement_guard import (  # noqa: PLC0415
+        LEGACY_READONLY_TABLES,
+    )
+
+    legacy = {t.lower() for t in LEGACY_READONLY_TABLES}
+    hits: List[str] = []
+    for path in sorted(paths):
+        rel = str(path.relative_to(_ROOT))
+        for lineno, text in guard_scan.string_constants(path):
+            for verb, table in _LEGACY_WRITE_RE.findall(text):
+                if table.lower() not in legacy:
+                    continue
+                if f"{rel}::{table}" in _LEGACY_WRITE_ALLOW:
+                    continue
+                verb = re.sub(r"\s+", " ", verb.upper())
+                hits.append(f"{rel}:{lineno} {verb} {table}")
+    return hits
+
+
+def test_the_legacy_write_detector_actually_detects(tmp_path: Path):
+    """扫描器自检 —— 四种写法都要看得见,注释里的说明⛔ 不许被判红。"""
+    bait = tmp_path / "bait.py"
+    bait.write_text(
+        '"""⛔ 本模块不许 UPDATE positions —— 这句说明不算命中。"""\n'
+        "def go(conn):\n"
+        '    conn.execute("ALTER TABLE baskets ADD COLUMN z TEXT")\n'
+        '    conn.execute("delete from positions where id=1")\n'
+        '    conn.execute("INSERT OR REPLACE INTO strategy_versions "\n'
+        '                 "(version) VALUES (?)", ("x",))\n'
+        '    conn.execute("update  decision_log set note=?", ("x",))\n'
+        "    # ⛔ 别写 DELETE FROM baskets(注释不算)\n",
+        encoding="utf-8")
+    # ⚠ `_legacy_write_sites` 拿 `relative_to(_ROOT)` 作标签,诱饵得放在仓内路径下
+    # 才走得通 —— 这里直接调底层正则做自检,判的是**判据形状**。
+    found = [
+        (v.upper(), t.lower())
+        for _ln, s in guard_scan.string_constants(bait)
+        for v, t in _LEGACY_WRITE_RE.findall(s)
+    ]
+    tables = {t for _v, t in found}
+    assert tables == {"baskets", "positions", "strategy_versions", "decision_log"}, found
+    assert len(found) == 4, "跨行拼接的那条 INSERT 被切碎了?"
+
+
+def test_the_k8_readonly_archive_has_no_application_layer_writer():
+    """🔴 **裁定 6**:K8 历史表「保留、只读、不迁移、不回填」。
+
+    ⚠ 扫描域是 `neckline/**` 减去 `db.py` —— `db.py` 拥有建表与 v2.4.2 就在的幂等
+    迁移,它归上面那条「与基线逐条比对」的判据管;应用层则是**一句都不许有**。
+    """
+    scanned = [p for p in sorted((_ROOT / "neckline").rglob("*.py")) if p != _DB_PY]
+    assert len(scanned) > 50, f"扫描域只有 {len(scanned)} 个文件 —— glob 怕是瞎了"
+    hits = _legacy_write_sites(scanned)
+    assert hits == [], (
+        "应用层写了 K8 只读留档表(裁定 6:不迁移、不回填):\n" + "\n".join(hits))
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "🔴 已知违规,归下一波(PROJECT_PLAN §13.1-B12):`scripts/oneoff/` 里三个 K8 "
+    "一次性脚本仍在写裁定 6 的只读留档表 —— bootstrap_k4.py 与 retire_k4_b3.py 写 "
+    "`strategy_versions`、fix_position_buy_dates.py 写 `positions`。§4.3 已把章程 / "
+    "包激活脚本整块列进退役,但『删掉还是留档』要用户拍板,⛔ 施工侧不自行删脚本、"
+    "更⛔ 不为了凑绿把它们从扫描域里摘出去。修好之后请连同这个 xfail 一起删。"))
+def test_the_oneoff_scripts_do_not_write_the_k8_readonly_archive():
+    """`scripts/**` 这一侧的同一条判据。
+
+    它们是「K8 表已无应用层写入方」这句验收话的现成反例。危害有限(都要人手动跑,
+    `fix_position_buy_dates.py` 还默认演练、只有 `--confirm` 才写),但**可见**比
+    绿要紧:这条闸红着,下一个人就知道这里还欠着账。
+    """
+    hits = _legacy_write_sites(sorted((_ROOT / "scripts").rglob("*.py")))
+    assert hits == [], (
+        "一次性脚本仍在写 K8 只读留档表:\n" + "\n".join(hits))
+
+
+def test_the_legacy_write_allowlist_stays_justified():
+    """白名单里每一条都要有理由,且那条理由指的东西**真的还在**。
+
+    ⛔ 白名单是给「结构上就该这样」的例外用的,不是给「一时改不动」用的。
+    """
+    assert set(_LEGACY_WRITE_ALLOW) == {"neckline/dedup.py::sentinel_events"}
+    for key, reason in _LEGACY_WRITE_ALLOW.items():
+        rel, table = key.split("::")
+        assert (_ROOT / rel).exists(), f"白名单指向一个不存在的文件:{rel}"
+        assert len(reason) > 10, f"{key} 的理由太短,说不清为什么"
+    # 正向:`dedup.py` **确实**还在写那张表 —— 例外若已作废,白名单要跟着删。
+    assert _LEGACY_WRITE_RE.search(
+        "\n".join(s for _ln, s in guard_scan.string_constants(_ROOT / "neckline" / "dedup.py"))
+    ), "`dedup.py` 不再写 `sentinel_events` 了 —— 这条白名单可以删了"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# B''. 回滚边界的那句话:**读取 helper 不执行 DDL**
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 这条闸**本版之前根本不存在**(复审:`grep -rn "不执行 DDL\|不是迁移触发器\|
+# readonly_connection" tests/*.py` 全空)。而这三处白纸黑字断言了它:
+#   · `README.md`「API、报告和复盘的读取 helper 不执行 DDL;……任何 GET 或日常读取
+#     都不是迁移触发器。」
+#   · `PROJECT_PLAN.md §9.2` 与 §9.6 步骤 2:「⛔ API / 报告 / 复盘的读 helper 不执行 DDL。」
+#   · `PROJECT_PLAN.md §9.4` 与 §9.6 步骤 6.8:「⛔ 任何 GET / 日常读取都不是迁移触发器
+#     —— 回滚边界就是『迁移前备份 + 已验证的 v2.4.2 源码』这两样。」
+#
+# **回滚边界的论证整个建立在这句话上**:§9.6 步骤 6.6 要求「K8 只读表行数与步骤 1.2
+# 备份逐表相等」,操作者若用任何 Neckline 侧工具把 `db_path` 指向那份备份去比对,
+# 一次读就往备份里建 16 张表,两份备份 sha256 相等这条前提随之作废。
+#
+# 复审实测(拿 `ee12b9b` 的 `_SCHEMA` 造 v2.4.2 老库,只调一个纯读 helper):
+#   老库 59 表 → `report.store.load_k9_report(...)` 返回 None → **当场 75 表**。
+#
+# ⚠ 本条现在是 **xfail(strict=True)**:闸先建起来、红着,让欠账**可见**。
+# ⛔ 不许为了凑绿把扫描域缩小或把前缀清单改窄。
+# ══════════════════════════════════════════════════════════════════════════
+
+#: 读路径的函数名前缀。⚠ 判据是**名字**而不是「有没有写 SQL」—— 一个叫 `load_x`
+#: 的函数,调用方就是当它只读来用的,这正是这条纪律要保护的那个预期。
+_READ_PREFIXES: Tuple[str, ...] = ("load_", "latest_", "list_", "get_", "read_", "fetch_")
+
+
+def _read_helpers_reaching_init_schema() -> List[str]:
+    hits: List[str] = []
+    for path in sorted((_ROOT / "neckline").rglob("*.py")):
+        if path == _DB_PY:          # `db.py` 拥有 `init_schema` 自己
+            continue
+        hits.extend(guard_scan.reaches(
+            path, _READ_PREFIXES, "init_schema",
+            label=str(path.relative_to(_ROOT))))
+    return hits
+
+
+def test_the_read_path_detector_actually_detects(tmp_path: Path):
+    """扫描器自检:间接调用也要看得见 —— 只查直接调用的版本,套一层 helper 就绕过去。"""
+    bait = tmp_path / "bait_store.py"
+    bait.write_text(
+        "def init_schema(p): ...\n"
+        "def _conn(p):\n"
+        "    init_schema(p)\n"
+        "def load_thing(p):\n"
+        "    return _conn(p)\n"
+        "def compute_thing(p):\n"
+        "    return _conn(p)\n",
+        encoding="utf-8")
+    hits = guard_scan.reaches(bait, _READ_PREFIXES, "init_schema")
+    assert len(hits) == 1 and "load_thing" in hits[0], hits
+
+
+def test_the_readonly_connection_helper_still_exists():
+    """正向:`db.py` 为这件事**专门写过**一个 `readonly_connection()`,它是修法本身。
+
+    ⛔ 这条闸不许被理解成「那就把 `init_schema` 从读函数里删掉、让表不存在时炸」——
+    正确修法是 `readonly_connection()` + 「表不存在 → 返回文档化的空态」。
+    """
+    from neckline import db as db_mod  # noqa: PLC0415
+
+    assert hasattr(db_mod, "readonly_connection")
+    src = guard_scan.code_without_docstrings(_DB_PY)
+    assert "def readonly_connection" in src
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "🔴 已知违规,归下一波(PROJECT_PLAN §13.1-B13):`neckline/**` 里 43 个 "
+    "`load_*` / `latest_*` / `list_*` / `get_*` 读函数在函数体里调 `init_schema()` —— "
+    "一次 GET 就能把一个 v2.4.2 老库迁移成 v2.5.0(实测 59 表 → 75 表)。"
+    "README / §9.2 / §9.4 / §9.6 三处白纸黑字断言了相反的事。"
+    "本片只建闸、不改业务代码;修好之后请连同这个 xfail 一起删。"))
+def test_no_read_helper_triggers_a_schema_migration():
+    """🔴 **回滚边界的机器判据**:读一次⛔ 不许把库迁移掉。
+
+    判据 = AST 调用图闭包:名字以 `load_/latest_/list_/get_/read_/fetch_` 开头的函数,
+    经**本文件内**的调用链走不到 `init_schema`。
+    """
+    hits = _read_helpers_reaching_init_schema()
+    assert hits == [], (
+        f"{len(hits)} 个读 helper 会触发 schema 迁移:\n" + "\n".join(hits))
+
+
+def test_the_read_path_debt_is_exactly_as_large_as_registered():
+    """欠账要有**数**,不能只有一句「还有一些」。
+
+    ⚠ 这条是**账本**,不是闸:它锁的是「这个数没有在没人注意的时候变大」。
+    数变了就来改这里 —— 让它成为一次自觉行为(⛔ 别顺手把断言改宽)。
+
+    **43 = 40 个直接调 `init_schema` 的 + 3 条隔了一层的**:
+      · `facts/industry.py:250  load_median_map  → load_day          → init_schema`
+      · `report/store.py:226    load_report      → load_report_by_str → init_schema`
+      · `settings_store.py:284  list_providers_public → list_providers → init_schema`
+    ⚠ 那三条正是「只查直接调用的判据」会漏掉的形状 —— 而 `report.store.load_report`
+    恰恰是复审用来实测「59 表 → 75 表」的那两个入口之一。
+    """
+    hits = _read_helpers_reaching_init_schema()
+    assert len(hits) == 43, (
+        f"读路径触发 DDL 的函数从 43 个变成了 {len(hits)} 个:\n" + "\n".join(hits))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -315,6 +571,56 @@ def test_the_strategy_segment_gets_the_params_package_path_explicitly():
     assert m.group(1).endswith(".json")
     # ⛔ 老的 K8 参数开关不许残留。
     assert "--direction-pipeline-config" not in text
+
+
+def test_every_unit_flag_and_segment_really_exists_in_the_evening_cli():
+    """🔴 **unit 指向的东西真的存在吗** —— S1 之后就出现过 unit 指向已删脚本的先例。
+
+    复审实测:把 `SEG_FACTS` 的值从 `"facts"` 改成 `"factpack"`(unit 不动)、或把
+    `--k9-params` 从 argparse 里删掉,本文件原来 **13 条全绿** —— 它比的是 unit 文本
+    与写死在本文件里的字面量,两边一起漂就看不出来。万幸 `test_weekend_report_
+    schedule.py` 接住了这两条;**但 README 的「发版」一节与 §9.6 头部都把本文件说成
+    「能在本地先跑一遍的机器判据」,操作者照着只跑这一个文件。** 判据搬过来一份。
+
+    ⚠ 这条比的是 unit ↔ **真实 argparse / 真实段名常量**,⛔ 不比字面量。
+    """
+    from neckline.report.evening import CHAIN_SEGMENTS  # noqa: PLC0415
+
+    known_segments = set(CHAIN_SEGMENTS)
+    assert known_segments, "`CHAIN_SEGMENTS` 是空的?那这条判据就是空的"
+
+    # `evening.py` 的 argparse 真的接受哪些开关(AST 读 `add_argument` 的字面量,
+    # ⛔ 不 import 那个模块去构造 parser —— parser 建在 `main()` 里,取不到)。
+    known_flags = {
+        arg.value
+        for node in ast.walk(ast.parse(
+            (_ROOT / "scripts" / "evening.py").read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument"
+        for arg in node.args
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+        and arg.value.startswith("--")
+    }
+    assert "--segments" in known_flags, "取 argparse 的方式失效了(一个恒空的闸)"
+
+    offenders: List[str] = []
+    for path in sorted(_DEPLOY.glob("*.service")):
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if not line.startswith("ExecStart="):
+                continue
+            if "evening.py" not in line:
+                continue
+            for token in line.split():
+                if token.startswith("--") and token not in known_flags:
+                    offenders.append(f"{path.name}: `{token}` 不在 evening.py 的 argparse 里")
+            m = re.search(r"--segments (\S+)", line)
+            if m:
+                for seg in m.group(1).split(","):
+                    if seg not in known_segments:
+                        offenders.append(
+                            f"{path.name}: 段名 `{seg}` 不在 `CHAIN_SEGMENTS` 里")
+    assert offenders == [], "unit 指向了不存在的东西:\n" + "\n".join(offenders)
 
 
 def test_stop_when_unneeded_is_still_there_and_no_remain_after_exit():
