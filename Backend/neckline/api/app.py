@@ -1148,7 +1148,7 @@ def _selection_stocks(trade_date: str) -> list:
     if not listing:
         return []
     codes = [e["ts_code"] for e in listing]
-    room = k9_store.load_upside_room_mech(day, db_path=_db())
+    room = k9_store.load_upside_room_mech(day, codes=codes, db_path=_db())
     playbooks = pb_store.load_latest(day, codes=codes, db_path=_db())
     notes = explain_store.load_notes(day, codes=codes, db_path=_db())
     out = []

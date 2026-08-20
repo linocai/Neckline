@@ -395,12 +395,17 @@ _UPSIDE_ROOM_SOURCES: Tuple[Tuple[str, str, float], ...] = (
 
 
 def load_upside_room_mech(
-    trade_date: date, *, db_path: Optional[Path] = None
+    trade_date: date, *, codes: Sequence[str], db_path: Optional[Path] = None
 ) -> Dict[str, float]:
-    """某日逐票的**上方机械空间**原值(`upside_room_mech_pct`),从召回记录反读。
+    """`codes` 里每只票当日的**上方机械空间**原值(`upside_room_mech_pct`),从召回记录反读。
 
     键不存在 = 这只票当天没有被 p1 / p3 召回过 → **本形态不看这一项**
     (⛔ 调用方不许补 0:「不看」与「没有空间」是两件事)。
+
+    🔴 **`codes` 是必填的,且过滤在 SQL 里做**:`k9_channel_hits` 是 append-only 的
+    **全部召回记录**(四通道 × 两档 × 数百只),而本函数的调用点在**常驻服务的
+    API 热路径**上(每次进选股板块都会拉一次)。把上千行捞回进程再逐行 `json.loads`
+    正是 §12 坑 1 那条链的形状 —— 清单只有 10~20 只,查询就该只回这 10~20 只。
 
     ⚠ **反读而不是新开一列**:`k9_channel_hits.strength_json` 已经原样冻着这个读数
     (p1 正向、p3 取负,见 `_UPSIDE_ROOM_SOURCES`),再给 `k9_listing_entries` 加一列
@@ -408,11 +413,19 @@ def load_upside_room_mech(
     ⚠ **命名铁律(裁定 1)**:这里读回来的是**上方机械空间**(机械、排序用),
     与预案层的**第一压力位**(LLM 判断)是两个量,⛔ 永不互相顶替。
     """
+    wanted = [c for c in dict.fromkeys(codes) if c]
+    if not wanted:
+        return {}
     init_schema(db_path)
+    placeholders = ",".join("?" for _ in wanted)
+    patterns = [p for p, _key, _sign in _UPSIDE_ROOM_SOURCES]
+    pattern_marks = ",".join("?" for _ in patterns)
     with connection(db_path) as conn:
         rows = conn.execute(
-            f"SELECT ts_code, pattern, strength_json FROM {HITS_TABLE} WHERE trade_date=?",
-            (_d(trade_date),),
+            f"SELECT ts_code, pattern, strength_json FROM {HITS_TABLE} "
+            f"WHERE trade_date=? AND pattern IN ({pattern_marks}) "
+            f"AND ts_code IN ({placeholders})",
+            (_d(trade_date), *patterns, *wanted),
         ).fetchall()
     out: Dict[str, float] = {}
     for ts_code, pattern, raw in rows:

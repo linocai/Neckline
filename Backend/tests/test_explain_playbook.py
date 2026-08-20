@@ -480,6 +480,120 @@ class TestUserEdit:
         assert body["playbook"] is None         # 没冻预案 → null
         assert body["entry"]["primaryPattern"] == "p1"
 
+    def test_the_slots_to_edit_come_from_the_server_never_from_the_client(
+        self, api_env, client, AUTH,
+    ):
+        """🔴 **V2.5.0 S12**:“改预案要填哪几个数”由**服务端下发**
+        (`playbookSlots`,唯一源 `playbook/skeleton.py`)。
+
+        ⛔ 客户端硬编一份键表 = 第二份事实源,必然漂 —— 而漂的后果是**静默**的:
+        用户改完点提交拿一个英文 422,而界面上的表单一路是绿的。
+        ⚠ 槽位**只有数值**(`kind ∈ {price, percent}`),⛔ 没有“理由”“评价”这类键。
+        """
+        from neckline.playbook import skeleton as skeleton_mod
+
+        day = date(2024, 4, 29)
+        self._seed_listing(api_env, day)
+        r = client.get(f"/api/v1/selection/{day:%Y%m%d}/stock/600001.SH", headers=AUTH)
+        slots = r.json()["playbookSlots"]
+        # 键集**逐字等于**服务端那一份(就是 `POST` 要求的那一份)。
+        assert [s["key"] for s in slots] == list(skeleton_mod.required_keys("p1"))
+        assert {s["kind"] for s in slots} <= set(skeleton_mod.KINDS)
+        for s in slots:
+            assert s["label"] and s["hint"]
+            assert set(s) == {"key", "kind", "label", "hint"}, "槽位只有这四个字段"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ⑧ 逐只摘要(V2.5.0 S12:§5.11 今日清单要的那四样)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestSelectionStocks:
+    """`/selection/{date}` 的 `stocks[]`:形态标注 / **上方机械空间** / 三个价位 /
+    三分支预案摘要 —— §5.11 逐字要的那四样。
+
+    🔴 **三样缺席各自如实标**:`upsideRoomMechPct = null` = 本形态不看这一项
+    (⛔ 不是“上方没有空间”);`playbook = null` = 明早核对不了它;
+    `newsState = null` = 解释层没跑过这一只(与 `"unverified"` “查过没查成”不是一回事)。
+    """
+
+    def _seed_report(self, env, day: date) -> None:
+        from neckline.report import store as report_store
+
+        report_store.save_k9_report(
+            trade_date=day, report_date=day, state="has_list", headline="今天有这些 · 1 只",
+            gaps=[], markdown="", structured={}, strategy="K9",
+            params_package_version="k9-params-fixture", pack_id="pid", pack_version="fp-2",
+            listing_size=1, strict_count=1, relaxed_count=0, db_path=env.db_path)
+
+    def test_each_missing_piece_is_reported_on_its_own(self, api_env, client, AUTH):
+        day = date(2024, 4, 29)
+        TestUserEdit()._seed_listing(api_env, day)
+        self._seed_report(api_env, day)
+
+        r = client.get(f"/api/v1/selection/{day:%Y%m%d}", headers=AUTH)
+        assert r.status_code == 200
+        stocks = r.json()["stocks"]
+        assert len(stocks) == 1
+        one = stocks[0]
+        assert one["tsCode"] == "600001.SH"
+        assert one["patterns"] == ["p1"] and one["primaryPattern"] == "p1"
+        assert one["tier"] == "strict" and one["seatKind"] == "floor"
+        # 没跑过召回记录 → 机械空间**缺席**。🔴 ⛔ 不许被写成 0。
+        assert one["upsideRoomMechPct"] is None
+        assert one["playbook"] is None      # 没冻预案 → 明早核对不了它
+        assert one["newsState"] is None     # 解释层没跑过这一只
+        assert one["explainOk"] is None
+
+    def test_the_upside_room_is_read_back_with_the_right_sign(self, api_env, client, AUTH):
+        """🔴 **裁定 1**:p1 存**原值**、p3 存**负值**(反向打分)——
+        反读回来必须是**同一个**上方机械空间原值。
+
+        ⚠ 它与预案层的**第一压力位**是两个量,⛔ 永不互相顶替。
+        """
+        from neckline.k9 import store as k9_store
+        from neckline.k9.contract import ChannelHit, Pattern, Tier
+
+        day = date(2024, 4, 29)
+        TestUserEdit()._seed_listing(api_env, day)
+        self._seed_report(api_env, day)
+        k9_store.save_channel_hits(
+            run_id="r1", trade_date=day,
+            hits=(ChannelHit(ts_code="600001.SH", pattern=Pattern.P1, tier=Tier.STRICT,
+                             strength={"upsideRoomFar": 0.1234}),),
+            seated_codes=["600001.SH"], db_path=api_env.db_path)
+
+        r = client.get(f"/api/v1/selection/{day:%Y%m%d}", headers=AUTH)
+        assert r.json()["stocks"][0]["upsideRoomMechPct"] == pytest.approx(0.1234)
+
+        # p3 存的是负值 → 反读取负号拿回原值。
+        room = k9_store.load_upside_room_mech(day, codes=["600001.SH"], db_path=api_env.db_path)
+        assert room["600001.SH"] == pytest.approx(0.1234)
+        k9_store.save_channel_hits(
+            run_id="r2", trade_date=day,
+            hits=(ChannelHit(ts_code="600002.SH", pattern=Pattern.P3, tier=Tier.STRICT,
+                             strength={"upsideRoomNear": -0.05}),),
+            seated_codes=[], db_path=api_env.db_path)
+        room = k9_store.load_upside_room_mech(
+            day, codes=["600001.SH", "600002.SH"], db_path=api_env.db_path)
+        assert room["600002.SH"] == pytest.approx(0.05)
+
+    def test_the_hot_path_query_is_bounded_by_the_listing(self, api_env):
+        """🔴 **热路径不允许全表扫**:`k9_channel_hits` 是 append-only 的**全部**
+        召回记录(四通道 × 两档 × 数百只),而本函数跑在常驻服务的 API 热路径上。
+        `codes` 是**必填**的,且过滤在 SQL 里做(§12 坑 1)。"""
+        import inspect
+
+        from neckline.k9 import store as k9_store
+
+        sig = inspect.signature(k9_store.load_upside_room_mech)
+        assert sig.parameters["codes"].default is inspect.Parameter.empty, (
+            "`codes` 必须是必填关键字 —— 给它一个默认值就等于默许全表扫")
+        src = inspect.getsource(k9_store.load_upside_room_mech)
+        assert "ts_code IN (" in src, "过滤必须在 SQL 里做,⛔ 不是全捞回进程再筛"
+        assert k9_store.load_upside_room_mech(
+            date(2024, 4, 29), codes=[], db_path=api_env.db_path) == {}
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 资料聚合的降级
