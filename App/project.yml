@@ -50,9 +50,13 @@ targets:
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Neckline/Neckline.entitlements
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: Neckline/Resources/Info.plist
-        # iOS 会把通知标题栏使用的主 App 图标缓存到系统界面。V2.4.2 Build 4
-        # 改用新的 asset-set 名称，避免覆盖安装后继续显示旧缓存；图稿本身不变。
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV242
+        # iOS 会把通知标题栏使用的主 App 图标缓存到系统界面。**每发一版换一次
+        # asset-set 名称**,避免覆盖安装后通知栏继续命中旧缓存;图稿本身不变。
+        # V2.4.2 Build 4 起用 `AppIconV242`,V2.5.0 Build 10 改名 `AppIconV250`。
+        # ⚠ 改名要同步四处:本行 / `Assets.xcassets/<名>.appiconset` 目录名 /
+        # 守门常量 `Backend/tests/test_v240_p4_release.py::_EXPECTED_PRIMARY_ICON` /
+        # `xcodegen generate` 重生成的 pbxproj(⛔ 不许只手改 pbxproj)。
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV250
         ENABLE_PREVIEWS: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

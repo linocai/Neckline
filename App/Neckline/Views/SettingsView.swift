@@ -534,13 +534,16 @@ struct SettingsView: View {
             NKFieldSeparator()
             versionRow("服务端版本", model.serverVersion ?? "未知(未连通)")
             NKFieldSeparator()
-            // 章程 / 选股包两行取**当日报告快照**里的版本号(⛔ 不在客户端硬编,
-            // 也⛔ 不在没取到时留白 —— 空白读作"没有",而事实是"这次没取到")。
-            versionRow("现役纪律章程", model.report.strategyVersion.isEmpty
-                       ? "未取得(本次没有报告)" : model.report.strategyVersion)
+            // 🔴 **V2.5.0 S12 换成 K9 的两个版本号**(K8 的「纪律章程 / 选股包」已随
+            // 那条链退役)。⛔ 不在客户端硬编,也⛔ 不在没取到时留白 ——
+            // 空白读作"没有",而事实分两种:「本次没有报告」与「参数未配置」。
+            versionRow("参数包版本", model.selection.paramsPackageVersion?.isEmpty == false
+                       ? (model.selection.paramsPackageVersion ?? "")
+                       : (model.selectionLoaded ? "参数未配置(设计行为,不是故障)"
+                                                : "未取得(本次没有报告)"))
             NKFieldSeparator()
-            versionRow("现役选股包", model.basketDaily.packVersion?.isEmpty == false
-                       ? (model.basketDaily.packVersion ?? "") : "未取得(本次没有篮子)")
+            versionRow("事实包版本", model.selection.packVersion?.isEmpty == false
+                       ? (model.selection.packVersion ?? "") : "未取得(本次没有报告)")
         }
         if let note = versionMismatchNote {
             NKInlineNote(text: LocalizedStringKey(note), tone: .warn)

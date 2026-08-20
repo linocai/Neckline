@@ -228,14 +228,6 @@ struct NKChip: View {
     }
 }
 
-/// 仓位额度三态徽标(满额/半额/休息)。
-struct QuotaBadge: View {
-    let quota: PositionQuota
-    var body: some View {
-        NKChip(text: quota.label, tone: quota.tone, filled: true)
-    }
-}
-
 // ⚠ **`VerdictBadge` 已随问询台整链退役删除**(V2.1-①):它是问询台描述性标注
 // (`InquiryVerdict`)专用的徽标,唯一消费方 `InquiryView.swift` 已物理删除,依赖的
 // `InquiryVerdict` 类型也已从 `Models.swift` 删除,徽标随之陪葬(不是遗漏)。
@@ -346,221 +338,40 @@ struct NKRefreshPill: View {
 // 审计规格 P0.7 末段点名的第二种假完成。今日篮子页面唯一保留的那条静态小提示
 // 见 `NKCopy.intradaySelfObserve`(`DesignTokens.swift`),**低强调、无状态、不可点击**。
 
-// MARK: - 漏录兜底提示条(§五 v1.1-B.4/E.3:一句提示,非弹窗打扰,补录后自动消失)
 
-struct MissedEntryHintBanner: View {
-    let text: String
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "info.circle.fill").font(.system(size: 14, weight: .semibold))
-            Text(text).font(NKFont.callout).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(NK.amber)
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.amber.opacity(0.12)))
-    }
-}
 
-// MARK: - v1.4-①-C 板块数据过期告警(§七 P0-3:报告顶部醒目告警,不静默把过期数据
-// 当正常结果展示)。
-
-/// 数据新鲜度告警(板块 + 行业强度 + **V2-⑭-A 市场扫描层**)。
-/// **三件独立故障各占一行,⛔ 不合并成一句** —— 合并读者就分不清哪个坏了
-/// (服务端契约同样是三组独立键)。
-struct DataFreshnessBanner: View {
-    let freshness: DataFreshness
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 14, weight: .semibold))
-            VStack(alignment: .leading, spacing: 6) {
-                if freshness.stale {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("板块数据已过期").font(NKFont.body).fontWeight(.bold)
-                        Text(sectorText).font(NKFont.callout).opacity(0.9)
-                        Text("「当日暴起板块」与「题材持续天数」本日不可信").font(NKFont.caption).opacity(0.85)
-                    }
-                }
-                if freshness.industryStrengthStale == true {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("行业强度数据未就绪").font(NKFont.body).fontWeight(.bold)
-                        Text(industryText).font(NKFont.callout).opacity(0.9)
-                        Text("排序缺行业维度、题材持续天数不可用").font(NKFont.caption).opacity(0.85)
-                    }
-                }
-                if freshness.scanLayerStale == true {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("市场扫描层未就绪").font(NKFont.body).fontWeight(.bold)
-                        Text(scanText).font(NKFont.callout).opacity(0.9)
-                        // 扫描层没跑 → 今日无种子 → 今日无篮子;而「今天没有篮子」与
-                        // 「今天没看」必须能分开,这一行就是把它们分开的那句话。
-                        Text("今日篮子若为空,可能是**没看**而不是**今天真没有**")
-                            .font(NKFont.caption).opacity(0.85)
-                    }
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(.white)
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: NKRadius.field).fill(NK.alertGrad))
-    }
-
-    private var sectorText: String {
-        let dateText = freshness.sectorDataDate.map { "最新至 \($0)" } ?? "完全缺失"
-        return "板块数据\(dateText),落后 \(freshness.sectorLagDays) 个交易日"
-    }
-
-    /// `-1` 是哨兵值(完全无数据),**不是"落后 -1 天"**,故单独成句。
-    private var industryText: String {
-        guard let date = freshness.industryStrengthDate,
-              let lag = freshness.industryStrengthLagDays, lag >= 0 else {
-            return "行业强度数据完全缺失(预计算表无任何数据)"
-        }
-        return "行业强度数据最新至 \(date),落后 \(lag) 个交易日"
-    }
-
-    private var scanText: String {
-        guard let date = freshness.scanLayerDate,
-              let lag = freshness.scanLayerLagDays, lag >= 0 else {
-            return "扫描层三张预计算表完全缺失"
-        }
-        return "扫描层最新至 \(date),落后 \(lag) 个交易日"
-    }
-}
-
-/// ⑤ 数据新鲜度明细(三组各自一行,**该组三键整体缺席 = 本次连新鲜度都没查到**,
-/// ⛔ 不是"新鲜")。
-struct DataFreshnessDetail: View {
-    let freshness: DataFreshness
-
-    /// 🔴 **V2.3.1 批 6:改成原型的「色点 + 定宽标题 + 右端读数」行表**
-    /// (macOS 原型 786–788 行:`padding:9px 0; gap:10`,7px 语义色圆点 + `12.5px #1D1D1F`
-    /// **定宽 130** 的标题 + `flex:1` + 右端 `12px` 读数,行间 `.5px rgba(60,60,67,.06)`,
-    /// **末行无分隔**)。V2.3.0 是"标题 11 灰粗 + 右端同色读数"的两列版式,三行看不出
-    /// 哪一路好哪一路坏 —— 那颗点才是一眼能扫的那个信号。
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            row(title: "概念板块日更",
-                date: freshness.sectorDataDate, lag: freshness.sectorLagDays,
-                stale: freshness.stale, present: true, last: false)
-            row(title: "行业强度日更",
-                date: freshness.industryStrengthDate, lag: freshness.industryStrengthLagDays,
-                stale: freshness.industryStrengthStale,
-                present: freshness.industryStrengthLagDays != nil || freshness.industryStrengthDate != nil
-                    || freshness.industryStrengthStale != nil, last: false)
-            row(title: "市场扫描层批算",
-                date: freshness.scanLayerDate, lag: freshness.scanLayerLagDays,
-                stale: freshness.scanLayerStale,
-                present: freshness.scanLayerLagDays != nil || freshness.scanLayerDate != nil
-                    || freshness.scanLayerStale != nil, last: true)
-        }
-    }
-
-    /// ⚠ 标题定宽 130 只在 macOS 生效:iPhone 402pt 减去卡内边距后,130 的定宽标题会把
-    /// 右端读数(「最新至 20260809 · 落后 1 个交易日」)挤成两三行(CLAUDE.md 已登记的
-    /// 402pt 挤压坑)。手机上标题按内容宽、读数靠右自适应。
-    @ViewBuilder
-    private func row(title: String, date: String?, lag: Int?, stale: Bool?,
-                     present: Bool, last: Bool) -> some View {
-        let t = tone(stale: stale, present: present)
-        VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 10) {         // 原型 786 行 gap:10
-                Circle().fill(t.color).frame(width: 7, height: 7)
-                    .padding(.top, 4)                      // 与 12pt 文字的视觉中线对齐
-                Text(title).font(NKFont.callout).foregroundStyle(NK.textPrimary)
-                    #if os(macOS)
-                    .frame(width: 130, alignment: .leading)   // 原型 786 行 width:130px
-                    #endif
-                Spacer(minLength: 8)
-                Text(text(date: date, lag: lag, stale: stale, present: present))
-                    .font(NKFont.callout.monospacedDigit())
-                    // 正常那两行是**中性灰**(原型 786/787);出问题的那一行才着色 + 加粗
-                    // (原型 788 行 `font-weight:600; color:#E8910A`)。
-                    .fontWeight(t == .good ? .regular : .semibold)
-                    .foregroundStyle(t == .good ? NK.textSecondary : t.color)
-                    .multilineTextAlignment(.trailing)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.vertical, 9)                          // 原型 786 行 padding:9px 0
-            if !last {
-                Rectangle().fill(NK.hairline.opacity(0.6)).frame(height: 0.5)
-            }
-        }
-    }
-
-    private func text(date: String?, lag: Int?, stale: Bool?, present: Bool) -> String {
-        guard present else { return "本次没查到(⛔ 不等于新鲜)" }
-        guard let l = lag else { return date.map { "最新至 \($0)" } ?? "无数据" }
-        if l < 0 { return "完全缺失(哨兵值 -1)" }
-        let base = date.map { "最新至 \($0)" } ?? "无日期"
-        return "\(base) · 落后 \(l) 个交易日" + (stale == true ? " · 已过期" : "")
-    }
-
-    private func tone(stale: Bool?, present: Bool) -> NKAxisTone {
-        guard present else { return .warn }
-        return stale == true ? .bad : .good
-    }
-}
-
-// MARK: - 成员状态点取色(位置关 / 核心关取最差;两关都没判 → 灰)
+// MARK: - 列表行外壳(选中态 = 白底 + accent 描边;⛔ 靠选中态分隔,不靠留白)
 //
-// 🔴 **V2.4.0 P3.4 把它从 `BasketListRow` 里提出来**:首选成员块底部那三颗点与列表行
-// 里每只票前面那一颗**必须是同一把尺** —— 各写一份就会出现「列表里是绿的、卡上是灰的」
-// 这种看不出是 bug 的分叉。⚠ 纯展示层聚合,读的就是那两枚判定,⛔ 不另算判据。
-func nkMemberDotColor(_ m: BasketMember) -> Color {
-    let tones = [m.positionVerdictLabel.map { _ in m.positionVerdictTone },
-                 m.coreVerdictLabel.map { _ in m.coreVerdictTone }].compactMap { $0 }
-    if tones.isEmpty { return NK.textTertiary.opacity(0.7) }
-    if tones.contains(.bad) { return NK.down }
-    if tones.contains(.warn) { return NK.amber }
-    if tones.contains(.good) { return NK.up }
-    return NK.textTertiary.opacity(0.7)
-}
+// ⚠ **V2.5.0 S12 从 `BasketDailyView.swift` 搬到这里**:它本来就是四个板块的列表栏
+// 共用的壳,却住在选股页里 —— 那一页随 K8 退役被删,设置屏当场编译不过。
+// ⛔ 别再把共用件放回某一页里。
 
-// MARK: - V2.4.0 P3.3-E:数据新鲜度工具栏徽标(⑤ 段正常时收成这一枚,降级才展开)
-//
-// 🔴 **三态不合并**(施工图 P3.3 末条逐字):
-//   · 三张表都当日 → 绿徽标「数据齐」;
-//   · 有落后项 → 琥珀徽标「数据 N」(N = `stale`/`industryStrengthStale`/
-//     `scanLayerStale` 三件里为真的项数,与既有 `NKToolbar.degradeCount` 同一把尺);
-//   · `dataFreshness == nil`(本次连新鲜度都没查到)→ 灰徽标「没查到」,
-//     ⛔ **这不等于「数据新鲜」**,不许并进「数据齐」那一态。
-// 点开都是完整 ⑤ 段(一个字段都不少)—— 本组件只负责"收成一行",点开逻辑由调用方
-// (`BasketDailyView`)接 `action` 弹出既有 `freshnessSection`,不重新实现一份。
-struct NKFreshnessBadge: View {
-    let freshness: DataFreshness?
+struct NKListRow<Content: View>: View {
+    let selected: Bool
     let action: () -> Void
-
-    private var degradeCount: Int {
-        guard let f = freshness else { return 0 }
-        var n = 0
-        if f.stale { n += 1 }
-        if f.industryStrengthStale == true { n += 1 }
-        if f.scanLayerStale == true { n += 1 }
-        return n
-    }
-
-    private var state: (dot: Color, text: String) {
-        guard let _ = freshness else { return (NK.textTertiary, "没查到") }
-        let n = degradeCount
-        return n > 0 ? (NK.amber, "数据 \(n)") : (NK.up, "数据齐")
-    }
+    @ViewBuilder var content: Content
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                Circle().fill(state.dot).frame(width: 5, height: 5)
-                Text(state.text).font(NKFont.caption).fontWeight(.semibold)
-            }
-            .foregroundStyle(state.dot)
-            .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(Capsule().fill(state.dot.opacity(0.12)))
-            .contentShape(Capsule())
+            content
+                // 原型 `pick()`(macOS 原型 1783 行):`padding:11px 12px; border-radius:9px`。
+                .padding(.horizontal, 12).padding(.vertical, 11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: NKRadius.inner)
+                        .fill(selected ? NK.cardBg : Color.clear)
+                        // 🔴 选中态是**白底 + 1.5px 实蓝描边 + 一层极轻投影**。
+                        // ⚠ 阴影**恒定不参与动画**(全局三禁之一):选中态切换只换颜色。
+                        .shadow(color: selected ? Color.black.opacity(0.06) : .clear,
+                                radius: 1.5, y: 1)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: NKRadius.inner)
+                        .stroke(selected ? NK.accent : Color.clear, lineWidth: 1.5)
+                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(freshness == nil ? "本次没查到数据新鲜度 —— 不等于数据新鲜"
-              : (degradeCount > 0 ? "有 \(degradeCount) 项数据落后,点开看完整披露" : "板块 / 行业强度 / 扫描层三张表都当日"))
     }
 }
 
@@ -716,190 +527,26 @@ enum NKFmt {
         let sign = v > 0 ? "+" : (v < 0 ? "-" : "")
         return sign + "¥" + grouped(abs(v), decimals: 2)
     }
-    /// 无符号、一位小数(v1.3-⑥「情报」板块的亿/万元量级数字,如大盘量能/板块资金流,
-    /// 不需要 `price` 的两位小数精度)。
+    /// 无符号、一位小数(亿 / 万元量级数字,不需要 `price` 的两位小数精度)。
     static func money(_ v: Double) -> String { String(format: "%.1f", v) }
-}
 
-// MARK: - V2.2-② 行情状态条(报告顶部 / 持仓页顶部;**纯展示、⛔ 零动作**)
-//
-// 🔴 **这不是买卖信号**:三态回答的是「今天市场结构是什么样」(趋势延续 / 高位分歧 /
-// 切换确认),⛔ 不构成任何仓位建议,更不是「今天别开仓」的自动状态位(§五 〇b-7)。
-//
-// 🔴 **`available == false` 必须如实说出口**:服务端已经把原因写好(批算没跑 / 非交易日
-// / 参数非法),⛔ 客户端不合并、不改写、**更不许什么都不显示** —— 不显示等于让读者
-// 默认"今天没什么特别的",那正是把「没看」讲成「没有」。
-
-struct MarketRegimeStrip: View {
-    let regime: MarketRegime
-    /// 紧凑档(持仓页顶部一行);报告顶部用完整档(带增强 / 减弱方向)。
-    var compact: Bool = false
-    /// 默认产品层只给结论；机器规则表达式仅允许显式技术入口使用。
-    var userFacing: Bool = true
-
-    var body: some View {
-        // 🔴 **compact 是列表栏里的一小块,不是数据卡**(V2.3.1 批 3):持仓列表栏 376pt
-        // 里挂一张白卡会把它抢成"这一栏最重要的东西",而它只是背景语境。形状对齐
-        // 同栏的合并敞口块(`radius 9 / padding 10×12 / 淡底 + .5px 同色描边`,
-        // macOS 原型 897 行)。⛔ 详情栏那一档(非 compact)仍是白卡,别一起改。
-        Group {
-            if compact {
-                #if os(iOS)
-                // 🔴 **iOS 上 compact 是一张白卡**(iOS 原型 98 行 `padding:10px 14px;
-                // radius:14; background:#fff; border:.5px rgba(60,60,67,.10)`)——
-                // 手机上整页就是一列卡,灰块会读成"这块坏了 / 这块被禁用了"。
-                inner
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14).padding(.vertical, 10)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(NK.cardBg))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(NK.hairline, lineWidth: 0.5))
-                #else
-                inner
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12).padding(.vertical, 10)
-                    .background(RoundedRectangle(cornerRadius: NKRadius.inner)
-                        .fill(NK.textTertiary.opacity(0.055)))
-                    .overlay(RoundedRectangle(cornerRadius: NKRadius.inner)
-                        .stroke(NK.hairline, lineWidth: 0.5))
-                #endif
-            } else {
-                NKCard { inner }
-            }
-        }
+    /// **可编辑数值位**(预案修改入口的输入框预填)。
+    /// 🔴 **⛔ 不带千分位、⛔ 不带货币符号** —— 这个串会被原样 `Double(...)` 解回去,
+    /// `1,802.00` 解不出来。`price(_:)` 是**展示**用的,两者⛔ 不许互换。
+    static func slotValue(_ v: Double) -> String {
+        var s = String(format: "%.4f", v)
+        while s.contains("."), s.hasSuffix("0") { s.removeLast() }
+        if s.hasSuffix(".") { s.removeLast() }
+        return s
     }
 
-    @ViewBuilder
-    private var inner: some View {
-        if let d = regime.day, regime.available {
-            available(d)
-        } else {
-            unavailable
-        }
-    }
-
-    @ViewBuilder
-    private func available(_ d: MarketRegimeDay) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 4 : 10) {
-            // 原型 713–717 行:左「行情状态」弱标 + 实心状态徽标,右端**日期 · 骨架版本**
-            // 合成一句 `10.5 .40 tabular`(⛔ 不是日期在左、版本徽标在右两处分开)。
-            // 🔴 **iOS compact 的头一行是原型的「色点 + 状态名 + 弱标」**(iOS 原型 99–101:
-            // 7px 语义色圆点 + `13.5/600` 状态名 + `11.5 .40` 的「行情状态」四个字)——
-            // ⛔ 不是实心徽标:手机上这一条本身就窄,徽标会把它抢成一枚"按钮"。
-            #if os(iOS)
-            if compact {
-                HStack(spacing: 8) {
-                    Circle().fill(d.tone.color).frame(width: 7, height: 7)
-                    Text(d.displayLabel).font(NKFont.body).fontWeight(.semibold)
-                        .foregroundStyle(NK.textPrimary)
-                    Text("行情状态").font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                    Spacer(minLength: 6)
-                    if !userFacing && !metaLine(d).isEmpty {
-                        Text(metaLine(d)).font(NKFont.caption.monospacedDigit())
-                            .foregroundStyle(NK.textTertiary)
-                    }
-                }
-            } else {
-                regimeHeadRow(d)
-            }
-            #else
-            regimeHeadRow(d)
-            #endif
-            if !userFacing && !d.regimeReason.isEmpty {
-                Text(d.regimeReason).font(compact ? NKFont.caption : NKFont.body)
-                    .lineSpacing(compact ? 0 : 4)
-                    .foregroundStyle(compact ? NK.textSecondary : NK.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if !compact {
-                // 原型 719 行:增强 / 减弱**并排两组**(`gap:24`),⛔ 不是上下两行通栏。
-                HStack(alignment: .top, spacing: 24) {
-                    directionRow("增强方向", d.strengthening, .good)
-                    directionRow("减弱方向", d.weakening, .warn)
-                    Spacer(minLength: 0)
-                }
-            }
-            // 🔴 五维里没算出来的那几维要说出口:缺维**不是**「这一维没问题」。
-            // 原型 723–733 行把它收进披露区(收起态那一行已经点名"几维没取得")。
-            if compact {
-                if !d.missingDims.isEmpty {
-                    Text("本次未取得的判定输入:\(d.missingDimLabels.joined(separator: "、")) —— 缺数 = 不知道,不猜")
-                        .font(NKFont.caption).foregroundStyle(NK.amber)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Text("行情状态是市场结构的描述 · 不是买卖建议、不改变任何持仓判定")
-                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-            } else {
-                NKDisclosure(summary: d.missingDims.isEmpty
-                             ? "行情状态不是买卖建议"
-                             : "\(d.missingDims.count) 维判定输入未取得",
-                             tone: d.missingDims.isEmpty ? .neutral : .warn) {
-                    if !d.missingDims.isEmpty {
-                        Text("本次未取得的判定输入:\(d.missingDimLabels.joined(separator: "、")) —— 缺数 = 不知道,不猜")
-                            .foregroundStyle(NK.amber)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Text("行情状态是市场结构的描述 · 不是买卖建议、不改变任何持仓判定")
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-
-    /// macOS(与 iOS 非 compact)那一档的头行:弱标 + 实心状态徽标 + 右端日期 · 骨架版本
-    /// (macOS 原型 713–717 行)。
-    private func regimeHeadRow(_ d: MarketRegimeDay) -> some View {
-        HStack(spacing: 8) {
-            Text("行情状态").nkLabel().foregroundStyle(NK.textTertiary)
-            NKChip(text: d.displayLabel, tone: d.tone, filled: true)
-            Spacer(minLength: 6)
-            if !userFacing && !metaLine(d).isEmpty {
-                Text(metaLine(d)).font(NKFont.caption.monospacedDigit())
-                    .foregroundStyle(NK.textTertiary)
-            }
-        }
-    }
-
-    /// 「20260810 · K8-V0.5」。**缺哪个不写哪个**,⛔ 不拿占位符冒充。
-    private func metaLine(_ d: MarketRegimeDay) -> String {
-        [d.tradeDate, d.skeletonVersion].filter { !$0.isEmpty }.joined(separator: " · ")
-    }
-
-    @ViewBuilder
-    private func directionRow(_ title: String, _ items: [NKJSON], _ tone: NKAxisTone) -> some View {
-        if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title).nkLabel().foregroundStyle(NK.textTertiary)
-                NKWrapRow(spacing: 5, lineSpacing: 5) {
-                    ForEach(Array(items.enumerated()), id: \.offset) { _, it in
-                        NKChip(text: it["industry"]?.stringValue ?? it.displayText, tone: tone)
-                    }
-                }
-            }
-        }
-    }
-
-    private var unavailable: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "questionmark.circle").font(.system(size: 13))
-                .foregroundStyle(NK.textTertiary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(userFacing ? "行情状态暂不可用" : "行情状态本次未取得")
-                    .font(NKFont.callout).fontWeight(.semibold)
-                    .foregroundStyle(NK.textSecondary)
-                Text(userFacing
-                     ? "市场状态暂不可用，请稍后刷新。"
-                     : (regime.unavailableReason ?? "服务端未给原因"))
-                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !userFacing {
-                    Text("⛔ 「没取到」不等于「今天没什么特别的」")
-                        .font(NKFont.caption).foregroundStyle(NK.amber)
-                }
-            }
-            Spacer()
-        }
+    /// **比例 → 带符号百分数**(上方机械空间那一族:`0.1234` → `+12.34%`)。
+    /// ⚠ 与 `ratioPct` 的区别只在符号,别混用。
+    static func signedRatioPct(_ v: Double) -> String {
+        (v > 0 ? "+" : "") + String(format: "%.2f", v * 100) + "%"
     }
 }
+
 
 // MARK: - QA / 截图钩子(⚠ **只影响初始展开态,⛔ 不改任何数据、不夺走交互**)
 //
@@ -917,35 +564,18 @@ enum NKQA {
     /// `NECKLINE_EXPAND_DISCLOSURES=1` → 展开区默认展开(纯截图辅助)。
     static let expandDisclosures: Bool =
         ProcessInfo.processInfo.environment["NECKLINE_EXPAND_DISCLOSURES"] == "1"
-    /// `NECKLINE_INITIAL_RECEIPT=1` → 选股板块列表栏**初始选中「昨日回执」**那一行。
-    /// ⚠ 与 `NECKLINE_INITIAL_BASKET_ID` 互斥:选了篮子就以篮子为准(篮子选中态住在
-    /// `AppModel`,回执只是列表栏的本地选中,判据见 `BasketDailyView.detailColumn`)。
-    /// ⛔ 同 `expandDisclosures`:**只给 `@State` 当初值**,不夺走用户的点击。
-    static let initialReceipt: Bool =
-        ProcessInfo.processInfo.environment["NECKLINE_INITIAL_RECEIPT"] == "1"
-    /// `NECKLINE_INITIAL_POSITIONS_PANE=board|alerts` → 持仓板块列表栏**初始选中**
-    /// 「盘中动态」/「临时提醒」那一行(选具体某笔仓走 `NECKLINE_INITIAL_POSITION_ID`,
-    /// 它要等数据到位、住在 `AppModel.applyQAHooksAfterRefresh`)。
-    /// ⛔ 同上:**只给 `@State` 当初值**,不夺走用户的点击。
-    static let initialPositionsPane: String? =
-        ProcessInfo.processInfo.environment["NECKLINE_INITIAL_POSITIONS_PANE"]
     /// `NECKLINE_INITIAL_SETTINGS_GROUP=backend|llm|push|version` → 设置板块列表栏
     /// **初始选中**那一组(V2.3.1 批 5)。⛔ 同上:只给 `@State` 当初值。
     static let initialSettingsGroup: NKSettingsGroup? =
         ProcessInfo.processInfo.environment["NECKLINE_INITIAL_SETTINGS_GROUP"]
             .flatMap(NKSettingsGroup.init(rawValue:))
-    /// `NECKLINE_INITIAL_POSITION_ID=<id>` → **iOS** 持仓板块直接推入那一笔的详情页
-    /// (V2.3.1 批 7:持仓详情是 `NavigationStack` 推进去的一页,`NECKLINE_INITIAL_TAB`
-    /// 只切得到 tab、切不到推入页)。⚠ 同名环境变量在 macOS 上由
-    /// `AppModel.applyQAHooksAfterRefresh()` 消费(那边是列表选中,不是推入)——
-    /// **两端读同一个变量、语义各按平台的导航形态**,⛔ 别为 iOS 另起一个名字。
-    /// ⛔ 仍然只给初值 / 只推一次:推进去之后返回键照常可用,不夺走用户的导航。
-    static let initialPositionId: Int? =
-        ProcessInfo.processInfo.environment["NECKLINE_INITIAL_POSITION_ID"].flatMap(Int.init)
-    // ⚠ **`NECKLINE_INITIAL_AUCTION_SHEET=1`(V2.3.3-⑤ 竞价小报告弹层)不在本枚举里**:
-    // 它要等 `refresh()` 把报告拉回来才有东西可开,故消费点在
-    // `AppModel.applyQAHooksAfterRefresh()`(同 `NECKLINE_INITIAL_INFOCARD_CODE` 先例)——
-    // 本枚举里的钩子都是**同步可读的初值**,⛔ 别把异步那一族搬进来。
+    // ⚠ **`NECKLINE_INITIAL_SELECTION_VIEW` / `NECKLINE_INITIAL_STOCK_CODE` 不在本枚举里**:
+    // 它们要等报告拉回来才有东西可切 / 可开,故消费点在
+    // `AppModel.applyQAHooksAfterRefresh()` —— 本枚举里的钩子都是**同步可读的初值**,
+    // ⛔ 别把异步那一族搬进来。
+    // ⚠ V2.5.0 S12:`NECKLINE_INITIAL_RECEIPT` / `..._POSITIONS_PANE` / `..._POSITION_ID`
+    // 三个钩子**已删** —— 它们指向的「昨日回执」「盘中动态」「持仓详情」都已随 K8 与
+    // 持仓板块下线(裁定 11)。⛔ 别留一个指向不存在的地方的钩子。
 
     /// `NECKLINE_INITIAL_PROVIDER_FORM=1` → 设置 · Provider 屏开**编辑 Provider** 弹层
     /// (取列表首个 Provider)。⚠ 它要等 `loadSettings()` 拿回注册表才有东西可编,

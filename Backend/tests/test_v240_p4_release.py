@@ -54,7 +54,7 @@ def _expected_marketing_version() -> str:
 
 _EXPECTED_VERSION = _expected_marketing_version()
 _EXPECTED_RC_BUILD = "10"
-_EXPECTED_PRIMARY_ICON = "AppIconV242"
+_EXPECTED_PRIMARY_ICON = "AppIconV250"
 
 
 # ══════════════════════════════════════════════════════════════════════════

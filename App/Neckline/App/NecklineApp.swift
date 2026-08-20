@@ -24,25 +24,18 @@ struct NecklineApp: App {
         // model 的 clientProvider 在 RootView.task 里注入(依赖 config,坑吸收④:
         // bind(config:) 必须先于 refresh(),放 .task 而非 .onAppear)。
         let m = AppModel()
-        // 纯 QA/截图辅助:`simctl launch` 可用 `SIMCTL_CHILD_NECKLINE_INITIAL_TAB=<tab>`
-        // 免交互地把 App 启动到指定板块(数值取 AppTab.rawValue —— V2.1-⑦ 起合法值 =
-        // **baskets | positions | review | settings**,`inquiry` 已随问询台整链退役删除),
-        // 用于视觉核对;不影响正常用户启动路径(缺此环境变量则按默认 .baskets 打开)。
+        // 纯 QA / 截图辅助:`simctl launch` 可用 `SIMCTL_CHILD_NECKLINE_INITIAL_TAB=<tab>`
+        // 免交互地把 App 启动到指定板块(取值 = `AppTab.rawValue` —— **V2.5.0 S12 起合法值 =
+        // `selection` | `scoreboard` | `review` | `settings`**;`baskets` / `positions`
+        // 两个旧值已随裁定 11 的三板块 IA 换血作废)。缺此环境变量则按默认 `.selection` 打开。
         if let raw = ProcessInfo.processInfo.environment["NECKLINE_INITIAL_TAB"],
            let tab = AppTab(rawValue: raw) {
             m.view = tab
         }
-        // 🔴 V2.5.0 S1:`NECKLINE_INITIAL_MODAL`(open / note / close: / tradeNote:)与
-        // `NECKLINE_INITIAL_NOTE_*` 三个预填钩子**整段删除** —— 它们驱动的开仓 / 清仓 /
-        // 补充说明 / 交易时钟四个弹层随持仓板块整块下线(裁定 11)。
-        // ⛔ 不留一个"传了但什么都不弹"的空壳:那会让截图脚本静默拍到默认屏还以为拍对了。
-        // S12 落新弹层(预案修改入口)时按同一体例重新加钩子。
-        // ⚠ **数据到位之后才能触发的钩子**(`NECKLINE_INITIAL_BASKET_ID` /
-        // `NECKLINE_INITIAL_INFOCARD_CODE` / V2.1-⑦ 新增的
-        // `NECKLINE_INITIAL_REVIEW_PAGE=daily|selectionClock|tradeClock|cumulative|reconcile` 与
-        // `NECKLINE_INITIAL_REVIEW_WEEK=YYYYMMDD`)**不能塞进这里** —— 那些内容是
-        // `AppModel.refresh()` 异步拉回来的,`init()` 里够不着。它们落在
-        // `AppModel.applyQAHooksAfterRefresh()`(v1.4-⑧ 立下的先例)。
+        // ⚠ **数据到位之后才能触发的钩子不能塞进这里**(`NECKLINE_INITIAL_SELECTION_VIEW` /
+        // `NECKLINE_INITIAL_STOCK_CODE` / `NECKLINE_INITIAL_REVIEW_PAGE` /
+        // `NECKLINE_INITIAL_REVIEW_WEEK`)—— 那些内容是异步拉回来的,`init()` 里够不着。
+        // 它们落在 `AppModel.applyQAHooksAfterRefresh()`(v1.4-⑧ 立下的先例)。
         _model = State(initialValue: m)
     }
 

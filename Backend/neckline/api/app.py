@@ -323,42 +323,22 @@ def health() -> dict:
 # —— 4A.2 报告 ————————————————————————————————————————————————————————
 
 
-# —— V2-⑭-B 篮子端点(⑤⑥⑦⑧⑨ 的产出上 API 面)————————————————————————————
+# —— ⚠ V2.5.0 S12:七个 K8 时代的 reason 常量**已随它们的端点一起删除** ————————
 #
-# **两个 404 reason 必须分得开(⑭-B 定死,⛔ 不许合并)**:
-#   · `basket_not_found` —— 这个篮子本身不存在(系统丢了篮子)。
-#   · `card_not_ready`   —— **篮子在,卡还没生成**(⑦ 的事务 2 独立于事务 1,合法中间态)。
-# 合并成一个就把「没有」和「没看」混了。`card_not_ready` 是**全新字符串**,客户端
-# `APIClient.mapReason` **必须加新 case**(文案方向「本篮的卡还没生成」,⛔ 不是「篮子
-# 不存在」)—— 404 的 fallback 是 `.notHolding`「持仓已清」,不加 case 就会显示成那句
-# 驴唇不对马嘴的话(v1.4 `watchlist` 的 `not_found` 已经这么踩过一次)。
-
-# **第三态 `card_corrupt` = 500 + reason(2026-08-04 planner 裁定,小审 🔵 B-3)**:
-#   · 判据分界:`basket_cards` **有行但读不出**(`card_json` 解不出 / 顶层必需键缺失)
-#     → `card_corrupt`;**根本没有行** → 仍是 `card_not_ready`。
-#   · **为什么给它 500 而不是塞进 404 家族**(⛔ 别按"体例一致"改回去):① 404 是在
-#     说谎,卡**存在**、只是读不出;② 它会与 `card_not_ready` 撞成同一类,而两者要求
-#     的反应完全相反(等 ⑦ 补 version=1 vs 需人排查);③ **决定性一条**:卡是冻结件、
-#     `INSERT OR IGNORE` 永不覆盖 → 坏了就是永久坏的,客户端当 `card_not_ready` 处理
-#     就会永远重试、界面永远显示「卡还没生成」而那张卡这辈子不会来 = **静默永久失败**;
-#     ④ 放 500 这一类,连只看状态码的采集器也不会误当良性态。**防误判优先于家族整齐。**
-#   · 体例一致性另有保住方式:响应体仍是同一个 `{"reason": ...}` 形状,`mapReason`
-#     仍是唯一语义映射点(客户端 `send()` 的 500 分支已接进 `mapReason`)。
-REASON_BASKET_NOT_FOUND = "basket_not_found"
-REASON_CARD_NOT_READY = "card_not_ready"
-REASON_CARD_CORRUPT = "card_corrupt"
-
-
-# —— 4A.3 盘中看板 ————————————————————————————————————————————————————
-
-
-# —— 4A.4 持仓 ————————————————————————————————————————————————————————
-
-
-# v1.4-①-A 两个新 400 reason 码(**客户端 `APIClient.mapReason` 必须逐个加 case**,守项目
-# CLAUDE.md「404/reason 映射」坑:别指望 fallback 猜对文案)。
-REASON_NOT_TRADING_DAY = "not_trading_day"
-REASON_FUTURE_BUY_DATE = "future_buy_date"
+# `basket_not_found` / `card_not_ready` / `card_corrupt`(篮子与冻结卡)、
+# `not_trading_day` / `future_buy_date`(补录开仓的日期校验)、
+# `auction_not_ready` / `auction_corrupt`(K8 竞价确认层)—— 这七条的**端点已在 S1
+# 全部删除**,常量却留了下来。留着不是无害的:契约对拍
+# (`tests/test_contract_crosscheck.py`)按「`app.py` 里出现的 reason 字面量」反推
+# 服务端 reason 面,一个再也 raise 不出来的常量会**要求客户端一直养着一个死 case**,
+# 而那个 case 的存在又让人以为对应端点还在。⛔ 别为了"以后可能用得上"留死码。
+#
+# 🔴 本版剩下的 reason 面只有 6 条,全部出自设置屏(见
+# `tests/test_contract_crosscheck.py::SERVER_REASONS`):新增会返 4xx 的端点时,
+# **必须同时**更新那份清单与客户端 `APIClient.mapReason`。
+# ⚠ K9 的四条新端点(`/selection/*` / `/checklist/*`)返的是**纯字符串 detail**
+# (「20260430 没有报告」这类),⛔ 不进 reason 面 —— 它们不需要客户端换算,
+# 原文直接给用户看比一个英文码更清楚。
 
 
 # —— V2-⑭-B 计划继承(`position_plans`)+ 建仓快照(`entry_snapshots`)————————
@@ -892,8 +872,6 @@ def get_review_conclusions(week: str = "", q: str = "", limit: int = 20) -> Revi
 # 同族 → 照 B1。**这是刻意的不同,⛔ 别"统一"。**
 #
 # ⛔ **零现算、零写库**:本端点只 SELECT(常驻服务与盘中哨兵同进程,P0-23)。
-REASON_AUCTION_NOT_READY = "auction_not_ready"
-REASON_AUCTION_CORRUPT = "auction_corrupt"
 
 
 # —— V2.1-⑤ 复盘板块:聚合读 + 校准移交件 ————————————————————————————————
@@ -1141,6 +1119,64 @@ def get_scoreboard_coverage(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
 # ⚠ 个股详情(`/selection/{date}/stock/{code}`)要解释层资料 + 预案,归 S9 / S10。
 
 
+def _selection_stocks(trade_date: str) -> list:
+    """清单上每只票的**摘要**:形态标注 / 上方机械空间 / 三个价位 / 三分支预案摘要。
+
+    🔴 **为什么在这里装而不是塞进 `k9_reports.structured_json`**:那份 JSON 是随报告
+    **冻结**的产物(S7),它的键序与内容要逐字节可复现;而这四样东西分别住在
+    `k9_listing_entries` / `k9_channel_hits` / `k9_playbooks` / `k9_explain_notes`
+    四张表里,其中预案是 **append-only 版本化**的(用户改一次就多一版)——
+    把它冻进报告快照,用户改完预案报告就与库里对不上了。故本段**每次请求现装**,
+    ⛔ 不动任何冻结件。
+
+    🔴 **为什么不让客户端逐只去问** `/selection/{date}/stock/{code}`:清单一天 10–20 只,
+    首屏就是 20 次请求。这里四次批量查询取全(⛔ 无按票循环)。
+
+    ⚠ **每一样缺席都各自如实标**(§5.10 / S9-S10 的三态纪律):
+      · `upsideRoomMechPct = null` —— 这只票只被 p2 / p4 召回,**本形态不看这一项**
+        (K9 §3.3 / §3.5 的强度性里没有它),⛔ 不是「上方没有空间」;
+      · `playbook = null` —— 那天没给这一只冻预案 → **明早核对不了它**;
+      · `newsState = null` —— 解释层没跑过这一只(⛔ 与 `"unverified"`「查过没查成」
+        不是一回事,两者都⛔ 不许显示成「无异常」)。
+    """
+    from neckline.explain import store as explain_store
+    from neckline.k9 import store as k9_store
+    from neckline.playbook import store as pb_store
+
+    day = _parse_day(trade_date)
+    listing = k9_store.load_listing(day, db_path=_db())
+    if not listing:
+        return []
+    codes = [e["ts_code"] for e in listing]
+    room = k9_store.load_upside_room_mech(day, db_path=_db())
+    playbooks = pb_store.load_latest(day, codes=codes, db_path=_db())
+    notes = explain_store.load_notes(day, codes=codes, db_path=_db())
+    out = []
+    for e in listing:
+        code = e["ts_code"]
+        note = notes.get(code)
+        pb = playbooks.get(code)
+        out.append({
+            "tsCode": code,
+            "name": e["name"],
+            "swL2Code": e["sw_l2_code"],
+            "swL2Name": e["sw_l2_name"],
+            "patterns": e["patterns"],
+            "primaryPattern": e["primary_pattern"],
+            "tier": e["tier"],
+            "seatKind": e["seat_kind"],
+            "rank": e["rank"],
+            # 裁定 1:**上方机械空间**(机械、排序用)⛔ 永不与预案的第一压力位互顶。
+            "upsideRoomMechPct": room.get(code),
+            "playbook": None if pb is None else pb.to_dict(),
+            "newsState": None if note is None else note["news_state"],
+            "newsCategory": None if note is None else note["news_category"],
+            "klineComment": None if note is None else note["kline_comment"],
+            "explainOk": None if note is None else bool(note["llm_ok"]),
+        })
+    return out
+
+
 def _selection_payload(row: dict) -> dict:
     return {
         "reportDate": row["report_date"],
@@ -1158,6 +1194,8 @@ def _selection_payload(row: dict) -> dict:
         "generatedAt": row["generated_at"],
         "markdown": row["markdown"],
         "structured": row["structured"],
+        # §5.11 今日清单要的逐只摘要(**现装,不进冻结件**,见 `_selection_stocks`)。
+        "stocks": _selection_stocks(row["trade_date"]),
     }
 
 
@@ -1176,6 +1214,7 @@ def get_selection_latest() -> dict:
             "headline": "今天没跑成 · 尚无任何报告",
             "gaps": ["库里还没有任何一份 K9 报告"],
             "listingSize": None,
+            "stocks": [],
         }
     return _selection_payload(row)
 
@@ -1218,6 +1257,7 @@ def get_selection_stock(trade_date: str, ts_code: str) -> dict:
     """
     from neckline.explain import store as explain_store
     from neckline.k9 import store as k9_store
+    from neckline.playbook import skeleton as skeleton_mod
     from neckline.playbook import store as pb_store
 
     day = _parse_day(trade_date)
@@ -1228,6 +1268,19 @@ def get_selection_stock(trade_date: str, ts_code: str) -> dict:
                             detail=f"{ts_code} 不在 {trade_date} 的清单里")
     notes = explain_store.load_notes(day, codes=[ts_code], db_path=_db())
     versions = pb_store.load_versions(day, ts_code, db_path=_db())
+    # 🔴 **改预案要填哪几个数由服务端说**(唯一源 = `playbook/skeleton.py`,同
+    # `PushKindOut.label` 的先例)。客户端硬编一份键表 = 第二份事实源,必然漂 ——
+    # 而漂的后果是用户改完点提交拿一个英文 422,界面上却一路是绿的。
+    # ⚠ 槽位**只有数值**(`kind ∈ {price, percent}`),⛔ 没有「理由」「评价」这类键
+    # (架构 §四 第 4 条:预案层知道形态,但不做好坏评价)。
+    # ⚠ 形态骨架**不可改** —— 这里给的是「方括号里那几个数」,不是「哪个量跟谁比」。
+    try:
+        slots = [
+            {"key": s.key, "kind": s.kind, "label": s.label, "hint": s.hint}
+            for s in skeleton_mod.all_slots(str(entry["primary_pattern"]))
+        ]
+    except Exception:  # noqa: BLE001  没登记骨架的形态 → 界面不给改,⛔ 不猜一组键
+        slots = []
     return {
         "tradeDate": trade_date,
         "tsCode": ts_code,
@@ -1240,6 +1293,7 @@ def get_selection_stock(trade_date: str, ts_code: str) -> dict:
         "explain": notes.get(ts_code),
         "playbook": versions[-1].to_dict() if versions else None,
         "playbookVersions": [p.to_dict() for p in versions],
+        "playbookSlots": slots,
     }
 
 

@@ -381,6 +381,54 @@ def relaxed_streak_before(
     return streak
 
 
+#: 上方机械空间在 `k9_channel_hits.strength_json` 里的两个落点与各自的符号。
+#:
+#: 🔴 **唯一源仍是 `k9/upside_room.py`**:形态 1 存的是 `score_room_far(pct)` = **原值**,
+#: 形态 3 存的是 `score_room_near(pct)` = **负值**(反向打分,裁定 1 / K9 §3.4)。
+#: 这张表只负责把那个符号**反过来读回原值**,⛔ 不在这里重算任何东西。
+#: ⚠ 形态 2 / 4 **根本不看这一项**(K9 §3.3 / §3.5 的强度性里没有它)—— 只被 p2/p4
+#: 召回的票**没有**上方机械空间,那是「本形态不看它」而不是「值是 0」。
+_UPSIDE_ROOM_SOURCES: Tuple[Tuple[str, str, float], ...] = (
+    ("p1", "upsideRoomFar", 1.0),
+    ("p3", "upsideRoomNear", -1.0),
+)
+
+
+def load_upside_room_mech(
+    trade_date: date, *, db_path: Optional[Path] = None
+) -> Dict[str, float]:
+    """某日逐票的**上方机械空间**原值(`upside_room_mech_pct`),从召回记录反读。
+
+    键不存在 = 这只票当天没有被 p1 / p3 召回过 → **本形态不看这一项**
+    (⛔ 调用方不许补 0:「不看」与「没有空间」是两件事)。
+
+    ⚠ **反读而不是新开一列**:`k9_channel_hits.strength_json` 已经原样冻着这个读数
+    (p1 正向、p3 取负,见 `_UPSIDE_ROOM_SOURCES`),再给 `k9_listing_entries` 加一列
+    等于让同一个数有两处落点、两处都可能漂。
+    ⚠ **命名铁律(裁定 1)**:这里读回来的是**上方机械空间**(机械、排序用),
+    与预案层的**第一压力位**(LLM 判断)是两个量,⛔ 永不互相顶替。
+    """
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT ts_code, pattern, strength_json FROM {HITS_TABLE} WHERE trade_date=?",
+            (_d(trade_date),),
+        ).fetchall()
+    out: Dict[str, float] = {}
+    for ts_code, pattern, raw in rows:
+        for want_pattern, key, sign in _UPSIDE_ROOM_SOURCES:
+            if pattern != want_pattern:
+                continue
+            try:
+                value = json.loads(raw).get(key)
+            except (TypeError, ValueError):
+                logger.warning("[k9] %s %s 的 strength_json 解不出,跳过", trade_date, ts_code)
+                continue
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                out[ts_code] = float(value) * sign
+    return out
+
+
 def load_relay_records(
     *, start: date, end: date, source_table: str, strategy: str = "K9",
     db_path: Optional[Path] = None,
@@ -414,6 +462,6 @@ __all__ = [
     "save_run", "save_channel_hits", "save_listing", "save_disposition",
     "mark_listing_finalized_by",
     "load_disposition", "load_listing_codes", "load_listing",
-    "load_listing_membership", "load_run",
+    "load_listing_membership", "load_run", "load_upside_room_mech",
     "relaxed_streak_before", "load_relay_records",
 ]

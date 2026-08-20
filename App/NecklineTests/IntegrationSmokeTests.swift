@@ -1,25 +1,24 @@
 //
 //  IntegrationSmokeTests.swift
-//  NecklineTests — 真实网络联调冒烟(§五 阶段4C 验收:「与本地 dev 后端的联调闭环
-//  证据(开清仓/看板真请求)」)。⚠ V2.1-① 起「问询台真请求」一项(原三项之一)
-//  已随问询台整链退役删除。
+//  NecklineTests — 真实网络联调冒烟(V2.5.0 S12 换血)。
 //
-//  这批测试用**真实 URLSession**(不经 MockURLProtocol)对本机 dev 后端发真请求,
-//  只有本地跑起 dev uvicorn 才会执行;检测不到服务 → `XCTSkip`,不影响默认
-//  `xcodebuild test` 的常规门禁(那 31 个测试全部离线可跑,见 URLGateTests /
-//  DTODecodeTests / AppModelTests)。
+//  这批测试用**真实 URLSession**(不经 Mock)对本机 dev 后端发真请求,只有本地跑起
+//  dev uvicorn 才会执行;检测不到服务 → `XCTSkip`,不影响默认 `xcodebuild test` 的
+//  常规门禁(其余测试全部离线可跑)。
 //
-//  跑法(先起 dev 后端,固定占位 token 沿用 `scripts/smoke_api.sh` 同款惯例——
+//  跑法(先起 dev 后端,固定占位 token 沿用 `scripts/smoke_api.sh` 同款惯例 ——
 //  纯本地联调用,非真实密钥):
 //    DB_PATH=/tmp/neckline_it.db API_TOKEN=smoke_token_at_least_16_chars_long \
 //      NECKLINE_ENABLE_SENTINEL=0 .venv/bin/python -m uvicorn neckline.api.app:app \
 //      --host 127.0.0.1 --port 8002
-//    然后:xcodebuild test -project Neckline.xcodeproj -scheme Neckline \
-//      -destination 'platform=iOS Simulator,name=LinoJ-iPhone16Pro' \
-//      -only-testing:NecklineTests/IntegrationSmokeTests
 //
-//  ⚠️ 只打 127.0.0.1:8002,任何情况下都不得指向 prod(nk.linotsai.top)—— 这批测试
-//     会真实开/清仓、真实改设置,绝不能碰生产台账。
+//  ⚠️ **只打 127.0.0.1:8002,任何情况下都不得指向 prod**(nk.linotsai.top)——
+//     这批测试会真实改设置、真实写结论,⛔ 绝不能碰生产台账。
+//
+//  🔴 **本版这批测试全部是「读」+「设置屏那一条可复原的写」**:
+//  K9 的写入口只有两个(改预案 / 存结论),它们都是 **append-only** 的 ——
+//  真跑一次就会在 dev 库里多留一版,⛔ 不放进常跑的冒烟里(它们由后端的
+//  `smoke_api.sh` 39–46 步覆盖,那边跑在**临时库**上)。
 //
 
 import XCTest
@@ -45,42 +44,82 @@ final class IntegrationSmokeTests: XCTestCase {
         try await skipUnlessDevServerReachable()
         let health = try await makeClient().health()
         XCTAssertTrue(health.ok)
-        // v1.5-⑤-E:health 端点顺带把 version 带回,联调时冒烟一下不为空(不锁具体值,
-        // 避免测试与「本地跑的到底是哪个版本」耦合)。
+        // 顺带冒烟一下 version 不为空(⛔ 不锁具体值,避免与「本地跑的是哪个版本」耦合)。
         XCTAssertNotNil(health.version)
     }
 
-    /// 今日计划:GET /report/latest 真请求(§4C.1)。
-    func testReportLatestRealRequest() async throws {
+    /// 选股:`GET /selection/latest` 真请求。
+    ///
+    /// 🔴 **空库也是 200**(`state='not_run'` 的空态)—— ⛔ 这条测试**刻意不断言
+    /// 「今天有清单」**:参数未标定之前每天都是「今天没跑成 · 参数未配置」,
+    /// 那是**设计行为**(裁定 5 / §9.5)。能断言的是**三态真的解出来了**。
+    func testSelectionLatestRealRequest() async throws {
         try await skipUnlessDevServerReachable()
-        let report = try await makeClient().fetchReportLatest()
-        XCTAssertFalse(report.degraded, "dev 后端应已由 scripts/report.py 生成过真实报告")
-        XCTAssertNotNil(report.sentiment)
-        // V2-⑮:候选榜整族已退役,报告改由**篮子日报三段**承载。⚠ 这里**刻意不断言
-        // 「今日篮子非空」** —— 「今天真没有篮子」是合法输出(⑥-b-B);能断言的是
-        // **三段的可得性位真的解出来了**(空数组 + available=true 与 available=false
-        // 是两回事,界面上必须讲不同的话)。
-        let daily = report.basketDaily
-        for b in daily.baskets {
-            XCTAssertGreaterThan(b.basketId, 0)
-            // 篮子在、卡没生成是合法中间态 —— 有卡时卡里的 basketKey 不该是空的。
-            if let card = b.card { XCTAssertFalse(card.basketKey.isEmpty) }
-            else { XCTAssertNotNil(b.cardUnavailableText, "无卡时必须给得出诚实文案") }
+        let snap = try await makeClient().fetchSelectionLatest()
+        XCTAssertNotNil(snap.state, "三态必须解得出来 —— 解不出说明契约漂了")
+        XCTAssertFalse(snap.headlineText.isEmpty, "首行即可分辨,⛔ 不许是空串")
+        if snap.state == .notRun {
+            XCTAssertNil(snap.listingSize, "「今天没跑成」的 listingSize 是 null,⛔ 不是 0")
         }
-        // ③b 两个原因码语义相反,⛔ 不许合并成「未入选」。
-        for d in daily.droppedBaskets {
-            XCTAssertTrue(["capacity_overflow", "below_quality_line"].contains(d.reason),
-                          "未登记的 dropped reason:\(d.reason)")
+        // 逐只摘要:有清单就该有票,且**上方机械空间缺席是合法的**(p2/p4 不看这一项)。
+        if snap.state == .hasList {
+            XCTAssertFalse(snap.stocks.isEmpty)
+            for s in snap.stocks {
+                XCTAssertFalse(s.tsCode.isEmpty)
+                XCTAssertFalse(s.primaryPattern.isEmpty)
+            }
         }
     }
 
+    /// 次日核对表:**404 是常态**(一天里只有 9:26 之后、且 D0 真出过清单才有)。
+    /// ⛔ 这条测试不许把 404 判成失败 —— 那正是「合法空态」。
+    func testChecklistRealRequestTreats404AsALegitimateEmptyState() async throws {
+        try await skipUnlessDevServerReachable()
+        let today = StaticTradingCalendar.shared.compactString(Date())
+        do {
+            let list = try await makeClient().fetchChecklist(tradeDate: today)
+            // 🔴 跑过了 → **恰好两段**,⛔ 没有「成立」。
+            XCTAssertEqual(list.segments.count, 2)
+            XCTAssertFalse(list.footnote.isEmpty)
+            for seg in list.segments {
+                XCTAssertNotEqual(seg.displayLabel, "已触发成立")
+                XCTAssertFalse(seg.displayLabel.contains("成立"))
+            }
+        } catch let e as APIError where e.isNotFound {
+            // 那天没跑过那一拍 —— 合法。
+        }
+    }
 
-    // ⚠ V2.1-① 起 `testInquiryRealRequestVerdictIsDescriptive`(§4C.3 问询台真请求)
-    // 已随问询台整链退役删除(`sendInquiry`/`ChatMessage` 均已物理删除)。
+    /// 成绩:覆盖率恒 200(空库 = 空数组);终值端点恒 200(那天没有 = 空数组)。
+    func testScoreboardRealRequest() async throws {
+        try await skipUnlessDevServerReachable()
+        let client = makeClient()
+        let coverage = try await client.fetchCoverage(window: 5)
+        XCTAssertGreaterThan(coverage.window, 0)
+        for d in coverage.days {
+            // 🔴 NULL 不是 0:覆盖率两个口径都可能是 null,⛔ 客户端不许当 0。
+            if d.coverageAll == nil { XCTAssertNil(d.coveredCount) }
+        }
+        let today = StaticTradingCalendar.shared.compactString(Date())
+        let verdicts = try await client.fetchVerdicts(tradeDate: today)
+        XCTAssertEqual(verdicts.tradeDate, today)
+        for v in verdicts.verdicts where v.isUndecided {
+            XCTAssertNil(v.decidedStage, "「还没定案」两列必须都是 null")
+        }
+    }
 
-    /// 设置真请求闭环(V2-②/⑪ 换血后):GET → POST provider(key 只发一次)→ GET
-    /// (**确认只回 keySet 布尔、绝不回明文**)→ PUT push(按 kind 全量覆盖)→ GET →
-    /// DELETE provider 清理。
+    /// 复盘聚合读:**恒 200**,空态走各段自己的 `available`。
+    func testReviewOverviewRealRequest() async throws {
+        try await skipUnlessDevServerReachable()
+        let ov = try await makeClient().fetchReviewOverview()
+        XCTAssertFalse(ov.weekKey.isEmpty, "ISO 周键由服务端给 —— ⛔ 客户端不自己算")
+        // 「没有」与「没看」分开:`available=true` + `found=false` = 这周没传过交割单。
+        if ov.reconcile.available { XCTAssertNotNil(ov.reconcile.found) }
+        else { XCTAssertNotNil(ov.reconcile.unavailableReason, "没取到必须给得出原因") }
+    }
+
+    /// 设置真请求闭环:GET → POST provider(key 只发一次)→ GET(**确认只回 keySet
+    /// 布尔、绝不回明文**)→ PUT push(按 kind 全量覆盖)→ GET → DELETE 清理。
     func testSettingsRoundTripRealRequest() async throws {
         try await skipUnlessDevServerReachable()
         let client = makeClient()
@@ -112,30 +151,4 @@ final class IntegrationSmokeTests: XCTestCase {
 
         _ = try await client.registerDevice(token: "integration-test-device-token")
     }
-
-
-    // MARK: - ⑩ 极简录入真请求闭环:三字段开仓 → 自动关联 + 计划继承 + 建仓快照 → 可选补充
-
-
-    /// 篮子族端点真请求:列表 → 单篮 → 卡 / 验证。**空列表是合法输出**,⛔ 不是 404。
-    func testBasketsRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-        let baskets = try await client.fetchBaskets()
-        guard let first = baskets.first else {
-            throw XCTSkip("dev 库当日无篮子(合法输出),跳过卡 / 验证的真请求")
-        }
-        let one = try await client.fetchBasket(id: first.basketId)
-        XCTAssertEqual(one.basketId, first.basketId)
-        // 「篮子在、卡没生成」是合法中间态 → `card_not_ready`,⛔ **不是**「篮子不存在」。
-        do { _ = try await client.fetchBasketCard(id: first.basketId) }
-        catch APIError.cardNotReady { /* 合法中间态 */ }
-        let v = try await client.fetchBasketVerification(id: first.basketId)
-        XCTAssertEqual(v.basketId, first.basketId)
-    }
-
-    // ⚠ **`testCircuitStateRealRequest` 已删**(V2.2-⑤-B):`GET /circuit` /
-    // `POST /circuit/unlock` 两条端点随熔断整体退役消失(用户裁定 #8),客户端两个
-    // 方法同批删 —— 这条真请求测试没有可打的目标了。⛔ 不许接回来。
-
 }

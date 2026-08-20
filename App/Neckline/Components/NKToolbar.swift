@@ -2,15 +2,11 @@
 //  NKToolbar.swift
 //  Neckline — V2.3 视觉升级:macOS 统一工具栏(规范 §05 / §06)
 //
-//  🔴 **左侧 240px 导航栏整个去掉**(规范 §01 决定 01):四个板块进工具栏,
-//  窗口宽度全部还给内容。
+//  🔴 **左侧 240px 导航栏整个去掉**(规范 §01 决定 01):板块进工具栏,
+//  窗口宽度全部还给内容。⛔ 别把侧栏加回来 —— 它与胶囊是同一组导航的两种形态。
 //
-//  🔴 **齿轮不做成第四个胶囊** —— 设置**是入口不是板块**(V2.1 用户裁定 #2,
+//  🔴 **齿轮不做成第四个胶囊** —— 设置**是入口不是板块**(裁定 11 沿用 V2.1 裁定 #2,
 //  「设置在产品语义上不算板块」)。它沉在右端,与三个胶囊之间隔开。
-//
-//  🔴 **退潮刹车条压在工具栏下方通栏,⛔ 不进卡片流**:它管的是「今天整份计划」,
-//  不是某一篮。⚠ 刹车激活时**篮子仍然全部列出、点得开** —— 作废的是计划,不是数据;
-//  **补录开仓按钮同样不灰化**(硬拦 = 帮用户瞒报,V2.2-⑤-B 已拆过一次熔断)。
 //
 
 import SwiftUI
@@ -20,9 +16,8 @@ import SwiftUI
 struct NKToolbar: View {
     @Bindable var model: AppModel
     /// 现役板块胶囊(设置不在内 —— 它是右端那个齿轮)。
-    /// 🔴 V2.5.0 S1:`.positions` 已随持仓板块整块下线(裁定 11);
-    /// 目标三板块是 **选股 / 成绩 / 复盘**,「成绩」在 S12 落地时补进这个数组。
-    private let tabs: [AppTab] = [.baskets, .review]
+    /// 🔴 **三板块 = 选股 / 成绩 / 复盘**(裁定 11)。⛔ 别把持仓加回来。
+    private let tabs: [AppTab] = [.selection, .scoreboard, .review]
 
     /// 工具栏高度(macOS 原型 23 行 `height:50px`)。红绿灯要在这个高度里居中。
     static let barHeight: CGFloat = 50
@@ -107,78 +102,47 @@ struct NKToolbar: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - 行情状态(色点 + 标签)
-    // ⛔ V2.4.0 P0:原先还有第四档「退潮刹车 → 实底白字」,随退潮判级退役删除。
+    // MARK: - 当前报告的身份(双日期 + 参数包版本)
 
-    /// 原型 57–60 行:**一枚带底色的胶囊**(`gap:6; padding:4px 10px 4px 8px; radius:7;
-    /// background: 语义色 8% alpha`)+ 6px 色点 + `12px/600 #1D1D1F` 文案。
-    /// V2.3.0 只画了裸色点 + 灰字,底色整枚缺席 —— 行情状态是**首屏最该被看见的一句**,
-    /// 没有底色就沉进了工具栏的其它灰字里。
+    /// 报告日 · 交易日 · 参数包版本。**缺哪个就不写哪个**,⛔ 不用占位符冒充。
+    ///
+    /// 🔴 **双日期都写出来**(LRN-20260816-001):`reportDate` 管标题 / 推送 / 可见身份,
+    /// `tradeDate` 管 EOD 读数 / 清单 / 审计键 —— 周日报告两者不同,只印一个会让人
+    /// 以为周日那份用的是周日的行情。两者相同时收成一个,不啰嗦。
     @ViewBuilder
-    private var regimePill: some View {
-        if let d = model.marketRegime.day, model.marketRegime.available {
-            regimeShell(dot: d.tone.color, text: d.displayLabel,
-                        textColor: NK.textPrimary, bg: d.tone.color.opacity(0.08))
-        } else {
-            // 🔴 「没取到」不等于「今天没什么特别的」——⛔ 不许什么都不显示。
-            // 底色走中性灰:形状与常态一致(同样是一枚胶囊,不缩水),颜色上不冒充判定。
-            regimeShell(dot: NK.textTertiary, text: "行情状态未取得",
-                        textColor: NK.textSecondary, bg: NK.chipNeutral)
-        }
-    }
-
-    private func regimeShell(dot: Color, text: String,
-                             textColor: Color, bg: Color, bold: Bool = false) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(dot).frame(width: 6, height: 6)
-            Text(text).font(NKFont.callout).fontWeight(bold ? .bold : .semibold)
-                .foregroundStyle(textColor)
-        }
-        .padding(.leading, 8).padding(.trailing, 10).padding(.vertical, 4)
-        .background(RoundedRectangle(cornerRadius: NKRadius.control).fill(bg))
-    }
-
-    /// 交易日 · 章程 · 选股包。**缺哪个就不写哪个**,⛔ 不用占位符冒充。
     private var metaLine: some View {
-        // 原型 61 行 `font-size:11.5px; color:rgba(60,60,67,.55)` → caption 11 + textSecondary。
-        // ⚠ 原来挂 `textTertiary`(.40),比原型淡一档 —— 交易日 / 章程 / 选股包是**每天都要
-        // 核一眼**的三个版本号,不该淡到要凑近看。
-        Text(metaParts.joined(separator: " · "))
-            .font(NKFont.caption.monospacedDigit())
-            .foregroundStyle(NK.textSecondary)
+        if !metaParts.isEmpty {
+            Text(metaParts.joined(separator: " · "))
+                .font(NKFont.caption.monospacedDigit())
+                .foregroundStyle(NK.textSecondary)
+                .help("报告日 · 行情交易日 · 参数包版本")
+        }
     }
 
     private var metaParts: [String] {
         var parts: [String] = []
-        let d = model.report.reportDate.isEmpty ? model.report.tradeDate : model.report.reportDate
-        if d.count == 8 {
-            parts.append("\(d.dropFirst(4).prefix(2))-\(d.suffix(2))")
-        } else if !d.isEmpty {
-            parts.append(d)
+        let report = NKToolbar.mmdd(model.selection.reportDate)
+        let trade = NKToolbar.mmdd(model.selection.tradeDate)
+        if !report.isEmpty && !trade.isEmpty && report != trade {
+            parts.append("\(report) · 行情 \(trade)")
+        } else if !report.isEmpty {
+            parts.append(report)
+        } else if !trade.isEmpty {
+            parts.append(trade)
         }
-        if !model.report.strategyVersion.isEmpty { parts.append(model.report.strategyVersion) }
-        // 选股包版本来自报告快照(⛔ 不硬编 `K8-V0.5`,也别改读 `marketRegime` 的
-        // `skeletonVersion` —— 那是**行情状态层**的骨架版本,与选股包不是同一个量)。
-        if let pack = model.basketDaily.packVersion, !pack.isEmpty { parts.append(pack) }
+        // 🔴 参数包版本:**没有就说没有**(那是「参数未配置」的日子,裁定 5)——
+        // ⛔ 不留空、⛔ 不写一个占位版本号。
+        if let v = model.selection.paramsPackageVersion, !v.isEmpty {
+            parts.append(v)
+        } else if model.selectionLoaded {
+            parts.append("参数未配置")
+        }
         return parts
     }
 
-    /// 🔴 V2.4.0 P3.3-E:数据新鲜度**三态**徽标(取代原「有才出现」的降级告警 ——
-    /// 那条只覆盖了"降级"一态,「三张表都当日」与「本次没查到」两态此前在工具栏上
-    /// 完全不可见)。点开跳选股板块并展开完整 ⑤ 段。
-    ///
-    /// ⚠ **报告还没拉过时整枚不画**(`tradeDate` 为空):P3.6 之后进持仓 / 复盘 Tab
-    /// **不会**顺带拉报告 —— 此时画一枚灰色「没查到」是把「这个 Tab 没拉过」说成
-    /// 「查了没查到」,方向正相反的一种谎。⛔ 别改成「拉不到就当新鲜」,
-    /// 报告**拉过之后** `dataFreshness == nil` 才是真的第三态,那一枚照画。
-    @ViewBuilder
-    private var freshnessBadge: some View {
-        if !model.report.tradeDate.isEmpty {
-            NKFreshnessBadge(freshness: model.report.dataFreshness) {
-                model.view = .baskets
-                model.showFreshnessSheet = true
-            }
-        }
+    static func mmdd(_ raw: String) -> String {
+        guard raw.count == 8 else { return raw }
+        return "\(raw.dropFirst(4).prefix(2))-\(raw.suffix(2))"
     }
 
     // MARK: - 刷新(按钮上直接显示上次更新时刻)+ 齿轮

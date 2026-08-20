@@ -1,21 +1,16 @@
 //
 //  RootView.swift
-//  Neckline — 导航壳(平台分叉:iOS 底部 TabView / **macOS 50px 统一工具栏**)
+//  Neckline — 导航壳(平台分叉:iOS 底部 TabView / **macOS 50px 统一工具栏**)。
 //
-//  **信息架构 = V2.1 三板块(2026-08-07 用户裁定 #2,⛔ 施工时不得重开)**:
-//    **选股 / 持仓 / 复盘** 三个板块,**设置沉底为入口**(iOS 排 TabBar 最后一项、
-//    macOS 沉成工具栏右端的齿轮)—— 🔴 **设置在产品语义上不算板块**,
-//    它只是个入口,所以既不进「交易」组也不进「复盘」组。
+//  🔴 **信息架构 = 三板块 选股 / 成绩 / 复盘 + 设置沉底**(**裁定 11**,⛔ 施工时不得重开)。
+//  设置**在产品语义上不算板块** —— 它只是个入口(iOS 排 TabBar 最后一项、
+//  macOS 沉成工具栏右端的齿轮),所以既不进「交易」组也不进「复盘」组。
 //
-//  ⚠ **V2.3 视觉升级:macOS 240px 玻璃侧栏整个删掉**(规范 §01 决定 01)。三个板块
-//  改成工具栏胶囊,窗口宽度全部还给内容;板块内部各自是「列表栏 376 + 详情栏自适应」。
-//  ⛔ **别把侧栏加回来** —— 它与工具栏胶囊是同一组导航的两种形态,并存 = 两套导航。
+//  ⚠ **⛔ 别把 macOS 那条 240px 玻璃侧栏加回来**(V2.3 已删):它与工具栏胶囊是**同一组
+//  导航的两种形态**,并存 = 两套导航。板块内部各自是「列表栏 376 + 详情栏自适应」。
 //
-//  ⚠ **前身 = D8 四板块**(今日篮子 / 持仓 / 问询台 / 设置 + macOS 独有的周复盘工作台):
-//    问询台整链退役(V2.1-①)、「今日篮子」改名「选股」、周复盘工作台**升为复盘板块**
-//    并进 iOS(V2.1-⑦)—— 上传交割单仍是桌面场景,iOS 侧只读展示。
-//  ⛔ **V2.4.0 P0:「盘中看板 / 盘中动态」整块退役** —— V1 它是独立 tab、V2 并入
-//  持仓板块作为一节,本版整个删掉(审计规格 P0)。持仓相关提醒改随 `/positions` 下发。
+//  ⚠ **前身**:V2.1 三板块是 选股 / **持仓** / 复盘;V2.5.0 裁定 11 把持仓整块下线、
+//  成绩线升为板块。⛔ 不许以任何名字把持仓加回来。
 //
 
 import SwiftUI
@@ -40,9 +35,12 @@ struct RootView: View {
     #if os(iOS)
     private var iosShell: some View {
         TabView(selection: Binding(get: { model.view }, set: { model.view = $0 })) {
-            BasketDailyView(model: model)
-                .tabItem { Label(AppTab.baskets.title, systemImage: AppTab.baskets.systemImage) }
-                .tag(AppTab.baskets)
+            SelectionView(model: model)
+                .tabItem { Label(AppTab.selection.title, systemImage: AppTab.selection.systemImage) }
+                .tag(AppTab.selection)
+            ScoreboardView(model: model)
+                .tabItem { Label(AppTab.scoreboard.title, systemImage: AppTab.scoreboard.systemImage) }
+                .tag(AppTab.scoreboard)
             ReviewView(model: model)
                 .tabItem { Label(AppTab.review.title, systemImage: AppTab.review.systemImage) }
                 .tag(AppTab.review)
@@ -55,7 +53,7 @@ struct RootView: View {
         // ⛔ **V2.4.0 P0**:原先挂在这里的**通栏退潮刹车条**已整体删除(P0.1 表
         // 「全 App 顶部退潮红条 = 删」)。⛔ 不许换个名字再挂一条壳层横幅回来。
         .overlay(alignment: .bottom) { toastOverlay.padding(.bottom, 90) }
-        // 🔴 V2.4.0 P3.6:只加载**当前 Tab**(默认 `.baskets`,QA 钩子可覆盖 ——
+        // 只加载**当前 Tab**(默认 `.selection`,QA 钩子可覆盖 ——
         // `NecklineApp.init()` 里 `m.view = tab` 早于本 `.task` 执行)。
         .task { model.bind(config: config); await model.ensureLoaded(model.view) }
         // 切 Tab 首次到达时才拉那个 Tab 的数据;已加载过的 Tab 再切回来不重打请求。
@@ -95,7 +93,8 @@ struct RootView: View {
     @ViewBuilder
     private var content: some View {
         switch model.view {
-        case .baskets: BasketDailyView(model: model)
+        case .selection: SelectionView(model: model)
+        case .scoreboard: ScoreboardView(model: model)
         case .review: ReviewView(model: model)
         case .settings: SettingsView(model: model, config: config)
         }
@@ -113,7 +112,7 @@ struct RootView: View {
 // MARK: - V2.3 macOS 三区骨架:列表栏 376 固定 + 详情栏自适应
 //
 // 🔴 **每个板块都是同一套「列表 + 详情」骨架**(规范 §06):
-//   选股 = 篮子 / 持仓 = 仓位 / 复盘 = 五页 / 设置 = 四组。
+//   选股 = 清单上的票 / 成绩 = 三块 / 复盘 = 四页 / 设置 = 四组。
 // 统一成一个容器,是为了让四个板块的**滚动行为、页边距、分隔线**只有一处实现 ——
 // 各写一遍必然漂。
 //
