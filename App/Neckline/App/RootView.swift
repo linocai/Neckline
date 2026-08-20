@@ -30,7 +30,11 @@ struct RootView: View {
         .preferredColorScheme(.light)
     }
 
-    // MARK: - iOS:底部 TabView(**三板块 + 设置沉底**,顺序 = 选股 / 持仓 / 复盘 / 设置)
+    // MARK: - iOS:底部 TabView(**三板块 + 设置沉底**,顺序 = 选股 / 成绩 / 复盘 / 设置)
+    //
+    // ⚠ 这行注释在 V2.5.0 S12 之后还写着「持仓」半年 —— 裁定 11 那块板已经整块下线,
+    // 而下面的代码里根本没有它。**顺序的唯一源是 `AppTab` 的枚举声明顺序**,
+    // ⛔ 别再让注释与它漂开(注释在陈述一件不成立的事实时,比没有注释更坏)。
 
     #if os(iOS)
     private var iosShell: some View {

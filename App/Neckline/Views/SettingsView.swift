@@ -95,7 +95,7 @@ struct SettingsView: View {
     //
     // 🔴 **原型的四行没有图标**(1582–1607 每一行只有「标题 + 右端读数」两段 + 次行说明)。
     // V2.3.0 给每行挂了一枚 SF Symbol —— 376pt 栏里那枚图标把标题往里推 24pt,
-    // 与同栏其它板块(选股 / 持仓 / 复盘的列表行都无图标)也不是一套语言。
+    // 与同栏其它板块(选股 / 成绩 / 复盘的列表行都无图标)也不是一套语言。
 
     #if os(macOS)
     private var groupListColumn: some View {
@@ -282,7 +282,9 @@ struct SettingsView: View {
                         selfCheckResult
                         Spacer(minLength: 0)
                     }
-                    NKInlineNote(text: "GET /health(免鉴权)+ GET /positions(带 token)")
+                    // ⚠ 第二探针在 V2.5.0 S1 已从 `/positions`(随持仓板块退役删除)换成
+                    // `/settings` —— 这四句文案当时忘了跟着改,对用户描述了一条会 404 的路由。
+                    NKInlineNote(text: "GET /health(免鉴权)+ GET /settings(带 token)")
                 }
             }
         }
@@ -302,7 +304,7 @@ struct SettingsView: View {
         case .tokenError:
             HStack(spacing: 6) {
                 Image(systemName: "xmark.circle").font(.system(size: 13, weight: .semibold))
-                Text("401 · Token 错或缺(/health 通但 /positions 被拒)").font(NKFont.callout)
+                Text("401 · Token 错或缺(/health 通但 /settings 被拒)").font(NKFont.callout)
             }
             .foregroundStyle(NK.down)
         case .networkError(let m):
@@ -357,7 +359,7 @@ struct SettingsView: View {
         if model.providers.isEmpty {
             NKFieldCard {
                 NKFieldRow(v: 16, h: 18) {
-                    Text("还没有配置任何 Provider —— LLM 相关能力(篮子卡叙述 / 提醒解析)会走优雅降级,不崩。")
+                    Text("还没有配置任何 Provider —— LLM 相关能力(解释层资料 / 日K 评价 / 预案填值)会走优雅降级,不崩。")
                         .font(NKFont.callout).foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -745,7 +747,7 @@ struct SettingsView: View {
             case .ok(let desc):
                 Label(desc, systemImage: "checkmark.circle.fill").font(NKFont.body).foregroundStyle(NK.up)
             case .tokenError:
-                Label("401 · Token 错或缺(/health 通但 /positions 被拒)", systemImage: "xmark.circle.fill")
+                Label("401 · Token 错或缺(/health 通但 /settings 被拒)", systemImage: "xmark.circle.fill")
                     .font(NKFont.body).foregroundStyle(NK.down)
             case .networkError(let m):
                 Label(m, systemImage: "exclamationmark.triangle.fill").font(NKFont.body).foregroundStyle(NK.amber)
@@ -753,7 +755,7 @@ struct SettingsView: View {
         } header: {
             Text("连接自检")
         } footer: {
-            Text("GET /health(免鉴权)+ GET /positions(带 token)。")
+            Text("GET /health(免鉴权)+ GET /settings(带 token)。")
         }
     }
 
@@ -762,7 +764,7 @@ struct SettingsView: View {
     private var providersSection: some View {
         Section {
             if model.providers.isEmpty {
-                Text("还没有配置任何 Provider —— LLM 相关能力(篮子卡叙述 / 问询台 / 提醒解析)会走优雅降级,不崩。")
+                Text("还没有配置任何 Provider —— LLM 相关能力(解释层资料 / 日K 评价 / 预案填值)会走优雅降级,不崩。")
                     .font(NKFont.callout).foregroundStyle(NK.textSecondary)
             }
             ForEach(model.providers) { p in
