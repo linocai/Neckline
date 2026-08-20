@@ -58,11 +58,16 @@ def unmigrated_db(tmp_path: Path) -> Path:
 def _read_calls(db: Path):
     from neckline import dedup, settings_store
     from neckline.auction import store as auction_store
+    from neckline.data import sw_industry
     from neckline.explain import store as explain_store
+    from neckline.facts import industry as facts_industry
+    from neckline.facts import store as fact_store
+    from neckline.k9 import store as k9_store
     from neckline.playbook import store as pb_store
     from neckline.report import store as report_store
     from neckline.review import conclusions as review_conclusions
     from neckline.review import store as review_store
+    from neckline.scorecard import store as sc_store
 
     d = date(2026, 8, 20)
     return [
@@ -102,6 +107,37 @@ def _read_calls(db: Path):
         ("settings.list_providers_public", lambda: settings_store.list_providers_public(db), []),
         ("settings.get_provider_record", lambda: settings_store.get_provider_record("zhipu", db), None),
         ("settings.get_llm_routes", lambda: settings_store.get_llm_routes(db), ({}, None)),
+        # —— F-A territory:facts / k9 / scorecard / data.sw_industry ————————————
+        ("facts.latest_pack", lambda: fact_store.latest_pack(db_path=db), None),
+        ("facts.list_packs", lambda: fact_store.list_packs(db_path=db), []),
+        ("facts_industry.load_day", lambda: facts_industry.load_day(d, db_path=db), []),
+        ("facts_industry.load_median_map",
+         lambda: facts_industry.load_median_map(d, db_path=db), {}),
+        ("facts_industry.load_series",
+         lambda: facts_industry.load_series(["801080.SI"], d, d, db_path=db), {}),
+        ("k9.load_listing_codes", lambda: k9_store.load_listing_codes(d, db_path=db), []),
+        ("k9.load_listing", lambda: k9_store.load_listing(d, db_path=db), []),
+        ("k9.load_listing_membership",
+         lambda: k9_store.load_listing_membership(d, d, ["000001.SZ"], db_path=db), {}),
+        ("k9.load_run", lambda: k9_store.load_run(d, db_path=db), None),
+        ("k9.load_upside_room_mech",
+         lambda: k9_store.load_upside_room_mech(d, codes=["000001.SZ"], db_path=db), {}),
+        ("k9.load_relay_records",
+         lambda: k9_store.load_relay_records(
+             start=d, end=d, source_table=k9_store.HITS_TABLE, db_path=db), []),
+        ("k9.load_relay_records(shortlisted)",
+         lambda: k9_store.load_relay_records(
+             start=d, end=d, source_table=k9_store.LISTING_TABLE, db_path=db), []),
+        # ⚠ 不带读前缀 —— 静态那条闸看不见它。
+        ("k9.relaxed_streak_before", lambda: k9_store.relaxed_streak_before(d, db_path=db), 0),
+        ("scorecard.load_coverage_days", lambda: sc_store.load_coverage_days(db_path=db), []),
+        ("scorecard.load_misses", lambda: sc_store.load_misses(d, db_path=db), []),
+        # ⚠ 不带读前缀。
+        ("scorecard.miss_reason_counts", lambda: sc_store.miss_reason_counts(db_path=db), {}),
+        ("sw_industry.load_l2_map", lambda: sw_industry.load_l2_map(db), {}),
+        # ⚠ 不带读前缀。
+        ("sw_industry.level_counts", lambda: sw_industry.level_counts(db), {}),
+        ("sw_industry.member_count", lambda: sw_industry.member_count(db), 0),
     ]
 
 

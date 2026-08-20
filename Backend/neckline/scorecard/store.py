@@ -19,7 +19,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 from neckline.scorecard.coverage import CoverageDay, Miss
 
 logger = logging.getLogger(__name__)
@@ -91,8 +91,9 @@ def load_coverage_days(
     limit: Optional[int] = None,
     db_path: Optional[Path] = None,
 ) -> List[dict]:
-    """读区间的覆盖率行(降序,最近的在前)。⛔ 不把 NULL 折成 0。"""
-    init_schema(db_path)
+    """读区间的覆盖率行(降序,最近的在前)。⛔ 不把 NULL 折成 0。
+
+    ⛔ 读函数不执行 DDL(§7.1):表还没建 → 空列表(成绩线还没跑过)。"""
     sql = f"SELECT {_DAILY_COLUMNS} FROM {DAILY_TABLE}"
     where, args = [], []
     if start is not None:
@@ -108,8 +109,8 @@ def load_coverage_days(
         sql += " LIMIT ?"
         args.append(int(limit))
     keys = [c.strip() for c in _DAILY_COLUMNS.split(",")]
-    with connection(db_path) as conn:
-        rows = conn.execute(sql, tuple(args)).fetchall()
+    with readonly_tables(DAILY_TABLE, db_path=db_path) as conn:
+        rows = [] if conn is None else conn.execute(sql, tuple(args)).fetchall()
     out = []
     for r in rows:
         rec = dict(zip(keys, r))
@@ -121,10 +122,10 @@ def load_coverage_days(
 def load_misses(
     trade_date: date, *, db_path: Optional[Path] = None
 ) -> List[dict]:
-    init_schema(db_path)
+    """某日的漏检行。⛔ 读函数不执行 DDL(§7.1):表还没建 → 空列表。"""
     keys = [c.strip() for c in _MISS_COLUMNS.split(",")]
-    with connection(db_path) as conn:
-        rows = conn.execute(
+    with readonly_tables(MISS_TABLE, db_path=db_path) as conn:
+        rows = [] if conn is None else conn.execute(
             f"SELECT {_MISS_COLUMNS} FROM {MISS_TABLE} WHERE trade_date=? ORDER BY ts_code",
             (_d(trade_date),),
         ).fetchall()
@@ -135,8 +136,9 @@ def miss_reason_counts(
     *, start: Optional[date] = None, end: Optional[date] = None,
     db_path: Optional[Path] = None,
 ) -> dict:
-    """区间内漏检归因的分布 `{reason: 只数}` ——「漏掉的是哪一类票」的一眼答案。"""
-    init_schema(db_path)
+    """区间内漏检归因的分布 `{reason: 只数}` ——「漏掉的是哪一类票」的一眼答案。
+
+    ⚠ 名字不带 `load_` 前缀,静态守门扫不到它 —— 但它是纯读,同样归 §7.1 政策。"""
     sql = f"SELECT reason, COUNT(*) FROM {MISS_TABLE}"
     where, args = [], []
     if start is not None:
@@ -148,7 +150,9 @@ def miss_reason_counts(
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " GROUP BY reason ORDER BY COUNT(*) DESC"
-    with connection(db_path) as conn:
+    with readonly_tables(MISS_TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return {}
         return {r[0]: int(r[1]) for r in conn.execute(sql, tuple(args)).fetchall()}
 
 

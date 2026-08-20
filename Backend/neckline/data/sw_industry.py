@@ -50,7 +50,7 @@ from neckline.data.tushare_client import (
     ts_index_classify,
     ts_index_member_all,
 )
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 
 logger = logging.getLogger(__name__)
 
@@ -267,27 +267,31 @@ def save_snapshot(
 # ══════════════════════════════════════════════════════════════════════════
 
 def load_l2_map(db_path: Optional[Path] = None) -> Dict[str, tuple]:
-    """`ts_code → (l2_code, l2_name)`,只取当前有效行。查无表 / 空表 → 空 dict。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(
+    """`ts_code → (l2_code, l2_name)`,只取当前有效行。查无表 / 空表 → 空 dict。
+
+    ⛔ 读函数不执行 DDL(§7.1):表还没建 → 空 dict,与「空表」同一个结果。"""
+    with readonly_tables("sw_industry_member", db_path=db_path) as conn:
+        rows = [] if conn is None else conn.execute(
             "SELECT ts_code, l2_code, l2_name FROM sw_industry_member WHERE is_current=1"
         ).fetchall()
     return {r[0]: (r[1], r[2]) for r in rows}
 
 
 def level_counts(db_path: Optional[Path] = None) -> Dict[str, int]:
-    """分类表逐层行数(§4.4 期望 L1 31 / L2 134 / L3 346)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(
+    """分类表逐层行数(§4.4 期望 L1 31 / L2 134 / L3 346)。
+
+    ⚠ 名字不带读前缀,静态守门扫不到它 —— 但它是纯读,同样归 §7.1 政策。"""
+    with readonly_tables("sw_industry_classify", db_path=db_path) as conn:
+        rows = [] if conn is None else conn.execute(
             "SELECT level, COUNT(*) FROM sw_industry_classify GROUP BY level").fetchall()
     return {r[0]: int(r[1]) for r in rows}
 
 
 def member_count(db_path: Optional[Path] = None) -> int:
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """当前有效成员行数。⚠ 纯读,归 §7.1 政策:表还没建 → 0。"""
+    with readonly_tables("sw_industry_member", db_path=db_path) as conn:
+        if conn is None:
+            return 0
         return int(conn.execute(
             "SELECT COUNT(*) FROM sw_industry_member WHERE is_current=1").fetchone()[0])
 
@@ -317,9 +321,10 @@ def verify(db_path: Optional[Path] = None) -> List[str]:
     if member_count(db_path) == 0:
         problems.append("成分表 0 行")
 
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute(
+    # ⚠ `verify` 是**自检**(纯读),同样归 §7.1:表还没建 → 当作查不到那一行,
+    # 上面 `level_counts` / `member_count` 已经把「0 行」如实报进 `problems` 了。
+    with readonly_tables("sw_industry_classify", db_path=db_path) as conn:
+        row = None if conn is None else conn.execute(
             "SELECT name FROM sw_industry_classify WHERE index_code=?", (BAIJIU_L2_CODE,)
         ).fetchone()
     if row is None:

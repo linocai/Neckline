@@ -470,17 +470,19 @@ def test_the_readonly_connection_helper_still_exists():
     assert "def readonly_connection" in src
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "🔴 已知违规,归下一波(PROJECT_PLAN §13.1-B13):`neckline/**` 里 43 个 "
-    "`load_*` / `latest_*` / `list_*` / `get_*` 读函数在函数体里调 `init_schema()` —— "
-    "一次 GET 就能把一个 v2.4.2 老库迁移成 v2.5.0(实测 59 表 → 75 表)。"
-    "README / §9.2 / §9.4 / §9.6 三处白纸黑字断言了相反的事。"
-    "本片只建闸、不改业务代码;修好之后请连同这个 xfail 一起删。"))
 def test_no_read_helper_triggers_a_schema_migration():
     """🔴 **回滚边界的机器判据**:读一次⛔ 不许把库迁移掉。
 
     判据 = AST 调用图闭包:名字以 `load_/latest_/list_/get_/read_/fetch_` 开头的函数,
     经**本文件内**的调用链走不到 `init_schema`。
+
+    ⚠ 这条曾经挂着 `xfail(strict=True)`(§13.1-B13:43 个读 helper 会触发迁移,
+    实测一次 `load_k9_report` 就把 v2.4.2 老库从 59 表建成 75 表)。**欠账已还清**
+    —— 2026-08-21 修复波:F-B 换掉 `auction/explain/playbook/report/review/dedup/
+    settings_store` 的 28 个,F-A 换掉 `facts/k9/scorecard/data.sw_industry` 的 15 个,
+    合计 43 → **0**,故按 xfail 原文「修好之后请连同这个 xfail 一起删」把它删了。
+    正确修法是 `readonly_tables()` + 「表不存在 → 返回文档化的空态」,
+    ⛔ 不是「把 `init_schema` 从读函数里删掉、让表不存在时炸」。
     """
     hits = _read_helpers_reaching_init_schema()
     assert hits == [], (
@@ -493,16 +495,19 @@ def test_the_read_path_debt_is_exactly_as_large_as_registered():
     ⚠ 这条是**账本**,不是闸:它锁的是「这个数没有在没人注意的时候变大」。
     数变了就来改这里 —— 让它成为一次自觉行为(⛔ 别顺手把断言改宽)。
 
-    **43 = 40 个直接调 `init_schema` 的 + 3 条隔了一层的**:
+    **账面从 43 变成 0**(2026-08-21 修复波,§13.1-B13 已还清)。当年那 43 =
+    40 个直接调 `init_schema` 的 + 3 条隔了一层的:
       · `facts/industry.py:250  load_median_map  → load_day          → init_schema`
       · `report/store.py:226    load_report      → load_report_by_str → init_schema`
       · `settings_store.py:284  list_providers_public → list_providers → init_schema`
     ⚠ 那三条正是「只查直接调用的判据」会漏掉的形状 —— 而 `report.store.load_report`
     恰恰是复审用来实测「59 表 → 75 表」的那两个入口之一。
+    ⚠ 钉在 0 之后它与上面那条闸重合,留着是为了让「这笔账**曾经**有多大」在
+    发版门禁里还看得见 —— ⛔ 谁都不许把这个数往上调。
     """
     hits = _read_helpers_reaching_init_schema()
-    assert len(hits) == 43, (
-        f"读路径触发 DDL 的函数从 43 个变成了 {len(hits)} 个:\n" + "\n".join(hits))
+    assert len(hits) == 0, (
+        f"读路径触发 DDL 的函数从 0 个变成了 {len(hits)} 个:\n" + "\n".join(hits))
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -54,7 +54,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import polars as pl
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 
 logger = logging.getLogger(__name__)
 
@@ -230,10 +230,11 @@ def save_day(
 
 
 def load_day(trade_date: date, *, db_path: Optional[Path] = None) -> List[IndustryDay]:
-    """在线唯一读入口。空 = 当日无行(合法结果,⛔ 不现算兜底 —— 现算就是 §12 坑 1)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(
+    """在线唯一读入口。空 = 当日无行(合法结果,⛔ 不现算兜底 —— 现算就是 §12 坑 1)。
+
+    ⛔ 读函数不执行 DDL(§7.1):表还没建 → 空列表,与「当日无行」同一个结果。"""
+    with readonly_tables(TABLE, db_path=db_path) as conn:
+        rows = [] if conn is None else conn.execute(
             f"SELECT l2_code, l2_name, member_count, suspended_excluded, median_ret "
             f"FROM {TABLE} WHERE trade_date=? ORDER BY l2_code",
             (_d(trade_date),),
@@ -257,8 +258,7 @@ def load_series(
 ) -> Dict[str, List[Tuple[str, float, int]]]:
     """几个二级行业在 `[start, end]` 的中位数序列:`l2_code → [(trade_date, median_ret,
     member_count), …]`(按日升序)。**一次查询**取全,⛔ 别在调用方按日循环
-    —— `init_schema()` 在每次 `load_day` 里都会重跑整份 schema 脚本,循环 40 天就是
-    40 次全表建表检查(S11 复盘装订原本会踩这个)。
+    —— 按日循环等于把开库这件事做 40 遍(S11 复盘装订原本会踩这个)。
 
     某个 `l2_code` / 某一天没有行 = **那天没冻结过事实包**(⛔ 不是「行业当天没涨跌」),
     调用方须把「查不到」与「查到是 0」分开说。查无该行业 → 键不出现,⛔ 不给空列表冒充。
@@ -266,10 +266,9 @@ def load_series(
     wanted = [c for c in dict.fromkeys(l2_codes) if c]
     if not wanted or start > end:
         return {}
-    init_schema(db_path)
     placeholders = ",".join("?" for _ in wanted)
-    with connection(db_path) as conn:
-        rows = conn.execute(
+    with readonly_tables(TABLE, db_path=db_path) as conn:              # ⛔ 读不建表(§7.1)
+        rows = [] if conn is None else conn.execute(
             f"SELECT l2_code, trade_date, median_ret, member_count FROM {TABLE} "
             f"WHERE trade_date>=? AND trade_date<=? AND l2_code IN ({placeholders}) "
             f"ORDER BY l2_code, trade_date",

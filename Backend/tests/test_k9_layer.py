@@ -511,6 +511,53 @@ class TestCalibratedValueSlots:
         assert set(ranking_mod.RELAY_TABLE_OF.values()) == {
             k9_store.HITS_TABLE, k9_store.LISTING_TABLE}
 
+    def test_the_shortlisted_source_keeps_every_pattern_not_just_the_primary(
+        self, market, tmp_path,
+    ):
+        """🔴 复审 H5:`shortlisted` 那一档曾经只读 `primary_pattern`。
+
+        一只票同时命中 p3/p4(主形态 p3)时,那份 **p4 的证据被吞掉** ——
+        `relay_counts` 会因为「今天也命中 p3」把整条跳过。后果不是「少一点」而是
+        **不可比**:`recalled` 读的是全部召回记录,两个取值系统性地不在一个口径上,
+        而 §8.3 #19 要标定侧在这两者之间选一个。
+        """
+        from neckline.db import connection, init_schema
+
+        env, day = market
+        code = "600777.SH"
+        init_schema(env.db_path)
+        with connection(env.db_path) as conn:
+            conn.execute(
+                "INSERT INTO k9_listing_entries (trade_date, ts_code, run_id, strategy, "
+                " name, sw_l2_code, sw_l2_name, patterns_json, primary_pattern, tier, "
+                " seat_kind, rank, score, industry_heat_score, pattern_strength_score, "
+                " relay_score, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("20240401", code, "run-x", "K9", "示例", "801080.SI", "半导体",
+                 json.dumps(["p3", "p4"]), "p3", "strict", "free", 1, 0.5,
+                 0.5, 0.5, 0.0, "now"),
+            )
+            conn.execute(
+                "INSERT INTO k9_channel_hits (run_id, trade_date, ts_code, pattern, tier, "
+                " seated, strength_json, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                ("run-x", "20240401", code, "p3", "strict", 1, "{}", "now"))
+            conn.execute(
+                "INSERT INTO k9_channel_hits (run_id, trade_date, ts_code, pattern, tier, "
+                " seated, strength_json, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                ("run-x", "20240401", code, "p4", "strict", 1, "{}", "now"))
+
+        window = dict(start=date(2024, 4, 1), end=date(2024, 4, 1), db_path=env.db_path)
+        from_hits = k9_store.load_relay_records(
+            source_table=k9_store.HITS_TABLE, **window)
+        from_listing = k9_store.load_relay_records(
+            source_table=k9_store.LISTING_TABLE, **window)
+        assert {r.pattern for r in from_listing if r.ts_code == code} == {
+            Pattern.P3, Pattern.P4}
+        # 🔴 两个取值在同一份历史上数出的「其它形态」必须一致 —— 否则不可比。
+        today = {code: (Pattern.P3,)}
+        assert (ranking_mod.relay_counts(from_listing, today)
+                == ranking_mod.relay_counts(from_hits, today) == {code: 1})
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # ⑥ 确定性(守门 G10)

@@ -36,7 +36,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 import polars as pl
 
 from neckline.config import settings
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 from neckline.k9.contract import Pattern, SeatKind, Shortlist, Tier
 from neckline.k9.ranking import RelayRecord
 
@@ -264,9 +264,12 @@ def load_disposition(
 def load_listing_codes(
     trade_date: date, *, strategy: str = "K9", db_path: Optional[Path] = None
 ) -> List[str]:
-    """某日清单上的全部 `ts_code`(升序)。空 = 那天没有清单。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """某日清单上的全部 `ts_code`(升序)。空 = 那天没有清单。
+
+    ⛔ 读函数不执行 DDL(§7.1):表还没建 → 空列表,与「那天没有清单」同一个结果。"""
+    with readonly_tables(LISTING_TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return []
         return [
             r[0] for r in conn.execute(
                 f"SELECT ts_code FROM {LISTING_TABLE} "
@@ -283,8 +286,8 @@ def load_listing_membership(
     """`[start, end]` × `codes` 里**上过清单**的那些:`(trade_date, ts_code) → {rank,
     patterns, primary_pattern, tier, seat_kind}`。键不存在 = 那天这只票不在清单上。
 
-    🔴 **一次查询**取全,⛔ 别按日循环 —— `init_schema()` 每次都要重跑整份 schema
-    脚本(S11 复盘装订的 40 天窗口会踩这个)。
+    🔴 **一次查询**取全,⛔ 别按日循环 —— 按日循环等于把开库这件事做 40 遍
+    (S11 复盘装订的 40 天窗口会踩这个)。
 
     ⚠ 它是**只读材料通道**:S11 的交割单分析台拿它回答「我买的这只,系统那天选没选」。
     ⛔ 反方向不成立 —— `scorecard/**` 绝不许 import `neckline.review`(架构 §五:
@@ -293,9 +296,10 @@ def load_listing_membership(
     wanted = [c for c in dict.fromkeys(codes) if c]
     if not wanted or start > end:
         return {}
-    init_schema(db_path)
     placeholders = ",".join("?" for _ in wanted)
-    with connection(db_path) as conn:
+    with readonly_tables(LISTING_TABLE, db_path=db_path) as conn:      # ⛔ 读不建表(§7.1)
+        if conn is None:
+            return {}
         rows = conn.execute(
             f"SELECT trade_date, ts_code, rank, patterns_json, primary_pattern, tier, seat_kind "
             f"FROM {LISTING_TABLE} WHERE trade_date>=? AND trade_date<=? AND strategy=? "
@@ -314,10 +318,11 @@ def load_listing_membership(
 def load_listing(
     trade_date: date, *, strategy: str = "K9", db_path: Optional[Path] = None
 ) -> List[Dict[str, object]]:
-    """某日清单的全部行(按名次升序),供报告层渲染。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(
+    """某日清单的全部行(按名次升序),供报告层渲染。
+
+    ⛔ 读函数不执行 DDL(§7.1):表还没建 → 空列表(那天没有清单)。"""
+    with readonly_tables(LISTING_TABLE, db_path=db_path) as conn:
+        rows = [] if conn is None else conn.execute(
             f"SELECT ts_code, name, sw_l2_code, sw_l2_name, patterns_json, primary_pattern, "
             f"tier, seat_kind, rank, score, industry_heat_score, pattern_strength_score, "
             f"relay_score FROM {LISTING_TABLE} WHERE trade_date=? AND strategy=? ORDER BY rank",
@@ -338,10 +343,11 @@ def load_listing(
 def load_run(
     trade_date: date, *, strategy: str = "K9", db_path: Optional[Path] = None
 ) -> Optional[Dict[str, object]]:
-    """某日的运行账。`None` = 那天策略层没跑过(⛔ 不是「跑了没结果」)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        r = conn.execute(
+    """某日的运行账。`None` = 那天策略层没跑过(⛔ 不是「跑了没结果」)。
+
+    ⛔ 读函数不执行 DDL(§7.1):表还没建 → `None`,与「那天没跑过」同一个结果。"""
+    with readonly_tables(RUNS_TABLE, db_path=db_path) as conn:
+        r = None if conn is None else conn.execute(
             f"SELECT run_id, params_package_version, pack_id, pack_version, tier_used, "
             f"strict_candidates, relaxed_candidates, seated_count, capacity_short, "
             f"over_strict, relaxed_streak, channel_counts_json, boundary_counts_json, "
@@ -365,10 +371,12 @@ def load_run(
 def relaxed_streak_before(
     trade_date: date, *, strategy: str = "K9", db_path: Optional[Path] = None
 ) -> int:
-    """截至(不含)`trade_date` 为止,连续多少天是靠放宽档跑的(K9 §五-8)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(
+    """截至(不含)`trade_date` 为止,连续多少天是靠放宽档跑的(K9 §五-8)。
+
+    ⚠ 名字不带 `load_` 前缀,静态守门扫不到它 —— 但它是**纯读**,同样归 §7.1 政策:
+    ⛔ 读函数不执行 DDL。表还没建 → 0(一天都还没跑过)。"""
+    with readonly_tables(RUNS_TABLE, db_path=db_path) as conn:
+        rows = [] if conn is None else conn.execute(
             f"SELECT tier_used FROM {RUNS_TABLE} WHERE trade_date<? AND strategy=? "
             "ORDER BY trade_date DESC",
             (_d(trade_date), strategy),
@@ -416,12 +424,11 @@ def load_upside_room_mech(
     wanted = [c for c in dict.fromkeys(codes) if c]
     if not wanted:
         return {}
-    init_schema(db_path)
     placeholders = ",".join("?" for _ in wanted)
     patterns = [p for p, _key, _sign in _UPSIDE_ROOM_SOURCES]
     pattern_marks = ",".join("?" for _ in patterns)
-    with connection(db_path) as conn:
-        rows = conn.execute(
+    with readonly_tables(HITS_TABLE, db_path=db_path) as conn:         # ⛔ 读不建表(§7.1)
+        rows = [] if conn is None else conn.execute(
             f"SELECT ts_code, pattern, strength_json FROM {HITS_TABLE} "
             f"WHERE trade_date=? AND pattern IN ({pattern_marks}) "
             f"AND ts_code IN ({placeholders})",
@@ -450,22 +457,50 @@ def load_relay_records(
 
     `source_table` 由 `ranking.RELAY_TABLE_OF[params.ranking.relaySource]` 给出
     —— **全映射**,⛔ 本函数不认识第三张表(传进来就抛)。
+
+    🔴 **`shortlisted` 那一档读 `patterns_json`,⛔ 不是 `primary_pattern`**
+    (2026-08-21 复审 H5):K9 §五-4 要求「命中的形态**全部**列出」,`save_listing`
+    也确实把它们都落进了 `patterns_json`;而这里上一版只取主形态,于是一只票
+    D−3 同时命中 p3/p4(主形态 p3)、今天又命中 p3 时,那份 **p4 的证据被吞掉** ——
+    `relay_counts` 会因为「r.pattern in mine」把它整条跳过。
+    后果不是「少一点」而是**不可比**:`recalled` 那一档读的是
+    `k9_channel_hits` 的**全部**召回记录,两个取值因此系统性地不在一个口径上,
+    而 §8.3 #19 要标定侧在这两者之间选一个(裁定 5:取值待标定)。
+
+    ⛔ 读函数不执行 DDL(§7.1):表还没建 → 空列表(那天没有接力证据),
+    ⛔ 不是顺手把库迁移掉。
     """
     if source_table == HITS_TABLE:
         sql = (f"SELECT trade_date, ts_code, pattern FROM {HITS_TABLE} "
                "WHERE trade_date>=? AND trade_date<=?")
         args: Tuple = (_d(start), _d(end))
+        required = HITS_TABLE
     elif source_table == LISTING_TABLE:
-        sql = (f"SELECT trade_date, ts_code, primary_pattern FROM {LISTING_TABLE} "
+        sql = (f"SELECT trade_date, ts_code, patterns_json FROM {LISTING_TABLE} "
                "WHERE trade_date>=? AND trade_date<=? AND strategy=?")
         args = (_d(start), _d(end), strategy)
+        required = f"{LISTING_TABLE}.patterns_json"
     else:
         raise ValueError(
             f"跨日接力分只认 {HITS_TABLE!r} / {LISTING_TABLE!r} 两张表,收到 {source_table!r}")
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        rows = conn.execute(sql, args).fetchall()
-    return [RelayRecord(trade_date=r[0], ts_code=r[1], pattern=Pattern(r[2])) for r in rows]
+    with readonly_tables(required, db_path=db_path) as conn:
+        rows = [] if conn is None else conn.execute(sql, args).fetchall()
+    if source_table == HITS_TABLE:
+        return [RelayRecord(trade_date=r[0], ts_code=r[1], pattern=Pattern(r[2]))
+                for r in rows]
+    out: List[RelayRecord] = []
+    for trade_date_s, ts_code, raw in rows:
+        try:
+            patterns = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            logger.warning(
+                "[k9] %s %s 的 patterns_json 解不出,该行不进接力分原料", trade_date_s, ts_code)
+            continue
+        # ⚠ 逐个走 `Pattern(...)`:表里冒出闭合集合之外的取值要当场炸,⛔ 不静默跳过。
+        for value in patterns:
+            out.append(RelayRecord(
+                trade_date=trade_date_s, ts_code=ts_code, pattern=Pattern(value)))
+    return out
 
 
 __all__ = [
