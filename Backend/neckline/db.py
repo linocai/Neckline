@@ -1818,6 +1818,42 @@ CREATE TABLE IF NOT EXISTS k9_listing_entries (
 );
 CREATE INDEX IF NOT EXISTS idx_k9_listing_day ON k9_listing_entries(trade_date, strategy);
 
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.5.0 S7:报告(架构 §3.5,PROJECT_PLAN §5.10)
+-- ══════════════════════════════════════════════════════════════════════════
+--
+-- 🔴 **新表,⛔ 不往旧 `reports` 上加列**:那张装满了 K8 时代的 JSON blob
+-- (`sentiment_json` / `sectors_json` / `basket_daily_json` …),按裁定 6 冻结只读。
+-- 往上加列不如新起一张干净的。
+--
+-- 🔴 **双日期契约⛔ 不许退化**(LRN-20260816-001,§12 坑 9):
+--   · `report_date` 管**标题 / 推送 / 可见身份**;
+--   · `trade_date`  管**EOD 读数 / 清单 / 预案 / 审计键**。
+-- 周日报告:`report_date=周日`,`trade_date=紧邻上一周五`。混同会让标题 / 推送 /
+-- 可见身份全错,而底层计算看起来是对的 —— 最难发现的一类错。
+-- 主键取 `trade_date`(一个交易日一份报告);`report_date` 另建索引供按发布日查。
+--
+-- ⚠ **NULL 与 0 语义不同**:`listing_size` 为 NULL = 「今天没跑成」(清单根本没算
+-- 出来),⛔ 不是「今天没有」(那是 0)。`params_package_version` 为 NULL = 参数未
+-- 配置;`pack_id` 为 NULL = 事实包未冻结。三处 NULL 各自说明「哪一环没成」。
+CREATE TABLE IF NOT EXISTS k9_reports (
+  trade_date             TEXT PRIMARY KEY,   -- EOD 读数 / 清单 / 审计键
+  report_date            TEXT NOT NULL,      -- 标题 / 推送 / 可见身份
+  state                  TEXT NOT NULL,      -- has_list | empty | not_run(三值闭合)
+  headline               TEXT NOT NULL,      -- 首行,三态即可分辨(架构 §3.5)
+  gaps_json              TEXT NOT NULL,      -- not_run 时**逐条**列出的缺口
+  markdown               TEXT NOT NULL,      -- 默认视图(离线可读,十分钟读完)
+  structured_json        TEXT NOT NULL,      -- 结构化完整版(默认折叠,可整段复制)
+  strategy               TEXT NOT NULL,      -- 'K9'(署名清单)
+  params_package_version TEXT,               -- NULL = 参数未配置
+  pack_id                TEXT,               -- NULL = 事实包未冻结
+  pack_version           TEXT,
+  listing_size           INTEGER,            -- NULL = 没跑成(⛔ 不是 0)
+  strict_count           INTEGER,            -- 成色标注(K9 §五-7)
+  relaxed_count          INTEGER,
+  generated_at           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_k9_reports_report_date ON k9_reports(report_date);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

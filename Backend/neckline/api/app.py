@@ -58,7 +58,6 @@ from neckline.api.stores import upsert_device
 from neckline.calendar import CN_TZ, is_trading_day
 from neckline.config import ensure_data_dirs
 from neckline.llm.factory import get_provider
-from neckline.report import store as report_store
 from neckline import notify_kinds
 from neckline import dedup
 from neckline.settings_store import (
@@ -885,6 +884,75 @@ def get_scoreboard_coverage(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
         ],
         "missReasonCounts": scorecard_store.miss_reason_counts(db_path=_db()),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# V2.5.0 S7 · 选股(报告三态 + 当日清单,PROJECT_PLAN §5.12 / §5.10)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 **三态必须原样透传**(裁定 5):`state ∈ {has_list, empty, not_run}`。
+#   · `empty`   = 跑通了、结果是空的 —— **可以被信任**;
+#   · `not_run` = 系统没工作,`gaps` 逐条说明缺什么,`listingSize` 为 **null**。
+# 客户端⛔ 不许把 `not_run` 渲染成「今天没有」,也⛔ 不许把 `null` 显示成 0。
+#
+# 🔴 **双日期契约**(LRN-20260816-001):`reportDate` 管标题 / 推送 / 可见身份,
+# `tradeDate` 管 EOD 读数 / 清单 / 审计键。周日报告两者不同,⛔ 客户端别只取一个。
+#
+# ⚠ 个股详情(`/selection/{date}/stock/{code}`)要解释层资料 + 预案,归 S9 / S10。
+
+
+def _selection_payload(row: dict) -> dict:
+    return {
+        "reportDate": row["report_date"],
+        "tradeDate": row["trade_date"],
+        "state": row["state"],
+        "headline": row["headline"],
+        "gaps": row["gaps"],
+        "strategy": row["strategy"],
+        "paramsPackageVersion": row["params_package_version"],
+        "packId": row["pack_id"],
+        "packVersion": row["pack_version"],
+        "listingSize": row["listing_size"],
+        "strictCount": row["strict_count"],
+        "relaxedCount": row["relaxed_count"],
+        "generatedAt": row["generated_at"],
+        "markdown": row["markdown"],
+        "structured": row["structured"],
+    }
+
+
+@app.get(f"{API_PREFIX}/selection/latest", dependencies=[Depends(require_token)])
+def get_selection_latest() -> dict:
+    """最近一份报告(三态 + 双日期 + 方向背景 + 清单)。
+
+    库里一份都没有 → `state='not_run'` 的**空态**,⛔ 不 500:那是「还没跑过」,
+    是一个正常的可读结论。"""
+    from neckline.report import store as report_store
+
+    row = report_store.latest_k9_report(db_path=_db())
+    if row is None:
+        return {
+            "state": "not_run",
+            "headline": "今天没跑成 · 尚无任何报告",
+            "gaps": ["库里还没有任何一份 K9 报告"],
+            "listingSize": None,
+        }
+    return _selection_payload(row)
+
+
+@app.get(f"{API_PREFIX}/selection/{{trade_date}}", dependencies=[Depends(require_token)])
+def get_selection_by_date(trade_date: str) -> dict:
+    """按**交易日**查历史报告(⚠ 不是发布日 —— 双日期契约里它才是审计键)。"""
+    from neckline.report import store as report_store
+
+    try:
+        day = datetime.strptime(trade_date, "%Y%m%d").date()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="trade_date 必须是 YYYYMMDD")
+    row = report_store.load_k9_report(day, db_path=_db())
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"{trade_date} 没有报告")
+    return _selection_payload(row)
 
 
 __all__ = ["app", "VERSION", "API_PREFIX"]

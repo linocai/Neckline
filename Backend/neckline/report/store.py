@@ -1,131 +1,160 @@
-"""报告与 LLM 审判落库(plan 2.4/2.5)。SQLite 存档:整份报告(markdown + 结构化
-快照)与每次 LLM 审判(含搜索结果全文,§2.4「搜索结果全文落 SQLite 存档」的落地
-点,供事后审计"当时为何否决" + 自建历史新闻快照)。幂等——同一 `trade_date`
-(报告)/ `(trade_date, ts_code)`(审判)重跑会覆盖旧记录,不留重复行,支持
-「同一交易日反复重跑报告脚本」这一常见操作场景。
+"""报告落库(V2.5.0 S7,PROJECT_PLAN §5.10)。
+
+两张表,**一张写、一张只读**:
+
+| 表 | 状态 | 谁写 |
+|---|---|---|
+| `k9_reports` | **本版的报告表** | 本文件 `save_k9_report()`(唯一写入口) |
+| `reports` | K8 时代的旧表,**冻结只读留档**(裁定 6) | **没有人** —— 写路径已随 S7 物理删除 |
+
+🔴 **旧 `reports` 的写函数 `save_report()` 已删除。** 它装满了 K8 的 JSON blob
+(`sentiment_json` / `sectors_json` / `basket_daily_json` …),V2.5.0 之后既没有生产
+调用方,也不该再长出一个 —— 留着一个「谁都能调回去」的写路径,等于让「只读留档」
+这条纪律靠自觉维持。表本身**不 DROP、不迁移、不回填**,历史行照旧可读(`load_report`
+/ `load_report_by_str` / `latest_report_date` / `load_llm_judgments`)。
+
+🔴 **双日期契约⛔ 不许退化**(LRN-20260816-001,§12 坑 9):
+`report_date` 管标题 / 推送 / 可见身份;`trade_date` 管 EOD 读数 / 清单 / 预案 /
+审计键。周日报告 `report_date=周日`、`trade_date=紧邻上一周五`。
+本文件的写入口**两个日期都是必填关键字**,⛔ 不给任何一个默认值去猜。
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from neckline.db import connection, init_schema
-from neckline.llm.judge import JudgeResult
 
 logger = logging.getLogger(__name__)
 
+K9_TABLE = "k9_reports"
+LEGACY_TABLE = "reports"
 
-def _d(trade_date: date) -> str:
-    return trade_date.strftime("%Y%m%d")
+
+def _d(d: date) -> str:
+    return d.strftime("%Y%m%d")
 
 
-def save_report(
-    trade_date: date,
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# k9_reports —— 唯一写入口
+# ══════════════════════════════════════════════════════════════════════════
+
+def save_k9_report(
     *,
-    report_date: Optional[date] = None,
-    strategy_version: str,
-    sentiment: Dict[str, Any],
-    sectors: List[Dict[str, Any]],
-    candidates: List[Dict[str, Any]],
+    trade_date: date,
+    report_date: date,
+    state: str,
+    headline: str,
+    gaps: List[str],
     markdown: str,
-    intel: Optional[Dict[str, Any]] = None,
-    sector_moneyflow: Optional[Dict[str, Any]] = None,
-    news_alerts_scan: Optional[List[Dict[str, Any]]] = None,
-    data_freshness: Optional[Dict[str, Any]] = None,
-    basket_daily: Optional[Dict[str, Any]] = None,
+    structured: Dict[str, Any],
+    strategy: str,
+    params_package_version: Optional[str],
+    pack_id: Optional[str],
+    pack_version: Optional[str],
+    listing_size: Optional[int],
+    strict_count: Optional[int],
+    relaxed_count: Optional[int],
     db_path: Optional[Path] = None,
 ) -> None:
-    """⚠ **V2-⑬-11 起 `watchlist_json` 列不再由本函数写入**(自选体检整节删除,裁定
-    #9-a):列本身**保留不 DROP**(历史行供归因只读),新行一律吃 DDL 默认值 `'[]'`。
-    `intel`/`sector_moneyflow`(v1.3-③ C1/C2,`IntelReport.to_public_dict()` /
-    `SectorMoneyflowReport.to_public_dict()` 的字典,均为**单个对象**而非数组——
-    已是 camelCase JSON-safe 形状,`sector_moneyflow` 携带 available/
-    unavailableReason 等元信息,不是裸榜单):默认 `None` → 落 `'{}'`(旧调用点零
-    改动落库形状)。
-    `news_alerts_scan`(v1.3-③-C4,`NewsAlertsReport.scan_statuses_public()` 的
-    JSON 数组快照——**只是扫描状态元信息,不含命中告警本身**〔告警条目落独立
-    `news_alerts` 表,见 `report/news_alerts_store.py`〕):默认 `None` → 落
-    `'[]'`。
-    `data_freshness`(v1.4-①-C,`SectorDataFreshness.to_public_dict()`:
-    `{sectorDataDate, sectorLagDays, stale}`):板块数据相对本报告日落后几个交易日 ——
-    **随报告一起冻住**,不在读时重算(读一份三天前的报告时,该看到的是**当时**的新鲜度,
-    不是今天的)。默认 `None` → 落 `'{}'`,同 intel 惯例。
-    `basket_daily`(V2-⑭-A,`report/basket_daily.py::BasketDaily.to_public_dict()`:
-    今日篮子 + ③b 未定档篮子 + 昨日篮子复盘,已是 camelCase):同上**随报告冻住**。
-    ⚠ ③b 的 `droppedBaskets` 只活在这份快照里(⑥ 的溢出篮不进 `baskets` 表),
-    不落 = 历史回放看不到那天有多少好货装不下。默认 `None` → 落 `'{}'`。
+    """落一份报告(同 `trade_date` 幂等重写)。
 
-    ⚠ **小审 🟡 Y-1(2026-08-03)修复:改 `INSERT OR REPLACE`(整行先删后插)为
-    `INSERT ... ON CONFLICT(trade_date) DO UPDATE SET <本函数实际写入的列>`**。
-    `watchlist_json`(⑬-11 起已停写、不在本函数参数/列清单里)天然不进 `DO UPDATE
-    SET` 子句,重跑历史日期时**原样保留**,不再被"先删后插"重置回 DDL 默认
-    `'[]'`——这正是修复 Y-1 的关键机制,不需要额外代码。
-    `candidates_json` 仍在列清单里(⑬-1 起调用方恒传 `[]`),但**只保护"覆写为
-    `[]`"这一种模式**:SQL 层 `CASE` 判断"本次要写的是 `[]` 且该行已有非 `[]`
-    历史值"时,保留历史值不覆写(V1 时代的 20 只候选快照,V2 已删候选管线、
-    永远无法重算);调用方若真的传入非空 `candidates`(不排除未来的合法写路径),
-    仍照常覆盖,不误伤合法写入。触发保留时额外记一条 WARNING,便于生产观测
-    "这天被跳过覆写了"。"""
+    ⚠ **`listing_size=None` 与 `0` 不可互换**:`None` = 「今天没跑成」(清单根本
+    没算出来),`0` = 「今天没有」(跑通了、结果为空、可以被信任)。裁定 5。
+    ⚠ 两个日期都是**必填关键字** —— 双日期契约⛔ 不许靠默认值去猜(§12 坑 9)。
+    """
     init_schema(db_path)
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    candidates_json_new = json.dumps(candidates, ensure_ascii=False)
     with connection(db_path) as conn:
-        if candidates_json_new == "[]":
-            existing = conn.execute(
-                "SELECT candidates_json FROM reports WHERE trade_date=?", (_d(trade_date),)
-            ).fetchone()
-            if existing is not None and existing[0] not in (None, "[]"):
-                logger.warning(
-                    "save_report(%s):本次候选快照为空([]),但该日已有非空 candidates_json"
-                    "(V1 冻结快照,V2 已删候选管线无法重算)——已跳过覆写、保留历史值。",
-                    _d(trade_date),
-                )
         conn.execute(
-            "INSERT INTO reports "
-            "(trade_date, report_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "intel_json, sector_moneyflow_json, news_alerts_scan_json, data_freshness_json, basket_daily_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            f"INSERT INTO {K9_TABLE} "
+            "(trade_date, report_date, state, headline, gaps_json, markdown, "
+            " structured_json, strategy, params_package_version, pack_id, pack_version, "
+            " listing_size, strict_count, relaxed_count, generated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(trade_date) DO UPDATE SET "
-            "report_date=excluded.report_date, "
-            "generated_at=excluded.generated_at, "
-            "strategy_version=excluded.strategy_version, "
-            "sentiment_json=excluded.sentiment_json, "
-            "sectors_json=excluded.sectors_json, "
-            "candidates_json=CASE WHEN excluded.candidates_json='[]' AND reports.candidates_json!='[]' "
-            "THEN reports.candidates_json ELSE excluded.candidates_json END, "
-            "markdown=excluded.markdown, "
-            "intel_json=excluded.intel_json, "
-            "sector_moneyflow_json=excluded.sector_moneyflow_json, "
-            "news_alerts_scan_json=excluded.news_alerts_scan_json, "
-            "data_freshness_json=excluded.data_freshness_json, "
-            "basket_daily_json=excluded.basket_daily_json",
+            "report_date=excluded.report_date, state=excluded.state, "
+            "headline=excluded.headline, gaps_json=excluded.gaps_json, "
+            "markdown=excluded.markdown, structured_json=excluded.structured_json, "
+            "strategy=excluded.strategy, "
+            "params_package_version=excluded.params_package_version, "
+            "pack_id=excluded.pack_id, pack_version=excluded.pack_version, "
+            "listing_size=excluded.listing_size, strict_count=excluded.strict_count, "
+            "relaxed_count=excluded.relaxed_count, generated_at=excluded.generated_at",
             (
-                _d(trade_date),
-                _d(report_date or trade_date),
-                now,
-                strategy_version,
-                json.dumps(sentiment, ensure_ascii=False),
-                json.dumps(sectors, ensure_ascii=False),
-                candidates_json_new,
-                markdown,
-                json.dumps(intel or {}, ensure_ascii=False),
-                json.dumps(sector_moneyflow or {}, ensure_ascii=False),
-                json.dumps(news_alerts_scan or [], ensure_ascii=False),
-                json.dumps(data_freshness or {}, ensure_ascii=False),
-                json.dumps(basket_daily or {}, ensure_ascii=False),
+                _d(trade_date), _d(report_date), state, headline,
+                json.dumps(list(gaps), ensure_ascii=False), markdown,
+                json.dumps(structured, ensure_ascii=False, sort_keys=True),
+                strategy, params_package_version, pack_id, pack_version,
+                listing_size, strict_count, relaxed_count, _now(),
             ),
         )
 
 
+_K9_COLUMNS = (
+    "trade_date, report_date, state, headline, gaps_json, markdown, structured_json, "
+    "strategy, params_package_version, pack_id, pack_version, listing_size, "
+    "strict_count, relaxed_count, generated_at"
+)
+
+
+def _k9_row(row) -> Dict[str, Any]:
+    return {
+        "trade_date": row[0],
+        "report_date": row[1],
+        "state": row[2],
+        "headline": row[3],
+        "gaps": json.loads(row[4]),
+        "markdown": row[5],
+        "structured": json.loads(row[6]),
+        "strategy": row[7],
+        "params_package_version": row[8],
+        "pack_id": row[9],
+        "pack_version": row[10],
+        "listing_size": row[11],
+        "strict_count": row[12],
+        "relaxed_count": row[13],
+        "generated_at": row[14],
+    }
+
+
+def load_k9_report(
+    trade_date: date, *, db_path: Optional[Path] = None
+) -> Optional[Dict[str, Any]]:
+    """查某交易日的报告。`None` = 那天没生成过(完全正常的场景)。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(
+            f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} WHERE trade_date=?",
+            (_d(trade_date),),
+        ).fetchone()
+    return None if row is None else _k9_row(row)
+
+
+def latest_k9_report(*, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """最新一份报告(按 `trade_date` 降序)。"""
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        row = conn.execute(
+            f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} ORDER BY trade_date DESC LIMIT 1"
+        ).fetchone()
+    return None if row is None else _k9_row(row)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 旧 `reports` 表 —— **只读留档**(裁定 6),⛔ 没有写函数
+# ══════════════════════════════════════════════════════════════════════════
+
 def _parse_json_field(raw: Optional[str], default: Any) -> Any:
-    """幂等补列的 `*_json` 列容错解析——老报告行经 `_migrate_columns` 补列后取列
-    默认值('[]'/'{}'),但防御性再兜一层(NULL / 非法 JSON → 调用方给的 `default`,
-    不炸历史回放)。`watchlist_json`/`intel_json`/`sector_moneyflow_json` 三列共用。"""
+    """历史行的 `*_json` 列容错解析(NULL / 非法 JSON → 调用方给的 `default`,
+    ⛔ 不炸历史回放)。"""
     if not raw:
         return default
     try:
@@ -134,109 +163,61 @@ def _parse_json_field(raw: Optional[str], default: Any) -> Any:
         return default
 
 
-def _parse_watchlist_json(raw: Optional[str]) -> List[Dict[str, Any]]:
-    """⚠ **V2-⑬-11 起只用于读历史行**(`watchlist_json` 已停写,列留档不 DROP)。
-    保留是为了让归因/审计能把 v1.1~v1.5.2 的自选体检快照读回来。"""
-    return _parse_json_field(raw, [])
+_LEGACY_COLUMNS = (
+    "trade_date, report_date, generated_at, strategy_version, sentiment_json, "
+    "sectors_json, candidates_json, markdown, watchlist_json, intel_json, "
+    "sector_moneyflow_json, news_alerts_scan_json, data_freshness_json, basket_daily_json"
+)
 
 
-def _parse_intel_json(raw: Optional[str]) -> Dict[str, Any]:
-    return _parse_json_field(raw, {})
-
-
-def _parse_sector_moneyflow_json(raw: Optional[str]) -> Dict[str, Any]:
-    return _parse_json_field(raw, {})
-
-
-def _parse_news_alerts_scan_json(raw: Optional[str]) -> List[Dict[str, Any]]:
-    return _parse_json_field(raw, [])
+def _legacy_row(row) -> Dict[str, Any]:
+    return {
+        "trade_date": row[0],
+        "report_date": row[1] or row[0],
+        "generated_at": row[2],
+        "strategy_version": row[3],
+        "sentiment": _parse_json_field(row[4], {}),
+        "sectors": _parse_json_field(row[5], []),
+        "candidates": _parse_json_field(row[6], []),
+        "markdown": row[7],
+        "watchlist": _parse_json_field(row[8], []),
+        "intel": _parse_json_field(row[9], {}),
+        "sector_moneyflow": _parse_json_field(row[10], {}),
+        "news_alerts_scan": _parse_json_field(row[11], []),
+        "data_freshness": _parse_json_field(row[12], {}),
+        "basket_daily": _parse_json_field(row[13], {}),
+    }
 
 
 def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """查某交易日的报告。查一个"从未生成过报告"的日期是完全正常的场景(如尚未
-    到 16:00、当天非交易日、或报告脚本还没跑过)——防御性 `init_schema`,免得
-    在从未写过库的全新 DB 上直接炸 `OperationalError: no such table`。"""
+    """读一条 **K8 历史**报告行(只读留档)。防御性 `init_schema` 同既有惯例。"""
+    return load_report_by_str(_d(trade_date), db_path)
+
+
+def load_report_by_str(
+    trade_date_str: str, db_path: Optional[Path] = None
+) -> Optional[Dict[str, Any]]:
     init_schema(db_path)
     with connection(db_path) as conn:
         row = conn.execute(
-            "SELECT trade_date, report_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json, "
-            "data_freshness_json, basket_daily_json FROM reports WHERE trade_date=?",
-            (_d(trade_date),),
+            f"SELECT {_LEGACY_COLUMNS} FROM {LEGACY_TABLE} WHERE trade_date=?",
+            (trade_date_str,),
         ).fetchone()
-    if row is None:
-        return None
-    return {
-        "trade_date": row[0],
-        "report_date": row[1] or row[0],
-        "generated_at": row[2],
-        "strategy_version": row[3],
-        "sentiment": json.loads(row[4]),
-        "sectors": json.loads(row[5]),
-        "candidates": json.loads(row[6]),
-        "markdown": row[7],
-        "watchlist": _parse_watchlist_json(row[8]),
-        "intel": _parse_intel_json(row[9]),
-        "sector_moneyflow": _parse_sector_moneyflow_json(row[10]),
-        "news_alerts_scan": _parse_news_alerts_scan_json(row[11]),
-        # v1.4-①-C:老报告行(建于本列之前)补列后取默认 '{}' → 读回空 dict,
-        # 客户端按「空 = 该版本还没有新鲜度概念」处理,不是「新鲜」。
-        "data_freshness": _parse_json_field(row[12], {}),
-        # V2-⑭-A:篮子日报快照(老报告行补列后取默认 '{}' → 读回空 dict,
-        # 客户端按「该版本还没有篮子日报概念」处理,不是「今天没有篮子」)。
-        "basket_daily": _parse_json_field(row[13], {}),
-    }
+    return None if row is None else _legacy_row(row)
 
 
 def latest_report_date(db_path: Optional[Path] = None) -> Optional[str]:
-    """最新一份报告的 `trade_date`('YYYYMMDD'),供 `GET /report/latest`。库里从未
-    生成过报告 → None(HTTP 层据此返 degraded 空态,不 500)。防御性 `init_schema`
-    同 `load_report`——查一个全新库是完全正常的场景。"""
+    """最新一条 K8 历史报告的 `trade_date`('YYYYMMDD')。"""
     init_schema(db_path)
     with connection(db_path) as conn:
-        row = conn.execute("SELECT MAX(trade_date) FROM reports").fetchone()
+        row = conn.execute(f"SELECT MAX(trade_date) FROM {LEGACY_TABLE}").fetchone()
     return row[0] if row and row[0] else None
 
 
-def load_report_by_str(trade_date_str: str, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """按 'YYYYMMDD' 字符串直接查报告(免调用方再拼 `date` 对象)。语义同 `load_report`。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute(
-            "SELECT trade_date, report_date, generated_at, strategy_version, sentiment_json, sectors_json, candidates_json, markdown, "
-            "watchlist_json, intel_json, sector_moneyflow_json, news_alerts_scan_json, "
-            "data_freshness_json, basket_daily_json FROM reports WHERE trade_date=?",
-            (trade_date_str,),
-        ).fetchone()
-    if row is None:
-        return None
-    return {
-        "trade_date": row[0],
-        "report_date": row[1] or row[0],
-        "generated_at": row[2],
-        "strategy_version": row[3],
-        "sentiment": json.loads(row[4]),
-        "sectors": json.loads(row[5]),
-        "candidates": json.loads(row[6]),
-        "markdown": row[7],
-        "watchlist": _parse_watchlist_json(row[8]),
-        "intel": _parse_intel_json(row[9]),
-        "sector_moneyflow": _parse_sector_moneyflow_json(row[10]),
-        "news_alerts_scan": _parse_news_alerts_scan_json(row[11]),
-        # v1.4-①-C:老报告行(建于本列之前)补列后取默认 '{}' → 读回空 dict,
-        # 客户端按「空 = 该版本还没有新鲜度概念」处理,不是「新鲜」。
-        "data_freshness": _parse_json_field(row[12], {}),
-        # V2-⑭-A:篮子日报快照(老报告行补列后取默认 '{}' → 读回空 dict,
-        # 客户端按「该版本还没有篮子日报概念」处理,不是「今天没有篮子」)。
-        "basket_daily": _parse_json_field(row[13], {}),
-    }
-
-
-def load_llm_judgments(trade_date: date, db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
-    # ⚠ **V2-⑬-2 起本表停写留档**:写函数 `save_llm_judgment`/`delete_llm_judgments`
-    # 已物理删除,本函数只服务历史行的归因只读(`/report` 读历史报告时仍会 live join)。
-    """同 `load_report` 的防御性 `init_schema` 理由:查询一个还没审判过的交易日
-    是正常场景,不应因表未建过而崩。"""
+def load_llm_judgments(
+    trade_date: date, db_path: Optional[Path] = None
+) -> List[Dict[str, Any]]:
+    """⚠ **V2-⑬-2 起本表停写留档**:写函数早已物理删除,本函数只服务历史归因只读。"""
     init_schema(db_path)
     with connection(db_path) as conn:
         rows = conn.execute(
@@ -245,23 +226,19 @@ def load_llm_judgments(trade_date: date, db_path: Optional[Path] = None) -> List
             "FROM llm_judgments WHERE trade_date=? ORDER BY id",
             (_d(trade_date),),
         ).fetchall()
-    out: List[Dict[str, Any]] = []
-    for r in rows:
-        out.append({
-            "ts_code": r[0],
-            "provider": r[1],
-            "model": r[2],
-            "verdict": r[3],
-            "narrative": r[4],
-            "degraded": bool(r[5]),
-            "degrade_reason": r[6],
-            "search_hits": json.loads(r[7]),
-            "search_engine": r[8],   # None=老行未记录 / 未开搜索 / 调用未成功
+    return [
+        {
+            "ts_code": r[0], "provider": r[1], "model": r[2], "verdict": r[3],
+            "narrative": r[4], "degraded": bool(r[5]), "degrade_reason": r[6],
+            "search_hits": _parse_json_field(r[7], []), "search_engine": r[8],
             "created_at": r[9],
-        })
-    return out
+        }
+        for r in rows
+    ]
 
 
 __all__ = [
-    "save_report", "load_report", "load_report_by_str", "latest_report_date", "load_llm_judgments",
+    "K9_TABLE", "LEGACY_TABLE",
+    "save_k9_report", "load_k9_report", "latest_k9_report",
+    "load_report", "load_report_by_str", "latest_report_date", "load_llm_judgments",
 ]

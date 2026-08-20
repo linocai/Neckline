@@ -169,10 +169,14 @@ def refresh_coverage(target: date) -> None:
     🔴 **它是尺子**:以涨停为口径,⛔ 不读任何待标定参数,参数标定完成之前就能跑。
     必须排在事实包冻结**之后**(它读那份冻结包)。
 
-    ⚠ **`listing` / `dispositions` 现在恒为 None**:K9 清单与全市场 disposition 是
-    S6 的产物。于是本片只出「涨停普查 + 涨停簇画像 + 结构性分布」那一半,
-    `coverage_all` 落 **NULL**(⛔ 不是 0)—— §5.8.1 说的「清单开始产出的次日
-    自动接上」就是指这里:S6 落地后把两个入参接上,同一天重算即可。
+    ⚠ **S7 起 `listing` / `dispositions` 真的接上了**(S4 登记的那条「清单开始产出
+    的次日自动接上」):`report/evening.py::coverage_inputs` 把 **D−1** 的 K9 清单与
+    全市场 disposition 翻成覆盖率层的 DTO。两者仍可能是 `None`(上线首日 / 昨天没跑
+    成),那时 `coverage_all` 照旧落 **NULL**(⛔ 不是 0)。
+
+    🔴 **接线为什么在编排器里**:守门单测断言 `scorecard/**` 零 import `neckline.k9`
+    —— 尺子不许读被量的东西。策略侧信息只经 `k9_disposition` / `k9_listing_entries`
+    这条**数据**通道进来。⛔ 别把 `coverage_inputs` 搬进 `scorecard/`。
 
     ⚠ **Plan 没写覆盖率挂在哪条链上**(§9.3 的晚间段序是 facts→k9→explain→playbook
     →report,没有 scorecard 段)。本片挂在 16:05 日更、紧随事实包冻结之后 ——
@@ -180,15 +184,24 @@ def refresh_coverage(target: date) -> None:
 
     尽力而为**不改退出码**;它是成绩线不是判据输入,失败打 WARNING。
     """
+    from neckline.report.evening import coverage_inputs
     from neckline.scorecard import coverage as coverage_mod
 
     try:
-        day = coverage_mod.refresh_day(target)
+        listing, dispositions = coverage_inputs(target)
+        day = coverage_mod.refresh_day(
+            target, listing=listing, dispositions=dispositions)
     except Exception:  # noqa: BLE001
         logger.warning("[coverage] %s 覆盖率刷新异常(已吞,不阻断主增量)", target, exc_info=True)
         return
     if day is None:
         logger.info("[coverage] %s 无冻结事实包,本日无覆盖率(⛔ 不编一行 0)", target)
+        return
+    logger.info(
+        "[coverage] %s 涨停 %d 只;昨日清单命中率 %s",
+        target, day.limit_up_count,
+        "NULL(昨天没有清单)" if day.coverage_all is None else f"{day.coverage_all:.1%}",
+    )
 
 
 def update_suspend_list(target: date) -> None:

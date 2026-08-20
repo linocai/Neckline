@@ -45,7 +45,7 @@ echo "1) health(免鉴权):"; curl -s "$BASE/health"; echo
 echo "2) 无 token → 401:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "$BASE/settings"
 echo "3) 错 token → 401:"; curl -s -o /dev/null -w "  status=%{http_code}\n" -H "Authorization: Bearer nope" "$BASE/settings"
 # —— (4~5) `report/latest` / `board` → **V2.5.0 S1 已删端点**(K8 报告与看板整链退役,
-#    PROJECT_PLAN §5.12),步骤号留空。S7 落 `/api/selection/latest` 后在此补新步骤。
+#    PROJECT_PLAN §5.12),步骤号留空。S7 的替代品是 `/api/selection/latest`(步骤 38)。
 echo "6) settings(默认):"; curl -s "${AUTH[@]}" "$BASE/settings"; echo
 # —— (7~8) `PUT /settings/llm` → **V2-⑬ 已删端点**(明文 key 那条),步骤号留空。
 echo "9) PUT settings/push(**V2-⑪ 起全量覆盖式、必须给全每一个 kind**):"
@@ -109,5 +109,20 @@ for M in "POST $BASE/inquiry" "GET $BASE/inquiries" "GET $BASE/report/latest" \
   printf "  %-5s %-44s " "$1" "$2"
   curl -s -o /dev/null -w "status=%{http_code}\n" -X "$1" "${AUTH[@]}" "${JSON[@]}" "$2"
 done
+
+# —— V2.5.0 S7 · 选股(报告三态 + 双日期契约)——————————————————————————————
+echo "38) GET /selection/latest —— 三态 + 双日期(⚠ 空库 → not_run,⛔ 不是 500):"
+curl -s "${AUTH[@]}" "$BASE/selection/latest" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+print('  state=%s reportDate=%s tradeDate=%s listingSize=%r'%(
+    d.get('state'),d.get('reportDate'),d.get('tradeDate'),d.get('listingSize')))
+print('  首行:%s'%d.get('headline'))
+print('  ⚠ listingSize=None 表示「今天没跑成」,⛔ 客户端不许显示成 0')
+for g in (d.get('gaps') or [])[:3]: print('   - %s'%g)"
+echo "38b) 无 token → 401:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "$BASE/selection/latest"
+echo "38c) 查一个没有报告的交易日 → 404:"
+curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "$BASE/selection/19900101"
+echo "38d) 日期格式非法 → 422:"
+curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "$BASE/selection/not-a-date"
 
 echo ">> 冒烟完成。"

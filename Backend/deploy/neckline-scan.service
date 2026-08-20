@@ -32,7 +32,7 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments verify,scan
+ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments facts
 # 批算段不碰 LLM,墙钟应当是分钟级;超时按 ⑯-C 实测 × 3 余量设,卡死不许无限占着串行队列。
 TimeoutStartSec=1800
 # —— 内存护栏(⑯-C 新机实测填,见本文件头)——

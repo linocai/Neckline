@@ -28,7 +28,7 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments basket --direction-pipeline-config /opt/neckline/config/direction-pipeline.v2.4.2-balanced.json
+ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments k9,explain,playbook --k9-params /opt/neckline/config/k9-params.json
 # 2026-08-16 用户明确取消选股总墙钟：晚间窗口充足，不得因为累计耗时把首批方向
 # 留在“已排队但未判断”。单次 HTTP/流式调用仍由 provider 自己的超时、重试和
 # systemd stop 操作约束；这里只取消整段累计时间截断。
