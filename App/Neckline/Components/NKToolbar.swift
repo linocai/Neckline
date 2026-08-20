@@ -19,8 +19,10 @@ import SwiftUI
 
 struct NKToolbar: View {
     @Bindable var model: AppModel
-    /// 三个板块(设置不在内 —— 它是右端那个齿轮)。
-    private let tabs: [AppTab] = [.baskets, .positions, .review]
+    /// 现役板块胶囊(设置不在内 —— 它是右端那个齿轮)。
+    /// 🔴 V2.5.0 S1:`.positions` 已随持仓板块整块下线(裁定 11);
+    /// 目标三板块是 **选股 / 成绩 / 复盘**,「成绩」在 S12 落地时补进这个数组。
+    private let tabs: [AppTab] = [.baskets, .review]
 
     /// 工具栏高度(macOS 原型 23 行 `height:50px`)。红绿灯要在这个高度里居中。
     static let barHeight: CGFloat = 50

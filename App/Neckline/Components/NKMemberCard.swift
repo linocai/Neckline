@@ -370,21 +370,8 @@ struct NKMemberCard: View {
     /// 两枚都是 `padding:7px 14px; radius:8; 12px/600`。⛔ 不是一左一右分居两端的纯文字链接。
     private var actionRow: some View {
         HStack(spacing: 9) {
-            // 动作按钮,不是状态。⛔ 文案不得写成买入建议 —— 这是**补录**用户已在
-            // 券商完成的真实操作(审计台账,系统永不下单)。
-            // 🔴 **任何情况下都不灰化**(V2.2-⑤-B / 〇b-7:熔断三件机制整体退役;
-            // 退潮刹车激活时同样不灰 —— 硬拦等于帮用户瞒报)。
-            Button {
-                Task { await model.beginPositionEntryFlow(fromMember: member,
-                                                          basketName: basketName) }
-            } label: {
-                Text("买入补录").font(NKFont.callout).fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: NKRadius.control).fill(NK.accent))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            // 🔴 V2.5.0 S1:「买入补录」按钮**已删除** —— 持仓台账整块下线(裁定 11),
+            // 补录的落点(`POST /positions`)已不存在。⛔ 不留一个点了没反应的按钮。
             Button {
                 model.openInfoCard(tradeDate: tradeDate, code: member.tsCode, name: member.name)
             } label: {

@@ -74,47 +74,6 @@ final class IntegrationSmokeTests: XCTestCase {
         }
     }
 
-    /// 盘中看板:GET /board 真请求(§4C.2)。
-    func testBoardRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let board = try await makeClient().fetchBoard()
-        // 不对具体内容做强断言(测试环境状态可能变化),只验证真实解码成功 + 类型正确。
-        XCTAssertFalse(board.tradeDate.isEmpty)
-        for e in board.events {
-            XCTAssertFalse(e.code.isEmpty)
-            XCTAssertFalse(e.verdict.isEmpty)
-        }
-    }
-
-    /// 持仓开/清仓真请求闭环(§4C.1「审计台账」;用独立测试代码,不碰手动种的演示持仓)。
-    func testPositionOpenCloseRoundTripRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-        // ⚠ 裁定 ②:`fetchPositions()` 自此返回 `PositionsSnapshot{holdings, portfolioAlerts}`
-        // —— 持仓那一半取 `.holdings`。
-        let before = try await client.fetchPositions().holdings
-
-        let opened = try await client.openPosition(code: "000001.SZ", name: "平安银行(集成测试)",
-                                                    buyPrice: 10.0, qty: 100,
-                                                    entryReason: "IntegrationSmokeTests 真请求闭环")
-        XCTAssertEqual(opened.stopLine, 9.5, accuracy: 0.001, "-5% 单一止损常量派生")
-
-        let afterOpen = try await client.fetchPositions().holdings
-        XCTAssertEqual(afterOpen.count, before.count + 1)
-        XCTAssertTrue(afterOpen.contains { $0.id == opened.positionId })
-
-        try await client.closePosition(id: opened.positionId, sellPrice: 10.3)
-        let afterClose = try await client.fetchPositions().holdings
-        XCTAssertFalse(afterClose.contains { $0.id == opened.positionId }, "清仓后不应再出现在持仓列表")
-
-        // 二次关闭同一笔 → 404 not_holding(对齐后端契约,真实网络往返验证,非 mock)。
-        do {
-            _ = try await client.closePosition(id: opened.positionId, sellPrice: 10.3)
-            XCTFail("重复清仓应抛 notHolding")
-        } catch APIError.notHolding {
-            // 期望路径
-        }
-    }
 
     // ⚠ V2.1-① 起 `testInquiryRealRequestVerdictIsDescriptive`(§4C.3 问询台真请求)
     // 已随问询台整链退役删除(`sendInquiry`/`ChatMessage` 均已物理删除)。
@@ -154,89 +113,9 @@ final class IntegrationSmokeTests: XCTestCase {
         _ = try await client.registerDevice(token: "integration-test-device-token")
     }
 
-    /// 一键补录预填推荐真请求(§五 v1.2-E.5,区间双档)。
-    ///
-    /// ⚠️ **已知契约缺口**(v1.2-E 施工期发现,已在交付报告里提出、未擅自改后端):
-    /// `neckline/api/schemas.py::EntrySuggestionOut` + `app.py::entry_suggestion()`
-    /// 仍是 v1.1-B.3 的单 `qty` 旧形状,尚未按「v1.2 客户端契约清单」改成
-    /// `qtyLow/qtyHigh/capFloor/capCeil`。客户端已按新契约实现并有 mock 单测覆盖
-    /// (见 `DTODecodeTests.testDecodeEntrySuggestionRange`),但对**当前**后端发真
-    /// 请求会因缺字段解码失败——用 `catch` 转 `XCTSkip` 而非放任失败,待后端补齐
-    /// 后请删掉这个 catch、改回直接断言。
-    func testEntrySuggestionRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-        do {
-            let s = try await client.entrySuggestion(code: "600001.SH", price: 50.0)
-            XCTAssertEqual(s.qtyHigh, 400)   // floor(single_cap/price/100)*100(现役 config 兜底 single_cap=20000)
-            XCTAssertEqual(s.qtyLow, 200)    // floor(single_cap*0.5/price/100)*100
-            XCTAssertEqual(s.stopLine, 47.5, accuracy: 0.001)   // 50×(1-0.05)
-        } catch {
-            throw XCTSkip("已知契约缺口:后端 EntrySuggestionOut 尚未实现区间字段,详见本方法头注释。原始错误:\(error)")
-        }
-    }
 
     // MARK: - ⑩ 极简录入真请求闭环:三字段开仓 → 自动关联 + 计划继承 + 建仓快照 → 可选补充
 
-    /// ⚠ **V2-⑮ 换血**:决策日志「创建 → link → scenario-outcome」闭环整套退役
-    /// (`decision_log` v2.0.0 起停写留档,四个写端点服务端已删)。本用例改为验
-    /// ⑩ 的新闭环:**三字段开仓**(其余自动关联)+ `position_plans` v1 自动落 +
-    /// `entry_snapshots` 冻结 + ⑩-C「用户可选补充」空提交合法。
-    func testMinimalEntryAutoLinkAndOptionalNoteRoundTripRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-
-        // ⑩-A:票 + 价 + 量三字段即可(理由 / 费用都不传)。幂等键每次新铸。
-        let opened = try await client.openPosition(
-            code: "600006.SH", name: nil, buyPrice: 10.0, qty: 1000, entryReason: "",
-            idempotencyKey: UUID().uuidString)
-        XCTAssertGreaterThan(opened.positionId, 0)
-        XCTAssertFalse(opened.replayed, "全新幂等键不该被判成重放")
-
-        // ⑩-B:开仓必落 `version=1` 计划行(**有仓无 v1 是走不出去的死局**)。
-        let plans = try await client.fetchPositionPlans(positionId: opened.positionId)
-        let v1 = try XCTUnwrap(plans.first { $0.version == 1 }, "开仓应自动落 version=1")
-        // 无来源篮子 / 卡未就绪都是**合法**结果 —— 行照落、如实标原因,⛔ 不省略整条记录。
-        if !v1.available { XCTAssertNotNil(v1.unavailableText) }
-        // ⑪-D 武装态四键**恒存在**(读侧 fail-closed:缺键 = 不武装)。
-        XCTAssertNotNil(v1.plan["exit_reference_armed"], "武装态键必须恒存在,不搞「缺键即默认」")
-
-        // ⑩-A:`entry_snapshots` 冻结一行(没有则 404 not_found,也是可接受的历史态)。
-        do {
-            let snap = try await client.fetchEntrySnapshot(positionId: opened.positionId)
-            XCTAssertEqual(snap.positionId, opened.positionId)
-            // ⛔ 别把"没采"读成"没有"。
-            XCTAssertFalse(snap.notCaptured.contains(""), "not_captured 不该有空串")
-        } catch APIError.notFound {
-            XCTFail("⑩ 起开仓必落 entry_snapshots 冻结行")
-        }
-
-        // ⑩-C:用户可选补充 —— **空提交合法**(200,不是 400)。
-        let empty = try await client.postDecisionNote(code: "600006.SH")
-        XCTAssertTrue(empty.ok)
-        let labeled = try await client.postDecisionNote(
-            code: "600006.SH", positionId: opened.positionId,
-            labels: ["THEME_SHIFT"], voiceNote: "IntegrationSmokeTests")
-        XCTAssertTrue(labeled.recorded.contains("label"))
-
-        // 清理:清仓,不污染 dev 库演示数据。
-        _ = try? await client.closePosition(id: opened.positionId, sellPrice: 10.1,
-                                            closeReason: "MANUAL")
-    }
-
-    /// **幂等键真实往返**:同键二次提交 → `replayed=true` 且**不开第二笔仓**。
-    func testIdempotencyKeyReplayDoesNotOpenSecondPositionRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-        let key = UUID().uuidString
-        let first = try await client.openPosition(code: "600008.SH", name: nil, buyPrice: 5.0,
-                                                  qty: 100, entryReason: "", idempotencyKey: key)
-        let second = try await client.openPosition(code: "600008.SH", name: nil, buyPrice: 5.0,
-                                                   qty: 100, entryReason: "", idempotencyKey: key)
-        XCTAssertTrue(second.replayed, "同键 = 同一笔意图的重试,服务端应重放而不是开第二笔")
-        XCTAssertEqual(first.positionId, second.positionId)
-        _ = try? await client.closePosition(id: first.positionId, sellPrice: 5.1, closeReason: "MANUAL")
-    }
 
     /// 篮子族端点真请求:列表 → 单篮 → 卡 / 验证。**空列表是合法输出**,⛔ 不是 404。
     func testBasketsRealRequest() async throws {
@@ -259,14 +138,4 @@ final class IntegrationSmokeTests: XCTestCase {
     // `POST /circuit/unlock` 两条端点随熔断整体退役消失(用户裁定 #8),客户端两个
     // 方法同批删 —— 这条真请求测试没有可打的目标了。⛔ 不许接回来。
 
-    /// 清仓带 closeReason 真请求(§五 v1.2-E.2)。
-    func testClosePositionWithCloseReasonRealRequest() async throws {
-        try await skipUnlessDevServerReachable()
-        let client = makeClient()
-        let opened = try await client.openPosition(code: "600007.SH", name: "集成测试乙", buyPrice: 20.0,
-                                                    qty: 100, entryReason: "IntegrationSmokeTests closeReason")
-        _ = try await client.closePosition(id: opened.positionId, sellPrice: 19.0, closeReason: "STOP_LOSS")
-        // closeReason 不在 PositionOut 里回显(只有开放持仓列表),这里只验证带
-        // closeReason 的清仓请求真实成功(未 422/500),契约形状由 mock 单测覆盖。
-    }
 }

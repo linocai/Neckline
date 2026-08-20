@@ -207,82 +207,6 @@ private struct ReportResponse: Decodable {
     }
 }
 
-private struct BoardResponse: Decodable {
-    let tradeDate: String
-    let asof: String
-    let retreatBrake: RetreatBrake
-    let events: [BoardEvent]
-}
-
-private struct PositionsListResponse: Decodable {
-    let holdings: [Position]
-    /// 🔴 组合环境提醒(2026-08-12 用户裁定 ②)。**缺键 = 老服务端**(2.4.0 之前),
-    /// 按空数组处理 —— ⛔ 空数组不等于「环境正常」,只是「今天没有这两类事件」。
-    let portfolioAlerts: [PortfolioAlert]?
-}
-
-/// `/positions` 的完整快照:持仓 + 组合环境提醒。
-/// ⚠ 两段**刻意分开**:板块级 / 市场级事件匹配不到任何一笔持仓码(裁定 ② 原文
-/// 「⛔ 也不重复塞进单票详情」)。
-struct PositionsSnapshot {
-    var holdings: [Position]
-    var portfolioAlerts: [PortfolioAlert]
-}
-
-struct OpenPositionRequest: Encodable {
-    let code: String
-    let name: String?
-    let buy_price: Double
-    let qty: Int
-    let entry_reason: String
-    let buyFees: Double?
-    let buyDate: String?
-    /// v2.0.0(契约线审计 🟡 Y7)**幂等键**。⚠ **每笔新提交动作一个新键(UUID),⛔ 严禁
-    /// 复用、⛔ 别绑「票 + 日期」之类业务量**(那必然复用)——服务端是标准幂等语义:
-    /// **同键 = 同一笔意图的重试**,同键不同 payload 会**静默重放原仓、把用户改过的
-    /// 价格数量整个吃掉**。生成点见 `AppModel.beginPositionEntryFlow`(每次打开录入
-    /// 表单铸一枚新键,提交失败重试复用同一枚)。
-    let idempotencyKey: String?
-}
-
-/// `POST /positions` 响应(v2.0.0 起带 ⑩-A/B 的自动关联结果 + 幂等重放位)。
-private struct OpenPositionResponse: Decodable {
-    let ok: Bool
-    let position_id: Int
-    let stop_line: Double
-    let sourceBasketKey: String?
-    let sourceBasketName: String?
-    let tier: Int?
-    let role: String?
-    let planAvailable: Bool?
-    /// 「原盈亏结构已变」偏离提示(纯展示,不质问不阻断);**无从比较 → null,不是"未偏离"**。
-    let planDeviationNotice: String?
-    /// `true` = 本次**没有开新仓**,`position_id` 指的是同一个幂等键之前已经开好的那笔。
-    /// 如实透出,别让"看起来成功了"掩盖"其实什么都没发生"。
-    let replayed: Bool?
-}
-
-/// 开仓结果(展示层)。
-struct OpenPositionResult: Equatable {
-    var positionId: Int
-    var stopLine: Double
-    var sourceBasketKey: String? = nil
-    var sourceBasketName: String? = nil
-    var tier: Int? = nil
-    var role: String? = nil
-    var planAvailable: Bool = false
-    var planDeviationNotice: String? = nil
-    var replayed: Bool = false
-}
-
-struct ClosePositionRequest: Encodable {
-    let sell_price: Double
-    let sell_time: String?   // 'YYYYMMDD';缺省服务端用今日
-    // ⚠ 契约字段名 `closeReason` 是 camelCase,与本结构体既有 `sell_price`/`sell_time`
-    // 的 snake_case 并存——后端契约如此,不自作主张统一大小写。
-    let closeReason: String?
-    let sellFees: Double?
-}
 
 // —— 设置(V2-② Provider 自填制 + V2-⑪ 按 kind 的推送开关)——————————————————
 
@@ -336,58 +260,14 @@ private struct OkResponse: Decodable { let ok: Bool }
 
 // —— v1.2-E.5 一键补录预填推荐(区间双档)——————————————————————————————
 
-private struct EntrySuggestionResponse: Decodable {
-    let ok: Bool; let code: String; let price: Double
-    let qtyLow: Int; let qtyHigh: Int; let capFloor: Double; let capCeil: Double; let stopLine: Double
-    /// V2.3.2-⑤:这条预计线的对外语义;老服务端不发 → nil = 未声明(合成 `Decodable`
-    /// 对 `Optional` 属性天然容忍缺键,这里不必手写 `init(from:)`)。
-    let lossWarningAction: String?
-}
 
 // ⚠ 「无请求体 POST 占位」`EmptyBody` 已删:它的唯一使用者是 `POST /circuit/unlock`,
 // 该端点随熔断整体退役消失(V2.2-⑤-B)。⛔ 别为了"以后可能用得上"留一个死类型。
 
-// —— ⑩-C「用户可选补充」入口(`POST /decisions` 语义换血:不再是九项强制表单)————
-//
-// **全部字段可选**——`code` 缺省也合法(该次提交完全没有可落的内容时,端点 200 空提交,
-// 不 400)。落 `user_actions`(`kind='label'`/`'voice_note'`),**不碰 `decision_log`**
-// (该表 v2.0.0 起停写留档)。
-struct DecisionNoteRequest: Encodable {
-    let code: String?
-    let positionId: Int?
-    let labels: [String]
-    let voiceNote: String?
-}
-
-/// `POST /decisions` 响应:**如实回显本次记了哪些 kind**(`[]` = 空提交,合法、不是错误)。
-struct DecisionNoteResult: Decodable, Equatable {
-    var ok: Bool = true
-    var recorded: [String] = []
-}
-
-private struct DecisionsListResponse: Decodable { let items: [DecisionLog] }
 
 // —— V2-⑭-B 篮子族 / 计划 / 画像 / 包 / 评价 / 提醒 的列表包装 ————————————————
 
 private struct BasketsListResponse: Decodable { let tradeDate: String; let items: [Basket] }
-/// V2.2-④-A `GET /clocks/selection` 的列表包装(**空列表是合法态**,见方法 doc)。
-private struct SelectionClocksResponse: Decodable {
-    let dateFrom: String?
-    let dateTo: String?
-    let items: [SelectionClock]
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        dateFrom = try c.decodeIfPresent(String.self, forKey: .dateFrom)
-        dateTo = try c.decodeIfPresent(String.self, forKey: .dateTo)
-        items = try c.decodeIfPresent([SelectionClock].self, forKey: .items) ?? []
-    }
-    enum CodingKeys: String, CodingKey { case dateFrom, dateTo, items }
-}
-/// `POST /clocks/trade/{id}/note` 请求体。**唯一字段**(K8 §十五「每次一条简短说明」);
-/// ⛔ 不加 kind / 不加时间戳 —— 那两样服务端自己定,客户端多发一份就是第二个事实源。
-private struct TradeClockNoteRequest: Encodable { let note: String }
-private struct PositionPlansResponse: Decodable { let items: [PositionPlan] }
 private struct PacksListResponse: Decodable { let items: [Pack] }
 private struct AlertsListResponse: Decodable { let items: [CustomAlert] }
 private struct ProvidersListResponse: Decodable { let items: [Provider] }
@@ -410,13 +290,6 @@ struct AlertUpdateRequest: Encodable {
     let resetFired: Bool
 }
 
-/// `POST /positions/{id}/plans`:计划新版本。
-/// ⚠ **武装态由服务端重算,请求体说了不算**(⑪-D-B 闸②)——即使这里带了
-/// `exit_reference_armed`,服务端也会拿这笔仓的真实成交价重过一遍闸。
-struct PositionPlanCreateRequest: Encodable {
-    let plan: NKJSON
-    let note: String?
-}
 
 // MARK: - APIClient
 
@@ -529,88 +402,9 @@ actor APIClient {
         return try JSONDecoder().decode(BasketReview.self, from: data)
     }
 
-    // —— 4A.3 盘中看板 ——
-    func fetchBoard() async throws -> BoardSnapshot {
-        let data = try await get("/api/v1/board")
-        let r = try JSONDecoder().decode(BoardResponse.self, from: data)
-        return BoardSnapshot(tradeDate: r.tradeDate, asof: r.asof,
-                             retreatBrake: r.retreatBrake, events: r.events)
-    }
-
-    // —— 4A.4 持仓(审计台账;系统永不自动下单,§3.8)——
-    func fetchPositions() async throws -> PositionsSnapshot {
-        let data = try await get("/api/v1/positions")
-        let r = try JSONDecoder().decode(PositionsListResponse.self, from: data)
-        return PositionsSnapshot(holdings: r.holdings, portfolioAlerts: r.portfolioAlerts ?? [])
-    }
-
-    /// 开仓录入(补录用户已在券商完成的真实操作)。
-    ///
-    /// `idempotencyKey`(v2.0.0):**这一次提交动作**的键。⛔ 严禁跨提交复用 —— 同键不同
-    /// payload 会被服务端当重试**静默重放原仓**。生成规则见 `OpenPositionRequest`。
-    /// `buyDate`:**不传 → 服务端取今天**;非交易日 / 未来日 → 400 + reason。
-    func openPosition(code: String, name: String?, buyPrice: Double, qty: Int,
-                      entryReason: String, buyFees: Double? = nil,
-                      buyDate: String? = nil,
-                      idempotencyKey: String? = nil) async throws -> OpenPositionResult {
-        let body = OpenPositionRequest(code: code, name: name, buy_price: buyPrice,
-                                       qty: qty, entry_reason: entryReason, buyFees: buyFees,
-                                       buyDate: buyDate, idempotencyKey: idempotencyKey)
-        let data = try await post("/api/v1/positions", body: body)
-        let r = try JSONDecoder().decode(OpenPositionResponse.self, from: data)
-        return OpenPositionResult(positionId: r.position_id, stopLine: r.stop_line,
-                                  sourceBasketKey: r.sourceBasketKey,
-                                  sourceBasketName: r.sourceBasketName,
-                                  tier: r.tier, role: r.role,
-                                  planAvailable: r.planAvailable ?? false,
-                                  planDeviationNotice: r.planDeviationNotice,
-                                  replayed: r.replayed ?? false)
-    }
-
-    /// 清仓录入。`sellTime` 缺省 → 服务端用今日。`closeReason` 可选(九码之一)。
-    @discardableResult
-    func closePosition(id: Int, sellPrice: Double, sellTime: String? = nil,
-                       closeReason: String? = nil, sellFees: Double? = nil) async throws -> Bool {
-        let body = ClosePositionRequest(sell_price: sellPrice, sell_time: sellTime,
-                                        closeReason: closeReason, sellFees: sellFees)
-        let data = try await post("/api/v1/positions/\(id)/close", body: body)
-        return try JSONDecoder().decode(OkResponse.self, from: data).ok
-    }
-
-    /// 一键补录预填推荐(区间双档,只读计算,不写台账)。
-    func entrySuggestion(code: String, price: Double) async throws -> EntrySuggestionRange {
-        let priceStr = String(format: "%.2f", price)
-        let data = try await get("/api/v1/positions/entry-suggestion?code=\(code)&price=\(priceStr)")
-        let r = try JSONDecoder().decode(EntrySuggestionResponse.self, from: data)
-        return EntrySuggestionRange(code: r.code, price: r.price, qtyLow: r.qtyLow, qtyHigh: r.qtyHigh,
-                                    capFloor: r.capFloor, capCeil: r.capCeil, stopLine: r.stopLine,
-                                    lossWarningAction: r.lossWarningAction)
-    }
 
     // —— V2-⑩-B 计划继承 + 建仓快照 ————————————————————————————————————
 
-    /// 某持仓的全部计划版本(升序,`version=1` 是从 D0 卡继承的原判)。
-    /// **空列表 = 这笔仓不存在或建于 ⑩ 之前**,不 404。
-    func fetchPositionPlans(positionId: Int) async throws -> [PositionPlan] {
-        let data = try await get("/api/v1/positions/\(positionId)/plans")
-        return try JSONDecoder().decode(PositionPlansResponse.self, from: data).items
-    }
-
-    /// 创建计划新版本(⑩-B)。**新版本不修改原始篮子卡**。
-    /// 无既有计划(缺 `version=1`)→ 400 `no_base_plan`。
-    @discardableResult
-    func createPositionPlanVersion(positionId: Int, plan: NKJSON,
-                                   note: String? = nil) async throws -> PositionPlan {
-        let body = PositionPlanCreateRequest(plan: plan, note: note)
-        let data = try await post("/api/v1/positions/\(positionId)/plans", body: body)
-        return try JSONDecoder().decode(PositionPlan.self, from: data)
-    }
-
-    /// 建仓瞬间的冻结快照。无快照行 → 404 `not_found`(复用既有 case)。
-    func fetchEntrySnapshot(positionId: Int) async throws -> EntrySnapshot {
-        let data = try await get("/api/v1/positions/\(positionId)/entry-snapshot")
-        return try JSONDecoder().decode(EntrySnapshot.self, from: data)
-    }
 
     // —— V2.2-④-B 双时钟(选股时钟只读 / 交易时钟只读 + **本版唯一新增写端点**)——
     //
@@ -620,33 +414,6 @@ actor APIClient {
     // 「⛔ 不新增 reason」)→ `mapReason` **一字不动**;调用方把 `.notFound` 当
     // **「这笔仓还没有交易时钟」的合法空态**处理,⛔ 别弹成网络错误。
 
-    /// 已结案的选股时钟(按 **D0** 区间)。**空列表 = 这段时间没有结案样本**(合法),
-    /// ⛔ 不是「系统没跑」。端点整段包保险丝,恒 200。
-    func fetchSelectionClocks(from: String? = nil, to: String? = nil) async throws -> [SelectionClock] {
-        var query: [String] = []
-        if let f = from, !f.isEmpty { query.append("from=\(f)") }
-        if let t = to, !t.isEmpty { query.append("to=\(t)") }
-        let path = "/api/v1/clocks/selection" + (query.isEmpty ? "" : "?" + query.joined(separator: "&"))
-        let data = try await get(path)
-        return try JSONDecoder().decode(SelectionClocksResponse.self, from: data).items
-    }
-
-    /// 一笔真实买入的交易时钟 + 全部事件流水。这笔仓没有交易时钟 → 404 `not_found`
-    /// (既有 case 覆盖,⛔ 不新增 reason)。
-    func fetchTradeClock(positionId: Int) async throws -> TradeClock {
-        let data = try await get("/api/v1/clocks/trade/\(positionId)")
-        return try JSONDecoder().decode(TradeClock.self, from: data)
-    }
-
-    /// 追加一条**用户主观说明**(K8 §十五)。**纯追加**,⛔ 不改任何既有行、⛔ 系统
-    /// 不代猜(§七 P3-28)。超长 / 空 → **422**(服务端 `TradeClockNoteIn.note` 的
-    /// `Field` 约束,上界唯一源 = `review/trade_clock.USER_NOTE_MAX_CHARS`)。
-    @discardableResult
-    func postTradeClockNote(positionId: Int, note: String) async throws -> TradeClockNoteResult {
-        let data = try await post("/api/v1/clocks/trade/\(positionId)/note",
-                                  body: TradeClockNoteRequest(note: note))
-        return try JSONDecoder().decode(TradeClockNoteResult.self, from: data)
-    }
 
     // ⚠ **V2.2-⑤-B 熔断整体退役(用户裁定 #8)**:`getCircuit()` / `unlockCircuit()`
     // 两个方法已随服务端 `GET /circuit` · `POST /circuit/unlock` 两条端点一起删除 ——
@@ -663,35 +430,6 @@ actor APIClient {
     // `link`/`cancel`/`revise`/`scenario-outcome` 四个写端点服务端已删,客户端对应四个
     // 方法随之删除(⑭-C 对拍表 §六 B2)。`GET /decisions`(只读归因)保留。
 
-    /// 记一次「用户可选补充」。**全部参数可选**,空提交合法(200,不是 400)。
-    @discardableResult
-    func postDecisionNote(code: String?, positionId: Int? = nil,
-                          labels: [String] = [], voiceNote: String? = nil) async throws -> DecisionNoteResult {
-        let body = DecisionNoteRequest(code: code, positionId: positionId,
-                                       labels: labels, voiceNote: voiceNote)
-        let data = try await post("/api/v1/decisions", body: body)
-        return try JSONDecoder().decode(DecisionNoteResult.self, from: data)
-    }
-
-    /// 历史决策日志(**只读归因**;v2.0.0 起零新增行,读的都是历史)。
-    func listDecisions(status: String? = nil, code: String? = nil,
-                       from: String? = nil, to: String? = nil) async throws -> [DecisionLog] {
-        var query: [String] = []
-        if let s = status, !s.isEmpty { query.append("status=\(s)") }
-        if let c = code, !c.isEmpty { query.append("code=\(c)") }
-        if let f = from, !f.isEmpty { query.append("from=\(f)") }
-        if let t = to, !t.isEmpty { query.append("to=\(t)") }
-        let path = query.isEmpty ? "/api/v1/decisions" : "/api/v1/decisions?" + query.joined(separator: "&")
-        let data = try await get(path)
-        return try JSONDecoder().decode(DecisionsListResponse.self, from: data).items
-    }
-
-    /// 挂单未成交追踪。`id` 不存在 → 404 `not_found`(既有 case 覆盖);决策存在但还没攒到
-    /// 任何追踪快照 → 合法 200 空态 `rows=[]`,不是错误(两种「空」分开)。
-    func decisionTrack(id: Int) async throws -> DecisionTrack {
-        let data = try await get("/api/v1/decisions/\(id)/track")
-        return try JSONDecoder().decode(DecisionTrack.self, from: data)
-    }
 
     // ⚠ V2.1-① 起「问询台」(`sendInquiry`)+「问询历史」(`fetchInquiries`/
     // `fetchInquiryDetail`)三个方法已随问询台整链退役删除。

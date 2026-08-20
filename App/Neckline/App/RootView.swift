@@ -43,9 +43,6 @@ struct RootView: View {
             BasketDailyView(model: model)
                 .tabItem { Label(AppTab.baskets.title, systemImage: AppTab.baskets.systemImage) }
                 .tag(AppTab.baskets)
-            PositionsView(model: model)
-                .tabItem { Label(AppTab.positions.title, systemImage: AppTab.positions.systemImage) }
-                .tag(AppTab.positions)
             ReviewView(model: model)
                 .tabItem { Label(AppTab.review.title, systemImage: AppTab.review.systemImage) }
                 .tag(AppTab.review)
@@ -99,7 +96,6 @@ struct RootView: View {
     private var content: some View {
         switch model.view {
         case .baskets: BasketDailyView(model: model)
-        case .positions: PositionsView(model: model)
         case .review: ReviewView(model: model)
         case .settings: SettingsView(model: model, config: config)
         }

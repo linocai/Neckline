@@ -733,7 +733,7 @@ struct BasketDailyView: View {
                         Text("行情状态未取得").font(NKFont.body).fontWeight(.semibold)
                             .foregroundStyle(NK.textSecondary)
                     }
-                    if let q = model.quota { NKChip(text: q.label, tone: q.tone, filled: true) }
+                    // 🔴 V2.5.0 S1:持仓额度胶囊(`model.quota`)已删 —— 持仓板块整块下线。
                     Spacer(minLength: 6)
                     Text(dataConfidenceText).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         .multilineTextAlignment(.trailing)

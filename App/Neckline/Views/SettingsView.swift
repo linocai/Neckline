@@ -932,8 +932,11 @@ struct SettingsView: View {
             return
         }
         do {
-            let snapshot = try await client.fetchPositions()
-            check = .ok("health ok · positions ok(\(snapshot.holdings.count) 持仓)")
+            // 🔴 V2.5.0 S1:自检的第二条从 `/positions`(已随持仓板块退役删除)换成
+            // `/settings` —— 它是**鉴权后**的只读端点,能同时验通「token 对不对」与
+            // 「服务端答不答」。⛔ 不许退化成只打 `/health`:那条免鉴权,验不了 token。
+            let snapshot = try await client.fetchSettings()
+            check = .ok("health ok · settings ok(\(snapshot.push.kinds.count) 项推送开关)")
         } catch APIError.unauthorized, APIError.noToken {
             check = .tokenError
         } catch let e as APIError {

@@ -25,7 +25,11 @@ enum AppTab: String, CaseIterable, Identifiable {
     // 截图脚本按 rawValue 传参,改名会把那些脚本静默变成"落到默认 tab"。改的只有
     // `title` / `systemImage` / 顺序。
     // ⚠ V2.1-① 起 `inquiry` case 已删(问询台整链退役,用户裁定 #1)。
-    case baskets, positions, review, settings
+    // 🔴 V2.5.0 S1(裁定 11):`positions` case **已删除** —— 持仓板块整块下线。
+    // 三板块的目标形态是 **选股 / 成绩 / 复盘**(PROJECT_PLAN §5.11);「成绩」板块
+    // 在 S12 落地时加 `case scoreboard`,⛔ 别把 `positions` 改名顶上去
+    // (rawValue 是 `NECKLINE_INITIAL_TAB` QA 钩子与截图脚本的参数)。
+    case baskets, review, settings
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -33,7 +37,6 @@ enum AppTab: String, CaseIterable, Identifiable {
         // 报告段名(「③ 今日篮子」等)是报告结构,两回事** —— 段名与服务端 markdown
         // 报告同构、是审计锚,⛔ 不许跟着改。
         case .baskets: return "选股"
-        case .positions: return "持仓"
         case .review: return "复盘"
         case .settings: return "设置"
         }
@@ -41,7 +44,6 @@ enum AppTab: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .baskets: return "square.grid.2x2"
-        case .positions: return "chart.line.uptrend.xyaxis"
         // 它已不只是"拖交割单"(每日复盘 + 累计成绩单 + 对账 + 移交件四件),
         // 故弃用 `tray.and.arrow.down`(那是"上传"的图标)。
         case .review: return "chart.bar.doc.horizontal"
@@ -62,13 +64,14 @@ enum AppTab: String, CaseIterable, Identifiable {
 ///
 /// ⚠ `rawValue` 一个都不许改(`NECKLINE_INITIAL_REVIEW_PAGE` QA 钩子按它传参)。
 enum ReviewPage: String, CaseIterable, Identifiable {
-    case daily, selectionClock, tradeClock, cumulative, reconcile
+    // 🔴 V2.5.0 S1:`selectionClock` / `tradeClock` 两页**已删除** —— 双时钟复盘
+    // (`review/{selection_clock,trade_clock}.py` 与 `/api/clocks/*`)整块退役。
+    // 复盘板块的目标形态见 PROJECT_PLAN §5.9 / §5.11,S11 收口。
+    case daily, cumulative, reconcile
     var id: String { rawValue }
     var title: String {
         switch self {
         case .daily: return "每日"
-        case .selectionClock: return "选股钟"
-        case .tradeClock: return "交易钟"
         case .cumulative: return "累计"
         case .reconcile: return "对账"
         }
@@ -81,8 +84,6 @@ enum ReviewPage: String, CaseIterable, Identifiable {
     var question: String {
         switch self {
         case .daily: return "昨天那批篮子后来怎么样了"
-        case .selectionClock: return "这批票选得对不对 · 样本 = D0 全部 T1/T2,与你买没买无关"
-        case .tradeClock: return "这笔买卖做得怎么样 · 只在你真的买了之后存在"
         case .cumulative: return "这套选股长期成绩如何"
         case .reconcile: return "我实际的成交与计划 / 章程对不对得上"
         }
@@ -91,56 +92,12 @@ enum ReviewPage: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .daily: return "calendar"
-        case .selectionClock: return "scope"
-        case .tradeClock: return "clock.arrow.circlepath"
         case .cumulative: return "chart.bar.doc.horizontal"
         case .reconcile: return "doc.text.magnifyingglass"
         }
     }
 }
 
-/// 开仓录入草稿(⑩-A **极简录入**:票 + 价 + 量 + 日期;其余由服务端自动关联)。
-/// 止损线由服务端派生返回,表单不手填、不预先本地算。
-struct PositionEntryForm {
-    var code = ""
-    var name = ""
-    var price = ""
-    var qty = ""
-    /// ⚠ **V2-⑩-A:进场理由不再是必填**(「买卖录入控制在数秒内、不再要求长表单」)。
-    /// 留一个可选输入位:用户想写就写,不写照样提交。
-    var reason = ""
-    /// 实付买入费用。⚠ V2 起**不再 UI 强制必填**(服务端本就宽松);留空 → 不传,
-    /// D5 净浮盈估算走默认佣金率兜底并**诚实标注为估算**。
-    var buyFees = ""
-    /// 真实买入日,默认今天、**不可选未来**(`DatePicker` 用 `in: ...Date()` 限死上界)。
-    /// 非交易日由服务端 400 拒绝,不在客户端预判(交易日历唯一事实源在服务端)。
-    var buyDate: Date = Date()
-
-    var buyPrice: Double? { Double(price.trimmingCharacters(in: .whitespaces)) }
-    var qtyInt: Int? { Int(qty.trimmingCharacters(in: .whitespaces)) }
-    var buyFeesValue: Double? { Double(buyFees.trimmingCharacters(in: .whitespaces)) }
-    /// ⑩-A 三字段即可提交(票 + 价 + 量)。⛔ 别把理由 / 费用加回必填 —— 表单退役是
-    /// 本版立项主题之一(减摩擦),归因标签稀疏这个代价已由用户拍板接受(裁定 #6)。
-    var isValid: Bool {
-        !code.trimmingCharacters(in: .whitespaces).isEmpty
-            && (buyPrice ?? 0) > 0
-            && (qtyInt ?? 0) > 0
-    }
-}
-
-/// ⑩-C「用户可选补充」草稿(七枚标签 + 一句可选说明)。
-/// ⚠ **这不是决策日志**:`decision_log` v2.0.0 起停写留档,本表单落 `user_actions`。
-/// **全部可空**(空提交合法),⛔ 不做任何硬阻断。
-struct NoteForm {
-    var code = ""
-    var positionId: Int? = nil
-    var labels: Set<NoteLabel> = []
-    var voiceNote = ""
-
-    var hasContent: Bool {
-        !labels.isEmpty || !voiceNote.trimmingCharacters(in: .whitespaces).isEmpty
-    }
-}
 
 /// NL 提醒录入草稿(⑪-C)。
 struct AlertComposeForm {
@@ -180,16 +137,6 @@ struct ProviderForm {
     }
 }
 
-enum PositionModal: Equatable {
-    case open
-    case close(code: String)
-    /// ⑩-C 用户可选补充(标签 + 语音说明)。
-    case note
-    /// V2.2-④-B 交易时钟的一条主观说明(K8 §十五)。**本版唯一新增写入口。**
-    case tradeNote(positionId: Int)
-    // ⚠ `case circuitReview` **已删**(V2.2-⑤-B 熔断整体退役,用户裁定 #8)——
-    // 「强制复盘解锁」这件机制在产品面消失,⛔ 不许接回来。
-}
 
 /// macOS 选股工作台的唯一目的地。左侧导航和右侧内容必须由同一状态驱动，避免
 /// "右边展示了第一只篮子、左边却没有选中项" 的隐式回退。
@@ -237,20 +184,6 @@ final class AppModel {
     /// macOS 信息卡深链/截图入口指定的成员；普通点击仍由详情页自身状态管理。
     var selectionMemberCode: String? = nil
 
-    // —— 持仓 ——
-    var positions: [Position] = []
-    /// 🔴 **组合环境提醒**(2026-08-12 用户裁定 ②):板块级 / 市场级的环境证据,
-    /// 落在**持仓页顶部**那一段。⚠ 空数组 = 今天没有这两类事件,
-    /// ⛔ **不许据此画一句「环境正常」** —— 那正是 P0 撤销掉的状态机。
-    var portfolioAlerts: [PortfolioAlert] = []
-    var positionsLoading = false
-    /// V2.3 macOS 三区布局:详情栏当前显示的那一笔(`nil` = 还没选)。
-    /// ⚠ 纯导航态,**不参与任何判定**;iOS 上走推入式详情、不读它。
-    var selectedPositionId: Int? = nil
-    var loadError: String? = nil
-    /// 每笔仓的计划版本(⑩-B),按需懒加载。
-    var positionPlans: [Int: [PositionPlan]] = [:]
-    private var plansLoading: Set<Int> = []
 
     // —— 信息卡(篮子成员详情页地基,D1 保留改造)——
     /// ⚠ 不再携带整个 `Candidate`(该类型已退役):只带展示头需要的三样。
@@ -323,6 +256,10 @@ final class AppModel {
     /// 该日查无报告等诚实空态(服务端 `no_report` 等),⛔ 不弹成通用错误。
     var reviewDailyError: String? = nil
 
+    /// 板块级拉取失败的一句话(展示在内容区,不弹层)。
+    /// ⚠ V2.5.0 S1:本位原先与持仓几个状态位挨在一起,那几个位随持仓板块删除,本位留下。
+    var loadError: String? = nil
+
     /// 每日页当前该读哪一份篮子日报:选了日期就读那一份,没选就读今天。
     var reviewDailyBasket: BasketDaily {
         (reviewDailyReport ?? report).basketDaily
@@ -365,10 +302,6 @@ final class AppModel {
     /// ⚠ **必须能翻周**:周度校准产物是**周六离线作业**落的,周一到周五看"本周"永远是
     /// 「尚未生成」—— 没有翻周入口 = 用户永远看不到上周那份已经算好的成绩单。
     var reviewWeekAnchor: String? = nil
-    /// 校准移交件(`GET /review/handoff`)。**按需拉**(用户点导出才拉),
-    /// ⛔ 不进主刷新 —— 它要读产物 + 装配 markdown,不该每次开 App 都跑一次。
-    var reviewHandoff: ReviewHandoff? = nil
-    var reviewHandoffLoading = false
 
     // 🔴 **熔断状态位已删**(V2.2-⑤-B / 〇b-7):`var circuit` 连同它驱动的横幅、
     // 开仓灰化、解锁弹层一起没了。⛔ **不许以任何名字加回一个「今天别开仓」的状态位**
@@ -401,36 +334,8 @@ final class AppModel {
     /// ⚠ **纯导航态**,不参与任何判定 —— 与 `showAuctionSheet` 同一种落法。
     var showFreshnessSheet = false
 
-    // —— V2.2-④ 双时钟 ——
-    //
-    // 选股时钟:**覆盖 D0 全部 T1/T2,与买没买无关**(K8 §十四)——⛔ 文案别写成
-    // 「你关注的篮子」。交易时钟:**只在实际买入后存在**,按仓懒加载。
-    var selectionClocks: [SelectionClock] = []
-    var selectionClocksLoading = false
-    var tradeClocks: [Int: TradeClock] = [:]
-    /// 🔴 **「这笔仓没有时钟」与「还没拉到」是两件事**:服务端 404 `not_found` 落进
-    /// 这个集合(合法空态),⛔ 不弹错误、⛔ 不显示成通用的「未找到该记录」。
-    var tradeClockAbsent: Set<Int> = []
-    private var tradeClockLoading: Set<Int> = []
-
-    // —— 模态 / 录入 / toast ——
-    var modal: PositionModal? = nil
-    var entryForm = PositionEntryForm()
-    /// **本次开仓提交动作**的幂等键(v2.0.0,契约线 🟡 Y7)。
-    /// ⚠ 规则定死:**每笔新提交动作铸一枚新键**(打开录入表单时铸),提交失败重试
-    /// **复用同一枚**;提交成功**不主动作废这枚键**,旧值原样留在内存里,直到**下一次
-    /// `beginPositionEntryFlow()`** 才换新(🔵-5 小审 2026-08-03 措辞订正:原注释写
-    /// "提交成功后作废"与实现不符——成功路径只 `dismissModal()`,没有重置本属性;
-    /// 风险为零,因为下一笔提交必经 `beginPositionEntryFlow()` 铸新键,
-    /// `AppModelTests` 已反向断言同一录入流程内重试不换键)。⛔ 严禁跨提交复用、
-    /// ⛔ 别绑「票 + 日期」之类业务量 —— 服务端是标准幂等语义,同键不同 payload 会
-    /// **静默重放原仓**,把用户改过的价格数量整个吃掉。
-    private(set) var entryIdempotencyKey: String = UUID().uuidString
-    var noteForm = NoteForm()
-    var closeSellPrice = ""
-    var closeReasonDraft: CloseReasonCode? = nil
-    var closeSellFees = ""
-    var entrySuggestionRange: EntrySuggestionRange? = nil
+    /// 一次性提示条(操作反馈)。⚠ V2.5.0 S1:它原先与开仓 / 清仓草稿几个位挨在一起,
+    /// 那几个位随持仓板块删除,本位**留下** —— 设置屏与提醒创建等仍在用它。
     var toast: Toast? = nil
 
     // —— 依赖(运行期注入)——
@@ -458,59 +363,13 @@ final class AppModel {
     // 退潮判级退役后服务端**永不再产生 active 状态**,留一个恒 nil 的派生位就是
     // 「前端隐藏、后台仍在判」的错觉来源。
 
-    /// **跨板块的「打开持仓板块的哪一屏」请求**(V2.3.1 批 6)。
-    ///
-    /// 取值 = `PositionsPane` 的 `case` 名(`"alerts"` / `"position"`;
-    /// ⛔ **V2.4.0 P0 起没有 `"board"` 了** —— 那一屏整个删掉了)——
-    /// ⚠ 用字符串而不是那个枚举:`PositionsPane` 住在 `PositionsView.swift`(视图层),
-    /// `AppModel` 反向 import 视图类型会把依赖方向倒过来。
-    /// 消费方 `PositionsView` 收到后**立刻置回 `nil`**(它是一次性请求,不是状态)。
-    /// ⛔ 别拿它当"当前选中的是哪一屏"用 —— 那个仍然住在 `PositionsView` 自己的 `@State` 里。
-    var positionsPaneRequest: String? = nil
-
+    /// 报告快照是否装着可用数据(⛔ 降级态与空交易日都不算)。
+    /// ⚠ V2.5.0 S1:本位原先与持仓额度派生位挨在一起,那位随持仓板块删除,本位留下。
     var hasReportData: Bool { !report.degraded && !report.tradeDate.isEmpty }
-    var quota: PositionQuota? { report.sentiment.map { PositionQuota($0.positionQuota) } }
-
-    func position(byID id: Int) -> Position? { positions.first(where: { $0.id == id }) }
 
     /// 篮子日报(报告快照里的三段)。
     var basketDaily: BasketDaily { report.basketDaily }
 
-    /// **同题材合并敞口**(蓝图 6.2:同一来源篮子的多笔仓**不得视为完全分散的两笔仓位**)。
-    /// 归并键 = 来源篮子(取自各仓 `version=1` 计划的 `sourceBasketId`);拿不到计划的仓
-    /// **不参与归并**(⛔ 不拿"同行业"之类近似量顶替 —— 那会把两笔无关的仓说成一笔)。
-    /// 只在**同一篮 ≥2 个不同标的**时才成立(单票加仓不算"看起来分散实则集中")。
-    var mergedExposures: [MergedExposure] {
-        var byBasket: [Int: (name: String, positions: [Position])] = [:]
-        for p in positions {
-            guard let plans = positionPlans[p.id], let base = plans.first(where: { $0.version == 1 }),
-                  let bid = base.sourceBasketId else { continue }
-            let name = base.sourceBasketName ?? base.sourceBasketKey ?? "篮子 #\(bid)"
-            byBasket[bid, default: (name, [])].positions.append(p)
-        }
-        return byBasket.compactMap { bid, v -> MergedExposure? in
-            let codes = Set(v.positions.map(\.code))
-            guard codes.count >= 2 else { return nil }
-            let cost = v.positions.reduce(0.0) { $0 + $1.buyPrice * Double($1.qty) }
-            let market = v.positions.reduce(0.0) {
-                $0 + ($1.hasLivePrice ? $1.price : $1.buyPrice) * Double($1.qty)
-            }
-            return MergedExposure(basketId: bid, basketName: v.name,
-                                  codes: v.positions.map(\.code).sorted(),
-                                  costAmount: cost, marketAmount: market)
-        }
-        .sorted { $0.basketId < $1.basketId }
-    }
-
-    /// 同题材合并敞口一条。
-    struct MergedExposure: Identifiable, Equatable {
-        let basketId: Int
-        let basketName: String
-        let codes: [String]
-        let costAmount: Double
-        let marketAmount: Double
-        var id: Int { basketId }
-    }
 
     // MARK: - 刷新(V2.4.0 P3.6:板块级刷新)
     //
@@ -547,7 +406,6 @@ final class AppModel {
     func refresh(for tab: AppTab) async {
         switch tab {
         case .baskets: await refreshSelection()
-        case .positions: await refreshPositions()
         case .review: await refreshReview()
         case .settings: await refreshSettings()
         }
@@ -558,8 +416,7 @@ final class AppModel {
     var isLoadingCurrentTab: Bool {
         switch view {
         case .baskets: return reportLoading
-        case .positions: return positionsLoading
-        case .review: return reviewOverviewLoading || selectionClocksLoading
+        case .review: return reviewOverviewLoading
         case .settings: return settingsLoading
         }
     }
@@ -608,36 +465,6 @@ final class AppModel {
         applyQAHooksAfterRefresh()
     }
 
-    /// 持仓板块:positions(**含 P0.5+ 随行下发的持仓事件**)+ 临时提醒 + 持仓计划。
-    /// ⛔ **不拉 `/board`**(P0 之后客户端零调用;施工图 P3.6 原文把 `board` 列在这里是
-    /// 与 P0 冲突的一处笔误,以 P0 为准,见施工图 P3.6 段落注)。
-    func refreshPositions() async {
-        guard let client = clientProvider() else {
-            loadError = "未配置后端连接"
-            return
-        }
-        positionsLoading = true
-        loadError = nil
-        async let positionsTask: Result<PositionsSnapshot, Error> = fetchResult { try await client.fetchPositions() }
-        async let alertsTask: Result<[CustomAlert], Error> = fetchResult { try await client.fetchAlerts() }
-        let (positionsResult, alertsResult) = await (positionsTask, alertsTask)
-
-        switch positionsResult {
-        case .success(let p):
-            self.positions = p.holdings
-            self.portfolioAlerts = p.portfolioAlerts
-        case .failure(let e): handleLoadFailure(e, context: "持仓")
-        }
-        switch alertsResult {
-        case .success(let a): self.alerts = a
-        case .failure: break   // 静默降级:提醒列表不是持仓页的主角
-        }
-        positionsLoading = false
-        if loadError == nil { lastRefreshedAt = Date() }
-        // 持仓计划要靠它才能算合并敞口 + 展示计划继承卡,随持仓一起拉(每仓一次)。
-        await loadAllPositionPlans()
-        applyQAHooksAfterRefresh()
-    }
 
     /// 复盘板块:五段汇总 + 选股时钟结案表(与 `ReviewView` 此前的 `loadIfNeeded()`/
     /// `reloadBoard()` 是同一份逻辑,收口到这里、避免两处各写一份)。
@@ -649,9 +476,6 @@ final class AppModel {
             await refreshSelection()
         }
         await loadReviewOverview()
-        if selectionClocks.isEmpty && !selectionClocksLoading {
-            await loadSelectionClocks()
-        }
     }
 
     /// 设置板块:薄壳,复用既有 `loadSettings()`(该函数已经是「进设置页才拉」的
@@ -660,13 +484,11 @@ final class AppModel {
         await loadSettings()
     }
 
-    /// ⚠ **仅供旧调用点过渡 / 单测复用**:等价于依次刷新选股 + 持仓两板块
-    /// (逐位对应 P3.6 之前 `refresh()` 的报告 + 持仓两路)。新代码一律用
-    /// `ensureLoaded(_:)` / `refresh(for:)` 按 Tab 精确刷新,⛔ 不要在新代码里
-    /// 加这个函数的新调用点。
+    /// ⚠ **仅供旧调用点过渡 / 单测复用**。新代码一律用 `ensureLoaded(_:)` /
+    /// `refresh(for:)` 按 Tab 精确刷新,⛔ 不要在新代码里加这个函数的新调用点。
+    /// ⚠ V2.5.0 S1:原先它是「选股 + 持仓」两路;持仓板块下线后只剩选股一路。
     func refresh() async {
         await refreshSelection()
-        await refreshPositions()
     }
 
     /// 纯 QA/截图辅助(同 `NecklineApp` 的 `NECKLINE_INITIAL_TAB`/`NECKLINE_INITIAL_MODAL`
@@ -698,12 +520,7 @@ final class AppModel {
             selectionDestination = .basket(basket.basketId)
         }
         #endif
-        // 持仓板块选仓钩子(V2.3.1 批 3):`NECKLINE_INITIAL_POSITION_ID=<id>`。
-        // ⚠ 同上,**必须在数据到位之后** —— `positions` 是 `refresh()` 拉回来的。
-        if let raw = env["NECKLINE_INITIAL_POSITION_ID"], let pid = Int(raw),
-           positions.contains(where: { $0.id == pid }) {
-            selectedPositionId = pid
-        }
+        // 🔴 V2.5.0 S1:`NECKLINE_INITIAL_POSITION_ID` 钩子已删(持仓板块整块下线)。
         // 竞价小报告弹层钩子(V2.3.3-⑤):`NECKLINE_INITIAL_AUCTION_SHEET=1`。
         // ⚠ **必须在数据到位之后** —— 报告是 `refresh()` 拉回来的,`NecklineApp.init()`
         // 里的同步钩子够不着(v1.4-⑧ `NECKLINE_INITIAL_INFOCARD_CODE` 立的先例)。
@@ -730,9 +547,8 @@ final class AppModel {
         // 先例)。⛔ 只影响截图路径:缺此环境变量时行为与之前逐字节相同。
         if let raw = env["NECKLINE_INITIAL_REVIEW_PAGE"], let page = ReviewPage(rawValue: raw) {
             reviewPage = page
-            // 五段由 `ReviewView.task` 拉;**移交件是按需拉的**(见 `loadReviewHandoff`
-            // docstring),截图钩子得替用户点那一下,否则那一段永远是"点按钮才有"。
-            if page == .cumulative { Task { await loadReviewHandoff() } }
+            // ⚠ V2.5.0 S1:原先这里替用户点一下「移交件」按需拉取;
+            // `/review/handoff` 端点已随 K8 退役删除,该钩子一并去掉。
         }
         // 同族钩子:`NECKLINE_INITIAL_REVIEW_WEEK=YYYYMMDD` 直接把累计页翻到某一周。
         // ⚠ 本环境 computer-use 点不动模拟器(CLAUDE.md 坑条),翻周箭头点不了 ——
@@ -851,30 +667,6 @@ final class AppModel {
 
     // MARK: - 开仓 / 清仓(审计台账,永不代下单)
 
-    /// 手动补录(持仓区「补录开仓」按钮)。
-    /// ⚠ **每次进入录入流程铸一枚新幂等键** —— 这就是「绑在这一次提交动作上」的落点。
-    func beginPositionEntryFlow() {
-        entryForm = PositionEntryForm()
-        entrySuggestionRange = nil
-        entryIdempotencyKey = UUID().uuidString
-        modal = .open
-    }
-
-    /// 从篮子成员进入补录:预填 code/name + 参考价(取成员的建仓观察区间下沿,
-    /// **夹逼拒收时留空手填**,⛔ 不虚构数字)+ 区间双档推荐(只读展示,不预填数量)。
-    func beginPositionEntryFlow(fromMember member: BasketMember, basketName: String) async {
-        beginPositionEntryFlow()
-        entryForm.code = member.tsCode
-        entryForm.name = member.name
-        entryForm.reason = Self.entryReasonText(basketName: basketName, member: member)
-        if let low = member.entryZone?.low, low > 0 {
-            entryForm.price = String(format: "%.2f", low)
-            if let client = clientProvider() {
-                do { entrySuggestionRange = try await client.entrySuggestion(code: member.tsCode, price: low) }
-                catch { /* 拉不到区间推荐 → 留给用户手填,不崩、不显示编造的数字 */ }
-            }
-        }
-    }
 
     /// 「买入补录」入口的进场理由预填(纯函数,单测覆盖)。
     /// ⚠ 文案只陈述**来源事实**,⛔ 不得出现「推荐 / 建议买入 / 看好」类表述(§2.8 红线)。
@@ -889,213 +681,18 @@ final class AppModel {
         return "来自篮子「\(name)」· \(role)"
     }
 
-    func openCloseSheet(code: String) {
-        guard let pos = positions.first(where: { $0.code == code }) else { return }
-        closeSellPrice = pos.hasLivePrice ? String(format: "%.2f", pos.price) : ""
-        closeReasonDraft = nil
-        closeSellFees = ""
-        modal = .close(code: code)
-    }
-
-    func dismissModal() { modal = nil }
-
-    func submitOpenPosition() async {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        guard entryForm.isValid, let price = entryForm.buyPrice, let qty = entryForm.qtyInt else {
-            showToast("请填写代码 / 买入价 / 数量", isError: true); return
-        }
-        let code = entryForm.code.trimmingCharacters(in: .whitespaces)
-        let name = entryForm.name.trimmingCharacters(in: .whitespaces)
-        let reason = entryForm.reason.trimmingCharacters(in: .whitespaces)
-        let buyDateStr = calendar.compactString(entryForm.buyDate)
-        do {
-            let r = try await client.openPosition(code: code, name: name.isEmpty ? nil : name,
-                                                  buyPrice: price, qty: qty, entryReason: reason,
-                                                  buyFees: entryForm.buyFeesValue, buyDate: buyDateStr,
-                                                  // ⚠ 同一次录入流程内重试**复用同一枚键**;
-                                                  // 下次 `beginPositionEntryFlow()` 才换新的。
-                                                  idempotencyKey: entryIdempotencyKey)
-            dismissModal()
-            await refresh()
-            if r.replayed {
-                // ⚠ 如实说「什么都没发生」,⛔ 别让"看起来成功了"掩盖它。
-                showToast("这笔提交与之前那次是同一笔(未重复开仓)")
-            } else {
-                var msg = "已录入开仓 · 止损线 \(String(format: "%.2f", r.stopLine))"
-                if let src = r.sourceBasketName { msg += " · 来源篮子「\(src)」" }
-                showToast(msg)
-            }
-            if let notice = r.planDeviationNotice, !notice.isEmpty {
-                showToast(notice)   // 「原盈亏结构已变」:纯提示,不质问、不阻断
-            }
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "录入失败", isError: true)
-        } catch {
-            showToast("录入失败:\(error.localizedDescription)", isError: true)
-        }
-    }
-
-    func submitClosePosition() async {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        guard case .close(let code) = modal, let pos = position(byCode: code) else {
-            showToast("找不到该持仓", isError: true); return
-        }
-        guard let sell = Double(closeSellPrice.trimmingCharacters(in: .whitespaces)), sell > 0 else {
-            showToast("请填写有效卖出价", isError: true); return
-        }
-        let sellFees = Double(closeSellFees.trimmingCharacters(in: .whitespaces))
-        do {
-            _ = try await client.closePosition(id: pos.id, sellPrice: sell,
-                                               closeReason: closeReasonDraft?.rawValue, sellFees: sellFees)
-            dismissModal()
-            await refresh()
-            showToast("已录入清仓")
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "清仓失败", isError: true)
-        } catch {
-            showToast("清仓失败:\(error.localizedDescription)", isError: true)
-        }
-    }
-
-    private func position(byCode code: String) -> Position? {
-        positions.first(where: { $0.code == code })
-    }
 
     // MARK: - ⑩-B 计划继承 + ⑪-D-D per-position 触达提醒开关
 
-    func loadAllPositionPlans() async {
-        for p in positions { await loadPositionPlans(positionId: p.id) }
-    }
-
-    func loadPositionPlans(positionId: Int) async {
-        guard let client = clientProvider(), !plansLoading.contains(positionId) else { return }
-        plansLoading.insert(positionId)
-        do { positionPlans[positionId] = try await client.fetchPositionPlans(positionId: positionId) }
-        catch { /* 静默降级:计划卡显示"暂不可用",不弹错打断主流程 */ }
-        plansLoading.remove(positionId)
-    }
-
-    /// 该仓的**现役计划**(版本号最大的一版)。
-    func latestPlan(positionId: Int) -> PositionPlan? {
-        positionPlans[positionId]?.max(by: { $0.version < $1.version })
-    }
-
-    /// ⑪-D-D:per-position「不提醒」开关。
-    ///
-    /// **为什么是 per-position 而不是全局关**:全局关 `take_profit` 会连坐所有持仓,
-    /// 用户真正想要的是「这只票的这个数不靠谱,别烦我」。
-    /// 落法 = 在最新计划之上**追加一个新版本**(`position_plans` 是版本化只增表,
-    /// ⛔ 不就地改历史行),⚠ **只翻静音位、计划正文一项不动**;武装态由服务端重算
-    /// (⑪-D-B 闸②:请求体说了不算,否则"写个新版本"就成了绕开红线闸的后门)。
-    func setExitReferenceMuted(positionId: Int, muted: Bool) async {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        guard let latest = latestPlan(positionId: positionId) else {
-            showToast("这笔仓没有可继承的计划基线", isError: true); return
-        }
-        do {
-            let note = muted ? "用户关闭本票触达提醒" : "用户恢复本票触达提醒"
-            _ = try await client.createPositionPlanVersion(
-                positionId: positionId, plan: latest.planBodyTogglingMute(muted), note: note)
-            await loadPositionPlansForcing(positionId: positionId)
-            showToast(muted ? "已关闭本票的触达提醒" : "已恢复本票的触达提醒")
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "设置失败", isError: true)
-        } catch {
-            showToast("设置失败:\(error.localizedDescription)", isError: true)
-        }
-    }
-
-    private func loadPositionPlansForcing(positionId: Int) async {
-        plansLoading.remove(positionId)
-        await loadPositionPlans(positionId: positionId)
-    }
 
     // MARK: - ⑩-C 用户可选补充(七枚标签 + 一句可选说明)
 
-    func beginNote(code: String, positionId: Int? = nil) {
-        noteForm = NoteForm(code: code, positionId: positionId)
-        modal = .note
-    }
-
-    /// **空提交合法**(服务端 200,不是 400)—— ⛔ 不做任何硬阻断。
-    func submitNote() async {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        let code = noteForm.code.trimmingCharacters(in: .whitespaces)
-        let voice = noteForm.voiceNote.trimmingCharacters(in: .whitespaces)
-        do {
-            let r = try await client.postDecisionNote(
-                code: code.isEmpty ? nil : code, positionId: noteForm.positionId,
-                labels: noteForm.labels.map(\.rawValue).sorted(),
-                voiceNote: voice.isEmpty ? nil : voice)
-            dismissModal()
-            showToast(r.recorded.isEmpty ? "没有可记录的补充内容(未记账)" : "已记录补充")
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "提交失败", isError: true)
-        } catch {
-            showToast("提交失败:\(error.localizedDescription)", isError: true)
-        }
-    }
 
     // MARK: - V2.2-④ 双时钟(选股时钟只读 / 交易时钟只读 + 一条主观说明)
     //
     // ⚠ **`confirmCircuitReview()` 已删**(V2.2-⑤-B):它是「强制复盘解锁」的客户端
     // 半边,机制整体退役后没有任何写入通道 —— 留着就是假成功面。⛔ 不许接回来。
 
-    /// 已结案的选股时钟。🔴 **样本 = D0 全部 T1/T2,与买没买无关**(K8 §十四)。
-    /// 端点恒 200,空列表 = 这段时间没有结案样本(合法),⛔ 不是"系统没跑"。
-    func loadSelectionClocks(from: String? = nil, to: String? = nil) async {
-        guard let client = clientProvider() else { return }
-        selectionClocksLoading = true
-        defer { selectionClocksLoading = false }
-        do { selectionClocks = try await client.fetchSelectionClocks(from: from, to: to) }
-        catch let e as APIError {
-            if case .noToken = e {} else { showToast(e.errorDescription ?? "选股时钟读取失败", isError: true) }
-        } catch { showToast("选股时钟读取失败:\(error.localizedDescription)", isError: true) }
-    }
-
-    /// 某笔仓的交易时钟(按仓懒加载,一仓一次)。
-    /// 🔴 **404 `not_found` = 这笔仓没有交易时钟,是合法空态** —— 落进
-    /// `tradeClockAbsent`、**不弹错误**。⛔ 别让通用文案「未找到该记录(可能已被删除)」
-    /// 出现在这里:那会让用户以为自己的持仓丢了(v1.4 `watchlist` 有案底)。
-    func loadTradeClock(positionId: Int) async {
-        guard tradeClocks[positionId] == nil, !tradeClockAbsent.contains(positionId),
-              !tradeClockLoading.contains(positionId), let client = clientProvider() else { return }
-        tradeClockLoading.insert(positionId)
-        defer { tradeClockLoading.remove(positionId) }
-        do { tradeClocks[positionId] = try await client.fetchTradeClock(positionId: positionId) }
-        catch APIError.notFound { tradeClockAbsent.insert(positionId) }
-        catch { /* 网络抖动:保持"读取中",下次进页面再试,⛔ 不冒充"没有时钟" */ }
-    }
-
-    func beginTradeClockNote(positionId: Int) { modal = .tradeNote(positionId: positionId) }
-
-    /// 追加一条用户主观说明(K8 §十五)。**纯追加**;成功后重拉该仓时钟以带出新事件。
-    /// ⚠ 超长 → 服务端 422(`.validation`),⛔ 客户端不静默截断。
-    func submitTradeClockNote(positionId: Int, note: String) async {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        do {
-            let r = try await client.postTradeClockNote(positionId: positionId, note: note)
-            tradeClocks[positionId] = nil
-            tradeClockAbsent.remove(positionId)
-            await loadTradeClock(positionId: positionId)
-            dismissModal()
-            showToast(r.coverageText.map { "已记下 · \($0)" } ?? "已记下")
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "记录失败", isError: true)
-        } catch {
-            showToast("记录失败:\(error.localizedDescription)", isError: true)
-        }
-    }
 
     // MARK: - ⑪-C 自然语言临时提醒(**只通知,永不交易**)
 
@@ -1452,19 +1049,6 @@ final class AppModel {
         await loadReviewOverview()
     }
 
-    /// 校准移交件(`GET /review/handoff`)。**同样恒 200**:产物没生成 / 读不出都由
-    /// `available=false` + `unavailableReason` 如实说,⛔ 客户端不把两者合成一句。
-    func loadReviewHandoff(from: String? = nil, to: String? = nil) async {
-        guard let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        reviewHandoffLoading = true
-        do { reviewHandoff = try await client.fetchReviewHandoff(from: from, to: to) }
-        catch let e as APIError {
-            showToast(e.errorDescription ?? "移交件拉取失败", isError: true)
-        } catch { showToast("移交件拉取失败:\(error.localizedDescription)", isError: true) }
-        reviewHandoffLoading = false
-    }
 
     // MARK: - Toast
 

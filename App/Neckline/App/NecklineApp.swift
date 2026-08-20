@@ -32,47 +32,11 @@ struct NecklineApp: App {
            let tab = AppTab(rawValue: raw) {
             m.view = tab
         }
-        // 同款 QA 钩子扩到弹层——`NECKLINE_INITIAL_MODAL=open|note|tradeNote:<positionId>`
-        // (用于本环境 computer-use 点击权限受限时的视觉核对,见 CLAUDE.md
-        // 「模拟器截图走 xcrun simctl io screenshot」坑吸收)。不影响正常用户路径。
-        // ⚠ `circuitReview` 已随熔断整体退役删除(V2.2-⑤-B):传它 → 落 default、
-        // 不弹任何层(⛔ 不要为了"兼容老脚本"把那个弹层留着)。
-        if let modalRaw = ProcessInfo.processInfo.environment["NECKLINE_INITIAL_MODAL"] {
-            switch modalRaw {
-            case "open": m.modal = .open
-            case "note": m.modal = .note
-            // V2.3.1 批 5:补录清仓弹层(`close:<代码>`)。
-            case let s where s.hasPrefix("close:"):
-                let code = String(s.dropFirst("close:".count))
-                if !code.isEmpty { m.modal = .close(code: code) }
-                // 同族预填:`NECKLINE_INITIAL_CLOSE_PRICE` / `NECKLINE_INITIAL_CLOSE_REASON`
-                // (后者取**服务端英文码**,如 `STOP_LOSS`;不认识的码静默跳过)。
-                let e = ProcessInfo.processInfo.environment
-                if let p = e["NECKLINE_INITIAL_CLOSE_PRICE"], !p.isEmpty { m.closeSellPrice = p }
-                if let r = e["NECKLINE_INITIAL_CLOSE_REASON"], !r.isEmpty {
-                    m.closeReasonDraft = CloseReasonCode(rawValue: r)
-                }
-            case let s where s.hasPrefix("tradeNote:"):
-                if let pid = Int(s.dropFirst("tradeNote:".count)) {
-                    m.modal = .tradeNote(positionId: pid)
-                }
-            default: break
-            }
-        }
-        // V2.3.1 批 5:补充说明弹层的**预填**(同 `NECKLINE_INITIAL_ALERT_TEXT` 体例:
-        // 只把用户本来要敲的东西先敲上,⛔ 不改任何提交逻辑)。三个都是**通用透传**,
-        // ⛔ 不在客户端硬编任何演示内容。
-        let env = ProcessInfo.processInfo.environment
-        if let c = env["NECKLINE_INITIAL_NOTE_CODE"], !c.isEmpty { m.noteForm.code = c }
-        if let t = env["NECKLINE_INITIAL_NOTE_TEXT"], !t.isEmpty { m.noteForm.voiceNote = t }
-        if let raw = env["NECKLINE_INITIAL_NOTE_LABELS"], !raw.isEmpty {
-            // 逗号分隔的**服务端英文码**(`THEME_SHIFT` 这套);不认识的码静默跳过。
-            for code in raw.split(separator: ",") {
-                if let l = NoteLabel(rawValue: String(code).trimmingCharacters(in: .whitespaces)) {
-                    m.noteForm.labels.insert(l)
-                }
-            }
-        }
+        // 🔴 V2.5.0 S1:`NECKLINE_INITIAL_MODAL`(open / note / close: / tradeNote:)与
+        // `NECKLINE_INITIAL_NOTE_*` 三个预填钩子**整段删除** —— 它们驱动的开仓 / 清仓 /
+        // 补充说明 / 交易时钟四个弹层随持仓板块整块下线(裁定 11)。
+        // ⛔ 不留一个"传了但什么都不弹"的空壳:那会让截图脚本静默拍到默认屏还以为拍对了。
+        // S12 落新弹层(预案修改入口)时按同一体例重新加钩子。
         // ⚠ **数据到位之后才能触发的钩子**(`NECKLINE_INITIAL_BASKET_ID` /
         // `NECKLINE_INITIAL_INFOCARD_CODE` / V2.1-⑦ 新增的
         // `NECKLINE_INITIAL_REVIEW_PAGE=daily|selectionClock|tradeClock|cumulative|reconcile` 与

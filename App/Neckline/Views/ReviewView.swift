@@ -146,21 +146,10 @@ struct ReviewView: View {
                     if c.falsified > 0 { NKChip(text: "\(c.falsified)", tone: .bad) }
                 }
             }
-        case .selectionClock:
-            if !model.selectionClocks.isEmpty {
-                Text("\(model.selectionClocks.count) 结案")
-                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
-            }
-        case .tradeClock:
-            if let n = model.reviewOverview?.tradeClock.detail["running"]?.intValue, n > 0 {
-                Text("\(n) 在跑").font(NKFont.caption.monospacedDigit())
-                    .foregroundStyle(NK.textTertiary)
-            }
         case .cumulative:
-            // 原型 1315 那颗 6px 琥珀点 = 「这一页有等你拍板的东西」。
-            if hasUndecidedThresholds {
-                Circle().fill(NK.amber).frame(width: 6, height: 6)
-            }
+            // 🔴 V2.5.0 S1:原型 1315 那颗琥珀点读的是双时钟迭代建议里的「待拍板阈值」,
+            // 该段随双时钟复盘退役删除,徽标一并去掉(⛔ 不留一颗永远不亮的点)。
+            EmptyView()
         case .reconcile:
             if let n = reconcileViolationCount {
                 NKChip(text: "\(n) 条违纪", tone: .bad)
@@ -185,10 +174,6 @@ struct ReviewView: View {
         return n > 0 ? n : nil
     }
 
-    private var hasUndecidedThresholds: Bool {
-        (model.reviewOverview?.iterationSuggestions.items ?? [])
-            .contains { $0["klassStatus"]?.stringValue == "thresholds_undecided" }
-    }
 
     /// 「已上传的周」+「再拖入交割单」(原型 `信息卡与对账` 321–336)。
     /// ⚠ 只列**已经知道的那些周** —— 契约没有「列出全部已上传周」的端点,
@@ -280,8 +265,6 @@ struct ReviewView: View {
     private var currentPage: some View {
         switch model.reviewPage {
         case .daily: dailyPage
-        case .selectionClock: selectionClockPage
-        case .tradeClock: tradeClockPage
         case .cumulative: cumulativePage
         case .reconcile: reconcilePage
         }
@@ -445,287 +428,16 @@ struct ReviewView: View {
     // (K8 §十四 第 3 条)。⛔ 文案不许写成「你关注的篮子」之类 —— 那会把覆盖域讲小,
     // 而这条覆盖域正是它能当选股正确率样本的前提。
 
-    @ViewBuilder
-    private var selectionClockPage: some View {
-        VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-            // 原型 1387–1389。⚠ 副标题带 `**加粗**` → **必须是字面量**(§五 〇d 第 7 条)。
-            VStack(alignment: .leading, spacing: 3) {
-                Text("选股时钟").font(NKFont.title1).tracking(-0.4)
-                    .foregroundStyle(NK.textPrimary)
-                Text("样本 = D0 当天全部 T1/T2 篮子,**与你买没买无关** · D1 收盘验证一次即结案,之后不再改")
-                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-                    .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
-            }
-            if model.selectionClocksLoading && model.selectionClocks.isEmpty {
-                NKCard { NKEmptyState(title: "正在取选股时钟…", systemImage: "hourglass") }
-            } else if model.selectionClocks.isEmpty {
-                NKCard {
-                    // ⚠ 端点恒 200 → 空列表是**合法态**。⛔ 别写成「读取失败」,
-                    // 也 ⛔ 别写成「系统没跑」(那要看每日复盘与段状态,是另一件事)。
-                    NKEmptyState(title: "这段时间还没有结案样本",
-                                 subtitle: "选股时钟在 D1 收盘验证后才结案;⛔ 这不等于「系统没跑」——那要看「每日」页的复盘段。",
-                                 systemImage: "stopwatch")
-                }
-            } else {
-                stateDistributionCard
-                clockTableCard
-                NKNoteBlock(text: "「D0 无判定行」= 那天没有行情状态记录,缺行 = 不知道,不猜。四态原样保留,折成正确率是周度侧的事,这一页一个数都不折。")
-                NKAuditSection(contains: "逐篮 D1 九项验证、结案时刻、骨架 / 条件集版本(只读冻结件)") {
-                    ForEach(model.selectionClocks) { c in
-                        NKAuditGroup(title: "篮子 #\(c.basketId) · D0 \(c.d0Date) → D1 \(c.d1Date)") {
-                            Text("结案于 \(c.closedAt) · 骨架 \(c.skeletonVersion) · 验证条件集 \(c.verificationRulesetVersion)")
-                                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            NKJSONTable(value: c.mech)
-                        }
-                    }
-                }
-            }
-            // 周度侧的正确率归因(读周度落盘产物,与上面的逐篮结案件是两条数据源)。
-            if let ov = model.reviewOverview {
-                ClockScoreboardCard(segment: ov.selectionClock)
-            }
-        }
-    }
-
-    /// 四态分布条(原型 1393–1405)。**四态原样,⛔ 不折成对错**。
-    private var stateDistributionCard: some View {
-        let clocks = model.selectionClocks
-        let segs: [(String, Int, Color)] = [
-            ("verified", clocks.filter { $0.tierAccuracy == "verified" }.count, NK.up),
-            ("partial", clocks.filter { $0.tierAccuracy == "partial" }.count, NK.up.opacity(0.45)),
-            ("unclear", clocks.filter { $0.tierAccuracy == "unclear" }.count,
-             NK.textTertiary.opacity(0.7)),
-            ("falsified", clocks.filter { $0.tierAccuracy == "falsified" }.count, NK.down),
-        ]
-        // 「没给分层准确性判定」是**第五种**,⛔ 不并进 unclear —— 一个是判过了说不清、
-        // 一个是压根没判。
-        let unjudged = clocks.count - segs.reduce(0) { $0 + $1.1 }
-        let total = max(segs.reduce(0) { $0 + $1.1 }, 1)
-        return NKCard {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("本期 \(clocks.count) 例结案 · 四态原样,不折成对错")
-                    .nkLabel().foregroundStyle(NK.textTertiary)
-                GeometryReader { geo in
-                    HStack(spacing: 0) {
-                        ForEach(segs, id: \.0) { s in
-                            if s.1 > 0 {
-                                ZStack {
-                                    s.2
-                                    Text("\(s.1)").font(.system(size: 11, weight: .bold))
-                                        .foregroundStyle(.white)
-                                }
-                                .frame(width: geo.size.width * CGFloat(s.1) / CGFloat(total))
-                            }
-                        }
-                    }
-                }
-                .frame(height: 26)                              // 原型 1394 height:26
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                NKWrapRow(spacing: 16, lineSpacing: 6) {        // 原型 1400 gap:16
-                    ForEach(segs, id: \.0) { s in
-                        HStack(spacing: 5) {
-                            RoundedRectangle(cornerRadius: 2).fill(s.2)
-                                .frame(width: 8, height: 8)
-                            // 🔴 图例走**中文**:原型印的是 `verified` / `falsified` 这类
-                            // 服务端枚举码(mock 如此),而本项目一贯不把机器码上屏
-                            // (`nkBoardLabel` 先例 / §〇c 硬伤 2)。
-                            Text("\(nkVerificationStateLabel(s.0)) \(s.1)")
-                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                        }
-                    }
-                }
-                if unjudged > 0 {
-                    Text("另有 \(unjudged) 篮未给分层准确性判定 —— 「没判」不进上面四态的任何一档")
-                        .font(NKFont.caption).foregroundStyle(NK.amber)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-
-    /// 结案表(原型 1407–1435:`60px 1fr 130px 100px 90px` 五列)。
-    private var clockTableCard: some View {
-        NKRowsCard {
-            NKRowsHeader {
-                Text("档位").frame(width: 60, alignment: .leading)
-                Text("篮子").frame(maxWidth: .infinity, alignment: .leading)
-                Text("D0 行情状态").frame(width: 130, alignment: .leading)
-                Text("引擎").frame(width: 100, alignment: .leading)
-                Text("D1 判定").frame(width: 90, alignment: .leading)
-            }
-            ForEach(Array(model.selectionClocks.enumerated()), id: \.element.id) { idx, c in
-                if idx > 0 { Divider().overlay(NK.hairline) }
-                HStack(spacing: 0) {
-                    NKChip(text: "T\(c.coveredTier)",
-                           tone: c.coveredTier == 1 ? .good : .warn, filled: true)
-                        .frame(width: 60, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("篮子 #\(c.basketId)").font(NKFont.callout)
-                            .foregroundStyle(NK.textPrimary)
-                        // K8 验证内容⑧:未触发原因。⛔ 别省 —— 「没触发」与「触发了但判错」
-                        // 是两件事,表里只剩一个判定列的话就分不出来了。
-                        if let why = c.untriggeredReason, !why.isEmpty {
-                            Text("未触发:\(why)").font(NKFont.caption)
-                                .foregroundStyle(NK.amber)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    // 🔴 `regimeAtD0` 是**裸英文码**(服务端这条不发 label)→ 展示层换算;
-                    // `nil` = D0 当天没有行情状态判定行(缺行 = 不知道,不猜)。
-                    Group {
-                        if let r = c.regimeAtD0, !r.isEmpty {
-                            Text(nkRegimeLabel(r)).foregroundStyle(NK.textSecondary)
-                        } else {
-                            Text("D0 无判定行").foregroundStyle(NK.textTertiary)
-                        }
-                    }
-                    .font(NKFont.caption).frame(width: 130, alignment: .leading)
-                    Text(engineText(c)).font(NKFont.caption)
-                        .foregroundStyle(NK.textSecondary)
-                        .frame(width: 100, alignment: .leading)
-                    Text(c.tierAccuracyLabel).font(NKFont.caption).fontWeight(.semibold)
-                        .foregroundStyle(c.tierAccuracyTone.color)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(width: 90, alignment: .leading)
-                }
-                .padding(.horizontal, 18).padding(.vertical, 11)  // 原型 1414
-            }
-        }
-    }
-
-    /// 「C1 v1.0」。⚠ `engineVersion` 服务端发的就是 `"C1 v1.0"`(**已含引擎码**)——
-    /// V2.3.0 写成 `引擎 \(code) \(version)` 打出了「引擎 C1 C1 v1.0」。
-    private func engineText(_ c: SelectionClock) -> String {
-        if let v = c.engineVersion, !v.isEmpty { return v }
-        return c.engineCode ?? "—"
-    }
 
     // MARK: - 交易时钟(V2.2-④-B):**只在实际买入后存在**
     //
     // ⚠ 逐仓明细在「持仓」板块每张持仓卡里(`TradeClockSection`,带写入口);
     // 本页给的是**周度侧的六项归因** + 一行指路。⛔ 不在两处各画一遍逐仓流水。
 
-    @ViewBuilder
-    private var tradeClockPage: some View {
-        VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-            // 原型 1440–1442。⚠ 副标题带 `**加粗**` → 必须是字面量(§五 〇d 第 7 条)。
-            VStack(alignment: .leading, spacing: 3) {
-                Text("交易时钟").font(NKFont.title1).tracking(-0.4)
-                    .foregroundStyle(NK.textPrimary)
-                Text("启动的唯一条件是**你真的买了** · 与选股时钟的样本域不同:那边看「选得对不对」,这边看「做得怎么样」")
-                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-                    .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
-            }
-            // 原型 1443–1450:指路卡 `padding:14px 18px; gap:11`。
-            NKCard(padding: nil) {
-                Button { model.view = .positions } label: {
-                    HStack(spacing: 11) {
-                        Image(systemName: "stopwatch").font(.system(size: 16))
-                            .foregroundStyle(NK.accent)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("逐笔时钟与「补一条主观说明」在持仓卡里")
-                                .font(NKFont.body).fontWeight(.semibold)
-                                .foregroundStyle(NK.textPrimary)
-                            Text("每张持仓卡底部即可 · 系统不会替你写那句话")
-                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                        }
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(NK.textTertiary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            if let ov = model.reviewOverview {
-                tradeAttributionCard(ov.tradeClock)
-                ClockScoreboardCard(segment: ov.tradeClock)
-            } else {
-                NKCard { NKEmptyState(title: "本次没取到周度归因", systemImage: "exclamationmark.icloud") }
-            }
-        }
-    }
-
-    /// 交易侧**六项归因**(原型 1451–1461 的三列网格)。
-    ///
-    /// 🔴 **项目名按契约来,⛔ 不照抄原型那六格**:原型画的是「买点偏离中位 / 持有天数
-    /// 中位 / 止损执行率 / 离场早于参考 / 违纪笔数 / 主观说明覆盖」—— 那六个量在
-    /// `eval/iteration.py::TRADE_ITEMS` 里**一个都不存在**(理想化 mock)。真的六项见
-    /// `nkTradeClockItemLabel`。在客户端算出原型那六个数 = 造服务端没给的判定。
-    @ViewBuilder
-    private func tradeAttributionCard(_ seg: ReviewSegment) -> some View {
-        if seg.available {
-            let d = seg.detail
-            NKCard {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 8) {
-                        Text("本期六项归因 · 读周度落盘产物").nkLabel()
-                            .foregroundStyle(NK.textTertiary)
-                        Spacer(minLength: 0)
-                        Text("成交 \(d["trades"]?.intValue ?? 0) 笔 · 在跑 \(d["running"]?.intValue ?? 0) · 已结案 \(d["closed"]?.intValue ?? 0)")
-                            .font(NKFont.caption.monospacedDigit())
-                            .foregroundStyle(NK.textTertiary)
-                    }
-                    NKStatGrid {
-                        ForEach(tradeItems(d), id: \.key) { it in
-                            NKStatCell(title: it.title, value: it.value,
-                                       tone: it.tone, footnote: it.footnote)
-                        }
-                    }
-                    if let cov = d["note_coverage"], cov["available"]?.boolValue == true {
-                        Divider().overlay(NK.hairline)
-                        Text("主观说明覆盖 \(cov["with_note"]?.intValue ?? 0) / \(cov["trades"]?.intValue ?? 0) 笔 —— K8 §十五 的主观说明是唯一的人工输入,覆盖率低只作披露,⛔ 系统不代猜")
-                            .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-    }
 
     private struct TradeItem { let key, title, value: String; let tone: NKAxisTone
                                let footnote: String? }
 
-    /// 六项各自的读数。**只读数,⛔ 无阈值、无「好 / 不好」结论**(服务端本就不判)。
-    private func tradeItems(_ d: NKJSON) -> [TradeItem] {
-        func pct(_ v: Double?) -> String { v.map { NKFmt.pct($0 * 100) } ?? "—" }
-        let trades = d["trades"]?.intValue ?? 0
-        let thesis = d["thesis_accuracy"], plan = d["plan_consistency"]
-        let onThesis = d["exit_quality_on_thesis"], onDecay = d["exit_quality_on_decay"]
-        let stop = d["stop_quality_on_failure"]
-        let reasons = stop?["by_close_reason"]?.objectValue ?? [:]
-        let reasonText = reasons.keys.sorted()
-            .map { "\(nkCloseReasonLabel($0)) \(reasons[$0]?.intValue ?? 0)" }
-            .joined(separator: " · ")
-        return [
-            TradeItem(key: "thesis_accuracy", title: nkTradeClockItemLabel("thesis_accuracy"),
-                      value: "\(thesis?["with_source_basket"]?.intValue ?? 0) / \(trades)",
-                      tone: .neutral, footnote: "有来源篮的笔数 · 对错在选股侧四态"),
-            TradeItem(key: "plan_consistency", title: nkTradeClockItemLabel("plan_consistency"),
-                      value: pct(plan?["rate"]?.doubleValue), tone: .neutral,
-                      footnote: "在建仓区 \(plan?["in_entry_zone"]?.intValue ?? 0)/\(plan?["judged"]?.intValue ?? 0) · 超追价上限 \(plan?["above_max_chase"]?.intValue ?? 0)"),
-            TradeItem(key: "exit_quality_on_thesis",
-                      title: nkTradeClockItemLabel("exit_quality_on_thesis"),
-                      value: pct(onThesis?["rate"]?.doubleValue), tone: .neutral,
-                      footnote: "到过参考区间 \(onThesis?["reached_target"]?.intValue ?? 0)/\(onThesis?["judged"]?.intValue ?? 0)"),
-            TradeItem(key: "exit_quality_on_decay",
-                      title: nkTradeClockItemLabel("exit_quality_on_decay"),
-                      value: onDecay?["ratio_median"]?.doubleValue
-                          .map { String(format: "%.2f", $0) } ?? "—",
-                      tone: .neutral,
-                      footnote: "上涨效率中位 · 读数 \(onDecay?["with_efficiency_reading"]?.intValue ?? 0) 笔 · 无阈值"),
-            TradeItem(key: "stop_quality_on_failure",
-                      title: nkTradeClockItemLabel("stop_quality_on_failure"),
-                      value: "\(reasons.values.compactMap { $0.intValue }.reduce(0, +))",
-                      tone: .neutral,
-                      footnote: reasonText.isEmpty ? "本期无已登记离场原因" : reasonText),
-            TradeItem(key: "user_pick_vs_all", title: nkTradeClockItemLabel("user_pick_vs_all"),
-                      value: "—", tone: .neutral,
-                      footnote: "本期产物未给读数 · 对照走既有 selected_vs_not,⛔ 不另建一份"),
-        ]
-    }
 
     // MARK: - 累计:五段 + **四分类建议** + 校准移交件出口
 
@@ -740,14 +452,12 @@ struct ReviewView: View {
                 // ⚠ 紧跟校准段是刻意的:两段吃的是**同一份**周度落盘产物(校准产物的
                 // `iteration` 段),四分类是校准结论的直接延伸;画像 / 对账是另外两件
                 // 互不相干的事,隔开更不容易被读成"这些数都出自同一处"。
-                IterationSegmentCard(segment: ov.iterationSuggestions)
-                ProfileSegmentCard(segment: ov.preference)
-                ProfileSegmentCard(segment: ov.capability)
-                // ⚠ **对账段在这里撤掉**(V2.3.1 批 4):原型的累计页没有它,而「对账」
-                // 本来就是自己一页(macOS 是整个工作台)—— 同一份数据画两遍只会让用户
-                // 在两处看到可能不同步的两个版本(同 ② 持仓体检、同 ⑨ 逐篮明细那两条)。
+                // 🔴 V2.5.0 S1:`iterationSuggestions` / `preference` / `capability`
+                // 三段与「移交件」整块删除 —— 双时钟复盘与 `profile/` 都已退役,
+                // 服务端 `ReviewOverviewOut` 上已无这几个键(⛔ 不留恒空的卡)。
+                // ⚠ **对账段仍不放在这里**(V2.3.1 批 4):「对账」是自己一页,
+                // 同一份数据画两遍只会让用户在两处看到可能不同步的两个版本。
                 ObservationSegmentCard(segment: ov.observations)
-                handoffSection
             } else if model.reviewOverviewLoading {
                 NKCard { NKEmptyState(title: "正在取累计复盘…", systemImage: "hourglass") }
             } else {
@@ -781,121 +491,8 @@ struct ReviewView: View {
 
     // —— 校准移交件出口(按需拉;⛔ 不随页面自动拉,它要读产物 + 拼 markdown)——
 
-    @ViewBuilder
-    private var handoffSection: some View {
-        // 原型 1538–1543:**一张可点的白卡**(17px 图标 + 13.5/600 标题 + 11.5 .55 说明),
-        // ⛔ 不再是「段头 + 卡 + 一个蓝字链接」三层。
-        VStack(alignment: .leading, spacing: NKSpace.blockGap) {
-            NKCard(padding: nil) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 12) {                        // 原型 1538 gap:12
-                        Image(systemName: "square.and.arrow.up").font(.system(size: 17))
-                            .foregroundStyle(NK.accent)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("导出校准移交件(.md)").font(NKFont.body).fontWeight(.semibold)
-                                .foregroundStyle(NK.textPrimary)
-                            Text("窗口与样本量 / 校准报告全文 / 画像两表 / 观察项清单 / 免责 —— 攒够样本后由你带去策略台改包,系统不会自己改。")
-                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                                .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer(minLength: 8)
-                    }
-                    if let h = model.reviewHandoff {
-                        handoffBody(h)
-                    } else if model.reviewHandoffLoading {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text("正在装配移交件…").font(NKFont.callout).foregroundStyle(NK.textSecondary)
-                        }
-                    } else {
-                        // 原型 1560 那枚蓝实底主按钮的同一档形状(批 2 动作行先例)。
-                        Button { Task { await model.loadReviewHandoff() } } label: {
-                            Text("装配移交件").font(NKFont.callout).fontWeight(.semibold)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 14).padding(.vertical, 7)
-                                .background(RoundedRectangle(cornerRadius: NKRadius.control)
-                                    .fill(NK.accent))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func handoffBody(_ h: ReviewHandoff) -> some View {
-        if h.available {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    NKChip(text: h.windowLabel)
-                    if !h.generatedAt.isEmpty {
-                        Text("生成于 \(h.generatedAt)").font(NKFont.caption)
-                            .foregroundStyle(NK.textTertiary)
-                    }
-                    Spacer()
-                }
-                // 「这一份带多少样本」先摆出来 —— 样本量是这份材料能不能当依据的前提。
-                if !h.sampleN.isEmpty {
-                    HStack(spacing: 6) {
-                        ForEach(h.sampleN.keys.sorted(), id: \.self) { k in
-                            NKChip(text: "\(k) \(h.sampleN[k] ?? 0)")
-                        }
-                        Spacer()
-                    }
-                }
-                HStack(spacing: 12) {
-                    ShareLink(item: h.markdown,
-                              preview: SharePreview(h.suggestedFilename)) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "square.and.arrow.up").font(.system(size: 11))
-                            Text("分享").font(NKFont.callout).fontWeight(.semibold)
-                        }
-                    }
-                    .buttonStyle(.plain).foregroundStyle(NK.accent)
-                    #if os(macOS)
-                    Button { saveHandoff(h) } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.down.doc").font(.system(size: 11))
-                            Text("存为 .md").font(NKFont.callout).fontWeight(.semibold)
-                        }
-                    }
-                    .buttonStyle(.plain).foregroundStyle(NK.accent)
-                    #endif
-                    Spacer()
-                }
-                DisclosureGroup("预览全文(\(h.markdown.count) 字)") {
-                    Text(h.markdown).font(NKFont.monoKey)
-                        .foregroundStyle(NK.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                .font(NKFont.caption)
-                .foregroundStyle(NK.textSecondary)
-            }
-        } else {
-            // ⛔ 服务端已把两种成因(还没生成 = 会自愈 / 读不出 = 不会自愈)写进
-            // `unavailableReason`,这里**原样展示那句话**,别合并成一句「暂不可用」。
-            NKReasonEmptyState(title: "本期移交件不可用",
-                               reason: h.unavailableReason ?? "未取得原因(服务端未给)",
-                               systemImage: "doc.badge.clock")
-        }
-    }
 
     #if os(macOS)
-    /// 存盘用 `NSSavePanel`(用户自己选位置),⛔ 不往固定目录偷偷写文件。
-    private func saveHandoff(_ h: ReviewHandoff) {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = h.suggestedFilename
-        panel.allowedContentTypes = [.plainText]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try h.markdown.write(to: url, atomically: true, encoding: .utf8)
-            model.showToast("已存到 \(url.lastPathComponent)")
-        } catch {
-            model.showToast("存盘失败:\(error.localizedDescription)", isError: true)
-        }
-    }
     #endif
 
     // MARK: - 对账:macOS = 完整工作台(拖入 / 周切换 / 违纪清单);iOS = 只读
