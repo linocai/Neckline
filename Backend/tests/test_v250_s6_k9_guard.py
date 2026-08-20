@@ -184,7 +184,11 @@ def test_the_playbook_price_level_never_leaks_into_the_strategy_layer():
 
 def test_the_upside_room_columns_are_defined_in_exactly_one_module():
     """两个列名只在 `k9/upside_room.py` 里以**字面量**出现 ——
-    别处出现字面量 = 有人在另一处又算了一遍。"""
+    别处出现字面量 = 有人在另一处又算了一遍。
+
+    ⚠ 这是**第一道线**,不是唯一一道:它只认那两个列名,换个列名再算一遍就绕过去了
+    (复审 M6 实测:`p3_riser.py` 里写 `pl.col("high").max().alias("_p3_my_high")`
+    → 72 passed 全绿)。真牙齿是下面那个 AST 检测器。"""
     hits: List[str] = []
     for p in sorted(_PKG.rglob("*.py")):
         if p == _K9 / "upside_room.py":
@@ -193,6 +197,99 @@ def test_the_upside_room_columns_are_defined_in_exactly_one_module():
         if '"upside_room_mech_high"' in src or '"upside_room_mech_pct"' in src:
             hits.append(str(p.relative_to(_ROOT)))
     assert hits == [], "「N 日最高」被人另写了一份:\n" + "\n".join(hits)
+
+
+def _col_under(node: ast.AST) -> str:
+    """顺着 `pl.col("X").shift(1).rolling_max(20)` 这条链往下找那个 `pl.col("X")`。
+
+    ⛔ 不能只看直接接受者:`.shift(1)` 一插进去,只查一层的判据就瞎了。
+    """
+    cur: ast.AST = node
+    while True:
+        if (isinstance(cur, ast.Call) and isinstance(cur.func, ast.Attribute)
+                and cur.func.attr == "col" and cur.args
+                and isinstance(cur.args[0], ast.Constant)
+                and isinstance(cur.args[0].value, str)):
+            return cur.args[0].value
+        if isinstance(cur, ast.Call):
+            cur = cur.func
+        elif isinstance(cur, ast.Attribute):
+            cur = cur.value
+        else:
+            return ""
+
+
+#: 「N 日最高」能落在哪些价格列上。
+_HIGH_LIKE_COLUMNS = ("high", "close")
+
+
+def _window_high_sites(path: Path) -> List[str]:
+    """找「在一个窗口上取价格列极大值」的形状 —— 「N 日最高」的实现特征。
+
+    两种写法:`pl.col("high").max()`(group_by 之后的窗口)与
+    `pl.col("<列>").rolling_max(N)`。体例照同文件里给放量倍数写的
+    `_mean_over_vol_sites` —— G12 原来只有一个**列名字面量**的文本判据,
+    姊妹条款(裁定 15)用的却是真 AST(复审 M6 / 🟡-8 点名的就是这个落差)。
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: List[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("max", "rolling_max")):
+            continue
+        if _col_under(node.func.value) in _HIGH_LIKE_COLUMNS:
+            out.append(f"{path.name}:{node.lineno}")
+    return out
+
+
+def test_the_window_high_detector_actually_detects(tmp_path):
+    """扫描器自检 —— 两种写法、隔一层 `.shift(1)` 都要看得见。"""
+    for src in (
+        'import polars as pl\nx = pl.col("high").max()\n',
+        'import polars as pl\nx = pl.col("high").rolling_max(20)\n',
+        'import polars as pl\nx = pl.col("close").shift(1).rolling_max(20).over("k")\n',
+    ):
+        p = tmp_path / "s.py"
+        p.write_text(src, encoding="utf-8")
+        assert _window_high_sites(p), src
+    # 反向:别的列 / 别的聚合⛔ 不许被判红。
+    p = tmp_path / "s.py"
+    p.write_text('import polars as pl\nx = pl.col("low").min()\ny = pl.col("vol").mean()\n',
+                 encoding="utf-8")
+    assert _window_high_sites(p) == []
+
+
+#: 🔴 已知的、**不是**上方机械空间的窗口极值,连同理由。
+#: ⛔ 这不是「豁免清单」而是**验收单**:多出一处 = 有人又算了一遍「N 日最高」。
+_KNOWN_WINDOW_HIGH_FILES: Dict[str, str] = {
+    "neckline/k9/upside_room.py":
+        "上方机械空间的**唯一**实现(裁定 1),p1 正向 / p3 反向共用它",
+    "neckline/k9/channels/p1_breakout.py":
+        "过去 N 天**振幅**的窗口极差(高 − 低)÷ 低,与机械空间是两个量(§14 S6 ① 已登记)",
+    "neckline/data/panel.py":
+        "K8 研究面板遗留的 `rolling_max(20)`,不在 K9 机械链上(无 K9 消费方)",
+}
+
+
+def test_the_n_day_high_has_exactly_one_implementation_on_the_k9_path():
+    """🔴 **G12 / 裁定 1**:「N 日最高」只有一处实现。
+
+    裁定 1 的全部意义就是「这个量只有一处」—— 换个列名再算一遍,上面那条列名判据
+    拦不住,这条拦得住。
+    """
+    sites: Dict[str, List[str]] = {}
+    for p in sorted(_PKG.rglob("*.py")):
+        got = _window_high_sites(p)
+        if got:
+            sites[str(p.relative_to(_ROOT))] = got
+    unexpected = sorted(set(sites) - set(_KNOWN_WINDOW_HIGH_FILES))
+    assert unexpected == [], (
+        f"这些地方又算了一遍窗口最高价:{ {k: sites[k] for k in unexpected} } —— "
+        f"裁定 1:上方机械空间只有一处实现。若确是**另一个量**,把它连同理由加进 "
+        f"`_KNOWN_WINDOW_HIGH_FILES`,让它成为一次自觉行为。")
+    # 反向:清单里每一条都**真的还在**(⛔ 不许留指向空气的豁免)。
+    missing = sorted(set(_KNOWN_WINDOW_HIGH_FILES) - set(sites))
+    assert missing == [], f"这些豁免已经没有对应实现,可以删了:{missing}"
 
 
 def test_only_p1_and_p3_consume_the_upside_room_and_they_use_both_directions():
@@ -298,13 +395,53 @@ def test_the_v_is_a_single_value_not_a_per_tier_knob():
         assert not any("erupt" in k.lower() for k in keys), (ch, keys)
 
 
+#: `k9/volume.py` 在别处的模块别名(`import ... as` 的两种常见写法)。
+_VOLUME_MODULE_ALIASES = {"volume", "volume_mod"}
+
+
+def _calls_on_module(path: Path, aliases: Set[str]) -> Set[str]:
+    """这个文件在那些模块别名上**调用**过哪些函数(`volume_mod.f(...)` 的 `f`)。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: Set[str] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in aliases):
+            out.add(node.func.attr)
+    return out
+
+
+def test_the_module_call_detector_actually_detects(tmp_path):
+    """扫描器自检。"""
+    p = tmp_path / "s.py"
+    p.write_text("volume_mod.compute(pack, ma_days=3)\nvolume_mod.volume_ratio(pack)\n",
+                 encoding="utf-8")
+    assert _calls_on_module(p, _VOLUME_MODULE_ALIASES) == {"compute", "volume_ratio"}
+
+
 def test_the_volume_ratio_is_not_confused_with_the_volume_multiple():
-    """⚠ 量比(÷ **5** 日均量)与放量倍数(÷ `volume.maDays`)是两个量。"""
+    """⚠ 量比(÷ **5** 日均量)与放量倍数(÷ `volume.maDays`)是两个量。
+
+    🔴 复审 M7:原来这条是两句文本断言 ——
+        `assert "volume_ratio" in p4_src`      ← 被 p4 的 **docstring** 满足,恒真
+        `assert "eruption_multiple" not in p4_src`  ← 只挡住了 V 这一个名字
+    实测把 `volume_mod.volume_ratio(pack)` 换成
+    `volume_mod.compute(pack, ma_days=params.volume.ma_days)`,**72 passed 全绿**:
+    分母从 5 日悄悄变成 `volume.maDays`,而裁定 15 的 ⚠ 正是「这两个量⛔ 别混」。
+
+    现在的判据是 **AST**:p4 在 `volume` 模块上调的函数**恰好只有** `volume_ratio`。
+    文本那一半改走 `guard_scan.code_without_docstrings()`(⛔ 不再让 docstring 满足断言)。
+    """
     assert volume_mod.COLUMN != volume_mod.RATIO_COLUMN
     assert volume_mod.VOLUME_RATIO_MA_DAYS == 5
-    p4_src = (_K9 / "channels" / "p4_moneyflow.py").read_text(encoding="utf-8")
-    assert "volume_ratio" in p4_src
-    assert "eruption_multiple" not in p4_src, "形态 4 与 V 无关,⛔ 别把两个量接到一起"
+    p4 = _K9 / "channels" / "p4_moneyflow.py"
+    called = _calls_on_module(p4, _VOLUME_MODULE_ALIASES)
+    assert called == {"volume_ratio"}, (
+        f"形态 4 在 `k9/volume.py` 上调了 {sorted(called)} —— 它只该读**量比**"
+        f"(÷ 5 日均量);`compute` 是放量倍数(÷ `volume.maDays`),两个量⛔ 别混。")
+    p4_code = guard_scan.code_without_docstrings(p4)
+    assert "volume_ratio" in p4_code, "p4 的**代码**里没有量比 —— 上一版是被 docstring 满足的"
+    assert "eruption_multiple" not in p4_code, "形态 4 与 V 无关,⛔ 别把两个量接到一起"
 
 
 # ══════════════════════════════════════════════════════════════════════════

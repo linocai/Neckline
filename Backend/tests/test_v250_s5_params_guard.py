@@ -25,7 +25,7 @@ from __future__ import annotations
 import ast
 import inspect
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import pytest
 
@@ -232,3 +232,177 @@ def test_the_three_states_are_never_collapsed_into_a_boolean():
     from neckline.report.state import resolve_state
     assert resolve_state(pack_frozen=True, params_ok=True, listing_count=0) \
         is not resolve_state(pack_frozen=True, params_ok=False, listing_count=0)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# G22 续:**数字兜底**也是兜底(裁定 5「⛔ 不使用任何默认值」)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 复审 M2 实测:上面那四种形状全部以 `is_enum_member` 收口 —— 只认「兜底成某个
+# 枚举成员」。把 `raw["industry"]["minMembers"]` 改成 `raw["industry"].get(
+# "minMembers", 10)`,`test_v250_s5_params_guard.py` + `test_k9_params.py`
+# **90 passed 全绿**。而裁定 5 的红线是「⛔ 不使用**任何**默认值」,不只是那三个枚举位。
+# ══════════════════════════════════════════════════════════════════════════
+
+#: 计数 / 打分里「没有就是 0」的正当写法,连同理由。
+#: 🔴 **按表达式而不是行号做键** —— 行号会随上面任何一次编辑漂,而漂了之后白名单
+#: 要么误放行、要么误报,两种都会逼着后来者把守门放宽。
+_NUMERIC_FALLBACK_ALLOW: Dict[str, str] = {
+    "boundary.py:got.get(r, 0)":
+        "逐条排除原因的**计数**:某条今天一个都没排除 = 0,不是「默认排除 0 只」",
+    "ranking.py:strength.get((code, p), 0.0)":
+        "这只票没命中这个形态 → 形态强度 0(K9 §五-4 取 max 的输入),不是标定值",
+    "ranking.py:strength.get((code, best), 0.0)":
+        "同上,取 max 之后再读一次同一张表",
+    "ranking.py:relay_scores.get(code, 0.0)":
+        "这只票过去 N 天没被选过 → 接力分 0,是**算出来的缺席**,不是默认",
+}
+
+
+def _is_number(node: ast.AST) -> bool:
+    """数字字面量(含 `-1` 这种一元负号)。⚠ `True` / `False` 在 Python 里是 int 的
+    子类,⛔ 别把布尔当数字算进去 —— 那会把一大批正当的开关误报成兜底。"""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return _is_number(node.operand)
+    return False
+
+
+def _numeric_default_offenders(path: Path) -> List[str]:
+    """「悄悄退回某个**数字**」的四种写法(形状与枚举版逐条对应)。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: List[str] = []
+
+    def note(node: ast.AST, what: str) -> None:
+        key = f"{path.name}:{ast.unparse(node)}"
+        if key in _NUMERIC_FALLBACK_ALLOW:
+            return
+        out.append(f"{path.name}:{node.lineno} {what} —— {ast.unparse(node)}")
+
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get" and len(node.args) == 2
+                and _is_number(node.args[1])):
+            note(node, "dict.get 兜底成一个数字")
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+            if any(_is_number(v) for v in node.values):
+                note(node, "`or` 短路兜底成一个数字")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for d in list(node.args.defaults) + [x for x in node.args.kw_defaults if x]:
+                if _is_number(d):
+                    out.append(f"{path.name}:{node.lineno} "
+                               f"形参默认值是数字 —— def {node.name}(… = {ast.unparse(d)})")
+        if isinstance(node, ast.Try):
+            for handler in node.handlers:
+                for sub in ast.walk(handler):
+                    if isinstance(sub, ast.Return) and sub.value is not None \
+                            and _is_number(sub.value):
+                        note(sub, "except 里返回一个数字")
+    return out
+
+
+def test_the_numeric_default_detector_actually_detects(tmp_path):
+    """扫描器自检 —— 四种形状都要看得见,布尔⛔ 不许被当成数字。"""
+    sample = tmp_path / "s.py"
+    sample.write_text(
+        "def f(raw, ma_days=20):\n"
+        "    a = raw['industry'].get('minMembers', 10)\n"
+        "    b = raw.get('x') or 0.3\n"
+        "    try:\n"
+        "        return int(raw['y'])\n"
+        "    except KeyError:\n"
+        "        return 5\n",
+        encoding="utf-8")
+    got = _numeric_default_offenders(sample)
+    assert len(got) == 4, got
+    ok = tmp_path / "ok.py"
+    ok.write_text("def g(flag=True):\n    return flag or False\n", encoding="utf-8")
+    assert _numeric_default_offenders(ok) == [], "布尔被当成数字了"
+
+
+def test_no_numeric_default_anywhere_in_the_strategy_layer():
+    """🔴 §7.6 / 裁定 5:「降为参数位」⛔ 不等于「可以先挑一个用」,而
+    「⛔ 不使用任何默认值」里的**任何**包括数字。
+
+    ⚠ 扫描域是 `neckline/k9/**`(策略层)——⛔ 不是全仓:`settings_store` / `api`
+    那些层里「没配就用 N」是正当的产品行为,把它们一起判红,这条守门第二天就会被放宽。
+    """
+    offenders: List[str] = []
+    for path in _K9:
+        offenders.extend(_numeric_default_offenders(path))
+    assert offenders == [], (
+        "策略层里出现了数字兜底 —— 待标定的数只能来自参数包:\n" + "\n".join(offenders))
+
+
+def test_the_numeric_fallback_allowlist_stays_justified():
+    """白名单每条都要有理由,且那个表达式**真的还在**(⛔ 不许留指向空气的例外)。"""
+    seen = {
+        f"{path.name}:{ast.unparse(node)}"
+        for path in _K9
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, (ast.Call, ast.BoolOp, ast.Return))
+    }
+    for key, reason in _NUMERIC_FALLBACK_ALLOW.items():
+        assert key in seen, f"白名单条目已不存在,可以删了:{key}"
+        assert len(reason) > 10, f"{key} 的理由太短,说不清为什么"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# G8 续:「无默认值」那条递归**是活的**吗
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_the_no_default_walk_is_actually_alive(tmp_path):
+    """🔴 复审 M1:`assert_no_field_defaults` 的递归写的是 `is_dataclass(f.type)`,
+    而模块顶上有 `from __future__ import annotations` —— `f.type` 是**字符串**,
+    `is_dataclass("BoundaryParams")` 恒为 `False`,那条递归**一次都没走过**。
+    真正起作用的是一张写死 14 个类的清单;新增一个带默认值的嵌套 dataclass 而没加进
+    清单,守门 15 passed 全绿。
+
+    诱饵必须**也带 `from __future__ import annotations`** —— 少了这一句,注解不是
+    字符串,死递归照样能走,自检就测不到那个失效点。
+    """
+    import sys  # noqa: PLC0415
+    import types  # noqa: PLC0415
+
+    name = "nk_bait_params"
+    source = (
+        "from __future__ import annotations\n"
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\n"
+        "class NewsParams:\n"
+        "    lookback_days: int = 3\n"
+        "@dataclass(frozen=True)\n"
+        "class Outer:\n"
+        "    news: NewsParams\n"
+    )
+    module = types.ModuleType(name)
+    sys.modules[name] = module
+    try:
+        exec(compile(source, name, "exec"), module.__dict__)  # noqa: S102
+        assert P.assert_no_field_defaults(module.Outer) == ["Outer.news.lookback_days"], (
+            "递归没走进嵌套 dataclass —— G8 又变回「清单维护得好就守得住」了")
+        assert len(P.param_dataclass_closure(module.Outer)) == 2
+    finally:
+        sys.modules.pop(name, None)
+
+
+def test_the_no_default_walk_reaches_every_param_dataclass():
+    """🔴 **闭包必须盖住本模块里每一个参数 dataclass**。
+
+    这条是 `PARAM_DATACLASS_ROOTS` 那张小清单的保险:`ChannelTiers.strict/relaxed`
+    声明成 `Any`,四个 `PNTier` 只能从根清单进来 —— 而清单会过期。有人新加一个
+    注解够不到的参数类而忘了挂进去,这里当场红。
+    """
+    import dataclasses  # noqa: PLC0415
+
+    declared = {
+        obj for obj in vars(P).values()
+        if isinstance(obj, type) and dataclasses.is_dataclass(obj)
+        and obj.__module__ == P.__name__
+    }
+    reached = set(P.param_dataclass_closure(*P.PARAM_DATACLASS_ROOTS))
+    assert declared == reached, (
+        f"这些参数 dataclass 没被「无默认值」的遍历走到:{sorted(c.__name__ for c in declared - reached)}"
+    )
+    assert len(reached) >= 14, f"只走到 {len(reached)} 个类 —— 闭包怕是断了"

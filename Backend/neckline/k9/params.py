@@ -78,6 +78,8 @@ from dataclasses import MISSING, dataclass, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import get_args as get_type_args
+from typing import get_type_hints
 
 from neckline.db import connection, init_schema
 from neckline.facts.pack import MAX_LOOKBACK_PACKS, PACK_VERSION
@@ -688,27 +690,84 @@ def load(path: Path, *, db_path: Optional[Path] = None) -> K9Params:
     return _build(raw, str(p))
 
 
+#: 🔴 **递归够不到的根**。`ChannelTiers.strict` / `relaxed` 声明成 `Any`
+#: (两档的形状随通道不同),注解里没有类型信息 —— 四个 `PNTier` 只能从这里进来。
+#:
+#: ⚠ 这张表**不是**判据本身。上一版的判据就是一张写死 14 个类的清单,而清单
+#: 「维护得好就守得住」不是结构性保证:新增一个带默认值的嵌套 dataclass 忘了加进
+#: 清单,守门全绿(2026-08-21 复审实测)。现在清单缩到只剩注解够不到的那四个,
+#: 其余靠活着的递归走;并且
+#: `test_v250_s5_params_guard.py::test_the_no_default_walk_reaches_every_param_dataclass`
+#: 断言「本模块里每个参数 dataclass 都被走到了」—— 漏加一个会当场红。
+PARAM_DATACLASS_ROOTS: Tuple[type, ...] = (K9Params, P1Tier, P2Tier, P3Tier, P4Tier)
+
+
+def _nested_dataclasses(annotation: Any) -> List[type]:
+    """一个类型注解里**装着**的参数 dataclass(拆开 `Optional` / `List` / `Dict` …)。"""
+    if isinstance(annotation, type) and is_dataclass(annotation):
+        return [annotation]
+    out: List[type] = []
+    for arg in get_type_args(annotation):
+        out.extend(_nested_dataclasses(arg))
+    return out
+
+
+def _field_hints(cls: type) -> Dict[str, Any]:
+    """字段名 → **解析过的**类型注解。
+
+    🔴 本模块顶上有 `from __future__ import annotations`,`dataclasses.fields()` 交出来的
+    `f.type` 是**字符串** —— `is_dataclass("BoundaryParams")` 恒为 `False`。
+    上一版的递归写的正是那一句,于是**一次都没走过**。
+    """
+    try:
+        return get_type_hints(cls)
+    except Exception:                                  # pragma: no cover - 解析不了就退回
+        return {}
+
+
+def param_dataclass_closure(*roots: type) -> List[type]:
+    """从这些根出发、经字段注解能走到的全部参数 dataclass(含根本身)。
+
+    守门单测拿它断言「递归是活的」—— 一条死了的递归不会报错,只会让一切照绿。
+    """
+    seen: List[type] = []
+
+    def walk(c: type) -> None:
+        if not (isinstance(c, type) and is_dataclass(c)) or c in seen:
+            return
+        seen.append(c)
+        hints = _field_hints(c)
+        for f in fields(c):
+            for nested in _nested_dataclasses(hints.get(f.name, f.type)):
+                walk(nested)
+
+    for root in roots:
+        walk(root)
+    return seen
+
+
 def assert_no_field_defaults(cls: type) -> List[str]:
     """遍历一个参数 dataclass(含嵌套)的每个字段,返回**带默认值**的字段路径列表。
 
     🔴 §5.4.3 校验 4 的机器判据:空列表 = 「少一个值就构造不出对象」这条结构性保证
-    仍然成立。守门单测直接断言它是空的。"""
-    offenders: List[str] = []
+    仍然成立。守门单测直接断言它是空的。
+    """
+    roots: List[type] = [cls]
+    if cls is K9Params:
+        roots.extend(r for r in PARAM_DATACLASS_ROOTS if r is not K9Params)
 
-    def walk(c: type, prefix: str) -> None:
-        if not is_dataclass(c):
-            return
+    offenders: List[str] = []
+    paths: Dict[type, str] = {}
+    reached = param_dataclass_closure(*roots)
+    for c in reached:
+        prefix = paths.get(c, c.__name__)
+        hints = _field_hints(c)
         for f in fields(c):
-            path = f"{prefix}.{f.name}" if prefix else f"{c.__name__}.{f.name}"
+            path = f"{prefix}.{f.name}"
             if f.default is not MISSING or f.default_factory is not MISSING:  # type: ignore[misc]
                 offenders.append(path)
-            if is_dataclass(f.type):
-                walk(f.type, path)
-
-    for cls_ in (K9Params, BoundaryParams, IndustryParams, VolumeParams, ChannelParams,
-                 ChannelTiers, P1Tier, P2Tier, P3Tier, P4Tier, RankingParams, RankingWeights,
-                 QuotaParams, ExplainParams):
-        walk(cls_, "")
+            for nested in _nested_dataclasses(hints.get(f.name, f.type)):
+                paths.setdefault(nested, path)
     return offenders
 
 
@@ -731,4 +790,6 @@ __all__ = [
     "validate",
     "load",
     "assert_no_field_defaults",
+    "param_dataclass_closure",
+    "PARAM_DATACLASS_ROOTS",
 ]
