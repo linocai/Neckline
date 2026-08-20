@@ -790,18 +790,29 @@ def _review_from_archive(week: str, result: Dict[str, Any]):
     (上传即解析即丢),而且「同一周装订两次得到不同材料」本身就是错的。
     ⚠ 历史行可能带着 V2.4.x 的多余键(`planChecks` / `disciplineViolations` …),
     这里**只挑要的**,多余键一律忽略(⛔ 不因为老行多几个键就炸)。
+    ⚠ **`buyDate` 解不出的行整条跳过并 WARNING**:买入日是窗口的锚,没有它这一笔
+    根本不知道该铺哪一段行情。⛔ 不拿今天或周一顶上去(那会画出一段与成交无关的图,
+    而看图的人不会知道)—— 跳过是**少一笔**,顶上去是**错一笔**。
     """
     from neckline.review.reconcile import RoundTrip, WeeklyReview, week_range
 
     def _day(raw):
-        return datetime.strptime(raw, "%Y%m%d").date() if raw else None
+        try:
+            return datetime.strptime(raw, "%Y%m%d").date() if raw else None
+        except (TypeError, ValueError):
+            return None
 
     w_start, w_end = week_range(week)
     trips = []
     for r in (result or {}).get("roundTrips") or []:
+        buy_date = _day(r.get("buyDate"))
+        if buy_date is None:
+            logger.warning("[review] %s 的存档里有一行 roundTrip 没有可解析的 buyDate"
+                           "(tsCode=%r),本次装订跳过这一笔", week, r.get("tsCode"))
+            continue
         trips.append(RoundTrip(
             ts_code=r.get("tsCode", ""), name=r.get("name", ""),
-            buy_date=_day(r.get("buyDate")), buy_price=float(r.get("buyPrice") or 0.0),
+            buy_date=buy_date, buy_price=float(r.get("buyPrice") or 0.0),
             qty=int(r.get("qty") or 0), fees=float(r.get("fees") or 0.0),
             sell_date=_day(r.get("sellDate")),
             sell_price=r.get("sellPrice"), closed=bool(r.get("closed")),

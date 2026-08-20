@@ -409,6 +409,33 @@ class TestBinderyEndpoint:
         md = client.get(f"/api/v1/review/bindery?week={week}", headers=AUTH).json()["markdown"]
         assert "回看材料" in md and "不是判断" in md
 
+    def test_a_round_trip_without_a_parseable_buy_date_is_skipped_not_guessed(
+            self, client, AUTH, review_env):
+        """⚠ 买入日是窗口的锚。解不出就**跳过这一笔**并 WARNING,
+        ⛔ 不拿今天或周一顶上去 —— 跳过是「少一笔」,顶上去是「错一笔」,
+        而看图的人不会知道自己看的是一段与成交无关的行情。"""
+        import json
+        import sqlite3
+
+        week = _upload(client, AUTH)
+        conn = sqlite3.connect(str(review_env.db_path))
+        try:
+            raw = conn.execute("SELECT result_json FROM reviews WHERE week=?",
+                               (week,)).fetchone()[0]
+            payload = json.loads(raw)
+            payload["roundTrips"][0]["buyDate"] = "not-a-date"
+            conn.execute("UPDATE reviews SET result_json=? WHERE week=?",
+                         (json.dumps(payload, ensure_ascii=False), week))
+            conn.commit()
+        finally:
+            conn.close()
+
+        body = client.get(f"/api/v1/review/bindery?week={week}", headers=AUTH).json()
+        assert body["found"] is True
+        assert body["unavailableReason"] is None, "跳一笔不该让整份材料装不出来"
+        assert any(g.startswith("no_round_trips") for g in body["binding"]["gaps"])
+
+
 
 class TestConclusionsEndpoint:
     def test_requires_auth(self, client):
