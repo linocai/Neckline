@@ -3,30 +3,26 @@
 (默认今天,可传参指定其它交易日)+ 尾部窗口重算 limit_derived(连板计数跨批次
 边界需要窗口,见 backfill.run_limit_derived 的 30 自然日缓冲说明)。
 
-**v1.4-①-C 新增两项(§七 P0-3 / P0-2)**:
-  · **概念板块日更**(`ths_daily` 尾窗重拉 + `ths_index`/`ths_member` 周更)—— 此前三表
-    只有一次性 backfill,压根不在日更清单里,导致「当日暴起板块」那一路候选长期失效
-    (且因为降级得安静,从报告上看不出坏了)。落盘细节与 `write_table_day` 铁律的**唯一
-    登记例外**见 `neckline/data/concept_data.py` 模块头。
-  · **当日停牌名单**(`suspend_d`)—— 给持仓票「当日无 EOD 行」的 reason 定标签
-    (`suspended` vs `data_gap`),见 `neckline/data/price_stale.py`。
-  两项都**尽力而为**:失败只记 WARNING,绝不让主增量(daily/basic/adj/moneyflow)失败,
-  也绝不改变退出码(它们是增强项,不是 EOD 主链路)。
+**当日停牌名单**(`suspend_d`,v1.4-①-C)—— 事实层判「全天停牌 vs 盘中临时停牌」的
+输入(裁定 12),见 `neckline/facts/pack.py::_suspend_flag_of`。**尽力而为**:失败只记
+WARNING,绝不让主增量(daily/basic/adj/moneyflow)失败,也绝不改变退出码。
 
-**v1.4-⑩-C 新增第三项(§七 P0-23)**:**行业强度预计算落表**(`industry_strength_daily`)
-  —— 只读当日那一个 `daily` 分区算一天,`persist_days` 递推;16:35 报告主链 / 信息卡端点 /
-  问询台三处从此**只读表**,不再各自扫全历史 784 万行(生产 2 vCPU/1.6G 上 700M cap
-  OOM-kill、1400M cap 600s 跑不完)。同样**尽力而为不改退出码,但日志用 ERROR** —— 它是
-  **判据输入**(A2 hard_cut + 排序键①)不是增强项;失败日志带补算命令原文。
+🔴 **V2.5.0 裁定 17:概念板块(`ths_*`)抓取段已整段移除。** 原先这里跑
+`update_concept_boards()`(`ths_daily` 尾窗 5 次/日 + `ths_index`/`ths_member` 周更
+**395 次连续调用**,合计约 21,750 次/年,且那 395 次几乎占满客户端 450 次/分限频
+窗口一整分钟)。移除依据:三表在 S3 之后**已零消费方**(读侧 `report/sectors.py` /
+`board_pool.py` / `intel_candidates.py` 已于 `e89c1fa` 物理删除),而 K9 §3.0 明写
+**不使用概念板块**。
+⚠ **已抓的 parquet 原地保留、⛔ 不删**(`data/parquet/ths_{index,member,daily}.parquet`
++ `ths_snapshot_meta.json`):将来解释层若要拿概念当**背景材料**仍可用。读写 helper
+`neckline/data/concept_data.py` 与三个 `ts_ths_*` 客户端函数同样保留 —— 删掉它们,
+保留下来的那 21 MB 就没人读得动了。⛔ 但概念板块**永远不进任何机械计算**(K9 §3.0),
+⛔ 不许把这一段接回定时器。守门单测:`tests/test_v250_s11_s13_guard.py`。
 
-**V2-④b 新增第四项(K7 需求 1b,§七 P0-23)**:**行业题材阶段六态状态机落表**
-  (`industry_stage_daily`)—— 只读 `industry_strength_daily` 当日行 + `limit_derived`
-  当日一个分区 + 本表自己过去 5 个交易日的既有行,不扫任何全历史;排在
-  `update_industry_strength` **之后**(依赖它刚写的 `persist_days`)。同样**尽力而为
-  不改退出码,但日志用 ERROR**(未来 ⑥ 的 `driver_freshness` 判据输入,非增强项)。
+⚠ 三项 K8 日更(`industry_strength_daily` / `industry_stage_daily` / `scan` 层三表)
+已随 K8 退役在 S1 摘除,见下方 `main()` 里的登记块。
 
-新增配额消耗(与 §七 P4-20 一起算账,部署块 ⑨-E 复核):`ths_daily` 5 次/日(尾窗)、
-`suspend_d` 1 次/日、`ths_index`+`ths_member` ~400 次/周。
+当前配额消耗:`suspend_d` 1 次/日、申万分类 3 + 2 次/日(S2)。
 
 用法:
     python scripts/daily_update.py                # 今天(若非交易日则报错退出)
@@ -37,7 +33,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import polars as pl
@@ -57,48 +53,12 @@ logger = logging.getLogger("daily_update")
 LIMIT_DERIVED_TRAILING_DAYS = 15  # 尾部重算窗口(交易日),覆盖连板计数跨批次边界
 
 
-def update_concept_boards(target: date) -> None:
-    """v1.4-①-C:概念板块日更(`ths_daily` 尾窗)+ 周更(`ths_index`/`ths_member`)。
-    **尽力而为**——任何异常只记 WARNING,不影响主增量与退出码。"""
-    from neckline.calendar import trading_days_between
-    from neckline.data.concept_data import (
-        THS_DAILY_TRAILING_DAYS,
-        max_ths_daily_date,
-        update_ths_daily,
-        update_ths_snapshots,
-    )
-
-    # 周更放在日更**之前**:`update_ths_daily` 要按 `ths_index` 快照过滤成概念板块
-    # (见该函数 docstring 的 ⚠),先刷新快照能让当周新增板块当天就被纳入。
-    try:
-        done = update_ths_snapshots(target)
-        logger.info("[ths_index/ths_member] 周更:%s", done)
-    except Exception:  # noqa: BLE001
-        logger.warning("[ths_index/ths_member] 周更异常(已吞,旧快照原样保留)", exc_info=True)
-
-    try:
-        window = trading_days_between(target - timedelta(days=30), target)[-THS_DAILY_TRAILING_DAYS:]
-        stats = update_ths_daily(window)
-        logger.info(
-            "[ths_daily] 尾窗 %d 个交易日:写入 %d 行、当日尚未发布 %d 天、拉取失败 %d 天",
-            stats["days"], stats["rows"], stats["empty"], stats["failed"],
-        )
-        newest = max_ths_daily_date()
-        if newest is None:
-            logger.warning("[ths_daily] 落盘后仍无任何数据 —— 板块相关情报本日不可信")
-        elif newest < target:
-            lag = max(len(trading_days_between(newest, target)) - 1, 0)
-            logger.info("[ths_daily] 最新至 %s(落后报告日 %d 个交易日)", newest, lag)
-    except Exception:  # noqa: BLE001
-        logger.warning("[ths_daily] 日更异常(已吞,不阻断主增量)", exc_info=True)
-
-
 def update_sw_industry() -> None:
     """V2.5.0 S2:申万 2021 版行业分类日更(`sw_industry_classify` / `sw_industry_member`)。
 
     🔴 **判据输入,不是增强项**:K9 全文的「相对强度」以申万**二级**行业当日成员涨跌幅
     中位数为基准(裁定 2),第三层排序的「行业热度分」也读它。故与 `update_suspend_list`
-    / `update_concept_boards` 同样**尽力而为不改退出码**,但**日志级别用 ERROR**
+    同样**尽力而为不改退出码**,但**日志级别用 ERROR**
     (同已退役的 `update_industry_strength` 旧例的理由)。
 
     ⚠ **两张表是「当前归属快照」,与 `target` 无关** —— 接口只给当前归属,故本函数
@@ -259,10 +219,11 @@ def main() -> int:
     window_start = all_days[-LIMIT_DERIVED_TRAILING_DAYS] if len(all_days) >= LIMIT_DERIVED_TRAILING_DAYS else all_days[0]
     backfill.run_limit_derived(window_start, target)
 
-    # v1.4-①-B/①-C 增强项(尽力而为,失败不改退出码;放在主增量之后,免得它们的失败
+    # v1.4-①-B 增强项(尽力而为,失败不改退出码;放在主增量之后,免得它们的失败
     # 影响 EOD 主链路的落盘时序)。
     update_suspend_list(target)
-    update_concept_boards(target)
+    # 🔴 V2.5.0 裁定 17:`update_concept_boards(target)` 已整段移除(`ths_*` 零消费方,
+    # 约 21,750 次/年配额;已抓 parquet 原地保留)。⛔ 不许接回,见模块头。
     # V2.5.0 S2:申万二级分类日更(**判据输入**,失败打 ERROR;见函数 docstring)。
     update_sw_industry()
     # V2.5.0 S3:事实包构建 + 冻结(架构第一层)。必须排在 `update_sw_industry` **之后**
