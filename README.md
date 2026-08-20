@@ -89,7 +89,22 @@ Key 的 Provider 可以保存为默认值；删除、停用或清空其 Key 会�
 `init_schema()` 是受控写入口：仅允许 API 启动、明确的写入命令或 RC 迁移步骤在
 **已确认目标库且已完成备份**后调用。API、报告和复盘的读取 helper 不执行 DDL；旧
 schema 只读探测后返回兼容的空值/旧快照。RC 迁移的回滚边界是迁移前 SQLite 备份与
-已验证的 v2.4.1 源码，任何 GET 或日常读取都不是迁移触发器。
+**已验证的 v2.4.2 源码**（commit `ee12b9b`），任何 GET 或日常读取都不是迁移触发器。
+
+## 发版
+
+V2.5.0 的发版清单在 [PROJECT_PLAN.md](PROJECT_PLAN.md) 的 **§9.6**（步骤 0～7：
+容量红线阻塞项 → 升级前备份 → 纯新增迁移 → 8 个 unit 逐个交代 → 部署验证 →
+上线后状态预告 → 回滚 → 收尾）。能在本地先跑一遍的那几件已做成机器判据：
+
+```bash
+cd Backend
+.venv/bin/python -m pytest tests/test_v250_s14_release_gate.py -q
+```
+
+它在**临时库**上拿 v2.4.2 的 schema 造一个老库、跑今天的 `init_schema`、逐表逐列
+对拍历史行，并锁住 unit 拓扑零新增与回滚锚点可取。⛔ 它不替代 §9.6 里那几步要在
+生产上做的事（两份备份 + `integrity_check` + 源码锚点 + 明确目标确认）。
 
 ## App
 
