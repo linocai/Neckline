@@ -272,7 +272,12 @@ def compute(
     )
 
     # —— K9 §五 · 名额 ————————————————————————————————————————————————————
-    allocation = quota_mod.allocate(scored, params.quota)
+    # ⚠ 缺席从 `decision.hits`(drop **之前**)算 —— 与 `channel_counts` 同一个口径。
+    # 被 `heatAbsentPolicy='drop'` 丢掉的票单独在 `dropped_by_heat_absent` 里说,
+    # ⛔ 不许让它们把一个**有候选**的形态说成「今日无此形态」(复审 L1)。
+    allocation = quota_mod.allocate(
+        scored, params.quota,
+        recalled_patterns={h.pattern for h in decision.hits})
     streak = k9_store.relaxed_streak_before(trade_date, db_path=db_path)
     streak_now = streak + 1 if decision.tier_used is Tier.RELAXED else 0
     over = quota_mod.over_strict(streak_now, params.quota)

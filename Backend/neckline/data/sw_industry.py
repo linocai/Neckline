@@ -42,7 +42,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from neckline.data.tushare_client import (
     SW_MEMBER_PAGE_LIMIT,
@@ -78,12 +78,23 @@ class SwRefreshStats:
     level_counts: Dict[str, int] = None          # type: ignore[assignment]
     member_rows: int = 0
     member_pages: int = 0
+    #: 🔴 接口给了行、但 `ts_code` / l1 / l2 / l3 有一项为空而**没能落库**的成员数。
+    #: §4.4 实测覆盖率 100%,所以这个数只要不是 0 就是**数据事故**(成分表没拉全 /
+    #: 翻页丢了一半 / 接口口径变了)。上一版这些行是静默 `continue` 掉的,只在
+    #: `pack._market_readings` 的 `missing_sw` 计数里间接可见 —— 到那时已经隔了一层,
+    #: 看到的人不知道是这里丢的(复审 L6)。
+    member_dropped: int = 0
+    #: 丢掉的是谁(最多留 20 只:是给人看的线索,不是全量清单)。
+    member_dropped_codes: Tuple[str, ...] = ()
 
     def summary(self) -> str:
         lv = self.level_counts or {}
+        dropped = ("" if not self.member_dropped
+                   else f" · ⚠ 丢 {self.member_dropped} 只"
+                        f"({'、'.join(self.member_dropped_codes[:5])}…)")
         return (f"classify={self.classify_rows} 行"
                 f"(L1 {lv.get('L1', 0)} / L2 {lv.get('L2', 0)} / L3 {lv.get('L3', 0)})"
-                f" · member={self.member_rows} 只({self.member_pages} 页)")
+                f" · member={self.member_rows} 只({self.member_pages} 页){dropped}")
 
 
 def _now() -> str:
@@ -200,16 +211,27 @@ def _classify_tuples(rows: Sequence[Dict[str, Any]], now: str) -> List[tuple]:
     return out
 
 
-def _member_tuples(rows: Sequence[Dict[str, Any]], now: str) -> List[tuple]:
-    """⚠ **同票两行会当场报错,⛔ 不静默留最后一条**:`ts_code` 是 PK,重复行本来就写不进去,
+def _member_tuples(
+    rows: Sequence[Dict[str, Any]], now: str
+) -> Tuple[List[tuple], List[str]]:
+    """→ `(可落库的行, 被丢掉的 ts_code)`。
+
+    ⚠ **同票两行会当场报错,⛔ 不静默留最后一条**:`ts_code` 是 PK,重复行本来就写不进去,
     但 SQLite 抛的是一句看不出所以然的 `UNIQUE constraint failed`。这里提前点名是哪几只 ——
-    §4.4 实测「每只恰好 1 个 L1/L2/L3」,真出现重复说明接口口径变了,是要人看的事。"""
+    §4.4 实测「每只恰好 1 个 L1/L2/L3」,真出现重复说明接口口径变了,是要人看的事。
+
+    🔴 **丢掉的行要说出口**(复审 L6):`ts_code` / l1 / l2 / l3 任一为空的成员上一版是
+    静默 `continue` 掉的,只在 `pack._market_readings` 的 `missing_sw` 里间接可见 ——
+    隔了一层,看到的人不知道是这里丢的。§4.4 实测覆盖率 100%,所以真掉下来是**数据
+    事故**;`save_snapshot` 只拒绝**空**快照,拦不住「少了 200 只」这种半残快照。"""
     seen: Dict[str, int] = {}
     out = []
+    dropped: List[str] = []
     for r in rows:
         code = _s(r.get("ts_code"))
         l1c, l2c, l3c = _s(r.get("l1_code")), _s(r.get("l2_code")), _s(r.get("l3_code"))
         if not code or not (l1c and l2c and l3c):
+            dropped.append(code or "<无 ts_code>")
             continue
         seen[code] = seen.get(code, 0) + 1
         out_date = _s(r.get("out_date"))
@@ -228,7 +250,13 @@ def _member_tuples(rows: Sequence[Dict[str, Any]], now: str) -> List[tuple]:
         raise ValueError(
             f"成分表里有 {len(dupes)} 只票出现多行归属(§4.4 实测每只恰好 1 个 L1/L2/L3):"
             f"{dupes[:10]}{' …' if len(dupes) > 10 else ''}")
-    return out
+    if dropped:
+        logger.warning(
+            "[sw_industry] 成分快照里有 %d 行归属不全(ts_code / l1 / l2 / l3 有一项为空),"
+            "**没能落库**:%s%s —— §4.4 实测覆盖率应为 100%%,这通常是成分表没拉全或"
+            "接口口径变了,⛔ 不是「这些票没有行业」",
+            len(dropped), dropped[:10], " …" if len(dropped) > 10 else "")
+    return out, dropped
 
 
 def save_snapshot(
@@ -239,12 +267,14 @@ def save_snapshot(
     """把两张表整体换成这一份快照(一个短事务内 DELETE + INSERT)。
 
     ⛔ **不做增量 diff**:分类调整时增量会留下既不属于新表也不属于旧表的孤儿行,
-    而全量重拉本来只要两次 API 调用。返回 `(classify_rows, member_rows)` 实写行数。
+    而全量重拉本来只要两次 API 调用。
+    返回 `(classify_rows, member_rows, dropped_member_codes)` —— 第三项是**归属不全
+    因而没能落库**的那些(复审 L6:⛔ 不静默丢)。
     """
     init_schema(db_path)
     now = _now()
     ct = _classify_tuples(classify_rows, now)
-    mt = _member_tuples(member_rows, now)
+    mt, dropped = _member_tuples(member_rows, now)
     if not ct or not mt:
         raise ValueError(
             f"⛔ 拒绝用空快照覆盖既有分类表(classify={len(ct)} / member={len(mt)}) —— "
@@ -259,7 +289,7 @@ def save_snapshot(
             "INSERT INTO sw_industry_member "
             "(ts_code, name, l1_code, l1_name, l2_code, l2_name, l3_code, l3_name, "
             " in_date, out_date, is_current, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", mt)
-    return len(ct), len(mt)
+    return len(ct), len(mt), dropped
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -363,11 +393,18 @@ def refresh(
     member_rows, pages = mres.data
 
     try:
-        n_cls, n_mem = save_snapshot(classify_rows, member_rows, db_path=db_path)
+        n_cls, n_mem, dropped = save_snapshot(classify_rows, member_rows, db_path=db_path)
     except Exception as e:  # noqa: BLE001  落库失败同样转 reason,不掀翻调用方
         return SwRefreshStats(ok=False, reason=f"落库失败:{e}")
 
     problems = verify(db_path)
+    # 🔴 丢行进 `problems`(复审 L6):§4.4 实测覆盖率 100%,丢掉哪怕一只都是数据事故。
+    # `save_snapshot` 只拒绝**空**快照,拦不住「少了 200 只」这种半残快照 ——
+    # 而半残快照会让下游一批票查无行业归属、相对强度算不出来。
+    if dropped:
+        problems = [*problems, (
+            f"成分快照有 {len(dropped)} 行归属不全没能落库:"
+            f"{dropped[:10]}{' …' if len(dropped) > 10 else ''}")]
     stats = SwRefreshStats(
         ok=not problems,
         reason="ok" if not problems else ";".join(problems),
@@ -375,6 +412,8 @@ def refresh(
         level_counts=level_counts(db_path),
         member_rows=n_mem,
         member_pages=pages,
+        member_dropped=len(dropped),
+        member_dropped_codes=tuple(dropped[:20]),
     )
     return stats
 

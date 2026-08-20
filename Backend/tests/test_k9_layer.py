@@ -424,7 +424,8 @@ class TestQuota:
             cand("BBB", (Pattern.P1,), 0.5),
         ]
         q = P.QuotaParams(min=1, max=1, floor_per_channel=1, over_strict_consecutive_days=3)
-        alloc = quota_mod.allocate(candidates, q)
+        alloc = quota_mod.allocate(
+            candidates, q, recalled_patterns={p for c in candidates for p in c.patterns})
         assert [s.candidate.ts_code for s in alloc.seated] == ["DDD"]
         assert alloc.seated[0].seat_kind is SeatKind.FLOOR
 
@@ -442,7 +443,8 @@ class TestQuota:
             cand("CCC", (Pattern.P3,), 0.4),
         ]
         q = P.QuotaParams(min=1, max=2, floor_per_channel=1, over_strict_consecutive_days=3)
-        alloc = quota_mod.allocate(candidates, q)
+        alloc = quota_mod.allocate(
+            candidates, q, recalled_patterns={p for c in candidates for p in c.patterns})
         # 并列 0.9 → 按 p1<p2<p3<p4 定序,p1 先挑走 AAA;p3 只能取次优 CCC
         assert [s.candidate.ts_code for s in alloc.seated] == ["AAA", "CCC"]
         assert all(s.seat_kind is SeatKind.FLOOR for s in alloc.seated)
@@ -469,6 +471,14 @@ class TestCalibratedValueSlots:
         if policy == "drop":
             assert res.shortlist.dropped_by_heat_absent, "drop 必须真的丢票"
             assert not set(res.shortlist.dropped_by_heat_absent) & set(entries)
+            # 🔴 复审 L1:被 drop 的票**不许**让一个有候选的形态变成「今日无此形态」。
+            # `absent_patterns` 与 `channel_counts` 在同一份报告里,两个数⛔ 不许打架。
+            for p in res.shortlist.absent_patterns:
+                counts = res.shortlist.channel_counts[p.value]
+                assert counts["strict"] == counts["relaxed"] == 0, (
+                    f"{p.value} 被标成「今日无此形态」,但 channel_counts 说它今天有候选 "
+                    f"{counts} —— 那是被 heatAbsentPolicy='drop' 丢掉的,"
+                    f"该由 dropped_by_heat_absent 单独说")
         elif policy == "zero":
             assert any(e.industry_heat_score == 0.0 for e in entries.values())
         else:

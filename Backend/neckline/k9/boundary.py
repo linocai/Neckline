@@ -195,8 +195,13 @@ def apply(
         .when(pl.col("suspend_flag") == SUSPEND_HALTED).then(pl.lit(EXCL_SUSPENDED))
         .when(pl.col("_illiquid").fill_null(False)).then(pl.lit(EXCL_ILLIQUID))
         .when(pl.col("is_limit_up").fill_null(False)).then(pl.lit(EXCL_LIMIT_UP))
+        # ⚠ `high` / `pre_close` 缺一 → `high_ret_pp` 为 null → **不排除**(复审 L2)。
+        # 这一句上一版是**隐式**的(null 传染进 `&` 之后 `when` 当 false),现在写明:
+        # 方向与第 7 条一致(「算不出来」不等于「它冲高回落了」),⛔ 但不许再靠
+        # 「读的人自己看得出 null 传染」——那是一条没写下来的口径。
         .when(
             close_ret_pp.is_not_null()
+            & high_ret_pp.is_not_null()
             & (close_ret_pp > boundary.spike_fade_ret_pct)
             & ((high_ret_pp - close_ret_pp) >= boundary.spike_fade_gap_pct)
         ).then(pl.lit(EXCL_SPIKE_FADE))

@@ -206,9 +206,15 @@ def compute_day(
     ⛔ 签名里没有参数包,也**收不下**参数包 —— `coverage_all` 的整条计算路径
     结构上读不到任何待标定数字(§5.8.1)。策略侧的信息只能经 `dispositions`
     这条**数据**通道进来。
+
+    ⚠ `pack.rows` 是**每次访问现读 parquet** 的属性(`facts/store.py` 纪律 4),
+    所以这里取**一次**存局部变量 —— 上一版一次调用读了 3 遍(`.columns` /
+    `.select(...)` / `limitmap.compute(...)` 各一次),5500 行 × 3 在 §12 坑 1
+    那台 2 vCPU / 1.6 G 的机器上没必要(复审 L4)。
     """
-    rows = pack.rows.select([c for c in NEEDED_COLUMNS if c in pack.rows.columns])
-    lmap = limitmap_mod.compute(pack.rows)
+    frame = pack.rows                     # ← 只读这一次
+    rows = frame.select([c for c in NEEDED_COLUMNS if c in frame.columns])
+    lmap = limitmap_mod.compute(frame)
     limit_ups = rows.filter(pl.col("is_limit_up")) if not rows.is_empty() else rows
 
     disp_of = {d.ts_code: d for d in (dispositions or ())}

@@ -24,7 +24,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from neckline.k9.contract import PATTERN_ORDER, ChannelHit, Pattern, SeatKind, Tier
 from neckline.k9.params import QuotaParams
@@ -88,14 +88,27 @@ class Allocation:
         return out
 
 
-def allocate(candidates: Sequence[ScoredCandidate], quota: QuotaParams) -> Allocation:
-    """保底 → 自由竞争 → 后备。`candidates` 必须已按名次升序(`ranking.rank` 的输出)。"""
+def allocate(
+    candidates: Sequence[ScoredCandidate],
+    quota: QuotaParams,
+    *,
+    recalled_patterns: Iterable[Pattern],
+) -> Allocation:
+    """保底 → 自由竞争 → 后备。`candidates` 必须已按名次升序(`ranking.rank` 的输出)。
+
+    🔴 `recalled_patterns` **必填**(2026-08-21 复审 L1):K9 §五-5 的「诚实缺席」
+    说的是「某形态当日**无候选**」,而 `candidates` 是 `ranking.rank` 的输出 ——
+    已经过了 `heatAbsentPolicy='drop'` 那一刀。拿它算缺席,会把「有候选、但候选
+    因为查不到行业热度被丢了」误报成「今日无此形态」,而同一份报告里的
+    `channel_counts`(取自 drop **之前**的 `decision.per_pattern`)会说那个形态
+    今天有几只 —— 两个数当场打架。
+    被 drop 的票单独在 `Shortlist.dropped_by_heat_absent` 里说,⛔ 不混进缺席。
+    ⛔ 不给默认值:空默认会让这条口径在调用方忘了传时安静退回旧行为。
+    """
     if quota.min > quota.max:
         raise ValueError(f"quota.min({quota.min}) > quota.max({quota.max})")
 
-    present = {
-        p for c in candidates for p in c.patterns
-    }
+    present = set(recalled_patterns)
     absent = tuple(p for p in PATTERN_ORDER if p not in present)
 
     seat_of: Dict[str, SeatKind] = {}

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 
 import pytest
@@ -58,11 +59,17 @@ def _member_rows(start: int, count: int):
             for i in range(count)]
 
 
-def _fake_members(total: int, page_limit: int = 3000):
-    """`index_member_all` 的替身。每次调用记一笔到 `fetcher.calls`,供断言「真的翻了几页」。"""
+def _fake_members(total: int, page_limit: int = 3000, holes: tuple = ()):
+    """`index_member_all` 的替身。每次调用记一笔到 `fetcher.calls`,供断言「真的翻了几页」。
+
+    `holes` = 把第几号(全局序号)那几行的 `l2_code` 抹空 —— 半残快照的形状。"""
     def fetcher(limit: int = page_limit, offset: int = 0):
         fetcher.calls.append((limit, offset))
-        return TushareResult.success(_member_rows(offset, max(0, min(limit, total - offset))))
+        rows = _member_rows(offset, max(0, min(limit, total - offset)))
+        for i, r in enumerate(rows, start=offset):
+            if i in holes:
+                r["l2_code"] = ""
+        return TushareResult.success(rows)
 
     fetcher.calls = []
     return fetcher
@@ -194,6 +201,30 @@ class TestPersistence:
         """⛔ 空覆盖会把「今天没拉到」变成「这些票查无行业」。"""
         with pytest.raises(ValueError, match="拒绝用空快照覆盖"):
             sw.save_snapshot([], [], db_path=db)
+
+    def test_a_member_row_with_a_hole_in_it_is_named_not_silently_dropped(self, db, caplog):
+        """🔴 复审 L6:`ts_code` / l1 / l2 / l3 任一为空的成员上一版是**静默 continue**。
+
+        它只在 `pack._market_readings` 的 `missing_sw` 计数里间接可见 —— 隔了一层,
+        看到的人不知道是这里丢的。§4.4 实测覆盖率 100%,所以丢行是**数据事故**;
+        `save_snapshot` 只拒绝**空**快照,拦不住「少了 200 只」这种半残快照。
+        """
+        rows = _member_rows(0, 5)
+        rows[2]["l2_code"] = ""                    # 归属不全 → 落不进库
+        with caplog.at_level(logging.WARNING):
+            n_cls, n_mem, dropped = sw.save_snapshot(
+                _classify_rows("L2", 3), rows, db_path=db)
+        assert n_mem == 4 and dropped == [rows[2]["ts_code"]]
+        assert any("归属不全" in r.getMessage() for r in caplog.records), "丢行必须打 WARNING"
+
+    def test_a_half_broken_snapshot_makes_the_refresh_not_ok(self, db):
+        """半残快照 → `ok=False` + `reason` 点名,⛔ 不是一句「拉完了」。"""
+        stats = sw.refresh(db_path=db, classify_fetcher=_fake_classify(),
+                           member_fetcher=_fake_members(total=10, holes=(3,)))
+        assert stats.ok is False
+        assert "归属不全" in stats.reason
+        assert stats.member_dropped == 1 and len(stats.member_dropped_codes) == 1
+        assert "丢 1 只" in stats.summary()
 
     def test_out_date_empty_means_currently_effective(self, db):
         rows = _member_rows(0, 2)
