@@ -36,6 +36,10 @@ CLIENT_ROOT = _ROOT.parent / "App"
 NETWORKING = CLIENT / "Networking"
 MODELS_DIR = NETWORKING / "Models"
 API_CLIENT = NETWORKING / "APIClient.swift"
+#: 推送落点表(`nkPushRoute(forKind:)`)与 `AppTab` / `SelectionViewMode` 的所在。
+#: ⚠ 这两份**不在** `Networking/` 子树里,故不进 `networking_swift_text()`。
+PUSH_MANAGER = CLIENT / "Push" / "PushManager.swift"
+APP_MODEL = CLIENT / "App" / "AppModel.swift"
 
 #: 🔴 五份 DTO 文件各留一个**只可能出现在它里面**的哨兵类型。
 #: 少一个 = 扫描域缺了一块 = 所有缺席断言在那一块上失明 → 当场报红。
@@ -114,6 +118,44 @@ def type_block(name: str, *, text: str | None = None) -> str:
     return body[m.start():m.end() + (nxt.start() if nxt else len(rest))]
 
 
+def swift_decl_block(header: str, *, text: str) -> str:
+    """取一段 Swift 声明的**大括号配对块**(声明行 → 与它配对的那个 `}`)。
+
+    `type_block()` 靠「下一个顶层声明」收尾,够用在 DTO 上;但函数体里嵌着
+    `switch` / `case`,一段函数的下一个顶层声明可能隔着几十行别的东西 ——
+    路由表这种**要逐条读 case 的块**必须真的配对括号。
+
+    🔴 **计括号时跳过字符串字面量与行注释**:文案里出现一个 `}` 就会把块切断,
+    而切断的后果是**绿灯守着半个块**(同 `type_block` 那条「切错块」的教训)。
+    `header` 是定位声明行的正则(多行模式)。找不到 → 返回空串,由调用方断言。
+    """
+    m = re.search(header, text, re.M)
+    if m is None:
+        return ""
+    i = text.find("{", m.start())
+    if i < 0:
+        return ""
+    depth, j, n = 0, i, len(text)
+    while j < n:
+        c = text[j]
+        if c == '"':
+            j += 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+        elif c == "/" and j + 1 < n and text[j + 1] == "/":
+            while j < n and text[j] != "\n":
+                j += 1
+            continue
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[m.start():j + 1]
+        j += 1
+    return ""
+
+
 def strip_comments(text: str, markers: tuple = ("#", "//", "///")) -> str:
     """剥掉整行注释再判。
 
@@ -132,6 +174,7 @@ def strip_comments(text: str, markers: tuple = ("#", "//", "///")) -> str:
 
 __all__ = [
     "CLIENT", "CLIENT_ROOT", "NETWORKING", "MODELS_DIR", "API_CLIENT",
+    "PUSH_MANAGER", "APP_MODEL",
     "model_files", "models_text", "networking_swift_text", "client_swift_files",
-    "type_block", "strip_comments",
+    "type_block", "swift_decl_block", "strip_comments",
 ]

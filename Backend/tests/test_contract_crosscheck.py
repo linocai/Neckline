@@ -5,7 +5,7 @@
 都没人管**(V2 时代那份闸抓到过 `PUT /settings/llm` 采集用户明文 key、发到一个不存在
 的端点、界面上还是一副成功的样子)。
 
-**能机器判的五组**:
+**能机器判的六组**:
 
 1. **客户端调用面 ⊆ 服务端路由面** —— 客户端**任意 Swift 文件**里出现的每一个
    `/api/v1/...` 路径,服务端都必须真有那条路由。差集用 `==` 断言(不是 `<=`):
@@ -16,21 +16,32 @@
    要么在登记过的欠账清单里;且 **reason 面只许按登记增长**。
 5. **冻结快照类 DTO 手写 `init(from:)`** —— 写入当时冻住的那一类,服务端升级永远
    不会给老快照补新键 → 合成 `Codable` 会让「装了新 App 的用户翻几天前的老件」整条解不出。
+6. **推送落点对拍**(V2.5.0 修复组 F-C 新增)—— 服务端**真的还会发出来**的每个
+   `kind`,客户端路由表都必须有一条落点,且落点指向的板块 / 视图**当前真的存在**;
+   反过来,客户端也不许留着指向已退役板块的路由。**这一条是 🔴-1 的根因面**:
+   `push_checklist_summary` 复用 `KIND_PRECALL`,而客户端照 K8 的名字把它路由到
+   `.positions` —— 裁定 11 已整块下线的板块。用户每个交易日 9:29 收到的那条唯一
+   通知,点开落在一个不存在的地方,**而两侧各自的测试都是绿的**。
 
 ⚠ **本文件不是 review**:它是施工块内的自查,不等于独立复审。
 """
 
 from __future__ import annotations
 
+import ast
 import re
+from pathlib import Path
 
 import pytest
 
 from tests.client_sources import (
     API_CLIENT,
+    APP_MODEL,
+    PUSH_MANAGER,
     client_swift_files,
     models_text,
     strip_comments,
+    swift_decl_block,
     type_block,
 )
 
@@ -517,3 +528,243 @@ def test_client_never_hardcodes_the_playbook_slot_keys():
     for k in sorted(keys - level_keys):
         assert f'"{k}"' not in swift, (
             f"客户端硬编了形态槽位键 `{k}` —— 它该由服务端的 `playbookSlots` 下发。")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 7. 推送落点:服务端**还在发的** kind ↔ 客户端路由表(V2.5.0 修复组 F-C)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 🔴 **这一组守的是 R3 🔴-1 的根因面**,不是那六条编译错。编译错只是症状:
+# `PushManager.swift` 整份住在 `#if os(iOS)` 里,`-destination 'platform=macOS'`
+# 一行都不编译它,于是路由表引用着裁定 11 已删的 `AppTab.baskets` / `.positions`
+# 却一路全绿。**语义那一半更深**:`push_checklist_summary` 复用 `KIND_PRECALL`,
+# 客户端照 K8 的名字把它送去「持仓」—— 一个已经不存在的板块。
+#
+# 修法是两条并用,缺一不可:
+#   ① 路由表**搬出 `#if os(iOS)`**(纯数据,不需要 UIKit)→ macOS 那条构建线
+#      从此替 iOS 逮这类漂移;
+#   ② 本组把「服务端还在发什么」与「客户端往哪送」做成机器对拍 → 下次有人删掉
+#      一条推送、或加一条新推送而忘了客户端,**当场红**。
+# ⛔ 只做 ① 不做 ②:落点写成任一现役 tab 都能编过,语义错照样静默。
+
+def _notify_source() -> str:
+    import neckline  # noqa: PLC0415
+    return (Path(neckline.__file__).parent / "api" / "notify.py").read_text(encoding="utf-8")
+
+
+def _wording_function_to_kind() -> dict:
+    """`api/notify.py` 的每个措辞函数 → 它发的 `kind`(**AST,⛔ 不按函数名猜**)。
+
+    取法:函数体里那次 `push_event(...)` 的第一个实参。是 `KIND_*` 常量 → 解成串;
+    是形参(`push_attention_alert` / `push_holding_risk_alert` 那两个共用入口把 kind
+    当参数收)→ 记成 `None`,由下面的断言逼调用方来教这个扫描器,
+    ⛔ 不静默当成"没有 kind"。
+    """
+    from neckline import notify_kinds  # noqa: PLC0415
+
+    tree = ast.parse(_notify_source())
+    out: dict = {}
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("push_"):
+            continue
+        if node.name == "push_event":
+            continue
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                    and sub.func.id == "push_event" and sub.args):
+                first = sub.args[0]
+                if isinstance(first, ast.Name) and first.id.startswith("KIND_"):
+                    out[node.name] = getattr(notify_kinds, first.id)
+                else:
+                    out[node.name] = None
+                break
+    return out
+
+
+def _live_wording_functions() -> set:
+    """**生产链上真的被调到**的措辞函数(`neckline/**` + `scripts/**`,⛔ 除 `notify.py` 自己)。
+
+    ⚠ 扫的是**调用**,不是 import:`from ... import push_report_ready` 之后不调,
+    那条推送依旧永不发生。`notify.push_x(...)` 与裸 `push_x(...)` 两种写法都收。
+    """
+    import neckline  # noqa: PLC0415
+
+    known = set(_wording_function_to_kind())
+    pkg = Path(neckline.__file__).parent
+    scripts = pkg.parent / "scripts"
+    called = set()
+    for path in sorted(pkg.rglob("*.py")) + sorted(scripts.rglob("*.py")):
+        if path == pkg / "api" / "notify.py":
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:                      # pragma: no cover - 语法坏了自有别的闸报
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = (node.func.id if isinstance(node.func, ast.Name)
+                    else node.func.attr if isinstance(node.func, ast.Attribute) else None)
+            if name in known:
+                called.add(name)
+    return called
+
+
+def live_push_kinds() -> set:
+    """服务端**当前真的还会发出去**的 kind 集合。"""
+    from neckline import notify_kinds  # noqa: PLC0415
+
+    mapping = _wording_function_to_kind()
+    live = set()
+    for fname in sorted(_live_wording_functions()):
+        kind = mapping[fname]
+        assert kind is not None, (
+            f"`{fname}` 的 kind 是运行期参数,而它现在**有生产调用方**了 —— "
+            f"请教会 `_wording_function_to_kind()` 怎么解它,⛔ 别让它静默漏出对拍面。")
+        assert kind not in notify_kinds.RETIRED_KINDS, (
+            f"`{fname}` 发的是已退役 kind `{kind}` —— `push_event` 会当场拒发,"
+            f"这条调用是死的。")
+        live.add(kind)
+    return live
+
+
+def _push_route_block() -> str:
+    """客户端路由函数 `nkPushRoute(forKind:)` 的**配对块**(已剥整行注释)。"""
+    text = PUSH_MANAGER.read_text(encoding="utf-8")
+    block = swift_decl_block(r"^func nkPushRoute\(forKind", text=text)
+    assert block, (
+        f"在 `{PUSH_MANAGER.name}` 里找不到 `func nkPushRoute(forKind:)` —— "
+        f"改名了?本组的对拍会**静默守空集**,请同步改这里。")
+    return strip_comments(block)
+
+
+def client_push_routes() -> dict:
+    """客户端路由表:`kind` → (板块, 选股板块内的视图或 `None`)。"""
+    block = _push_route_block()
+    routes: dict = {}
+    # `case "a", "b":` … 直到该 case 的 `return NKPushRoute(...)`。
+    for m in re.finditer(
+            r'case\s+((?:"[a-z_]+"\s*,?\s*)+):\s*'
+            r'return\s+NKPushRoute\(tab:\s*\.(\w+)\s*,\s*selectionMode:\s*(?:\.(\w+)|nil)\s*\)',
+            block):
+        kinds = re.findall(r'"([a-z_]+)"', m.group(1))
+        for k in kinds:
+            routes[k] = (m.group(2), m.group(3))
+    return routes
+
+
+def _swift_enum_cases(name: str) -> set:
+    """`enum <name>` 的成员名集合(`case a, b, c` 与逐行 `case a = "x"` 两种写法都收)。"""
+    text = APP_MODEL.read_text(encoding="utf-8")
+    block = strip_comments(type_block(name, text=text))
+    assert block, f"`{APP_MODEL.name}` 里找不到 `enum {name}`"
+    cases = set()
+    for line in block.splitlines():
+        m = re.match(r"\s*case\s+([\w\s,]+?)(?:\s*=|$)", line)
+        if m:
+            cases |= {c.strip() for c in m.group(1).split(",") if c.strip()}
+    return cases
+
+
+def test_the_push_route_table_covers_exactly_the_kinds_the_server_still_sends():
+    """🔴 **服务端还在发的 kind ↔ 客户端落点,`==` 对拍**(⛔ 不是 `<=`)。
+
+    两个方向都要:
+      · **少了** = 用户点开一条真通知,App 一动不动(V2.5.0 之前 `report_ready`
+        指着已改名的 `.baskets`,那半年 iOS 根本编不出来);
+      · **多了** = 客户端养着一条永不触发的路由,而它的存在让人以为那个能力还在
+        (`retreat` 当年就是这样,V2.4.0 P0 已按这条纪律删掉)。
+    """
+    from neckline import notify_kinds  # noqa: PLC0415
+
+    live = live_push_kinds()
+    routed = set(client_push_routes())
+    assert routed == live, (
+        f"推送落点对拍不上 —— 服务端还在发 {sorted(live)},客户端路由 {sorted(routed)}。\n"
+        f"  服务端有、客户端没有:{sorted(live - routed)}(点开不跳转)\n"
+        f"  客户端有、服务端没有:{sorted(routed - live)}(永不触发的死路由)")
+    for k in sorted(routed):
+        assert k in notify_kinds.ALL_KINDS, f"客户端路由了一个不在白名单里的 kind `{k}`"
+        assert k not in notify_kinds.RETIRED_KINDS, (
+            f"客户端还在路由已退役 kind `{k}` —— 它永不再有新推送。")
+
+
+def test_every_push_route_lands_on_a_section_that_still_exists():
+    """🔴 **落点必须是当前真的存在的板块 / 视图**(裁定 11 的三板块 IA)。
+
+    ⚠ 这一条**不靠编译器**:`AppTab` 少一个成员时 Swift 会报错,但那条错只在
+    **编译到那份文件的平台**上出现 —— 路由表原先住在 `#if os(iOS)` 里,macOS
+    构建线一行都看不到。本条在 Python 侧按源码对拍,与平台无关。
+    """
+    tabs = _swift_enum_cases("AppTab")
+    modes = _swift_enum_cases("SelectionViewMode")
+    assert "selection" in tabs and "checklist" in modes, "枚举扫描器怕是切错块了"
+    for kind, (tab, mode) in sorted(client_push_routes().items()):
+        assert tab in tabs, (
+            f"kind `{kind}` 落到 `.{tab}` —— `AppTab` 里没有这个板块(现有:{sorted(tabs)})")
+        if mode is not None:
+            assert mode in modes, (
+                f"kind `{kind}` 落到选股板块的 `.{mode}` 视图 —— "
+                f"`SelectionViewMode` 里没有它(现有:{sorted(modes)})")
+        if tab != "selection":
+            assert mode is None, (
+                f"kind `{kind}` 落在 `.{tab}`,却顺带拨了选股板块的视图 —— 那个字段"
+                f"只在 `.selection` 上有意义。")
+
+
+def test_the_checklist_push_lands_on_the_checklist_view_not_merely_the_tab():
+    """🔴 **9:29 那条唯一的日常推送必须落在核对表视图上**,⛔ 不只是「选股」板块。
+
+    `push_checklist_summary` 复用 `KIND_PRECALL`(2026-08-11 用户拍板),语义已由
+    K8 的「盘前校准汇总」换成 K9 的「竞价核对表」。而选股板块里有两个视图,默认落哪一个
+    **由钟点决定**(§5.11)—— 只拨 tab 不拨视图,9:29 点开有机会停在昨晚的清单上,
+    那与落错板块是同一种答非所问。
+    """
+    from neckline import notify_kinds  # noqa: PLC0415
+
+    routes = client_push_routes()
+    assert routes.get(notify_kinds.KIND_PRECALL) == ("selection", "checklist"), (
+        f"竞价核对表推送的落点是 {routes.get(notify_kinds.KIND_PRECALL)} —— "
+        f"应为 选股板块 · 次日核对表视图。")
+    assert routes.get(notify_kinds.KIND_REPORT_READY) == ("selection", "listing"), (
+        f"报告就绪推送的落点是 {routes.get(notify_kinds.KIND_REPORT_READY)} —— "
+        f"应为 选股板块 · 今日清单视图。")
+
+
+def test_the_push_route_table_is_compiled_on_both_platforms():
+    """🔴 **路由表必须住在 `#if os(iOS)` 之外** —— 这是 🔴-1 的结构性修复本身。
+
+    纯数据的映射不需要 UIKit。放在分叉外面,**macOS 那条构建线就替 iOS 把
+    「引用了已删的板块」当场逮住**;放回分叉里面,只跑一个平台的验收又会失明一次。
+    ⛔ 别把它挪回去(真正 iOS 专属的是下面那个 `UNUserNotificationCenterDelegate`)。
+    """
+    text = PUSH_MANAGER.read_text(encoding="utf-8")
+    fork = text.find("\n#if os(iOS)")
+    route = text.find("\nfunc nkPushRoute(forKind")
+    assert fork > 0, "`PushManager.swift` 里找不到 `#if os(iOS)` —— 这份守门在守空集"
+    assert 0 < route < fork, (
+        "`nkPushRoute(forKind:)` 落在了 `#if os(iOS)` 里面 —— macOS 构建线就再也"
+        "看不到它了,而 V2.5.0 的六条编译错正是这样藏了整整一版。")
+    # 裁定 11 已下线的两个板块名,⛔ 路由表里零残留(⚠ 剥注释后再扫:文件头那段
+    # 修复说明必须写得出这两个名字才讲得清,把说明算进命中会逼后来者删注释凑绿)。
+    block = _push_route_block()
+    for retired in ("baskets", "positions"):
+        assert retired not in block, (
+            f"路由表里还留着已下线的板块 `{retired}`(裁定 11)")
+
+
+def test_the_push_route_scanners_actually_see_something():
+    """闸自己的守门:三个扫描器**都不许是空集**。
+
+    一个恒空的对拍是绿的、也是没用的 —— 本仓在 `_hits` 假阳性那一条上已经写过
+    同族教训(§14 S12 登记 ⑨)。
+    """
+    mapping = _wording_function_to_kind()
+    assert len(mapping) >= 8, f"`api/notify.py` 的措辞函数只扫到 {len(mapping)} 个?"
+    assert any(v is None for v in mapping.values()), (
+        "没扫到任何「kind 是运行期参数」的共用入口 —— `push_attention_alert` 那一族"
+        "还在文件里,扫不到说明 AST 解析歪了。")
+    live_fns = _live_wording_functions()
+    assert live_fns, "生产链上一个 push 调用点都没扫到 —— 扫描器失效了"
+    assert live_push_kinds(), "服务端 live kind 集合是空的?"
+    assert len(client_push_routes()) >= 2, "客户端路由表扫到的条目少于 2 条"
