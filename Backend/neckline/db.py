@@ -1604,6 +1604,120 @@ CREATE TABLE IF NOT EXISTS sw_industry_member (
 );
 CREATE INDEX IF NOT EXISTS idx_sw_member_l2 ON sw_industry_member(l2_code);
 CREATE INDEX IF NOT EXISTS idx_sw_member_current ON sw_industry_member(is_current);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.5.0 S3:架构第一层 · 事实层(PROJECT_PLAN §5.3)
+-- ══════════════════════════════════════════════════════════════════════════
+--
+-- 三个产物三个载体,⛔ 不许混:
+--   · **大表**(一行一只票,~40 列)→ parquet 日分区 `fact_pack/`(SQLite 装不下
+--     5500 行/天 × 250 天,§3.2);
+--   · **行业事实**(申万二级当日中位数)→ 本文件的 `sw_industry_daily`;
+--   · **清单 / 指纹 / 缺口 / 市场级读数**→ 本文件的 `fact_packs`(**永不裁剪**:
+--     parquet 被滚动裁剪后,「那次跑用的是哪版包」仍必须查得到)。
+
+-- 申万二级行业当日事实(裁定 2 / 裁定 3)。
+-- 🔴 **无 rank、无强度日、无持续天数、无最小成员数门槛** —— 那些要 `minMembers` /
+-- 分位,是**策略参数**,住 `k9/industry_heat.py`(架构 §二 判据:凡是我会想去调的
+-- 东西都落在策略层)。本表只老实回答「这个二级行业今天的成员涨跌幅中位数是多少、
+-- 用了几个成员算、剔掉了几个停牌的」。
+--
+-- ⚠ `median_ret` 的口径(§4.6,⛔ 别写成「过滤 suspend_d 全部行」):中位数在当日
+-- `daily` 现有行上算 —— `suspend_type='S'`(停牌)的票天然不在 `daily` 里,自动已
+-- 剔除;`suspend_type='R'` 是**复牌**,当天正常交易(实测 20230103 的 000045.SZ 还
+-- 涨停 +10.01%),⛔ 一律不过滤。`suspended_excluded` 记的是**异常**:S 类竟然出现
+-- 在 `daily` 里、被本层强行排除掉的行数,正常恒为 0(见 `facts/industry.py`)。
+CREATE TABLE IF NOT EXISTS sw_industry_daily (
+  trade_date          TEXT NOT NULL,        -- 'YYYYMMDD'
+  l2_code             TEXT NOT NULL,        -- 如 '801125.SI'(⛔ 按代码认,不按名称)
+  l2_name             TEXT NOT NULL,
+  member_count        INTEGER NOT NULL,     -- 实际参与中位数的成员数(已剔除异常 S 行)
+  suspended_excluded  INTEGER NOT NULL,     -- 被剔除的异常 S 行数,正常恒 0
+  median_ret          REAL NOT NULL,        -- 成员 ret_1d 中位数(原始未复权收盘比)
+  computed_at         TEXT NOT NULL,
+  PRIMARY KEY (trade_date, l2_code)
+);
+CREATE INDEX IF NOT EXISTS idx_sw_industry_daily_date ON sw_industry_daily(trade_date);
+
+-- 事实包清单 / 指纹(§5.3.1)。**审计要活得比数据久**:parquet 按 250 交易日滚动
+-- 裁剪,本表**永不裁剪**。
+--
+-- 🔴 三条硬纪律(§5.3.2,每条都有守门单测):
+--   ① **不许覆盖** —— `UNIQUE(trade_date, pack_version)` + 应用层用 `INSERT`
+--      (⛔ 不是 `INSERT OR REPLACE`)。口径变了就发新 `pack_version`,
+--      ⛔ 没有静默重写这条路。
+--   ② **写序** —— 先 parquet 就位再插本表。进程死在中间只会留一个没有清单的孤儿
+--      parquet(不可见,下次覆盖);反序则会留一个指向空气的清单。
+--   ③ **数据未到齐 → 不冻结** —— 本表里**只可能有 `state='frozen'` 的行**。
+--      「今天没跑成」是**没有行**,不是一行标着 incomplete 的记录(§3.5)。
+CREATE TABLE IF NOT EXISTS fact_packs (
+  pack_id                TEXT PRIMARY KEY,   -- uuid4
+  trade_date             TEXT NOT NULL,      -- 'YYYYMMDD'
+  pack_version           TEXT NOT NULL,      -- 事实层口径版本,如 'fp-1'
+  origin                 TEXT NOT NULL,      -- 'live' | 'backfill'
+  state                  TEXT NOT NULL,      -- 恒 'frozen'(见纪律③)
+  content_fingerprint    TEXT NOT NULL,      -- parquet 文件 sha256
+  row_count              INTEGER NOT NULL,
+  sources_json           TEXT NOT NULL,      -- 每个上游分区的 路径 / 行数 / mtime
+  market_json            TEXT NOT NULL,      -- 市场级读数(指数 / 涨停分布 / 涨停簇摘要 …)
+  suspend_anomaly_count  INTEGER NOT NULL,   -- S 类竟然出现在 daily 的行数,正常恒 0
+  frozen_at              TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_packs_date_version
+    ON fact_packs(trade_date, pack_version);
+CREATE INDEX IF NOT EXISTS idx_fact_packs_date ON fact_packs(trade_date);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.5.0 S4:覆盖率成绩线(PROJECT_PLAN §5.8.1,架构 §5.2)
+-- ══════════════════════════════════════════════════════════════════════════
+--
+-- 🔴 **口径 = 涨停,⛔ 不依赖任何待标定数字** —— 这是参数包回来之前唯一能跑起来的
+-- 成绩线,做成「尺子」。`coverage_all`(头条数字)这一列的整条计算路径**读不到参数包**
+-- (守门单测断言 `scorecard/**` 零 import `neckline.k9`)。
+--
+-- ⚠ **NULL 与 0 语义不同,⛔ 不许互顶**:
+--   · `coverage_all` NULL = 昨天还没有清单(上线首日 / 参数未配置的日子),
+--     ⛔ 不是「一只都没覆盖到」;
+--   · `coverage_in_pool` NULL = 边界参数缺失或当日无 disposition,⛔ 不是 0
+--     (§5.8.1 逐字要求)。
+CREATE TABLE IF NOT EXISTS k9_coverage_daily (
+  trade_date           TEXT PRIMARY KEY,     -- 'YYYYMMDD',涨停发生的那一天(D)
+  pack_id              TEXT NOT NULL,        -- 这一行算在哪份冻结事实包上
+  pack_version         TEXT NOT NULL,
+  limit_up_count       INTEGER NOT NULL,     -- 分母:当日全部涨停票
+  limit_down_count     INTEGER NOT NULL,
+  zaban_count          INTEGER NOT NULL,
+  zaban_rate           REAL,                 -- NULL = 当日既无涨停也无炸板(分母 0)
+  max_consec_days      INTEGER,              -- 连板高度,NULL = 当日无涨停
+  cluster_count        INTEGER NOT NULL,     -- 申万二级涨停簇个数(⛔ 不含概念板块)
+  listing_trade_date   TEXT,                 -- D−1 清单的 trade_date,NULL = 昨天没有清单
+  listing_size         INTEGER,
+  covered_count        INTEGER,              -- 分子,NULL = 昨天没有清单
+  coverage_all         REAL,                 -- 头条数字,NULL 见上方 ⚠
+  in_pool_denominator  INTEGER,              -- NULL = 无 disposition / 边界参数缺失
+  covered_in_pool      INTEGER,
+  coverage_in_pool     REAL,                 -- NULL 见上方 ⚠(⛔ 不写 0)
+  computed_at          TEXT NOT NULL
+);
+
+-- 漏检归因:每只**没被覆盖**的涨停票一行。「昨天为什么没选中这只涨停票」从此是
+-- 一次查表,不是一次考古(§5.4.8)。
+-- `reason` 取值见 `scorecard/coverage.py::MissReason`(闭合枚举,⛔ 不许现编字符串)。
+CREATE TABLE IF NOT EXISTS k9_coverage_misses (
+  trade_date            TEXT NOT NULL,
+  ts_code               TEXT NOT NULL,
+  name                  TEXT,
+  sw_l2_code            TEXT,
+  sw_l2_name            TEXT,
+  board                 TEXT,
+  consec_limit_up_days  INTEGER,
+  reason                TEXT NOT NULL,
+  detail                TEXT,
+  computed_at           TEXT NOT NULL,
+  PRIMARY KEY (trade_date, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_k9_coverage_misses_reason
+    ON k9_coverage_misses(trade_date, reason);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

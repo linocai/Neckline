@@ -145,7 +145,14 @@ def test_load_bearing_modules_live_in_their_new_homes():
     for name in ("already_pushed", "record_pushed"):
         assert hasattr(dedup, name), f"dedup.py 缺 {name}"
     assert hasattr(panel, "build_research_panel")
-    assert hasattr(limitmap, "refresh_limit_clusters")
+    # 🔴 V2.5.0 S3 改口径:S1 断言的是搬家后的旧 API `refresh_limit_clusters`
+    # (K8 口径:按 `stock_basic.industry` + 概念板块聚类、upsert 进
+    # `limit_cluster_daily`)。S3 按**裁定 3** 把 limitmap 切到申万二级、按 K9 §3.0
+    # 砍掉概念锚点、按 §5.3.1 改为**纯函数不落表**(涨停簇摘要进
+    # `fact_packs.market_json`)。本条守的是「承重墙在不在新家」,故改断新 API;
+    # 旧 API 的物理消失由 `test_facts_limitmap.py::test_concept_boards_are_gone_
+    # from_the_module_entirely` 逐个点名。
+    assert hasattr(limitmap, "compute")
 
 
 @pytest.mark.parametrize("old_path", [

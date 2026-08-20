@@ -49,6 +49,11 @@ _VALID_TABLES = {
     # 写入逻辑留给 V2-⑧;本块只声明表名与数值列 canonical dtype。
     "intraday_ticks",
     "auction_snapshots",
+    # V2.5.0 S3(§5.3.1):**当日事实包大表**,一行一只票、~40 列。走 parquet 而非
+    # SQLite 的理由(§3.2):5500 行/天 × 250 天会把 2vCPU/1.6G 的机器拖垮。
+    # 🔴 唯一写入口是 `facts/store.py::freeze_pack()`(AST 守门断言全仓只有那一处
+    # 调 `write_table_day("fact_pack", ...)`)。
+    "fact_pack",
 }
 
 
@@ -124,6 +129,23 @@ TABLE_FLOAT_COLS: Dict[str, Tuple[str, ...]] = {
     # "计数类"列——如 `daily.vol`——统一走 CANONICAL_FLOAT 的既有口径一致,不特殊化)。
     "intraday_ticks": ("price", "volume", "amount", "cum_volume", "cum_amount"),
     "auction_snapshots": ("auction_price", "auction_volume", "auction_amount", "pre_close", "gap_pct"),
+    # V2.5.0 S3(§12 坑 2:新 parquet 表必须显式声明数值列)。事实包 40 列里的 25 个
+    # 浮点列全部在此。**刻意不声明**的是本项目自算的非浮点列 —— `is_st` /
+    # `is_limit_up` / `is_limit_down` / `is_limit_open` 是 Boolean、
+    # `consec_limit_up_days` 是 Int64、`list_date` 是 Date,它们不经 TuShare 直接落盘,
+    # 无类型漂移风险(同 `limit_derived` 既有惯例)。
+    "fact_pack": (
+        # 价量(原始未复权)
+        "open", "high", "low", "close", "pre_close", "pct_chg", "vol", "amount", "adj_factor",
+        # 当日衍生
+        "ret_1d", "amp_1d", "limit_up_price", "limit_down_price",
+        # daily_basic
+        "turnover_rate", "turnover_rate_f", "volume_ratio", "circ_mv", "total_mv", "free_share",
+        # 资金流
+        "net_amount", "net_amount_rate", "buy_elg_amount", "buy_lg_amount",
+        # 行业相对(裁定 2:基准是申万二级成员中位数,⛔ 不是行业指数涨跌幅)
+        "sw_l2_median_ret", "rel_strength_1d",
+    ),
 }
 
 

@@ -159,9 +159,17 @@ def _build_calendar_ordinal(calendar_days: List[date]) -> pl.DataFrame:
     return pl.DataFrame({"trade_date": sorted(set(calendar_days))}).with_row_index("trade_ord")
 
 
-def _is_st_name(name_col: str = "name") -> pl.Expr:
-    """名称是否 ST/*ST 前缀(去掉领头 "*" 后判 "ST" 开头,同时吃住两种写法)。"""
+def is_st_name(name_col: str = "name") -> pl.Expr:
+    """名称是否 ST/*ST 前缀(去掉领头 "*" 后判 "ST" 开头,同时吃住两种写法)。
+
+    **ST 判定的唯一口径**(V2.5.0 S3 由 `_is_st_name` 提为公开):事实包大表的 `is_st`
+    列与 K9 第一层第 3 条排除项都走这一个表达式,⛔ 不许另写一份
+    (PROJECT_PLAN §5.4.4 第 3 条逐字要求「复用 `limit_derived._is_st_name` 口径」)。"""
     return pl.col(name_col).str.strip_chars("*").str.starts_with("ST")
+
+
+#: 兼容旧名(本模块内部调用点仍用它);⛔ 新代码一律用 `is_st_name`。
+_is_st_name = is_st_name
 
 
 def compute_limit_derived(
@@ -344,6 +352,7 @@ __all__ = [
     "compute_limit_derived",
     "GEM_REFORM_DATE",
     "MAIN_ST_REFORM_DATE",
+    "is_st_name",
     "resolve_limit_pct",
     "resolve_exempt_days",
     "compute_intraday_limit_prices",

@@ -120,6 +120,49 @@ def update_sw_industry() -> None:
     logger.info("[sw_industry] %s", stats.summary())
 
 
+def build_and_freeze_fact_pack(target: date) -> None:
+    """V2.5.0 S3:当日事实包构建 + 冻结(PROJECT_PLAN §5.3)。
+
+    🔴 **数据未到齐 → 不冻结**(架构 §3.5):`build()` 返回 `IncompletePack` 时本函数
+    **什么都不写**,只把缺口逐条打进日志 —— 报告层据此出「今天没跑成 · <缺口逐条>」。
+    ⛔ 不冻一份残包、⛔ 不用昨天的数据顶今天的位。
+
+    **已冻结过就跳过**(`PackAlreadyFrozen`):冻结不可覆盖(§5.3.2 纪律 3),补跑同一天
+    是幂等的 no-op,不是错误。口径真变了走新 `pack_version`。
+
+    与 `update_sw_industry` 同一姿势:**尽力而为不改退出码,但日志用 ERROR** ——
+    它是整条 K9 链的输入,不是增强项。
+    """
+    from neckline.facts import pack as fact_pack
+    from neckline.facts import store as fact_store
+
+    try:
+        built = fact_pack.build(target)
+    except Exception:  # noqa: BLE001
+        logger.error("[fact_pack] %s 构建异常(已吞,不阻断主增量)", target, exc_info=True)
+        return
+    if isinstance(built, fact_pack.IncompletePack):
+        logger.error(
+            "[fact_pack] %s **数据未到齐,不冻结**(报告将出「今天没跑成」)。缺口:%s。"
+            "补齐后重跑:python scripts/daily_update.py %s",
+            target, built.describe(), target.strftime("%Y%m%d"),
+        )
+        return
+    try:
+        frozen = fact_store.freeze_pack(built, origin=fact_store.ORIGIN_LIVE)
+    except fact_store.PackAlreadyFrozen as e:
+        logger.info("[fact_pack] %s 已冻结过,跳过(幂等):%s", target, e)
+        return
+    except Exception:  # noqa: BLE001
+        logger.error("[fact_pack] %s 冻结异常(已吞,不阻断主增量)", target, exc_info=True)
+        return
+    logger.info(
+        "[fact_pack] %s 已冻结:%d 行、%d 个二级行业、停牌异常 %d、sha256=%s…",
+        target, frozen.row_count, len(built.industry_rows),
+        frozen.suspend_anomaly_count, frozen.content_fingerprint[:12],
+    )
+
+
 def update_suspend_list(target: date) -> None:
     """v1.4-①-B:当日全市场停牌名单落盘(`suspend_d`,走 `write_table_day` 铁律路径)。
     **尽力而为**——拉不到就不落盘,`price_stale` 读不到该分区时 reason 如实降级为
@@ -181,6 +224,9 @@ def main() -> int:
     update_concept_boards(target)
     # V2.5.0 S2:申万二级分类日更(**判据输入**,失败打 ERROR;见函数 docstring)。
     update_sw_industry()
+    # V2.5.0 S3:事实包构建 + 冻结(架构第一层)。必须排在 `update_sw_industry` **之后**
+    # (申万归属是中位数的输入)与全部行情落盘之后(完整性判定要看当日分区)。
+    build_and_freeze_fact_pack(target)
     # —— 🔴 V2.5.0 S1:三项 K8 日更已摘除 ————————————————————————————————————
     # `update_industry_strength`(`industry_strength_daily`)、`update_industry_stage`
     # (`industry_stage_daily`)、`update_scan_layer`(`limit_cluster_daily` /

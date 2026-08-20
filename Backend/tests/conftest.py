@@ -273,7 +273,6 @@ def seed_synthetic_market(
     *,
     start: date = date(2024, 1, 2),
     n_days: int = 30,
-    with_industry_strength: bool = True,
 ) -> List[date]:
     """铺一份"看起来正常"的多票多日合成行情(daily/adj_factor/daily_basic +
     stock_basic + namechange + trade_cal),覆盖 `base_universe_expr` 与 rule v1
@@ -350,15 +349,11 @@ def seed_synthetic_market(
         {"index_code": "885921.TI", "con_code": "600001.SH"},
         {"index_code": "885921.TI", "con_code": "600002.SH"},
     ])
-    # v1.4-⑩(§七 P0-23):行业强度**预计算表**日更 —— 一个「看起来正常」的市场,16:05
-    # 日更该跑的都跑过了,表里该有行。**必须放在 `insert_stock_basic` 之后**(要行业映射)。
-    # 本 fixture 的 3 只有价票同属「电气设备」(3 < `_MIN_MEMBERS`=5)→ 落行但
-    # `industry_rank` 为 NULL,故 `load_industry_strength` 仍返回空列表 —— 与 v1.4-② 现算
-    # 时代的行为逐位一致(判据侧无变化),但**新鲜度是「就绪」而不是「未就绪」**,这正是
-    # 「没有(不够格)」与「没看(表空)」的分野。`with_industry_strength=False` 可造
-    # 「日更没跑」的降级场景。
-    if with_industry_strength:
-        seed_industry_strength(settings, dates)
+    # 🔴 V2.5.0 S3:这里原先还调一个 `seed_industry_strength(settings, dates)`,
+    # 铺 K8 的 `industry_strength_daily` 预计算表。**那个函数在 S1 删测试时就已经
+    # 不存在了**(调用点没跟着删,靠 `TestEntryScreens` 里只剩夹具、没有用例才没炸)。
+    # 本片随 `report/industry_strength.py` 整体退役一并摘除:行业强度的新家是
+    # `facts/industry.py`(申万二级中位数,**无最小成员数门槛** —— 那是策略参数)。
     return dates
 
 
@@ -521,6 +516,42 @@ def markdown_modulo_generated_at(bundle) -> str:
     return bundle.markdown.replace(stamp, "<GENERATED_AT>")
 
 
+def insert_sw_members(settings: Settings, rows: List[dict]) -> None:
+    """写 `sw_industry_member`(V2.5.0 S3):申万二级归属是**判据输入** —— 事实包的
+    `sw_l2_code` / 行业中位数 / 相对强度全靠它,K9 第一层的白酒排除也按 `l2_code` 走。
+
+    每行至少给 `ts_code` 与 `l2_code`;`l1_*` / `l3_*` 缺省从 `l2_*` 派生(测试里
+    只有二级是判据,一级 / 三级只是随包冻结的追溯字段)。⛔ 不经任何联网 fetcher。"""
+    import sqlite3
+    from datetime import datetime as _dt
+
+    from neckline.db import init_schema
+
+    init_schema(db_path=settings.db_path)
+    now = _dt.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(str(settings.db_path))
+    try:
+        for r in rows:
+            l2c = r["l2_code"]
+            l2n = r.get("l2_name", l2c)
+            conn.execute(
+                "INSERT OR REPLACE INTO sw_industry_member "
+                "(ts_code,name,l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,"
+                " in_date,out_date,is_current,fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    r["ts_code"], r.get("name", r["ts_code"]),
+                    r.get("l1_code", f"L1-{l2c}"), r.get("l1_name", f"一级-{l2n}"),
+                    l2c, l2n,
+                    r.get("l3_code", f"L3-{l2c}"), r.get("l3_name", f"三级-{l2n}"),
+                    r.get("in_date"), r.get("out_date"),
+                    0 if r.get("out_date") else 1, now,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 __all__ = [
     "fake_settings",
     "isolated_env",
@@ -531,6 +562,7 @@ __all__ = [
     "write_daily_fixture",
     "insert_stock_basic",
     "insert_namechange",
+    "insert_sw_members",
     "seed_synthetic_market",
     "write_flat_parquet",
     "insert_inquiry_pool_row",

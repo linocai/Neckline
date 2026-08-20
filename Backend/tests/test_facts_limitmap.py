@@ -1,267 +1,199 @@
-"""涨停共振簇预计算表 `limit_cluster_daily` 单测(plan §五 V2-④)。
+"""涨停分布与涨停簇单测(V2.5.0 S3,PROJECT_PLAN §5.3.1「市场级读数」)。
 
-覆盖:①同日簇按行业/概念聚类(含跨行业的概念簇、同票多簇);②连板簇是同日簇的
-子集(`consecutive_days>=2`门槛);③孤身涨停不成簇(`MIN_CLUSTER_SIZE`);
-④`cluster_key` 确定性(`zlib.crc32`,跨进程/跨天不冲突,`same_day`/`consecutive`
-不撞 key);⑤板块池卫生线剔除宽基概念,不把"全市场"当一个簇;⑥落表读回与
-批算逐位一致(三路等价的"批 vs 逐日 vs 读回");⑦空表/无现役数据的降级。
+**本文件在 S3 被整体重写**。S1 版测的是 K8 口径的 `limit_cluster_daily`
+(按 `stock_basic.industry` 旧 110 行业 + 概念板块两个锚点、upsert 落表)。
+S3 按裁定 3 切到申万二级、按 K9 §3.0 砍掉概念锚点、按 §5.3.1 改为纯函数不落表。
+
+覆盖:
+    ① 簇锚在**申万二级**(⛔ 不是 `stock_basic.industry`,⛔ 不是概念板块);
+    ② 连板簇是同日簇的子集(`consec_limit_up_days >= 2`);
+    ③ 孤身涨停不成簇(`MIN_CLUSTER_SIZE`);
+    ④ 查无申万归属的票不参与聚类(⛔ 不凑一个「其它」簇);
+    ⑤ 炸板率的分母 0 → `None`(⛔ 不是 0);
+    ⑥ 缺列当场抛(⛔ 不降级成「今天没涨停」);
+    ⑦ 纯函数:同输入两次调用逐位相同,且**零 I/O**。
 """
 
 from __future__ import annotations
 
-import zlib
-from datetime import date
-
 import polars as pl
 import pytest
 
-from neckline.db import connection
-from neckline.facts import limitmap as cluster
-from tests.conftest import (
-    insert_stock_basic,
-    insert_trade_cal,
-    write_daily_fixture,
-    write_flat_parquet,
-)
-
-D0 = date(2024, 3, 4)
-D1 = date(2024, 3, 5)
-D2 = date(2024, 3, 6)
+from neckline.facts import limitmap
 
 
-def _limit_row(code: str, consec: int, is_limit_up: bool = True) -> dict:
+def _row(
+    code: str,
+    l2_code: str | None,
+    *,
+    up: bool = False,
+    down: bool = False,
+    zaban: bool = False,
+    consec: int = 0,
+    board: str = "MAIN",
+) -> dict:
     return {
         "ts_code": code,
-        "board": "MAIN",
-        "status": "limit_up" if is_limit_up else None,
-        "limit_pct": 0.10,
-        "limit_up_price": 11.0,
-        "limit_down_price": 9.0,
-        "is_limit_up": is_limit_up,
-        "is_limit_down": False,
-        "is_zaban": False,
+        "board": board,
+        "sw_l2_code": l2_code,
+        "sw_l2_name": None if l2_code is None else f"名-{l2_code}",
+        "is_limit_up": up,
+        "is_limit_down": down,
+        "is_limit_open": zaban,
         "consec_limit_up_days": consec,
     }
 
 
-def _seed_basic(env) -> None:
-    insert_trade_cal(env, [D0, D1, D2])
-    insert_stock_basic(env, [
-        {"ts_code": "600001.SH", "industry": "半导体"},
-        {"ts_code": "600002.SH", "industry": "半导体"},
-        {"ts_code": "600003.SH", "industry": "半导体"},
-        {"ts_code": "600004.SH", "industry": "白酒"},
-        {"ts_code": "600005.SH", "industry": "白酒"},
-    ])
-    # 概念板块「国产替代」跨行业成分 = 600001(半导体) + 600004(白酒)
-    write_flat_parquet(env, "ths_index.parquet", [{"ts_code": "885001.TI", "name": "国产替代"}])
-    write_flat_parquet(env, "ths_member.parquet", [
-        {"index_code": "885001.TI", "con_code": "600001.SH"},
-        {"index_code": "885001.TI", "con_code": "600004.SH"},
-    ])
+def _frame(rows: list[dict]) -> pl.DataFrame:
+    return pl.DataFrame(rows, schema={
+        "ts_code": pl.String, "board": pl.String,
+        "sw_l2_code": pl.String, "sw_l2_name": pl.String,
+        "is_limit_up": pl.Boolean, "is_limit_down": pl.Boolean,
+        "is_limit_open": pl.Boolean, "consec_limit_up_days": pl.Int64,
+    })
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# ① 同日簇:行业 + 概念两个维度,同票可属多簇
+# ① 簇锚在申万二级
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_same_day_cluster_by_industry_and_concept(isolated_env):
-    env = isolated_env
-    _seed_basic(env)
-    write_daily_fixture(env, "limit_derived", D0, [
-        _limit_row("600001.SH", 1),
-        _limit_row("600002.SH", 1),
-        _limit_row("600003.SH", 1),
-        _limit_row("600004.SH", 1),
-        _limit_row("600005.SH", 1, is_limit_up=False),   # 未涨停,不参与聚类
-    ])
+def test_clusters_are_anchored_on_sw_l2_not_legacy_industry():
+    """🔴 遗留 2 的机器判据:涨停簇必须按**申万二级代码**分组。
 
-    stats = cluster.refresh_limit_clusters([D0], db_path=env.db_path, parquet_dir=env.parquet_dir)
-    assert stats["days"] == 1
-    assert stats["same_day_clusters"] == 2   # 半导体(3只) + 国产替代(2只);白酒只1只不成簇
-    assert stats["consecutive_clusters"] == 0
-
-    df = cluster.load_limit_clusters(D0, db_path=env.db_path)
-    assert set(df["cluster_kind"].unique().to_list()) == {"same_day"}
-
-    industry_rows = df.filter(pl.col("anchor_industry") == "半导体")
-    assert set(industry_rows["ts_code"].to_list()) == {"600001.SH", "600002.SH", "600003.SH"}
-    assert industry_rows["cluster_size"].unique().to_list() == [3]
-
-    concept_rows = df.filter(pl.col("anchor_concept") == "885001.TI")
-    assert set(concept_rows["ts_code"].to_list()) == {"600001.SH", "600004.SH"}
-    assert concept_rows["cluster_size"].unique().to_list() == [2]
-
-    # 600001.SH 同时属于行业簇与概念簇(两个不同 cluster_key)
-    rows_600001 = df.filter(pl.col("ts_code") == "600001.SH")
-    assert rows_600001.height == 2
-    assert rows_600001["cluster_key"].n_unique() == 2
-
-    # 白酒行业只有 600004 涨停(600005 未涨停)→ 不成簇
-    assert df.filter(pl.col("anchor_industry") == "白酒").is_empty()
+    这条要紧是因为 **S4 覆盖率线以涨停为口径** —— 归因落在旧的 110 行业分类上,
+    「漏掉的是哪一类票」整条结论就是错的(裁定 3)。"""
+    out = limitmap.compute(_frame([
+        _row("600001.SH", "801080.SI", up=True, consec=1),
+        _row("600002.SH", "801080.SI", up=True, consec=1),
+        _row("600003.SH", "801125.SI", up=True, consec=1),
+    ]))
+    same_day = [c for c in out.clusters if c.kind == limitmap.SAME_DAY]
+    assert [c.l2_code for c in same_day] == ["801080.SI"]
+    assert same_day[0].members == ("600001.SH", "600002.SH")
+    assert same_day[0].l2_name == "名-801080.SI"
 
 
-def test_lone_limit_up_does_not_form_cluster(isolated_env):
-    """孤身涨停(行业内只此一家、且不在任何过闸概念里)不构成"共振",不落一行。"""
-    env = isolated_env
-    _seed_basic(env)
-    write_daily_fixture(env, "limit_derived", D0, [_limit_row("600005.SH", 1)])   # 白酒,仅此一家
-
-    stats = cluster.refresh_limit_clusters([D0], db_path=env.db_path, parquet_dir=env.parquet_dir)
-    assert stats["rows"] == 0
-    assert cluster.load_limit_clusters(D0, db_path=env.db_path).is_empty()
+def test_concept_boards_are_gone_from_the_module_entirely():
+    """K9 §3.0 / 架构 §3.1:**概念板块不进入任何机械计算**。S1 版本里的
+    `concept_membership_map` / `anchor_concept` 必须物理消失,⛔ 不留兼容入口。"""
+    for gone in ("concept_membership_map", "cluster_members_by_anchor",
+                 "make_cluster_key", "refresh_limit_clusters", "load_limit_clusters", "TABLE"):
+        assert not hasattr(limitmap, gone), f"{gone} 还在 —— 概念锚点/落表路径没删干净"
+    src = (limitmap.__doc__ or "") + "".join(
+        (getattr(limitmap, n).__doc__ or "") for n in limitmap.__all__ if hasattr(limitmap, n)
+    )
+    assert "anchor_concept" not in src
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # ② 连板簇是同日簇的子集
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_consecutive_cluster_is_subset_with_streak_ge_2(isolated_env):
-    env = isolated_env
-    _seed_basic(env)
-    write_daily_fixture(env, "limit_derived", D1, [
-        _limit_row("600001.SH", 2),   # 连板第2天
-        _limit_row("600002.SH", 2),   # 连板第2天
-        _limit_row("600003.SH", 1),   # 今天才第1天涨停,不进 consecutive 簇
+def test_consecutive_cluster_is_a_subset_of_same_day():
+    out = limitmap.compute(_frame([
+        _row("600001.SH", "801080.SI", up=True, consec=3),
+        _row("600002.SH", "801080.SI", up=True, consec=2),
+        _row("600003.SH", "801080.SI", up=True, consec=1),   # 首板,不进连板簇
+    ]))
+    same = {c.l2_code: c for c in out.clusters if c.kind == limitmap.SAME_DAY}
+    consec = {c.l2_code: c for c in out.clusters if c.kind == limitmap.CONSECUTIVE}
+    assert same["801080.SI"].size == 3
+    assert consec["801080.SI"].size == 2
+    assert set(consec["801080.SI"].members) < set(same["801080.SI"].members)
+    assert consec["801080.SI"].max_consec_days == 3
+    assert out.max_consec_days == 3
+    assert out.consec_histogram == {1: 1, 2: 1, 3: 1}
+
+
+def test_single_consecutive_stock_does_not_form_a_cluster():
+    """一只连板票不构成「接力」:同日簇成立(3 只同行业),连板簇不成立(只 1 只)。"""
+    out = limitmap.compute(_frame([
+        _row("600001.SH", "801080.SI", up=True, consec=2),
+        _row("600002.SH", "801080.SI", up=True, consec=1),
+        _row("600003.SH", "801080.SI", up=True, consec=1),
+    ]))
+    assert [c.kind for c in out.clusters] == [limitmap.SAME_DAY]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ③④ 门槛与「查无该行业」
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_lone_limit_up_is_not_a_cluster():
+    out = limitmap.compute(_frame([
+        _row("600001.SH", "801080.SI", up=True, consec=1),
+        _row("600004.SH", "801125.SI", up=True, consec=1),
+    ]))
+    assert out.clusters == ()
+    assert out.limit_up_count == 2
+
+
+def test_stocks_without_sw_membership_never_form_an_other_bucket():
+    """「查无行业」不是一个行业。⛔ 不许把它们凑成一个「其它」簇 —— 那会在覆盖率
+    归因里冒出一个不存在的题材。"""
+    out = limitmap.compute(_frame([
+        _row("600001.SH", None, up=True, consec=1),
+        _row("600002.SH", None, up=True, consec=1),
+        _row("600003.SH", "", up=True, consec=1),
+    ]))
+    assert out.clusters == ()
+    assert out.limit_up_count == 3
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑤ 炸板率:分母 0 → None(⛔ 不是 0)
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_zaban_rate_is_none_when_nothing_could_have_broken():
+    out = limitmap.compute(_frame([_row("600001.SH", "801080.SI")]))
+    assert out.zaban_rate is None, "「没炸」与「没得炸」是两件事,⛔ 不许写 0"
+    assert out.max_consec_days is None
+    assert out.limit_up_count == 0
+
+
+def test_zaban_rate_counts_limit_up_plus_zaban_as_denominator():
+    out = limitmap.compute(_frame([
+        _row("600001.SH", "801080.SI", up=True, consec=1),
+        _row("600002.SH", "801080.SI", up=True, consec=1),
+        _row("600003.SH", "801080.SI", zaban=True),
+        _row("600004.SH", "801080.SI", down=True),
+    ]))
+    assert out.zaban_rate == pytest.approx(1 / 3)
+    assert out.limit_down_count == 1
+    assert out.by_board["MAIN"] == {"limitUp": 2, "limitDown": 1, "zaban": 1}
+
+
+def test_board_split_is_reported_separately():
+    out = limitmap.compute(_frame([
+        _row("600001.SH", "801080.SI", up=True, consec=1, board="MAIN"),
+        _row("300001.SZ", "801080.SI", up=True, consec=1, board="GEM"),
+    ]))
+    assert set(out.by_board) == {"MAIN", "GEM"}
+    assert out.by_board["GEM"]["limitUp"] == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑥⑦ 缺列当场抛;纯函数
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_missing_column_raises_instead_of_pretending_a_quiet_market():
+    df = _frame([_row("600001.SH", "801080.SI", up=True, consec=1)]).drop("sw_l2_code")
+    with pytest.raises(ValueError, match="缺列"):
+        limitmap.compute(df)
+
+
+def test_compute_is_pure_and_reproducible():
+    rows = _frame([
+        _row("600002.SH", "801080.SI", up=True, consec=2),
+        _row("600001.SH", "801080.SI", up=True, consec=1),
     ])
-
-    cluster.refresh_limit_clusters([D1], db_path=env.db_path, parquet_dir=env.parquet_dir)
-    df = cluster.load_limit_clusters(D1, db_path=env.db_path)
-
-    same_day = df.filter(pl.col("cluster_kind") == "same_day")
-    assert set(same_day.filter(pl.col("anchor_industry") == "半导体")["ts_code"].to_list()) == {
-        "600001.SH", "600002.SH", "600003.SH"
-    }
-
-    consecutive = df.filter(pl.col("cluster_kind") == "consecutive")
-    consec_industry = consecutive.filter(pl.col("anchor_industry") == "半导体")
-    assert set(consec_industry["ts_code"].to_list()) == {"600001.SH", "600002.SH"}
-    assert consec_industry["cluster_size"].unique().to_list() == [2]
-    # consecutive_days 是成员自己的量,不是簇聚合值
-    per_code = dict(zip(consec_industry["ts_code"].to_list(), consec_industry["consecutive_days"].to_list()))
-    assert per_code == {"600001.SH": 2, "600002.SH": 2}
+    a, b = limitmap.compute(rows), limitmap.compute(rows)
+    assert a == b
+    assert a.to_dict() == b.to_dict()
+    # 成员按 ts_code 升序,与入参行序无关(可复现)
+    assert a.clusters[0].members == ("600001.SH", "600002.SH")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# ③④ cluster_key 确定性:crc32、same_day/consecutive 不撞 key
-# ══════════════════════════════════════════════════════════════════════════
-
-def test_cluster_key_is_deterministic_crc32():
-    k1 = cluster.make_cluster_key("20240304", "same_day", "industry", "半导体")
-    k2 = cluster.make_cluster_key("20240304", "same_day", "industry", "半导体")
-    assert k1 == k2
-    expected = format(zlib.crc32("20240304|same_day:industry:半导体".encode("utf-8")), "08x")
-    assert k1 == expected
-
-
-def test_cluster_key_differs_by_cluster_kind():
-    """同一 (trade_date, anchor) 下 same_day 与 consecutive 两种簇不撞 key
-    (`cluster_kind` 已编进被哈希的字符串)。"""
-    k_same = cluster.make_cluster_key("20240304", "same_day", "industry", "半导体")
-    k_consec = cluster.make_cluster_key("20240304", "consecutive", "industry", "半导体")
-    assert k_same != k_consec
-
-
-def test_refresh_twice_is_deterministic_and_idempotent(isolated_env):
-    """同一天跑两次批算,业务列逐位相同且不重复行。
-
-    ``computed_at`` 是每次刷新都会更新的审计时间,不属于幂等性判据；这与下方
-    “批量 vs 逐日”测试的既定比较口径保持一致。
-    """
-    env = isolated_env
-    _seed_basic(env)
-    write_daily_fixture(env, "limit_derived", D0, [
-        _limit_row("600001.SH", 1), _limit_row("600002.SH", 1), _limit_row("600003.SH", 1),
-    ])
-    cluster.refresh_limit_clusters([D0], db_path=env.db_path, parquet_dir=env.parquet_dir)
-    first = cluster.load_limit_clusters(D0, db_path=env.db_path).sort(["cluster_key", "ts_code"])
-    cluster.refresh_limit_clusters([D0], db_path=env.db_path, parquet_dir=env.parquet_dir)
-    second = cluster.load_limit_clusters(D0, db_path=env.db_path).sort(["cluster_key", "ts_code"])
-    assert first.drop("computed_at").equals(second.drop("computed_at"))
-    with connection(env.db_path) as conn:
-        n = conn.execute("SELECT COUNT(*) FROM limit_cluster_daily WHERE trade_date=?", ("20240304",)).fetchone()[0]
-    assert n == first.height   # 未重复插入
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# ⑤ 板块池卫生线:宽基/资格类概念不进聚类候选
-# ══════════════════════════════════════════════════════════════════════════
-
-def test_broad_concept_excluded_by_board_pool_hygiene(isolated_env):
-    """"融资融券"这类宽基标签板块被 `board_pool` 剔除,不会把"全市场"当一个簇。"""
-    env = isolated_env
-    _seed_basic(env)
-    write_flat_parquet(env, "ths_index.parquet", [
-        {"ts_code": "885001.TI", "name": "国产替代"},
-        {"ts_code": "885002.TI", "name": "融资融券"},
-    ])
-    write_flat_parquet(env, "ths_member.parquet", [
-        {"index_code": "885001.TI", "con_code": "600001.SH"},
-        {"index_code": "885001.TI", "con_code": "600004.SH"},
-        {"index_code": "885002.TI", "con_code": "600002.SH"},
-        {"index_code": "885002.TI", "con_code": "600003.SH"},
-    ])
-    concept_of = cluster.concept_membership_map(parquet_dir=env.parquet_dir)
-    assert "885002.TI" not in concept_of.get("600002.SH", [])
-    assert "885001.TI" in concept_of.get("600001.SH", [])
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# ⑥ 三路等价:批量多日 vs 逐日循环 vs 落表读回
-# ══════════════════════════════════════════════════════════════════════════
-
-def test_bulk_vs_day_by_day_vs_readback_are_identical(isolated_env):
-    """三路等价:全量批算(一次调用 3 天)≡ 逐日循环 ≡ 落表读回,随机 3 日
-    (plan §五 V2-④ 验收原文),三天故意给三种不同形状——同日簇、连板簇变化、
-    与"当日合法零簇"——覆盖批量路径对"稀疏输出"的处理不出岔子。
-
-    **比较时排除 `computed_at`**(§七 P1-36 定案):该列是"这行何时算的"审计戳
-    (秒精度墙钟,每次调用 `_now()` 重新生成),不是业务判据列——批算与逐日循环
-    是**两次独立调用**,只要跨越了墙钟的秒边界,`computed_at` 就会合法地不同,
-    与业务列(cluster_key/ts_code/cluster_size/...)是否一致无关。同一坑
-    `tests/test_industry_strength_store.py` 早有先例(`{k:v for k,v in
-    r.items() if k!="computed_at"}`),此处用 `.drop("computed_at")` 复刻同一
-    修法,不是放宽断言(业务列仍要求逐位相同)。"""
-    env = isolated_env
-    _seed_basic(env)
-    write_daily_fixture(env, "limit_derived", D0, [
-        _limit_row("600001.SH", 1), _limit_row("600002.SH", 1), _limit_row("600003.SH", 1),
-    ])
-    write_daily_fixture(env, "limit_derived", D1, [
-        _limit_row("600001.SH", 2), _limit_row("600002.SH", 2),
-    ])
-    write_daily_fixture(env, "limit_derived", D2, [
-        _limit_row("600004.SH", 1, is_limit_up=False),   # 当日无涨停 → 合法零簇
-    ])
-
-    days = [D0, D1, D2]
-
-    # 路① 全量批算(一次调用三天)
-    cluster.refresh_limit_clusters(days, db_path=env.db_path, parquet_dir=env.parquet_dir)
-    bulk = {d: cluster.load_limit_clusters(d, db_path=env.db_path).sort(["cluster_key", "ts_code"]) for d in days}
-
-    # 清库重来,路② 逐日循环
-    with connection(env.db_path) as conn:
-        conn.execute("DELETE FROM limit_cluster_daily")
-    for d in days:
-        cluster.refresh_limit_clusters([d], db_path=env.db_path, parquet_dir=env.parquet_dir)
-    daybyday = {d: cluster.load_limit_clusters(d, db_path=env.db_path).sort(["cluster_key", "ts_code"]) for d in days}
-
-    # 路③ 落表读回已经是上面两次 load_limit_clusters 本身(SELECT 直读,不做二次判断)
-    for d in days:
-        assert bulk[d].drop("computed_at").equals(daybyday[d].drop("computed_at")), (
-            f"{d} 批算与逐日结果不一致(业务列,已排除审计戳 computed_at)"
-        )
-    assert bulk[D2].is_empty()   # D2 合法零簇,批量路径没有把它悄悄凑出内容
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# ⑦ 降级:无涨停数据的一天
-# ══════════════════════════════════════════════════════════════════════════
-
-def test_no_limit_derived_data_is_empty_not_error(isolated_env):
-    env = isolated_env
-    _seed_basic(env)
-    stats = cluster.refresh_limit_clusters([D0], db_path=env.db_path, parquet_dir=env.parquet_dir)
-    assert stats == {"days": 1, "rows": 0, "same_day_clusters": 0, "consecutive_clusters": 0}
-    assert cluster.load_limit_clusters(D0, db_path=env.db_path).is_empty()
+def test_empty_frame_degrades_to_an_honest_zero_map():
+    out = limitmap.compute(pl.DataFrame())
+    assert out.limit_up_count == 0 and out.clusters == () and out.zaban_rate is None
