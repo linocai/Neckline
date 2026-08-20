@@ -117,130 +117,6 @@ def update_suspend_list(target: date) -> None:
         logger.warning("[suspend_d] 日更异常(已吞,不阻断主增量)", exc_info=True)
 
 
-def update_industry_strength(target: date) -> None:
-    """v1.4-⑩-C(§七 P0-23):行业强度预计算落表(`industry_strength_daily`)。
-
-    **只读当日那一个 `daily` 分区**算一天,`persist_days` 由「上一评定日 streak + 今日强度日
-    标记」递推 —— 16:35 报告主链 / 信息卡端点 / 问询台三处从此**只读表**,不再各自扫全历史
-    784 万行(生产 2 vCPU/1.6G 上根本跑不完)。
-
-    **尽力而为**(异常吞掉、不改退出码,同 `update_suspend_list`/`update_concept_boards`
-    两位先例)**但日志级别用 ERROR** —— 它是**判据输入**(A2 hard_cut + 排序键①),不是
-    增强项;日志带**补算命令原文**,让运维看到就知道下一步敲什么。"""
-    from neckline.report.industry_strength_store import (
-        industry_strength_status,
-        refresh_command_hint,
-        refresh_industry_strength,
-    )
-
-    try:
-        stats = refresh_industry_strength([target])
-        fresh = industry_strength_status(target)
-        if stats["rows"] == 0:
-            logger.error(
-                "[industry_strength] %s 未落任何行(缺 daily 分区 %d 天 / 无行业映射?)——"
-                "今日报告的题材持续天数与 A2/B3 将走保险丝降级。补算:%s",
-                target, stats["missing"], refresh_command_hint(target, target),
-            )
-        elif stats.get("holes"):
-            # v1.4 review 🟡-2:落了行 ≠ 数是对的 —— 表里还留着断口时 streak 是桥过缺口
-            # 算出来的。**这一条不许被上面那句 INFO 的绿意盖过去**,故单开 ERROR 分支。
-            logger.error(
-                "[industry_strength] %s 落 %d 行,但表内仍有 %d 个交易日**断口**(%s)——"
-                "题材持续天数可能桥过缺口失真(A2/B3 与排序行业维度受影响)。"
-                "先补齐那几天的 daily 分区再跑:%s",
-                target, stats["rows"], len(stats["holes"]), ",".join(stats["holes"][:10]),
-                refresh_command_hint(),
-            )
-        else:
-            logger.info("[industry_strength] %s 落 %d 行(表内最新至 %s,落后 %d 个交易日)",
-                        target, stats["rows"], fresh.latest_label(), fresh.lag_days)
-    except Exception:  # noqa: BLE001
-        logger.error(
-            "[industry_strength] 日更异常(已吞,不阻断主增量)——**判据输入缺失**,"
-            "今日报告的题材持续天数与 A2/B3 将走保险丝降级。补算:%s",
-            refresh_command_hint(target, target), exc_info=True,
-        )
-
-
-def update_industry_stage(target: date) -> None:
-    """V2-④b(plan §五 V2-④b,K7 需求 1b,§七 P0-23):行业题材阶段六态状态机预计算
-    落表(`industry_stage_daily`)—— 只读 `industry_strength_daily` 当日行 + `limit_derived`
-    当日一个分区 + 本表自己过去 5 个交易日的既有行,不扫任何全历史(见
-    `neckline/scan/stage.py` 模块 docstring)。
-
-    **尽力而为**(异常吞掉、不改退出码,同 `update_industry_strength` 先例)**但日志
-    级别用 ERROR** —— 它是未来 ⑥ `driver_freshness` 维度的判据输入,不是增强项;
-    日志带补算命令原文。**排在 `update_industry_strength` 之后**(依赖它刚写的
-    `persist_days`)。"""
-    from neckline.scan.stage import industry_stage_status, refresh_command_hint, refresh_industry_stage
-
-    try:
-        stats = refresh_industry_stage([target])
-        fresh = industry_stage_status(target)
-        if stats["rows"] == 0:
-            logger.error(
-                "[industry_stage] %s 未落任何行(industry_strength_daily 当日无行,源表本身"
-                "可能未就绪)——未来 driver_freshness 六态判据本日走保险丝降级。补算:%s",
-                target, refresh_command_hint(target, target),
-            )
-        else:
-            logger.info("[industry_stage] %s 落 %d 行(表内最新至 %s,落后 %d 个交易日)",
-                        target, stats["rows"], fresh.latest_label(), fresh.lag_days)
-    except Exception:  # noqa: BLE001
-        logger.error(
-            "[industry_stage] 日更异常(已吞,不阻断主增量)——未来 driver_freshness 判据"
-            "输入缺失。补算:%s",
-            refresh_command_hint(target, target), exc_info=True,
-        )
-
-
-def update_scan_layer(target: date) -> None:
-    """V2-④(plan §五 V2-④,P0-23):市场扫描层三张预计算表(`limit_cluster_daily`/
-    `corr_matrix_daily`/`leader_structure_daily`)日更增量,固定顺序
-    cluster→corr→leader(见 `neckline/scan/__init__.py`)。
-
-    **尽力而为,WARNING 级别**(同 `update_suspend_list`/`update_concept_boards`
-    两位先例,比 `update_industry_strength` 的 ERROR 级别更保守)——V2-④ 落地时
-    尚无任何在线路径消费这三张表(⑤ 驱动聚合层未建),当日零行是**合法**的
-    "今天没有涨停共振/没有够格的相关对"结果,不是判据输入缺失,不值得 ERROR
-    级别报警;真出异常(数据管线本身坏了)才升级。**依赖当日 `limit_derived`
-    与 `industry_strength_daily` 已落盘**,故排在 `run_limit_derived` 与
-    `update_industry_strength` 两者之后。"""
-    from neckline.facts import limitmap as cluster
-    from neckline.scan import corr, leader, seeds
-
-    try:
-        c_stats = cluster.refresh_limit_clusters([target])
-        r_stats = corr.refresh_corr_matrix([target])
-        l_stats = leader.refresh_leader_structure([target])
-        logger.info(
-            "[scan_layer] %s cluster=%d行(同日簇%d/连板簇%d) corr=%d行 leader=%d行",
-            target, c_stats["rows"], c_stats["same_day_clusters"], c_stats["consecutive_clusters"],
-            r_stats["rows"], l_stats["rows"],
-        )
-        seed_set = seeds.generate_seeds(target)
-        if seed_set is None:
-            logger.warning(
-                "[scan_layer] %s 无现役策略包 —— 今日不产出驱动种子(先跑 "
-                "`python scripts/activate_pack.py --file packs/K8-skeleton.json --confirm`)",
-                target,
-            )
-        else:
-            counts = seed_set.counts()
-            logger.info(
-                "[scan_layer] %s 驱动种子:热点行业%d/暴起概念%d/涨停簇%d/异动簇%d(pack=%s)",
-                target, counts["hot_industry"], counts["surging_concept"],
-                counts["limit_cluster"], counts["anomaly_cluster"], seed_set.pack_version,
-            )
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "[scan_layer] 日更异常(已吞,不阻断主增量)。补算:"
-            "`python scripts/scan_layer.py refresh --from %s --to %s`",
-            target.strftime("%Y%m%d"), target.strftime("%Y%m%d"), exc_info=True,
-        )
-
-
 def main() -> int:
     if not settings.tushare_token:
         logger.error("TUSHARE_TOKEN 缺失(.env),无法拉取。")
@@ -276,21 +152,13 @@ def main() -> int:
     # 影响 EOD 主链路的落盘时序)。
     update_suspend_list(target)
     update_concept_boards(target)
-    # v1.4-⑩-C:排在两位增强项**之后**(它吃的是本次主增量刚落的当日 `daily` 分区,
-    # 时序上必须在 `backfill_day_tables` 之后)。
-    update_industry_strength(target)
-    # —— ⑯-D(2026-08-04):**④ 扫描层与 ④b 行业阶段的日更挂载已从这里摘掉** ————————
-    # 它们此前是**双挂载**(这里一份 + `report/evening.py` 的 `scan` 段一份)。⑯-D 拆三个
-    # oneshot 时按 plan「二选一 = 摘掉 `daily_update` 那份、留链里的」执行,理由是**跨进程
-    # 隐式依赖会静默用陈旧数据**:⑤ 直接吃 ④ 的**当日**产出,留在链里则链自己保证「⑤ 读到
-    # 的是今天的」;留在这里,一旦这一步失败(它在本脚本里是「尽力而为不改退出码」),链会
-    # 拿**昨天的**扫描表当今天用**而且不报错**。移进链里还顺带让它有了明确退出码。
-    # ⚠ `update_scan_layer` / `update_industry_stage` **两个函数刻意保留**(补算用:
-    # `python scripts/scan_layer.py refresh --from … --to …` 是对外补算入口,本脚本这两个
-    # 函数则是「某天要在拉数进程里顺手补一次」的手动后门),只是**不再挂进 `main()`**。
-    # ⛔ 别"顺手"加回来 —— 加回来就恢复了上面那个静默陈旧数据的故障面。
-    # `update_industry_strength`(`industry_strength_daily`)**留在这里不动**:它不在链的
-    # 任何段里,是 ④b 的唯一上游,必须在 16:05 这一跑落好。
+    # —— 🔴 V2.5.0 S1:三项 K8 日更已摘除 ————————————————————————————————————
+    # `update_industry_strength`(`industry_strength_daily`)、`update_industry_stage`
+    # (`industry_stage_daily`)、`update_scan_layer`(`limit_cluster_daily` /
+    # `corr_matrix_daily` / `leader_structure_daily`)三个函数**已删除**:它们的落表
+    # 模块随 K8 退役(`scan/` 整包、`report/industry_strength_store.py`),三张表按
+    # 裁定 6 **保留只读、不迁移、不回填**,应用层写路径就此断开。
+    # S2 在这里挂**申万二级分类日更**(PROJECT_PLAN §6 S2),S3 挂**事实包构建冻结**。
 
     logger.info("增量更新完成:%s", target)
     return 0

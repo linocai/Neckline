@@ -89,9 +89,12 @@ def test_whitelist_is_currently_empty():
 def test_scan_actually_covers_known_database_guardrails():
     """防止 glob 模式失效导致本守门形同虚设。"""
     names = {p.name for p in _TEST_FILES}
+    # 🔴 V2.5.0 S1:原来点名的 `test_brain.py` / `test_activate_pack_script.py` 随
+    # `strategy/` 与 `selection/` 整包退役而删除;换两个**仍在且真的会开库**的文件顶上
+    # —— 这条守门要证明的是「glob 没瞎」,不是「那两个文件还在」。
     for expected in (
-        "test_brain.py",
-        "test_activate_pack_script.py",
+        "test_review_reconcile.py",
+        "test_v2_schema_guard.py",
         "test_db_isolation_guardrail.py",
     ):
         assert expected in names

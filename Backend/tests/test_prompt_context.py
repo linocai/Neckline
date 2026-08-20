@@ -107,12 +107,11 @@ class TestTimelinessRulesAreInEveryPrompt:
         # 退役从本清单摘除(该注入点本身不存在了)——清单**只许少这一项**,其余
         # 逐字不动(见 PROJECT_PLAN §五 V2.1-① 完工记录的改前改后对照)。
         "neckline.llm.judge:JUDGE_SYSTEM_PROMPT",
-        # V2 起的四条 LLM 链路(⑤ 检索/推理、⑥ 同档次序、⑦ 卡)——⑦ 是 2026-08-04
-        # 判定线审计 🔵-3 补的最后一处;⑦ 不联网,但资料里的证据带日期,同样要时效纪律。
-        "neckline.selection.aggregate:DRIVER_SEARCH_SYSTEM_PROMPT",
-        "neckline.selection.aggregate:BASKET_REASON_SYSTEM_PROMPT",
-        "neckline.selection.tier:TIER_RANK_SYSTEM_PROMPT",
-        "neckline.selection.basket_card:CARD_SYSTEM_PROMPT",
+        # 🔴 V2.5.0 S1:K8 的四条链路(⑤ 检索/推理、⑥ 同档次序、⑦ 卡)已随
+        # `neckline/selection/` 整包退役从本清单摘除 —— 注入点本身不存在了。
+        # ⚠ **清单只许少,不许悄悄少**:K9 的三个 LLM 岗位(事实层方向解读 / 解释层
+        # 资料聚合 / 预案层填值)在 S9、S10、以及 S3 的 `facts/direction_llm.py`
+        # 落地时,必须逐条加回这张表,⛔ 别让"清单变短"变成"纪律没人管"。
         # 消息面扫描(A4 补;联网 + 问的就是"近期",没有日期概念最伤)
         "neckline.llm.news_scan:NEWS_SCAN_SYSTEM_PROMPT",
     ])

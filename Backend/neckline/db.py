@@ -2116,17 +2116,10 @@ def init_schema(db_path: Optional[Path] = None) -> None:
     with connection(db_path) as conn:
         conn.executescript(_SCHEMA)
         _migrate_columns(conn)
-        # V2.4.2 选择运行账是独立、追加式审计域。它在这里随既有 schema 以同一
-        # 短事务初始化，避免 API 读路径为了查询运行态而执行任何 DDL。
-        try:
-            from neckline.selection.run_store import init_selection_run_schema_on_connection
-        except ImportError:
-            # Tests that intentionally replace this optional read-overlay module
-            # with a tiny stub must not make unrelated legacy schema setup fail.
-            # The real module is present in every V2.4.2 runtime.
-            init_selection_run_schema_on_connection = None
-        if init_selection_run_schema_on_connection is not None:
-            init_selection_run_schema_on_connection(conn)
+        # 🔴 V2.5.0 S1:原先这里挂着 `selection/run_store.py` 的 `selection_runs*`
+        # 建表钩子。`neckline/selection/` 整包已随 K8 退役物理删除,该钩子一并移除。
+        # ⛔ **既有库里的那几张表不 DROP、不迁移、不回填**(裁定 6):生产库已有的行
+        # 原样留着供追溯;本函数只是不再为**新库**建它们(新库里也没有任何写入方)。
 
 
 __all__ = ["get_connection", "connection", "readonly_connection", "init_schema"]

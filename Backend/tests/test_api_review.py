@@ -8,7 +8,8 @@ from io import BytesIO
 import openpyxl
 import pytest
 
-from .conftest import insert_stock_basic, seed_active_rule_v1
+from .conftest import insert_stock_basic
+
 
 FORMAT1_HEADER = ["交易日期", "券商来源", "业务名称", "证券名称", "成交数量", "股份余额", "费用", "发生金额", "资金余额", "备注"]
 
@@ -35,7 +36,6 @@ def _sample_workbook() -> bytes:
 @pytest.fixture
 def review_env(api_env):
     insert_stock_basic(api_env, [{"ts_code": "600519.SH", "name": "贵州茅台", "market": "主板"}])
-    seed_active_rule_v1(api_env)
     return api_env
 
 
@@ -104,17 +104,6 @@ def test_upload_invalid_file_degrades_not_crashes(client, AUTH, review_env):
     assert body["ok"] is True
     assert body["weeks"] == []
     assert any("bad.xlsx" in w for w in body["parseWarnings"])
-
-
-def test_upload_off_plan_and_ledger_gap_surface_in_result(client, AUTH, review_env):
-    """未经报告候选放行、也未录入持仓台账的买入应正确标记(§4D 对账三查①)。"""
-    r = client.post(
-        "/api/v1/review/upload", headers=AUTH,
-        files={"files": ("t.xlsx", _sample_workbook(), "application/octet-stream")},
-    )
-    check = r.json()["weeks"][0]["result"]["planChecks"][0]
-    assert check["planStatus"].startswith("无报告数据") or check["planStatus"].startswith("计划外")
-    assert check["ledgerStatus"].startswith("台账缺失")
 
 
 def test_review_col_map_setting_roundtrip(client, AUTH, review_env):
@@ -206,16 +195,23 @@ def _overview(client, AUTH, week=_WEEK_ANY):
 class TestReviewOverview:
     def test_requires_auth(self, client):
         assert client.get("/api/v1/review/overview").status_code == 401
-        assert client.get("/api/v1/review/handoff").status_code == 401
 
-    def test_five_segments_each_answer_independently(self, client, AUTH, week_env):
-        """plan §五⑤ 验收原文:**五段各自能独立说出「有 / 没有 / 没取到」**。"""
+    def test_each_segment_answers_independently(self, client, AUTH, week_env):
+        """验收原文:**各段各自能独立说出「有 / 没有 / 没取到」**。
+
+        🔴 V2.5.0 S1:原「五段」中的 `preference` / `capability` 两段随 `profile/` 整包
+        退役而**删除**(不是留成恒 `available=false` 的壳);V2.2-④ 追加的
+        `selectionClock` / `tradeClock` / `iterationSuggestions` 三段随双时钟复盘退役
+        一并删除。剩下三段。"""
         body = _overview(client, AUTH)
         assert body["weekStart"] == "20260803" and body["weekEnd"] == "20260807"
         assert body["weekKey"].startswith("2026-W")
-        for seg in ("calibration", "preference", "capability", "reconcile", "observations"):
+        for seg in ("calibration", "reconcile", "observations"):
             assert seg in body, f"缺段:{seg}"
             assert "available" in body[seg] and "unavailableReason" in body[seg]
+        for gone in ("preference", "capability", "selectionClock", "tradeClock",
+                     "iterationSuggestions"):
+            assert gone not in body, f"{gone} 段已随 K8 退役,⛔ 不许留成恒空的壳"
 
     def test_calibration_segment_reads_the_landed_artifact_only(self, client, AUTH, week_env):
         _write_calibration(week_env)
@@ -246,27 +242,6 @@ class TestReviewOverview:
         assert seg["available"] is False
         assert seg["detail"]["latestAvailable"] == "20260727→20260731"
 
-    def test_profile_segments_speak_with_the_same_voice_as_profile_endpoints(
-            self, client, AUTH, week_env):
-        """画像两段 = **直接复用 `/profile/*` 两个端点的返回**(同码不重写)——
-        两条路上的画像永远讲同一句话。"""
-        body = _overview(client, AUTH)
-        direct = client.get("/api/v1/profile/preference", headers=AUTH).json()
-        assert body["preference"]["available"] == direct["available"]
-        assert body["preference"]["unavailableReason"] == direct["unavailableReason"]
-        assert body["preference"]["asOf"] == direct["asOf"]
-
-    def test_profile_rows_show_up_with_sample_and_confidence(self, client, AUTH, week_env):
-        from neckline.profile.preference import PreferenceRow
-        from neckline.profile.store import save_preference
-
-        save_preference("20260807", [PreferenceRow(
-            dimension="theme", value="固态电池", share=0.4, sample_n=2,
-            window_start="20260510", window_end="20260807", confidence="low")],
-            db_path=week_env.db_path)
-        seg = _overview(client, AUTH)["preference"]
-        assert seg["available"] is True and seg["asOf"] == "20260807"
-        assert seg["items"][0]["sampleN"] == 2 and seg["items"][0]["confidence"] == "low"
 
     def test_reconcile_without_a_statement_is_found_false_not_unavailable(
             self, client, AUTH, week_env):
@@ -317,155 +292,9 @@ class TestReviewOverview:
         assert body["observations"]["available"] is True       # 其余段不连坐
 
 
-class TestReviewHandoff:
-    def test_exports_a_markdown_a_strategist_can_read(self, client, AUTH, week_env):
-        _write_calibration(week_env)
-        body = client.get("/api/v1/review/handoff", headers=AUTH).json()
-        assert body["available"] is True
-        assert (body["windowFrom"], body["windowTo"]) == ("20260803", "20260807")
-        assert body["sampleN"]["tradingDays"] == 5 and body["sampleN"]["baskets"] == 12
-        # ⚠ V2.2-④ 起是**六节**(④「修改建议四分类」插在画像与观察项之间)。
-        for head in ("## ① 窗口与样本量", "## ② 周度校准报告(原文)",
-                     "## ③ 用户画像", "## ④ 修改建议四分类", "## ⑤ 观察项清单",
-                     "## ⑥ 免责与口径"):
-            assert head in body["markdown"]
-
-    def test_explicit_window_uses_the_from_to_aliases(self, client, AUTH, week_env):
-        """⚠ `from` 是 Python 关键字 → 形参 `date_from` + `Query(alias="from")`;
-        URL 上仍是客户端契约里那个 `?from=`(同 `GET /decisions` 姿势)。"""
-        _write_calibration(week_env, "20260727", "20260731")
-        _write_calibration(week_env, "20260803", "20260807")
-        body = client.get("/api/v1/review/handoff?from=20260727&to=20260731",
-                          headers=AUTH).json()
-        assert (body["windowFrom"], body["windowTo"]) == ("20260727", "20260731")
-
-    def test_no_artifact_is_200_unavailable_not_404(self, client, AUTH, week_env):
-        """🔴 **一律不 404** → V2.1 零新增 reason 字符串。"""
-        r = client.get("/api/v1/review/handoff", headers=AUTH)
-        assert r.status_code == 200
-        assert r.json()["available"] is False and "还没跑过第一次" in r.json()["unavailableReason"]
-
-    def test_corrupt_window_is_a_different_sentence(self, client, AUTH, week_env):
-        _write_calibration(week_env, json_text="{坏了")
-        body = client.get("/api/v1/review/handoff?from=20260803&to=20260807",
-                          headers=AUTH).json()
-        assert body["available"] is False and "读不出" in body["unavailableReason"]
-
-    def test_fuse_degrades_instead_of_500(self, client, AUTH, week_env, monkeypatch):
-        import neckline.review.handoff as ho_mod
-
-        monkeypatch.setattr(ho_mod, "build_handoff",
-                            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("炸")))
-        r = client.get("/api/v1/review/handoff", headers=AUTH)
-        assert r.status_code == 200 and r.json()["available"] is False
-
-
 # ══════════════════════════════════════════════════════════════════════════
 # V2.2-④ 双时钟端点 + 复盘板块三段
 # ══════════════════════════════════════════════════════════════════════════
-
-def _seed_clock(env, *, ts_code="A.SZ", buy_price=9.5, buy_date="20260805"):
-    """建一笔仓 + 计划 v1,再对一次账 → 拿到 `position_id`。"""
-    from neckline.db import connection
-    from neckline.review.trade_clock import sync_from_positions
-    import json as _json
-
-    with connection(env.db_path) as conn:
-        cur = conn.execute(
-            "INSERT INTO positions (ts_code, buy_price, qty, buy_date, status, created_at,"
-            " updated_at) VALUES (?,?,?,?,'open','t','t')", (ts_code, buy_price, 1000, buy_date))
-        pid = int(cur.lastrowid)
-        conn.execute("INSERT INTO position_plans (position_id, version, plan_json, created_at)"
-                     " VALUES (?,1,?,'t')",
-                     (pid, _json.dumps({"available": True, "driver": "d",
-                                        "entry_zone": {"low": 9.0, "high": 10.0}})))
-    sync_from_positions(buy_date, db_path=env.db_path)
-    return pid
-
-
-class TestClockEndpoints:
-    def test_requires_auth(self, client):
-        assert client.get("/api/v1/clocks/selection").status_code == 401
-        assert client.get("/api/v1/clocks/trade/1").status_code == 401
-        assert client.post("/api/v1/clocks/trade/1/note", json={"note": "x"}).status_code == 401
-
-    def test_selection_clocks_empty_is_a_list_not_a_404(self, client, AUTH, week_env):
-        r = client.get("/api/v1/clocks/selection", headers=AUTH)
-        assert r.status_code == 200 and r.json()["items"] == []
-
-    def test_trade_clock_404_reuses_the_existing_not_found_reason(self, client, AUTH, week_env):
-        """🔴 ⛔ 零新增 reason(V2.2-⑥ 契约):客户端 `mapReason` 一字不动。"""
-        r = client.get("/api/v1/clocks/trade/999", headers=AUTH)
-        assert r.status_code == 404 and r.json()["detail"]["reason"] == "not_found"
-
-    def test_trade_clock_round_trip(self, client, AUTH, week_env):
-        pid = _seed_clock(week_env)
-        body = client.get(f"/api/v1/clocks/trade/{pid}", headers=AUTH).json()
-        assert body["positionId"] == pid and body["status"] == "running"
-        assert body["final"] is None            # 运行中恒 null
-        assert [e["kind"] for e in body["events"]] == ["d1_open"]
-
-    def test_note_appends_and_reports_coverage(self, client, AUTH, week_env):
-        pid = _seed_clock(week_env)
-        r = client.post(f"/api/v1/clocks/trade/{pid}/note", headers=AUTH,
-                        json={"note": "板块情绪转弱,先减一半"})
-        assert r.status_code == 200 and r.json()["ok"] is True
-        assert r.json()["coverage"]["with_note"] == 1
-        events = client.get(f"/api/v1/clocks/trade/{pid}", headers=AUTH).json()["events"]
-        assert [e["kind"] for e in events] == ["d1_open", "manual_note"]
-        assert events[-1]["userNote"] == "板块情绪转弱,先减一半"
-
-    def test_note_on_a_missing_clock_is_404_not_found(self, client, AUTH, week_env):
-        r = client.post("/api/v1/clocks/trade/999/note", headers=AUTH, json={"note": "x"})
-        assert r.status_code == 404 and r.json()["detail"]["reason"] == "not_found"
-
-    @pytest.mark.parametrize("note", ["", "x" * 5000])
-    def test_empty_or_overlong_note_is_422_without_a_new_reason(self, client, AUTH,
-                                                                week_env, note):
-        """⛔ 不静默截断、⛔ 也不新造一个 reason 字符串(那条是机器判据)。"""
-        pid = _seed_clock(week_env)
-        r = client.post(f"/api/v1/clocks/trade/{pid}/note", headers=AUTH, json={"note": note})
-        assert r.status_code == 422
-
-
-class TestOverviewClockSegments:
-    def test_three_new_segments_exist_and_answer_independently(self, client, AUTH, week_env):
-        body = _overview(client, AUTH)
-        for key in ("selectionClock", "tradeClock", "iterationSuggestions"):
-            seg = body[key]
-            assert seg["available"] is False           # 本窗口还没有落盘产物
-            assert "会自愈" in seg["unavailableReason"]
-
-    def test_segments_read_the_artifact_never_recompute(self, client, AUTH, week_env):
-        import json as _json
-
-        d = _cal_dir(week_env)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "calibration_20260803_20260807.json").write_text(_json.dumps({
-            "specVersion": "weekly_calibration_v1", "dateFrom": "20260803",
-            "dateTo": "20260807", "nTradingDays": 5, "nBaskets": 3, "strata": [],
-            "iteration": {
-                "samples": {"selectionClock": 3, "tradeClock": 1},
-                "strataKey": ["skeletonVersion", "engineCode", "engineVersion",
-                              "rulesetVersion"],
-                "selection": {"overall": {"samples": 3}, "byStratum": []},
-                "trade": {"trades": 1, "closed": 1},
-                "thresholds": {"available": False, "unavailableReason": "待拍板"},
-                "suggestions": [{"factor": "tier=T1", "klass": None,
-                                 "klassStatus": "thresholds_undecided", "n": 3}],
-                "disclaimer": "建议不是动作",
-            },
-        }, ensure_ascii=False), encoding="utf-8")
-
-        body = _overview(client, AUTH)
-        assert body["selectionClock"]["available"] is True
-        assert body["selectionClock"]["detail"]["samples"] == 3
-        assert body["tradeClock"]["detail"]["closed"] == 1
-        sug = body["iterationSuggestions"]
-        assert sug["available"] is True                       # 统计量**有**
-        assert sug["detail"]["thresholds"]["available"] is False   # 缺的只是那两个数
-        assert sug["items"][0]["klass"] is None
-        assert sug["items"][0]["klassStatus"] == "thresholds_undecided"
 
 
 class TestNoOnlineRecompute:
@@ -478,16 +307,14 @@ class TestNoOnlineRecompute:
 
     def test_runtime_proof_endpoints_never_call_build_report(
             self, client, AUTH, week_env, monkeypatch):
-        """运行期证明:研究实现已物理迁出，三个端点仍只读落盘产物。"""
+        """运行期证明:研究实现已物理迁出，两个端点仍只读落盘产物。"""
         from pathlib import Path
 
         assert not (Path(__file__).resolve().parents[1] / "neckline" / "eval").exists()
 
         _write_calibration(week_env)
         assert _overview(client, AUTH)["calibration"]["available"] is True
-        h = client.get("/api/v1/review/handoff", headers=AUTH)
-        assert h.status_code == 200 and h.json()["available"] is True
-        # `/eval/weekly` 现在读的是同一份落盘产物。
+        # `/eval/weekly` 读的是同一份落盘产物。
         w = client.get("/api/v1/eval/weekly?week=20260805", headers=AUTH)
         assert w.status_code == 200 and w.json()["available"] is True
 
@@ -516,8 +343,8 @@ class TestNoOnlineRecompute:
         import neckline.api.app as app_mod
 
         tree = _ast.parse(_Path(app_mod.__file__).read_text(encoding="utf-8"))
-        targets = {"get_review_overview", "get_review_handoff", "_calibration_segment",
-                   "_profile_segment", "_reconcile_segment", "_observations_segment"}
+        targets = {"get_review_overview", "_calibration_segment",
+                   "_reconcile_segment", "_observations_segment"}
         seen = set()
         for node in _ast.walk(tree):
             if isinstance(node, _ast.FunctionDef) and node.name in targets:

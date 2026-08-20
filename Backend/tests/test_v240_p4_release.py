@@ -316,10 +316,3 @@ def test_git_diff_check_reports_no_whitespace_errors(extra):
         pytest.skip("无 git")
     assert proc.returncode == 0, (
         f"git diff --check {' '.join(extra)} 有问题:\n{proc.stdout}")
-
-
-def test_release_scripts_exist_and_are_top_level():
-    """P4.2 / P4.3 的两个新脚本是**现役脚本**,放 `scripts/` 顶层(⛔ 不进 `oneoff/`)。"""
-    for name in ("bootstrap_dev_db.py", "activate_pack_set.py"):
-        assert (_REPO_ROOT / "scripts" / name).exists()
-        assert not (_REPO_ROOT / "scripts" / "oneoff" / name).exists()

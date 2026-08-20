@@ -202,27 +202,6 @@ def write_daily_fixture(
     write_table_day(table, trade_date, df, parquet_dir=settings.parquet_dir)
 
 
-def seed_industry_strength(settings: Settings, days: List[date]) -> dict:
-    """把 `industry_strength_daily` 预计算表喂上(v1.4-⑩ / §七 P0-23)。
-
-    **凡端到端跑 pipeline / 信息卡 / 问询台的测试都要先调它** —— 这三条在线路径 v1.4-⑩
-    起**只读表**、不再现算(现算 = 全历史 `scan_parquet`,生产跑不完)。表没喂 = 保险丝
-    降级(空 `industry_scores`),那是**另一组断言**(降级不崩 + 如实披露),别拿它当
-    "取数坏了"。
-
-    走的就是生产同一条写入路径(`refresh_industry_strength`,只读当日一个分区),**不是
-    测试专用的第二套写法** —— 夹具和生产写侧共用同一份代码,夹具喂出来的表就是生产表。
-    `days` 传该测试铺过 `daily` 分区的交易日(升序;顺序无关,函数内部会排序)。
-
-    ⚠ `db_path` **必须显式传**(见 CLAUDE.md「测试隔离」条:`isolated_env` 不重写
-    `neckline.db` 的 settings 绑定,`db_path=None` 会静默落到真实项目库)。"""
-    from neckline.report.industry_strength_store import refresh_industry_strength
-
-    return refresh_industry_strength(
-        days, parquet_dir=settings.parquet_dir, db_path=settings.db_path
-    )
-
-
 def insert_stock_basic(settings: Settings, rows: List[dict]) -> None:
     """写 `stock_basic`(SQLite)测试行,供需要股票中文名/板块/上市日的模块
     (`report/candidates.py` 的名称解析等)使用。每行至少给 `ts_code`,其余字段有
@@ -287,81 +266,6 @@ def insert_namechange(settings: Settings, rows: List[dict]) -> None:
         conn.commit()
     finally:
         conn.close()
-
-
-# rule v1 的精简镜像(阶段2 报告管线测试专用)——**有意不 import research/rule_v1.py
-# 的 RULE_V1**:tests/ 不应依赖 research/(纯研究脚本,可能改动/有导入期副作用),
-# 测试夹具须自包含。字段含义与真实 rule v1 完全一致(见 research/rule_v1.py 注释),
-# 只是各自独立维护,不假设两边逐字同步。
-TEST_RULE_V1_CONFIG = dict(
-    strength="none",
-    buypoint="pullback",
-    forbid_high_elasticity=True,   # 主板 only
-    stop_pct=0.05,
-    take_profit_retrace=0.05,
-    max_hold_days=5,
-    cooldown_days=0,
-    single_cap=20000.0,
-    max_positions=5,
-    max_exposure_frac=0.60,
-    week_halving=False,
-)
-
-
-def seed_active_rule_v1(settings: Settings, extra_config: dict = None) -> None:
-    """把 `TEST_RULE_V1_CONFIG` 存成大脑现役版本 `v1`(`neckline.strategy.brain`),
-    供需要"某个现役规则"才能跑的报告管线测试使用(`build_report` 无现役版本时会
-    直接拒绝生成报告)。"""
-    from neckline.strategy import brain
-
-    cfg = dict(TEST_RULE_V1_CONFIG)
-    cfg.update(extra_config or {})
-    brain.save_version(
-        "v1", {"config": cfg}, "测试夹具:镜像 rule v1(不依赖 research/)",
-        metrics={}, activate=True, db_path=settings.db_path,
-    )
-
-
-def set_activation_timeline(db_path, events, *, active: str = None) -> None:
-    """测试专用:把「章程激活历史」**重写**成一条确定的时间线(不受 `now()` 抖动影响)。
-
-    ⚠ v1.4 review 🟡-1 之后,纪律判定的时间轴事实源 = **append-only 表**
-    `strategy_activation_log`(`brain._activation_events`),`strategy_versions.activated_at`
-    降级为兼容/展示列。**故造历史时间线必须写这张表** —— 只 UPDATE `activated_at`(v1.4
-    之前的老姿势)已经不再决定判向,会造出"库里写着一套、判定按另一套"的假夹具。
-
-    本 helper 一次性 `DELETE + INSERT` 该表:测试要的是「假装历史长这样」,不是生产语义;
-    **生产侧永远只经 `brain.save_version/activate_version` 追加,不删不改**(这也是为什么
-    重写逻辑住在 tests/ 而不是 brain 里 —— 生产代码里根本不该存在改写历史的函数)。
-
-    `events` = `[(版本号, 激活戳 ISO), ...]`,按发生先后给;同一版本可以出现多次(回滚)。
-    同步刷新每个版本的 `activated_at` = 它**最后一次**激活的戳(与生产不变式一致),并把
-    `is_active` 置到 `active`(缺省 = 最后一个事件的版本)。
-    """
-    from neckline.db import connection, init_schema
-
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        conn.execute("DELETE FROM strategy_activation_log")
-        for version, stamp in events:
-            conn.execute(
-                "INSERT INTO strategy_activation_log (version, activated_at, via, note) "
-                "VALUES (?,?,'test','tests.conftest.set_activation_timeline')",
-                (version, stamp),
-            )
-        last_stamp = {}
-        for version, stamp in events:
-            last_stamp[version] = stamp
-        for version, stamp in last_stamp.items():
-            conn.execute(
-                "UPDATE strategy_versions SET activated_at=? WHERE version=?", (stamp, version)
-            )
-        winner = active if active is not None else (events[-1][0] if events else None)
-        if winner is not None:
-            conn.execute(
-                "UPDATE strategy_versions SET is_active = CASE WHEN version=? THEN 1 ELSE 0 END",
-                (winner,),
-            )
 
 
 def seed_synthetic_market(
@@ -511,7 +415,6 @@ def api_env(api_settings: Settings, monkeypatch: "pytest.MonkeyPatch"):
     # `data/reports/`(CLAUDE.md「测试隔离」条:`api_env` 不重写 `neckline.config.settings`)
     # —— 那类泄漏的特征是"断言全错还不报错",必须在夹具里堵死。
     monkeypatch.setattr(app_mod, "_DATA_DIR_OVERRIDE", api_settings.data_dir)
-    monkeypatch.setattr(app_mod, "_QUOTES_FN", lambda codes: {})
     yield api_settings
     tc_mod.reset_cache()
 
@@ -566,83 +469,6 @@ def insert_inquiry_pool_row(db_path, trade_date, ts_code, *, name=None, reason=N
         conn.commit()
     finally:
         conn.close()
-
-
-def insert_decision_log_row(
-    db_path,
-    *,
-    ts_code: str,
-    why_buy: str = "",
-    why_entry_price: str = "",
-    invalidation: str = "",
-    thesis_tags=None,
-    playbook_tag: str = "SWING_CHASE",
-    contingency_scenarios=None,
-    name=None,
-    target_price=None,
-    exit_low=None,
-    exit_high=None,
-    planned_price=None,
-    planned_qty=None,
-    max_chase_pct=None,
-    status: str = "pending",
-    position_id=None,
-    revision_of=None,
-    created_at=None,
-):
-    """v2.0.0 起(PROJECT_PLAN §五 V2-⑩-C)`decision_log` 表停写留档、
-    `neckline.decision_log` 不再提供 `create_decision` 等写函数——测试仍需要历史
-    pending/filled/cancelled 行做 fixture(如 `pending_track` 的追踪对象、
-    `exec_hint` C3 的最近决策查询),直接裸 SQL 插入,不经任何已退役的应用层写口。
-
-    返回 `DecisionRow`(复用 `neckline.decision_log.get_decision` 装配),调用方
-    原有的属性访问写法(`row.id`/`row.why_buy`/...)不必改。"""
-    import json as _json
-    from datetime import datetime as _dt, timezone as _tz
-
-    from neckline.db import connection, init_schema
-    from neckline.decision_log import get_decision
-
-    init_schema(db_path)
-    now = created_at or _dt.now(_tz.utc).isoformat(timespec="seconds")
-    with connection(db_path) as conn:
-        cur = conn.execute(
-            "INSERT INTO decision_log ("
-            "ts_code, name, created_at, why_buy, why_entry_price, target_price, "
-            "exit_low, exit_high, thesis_tags, invalidation, contingency_scenarios, "
-            "playbook_tag, planned_price, planned_qty, status, position_id, revision_of, updated_at, "
-            "max_chase_pct"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                ts_code, name, now, why_buy, why_entry_price, target_price,
-                exit_low, exit_high, _json.dumps(list(thesis_tags or []), ensure_ascii=False),
-                invalidation, _json.dumps(list(contingency_scenarios or []), ensure_ascii=False),
-                playbook_tag, planned_price, planned_qty, status, position_id, revision_of, now,
-                max_chase_pct,
-            ),
-        )
-        new_id = int(cur.lastrowid)
-    row = get_decision(new_id, db_path=db_path)
-    assert row is not None
-    return row
-
-
-def set_decision_status(db_path, decision_id: int, status: str, *, position_id=None) -> None:
-    """测试夹具:直接改历史行状态(模拟 v2.0.0 之前 `link_decision`/`cancel_decision`
-    的最终效果),同样绕开已退役的应用层写函数——**只测试用**,生产代码不许有第二处
-    对 `decision_log` 的 UPDATE(全仓 grep 守门,见 `tests/test_decision_log.py`)。"""
-    from datetime import datetime as _dt, timezone as _tz
-
-    from neckline.db import connection, init_schema
-
-    init_schema(db_path)
-    now = _dt.now(_tz.utc).isoformat(timespec="seconds")
-    with connection(db_path) as conn:
-        conn.execute(
-            "UPDATE decision_log SET status=?, position_id=COALESCE(?, position_id), "
-            "updated_at=? WHERE id=?",
-            (status, position_id, now, decision_id),
-        )
 
 
 def source_code_only(path: Path) -> str:
@@ -703,15 +529,9 @@ __all__ = [
     "insert_trade_cal",
     "business_days",
     "write_daily_fixture",
-    "seed_industry_strength",
     "insert_stock_basic",
     "insert_namechange",
-    "TEST_RULE_V1_CONFIG",
-    "seed_active_rule_v1",
-    "set_activation_timeline",
     "seed_synthetic_market",
     "write_flat_parquet",
-    "insert_decision_log_row",
     "insert_inquiry_pool_row",
-    "set_decision_status",
 ]

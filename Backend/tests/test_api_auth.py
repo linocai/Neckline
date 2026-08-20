@@ -6,14 +6,15 @@ import dataclasses
 
 import pytest
 
+# 🔴 V2.5.0 S1:`/report*` `/board` `/positions*` 已随 K8 退役删除(PROJECT_PLAN §5.12),
+# 覆盖面换成仍在的只读端点顶上 —— ⛔ 不许因为删端点就让 401 覆盖面变窄。
 PROTECTED_GET = [
-    "/api/v1/report/latest",
-    "/api/v1/report?date=20260101",
-    "/api/v1/board",
-    "/api/v1/positions",
     "/api/v1/settings",
     "/api/v1/settings/providers",
     "/api/v1/settings/llm-routes",
+    "/api/v1/review",
+    "/api/v1/review/overview",
+    "/api/v1/eval/weekly",
 ]
 
 
@@ -31,12 +32,10 @@ def test_protected_get_requires_token(client, path):
 
 def test_protected_post_requires_token(client):
     assert client.post("/api/v1/devices", json={"token": "x"}).status_code == 401
-    assert client.post("/api/v1/positions", json={"code": "600001.SH", "buy_price": 1.0, "qty": 100}).status_code == 401
-    # V2.1-①:`/inquiry` 已随问询台整链退役删除,401 覆盖面换一条同样全字段可选的
-    # POST 端点顶上(不许因此变窄)——`DecisionCreateIn` 全部字段可选,空提交合法。
-    assert client.post("/api/v1/decisions", json={}).status_code == 401
-    # V2-②:Provider 注册表新增端点(自填制,plan §3.10-B)
+    # V2-②:Provider 注册表端点(自填制,plan §3.10-B)
     assert client.post("/api/v1/settings/providers", json={"name": "x"}).status_code == 401
+    # V2.5.0 S1:`/positions` `/decisions` 已删除;上传端点顶上(multipart,无 body 也 401)。
+    assert client.post("/api/v1/review/upload").status_code == 401
 
 
 def test_protected_put_requires_token(client):
@@ -46,8 +45,9 @@ def test_protected_put_requires_token(client):
 
 
 def test_protected_delete_requires_token(client):
-    assert client.delete("/api/v1/alerts/1").status_code == 401
+    # V2.5.0 S1:`/alerts/{id}` 已随自定义提醒退役删除;剩下两条 DELETE 都在 settings 下。
     assert client.delete("/api/v1/settings/providers/glm").status_code == 401
+    assert client.delete("/api/v1/settings/tavily").status_code == 401
 
 
 def test_valid_token_passes(client, AUTH):

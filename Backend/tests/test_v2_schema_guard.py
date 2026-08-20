@@ -94,6 +94,10 @@ def test_scan_domain_covers_both_package_and_scripts():
     assert any(p.startswith("scripts/") for p in rel)
     assert any(p.startswith("scripts/oneoff/") for p in rel), "oneoff 留档脚本同样在扫描域内"
 
+# 🔴 V2.5.0 S1:这 18 张表的**应用层写路径已全部删除**(K8 退役),但表本身按裁定 6
+# **保留、只读、不迁移、不回填**。本清单因此从「新表验收单」变成「只读留档验收单」——
+# `init_schema()` 在空库上仍必须把它们建出来,少一张就说明有人顺手 DROP 了。
+
 _NEW_SQLITE_TABLES = (
     "baskets",
     "basket_members",
@@ -247,6 +251,8 @@ _EXEC_METHOD_NAMES = {"execute", "executemany", "executescript"}
 # 主观说明)—— **只追加**。⛔ 注意父表 `trade_clock` **不在**这份清单里:它是一个有
 # 生命周期的对象(`running → closed`),`UPDATE trade_clock SET status=…` 是它的正常
 # 职责,同 `selection_packs` 版本注册表与其 activation_log 的既有分工。
+# 追加表禁 UPDATE/DELETE;**`INSERT OR REPLACE` 也算改写**(= 先删后插),Y1 一并补上
+# ——「只 INSERT」这条纪律不是靠动词第一个单词是 INSERT 就算数的。
 _APPEND_ONLY_TABLES = ("user_actions", "basket_verification", "selection_pack_activation_log",
                        "trade_clock_events",
                        # V2.3.2 三张新审计表(plan §五 ⑨):阈值影子 / OUT 股票级清单 /
@@ -254,8 +260,7 @@ _APPEND_ONLY_TABLES = ("user_actions", "basket_verification", "selection_pack_ac
                        # 本身就是审计对象,覆盖掉就没了。
                        "threshold_shadow_evals", "out_candidates", "out_shadow_daily",
                        "out_shadow_reviews")
-# 追加表禁 UPDATE/DELETE;**`INSERT OR REPLACE` 也算改写**(= 先删后插),Y1 一并补上
-# ——「只 INSERT」这条纪律不是靠动词第一个单词是 INSERT 就算数的。
+
 _FORBIDDEN_APPEND_SQL = tuple(
     f"{verb} {tbl}" if verb == "UPDATE" else f"{verb} FROM {tbl}"
     for tbl in _APPEND_ONLY_TABLES
@@ -309,124 +314,10 @@ def _execute_sql_literals(path: Path) -> List[Tuple[int, str]]:
     return out
 
 
-def test_append_only_tables_have_no_update_or_delete_call_sites():
-    hits: List[Tuple[str, int, str]] = []
-    for path in _SCANNED_PY_FILES:      # 🟡 Y1:扫描域含 `scripts/`
-        for lineno, sql in _execute_sql_literals(path):
-            upper = " ".join(sql.upper().split())   # 折行 SQL 也要能匹配到相邻关键字
-            for forbidden in _FORBIDDEN_APPEND_SQL:
-                # ⚠ `forbidden.upper()`,不是裸 `forbidden`(🟡 Y1 施工期反向证伪时打出来的
-                # **第 4 个洞,审计报告未列**):禁止串里的表名是小写(`UPDATE user_actions`),
-                # 而右边是 `sql.upper()` —— 老写法 `forbidden in upper` 两边大小写永不相等,
-                # 这条守门**从上线起一次都不可能命中**,是彻头彻尾的空转。
-                # 教训与 🟡-5 锁空靶同类:守门写完必须**反向造一条真违规**验证它会红,
-                # 「全绿」本身不构成"守住了"的证据。
-                if forbidden.upper() in upper:
-                    hits.append((str(path.relative_to(_ROOT)), lineno, forbidden))
-    assert not hits, f"追加表(append-only)出现禁止的改写调用点:{hits}"
-
-
-def test_user_actions_module_exposes_only_insert_and_read():
-    """`neckline/user_actions.py` 的公开契约本身就是 append-only 的第一道保证:
-    `__all__` 只有两个名字,没有第三个函数可以碰这张表。"""
-    from neckline import user_actions
-
-    assert set(user_actions.__all__) == {"record", "list_actions"}
-
-
-def test_user_actions_record_and_list_round_trip(tmp_path):
-    from neckline import user_actions
-
-    db_path = tmp_path / "n.db"
-    init_schema(db_path)
-    id1 = user_actions.record("view", ts_code="600001.SH", payload={"page": "basket"}, db_path=db_path)
-    id2 = user_actions.record(
-        "select", basket_id=7, position_id=3, occurred_at="2026-07-30T09:31:00+08:00", db_path=db_path
-    )
-    assert id2 == id1 + 1
-
-    # id2 显式传入的 occurred_at(2026-07-30)早于 id1 的自动时间戳(当前真实时间),
-    # 验证排序确实按 occurred_at 走、不是按插入顺序 / id。
-    rows = user_actions.list_actions(db_path=db_path)
-    assert [r["id"] for r in rows] == [id2, id1]
-    assert rows[0]["kind"] == "select" and rows[0]["basket_id"] == 7 and rows[0]["position_id"] == 3
-
-    by_kind = user_actions.list_actions(kind="view", db_path=db_path)
-    assert len(by_kind) == 1 and by_kind[0]["ts_code"] == "600001.SH"
-    assert by_kind[0]["payload"] == {"page": "basket"}
-
-
 # —— 🟡 Y2(契约线审计 2026-08-03):`occurred_at` 时区口径 ————————————————————
 # 病根:DDL 注释承诺「ISO8601 北京时间」,`record()` 却默认落 UTC。⑮ 客户端按北京时间
 # 上报 `view` 事件那天,同一列里就会混进两种偏移 —— 而 `since`/`until` 与 `ORDER BY`
 # 都是**字符串比较**,时间轴当场错乱且不报错。
-
-def test_occurred_at_defaults_to_beijing_time_created_at_stays_utc(tmp_path):
-    from neckline import user_actions
-    from neckline.calendar import CN_TZ
-
-    db_path = tmp_path / "n.db"
-    init_schema(db_path)
-    rid = user_actions.record("view", db_path=db_path)
-    with connection(db_path) as conn:
-        occurred, created = conn.execute(
-            "SELECT occurred_at, created_at FROM user_actions WHERE id=?", (rid,)
-        ).fetchone()
-    assert occurred.endswith("+08:00"), f"occurred_at 必须是北京时间(DDL 承诺):{occurred}"
-    assert created.endswith("+00:00"), f"created_at 是 UTC 审计戳(全仓惯例):{created}"
-    # 同一时刻的两种写法必须真的指同一瞬间(不是把 UTC 的数字直接贴上 +08:00)
-    delta = abs((datetime.fromisoformat(occurred) - datetime.fromisoformat(created))
-                .total_seconds())
-    assert delta < 5, "两列写的是同一瞬间、只是时区不同,不该差 8 小时"
-    assert datetime.fromisoformat(occurred).utcoffset() == CN_TZ.utcoffset(None)
-
-
-def test_explicit_occurred_at_is_normalized_to_beijing(tmp_path):
-    """任何写法进来,库里只留北京时间一种 —— 归一在**写侧**收口,不靠调用方自觉。"""
-    from neckline import user_actions
-
-    db_path = tmp_path / "n.db"
-    init_schema(db_path)
-    same_instant = {
-        "utc": "2026-07-30T01:31:00+00:00",
-        "beijing": "2026-07-30T09:31:00+08:00",
-        "naive": "2026-07-30T09:31:00",          # 无时区 = 北京时间(市场时刻口径)
-        "other_zone": "2026-07-30T03:31:00+02:00",
-    }
-    for kind, raw in same_instant.items():
-        user_actions.record(kind, occurred_at=raw, db_path=db_path)
-    with connection(db_path) as conn:
-        stamps = {r[0] for r in conn.execute("SELECT occurred_at FROM user_actions")}
-    assert stamps == {"2026-07-30T09:31:00+08:00"}, f"同一瞬间必须只有一种写法:{stamps}"
-
-
-def test_bad_occurred_at_fails_loud_not_silently_stored(tmp_path):
-    """「没给」(None → 取当前北京时间)与「给错了」(ValueError)必须分得开;
-    ⛔ 不许把解析不了的串原样落库 —— 那就是往这一列里混进第二种时间轴。"""
-    from neckline import user_actions
-
-    db_path = tmp_path / "n.db"
-    init_schema(db_path)
-    for bad in ("昨天下午", "", "2026-13-45T99:99:99"):
-        with pytest.raises(ValueError):
-            user_actions.record("view", occurred_at=bad, db_path=db_path)
-    with connection(db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM user_actions").fetchone()[0] == 0
-
-
-def test_since_until_are_normalized_too(tmp_path):
-    """窗口过滤走同一个归一函数:递进来一个 UTC 串不该静默筛错时段。"""
-    from neckline import user_actions
-
-    db_path = tmp_path / "n.db"
-    init_schema(db_path)
-    user_actions.record("view", occurred_at="2026-07-30T09:31:00+08:00", db_path=db_path)
-    # 北京 09:31 = UTC 01:31;拿 UTC 串当窗口边界,归一后应当仍命中
-    assert len(user_actions.list_actions(since="2026-07-30T01:00:00+00:00",
-                                         until="2026-07-30T02:00:00+00:00",
-                                         db_path=db_path)) == 1
-    assert len(user_actions.list_actions(since="2026-07-30T02:00:00+00:00",
-                                         db_path=db_path)) == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════
