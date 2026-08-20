@@ -93,6 +93,33 @@ def update_concept_boards(target: date) -> None:
         logger.warning("[ths_daily] 日更异常(已吞,不阻断主增量)", exc_info=True)
 
 
+def update_sw_industry() -> None:
+    """V2.5.0 S2:申万 2021 版行业分类日更(`sw_industry_classify` / `sw_industry_member`)。
+
+    🔴 **判据输入,不是增强项**:K9 全文的「相对强度」以申万**二级**行业当日成员涨跌幅
+    中位数为基准(裁定 2),第三层排序的「行业热度分」也读它。故与 `update_suspend_list`
+    / `update_concept_boards` 同样**尽力而为不改退出码**,但**日志级别用 ERROR**
+    (同已退役的 `update_industry_strength` 旧例的理由)。
+
+    ⚠ **两张表是「当前归属快照」,与 `target` 无关** —— 接口只给当前归属,故本函数
+    不接受交易日参数;补跑历史日时它照样把表刷成今天的。这一点与事实包回填的语义差
+    是同一件事(PROJECT_PLAN §5.3.5:回填包用的是**今天的**申万归属快照),
+    ⛔ 别写「按 target 回改历史归属」的机灵代码。
+    """
+    from neckline.data import sw_industry
+
+    stats = sw_industry.refresh()
+    if not stats.ok:
+        logger.error(
+            "[sw_industry] 申万分类日更未通过(已吞,不阻断主增量)——**判据输入缺失**,"
+            "今日相对强度与行业热度分将算不出。原因:%s。补算:"
+            "python -c \"from neckline.data import sw_industry; print(sw_industry.refresh())\"",
+            stats.reason,
+        )
+        return
+    logger.info("[sw_industry] %s", stats.summary())
+
+
 def update_suspend_list(target: date) -> None:
     """v1.4-①-B:当日全市场停牌名单落盘(`suspend_d`,走 `write_table_day` 铁律路径)。
     **尽力而为**——拉不到就不落盘,`price_stale` 读不到该分区时 reason 如实降级为
@@ -152,13 +179,15 @@ def main() -> int:
     # 影响 EOD 主链路的落盘时序)。
     update_suspend_list(target)
     update_concept_boards(target)
+    # V2.5.0 S2:申万二级分类日更(**判据输入**,失败打 ERROR;见函数 docstring)。
+    update_sw_industry()
     # —— 🔴 V2.5.0 S1:三项 K8 日更已摘除 ————————————————————————————————————
     # `update_industry_strength`(`industry_strength_daily`)、`update_industry_stage`
     # (`industry_stage_daily`)、`update_scan_layer`(`limit_cluster_daily` /
     # `corr_matrix_daily` / `leader_structure_daily`)三个函数**已删除**:它们的落表
     # 模块随 K8 退役(`scan/` 整包、`report/industry_strength_store.py`),三张表按
     # 裁定 6 **保留只读、不迁移、不回填**,应用层写路径就此断开。
-    # S2 在这里挂**申万二级分类日更**(PROJECT_PLAN §6 S2),S3 挂**事实包构建冻结**。
+    # ⬆ 申万分类日更已由 S2 挂上(见上一行);S3 在此后挂**事实包构建冻结**。
 
     logger.info("增量更新完成:%s", target)
     return 0

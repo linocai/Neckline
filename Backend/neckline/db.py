@@ -1555,6 +1555,55 @@ CREATE TABLE IF NOT EXISTS auction_verdicts (
 );
 CREATE INDEX IF NOT EXISTS idx_auction_verdicts_date ON auction_verdicts(trade_date);
 CREATE INDEX IF NOT EXISTS idx_auction_verdicts_d0   ON auction_verdicts(d0_date);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.5.0 S2:申万 2021 版行业分类(SW2021,裁定 3 定死用**二级 L2**)
+-- ══════════════════════════════════════════════════════════════════════════
+--
+-- 🔴 **这不是增强项,是判据输入**:K9 全文的「相对强度」以申万二级行业当日成员
+-- 涨跌幅中位数为基准(裁定 2),第三层排序的「行业热度分」也读它。⛔ 拉不到就是
+-- 「今天没跑成」,不是「今天没有」。
+--
+-- ⚠ **归属一律按 `index_code` 认,⛔ 不按名称字符串**(§12 坑 6:名称会变、代码不变)。
+-- 白酒Ⅱ = `801125.SI`(K9 第一层第 2 条排除项按代码识别)。
+
+-- 分类表:三层(L1 31 / L2 134 / L3 346,§4.4 实测值,⛔ 不要重测)。
+-- 只装**分类本身**,⛔ 不装任何强度 / 排名 / 阈值 —— 那些是策略参数(架构 §二 判据)。
+CREATE TABLE IF NOT EXISTS sw_industry_classify (
+  index_code   TEXT PRIMARY KEY,      -- 如 '801125.SI'
+  name         TEXT NOT NULL,         -- 如 '白酒Ⅱ'
+  level        TEXT NOT NULL,         -- 'L1' | 'L2' | 'L3'
+  -- ⚠ **`parent_code` 是 TuShare 的 `industry_code` 形态,⛔ 不是 `index_code`**
+  -- (2026-08-20 实测:L1 的 parent_code = '0';`801125.SI` 白酒Ⅱ 的 = '340000')。
+  -- 🔴 **⛔ 不许拿它 join 本表的 `index_code`** —— join 不上,而且不会报错,只会静默空。
+  -- 要「这只票的 L1 是谁」直接读 `sw_industry_member.l1_code`(那张表一行里
+  -- l1/l2/l3 三层俱全,§4.8「同 L1 下的非白酒是另一个二级」也从那里读)。
+  parent_code  TEXT,                  -- TuShare 原样透传,见上方警告
+  src          TEXT NOT NULL,         -- 恒 'SW2021'(⛔ 2014 老版实测返 0 行,不落)
+  fetched_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sw_classify_level ON sw_industry_classify(level);
+
+-- 成分归属:一只票一行(`index_member_all` 每只恰好一个 L1/L2/L3,§4.4)。
+-- 🔴 **`out_date IS NULL` = 当前有效**;`is_current` 是它的物化位,查询别再各算一遍。
+-- ⚠ 本表装的是**当前**归属快照(接口只给当前)。历史归属要走 `index_member` 逐 L1
+-- 拉 31 次 —— 生产不需要(成绩线在写入时冻结 `sw_l2_code`),属 Backlog §13。
+CREATE TABLE IF NOT EXISTS sw_industry_member (
+  ts_code      TEXT PRIMARY KEY,
+  name         TEXT,
+  l1_code      TEXT NOT NULL,
+  l1_name      TEXT NOT NULL,
+  l2_code      TEXT NOT NULL,
+  l2_name      TEXT NOT NULL,
+  l3_code      TEXT NOT NULL,
+  l3_name      TEXT NOT NULL,
+  in_date      TEXT,
+  out_date     TEXT,                  -- NULL / '' = 当前有效
+  is_current   INTEGER NOT NULL DEFAULT 1,
+  fetched_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sw_member_l2 ON sw_industry_member(l2_code);
+CREATE INDEX IF NOT EXISTS idx_sw_member_current ON sw_industry_member(is_current);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

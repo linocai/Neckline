@@ -345,7 +345,54 @@ def ts_namechange_page(limit: int = 8000, offset: int = 0) -> TushareResult:
     )
 
 
+# —— 申万行业分类(V2.5.0 S2,PROJECT_PLAN §3.2 / §6 S2)————————————————————
+#
+# 🔴 **只认 2021 版**:`src='SW'`(2014 老版)在 600 元档实测**返回 0 行**
+# (PROJECT_PLAN §4.4),⛔ 别把它当"另一个可选口径"留着。
+
+#: `index_member_all` 的**单次返回行数硬上限**(TuShare 侧,实测 §4.4)。
+#: 🔴 **不翻页会静默少拿一半票** —— 接口不报错,只是少给(§12 坑 5)。
+SW_MEMBER_PAGE_LIMIT = 3000
+
+
+def ts_index_classify(level: str = "", src: str = "SW2021") -> TushareResult:
+    """申万行业分类表(`index_classify`)。
+
+    `level` 传 `'L1'` / `'L2'` / `'L3'` 取某一层;留空取全部三层。
+    实测(§4.4,⛔ 不要重测):`src='SW2021'` → L1 **31** / L2 **134** / L3 **346**;
+    `src='SW'`(2014 老版)→ **0 行**。
+
+    字段:`index_code`(如 `801125.SI`)、`industry_name`、`level`、`industry_code`、
+    `parent_code`、`src`、`is_pub`。⚠ 归属一律**按 `index_code` 认**,⛔ 不按名称
+    字符串(§12 坑 6:名称会变,代码不变)。
+    """
+    kwargs = {"src": src}
+    if level:
+        kwargs["level"] = level
+    return _call("index_classify", **kwargs)
+
+
+def ts_index_member_all(limit: int = SW_MEMBER_PAGE_LIMIT, offset: int = 0) -> TushareResult:
+    """申万成分**当前**归属全量(`index_member_all`),**一页**。
+
+    🔴 **调用方必须循环 offset 翻页**(§12 坑 5):单次上限 `SW_MEMBER_PAGE_LIMIT`
+    = 3000 行,而全市场约 5897 只 → **2 页才拿得全**。接口在超限时不报错、只少给,
+    少拿的那一半会静默变成"这些票查无行业归属"。分页编排见
+    `neckline/data/sw_industry.py::fetch_members`。
+
+    字段:`l1_code` `l1_name` `l2_code` `l2_name` `l3_code` `l3_name` `ts_code`
+    `name` `in_date` `out_date` `is_new`。`out_date` 为空 = 当前有效(§4.4);
+    每只票恰好一个 L1/L2/L3。
+
+    ⚠ 本接口只给**当前**归属。要历史(带 in_date/out_date、同票可多段)得走
+    `index_member(index_code=...)` 逐个 L1 拉 31 次 —— 生产不需要(成绩线在写入时
+    冻结绑定),属 Backlog(§13)。
+    """
+    return _call("index_member_all", limit=limit, offset=offset)
+
+
 __all__ = [
+    "SW_MEMBER_PAGE_LIMIT",
     "TushareResult",
     "to_ts_code",
     "reset_client_cache",
@@ -367,4 +414,6 @@ __all__ = [
     "ts_ths_daily",
     "ts_top_list",
     "ts_stk_holdertrade",
+    "ts_index_classify",
+    "ts_index_member_all",
 ]
