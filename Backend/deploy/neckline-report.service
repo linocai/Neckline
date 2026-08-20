@@ -1,24 +1,18 @@
-# Neckline 晚间链 **第 3 段**:⑨ 盘后复盘引擎 + 篮子日报渲染落库 + APNs
-# (plan §五 V2-⑯-D;**沿用 V1 的 unit 名**,它本来干的就是"出报告"这件事。
-#  V1 原文 = `scripts/report.py --notify` 单跑;V2 起换成晚间链的 review+report 两段。)
+# Neckline 晚间链 **第 3 段**:报告装配 + 落库 + APNs。
+# (unit 名沿用 V1/V2 —— 它本来干的就是"出报告"这件事,⛔ 本版不动 unit 拓扑。
+#  V1 = `scripts/report.py --notify` 单跑;V2 = 晚间链的 `review,report` 两段;
+#  V2.5.0 = **只剩 `report` 一段**:K8 的 ⑨ 盘后复盘引擎随裁定 8 整块退役,
+#  周复盘搬去了 `neckline/review/` 的交割单分析台(架构 §六,由 App 触发,不进本链)。)
 #
-# ⚠⚠ **为什么 ⑨ 与报告必须同一个 unit(⑯-D 改口径的真正收益)**:「⑨ 在报告之前」
-# 是一条**语义依赖** —— 报告的 ④「昨日篮子复盘」节要读 `basket_review_daily` 的**当日
-# 行**,⑨ 排后面那一节在同一次运行里必然空,而且**症状是那一节静默变空、不报错**。
-# 放进同一个 unit,这个顺序由链内固定序(`CHAIN_SEGMENTS`)保证、**systemd 侧根本无法
-# 配错**;拆成两个 unit 则任何人改一次 `After=` 就能把顺序弄反。
-# ⛔ **别把 `--segments review,report` 拆成两个 unit。**
+# ⚠ **`--segments report` 就是全部,别再找第二段**:V2 那句「⛔ 别把
+#   `--segments review,report` 拆成两个 unit」讲的是**当时**那两段的语义依赖
+#   (报告要读 ⑨ 当日落的行)。那两段今天只剩一段,那句禁令**已无对象** ——
+#   保留这段沿革是为了让下一个人知道它为什么消失,⛔ 不是让谁去把 `review` 加回来。
 #
-# ✅ **已修复(2026-08-04 同日追加,定向小修,选③)**:报告 ③b「今日未定档篮子」
-# (`droppedBaskets`)原本卡死 `available=false` 且披露文案误导(⑥ 的 `TierResult.
-# dropped` 只在内存里随链传递、跨不过 seg2/seg3 的进程边界)。现由新表
-# `basket_dropped_handoff`(唯一读写实现 `neckline/selection/basket_dropped_
-# handoff.py`)承接跨进程交接:seg2(`neckline-basket.service`)在 ⑥ 定档完成后
-# 立刻落一行(按 `trade_date` 整行覆写,不追加历史、无 `basket_id`、不进
-# `baskets`/`tier_history` —— ⑥-b-C「溢出篮不落库」的裁定原样有效,本表只是
-# 搬运工不是审计账本);本 unit(seg3)在 SEG_BASKET 不在本次 `segments` 里时
-# 读回。三态(没跑 ⑥ / 跑了零溢出 / 跑了有溢出)与单进程路径逐位同构,详见
-# PROJECT_PLAN §五 V2-⑯-D 补记。
+# ⚠ **V2.3.2 的 `basket_dropped_handoff` 跨进程交接机制已随 S1 物理删除**
+#   (`neckline/selection/` 整包退役)。报告的「今日未定档篮子」那一节连同 K8 报告
+#   一起没了;K9 报告的三态与缺口披露见 `neckline/report/state.py`。
+#   ⛔ 别照这段沿革去找 `basket_dropped_handoff.py`,它不在了。
 #
 # ✅ **配额已于 2026-08-11 V2.3.2 第 ⑥ 块部署时生产隔离实测复核,欠账销案。结论:
 #    `TimeoutStartSec=2400` / `MemoryMax=1000M` **两个数都不动** —— ③-A 的增量约等于零。**
@@ -60,7 +54,7 @@
 # ⛔ 无 [Install]:由 neckline-evening.target 拉起。
 
 [Unit]
-Description=Neckline evening chain seg3: post-close review + basket daily report + APNs
+Description=Neckline evening chain seg3: report assembly + persistence + APNs
 Documentation=file:///opt/neckline/PROJECT_PLAN.md
 After=network-online.target neckline-basket.service
 Wants=network-online.target
@@ -72,6 +66,8 @@ Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
 ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments report --notify
-# ⑨ 复盘含 LLM(TASK_REVIEW)+ 报告渲染;墙钟以 LLM 为主。
+# ⚠ 这两个数是 **V2 负载**(⑨ 复盘含 LLM + 报告渲染)下定的;V2.5.0 本段只剩
+#    报告装配(**只读已落好的表,零 LLM、零批算**,`report/pipeline.py` 模块头),
+#    实际用量只会更小。⛔ 本版一个数都没改(§13.1-B5 等用户裁定)。
 TimeoutStartSec=2400
 MemoryMax=1000M

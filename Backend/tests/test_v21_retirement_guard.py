@@ -1,9 +1,15 @@
 """V2.1-①「问询台整链退役」的全仓守门(plan §五 V2.1-① 测试与守门条款)。
 
-体例逐字照抄 `test_v1_retirement_guard.py` 的三类断言 + AST 扫描器(`_imported_names`/
-`_import_hits`/`_sql_literal`/`_write_sql_hits` 四个辅助函数逐字复制,不去改成
-"从那边 import" ——两份守门文件各自独立、各自对应各自的退役事件,同项目
-`retire_k4_b3.py` 类一次性脚本"一个事件一个文件"惯例的测试侧对应)。
+体例照 `test_v1_retirement_guard.py` 的三类断言 —— 两份守门文件各自独立、各自
+对应各自的退役事件,同项目 `retire_k4_b3.py` 类一次性脚本"一个事件一个文件"惯例。
+
+🔴 **import 型判据不再自带抄本**(V2.5.0 收敛):本文件原来复制了一份
+`_imported_names`,它的 `ast.ImportFrom` 分支写着 `node.level == 0`
+—— **对相对 import 全盲**。一行 `from ..api import inquiry` 就能让整条退役守门
+看不见,而它照绿。现在统一走 `tests/guard_scan.py::import_hits()`(全仓唯一实现,
+相对 import 会被解析成绝对名;解析不出来的那种由 `test_v250_scanner_guard.py`
+另有一条全仓守门当场点名)。⚠ `_sql_literal` / `_write_sql_hits` 两个是**写 SQL**
+判据,不在这次收敛范围内。
 
 本文件每条断言都是某条老断言的**反转**,docstring 逐条写明反转自哪里:
 
@@ -33,7 +39,9 @@ from __future__ import annotations
 import ast
 import sqlite3
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import List, Tuple
+
+from tests import guard_scan
 
 _ROOT = Path(__file__).resolve().parent.parent
 _PKG = _ROOT / "neckline"
@@ -47,25 +55,15 @@ _EXEC_METHODS = {"execute", "executemany", "executescript"}
 #  共用扫描器(逐字照抄 test_v1_retirement_guard.py,两份守门文件各自独立)
 # ======================================================================
 
-def _imported_names(path: Path) -> Set[str]:
-    """该文件 import 进来的模块全名集合(`import a.b` / `from a.b import c` 都算 `a.b`)。
-    **只看 import 语句**,注释与字符串里的旧名字不计——历史说明不是残留。"""
-    out: Set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
-        if isinstance(node, ast.Import):
-            out.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            out.add(node.module)
-            out.update(f"{node.module}.{a.name}" for a in node.names)
-    return out
-
-
 def _import_hits(needle: str) -> List[str]:
-    return [
-        str(p.relative_to(_ROOT))
-        for p in _PY_FILES
-        if any(m == needle or m.startswith(needle + ".") for m in _imported_names(p))
-    ]
+    """哪些文件 import 了 `needle` 或它的子模块(`文件 → 模块` 清单)。
+
+    🔴 判据的**唯一实现**在 `guard_scan.import_hits()`。本文件从前自带一份抄本,
+    它写着 `node.level == 0` —— 对**相对 import 全盲**,`from ..api import inquiry`
+    一行就能绕过整条退役守门而它照绿。⛔ 不许再抄回来。
+    **只看 import 语句**,注释与字符串里的旧名字不计 —— 历史说明不是残留。
+    """
+    return guard_scan.import_hits(_PY_FILES, [needle], root=_ROOT)
 
 
 def _sql_literal(node: ast.AST):
@@ -230,3 +228,26 @@ def test_retired_route_key_filter_logs_a_warning(isolated_env, caplog):
     with caplog.at_level(logging.WARNING, logger="neckline.settings_store"):
         settings_store.get_llm_routes(db_path=db_path)
     assert any("inquiry" in r.message for r in caplog.records)
+
+
+def test_the_import_scanner_is_not_blind_to_relative_imports(tmp_path: Path):
+    """🔴 **收敛后的反例自检**(V2.5.0):一行相对 import 不许绕过整条退役守门。
+
+    本文件从前自带一份 `_imported_names` 抄本,它的 `ImportFrom` 分支写着
+    `node.level == 0` —— `from ..api import inquiry` 在它眼里**不存在**,
+    于是「问询台零残留」这条断言可以在问询台被复活的情况下照绿。
+    ⚠ 诱饵必须放在**真包**里(`guard_scan` 靠 `__init__.py` 认包边界),
+    拿裸文件当诱饵会测到另一条路径 —— 那种自检比没有更糟。
+    """
+    for rel in ("neckline", "neckline/api", "neckline/report"):
+        d = tmp_path / rel
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "__init__.py").write_text("", encoding="utf-8")
+    bait = tmp_path / "neckline" / "report" / "bait.py"
+    bait.write_text("from ..api import inquiry\n", encoding="utf-8")
+    assert guard_scan.import_hits([bait], ["neckline.api.inquiry"]), (
+        "`from ..api import inquiry` 绕过了退役守门 —— 扫描器又对相对 import 瞎了")
+    # 反向:不相干的 import 不许被判红。
+    clean = tmp_path / "neckline" / "report" / "clean.py"
+    clean.write_text("from ..api import notify\nimport json\n", encoding="utf-8")
+    assert guard_scan.import_hits([clean], ["neckline.api.inquiry"]) == []

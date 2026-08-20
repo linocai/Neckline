@@ -22,9 +22,10 @@
 临时库,于是「这条用例看见的行是谁写的」变成一道要现场推理的题。两条都要。
 
 **另一半风险面在别处**:那 60 多个 store 函数里,`load_*` / `latest_*` / `list_*` /
-`get_*` 有 43 个会顺带 `init_schema()`(一次读就把库迁移了)。那一条闸在
+`get_*` 曾有 43 个会顺带 `init_schema()`(一次读就把库迁移了)。**已清零**
+(R3-🔴-2:读路径统一改走 `db.readonly_tables()`)。两条闸看着它:静态那条在
 `test_v250_s14_release_gate.py::test_no_read_helper_triggers_a_schema_migration`,
-目前 `xfail(strict=True)` 挂着(§13.1-B13)。
+行为那条在 `test_read_path_no_ddl.py`。
 
 ⚠ **AST 精确匹配,不是纯文本 grep**:只抓「代码里真的发起了调用」,不误伤 docstring /
 注释里提到这些名字的散文引用 —— 本仓的模块头习惯把「⛔ 不许做 X」连同 X 的名字一起
@@ -38,6 +39,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import pytest
+
+from tests import guard_scan
 
 _TESTS_DIR = Path(__file__).resolve().parent
 _ROOT = _TESTS_DIR.parent
@@ -99,12 +102,18 @@ def risk_surface() -> Dict[str, Tuple[str, Optional[int]]]:
 _RISK = risk_surface()
 
 
-def _store_bindings(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+def _store_bindings(path: Path, tree: ast.AST) -> Tuple[Set[str], Set[str]]:
     """一个文件里,哪些名字绑到了 store **模块**、哪些绑到了 store **函数**。
 
     🔴 **必须解析绑定,⛔ 不能只比函数名**:`re.search(...)` 与
     `settings_store.search(...)` 同名,只比名字会把前者判红 —— 实测 27 条假阳性,
     其中 24 条是 `re.search`。而假阳性会逼着后来者把守门放宽。
+
+    🔴 **相对 import 也要认**(V2.5.0 收敛):从前这里写的是
+    `isinstance(node, ast.ImportFrom) and node.module` —— `from . import store`
+    的 `node.module` 是 `None`,`from .store import save_x` 的 `node.module` 是
+    `'store'`(不是绝对名),两种都绑不上,于是那个文件里的漏传**一条都扫不出来**。
+    现在模块名一律经 `guard_scan.resolve_relative()` 解析成绝对名(全仓唯一实现)。
     """
     modules = _store_modules()
     mod_names: Set[str] = set()
@@ -114,11 +123,15 @@ def _store_bindings(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
             for alias in node.names:
                 if alias.name in modules:
                     mod_names.add(alias.asname or alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom) and node.module:
+        elif isinstance(node, ast.ImportFrom):
+            module = (guard_scan.resolve_relative(path, node.level, node.module)
+                      if node.level else node.module)
+            if not module:
+                continue
             for alias in node.names:
-                if f"{node.module}.{alias.name}" in modules:
+                if f"{module}.{alias.name}" in modules:
                     mod_names.add(alias.asname or alias.name)
-                elif node.module in modules:
+                elif module in modules:
                     func_names.add(alias.asname or alias.name)
     return mod_names, func_names
 
@@ -131,7 +144,7 @@ def implicit_db_calls(path: Path) -> List[Tuple[int, str]]:
     这是这条判据已知的残余口子,写在这里免得下一个人以为它滴水不漏。
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    mod_names, func_names = _store_bindings(tree)
+    mod_names, func_names = _store_bindings(path, tree)
     hits: List[Tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -201,6 +214,51 @@ def test_the_implicit_db_detector_actually_detects(tmp_path: Path):
     unrelated.write_text("import re\ndef test_x():\n    re.search('a', 'b')\n",
                          encoding="utf-8")
     assert implicit_db_calls(unrelated) == []
+
+
+def test_the_detector_is_not_blind_to_relative_imports(tmp_path: Path):
+    """🔴 **收敛后的反例自检**(V2.5.0):相对 import 绑进来的 store 也要看得见。
+
+    从前 `_store_bindings` 写的是 `isinstance(node, ast.ImportFrom) and node.module`
+    —— `from . import store` 的 `node.module` 是 `None`,`from .store import
+    load_k9_report` 的 `node.module` 是 `'store'`(不是绝对名),两种都绑不上,
+    于是那个文件里的漏传**一条都扫不出来**,而守门照绿。
+    ⚠ 诱饵必须放在**真包**里(`guard_scan.resolve_relative` 靠 `__init__.py`
+    认包边界),拿一个裸文件当诱饵会测到另一条路径 —— 那种自检比没有更糟。
+    """
+    root = tmp_path / "neckline" / "report"
+    root.mkdir(parents=True)
+    (tmp_path / "neckline" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "__init__.py").write_text("", encoding="utf-8")
+
+    mod_form = root / "test_bait_mod.py"
+    mod_form.write_text(
+        "from datetime import date\n"
+        "from . import store\n"
+        "def test_x():\n"
+        "    store.load_k9_report(date(2026, 8, 20))\n",
+        encoding="utf-8")
+    assert implicit_db_calls(mod_form) == [(4, "load_k9_report")], \
+        "`from . import store` 绕过了判据 —— 扫描器对相对 import 又瞎了"
+
+    func_form = root / "test_bait_func.py"
+    func_form.write_text(
+        "from datetime import date\n"
+        "from .store import load_k9_report\n"
+        "def test_x():\n"
+        "    load_k9_report(date(2026, 8, 20))\n",
+        encoding="utf-8")
+    assert implicit_db_calls(func_form) == [(4, "load_k9_report")], \
+        "`from .store import f` 绕过了判据"
+
+    ok = root / "test_bait_ok.py"
+    ok.write_text(
+        "from datetime import date\n"
+        "from . import store\n"
+        "def test_x(tmp_path):\n"
+        "    store.load_k9_report(date(2026, 8, 20), db_path=tmp_path / 'n.db')\n",
+        encoding="utf-8")
+    assert implicit_db_calls(ok) == [], "显式给了库却被判红 —— 假阳性会逼人放宽守门"
 
 
 # ══════════════════════════════════════════════════════════════════════════

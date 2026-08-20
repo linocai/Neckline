@@ -267,6 +267,8 @@ def test_basket_card_freeze_and_discipline_never_in_degrade_order():
 # 全仓守门:真的调用 LLM 的模块必须 import prompt_context
 # ══════════════════════════════════════════════════════════════════════════
 
+from tests import guard_scan
+
 _NECKLINE_DIR = Path(__file__).resolve().parent.parent / "neckline"
 
 
@@ -282,13 +284,15 @@ def _calls_provider_chat(path: Path) -> bool:
 
 
 def _imports_prompt_context(path: Path) -> bool:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and "prompt_context" in node.module:
-            return True
-        if isinstance(node, ast.Import) and any("prompt_context" in a.name for a in node.names):
-            return True
-    return False
+    """这个文件 import 了 `prompt_context` 吗。
+
+    🔴 判据的**唯一实现**在 `guard_scan.imports()`(V2.5.0 收敛)。本文件从前自带
+    一份抄本,它的 `ImportFrom` 分支要求 `node.module` 非空 —— 对
+    `from . import prompt_context`(`node.module is None`)**全盲**:一个真的
+    接上了 `prompt_context` 的模块会被判成没接,而**反向**那条
+    `test_grandfather_list_is_still_accurate` 又会因此判错。⛔ 不许再抄回来。
+    """
+    return any("prompt_context" in mod for mod in guard_scan.imports(path))
 
 
 # **豁免名单已清空(2026-08-04,A4)**:唯一一条 `neckline/llm/news_scan.py`
@@ -345,3 +349,28 @@ def test_get_settings_family_never_leaks_provider_key(client, AUTH):
         resp = client.get(path, headers=AUTH)
         assert resp.status_code == 200, path
         assert _SECRET not in resp.text, f"{path} 响应里出现了明文 key"
+
+
+def test_the_prompt_context_scanner_is_not_blind_to_relative_imports(tmp_path: Path):
+    """🔴 **收敛后的反例自检**(V2.5.0)。
+
+    本文件从前自带一份抄本,它的 `ImportFrom` 分支要求 `node.module` 非空 ——
+    `from . import prompt_context` 的 `node.module` 是 `None`,于是一个**真的**
+    接上了 `prompt_context` 的模块会被判成没接;而反向那条
+    `test_grandfather_list_is_still_accurate` 又会因此判错。两个方向都会错。
+    ⚠ 诱饵必须放在**真包**里(`guard_scan` 靠 `__init__.py` 认包边界)。
+    """
+    for rel in ("neckline", "neckline/llm"):
+        d = tmp_path / rel
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "__init__.py").write_text("", encoding="utf-8")
+    bait = tmp_path / "neckline" / "llm" / "judge.py"
+    bait.write_text("from . import prompt_context\n", encoding="utf-8")
+    assert _imports_prompt_context(bait), (
+        "`from . import prompt_context` 没被看见 —— 扫描器对相对 import 瞎了")
+    bait2 = tmp_path / "neckline" / "llm" / "news_scan.py"
+    bait2.write_text("from ..llm.prompt_context import TIMELINESS_RULES\n", encoding="utf-8")
+    assert _imports_prompt_context(bait2)
+    clean = tmp_path / "neckline" / "llm" / "factory.py"
+    clean.write_text("from . import router\nimport json\n", encoding="utf-8")
+    assert not _imports_prompt_context(clean)

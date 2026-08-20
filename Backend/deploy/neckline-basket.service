@@ -1,23 +1,33 @@
-# Neckline 晚间链 **第 2 段**:⑤ 驱动聚合 → ⑥ Tier 定档(事务1)→ ⑦ 卡冻结(事务2)
-# (plan §五 V2-⑯-D)。
+# Neckline 晚间链 **第 2 段**:架构第二~四层 · **策略层 → 解释层 → 预案层**。
+# (unit 文件名沿用 V2 的 `basket`,⛔ 本版不动 unit 拓扑 —— §9.3「新增 unit:无」。
+#  V2 时它跑的是「⑤ 驱动聚合 → ⑥ Tier 定档 → ⑦ 卡冻结」。)
 #
-# **这一段是 LLM 段**,资源画像是**墙钟 / 网络**而不是内存 —— 单独成段才能给它长
-# 超时**而不必把长超时也给批算段**(带联网搜索的调用正常生成 30–60s+,见 CLAUDE.md
-# 「带联网搜索的 LLM 调用不能用短读超时」)。
+# **这一段有 LLM**(解释层的资料聚合 + 消息面扫描、预案层的填值),所以要长超时 ——
+# 单独成段才能给它长超时**而不必把长超时也给批算段**(带联网搜索的调用正常生成
+# 30–60s+,见 CLAUDE.md「带联网搜索的 LLM 调用不能用短读超时」)。
 #
-# ⚠ **本段不重跑 ④**:`run_evening_chain(segments=['basket'])` 里 `seed_set` 是 `None`,
-#   `aggregate_baskets` 会自己 `generate_seeds()` —— 那是**只读上一段刚落的扫描表**,
-#   不是重算(只多一次便宜的 DB 查询)。故 seg1 失败 / 零行时,本段会如实得到"今日无
-#   种子",走"当日无篮子是合法输出"分支,⛔ 不会拿昨天的凑数。
+# 🔴 **内存画像已经变了 —— ⛔ 别再照 V2 那句「内存画像轻」判**:
+#   V2 时本段只读上一段落好的表 + 装配上下文,不做全表扫描,那句话是 `MemoryMax=900M`
+#   当年的**理由**。V2.5.0 把**策略层**(硬边界 → 四通道 → 排序 → 名额,吃全市场
+#   parquet)搬了进来:实测 RSS 峰值 **736 MB**(§14 S6)对 `MemoryMax=900M`
+#   —— **余量 18%**,正是 §9.6 步骤 0 的红线所在。
+#   ⚠ 超 `MemoryMax` 会被 **OOM-kill 且不报错**(§12 坑 1)。
+# 🔴 **`MemoryMax` 的数本版一个都没改**(§13.1-B5 等用户裁定):736 MB 是**开发机
+#   macOS** 的读数,拿一个跨平台的数去改生产 cap 是在猜。从新负载看
+#   1400M(seg1,实测 127 MB)/ 900M(本段,实测 736 MB)这对数很可能该对调,
+#   但那要用户点头 + 生产实测,⛔ 施工侧不自行改、不拆 unit。
 #
 # ⚠ **Wants 不是 Requires**:seg1 失败本段照跑(链的保险丝哲学:任一段失败,后面照走、
 #   缺席如实披露)。要改成"前段失败就不跑",那是产品判断,得先回 planner。
+# ⚠ **本段拿不到 seg1 的进程内产物**:事实包是**落库件**,本段只读它;seg1 没冻成
+#   事实包时策略层会如实得到「事实包未冻结」,报告走「今天没跑成」并逐条列缺口,
+#   ⛔ 不会拿昨天的凑数。
 #
 # 安装:sudo cp /opt/neckline/deploy/neckline-basket.service /etc/systemd/system/ && sudo systemctl daemon-reload
 # ⛔ 无 [Install]:由 neckline-evening.target 拉起。
 
 [Unit]
-Description=Neckline evening chain seg2: driver aggregation + Tier + card freeze (LLM segment)
+Description=Neckline evening chain seg2: strategy + explain + playbook layers (LLM segment)
 Documentation=file:///opt/neckline/PROJECT_PLAN.md
 After=network-online.target neckline-scan.service
 Wants=network-online.target
@@ -33,5 +43,6 @@ ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segmen
 # 留在“已排队但未判断”。单次 HTTP/流式调用仍由 provider 自己的超时、重试和
 # systemd stop 操作约束；这里只取消整段累计时间截断。
 TimeoutStartSec=infinity
-# 内存画像轻(不做全表扫描,只读上一段落好的表 + 装配上下文)。
+# —— 内存护栏 —— 🔴 这个数是 **V2 负载**下定的(那时本段「不做全表扫描」);
+#    V2.5.0 本段实测 **736 MB**,余量 18%。⛔ 本版一个数都没改,见本文件头。
 MemoryMax=900M
