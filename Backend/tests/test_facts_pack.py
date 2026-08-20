@@ -7,7 +7,7 @@
 | 1 | 类型级:`freeze_pack(IncompletePack)` 不通过 | ① |
 | 2 | 冻结不可覆盖:同 `(trade_date, pack_version)` 二次冻结抛错 | ② |
 | 3 | 中位数三路等价:现算 ≡ 落表 ≡ 读回 | ③ |
-| 4 | 停牌**双向**夹具(S 混进 daily → 排除且计数 1;R 涨停 → 计入) | ④ |
+| 4 | 停牌**多向**夹具(全天停牌混进 daily → 排除且计数 1;盘中临时停牌 / R 涨停 → **计入**) | ④ |
 | 5 | 缺一个上游分区 → `IncompletePack` 且 `missing` 列出具体表名 | ⑤ |
 | 6 | 保留策略:parquet 滚动裁剪,**清单行永不裁剪** | ⑥ |
 
@@ -184,9 +184,9 @@ class TestFreezeIsNotOverwritable:
         _seed_day(env)
         _freeze(env, _build(env))
         import dataclasses
-        v2 = dataclasses.replace(_build(env), pack_version="fp-2")
+        v2 = dataclasses.replace(_build(env), pack_version="fp-99")
         _freeze(env, v2)
-        assert {r[1] for r in fact_store.list_packs(db_path=env.db_path)} == {"fp-1", "fp-2"}
+        assert {r[1] for r in fact_store.list_packs(db_path=env.db_path)} == {fact_pack.PACK_VERSION, "fp-99"}
 
     def test_the_manifest_row_only_ever_says_frozen(self, isolated_env):
         env = isolated_env
@@ -257,15 +257,17 @@ class TestIndustryMedianThreeWays:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# ④ 停牌:**双向**夹具(§5.3.4)
+# ④ 停牌:**多向**夹具(§5.3.4,🔴 裁定 12 返工后)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestSuspensionIsAnAssertionNotAnAssumption:
-    def test_an_S_row_that_sneaks_into_daily_is_excluded_and_counted(self, isolated_env):
-        """人造一条 `suspend_type='S'` 的票混进 `daily` → 被排除出中位数、计数 = 1。
+    def test_a_full_day_halt_that_sneaks_into_daily_is_excluded_and_counted(self, isolated_env):
+        """人造一条**全天停牌**(`suspend_timing` 为空)的票混进 `daily`
+        → 被排除出中位数、计数 = 1。
 
-        §4.6 实测:S 类票**天然不在 daily 分区里**。真出现了就是数据事故,
-        ⛔ 不静默、不掩盖(WARNING + `fact_packs.suspend_anomaly_count`)。"""
+        §4.6 实测:全天停牌的票**天然不在 daily 分区里**(150 天 2001 行 0 命中)。
+        真出现了就是数据事故,⛔ 不静默、不掩盖(WARNING +
+        `fact_packs.suspend_anomaly_count`)。"""
         env = isolated_env
         _seed_meta(env)
         _seed_day(
@@ -288,20 +290,48 @@ class TestSuspensionIsAnAssertionNotAnAssumption:
         # 那一行**仍在事实包里**(K9 第一层第 6 条要靠 `suspend_flag` 把它排除掉)
         rows = {r["ts_code"]: r for r in frozen.rows.iter_rows(named=True)}
         assert rows["600001.SH"]["suspend_flag"] == "S"
-        # 判别证据一并冻进 market_json:这条断言在真实数据上几乎只被**盘中临时停牌**触发
         assert frozen.market["suspendAnomaly"] == {
-            "total": 1, "fullDay": 1, "intraday": 0,
-            "codes": ["600001.SH"], "intradayTimings": {},
+            "total": 1, "codes": ["600001.SH"],
+            "intradayCounted": 0, "intradayTimings": {},
         }
 
-    def test_an_intraday_halt_is_counted_separately_from_a_full_day_halt(self, isolated_env):
-        """🔴 150 日实测的发现:`suspend_timing` 非空 = **盘中临时停牌**,那只票当天
-        **照常交易、照常有 daily 行**。全天停牌(`suspend_timing IS NULL`)在 150 天
-        2001 行里**一行都没进过 daily**,§4.6 那句话只对全天停牌成立。
+    def test_an_intraday_halt_is_counted_into_the_median_and_is_not_an_anomaly(self, isolated_env):
+        """🔴 **裁定 12**(2026-08-20 用户对 S3 的返工):`suspend_timing` 非空 =
+        **盘中临时停牌**,那只票当天**照常交易、照常有完整涨跌幅**
+        → **照常计入行业中位数**,且⛔ **不算异常**。
 
-        §5.3.4 逐字要求把违反行排除出中位数,本片**照做**;但「盘中停过十分钟算不算
-        停牌」是一条**口径主张**,⛔ 施工侧不自行拍板 —— 只把判别证据原样冻进
-        `market_json`。这条夹具锁的是「证据没被抹掉」,不是某个口径。"""
+        150 日实测:盘中停牌 36 行里 **35 行**都在 daily、分布在 25/150 天 ——
+        把它当异常等于让告警从此没人看,把它剔出中位数等于每 6 天就悄悄抹掉一只
+        正常交易的票。"""
+        env = isolated_env
+        _seed_meta(env)
+        _seed_day(
+            env,
+            closes={"600001.SH": 11.0, "600002.SH": 10.2, "600003.SH": 9.7,
+                    "600004.SH": 10.0, "600005.SH": 10.0,
+                    "300001.SZ": 10.0, "300002.SZ": 10.0},
+            suspend_rows=[
+                {"ts_code": "600001.SH", "suspend_type": "S", "suspend_timing": "9:30-9:40"},
+            ],
+        )
+        built = _build(env)
+        assert built.suspend_anomaly_count == 0, "盘中临时停牌是常态,⛔ 不是异常"
+        semi = {r.l2_code: r for r in built.industry_rows}["801080.SI"]
+        assert semi.member_count == 3, "盘中停过十分钟的票当天正常交易,必须**计入**中位数"
+        assert semi.suspended_excluded == 0
+        assert semi.median_ret == pytest.approx(0.02)   # +10% / +2% / −3% 的中位数
+
+        frozen = _freeze(env, built)
+        rows = {r["ts_code"]: r for r in frozen.rows.iter_rows(named=True)}
+        assert rows["600001.SH"]["suspend_flag"] == "I", "⛔ 不许把盘中停牌折回 S"
+        # 判别证据仍然留在包里 —— 「那天有几只票盘中停过」事后仍查得到。
+        assert frozen.market["suspendAnomaly"] == {
+            "total": 0, "codes": [],
+            "intradayCounted": 1, "intradayTimings": {"600001.SH": "9:30-9:40"},
+        }
+
+    def test_the_two_kinds_of_halt_never_collapse_into_one_flag(self, isolated_env):
+        """同一天两类都出现:全天停牌进异常并被剔除,盘中停牌照常计入。"""
         env = isolated_env
         _seed_meta(env)
         _seed_day(
@@ -315,10 +345,25 @@ class TestSuspensionIsAnAssertionNotAnAssumption:
             ],
         )
         built = _build(env)
+        assert built.suspend_anomaly_count == 1, "只有全天停牌那一只算异常"
         detail = built.market["suspendAnomaly"]
-        assert detail["total"] == 2
-        assert detail["intraday"] == 1 and detail["fullDay"] == 1
+        assert detail["total"] == 1 and detail["codes"] == ["600002.SH"]
+        assert detail["intradayCounted"] == 1
         assert detail["intradayTimings"] == {"600001.SH": "9:30-9:40"}
+        semi = {r.l2_code: r for r in built.industry_rows}["801080.SI"]
+        assert semi.member_count == 2 and semi.suspended_excluded == 1
+        rows = {r["ts_code"]: r for r in built.rows.iter_rows(named=True)}
+        assert rows["600001.SH"]["suspend_flag"] == "I"
+        assert rows["600002.SH"]["suspend_flag"] == "S"
+
+    def test_the_flag_resolver_is_the_single_implementation(self):
+        """判别只有一处实现,四值闭合(⛔ 下游不许自己再看一次 `suspend_timing`)。"""
+        f = fact_pack._suspend_flag_of
+        assert f("S", None) == fact_pack.SUSPEND_HALTED
+        assert f("S", "9:30-9:40") == fact_pack.SUSPEND_INTRADAY
+        assert f("R", None) == fact_pack.SUSPEND_RESUMED
+        assert f("R", "9:30-9:40") == fact_pack.SUSPEND_RESUMED
+        assert f("", None) == fact_pack.SUSPEND_NONE
 
     def test_an_R_row_at_limit_up_is_counted_in(self, isolated_env):
         """🔴 `suspend_type='R'` = **复牌**,当天正常交易(§4.6 实测 20230103 的

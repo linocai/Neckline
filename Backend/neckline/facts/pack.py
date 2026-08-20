@@ -52,7 +52,12 @@ logger = logging.getLogger(__name__)
 
 #: 事实层口径版本。🔴 口径变了就**发新版本**(§5.3.2 第 3 条),⛔ 没有静默重写这条路。
 #: 参数包的 `factPackVersion` 必须逐字等于它,否则该参数包无效(§5.4.3 校验 3)。
-PACK_VERSION = "fp-1"
+#:
+#: · `fp-1`(S3 首版):S 类停牌**一律**排除出行业中位数并计为异常。
+#: · `fp-2`(**裁定 12 返工**):只剔**全天停牌**;盘中临时停牌**照常计入**中位数,
+#:   `suspend_flag` 因此新增 `I` 取值。这改的是中位数本身的口径 → 必须升版,
+#:   ⛔ 不许在 `fp-1` 上静默重算(那会让「同一版包」在两天里意思不同)。
+PACK_VERSION = "fp-2"
 
 #: 策略层历史读取上限(§3.2:**工程容量上限,不是策略参数**)。
 #: 120 × 5500 × 10 列 ≈ 53 MB,2vCPU/1.6G 扛得住;参数包里任何窗口 > 它一律判配置无效。
@@ -84,10 +89,25 @@ PACK_COLUMNS: Tuple[str, ...] = (
 #: 有哪些策略了。⛔ 不许加豁免,要加列先想清楚它是不是事实。
 FORBIDDEN_COLUMN_ROOTS: Tuple[str, ...] = ("pattern", "channel", "recall", "k9", "rank", "score")
 
-#: `suspend_flag` 的闭合取值。⚠ `R` = **复牌**,当天正常交易,⛔ 一律不过滤(§4.6)。
+#: `suspend_flag` 的**闭合取值**(🔴 **裁定 12** 之后是四值,不是三值)。
+#:
+#: | 值 | 含义 | 当天交易了吗 | 进中位数吗 | K9 第一层第 6 条排除吗 |
+#: |---|---|---|---|---|
+#: | `none` | 不在当日停牌名单里 | 是 | 是 | 否 |
+#: | `S` | **全天停牌**(`suspend_type='S'` 且 `suspend_timing` 为空) | 否 | **否** | **是** |
+#: | `I` | **盘中临时停牌**(`suspend_type='S'` 且 `suspend_timing` 非空,如 `'9:30-9:40'`) | 是 | **是** | 否 |
+#: | `R` | **复牌**(`suspend_type='R'`) | 是 | 是 | 否 |
+#:
+#: 🔴 **为什么把 `I` 单列成一个值,而不是留个布尔列或让下游自己看 timing**:
+#: 「停牌」这个词在本系统里有**两个**消费方(行业中位数、K9 第一层第 6 条),
+#: 裁定 12 要求两处口径一致。把判别做成**一个列的一个取值**,下游写
+#: `suspend_flag == 'S'` 就自动是对的;留成「S + 另一列 timing」则每个消费方都要
+#: 记得再 and 一次,而忘记的那次不会报错、只会把一只正常交易的票悄悄从中位数里
+#: 抹掉。⛔ 不许把 `I` 折回 `S`。
 SUSPEND_NONE = "none"
-SUSPEND_HALTED = "S"
-SUSPEND_RESUMED = "R"
+SUSPEND_HALTED = "S"          # 全天停牌 —— 唯一被剔除的一类(裁定 12)
+SUSPEND_INTRADAY = "I"        # 盘中临时停牌 —— 当天正常交易,照常计入(裁定 12)
+SUSPEND_RESUMED = "R"         # 复牌 —— 当天正常交易(§4.6)
 
 
 @dataclass(frozen=True)
@@ -141,7 +161,9 @@ def _read_day(table: str, trade_date: date, parquet_dir: Optional[Path]) -> pl.D
 def _suspend_records(
     trade_date: date, parquet_dir: Optional[Path]
 ) -> Dict[str, Tuple[str, Optional[str]]]:
-    """`ts_code → (suspend_type, suspend_timing)`(不在名单里的票由调用方填 `'none'`)。
+    """`ts_code → (suspend_type, suspend_timing)` 的**原始**读数(不在名单里的票由
+    调用方填 `'none'`)。原始 `suspend_type` 只有 `S`/`R` 两值 —— 四值的
+    `suspend_flag`(含 `I`)由 `_suspend_flag_of` 从这两列**推**出来。
 
     ⚠ **当前数据路径里只会出现 S**:`tushare_client.ts_suspend_d_all` 调接口时就传了
     `suspend_type='S'`,R 类记录根本不落地。本函数**仍然**按 `suspend_type` 逐行映射
@@ -149,12 +171,12 @@ def _suspend_records(
     交易日(§4.6:20230103 的 000045.SZ 是 R,当天涨停 +10.01%)。⛔ 别把这段
     「多余」的映射优化掉。
 
-    🔴 **`suspend_timing` 是本片实测出来的判别位,⛔ 别当成没用的附加列**:
+    🔴 **`suspend_timing` 是判别位,⛔ 别当成没用的附加列**:
     `suspend_timing IS NULL` = **全天停牌**;非空(如 `'9:30-9:40'`)= **盘中临时停牌**,
     那只票**当天照常交易、照常有 daily 行**。150 个交易日实测:
     全天停牌 2001 行 —— **0 行**出现在 daily(§4.6 那句「天然不在 daily 里」成立);
-    盘中停牌 36 行 —— **35 行**出现在 daily,分布在 25/150 天。
-    详见 PROJECT_PLAN §14 的 S3 登记(⚠ 那里挂着一个需要用户拍板的口径问题)。
+    盘中停牌 36 行 —— **35 行**出现在 daily,分布在 25/150 天(17% 的日子)。
+    **用户 2026-08-20 据此裁定 12:只剔全天停牌,盘中临时停牌照常计入中位数。**
     """
     df = _read_day("suspend_d", trade_date, parquet_dir)
     if df.is_empty() or "ts_code" not in df.columns:
@@ -174,6 +196,20 @@ def _suspend_records(
             t = str(timing).strip() if timing is not None and str(timing).strip() else None
             out[str(code)] = (k, t)
     return out
+
+
+def _suspend_flag_of(kind: str, timing: Optional[str]) -> str:
+    """原始 `(suspend_type, suspend_timing)` → 四值 `suspend_flag`(**裁定 12**)。
+
+    🔴 这是「哪些票算停牌」的**唯一**判别实现。行业中位数与 K9 第一层第 6 条
+    都只认它的产物,⛔ 不许任何下游再看一次 `suspend_timing` 自己判一遍。
+    """
+    if kind == SUSPEND_RESUMED:
+        return SUSPEND_RESUMED
+    if kind == SUSPEND_HALTED:
+        # ⛔ 不许简化成「凡 S 即停牌」:盘中停过十分钟的票当天是正常交易的。
+        return SUSPEND_INTRADAY if timing else SUSPEND_HALTED
+    return SUSPEND_NONE
 
 
 def _meta_frame(db_path: Optional[Path], trade_date: date) -> pl.DataFrame:
@@ -294,7 +330,9 @@ def build(
     meta = _meta_frame(db_path, trade_date)
     sw = _sw_frame(db_path)
     suspend_records = _suspend_records(trade_date, parquet_dir)
-    suspend_of = {c: k for c, (k, _t) in suspend_records.items()}
+    #: 裁定 12:`S`(全天停牌)/ `I`(盘中临时停牌)/ `R`(复牌)三类在这里就分开,
+    #: 下游一律只认这一列。
+    suspend_of = {c: _suspend_flag_of(k, t) for c, (k, t) in suspend_records.items()}
 
     df = (
         daily.join(meta, on="ts_code", how="left")
@@ -328,18 +366,28 @@ def build(
         df = df.with_columns(pl.lit(Board.MAIN.value).alias("board"))
     df = df.with_columns(pl.col("board").fill_null(Board.MAIN.value))
 
-    # —— 申万二级中位数(裁定 2)+ 停牌断言(§5.3.4)——————————————————————————
+    # —— 申万二级中位数(裁定 2)+ 停牌断言(§5.3.4,裁定 12 收窄)————————————
+    # 🔴 裁定 12:**只把全天停牌剔出中位数**。盘中临时停牌(`I`)当天正常交易、
+    # 有完整涨跌幅,照常参与 —— ⛔ 不许把它并回 `halted`。
     l2_of = load_l2_map(db_path)
     halted = {c for c, k in suspend_of.items() if k == SUSPEND_HALTED}
+    intraday_in_daily = sorted(
+        c for c in df["ts_code"].to_list() if suspend_of.get(c) == SUSPEND_INTRADAY
+    )
     industry_rows, anomalies = industry_mod.compute_day(df, l2_of, halted)
-    anomaly_detail = _anomaly_breakdown(anomalies, suspend_records)
+    anomaly_detail = _anomaly_breakdown(anomalies, intraday_in_daily, suspend_records)
     if anomalies:
         logger.warning(
-            "[fact_pack] %s 停牌断言被违反:%d 只 suspend_type='S' 的票竟然出现在 daily 里"
-            "(全天停牌 %d / 盘中临时停牌 %d),已按 §5.3.4 排除出行业中位数并记入 "
-            "suspend_anomaly_count:%s",
-            trade_date, len(anomalies),
-            anomaly_detail["fullDay"], anomaly_detail["intraday"], anomalies[:10],
+            "[fact_pack] %s 停牌断言被违反:%d 只**全天停牌**的票竟然出现在 daily 里"
+            "(§4.6 实测 150 天 2001 行全天停牌 0 行进过 daily,这是真异常),"
+            "已排除出行业中位数并记入 suspend_anomaly_count:%s",
+            trade_date, len(anomalies), anomalies[:10],
+        )
+    if intraday_in_daily:
+        logger.info(
+            "[fact_pack] %s 有 %d 只**盘中临时停牌**的票出现在 daily —— 这是常态不是异常"
+            "(裁定 12:当天正常交易,照常计入行业中位数),⛔ 不计入 suspend_anomaly_count",
+            trade_date, len(intraday_in_daily),
         )
     median_of = {r.l2_code: r.median_ret for r in industry_rows}
     df = df.with_columns(
@@ -369,24 +417,30 @@ def build(
 
 
 def _anomaly_breakdown(
-    anomalies: List[str], records: Dict[str, Tuple[str, Optional[str]]]
+    anomalies: List[str],
+    intraday_in_daily: List[str],
+    records: Dict[str, Tuple[str, Optional[str]]],
 ) -> Dict[str, object]:
-    """把停牌断言的违反行**按 `suspend_timing` 拆开**(纯记账,⛔ 不改任何口径)。
+    """`fact_packs.market_json.suspendAnomaly` 的内容(纯记账,⛔ 不改任何口径)。
 
-    🔴 为什么要拆:150 日实测显示这条断言几乎只被**盘中临时停牌**触发
-    (全天停牌 2001 行 0 命中 / 盘中停牌 36 行 35 命中,分布在 25/150 天),
-    而盘中停过十分钟的票**当天是正常交易的**。§5.3.4 逐字要求把违反行「排除出中位数」,
-    本片**照做**;但「盘中临时停牌该不该算停牌」是一条**口径主张**,⛔ 施工侧不自行拍板。
-    这里把判别证据原样冻进 `market_json`,让那个决定有据可依(PROJECT_PLAN §14 已登记)。
+    🔴 **裁定 12 之后这里只对一件事告警**:「`suspend_type='S'` 且 `suspend_timing`
+    为空(**全天停牌**)的票竟然出现在 `daily` 里」。150 个交易日实测该情形
+    **0 次**(2001 行全天停牌无一进 daily),所以它真发生时就是数据事故。
+
+    **盘中临时停牌不是异常**(实测 36 行里 35 行都在 daily、分布在 25/150 天):
+    它们当天正常交易、照常计入中位数,这里只把判别证据(只数与 timing 串)原样
+    留在包里,让「那天有几只票盘中停过」事后仍查得到 —— ⛔ 但**不进
+    `suspend_anomaly_count`**,把常态记成异常等于让告警从此没人看。
     """
-    intraday = [c for c in anomalies if records.get(c, ("", None))[1]]
-    full_day = [c for c in anomalies if not records.get(c, ("", None))[1]]
     return {
+        # 真异常:全天停牌却出现在 daily。正常恒 0。
         "total": len(anomalies),
-        "fullDay": len(full_day),
-        "intraday": len(intraday),
         "codes": sorted(anomalies)[:50],
-        "intradayTimings": {c: records[c][1] for c in sorted(intraday)[:50]},
+        # 常态记账:盘中临时停牌且当天有 daily 行 —— **照常计入**中位数(裁定 12)。
+        "intradayCounted": len(intraday_in_daily),
+        "intradayTimings": {
+            c: records[c][1] for c in intraday_in_daily[:50] if c in records
+        },
     }
 
 
@@ -437,6 +491,7 @@ __all__ = [
     "FORBIDDEN_COLUMN_ROOTS",
     "SUSPEND_NONE",
     "SUSPEND_HALTED",
+    "SUSPEND_INTRADAY",
     "SUSPEND_RESUMED",
     "CompletePack",
     "IncompletePack",

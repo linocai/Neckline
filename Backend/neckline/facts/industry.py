@@ -14,18 +14,24 @@
 为由留下。那条分工对 `limitmap.MIN_CLUSTER_SIZE`(判「簇存不存在」)成立,对
 「行业成员数不足则不产出强度」**不成立**。
 
-**口径(裁定 2 逐字)**:
+**口径(裁定 2 + 🔴 裁定 12 逐字)**:
     相对强度 = 个股当日涨跌幅 − 所属申万**二级**行业当日**全部成员**涨跌幅的
-    **中位数**(剔除当日**停牌**成员)
+    **中位数**(剔除当日**全天停牌**的成员)
 ⛔ 不使用申万行业指数涨跌幅(`sw_daily` 本版不落,§3.2),⛔ 不使用概念板块。
 
-**停牌:断言而不是假设(§4.6 / §5.3.4,⛔ 别写成「过滤 suspend_d 全部行」)**:
-    · `suspend_type='S'` = 停牌。这类票**天然不在 `daily` 分区里**(20260724 的 5 只、
-      20230103 的 73 只,无一进 daily)→ 按 `daily` 算中位数时自动已剔除。
+**🔴 停牌 = 只剔「全天停牌」(裁定 12,2026-08-20 用户对 S3 的返工)**:
+    · **全天停牌**(`suspend_type='S'` 且 `suspend_timing` 为空)——150 个交易日实测
+      2001 行,**0 行**出现在 daily。它天然不在 `daily` 里,按 `daily` 算中位数时
+      自动已剔除;真出现了就是数据事故 → WARNING + 排除 + 计数(`suspended_excluded`)。
+    · **盘中临时停牌**(`suspend_timing` 非空,如 `'9:30-9:40'`)——实测 36 行里
+      **35 行**在 daily 里,分布在 25/150 天。这些票**当天正常交易、有完整涨跌幅**,
+      🔴 **照常计入中位数**。⛔ 不许把它们当停牌剔掉:那是把 17% 的日子里若干只
+      正常交易的票从行业事实里抹掉,而且不会有任何人看见。
     · `suspend_type='R'` = **复牌**,当天**正常交易**(20230103 的 000045.SZ 还涨停
       +10.01%、成交 14639 手)。⛔ **一律不过滤,认 R 会误杀真实交易日。**
-    · 样本只有两天 → 写成**断言 + 告警**:S 类若真的出现在 daily,WARNING + 把那些行
-      排除出中位数 + 计数(`suspended_excluded`),⛔ 不静默、不掩盖。
+
+⚠ 三类的判别**不在本模块**:`facts/pack.py::_suspend_flag_of` 是唯一实现,产出四值
+`suspend_flag`(`none`/`S`/`I`/`R`);本模块只收「哪些代码是全天停牌」这一个集合。
 
 **`ret_1d` 用原始(未复权)`close / pre_close − 1`**,不走 `apply_qfq`:qfq 对同一行的
 `close`/`pre_close` 用同一标量缩放,比值精确抵消(见 `data/adjust.py::qfq_expr`),
@@ -110,13 +116,16 @@ def attach_ret_1d(daily: pl.DataFrame) -> pl.DataFrame:
 def compute_day(
     daily_with_ret: pl.DataFrame,
     l2_of: Dict[str, Tuple[str, str]],
-    suspended_s: Iterable[str] = (),
+    full_day_halted: Iterable[str] = (),
 ) -> Tuple[List[IndustryDay], List[str]]:
     """**纯函数,无 I/O**。当日横截面(需含 `ts_code`/`ret_1d`)+ `ts_code → (l2_code,
     l2_name)` 映射 → 每个有成员的二级行业一条中位数。
 
-    返回 `(逐行业结果, 异常 S 类票代码列表)`。第二项非空 = 停牌断言被违反
-    (S 类竟然出现在 daily),调用方须打 WARNING 并把数量记进
+    🔴 `full_day_halted` 只装**全天停牌**的代码(裁定 12)。盘中临时停牌与复牌
+    ⛔ 不许放进来 —— 它们当天正常交易,是中位数的合法成员。
+
+    返回 `(逐行业结果, 异常代码列表)`。第二项非空 = 停牌断言被违反
+    (**全天停牌**的票竟然出现在 daily),调用方须打 WARNING 并把数量记进
     `fact_packs.suspend_anomaly_count`。
 
     ⛔ **不设最小成员数门槛**:成员只有 2 只的「旅游零售Ⅱ」照样产出中位数。
@@ -124,10 +133,10 @@ def compute_day(
     """
     if daily_with_ret.is_empty() or not l2_of:
         return [], []
-    suspended = set(suspended_s)
+    halted = set(full_day_halted)
 
     codes = daily_with_ret["ts_code"].to_list()
-    anomalies = sorted(c for c in codes if c in suspended)
+    anomalies = sorted(c for c in codes if c in halted)
 
     mapping = pl.DataFrame(
         {
@@ -140,8 +149,8 @@ def compute_day(
     if panel.is_empty():
         return [], anomalies
 
-    # 每个行业先记「本该有几个成员」,再剔除异常 S 行 —— 两个数都要,`suspended_excluded`
-    # 就是它们的差(⛔ 不掩盖:剔了几个必须看得见)。
+    # 每个行业先记「本该有几个成员」,再剔除异常的全天停牌行 —— 两个数都要,
+    # `suspended_excluded` 就是它们的差(⛔ 不掩盖:剔了几个必须看得见)。
     before = panel.group_by("l2_code").agg(pl.len().alias("_before"))
     if anomalies:
         panel = panel.filter(~pl.col("ts_code").is_in(anomalies))

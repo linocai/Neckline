@@ -1622,11 +1622,17 @@ CREATE INDEX IF NOT EXISTS idx_sw_member_current ON sw_industry_member(is_curren
 -- 东西都落在策略层)。本表只老实回答「这个二级行业今天的成员涨跌幅中位数是多少、
 -- 用了几个成员算、剔掉了几个停牌的」。
 --
--- ⚠ `median_ret` 的口径(§4.6,⛔ 别写成「过滤 suspend_d 全部行」):中位数在当日
--- `daily` 现有行上算 —— `suspend_type='S'`(停牌)的票天然不在 `daily` 里,自动已
--- 剔除;`suspend_type='R'` 是**复牌**,当天正常交易(实测 20230103 的 000045.SZ 还
--- 涨停 +10.01%),⛔ 一律不过滤。`suspended_excluded` 记的是**异常**:S 类竟然出现
--- 在 `daily` 里、被本层强行排除掉的行数,正常恒为 0(见 `facts/industry.py`)。
+-- ⚠ `median_ret` 的口径(§4.6 + 🔴 **裁定 12**,⛔ 别写成「过滤 suspend_d 全部行」):
+-- 中位数在当日 `daily` 现有行上算,**只剔「全天停牌」**(`suspend_type='S'` 且
+-- `suspend_timing` 为空)—— 这类票天然不在 `daily` 里(150 日实测 2001 行 0 命中),
+-- 自动已剔除。
+--   · **盘中临时停牌**(`suspend_timing` 非空,如 '9:30-9:40';实测 36 行里 35 行都在
+--     daily、分布在 25/150 天)当天**正常交易**,🔴 **照常计入中位数**(裁定 12,
+--     2026-08-20 对 S3 的返工);
+--   · `suspend_type='R'` 是**复牌**,当天正常交易(实测 20230103 的 000045.SZ 还涨停
+--     +10.01%),⛔ 一律不过滤。
+-- `suspended_excluded` 记的是**异常**:全天停牌的票竟然出现在 `daily` 里、被本层强行
+-- 排除掉的行数,正常恒为 0(见 `facts/industry.py`)。
 CREATE TABLE IF NOT EXISTS sw_industry_daily (
   trade_date          TEXT NOT NULL,        -- 'YYYYMMDD'
   l2_code             TEXT NOT NULL,        -- 如 '801125.SI'(⛔ 按代码认,不按名称)
@@ -1653,14 +1659,16 @@ CREATE INDEX IF NOT EXISTS idx_sw_industry_daily_date ON sw_industry_daily(trade
 CREATE TABLE IF NOT EXISTS fact_packs (
   pack_id                TEXT PRIMARY KEY,   -- uuid4
   trade_date             TEXT NOT NULL,      -- 'YYYYMMDD'
-  pack_version           TEXT NOT NULL,      -- 事实层口径版本,如 'fp-1'
+  pack_version           TEXT NOT NULL,      -- 事实层口径版本(fp-1 → fp-2:裁定 12 改了
+                                             --   停牌口径,口径变了必须发新版本)
   origin                 TEXT NOT NULL,      -- 'live' | 'backfill'
   state                  TEXT NOT NULL,      -- 恒 'frozen'(见纪律③)
   content_fingerprint    TEXT NOT NULL,      -- parquet 文件 sha256
   row_count              INTEGER NOT NULL,
   sources_json           TEXT NOT NULL,      -- 每个上游分区的 路径 / 行数 / mtime
   market_json            TEXT NOT NULL,      -- 市场级读数(指数 / 涨停分布 / 涨停簇摘要 …)
-  suspend_anomaly_count  INTEGER NOT NULL,   -- S 类竟然出现在 daily 的行数,正常恒 0
+  suspend_anomaly_count  INTEGER NOT NULL,   -- **全天停牌**竟然出现在 daily 的行数,正常恒 0
+                                             -- (裁定 12:盘中临时停牌是常态,⛔ 不计这里)
   frozen_at              TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_packs_date_version
