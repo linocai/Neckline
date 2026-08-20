@@ -23,7 +23,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 
 
 def _d(trade_date: date) -> str:
@@ -65,9 +65,13 @@ def record_pushed(
 def load_events_for_date(trade_date: date, db_path: Optional[Path] = None) -> list:
     """读某交易日已落库的哨兵事件(供 `GET /board` 聚合,plan 4A.3)。返回按推送时间
     升序的 dict 列表 `{sentinel, ts_code, event_key, payload, pushed_at}`——**看板只读**,
-    哨兵引擎已把每次推送落进 `sentinel_events`,看板不重算、不触发任何新判断。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    哨兵引擎已把每次推送落进 `sentinel_events`,看板不重算、不触发任何新判断。
+
+    ⚠ **只读**(`readonly_tables`,R3-🔴-2):表还没建 → 空列表。
+    ⛔ 读一次不许把库迁移掉(README /§9.2 /§9.4)。"""
+    with readonly_tables("sentinel_events", db_path=db_path) as conn:
+        if conn is None:
+            return []
         rows = conn.execute(
             "SELECT sentinel, ts_code, event_key, payload_json, pushed_at "
             "FROM sentinel_events WHERE trade_date=? ORDER BY pushed_at, id",
@@ -88,9 +92,11 @@ def load_events_for_date(trade_date: date, db_path: Optional[Path] = None) -> li
 
 def retreat_brake_state(trade_date: date, db_path: Optional[Path] = None) -> Optional[dict]:
     """某交易日是否已触发退潮红色刹车(plan 4A.3 看板顶置红条 / 2.4 拍板)。触发过 →
-    `{active:True, reason:<刹车文案>, pushed_at:...}`;未触发 → None(HTTP 层映射 active:False)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    `{active:True, reason:<刹车文案>, pushed_at:...}`;未触发 → None(HTTP 层映射 active:False)。
+    ⚠ **只读**(R3-🔴-2):表还没建 → `None`(= 未触发)。"""
+    with readonly_tables("sentinel_events", db_path=db_path) as conn:
+        if conn is None:
+            return None
         row = conn.execute(
             "SELECT payload_json, pushed_at FROM sentinel_events "
             "WHERE trade_date=? AND sentinel='retreat' AND ts_code='' AND event_key='brake'",

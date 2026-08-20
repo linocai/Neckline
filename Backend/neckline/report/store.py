@@ -25,9 +25,9 @@ import json
 import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,12 @@ _K9_COLUMNS = (
 )
 
 
+#: 🔴 R3-🔴-2:读路径的**表 / 列存在性探针**,逐列由 `_K9_COLUMNS` 自动派生 ——
+#: 加一列而忘了加探针在结构上不可能发生。缺表 / 缺列 = 未迁移的老库 → 文档化空态。
+_K9_PROBE: Tuple[str, ...] = tuple(
+    f"{K9_TABLE}.{c.strip()}" for c in _K9_COLUMNS.split(","))
+
+
 def _k9_row(row) -> Dict[str, Any]:
     return {
         "trade_date": row[0],
@@ -128,9 +134,14 @@ def _k9_row(row) -> Dict[str, Any]:
 def load_k9_report(
     trade_date: date, *, db_path: Optional[Path] = None
 ) -> Optional[Dict[str, Any]]:
-    """查某交易日的报告。`None` = 那天没生成过(完全正常的场景)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """查某交易日的报告。`None` = 那天没生成过(完全正常的场景)。
+
+    ⚠ **只读**(`readonly_tables`,R3-🔴-2):`k9_reports` 还没建的 v2.4.2 老库
+    读出来就是 `None` —— ⛔ 读一次不许把库迁移掉。复审实测的就是这个入口:
+    老库 59 表,调一次本函数 → 75 表。"""
+    with readonly_tables(*_K9_PROBE, db_path=db_path) as conn:
+        if conn is None:
+            return None
         row = conn.execute(
             f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} WHERE trade_date=?",
             (_d(trade_date),),
@@ -154,8 +165,9 @@ def load_k9_report_index(
     """
     if start > end:
         return {}
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    with readonly_tables(*_K9_PROBE, db_path=db_path) as conn:   # 只读,R3-🔴-2
+        if conn is None:
+            return {}
         rows = conn.execute(
             f"SELECT trade_date, report_date, state, headline, listing_size, "
             f"params_package_version, pack_version, generated_at FROM {K9_TABLE} "
@@ -173,9 +185,10 @@ def load_k9_report_index(
 
 
 def latest_k9_report(*, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """最新一份报告(按 `trade_date` 降序)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """最新一份报告(按 `trade_date` 降序)。⚠ **只读**(R3-🔴-2):表还没建 → `None`。"""
+    with readonly_tables(*_K9_PROBE, db_path=db_path) as conn:
+        if conn is None:
+            return None
         row = conn.execute(
             f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} ORDER BY trade_date DESC LIMIT 1"
         ).fetchone()
@@ -204,6 +217,14 @@ _LEGACY_COLUMNS = (
 )
 
 
+#: 同 `_K9_PROBE`。⚠ 这张 K8 老表的**七列都在 `_COLUMN_MIGRATIONS` 里**
+#: (`report_date` / `watchlist_json` / `intel_json` / `sector_moneyflow_json` /
+#: `news_alerts_scan_json` / `data_freshness_json` / `basket_daily_json`)——
+#: 只探表名不够,老库缺任何一列这条 SELECT 都会炸。
+_LEGACY_PROBE: Tuple[str, ...] = tuple(
+    f"{LEGACY_TABLE}.{c.strip()}" for c in _LEGACY_COLUMNS.split(","))
+
+
 def _legacy_row(row) -> Dict[str, Any]:
     return {
         "trade_date": row[0],
@@ -224,15 +245,21 @@ def _legacy_row(row) -> Dict[str, Any]:
 
 
 def load_report(trade_date: date, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """读一条 **K8 历史**报告行(只读留档)。防御性 `init_schema` 同既有惯例。"""
+    """读一条 **K8 历史**报告行(只读留档)。
+
+    🔴 R3-🔴-2:原先这里(经 `load_report_by_str`)会 `init_schema` —— 复审拿它
+    实测过「老库 59 表 → 75 表」。现在走 `readonly_tables`,⛔ 一次读不再迁移任何库。"""
     return load_report_by_str(_d(trade_date), db_path)
 
 
 def load_report_by_str(
     trade_date_str: str, db_path: Optional[Path] = None
 ) -> Optional[Dict[str, Any]]:
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    # ⚠ **逐列探**(见 `_LEGACY_PROBE`):老库缺列 = legacy → `None`,
+    # ⛔ 不是当场 `ALTER TABLE` 把它迁移掉。
+    with readonly_tables(*_LEGACY_PROBE, db_path=db_path) as conn:
+        if conn is None:
+            return None
         row = conn.execute(
             f"SELECT {_LEGACY_COLUMNS} FROM {LEGACY_TABLE} WHERE trade_date=?",
             (trade_date_str,),
@@ -241,9 +268,10 @@ def load_report_by_str(
 
 
 def latest_report_date(db_path: Optional[Path] = None) -> Optional[str]:
-    """最新一条 K8 历史报告的 `trade_date`('YYYYMMDD')。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """最新一条 K8 历史报告的 `trade_date`('YYYYMMDD')。⚠ **只读**(R3-🔴-2)。"""
+    with readonly_tables(LEGACY_TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return None
         row = conn.execute(f"SELECT MAX(trade_date) FROM {LEGACY_TABLE}").fetchone()
     return row[0] if row and row[0] else None
 
@@ -251,9 +279,13 @@ def latest_report_date(db_path: Optional[Path] = None) -> Optional[str]:
 def load_llm_judgments(
     trade_date: date, db_path: Optional[Path] = None
 ) -> List[Dict[str, Any]]:
-    """⚠ **V2-⑬-2 起本表停写留档**:写函数早已物理删除,本函数只服务历史归因只读。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """⚠ **V2-⑬-2 起本表停写留档**:写函数早已物理删除,本函数只服务历史归因只读。
+
+    ⚠ **只读**(R3-🔴-2)。连 `search_engine` 一起探 —— 它是 `_COLUMN_MIGRATIONS`
+    里的补列,老库缺它 = legacy → 空列表。"""
+    with readonly_tables("llm_judgments.search_engine", db_path=db_path) as conn:
+        if conn is None:
+            return []
         rows = conn.execute(
             "SELECT ts_code, provider, model, verdict, narrative, degraded, degrade_reason, "
             "search_hits_json, search_engine, created_at "

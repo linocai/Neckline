@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 from neckline.review.reconcile import WeeklyReview, weekly_review_dict
 
 
@@ -41,10 +41,13 @@ def save_weekly_review(review: WeeklyReview, material: Optional[str] = None, db_
 
 
 def load_weekly_review(week: str, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """查一周的存档对账结果。查一个从未上传过交割单的周是正常场景(防御性
-    `init_schema`,同 `report/store.py` 惯例,不因表未建过而崩)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """查一周的存档对账结果。查一个从未上传过交割单的周是正常场景。
+
+    ⚠ **只读**(`readonly_tables`,R3-🔴-2):原先这里是「防御性 `init_schema`」
+    —— 那正是 R3-🔴-2 点名的病(一次读把老库迁移掉)。表还没建 → `None`。"""
+    with readonly_tables("reviews", db_path=db_path) as conn:
+        if conn is None:
+            return None
         row = conn.execute(
             "SELECT week, generated_at, result_json, material, updated_at FROM reviews WHERE week=?",
             (week,),
@@ -61,9 +64,11 @@ def load_weekly_review(week: str, db_path: Optional[Path] = None) -> Optional[Di
 
 
 def list_review_weeks(db_path: Optional[Path] = None) -> List[str]:
-    """全部已存档的周(降序,最近的周在前),供工作台"历史周列表"展示用。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """全部已存档的周(降序,最近的周在前),供工作台"历史周列表"展示用。
+    ⚠ **只读**(R3-🔴-2):表还没建 → 空列表。"""
+    with readonly_tables("reviews", db_path=db_path) as conn:
+        if conn is None:
+            return []
         rows = conn.execute("SELECT week FROM reviews ORDER BY week DESC").fetchall()
     return [r[0] for r in rows]
 

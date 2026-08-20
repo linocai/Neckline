@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 
 logger = logging.getLogger(__name__)
 
@@ -150,9 +150,13 @@ _SELECT = "week, version, title, body, tags_json, author, created_at"
 
 def load_latest(week: str, *, db_path: Optional[Path] = None) -> Optional[Conclusion]:
     """某周的**最新版**结论。`None` = 那周还没写过结论(完全正常的场景,
-    ⛔ 别把它渲染成「这周没问题」)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    ⛔ 别把它渲染成「这周没问题」)。
+
+    ⚠ **只读**(`readonly_tables`,R3-🔴-2):表还没建的老库读出来就是 `None`
+    —— ⛔ 读一次不许把库迁移掉(README /§9.2 /§9.4)。"""
+    with readonly_tables(TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return None
         r = conn.execute(
             f"SELECT {_SELECT} FROM {TABLE} WHERE week=? ORDER BY version DESC LIMIT 1",
             (week,),
@@ -161,9 +165,11 @@ def load_latest(week: str, *, db_path: Optional[Path] = None) -> Optional[Conclu
 
 
 def load_versions(week: str, *, db_path: Optional[Path] = None) -> List[Conclusion]:
-    """某周的**全部版本**(升序)。改过几次、每次改了什么,在这里看得见。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """某周的**全部版本**(升序)。改过几次、每次改了什么,在这里看得见。
+    ⚠ **只读**(R3-🔴-2):表还没建 → 空列表。"""
+    with readonly_tables(TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return []
         rows = conn.execute(
             f"SELECT {_SELECT} FROM {TABLE} WHERE week=? ORDER BY version", (week,)
         ).fetchall()
@@ -173,9 +179,11 @@ def load_versions(week: str, *, db_path: Optional[Path] = None) -> List[Conclusi
 def list_latest(
     *, limit: int = 20, db_path: Optional[Path] = None
 ) -> List[Conclusion]:
-    """最近几周的结论(每周只出**最新版**,按周降序)。「下周可检索」的默认入口。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """最近几周的结论(每周只出**最新版**,按周降序)。「下周可检索」的默认入口。
+    ⚠ **只读**(R3-🔴-2):表还没建 → 空列表。"""
+    with readonly_tables(TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return []
         rows = conn.execute(
             f"SELECT {_SELECT} FROM {TABLE} c WHERE c.version = "
             f"(SELECT MAX(version) FROM {TABLE} q WHERE q.week=c.week) "
@@ -197,8 +205,9 @@ def search(
     if not q:
         return list_latest(limit=limit, db_path=db_path)
     like = f"%{q}%"
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    with readonly_tables(TABLE, db_path=db_path) as conn:   # 只读,R3-🔴-2
+        if conn is None:
+            return []
         rows = conn.execute(
             f"SELECT {_SELECT} FROM {TABLE} c WHERE c.version = "
             f"(SELECT MAX(version) FROM {TABLE} q WHERE q.week=c.week) "

@@ -17,7 +17,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 from neckline.playbook.model import (
     Playbook,
     PlaybookInvalid,
@@ -98,9 +98,13 @@ def load_latest(
 
     ⚠ 解析不过的行**跳过并 WARNING**,⛔ 不让它掀翻整张核对表:一份坏预案
     只该让**那一只**票落进「没有可用预案」那一栏,而不是让今天早上整拍不出。
+
+    ⚠ **只读**(`readonly_tables`,R3-🔴-2):表还没建的老库读出来就是空
+    —— ⛔ 读一次不许把库迁移掉(README /§9.2 /§9.4)。
     """
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    with readonly_tables(TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return {}
         rows = conn.execute(
             f"SELECT {_SELECT} FROM {TABLE} p WHERE trade_date=? AND version = "
             f"(SELECT MAX(version) FROM {TABLE} q WHERE q.trade_date=p.trade_date "
@@ -123,9 +127,12 @@ def load_latest(
 def load_versions(
     trade_date: date, ts_code: str, *, db_path: Optional[Path] = None
 ) -> List[Playbook]:
-    """一只票的**全部版本**(升序)。用户改过几次、每次改了什么,在这里看得见。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """一只票的**全部版本**(升序)。用户改过几次、每次改了什么,在这里看得见。
+
+    ⚠ **只读**(R3-🔴-2):表还没建 → 空列表。"""
+    with readonly_tables(TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return []
         rows = conn.execute(
             f"SELECT {_SELECT} FROM {TABLE} WHERE trade_date=? AND ts_code=? ORDER BY version",
             (_d(trade_date), ts_code),
@@ -153,9 +160,10 @@ def load_latest_range(
     wanted = [c for c in dict.fromkeys(codes) if c]
     if not wanted or start > end:
         return {}
-    init_schema(db_path)
     placeholders = ",".join("?" for _ in wanted)
-    with connection(db_path) as conn:
+    with readonly_tables(TABLE, db_path=db_path) as conn:   # 只读,R3-🔴-2
+        if conn is None:
+            return {}
         rows = conn.execute(
             f"SELECT {_SELECT} FROM {TABLE} p WHERE p.trade_date>=? AND p.trade_date<=? "
             f"AND p.ts_code IN ({placeholders}) AND p.version = "
@@ -174,9 +182,10 @@ def load_latest_range(
 
 
 def count_for_day(trade_date: date, *, db_path: Optional[Path] = None) -> int:
-    """当日有几只票冻了预案(去重后)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """当日有几只票冻了预案(去重后)。⚠ **只读**(R3-🔴-2):表还没建 → 0。"""
+    with readonly_tables(TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return 0
         r = conn.execute(
             f"SELECT COUNT(DISTINCT ts_code) FROM {TABLE} WHERE trade_date=?",
             (_d(trade_date),),

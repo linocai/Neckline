@@ -15,7 +15,7 @@ import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Dict, Iterator, Optional, Set
 
 from neckline.config import settings
 
@@ -2561,6 +2561,62 @@ def readonly_connection(db_path: Optional[Path] = None) -> Iterator[sqlite3.Conn
         conn.close()
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
+
+def _columns_of(conn: sqlite3.Connection, table: str) -> Set[str]:
+    # ⚠ `PRAGMA table_info` 的表名不能用占位符;`table` 恒来自各 store 的**模块级常量**
+    # (⛔ 从不来自请求),与本文件既有的表名内插同一条纪律。
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+@contextmanager
+def readonly_tables(
+    *required: str, db_path: Optional[Path] = None
+) -> Iterator[Optional[sqlite3.Connection]]:
+    """🔴 **读路径的唯一开库姿势**(V2.4.2 §7.1 政策,V2.5.0 R3-🔴-2 补齐)。
+
+        with readonly_tables(TABLE, db_path=db_path) as conn:
+            if conn is None:
+                return []          # ← 调用方**自己文档化的空态**
+            rows = conn.execute(...).fetchall()
+
+    `yield` 一条 `mode=ro` 只读连接;**库文件不存在、或 `required` 里任何一张表 /
+    一个列还没建 → `yield None`** —— 未迁移的库按 **legacy / empty** 读出来,
+    ⛔ 不是当场把它迁移掉、也⛔ 不是抛一个 `no such table`。
+
+    `required` 的每一项是 `"表名"` 或 `"表名.列名"`(后者用于 `_COLUMN_MIGRATIONS`
+    里那些**只在老库上缺**的列)。
+
+    🔴 **为什么必须有这个东西**(README「任何 GET 或日常读取都不是迁移触发器」/
+    PROJECT_PLAN §9.2 / §9.4 / §9.6 步骤 6.8 三处白纸黑字):回滚边界的论证整个
+    建立在这句话上 —— §9.6 步骤 6.6 要求「K8 只读表行数与备份**逐表相等**」,
+    操作者若拿新代码把 `db_path` 指向那份备份去比对,一次 `load_*` 就往备份里建
+    16 张表,「两份备份 sha256 相同」当场作废。实测:v2.4.2 老库 59 表,
+    只调一次 `report.store.load_k9_report` → **75 表**。
+    ⛔ 迁移只属于启动、显式写命令、RC 迁移流程这三处。
+    """
+    try:
+        with readonly_connection(db_path) as conn:
+            cols: Dict[str, Set[str]] = {}
+            for item in required:
+                table, _, column = item.partition(".")
+                if table not in cols:
+                    if not _table_exists(conn, table):
+                        yield None
+                        return
+                    cols[table] = _columns_of(conn, table)
+                if column and column not in cols[table]:
+                    yield None
+                    return
+            yield conn
+    except FileNotFoundError:
+        yield None
+
+
 def init_schema(db_path: Optional[Path] = None) -> None:
     """建表(幂等,`IF NOT EXISTS`)+ 既有表缺列补齐(幂等 `ALTER TABLE`,见
     `_migrate_columns`)。backfill / init_calendar / 各 store 入口处调用。"""
@@ -2573,4 +2629,5 @@ def init_schema(db_path: Optional[Path] = None) -> None:
         # 原样留着供追溯;本函数只是不再为**新库**建它们(新库里也没有任何写入方)。
 
 
-__all__ = ["get_connection", "connection", "readonly_connection", "init_schema"]
+__all__ = ["get_connection", "connection", "readonly_connection", "readonly_tables",
+           "init_schema"]

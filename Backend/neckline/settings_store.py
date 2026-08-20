@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 # 几十个测试文件共享的 fixture。
 from neckline import notify_kinds
 from neckline.config import settings as _default_settings  # noqa: F401
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 
 # 局部更新(`update_provider`)用的"未传"哨兵——与"显式传 None/空串"区分。
 _UNSET = object()
@@ -151,10 +151,14 @@ def _decode_push_kinds(raw: Optional[str]) -> Dict[str, bool]:
 
 
 def get_push_kinds(db_path: Optional[Path] = None) -> Dict[str, bool]:
-    """读按 kind 的推送开关(全部 `ALL_KINDS` 已补齐,顺序与 `ALL_KINDS` 一致)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute("SELECT push_kinds FROM app_settings WHERE id=1").fetchone()
+    """读按 kind 的推送开关(全部 `ALL_KINDS` 已补齐,顺序与 `ALL_KINDS` 一致)。
+
+    ⚠ **只读**(`readonly_tables`,R3-🔴-2):`push_kinds` 是 `_COLUMN_MIGRATIONS`
+    里的补列 —— 老库缺表 / 缺列 → 与「从未写过」同一条路径(全部默认开),
+    ⛔ 不是当场把库迁移掉(README /§9.2 /§9.4)。"""
+    with readonly_tables("app_settings.push_kinds", db_path=db_path) as conn:
+        row = None if conn is None else conn.execute(
+            "SELECT push_kinds FROM app_settings WHERE id=1").fetchone()
     return _decode_push_kinds(row[0] if row else None)
 
 
@@ -189,10 +193,12 @@ def push_kind_enabled(kind: str, db_path: Optional[Path] = None) -> bool:
 
 
 def get_app_settings(db_path: Optional[Path] = None) -> AppSettings:
-    """读安全视图(供 `GET /settings`)。从未写过 → 默认值(全部 kind 默认开)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute(
+    """读安全视图(供 `GET /settings`)。从未写过 → 默认值(全部 kind 默认开)。
+
+    ⚠ **只读**(R3-🔴-2):缺表 / 缺补列 → 走「从未写过」那条既有分支。"""
+    with readonly_tables("app_settings.push_kinds", "app_settings.tavily_api_key",
+                         db_path=db_path) as conn:
+        row = None if conn is None else conn.execute(
             "SELECT push_kinds, review_col_map, tavily_api_key, updated_at "
             "FROM app_settings WHERE id=1"
         ).fetchone()
@@ -214,10 +220,11 @@ def get_app_settings(db_path: Optional[Path] = None) -> AppSettings:
 
 
 def get_tavily_api_key(db_path: Optional[Path] = None) -> Optional[str]:
-    """服务端内部读取 Tavily 明文 key；HTTP 层禁止直接调用或序列化返回值。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute("SELECT tavily_api_key FROM app_settings WHERE id=1").fetchone()
+    """服务端内部读取 Tavily 明文 key；HTTP 层禁止直接调用或序列化返回值。
+    ⚠ **只读**(R3-🔴-2):缺表 / 缺补列 → `None`(= 未配置)。"""
+    with readonly_tables("app_settings.tavily_api_key", db_path=db_path) as conn:
+        row = None if conn is None else conn.execute(
+            "SELECT tavily_api_key FROM app_settings WHERE id=1").fetchone()
     return _clean(row[0]) if row else None
 
 
@@ -272,9 +279,12 @@ def _to_public(rec: ProviderRecord) -> ProviderPublic:
 def list_providers(db_path: Optional[Path] = None) -> List[ProviderRecord]:
     """🔴 内部读(含明文 key)——供 `neckline.llm.factory.get_provider()` 用。
     HTTP 层必须改用 `list_providers_public`。按 `id` 升序(默认路由「挑第一个
-    has_web_search 的 provider」需要一个稳定序,见 `neckline.llm.router`)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    has_web_search 的 provider」需要一个稳定序,见 `neckline.llm.router`)。
+
+    ⚠ **只读**(R3-🔴-2):表还没建 → 空列表(= 一个 provider 都没配)。"""
+    with readonly_tables("llm_providers", db_path=db_path) as conn:
+        if conn is None:
+            return []
         rows = conn.execute(
             f"SELECT {_PROVIDER_COLUMNS} FROM llm_providers ORDER BY id ASC"
         ).fetchall()
@@ -287,10 +297,9 @@ def list_providers_public(db_path: Optional[Path] = None) -> List[ProviderPublic
 
 
 def get_provider_record(name: str, db_path: Optional[Path] = None) -> Optional[ProviderRecord]:
-    """🔴 内部读单行(含明文 key)。不存在 → `None`。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
-        row = conn.execute(
+    """🔴 内部读单行(含明文 key)。不存在 → `None`。⚠ **只读**(R3-🔴-2)。"""
+    with readonly_tables("llm_providers", db_path=db_path) as conn:
+        row = None if conn is None else conn.execute(
             f"SELECT {_PROVIDER_COLUMNS} FROM llm_providers WHERE name=?", (name,)
         ).fetchone()
     return _row_to_record(row) if row is not None else None
@@ -446,9 +455,15 @@ def get_llm_routes(db_path: Optional[Path] = None) -> Tuple[Dict[str, str], Opti
     `scripts/oneoff/strip_retired_llm_routes.py` 配套的两件事之一**——脚本清生产库
     那一次性的键,这里兜住"任何时候库里又冒出未知任务名"的自愈,少一件都不够
     (只清库、不读侧过滤 = 恢复一次备份就复发;只读侧过滤、不清库 = 生产库长期带一个
-    死键,`app_settings.llm_task_routes` 的审计视图会显示假信息)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    死键,`app_settings.llm_task_routes` 的审计视图会显示假信息)。
+
+    ⚠ **只读**(R3-🔴-2):缺表 / 缺补列 → `({}, None)`(= 路由未配置),
+    与既有的「JSON 非法 → 空字典兜底」同一条诚实降级路径。"""
+    with readonly_tables("app_settings.llm_task_routes",
+                         "app_settings.llm_default_provider", "llm_providers",
+                         db_path=db_path) as conn:
+        if conn is None:
+            return {}, None
         row = conn.execute(
             "SELECT llm_task_routes, llm_default_provider FROM app_settings WHERE id=1"
         ).fetchone()

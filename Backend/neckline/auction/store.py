@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from neckline.auction.checklist import Checklist, ChecklistVerdict
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 from neckline.playbook.evaluate import SettleOutcome, Verdict
 
 logger = logging.getLogger(__name__)
@@ -177,9 +177,13 @@ def settle_verdicts(
 def load_checklist(
     trade_date: date, *, strategy: str = "K9", db_path: Optional[Path] = None
 ) -> Optional[Dict[str, Any]]:
-    """某日的核对表。`None` = **那天没跑过那一拍**(⛔ 不是「跑了、表是空的」)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """某日的核对表。`None` = **那天没跑过那一拍**(⛔ 不是「跑了、表是空的」)。
+
+    ⚠ **只读**(`readonly_tables`,R3-🔴-2):表还没建的老库读出来就是 `None`
+    —— ⛔ 读一次不许把库迁移掉(README /§9.2 /§9.4)。"""
+    with readonly_tables(CHECKLIST_TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return None
         r = conn.execute(
             f"SELECT checklist_json, created_at FROM {CHECKLIST_TABLE} "
             "WHERE trade_date=? AND strategy=?",
@@ -195,9 +199,12 @@ def load_checklist(
 def load_verdicts(
     trade_date: date, *, strategy: str = "K9", db_path: Optional[Path] = None
 ) -> List[Dict[str, Any]]:
-    """某日逐票的三分支终值(按 `ts_code` 升序)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """某日逐票的三分支终值(按 `ts_code` 升序)。
+
+    ⚠ **只读**(R3-🔴-2):表还没建 → 空列表(那天本来就没有终值)。"""
+    with readonly_tables(VERDICTS_TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return []
         rows = conn.execute(
             f"SELECT ts_code, d0_date, pattern, playbook_version, auction_verdict, "
             f"auction_readings_json, auction_branch_json, auction_at, verdict, "
@@ -225,9 +232,13 @@ def load_verdicts(
 def undecided_codes(
     trade_date: date, *, strategy: str = "K9", db_path: Optional[Path] = None
 ) -> List[str]:
-    """还没定案的票(`decided_stage IS NULL`)—— 10:00 那一拍要结算的就是它们。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """还没定案的票(`decided_stage IS NULL`)—— 10:00 那一拍要结算的就是它们。
+
+    ⚠ **只读**(R3-🔴-2):表还没建 → 空列表。名字不带 `load_` 前缀,但它确实是
+    读函数 —— ⛔ 别因为守门的前缀清单扫不到它就留一个后门。"""
+    with readonly_tables(VERDICTS_TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return []
         return [
             r[0] for r in conn.execute(
                 f"SELECT ts_code FROM {VERDICTS_TABLE} "

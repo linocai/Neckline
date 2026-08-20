@@ -13,7 +13,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from neckline.db import connection, init_schema
+from neckline.db import connection, init_schema, readonly_tables
 from neckline.explain.aggregate import ExplainNote
 from neckline.explain.news_exclusion import NewsState, NewsVerdict
 
@@ -111,9 +111,13 @@ def load_notes(
     trade_date: date, *, codes: Optional[Sequence[str]] = None,
     db_path: Optional[Path] = None,
 ) -> Dict[str, Dict[str, Any]]:
-    """某日的资料聚合(按 `ts_code`)。空 = 那天解释层没跑过。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """某日的资料聚合(按 `ts_code`)。空 = 那天解释层没跑过。
+
+    ⚠ **只读**(`readonly_tables`,R3-🔴-2):表还没建的老库读出来就是空
+    —— ⛔ 读一次不许把库迁移掉(README /§9.2 /§9.4)。"""
+    with readonly_tables(NOTES_TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return {}
         rows = conn.execute(
             f"SELECT ts_code, profile_json, kline_comment, news_state, news_category, "
             f"news_json, llm_ok, filled_by, created_at FROM {NOTES_TABLE} "
@@ -137,9 +141,12 @@ def load_notes(
 def load_audit(
     trade_date: date, *, db_path: Optional[Path] = None
 ) -> List[Dict[str, Any]]:
-    """某日的剔除 / 补位审计链(按 `seq` 升序)。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    """某日的剔除 / 补位审计链(按 `seq` 升序)。
+
+    ⚠ **只读**(R3-🔴-2):表还没建 → 空列表。"""
+    with readonly_tables(AUDIT_TABLE, db_path=db_path) as conn:
+        if conn is None:
+            return []
         rows = conn.execute(
             f"SELECT seq, round_no, action, ts_code, reason, created_at FROM {AUDIT_TABLE} "
             "WHERE trade_date=? ORDER BY seq",
