@@ -125,4 +125,28 @@ curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "$BASE/selection/
 echo "38d) 日期格式非法 → 422:"
 curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "$BASE/selection/not-a-date"
 
+
+# —— V2.5.0 S8 · 次日核对表与 D1 结算(裁定 10)——————————————————————————————
+# 🔴 **G20 的冒烟侧**:`/checklist/{date}` 的响应体里⛔ 没有「成立」这个取值。
+#    空库 → 404 = **那天没跑过那一拍**(⛔ 不是「跑了、表是空的」)。
+echo "39) GET /checklist/{date}(空库 → 404,那天没跑过那一拍):"
+curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "$BASE/checklist/20240430"
+echo "39b) 日期格式非法 → 422:"
+curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "$BASE/checklist/not-a-date"
+echo "39c) 无 token → 401:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "$BASE/checklist/20240430"
+echo "40) GET /scoreboard/verdicts/{date}(10:00 结算拍的三分支终值;空库 → 200 + 空数组):"
+curl -s "${AUTH[@]}" "$BASE/scoreboard/verdicts/20240430" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+print('  tradeDate=%s verdicts=%d'%(d.get('tradeDate'),len(d.get('verdicts') or [])))
+print('  ⚠ verdict=null 表示「今天还没定案」,⛔ 不是「观察」')
+print('  🔴 它挂在 scoreboard 下 = 属于成绩线,⛔ 不进选股首屏(裁定 10)')"
+
+# —— V2.5.0 S9/S10 · 个股详情与预案修改入口 ————————————————————————————————
+echo "41) GET /selection/{date}/stock/{code}(不在清单里 → 404):"
+curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" \
+  "$BASE/selection/20240430/stock/600001.SH"
+echo "42) POST .../playbook(不在清单里 → 404;⛔ 不给不存在的票冻预案):"
+curl -s -o /dev/null -w "  status=%{http_code}\n" -X POST "${AUTH[@]}" "${JSON[@]}" \
+  -d '{}' "$BASE/selection/20240430/stock/600001.SH/playbook"
+
 echo ">> 冒烟完成。"

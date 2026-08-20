@@ -167,6 +167,88 @@ def _listing_section(bundle) -> List[str]:
         )
     out.append("")
     out += _run_notes(bundle)
+    out += _news_notes(bundle)
+    out += _per_stock_section(bundle)
+    return out
+
+
+def _news_notes(bundle) -> List[str]:
+    """消息面三态的**如实披露**(§5.5 / `explain/news_exclusion.py`)。
+
+    🔴 三态各说各的:`excluded` 是「查出来了、剔了」;`unverified` 是「**没查成**」;
+    ⛔ 不许把后者说成「都干净」。"""
+    ex = bundle.explain or {}
+    if not ex:
+        return []
+    counts = ex.get("newsCounts") or {}
+    out: List[str] = []
+    unverified = int(counts.get("unverified", 0))
+    excluded = sum(1 for a in (ex.get("audit") or []) if a["action"] == "excluded")
+    backfilled = sum(1 for a in (ex.get("audit") or []) if a["action"] == "backfilled")
+    if excluded or backfilled:
+        out.append(f"- 消息面剔除 **{excluded}** 只,后备补位 **{backfilled}** 只")
+        for a in (ex.get("audit") or []):
+            if a["action"] == "excluded":
+                out.append(f"  - 剔除 {a['ts_code']}:{a['reason']}")
+            elif a["action"] == "backfilled":
+                out.append(f"  - 补位 {a['ts_code']}:{a['reason']}")
+            elif a["action"] == "rounds_exhausted":
+                out.append(f"  - ⚠ {a['reason']}")
+    if unverified:
+        out.append(
+            f"- ⚠ **{unverified} 只消息面未核实**(没查成,⛔ 不等于确认无消息):"
+            f"这几只的爆雷 / 减持 / 立案 / 监管**没有人查过**")
+    ok = int(ex.get("profilesOk", 0))
+    total = len(ex.get("notes") or {})
+    if total and ok < total:
+        out.append(f"- ⚠ 资料聚合 {ok}/{total} 只成功,其余如实缺席")
+    if out:
+        out.append("")
+    return out
+
+
+def _per_stock_section(bundle) -> List[str]:
+    """每只票一句话画像 + 关键价位与预案(§5.10 默认视图第 2、3 段)。"""
+    notes = (bundle.explain or {}).get("notes") or {}
+    pbs = bundle.playbooks or {}
+    if not notes and not pbs:
+        return []
+    out = ["### 逐只", ""]
+    for e in bundle.listing:
+        code = e["ts_code"]
+        out.append(f"**{e['name'] or code}({code})**")
+        n = notes.get(code)
+        if n:
+            prof = n.get("profile") or {}
+            one = prof.get("company") or ""
+            if one:
+                out.append(f"- {one}")
+            if n.get("kline_comment"):
+                out.append(f"- 日K:{n['kline_comment']}")
+            state = n.get("news_state")
+            if state == "excluded":
+                out.append(f"- ⚠ 消息面命中 {n.get('news_category') or ''}")
+            elif state == "unverified":
+                out.append("- ⚠ 消息面**未核实**(没查成,不等于确认无消息)")
+        else:
+            out.append("- 资料未取得(解释层这一只没跑成)")
+        pb = pbs.get(code)
+        if pb:
+            lv = pb["levels"]
+            out.append(
+                f"- 价位:第一压力位 {lv['firstResistance']:g} / 第二 "
+                f"{lv['secondResistance']:g} / 失效位 {lv['invalidation']:g}"
+                f"(v{pb['version']},{pb['source']})")
+            for b in pb["branches"]:
+                conds = " 且 ".join(
+                    f"{c['lhs']} {c['op']} "
+                    f"{c['rhs'] if isinstance(c['rhs'], str) else format(c['rhs'], 'g')}"
+                    for c in b["all"])
+                out.append(f"  - {b['name']}:{conds}")
+            out.append(f"  - 其余:{pb['default']}")
+        else:
+            out.append("- ⚠ **没有冻结预案** —— 明早核对不了这一只")
+        out.append("")
     return out
 
 
@@ -189,7 +271,7 @@ def _run_notes(bundle) -> List[str]:
             f"靠放宽档凑足(K9 §五-8)")
     if run.get("listing_finalized_by") == "k9":
         out.append(
-            "- ⚠ 这份清单**尚未经过消息面剔除**(解释层未接入):"
+            "- ⚠ 这份清单**尚未经过消息面剔除**(解释层未跑):"
             "爆雷 / 减持 / 立案 / 监管还没有人查过")
     dropped = run.get("dropped_heat_absent") or []
     if dropped:

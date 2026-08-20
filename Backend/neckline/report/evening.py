@@ -3,8 +3,8 @@
     16:05 拉数(`scripts/daily_update.py`,**不在本模块内**)
       → facts    架构第一层 · 事实包构建 + 冻结
       → k9       架构第二层 · 策略层(硬边界 → 四通道 → 排序 → 名额)
-      → explain  架构第三层 · 解释层(**S9 未建**)
-      → playbook 架构第四层 · 预案层(**S10 未建**)
+      → explain  架构第三层 · 解释层(消息面剔除 + 后备补位 + 资料聚合 → **清单定稿**)
+      → playbook 架构第四层 · 预案层(四骨架 + LLM 填值 → D0 冻结)
       → report   报告装配 + 落库(+ APNs)
 
 **为什么批算住这里、不塞进 `pipeline.py`**:那份是**在线路径**,P0-23 纪律要求它
@@ -15,9 +15,12 @@
 报告照出、缺席**如实披露**。⛔ 绝不因为某段失败而当日无报告 —— 唯一例外是最后那段
 报告本身炸了(那才是真的没有报告,退出码必须非零)。
 
-🔴 **还没建的段是 `not_built`,不是 `ok`**:`explain` / `playbook` 要到 S9 / S10 才
-存在。给它们一个「跑过了」的绿灯,等于让报告宣称清单已经过消息面剔除 —— 那正是
-`k9_runs.listing_finalized_by` 这一列要防的事。
+🔴 **`STATUS_NOT_BUILT` 留着但本版已无人用**:S9 / S10 落地后 `explain` / `playbook`
+两段真的会跑。给一层没跑过的绿灯等于让报告宣称清单已经过消息面剔除 —— 那件事现在由
+`k9_runs.listing_finalized_by` 这一列如实记着(`'k9'` = 还没过消息面,`'explain'` = 过了)。
+
+🔴 **解释层的「后备补位」住在本模块,不住 `explain/`**:补位要按**名次**取下一名,
+而解释层**不知道谁是第几名**(架构 §3.3 双盲)。见 `_run_explain` 的说明。
 
 ⚠ **`segments` 只挑跑哪几段,不改顺序**:传进来的集合会按 `CHAIN_SEGMENTS` 重排,
 乱序传参不会得到乱序执行(三个 oneshot 单元靠这个接缝分段跑)。
@@ -60,6 +63,12 @@ class EveningChainResult:
     notes: List[str] = field(default_factory=list)
     stats: Dict[str, Any] = field(default_factory=dict)
     bundle: Any = None
+    #: 🔴 **策略层这一次的产物,在内存里传给解释层**(⛔ 不落库再读回来)。
+    #: 解释层的后备补位要拿 `reserve`(按名次排好的后备票),而 `k9_listing_entries`
+    #: 只装**入席**的那些 —— 落库再读回来就把补位所需的东西丢了。
+    #: ⚠ 分段跑(`--segments explain`)时它是 `None`:那时本进程没跑过策略层,
+    #: 解释层如实报「拿不到本日策略层产物」,⛔ 不去猜一个后备名单出来。
+    k9_result: Any = None
 
     def ok(self, seg: str) -> bool:
         return self.status.get(seg) in (STATUS_OK, STATUS_EMPTY)
@@ -93,18 +102,18 @@ def run_evening_chain(
     if SEG_K9 in wanted:
         _fuse(res, SEG_K9, lambda: _run_k9(
             trade_date, k9_params_path=k9_params_path, db_path=db_path,
-            parquet_dir=parquet_dir))
+            parquet_dir=parquet_dir, chain=res))
         # 🔴 **k9 段最清楚它自己为什么没跑**(参数未配置 / 参数无效 + 逐条缺口)。
         # 把原因**带下去**给报告段 —— 报告⛔ 不去猜别人的失败原因,也⛔ 不自己再
         # 读一遍参数文件(那会得出一个与事实无关的结论,见 `pipeline.build_report`)。
         for gap in _upstream_gaps(res):
             res.notes.append(f"k9 段:{gap}")
-    for seg, slice_id in ((SEG_EXPLAIN, "S9"), (SEG_PLAYBOOK, "S10")):
-        if seg in wanted:
-            res.status[seg] = STATUS_NOT_BUILT
-            res.notes.append(
-                f"{seg} 层本版尚未建({slice_id});清单因此**未经消息面剔除**,"
-                f"报告已如实标注(k9_runs.listing_finalized_by='k9')")
+    if SEG_EXPLAIN in wanted:
+        _fuse(res, SEG_EXPLAIN, lambda: _run_explain(
+            trade_date, result=res.k9_result, db_path=db_path, parquet_dir=parquet_dir))
+    if SEG_PLAYBOOK in wanted:
+        _fuse(res, SEG_PLAYBOOK, lambda: _run_playbook(
+            trade_date, db_path=db_path, parquet_dir=parquet_dir))
 
     if SEG_REPORT in wanted:
         # 🔴 报告段**不包保险丝**:它炸了就是真的没有报告,异常必须往上抛
@@ -161,6 +170,7 @@ def _run_facts(
 def _run_k9(
     trade_date: date, *, k9_params_path: Optional[Path],
     db_path: Optional[Path], parquet_dir: Optional[Path],
+    chain: Optional["EveningChainResult"] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """策略层。⛔ **无默认参数路径**:没传 = 参数未配置 = 报告「今天没跑成」。"""
     from neckline.k9 import params as k9_params
@@ -179,12 +189,217 @@ def _run_k9(
 
     result, run_id = k9_run.run_k9(
         trade_date, params=params, parquet_dir=parquet_dir, db_path=db_path)
+    if chain is not None:
+        # 🔴 内存传给解释层(见 `EveningChainResult.k9_result` 的说明)。
+        chain.k9_result = _K9Handoff(result=result, run_id=run_id, params=params)
     return STATUS_OK, {
         "runId": run_id,
         "seated": result.shortlist.size,
         "tierUsed": result.shortlist.tier_used.value,
         "capacityShort": result.shortlist.capacity_short,
     }
+
+
+@dataclass
+class _K9Handoff:
+    """策略层 → 解释层的**进程内**交接件(⛔ 不落库、⛔ 不下发)。"""
+
+    result: Any
+    run_id: str
+    params: Any
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 解释层(S9)—— 🔴 **补位决定住在编排器里,双盲不破**
+# ══════════════════════════════════════════════════════════════════════════
+
+def _run_explain(
+    trade_date: date, *, result: Any,
+    db_path: Optional[Path], parquet_dir: Optional[Path],
+    provider: Any = None, transport: Any = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """消息面剔除 + 后备补位 + 资料聚合,最后**定稿清单**(§5.5)。
+
+    🔴 **为什么这段接线住编排器、不住 `explain/`**:补位要按**名次**从后备票里取
+    下一名,而解释层**不知道谁是第几名**(架构 §3.3 双盲)。守门单测断言
+    `explain/**` 零 import `neckline.k9` —— 那条边界的另一半就是:知道名次的这一段
+    必须待在编排器里。⛔ 别把本函数搬进 `explain/`。
+
+    流程(§5.5 逐字):
+        策略层出 seated + reserve
+          → 解释层处理 seated
+          → 每剔除一只,从 reserve 取下一名再跑解释层
+          → 最多 `params.explain.maxBackfillRounds` 轮
+          → 定稿
+    """
+    from neckline.explain import aggregate as explain_aggregate
+    from neckline.explain import input as explain_input
+    from neckline.explain import news_exclusion as news_mod
+    from neckline.explain import store as explain_store
+    from neckline.k9 import store as k9_store
+    from neckline.k9.contract import Shortlist
+    from neckline.llm.factory import get_provider
+    from neckline.llm.router import TASK_EXPLAIN, TASK_NEWS_SCAN
+
+    if result is None:
+        # 分段跑时本进程没碰过策略层 —— ⛔ 不去猜一个后备名单出来。
+        logger.error("[evening] 解释层拿不到本日策略层产物(本次链没跑 k9 段),不定稿")
+        return STATUS_EMPTY, {"reason": "no_k9_result"}
+    shortlist: Shortlist = result.result.shortlist
+    if not shortlist.entries:
+        # 清单本来就是空的 —— 「今天没有」是可信的空,⛔ 不是故障。
+        return STATUS_EMPTY, {"reason": "empty_listing"}
+
+    max_rounds = int(result.params.explain.max_backfill_rounds)
+    news_provider = get_provider(TASK_NEWS_SCAN, db_path=db_path)
+    llm_provider = provider if provider is not None else get_provider(
+        TASK_EXPLAIN, db_path=db_path)
+
+    seated = list(shortlist.entries)
+    reserve = list(shortlist.reserve)
+    checked: Dict[str, Any] = {}
+    audit: List[Dict[str, Any]] = []
+    excluded_codes: List[str] = []
+    rounds_used = 0
+
+    pending = list(seated)
+    while pending:
+        # 🔴 **升序交给解释层** —— 位次不从列表顺序泄漏(双盲第 ③ 条)。
+        items = sorted(((e.ts_code, e.name) for e in pending), key=lambda t: t[0])
+        verdicts = news_mod.screen(items, provider=news_provider, transport=transport)
+        for v in verdicts:
+            checked[v.ts_code] = v
+        hits = [v for v in verdicts if v.excluded]
+        if not hits:
+            break
+        for v in hits:
+            label = news_mod.CATEGORY_LABEL[v.category] if v.category else "消息面"
+            audit.append({"round_no": rounds_used + 1, "action": explain_store.ACTION_EXCLUDED,
+                          "ts_code": v.ts_code,
+                          "reason": f"{label}:{v.summary}".strip("：: ")})
+            excluded_codes.append(v.ts_code)
+        seated = [e for e in seated if e.ts_code not in {v.ts_code for v in hits}]
+        rounds_used += 1
+        if rounds_used >= max_rounds:
+            audit.append({"round_no": rounds_used,
+                          "action": explain_store.ACTION_ROUNDS_EXHAUSTED, "ts_code": "",
+                          "reason": f"补位轮数已达上限 {max_rounds},本日清单如实少这几只"})
+            break
+        # 补位:从后备票里按**名次**取下一名(编排器知道名次,解释层不知道)。
+        take = min(len(hits), len(reserve))
+        picked = reserve[:take]
+        reserve = reserve[take:]
+        for e in picked:
+            audit.append({"round_no": rounds_used, "action": explain_store.ACTION_BACKFILLED,
+                          "ts_code": e.ts_code, "reason": f"补位(后备第 {e.rank} 名)"})
+        seated = seated + picked
+        pending = picked                      # 只对新补进来的跑下一轮
+
+    # 资料聚合(逐只,升序)。
+    codes = sorted(e.ts_code for e in seated)
+    inputs = explain_input.build_inputs(
+        trade_date, codes, sessions=explain_input.KLINE_SESSIONS,
+        parquet_dir=parquet_dir, db_path=db_path)
+    notes = explain_aggregate.aggregate(
+        inputs, provider=llm_provider, news_by_code=checked, transport=transport)
+
+    # —— 定稿(§5.5:清单在解释层之后定稿)——
+    final = Shortlist(
+        strategy=shortlist.strategy, params_version=shortlist.params_version,
+        pack_version=shortlist.pack_version, pack_id=shortlist.pack_id,
+        trade_date=shortlist.trade_date,
+        entries=tuple(sorted(seated, key=lambda e: e.rank)),
+        reserve=tuple(reserve), tier_used=shortlist.tier_used,
+        strict_candidates=shortlist.strict_candidates,
+        relaxed_candidates=shortlist.relaxed_candidates,
+        channel_counts=shortlist.channel_counts,
+        capacity_short=shortlist.capacity_short,
+        absent_patterns=shortlist.absent_patterns,
+        dropped_by_heat_absent=shortlist.dropped_by_heat_absent,
+    )
+    k9_store.save_listing(run_id=result.run_id, shortlist=final, db_path=db_path)
+    _mark_news_excluded(trade_date, final, excluded_codes, parquet_dir=parquet_dir,
+                        rows=result.result.disposition_rows)
+    k9_store.mark_listing_finalized_by(
+        trade_date, finalized_by=k9_store.FINALIZED_BY_EXPLAIN,
+        seated_count=final.size, strategy=final.strategy, db_path=db_path)
+    explain_store.save_notes(trade_date, notes, news_by_code=checked, db_path=db_path)
+    if audit:
+        explain_store.append_audit(trade_date, audit, db_path=db_path)
+
+    counts = news_mod.summarize(list(checked.values()))
+    logger.info("[evening] 解释层定稿:清单 %d 只(剔除 %d、补位 %d、未核实 %d)",
+                final.size, len(excluded_codes),
+                sum(1 for a in audit if a["action"] == explain_store.ACTION_BACKFILLED),
+                counts.get("unverified", 0))
+    return STATUS_OK, {
+        "seated": final.size,
+        "excluded": len(excluded_codes),
+        "backfilled": sum(1 for a in audit
+                          if a["action"] == explain_store.ACTION_BACKFILLED),
+        "roundsUsed": rounds_used,
+        "news": counts,
+        "profilesOk": sum(1 for n in notes if n.llm_ok),
+    }
+
+
+def _mark_news_excluded(
+    trade_date: date, final: Any, excluded_codes: Sequence[str], *,
+    rows: Sequence[Dict[str, Any]], parquet_dir: Optional[Path],
+) -> None:
+    """把消息面剔除与补位的结果写回全市场 disposition(覆盖率归因要用,§5.4.8)。
+
+    ⚠ 覆盖率层读的是 `k9_disposition` 这条**数据**通道(守门:`scorecard/**` 零
+    import `neckline.k9`)—— 不回写这里,「昨天为什么没选中这只涨停票」就少了
+    「被消息面剔除」那一档答案。"""
+    from neckline.k9 import store as k9_store
+
+    dead = set(excluded_codes)
+    seated_now = {e.ts_code: e for e in final.entries}
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        row = dict(r)
+        code = row["ts_code"]
+        if code in dead:
+            row["news_excluded"] = 1
+            row["seated"] = 0
+            row["seat_kind"] = None
+        elif code in seated_now:
+            row["seated"] = 1
+            row["seat_kind"] = (None if seated_now[code].seat_kind is None
+                                else seated_now[code].seat_kind.value)
+        out.append(row)
+    k9_store.save_disposition(trade_date, out, parquet_dir=parquet_dir)
+
+
+def _run_playbook(
+    trade_date: date, *, db_path: Optional[Path], parquet_dir: Optional[Path],
+    provider: Any = None, transport: Any = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """预案层:为**定稿清单**上每只票冻一份预案(S10)。
+
+    ⚠ 读的是 `k9_listing_entries`(**已定稿**的那一份)—— 预案必须跟着定稿走,
+    否则会给一只已经被消息面剔除的票冻一份明早要核对的预案。"""
+    from neckline.k9 import store as k9_store
+    from neckline.llm.factory import get_provider
+    from neckline.llm.router import TASK_PLAYBOOK
+    from neckline.playbook import fill as playbook_fill
+
+    listing = k9_store.load_listing(trade_date, db_path=db_path)
+    if not listing:
+        return STATUS_EMPTY, {"reason": "empty_listing"}
+    llm = provider if provider is not None else get_provider(TASK_PLAYBOOK, db_path=db_path)
+    stats = playbook_fill.fill_for_listing(
+        trade_date, listing, provider=llm, transport=transport,
+        parquet_dir=parquet_dir, db_path=db_path)
+    if stats["frozen"] == 0 and stats["failed"]:
+        # 🔴 **一份都没冻成 = 这一段没达成它的目的**,⛔ 不给它一个 `ok`:
+        # 没有预案 = 明早那两拍核对不了任何一只(核对表会把它们列进
+        # 「没有冻结预案」那一栏)。报告逐只也会如实说这句话。
+        logger.error("[evening] 预案层一份都没冻成(%d 只失败):明早核对不了",
+                     len(stats["failed"]))
+        return STATUS_FAILED, stats
+    return STATUS_OK, stats
 
 
 def _upstream_gaps(res: EveningChainResult) -> List[str]:

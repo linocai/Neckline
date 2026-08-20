@@ -206,6 +206,32 @@ def save_listing(
     return len(rows)
 
 
+def mark_listing_finalized_by(
+    trade_date: date, *, finalized_by: str, seated_count: int,
+    strategy: str = "K9", db_path: Optional[Path] = None,
+) -> bool:
+    """把「**是谁定的稿**」改成 `'explain'`(S9 接入后由编排器调)。
+
+    🔴 只动这两列 —— ⛔ 不重写整行运行账:那一行记的是**策略层**那次运行
+    (参数包版本 / 事实包版本 / 逐形态计数 / 边界计数),解释层没有资格改它。
+    `seated_count` 要跟着动,因为剔除 + 补位之后清单上的只数可能变了。
+
+    返回 `True` = 真的改到了那一行(`False` = 那天根本没有运行账,⛔ 不静默造一行)。
+    """
+    if finalized_by not in (FINALIZED_BY_K9, FINALIZED_BY_EXPLAIN):
+        raise ValueError(
+            f"listing_finalized_by 只能是 {FINALIZED_BY_K9!r} / {FINALIZED_BY_EXPLAIN!r},"
+            f"收到 {finalized_by!r}")
+    init_schema(db_path)
+    with connection(db_path) as conn:
+        cur = conn.execute(
+            f"UPDATE {RUNS_TABLE} SET listing_finalized_by=?, seated_count=? "
+            "WHERE trade_date=? AND strategy=?",
+            (finalized_by, int(seated_count), _d(trade_date), strategy),
+        )
+        return bool(cur.rowcount)
+
+
 def save_disposition(
     trade_date: date, rows: Sequence[Mapping[str, object]],
     *, parquet_dir: Optional[Path] = None,
@@ -351,6 +377,7 @@ __all__ = [
     "FINALIZED_BY_K9", "FINALIZED_BY_EXPLAIN",
     "disposition_path", "new_run_id",
     "save_run", "save_channel_hits", "save_listing", "save_disposition",
+    "mark_listing_finalized_by",
     "load_disposition", "load_listing_codes", "load_listing", "load_run",
     "relaxed_streak_before", "load_relay_records",
 ]

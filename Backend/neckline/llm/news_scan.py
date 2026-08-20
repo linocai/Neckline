@@ -1,10 +1,17 @@
-"""消息面扫描 LLM 调用(plan §五 v1.3-③-C4)。持仓 / 自选票的「立案 / 暴雷 / 监管」
-三类消息扫描——TuShare 无结构化接口覆盖这三类(数据源侦察结论见
-`neckline.report.news_alerts` 模块头;唯一有结构化覆盖的「减持」类已改走
-`neckline.data.tushare_client.ts_stk_holdertrade`,不占本模块)。
+"""消息面扫描 LLM 调用(plan §五 v1.3-③-C4;**V2.5.0 S9 扩到四类**)。
 
-**一次调用问三类**(不是三次调用):控成本、控时长——持仓+自选合计最多 33 只
-(≤3 仓 + ≤30 自选),若每类各发一次调用会是 99 次,一次问三类降到最多 33 次。
+🔴 **V2.5.0 S9:加了第四类「减持」** —— K9 §二 末段 与 架构 §3.3 逐字写的是
+**「爆雷、减持、立案、监管」四类**在解释层查出并剔除。K8 时代「减持」走
+`ts_stk_holdertrade` 结构化接口、不占本模块;而 K9 的消息面排除是**一次问全四类**
+的整体判断(⛔ 不许一半走结构化接口、一半走 LLM —— 那样「查过了没有」与
+「这一半根本没查」会混成同一句话)。⚠ `ts_stk_holdertrade` 本身**没有删**,
+将来若要用它做交叉核对是另一件事。
+
+持仓 / 自选票的「立案 / 暴雷 / 监管 / 减持」四类消息扫描 —— TuShare 无结构化接口
+覆盖前三类(数据源侦察结论见 K8 时代 `report.news_alerts` 模块头)。
+
+**一次调用问四类**(不是四次调用):控成本、控时长 —— K9 的清单最多 20 只,
+若每类各发一次调用会是 80 次,一次问四类降到最多 20 次。
 
 **复用 `judge.py` 同一套 provider / 降级链姿势**(§硬要求「复用 judge.py 那套调用/
 解析/降级,不要另写一套」)——`provider=None`(缺 key)零调用直接降级;调用失败
@@ -55,19 +62,28 @@ from neckline.llm.prompt_context import (
 # 避免 llm/ 依赖 report/ 造成循环 import——`report/news_alerts.py` 侧再对齐
 # `NewsCategory` 枚举,两边字符串值逐字相同,已用单测互相对拍)。
 CATEGORY_INVESTIGATION = "INVESTIGATION"   # 立案
-CATEGORY_BLOWUP = "BLOWUP"                 # 暴雷
+CATEGORY_BLOWUP = "BLOWUP"                 # 暴雷(K9 §二 写作「爆雷」,同一类)
 CATEGORY_REGULATORY = "REGULATORY"         # 监管
+#: 🔴 V2.5.0 S9 新增第四类(K9 §二 末段 / 架构 §3.3 逐字点名)。
+CATEGORY_REDUCTION = "REDUCTION"           # 减持
 
-_LABEL_TO_CODE = {"立案": CATEGORY_INVESTIGATION, "暴雷": CATEGORY_BLOWUP, "监管": CATEGORY_REGULATORY}
+#: 四类的闭合集合(⛔ 解析器只认这四个中文标签)。
+ALL_CATEGORIES = (CATEGORY_INVESTIGATION, CATEGORY_BLOWUP,
+                  CATEGORY_REGULATORY, CATEGORY_REDUCTION)
+
+_LABEL_TO_CODE = {"立案": CATEGORY_INVESTIGATION, "暴雷": CATEGORY_BLOWUP,
+                  "监管": CATEGORY_REGULATORY, "减持": CATEGORY_REDUCTION}
 
 NEWS_SCAN_SYSTEM_PROMPT = """你是「颈线」系统的盘后消息面扫描员。系统本身只做审计、不代客下单,你的任务是
-帮用户排查一只持仓或自选股票近期(重点关注最近一周内,如有更早但仍未消化的重大
-事项也可提及)是否出现以下三类值得警惕的消息:
+帮用户排查一只股票近期(重点关注最近一周内,如有更早但仍未消化的重大
+事项也可提及)是否出现以下四类值得警惕的消息:
 
 ① 立案:被证监会 / 交易所立案调查。
 ② 暴雷:财务造假、资金占用、业绩大幅低于预期、审计意见异常、或其他可能引发
 停牌、退市风险的重大利空。
 ③ 监管:收到监管函、问询函、警示函、处罚决定(不含日常业务问询、常规财报问询)。
+④ 减持:控股股东 / 实控人 / 董监高 / 持股 5% 以上股东公告减持或已实施减持
+(不含员工持股计划的常规到期、也不含单纯的股权质押)。
 
 你配有联网搜索工具,可以查该股票近期的新闻、公告。
 
@@ -83,9 +99,10 @@ NEWS_SCAN_SYSTEM_PROMPT = """你是「颈线」系统的盘后消息面扫描员
 使用分点列表、表格、"技术面/资金面/消息面"这类固定分栏模板。
 
 结尾格式(唯一的机器可读部分):写完叙述后,另起一段,按以下规则收尾——
-    · 如果三类都没有发现值得警惕的消息,只写一行:"结论:未发现"。
+    · 如果四类都没有发现值得警惕的消息,只写一行:"结论:未发现"。
     · 如果发现了某类消息,把触发的类别各自单独写一行,格式固定为
-      "结论-立案:一句话摘要"、"结论-暴雷:一句话摘要"、"结论-监管:一句话摘要"
+      "结论-立案:一句话摘要"、"结论-暴雷:一句话摘要"、"结论-监管:一句话摘要"、
+      "结论-减持:一句话摘要"
       (没触发的类别不必写这一行,可以同时触发多个类别就写多行)。
 不要在正文叙述部分提前使用"结论"这个词,以免与收尾解析冲突。
 """
@@ -103,7 +120,7 @@ class NewsScanResult:
     search_hits: List[SearchHit] = field(default_factory=list)
 
 
-_HIT_RE = re.compile(r"结论-(立案|暴雷|监管)[:：]\s*(.+)")
+_HIT_RE = re.compile(r"结论-(立案|暴雷|监管|减持)[:：]\s*(.+)")
 _NONE_RE = re.compile(r"结论[:：]\s*未发现")
 
 
@@ -135,14 +152,14 @@ def scan_news_for_code(
     provider: Optional[LLMProvider],
     transport: Optional[Any] = None,
 ) -> NewsScanResult:
-    """扫一只标的的「立案/暴雷/监管」三类(一次调用)。`provider=None`(工厂在无
+    """扫一只标的的「立案/暴雷/监管/减持」四类(一次调用)。`provider=None`(工厂在无
     key/无 provider 时返回 None)→ 直接走降级,不发起任何网络调用(同
     `judge.judge_candidate` 姿势)。"""
     if provider is None:
         return NewsScanResult(
             ts_code=ts_code, provider="none", model="", degraded=True,
             degrade_reason="未配置 LLM_PROVIDER/LLM_API_KEY",
-            narrative="LLM 未激活,本标的消息面(立案/暴雷/监管)未扫描,不代表确认无消息。",
+            narrative="LLM 未激活,本标的消息面(立案/暴雷/监管/减持)未扫描,不代表确认无消息。",
         )
 
     messages = [
@@ -182,6 +199,8 @@ __all__ = [
     "CATEGORY_INVESTIGATION",
     "CATEGORY_BLOWUP",
     "CATEGORY_REGULATORY",
+    "CATEGORY_REDUCTION",
+    "ALL_CATEGORIES",
     "NEWS_SCAN_SYSTEM_PROMPT",
     "NewsScanResult",
     "news_search_query",

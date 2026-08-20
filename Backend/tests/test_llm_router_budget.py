@@ -37,10 +37,24 @@ def test_all_tasks_declared_count_and_uniqueness():
     (D1 集合竞价确认层,出处 K8.md **§二十**:9:26—9:29 一次调用覆盖全部篮子)。
     不许漏项也不许有重复字符串。
 
+    **V2.5.0 S9/S10 新增 `TASK_EXPLAIN` / `TASK_PLAYBOOK` → 十三项**(架构 §八
+    「LLM 的三个岗位」里的后两个;第一个「方向解读」在事实层,本版未建)。
+    三处都想过了:① 预算账 —— 逐票调用、上下文很小;② 流式分级 —— **不进**
+    `LONG_CONTEXT_TASKS`(不开流式 + 基类 90s 读超时,两项同路);
+    ③ prompt_context —— 两条 system prompt 都嵌了时效纪律,
+    已加进 `test_prompt_context.py` 的清单。
+
     ⛔ **别改成 `>= 8`** —— 这条闸的意义全在"加不进来":新增一个 LLM 任务是要
     连预算账、流式分级、prompt_context 三处一起想清楚的事,不是顺手加个字符串。"""
-    assert len(router.ALL_TASKS) == 11
-    assert len(set(router.ALL_TASKS)) == 11
+    assert len(router.ALL_TASKS) == 13
+    assert len(set(router.ALL_TASKS)) == 13
+    assert router.TASK_EXPLAIN in router.ALL_TASKS
+    assert router.TASK_PLAYBOOK in router.ALL_TASKS
+    # 🔴 两个新岗位**都不开流式、都不联网**(见上;各自的理由写在 router.py)。
+    for t in (router.TASK_EXPLAIN, router.TASK_PLAYBOOK):
+        assert t not in router.LONG_CONTEXT_TASKS
+        assert router.use_streaming_for_task(t) is False
+        assert t not in router.DEFAULT_SEARCH_TASKS
     assert router.TASK_AUCTION in router.ALL_TASKS
     assert router.TASK_DIRECTION_TRIAGE in router.ALL_TASKS
     assert router.TASK_DEEP_REASON in router.ALL_TASKS

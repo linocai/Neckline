@@ -24,14 +24,25 @@ TASK_SCRIPT = "script"                  # 明早证伪剧本
 TASK_REVIEW = "review"                  # 盘后复盘解释
 TASK_PROFILE = "profile"                # 画像总结
 TASK_NL_ALERT = "nl_alert"              # 自然语言临时提醒解析
-# V2.3.3-③(K8.md §二十 D1 集合竞价确认层):9:26—9:29 一次调用覆盖**全部篮子**,
-# 解释竞价对 D0 假设投出的第一次票。**不联网**(资料由机械层冻结后原样喂入)。
-TASK_AUCTION = "auction"                # 集合竞价确认层解释
+# ⛔ **V2.5.0 起 `TASK_AUCTION` 在生产链上零调用**:K9 的次日核对是**零 LLM
+# 纯条件求值**(架构 §四 / 守门 G7),9:26 那一拍连 provider 都不取。
+# 这个键**留着只为让老库里存过的路由行仍解得出来**(同 `basket_reason` / `tier_rank`
+# / `script` 的处置),⛔ 别照旧注释以为竞价层还在调 LLM。
+TASK_AUCTION = "auction"                # (已退役)K8 集合竞价确认层解释
 # V2.4.2 selection chain: cheap brief triage and full deep reasoning are
 # distinct billable purposes.  They intentionally do not reuse the retired
 # tier/card generation tasks.
 TASK_DIRECTION_TRIAGE = "direction_triage"
 TASK_DEEP_REASON = "deep_reason"
+# 🔴 **V2.5.0 S9/S10:K9 架构 §八「LLM 的三个岗位」里的后两个**。
+# (第一个「方向解读」住事实层 `facts/direction_llm.py`,S3 登记 ⑦ 记明本版未建。)
+# ⚠ 两者都是**逐票**调用、上下文很小(一只票的日K + 已经拿到的检索证据),
+# 故**不进 `LONG_CONTEXT_TASKS`**:不开流式、吃基类的 90s 读超时
+# —— 那两项必须同路接线,只接一半就是 §七 P0-40/P0-44 的原病复发路径。
+# ⚠ 也**不进 `DEFAULT_SEARCH_TASKS`**:一只票**只联一次网**,那一次在
+# `news_scan`(Tavily),证据由编排器喂给这两个岗位,⛔ 不各自再搜一遍。
+TASK_EXPLAIN = "explain"                # 解释层 · 资料聚合 + 日K 评价(架构 §3.3)
+TASK_PLAYBOOK = "playbook"              # 预案层 · 关键价位与三分支阈值填值(架构 §3.4)
 
 ALL_TASKS = (
     TASK_DRIVER_SEARCH,
@@ -45,6 +56,8 @@ ALL_TASKS = (
     TASK_AUCTION,
     TASK_DIRECTION_TRIAGE,
     TASK_DEEP_REASON,
+    TASK_EXPLAIN,
+    TASK_PLAYBOOK,
 )
 
 # 外部 Tavily 包装的「检索类」集合。它不再触发 LLM Provider 自带搜索协议；
@@ -58,6 +71,9 @@ DEFAULT_SEARCH_TASKS = (TASK_DRIVER_SEARCH, TASK_NEWS_SCAN)
 # The V2.4.2 selection pipeline has a deliberately small active task surface.
 # `basket_reason`, `tier_rank`, and `script` stay in ALL_TASKS so stored route
 # configuration and historical rows decode, but they are not new-flow steps.
+# ⚠ **V2.5.0:这一元组是 K8 时代 selection 链的残留** —— `neckline/selection/` 整包
+# 已在 S1 物理删除,三项在生产链上零调用。⛔ 本组未动它(改它要连 App 设置屏一起收口);
+# K9 的两个 LLM 岗位是 `TASK_EXPLAIN` / `TASK_PLAYBOOK`,⛔ 不进这张 K8 的表。
 SELECTION_PIPELINE_TASKS = (
     TASK_DRIVER_SEARCH,
     TASK_DIRECTION_TRIAGE,

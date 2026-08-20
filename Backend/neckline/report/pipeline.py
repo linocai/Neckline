@@ -64,6 +64,10 @@ class ReportBundle:
     market: Dict[str, Any]
     direction: Optional[Dict[str, Any]]
     coverage: Optional[Dict[str, Any]]
+    #: 解释层(S9):逐票资料 + 消息面三态。空 dict = **那天解释层没跑过**。
+    explain: Dict[str, Any] = field(default_factory=dict)
+    #: 预案层(S10):逐票三个价位 + 两条分支。空 dict = 那天没冻结任何预案。
+    playbooks: Dict[str, Any] = field(default_factory=dict)
     markdown: str = ""
     structured: Dict[str, Any] = field(default_factory=dict)
 
@@ -139,6 +143,13 @@ def build_report(
     # —— 覆盖率成绩线(⚠ 参数未配置的日子照样呈现,§5.10)————————————————
     coverage = _load_coverage(trade_date, db_path=db_path)
 
+    # —— 解释层与预案层(S9 / S10)————————————————————————————————————————
+    # ⚠ **只读**:两层跑没跑过、跑成什么样,由库里那两张表如实说;
+    # ⛔ 报告不去替它们重跑,也不猜「大概查过了」。
+    codes = [e["ts_code"] for e in listing]
+    explain = _load_explain(trade_date, codes, db_path=db_path)
+    playbooks = _load_playbooks(trade_date, codes, db_path=db_path)
+
     bundle = ReportBundle(
         trade_date=trade_date,
         report_date=report_date,
@@ -157,6 +168,8 @@ def build_report(
         market=market,
         direction=direction,
         coverage=coverage,
+        explain=explain,
+        playbooks=playbooks,
     )
     structured = render_mod.structured(bundle)
     return ReportBundle(
@@ -164,6 +177,39 @@ def build_report(
            "markdown": render_mod.markdown(bundle, structured),
            "structured": structured}
     )
+
+
+def _load_explain(
+    trade_date: date, codes: Sequence[str], *, db_path: Optional[Path]
+) -> Dict[str, Any]:
+    """解释层产物 + 消息面三态计数。空 dict = 那天解释层没跑过。
+
+    🔴 **`unverified` 必须单独报出来**:它是「**没查成**」,既不是「查过了、干净」
+    也不是「命中了」。把它折进任何一边,报告就会在用户那里变成一句假话。"""
+    from neckline.explain import store as explain_store
+
+    notes = explain_store.load_notes(trade_date, codes=list(codes), db_path=db_path)
+    if not notes:
+        return {}
+    counts: Dict[str, int] = {}
+    for n in notes.values():
+        counts[n["news_state"]] = counts.get(n["news_state"], 0) + 1
+    return {
+        "notes": notes,
+        "newsCounts": counts,
+        "audit": explain_store.load_audit(trade_date, db_path=db_path),
+        "profilesOk": sum(1 for n in notes.values() if n["llm_ok"]),
+    }
+
+
+def _load_playbooks(
+    trade_date: date, codes: Sequence[str], *, db_path: Optional[Path]
+) -> Dict[str, Any]:
+    """当日冻结的预案(每只票取**最新版**)。空 = 那天一份都没冻。"""
+    from neckline.playbook import store as pb_store
+
+    pbs = pb_store.load_latest(trade_date, codes=list(codes), db_path=db_path)
+    return {c: pb.to_dict() for c, pb in pbs.items()}
 
 
 def _load_coverage(

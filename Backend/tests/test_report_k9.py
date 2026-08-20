@@ -202,10 +202,35 @@ class TestTwoLayerView:
     def test_the_listing_section_discloses_that_news_screening_has_not_run(
         self, market, tmp_path,
     ):
-        """§5.5:解释层未接入 → 报告**如实说**这份清单还没过消息面。"""
+        """§5.5:解释层**没跑**(分段跑里没有它)→ 报告如实说这份清单还没过消息面。
+
+        ⚠ **V2.5.0 S9 起解释层已经建好**,所以这条测试改成「分段跑里不带 explain」
+        —— 那才是「没跑过」的真实情形。清单是否过了消息面,权威是
+        `k9_runs.listing_finalized_by` 那一列。"""
+        env, day = market
+        bundle = _chain(env, day, params_path=_params_file(env, tmp_path),
+                        segments=["facts", "k9", "report"]).bundle
+        assert "尚未经过消息面剔除" in bundle.markdown
+
+    def test_unverified_news_is_never_reported_as_clean(self, market, tmp_path):
+        """🔴 解释层跑了、但**一个 provider 都没有** → 五只全是 `unverified`。
+
+        报告必须**如实说「没查成」**,⛔ 不许因为「解释层跑过了」就让读者以为
+        消息面已经核实过 —— 「没看」冒充「看过了没事」正是本仓栽过三次的那族病。"""
         env, day = market
         bundle = _chain(env, day, params_path=_params_file(env, tmp_path)).bundle
-        assert "尚未经过消息面剔除" in bundle.markdown
+        assert "消息面未核实" in bundle.markdown
+        assert "不等于确认无消息" in bundle.markdown
+        # 清单确实过了解释层那一遍(剔除 + 补位的编排),所以那句「尚未经过消息面
+        # 剔除」不该再出现 —— 两句话说的是**两件不同的事**。
+        assert "尚未经过消息面剔除" not in bundle.markdown
+
+    def test_a_stock_without_a_frozen_playbook_says_so(self, market, tmp_path):
+        """没有 provider → 一份预案都冻不成。报告必须逐只说「明早核对不了」,
+        ⛔ 不许沉默(沉默会被读成「预案在,只是没印出来」)。"""
+        env, day = market
+        bundle = _chain(env, day, params_path=_params_file(env, tmp_path)).bundle
+        assert "没有冻结预案" in bundle.markdown
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -217,14 +242,26 @@ class TestEveningChain:
         assert evening_mod.CHAIN_SEGMENTS == (
             "facts", "k9", "explain", "playbook", "report")
 
-    def test_unbuilt_layers_are_not_built_not_ok(self, market, tmp_path):
-        """🔴 还没建的层是 `not_built`,⛔ 不是 `ok` —— 给它绿灯等于让报告
-        宣称清单已经过消息面剔除。"""
+    def test_explain_finalises_the_listing_and_playbook_reports_its_failure(
+        self, market, tmp_path,
+    ):
+        """**V2.5.0 S9/S10 起两段真的会跑**(此前它们是 `not_built`)。
+
+        🔴 没有 provider 的环境里:
+            · `explain` 段照样跑完(消息面全 `unverified`、资料全缺席),
+              **清单由它定稿** → `listing_finalized_by='explain'`;
+            · `playbook` 段**一份都冻不成 → `failed`**,⛔ 不给它一个 `ok`
+              (没有预案 = 明早那两拍核对不了任何一只)。"""
+        from neckline.k9 import store as k9_store
+
         env, day = market
         res = _chain(env, day, params_path=_params_file(env, tmp_path))
-        assert res.status["explain"] == evening_mod.STATUS_NOT_BUILT
-        assert res.status["playbook"] == evening_mod.STATUS_NOT_BUILT
-        assert any("尚未建" in n for n in res.notes)
+        assert res.status["explain"] == evening_mod.STATUS_OK
+        assert res.status["playbook"] == evening_mod.STATUS_FAILED
+        run = k9_store.load_run(day, db_path=env.db_path)
+        assert run["listing_finalized_by"] == k9_store.FINALIZED_BY_EXPLAIN
+        assert res.stats["explain"]["news"]["unverified"] == res.stats["explain"]["seated"]
+        assert res.stats["playbook"]["frozen"] == 0
 
     def test_segments_only_pick_what_runs_never_the_order(self, market, tmp_path):
         env, day = market

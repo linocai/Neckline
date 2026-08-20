@@ -1002,6 +1002,99 @@ def _parse_day(raw: str) -> date_cls:
         raise HTTPException(status_code=422, detail="日期必须是 YYYYMMDD")
 
 
+# —— V2.5.0 S9/S10:个股详情与预案修改入口 ————————————————————————————————
+
+
+@app.get(f"{API_PREFIX}/selection/{{trade_date}}/stock/{{ts_code}}",
+         dependencies=[Depends(require_token)])
+def get_selection_stock(trade_date: str, ts_code: str) -> dict:
+    """个股详情 = **解释层资料 + 日K 评价 + 完整预案(全部版本)**。
+
+    ⚠ 三段各自可能缺席,**各自如实标**:
+      · `explain=null`  那天解释层没跑过 / 这一只没跑成;
+      · `playbook=null` 那天没给这一只冻预案 → **明早核对不了它**;
+      · `newsState`     三态(clean / excluded / **unverified**)——
+        `unverified` 是「没查成」,⛔ 客户端不许把它显示成「无异常」。
+    """
+    from neckline.explain import store as explain_store
+    from neckline.k9 import store as k9_store
+    from neckline.playbook import store as pb_store
+
+    day = _parse_day(trade_date)
+    listing = {r["ts_code"]: r for r in k9_store.load_listing(day, db_path=_db())}
+    entry = listing.get(ts_code)
+    if entry is None:
+        raise HTTPException(status_code=404,
+                            detail=f"{ts_code} 不在 {trade_date} 的清单里")
+    notes = explain_store.load_notes(day, codes=[ts_code], db_path=_db())
+    versions = pb_store.load_versions(day, ts_code, db_path=_db())
+    return {
+        "tradeDate": trade_date,
+        "tsCode": ts_code,
+        "entry": {
+            "name": entry["name"], "patterns": entry["patterns"],
+            "primaryPattern": entry["primary_pattern"], "tier": entry["tier"],
+            "seatKind": entry["seat_kind"], "rank": entry["rank"],
+            "swL2Code": entry["sw_l2_code"], "swL2Name": entry["sw_l2_name"],
+        },
+        "explain": notes.get(ts_code),
+        "playbook": versions[-1].to_dict() if versions else None,
+        "playbookVersions": [p.to_dict() for p in versions],
+    }
+
+
+@app.post(f"{API_PREFIX}/selection/{{trade_date}}/stock/{{ts_code}}/playbook",
+          dependencies=[Depends(require_token)])
+def post_stock_playbook(trade_date: str, ts_code: str, body: dict) -> dict:
+    """**用户修改预案**(K9 §6.4「最终确认由我盘后逐只过目,可修改」)。
+
+    🔴 **append-only**:本端点**只新增一个版本**,原冻结版本一个字不改
+    (`k9_playbooks` 的主键含 `version`,应用层也没有 `UPDATE` 那条 SQL)。
+
+    **契约**:请求体只收**数值**,键集 = `playbook/skeleton.py::required_keys(pattern)`
+    (由该票的 `primary_pattern` 决定,响应 404/422 里会逐个列出来)。
+    多一个键、少一个键、或者哪个值不是数字 → **422**,⛔ 不是「忽略多余的」
+    —— 忽略等于默许往预案里塞自由文本评价(§5.2 边界④ 第 2 条)。
+
+    ⚠ 形态骨架**不可改**:用户能改的是方括号里的数,不是「哪个量跟谁比」
+    (骨架是机械的,K9 §6.4 分工表)。
+    """
+    from neckline.k9 import store as k9_store
+    from neckline.playbook import fill as playbook_fill
+    from neckline.playbook import model as pb_model
+    from neckline.playbook import skeleton as skeleton_mod
+    from neckline.playbook import store as pb_store
+
+    day = _parse_day(trade_date)
+    listing = {r["ts_code"]: r for r in k9_store.load_listing(day, db_path=_db())}
+    entry = listing.get(ts_code)
+    if entry is None:
+        raise HTTPException(status_code=404,
+                            detail=f"{ts_code} 不在 {trade_date} 的清单里")
+    pattern = str(entry["primary_pattern"])
+    values, why = playbook_fill.validate_fill(pattern, body)
+    if why:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{why};本形态({pattern})要的数值键:"
+                   f"{list(skeleton_mod.required_keys(pattern))}")
+    item = pb_model.PlaybookInput(
+        ts_code=ts_code, name=entry["name"],
+        patterns=tuple(entry["patterns"]), primary_pattern=pattern,
+        sw_l2_name=entry["sw_l2_name"], close=0.0,
+        prev_close=None, high=None, low=None,
+    )
+    version = pb_store.next_version(day, ts_code, db_path=_db())
+    try:
+        pb = playbook_fill.assemble(item, values, trade_date=day, version=version,
+                                    filled_by="user", source=pb_model.SOURCE_USER)
+    except pb_model.PlaybookInvalid as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    pb_store.save(pb, db_path=_db())
+    return {"tradeDate": trade_date, "tsCode": ts_code, "version": version,
+            "playbook": pb.to_dict()}
+
+
 # —— V2.5.0 S8:次日核对表与 D1 结算 ————————————————————————————————————————
 
 

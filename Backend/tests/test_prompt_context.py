@@ -114,6 +114,13 @@ class TestTimelinessRulesAreInEveryPrompt:
         # 落地时,必须逐条加回这张表,⛔ 别让"清单变短"变成"纪律没人管"。
         # 消息面扫描(A4 补;联网 + 问的就是"近期",没有日期概念最伤)
         "neckline.llm.news_scan:NEWS_SCAN_SYSTEM_PROMPT",
+        # 🔴 V2.5.0 S9 / S10:K9 三个 LLM 岗位里的后两个(上面那条 ⚠ 点名要求
+        # 「落地时必须逐条加回这张表」)。解释层要讲「当前消息面」「近期表现」,
+        # 预案层要判「下一个压力位」—— 两者都吃"现在是什么时候"这个前提。
+        # ⚠ 第一个岗位「事实层方向解读」(`facts/direction_llm.py`)本版仍未建
+        # (S3 登记 ⑦),建的时候同样要加进来。
+        "neckline.explain.aggregate:EXPLAIN_SYSTEM_PROMPT",
+        "neckline.playbook.fill:PLAYBOOK_FILL_SYSTEM_PROMPT",
     ])
     def test_prompt_embeds_the_shared_rules_verbatim(self, prompt_ref):
         import importlib

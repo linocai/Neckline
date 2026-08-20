@@ -26,6 +26,7 @@ from neckline.auction import checklist as checklist_mod
 from neckline.auction import settle as settle_mod
 from neckline.playbook import evaluate as evaluate_mod
 from neckline.playbook import model as pb_model
+from tests import guard_scan
 
 _ROOT = Path(__file__).resolve().parent.parent
 _PKG = _ROOT / "neckline"
@@ -36,15 +37,7 @@ _PLAYBOOK_FILES = sorted(_PLAYBOOK.glob("*.py"))
 
 
 def _imports(path: Path) -> Set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    out: Set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            out.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            out.add(node.module)
-            out.update(f"{node.module}.{a.name}" for a in node.names)
-    return out
+    return guard_scan.imports(path)
 
 
 def test_scanner_sees_the_files_it_claims_to_guard():
@@ -257,23 +250,7 @@ def test_the_three_way_verdict_is_closed_and_fully_labelled():
 
 
 def _code_without_docstrings(path: Path) -> str:
-    """源码去掉所有 docstring 后的正文。
-
-    ⚠ 扫「这个词不许出现」时必须先掐掉文档:一条纪律总要**写出**它禁止的那个词
-    才解释得清,把注释算进命中会逼着后来者把说明删掉去凑绿 —— 那正好是反的。"""
-    src = path.read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    docs: List[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
-                             ast.AsyncFunctionDef)):
-            d = ast.get_docstring(node)
-            if d:
-                docs.append(d)
-    body = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
-    for d in docs:
-        body = body.replace(d, "")
-    return body
+    return guard_scan.code_without_docstrings(path)
 
 
 def test_playbook_store_has_no_update_or_delete():
