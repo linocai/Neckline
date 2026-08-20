@@ -321,12 +321,21 @@ _SUB_WEIGHT_KEYS: Mapping[str, Tuple[str, ...]] = {
     "p4": ("inflowRank", "volumeRatioRank"),
 }
 
-_CHANNEL_TIER_KEYS: Mapping[str, Tuple[str, ...]] = {
+#: 每档的键 → **声明类型**。🔴 类型不是装饰:窗口类键被声明成 `float` 时,
+#: `_check_ranges` 里那两个 `isinstance(v, int)` 前置判断会**整条跳过** ——
+#: 2026-08-21 复审实测 `channels.p3.strict.longWindow = 500.0` 与
+#: `channels.p2.strict.maDays = 0.4` 双双**校验通过**,而前者会绕过
+#: `MAX_LOOKBACK_PACKS`、后者会让 `PackRange.history(days=0.4)` 抛裸 `ValueError`
+#: (于是裁定 5 的「参数未配置 = 今天没跑成」在这些输入上走的是异常路径)。
+#: ⚠ 这里的类型必须与四个 `PNTier` dataclass 的字段注解逐个一致
+#: (`_assert_tier_types_match_the_dataclasses()` 在 import 期核对)。
+_CHANNEL_TIER_KEYS: Mapping[str, Mapping[str, type]] = {
     # ⚠ p1 没有 `volMaDays` / 放量门槛:两者都是**共享**的 `volume.*`(裁定 15)。
-    "p1": ("ampWindowDays", "ampMaxPct", "minRetPct"),
-    "p2": ("normDropMin", "maDays", "minVolMultiple"),
-    "p3": ("longWindow", "shortWindow", "flatBand"),
-    "p4": ("dailyInflowRankPct", "cumDays", "cumInflowRankPct", "lagRankGap"),
+    "p1": {"ampWindowDays": int, "ampMaxPct": float, "minRetPct": float},
+    "p2": {"normDropMin": float, "maDays": int, "minVolMultiple": float},
+    "p3": {"longWindow": int, "shortWindow": int, "flatBand": float},
+    "p4": {"dailyInflowRankPct": float, "cumDays": int,
+           "cumInflowRankPct": float, "lagRankGap": float},
 }
 
 _TIER_NAMES: Tuple[str, ...] = ("strict", "relaxed")
@@ -357,7 +366,7 @@ REQUIRED_SCHEMA: Mapping[str, Any] = {
         "eruptionMultiple": float,
     },
     "channels": {
-        ch: {tier: {k: float for k in keys} for tier in _TIER_NAMES}
+        ch: {tier: dict(keys) for tier in _TIER_NAMES}
         for ch, keys in _CHANNEL_TIER_KEYS.items()
     },
     "ranking": {
@@ -378,6 +387,17 @@ REQUIRED_SCHEMA: Mapping[str, Any] = {
     },
     "explain": {"maxBackfillRounds": int},
 }
+
+def _tier_paths(*keys: str) -> Tuple[str, ...]:
+    """`channels.<ch>.<档>.<key>` 的全部路径(两档都要),按 `_CHANNEL_TIER_KEYS` 取。"""
+    return tuple(
+        f"channels.{ch}.{tier}.{key}"
+        for ch, ks in _CHANNEL_TIER_KEYS.items()
+        for tier in _TIER_NAMES
+        for key in ks
+        if key in keys
+    )
+
 
 #: 必须 `<= MAX_LOOKBACK_PACKS` 的窗口位(§5.4.3 校验 2)。路径是点分键路。
 _WINDOW_PATHS: Tuple[str, ...] = (
@@ -416,6 +436,93 @@ _POSITIVE_INT_PATHS: Tuple[str, ...] = (
     for key in keys
     if key.endswith("Days") or key.endswith("Window")
 )
+
+# ── 阈值位的**结构性**区间 ─────────────────────────────────────────────────
+# 🔴 下面每一条都是「这个量自己的取值范围**决定**的」,⛔ 不是施工侧挑的标定值:
+# 越界的值不会让系统报错,它会让判据**退化**(对全体成立或对全体不成立),
+# 于是报告照常出、只说「今日无此形态」—— 裁定 5 建立的「跑通了、结果为空、
+# 可以被信任」在这里被稀释成一句看不出真假的话。逐条理由见各自注释。
+# ⛔ 施工侧**没有**给 `ampMaxPct` / `minRetPct` / `spikeFadeRetPct` 的**量级**
+# 加任何上下界 —— 那需要挑一个数,归标定侧(§8 待标定总表)。
+
+#: 必须 > 0 的阈值位(非整数)。
+_POSITIVE_FLOAT_PATHS: Tuple[str, ...] = (
+    # 放量倍数 = 当日量 ÷ N 日均量 ≥ 0。V ≤ 0 → p1 的「≥ V」对全体成立、
+    # p3 的「< V」对全体不成立 → **形态 3 当天归零**、形态 1 的放量门槛整条失效。
+    "volume.eruptionMultiple",
+    # 第 9 条:最高涨幅 − 收盘涨幅 ≥ 0 恒成立(high ≥ close)。门槛 ≤ 0 →
+    # 第 9 条退化成只看「当日涨幅 >」那半条。
+    "boundary.spikeFadeGapPct",
+) + _tier_paths(
+    # 裁定 13「当日有实际换手」的判据,同 `eruptionMultiple`:≤ 0 对全体成立。
+    "minVolMultiple",
+    # 振幅上限:振幅 ≥ 0,门槛 ≤ 0 → p1 永远召不到票。
+    "ampMaxPct",
+    # 长窗相对强度「≈0」的**区间宽度**:≤ 0 是空区间 → p3 永远召不到票。
+    "flatBand",
+)
+
+#: 必须落在 (0, 1] 的比例位 —— 上界由这个量自己的定义给出。
+_HALF_OPEN_UNIT_PATHS: Tuple[str, ...] = _tier_paths(
+    # 归一化跌幅 = −`ret_1d` ÷ 该板跌停幅度 ∈ [−1, 1](跌不过跌停)。
+    # ≤ 0 → 对一只**上涨**的票也成立(「超跌反弹」失去意义);> 1 → 永远召不到票。
+    "normDropMin",
+)
+
+#: 必须落在 [0, 1] 闭区间的**百分位差值**位。
+_UNIT_GAP_PATHS: Tuple[str, ...] = _tier_paths(
+    # 资金流入百分位 − 涨跌幅百分位,两者都 ∈ (0,1] → 差值 ∈ (−1, 1)。
+    # `lagRankGap` 是它的下限门槛:0 有意义(「资金排名不低于涨幅排名」),
+    # > 1 则**永远召不到票**。p4 模块头与 §14 S6 登记 ① 都明写它是 0~1 的差值。
+    "lagRankGap",
+)
+
+
+def _schema_type_at(path: str) -> Any:
+    """`REQUIRED_SCHEMA` 在这条点分键路上声明的类型(走不到 → `None`)。"""
+    cur: Any = REQUIRED_SCHEMA
+    for part in path.split("."):
+        if not isinstance(cur, Mapping) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _assert_int_paths_are_declared_int() -> None:
+    """🔴 **整数闸的前提自检**(2026-08-21 复审 H1)。
+
+    `_check_ranges` 里 `_POSITIVE_INT_PATHS` / `_WINDOW_PATHS` 两个循环都以
+    `isinstance(v, int)` 开路 —— 值不是 int 就**整条跳过**。于是只要 schema 把某个
+    窗口键声明成 `float`,这两道闸(正数、`MAX_LOOKBACK_PACKS`)连同 `_walk` 的
+    整数性检查会**一起**失效,而且校验是绿的。上一版正是这样:四个通道的档内键被
+    一句 `{k: float for k in keys}` 统一声明成 `float`。
+
+    这条 import 期断言把「跳过」变成不可能:凡进这两张表的路径,schema 必须声明
+    `int`。⛔ 想加一个不是 int 的窗口位?那说明这条路径不该进这两张表。
+    """
+    bad = [
+        p for p in dict.fromkeys(_POSITIVE_INT_PATHS + _WINDOW_PATHS)
+        if _schema_type_at(p) is not int
+    ]
+    assert not bad, (
+        f"这些路径进了整数闸,`REQUIRED_SCHEMA` 却没把它们声明成 int:{bad} —— "
+        f"`_check_ranges` 的 `isinstance(v, int)` 会把它们整条跳过")
+
+
+def _assert_tier_types_match_the_dataclasses() -> None:
+    """档内键的**声明类型**必须与四个 `PNTier` 的字段注解逐个一致。
+
+    两处各说各话 = 「schema 说 float、dataclass 说 int」那种谁也不报错的漂移。
+    """
+    classes = {"p1": P1Tier, "p2": P2Tier, "p3": P3Tier, "p4": P4Tier}
+    bad: List[str] = []
+    for ch, keys in _CHANNEL_TIER_KEYS.items():
+        hints = get_type_hints(classes[ch])
+        for key, declared in keys.items():
+            got = hints.get(_to_snake(key))
+            if got is not declared:
+                bad.append(f"channels.{ch}.{key}: schema={declared} vs dataclass={got}")
+    assert not bad, "档内键的类型两处不一致:\n" + "\n".join(bad)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -487,6 +594,22 @@ def _check_ranges(raw: Mapping[str, Any], invalid: List[str]) -> None:
         v = _dig(raw, path)
         if isinstance(v, (int, float)) and not isinstance(v, bool) and not (0 < v < 1):
             invalid.append(f"{path}={v} 必须落在 (0, 1) 开区间")
+    for path in _POSITIVE_FLOAT_PATHS:
+        v = _dig(raw, path)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v <= 0:
+            invalid.append(
+                f"{path}={v} 必须 > 0 —— 非正值不会报错,它会让判据**退化**"
+                f"(对全体成立或对全体不成立),报告只会说「今日无此形态」")
+    for path in _HALF_OPEN_UNIT_PATHS:
+        v = _dig(raw, path)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and not (0 < v <= 1):
+            invalid.append(
+                f"{path}={v} 必须落在 (0, 1] —— 归一化跌幅的取值上限是 1(跌不过跌停)")
+    for path in _UNIT_GAP_PATHS:
+        v = _dig(raw, path)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and not (0 <= v <= 1):
+            invalid.append(
+                f"{path}={v} 必须落在 [0, 1] —— 它是两个百分位的差值(p4 模块头 / §14 S6 登记 ①)")
 
     lo, hi = _dig(raw, "quota.min"), _dig(raw, "quota.max")
     if isinstance(lo, int) and isinstance(hi, int) and lo > hi:
@@ -533,7 +656,13 @@ def _check_excluded_codes(
     里存在;`801125.SI` 额外核一次名字叫「白酒Ⅱ」—— **名称不符只告警不阻断**
     (§12 坑 6:名称会变、代码不变)。
 
-    分类表本身是空的(还没日更过)→ **跳过这条校验**,⛔ 不把「没拉过分类表」误报成
+    🔴 **白酒必须在里面**(2026-08-21 复审 M4):K9 §二 第 2 条是**给定**排除项,
+    ⛔ 不是待标定项(§14 S5 已把 `excludedL2Codes` 登记为示例配置里唯一的真值)。
+    复审实测 `excludedL2Codes = []` 校验通过 —— 于是一份参数包可以**安静地**把
+    白酒 19 只(§4.8)重新放回池子,而报告里看不出发生过这件事。
+    ⚠ 这一条不依赖分类表:它核的是「参数包里有没有这个码」,不是「这个码存不存在」。
+
+    分类表本身是空的(还没日更过)→ **跳过存在性校验**,⛔ 不把「没拉过分类表」误报成
     「参数写错了」:那是**数据缺口**,归 `facts/completeness.py` 判「今天没跑成」。"""
     from neckline.data.sw_industry import BAIJIU_L2_CODE, BAIJIU_L2_NAME
 
@@ -544,6 +673,10 @@ def _check_excluded_codes(
     if bad_type:
         invalid.append(f"industry.excludedL2Codes 含非字符串项:{bad_type}")
         return
+    if BAIJIU_L2_CODE not in codes:
+        invalid.append(
+            f"industry.excludedL2Codes 里没有 {BAIJIU_L2_CODE}(白酒Ⅱ)—— "
+            f"K9 §二 第 2 条是**给定**排除项,⛔ 不是标定侧可以关掉的开关")
     init_schema(db_path)
     with connection(db_path) as conn:
         total = int(conn.execute("SELECT COUNT(*) FROM sw_industry_classify").fetchone()[0])
@@ -769,6 +902,13 @@ def assert_no_field_defaults(cls: type) -> List[str]:
             for nested in _nested_dataclasses(hints.get(f.name, f.type)):
                 paths.setdefault(nested, path)
     return offenders
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# import 期自检 —— ⛔ 不是可选的:这两条塌了,上面的区间闸会**安静地**失效
+# ══════════════════════════════════════════════════════════════════════════
+_assert_int_paths_are_declared_int()
+_assert_tier_types_match_the_dataclasses()
 
 
 __all__ = [

@@ -67,8 +67,10 @@ def make_raw(**overrides) -> dict:
             "p1": _tiers({"ampWindowDays": 20, "ampMaxPct": 25.0, "minRetPct": 0.0}),
             "p2": _tiers({"normDropMin": 0.7, "maDays": 20, "minVolMultiple": 1.0}),
             "p3": _tiers({"longWindow": 60, "shortWindow": 7, "flatBand": 0.02}),
+            # ⚠ `lagRankGap` 曾经在这份夹具里写着 500.0 —— 一个**永远召不到票**的值,
+            # 而校验当时是绿的(复审 H2)。它是两个百分位的差值,只可能落在 [0,1]。
             "p4": _tiers({"dailyInflowRankPct": 0.1, "cumDays": 5,
-                          "cumInflowRankPct": 0.15, "lagRankGap": 500.0}),
+                          "cumInflowRankPct": 0.15, "lagRankGap": 0.2}),
         },
         "ranking": {
             "weights": {"industryHeat": 0.4, "patternStrength": 0.4, "relay": 0.2},
@@ -275,6 +277,113 @@ class TestRangesAndFingerprint:
         assert any("minMembers" in s for s in e.value.invalid)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# ③' 复审 H1 / H2:窗口键的整数性、阈值键的结构性区间
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestWindowKeysAreReallyIntegers:
+    """🔴 H1:档内键曾被一句 `{k: float for k in keys}` 统一声明成 `float`,
+    于是 `_check_ranges` 里两个 `isinstance(v, int)` 前置判断把整数性、正数、
+    `MAX_LOOKBACK_PACKS` 三道闸**一起**跳过了 —— 而校验是绿的。"""
+
+    @pytest.mark.parametrize("path,value", [
+        ("channels.p3.strict.longWindow", 500.0),      # 复审原样的反例:曾经通过
+        ("channels.p2.strict.maDays", 0.4),            # → PackRange.history(days=0.4) 抛裸 ValueError
+        ("channels.p1.relaxed.ampWindowDays", 20.5),
+        ("channels.p4.strict.cumDays", 5.0),
+        ("channels.p3.relaxed.shortWindow", 7.5),
+    ])
+    def test_a_float_in_a_window_slot_is_invalid(self, tmp_path, db, path, value):
+        with pytest.raises(P.ParamsUnavailable) as e:
+            P.load(write(tmp_path, make_raw(**{path: value})), db_path=db)
+        assert any(path in s and "整数" in s for s in e.value.invalid), e.value.invalid
+
+    @pytest.mark.parametrize("path", [
+        "channels.p3.strict.longWindow", "channels.p1.strict.ampWindowDays",
+        "channels.p2.relaxed.maDays", "channels.p4.relaxed.cumDays",
+    ])
+    def test_a_window_longer_than_max_lookback_is_invalid_in_the_tiers_too(
+        self, tmp_path, db, path,
+    ):
+        """§12 坑 1 的容量红线:上一版档内窗口整条绕过了这道闸。"""
+        with pytest.raises(P.ParamsUnavailable) as e:
+            P.load(write(tmp_path, make_raw(**{path: 121})), db_path=db)
+        assert any(path in s and "MAX_LOOKBACK_PACKS" in s for s in e.value.invalid)
+
+    @pytest.mark.parametrize("path", [
+        "channels.p3.strict.longWindow", "channels.p1.strict.ampWindowDays",
+        "channels.p2.strict.maDays", "channels.p4.strict.cumDays",
+    ])
+    def test_a_non_positive_window_is_invalid(self, tmp_path, db, path):
+        with pytest.raises(P.ParamsUnavailable) as e:
+            P.load(write(tmp_path, make_raw(**{path: 0})), db_path=db)
+        assert any(path in s and "> 0" in s for s in e.value.invalid)
+
+    def test_the_two_declarations_of_the_tier_key_types_agree(self):
+        """schema 与 dataclass 两处各说各话,正是「声明成 float」那类漂移的开头。
+        这条在 import 期就断言过,这里再明写一遍(⛔ 别把 import 期那句删了)。"""
+        P._assert_tier_types_match_the_dataclasses()
+        P._assert_int_paths_are_declared_int()
+
+    def test_every_int_slot_that_has_a_range_gate_is_declared_int(self):
+        """整数闸的前提:进 `_POSITIVE_INT_PATHS` / `_WINDOW_PATHS` 的路径,
+        schema 必须声明 `int` —— 否则 `isinstance(v, int)` 会把它整条跳过。"""
+        for path in set(P._POSITIVE_INT_PATHS) | set(P._WINDOW_PATHS):
+            assert P._schema_type_at(path) is int, path
+
+
+class TestThresholdsHaveStructuralBounds:
+    """🔴 H2:一个写错的标定值曾经会**安静地**跑出一份错清单 —— 系统照跑,
+    报告只说「今日无此形态」(K9 §五-5 的诚实缺席),看不出是参数写错了。"""
+
+    @pytest.mark.parametrize("path,value", [
+        # 放量倍数 ≥ 0:V ≤ 0 → p1 的「≥V」对全体成立、p3 的「<V」对全体不成立
+        ("volume.eruptionMultiple", -1.0),
+        ("volume.eruptionMultiple", 0),
+        # 裁定 13「有实际换手」
+        ("channels.p2.strict.minVolMultiple", -1.0),
+        # 振幅上限 ≤ 0 → p1 永远召不到票
+        ("channels.p1.strict.ampMaxPct", -5.0),
+        # 「≈0」的区间宽度 ≤ 0 是空区间
+        ("channels.p3.relaxed.flatBand", 0),
+        # 最高涨幅 − 收盘涨幅 ≥ 0 恒成立 → 门槛 ≤ 0 让第 9 条退化成只看一半
+        ("boundary.spikeFadeGapPct", 0),
+    ])
+    def test_a_non_positive_threshold_is_invalid(self, tmp_path, db, path, value):
+        with pytest.raises(P.ParamsUnavailable) as e:
+            P.load(write(tmp_path, make_raw(**{path: value})), db_path=db)
+        assert any(path in s for s in e.value.invalid), e.value.invalid
+
+    @pytest.mark.parametrize("value", [0, -0.1, 1.5])
+    def test_a_normalised_drop_outside_zero_to_one_is_invalid(self, tmp_path, db, value):
+        """归一化跌幅 = −`ret_1d` ÷ 该板跌停幅度 ∈ [−1, 1] —— 跌不过跌停。"""
+        with pytest.raises(P.ParamsUnavailable) as e:
+            P.load(write(tmp_path, make_raw(**{"channels.p2.strict.normDropMin": value})),
+                   db_path=db)
+        assert any("normDropMin" in s for s in e.value.invalid)
+
+    def test_a_normalised_drop_of_exactly_one_is_allowed(self, tmp_path, db):
+        """恰好 1 = 「跌到跌停」,是一个有意义的门槛,⛔ 不许连它一起挡掉。"""
+        P.load(write(tmp_path, make_raw(**{"channels.p2.strict.normDropMin": 1.0,
+                                           "channels.p2.relaxed.normDropMin": 1.0})),
+               db_path=db)
+
+    @pytest.mark.parametrize("value", [7, -0.1, 1.01])
+    def test_a_lag_rank_gap_outside_the_unit_interval_is_invalid(self, tmp_path, db, value):
+        """复审原样的反例:`lagRankGap = 7` 曾经**校验通过**,而百分位差值最大是 1
+        —— p4 从此永远召不到票,报告只会说「今日无形态 4」。"""
+        with pytest.raises(P.ParamsUnavailable) as e:
+            P.load(write(tmp_path, make_raw(**{"channels.p4.strict.lagRankGap": value})),
+                   db_path=db)
+        assert any("lagRankGap" in s for s in e.value.invalid), e.value.invalid
+
+    def test_a_lag_rank_gap_of_zero_is_allowed(self, tmp_path, db):
+        """0 = 「资金排名不低于涨幅排名」,是一个有意义的取值(闭区间,⛔ 不是开区间)。"""
+        P.load(write(tmp_path, make_raw(**{"channels.p4.strict.lagRankGap": 0,
+                                           "channels.p4.relaxed.lagRankGap": 0})),
+               db_path=db)
+
+
 class TestExcludedCodes:
     def test_an_unknown_l2_code_is_invalid_when_the_classify_table_is_populated(
         self, tmp_path, db
@@ -284,6 +393,22 @@ class TestExcludedCodes:
             P.load(write(tmp_path, make_raw(**{"industry.excludedL2Codes": ["999999.SI"]})),
                    db_path=db)
         assert any("999999.SI" in s for s in e.value.invalid)
+
+    @pytest.mark.parametrize("codes", [[], ["801080.SI"]])
+    def test_dropping_baijiu_from_the_exclusion_list_is_invalid(self, tmp_path, db, codes):
+        """🔴 复审 M4:`excludedL2Codes = []` 曾经**校验通过** —— 一份参数包可以
+        安静地把白酒 19 只(§4.8)放回池子。K9 §二 第 2 条是给定项,不是开关。"""
+        _seed_classify(db)
+        with pytest.raises(P.ParamsUnavailable) as e:
+            P.load(write(tmp_path, make_raw(**{"industry.excludedL2Codes": codes})),
+                   db_path=db)
+        assert any("801125.SI" in s and "给定" in s for s in e.value.invalid), e.value.invalid
+
+    def test_baijiu_is_required_even_when_the_classify_table_is_empty(self, tmp_path, db):
+        """⚠ 这一条核的是「参数包里有没有这个码」,与分类表拉没拉过无关。"""
+        with pytest.raises(P.ParamsUnavailable) as e:
+            P.load(write(tmp_path, make_raw(**{"industry.excludedL2Codes": []})), db_path=db)
+        assert any("801125.SI" in s for s in e.value.invalid)
 
     def test_a_renamed_baijiu_only_warns(self, tmp_path, db, caplog):
         """§12 坑 6:**名称会变、代码不变**。名称不符只告警不阻断。"""
