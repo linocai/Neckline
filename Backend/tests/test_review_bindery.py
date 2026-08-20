@@ -274,6 +274,36 @@ class TestGapsAreNamed:
                         pre_sessions=bindery.MAX_WINDOW_SESSIONS + 50, post_sessions=5)
         assert any(g.startswith("window_truncated") for g in binding.gaps)
 
+    def test_truncation_never_moves_the_window_off_the_trade_dates(self, market):
+        """🔴 **R2-07**:容量上限只削**上下文**,⛔ 不许把成交日削掉。
+
+        从前的写法是「窗口超了就取最后 250 根」—— 只动 `start`、`end` 不动。
+        窗口被向后拉长时,截断后的 `[start, end]` 会**整段落在成交日之后**,
+        那一周的每一笔回合都拿到 0 根 K 线;跨度较长的交割单则会被从最早处截掉。
+        """
+        env, days = market
+        buy, sell = days[20], days[24]
+        binding = _bind(env, _review(days, 20, 24),
+                        pre_sessions=bindery.MAX_WINDOW_SESSIONS * 3,
+                        post_sessions=bindery.MAX_WINDOW_SESSIONS * 3)
+        assert any(g.startswith("window_truncated") for g in binding.gaps)
+        rt = binding.round_trips[0]
+        assert rt.window_start <= buy.strftime("%Y%m%d"), "成交日被截到窗口外面去了"
+        assert rt.window_end >= sell.strftime("%Y%m%d"), "窗口整段落在成交日之前 / 之后"
+        # 🔴 每一笔回合仍然拿得到自己的 K 线(材料不是空的)。
+        bar_days = {b.trade_date for b in rt.bars}
+        assert buy.strftime("%Y%m%d") in bar_days and sell.strftime("%Y%m%d") in bar_days
+        # 首行那句「买入前 N 个交易日」得说真话:记的是**实际铺了几天**。
+        assert binding.pre_sessions < bindery.MAX_WINDOW_SESSIONS * 3
+        assert binding.pre_sessions + binding.post_sessions <= bindery.MAX_WINDOW_SESSIONS
+
+    def test_a_normal_window_is_not_touched_by_the_cap(self, market):
+        """⚠ 反向自检:没超上限的窗口一个字都不许改。"""
+        env, days = market
+        binding = _bind(env, _review(days, 20, 24), pre_sessions=3, post_sessions=3)
+        assert not any(g.startswith("window_truncated") for g in binding.gaps)
+        assert (binding.pre_sessions, binding.post_sessions) == (3, 3)
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # ③ 一次取数(§12 坑 1)

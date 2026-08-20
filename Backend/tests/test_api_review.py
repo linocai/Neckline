@@ -386,6 +386,29 @@ class TestBinderyEndpoint:
         r = client.get("/api/v1/review/bindery", headers=AUTH)
         assert r.status_code == 200 and r.json()["found"] is False
 
+    def test_the_two_context_lengths_have_an_upper_bound(self, client, AUTH, review_env):
+        """🔴 **R2-07**:`preSessions` / `postSessions` 从前只判 `< 0`。
+
+        实测 `=350000` 会算出一个 70 万个交易日的窗口(**4.2 s / +42 MB RSS**),
+        而这个端点跑在**常驻** `neckline.service` 上、§13.1-B5 正在为 900 M 的
+        余量发愁 —— 一个来自查询串的整数就能把它拖住(§12 坑 1)。
+        """
+        from neckline.review import bindery
+
+        cap = bindery.MAX_WINDOW_SESSIONS
+        for param in ("preSessions", "postSessions"):
+            r = client.get(f"/api/v1/review/bindery?week=2099-W01&{param}=350000",
+                           headers=AUTH)
+            assert r.status_code == 422, f"{param} 没有上界"
+            assert str(cap) in r.json()["detail"]
+            # 上界之内照常放行(⛔ 别顺手把正常取值也挡了)。
+            ok = client.get(f"/api/v1/review/bindery?week=2099-W01&{param}={cap}",
+                            headers=AUTH)
+            assert ok.status_code == 200
+        # 缺省(< 0)= 用模块常量,仍然放行。
+        assert client.get("/api/v1/review/bindery?week=2099-W01&preSessions=-1",
+                          headers=AUTH).status_code == 200
+
     def test_binds_the_archived_week_and_prints_its_gaps(self, client, AUTH, review_env):
         """夹具库里没有行情 parquet → 材料必然有缺口,而缺口**必须被印出来**
         (⛔ 不许用空列表冒充「查过了没有」)。"""

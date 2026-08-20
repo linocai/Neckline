@@ -40,7 +40,20 @@ def _num(x: Optional[float], digits: int = 2) -> str:
 
 
 def structured(bundle) -> Dict[str, Any]:
-    """结构化完整版(可整段复制到聊天框)。键序固定 → 同一份输入逐字节相同。"""
+    """结构化完整版(可整段复制到聊天框)。键序固定 → 同一份输入逐字节相同。
+
+    🔴 **必须含 `explain` 与 `playbooks`**(R2-08):§5.10 与架构 §3.5 给这一份的
+    用途逐字是「展开可**整段复制到聊天框做深度分析**」—— 深度分析要的恰恰是
+    每只票的资料聚合、日K 评价、消息面三态、三个价位与两条分支。少了这两样,
+    复制过去的只是市场读数 + 一张排名表,那份「完整版」名不副实。
+
+    ⚠ **预案是 append-only 版本化的**,而本函数的产物会冻进
+    `k9_reports.structured_json`(冻结件,写入当时什么样就永远什么样)。
+    所以这里存的是**写入那一刻的那一版**,每份都自带 `version` ——
+    用户之后改了预案,快照与库里对不上是**正常且可查**的(版本号不同),
+    ⛔ 不许为了「跟上」而去改冻结件。个股详情那条路(`api/app.py::
+    _selection_stocks`)⚠ 刻意用**现装**的最新版,两者用途不同。
+    """
     return {
         "reportDate": bundle.report_date.isoformat(),
         "tradeDate": bundle.trade_date.isoformat(),
@@ -55,6 +68,10 @@ def structured(bundle) -> Dict[str, Any]:
         "strictCount": bundle.strict_count,
         "relaxedCount": bundle.relaxed_count,
         "listing": [dict(e) for e in bundle.listing],
+        # 🔴 R2-08:解释层资料 + 预案 —— 这一份存在的**理由**就是这两样。
+        # 空 dict 各自表示「那天这一层没跑过」/「那天一份预案都没冻」(⛔ 不是「没有」)。
+        "explain": dict(bundle.explain or {}),
+        "playbooks": dict(bundle.playbooks or {}),
         "run": bundle.run,
         "market": bundle.market,
         "direction": bundle.direction,

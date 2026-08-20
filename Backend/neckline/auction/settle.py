@@ -250,9 +250,11 @@ def run_settle_tick(
     res.ran = True
     res.settled = stats["settled"]
     res.unchanged = len(playbooks) - len(outcomes)
-    res.confirmed = sum(1 for o in outcomes if o.verdict is Verdict.CONFIRMED)
-    res.rejected = sum(1 for o in outcomes if o.verdict is Verdict.REJECTED)
-    res.observed = sum(1 for o in outcomes if o.verdict is Verdict.OBSERVED)
+    # 🔴 三分支计数取**真的被 UPDATE 到**的那些(R2-10),⛔ 不从 `outcomes` 里数 ——
+    # 账上的数与库里的行对不上是本仓最不该出现的那一类。
+    res.confirmed = stats[Verdict.CONFIRMED.value]
+    res.rejected = stats[Verdict.REJECTED.value]
+    res.observed = stats[Verdict.OBSERVED.value]
     res.data_quality = snap.quality_of(sorted(playbooks))
     res.notes.extend(snap.notes)          # ⚠ 追加,⛔ 不覆盖(R2-03 的版本核对留言)
     record_pushed(trade_date, SETTLE_SENTINEL, "", EVENT_SETTLE,

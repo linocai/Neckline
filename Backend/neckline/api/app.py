@@ -242,13 +242,24 @@ async def _morning_loop(stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
         now = datetime.now()
         # 🔴 两拍**各自独立** `try/except`(§5.7.3):一拍炸了不影响另一拍。
+        # 🔴 **两拍都丢进线程池**(R2-09):它们内部做 HTTP + SQLite,是**同步阻塞**。
+        # 单源最坏 `2 × (3+5) = 16 s`(`data/realtime.py` 的 connect=3s / read=5s /
+        # 2 次尝试),双源顺序 → 单拍最坏约 **32 s**,而收紧区间的轮询间隔是 30 s
+        # —— 阻塞窗口与轮询周期**重叠**。行情源抽风时 `/health`、`/checklist/{date}`、
+        # `/selection/latest` 会一起卡住,而 9:26–9:29 与 9:55–10:06 正是用户盯着
+        # App 看核对表的时刻(他看到的是「App 转圈」,日志只说「实时源请求异常」)。
+        # ⛔ 别改成 `create_task` + 同步函数,那不解决阻塞;两拍本来就是纯同步、
+        # 不共享状态,SQLite 也是每次新连接。
+        # ⚠ 写成 `to_thread(lambda: f(now))` 而不是 `to_thread(f, now)`:守门
+        # (G21 那组)按**字面**核「两拍是不是各自从这个循环里被调起来的」,
+        # 而 `to_thread(f, now)` 里根本没有 `f(now)` 这个形状。⛔ 别顺手"清理"掉。
         try:
-            _morning_checklist_tick(now)
+            await asyncio.to_thread(lambda: _morning_checklist_tick(now))
         except Exception:  # noqa: BLE001 —— 早晨循环不许被单拍异常掀翻
             logger.warning("[morning] 竞价核对表那一拍异常(已吞,不影响结算拍)",
                            exc_info=True)
         try:
-            _morning_settle_tick(now)
+            await asyncio.to_thread(lambda: _morning_settle_tick(now))
         except Exception:  # noqa: BLE001
             logger.warning("[morning] 10:00 结算拍异常(已吞,不影响竞价拍)", exc_info=True)
         interval = _MORNING_TIGHT_POLL_SEC if _is_tight_poll(now) else _MORNING_IDLE_POLL_SEC
@@ -728,10 +739,24 @@ def get_review_bindery(week: str = "", preSessions: int = -1, postSessions: int 
     🛑 **容量**:窗口内**全部票**走一次 parquet glob、行业 / 报告 / 预案 / 清单各走
     一次区间 SQL(§12 坑 1:本端点跑在常驻 `neckline.service` 里)。⛔ 别在这里
     按票或按日循环取数。
+
+    🔴 **两个上下文长度有上界**(R2-07):`0 ≤ n ≤ MAX_WINDOW_SESSIONS`,越界 **422**。
+    从前只判 `< 0` —— 实测 `preSessions=postSessions=350000` 会算出一个 70 万个
+    交易日的窗口(**4.2 s / +42 MB RSS**),而这个端点跑在**常驻**服务上、
+    §13.1-B5 正在为 900 M 的余量发愁:一个来自查询串的整数就能把它拖住。
+    ⚠ 上界取 `MAX_WINDOW_SESSIONS` 而不是另编一个数 —— 它本来就是这份材料的容量上限,
+    要多于它的上下文,装订层也会削回去。
     """
     from neckline.review import bindery
     from neckline.review.store import load_weekly_review
 
+    for name, raw in (("preSessions", preSessions), ("postSessions", postSessions)):
+        if raw >= 0 and raw > bindery.MAX_WINDOW_SESSIONS:
+            raise HTTPException(
+                status_code=422,
+                detail=(f"{name} 最多 {bindery.MAX_WINDOW_SESSIONS} 个交易日"
+                        f"(装订材料的容量上限,见 §12 坑 1);收到 {raw}。"
+                        "缺省(< 0)= 用模块常量。"))
     week = (week or "").strip()
     if not week:
         return ReviewBinderyOut(ok=True, found=False)
@@ -1393,12 +1418,31 @@ def get_checklist(trade_date: str) -> dict:
     `footnote` 恒带一句「成立由 10:00 结算,9:30–10:00 由我自己判定」。
 
     404 = **那天没跑过那一拍**(⛔ 不是「跑了、表是空的」——那会返回一张两段皆空的表)。
+
+    🔴 **404 的两种原因必须分开说**(R2-11):「D0 本来就没有清单,今天没有要核对的
+    东西」是**可信的空**;「那一拍没跑成」是**系统没工作**。从前两者共用一句
+    「没有竞价核对表」—— 用户无法分辨,而这正是本项目在别处一贯坚持的三态纪律。
+    ⚠ 这里**只把话说清**:是否要在「昨天没有清单」的早晨推一条,是产品决定
+    (现行「不推」写在 `auction/pipeline.py::should_push` 的 docstring 里,
+    是一次自觉选择)—— 已登记 PROJECT_PLAN §13.1 等用户裁定,⛔ 施工侧不自选。
     """
     from neckline.auction import store as auction_store
+    from neckline.calendar import prev_trading_day
+    from neckline.k9 import store as k9_store
 
-    out = auction_store.load_checklist(_parse_day(trade_date), db_path=_db())
+    day = _parse_day(trade_date)
+    out = auction_store.load_checklist(day, db_path=_db())
     if out is None:
-        raise HTTPException(status_code=404, detail=f"{trade_date} 没有竞价核对表")
+        d0 = prev_trading_day(day)
+        if not k9_store.load_listing_codes(d0, db_path=_db()):
+            raise HTTPException(
+                status_code=404,
+                detail=(f"{trade_date} 没有竞价核对表:{d0:%Y-%m-%d} 没有清单,"
+                        f"**今天没有要核对的东西**(这是「没有」,不是「没跑成」)。"))
+        raise HTTPException(
+            status_code=404,
+            detail=(f"{trade_date} 没有竞价核对表:{d0:%Y-%m-%d} 有清单,"
+                    f"但**那一拍今天没跑成**(见服务端日志)。"))
     return out
 
 

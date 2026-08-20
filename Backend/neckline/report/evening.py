@@ -263,10 +263,17 @@ def _run_explain(
     checked: Dict[str, Any] = {}
     audit: List[Dict[str, Any]] = []
     excluded_codes: List[str] = []
+    #: 🔴 **真正补过几次位**(R2-05)。⛔ 不是「筛查跑了几遍」——
+    #: 参数叫 `maxBackfillRounds`,它约束的就得是**补位**的次数。
+    #: 从前这里数的是筛查轮次,而 `break` 又落在补位**之前**,于是
+    #: `maxBackfillRounds=1` 得到的是「补位 0 次」,审计还写着「已达上限 1」
+    #: —— 用户照字面意思填 1 = 把补位功能整个关掉,而系统告诉他它运行过。
     rounds_used = 0
+    pass_no = 0                               # 筛查跑了第几遍(审计编号用)
 
     pending = list(seated)
     while pending:
+        pass_no += 1
         # 🔴 **升序交给解释层** —— 位次不从列表顺序泄漏(双盲第 ③ 条)。
         items = sorted(((e.ts_code, e.name) for e in pending), key=lambda t: t[0])
         verdicts = news_mod.screen(items, provider=news_provider, transport=transport)
@@ -277,14 +284,15 @@ def _run_explain(
             break
         for v in hits:
             label = news_mod.CATEGORY_LABEL[v.category] if v.category else "消息面"
-            audit.append({"round_no": rounds_used + 1, "action": explain_store.ACTION_EXCLUDED,
+            audit.append({"round_no": pass_no, "action": explain_store.ACTION_EXCLUDED,
                           "ts_code": v.ts_code,
                           "reason": f"{label}:{v.summary}".strip("：: ")})
             excluded_codes.append(v.ts_code)
         seated = [e for e in seated if e.ts_code not in {v.ts_code for v in hits}]
-        rounds_used += 1
         if rounds_used >= max_rounds:
-            audit.append({"round_no": rounds_used,
+            # ⚠ 上限判在**补位之前**、按**已补过几次**判 —— 到这里才是真的
+            # 「补不动了」。⛔ 别把它挪回自增之后:那就又变成 N−1 次。
+            audit.append({"round_no": pass_no,
                           "action": explain_store.ACTION_ROUNDS_EXHAUSTED, "ts_code": "",
                           "reason": f"补位轮数已达上限 {max_rounds},本日清单如实少这几只"})
             break
@@ -292,11 +300,17 @@ def _run_explain(
         take = min(len(hits), len(reserve))
         picked = reserve[:take]
         reserve = reserve[take:]
+        if not picked:
+            # 后备票用完了 —— 如实少这几只(⛔ 不制造候选,K9 §五)。
+            break
+        rounds_used += 1
         for e in picked:
-            audit.append({"round_no": rounds_used, "action": explain_store.ACTION_BACKFILLED,
+            audit.append({"round_no": pass_no, "action": explain_store.ACTION_BACKFILLED,
                           "ts_code": e.ts_code, "reason": f"补位(后备第 {e.rank} 名)"})
         seated = seated + picked
-        pending = picked                      # 只对新补进来的跑下一轮
+        # ⚠ 只对新补进来的跑下一轮 —— 但**一定要跑**:补进来却没过消息面的票
+        # 会带着空的 `news_state` 进清单,那是这一层存在的全部意义的反面。
+        pending = picked
 
     # 资料聚合(逐只,升序)。
     codes = sorted(e.ts_code for e in seated)

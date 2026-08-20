@@ -271,6 +271,45 @@ class TestBackfillOrchestration:
         audit = explain_store.load_audit(day, db_path=env.db_path)
         assert any(a["action"] == explain_store.ACTION_ROUNDS_EXHAUSTED for a in audit)
 
+    def test_max_rounds_of_one_really_backfills_once(self, listed, monkeypatch):
+        """🔴 **R2-05**:`maxBackfillRounds=1` 必须真的补位 **1 次**。
+
+        从前 `break` 落在补位**之前**,于是「最多 N 轮」实为「最多 N−1 次补位」:
+        N=1 → 剔除 1 只、补位 **0** 只,而审计还写着「补位轮数已达上限 1」。
+        `maxBackfillRounds` 是参数包里的**待标定项** —— 用户照字面意思填 1
+        会得到「补位功能整个关掉」,同时被告知补位机制运行过。
+        """
+        env, day, result, _run_id, _p = listed
+        victim = result.shortlist.entries[0].ts_code
+        assert result.shortlist.reserve, "夹具得有后备票"
+        backup = result.shortlist.reserve[0].ts_code
+        env, day, status, stats, _seen = self._run(
+            listed, hit_codes=[victim], max_rounds=1, monkeypatch=monkeypatch)
+        assert stats["excluded"] == 1
+        assert stats["backfilled"] == 1, "N=1 补了 0 只 —— 「最多 N 轮」又变回 N−1"
+        assert stats["roundsUsed"] == 1
+        codes = k9_store.load_listing_codes(day, db_path=env.db_path)
+        assert victim not in codes and backup in codes
+
+    def test_everything_on_the_final_listing_was_actually_screened(
+            self, listed, monkeypatch):
+        """🔴 上限**⛔ 不许**把一只没过消息面的票留在清单上。
+
+        「把 break 挪到补位之后」是最直觉的改法,但它会在补位之后立刻收工 ——
+        补进来那几只的爆雷 / 减持 / 立案 / 监管**没有人查过**,却带着空的
+        `news_state` 进了清单。那是这一层存在的全部意义的反面。
+        """
+        env, day, result, _run_id, _p = listed
+        victim = result.shortlist.entries[0].ts_code
+        env, day, _status, _stats, seen = self._run(
+            listed, hit_codes=[victim], max_rounds=1, monkeypatch=monkeypatch)
+        codes = set(k9_store.load_listing_codes(day, db_path=env.db_path))
+        assert codes <= set(seen), (
+            f"这几只没过消息面就进了清单:{sorted(codes - set(seen))}")
+        notes = explain_store.load_notes(day, db_path=env.db_path)
+        assert codes <= set(notes)
+        assert all(notes[c]["news_state"] for c in codes)
+
     def test_explain_refuses_to_guess_a_reserve_list(self, listed):
         """分段跑(本进程没跑过策略层)→ 如实报「拿不到本日策略层产物」,
         ⛔ 不去猜一个后备名单出来。"""

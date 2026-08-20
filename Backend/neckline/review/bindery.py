@@ -320,15 +320,32 @@ def bind_week(
     # —— 窗口:全部回合的并集(一次取数覆盖所有票)————————————————————————
     lo = min(rt.buy_date for rt in trips)
     hi = max((rt.sell_date or rt.buy_date) for rt in trips)
-    start, end, notes = _sessions_around(lo, hi, pre_sessions, post_sessions)
-    gaps.extend(notes)
-    span = trading_days_between(start, end)
-    if len(span) > MAX_WINDOW_SESSIONS:
+
+    # 🔴 **容量上限只削上下文,⛔ 不许把成交日削掉**(R2-07)。
+    # 从前的写法是「窗口超了就 `start = span[-250]`」—— 只动 `start`、`end` 不动。
+    # 窗口被向后拉长时,截断后的 `[start, end]` 会**整段落在成交日之后**,
+    # 那一周的每一笔回合都拿到 0 根 K 线(材料是空的);同样的形状在正常场景也会
+    # 出现:一份跨度较长的交割单(早开仓、本周才平)会让早期回合被从最早处截掉。
+    # 现在的判据:先把**成交日区间**留住,余下的额度才分给前后上下文。
+    core = trading_days_between(lo, hi)
+    budget = MAX_WINDOW_SESSIONS - len(core)
+    eff_pre, eff_post = pre_sessions, post_sessions
+    if budget <= 0:
+        eff_pre = eff_post = 0
         gaps.append(
-            f"window_truncated:窗口 {len(span)} 个交易日超过容量上限 "
-            f"{MAX_WINDOW_SESSIONS},已从最早处截断(⛔ 不静默照读,见 §12 坑 1)"
-        )
-        start = span[-MAX_WINDOW_SESSIONS]
+            f"window_truncated:成交日区间本身就有 {len(core)} 个交易日"
+            f"(容量上限 {MAX_WINDOW_SESSIONS}),本次前后各铺 0 个交易日 —— "
+            f"⛔ 成交日一天都没截(每一笔回合仍有自己的 K 线)")
+    elif pre_sessions + post_sessions > budget:
+        total = pre_sessions + post_sessions
+        eff_pre = int(budget * pre_sessions / total)
+        eff_post = budget - eff_pre
+        gaps.append(
+            f"window_truncated:前后上下文 {pre_sessions}/{post_sessions} 超出容量上限 "
+            f"{MAX_WINDOW_SESSIONS}(成交日已占 {len(core)} 个交易日),"
+            f"本次按 {eff_pre}/{eff_post} 铺 —— ⛔ 成交日区间一天都没截")
+    start, end, notes = _sessions_around(lo, hi, eff_pre, eff_post)
+    gaps.extend(notes)
 
     codes = sorted({rt.ts_code for rt in trips})
 
@@ -432,7 +449,9 @@ def bind_week(
 
     return WeekBinding(
         week=review.week, window_start=_d(start), window_end=_d(end),
-        pre_sessions=pre_sessions, post_sessions=post_sessions,
+        # ⚠ 记的是**这次真的铺了几天**(可能被容量上限削过,R2-07),⛔ 不是请求值 ——
+        # 材料首行那句「买入前 N 个交易日」得说真话。
+        pre_sessions=eff_pre, post_sessions=eff_post,
         round_trips=tuple(bindings), gaps=tuple(gaps),
     )
 

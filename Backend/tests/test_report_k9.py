@@ -187,6 +187,42 @@ class TestTwoLayerView:
         blob = bundle.markdown.split("```json\n")[1].split("\n```")[0]
         assert json.loads(blob)["tradeDate"] == day.isoformat()
 
+    def test_the_structured_version_carries_the_explain_and_playbook_material(
+        self, market, tmp_path, monkeypatch,
+    ):
+        """🔴 **R2-08**:「结构化完整版」必须含解释层资料与预案。
+
+        §5.10 与架构 §3.5 给这一份的用途逐字是「展开可**整段复制到聊天框做深度
+        分析**」—— 深度分析要的恰恰是每只票的资料聚合、日K 评价、消息面三态、
+        三个价位与两条分支。少了这两样,复制过去的只是市场读数 + 一张排名表。
+        """
+        from neckline.playbook import store as pb_store
+        from tests.test_auction_checklist import make_playbook
+
+        env, day = market
+        bundle = _chain(env, day, params_path=_params_file(env, tmp_path)).bundle
+        assert bundle.state is ReportState.HAS_LIST
+        body = json.loads(bundle.markdown.split("```json\n")[1].split("\n```")[0])
+        assert "explain" in body and "playbooks" in body
+
+        # 夹具里没有 LLM provider(预案层一份都没冻成)—— 手动冻一份,
+        # 断言它**真的进得去**结构化完整版,而不只是键在那里。
+        code = bundle.listing[0]["ts_code"]
+        pb_store.save(make_playbook(code, trade_date=day.strftime("%Y%m%d")),
+                      db_path=env.db_path)
+        again = pipeline_mod.build_report(
+            day, report_date=day, db_path=env.db_path, parquet_dir=env.parquet_dir)
+        assert code in again.structured["playbooks"], "预案没进结构化完整版"
+        # ⚠ 冻结件里的预案**每份自带版本号** —— 用户之后改了预案,快照与库里
+        #    对不上是正常且**可查**的(版本号不同),⛔ 不是靠去改冻结件跟上。
+        frozen = again.structured["playbooks"][code]
+        assert frozen["version"] == 1 and frozen["levels"] and frozen["branches"]
+        # 整份仍然可 JSON 往返(它是要被**整段复制**走的)。
+        assert json.loads(json.dumps(again.structured, ensure_ascii=False))["playbooks"]
+        # 落库那一份也得有(它才是「整段复制」真正拿到的东西)。
+        row = report_store.load_k9_report(day, db_path=env.db_path)
+        assert set(row["structured"]) >= {"explain", "playbooks"}
+
     def test_the_report_records_which_pack_and_which_params_it_ran_on(
         self, market, tmp_path,
     ):

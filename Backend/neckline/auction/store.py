@@ -151,10 +151,19 @@ def settle_verdicts(
     """写三分支终值。🔴 **幂等 `WHERE decided_stage IS NULL`** ——
     已在竞价定案的票**改不动**(裁定 10),重复跑也不改判。
 
-    返回 `{settled, unchanged}`:`unchanged` = 那几只早上 9:29 就已经定案了。"""
+    返回 `{settled, unchanged, confirmed, rejected, observed}`:
+    `unchanged` = 那几只早上 9:29 就已经定案了。
+
+    🔴 **三分支计数只数「真的被 UPDATE 到」的那些**(R2-10)。从前
+    `settled` 取真实 rowcount、而 `confirmed/rejected/observed` 由调用方直接从
+    `outcomes` 里数 —— 正常路径两者一致,但 `undecided_codes` 与本函数之间若发生
+    并发写,日志与 `SettleRunResult.counts` 会报出一个**没有落库的分布**。
+    账上的数与库里的行对不上,是本仓最不该出现的那一类。
+    """
     init_schema(db_path)
     now = _now()
     settled = 0
+    landed: Dict[str, int] = {v.value: 0 for v in Verdict}
     with connection(db_path) as conn:
         for out in outcomes:
             cur = conn.execute(
@@ -166,8 +175,11 @@ def settle_verdicts(
                  _j([out.rejected.to_dict(), out.confirmed.to_dict()]),
                  now, _d(trade_date), out.ts_code, strategy),
             )
-            settled += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
-    return {"settled": settled, "unchanged": len(outcomes) - settled}
+            hit = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            settled += hit
+            if hit:
+                landed[out.verdict.value] += 1
+    return {"settled": settled, "unchanged": len(outcomes) - settled, **landed}
 
 
 # ══════════════════════════════════════════════════════════════════════════

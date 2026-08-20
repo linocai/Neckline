@@ -531,6 +531,35 @@ class TestSettleTick:
         assert got["open_price"] == pytest.approx(10.5)
         assert got["first30_low"] == pytest.approx(10.5)
 
+    def test_the_three_counts_only_count_rows_that_actually_landed(self, d0d1):
+        """🔴 **R2-10**:三分支计数只数**真的被 UPDATE 到**的那些。
+
+        从前 `settled` 取真实 rowcount、而 `confirmed/rejected/observed` 直接从
+        `outcomes` 里数 —— 并发写(有人在 `undecided_codes` 与 `settle_verdicts`
+        之间把行定案了)会让日志报出一个**没有落库的分布**。
+        """
+        env, d0, d1, codes = d0d1
+        # 先让 9:26 那一拍把第一只判「放弃」并定案。
+        dead = codes[0]
+        qs = {c: quote(c, price=(9.0 if c == dead else 10.2),
+                       ts=f"{d1:%Y-%m-%d} 09:25:03") for c in codes}
+        auction_pipeline.run_checklist_tick(
+            at(d1, time(9, 26, 10)), db_path=env.db_path, parquet_dir=env.parquet_dir,
+            quotes_fn=lambda cs: {c: qs[c] for c in cs if c in qs},
+            now_fn=lambda: at(d1, time(9, 26, 30)))
+
+        # 10:00 给一组会判「成立」的读数 —— 已定案那只 ⛔ 改不动,
+        # 于是它的 `confirmed` **不许**被计进去。
+        prices = {c: (10.5, 10.9, 10.5, 10.8) for c in codes}
+        res = _settle(env, d1, codes, prices)
+        rows = auction_store.load_verdicts(d1, db_path=env.db_path)
+        landed = [r for r in rows if r["decided_stage"] == "open30"]
+        assert res.settled == len(landed)
+        assert res.confirmed == sum(1 for r in landed if r["verdict"] == "confirmed")
+        assert res.confirmed + res.rejected + res.observed == res.settled, (
+            "计数之和与真的落库的行数对不上 —— 账上的数在描述一个没发生的分布")
+        assert dead not in {r["ts_code"] for r in landed}
+
     def test_settle_pushes_nothing(self, d0d1, monkeypatch):
         """🔴 **G21:结算拍零推送** —— 跑一次结算后 APNs 调用计数 = 0(裁定 10)。"""
         from neckline.push import apns as apns_mod
