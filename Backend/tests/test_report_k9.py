@@ -355,3 +355,122 @@ def test_a_not_run_day_never_pushes_selection_is_ready():
     assert evening_script._PUSH_STATE["not_run"] == "unavailable"
     assert evening_script._PUSH_STATE["empty"] is None
     assert evening_script._PUSH_STATE["has_list"] is None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑥ 🔴 R2-04:**半途失败⛔ 不许渲染成「今天没有」**
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 架构 §3.5 设计三态的**全部理由**就是「空清单可以被信任」;裁定 5 逐字区分
+# 「今天没有 = 跑通了、结果为空」与「今天没跑成 = 系统没工作」。
+#
+# 复审 CE-6 的反例:`k9/run.py::persist` 是 `save_run` → `save_channel_hits`
+# → `save_listing` 三步,中间炸掉留下「运行账有行(`seated_count=2`)、清单零行」,
+# 而报告渲染成 `state=empty / headline=今天没有 / gaps=()` —— 推送还走
+# `_PUSH_STATE["empty"]` 的**正常文案**。库里唯一自相矛盾的证据没人比对。
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestAHalfWrittenRunIsNeverRenderedAsAnEmptyDay:
+    def test_a_run_ledger_that_disagrees_with_the_listing_table_is_not_run(
+            self, market, tmp_path):
+        """🔴 复审 CE-6 的原样复现:运行账说 N 只、清单表零行。"""
+        from neckline.k9 import store as k9_store
+
+        env, day = market
+        res = _chain(env, day, params_path=_params_file(env, tmp_path))
+        assert res.bundle.state is ReportState.HAS_LIST
+        seated = res.bundle.listing_size
+        assert seated > 0
+
+        # —— 把清单表清空,运行账原样留着 = `save_listing` 那一步炸掉的现场 ——
+        from neckline.db import connection
+        with connection(env.db_path) as conn:
+            conn.execute("DELETE FROM k9_listing_entries WHERE trade_date=?",
+                         (day.strftime("%Y%m%d"),))
+        assert k9_store.load_listing(day, db_path=env.db_path) == []
+        assert k9_store.load_run(day, db_path=env.db_path)["seated_count"] == seated
+
+        bundle = pipeline_mod.build_report(
+            day, report_date=day, db_path=env.db_path, parquet_dir=env.parquet_dir)
+        assert bundle.state is ReportState.NOT_RUN, "半途失败被渲染成了「今天没有」"
+        assert bundle.markdown.splitlines()[0].startswith("# 今天没跑成 · ")
+        assert any("运行账与清单表对不上" in g for g in bundle.gaps), bundle.gaps
+        assert f"k9_runs 说 {seated} 只" in "".join(bundle.gaps)
+        # ⚠ 首行之外,清单段也必须说这句话(⛔ 不许只在 gaps 里悄悄记一笔)。
+        assert "⚠ 这是**系统没工作**,不是「今天没有」。" in bundle.markdown
+
+    def test_a_k9_segment_that_blew_up_is_reported_even_though_a_run_row_exists(
+            self, market, tmp_path, monkeypatch):
+        """🔴 上游段**自己说了**它炸了 —— 报告⛔ 不许把这句话丢掉。
+
+        「报告不猜别人的失败原因」⛔ 不要求把别人**说了**的原因扔了。
+        """
+        env, day = market
+        # 先跑一次完整链把运行账 + 清单落好(= 那天确实有一份运行账)。
+        _chain(env, day, params_path=_params_file(env, tmp_path))
+
+        # 再跑一次:k9 段在**落库之后**炸掉(最难发现的那种半途失败)。
+        from neckline.k9 import run as k9_run
+
+        real = k9_run.run_k9
+
+        def boom(*a, **kw):
+            real(*a, **kw)
+            raise RuntimeError("save_channel_hits 挂了")
+
+        monkeypatch.setattr(k9_run, "run_k9", boom)
+        res = _chain(env, day, params_path=_params_file(env, tmp_path),
+                     segments=("k9", "report"))
+        assert res.status["k9"] == evening_mod.STATUS_FAILED
+        assert res.bundle.state is ReportState.NOT_RUN
+        assert any("k9 段失败" in g for g in res.bundle.gaps), res.bundle.gaps
+
+    def test_a_genuinely_empty_day_is_still_trusted(self, market, tmp_path):
+        """⚠ 反向自检:真的跑通、真的没有票的日子 **仍然**是「今天没有」。
+
+        ⛔ 这条修复不许把「可信的空」也一起打成「没跑成」—— 那是另一个方向的谎话。
+        """
+        env, day = market
+        path = _params_file(
+            env, tmp_path,
+            **{"channels.p1.strict.ampMaxPct": 0.001,
+               "channels.p1.relaxed.ampMaxPct": 0.001,
+               "channels.p2.strict.normDropMin": 0.999,
+               "channels.p2.relaxed.normDropMin": 0.999,
+               "channels.p3.strict.flatBand": 1e-9,
+               "channels.p3.relaxed.flatBand": 1e-9,
+               "channels.p4.strict.lagRankGap": 0.999,
+               "channels.p4.relaxed.lagRankGap": 0.999})
+        res = _chain(env, day, params_path=path)
+        assert res.bundle.state is ReportState.EMPTY
+        assert res.bundle.gaps == ()
+        assert res.bundle.listing_size == 0
+
+
+def test_upstream_gaps_and_upstream_failures_are_two_different_doors():
+    """🔴 两个口子⛔ 不许合并(R2-04)。
+
+    · `upstream_gaps`  = 「k9 段**为什么没跑**」 → 关于**这一次调用**,
+      只在没有运行账时采纳(分段跑 `--segments report` 时曾因此误报「今天没跑成」);
+    · `upstream_failures` = 「某段**跑了、炸了**」 → 关于**这一天**,恒采纳。
+    """
+    import inspect
+
+    sig = inspect.signature(pipeline_mod.build_report)
+    assert "upstream_gaps" in sig.parameters and "upstream_failures" in sig.parameters
+
+
+def test_explain_and_playbook_failures_do_not_hide_a_usable_listing():
+    """⚠ 只有 `k9` 段的失败会翻成「今天没跑成」。
+
+    explain / playbook 炸掉时清单本身仍然成立,而它们的缺席**各自已有诚实披露**
+    (`listing_finalized_by='k9'` / 逐只那句「没有冻结预案」)。把它们也翻成
+    「今天没跑成」会把一份**可用**的清单整段藏起来。
+    """
+    res = evening_mod.EveningChainResult(trade_date=date(2026, 8, 20),
+                                         report_date=date(2026, 8, 20))
+    res.status = {s: evening_mod.STATUS_FAILED for s in evening_mod.CHAIN_SEGMENTS}
+    res.status[evening_mod.SEG_K9] = evening_mod.STATUS_OK
+    assert evening_mod._upstream_failures(res) == []
+    res.status[evening_mod.SEG_K9] = evening_mod.STATUS_FAILED
+    assert len(evening_mod._upstream_failures(res)) == 1

@@ -77,6 +77,7 @@ def build_report(
     *,
     report_date: date,
     upstream_gaps: Sequence[str] = (),
+    upstream_failures: Sequence[str] = (),
     strategy: str = "K9",
     db_path: Optional[Path] = None,
     parquet_dir: Optional[Path] = None,
@@ -92,6 +93,13 @@ def build_report(
 
     `upstream_gaps` 是**上游段自己说的原因**(k9 段最清楚它为什么没跑:参数未配置 /
     参数无效 + 逐条缺口)。⛔ 报告不去猜别人的失败原因。
+    ⚠ 它只在**没有运行账**时被采纳 —— 有运行账 = 那天真跑过,本次进程有没有拿到
+    参数路径与那一天无关(分段跑 `--segments report` 时曾因此误报「今天没跑成」)。
+
+    🔴 `upstream_failures` 与它**不是一回事,⛔ 不许合并**(R2-04):
+    它装的是「上游段**自己说它炸了**」,那是关于**这一天**的事实,不是关于本次调用的
+    —— 所以**无论有没有运行账都采纳**。「报告不猜别人的失败原因」这句话⛔ 不要求
+    把别人**说了**的原因丢掉。
     """
     from neckline.report import render as render_mod
 
@@ -127,6 +135,38 @@ def build_report(
         gaps.extend(upstream_gaps)
         if not gaps or all("事实包未冻结" in g for g in gaps):
             gaps.append("策略层当日未产出运行记录(k9_runs 无该日行)")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 🔴 **半途失败⛔ 不许渲染成「今天没有」**(R2-04)
+    # ══════════════════════════════════════════════════════════════════════
+    # 架构 §3.5 设计三态的**全部理由**就是「**空清单可以被信任**」;裁定 5 逐字区分
+    # 「今天没有 = 跑通了、结果为空」与「今天没跑成 = 系统没工作」。
+    #
+    # `k9/run.py::persist` 是 `save_run` → `save_channel_hits` → `save_listing`
+    # 三步:中间炸掉会留下「运行账有行、清单零行」。此前 `build_report` 只在
+    # `run is None` 时才采纳上游缺口,于是那条路径产出的是
+    # `state=empty / headline=今天没有 / gaps=()` —— **一句每天准时到达手机的谎话**,
+    # 而库里其实存着自相矛盾的证据(`k9_runs.seated_count` 与清单行数),没人比对。
+    #
+    # 判据两条,任一成立即 `NOT_RUN` + 把缺口说出来:
+    #   ① 上游段自己报了失败(`upstream_failures`);
+    #   ② **运行账与清单表对不上** —— 两个写入方(`save_run` /
+    #      `mark_listing_finalized_by`)都保证 `seated_count == len(listing)`,
+    #      对不上就只可能是落库半途中断。
+    broken: List[str] = [g for g in upstream_failures if g]
+    if run is not None and listing_size is not None:
+        seated = run.get("seated_count")
+        if seated is not None and int(seated) != listing_size:
+            broken.append(
+                f"运行账与清单表对不上:k9_runs 说 {int(seated)} 只、"
+                f"k9_listing_entries 有 {listing_size} 行(策略层落库半途中断)")
+    for g in broken:
+        if g not in gaps:
+            gaps.append(g)
+    if broken:
+        # 🔴 `listing_count=None` 在 `report/state.py` 里的含义**正是**「链路异常,
+        # 清单根本没算出来」→ `NOT_RUN`。⛔ 不是 `EMPTY`。
+        listing_size = strict_count = relaxed_count = None
 
     state = resolve_state(
         pack_frozen=pack is not None,

@@ -121,6 +121,9 @@ def run_evening_chain(
         res.bundle = _run_report(
             trade_date, report_date=report_date,
             upstream_gaps=_upstream_gaps(res),
+            # 🔴 R2-04:「谁炸了」与「谁为什么没跑」分两个口子进报告 ——
+            # 前者无论有没有运行账都要采纳,后者只在没有运行账时采纳。
+            upstream_failures=_upstream_failures(res),
             db_path=db_path, parquet_dir=parquet_dir, save=save)
         res.status[SEG_REPORT] = STATUS_OK
         res.stats[SEG_REPORT] = {
@@ -416,20 +419,46 @@ def _upstream_gaps(res: EveningChainResult) -> List[str]:
         gaps.insert(0, "参数未配置(晚间链未拿到 --k9-params;⛔ 本系统无默认参数)")
     elif reason == "params_invalid" and not gaps:
         gaps.insert(0, "参数包无效")
-    if res.status.get(SEG_K9) == STATUS_FAILED:
-        gaps.append("策略层当日执行失败(见服务端日志)")
     return gaps
+
+
+def _upstream_failures(res: EveningChainResult) -> List[str]:
+    """🔴 **本次链里真的炸掉的那些段**(R2-04)。与 `_upstream_gaps` ⛔ 不是一回事。
+
+    `_upstream_gaps` 说的是「k9 段**为什么没跑**」(参数未配置 / 参数无效)——
+    那是关于**这一次调用**的,分段跑时不成立,所以只在没有运行账时采纳。
+    本函数说的是「某一段**跑了、炸了**」—— 那是关于**这一天**的事实,
+    `build_report` **无论有没有运行账都要采纳**。
+
+    ⚠ 为什么这条必须存在:`_run_k9` → `persist` 是 `save_run` → `save_channel_hits`
+    → `save_listing` 三步。第一步之后炸掉会留下「运行账有行、清单零行」,
+    而保险丝已经把原因**说出来了** —— 从前报告把它整条丢掉,渲染成「今天没有」。
+    架构 §3.5 那句「空清单可以被信任」就是被这条路径击穿的。
+
+    🔴 **只看 `k9` 段,⛔ 不要顺手把 explain / playbook 也算进来**:那两段炸掉时
+    清单本身仍然成立,而它们的缺席**已经各自有诚实披露** ——
+    `k9_runs.listing_finalized_by='k9'`(渲染成「这份清单尚未经过消息面剔除」)与
+    逐只那句「⚠ **没有冻结预案** —— 明早核对不了这一只」。把它们也翻成「今天没跑成」
+    会把一份**可用**的清单整段藏起来,那是另一个方向的谎话。
+    `facts` 段不用管:事实包没冻结本来就走 `pack_frozen=False`。
+    """
+    if res.status.get(SEG_K9) != STATUS_FAILED:
+        return []
+    note = next((n for n in res.notes if n.startswith(f"{SEG_K9} 段失败:")), "")
+    return [note or "策略层当日执行失败(见服务端日志)"]
 
 
 def _run_report(
     trade_date: date, *, report_date: date, upstream_gaps: Sequence[str],
     db_path: Optional[Path], parquet_dir: Optional[Path], save: bool,
+    upstream_failures: Sequence[str] = (),
 ):
     from neckline.report import pipeline as pipeline_mod
     from neckline.report import store as report_store
 
     bundle = pipeline_mod.build_report(
         trade_date, report_date=report_date, upstream_gaps=upstream_gaps,
+        upstream_failures=upstream_failures,
         db_path=db_path, parquet_dir=parquet_dir)
     if save:
         report_store.save_k9_report(
