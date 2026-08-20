@@ -27,6 +27,7 @@ from neckline.k9 import store as k9_store
 from neckline.k9 import upside_room as upside_room_mod
 from neckline.k9 import volume as volume_mod
 from neckline.k9.channels import p1_breakout, p2_rebound, p3_riser, p4_moneyflow
+from tests import guard_scan
 
 _ROOT = Path(__file__).resolve().parent.parent
 _PKG = _ROOT / "neckline"
@@ -36,15 +37,12 @@ _REPO = _ROOT.parent
 
 
 def _imports(path: Path) -> Set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    out: Set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            out.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            out.add(node.module)
-            out.update(f"{node.module}.{a.name}" for a in node.names)
-    return out
+    """🔴 扫描器走 `tests/guard_scan.py`(S15 收敛)。
+
+    本文件原来抄了一份跳过相对 import 的 `_imports` —— 复审实测 `from . import
+    p2_rebound`(CE5)当场穿过 G4「通道互不知道」。
+    """
+    return guard_scan.imports(path)
 
 
 def test_scan_covers_all_four_channels():

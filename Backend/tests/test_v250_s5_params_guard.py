@@ -31,6 +31,7 @@ import pytest
 
 from neckline.k9 import params as P
 from neckline.report.state import ReportState
+from tests import guard_scan
 
 _ROOT = Path(__file__).resolve().parent.parent
 _PKG = _ROOT / "neckline"
@@ -52,18 +53,6 @@ _ENUM_MEMBER_NAMES: Set[str] = {
 _ENUM_CLASS_NAMES: Set[str] = {"HeatAbsentPolicy", "RelaySource", "RelayScoring"}
 
 
-def _imported_modules(path: Path) -> Set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    out: Set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            out.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            out.add(node.module)
-            out.update(f"{node.module}.{a.name}" for a in node.names)
-    return out
-
-
 def test_scan_covers_the_k9_package():
     assert {p.name for p in _K9} >= {"params.py"}
 
@@ -77,12 +66,14 @@ def test_scan_covers_the_k9_package():
     (FORBIDDEN_DATA, "取数唯一来源是事实包"),
 ])
 def test_k9_never_imports_the_forbidden_groups(group, label):
-    hits: List[str] = []
-    for path in _K9:
-        for mod in sorted(_imported_modules(path)):
-            for p in group:
-                if mod == p or mod.startswith(p + "."):
-                    hits.append(f"{path.relative_to(_ROOT)} → {mod}")
+    """🔴 扫描器走 `tests/guard_scan.py`(S15 收敛)。
+
+    本文件原来抄了一份跳过相对 import 的 `_imported_modules` —— 复审实测
+    `from ..llm import factory`(CE1)与 `from ..data import market_data`(CE3)
+    双双穿过,而这两条正是 G2 / G3「取数唯一来源是事实包 / 策略层零 LLM」的**全部**
+    牙齿。现在相对 import 与字面量动态 import 一并被看见。
+    """
+    hits = guard_scan.import_hits(_K9, group, root=_ROOT)
     assert hits == [], f"{label} —— 这条边界被破了:\n" + "\n".join(hits)
 
 

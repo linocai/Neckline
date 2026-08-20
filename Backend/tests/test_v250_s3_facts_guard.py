@@ -33,6 +33,7 @@ import pytest
 
 from neckline.facts import pack as fact_pack
 from neckline.facts import store as fact_store
+from tests import guard_scan
 
 _ROOT = Path(__file__).resolve().parent.parent
 _PKG = _ROOT / "neckline"
@@ -46,18 +47,6 @@ DOWNSTREAM_PACKAGES: Tuple[str, ...] = (
 )
 
 
-def _imported_modules(path: Path) -> Set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    out: Set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            out.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            out.add(node.module)
-            out.update(f"{node.module}.{a.name}" for a in node.names)
-    return out
-
-
 def test_scan_covers_the_facts_package():
     """扫描范围本身要被看住:glob 失效会让本守门整体形同虚设。"""
     names = {p.name for p in _FACTS}
@@ -69,12 +58,9 @@ def test_scan_covers_the_facts_package():
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_facts_never_import_any_downstream_package():
-    hits: List[str] = []
-    for path in _FACTS:
-        for mod in sorted(_imported_modules(path)):
-            for p in DOWNSTREAM_PACKAGES:
-                if mod == p or mod.startswith(p + "."):
-                    hits.append(f"{path.relative_to(_ROOT)} → {mod}")
+    """🔴 扫描器走 `tests/guard_scan.py`(S15 收敛)。本文件原来抄了一份跳过相对
+    import 的 `_imported_modules` —— `from ..k9 import ranks` 当场穿过去(复审实测)。"""
+    hits = guard_scan.import_hits(_FACTS, DOWNSTREAM_PACKAGES, root=_ROOT)
     assert hits == [], "事实层开始知道下游有哪些策略了:\n" + "\n".join(hits)
 
 
@@ -253,11 +239,7 @@ def test_retired_report_modules_are_not_importable(mod):
 
 
 def test_retired_report_modules_have_zero_import_sites():
-    hits = []
-    for path in _SCANNED:
-        for m in sorted(_imported_modules(path)):
-            if any(m == r or m.startswith(r + ".") for r in RETIRED_S3_MODULES):
-                hits.append(f"{path.relative_to(_ROOT)} → {m}")
+    hits = guard_scan.import_hits(_SCANNED, RETIRED_S3_MODULES, root=_ROOT)
     assert hits == [], "退役模块仍被 import:\n" + "\n".join(hits)
 
 

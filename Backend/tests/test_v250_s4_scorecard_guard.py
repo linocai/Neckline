@@ -23,6 +23,7 @@ from typing import List, Set, Tuple
 import pytest
 
 from neckline.scorecard import coverage as cov
+from tests import guard_scan
 
 _ROOT = Path(__file__).resolve().parent.parent
 _PKG = _ROOT / "neckline"
@@ -41,18 +42,6 @@ PARAM_WORD_ROOTS: Tuple[str, ...] = (
 )
 
 
-def _imported_modules(path: Path) -> Set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    out: Set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            out.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            out.add(node.module)
-            out.update(f"{node.module}.{a.name}" for a in node.names)
-    return out
-
-
 def test_scan_covers_the_scorecard_package():
     names = {p.name for p in _SCORECARD}
     assert {"coverage.py", "store.py"} <= names
@@ -60,13 +49,11 @@ def test_scan_covers_the_scorecard_package():
 
 def test_scorecard_never_imports_the_strategy_layer():
     """🔴 尺子不许读被量的东西。策略侧的信息只能经 `k9_disposition` 这条**数据**
-    通道进来(`DispositionRow` 是本层自己的 DTO),⛔ 不通过 import 进来。"""
-    hits: List[str] = []
-    for path in _SCORECARD:
-        for mod in sorted(_imported_modules(path)):
-            for p in FORBIDDEN_FOR_SCORECARD:
-                if mod == p or mod.startswith(p + "."):
-                    hits.append(f"{path.relative_to(_ROOT)} → {mod}")
+    通道进来(`DispositionRow` 是本层自己的 DTO),⛔ 不通过 import 进来。
+
+    🔴 扫描器走 `tests/guard_scan.py`(S15 收敛):本文件原来抄了一份跳过相对 import
+    的 `_imported_modules`,`from ..k9 import ranking` 一行就能穿过去。"""
+    hits = guard_scan.import_hits(_SCORECARD, FORBIDDEN_FOR_SCORECARD, root=_ROOT)
     assert hits == [], "覆盖率线开始 import 策略层了:\n" + "\n".join(hits)
 
 

@@ -22,14 +22,14 @@
 
 from __future__ import annotations
 
-import ast
 import sqlite3
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import List, Tuple
 
 import pytest
 
 from neckline.db import init_schema
+from tests import guard_scan
 
 _ROOT = Path(__file__).resolve().parent.parent
 _PKG = _ROOT / "neckline"
@@ -67,36 +67,18 @@ LEGACY_READONLY_TABLES: Tuple[str, ...] = (
 )
 
 
-def _imported_modules(path: Path) -> Set[str]:
-    """该文件 import 到的**模块全名**集合(含 `from X import y` 的 `X` 与 `X.y`)。
+def _hits(prefixes: Tuple[str, ...]) -> List[str]:
+    """哪些文件 import 到了这批前缀。
 
     只看 import 语句,⛔ 不做整文件字符串匹配 —— docstring 里写「原 `scan/cluster.py`
-    搬入」是**历史说明**,不是依赖。"""
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    except SyntaxError:  # pragma: no cover
-        pytest.fail(f"{path} 语法错误")
-    out: Set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            out.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level:            # 相对 import:本仓全绝对,出现即异常
-                out.add("." * node.level + (node.module or ""))
-            elif node.module:
-                out.add(node.module)
-                out.update(f"{node.module}.{a.name}" for a in node.names)
-    return out
+    搬入」是**历史说明**,不是依赖。
 
-
-def _hits(prefixes: Tuple[str, ...]) -> List[str]:
-    found = []
-    for path in _SCANNED:
-        for mod in sorted(_imported_modules(path)):
-            for p in prefixes:
-                if mod == p or mod.startswith(p + "."):
-                    found.append(f"{path.relative_to(_ROOT)} → {mod}")
-    return found
+    🔴 **扫描器走 `tests/guard_scan.py` 那一份**(S15 收敛)。本文件原来抄了一份
+    `_imported_modules`,它把相对 import 收成 `"..sentinel"` 这种原样字符串,而这里
+    比的是前缀 `neckline.sentinel` —— 对不上,于是 `from ..sentinel import quotes`
+    零命中(复审 CE11 实测)。现在相对 import 在 `guard_scan` 里被解析成绝对名。
+    """
+    return guard_scan.import_hits(_SCANNED, prefixes, root=_ROOT)
 
 
 # ══════════════════════════════════════════════════════════════════════════
