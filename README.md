@@ -111,6 +111,14 @@ cd Backend
 ```bash
 cd App
 xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' build
+xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/platform=iOS Simulator' build
 ```
+
+🔴 **两条都要跑,改了任何 `.swift` 都一样。** iOS 与 macOS 是同一个工程的两个一等公民
+（`project.yml` 的 `supportedDestinations: [iOS, macOS]`），而 App 里有大量
+`#if os(iOS)` / `#else` 分叉 —— **一个平台的构建不能替另一个平台作证**。
+V2.5.0 就是因为验收口径只写了 macOS，iOS 侧 6 条编译错（推送路由引用了已下线的板块）
+一路绿到发版前。⚠ 锁屏推送 entitlement 只给 iOS，全 App 唯一依赖 iOS 的能力正好落在
+那个文件上。
 
 当前系统边界、版本和待办见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。历史文档仅供追溯，不作为当前施工指令。
