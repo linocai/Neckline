@@ -11,6 +11,7 @@ S3 现状(本包已完工的五件):
 | `industry.py` | 申万二级成员涨跌幅中位数(裁定 2,**无参数、无门槛**) |
 | `limitmap.py` | 涨停分布 + 涨停簇(裁定 3:锚在申万二级;⛔ 无概念板块) |
 | `completeness.py` | 冻结前的缺口判定 ——「今天没跑成」的第一个来源 |
+| `universe.py` | 当日**在市**的全市场票池(`stock_basic` 口径)—— 事实包只装当日 `daily` 有行的票,而 §6 S6 的全市场 disposition 要覆盖「一只票都没交易过」的那些(2026-08-21 复审 R3-🔴-5) |
 
 ⛔ **本包不许 import `neckline.k9` / `explain` / `playbook` / `scorecard`**
 (架构 §二 边界①:事实层不知道下游有哪些策略)。守门单测 G1 逐文件 AST 扫描。
