@@ -312,6 +312,36 @@ neckline/
 
 ## 4. 当前状态
 
+### 4.0 施工进度（每完成一片就改这里；细节见 §14）
+
+**批 A 已完工 S0–S11 + S13**（21 个提交，`448adb5` → `65b0e8e`，⛔ 全程未部署 / 未 ssh / 未推送）。
+测试 **1280 passed / 0 skipped / 0 failed**。
+
+| 片 | 状态 | 落在哪 |
+|---|---|---|
+| S0 立项收口与权威文件修订 | ✅ | 权威文件 17 处 + 第五组 4 处（§5.1-E） |
+| S1 退役与搬家 | ✅ | 后端 −106,734 行 / App −6,493 行 |
+| S2 申万分类接入 | ✅ | `data/sw_industry.py` + 两张表 |
+| S3 事实层与事实包 | ✅ | `facts/`，`PACK_VERSION = fp-2` |
+| S4 覆盖率成绩线 | ✅ | `scorecard/{coverage,store}.py` |
+| S5 参数包契约与三态 | ✅ | `k9/params.py` + `report/state.py` |
+| S6 策略层骨架 | ✅ | `k9/`（全机械、零 LLM） |
+| S7 报告骨架与推送 | ✅ | `report/` + `k9_reports` |
+| S8 次日核对与 D1 结算 | ✅ | `auction/` + `playbook/{model,evaluate,store}.py` |
+| S9 解释层 / S10 预案层 | ✅ | `explain/` + `playbook/{skeleton,fill}.py` |
+| **S11 交割单分析台** | ✅ | `review/{bindery,conclusions}.py` + `review_conclusions` 表 |
+| **S13 对外接口** | ✅ | `export_research_snapshot.py --include-fact-packs` + `legacy_k8.py` |
+| S12 App 重做 | ⬜ **未开工** | §5.11 |
+| S14 发布门禁 | ⬜ **未开工**（🔴 高危区） | §9 |
+| 批 B（S15–S17） | ⬜ 等参数标定 | §6 批 B |
+
+🔴 **上线前必须知道的两件事**：① **参数包还没标定** —— `Backend/config/k9-params.json` 不存在，
+清单段每天会出「今天没跑成 · 参数未配置」，这是**设计行为**（裁定 5 / §9.5），⛔ 不是故障；
+② **生产仍跑 v2.4.2 Build 9**，S1 摘掉的三项 K8 日更与裁定 17 停掉的概念抓取，
+在上云之前**都还在生产上继续跑**（§13.1-B6）。
+
+⚠ **等用户裁定的 9 条**收拢在 **§13.1**（B1–B9），施工侧已绕过它们继续做，⛔ 未自行拍板。
+
 ### 4.1 基线
 
 已部署 **v2.4.2 Build 9**，生产在 `deploy@114.66.0.38:/opt/neckline`，
@@ -1473,7 +1503,167 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=m
 
 ---
 
-## 13. Backlog（本版不做，记着别忘）
+## 13. Backlog
+
+分两节：**§13.1 等用户裁定**（施工侧 ⛔ 不自行拍板，已绕过它继续做）与
+**§13.2 本版不做，记着别忘**。
+
+⚠ §13.1 的每一条都是**前几组登记在 §14 各处**的未决项，第五组统一收拢到这里，
+格式一致：**事实 / 选项 / 影响面 / 我的倾向（标明是倾向，不是决定）**。
+⛔ 「我的倾向」不是已定案，⛔ 施工侧不得据它施工。
+
+### 13.1 等用户裁定
+
+#### B1 · `MetricRef.FIRST30_LOW` 在 9:26 那一拍绑竞价价的语义（施工侧结构判断，待**策略侧**复核）
+
+- **事实**：K9 §6.3 四条「放弃」全是「跌破 X」；§5.7.2 逐字写「放弃分支四个全是单条
+  破位判定 → **竞价价就能触发**」；而 §5.6.3 的闭合枚举里能承载「跌破」的只有
+  `first30_low`。S8 因此把它定义为「**本场至今的最低价（含 9:25 竞价成交）**」——
+  9:26 时本场只有一笔竞价成交，那个最低价**就是**竞价价；10:00 时它是 `Quote.low`。
+  它是**单调下行**的量，这正是「先到先定、⛔ 不改判」在语义上站得住的原因。
+  ⛔ S8 未新增第 10 个枚举成员。
+- **选项**：(a) 认可该语义，`first30_low` 在两拍上是同一个量的两次读数；
+  (b) 拆成两个枚举成员（`auction_low` 与 `first30_low`），预案里两条分支各绑各的；
+  (c) 让 9:26 那一拍**完全不判**「跌破」，全部推到 10:00。
+- **影响面**：`playbook/model.py` 的闭合枚举、`auction/{checklist,settle}.py`、
+  已冻结的预案 JSON 形状；选 (b) 要给存量预案定迁移口径。
+- **我的倾向（⚠ 倾向不是决定）**：(a)。(b) 会让「9:29 提前告知哪几只已经死了」这件事
+  多出一个只在竞价那三分钟有意义的量；(c) 会让核对表在 9:29 变成一张空表。
+
+#### B2 · 形态 2「跌破昨日最低价 [B]%」落成了**价位**而不是百分比（待**策略侧**复核）
+
+- **事实**：K9 §6.3 形态 2 的「放弃」写的是「跌破昨日最低价 [B]%」，而 §5.6.3 的条件
+  语法 `{op, lhs, rhs}` 是**闭合**的、**没有算术**。S9/S10 因此让 LLM 直接给**那个价位**
+  （`rhs` 是有限数值），百分比可由 `(prev_low − rhs) / prev_low` 反算，信息一点没丢。
+  ⛔ 未擅自给条件语法加乘法。
+- **选项**：(a) 维持现状（LLM 给价位，百分比反算）；(b) 给语法加一个受限的
+  「基准 × 系数」形式，只允许 `MetricRef × 常数`；(c) 给 `Condition` 加一个可选的
+  `rhs_pct` 字段，由求值器按 `lhs` 的基准换算。
+- **影响面**：`playbook/model.py` 的语法闭合性（它是「求值器是全函数」的唯一依据）、
+  `evaluate.py`、LLM 返回体校验、App 的预案修改入口。
+- **我的倾向（⚠ 倾向不是决定）**：(a)。(b)(c) 都是往求值器里开一个口子，而那条闭合性
+  正是「⛔ 绝不让一个次日早上求不出值的条件被冻结进去」的全部依据。
+
+#### B3 · `explain/input.py::KLINE_SESSIONS = 60` 是否该搬进参数包
+
+- **事实**：S9 起的一个数，是「给 LLM 看几根日 K」的**上下文长度**。换成 40 或 80
+  **不会让任何一只票被选上或落选**，只影响模型看到多长一段图。§8 的 22 项待标定参数里
+  没有它，K9 §九 也没有。已写死在一处，`build_inputs(sessions=)` 是必填关键字。
+  ⚠ **S11 又添了同类的两个**：`review/bindery.py::PRE_SESSIONS / POST_SESSIONS`（各 20，
+  买入前 / 卖出后各看几个交易日），同样是上下文长度，同样做成必填关键字。
+- **选项**：(a) 三个都留作模块常量（现状）；(b) 三个都搬进参数包，随标定一起给；
+  (c) 只搬 `KLINE_SESSIONS`（它喂给 LLM，可能影响解释质量），装订那两个留常量。
+- **影响面**：选 (b)(c) 是一次**参数包 schema 变更**（`REQUIRED_SCHEMA` 加键 →
+  存量示例配置与标定产物都要跟），归标定侧。
+- **我的倾向（⚠ 倾向不是决定）**：(a)。按架构 §二 的判据，「凡是我会想去调的东西都落在
+  策略层」——但这三个数调了不改变**任何一只票的去留**，把它们塞进参数包会让「参数未配置
+  = 今天没跑成」这条铁律为一个显示长度而触发。⚠ 若用户认为自己确实会想调它，那按同一条
+  判据它就该进参数包 —— 这一条只有用户能判。
+
+#### B4 · V 不分档的**标定侧**复核（裁定 16 已定，但标定方必须知道这个结构性质）
+
+- **事实**：**裁定 16 已定案**（§2），V 是**一个**值、⛔ 不分档。本条不是重开裁定，
+  是把它对标定工作的**约束**摆出来：V 同时是形态 1 的下限与形态 3 的上限，
+  「p1 召回太少」⛔ **不能**靠放宽 V 解决 —— 那只会把票从 p3 搬到 p1，
+  `p1 ∪ p3` 一只都不会多。p1 要变松只能动它**别的**定义性项（振幅窗口 / 涨幅门槛）。
+- **选项**：（无需裁定，只需确认标定任务书里写进了这条约束）
+- **影响面**：标定阶段对 p1 / p3 日均召回量的调法；S15 的联合通过率验证。
+- **我的倾向（⚠ 倾向不是决定）**：把这条原样抄进给 whynotme 的标定任务书。
+
+#### B5 · 🔴 容量红线：`neckline-basket.service` 的 `MemoryMax=900M` 只剩 18% 余量
+
+- **事实**：S6 在**真实数据**上实测策略层 RSS 峰值 **736 MB**（120 天 × 663,120 行 ×
+  23 列投影，frame 101.6 MB）；`deploy/neckline-basket.service` 现挂 `MemoryMax=900M`
+  → 余量 **18%**。S9/S10 在**合成市场**上实测 explain / playbook **各 +0 MB**
+  （工作集 60 天 × 20 只 ≈ 1,200 行，相对策略层那份 66 万行的 frame 可忽略；
+  该组的 532 MB 因合成市场字符串区小，⛔ 不能与 736 MB 直接比）。
+  S11 的装订新增读取**不落在这个 unit 上**（它跑在常驻 `neckline.service`，
+  且窗口受 `MAX_WINDOW_SESSIONS=250` 与「一次 glob」双重约束）。
+  🔴 **生产是 2 vCPU / 1.6 G，超 `MemoryMax` 会被 OOM-kill 且不报错**（§12 坑 1）。
+- **选项（⛔ 施工侧未自行选）**：
+  (a) 维持 `MemoryMax=900M`，接受 18% 余量，S14 在生产同规格 Linux 机上用**真实数据**
+      复测后再定；
+  (b) 抬高 `neckline-basket.service` 的 `MemoryMax`（要算清 1.6 G 机器上三段并存的账）；
+  (c) 把 `explain,playbook` 拆成第四个晚间 oneshot —— ⚠ 它与「两拍 ⛔ 不新增 unit」
+      是两码事（那条管的是**早晨**的进程内 tick），但仍会动 unit 拓扑；
+  (d) 降 `MAX_LOOKBACK_PACKS`（现 120）—— ⚠ 它会**直接限制**参数包里的窗口上限，
+      属于会影响策略的工程参数，⛔ 不该为省内存单方面调。
+- **影响面**：S14 发版门禁；(c)(d) 还牵连 `neckline-evening.target` 的段序与参数校验。
+- **我的倾向（⚠ 倾向不是决定）**：(a) 先复测再决定 —— 736 MB 是**开发机 macOS** 上的
+  读数，Linux 上 polars 的分配行为不一定相同，拿一个跨平台的数去改生产 cap 是在猜。
+
+#### B6 · 生产 `neckline-daily.timer` 仍跑旧 v2.4.2 代码，**部署前概念抓取仍会继续**
+
+- **事实**：裁定 17 已把 `ths_*` 抓取段从 `scripts/daily_update.py` 移除，但**代码还没上云**
+  （本版全程 ⛔ 未部署、⛔ 未 ssh）。生产 `/opt/neckline` 上跑的仍是 v2.4.2 Build 9，
+  它的 16:05 日更**照旧**每天 5 次 `ths_daily`、每周 395 次连续 `ths_index`/`ths_member`。
+  同理，S1 摘掉的三项 K8 日更在生产也仍在跑。
+- **选项**：(a) 等 S14 整版上云时一并生效（本版计划）；
+  (b) 单独先推一次 `daily_update.py` 止血 —— ⚠ 那要 ssh 生产、且新旧代码混跑，
+      而新 `daily_update.py` 会调 S2/S3/S4 的新函数（`sw_industry` / `fact_pack` /
+      `coverage`），⛔ 在旧库上跑不起来；
+  (c) 在生产手工 `systemctl stop neckline-daily.timer` 直到 S14 —— ⚠ 会同时停掉
+      行情主增量（daily/basic/adj/moneyflow），代价远大于配额。
+- **影响面**：TuShare 配额（约 60 次/交易日 + 395 次/周）；数据完整性。
+- **我的倾向（⚠ 倾向不是决定）**：(a)。(b) 是新旧混跑，(c) 会停掉真正要紧的行情增量；
+  配额浪费在 600 元档下不是瓶颈，等 S14 一起切最干净。
+
+#### B7 · 「我的成绩」这条线**落在哪个包**（第五组新发现）
+
+- **事实**：§3.3 的包布局把 `scorecard/mine.py` 列在 `scorecard/` 下，但 §6 的
+  **任何一个切片都没有认领它**（S11 的产出清单只有 `review/{bindery,conclusions}.py`，
+  S17 只做清单成绩五指标）。而 §5.8.3 要求「我的成绩」与前两条线**完全隔离**，
+  §5.9 又把它归在周末复盘线上。⚠ 若真放进 `scorecard/`，那个文件就得
+  import `neckline.review`，而本组刚立的守门单测断言 `scorecard/**` **零 import**
+  `neckline.review`（那条守门正是「交割单成交不进另外两条线的分子分母」的牙齿）。
+  现状：「我的成绩」的**内容**已经存在 —— `reconcile.WeeklyStats`（胜率 / 盈利因子 /
+  盈亏比 / 费用 / 毛净盈亏 / `realized_loss`），由 `/review` 与 `/review/overview`
+  的对账段下发。
+- **选项**：(a) 认定它已由 `review/reconcile.WeeklyStats` 承担，§3.3 里那行
+  `scorecard/mine.py` **作废**（Plan 勘误）；
+  (b) 建 `review/mine.py`（住复盘包、离数据最近，隔离守门不动）；
+  (c) 建 `scorecard/mine.py` 并**放宽**那条守门，改成「`coverage.py` / `listing.py` 零
+  import review」的逐文件白名单。
+- **影响面**：§3.3 包布局、S12 App「复盘」板块的数据来源、那条隔离守门单测。
+- **我的倾向（⚠ 倾向不是决定）**：(a) 或 (b)。⛔ 不建议 (c)：一条带白名单的隔离守门，
+  第二次加白名单时就没人拦得住了。
+
+#### B8 · 复盘板块的**校准段**在 K9 之下还成不成立（第五组新发现）
+
+- **事实**：`/review/overview` 的校准段与 `/eval/weekly` 读的是 whynotme 周度离线作业
+  落盘的 `calibration_{from}_{to}.{md,json}`，而 `review/{handoff,research_artifact}.py`
+  里的排版仍是 **K8 语义**（Tier 入场信号正确率 / C·Z·Y 引擎版本 / 双时钟 / 包成绩单）。
+  K8 整链已退役，那份产物在 K9 之下的**形状未定义**。S1 因为这两条路由被 §5.12 明确
+  「保留」而**被迫保留**了这两个文件。另外 `handoff.HANDOFF_OBSERVATIONS` 的守门要求
+  每个 `id` 能在 PROJECT_PLAN §七 里 grep 到 `[P3-xx]` —— 而**本版的 §7 已清空**。
+- **选项**：(a) 本版原样留着（读不到就说读不到，不产生错误信息，只是永远
+  `available=false`）；(b) 把校准段与 `/eval/weekly` 一并下线，等 K9 的标定产物格式定了
+  再建；(c) 现在就定 K9 版校准产物的格式（属标定侧工作，本 Plan ⛔ 不规划 whynotme）。
+- **影响面**：`/eval/weekly`、`/review/overview` 的校准段、S12 App 复盘板块、
+  `review/{handoff,research_artifact}.py` 约 500 行。
+- **我的倾向（⚠ 倾向不是决定）**：(b)。一个永远 `available=false` 的段，比没有这个段更
+  让人以为「系统那一步坏了」；而它现在渲染的字段名（Tier / C·Z·Y）已经指向不存在的东西。
+
+#### B9 · 裁定 17 的**边界**：另外两条抓取路径要不要一起摘（第五组新发现）
+
+- **事实**：裁定 17 逐字只说「移除 `scripts/daily_update.py` 里的 `ths_*` 抓取段」，
+  已照办（那是**唯一挂在定时器上**的入口）。但仓里还留着两条**能抓**的路径：
+  ① `scripts/backfill_concept.py`（106 行，无人 import、`__main__` 唯一入口、
+  `END = "20260722"` 是**写死的过期日**，一跑就是 395 次连续调用）；
+  ② `neckline/data/concept_data.py` 里的写函数 `update_ths_daily` / `update_ths_snapshots`
+  （现已零调用方）。⚠ 本组**刻意保留**了 `concept_data.py`：裁定 17 要求「已抓的 parquet
+  原地保留、将来解释层可拿概念当背景材料」，而删掉这个模块，那 21 MB 就没人读得动了。
+  守门单测已锁住「读侧 helper 必须还在」这一半。
+- **选项**：(a) 现状（只摘定时器那一段，读写 helper 与 backfill 脚本都留）；
+  (b) 删 `scripts/backfill_concept.py`、并把 `concept_data.py` 收窄成**只读**模块
+      （删两个 `update_*` 与三个 `ts_ths_*` 客户端函数）；
+  (c) 整链退役，连 parquet 一起清 —— ⛔ **与裁定 17 明文冲突**，列在这里只为把选项摆全。
+- **影响面**：(b) 会连带删 `tests/test_concept_data.py` 里约一半用例与
+  `tests/test_tushare_client.py` 的三行降级夹具。
+- **我的倾向（⚠ 倾向不是决定）**：(b) 的前半（删那个带过期硬编码日期的 backfill 脚本），
+  后半保留写函数无妨 —— 但这已经越过裁定 17 的字面，所以 ⛔ 本组一个字没动。
+
+### 13.2 本版不做，记着别忘
 
 - **策略并行运行**（架构 §七第 2 条）：本版不实现（裁定 8）。将来引入 K10 时再做，
   届时 `k9_runs.strategy` 字段与「署名清单」的形状已经预留好了。
@@ -1481,8 +1671,10 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=m
   whynotme 若要跑上线前的历史标定，自己拉。
 - **`sw_daily` 行业指数行情**：本版明确不落（§3.2）。若将来有对照需求，注意 2014 版指数码混入问题。
 - **`suspend_d` 历史回补**（本地只有 5 天）：标定跑历史时需要，属 whynotme 侧的输入准备。
-- **`ths_*` 概念板块**：K9 明令「概念板块不进入任何机械计算」。相关日更是否保留由 S1 判断；
-  若无消费方则一并退役。
+- **`ths_*` 概念板块**：**已由裁定 17 处置**（停抓、保留已有数据，§2）。剩余边界见 §13.1-B9。
+- **`neckline/__init__.py::__version__ = "0.1.0"`**：一个从没人读的陈旧版本号
+  （真正的单一源是 `api/app.py::VERSION`，版本治理守门锁的也是它）。留着是第二个
+  「看起来像版本号的东西」，S14 顺手删或改成读同一处。
 - 阅读行为记录：**已关闭，不做**（裁定 9）。
 
 ---
@@ -1505,6 +1697,8 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=m
 | 2026-08-20 | **概念板块日更核实(S6/S7 组附带)** | 🔴 **结论:`ths_*` 概念板块日更在全仓已零消费方,证据确凿;⛔ 本组未删,等用户点头**(它动 `scripts/daily_update.py` 的抓取段)。**证据**:① 载体是**扁平 parquet 不是 SQLite**(`data/parquet/ths_{index,member,daily}.parquet` + `ths_snapshot_meta.json`,共 ~21 MB)——⚠ §13 Backlog 那条写的是「表」,实际没有任何 SQLite 表名含 `ths_`/`concept`(唯二相关的是 `limit_cluster_daily.anchor_concept` 与 `app_settings.intel_watch_boards`,两者都已按裁定 6 只读留档,⛔ 不 DROP);② **写方三处**:`neckline/data/concept_data.py`(374 行,唯一生产 import 方 = `scripts/daily_update.py:64`)、`daily_update.update_concept_boards`(调用点 `:265`,**零测试覆盖**)、`scripts/backfill_concept.py`(106 行,**无人 import、`__main__` 唯一入口、`END = "20260722"` 是写死的过期日**);③ **读方零**:所有 `read_parquet`/`scan_parquet` 命中都在 `concept_data.py` 自己内部;它 docstring 里点名的三个读侧(`report/sectors.py` / `board_pool.py` / `intel_candidates.py`)**已在 `e89c1fa` 物理删除**;`facts/` `k9/` `scorecard/` `report/` 对概念板块的全部命中都是**反向声明**(如 `facts/limitmap.py` 头「概念板块锚点整块删除」),且 `tests/test_facts_limitmap.py` 有一条守门断言 `anchor_concept` 不再出现;④ **配额账**:`ths_daily` **5 次/日**(尾窗 5 天,一次取全板块)+ `ths_index`+`ths_member` **395 次/周**(1 + 394 个板块逐个拉,`ths_index.parquet` 实有 394 行)≈ **~21,750 次/年**;⚠ 那 395 次是**连续**调用,几乎占满客户端 450 次/分限频窗口一整分钟。**处置建议(供用户裁定)**:整链退役 —— 删 `data/concept_data.py`、`scripts/backfill_concept.py`、`tests/test_concept_data.py`、`daily_update.py:60-93` 与调用点 `:265`、`tushare_client.py` 的 `ts_ths_{index,member,daily}` 三个函数与 `__all__` 条目、`tests/test_tushare_client.py:89-91`、`tests/conftest.py:345-350` 的夹具写入;`data/parquet/ths_*`(21 MB)可一并清理;`anchor_concept` 与 `intel_watch_boards` 两列**保留不 DROP**(裁定 6)。⛔ 未执行。 |
 | 2026-08-20 | **S8 完工** | commit `fa294af`。新增 `neckline/auction/{__init__,quality,collect,checklist,settle,pipeline,store}.py` 与 `neckline/playbook/{__init__,model,evaluate,store}.py`;新表 `k9_checklists` / `k9_d1_verdicts` / `k9_playbooks`(**纯新增**);新端点 `GET /api/v1/checklist/{date}` 与 `GET /api/v1/scoreboard/verdicts/{date}`;`_morning_loop` 两拍齐全。测试 996 → **1051** 全绿。<br>**🔴 裁定 10「9:29 不许出现成立」的三重结构性锁**(⛔ 不是靠运行期判断躲开):① **类型层** —— `ChecklistVerdict` 是二值枚举 `{rejected, pending_open}`,「成立」不是一个取值,模块加载时 `assert len(...) == 2`,加第三个成员 = **import 就炸**;② **求值层** —— `checklist.py` **只碰** `playbook.rejection_branch`,守门单测掐掉 docstring 后 AST 扫源码,`confirmation_branch` / `settle_verdict` / `CONFIRMED` **零命中**(够不着,不是「记得别碰」);③ **落库层** —— `store.record_auction_stage()` 收的是二值枚举,`_AUCTION_FINAL` 是**两键全映射** `{rejected → Verdict.REJECTED, pending_open → None}`,`Verdict.CONFIRMED` 在这条写路径上**根本构造不出来**。另有第四道行为锁:9:26 那一拍的读数表(`auction_readings`)**刻意不提供** `open_price` / `gap_pct` / `first30_high`,就算有人把成立分支拿去求值也只得到 `UNKNOWN`。<br>**🔴 三分支唯一权威 = 10:00 结算拍**:`settle.py` 写 `verdict` + `decided_stage='open30'`,幂等条件 `WHERE decided_stage IS NULL` —— **9:29 已判「放弃」的票结构上改不动**(夹具:那只票 10:00 反弹回来、成立分支读数全满足,照样仍是 `rejected`/`auction`,`settled_at` 仍为 NULL,竞价读数逐字未变)。零推送有两条守门:`settle.py` 零 import `neckline.api.notify` / `neckline.push`(AST),`SettleRunResult` **没有** `should_push` 字段;`_morning_settle_tick` 里一行 `notify` 都没有。<br>**🔴 零新增 systemd unit**:守门单测把 `deploy/` 下 8 个 unit 的文件名逐个对拍成一个**精确集合**,并扫全部 unit 正文里 `checklist` / `settle` / `auction` 零命中。两拍都在既有常驻 `neckline.service` 的 `_morning_loop` 里,各自独立 `try/except`(守门断言那段循环里 ≥3 个 `try` 且两个 tick 函数都被调到)。<br>**`auction/` 三件的取回与改造**(自 `git show eac2823:Backend/neckline/auction/*`,⛔ 未凭空重写):`quality.py`(601 行)**七项校验、零容差裁定 #2、`degraded` 那一档的理由、`_is_cross_verified` 判别式一字未动**,只改三处 —— 常量源换到本包新 `__init__.py`(K8 的 verdict / clamp 语义**一个都没取回**)、四类结论性冲突里需要 D0 **K8 卡**的两类合并成需要 **D0 K9 冻结预案**的 `rejection_disagree`(⛔ 只比「放弃」分支:9:26 判不出成立,比成立只会得到两边都 `UNKNOWN` 的假安心)、涨跌幅算式改调 `playbook/model.py::gap_percent_points`(全包唯一源)。`collect.py`(616 行)保住「自己拉一次价 / 拉价前用真实时钟复判窗口 → 越窗**一条价都不拉、零落库** / `captured_at` = 真正拉完价那一刻 / 拉价跨窗 → 降级不丢读数 / 拉价失败不掀翻本层 / `missing` 与 `invalid` 分两栏」,删掉 T1/T2 篮子、盘中关注池、独立观察池、竞价强势股、板块对照股、三支市场对照指数(K9 的核对表是**纯条件求值**,不需要市场环境)。`pipeline.py`(373 行)保住窗口门 / 当日防重 / **⛔ 事后不补跑** / 「当日已跑」标记落在**落库之后**(中途异常下一拍干净重跑),**按 §5.7.1 明令把 daemon 线程那套删掉** —— 那是为兜住 LLM 的不确定墙钟(实测同一份输入两次差 1.44 倍)而生的,零 LLM 之后没有要兜的东西,换成一句朴素墙钟保护(落库前复判,过 9:29 就记 `deadline_missed` **不发布**、也不落已跑标记)。⛔ `llm.py`(489 行)/ `mech.py`(1651 行,Z1/Y1/C1 三道夹逼闸)/ `observation.py`(272 行)**未取回**,守门断言这三个文件不存在且 `VERDICT_CONFIRM` / `clamped_by` / `BasketRef` 等 K8 语义在整包零命中。<br>**⚠ 与 Plan / K9 不符或未写清,如实登记(⛔ 施工侧未自行发明数或策略主张)**:① 🔴 **权威文件里还有两句与裁定 10 直接冲突,本组⛔ 未擅自改**:`K9.md` §七 仍写「输出一张核对表:**哪几只已触发成立**、哪几只已触发放弃、其余待开盘后观察」,`Neckline新架构_20260818.md` §四「输出」段同句。§5.1 的 17 处修订清单里**没有这两句**(只列了架构 §四 **边界段**的明文例外),而 §1.2 明写「不改,后来者照文件施工就会做回错的口径」。**这是一处会绊倒下一个人的活坑,请用户裁定是否补这两句的措辞**;⛔ 本组没有动用户的策略原文。② 🔴 **`MetricRef.FIRST30_LOW` 在 9:26 那一拍绑到竞价价 —— 施工侧的结构判断,请策略侧复核**:K9 §6.3 的四条「放弃」全是「跌破 X」,而 §5.7.2 逐字说「放弃分支四个全是单条破位判定 → **竞价价就能触发**」;§5.6.3 的闭合枚举里能承载「跌破」的只有 `first30_low`。故把它的语义定义为「**本场至今的最低价(含 9:25 竞价成交)**」:9:26 时本场只有一笔竞价成交,那个最低价**就是**竞价价;10:00 时它是 `Quote.low`(Plan §5.7.2 逐字:10:00 的 high/low 即前 30 分钟极值)。它是**单调下行**的量 —— 9:26 已经跌破的价位 10:00 一定仍然跌破,这正是「先到先定、⛔ 不改判」在语义上站得住的原因。⛔ 未新增第 10 个枚举成员。③ 🔴 **K9 §6.3 形态 2 的「跌破昨日最低价 [B]%」落成了一个价位而不是百分比**(见 S9+S10 行的登记 ②,两片共用同一条理由:§5.6.3 的条件语法闭合、**没有算术**)。④ **`k9_d1_verdicts.verdict` / `decided_stage` 为 NULL = 「今天还没定案」,⛔ 不是「观察」** —— 「观察」是 10:00 真看过之后的结论,它带着 `decided_stage='open30'`。两者在表、API、冒烟三处都分开说。⑤ **两拍的防重事件码刻意与 K8 不同**(`checklist_tick` / `settle_tick`,⛔ 不复用 `tick`):老库 `sentinel_events` 里那些行是 K8 竞价确认层留下的,用同一个码会让「今天这一拍跑没跑过」在历史行上撞车。表名仍是 `sentinel_events`(§3.2 定死)。⑥ **`push_auction_summary` → `push_checklist_summary`**(K9 两段措辞,恒带脚注「成立由 10:00 结算,9:30–10:00 由我自己判定」,守门断言正文里「成立」只出现这一次);**`push_precall_summary` 随 `sentinel/precall.py` 退役一并删除**(S1 登记 ⑩ 点名要求 S8 顺手收口:它的四类计数已经没有任何东西能产出)。两者都**沿用 `KIND_PRECALL`、零新 kind**,`ALL_KINDS` 冻结元组一字未动。⚠ 2026-08-11 那条拍板原本的代价(盘前校准与竞价确认共用一个开关)**随盘前校准退役自动消失**。⑦ **推送门槛与 K8 刻意相反**:K8 是「平静的早晨不发」(它推的是**提醒**),K9 是**每个有清单的交易日都推一条**(它推的是**当日清单的核对结果**,「今天一只都没触发放弃」本身就是用户 9:30 要用的信息)。⛔ `ran=False` 恒不推;清单为空也不推。⑧ **`playbook/{model,evaluate,store}.py` 提前在 S8 落地**(§6 把 `playbook/` 整包归 S10):§5.7.1 明令「`playbook/evaluate.py` 作为**唯一**求值器(两拍共用)」是 S8 的产出,而求值器需要 DTO 与读回路径。`skeleton.py` / `fill.py` 留给 S10。⑨ **`GET /scoreboard/verdicts/{date}` 与 `GET /checklist/{date}` 两条路由由本组认领**(S7 登记 ⑦ 说 §5.12 没把 8 条新路由分配给任何切片)。⑩ 🔴 **收尾自查抓到一个真洞并已修**(commit `5a52496`):§5.7.3 写的「非窗口时段 5 分钟一探」撞上**正好 5 分钟宽**的结算窗口(10:00–10:05)会**整窗错过** —— 相邻两次探测可以一次落在 9:58、下一次落在 10:05:30,而「今天跑没跑过」于是变成一道看运气的题。S1 留下的 `_is_preopen`(只收紧 9:20–9:30)换成 `_is_tight_poll`(9:20–9:30 与 9:55–10:06 两段都 30 秒一探)。判据的单一源仍在两个 tick 自己那里,这里只决定**多久探一次**。守门单测从窗口左端前一瞬起按实际间隔推进,断言最坏情况下仍至少落进窗口两次。测试 1119 → **1120**。 |
 | 2026-08-20 | **S9 + S10 完工** | commit `7fe0b57`。新增 `neckline/explain/{__init__,input,news_exclusion,aggregate,store}.py` 与 `neckline/playbook/{skeleton,fill}.py`;新表 `k9_explain_notes` / `k9_explain_audit`(纯新增);新端点 `GET /api/v1/selection/{date}/stock/{code}` 与 `POST .../playbook`;晚间链 `explain` / `playbook` 两段**真的会跑**(此前是 `not_built`)。测试 1051 → **1119** 全绿;`smoke_api.sh` 加 39–42 步,临时库实跑通过。<br>**🔴 S9 双盲的结构性证据**(架构 §3.3「解释层收到的输入不含通道身份与排序位次」):① `ExplainInput` 里**根本没有** `patterns` / `channel` / `rank` / `score` / `tier` / `seat_kind`(不是「有但不填」),字段集冻结成 `EXPLAIN_INPUT_FIELDS` 并逐字断言,另有 8 条参数化夹具逐个词根扫「字段名里不许出现它」;② AST 断言 `explain/**` **零 import** `neckline.k9`;③ **列表顺序也会泄漏位次** —— `build_inputs()` 一律按 `ts_code` 升序返回(夹具:正序与逆序传入拿到同一个序列);④ **AST 判据**(⛔ 不是文本扫描)断言解释层**没有真的去读** `reserve` / `rank` / `score` / `seat_kind` / `primary_pattern` / `patterns` / `tier` —— 文本扫描会被 `EXPLAIN_INPUT_FORBIDDEN` 那个**黑名单常量**本身误伤,「声明了什么不许有」与「真的去读了它」是两件事;扫描器自带自检(它**扫得到**编排器确实读了 `shortlist.reserve` 与 `e.rank`);⑤ 运行时证据:喂给模型的材料里「排名 / rank / score / seat / 形态 / 通道」逐个零命中。**补位决定住在编排器 `report/evening.py::_run_explain`**(它才知道名次),守门断言那段代码确实读了 `shortlist.reserve`。<br>**🔴 S10 预案「结构化可机械求值」的证据**:`MetricRef` 是**恰好九个成员**的闭合枚举、`Op` 四个、`BranchName` 两个、`default` 恒「观察」;`Condition` 只有 `{op, lhs, rhs}` 三位,**语法外的键当场抛**;`rhs` 只能是有限数值或另一个 `MetricRef`(⛔ 没有算术);未知 `MetricRef` → `parse_playbook` **D0 当场拒绝冻结**;`Condition`/`Branch`/`Levels` 三个 dataclass 里**一个自由文本位都没有**;三个价位次序(失效位 < 第一压力位 < 第二压力位)是硬校验。**LLM 返回体只收数值**:键集**恰好等于** `required_keys(pattern)` —— 少一个 = **空成功判失败**(§12 坑 13 / LRN-20260816-002),多一个 = **拒绝**(⛔ 不是「忽略多余的」:忽略等于默许它下次塞得更多),值不是有限数值 = 拒绝。**用户修改入口的契约**:`POST /api/v1/selection/{date}/stock/{code}/playbook`,请求体只收那几个数值键(键集由该票 `primary_pattern` 决定,422 的 detail 里逐个列出),**append-only 写新版本、原版本一个字不改**(夹具:v1 的 `first_resistance` 改完之后仍是 11.0,`source` 仍是 `llm`;两拍读 `max(version)`);`k9_playbooks` 主键含 `version`,守门扫本文件的 SQL:`UPDATE` / `DELETE` / `INSERT OR REPLACE` 零命中。**骨架不可改**:用户能改的是方括号里的数,不是「哪个量跟谁比」。<br>**🔴 内存实测(S14 定 `MemoryMax` 的依据;开发机 macOS,一次性临时目录,⛔ 未触碰工作库 / 工作 parquet / 生产)**。⚠ **走的是合成市场不是真实行情,如实说明**:`fact_pack` 的 parquet 不在工作目录里(S3/S6 建在各自私有临时目录、跑完就没了),重建它要 `suspend_d` 的历史分区而本地只有 5 天(S6 那次为此打了 127 次 TuShare)。本组按**生产规模**造包(**5526 行 × 41 列 × 120 天**,与 §14 S3 实测的 5526 行同量级)。读数:<br>　· `explain` **独立**峰值 **192 MB**(基线 110 MB,**增量 82 MB**);`build_inputs` 60 天 × 20 只墙钟 **0.31s**,单只 prompt **3,747 字符**;<br>　· `playbook` 接着跑,进程峰值 **212 MB**(相对基线 **增量 101 MB**,相对 explain 之后 **+19 MB**);`fill_for_listing` 20 只墙钟 **0.39s**,单只 prompt **3,835 字符**;<br>　· 🔴 **三段合并(`k9,explain,playbook` 同一进程)**:先复现策略层的读峰(120 天 × 663,120 行 × 23 列投影 → frame **85.8 MB** / RSS 峰值 **532 MB**),再跑 explain 与 playbook —— **进程高水位仍是 532 MB,两段各自 +0 MB**。<br>**结论(⛔ 施工侧未改任何 `MemoryMax`、未拆 unit,那要用户点头、归 S14)**:**explain / playbook 不会把三段合并的峰值顶上去** —— 它们的工作集(60 天 × 20 只 ≈ 1,200 行)相对策略层那份 66 万行的 frame 可以忽略,而进程高水位早已被策略层设定。S6 在**真实数据**上量到的策略层 **736 MB** 因此仍是那条红线本身,余量仍是 `neckline-basket.service` 现挂 `MemoryMax=900M` 的 **18%**,本组既没改善也没恶化它。⚠ 本组的 532 MB **不能**与 S6 的 736 MB 直接比:合成市场的字符串列只有 97 个不同取值,polars 的字符串区小得多(frame 85.8 MB vs 真实 101.6 MB)。**供用户拍板的选项(⛔ 未自行选)**:(a) 维持 `MemoryMax=900M`,接受 18% 余量,S14 在生产同规格 Linux 机上用真实数据复测后再定;(b) 抬高 `neckline-basket.service` 的 `MemoryMax`;(c) 把 `explain,playbook` 拆成第四个晚间 oneshot —— ⚠ 它与「两拍⛔ 不新增 unit」是两码事(那条管的是早晨的进程内 tick),但仍会动 unit 拓扑,归 S14 且需用户点头。<br>**⚠ 与 Plan 不符 / Plan 未写清,如实登记(⛔ 施工侧未自行发明数或策略主张)**:① 🔴 **`explain/input.py::KLINE_SESSIONS = 60` 是本组起的一个数,请用户复核**。它是「给 LLM 看几根日 K」的**上下文长度**,⛔ 不是待标定的策略阈值(§8 的 22 项里没有它,K9 §九 也没有):换成 40 或 80 **不会让任何一只票被选上或落选**,只影响模型看到多长一段图。已写死在一处、`build_inputs(sessions=)` 是**必填关键字**(调用方必须显式说)。⚠ 若用户认为它属于「我会想去调的东西」,那按架构 §二 的判据它就该搬进参数包 —— 那是一次参数包 schema 变更,归标定侧。② 🔴 **K9 §6.3 形态 2 的「跌破昨日最低价 [B]%」落成了 LLM 直接给那个价位、不是给百分比**:§5.6.3 的条件语法是闭合的 `{op, lhs, rhs}`,**没有算术** —— 要表达 `prev_low × (1 − B/100)` 就得往语法里加乘法,而那等于给求值器开一个「谁都能往里塞表达式」的口子。百分比可由 `(prev_low − rhs) / prev_low` 反算,信息一点没丢。⛔ 未擅自扩语法。**请策略侧复核这个落地形状。**③ **形态 2 的「前 30 分钟不创昨日新低」是零 LLM 的**:它的 `rhs` 是**另一个 `MetricRef`**(`prev_low`),模型不必填也不该填 —— `required_keys("p2")` 里没有它。④ **`llm/news_scan.py` 从三类扩到四类**(加「减持」):K9 §二 末段与架构 §3.3 逐字写的是**四类**,而 K8 时代「减持」走 `ts_stk_holdertrade` 结构化接口、不占该模块。K9 的消息面排除是**一次问全四类**的整体判断 —— ⛔ 不许一半走结构化接口、一半走 LLM,那样「查过了没有」与「这一半根本没查」会混成同一句话。`ts_stk_holdertrade` 本身**没删**。⑤ 🔴 **消息面是三态,`unverified` 单独占一格**:`clean`(查过了、干净)/ `excluded`(命中四类之一、剔除)/ `unverified`(**没查成**:没有 provider / 调用失败 / 模型没按格式收尾 / 类别不在闭合枚举里)。折成 `clean` = 「没看」冒充「看过了没事」;折成 `excluded` = 因为一次检索失败悄悄砍掉一只好票。两种都错,所以报告**逐日报出「N 只消息面未核实」**,夹具锁死「解释层跑过了 ≠ 消息面已核实」这两句话是**两件不同的事**。⑥ **`k9_runs.listing_finalized_by` 由编排器改传 `'explain'`,新增 `k9/store.py::mark_listing_finalized_by()`** —— 它**只动 `listing_finalized_by` 与 `seated_count` 两列**,⛔ 不重写整行运行账(那一行记的是**策略层**那次运行,解释层没有资格改它)。⑦ **策略层产物在进程内交给解释层**(`EveningChainResult.k9_result`):后备补位要拿按名次排好的 `reserve`,而 `k9_listing_entries` 只装**入席**的那些 —— 落库再读回来就把补位所需的东西丢了。⚠ 分段跑(`--segments explain`)时它是 `None`,解释层如实报 `no_k9_result`,⛔ 不去猜一个后备名单。⑧ **预案层「一份都没冻成」返 `STATUS_FAILED` 而不是 `ok`**:没有预案 = 明早那两拍核对不了任何一只(核对表会把它们列进「没有冻结预案」那一栏),⛔ 不给这一段绿灯。⑨ **新增两个 LLM 任务常量 `TASK_EXPLAIN` / `TASK_PLAYBOOK`(`ALL_TASKS` 11 → 13)**,三处都想过了(那条守门单测明令的):预算账 —— 逐票调用、上下文小(单只 prompt ~3.8k 字符);流式分级 —— **不进** `LONG_CONTEXT_TASKS`(不开流式 + 基类 90s 读超时,**两项同路接线**);prompt_context —— 两条 system prompt 都嵌了时效纪律并已加进 `test_prompt_context.py` 的清单(S1 在那张表上留的 ⚠「K9 的三个 LLM 岗位落地时必须逐条加回」现已兑现两条;第三条「事实层方向解读」本版仍未建,S3 登记 ⑦)。⚠ 顺带把 `TASK_AUCTION` 的注释改成「**已退役**」——K9 的次日核对是零 LLM,那个键只为让老库存过的路由行仍解得出来;守门断言 `auction/**` 里 `TASK_AUCTION` 零命中。⚠ `SELECTION_PIPELINE_TASKS` 是 K8 残留(`selection/` 整包已删、三项零调用),⛔ 本组未动它,K9 的两个岗位也**不进**那张 K8 的表。⑩ **消息面证据只联一次网**:检索在 `news_scan`(Tavily,经 `get_provider(TASK_NEWS_SCAN)` 包成 `TavilyGroundedProvider`),证据由编排器喂给资料聚合与预案填值,两者都 `enable_search=False` —— ⛔ 不各自再搜一遍。⑪ **报告新增「逐只」段**(§5.10 默认视图第 2、3 段:一句话画像 → 关键价位与预案),并对三件缺席各自如实标:资料未取得 / 消息面未核实 / **没有冻结预案 —— 明早核对不了这一只**。⑫ **新增 `tests/guard_scan.py`(共用扫描器)**:S8 与 S9/S10 两组守门都要「这个词不许出现」这类判据,两份各自漂移的扫描器比一份写错的更糟。它同时提供**文本判据**(先掐掉 docstring 与注释 —— 一条纪律总要写出它禁止的那个词才解释得清,把说明算进命中会逼着后来者删注释去凑绿)与 **AST 判据**(真的去读了没有)。⚠ docstring 的掐法走**行号**而不是 `ast.get_docstring()` 的返回值:后者是清洗过的,对缩进的函数 docstring 匹配不上原文,会让扫描器悄悄少掐一段而不报错。⑬ **S7 的两条测试按新事实改写**(⛔ 不是放宽):`test_..._news_screening_has_not_run` 改成「分段跑里不带 explain」才是「没跑过」的真实情形;`test_unbuilt_layers_are_not_built_not_ok` 改成断言 explain 段 `ok` + 清单由它定稿 + playbook 段 `failed`。另加三条新夹具锁死「未核实 ⛔ 不许报成干净」「没有预案要逐只说出来」。⑭ **`GET /selection/{date}/stock/{code}` 与 `POST .../playbook` 两条路由由本组认领**(§5.12 的 8 条新路由中,S7 落 2 条、S8 落 2 条、本片落 2 条;剩 `/scoreboard/listing`(S17)与 `/legacy/k8/baskets`(S13)仍待认领)。⑮ **`deploy/*.service` 一个字未改**:`neckline-basket.service` 的 `--segments k9,explain,playbook` 是 S7 就改好的,本组的两段正好落在那个 unit 里;`MemoryMax` 三个数一个没动(见上「供用户拍板的选项」)。⛔ 未部署、⛔ 未 ssh。 |
+| 2026-08-20 | **裁定 16 / 17 + K9 §七、架构 §四 措辞修订（第五组回写）** | Neckline commit `aa416ca` + whynotme commit `f29a3a3`。**三条回写全部落地**：① **裁定 16（V 豁免分档）** 写进 §2，K9 §五-6 那一行补「⚠ 唯一例外：放量倍数分界值 V ⛔ 不分档（裁定 16）」+ 表下两条理由（p1「≥ V」与 p3「< V」在放量维上**穷尽整个空间**，移动分界点只把票从 p3 挪到 p1，`p1 ∪ p3` 一只都不会多，而 §五-6 分档的目的正是「凑够 10 只」；两档还会让落在两值之间的票**同时命中 p1 放宽档与 p3 严格档**，破坏裁定 15 建立的互斥）+「⛔ 其余带数字的定义性项照旧分两档」的界限。⚠ **这是把 S6 的结构判断升为正式裁定，⛔ 不是新施工要求** —— S6 已按此实现。② **裁定 17（停抓概念板块、保留已有数据）** 写进 §2；`scripts/daily_update.py::update_concept_boards` 及其调用点**整段移除**（`ths_daily` 5 次/日 + `ths_index`/`ths_member` **395 次连续**/周 ≈ 21,750 次/年，其中那 395 次几乎占满 450 次/分限频窗口一整分钟），模块头补写移除依据；**已抓的 21 MB parquet 原地保留、⛔ 未删一个字节**（实测确认 `ths_{daily,index,member}.parquet` + `ths_snapshot_meta.json` mtime 仍是 7-28，未被触碰），`data/concept_data.py` 读写 helper 与三个 `ts_ths_*` 客户端函数**刻意保留** —— 删掉它们，保留下来的那 21 MB 就没人读得动了。守门单测双向锁死：定时器路径上 `ths_*` / `concept_data` 零命中 **且**「读侧 helper 必须还在」。③ **K9 §七 + 架构 §四「输出」段的措辞修订（实施裁定 10，⛔ 未编新号）** —— 两处**前后对照**：K9 §七 原文「输出一张核对表：**哪几只已触发成立**、哪几只已触发放弃、其余待开盘后观察。」→ 改成两段「哪几只已触发放弃、其余待开盘后观察」，并补两段说明(⛔ 9:29 判不出「成立」的**结构性**原因：§6.3 四个成立分支**全部含有「前 30 分钟」这一合取项**，9:29 时它还没发生；若强行让 9:29 出「成立」，§八 的成立率会**结构性恒为 0**)+「**三分支的唯一权威是 D1 10:00 的一次性结算读数**、9:29 的『放弃』先到先定不改判」；架构 §四「**输出**：哪几只已触发成立、…」→ 同款两段 + 同款原因 + 指向 10:00 结算拍。**配套一致性修订三处**：K9 §八 路径图由一行「D1 竞价 + 开盘 30 分钟 → 三分支之一」改成**显式两拍**（9:26–9:29 只判放弃 → 10:00 结算出终值）并补一段「三个比率一律读 10:00 终值，⛔ 不许把 9:29 的『待开盘后观察』当成任何一个分支的结论」；架构 §二 次日时间表补「输出两段 ⛔ 无「成立」」「10:00–10:05 一次性结算读数」两行、并写明 9:30–10:00 系统不出读数；架构 §5.1「成立率」行注明终值出自 10:00 那一拍。**验收**：`grep -n "已触发成立" K9.md Neckline新架构_20260818.md` **零命中**；`grep -n "不分档" K9.md` 命中 §五-6;S0 立的三条 grep(`上方空间` 零命中 / `行业指数` 只剩那句否定句 / `一次性结算读数` 命中)全部仍然成立。§1.2 与 §5.1-E 已登记这四处修订。 |
+| 2026-08-20 | **S11 + S13 完工** | commit `65b0e8e`。新增 `neckline/review/{bindery,conclusions}.py`、`neckline/legacy_k8.py`；新表 `review_conclusions`（**纯新增**，append-only，PK `(week, version)`）；新端点 `GET /api/v1/review/bindery`、`POST`/`GET /api/v1/review/conclusions`、`GET /api/v1/legacy/k8/baskets`；`/review/overview` 加**结论存档段**（三段 → 四段）；`export_research_snapshot.py` 加 `--include-fact-packs --start --end`；`smoke_api.sh` 加 43–46 步，临时库实跑通过。测试 1120 → **1280** 全绿。<br>**测试数逐条对上**（+160）：新文件 `test_review_bindery` 18 + `test_review_conclusions` 16 + `test_legacy_k8` 9 + `test_export_snapshot` 15 + `test_v250_s11_s13_guard` **80** = **138**;`test_api_review` 23 → 40(**+17**,装订 / 结论 / legacy 三组端点);`test_db_isolation_guardrail` 61 → 66(**+5**,它按 `tests/test_*.py` 参数化,新增 5 个测试文件);`test_review_reconcile` **21 → 21**(删 1 条已失效用例 + 补 1 条「那个别名确实没了」的反向断言,净 0)。<br>**🔴 S11 无 LLM 的证据**(架构 §六 逐字「这一层无 LLM 调用」):① 逐文件 AST 断言 `review/**`(10 个文件)零 import `neckline.llm` / `neckline.search` / `openai` / `anthropic`;② 更严一档的文本判据 —— 掐掉 docstring 后 `TASK_` 与 `get_provider` 在全包零命中(**连任务常量都不许出现**:一个 `TASK_*` 引用就是在为接线做准备);③ 扫描器自带自检(喂它一份真的 import 了 llm 的文件,它必须报出来)。<br>**🔴 `cashflow.py` 四分类未被加回合计字段的证据**(蓝图 5.3「账户金额增加不得直接视为策略收益」):① `CashFlowSummary` 的字段名列表**逐字冻结**成断言(`week / transfer_in / transfer_out / dividend / tax / other / other_event_count / trading_pnl / event_count`)—— 想加一个合计字段就得先改那行断言;② `to_dict()` 的键集同样逐字冻结(11 个键,无任何合计);③ 8 个候选合计名(`account_net` / `net_change` / `total_net` / `combined` / `grand_total` …)全仓零命中;④ **AST 判据**:模块里不存在把 `dividend` / `tax` / `trading_pnl` / `other` 中任意两个加减到一起的表达式(⚠ `transfer_in − transfer_out` 是**转入转出这一类内部**的净额,合法且必须留 —— 判据按「跨类才算」写,⛔ 不是一刀切禁加法)。<br>**🔴 三条成绩线隔离的证据**(架构 §五「互不进入对方的分子分母」,隔离是**单向**的):① **最要紧的方向** —— `scorecard/**` 逐文件断言零 import `neckline.review`,且源码里 `round_trip` / `roundTrip` / `交割单` / `realized_pnl` / `cash_flow` 五个词零命中;② **结构性** —— `coverage.compute_day` 的签名**恰好** `(pack, listing, dispositions)` 三个位置,**收不下**交割单;③ 反向 —— `review/**` 零 import `neckline.scorecard`;④ **只读不写** —— `review/**` 逐文件扫写 SQL,`INSERT INTO k9_` / `UPDATE k9_` / `DELETE FROM k9_` / `INSERT OR REPLACE INTO k9_` / `DROP TABLE k9_` 全部零命中;⑤ **反面自检**(⛔ 防止上一条守的是空集):断言装订**确实**调了 `load_k9_report_index` / `load_latest_range` / `load_listing_membership` 三个读函数 —— 架构 §六 明文要求装订「当时那几天的报告与预案快照」,读是必须的,写才是禁的。<br>**🔴 装订的容量实测**(开发机 macOS;**真实 parquet 只读 symlink 到临时根** + SQLite 一次性只读副本,⛔ 未触碰工作库 / 工作 parquet / 生产。窗口 = 买入前 20 + 卖出后 20 个交易日):1 只 **0.135s**(冷 glob)/ 5 只 **0.018s** / 15 只 **0.020s** / 40 只 **0.027s**;RSS 峰值 89 → 94 → 98 → **106 MB**(基线 56 MB);40 只时日 K 822 根、markdown 14,576 字符、JSON 336,865 字符。**为什么这么小**:全部票走**一次** `get_multi_stock_history`(新增,一次 glob + `is_in` 过滤 + 列投影),大盘走一次,行业 / 报告 / 预案 / 清单各走**一次区间 SQL**。守门单测按调用计数锁死「三只票 = 1 次多票取数 + 1 次大盘取数」,并断言 `bindery.py` 里 `get_stock_history` / `get_market_slice` / `scan_table_range` 三个名字零命中。<br>**🔴 S13 逐字节相同的证据**(§5.13:标定必须跑在与生产逐字节相同的事实包上):`shutil.copy2` 原文件、⛔ 不重写 parquet(重写会换压缩块与行组边界,数据看起来一模一样而 sha256 立刻对不上);单测断言「拷出来的 bytes == 原文件 bytes == manifest 里的 sha256」三者相等,且**布局用 `market_data.day_file_path` 对拍**(⛔ 不在导出脚本里另拼一套路径)。manifest 身份证四项齐全:`packVersion`(`fp-2`)/ 区间 / `necklineVersion`(取 `api/app.py::VERSION` 这个**单一源**,⛔ 不另存常量、⛔ 读不出也不退回占位值)/ 逐日 sha256;另报 `missingDates`(清单里有、parquet 拷不到 = **真缺口**)与 `orphanDates`(拷到了、清单里没有)—— **标定方拿到 118 天而不是 120 天,与拿到 120 天是两件事**。⛔ 区间**没有默认值**(缺 / 非法 / 倒序一律退出码 2,且退出时快照还没写出去)。<br>**🔴 legacy 端点只读的证据**:`legacy_k8.py` 走 `sqlite3` 的 `mode=ro` 连接、**⛔ 不 import `neckline.db`**(那条路上的 `connection()` 顺手 `init_schema`,只读入口绝不该给任何库建表),模块里 `INSERT`/`UPDATE`/`DELETE`/`REPLACE`/`CREATE`/`DROP`/`ALTER` 七个词**逐个断言零命中**;行为侧断言调完两次之后源库的**行数 / schema / 文件大小**逐条不变、库文件不存在时**不会凭空造一个空库**;写方法 POST/PUT/DELETE → **405**(路由只注册 GET,⛔ 不是 404)。另断言 K8 留档里**不出现 K9 的字段名**(`pattern` / `seatKind` / `firstResistance` …)—— 翻译过去会让一份 K8 留档看起来像一份 K9 清单,进而被谁拿去算成绩。<br>**冒烟与零污染自查**(第四组建立的做法,照做):`DB_PATH` 显式指到 scratchpad,`PORT=8097`;跑前跑后对**真实 `Backend/data/` 全目录**逐文件 `(路径, 大小, mtime)` 快照做 diff —— **9,559 个文件逐条一致**;`data/reports/` 无新增;`git status` 零 `data/` 文件。⚠ **唯一一处差异如实登记**:容量实测那一步以 `mode=ro` 打开真实 `neckline.db` 做一次性副本,过程中 SQLite 的两个**瞬时 sidecar**(`neckline.db-shm` / 0 字节的 `-wal`)被回收又重建 —— 主库文件**大小 4,325,376 与 mtime 均逐字未变**,`PRAGMA integrity_check` 返回 `ok`,69 张表俱在。那两个 sidecar 是 SQLite 自己的生命周期产物,任何一次连接(含只读)都会碰它们,⛔ 不是本组写了工作库。<br>**⚠ 与 Plan 不符 / Plan 未写清,如实登记(⛔ 施工侧未自行发明数或策略主张)**:① 🔴 **§6 S13 的验收 grep「全仓 `grep whynotme` 在 `neckline/` 下零命中」与一句合法的用户文案冲突** —— `api/app.py::get_eval_weekly` 的空态文案原写「周度作业(whynotme 离线周任务还没跑到这个窗口。」(⚠ 还带一个从 V2.1 起就没配对的括号)。处置:**改写文案**为「**离线**周度校准作业还没跑到这个窗口」并补上那个括号 —— 它按**角色**指认那个作业,信息一点没少,而验收 grep 从此零命中。⛔ 没有给守门开豁免(一条带豁免清单的守门,第二次加豁免时就没人拦得住了)。② 🔴 **§3.3 的包布局列了 `scorecard/mine.py`,而 §6 的任何切片都没有认领它** —— 且若真放进 `scorecard/`,那个文件就得 import `neckline.review`,与本组刚立的隔离守门直接冲突。「我的成绩」的**内容**其实已经存在(`reconcile.WeeklyStats`)。⛔ 未自行决定它落在哪个包,已登记 **§13.1-B7** 带事实 / 三个选项 / 影响面 / 倾向。③ 🔴 **`review/{handoff,research_artifact}.py` 的排版仍是 K8 语义**(Tier 入场信号正确率 / C·Z·Y 引擎版本 / 双时钟),而它们服务的 `/eval/weekly` 与 `/review/overview` 校准段被 §5.12 明确「保留」;K9 之下那份离线校准产物的**形状未定义**,且 `HANDOFF_OBSERVATIONS` 的守门要求每个 id 能在 PROJECT_PLAN §七 grep 到 `[P3-xx]` —— **而本版 §7 已清空**。⛔ 未擅自下线,已登记 **§13.1-B8**。④ **裁定 17 的边界**:逐字只说移除 `daily_update.py` 那一段(已照办,那是唯一挂在定时器上的入口),但仓里还留着 `scripts/backfill_concept.py`(**`END = "20260722"` 是写死的过期日**,一跑 395 次连续调用)与 `concept_data.py` 的两个写函数(现已零调用方)。⛔ 未越过裁定字面动它们,已登记 **§13.1-B9**。⑤ **新增五个批量读函数**(`market_data.get_multi_stock_history` / `facts.industry.load_series` / `report.store.load_k9_report_index` / `playbook.store.load_latest_range` / `k9.store.load_listing_membership`):不是为了好看 —— 逐日调 `load_day` / `load_latest` 会让 **`init_schema()` 在每次调用里重跑整份 schema 脚本**,40 天的复盘窗口就是 40 次全表建表检查;逐票调 `get_stock_history` 会让 15 只票各 glob 一遍区间年份。两者都是 §12 坑 1 那条链的新入口,所以在**源头**做成批量。⑥ **`load_k9_report_index` 刻意不带 `markdown` / `structured_json`**:40 天窗口塞 40 份报告全文是几百 KB 的无用负担,而首行(`state` + `headline`)已经说清那天系统在说什么;要全文按日走 `load_k9_report()` 点查。⑦ **`review/bindery.py::PRE_SESSIONS / POST_SESSIONS = 20 / 20` 是本组起的两个数** —— 与 S9 的 `KLINE_SESSIONS = 60` 同类:**上下文长度,不是待标定策略参数**(换成 30 不会让任何一笔成交变成另一笔),§8 的 22 项里没有它们。已写死在一处、`bind_week(pre_sessions=, post_sessions=)` 是**必填关键字**(调用方必须显式说)。请用户复核,已并进 **§13.1-B3**。⑧ **大盘基准取上证综指** —— 架构 §六 原文只写「同期大盘走势」(单数),未指定指数。取 `data/panel.py::SSE_INDEX` 这个**全仓既有的「大盘」常量**(⛔ 不另起第二个);`index_daily` 里落着的另一条是深证成指,本层刻意只装一条。**这是命名与复用,不是策略主张。**⑨ **申万归属用的是「今天的」成分快照,不是成交当日的**(`sw_industry_member` 只给当前归属,S2 登记 ④)—— 与事实包回填的语义差是同一件事。写在明处:`RoundTripBinding.industry_source == 'current_snapshot'`,`to_dict().note` 与 markdown 都照直说。⚠ 与 `k9_listing_entries` 的**冻结**绑定刻意不同:那一列是清单成绩拆「行业分 / 选票分」的依据必须冻,而交割单是事后回看、当时的清单里未必有这只票,没有可冻的东西。⑩ **`legacy_k8` 是四态不是三态**:全新 Neckline 库**有** `baskets` 表(裁定 6:表保留只读,`init_schema` 照建,只是应用层没有写路径了)但一行都没有 —— 「这个库从没跑过 K8」与「跑过、只是不是这一天」要人做的下一步完全不同,两句话⛔ 不许合并。⑪ **`/review/overview` 由三段变四段**(加结论存档段),`schemas.py` 与 `app.py` 里遗留的「五段」措辞一并改正(那是 S1 删掉画像与双时钟三段之后没跟上的旧文)。⑫ **装订刻意不进 `/review/overview`**:它要读 parquet 行情,属于「点一下才算」的动作,而 overview 是每次进复盘板块都会拉的聚合读(§12 坑 1 / P0-23)。守门单测按函数扫,断言 `get_review_overview` 函数体内 `bind_week` / `bindery` 零命中。⑬ **`reconcile.py` 的陈旧遗留一并清掉**(S1 删代码时留下的):模块 docstring 仍在逐条讲 `MomentumConfig` / `strategy.signals` / `brain.config_governing_at` / `strategy_activation_log` 这些**已物理删除**的东西;`STOP_TOLERANCE_PP` 与 `PRICE_MATCH_TOLERANCE` 两个常量零引用;`day_close_instant()` 只是 `trade_instant(d, None)` 的别名、零生产调用方,而它的 docstring 写着「归属哪版章程」。三样全删,docstring 重写成「本模块只出事实,不出判据」。**测试侧同批**:`TestStopDiscipline` / `TestEntryScreens` / `TestCharterSwitchReporting` 三个类只剩 helper **一条断言都不跑**,外加 `_DueItem` / `_30k_trades` / `_week_of` 三个零引用 helper 与七块指向已退役概念的段旗 —— 它们长得像在跑测试,下一个人会以为止损纪律还在被测。⛔ 这不是放宽:被测的东西早已不存在。⑭ **`export_snapshot` 的 manifest 从 schemaVersion 1 升到 2**:加 `necklineVersion`,并把 `parquetReadOnlyPath` 从写死的 `settings.parquet_dir` 改成**这次真正读的那个根** —— 一份跑在临时目录上的 manifest 指着生产目录说话,是另一种形式的说谎。⑮ **`deploy/*.service` 一个字未改、⛔ 未部署、⛔ 未 ssh、⛔ 未推送**:本组两条新端点都跑在既有常驻 `neckline.service` 里(零新增 unit),`daily_update.py` 少了一段抓取(不改 unit),导出脚本是手工 CLI(不在任何 timer 上)。⚠ **生产仍跑 v2.4.2 Build 9,裁定 17 在上云之前不生效** —— 已登记 §13.1-B6。<br>**Backlog 收拢**:前四组散在 §14 各处的未决项已统一收进 **§13.1**,共 **9 条**(B1–B9),每条带**事实 / 选项 / 影响面 / 我的倾向(标明是倾向不是决定)**;§13.2 保留「本版不做,记着别忘」。 |
 
 > 施工侧每完成一个切片在此追加一行：切片号、日期、commit、实测数字（墙钟 / 峰值内存 / 通过率）、
 > 以及任何与本 Plan 不符的如实登记。⛔ 不另建第二份计划文件。
