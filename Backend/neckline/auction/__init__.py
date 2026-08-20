@@ -89,9 +89,14 @@ QUOTE_STATUSES: Tuple[str, ...] = (
 #   · `fresh`        至少一源通过**全部**七项校验,且两源没有结论性冲突;
 #   · `degraded`     读数**可以用**、但有非致命项没过(目前只有:源还没发出开盘价);
 #   · `insufficient` 双源(或唯一源)都踩了**致命项** → 这一格**没有可用读数**;
-#   · `conflict`     双源都新鲜、但出现**结论性冲突**。
+#   · `conflict`     双源读数都**可用**、但出现**结论性冲突**。
 # 🔴 **`degraded` 这一档⛔ 别"简化"掉**:开盘价在 9:26 那一拍本来就还没有,
 # 把它算致命等于因为一个当时用不上的字段把好端端的竞价价一起扔掉。
+# 🔴 **`conflict` 压过 `degraded`**(R2-02):两源结论打架比「缺开盘价」严重得多。
+# 判「有没有对拍过」用的是 `usable`(无致命项)而**不是** `ok`(七项全过)——
+# 用 `ok` 会让跨源核验在 9:26 那一拍结构性永不触发(源那时还没发开盘价),
+# `rejection_disagree` 就成了它专为之而生的那一拍里的死代码。判别式单一源 =
+# `quality._is_cross_verified`。
 QF_FRESH = "fresh"
 QF_DEGRADED = "degraded"
 QF_INSUFFICIENT = "insufficient"

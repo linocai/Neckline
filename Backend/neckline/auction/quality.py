@@ -422,15 +422,27 @@ def _is_cross_verified(checks: Sequence[QuoteCheck]) -> bool:
     """这一格**到底有没有真的做过两源对拍**(复审 🔴-2 的判别式,单一源就是本函数)。
 
     🔴 定义 = **`detect_conflict` 实际跑起来的那个条件**:两源都返回了读数(所以
-    `checks` 恰好两条),**且两侧七项都过**。`resolve_dual` 里那个 `if` 直接调它,
-    ⛔ 两处不许各写一遍 —— 那正是"守门停在屏幕前一层"的复发路径。
+    `checks` 恰好两条),**且两侧都没踩致命项**(`usable`)。`resolve_dual` 里那个
+    `if` 直接调它,⛔ 两处不许各写一遍 —— 那正是"守门停在屏幕前一层"的复发路径。
 
-    ⛔ **「只有一源」「有一源不合格」都不算核验过**:那时 `conflict` 恒 `None`,
+    ⛔ **「只有一源」「有一源踩了致命项」都不算核验过**:那时 `conflict` 恒 `None`,
     而 `None` 的含义是「**没得比**」,不是「比过了没冲突」(`detect_conflict` 的
     docstring 逐字写着这句话)。把它们讲成"已交叉核验"就是把「没判」折成「没问题」——
     本项目连续三版栽在同一族病上。
+
+    🔴 **判据是 `usable`(无致命项),⛔ 不是 `ok`(七项全过)** —— R2-02 修的
+    就是这一处**自相矛盾**:同一个模块把 `open_price_missing` 明确排除在
+    `_FATAL_ERRORS` 之外(理由见 `auction/__init__.py::QF_DEGRADED`:开盘价在
+    9:26 那一拍本来就还没有),却又在这里要求「七项全过」才算对拍过。
+    两条判据打架的后果是**结构性**的:9:26 那一拍源还没发开盘价 →
+    `ok == False` → 跨源核验**永不触发** → S8 新造的 `rejection_disagree`
+    在它专为之而生的那一拍里是**死代码**。
+
+    ⚠ 反过来说:一条读数只要**能被拿去求值**(`usable` 正是这个含义,
+    `resolve_dual` 也确实拿它去出核对表),就一定**能被拿去与另一源对拍** ——
+    对拍比求值要求更低,不是更高。
     """
-    return len(checks) == 2 and all(c.ok for c in checks)
+    return len(checks) == 2 and all(c.usable for c in checks)
 
 
 @dataclass(frozen=True)
@@ -552,9 +564,14 @@ def resolve_dual(
     elif cp is not None and cp.usable:
         # 可以用、但七项里有非致命项没过(目前只有"源还没发开盘价")→ 读数照出、
         # 样本域降级。⛔ 不判 `insufficient`:那会把好的价 / 量 / 额一起扔掉。
-        chosen, role, degraded, freshness = primary, QUOTE_ROLE_PRIMARY, False, QF_DEGRADED
+        # 🔴 **冲突优先于降级**(R2-02):两源结论打架比「缺开盘价」严重得多,
+        # 而 `conflict` 非空却把 `freshness` 写成 `degraded`,等于把它藏起来
+        # —— 消费方读的正是 `freshness`。
+        chosen, role, degraded = primary, QUOTE_ROLE_PRIMARY, False
+        freshness = QF_CONFLICT if conflict else QF_DEGRADED
     elif cb is not None and cb.usable:
-        chosen, role, degraded, freshness = backup, QUOTE_ROLE_BACKUP, True, QF_DEGRADED
+        chosen, role, degraded = backup, QUOTE_ROLE_BACKUP, True
+        freshness = QF_CONFLICT if conflict else QF_DEGRADED
     elif cp is not None:
         chosen, role, degraded, freshness = primary, QUOTE_ROLE_PRIMARY, False, QF_INSUFFICIENT
     elif cb is not None:
