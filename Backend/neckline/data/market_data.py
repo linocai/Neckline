@@ -81,9 +81,31 @@ def table_dir(table: str, parquet_dir: Optional[Path] = None) -> Path:
     return (parquet_dir or settings.parquet_dir) / table
 
 
-def day_file_path(table: str, trade_date: DateLike, parquet_dir: Optional[Path] = None) -> Path:
+def day_file_path(
+    table: str,
+    trade_date: DateLike,
+    parquet_dir: Optional[Path] = None,
+    *,
+    version: Optional[str] = None,
+) -> Path:
+    """`<root>/<table>[/version=<v>]/year=YYYY/YYYYMMDD.parquet`。
+
+    🔴 **`version` 是给「同一天可以有多版」的表用的**(目前只有 `fact_pack`,
+    §5.3.2 第 3 条:「口径变了就发新 `pack_version`」)。⚠ 不给 `version` 时布局
+    与历史逐字相同 —— 上游各表(`daily` / `daily_basic` / …)一天只有一版,⛔ 不要
+    给它们加版本目录。
+
+    **为什么非加不可**(2026-08-21 复审 R1-B1 实测):`fact_packs` 有
+    `UNIQUE(trade_date, pack_version)`,同一天允许两版清单行,而路径里没有版本时
+    两版共用一个坑位 —— 先冻 fp-2 再冻 fp-3,fp-2 的清单行连同它的
+    `content_fingerprint` 原样留着,指向的却已经是 fp-3 的数据。清单是审计物,
+    ⛔ 不能允许它说谎。
+    """
     dt = _to_date(trade_date)
-    return table_dir(table, parquet_dir) / f"year={dt.year}" / f"{dt.strftime('%Y%m%d')}.parquet"
+    base = table_dir(table, parquet_dir)
+    if version:
+        base = base / f"version={version}"
+    return base / f"year={dt.year}" / f"{dt.strftime('%Y%m%d')}.parquet"
 
 
 # —— 各表数值列 canonical dtype 声明(单一事实源)——————————————————————————

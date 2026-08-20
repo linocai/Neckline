@@ -188,6 +188,135 @@ class TestFreezeIsNotOverwritable:
         _freeze(env, v2)
         assert {r[1] for r in fact_store.list_packs(db_path=env.db_path)} == {fact_pack.PACK_VERSION, "fp-99"}
 
+    def test_two_versions_of_the_same_day_do_not_share_one_parquet_slot(self, isolated_env):
+        """🔴 R1-B1:「口径变了就发新版本」这条**唯一逃生口**自己曾经是覆盖后门。
+
+        复审实测(修复前):先冻 fp-2(close=10)再冻 fp-3(close=99),
+        重新读 fp-2 的 `rows` 拿到的是 **99** —— 清单行的 `content_fingerprint`
+        还写着 fp-2 的指纹,指向的却是 fp-3 的字节。清单是审计物,⛔ 不能说谎。
+        """
+        import dataclasses
+        import hashlib
+
+        env = isolated_env
+        _seed_meta(env)
+        _seed_day(env, closes={"600001.SH": 10.0})
+        v2 = _freeze(env, _build(env))
+
+        _seed_day(env, closes={"600001.SH": 99.0})
+        v3 = _freeze(env, dataclasses.replace(_build(env), pack_version="fp-3"))
+
+        def close_of(p):
+            return p.rows.filter(pl.col("ts_code") == "600001.SH")["close"].to_list()
+
+        def sha(path):
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        again2 = fact_store.load_pack(
+            D0, pack_version=fact_pack.PACK_VERSION,
+            parquet_dir=env.parquet_dir, db_path=env.db_path)
+        again3 = fact_store.load_pack(
+            D0, pack_version="fp-3", parquet_dir=env.parquet_dir, db_path=env.db_path)
+
+        assert again2.path != again3.path, "两版必须各占一个坑位"
+        assert close_of(again2) == [10.0], "旧版本读回来的必须还是旧版本的数据"
+        assert close_of(again3) == [99.0]
+        # 🔴 每一行清单的指纹都等于**它自己那份**磁盘文件的 sha256。
+        assert sha(again2.path) == again2.content_fingerprint == v2.content_fingerprint
+        assert sha(again3.path) == again3.content_fingerprint == v3.content_fingerprint
+
+    def test_a_pack_frozen_in_the_legacy_layout_is_still_readable(self, isolated_env):
+        """R1-B1 修复前落盘的包(路径里没有版本)必须**平滑读得到**。
+
+        它是生产 / 开发机上已有 fp-2 数据的形状 —— 修复不许把它们读丢。
+        """
+        env = isolated_env
+        _seed_meta(env)
+        _seed_day(env, closes={"600001.SH": 42.0})
+        frozen = _freeze(env, _build(env))
+
+        # 把它搬回遗留布局,模拟「本次修复之前冻的那些包」。
+        legacy = fact_store.legacy_pack_file_path(D0, env.parquet_dir)
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        frozen.path.rename(legacy)
+        assert not fact_store.pack_file_path(
+            D0, fact_pack.PACK_VERSION, env.parquet_dir).exists()
+
+        again = fact_store.load_pack(D0, parquet_dir=env.parquet_dir, db_path=env.db_path)
+        assert again.path == legacy
+        assert again.rows.filter(
+            pl.col("ts_code") == "600001.SH")["close"].to_list() == [42.0]
+        # 区间读走的是另一条路径解析,一并锁住。
+        frame = fact_store.load_pack_range(
+            D0, D0, as_of=D0, columns=["ts_code", "close"],
+            parquet_dir=env.parquet_dir, db_path=env.db_path)
+        assert frame["close"].to_list() == [42.0]
+
+    def test_the_legacy_file_is_relocated_before_a_second_version_lands(self, isolated_env):
+        """遗留布局那一份必须**先归位**,再让新版本落地 —— 否则又回到覆盖后门。"""
+        import dataclasses
+
+        env = isolated_env
+        _seed_meta(env)
+        _seed_day(env, closes={"600001.SH": 10.0})
+        frozen = _freeze(env, _build(env))
+        legacy = fact_store.legacy_pack_file_path(D0, env.parquet_dir)
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        frozen.path.rename(legacy)
+
+        _seed_day(env, closes={"600001.SH": 99.0})
+        _freeze(env, dataclasses.replace(_build(env), pack_version="fp-3"))
+
+        assert not legacy.exists(), "遗留布局那一份应当已经归位"
+        old = fact_store.load_pack(D0, parquet_dir=env.parquet_dir, db_path=env.db_path)
+        assert old.path == fact_store.pack_file_path(
+            D0, fact_pack.PACK_VERSION, env.parquet_dir)
+        assert old.rows.filter(
+            pl.col("ts_code") == "600001.SH")["close"].to_list() == [10.0]
+
+    def test_a_legacy_file_nobody_can_claim_stops_the_next_freeze(self, isolated_env):
+        """遗留文件的指纹对不上任何一条清单行 → **当场停手**,⛔ 不许再叠一版。"""
+        import dataclasses
+
+        env = isolated_env
+        _seed_meta(env)
+        _seed_day(env)
+        frozen = _freeze(env, _build(env))
+        legacy = fact_store.legacy_pack_file_path(D0, env.parquet_dir)
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        frozen.path.rename(legacy)
+        legacy.write_bytes(legacy.read_bytes() + b"\x00")      # 指纹从此对不上
+
+        with pytest.raises(fact_store.PackAlreadyFrozen, match="对不上唯一一条清单行"):
+            _freeze(env, dataclasses.replace(_build(env), pack_version="fp-3"))
+
+    def test_a_file_that_appeared_after_we_started_is_never_clobbered(self, isolated_env):
+        """R1-B1「顺带」那一条:查清单与落地之间有窗口,两个进程同冻一版时,
+        后到的那个过去会**先覆盖**再抛错 —— 先到者的清单行从此对不上磁盘。"""
+        env = isolated_env
+        _seed_meta(env)
+        _seed_day(env)
+        target = fact_store.pack_file_path(D0, fact_pack.PACK_VERSION, env.parquet_dir)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        built = _build(env)
+
+        import neckline.facts.store as store_mod
+        original = store_mod._sha256
+
+        def sneak(path):                       # 在「算指纹」与「就位」之间插一脚
+            if path.name.endswith(".parquet") and not target.exists():
+                target.write_bytes(b"another process got here first")
+            return original(path)
+
+        store_mod._sha256 = sneak
+        try:
+            with pytest.raises(fact_store.PackAlreadyFrozen, match="另一个进程"):
+                _freeze(env, built)
+        finally:
+            store_mod._sha256 = original
+        assert target.read_bytes() == b"another process got here first", "⛔ 不许覆盖别人的字节"
+        assert fact_store.list_packs(db_path=env.db_path) == [], "没落地就⛔ 不许有清单行"
+
     def test_the_manifest_row_only_ever_says_frozen(self, isolated_env):
         env = isolated_env
         _seed_meta(env)
@@ -520,7 +649,12 @@ class TestRetentionAndReadOnly:
             _freeze(env, _build(env, d))
         table_root = env.parquet_dir / fact_store.PARQUET_TABLE
         assert not (table_root / ".staging").exists()
-        assert sorted(p.name for p in table_root.iterdir()) == ["year=2024"]
+        # ⚠ R1-B1 之后**版本进路径**:表根下只剩 `version=<v>/`,年分区在它下面一层。
+        assert sorted(p.name for p in table_root.iterdir()) == [
+            f"version={fact_pack.PACK_VERSION}"]
+        assert sorted(
+            p.name for p in (table_root / f"version={fact_pack.PACK_VERSION}").iterdir()
+        ) == ["year=2024"]
 
     def test_rows_is_a_fresh_copy_every_time(self, isolated_env):
         env = isolated_env
