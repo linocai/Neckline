@@ -204,12 +204,8 @@ async def _morning_loop(stop_event: asyncio.Event) -> None:
     ⛔ 不许以任何形式接回来。系统不持续观察 9:30 以后的价格、不推送盘中提醒、
     不跟踪持仓(架构 §四)。
 
-    **本片(S1)的状态:两拍都还没有输入,循环里只剩节奏骨架。**
-    竞价核对表要代入 D0 冻结的 K9 预案条件,而 K9 清单与预案要到 S6 / S10 才存在;
-    原 K8 竞价层(`neckline/auction/`)的输入是 T1/T2 篮子 + 盘中关注池,两者都随
-    K8 退役,故整包已在 S1 删除(登记见 PROJECT_PLAN §14)。
-
-    S8 在此挂两拍(PROJECT_PLAN §5.7.3),**各自独立 `try/except`,一拍炸了不影响另一拍**:
+    **本片(S8)起两拍齐全**(PROJECT_PLAN §5.7.3),
+    **各自独立 `try/except`,一拍炸了不影响另一拍**:
 
     | 拍 | 窗口 | 推送 | 产物 |
     |---|---|---|---|
@@ -219,15 +215,59 @@ async def _morning_loop(stop_event: asyncio.Event) -> None:
     🔴 ⛔ **不新增 systemd unit** —— 两拍都跑在既有常驻 `neckline.service` 里
     (PROJECT_PLAN §9.3)。多一个 unit 就多一条双跑路径,而「当日只跑一次」记在
     `neckline/dedup.py` 的台账里,双触发会把「今天跑没跑过」变成一道要现场推理的题。
+
+    🔴 **推送只在第一拍**:结算拍**零推送**(裁定 10 —— 它是结算,不是提醒)。
+    本函数里 `notify.*` 只出现在竞价那一支下面,守门单测 G21 跑一次结算断言
+    APNs 调用计数 = 0。
     """
-    logger.info("早晨轮询已挂载(S1:节奏骨架,两拍待 S8 接入)")
+    logger.info("早晨轮询已挂载(S8:9:26 竞价核对表 + 10:00 结算拍,零新增 unit)")
     while not stop_event.is_set():
         now = datetime.now()
+        # 🔴 两拍**各自独立** `try/except`(§5.7.3):一拍炸了不影响另一拍。
+        try:
+            _morning_checklist_tick(now)
+        except Exception:  # noqa: BLE001 —— 早晨循环不许被单拍异常掀翻
+            logger.warning("[morning] 竞价核对表那一拍异常(已吞,不影响结算拍)",
+                           exc_info=True)
+        try:
+            _morning_settle_tick(now)
+        except Exception:  # noqa: BLE001
+            logger.warning("[morning] 10:00 结算拍异常(已吞,不影响竞价拍)", exc_info=True)
         interval = _MORNING_PREOPEN_POLL_SEC if _is_preopen(now) else _MORNING_IDLE_POLL_SEC
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
             pass
+
+
+def _morning_checklist_tick(now: datetime) -> None:
+    """9:26—9:29 那一拍:跑核对表 → 落库 → **判门槛** → 推一条 APNs。
+
+    ⚠ 窗口外 / 当日已跑 → `run_checklist_tick` 内部**零落库**直接返回,
+    本函数只是把它调起来;⛔ 这里不复判窗口(判据的单一源在 `pipeline.py`)。"""
+    from neckline.auction import pipeline as auction_pipeline
+
+    res = auction_pipeline.run_checklist_tick(now, db_path=_db(),
+                                              parquet_dir=_PARQUET_DIR_OVERRIDE)
+    if res.skipped_reason:
+        logger.debug("[morning] 竞价核对表跳过:%s", res.skipped_reason)
+        return
+    # 推送门槛的单一源是 `ChecklistRunResult.should_push`,⛔ 不在这里另判一次。
+    if res.should_push:
+        notify.push_checklist_summary(res.counts, db_path=_db())
+
+
+def _morning_settle_tick(now: datetime) -> None:
+    """10:00—10:05 那一拍:一次性结算快照 → 三分支终值。
+
+    🔴 **零推送、不进 App 首屏**(裁定 10)。本函数**一行 `notify` 都没有** ——
+    结算拍的产物只从 `GET /scoreboard/verdicts/{date}` 出去。"""
+    from neckline.auction import settle as auction_settle
+
+    res = auction_settle.run_settle_tick(now, db_path=_db(),
+                                         parquet_dir=_PARQUET_DIR_OVERRIDE)
+    if res.skipped_reason:
+        logger.debug("[morning] 结算拍跳过:%s", res.skipped_reason)
 
 
 @asynccontextmanager
@@ -953,6 +993,69 @@ def get_selection_by_date(trade_date: str) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail=f"{trade_date} 没有报告")
     return _selection_payload(row)
+
+
+def _parse_day(raw: str) -> date_cls:
+    try:
+        return datetime.strptime(raw, "%Y%m%d").date()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="日期必须是 YYYYMMDD")
+
+
+# —— V2.5.0 S8:次日核对表与 D1 结算 ————————————————————————————————————————
+
+
+@app.get(f"{API_PREFIX}/checklist/{{trade_date}}", dependencies=[Depends(require_token)])
+def get_checklist(trade_date: str) -> dict:
+    """**9:29 竞价核对表**:`已触发放弃 / 待开盘后观察` 两段。
+
+    🔴 **响应体里没有「成立」这个取值**(裁定 10 / 守门 G20)——
+    `segments` 逐段来自 `ChecklistVerdict` 这个**二值枚举**,类型上就没有第三段。
+    `footnote` 恒带一句「成立由 10:00 结算,9:30–10:00 由我自己判定」。
+
+    404 = **那天没跑过那一拍**(⛔ 不是「跑了、表是空的」——那会返回一张两段皆空的表)。
+    """
+    from neckline.auction import store as auction_store
+
+    out = auction_store.load_checklist(_parse_day(trade_date), db_path=_db())
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"{trade_date} 没有竞价核对表")
+    return out
+
+
+@app.get(f"{API_PREFIX}/scoreboard/verdicts/{{trade_date}}",
+         dependencies=[Depends(require_token)])
+def get_verdicts(trade_date: str) -> dict:
+    """**10:00 结算拍的三分支终值**(含 `decidedStage`)。
+
+    🔴 **挂在 `scoreboard` 下而不是 `checklist` 下**(裁定 10):这样「它属于成绩线、
+    不属于早盘首屏」在**路由上**就看得出来。
+
+    ⚠ `verdict` / `decidedStage` 为 `null` = **今天还没定案**(9:29 判了待观察、
+    10:00 那一拍还没跑或没跑成),⛔ 不是「观察」——「观察」是 10:00 真看过之后的
+    结论,它带着 `decidedStage='open30'`。
+    """
+    from neckline.auction import store as auction_store
+
+    day = _parse_day(trade_date)
+    rows = auction_store.load_verdicts(day, db_path=_db())
+    return {
+        "tradeDate": trade_date,
+        "verdicts": [
+            {
+                "tsCode": r["ts_code"], "d0Date": r["d0_date"], "pattern": r["pattern"],
+                "playbookVersion": r["playbook_version"],
+                "auctionVerdict": r["auction_verdict"],
+                "verdict": r["verdict"], "decidedStage": r["decided_stage"],
+                "auctionReadings": r["auction_readings"],
+                "open30Readings": r["open30_readings"],
+                "branches": r["open30_branches"] or (
+                    [r["auction_branch"]] if r["auction_branch"] else []),
+                "settledAt": r["settled_at"],
+            }
+            for r in rows
+        ],
+    }
 
 
 __all__ = ["app", "VERSION", "API_PREFIX"]

@@ -202,85 +202,54 @@ def push_retreat_brake(
     )
 
 
-# 熔断锁定期盘前提醒的固定措辞(= `sentinel/precall.py::CIRCUIT_LOCKED_PRECALL_NOTE`;
-# 此处按字面量引用以免 notify → sentinel 重耦合,与 `_KIND_TIME_EXIT` 同惯例,
-# 一致性由 `tests/test_notify.py` 结构性断言守护)。
-# ⚠ **V2.2-⑤-B:`_CIRCUIT_LOCKED_NOTE`(「熔断中:今日只减不加」)已随熔断整体退役删除**。
-# 连带后果**如实登记**(§八 第 19 项原文):那句「次日只减不加」此前是靠 9:26 汇总推送的
-# **必发豁免**送到用户手机上的,**豁免一并取消** —— 以后平静的清晨就是真的没推送。
+# —— V2.5.0 S8:D1 次日核对表的汇总推送 ————————————————————————————————————
+#
+# ⚠ **`push_precall_summary`(9:26 盘前校准汇总)已随 K8 退役删除**:它的四类计数
+# (买点变形 / 开盘证伪 / 持仓止损预警 / 竞价量能异常)全部来自 `sentinel/precall.py`,
+# 而那个包已在 V2.5.0 S1 物理删除 —— 留着一个**没有任何东西能产出它入参**的措辞函数,
+# 只会让下一个人以为盘前校准还在跑(PROJECT_PLAN §14 S1 登记 ⑩ 点名要求 S8 顺手收口)。
 
 
-def push_precall_summary(
+def push_checklist_summary(
     counts: dict, *,
     db_path: Optional[Path] = None, transport: Optional[Any] = None,
 ) -> NotifyOutcome:
-    """9:26 盘前校准汇总(kind=`precall`,**重要不紧急**级,plan v1.1-A.4)。`counts` =
-    盘前校准四类判定的计数 dict(`gap_up` 买点变形 / `low_open` 开盘证伪 /
-    `position_low_open` 持仓预警 / `auction` 竞价量能异常附注 / `member_ex_rights`
-    疑似除权除息导致**今日核对不了**的成员数)。**盘前不产新票、不推荐买入**
-    (§2.4 铁原则),只汇总「前晚计划被集合竞价作废/预警」的条数。
+    """9:26—9:29 **D1 竞价核对表**汇总(V2.5.0 S8,K9 §七 / 架构 §四 / 裁定 10)。
 
-    `member_ex_rights`(判定线审计 🟡-2,2026-08-03)照 `auction` 的体例做附注:
-    它既不是判定也不触发推送(缺键 → 0,老调用方零感知),但**「今天没核对」必须与
-    「核对过、没异常」分得开**,否则用户会把沉默读成平安。
+    🔴 **kind 复用 `KIND_PRECALL`,⛔ 不新开 kind**(2026-08-11 用户拍板,V2.5.0 沿用):
+    新 kind 要动 `app_settings` 加列 + 迁移 + 设置屏,且 `ALL_KINDS` 是冻结元组、
+    加一个要用户单独拍板。⚠ 那条拍板原本的代价是「盘前校准与竞价确认共用一个开关」——
+    **盘前校准已随 K8 退役**,于是这个 kind 现在只服务这一条推送,代价自动消失。
 
-    ⚠ **V2.2-⑤-B:原来的「熔断锁定态」参数已删**(熔断整体退役,裁定 #8)。它原本让锁定期即便
-    零判定也必发一条 —— **这条必发豁免随之取消**,汇总推送回归正常门槛
-    (`PrecallResult.should_push_summary` = 有需要动作的判定才推)。**这是裁定 #8 的字面
-    结果、不是遗漏**:平静的清晨从此真的没推送(§八 第 19 项已当面告知用户)。
-    **纯提醒层**(§3.8):本函数只发文字,绝不代下单/撤单。"""
-    n = int(counts.get("gap_up", 0))
-    m = int(counts.get("low_open", 0))
-    k = int(counts.get("position_low_open", 0))
-    a = int(counts.get("auction", 0))
-    x = int(counts.get("member_ex_rights", 0))
-    body = f"集合竞价校准:{n} 只买点变形、{m} 只开盘证伪、{k} 只持仓止损预警"
-    if a:
-        body += f"(另 {a} 只竞价量能异常)"
-    if x:
-        body += f"(另 {x} 只疑似除权除息、冻结锚失效,今日未核对)"
-    body += "。前晚计划按校准结果执行," + _OPEN_APP_NOW
-    return push_event(
-        KIND_PRECALL, "盘前校准提醒", body,
-        db_path=db_path, transport=transport,
-    )
+    🔴 **⛔ 文案里不许出现「成立」**(裁定 10 / G20):9:26 那一拍**结构上判不出成立**,
+    核对表只有「已触发放弃」与「待开盘后观察」两段。恒带的那句脚注
+    (`checklist.CHECKLIST_FOOTNOTE`)把「谁在什么时候定成立」说清楚。
 
+    `counts` 键:`rejected` / `pendingOpen` / `noQuote` / `noPlaybook` / `dataQuality`
+    —— **唯一源 = `auction/pipeline.py::ChecklistRunResult.counts`**。
 
-def push_auction_summary(
-    counts: dict, *,
-    db_path: Optional[Path] = None, transport: Optional[Any] = None,
-) -> NotifyOutcome:
-    """9:26—9:29 **D1 集合竞价确认**汇总(V2.3.3-④,K8.md §二十)。
-
-    🔴 **kind 复用 `KIND_PRECALL`,⛔ 不新开 kind**(2026-08-11 用户拍板):新 kind 要动
-    `app_settings` 加列 + 迁移 + 设置屏,且 `ALL_KINDS` 是冻结元组、加一个要用户单独拍板。
-    ⚠ **已知代价、如实登记**(§五 ⑨-B-4):9:26 盘前校准汇总与竞价确认汇总**共用一个
-    开关** —— 用户关掉 `precall` 会**同时关掉两条**。这是那条拍板的**字面结果、不是遗漏**;
-    要拆开需用户单独拍一个新 kind。
-
-    `counts` 键:`confirm` / `neutral` / `veto` / `pending_explanation` /
-    `hit_invalidation` / `llm_stage`(**唯一源 = `auction/pipeline.py::AuctionRunResult.
-    counts`**)。⚠ `llm_stage` 是**字符串**混在 counts 里,措辞按它决定加不加那句
-    「本次 LLM 未给出解释」—— 同 `push_precall_summary` 的 counts 位置。
-
-    **推送门槛不在这里**(单一源是 `AuctionRunResult.should_push`):`_sentinel_loop`
-    判完才调本函数。⛔ 不许"平静的早晨也发一条"。
-
-    **纯提醒层**(§3.8):只发文字,绝不代下单。文案里 ⛔ 不得出现「建议买入 / 可以买」
-    这类措辞 —— 系统只审计不代下单。
+    **推送门槛不在这里**(单一源是 `ChecklistRunResult.should_push`):
+    `_morning_loop` 判完才调本函数。**纯提醒层**:只发文字,绝不代下单。
     """
-    c = int(counts.get("confirm", 0))
-    n = int(counts.get("neutral", 0))
-    v = int(counts.get("veto", 0))
-    h = int(counts.get("hit_invalidation", 0))
-    stage = str(counts.get("llm_stage", "") or "")
-    body = f"集合竞价确认:{c} 篮确认、{n} 篮中性、{v} 篮否决;{h} 只命中 D0 失效位。"
-    if stage != "ok":
-        body += "(本次 LLM 未给出解释,已按『待解释』记录)"
-    # K8 §二十 逐字,**恒带**:竞价结论不是买入指令。
-    body += "竞价结论只说明竞价反映出的信息,不等于买入指令。"
+    from neckline.auction.checklist import CHECKLIST_FOOTNOTE
+
+    rejected = int(counts.get("rejected", 0))
+    pending = int(counts.get("pendingOpen", 0))
+    no_quote = int(counts.get("noQuote", 0))
+    no_playbook = int(counts.get("noPlaybook", 0))
+    quality = str(counts.get("dataQuality", "") or "")
+    body = f"竞价核对表:{rejected} 只已触发放弃、{pending} 只待开盘后观察。"
+    if no_quote:
+        # 「没抓到读数」与「读数正常、条件没触发」必须分得开 —— 否则用户会把
+        # 一次拉价失败读成「这几只都没事」。
+        body += f"(其中 {no_quote} 只本次没有可用读数,已按待观察列出)"
+    if no_playbook:
+        body += f"(另 {no_playbook} 只没有冻结预案,今日核对不了)"
+    if quality and quality != "ok":
+        body += f"(本次数据质量:{quality})"
+    body += CHECKLIST_FOOTNOTE
     return push_event(
-        KIND_PRECALL, "集合竞价确认", body,
+        KIND_PRECALL, "竞价核对表", body,
         db_path=db_path, transport=transport,
     )
 
@@ -486,9 +455,8 @@ __all__ = [
     # 措辞层(V1 六类迁移)
     "push_report_ready",
     "push_retreat_brake",
-    "push_precall_summary",
-    # 措辞层(V2.3.3-④ 新增;kind 复用 KIND_PRECALL,**零新 kind**)
-    "push_auction_summary",
+    # 措辞层(V2.5.0 S8;kind 复用 KIND_PRECALL,**零新 kind**)
+    "push_checklist_summary",
     "push_d5_exit",
     "push_consecutive_stops_notice",
     "push_holding_alert",

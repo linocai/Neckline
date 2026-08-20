@@ -53,16 +53,18 @@ def test_push_entrypoints_are_exactly_the_declared_set():
     入口;**V2.3.3-④ 再加一个竞价确认汇总**):`notify.__all__` = 一条 `push_event`
     + 十个措辞函数,**不给第十二个入口留位置**。加入口 = 改这条断言 = 过一次人眼。
 
-    ⚠ `push_auction_summary` 是**措辞层**新增,**kind 复用 `KIND_PRECALL`、零新 kind**
-    (§五 〇-5 用户拍板)—— 所以 `test_notify_kinds.py` 的 `ALL_KINDS` 精确集合**不动**。
+    ⚠ **V2.5.0 S8**:`push_auction_summary`(K8 竞价确认)换成 `push_checklist_summary`
+    (K9 两段核对表),`push_precall_summary`(盘前校准)**随 `sentinel/precall.py` 退役
+    一并删除** —— 它的四类计数已经没有任何东西能产出。两者都**沿用 `KIND_PRECALL`、
+    零新 kind**,所以 `test_notify_kinds.py` 的 `ALL_KINDS` 精确集合**仍然不动**。
     """
     assert set(notify.__all__) == {
         "NotifyOutcome", "push_event",
-        "push_report_ready", "push_retreat_brake", "push_precall_summary",
+        "push_report_ready", "push_retreat_brake",
         "push_d5_exit", "push_consecutive_stops_notice", "push_holding_alert",
         "push_attention_alert", "push_custom_alert",
         "push_holding_risk_alert",
-        "push_auction_summary",
+        "push_checklist_summary",
     }
 
 
@@ -203,34 +205,34 @@ def _set_kind(db, kind: str, on: bool) -> None:
     set_push_kinds(kinds, db_path=db)
 
 
-def test_precall_summary_gated_off(api_env, apns_configured):
+def test_checklist_summary_gated_off(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
     _set_kind(db, notify_kinds.KIND_PRECALL, False)
-    out = notify.push_precall_summary(
-        {"gap_up": 2, "low_open": 1, "position_low_open": 0, "auction": 1},
+    out = notify.push_checklist_summary(
+        {"rejected": 2, "pendingOpen": 3, "noQuote": 0, "noPlaybook": 0, "dataQuality": "ok"},
         db_path=db, transport=_ok_transport,
     )
     assert out.sent == 0 and out.skipped_reason == "kind_off:precall"
 
 
-def test_precall_summary_sends_when_on(api_env, apns_configured):
+def test_checklist_summary_sends_when_on(api_env, apns_configured):
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
     upsert_device("tok2", db_path=db)
-    out = notify.push_precall_summary(
-        {"gap_up": 1, "low_open": 0, "position_low_open": 1, "auction": 0},
+    out = notify.push_checklist_summary(
+        {"rejected": 0, "pendingOpen": 5, "noQuote": 0, "noPlaybook": 0, "dataQuality": "ok"},
         db_path=db, transport=_ok_transport,
     )
     assert out.sent == 2 and out.failed == 0   # 默认开(列默认 1)
 
 
-def test_precall_summary_has_no_lock_prefix_anymore(api_env, apns_configured):
-    """**V2.2-⑤-B(裁定 #8)**:原「熔断锁定 → 标题/正文前置『今日只减不加』+ custom 带
-    锁定位」三件**全删**。汇总推送从此只有一种形态:一句集合竞价校准。
+def test_checklist_summary_never_says_confirmed(api_env, apns_configured):
+    """🔴 **裁定 10 / 守门 G20 的推送侧**:9:26 那一条推送里 ⛔ 不许出现「成立」
+    —— 那一拍**结构上判不出成立**(K9 §6.3 四个成立分支全含「前 30 分钟」合取项)。
 
-    ⚠ 连带如实登记:那句「次日只减不加」此前靠 9:26 汇总的**必发豁免**送达,**豁免一并
-    取消**(§八 第 19 项已当面告知用户:以后平静的清晨就是真的没推送)。"""
+    恒带的脚注把「谁在什么时候定成立」说清楚,所以正文里那两个字只会以
+    「成立由 10:00 结算」这个**说明**的形式出现,⛔ 不会出现在任何一段计数里。"""
     import json
     db = api_env.db_path
     upsert_device("tok1", db_path=db)
@@ -240,16 +242,23 @@ def test_precall_summary_has_no_lock_prefix_anymore(api_env, apns_configured):
         seen.update(json.loads(body.decode() if isinstance(body, bytes) else body))
         return apns.PushResult(ok=True, status=200, reason="ok")
 
-    out = notify.push_precall_summary(
-        {"gap_up": 1, "low_open": 0, "position_low_open": 0, "auction": 0},
+    out = notify.push_checklist_summary(
+        {"rejected": 1, "pendingOpen": 4, "noQuote": 1, "noPlaybook": 0,
+         "dataQuality": "degraded"},
         db_path=db, transport=_capture,
     )
     assert out.sent == 1
     alert = seen["aps"]["alert"]
-    assert alert["title"] == "盘前校准提醒"
-    for banned in ("熔断", "只减不加", "只许减仓"):
-        assert banned not in alert["title"] and banned not in alert["body"]
-    assert "circuitLocked" not in seen      # custom 载荷里那一位也没了
+    assert alert["title"] == "竞价核对表"
+    assert "1 只已触发放弃" in alert["body"] and "4 只待开盘后观察" in alert["body"]
+    # 「本次没有可用读数」必须与「读数正常、条件没触发」分得开。
+    assert "没有可用读数" in alert["body"]
+    # ⛔ 正文里除了那句脚注,不许有第二处「成立」。
+    assert alert["body"].count("成立") == 1
+    assert "成立由 10:00 结算" in alert["body"]
+    # K8 的三种竞价结论码全仓不许出现在推送文案里。
+    for banned in ("确认", "否决", "篮", "买入"):
+        assert banned not in alert["body"]
 
 
 def test_d5_exit_gated_off(api_env, apns_configured):

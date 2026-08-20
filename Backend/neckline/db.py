@@ -1854,6 +1854,128 @@ CREATE TABLE IF NOT EXISTS k9_reports (
   generated_at           TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_k9_reports_report_date ON k9_reports(report_date);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.5.0 S10:预案(K9 §六,架构 §3.4,PROJECT_PLAN §5.6)
+-- ══════════════════════════════════════════════════════════════════════════
+--
+-- 🔴 **append-only 版本化**(K9 §6.4「最终确认由我盘后逐只过目,可修改」):
+-- 用户改动写**新版本行**,⛔ 不覆盖原冻结版本。主键含 `version` 就是那条纪律的牙齿
+-- —— 想改老版本只能 UPDATE,而应用层根本没有那条 SQL(守门单测扫)。
+--
+-- ⚠ `branches_json` 装的是**结构化可机械求值**的条件(架构 §3.4 硬约束),
+-- 形状由 `playbook/model.py` 的闭合枚举定死;⛔ 里面不许有自然语言条件。
+-- ⚠ 三个价位**分三列存**,⛔ 不给任何「赔率」合计列 —— 赔率由收盘价现算
+-- (`Levels.odds_of`),存下来只会在用户改了价位之后变成一个对不上的旧数。
+CREATE TABLE IF NOT EXISTS k9_playbooks (
+  trade_date       TEXT NOT NULL,      -- D0(预案冻结这一天)
+  ts_code          TEXT NOT NULL,
+  version          INTEGER NOT NULL,   -- 1 起;用户每改一次 +1
+  source           TEXT NOT NULL,      -- llm | user(闭合)
+  pattern          TEXT NOT NULL,      -- 骨架按它套用(架构 §四:预案层知道形态)
+  first_resistance REAL NOT NULL,      -- 第一压力位 = 预期离场价 = 判断对错的标准
+  second_resistance REAL NOT NULL,
+  invalidation     REAL NOT NULL,      -- 失效位
+  branches_json    TEXT NOT NULL,      -- [成立, 放弃] 两条分支的条件(闭合语法)
+  filled_by        TEXT NOT NULL,      -- provider/model 或用户标识
+  filled_at        TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  PRIMARY KEY (trade_date, ts_code, version)
+);
+CREATE INDEX IF NOT EXISTS idx_k9_playbooks_day ON k9_playbooks(trade_date);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.5.0 S9:解释层(架构 §3.3,PROJECT_PLAN §5.5)
+-- ══════════════════════════════════════════════════════════════════════════
+--
+-- ⚠ `news_state` 三值闭合:`clean`(查过了、干净)/ `excluded`(命中四类之一,已剔除)/
+-- `unverified`(**没查成**)。🔴 三者⛔ 不许折平:把 `unverified` 当 `clean` 是
+-- 「没看」冒充「看过了没事」;把它当 `excluded` 则会因为一次检索失败悄悄砍掉好票。
+CREATE TABLE IF NOT EXISTS k9_explain_notes (
+  trade_date     TEXT NOT NULL,
+  ts_code        TEXT NOT NULL,
+  profile_json   TEXT NOT NULL,   -- 资料聚合(公司 / 行业处境 / 位置与结构 / 近期表现)
+  kline_comment  TEXT NOT NULL,   -- 日K 形态评价(LLM 先看一遍,用户再自己看一遍)
+  news_state     TEXT NOT NULL,   -- clean | excluded | unverified(闭合三值)
+  news_category  TEXT,            -- 爆雷 | 减持 | 立案 | 监管(闭合;NULL = 未命中)
+  news_json      TEXT NOT NULL,   -- 检索证据留痕(Tavily 命中条目)
+  llm_ok         INTEGER NOT NULL,
+  filled_by      TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  PRIMARY KEY (trade_date, ts_code)
+);
+
+-- 剔除与补位的**逐步审计**(§5.5「每次剔除与补位都写进运行审计」)。
+-- append-only;`seq` 是当日次序 —— 「谁被剔、为什么、谁补上」是一条可回放的链。
+CREATE TABLE IF NOT EXISTS k9_explain_audit (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_date   TEXT NOT NULL,
+  seq          INTEGER NOT NULL,
+  round_no     INTEGER NOT NULL,   -- 第几轮补位(受 params.explain.maxBackfillRounds 约束)
+  action       TEXT NOT NULL,      -- excluded | backfilled | rounds_exhausted(闭合)
+  ts_code      TEXT NOT NULL,
+  reason       TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_k9_explain_audit_day ON k9_explain_audit(trade_date, seq);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.5.0 S8:次日核对与 D1 结算(K9 §七 / 架构 §四 / **裁定 10**)
+-- ══════════════════════════════════════════════════════════════════════════
+--
+-- 🔴 **两张表,两拍各写各的**:
+--   · `k9_checklists`   9:26—9:29 那一张**两段**核对表(整张冻结成 JSON,供 App 与
+--     `GET /checklist/{date}` 原样下发)。⛔ 表里**没有「成立」这个取值**(裁定 10)。
+--   · `k9_d1_verdicts`  逐票的三分支**终值**与两阶段读数(架构 §5.1 要求冻结
+--     「D0 预案条件、D1 竞价与开盘 30 分钟读数、三分支判定结果」)。
+--
+-- 🔴 **`decided_stage` 是「先到先定」的牙齿**:
+--   · `auction`(9:29 判的「放弃」)—— 10:00 那一拍**不改判**,靠
+--     `UPDATE ... WHERE decided_stage IS NULL` 的幂等条件保证,不靠谁记得跳过;
+--   · `open30` (10:00 结算拍)—— 🔴 **三分支判定的唯一权威**。
+-- 成绩线只读 `decided_stage='open30'` 的终值,或 `decided_stage='auction'` 的
+-- 「放弃」终值(§5.8.2);⛔ 不许把 9:29 的「待开盘后观察」当成任何一个分支的结论。
+--
+-- ⚠ **NULL 与取值语义不同**:`verdict` / `decided_stage` 为 NULL = **今天还没定案**
+-- (9:29 判了「待观察」、10:00 那一拍还没跑或没跑成),⛔ 不是「观察」——
+-- 「观察」是 10:00 真的看过之后的结论,它有 `decided_stage='open30'`。
+CREATE TABLE IF NOT EXISTS k9_checklists (
+  trade_date     TEXT NOT NULL,       -- D1
+  strategy       TEXT NOT NULL,
+  d0_date        TEXT NOT NULL,
+  captured_at    TEXT NOT NULL,       -- **真正拉完价的那一刻**(⛔ 不是那一拍的名义时刻)
+  data_quality   TEXT NOT NULL,       -- ok | degraded | insufficient(结构性判据)
+  rejected_count INTEGER NOT NULL,
+  pending_count  INTEGER NOT NULL,
+  checklist_json TEXT NOT NULL,       -- 整张表(两段)
+  notes_json     TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  PRIMARY KEY (trade_date, strategy)
+);
+
+CREATE TABLE IF NOT EXISTS k9_d1_verdicts (
+  trade_date            TEXT NOT NULL,   -- D1
+  ts_code               TEXT NOT NULL,
+  strategy              TEXT NOT NULL,
+  d0_date               TEXT NOT NULL,
+  pattern               TEXT NOT NULL,
+  playbook_version      INTEGER NOT NULL,
+  -- —— 9:26 那一拍(**二值**,⛔ 结构上没有「成立」)——
+  auction_verdict       TEXT,            -- rejected | pending_open | NULL(那一拍没跑)
+  auction_readings_json TEXT,
+  auction_branch_json   TEXT,            -- 「放弃」分支的逐条留痕
+  auction_at            TEXT,
+  -- —— 10:00 那一拍(三分支终值的**唯一权威**)——
+  verdict               TEXT,            -- confirmed | rejected | observed | NULL(未定案)
+  decided_stage         TEXT,            -- auction | open30 | NULL(未定案)
+  open30_readings_json  TEXT,
+  open30_branches_json  TEXT,
+  settled_at            TEXT,
+  created_at            TEXT NOT NULL,
+  PRIMARY KEY (trade_date, ts_code, strategy)
+);
+CREATE INDEX IF NOT EXISTS idx_k9_d1_verdicts_stage
+  ON k9_d1_verdicts(trade_date, decided_stage);
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库
