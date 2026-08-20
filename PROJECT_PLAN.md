@@ -539,7 +539,11 @@ grep -n "不分档" K9.md                                    # 期望：§五-6 
 
 #### 5.3.1 产物：当日事实包
 
-- **大表** → parquet 日分区 `data/parquet/fact_pack/year=YYYY/YYYYMMDD.parquet`，
+- **大表** → parquet 日分区 `data/parquet/fact_pack/version=<pack_version>/year=YYYY/YYYYMMDD.parquet`，
+  （🔴 **版本进路径**，2026-08-21 复审 R1-B1 修复：清单有 `UNIQUE(trade_date, pack_version)`，
+  路径里没有版本时两版共用一个坑位，于是「口径变了就发新版本」这条**被指定为正路**的路径，
+  恰恰是唯一能把旧数据抹掉的那条。修复前落盘的包在无版本的**遗留布局**里，读侧拿
+  `content_fingerprint` 核过 sha256 后仍读得到，写侧在下次冻结同一天时把它归位。）
   一行一只票，必须在 `market_data.TABLE_FLOAT_COLS` 里**显式声明数值列**（⚠ §12 坑 2）。
   列（定死，~40 列）：
 
@@ -573,6 +577,10 @@ grep -n "不分档" K9.md                                    # 期望：§五-6 
    进程死在中间只会留一个没有清单的孤儿 parquet（不可见，下次覆盖）；反序则会留一个指向空气的清单。
 3. **不许覆盖**：用 `INSERT`（不是 `INSERT OR REPLACE`）。同一 `(trade_date, pack_version)` 二次冻结直接抛错。
    口径变了就**发新 `pack_version`**，⛔ 没有静默重写这条路。
+   🔴 **版本必须在 parquet 路径里**（§5.3.1，R1-B1）：不然这条纪律是自相矛盾的 ——
+   同日第二版一落地就把第一版的字节抹掉，而第一版的清单行连同它的 `content_fingerprint`
+   还在，那是一条**会说谎的审计记录**。就位用 `os.link`（目标已存在即抛）：查完清单与落地
+   之间那段窗口里，两个进程同冻一版时后到的那个**停手**，⛔ 不先覆盖再抛错。
 4. **只读**：`load_pack()` 返回 `@dataclass(frozen=True)` 的 `FactPack`；`rows` 是每次调用现读 parquet
    的属性，调用方拿到的永远是自己的副本，改不脏别人。
 5. **唯一写入口**：AST 守门断言 `write_table_day("fact_pack", ...)` 与 `INSERT INTO fact_packs`
@@ -927,6 +935,16 @@ Playbook   = { ts_code, pattern, levels{first_resistance, second_resistance, inv
 - **票与行业的从属关系在写入时即冻结**（架构 §5.1）——`k9_listing_entries` 落库时把
   `sw_l2_code`/`sw_l2_name` 一并写死，事后申万调整不回改。
 - **观察分支不进任何正确率的分子分母**。单测夹具：全是观察的一天 → 三个比率返回 `None`，⛔ 不是 0。
+- 🔴 **成立率的分母是「清单」，⛔ 不是 `k9_d1_verdicts` 的行数**（R2-06，K9 §八 原文
+  「**清单中**触发『成立』的比例」）。两者**不相等**：清单上但当天没冻成预案的票，
+  9:26 与 10:00 两拍都不给它建行（`auction/store.py::ensure_rows` 的 rows 来自
+  `playbooks.items()`；`checklist.py` 对无预案的票 `continue`，只把它记进
+  `k9_checklists.checklist_json.noPlaybookCodes`）。S17 若照最自然的写法从
+  `k9_d1_verdicts` 取分母，就会**悄悄把「没冻成预案」那几只摘掉** ——
+  预案层越是失败（`_run_playbook` 允许部分失败并返回 `STATUS_OK`），成立率看起来越好。
+  ⚠ **「那几只算不算分子 / 分母」这个数本身还没定** —— 与 §13.1-B10 一起，
+  **S17 开工前**要用户拍板（见 §13.1-B22）。⛔ 施工侧不自行选，也⛔ 不许在 S17 里
+  直接 `SELECT COUNT(*) FROM k9_d1_verdicts` 当分母就开写。
 
 表：`k9_listing_entries`（D0 清单 + 冻结行业绑定）、`k9_playbooks`（D0 预案，append-only 版本化）、
 `k9_d1_verdicts`（三分支 + 两阶段读数）、`k9_followups`（D+1..D+4 逐日回填）、
@@ -1011,7 +1029,7 @@ Swift 侧：
 | `GET /api/selection/{date}/stock/{code}` | 解释层资料 + 日K评价 + 预案 + 上方机械空间 + 三价位 |
 | `POST /api/selection/{date}/stock/{code}/playbook` | 用户修改预案（append-only 新版本） |
 | `GET /api/checklist/{date}` | **9:29 竞价核对表**：`已触发放弃 / 待开盘后观察` 两段。⛔ 响应体里**没有「成立」这个取值**（裁定 10） |
-| `GET /api/scoreboard/listing?window=` | 五指标（行业分 / 选票分分列） |
+| `GET /api/scoreboard/listing?window=` | 五指标（行业分 / 选票分分列）。⚠ **批 B / S17**（R2-13）——本表其余 8 条已在批 A 落地，只有这一条随清单成绩线一起等参数标定；后端未实现、App 也未调用，运行上无影响，但照本表逐条核「API 契约是否落全」的人会当成遗漏。 |
 | `GET /api/scoreboard/verdicts/{date}` | **10:00 结算拍的三分支终值**（含 `decided_stage`）。挂在 scoreboard 下而不是 checklist 下，是为了让「它属于成绩线、不属于早盘首屏」在路由上就看得出来（裁定 10） |
 | `GET /api/scoreboard/coverage?window=` | 覆盖率 + 漏检归因 |
 | `GET /api/legacy/k8/baskets?date=` | **K8 只读追溯唯一入口**（裁定 6），只读、无写、无迁移 |
@@ -1130,6 +1148,11 @@ Swift 侧：
     `industry.heatAbsentPolicy` 三种、`ranking.relaySource` × `relayScoring` 四种组合，
     每种一条夹具；⛔ 任一取值缺省或未实现 = 本片不通过；⛔ 代码里不许有「哪个是默认」的分支；
   - `k9_disposition` 覆盖全市场每一只票且 `excluded_by` 可解释。
+    ⚠ **全集口径 = `stock_basic` 当日在市,⛔ 不是事实包口径**(2026-08-21 复审 R3-🔴-5 修复):
+    事实包只装当日 `daily` 有行的票,「一整天没交易过」的那些由 `facts/universe.py` 交出全集、
+    `boundary.apply(universe=…)` 按 K9 第一层第 6 条**后半句**补成 `suspended`。
+    那条后半句此前被称作「结构性满足」—— 但那只证明了它们不会被误放进池子,
+    不等于它们在归因表里**有行**,而这张表存在的全部理由就是回答「昨天为什么没选中它」。
 
 #### S7 · 报告骨架与推送
 - 产出：`report/{pipeline,render,store,evening}.py` 重做；表 `k9_reports`；
@@ -1439,6 +1462,13 @@ Swift 侧：
 | 生产规格 | **2 vCPU / 1.6 G** |
 | 前科 | **2026-07-29 被 OOM-kill 挡过一次上云**;超 `MemoryMax` 会被 kill **且不报错**(§12 坑 1) |
 
+⚠ **判之前先知道这件事(R3-🟡-3)**:三个 oneshot 的 `MemoryMax` 是 **V2 负载**下定的,
+而 K9 把最重的一段**搬了家** —— `neckline-scan.service` 现在只跑事实层(实测 **127 MB**)
+却挂着 `MemoryMax=1400M`,`neckline-basket.service` 接下了 736 MB 的策略层却只挂 900M。
+**从新负载看,这对数很可能该对调。** 四个 unit 的头注释已按实测改正(⛔ 一个数没动),
+免得执行那天的人读到一句反向证词(`neckline-basket.service` 那句「内存画像轻
+(不做全表扫描)」恰好是 900M 这个 cap 当年的**理由**)。
+
 ⛔ **施工侧未自行改 `MemoryMax`、未拆 unit** —— 那要用户点头(选项 a/b/c/d 见 §13.1-B5)。
 **上云前必须做的一件事**:在**生产同规格 Linux 机**上用**真实数据**复测策略层峰值
 (736 MB 是 macOS 上的读数,Linux 上 polars 的分配行为不一定相同,拿一个跨平台的数
@@ -1537,7 +1567,16 @@ Swift 侧：
    K8 只读表行数与步骤 1.2 备份**逐表相等** · 晚间链手跑一次 seg1 不报错;
 7. 客户端回装 macOS `2.4.2 (9)`(**`ditto`**)。
 8. ⛔ **任何 GET / 日常读取都不是迁移触发器** —— 回滚边界就是「迁移前备份 + 已验证的
-   v2.4.2 源码」这两样。
+   v2.4.2 源码」这两样。⚠ 这句话在 V2.5.0 之前**是不成立的**:43 个读 helper 会在
+   函数体里 `init_schema()`,一次 `load_*` 就把 v2.4.2 老库迁移成 v2.5.0
+   (实测 59 表 → 75 表)。已在本版修好(§13.1-B13,`db.py::readonly_tables()`),
+   两条闸看着它:`test_v250_s14_release_gate.py::test_no_read_helper_triggers_a_schema_migration`
+   (静态)+ `tests/test_read_path_no_ddl.py`(行为)。
+9. 🔴 **⛔ 不要用任何 Neckline 侧工具去打开那两份备份**(R3-🔴-2 的操作面残余)。
+   读路径已经不迁移了,但**启动路径与写命令仍然会** —— `api/app.py` 的 lifespan、
+   `scripts/*.py` 的写入口、任何 `init_schema()` 的显式调用,把 `db_path` 指向备份
+   就会当场往里建表,步骤 6.6 那条「与备份逐表相等」和「两份备份 sha256 相同」随之作废。
+   要比对行数,用 **`sqlite3` 直接查**(`sqlite3 <备份> "SELECT COUNT(*) FROM …"`)。
 
 #### 步骤 7 · 收尾
 
@@ -1913,7 +1952,22 @@ V2.5.0 的验收口径只写了 macOS，于是 `Push/PushManager.swift`（整份
   章程是怎么写进去的」就查不到了;而裁定 6 禁的是「再去写」,不是「留着当年的脚本」。
   ⛔ 但这要用户点头 —— 施工侧不替用户决定一个退役单的边界。
 
-#### B13 · 🔴 读取 helper **会执行 DDL**,而 README / §9.2 / §9.4 / §9.6 断言了相反的事
+#### B13 · ✅ **已还清** · 读取 helper **会执行 DDL**,而 README / §9.2 / §9.4 / §9.6 断言了相反的事
+
+> **2026-08-21 修复波处置:走 (a) 改代码,账面 43 → 0。**
+> ⚠ **这不是施工侧替用户拍板**:§7.1 的政策 V2.4.2 就定过(readers no longer initiate
+> schema migration;un-migrated stores are read-probed as legacy/empty),V2.5.0 只是把它
+> 从 ~7 个读 helper 回退到了 43 个 —— 走 (a) 是**回到既定政策**,不是在两个选项之间做新决定。
+> 落地:`db.py::readonly_tables()`(`mode=ro` + 「表 / 列还没建 → 文档化的空态」),
+> F-B 换 28 个(auction/explain/playbook/report/review/dedup/settings_store),
+> F-A 换 15 个(facts/k9/scorecard/data.sw_industry)。
+> 每个空态都按各自 docstring 已经写着的那句来(⛔ 没有新造语义):
+> 「那天没冻结 / 那天没跑过 / 那天没有清单」一律是既有的 `None` / `[]` / `{}` / `0`。
+> `xfail(strict=True)` 按它自己的原文删掉,那条闸从此活着且是绿的;
+> 账本断言从 `== 43` 改成 `== 0`;行为侧另有 `tests/test_read_path_no_ddl.py`
+> (未迁移库上读一整轮,`sqlite_master` 逐行不变)。
+> ⚠ **仍待用户点头的那一半**:§9.6 步骤 6 要不要加「⚠ 不要用新代码去打开那两份备份」
+> 这句 —— 归 §9 的负责人,本波未改 §9 措辞。
 
 - **事实**:三处白纸黑字 —— `README.md`「API、报告和复盘的**读取 helper 不执行 DDL**;
   ……任何 GET 或日常读取都不是迁移触发器」;§9.2 与 §9.6 步骤 2「⛔ API / 报告 / 复盘的
@@ -1998,6 +2052,172 @@ V2.5.0 的验收口径只写了 macOS，于是 `Push/PushManager.swift`（整份
   「设置屏摆着 11 个按了没用的开关」本身就是一种谎报能力;⛔ 施工侧未自行改动
   `RETIRED_KINDS`(那是**改推送白名单**,按模块头纪律要用户点头)。
 
+#### B16 · 🔴 放量倍数的「半窗也给读数」被摘掉了 —— 口径影响选票,请过目(修复组 F-A 登记)
+
+- **事实**:`k9/volume.py` 里有一个 **`_MIN_COVERAGE = 0.5`**,决定「历史要有多少天才
+  给出放量倍数」。它是一个**未登记的自定量**:不在 §8 的待标定总表里,也不在 §14 的
+  S6 登记清单里(那条把 p1 振幅形状、p3 窗口形状、p4 排名口径、`count` 归一、缺读数
+  重新归一五处判断都如实登记了,唯独漏了它)。复审 R1-H3 实测(`ma_days=20`):
+  19 天历史与 10 天历史的票**当日同为 250 手**,两只都拿到 `vol_multiple = 2.5` ——
+  后者的分母是 10 天均量。而放量倍数正是 p1 / p3 的**分界**(裁定 15)、也是 p2
+  「当日有实际换手」的判据(裁定 13),这个数直接决定谁进哪个形态。
+  同组另外三处(`p2._prev_close_and_ma` / `p3._window_sum` / `p4._cum_inflow`)
+  **全都要满窗**,只有它收半窗。
+- **⛔ 施工侧做了什么、为什么**:把这个常量**物理删掉**,改成与其余三处一致的
+  「满窗才给读数」。⚠ 这是**去掉一个数**而不是发明一个 —— 施工侧不许替一个未登记的
+  量选值,而「与同组三处一致」是唯一不需要挑数的出路。但它**改的是口径**,
+  所以摆在这里给你过目。
+- **口径影响(只读真实 `daily` 分区实测,⛔ 未碰 SQLite)**:
+
+  | as_of | 当日票数 | 旧口径有读数 | 新口径有读数 | **失去读数** |
+  |---|---|---|---|---|
+  | 20260724 | 5526 | 5522 | 5476 | **46**(0.83%) |
+  | 20260612 | 5512 | 5501 | 5457 | **44**(0.80%) |
+  | 20260123 | 5467 | 5463 | 5403 | **60**(1.10%) |
+
+  失去读数的票 `vol_multiple = null`,按 `volume.erupted()` 的既有语义**两边都不中**
+  (⛔ 不许当 False 塞进形态 3),因此当日不进 p1 / p2 / p3;p4 的量比只是**强度项**,
+  缺读数走既有的「退出加权、重新归一」。它们的历史天数分布集中在 19 天
+  (刚停牌复牌 / 刚上市的那一类)。
+- **选项**:(a) **保持现状**(满窗才给读数,与 p2/p3/p4 同一条纪律);
+  (b) 把「最少历史天数比例」**升格成第 23 个待标定参数**(进 §8、进参数包、由 whynotme
+  标定),取值由标定侧给,⛔ 不由施工侧给;(c) 回到 0.5 —— 那等于把一个未登记的
+  自定量正式追认下来,需要你明说。
+- **影响面**:(a) 零改动(现状);(b) 要动 `REQUIRED_SCHEMA` + `VolumeParams` +
+  示例配置 + §8 总表 + 一批夹具,并且**第 23 项待标定**会卡住参数包交付;
+  (c) 改 `volume.py` 一处常量 + 本条登记。
+- **我的倾向(⚠ 倾向不是决定)**:(a)。半窗读数与满窗读数**共用同一个名字与同一个门槛
+  V**,这本身就是把两个不同量纲的东西塞进一个判据;而 §12 那台机器上每天多损失
+  0.8% 的候选,远轻于「上线首几天所有票都『放量』」那类事故。
+  ⛔ 施工侧未把它做成参数位(那就是替你把 (b) 定了)。
+
+#### B17 · §8.4「K9 原文已给定值」既没转录也没标记 `origin`,且未登记为偏差(F-A 登记)
+
+- **事实**:§8.4(`PROJECT_PLAN` 本文)逐字写着「这些数**权威文件已经写死**,施工时按
+  原文转录进参数包,标记 `origin='K9原文'`,⛔ 施工侧不得改动」,共 10 个数
+  (`quota.min` / `quota.max` / `floorPerChannel` / `newListingDays` /
+  `liquidityWindowDays` / `liquidityBottomPct` / `p4.cumDays` 等)。实际:
+  ① `config/k9-params.example.json` 把它们全写成 `__TO_BE_CALIBRATED__`;
+  ② `params.py` 里**没有任何 `origin` 概念**(全仓 `grep "K9原文"` 只命中 Plan 那一行);
+  ③ 校验也不核它们等于 K9 原文值 —— 复审实测 `quota.min=1, quota.max=1` **校验通过**,
+  K9 §五-1 的「最少 10 最多 20」可以被一份参数包安静改掉;`p4.cumDays` 同理
+  (K9 §3.5 写死 5 日累计)。④ §14 的 S5 登记 ①–⑧、S6 登记 ①–⑬ 都没有这一条。
+- **张力所在**:这与 §7.6 / S5 那条「示例配置里一律 `__TO_BE_CALIBRATED__`」互相拉扯;
+  S5 登记已把 `excludedL2Codes` 列为**唯一例外**(白酒代码是真值)—— 但 §8.4 的这 10 个数
+  **没被讨论过**,现在既不是「转录了」也不是「登记成偏差了」,是掉在中间。
+- **选项**:(a) 在 `params.py` 加一层「K9 原文值」断言 —— 不符判 `invalid`
+  (与本波给 `excludedL2Codes` 补的「白酒必填」同一形状);(b) 同 (a) 但只打一条很吵的
+  WARNING 并记进 `k9_runs`(允许标定侧覆盖,但覆盖这件事查得到);
+  (c) 正式把「§8.4 的值不转录、不标记」登记成偏差,说清标定侧**可以**改它们。
+- **影响面**:(a)/(b) 动 `params.py` 校验 + 示例配置(那 10 个键要从
+  `__TO_BE_CALIBRATED__` 变成真值)+ §7.6 那条「一律占位符」的措辞 + 一批夹具;
+  (c) 零代码,改 §8.4 与 §14 的措辞。
+- **我的倾向(⚠ 倾向不是决定)**:(a)。§8.4 自己就写着「⛔ 施工侧不得改动」,而一个
+  **能被参数包安静改掉**的给定值,和没给定是一回事。⛔ 施工侧本波只补了白酒那一条
+  (K9 §二 第 2 条,是**排除项**不是数值),这 10 个**数**一个都没动。
+
+#### B18 · `Entry.rank` 是**全体候选**里的全局名次,不是清单内的 1..N(F-A 登记)
+
+- **事实**:`quota.py::allocate` 的 `for i, c in enumerate(candidates, start=1)` 给的是
+  **全体候选**(含没入席的后备)里的名次。保底席位会把名次靠后的票拉进席,于是一份
+  20 只的清单里可能出现 `rank=57`。这个值落进 `k9_listing_entries.rank`、经 API 出到 App。
+  Plan §5.4.2 只写了 `rank`,没说是哪一种。
+- **缺的信息**:**App 侧是否直接按它显示序号**(展示层归 R2 的范围,本条只标源头)。
+  若 App 直接显示,用户会看到「第 1、第 3、第 57 名」这种跳号。
+- **选项**:(a) 保持现状 —— `rank` 就是全局名次,展示层自己按位置编号;
+  (b) 落库时改成清单内 1..N,全局名次另存一列(要动 schema);
+  (c) 保持现状 + 在契约文档与 App 展示上明确「这是全市场候选里的名次,跳号是正常的」。
+- **影响面**:(a) 零改动;(b) 动 `k9_listing_entries` schema + API 契约 + App;
+  (c) 动文档与 App 文案。
+- **我的倾向(⚠ 倾向不是决定)**:(c)。全局名次**信息量更大**(它说得出「这只票是被
+  保底捞进来的」),丢掉可惜;但「跳号」必须是**说明过的**,不能靠用户猜。
+
+#### B19 · `k9_channel_hits` 的 append-only 与 `k9_runs` 的幂等重写会留下悬空 `run_id`(F-A 登记)
+
+- **事实**:`k9/store.py::save_run` 用 `INSERT OR REPLACE`(同 `(trade_date, strategy)`
+  幂等重写),而 `save_channel_hits` 是纯 `INSERT`(append-only,docstring 说明是刻意的)。
+  同一天重跑之后,旧 `run_id` 的召回行仍在 `k9_channel_hits` 里,但 `k9_runs` 里已经
+  没有那个 `run_id` → **悬空引用**。跨日接力分按 `(trade_date, pattern)` 去重,分数不受
+  影响;受影响的是**追溯**:「这条召回属于哪次运行」查不回去了。
+- **待确认**:是否有意为之。docstring 只说了 append-only 是刻意的,**没提这条悬空**。
+- **选项**:(a) 保持现状 + 在 docstring 里把悬空写明(它是 append-only 台账的自然后果);
+  (b) `k9_runs` 也改成 append-only,「当天最终那一次」由 `created_at` 最大者决定
+  (追溯完整,但「同包同参必然算出同一行」这条幂等性就不再由表结构保证);
+  (c) 重跑时把同日旧 `run_id` 的召回行标记为 superseded(加一列),⛔ 不删。
+- **影响面**:(a) 零改动;(b) 动 `save_run` + 所有读 `k9_runs` 的地方(要选「哪一行」);
+  (c) 动 schema + 写入 + 接力分的取数条件。
+- **我的倾向(⚠ 倾向不是决定)**:(a)。同一天重跑在生产里只发生在人工重放,而
+  「哪次运行召回的」这个问题目前没有任何调用方在问;(b) 会把一条结构性幂等降级。
+
+#### B20 · 🔴 9:26 那一拍的 `dataQuality` **结构性恒为 `degraded`**,推送天天带一句警告(F-B 登记)
+
+- **事实**:`QF_FRESH` 的定义逐字是「至少一源通过**全部**七项校验」,而七项里的
+  `open_price_missing` 在 9:26 那一拍**必然**不过(源那时还没发今开)。于是
+  `resolve_dual` 恒给 `QF_DEGRADED` → `Snapshot.quality_of` 的 `all_fresh` 恒假 →
+  `dataQuality` 恒 `degraded` → `api/notify.py` 的条件是 `quality != "ok"`,
+  于是**每天早晨的 APNs 都带一句「(本次数据质量:degraded)」**。
+  一个天天出现的警告等于没有警告,而 `ok / degraded / insufficient` 这个三态
+  在核对表上也就此不再有分辨力。
+  ⚠ 复审 R2-02 的**另一半**已经修了(跨源核验的判据从 `ok` 改成 `usable`,
+  `rejection_disagree` 不再是死代码)——那一处是**自相矛盾**(同模块两条判据打架);
+  这一处**不是矛盾**,是一条口径,所以摆在这里。
+- ⚠ **前提还没有实盘证据**:「9:26 时新浪 / 腾讯的今开为 0」这个前提是**代码自己
+  两处写死的判断**(`auction/__init__.py::QF_DEGRADED` 的说明 +
+  `test_auction_checklist.py` 全部 9:26 夹具的 `open_=0.0` 默认值),仓内没有一条实盘读数。
+  复审自己的结论也是「**建议上产第一周直接记一天 9:26 的 `open` 分布再定改法**」。
+- **选项**:(a) 维持现状(推送天天带那句);(b) 把 `all_fresh` 的判据从「七项全过」
+  改成「无致命项」—— 9:26 缺开盘价从此不再压低样本域质量,`ok` 恢复分辨力;
+  (c) 只改**推送措辞**:9:26 那一拍不提 `degraded`,把它留在核对表详情里;
+  (d) 给 `QF_*` 加一档「`degraded_open_pending`」,把「缺开盘价」与真正的降级分开。
+- **影响面**:(b)(d) 动 `auction/{__init__,quality,collect}.py` 的三态定义与
+  `k9_checklists.data_quality` 的历史可比性;(c) 只动 `api/notify.py` 一处措辞。
+- **我的倾向(⚠ 倾向不是决定)**:先上产记一周 `open` 分布,再在 (b)/(c) 之间选。
+  ⛔ 施工侧没改 —— 它是一条口径,不是一处矛盾。
+
+#### B21 · 「昨天没有清单」的早晨是**彻底沉默**,要不要推一条(F-B 登记)
+
+- **事实**:`auction/pipeline.py` 的 `should_push` 要求 `listing_size > 0`;
+  D0 没有清单时更是走 `SKIP_NO_LISTING`(零落库、零推送)。于是前一天报告是
+  `empty` 或 `not_run` 的日子,9:26 一条推送都没有 —— 用户**无法区分**
+  「昨天本来就没有票」与「今天早晨那一拍炸了」。
+  这与本项目在别处一贯坚持的三态纪律(「没有」与「没跑成」都要说出口)不一致。
+- ⚠ **现行「不推」是一次自觉选择,不是遗漏**:`should_push` 的 docstring 逐字写着
+  「⚠ 清单为空(`listing_size == 0`)也不推:昨天就没有票要核对」。改它 =
+  **改用户手机每天会不会响**,那是产品决定,⛔ 施工侧不自选。
+- **本波已做的那一半(不需要拍板的部分)**:`GET /checklist/{date}` 的 404 从前对
+  两种原因说同一句「没有竞价核对表」;现在分开说 ——「D0 没有清单 → 今天没有要核对的
+  东西」(可信的空)vs「D0 有清单、那一拍没跑成」(系统没工作)。⚠ 只改了**措辞**,
+  状态码与响应形状一个字没动。
+- **选项**:(a) 维持沉默;(b) 推一条「昨天没有清单,今天没有要核对的东西」
+  (与晚间报告三态「每天必发其一」的纪律对齐);(c) 只在**昨天是 `not_run`**
+  (系统没工作)时推,昨天是 `empty`(可信的空)时仍沉默。
+- **影响面**:`auction/pipeline.py::should_push` 一处判据 + `api/notify.py` 的措辞 +
+  `SKIP_NO_LISTING` 那条早返回要不要改成「落一条空核对表」(动 `k9_checklists`)。
+- **我的倾向(⚠ 倾向不是决定)**:(c)。它正好落在「没有 ≠ 没跑成」这条纪律上,
+  又不会在真的没票的日子每天吵一次。
+
+#### B22 · 🔴 成立率的**分母**:清单上但没冻成预案的票算不算(F-B 登记,**S17 开工前必须定**)
+
+- **事实**:K9 §八 把成立率定义为「**清单中**触发『成立』的比例」,分母是清单(10–20 只)。
+  但 `k9_d1_verdicts` **装不下整份清单**:`auction/store.py::ensure_rows` 的 rows 来自
+  `playbooks.items()`,`checklist.py` 对无预案的票直接 `continue`(只记进
+  `k9_checklists.checklist_json.noPlaybookCodes`)。于是 S17 若照最自然的写法从
+  `k9_d1_verdicts` 取分母,就会**悄悄把「没冻成预案」那几只摘掉** ——
+  **预案层越是失败,成立率看起来越好**(`_run_playbook` 允许部分失败并返回 `STATUS_OK`)。
+  ⚠ 这条污染在账上**看不出来**:两张表、两种形状,没人比对。
+- **选项**:(a) `ensure_rows` 按 **D0 清单全量**建行,无预案的行 `verdict` 恒 NULL
+  并加一个 `no_playbook` 标记(**要动 schema**:`playbook_version` 现在是 NOT NULL);
+  (b) 分母改从 `k9_listing_entries` 取,`k9_d1_verdicts` 只当分子来源
+  (零 schema 改动,S17 一处 SQL);
+  (c) 明写「未冻结预案的票**不计入**分母」——那等于把基础设施故障从成绩里摘出去。
+- **影响面**:(a) 是一次迁移(§9 高危区);(b) 只动 S17;(c) 只动 §5.8.2 的口径文字。
+  三条都会改成绩单上的那个数,所以**必须先定再写渲染**(与 §13.1-B10 同一类:
+  口径没定就先写渲染会返工)。
+- **我的倾向(⚠ 倾向不是决定)**:(b) —— 它让 K9 §八 那句「清单中」逐字成立,
+  且不动任何已冻结的表。⛔ 施工侧未自行选:这是**成绩口径**,归用户。
+- **本波已做的**:只在 §5.8.2 把这件事**写下来**(附两张表为什么对不上的机制),
+  ⛔ 一行代码没改、一个数没选。
+
 ### 13.2 本版不做，记着别忘
 
 - **策略并行运行**（架构 §七第 2 条）：本版不实现（裁定 8）。将来引入 K10 时再做，
@@ -2035,7 +2255,7 @@ V2.5.0 的验收口径只写了 macOS，于是 `Push/PushManager.swift`（整份
 | 2026-08-20 | **裁定 16 / 17 + K9 §七、架构 §四 措辞修订（第五组回写）** | Neckline commit `aa416ca` + whynotme commit `f29a3a3`。**三条回写全部落地**：① **裁定 16（V 豁免分档）** 写进 §2，K9 §五-6 那一行补「⚠ 唯一例外：放量倍数分界值 V ⛔ 不分档（裁定 16）」+ 表下两条理由（p1「≥ V」与 p3「< V」在放量维上**穷尽整个空间**，移动分界点只把票从 p3 挪到 p1，`p1 ∪ p3` 一只都不会多，而 §五-6 分档的目的正是「凑够 10 只」；两档还会让落在两值之间的票**同时命中 p1 放宽档与 p3 严格档**，破坏裁定 15 建立的互斥）+「⛔ 其余带数字的定义性项照旧分两档」的界限。⚠ **这是把 S6 的结构判断升为正式裁定，⛔ 不是新施工要求** —— S6 已按此实现。② **裁定 17（停抓概念板块、保留已有数据）** 写进 §2；`scripts/daily_update.py::update_concept_boards` 及其调用点**整段移除**（`ths_daily` 5 次/日 + `ths_index`/`ths_member` **395 次连续**/周 ≈ 21,750 次/年，其中那 395 次几乎占满 450 次/分限频窗口一整分钟），模块头补写移除依据；**已抓的 21 MB parquet 原地保留、⛔ 未删一个字节**（实测确认 `ths_{daily,index,member}.parquet` + `ths_snapshot_meta.json` mtime 仍是 7-28，未被触碰），`data/concept_data.py` 读写 helper 与三个 `ts_ths_*` 客户端函数**刻意保留** —— 删掉它们，保留下来的那 21 MB 就没人读得动了。守门单测双向锁死：定时器路径上 `ths_*` / `concept_data` 零命中 **且**「读侧 helper 必须还在」。③ **K9 §七 + 架构 §四「输出」段的措辞修订（实施裁定 10，⛔ 未编新号）** —— 两处**前后对照**：K9 §七 原文「输出一张核对表：**哪几只已触发成立**、哪几只已触发放弃、其余待开盘后观察。」→ 改成两段「哪几只已触发放弃、其余待开盘后观察」，并补两段说明(⛔ 9:29 判不出「成立」的**结构性**原因：§6.3 四个成立分支**全部含有「前 30 分钟」这一合取项**，9:29 时它还没发生；若强行让 9:29 出「成立」，§八 的成立率会**结构性恒为 0**)+「**三分支的唯一权威是 D1 10:00 的一次性结算读数**、9:29 的『放弃』先到先定不改判」；架构 §四「**输出**：哪几只已触发成立、…」→ 同款两段 + 同款原因 + 指向 10:00 结算拍。**配套一致性修订三处**：K9 §八 路径图由一行「D1 竞价 + 开盘 30 分钟 → 三分支之一」改成**显式两拍**（9:26–9:29 只判放弃 → 10:00 结算出终值）并补一段「三个比率一律读 10:00 终值，⛔ 不许把 9:29 的『待开盘后观察』当成任何一个分支的结论」；架构 §二 次日时间表补「输出两段 ⛔ 无「成立」」「10:00–10:05 一次性结算读数」两行、并写明 9:30–10:00 系统不出读数；架构 §5.1「成立率」行注明终值出自 10:00 那一拍。**验收**：`grep -n "已触发成立" K9.md Neckline新架构_20260818.md` **零命中**；`grep -n "不分档" K9.md` 命中 §五-6;S0 立的三条 grep(`上方空间` 零命中 / `行业指数` 只剩那句否定句 / `一次性结算读数` 命中)全部仍然成立。§1.2 与 §5.1-E 已登记这四处修订。 |
 | 2026-08-20 | **S11 + S13 完工** | commit `65b0e8e`。新增 `neckline/review/{bindery,conclusions}.py`、`neckline/legacy_k8.py`；新表 `review_conclusions`（**纯新增**，append-only，PK `(week, version)`）；新端点 `GET /api/v1/review/bindery`、`POST`/`GET /api/v1/review/conclusions`、`GET /api/v1/legacy/k8/baskets`；`/review/overview` 加**结论存档段**（三段 → 四段）；`export_research_snapshot.py` 加 `--include-fact-packs --start --end`；`smoke_api.sh` 加 43–46 步，临时库实跑通过。测试 1120 → **1281** 全绿。<br>**测试数逐条对上**（+161）：新文件 `test_review_bindery` 18 + `test_review_conclusions` 16 + `test_legacy_k8` 9 + `test_export_snapshot` 15 + `test_v250_s11_s13_guard` **80** = **138**;`test_api_review` 23 → 41(**+18**,装订 / 结论 / legacy 三组端点);`test_db_isolation_guardrail` 61 → 66(**+5**,它按 `tests/test_*.py` 参数化,新增 5 个测试文件);`test_review_reconcile` **21 → 21**(删 1 条已失效用例 + 补 1 条「那个别名确实没了」的反向断言,净 0)。<br>**🔴 S11 无 LLM 的证据**(架构 §六 逐字「这一层无 LLM 调用」):① 逐文件 AST 断言 `review/**`(10 个文件)零 import `neckline.llm` / `neckline.search` / `openai` / `anthropic`;② 更严一档的文本判据 —— 掐掉 docstring 后 `TASK_` 与 `get_provider` 在全包零命中(**连任务常量都不许出现**:一个 `TASK_*` 引用就是在为接线做准备);③ 扫描器自带自检(喂它一份真的 import 了 llm 的文件,它必须报出来)。<br>**🔴 `cashflow.py` 四分类未被加回合计字段的证据**(蓝图 5.3「账户金额增加不得直接视为策略收益」):① `CashFlowSummary` 的字段名列表**逐字冻结**成断言(`week / transfer_in / transfer_out / dividend / tax / other / other_event_count / trading_pnl / event_count`)—— 想加一个合计字段就得先改那行断言;② `to_dict()` 的键集同样逐字冻结(11 个键,无任何合计);③ 8 个候选合计名(`account_net` / `net_change` / `total_net` / `combined` / `grand_total` …)全仓零命中;④ **AST 判据**:模块里不存在把 `dividend` / `tax` / `trading_pnl` / `other` 中任意两个加减到一起的表达式(⚠ `transfer_in − transfer_out` 是**转入转出这一类内部**的净额,合法且必须留 —— 判据按「跨类才算」写,⛔ 不是一刀切禁加法)。<br>**🔴 三条成绩线隔离的证据**(架构 §五「互不进入对方的分子分母」,隔离是**单向**的):① **最要紧的方向** —— `scorecard/**` 逐文件断言零 import `neckline.review`,且源码里 `round_trip` / `roundTrip` / `交割单` / `realized_pnl` / `cash_flow` 五个词零命中;② **结构性** —— `coverage.compute_day` 的签名**恰好** `(pack, listing, dispositions)` 三个位置,**收不下**交割单;③ 反向 —— `review/**` 零 import `neckline.scorecard`;④ **只读不写** —— `review/**` 逐文件扫写 SQL,`INSERT INTO k9_` / `UPDATE k9_` / `DELETE FROM k9_` / `INSERT OR REPLACE INTO k9_` / `DROP TABLE k9_` 全部零命中;⑤ **反面自检**(⛔ 防止上一条守的是空集):断言装订**确实**调了 `load_k9_report_index` / `load_latest_range` / `load_listing_membership` 三个读函数 —— 架构 §六 明文要求装订「当时那几天的报告与预案快照」,读是必须的,写才是禁的。<br>**🔴 装订的容量实测**(开发机 macOS;**真实 parquet 只读 symlink 到临时根** + SQLite 一次性只读副本,⛔ 未触碰工作库 / 工作 parquet / 生产。窗口 = 买入前 20 + 卖出后 20 个交易日):1 只 **0.135s**(冷 glob)/ 5 只 **0.018s** / 15 只 **0.020s** / 40 只 **0.027s**;RSS 峰值 89 → 94 → 98 → **106 MB**(基线 56 MB);40 只时日 K 822 根、markdown 14,576 字符、JSON 336,865 字符。**为什么这么小**:全部票走**一次** `get_multi_stock_history`(新增,一次 glob + `is_in` 过滤 + 列投影),大盘走一次,行业 / 报告 / 预案 / 清单各走**一次区间 SQL**。守门单测按调用计数锁死「三只票 = 1 次多票取数 + 1 次大盘取数」,并断言 `bindery.py` 里 `get_stock_history` / `get_market_slice` / `scan_table_range` 三个名字零命中。<br>**🔴 S13 逐字节相同的证据**(§5.13:标定必须跑在与生产逐字节相同的事实包上):`shutil.copy2` 原文件、⛔ 不重写 parquet(重写会换压缩块与行组边界,数据看起来一模一样而 sha256 立刻对不上);单测断言「拷出来的 bytes == 原文件 bytes == manifest 里的 sha256」三者相等,且**布局用 `market_data.day_file_path` 对拍**(⛔ 不在导出脚本里另拼一套路径)。manifest 身份证四项齐全:`packVersion`(`fp-2`)/ 区间 / `necklineVersion`(取 `api/app.py::VERSION` 这个**单一源**,⛔ 不另存常量、⛔ 读不出也不退回占位值)/ 逐日 sha256;另报 `missingDates`(清单里有、parquet 拷不到 = **真缺口**)与 `orphanDates`(拷到了、清单里没有)—— **标定方拿到 118 天而不是 120 天,与拿到 120 天是两件事**。⛔ 区间**没有默认值**(缺 / 非法 / 倒序一律退出码 2,且退出时快照还没写出去)。<br>**🔴 legacy 端点只读的证据**:`legacy_k8.py` 走 `sqlite3` 的 `mode=ro` 连接、**⛔ 不 import `neckline.db`**(那条路上的 `connection()` 顺手 `init_schema`,只读入口绝不该给任何库建表),模块里 `INSERT`/`UPDATE`/`DELETE`/`REPLACE`/`CREATE`/`DROP`/`ALTER` 七个词**逐个断言零命中**;行为侧断言调完两次之后源库的**行数 / schema / 文件大小**逐条不变、库文件不存在时**不会凭空造一个空库**;写方法 POST/PUT/DELETE → **405**(路由只注册 GET,⛔ 不是 404)。另断言 K8 留档里**不出现 K9 的字段名**(`pattern` / `seatKind` / `firstResistance` …)—— 翻译过去会让一份 K8 留档看起来像一份 K9 清单,进而被谁拿去算成绩。<br>**冒烟与零污染自查**(第四组建立的做法,照做):`DB_PATH` 显式指到 scratchpad,`PORT=8097`;跑前跑后对**真实 `Backend/data/` 全目录**逐文件 `(路径, 大小, mtime)` 快照做 diff —— **9,559 个文件逐条一致**;`data/reports/` 无新增;`git status` 零 `data/` 文件。⚠ **唯一一处差异如实登记**:容量实测那一步以 `mode=ro` 打开真实 `neckline.db` 做一次性副本,过程中 SQLite 的两个**瞬时 sidecar**(`neckline.db-shm` / 0 字节的 `-wal`)被回收又重建 —— 主库文件**大小 4,325,376 与 mtime 均逐字未变**,`PRAGMA integrity_check` 返回 `ok`,69 张表俱在。那两个 sidecar 是 SQLite 自己的生命周期产物,任何一次连接(含只读)都会碰它们,⛔ 不是本组写了工作库。<br>**⚠ 与 Plan 不符 / Plan 未写清,如实登记(⛔ 施工侧未自行发明数或策略主张)**:① 🔴 **§6 S13 的验收 grep「全仓 `grep whynotme` 在 `neckline/` 下零命中」与一句合法的用户文案冲突** —— `api/app.py::get_eval_weekly` 的空态文案原写「周度作业(whynotme 离线周任务还没跑到这个窗口。」(⚠ 还带一个从 V2.1 起就没配对的括号)。处置:**改写文案**为「**离线**周度校准作业还没跑到这个窗口」并补上那个括号 —— 它按**角色**指认那个作业,信息一点没少,而验收 grep 从此零命中。⚠ **但字面 `grep whynotme` 仍剩 3 处命中,如实说清**:`k9/params.py` 模块头两句(「参数标定归 whynotme」「⛔ 不写 whynotme 的任何目录」)与 `review/research_artifact.py` 模块头一句,**全部在 docstring 里**,且全部是在**解释这条边界本身**。守门单测按 S8 建立的体例走:先掐掉 docstring 与注释再扫源码 —— **一条纪律总要写出它禁止的那个词才解释得清**,把说明算进命中会逼着后来者删注释去凑绿(与 S6 登记 ⑬ 的 G11 豁免同一条理由)。真正的牙齿是另一条:逐文件 AST 断言 `neckline/**` **零 import `whynotme`**(AGENTS.md 原文)。⛔ 没有给守门开可扩展的豁免清单(那种守门第二次加豁免时就没人拦得住了)。② 🔴 **§3.3 的包布局列了 `scorecard/mine.py`,而 §6 的任何切片都没有认领它** —— 且若真放进 `scorecard/`,那个文件就得 import `neckline.review`,与本组刚立的隔离守门直接冲突。「我的成绩」的**内容**其实已经存在(`reconcile.WeeklyStats`)。⛔ 未自行决定它落在哪个包,已登记 **§13.1-B7** 带事实 / 三个选项 / 影响面 / 倾向。③ 🔴 **`review/{handoff,research_artifact}.py` 的排版仍是 K8 语义**(Tier 入场信号正确率 / C·Z·Y 引擎版本 / 双时钟),而它们服务的 `/eval/weekly` 与 `/review/overview` 校准段被 §5.12 明确「保留」;K9 之下那份离线校准产物的**形状未定义**,且 `HANDOFF_OBSERVATIONS` 的守门要求每个 id 能在 PROJECT_PLAN §七 grep 到 `[P3-xx]` —— **而本版 §7 已清空**。⛔ 未擅自下线,已登记 **§13.1-B8**。④ **裁定 17 的边界**:逐字只说移除 `daily_update.py` 那一段(已照办,那是唯一挂在定时器上的入口),但仓里还留着 `scripts/backfill_concept.py`(**`END = "20260722"` 是写死的过期日**,一跑 395 次连续调用)与 `concept_data.py` 的两个写函数(现已零调用方)。⛔ 未越过裁定字面动它们,已登记 **§13.1-B9**。⑤ **新增五个批量读函数**(`market_data.get_multi_stock_history` / `facts.industry.load_series` / `report.store.load_k9_report_index` / `playbook.store.load_latest_range` / `k9.store.load_listing_membership`):不是为了好看 —— 逐日调 `load_day` / `load_latest` 会让 **`init_schema()` 在每次调用里重跑整份 schema 脚本**,40 天的复盘窗口就是 40 次全表建表检查;逐票调 `get_stock_history` 会让 15 只票各 glob 一遍区间年份。两者都是 §12 坑 1 那条链的新入口,所以在**源头**做成批量。⑥ **`load_k9_report_index` 刻意不带 `markdown` / `structured_json`**:40 天窗口塞 40 份报告全文是几百 KB 的无用负担,而首行(`state` + `headline`)已经说清那天系统在说什么;要全文按日走 `load_k9_report()` 点查。⑦ **`review/bindery.py::PRE_SESSIONS / POST_SESSIONS = 20 / 20` 是本组起的两个数** —— 与 S9 的 `KLINE_SESSIONS = 60` 同类:**上下文长度,不是待标定策略参数**(换成 30 不会让任何一笔成交变成另一笔),§8 的 22 项里没有它们。已写死在一处、`bind_week(pre_sessions=, post_sessions=)` 是**必填关键字**(调用方必须显式说)。请用户复核,已并进 **§13.1-B3**。⑧ **大盘基准取上证综指** —— 架构 §六 原文只写「同期大盘走势」(单数),未指定指数。取 `data/panel.py::SSE_INDEX` 这个**全仓既有的「大盘」常量**(⛔ 不另起第二个);`index_daily` 里落着的另一条是深证成指,本层刻意只装一条。**这是命名与复用,不是策略主张。**⑨ **申万归属用的是「今天的」成分快照,不是成交当日的**(`sw_industry_member` 只给当前归属,S2 登记 ④)—— 与事实包回填的语义差是同一件事。写在明处:`RoundTripBinding.industry_source == 'current_snapshot'`,`to_dict().note` 与 markdown 都照直说。⚠ 与 `k9_listing_entries` 的**冻结**绑定刻意不同:那一列是清单成绩拆「行业分 / 选票分」的依据必须冻,而交割单是事后回看、当时的清单里未必有这只票,没有可冻的东西。⑩ **`legacy_k8` 是四态不是三态**:全新 Neckline 库**有** `baskets` 表(裁定 6:表保留只读,`init_schema` 照建,只是应用层没有写路径了)但一行都没有 —— 「这个库从没跑过 K8」与「跑过、只是不是这一天」要人做的下一步完全不同,两句话⛔ 不许合并。⑪ **`/review/overview` 由三段变四段**(加结论存档段),`schemas.py` 与 `app.py` 里遗留的「五段」措辞一并改正(那是 S1 删掉画像与双时钟三段之后没跟上的旧文)。⑫ **装订刻意不进 `/review/overview`**:它要读 parquet 行情,属于「点一下才算」的动作,而 overview 是每次进复盘板块都会拉的聚合读(§12 坑 1 / P0-23)。守门单测按函数扫,断言 `get_review_overview` 函数体内 `bind_week` / `bindery` 零命中。⑬ **`reconcile.py` 的陈旧遗留一并清掉**(S1 删代码时留下的):模块 docstring 仍在逐条讲 `MomentumConfig` / `strategy.signals` / `brain.config_governing_at` / `strategy_activation_log` 这些**已物理删除**的东西;`STOP_TOLERANCE_PP` 与 `PRICE_MATCH_TOLERANCE` 两个常量零引用;`day_close_instant()` 只是 `trade_instant(d, None)` 的别名、零生产调用方,而它的 docstring 写着「归属哪版章程」。三样全删,docstring 重写成「本模块只出事实,不出判据」。**测试侧同批**:`TestStopDiscipline` / `TestEntryScreens` / `TestCharterSwitchReporting` 三个类只剩 helper **一条断言都不跑**,外加 `_DueItem` / `_30k_trades` / `_week_of` 三个零引用 helper 与七块指向已退役概念的段旗 —— 它们长得像在跑测试,下一个人会以为止损纪律还在被测。⛔ 这不是放宽:被测的东西早已不存在。⑭ **`export_snapshot` 的 manifest 从 schemaVersion 1 升到 2**:加 `necklineVersion`,并把 `parquetReadOnlyPath` 从写死的 `settings.parquet_dir` 改成**这次真正读的那个根** —— 一份跑在临时目录上的 manifest 指着生产目录说话,是另一种形式的说谎。⑮ **`deploy/*.service` 一个字未改、⛔ 未部署、⛔ 未 ssh、⛔ 未推送**:本组两条新端点都跑在既有常驻 `neckline.service` 里(零新增 unit),`daily_update.py` 少了一段抓取(不改 unit),导出脚本是手工 CLI(不在任何 timer 上)。⚠ **生产仍跑 v2.4.2 Build 9,裁定 17 在上云之前不生效** —— 已登记 §13.1-B6。<br>**Backlog 收拢**:前四组散在 §14 各处的未决项已统一收进 **§13.1**,共 **9 条**(B1–B9),每条带**事实 / 选项 / 影响面 / 我的倾向(标明是倾向不是决定)**;§13.2 保留「本版不做,记着别忘」。 |
 | 2026-08-20 | **S12 + S14 完工(批 A 收官)** | 三次提交:`e4666f4`(S12)/ `ec53a9d`(S14 与文档)/ `47fb473`(热路径收敛 + 补测)。**App 三板块换血**:`AppTab` = `selection` / `scoreboard` / `review` + 设置沉底(裁定 11);新增 `Views/{SelectionView,StockDetailView,CheckListView,ScoreboardView}.swift` 与 `Networking/Models/{K9Models,CheckListModels,ScoreboardModels}.swift`,重做 `ReviewView.swift`;删 12 个 K8 件(`BasketDailyView` / `BasketCardView` / `AuctionCardView` / `InfoCardView` / `IntelSectionView` / `ReviewWorkbenchView` + `BasketModels` / `AuctionModels` / `ReportModels` + `NKGateViews` / `NKMemberCard` / `NKStopScale`)。App 净 **−17,382 / +5,755** 行。后端测试 1281 → **1430** 全绿(+149:契约对拍 50 / S12 App 守门 79 / S14 发版门禁 13 / 逐只摘要 4 / `test_db_isolation_guardrail` 按测试文件参数化 +3);App **43 passed / 6 skipped**(skip = 要真 dev 后端的联调冒烟);`xcodebuild -destination 'platform=macOS' build` 与 `test` 均通过 —— 🔴 **iOS 当时一次都没验**(见本行末尾「2026-08-21 修复组 F-C 订正」)。**冒烟零污染自查**(前几组建立的做法,照做):`DB_PATH` 指到 scratchpad、`PORT=8099`,跑前跑后对真实 `Backend/data/` 全目录 `(路径, 大小, mtime)` 逐文件 diff —— **9,559 个文件逐条一致**,`git status -- Backend/data` 为空。<br>**🔴 裁定 10 在客户端这一侧的三重锁**:① `ChecklistVerdict` 是**二值枚举**,`ChecklistVerdict(rawValue: "confirmed")` 恒 `nil`(客户端单测);② 契约对拍按**行首 + 词边界**取类型块后断言客户端枚举恰好两个成员、且块内 `confirmed` 零命中;③ **文案扫描按字符串字面量长度判** —— `CheckListView.swift` 里带「成立」的**短串**(≤ 20 字,= 段名 / 徽标的形状)零命中,长句放行**且必须至少有一句**(⛔ 不许沉默地少一段却不说为什么)。⚠ 这条判据没有「写了某个词就放行」的口子:想把「成立」做成一枚徽标,怎么写都过不去。另一条:`model.verdicts`(10:00 结算终值)在 `SelectionView` / `CheckListView` / `StockDetailView` 三个文件里**零命中**,只出现在 `ScoreboardView` —— 终值 ⛔ 不进选股首屏。<br>**🔴 行业分 / 选票分分两栏的证据**:`ScoreboardView` 那一卡是 `HStack { 行业分 · Divider · 选票分 }`,中间**没有任何合计**;守门两侧同扫 `combinedScore` / `totalScore` / `industryPlusPick` / `合计分` / `综合分` 零命中,并**正向**断言两个名字都在(⛔ 防止守的是空集)。<br>**契约对拍重建**(S1 登记 ⑨ 点名的活,那半年这条闸是空的):`tests/{client_sources,test_contract_crosscheck}.py`,**50 条**。六组判据:客户端调用面 ⊆ 服务端路由面(`==` 断言,欠账清单**为空** = 本闸最严状态)/ HTTP method 对拍(21 个调用点)/ 已删的 37 条路径**两侧**零残留 / reason 面**双向**闭包 / **32 个冻结快照类 DTO** 手写 `init(from:)` / 裁定 10 与「无合计」的两侧对拍。**实测抓到过什么**:① 🔴 **404 的 fallback 是 `.notHolding`「该持仓已清或不存在」** —— 持仓整块下线之后,K9 的每一条 404(「20260430 没有报告」/「600001.SH 不在清单里」/「没有竞价核对表」)都会显示成那句驴唇不对马嘴的话(v1.4 `watchlist` 与 V2 `card_not_ready` 已经踩过两次同一个坑);已改成 `.notFound(服务端原文)` 并立了守门断言那个 fallback 必须带上服务端 detail。② 🔴 **七个 reason 常量的端点早就删了、常量还留着**(`basket_not_found` / `card_not_ready` / `card_corrupt` / `not_trading_day` / `future_buy_date` / `auction_not_ready` / `auction_corrupt`)—— 它们会**要求客户端一直养着七个死 case**,而那些 case 的存在又让人以为对应端点还在;已连同客户端的 case 一起删,并新增**反向**守门:登记过的每一条都必须**真的还能被 raise**。③ **负向自检实测**:往客户端塞一条 `/api/v1/positions/close` 当场红(`Extra items in the left set`),移回原样恢复 50 绿。<br>**图标改名四处同步**:`AppIconV242` → `AppIconV250` —— `App/project.yml` 的 `ASSETCATALOG_COMPILER_APPICON_NAME` / asset 目录(`git mv`,图稿 **7 张 png 一张没动**)/ `tests/test_v240_p4_release.py::_EXPECTED_PRIMARY_ICON` / `xcodegen generate` 重生成的 pbxproj(**2 处**)。新增守门锁「旧名在配置与 pbxproj 里零残留」+「asset 目录里只许有**一个** `.appiconset`」;**当前值**仍由 `_EXPECTED_PRIMARY_ICON` 单点持有(⛔ 两处不重复写死同一个串)。<br>**服务端两处纯新增**(⛔ 不动任何冻结件):① `api/app.py::_selection_stocks()` —— `/selection/*` 带上**逐只摘要**(形态标注 / **上方机械空间** / 三个价位 / 三分支预案摘要),**每次请求现装**:那四样分别住在 `k9_listing_entries` / `k9_channel_hits` / `k9_playbooks` / `k9_explain_notes` 四张表里,而预案是 **append-only 版本化**的 —— 冻进 `k9_reports.structured_json` 会让「用户改完预案」与「报告快照」当场对不上;四次批量查询取全,⛔ 无按票循环(否则首屏就是 20 次请求)。② 个股详情下发 **`playbookSlots`** —— **改预案要填哪几个数由服务端说**(唯一源 `playbook/skeleton.py`,同 `PushKindOut.label` 的先例),⛔ 客户端不硬编键表;守门拿服务端的槽位表**反扫**全 App,形态槽位键零命中。配套新增 `k9/store.py::load_upside_room_mech()`:从 `k9_channel_hits.strength_json` **反读**机械空间原值(p1 存原值、p3 存其负值,符号唯一源仍在 `k9/upside_room.py`),⛔ 不给 `k9_listing_entries` 加列 —— 同一个数两处落点必然漂。⚠ 只被 p2 / p4 召回的票**没有**这一项(K9 §3.3 / §3.5 的强度性里没有它),界面写「本形态不看这一项」,⛔ 不补 0。<br>**🔴 S14 只准备、⛔ 一步都没执行**:没有 ssh、没有部署、没有碰生产、没有改 `MemoryMax`、没有推送。清单落 **§9.6**(步骤 0~7:容量红线**阻塞项** → 升级前五步 → 纯新增迁移 → **8 个 unit 逐个交代** → 部署验证 → **上线后状态预告** → 回滚七步 → 收尾),README 加了「发版」一节指路并把回滚锚点从 `v2.4.1` 更正到 **`v2.4.2` / `ee12b9b`**。**能在本地先跑一遍的做成机器判据**(`tests/test_v250_s14_release_gate.py`,**13 条,全在 `tmp_path` 临时库**):**迁移演练** —— 拿 `ee12b9b` 那份 `_SCHEMA` 造 v2.4.2 老库、**先跑一遍基线自己的 `_COLUMN_MIGRATIONS`**(⚠ 真实生产库不是"刚 `executescript` 出来的样子",少这一步会把 v2.4.2 自己已经跑过的补列**误报**成 v2.5.0 动了历史行 —— 实测踩到)、塞 12 张历史表的行、跑今天的 `init_schema` → 历史行**逐表逐列不变**、**16 张新表**建出且**全空**、老表一张没少、`integrity_check` = `ok`;**零 ALTER 零 DROP 新增** —— 与基线**逐条比对**(⛔ 不是"扫到 ALTER 就红":那会逼人删掉已经在生产跑过的 V2.2/V2.4.2 幂等迁移);unit 拓扑**精确 8 个**、段序 `facts` + `k9,explain,playbook` + `report` **不重不漏**、`--k9-params` 显式传、`StopWhenUnneeded=yes` 还在、三段无 `RemainAfterExit`、`deploy/` 代码行里 `checklist`/`settle`/`auction` 零命中;**五个 `MemoryMax` 逐个锁死未改**;回滚锚点 `ee12b9b` 真能取到且那一版 `VERSION == v2.4.2`;参数包不在仓库里、示例配置**零真数字**。<br>**⚠ 与 Plan 不符 / 未写清,如实登记(⛔ 施工侧未自行发明数或策略主张)**:① 🔴 **§6 S12 验收要的「macOS 截图覆盖六屏」本组拍不到**:`screencapture` 在本环境返回**全黑图**(屏幕锁定 / 无录屏权限),而 iOS 模拟器那条路要装 App(本组明令 ⛔ 不装)。**没有拿别的东西冒充截图** —— 替代证据是 `xcodebuild build` + `test`(43 条)+ 后端 **79 条** App 结构守门 + **50 条**契约对拍,其中「核对表无成立段」「两栏无合计」「终值不进选股首屏」三条是**直接扫源码**的,比截图更硬;但「布局有没有错位、长文案有没有截断」这类**只有截图能答**,🔴 **发版前请人工过一眼六屏**。② **`AppTab.baskets` 更名 `selection`**:那条「rawValue 一个都不许改」的纪律,理由是**外部截图脚本按 rawValue 传参**,而那些脚本(20 个 K8 驱动脚本)已在 S1 随 K8 整链删除 —— 现在 `NECKLINE_INITIAL_TAB` 的消费方**只剩本工程自己**。留着 `baskets` 反而是坑(「篮子」是已退役的 K8 概念,下一个人 grep 它会以为还在)。⛔ 新的 rawValue 从此**又是**契约,两侧各立了一条守门。③ **`NKStopScale.swift` 删除**(§5.11 把它列在「保留 `Components/`」的**按需**一栏):它整件是**持仓纪律**语义(止损 / 成本 / 现价 / 峰值 / 破线),持仓下线后零消费方;K9 的三个价位另写了一把 `PriceLadder`(失效位 / 第一压力位 / 第二压力位,⛔ 不画概率、不画建议)。同理删 `NKGateViews`(绑 `BasketGates`)与 `NKMemberCard`(绑 `BasketMember`)。⚠ 其中 **`NKListRow`(四板块共用的列表行壳)原本住在 `BasketDailyView.swift` 里** —— 那一页一删,设置屏当场编译不过;已搬进 `Components/SharedUI.swift`,⛔ 别再把共用件放回某一页。④ **`NKCopy.intradaySelfObserve` 整段删除**:V2.4.0 P0 留下的那句盘中提示,落点是已经不存在的「今日篮子页面」,更要紧的是它在解释「盘中证伪」与「全局刹车」两个 **K9 之下根本没有的机制** —— 留着是在为一个不存在的机制辩护。K9 的等价物是**服务端下发**的核对表脚注(`CHECKLIST_FOOTNOTE`),⛔ 客户端不另写一句(守门锁死)。⑤ **`GET /api/v1/scoreboard/listing` 本组没建**:清单成绩五指标的结算是 **S17**(批 B),依赖 `k9_followups` 回填与 **B10 那个还没定的窗口**。App 的成绩板块因此是「**两栏在、数没有**」的诚实壳,并加了一条**反向**守门:那条路由**现在就该不存在** —— 提前挂一个恒空的路由,会让「还没开始结算」看起来像「结算了、结果是空的」。⚠ S17 落地时**同时**做三件事:挂路由 / 加进 `_V250_NEW_ROUTES` / 删掉那条反向守门。⑥ **客户端刻意不调的三条服务端路由**:`/eval/weekly` 与 `/review/overview` 的**校准段**(§13.1-B8:排版仍是 K8 语义,K9 之下形状未定义)、`/legacy/k8/baskets`(追溯与导出入口,§5.11 的三板块里没有它的位置)。⛔ 不渲染成一段永远 `available=false` 的壳 —— 那比没有这个段更让人以为「系统那一步坏了」;三条都在 `APIClient.swift` 文件头写明「服务端有、本客户端刻意不调」及理由。⑦ 🔴 **新登记两条 Backlog**:**B10**「**行业分 / 选票分的『同期』窗口没定义**」(K9 §八 只写「同期表现」,§8 的 22 项待标定参数里也没有它;⛔ 施工侧未拍板 —— **S17 开工前必须定**,因为它决定 `k9_followups` 的回填形状,定晚了要重跑历史)、**B11**「契约里两处 snake_case 混进 camelCase 信封」(`structured.listing` 与个股详情的 `explain` 段;不影响运行,客户端已用显式 `CodingKeys` 对齐,登记是因为下一个人照文件头的约定去解会静默解不出)。⑧ **App 侧删了 129 条 K8 用例**(`DTODecodeTests` 89 + `AppModelTests` 40),换成 `K9ContractTests` 18 + `AppModelTests` 12 + `URLGateTests` 2 —— ⛔ **这不是放宽**:被测的东西(篮子 / 六关 / 双时钟 / 持仓角色 / 行情状态)早就物理不存在了。新用例守的是**那几条不许退化的读法**:三态是三句不同的话、`listingSize == nil` **≠ 0**、核对表恰好两段、「还没定案」**≠**「观察」、上方机械空间缺席 **≠ 0**、覆盖率 NULL **≠ 0**、`unverified` **≠**「无异常」、`NKFmt.slotValue` 能被 `Double(...)` 解回去(⛔ 展示用的 `price` 带千分位,两者不许互换)。⑨ **`_hits` 的假阳性**:S12 App 守门起初用裸子串,把 `paramsPackageVersion` 判成了退役标识符 `Pack` 的命中 —— 已改成**标识符边界**匹配。⚠ 记在这里是因为那类假阳性的真实代价不是"多红一次",是**逼着后来者把守门放宽**,最后连真的都拦不住。同族的第二个:`CREATE TABLE IF NOT EXISTS (\w+)` 里 Python 的 `\w` 在 Unicode 模式下**匹配中文**,把 `db.py` 注释里的「天然幂等」当成了一张表名 —— 已锁成 ASCII 标识符。<br><br>**🔴 2026-08-21 修复组 F-C 订正(R3 🔴-1)**:上面那句「`xcodebuild` 均通过」**只对 macOS 成立** —— 独立复审 R3 复跑 `-destination 'generic/platform=iOS Simulator' build` 得 `** BUILD FAILED **`,**6 条 error**,我已复跑确认。**根因不是笔误,是验收漏了一个平台**:`Push/PushManager.swift` 整份在 `#if os(iOS)` 内、`Views/ReviewView.swift:138` 在 `#else` 的 iOS 支内,`platform=macOS` **一行都不编译它们**,所以 macOS 全绿。而 §6 S12 验收 / §10 验证矩阵 / AGENTS.md「Verification」/ README **四处都只写了 macOS**,全仓无任何 iOS 构建门禁。**逐条修法**:① `PushManager.swift:139` 的 `.baskets` / `.positions`(裁定 11 已改名 / 已下线)与 `:159` / `:166` 同源 —— 整张路由表重写,**⛔ 没有把板块加回来**,改的是引用;② 同行 `refresh()` 少 `for:` 实参 → `refresh(for: route.tab)`(现有签名是 `refresh(for tab:)`);③ `ReviewView.swift:138` 把 `"a" + "b"` 传给了要 `LocalizedStringKey` 的形参 → 并成**单个字面量**(⛔ 不改 `NKNoteBlock` 的类型:`Text(字面量)` 才解析 markdown,那句里的 `**桌面场景**` 要真加粗)。**🔴 连带的语义错(比编译错更深)**:服务端每天唯一还在推的 `push_checklist_summary` **复用 `KIND_PRECALL`**(2026-08-11 用户拍板),而客户端照 K8 的名字把 `precall` 路由到 `.positions` —— 裁定 11 已整块下线的板块。**用户每个交易日 9:29 收到的那条唯一通知,点开落在一个不存在的地方**。已改成 选股板块 · **次日核对表视图**(⛔ 不只拨 tab:选股板块里有两个视图,只拨 tab 有机会停在昨晚的清单上,与落错板块是同一种答非所问);`report_ready` → 选股 · 今日清单。**其余 kind 逐个排查过,不只修了这一条**:`ALL_KINDS` 14 个里,生产链**真的还会发出来的只有 2 个**(`api/app.py::_morning_loop` 与 `scripts/evening.py` 是全仓仅有的两个 push 调用点);`retreat` 已在 `RETIRED_KINDS`、恒被拒发;裁定 7 整块退役盘中哨兵后,`circuit`/`d5exit`/`holding_alert`/`custom_alert`/`stop_approach`/`take_profit`/`sector_dive`/`basket_peers_weak`/`sector_bid_fade`/`holding_decoupled`/`market_shock` 这 **11 个的措辞函数已零生产调用方** —— 客户端路由表里它们**全部删掉走 `default` → 不跳转**(文件头本就写明「未知 kind 不路由、通知照常显示」),⛔ 不留一条指向现役板块的假路由。**🔴 结构性修复(不只修症状)**:路由表是**纯数据、零 UIKit 依赖**,已**搬出 `#if os(iOS)`** —— 从此 **macOS 那条构建线替 iOS 逮这类漂移**;真正 iOS 专属的只剩 `UNUserNotificationCenterDelegate` 那一段。**机器判据**:`tests/test_contract_crosscheck.py` 新增**第七组 5 条** —— 服务端「还在发的 kind」(AST 解 `api/notify.py` 每个措辞函数发的 kind + 扫 `neckline/**`+`scripts/**` 的**真实调用**)与客户端路由表 `==` 对拍(两个方向:少了 = 点开不跳转,多了 = 死路由)/ 落点的板块与视图必须是 `AppTab`、`SelectionViewMode` 里**真的存在**的成员(⚠ 这条**不靠编译器**,与平台无关)/ 核对表推送必须落到 `.checklist` 视图 / 路由表必须住在 `#if os(iOS)` **之外** / 扫描器自检非空。**四条负向自检实测**:落点改 `.scoreboard`、改成不存在的 `.positions`、删掉 `report_ready` 一路、塞一条已退役的 `retreat` 死路由 —— **四次全部当场红**,改回全绿。**把洞堵上(三处 + 一处)**:AGENTS.md「Verification」/ README「App」/ §6 S12 验收 / §10 验证矩阵**都补上 iOS 那条 `xcodebuild`**,并写明「改任何 `.swift` 两条都要跑」;§10 原本那句「**若既有测试 target 支持**,补 iOS 模拟器等价状态」是它半年没人跑的许可证,已升级成硬门禁。⚠ 仍未做的是 **iOS 截图**(要装 App,本组明令 ⛔ 不装),它属「人工过一眼」那一档,⛔ 不冒充机器判据。**🔴 值得记住的一条经验**(用户全局规范那条「改 SwiftUI View 必须 `xcodebuild` 跑 App target」的下一层):**只跑一个平台也不够 —— 平台分叉的代码只有跑两个平台才暴露**,而更省事的做法是**能不分叉就不分叉**(纯数据 / 纯逻辑放 `#if` 外面)。**顺带订正一处口径互斥**(R3 发现):§6 S12 原写「核对表内『成立』零命中」,而 §5.11 要求「用一行说明『成立由 10:00 结算…』」——**该句本身含「成立」**。施工侧当时解成「短串禁 / 长句必须有」是对的(守门 `test_the_checklist_view_never_renders_a_confirmed_segment` 就是这么实现的),但 §6 的措辞会诱使下一个人**删掉那行脚注去凑 grep**。已把 §6 措辞改齐 §5.11,**⛔ 判据本身一字未动**。**验收**:后端 `pytest -q` 收工时 **1462 passed / 1 xfailed / 0 failed**。⚠ **这个数不全是本组的**:同期有另一组在并行改守门体系,收工前最后一跑已含它的改动(那条 xfail 也是它的)。**本组净 +5**,= 第七组那 5 条,`git show HEAD:tests/test_contract_crosscheck.py` 与现文件的 `^def test_` 逐个数过:**19 → 24**,其余测试文件本组一行未动。⚠ 顺带订正:**HEAD 实际基线是 1453,不是上面 S12 那句「1430」** —— 1430 是 S12 当时的数,其后 `ec53a9d` / `47fb473` / `bfc5305` 又加了 23 条。**本组的判据因此是「没有一条因我的改动而红」,不是对某个绝对数字**;`platform=macOS` 与 `generic/platform=iOS Simulator` **两条 `build` 均 `** BUILD SUCCEEDED **`**(iOS 那条是本项目**有史以来第一次**通过)。⛔ 未部署、未 ssh、未推送、未装 App、未动 `MemoryMax`、未填任何待标定参数、未动裁定 10 / 11 的产品语义。**顺带扫出并修掉的同类残骸**(都在 `App/**`,都属「客户端在对用户描述一个已经不存在的东西」):① `SettingsView` 连接自检的**四句文案**仍写着「GET `/positions`(带 token)」与「401 · `/health` 通但 `/positions` 被拒」—— 而 S1 早把第二探针换成了 `/settings`(**代码注释里写了、文案没跟着改**),四句里**有两句在 iOS 分支**,同一个盲区。⚠ 现有契约对拍**抓不到它**:那几句是 `/positions` 短写、没有 `/api/v1` 前缀,而扫描器锚的是 `/api/v1` 字面量 —— **展示文案里的短写路径至今无机器判据**,如实登记(未新造判据:按短写路径去扫会把「/health」这类正常散文一起打成命中,假阳性的真实代价是逼后来者放宽守门)。② `RootView.swift` 的 iOS TabView 那行注释写着「顺序 = 选股 / **持仓** / 复盘 / 设置」,与裁定 11 直接冲突,而它下面的代码里根本没有那一项;`SettingsView` 另有一处同病 —— 都已改齐。③ 两句用户可见文案还在讲「篮子卡叙述 / 问询台」(K8 概念),已按现役 LLM 任务(`llm/router.py` 的 `TASK_EXPLAIN` / `TASK_PLAYBOOK`)改成「解释层资料 / 日K 评价 / 预案填值」。**App 单测**:`xcodebuild -destination 'platform=macOS' test` **43 passed / 6 skipped**(skip 仍是要真 dev 后端的联调冒烟),与 S12 时同数。**新登记两条 Backlog**:**B14**(iOS 侧要不要连 `xctest` 一起进门禁)、**B15**(11 个零调用方的 push 措辞函数与 `ALL_KINDS` 怎么收口 —— 动 `ALL_KINDS` 按其模块头纪律**须用户单独拍板**)。⚠ 起初编成 B12 / B13,**改号让位**:并行的守门修复组已把 B12 / B13 写进了它那两条 xfail 的说明里(先占先得,⛔ 不与它抢号)。 |
-| 2026-08-21 | **S15 守门修复(F-G 组)** | 五次提交:`398d3eb`(import 扫描器)/ `ce1b030`(裁定 6 与回滚边界)/ `910d545`(判据形状)/ `76ce5c5`(守空集)/ 本行所在的文档提交。**起因**:三路独立复审(R1/R2/R3)注入应当被拦下的反例后测试照绿,查出 **25 条守门是纸糊的**。本组只修**测量仪器**,⛔ 不放宽任何一条守门去迁就现状。<br>**① import 型守门全线可绕(9 条出自同一根因)**:`tests/guard_scan.py:36` 的 `and not node.level` 把相对 import 整类跳过,另有五份抄本(S1/S3/S4/S5/S6)各写一遍 —— 一行 `from ..llm import factory` 同时穿过 G2/G3/G4/G5/G7/G18/G19/G21 全部八条边界。修法:按包边界(靠 `__init__.py` 认,⛔ 不写死路径常量)把相对 import 解析成绝对模块名;收字面量动态 import(`import_module("httpx")`、`'why'+'notme'` 拼接、全常量 f-string);**五份抄本全部删除**,改走 `guard_scan.import_hits()` 这一份;解析不出的相对 import 与模块名非字面量的动态 import 单独报出、各配一条全仓守门断言恒空。新增 `tests/test_v250_scanner_guard.py`(22 条)= 扫描器自己的反例自检。<br>**② DDL 判据太窄**:S14 那条只扫 `db.py`、只认 4 个**大写**关键字、`DELETE` 不在表里。改为大小写不敏感 + 补 `DELETE FROM`;新增**按表名**的 K8 留档写保护(扫 `neckline/**`,表名走 `LEGACY_READONLY_TABLES` 单一源,判据走 AST 字符串常量 —— 按行 grep 会把跨行拼的 SQL 表名丢在第二行)。`sentinel_events` 列为唯一白名单并写清理由(裁定 7:包退役、表名留着、防重台账仍在写);S1 那份清单原本自述「全部已无应用层写入方」,**这句不成立**,已就地订正。<br>**③ 判据形状选窄**:示例配置「零真数字」由正则换成 **JSON 叶子递归**(数组里的数原先照绿);G11 扫描域从 5 类后缀补到 16 类(`.yml` / `.service` / `.entitlements` / `.pbxproj` …,「上方空间」种进 `App/project.yml` 原先照绿)并加一条**域自检**(⛔ 不许只断言「文件总数 > 100」);客户端三条纪律的域从「一个 View 文件」换成**由内容决定的面**(核对表面 = 代码里提到 checklist 的每一个文件)与**允许面**(终值只许出现在四个文件里),G13 补一条 AST-lite「同一表达式里两个分数相加」检测器 —— ⚠ 那两个数值字段 S17 才落,**判据写在字段出现之前**。<br>**④ 守空集 / 检测器失效**:`test_db_isolation_guardrail.py` 的 5 个被禁函数名在 S1 之后全仓定义数为 0,71 条参数化用例恒绿 → 换成从生产源码算出的真风险面(64 个带 `db_path=None` 兜底的落库层公开函数)+ 三条自检;`assert_no_field_defaults` 的递归因 `from __future__ import annotations` 恒不进入(`f.type` 是字符串),改用 `typing.get_type_hints()` 让它活过来,写死的 14 类清单缩到只剩注解够不到的四个 `PNTier` 并加一条「闭包必须盖住每一个参数 dataclass」的保险;G22 补数字兜底四形状(域限 `neckline/k9/**`,四处正当计数零值按**表达式**做键列白名单);G12 由两个列名字面量的文本扫描换成真 AST 检测器;M7「量比 ≠ 放量倍数」原来被 p4 自己的 docstring 满足(恒真),改为 AST 断言「p4 在 `volume` 上调的函数恰好只有 `volume_ratio`」。<br>**⑤ 新增一条此前根本不存在的闸**:「读取 helper 不执行 DDL」(README / §9.2 / §9.4 / §9.6 三处都断言了它)。AST 调用图闭包数出 **43 处**违规(40 直接 + 3 隔一层,其中 `report/store.py::load_report` 正是复审实测「59 表 → 75 表」的入口之一,只查直接调用会漏掉)。<br>**⑥ §10 守门表订正**:G14 是 22 条里**唯一没有任何具名测试**的一条(主体 `scorecard/listing.py` 归 S17,三个比率全仓零命中)→ 表里逐字标注「随 S17 落地」,并落一条**绊线**测试(比率一出现当场红,提醒补真判据);G15 / G17 / G19 有实现但表里查不到编号 → 表加**具名测试落点**一列,逐条写到函数名;另加一张「守门自己的守门」小表。<br>**🔴 两条 `xfail(strict=True)`(⛔ 未为凑绿放宽守门)**:`scripts/oneoff/` 三个 K8 脚本仍写留档表(§13.1-**B12**);43 个读 helper 触发 DDL(§13.1-**B13**)。两条都配了「欠账账本」断言锁住数字不悄悄变大,修好之后连 xfail 一起删。<br>**反例自检(注入 → 跑守门 → 还原,⛔ 原文件逐字节还原并 sha256 复核)**:CE1/CE3/CE4/CE5/CE11/CE20/CE21/CE22/CE23 + `import_module('why'+'notme')` + CE7/CE8/CE9 + `k9/store.py` 的 DELETE/UPDATE + 跨行 INSERT + CE12c/CE13b + CE14/CE15 + CE24/CE26/CE27 + M1/M2/M6/M7 + 测试漏传 `db_path` + 两条读路径注入 —— **修前全绿,修后全红**;对照组 CE2/CE17(绝对 import)修前修后都红。⚠ 涉及 `App/**` 的三条走**内存注入**(另一个 builder 正在并行改 App,⛔ 不碰它的磁盘)。<br>**测试数**:1430 → **1490 passed + 2 xfailed = 1492**(+62)。**逐文件对得上**:`test_v250_scanner_guard.py` 0→22、`test_v250_s14_release_gate.py` 13→25、`test_v250_s12_app_guard.py` 79→88、`test_v250_s5_params_guard.py` 15→20、`test_v250_s6_k9_guard.py` 25→29、`test_db_isolation_guardrail.py` 69→72(它按测试文件参数化,+1 是本组新增那个文件带来的基数变化)、`test_v250_s4_scorecard_guard.py` 10→12 —— 本组共 **+57**;其余 **+5** 是同期另一个 builder(F-C)在 `test_contract_crosscheck.py` 上的并行提交(50→55)。57 + 5 = 62,逐位对得上。**⛔ 一个待标定参数都没填**;⛔ 未碰生产、未 ssh、未推送、未部署;测试一律临时库。 |
+| 2026-08-21 | **S15 守门修复(F-G 组)** | 五次提交:`398d3eb`(import 扫描器)/ `ce1b030`(裁定 6 与回滚边界)/ `910d545`(判据形状)/ `76ce5c5`(守空集)/ 本行所在的文档提交。**起因**:三路独立复审(R1/R2/R3)注入应当被拦下的反例后测试照绿,查出 **25 条守门是纸糊的**。本组只修**测量仪器**,⛔ 不放宽任何一条守门去迁就现状。<br>**① import 型守门全线可绕(9 条出自同一根因)**:`tests/guard_scan.py:36` 的 `and not node.level` 把相对 import 整类跳过,另有五份抄本(S1/S3/S4/S5/S6)各写一遍 —— 一行 `from ..llm import factory` 同时穿过 G2/G3/G4/G5/G7/G18/G19/G21 全部八条边界。修法:按包边界(靠 `__init__.py` 认,⛔ 不写死路径常量)把相对 import 解析成绝对模块名;收字面量动态 import(`import_module("httpx")`、`'why'+'notme'` 拼接、全常量 f-string);**五份抄本全部删除**,改走 `guard_scan.import_hits()` 这一份;解析不出的相对 import 与模块名非字面量的动态 import 单独报出、各配一条全仓守门断言恒空。新增 `tests/test_v250_scanner_guard.py`(22 条)= 扫描器自己的反例自检。<br>**② DDL 判据太窄**:S14 那条只扫 `db.py`、只认 4 个**大写**关键字、`DELETE` 不在表里。改为大小写不敏感 + 补 `DELETE FROM`;新增**按表名**的 K8 留档写保护(扫 `neckline/**`,表名走 `LEGACY_READONLY_TABLES` 单一源,判据走 AST 字符串常量 —— 按行 grep 会把跨行拼的 SQL 表名丢在第二行)。`sentinel_events` 列为唯一白名单并写清理由(裁定 7:包退役、表名留着、防重台账仍在写);S1 那份清单原本自述「全部已无应用层写入方」,**这句不成立**,已就地订正。<br>**③ 判据形状选窄**:示例配置「零真数字」由正则换成 **JSON 叶子递归**(数组里的数原先照绿);G11 扫描域从 5 类后缀补到 16 类(`.yml` / `.service` / `.entitlements` / `.pbxproj` …,「上方空间」种进 `App/project.yml` 原先照绿)并加一条**域自检**(⛔ 不许只断言「文件总数 > 100」);客户端三条纪律的域从「一个 View 文件」换成**由内容决定的面**(核对表面 = 代码里提到 checklist 的每一个文件)与**允许面**(终值只许出现在四个文件里),G13 补一条 AST-lite「同一表达式里两个分数相加」检测器 —— ⚠ 那两个数值字段 S17 才落,**判据写在字段出现之前**。<br>**④ 守空集 / 检测器失效**:`test_db_isolation_guardrail.py` 的 5 个被禁函数名在 S1 之后全仓定义数为 0,71 条参数化用例恒绿 → 换成从生产源码算出的真风险面(64 个带 `db_path=None` 兜底的落库层公开函数)+ 三条自检;`assert_no_field_defaults` 的递归因 `from __future__ import annotations` 恒不进入(`f.type` 是字符串),改用 `typing.get_type_hints()` 让它活过来,写死的 14 类清单缩到只剩注解够不到的四个 `PNTier` 并加一条「闭包必须盖住每一个参数 dataclass」的保险;G22 补数字兜底四形状(域限 `neckline/k9/**`,四处正当计数零值按**表达式**做键列白名单);G12 由两个列名字面量的文本扫描换成真 AST 检测器;M7「量比 ≠ 放量倍数」原来被 p4 自己的 docstring 满足(恒真),改为 AST 断言「p4 在 `volume` 上调的函数恰好只有 `volume_ratio`」。<br>**⑤ 新增一条此前根本不存在的闸**:「读取 helper 不执行 DDL」(README / §9.2 / §9.4 / §9.6 三处都断言了它)。AST 调用图闭包数出 **43 处**违规(40 直接 + 3 隔一层,其中 `report/store.py::load_report` 正是复审实测「59 表 → 75 表」的入口之一,只查直接调用会漏掉)。<br>**⑥ §10 守门表订正**:G14 是 22 条里**唯一没有任何具名测试**的一条(主体 `scorecard/listing.py` 归 S17,三个比率全仓零命中)→ 表里逐字标注「随 S17 落地」,并落一条**绊线**测试(比率一出现当场红,提醒补真判据);G15 / G17 / G19 有实现但表里查不到编号 → 表加**具名测试落点**一列,逐条写到函数名;另加一张「守门自己的守门」小表。<br>**🔴 两条 `xfail(strict=True)`(⛔ 未为凑绿放宽守门)**:`scripts/oneoff/` 三个 K8 脚本仍写留档表(§13.1-**B12**);43 个读 helper 触发 DDL(§13.1-**B13**)。两条都配了「欠账账本」断言锁住数字不悄悄变大,修好之后连 xfail 一起删。<br>**反例自检(注入 → 跑守门 → 还原,⛔ 原文件逐字节还原并 sha256 复核)**:CE1/CE3/CE4/CE5/CE11/CE20/CE21/CE22/CE23 + `import_module('why'+'notme')` + CE7/CE8/CE9 + `k9/store.py` 的 DELETE/UPDATE + 跨行 INSERT + CE12c/CE13b + CE14/CE15 + CE24/CE26/CE27 + M1/M2/M6/M7 + 测试漏传 `db_path` + 两条读路径注入 —— **修前全绿,修后全红**;对照组 CE2/CE17(绝对 import)修前修后都红。⚠ 涉及 `App/**` 的三条走**内存注入**(另一个 builder 正在并行改 App,⛔ 不碰它的磁盘)。<br>**测试数**:1430 → **1490 passed + 2 xfailed = 1492**(+62)。**逐文件对得上**:`test_v250_scanner_guard.py` 0→22、`test_v250_s14_release_gate.py` 13→25、`test_v250_s12_app_guard.py` 79→88、`test_v250_s5_params_guard.py` 15→20、`test_v250_s6_k9_guard.py` 25→29、`test_db_isolation_guardrail.py` 69→72(它按测试文件参数化,+1 是本组新增那个文件带来的基数变化)、`test_v250_s4_scorecard_guard.py` 10→12 —— 本组共 **+57**;其余 **+5** 是同期另一个 builder(F-C)在 `test_contract_crosscheck.py` 上的并行提交(50→55)。57 + 5 = 62,逐位对得上。**⛔ 一个待标定参数都没填**;⛔ 未碰生产、未 ssh、未推送、未部署;测试一律临时库。 || 2026-08-21 | **R1 / R3 策略与事实层修复(F-A 组)** | 七次提交:`b1df3e1`(R1-B1 事实包一版一坑位)/ `91513d2`(R3-🔴-5 disposition 覆盖全市场)/ `4f34c11`(H1/H2/M4 参数校验)/ `a3acbd0`(H3/H4 满窗口径)/ `737b0a0`(H5 接力证据 + 我这半边的读路径)/ `c706c6f`(L1/L2/L4/L6)/ `c3a6d0d`(M5 ranking 夹具)。<br>**① R1-B1(🔴 阻塞)**:`fact_packs` 有 `UNIQUE(trade_date, pack_version)`,parquet 路径里却没有版本 ——「口径变了就发新版本」这条**被指定为正路**的路径,恰恰是唯一能把旧数据抹掉的那条。布局改为 `fact_pack/version=<v>/year=YYYY/YYYYMMDD.parquet`;遗留布局的回落**要过 sha256 与清单指纹的对拍**(⛔ 不是「文件在就用」);`_relocate_legacy_day` 在下次冻同一天时把遗留文件归位,归属对不上唯一一条清单行就当场停手;就位改用 `os.link`(开工后才冒出来的文件 → `PackAlreadyFrozen`,磁盘不动)。⚠ **未做、归 `Backend/scripts/` 的负责人**:`export_research_snapshot.py::_day_files` 仍在 glob`fact_pack/year=*/*.parquet`(它自己 docstring 说「⛔ 不在这里另拼一套路径」,实际拼了)——版本进路径后它会**扫不到任何日分区**并把区间内每一天都报进 `missingDates`(**响亮**,不是静默少给)。⛔ 本组不碰 `scripts/`(并行组的 territory),`test_export_snapshot.py` 因其夹具直接在遗留路径造文件而仍全绿。修法:改用 `facts.store.pack_file_path` / `resolve_pack_path`。<br>**② R3-🔴-5(🔴 阻塞)**:`k9_disposition` 的口径被静默降级成「覆盖当日事实包的行」。新增 `facts/universe.py::market_universe`(`stock_basic` 口径,只走 `list_date` / `delist_date` 两列,⛔ 不看 `list_status` —— 那是当前标志、拿它过滤历史会抹掉那天还在交易的票);`boundary.apply()` 收**必填**的 `universe`,把当日一行行情都没有的票补成 `suspended` ——这就是 K9 第一层第 6 条的后半句「或当日无 daily 行」,上一版只在注释里成立。取数经事实层过一手,守门 G3(`k9/**` ⛔ 不 import `market_data`)不破。`boundary.counts()` 同步认它们(两处记账⛔ 不许各说各话)。<br>**③ 参数校验(H1/H2/M4)**:档内键原本一句 `{k: float for k in keys}` 统一声明成 `float`,而 `_check_ranges` 两个循环都以 `isinstance(v, int)` 开路 —— 整数性 / 正数 / `MAX_LOOKBACK_PACKS`**三道闸一起被跳过**,`longWindow = 500.0` 与 `maDays = 0.4` 双双校验通过。现在 `_CHANNEL_TIER_KEYS`带类型,并有两条 import 期自检(进整数闸的路径 schema 必须声明 `int`;档内键类型与四个 `PNTier` 的字段注解逐个一致)。阈值区间只补**这个量自己的取值范围决定的**那些:`eruptionMultiple` / `minVolMultiple` / `ampMaxPct` / `flatBand` / `spikeFadeGapPct` 必须 > 0;`normDropMin` ∈ (0,1](跌不过跌停);`lagRankGap` ∈ [0,1](两个百分位的差值)—— 复审原样反例 `lagRankGap = 7` 曾经通过。⛔ **没有**给 `ampMaxPct` / `minRetPct` / `spikeFadeRetPct` 的**量级**加任何界(那要挑一个数,归 §8)。M4:`excludedL2Codes` 缺 `801125.SI` 判 `invalid` —— 复审实测空数组校验通过,K9 §二 第 2 条给定的白酒 19 只可以被一份参数包安静放回池子。⚠ 顺带修了一个夹具:`test_k9_params.py` 里 `lagRankGap` 写着 **500.0**。<br>**④ 满窗口径(H3/H4)**:`volume.py::_MIN_COVERAGE = 0.5` 是一个**未登记的自定量**(§8 待标定总表与 §14 S6 登记里都没有它),已物理删除 → 与 p2/p3/p4 一致的「满窗才给读数」。实测口径影响 46 / 44 / 60 只(0.8%~1.1%,三个采样日),**已登记 §13.1-B16 交用户过目**;⛔ 这是去掉一个数不是发明一个,⛔ 也没有换个值。`boundary._liquidity_cut` 同样补满窗过滤 —— K9 §二 第 7 条逐字是「**20 日**平均成交额」,上一版一只 11 天数据的票拿 11 天均值去和全市场的 20 日均值比分位。<br>**⑤ H5**:`relaySource='shortlisted'` 只读 `primary_pattern`,改读 `patterns_json` 并展开 ——两个取值原本系统性**不可比**,而 §8.3 #19 要标定侧在它们之间选一个。<br>**⑥ R3-🔴-2 收尾**:我这半边 15 个读函数换 `readonly_tables()`,账面 **43 → 0**,§13.1-B13 还清(F-B 换了另外 28 个)。`xfail(strict=True)` 按其原文删除,账本断言改 `== 0`;`tests/test_read_path_no_ddl.py` 补进我这 19 个调用点(含 3 个不带读前缀、静态闸扫不到的)。<br>**⑦ 🔵/⚪ 六条**:L1(「诚实缺席」原本算在 `heatAbsentPolicy='drop'` 之后,与同一份报告里的`channel_counts` 打架 → `allocate` 收必填 `recalled_patterns`)、L2(第 9 条 `high` 缺失时的行为由隐式改显式,**行为一字不变**)、L4(`coverage.compute_day` 一次调用读了 3 遍 parquet → 1 遍)、L6(申万成分里归属不全的行原本静默 `continue` → 逐个点名、进 `SwRefreshStats.member_dropped`、进 `problems` 使 `ok=False`)、M5(`ranking.py` 272 行**此前零直接单测**,补 18 条纯函数夹具,其中「命中多个形态取 max、⛔ 不加分」这一支在全链里**从没被执行过**)。<br>**⛔ 未处置、需要别人接手的三条**:(a) 上面 ① 的 `export_research_snapshot`;(b) **R1-M2**:`test_v250_s5_params_guard.py::_default_branch_offenders` 只认「兜底成枚举成员」,**数字兜底不在扫描面内** —— 复审实测把 `raw["industry"]["minMembers"]` 改成 `.get(..., 10)` 全绿,而裁定 5 的红线是「⛔ 不使用**任何**默认值」。⛔ 守门文件不是本组 territory,未改。⚠ 代码本身是干净的:R1 §6 第 1 条用 AST 全仓扫过五种兜底形状,命中的全是计数类;(c) R1 建议在 `k9_env` 里加一只同时命中 p1 与 p4 的票 —— 那份合成市场被并行组正在改的`test_report_k9.py` 与两份守门共用,未动,实质缺口已由 `test_k9_ranking.py` 的纯函数夹具覆盖。<br>**新增 Backlog**:B16(放量倍数半窗口径)/ B17(§8.4 K9 原文值没转录也没标记)/ B18(`Entry.rank` 是全局名次)/ B19(`k9_channel_hits` 悬空 `run_id`);B13 标记为已还清。<br>**测试数**:1490 passed + 2 xfailed → **1626 passed + 1 xfailed**。本组净增约 **+40 条**(facts +5 / k9_layer +6 / k9_params +21 / k9_ranking +18 / sw_industry +2 / read_path_no_ddl 的调用点 +19 不新增用例;−1 是 B13 的 xfail 删除后并入 passed),其余增量来自同期并行的 F-B / F-C 提交。**⛔ 一个待标定参数都没填**;⛔ 未碰生产、未 ssh、未推送、未部署;测试一律临时库,跑完对 `Backend/data/` 做过逐文件 sha256 对拍,**零变化**。 |
 
 > 施工侧每完成一个切片在此追加一行：切片号、日期、commit、实测数字（墙钟 / 峰值内存 / 通过率）、
 > 以及任何与本 Plan 不符的如实登记。⛔ 不另建第二份计划文件。
