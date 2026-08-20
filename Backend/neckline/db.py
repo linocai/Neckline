@@ -1730,6 +1730,94 @@ CREATE TABLE IF NOT EXISTS k9_coverage_misses (
 );
 CREATE INDEX IF NOT EXISTS idx_k9_coverage_misses_reason
     ON k9_coverage_misses(trade_date, reason);
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- V2.5.0 S6:架构第二层 · 策略层(K9 第一~三层,PROJECT_PLAN §5.4)
+-- ══════════════════════════════════════════════════════════════════════════
+--
+-- 三张表 + 一张 parquet(`k9_disposition`,全市场逐票处置,§5.4.8):
+--   · `k9_runs`            一次运行的账(幂等重写)
+--   · `k9_channel_hits`    逐条召回记录,**append-only**(跨日接力分的数据源)
+--   · `k9_listing_entries` **定稿**的清单 + **冻结的申万绑定**
+--
+-- 🔴 **成绩单永远记得自己跑在哪版事实包 + 哪版参数上**(架构 §3.1):`k9_runs` 同时
+-- 记 `pack_id` / `pack_version` / `params_package_version`。⛔ 三个都不许省 ——
+-- 少了任何一个,「上个月那批清单是按什么口径出的」就再也答不上来。
+
+-- 一次策略层运行。同 `(trade_date, strategy)` 幂等重写:同一份冻结事实包 + 同一份
+-- 参数包必然算出逐字节相同的结果(守门 G10),覆盖是幂等而不是改写。
+-- `strategy` 列为将来的多策略并行留位(架构 §3.2;本版不实现并行,裁定 8)。
+CREATE TABLE IF NOT EXISTS k9_runs (
+  run_id                  TEXT NOT NULL,      -- uuid4,`k9_channel_hits` 靠它归属
+  trade_date              TEXT NOT NULL,      -- 'YYYYMMDD'
+  strategy                TEXT NOT NULL,      -- 'K9'(署名清单,架构 §3.2 契约二)
+  params_package_version  TEXT NOT NULL,      -- 参数包 packageVersion
+  pack_id                 TEXT NOT NULL,      -- 跑在哪一份冻结事实包上
+  pack_version            TEXT NOT NULL,      -- 那份包的口径版本(如 'fp-2')
+  tier_used               TEXT NOT NULL,      -- strict|relaxed(K9 §五-6 分档放宽)
+  strict_candidates       INTEGER NOT NULL,   -- 严格档去重后的票数
+  relaxed_candidates      INTEGER NOT NULL,   -- 严格 ∪ 放宽 去重后的票数
+  seated_count            INTEGER NOT NULL,
+  capacity_short          INTEGER NOT NULL,   -- 放宽后仍 < quota.min → 如实披露,⛔ 不造候选
+  over_strict             INTEGER NOT NULL,   -- K9 §五-8「判据过严,建议重标」
+  relaxed_streak          INTEGER NOT NULL,   -- 连续几天靠放宽档凑足
+  channel_counts_json     TEXT NOT NULL,      -- 每形态 strict/relaxed/seated(§5.4.7 第 8 步)
+  boundary_counts_json    TEXT NOT NULL,      -- 9 条排除项各排掉多少只(⛔ 不合并成一个总数)
+  absent_patterns_json    TEXT NOT NULL,      -- K9 §五-5 诚实缺席:今日无此形态
+  dropped_heat_absent_json TEXT NOT NULL,     -- heatAbsentPolicy='drop' 丢掉的票
+  -- 🔴 **谁定的稿**:'k9' = 解释层尚未接入(S9 之前),这份清单**还没过消息面**;
+  -- 'explain' = 消息面剔除 + 后备补位之后定稿。⛔ 不许删掉这一列或恒填 'explain'
+  -- —— 「有没有人查过公告」必须是查得到的事实,不是一句注释(§5.5)。
+  listing_finalized_by    TEXT NOT NULL,
+  created_at              TEXT NOT NULL,
+  PRIMARY KEY (trade_date, strategy)
+);
+CREATE INDEX IF NOT EXISTS idx_k9_runs_run_id ON k9_runs(run_id);
+
+-- 逐条召回记录,**append-only**(§5.4.6:跨日接力分的数据源;⛔ 零 UPDATE / 零 DELETE)。
+-- ⚠ 同一天重跑会再落一份 —— 这是刻意的(台账不改历史)。跨日接力分按
+-- `(trade_date, pattern)` 去重,重复行⛔ 不会把分算高(`ranking.relay_counts`)。
+-- `seated` 记的是「这次召回最后进没进席」,让「召回了但没进席」这类归因不必再 join。
+CREATE TABLE IF NOT EXISTS k9_channel_hits (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id        TEXT NOT NULL,
+  trade_date    TEXT NOT NULL,
+  ts_code       TEXT NOT NULL,
+  pattern       TEXT NOT NULL,      -- p1|p2|p3|p4(闭合枚举,⛔ 不许现编)
+  tier          TEXT NOT NULL,      -- strict|relaxed
+  seated        INTEGER NOT NULL,   -- 0/1
+  strength_json TEXT NOT NULL,      -- 该形态的强度性**原始读数**(⛔ 不是分数)
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_k9_channel_hits_day ON k9_channel_hits(trade_date, pattern);
+CREATE INDEX IF NOT EXISTS idx_k9_channel_hits_code ON k9_channel_hits(ts_code, trade_date);
+
+-- **定稿**的当日清单(§5.5:清单是在解释层之后定稿的)。
+-- 🔴 **申万归属在写入时即冻结**(架构 §5.1 / §5.8.2):`sw_l2_code`/`sw_l2_name` 随行
+-- 写死,事后申万调整**不回改** —— 「行业分与选票分能拆开」的唯一依据就是这个冻结,
+-- 事后无法重建。⛔ 不许改成 live join `sw_industry_member`。
+CREATE TABLE IF NOT EXISTS k9_listing_entries (
+  trade_date             TEXT NOT NULL,
+  ts_code                TEXT NOT NULL,
+  run_id                 TEXT NOT NULL,
+  strategy               TEXT NOT NULL,
+  name                   TEXT,
+  sw_l2_code             TEXT,           -- 🔴 写入时冻结,⛔ 不回改
+  sw_l2_name             TEXT,           -- 🔴 同上
+  patterns_json          TEXT NOT NULL,  -- 命中的形态**全部列出**(K9 §五-4)
+  primary_pattern        TEXT NOT NULL,  -- 形态内强度分最高的那个
+  tier                   TEXT NOT NULL,  -- 成色标注(K9 §五-7)
+  seat_kind              TEXT,           -- floor|free
+  rank                   INTEGER NOT NULL,
+  score                  REAL NOT NULL,
+  industry_heat_score    REAL,           -- NULL = 查无该行业且 policy=renormalize
+  pattern_strength_score REAL NOT NULL,
+  relay_score            REAL NOT NULL,
+  created_at             TEXT NOT NULL,
+  PRIMARY KEY (trade_date, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_k9_listing_day ON k9_listing_entries(trade_date, strategy);
+
 """
 
 # 幂等列迁移(plan v1.1 §五「均 CREATE TABLE IF NOT EXISTS / 幂等迁移」)。生产库

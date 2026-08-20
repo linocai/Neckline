@@ -54,6 +54,13 @@ _VALID_TABLES = {
     # 🔴 唯一写入口是 `facts/store.py::freeze_pack()`(AST 守门断言全仓只有那一处
     # 调 `write_table_day("fact_pack", ...)`)。
     "fact_pack",
+    # V2.5.0 S6(§5.4.8):**全市场逐票处置**(覆盖率归因的原料),一行一只票。
+    # ⚠ 本表**不经 `write_table_day` 写入** —— 写入方是 `k9/store.py`,而 `k9/**`
+    # ⛔ 不许 import 本模块(守门 G3:策略层取数唯一来源是事实包)。那边自带一张
+    # **显式 schema** 每次照造(比「向既有分区看齐」更强,§12 坑 2)。在这里登记表名
+    # 的意义是:**读侧**(导出快照 / 裁剪脚本 / 覆盖率)仍走同一套路径与 dtype 约定,
+    # 布局只有一个真相。守门单测拿 `day_file_path` 与那边的路径拼法逐字对拍。
+    "k9_disposition",
 }
 
 
@@ -146,6 +153,10 @@ TABLE_FLOAT_COLS: Dict[str, Tuple[str, ...]] = {
         # 行业相对(裁定 2:基准是申万二级成员中位数,⛔ 不是行业指数涨跌幅)
         "sw_l2_median_ret", "rel_strength_1d",
     ),
+    # V2.5.0 S6:`k9_disposition` 唯一的浮点列是 `score`(其余是 String / Int64)。
+    # ⚠ 写入方是 `k9/store.py::_DISPOSITION_SCHEMA`(它⛔ 不能 import 本模块,G3);
+    # 这里的声明服务读侧与 §12 坑 2 的体例,守门单测断言两边**逐列一致**。
+    "k9_disposition": ("score",),
 }
 
 

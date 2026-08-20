@@ -34,15 +34,30 @@ Neckline 侧的动作只有三件:校验 → 记 `packageVersion` 进每次运�
 `.get(x, DEFAULT)`、没有 `if policy == X: … else: …` 的兜底分支。取值不在枚举里 =
 `invalid`,不是「退回某个默认」。示例配置里三个键一律写 `"__TO_BE_CALIBRATED__"`。
 
-## ⚠ 与 Plan 不符 / Plan 未写清之处(已登记 §14,⛔ 施工侧不自行发明)
+## 🔴 裁定 13 / 14 / 15:放量倍数的两个门槛(S5 挂起的两条登记已关闭)
 
-1. **`p2` 的「一字跌停判定」没有键名**。§8.1 第 4 项把「一字跌停 / 有效换手的判定」
-   列为待标定,§5.4.5 只给了三个键(`normDropMin` / `maDays` / `minTurnover`)——
-   `minTurnover` 是「有效换手」那一半,「一字跌停」那一半**没有键名也没有形状**
-   (是按振幅?按 `high==low==limit_down_price`?按开盘即跌停 + 成交量?)。
-   ⛔ 本片不发明键名(那等于替标定方决定判据形状),`REQUIRED_SCHEMA` 里没有它。
-2. **`p3` 的 `notErupted*` 是 Plan 里的通配符**。§5.4.5 逐字写的就是 `p3.notErupted*`,
-   §8.1 第 8 项也只说「『尚未爆发』的判定」待标定。同理 ⛔ 不发明。
+S5 曾登记「`p2` 的一字跌停判定没有键名」「`p3` 的 `notErupted*` 是通配符」两条,
+⛔ 当时未自行发明。用户 2026-08-20 的裁定 13/14/15 把形状定死:
+
+| 判据 | 形状 | 参数位 |
+|---|---|---|
+| 形态 2「一字跌停」 | 开、高、低、收**四价全等于当日跌停价** | **零参数**(⛔ 不为它造键) |
+| 形态 2「有实际换手」 | **放量倍数 ≥ 门槛** | `channels.p2.<档>.minVolMultiple`(§8.2 #21) |
+| 形态 3「尚未放量爆发」 | **放量倍数 < V** | `volume.eruptionMultiple`(§8.2 #22) |
+| 形态 1「放量启动」 | **放量倍数 ≥ V** | **同一个** `volume.eruptionMultiple` |
+
+**放量倍数 = 当日成交量 ÷ 前 `volume.maDays` 个交易日均量**(K9 §3.0.1),
+三处**共用一处计算**(`k9/volume.py`)。
+
+🔴 **V 为什么不分档**(⚠ 与 K9 §五-6「定义性条件中带数字的项设两档」的张力,已登记 §14):
+V 是形态 1 与形态 3 的**分界点**,不是松紧旋钮 —— 调低它只是把票从 p3 挪到 p1,
+p1∪p3 的召回总量**一只都不会多**,放宽档在它身上没有意义。反过来,若给它两档
+(`V_strict` / `V_relaxed`),放宽档一开就会出现「放量倍数落在两值之间」的票同时
+命中 p1(放宽档)与 p3(严格档)—— 裁定 15 要的「严丝合缝互补」当场破掉。
+故 V 是**单值**,住 `volume` 而不是 `channels.pN.<档>`。
+p2 的 `minVolMultiple` 是真正的松紧旋钮(调高 = 候选变少),照旧**分两档**。
+## ⚠ 其余与 Plan 不符 / Plan 未写清之处(已登记 §14,⛔ 施工侧不自行发明)
+
 3. **`patternSubWeights` 的分项键名是本片起的**。§8.3 #17 只说「形态 1 三项 / 形态 2
    一项 / 形态 3 两项 / 形态 4 两项」,§5.4.5 用中文列出了这 8 个量。这里把它们
    逐个转成标识符(见 `_SUB_WEIGHT_KEYS`),**是命名不是主张** —— 每个量都逐字
@@ -174,24 +189,39 @@ class IndustryParams:
 
 
 @dataclass(frozen=True)
+class VolumeParams:
+    """放量倍数(K9 §3.0.1)的两个数。🔴 **不分档**,理由见模块 docstring。
+
+    ⚠ 与形态 4 的**量比**(÷ **5** 日均量的盘后口径,§4.7)是两个不同的量,⛔ 别混。"""
+
+    ma_days: int                   # 分母窗口(K9 §3.0.1 原文 20 日),⛔ 不含当日
+    eruption_multiple: float       # 裁定 15 的 V:p1 ≥ V、p3 < V,**同一个值**
+
+
+@dataclass(frozen=True)
 class P1Tier:
-    """形态 1 放量启动的**定义性条件**(§5.4.5)。强度性条件⛔ 不设门槛。"""
+    """形态 1 放量启动的**定义性条件**(§5.4.5 + 裁定 15)。
+
+    ⚠ 放量倍数的门槛**不在这里** —— 它是 `volume.eruptionMultiple`(与 p3 共用的 V)。
+    强度性条件⛔ 不设门槛。"""
 
     amp_window_days: int
     amp_max_pct: float
     min_ret_pct: float
-    vol_ma_days: int
 
 
 @dataclass(frozen=True)
 class P2Tier:
     norm_drop_min: float           # 归一化跌幅 = 跌幅 ÷ 该板跌停幅度
     ma_days: int                   # 前一日收盘 ≥ N 日均线
-    min_turnover: float            # 「有效换手」那一半
+    min_vol_multiple: float        # 裁定 13「有实际换手」:放量倍数 ≥ 它
 
 
 @dataclass(frozen=True)
 class P3Tier:
+    """⚠ 「尚未放量爆发」的门槛**不在这里** —— 它是 `volume.eruptionMultiple`
+    的**上界侧**(裁定 14/15,与 p1 共用同一个 V)。"""
+
     long_window: int
     short_window: int
     flat_band: float               # 长窗相对强度「≈0」的区间宽度
@@ -265,6 +295,7 @@ class K9Params:
     approved_at: str
     boundary: BoundaryParams
     industry: IndustryParams
+    volume: VolumeParams
     channels: ChannelParams
     ranking: RankingParams
     quota: QuotaParams
@@ -289,8 +320,9 @@ _SUB_WEIGHT_KEYS: Mapping[str, Tuple[str, ...]] = {
 }
 
 _CHANNEL_TIER_KEYS: Mapping[str, Tuple[str, ...]] = {
-    "p1": ("ampWindowDays", "ampMaxPct", "minRetPct", "volMaDays"),
-    "p2": ("normDropMin", "maDays", "minTurnover"),
+    # ⚠ p1 没有 `volMaDays` / 放量门槛:两者都是**共享**的 `volume.*`(裁定 15)。
+    "p1": ("ampWindowDays", "ampMaxPct", "minRetPct"),
+    "p2": ("normDropMin", "maDays", "minVolMultiple"),
     "p3": ("longWindow", "shortWindow", "flatBand"),
     "p4": ("dailyInflowRankPct", "cumDays", "cumInflowRankPct", "lagRankGap"),
 }
@@ -315,6 +347,12 @@ REQUIRED_SCHEMA: Mapping[str, Any] = {
         "minMembers": int,
         "excludedL2Codes": list,
         "heatAbsentPolicy": HeatAbsentPolicy,
+    },
+    #: 裁定 13/14/15 的共享量。🔴 `eruptionMultiple` **一个值**,p1 与 p3 都读它 ——
+    #: 「互斥由判据本身保证」这句话在参数结构上的落点就是这里。
+    "volume": {
+        "maDays": int,
+        "eruptionMultiple": float,
     },
     "channels": {
         ch: {tier: {k: float for k in keys} for tier in _TIER_NAMES}
@@ -342,6 +380,7 @@ REQUIRED_SCHEMA: Mapping[str, Any] = {
 #: 必须 `<= MAX_LOOKBACK_PACKS` 的窗口位(§5.4.3 校验 2)。路径是点分键路。
 _WINDOW_PATHS: Tuple[str, ...] = (
     "boundary.liquidityWindowDays",
+    "volume.maDays",
     "ranking.relayLookbackDays",
     "ranking.upsideRoomMechDays",
 ) + tuple(
@@ -364,7 +403,7 @@ _UNIT_INTERVAL_PATHS: Tuple[str, ...] = (
 #: 必须 > 0 的整数位。
 _POSITIVE_INT_PATHS: Tuple[str, ...] = (
     "boundary.newListingDays", "boundary.liquidityWindowDays",
-    "industry.minMembers",
+    "industry.minMembers", "volume.maDays",
     "ranking.relayLookbackDays", "ranking.upsideRoomMechDays",
     "quota.min", "quota.max", "quota.floorPerChannel", "quota.overStrictConsecutiveDays",
     "explain.maxBackfillRounds",
@@ -575,6 +614,10 @@ def _build(raw: Mapping[str, Any], source_path: str) -> K9Params:
             # ⛔ 这里没有 `.get(x, DEFAULT)`、没有 else 兜底分支。
             heat_absent_policy=HeatAbsentPolicy(raw["industry"]["heatAbsentPolicy"]),
         ),
+        volume=VolumeParams(
+            ma_days=raw["volume"]["maDays"],
+            eruption_multiple=raw["volume"]["eruptionMultiple"],
+        ),
         channels=channels,
         ranking=RankingParams(
             weights=RankingWeights(
@@ -662,8 +705,8 @@ def assert_no_field_defaults(cls: type) -> List[str]:
             if is_dataclass(f.type):
                 walk(f.type, path)
 
-    for cls_ in (K9Params, BoundaryParams, IndustryParams, ChannelParams, ChannelTiers,
-                 P1Tier, P2Tier, P3Tier, P4Tier, RankingParams, RankingWeights,
+    for cls_ in (K9Params, BoundaryParams, IndustryParams, VolumeParams, ChannelParams,
+                 ChannelTiers, P1Tier, P2Tier, P3Tier, P4Tier, RankingParams, RankingWeights,
                  QuotaParams, ExplainParams):
         walk(cls_, "")
     return offenders
@@ -678,6 +721,7 @@ __all__ = [
     "ParamsUnavailable",
     "BoundaryParams",
     "IndustryParams",
+    "VolumeParams",
     "P1Tier", "P2Tier", "P3Tier", "P4Tier",
     "ChannelTiers", "ChannelParams",
     "RankingWeights", "RankingParams",

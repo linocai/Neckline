@@ -60,10 +60,12 @@ def make_raw(**overrides) -> dict:
             "excludedL2Codes": ["801125.SI"],
             "heatAbsentPolicy": "renormalize",
         },
+        # 裁定 13/14/15:放量倍数是**共享量**,分母窗口与分界值 V 都住 `volume`,
+        # ⛔ 不在任何一个通道的档里(V 不分档,理由见 `params.py` 模块 docstring)。
+        "volume": {"maDays": 20, "eruptionMultiple": 2.0},
         "channels": {
-            "p1": _tiers({"ampWindowDays": 20, "ampMaxPct": 25.0,
-                          "minRetPct": 0.0, "volMaDays": 20}),
-            "p2": _tiers({"normDropMin": 0.7, "maDays": 20, "minTurnover": 1.0}),
+            "p1": _tiers({"ampWindowDays": 20, "ampMaxPct": 25.0, "minRetPct": 0.0}),
+            "p2": _tiers({"normDropMin": 0.7, "maDays": 20, "minVolMultiple": 1.0}),
             "p3": _tiers({"longWindow": 60, "shortWindow": 7, "flatBand": 0.02}),
             "p4": _tiers({"dailyInflowRankPct": 0.1, "cumDays": 5,
                           "cumInflowRankPct": 0.15, "lagRankGap": 500.0}),
@@ -206,7 +208,7 @@ class TestRangesAndFingerprint:
     @pytest.mark.parametrize("path", [
         "boundary.liquidityWindowDays", "ranking.relayLookbackDays",
         "ranking.upsideRoomMechDays", "channels.p3.strict.longWindow",
-        "channels.p1.relaxed.volMaDays",
+        "volume.maDays",
     ])
     def test_a_window_longer_than_max_lookback_is_invalid(self, tmp_path, db, path):
         """§3.2:参数包里任何窗口 > `MAX_LOOKBACK_PACKS`(120)一律判为配置无效
@@ -434,7 +436,7 @@ class TestExampleConfig:
 def test_an_unknown_key_warns_but_still_loads(tmp_path, db, caplog):
     import logging
     raw = make_raw()
-    raw["channels"]["p3"]["strict"]["notEruptedVolRatio"] = 1.5
+    raw["channels"]["p3"]["strict"]["someUndeclaredKnob"] = 1.5
     with caplog.at_level(logging.WARNING):
         P.load(write(tmp_path, raw), db_path=db)
     assert any("未声明的键" in r.getMessage() for r in caplog.records)

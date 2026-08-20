@@ -19,31 +19,33 @@
     ],
     "heatAbsentPolicy": "__TO_BE_CALIBRATED__"
   },
+  "volume": {
+    "maDays": "__TO_BE_CALIBRATED__",
+    "eruptionMultiple": "__TO_BE_CALIBRATED__"
+  },
   "channels": {
     "p1": {
       "strict": {
         "ampWindowDays": "__TO_BE_CALIBRATED__",
         "ampMaxPct": "__TO_BE_CALIBRATED__",
-        "minRetPct": "__TO_BE_CALIBRATED__",
-        "volMaDays": "__TO_BE_CALIBRATED__"
+        "minRetPct": "__TO_BE_CALIBRATED__"
       },
       "relaxed": {
         "ampWindowDays": "__TO_BE_CALIBRATED__",
         "ampMaxPct": "__TO_BE_CALIBRATED__",
-        "minRetPct": "__TO_BE_CALIBRATED__",
-        "volMaDays": "__TO_BE_CALIBRATED__"
+        "minRetPct": "__TO_BE_CALIBRATED__"
       }
     },
     "p2": {
       "strict": {
         "normDropMin": "__TO_BE_CALIBRATED__",
         "maDays": "__TO_BE_CALIBRATED__",
-        "minTurnover": "__TO_BE_CALIBRATED__"
+        "minVolMultiple": "__TO_BE_CALIBRATED__"
       },
       "relaxed": {
         "normDropMin": "__TO_BE_CALIBRATED__",
         "maDays": "__TO_BE_CALIBRATED__",
-        "minTurnover": "__TO_BE_CALIBRATED__"
+        "minVolMultiple": "__TO_BE_CALIBRATED__"
       }
     },
     "p3": {

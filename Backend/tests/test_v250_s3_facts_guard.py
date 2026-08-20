@@ -338,9 +338,14 @@ def test_the_hardcoded_min_members_threshold_is_gone_from_the_whole_tree():
         for p in _SCANNED
         if any("MIN_MEMBER" in ident.upper() for ident in _identifiers(p))
     )
-    assert mentions == ["neckline/k9/params.py"], (
-        "最小成员数只允许作为**参数包字段**出现在策略层;它出现在这些地方:"
-        f"{mentions}")
+    # ⚠ S6 起策略层不止 `params.py` 一个文件了(`k9/industry_heat.py` 就是那个
+    # 按 `minMembers` 判「够不够格参与热度排名」的地方)。判据因此按**目录**而不是
+    # 按文件名 —— 本条守的是「这个概念⛔ 不许出现在事实层」,不是「只许有一个文件」。
+    outside = [m for m in mentions if not m.startswith("neckline/k9/")]
+    assert outside == [], (
+        "最小成员数只允许作为**参数包字段**出现在策略层 `neckline/k9/`;"
+        f"它出现在这些地方:{outside}")
+    assert "neckline/k9/params.py" in mentions, "它必须仍然是参数包里的一个字段"
 
 
 def test_the_numeric_threshold_detector_actually_detects():
