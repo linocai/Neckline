@@ -84,6 +84,20 @@ curl -s "${AUTH[@]}" "$BASE/eval/weekly" | "$PY" -c "
 import sys,json;d=json.load(sys.stdin)
 print('  available=%s reason=%s'%(d.get('available'),(d.get('unavailableReason') or '')[:60]))"
 
+# —— V2.5.0 S4 覆盖率成绩线 ——————————————————————————————————————————————
+# 🔴 判据是 **200 + `coverageAll: null`**,⛔ 不是 0:空库 = 昨天还没有清单。
+# 这条线以涨停为口径、**不读参数包**,是参数标定完成之前唯一能跑起来的尺子(§5.8.1)。
+echo "37) GET /scoreboard/coverage(空库 → 200,days 为空):"
+curl -s -o /dev/null -w "  status=%{http_code}\n" "${AUTH[@]}" "$BASE/scoreboard/coverage"
+curl -s "${AUTH[@]}" "$BASE/scoreboard/coverage?window=5" | "$PY" -c "
+import sys,json;d=json.load(sys.stdin)
+print('  window=%s days=%d latestMisses=%d reasons=%s'%(
+    d.get('window'),len(d.get('days') or []),len(d.get('latestMisses') or []),d.get('missReasonCounts')))
+for r in (d.get('days') or [])[:1]:
+    print('  %s 涨停 %s · coverageAll=%r(None=昨天还没有清单,⛔ 不是 0)'%(
+        r['tradeDate'],r['limitUpCount'],r['coverageAll']))"
+echo "37b) 无 token → 401:"; curl -s -o /dev/null -w "  status=%{http_code}\n" "$BASE/scoreboard/coverage"
+
 # —— 退役面反向印证:已删端点必须 404 ————————————————————————————————————
 echo "36) 已退役端点 → 全 404(V2.1-① 问询台 + V2.5.0 S1 的 K8 整链):"
 for M in "POST $BASE/inquiry" "GET $BASE/inquiries" "GET $BASE/report/latest" \

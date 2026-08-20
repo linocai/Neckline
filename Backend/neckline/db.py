@@ -1697,6 +1697,10 @@ CREATE TABLE IF NOT EXISTS k9_coverage_daily (
   in_pool_denominator  INTEGER,              -- NULL = 无 disposition / 边界参数缺失
   covered_in_pool      INTEGER,
   coverage_in_pool     REAL,                 -- NULL 见上方 ⚠(⛔ 不写 0)
+  -- 涨停普查 + 涨停簇画像 + 当日涨停票的**结构性**分布(分板块 / ST / 申万二级)。
+  -- ⚠ 这里装的全是**事实包里的列**(board / is_st / sw_l2_code),⛔ 不含任何
+  -- 「被第 N 条边界排除」的判定 —— 那要边界参数,归 `coverage_in_pool` 那一半。
+  census_json          TEXT NOT NULL,
   computed_at          TEXT NOT NULL
 );
 

@@ -163,6 +163,34 @@ def build_and_freeze_fact_pack(target: date) -> None:
     )
 
 
+def refresh_coverage(target: date) -> None:
+    """V2.5.0 S4:覆盖率成绩线(PROJECT_PLAN §5.8.1)。
+
+    🔴 **它是尺子**:以涨停为口径,⛔ 不读任何待标定参数,参数标定完成之前就能跑。
+    必须排在事实包冻结**之后**(它读那份冻结包)。
+
+    ⚠ **`listing` / `dispositions` 现在恒为 None**:K9 清单与全市场 disposition 是
+    S6 的产物。于是本片只出「涨停普查 + 涨停簇画像 + 结构性分布」那一半,
+    `coverage_all` 落 **NULL**(⛔ 不是 0)—— §5.8.1 说的「清单开始产出的次日
+    自动接上」就是指这里:S6 落地后把两个入参接上,同一天重算即可。
+
+    ⚠ **Plan 没写覆盖率挂在哪条链上**(§9.3 的晚间段序是 facts→k9→explain→playbook
+    →report,没有 scorecard 段)。本片挂在 16:05 日更、紧随事实包冻结之后 ——
+    它只读当日那一份冻结包,是秒级动作,不值得为它新增一个段。已登记进 §14。
+
+    尽力而为**不改退出码**;它是成绩线不是判据输入,失败打 WARNING。
+    """
+    from neckline.scorecard import coverage as coverage_mod
+
+    try:
+        day = coverage_mod.refresh_day(target)
+    except Exception:  # noqa: BLE001
+        logger.warning("[coverage] %s 覆盖率刷新异常(已吞,不阻断主增量)", target, exc_info=True)
+        return
+    if day is None:
+        logger.info("[coverage] %s 无冻结事实包,本日无覆盖率(⛔ 不编一行 0)", target)
+
+
 def update_suspend_list(target: date) -> None:
     """v1.4-①-B:当日全市场停牌名单落盘(`suspend_d`,走 `write_table_day` 铁律路径)。
     **尽力而为**——拉不到就不落盘,`price_stale` 读不到该分区时 reason 如实降级为
@@ -227,6 +255,8 @@ def main() -> int:
     # V2.5.0 S3:事实包构建 + 冻结(架构第一层)。必须排在 `update_sw_industry` **之后**
     # (申万归属是中位数的输入)与全部行情落盘之后(完整性判定要看当日分区)。
     build_and_freeze_fact_pack(target)
+    # V2.5.0 S4:覆盖率成绩线(尺子)。必须排在事实包冻结**之后** —— 它读那份冻结包。
+    refresh_coverage(target)
     # —— 🔴 V2.5.0 S1:三项 K8 日更已摘除 ————————————————————————————————————
     # `update_industry_strength`(`industry_strength_daily`)、`update_industry_stage`
     # (`industry_stage_daily`)、`update_scan_layer`(`limit_cluster_daily` /

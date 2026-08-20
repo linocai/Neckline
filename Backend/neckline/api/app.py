@@ -822,8 +822,69 @@ def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# V2.2-④ 双时钟:两条只读 + **一条写**(`POST …/note` 是本版唯一新增写端点)
+# V2.5.0 S4 · 覆盖率成绩线(PROJECT_PLAN §5.12 / §5.8.1)
 # ══════════════════════════════════════════════════════════════════════════
+
+#: `window` 的上限:一次最多回看多少个已算出的交易日。⚠ 这是**接口分页上限**,
+#: 与 §8 的待标定参数无关(同 `MAX_LOOKBACK_PACKS` 那类工程容量上限的性质)。
+_COVERAGE_WINDOW_MAX = 250
+_COVERAGE_WINDOW_DEFAULT = 20
+
+
+@app.get(f"{API_PREFIX}/scoreboard/coverage", dependencies=[Depends(require_token)])
+def get_scoreboard_coverage(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
+    """覆盖率 + 漏检归因(架构 §5.2)。
+
+    🔴 **这条线不读参数包**:`coverageAll` 以涨停为口径,涨停是硬事实。
+    参数标定完成之前它就是那把尺子(§5.8.1)。
+
+    ⚠ **NULL 不是 0**,响应里原样保留:
+        · `coverageAll = null` —— 昨天还没有清单(上线首日 / 参数未配置的日子);
+        · `coverageInPool = null` —— 没有 D−1 的全市场 disposition(边界参数缺失)。
+    客户端**必须**把 null 渲染成「尚不可得」而不是 0%。
+    """
+    from neckline.scorecard import store as scorecard_store
+
+    n = max(1, min(int(window or _COVERAGE_WINDOW_DEFAULT), _COVERAGE_WINDOW_MAX))
+    days = scorecard_store.load_coverage_days(limit=n, db_path=_db())
+    latest_misses = []
+    if days:
+        newest = datetime.strptime(days[0]["trade_date"], "%Y%m%d").date()
+        latest_misses = scorecard_store.load_misses(newest, db_path=_db())
+    return {
+        "window": n,
+        "days": [
+            {
+                "tradeDate": d["trade_date"],
+                "packVersion": d["pack_version"],
+                "limitUpCount": d["limit_up_count"],
+                "limitDownCount": d["limit_down_count"],
+                "zabanCount": d["zaban_count"],
+                "zabanRate": d["zaban_rate"],
+                "maxConsecDays": d["max_consec_days"],
+                "clusterCount": d["cluster_count"],
+                "listingTradeDate": d["listing_trade_date"],
+                "listingSize": d["listing_size"],
+                "coveredCount": d["covered_count"],
+                "coverageAll": d["coverage_all"],
+                "inPoolDenominator": d["in_pool_denominator"],
+                "coveredInPool": d["covered_in_pool"],
+                "coverageInPool": d["coverage_in_pool"],
+                "census": d["census_json"],
+            }
+            for d in days
+        ],
+        "latestMisses": [
+            {
+                "tradeDate": m["trade_date"], "tsCode": m["ts_code"], "name": m["name"],
+                "board": m["board"], "l2Code": m["sw_l2_code"], "l2Name": m["sw_l2_name"],
+                "consecLimitUpDays": m["consec_limit_up_days"],
+                "reason": m["reason"], "detail": m["detail"],
+            }
+            for m in latest_misses
+        ],
+        "missReasonCounts": scorecard_store.miss_reason_counts(db_path=_db()),
+    }
 
 
 __all__ = ["app", "VERSION", "API_PREFIX"]
