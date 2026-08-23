@@ -1,10 +1,10 @@
 {
-  "packageVersion": "k9-params-20260822-r1",
+  "packageVersion": "k9-params-20260823-r2",
   "factPackVersion": "fp-2",
   "calibratedBy": "whynotme/K9-20260822",
   "calibratedAt": "2026-08-22T00:00:00+08:00",
   "approvedBy": "Lino",
-  "approvedAt": "2026-08-22T18:27:26+08:00",
+  "approvedAt": "2026-08-23T15:38:00+08:00",
   "boundary": {
     "newListingDays": 30,
     "liquidityWindowDays": 20,
@@ -109,8 +109,5 @@
     "max": 20,
     "floorPerChannel": 1,
     "overStrictConsecutiveDays": 3
-  },
-  "explain": {
-    "maxBackfillRounds": 2
   }
 }

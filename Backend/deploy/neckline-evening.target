@@ -1,94 +1,25 @@
-# Neckline 19:00 晚间链的**编排锚**(plan §五 V2-⑯-D)。三个 oneshot **串行**。
+# Neckline 19:00 晚间链编排锚。一次拉起 facts → strategy → report 三个 oneshot。
 #
-# **为什么用 target 而不是三个 timer**:三个各自定时的 timer 是"按钟点碰运气"——
-# 上一段跑超时下一段照样开跑,链序就断了。target 一次拉起三段、由各 service 自己的
-# `After=` 串成序,systemd 保证"前一个 oneshot 跑完(不论成败)才轮到下一个"。
+# 三段用 `Wants=` 而不是 `Requires=`：任一段失败，后续仍运行并在报告中如实披露。
+# 具体顺序由 service 的 `After=` 链保证。
 #
-# **`Wants=` 而不是 `Requires=`**:任一段失败,后面几段**照跑**、报告照出、缺席如实
-# 披露 —— 这是晚间链自己的保险丝哲学(`report/evening.py` 模块头),systemd 侧不许
-# 加严成"一段挂了整条不跑"。⛔ 改成 Requires 前先回 planner。
+# `StopWhenUnneeded=yes` 不能删除。target 若在三段结束后仍保持 active，timer 会停在
+# running 而不重新计算下一次触发，表现为“首晚成功、之后静默不跑”。三个 service 也
+# 不得设置 `RemainAfterExit=yes`，否则下一晚不会再次执行 `ExecStart`。
 #
-# **顺序由 service 侧的 After= 定**(scan ← basket ← report),不在这里重复声明,
-# 免得两处对不上时不知道听谁的。
-#
-# ══════════════════════════════════════════════════════════════════════════════
-# 🔴 **`StopWhenUnneeded=yes` 是这条链能天天跑的必要条件,⛔ 删了它 = 只跑第一晚**
-#    (2026-08-07 生产实打,§七 **P0-45**;⑯-D 的设计缺陷,原始交付漏了这一行)
-# ══════════════════════════════════════════════════════════════════════════════
-#
-# **病象**:`systemctl list-timers` 里 evening 那行 **NEXT = `-`**、`systemctl status`
-# 里 **`Trigger: n/a`**、`systemctl show -p NextElapseUSecRealtime` **空**,而 timer 自己
-# `ActiveState=active` / **`SubState=running`**(不是 `waiting`)。08-06 16:35 五个 unit
-# 的 journal **一条都没有** = 根本没触发。
-#
-# **真因在 timer 的重新武装边,不在 target 的启动作业**:systemd 的 timer 触发后进
-# `TIMER_RUNNING` 停着,**唯一的重新武装入口是 `timer_trigger_notify()` —— 它只在被触发
-# 的那个 unit 转成 inactive/failed 时才把 timer 拨回 `TIMER_WAITING` 并重算 NEXT**。
-# 而 `.target` **不会自己落下**:三段 oneshot 退出后 target 照样 `active` 挂着(它本就是
-# 个同步点,没有"跑完"的概念),于是那个边**永远不来**,NEXT 永远算不出来 → 次晚起全哑。
-#
-# ⛔ **已证伪,别再往这个方向查**:「target 已经 active,所以后续 start 被 systemd 吞掉」
-# **是错的**。本机 target 自 **2026-08-04 14:36:36**(⑯ 交付演练那次手动 start)起就一直
-# active,而 **08-05 16:35 那次触发照样把整条链跑完了**(三段 16:35:20 → 17:07:20、
-# `ExecMainStatus` 全 0)—— 触发作业本身没被吞,**被卡住的是"下一次什么时候触发"**。
-# 08-05 之所以能跑,是因为 08-04 22:01:08 那次 `enable --now` 让 `timer_start()` 走了一遍
-# `timer_enter_waiting()`,**它算 NEXT 时根本不看被触发 unit 的死活** —— 所以这个病的形状
-# 必然是「**首晚必成、次晚起必哑**」,而不是"一直不跑"(那会一眼看出来)。
-#
-# **修法(本行)**:三段 oneshot 全部退出后,target 因 `After=` 三段而**最后**才转 active;
-# 此刻没有任何 unit 以 `Wants=`/`Requires=`/`BindsTo=`/`Upholds=` 反向钉住它
-# (timer 的 `TriggeredBy=` **不算**钉),`StopWhenUnneeded=yes` 立刻把它停下 → timer 收到
-# inactive 通知 → 拨回 waiting → NEXT 重算。链内不会被提前停掉:`unit_is_unneeded()` 对
-# 「还挂着 job」和「尚未 active」的 unit 一律返回 false。
-#
-# ⛔⛔ **三段 service 永远不许加 `RemainAfterExit=yes`** —— 那会让它们跑完仍 `active`,
-#     下一晚 target 拉它们时 `unit_start()` 直接返回 `-EALREADY`、**ExecStart 一行都不执行**,
-#     链变成静默空跑(unit 全绿、什么都没干)。这才是真正的"已 active 被吞",别去招惹它。
-#
-# **没选另外两条路的理由**:① 链尾 `ExecStartPost=` 停 target —— seg3 跑的是 `User=neckline`
-# (nologin 非特权),停系统 unit 要么加 `+` 提权要么配 polkit;而且"从 target 拉起的 unit
-# 里反手停这个 target"是自指作业冲突,更要命的是 **seg3 没跑到那一步(失败/被掐)时 target
-# 就落不下,病原样复发** —— 把状态机的复位挂在业务段的成败上,方向反了。② timer 改触发
-# wrapper oneshot —— 得把 `Wants=`/`After=` 的保险丝哲学(见上)整套重写进脚本,收益为零。
-#
-# **改完怎么验**(⛔ 别用 `systemctl start neckline-evening.target` 真跑一遍验,那是真烧钱的
-# LLM 全链):用 drop-in 把三段 `ExecStart` 临时换成 `/bin/true` 空跑演练状态机,看
-# 「三段退出 → target 自动回 inactive → timer SubState 回 waiting → NEXT 有值」四连,
-# 演练完删 drop-in + `daemon-reload` + 核对三段 ExecStart 已复原。
-#
-# ══════════════════════════════════════════════════════════════════════════════
-# 🔴🔴 **在已经卡住的机器上首次加这一行:必须先 `stop` timer,否则当场补跑一次全链**
-#      (2026-08-07 真踩,§七 P0-45 的次生事故)
-# ══════════════════════════════════════════════════════════════════════════════
-# `daemon-reload` **会异步地**把 `StopWhenUnneeded` 应用到那个已经 active 了几天的 target
-# 上(⚠ reload 后立刻 `systemctl show` 还看得见 `active` —— **同步查一次看不出来**,几百毫秒
-# 后它才落下)。target 一落下,timer 立刻重新武装,而 `timer_enter_waiting()` 算下一次
-# elapse 是**以 `LastTriggerUSec` 为基点**往后找日历槽的 —— 基点还是卡住那天(08-05 16:35),
-# 于是算出来的"下一槽"是**已经过去的** 08-06 16:35 → **立即触发,整条链当场开跑**。
-# ⚠ `Persistent=false` **拦不住**它:那个选项只管重启后要不要补,不管本次开机内的过期槽。
-# ⚠ seg3 带 `--notify`,所以这一跑是**会真推送到手机上**的。
-#
-# **正确的施加顺序**(幂等,任何时候都能重跑):
-#   systemctl stop neckline-evening.timer          # ← 先摘掉触发器,关键
-#   cp …/neckline-evening.target /etc/systemd/system/ && systemctl daemon-reload
-#   systemctl stop neckline-evening.target         # 兜底:把卡住的 target 显式清掉
-#   systemctl start neckline-evening.timer         # timer_start() 从"现在"重算 NEXT,不看旧基点
-#   systemctl list-timers | grep evening           # 核 NEXT 是下一个 19:00,不是过去的槽
-# 之后 timer 的 `LastTriggerUSec` 一旦更新成"今天",这个补跑陷阱就自动消失(下一槽必在未来),
-# **只有第一次施加时有**。
-#
-# 安装:
-#   sudo cp /opt/neckline/deploy/neckline-evening.target /etc/systemd/system/
-#   sudo cp /opt/neckline/deploy/neckline-{scan,basket,report}.service /etc/systemd/system/
-#   sudo cp /opt/neckline/deploy/neckline-evening.timer /etc/systemd/system/
-#   sudo systemctl daemon-reload
-#   # 演练(不等 timer):sudo systemctl start neckline-evening.target
-#   # 正式排程:sudo systemctl enable --now neckline-evening.timer
+# 安装/改名顺序（禁止启动真实 target 做演练，它会产生 LLM 费用并发送通知）：
+#   systemctl stop neckline-evening.timer
+#   cp deploy/neckline-evening.target /etc/systemd/system/
+#   cp deploy/neckline-{facts,strategy,report}.service /etc/systemd/system/
+#   rm -f /etc/systemd/system/neckline-scan.service /etc/systemd/system/neckline-basket.service
+#   systemctl daemon-reload
+#   systemctl stop neckline-evening.target
+#   systemctl start neckline-evening.timer
+#   systemctl list-timers | grep neckline-evening
 
 [Unit]
-Description=Neckline 19:00 evening chain (3 serial oneshots: scan -> basket -> report)
+Description=Neckline 19:00 evening chain (facts -> strategy -> report)
 Documentation=file:///opt/neckline/PROJECT_PLAN.md
-Wants=neckline-scan.service neckline-basket.service neckline-report.service
-After=neckline-scan.service neckline-basket.service neckline-report.service
-# 🔴 见上方大段:没有这一行,timer 只会成功触发一晚,次晚起静默全哑。⛔ 别删。
+Wants=neckline-facts.service neckline-strategy.service neckline-report.service
+After=neckline-facts.service neckline-strategy.service neckline-report.service
 StopWhenUnneeded=yes

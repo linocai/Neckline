@@ -470,7 +470,7 @@ struct SettingsView: View {
             ForEach(model.llmRoutes.routes.keys.sorted(), id: \.self) { task in
                 NKFieldSeparator()
                 NKFieldRow(v: 10, h: 18) {
-                    // 任务名是**服务端登记的机器标识符**(`basket_card` / `daily_review`),
+                    // 任务名是**服务端登记的机器标识符**(`market_direction` / `explain`),
                     // 等宽展示 = 说明"这是机器名",⛔ 不在客户端造一套中文任务名。
                     Text(task).font(NKFont.callout.monospaced()).foregroundStyle(NK.textPrimary)
                     Spacer(minLength: 8)

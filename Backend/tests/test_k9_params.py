@@ -87,7 +87,6 @@ def make_raw(**overrides) -> dict:
         },
         "quota": {"min": 10, "max": 20, "floorPerChannel": 1,
                   "overStrictConsecutiveDays": 5},
-        "explain": {"maxBackfillRounds": 3},
     }
     for path, value in overrides.items():
         cur = raw
@@ -137,7 +136,7 @@ class TestNoDefaultsAnywhere:
     def test_every_param_dataclass_is_frozen(self):
         for cls in (P.K9Params, P.BoundaryParams, P.IndustryParams, P.ChannelParams,
                     P.ChannelTiers, P.P1Tier, P.P2Tier, P.P3Tier, P.P4Tier,
-                    P.RankingParams, P.RankingWeights, P.QuotaParams, P.ExplainParams):
+                    P.RankingParams, P.RankingWeights, P.QuotaParams):
             assert cls.__dataclass_params__.frozen, f"{cls.__name__} 不是 frozen"
 
     def test_a_loaded_pack_is_immutable(self, tmp_path, db):
@@ -168,7 +167,7 @@ class TestMissingKeys:
         "ranking.weights.relay", "ranking.patternSubWeights.p2.relStrengthShortfall",
         "ranking.relayLookbackDays", "ranking.relaySource", "ranking.relayScoring",
         "ranking.upsideRoomMechDays",
-        "quota.min", "quota.overStrictConsecutiveDays", "explain.maxBackfillRounds",
+        "quota.min", "quota.overStrictConsecutiveDays",
     ])
     def test_dropping_any_single_key_names_that_exact_path(self, tmp_path, db, path):
         """⛔ **永不取默认**:少任何一个键都必须点名到**那一个路径**,
@@ -232,7 +231,6 @@ class TestRangesAndFingerprint:
         ("boundary.newListingDays", 0),
         ("industry.minMembers", -1),
         ("quota.floorPerChannel", 0),
-        ("explain.maxBackfillRounds", 0),
     ])
     def test_non_positive_integers_are_invalid(self, tmp_path, db, path, value):
         with pytest.raises(P.ParamsUnavailable) as e:

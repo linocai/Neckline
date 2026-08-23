@@ -18,7 +18,7 @@ def _seed_contract(db, d0: date) -> None:
     init_schema(db)
     with connection(db) as conn:
         for rank, (code, l2) in enumerate(
-                (("AAA", "L1"), ("BBB", "L1"), ("CCC", "L1")), 1):
+                (("AAA", "L1"), ("BBB", "L1"), ("CCC", "L1"), ("DDD", "L1")), 1):
             conn.execute(
                 "INSERT INTO k9_listing_entries VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (day, code, "run", "K9", code, l2, "行业一", '["p1"]', "p1",
@@ -76,9 +76,11 @@ def test_d0_to_d4_followup_and_five_metrics(tmp_path, monkeypatch):
 
     assert listing.refresh_day(d0, as_of=sessions[-1], db_path=db) is True
     score = listing.load_scorecard(window=20, db_path=db)
-    assert score["listingCount"] == 3
+    assert score["listingCount"] == 4
     assert score["establishmentNumerator"] == 1
-    assert score["establishmentDenominator"] == 3  # B22：含观察/缺读数的正式清单全量
+    assert score["establishmentDenominator"] == 2
+    assert score["establishmentRate"] == 0.5
+    # K9 §八：CCC=观察、DDD=尚未生成终值，两者都不进入成立率分母。
     assert score["realizationRate"] == 1.0
     assert score["falseKillRate"] == 1.0
     assert score["industryScore"] == pytest.approx(0.04)

@@ -1,6 +1,6 @@
-# 晚间链第 1 段：事实包构建与冻结。unit 名沿用现有部署拓扑，本版不新增触发面。
+# 晚间链第 1 段：冻结事实包并生成只读市场方向背景。
 [Unit]
-Description=Neckline evening chain seg1: facts layer
+Description=Neckline evening chain seg1: facts + market direction
 Documentation=file:///opt/neckline/PROJECT_PLAN.md
 After=network-online.target
 Wants=network-online.target
@@ -13,5 +13,5 @@ WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
 ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments facts,direction
 TimeoutStartSec=1800
-# B5 宁波云真实数据实测：当日 facts 约 108 MiB；512M 留出约 4.7 倍余量。
+# 宁波云真实数据实测：当日 facts 约 108 MiB；512M 留出约 4.7 倍余量。
 MemoryMax=512M

@@ -259,7 +259,7 @@ def _run_explain(
         策略层出 seated + reserve
           → 解释层处理 seated
           → 每剔除一只,从 reserve 取下一名再跑解释层
-          → 最多 `params.explain.maxBackfillRounds` 轮
+          → 直到恢复原目标数量或 reserve 用尽
           → 定稿
     """
     from neckline.explain import aggregate as explain_aggregate
@@ -280,7 +280,6 @@ def _run_explain(
         # 清单本来就是空的 —— 「今天没有」是可信的空,⛔ 不是故障。
         return STATUS_EMPTY, {"reason": "empty_listing"}
 
-    max_rounds = int(result.params.explain.max_backfill_rounds)
     news_provider = get_provider(TASK_NEWS_SCAN, db_path=db_path)
     llm_provider = provider if provider is not None else get_provider(
         TASK_EXPLAIN, db_path=db_path)
@@ -290,11 +289,8 @@ def _run_explain(
     checked: Dict[str, Any] = {}
     audit: List[Dict[str, Any]] = []
     excluded_codes: List[str] = []
-    #: 🔴 **真正补过几次位**(R2-05)。⛔ 不是「筛查跑了几遍」——
-    #: 参数叫 `maxBackfillRounds`,它约束的就得是**补位**的次数。
-    #: 从前这里数的是筛查轮次,而 `break` 又落在补位**之前**,于是
-    #: `maxBackfillRounds=1` 得到的是「补位 0 次」,审计还写着「已达上限 1」
-    #: —— 用户照字面意思填 1 = 把补位功能整个关掉,而系统告诉他它运行过。
+    #: 真正补过几次位，供审计与用量解释；它不再是上限。补位循环只有两个
+    #: 合法终点：这一批没有新剔除（已恢复原目标数量），或 reserve 已经用尽。
     rounds_used = 0
     pass_no = 0                               # 筛查跑了第几遍(审计编号用)
 
@@ -318,13 +314,6 @@ def _run_explain(
                           "reason": f"{label}:{v.summary}".strip("：: ")})
             excluded_codes.append(v.ts_code)
         seated = [e for e in seated if e.ts_code not in {v.ts_code for v in hits}]
-        if rounds_used >= max_rounds:
-            # ⚠ 上限判在**补位之前**、按**已补过几次**判 —— 到这里才是真的
-            # 「补不动了」。⛔ 别把它挪回自增之后:那就又变成 N−1 次。
-            audit.append({"round_no": pass_no,
-                          "action": explain_store.ACTION_ROUNDS_EXHAUSTED, "ts_code": "",
-                          "reason": f"补位轮数已达上限 {max_rounds},本日清单如实少这几只"})
-            break
         # 补位:从后备票里按**名次**取下一名(编排器知道名次,解释层不知道)。
         take = min(len(hits), len(reserve))
         picked = reserve[:take]

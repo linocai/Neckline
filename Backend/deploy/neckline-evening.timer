@@ -1,8 +1,8 @@
 # Neckline 晚间链定时(plan §五 V2-⑯-D)。触发 `neckline-evening.target`,
-# 由它串起 scan → basket → report 三段。
+# 由它串起 facts → strategy → report 三段。
 #
 # **时刻表**(总窗口按 ⑯-C 新机实测排,改点前先看那份计时表):
-#   16:05  neckline-daily.timer    拉当日 EOD → Parquet + industry_strength_daily
+#   16:05  neckline-daily.timer    拉当日 EOD → Parquet + 申万分类快照
 #   Mon-Thu 19:00 本 timer          当日 seg1 批算 → seg2 LLM → seg3 复盘+报告+APNs
 #   Sun 19:00 本 timer              明确绑定前一周五,纳入周末消息后再跑同一条链
 #   行情增量仍在交易日 16:05 启动；晚间链统一 19:00 启动，避免读到半份数据。

@@ -234,7 +234,7 @@ def test_no_new_systemd_unit_was_added():
     assert set(units) == {
         "neckline.service",
         "neckline-daily.service", "neckline-daily.timer",
-        "neckline-scan.service", "neckline-basket.service", "neckline-report.service",
+        "neckline-facts.service", "neckline-strategy.service", "neckline-report.service",
         "neckline-evening.target", "neckline-evening.timer",
     }, units
     blob = "\n".join((deploy / u).read_text(encoding="utf-8") for u in units)

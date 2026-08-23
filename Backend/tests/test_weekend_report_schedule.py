@@ -170,7 +170,7 @@ def test_timer_and_all_three_services_share_the_scheduled_date_contract():
         "OnCalendar=Sun 19:00 Asia/Shanghai",
     ]
 
-    service_names = ("neckline-scan.service", "neckline-basket.service",
+    service_names = ("neckline-facts.service", "neckline-strategy.service",
                      "neckline-report.service")
     for service_name in service_names:
         unit = (BACKEND_ROOT / "deploy" / service_name).read_text(encoding="utf-8")
@@ -182,7 +182,7 @@ def test_the_three_oneshots_cover_the_new_segment_order_exactly_once():
     """晚间段序 `facts → direction → k9 → explain → playbook → report` 被三个单元
     **不重不漏**地分完。漏一段 = 那一层每晚静默不跑,而 timer 看起来一切正常。"""
     covered: list = []
-    for name in ("neckline-scan.service", "neckline-basket.service",
+    for name in ("neckline-facts.service", "neckline-strategy.service",
                  "neckline-report.service"):
         unit = (BACKEND_ROOT / "deploy" / name).read_text(encoding="utf-8")
         exec_start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
@@ -193,7 +193,22 @@ def test_the_three_oneshots_cover_the_new_segment_order_exactly_once():
 
 def test_the_strategy_unit_passes_a_parameter_package_explicitly():
     """⛔ **无默认参数路径**(裁定 5):跑策略层的那个单元必须显式传 `--k9-params`。"""
-    unit = (BACKEND_ROOT / "deploy" / "neckline-basket.service").read_text(encoding="utf-8")
+    unit = (BACKEND_ROOT / "deploy" / "neckline-strategy.service").read_text(encoding="utf-8")
     exec_start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
     assert "--k9-params " in exec_start
     assert "direction-pipeline" not in exec_start, "K8 时代的方向流水线配置已退役"
+
+
+def test_retired_k8_evening_unit_names_and_config_are_absent():
+    """现役拓扑不再借用 scan/basket 名字；Git 历史已经承担旧链追溯。"""
+    deploy = BACKEND_ROOT / "deploy"
+    assert not (deploy / "neckline-scan.service").exists()
+    assert not (deploy / "neckline-basket.service").exists()
+    assert not (BACKEND_ROOT / "config" / "direction-pipeline.v2.4.2-balanced.json").exists()
+    target = (deploy / "neckline-evening.target").read_text(encoding="utf-8")
+    assert "neckline-facts.service" in target
+    assert "neckline-strategy.service" in target
+    live_lines = "\n".join(line for line in target.splitlines()
+                           if line.startswith(("Wants=", "After=")))
+    assert "neckline-scan.service" not in live_lines
+    assert "neckline-basket.service" not in live_lines

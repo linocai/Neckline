@@ -109,8 +109,5 @@
     "max": 20,
     "floorPerChannel": 1,
     "overStrictConsecutiveDays": "__TO_BE_CALIBRATED__"
-  },
-  "explain": {
-    "maxBackfillRounds": "__TO_BE_CALIBRATED__"
   }
 }

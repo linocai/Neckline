@@ -300,11 +300,6 @@ class QuotaParams:
 
 
 @dataclass(frozen=True)
-class ExplainParams:
-    max_backfill_rounds: int
-
-
-@dataclass(frozen=True)
 class K9Params:
     """一份**已校验**的参数包。🔴 每个字段都没有默认值(见模块 docstring)。"""
 
@@ -320,7 +315,6 @@ class K9Params:
     channels: ChannelParams
     ranking: RankingParams
     quota: QuotaParams
-    explain: ExplainParams
     source_path: str
 
 
@@ -404,7 +398,6 @@ REQUIRED_SCHEMA: Mapping[str, Any] = {
         "floorPerChannel": int,
         "overStrictConsecutiveDays": int,
     },
-    "explain": {"maxBackfillRounds": int},
 }
 
 def _tier_paths(*keys: str) -> Tuple[str, ...]:
@@ -447,7 +440,6 @@ _POSITIVE_INT_PATHS: Tuple[str, ...] = (
     "industry.minMembers", "volume.maDays",
     "ranking.relayLookbackDays", "ranking.upsideRoomMechDays",
     "quota.min", "quota.max", "quota.floorPerChannel", "quota.overStrictConsecutiveDays",
-    "explain.maxBackfillRounds",
 ) + tuple(
     f"channels.{ch}.{tier}.{key}"
     for ch, keys in _CHANNEL_TIER_KEYS.items()
@@ -807,7 +799,6 @@ def _build(raw: Mapping[str, Any], source_path: str) -> K9Params:
             floor_per_channel=raw["quota"]["floorPerChannel"],
             over_strict_consecutive_days=raw["quota"]["overStrictConsecutiveDays"],
         ),
-        explain=ExplainParams(max_backfill_rounds=raw["explain"]["maxBackfillRounds"]),
         source_path=source_path,
     )
 
@@ -960,7 +951,7 @@ __all__ = [
     "P1Tier", "P2Tier", "P3Tier", "P4Tier",
     "ChannelTiers", "ChannelParams",
     "RankingWeights", "RankingParams",
-    "QuotaParams", "ExplainParams",
+    "QuotaParams",
     "K9Params",
     "REQUIRED_SCHEMA",
     "validate",

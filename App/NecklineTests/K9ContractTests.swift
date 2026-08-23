@@ -247,14 +247,14 @@ final class K9ContractTests: XCTestCase {
         XCTAssertEqual(nkNewsStateTone(nil), .neutral)
     }
 
-    func testExplainNoteDecodesServerSnakeCaseKeys() throws {
-        // ⚠ 解释层的键是 **snake_case**(服务端 `explain/store.py::load_notes` 原样透传),
-        // 与外层 camelCase 的信封刻意不同 —— 这条测试就是那份对齐的判据。
+    func testExplainNoteDecodesOnlineCamelCaseKeys() throws {
+        // 数据库内部是 snake_case；在线端点必须经 `_explain_api` 收口为 camelCase。
+        // 客户端只消费 API 契约，不读取数据库内部形状。
         let note = try decode(K9ExplainNote.self, """
-        {"ts_code":"600008.SH",
+        {"tsCode":"600008.SH",
          "profile":{"company":"一句话","industryContext":"处境","position":"位置","recent":"近期"},
-         "kline_comment":"日K 评价","news_state":"unverified","news_category":null,
-         "news":{},"llm_ok":false,"filled_by":"explain","created_at":"2026-08-20T17:00:00"}
+         "klineComment":"日K 评价","newsState":"unverified","newsCategory":null,
+         "news":{},"llmOk":false,"filledBy":"explain","createdAt":"2026-08-20T17:00:00"}
         """)
         XCTAssertEqual(note.tsCode, "600008.SH")
         XCTAssertEqual(note.klineComment, "日K 评价")

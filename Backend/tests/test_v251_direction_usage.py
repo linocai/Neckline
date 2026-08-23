@@ -144,3 +144,87 @@ def test_usage_keeps_real_credits_when_reasoning_failed(tmp_path: Path):
     assert task["failed"] == 1
     assert task["tavilyCredits"] == 1
     assert task["totalTokens"] is None
+
+
+def test_stuck_direction_can_only_be_settled_with_exact_token(tmp_path: Path):
+    db = tmp_path / "settle.db"
+    init_schema(db)
+    claimed, running = direction_store.claim(
+        pack_id=_pack().pack_id, trade_date="20260821", db_path=db)
+    assert claimed and running["state"] == "running"
+
+    changed, still_running = direction_store.settle_running(
+        pack_id=_pack().pack_id,
+        expected_created_at="wrong-token",
+        reason="worker 已确认退出",
+        db_path=db,
+    )
+    assert not changed and still_running["state"] == "running"
+
+    changed, settled = direction_store.settle_running(
+        pack_id=_pack().pack_id,
+        expected_created_at=running["createdAt"],
+        reason="worker 已确认退出",
+        db_path=db,
+    )
+    assert changed and settled["state"] == "unavailable"
+    assert settled["failureReason"] == "人工结案：worker 已确认退出"
+
+
+def test_manual_retry_is_one_explicit_call_and_one_usage_row(tmp_path: Path):
+    db = tmp_path / "retry.db"
+    init_schema(db)
+    provider = _Provider()
+    claimed, running = direction_store.claim(
+        pack_id=_pack().pack_id, trade_date="20260821", db_path=db)
+    assert claimed
+
+    changed, result = direction_llm.retry_once(
+        _pack(),
+        provider=provider,
+        expected_created_at=running["createdAt"],
+        reason="原 worker 已退出，人工授权补跑",
+        report_date=date(2026, 8, 23),
+        db_path=db,
+    )
+
+    assert changed and result["state"] == "ready"
+    assert provider.calls == 1
+    tasks = usage.summary(days=5, db_path=db)["days"][0]["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["task"] == "market_direction" and tasks[0]["calls"] == 1
+
+
+def test_reclaimed_claim_fences_out_late_old_worker(tmp_path: Path):
+    db = tmp_path / "fencing.db"
+    init_schema(db)
+    claimed, old = direction_store.claim(
+        pack_id=_pack().pack_id, trade_date="20260821", db_path=db)
+    assert claimed
+    reclaimed, current = direction_store.reclaim_running(
+        pack_id=_pack().pack_id,
+        expected_created_at=old["createdAt"],
+        reason="旧 worker 已确认退出",
+        db_path=db,
+    )
+    assert reclaimed and current["createdAt"] != old["createdAt"]
+
+    late = direction_store.complete_claim(
+        pack_id=_pack().pack_id,
+        claim_created_at=old["createdAt"],
+        state="ready",
+        summary="旧进程迟到的结果",
+        themes=[{"name": "旧", "reason": "不应落库"}],
+        db_path=db,
+    )
+    assert late["state"] == "running"
+    assert late["summary"] == ""
+
+    final = direction_store.complete_claim(
+        pack_id=_pack().pack_id,
+        claim_created_at=current["createdAt"],
+        state="unavailable",
+        failure_reason="人工重试也失败",
+        db_path=db,
+    )
+    assert final["state"] == "unavailable"

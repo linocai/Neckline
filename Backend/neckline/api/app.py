@@ -934,8 +934,9 @@ def get_scoreboard_coverage(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
 def get_scoreboard_listing(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
     """最近若干个已经走完 D+4 的正式清单日五指标。
 
-    成立率分母是正式清单全量；兑现率与错杀率只在相应终值且存在预案压力位的
-    样本内计算。行业分与选票分始终分开返回，不提供合计字段。
+    成立率分母只含 10:00 已得到成立/放弃终值的样本；观察与未结算均不进入任何
+    正确率分子或分母。兑现率与错杀率只在相应终值且存在预案压力位的样本内计算。
+    行业分与选票分始终分开返回，不提供合计字段。
     """
     from neckline.scorecard import listing
 

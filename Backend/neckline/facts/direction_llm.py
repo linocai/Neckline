@@ -54,19 +54,16 @@ def _query(pack: Any) -> str:
     return f"{pack.trade_date.isoformat()} A股 盘后 市场主线 行业强弱 涨停梯队"
 
 
-def run_once(pack: Any, *, provider: Optional[LLMProvider], report_date: Optional[date] = None,
-             db_path: Optional[Path] = None,
-             transport: Optional[Any] = None) -> Dict[str, Any]:
-    claimed, existing = direction_store.claim(
-        pack_id=pack.pack_id, trade_date=pack.trade_date.strftime("%Y%m%d"), db_path=db_path)
-    if not claimed:
-        # 已完成直接复用；仍在生成或前序任务崩溃时同样不再触发一次外部调用。
-        # ``running`` 会被报告层诚实呈现为「暂未生成」，而不是伪造为成功背景。
-        return existing
+def _run_claimed(
+    pack: Any, *, claim_created_at: str, provider: Optional[LLMProvider],
+    report_date: Optional[date], db_path: Optional[Path], transport: Optional[Any],
+) -> Dict[str, Any]:
+    """执行已经取得 claim 的唯一外部调用；claim 时间同时是防旧进程覆盖的 token。"""
     if provider is None:
         record(task="market_direction", trade_date=pack.trade_date, report_date=report_date, pack_id=pack.pack_id,
                outcome="skipped", failure_reason="未配置可用的 LLM provider", db_path=db_path)
-        return direction_store.complete_claim(pack_id=pack.pack_id, state="unavailable",
+        return direction_store.complete_claim(pack_id=pack.pack_id, claim_created_at=claim_created_at,
+                                              state="unavailable",
                                               failure_reason="方向解读暂未生成：未配置模型或联网搜索", db_path=db_path)
     started = time.monotonic()
     try:
@@ -77,13 +74,15 @@ def run_once(pack: Any, *, provider: Optional[LLMProvider], report_date: Optiona
         record(task="market_direction", trade_date=pack.trade_date, report_date=report_date, pack_id=pack.pack_id,
                outcome="failed", searched=True, duration_ms=int((time.monotonic()-started)*1000),
                failure_reason=f"调用异常:{type(exc).__name__}", db_path=db_path)
-        return direction_store.complete_claim(pack_id=pack.pack_id, state="unavailable",
+        return direction_store.complete_claim(pack_id=pack.pack_id, claim_created_at=claim_created_at,
+                                              state="unavailable",
                                               failure_reason="方向解读暂未生成", db_path=db_path)
     credits = getattr(result, "tavily_credits", None)
     record(task="market_direction", result=result, trade_date=pack.trade_date, report_date=report_date, pack_id=pack.pack_id,
            searched=True, tavily_credits=credits, duration_ms=int((time.monotonic()-started)*1000), db_path=db_path)
     if not result.ok:
-        return direction_store.complete_claim(pack_id=pack.pack_id, state="unavailable",
+        return direction_store.complete_claim(pack_id=pack.pack_id, claim_created_at=claim_created_at,
+                                              state="unavailable",
                                               provider=result.provider or None, model=result.model or None,
                                               failure_reason="方向解读暂未生成", db_path=db_path)
     narrative, block = split_narrative_and_json(result.content or "")
@@ -94,12 +93,43 @@ def run_once(pack: Any, *, provider: Optional[LLMProvider], report_date: Optiona
             if isinstance(item, dict) and str(item.get("name") or "").strip() and str(item.get("reason") or "").strip():
                 themes.append({"name": str(item["name"]).strip()[:32], "reason": str(item["reason"]).strip()[:160]})
     if not narrative.strip() or len(themes) < 2:
-        return direction_store.complete_claim(pack_id=pack.pack_id, state="unavailable",
+        return direction_store.complete_claim(pack_id=pack.pack_id, claim_created_at=claim_created_at,
+                                              state="unavailable",
                                               provider=result.provider or None, model=result.model or None,
                                               evidence_count=len(result.search_hits), failure_reason="方向解读格式不完整", db_path=db_path)
-    return direction_store.complete_claim(pack_id=pack.pack_id, state="ready",
+    return direction_store.complete_claim(pack_id=pack.pack_id, claim_created_at=claim_created_at,
+                                          state="ready",
                                           summary=narrative.strip()[:500], themes=themes, provider=result.provider or None,
                                           model=result.model or None, evidence_count=len(result.search_hits), db_path=db_path)
 
 
-__all__ = ["DirectionResult", "run_once"]
+def run_once(pack: Any, *, provider: Optional[LLMProvider], report_date: Optional[date] = None,
+             db_path: Optional[Path] = None,
+             transport: Optional[Any] = None) -> Dict[str, Any]:
+    claimed, existing = direction_store.claim(
+        pack_id=pack.pack_id, trade_date=pack.trade_date.strftime("%Y%m%d"), db_path=db_path)
+    if not claimed:
+        # 已完成直接复用；仍在生成或前序任务崩溃时同样不再触发一次外部调用。
+        # ``running`` 会被报告层诚实呈现为「暂未生成」，而不是伪造为成功背景。
+        return existing
+    return _run_claimed(
+        pack, claim_created_at=existing["createdAt"], provider=provider,
+        report_date=report_date, db_path=db_path, transport=transport)
+
+
+def retry_once(
+    pack: Any, *, provider: Optional[LLMProvider], expected_created_at: str, reason: str,
+    report_date: date, db_path: Path, transport: Optional[Any] = None,
+) -> tuple[bool, Dict[str, Any]]:
+    """显式接管崩溃遗留的 running claim 并重试；普通晚间链永远不会调用本入口。"""
+    reclaimed, current = direction_store.reclaim_running(
+        pack_id=pack.pack_id, expected_created_at=expected_created_at,
+        reason=reason, db_path=db_path)
+    if not reclaimed:
+        return False, current
+    return True, _run_claimed(
+        pack, claim_created_at=current["createdAt"], provider=provider,
+        report_date=report_date, db_path=db_path, transport=transport)
+
+
+__all__ = ["DirectionResult", "run_once", "retry_once"]

@@ -4,7 +4,7 @@
 |---|---|---|
 | 1 | 输入按 `ts_code` 升序(位次不从列表顺序泄漏) | ① |
 | 2 | 消息面三态;`unverified` ⛔ 不许折成 clean / excluded | ② |
-| 3 | 剔除 → 补位 → 定稿全流程;每步进审计;补位轮数受 `maxBackfillRounds` 约束 | ③ |
+| 3 | 剔除 → 补位 → 定稿全流程;每步进审计;补到目标数量或后备池耗尽 | ③ |
 | 4 | 四骨架逐条对上 K9 §6.3;骨架机械、数值 LLM | ④ |
 | 5 | LLM 返回带自由文本评价键 → 拒绝;缺键(空成功)→ 拒绝;未知 MetricRef → 拒绝冻结 | ⑤ |
 | 6 | 用户修改产生**新版本**、原版本不变 | ⑥ |
@@ -202,13 +202,8 @@ class TestNewsExclusion:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestBackfillOrchestration:
-    def _run(self, listed, *, hit_codes, max_rounds=None, monkeypatch=None):
+    def _run(self, listed, *, hit_codes, monkeypatch=None):
         env, day, result, run_id, params = listed
-        if max_rounds is not None:
-            import dataclasses
-            params = dataclasses.replace(
-                params, explain=dataclasses.replace(
-                    params.explain, max_backfill_rounds=max_rounds))
         hits = set(hit_codes)
         seen: List[str] = []
 
@@ -262,38 +257,41 @@ class TestBackfillOrchestration:
         row = frame.filter(frame["ts_code"] == victim).to_dicts()[0]
         assert row["news_excluded"] == 1 and row["seated"] == 0
 
-    def test_backfill_rounds_are_capped(self, listed, monkeypatch):
-        """补位轮数受 `params.explain.maxBackfillRounds` 约束;
-        用完了就**如实少这几只**,⛔ 不无限补下去。"""
+    def test_backfill_continues_until_the_original_target_is_restored(
+            self, listed, monkeypatch):
+        """第一只补位仍被剔除时，必须继续取下一名，不能按轮数截断。"""
         env, day, result, _run_id, _p = listed
-        # 让每一轮都命中:席位上的第一只 + 所有后备票。
-        hit = [result.shortlist.entries[0].ts_code] + [
-            e.ts_code for e in result.shortlist.reserve]
-        env, day, status, stats, _seen = self._run(
-            listed, hit_codes=hit, max_rounds=1, monkeypatch=monkeypatch)
-        assert stats["roundsUsed"] == 1
-        audit = explain_store.load_audit(day, db_path=env.db_path)
-        assert any(a["action"] == explain_store.ACTION_ROUNDS_EXHAUSTED for a in audit)
-
-    def test_max_rounds_of_one_really_backfills_once(self, listed, monkeypatch):
-        """🔴 **R2-05**:`maxBackfillRounds=1` 必须真的补位 **1 次**。
-
-        从前 `break` 落在补位**之前**,于是「最多 N 轮」实为「最多 N−1 次补位」:
-        N=1 → 剔除 1 只、补位 **0** 只,而审计还写着「补位轮数已达上限 1」。
-        `maxBackfillRounds` 是参数包里的**待标定项** —— 用户照字面意思填 1
-        会得到「补位功能整个关掉」,同时被告知补位机制运行过。
-        """
-        env, day, result, _run_id, _p = listed
+        reserve = list(result.shortlist.reserve)
+        assert len(reserve) >= 2, "夹具至少需要两只后备票来证明跨轮补位"
+        original_size = len(result.shortlist.entries)
         victim = result.shortlist.entries[0].ts_code
-        assert result.shortlist.reserve, "夹具得有后备票"
-        backup = result.shortlist.reserve[0].ts_code
+        hit = [victim, reserve[0].ts_code]
         env, day, status, stats, _seen = self._run(
-            listed, hit_codes=[victim], max_rounds=1, monkeypatch=monkeypatch)
-        assert stats["excluded"] == 1
-        assert stats["backfilled"] == 1, "N=1 补了 0 只 —— 「最多 N 轮」又变回 N−1"
-        assert stats["roundsUsed"] == 1
+            listed, hit_codes=hit, monkeypatch=monkeypatch)
+        assert status == evening_mod.STATUS_OK
+        assert stats["roundsUsed"] == 2
+        assert stats["backfilled"] == 2
+        codes = set(k9_store.load_listing_codes(day, db_path=env.db_path))
+        assert len(codes) == original_size
+        assert reserve[1].ts_code in codes
+        assert not ({victim, reserve[0].ts_code} & codes)
+
+    def test_listing_shrinks_only_after_the_reserve_is_exhausted(self, listed, monkeypatch):
+        """后备池每只都命中排除项时才允许如实缩短，且所有后备票都必须被筛查。"""
+        env, day, result, _run_id, _p = listed
+        original_size = len(result.shortlist.entries)
+        victim = result.shortlist.entries[0].ts_code
+        reserve_codes = [e.ts_code for e in result.shortlist.reserve]
+        assert reserve_codes
+        env, day, status, stats, seen = self._run(
+            listed, hit_codes=[victim, *reserve_codes], monkeypatch=monkeypatch)
+        assert status == evening_mod.STATUS_OK
+        assert stats["backfilled"] == len(reserve_codes)
+        assert stats["roundsUsed"] == len(reserve_codes)
         codes = k9_store.load_listing_codes(day, db_path=env.db_path)
-        assert victim not in codes and backup in codes
+        assert len(codes) == original_size - 1
+        assert set(reserve_codes) <= set(seen)
+        assert victim not in codes and not (set(reserve_codes) & set(codes))
 
     def test_everything_on_the_final_listing_was_actually_screened(
             self, listed, monkeypatch):
@@ -306,7 +304,7 @@ class TestBackfillOrchestration:
         env, day, result, _run_id, _p = listed
         victim = result.shortlist.entries[0].ts_code
         env, day, _status, _stats, seen = self._run(
-            listed, hit_codes=[victim], max_rounds=1, monkeypatch=monkeypatch)
+            listed, hit_codes=[victim], monkeypatch=monkeypatch)
         codes = set(k9_store.load_listing_codes(day, db_path=env.db_path))
         assert codes <= set(seen), (
             f"这几只没过消息面就进了清单:{sorted(codes - set(seen))}")

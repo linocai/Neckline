@@ -14,6 +14,11 @@ TERMINAL_STATES = ("ready", "unavailable", "not_attempted")
 RUNNING_STATE = "running"
 
 
+def _now(*, precise: bool = False) -> str:
+    return datetime.now(timezone.utc).isoformat(
+        timespec="microseconds" if precise else "seconds")
+
+
 def load(pack_id: str, *, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     with readonly_tables("fact_direction_briefings", db_path=db_path) as conn:
         if conn is None:
@@ -43,7 +48,7 @@ def save_once(
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (pack_id, trade_date, state, summary.strip(), json.dumps(themes or [], ensure_ascii=False),
              provider, model, int(evidence_count), failure_reason,
-             datetime.now(timezone.utc).isoformat(timespec="seconds")),
+             _now()),
         )
     return load(pack_id, db_path=db_path) or {}
 
@@ -63,29 +68,76 @@ def claim(
             "INSERT OR IGNORE INTO fact_direction_briefings "
             "(pack_id, trade_date, state, summary, themes_json, provider, model, evidence_count, failure_reason, created_at) "
             "VALUES (?, ?, ?, '', '[]', NULL, NULL, 0, NULL, ?)",
-            (pack_id, trade_date, RUNNING_STATE,
-             datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            (pack_id, trade_date, RUNNING_STATE, _now()),
         )
         claimed = cursor.rowcount == 1
     return claimed, load(pack_id, db_path=db_path) or {}
 
 
 def complete_claim(
-    *, pack_id: str, state: str, summary: str = "", themes: list[dict] | None = None,
+    *, pack_id: str, claim_created_at: str, state: str, summary: str = "",
+    themes: list[dict] | None = None,
     provider: Optional[str] = None, model: Optional[str] = None, evidence_count: int = 0,
     failure_reason: Optional[str] = None, db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """完成已领取的 sidecar；只允许 ``running → terminal`` 一次转换。"""
+    """完成已领取的 sidecar；只允许持有当前 fencing token 的进程结案。"""
     if state not in TERMINAL_STATES:
         raise ValueError(f"非法 direction terminal state:{state}")
     with connection(db_path) as conn:
         conn.execute(
             "UPDATE fact_direction_briefings SET state=?, summary=?, themes_json=?, provider=?, model=?, "
-            "evidence_count=?, failure_reason=? WHERE pack_id=? AND state=?",
+            "evidence_count=?, failure_reason=? WHERE pack_id=? AND state=? AND created_at=?",
             (state, summary.strip(), json.dumps(themes or [], ensure_ascii=False), provider, model,
-             int(evidence_count), failure_reason, pack_id, RUNNING_STATE),
+             int(evidence_count), failure_reason, pack_id, RUNNING_STATE, claim_created_at),
         )
     return load(pack_id, db_path=db_path) or {}
 
 
-__all__ = ["TERMINAL_STATES", "RUNNING_STATE", "claim", "complete_claim", "load", "save_once"]
+def settle_running(
+    *, pack_id: str, expected_created_at: str, reason: str,
+    db_path: Optional[Path] = None,
+) -> tuple[bool, Dict[str, Any]]:
+    """把一个精确指认的崩溃遗留 claim 人工结案为不可用；不触发外部调用。"""
+    clean_reason = reason.strip()
+    if not clean_reason:
+        raise ValueError("人工结案必须填写原因")
+    with connection(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE fact_direction_briefings SET state='unavailable', failure_reason=? "
+            "WHERE pack_id=? AND state=? AND created_at=?",
+            (f"人工结案：{clean_reason}", pack_id, RUNNING_STATE, expected_created_at),
+        )
+        changed = cursor.rowcount == 1
+    return changed, load(pack_id, db_path=db_path) or {}
+
+
+def reclaim_running(
+    *, pack_id: str, expected_created_at: str, reason: str,
+    db_path: Optional[Path] = None,
+) -> tuple[bool, Dict[str, Any]]:
+    """显式接管一个精确指认的 running claim，给人工授权重试建立新的 fencing token。
+
+    ``created_at`` 同时充当本次 claim token：旧进程即使稍后返回，也无法用旧 token
+    覆盖人工重试的结果。这里只接管、不调用 provider；外部费用只能由管理 CLI 的二次
+    确认路径触发。
+    """
+    clean_reason = reason.strip()
+    if not clean_reason:
+        raise ValueError("人工重试必须填写原因")
+    new_created_at = _now(precise=True)
+    with connection(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE fact_direction_briefings SET summary='', themes_json='[]', provider=NULL, "
+            "model=NULL, evidence_count=0, failure_reason=?, created_at=? "
+            "WHERE pack_id=? AND state=? AND created_at=?",
+            (f"人工授权重试：{clean_reason}", new_created_at, pack_id,
+             RUNNING_STATE, expected_created_at),
+        )
+        changed = cursor.rowcount == 1
+    return changed, load(pack_id, db_path=db_path) or {}
+
+
+__all__ = [
+    "TERMINAL_STATES", "RUNNING_STATE", "claim", "complete_claim", "load", "save_once",
+    "settle_running", "reclaim_running",
+]

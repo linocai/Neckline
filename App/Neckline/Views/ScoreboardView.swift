@@ -85,7 +85,7 @@ struct ScoreboardView: View {
                         model.listingScorecard.falseKillDenominator)
                 NKNoteBlock(text: LocalizedStringKey(
                     "主收益统一按当日收盘到四个交易日后收盘计算。盘中最高收益只作辅助参考；"
-                    + "成立率以当天正式清单为分母。"
+                    + "成立率只统计已经得到成立或放弃结论的标的，观察与尚未结算不计入。"
                 ))
             }
         }

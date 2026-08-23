@@ -413,7 +413,6 @@ def raw_params(**overrides) -> dict:
         },
         "quota": {"min": 10, "max": 20, "floorPerChannel": 1,
                   "overStrictConsecutiveDays": 3},
-        "explain": {"maxBackfillRounds": 2},
     }
     for path, value in overrides.items():
         node = raw

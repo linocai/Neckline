@@ -210,8 +210,6 @@ def _news_notes(bundle) -> List[str]:
                 out.append(f"  - 剔除 {a['ts_code']}:{a['reason']}")
             elif a["action"] == "backfilled":
                 out.append(f"  - 补位 {a['ts_code']}:{a['reason']}")
-            elif a["action"] == "rounds_exhausted":
-                out.append(f"  - ⚠ {a['reason']}")
     if unverified:
         out.append(
             f"- ⚠ **{unverified} 只消息面未核实**(没查成,⛔ 不等于确认无消息):"

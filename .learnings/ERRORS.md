@@ -1,5 +1,192 @@
 # Errors
 
+## [ERR-20260823-011] production-sudo-is-command-scoped-not-unrestricted
+
+**Logged**: 2026-08-23T16:53:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+宁波云部署账号的非交互 sudo 是精确命令白名单，通用的 `sudo -n true` 不被允许，因此该次
+预检在第一条命令即退出且没有输出。
+
+### Error
+
+```text
+sudo -n true exited 1
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-23T16:53:00+08:00
+- **Notes**: 不申请或绕过更高权限；先用 `sudo -n -l` 读取现有白名单，再严格沿已授权的发布路径执行。
+
+---
+
+## [ERR-20260823-010] deploy-user-cannot-read-production-environment-file
+
+**Logged**: 2026-08-23T16:52:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+部署账号对 `/opt/neckline/.env` 没有读取权限，按普通用户提取 `DB_PATH` 被系统拒绝。
+
+### Error
+
+```text
+sed: can't read /opt/neckline/.env: Permission denied
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-23T16:52:00+08:00
+- **Notes**: 保持环境文件权限不变，使用现有非交互 sudo 仅提取 `DB_PATH` 字段；不输出或复制其它环境内容。
+
+---
+
+## [ERR-20260823-009] production-preflight-assumed-repo-local-database-path
+
+**Logged**: 2026-08-23T16:50:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+Build 12 生产只读预检沿用了仓库默认布局 `/opt/neckline/data/neckline.db`，但宁波云服务
+通过 `.env` 把数据库放在独立运行数据目录；SQLite 锚点查询未启动。
+
+### Error
+
+```text
+Error: unable to open database "/opt/neckline/data/neckline.db"
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-23T16:51:00+08:00
+- **Notes**: 只读取 `.env` 的 `DB_PATH` 路径字段，不输出其它环境值；随后针对解析出的真实路径重新执行只读完整性与表数检查。
+
+---
+
+## [ERR-20260823-008] final-targeted-test-used-backend-relative-venv-from-root
+
+**Logged**: 2026-08-23T16:16:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+最终静态复核从仓库根执行时沿用了 Backend 工作目录下的 `.venv/bin/python` 相对路径，
+三条补充守门没有启动；前序后端全量与冒烟结果不受影响。
+
+### Error
+
+```text
+zsh: no such file or directory: .venv/bin/python
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-23T16:16:00+08:00
+- **Notes**: 改用 `Backend/.venv/bin/python` 从仓库根执行目标用例，或进入 `Backend/` 后再用相对路径。
+
+---
+
+## [ERR-20260823-007] client-contract-test-used-database-key-shape
+
+**Logged**: 2026-08-23T16:08:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: app
+
+### Summary
+
+首次执行完整 macOS 测试时，一条 K9 客户端契约用例用数据库内部 snake_case 字段
+模拟线上响应，和服务端 `_explain_api` 已明确输出的 camelCase 契约冲突。
+
+### Error
+
+```text
+K9ContractTests.testExplainNoteDecodesServerSnakeCaseKeys: 3 assertions failed
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-23T16:08:00+08:00
+- **Notes**: 不修改正确的生产 DTO；测试改用真实在线 camelCase 响应，并重命名以明确边界。
+
+---
+
+## [ERR-20260823-006] retired-param-class-left-stale-count-guard
+
+**Logged**: 2026-08-23T16:02:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: backend
+
+### Summary
+
+全量测试中的参数闭包守门仍把现役 dataclass 数量下限写死为 14；Build 12 删除无效的
+`ExplainParams` 后，完整闭包合法地变为 13 个。
+
+### Error
+
+```text
+AssertionError: 只走到 13 个类 —— 闭包怕是断了
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-23T16:02:00+08:00
+- **Notes**: 保留 `declared == reached` 这条真正的完整性判据，并把数量下限同步为删除后的 13。
+
+---
+
+## [ERR-20260823-005] multi-file-backfill-patch-context-mismatch
+
+**Logged**: 2026-08-23T15:40:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: backend
+
+### Summary
+
+补位上限清理的首个多文件补丁因测试夹具中的现值与预期上下文不同而被整体拒绝。
+
+### Error
+
+```text
+apply_patch verification failed: Failed to find expected lines in Backend/tests/test_k9_params.py
+```
+
+### Context
+
+- 目标是同时删除 `maxBackfillRounds` 的模型、配置、实现和测试。
+- `apply_patch` 在命中差异前拒绝整份补丁；核对 `git diff` 确认相关文件均未发生半套修改。
+
+### Suggested Fix
+
+先按实际文件内容拆分参数模型、运行逻辑、配置和夹具补丁，每一组落地后立即用 `rg` 检查残留。
+
+### Metadata
+
+- Reproducible: no
+- Related Files: Backend/neckline/k9/params.py, Backend/tests/test_k9_params.py
+
+### Resolution
+
+- **Resolved**: 2026-08-23T15:40:00+08:00
+- **Notes**: 已确认零部分写入，改用小块补丁继续施工。
+
+---
+
 ## [ERR-20260816-050] markdown-refresh-guard-scanned-unrelated-sections
 
 **Logged**: 2026-08-16T20:02:00+08:00

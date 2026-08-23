@@ -1,5 +1,38 @@
 # Project learnings
 
+## [LRN-20260823-001] correction
+
+**Logged**: 2026-08-23T15:38:00+08:00
+**Priority**: high
+**Status**: promoted
+**Area**: backend
+
+### Summary
+
+K9 的成绩口径高于后来冲突的施工裁定：观察与未结算样本不进入成立率分子或分母。
+
+### Details
+
+V2.5.0 的 B22 曾把“全部正式清单”作为成立率分母，这与 K9 §八及新架构的明确原文冲突。
+用户在 V2.5.1 Build 12 快修中重新裁定“按 K9”，同时确认消息面剔除后的补位只要后备池
+尚未用尽，就必须继续补到原目标数量；轮数上限不能截断这项产品承诺。
+
+### Suggested Action
+
+成绩单只以 `confirmed + rejected` 为成立率分母；`observed` 与缺失终值均排除。删除
+`maxBackfillRounds` 配置和实现，补位循环只由“达到原目标数量”或“后备池耗尽”终止，
+并用具名回归测试锁住两条口径。
+
+### Metadata
+
+- Source: user_feedback
+- Related Files: PROJECT_PLAN.md, Backend/neckline/scorecard/listing.py,
+  Backend/neckline/report/evening.py
+- Tags: k9, scorecard, observed, backfill, source-authority
+- Promoted: PROJECT_PLAN.md
+
+---
+
 ## [LRN-20260822-001] correction
 
 **Logged**: 2026-08-22T12:00:00+08:00

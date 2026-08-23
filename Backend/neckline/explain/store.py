@@ -22,11 +22,10 @@ logger = logging.getLogger(__name__)
 NOTES_TABLE = "k9_explain_notes"
 AUDIT_TABLE = "k9_explain_audit"
 
-#: 审计动作(闭合三值)。
+#: 审计动作(闭合两值)。补位不再有轮数上限；reserve 用尽由最终清单容量如实表达。
 ACTION_EXCLUDED = "excluded"
 ACTION_BACKFILLED = "backfilled"
-ACTION_ROUNDS_EXHAUSTED = "rounds_exhausted"
-ACTIONS = (ACTION_EXCLUDED, ACTION_BACKFILLED, ACTION_ROUNDS_EXHAUSTED)
+ACTIONS = (ACTION_EXCLUDED, ACTION_BACKFILLED)
 
 
 def _d(d: date) -> str:
@@ -161,6 +160,6 @@ def load_audit(
 
 __all__ = [
     "NOTES_TABLE", "AUDIT_TABLE",
-    "ACTION_EXCLUDED", "ACTION_BACKFILLED", "ACTION_ROUNDS_EXHAUSTED", "ACTIONS",
+    "ACTION_EXCLUDED", "ACTION_BACKFILLED", "ACTIONS",
     "save_notes", "append_audit", "load_notes", "load_audit",
 ]

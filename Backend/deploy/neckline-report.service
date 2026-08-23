@@ -2,7 +2,7 @@
 [Unit]
 Description=Neckline evening chain seg3: report + persistence + APNs
 Documentation=file:///opt/neckline/PROJECT_PLAN.md
-After=network-online.target neckline-basket.service
+After=network-online.target neckline-strategy.service
 Wants=network-online.target
 
 [Service]

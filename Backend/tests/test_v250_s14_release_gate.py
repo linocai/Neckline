@@ -13,14 +13,14 @@ from neckline.k9 import params
 ROOT = Path(__file__).resolve().parent.parent.parent
 BACKEND = ROOT / "Backend"
 APP = ROOT / "App"
-PRODUCTION_PARAMS_SHA256 = "5775641b989e9553ad29e0178a059007f1f663b422e8134130c99922e0dee952"
+PRODUCTION_PARAMS_SHA256 = "d926cb048c011796d4a1a8df3555f11849332dd89daef5d8d1708861df25f1a7"
 
 
 def test_release_version_and_build_are_aligned():
     project = (APP / "Neckline.xcodeproj" / "project.pbxproj").read_text(encoding="utf-8")
     assert VERSION == "v2.5.1"
     assert set(re.findall(r"MARKETING_VERSION = ([^;]+);", project)) == {"2.5.1"}
-    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"11"}
+    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"12"}
 
 
 def test_production_parameter_pack_is_the_user_approved_whynotme_artifact(tmp_path):
@@ -30,7 +30,7 @@ def test_production_parameter_pack_is_the_user_approved_whynotme_artifact(tmp_pa
     assert hashlib.sha256(path.read_bytes()).hexdigest() == PRODUCTION_PARAMS_SHA256
 
     document = json.loads(path.read_text(encoding="utf-8"))
-    assert document["packageVersion"] == "k9-params-20260822-r1"
+    assert document["packageVersion"] == "k9-params-20260823-r2"
     assert document["factPackVersion"] == params.PACK_VERSION
     assert document["calibratedBy"] == "whynotme/K9-20260822"
     assert document["approvedBy"] == "Lino"
@@ -85,6 +85,7 @@ def test_retired_k8_runtime_files_are_absent():
         BACKEND / "neckline" / "legacy_k8.py",
         BACKEND / "neckline" / "data" / "concept_data.py",
         BACKEND / "scripts" / "backfill_concept.py",
+        BACKEND / "config" / "direction-pipeline.v2.4.2-balanced.json",
         BACKEND / "packs",
     ):
         assert not path.exists() or (path.is_dir() and not any(path.iterdir()))

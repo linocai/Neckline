@@ -476,7 +476,8 @@ def test_the_no_default_walk_reaches_every_param_dataclass():
     assert declared == reached, (
         f"这些参数 dataclass 没被「无默认值」的遍历走到:{sorted(c.__name__ for c in declared - reached)}"
     )
-    assert len(reached) >= 14, f"只走到 {len(reached)} 个类 —— 闭包怕是断了"
+    # Build 12 按用户裁定删除无效的 ExplainParams 后，现役参数类从 14 个收口为 13 个。
+    assert len(reached) >= 13, f"只走到 {len(reached)} 个类 —— 闭包怕是断了"
 
 
 # ══════════════════════════════════════════════════════════════════════════

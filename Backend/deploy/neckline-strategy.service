@@ -1,8 +1,8 @@
-# 晚间链第 2 段：K9 机械策略、解释与预案。unit 名沿用现有部署拓扑。
+# 晚间链第 2 段：K9 机械策略、消息核实、解释与预案。
 [Unit]
 Description=Neckline evening chain seg2: K9 + explain + playbook
 Documentation=file:///opt/neckline/PROJECT_PLAN.md
-After=network-online.target neckline-scan.service
+After=network-online.target neckline-facts.service
 Wants=network-online.target
 
 [Service]
@@ -12,7 +12,7 @@ Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
 ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments k9,explain,playbook --k9-params /opt/neckline/config/k9-params.json
-# 用户已取消晚间链累计时间截断；单次网络调用仍有自身超时与重试。
+# 晚间链没有累计时间截断；单次网络调用仍使用自身超时与重试。
 TimeoutStartSec=infinity
-# B5 宁波云 20 只正式参数包全链实测峰值 245 MiB；768M 留出约 3.1 倍余量。
+# 宁波云 20 只正式参数包全链实测峰值 245 MiB；768M 留出约 3.1 倍余量。
 MemoryMax=768M

@@ -186,7 +186,9 @@ def load_scorecard(*, window: int = 20, strategy: str = "K9",
                     f"FROM {TABLE} WHERE strategy=? AND d0_date IN ({marks}) "
                     "ORDER BY d0_date DESC, ts_code", (strategy, *dates)).fetchall()
 
-    establishment_den = len(rows)  # B22：正式清单全量；verdict 表只贡献分子。
+    # K9 §八：观察是“看过但无结论”，缺 verdict 是“尚未结算”；两者都不能混进
+    # 正确率分母。成立率只回答已得到 10:00 终值的样本里有多少成立。
+    establishment_den = sum(1 for r in rows if r[3] in {"confirmed", "rejected"})
     establishment_num = sum(1 for r in rows if r[3] == "confirmed")
     confirmed = [r for r in rows if r[3] == "confirmed" and r[4] and r[5] is not None]
     rejected = [r for r in rows if r[3] == "rejected" and r[4] and r[5] is not None]

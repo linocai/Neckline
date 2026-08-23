@@ -66,7 +66,6 @@ def _params(**over) -> P.K9Params:
             upside_room_mech_days=20),
         quota=P.QuotaParams(min=1, max=20, floor_per_channel=1,
                             over_strict_consecutive_days=3),
-        explain=P.ExplainParams(max_backfill_rounds=1),
         source_path="fixture",
     )
 

@@ -4,7 +4,7 @@
 **段序定死**(改顺序前先读 `neckline/report/evening.py` 模块头):
 
     16:05 拉数(`scripts/daily_update.py`,**不在本脚本内**)
-      → facts → k9 → explain → playbook → report
+      → facts → direction → k9 → explain → playbook → report
 
 **每段各自包保险丝**:任一段异常只记 WARNING、在报告里如实标该段缺席,链继续往下走。
 ⛔ 绝不因为某段失败而当日无报告 —— 唯一例外是最后那段报告本身炸了(那才是真的没有
@@ -28,8 +28,8 @@
 
 ⛔ **无默认参数包路径**(裁定 5):没传 `--k9-params` 就是「参数未配置」,报告首行会是
 「今天没跑成 · 参数未配置」——**这是设计行为,不是故障**(§9.5)。市场事实与覆盖率成绩线
-照常呈现;方向背景这一段本版**渲染为「未接入」**(事实层的 LLM 旁路 `facts/direction_llm.py`
-尚未建,见 §5.3.6),⛔ 别把那句占位读成「今天没有方向」。
+照常呈现；方向背景由 `facts/direction_llm.py` 读取冻结事实包生成，失败只显示
+“方向解读暂未生成”，不影响机械清单。
 """
 
 from __future__ import annotations

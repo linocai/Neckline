@@ -12,7 +12,8 @@
        `has_web_search`/`search_engine` 由行给),**不再要求 provider 名字必须是
        "glm"/"kimi" 这类白名单值**——任意 OpenAI 兼容端点都能配。
 
-``news_scan`` 会额外要求 Tavily key 并套上检索包装；另两项不联网。
+``market_direction`` 与 ``news_scan`` 会额外要求 Tavily key 并套上检索包装；
+``explain`` 与 ``playbook`` 不联网。
 """
 
 from __future__ import annotations

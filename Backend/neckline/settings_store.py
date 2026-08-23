@@ -410,9 +410,8 @@ def update_provider(
 
 def delete_provider(name: str, db_path: Optional[Path] = None) -> bool:
     """删除一行。返回 `True`=删除成功,`False`=本来就不存在(HTTP 层转 404)。
-    `llm_providers` 不在三律(冻结/追加/不回写)约束范围内(plan §五 V2-① DDL
-    注释:「可改(用户自填/编辑)」)——与 `basket_cards`/`user_actions` 等表不同,
-    这里允许普通 UPDATE/DELETE。"""
+    Provider 是用户维护的运行配置，不是冻结事实或审计成绩，因此允许普通
+    UPDATE/DELETE。"""
     init_schema(db_path)
     with connection(db_path) as conn:
         cur = conn.execute("DELETE FROM llm_providers WHERE name=?", (name,))
@@ -428,7 +427,7 @@ def get_llm_routes(db_path: Optional[Path] = None) -> Tuple[Dict[str, str], Opti
     """读 (任务路由表, 默认 provider 名)。路由表 JSON 非法/非 dict → 空字典兜底
     (诚实降级,不崩)。
 
-    读侧只返回 K9 三个现役任务和可用 Provider；旧键与失效引用会被过滤，下一次
+    读侧只返回 K9 四个现役计量任务和可用 Provider；旧键与失效引用会被过滤，下一次
     设置写回时即从数据库消失。
 
     ⚠ **只读**(R3-🔴-2):缺表 / 缺补列 → `({}, None)`(= 路由未配置),

@@ -460,7 +460,7 @@ struct SelectionSnapshot: Codable, Equatable {
 
     /// 方向背景(事实层的 LLM 旁路,架构 §八)。⚠ **不参与筛选、不参与排序、
     /// 不影响任何机械决策** —— 界面上必须把这句话说出口,⛔ 别让它看起来像一条选股依据。
-    /// `nil` = 那天没有方向解读(现阶段 `facts/direction_llm.py` 尚未建,恒 nil)。
+    /// `nil` = 当日方向旁路没有生成可用内容；不代表市场“没有方向”。
     var direction: NKJSON? {
         if let directionSnapshot, !directionSnapshot.isNull { return directionSnapshot }
         guard let d = structured["direction"], !d.isNull else { return nil }
