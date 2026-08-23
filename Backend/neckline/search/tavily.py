@@ -230,10 +230,12 @@ class TavilyGroundedProvider(LLMProvider):
         query = (search_query or "").strip()
         if not query:
             query = next((str(m.content or "") for m in reversed(messages) if m.role == "user"), "")[:400]
-        searched = self.search_client.search(query)
+        searched = self.search_client.search(query, transport=transport)
         if not searched.ok:
-            return LLMResult(ok=False, reason=searched.reason, provider=self.name, model=self.model)
+            return LLMResult(ok=False, reason=searched.reason, provider=self.name, model=self.model,
+                             tavily_credits=searched.credits)
         result = self.inner.chat(messages + [_grounding_message(searched)], enable_search=False, transport=transport)
+        result.tavily_credits = searched.credits
         if not result.ok:
             return result
         result.search_hits = list(searched.hits)

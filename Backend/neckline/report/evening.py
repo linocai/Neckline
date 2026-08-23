@@ -37,13 +37,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 logger = logging.getLogger(__name__)
 
 SEG_FACTS = "facts"
+SEG_DIRECTION = "direction"
 SEG_K9 = "k9"
 SEG_EXPLAIN = "explain"
 SEG_PLAYBOOK = "playbook"
 SEG_REPORT = "report"
 
 #: **顺序定死**(§9.3)。⛔ 改顺序前先读模块头。
-CHAIN_SEGMENTS: Tuple[str, ...] = (SEG_FACTS, SEG_K9, SEG_EXPLAIN, SEG_PLAYBOOK, SEG_REPORT)
+CHAIN_SEGMENTS: Tuple[str, ...] = (SEG_FACTS, SEG_DIRECTION, SEG_K9, SEG_EXPLAIN, SEG_PLAYBOOK, SEG_REPORT)
 
 STATUS_OK = "ok"
 STATUS_FAILED = "failed"        # 跑了、炸了(保险丝吞掉,报告里如实标)
@@ -99,6 +100,9 @@ def run_evening_chain(
     if SEG_FACTS in wanted:
         _fuse(res, SEG_FACTS, lambda: _run_facts(
             trade_date, db_path=db_path, parquet_dir=parquet_dir))
+    if SEG_DIRECTION in wanted:
+        _fuse(res, SEG_DIRECTION, lambda: _run_direction(
+            trade_date, report_date=report_date, db_path=db_path, parquet_dir=parquet_dir))
     if SEG_K9 in wanted:
         _fuse(res, SEG_K9, lambda: _run_k9(
             trade_date, k9_params_path=k9_params_path, db_path=db_path,
@@ -110,10 +114,11 @@ def run_evening_chain(
             res.notes.append(f"k9 段:{gap}")
     if SEG_EXPLAIN in wanted:
         _fuse(res, SEG_EXPLAIN, lambda: _run_explain(
-            trade_date, result=res.k9_result, db_path=db_path, parquet_dir=parquet_dir))
+            trade_date, report_date=report_date, result=res.k9_result,
+            db_path=db_path, parquet_dir=parquet_dir))
     if SEG_PLAYBOOK in wanted:
         _fuse(res, SEG_PLAYBOOK, lambda: _run_playbook(
-            trade_date, db_path=db_path, parquet_dir=parquet_dir))
+            trade_date, report_date=report_date, db_path=db_path, parquet_dir=parquet_dir))
 
     if SEG_REPORT in wanted:
         # 🔴 报告段**不包保险丝**:它炸了就是真的没有报告,异常必须往上抛
@@ -203,6 +208,28 @@ def _run_k9(
     }
 
 
+def _run_direction(
+    trade_date: date, *, report_date: date, db_path: Optional[Path], parquet_dir: Optional[Path],
+    provider: Any = None, transport: Any = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """事实层背景旁路。它只读冻结事实，任何失败都不影响 K9。"""
+    from neckline.facts import direction_llm, store as fact_store
+    from neckline.facts.store import PackNotFrozen
+    from neckline.llm.factory import get_provider
+    from neckline.llm.router import TASK_MARKET_DIRECTION
+
+    try:
+        pack = fact_store.load_pack(trade_date, parquet_dir=parquet_dir, db_path=db_path)
+    except PackNotFrozen:
+        return STATUS_EMPTY, {"reason": "facts_not_frozen"}
+    llm = provider if provider is not None else get_provider(TASK_MARKET_DIRECTION, db_path=db_path)
+    sidecar = direction_llm.run_once(pack, provider=llm, report_date=report_date,
+                                     db_path=db_path, transport=transport)
+    return (STATUS_OK if sidecar.get("state") == "ready" else STATUS_EMPTY), {
+        "state": sidecar.get("state"), "packId": pack.pack_id,
+    }
+
+
 @dataclass
 class _K9Handoff:
     """策略层 → 解释层的**进程内**交接件(⛔ 不落库、⛔ 不下发)。"""
@@ -217,7 +244,7 @@ class _K9Handoff:
 # ══════════════════════════════════════════════════════════════════════════
 
 def _run_explain(
-    trade_date: date, *, result: Any,
+    trade_date: date, *, result: Any, report_date: Optional[date] = None,
     db_path: Optional[Path], parquet_dir: Optional[Path],
     provider: Any = None, transport: Any = None,
 ) -> Tuple[str, Dict[str, Any]]:
@@ -276,7 +303,9 @@ def _run_explain(
         pass_no += 1
         # 🔴 **升序交给解释层** —— 位次不从列表顺序泄漏(双盲第 ③ 条)。
         items = sorted(((e.ts_code, e.name) for e in pending), key=lambda t: t[0])
-        verdicts = news_mod.screen(items, provider=news_provider, transport=transport)
+        verdicts = news_mod.screen(items, provider=news_provider, transport=transport,
+                                   trade_date=trade_date, report_date=report_date,
+                                   pack_id=shortlist.pack_id, db_path=db_path)
         for v in verdicts:
             checked[v.ts_code] = v
         hits = [v for v in verdicts if v.excluded]
@@ -318,7 +347,8 @@ def _run_explain(
         trade_date, codes, sessions=explain_input.KLINE_SESSIONS,
         parquet_dir=parquet_dir, db_path=db_path)
     notes = explain_aggregate.aggregate(
-        inputs, provider=llm_provider, news_by_code=checked, transport=transport)
+        inputs, provider=llm_provider, news_by_code=checked, transport=transport,
+        trade_date=trade_date, report_date=report_date, pack_id=shortlist.pack_id, db_path=db_path)
 
     # —— 定稿(§5.5:清单在解释层之后定稿)——
     final = Shortlist(
@@ -391,6 +421,7 @@ def _mark_news_excluded(
 
 def _run_playbook(
     trade_date: date, *, db_path: Optional[Path], parquet_dir: Optional[Path],
+    report_date: Optional[date] = None,
     provider: Any = None, transport: Any = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """预案层:为**定稿清单**上每只票冻一份预案(S10)。
@@ -406,9 +437,13 @@ def _run_playbook(
     if not listing:
         return STATUS_EMPTY, {"reason": "empty_listing"}
     llm = provider if provider is not None else get_provider(TASK_PLAYBOOK, db_path=db_path)
+    run = k9_store.load_run(trade_date, db_path=db_path)
+    # 用量账要能回到当日机械运行所用的冻结事实包；没有 run 时保留空值，
+    # 不凭空猜一个 pack_id。
+    pack_id = None if run is None else run.get("pack_id")
     stats = playbook_fill.fill_for_listing(
         trade_date, listing, provider=llm, transport=transport,
-        parquet_dir=parquet_dir, db_path=db_path)
+        parquet_dir=parquet_dir, report_date=report_date, pack_id=pack_id, db_path=db_path)
     if stats["frozen"] == 0 and stats["failed"]:
         # 🔴 **一份都没冻成 = 这一段没达成它的目的**,⛔ 不给它一个 `ok`:
         # 没有预案 = 明早那两拍核对不了任何一只(核对表会把它们列进
@@ -538,7 +573,7 @@ def coverage_inputs(
 
 
 __all__ = [
-    "SEG_FACTS", "SEG_K9", "SEG_EXPLAIN", "SEG_PLAYBOOK", "SEG_REPORT",
+    "SEG_FACTS", "SEG_DIRECTION", "SEG_K9", "SEG_EXPLAIN", "SEG_PLAYBOOK", "SEG_REPORT",
     "CHAIN_SEGMENTS",
     "STATUS_OK", "STATUS_FAILED", "STATUS_SKIPPED", "STATUS_EMPTY", "STATUS_NOT_BUILT",
     "EveningChainResult", "run_evening_chain", "coverage_inputs",

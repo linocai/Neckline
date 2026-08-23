@@ -21,17 +21,17 @@ private enum SelfCheckState: Equatable {
     case networkError(String)
 }
 
-/// V2.3 macOS 三区布局:设置的**四组**(规范 §06「设置 = 四组」)。
-/// ⚠ 组名与原型逐字一致 —— 它们是用户认路的锚。
+/// macOS 设置默认只放日常确认项；改连接、密钥与模型路由统一沉入高级区。
 enum NKSettingsGroup: String, CaseIterable, Identifiable {
-    case backend, llm, push, version
+    case backend, llm, push, version, advanced
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .backend: return "后端连接与鉴权"
-        case .llm: return "LLM Provider 与任务路由"
+        case .backend: return "连接与账号"
+        case .llm: return "研究服务"
         case .push: return "锁屏推送"
         case .version: return "版本"
+        case .advanced: return "高级与诊断"
         }
     }
     var systemImage: String {
@@ -40,6 +40,7 @@ enum NKSettingsGroup: String, CaseIterable, Identifiable {
         case .llm: return "brain"
         case .push: return "bell.badge"
         case .version: return "info.circle"
+        case .advanced: return "wrench.and.screwdriver"
         }
     }
 }
@@ -141,6 +142,9 @@ struct SettingsView: View {
         case .version:
             Text(appShortVersion).font(NKFont.caption.monospacedDigit())
                 .foregroundStyle(NK.textTertiary)
+        case .advanced:
+            Text("桌面端").font(NKFont.caption)
+                .foregroundStyle(NK.textTertiary)
         }
     }
 
@@ -149,13 +153,15 @@ struct SettingsView: View {
     private func groupCaption(_ g: NKSettingsGroup) -> String {
         switch g {
         case .backend:
-            return "\(config.environment.label) · \(config.hasToken ? "token 已填" : "token 未填")"
+            return "\(config.environment.label) · \(config.hasToken ? "访问码已填" : "访问码未填")"
         case .llm:
-            return "LLM 推理 + Tavily 联网检索"
+            return "模型与联网资料状态"
         case .push:
             return "按通知类型配,不按呈现分组配"
         case .version:
             return "App 与服务端双版本行"
+        case .advanced:
+            return "服务地址、密钥、模型与诊断"
         }
     }
 
@@ -173,6 +179,7 @@ struct SettingsView: View {
             case .llm: providersDetail
             case .push: pushDetail
             case .version: versionDetail
+            case .advanced: advancedDetail
             }
         }
     }
@@ -190,11 +197,67 @@ struct SettingsView: View {
         }
     }
 
-    // —— ① 后端连接与鉴权(原型 1618–1671)——————————————————————————————
+    // —— 默认设置：只显示状态与日常开关 ————————————————————————————————
 
     @ViewBuilder
     private var connDetail: some View {
-        detailTitle("后端连接与鉴权")
+        detailTitle("连接与账号", "这里仅确认状态；更换服务地址、访问码或排查连接，请到“高级与诊断”。")
+        NKFieldCard {
+            NKFieldRow(v: 14, h: 18) {
+                NKFieldLabel(text: "当前环境")
+                Spacer(minLength: 8)
+                Text(config.environment.label).font(NKFont.callout).foregroundStyle(NK.textPrimary)
+            }
+            NKFieldSeparator()
+            NKFieldRow(v: 14, h: 18) {
+                NKFieldLabel(text: "访问配置")
+                Spacer(minLength: 8)
+                NKChip(text: config.hasToken ? "已配置" : "未配置",
+                       tone: config.hasToken ? .good : .warn)
+            }
+            NKFieldSeparator()
+            NKFieldRow(v: 14, h: 18) {
+                NKFieldLabel(text: "服务状态")
+                Spacer(minLength: 8)
+                Text(model.serverVersion == nil ? "尚未确认" : "可读取版本信息")
+                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var providersDetail: some View {
+        detailTitle("研究服务", "确认模型与联网资料的可用状态；具体配置只在“高级与诊断”。")
+        NKFieldCard {
+            NKFieldRow(v: 14, h: 18) {
+                NKFieldLabel(text: "联网资料")
+                Spacer(minLength: 8)
+                NKChip(text: model.settings.tavily.keySet ? "已配置" : "未配置",
+                       tone: model.settings.tavily.keySet ? .good : .warn)
+            }
+            NKFieldSeparator()
+            NKFieldRow(v: 14, h: 18) {
+                NKFieldLabel(text: "可用模型")
+                Spacer(minLength: 8)
+                Text("\(eligibleProviders.count) 个").font(NKFont.callout.monospacedDigit())
+                    .foregroundStyle(NK.textPrimary)
+            }
+        }
+        usageDetail
+    }
+
+    @ViewBuilder
+    private var advancedDetail: some View {
+        detailTitle("高级与诊断", "仅在更换服务、访问凭据、模型路由或排查问题时使用。")
+        advancedConnectionDetail
+        advancedProvidersDetail
+    }
+
+    // —— 高级：后端连接与鉴权 ————————————————————————————————————————
+
+    @ViewBuilder
+    private var advancedConnectionDetail: some View {
+        NKGroupLabel(text: "连接与访问凭据")
 
         NKFieldCard {
             NKFieldRow(v: 14, h: 18, alignment: .top) {
@@ -202,13 +265,13 @@ struct SettingsView: View {
                     NKGroupLabel(text: "环境")
                     NKSegmented(options: NKEnvironment.allCases.map { ($0, $0.shortLabel) },
                                 selection: $config.environment)
-                    NKInlineNote(text: "Dev 连本机 uvicorn(:8002);Prod 连云端 HTTPS。切换即时生效。",
+                    NKInlineNote(text: "可选择本机或云端服务；切换后即时生效。",
                                  tone: .neutral)
                 }
             }
             NKFieldSeparator()
             NKFieldRow(v: 14, h: 18) {
-                NKFieldLabel(text: "生效 baseURL")
+                NKFieldLabel(text: "当前服务地址")
                 Text(config.resolvedBaseURL.absoluteString)
                     .font(NKFont.callout.monospaced()).foregroundStyle(NK.textPrimary)
                     .lineLimit(1).truncationMode(.middle)
@@ -217,13 +280,13 @@ struct SettingsView: View {
             NKFieldSeparator()
             NKFieldRow(v: 14, h: 18, alignment: .top) {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("baseURL 覆盖(可选)").font(NKFont.body)
+                    Text("临时服务地址（可选）").font(NKFont.body)
                         .foregroundStyle(NK.textPrimary.opacity(0.75))
                     NKTextFieldBox(placeholder: "留空则用环境默认",
                                    text: $config.baseURLOverride, mono: true)
                     // 🔴 原型 1637 行这句是琥珀的 —— 它是**排障口诀**(CLAUDE.md 登记:
                     // 「换包后连不上/一片空白」先来这里看有没有手填过老基址)。
-                    NKInlineNote(text: "⚠ 这一栏压过环境默认值 —— 换包后连不上,先来这里看有没有手填过老基址。",
+                    NKInlineNote(text: "⚠ 这里会优先于环境选择；无法连接时可先检查是否留有旧地址。",
                                  tone: .warn)
                 }
             }
@@ -232,7 +295,7 @@ struct SettingsView: View {
         NKFieldCard {
             NKFieldRow(v: 16, h: 18, alignment: .top) {
                 VStack(alignment: .leading, spacing: 10) {
-                    NKGroupLabel(text: "鉴权 Token")
+                    NKGroupLabel(text: "访问码")
                     HStack(spacing: 10) {
                         // 🔴 **只写不回显的是 Provider 的 key,不是这个 token** ——
                         // token 是用户自己填进本机 UserDefaults 的,给个眼睛按钮让他核对
@@ -264,7 +327,7 @@ struct SettingsView: View {
                             .font(NKFont.callout).fontWeight(.semibold)
                             .foregroundStyle(config.hasToken ? NK.up : NK.amber)
                         Spacer(minLength: 8)
-                        Text("仅存本机 UserDefaults,绝不提交进 git")
+                        Text("仅保存在当前设备，不会上传到报告或同步到其他设备。")
                             .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                 }
@@ -284,7 +347,7 @@ struct SettingsView: View {
                     }
                     // ⚠ 第二探针在 V2.5.0 S1 已从 `/positions`(随持仓板块退役删除)换成
                     // `/settings` —— 这四句文案当时忘了跟着改,对用户描述了一条会 404 的路由。
-                    NKInlineNote(text: "GET /health(免鉴权)+ GET /settings(带 token)")
+                    NKInlineNote(text: "会检查服务是否可连接，以及访问码是否有效。")
                 }
             }
         }
@@ -304,7 +367,7 @@ struct SettingsView: View {
         case .tokenError:
             HStack(spacing: 6) {
                 Image(systemName: "xmark.circle").font(.system(size: 13, weight: .semibold))
-                Text("401 · Token 错或缺(/health 通但 /settings 被拒)").font(NKFont.callout)
+                Text("访问码无效或已失效，请重新确认。").font(NKFont.callout)
             }
             .foregroundStyle(NK.down)
         case .networkError(let m):
@@ -316,12 +379,11 @@ struct SettingsView: View {
         }
     }
 
-    // —— ② LLM Provider 与任务路由(原型 1672–1706)————————————————————
+    // —— 高级：LLM Provider 与任务路由 —————————————————————————————
 
     @ViewBuilder
-    private var providersDetail: some View {
-        detailTitle("LLM Provider 与任务路由",
-                    "LLM 负责推理，Tavily 统一负责联网检索；两种 key 都只写不回显")
+    private var advancedProvidersDetail: some View {
+        NKGroupLabel(text: "模型、联网资料与任务路由")
 
         NKFieldCard {
             NKFieldRow(v: 14, h: 18) {
@@ -352,7 +414,7 @@ struct SettingsView: View {
             }
             NKFieldSeparator()
             NKFieldRow(v: 10, h: 18) {
-                NKInlineNote(text: "填写路径：设置 → LLM Provider 与任务路由 → Tavily 联网搜索。key 明文不会返回客户端。")
+                NKInlineNote(text: "密钥保存后不会再次显示。")
             }
         }
 
@@ -438,6 +500,29 @@ struct SettingsView: View {
                 .font(NKFont.callout).fontWeight(.semibold)
             }
         }
+
+    }
+
+    @ViewBuilder
+    private var usageDetail: some View {
+        NKFieldCard {
+            NKFieldRow(v: 14, h: 18) { NKGroupLabel(text: "最近 5 日用量") }
+            if model.usageSummary.days.isEmpty {
+                Text("暂时还没有可用的用量记录。")
+                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+            } else {
+                ForEach(model.usageSummary.days) { day in
+                    NKFieldSeparator()
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(NKFmt.reportDate(day.date)).font(NKFont.callout).foregroundStyle(NK.textPrimary)
+                        ForEach(day.tasks) { task in
+                            Text("\(usageTaskLabel(task.task))：\(task.calls) 次 · Token \(task.totalTokens.map(String.init) ?? "未回传") · 搜索额度 \(task.tavilyCredits.map(String.init) ?? "—")")
+                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // —— ③ 锁屏推送(原型 1707–1732)——————————————————————————————————
@@ -445,7 +530,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var pushDetail: some View {
         detailTitle("锁屏推送",
-                    "开关按**通知类型**配、不按呈现分组配 —— 关掉某一类不会连坐同组里别的事。三级只决定「怎么响」,类型决定「响不响」。")
+                    "开关按通知类型分别设置；关闭一种通知不会影响其他通知。")
 
         if model.pushKindsDraft.isEmpty {
             NKFieldCard {
@@ -567,6 +652,16 @@ struct SettingsView: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
     }
 
+    private func usageTaskLabel(_ task: String) -> String {
+        switch task {
+        case "market_direction": return "市场方向"
+        case "news_scan": return "消息核实"
+        case "explain": return "个股资料"
+        case "playbook": return "次日预案"
+        default: return "其他任务"
+        }
+    }
+
     /// 双端共用(macOS 路由行 / iOS `routesSection` 都靠它)。
     private func routeBinding(_ task: String) -> Binding<String> {
         Binding(
@@ -600,43 +695,20 @@ struct SettingsView: View {
         )
     }
 
-    // MARK: - iOS 表单(⚠ **批 5 只做 macOS**;iOS 逐屏比对归批 7,这一整块原样不动)
+    // MARK: - iOS：只保留安全状态、日常通知与桌面端指引
 
     #if os(iOS)
     private var form: some View {
         Form {
-            envSection
-            tokenSection
-            overrideSection
-            selfCheckSection
-            // ⚠ **Provider 注册表与任务路由不下放 iOS**(规范 §06:它们是**配置动作**,
-            // 手机上既难填又容易填错)。⛔ 不是"忘了做" —— 下面这一行把它说出口。
-            #if os(iOS)
+            iosStatusSection
             desktopOnlyNote
-            #else
-            providersSection
-            routesSection
-            #endif
             pushSection
-            #if os(iOS)
-            devicePushSection
-            #endif
             footerSection
         }
         .formStyle(.grouped)
         .task {
             await model.loadSettings()
             await model.loadServerVersion()
-        }
-        .alert("删除 Provider", isPresented: Binding(get: { deletingProvider != nil },
-                                                     set: { if !$0 { deletingProvider = nil } })) {
-            Button("取消", role: .cancel) { deletingProvider = nil }
-            Button("删除", role: .destructive) {
-                if let n = deletingProvider { Task { await model.deleteProvider(name: n) } }
-                deletingProvider = nil
-            }
-        } message: {
-            Text("将删除「\(deletingProvider ?? "")」及其已保存的 key。指向它的任务路由会失去目标,记得同步改路由表。")
         }
     }
 
@@ -647,10 +719,30 @@ struct SettingsView: View {
     /// 是**刻意的**(配置动作留桌面)—— 不说,用户只会以为这版少了功能或者坏了。
     private var desktopOnlyNote: some View {
         Section {
-            Label("Provider 注册表与任务路由在 macOS 上配", systemImage: "desktopcomputer")
+            Label("研究服务与高级配置请在 Mac 上管理", systemImage: "desktopcomputer")
                 .font(NKFont.body).foregroundStyle(NK.textSecondary)
         } footer: {
-            Text("它们是配置动作(填完整端点、粘 key、设路由),手机上既难填又容易填错;交割单上传同理。⛔ 这不是这一版少了功能。")
+            Text("模型、联网资料和服务地址等高级配置请在 Mac 上完成；手机保留日常阅读与通知设置。")
+        }
+    }
+
+    private var iosStatusSection: some View {
+        Section {
+            LabeledContent("访问配置") {
+                Label(config.hasToken ? "已配置" : "未配置",
+                      systemImage: config.hasToken ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(NKFont.body).fontWeight(.semibold)
+                    .foregroundStyle(config.hasToken ? NK.up : NK.amber)
+            }
+            LabeledContent("联网资料") {
+                Text(model.settings.tavily.keySet ? "已配置" : "未配置")
+                    .font(NKFont.body).foregroundStyle(NK.textSecondary)
+            }
+            LabeledContent("可用模型", value: "\(eligibleProviders.count) 个")
+        } header: {
+            Text("安全状态")
+        } footer: {
+            Text("手机不会显示服务地址、访问码、模型密钥或诊断入口。")
         }
     }
     #endif
@@ -662,16 +754,16 @@ struct SettingsView: View {
             Picker("环境", selection: $config.environment) {
                 ForEach(NKEnvironment.allCases) { env in Text(env.label).tag(env) }
             }
-            LabeledContent("生效 baseURL") {
+            LabeledContent("当前服务") {
                 Text(config.resolvedBaseURL.absoluteString)
                     .font(NKFont.body.monospaced())
                     .foregroundStyle(NK.textSecondary)
                     .lineLimit(1).truncationMode(.middle)
             }
         } header: {
-            Text("后端连接")
+            Text("连接")
         } footer: {
-            Text("Dev 连本机 uvicorn(:8002);Prod 连云端 HTTPS。切换即时生效。")
+            Text("选择本机或云端服务；切换后即时生效。服务地址可在 Mac 的高级设置中管理。")
         }
     }
 
@@ -702,9 +794,9 @@ struct SettingsView: View {
                     .foregroundStyle(config.hasToken ? NK.up : NK.amber)
             }
         } header: {
-            Text("鉴权 Token")
+            Text("访问码")
         } footer: {
-            Text("Token 仅存本机 UserDefaults,绝不提交进 git。")
+            Text("访问码仅保存在当前设备。")
         }
     }
 
@@ -747,7 +839,7 @@ struct SettingsView: View {
             case .ok(let desc):
                 Label(desc, systemImage: "checkmark.circle.fill").font(NKFont.body).foregroundStyle(NK.up)
             case .tokenError:
-                Label("401 · Token 错或缺(/health 通但 /settings 被拒)", systemImage: "xmark.circle.fill")
+                Label("访问码无效或已失效，请重新确认。", systemImage: "xmark.circle.fill")
                     .font(NKFont.body).foregroundStyle(NK.down)
             case .networkError(let m):
                 Label(m, systemImage: "exclamationmark.triangle.fill").font(NKFont.body).foregroundStyle(NK.amber)
@@ -755,7 +847,7 @@ struct SettingsView: View {
         } header: {
             Text("连接自检")
         } footer: {
-            Text("GET /health(免鉴权)+ GET /settings(带 token)。")
+            Text("会检查服务是否可连接，以及访问码是否有效。")
         }
     }
 
@@ -833,7 +925,7 @@ struct SettingsView: View {
         } header: {
             Text("任务路由")
         } footer: {
-            Text("哪个任务用哪个 Provider(全量覆盖式保存)。任务名由服务端登记,填了没登记的名字会被 422 拒绝。")
+            Text("哪个任务用哪个 Provider（全量覆盖式保存）。未登记的任务名无法保存。")
         }
     }
 
@@ -864,7 +956,7 @@ struct SettingsView: View {
         } header: {
             Text("锁屏推送(按通知类型)")
         } footer: {
-            Text("开关按**通知类型**配、不按呈现分组配 —— 关掉某一类不会连坐同组里别的事。三级只决定「怎么响」,类型决定「响不响」。")
+            Text("开关按通知类型分别设置；关闭一种通知不会影响其他通知。")
         }
     }
 
@@ -933,7 +1025,7 @@ struct SettingsView: View {
         let health = try? await client.health()
         if let v = health?.version { model.serverVersion = v }
         guard health?.ok == true else {
-            check = .networkError("/health 不可达 · 检查环境 / 网络")
+            check = .networkError("服务暂不可达，请检查环境或网络。")
             return
         }
         do {
@@ -941,7 +1033,7 @@ struct SettingsView: View {
             // `/settings` —— 它是**鉴权后**的只读端点,能同时验通「token 对不对」与
             // 「服务端答不答」。⛔ 不许退化成只打 `/health`:那条免鉴权,验不了 token。
             let snapshot = try await client.fetchSettings()
-            check = .ok("health ok · settings ok(\(snapshot.push.kinds.count) 项推送开关)")
+            check = .ok("服务与访问配置正常（\(snapshot.push.kinds.count) 项推送开关）")
         } catch APIError.unauthorized, APIError.noToken {
             check = .tokenError
         } catch let e as APIError {
@@ -1016,7 +1108,7 @@ struct ProviderFormSheet: View {
                     }
                 }
                 // 原型 205 行:这条踩过的坑从 footer 里提出来贴到字段下方并着琥珀色。
-                NKInlineNote(text: "⚠ Base URL 要写**完整端点**(必须带 `/chat/completions`)—— 少写会拿真 key 打出 404。",
+                NKInlineNote(text: "⚠ Base URL 需要填写完整端点（包含 /chat/completions）；地址不完整会导致连接失败。",
                              tone: .warn)
             }
 
@@ -1035,7 +1127,7 @@ struct ProviderFormSheet: View {
                         }
                     }
                 }
-                NKInlineNote(text: "key 只发一次、**服务端从不回显明文**。界面上永远只看得到「已配 / 未配」这个布尔。")
+                NKInlineNote(text: "key 只发一次，服务端不会回显明文。界面上只显示「已配 / 未配」。")
             }
 
             // —— 能力 ——
@@ -1097,7 +1189,7 @@ struct ProviderFormSheet: View {
                 } header: {
                     Text("凭据")
                 } footer: {
-                    Text("key 只发一次、**从不回显**。编辑时留空表示保持原值不变。")
+                    Text("key 只发一次，之后不会回显。编辑时留空表示保持原值不变。")
                 }
 
                 Section {

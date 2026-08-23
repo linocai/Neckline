@@ -48,6 +48,9 @@
 from __future__ import annotations
 
 import re
+import time
+from datetime import date
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
 
@@ -149,9 +152,16 @@ def scan_news_for_code(
     *,
     provider: Optional[LLMProvider],
     transport: Optional[Any] = None,
+    trade_date: Optional[date] = None,
+    report_date: Optional[date] = None,
+    pack_id: Optional[str] = None,
+    db_path: Optional[Path] = None,
 ) -> NewsScanResult:
     """扫一只标的的「立案/暴雷/监管/减持」四类；无 Provider 时诚实降级。"""
     if provider is None:
+        from neckline.llm.usage import record
+        record(task="news_scan", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="skipped",
+               failure_reason="未配置可用的 LLM provider", db_path=db_path)
         return NewsScanResult(
             ts_code=ts_code, provider="none", model="", degraded=True,
             degrade_reason="未配置可用的 LLM Provider 或默认模型",
@@ -166,11 +176,22 @@ def scan_news_for_code(
             f"股票:{name}({ts_code})。请排查该股票近期是否有上述三类消息。",
         ])),
     ]
-    result = provider.chat(
-        messages, enable_search=True, transport=transport,
-        # 显式检索词带当前年份，避免把旧材料误当成当前事实。
-        search_query=news_search_query(ts_code, name),
-    )
+    started = time.monotonic()
+    try:
+        result = provider.chat(
+            messages, enable_search=True, transport=transport,
+            search_query=news_search_query(ts_code, name),
+        )
+    except Exception:
+        from neckline.llm.usage import record
+        record(task="news_scan", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="failed",
+               searched=True, duration_ms=int((time.monotonic() - started) * 1000),
+               failure_reason="调用异常", db_path=db_path)
+        raise
+    from neckline.llm.usage import record
+    record(task="news_scan", result=result, trade_date=trade_date, report_date=report_date, pack_id=pack_id,
+           searched=True, tavily_credits=result.tavily_credits,
+           duration_ms=int((time.monotonic() - started) * 1000), db_path=db_path)
     if not result.ok:
         return NewsScanResult(
             ts_code=ts_code, provider=provider.name, model=getattr(provider, "model", ""),

@@ -27,9 +27,12 @@
 from __future__ import annotations
 
 import logging
+import inspect
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from datetime import date
+from pathlib import Path
 
 from neckline.llm.base import LLMProvider
 from neckline.llm.news_scan import (
@@ -144,6 +147,10 @@ def screen(
     provider: Optional[LLMProvider],
     transport: Optional[Any] = None,
     scan_fn: Optional[Callable[..., NewsScanResult]] = None,
+    trade_date: Optional[date] = None,
+    report_date: Optional[date] = None,
+    pack_id: Optional[str] = None,
+    db_path: Optional[Path] = None,
 ) -> List[NewsVerdict]:
     """逐只查消息面。`items = [(ts_code, name), ...]`,**按传入顺序**逐只调用。
 
@@ -157,7 +164,18 @@ def screen(
     out: List[NewsVerdict] = []
     for ts_code, name in items:
         try:
-            scan = fn(ts_code, name or "", provider=provider, transport=transport)
+            kwargs: Dict[str, Any] = {"provider": provider, "transport": transport,
+                                      "trade_date": trade_date, "report_date": report_date,
+                                      "pack_id": pack_id, "db_path": db_path}
+            # 既有测试会 monkeypatch 模块级扫描函数；按签名过滤新增的运行时参数，
+            # 既保留正式调用的计量关联，也不会要求旧 stub 改签名。
+            try:
+                accepted = inspect.signature(fn).parameters
+                if not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in accepted.values()):
+                    kwargs = {key: value for key, value in kwargs.items() if key in accepted}
+            except (TypeError, ValueError):
+                pass
+            scan = fn(ts_code, name or "", **kwargs)
         except Exception as e:  # noqa: BLE001
             logger.warning("[explain] %s 消息面扫描异常,按未核实处理", ts_code, exc_info=True)
             out.append(NewsVerdict(ts_code=ts_code, state=NewsState.UNVERIFIED,

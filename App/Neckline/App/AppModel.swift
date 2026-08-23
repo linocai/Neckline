@@ -181,6 +181,9 @@ final class AppModel {
     var selectionLoading = false
     /// `nil` = 本次还没成功拉过 / 拉失败(界面如实说「没取到」,⛔ 不冒充三态里的任何一态)。
     var selectionLoaded = false
+    /// 在线响应以外的最近一份成功报告。只在网络不可达时使用，鉴权错误绝不回退。
+    var selectionOffline = false
+    var selectionCachedAt: Date? = nil
 
     /// 次日核对表。**三态各自独立,⛔ 别压成一个 `try?`**:
     ///   · `checklist != nil`            = 那一拍跑过了;
@@ -245,6 +248,7 @@ final class AppModel {
     var settingsLoading = false
     var providers: [Provider] = []
     var llmRoutes: LLMRoutes = LLMRoutes()
+    var usageSummary: UsageSummary = .empty
     /// Tavily key 草稿只存在于本次输入期间;成功或失败后都立即清空。
     var tavilyKeyDraft = ""
     var providerForm = ProviderForm()
@@ -261,6 +265,7 @@ final class AppModel {
     // —— 依赖(运行期注入)——
     let calendar = StaticTradingCalendar.shared
     private var clientProvider: () -> APIClient?
+    private var snapshotStoreProvider: () -> ReportSnapshotStore? = { nil }
     #if os(iOS)
     weak var pushManager: PushManager? = nil
     #endif
@@ -275,6 +280,16 @@ final class AppModel {
             guard let c = config, c.hasToken else { return nil }
             return APIClient(baseURL: c.resolvedBaseURL, token: c.apiToken)
         }
+        self.snapshotStoreProvider = { [weak config] in
+            guard let c = config, c.hasToken else { return nil }
+            return ReportSnapshotStore(baseURL: c.resolvedBaseURL, token: c.apiToken)
+        }
+    }
+
+    func clearReportSnapshotCache() {
+        ReportSnapshotStore.clearAll()
+        selectionOffline = false
+        selectionCachedAt = nil
     }
 
     // MARK: - 派生(纯逻辑,单测覆盖)
@@ -338,8 +353,24 @@ final class AppModel {
         case .success(let s):
             selection = s
             selectionLoaded = true
+            selectionOffline = false
+            selectionCachedAt = nil
+            // `not_run` 是服务端当前的明确结论，不以旧快照遮盖；也不把它覆盖到
+            // 最近一份可离线阅读的完整报告上。
+            if s.state != .notRun { try? snapshotStoreProvider()?.save(s) }
         case .failure(let e):
-            handleLoadFailure(e, context: "报告")
+            let cached = snapshotStoreProvider()?.latest()
+            if Self.shouldDisplayOfflineSelectionSnapshot(for: e, hasCachedSnapshot: cached != nil),
+               let cached {
+                selection = cached.snapshot
+                selectionLoaded = true
+                selectionOffline = true
+                selectionCachedAt = cached.savedAt
+                loadError = nil
+            } else {
+                selectionOffline = false
+                handleLoadFailure(e, context: "报告")
+            }
         }
         selectionLoading = false
         // 🔴 **核对表核的是 D1** —— 它按**今天**取,而报告的 `tradeDate` 是 D0。
@@ -347,6 +378,17 @@ final class AppModel {
         await loadChecklist(tradeDate: calendar.compactString(Date()))
         if loadError == nil { lastRefreshedAt = Date() }
         applyQAHooksAfterRefresh()
+    }
+
+    /// 这是刻意窄的状态机入口，便于测试也避免未来某个笼统的 `catch` 扩大离线回退。
+    static func mayUseOfflineSelectionSnapshot(for error: Error) -> Bool {
+        (error as? APIError)?.permitsOfflineSelectionSnapshot == true
+    }
+
+    static func shouldDisplayOfflineSelectionSnapshot(
+        for error: Error, hasCachedSnapshot: Bool,
+    ) -> Bool {
+        hasCachedSnapshot && mayUseOfflineSelectionSnapshot(for: error)
     }
 
     /// 次日核对表。**404 是常态**(一天里只有 9:26 之后才有,且要 D0 真出过清单)——
@@ -551,7 +593,8 @@ final class AppModel {
         async let settingsTask: Result<SettingsSnapshot, Error> = fetchResult { try await client.fetchSettings() }
         async let providersTask: Result<[Provider], Error> = fetchResult { try await client.fetchProviders() }
         async let routesTask: Result<LLMRoutes, Error> = fetchResult { try await client.fetchLLMRoutes() }
-        let (s, p, r) = await (settingsTask, providersTask, routesTask)
+        async let usageTask: Result<UsageSummary, Error> = fetchResult { try await client.fetchUsageSummary() }
+        let (s, p, r, u) = await (settingsTask, providersTask, routesTask, usageTask)
         switch s {
         case .success(let v):
             settings = v
@@ -562,6 +605,7 @@ final class AppModel {
         }
         if case .success(let v) = p { providers = v }
         if case .success(let v) = r { llmRoutes = v }
+        if case .success(let v) = u { usageSummary = v }
         settingsLoading = false
     }
 

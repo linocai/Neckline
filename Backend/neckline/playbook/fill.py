@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -175,21 +176,33 @@ def _material(item: PlaybookInput) -> str:
 
 def fill_one(
     item: PlaybookInput, *, trade_date: date, provider: Optional[LLMProvider],
-    version: int = 1, transport: Optional[Any] = None,
+    version: int = 1, transport: Optional[Any] = None, report_date: Optional[date] = None,
+    pack_id: Optional[str] = None,
+    db_path: Optional[Path] = None,
 ) -> FillResult:
     """填一只票。`provider=None` → 直接失败,**零网络调用**、⛔ 不编一份预案。"""
     if provider is None:
+        from neckline.llm.usage import record
+        record(task="playbook", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="skipped",
+               failure_reason="未配置可用的 LLM provider", db_path=db_path)
         return FillResult(ts_code=item.ts_code, ok=False,
                           reason="未配置可用的 LLM provider")
     messages = [
         ChatMessage(role="system", content=PLAYBOOK_FILL_SYSTEM_PROMPT),
         ChatMessage(role="user", content=_material(item)),
     ]
+    started = time.monotonic()
     try:
         result = provider.chat(messages, enable_search=False, transport=transport)
     except Exception as e:  # noqa: BLE001 —— 一只票炸了只缺它自己那一份
         logger.warning("[playbook] %s 填值调用异常", item.ts_code, exc_info=True)
+        from neckline.llm.usage import record
+        record(task="playbook", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="failed",
+               duration_ms=int((time.monotonic()-started)*1000), failure_reason="调用异常", db_path=db_path)
         return FillResult(ts_code=item.ts_code, ok=False, reason=f"调用异常:{e}")
+    from neckline.llm.usage import record
+    record(task="playbook", result=result, trade_date=trade_date, report_date=report_date, pack_id=pack_id,
+           duration_ms=int((time.monotonic()-started)*1000), db_path=db_path)
     if not result.ok:
         return FillResult(ts_code=item.ts_code, ok=False,
                           reason=f"调用未成功:{result.reason}")
@@ -246,7 +259,8 @@ def build_inputs(
 def fill_for_listing(
     trade_date: date, listing: Sequence[Mapping[str, Any]], *,
     provider: Optional[LLMProvider], transport: Optional[Any] = None,
-    parquet_dir: Optional[Path] = None, db_path: Optional[Path] = None,
+    parquet_dir: Optional[Path] = None, report_date: Optional[date] = None, pack_id: Optional[str] = None,
+    db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """给定稿清单上每只票冻一份预案。**已经有 v1 的票跳过**(⛔ 不覆盖冻结件)。
 
@@ -273,7 +287,7 @@ def fill_for_listing(
         res = fill_one(item, trade_date=trade_date, provider=provider,
                        version=pb_store.next_version(trade_date, item.ts_code,
                                                      db_path=db_path),
-                       transport=transport)
+                       transport=transport, report_date=report_date, pack_id=pack_id, db_path=db_path)
         if not res.ok or res.playbook is None:
             failed.append(item.ts_code)
             logger.warning("[playbook] %s 填值失败:%s", item.ts_code, res.reason)

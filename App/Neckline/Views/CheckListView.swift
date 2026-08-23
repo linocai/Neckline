@@ -56,7 +56,7 @@ struct CheckListView: View {
                 // 🔴 两个日期分开写:核的是 **D0 的清单**,读数取的是 **D1 的竞价**。
                 HStack(spacing: 10) {
                     if !list.d0Date.isEmpty { Text("核 \(list.d0Date) 的清单") }
-                    if !list.tradeDate.isEmpty { Text("竞价日 \(list.tradeDate)") }
+                    if !list.tradeDate.isEmpty { Text("竞价日 \(NKFmt.reportDate(list.tradeDate))") }
                     if !list.capturedAt.isEmpty { Text("冻结于 \(list.capturedAt)") }
                 }
                 .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
@@ -128,14 +128,14 @@ struct CheckListView: View {
         if !list.footnote.isEmpty {
             NKNoteBlock(text: LocalizedStringKey(list.footnote))
         }
-        Text("⚠ 这张表**没有「成立」段**:四个形态的成立分支都含「前 30 分钟」这一项,"
-             + "9:29 时它还没发生。三分支终值在**成绩**板块(10:00 结算拍)。")
+        Text("这张表只显示已经能确认放弃的项目；其余情况需开盘后继续观察。"
+             + "9:29 的判断不构成「成立」结论，最终结果会在 10:00 的结算中确认。")
             .font(NKFont.caption).foregroundStyle(NK.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     private var notRunNote: some View {
-        Text("竞价核对表在交易日 9:26–9:29 那一拍产出,**事后不补跑**"
+        Text("竞价核对表在交易日 9:26–9:29 生成，之后不会补做。"
              + "(补跑会拿 10 点的价格冒充 9:26 那一刻)。")
             .font(NKFont.caption).foregroundStyle(NK.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
@@ -196,7 +196,7 @@ struct ChecklistRowView: View {
                         }
                         // ⚠ 9:26 那一拍**刻意读不到**开盘价 / 高开幅度 / 前 30 分钟最高价 ——
                         // 那时开盘还没发生,给它们一个值就是编数。缺席即缺席,⛔ 不补 0。
-                        Text("⚠ 只列**读得到**的量:9:29 时开盘还没发生,开盘价一族本就读不到。")
+                        Text("这里只展示当时已经取得的数据；开盘后才有的读数不会提前出现。")
                             .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

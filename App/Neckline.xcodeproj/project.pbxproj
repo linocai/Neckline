@@ -36,6 +36,7 @@
 		E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */; };
 		EAC7AD21194069BE763EB703 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DD9017BB093BA4BC511379F /* ReviewView.swift */; };
 		EB18B7D4374EA05AD70C0D9C /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE386C48FF2459211CE2D690 /* AppModel.swift */; };
+		F09617D9220F5323EFF44273 /* ReportSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1186E0993CFE62505B9672E1 /* ReportSnapshotStore.swift */; };
 		FE0DC5D1335F2F673834AB37 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0C09A262074F0F512BCF821 /* AppModelTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -50,6 +51,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		1186E0993CFE62505B9672E1 /* ReportSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportSnapshotStore.swift; sourceTree = "<group>"; };
 		147CEB81991D3CEBBD6B53F4 /* SharedModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedModels.swift; sourceTree = "<group>"; };
 		25668292605D18FC8FBABE7D /* K9ContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = K9ContractTests.swift; sourceTree = "<group>"; };
 		30F0D46F0056BE5E01FEB3EC /* Neckline.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Neckline.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -147,6 +149,7 @@
 			children = (
 				CE386C48FF2459211CE2D690 /* AppModel.swift */,
 				ABEBC4EDE068B74257F09B22 /* NecklineApp.swift */,
+				1186E0993CFE62505B9672E1 /* ReportSnapshotStore.swift */,
 				AE316F84834D593284EA3A4C /* RootView.swift */,
 			);
 			path = App;
@@ -323,6 +326,7 @@
 				499CB305261279D9053C4B94 /* NKToolbar.swift in Sources */,
 				E97722F5A52DB673EA427EDF /* NecklineApp.swift in Sources */,
 				CCCBAE520CB8795277F18C90 /* PushManager.swift in Sources */,
+				F09617D9220F5323EFF44273 /* ReportSnapshotStore.swift in Sources */,
 				CBBD1F2E43E0044CDD17CDE0 /* ReviewModels.swift in Sources */,
 				EAC7AD21194069BE763EB703 /* ReviewView.swift in Sources */,
 				D10EDFBD9EFD027DEEF58088 /* RootView.swift in Sources */,
@@ -401,7 +405,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.5.0;
+				MARKETING_VERSION = 2.5.1;
 				PRODUCT_BUNDLE_IDENTIFIER = top.linotsai.neckline;
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;
@@ -470,7 +474,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = HX73DFL88G;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -486,7 +490,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2.5.0;
+				MARKETING_VERSION = 2.5.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -533,7 +537,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = HX73DFL88G;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -555,7 +559,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2.5.0;
+				MARKETING_VERSION = 2.5.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -587,7 +591,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.5.0;
+				MARKETING_VERSION = 2.5.1;
 				PRODUCT_BUNDLE_IDENTIFIER = top.linotsai.neckline;
 				PRODUCT_NAME = Neckline;
 				SDKROOT = auto;

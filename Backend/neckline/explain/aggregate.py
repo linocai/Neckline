@@ -24,6 +24,9 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from datetime import date
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
@@ -142,6 +145,10 @@ def aggregate_one(
     provider: Optional[LLMProvider],
     news: Optional[NewsVerdict] = None,
     transport: Optional[Any] = None,
+    trade_date: Optional[date] = None,
+    report_date: Optional[date] = None,
+    pack_id: Optional[str] = None,
+    db_path: Optional[Path] = None,
 ) -> ExplainNote:
     """聚合一只票的资料。`provider=None` → 直接降级,**零网络调用**。
 
@@ -149,16 +156,26 @@ def aggregate_one(
     没给全 → `llm_ok=False`,⛔ 不留一份「有结构、没内容」的记录冒充跑通了。
     """
     if provider is None:
+        from neckline.llm.usage import record
+        record(task="explain", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="skipped",
+               failure_reason="未配置可用的 LLM provider", db_path=db_path)
         return _degraded(item.ts_code, "未配置可用的 LLM provider")
     messages = [
         ChatMessage(role="system", content=EXPLAIN_SYSTEM_PROMPT),
         ChatMessage(role="user", content=_material(item, news)),
     ]
+    started = time.monotonic()
     try:
         result = provider.chat(messages, enable_search=False, transport=transport)
     except Exception as e:  # noqa: BLE001 —— 一只票炸了只缺它自己那一段
         logger.warning("[explain] %s 资料聚合调用异常", item.ts_code, exc_info=True)
+        from neckline.llm.usage import record
+        record(task="explain", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="failed",
+               duration_ms=int((time.monotonic()-started)*1000), failure_reason="调用异常", db_path=db_path)
         return _degraded(item.ts_code, f"调用异常:{e}")
+    from neckline.llm.usage import record
+    record(task="explain", result=result, trade_date=trade_date, report_date=report_date, pack_id=pack_id,
+           duration_ms=int((time.monotonic()-started)*1000), db_path=db_path)
     if not result.ok:
         return _degraded(item.ts_code, f"调用未成功:{result.reason}")
     narrative, block = split_narrative_and_json(result.content or "")
@@ -192,11 +209,16 @@ def aggregate(
     provider: Optional[LLMProvider],
     news_by_code: Optional[Mapping[str, NewsVerdict]] = None,
     transport: Optional[Any] = None,
+    trade_date: Optional[date] = None,
+    report_date: Optional[date] = None,
+    pack_id: Optional[str] = None,
+    db_path: Optional[Path] = None,
 ) -> List[ExplainNote]:
     """逐只聚合(**按传入顺序**,调用方保证是 `ts_code` 升序)。"""
     news = dict(news_by_code or {})
     return [
-        aggregate_one(it, provider=provider, news=news.get(it.ts_code), transport=transport)
+        aggregate_one(it, provider=provider, news=news.get(it.ts_code), transport=transport,
+                      trade_date=trade_date, report_date=report_date, pack_id=pack_id, db_path=db_path)
         for it in items
     ]
 

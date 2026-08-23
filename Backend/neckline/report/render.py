@@ -110,11 +110,12 @@ def _direction_section(bundle) -> List[str]:
     out = ["## 方向背景", ""]
     if not bundle.direction:
         out += [
-            "今日方向解读**未接入**(事实层的 LLM 旁路 `facts/direction_llm.py` 尚未建)。",
-            "",
-            "⚠ 它只是报告背景 —— **不参与筛选、不参与排序、不影响任何机械决策**(架构 §八)。",
+            "方向解读暂未生成。它只用于理解市场背景，不参与清单筛选或排序。",
             "",
         ]
+        return out
+    if bundle.direction.get("state") != "ready":
+        out += ["方向解读暂未生成。它只用于理解市场背景，不参与清单筛选或排序。", ""]
         return out
     out += [str(bundle.direction.get("summary", "")), ""]
     for item in bundle.direction.get("themes", []) or []:

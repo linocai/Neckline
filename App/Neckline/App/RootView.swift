@@ -28,6 +28,12 @@ struct RootView: View {
             #endif
         }
         .preferredColorScheme(.light)
+        .onChange(of: config.resolvedBaseURL.absoluteString) { _, _ in
+            model.clearReportSnapshotCache()
+        }
+        .onChange(of: config.apiToken) { _, _ in
+            model.clearReportSnapshotCache()
+        }
     }
 
     // MARK: - iOS:底部 TabView(**三板块 + 设置沉底**,顺序 = 选股 / 成绩 / 复盘 / 设置)

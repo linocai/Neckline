@@ -8,10 +8,10 @@ from neckline.db import init_schema
 
 
 ACTIVE_TABLES = {
-    "app_settings", "backfill_log", "devices", "fact_packs", "k9_channel_hits",
+    "app_settings", "backfill_log", "devices", "fact_packs", "fact_direction_briefings", "k9_channel_hits",
     "k9_checklists", "k9_coverage_daily", "k9_coverage_misses", "k9_d1_verdicts",
     "k9_explain_audit", "k9_explain_notes", "k9_followups", "k9_listing_entries",
-    "k9_playbooks", "k9_reports", "k9_runs", "llm_providers", "namechange",
+    "k9_playbooks", "k9_reports", "k9_runs", "llm_providers", "llm_usage_events", "namechange",
     "review_conclusions", "reviews", "job_events", "stock_basic",
     "sw_industry_classify", "sw_industry_daily", "sw_industry_member", "trade_cal",
 }

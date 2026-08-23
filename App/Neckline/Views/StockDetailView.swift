@@ -76,8 +76,6 @@ struct StockDetailView: View {
                         .foregroundStyle(NK.textPrimary)
                     Text(d.tsCode).font(NKFont.monoKey).foregroundStyle(NK.textTertiary)
                     Spacer(minLength: 6)
-                    Text("全候选第 \(d.entry.rank) 名").font(NKFont.caption.monospacedDigit())
-                        .foregroundStyle(NK.textSecondary)
                 }
                 NKWrapRow(spacing: 5, lineSpacing: 5) {
                     ForEach(d.entry.patterns, id: \.self) { p in
@@ -85,24 +83,16 @@ struct StockDetailView: View {
                                tone: p == d.entry.primaryPattern ? .info : .neutral,
                                filled: p == d.entry.primaryPattern)
                     }
-                    NKChip(text: nkTierLabel(d.entry.tier),
-                           tone: d.entry.tier == "strict" ? .good : .warn)
-                    NKChip(text: nkSeatKindLabel(d.entry.seatKind), tone: .neutral)
                     if let n = d.entry.swL2Name, !n.isEmpty { NKChip(text: n, tone: .neutral) }
                 }
-                Text("全候选名次按全市场机械排序计算；保底席位会让最终清单出现跳号，这是正常的。")
-                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                // 🔴 **上方机械空间单独一块**(裁定 1:它是机械排序量,不是价位)。
                 if let stock = model.selection.stocks.first(where: { $0.tsCode == d.tsCode }) {
                     HStack(spacing: 6) {
-                        Text("上方机械空间").font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                        if let pct = stock.upsideRoomMechPct {
-                            Text(NKFmt.signedRatioPct(pct)).font(NKFont.monoValue)
+                        Text("收盘价（截至行情日）").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                        if let close = stock.referenceClose {
+                            Text(NKFmt.price(close)).font(NKFont.monoValue)
                                 .foregroundStyle(NK.textPrimary)
-                            Text("(收盘价距过去 N 日最高价;**机械算出、只用于排序**)")
-                                .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         } else {
-                            Text("本形态不看这一项(K9 §3.3 / §3.5 的强度性里没有它)")
+                            Text("资料暂未保存")
                                 .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         }
                     }
@@ -121,7 +111,7 @@ struct StockDetailView: View {
                 if let e = d.explain {
                     if !e.llmOk {
                         // ⛔ 「跑了但没跑成」不许显示成空白 —— 空白读起来像「没什么可说的」。
-                        Text("⚠ 这一只的资料聚合**没跑成** —— 下面的内容可能不全。")
+                        Text("这只股票的资料暂未完整生成，以下内容可能不全。")
                             .font(NKFont.callout).foregroundStyle(NK.amber)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -149,8 +139,7 @@ struct StockDetailView: View {
                         }
                     }
                     if e.newsState == "unverified" {
-                        Text("⚠ 「未核实」= **这次没查成**(没有 provider / 调用失败 / 模型没按格式收尾)"
-                             + " —— 它既不是「查过了、干净」,也不是「有问题」。")
+                        Text("消息面暂未核实：这不代表没有消息，也不代表存在问题。")
                             .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -159,10 +148,9 @@ struct StockDetailView: View {
                             NKJSONTable(value: e.news)
                         }
                     }
-                    // 🔴 LLM 产出与硬纪律之间的那条线(§2.8 红线,每处出现都要带)。
-                    NKReferenceNote(text: "解释层资料是 LLM 产出 · 参考、非指令 · 不进排序、不改去留")
+                    NKReferenceNote(text: "这份资料用于理解公司与走势，不构成交易建议。")
                 } else {
-                    Text("那天解释层没跑过这一只 —— ⚠ 这**不是**「这只票没什么可说的」。")
+                    Text("这只股票的资料当日未生成，不代表它没有值得了解的信息。")
                         .font(NKFont.body).foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -190,22 +178,24 @@ struct StockDetailView: View {
                         NKChip(text: pb.isUserEdited ? "我改过" : "预案层填的",
                                tone: pb.isUserEdited ? .good : .neutral)
                         if !pb.filledAt.isEmpty {
-                            Text(pb.filledAt).font(NKFont.caption.monospacedDigit())
+                            Text(NKFmt.timestamp(pb.filledAt)).font(NKFont.caption.monospacedDigit())
                                 .foregroundStyle(NK.textTertiary)
                         }
                     }
-                    // 🔴 三个价位 —— **LLM 判断**(裁定 1:与上方机械空间永不互顶)。
-                    PriceLadder(levels: pb.levels)
+                    NKStatGrid(columns: 3) {
+                        NKStatCell(title: "失效价", value: NKFmt.price(pb.levels.invalidation), tone: .bad)
+                        NKStatCell(title: "第一压力位", value: NKFmt.price(pb.levels.firstResistance), tone: .good)
+                        NKStatCell(title: "第二压力位", value: NKFmt.price(pb.levels.secondResistance))
+                    }
                     branchBlock("成立", pb.confirmBranch, .good)
                     branchBlock("放弃", pb.rejectBranch, .bad)
                     Text("其余:\(pb.defaultBranch)")
                         .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-                    Text("⚠ **骨架是机械的**:哪个量跟谁比由形态决定,你能改的是方括号里的数。"
-                         + "求值在服务端、只在 D1 那两拍发生 —— 界面不替系统判。")
+                    Text("条件的计算由系统在指定时点完成；这里展示的是供你复核的预案。")
                         .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text("那天没给这一只冻预案 —— 🔴 **明早核对不了它**。")
+                    Text("这只股票当日没有生成预案，次日无法自动核对。")
                         .font(NKFont.body).foregroundStyle(NK.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -234,7 +224,7 @@ struct StockDetailView: View {
             NKCard {
                 VStack(alignment: .leading, spacing: 8) {
                     NKSectionHeader(title: "预案版本历史",
-                                    trailing: "append-only · 老版本一个字不动")
+                                    trailing: "每次修改都会保留旧版本")
                     ForEach(d.playbookVersions, id: \.version) { pb in
                         HStack(spacing: 8) {
                             NKChip(text: "v\(pb.version)",
@@ -248,63 +238,6 @@ struct StockDetailView: View {
                     }
                 }
             }
-        }
-    }
-}
-
-// MARK: - 三个价位的刻度(⛔ 只是版式,不代表任何概率、不构成任何建议)
-
-/// 失效位 → 第一压力位 → 第二压力位 的线性刻度。
-///
-/// 🔴 **这三个是 LLM 判断的价位**(K9 §6.1),⛔ 与「上方机械空间」永不互相顶替(裁定 1)。
-/// ⚠ 刻度只回答「三个位相对在哪」——⛔ 不画概率、不画建议、不画"应该"。
-struct PriceLadder: View {
-    let levels: PlaybookLevels
-
-    private var domain: (lo: Double, hi: Double) {
-        let vs = [levels.invalidation, levels.firstResistance, levels.secondResistance]
-        let lo = vs.min() ?? 0, hi = vs.max() ?? 1
-        let pad = max(hi - lo, 0.0001) * 0.12
-        return (lo - pad, hi + pad)
-    }
-
-    private func x(_ v: Double, width: CGFloat) -> CGFloat {
-        let d = domain
-        let t = (v - d.lo) / max(d.hi - d.lo, 0.0001)
-        return width * CGFloat(min(max(t, 0), 1))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            GeometryReader { geo in
-                let w = geo.size.width
-                ZStack(alignment: .topLeading) {
-                    Capsule().fill(NK.hairline.opacity(0.7)).frame(width: w, height: 5)
-                        .offset(y: 8)
-                    tick(x(levels.invalidation, width: w), NK.down)
-                    tick(x(levels.firstResistance, width: w), NK.up)
-                    tick(x(levels.secondResistance, width: w), NK.textTertiary)
-                }
-                .frame(width: w, height: 22, alignment: .topLeading)
-            }
-            .frame(height: 22)
-            HStack(spacing: 14) {
-                legend("失效位", levels.invalidation, NK.down)
-                legend("第一压力位", levels.firstResistance, NK.up)
-                legend("第二压力位", levels.secondResistance, NK.textTertiary)
-            }
-        }
-    }
-
-    private func tick(_ cx: CGFloat, _ color: Color) -> some View {
-        RoundedRectangle(cornerRadius: 1.5).fill(color)
-            .frame(width: 3, height: 17).offset(x: cx - 1.5, y: 2)
-    }
-
-    private func legend(_ title: String, _ v: Double, _ color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(NKFont.caption).foregroundStyle(NK.textTertiary)
-            Text(NKFmt.price(v)).font(NKFont.monoValue).foregroundStyle(color)
         }
     }
 }
@@ -330,8 +263,7 @@ struct PlaybookEditorSheet: View {
                 Text("这只票的形态没有可改的数值位。")
                     .font(NKFont.body).foregroundStyle(NK.textSecondary)
             } else {
-                Text("🔴 **骨架不可改**:哪个量跟谁比由形态决定(K9 §6.3)。"
-                     + "你改的是方括号里的**数**;存下去会成为**新的一版**,原版本一个字不动。")
+                Text("你可以调整数值；保存后会保留旧版本，方便回看。")
                     .font(NKFont.callout).foregroundStyle(NK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 ForEach(slots) { slot in
@@ -356,8 +288,7 @@ struct PlaybookEditorSheet: View {
                         }
                     }
                 }
-                Text("⚠ 每一项都要填成数字 —— 服务端**不接受**缺键或多键(会 422),"
-                     + "界面也**不替你补 0**。")
+                Text("每一项都需要填写数字，系统不会替你补值。")
                     .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }

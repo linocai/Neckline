@@ -37,9 +37,7 @@ from neckline.scorecard import store as scorecard_store
 
 logger = logging.getLogger(__name__)
 
-#: 方向背景的来源键(事实层的 LLM 旁路,架构 §八 / §5.3.6)。
-#: ⚠ `facts/direction_llm.py` 尚未建(S3 登记 ⑦,架构 §十 把它列为「可随时接入」)
-#: → 这个键现在恒缺席,报告里如实写「未接入」,⛔ 不编一段方向解读。
+#: 方向背景是 `fact_direction_briefings` sidecar；绝不反写冻结事实包。
 DIRECTION_KEY = "direction"
 
 
@@ -113,7 +111,10 @@ def build_report(
     except facts_store.PackNotFrozen:
         gaps.append(f"事实包未冻结({trade_date} 数据未到齐)")
     market: Dict[str, Any] = dict(pack.market) if pack is not None else {}
-    direction = market.get(DIRECTION_KEY)
+    direction = None
+    if pack is not None:
+        from neckline.facts import direction_store
+        direction = direction_store.load(pack.pack_id, db_path=db_path)
 
     # —— 清单(⚠ 只读 `k9_runs` / `k9_listing_entries`,⛔ 不现算)——————————
     run = k9_store.load_run(trade_date, strategy=strategy, db_path=db_path)

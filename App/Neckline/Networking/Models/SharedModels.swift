@@ -333,6 +333,28 @@ struct SettingsSnapshot: Codable, Equatable {
     }
 }
 
+/// 高级诊断的去敏用量账；只展示真实回传的 Token/credits，不含密钥或请求材料。
+struct UsageTaskSummary: Codable, Equatable, Identifiable {
+    var task: String = ""
+    var calls: Int = 0
+    var failed: Int = 0
+    var usageUnavailable: Int = 0
+    var totalTokens: Int? = nil
+    var tavilyCredits: Int? = nil
+    var id: String { task }
+}
+
+struct UsageDaySummary: Codable, Equatable, Identifiable {
+    var date: String = ""
+    var tasks: [UsageTaskSummary] = []
+    var id: String { date }
+}
+
+struct UsageSummary: Codable, Equatable {
+    var days: [UsageDaySummary] = []
+    static let empty = UsageSummary()
+}
+
 // MARK: - 展示用轴向着色(沿用 LinoN `AxisTone` 概念,四值穷举)
 //
 //  刻意只留纯枚举(不 import SwiftUI),保持 DTO 层是纯 Foundation 数据层、

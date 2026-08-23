@@ -16,13 +16,17 @@ class _Row(NamedTuple):
     has_web_search: bool
 
 
-def test_only_three_current_llm_tasks_are_registered():
+def test_only_four_current_llm_tasks_are_registered():
     assert router.ALL_TASKS == (
+        router.TASK_MARKET_DIRECTION,
         router.TASK_NEWS_SCAN,
         router.TASK_EXPLAIN,
         router.TASK_PLAYBOOK,
     )
-    assert router.DEFAULT_SEARCH_TASKS == (router.TASK_NEWS_SCAN,)
+    assert router.DEFAULT_SEARCH_TASKS == (
+        router.TASK_MARKET_DIRECTION,
+        router.TASK_NEWS_SCAN,
+    )
 
 
 def test_explicit_route_wins_even_if_provider_is_missing():

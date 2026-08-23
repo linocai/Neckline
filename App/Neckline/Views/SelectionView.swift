@@ -22,6 +22,11 @@
 //
 
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 struct SelectionView: View {
     @Bindable var model: AppModel
@@ -91,6 +96,7 @@ struct SelectionView: View {
         }
         directionSection
         marketSection
+        coverageSection
         if model.hasListing {
             NKGroupHeader("清单 · \(model.selection.stocks.count) 只")
             ForEach(model.selection.stocks) { stock in
@@ -104,6 +110,20 @@ struct SelectionView: View {
             NKEmptyState(title: "今天没有",
                          subtitle: "跑通了、四通道一只都没召回。这是一个可以被信任的结论,不是故障。",
                          systemImage: "checkmark.circle")
+        }
+        if !model.selection.copyText.isEmpty {
+            NKDisclosure(summary: "完整资料与预案") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("展开阅读完整资料，或复制到聊天框继续讨论。")
+                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                    Text(model.selection.copyText)
+                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("复制完整资料") { NKClipboard.copy(model.selection.copyText) }
+                        .buttonStyle(.bordered)
+                }
+            }
         }
     }
 
@@ -122,13 +142,17 @@ struct SelectionView: View {
                 // 🔴 双日期都写出来(LRN-20260816-001):周日报告两者不同。
                 HStack(spacing: 10) {
                     if !model.selection.reportDate.isEmpty {
-                        Text("报告日 \(model.selection.reportDate)")
+                        Text("报告日 \(NKFmt.reportDate(model.selection.reportDate))")
                     }
                     if !model.selection.tradeDate.isEmpty {
-                        Text("行情截至 \(model.selection.tradeDate)")
+                        Text("行情截至 \(NKFmt.reportDate(model.selection.tradeDate))")
                     }
                 }
                 .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+                if model.selectionOffline {
+                    Text("离线浏览 · 显示本机最近保存的报告")
+                        .font(NKFont.caption).foregroundStyle(NK.amber)
+                }
                 // 🔴 `listingSize == nil` ⛔ 不许显示成 0。
                 HStack(spacing: 8) {
                     if let n = model.selection.listingSize {
@@ -188,10 +212,10 @@ struct SelectionView: View {
                         }
                     }
                 } else {
-                    Text("今日方向解读**未接入**(事实层的 LLM 旁路尚未建)。")
+                    Text("方向解读暂未生成。")
                         .font(NKFont.body).foregroundStyle(NK.textSecondary)
                 }
-                NKReferenceNote(text: "方向背景只是报告背景 · 不参与筛选、不参与排序、不影响任何机械决策")
+                NKReferenceNote(text: "这是市场背景，供你理解当天环境，不是交易建议。")
             }
         }
     }
@@ -227,6 +251,24 @@ struct SelectionView: View {
     private func intText(_ v: NKJSON?) -> String {
         guard let n = v?.intValue else { return "—" }   // ⛔ 缺席不写 0
         return String(n)
+    }
+
+    @ViewBuilder
+    private var coverageSection: some View {
+        if let coverage = model.selection.coverage {
+            NKCard {
+                VStack(alignment: .leading, spacing: 8) {
+                    NKSectionHeader(title: "昨日清单覆盖情况")
+                    if let value = coverage["coverage_all"]?.doubleValue {
+                        Text("昨日清单覆盖了今天走强股票中的 \(NKFmt.ratioPct(value))")
+                            .font(NKFont.body).foregroundStyle(NK.textPrimary)
+                    } else {
+                        Text("暂无法核对前一日清单。")
+                            .font(NKFont.body).foregroundStyle(NK.textSecondary)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - macOS 两栏
@@ -277,6 +319,7 @@ struct SelectionView: View {
                     if model.selection.state == .notRun { gapsCard }
                     directionSection
                     marketSection
+                    coverageSection
                     if model.hasListing {
                         NKDetailPlaceholder(title: "左边点一只票看详情",
                                             subtitle: "解释层资料 · 日K 评价 · 完整预案 · 预案修改入口",
@@ -291,6 +334,17 @@ struct SelectionView: View {
     #endif
 }
 
+private enum NKClipboard {
+    static func copy(_ text: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #else
+        UIPasteboard.general.string = text
+        #endif
+    }
+}
+
 // MARK: - 清单上的一行
 
 /// 一只票。§5.11 要求每只带:**形态标注 / 上方机械空间 / 三个价位 / 三分支预案摘要**。
@@ -302,9 +356,17 @@ struct K9StockRow: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             patternChips
-            roomAndLevels
-            if !compact { branchSummary }
-            newsLine
+            if let profile = stock.oneLineProfile, !profile.isEmpty {
+                Text(profile).font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                    .lineLimit(compact ? 2 : 3).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("资料暂未生成").font(NKFont.callout).foregroundStyle(NK.textTertiary)
+            }
+            HStack(spacing: 6) {
+                Text("收盘价（截至行情日）").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                Text(stock.referenceClose.map(NKFmt.price) ?? "资料暂未保存")
+                    .font(NKFont.monoValue).foregroundStyle(NK.textPrimary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // ⚠ compact 形态**不自带卡壳**:macOS 列表栏的选中态由 `NKListRow` 统一给
@@ -319,8 +381,6 @@ struct K9StockRow: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("全\(stock.rank)").font(NKFont.caption.monospacedDigit())
-                .foregroundStyle(NK.textTertiary).frame(minWidth: 28, alignment: .trailing)
             Text(stock.displayName).font(NKFont.headline).foregroundStyle(NK.textPrimary)
             Text(stock.tsCode).font(NKFont.monoKey).foregroundStyle(NK.textTertiary)
             Spacer(minLength: 6)
@@ -330,91 +390,11 @@ struct K9StockRow: View {
         }
     }
 
-    /// 形态标注 + 成色 + 席位。🔴 **成色必须看得见**(K9 §五-7):15 只全出自严格档,
-    /// 与 10 只里 8 只靠放宽凑上,是两种完全不同的日子。
+    /// 默认层只留一个能理解的形态标签；内部排序/档位移到详情资料。
     private var patternChips: some View {
         NKWrapRow(spacing: 5, lineSpacing: 5) {
-            ForEach(stock.patterns, id: \.self) { p in
-                NKChip(text: nkPatternLabel(p),
-                       tone: p == stock.primaryPattern ? .info : .neutral,
-                       filled: p == stock.primaryPattern)
-            }
-            NKChip(text: nkTierLabel(stock.tier),
-                   tone: stock.tier == "strict" ? .good : .warn)
-            NKChip(text: nkSeatKindLabel(stock.seatKind), tone: .neutral)
+            NKChip(text: nkPatternLabel(stock.primaryPattern), tone: .info, filled: true)
         }
     }
 
-    /// **上方机械空间**(裁定 1:机械、排序用)+ **三个价位**(LLM、预案用)。
-    /// 🔴 两者名字分开、⛔ 永不互相顶替 —— 这一行的排版就是那条铁律的落地。
-    private var roomAndLevels: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text("上方机械空间").font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                if let pct = stock.upsideRoomMechPct {
-                    Text(NKFmt.signedRatioPct(pct))
-                        .font(NKFont.monoValue).foregroundStyle(NK.textPrimary)
-                } else {
-                    // ⛔ 不补 0:「本形态不看它」与「上方没有空间」是两件事。
-                    Text("本形态不看这一项").font(NKFont.caption)
-                        .foregroundStyle(NK.textTertiary)
-                }
-            }
-            if let pb = stock.playbook {
-                HStack(spacing: 12) {
-                    levelCell("失效位", pb.levels.invalidation, .bad)
-                    levelCell("第一压力位", pb.levels.firstResistance, .good)
-                    levelCell("第二压力位", pb.levels.secondResistance, .neutral)
-                }
-            } else {
-                // 🔴 没有预案要**逐只说出来**:明早那两拍核对不了这一只。
-                Text("⚠ 没有冻结预案 —— 明早核对不了这一只")
-                    .font(NKFont.caption).foregroundStyle(NK.amber)
-            }
-        }
-    }
-
-    private func levelCell(_ title: String, _ v: Double, _ tone: NKAxisTone) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(NKFont.caption).foregroundStyle(NK.textTertiary)
-            Text(NKFmt.price(v)).font(NKFont.monoValue).foregroundStyle(tone.color)
-        }
-    }
-
-    /// 三分支预案摘要。⚠ **只列条件,⛔ 不替系统求值** —— 求值在服务端,
-    /// 而且只在 D1 那两拍发生(架构 §四:判断已经在 D0 完成并冻结)。
-    @ViewBuilder
-    private var branchSummary: some View {
-        if let pb = stock.playbook {
-            VStack(alignment: .leading, spacing: 3) {
-                branchLine("成立", pb.confirmBranch, .good)
-                branchLine("放弃", pb.rejectBranch, .bad)
-                Text("其余:\(pb.defaultBranch)")
-                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func branchLine(_ name: String, _ branch: PlaybookBranch?, _ tone: NKAxisTone) -> some View {
-        if let b = branch, !b.all.isEmpty {
-            HStack(alignment: .top, spacing: 6) {
-                Text(name).font(NKFont.caption).fontWeight(.semibold).foregroundStyle(tone.color)
-                Text(b.all.map(\.text).joined(separator: " 且 "))
-                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    /// 消息面三态。🔴 `unverified` = **没查成**,⛔ 不许显示成「无异常」。
-    private var newsLine: some View {
-        HStack(spacing: 6) {
-            NKChip(text: nkNewsStateLabel(stock.newsState), tone: nkNewsStateTone(stock.newsState))
-            if let c = stock.klineComment, !c.isEmpty, !compact {
-                Text(c).font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
 }

@@ -461,6 +461,21 @@ struct NKLogo: View {
 // MARK: - 数字格式化
 
 enum NKFmt {
+    /// API 的 YYYYMMDD / YYYY-MM-DD 统一显示为中文日期；无法识别时保留原文，绝不猜日期。
+    static func reportDate(_ raw: String) -> String {
+        let clean = raw.replacingOccurrences(of: "-", with: "")
+        guard clean.count == 8, let year = Int(clean.prefix(4)),
+              let month = Int(clean.dropFirst(4).prefix(2)), let day = Int(clean.suffix(2)) else { return raw }
+        return "\(year)年\(month)月\(day)日"
+    }
+    /// ISO 时间统一显示为本地可读日期时间；解析失败保留原文，不猜测时区。
+    static func timestamp(_ raw: String) -> String {
+        guard let value = ISO8601DateFormatter().date(from: raw) else { return reportDate(raw) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 HH:mm"
+        return formatter.string(from: value)
+    }
     /// 🔴 **千分位分组器**(V2.3.1 补批 1 漏网的全局钉子)。
     ///
     /// 原型全篇金额都是分组的(`¥48,600` / `+¥1,444` / `¥120,000`,macOS 原型 800/778/804 行),

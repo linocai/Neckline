@@ -12,9 +12,10 @@ from typing import Dict, Optional, Protocol, Sequence
 TASK_NEWS_SCAN = "news_scan"
 TASK_EXPLAIN = "explain"
 TASK_PLAYBOOK = "playbook"
+TASK_MARKET_DIRECTION = "market_direction"
 
-ALL_TASKS = (TASK_NEWS_SCAN, TASK_EXPLAIN, TASK_PLAYBOOK)
-DEFAULT_SEARCH_TASKS = (TASK_NEWS_SCAN,)
+ALL_TASKS = (TASK_MARKET_DIRECTION, TASK_NEWS_SCAN, TASK_EXPLAIN, TASK_PLAYBOOK)
+DEFAULT_SEARCH_TASKS = (TASK_MARKET_DIRECTION, TASK_NEWS_SCAN)
 
 
 class ProviderLike(Protocol):
@@ -44,6 +45,7 @@ def resolve_task_provider_name(
 
 __all__ = [
     "TASK_NEWS_SCAN",
+    "TASK_MARKET_DIRECTION",
     "TASK_EXPLAIN",
     "TASK_PLAYBOOK",
     "ALL_TASKS",

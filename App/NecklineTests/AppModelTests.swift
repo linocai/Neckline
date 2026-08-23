@@ -12,6 +12,28 @@ import XCTest
 @MainActor
 final class AppModelTests: XCTestCase {
 
+    // MARK: - 离线报告快照
+
+    func testOnlyExplicitTransportUnavailabilityMayUseOfflineReportSnapshot() {
+        let offline = APIError.networkUnavailable("The Internet connection appears to be offline.")
+        XCTAssertTrue(AppModel.shouldDisplayOfflineSelectionSnapshot(for: offline, hasCachedSnapshot: true),
+                      "缓存 + 明确断网才进入离线浏览")
+        XCTAssertFalse(AppModel.shouldDisplayOfflineSelectionSnapshot(for: offline, hasCachedSnapshot: false))
+        XCTAssertFalse(AppModel.shouldDisplayOfflineSelectionSnapshot(
+            for: APIError.server(500, "服务端错误"), hasCachedSnapshot: true))
+        XCTAssertFalse(AppModel.shouldDisplayOfflineSelectionSnapshot(
+            for: APIError.notFound("没有报告"), hasCachedSnapshot: true))
+        XCTAssertFalse(AppModel.shouldDisplayOfflineSelectionSnapshot(
+            for: APIError.unauthorized, hasCachedSnapshot: true))
+        XCTAssertFalse(AppModel.shouldDisplayOfflineSelectionSnapshot(
+            for: APIError.noToken, hasCachedSnapshot: true))
+        XCTAssertFalse(AppModel.shouldDisplayOfflineSelectionSnapshot(
+            for: APIError.transport("无效 URL"), hasCachedSnapshot: true))
+        XCTAssertFalse(AppModel.shouldDisplayOfflineSelectionSnapshot(
+            for: DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "坏 JSON")),
+            hasCachedSnapshot: true))
+    }
+
     // MARK: - 三板块 IA(裁定 11)
 
     /// 🔴 **`rawValue` 是 `NECKLINE_INITIAL_TAB` QA 钩子的契约**:

@@ -57,7 +57,7 @@ struct ScoreboardView: View {
     private var listingScorecardCard: some View {
         NKCard {
             VStack(alignment: .leading, spacing: 12) {
-                NKSectionHeader(title: "清单成绩 · 五指标", trailing: "K9 §八")
+                NKSectionHeader(title: "清单成绩 · 五项指标", trailing: "按既定口径统计")
                 // 🔴 **两栏永远分开**:这两块并排、各占一半,⛔ 中间不出现任何合计。
                 HStack(alignment: .top, spacing: 16) {
                     splitColumn(NKListingScorecard.splitPair.industry, "方向对不对",
@@ -66,8 +66,8 @@ struct ScoreboardView: View {
                     splitColumn(NKListingScorecard.splitPair.pick, "票挑得好不好",
                                 model.listingScorecard.pickScore)
                 }
-                Text("🔴 **行业分与选票分分开计,⛔ 不给合计**:行业分低是**方向层**的问题,"
-                     + "行业分高而选票分低是**选票参数**的问题 —— 两者吃的药完全不同。")
+                Text("行业表现和个股表现分别计算，便于看清问题来自哪里。"
+                     + "行业分高而选票分低，说明需要复盘选票这一环。")
                     .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Divider().overlay(NK.hairline)
@@ -84,8 +84,8 @@ struct ScoreboardView: View {
                         model.listingScorecard.falseKillNumerator,
                         model.listingScorecard.falseKillDenominator)
                 NKNoteBlock(text: LocalizedStringKey(
-                    "主收益统一按 **D0 收盘 → D+4 收盘**。D+1～D+4 盘中最高收益只作辅助读数，"
-                    + "不拿来替代主口径。成立率分母是正式清单全量。"
+                    "主收益统一按当日收盘到四个交易日后收盘计算。盘中最高收益只作辅助参考；"
+                    + "成立率以当天正式清单为分母。"
                 ))
             }
         }
@@ -123,15 +123,13 @@ struct ScoreboardView: View {
         NKCard {
             VStack(alignment: .leading, spacing: 10) {
                 NKSectionHeader(title: "10:00 结算 · 三分支终值",
-                                trailing: model.verdicts.tradeDate)
-                Text("🔴 **三分支判定的唯一权威是这一拍**(裁定 10)。9:29 那张核对表只提前告知"
-                     + "「哪几只已经死了」,它**不产生「成立」**;⛔ 也不许把「待开盘后观察」"
-                     + "当成任何一个分支的结论。")
+                                trailing: NKFmt.reportDate(model.verdicts.tradeDate))
+                Text("这里显示开盘后的最终核对结果；早间页面只提供提前观察。"
+                     + "提前放弃并不等同于成立；仍待观察的项目也不会提前计入结论。")
                     .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 if model.verdicts.verdicts.isEmpty {
-                    Text("这一天还没有结算记录 —— 结算拍在 D1 的 10:00–10:05 跑,**事后不补跑**"
-                         + "(补跑会拿 10:30 的价格冒充 10:00 那一刻)。")
+                    Text("这一天还没有开盘后的结算记录。补跑不会用更晚的价格替代当时的记录。")
                         .font(NKFont.body).foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
@@ -172,13 +170,12 @@ struct ScoreboardView: View {
                                    footnote: "连板高度 \(d.maxConsecDays.map(String.init) ?? "—")")
                     }
                     HStack(spacing: 10) {
-                        Text("交易日 \(d.tradeDate)")
+                        Text("交易日 \(NKFmt.reportDate(d.tradeDate))")
                         if let v = d.packVersion, !v.isEmpty { Text("事实包 \(v)") }
-                        if let lt = d.listingTradeDate, !lt.isEmpty { Text("对比清单 \(lt)") }
+                        if let lt = d.listingTradeDate, !lt.isEmpty { Text("对比清单 \(NKFmt.reportDate(lt))") }
                     }
                     .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
-                    Text("⚠ **NULL 不是 0**:「尚不可得」= 昨天还没有清单(上线首日 / 参数未配置的"
-                         + "日子),⛔ 不是「一只都没覆盖到」。")
+                    Text("“尚不可得”表示还没有可用于对比的前一日清单，不是 0%，也不是一只都没覆盖到。")
                         .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {

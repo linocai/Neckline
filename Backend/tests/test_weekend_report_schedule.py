@@ -179,7 +179,7 @@ def test_timer_and_all_three_services_share_the_scheduled_date_contract():
 
 
 def test_the_three_oneshots_cover_the_new_segment_order_exactly_once():
-    """🔴 §9.3 的新段序 `facts → k9 → explain → playbook → report` 被三个单元
+    """晚间段序 `facts → direction → k9 → explain → playbook → report` 被三个单元
     **不重不漏**地分完。漏一段 = 那一层每晚静默不跑,而 timer 看起来一切正常。"""
     covered: list = []
     for name in ("neckline-scan.service", "neckline-basket.service",

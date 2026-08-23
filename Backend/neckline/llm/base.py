@@ -68,6 +68,8 @@ class LLMResult:
     total_tokens: Optional[int] = None
     raw_usage: Dict[str, Any] = field(default_factory=dict)
     usage_unavailable: bool = True
+    # Tavily 是独立账单；成功检索后即使后续推理失败也必须把真实 credits 带回调用点。
+    tavily_credits: Optional[int] = None
 
 
 def search_coverage_line(hit_count: int) -> str:

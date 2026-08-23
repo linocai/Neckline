@@ -139,7 +139,7 @@ logger = logging.getLogger(__name__)
 # 故 v1.3.5 那条「历史脏分区不会自愈」现在只对**跨到脏那年**的读成立(守门单测已改写记录)。
 # API 与两个客户端工程的版本号必须同批变更；守门测试负责校验三处一致。
 # 本地修改不代表生产已部署，只有生产 `/health` 返回本值才算后端到位。
-VERSION = "v2.5.0"
+VERSION = "v2.5.1"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -990,11 +990,24 @@ def _selection_stocks(trade_date: str) -> list:
     room = k9_store.load_upside_room_mech(day, codes=codes, db_path=_db())
     playbooks = pb_store.load_latest(day, codes=codes, db_path=_db())
     notes = explain_store.load_notes(day, codes=codes, db_path=_db())
+    closes: Dict[str, float] = {}
+    try:
+        from neckline.facts import store as fact_store
+        frame = fact_store.load_pack(day, db_path=_db()).rows
+        if "ts_code" in frame.columns and "close" in frame.columns:
+            closes = {str(r["ts_code"]): float(r["close"])
+                      for r in frame.select(["ts_code", "close"]).iter_rows(named=True)
+                      if r["close"] is not None}
+    except Exception:
+        # 历史报告的事实包可能已按保留规则裁剪；报告仍然可读。
+        closes = {}
     out = []
     for e in listing:
         code = e["ts_code"]
         note = notes.get(code)
         pb = playbooks.get(code)
+        profile = note.get("profile", {}) if note else {}
+        one_line = str(profile.get("company") or profile.get("position") or "").strip()
         out.append({
             "tsCode": code,
             "name": e["name"],
@@ -1005,6 +1018,8 @@ def _selection_stocks(trade_date: str) -> list:
             "tier": e["tier"],
             "seatKind": e["seat_kind"],
             "rank": e["rank"],
+            "referenceClose": closes.get(code),
+            "oneLineProfile": one_line or None,
             # 裁定 1:**上方机械空间**(机械、排序用)⛔ 永不与预案的第一压力位互顶。
             "upsideRoomMechPct": room.get(code),
             "playbook": None if pb is None else pb.to_dict(),
@@ -1017,7 +1032,9 @@ def _selection_stocks(trade_date: str) -> list:
 
 
 def _selection_payload(row: dict) -> dict:
-    return {
+    stocks = _selection_stocks(row["trade_date"])
+    structured = row["structured"]
+    payload = {
         "reportDate": row["report_date"],
         "tradeDate": row["trade_date"],
         "state": row["state"],
@@ -1032,10 +1049,71 @@ def _selection_payload(row: dict) -> dict:
         "relaxedCount": row["relaxed_count"],
         "generatedAt": row["generated_at"],
         "markdown": row["markdown"],
-        "structured": row["structured"],
+        "structured": structured,
+        "direction": structured.get("direction") if isinstance(structured, dict) else None,
+        "market": structured.get("market") if isinstance(structured, dict) else None,
+        "coverage": structured.get("coverage") if isinstance(structured, dict) else None,
         # §5.11 今日清单要的逐只摘要(**现装,不进冻结件**,见 `_selection_stocks`)。
-        "stocks": _selection_stocks(row["trade_date"]),
+        "stocks": stocks,
     }
+    payload["copyText"] = _selection_copy_text(payload)
+    return payload
+
+
+def _selection_copy_text(payload: Mapping[str, Any]) -> str:
+    """由已保存事实确定性拼出的可复制中文，不重写冻结报告。"""
+    lines = [str(payload.get("headline") or "每日报告"),
+             f"报告日：{payload.get('reportDate') or '—'}；行情截至：{payload.get('tradeDate') or '—'}"]
+    direction = payload.get("direction") or {}
+    if direction.get("state") == "ready":
+        lines += ["", "市场方向", str(direction.get("summary") or "")]
+        for theme in direction.get("themes") or []:
+            lines.append(f"- {theme.get('name', '')}：{theme.get('reason', '')}")
+    elif direction:
+        lines += ["", "市场方向", "方向解读暂未生成。"]
+    market = payload.get("market") or {}
+    if market:
+        lines += ["", "市场事实"]
+        limit_map = market.get("limitMap") if isinstance(market, Mapping) else None
+        if isinstance(limit_map, Mapping):
+            bits = []
+            labels = (("limitUpCount", "涨停"), ("limitDownCount", "跌停"), ("zabanCount", "炸板"))
+            for key, label in labels:
+                if limit_map.get(key) is not None:
+                    bits.append(f"{label} {limit_map[key]} 家")
+            if bits:
+                lines.append("；".join(bits) + "。")
+        median = market.get("marketMedianRet") if isinstance(market, Mapping) else None
+        if isinstance(median, (int, float)):
+            lines.append(f"全市场涨跌幅中位数：{median * 100:.2f}%。")
+        if len(lines) and lines[-1] == "市场事实":
+            lines.append("当日市场资料已保存，具体数值请在报告中查看。")
+    coverage = payload.get("coverage")
+    if isinstance(coverage, Mapping):
+        lines += ["", "覆盖率"]
+        summary = coverage.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            lines.append(summary.strip())
+        else:
+            lines.append("前一日清单覆盖情况已保存；缺少可核对记录时不会按 0% 处理。")
+    lines += ["", "清单"]
+    stocks = payload.get("stocks") or []
+    if not stocks:
+        lines.append("今天没有可供进一步阅读的清单。")
+    for stock in stocks:
+        lines.append(f"{stock.get('name') or stock.get('tsCode')}（{stock.get('tsCode')}）")
+        if stock.get("oneLineProfile"):
+            lines.append(str(stock["oneLineProfile"]))
+        close = stock.get("referenceClose")
+        lines.append("收盘价（截至行情日）：" + (f"{float(close):.2f}" if close is not None else "资料暂未保存"))
+        levels = (stock.get("playbook") or {}).get("levels") or {}
+        if levels:
+            lines.append("失效价 {0}；第一压力位 {1}；第二压力位 {2}".format(
+                levels.get("invalidation", "—"), levels.get("firstResistance", "—"), levels.get("secondResistance", "—")))
+        else:
+            lines.append("明日预案：资料暂未生成。")
+    lines += ["", "以上为研究材料，不构成交易指令。"]
+    return "\n".join(lines)
 
 
 @app.get(f"{API_PREFIX}/selection/latest", dependencies=[Depends(require_token)])
@@ -1071,6 +1149,13 @@ def get_selection_by_date(trade_date: str) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail=f"{trade_date} 没有报告")
     return _selection_payload(row)
+
+
+@app.get(f"{API_PREFIX}/usage/summary", dependencies=[Depends(require_token)])
+def get_usage_summary(days: int = 5) -> dict:
+    """真实 Token / Tavily credits 的去敏只读汇总。"""
+    from neckline.llm import usage
+    return usage.summary(days=days, db_path=_db())
 
 
 def _parse_day(raw: str) -> date_cls:

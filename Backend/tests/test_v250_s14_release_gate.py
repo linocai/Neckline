@@ -18,9 +18,9 @@ PRODUCTION_PARAMS_SHA256 = "5775641b989e9553ad29e0178a059007f1f663b422e8134130c9
 
 def test_release_version_and_build_are_aligned():
     project = (APP / "Neckline.xcodeproj" / "project.pbxproj").read_text(encoding="utf-8")
-    assert VERSION == "v2.5.0"
-    assert set(re.findall(r"MARKETING_VERSION = ([^;]+);", project)) == {"2.5.0"}
-    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"10"}
+    assert VERSION == "v2.5.1"
+    assert set(re.findall(r"MARKETING_VERSION = ([^;]+);", project)) == {"2.5.1"}
+    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"11"}
 
 
 def test_production_parameter_pack_is_the_user_approved_whynotme_artifact(tmp_path):

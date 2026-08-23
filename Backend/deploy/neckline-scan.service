@@ -11,7 +11,7 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments facts
+ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments facts,direction
 TimeoutStartSec=1800
 # B5 宁波云真实数据实测：当日 facts 约 108 MiB；512M 留出约 4.7 倍余量。
 MemoryMax=512M

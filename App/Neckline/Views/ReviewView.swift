@@ -308,9 +308,9 @@ struct ReviewView: View {
     private var binderyPage: some View {
         NKCard {
             VStack(alignment: .leading, spacing: 10) {
-                NKSectionHeader(title: "行情材料装订", trailing: "架构 §六 第 2 件事")
-                Text("每笔回合前后的 K 线 + 买卖点标注 + 同期大盘 + 同期申万二级 + "
-                     + "**当时那几天的报告与预案快照**。⚠ 它要读行情文件,属于「点一下才算」的动作。")
+                NKSectionHeader(title: "行情材料装订", trailing: "按需生成")
+                Text("每笔回合前后的 K 线、买卖点标注、同期大盘与行业，以及当时的报告和预案快照。"
+                     + "生成时会读取行情资料，请按需打开。")
                     .font(NKFont.callout).foregroundStyle(NK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Button { Task { await model.loadBindery() } } label: {
@@ -351,7 +351,7 @@ struct ReviewView: View {
         NKCard {
             VStack(alignment: .leading, spacing: 10) {
                 NKSectionHeader(title: "本周材料",
-                                trailing: "\(b.windowStart) – \(b.windowEnd)")
+                                trailing: "\(NKFmt.reportDate(b.windowStart)) – \(NKFmt.reportDate(b.windowEnd))")
                 HStack(spacing: 8) {
                     NKChip(text: "\(b.roundTrips.count) 笔回合", tone: .info)
                     if !b.benchmarkName.isEmpty { NKChip(text: "大盘 \(b.benchmarkName)", tone: .neutral) }
@@ -372,8 +372,8 @@ struct ReviewView: View {
                     NKNoteBlock(text: LocalizedStringKey(b.note))
                 }
                 if !b.markdown.isEmpty {
-                    NKDisclosure(summary: "整段材料(可复制到聊天框) · \(b.markdown.count) 字") {
-                        Text(b.markdown).font(NKFont.monoKey)
+                    NKDisclosure(summary: "完整材料（可复制到聊天框） · \(b.markdown.count) 字") {
+                        Text(nkMarkdown(b.markdown)).font(NKFont.callout)
                             .foregroundStyle(NK.textSecondary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
@@ -390,13 +390,13 @@ struct ReviewView: View {
         NKCard {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    NKSectionHeader(title: "结论存档", trailing: "append-only · 下周可检索")
+                    NKSectionHeader(title: "结论存档", trailing: "保留每一版 · 下周可检索")
                     Spacer()
                     Button("写一版") { model.beginConclusion() }
                         .buttonStyle(.plain).font(NKFont.callout).foregroundStyle(NK.accent)
                 }
-                Text("**系统不做对话**(架构 §六):把上面的装订材料带到聊天框里得出结论,"
-                     + "再存回这里。存一次 = 新的一版,**老版本一个字不动**。")
+                Text("把材料带到聊天框或笔记里形成自己的结论，再在这里保存。"
+                     + "每次保存都会新建一版，过去的版本保持不变。")
                     .font(NKFont.callout).foregroundStyle(NK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let latest = model.conclusions.latest {
@@ -406,7 +406,7 @@ struct ReviewView: View {
                             Text(latest.title).font(NKFont.headline)
                                 .foregroundStyle(NK.textPrimary)
                             Spacer(minLength: 6)
-                            Text(latest.createdAt).font(NKFont.caption.monospacedDigit())
+                            Text(NKFmt.timestamp(latest.createdAt)).font(NKFont.caption.monospacedDigit())
                                 .foregroundStyle(NK.textTertiary)
                         }
                         Text(latest.body).font(NKFont.body).foregroundStyle(NK.textSecondary)
@@ -420,7 +420,7 @@ struct ReviewView: View {
                     }
                 } else {
                     // ⚠ `latest == nil` = **那周还没写过结论** —— ⛔ 别渲染成「这周没问题」。
-                    Text("这周还没写过结论。⚠ 这不是「这周没问题」,是**还没写**。")
+                    Text("这周还没有保存结论。")
                         .font(NKFont.body).foregroundStyle(NK.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -437,7 +437,7 @@ struct ReviewView: View {
                                    tone: c.version == model.conclusions.latest?.version ? .info : .neutral)
                             Text(c.title).font(NKFont.body).foregroundStyle(NK.textPrimary)
                             Spacer(minLength: 6)
-                            Text(c.createdAt).font(NKFont.caption.monospacedDigit())
+                            Text(NKFmt.timestamp(c.createdAt)).font(NKFont.caption.monospacedDigit())
                                 .foregroundStyle(NK.textTertiary)
                         }
                     }
@@ -453,8 +453,8 @@ struct ReviewView: View {
         NKCard {
             VStack(alignment: .leading, spacing: 12) {
                 NKSectionHeader(title: "我的成绩", trailing: "来源 = 交割单")
-                Text("🔴 **与系统的清单成绩、覆盖率完全隔离**(架构 §五):"
-                     + "这三条线**互不进入对方的分子分母** —— 我买没买,与清单选得对不对,是两件事。")
+                Text("这里记录的是你的交易结果，与系统的清单成绩分开计算。"
+                     + "是否实际买入与清单表现是两件事，彼此不会混在同一项统计里。")
                     .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let stats = model.selectedReviewEntry?.result.stats {
@@ -492,7 +492,7 @@ struct ReviewView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(AppTab.review.title).font(NKFont.title2).tracking(-0.3)
                     .foregroundStyle(NK.textPrimary)
-                Text("解析 · 装订 · 存档 —— **这一层无 LLM**")
+                Text("上传、整理与保存")
                     .font(NKFont.caption).foregroundStyle(NK.textTertiary)
             }
             .padding(.horizontal, NKSpace.listHeaderExtraH).padding(.bottom, 12)
@@ -534,11 +534,11 @@ struct ConclusionEditorSheet: View {
                      onCancel: { model.showConclusionEditor = false },
                      onPrimary: { Task { await model.submitConclusion() } }) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("**系统不做对话**:结论由你带着装订材料在聊天框里得出,这里只负责存档。"
-                     + "存一次 = 新的一版,**老版本一个字不动**。")
+                Text("结论由你基于材料自行形成；这里负责保存与回看。"
+                     + "每次保存都会新建一版，过去的版本保持不变。")
                     .font(NKFont.callout).foregroundStyle(NK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                field("周(ISO 周键,如 2026-W34)", text: Binding(
+                field("周（例如 2026-W34）", text: Binding(
                     get: { model.conclusionForm.week },
                     set: { model.conclusionForm.week = $0 }))
                 field("标题", text: Binding(

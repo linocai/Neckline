@@ -178,6 +178,45 @@ CREATE INDEX IF NOT EXISTS idx_fact_packs_date ON fact_packs(trade_date);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_packs_date_version
   ON fact_packs(trade_date, pack_version);
 
+-- V2.5.1：方向解读是冻结事实包的旁路，不参与 K9 策略。
+CREATE TABLE IF NOT EXISTS fact_direction_briefings (
+  pack_id TEXT PRIMARY KEY,
+  trade_date TEXT NOT NULL,
+  state TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  themes_json TEXT NOT NULL DEFAULT '[]',
+  provider TEXT,
+  model TEXT,
+  evidence_count INTEGER NOT NULL DEFAULT 0,
+  failure_reason TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fact_direction_briefings_date
+  ON fact_direction_briefings(trade_date);
+
+-- V2.5.1：每次真实 LLM/搜索调用的去敏审计账。Token 未回传必须显式为 NULL。
+CREATE TABLE IF NOT EXISTS llm_usage_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_date TEXT,
+  report_date TEXT,
+  pack_id TEXT,
+  task TEXT NOT NULL,
+  provider TEXT,
+  model TEXT,
+  outcome TEXT NOT NULL,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  total_tokens INTEGER,
+  usage_unavailable INTEGER NOT NULL DEFAULT 1,
+  tavily_credits INTEGER,
+  searched INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER,
+  failure_reason TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_events_date_task
+  ON llm_usage_events(trade_date, task);
+
 CREATE TABLE IF NOT EXISTS k9_coverage_daily (
   trade_date TEXT PRIMARY KEY,
   pack_id TEXT NOT NULL,

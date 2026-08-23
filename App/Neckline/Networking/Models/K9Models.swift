@@ -299,6 +299,10 @@ struct K9Stock: Codable, Equatable, Identifiable {
     var tier: String = ""
     var seatKind: String? = nil
     var rank: Int = 0
+    /// D0 冻结事实中的收盘价；不是实时行情。
+    var referenceClose: Double? = nil
+    /// 解释层既有画像中的一句话，缺席时不编造。
+    var oneLineProfile: String? = nil
     /// **上方机械空间**(裁定 1:机械算出的「收盘价距过去 N 日最高价」的比例)。
     /// ⛔ 它**不是**第一压力位,⛔ 永不互相顶替。
     var upsideRoomMechPct: Double? = nil
@@ -313,18 +317,21 @@ struct K9Stock: Codable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case tsCode, name, swL2Code, swL2Name, patterns, primaryPattern, tier, seatKind, rank
+        case referenceClose, oneLineProfile
         case upsideRoomMechPct, playbook, newsState, newsCategory, klineComment, explainOk
     }
 
     init(tsCode: String = "", name: String? = nil, swL2Code: String? = nil,
          swL2Name: String? = nil, patterns: [String] = [], primaryPattern: String = "",
          tier: String = "", seatKind: String? = nil, rank: Int = 0,
+         referenceClose: Double? = nil, oneLineProfile: String? = nil,
          upsideRoomMechPct: Double? = nil, playbook: Playbook? = nil,
          newsState: String? = nil, newsCategory: String? = nil,
          klineComment: String? = nil, explainOk: Bool? = nil) {
         self.tsCode = tsCode; self.name = name; self.swL2Code = swL2Code
         self.swL2Name = swL2Name; self.patterns = patterns; self.primaryPattern = primaryPattern
         self.tier = tier; self.seatKind = seatKind; self.rank = rank
+        self.referenceClose = referenceClose; self.oneLineProfile = oneLineProfile
         self.upsideRoomMechPct = upsideRoomMechPct; self.playbook = playbook
         self.newsState = newsState; self.newsCategory = newsCategory
         self.klineComment = klineComment; self.explainOk = explainOk
@@ -341,6 +348,8 @@ struct K9Stock: Codable, Equatable, Identifiable {
         tier = try c.decodeIfPresent(String.self, forKey: .tier) ?? ""
         seatKind = try c.decodeIfPresent(String.self, forKey: .seatKind)
         rank = try c.decodeIfPresent(Int.self, forKey: .rank) ?? 0
+        referenceClose = try c.decodeIfPresent(Double.self, forKey: .referenceClose)
+        oneLineProfile = try c.decodeIfPresent(String.self, forKey: .oneLineProfile)
         upsideRoomMechPct = try c.decodeIfPresent(Double.self, forKey: .upsideRoomMechPct)
         playbook = try c.decodeIfPresent(Playbook.self, forKey: .playbook)
         newsState = try c.decodeIfPresent(String.self, forKey: .newsState)
@@ -373,6 +382,10 @@ struct SelectionSnapshot: Codable, Equatable {
     var markdown: String = ""
     /// 结构化完整版(默认折叠,展开可整段复制到聊天框 —— §5.10 两层视图)。
     var structured: NKJSON = .object([:])
+    var directionSnapshot: NKJSON? = nil
+    var marketSnapshot: NKJSON? = nil
+    var coverageSnapshot: NKJSON? = nil
+    var copyText: String = ""
     var stocks: [K9Stock] = []
 
     static let notLoaded = SelectionSnapshot(
@@ -381,7 +394,10 @@ struct SelectionSnapshot: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case state, reportDate, tradeDate, headline, gaps, strategy, paramsPackageVersion
         case packId, packVersion, listingSize, strictCount, relaxedCount, generatedAt
-        case markdown, structured, stocks
+        case markdown, structured, copyText, stocks
+        case directionSnapshot = "direction"
+        case marketSnapshot = "market"
+        case coverageSnapshot = "coverage"
     }
 
     init(state: K9ReportState? = nil, reportDate: String = "", tradeDate: String = "",
@@ -389,7 +405,9 @@ struct SelectionSnapshot: Codable, Equatable {
          paramsPackageVersion: String? = nil, packId: String? = nil, packVersion: String? = nil,
          listingSize: Int? = nil, strictCount: Int? = nil, relaxedCount: Int? = nil,
          generatedAt: String = "", markdown: String = "",
-         structured: NKJSON = .object([:]), stocks: [K9Stock] = []) {
+         structured: NKJSON = .object([:]), directionSnapshot: NKJSON? = nil,
+         marketSnapshot: NKJSON? = nil, coverageSnapshot: NKJSON? = nil,
+         copyText: String = "", stocks: [K9Stock] = []) {
         self.state = state; self.reportDate = reportDate; self.tradeDate = tradeDate
         self.headline = headline; self.gaps = gaps; self.strategy = strategy
         self.paramsPackageVersion = paramsPackageVersion; self.packId = packId
@@ -397,6 +415,8 @@ struct SelectionSnapshot: Codable, Equatable {
         self.strictCount = strictCount; self.relaxedCount = relaxedCount
         self.generatedAt = generatedAt; self.markdown = markdown
         self.structured = structured; self.stocks = stocks
+        self.directionSnapshot = directionSnapshot; self.marketSnapshot = marketSnapshot
+        self.coverageSnapshot = coverageSnapshot; self.copyText = copyText
     }
 
     init(from decoder: Decoder) throws {
@@ -417,6 +437,10 @@ struct SelectionSnapshot: Codable, Equatable {
         generatedAt = try c.decodeIfPresent(String.self, forKey: .generatedAt) ?? ""
         markdown = try c.decodeIfPresent(String.self, forKey: .markdown) ?? ""
         structured = try c.decodeIfPresent(NKJSON.self, forKey: .structured) ?? .object([:])
+        directionSnapshot = try c.decodeIfPresent(NKJSON.self, forKey: .directionSnapshot)
+        marketSnapshot = try c.decodeIfPresent(NKJSON.self, forKey: .marketSnapshot)
+        coverageSnapshot = try c.decodeIfPresent(NKJSON.self, forKey: .coverageSnapshot)
+        copyText = try c.decodeIfPresent(String.self, forKey: .copyText) ?? ""
         stocks = try c.decodeIfPresent([K9Stock].self, forKey: .stocks) ?? []
     }
 
@@ -432,18 +456,21 @@ struct SelectionSnapshot: Codable, Equatable {
     /// 不影响任何机械决策** —— 界面上必须把这句话说出口,⛔ 别让它看起来像一条选股依据。
     /// `nil` = 那天没有方向解读(现阶段 `facts/direction_llm.py` 尚未建,恒 nil)。
     var direction: NKJSON? {
+        if let directionSnapshot, !directionSnapshot.isNull { return directionSnapshot }
         guard let d = structured["direction"], !d.isNull else { return nil }
         return d
     }
 
     /// 市场事实(涨停分布 / 连板高度 / 炸板率 / 全市场中位涨幅…)。
     var market: NKJSON? {
+        if let marketSnapshot, !marketSnapshot.isNull { return marketSnapshot }
         guard let m = structured["market"], !m.isNull, (m.objectValue?.isEmpty == false) else { return nil }
         return m
     }
 
     /// 覆盖率成绩线的当日读数(⚠ 完整的覆盖率在**成绩**板块,这里只是报告里的一段)。
     var coverage: NKJSON? {
+        if let coverageSnapshot, !coverageSnapshot.isNull { return coverageSnapshot }
         guard let c = structured["coverage"], !c.isNull else { return nil }
         return c
     }

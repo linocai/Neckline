@@ -5,7 +5,7 @@
 | 1 | 三态各一份渲染快照,**首行可辨** | ① |
 | 2 | 🔴 参数未配置那份**仍有**方向背景 + 市场事实 + 覆盖率 | ② |
 | 3 | 两层视图:默认视图 + **默认折叠**的结构化完整版 | ③ |
-| 4 | 晚间链段序 `facts → k9 → explain → playbook → report`;逐段状态四态分开 | ④ |
+| 4 | 晚间链段序 `facts → direction → k9 → explain → playbook → report`;逐段状态四态分开 | ④ |
 | 5 | APNs:三态 → 推送文案是**全映射**;`not_run` ⛔ 不许推「选股已就绪」 | ⑤ |
 
 周日排程 / 休市跳过 / 同日已生成跳过 三条契约见 `test_weekend_report_schedule.py`
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 
 import pytest
@@ -23,6 +24,8 @@ from neckline.report import evening as evening_mod
 from neckline.report import pipeline as pipeline_mod
 from neckline.report import store as report_store
 from neckline.report.state import ReportState
+from neckline.db import readonly_tables
+from neckline.llm.base import LLMResult
 from tests import k9_env
 
 
@@ -154,13 +157,13 @@ def test_a_not_run_report_still_carries_market_facts_and_the_coverage_ruler(
     assert bundle.market.get("limitMap")
 
 
-def test_the_direction_section_says_not_wired_instead_of_inventing_one(market):
-    """⚠ `facts/direction_llm.py` 尚未建 → 报告如实写「未接入」,
-    ⛔ 不编一段方向解读(架构 §八:它不参与任何机械决策)。"""
+def test_the_direction_section_is_honest_when_no_provider_is_configured(market):
+    """方向旁路缺少模型时，如实说未生成，不能编一段市场结论。"""
     env, day = market
     bundle = _chain(env, day, params_path=None).bundle
-    assert bundle.direction is None
-    assert "未接入" in bundle.markdown
+    assert bundle.direction is not None
+    assert bundle.direction["state"] == "unavailable"
+    assert "方向解读暂未生成" in bundle.markdown
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -269,7 +272,7 @@ class TestTwoLayerView:
 class TestEveningChain:
     def test_the_segment_order_is_the_new_one(self):
         assert evening_mod.CHAIN_SEGMENTS == (
-            "facts", "k9", "explain", "playbook", "report")
+            "facts", "direction", "k9", "explain", "playbook", "report")
 
     def test_explain_finalises_the_listing_and_playbook_reports_its_failure(
         self, market, tmp_path,
@@ -291,6 +294,46 @@ class TestEveningChain:
         assert run["listing_finalized_by"] == k9_store.FINALIZED_BY_EXPLAIN
         assert res.stats["explain"]["news"]["unverified"] == res.stats["explain"]["seated"]
         assert res.stats["playbook"]["frozen"] == 0
+
+    def test_playbook_usage_is_linked_to_the_k9_run_fact_pack(self, market, tmp_path):
+        """预案调用不是孤立账：它必须能追溯到当日 K9 run 的冻结事实包。"""
+        env, day = market
+
+        class PlaybookProvider:
+            name = "fixture"
+            model = "fixture-model"
+
+            def chat(self, messages, **_kwargs):
+                material = messages[-1].content or ""
+                pattern = re.search(r"形态:(p[123])", material).group(1)
+                values = {"firstResistance": 11.0, "secondResistance": 12.0,
+                          "invalidation": 9.5}
+                if pattern == "p1":
+                    values.update({"maxGapUpPct": 5.0, "first30FloorPrice": 10.2,
+                                   "rejectPrice": 9.8})
+                elif pattern == "p2":
+                    values.update({"minOpenPrice": 10.0, "rejectPrice": 9.6})
+                else:
+                    values.update({"first30FloorPrice": 10.2, "rejectPrice": 9.8})
+                return LLMResult(ok=True, provider=self.name, model=self.model,
+                                 content="说明。\n```json\n" + json.dumps(values) + "\n```")
+
+        made = _chain(env, day, params_path=_params_file(env, tmp_path),
+                      segments=["facts", "k9", "explain"])
+        assert made.status["k9"] == evening_mod.STATUS_OK
+        status, stats = evening_mod._run_playbook(
+            day, db_path=env.db_path, parquet_dir=env.parquet_dir, report_date=day,
+            provider=PlaybookProvider())
+        assert status == evening_mod.STATUS_OK and stats["frozen"] > 0
+
+        from neckline.k9 import store as k9_store
+
+        pack_id = k9_store.load_run(day, db_path=env.db_path)["pack_id"]
+        with readonly_tables("llm_usage_events", db_path=env.db_path) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT pack_id FROM llm_usage_events WHERE task='playbook'"
+            ).fetchall()
+        assert rows == [(pack_id,)]
 
     def test_segments_only_pick_what_runs_never_the_order(self, market, tmp_path):
         env, day = market

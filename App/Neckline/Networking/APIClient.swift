@@ -59,6 +59,8 @@ enum APIError: Error, LocalizedError, Equatable {
     case invalidPushKinds    // 422 PUT /settings/push 缺键 / 未登记 kind
     case validation(String)  // 422 其它字段校验(⚠ 预案改值的键集校验走这条)
     case server(Int, String)
+    /// URLSession 明确报告的传输层不可达；这是唯一允许回看本地报告快照的失败类别。
+    case networkUnavailable(String)
     case transport(String)
     case noToken
 
@@ -73,6 +75,7 @@ enum APIError: Error, LocalizedError, Equatable {
         case .invalidPushKinds: return "推送开关清单不完整或含未登记的通知类型"
         case .validation(let m): return "字段校验失败:\(m)"
         case .server(let c, let m): return "服务端错误 \(c):\(m)"
+        case .networkUnavailable(let m): return "网络暂不可用:\(m)"
         case .transport(let m): return "网络错误:\(m)"
         case .noToken:          return "未配置 API Token · 去设置填入"
         }
@@ -81,6 +84,13 @@ enum APIError: Error, LocalizedError, Equatable {
     /// 这次失败是不是「服务端说那天没有 / 那只不在清单里」这类**合法空态**。
     /// 调用方据此走空态而不是弹错(⛔ 别把「没有」讲成「故障」)。
     var isNotFound: Bool { if case .notFound = self { return true }; return false }
+
+    /// 离线快照只为「服务无法到达」而准备。HTTP 状态、鉴权、配置、解码失败都必须
+    /// 原样曝光，不能用旧报告掩盖新的服务端事实。
+    var permitsOfflineSelectionSnapshot: Bool {
+        if case .networkUnavailable = self { return true }
+        return false
+    }
 }
 
 // MARK: - 请求体(只写不回显的字段一律单向)
@@ -237,6 +247,11 @@ actor APIClient {
     func fetchVerdicts(tradeDate: String) async throws -> K9VerdictsSnapshot {
         let data = try await get("/api/v1/scoreboard/verdicts/\(tradeDate)")
         return try JSONDecoder().decode(K9VerdictsSnapshot.self, from: data)
+    }
+
+    func fetchUsageSummary(days: Int = 5) async throws -> UsageSummary {
+        let data = try await get("/api/v1/usage/summary?days=\(max(1, min(days, 35)))")
+        return try JSONDecoder().decode(UsageSummary.self, from: data)
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -459,6 +474,8 @@ actor APIClient {
         let resp: URLResponse
         do {
             (data, resp) = try await session.data(for: req)
+        } catch let error as URLError {
+            throw APIError.networkUnavailable(error.localizedDescription)
         } catch {
             throw APIError.transport(error.localizedDescription)
         }
