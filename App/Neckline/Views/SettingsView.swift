@@ -623,11 +623,9 @@ struct SettingsView: View {
             NKFieldSeparator()
             // 🔴 **V2.5.0 S12 换成 K9 的两个版本号**(K8 的「纪律章程 / 选股包」已随
             // 那条链退役)。⛔ 不在客户端硬编,也⛔ 不在没取到时留白 ——
-            // 空白读作"没有",而事实分两种:「本次没有报告」与「参数未配置」。
-            versionRow("参数包版本", model.selection.paramsPackageVersion?.isEmpty == false
-                       ? (model.selection.paramsPackageVersion ?? "")
-                       : (model.selectionLoaded ? "参数未配置(设计行为,不是故障)"
-                                                : "未取得(本次没有报告)"))
+            // 空白读作"没有",而事实分两种:「本次没有报告」与「参数未配置」。后者
+            // 只有报告自己把它列为失败原因时才成立,不能拿 `selectionLoaded` 猜。
+            versionRow("参数包版本", paramsPackageVersionText)
             NKFieldSeparator()
             versionRow("事实包版本", model.selection.packVersion?.isEmpty == false
                        ? (model.selection.packVersion ?? "") : "未取得(本次没有报告)")
@@ -645,6 +643,12 @@ struct SettingsView: View {
             Text(value).font(NKFont.callout.monospacedDigit()).fontWeight(.semibold)
                 .foregroundStyle(NK.textPrimary)
         }
+    }
+
+    private var paramsPackageVersionText: String {
+        if let value = model.selection.paramsPackageVersion, !value.isEmpty { return value }
+        if model.selection.parameterPackWasMissing { return "参数未配置（本次报告未跑成）" }
+        return "未取得（本次没有报告）"
     }
     #endif
 

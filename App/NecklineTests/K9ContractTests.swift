@@ -51,6 +51,9 @@ final class K9ContractTests: XCTestCase {
         XCTAssertNil(notRun.listingSize, "「今天没跑成」没有清单大小可言 —— ⛔ 不许解成 0")
         XCTAssertEqual(notRun.gaps.count, 1, "缺口必须逐条留着,⛔ 不许合并成一句")
         XCTAssertNotEqual(notRun.state, empty.state, "⛔ 「没跑成」与「没有」不是同一态")
+        XCTAssertTrue(notRun.parameterPackWasMissing)
+        XCTAssertFalse(empty.parameterPackWasMissing,
+                       "没有报告或空清单都不能被界面说成参数未配置")
     }
 
     func testUnknownStateIsNilNotSilentlyMappedToAnyOfTheThree() throws {

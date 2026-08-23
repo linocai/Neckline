@@ -130,11 +130,11 @@ struct NKToolbar: View {
         } else if !trade.isEmpty {
             parts.append(trade)
         }
-        // 🔴 参数包版本:**没有就说没有**(那是「参数未配置」的日子,裁定 5)——
-        // ⛔ 不留空、⛔ 不写一个占位版本号。
+        // 参数包版本缺席时，只有报告明确写了「参数未配置」才能下这个结论；库里
+        // 还没有报告时保持不显示，不能把“未知”说成“缺配置”。
         if let v = model.selection.paramsPackageVersion, !v.isEmpty {
             parts.append(v)
-        } else if model.selectionLoaded {
+        } else if model.selection.parameterPackWasMissing {
             parts.append("参数未配置")
         }
         return parts

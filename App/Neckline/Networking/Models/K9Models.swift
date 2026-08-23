@@ -452,6 +452,12 @@ struct SelectionSnapshot: Codable, Equatable {
 
     var tone: NKAxisTone { state?.tone ?? .warn }
 
+    /// 只有报告明确把“参数未配置”列为失败原因时，界面才可以这么说。
+    /// 没有任何报告、网络失败或其它链路错误都不能冒充成参数缺失。
+    var parameterPackWasMissing: Bool {
+        headline.contains("参数未配置") || gaps.contains { $0.contains("参数未配置") }
+    }
+
     /// 方向背景(事实层的 LLM 旁路,架构 §八)。⚠ **不参与筛选、不参与排序、
     /// 不影响任何机械决策** —— 界面上必须把这句话说出口,⛔ 别让它看起来像一条选股依据。
     /// `nil` = 那天没有方向解读(现阶段 `facts/direction_llm.py` 尚未建,恒 nil)。
