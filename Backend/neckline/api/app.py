@@ -97,7 +97,7 @@ logger = logging.getLogger(__name__)
 # (不传时 payload 逐字节不变,护栏单测锁死)+ 问询台补中文名并显式传检索词。
 # 同批加「联网搜索命中 0 条」的埋点与用户侧露出(报告脚注 / 问询 evidence / 消息面扫描
 # 状态),因为搜索静默返 0 条时模型照样写得出像样的分析——见 `llm.base.search_coverage_line`。
-# ⚠ 被证伪的排除项(别再查一遍):GLM 那份 payload 里 `enable`/`search_result` 发字符串
+# 搜索工具字段的布尔值按既有协议使用字符串；不要在 API 层擅自改写。
 # `"True"`、`count` 发 `"5"` **不是 bug**,真 key A/B 实证接口会正确解析成 bool/int。
 # v1.3.5(2026-07-28 快修,用户拍板):**2026-07-27 的 16:35 报告当场崩掉、当日无报告**
 # —— `moneyflow_dc` 分区 schema 分裂(2020-2023 的 897 个 0 行空文件落成 String,

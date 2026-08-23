@@ -72,20 +72,19 @@ class TestRecencyHint:
         assert pc.recency_hint(date(2027, 1, 1)) == "2027 最新"
 
     def test_hint_goes_right_after_subject_not_at_the_tail(self):
-        """**刻意不放最末**:GLM `max_search_query_chars=78` 截尾会把末尾的时效词连同
-        用户长问句一起切掉 = 等于没加。"""
+        """刻意不放最末，避免通用协议截尾时丢掉时效词。"""
         q = pc.search_subject_with_recency("康龙化成(300759.SZ)", "这只票最近的业绩怎么样",
                                            today=date(2026, 7, 30))
         assert q.index("2026 最新") < q.index("这只票")
         assert q.startswith("康龙化成(300759.SZ) 2026 最新")
 
     def test_hint_survives_provider_truncation_with_a_long_question(self):
-        """把 GLM 的 78 字截断真跑一遍:时效词必须还在截断窗口内。"""
-        from neckline.llm.providers.glm import GLMProvider
+        """按通用协议的截断上限真跑一遍：时效词必须留在窗口内。"""
+        from neckline.llm.openai_compat import OpenAICompatProvider
         long_q = "我看到有人说这票有新的产业催化," + "想知道后续会不会兑现以及风险在哪" * 4
         q = pc.search_subject_with_recency("康龙化成(300759.SZ)", long_q, today=date(2026, 7, 30))
-        assert len(q) > GLMProvider.max_search_query_chars      # 前提:确实会被截
-        assert "2026 最新" in q[: GLMProvider.max_search_query_chars]
+        assert len(q) > OpenAICompatProvider.max_search_query_chars
+        assert "2026 最新" in q[: OpenAICompatProvider.max_search_query_chars]
 
     def test_empty_tail_and_empty_subject_are_safe(self):
         assert pc.search_subject_with_recency("600001.SH", today=date(2026, 7, 30)) == "600001.SH 2026 最新"

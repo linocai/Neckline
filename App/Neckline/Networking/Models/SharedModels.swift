@@ -131,7 +131,7 @@ func nkBoardLabel(_ raw: String) -> String {
 /// - 其余未识别值 → **原样透传**(⛔ 不瞎翻译成中文)
 // MARK: - 4A.5 设置(V2-②/⑪ 换血:Provider 自填制 + 按 kind 的推送开关)
 //
-// ⚠ **`LLMProviderKind`(`glm`/`kimi` 二值枚举)已退役**:V2-② 起 Provider 是**自填制**
+// ⚠ **`LLMProviderKind` 品牌枚举已退役**:V2-② 起 Provider 是**自填制**
 // (任意 OpenAI 兼容端点可配),枚举写死两家本身就是那个要被替换掉的东西。
 // ⚠ **`PushSettings` 六个具名 bool 已退役**:V2-⑪ 起 = **按 kind 的开关清单**。
 

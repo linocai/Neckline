@@ -16,7 +16,7 @@ A 股生产应用：SwiftUI 客户端 + FastAPI 服务。离线研究、回测�
 ```text
 App/            iOS / macOS 客户端
 Backend/        API、定时任务、数据契约、部署单元与测试
-archive/        历史材料；不作为当前指令
+archive/        用户明确要求暂存的材料；默认保持为空
 AGENTS.md       项目工作规则
 PROJECT_PLAN.md 唯一当前计划
 README.md       操作入口
@@ -98,21 +98,15 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline build-for-testing -desti
 三条都是发布门禁。macOS 构建不会编译 iOS 专属推送代码，iOS 普通构建也不能替代测试目标编译。
 App 的业务板块是“选股 / 成绩 / 复盘”，设置单独入口；系统不展示或跟踪持仓。
 
-## 生产发布记录
+## 当前生产
 
 V2.5.1 Build 12 于 2026-08-23 部署到宁波云 `114.66.0.38:/opt/neckline`。生产数据库保持
 28 张现行表，`PRAGMA integrity_check=ok`；公开 `/api/v1/health` 返回 `v2.5.1`，API
 服务运行且重启次数为 0。旧 `scan/basket` 单元已下架，晚间链现为
 `facts → strategy → report`。发布没有手动重跑报告，首份正式报告仍由周日 19:00 排程触发。
 
-服务器回滚包位于
-`/opt/neckline-release-backups/v2.5.1-b12-pre-20260823-165715/`；换包前 Build 11 macOS App 位于
-`/Users/linotsai/Lino/app_backups/Neckline-v2.5.1-b11-pre-v2.5.1-b12-20260823-1706/`。
-签名归档、交付压缩包与 SHA-256 清单位于
-`/Users/linotsai/Lino/releases/Neckline/v2.5.1-b12-20260823/`。
-
-本次完整上产事实见
-[V2.5.1 Build 12 发布记录](archive/施工图/V2.5.1_Build12_发布记录_20260823.md)；
-旧 Build 的事实继续保留在各自历史发布记录中。
+当前服务器回滚包位于
+`/opt/neckline-release-backups/v2.5.1-b12-pre-20260823-165715/`。当前 iOS 签名归档位于
+`/Users/linotsai/Lino/releases/Neckline/v2.5.1-b12-20260823/`，由用户自行安装。
 
 完整发布事实与回滚边界以 [PROJECT_PLAN.md](PROJECT_PLAN.md) 为准。

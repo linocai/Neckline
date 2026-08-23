@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Neckline 后端一键安装(plan 4B.2)。幂等:建 venv、装钉死依赖、建 SQLite schema。
-# pip 走阿里云镜像(hz 直连 PyPI 会超时,见 ~/Lino/hz_info.md §12);可用 PIP_INDEX_URL 覆盖。
+# Neckline 后端一键安装。幂等:建 venv、装钉死依赖、建 SQLite schema。
+# pip 默认走阿里云镜像；可用 PIP_INDEX_URL 覆盖。
 #
 # 用法(在 /opt/neckline 或任意目录均可,脚本自定位到仓库根):
 #   bash scripts/setup.sh

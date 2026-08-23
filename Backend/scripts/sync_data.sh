@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Neckline 行情 Parquet 产物同步(plan 4B.1 方案 B / 内存门禁用)。**只把 data/parquet/
+# Neckline 行情 Parquet 产物同步。**只把 data/parquet/
 # 推上云**(行情只读),**显式排除 *.db**——绝不上传本机 neckline.db 覆盖 ECS 权威台账
 # (settings/LLM key/devices/K9 报告/成绩/reviews 恒以 ECS 为准)。
 #
@@ -7,16 +7,20 @@
 # (六年历史)恒在 Mac 一次性跑,ECS 不做全量 backfill(§3.6)。
 #
 # 用法:
-#   bash scripts/sync_data.sh              # 用默认 hz 目标
+#   NECKLINE_DEPLOY_HOST=114.66.0.38 bash scripts/sync_data.sh
 #   DRY_RUN=1 bash scripts/sync_data.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-HOST="${NECKLINE_DEPLOY_HOST:-118.178.122.194}"
+HOST="${NECKLINE_DEPLOY_HOST:-}"
 USER_NAME="${NECKLINE_DEPLOY_USER:-deploy}"
 REMOTE_PATH="${NECKLINE_DEPLOY_PATH:-/opt/neckline}"
+if [ -z "${HOST}" ]; then
+  echo "[sync_data] NECKLINE_DEPLOY_HOST 必填；禁止使用隐式生产目标。" >&2
+  exit 64
+fi
 
 LOCAL_PARQUET="${ROOT_DIR}/data/parquet/"
 if [ ! -d "${LOCAL_PARQUET}" ]; then

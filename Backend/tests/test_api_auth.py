@@ -40,13 +40,13 @@ def test_protected_post_requires_token(client):
 
 def test_protected_put_requires_token(client):
     assert client.put("/api/v1/settings/push", json={"report": True, "retreatBrake": True}).status_code == 401
-    assert client.put("/api/v1/settings/providers/glm", json={}).status_code == 401
+    assert client.put("/api/v1/settings/providers/custom", json={}).status_code == 401
     assert client.put("/api/v1/settings/llm-routes", json={}).status_code == 401
 
 
 def test_protected_delete_requires_token(client):
     # V2.5.0 S1:`/alerts/{id}` 已随自定义提醒退役删除;剩下两条 DELETE 都在 settings 下。
-    assert client.delete("/api/v1/settings/providers/glm").status_code == 401
+    assert client.delete("/api/v1/settings/providers/custom").status_code == 401
     assert client.delete("/api/v1/settings/tavily").status_code == 401
 
 

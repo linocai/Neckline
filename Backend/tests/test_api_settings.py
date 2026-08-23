@@ -33,32 +33,32 @@ def test_settings_default(client, AUTH):
 
 def test_create_provider_key_not_leaked_and_runtime_effective(client, AUTH, api_env):
     r = client.post("/api/v1/settings/providers", headers=AUTH, json={
-        "name": "glm", "baseUrl": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        "model": "glm-5.2", "apiKey": "sk-secret-abc", "hasWebSearch": True, "searchEngine": "search_pro",
+        "name": "custom", "baseUrl": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "model": "test-model", "apiKey": "sk-secret-abc", "hasWebSearch": True, "searchEngine": "search_pro",
     })
     assert r.status_code == 201
     created = r.json()
-    assert created["name"] == "glm" and created["keySet"] is True
+    assert created["name"] == "custom" and created["keySet"] is True
     assert "sk-secret" not in json.dumps(created)
 
     body = client.get("/api/v1/settings", headers=AUTH).json()
     assert body["providers"] == [
-        {"name": "glm", "model": "glm-5.2", "hasWebSearch": True, "keySet": True, "enabled": True}
+        {"name": "custom", "model": "test-model", "hasWebSearch": True, "keySet": True, "enabled": True}
     ]
     assert "sk-secret" not in json.dumps(body)
     assert "sk-secret" not in client.get("/api/v1/settings/providers", headers=AUTH).text
 
     # 默认模型可在运行时直接保存；历史 `hasWebSearch` 字段不再决定路由。
     assert client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
-        "routes": {}, "defaultProvider": "glm",
+        "routes": {}, "defaultProvider": "custom",
     }).status_code == 200
     p = get_provider(db_path=api_env.db_path)
-    assert p is not None and p.name == "glm" and p.model == "glm-5.2"
+    assert p is not None and p.name == "custom" and p.model == "test-model"
     assert get_provider(TASK_NEWS_SCAN, db_path=api_env.db_path) is None
 
 
 def test_create_provider_duplicate_name_409(client, AUTH):
-    body = {"name": "glm", "baseUrl": "https://x", "model": "m"}
+    body = {"name": "custom", "baseUrl": "https://x", "model": "m"}
     assert client.post("/api/v1/settings/providers", headers=AUTH, json=body).status_code == 201
     r = client.post("/api/v1/settings/providers", headers=AUTH, json=body)
     assert r.status_code == 409 and r.json()["detail"]["reason"] == "already_exists"
@@ -247,21 +247,21 @@ def test_register_device(client, AUTH, api_env):
 
 def test_empty_key_treated_as_unset(api_env):
     db = api_env.db_path
-    settings_store.create_provider("glm", "https://x", "glm-5.2", api_key="realkey", db_path=db)
-    settings_store.set_llm_routes({}, "glm", db_path=db)  # 立"glm"为默认 provider,便于下面用 get_provider() 观测
-    assert settings_store.get_provider_record("glm", db_path=db).api_key == "realkey"
+    settings_store.create_provider("custom", "https://x", "test-model", api_key="realkey", db_path=db)
+    settings_store.set_llm_routes({}, "custom", db_path=db)  # 立"custom"为默认 provider,便于下面用 get_provider() 观测
+    assert settings_store.get_provider_record("custom", db_path=db).api_key == "realkey"
     assert get_provider(db_path=db) is not None
     # 填空 key → 视为清除(降级),不留一个空 key 去乱调
-    settings_store.update_provider("glm", api_key="   ", db_path=db)
-    assert settings_store.get_provider_record("glm", db_path=db).api_key is None
+    settings_store.update_provider("custom", api_key="   ", db_path=db)
+    assert settings_store.get_provider_record("custom", db_path=db).api_key is None
     assert get_provider(db_path=db) is None
 
 
 def test_create_provider_rejects_duplicate_name(api_env):
     db = api_env.db_path
-    settings_store.create_provider("glm", "https://x", "m1", db_path=db)
+    settings_store.create_provider("custom", "https://x", "m1", db_path=db)
     with pytest.raises(ValueError):
-        settings_store.create_provider("glm", "https://y", "m2", db_path=db)
+        settings_store.create_provider("custom", "https://y", "m2", db_path=db)
 
 
 def test_update_provider_missing_name_returns_none(api_env):
@@ -284,8 +284,8 @@ def test_get_llm_routes_default_empty(api_env):
 def test_key_never_logged(api_env, caplog):
     import logging
     with caplog.at_level(logging.DEBUG):
-        settings_store.create_provider("glm", "https://x", "glm-5.2", api_key="sk-topsecret-999", db_path=api_env.db_path)
-        settings_store.update_provider("glm", api_key="sk-topsecret-999-v2", db_path=api_env.db_path)
+        settings_store.create_provider("custom", "https://x", "test-model", api_key="sk-topsecret-999", db_path=api_env.db_path)
+        settings_store.update_provider("custom", api_key="sk-topsecret-999-v2", db_path=api_env.db_path)
         settings_store.set_tavily_api_key("tvly-topsecret-999", db_path=api_env.db_path)
         settings_store.list_providers(db_path=api_env.db_path)
         settings_store.get_app_settings(db_path=api_env.db_path)

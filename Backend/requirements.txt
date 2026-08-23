@@ -9,7 +9,7 @@ pandas==3.0.3
 tushare==1.4.29
 python-dotenv==1.2.2
 pytest==9.1.1
-httpx==0.28.1     # 阶段2 §3.4 LLM 层(GLM/Kimi 均 OpenAI 兼容 HTTP,姿势继承 LinoN deepseek.py)
+httpx==0.28.1     # 阶段2 §3.4 LLM 层(通用协议/供应商 均 OpenAI 兼容 HTTP,姿势继承 LinoN deepseek.py)
 
 # —— 阶段4 (4A/4B) 后端服务化 + APNs(版本参照 LinoN 钉死,plan §五 阶段4)——
 fastapi==0.115.6

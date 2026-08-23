@@ -1,13 +1,8 @@
 //
 //  AppConfigDefaultTests.swift
-//  NecklineTests — App 默认后端 = prod(**nk.linotsai.top**)门禁(§五 V2-⑰ 割接)。
+//  NecklineTests — App 默认后端 = prod(**nk.linotsai.top**)门禁。
 //
-//  2026-08-04 V2-⑰ 双端换包:默认后端从老机 `ln.linotsai.top` 改指新机
-//  `nk.linotsai.top`(D2 = A 路,老 App 打老机 / 新 App 打新机、两拨永不交叉)。
-//  **这条断言是那道闸门的机器判据** —— V2 契约已删了 V1 客户端硬解码的键,默认值指错
-//  哪一边都是整份报告解不出,不是"少个字段"(见 `archive/deploy_retired/A路割接前提自检清单.md`)。
-//  历史:2026-07-20 4E 接班切换时此处曾锁 `ln`(nginx upstream 从 LinoN 8001 切到
-//  Neckline 8002),换机后不再适用。
+//  **这条断言是客户端与现役契约的机器闸门**：默认值指错会导致整份报告解码失败。
 //  本测试同时验证「保留可配置覆盖」:环境 picker 与手填 baseURLOverride 仍能切回
 //  dev / 任意基址。
 //
@@ -32,9 +27,9 @@ final class AppConfigDefaultTests: XCTestCase {
     /// 无持久化选择时,默认后端 = prod(https://nk.linotsai.top)。
     func testDefaultBackendIsProdLinotsai() {
         let config = AppConfig(defaults: freshDefaults())
-        XCTAssertEqual(config.environment, .prod, "首次启动默认环境应为 prod(V2 割接后)")
+        XCTAssertEqual(config.environment, .prod, "首次启动默认环境应为 prod")
         XCTAssertEqual(config.resolvedBaseURL.absoluteString, "https://nk.linotsai.top",
-                       "默认后端地址应为 https://nk.linotsai.top(V2 新机)")
+                       "默认后端地址应为 https://nk.linotsai.top")
     }
 
     /// 反向闸门:默认后端**绝不能**再指向老机 `ln.linotsai.top`。

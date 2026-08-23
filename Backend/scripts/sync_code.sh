@@ -1,21 +1,16 @@
 #!/usr/bin/env bash
-# Neckline 后端代码同步(plan 4B.2)。rsync 仓库根 → deploy@host:/opt/neckline。
+# Neckline 后端代码同步。rsync 仓库根 → deploy@host:/opt/neckline。
 # **只同步源码**,显式排除:业务数据 / 密钥 / 本机 db / 研究缓存。
 #
-# 全量吸收 hz_info.md §12 + LinoN CLAUDE.md 部署坑:
 #   · GNU rsync 3.x(macOS 自带 openrsync 与 --delete 不兼容)——自动探测。
 #   · **exclude 锚定根 `/data/`**(前导斜杠):Neckline 同时有 data/(Parquet+db,排)与
-#     源码包 neckline/data/(tushare_client/realtime/limit_derived,**绝不能排**)。这正是
-#     LinoN 坑 4——无锚 'data/' 会匹配任意层级、连 neckline/data/ 一起误删。
+#     源码包 neckline/data/(tushare_client/realtime/limit_derived,**绝不能排**)。
 #   · 排除 .env / *.p8(远端独立维护,--delete 绝不清)。
 #   · rsync -a 会冲掉 setgid → 同步后须 chown/chmod 复原(见脚本尾提示)。
-#   · **v1.2-0 footgun 修复**:此前打印的收尾 chown -R / find chmod 会递归进已排除的
-#     data/,把生产 DB 属主从 neckline 翻成 deploy → DB 只读 → 服务 502(v1.1-H/H2 部署
-#     期各复发一次,见 hz_info.md §12/§191)。现改为 find -prune 版跳过 data/,脚本末尾
-#     另加只读属主自检(真部署时自动跑,不符 = 红字 + exit 1,把问题挡在部署环节)。
+#   · 收尾权限修复必须跳过 data/；脚本末尾会只读核对生产数据库属主。
 #
 # 用法:
-#   bash scripts/sync_code.sh              # 用默认 hz 目标(deploy@118.178.122.194:/opt/neckline)
+#   NECKLINE_DEPLOY_HOST=114.66.0.38 bash scripts/sync_code.sh
 #   DRY_RUN=1 bash scripts/sync_code.sh    # 预演,不实传;属主自检随之跳过(dry-run 未
 #                                           # 触碰远端,检查无意义,见脚本内注释)
 #   NECKLINE_DEPLOY_HOST=... NECKLINE_DEPLOY_USER=... NECKLINE_DEPLOY_PATH=... bash scripts/sync_code.sh
@@ -27,9 +22,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-HOST="${NECKLINE_DEPLOY_HOST:-118.178.122.194}"
+HOST="${NECKLINE_DEPLOY_HOST:-}"
 USER_NAME="${NECKLINE_DEPLOY_USER:-deploy}"
 REMOTE_PATH="${NECKLINE_DEPLOY_PATH:-/opt/neckline}"
+if [ -z "${HOST}" ]; then
+  echo "[sync_code] NECKLINE_DEPLOY_HOST 必填；禁止使用隐式生产目标。" >&2
+  exit 64
+fi
 
 # —— 只读属主自检(v1.2-0 新增):核对远端指定路径属主是否 neckline:neckline ——
 # 用 sudo -n stat(非交互):实测 data/ 目录 drwxrws--- 属 neckline:neckline,deploy 不在
@@ -113,8 +112,7 @@ echo "[sync_code] ${RSYNC_BIN} ${ROOT_DIR}/  ->  ${DEST}"
 cat <<EOF
 [sync_code] 完成。远端收尾(rsync -a 冲了 setgid 须复原;下面 chown/chmod 两条均用
 find -path ... -prune 跳过 data/——data/ 本就被 rsync --exclude 未触碰、属主天然正确,
-收尾绝不碰它〔v1.2-0 修复的 footgun:旧版 chown -R 会递归进 data/,把生产 DB 属主从
-neckline 翻成 deploy 致只读、服务 502,已复发两次见 hz_info.md〕。chown -R 仍会把
+收尾绝不碰它。chown -R 仍会把
 .env/.p8 也翻成 deploy,须 chown 回 neckline 否则服务 User=neckline 读不到;改包结构
 须删 stale .pyc):
   ssh ${USER_NAME}@${HOST} 'sudo find ${REMOTE_PATH} -path ${REMOTE_PATH}/data -prune -o -exec chown deploy:neckline {} + \\

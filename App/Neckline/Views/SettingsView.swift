@@ -5,7 +5,7 @@
 //    **按 `kind` 的推送开关(动态渲染 + 按 level 分组)** · 连接自检 · iOS 推送重注册 ·
 //    App / 服务端双版本行。
 //
-//  ⚠ **V2-② Provider 自填制**:`glm`/`kimi` 二值枚举整个退役 —— 任意 OpenAI 兼容端点
+//  ⚠ **V2-② Provider 自填制**:供应商品牌二值枚举已退役 —— 任意 OpenAI 兼容端点
 //  可配。**`apiKey` 只写不回显**(服务端只回 `keySet` 布尔),删除走二次确认。
 //  ⚠ **V2-⑪ 推送开关按 `kind` 配**:权威在服务端 `notify_kinds.py`,客户端
 //  **⛔ 不硬编 kind 清单** —— 服务端发什么就渲染什么,新增 kind 时客户端**不改代码
@@ -1094,7 +1094,7 @@ struct ProviderFormSheet: View {
                             Spacer(minLength: 8)
                             Text("创建后不可改").font(NKFont.caption).foregroundStyle(NK.textTertiary)
                         } else {
-                            NKTextFieldBox(placeholder: "唯一名,如 glm",
+                            NKTextFieldBox(placeholder: "唯一名,如 deepseek",
                                            text: $model.providerForm.name, bordered: false)
                         }
                     }
@@ -1107,7 +1107,7 @@ struct ProviderFormSheet: View {
                     NKFieldSeparator()
                     NKFieldRow(v: 12, h: 15) {
                         NKFieldLabel(text: "模型名", width: 76)
-                        NKTextFieldBox(placeholder: "如 glm-4-plus",
+                        NKTextFieldBox(placeholder: "如 deepseek-chat",
                                        text: $model.providerForm.model, mono: true, bordered: false)
                     }
                 }

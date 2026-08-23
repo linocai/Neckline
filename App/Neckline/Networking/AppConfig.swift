@@ -2,20 +2,14 @@
 //  AppConfig.swift
 //  Neckline — 后端连接配置(baseURL + apiToken 可配)
 //
-//  **App 默认后端 = prod(https://nk.linotsai.top)**(2026-08-04 V2-⑰ 割接;D2 = A 路)。
-//  ⚠ **V2.0.0 起改指新机子域 `nk`,不再是老机 `ln`** —— A 路的全部依据是「老 App 打老机、
-//  新 App 打新机,两拨客户端永不交叉」(`archive/deploy_retired/A路割接前提自检清单.md`)。V2 契约已删了
-//  V1 客户端硬解码的键,**这个默认值指错 = 老机吃 V2 契约 / 新 App 吃 V1 契约,两个方向
-//  都是整份报告解不出、今日计划页全空**,不是"少个字段"。改它之前先读那份清单。
-//  历史留痕:V1 时代此处是 `ln.linotsai.top`(2026-07-20 4E 接班切换,nginx upstream 从
-//  LinoN 8001 切到 Neckline 8002);`ln` 域名的语义不符当时是"设计已接受",V2 换机后不再
-//  适用 —— 现在域名与机器一一对应。
+//  **App 默认后端 = prod(https://nk.linotsai.top)**。
+//  默认域名是客户端与现役契约的边界；改错会导致整份报告无法解码、页面全空。
 //  dev(http://127.0.0.1:8002,本地 uvicorn)保留作可切换选项(设置屏「环境」picker /
 //  手填 baseURLOverride);两环境同端口 8002。
 //  ⚠ **`NK_BASE_URL_OVERRIDE` 压过本默认值**:老 App 若手填过 `ln` 基址,换包后仍会打老机
 //  (override 优先级见 `resolvedBaseURL`)。换包后连不上时先去设置屏清空手填基址。
 //
-//  ⚠️ API_TOKEN 绝不硬编码进提交源码(plan 铁律):
+//  ⚠️ API_TOKEN 绝不硬编码进提交源码：
 //   解析优先级 ——
 //    1. UserDefaults("NK_API_TOKEN")  ← App 内设置屏填入,或预置 plist
 //    2. 构建期环境变量 NK_API_TOKEN(scheme 注入,本地开发用)

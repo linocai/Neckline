@@ -8,9 +8,8 @@
     2. 交给 `neckline.llm.router.resolve_task_provider_name()` 决定用哪个
        provider **名字**(有路由用路由,其余回退 `llm_default_provider`)。
     3. 按名字查行；行不存在、禁用或没 key 时返回 ``None``。
-    4. 可用 → 直接构造裸 `OpenAICompatProvider`(`base_url`/`model`/`api_key`/
-       `has_web_search`/`search_engine` 由行给),**不再要求 provider 名字必须是
-       "glm"/"kimi" 这类白名单值**——任意 OpenAI 兼容端点都能配。
+    4. 可用 → 按数据库中的端点、模型和密钥构造 ``OpenAICompatProvider``；
+       provider 名字完全自填，不使用供应商品牌白名单。
 
 ``market_direction`` 与 ``news_scan`` 会额外要求 Tavily key 并套上检索包装；
 ``explain`` 与 ``playbook`` 不联网。
@@ -50,8 +49,7 @@ def get_provider(
         model=row.model,
         name=row.name,
         api_url=row.base_url,
-        # 联网统一走 Tavily；即使历史行仍勾着 has_web_search，也绝不再把 GLM
-        # 专属 tools 形状发给 DeepSeek 或其它 OpenAI 兼容端点。
+        # 联网统一走 Tavily；不向推理模型发送供应商私有搜索工具。
         has_web_search=False,
         search_engine=None,
         read_timeout=None,

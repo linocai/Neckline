@@ -106,12 +106,10 @@ def recency_hint(today: Optional[date] = None) -> str:
 def search_subject_with_recency(subject: str, tail: str = "", today: Optional[date] = None) -> str:
     """拼检索词 = 「**主体** + 时效引导词 + 追加语」。
 
-    **时效引导词紧跟主体、刻意不放最末**:GLM 侧 `max_search_query_chars=78`
-    (`llm/providers/glm.py`)会**截尾**,而问询台的追加语是用户原话(常常几十个字),
-    放最末的时效词在长问句下会被整段切掉 = 等于没加。放主体后面则恒在截断窗口内。
+    **时效引导词紧跟主体、刻意不放最末**：通用协议会防御性截断过长检索词，
+    放主体后面可保证时效词留在截断窗口内。
 
-    ⚠ **只改检索词文本,不加任何新 API 参数**(v1.3.4 案底:取值/参数不被上游认识时会
-    `ok=True` **静默返 0 条**,文字上完全看不出来)。
+    这里只调整检索词文本，不增加供应商私有参数。
     """
     hint = recency_hint(today)
     head = f"{(subject or '').strip()} {hint}".strip()
