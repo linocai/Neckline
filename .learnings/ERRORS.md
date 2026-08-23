@@ -1,6 +1,31 @@
 # Errors
 
-## [ERR-20260823-011] production-sudo-is-command-scoped-not-unrestricted
+## [ERR-20260823-012] sqlite-backup-could-not-create-file-in-root-only-release-dir
+
+**Logged**: 2026-08-23T17:00:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+Build 12 切换已停 API 与晚间 timer 后，SQLite `.backup` 无法直接在 mode 700 的 root 回滚目录
+创建目标文件；脚本因 `set -e` 在任何生产文件替换前退出。
+
+### Error
+
+```text
+Error: unable to open database ".../v2.5.1-b12-pre-20260823-165715/neckline.db"
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-23T17:01:00+08:00
+- **Notes**: API 保持停止；先由 SQLite 在受控临时路径生成一致性备份并执行完整性检查，再由 root 移入 mode 700 回滚目录。源码、systemd 与环境文件备份已经完成，生产代码尚未替换。
+
+---
+
+## [ERR-20260823-011] production-db-path-probe-stopped-on-missing-env-override
 
 **Logged**: 2026-08-23T16:53:00+08:00
 **Priority**: low
@@ -9,19 +34,20 @@
 
 ### Summary
 
-宁波云部署账号的非交互 sudo 是精确命令白名单，通用的 `sudo -n true` 不被允许，因此该次
-预检在第一条命令即退出且没有输出。
+宁波云 `.env` 没有设置 `DB_PATH`；在 `set -e` 下用 `grep` 查找该可选字段时返回 1，
+导致预检链提前退出且没有输出。`sudo -l` 随后确认部署账号实际拥有非交互权限，sudo 本身不是阻塞点。
 
 ### Error
 
 ```text
-sudo -n true exited 1
+grep '^DB_PATH=' /opt/neckline/.env exited 1
 ```
 
 ### Resolution
 
 - **Resolved**: 2026-08-23T16:53:00+08:00
-- **Notes**: 不申请或绕过更高权限；先用 `sudo -n -l` 读取现有白名单，再严格沿已授权的发布路径执行。
+- **Notes**: 可选配置不能用裸 `grep` 充当必过步骤；缺少覆盖项时回到已确认的默认路径
+  `/opt/neckline/data/neckline.db`，并继续执行只读检查。
 
 ---
 
@@ -34,7 +60,7 @@ sudo -n true exited 1
 
 ### Summary
 
-部署账号对 `/opt/neckline/.env` 没有读取权限，按普通用户提取 `DB_PATH` 被系统拒绝。
+部署账号对 `/opt/neckline/.env` 没有读取权限，按普通用户探测可选的 `DB_PATH` 覆盖项被系统拒绝。
 
 ### Error
 
@@ -45,7 +71,8 @@ sed: can't read /opt/neckline/.env: Permission denied
 ### Resolution
 
 - **Resolved**: 2026-08-23T16:52:00+08:00
-- **Notes**: 保持环境文件权限不变，使用现有非交互 sudo 仅提取 `DB_PATH` 字段；不输出或复制其它环境内容。
+- **Notes**: 保持环境文件权限不变；经现有非交互 sudo 确认 `.env` 中没有 `DB_PATH` 覆盖项，
+  因而使用服务约定的默认数据库路径，且不输出或复制其它环境内容。
 
 ---
 
@@ -58,8 +85,9 @@ sed: can't read /opt/neckline/.env: Permission denied
 
 ### Summary
 
-Build 12 生产只读预检沿用了仓库默认布局 `/opt/neckline/data/neckline.db`，但宁波云服务
-通过 `.env` 把数据库放在独立运行数据目录；SQLite 锚点查询未启动。
+Build 12 生产只读预检以部署账号直接打开默认数据库路径
+`/opt/neckline/data/neckline.db`，但运行数据目录仅允许 `neckline` 服务账号和 root 访问；
+SQLite 锚点查询因此未启动。路径本身是正确的，问题是预检读取身份。
 
 ### Error
 
@@ -70,7 +98,8 @@ Error: unable to open database "/opt/neckline/data/neckline.db"
 ### Resolution
 
 - **Resolved**: 2026-08-23T16:51:00+08:00
-- **Notes**: 只读取 `.env` 的 `DB_PATH` 路径字段，不输出其它环境值；随后针对解析出的真实路径重新执行只读完整性与表数检查。
+- **Notes**: 保持数据目录权限不变，使用现有非交互 sudo 对已确认的默认路径执行只读完整性与表数检查；
+  `.env` 没有 `DB_PATH` 覆盖项。
 
 ---
 
@@ -1698,7 +1727,8 @@ GET https://nk.linotsai.top/health -> HTTP 404
   `/api/v1/health` route before continuing. Deployment checks must derive exact field/path names from the
   checked-out contract rather than remembered summaries. Production SQLite is mode `600` and owned by
   `neckline`; all deployment-time read-only SQLite checks must run through `sudo -u neckline sqlite3
-  -readonly`, not as the SSH `deploy` user.
+  -readonly`, not as the SSH `deploy` user. **Recurrence 2026-08-23**: Build 12 最终复核再次误用裸
+  `/health`；已改为从现行路由取值，并同步修正 `app.py` 中两处误导性短路径注释。
 
 ---
 
