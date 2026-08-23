@@ -19,6 +19,16 @@
 
 import SwiftUI
 
+private func nkQuoteQualityLabel(_ raw: String) -> String {
+    switch raw {
+    case "fresh": return "正常"
+    case "degraded": return "单路数据可用"
+    case "insufficient": return "资料不足"
+    case "conflict": return "两路数据不一致"
+    default: return "需留意"
+    }
+}
+
 struct CheckListView: View {
     @Bindable var model: AppModel
 
@@ -55,13 +65,13 @@ struct CheckListView: View {
                 }
                 // 🔴 两个日期分开写:核的是 **D0 的清单**,读数取的是 **D1 的竞价**。
                 HStack(spacing: 10) {
-                    if !list.d0Date.isEmpty { Text("核 \(list.d0Date) 的清单") }
+                    if !list.d0Date.isEmpty { Text("核 \(NKFmt.reportDate(list.d0Date)) 的清单") }
                     if !list.tradeDate.isEmpty { Text("竞价日 \(NKFmt.reportDate(list.tradeDate))") }
-                    if !list.capturedAt.isEmpty { Text("冻结于 \(list.capturedAt)") }
+                    if !list.capturedAt.isEmpty { Text("冻结于 \(NKFmt.timestamp(list.capturedAt))") }
                 }
                 .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
                 if !list.dataQuality.isEmpty {
-                    NKChip(text: "报价质量 \(list.dataQuality)",
+                    NKChip(text: "报价质量 \(nkQuoteQualityLabel(list.dataQuality))",
                            tone: list.dataQuality == "fresh" ? .good : .warn)
                 }
             }
@@ -104,7 +114,7 @@ struct CheckListView: View {
                                list.noQuoteCodes, .neutral)
                     }
                     ForEach(Array(list.notes.enumerated()), id: \.offset) { _, n in
-                        Text("· \(n)").font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                        Text(nkMarkdown("· \(n)")).font(NKFont.caption).foregroundStyle(NK.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -135,8 +145,8 @@ struct CheckListView: View {
     }
 
     private var notRunNote: some View {
-        Text("竞价核对表在交易日 9:26–9:29 生成，之后不会补做。"
-             + "(补跑会拿 10 点的价格冒充 9:26 那一刻)。")
+        Text("竞价核对表只在交易日 9:26–9:29 生成，错过时点后不会补做，"
+             + "避免把更晚的价格当成当时数据。")
             .font(NKFont.caption).foregroundStyle(NK.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -167,7 +177,7 @@ struct ChecklistRowView: View {
                         // ⛔ 「没抓到价」不许静默 —— 它意味着这一只这一拍根本没判过。
                         Text("这一拍没抓到价").font(NKFont.caption).foregroundStyle(NK.amber)
                     } else {
-                        Text("报价 \(row.quoteState)")
+                        Text("报价 \(nkQuoteQualityLabel(row.quoteState))")
                             .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     }
                 }

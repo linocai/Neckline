@@ -629,6 +629,12 @@ class TestApi:
     def test_checklist_404_means_the_tick_never_ran(self, api_env, client, AUTH):
         r = client.get("/api/v1/checklist/20240430", headers=AUTH)
         assert r.status_code == 404
+        detail = r.json()["detail"]
+        assert detail == (
+            "2024年4月30日没有竞价核对表：2024年4月29日没有清单，"
+            "今天没有要核对的东西。这是“没有”，不是“没跑成”。"
+        )
+        assert "**" not in detail and "20240430" not in detail
 
     def test_verdicts_endpoint_reports_the_decided_stage(self, api_env, client, AUTH):
         day = date(2024, 4, 30)

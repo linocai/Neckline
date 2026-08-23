@@ -1350,15 +1350,17 @@ def get_checklist(trade_date: str) -> dict:
     out = auction_store.load_checklist(day, db_path=_db())
     if out is None:
         d0 = prev_trading_day(day)
+        visible_day = f"{day.year}年{day.month}月{day.day}日"
+        visible_d0 = f"{d0.year}年{d0.month}月{d0.day}日"
         if not k9_store.load_listing_codes(d0, db_path=_db()):
             raise HTTPException(
                 status_code=404,
-                detail=(f"{trade_date} 没有竞价核对表:{d0:%Y-%m-%d} 没有清单,"
-                        f"**今天没有要核对的东西**(这是「没有」,不是「没跑成」)。"))
+                detail=(f"{visible_day}没有竞价核对表：{visible_d0}没有清单，"
+                        "今天没有要核对的东西。这是“没有”，不是“没跑成”。"))
         raise HTTPException(
             status_code=404,
-            detail=(f"{trade_date} 没有竞价核对表:{d0:%Y-%m-%d} 有清单,"
-                    f"但**那一拍今天没跑成**(见服务端日志)。"))
+            detail=(f"{visible_day}没有竞价核对表：{visible_d0}有清单，"
+                    "但今天的竞价核对没有跑成，请检查服务状态。"))
     return out
 
 
