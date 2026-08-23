@@ -5,11 +5,11 @@ A 股生产应用：SwiftUI 客户端 + FastAPI 服务。离线研究、回测�
 
 ## 当前状态
 
-- 待发布版本：**V2.5.0 · Build 10**。
-- 生产仍运行 **V2.4.2 · Build 9**；本版尚未部署，也没有迁移生产数据库。
+- 当前生产版本：**V2.5.0 · Build 10**，已于 2026-08-23 部署到宁波云。
+- macOS 已换装 V2.5.0 Build 10；iOS 签名归档已生成，交由用户自行安装。
 - 现行引擎：事实包 → 四通道机械召回 → 排序与名额 → 解释 → 预案 → 次日两拍 → 成绩。
 - 退役运行时代码、表、路由、设置和数据已删除；历史追溯使用 Git。
-- 具体裁定、部署边界和现场事项见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
+- 当前进入上产观察期；具体裁定、发布记录和待观察事项见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
 
 ## 仓库结构
 
@@ -97,14 +97,25 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline build-for-testing -desti
 三条都是发布门禁。macOS 构建不会编译 iOS 专属推送代码，iOS 普通构建也不能替代测试目标编译。
 App 的业务板块是“选股 / 成绩 / 复盘”，设置单独入口；系统不展示或跟踪持仓。
 
-## 部署前现场门禁
+## 生产发布记录
 
-2026-08-22 已在宁波云用隔离库和真实行情完成 facts、`k9,explain,playbook` 与报告装配的
-Linux 内存实测；三个晚间 unit 已按实测峰值加余量收口。用户批准的正式参数包也已从
+V2.5.0 Build 10 于 2026-08-23 部署到宁波云 `114.66.0.38:/opt/neckline`。正式参数包从
 whynotme 原样纳入 `Backend/config/k9-params.json`，文件 SHA-256 为
 `5775641b989e9553ad29e0178a059007f1f663b422e8134130c99922e0dee952`。
 
-正式部署仍必须先备份并核验生产库、补齐生产 `suspend_d` 的 131 个历史交易日，再执行迁移；
-不得把隔离实测产物直接当作生产数据。
+发布时已完成：
 
-部署步骤、备份与回滚清单以 [PROJECT_PLAN.md](PROJECT_PLAN.md) 为准。
+- 停止旧链、备份源码/unit/密钥与数据库，并在数据库副本上完成迁移演练；
+- 使用 TuShare `suspend_d` 补齐 131 个缺失交易日，154/154 个交易日分区均可读；
+- 正式数据库迁移为 26 张现行表，`PRAGMA integrity_check=ok`，设置、DeepSeek、Tavily、
+  Provider、设备、交易日历与股票基础信息均保留；
+- API 与两个 timer 均为 enabled/active，公开健康检查返回 `v2.5.0`，服务重启次数为 0；
+- 未在部署时重跑报告；下一次晚间任务由系统按周日 19:00 的正式计划触发。
+
+服务器回滚包位于
+`/opt/neckline-release-backups/v2.5.0-pre-20260823-095437/`；旧 macOS App 位于
+`/Users/linotsai/Lino/app_backups/Neckline-v2.4.2-b8-pre-v2.5.0-b10-20260823/`。
+签名归档、交付压缩包与 SHA-256 清单位于
+`/Users/linotsai/Lino/releases/Neckline/v2.5.0-b10-20260823/`。
+
+完整发布事实与回滚边界以 [PROJECT_PLAN.md](PROJECT_PLAN.md) 为准。

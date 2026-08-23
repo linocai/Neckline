@@ -1,6 +1,6 @@
-# Neckline · V2.5.0 收口计划
+# Neckline · V2.5.0 发布记录与观察计划
 
-> 目标：V2.5.0 · Build 10　　基线：生产 V2.4.2 Build 9　　更新：2026-08-23
+> 当前生产：V2.5.0 · Build 10　　阶段：发布完成、进入上产观察　　更新：2026-08-23
 >
 > 本文件是仓库唯一当前计划。旧实现和旧计划不承担现行指令；源码追溯使用 Git。
 
@@ -121,9 +121,7 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline build-for-testing -desti
 发版元数据必须一致：API `v2.5.0`；App Marketing Version `2.5.0`；Build `10`；
 asset set `AppIconV250`。
 
-## 7. 部署前仍需完成的现场事项
-
-这些不是代码欠账，不能在本地伪造完成：
+## 7. 生产部署与发布记录
 
 - **生产参数包（已完成）**：用户批准的 whynotme `k9-params-20260822-r1` 已原样纳入
   `Backend/config/k9-params.json`；与标定原件逐字一致，SHA-256 为
@@ -136,22 +134,31 @@ asset set `AppIconV250`。
   峰值 107.6 MiB / 0.60 秒，申万元数据刷新峰值 133.3 MiB / 6.83 秒，补齐 131 个交易日
   `suspend_d` 峰值 172.4 MiB / 16.63 秒，154 个交易日事实包回填峰值 128.2 MiB /
   33.16 秒（冻结 131、复用 23、缺失 0、异常 0；登记、文件与 SHA-256 为 154/154）。
-  生产 `suspend_d` 目前只从 2026-07-22 起存在，正式迁移前必须按同一完整性口径补齐此前
-  131 个交易日；不得伪造空分区或放宽门禁。后半程使用正式参数包完成：严格档候选 241，
+  正式部署时已按同一完整性口径补齐此前缺失的 131 个交易日，最终 154/154 个交易日的
+  `suspend_d` Parquet 分区均可读；没有伪造空分区，也没有放宽门禁。后半程使用正式参数包完成：严格档候选 241，
   初始清单 20，消息面剔除 4、后备补位 4，最终 20 只；20/20 解释和 20/20 预案成功，
   价位次序违规 0。全段墙钟 2:00:20、CPU 7.875 秒、Linux `MemoryPeak` 245 MiB、swap 0；
   报告装配 0.43 秒、峰值 48.7 MiB。逻辑调用为 DeepSeek 64 次、Tavily Basic 检索 24 次；
   Token 聚合探针的唯一 stdout 长管道在收尾丢失，故不猜测 Token 数值，也不为补账重复消费
   这 64 次调用。三个 unit 据实测改为 facts 512M、basket 768M、report 512M；basket 保持
   `TimeoutStartSec=infinity`，不缩策略窗口、不增加累计时间截断。
-- **部署与发版授权**：确认备份、迁移、同步代码/unit、重启、健康检查、macOS/iOS 换包。
+- **部署与发版（已完成）**：2026-08-23 部署到宁波云 `114.66.0.38:/opt/neckline`。
+  发布前已停止旧链；备份源码、八个 unit、`.env`、APNs 密钥与数据库，回滚目录为
+  `/opt/neckline-release-backups/v2.5.0-pre-20260823-095437/`。数据库副本迁移演练通过后才执行
+  正式迁移；现库为 26 张现行表，`PRAGMA integrity_check=ok`，设置、DeepSeek 默认模型、
+  Tavily、Provider、设备、交易日历与股票基础信息均已核对保留。公开 API 返回 `v2.5.0`，
+  服务和两个 timer 均为 enabled/active，服务重启次数为 0。部署过程没有重跑报告。
+- **客户端发版（已完成）**：macOS V2.5.0 Build 10 已签名、校验并换装，旧版可从
+  `/Users/linotsai/Lino/app_backups/Neckline-v2.4.2-b8-pre-v2.5.0-b10-20260823/` 恢复；
+  iOS V2.5.0 Build 10 签名归档已生成，交由用户自行安装。两个平台的归档、压缩包与
+  `SHA256SUMS` 位于 `/Users/linotsai/Lino/releases/Neckline/v2.5.0-b10-20260823/`。
 - **B20 上产后一周证据**：收集 9:26 双源 `open` 分布后再裁定质量状态，不在发布前猜。
 
 ## 8. 状态
 
-- 代码状态：实现已收口；后端全量测试、两组冒烟、macOS 构建、iOS 构建和 iOS
-  `build-for-testing` 全部通过。正式参数包门禁与宁波 unit 语法验证也已通过；B5 实测和
-  `MemoryMax` 收口完成，已停在部署前。
-- 生产状态：仍为 V2.4.2 Build 9；本轮没有部署、没有运行生产迁移、没有重跑报告。
-- 下一动作：取得部署授权后，按备份 → 副本迁移验证 → 生产补齐 131 个 `suspend_d`
-  历史分区 → 正式迁移 → 健康检查 → 发版换包的顺序执行。
+- 代码状态：V2.5.0 Build 10 已完成后端全量测试、两组冒烟、macOS 构建、iOS 构建、iOS
+  `build-for-testing`、两平台 archive 与签名校验。
+- 生产状态：V2.5.0 已上线；API 与定时器健康，数据库迁移完成，154 个交易日的
+  `suspend_d` 已齐。macOS 已换包，iOS 包已交付。发布时没有触发正式报告重跑。
+- 下一动作：按 B20 观察上产后一周 9:26 双源 `open` 分布；影响使用的问题即时快修，
+  非阻断反馈进入下一轮统一收口。
