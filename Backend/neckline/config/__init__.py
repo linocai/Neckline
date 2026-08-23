@@ -1,8 +1,7 @@
-"""配置读取(plan §3.9 `config/`):读 `.env`、定义路径常量。
+"""环境配置与本地数据路径。
 
-铁律:token / key 绝不写进任何被 git 跟踪的文件,一律从 `.env` 读。
-`.env` 已在 `.gitignore`。LLM 两项(`LLM_PROVIDER`/`LLM_API_KEY`)阶段 0 允许缺省
-——数据层完全不碰 LLM,缺省时以 None 优雅传递,不报错、不崩。
+凭据不进入 Git。LLM Provider 与模型路由只从数据库中的设置读取，不接受旧的
+`LLM_PROVIDER` / `LLM_API_KEY` 环境变量回退。
 
 用法:
     from neckline.config import settings
@@ -39,9 +38,6 @@ DB_PATH = DATA_DIR / "neckline.db"
 @dataclass(frozen=True)
 class Settings:
     tushare_token: Optional[str]
-    llm_provider: Optional[str]
-    llm_api_key: Optional[str]
-    bark_url: Optional[str] = None
     # —— 阶段4 (4A/4B) 后端服务化(plan §五 阶段4)——
     # API 鉴权:单用户共享密钥,Bearer + hmac.compare_digest,startup fail-fast len>=16。
     api_token: Optional[str] = None
@@ -101,12 +97,7 @@ def _load_settings() -> Settings:
 
     return Settings(
         tushare_token=_clean(os.environ.get("TUSHARE_TOKEN")),
-        llm_provider=_clean(os.environ.get("LLM_PROVIDER")),
-        llm_api_key=_clean(os.environ.get("LLM_API_KEY")),
         db_path=db_path,
-        # 阶段3 §3.6 推送通道:Bark 推送 URL(如 https://api.day.app/<你的key>),
-        # 缺省 = None,`sentinel.channels.BarkChannel` 据此优雅降级为不推送(不崩)。
-        bark_url=_clean(os.environ.get("BARK_URL")),
         api_token=_clean(os.environ.get("API_TOKEN")),
         apns_key_id=_clean(os.environ.get("APNS_KEY_ID")),
         apns_team_id=_clean(os.environ.get("APNS_TEAM_ID")),

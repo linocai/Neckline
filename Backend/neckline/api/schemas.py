@@ -28,39 +28,16 @@ CloseReasonLiteral = Literal[
 ]
 
 
-class EvalWeeklyOut(BaseModel):
-    """周度评价校准报告(⑨-C;含安慰剂对照臂)。`result` 原样透传
-    `eval/calibration.py::CalibrationReport` 的字典形状(同 `WeeklyReviewOut.result`
-    透传惯例)。
-
-    ⚠ **评价是长期统计,不是单日打分**:`available=false` 时 `unavailableReason`
-    必有值(样本窗未就绪 / 前向窗口还没走完),⛔ 不许拿半截样本给结论。"""
-
-    weekStart: str = ""
-    weekEnd: str = ""
-    available: bool = False
-    unavailableReason: Optional[str] = None
-    result: Dict[str, Any] = Field(default_factory=dict)
-    markdown: str = ""
-
-
 # —— 4A.5 设置 ——————————————————————————————————————————————————————————
 
 class PushKindOut(BaseModel):
-    """一个通知 kind 的开关行(V2-⑪,plan §五 V2-⑪-B / D5)。`level` 是三级之一
-    (`immediate`/`important`/`digest`),客户端据此分组展示;`label` 是服务端给的
+    """一个通知 kind 的开关行。`level` 是 `important` 或 `digest`,客户端据此分组展示;
+    `label` 是服务端给的
     人读名(避免双端各抄一份中文映射,同 `boardLabel` 的反面教训)。"""
     kind: str
     level: str
     label: str
     enabled: bool
-    # —— V2.4.0 P0:退役位(唯一源 `notify_kinds.RETIRED_KINDS`)————————————————
-    # `True` = 该 kind 已退役,服务端**永不再发这类推送**,新客户端**隐藏这一行开关**。
-    # 🔴 **行仍然下发、`PUT /settings/push` 仍要求给全 `ALL_KINDS`** —— 旧客户端照旧
-    # 读写这个开关不受影响(P0.5「`push_retreat` 设置字段继续接受读写」)。
-    # ⛔ **客户端不许硬编码一份退役 kind 黑名单** —— 那是第二份事实源(§3.14-B);
-    #    也⛔ 不许把退役行从 `kinds` 里删掉:删了旧客户端下一次 PUT 就缺键 422。
-    retired: bool = False
 
 
 class PushSettingsOut(BaseModel):
@@ -213,25 +190,21 @@ class ReviewUploadOut(BaseModel):
 
 
 class ReviewSegmentOut(BaseModel):
-    """复盘板块「累计」页里的**一段**。V2.5.0 S11 起共**四段**
-    (校准 / 对账 / 结论存档 / 观察项),形状统一。
+    """复盘板块「累计」页里的**一段**。现行两段为对账与结论存档。
 
     🔴 **每段各自带 `available` + `unavailableReason`,⛔ 不许拿一个总开关罩住四段** ——
-    校准产物没生成、这周没传交割单、这周还没写结论是**三件互不相干的事**,合成一句
-    读者就分不清哪个没有。三态读法(plan §五⑤ 验收原文「有 / 没有 / 没取到」):
+    这周没传交割单与这周还没写结论是两件互不相干的事。三态读法:
 
       · **有**   → `available=true` + 有内容;
       · **没有** → `available=true` + 空内容(该段自己的空态文案说清为什么空);
       · **没取到** → `available=false` + `unavailableReason`(⛔ 不许拿空数组冒充)。
 
-    ⚠ **校准段与对账 / 结论两段的空态刻意判得不一样,⛔ 别"统一"**:校准产物缺席 =
-    **系统自己那一步没跑**(周度离线作业未运行)→ 那是「没看」→ `available=false`;
     对账与结论缺席 = 输入(券商交割单 / 用户写的结论)**只能由用户给**、系统查过表
     确实没有 → 那是「没有」→ `available=true` + `detail.found=false`。
     两者给用户的动作完全不同(等系统 vs 自己去做),⛔ 别合并。
 
     `items` / `detail` **原样透传**领域层形状(同 `WeeklyReviewOut.result` /
-    `EvalWeeklyOut.result` 的既定惯例)—— 在 API 层再镜像一套嵌套模型只会多一处会漂的
+    既定惯例)—— 在 API 层再镜像一套嵌套模型只会多一处会漂的
     定义。`label` 由服务端给人读名(同 `PushKindOut.label` 先例,免双端各抄一份中文)。"""
 
     available: bool = False
@@ -245,15 +218,9 @@ class ReviewSegmentOut(BaseModel):
 class ReviewOverviewOut(BaseModel):
     """复盘板块「累计」页的聚合读(`GET /review/overview`)。
 
-    **零现算**:四段全部读**已冻结 / 已落盘**的产物 —— 校准报告由离线周度作业算好落盘
-    (§七 P0-23:本端点与常驻服务同进程,重活进常驻服务 = 卡死不报错),对账读
-    `reviews` 表,结论读 `review_conclusions` 表。⛔ 读不到就说读不到,**永不在线补算**。
+    **零现算**:对账读 `reviews` 表,结论读 `review_conclusions` 表。
     ⚠ **装订材料刻意不在这里**:它要读 parquet 行情,属于「点一下才算」的动作,
     单独走 `GET /review/bindery`(⛔ 别把它塞进这个每次进板块都会拉的聚合读)。
-
-    **包成绩单 = `calibration.detail.strata` 本身**(产物原文已按
-    `pack_version × verification_ruleset_version` 分层)——⛔ 不另建第二份聚合,
-    那就是「同一个数两个算法」的老病。
 
     🔴 **本端点一律不 404**(空态走各段的 `available=false`)→ V2.1 **零新增 reason
     字符串**,`SERVER_REASONS` 与客户端 `mapReason` 一字不动。"""
@@ -261,12 +228,10 @@ class ReviewOverviewOut(BaseModel):
     weekStart: str = ""
     weekEnd: str = ""
     weekKey: str = ""                       # ISO 周键(`YYYY-Www`),对账段按它取
-    calibration: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
     reconcile: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
     # V2.5.0 S11:结论存档段(架构 §六 第 3 件事)。同对账段的三态读法 ——
     # `available=true` + `detail.found=false` = 「这周还没写结论」(⛔ 不是「没取到」)。
     conclusions: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
-    observations: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
     # 🔴 V2.5.0 S1:`preference` / `capability`(`profile/` 整包退役)与
     # `selectionClock` / `tradeClock` / `iterationSuggestions`(双时钟复盘退役)
     # 五段**已删除** —— 它们的数据源已随 K8 一起下线,留着只会让客户端每次都拿到
@@ -331,7 +296,6 @@ class ReviewGetOut(BaseModel):
 
 __all__ = [
     "OkOut",
-    "EvalWeeklyOut",
     "PushKindOut",
     "PushSettingsOut",
     "SettingsProviderOut",

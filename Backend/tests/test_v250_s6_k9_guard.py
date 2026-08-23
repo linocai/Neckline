@@ -307,8 +307,6 @@ _KNOWN_WINDOW_HIGH_FILES: Dict[str, str] = {
         "过去 N 天**振幅**的窗口极差(高 − 低)÷ 低,与机械空间是两个量(§14 S6 ① 已登记)",
     "neckline/data/panel.py":
         "K8 研究面板遗留的 `rolling_max(20)`,不在 K9 机械链上(无 K9 消费方)",
-    "neckline/data/concept_data.py":
-        "取**最新交易日**(`max` over `trade_date`),是个日期不是价格",
     "neckline/facts/limitmap.py":
         "连板天数的最大值(`max` over `consec_limit_up_days`),不是价格极值",
 }

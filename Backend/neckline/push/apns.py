@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
 from neckline.config import settings
-from neckline.notify_kinds import CATEGORY_DIGEST, CATEGORY_IMMEDIATE, CATEGORY_IMPORTANT
+from neckline.notify_kinds import CATEGORY_DIGEST, CATEGORY_IMPORTANT
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ GATEWAY_PROD = "https://api.push.apple.com"
 
 # 锁屏动作分类(信息类,无动作按钮;客户端注册对应 UNNotificationCategory)。
 #
-# **V2.0.0-⑪ 起 = 三级,不再是 V1 的六类**(D5 拍板):category 只决定「怎么响」,
+# 当前只剩两个 category:盘后汇总与竞价核对。category 只决定「怎么响」,
 # 「响不响」由事件自带的 `kind` + 按 kind 配的开关决定(按 category 配会连坐)。
 # 三个字面量与全部 kind→level 归属的**唯一源是 `neckline.notify_kinds`**,本模块
 # 只做本地别名(`push/` 是最底层的传输件,不该反向 import 上层;别名保证两处永远
@@ -47,7 +47,7 @@ GATEWAY_PROD = "https://api.push.apple.com"
 # ⚠ V1 的六个 category 常量(`REPORT`/`RETREAT`/`PRECALL`/`D5EXIT`/`CIRCUIT`/
 # `HOLDINGALERT`)**已随本块删除**——D2=A 路已拍板(新机新子域、老 App 打老机),
 # V2 契约一次性换血、不留过渡键;客户端那一侧的 category 注册在 ⑮ 一并换。
-# (三个常量的 import 见上方 import 区,此处不重复定义。)
+# (两个常量的 import 见上方 import 区,此处不重复定义。)
 
 # JWT 刷新窗口:Apple 接受 20–60min,留余量 ~50min 重签。
 _JWT_TTL_SEC = 50 * 60
@@ -196,7 +196,7 @@ def send_push(
 
 __all__ = [
     "PushResult",
-    "CATEGORY_IMMEDIATE", "CATEGORY_IMPORTANT", "CATEGORY_DIGEST",
+    "CATEGORY_IMPORTANT", "CATEGORY_DIGEST",
     "build_jwt", "get_jwt", "reset_jwt_cache", "build_payload", "send_push",
     "GATEWAY_SANDBOX", "GATEWAY_PROD",
 ]

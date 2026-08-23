@@ -116,6 +116,10 @@ def _amount_of(code: str) -> float:
     情形,会让「后百分之几」失去意义。`ILLIQUID_CODE` 刻意压到最低。"""
     if code == ILLIQUID_CODE:
         return 1_000.0
+    if code in (P1_CODE, P2_CODE, P3_CODE, P4_CODE, INTRADAY_HALT_CODE):
+        # B17 把流动性底部比例固定为 20%；四个通道正例必须明确不在底部组，
+        # 否则这份夹具测到的是边界而不是通道。
+        return 10_000_000.0 + int(code[2:6]) * 100.0
     return _FLAT_AMOUNT * (1.0 + (int(code[2:6]) % 17) / 5.0)
 
 
@@ -371,7 +375,7 @@ def raw_params(**overrides) -> dict:
         "boundary": {
             "newListingDays": 30,
             "liquidityWindowDays": 20,
-            "liquidityBottomPct": 0.1,
+            "liquidityBottomPct": 0.2,
             "spikeFadeRetPct": 5.0,
             "spikeFadeGapPct": 3.0,
         },
@@ -407,7 +411,7 @@ def raw_params(**overrides) -> dict:
             "relayScoring": "binary",
             "upsideRoomMechDays": 20,
         },
-        "quota": {"min": 3, "max": 6, "floorPerChannel": 1,
+        "quota": {"min": 10, "max": 20, "floorPerChannel": 1,
                   "overStrictConsecutiveDays": 3},
         "explain": {"maxBackfillRounds": 2},
     }

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from neckline.llm.base import ChatMessage, LLMProvider
-from neckline.llm.json_block import split_narrative_and_reference_json
+from neckline.llm.json_block import split_narrative_and_json
 from neckline.llm.prompt_context import TIMELINESS_RULES, date_anchor_line
 from neckline.playbook import skeleton as skeleton_mod
 from neckline.playbook import store as pb_store
@@ -193,7 +193,7 @@ def fill_one(
     if not result.ok:
         return FillResult(ts_code=item.ts_code, ok=False,
                           reason=f"调用未成功:{result.reason}")
-    narrative, block = split_narrative_and_reference_json(result.content or "")
+    narrative, block = split_narrative_and_json(result.content or "")
     filled_by = f"{result.provider}/{result.model}"
     values, why = validate_fill(item.primary_pattern, block)
     if why:

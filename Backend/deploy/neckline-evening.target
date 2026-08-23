@@ -1,4 +1,4 @@
-# Neckline 16:35 晚间链的**编排锚**(plan §五 V2-⑯-D)。三个 oneshot **串行**。
+# Neckline 19:00 晚间链的**编排锚**(plan §五 V2-⑯-D)。三个 oneshot **串行**。
 #
 # **为什么用 target 而不是三个 timer**:三个各自定时的 timer 是"按钟点碰运气"——
 # 上一段跑超时下一段照样开跑,链序就断了。target 一次拉起三段、由各 service 自己的
@@ -73,7 +73,7 @@
 #   cp …/neckline-evening.target /etc/systemd/system/ && systemctl daemon-reload
 #   systemctl stop neckline-evening.target         # 兜底:把卡住的 target 显式清掉
 #   systemctl start neckline-evening.timer         # timer_start() 从"现在"重算 NEXT,不看旧基点
-#   systemctl list-timers | grep evening           # 核 NEXT 是下一个 16:35,不是过去的槽
+#   systemctl list-timers | grep evening           # 核 NEXT 是下一个 19:00,不是过去的槽
 # 之后 timer 的 `LastTriggerUSec` 一旦更新成"今天",这个补跑陷阱就自动消失(下一槽必在未来),
 # **只有第一次施加时有**。
 #
@@ -86,7 +86,7 @@
 #   # 正式排程:sudo systemctl enable --now neckline-evening.timer
 
 [Unit]
-Description=Neckline 16:35 evening chain (3 serial oneshots: scan -> basket -> report)
+Description=Neckline 19:00 evening chain (3 serial oneshots: scan -> basket -> report)
 Documentation=file:///opt/neckline/PROJECT_PLAN.md
 Wants=neckline-scan.service neckline-basket.service neckline-report.service
 After=neckline-scan.service neckline-basket.service neckline-report.service

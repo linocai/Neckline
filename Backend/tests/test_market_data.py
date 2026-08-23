@@ -338,7 +338,7 @@ class TestCanonicalSchemaAlignment:
 
         # ⑤ **如实锁死互补契约**:写侧防线只保证「今后不再产生脏分区」,**historical
         # 脏分区不会自愈** —— 跨年整表 scan 依旧 SchemaError。要让读侧恢复,
-        # 必须另跑 `scripts/fix_moneyflow_schema.py`(其单测见 test_fix_moneyflow_schema.py)。
+        # 历史脏分区必须在部署前完成独立迁移；常规写路径不负责猜类型修旧账。
         # 两者是互补的两半,谁也替代不了谁;生产 2026-07-28 正是「先修数据、后修写侧」。
         #
         # **v1.4.1(§七 P1-26)起传染半径收窄到「同年」**:取数层按 `year=` 裁剪后,单日 /

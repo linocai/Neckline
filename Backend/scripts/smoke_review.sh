@@ -19,31 +19,19 @@ BASE="http://$HOST:$PORT/api/v1"
 
 export DB_PATH="${DB_PATH:-/tmp/neckline_smoke_review_$$.db}"
 export API_TOKEN="${API_TOKEN:-smoke_review_token_16_chars_ok}"
-export NECKLINE_ENABLE_SENTINEL=0
+export NECKLINE_ENABLE_MORNING_TASKS=0
 TOKEN="$API_TOKEN"
 AUTH=(-H "Authorization: Bearer $TOKEN")
 JSON=(-H "Content-Type: application/json")
 XLSX_PATH="/tmp/neckline_smoke_review_$$.xlsx"
 
-echo ">> 建临时库 schema + 种子数据(策略大脑现役版本 + 贵州茅台参考行)..."
+echo ">> 建临时库 schema + 贵州茅台参考行..."
 "$PY" - <<PYEOF
 from pathlib import Path
 from neckline.db import init_schema, connection
-from neckline.strategy import brain
 
 db_path = Path("$DB_PATH")
 init_schema(db_path=db_path)
-brain.save_version(
-    "v1",
-    {"config": {
-        "strength": "none", "buypoint": "pullback", "forbid_green_bigdown": None,
-        "forbid_far_from_high": None, "forbid_new_days": None, "forbid_high_elasticity": True,
-        "stop_pct": 0.05, "take_profit_retrace": 0.05, "max_hold_days": 5, "cooldown_days": 0,
-        "single_cap": 20000.0, "max_positions": 5, "max_exposure_frac": 0.6, "week_halving": False,
-    }},
-    "冒烟种子:镜像生产 rule v1",
-    metrics={}, activate=True, db_path=db_path,
-)
 with connection(db_path=db_path) as conn:
     conn.execute(
         "INSERT OR REPLACE INTO stock_basic (ts_code,symbol,name,industry,market,list_date,delist_date,list_status) "

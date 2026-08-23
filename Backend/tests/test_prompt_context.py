@@ -93,8 +93,7 @@ class TestRecencyHint:
 
 
 class TestTimelinessRulesAreInEveryPrompt:
-    """时效纪律**只有一份实现**,三条链路(问询台 / 审判 / 参考件)的 system prompt
-    逐个必须带上它——任何一处漏了,那条链路就会重犯"把旧研报当现行"的错。"""
+    """每个现役 LLM 提示词必须共用同一份时效纪律。"""
 
     def test_rules_text_covers_the_three_demands(self):
         r = pc.TIMELINESS_RULES
@@ -103,22 +102,7 @@ class TestTimelinessRulesAreInEveryPrompt:
         assert "只能作为历史参照" in r and "不得" in r
 
     @pytest.mark.parametrize("prompt_ref", [
-        # ⚠ V2.1-① 起 `neckline.api.inquiry:INQUIRY_SYSTEM_PROMPT` 已随问询台整链
-        # 退役从本清单摘除(该注入点本身不存在了)——清单**只许少这一项**,其余
-        # 逐字不动(见 PROJECT_PLAN §五 V2.1-① 完工记录的改前改后对照)。
-        "neckline.llm.judge:JUDGE_SYSTEM_PROMPT",
-        # 🔴 V2.5.0 S1:K8 的四条链路(⑤ 检索/推理、⑥ 同档次序、⑦ 卡)已随
-        # `neckline/selection/` 整包退役从本清单摘除 —— 注入点本身不存在了。
-        # ⚠ **清单只许少,不许悄悄少**:K9 的三个 LLM 岗位(事实层方向解读 / 解释层
-        # 资料聚合 / 预案层填值)在 S9、S10、以及 S3 的 `facts/direction_llm.py`
-        # 落地时,必须逐条加回这张表,⛔ 别让"清单变短"变成"纪律没人管"。
-        # 消息面扫描(A4 补;联网 + 问的就是"近期",没有日期概念最伤)
         "neckline.llm.news_scan:NEWS_SCAN_SYSTEM_PROMPT",
-        # 🔴 V2.5.0 S9 / S10:K9 三个 LLM 岗位里的后两个(上面那条 ⚠ 点名要求
-        # 「落地时必须逐条加回这张表」)。解释层要讲「当前消息面」「近期表现」,
-        # 预案层要判「下一个压力位」—— 两者都吃"现在是什么时候"这个前提。
-        # ⚠ 第一个岗位「事实层方向解读」(`facts/direction_llm.py`)本版仍未建
-        # (S3 登记 ⑦),建的时候同样要加进来。
         "neckline.explain.aggregate:EXPLAIN_SYSTEM_PROMPT",
         "neckline.playbook.fill:PLAYBOOK_FILL_SYSTEM_PROMPT",
     ])

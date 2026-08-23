@@ -6,11 +6,11 @@
   "approvedBy": "__TO_BE_CALIBRATED__",
   "approvedAt": "__TO_BE_CALIBRATED__",
   "boundary": {
-    "newListingDays": "__TO_BE_CALIBRATED__",
-    "liquidityWindowDays": "__TO_BE_CALIBRATED__",
-    "liquidityBottomPct": "__TO_BE_CALIBRATED__",
-    "spikeFadeRetPct": "__TO_BE_CALIBRATED__",
-    "spikeFadeGapPct": "__TO_BE_CALIBRATED__"
+    "newListingDays": 30,
+    "liquidityWindowDays": 20,
+    "liquidityBottomPct": 0.2,
+    "spikeFadeRetPct": 5.0,
+    "spikeFadeGapPct": 3.0
   },
   "industry": {
     "minMembers": "__TO_BE_CALIBRATED__",
@@ -20,15 +20,15 @@
     "heatAbsentPolicy": "__TO_BE_CALIBRATED__"
   },
   "volume": {
-    "maDays": "__TO_BE_CALIBRATED__",
+    "maDays": 20,
     "eruptionMultiple": "__TO_BE_CALIBRATED__"
   },
   "channels": {
     "p1": {
       "strict": {
-        "ampWindowDays": "__TO_BE_CALIBRATED__",
-        "ampMaxPct": "__TO_BE_CALIBRATED__",
-        "minRetPct": "__TO_BE_CALIBRATED__"
+        "ampWindowDays": 20,
+        "ampMaxPct": 25.0,
+        "minRetPct": 0.0
       },
       "relaxed": {
         "ampWindowDays": "__TO_BE_CALIBRATED__",
@@ -39,7 +39,7 @@
     "p2": {
       "strict": {
         "normDropMin": "__TO_BE_CALIBRATED__",
-        "maDays": "__TO_BE_CALIBRATED__",
+        "maDays": 20,
         "minVolMultiple": "__TO_BE_CALIBRATED__"
       },
       "relaxed": {
@@ -63,7 +63,7 @@
     "p4": {
       "strict": {
         "dailyInflowRankPct": "__TO_BE_CALIBRATED__",
-        "cumDays": "__TO_BE_CALIBRATED__",
+        "cumDays": 5,
         "cumInflowRankPct": "__TO_BE_CALIBRATED__",
         "lagRankGap": "__TO_BE_CALIBRATED__"
       },
@@ -105,9 +105,9 @@
     "upsideRoomMechDays": "__TO_BE_CALIBRATED__"
   },
   "quota": {
-    "min": "__TO_BE_CALIBRATED__",
-    "max": "__TO_BE_CALIBRATED__",
-    "floorPerChannel": "__TO_BE_CALIBRATED__",
+    "min": 10,
+    "max": 20,
+    "floorPerChannel": 1,
     "overStrictConsecutiveDays": "__TO_BE_CALIBRATED__"
   },
   "explain": {

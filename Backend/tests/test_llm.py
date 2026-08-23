@@ -21,7 +21,7 @@ from neckline.llm.factory import get_provider
 from neckline.llm.openai_compat import OpenAICompatProvider
 from neckline.llm.providers.glm import GLMProvider
 from neckline.llm.providers.kimi import KimiProvider
-from neckline.llm.router import TASK_BASKET_REASON, TASK_DRIVER_SEARCH
+from neckline.llm.router import TASK_EXPLAIN, TASK_NEWS_SCAN
 from neckline.search.tavily import TavilyGroundedProvider
 
 
@@ -92,7 +92,7 @@ class TestFactory:
         """写侧拒绝幽灵 Provider，避免默认模型看似保存、实际不可点击。"""
         db = self._db(tmp_path)
         with pytest.raises(LookupError):
-            settings_store.set_llm_routes({"review": "ghost"}, None, db_path=db)
+            settings_store.set_llm_routes({"explain": "ghost"}, None, db_path=db)
 
     def test_default_provider_without_key_returns_none(self, tmp_path):
         db = self._db(tmp_path)
@@ -117,8 +117,8 @@ class TestFactory:
             "my-custom-glm", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-5.2",
             api_key="sk-xxx", has_web_search=True, search_engine="search_pro", db_path=db,
         )
-        settings_store.set_llm_routes({"review": "my-custom-glm"}, None, db_path=db)
-        p = get_provider("review", db_path=db)
+        settings_store.set_llm_routes({"explain": "my-custom-glm"}, None, db_path=db)
+        p = get_provider(TASK_EXPLAIN, db_path=db)
         assert type(p) is OpenAICompatProvider  # 不是 GLMProvider/KimiProvider 子类
         assert p.name == "my-custom-glm" and p.model == "glm-5.2"
         assert p.has_web_search is False and p.search_engine is None
@@ -132,7 +132,7 @@ class TestFactory:
                                         has_web_search=True, search_engine="search_pro", db_path=db)
         settings_store.set_llm_routes({}, "deepseek", db_path=db)
         settings_store.set_tavily_api_key("tvly-test", db_path=db)
-        p = get_provider(TASK_DRIVER_SEARCH, db_path=db)
+        p = get_provider(TASK_NEWS_SCAN, db_path=db)
         assert isinstance(p, TavilyGroundedProvider)
         assert p.name == "deepseek"
         assert p.inner.has_web_search is False and p.inner.search_engine is None
@@ -142,35 +142,21 @@ class TestFactory:
         settings_store.create_provider("deepseek", "https://api.deepseek.com/x", "deepseek-chat",
                                         api_key="k1", db_path=db)
         settings_store.set_llm_routes({}, "deepseek", db_path=db)
-        p = get_provider(TASK_BASKET_REASON, db_path=db)
+        p = get_provider(TASK_EXPLAIN, db_path=db)
         assert p is not None and p.name == "deepseek"
 
-    # —— §七 P0-40 → P0-44:按 task 类别分级(流式 + chunk 间隔超时)——————————
     def _provider_for(self, tmp_path, task):
         db = self._db(tmp_path)
         settings_store.create_provider("glm", "https://open.bigmodel.cn/x", "glm-5.2", api_key="k",
                                         has_web_search=True, search_engine="search_pro", db_path=db)
         settings_store.set_llm_routes({}, "glm", db_path=db)
-        if task in ("driver_search", "news_scan"):
+        if task == "news_scan":
             settings_store.set_tavily_api_key("tvly-test", db_path=db)
         provider = get_provider(task, db_path=db)
         return provider.inner if isinstance(provider, TavilyGroundedProvider) else provider
 
-    @pytest.mark.parametrize("task", ["basket_reason", "deep_reason", "review"])
-    def test_long_context_tasks_stream_with_chunk_gap_timeout(self, tmp_path, task):
-        """⑤ 篮子聚合一次塞 20 颗种子 + 成员机械数据:2026-08-05 中午 3/3 次撞满 90s、
-        当晚 3/3 次撞满 240s —— **抬数字这条路已被证伪**,推理类必须走流式,读超时
-        语义随之变成 **chunk 间隔**(判「还在不在吐字」,与上游吞吐无关)。"""
-        p = self._provider_for(tmp_path, task)
-        assert p.use_streaming is True
-        assert p.read_timeout == 90.0   # ⚠ 语义 = chunk 间隔,不是整段墙钟
-
-    @pytest.mark.parametrize("task", ["driver_search", "news_scan", "direction_triage", "tier_rank", "script", "nl_alert",
-                                      "profile", None])
-    def test_search_and_light_tasks_stay_non_streaming_at_the_validated_90s(self, tmp_path, task):
-        """⛔ 检索类**刻意不开流式** —— GLM `web_search` tools 协议与流式的组合本项目
-        从未验证过(v1.3.4 案底:不被认识的组合会 `ok=True` 静默返 0 条)。90s 整段
-        墙钟是有实测背书的,一字不动。"""
+    @pytest.mark.parametrize("task", ["news_scan", "explain", "playbook", None])
+    def test_current_tasks_are_small_non_streaming_calls(self, tmp_path, task):
         p = self._provider_for(tmp_path, task)
         assert p.use_streaming is False
         assert p.read_timeout == 90.0
@@ -206,7 +192,7 @@ class TestFactory:
                 raise RuntimeError("探针不发真请求")
 
         monkeypatch.setattr(httpx, "Client", _Probe)
-        p = self._provider_for(tmp_path, "basket_reason")
+        p = self._provider_for(tmp_path, "explain")
         p.max_attempts = 1
         body, reason = p._post({"x": 1, "stream": True}, None)
         assert body is None and reason == "调用异常 RuntimeError"
@@ -322,17 +308,13 @@ class TestStreamingAssembly:
 
     def test_search_tasks_wrap_non_streaming_llm_without_vendor_tools(self, tmp_path):
         """检索类由 Tavily 包装，内部 LLM 非流式且不带厂商私有搜索工具。"""
-        from neckline.llm import router
-
-        for task in router.DEFAULT_SEARCH_TASKS:
-            assert router.use_streaming_for_task(task) is False
         db = tmp_path / "n.db"
         init_schema(db)
         settings_store.create_provider("glm", "https://x/chat/completions", "glm-5.2", api_key="k",
                                         has_web_search=True, search_engine="search_pro", db_path=db)
         settings_store.set_llm_routes({}, "glm", db_path=db)
         settings_store.set_tavily_api_key("tvly-test", db_path=db)
-        provider = get_provider(TASK_DRIVER_SEARCH, db_path=db)
+        provider = get_provider(TASK_NEWS_SCAN, db_path=db)
         assert isinstance(provider, TavilyGroundedProvider)
         assert provider.inner.use_streaming is False
         assert provider.inner.has_web_search is False

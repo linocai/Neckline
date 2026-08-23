@@ -52,8 +52,6 @@ def fake_settings(tmp_path: Path) -> Settings:
     data_dir = tmp_path / "data"
     return Settings(
         tushare_token=None,
-        llm_provider=None,
-        llm_api_key=None,
         project_root=tmp_path,
         data_dir=data_dir,
         parquet_dir=data_dir / "parquet",
@@ -285,13 +283,6 @@ def seed_synthetic_market(
         · "300001.SZ" 创业板,价格路径与 600001.SH 相同 → 应被 rule v1 主板 only 剔除。
     三者的存在与否(通过/剔除)本身就是"熔断线"——验证 mask 确实在筛选,不是摆设。
 
-    **v1.3-③-C3**:同时铺一个「常驻概念板块」`储能`(`ths_index`/`ths_member`,成分
-    = {600001.SH, 600002.SH})——让候选情报管线(`report/intel_candidates.py`,K1 entry
-    mask 退役后 `build_report` 的候选生成源)能识别到一个 step① 板块并从其成员里产候选。
-    刻意**不含 300001.SZ**(它不是任何 step① 板块成员 → 情报管线天然不纳入),从而
-    「问询台强制纳入」/「自选体检独立于候选」等既有断言(300001.SZ 不在候选)继续成立。
-    只铺 `ths_index`+`ths_member`(不铺 `ths_daily`)——板块常驻按名精确匹配即可入 step①,
-    板块年龄/资金流的完整链路由 `test_intel_candidates.py` 的手搓面板专测。
     """
     dates = business_days(start, n_days)
     insert_trade_cal(settings, dates)
@@ -340,15 +331,6 @@ def seed_synthetic_market(
     insert_namechange(settings, [
         {"ts_code": "600002.SH", "name": "*ST示例乙", "start_date": start - timedelta(days=365)},
     ])
-    # v1.3-③-C3:常驻概念板块「储能」(名称即 settings_store.DEFAULT_INTEL_WATCH_BOARDS 之一,
-    # 走「五常驻按 ths_index.name 精确匹配」路径)。成分只含 600001.SH/600002.SH(不含 300001.SZ)。
-    write_flat_parquet(settings, "ths_index.parquet", [
-        {"ts_code": "885921.TI", "name": "储能"},
-    ])
-    write_flat_parquet(settings, "ths_member.parquet", [
-        {"index_code": "885921.TI", "con_code": "600001.SH"},
-        {"index_code": "885921.TI", "con_code": "600002.SH"},
-    ])
     # 🔴 V2.5.0 S3:这里原先还调一个 `seed_industry_strength(settings, dates)`,
     # 铺 K8 的 `industry_strength_daily` 预计算表。**那个函数在 S1 删测试时就已经
     # 不存在了**(调用点没跟着删,靠 `TestEntryScreens` 里只剩夹具、没有用例才没炸)。
@@ -368,7 +350,7 @@ def api_settings(tmp_path: Path) -> Settings:
     data_dir = tmp_path / "data"
     return dataclasses.replace(
         Settings(
-            tushare_token=None, llm_provider=None, llm_api_key=None,
+            tushare_token=None,
             project_root=tmp_path, data_dir=data_dir,
             parquet_dir=data_dir / "parquet", db_path=data_dir / "neckline.db",
         ),
@@ -386,29 +368,19 @@ def api_env(api_settings: Settings, monkeypatch: "pytest.MonkeyPatch"):
     import neckline.data.market_data as md_mod
     import neckline.data.tushare_client as ts_mod
     import neckline.push.apns as apns_mod
-    import neckline.settings_store as ss_mod
     from neckline.db import init_schema
 
     for mod in (deps_mod, apns_mod, tc_mod, md_mod, ts_mod):
         monkeypatch.setattr(mod, "settings", api_settings)
-    monkeypatch.setattr(ss_mod, "_default_settings", api_settings)
-
     api_settings.data_dir.mkdir(parents=True, exist_ok=True)
     api_settings.parquet_dir.mkdir(parents=True, exist_ok=True)
     init_schema(db_path=api_settings.db_path)
     tc_mod.reset_cache()
 
-    monkeypatch.setattr(app_mod, "ENABLE_SENTINEL", False)
+    monkeypatch.setattr(app_mod, "ENABLE_MORNING_TASKS", False)
     monkeypatch.setattr(app_mod, "_DB_PATH_OVERRIDE", api_settings.db_path)
-    # v1.3-⑥:`GET/PUT /settings/intel-boards` 是 app.py 端点层首次直接读 parquet
-    # (`ths_index.parquet` 板块名校验)——同 `_DB_PATH_OVERRIDE` 姿势隔离,防止落到
-    # 真实项目 `data/parquet`(未设置此项时其它测试从未触发过 parquet 读取,新增本行
-    # 对既有测试零行为影响)。
     monkeypatch.setattr(app_mod, "_PARQUET_DIR_OVERRIDE", api_settings.parquet_dir)
-    # V2.1-⑤:`GET /review/{overview,handoff}` 读离线落盘的周度校准产物
-    # (`<data>/reports/calibration/`)。⚠ 不注入这一行就会读到**真实项目**的
-    # `data/reports/`(CLAUDE.md「测试隔离」条:`api_env` 不重写 `neckline.config.settings`)
-    # —— 那类泄漏的特征是"断言全错还不报错",必须在夹具里堵死。
+    # 复盘上传材料也必须留在隔离目录，不能读到真实项目数据。
     monkeypatch.setattr(app_mod, "_DATA_DIR_OVERRIDE", api_settings.data_dir)
     yield api_settings
     tc_mod.reset_cache()
@@ -427,43 +399,6 @@ def client(api_env: Settings):
 @pytest.fixture
 def AUTH() -> dict:
     return {"Authorization": f"Bearer {API_TEST_TOKEN}"}
-
-
-def write_flat_parquet(settings: Settings, filename: str, rows: List[dict]) -> Path:
-    """写一个不按年份分区的扁平 Parquet 文件到 `parquet_dir` 根下——同花顺概念板块
-    三张表的落盘方式(plan 1.6/`scripts/backfill_concept.py`:`ths_index.parquet` /
-    `ths_daily.parquet` / `ths_member.parquet`,阶段2 report/sectors.py 与
-    report/candidates.py 的测试共用本 helper)。"""
-    path = settings.parquet_dir / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(rows).write_parquet(path)
-    return path
-
-
-def insert_inquiry_pool_row(db_path, trade_date, ts_code, *, name=None, reason=None,
-                            consumed_report_date=None):
-    """v2.0.0 起(PROJECT_PLAN §五 V2-⑬-10)`inquiry_pool` 表停写留档、
-    `neckline.api.stores.add_to_inquiry_pool` 已物理删除——但周复盘的「计划内(问询台
-    海选池)」判定仍要读**历史行**做归因,单测因此需要能造一条历史行。直接裸 SQL 插入,
-    不经任何已退役的应用层写口(同 `insert_decision_log_row` 体例)。"""
-    import sqlite3
-    from datetime import datetime, timezone
-
-    from neckline.db import init_schema
-    from neckline.review.parse import normalize_ts_code
-
-    init_schema(db_path)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute(
-            "INSERT OR IGNORE INTO inquiry_pool "
-            "(trade_date, ts_code, name, reason, created_at, consumed_report_date) VALUES (?,?,?,?,?,?)",
-            (trade_date.strftime("%Y%m%d"), normalize_ts_code(ts_code), name, reason,
-             datetime.now(timezone.utc).isoformat(timespec="seconds"), consumed_report_date),
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def source_code_only(path: Path) -> str:
@@ -564,6 +499,4 @@ __all__ = [
     "insert_namechange",
     "insert_sw_members",
     "seed_synthetic_market",
-    "write_flat_parquet",
-    "insert_inquiry_pool_row",
 ]

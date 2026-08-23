@@ -28,6 +28,8 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from scripts import evening as evening_script
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -97,8 +99,12 @@ def test_manual_backfill_can_name_the_publication_date_explicitly(tmp_path, monk
 # 契约 3 · 休市安全跳过(⛔ 不回退重跑旧报告)
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_scheduled_holiday_is_clean_noop_and_never_falls_back(monkeypatch):
-    monkeypatch.setattr(evening_script, "_today", lambda: date(2026, 8, 16))
+@pytest.mark.parametrize("scheduled_day", [date(2026, 8, 17), date(2026, 8, 16)])
+def test_scheduled_holiday_is_clean_noop_and_never_falls_back(
+    monkeypatch, scheduled_day,
+):
+    """周一至周四的节假日，以及周日前一个周五休市，都必须整链跳过。"""
+    monkeypatch.setattr(evening_script, "_today", lambda: scheduled_day)
     monkeypatch.setattr(evening_script, "is_trading_day", lambda value: False)
     monkeypatch.setattr(evening_script, "ensure_data_dirs", lambda: None)
     monkeypatch.setattr(
@@ -160,7 +166,7 @@ def test_timer_and_all_three_services_share_the_scheduled_date_contract():
     timer = (BACKEND_ROOT / "deploy" / "neckline-evening.timer").read_text(encoding="utf-8")
     calendars = [line for line in timer.splitlines() if line.startswith("OnCalendar=")]
     assert calendars == [
-        "OnCalendar=Mon-Thu 16:35 Asia/Shanghai",
+        "OnCalendar=Mon-Thu 19:00 Asia/Shanghai",
         "OnCalendar=Sun 19:00 Asia/Shanghai",
     ]
 

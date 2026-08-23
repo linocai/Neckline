@@ -3,10 +3,9 @@
 #
 # **时刻表**(总窗口按 ⑯-C 新机实测排,改点前先看那份计时表):
 #   16:05  neckline-daily.timer    拉当日 EOD → Parquet + industry_strength_daily
-#   Mon-Thu 16:35 本 timer          当日 seg1 批算 → seg2 LLM → seg3 复盘+报告+APNs
+#   Mon-Thu 19:00 本 timer          当日 seg1 批算 → seg2 LLM → seg3 复盘+报告+APNs
 #   Sun 19:00 本 timer              明确绑定前一周五,纳入周末消息后再跑同一条链
-#   排在 16:35 的理由沿用 V1:TuShare 核心 EOD(daily/basic/adj)~15:35 后稳定,
-#   16:05 拉完给 30 分钟缓冲,报告才不会读到半份数据。
+#   行情增量仍在交易日 16:05 启动；晚间链统一 19:00 启动，避免读到半份数据。
 #
 # 三个 service 都带 `--scheduled`:Mon-Thu 绑定当天,Sunday 只绑定前一周五。若该日休市,
 # 脚本成功跳过,绝不回退到更早交易日重复生成旧报告；若同一交易日的报告已在当天人工
@@ -25,10 +24,10 @@
 # 安装见 neckline-evening.target 头部。
 
 [Unit]
-Description=Run Neckline evening chain Mon-Thu 16:35 and Sunday 19:00
+Description=Run Neckline evening chain Mon-Thu and Sunday at 19:00
 
 [Timer]
-OnCalendar=Mon-Thu 16:35 Asia/Shanghai
+OnCalendar=Mon-Thu 19:00 Asia/Shanghai
 OnCalendar=Sun 19:00 Asia/Shanghai
 Persistent=false
 Unit=neckline-evening.target

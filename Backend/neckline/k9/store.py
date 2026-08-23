@@ -3,7 +3,7 @@
 | 载体 | 装什么 | 覆盖语义 |
 |---|---|---|
 | SQLite `k9_runs` | 一次运行的账:参数包版本 / 事实包版本 / 档位 / 逐形态计数 / 边界计数 | 同 `(trade_date, strategy)` **幂等重写**(同包同参必然算出同一行) |
-| SQLite `k9_channel_hits` | 逐条召回记录(跨日接力分的数据源) | **append-only** |
+| SQLite `k9_channel_hits` | 逐条召回记录(跨日接力分的数据源) | 跨日保留；同日重跑先删旧 run |
 | SQLite `k9_listing_entries` | **定稿**的清单 + **冻结的申万绑定** | 同 `(trade_date, ts_code)` 幂等重写 |
 | parquet `k9_disposition` | 全市场逐票的处置(覆盖率归因的原料) | 同日重写 |
 
@@ -124,6 +124,14 @@ def save_run(
         listing_finalized_by, _now(),
     )
     with connection(db_path) as conn:
+        # B19-D：`k9_runs` 会按日重写，旧 run 的 hits 若继续留着就会成为悬空记录。
+        # 同日人工重跑不是两份历史，而是用新结果取代旧结果；在写新 run 前一并清掉。
+        old = conn.execute(
+            f"SELECT run_id FROM {RUNS_TABLE} WHERE trade_date=? AND strategy=?",
+            (_d(shortlist.trade_date), shortlist.strategy),
+        ).fetchone()
+        if old is not None and old[0] != run_id:
+            conn.execute(f"DELETE FROM {HITS_TABLE} WHERE run_id=?", (old[0],))
         conn.execute(
             f"INSERT OR REPLACE INTO {RUNS_TABLE} "
             "(run_id, trade_date, strategy, params_package_version, pack_id, pack_version, "
@@ -143,11 +151,10 @@ def save_channel_hits(
     seated_codes: Sequence[str],
     db_path: Optional[Path] = None,
 ) -> int:
-    """逐条召回记录,**append-only**(§5.4.6:跨日接力分的数据源)。
+    """逐条召回记录(§5.4.6:跨日接力分的数据源)。
 
-    ⚠ 同一天重跑会再落一份 —— 这是刻意的(append-only 台账不改历史)。
-    跨日接力分按 `(trade_date, pattern)` 去重,重复行⛔ 不会把分算高
-    (见 `ranking.relay_counts`)。
+    跨交易日保留；同一天重跑的旧 run 已由 `save_run()` 删除(B19-D)，因此不会
+    留下悬空 `run_id`，也不会让同一日同时存在两代召回记录。
     """
     init_schema(db_path)
     seated = set(seated_codes)

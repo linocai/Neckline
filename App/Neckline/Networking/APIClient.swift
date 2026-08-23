@@ -35,13 +35,6 @@
 //    GET|PUT /settings/llm-routes · PUT|DELETE /settings/tavily · PUT /settings/push
 //    PUT  /settings/review-col-map · POST /devices
 //
-//  ⚠ **服务端有、本客户端刻意不调的两条**(⛔ 不是漏做):
-//    · `GET /api/v1/eval/weekly` 与 `/review/overview` 的**校准段** —— 它们读的是
-//      whynotme 周度离线作业的产物,而排版仍是 K8 语义(Tier 入场信号正确率 /
-//      C·Z·Y 引擎版本),K9 之下形状未定义(PROJECT_PLAN §13.1-B8,等用户裁定);
-//    · `GET /api/v1/legacy/k8/baskets` —— K8 只读追溯入口(裁定 6),它服务的是
-//      **追溯与导出**,不是任何一个板块的日常读(§5.11 三板块里没有它的位置)。
-//
 //  鉴权:`Authorization: Bearer <API_TOKEN>`(health 外全部)。
 //
 
@@ -231,6 +224,13 @@ actor APIClient {
         let path = "/api/v1/scoreboard/coverage" + (window.map { "?window=\($0)" } ?? "")
         let data = try await get(path, timeout: 30)
         return try JSONDecoder().decode(CoverageSnapshot.self, from: data)
+    }
+
+    /// 已经走完 D+4 的清单成绩。行业分与选票分由服务端分别给出，不存在合计分。
+    func fetchListingScorecard(window: Int? = nil) async throws -> ListingScorecardSnapshot {
+        let path = "/api/v1/scoreboard/listing" + (window.map { "?window=\($0)" } ?? "")
+        let data = try await get(path, timeout: 30)
+        return try JSONDecoder().decode(ListingScorecardSnapshot.self, from: data)
     }
 
     /// **10:00 结算拍的三分支终值**(裁定 10)。⚠ 一律 200(那天没有就是空数组)。

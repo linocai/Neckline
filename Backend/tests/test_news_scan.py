@@ -43,7 +43,7 @@ class TestNoProviderDegradation:
         r = scan_news_for_code("600001.SH", "示例甲", provider=None)
         assert r.degraded is True
         assert r.hits == []
-        assert "LLM_PROVIDER" in r.degrade_reason
+        assert "LLM Provider" in r.degrade_reason
         assert "未扫描" in r.narrative or "未激活" in r.narrative
 
 

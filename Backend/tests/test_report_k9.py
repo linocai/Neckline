@@ -66,17 +66,10 @@ class TestThreeStates:
     def test_empty_when_the_run_produced_nothing(self, market, tmp_path):
         """「今天没有」= 跑通了、结果是空的 —— 这个结论**可以被信任**。"""
         env, day = market
-        # 把四个通道全部卡死 → 候选为空 → 清单 0 只
+        # 所有行业都查无热度且策略明确 drop → 候选为空 → 清单 0 只。
         path = _params_file(
             env, tmp_path,
-            **{"channels.p1.strict.ampMaxPct": 0.001,
-               "channels.p1.relaxed.ampMaxPct": 0.001,
-               "channels.p2.strict.normDropMin": 0.999,
-               "channels.p2.relaxed.normDropMin": 0.999,
-               "channels.p3.strict.flatBand": 1e-9,
-               "channels.p3.relaxed.flatBand": 1e-9,
-               "channels.p4.strict.lagRankGap": 0.999,
-               "channels.p4.relaxed.lagRankGap": 0.999})
+            **{"industry.minMembers": 999, "industry.heatAbsentPolicy": "drop"})
         res = _chain(env, day, params_path=path)
         assert res.bundle.state is ReportState.EMPTY
         assert res.bundle.markdown.splitlines()[0] == "# 今天没有"
@@ -469,14 +462,7 @@ class TestAHalfWrittenRunIsNeverRenderedAsAnEmptyDay:
         env, day = market
         path = _params_file(
             env, tmp_path,
-            **{"channels.p1.strict.ampMaxPct": 0.001,
-               "channels.p1.relaxed.ampMaxPct": 0.001,
-               "channels.p2.strict.normDropMin": 0.999,
-               "channels.p2.relaxed.normDropMin": 0.999,
-               "channels.p3.strict.flatBand": 1e-9,
-               "channels.p3.relaxed.flatBand": 1e-9,
-               "channels.p4.strict.lagRankGap": 0.999,
-               "channels.p4.relaxed.lagRankGap": 0.999})
+            **{"industry.minMembers": 999, "industry.heatAbsentPolicy": "drop"})
         res = _chain(env, day, params_path=path)
         assert res.bundle.state is ReportState.EMPTY
         assert res.bundle.gaps == ()

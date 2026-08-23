@@ -395,15 +395,22 @@ class TestQuota:
     def test_capacity_shortfall_is_disclosed_not_padded(self, market, tmp_path):
         """§5.4.7 第 6 步:放宽后仍不足 → **如实出这么多** + 显式披露,⛔ 不制造候选。"""
         env, day = market
-        res, _ = _compute(env, day, tmp_path, **{"quota.min": 20, "quota.max": 20})
+        res, _ = _compute(env, day, tmp_path)
         assert res.shortlist.capacity_short is True
-        assert res.shortlist.size < 20
+        assert res.shortlist.size < 10
 
-    def test_the_max_capacity_is_respected(self, market, tmp_path):
-        env, day = market
-        res, _ = _compute(env, day, tmp_path, **{"quota.min": 1, "quota.max": 2})
-        assert res.shortlist.size == 2
-        assert len(res.shortlist.reserve) >= 1
+    def test_the_max_capacity_is_respected(self):
+        def cand(code, score):
+            return ranking_mod.ScoredCandidate(
+                ts_code=code, patterns=(Pattern.P1,), primary_pattern=Pattern.P1,
+                tier=Tier.STRICT, industry_heat_score=0.5,
+                pattern_strength_score=score, relay_score=0.0, score=score)
+        candidates = [cand("AAA", 0.9), cand("BBB", 0.8), cand("CCC", 0.7)]
+        q = P.QuotaParams(min=1, max=2, floor_per_channel=1,
+                          over_strict_consecutive_days=3)
+        alloc = quota_mod.allocate(candidates, q, recalled_patterns={Pattern.P1})
+        assert len(alloc.seated) == 2
+        assert len(alloc.reserve) == 1
 
     def test_floor_order_is_by_best_candidate_not_by_pattern_index(self):
         """§5.4.7 第 3 步:⛔ 固定按 p1..p4 轮会给 p1 系统性优势。
@@ -643,7 +650,7 @@ class TestPersistence:
             k9_run.persist(res, listing_finalized_by="whatever",
                            parquet_dir=env.parquet_dir, db_path=env.db_path)
 
-    def test_channel_hits_are_append_only(self, market, tmp_path):
+    def test_rerunning_the_same_day_replaces_old_hits(self, market, tmp_path):
         env, day = market
         res, _ = _compute(env, day, tmp_path)
         k9_run.persist(res, parquet_dir=env.parquet_dir, db_path=env.db_path)
@@ -651,7 +658,7 @@ class TestPersistence:
         from neckline.db import connection
         with connection(env.db_path) as conn:
             n = conn.execute(f"SELECT COUNT(*) FROM {k9_store.HITS_TABLE}").fetchone()[0]
-        assert n == 2 * len(res.hits), "append-only 台账⛔ 不改历史"
+        assert n == len(res.hits), "B19：同日重跑只保留最新结果，旧命中必须删除"
         # 但清单是幂等重写的,⛔ 不会翻倍
         assert len(k9_store.load_listing(day, db_path=env.db_path)) == res.shortlist.size
 

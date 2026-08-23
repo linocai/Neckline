@@ -5,7 +5,7 @@
 - Neckline is the production A-share application: Swift clients plus the Python service.
 - Strategy research, backtests, evaluation, calibration, and experiment history belong in `/Users/linotsai/Lino/whynotme`.
 - Production code must never import `whynotme`. The research laboratory may depend on stable Neckline runtime contracts in one direction only.
-- The live engine is **K9** (facts → four recall channels → mechanical ranking → quota → explain → playbook → next-morning check → scorecards). The K8 chain (driver seeds, directions, baskets, six gates, tiers, cards) is **retired and archived**; its tables are kept read-only. Retired ≠ deleted, and retired ≠ still current — do not reintroduce those concepts from old comments or archived documents.
+- The live engine is **K9** (facts → four recall channels → mechanical ranking → quota → explain → playbook → next-morning check → scorecards). The K8 chain (driver seeds, directions, baskets, six gates, tiers, cards) is **retired and deleted**. Do not preserve dead runtime code, tables, routes, settings, data files, compatibility shims, or UI placeholders merely for historical traceability; Git history is the archive. Do not reintroduce K8 concepts from old comments or archived documents.
 
 ## Repository map
 
@@ -21,6 +21,7 @@
 - Run backend commands from `Backend/` and app commands from `App/`.
 - Keep the repository root limited to the six documented visible entries.
 - Add current operational facts to `README.md` or `PROJECT_PLAN.md`; move superseded detail to `archive/` instead of growing another root document.
+- When the user retires a product capability, deletion is the default: remove its producers, consumers, routes, settings, tests, stored artifacts, and compatibility mappings once the migration boundary is verified. Retention requires an explicit user ruling; do not invent a preservation requirement.
 - Treat `Backend/data/`, `.env`, credentials, production databases, and market-data artifacts as local or operational state. Never commit them.
 - Tests must use temporary databases or explicit read-only snapshots. Never let a test fall back to the working database.
 - Any production deployment or database mutation requires explicit verification of the target and a rollback path.
@@ -38,9 +39,10 @@ cd Backend
 cd ../App
 xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'platform=macOS' build
 xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination 'generic/platform=iOS Simulator' build
+xcodebuild -project Neckline.xcodeproj -scheme Neckline build-for-testing -destination 'generic/platform=iOS Simulator'
 ```
 
-**改了任何 `.swift` 就必须跑上面那两条 `xcodebuild`,一条都不能省。**
+**改了任何 `.swift` 就必须跑上面三条 `xcodebuild`,一条都不能省。**
 
 - 这不是保险起见,是登记过的事故:V2.5.0 的验收口径只写了 macOS,而
   `Push/PushManager.swift` 整份住在 `#if os(iOS)` 里、`Views/ReviewView.swift`

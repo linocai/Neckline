@@ -319,8 +319,8 @@ struct K9StockRow: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("\(stock.rank)").font(NKFont.caption.monospacedDigit())
-                .foregroundStyle(NK.textTertiary).frame(minWidth: 16, alignment: .trailing)
+            Text("全\(stock.rank)").font(NKFont.caption.monospacedDigit())
+                .foregroundStyle(NK.textTertiary).frame(minWidth: 28, alignment: .trailing)
             Text(stock.displayName).font(NKFont.headline).foregroundStyle(NK.textPrimary)
             Text(stock.tsCode).font(NKFont.monoKey).foregroundStyle(NK.textTertiary)
             Spacer(minLength: 6)

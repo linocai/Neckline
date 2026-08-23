@@ -20,23 +20,18 @@ def _now() -> str:
 
 def save_weekly_review(review: WeeklyReview, material: Optional[str] = None, db_path: Optional[Path] = None) -> None:
     """幂等覆盖(`INSERT OR REPLACE`)——同一周重新上传交割单会覆盖旧对账结果,
-    不留重复行(与 `report/store.py::save_report` 同款幂等惯例)。
-
-    `strategy_version` 列(v1.2-A):原先落「本周 governing 大脑版本号」。🔴 V2.5.0 S1
-    起「大脑章程」(`strategy/brain.py`)随 K8 退役,`WeeklyReview` 上已无此字段 →
-    **新行一律写 NULL**。⛔ 列不删、历史行不回填(裁定 6):V2.4.x 及更早的行仍带着
-    当时的版本号,那是审计事实。"""
+    不留重复行。退役的 K8 ``strategy_version`` 列已从现行表物理删除。"""
     init_schema(db_path)
     now = _now()
     payload = json.dumps(weekly_review_dict(review), ensure_ascii=False)
     with connection(db_path) as conn:
         conn.execute(
-            "INSERT INTO reviews (week, generated_at, result_json, material, updated_at, strategy_version) "
-            "VALUES (?,?,?,?,?,?) "
+            "INSERT INTO reviews (week, generated_at, result_json, material, updated_at) "
+            "VALUES (?,?,?,?,?) "
             "ON CONFLICT(week) DO UPDATE SET generated_at=excluded.generated_at, "
             "result_json=excluded.result_json, material=excluded.material, "
-            "updated_at=excluded.updated_at, strategy_version=excluded.strategy_version",
-            (review.week, now, payload, material, now, None),
+            "updated_at=excluded.updated_at",
+            (review.week, now, payload, material, now),
         )
 
 

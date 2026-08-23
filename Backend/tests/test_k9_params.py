@@ -505,14 +505,11 @@ class TestExampleConfig:
     def test_it_exists(self):
         assert EXAMPLE.exists()
 
-    def test_every_numeric_slot_is_the_placeholder(self):
-        """§6 S5:示例文件里所有数值位写 `"__TO_BE_CALIBRATED__"`,⛔ 不许放任何真数字。
-
-        ⚠ 唯一的例外是 `industry.excludedL2Codes`:白酒Ⅱ `801125.SI` 是 K9 §二 第 2 条
-        **给定**的排除项(不是待标定),而且它按**代码**识别(§12 坑 6)——
-        示例里给真值是为了让人一眼看出这个键要填什么形状。"""
+    def test_only_fixed_structure_values_and_placeholders_exist(self):
+        """B17：正文固定值逐字展示；真正待标定的位置仍必须是占位符。"""
         doc = json.loads(EXAMPLE.read_text(encoding="utf-8"))
         offenders = []
+        allowed = dict(P.K9_FIXED_VALUES)
 
         def walk(node, prefix=""):
             if isinstance(node, dict):
@@ -522,10 +519,16 @@ class TestExampleConfig:
                 if prefix != "industry.excludedL2Codes":
                     offenders.append(prefix)
             elif node != P.TO_BE_CALIBRATED:
-                offenders.append(f"{prefix}={node!r}")
+                if prefix not in allowed or allowed[prefix] != node:
+                    offenders.append(f"{prefix}={node!r}")
 
         walk(doc)
         assert offenders == [], f"示例配置里出现了真值:{offenders}"
+        for path, value in allowed.items():
+            node = doc
+            for key in path.split("."):
+                node = node[key]
+            assert node == value
 
     def test_the_three_calibrated_value_slots_are_placeholders(self):
         """G22 的一半:三个「取值待标定」的键在示例里⛔ 不许填一个真取值(§7.6)。"""

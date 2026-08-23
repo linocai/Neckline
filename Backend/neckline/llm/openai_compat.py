@@ -136,7 +136,7 @@ class OpenAICompatProvider(LLMProvider):
     search_engine: Optional[str] = None
     # §七 P0-44:是否走 SSE 流式(`stream: true`)。**默认 False = 既有行为逐字节
     # 不变**;唯一打开它的地方是 `factory.get_provider(task)`,判据唯一实现在
-    # `llm/router.py::use_streaming_for_task()`(现为「大上下文推理类」)。
+    # 工厂当前全部关闭流式；保留此开关只服务底层 OpenAI 兼容协议单测。
     # ⛔ **检索类刻意不开** —— GLM 的 `web_search` tools 协议与流式的组合本项目
     # 从未验证过,v1.3.4 案底(不被上游认识的组合会 `ok=True` 静默返 0 条)说明
     # 这种赌注的代价是**看不出来的错**,不拿生产赌。

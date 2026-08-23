@@ -1,6 +1,4 @@
-"""哨兵事件防重台账单测(plan 阶段3 工程要求)。核心断言:① 同一 key 推过后
-`already_pushed` 返回 True;② 落 SQLite(不是内存态)——新开一条独立连接(模拟
-进程重启)依然能查到,验证「进程重启不重复推当日已推事件」。"""
+"""现役竞价任务的跨进程防重台账。"""
 
 from __future__ import annotations
 
@@ -8,56 +6,84 @@ from datetime import date
 
 import pytest
 
-from neckline.dedup import already_pushed, count_pushed_today, record_pushed
+from neckline.dedup import already_pushed, record_pushed
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 
 D = date(2026, 7, 20)
 
 
-class TestAlreadyPushed:
-    def test_false_before_any_push(self, isolated_env):
-        assert already_pushed(D, "entry", "600519.SH", "trigger", db_path=isolated_env.db_path) is False
-
-    def test_true_after_record(self, isolated_env):
-        record_pushed(D, "entry", "600519.SH", "trigger", db_path=isolated_env.db_path)
-        assert already_pushed(D, "entry", "600519.SH", "trigger", db_path=isolated_env.db_path) is True
-
-    def test_survives_simulated_process_restart(self, isolated_env):
-        """落 SQLite,不是进程内存态——重新用同一 db_path 建新连接查询(模拟哨兵
-        脚本重启后重新扫描到同一事件),仍应命中。"""
-        record_pushed(D, "retreat", "", "brake", db_path=isolated_env.db_path)
-        # 不复用任何已打开的连接/缓存对象,纯粹传 db_path 重新查询
-        assert already_pushed(D, "retreat", "", "brake", db_path=isolated_env.db_path) is True
-
-    def test_different_event_key_is_independent(self, isolated_env):
-        """持仓哨兵同票的三种事件互不抑制——推过 stop_approach 不影响 sector_dive
-        仍能独立推送。"""
-        record_pushed(D, "holding", "600519.SH", "stop_approach", db_path=isolated_env.db_path)
-        assert already_pushed(D, "holding", "600519.SH", "stop_approach", db_path=isolated_env.db_path) is True
-        assert already_pushed(D, "holding", "600519.SH", "sector_dive", db_path=isolated_env.db_path) is False
-
-    def test_different_trade_date_is_independent(self, isolated_env):
-        """跨日不去重——今天推过的事件,明天同样条件应该能再推一次(不是"曾经推过
-        就永远不推了")。"""
-        record_pushed(D, "entry", "600519.SH", "trigger", db_path=isolated_env.db_path)
-        tomorrow = date(2026, 7, 21)
-        assert already_pushed(tomorrow, "entry", "600519.SH", "trigger", db_path=isolated_env.db_path) is False
-
-    def test_double_record_is_idempotent_not_error(self, isolated_env):
-        """INSERT OR IGNORE——重复记同一事件不报错(哨兵主循环里"先判断再记"之间
-        理论上不会真正并发,但防御性幂等总是更安全)。"""
-        record_pushed(D, "invalidation", "600519.SH", "trigger", db_path=isolated_env.db_path)
-        record_pushed(D, "invalidation", "600519.SH", "trigger", db_path=isolated_env.db_path)
-        assert count_pushed_today(D, "invalidation", db_path=isolated_env.db_path) == 1
+def test_false_before_any_task_run(isolated_env):
+    assert not already_pushed(
+        D, "auction", "", "checklist_tick", db_path=isolated_env.db_path
+    )
 
 
-class TestCountPushedToday:
-    def test_counts_across_sentinels_when_unfiltered(self, isolated_env):
-        record_pushed(D, "entry", "A.SH", "trigger", db_path=isolated_env.db_path)
-        record_pushed(D, "holding", "B.SH", "stop_approach", db_path=isolated_env.db_path)
-        assert count_pushed_today(D, db_path=isolated_env.db_path) == 2
-        assert count_pushed_today(D, "entry", db_path=isolated_env.db_path) == 1
+def test_record_survives_a_new_connection(isolated_env):
+    record_pushed(D, "auction", "", "checklist_tick", db_path=isolated_env.db_path)
+    assert already_pushed(
+        D, "auction", "", "checklist_tick", db_path=isolated_env.db_path
+    )
 
-    def test_zero_when_nothing_pushed(self, isolated_env):
-        assert count_pushed_today(D, db_path=isolated_env.db_path) == 0
+
+def test_auction_and_open30_tasks_are_independent(isolated_env):
+    record_pushed(D, "auction", "", "checklist_tick", db_path=isolated_env.db_path)
+    assert already_pushed(
+        D, "auction", "", "checklist_tick", db_path=isolated_env.db_path
+    )
+    assert not already_pushed(
+        D, "auction", "", "settle_tick", db_path=isolated_env.db_path
+    )
+
+
+def test_same_task_on_next_day_is_independent(isolated_env):
+    record_pushed(D, "auction", "", "checklist_tick", db_path=isolated_env.db_path)
+    assert not already_pushed(
+        date(2026, 7, 21), "auction", "", "checklist_tick", db_path=isolated_env.db_path
+    )
+
+
+def test_double_record_is_idempotent(isolated_env):
+    record_pushed(D, "auction", "", "settle_tick", db_path=isolated_env.db_path)
+    record_pushed(D, "auction", "", "settle_tick", db_path=isolated_env.db_path)
+    from neckline.db import connection
+
+    with connection(isolated_env.db_path) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM job_events WHERE trade_date=? AND event_key=?",
+            ("20260720", "settle_tick"),
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_upgrade_keeps_only_active_auction_records(tmp_path):
+    import sqlite3
+
+    from neckline.db import init_schema
+
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript("""
+            CREATE TABLE sentinel_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              trade_date TEXT NOT NULL, sentinel TEXT NOT NULL,
+              ts_code TEXT NOT NULL DEFAULT '', event_key TEXT NOT NULL,
+              payload_json TEXT NOT NULL DEFAULT '{}', pushed_at TEXT NOT NULL,
+              UNIQUE(trade_date, sentinel, ts_code, event_key)
+            );
+            INSERT INTO sentinel_events
+              (trade_date,sentinel,ts_code,event_key,payload_json,pushed_at)
+            VALUES
+              ('20260720','auction','','checklist_tick','{}','now'),
+              ('20260720','retreat','','brake','{}','now');
+        """)
+    init_schema(db)
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT scope,event_key FROM job_events ORDER BY event_key"
+        ).fetchall()
+        old_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sentinel_events'"
+        ).fetchone()
+    assert rows == [("auction", "checklist_tick")]
+    assert old_table is None

@@ -22,6 +22,258 @@ broader than the basket section being changed.
 
 ---
 
+## [ERR-20260823-001] systemd-analyze-unavailable-on-macos
+
+**Logged**: 2026-08-23T09:33:44+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+本地 macOS 没有 `systemd-analyze`，不能用 Linux 命令解析 systemd 日历表达式。
+
+### Error
+
+```text
+zsh:1: command not found: systemd-analyze
+```
+
+### Context
+
+- 修改 `Backend/deploy/neckline-evening.timer` 后尝试在本地校验 `OnCalendar`。
+- 仓库的排程契约测试已覆盖精确日历表达式；生产部署时仍应在 Linux 目标机验证 unit。
+
+### Suggested Fix
+
+macOS 本地以排程契约测试为准；部署到 Linux 时再运行 `systemd-analyze verify` 与
+`systemctl list-timers`，不要把本地缺少命令误判为 unit 配置失败。
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: Backend/deploy/neckline-evening.timer, Backend/tests/test_weekend_report_schedule.py
+
+### Resolution
+
+- **Resolved**: 2026-08-23T09:33:44+08:00
+- **Notes**: 已改用仓库门禁验证，生产 Linux 验证留在部署步骤执行。
+
+---
+
+## [ERR-20260822-001] redundant-chgrp-on-setgid-probe-directory
+
+**Logged**: 2026-08-22T17:28:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+宁波云内存探针目录已经通过父目录的 setgid 继承 `neckline` 组，脚本仍重复执行
+`chgrp neckline`，被主机权限策略拒绝。
+
+### Error
+
+```text
+chgrp: changing group of '/tmp/neckline-b5-v250-4PLllY/data/parquet': Operation not permitted
+```
+
+### Context
+
+- 目标只是创建隔离的 Parquet overlay，不涉及生产目录。
+- 目录已经是正确组，失败发生在任何链接或业务任务开始之前。
+
+### Suggested Fix
+
+创建 setgid 子目录后先 `stat` 验证实际组；组已正确时不再执行多余的 `chgrp`。
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: Backend/deploy
+
+### Resolution
+
+- **Resolved**: 2026-08-22T17:28:00+08:00
+- **Notes**: 删除冗余改组动作，保留权限验证后继续；生产状态未变化。
+
+---
+
+## [ERR-20260822-002] isolated-fact-registry-copied-without-one-matching-file
+
+**Logged**: 2026-08-22T17:36:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: data
+
+### Summary
+
+宁波云隔离实测复制了生产 SQLite 的 `fact_packs` 登记，但为防误写而没有挂载生产
+`fact_pack` 目录。回填脚本会按登记跳过已冻结日期，因此日志显示 154 日均已处理时，隔离目录
+实际上仍缺 2026-08-21 的文件本体。
+
+### Context
+
+- 生产文件与生产登记均完整，问题只存在于临时隔离副本。
+- 单看“冻结 / 跳过 / 缺失”汇总不足以证明事实包可读；登记和文件必须成对校验。
+
+### Suggested Fix
+
+任何从数据库快照启动的事实包探针，在宣布历史完整前都要逐条验证：登记存在、解析后的文件
+存在、文件 SHA-256 等于 `content_fingerprint`。隔离副本缺文件时，只能复制指纹完全匹配的
+生产只读文件，或在隔离库中显式重建；不能把登记当作文件存在的证据。
+
+### Resolution
+
+- **Resolved**: 2026-08-22T17:37:00+08:00
+- **Notes**: 指纹核对生产源和隔离登记完全一致后，仅向临时目录复制缺失文件；随后对 154 条
+  登记逐一验证文件与 SHA-256，结果 154/154 通过。生产库、生产 Parquet 和正式报告均未改动。
+
+---
+
+## [ERR-20260822-003] ripgrep-pattern-starting-with-dashes-was-parsed-as-an-option
+
+**Logged**: 2026-08-22T18:31:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+检索报告 CLI 参数时，搜索模式以 `--segments` 开头却没有先传 `--`，`rg` 把整个模式当成
+命令行选项并在检索前退出。
+
+### Error
+
+```text
+rg: unrecognized flag --segments|k9-params|no-save|segments
+```
+
+### Suggested Fix
+
+搜索可能以连字符开头的字面模式时使用 `rg -n -- 'pattern' paths...`，明确结束选项解析。
+
+### Resolution
+
+- **Resolved**: 2026-08-22T18:31:00+08:00
+- **Notes**: 失败发生在纯本地文本检索，K9 探针尚未启动，没有远端或生产写入；后续命令改用
+  `--` 分隔搜索模式。
+
+---
+
+## [ERR-20260822-004] long-running-probe-kept-telemetry-only-on-ssh-pipe
+
+**Logged**: 2026-08-22T20:53:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: infra
+
+### Summary
+
+宁波云两小时 K9 探针把 Token/Tavily 汇总只保存在进程内，并计划在结束时通过
+`systemd-run --pipe` 一次性输出。业务链完整落地 20 份解释和 20 份预案，但长连接收尾时
+SSH 管道没有返回 stdout/stderr；单元最终为 exit 1，进程内用量汇总随退出丢失。
+
+### Context
+
+- 隔离库证明 K9、解释和预案业务结果均已完成；生产状态未变化。
+- systemd 日志保留了 2:00:20 墙钟、7.875 秒 CPU、245 MiB 峰值和 0 swap，但 stdout
+  因 `--pipe` 不进 journal，无法事后恢复 provider 报告的 Token 明细。
+- 不应为了补测量输出而重复花费整套 64 次 DeepSeek 逻辑调用。
+
+### Suggested Fix
+
+超过数分钟的现场探针必须把去敏后的阶段计数和 provider-reported usage 增量持久化到受限的
+临时 telemetry 文件，并让 stdout 只作副本；用量文件需原子替换、权限 600、任务结束核验后
+删除。不要把唯一测量结果押在 SSH 长管道上。
+
+### Metadata
+
+- Reproducible: unknown
+- Related Files: Backend/neckline/llm/openai_compat.py, Backend/deploy/neckline-basket.service
+
+---
+
+## [ERR-20260822-005] remote-readonly-python-omitted-isolated-pythonpath
+
+**Logged**: 2026-08-22T20:57:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+一次只读 Provider 主机名查询没有进入临时代码目录，也没有显式传 `PYTHONPATH`，因此在导入
+`neckline` 前退出。
+
+### Error
+
+```text
+ModuleNotFoundError: No module named 'neckline'
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-22T20:57:00+08:00
+- **Notes**: 改为先进入隔离工作目录并显式传 `PYTHONPATH` 后查询成功；失败发生在导入阶段，
+  没有读取凭据内容、写数据库或触发网络调用。
+
+---
+
+## [ERR-20260822-006] release-guard-still-forbade-an-approved-production-pack
+
+**Logged**: 2026-08-22T21:05:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+正式参数包经用户批准、宁波实测并纳入生产路径后，旧发布门禁仍断言
+`Backend/config/k9-params.json` 不得存在，导致全量测试 1 条失败。
+
+### Error
+
+```text
+FAILED tests/test_v250_s14_release_gate.py::test_no_production_parameter_pack_is_committed
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-22T21:06:00+08:00
+- **Notes**: 门禁从“批准前不得提交”切换为“批准后必须存在且身份固定”：校验用户批准的
+  package/fact-pack 版本、来源、批准人、SHA-256，并用临时数据库执行 Neckline 参数强校验。
+  测试不接触工作数据库。
+
+---
+
+## [ERR-20260822-007] ningbo-host-does-not-have-ripgrep
+
+**Logged**: 2026-08-22T21:08:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+
+临时 unit 的 `systemd-analyze verify` 没有报错，但同一远端命令尾部用 `rg` 回显内存值；宁波
+主机未安装 ripgrep，导致整条辅助命令最终返回非零。
+
+### Error
+
+```text
+bash: line 1: rg: command not found
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-22T21:08:00+08:00
+- **Notes**: 不给生产机安装额外工具；远端窄范围复核改用主机已有的 `grep -E`，并把
+  `systemd-analyze verify` 与回显检查分开执行。unit 只位于临时目录，尚未安装。
+
+---
+
 ## [ERR-20260814-001] api-overlay-test-compared-wire-defaults
 
 **Logged**: 2026-08-14T00:00:00+08:00

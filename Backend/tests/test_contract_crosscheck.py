@@ -186,8 +186,6 @@ def test_the_method_pair_scanner_actually_sees_something():
 # ══════════════════════════════════════════════════════════════════════════
 
 #: §5.12 定稿的新端点(**路由面自检**;逐字段契约由客户端 DTO 与冒烟覆盖)。
-#: ⚠ `GET /api/v1/scoreboard/listing`(清单成绩五指标)**不在这张表里** ——
-#: 它归 **S17**(批 B,等参数标定),现在还没有。⛔ 别为了"补齐"提前挂一个空壳路由。
 _V250_NEW_ROUTES = (
     "/api/v1/selection/latest",
     "/api/v1/selection/{}",
@@ -195,10 +193,10 @@ _V250_NEW_ROUTES = (
     "/api/v1/selection/{}/stock/{}/playbook",
     "/api/v1/checklist/{}",
     "/api/v1/scoreboard/coverage",
+    "/api/v1/scoreboard/listing",
     "/api/v1/scoreboard/verdicts/{}",
     "/api/v1/review/bindery",
     "/api/v1/review/conclusions",
-    "/api/v1/legacy/k8/baskets",
 )
 
 
@@ -206,18 +204,6 @@ def test_v250_new_endpoints_are_reachable_shapes():
     server = server_route_surface()
     for path in _V250_NEW_ROUTES:
         assert path in server, f"§5.12 清单里的端点 {path} 没挂上"
-
-
-def test_the_listing_scorecard_route_is_honestly_absent_until_s17():
-    """🔴 **`/scoreboard/listing` 现在就该不存在**(S17,批 B)。
-
-    ⛔ 这条不是"少做一片"的遮羞布,是**反向**守门:提前挂一个恒空的路由,会让
-    「五指标还没开始结算」看起来像「结算了、结果是空的」——那是把没做讲成做了。
-    ⚠ S17 落地时**同时**做三件事:挂路由 / 加进 `_V250_NEW_ROUTES` / 删掉本条。
-    """
-    assert "/api/v1/scoreboard/listing" not in server_route_surface(), (
-        "`/scoreboard/listing` 挂上了 —— 若这是 S17 落地,请把它加进 `_V250_NEW_ROUTES` "
-        "并删掉本条测试;若是提前挂的空壳,⛔ 摘掉。")
 
 
 #: §5.12「删除」栏逐条 + S1 实际删掉的 33 条路由的路径形状。
@@ -238,7 +224,7 @@ _DELETED_ROUTES = (
     "/api/v1/alerts", "/api/v1/alerts/{}", "/api/v1/alerts/parse",
     "/api/v1/profile/preference", "/api/v1/profile/capability",
     "/api/v1/packs", "/api/v1/packs/{}",
-    "/api/v1/review/handoff",
+    "/api/v1/review/handoff", "/api/v1/eval/weekly", "/api/v1/legacy/k8/baskets",
     # 更早退役的(问询台 / 熔断 / 关注池 —— 留在清单里防止有人"复活"）
     "/api/v1/inquiry", "/api/v1/inquiries", "/api/v1/circuit", "/api/v1/circuit/unlock",
     "/api/v1/watchlist", "/api/v1/settings/llm", "/api/v1/settings/intel-boards",
@@ -621,9 +607,8 @@ def live_push_kinds() -> set:
         assert kind is not None, (
             f"`{fname}` 的 kind 是运行期参数,而它现在**有生产调用方**了 —— "
             f"请教会 `_wording_function_to_kind()` 怎么解它,⛔ 别让它静默漏出对拍面。")
-        assert kind not in notify_kinds.RETIRED_KINDS, (
-            f"`{fname}` 发的是已退役 kind `{kind}` —— `push_event` 会当场拒发,"
-            f"这条调用是死的。")
+        assert kind in notify_kinds.ALL_KINDS, (
+            f"`{fname}` 发的是未登记 kind `{kind}` —— 这条调用会当场失败。")
         live.add(kind)
     return live
 
@@ -685,8 +670,6 @@ def test_the_push_route_table_covers_exactly_the_kinds_the_server_still_sends():
         f"  客户端有、服务端没有:{sorted(routed - live)}(永不触发的死路由)")
     for k in sorted(routed):
         assert k in notify_kinds.ALL_KINDS, f"客户端路由了一个不在白名单里的 kind `{k}`"
-        assert k not in notify_kinds.RETIRED_KINDS, (
-            f"客户端还在路由已退役 kind `{k}` —— 它永不再有新推送。")
 
 
 def test_every_push_route_lands_on_a_section_that_still_exists():
@@ -760,10 +743,7 @@ def test_the_push_route_scanners_actually_see_something():
     同族教训(§14 S12 登记 ⑨)。
     """
     mapping = _wording_function_to_kind()
-    assert len(mapping) >= 8, f"`api/notify.py` 的措辞函数只扫到 {len(mapping)} 个?"
-    assert any(v is None for v in mapping.values()), (
-        "没扫到任何「kind 是运行期参数」的共用入口 —— `push_attention_alert` 那一族"
-        "还在文件里,扫不到说明 AST 解析歪了。")
+    assert len(mapping) >= 3, f"`api/notify.py` 的措辞函数只扫到 {len(mapping)} 个?"
     live_fns = _live_wording_functions()
     assert live_fns, "生产链上一个 push 调用点都没扫到 —— 扫描器失效了"
     assert live_push_kinds(), "服务端 live kind 集合是空的?"

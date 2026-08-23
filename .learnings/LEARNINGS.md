@@ -1,5 +1,38 @@
 # Project learnings
 
+## [LRN-20260822-001] correction
+
+**Logged**: 2026-08-22T12:00:00+08:00
+**Priority**: critical
+**Status**: promoted
+**Area**: architecture
+
+### Summary
+
+Retired Neckline capabilities are deleted by default; the agent must not invent a historical-retention requirement.
+
+### Details
+
+The agent repeatedly treated retired K8 and concept-board code as material that should remain readable or archived,
+even though the user had not requested that policy. This kept dead routes, settings, mappings, data readers, and UI
+placeholders alive and made the repository harder to reason about. The user explicitly overruled that assumption:
+when a product capability is retired, its obsolete runtime surface should be removed. Git history already preserves
+the old implementation.
+
+### Suggested Action
+
+For every retirement, remove the full connected surface: producers, consumers, routes, settings, schemas, tests,
+stored artifacts, compatibility mappings, and UI. Keep anything only when the user explicitly identifies a live
+operational or legal retention need.
+
+### Metadata
+
+- Source: user_feedback
+- Related Files: AGENTS.md, PROJECT_PLAN.md, Backend/neckline, App/Neckline
+- Tags: retirement, deletion, k8, compatibility, scope-control
+
+---
+
 ## [LRN-20260816-001] correction
 
 **Logged**: 2026-08-16T17:58:00+08:00

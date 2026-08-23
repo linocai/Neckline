@@ -9,7 +9,7 @@
 //  跑法(先起 dev 后端,固定占位 token 沿用 `scripts/smoke_api.sh` 同款惯例 ——
 //  纯本地联调用,非真实密钥):
 //    DB_PATH=/tmp/neckline_it.db API_TOKEN=smoke_token_at_least_16_chars_long \
-//      NECKLINE_ENABLE_SENTINEL=0 .venv/bin/python -m uvicorn neckline.api.app:app \
+//      NECKLINE_ENABLE_MORNING_TASKS=0 .venv/bin/python -m uvicorn neckline.api.app:app \
 //      --host 127.0.0.1 --port 8002
 //
 //  ⚠️ **只打 127.0.0.1:8002,任何情况下都不得指向 prod**(nk.linotsai.top)——

@@ -1,29 +1,6 @@
-# Neckline 晚间链 **第 1 段**:架构第一层 · **事实层**(事实包构建 + 冻结)。
-# (unit 文件名沿用 V2 的 `scan`,⛔ 本版不动 unit 拓扑 —— 改名要多一次
-#  安装/enable 的操作面,§9.3「新增 unit:无」。V2 时它跑的是
-#  「⑧ EOD 篮子验证拍 + ④ 市场扫描层 + ④b 行业阶段」,K8 退役后只剩事实层。)
-#
-# **资源画像(V2.5.0 实测,§14 S3)**:纯机械批算、吃 parquet;RSS 峰值 **127 MB**。
-# ⚠ **这一段已经不是三段里内存最重的那一段了** —— V2 时它是(那正是 `MemoryMax`
-#   卡在这里的原因),K9 把最重的负载搬去了 seg2(`neckline-basket.service`:
-#   策略层实测 RSS 峰值 **736 MB**)。⛔ 别拿这行注释当「所以 1400M 是给它的」的依据。
-# 🔴 **`MemoryMax` 的数本版一个都没改**(§13.1-B5 等用户裁定)。从新负载看
-#   1400M/900M 这对数很可能该对调,但那要用户点头 + 生产实测,⛔ 施工侧不自行改。
-#
-# **段序**(⛔ 由 `run_evening_chain` 的 `CHAIN_SEGMENTS` 固定,systemd 侧改不了顺序):
-#   16:05 neckline-daily(拉数,另一个 unit)
-#     → 本段 facts
-#     → neckline-basket.service(k9,explain,playbook)
-#     → neckline-report.service(report)
-#
-# 安装(rsync 不同步 deploy/,改动后须手动 scp + daemon-reload):
-#   sudo cp /opt/neckline/deploy/neckline-scan.service /etc/systemd/system/
-#   sudo systemctl daemon-reload
-# ⛔ 本 unit **不带 [Install]**:它由 `neckline-evening.target` 的 `Wants=` 拉起,
-#   不单独 enable(避免出现"两条路都能触发这一段"的双跑面)。
-
+# 晚间链第 1 段：事实包构建与冻结。unit 名沿用现有部署拓扑，本版不新增触发面。
 [Unit]
-Description=Neckline evening chain seg1: facts layer (fact pack build + freeze)
+Description=Neckline evening chain seg1: facts layer
 Documentation=file:///opt/neckline/PROJECT_PLAN.md
 After=network-online.target
 Wants=network-online.target
@@ -35,10 +12,6 @@ Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
 ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments facts
-# 批算段不碰 LLM,墙钟应当是分钟级;超时按 ⑯-C 实测 × 3 余量设,卡死不许无限占着串行队列。
 TimeoutStartSec=1800
-# —— 内存护栏 —— ⚠ 这个数是 **V2 负载**下定的(那时本段最重);V2.5.0 本段实测
-#    只有 127 MB。⛔ 本版一个数都没改(§13.1-B5 等用户裁定),见本文件头。
-MemoryMax=1400M
-# ⛔ 不设 MemoryHigh:软节流会让进程陷进回收死循环 = 卡死不报错(P0-23 老机教训),
-#    宁可 OOM-kill 一个 oneshot、日志里看得见,也不要静默变慢。
+# B5 宁波云真实数据实测：当日 facts 约 108 MiB；512M 留出约 4.7 倍余量。
+MemoryMax=512M

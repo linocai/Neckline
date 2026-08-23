@@ -59,7 +59,7 @@ from neckline.playbook.model import MetricRef, Playbook, gap_percent_points
 logger = logging.getLogger(__name__)
 
 #: 台账 key(与 9:26 那一拍**分开记**:两拍各自防重,一拍跑没跑过不影响另一拍)。
-SETTLE_SENTINEL = "auction"
+SETTLE_SCOPE = "auction"
 EVENT_SETTLE = "settle_tick"
 
 
@@ -148,7 +148,7 @@ def run_settle_tick(
     if not is_settle_window(now):
         res.skipped_reason = SKIP_NOT_WINDOW
         return res
-    if already_pushed(trade_date, SETTLE_SENTINEL, "", EVENT_SETTLE, db_path=db_path):
+    if already_pushed(trade_date, SETTLE_SCOPE, "", EVENT_SETTLE, db_path=db_path):
         res.skipped_reason = SKIP_ALREADY_RAN
         return res
 
@@ -257,7 +257,7 @@ def run_settle_tick(
     res.observed = stats[Verdict.OBSERVED.value]
     res.data_quality = snap.quality_of(sorted(playbooks))
     res.notes.extend(snap.notes)          # ⚠ 追加,⛔ 不覆盖(R2-03 的版本核对留言)
-    record_pushed(trade_date, SETTLE_SENTINEL, "", EVENT_SETTLE,
+    record_pushed(trade_date, SETTLE_SCOPE, "", EVENT_SETTLE,
                   payload={"counts": res.counts}, db_path=db_path)
     logger.info(
         "[settle] %s 结算拍:成立 %d / 放弃 %d / 观察 %d(另 %d 只 9:29 已定案,⛔ 未改判)",
@@ -266,6 +266,6 @@ def run_settle_tick(
 
 
 __all__ = [
-    "SETTLE_SENTINEL", "EVENT_SETTLE",
+    "SETTLE_SCOPE", "EVENT_SETTLE",
     "is_settle_window", "open30_readings", "SettleRunResult", "run_settle_tick",
 ]

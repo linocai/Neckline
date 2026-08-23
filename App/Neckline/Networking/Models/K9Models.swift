@@ -451,9 +451,7 @@ struct SelectionSnapshot: Codable, Equatable {
 
 // MARK: - 个股详情(`GET /selection/{tradeDate}/stock/{tsCode}`)
 
-/// 解释层给的一只票的资料(S9)。字段来自服务端 `k9_explain_notes` 的**原样透传**
-/// —— ⚠ 那一层的键是 **snake_case**(`kline_comment` / `news_state` / …),
-/// 与外层 camelCase 的信封刻意不同,这里用显式 `CodingKeys` 对齐,⛔ 不猜。
+/// 解释层给的一只票的资料(S9)。在线 API 统一使用 camelCase；数据库内部键不外泄。
 struct K9ExplainNote: Codable, Equatable {
     var tsCode: String = ""
     /// 五句话画像(`company` / `industryContext` / `position` / `recent` / `klineComment`)。
@@ -468,15 +466,15 @@ struct K9ExplainNote: Codable, Equatable {
     var createdAt: String = ""
 
     enum CodingKeys: String, CodingKey {
-        case tsCode = "ts_code"
+        case tsCode
         case profile
-        case klineComment = "kline_comment"
-        case newsState = "news_state"
-        case newsCategory = "news_category"
+        case klineComment
+        case newsState
+        case newsCategory
         case news
-        case llmOk = "llm_ok"
-        case filledBy = "filled_by"
-        case createdAt = "created_at"
+        case llmOk
+        case filledBy
+        case createdAt
     }
 
     init(tsCode: String = "", profile: NKJSON = .object([:]), klineComment: String? = nil,

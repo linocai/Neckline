@@ -16,11 +16,6 @@
 //  🔴 **NULL 不是 0**:`coverageAll == nil` = 昨天还没有清单;
 //  `coverageInPool == nil` = 边界参数缺失。⛔ 一律渲染成「尚不可得」。
 //
-//  ⚠ **① 现在只有壳、没有数,这是计划中的顺序不是漏做**:五指标的结算是 **S17**
-//  (排在参数标定完成之后),依赖 D+1~D+4 的行情回填与 10:00 结算终值。
-//  服务端因此还**没有** `GET /scoreboard/listing` 这条路由 —— 客户端⛔ 不去调一个
-//  不存在的端点(契约对拍会当场红),界面如实说「这条线还没开始结算」。
-//
 
 import SwiftUI
 
@@ -57,7 +52,7 @@ struct ScoreboardView: View {
         #endif
     }
 
-    // MARK: - ① 清单成绩五指标(壳 + 两栏)
+    // MARK: - ① 清单成绩五指标
 
     private var listingScorecardCard: some View {
         NKCard {
@@ -65,44 +60,61 @@ struct ScoreboardView: View {
                 NKSectionHeader(title: "清单成绩 · 五指标", trailing: "K9 §八")
                 // 🔴 **两栏永远分开**:这两块并排、各占一半,⛔ 中间不出现任何合计。
                 HStack(alignment: .top, spacing: 16) {
-                    splitColumn(NKListingScorecard.splitPair.industry, "方向对不对")
+                    splitColumn(NKListingScorecard.splitPair.industry, "方向对不对",
+                                model.listingScorecard.industryScore)
                     Divider().frame(width: 0.5).overlay(NK.hairline)
-                    splitColumn(NKListingScorecard.splitPair.pick, "票挑得好不好")
+                    splitColumn(NKListingScorecard.splitPair.pick, "票挑得好不好",
+                                model.listingScorecard.pickScore)
                 }
                 Text("🔴 **行业分与选票分分开计,⛔ 不给合计**:行业分低是**方向层**的问题,"
                      + "行业分高而选票分低是**选票参数**的问题 —— 两者吃的药完全不同。")
                     .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Divider().overlay(NK.hairline)
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(NKListingScorecard.metrics.filter {
-                        $0.name != NKListingScorecard.splitPair.industry
-                            && $0.name != NKListingScorecard.splitPair.pick
-                    }, id: \.name) { m in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(m.name).font(NKFont.callout).fontWeight(.semibold)
-                                .foregroundStyle(NK.textPrimary).frame(width: 52, alignment: .leading)
-                            Text(m.question).font(NKFont.caption)
-                                .foregroundStyle(NK.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 6)
-                            Text("尚未结算").font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                        }
-                    }
-                }
-                NKNoteBlock(text: LocalizedStringKey(NKListingScorecard.notSettledNote))
+                rateRow("成立率", "预案条件的松紧",
+                        model.listingScorecard.establishmentRate,
+                        model.listingScorecard.establishmentNumerator,
+                        model.listingScorecard.establishmentDenominator)
+                rateRow("兑现率", "成立后是否摸到第一压力位",
+                        model.listingScorecard.realizationRate,
+                        model.listingScorecard.realizationNumerator,
+                        model.listingScorecard.realizationDenominator)
+                rateRow("错杀率", "放弃后是否仍摸到第一压力位",
+                        model.listingScorecard.falseKillRate,
+                        model.listingScorecard.falseKillNumerator,
+                        model.listingScorecard.falseKillDenominator)
+                NKNoteBlock(text: LocalizedStringKey(
+                    "主收益统一按 **D0 收盘 → D+4 收盘**。D+1～D+4 盘中最高收益只作辅助读数，"
+                    + "不拿来替代主口径。成立率分母是正式清单全量。"
+                ))
             }
         }
     }
 
-    private func splitColumn(_ title: String, _ question: String) -> some View {
+    private func splitColumn(_ title: String, _ question: String, _ value: Double?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
             Text(question).font(NKFont.caption).foregroundStyle(NK.textSecondary)
-            // ⛔ 尚未结算 → 写「尚未结算」,**⛔ 不写 0**、⛔ 不写「—」蒙混。
-            Text("尚未结算").font(NKFont.metric).foregroundStyle(NK.textTertiary)
+            Text(value.map(NKFmt.ratioPct) ?? "尚不可得")
+                .font(NKFont.metric)
+                .foregroundStyle(value == nil ? NK.textTertiary : NK.textPrimary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func rateRow(_ title: String, _ question: String, _ value: Double?,
+                         _ numerator: Int, _ denominator: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title).font(NKFont.callout).fontWeight(.semibold)
+                .foregroundStyle(NK.textPrimary).frame(width: 52, alignment: .leading)
+            Text(question).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            Spacer(minLength: 6)
+            Text(value.map(NKFmt.ratioPct) ?? "尚不可得")
+                .font(NKFont.callout.monospacedDigit()).fontWeight(.semibold)
+                .foregroundStyle(value == nil ? NK.textTertiary : NK.textPrimary)
+            Text("\(numerator)/\(denominator)")
+                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
+        }
     }
 
     // MARK: - ② 10:00 结算拍的三分支终值

@@ -137,9 +137,7 @@ def _parse_hits(content: str) -> Optional[List[Tuple[str, str]]]:
 
 
 def news_search_query(ts_code: str, name: str) -> str:
-    """消息面链路的**显式检索词** = 「中文名(代码) <当前年份> 最新」(同
-    `judge.judge_search_query`,年份词的位置与截断风险见
-    `prompt_context.search_subject_with_recency`)。**不另拼一套字符串**。"""
+    """消息面链路的显式检索词：中文名、代码和当前年份。"""
     code = (ts_code or "").strip()
     nm = (name or "").strip()
     return search_subject_with_recency(f"{nm}({code})" if nm else code)
@@ -152,13 +150,11 @@ def scan_news_for_code(
     provider: Optional[LLMProvider],
     transport: Optional[Any] = None,
 ) -> NewsScanResult:
-    """扫一只标的的「立案/暴雷/监管/减持」四类(一次调用)。`provider=None`(工厂在无
-    key/无 provider 时返回 None)→ 直接走降级,不发起任何网络调用(同
-    `judge.judge_candidate` 姿势)。"""
+    """扫一只标的的「立案/暴雷/监管/减持」四类；无 Provider 时诚实降级。"""
     if provider is None:
         return NewsScanResult(
             ts_code=ts_code, provider="none", model="", degraded=True,
-            degrade_reason="未配置 LLM_PROVIDER/LLM_API_KEY",
+            degrade_reason="未配置可用的 LLM Provider 或默认模型",
             narrative="LLM 未激活,本标的消息面(立案/暴雷/监管/减持)未扫描,不代表确认无消息。",
         )
 
@@ -172,7 +168,7 @@ def scan_news_for_code(
     ]
     result = provider.chat(
         messages, enable_search=True, transport=transport,
-        # 显式检索词(带当前年份),同 `judge.judge_search_query` 姿势。
+        # 显式检索词带当前年份，避免把旧材料误当成当前事实。
         search_query=news_search_query(ts_code, name),
     )
     if not result.ok:

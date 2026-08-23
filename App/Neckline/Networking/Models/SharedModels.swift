@@ -135,7 +135,7 @@ func nkBoardLabel(_ raw: String) -> String {
 // (任意 OpenAI 兼容端点可配),枚举写死两家本身就是那个要被替换掉的东西。
 // ⚠ **`PushSettings` 六个具名 bool 已退役**:V2-⑪ 起 = **按 kind 的开关清单**。
 
-/// 一个通知 kind 的开关行。`level` 是三级之一(`immediate`/`important`/`digest`),
+/// 一个通知 kind 的开关行。`level` 是 `important` 或 `digest`,
 /// `label` 是**服务端给的人读名** —— 避免双端各抄一份中文映射(`board` 的反面教训)。
 ///
 /// ⛔ **客户端不许硬编 kind 清单**:权威在服务端 `notify_kinds.py`,硬编一份必然漂移;
@@ -145,23 +145,15 @@ struct PushKind: Codable, Equatable, Identifiable {
     var level: String
     var label: String
     var enabled: Bool
-    /// **V2.4.0 P0:退役位,唯一源在服务端** `notify_kinds.RETIRED_KINDS`(随 `/settings` 下发)。
-    /// `true` = 该 kind 已退役、服务端永不再发这类推送 → **设置屏隐藏这一行开关**。
-    /// 🔴 ⛔ **客户端不许硬编码一份退役 kind 黑名单** —— 那是第二份事实源(§3.14-B)。
-    /// ⚠ **隐藏只发生在渲染层**:这一行仍留在 `pushKindsDraft` 里,`PUT /settings/push`
-    /// 照旧把它一起发回去(服务端要求给全 `ALL_KINDS`,少一个键就 422)。
-    /// ⚠ 老服务端不发这个键 → `decodeIfPresent` 兜底 `false` = 「没退役」,与旧行为一致。
-    var retired: Bool
-
     var id: String { kind }
     /// 未识别 `level` 原样透传(**照常显示**,⛔ 不静默丢弃这一行)。
     var levelLabel: String { nkPushLevelLabel(level) }
 
-    enum CodingKeys: String, CodingKey { case kind, level, label, enabled, retired }
+    enum CodingKeys: String, CodingKey { case kind, level, label, enabled }
 
-    init(kind: String, level: String, label: String, enabled: Bool, retired: Bool = false) {
+    init(kind: String, level: String, label: String, enabled: Bool) {
         self.kind = kind; self.level = level; self.label = label
-        self.enabled = enabled; self.retired = retired
+        self.enabled = enabled
     }
 
     init(from decoder: Decoder) throws {
@@ -172,7 +164,6 @@ struct PushKind: Codable, Equatable, Identifiable {
         let rawLabel = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
         label = rawLabel.isEmpty ? kind : rawLabel
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
-        retired = try c.decodeIfPresent(Bool.self, forKey: .retired) ?? false
     }
 }
 
@@ -203,18 +194,10 @@ struct PushSettings: Codable, Equatable {
 
     /// 按 `level` 分组(**服务端出现过的每一个 level 都成一组**,含未识别的;
     /// 组内保持服务端顺序)。⛔ 不按硬编的三级过滤 —— 那等于把未知 level 静默丢掉。
-    /// 按 level 分组的**可见清单**。
-    ///
-    /// 🔴 **V2.4.0 P0:`retired == true` 的行在这里被过滤掉** —— 服务端已退役该 kind、
-    /// 永不再发这类推送,留一个开关只会让用户以为"关了就不会收到、开着就会收到"。
-    /// ⚠ **只在渲染层过滤**:`kinds`(= `pushKindsDraft`)里那一行**照旧留着**,
-    /// `enabledMap` 仍把它一起发回服务端(`PUT /settings/push` 要求给全 `ALL_KINDS`,
-    /// 少一个键就 422)。⛔ 别顺手把它从 `kinds` 里删掉。
-    /// 🔴 判据来自服务端下发的 `retired` 位,⛔ **不是客户端硬编码的 kind 黑名单**。
     var groupedByLevel: [(level: String, kinds: [PushKind])] {
         var order: [String] = []
         var bucket: [String: [PushKind]] = [:]
-        for k in kinds where !k.retired {
+        for k in kinds {
             if bucket[k.level] == nil { order.append(k.level) }
             bucket[k.level, default: []].append(k)
         }

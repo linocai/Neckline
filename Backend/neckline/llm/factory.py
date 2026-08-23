@@ -1,33 +1,18 @@
-"""选出可用的 `LLMProvider` 实例(plan §五 V2-②,取代 V1 §3.4「GLM/Kimi 枚举」)。
+"""按 K9 现役任务选出可用的 ``LLMProvider``。
 
-**V2 解析链路(自填制,§3.10-B)**:
+解析链路：
     1. 读 `llm_providers` 表全部行 + `app_settings.llm_task_routes`/
        `llm_default_provider` 两列(每次调用现读,不缓存——`PUT /settings/
        providers/*`/`PUT /settings/llm-routes` 落库后下一次调用即生效,不重启,
        这条铁律与 V1 `resolve_llm()` 的"DB 覆盖现读"一脉相承)。
     2. 交给 `neckline.llm.router.resolve_task_provider_name()` 决定用哪个
        provider **名字**(有路由用路由,其余回退 `llm_default_provider`)。
-    3. 按名字查行;行不存在 / `enabled=0` / `api_key` 未设 → 整体判「不可用」,
-       返回 `None`(**全链路必须在无 key/被禁用下优雅降级跑通**,§2.0/§3.8 铁律
-       一字不变,调用方——`judge.py`/`selection/aggregate.py`/`report/pipeline.py`
-       等——据此走既有降级路径,不用改)。
+    3. 按名字查行；行不存在、禁用或没 key 时返回 ``None``。
     4. 可用 → 直接构造裸 `OpenAICompatProvider`(`base_url`/`model`/`api_key`/
        `has_web_search`/`search_engine` 由行给),**不再要求 provider 名字必须是
        "glm"/"kimi" 这类白名单值**——任意 OpenAI 兼容端点都能配。
 
-`GLMProvider`/`KimiProvider`(`llm/providers/{glm,kimi}.py`)**不是这条解析链路
-的一部分**——本模块不 import 这两个类,它们降级为预置参考实现(见各自模块头
-注释),只服务于既有单测的"具体测试替身"这一用途。
-
-`task`:见 `neckline.llm.router` 的任务常量(`TASK_REVIEW` 等);传 `None`(默认)
-走"缺路由回退默认 provider"分支,适合尚未纳入 V2 任务分工、只需要"随便一个能用
-的 provider"的旧调用点(如 V1 `report/pipeline.py` 候选审判,该管线将在 ⑬ 块
-被篮子引擎取代,不必现在补任务语义)。
-
-`db_path`:默认 `None` 走生产库;单测/ECS 隔离库显式传入。
-`settings_obj`:V1 遗留参数,**V2 起不驱动任何解析逻辑**——自填制下不存在
-".env 单 provider" 这个概念,保留纯粹是为了不破坏既有调用方签名(`report/
-pipeline.py`/`tests/conftest.py` 等仍可能按老习惯传入而不报错)。
+``news_scan`` 会额外要求 Tavily key 并套上检索包装；另两项不联网。
 """
 
 from __future__ import annotations
@@ -40,9 +25,7 @@ from neckline.llm.base import LLMProvider
 from neckline.llm.openai_compat import OpenAICompatProvider
 from neckline.llm.router import (
     DEFAULT_SEARCH_TASKS,
-    read_timeout_for_task,
     resolve_task_provider_name,
-    use_streaming_for_task,
 )
 from neckline.settings_store import get_llm_routes, get_tavily_api_key, list_providers
 
@@ -70,17 +53,8 @@ def get_provider(
         # 专属 tools 形状发给 DeepSeek 或其它 OpenAI 兼容端点。
         has_web_search=False,
         search_engine=None,
-        # §七 P0-40 → P0-44:按 task 类别分级。**分级判据的唯一实现在 router**,
-        # 本层只负责把它接上;`task=None`(V1 遗留调用点)→ 不覆盖任何一项。
-        # ⚠ 这是**所有 provider 的唯一出生地**,所以分级只需接这一处就全覆盖 ——
-        # 若改成在 `chat()` 加参数,⑤⑥⑦⑨ 每个调用点都要改,漏一个还看不出来。
-        #
-        # 两项**必须同路接线、同一个判据**(`LONG_CONTEXT_TASKS`):`read_timeout`
-        # 在流式下的语义是 **chunk 间隔**、非流式下是**整段墙钟**,只接一项 =
-        # 语义与数字对不上(如给非流式任务配 chunk 间隔的数字 → 悄悄变成 90s 整段
-        # 墙钟 = P0-40 原病复发)。
-        read_timeout=read_timeout_for_task(task),
-        use_streaming=use_streaming_for_task(task),
+        read_timeout=None,
+        use_streaming=False,
     )
     if task in DEFAULT_SEARCH_TASKS:
         from neckline.search.tavily import TavilyGroundedProvider, TavilySearchClient

@@ -440,11 +440,7 @@ struct ReviewSegment: Codable, Equatable {
 /// 🔴 **本端点一律不 404**(空态走各段 `available=false`)→ 客户端**不需要**为它加任何
 /// `mapReason` case。
 ///
-/// ⚠ **本版只解 `reconcile` 与 `conclusions` 两段**:服务端还发着 `calibration` 与
-/// `observations`,但它们的内容仍是 **K8 语义**(Tier 入场信号正确率 / C·Z·Y 引擎版本 /
-/// 涨停簇 lift 门槛),K9 之下的形状未定义 —— 已登记 PROJECT_PLAN §13.1-B8 等用户裁定。
-/// ⛔ **不解 = 不呈现**,而不是解出来再渲染成一段永远空着的壳:一个永远
-/// `available=false` 的段,比没有这个段更让人以为「系统那一步坏了」。
+/// 服务端只保留 `reconcile` 与 `conclusions` 两段；K8 校准与观察登记已下架。
 struct ReviewOverview: Codable, Equatable {
     var weekStart: String = ""
     var weekEnd: String = ""

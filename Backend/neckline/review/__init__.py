@@ -12,8 +12,7 @@
 
 配套件:`reconcile.py`(FIFO 回合闭合 + `WeeklyStats`)、`cashflow.py`(资金流水
 **四分类**,🔴 刻意**没有**「账户净变动」合计字段)、`material.py`(确定性对账叙述)、
-`store.py`(`reviews` 表)。`handoff.py` / `research_artifact.py` 只为 `/eval/weekly`
-与 `/review/overview` 读**离线落盘**的周度校准产物,⛔ 零现算(S1 登记 ⑤)。
+`store.py`(`reviews` 表)。K8 周度校准读取链已经物理删除。
 
 🔴 **V2.5.0 S1 已整块删除 K8 的「对账三查」**(单笔上限 / 并发与敞口 / 禁买过滤 /
 冷却 / 时间退出 / 止损纪律 / 计划台账核对 / 章程分段)—— 它们绑在持仓台账与

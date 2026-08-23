@@ -11,8 +11,7 @@ import pytest
 
 from neckline import notify_kinds, settings_store
 from neckline.llm.factory import get_provider
-from neckline.llm.router import TASK_BASKET_REASON, TASK_DRIVER_SEARCH
-from tests.conftest import write_flat_parquet
+from neckline.llm.router import TASK_EXPLAIN, TASK_NEWS_SCAN
 
 
 # —— 端点 ————————————————————————————————————————————————————————————
@@ -55,7 +54,7 @@ def test_create_provider_key_not_leaked_and_runtime_effective(client, AUTH, api_
     }).status_code == 200
     p = get_provider(db_path=api_env.db_path)
     assert p is not None and p.name == "glm" and p.model == "glm-5.2"
-    assert get_provider(TASK_DRIVER_SEARCH, db_path=api_env.db_path) is None
+    assert get_provider(TASK_NEWS_SCAN, db_path=api_env.db_path) is None
 
 
 def test_create_provider_duplicate_name_409(client, AUTH):
@@ -83,7 +82,7 @@ def test_update_provider_partial_only_touches_named_fields(client, AUTH, api_env
     assert got["keySet"] is True  # 没碰 apiKey,key 仍在
 
     assert client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
-        "routes": {"basket_reason": "deepseek"}, "defaultProvider": "deepseek",
+        "routes": {"explain": "deepseek"}, "defaultProvider": "deepseek",
     }).status_code == 200
 
     # 显式传空串清空 apiKey(视为清除,同既有 `_clean()` 纪律)
@@ -107,7 +106,7 @@ def test_disabling_provider_atomically_clears_default_and_routes(client, AUTH):
         "model": "deepseek-chat", "apiKey": "k1",
     }).status_code == 201
     assert client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
-        "routes": {"basket_reason": "deepseek"}, "defaultProvider": "deepseek",
+        "routes": {"explain": "deepseek"}, "defaultProvider": "deepseek",
     }).status_code == 200
     assert client.put("/api/v1/settings/providers/deepseek", headers=AUTH,
                       json={"enabled": False}).status_code == 200
@@ -126,7 +125,7 @@ def test_delete_provider(client, AUTH):
         "name": "temp", "baseUrl": "https://x", "model": "m", "apiKey": "k",
     })
     client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
-        "routes": {"basket_reason": "temp"}, "defaultProvider": "temp",
+        "routes": {"explain": "temp"}, "defaultProvider": "temp",
     })
     assert client.delete("/api/v1/settings/providers/temp", headers=AUTH).status_code == 200
     assert client.delete("/api/v1/settings/providers/temp", headers=AUTH).status_code == 404
@@ -142,12 +141,12 @@ def test_llm_routes_roundtrip_and_default_fallback(client, AUTH, api_env):
         "model": "deepseek-chat", "apiKey": "k1",
     })
     r = client.put("/api/v1/settings/llm-routes", headers=AUTH,
-                    json={"routes": {"basket_reason": "deepseek"}, "defaultProvider": "deepseek"})
+                    json={"routes": {"explain": "deepseek"}, "defaultProvider": "deepseek"})
     assert r.status_code == 200
-    assert r.json() == {"routes": {"basket_reason": "deepseek"}, "defaultProvider": "deepseek"}
+    assert r.json() == {"routes": {"explain": "deepseek"}, "defaultProvider": "deepseek"}
     assert client.get("/api/v1/settings/llm-routes", headers=AUTH).json() == r.json()
 
-    p = get_provider(TASK_BASKET_REASON, db_path=api_env.db_path)
+    p = get_provider(TASK_EXPLAIN, db_path=api_env.db_path)
     assert p is not None and p.name == "deepseek"
     # 未在 routes 里的其它任务缺路由回退 defaultProvider(同一个 deepseek)
     p2 = get_provider("some_future_task", db_path=api_env.db_path)
@@ -194,26 +193,20 @@ def test_tavily_whitespace_key_rejected(client, AUTH):
 
 
 def test_put_push_toggles(client, AUTH):
-    """V2-⑪:开关按 **kind** 配(D5)。关掉 `d5exit` 不连坐同为「重要不紧急」级的
-    `holding_alert` —— 这正是不按 category 配的理由。"""
+    """两类通知各自有独立开关。"""
     kinds = {k: True for k in notify_kinds.ALL_KINDS}
     kinds[notify_kinds.KIND_REPORT_READY] = False
-    kinds[notify_kinds.KIND_D5EXIT] = False
     r = client.put("/api/v1/settings/push", headers=AUTH, json={"kinds": kinds})
     assert r.status_code == 200
     got = {k["kind"]: k["enabled"] for k in client.get("/api/v1/settings", headers=AUTH).json()["push"]["kinds"]}
     assert got[notify_kinds.KIND_REPORT_READY] is False
-    assert got[notify_kinds.KIND_D5EXIT] is False
-    # 同级的其它 kind 一个都没被连坐
-    assert got[notify_kinds.KIND_HOLDING_ALERT] is True
     assert got[notify_kinds.KIND_PRECALL] is True
-    assert got[notify_kinds.KIND_MARKET_SHOCK] is True
 
 
 def test_put_push_missing_kind_422(client, AUTH):
     """必须给全每一个 kind(承 V1「六字段必填、防漏传静默重置」的同一条纪律),
     缺 kind → 422 而非静默补默认。"""
-    kinds = {k: True for k in notify_kinds.ALL_KINDS if k != notify_kinds.KIND_CUSTOM_ALERT}
+    kinds = {notify_kinds.KIND_REPORT_READY: True}
     r = client.put("/api/v1/settings/push", headers=AUTH, json={"kinds": kinds})
     assert r.status_code == 422
     assert r.json()["detail"]["reason"] == "invalid_push_kinds"

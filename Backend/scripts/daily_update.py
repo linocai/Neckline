@@ -7,20 +7,7 @@
 输入(裁定 12),见 `neckline/facts/pack.py::_suspend_flag_of`。**尽力而为**:失败只记
 WARNING,绝不让主增量(daily/basic/adj/moneyflow)失败,也绝不改变退出码。
 
-🔴 **V2.5.0 裁定 17:概念板块(`ths_*`)抓取段已整段移除。** 原先这里跑
-`update_concept_boards()`(`ths_daily` 尾窗 5 次/日 + `ths_index`/`ths_member` 周更
-**395 次连续调用**,合计约 21,750 次/年,且那 395 次几乎占满客户端 450 次/分限频
-窗口一整分钟)。移除依据:三表在 S3 之后**已零消费方**(读侧 `report/sectors.py` /
-`board_pool.py` / `intel_candidates.py` 已于 `e89c1fa` 物理删除),而 K9 §3.0 明写
-**不使用概念板块**。
-⚠ **已抓的 parquet 原地保留、⛔ 不删**(`data/parquet/ths_{index,member,daily}.parquet`
-+ `ths_snapshot_meta.json`):将来解释层若要拿概念当**背景材料**仍可用。读写 helper
-`neckline/data/concept_data.py` 与三个 `ts_ths_*` 客户端函数同样保留 —— 删掉它们,
-保留下来的那 21 MB 就没人读得动了。⛔ 但概念板块**永远不进任何机械计算**(K9 §3.0),
-⛔ 不许把这一段接回定时器。守门单测:`tests/test_v250_s11_s13_guard.py`。
-
-⚠ 三项 K8 日更(`industry_strength_daily` / `industry_stage_daily` / `scan` 层三表)
-已随 K8 退役在 S1 摘除,见下方 `main()` 里的登记块。
+旧同花顺概念链已经退役并物理删除；日更只维护现行 K9 所需数据。
 
 当前配额消耗:`suspend_d` 1 次/日、申万分类 3 + 2 次/日(S2)。
 
@@ -164,6 +151,19 @@ def refresh_coverage(target: date) -> None:
     )
 
 
+def refresh_listing_scorecards(target: date) -> None:
+    """S17：当日事实包到位后补齐所有已走完 D+4 的清单成绩。"""
+    from neckline.scorecard import listing
+
+    try:
+        count = listing.refresh_due(target)
+    except Exception:  # noqa: BLE001
+        logger.warning("[listing_scorecard] %s 刷新异常(已吞,不阻断行情日更)",
+                       target, exc_info=True)
+        return
+    logger.info("[listing_scorecard] 截至 %s 已刷新 %d 个清单日", target, count)
+
+
 def update_suspend_list(target: date) -> None:
     """v1.4-①-B:当日全市场停牌名单落盘(`suspend_d`,走 `write_table_day` 铁律路径)。
     **尽力而为**——拉不到就不落盘,`price_stale` 读不到该分区时 reason 如实降级为
@@ -222,8 +222,6 @@ def main() -> int:
     # v1.4-①-B 增强项(尽力而为,失败不改退出码;放在主增量之后,免得它们的失败
     # 影响 EOD 主链路的落盘时序)。
     update_suspend_list(target)
-    # 🔴 V2.5.0 裁定 17:`update_concept_boards(target)` 已整段移除(`ths_*` 零消费方,
-    # 约 21,750 次/年配额;已抓 parquet 原地保留)。⛔ 不许接回,见模块头。
     # V2.5.0 S2:申万二级分类日更(**判据输入**,失败打 ERROR;见函数 docstring)。
     update_sw_industry()
     # V2.5.0 S3:事实包构建 + 冻结(架构第一层)。必须排在 `update_sw_industry` **之后**
@@ -231,13 +229,7 @@ def main() -> int:
     build_and_freeze_fact_pack(target)
     # V2.5.0 S4:覆盖率成绩线(尺子)。必须排在事实包冻结**之后** —— 它读那份冻结包。
     refresh_coverage(target)
-    # —— 🔴 V2.5.0 S1:三项 K8 日更已摘除 ————————————————————————————————————
-    # `update_industry_strength`(`industry_strength_daily`)、`update_industry_stage`
-    # (`industry_stage_daily`)、`update_scan_layer`(`limit_cluster_daily` /
-    # `corr_matrix_daily` / `leader_structure_daily`)三个函数**已删除**:它们的落表
-    # 模块随 K8 退役(`scan/` 整包、`report/industry_strength_store.py`),三张表按
-    # 裁定 6 **保留只读、不迁移、不回填**,应用层写路径就此断开。
-    # ⬆ 申万分类日更已由 S2 挂上(见上一行);S3 在此后挂**事实包构建冻结**。
+    refresh_listing_scorecards(target)
 
     logger.info("增量更新完成:%s", target)
     return 0

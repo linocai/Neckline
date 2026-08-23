@@ -182,22 +182,9 @@ def test_g14_the_observed_branch_is_representable_so_it_can_be_excluded_later():
         f"三分支终值不再是三分支:{[v.name for v in Verdict]}")
 
 
-def test_g14_tripwire_the_three_listing_rates_have_not_landed_yet():
-    """🔴 **G14 的绊线**(§10 已标注「随 S17 落地」)。
-
-    S17 落 `scorecard/listing.py` 的那一刻本条会红。**那时请把它换成真判据**:
-    拿一份含 `verdict='observed'` 行的 `k9_d1_verdicts` 夹具,断言三个比率
-    **返回 `None` 而不是 0**,且观察行不进任何分子分母。
-    ⛔ 不要只是把这条删掉 —— 删掉就又回到「§10 表里有一条没人实现」。
-    """
-    assert not (_PKG / "scorecard" / "listing.py").exists(), (
-        "`scorecard/listing.py` 出现了 —— S17 落地了,请把 G14 换成真判据(见 docstring)")
-    hits: List[str] = []
-    for path in sorted(_PKG.rglob("*.py")):
-        src = path.read_text(encoding="utf-8")
-        for token in _LISTING_RATE_TOKENS:
-            if token in src:
-                hits.append(f"{path.relative_to(_ROOT)} → {token}")
-    assert hits == [], (
-        "清单成绩的比率出现了,而 G14 的真判据还没补上:\n" + "\n".join(hits)
-        + "\n👉 请把「观察行不进任何分子分母」写成夹具断言,并删掉本条绊线。")
+def test_g14_has_been_replaced_by_the_s17_behavior_fixture():
+    """S17 已落地；真口径由 `test_scorecard_listing.py` 的含观察样本夹具锁定。"""
+    assert (_PKG / "scorecard" / "listing.py").is_file()
+    fixture = (_ROOT / "tests" / "test_scorecard_listing.py").read_text(encoding="utf-8")
+    assert '"observed"' in fixture
+    assert 'establishmentDenominator' in fixture

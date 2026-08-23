@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 from neckline.explain.input import ExplainInput
 from neckline.explain.news_exclusion import NewsVerdict
 from neckline.llm.base import ChatMessage, LLMProvider
-from neckline.llm.json_block import split_narrative_and_reference_json
+from neckline.llm.json_block import split_narrative_and_json
 from neckline.llm.prompt_context import TIMELINESS_RULES, date_anchor_line
 
 logger = logging.getLogger(__name__)
@@ -161,7 +161,7 @@ def aggregate_one(
         return _degraded(item.ts_code, f"调用异常:{e}")
     if not result.ok:
         return _degraded(item.ts_code, f"调用未成功:{result.reason}")
-    narrative, block = split_narrative_and_reference_json(result.content or "")
+    narrative, block = split_narrative_and_json(result.content or "")
     if not isinstance(block, dict):
         note = _degraded(item.ts_code, "模型未给出结构化收尾")
         return ExplainNote(ts_code=note.ts_code, profile=note.profile,

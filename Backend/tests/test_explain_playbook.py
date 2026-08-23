@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date
 from typing import Any, Dict, List, Optional
 
@@ -98,7 +99,10 @@ def listed(isolated_env, tmp_path):
     ⚠ `quota.max=3` 是为了让合成市场的 5 个候选里有 2 只落到 `reserve`
     —— 后备补位没有后备票就测不了。**这是夹具条件,⛔ 不是标定值。**"""
     day = k9_env.seed(isolated_env)
-    params = k9_env.params(isolated_env, tmp_path, **{"quota.max": 3})
+    params = k9_env.params(isolated_env, tmp_path)
+    # 生产参数入口不允许改 B17 固定配额；这里直接构造一个小容量对象，只为制造
+    # 后备票来测解释层补位算法，不是在测试参数包能否接受另一个配额。
+    params = replace(params, quota=replace(params.quota, min=1, max=3))
     result, run_id = k9_run.run_k9(day, params=params,
                                    parquet_dir=isolated_env.parquet_dir,
                                    db_path=isolated_env.db_path)

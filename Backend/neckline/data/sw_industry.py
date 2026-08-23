@@ -29,7 +29,7 @@
     · 覆盖率 **100%**:本地 20260724 全市场 5526 只全部有申万归属
 
 **写入姿势**:全量重拉 → 一个短事务里 `DELETE` + 批量 `INSERT`(快照语义,同
-`concept_data.replace_snapshot` 先例)。⛔ 不做增量 diff —— 分类调整时增量会留下
+原子替换整份快照。⛔ 不做增量 diff —— 分类调整时增量会留下
 既不属于新表也不属于旧表的孤儿行,而全量重拉本来就只要两次 API 调用。
 
 **注入点**:`fetch_classify` / `fetch_members` 两个 fetcher 可覆盖(单测传假 client,

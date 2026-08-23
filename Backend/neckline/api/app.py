@@ -8,7 +8,7 @@ shutdown:置位 stop_event,优雅停轮询。
 **同码不重写**:报告 / 看板 / 持仓的领域逻辑全部复用现有模块,端点只做「装配 +
 出入参映射 + 鉴权」。
 
-**测试注入(沿 LinoN 模块级替身姿势)**:`ENABLE_SENTINEL`(关后台轮询)、`_DB_PATH_OVERRIDE`
+**测试注入**：`ENABLE_MORNING_TASKS`（关早晨两拍）、`_DB_PATH_OVERRIDE`
 (隔离库)、`_PARQUET_DIR_OVERRIDE` / `_DATA_DIR_OVERRIDE`(隔离产物目录)。
 """
 
@@ -21,7 +21,7 @@ import os
 from contextlib import asynccontextmanager
 # `date_cls` 别名:多个端点用 `date: str = ""` 作查询参数名(客户端契约),
 # 函数内会把模块级的 `date` 类型遮住 —— 别名让「今天」这种取值仍拿得到。
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from datetime import date as date_cls
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
@@ -32,7 +32,6 @@ from neckline.api import notify
 from neckline.api.deps import require_api_token_ready, require_token
 from neckline.api.schemas import (
     DeviceRegisterIn,
-    EvalWeeklyOut,
     LLMRoutesIn,
     LLMRoutesOut,
     OkOut,
@@ -58,7 +57,7 @@ from neckline.api.schemas import (
     WeeklyReviewOut,
 )
 from neckline.api.stores import upsert_device
-from neckline.calendar import CN_TZ, is_trading_day
+from neckline.calendar import CN_TZ, is_trading_day, trading_days_between
 from neckline.config import ensure_data_dirs
 from neckline.llm.factory import get_provider
 from neckline import notify_kinds
@@ -104,7 +103,7 @@ logger = logging.getLogger(__name__)
 # —— `moneyflow_dc` 分区 schema 分裂(2020-2023 的 897 个 0 行空文件落成 String,
 # 2023-09-11..2026-07-20 的 688 个真数据是 Float64)→ v1.3 新增的候选情报管线首次对该表
 # 做全表 `scan_parquet` → SchemaError → 整个 `build_report` 崩。两半修法:
-# ① **数据**:`scripts/fix_moneyflow_schema.py` 把 902 个脏分区 cast 回 Float64(生产已跑,
+# ① **数据**:历史脏分区已在生产修缮为 Float64，
 #    零损失对拍全过);② **代码**:`_align_to_table_schema` 的对齐目标从「既有分区的**第一个
 #    文件**」改为 `market_data.TABLE_FLOAT_COLS` 的**显式 canonical 声明**——旧口径的致命
 #    假设是「第一个分区一定是对的」,而 moneyflow_dc 的首个分区恰恰是脏的,于是 2026-07-21
@@ -138,53 +137,22 @@ logger = logging.getLogger(__name__)
 # 依据是「`year=YYYY` 目录里结构上只可能有该年的行」。客户端同步把该请求超时给到 60s
 # (照问询台惯例)。**⚠ 顺带收窄了脏分区的传染半径**:单日/区间读不再打开无关年份,
 # 故 v1.3.5 那条「历史脏分区不会自愈」现在只对**跨到脏那年**的读成立(守门单测已改写记录)。
-# v1.5.0(§五 v1.5-⑤-E「A2 客户端版本号治理」):本行在 ⑤ 就已改成 v1.5.0——纯本地源码
-# 常量变更,**不构成部署**(生产此刻仍跑 v1.4.1,直到 ⑥ 真正上云重启服务)。这么早改的
-# 原因:⑤-E 的守门单测要求 `VERSION`(去 v 前缀)与客户端 `project.yml`/`pbxproj` 的
-# `MARKETING_VERSION` 三者恒等,三者必须在同一次提交里一起动,否则守门测试本身就会
-# 常年红。⑥-A「版号 → v1.5.0」到时只是把这行已经写好的代码部署上线,不再是新改动。
-# v1.5.1(2026-07-30,两线 review 黄牌集中修复)→ **已上云 12:07**。
-# v1.5.2(2026-07-30,用户报障:LLM 把 2024 年研报当现行参照 —— 三处提示词都没注入当前
-# 日期):纯提示词层修复(日期锚 + 时效纪律 + 检索词年份引导),**零契约改动、客户端
-# 零改动**(已装 1.5.1 App 无需换包,设置屏会显示版本差提示,属预期)。同上,本行与
-# `project.yml`/`pbxproj` 同一次提交动;`/health` 返 v1.5.2 即为本次部署的到位判据。
-# V2.0.0(⑮,2026-08-03):契约换血 + 客户端双端改版同批到位。⚠ **三方同一次提交动**
-# ——`App/project.yml` 与 `pbxproj` 的 `MARKETING_VERSION` 必须同为 `2.0.0`
-# (守门单测 `tests/test_client_version_governance.py` 锁三处恒等,漏一处立刻红)。
-# ⚠ ⑭ 刻意没升它:提前升会让守门单测常年红,版号归 ⑮。
-# V2.4.0(P4.4,2026-08-12):可信度与减法版(P0 退役盘中通用证伪 + 代理池退潮刹车 /
-# P1 选股关口与 Tier 语义 / P2 竞价数据可靠性 / P3 持仓语义与前端三层收敛 / P4 发布治理)。
-# **三处同一次提交动**:本行 + `App/project.yml` **两处** `MARKETING_VERSION`
-# (顶层 base + app target,刻意重复;守门只比 app target,故两处都得手动改)+
-# `xcodegen generate` 重生 pbxproj。⚠ 改完必须跑一次 `xcodegen generate` ——
-# 它顺手修好 project 级漂移,而守门看不见那一处。
-# V2.4.2 RC:版本只能通过 `App/scripts/prepare_release_candidate.sh` 与客户端一起切换。
-# ⚠ 本行改动**不构成部署**:生产 `/health` 要到真正 rsync + 重启之后才返此版本。
+# API 与两个客户端工程的版本号必须同批变更；守门测试负责校验三处一致。
+# 本地修改不代表生产已部署，只有生产 `/health` 返回本值才算后端到位。
 VERSION = "v2.5.0"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
-# startup 是否挂早晨轮询;可用环境变量 NECKLINE_ENABLE_SENTINEL=0 关(冒烟脚本用)。
-# ⚠ **环境变量名刻意不改**(同 `sentinel_events` 表名留着的理由,PROJECT_PLAN §3.2):
-# 改名要同步动 `scripts/smoke_api.sh` 与生产 unit,一次改名换零产品价值。
-ENABLE_SENTINEL = os.environ.get("NECKLINE_ENABLE_SENTINEL", "1") != "0"
+# startup 是否挂 9:26/10:00 两拍；冒烟可显式关闭。
+ENABLE_MORNING_TASKS = os.environ.get("NECKLINE_ENABLE_MORNING_TASKS", "1") != "0"
 _DB_PATH_OVERRIDE: Optional[Path] = None      # 隔离库(None → settings.db_path)
 _PARQUET_DIR_OVERRIDE: Optional[Path] = None  # 隔离 parquet 根(None → settings.parquet_dir)
-# `GET /review/{overview}` 与 `GET /eval/weekly` 要读**离线落盘**的周度校准产物
-# (`data/reports/calibration/`)。CLAUDE.md「测试隔离」条明载 `api_env` **不重写**
-# `neckline.config.settings`,不给注入点就会读到真实项目的 `data/reports/`
-# (那正是"一测就踩、断言全错还不报错"的那类泄漏)。
 _DATA_DIR_OVERRIDE: Optional[Path] = None     # 隔离 data 根(None → settings.data_dir)
 
 
 def _db() -> Optional[Path]:
     return _DB_PATH_OVERRIDE
 
-
-def _calibration_dir() -> Optional[Path]:
-    """周度校准产物目录(`<data>/reports/calibration`)。`None` = 用
-    `review/handoff.py::calibration_dir()` 自己的缺省(真实 `settings.data_dir`)。"""
-    return None if _DATA_DIR_OVERRIDE is None else (_DATA_DIR_OVERRIDE / "reports" / "calibration")
 
 #: 非窗口时段的待机探测间隔(PROJECT_PLAN §5.7.3「非窗口时段 5 分钟一探,不空转」)。
 _MORNING_IDLE_POLL_SEC = 300
@@ -215,16 +183,9 @@ def _is_tight_poll(now: datetime) -> bool:
 
 
 async def _morning_loop(stop_event: asyncio.Event) -> None:
-    """早晨轮询(V2.5.0 S1:自 `_sentinel_loop` 瘦身而来)。
+    """9:26 核对与 10:00 结算的早晨轮询。
 
-    🔴 **本版只剩早晨,盘中四哨兵整块退役**(裁定 7):买点 / 证伪 / 持仓 / 退潮
-    四条盘中判定、盘中存拍、盘前校准、自定义提醒**全部已物理删除**,
-    ⛔ 不许以任何形式接回来。系统不持续观察 9:30 以后的价格、不推送盘中提醒、
-    不跟踪持仓(架构 §四)。
-
-    **本片(S8)起两拍齐全**(PROJECT_PLAN §5.7.3),
-    **各自独立 `try/except`,一拍炸了不影响另一拍**:
-
+    系统不持续观察盘中价格，也不跟踪持仓。两拍各自独立 ``try/except``：
     | 拍 | 窗口 | 推送 | 产物 |
     |---|---|---|---|
     | 竞价核对表 | 9:26–9:29 | 有(APNs) | `已触发放弃 / 待开盘后观察` 两段,⛔ 无「成立」 |
@@ -279,6 +240,19 @@ def _morning_checklist_tick(now: datetime) -> None:
     res = auction_pipeline.run_checklist_tick(now, db_path=_db(),
                                               parquet_dir=_PARQUET_DIR_OVERRIDE)
     if res.skipped_reason:
+        # B21:可信空清单保持静默；只有前一交易日报告明确 `not_run` 才提醒一次。
+        if res.skipped_reason == auction_pipeline.SKIP_NO_LISTING and res.d0_date is not None:
+            from neckline.report import store as report_store
+
+            report = report_store.load_k9_report(res.d0_date, db_path=_db())
+            event = "previous_report_not_run"
+            if (report is not None and report.get("state") == "not_run"
+                    and not dedup.already_pushed(now.date(), "auction", "", event,
+                                                db_path=_db())):
+                notify.push_previous_report_not_run(res.d0_date.strftime("%Y%m%d"), db_path=_db())
+                dedup.record_pushed(now.date(), "auction", "", event,
+                                    payload={"d0Date": res.d0_date.strftime("%Y%m%d")},
+                                    db_path=_db())
         logger.debug("[morning] 竞价核对表跳过:%s", res.skipped_reason)
         return
     # 推送门槛的单一源是 `ChecklistRunResult.should_push`,⛔ 不在这里另判一次。
@@ -308,7 +282,7 @@ async def lifespan(app: FastAPI):
     init_schema(_db())
     app.state._stop_event = asyncio.Event()
     app.state._morning_task = None
-    if ENABLE_SENTINEL:
+    if ENABLE_MORNING_TASKS:
         app.state._morning_task = asyncio.create_task(_morning_loop(app.state._stop_event))
     yield
     # —— shutdown ——
@@ -329,58 +303,6 @@ app = FastAPI(title="Neckline", version=VERSION, lifespan=lifespan)
 @app.get(f"{API_PREFIX}/health")
 def health() -> dict:
     return {"status": "ok", "version": VERSION}
-
-
-# —— 4A.2 报告 ————————————————————————————————————————————————————————
-
-
-# —— ⚠ V2.5.0 S12:七个 K8 时代的 reason 常量**已随它们的端点一起删除** ————————
-#
-# `basket_not_found` / `card_not_ready` / `card_corrupt`(篮子与冻结卡)、
-# `not_trading_day` / `future_buy_date`(补录开仓的日期校验)、
-# `auction_not_ready` / `auction_corrupt`(K8 竞价确认层)—— 这七条的**端点已在 S1
-# 全部删除**,常量却留了下来。留着不是无害的:契约对拍
-# (`tests/test_contract_crosscheck.py`)按「`app.py` 里出现的 reason 字面量」反推
-# 服务端 reason 面,一个再也 raise 不出来的常量会**要求客户端一直养着一个死 case**,
-# 而那个 case 的存在又让人以为对应端点还在。⛔ 别为了"以后可能用得上"留死码。
-#
-# 🔴 本版剩下的 reason 面只有 6 条,全部出自设置屏(见
-# `tests/test_contract_crosscheck.py::SERVER_REASONS`):新增会返 4xx 的端点时,
-# **必须同时**更新那份清单与客户端 `APIClient.mapReason`。
-# ⚠ K9 的四条新端点(`/selection/*` / `/checklist/*`)返的是**纯字符串 detail**
-# (「20260430 没有报告」这类),⛔ 不进 reason 面 —— 它们不需要客户端换算,
-# 原文直接给用户看比一个英文码更清楚。
-
-
-# —— V2-⑭-B 计划继承(`position_plans`)+ 建仓快照(`entry_snapshots`)————————
-#
-# **⑩-E 信息互通边界**:持仓侧可读篮子卡、可追加自己的计划版本,**不得回头修改
-# 对方已冻结的历史信息** —— 本节两个端点对 `baskets`/`basket_cards`/`tier_history`
-# 零写入(AST 守门单测锁死),`create_position_plan_version` 签名里根本没有相关参数。
-
-
-# —— ⚠ V2.2-⑤-B:`GET /circuit` 与 `POST /circuit/unlock` **两条端点已删**(裁定 #8)——
-# 熔断整体退役 = 锁定态 / 次日只减不加 / 强制复盘解锁三件机制全删,故:
-#   · `POST /circuit/unlock` 是「解锁」动作,**随机制消失**;
-#   · `GET /circuit` **没有替代端点** —— 提醒走推送与看板事件,**不走状态查询**。
-# 两条路径自此由 FastAPI 天然返 **404**(⛔ 别加一条返空态的兼容路由:那等于把"已退役"
-# 讲成"查得到、恰好没锁",又是一个看不出来的状态位)。
-# ✅ **`PositionsOut.circuit` 已于 v2.3.0 删键**(两步淘汰第二步):逐版核实历代客户端
-# 都只解 `PositionsListResponse { holdings }`,**从没有一版声明过这个字段**,故删它零风险
-# —— 零删键铁律没被破例,是核实之后发现这个键根本没有消费方。
-# ⚠ 客户端里那两条活调用由 ⑥ 删,本版先登记进
-# `tests/test_contract_crosscheck.py::PENDING_CLIENT_CALLS_TO_BE_REMOVED_IN_15`。
-
-
-# —— v1.2-B 预注册决策日志(§2.1 第 3 条 / plan §五 v1.2-B)——————————————————
-# **v2.0.0(⑩-C)决策日志强制表单退役**:`decision_log` 表停写留档(历史行只读
-# 归因,`neckline.decision_log` 不再提供任何写函数)。本节只剩两个**只读**端点
-# (`GET /decisions` / `GET /decisions/{id}/track`,§3.8「审计件、非下单件」精神
-# 不变);`create_decision` 复用 `POST /decisions` 路径但已换血成蓝图 §2.2/§5.2
-# 的「用户可选补充」入口——不再触碰 `decision_log`,改落 `user_actions`。旧的
-# `link`/`cancel`/`revise`/`scenario-outcome` 四个端点随写入口一起下线(历史行
-# 「不可编辑」的既有铁律现在升级成「完全不可写」,这四个端点存在的唯一理由就是
-# 编辑历史行,理由消失、端点随之消失)。
 
 
 # —— 4A.5 设置 + 设备注册 ——————————————————————————————————————————————
@@ -406,8 +328,6 @@ def get_settings() -> SettingsOut:
             PushKindOut(
                 kind=k, level=notify_kinds.level_of(k),
                 label=notify_kinds.KIND_LABEL[k], enabled=st.push_kinds[k],
-                # V2.4.0 P0:退役位随契约下发,客户端据此隐藏开关(⛔ 不硬编黑名单)。
-                retired=(k in notify_kinds.RETIRED_KINDS),
             )
             for k in notify_kinds.ALL_KINDS
         ]),
@@ -630,66 +550,6 @@ def review_upload(files: List[UploadFile] = File(...)) -> ReviewUploadOut:
 # `neckline/selection/` 与 `neckline/scan/` 全目录零 `profile` 引用(守门单测锁死)。
 
 
-@app.get(f"{API_PREFIX}/eval/weekly", dependencies=[Depends(require_token)])
-def get_eval_weekly(week: str = "") -> EvalWeeklyOut:
-    """周度评价校准报告(⑨-C,含安慰剂对照臂)。`week` = 该周任意一天 'YYYYMMDD',
-    缺省 = 本周。
-
-    🔴 **V2.2-④ 起改为「读周度 unit 落盘的产物」,⛔ 不再在线现算**(§七 **P4-46**
-    在本块结案)。理由两条,都不是偏好:
-      ① 归因分层键从 2 个扩到 4 个(骨架 × 引擎 × 版本 × 条件集),现算成本必然上升,
-         P4-46 原文的触发条件「生产实测 > 5s」大概率当场成立;
-      ② 本端点跑在常驻 `neckline.service` 里、**与盘中哨兵同进程** —— §七 **P0-23**
-         原教旨:重活进常驻服务 = `MemoryHigh` 先节流 → 进程陷进回收死循环 =
-         **卡死不报错**,盘中点一次就拖累哨兵。
-    ⛔ **查不到不许现算自愈**,如实降级(与 `/review/handoff` 完全同一条纪律):
-      · 产物不在   → `available=false`,原因写明**会自愈**(等下一次周度作业);
-      · 产物读不出 → `available=false`,原因写明**不会自愈**、要人排查。
-        两句话必须分开 —— 合成一句就是叫人一直等一份永远好不了的产物。
-
-    ⚠ **评价是长期统计,不是单日打分**:样本窗未就绪时如实说,⛔ 不拿半截样本给结论。
-    """
-    from neckline.review.research_artifact import week_bounds
-    from neckline.review.handoff import (
-        CAL_CORRUPT, CAL_OK, load_calibration_markdown, load_calibration_with_status,
-    )
-
-    try:
-        anchor = (datetime.strptime(week, "%Y%m%d").date()
-                  if (len(week) == 8 and week.isdigit()) else date_cls.today())
-        start, end = week_bounds(anchor)
-        if start is None or end is None:
-            return EvalWeeklyOut(
-                available=False,
-                unavailableReason="这一周没有交易日,没有可校准的窗口。")
-        lo, hi = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
-        out_dir = _calibration_dir()
-        payload, status = load_calibration_with_status(lo, hi, out_dir)
-        if status == CAL_CORRUPT:
-            return EvalWeeklyOut(
-                weekStart=lo, weekEnd=hi, available=False,
-                unavailableReason=(
-                    f"本窗口({lo}→{hi})的周度校准产物**读不出**(文件在、JSON 解析失败)。"
-                    f"它是落盘产物、**不会自己好** —— 需人工排查,⛔ 别当成「还没生成」等下去。"
-                ))
-        if status != CAL_OK or payload is None:
-            return EvalWeeklyOut(
-                weekStart=lo, weekEnd=hi, available=False,
-                unavailableReason=(
-                    f"本窗口({lo}→{hi})尚无周度校准产物 —— **离线**周度校准作业"
-                    f"还没跑到这个窗口。"
-                    f"**会自愈**:下一次周度作业跑完即有。⛔ 在线路径不补算(§七 P0-23)。"
-                ))
-        return EvalWeeklyOut(
-            weekStart=lo, weekEnd=hi, available=True, result=dict(payload),
-            markdown=(load_calibration_markdown(lo, hi, out_dir) or ""),
-        )
-    except Exception as exc:  # noqa: BLE001  评价报告是审计件,炸了如实说,不 500
-        logger.warning("[eval] 周度校准产物读取异常(已降级为不可得)", exc_info=True)
-        return EvalWeeklyOut(available=False,
-                             unavailableReason=f"周度评价产物本次读取失败:{type(exc).__name__}")
-
-
 @app.get(f"{API_PREFIX}/review", dependencies=[Depends(require_token)])
 def review_by_week(week: str = "") -> ReviewGetOut:
     """读某周已存档的对账结果(历史回放;客户端务必走 makeURL 免 `?` 编码坑,同
@@ -899,57 +759,16 @@ def get_review_conclusions(week: str = "", q: str = "", limit: int = 20) -> Revi
 # ⛔ **零现算、零写库**:本端点只 SELECT(常驻服务与盘中哨兵同进程,P0-23)。
 
 
-# —— V2.1-⑤ 复盘板块:聚合读 + 校准移交件 ————————————————————————————————
-#
-# 🔴 **两条端点的三条硬边界**(⛔ 施工时别改主意,守门在 `tests/test_review_handoff.py`
-# 与 `tests/test_api_review.py`):
-#   ① **零现算**:只读已冻结 / 已落盘的产物。它们跑在常驻 `neckline.service` 里、
-#      **与盘中哨兵同进程** —— §七 P0-23 的原教旨:重活进常驻服务 = `MemoryHigh`
-#      先节流 → 卡死不报错,盘中点一次就拖累哨兵。⛔ 永不调 `calibration.build_report`
-#      (静态 AST + 运行期双向守门)。
-#   ② **零写库**(纯 GET,一行都不写)。
-#   ③ **一律不 404**:空态走 `available=false` → V2.1 **零新增 reason 字符串**,
-#      `SERVER_REASONS` 与客户端 `mapReason` 一字不动。
+# —— 复盘板块：聚合只读 ————————————————————————————————————————————————
 
 def _week_anchor(week: str) -> date_cls:
-    """`week` = 该周任意一天 `YYYYMMDD`;非法 / 缺省 → 今天(同 `/eval/weekly` 惯例,
-    **降级不 4xx**)。"""
+    """`week` 接受该周任意一天 `YYYYMMDD`；非法或缺省时降级为今天。"""
     if len(week) == 8 and week.isdigit():
         try:
             return datetime.strptime(week, "%Y%m%d").date()
         except ValueError:
             pass
     return date_cls.today()
-
-
-def _calibration_segment(lo, hi) -> ReviewSegmentOut:
-    """校准段:**只读离线产物**,三态分开说话(`ok` / 没生成 / 读不出)。
-
-    🔴 **包成绩单 = 产物里的 `strata` 本身**(已按 `pack_version × verification_ruleset_version`
-    分层)——⛔ 不在这里另建第二份聚合,那就是"同一个数两个算法"的老病。"""
-    from neckline.review import handoff as ho
-
-    label = "包成绩单 · 周度校准"
-    if lo is None or hi is None:
-        return ReviewSegmentOut(available=False, label=label,
-                                unavailableReason="该周没有交易日,本周无校准窗口。")
-    lo_s, hi_s = lo.strftime("%Y%m%d"), hi.strftime("%Y%m%d")
-    out_dir = _calibration_dir()
-    payload, status = ho.load_calibration_with_status(lo_s, hi_s, out_dir)
-    if status == ho.CAL_OK:
-        return ReviewSegmentOut(available=True, label=label, asOf=f"{lo_s}→{hi_s}",
-                                detail=dict(payload or {}))
-    latest = ho.list_calibration_artifacts(out_dir)
-    detail = {"latestAvailable": latest[0].label} if latest else {}
-    if status == ho.CAL_CORRUPT:
-        # ⛔ 不降级成"还没生成":文件在那儿、不会自己好,是要人排查的事故。
-        reason = (f"本窗口({lo_s}→{hi_s})的周度校准产物**读不出**"
-                  f"(文件在、JSON 解析失败)—— 它不会自愈,需人工排查。")
-    else:
-        reason = (f"本窗口({lo_s}→{hi_s})的周度校准产物尚未生成 —— 周度作业按周离线"
-                  f"落盘,在线路径只读产物、**不补算**。等下一次周度作业跑完即有。")
-    return ReviewSegmentOut(available=False, label=label, asOf=f"{lo_s}→{hi_s}",
-                            unavailableReason=reason, detail=detail)
 
 
 def _reconcile_segment(week_key: str) -> ReviewSegmentOut:
@@ -1004,26 +823,14 @@ def _conclusions_segment(week_key: str) -> ReviewSegmentOut:
     )
 
 
-def _observations_segment() -> ReviewSegmentOut:
-    """观察项段:静态登记册(与 `PROJECT_PLAN.md` §七 Backlog 的闭合由守门单测钉死)。
-    它**恒 available** —— 清单本身一直在,空不空是内容的事。"""
-    from neckline.review.handoff import HANDOFF_OBSERVATIONS
-
-    return ReviewSegmentOut(available=True, label="观察项 · 等证据的策略问题",
-                            items=[dict(o) for o in HANDOFF_OBSERVATIONS])
-
-
 @app.get(f"{API_PREFIX}/review/overview", dependencies=[Depends(require_token)])
 def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
-    """复盘板块「累计」页的聚合读。V2.5.0 S11 起共**四段**:
-    校准 / 对账 / **结论存档** / 观察项。
+    """复盘板块「累计」页的聚合读:对账与结论存档两段。
 
     `week` = 该周任意一天 `YYYYMMDD`(缺省本周);`asOf` 保留兼容位(画像段已随
     `profile/` 在 S1 退役,⛔ 不再有消费方)。
 
-    **四段各自独立说"有 / 没有 / 没取到"**,⛔ 不许一个总开关罩住 —— 校准产物没生成、
-    这周没传交割单、这周还没写结论是三件互不相干的事。**每段各自包保险丝**:任一段
-    炸了只让那一段 `available=false`,其余三段照出(⛔ 不 500)。
+    两段各自独立说"有 / 没有 / 没取到"。任一段异常只降级本段。
 
     ⚠ **装订材料刻意不在这里**:它要读 parquet 行情,属于「点一下才算」的动作,
     单独走 `GET /review/bindery`(⛔ 别塞进这个每次进板块都会拉的聚合读,§12 坑 1)。"""
@@ -1036,21 +843,15 @@ def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
     except Exception:  # noqa: BLE001
         logger.warning("[review] ISO 周键计算异常", exc_info=True)
 
-    lo = hi = None
-    try:
-        from neckline.review.research_artifact import week_bounds
-
-        lo, hi = week_bounds(anchor)          # 该周的**交易日**首尾(与产物命名同源)
-    except Exception:  # noqa: BLE001  交易日历读不到不该掀翻整页
-        logger.warning("[review] 周边界(交易日)解析异常", exc_info=True)
+    monday = anchor - timedelta(days=anchor.weekday())
+    days = trading_days_between(monday, monday + timedelta(days=6))
+    lo, hi = (days[0], days[-1]) if days else (None, None)
     out.weekStart = lo.strftime("%Y%m%d") if lo else ""
     out.weekEnd = hi.strftime("%Y%m%d") if hi else ""
 
     for field_name, build in (
-        ("calibration", lambda: _calibration_segment(lo, hi)),
         ("reconcile", lambda: _reconcile_segment(out.weekKey)),
         ("conclusions", lambda: _conclusions_segment(out.weekKey)),
-        ("observations", _observations_segment),
     ):
         try:
             setattr(out, field_name, build())
@@ -1127,6 +928,19 @@ def get_scoreboard_coverage(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
         ],
         "missReasonCounts": scorecard_store.miss_reason_counts(db_path=_db()),
     }
+
+
+@app.get(f"{API_PREFIX}/scoreboard/listing", dependencies=[Depends(require_token)])
+def get_scoreboard_listing(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
+    """最近若干个已经走完 D+4 的正式清单日五指标。
+
+    成立率分母是正式清单全量；兑现率与错杀率只在相应终值且存在预案压力位的
+    样本内计算。行业分与选票分始终分开返回，不提供合计字段。
+    """
+    from neckline.scorecard import listing
+
+    n = max(1, min(int(window or _COVERAGE_WINDOW_DEFAULT), _COVERAGE_WINDOW_MAX))
+    return listing.load_scorecard(window=n, db_path=_db())
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1275,6 +1089,23 @@ def _today() -> date_cls:
     return datetime.now(CN_TZ).date()
 
 
+def _explain_api(note: Optional[dict]) -> Optional[dict]:
+    """在线解释 DTO 使用 API 统一的 camelCase；数据库内部键保持 snake_case。"""
+    if note is None:
+        return None
+    return {
+        "tsCode": note.get("ts_code"),
+        "profile": note.get("profile", {}),
+        "klineComment": note.get("kline_comment"),
+        "newsState": note.get("news_state"),
+        "newsCategory": note.get("news_category"),
+        "news": note.get("news", {}),
+        "llmOk": bool(note.get("llm_ok")),
+        "filledBy": note.get("filled_by"),
+        "createdAt": note.get("created_at"),
+    }
+
+
 # —— V2.5.0 S9/S10:个股详情与预案修改入口 ————————————————————————————————
 
 
@@ -1324,7 +1155,7 @@ def get_selection_stock(trade_date: str, ts_code: str) -> dict:
             "seatKind": entry["seat_kind"], "rank": entry["rank"],
             "swL2Code": entry["sw_l2_code"], "swL2Name": entry["sw_l2_name"],
         },
-        "explain": notes.get(ts_code),
+        "explain": _explain_api(notes.get(ts_code)),
         "playbook": versions[-1].to_dict() if versions else None,
         "playbookVersions": [p.to_dict() for p in versions],
         "playbookSlots": slots,
@@ -1479,34 +1310,6 @@ def get_verdicts(trade_date: str) -> dict:
             for r in rows
         ],
     }
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# V2.5.0 S13 · K8 历史数据的只读追溯(裁定 6,PROJECT_PLAN §5.12)
-# ══════════════════════════════════════════════════════════════════════════
-
-@app.get(f"{API_PREFIX}/legacy/k8/baskets", dependencies=[Depends(require_token)])
-def get_legacy_k8_baskets(date: str = "") -> dict:
-    """**K8 只读追溯的唯一入口**(裁定 6:旧表保留、只读、不迁移、不回填)。
-
-    `date` = `YYYYMMDD`;缺省只回总览(库里有哪几天、共多少篮),供先定位再点查。
-
-    🔴 **只读**:领域实现 `neckline/legacy_k8.py` 走 `sqlite3` 的 `mode=ro` 连接,
-    且模块里结构上**只有 SELECT**(守门单测扫 `INSERT`/`UPDATE`/`DELETE`/`CREATE`/
-    `DROP`/`ALTER` 零命中)。⛔ 本路径不 `init_schema`、不建表、不回填。
-    写方法(POST/PUT/DELETE)未注册 → FastAPI 自动 **405**。
-
-    ⚠ **返回的是 K8 的语义,不是 K9 的**:`tier` / `driver` / `roleLlm` 这些字段属于
-    已退役的那条链,⛔ 不许被翻译成 K9 的 `pattern` / `seatKind`,也 ⛔ 不进任何成绩线。
-
-    ⚠ **一律 200,三态分开说**(⛔ 不 404):`available=false` = 这个库根本没有 K8
-    篮子表;`available=true, found=false` = 有 K8 历史但不是那一天。
-    """
-    from neckline import legacy_k8
-
-    raw = (date or "").strip()
-    day = _parse_day(raw) if raw else None
-    return legacy_k8.load_baskets(day, db_path=_db())
 
 
 __all__ = ["app", "VERSION", "API_PREFIX"]

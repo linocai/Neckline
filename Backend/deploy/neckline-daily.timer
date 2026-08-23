@@ -4,7 +4,7 @@
 Description=Run Neckline daily data update at 16:30 on weekdays (Scheme A only)
 
 # 16:05:A 股 15:00 收盘、TuShare 核心 EOD(daily/basic/adj)~15:35 后稳定,给缓冲;
-# 排在 report(16:35)之前——report 依赖当日数据先落 Parquet(见 neckline-report.timer 说明)。
+# 排在 report(19:00)之前——report 依赖当日数据先落 Parquet(见 neckline-evening.timer 说明)。
 [Timer]
 OnCalendar=Mon-Fri 16:05 Asia/Shanghai
 Persistent=false

@@ -34,7 +34,7 @@ def _apns_settings(tmp_path, key_pem, **over) -> Settings:
         apns_bundle_id="top.linotsai.neckline", apns_key_path=str(p8), apns_use_sandbox=True,
     )
     kw.update(over)  # 覆盖(避免与显式 kwarg 重复传参)
-    return dataclasses.replace(Settings(tushare_token=None, llm_provider=None, llm_api_key=None), **kw)
+    return dataclasses.replace(Settings(tushare_token=None), **kw)
 
 
 # —— JWT 签名 ————————————————————————————————————————————————————————
@@ -49,7 +49,7 @@ def test_build_jwt_es256_verifiable(ec_key_pem):
 
 
 def test_get_jwt_none_without_config(monkeypatch):
-    monkeypatch.setattr(apns, "settings", Settings(tushare_token=None, llm_provider=None, llm_api_key=None))
+    monkeypatch.setattr(apns, "settings", Settings(tushare_token=None))
     apns.reset_jwt_cache()
     assert apns.get_jwt() is None
 
@@ -80,10 +80,11 @@ def test_get_jwt_missing_p8_file(tmp_path, ec_key_pem, monkeypatch):
 # —— payload / send_push ——————————————————————————————————————————————
 
 def test_build_payload():
-    p = apns.build_payload("标题", "正文", category=apns.CATEGORY_IMMEDIATE, custom={"kind": "retreat"})
+    p = apns.build_payload("标题", "正文", category=apns.CATEGORY_IMPORTANT,
+                           custom={"kind": "precall"})
     assert p["aps"]["alert"] == {"title": "标题", "body": "正文"}
-    assert p["aps"]["category"] == "NKIMMEDIATE"    # V2-⑪:三级 category
-    assert p["kind"] == "retreat"
+    assert p["aps"]["category"] == "NKIMPORTANT"
+    assert p["kind"] == "precall"
 
 
 def test_send_push_success_injected_transport(tmp_path, ec_key_pem, monkeypatch):
@@ -122,7 +123,7 @@ def test_send_push_sandbox_gateway(tmp_path, ec_key_pem, monkeypatch):
 
 
 def test_send_push_no_config_graceful(monkeypatch):
-    monkeypatch.setattr(apns, "settings", Settings(tushare_token=None, llm_provider=None, llm_api_key=None))
+    monkeypatch.setattr(apns, "settings", Settings(tushare_token=None))
     apns.reset_jwt_cache()
     res = apns.send_push("t", "a", "b")               # 无凭证 + 无注入 jwt → ok=False,不抛
     assert res.ok is False and "JWT" in res.reason

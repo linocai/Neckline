@@ -75,10 +75,6 @@ def _read_calls(db: Path):
         ("report.load_k9_report_index",
          lambda: report_store.load_k9_report_index(d, d, db_path=db), {}),
         ("report.latest_k9_report", lambda: report_store.latest_k9_report(db_path=db), None),
-        ("report.load_report", lambda: report_store.load_report(d, db), None),
-        ("report.load_report_by_str", lambda: report_store.load_report_by_str("20260820", db), None),
-        ("report.latest_report_date", lambda: report_store.latest_report_date(db), None),
-        ("report.load_llm_judgments", lambda: report_store.load_llm_judgments(d, db), []),
         ("auction.load_checklist", lambda: auction_store.load_checklist(d, db_path=db), None),
         ("auction.load_verdicts", lambda: auction_store.load_verdicts(d, db_path=db), []),
         # ⚠ 不带读前缀 —— 静态那条闸看不见它。
@@ -99,9 +95,6 @@ def _read_calls(db: Path):
         ("conclusions.list_latest", lambda: review_conclusions.list_latest(db_path=db), []),
         # ⚠ 不带读前缀。
         ("conclusions.search", lambda: review_conclusions.search("涨停", db_path=db), []),
-        ("dedup.load_events_for_date", lambda: dedup.load_events_for_date(d, db), []),
-        # ⚠ 不带读前缀。
-        ("dedup.retreat_brake_state", lambda: dedup.retreat_brake_state(d, db), None),
         ("settings.get_tavily_api_key", lambda: settings_store.get_tavily_api_key(db), None),
         ("settings.list_providers", lambda: settings_store.list_providers(db), []),
         ("settings.list_providers_public", lambda: settings_store.list_providers_public(db), []),

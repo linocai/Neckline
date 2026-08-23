@@ -3,8 +3,7 @@
 //  Neckline — 锁屏推送。**收发是 iOS 专属**(macOS 无锁屏推送,平台分叉);
 //  **落点表 `nkPushRoute(forKind:)` 双端都编译**(纯数据;理由见本文件头最后一段)。
 //
-//  **V2-⑪ 通知三级(D5 已拍板)**:三个 APNs category —— `NKIMMEDIATE`(立即)/
-//  `NKIMPORTANT`(重要不紧急)/ `NKDIGEST`(盘后汇总)。category 字面量必须与服务端
+//  现行两个 APNs category：`NKIMPORTANT`(竞价核对表)与 `NKDIGEST`(盘后报告)。
 //  `neckline/notify_kinds.py` 的 `CATEGORY_*` **逐字一致**(改串 = 改契约)。
 //
 //  ⚠ **业务分支一律读 payload 里的 `kind`,⛔ 不按 category 分支** ——
@@ -53,7 +52,7 @@ struct NKPushRoute: Equatable {
 /// `Backend/tests/test_contract_crosscheck.py`(第七组)。
 func nkPushRoute(forKind kind: String) -> NKPushRoute? {
     switch kind {
-    // 16:35 盘后报告就绪 → 选股 · **今日清单**(那条推送讲的就是这一份清单)。
+    // 19:00 晚间链完成后报告就绪 → 选股 · **今日清单**(那条推送讲的就是这一份清单)。
     case "report_ready":
         return NKPushRoute(tab: .selection, selectionMode: .listing)
     // 9:26—9:29 竞价核对表汇总 → 选股 · **次日核对表**。
@@ -74,13 +73,12 @@ import UIKit
 import UserNotifications
 
 /// APNs category 标识(**必须与服务端 `notify_kinds.py` 字面一致**)。
-/// V2-⑪ 起由 V1 的六个具名 category 收敛为**三级**。
+/// 与服务端现行两个通知级别一致。
 enum NKNotificationCategory {
-    static let immediate = "NKIMMEDIATE"
     static let important = "NKIMPORTANT"
     static let digest = "NKDIGEST"
 
-    static let all = [immediate, important, digest]
+    static let all = [important, digest]
 }
 
 /// payload 里携带业务 `kind` 的键名(服务端 `api/notify.py` 扇出时写入)。
@@ -101,7 +99,7 @@ final class PushManager: NSObject, ObservableObject, UNUserNotificationCenterDel
         super.init()
     }
 
-    /// 启动时挂载:设 delegate + 注册三个 category。
+    /// 启动时挂载:设 delegate + 注册两个 category。
     func bootstrap() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self

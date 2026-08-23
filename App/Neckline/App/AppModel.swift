@@ -202,7 +202,7 @@ final class AppModel {
 
     /// **本机上一次成功刷新的时刻**。⚠ 这是**客户端**的钟,回答「我上次去问是什么时候」
     /// —— ⛔ **不是** `selection.generatedAt`(那是服务端出报告的时刻,两者可以差好几个
-    /// 小时:16:35 出的报告,你 21:00 才打开)。两个时刻**刻意不合并**。
+    /// 小时:19:00 启动生成的报告,你 21:00 才打开)。两个时刻**刻意不合并**。
     var lastRefreshedAt: Date? = nil
 
     // ══════════════════════════════════════════════════════════════════════
@@ -211,6 +211,7 @@ final class AppModel {
 
     var coverage: CoverageSnapshot = .empty
     var coverageLoading = false
+    var listingScorecard: ListingScorecardSnapshot = .empty
     /// 10:00 结算拍的三分支终值(成立率的**明细**)。
     var verdicts: K9VerdictsSnapshot = .empty
     var scoreboardLoading = false
@@ -366,7 +367,7 @@ final class AppModel {
         }
     }
 
-    /// 成绩板块:覆盖率 + 10:00 结算终值。
+    /// 成绩板块:清单五指标 + 覆盖率 + 10:00 结算终值。
     ///
     /// ⚠ 三分支终值按**报告的交易日**取:那批票是 D0 的清单,结算发生在 D1 早上,
     /// 而 `k9_d1_verdicts` 的 `trade_date` 记的就是 D1。这里用「今天」去问,
@@ -382,12 +383,20 @@ final class AppModel {
         let today = calendar.compactString(Date())
         async let coverageTask: Result<CoverageSnapshot, Error> =
             fetchResult { try await client.fetchCoverage() }
+        async let listingTask: Result<ListingScorecardSnapshot, Error> =
+            fetchResult { try await client.fetchListingScorecard() }
         async let verdictsTask: Result<K9VerdictsSnapshot, Error> =
             fetchResult { try await client.fetchVerdicts(tradeDate: today) }
-        let (c, v) = await (coverageTask, verdictsTask)
+        let (c, l, v) = await (coverageTask, listingTask, verdictsTask)
         switch c {
         case .success(let s): coverage = s
         case .failure(let e): handleLoadFailure(e, context: "覆盖率")
+        }
+        switch l {
+        case .success(let s): listingScorecard = s
+        case .failure(let e):
+            listingScorecard = .empty
+            handleLoadFailure(e, context: "清单成绩")
         }
         // 终值端点**恒 200**(那天没有就是空数组)→ 走到失败分支只可能是网络 / 鉴权。
         if case .success(let s) = v { verdicts = s } else { verdicts = .empty }

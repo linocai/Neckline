@@ -268,7 +268,7 @@ class TestAuctionWindowDiscipline:
         assert auction_store.load_checklist(d1, db_path=env.db_path) is None
         # ⛔ 也没落「当日已跑」标记 —— 今天压根没跑成,下一拍还能干净重跑。
         from neckline.dedup import already_pushed
-        assert not already_pushed(d1, auction_pipeline.AUCTION_SENTINEL, "",
+        assert not already_pushed(d1, auction_pipeline.AUCTION_SCOPE, "",
                                   auction_pipeline.EVENT_CHECKLIST, db_path=env.db_path)
 
     def test_no_listing_means_nothing_to_check(self, isolated_env, tmp_path):

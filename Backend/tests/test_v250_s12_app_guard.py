@@ -5,7 +5,7 @@
 | A · 退役零残留 | 持仓 / 篮子 / 六关 / Tier / 双时钟 / 情报 / 盘中看板 在 `App/` 下零命中(**代码行**,注释留痕不算) |
 | B · 三板块 IA | `AppTab` 恰好 `选股 / 成绩 / 复盘 + 设置`;⛔ 240px 玻璃侧栏没被加回来 |
 | C · 视图与模型清单 | §5.11 逐条:该删的文件不在、该有的文件在 |
-| D · 图标改名 | `AppIconV250` 四处同步(⚠ 与 `test_v240_p4_release.py` 分工:那边锁**当前**值三处,这边锁「旧名零残留」) |
+| D · 图标改名 | `AppIconV250` 四处同步并锁定旧名零残留 |
 
 🔴 **为什么"注释留痕不算"**:一条纪律总要写出它禁止的那个词才解释得清
 (「⛔ 不许把持仓加回来」)。把说明算进命中会逼着后来者删注释去凑绿 ——
@@ -30,6 +30,7 @@ from tests.client_sources import CLIENT, CLIENT_ROOT, strip_comments
 _ASSET_CATALOG = CLIENT / "Resources" / "Assets.xcassets"
 _PROJECT_YML = CLIENT_ROOT / "project.yml"
 _PBXPROJ = CLIENT_ROOT / "Neckline.xcodeproj" / "project.pbxproj"
+_EXPECTED_PRIMARY_ICON = "AppIconV250"
 
 
 def _code_lines() -> Dict[Path, List[Tuple[int, str]]]:
@@ -224,18 +225,15 @@ def test_every_swift_file_is_wired_into_the_generated_project():
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# D. 图标改名(⚠ 与 `test_v240_p4_release.py` 分工见模块头)
+# D. 图标改名
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_the_old_icon_name_is_gone_from_every_one_of_the_four_places():
     """🔴 **iOS 通知栏会缓存主 App 图标** —— 每版换 asset-set 名就是为了让那个缓存失效。
 
     改名要同步**四处**:`project.yml` / asset 目录名 / 守门常量 / 重生成的 pbxproj。
-    本条只锁「旧名零残留」;**当前**值等于哪一个由
-    `test_v240_p4_release.py::_EXPECTED_PRIMARY_ICON` 锁 —— ⛔ 两处不重复写死同一个串。
+    本文件同时锁当前值与「旧名零残留」，不依赖任何退役版本的测试。
     """
-    from tests.test_v240_p4_release import _EXPECTED_PRIMARY_ICON  # noqa: PLC0415
-
     old = "AppIconV242"
     assert _EXPECTED_PRIMARY_ICON != old, "V2.5.0 必须换一个新的 asset-set 名"
     assert not (_ASSET_CATALOG / f"{old}.appiconset").exists(), "旧 asset 目录还在"
@@ -261,8 +259,6 @@ def test_only_one_appicon_name_exists_in_the_asset_catalog():
 
 
 def test_project_yml_and_pbxproj_agree_on_the_icon_name():
-    from tests.test_v240_p4_release import _EXPECTED_PRIMARY_ICON  # noqa: PLC0415
-
     data = yaml.safe_load(_PROJECT_YML.read_text(encoding="utf-8"))
     target = data["targets"]["Neckline"]["settings"]["base"]
     assert target["ASSETCATALOG_COMPILER_APPICON_NAME"] == _EXPECTED_PRIMARY_ICON

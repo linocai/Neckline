@@ -76,7 +76,7 @@ struct StockDetailView: View {
                         .foregroundStyle(NK.textPrimary)
                     Text(d.tsCode).font(NKFont.monoKey).foregroundStyle(NK.textTertiary)
                     Spacer(minLength: 6)
-                    Text("第 \(d.entry.rank) 名").font(NKFont.caption.monospacedDigit())
+                    Text("全候选第 \(d.entry.rank) 名").font(NKFont.caption.monospacedDigit())
                         .foregroundStyle(NK.textSecondary)
                 }
                 NKWrapRow(spacing: 5, lineSpacing: 5) {
@@ -90,6 +90,8 @@ struct StockDetailView: View {
                     NKChip(text: nkSeatKindLabel(d.entry.seatKind), tone: .neutral)
                     if let n = d.entry.swL2Name, !n.isEmpty { NKChip(text: n, tone: .neutral) }
                 }
+                Text("全候选名次按全市场机械排序计算；保底席位会让最终清单出现跳号，这是正常的。")
+                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
                 // 🔴 **上方机械空间单独一块**(裁定 1:它是机械排序量,不是价位)。
                 if let stock = model.selection.stocks.first(where: { $0.tsCode == d.tsCode }) {
                     HStack(spacing: 6) {

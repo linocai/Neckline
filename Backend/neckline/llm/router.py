@@ -1,162 +1,23 @@
-"""任务 → Provider 路由(plan §五 V2-② / §3.10-B)。**任务常量单一源**——新增任何
-消费某个 LLM 任务的模块,一律从本文件 import 任务常量,不许各处散抄字符串字面量。
+"""K9 现役 LLM 任务到 Provider 的纯路由。
 
-V2.4.2 Build 6 起联网检索统一由 Tavily 独立完成。任务路由只决定“由哪个 LLM
-读证据并推理”，不再把 `has_web_search` 当成默认模型资格；缺显式路由一律回退
-`app_settings.llm_default_provider`。
-
-本模块**不碰 DB / 不做 I/O**——`resolve_task_provider_name()` 是纯函数,输入已经
-是调用方(`neckline.llm.factory`)查好的 `routes`/`default_provider`/`rows`,方便
-不建库直接单测四态解析逻辑。**不 import `neckline.settings_store`**(避免与
-`settings_store.set_llm_routes` 反向 import 本模块的 `ALL_TASKS` 校验形成循环)。
+联网只发生在 ``news_scan``，并由 Tavily 提供证据；``explain`` 与 ``playbook``
+只读取已经准备好的小上下文。退役任务键不会被接受，也不会为旧设置保留兼容入口。
 """
 
 from __future__ import annotations
 
 from typing import Dict, Optional, Protocol, Sequence
 
-# —— 任务常量(plan §五 V2-② 原文九项,逐字对应)——————————————————————————
-TASK_DRIVER_SEARCH = "driver_search"    # 驱动证据检索(①市场扫描→②聚合层用)
-TASK_NEWS_SCAN = "news_scan"            # 消息面扫描(立案/暴雷/监管三类)
-TASK_BASKET_REASON = "basket_reason"    # 篮子逻辑与角色比较(②聚合层)
-TASK_TIER_RANK = "tier_rank"            # 同档排序理由(③Tier 分层引擎)
-TASK_SCRIPT = "script"                  # 明早证伪剧本
-TASK_REVIEW = "review"                  # 盘后复盘解释
-TASK_PROFILE = "profile"                # 画像总结
-TASK_NL_ALERT = "nl_alert"              # 自然语言临时提醒解析
-# ⛔ **V2.5.0 起 `TASK_AUCTION` 在生产链上零调用**:K9 的次日核对是**零 LLM
-# 纯条件求值**(架构 §四 / 守门 G7),9:26 那一拍连 provider 都不取。
-# 这个键**留着只为让老库里存过的路由行仍解得出来**(同 `basket_reason` / `tier_rank`
-# / `script` 的处置),⛔ 别照旧注释以为竞价层还在调 LLM。
-TASK_AUCTION = "auction"                # (已退役)K8 集合竞价确认层解释
-# V2.4.2 selection chain: cheap brief triage and full deep reasoning are
-# distinct billable purposes.  They intentionally do not reuse the retired
-# tier/card generation tasks.
-TASK_DIRECTION_TRIAGE = "direction_triage"
-TASK_DEEP_REASON = "deep_reason"
-# 🔴 **V2.5.0 S9/S10:K9 架构 §八「LLM 的三个岗位」里的后两个**。
-# (第一个「方向解读」住事实层 `facts/direction_llm.py`,S3 登记 ⑦ 记明本版未建。)
-# ⚠ 两者都是**逐票**调用、上下文很小(一只票的日K + 已经拿到的检索证据),
-# 故**不进 `LONG_CONTEXT_TASKS`**:不开流式、吃基类的 90s 读超时
-# —— 那两项必须同路接线,只接一半就是 §七 P0-40/P0-44 的原病复发路径。
-# ⚠ 也**不进 `DEFAULT_SEARCH_TASKS`**:一只票**只联一次网**,那一次在
-# `news_scan`(Tavily),证据由编排器喂给这两个岗位,⛔ 不各自再搜一遍。
-TASK_EXPLAIN = "explain"                # 解释层 · 资料聚合 + 日K 评价(架构 §3.3)
-TASK_PLAYBOOK = "playbook"              # 预案层 · 关键价位与三分支阈值填值(架构 §3.4)
 
-ALL_TASKS = (
-    TASK_DRIVER_SEARCH,
-    TASK_NEWS_SCAN,
-    TASK_BASKET_REASON,
-    TASK_TIER_RANK,
-    TASK_SCRIPT,
-    TASK_REVIEW,
-    TASK_PROFILE,
-    TASK_NL_ALERT,
-    TASK_AUCTION,
-    TASK_DIRECTION_TRIAGE,
-    TASK_DEEP_REASON,
-    TASK_EXPLAIN,
-    TASK_PLAYBOOK,
-)
+TASK_NEWS_SCAN = "news_scan"
+TASK_EXPLAIN = "explain"
+TASK_PLAYBOOK = "playbook"
 
-# 外部 Tavily 包装的「检索类」集合。它不再触发 LLM Provider 自带搜索协议；
-# `factory.get_provider()` 仅用本集合决定是否包 TavilyGroundedProvider。
-# ⚠ **V2.1-① 起 `TASK_INQUIRY` 已随问询台整链退役从本元组移除**——它此前是
-# builder 推断收录(问询台 `provider.chat(enable_search=True, ...)` 需要搜索能力
-# 的 provider),现在连同问询台主体一起消失,不留影子档;`ALL_TASKS`/`__all__` 三处
-# 同步摘除,反向 hasattr 守门见 `tests/test_v21_retirement_guard.py`。
-DEFAULT_SEARCH_TASKS = (TASK_DRIVER_SEARCH, TASK_NEWS_SCAN)
-
-# The V2.4.2 selection pipeline has a deliberately small active task surface.
-# `basket_reason`, `tier_rank`, and `script` stay in ALL_TASKS so stored route
-# configuration and historical rows decode, but they are not new-flow steps.
-# ⚠ **V2.5.0:这一元组是 K8 时代 selection 链的残留** —— `neckline/selection/` 整包
-# 已在 S1 物理删除,三项在生产链上零调用。⛔ 本组未动它(改它要连 App 设置屏一起收口);
-# K9 的两个 LLM 岗位是 `TASK_EXPLAIN` / `TASK_PLAYBOOK`,⛔ 不进这张 K8 的表。
-SELECTION_PIPELINE_TASKS = (
-    TASK_DRIVER_SEARCH,
-    TASK_DIRECTION_TRIAGE,
-    TASK_DEEP_REASON,
-)
-
-# —— 大上下文推理:流式 + chunk 间隔超时(§七 P0-44,2026-08-05 晚间生产实打)——
-# **P0-40 的病灶**:`OpenAICompatProvider.read_timeout=90.0` 那个数字是给**带联网
-# 搜索的单次审判/问询**调的(v1.3.4 实测 30-60s+)。V2 的**推理类**是另一种工作量:
-# ⑤ 的篮子聚合一次把 **20 颗种子 + 每颗的成员机械数据**塞进同一个 prompt,再要一份
-# 结构化 JSON 出来 —— 08-05 中午 3/3 次恰好 90s ReadTimeout,**确定性超长、不是网络
-# 抖动**。P0-40 把它抬到 240s,当天中午实测该调用 **173s**,通过。
-#
-# **P0-44 = 同一个病当晚复发,证明抬数字这条路本身是错的**:当晚 16:35 生产链
-# **3/3 次精确各花 240s**(16:51:53/16:55:53/16:59:53)—— 晚高峰 GLM 吐字慢于中午,
-# 240s 照样不够。**根子在于"整段生成必须在 X 秒内回完"这个判据要求我们提前猜准一个
-# 与上游吞吐挂钩的数字,而那个数字每天都不一样**;再抬到 480 只是把下一次翻车推迟。
-#
-# **根治 = 换判据**:大上下文推理改**流式**(`stream: true`)。httpx 的 read 超时天然
-# 作用在每次 socket 读上,于是它从「整段墙钟」变成「**chunk 与 chunk 之间**最多静默
-# 多久」—— 判「还在不在吐字」而不是「一共要吐多久」,与吞吐无关,**不需要猜**。
-# 生成多长都合法;真死了(90s 一个字都没有)照样快速掐断,短超时的原始价值没丢。
-#
-# **⛔ 检索类不开流式**:GLM 的 `web_search` tools 协议与流式的组合本项目从未验证过
-# (v1.3.4 案底:不被上游认识的组合会 `ok=True` **静默返 0 条**),不拿生产赌。它们
-# 维持非流式 + 有实测背书的 90s。
-#
-# **为什么落在 `factory.get_provider(task)` 而不是 `chat()` 加参数**:后者要改每
-# 一个调用点(⑤⑥⑦⑨ 五处 + 未来的),漏一个就退回旧行为且**看不出来**;工厂是所有
-# provider 的唯一出生地,按 task 分级只需一处、天然全覆盖。⚠ 代价是**直接 new
-# 出来的 provider 不受影响**(单测替身、`providers/{glm,kimi}.py` 参考实现)——
-# 这正是我们要的:类属性默认值(非流式 / 90.0)保持不变,既有行为逐字节不变。
-#
-# **单次调用保险丝**:流式生成的总墙钟没有固定上限(生成多长都合法),但 chunk 间隔
-# 仍是 90s——连续 90s 一个字都没有就按卡死处理。2026-08-16 用户明确取消晚间选股
-# 整段累计时间上限，`neckline-basket.service` 同步设为 `TimeoutStartSec=infinity`；
-# 不得再用这里的悲观额度反推出一个 selection/unit 总墙钟。
-STREAM_CHUNK_GAP_TIMEOUT_SECONDS: float = 90.0
-
-# 单次流式生成的悲观额度(**只用于预算算术与守门单测,不是运行时会去掐的超时**)。
-# ⛔ 别把它接成一个真的 timeout —— 那就又变回"提前猜一个固定数字",正是 P0-44 要
-# 根治的东西。
-STREAM_GENERATION_BUDGET_ALLOWANCE_SECONDS: float = 600.0
-
-# 「大上下文 + 长结构化生成」的任务集合 = 开流式的那一批。⛔ 检索类
-# (`DEFAULT_SEARCH_TASKS`)与轻量解析类(`TASK_NL_ALERT`/`TASK_PROFILE`)不在其中。
-# ⚠ V2.3.3-③ 把 `TASK_AUCTION` 加进来(4 → 5):它一次把全部篮子的逐票读数 + 板块
-# 协同 + 相对强弱 + 历史对照塞进同一个 prompt,是标准的「大上下文 + 长结构化生成」。
-# 🔴 加进本元组 = `use_streaming_for_task()` 与 `read_timeout_for_task()` **两项同路
-# 接线**(它们读的就是这一个元组)—— 只接一半就是 P0-40/P0-44 的原病复发路径。
-# ⚠ 竞价层真正的天花板不是这里的 chunk 间隔,而是 **9:29 硬截止**
-# (`auction/pipeline.py`):流式下单次调用的墙钟无固定上限是刻意的,兜不住 9:29。
-# Tier/card task keys remain readable for historical configuration, but the
-# V2.4.2 path never invokes them.  Deep reasoning inherits the proven streaming
-# policy for structured long-form output; triage stays non-streaming and has no
-# search capability.
-LONG_CONTEXT_TASKS = (TASK_BASKET_REASON, TASK_REVIEW, TASK_AUCTION, TASK_DEEP_REASON)
-
-
-def use_streaming_for_task(task: Optional[str]) -> bool:
-    """该任务要不要走 SSE 流式(§七 P0-44)。**分级判据唯一实现**,`factory.
-    get_provider()` 是唯一接线点。检索类恒 `False`(协议组合未验证,见上方注释)。"""
-    return task in LONG_CONTEXT_TASKS
-
-
-def read_timeout_for_task(task: Optional[str]) -> Optional[float]:
-    """该任务该用多长的读超时。**`None` = 不覆盖**(用 provider 的类属性默认值
-    90.0)—— 返回 `None` 而不是直接返回 90.0,是为了让"没有分级意见"与"分级后
-    恰好等于默认值"两件事在调用侧分得开(provider 子类可能有自己的默认值)。
-
-    ⚠ **P0-44 起,长上下文那一档返回的数字语义变了**:它不再是"整段生成的墙钟
-    上限"(那是 P0-40 的 240s,已证伪并删除),而是**流式下的 chunk 间隔上限**。
-    数值上又回到 90.0,但**含义完全不同,别看见 90 就以为回退了** —— 判据从
-    「一共要吐多久」换成了「还在不在吐字」。"""
-    if task in LONG_CONTEXT_TASKS:
-        return STREAM_CHUNK_GAP_TIMEOUT_SECONDS
-    return None
+ALL_TASKS = (TASK_NEWS_SCAN, TASK_EXPLAIN, TASK_PLAYBOOK)
+DEFAULT_SEARCH_TASKS = (TASK_NEWS_SCAN,)
 
 
 class ProviderLike(Protocol):
-    """`resolve_task_provider_name` 对 `rows` 元素的最小结构化要求(鸭子类型,
-    刻意不 import `settings_store.ProviderRecord`——避免引入不必要的模块耦合)。"""
-
     name: str
     enabled: bool
     has_web_search: bool
@@ -167,20 +28,12 @@ def resolve_task_provider_name(
     *,
     routes: Dict[str, str],
     default_provider: Optional[str],
-    rows: Sequence[ProviderLike],
+    rows: Sequence[ProviderLike],  # noqa: ARG001 - 保持纯路由接口可直接对拍设置行
 ) -> Optional[str]:
-    """决定这个任务该用哪个 provider **名字**。纯函数,不做存在性 / enabled / key
-    校验——那是 `factory.get_provider()` 的下一步(找不到该名字对应的行,或行被
-    禁用/无 key,一律在那一层判「不可用」返回 `None`)。
+    """显式任务路由优先；缺路由时使用默认 Provider。
 
-    优先级:
-    ① **显式路由永远优先**(`routes[task]`)——即便指向的名字当前不存在/被禁用,
-       也原样返回该名字,交给调用方统一走「不可用→None」,**不在这里悄悄跳过到
-       默认值**:路由是用户显式配置,配错了要如实反映成"这个任务不可用",不能被
-       "贴心地"绕过去用别的 provider(那样用户永远发现不了自己配错了)。
-    ② 缺路由 → 回退 `default_provider`(`app_settings.llm_default_provider`)。
-
-    `has_web_search` 是历史兼容字段，V2.4.2 Build 6 后不参与任何路由判定。
+    显式路由即使指向不存在或禁用的 Provider 也不偷偷回退，具体可用性由工厂统一
+    判定。这样配置错误会如实表现为任务不可用，而不是悄悄换模型。
     """
     if task:
         routed = routes.get(task)
@@ -190,25 +43,11 @@ def resolve_task_provider_name(
 
 
 __all__ = [
-    "TASK_DRIVER_SEARCH",
     "TASK_NEWS_SCAN",
-    "TASK_BASKET_REASON",
-    "TASK_TIER_RANK",
-    "TASK_SCRIPT",
-    "TASK_REVIEW",
-    "TASK_PROFILE",
-    "TASK_NL_ALERT",
-    "TASK_AUCTION",
-    "TASK_DIRECTION_TRIAGE",
-    "TASK_DEEP_REASON",
+    "TASK_EXPLAIN",
+    "TASK_PLAYBOOK",
     "ALL_TASKS",
     "DEFAULT_SEARCH_TASKS",
-    "SELECTION_PIPELINE_TASKS",
-    "STREAM_CHUNK_GAP_TIMEOUT_SECONDS",
-    "STREAM_GENERATION_BUDGET_ALLOWANCE_SECONDS",
-    "LONG_CONTEXT_TASKS",
     "ProviderLike",
-    "read_timeout_for_task",
     "resolve_task_provider_name",
-    "use_streaming_for_task",
 ]

@@ -13,9 +13,7 @@ Playbook   = { ts_code, pattern, levels{first_resistance, second_resistance, inv
 (`parse_playbook` 抛 `PlaybookInvalid`),⛔ 绝不让一个次日早上求不出值的条件被冻结进去。
 
 🔴 **⛔ 没有算术**:`rhs` 只能是一个数或另一个 `MetricRef`。
-K9 §6.3 形态 2 的「跌破昨日最低价 **[B]%**」因此由 LLM 直接填**那个价位**
-(百分比可由 `(prev_low − rhs) / prev_low` 反算),⛔ 不在条件语法里加乘法
-—— 加了就等于给求值器开了一条「谁都能往里塞表达式」的口子。**如实登记见 §14**。
+B2 已裁定形态 2 的放弃条件只保存明确价格；不保存、不反算、不展示百分比。
 
 🔴 **⛔ 没有自由文本**:`Condition` / `Branch` / `Levels` 三个 dataclass 里
 一个 `str` 字段都不承载评价(`Branch.name` 是闭合枚举、`Playbook.pattern` 是形态码)。

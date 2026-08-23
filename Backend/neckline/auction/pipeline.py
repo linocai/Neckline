@@ -57,10 +57,8 @@ logger = logging.getLogger(__name__)
 #: 硬截止时刻 = 窗口右端(9:29)。
 AUCTION_HARD_DEADLINE = AUCTION_WINDOW_END
 
-#: `sentinel_events` 的市场级台账 key(表名留着、语义已换,见 `dedup.py` 模块头)。
-AUCTION_SENTINEL = "auction"
-#: ⚠ 事件码**刻意与 K8 时代的 `tick` 不同**:老库里那些行是 K8 竞价确认层留下的,
-#: 用同一个码会让「今天这一拍跑没跑过」在历史行上撞车。
+#: 早晨任务防重作用域。
+AUCTION_SCOPE = "auction"
 EVENT_CHECKLIST = "checklist_tick"
 
 #: 9:29 已过还没落完 → 记这个,**不发布**。
@@ -131,7 +129,7 @@ def run_checklist_tick(
     if not is_auction_window(now):
         res.skipped_reason = SKIP_NOT_WINDOW
         return res
-    if already_pushed(trade_date, AUCTION_SENTINEL, "", EVENT_CHECKLIST, db_path=db_path):
+    if already_pushed(trade_date, AUCTION_SCOPE, "", EVENT_CHECKLIST, db_path=db_path):
         res.skipped_reason = SKIP_ALREADY_RAN
         return res
 
@@ -223,7 +221,7 @@ def run_checklist_tick(
     res.no_playbook = len(checklist.no_playbook_codes)
     res.data_quality = checklist.data_quality
     res.notes = list(checklist.notes)
-    record_pushed(trade_date, AUCTION_SENTINEL, "", EVENT_CHECKLIST,
+    record_pushed(trade_date, AUCTION_SCOPE, "", EVENT_CHECKLIST,
                   payload={"counts": res.counts}, db_path=db_path)
     logger.info("[auction] %s 竞价核对表:已触发放弃 %d / 待开盘后观察 %d(质量 %s)",
                 trade_date, res.rejected, res.pending_open, res.data_quality)
@@ -232,6 +230,6 @@ def run_checklist_tick(
 
 __all__ = [
     "AUCTION_WINDOW_START", "AUCTION_WINDOW_END", "AUCTION_HARD_DEADLINE",
-    "AUCTION_SENTINEL", "EVENT_CHECKLIST", "SKIP_DEADLINE_MISSED",
+    "AUCTION_SCOPE", "EVENT_CHECKLIST", "SKIP_DEADLINE_MISSED",
     "is_auction_window", "ChecklistRunResult", "run_checklist_tick",
 ]

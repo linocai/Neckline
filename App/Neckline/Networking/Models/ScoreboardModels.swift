@@ -2,7 +2,8 @@
 //  ScoreboardModels.swift
 //  Neckline — **成绩板块**的 DTO(V2.5.0 S12 新增,裁定 11:成绩线升为板块)。
 //
-//  对齐后端 `GET /api/v1/scoreboard/coverage?window=` 与
+//  对齐后端 `GET /api/v1/scoreboard/listing?window=`,
+//  `GET /api/v1/scoreboard/coverage?window=` 与
 //  `GET /api/v1/scoreboard/verdicts/{tradeDate}`(逐字段对齐,⛔ 别猜)。
 //
 //  🔴 **三条成绩线分开存放、互不进入对方的分子分母**(架构 §五)。本文件只装前两条
@@ -298,18 +299,52 @@ struct K9VerdictsSnapshot: Codable, Equatable {
 
 // MARK: - 清单成绩五指标(K9 §八)—— **本版只有壳,结算归 S17**
 
-/// 五指标的展示骨架。
+/// 一只正式清单成员走完 D+4 后留下的结算明细。
+struct ListingFollowupRow: Codable, Equatable, Identifiable {
+    var d0Date: String = ""
+    var d4Date: String = ""
+    var tsCode: String = ""
+    var verdict: String? = nil
+    var hasPlaybook = false
+    var hitFirstResistance: Bool? = nil
+    var stockCloseReturn: Double? = nil
+    var stockMaxReturn: Double? = nil
+    var industryCloseReturn: Double? = nil
+    var pickCloseExcess: Double? = nil
+
+    var id: String { "\(d0Date)-\(tsCode)" }
+}
+
+/// 最近若干个已结算清单日的五指标。
+/// `nil` 表示当前没有足够的合格样本，客户端必须说「尚不可得」，不能显示为零。
+struct ListingScorecardSnapshot: Codable, Equatable {
+    var window = 0
+    var settledDays = 0
+    var listingCount = 0
+    var establishmentRate: Double? = nil
+    var establishmentNumerator = 0
+    var establishmentDenominator = 0
+    var realizationRate: Double? = nil
+    var realizationNumerator = 0
+    var realizationDenominator = 0
+    var falseKillRate: Double? = nil
+    var falseKillNumerator = 0
+    var falseKillDenominator = 0
+    var industryScore: Double? = nil
+    var pickScore: Double? = nil
+    var latestD0Date: String? = nil
+    var rows: [ListingFollowupRow] = []
+
+    static let empty = ListingScorecardSnapshot()
+}
+
+/// 五指标的显示定义。
 ///
 /// 🔴 **行业分与选票分永远是两栏,⛔ 本类型不提供、也不许有任何合计口径** ——
 /// 服务端 `scorecard` 存储层刻意没有 `total` / `combined` 字段(架构 §5.1 / K9 §八),
 /// 客户端也⛔ 不许自己相加。这不是排版洁癖:行业分低是**方向层**的问题,
 /// 行业分高而选票分低是**选票参数**的问题,两者吃的药完全不同。
 ///
-/// ⚠ **本版(V2.5.0)只有壳,没有数**,这是**计划中的顺序**不是漏做:
-/// 五指标的结算是 **S17**,它排在批 B(等参数标定完成、用户确认之后),
-/// 依赖 D+1~D+4 的行情回填(`k9_followups`)与 10:00 结算终值。
-/// 服务端因此还**没有** `GET /scoreboard/listing` 这条路由 —— 客户端⛔ 不许去调
-/// 一个不存在的端点(契约对拍会当场红),界面如实说「这条线还没开始结算」。
 enum NKListingScorecard {
     /// 五个指标各自在问什么(K9 §八 表格逐字)。⛔ 别改写成对仗好听但讲不清的句子。
     static let metrics: [(name: String, question: String)] = [
@@ -323,9 +358,4 @@ enum NKListingScorecard {
     /// 🔴 两栏永远分开呈现的那两项。⛔ **不给合计**。
     static let splitPair: (industry: String, pick: String) = ("行业分", "选票分")
 
-    /// 为什么现在还没有数(如实说,⛔ 不写「暂无数据」——那会把「还没做」讲成「查过了没有」)。
-    static let notSettledNote =
-        "清单成绩五指标要 D+1~D+4 的行情回填与 10:00 结算终值才算得出,"
-        + "结算归 S17(排在参数标定完成之后)。现在能看的是下面两块:"
-        + "**10:00 结算拍的三分支终值**(成立率的明细)与**覆盖率**。"
 }

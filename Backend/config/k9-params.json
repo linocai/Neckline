@@ -1,0 +1,116 @@
+{
+  "packageVersion": "k9-params-20260822-r1",
+  "factPackVersion": "fp-2",
+  "calibratedBy": "whynotme/K9-20260822",
+  "calibratedAt": "2026-08-22T00:00:00+08:00",
+  "approvedBy": "Lino",
+  "approvedAt": "2026-08-22T18:27:26+08:00",
+  "boundary": {
+    "newListingDays": 30,
+    "liquidityWindowDays": 20,
+    "liquidityBottomPct": 0.2,
+    "spikeFadeRetPct": 5.0,
+    "spikeFadeGapPct": 3.0
+  },
+  "industry": {
+    "minMembers": 5,
+    "excludedL2Codes": [
+      "801125.SI"
+    ],
+    "heatAbsentPolicy": "renormalize"
+  },
+  "volume": {
+    "maDays": 20,
+    "eruptionMultiple": 2.0
+  },
+  "channels": {
+    "p1": {
+      "strict": {
+        "ampWindowDays": 20,
+        "ampMaxPct": 25.0,
+        "minRetPct": 0.0
+      },
+      "relaxed": {
+        "ampWindowDays": 20,
+        "ampMaxPct": 30.0,
+        "minRetPct": 0.0
+      }
+    },
+    "p2": {
+      "strict": {
+        "normDropMin": 0.3,
+        "maDays": 20,
+        "minVolMultiple": 1.0
+      },
+      "relaxed": {
+        "normDropMin": 0.25,
+        "maDays": 20,
+        "minVolMultiple": 0.8
+      }
+    },
+    "p3": {
+      "strict": {
+        "longWindow": 60,
+        "shortWindow": 7,
+        "flatBand": 0.005
+      },
+      "relaxed": {
+        "longWindow": 60,
+        "shortWindow": 7,
+        "flatBand": 0.01
+      }
+    },
+    "p4": {
+      "strict": {
+        "dailyInflowRankPct": 0.05,
+        "cumDays": 5,
+        "cumInflowRankPct": 0.05,
+        "lagRankGap": 0.3
+      },
+      "relaxed": {
+        "dailyInflowRankPct": 0.1,
+        "cumDays": 5,
+        "cumInflowRankPct": 0.1,
+        "lagRankGap": 0.2
+      }
+    }
+  },
+  "ranking": {
+    "weights": {
+      "industryHeat": 0.6,
+      "patternStrength": 0.0,
+      "relay": 0.4
+    },
+    "patternSubWeights": {
+      "p1": {
+        "volMultiple": 0.3333333333333333,
+        "upsideRoomFar": 0.3333333333333333,
+        "relStrength": 0.3333333333333333
+      },
+      "p2": {
+        "relStrengthShortfall": 1.0
+      },
+      "p3": {
+        "shortWindowImprovement": 0.0,
+        "upsideRoomNear": 1.0
+      },
+      "p4": {
+        "inflowRank": 1.0,
+        "volumeRatioRank": 0.0
+      }
+    },
+    "relayLookbackDays": 10,
+    "relaySource": "shortlisted",
+    "relayScoring": "binary",
+    "upsideRoomMechDays": 20
+  },
+  "quota": {
+    "min": 10,
+    "max": 20,
+    "floorPerChannel": 1,
+    "overStrictConsecutiveDays": 3
+  },
+  "explain": {
+    "maxBackfillRounds": 2
+  }
+}

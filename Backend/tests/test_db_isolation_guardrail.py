@@ -301,7 +301,7 @@ def test_scan_actually_covers_known_database_guardrails():
     # —— 这条守门要证明的是「glob 没瞎」,不是「那两个文件还在」。
     for expected in (
         "test_review_reconcile.py",
-        "test_v2_schema_guard.py",
+            "test_schema_current.py",
         "test_report_store.py",
         "test_db_isolation_guardrail.py",
     ):

@@ -92,6 +92,25 @@ TO_BE_CALIBRATED = "__TO_BE_CALIBRATED__"
 #: 权重和的浮点容差(数值容差,不是策略参数)。
 _WEIGHT_SUM_TOL = 1e-6
 
+#: B17：K9 正文已经给定的结构值。它们不是标定旋钮，参数包只能逐字转录。
+#: 两档定义性条件里的正文值落在 strict 档；relaxed 档仍由联合通过率标定。
+K9_FIXED_VALUES: Mapping[str, Any] = {
+    "boundary.newListingDays": 30,
+    "boundary.liquidityWindowDays": 20,
+    "boundary.liquidityBottomPct": 0.2,
+    "boundary.spikeFadeRetPct": 5.0,
+    "boundary.spikeFadeGapPct": 3.0,
+    "volume.maDays": 20,
+    "channels.p1.strict.ampWindowDays": 20,
+    "channels.p1.strict.ampMaxPct": 25.0,
+    "channels.p1.strict.minRetPct": 0.0,
+    "channels.p2.strict.maDays": 20,
+    "channels.p4.strict.cumDays": 5,
+    "quota.min": 10,
+    "quota.max": 20,
+    "quota.floorPerChannel": 1,
+}
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 三个「取值待标定」的闭合枚举 —— 全部候选取值都实现,⛔ 无默认
@@ -649,6 +668,21 @@ def _check_fingerprint(raw: Mapping[str, Any], invalid: List[str]) -> None:
             f"这份参数包是在另一版事实包口径上标定的,⛔ 不能拿来跑")
 
 
+def _check_k9_fixed_values(raw: Mapping[str, Any], invalid: List[str]) -> None:
+    """K9 原文给定值只能转录，不能被参数包安静改写。"""
+    for path, expected in K9_FIXED_VALUES.items():
+        got = _dig(raw, path)
+        if isinstance(expected, float) and isinstance(got, (int, float)) \
+                and not isinstance(got, bool):
+            matches = abs(float(got) - expected) <= _WEIGHT_SUM_TOL
+        else:
+            matches = got == expected
+        if not matches:
+            invalid.append(
+                f"{path}={got!r} 必须等于 K9 原文值 {expected!r}；"
+                "这是固定结构值，不是标定参数")
+
+
 def _check_excluded_codes(
     raw: Mapping[str, Any], invalid: List[str], db_path: Optional[Path]
 ) -> None:
@@ -788,6 +822,7 @@ def validate(
     _walk(REQUIRED_SCHEMA, raw, "", missing, invalid, extras)
     _check_fingerprint(raw, invalid)
     if not missing:
+        _check_k9_fixed_values(raw, invalid)
         _check_ranges(raw, invalid)
         _check_weight_sums(raw, invalid)
         _check_excluded_codes(raw, invalid, db_path)
@@ -917,6 +952,7 @@ __all__ = [
     "RelaySource",
     "RelayScoring",
     "ENUM_PARAM_SLOTS",
+    "K9_FIXED_VALUES",
     "ParamsUnavailable",
     "BoundaryParams",
     "IndustryParams",

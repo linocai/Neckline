@@ -1,27 +1,16 @@
-"""应用设置存取(plan §五 阶段4 / 4A.5,V2-② 起 LLM 部分改为 Provider 注册表,
-**🔴 高危区:LLM key 服务端存取**)。
+"""应用设置与 LLM Provider 注册表存取。
 
 单行 `app_settings` 表(id 恒为 1),存 App 设置屏可改的运行配置:
     · push_kinds —— **V2-⑪ 起的推送开关落点**:JSON `{"<kind>": 0|1}`,**按 kind 配**
       (三级 category 只决定「怎么响」,kind 决定「响不响」;按 category 配会连坐,
       D5 定案)。kind 取值域唯一源 `neckline/notify_kinds.py::ALL_KINDS`;缺键取
       默认开。读 `get_push_kinds` / 写 `set_push_kinds`。
-    · push_report / push_retreat / push_precall / push_d5exit / push_circuit /
-      push_holding_alert —— **V1 六类开关列,V2-⑪ 起停写留档**(不 DROP,同
-      llm_provider 的列级停写纪律)。老库取值已由 `db.py::_seed_push_kinds` 一次性
-      播种进 `push_kinds`;本模块此后**既不读也不写**这六列。
     · review_col_map —— 周复盘交割单列映射(4D 用,本块只建字段)。
-    · intel_watch_boards —— ⚠ **v2.0.0-⑬-1/⑬-13 起停写留档**(五常驻板块保底删除):
-      列保留不 DROP,存取函数 `get/set_intel_watch_boards` 与两个 HTTP 端点已物理删除。
     · llm_task_routes / llm_default_provider —— V2-② 任务→Provider 路由(见
       `get_llm_routes`/`set_llm_routes`),`neckline.llm.factory.get_provider()`
       解析用。
     · tavily_api_key —— V2.4.2 Build 6 独立联网检索凭据。它不是 LLM Provider
       的能力位；只写不回显，HTTP 只返回 `keySet`。
-    · llm_provider / llm_api_key —— **V1 遗留列,V2 起停写**(不 DROP,同项目
-      "删表一律停写留档"纪律的列级版本)。单 provider 时代的 `set_llm`/
-      `resolve_llm` 已随 V2-② 退役,被下方 Provider 注册表(`llm_providers` 表,
-      任意 OpenAI 兼容端点自填)取代。
 
 **LLM Provider 注册表(V2-②,plan §3.10-B)**:`llm_providers` 表(建表见
 `neckline/db.py::_SCHEMA`)。CRUD 见 `list_providers`/`get_provider_record`/
@@ -53,15 +42,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# `_default_settings` 自 V2-② 起不再被本模块任何函数消费(V1 的 `.env` 单 provider
-# 兜底 `resolve_llm` 已退役,自填制下没有这个概念)——**但保留这个导入**:
-# `tests/conftest.py::api_env` 固定会
-# `monkeypatch.setattr(settings_store, "_default_settings", api_settings)`,
-# 删掉这个名字会让该夹具(几乎所有 API 测试都依赖它)在 `setattr` 那一步就
-# `AttributeError`。保留一个"被 monkeypatch 但没人读"的名字,好过牵连改一个被
-# 几十个测试文件共享的 fixture。
 from neckline import notify_kinds
-from neckline.config import settings as _default_settings  # noqa: F401
 from neckline.db import connection, init_schema, readonly_tables
 
 # 局部更新(`update_provider`)用的"未传"哨兵——与"显式传 None/空串"区分。
@@ -124,8 +105,7 @@ def _clean(v: Optional[str]) -> Optional[str]:
 
 def _ensure_row(conn) -> None:
     conn.execute(
-        "INSERT OR IGNORE INTO app_settings (id, push_report, push_retreat, review_col_map) "
-        "VALUES (1, 1, 1, '{}')"
+        "INSERT OR IGNORE INTO app_settings (id, review_col_map) VALUES (1, '{}')"
     )
 
 
@@ -448,14 +428,8 @@ def get_llm_routes(db_path: Optional[Path] = None) -> Tuple[Dict[str, str], Opti
     """读 (任务路由表, 默认 provider 名)。路由表 JSON 非法/非 dict → 空字典兜底
     (诚实降级,不崩)。
 
-    **V2.1-① 起读侧过滤未知任务名**(丢弃 + 一行 WARNING,不抛):库里可能残留已退役
-    任务名(如问询台整链退役后的 `"inquiry"` 键——从老备份恢复、或退役前就写入过),
-    若原样透传给客户端,`GET` 回来的 routes 被客户端原样 `PUT` 回去会撞
-    `set_llm_routes()` 的 `ALL_TASKS` 校验 400。**这是与一次性清库脚本
-    `scripts/oneoff/strip_retired_llm_routes.py` 配套的两件事之一**——脚本清生产库
-    那一次性的键,这里兜住"任何时候库里又冒出未知任务名"的自愈,少一件都不够
-    (只清库、不读侧过滤 = 恢复一次备份就复发;只读侧过滤、不清库 = 生产库长期带一个
-    死键,`app_settings.llm_task_routes` 的审计视图会显示假信息)。
+    读侧只返回 K9 三个现役任务和可用 Provider；旧键与失效引用会被过滤，下一次
+    设置写回时即从数据库消失。
 
     ⚠ **只读**(R3-🔴-2):缺表 / 缺补列 → `({}, None)`(= 路由未配置),
     与既有的「JSON 非法 → 空字典兜底」同一条诚实降级路径。"""
