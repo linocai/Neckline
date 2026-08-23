@@ -61,6 +61,86 @@ macOS 本地以排程契约测试为准；部署到 Linux 时再运行 `systemd-
 
 ---
 
+## [ERR-20260823-002] sqlite-online-backup-parent-not-traversable
+
+**Logged**: 2026-08-23T09:58:17+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+生产回滚目录按 `root:root 700` 创建后，`neckline` 服务用户无法穿过父目录创建 SQLite
+在线备份。
+
+### Error
+
+```text
+sqlite3.OperationalError: unable to open database file
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-23T09:56:00+08:00
+- **Notes**: 服务与定时器已经停止，生产库未改。改为由 `neckline` 在权限 600 的独立临时文件
+  完成官方 backup API，再由 root 移入 700 回滚目录；源库和副本 `integrity_check` 均为 ok。
+
+---
+
+## [ERR-20260823-003] real-v242-db-exposed-five-unretired-selection-tables
+
+**Logged**: 2026-08-23T09:58:17+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+
+V2.5.0 迁移门禁只用了过窄的合成旧库；对真实 V2.4.2 备份副本演练时发现五张已退役的
+selection 追踪表未进入物理删除清单，迁移后会留下 31 张表而不是现行 26 张。
+
+### Error
+
+```text
+unexpected tables: selection_direction_events, selection_directions,
+selection_llm_calls, selection_runs, selection_search_calls
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-23T09:58:17+08:00
+- **Notes**: 生产数据库尚未迁移。五张表已加入 `_RETIRED_TABLES`，合成迁移测试补齐同名旧表，
+  退役清单门禁同时锁住；随后必须重跑全量测试和真实备份副本演练。
+
+---
+
+## [ERR-20260823-004] retired-selection-parent-dropped-before-child
+
+**Logged**: 2026-08-23T10:01:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+
+首次补入五张 selection 退役表时，删除顺序把父表 `selection_runs` 放在
+`selection_search_calls` 前；真实 V2.4.2 外键因此拒绝迁移。
+
+### Error
+
+```text
+sqlite3.IntegrityError: FOREIGN KEY constraint failed
+```
+
+### Resolution
+
+- **Resolved**: 2026-08-23T10:01:00+08:00
+- **Notes**: 生产数据库仍未迁移。四张子表现在全部先删，父表最后删；合成旧库门禁已加入真实
+  外键。重新对生产备份副本演练后得到严格 26 张现役表，完整性、设置、Provider、Tavily、
+  设备、交易日历和基础证券数据全部通过。
+
+---
+
 ## [ERR-20260822-001] redundant-chgrp-on-setgid-probe-directory
 
 **Logged**: 2026-08-22T17:28:00+08:00

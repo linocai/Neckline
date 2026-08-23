@@ -44,6 +44,15 @@ def test_migration_physically_drops_retired_tables_and_columns(tmp_path):
             CREATE TABLE baskets(id TEXT);
             CREATE TABLE reports(trade_date TEXT);
             CREATE TABLE positions(id INTEGER);
+            CREATE TABLE selection_runs(run_id TEXT PRIMARY KEY);
+            CREATE TABLE selection_directions(
+              run_id TEXT REFERENCES selection_runs(run_id));
+            CREATE TABLE selection_direction_events(
+              run_id TEXT REFERENCES selection_runs(run_id));
+            CREATE TABLE selection_llm_calls(
+              run_id TEXT REFERENCES selection_runs(run_id));
+            CREATE TABLE selection_search_calls(
+              run_id TEXT REFERENCES selection_runs(run_id));
             CREATE TABLE app_settings(
               id INTEGER PRIMARY KEY, push_report INTEGER, push_retreat INTEGER,
               tavily_api_key TEXT, review_col_map TEXT, updated_at TEXT,

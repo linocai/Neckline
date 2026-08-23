@@ -408,6 +408,9 @@ _RETIRED_TABLES = (
     "basket_members", "basket_cards", "basket_verification", "basket_review_daily",
     "tier_history", "gate_evaluations", "basket_dropped_handoff", "basket_stage_handoff",
     "out_candidates", "out_shadow_daily", "out_shadow_reviews", "baskets",
+    # 四张子表必须先于父表 selection_runs 删除；生产旧库有真实外键约束。
+    "selection_direction_events", "selection_directions", "selection_llm_calls",
+    "selection_search_calls", "selection_runs",
     "selection_pack_activation_log", "selection_packs", "strategy_activation_log",
     "strategy_versions", "llm_judgments", "reports", "entry_snapshots", "position_plans",
     "holding_eod_check", "decision_pending_track", "decision_log", "positions",

@@ -28,6 +28,8 @@ def test_retired_tables_cover_the_old_k8_surface():
         "baskets", "basket_members", "basket_cards", "gate_evaluations",
         "strategy_versions", "reports", "positions", "inquiry_pool",
         "selection_packs", "auction_reports", "auction_verdicts",
+        "selection_runs", "selection_directions", "selection_direction_events",
+        "selection_llm_calls", "selection_search_calls",
     }
     assert required <= set(_RETIRED_TABLES)
 
