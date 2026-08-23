@@ -5,8 +5,8 @@ A 股生产应用：SwiftUI 客户端 + FastAPI 服务。离线研究、回测�
 
 ## 当前状态
 
-- 当前生产版本：**V2.5.0 · Build 10**，已于 2026-08-23 部署到宁波云。
-- macOS 已换装 V2.5.0 Build 10；iOS 签名归档已生成，交由用户自行安装。
+- 当前生产版本：**V2.5.1 · Build 11**，已于 2026-08-23 部署到宁波云。
+- macOS 已换装 V2.5.1 Build 11；iOS 签名归档已生成，交由用户自行安装。
 - 现行引擎：事实包 → 四通道机械召回 → 排序与名额 → 解释 → 预案 → 次日两拍 → 成绩。
 - 退役运行时代码、表、路由、设置和数据已删除；历史追溯使用 Git。
 - 当前进入上产观察期；具体裁定、发布记录和待观察事项见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
@@ -74,7 +74,7 @@ bash scripts/smoke_review.sh
 - `playbook`：给机械预案骨架填明确价格。
 
 机械策略层、9:26 条件判断和 10:00 结算均不调用 LLM。Provider 只负责推理，联网统一由
-Tavily 完成。macOS 配置路径是“设置 → LLM Provider 与任务路由 → Tavily 联网搜索”；
+Tavily 完成。macOS 配置路径是“设置 → 高级与诊断 → 模型、联网资料与任务路由 → Tavily 联网搜索”；
 Key 只写入服务端，API 和客户端只返回是否已配置。
 
 ### 数据库
@@ -100,23 +100,17 @@ App 的业务板块是“选股 / 成绩 / 复盘”，设置单独入口；系�
 
 ## 生产发布记录
 
-V2.5.0 Build 10 于 2026-08-23 部署到宁波云 `114.66.0.38:/opt/neckline`。正式参数包从
-whynotme 原样纳入 `Backend/config/k9-params.json`，文件 SHA-256 为
-`5775641b989e9553ad29e0178a059007f1f663b422e8134130c99922e0dee952`。
-
-发布时已完成：
-
-- 停止旧链、备份源码/unit/密钥与数据库，并在数据库副本上完成迁移演练；
-- 使用 TuShare `suspend_d` 补齐 131 个缺失交易日，154/154 个交易日分区均可读；
-- 正式数据库迁移为 26 张现行表，`PRAGMA integrity_check=ok`，设置、DeepSeek、Tavily、
-  Provider、设备、交易日历与股票基础信息均保留；
-- API 与两个 timer 均为 enabled/active，公开健康检查返回 `v2.5.0`，服务重启次数为 0；
-- 未在部署时重跑报告；下一次晚间任务由系统按周日 19:00 的正式计划触发。
+V2.5.1 Build 11 于 2026-08-23 部署到宁波云 `114.66.0.38:/opt/neckline`。生产数据库已由
+26 张现行表增至 28 张，`PRAGMA integrity_check=ok`；公开健康检查返回 `v2.5.1`，API
+服务运行且重启次数为 0。发布没有手动重跑报告，首份正式报告仍由周日 19:00 排程触发。
 
 服务器回滚包位于
-`/opt/neckline-release-backups/v2.5.0-pre-20260823-095437/`；旧 macOS App 位于
-`/Users/linotsai/Lino/app_backups/Neckline-v2.4.2-b8-pre-v2.5.0-b10-20260823/`。
+`/opt/neckline-release-backups/v2.5.1-b11-pre-20260823-144641/`；换包前 V2.5.0 macOS App 位于
+`/Users/linotsai/Lino/app_backups/Neckline-v2.5.0-b10-pre-v2.5.1-b11-20260823-145130/`。
 签名归档、交付压缩包与 SHA-256 清单位于
-`/Users/linotsai/Lino/releases/Neckline/v2.5.0-b10-20260823/`。
+`/Users/linotsai/Lino/releases/Neckline/v2.5.1-b11-20260823/`。
+
+V2.5.0 Build 10 的上产事实保留在
+[V2.5.0 发布记录](archive/施工图/V2.5.0_Build10_发布记录_20260823.md)。
 
 完整发布事实与回滚边界以 [PROJECT_PLAN.md](PROJECT_PLAN.md) 为准。
