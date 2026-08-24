@@ -389,7 +389,7 @@ Use `min_drawdown_from_window_high_pct` consistently and update scorecard fixtur
 
 **Logged**: 2026-08-24T23:52:00+08:00
 **Priority**: critical
-**Status**: in_progress
+**Status**: resolved
 **Area**: backend
 
 ### Summary
@@ -409,6 +409,10 @@ Store `params_package_version`, `pack_id`, and `pack_version` on every predictio
 ### Metadata
 - Reproducible: yes
 - Related Files: Backend/neckline/db.py, Backend/neckline/scorecard/listing.py, Backend/scripts/migrate_k9_v2.py, Backend/tests/test_scorecard_listing.py, Backend/tests/test_schema_current.py, Backend/tests/test_k9_v2_migration.py
+
+### Resolution
+- **Resolved**: 2026-08-25T00:35:00+08:00
+- **Notes**: Prediction rows now freeze parameter-package, pack ID, pack version, strategy version, and label-contract provenance. Migration and schema release guards cover every field; the closed first cutover was fully restored before the corrected run. Released in `fd75bf5` / `v2.6.0-b16-r2`.
 
 ---
 
@@ -446,7 +450,7 @@ Inspect the narrow target range first and apply the implementation and test chan
 
 **Logged**: 2026-08-25T00:52:00+08:00
 **Priority**: critical
-**Status**: in_progress
+**Status**: resolved
 **Area**: backend
 
 ### Summary
@@ -466,5 +470,129 @@ Select scorecard dates only from final-cohort rows whose `path_state` is no long
 ### Metadata
 - Reproducible: yes
 - Related Files: Backend/neckline/scorecard/listing.py, Backend/tests/test_scorecard_listing.py, App/Neckline/Views/ScoreboardView.swift
+
+### Resolution
+- **Resolved**: 2026-08-25T00:54:00+08:00
+- **Notes**: Scorecard dates now come only from non-pending final-cohort rows. Day 1 exposes `activeQueueCount=20` separately while `settledDays=0`, `latestD0Date=null`, and score rows remain empty. Released in `676d20e` / `v2.6.0-b16-r3`.
+
+---
+
+## [ERR-20260825-002] shell expression embedded in JavaScript template
+
+**Logged**: 2026-08-25T00:10:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+A remote release command containing the shell expression `${API_TOKEN:-}` was embedded directly in a JavaScript template string and failed to parse before any remote command ran.
+
+### Error
+`SyntaxError: Missing } in template expression`
+
+### Context
+- No production action occurred because JavaScript parsing failed first.
+- Shell parameter syntax and JavaScript interpolation syntax collided.
+
+### Suggested Fix
+Use a single-quoted JavaScript string or escape the dollar sign when the command must contain shell parameter expansion.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+### Resolution
+- **Resolved**: 2026-08-25T00:12:00+08:00
+- **Notes**: Reissued the remote command with quoting that kept shell expansion entirely on the remote side.
+
+---
+
+## [ERR-20260825-003] fixed health file collided with existing permissions
+
+**Logged**: 2026-08-25T00:40:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: release
+
+### Summary
+One closed cutover check wrote to a fixed `/tmp/neckline-health.json` path that already existed with incompatible permissions, so validation stopped after the service had started and before timers were enabled.
+
+### Error
+`Permission denied: /tmp/neckline-health.json`
+
+### Context
+- The API was not publicly exposed as complete and timers remained stopped.
+- Production data was intact.
+
+### Suggested Fix
+Pipe health output directly into the validator or use a unique `mktemp` path instead of a shared fixed filename.
+
+### Metadata
+- Reproducible: environment-dependent
+- Related Files: none
+
+### Resolution
+- **Resolved**: 2026-08-25T00:43:00+08:00
+- **Notes**: Replaced the fixed temporary file with pipe-based validation, reran all release assertions, and only then enabled timers.
+
+---
+
+## [ERR-20260825-004] production verification assumed stale API field names
+
+**Logged**: 2026-08-25T00:58:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: release
+
+### Summary
+Final public verification initially assumed internal names (`paramsVersion`, `activeQueue`, `factPackSchemaVersion`) instead of the shipped DTO names (`paramsPackageVersion`, `activeQueueCount`, `packVersion`). It also assumed a nonexistent prediction `status` column.
+
+### Error
+`KeyError: 'paramsVersion'` and `sqlite3.OperationalError: no such column: status`
+
+### Context
+- These were read-only verification failures after a healthy deployment.
+- The public endpoint correctly required authentication; the first script also guessed `NECKLINE_API_TOKEN` instead of the configured `API_TOKEN` name.
+
+### Suggested Fix
+Inspect response keys and SQLite schema before writing final release assertions; do not infer public DTO names from internal model names.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/neckline/api/app.py, Backend/neckline/db.py
+
+### Resolution
+- **Resolved**: 2026-08-25T01:00:00+08:00
+- **Notes**: Corrected the assertions to the live DTO and schema, then verified K9-v2, the approved parameter package, fp-3, 20 stocks, active queue 20, settled days 0, and listing score denominator 0 through public HTTPS.
+
+---
+
+## [ERR-20260825-005] Developer ID build blocked on legacy Keychain ACL
+
+**Logged**: 2026-08-25T01:00:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: macOS
+
+### Summary
+The Developer ID-signed macOS distribution build launched but its main thread blocked in `SecItemCopyMatching` while reading the token created by the prior Apple Development-signed installation, so the SwiftUI window did not finish initializing.
+
+### Error
+`errAETimeout` while the sampled main thread waited in `TokenKeychain.load() -> SecItemCopyMatching`
+
+### Context
+- The packaged distribution artifact itself passed strict Developer ID verification.
+- The issue affected only continuity with this machine's existing Keychain item after replacing Build 15.
+
+### Suggested Fix
+Keep the distribution artifact Developer ID-signed, but sign the installed local copy with the same Apple Development identity as the prior app when preserving the existing Keychain ACL. Treat a signing-identity transition as a mandatory live-launch gate.
+
+### Metadata
+- Reproducible: machine/keychain-dependent
+- Related Files: App/Neckline/Config/AppConfig.swift
+
+### Resolution
+- **Resolved**: 2026-08-25T01:01:00+08:00
+- **Notes**: Re-signed only `/Applications/Neckline.app` with the prior Apple Development identity. Keychain access resumed without reconfiguration; the real UI then showed the 20-stock K9-v2 Day 1 list and the empty score baseline. The release-directory macOS package remains Developer ID-signed.
 
 ---

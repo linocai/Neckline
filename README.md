@@ -1,12 +1,12 @@
 # Neckline
 
-V2.6.0 Build 16 / K9-v2 的系统施工、正式参数接入、全量门禁和生产副本迁移回滚演练已经完成，
-当前正在执行用户授权的一条龙发布。正式参数原包为 `k9-params-20260824-v2-r1`，SHA-256 为
+V2.6.0 Build 16 / K9-v2 已于 2026-08-25 完成一条龙发布。正式参数原包为
+`k9-params-20260824-v2-r1`，SHA-256 为
 `718bf7876d69936937edfdc7432bbea88ec1cd3e6e6107501acd325b7f1098df`；加载器仍无任何策略默认值。
 
-当前生产客户端为 V2.5.2 Build 15，已于 2026-08-24 完成 macOS 可见结算快修换包；
-宁波云服务端仍为 V2.5.2；该次生产快修没有后端变更。
-S3 异机备份是默认不启用的可选能力。运行链路仍是 K9。
+宁波云服务端与本机 macOS 客户端均为 V2.6.0 Build 16。最新完整交易日 2026-08-24 已作为
+K9-v2 Day 1 生成首份正式清单；当前只有观察队列，没有已结算成绩。S3 异机备份仍是默认不启用的
+可选能力，日常运行链路只保留 K9-v2。
 交易日数据在 16:05 更新，报告仅在周一至周四及周日 19:00 生成；周日读取前一周五
 盘面并纳入周末消息，周五和节假日不生成报告。
 
@@ -15,15 +15,14 @@ A 股生产应用：SwiftUI 客户端 + FastAPI 服务。离线研究、回测�
 
 ## 当前状态
 
-- 发布候选：**V2.6.0 Build 16 / K9-v2 / fp-3 / d2-v1**；P0–P9 已通过完整工程门禁。
-- 当前生产客户端：**V2.5.2 · Build 15**；服务端版本：**V2.5.2**。
-- macOS 已换装 V2.5.2 Build 15；iOS 签名归档已生成，交由用户自行安装。
-- 双端交付物位于 `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b15-20260824/`。
-- Build 15 在既有 10:00 自动同步上补齐 macOS 可见路径：核对表明确提示结算已完成，可直达“三分支终值”；成绩页默认展示当日已完成终值。
+- 当前生产：**V2.6.0 Build 16 / K9-v2 / fp-3 / d2-v1**；最终后端标签为 `v2.6.0-b16-r3`。
+- macOS 已换装 Build 16 并通过真实界面核验；iOS 签名 IPA 已生成，交由用户自行安装。
+- 双端交付物位于 `/Users/linotsai/Lino/releases/Neckline/v2.6.0-b16-20260824/`。
 - V2.6.0 链路：fp-3 → 有效活跃度 → P1/P2/P3/P4 → 排序与名额 → 解释 → D1 预案两拍 → D2 五指标。
 - 两次近期 K9-v1 结果只在迁移归档中保留为 `invalidated / superseded_by_k9-v2`，不会进入 K9-v2 的候选、观察、结算或成绩分母；K9-v1 与 `k9-params-20260822-r1` 的正式历史保留。
 - 退役运行时代码、表、路由、设置和数据已删除；历史追溯使用 Git。
-- 当前进入上产观察期；具体裁定、发布记录和待观察事项见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
+- 策略实验状态为 `continue-observing`：已完成 1 次执行有效的 Day 1，尚无 D2 样本，不作优劣结论。
+- 具体裁定、发布记录和待观察事项见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
 
 ## 仓库结构
 
@@ -136,17 +135,29 @@ App 的业务板块是“选股 / 成绩 / 复盘”，设置单独入口；系�
 
 ## 当前生产
 
-V2.5.2 服务端于 2026-08-24 部署到宁波云 `114.66.0.38:/opt/neckline`；
-Build 15 是只更换客户端的 10:00 结算可见性快修。生产数据库保持
-28 张现行表，`PRAGMA integrity_check=ok`，发布前后逐表行数完全一致；公开
-`/api/v1/health` 返回 `v2.5.2`，API 服务运行且重启次数为 0。日更、晚间与数据恢复 timer
-均 enabled / active；可选的 `neckline-backup.timer` 为 disabled / inactive。
+V2.6.0 服务端于 2026-08-25 部署到宁波云 `114.66.0.38:/opt/neckline`，发布代码为
+`676d20e`，不可变后端标签为 `v2.6.0-b16-r3`。公开 `/api/v1/health` 返回 `v2.6.0`；
+API 服务运行且重启次数为 0，日更、晚间与数据恢复 timer 均 enabled / active；可选的
+`neckline-backup.timer` 仍为 disabled / inactive。生产数据库 `PRAGMA integrity_check=ok`。
 
-本次快修没有手动重跑报告，也没有改写服务端数据。真实 macOS 界面已验证：核对表显示
-“10:00 结算已完成”，点击后进入 2026-08-24 三分支终值并显示成立 11、放弃 3、观察 6、
-未定案 0。服务器回滚包仍位于
-`/opt/neckline-release-backups/v2.5.2-b13-pre-20260824-093620/`；换包前的 macOS Build 14 位于
-`/Users/linotsai/Lino/app_backups/Neckline-v2.5.2-b14-pre-v2.5.2-b15-20260824-105332/`。
-当前 iOS 签名归档位于 `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b15-20260824/`，由用户自行安装。
+两次 K9-v1 活动运行 `214566e02ef44c9e88bcf5f812e2cdb0` 与
+`103d4f5d76eb47bb8117bf722457bba9` 已从当前候选、D1/D2、待结算和成绩状态中移除，归档位于
+`/opt/neckline/data/archive/k9-v1-invalidated-20260824/`。归档清单保存原报告、运行元数据、哈希和
+回滚库，状态为 `invalidated / superseded_by_k9-v2`；原始行情快照未动，K9-v1 与
+`k9-params-20260822-r1` 正式历史未动。发布前完整服务器回滚包位于
+`/opt/neckline-release-backups/v2.6.0-b16-pre-20260824-230400/`。
+
+最新完整交易日 2026-08-24 的 K9-v2 Day 1 运行 ID 为
+`bcce862a80fb409e8d6fcf02daeaec97`，事实包为 `b0157268e549403f872ca1c49c939b4e / fp-3`。
+机械层严格候选 71、联合候选 172，最终严格清单 20 只；活动观察队列 20、已结算批次 0、成绩分母 0。
+解释与作战卡均完成；20 只中 19 只联网核验为干净，`601919.SH 中远海控` 因模型未按格式给出结论
+标签而明确显示“未核验”，没有被伪装成已通过，也不改变机械名单。
+
+macOS `/Applications/Neckline.app` 已换装 V2.6.0 Build 16；为连续读取原有 Keychain 令牌，本机副本
+沿用原 Apple Development 身份签名，交付目录中的 macOS 分发包仍保留 Developer ID 签名。
+真实界面已验证清单 20 只，以及“观察队列 20/60、已结算 0 批、指标尚不可得”的空成绩基线。
+换包前客户端备份位于
+`/Users/linotsai/Lino/app_backups/Neckline-v2.5.2-b15-pre-v2.6.0-b16-20260825-005900/`；
+iOS IPA 位于 `/Users/linotsai/Lino/releases/Neckline/v2.6.0-b16-20260824/`，由用户自行安装。
 
 完整发布事实与回滚边界以 [PROJECT_PLAN.md](PROJECT_PLAN.md) 为准。
