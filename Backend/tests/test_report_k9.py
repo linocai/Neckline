@@ -225,7 +225,7 @@ class TestTwoLayerView:
         """架构 §3.1:报告永远记得自己跑在哪版事实包 + 哪版参数上。"""
         env, day = market
         bundle = _chain(env, day, params_path=_params_file(env, tmp_path)).bundle
-        assert bundle.pack_version == "fp-2"
+        assert bundle.pack_version == "fp-3"
         assert bundle.params_package_version == "k9-params-fixture"
         row = report_store.load_k9_report(day, db_path=env.db_path)
         assert row["pack_id"] == bundle.pack_id
@@ -313,6 +313,9 @@ class TestEveningChain:
                                    "rejectPrice": 9.8})
                 elif pattern == "p2":
                     values.update({"minOpenPrice": 10.0, "rejectPrice": 9.6})
+                elif pattern == "p3":
+                    values.update({"maxGapUpPct": 5.0, "first30FloorPrice": 10.2,
+                                   "rejectPrice": 9.8})
                 else:
                     values.update({"first30FloorPrice": 10.2, "rejectPrice": 9.8})
                 return LLMResult(ok=True, provider=self.name, model=self.model,

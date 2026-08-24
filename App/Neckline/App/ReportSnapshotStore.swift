@@ -31,7 +31,8 @@ struct ReportSnapshotStore {
     }
 
     func save(_ snapshot: SelectionSnapshot) throws {
-        guard snapshot.state != nil else { return }
+        guard snapshot.state != nil, snapshot.strategyVersion == "K9-v2",
+              snapshot.packVersion == "fp-3" else { return }
         let manager = FileManager.default
         try manager.createDirectory(at: root, withIntermediateDirectories: true)
         let filename = (snapshot.tradeDate.isEmpty ? "latest" : snapshot.tradeDate) + ".json"
@@ -56,7 +57,10 @@ struct ReportSnapshotStore {
             return a > b
         }
         for file in candidates {
-            if let data = try? Data(contentsOf: file), let snapshot = try? JSONDecoder().decode(SelectionSnapshot.self, from: data), snapshot.state != nil {
+            if let data = try? Data(contentsOf: file),
+               let snapshot = try? JSONDecoder().decode(SelectionSnapshot.self, from: data),
+               snapshot.state != nil, snapshot.strategyVersion == "K9-v2",
+               snapshot.packVersion == "fp-3" {
                 let savedAt = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 return CachedSnapshot(snapshot: snapshot, savedAt: savedAt)
             }

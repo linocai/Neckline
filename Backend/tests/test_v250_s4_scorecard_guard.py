@@ -183,9 +183,10 @@ def test_g14_the_observed_branch_is_representable_so_it_can_be_excluded_later():
 
 
 def test_g14_has_been_replaced_by_the_s17_behavior_fixture():
-    """S17 已落地；真口径由含观察与未结算样本的夹具锁定。"""
+    """K9-v2 已落地；真口径由 D2 五指标夹具锁定。"""
     assert (_PKG / "scorecard" / "listing.py").is_file()
     fixture = (_ROOT / "tests" / "test_scorecard_listing.py").read_text(encoding="utf-8")
-    assert '"observed"' in fixture
-    assert 'establishmentDenominator' in fixture
-    assert '== 2' in fixture, "K9 §八要求观察与未结算样本都不进成立率分母"
+    for key in ("touchRate", "d2CloseWinRate", "averageIndustryExcess",
+                "averageMaxDrawdown", "finalListingLift"):
+        assert key in fixture
+    assert 'd1Aux' in fixture

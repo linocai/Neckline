@@ -130,27 +130,19 @@ def _path(code: str, sessions: Sequence[date]) -> List[Bar]:
     bars = [_flat_bar(amount=amt) for _ in range(n)]
 
     if code == P1_CODE:
-        # 横盘很久 → 今天 +5% 且放量 3 倍(振幅窗口内极差 5%,远小于门槛)
+        # 平时只属有效活跃、但不是持续热门；今天才首次放量启动。
+        bars = [_flat_bar(amount=amt) for _ in range(n)]
         bars[-1] = Bar(10.0, 10.5, 10.0, 10.5, _FLAT_VOL * 3, amt * 3, 100.0)
     elif code == INTRADAY_HALT_CODE:
         # 与 P1 同形:用来证明「盘中临时停牌」照常参与召回(裁定 12)
         bars[-1] = Bar(10.0, 10.5, 10.0, 10.5, _FLAT_VOL * 3, amt * 3, 50.0)
     elif code == P2_CODE:
-        # 今天 −8%(主板跌停 10% → 归一化跌幅 0.8),非一字,量 1.5 倍
-        bars[-1] = Bar(10.0, 10.0, 9.2, 9.2, _FLAT_VOL * 1.5, amt, -500.0)
+        # 7 日个股性超跌，D0 收在当日振幅上部且非一字跌停。
+        bars[-1] = Bar(9.0, 9.3, 9.0, 9.2, _FLAT_VOL * 1.5, amt, -500.0)
     elif code == P3_CODE:
-        # 长窗累计 ≈ 0;上一个短窗 +0.1%/天,当前短窗 +0.4%/天(转正且在改善);量未放
-        px = BASE_PRICE
-        for i in range(n):
-            if i < n - 10:
-                step = 0.0
-            elif i < n - 5:
-                step = 0.001
-            else:
-                step = 0.004
-            nxt = round(px * (1 + step), 4)
-            bars[i] = Bar(px, max(px, nxt), min(px, nxt), nxt, _FLAT_VOL, amt, 0.0)
-            px = nxt
+        # 持续高热度，并在 D0 出现达到主板涨停幅 50% 的强博弈但未涨停。
+        bars = [_flat_bar(amount=amt * 1.5) for _ in range(n)]
+        bars[-1] = Bar(10.0, 10.7, 10.0, 10.5, _FLAT_VOL * 2, amt * 2, 0.0)
     elif code == P4_CODE:
         # 钱一直在进,价格没动(K9 §3.5 的画像)
         bars = [_flat_bar(net=10_000.0, amount=amt) for _ in range(n)]
@@ -291,7 +283,11 @@ def _seed_day(env, day: date, paths: Dict[str, List[Bar]], i: int, *, last: bool
             "pct_chg": (b.close / prev - 1) * 100 if prev else 0.0,
             "vol": b.vol, "amount": b.amount,
         })
-        basic.append({"ts_code": code, "turnover_rate": 5.0, "turnover_rate_f": 6.0,
+        basic.append({"ts_code": code,
+                      # P3 正例要同时满足正式 dailyHeat 的成交额与换手率两分量；
+                      # 其余票保持并列，避免把测试夹具误当成第二套参数标定。
+                      "turnover_rate": 10.0 if code == P3_CODE else 5.0,
+                      "turnover_rate_f": 11.0 if code == P3_CODE else 6.0,
                       "volume_ratio": 1.2, "circ_mv": 1e6, "total_mv": 2e6,
                       "free_share": 1e5})
         adj.append({"ts_code": code, "adj_factor": 1.0})
@@ -305,6 +301,10 @@ def _seed_day(env, day: date, paths: Dict[str, List[Bar]], i: int, *, last: bool
     limits: List[dict] = []
     if last:
         limits = [
+            {"ts_code": P3_CODE, "board": "MAIN", "status": "normal",
+             "limit_pct": 0.10, "limit_up_price": 11.0, "limit_down_price": 9.0,
+             "is_limit_up": False, "is_limit_down": False, "is_zaban": False,
+             "consec_limit_up_days": 0},
             {"ts_code": LIMIT_UP_CODE, "board": "MAIN", "status": "limit_up",
              "limit_pct": 0.10, "limit_up_price": 11.0, "limit_down_price": 9.0,
              "is_limit_up": True, "is_limit_down": False, "is_zaban": False,
@@ -358,70 +358,22 @@ def _write_suspend(env, day: date, rows: List[dict]) -> None:
 # ══════════════════════════════════════════════════════════════════════════
 
 def raw_params(**overrides) -> dict:
-    """一份**结构完整**的参数包原文(每个值都显式给出 —— `K9Params` 没有默认值)。
+    """从正式原包派生隔离夹具；只改身份字段和用例显式覆盖项。
 
-    ⚠ 数字是夹具,⛔ 不是标定值。
+    测试与生产因此共享唯一 schema，仓库里不再维护一份会漂移的第二套参数字面量。
     """
-    def tiers(strict: dict, relaxed: dict) -> dict:
-        return {"strict": strict, "relaxed": relaxed}
-
-    raw = {
-        "packageVersion": "k9-params-fixture",
-        "factPackVersion": fact_pack.PACK_VERSION,
-        "calibratedBy": "unit-test",
-        "calibratedAt": "2026-08-20T00:00:00Z",
-        "approvedBy": "unit-test",
-        "approvedAt": "2026-08-20T00:00:00Z",
-        "boundary": {
-            "newListingDays": 30,
-            "liquidityWindowDays": 20,
-            "liquidityBottomPct": 0.2,
-            "spikeFadeRetPct": 5.0,
-            "spikeFadeGapPct": 3.0,
-        },
-        "industry": {
-            "minMembers": 3,
-            "excludedL2Codes": ["801125.SI"],
-            "heatAbsentPolicy": "renormalize",
-        },
-        # 裁定 13/14/15:放量倍数的分母窗口与分界值 V(V **不分档**)
-        "volume": {"maDays": 20, "eruptionMultiple": 2.0},
-        "channels": {
-            "p1": tiers({"ampWindowDays": 20, "ampMaxPct": 25.0, "minRetPct": 0.0},
-                        {"ampWindowDays": 20, "ampMaxPct": 40.0, "minRetPct": 0.0}),
-            "p2": tiers({"normDropMin": 0.7, "maDays": 20, "minVolMultiple": 1.2},
-                        {"normDropMin": 0.5, "maDays": 20, "minVolMultiple": 1.0}),
-            "p3": tiers({"longWindow": 60, "shortWindow": 5, "flatBand": 0.05},
-                        {"longWindow": 60, "shortWindow": 5, "flatBand": 0.08}),
-            "p4": tiers({"dailyInflowRankPct": 0.2, "cumDays": 5,
-                         "cumInflowRankPct": 0.2, "lagRankGap": 0.3},
-                        {"dailyInflowRankPct": 0.4, "cumDays": 5,
-                         "cumInflowRankPct": 0.4, "lagRankGap": 0.2}),
-        },
-        "ranking": {
-            "weights": {"industryHeat": 0.4, "patternStrength": 0.4, "relay": 0.2},
-            "patternSubWeights": {
-                "p1": {"volMultiple": 0.4, "upsideRoomFar": 0.3, "relStrength": 0.3},
-                "p2": {"relStrengthShortfall": 1.0},
-                "p3": {"shortWindowImprovement": 0.5, "upsideRoomNear": 0.5},
-                "p4": {"inflowRank": 0.6, "volumeRatioRank": 0.4},
-            },
-            "relayLookbackDays": 10,
-            "relaySource": "recalled",
-            "relayScoring": "binary",
-            "upsideRoomMechDays": 20,
-        },
-        "quota": {"min": 10, "max": 20, "floorPerChannel": 1,
-                  "overStrictConsecutiveDays": 3},
-    }
+    approved = Path(__file__).parents[1] / "config" / "k9-params.json"
+    raw = json.loads(approved.read_text(encoding="utf-8"))
+    raw["packageVersion"] = "k9-params-fixture"
+    raw["parameterizedBy"] = "unit-test"
+    raw["approvedBy"] = "unit-test"
     for path, value in overrides.items():
         node = raw
         parts = path.split(".")
-        for p in parts[:-1]:
-            node = node[p]
+        for part in parts[:-1]:
+            node = node[part]
         node[parts[-1]] = value
     return raw
-
 
 def params(env, tmp_path: Path, **overrides) -> P.K9Params:
     """把夹具原文写成文件并走**完整校验路径**加载(⛔ 不绕过 `load`)。"""

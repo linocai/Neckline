@@ -72,13 +72,13 @@ def test_fact_pack_column_names_carry_no_strategy_word_roots():
     assert bad == [], f"事实包列名带上了策略词根:{bad}"
 
 
-def test_fact_pack_column_set_is_frozen_at_forty_one():
+def test_fact_pack_column_set_is_frozen_at_fp3_shape():
     """§5.3.1 逐组数出来是 40 列 + `trade_date`(分区键)= 41。
 
     加列必须先改这条断言 —— 让它成为一次自觉行为,而不是某天悄悄多出一列
     「顺手也算一下」的窗口量(事实层**只装一天的事实**)。"""
-    assert len(fact_pack.PACK_COLUMNS) == 41
-    assert len(set(fact_pack.PACK_COLUMNS)) == 41
+    assert len(fact_pack.PACK_COLUMNS) == 43
+    assert len(set(fact_pack.PACK_COLUMNS)) == 43
     assert fact_pack.PACK_COLUMNS[0] == "trade_date"
 
 
@@ -95,6 +95,7 @@ def test_declared_float_columns_cover_every_numeric_pack_column():
         "trade_date", "ts_code", "name", "board", "list_date", "is_st", "suspend_flag",
         "sw_l1_code", "sw_l1_name", "sw_l2_code", "sw_l2_name", "sw_l3_code",
         "is_limit_up", "is_limit_down", "is_limit_open", "consec_limit_up_days",
+        "top_list_state", "top_list_hit",
     }
 
 

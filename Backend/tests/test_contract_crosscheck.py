@@ -474,13 +474,7 @@ def test_the_settlement_verdicts_live_in_the_scoreboard_not_the_selection_screen
 # 6. 行业分 / 选票分:两侧都⛔ 不许有合计
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_neither_side_offers_a_combined_industry_plus_pick_score():
-    """🔴 **守门 G13 的客户端半边**。
-
-    K9 §八 口径原文:行业分低是**方向层**的问题,行业分高而选票分低是**选票参数**的
-    问题 —— **两者吃的药完全不同**。服务端 `scorecard` 存储层刻意没有合计字段;
-    客户端同理,⛔ 不许自己相加。
-    """
+def test_client_exposes_the_five_d2_metrics_without_a_combined_score():
     from tests.client_sources import CLIENT  # noqa: PLC0415
 
     scoreboard_model = strip_comments(type_block("NKListingScorecard") or "")
@@ -489,9 +483,11 @@ def test_neither_side_offers_a_combined_industry_plus_pick_score():
     for banned in ("combinedScore", "totalScore", "industryPlusPick", "合计分", "综合分"):
         assert banned not in text, f"成绩板块出现了合计口径 `{banned}` —— ⛔ 两栏永不合并"
         assert banned not in scoreboard_model
-    # 正向:两栏确实都在。
+    # 正向：K9-v2 的五项 D2 指标逐项存在。
     models = models_text()
-    assert '("行业分"' in models and '("选票分"' in models
+    for label in ("D1—D2 上涨触达", "D2 收盘胜率", "D2 行业超额",
+                  "D1—D2 最大回撤", "最终清单提升"):
+        assert label in models
 
 
 def test_client_never_hardcodes_the_playbook_slot_keys():

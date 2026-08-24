@@ -45,7 +45,7 @@ _VALID_TABLES = {
     "suspend_d",
     # V2-①(plan §五 V2-①,§3.10-A):盘中存拍两张事实表——「只增不改的高频事实」,
     # 走 `write_table_day` 铁律按日分区,不进 SQLite(SQLite 装不下 关注池 200 只 ×
-    # 240 分钟/日的量级)。落盘时机 = D4 拍板「内存累计 + 15:05 收盘后一次性落盘」,
+    # 240 分钟/日的量级)。落盘时机按既有裁定为「内存累计 + 15:05 收盘后一次性落盘」,
     # 写入逻辑留给 V2-⑧;本块只声明表名与数值列 canonical dtype。
     "intraday_ticks",
     "auction_snapshots",

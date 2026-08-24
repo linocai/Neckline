@@ -41,6 +41,7 @@ from neckline.calendar import trading_days_between
 from neckline.facts import industry as facts_industry
 from neckline.facts import store as facts_store
 from neckline.facts import universe as facts_universe
+from neckline.k9 import activity as activity_mod
 from neckline.k9 import boundary as boundary_mod
 from neckline.k9 import industry_heat as heat_mod
 from neckline.k9 import quota as quota_mod
@@ -50,7 +51,7 @@ from neckline.k9.channels import p1_breakout, p2_rebound, p3_riser, p4_moneyflow
 from neckline.k9.contract import (
     DECLARED_FIELDS,
     PATTERN_ORDER,
-    STRATEGY,
+    STRATEGY, STRATEGY_VERSION,
     ChannelHit,
     Entry,
     PackRange,
@@ -74,23 +75,23 @@ class PackUnavailable(RuntimeError):
 def required_lookback(params: K9Params) -> int:
     """跑完全链需要多少个交易日的事实包(**含当日**)。
 
-    ⚠ p3 的「在改善」要跟**紧邻的上一个等长窗口**比 → 需要 `2 × shortWindow` 天。
-    Plan 的窗口校验只逐键比 `MAX_LOOKBACK_PACKS`,看不见这个乘 2(已登记 §14),
-    故在这里再判一次:超了 = 参数配置无效 = 「今天没跑成」,⛔ 不静默截断窗口。
+    P3 每个历史热门日都要向前计算有效活跃度，因此历史长度是热门窗口与活跃度
+    窗口的组合，而不是单键最大值。
     """
     ch = params.channels
     needs = [
         params.volume.ma_days,
-        params.ranking.upside_room_mech_days,
-        params.boundary.liquidity_window_days,
+        params.boundary.activity_amount_window_days,
+        params.boundary.activity_participation_window_days,
     ]
     for tier in (ch.p1.strict, ch.p1.relaxed):
-        needs.append(tier.amp_window_days)
+        needs.append(tier.breakout_window_days + 1)
+        needs.append(tier.hot_identity_exclusion.lookback_days)
     for tier in (ch.p2.strict, ch.p2.relaxed):
-        needs.append(tier.ma_days + 1)          # 均线截到前一日 → 多要一天
+        needs.append(tier.window_days)
     for tier in (ch.p3.strict, ch.p3.relaxed):
-        needs.append(tier.long_window)
-        needs.append(tier.short_window * 2)     # 「在改善」要两段等长窗口
+        needs.append(tier.hot_lookback_days)
+        needs.append(tier.conflict_lookback_days + params.volume.ma_days)
     for tier in (ch.p4.strict, ch.p4.relaxed):
         needs.append(tier.cum_days)
     return max(needs)
@@ -123,7 +124,7 @@ def build_pack_range(
         raise ParamsUnavailable(invalid=[
             f"这份参数包要读 {lookback} 个交易日的事实包,超过 MAX_LOOKBACK_PACKS="
             f"{facts_store.MAX_LOOKBACK_PACKS}(工程容量上限,§3.2)。"
-            f"⚠ p3 的「在改善」需要 2 × shortWindow 天,单键校验看不见这个乘 2"])
+            "P3 热门窗、活跃度窗与博弈窗的组合长度也必须落在容量内。"])
     start = _window_start(trade_date, lookback)
     frame = facts_store.load_pack_range(
         start, trade_date, as_of=trade_date,
@@ -239,24 +240,38 @@ def compute(
     # 票,全天停牌的一只都不在里面 —— 而 §6 S6 要 disposition **覆盖全市场每一只票**
     # (R3-🔴-5)。取数经事实层过一手,⛔ 不在 k9 里 import `market_data`(守门 G3)。
     universe = facts_universe.market_universe(trade_date, db_path=db_path)
-    verdicts = boundary_mod.apply(
-        pack, boundary=params.boundary, industry=params.industry, universe=universe)
-    pool_codes = boundary_mod.survivors(verdicts)
-    counts = boundary_mod.counts(verdicts)
-    logger.info(
-        "[k9] %s 硬边界:全市场 %d(其中事实包 %d 行)→ 池内 %d;逐条 %s",
-        trade_date, verdicts.height, pack.today.height, len(pool_codes), counts)
-
-    pool = _restrict(pack, pool_codes)
+    activity_probe = activity_mod.compute(pack, target=pack.as_of, params=params.boundary)
+    if activity_probe.is_empty():
+        raise ParamsUnavailable(invalid=[
+            "boundary.activity 缺少满足 minimumValidDays 的成交额或换手率参与密度；"
+            "missingComponentPolicy=parameters_not_configured，拒绝降级运行"
+        ])
+    strict_verdicts = boundary_mod.apply(
+        pack, boundary=params.boundary, industry=params.industry, universe=universe,
+        activity_min_percentile=params.boundary.strict_activity_min_percentile)
+    relaxed_verdicts = boundary_mod.apply(
+        pack, boundary=params.boundary, industry=params.industry, universe=universe,
+        activity_min_percentile=params.boundary.relaxed_activity_min_percentile)
+    strict_pool = _restrict(pack, boundary_mod.survivors(strict_verdicts))
+    relaxed_pool = _restrict(pack, boundary_mod.survivors(relaxed_verdicts))
 
     # —— K9 第二层 · 四通道(每通道两档)————————————————————————————————————
     hits: List[ChannelHit] = []
     for mod in CHANNELS:
-        got = mod.run(pool, params)
-        hits.extend(got)
-        logger.info("[k9] %s %s 召回 %d 只", trade_date, mod.PATTERN.value, len(got))
+        got_strict = [hit for hit in mod.run(strict_pool, params) if hit.tier is Tier.STRICT]
+        got_relaxed = [hit for hit in mod.run(relaxed_pool, params) if hit.tier is Tier.RELAXED]
+        hits.extend((*got_strict, *got_relaxed))
+        logger.info("[k9] %s %s 严格/放宽召回 %d/%d 只",
+                    trade_date, mod.PATTERN.value, len(got_strict), len(got_relaxed))
 
     decision = quota_mod.choose_tier(hits, params.quota)
+    verdicts = strict_verdicts if decision.tier_used is Tier.STRICT else relaxed_verdicts
+    pool_codes = boundary_mod.survivors(verdicts)
+    counts = boundary_mod.counts(verdicts)
+    logger.info(
+        "[k9] %s %s硬边界:全市场 %d(事实包 %d 行)→池内 %d;逐条 %s",
+        trade_date, decision.tier_used.value, verdicts.height, pack.today.height,
+        len(pool_codes), counts)
 
     # —— K9 第三层 · 排序 ————————————————————————————————————————————————
     industry_rows = facts_industry.load_day(trade_date, db_path=db_path)
@@ -299,6 +314,7 @@ def compute(
             industry_heat_score=c.industry_heat_score,
             pattern_strength_score=c.pattern_strength_score,
             relay_score=c.relay_score,
+            evidence=c.evidence, risks=c.risks,
         )
 
     seated_entries = tuple(to_entry(s) for s in allocation.seated)
@@ -311,6 +327,14 @@ def compute(
     }
     shortlist = Shortlist(
         strategy=STRATEGY,
+        strategy_version=STRATEGY_VERSION,
+        label_contract_version=params.label_contract_version,
+        scoring_contract={
+            "touchThresholdU": params.scoring.touch_threshold_u,
+            "riskLineL": params.scoring.risk_line_l,
+            "d1Reference": params.scoring.d1_reference.value,
+            "matchedBaseline": params.scoring.matched_baseline.value,
+        },
         params_version=params.package_version,
         pack_version=frozen.pack_version,
         pack_id=frozen.pack_id,
@@ -353,9 +377,8 @@ def persist(
 ) -> str:
     """落库:`k9_runs` + `k9_channel_hits` + `k9_listing_entries` + disposition parquet。
 
-    ⚠ `listing_finalized_by` 默认 `'k9'` —— **解释层还没接入**(S9)。
-    S9 起由编排器在消息面剔除 + 后备补位之后改传 `'explain'`,
-    ⛔ 不许把这个参数删掉或恒填 `'explain'`(§5.5 / `store.py` 模块头)。
+    `listing_finalized_by='k9'` 表示只完成机械策略段；完整晚间链会在消息面剔除与
+    后备补位后重写正式清单并标记为 `'explain'`。
     """
     run_id = k9_store.new_run_id()
     sl = result.shortlist
@@ -366,7 +389,8 @@ def persist(
     )
     k9_store.save_channel_hits(
         run_id=run_id, trade_date=sl.trade_date, hits=result.hits,
-        seated_codes=[e.ts_code for e in sl.entries], db_path=db_path,
+        seated_codes=[e.ts_code for e in sl.entries],
+        strategy_version=sl.strategy_version, db_path=db_path,
     )
     k9_store.save_listing(run_id=run_id, shortlist=sl, db_path=db_path)
     k9_store.save_disposition(

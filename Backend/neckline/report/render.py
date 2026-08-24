@@ -61,6 +61,7 @@ def structured(bundle) -> Dict[str, Any]:
         "headline": bundle.headline,
         "gaps": list(bundle.gaps),
         "strategy": bundle.strategy,
+        "strategyVersion": bundle.strategy_version,
         "paramsPackageVersion": bundle.params_package_version,
         "packId": bundle.pack_id,
         "packVersion": bundle.pack_version,

@@ -31,7 +31,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from neckline.k9 import industry_heat as heat_mod
@@ -72,6 +72,8 @@ class ScoredCandidate:
     pattern_strength_score: float
     relay_score: float
     score: float
+    evidence: Mapping[str, Optional[bool]] = field(default_factory=dict)
+    risks: Tuple[str, ...] = ()
 
     @property
     def sort_key(self) -> Tuple[float, float, str]:
@@ -234,7 +236,13 @@ def rank(
             patterns,
             key=lambda p: (strength.get((code, p), 0.0), -PATTERN_ORDER.index(p)),
         )
-        ps = strength.get((code, best), 0.0)
+        base_ps = strength.get((code, best), 0.0)
+        bonus = max(
+            (float(hit.bonus_score) for hit in hits
+             if hit.ts_code == code and hit.pattern is best),
+            default=0.0,
+        )
+        ps = min(1.0, base_ps + bonus)
         relay = relay_scores.get(code, 0.0)
 
         heat_score = heat.score_of(l2_of.get(code))
@@ -254,6 +262,16 @@ def rank(
             score = (w.industry_heat * heat_score
                      + w.pattern_strength * ps + w.relay * relay)
 
+        code_hits = [h for h in hits if h.ts_code == code]
+        evidence: Dict[str, Optional[bool]] = {}
+        for hit in code_hits:
+            for key, value in hit.evidence.items():
+                previous = evidence.get(key)
+                # True 胜过 False；数据可用的 False 胜过不可用的 None。
+                evidence[key] = (True if previous is True or value is True
+                                 else False if previous is False or value is False
+                                 else None)
+        risks = tuple(sorted({risk for hit in code_hits for risk in hit.risks}))
         out.append(ScoredCandidate(
             ts_code=code, patterns=patterns, primary_pattern=best,
             tier=tier_of[code], industry_heat_score=heat_score,
@@ -261,6 +279,7 @@ def rank(
             # 浮点尾数在不同机器上可能差 1 ulp → 落库前统一收到 12 位,
             # 「逐字节相等」这条验收才是可达的(⛔ 不是为了好看)。
             score=round(score, 12),
+            evidence=dict(sorted(evidence.items())), risks=risks,
         ))
     out.sort(key=lambda c: c.sort_key)
     return out, sorted(dropped)

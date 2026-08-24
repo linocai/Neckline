@@ -350,7 +350,10 @@ def _run_explain(
 
     # —— 定稿(§5.5:清单在解释层之后定稿)——
     final = Shortlist(
-        strategy=shortlist.strategy, params_version=shortlist.params_version,
+        strategy=shortlist.strategy, strategy_version=shortlist.strategy_version,
+        label_contract_version=shortlist.label_contract_version,
+        scoring_contract=shortlist.scoring_contract,
+        params_version=shortlist.params_version,
         pack_version=shortlist.pack_version, pack_id=shortlist.pack_id,
         trade_date=shortlist.trade_date,
         entries=tuple(sorted(seated, key=lambda e: e.rank)),
@@ -367,7 +370,12 @@ def _run_explain(
                         rows=result.result.disposition_rows)
     k9_store.mark_listing_finalized_by(
         trade_date, finalized_by=k9_store.FINALIZED_BY_EXPLAIN,
-        seated_count=final.size, strategy=final.strategy, db_path=db_path)
+        seated_count=final.size, strategy=final.strategy,
+        strategy_version=final.strategy_version, db_path=db_path)
+    from neckline.scorecard import listing as listing_scorecard
+    listing_scorecard.open_day(
+        trade_date, strategy=final.strategy, strategy_version=final.strategy_version,
+        parquet_dir=parquet_dir, db_path=db_path)
     explain_store.save_notes(trade_date, notes, news_by_code=checked, db_path=db_path)
     if audit:
         explain_store.append_audit(trade_date, audit, db_path=db_path)
@@ -518,6 +526,7 @@ def _run_report(
             state=bundle.state.value, headline=bundle.headline, gaps=list(bundle.gaps),
             markdown=bundle.markdown, structured=bundle.structured,
             strategy=bundle.strategy,
+            strategy_version=bundle.strategy_version,
             params_package_version=bundle.params_package_version,
             pack_id=bundle.pack_id, pack_version=bundle.pack_version,
             listing_size=bundle.listing_size, strict_count=bundle.strict_count,

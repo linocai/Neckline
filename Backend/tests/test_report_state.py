@@ -18,7 +18,7 @@ import pytest
 
 from neckline.k9 import params as P
 from neckline.report.state import ReportState, headline, resolve_state
-from tests.test_k9_params import _DELETE, make_raw, write
+from tests import k9_env
 
 D0 = date(2024, 3, 4)
 D1 = date(2024, 3, 5)
@@ -116,9 +116,12 @@ class TestParamsGapEndToEnd:
         db = tmp_path / "n.db"
         from neckline.db import init_schema
         init_schema(db)
-        raw = make_raw(**{"ranking.relayScoring": _DELETE})
+        raw = k9_env.raw_params()
+        del raw["ranking"]["relayScoring"]
+        target = tmp_path / "missing.json"
+        target.write_text(json.dumps(raw), encoding="utf-8")
         try:
-            P.load(write(tmp_path, raw), db_path=db)
+            P.load(target, db_path=db)
             pytest.fail("缺键的参数包居然加载成功了")
         except P.ParamsUnavailable as e:
             state = resolve_state(pack_frozen=True, params_ok=False, listing_count=None)

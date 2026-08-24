@@ -1,4 +1,4 @@
-"""形态 4 · 资金异动(K9 §3.5)。
+"""形态 P4 · 资金领先价格(K9-v2 §3.5)。
 
 > **画像**:钱在持续进场,价格还没跟上。四种形态里唯一从资金出发的。
 
@@ -13,7 +13,7 @@
 连续多日流入说明有人在**系统性建仓**。
 
 ⚠ **量比一律用盘后口径**(K9 §3.5 / §4.7):全天成交量 ÷ 过去 **5** 日均量。
-它与形态 1/2/3 用的**放量倍数**(÷ `volume.maDays` 日均量)是**两个不同的量**,
+它与 P1/P2 使用的**放量倍数**(÷ `volume.maDays` 日均量)是**两个不同的量**,
 ⛔ 别混 —— 两者的唯一实现都在 `k9/volume.py`,那里有对照说明。
 排名**自算**而不读 `daily_basic.volume_ratio`:后者只有 2 位小数,做排名会大量并列
 (§12 坑 4)。
@@ -39,7 +39,9 @@ from neckline.k9.params import K9Params, P4Tier
 PATTERN = Pattern.P4
 
 #: 强度项的键 —— 必须逐字对上 `params.ranking.patternSubWeights.p4`。
-STRENGTH_KEYS = ("inflowRank", "volumeRatioRank")
+STRENGTH_KEYS = (
+    "dailyInflowRank", "cumulativeInflowRank", "lagRankGap", "volumeRatioRank",
+)
 
 
 def _cum_inflow(pack: PackRange, *, days: int) -> Dict[str, Optional[float]]:
@@ -129,7 +131,12 @@ def run(pack: PackRange, params: K9Params) -> List[ChannelHit]:
         ChannelHit(
             ts_code=code, pattern=PATTERN, tier=picked[code],
             strength={
-                "inflowRank": inflow_rank.get(code),
+                "dailyInflowRank": inflow_rank.get(code),
+                "cumulativeInflowRank": cum_ranks[picked[code]].get(code),
+                "lagRankGap": (
+                    None if inflow_rank.get(code) is None or ret_rank.get(code) is None
+                    else inflow_rank[code] - ret_rank[code]
+                ),
                 "volumeRatioRank": ratio_rank.get(code),
             },
         )

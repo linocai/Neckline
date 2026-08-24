@@ -12,8 +12,8 @@
 
 ⚠ **单位约定**(标定侧必读,⛔ 别猜):
     · 名字里带 `Pct` 且落在 `params._UNIT_INTERVAL_PATHS` 的键是**比例**(0~1),
-      如 `liquidityBottomPct=0.2` 表示后 20%;
-    · 其余带 `Pct` 的键是**百分点**,如 `ampMaxPct=25.0` 表示 25%、
+      如 `activityMinPercentile=0.2` 表示第 20 百分位;
+    · 其余带 `Pct` 的键是**百分点**,如 `minAmplitudePct=25.0` 表示 25%、
       `spikeFadeGapPct=3.0` 表示 3 个点。
   两组各自有校验(见 `params.py` 的 `_UNIT_INTERVAL_PATHS` / `_PERCENT_POINT_PATHS`)。
   事实包里的 `ret_1d` / `amp_1d` 是**比例**,与百分点比较前一律 `* 100`(本模块的
@@ -37,8 +37,8 @@ class Pattern(str, Enum):
 
     P1 = "p1"       # 放量启动
     P2 = "p2"       # 超跌反弹
-    P3 = "p3"       # 中等生转强
-    P4 = "p4"       # 资金异动
+    P3 = "p3"       # 热门强博弈
+    P4 = "p4"       # 资金领先价格
 
 
 #: 形态的**定序**(K9 §五-4 保底席位并列时的定序键;⛔ 不是优先级)。
@@ -48,8 +48,8 @@ PATTERN_ORDER: Tuple[Pattern, ...] = (Pattern.P1, Pattern.P2, Pattern.P3, Patter
 PATTERN_LABEL: Mapping[Pattern, str] = {
     Pattern.P1: "放量启动",
     Pattern.P2: "超跌反弹",
-    Pattern.P3: "中等生转强",
-    Pattern.P4: "资金异动",
+    Pattern.P3: "热门强博弈",
+    Pattern.P4: "资金领先价格",
 }
 assert set(PATTERN_LABEL) == set(Pattern)
 
@@ -85,7 +85,10 @@ DECLARED_FIELDS: frozenset = frozenset({
     # 价量
     "open", "high", "low", "close", "pre_close", "vol", "amount",
     # 当日衍生
-    "ret_1d", "amp_1d", "limit_down_price", "is_limit_up",
+    "ret_1d", "amp_1d", "limit_up_price", "limit_down_price", "is_limit_up", "is_limit_down",
+    "consec_limit_up_days",
+    # 有效活跃度 / 放量 / P3 可选证据
+    "turnover_rate", "circ_mv", "top_list_state", "top_list_hit",
     # 资金流(形态 4)
     "net_amount",
     # 行业相对(裁定 2)
@@ -189,6 +192,11 @@ class ChannelHit:
     pattern: Pattern
     tier: Tier
     strength: Mapping[str, Optional[float]] = field(default_factory=dict)
+    # 可选证据只作解释/形态强度输入；None 表示数据源不可用，不能当作 False。
+    evidence: Mapping[str, Optional[bool]] = field(default_factory=dict)
+    risks: Tuple[str, ...] = ()
+    # P3 批准包定义的附加分；不属于 patternSubWeights，且受 bonusCap 限制。
+    bonus_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -208,6 +216,8 @@ class Entry:
     industry_heat_score: Optional[float]
     pattern_strength_score: float
     relay_score: float
+    evidence: Mapping[str, Optional[bool]] = field(default_factory=dict)
+    risks: Tuple[str, ...] = ()
 
     def to_row(self) -> Dict[str, object]:
         """落库 / canonical JSON 用的**确定性**字典(键序固定)。"""
@@ -225,12 +235,15 @@ class Entry:
             "industryHeatScore": self.industry_heat_score,
             "patternStrengthScore": self.pattern_strength_score,
             "relayScore": self.relay_score,
+            "evidence": dict(sorted(self.evidence.items())),
+            "risks": list(self.risks),
         }
 
 
 #: 策略署名。将来引入 K10 时它与 `k9_runs.strategy` 一起构成「各出各的署名清单」
 #: (架构 §3.2 多策略并行;本版不实现并行,裁定 8)。
 STRATEGY = "K9"
+STRATEGY_VERSION = "K9-v2"
 
 
 @dataclass(frozen=True)
@@ -243,6 +256,9 @@ class Shortlist:
     """
 
     strategy: str
+    strategy_version: str
+    label_contract_version: str
+    scoring_contract: Mapping[str, object]
     params_version: str
     pack_version: str
     pack_id: str
@@ -267,5 +283,5 @@ __all__ = [
     "Tier", "SeatKind",
     "DECLARED_FIELDS", "to_percent_points",
     "UndeclaredField", "PackRange",
-    "ChannelHit", "Entry", "Shortlist", "STRATEGY",
+    "ChannelHit", "Entry", "Shortlist", "STRATEGY", "STRATEGY_VERSION",
 ]

@@ -1,35 +1,4 @@
-"""形态 3 · 中等生转强(K9 §3.4)。
-
-> **画像**:平时跟着行业走,不突出也不垃圾;这两天开始不一样了,有突破的形式。
-> 趁它还没爆发提前埋伏。
-
-| 类型 | 判据 | 参数 |
-|---|---|---|
-| **定义性** | 长窗 `longWindow` 日相对强度 **≈ 0**(\\|累计\\| ≤ `flatBand`) | 待标定(K9 原文约 60 日) |
-| | 短窗 `shortWindow` 日相对强度 **> 0 且在改善** | 待标定(K9 原文约 5-10 日) |
-| | 🔴 **当日尚未放量爆发**(裁定 14:放量倍数 < `volume.eruptionMultiple`) | 待标定(与形态 1 **共用同一个 V**) |
-| **强度性** | 短窗改善幅度;上方机械空间(**反向**) | ⛔ 不设门槛,→ 第三层打分 |
-
-🔴 **与形态 1 的互斥由判据本身保证**(裁定 15):形态 1 要求放量倍数 **≥ V**,
-本形态要求 **< V**,同一个量、同一个 V,两个半区互补 —— 「今天爆了归形态 1,今天还
-没爆归形态 3」(K9 §3.4)因此是一条**恒真**的话,不是一句需要事后仲裁的约定。
-⛔ 「尚未爆发」**只看量,不加涨幅门槛**(裁定 14):加了涨幅就会出现「量没起来但涨幅
-超标」的票两边都不中 —— 那不是互斥,是漏斗。
-
-⚠ **两个窗口量的形状**(K9 与 Plan 都只写了「长窗相对强度 ≈ 0」「短窗转正且在改善」,
-未给公式;本片取**逐日相对强度的累计和**,零新增参数,已登记 §14):
-
-    长窗相对强度 = Σ rel_strength_1d(最近 longWindow 个交易日,含当日)
-    短窗相对强度 = Σ rel_strength_1d(最近 shortWindow 个交易日,含当日)
-    「在改善」    = 短窗相对强度 > 紧邻的**上一个**等长窗口的相对强度
-
-理由:`rel_strength_1d` 是**逐日**的超额收益(裁定 2 口径),把一段时间「相对行业走得
-如何」讲清楚的最省事读法就是把它加起来;「在改善」要的是**趋势**,与紧邻的等长窗口
-比是唯一不引入新参数的比法。⛔ 没有引入「改善幅度门槛」这种新数 —— 改善幅度是
-**强度性**,按 K9 §3.6 只进打分,不设门槛。
-
-⚠ 「在改善」需要 **2 × shortWindow** 天历史;不够 → 该票不通过(⛔ 缺数不放行)。
-"""
+"""P3：持续热门、近五日强博弈、D0 仍热门；可选证据只作封顶附加分。"""
 
 from __future__ import annotations
 
@@ -37,120 +6,150 @@ from typing import Dict, List, Optional
 
 import polars as pl
 
-from neckline.k9 import upside_room as upside_room_mod
-from neckline.k9 import volume as volume_mod
+from neckline.facts.pack import TOP_LIST_AVAILABLE
+from neckline.k9 import hotness
 from neckline.k9.contract import ChannelHit, PackRange, Pattern, Tier
-from neckline.k9.params import K9Params, P3Tier
+from neckline.k9.params import K9Params, P3Bonuses, P3Tier
 
 PATTERN = Pattern.P3
-
-#: 强度项的键 —— 必须逐字对上 `params.ranking.patternSubWeights.p3`。
-STRENGTH_KEYS = ("shortWindowImprovement", "upsideRoomNear")
-
-_LONG = "_p3_long_rel"
-_SHORT = "_p3_short_rel"
-_PREV_SHORT = "_p3_prev_short_rel"
-_IMPROVE = "_p3_improvement"
+STRENGTH_KEYS = (
+    "hotPersistence", "maxAmplitude", "maxAbsoluteMove", "hugeTurnover",
+    "conflictRecency", "directionAndIndustryRelativeStrength",
+)
 
 
-def _window_sum(pack: PackRange, *, days: int, skip_recent: int, alias: str) -> pl.DataFrame:
-    """最近 `days` 个交易日(可先跳过最近 `skip_recent` 天)的 `rel_strength_1d` 累计和。
-
-    历史不足整段窗口 → 该票**没有这一行**(⛔ 不拿半段窗口冒充整段:那会让上线首几天
-    每只票的「长窗相对强度」都恰好 ≈ 0,整个形态当场失真)。
-    """
-    need = days + skip_recent
-    pool = pack.history(days=need, include_today=True)
-    schema = {"ts_code": pl.String, alias: pl.Float64}
-    if pool.is_empty():
-        return pl.DataFrame(schema=schema)
-    sessions = sorted(pool["trade_date"].unique().to_list())
-    if len(sessions) < need:
-        return pl.DataFrame(schema=schema)
-    window = sessions[:len(sessions) - skip_recent][-days:]
+def _with_mechanics(pack: PackRange, ma_days: int) -> pl.DataFrame:
     return (
-        pool.filter(pl.col("trade_date").is_in(window))
-        .select(["ts_code", "rel_strength_1d"])
-        .group_by("ts_code")
-        .agg(
-            pl.col("rel_strength_1d").sum().alias(alias),
-            pl.col("rel_strength_1d").is_not_null().sum().alias("_n"),
+        pack.frame.sort(["ts_code", "trade_date"])
+        .with_columns(
+            pl.col("vol").shift(1).rolling_mean(window_size=ma_days).over("ts_code")
+            .alias("_prior_vol_ma")
         )
-        # 窗口内有缺日的票不给读数(⛔ 缺数不当 0)
-        .filter(pl.col("_n") >= days)
-        .select(["ts_code", alias])
+        .with_columns(
+            pl.when(pl.col("_prior_vol_ma") > 0)
+            .then(pl.col("vol") / pl.col("_prior_vol_ma"))
+            .otherwise(None).alias("_vol_multiple"),
+            pl.when((pl.col("pre_close") > 0) & (pl.col("limit_up_price") > 0))
+            .then(((pl.col("limit_up_price") / pl.col("pre_close") - 1.0).abs() * 100))
+            .otherwise(None).alias("_limit_width_pp"),
+        )
+        .with_columns(
+            pl.when(pl.col("_limit_width_pp") > 0)
+            .then((pl.col("ret_1d").abs() * 100) / pl.col("_limit_width_pp"))
+            .otherwise(None).alias("_move_limit_ratio"),
+            pl.when(pl.col("_limit_width_pp") > 0)
+            .then((pl.col("amp_1d") * 100) / pl.col("_limit_width_pp"))
+            .otherwise(None).alias("_amplitude_limit_ratio"),
+        )
     )
 
 
-def _passes(frame: pl.DataFrame, tier: P3Tier, eruption_v: float) -> List[str]:
-    kept = frame.filter(
-        pl.col(_LONG).is_not_null()
-        & (pl.col(_LONG).abs() <= tier.flat_band)
-        & pl.col(_SHORT).is_not_null()
-        & (pl.col(_SHORT) > 0)
-        & pl.col(_IMPROVE).is_not_null()
-        & (pl.col(_IMPROVE) > 0)
-        # 裁定 14 / 15:尚未放量爆发 = 放量倍数 < V(与形态 1 的 ≥ V 互补)
-        & pl.col(volume_mod.COLUMN).is_not_null()
-        & (pl.col(volume_mod.COLUMN) < eruption_v)
+def _contest(pack: PackRange, cfg: P3Tier, ma_days: int) -> pl.DataFrame:
+    full = _with_mechanics(pack, ma_days)
+    days = sorted(full["trade_date"].unique().to_list())[-cfg.conflict_lookback_days:]
+    win = full.filter(pl.col("trade_date").is_in(days))
+    if win.is_empty():
+        return pl.DataFrame(schema={"ts_code": pl.String})
+    day_index = {day: index for index, day in enumerate(days)}
+    win = win.with_columns(
+        pl.col("trade_date").replace_strict(day_index).alias("_contest_day_index"),
+        ((pl.col("_move_limit_ratio") >= cfg.min_absolute_move_as_limit_ratio)
+         | (pl.col("_amplitude_limit_ratio") >= cfg.min_amplitude_as_limit_ratio)
+         | (pl.col("_vol_multiple") >= cfg.min_huge_vol_multiple)).alias("_contest_event"),
     )
-    return kept["ts_code"].to_list()
-
-
-def _tier_frame(pack: PackRange, base: pl.DataFrame, tier: P3Tier) -> pl.DataFrame:
-    long_rel = _window_sum(pack, days=tier.long_window, skip_recent=0, alias=_LONG)
-    short_rel = _window_sum(pack, days=tier.short_window, skip_recent=0, alias=_SHORT)
-    prev_short = _window_sum(
-        pack, days=tier.short_window, skip_recent=tier.short_window, alias=_PREV_SHORT)
     return (
-        base.join(long_rel, on="ts_code", how="left")
-        .join(short_rel, on="ts_code", how="left")
-        .join(prev_short, on="ts_code", how="left")
-        .with_columns((pl.col(_SHORT) - pl.col(_PREV_SHORT)).alias(_IMPROVE))
+        win.group_by("ts_code").agg(
+            pl.col("_move_limit_ratio").max().alias("_max_move_ratio"),
+            pl.col("_amplitude_limit_ratio").max().alias("_max_amplitude_ratio"),
+            pl.col("_vol_multiple").max().alias("_max_vol_multiple"),
+            pl.col("is_limit_up").fill_null(False).any().alias("_limit_up"),
+            pl.col("is_limit_down").fill_null(False).any().alias("_limit_down"),
+            pl.when(pl.col("top_list_state") == TOP_LIST_AVAILABLE)
+            .then(pl.col("top_list_hit").cast(pl.Int8)).otherwise(None)
+            .max().alias("_top_list"),
+            pl.when(pl.col("_contest_event")).then(pl.col("_contest_day_index"))
+            .otherwise(None).max().alias("_latest_contest_index"),
+        )
+        .with_columns(
+            ((pl.col("_latest_contest_index") + 1) / len(days)).alias("_freshness")
+        )
+    )
+
+
+def _evidence(row: dict) -> Dict[str, Optional[bool]]:
+    return {
+        "limitUp": bool(row.get("_limit_up")),
+        "limitDown": bool(row.get("_limit_down")),
+        "topList": None if row.get("_top_list") is None else bool(row["_top_list"]),
+        # 正式事实包尚无可审计的控异动/反包结构字段；按批准包明确记 unavailable。
+        "controlPause": None,
+        "reversalSecondWave": None,
+    }
+
+
+def _bonus(evidence: Dict[str, Optional[bool]], params: P3Bonuses) -> float:
+    value = 0.0
+    value += params.recent_limit_up if evidence["limitUp"] else 0.0
+    value += params.recent_limit_down_heat if evidence["limitDown"] else 0.0
+    value += params.dragon_tiger_list if evidence["topList"] else 0.0
+    value += params.controlled_anomaly if evidence["controlPause"] else 0.0
+    value += params.reversal_or_second_wave if evidence["reversalSecondWave"] else 0.0
+    return min(value, params.bonus_cap)
+
+
+def _frame(pack: PackRange, params: K9Params, cfg: P3Tier) -> pl.DataFrame:
+    persistent = hotness.persistent_hot(
+        pack, daily_heat=params.channels.p3.daily_heat, tier=cfg)
+    current = hotness.daily_heat_scores(
+        pack, daily_heat=params.channels.p3.daily_heat, days=1
+    ).filter(pl.col("trade_date") == pack.as_of).select("ts_code", "hot_score")
+    contest = _contest(pack, cfg, params.volume.ma_days)
+    return (
+        pack.today.join(persistent, on="ts_code", how="left")
+        .join(current, on="ts_code", how="left")
+        .join(contest, on="ts_code", how="left")
+        .filter(
+            pl.col("hot_days").is_not_null()
+            & (pl.col("hot_score") >= 1.0 - cfg.current_heat_top_pct)
+            & ((pl.col("_max_move_ratio") >= cfg.min_absolute_move_as_limit_ratio)
+               | (pl.col("_max_amplitude_ratio") >= cfg.min_amplitude_as_limit_ratio)
+               | (pl.col("_max_vol_multiple") >= cfg.min_huge_vol_multiple))
+        )
     )
 
 
 def run(pack: PackRange, params: K9Params) -> List[ChannelHit]:
-    today = pack.today
-    if today.is_empty():
+    if pack.today.is_empty():
         return []
-
-    strict, relaxed = params.channels.p3.strict, params.channels.p3.relaxed
-    vol = volume_mod.compute(pack, ma_days=params.volume.ma_days)
-    room = upside_room_mod.compute(pack, days=params.ranking.upside_room_mech_days)
-    base = today.join(vol, on="ts_code", how="left").join(room, on="ts_code", how="left")
-
-    v = params.volume.eruption_multiple
-    frames = {
-        Tier.STRICT: _tier_frame(pack, base, strict),
-        Tier.RELAXED: _tier_frame(pack, base, relaxed),
-    }
     picked: Dict[str, Tier] = {}
-    for tier, cfg in ((Tier.STRICT, strict), (Tier.RELAXED, relaxed)):
-        for code in _passes(frames[tier], cfg, v):
-            picked.setdefault(code, tier)
-
-    if not picked:
-        return []
-    hits: List[ChannelHit] = []
+    rows: Dict[str, dict] = {}
+    for tier, cfg in ((Tier.STRICT, params.channels.p3.strict),
+                      (Tier.RELAXED, params.channels.p3.relaxed)):
+        for row in _frame(pack, params, cfg).iter_rows(named=True):
+            code = str(row["ts_code"])
+            if code not in picked:
+                picked[code], rows[code] = tier, row
+    result = []
     for code in sorted(picked):
-        tier = picked[code]
-        row = {
-            r["ts_code"]: r
-            for r in frames[tier].select(
-                ["ts_code", _IMPROVE, upside_room_mod.PCT_COLUMN]
-            ).iter_rows(named=True)
-        }[code]
-        hits.append(ChannelHit(
-            ts_code=code, pattern=PATTERN, tier=tier,
+        row = rows[code]
+        evidence = _evidence(row)
+        risks = ("limit_down_contest",) if evidence["limitDown"] else ()
+        result.append(ChannelHit(
+            ts_code=code, pattern=PATTERN, tier=picked[code], evidence=evidence,
+            risks=risks, bonus_score=_bonus(evidence, params.channels.p3.bonuses),
             strength={
-                "shortWindowImprovement": row[_IMPROVE],
-                # **反向**:贴着那个位置还没捅破最好(K9 §3.4)
-                "upsideRoomNear": upside_room_mod.score_room_near(
-                    row[upside_room_mod.PCT_COLUMN]),
+                "hotPersistence": row["hot_persistence"],
+                "maxAmplitude": row["_max_amplitude_ratio"],
+                "maxAbsoluteMove": row["_max_move_ratio"],
+                "hugeTurnover": row["_max_vol_multiple"],
+                "conflictRecency": row["_freshness"],
+                "directionAndIndustryRelativeStrength": (
+                    None if row.get("ret_1d") is None or row.get("rel_strength_1d") is None
+                    else (float(row["ret_1d"]) + float(row["rel_strength_1d"])) / 2.0
+                ),
             },
         ))
-    return hits
+    return result
 
 
 __all__ = ["PATTERN", "STRENGTH_KEYS", "run"]

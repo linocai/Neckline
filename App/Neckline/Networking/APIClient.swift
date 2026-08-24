@@ -235,7 +235,7 @@ actor APIClient {
         return try JSONDecoder().decode(CoverageSnapshot.self, from: data)
     }
 
-    /// 已经走完 D+4 的清单成绩。行业分与选票分由服务端分别给出，不存在合计分。
+    /// 已经走完 D2 的 K9-v2 清单五指标，同时包含全清单与 P1–P4 切片。
     func fetchListingScorecard(window: Int? = nil) async throws -> ListingScorecardSnapshot {
         let path = "/api/v1/scoreboard/listing" + (window.map { "?window=\($0)" } ?? "")
         let data = try await get(path, timeout: 30)

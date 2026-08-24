@@ -92,7 +92,7 @@ def _read_review_upload(upload: UploadFile, *, total_before: int) -> bytes:
     return data
 
 # 版本必须与客户端工程同步；部署是否生效以生产 health 响应为准。
-VERSION = "v2.5.2"
+VERSION = "v2.6.0"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -860,11 +860,10 @@ def get_scoreboard_coverage(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
 
 @app.get(f"{API_PREFIX}/scoreboard/listing", dependencies=[Depends(require_token)])
 def get_scoreboard_listing(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
-    """最近若干个已经走完 D+4 的正式清单日五指标。
+    """最近若干个已经走完 D2 的 K9-v2 正式清单日五指标。
 
-    成立率分母只含 10:00 已得到成立/放弃终值的样本；观察与未结算均不进入任何
-    正确率分子或分母。兑现率与错杀率只在相应终值且存在预案压力位的样本内计算。
-    行业分与选票分始终分开返回，不提供合计字段。
+    主成绩覆盖全部正式清单，并同时返回全清单与 P1–P4 切片；10:00 三分支只进入
+    D1 辅助观察，不改变 D2 主成绩分母。
     """
     from neckline.scorecard import listing
 
@@ -956,6 +955,8 @@ def _selection_stocks(trade_date: str) -> list:
             "newsCategory": None if note is None else note["news_category"],
             "klineComment": None if note is None else note["kline_comment"],
             "explainOk": None if note is None else bool(note["llm_ok"]),
+            "evidence": e.get("evidence", {}),
+            "risks": e.get("risks", []),
         })
     return out
 
@@ -970,6 +971,7 @@ def _selection_payload(row: dict) -> dict:
         "headline": row["headline"],
         "gaps": row["gaps"],
         "strategy": row["strategy"],
+        "strategyVersion": row["strategy_version"],
         "paramsPackageVersion": row["params_package_version"],
         "packId": row["pack_id"],
         "packVersion": row["pack_version"],

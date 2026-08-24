@@ -268,11 +268,12 @@ def test_there_is_exactly_one_evaluator():
     assert "neckline.playbook.evaluate" in _imports(_AUCTION / "settle.py")
 
 
-def test_metric_ref_is_a_closed_enum_of_exactly_the_nine_documented_values():
-    """§5.6.3 逐字给的九个量。加一个成员必须同时回答「两拍各自从哪里读到它」。"""
+def test_metric_ref_is_a_closed_enum_of_exactly_the_documented_values():
+    """正式 D1 成绩参考价也必须由 10:00 结算拍冻结，不能事后猜。"""
     assert {m.value for m in pb_model.MetricRef} == {
         "auction_price", "auction_gap_pct", "open_price", "gap_pct",
-        "first30_low", "first30_high", "prev_close", "prev_low", "prev_high"}
+        "first30_low", "first30_high", "prev_close", "prev_low", "prev_high",
+        "last_valid_trade_at_10_00"}
     assert {o.value for o in pb_model.Op} == {"<=", ">=", "<", ">"}
     assert {b.value for b in pb_model.BranchName} == {"成立", "放弃"}
     assert pb_model.DEFAULT_BRANCH == "观察"

@@ -93,20 +93,22 @@ def _seed_system_records(env, day, *, code: str = _CODE) -> None:
     report_store.save_k9_report(
         trade_date=day, report_date=day, state="has_list",
         headline="今天有这些 · 1 只(严格 1 / 放宽 0)", gaps=[], markdown="# 夹具",
-        structured={}, strategy="K9", params_package_version="k9-params-fixture",
-        pack_id="pid", pack_version="fp-2", listing_size=1,
+        structured={}, strategy="K9", strategy_version="K9-v2",
+        params_package_version="k9-params-fixture",
+        pack_id="pid", pack_version="fp-3", listing_size=1,
         strict_count=1, relaxed_count=0, db_path=env.db_path)
 
     conn = sqlite3.connect(str(env.db_path))
     try:
         conn.execute(
             "INSERT OR REPLACE INTO k9_listing_entries (trade_date, ts_code, run_id, "
-            "strategy, name, sw_l2_code, sw_l2_name, patterns_json, primary_pattern, "
+            "strategy, strategy_version, name, sw_l2_code, sw_l2_name, patterns_json, primary_pattern, "
             "tier, seat_kind, rank, score, industry_heat_score, pattern_strength_score, "
-            "relay_score, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (day.strftime("%Y%m%d"), code, "run-fixture", "K9", "贵州茅台",
+            "relay_score, evidence_json, risks_json, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (day.strftime("%Y%m%d"), code, "run-fixture", "K9", "K9-v2", "贵州茅台",
              _L2[0], _L2[1], json.dumps(["p1"]), "p1", "strict", "floor", 1, 0.9,
-             0.5, 0.4, 0.0, "2026-01-01T00:00:00"))
+             0.5, 0.4, 0.0, "{}", "[]", "2026-01-01T00:00:00"))
         conn.commit()
     finally:
         conn.close()

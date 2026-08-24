@@ -64,8 +64,32 @@ func nkPatternLabel(_ raw: String) -> String {
     switch raw {
     case "p1": return "放量启动"
     case "p2": return "超跌反弹"
-    case "p3": return "中等生转强"
-    case "p4": return "资金异动"
+    case "p3": return "热门强博弈"
+    case "p4": return "资金领先价格"
+    default: return raw
+    }
+}
+
+func nkRiskLabel(_ raw: String) -> String {
+    switch raw {
+    case "high_position_drawdown": return "高位回撤风险"
+    case "high_stall": return "高位滞涨风险"
+    case "giant_breakdown": return "巨量破位风险"
+    case "limit_down_contest": return "跌停博弈风险"
+    default: return raw
+    }
+}
+
+func nkEvidenceLabel(_ raw: String) -> String {
+    switch raw {
+    case "limitUp": return "涨停证据"
+    case "limitDown": return "跌停博弈"
+    case "topList": return "龙虎榜"
+    case "controlPause": return "控盘停顿"
+    case "reversalSecondWave": return "反转二波"
+    case "lowRecovery": return "低点回收"
+    case "downsideDeceleration": return "跌速放缓"
+    case "effectiveTurnover": return "有效换手"
     default: return raw
     }
 }
@@ -311,6 +335,8 @@ struct K9Stock: Codable, Equatable, Identifiable {
     var newsCategory: String? = nil
     var klineComment: String? = nil
     var explainOk: Bool? = nil
+    var evidence: NKJSON = .object([:])
+    var risks: [String] = []
 
     var id: String { tsCode }
     var displayName: String { (name?.isEmpty == false) ? name! : tsCode }
@@ -319,6 +345,7 @@ struct K9Stock: Codable, Equatable, Identifiable {
         case tsCode, name, swL2Code, swL2Name, patterns, primaryPattern, tier, seatKind, rank
         case referenceClose, oneLineProfile
         case upsideRoomMechPct, playbook, newsState, newsCategory, klineComment, explainOk
+        case evidence, risks
     }
 
     init(tsCode: String = "", name: String? = nil, swL2Code: String? = nil,
@@ -327,7 +354,8 @@ struct K9Stock: Codable, Equatable, Identifiable {
          referenceClose: Double? = nil, oneLineProfile: String? = nil,
          upsideRoomMechPct: Double? = nil, playbook: Playbook? = nil,
          newsState: String? = nil, newsCategory: String? = nil,
-         klineComment: String? = nil, explainOk: Bool? = nil) {
+         klineComment: String? = nil, explainOk: Bool? = nil,
+         evidence: NKJSON = .object([:]), risks: [String] = []) {
         self.tsCode = tsCode; self.name = name; self.swL2Code = swL2Code
         self.swL2Name = swL2Name; self.patterns = patterns; self.primaryPattern = primaryPattern
         self.tier = tier; self.seatKind = seatKind; self.rank = rank
@@ -335,6 +363,7 @@ struct K9Stock: Codable, Equatable, Identifiable {
         self.upsideRoomMechPct = upsideRoomMechPct; self.playbook = playbook
         self.newsState = newsState; self.newsCategory = newsCategory
         self.klineComment = klineComment; self.explainOk = explainOk
+        self.evidence = evidence; self.risks = risks
     }
 
     init(from decoder: Decoder) throws {
@@ -356,6 +385,8 @@ struct K9Stock: Codable, Equatable, Identifiable {
         newsCategory = try c.decodeIfPresent(String.self, forKey: .newsCategory)
         klineComment = try c.decodeIfPresent(String.self, forKey: .klineComment)
         explainOk = try c.decodeIfPresent(Bool.self, forKey: .explainOk)
+        evidence = try c.decodeIfPresent(NKJSON.self, forKey: .evidence) ?? .object([:])
+        risks = try c.decodeIfPresent([String].self, forKey: .risks) ?? []
     }
 }
 
@@ -371,6 +402,7 @@ struct SelectionSnapshot: Codable, Equatable {
     var headline: String = ""
     var gaps: [String] = []
     var strategy: String = ""
+    var strategyVersion: String = ""
     var paramsPackageVersion: String? = nil
     var packId: String? = nil
     var packVersion: String? = nil
@@ -392,7 +424,7 @@ struct SelectionSnapshot: Codable, Equatable {
         state: nil, headline: "还没连上服务端", gaps: ["本次启动尚未成功拉过报告"])
 
     enum CodingKeys: String, CodingKey {
-        case state, reportDate, tradeDate, headline, gaps, strategy, paramsPackageVersion
+        case state, reportDate, tradeDate, headline, gaps, strategy, strategyVersion, paramsPackageVersion
         case packId, packVersion, listingSize, strictCount, relaxedCount, generatedAt
         case markdown, structured, copyText, stocks
         case directionSnapshot = "direction"
@@ -402,6 +434,7 @@ struct SelectionSnapshot: Codable, Equatable {
 
     init(state: K9ReportState? = nil, reportDate: String = "", tradeDate: String = "",
          headline: String = "", gaps: [String] = [], strategy: String = "",
+         strategyVersion: String = "",
          paramsPackageVersion: String? = nil, packId: String? = nil, packVersion: String? = nil,
          listingSize: Int? = nil, strictCount: Int? = nil, relaxedCount: Int? = nil,
          generatedAt: String = "", markdown: String = "",
@@ -410,6 +443,7 @@ struct SelectionSnapshot: Codable, Equatable {
          copyText: String = "", stocks: [K9Stock] = []) {
         self.state = state; self.reportDate = reportDate; self.tradeDate = tradeDate
         self.headline = headline; self.gaps = gaps; self.strategy = strategy
+        self.strategyVersion = strategyVersion
         self.paramsPackageVersion = paramsPackageVersion; self.packId = packId
         self.packVersion = packVersion; self.listingSize = listingSize
         self.strictCount = strictCount; self.relaxedCount = relaxedCount
@@ -428,6 +462,7 @@ struct SelectionSnapshot: Codable, Equatable {
         headline = try c.decodeIfPresent(String.self, forKey: .headline) ?? ""
         gaps = try c.decodeIfPresent([String].self, forKey: .gaps) ?? []
         strategy = try c.decodeIfPresent(String.self, forKey: .strategy) ?? ""
+        strategyVersion = try c.decodeIfPresent(String.self, forKey: .strategyVersion) ?? ""
         paramsPackageVersion = try c.decodeIfPresent(String.self, forKey: .paramsPackageVersion)
         packId = try c.decodeIfPresent(String.self, forKey: .packId)
         packVersion = try c.decodeIfPresent(String.self, forKey: .packVersion)

@@ -30,7 +30,7 @@ from tests.client_sources import CLIENT, CLIENT_ROOT, strip_comments
 _ASSET_CATALOG = CLIENT / "Resources" / "Assets.xcassets"
 _PROJECT_YML = CLIENT_ROOT / "project.yml"
 _PBXPROJ = CLIENT_ROOT / "Neckline.xcodeproj" / "project.pbxproj"
-_EXPECTED_PRIMARY_ICON = "AppIconV252B15"
+_EXPECTED_PRIMARY_ICON = "AppIconV260B16"
 
 
 def _code_lines() -> Dict[Path, List[Tuple[int, str]]]:
@@ -234,7 +234,7 @@ def test_the_old_icon_name_is_gone_from_every_one_of_the_four_places():
     改名要同步**四处**:`project.yml` / asset 目录名 / 守门常量 / 重生成的 pbxproj。
     本文件同时锁当前值与「旧名零残留」，不依赖任何退役版本的测试。
     """
-    old_names = ("AppIconV242", "AppIconV250", "AppIconV252B14")
+    old_names = ("AppIconV242", "AppIconV250", "AppIconV252B14", "AppIconV252B15")
     assert _EXPECTED_PRIMARY_ICON not in old_names, "当前发布必须换一个新的 asset-set 名"
     for old in old_names:
         assert not (_ASSET_CATALOG / f"{old}.appiconset").exists(), "旧 asset 目录还在"
@@ -563,10 +563,10 @@ def test_neither_the_scoreboard_view_nor_its_models_offer_a_combined_score():
     assert offenders == [], "成绩板块出现了合计口径:\n" + "\n".join(offenders)
 
 
-def test_the_two_columns_are_both_still_there():
-    """正向:两栏确实都在(⛔ 「没有合计」不许靠删掉其中一栏来满足)。"""
+def test_the_five_d2_metrics_are_all_present():
     models = (CLIENT / "Networking" / "Models" / "ScoreboardModels.swift").read_text(
         encoding="utf-8")
     _code, literals = _scan_swift(models)
     values = {s for _l, s in literals}
-    assert "行业分" in values and "选票分" in values, "两栏的栏名不见了"
+    assert {"D1—D2 上涨触达", "D2 收盘胜率", "D2 行业超额",
+            "D1—D2 最大回撤", "最终清单提升"} <= values

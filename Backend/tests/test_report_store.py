@@ -11,7 +11,8 @@ def _save(db, trade_date, report_date, state="has_list", size=2):
     store.save_k9_report(
         trade_date=trade_date, report_date=report_date, state=state,
         headline="标题", gaps=[], markdown="# 标题", structured={"ok": True},
-        strategy="K9", params_package_version="p", pack_id="id", pack_version="v",
+        strategy="K9", strategy_version="K9-v2",
+        params_package_version="p", pack_id="id", pack_version="fp-3",
         listing_size=size, strict_count=1 if size else 0, relaxed_count=1 if size else 0,
         db_path=db)
 

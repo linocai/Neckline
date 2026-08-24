@@ -257,6 +257,8 @@ CREATE TABLE IF NOT EXISTS k9_runs (
   run_id TEXT NOT NULL,
   trade_date TEXT NOT NULL,
   strategy TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
+  label_contract_version TEXT NOT NULL,
   params_package_version TEXT NOT NULL,
   pack_id TEXT NOT NULL,
   pack_version TEXT NOT NULL,
@@ -272,8 +274,9 @@ CREATE TABLE IF NOT EXISTS k9_runs (
   absent_patterns_json TEXT NOT NULL,
   dropped_heat_absent_json TEXT NOT NULL,
   listing_finalized_by TEXT NOT NULL,
+  scoring_contract_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  PRIMARY KEY (trade_date, strategy)
+  PRIMARY KEY (trade_date, strategy, strategy_version)
 );
 CREATE INDEX IF NOT EXISTS idx_k9_runs_run_id ON k9_runs(run_id);
 
@@ -281,11 +284,14 @@ CREATE TABLE IF NOT EXISTS k9_channel_hits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL,
   trade_date TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
   ts_code TEXT NOT NULL,
   pattern TEXT NOT NULL,
   tier TEXT NOT NULL,
   seated INTEGER NOT NULL,
   strength_json TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  risks_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_k9_channel_hits_day
@@ -298,6 +304,7 @@ CREATE TABLE IF NOT EXISTS k9_listing_entries (
   ts_code TEXT NOT NULL,
   run_id TEXT NOT NULL,
   strategy TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
   name TEXT,
   sw_l2_code TEXT,
   sw_l2_name TEXT,
@@ -310,8 +317,10 @@ CREATE TABLE IF NOT EXISTS k9_listing_entries (
   industry_heat_score REAL,
   pattern_strength_score REAL NOT NULL,
   relay_score REAL NOT NULL,
+  evidence_json TEXT NOT NULL,
+  risks_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  PRIMARY KEY (trade_date, ts_code)
+  PRIMARY KEY (trade_date, ts_code, strategy_version)
 );
 CREATE INDEX IF NOT EXISTS idx_k9_listing_day
   ON k9_listing_entries(trade_date, strategy);
@@ -325,6 +334,7 @@ CREATE TABLE IF NOT EXISTS k9_reports (
   markdown TEXT NOT NULL,
   structured_json TEXT NOT NULL,
   strategy TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
   params_package_version TEXT,
   pack_id TEXT,
   pack_version TEXT,
@@ -415,30 +425,40 @@ CREATE TABLE IF NOT EXISTS k9_d1_verdicts (
 CREATE INDEX IF NOT EXISTS idx_k9_d1_verdicts_stage
   ON k9_d1_verdicts(trade_date, decided_stage);
 
-CREATE TABLE IF NOT EXISTS k9_followups (
+CREATE TABLE IF NOT EXISTS k9_predictions (
   d0_date TEXT NOT NULL,
-  d4_date TEXT NOT NULL,
+  d1_date TEXT NOT NULL,
+  d2_date TEXT NOT NULL,
   ts_code TEXT NOT NULL,
   strategy TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
+  label_contract_version TEXT NOT NULL,
+  cohort TEXT NOT NULL,
+  primary_pattern TEXT,
   name TEXT,
   sw_l2_code TEXT,
   sw_l2_name TEXT,
-  verdict TEXT,
-  has_playbook INTEGER NOT NULL,
-  first_resistance REAL,
-  hit_first_resistance INTEGER,
   d0_close REAL,
-  d4_close REAL,
-  max_high_d1_d4 REAL,
-  stock_close_return REAL,
-  stock_max_return REAL,
-  industry_close_return REAL,
-  pick_close_excess REAL,
+  d2_close REAL,
+  max_high_d1_d2 REAL,
+  min_low_d1_d2 REAL,
+  touch_up INTEGER,
+  close_win INTEGER,
+  path_state TEXT,
+  stock_d2_return REAL,
+  industry_d2_return REAL,
+  industry_excess REAL,
+  max_drawdown REAL,
+  d1_verdict TEXT,
+  evaluable INTEGER NOT NULL,
+  unavailable_reason TEXT,
   computed_at TEXT NOT NULL,
-  PRIMARY KEY (d0_date, ts_code, strategy)
+  d1_reference_price REAL,
+  d1_touch_up INTEGER,
+  PRIMARY KEY (d0_date, ts_code, strategy_version, cohort)
 );
-CREATE INDEX IF NOT EXISTS idx_k9_followups_d4
-  ON k9_followups(d4_date, strategy);
+CREATE INDEX IF NOT EXISTS idx_k9_predictions_d2
+  ON k9_predictions(d2_date, strategy, strategy_version);
 """
 
 

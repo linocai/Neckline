@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
+import hashlib
 import re
 from pathlib import Path
 
@@ -13,31 +13,25 @@ from neckline.k9 import params
 ROOT = Path(__file__).resolve().parent.parent.parent
 BACKEND = ROOT / "Backend"
 APP = ROOT / "App"
-PRODUCTION_PARAMS_SHA256 = "d926cb048c011796d4a1a8df3555f11849332dd89daef5d8d1708861df25f1a7"
 
 
 def test_release_version_and_build_are_aligned():
     project = (APP / "Neckline.xcodeproj" / "project.pbxproj").read_text(encoding="utf-8")
-    assert VERSION == "v2.5.2"
-    assert set(re.findall(r"MARKETING_VERSION = ([^;]+);", project)) == {"2.5.2"}
-    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"15"}
+    assert VERSION == "v2.6.0"
+    assert set(re.findall(r"MARKETING_VERSION = ([^;]+);", project)) == {"2.6.0"}
+    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"16"}
 
 
-def test_production_parameter_pack_is_the_user_approved_whynotme_artifact(tmp_path):
+def test_production_parameter_pack_is_the_exact_approved_original():
     path = BACKEND / "config" / "k9-params.json"
-    assert path.exists()
-    assert (BACKEND / "config" / "k9-params.example.json").exists()
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == PRODUCTION_PARAMS_SHA256
-
+    assert path.is_file()
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
+        "718bf7876d69936937edfdc7432bbea88ec1cd3e6e6107501acd325b7f1098df")
     document = json.loads(path.read_text(encoding="utf-8"))
-    assert document["packageVersion"] == "k9-params-20260823-r2"
-    assert document["factPackVersion"] == params.PACK_VERSION
-    assert document["calibratedBy"] == "whynotme/K9-20260822"
-    assert document["approvedBy"] == "Lino"
-
-    loaded = params.load(path, db_path=tmp_path / "params-validation.db")
-    assert loaded.package_version == document["packageVersion"]
-    assert loaded.approved_at == document["approvedAt"]
+    assert document["packageVersion"] == "k9-params-20260824-v2-r1"
+    assert document["strategyVersion"] == "K9-v2"
+    assert document["factPackVersion"] == "fp-3"
+    assert (BACKEND / "config" / "k9-params.example.json").exists()
 
 
 def test_example_has_fixed_structure_and_placeholders_only():

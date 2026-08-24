@@ -93,6 +93,7 @@ def open30_readings(
         MetricRef.AUCTION_PRICE: _frozen(MetricRef.AUCTION_PRICE),
         MetricRef.AUCTION_GAP_PCT: _frozen(MetricRef.AUCTION_GAP_PCT),
         MetricRef.OPEN_PRICE: open_price,
+        MetricRef.LAST_VALID_TRADE_AT_10_00: snap.price_of(code),
         MetricRef.GAP_PCT: gap_percent_points(open_price, prev.close if prev else None),
         # 10:00 的 high/low 即前 30 分钟极值(含 9:25 竞价成交)—— 裁定 10 逐字。
         MetricRef.FIRST30_LOW: snap.low_of(code),

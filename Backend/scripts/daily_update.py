@@ -164,16 +164,18 @@ def refresh_coverage(target: date) -> None:
 
 
 def refresh_listing_scorecards(target: date) -> None:
-    """S17：当日事实包到位后补齐所有已走完 D+4 的清单成绩。"""
+    """当日事实包到位后补齐所有已走完 D2 的 K9-v2 清单成绩。"""
     from neckline.scorecard import listing
 
     try:
+        opened = listing.open_due(target)
         count = listing.refresh_due(target)
     except Exception:  # noqa: BLE001
         logger.warning("[listing_scorecard] %s 刷新异常(已吞,不阻断行情日更)",
                        target, exc_info=True)
         return
-    logger.info("[listing_scorecard] 截至 %s 已刷新 %d 个清单日", target, count)
+    logger.info("[listing_scorecard] 截至 %s 已恢复 %d 条预测、刷新 %d 个清单日",
+                target, opened, count)
 
 
 def update_suspend_list(target: date) -> None:
@@ -196,6 +198,25 @@ def update_suspend_list(target: date) -> None:
         logger.info("[suspend_d] %s 停牌 %d 只", target, df.height)
     except Exception:  # noqa: BLE001
         logger.warning("[suspend_d] 日更异常(已吞,不阻断主增量)", exc_info=True)
+
+
+def update_top_list(target: date) -> None:
+    """尽力获取当日龙虎榜并落日分区；失败由 fp-3 冻结为 unavailable。
+
+    龙虎榜只给 K9-v2 P3 做附加证据，缺失不能阻断事实包，更不能被解释为未上榜。
+    """
+    from neckline.data.top_list import load_top_list
+
+    try:
+        frame = load_top_list(target, fetch_if_missing=True)
+        from neckline.data.market_data import day_file_exists
+        if day_file_exists("top_list", target):
+            logger.info("[top_list] %s 已查，%d 行", target, frame.height)
+        else:
+            logger.warning("[top_list] %s 数据不可用；fp-3 将明确记录 unavailable", target)
+    except Exception:  # noqa: BLE001
+        logger.warning("[top_list] %s 获取异常；fp-3 将明确记录 unavailable", target,
+                       exc_info=True)
 
 
 def main() -> int:
@@ -236,6 +257,7 @@ def main() -> int:
     # v1.4-①-B 增强项(尽力而为,失败不改退出码;放在主增量之后,免得它们的失败
     # 影响 EOD 主链路的落盘时序)。
     update_suspend_list(target)
+    update_top_list(target)
     # V2.5.0 S2:申万二级分类日更(**判据输入**,失败打 ERROR;见函数 docstring)。
     update_sw_industry()
     # V2.5.0 S3:事实包构建 + 冻结(架构第一层)。必须排在 `update_sw_industry` **之后**

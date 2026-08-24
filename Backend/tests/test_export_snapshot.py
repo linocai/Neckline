@@ -85,7 +85,7 @@ class TestByteForByte:
                                     parquet_dir=env.parquet_dir, db_path=env.db_path)
         assert frag["fileCount"] == 3
         for entry in frag["files"]:
-            src = env.parquet_dir / "fact_pack" / "version=fp-2" / "year=2026" / f"{entry['date']}.parquet"
+            src = env.parquet_dir / "fact_pack" / "version=fp-3" / "year=2026" / f"{entry['date']}.parquet"
             dst = out / entry["path"]
             assert dst.read_bytes() == src.read_bytes()
             assert entry["sha256"] == _sha(src) == _sha(dst)
@@ -96,7 +96,7 @@ class TestByteForByte:
         out = tmp_path / "snap"
         EX.export_fact_packs(out, "20260101", "20260131",
                              parquet_dir=env.parquet_dir, db_path=env.db_path)
-        assert (out / "fact_pack" / "version=fp-2" / "year=2026" / "20260105.parquet").is_file()
+        assert (out / "fact_pack" / "version=fp-3" / "year=2026" / "20260105.parquet").is_file()
 
     def test_layout_matches_the_production_day_file_path(self, snapshot_env, tmp_path):
         """⛔ 不许在导出脚本里另拼一套路径:拿 `market_data.day_file_path` 对拍。"""
@@ -107,7 +107,7 @@ class TestByteForByte:
         frag = EX.export_fact_packs(out, "20260101", "20260131",
                                     parquet_dir=env.parquet_dir, db_path=env.db_path)
         for entry in frag["files"]:
-            expected = day_file_path("fact_pack", entry["date"], parquet_dir=out, version="fp-2")
+            expected = day_file_path("fact_pack", entry["date"], parquet_dir=out, version="fp-3")
             assert (out / entry["path"]) == expected
 
 
@@ -121,7 +121,7 @@ class TestRangeSelection:
     def test_missing_dates_are_reported_not_silently_dropped(self, snapshot_env, tmp_path):
         """🔴 标定方拿到 2 天而不是 3 天,与拿到 3 天是两件事。⛔ 不静默少给。"""
         env, days = snapshot_env
-        (env.parquet_dir / "fact_pack" / "version=fp-2" / "year=2026" / "20260105.parquet").unlink()
+        (env.parquet_dir / "fact_pack" / "version=fp-3" / "year=2026" / "20260105.parquet").unlink()
         frag = EX.export_fact_packs(tmp_path / "s", "20260101", "20260131",
                                     parquet_dir=env.parquet_dir, db_path=env.db_path)
         assert frag["missingDates"] == ["20260105"]
@@ -130,7 +130,7 @@ class TestRangeSelection:
     def test_orphan_parquet_without_a_manifest_row_is_reported(self, snapshot_env, tmp_path):
         """拷到了、清单里却没有 —— 同样要说出口(⛔ 不静默带走一份来路不明的包)。"""
         env, _ = snapshot_env
-        orphan = env.parquet_dir / "fact_pack" / "version=fp-2" / "year=2026" / "20260107.parquet"
+        orphan = env.parquet_dir / "fact_pack" / "version=fp-3" / "year=2026" / "20260107.parquet"
         orphan.write_bytes(b"x")
         frag = EX.export_fact_packs(tmp_path / "s", "20260101", "20260131",
                                     parquet_dir=env.parquet_dir, db_path=env.db_path)

@@ -9,8 +9,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "2.5.2"
-    CURRENT_PROJECT_VERSION: "15"
+    MARKETING_VERSION: "2.6.0"
+    CURRENT_PROJECT_VERSION: "16"
     DEVELOPMENT_TEAM: HX73DFL88G
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: minimal
@@ -44,7 +44,7 @@ targets:
         # 同时含 `PRODUCT_NAME = Neckline;` 与 `MARKETING_VERSION`」——xcodegen 不把顶层 base
         # 下放到 target 块,只写顶层,该块就没有 MARKETING_VERSION、守门直接挂。
         # 重复值必须与顶层一致(单测同时断言两处相等,漂了会红)。
-        MARKETING_VERSION: "2.5.2"
+        MARKETING_VERSION: "2.6.0"
         # 推送 entitlement 仅 iOS 应用(真机/模拟器);macOS 不开推送(平台分叉,同 LinoN 姿势)。
         "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Neckline/Neckline.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Neckline/Neckline.entitlements
@@ -53,11 +53,12 @@ targets:
         # iOS 会把通知标题栏使用的主 App 图标缓存到系统界面。**每发一版换一次
         # asset-set 名称**,避免覆盖安装后通知栏继续命中旧缓存;图稿本身不变。
         # V2.4.2 Build 4 起用 `AppIconV242`,V2.5.0 Build 10 改名 `AppIconV250`,
-        # V2.5.2 Build 14 改名 `AppIconV252B14`,Build 15 改名 `AppIconV252B15`。
+        # V2.5.2 Build 14/15 分别使用旧发布名；V2.6.0 Build 16 改名
+        # `AppIconV260B16`，确保覆盖安装后通知栏不命中旧图标缓存。
         # ⚠ 改名要同步四处:本行 / `Assets.xcassets/<名>.appiconset` 目录名 /
         # 守门常量 `Backend/tests/test_v250_s12_app_guard.py::_EXPECTED_PRIMARY_ICON` /
         # `xcodegen generate` 重生成的 pbxproj(⛔ 不许只手改 pbxproj)。
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV252B15
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV260B16
         ENABLE_PREVIEWS: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

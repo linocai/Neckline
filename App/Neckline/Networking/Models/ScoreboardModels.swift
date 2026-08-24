@@ -297,65 +297,79 @@ struct K9VerdictsSnapshot: Codable, Equatable {
     var decided: [K9VerdictRow] { verdicts.filter { !$0.isUndecided } }
 }
 
-// MARK: - 清单成绩五指标(K9 §八)—— **本版只有壳,结算归 S17**
+// MARK: - K9-v2 D2 清单成绩
 
-/// 一只正式清单成员走完 D+4 后留下的结算明细。
-struct ListingFollowupRow: Codable, Equatable, Identifiable {
-    var d0Date: String = ""
-    var d4Date: String = ""
-    var tsCode: String = ""
-    var verdict: String? = nil
-    var hasPlaybook = false
-    var hitFirstResistance: Bool? = nil
-    var stockCloseReturn: Double? = nil
-    var stockMaxReturn: Double? = nil
-    var industryCloseReturn: Double? = nil
-    var pickCloseExcess: Double? = nil
+struct ListingLift: Codable, Equatable {
+    var finalMeanD2Return: Double? = nil
+    var strictRecallMeanD2Return: Double? = nil
+    var matchedBaselineMeanD2Return: Double? = nil
+    var vsStrictRecall: Double? = nil
+    var vsMatchedBaseline: Double? = nil
+}
+
+struct ListingMetricGroup: Codable, Equatable {
+    var sampleCount = 0
+    var touchRate: Double? = nil
+    var touchNumerator = 0
+    var touchDenominator = 0
+    var d2CloseWinRate: Double? = nil
+    var d2CloseWinNumerator = 0
+    var d2CloseWinDenominator = 0
+    var averageIndustryExcess: Double? = nil
+    var averageMaxDrawdown: Double? = nil
+    var finalListingLift = ListingLift()
+}
+
+struct ListingD1Aux: Codable, Equatable {
+    var touchRate: Double? = nil
+    var numerator = 0
+    var denominator = 0
+}
+
+struct ListingD2Row: Codable, Equatable, Identifiable {
+    var d0Date = ""
+    var d1Date = ""
+    var d2Date = ""
+    var cohort = ""
+    var primaryPattern: String? = nil
+    var touchUp: Bool? = nil
+    var closeWin: Bool? = nil
+    var stockD2Return: Double? = nil
+    var industryExcess: Double? = nil
+    var maxDrawdown: Double? = nil
+    var evaluable = false
+    var d1Verdict: String? = nil
+    var pathState = ""
+    var tsCode = ""
+    var unavailableReason: String? = nil
+    var d1TouchUp: Bool? = nil
 
     var id: String { "\(d0Date)-\(tsCode)" }
 }
 
-/// 最近若干个已结算清单日的五指标。
-/// `nil` 表示当前没有足够的合格样本，客户端必须说「尚不可得」，不能显示为零。
 struct ListingScorecardSnapshot: Codable, Equatable {
+    var strategyVersion = ""
+    var labelContractVersion = ""
     var window = 0
     var settledDays = 0
+    var activeQueueCount = 0
+    var activeQueueLimit = 60
     var listingCount = 0
-    var establishmentRate: Double? = nil
-    var establishmentNumerator = 0
-    var establishmentDenominator = 0
-    var realizationRate: Double? = nil
-    var realizationNumerator = 0
-    var realizationDenominator = 0
-    var falseKillRate: Double? = nil
-    var falseKillNumerator = 0
-    var falseKillDenominator = 0
-    var industryScore: Double? = nil
-    var pickScore: Double? = nil
+    var overall = ListingMetricGroup()
+    var byPattern: [String: ListingMetricGroup] = [:]
+    var d1Aux: [String: ListingD1Aux] = [:]
     var latestD0Date: String? = nil
-    var rows: [ListingFollowupRow] = []
+    var rows: [ListingD2Row] = []
 
     static let empty = ListingScorecardSnapshot()
 }
 
-/// 五指标的显示定义。
-///
-/// 🔴 **行业分与选票分永远是两栏,⛔ 本类型不提供、也不许有任何合计口径** ——
-/// 服务端 `scorecard` 存储层刻意没有 `total` / `combined` 字段(架构 §5.1 / K9 §八),
-/// 客户端也⛔ 不许自己相加。这不是排版洁癖:行业分低是**方向层**的问题,
-/// 行业分高而选票分低是**选票参数**的问题,两者吃的药完全不同。
-///
 enum NKListingScorecard {
-    /// 五个指标各自在问什么(K9 §八 表格逐字)。⛔ 别改写成对仗好听但讲不清的句子。
     static let metrics: [(name: String, question: String)] = [
-        ("成立率", "预案条件的松紧 —— 长期 1/20 成立说明卡太死,15/20 说明形同虚设"),
-        ("兑现率", "选票与压力位判断准不准"),
-        ("错杀率", "预案是否过严,把好票劝退了"),
-        ("行业分", "方向对不对"),
-        ("选票分", "票挑得好不好"),
+        ("D1—D2 上涨触达", "两天内是否给出可交易的短线上涨机会"),
+        ("D2 收盘胜率", "上涨是否延续到统一结算点"),
+        ("D2 行业超额", "个股是否真正跑赢所属行业"),
+        ("D1—D2 最大回撤", "获得机会前承受了多少下行"),
+        ("最终清单提升", "排序与名额是否优于严格召回全集和匹配基准"),
     ]
-
-    /// 🔴 两栏永远分开呈现的那两项。⛔ **不给合计**。
-    static let splitPair: (industry: String, pick: String) = ("行业分", "选票分")
-
 }

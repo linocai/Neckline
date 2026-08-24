@@ -88,6 +88,9 @@ def _fill_content(pattern: str = "p1", **over: Any) -> str:
                        "rejectPrice": 9.8})
     elif pattern == "p2":
         values.update({"minOpenPrice": 10.0, "rejectPrice": 9.6})
+    elif pattern == "p3":
+        values.update({"maxGapUpPct": 5.0, "first30FloorPrice": 10.2,
+                       "rejectPrice": 9.8})
     else:
         values.update({"first30FloorPrice": 10.2, "rejectPrice": 9.8})
     values.update(over)
@@ -104,7 +107,7 @@ def listed(isolated_env, tmp_path):
     params = k9_env.params(isolated_env, tmp_path)
     # 生产参数入口不允许改 B17 固定配额；这里直接构造一个小容量对象，只为制造
     # 后备票来测解释层补位算法，不是在测试参数包能否接受另一个配额。
-    params = replace(params, quota=replace(params.quota, min=1, max=3))
+    params = replace(params, quota=replace(params.quota, min=1, max=2))
     result, run_id = k9_run.run_k9(day, params=params,
                                    parquet_dir=isolated_env.parquet_dir,
                                    db_path=isolated_env.db_path)
@@ -385,19 +388,21 @@ class TestSkeletons:
         assert confirm.all[1].rhs is MetricRef.PREV_LOW
         assert "prevLow" not in skeleton_mod.required_keys("p2")
 
-    def test_p3_and_p4_are_the_same_ambush_skeleton(self):
-        """K9 §6.3:形态 4「同为埋伏型,按形态 3 处理」。"""
-        a = skeleton_mod.skeleton_for("p3").build(
-            {"first30FloorPrice": 10.0, "rejectPrice": 9.5})
-        b = skeleton_mod.skeleton_for("p4").build(
-            {"first30FloorPrice": 10.0, "rejectPrice": 9.5})
-        assert [c.to_dict() for c in a[0].all] == [c.to_dict() for c in b[0].all]
-        assert [c.to_dict() for c in a[1].all] == [c.to_dict() for c in b[1].all]
+    def test_p3_has_its_own_hot_contest_skeleton(self):
+        """P3 成立同时检查透支线与强博弈关键位；放弃检查结构失效位。"""
+        confirm, reject = skeleton_mod.skeleton_for("p3").build(
+            {"maxGapUpPct": 7.0, "first30FloorPrice": 10.0, "rejectPrice": 9.5})
+        assert [(c.lhs, c.op, c.rhs) for c in confirm.all] == [
+            (MetricRef.GAP_PCT, Op.LE, 7.0),
+            (MetricRef.FIRST30_LOW, Op.GE, 10.0),
+        ]
+        assert [(c.lhs, c.op, c.rhs) for c in reject.all] == [
+            (MetricRef.FIRST30_LOW, Op.LT, 9.5),
+        ]
 
-    def test_the_ambush_confirmation_never_demands_strength(self):
-        """「埋伏型的成立是『没出事』,而非『表现好』」(K9 §6.3 原文)——
-        成立分支里 ⛔ 没有任何涨幅 / 高开类条件。"""
-        confirm, _ = skeleton_mod.skeleton_for("p3").build(
+    def test_p4_ambush_confirmation_never_demands_strength(self):
+        """P4 的 D1 成立只要求资金进场后价格不破位。"""
+        confirm, _ = skeleton_mod.skeleton_for("p4").build(
             {"first30FloorPrice": 10.0, "rejectPrice": 9.5})
         assert all(c.lhs is MetricRef.FIRST30_LOW for c in confirm.all)
 
@@ -495,7 +500,12 @@ class TestUserEdit:
                       seat_kind=SeatKind.FLOOR, score=0.9,
                       industry_heat_score=0.5, pattern_strength_score=0.8,
                       relay_score=0.0)
-        sl = Shortlist(strategy="K9", params_version="v", pack_version="fp-2",
+        sl = Shortlist(strategy="K9", strategy_version="K9-v2",
+                       label_contract_version="d2-v1",
+                       scoring_contract={"touchThresholdU": 0.03, "riskLineL": 0.03,
+                                         "d1Reference": "open",
+                                         "matchedBaseline": "industryMedian"},
+                       params_version="v", pack_version="fp-3",
                        pack_id="pid", trade_date=day, entries=(entry,), reserve=(),
                        tier_used=Tier.STRICT, strict_candidates=1, relaxed_candidates=1,
                        channel_counts={}, capacity_short=False, absent_patterns=(),
@@ -661,8 +671,8 @@ class TestSelectionStocks:
 
         report_store.save_k9_report(
             trade_date=day, report_date=day, state="has_list", headline="今天有这些 · 1 只",
-            gaps=[], markdown="", structured={}, strategy="K9",
-            params_package_version="k9-params-fixture", pack_id="pid", pack_version="fp-2",
+            gaps=[], markdown="", structured={}, strategy="K9", strategy_version="K9-v2",
+            params_package_version="k9-params-fixture", pack_id="pid", pack_version="fp-3",
             listing_size=1, strict_count=1, relaxed_count=0, db_path=env.db_path)
 
     def test_each_missing_piece_is_reported_on_its_own(self, api_env, client, AUTH):
@@ -685,8 +695,7 @@ class TestSelectionStocks:
         assert one["explainOk"] is None
 
     def test_the_upside_room_is_read_back_with_the_right_sign(self, api_env, client, AUTH):
-        """🔴 **裁定 1**:p1 存**原值**、p3 存**负值**(反向打分)——
-        反读回来必须是**同一个**上方机械空间原值。
+        """K9-v2 只由 P1 保存并反读上方机械空间原值。
 
         ⚠ 它与预案层的**第一压力位**是两个量,⛔ 永不互相顶替。
         """
@@ -700,22 +709,13 @@ class TestSelectionStocks:
             run_id="r1", trade_date=day,
             hits=(ChannelHit(ts_code="600001.SH", pattern=Pattern.P1, tier=Tier.STRICT,
                              strength={"upsideRoomFar": 0.1234}),),
-            seated_codes=["600001.SH"], db_path=api_env.db_path)
+            seated_codes=["600001.SH"], strategy_version="K9-v2", db_path=api_env.db_path)
 
         r = client.get(f"/api/v1/selection/{day:%Y%m%d}", headers=AUTH)
         assert r.json()["stocks"][0]["upsideRoomMechPct"] == pytest.approx(0.1234)
 
-        # p3 存的是负值 → 反读取负号拿回原值。
         room = k9_store.load_upside_room_mech(day, codes=["600001.SH"], db_path=api_env.db_path)
         assert room["600001.SH"] == pytest.approx(0.1234)
-        k9_store.save_channel_hits(
-            run_id="r2", trade_date=day,
-            hits=(ChannelHit(ts_code="600002.SH", pattern=Pattern.P3, tier=Tier.STRICT,
-                             strength={"upsideRoomNear": -0.05}),),
-            seated_codes=[], db_path=api_env.db_path)
-        room = k9_store.load_upside_room_mech(
-            day, codes=["600001.SH", "600002.SH"], db_path=api_env.db_path)
-        assert room["600002.SH"] == pytest.approx(0.05)
 
     def test_the_hot_path_query_is_bounded_by_the_listing(self, api_env):
         """🔴 **热路径不允许全表扫**:`k9_channel_hits` 是 append-only 的**全部**

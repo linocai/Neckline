@@ -204,7 +204,7 @@ class TestFreezeIsNotOverwritable:
         v2 = _freeze(env, _build(env))
 
         _seed_day(env, closes={"600001.SH": 99.0})
-        v3 = _freeze(env, dataclasses.replace(_build(env), pack_version="fp-3"))
+        v3 = _freeze(env, dataclasses.replace(_build(env), pack_version="fp-4"))
 
         def close_of(p):
             return p.rows.filter(pl.col("ts_code") == "600001.SH")["close"].to_list()
@@ -216,7 +216,7 @@ class TestFreezeIsNotOverwritable:
             D0, pack_version=fact_pack.PACK_VERSION,
             parquet_dir=env.parquet_dir, db_path=env.db_path)
         again3 = fact_store.load_pack(
-            D0, pack_version="fp-3", parquet_dir=env.parquet_dir, db_path=env.db_path)
+            D0, pack_version="fp-4", parquet_dir=env.parquet_dir, db_path=env.db_path)
 
         assert again2.path != again3.path, "两版必须各占一个坑位"
         assert close_of(again2) == [10.0], "旧版本读回来的必须还是旧版本的数据"

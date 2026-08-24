@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from neckline.facts import store as facts_store
 from neckline.k9 import store as k9_store
+from neckline.k9.contract import STRATEGY_VERSION
 from neckline.report.state import ReportState, headline, resolve_state
 from neckline.scorecard import store as scorecard_store
 
@@ -51,6 +52,7 @@ class ReportBundle:
     headline: str
     gaps: Tuple[str, ...]
     strategy: str
+    strategy_version: str
     params_package_version: Optional[str]
     pack_id: Optional[str]
     pack_version: Optional[str]
@@ -77,6 +79,7 @@ def build_report(
     upstream_gaps: Sequence[str] = (),
     upstream_failures: Sequence[str] = (),
     strategy: str = "K9",
+    strategy_version: str = STRATEGY_VERSION,
     db_path: Optional[Path] = None,
     parquet_dir: Optional[Path] = None,
 ) -> ReportBundle:
@@ -117,7 +120,8 @@ def build_report(
         direction = direction_store.load(pack.pack_id, db_path=db_path)
 
     # —— 清单(⚠ 只读 `k9_runs` / `k9_listing_entries`,⛔ 不现算)——————————
-    run = k9_store.load_run(trade_date, strategy=strategy, db_path=db_path)
+    run = k9_store.load_run(
+        trade_date, strategy=strategy, strategy_version=strategy_version, db_path=db_path)
     listing: Tuple[Dict[str, Any], ...] = ()
     listing_size: Optional[int] = None
     strict_count = relaxed_count = None
@@ -126,7 +130,7 @@ def build_report(
         # 是**无关的**(报告描述的是**这一天**,不是这一次调用)——
         # `upstream_gaps` 只服务于「为什么没跑成」的诊断,这里一条都不采。
         listing = tuple(k9_store.load_listing(
-            trade_date, strategy=strategy, db_path=db_path))
+            trade_date, strategy=strategy, strategy_version=strategy_version, db_path=db_path))
         listing_size = len(listing)
         strict_count = sum(1 for e in listing if e["tier"] == "strict")
         relaxed_count = listing_size - strict_count
@@ -198,6 +202,7 @@ def build_report(
         headline=line,
         gaps=tuple(gaps),
         strategy=strategy,
+        strategy_version=strategy_version,
         params_package_version=None if run is None else run["params_package_version"],
         pack_id=None if pack is None else pack.pack_id,
         pack_version=None if pack is None else pack.pack_version,

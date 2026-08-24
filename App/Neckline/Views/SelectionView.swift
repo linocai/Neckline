@@ -356,6 +356,16 @@ struct K9StockRow: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             patternChips
+            if !stock.risks.isEmpty || !positiveEvidence.isEmpty {
+                NKWrapRow(spacing: 5, lineSpacing: 5) {
+                    ForEach(positiveEvidence, id: \.self) { key in
+                        NKChip(text: nkEvidenceLabel(key), tone: .good)
+                    }
+                    ForEach(stock.risks, id: \.self) { risk in
+                        NKChip(text: nkRiskLabel(risk), tone: .warn)
+                    }
+                }
+            }
             if let profile = stock.oneLineProfile, !profile.isEmpty {
                 Text(profile).font(NKFont.callout).foregroundStyle(NK.textSecondary)
                     .lineLimit(compact ? 2 : 3).fixedSize(horizontal: false, vertical: true)
@@ -395,6 +405,12 @@ struct K9StockRow: View {
         NKWrapRow(spacing: 5, lineSpacing: 5) {
             NKChip(text: nkPatternLabel(stock.primaryPattern), tone: .info, filled: true)
         }
+    }
+
+    private var positiveEvidence: [String] {
+        (stock.evidence.objectValue ?? [:])
+            .filter { $0.value.boolValue == true }
+            .map(\.key).sorted()
     }
 
 }

@@ -43,6 +43,7 @@ def save_k9_report(
     markdown: str,
     structured: Dict[str, Any],
     strategy: str,
+    strategy_version: str,
     params_package_version: Optional[str],
     pack_id: Optional[str],
     pack_version: Optional[str],
@@ -62,14 +63,15 @@ def save_k9_report(
         conn.execute(
             f"INSERT INTO {K9_TABLE} "
             "(trade_date, report_date, state, headline, gaps_json, markdown, "
-            " structured_json, strategy, params_package_version, pack_id, pack_version, "
+            " structured_json, strategy, strategy_version, params_package_version, pack_id, pack_version, "
             " listing_size, strict_count, relaxed_count, generated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(trade_date) DO UPDATE SET "
             "report_date=excluded.report_date, state=excluded.state, "
             "headline=excluded.headline, gaps_json=excluded.gaps_json, "
             "markdown=excluded.markdown, structured_json=excluded.structured_json, "
             "strategy=excluded.strategy, "
+            "strategy_version=excluded.strategy_version, "
             "params_package_version=excluded.params_package_version, "
             "pack_id=excluded.pack_id, pack_version=excluded.pack_version, "
             "listing_size=excluded.listing_size, strict_count=excluded.strict_count, "
@@ -78,7 +80,7 @@ def save_k9_report(
                 _d(trade_date), _d(report_date), state, headline,
                 json.dumps(list(gaps), ensure_ascii=False), markdown,
                 json.dumps(structured, ensure_ascii=False, sort_keys=True),
-                strategy, params_package_version, pack_id, pack_version,
+                strategy, strategy_version, params_package_version, pack_id, pack_version,
                 listing_size, strict_count, relaxed_count, _now(),
             ),
         )
@@ -86,7 +88,7 @@ def save_k9_report(
 
 _K9_COLUMNS = (
     "trade_date, report_date, state, headline, gaps_json, markdown, structured_json, "
-    "strategy, params_package_version, pack_id, pack_version, listing_size, "
+    "strategy, strategy_version, params_package_version, pack_id, pack_version, listing_size, "
     "strict_count, relaxed_count, generated_at"
 )
 
@@ -107,13 +109,14 @@ def _k9_row(row) -> Dict[str, Any]:
         "markdown": row[5],
         "structured": json.loads(row[6]),
         "strategy": row[7],
-        "params_package_version": row[8],
-        "pack_id": row[9],
-        "pack_version": row[10],
-        "listing_size": row[11],
-        "strict_count": row[12],
-        "relaxed_count": row[13],
-        "generated_at": row[14],
+        "strategy_version": row[8],
+        "params_package_version": row[9],
+        "pack_id": row[10],
+        "pack_version": row[11],
+        "listing_size": row[12],
+        "strict_count": row[13],
+        "relaxed_count": row[14],
+        "generated_at": row[15],
     }
 
 
@@ -129,7 +132,7 @@ def load_k9_report(
         if conn is None:
             return None
         row = conn.execute(
-            f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} WHERE trade_date=?",
+            f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} WHERE trade_date=? AND strategy_version='K9-v2'",
             (_d(trade_date),),
         ).fetchone()
     return None if row is None else _k9_row(row)
@@ -156,15 +159,15 @@ def load_k9_report_index(
             return {}
         rows = conn.execute(
             f"SELECT trade_date, report_date, state, headline, listing_size, "
-            f"params_package_version, pack_version, generated_at FROM {K9_TABLE} "
-            f"WHERE trade_date>=? AND trade_date<=? ORDER BY trade_date",
+            f"params_package_version, pack_version, generated_at, strategy_version FROM {K9_TABLE} "
+            f"WHERE trade_date>=? AND trade_date<=? AND strategy_version='K9-v2' ORDER BY trade_date",
             (_d(start), _d(end)),
         ).fetchall()
     return {
         r[0]: {
             "trade_date": r[0], "report_date": r[1], "state": r[2], "headline": r[3],
             "listing_size": r[4], "params_package_version": r[5],
-            "pack_version": r[6], "generated_at": r[7],
+            "pack_version": r[6], "generated_at": r[7], "strategy_version": r[8],
         }
         for r in rows
     }
@@ -176,7 +179,8 @@ def latest_k9_report(*, db_path: Optional[Path] = None) -> Optional[Dict[str, An
         if conn is None:
             return None
         row = conn.execute(
-            f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} ORDER BY trade_date DESC LIMIT 1"
+            f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} WHERE strategy_version='K9-v2' "
+            "ORDER BY trade_date DESC LIMIT 1"
         ).fetchone()
     return None if row is None else _k9_row(row)
 

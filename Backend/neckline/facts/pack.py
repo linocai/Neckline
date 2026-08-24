@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -54,10 +54,10 @@ logger = logging.getLogger(__name__)
 #: 参数包的 `factPackVersion` 必须逐字等于它,否则该参数包无效(§5.4.3 校验 3)。
 #:
 #: · `fp-1`(S3 首版):S 类停牌**一律**排除出行业中位数并计为异常。
-#: · `fp-2`(**裁定 12 返工**):只剔**全天停牌**;盘中临时停牌**照常计入**中位数,
-#:   `suspend_flag` 因此新增 `I` 取值。这改的是中位数本身的口径 → 必须升版,
-#:   ⛔ 不许在 `fp-1` 上静默重算(那会让「同一版包」在两天里意思不同)。
-PACK_VERSION = "fp-2"
+#: · `fp-2`:只剔全天停牌；盘中临时停牌照常计入行业中位数。
+#: · `fp-3`(K9-v2):加入龙虎榜来源状态与命中事实。`unavailable` 与
+#:   `available + hit=false` 分开，避免把“没拿到数据”当成“确认未上榜”。
+PACK_VERSION = "fp-3"
 
 #: 策略层历史读取上限(§3.2:**工程容量上限,不是策略参数**)。
 #: 120 × 5500 × 10 列 ≈ 53 MB,2vCPU/1.6G 扛得住;参数包里任何窗口 > 它一律判配置无效。
@@ -77,6 +77,8 @@ PACK_COLUMNS: Tuple[str, ...] = (
     # —— 当日衍生 ——
     "ret_1d", "amp_1d", "limit_up_price", "limit_down_price",
     "is_limit_up", "is_limit_down", "is_limit_open", "consec_limit_up_days",
+    # —— 可选事件源（K9-v2 P3 附加证据）——
+    "top_list_state", "top_list_hit",
     # —— daily_basic ——
     "turnover_rate", "turnover_rate_f", "volume_ratio", "circ_mv", "total_mv", "free_share",
     # —— 资金流 ——
@@ -108,6 +110,9 @@ SUSPEND_NONE = "none"
 SUSPEND_HALTED = "S"          # 全天停牌 —— 唯一被剔除的一类(裁定 12)
 SUSPEND_INTRADAY = "I"        # 盘中临时停牌 —— 当天正常交易,照常计入(裁定 12)
 SUSPEND_RESUMED = "R"         # 复牌 —— 当天正常交易(§4.6)
+
+TOP_LIST_AVAILABLE = "available"
+TOP_LIST_UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True)
@@ -330,6 +335,25 @@ def build(
         if "ts_code" in limits.columns
         else pl.DataFrame(schema={"ts_code": pl.String})
     )
+    # 龙虎榜是 P3 的附加证据，不是事实包完整性的阻断项。分区存在（即使 0 行）
+    # 才代表“这一日已查”；缺分区或读坏都只能记 unavailable，不能伪装成未上榜。
+    top_path = day_file_path("top_list", trade_date, parquet_dir)
+    top_state = TOP_LIST_UNAVAILABLE
+    top_codes: set[str] = set()
+    top_rows: Optional[int] = None
+    top_mtime: Optional[str] = None
+    if top_path.exists():
+        try:
+            top = pl.read_parquet(top_path)
+            top_codes = set(top["ts_code"].drop_nulls().cast(pl.String).to_list()) \
+                if "ts_code" in top.columns else set()
+            top_rows = int(top.height)
+            top_mtime = datetime.fromtimestamp(
+                top_path.stat().st_mtime, tz=timezone.utc).isoformat(timespec="seconds")
+            top_state = TOP_LIST_AVAILABLE
+        except Exception:  # noqa: BLE001
+            logger.warning("[fact_pack] %s 龙虎榜分区不可读，按 unavailable 冻结", trade_date,
+                           exc_info=True)
 
     meta = _meta_frame(db_path, trade_date)
     sw = _sw_frame(db_path)
@@ -352,6 +376,8 @@ def build(
         .replace_strict(suspend_of, default=SUSPEND_NONE, return_dtype=pl.String)
         .alias("suspend_flag"),
         ((pl.col("high") - pl.col("low")) / pl.col("pre_close")).alias("amp_1d"),
+        pl.lit(top_state, dtype=pl.String).alias("top_list_state"),
+        pl.col("ts_code").is_in(sorted(top_codes)).alias("top_list_hit"),
     )
     for col, dtype, fill in (
         ("is_limit_up", pl.Boolean, False),
@@ -415,7 +441,11 @@ def build(
         rows=rows,
         industry_rows=tuple(industry_rows),
         market=market,
-        sources=comp.sources,
+        sources=(
+            *comp.sources,
+            completeness_mod.SourceRecord(
+                "top_list", str(top_path), top_rows, top_mtime),
+        ),
         suspend_anomaly_count=len(anomalies),
     )
 
@@ -497,6 +527,8 @@ __all__ = [
     "SUSPEND_HALTED",
     "SUSPEND_INTRADAY",
     "SUSPEND_RESUMED",
+    "TOP_LIST_AVAILABLE",
+    "TOP_LIST_UNAVAILABLE",
     "CompletePack",
     "IncompletePack",
     "Pack",

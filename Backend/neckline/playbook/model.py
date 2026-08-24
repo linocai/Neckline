@@ -48,6 +48,8 @@ class MetricRef(str, Enum):
     AUCTION_GAP_PCT = "auction_gap_pct"
     #: 开盘价(9:30)。⚠ 9:26 那一拍**读不到**(还没开盘)。
     OPEN_PRICE = "open_price"
+    #: D1 10:00 结算拍真正抓到的最后有效成交价；只供 D1 确认账冻结参考价。
+    LAST_VALID_TRADE_AT_10_00 = "last_valid_trade_at_10_00"
     #: 高开幅度 = `开盘价 / 昨收 − 1`,**百分点**。⚠ 9:26 那一拍读不到。
     GAP_PCT = "gap_pct"
     #: 🔴 **本场至今的最低价**(含 9:25 竞价成交)。10:00 那一拍读到的就是

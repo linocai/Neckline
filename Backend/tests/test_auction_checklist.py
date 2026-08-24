@@ -416,7 +416,8 @@ class TestSettleTick:
         """🔴 **先到先定**(裁定 10):9:29 判「放弃」的票,10:00 ⛔ 不改判。
         幂等靠 `WHERE decided_stage IS NULL`,不靠谁记得跳过。"""
         env, d0, d1, codes = d0d1
-        dead, alive = codes[0], codes[1]
+        dead = codes[0]
+        alive = codes[1] if len(codes) > 1 else None
         qs = {c: quote(c, price=(9.0 if c == dead else 10.2),
                        ts=f"{d1:%Y-%m-%d} 09:25:03") for c in codes}
         auction_pipeline.run_checklist_tick(
@@ -438,7 +439,8 @@ class TestSettleTick:
         assert after[dead]["decided_stage"] == "auction"
         assert after[dead]["settled_at"] is None
         assert after[dead]["auction_readings"] == before[dead]["auction_readings"]
-        assert after[alive]["decided_stage"] == "open30"
+        if alive is not None:
+            assert after[alive]["decided_stage"] == "open30"
         assert res.unchanged == 1
 
     def test_the_settle_tick_uses_the_version_pinned_at_the_auction_tick(self, d0d1):

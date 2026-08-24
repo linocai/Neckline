@@ -269,7 +269,7 @@ final class K9ContractTests: XCTestCase {
     func testCoverageNullIsNotZero() throws {
         let snap = try decode(CoverageSnapshot.self, """
         {"window":20,"days":[
-          {"tradeDate":"20260820","packVersion":"fp-2","limitUpCount":43,"limitDownCount":24,
+          {"tradeDate":"20260820","packVersion":"fp-3","limitUpCount":43,"limitDownCount":24,
            "zabanCount":17,"zabanRate":0.283,"maxConsecDays":4,"clusterCount":12,
            "listingTradeDate":null,"listingSize":null,"coveredCount":null,
            "coverageAll":null,"inPoolDenominator":null,"coveredInPool":null,
@@ -291,15 +291,16 @@ final class K9ContractTests: XCTestCase {
                        "未识别码原样透传 —— ⛔ 不瞎翻译")
     }
 
-    // MARK: - 行业分 / 选票分:⛔ 无合计
+    // MARK: - K9-v2 D2 五指标
 
-    func testIndustryAndPickScoresAreTwoSeparateColumnsWithNoTotal() {
+    func testD2ScorecardHasFiveMetricsWithNoSyntheticTotal() {
         let names = NKListingScorecard.metrics.map(\.name)
         XCTAssertEqual(names.count, 5, "K9 §八 是五个指标")
-        XCTAssertTrue(names.contains(NKListingScorecard.splitPair.industry))
-        XCTAssertTrue(names.contains(NKListingScorecard.splitPair.pick))
-        // 🔴 **⛔ 不给任何合计口径**:行业分低是方向层的问题,行业分高而选票分低是
-        // 选票参数的问题 —— 两者吃的药完全不同。
+        XCTAssertTrue(names.contains("D1—D2 上涨触达"))
+        XCTAssertTrue(names.contains("D2 收盘胜率"))
+        XCTAssertTrue(names.contains("D2 行业超额"))
+        XCTAssertTrue(names.contains("D1—D2 最大回撤"))
+        XCTAssertTrue(names.contains("最终清单提升"))
         for banned in ["合计", "总分", "综合", "total", "combined"] {
             XCTAssertFalse(names.contains { $0.localizedCaseInsensitiveContains(banned) },
                            "⛔ 五指标里不许出现合计口径:\(banned)")
@@ -310,7 +311,8 @@ final class K9ContractTests: XCTestCase {
 
     func testPatternTierSeatLabelsTranslateAndPassThroughUnknown() {
         XCTAssertEqual(nkPatternLabel("p1"), "放量启动")
-        XCTAssertEqual(nkPatternLabel("p4"), "资金异动")
+        XCTAssertEqual(nkPatternLabel("p3"), "热门强博弈")
+        XCTAssertEqual(nkPatternLabel("p4"), "资金领先价格")
         XCTAssertEqual(nkPatternLabel("p9"), "p9", "未识别值原样透传,⛔ 不瞎翻译")
         XCTAssertEqual(nkTierLabel("strict"), "严格")
         XCTAssertEqual(nkTierLabel("relaxed"), "放宽")

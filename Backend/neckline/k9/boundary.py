@@ -11,11 +11,11 @@
 | 4 | 北交所 | `board == 'BSE'` | 无 |
 | 5 | 次新股 | `trade_date − list_date < boundary.newListingDays` | 待标定 |
 | 6 | 停牌 | `suspend_flag == 'S'`(**只认全天停牌**,裁定 12)或当日无 daily 行 | 无 |
-| 7 | 流动性过弱 | `amount` 的 N 日均值处于全市场后 `liquidityBottomPct` | 待标定 |
+| 7 | 活跃度不足 | 滚动中位成交额与参与密度合成分低于参数包分位线 | 待标定 |
 | 8 | 当日涨停 | `is_limit_up`(主板 10% / 创业板 20% 一律排除,**不设例外**) | 无 |
 | 9 | 当日冲高回落 | 当日涨幅 > `spikeFadeRetPct` **且** 最高涨幅 − 收盘涨幅 ≥ `spikeFadeGapPct` | 待标定 |
 
-🔴 **第 6 条只认 `suspend_flag == 'S'`**(裁定 12):`S` 在 `fp-2` 起专指**全天停牌**;
+🔴 **第 6 条只认 `suspend_flag == 'S'`**:`S` 专指**全天停牌**;
 盘中临时停牌是 `I`,那只票当天正常交易、有完整涨跌幅,⛔ 不排除。
 
 🔴 **第 6 条的后半句「当日无 daily 行」在这里**(2026-08-21 复审 R3-🔴-5 修复):
@@ -44,7 +44,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import polars as pl
 
 from neckline.data.board import Board
-from neckline.k9 import ranks as ranks_mod
+from neckline.k9 import activity as activity_mod
 from neckline.facts.pack import SUSPEND_HALTED
 from neckline.k9.contract import PackRange, to_percent_points
 from neckline.k9.params import BoundaryParams, IndustryParams
@@ -58,7 +58,7 @@ EXCL_ST = "st"                      # 3 ST / *ST
 EXCL_BSE = "bse_board"              # 4 北交所
 EXCL_NEW_LISTING = "new_listing"    # 5 次新股
 EXCL_SUSPENDED = "suspended"        # 6 停牌(**只认全天停牌**,裁定 12)
-EXCL_ILLIQUID = "illiquid"          # 7 流动性过弱
+EXCL_INACTIVE = "inactive"           # 7 有效活跃度不足
 EXCL_LIMIT_UP = "limit_up"          # 8 当日涨停
 EXCL_SPIKE_FADE = "spike_fade"      # 9 当日冲高回落
 
@@ -66,7 +66,7 @@ EXCL_SPIKE_FADE = "spike_fade"      # 9 当日冲高回落
 #: 次序 = K9 §二 表的原序 —— 报告里说「它是科创板」比说「它今天涨停了」更接近根因。
 EXCLUSION_ORDER: Tuple[str, ...] = (
     EXCL_STAR, EXCL_BAIJIU, EXCL_ST, EXCL_BSE, EXCL_NEW_LISTING,
-    EXCL_SUSPENDED, EXCL_ILLIQUID, EXCL_LIMIT_UP, EXCL_SPIKE_FADE,
+    EXCL_SUSPENDED, EXCL_INACTIVE, EXCL_LIMIT_UP, EXCL_SPIKE_FADE,
 )
 
 EXCLUSION_LABEL: Dict[str, str] = {
@@ -76,7 +76,7 @@ EXCLUSION_LABEL: Dict[str, str] = {
     EXCL_BSE: "北交所",
     EXCL_NEW_LISTING: "次新股",
     EXCL_SUSPENDED: "全天停牌",
-    EXCL_ILLIQUID: "流动性过弱",
+    EXCL_INACTIVE: "有效活跃度不足",
     EXCL_LIMIT_UP: "当日涨停",
     EXCL_SPIKE_FADE: "当日冲高回落",
 }
@@ -85,47 +85,16 @@ assert set(EXCLUSION_LABEL) == set(EXCLUSION_ORDER)
 REASON_COLUMN = "excluded_by"
 
 
-def _liquidity_cut(pack: PackRange, window_days: int, bottom_pct: float) -> pl.DataFrame:
-    """第 7 条:`amount` 的 N 日均值在**全市场**里的分位。
-
-    ⚠ 分位在**当日全市场**上取,不是在某个子集上 —— K9 §二 原文就是「位于全市场后
-    20%」(这是全链里唯一一处**刻意用全市场**做分母的地方,见 `k9/run.py` 模块头)。
-
-    🔴 **满窗才给均值**(2026-08-21 复审 H4):K9 §二 第 7 条逐字是「**20 日**平均
-    成交额位于全市场后 20%」。上一版没有任何窗口长度过滤 —— 一只只有 11 天数据的票
-    拿 **11 天均值**去和 5500 只票的 20 日均值比分位,排出来的名次没有意义,而这条
-    排除项决定它进不进池;方向还不确定(3 天恰好放量 → 名次虚高不被排除;
-    3 天恰好缩量 → 被误排)。现在窗口内缺过日子的票**不进这张表**,于是
-    历史不足 → 均值为 null → **不排除** —— 这才是本 docstring 一直承诺的行为
-    (⛔ 「算不出来」不等于「流动性弱」,那会在上线首几天把整个市场排干净),
-    也与 p2 / p3 / p4 / 放量倍数四处的「满窗才给读数」同一条纪律。
-
-    🔴 **走名次不走数值分位点**(`ranks.pct_rank`,并列取平均名次):
-    `quantile()` 配 `<=` 在**大量并列**的分布上会一口气排掉远超 `bottom_pct` 的票
-    —— 极端情形(全市场成交额都相同)会把整个市场判成流动性过弱。名次口径在同一
-    情形下让所有票落在中位,一只都不排,这才是「后 20%」在退化分布上的正确读法。
-    """
-    hist = pack.history(days=window_days, include_today=True)
-    if hist.is_empty():
-        return pl.DataFrame(schema={"ts_code": pl.String, "_illiquid": pl.Boolean})
-    avg = (
-        hist.select(["ts_code", "amount"])
-        .filter(pl.col("amount").is_not_null())
-        .group_by("ts_code")
-        .agg(pl.col("amount").mean().alias("_amt_ma"), pl.len().alias("_n"))
-        # 窗口内有缺日的票不给均值(⛔ 不拿 3 天均额冒充 20 日均额)
-        .filter(pl.col("_n") >= window_days)
-        .select(["ts_code", "_amt_ma"])
-    )
-    if avg.is_empty():
-        return pl.DataFrame(schema={"ts_code": pl.String, "_illiquid": pl.Boolean})
-    rank = ranks_mod.pct_rank({
-        r["ts_code"]: r["_amt_ma"] for r in avg.iter_rows(named=True)
-    })
-    flags = {code: (r < bottom_pct) for code, r in rank.items()}
-    return pl.DataFrame(
-        {"ts_code": list(flags), "_illiquid": [flags[c] for c in flags]},
-        schema={"ts_code": pl.String, "_illiquid": pl.Boolean},
+def _activity_cut(
+    pack: PackRange, boundary: BoundaryParams, activity_min_percentile: float,
+) -> pl.DataFrame:
+    """第 7 条：有效活跃度低于参数包给定的横截面门槛。"""
+    scored = activity_mod.compute(pack, target=pack.as_of, params=boundary)
+    if scored.is_empty():
+        return pl.DataFrame(schema={"ts_code": pl.String, "_inactive": pl.Boolean})
+    return scored.select(
+        "ts_code",
+        (pl.col(activity_mod.SCORE) < activity_min_percentile).alias("_inactive"),
     )
 
 
@@ -144,6 +113,7 @@ def apply(
     boundary: BoundaryParams,
     industry: IndustryParams,
     universe: Sequence[str],
+    activity_min_percentile: float,
 ) -> pl.DataFrame:
     """当日全市场 → `ts_code / excluded_by`(未被排除的票 `excluded_by` 为 null)。
 
@@ -172,8 +142,8 @@ def apply(
         return _absent_rows(absent)
 
     excluded_codes = set(industry.excluded_l2_codes)
-    liq = _liquidity_cut(pack, boundary.liquidity_window_days, boundary.liquidity_bottom_pct)
-    df = today.join(liq, on="ts_code", how="left")
+    activity = _activity_cut(pack, boundary, activity_min_percentile)
+    df = today.join(activity, on="ts_code", how="left")
 
     #: 第 9 条:当日涨幅 > A **且** 最高涨幅 − 收盘涨幅 ≥ B(单位:**百分点**)。
     #: 「最高涨幅」= `(high − pre_close) / pre_close`。
@@ -193,7 +163,7 @@ def apply(
         .then(pl.lit(EXCL_NEW_LISTING))
         # 裁定 12:只认 'S'(全天停牌);'I'(盘中临时停牌)与 'R'(复牌)照常参与。
         .when(pl.col("suspend_flag") == SUSPEND_HALTED).then(pl.lit(EXCL_SUSPENDED))
-        .when(pl.col("_illiquid").fill_null(False)).then(pl.lit(EXCL_ILLIQUID))
+        .when(pl.col("_inactive").fill_null(True)).then(pl.lit(EXCL_INACTIVE))
         .when(pl.col("is_limit_up").fill_null(False)).then(pl.lit(EXCL_LIMIT_UP))
         # ⚠ `high` / `pre_close` 缺一 → `high_ret_pp` 为 null → **不排除**(复审 L2)。
         # 这一句上一版是**隐式**的(null 传染进 `&` 之后 `when` 当 false),现在写明:
@@ -238,7 +208,7 @@ def counts(verdicts: pl.DataFrame) -> Dict[str, int]:
 
 __all__ = [
     "EXCL_STAR", "EXCL_BAIJIU", "EXCL_ST", "EXCL_BSE", "EXCL_NEW_LISTING",
-    "EXCL_SUSPENDED", "EXCL_ILLIQUID", "EXCL_LIMIT_UP", "EXCL_SPIKE_FADE",
+    "EXCL_SUSPENDED", "EXCL_INACTIVE", "EXCL_LIMIT_UP", "EXCL_SPIKE_FADE",
     "EXCLUSION_ORDER", "EXCLUSION_LABEL", "REASON_COLUMN",
     "apply", "survivors", "counts",
 ]

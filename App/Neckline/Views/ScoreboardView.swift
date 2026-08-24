@@ -57,64 +57,79 @@ struct ScoreboardView: View {
     private var listingScorecardCard: some View {
         NKCard {
             VStack(alignment: .leading, spacing: 12) {
-                NKSectionHeader(title: "清单成绩 · 五项指标", trailing: "按既定口径统计")
-                // 🔴 **两栏永远分开**:这两块并排、各占一半,⛔ 中间不出现任何合计。
-                HStack(alignment: .top, spacing: 16) {
-                    splitColumn(NKListingScorecard.splitPair.industry, "方向对不对",
-                                model.listingScorecard.industryScore)
-                    Divider().frame(width: 0.5).overlay(NK.hairline)
-                    splitColumn(NKListingScorecard.splitPair.pick, "票挑得好不好",
-                                model.listingScorecard.pickScore)
+                NKSectionHeader(title: "K9-v2 清单成绩 · D2 结算",
+                                trailing: "观察队列 \(model.listingScorecard.activeQueueCount)"
+                                    + "/\(model.listingScorecard.activeQueueLimit)"
+                                    + " · 已结算 \(model.listingScorecard.settledDays) 批")
+                let score = model.listingScorecard.overall
+                metricRow("D1—D2 上涨触达", score.touchRate.map(NKFmt.ratioPct),
+                          "\(score.touchNumerator)/\(score.touchDenominator)")
+                metricRow("D2 收盘胜率", score.d2CloseWinRate.map(NKFmt.ratioPct),
+                          "\(score.d2CloseWinNumerator)/\(score.d2CloseWinDenominator)")
+                metricRow("D2 行业超额", score.averageIndustryExcess.map(NKFmt.signedPct),
+                          "个股收益减冻结行业同期收益")
+                metricRow("D1—D2 最大回撤", score.averageMaxDrawdown.map(NKFmt.signedPct),
+                          "统一以 D0 收盘为起点")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("最终清单提升").font(NKFont.callout).fontWeight(.semibold)
+                    HStack(spacing: 12) {
+                        Text("对严格召回 " + (score.finalListingLift.vsStrictRecall
+                            .map(NKFmt.signedPct) ?? "尚不可得"))
+                        Text("对匹配基准 " + (score.finalListingLift.vsMatchedBaseline
+                            .map(NKFmt.signedPct) ?? "尚不可得"))
+                    }
+                    .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
                 }
-                Text("行业表现和个股表现分别计算，便于看清问题来自哪里。"
-                     + "行业分高而选票分低，说明需要复盘选票这一环。")
-                    .font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
                 Divider().overlay(NK.hairline)
-                rateRow("成立率", "预案条件的松紧",
-                        model.listingScorecard.establishmentRate,
-                        model.listingScorecard.establishmentNumerator,
-                        model.listingScorecard.establishmentDenominator)
-                rateRow("兑现率", "成立后是否摸到第一压力位",
-                        model.listingScorecard.realizationRate,
-                        model.listingScorecard.realizationNumerator,
-                        model.listingScorecard.realizationDenominator)
-                rateRow("错杀率", "放弃后是否仍摸到第一压力位",
-                        model.listingScorecard.falseKillRate,
-                        model.listingScorecard.falseKillNumerator,
-                        model.listingScorecard.falseKillDenominator)
+                Text("按主形态拆分").font(NKFont.callout).fontWeight(.semibold)
+                ForEach(["p1", "p2", "p3", "p4"], id: \.self) { pattern in
+                    patternRow(pattern, model.listingScorecard.byPattern[pattern])
+                }
+                Divider().overlay(NK.hairline)
+                Text("D1 预案辅助账").font(NKFont.callout).fontWeight(.semibold)
+                HStack(spacing: 12) {
+                    d1Aux("成立率", key: "confirmationRate")
+                    d1Aux("成立后触达", key: "confirmed")
+                    d1Aux("放弃后触达", key: "rejected")
+                    d1Aux("观察分支", key: "observed")
+                }
                 NKNoteBlock(text: LocalizedStringKey(
-                    "主收益统一按当日收盘到四个交易日后收盘计算。盘中最高收益只作辅助参考；"
-                    + "成立率只统计已经得到成立或放弃结论的标的，观察与尚未结算不计入。"
+                    "全部正式清单都从 D0 收盘跟踪到 D2 收盘；D1 的成立、观察、放弃只作辅助拆分，"
+                    + "不会把放弃票或未成交票从主成绩里删掉。D1 辅助触达统一使用参数包冻结的开盘参考价；"
+                    + "同一日同时触及上涨线和风险线时标记路径不明。"
                 ))
             }
         }
     }
 
-    private func splitColumn(_ title: String, _ question: String, _ value: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(NKFont.callout).fontWeight(.semibold).foregroundStyle(NK.textPrimary)
-            Text(question).font(NKFont.caption).foregroundStyle(NK.textSecondary)
-            Text(value.map(NKFmt.ratioPct) ?? "尚不可得")
-                .font(NKFont.metric)
-                .foregroundStyle(value == nil ? NK.textTertiary : NK.textPrimary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func rateRow(_ title: String, _ question: String, _ value: Double?,
-                         _ numerator: Int, _ denominator: Int) -> some View {
+    private func metricRow(_ title: String, _ value: String?, _ note: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(title).font(NKFont.callout).fontWeight(.semibold)
-                .foregroundStyle(NK.textPrimary).frame(width: 52, alignment: .leading)
-            Text(question).font(NKFont.caption).foregroundStyle(NK.textSecondary)
             Spacer(minLength: 6)
-            Text(value.map(NKFmt.ratioPct) ?? "尚不可得")
-                .font(NKFont.callout.monospacedDigit()).fontWeight(.semibold)
-                .foregroundStyle(value == nil ? NK.textTertiary : NK.textPrimary)
-            Text("\(numerator)/\(denominator)")
-                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
+            Text(value ?? "尚不可得").font(NKFont.callout.monospacedDigit())
+                .fontWeight(.semibold).foregroundStyle(value == nil ? NK.textTertiary : NK.textPrimary)
+            Text(note).font(NKFont.caption).foregroundStyle(NK.textTertiary)
         }
+    }
+
+    private func patternRow(_ pattern: String, _ group: ListingMetricGroup?) -> some View {
+        HStack(spacing: 10) {
+            Text(nkPatternLabel(pattern)).font(NKFont.caption).frame(width: 84, alignment: .leading)
+            Text("触达 " + (group?.touchRate.map(NKFmt.ratioPct) ?? "—"))
+            Text("胜率 " + (group?.d2CloseWinRate.map(NKFmt.ratioPct) ?? "—"))
+            Text("超额 " + (group?.averageIndustryExcess.map(NKFmt.signedPct) ?? "—"))
+            Text("回撤 " + (group?.averageMaxDrawdown.map(NKFmt.signedPct) ?? "—"))
+        }
+        .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textSecondary)
+    }
+
+    private func d1Aux(_ title: String, key: String) -> some View {
+        let value = model.listingScorecard.d1Aux[key]
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            Text(value?.touchRate.map(NKFmt.ratioPct) ?? "尚不可得")
+                .font(NKFont.callout.monospacedDigit()).fontWeight(.semibold)
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - ② 10:00 结算拍的三分支终值

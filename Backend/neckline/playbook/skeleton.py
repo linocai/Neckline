@@ -1,11 +1,12 @@
-"""四个形态的**条件骨架**(V2.5.0 S10,K9 §6.3 逐字)。
+"""K9-v2 四通道的 D1 条件骨架(K9 §6.3)。
 
     形态 1 · 放量启动   成立:高开幅度 ≤ [A]%  且  前 30 分钟最低价 ≥ [B]
                         放弃:跌破 [C](昨日启动的起点)          其余:观察
     形态 2 · 超跌反弹   成立:开盘价 ≥ [A]  且  前 30 分钟不创昨日新低
                         放弃:跌破明确价位 [B]                    其余:观察
-    形态 3 · 中等生转强 成立:前 30 分钟不破 [A]                   放弃:跌破 [B]
-    形态 4 · 资金异动   同形态 3(埋伏型)
+    P3 · 热门强博弈   成立:高开未越透支线 [A] 且前 30 分钟守住关键位 [B]
+                       放弃:跌破强博弈结构失效位 [C]
+    P4 · 资金领先价格 成立:前 30 分钟不破 [A]                    放弃:跌破 [B]
 
 🔴 **骨架是机械的,数值是 LLM 的**(K9 §6.4 分工表):本模块**只**负责
 「哪个量、哪个算子、跟谁比」;方括号里的数由 `fill.py` 逐票问模型。
@@ -114,13 +115,28 @@ _P2 = Skeleton(
 )
 
 
-def _ambush(pattern: str) -> Skeleton:
-    """埋伏型骨架(形态 3 / 形态 4 共用,K9 §6.3:形态 4「同为埋伏型,按形态 3 处理」)。
+_P3 = Skeleton(
+    pattern="p3",
+    slots=(
+        Slot("maxGapUpPct", KIND_PERCENT, "[A]",
+             "逐票透支线上限(百分点):高开超过它说明热门博弈已被过度定价"),
+        Slot("first30FloorPrice", KIND_PRICE, "[B]",
+             "前 30 分钟必须守住的强博弈关键位(元)"),
+        Slot("rejectPrice", KIND_PRICE, "[C]",
+             "强博弈结构失效位(元):跌破即判放弃"),
+    ),
+    _confirm=((Op.LE, MetricRef.GAP_PCT, "maxGapUpPct"),
+              (Op.GE, MetricRef.FIRST30_LOW, "first30FloorPrice")),
+    _reject=((Op.LT, MetricRef.FIRST30_LOW, "rejectPrice"),),
+)
 
-    ⚠ 「埋伏型的**成立**是『没出事』,而非『表现好』」(K9 §6.3 原文)——
-    ⛔ 别给它加一条「今天得涨多少」,那就不叫埋伏了。"""
+
+def _p4_ambush() -> Skeleton:
+    """P4 资金领先价格的埋伏型骨架。
+
+    资金信号是 D0 盘后事实，D1 早盘无法再观测；成立只要求资金进场后价格不破位。"""
     return Skeleton(
-        pattern=pattern,
+        pattern="p4",
         slots=(
             Slot("first30FloorPrice", KIND_PRICE, "[A]",
                  "前 30 分钟不破的价位(元):守住它就算没出事"),
@@ -137,8 +153,8 @@ def _ambush(pattern: str) -> Skeleton:
 SKELETONS: Mapping[str, Skeleton] = {
     "p1": _P1,
     "p2": _P2,
-    "p3": _ambush("p3"),
-    "p4": _ambush("p4"),
+    "p3": _P3,
+    "p4": _p4_ambush(),
 }
 
 
