@@ -1,7 +1,7 @@
 # Neckline · V2.5.2 Build 13 控制面
 
 > 当前生产：V2.5.1 · Build 12 ｜目标版本：V2.5.2 · Build 13
-> 现行引擎：K9 ｜当前阶段：Plan → Build → Review → 修复 → 独立复审全部完成，部署前门禁通过，等待用户部署/发版授权
+> 现行引擎：K9 ｜当前阶段：源码已推送、双端归档已完成；生产部署停在发布前 S3 加密备份配置门禁
 > 更新：2026-08-24 ｜分支：`main` ｜`archive/` 保持空（仅 `.gitkeep`）
 
 本文件是唯一现行计划。Git 负责历史；不建立版本日记、平行计划或归档施工记录。
@@ -136,4 +136,9 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination "platform=i
 
 - Plan → Build → Review → Builder 修复 → 第四轮独立复审全部完成；第四轮独立复审无 P0/P1/P2，上一轮 news scan 四类 P2 已关闭。
 - Backend 全量测试：1364 passed、21 warnings；本版部署前门禁通过。
-- **未执行**部署、发版、换包、commit/push 或正式报告；任何生产动作继续等待用户明确授权。
+- 源码已提交并推送 `main`：`5e299a6`（`release: prepare v2.5.2 build 13`）。macOS / iOS
+  Release 签名归档已生成并校验为 `2.5.2 (13)`；交付目录为
+  `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b13-20260824/`。
+- 生产仍为 V2.5.1 Build 12，macOS 仍未换包，也未触发正式报告。宁波云与用户 Mac 均未配置
+  S3 桶/凭据、备份公钥或隔离恢复验证器，因此按 fail-closed 契约停在发布前备份；取得配置后
+  第一动作是完成异机恢复演练，再继续后端部署、timer 启用、生产验证和换包。

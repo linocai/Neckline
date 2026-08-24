@@ -47,4 +47,7 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline build-for-testing -desti
 替另一个平台作证；只跑 SwiftPM 也不能覆盖 View 层。能不分叉就不分叉，纯数据与纯逻辑
 尽量放在平台条件编译之外。**
 
+- macOS 与 iOS 的 `xcodebuild archive` 若要并行，必须给两条命令传不同的
+  `-derivedDataPath`；否则会争用同一 `XCBuildData/build.db`。没有隔离目录就串行归档。
+
 For research-engine changes, work and test in `/Users/linotsai/Lino/whynotme`.
