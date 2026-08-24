@@ -178,3 +178,21 @@ def test_missing_backup_configuration_fails_closed(monkeypatch: pytest.MonkeyPat
         monkeypatch.delenv(key, raising=False)
     with pytest.raises(backup.BackupConfigurationError):
         backup.BackupConfig.from_environment()
+
+
+def test_s3_backup_is_opt_in_and_not_a_runtime_or_release_dependency():
+    root = SCRIPTS.parent.parent
+    deploy = root / "Backend" / "deploy"
+    standard_units = (
+        "neckline.service", "neckline-daily.service", "neckline-daily.timer",
+        "neckline-evening.target", "neckline-evening.timer",
+        "neckline-recovery.service", "neckline-recovery.timer",
+    )
+    standard_runtime = "\n".join(
+        (deploy / name).read_text(encoding="utf-8") for name in standard_units
+    )
+    assert "neckline-backup" not in standard_runtime
+    assert "默认不启用" in (root / "README.md").read_text(encoding="utf-8")
+    assert "未完成对象存储配置和恢复演练时不得 enable" in (
+        deploy / "neckline-backup.timer"
+    ).read_text(encoding="utf-8")

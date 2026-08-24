@@ -1,9 +1,11 @@
 [Unit]
-Description=Neckline encrypted S3 backup with mandatory isolated restore verification
+Description=Optional Neckline encrypted S3 backup with isolated restore verification
 After=network-online.target
 Wants=network-online.target
 
 [Service]
+# 可选能力：生产默认不启用对应 timer。只有 S3、公开密钥和隔离恢复验证器均已配置，
+# 且人工恢复演练通过后，才可显式 systemctl enable --now neckline-backup.timer。
 Type=oneshot
 User=neckline
 Group=neckline

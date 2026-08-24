@@ -1,7 +1,8 @@
 [Unit]
-Description=Nightly Neckline encrypted backup
+Description=Optional nightly Neckline encrypted S3 backup
 
 [Timer]
+# 默认不启用；未完成对象存储配置和恢复演练时不得 enable。
 OnCalendar=*-*-* 02:30:00 Asia/Shanghai
 Persistent=true
 Unit=neckline-backup.service
