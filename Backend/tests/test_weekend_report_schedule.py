@@ -67,7 +67,7 @@ def _fake_chain(captured):
 def test_sunday_slot_passes_sunday_report_date_but_friday_trade_date(tmp_path, monkeypatch):
     captured = {}
     monkeypatch.setattr(evening_script, "_today", lambda: date(2026, 8, 16))
-    monkeypatch.setattr(evening_script, "is_trading_day", lambda value: True)
+    monkeypatch.setattr(evening_script, "official_is_trading_day", lambda value: True)
     monkeypatch.setattr(evening_script, "ensure_data_dirs", lambda: None)
     monkeypatch.setattr(evening_script, "_report_generated_on_local_day",
                         lambda *a, **k: False)
@@ -82,7 +82,7 @@ def test_sunday_slot_passes_sunday_report_date_but_friday_trade_date(tmp_path, m
 
 def test_manual_backfill_can_name_the_publication_date_explicitly(tmp_path, monkeypatch):
     captured = {}
-    monkeypatch.setattr(evening_script, "is_trading_day", lambda value: True)
+    monkeypatch.setattr(evening_script, "official_is_trading_day", lambda value: True)
     monkeypatch.setattr(evening_script, "ensure_data_dirs", lambda: None)
     monkeypatch.setattr(evening_script, "run_evening_chain", _fake_chain(captured))
     monkeypatch.setattr(sys, "argv", [
@@ -105,7 +105,7 @@ def test_scheduled_holiday_is_clean_noop_and_never_falls_back(
 ):
     """周一至周四的节假日，以及周日前一个周五休市，都必须整链跳过。"""
     monkeypatch.setattr(evening_script, "_today", lambda: scheduled_day)
-    monkeypatch.setattr(evening_script, "is_trading_day", lambda value: False)
+    monkeypatch.setattr(evening_script, "official_is_trading_day", lambda value: False)
     monkeypatch.setattr(evening_script, "ensure_data_dirs", lambda: None)
     monkeypatch.setattr(
         evening_script,
@@ -176,6 +176,20 @@ def test_timer_and_all_three_services_share_the_scheduled_date_contract():
         unit = (BACKEND_ROOT / "deploy" / service_name).read_text(encoding="utf-8")
         exec_start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
         assert "scripts/evening.py --scheduled " in exec_start
+
+
+def test_missed_sunday_slot_cannot_be_replayed_on_monday():
+    """P1：timer 只能在真实槽点跑；重启后的 missed slot 绝不补发报告/APNs。"""
+    evening = (BACKEND_ROOT / "deploy" / "neckline-evening.timer").read_text(encoding="utf-8")
+    daily = (BACKEND_ROOT / "deploy" / "neckline-daily.timer").read_text(encoding="utf-8")
+    recovery = (BACKEND_ROOT / "deploy" / "neckline-recovery.timer").read_text(encoding="utf-8")
+    assert "Persistent=false" in evening
+    assert "Persistent=false" in daily
+    assert "Persistent=false" in recovery
+    assert "OnCalendar=*-*-* 16:25 Asia/Shanghai" in recovery
+    recovery_service = (BACKEND_ROOT / "deploy" / "neckline-recovery.service").read_text(encoding="utf-8")
+    assert "recover_data_prerequisites.py" in recovery_service
+    assert "evening.py" not in recovery_service
 
 
 def test_the_three_oneshots_cover_the_new_segment_order_exactly_once():

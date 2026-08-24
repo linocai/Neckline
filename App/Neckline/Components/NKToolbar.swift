@@ -1,12 +1,6 @@
 //
 //  NKToolbar.swift
-//  Neckline — V2.3 视觉升级:macOS 统一工具栏(规范 §05 / §06)
-//
-//  🔴 **左侧 240px 导航栏整个去掉**(规范 §01 决定 01):板块进工具栏,
-//  窗口宽度全部还给内容。⛔ 别把侧栏加回来 —— 它与胶囊是同一组导航的两种形态。
-//
-//  🔴 **齿轮不做成第四个胶囊** —— 设置**是入口不是板块**(裁定 11 沿用 V2.1 裁定 #2,
-//  「设置在产品语义上不算板块」)。它沉在右端,与三个胶囊之间隔开。
+//  Neckline — macOS 统一工具栏。
 //
 
 import SwiftUI
@@ -16,7 +10,7 @@ import SwiftUI
 struct NKToolbar: View {
     @Bindable var model: AppModel
     /// 现役板块胶囊(设置不在内 —— 它是右端那个齿轮)。
-    /// 🔴 **三板块 = 选股 / 成绩 / 复盘**(裁定 11)。⛔ 别把持仓加回来。
+    /// 当前工作台板块。
     private let tabs: [AppTab] = [.selection, .scoreboard, .review]
 
     /// 工具栏高度(macOS 原型 23 行 `height:50px`)。红绿灯要在这个高度里居中。
@@ -28,7 +22,7 @@ struct NKToolbar: View {
         HStack(spacing: 10) {
             // 左:红绿灯 → Logo + 字标 → 分隔线 → 三个板块胶囊
             //
-            // ⚠ **V2.3.1**:窗口已 `.hiddenTitleBar`(§〇c 硬伤 1),红绿灯是**系统按钮
+            // 窗口使用 `.hiddenTitleBar`，红绿灯是**系统按钮
             // 浮在这一条栏上**,所以这里仍然只能占位;`NKTrafficLightAligner` 负责把系统
             // 那三颗挪到 50pt 栏的垂直中线、左起点对齐 `barPadH`。
             // **宽度 60 = 系统三颗按钮的真实跨度**(14pt 框 × 3,节距 23 → 14…74)。
@@ -75,7 +69,7 @@ struct NKToolbar: View {
         return Button { model.view = tab } label: {
             HStack(spacing: 6) {                       // 原型 nav() 1789 行 gap:6
                 // 🔴 图标与文字**着色不同**(原型 navIcon() 1798 行):选中图标是**蓝的**
-                // (`#0B6BCB`),不是跟着文字变深 —— V2.3.0 把两者绑成同一个
+                // (`#0B6BCB`)，不是跟着文字变深。
                 // `foregroundStyle`,选中态就少了这一记提示。
                 Image(systemName: tab.systemImage).font(.system(size: 11, weight: .medium))
                     .foregroundStyle(active ? NK.accent : NK.textTertiary)
@@ -83,7 +77,6 @@ struct NKToolbar: View {
                 Text(tab.title).font(NKFont.callout)
                     .fontWeight(active ? .semibold : .regular)
                     .foregroundStyle(active ? NK.textPrimary : NK.textSecondary)
-                // ⛔ V2.4.0 P0:原先退潮刹车时持仓那枚带一颗红点,随退潮判级退役删除。
             }
             // 原型 nav() 1789 行 `padding:5px 11px 5px 9px`(左 9 / 右 11,刻意不对称:
             // 左边挨着图标、右边挨着文字或计数徽标)。
@@ -148,8 +141,8 @@ struct NKToolbar: View {
     // MARK: - 刷新(按钮上直接显示上次更新时刻)+ 齿轮
 
     private var refreshButton: some View {
-        // 🔴 V2.4.0 P3.6:`refresh(for: model.view)` 只刷**当前 Tab**——三个板块
-        // 各自的工具栏按钮语义不同了,⛔ 不再是"刷新报告/持仓/盘中动态"一把梭。
+        // `refresh(for: model.view)` 只刷**当前 Tab**。
+        // 各自的工具栏按钮只刷新当前页面的数据。
         Button { Task { await model.refresh(for: model.view) } } label: {
             // 原型 67–70 行:`gap:5; padding:5px 10px; radius:7; background:#0B6BCB` +
             // 11px 图标 + `11.5/600 #fff`。⛔ 去胶囊。
@@ -176,7 +169,7 @@ struct NKToolbar: View {
     /// 🔴 **齿轮是入口不是板块** —— ⛔ 别把它做成第四个胶囊。
     private var gearButton: some View {
         // 原型 `gearBtn()`(1802 行):`28×28 / radius 7`,**选中时有白底 + 投影 + .5px 描边**
-        // (与板块胶囊同一套选中语言,只是没有文字)。V2.3.0 是 24×24 且选中只变色,
+        // （与板块胶囊同一套选中语言，只是没有文字）。
         // 点开设置后看不出"我在这儿"。
         let active = model.view == .settings
         return Button { model.view = .settings } label: {

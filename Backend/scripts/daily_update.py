@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import backfill  # noqa: E402  (同目录 scripts/backfill.py)
 
-from neckline.calendar import is_trading_day, reset_cache  # noqa: E402
+from neckline.calendar import official_is_trading_day, reset_cache  # noqa: E402
 from neckline.config import ensure_data_dirs, settings  # noqa: E402
 from neckline.db import init_schema  # noqa: E402
 
@@ -110,6 +110,18 @@ def build_and_freeze_fact_pack(target: date) -> None:
     )
 
 
+def verify_readiness(target: date) -> bool:
+    """日更的最终判据：19:00 消费前必须通过只读就绪检查。"""
+    from neckline.facts import readiness
+
+    result = readiness.preflight(target)
+    if result.ready:
+        logger.info("[readiness] %s 已就绪，冻结包=%s", target, result.pack_id)
+        return True
+    logger.error("[readiness] %s 未就绪，晚间链将只产出 not_run：%s", target, "；".join(result.gaps))
+    return False
+
+
 def refresh_coverage(target: date) -> None:
     """V2.5.0 S4:覆盖率成绩线(PROJECT_PLAN §5.8.1)。
 
@@ -165,16 +177,14 @@ def refresh_listing_scorecards(target: date) -> None:
 
 
 def update_suspend_list(target: date) -> None:
-    """v1.4-①-B:当日全市场停牌名单落盘(`suspend_d`,走 `write_table_day` 铁律路径)。
-    **尽力而为**——拉不到就不落盘,`price_stale` 读不到该分区时 reason 如实降级为
-    `unknown`(不猜成 suspended)。"""
+    """当日全市场停牌名单落盘；这不是事实包的阻断输入。"""
     from neckline.data.market_data import write_table_day
     from neckline.data.tushare_client import ts_suspend_d_all
 
     try:
         res = ts_suspend_d_all(target.strftime("%Y%m%d"))
         if not res.ok or res.data is None:
-            logger.warning("[suspend_d] 拉取失败:%s(不落盘,reason 将降级为 unknown)", res.reason)
+            logger.warning("[suspend_d] 拉取失败:%s（不落盘）", res.reason)
             return
         # 当日零停牌是**正常且有信息量**的结果(「今天没人停牌」≠「今天没查」),照样落盘。
         # 空表也要给显式 dtype —— 全 Null dtype 列会成为下一次 `_align_to_table_schema`
@@ -199,8 +209,12 @@ def main() -> int:
 
     target = datetime.strptime(sys.argv[1], "%Y%m%d").date() if len(sys.argv) > 1 else date.today()
 
-    if not is_trading_day(target):
-        logger.error("%s 不是交易日,无需更新。若日历本身过期,先跑 scripts/init_calendar.py 补数据。", target)
+    calendar_open = official_is_trading_day(target)
+    if calendar_open is None:
+        logger.error("%s 不在已落库的官方交易日历中；拒绝用工作日近似更新。先跑 scripts/init_calendar.py。", target)
+        return 1
+    if not calendar_open:
+        logger.error("%s 不是交易日,无需更新。", target)
         return 1
 
     logger.info("增量更新交易日:%s", target)
@@ -227,6 +241,9 @@ def main() -> int:
     # V2.5.0 S3:事实包构建 + 冻结(架构第一层)。必须排在 `update_sw_industry` **之后**
     # (申万归属是中位数的输入)与全部行情落盘之后(完整性判定要看当日分区)。
     build_and_freeze_fact_pack(target)
+    if not verify_readiness(target):
+        # 16:05 进程必须让 systemd 看见失败；不得把半套数据伪装成成功更新。
+        return 1
     # V2.5.0 S4:覆盖率成绩线(尺子)。必须排在事实包冻结**之后** —— 它读那份冻结包。
     refresh_coverage(target)
     refresh_listing_scorecards(target)

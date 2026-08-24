@@ -124,3 +124,19 @@ def test_no_device_and_no_config_are_safe_empty(api_env, apns_configured, monkey
     out = notify.push_report_ready("2026-08-16", db_path=api_env.db_path,
                                    transport=_ok_transport)
     assert out.skipped_reason == "no_apns_config"
+
+
+def test_only_permanently_invalid_apns_tokens_are_removed(api_env, apns_configured):
+    from neckline.api.stores import list_device_tokens
+
+    upsert_device("permanent", db_path=api_env.db_path)
+    upsert_device("transient", db_path=api_env.db_path)
+
+    def transport(url, headers, body):
+        token = url.rsplit("/", 1)[-1]
+        if token == "permanent":
+            return apns.PushResult(ok=False, status=410, reason="Unregistered")
+        return apns.PushResult(ok=False, status=503, reason="ServiceUnavailable")
+
+    notify.push_report_ready("2026-08-16", db_path=api_env.db_path, transport=transport)
+    assert list_device_tokens(db_path=api_env.db_path) == ["transient"]

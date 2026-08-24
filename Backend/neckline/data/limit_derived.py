@@ -53,7 +53,7 @@ _EXEMPT_DAYS_1 = 1   # 主板 / 北交所 / 创业板审批制(旧)新股
 #    的幅度规则算当日涨跌停价」)——————————————————————————————————————————
 #
 # 上面 `compute_limit_derived` 是全市场向量化(polars)EOD 批算,盘中哨兵每拍只需
-# 对「关注池」(候选 + 持仓 + 昨日涨停股,数十到数百只)逐票算一次涨跌停价,不值得
+# 对「关注标的」逐票算一次涨跌停价，不值得
 # 为几百行套一次 polars DataFrame。以下两个纯 Python 标量函数与向量化版本共用
 # 同一组常量(`GEM_REFORM_DATE`/`MAIN_ST_REFORM_DATE`/`_PCT_BP_*`/`_EXEMPT_DAYS_*`,
 # 定义于本模块顶部),分支顺序与 `compute_limit_derived` 的 `pl.when()` 链逐条对应
@@ -112,7 +112,7 @@ def compute_intraday_limit_prices(
 
     注意:本函数不处理新股豁免窗口(是否当前处于豁免期是「另一件事」,见
     `resolve_exempt_days` + `neckline.calendar.trading_days_between`),调用方
-    (如退潮哨兵的市场宽度统计)若需要豁免语义,自行先判断再决定是否调用本函数。
+    调用方若需要豁免语义，应先自行判断再决定是否调用本函数。
     """
     if pre_close <= 0:
         return None, None

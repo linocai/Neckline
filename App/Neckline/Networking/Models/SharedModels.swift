@@ -7,17 +7,11 @@
 //  Codable 解码(服务端 pydantic 模型字段本身就是 camelCase,默认 keyDecodingStrategy
 //  不做任何转换);服务端 `Dict[str,Any]` 原样透传的自由结构一律走 `NKJSON`。
 //
-//  🔴 **V2.5.0 S12 换血,本文件删掉四族**(它们的端点已在 S1 随 K8 整链下线,
-//  ⛔ 别把任何一族接回来):
-//    · `SentimentSnapshot` / `SectorSnapshot`(K8 报告的情绪与板块快照,`/report*` 已删);
-//    · `PositionQuota`(持仓额度,持仓板块整块下线 —— 裁定 11);
-//    · `nkRoleLabel` / `nkK4Section*` / `nkVerdict*`(簇内角色、K4、六关裁决 —— K8 语义);
-//    · `InfoCard*` 摘要族与 `Alert*`(`/report/{date}/info-card/*` 与 `/alerts*` 已删)。
+//  本文件只维护当前 API 的共享 DTO；删除端点不保留客户端占位模型。
 //
 //  🔴 **DTO 的落点纪律**:客户端 DTO **必须**放在 `Networking/Models/` 下 ——
 //  守门单测 `tests/test_contract_crosscheck.py` 走 `tests/client_sources.py` 把本目录
-//  整棵子树拼起来读,放在别处会让那些「某字段已退役」的**缺席断言静默变成真**
-//  (读不到的文件里当然搜不到),看起来还全绿。
+//  整棵子树拼起来读，避免字段缺席断言被拆散后失效。
 //  ⚠ 加 / 移动 / 删 `.swift` 之后**必须 `xcodegen generate`**(pbxproj 是显式文件引用)。
 //
 
@@ -116,12 +110,12 @@ func nkBoardLabel(_ raw: String) -> String {
 /// 簇内角色英文码 → 中文展示名(**唯一**展示层换算源,沿 `nkBoardLabel` 先例:
 /// 服务端只发英文码、中文在客户端换算、未识别值原样透传)。
 ///
-/// 🔴 **V2.3.1 §〇c 硬伤 2**:V2.3.0 之前三处 `roleDisplay` 把服务端原值**原样返回**,
+/// `roleDisplay` 不能把服务端原值直接暴露给用户，
 /// 而生产实际发的是 `leader` / `core` / `elastic`(源 `neckline/selection/aggregate.py`)
 /// —— 界面上直接印英文。⚠ 既有单测**是绿的**,因为 fixture 直接喂了中文「龙头」/「跟随」:
 /// **绿的测试没有拦住线上印英文**,所以本函数的用例必须喂英文码。
 ///
-/// 换算表(V2.3.1 §⑪,用户 2026-08-10 拍板,⛔ 不得重开):
+/// 换算表：
 /// - `leader` → 龙头 · `core` → 跟随(macOS 原型 369 行 / A-workbench 376 行有据)
 /// - `elastic` → **弹性**(用户原话「elastic 就叫弹性」;`neckline/scan/leader.py` 口径 =
 ///   簇内排除头名后的后一半,「弹性」是三者里最不带褒贬的一个)
@@ -129,11 +123,7 @@ func nkBoardLabel(_ raw: String) -> String {
 ///   「`unknown` = 算不出,**不是一种角色**」,画出来就是把"没算出来"讲成了一种判断。
 ///   空串由 `NKChip` 的「空文案整枚不画」规则天然吞掉。
 /// - 其余未识别值 → **原样透传**(⛔ 不瞎翻译成中文)
-// MARK: - 4A.5 设置(V2-②/⑪ 换血:Provider 自填制 + 按 kind 的推送开关)
-//
-// ⚠ **`LLMProviderKind` 品牌枚举已退役**:V2-② 起 Provider 是**自填制**
-// (任意 OpenAI 兼容端点可配),枚举写死两家本身就是那个要被替换掉的东西。
-// ⚠ **`PushSettings` 六个具名 bool 已退役**:V2-⑪ 起 = **按 kind 的开关清单**。
+// MARK: - 设置：Provider 配置与按 kind 的推送开关
 
 /// 一个通知 kind 的开关行。`level` 是 `important` 或 `digest`,
 /// `label` 是**服务端给的人读名** —— 避免双端各抄一份中文映射(`board` 的反面教训)。

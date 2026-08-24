@@ -31,6 +31,15 @@ def test_is_trading_day_true_for_seeded_days(isolated_env):
         assert is_trading_day(d) is True
 
 
+def test_official_calendar_never_falls_back_to_a_weekday_guess(isolated_env):
+    from neckline.calendar import official_is_trading_day
+
+    assert official_is_trading_day(date(2030, 1, 2)) is None
+    insert_trade_cal(isolated_env, [date(2024, 1, 2)])
+    assert official_is_trading_day(date(2024, 1, 2)) is True
+    assert official_is_trading_day(date(2024, 1, 3)) is False
+
+
 def test_is_trading_day_false_for_gap_and_weekend(isolated_env):
     insert_trade_cal(isolated_env, _sample_days())
     from neckline.calendar import is_trading_day, reset_cache

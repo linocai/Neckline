@@ -7,6 +7,7 @@ Description=Run Neckline daily data update at 16:05 on weekdays
 # 排在 report(19:00)之前——report 依赖当日数据先落 Parquet(见 neckline-evening.timer 说明)。
 [Timer]
 OnCalendar=Mon-Fri 16:05 Asia/Shanghai
+# 错过的 16:05 绝不按开机时刻补跑；恢复扫描由独立普通 timer 处理。
 Persistent=false
 
 [Install]

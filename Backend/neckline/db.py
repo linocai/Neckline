@@ -1,7 +1,6 @@
 """Neckline 现行 SQLite 契约。
 
 当前数据库只承载 K9 生产链、基础行情元数据、设置、通知去重和周复盘。
-K8 及更早的策略表不再建表、不再补列；升级时由显式退役清单物理删除。
 读路径只能使用 ``readonly_connection`` / ``readonly_tables``，不能触发迁移。
 """
 
@@ -178,7 +177,7 @@ CREATE INDEX IF NOT EXISTS idx_fact_packs_date ON fact_packs(trade_date);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_packs_date_version
   ON fact_packs(trade_date, pack_version);
 
--- V2.5.1：方向解读是冻结事实包的旁路，不参与 K9 策略。
+-- 方向解读是冻结事实包的旁路，不参与 K9 策略。
 CREATE TABLE IF NOT EXISTS fact_direction_briefings (
   pack_id TEXT PRIMARY KEY,
   trade_date TEXT NOT NULL,
@@ -194,7 +193,7 @@ CREATE TABLE IF NOT EXISTS fact_direction_briefings (
 CREATE INDEX IF NOT EXISTS idx_fact_direction_briefings_date
   ON fact_direction_briefings(trade_date);
 
--- V2.5.1：每次真实 LLM/搜索调用的去敏审计账。Token 未回传必须显式为 NULL。
+-- 每次真实 LLM/搜索调用的去敏审计账。Token 未回传必须显式为 NULL。
 CREATE TABLE IF NOT EXISTS llm_usage_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   trade_date TEXT,
@@ -443,32 +442,6 @@ CREATE INDEX IF NOT EXISTS idx_k9_followups_d4
 """
 
 
-_RETIRED_TABLES = (
-    "basket_members", "basket_cards", "basket_verification", "basket_review_daily",
-    "tier_history", "gate_evaluations", "basket_dropped_handoff", "basket_stage_handoff",
-    "out_candidates", "out_shadow_daily", "out_shadow_reviews", "baskets",
-    # 四张子表必须先于父表 selection_runs 删除；生产旧库有真实外键约束。
-    "selection_direction_events", "selection_directions", "selection_llm_calls",
-    "selection_search_calls", "selection_runs",
-    "selection_pack_activation_log", "selection_packs", "strategy_activation_log",
-    "strategy_versions", "llm_judgments", "reports", "entry_snapshots", "position_plans",
-    "holding_eod_check", "decision_pending_track", "decision_log", "positions",
-    "inquiry_pool", "inquiry_log", "watchlist", "custom_alerts", "reference_plans",
-    "retreat_metrics", "circuit_breaker", "breathing_t_trades", "news_alerts",
-    "industry_strength_daily", "industry_stage_daily", "corr_matrix_daily",
-    "limit_cluster_daily", "leader_structure_daily", "market_regime_daily",
-    "landing_metrics_daily", "profile_preference", "profile_capability", "user_actions",
-    "selection_clock", "trade_clock_events", "trade_clock", "threshold_shadow_evals",
-    "auction_verdicts", "auction_reports", "sentinel_events",
-)
-
-_APP_SETTINGS_COLUMNS = (
-    "id", "tavily_api_key", "review_col_map", "updated_at", "llm_default_provider",
-    "llm_task_routes", "push_kinds",
-)
-_REVIEW_COLUMNS = ("week", "generated_at", "result_json", "material", "updated_at")
-
-
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
@@ -477,77 +450,6 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 def _columns_of(conn: sqlite3.Connection, table: str) -> Set[str]:
     return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-
-
-def _drop_retired_tables(conn: sqlite3.Connection) -> None:
-    """物理删除退役运行时表；历史只由 Git 和发布前数据库备份承担。"""
-    for table in _RETIRED_TABLES:
-        conn.execute(f"DROP TABLE IF EXISTS {table}")
-
-
-def _migrate_active_job_events(conn: sqlite3.Connection) -> None:
-    """升级旧库时只接走仍在使用的竞价/10:00 任务防重记录。"""
-    if not _table_exists(conn, "sentinel_events"):
-        return
-    required = {"trade_date", "sentinel", "ts_code", "event_key", "payload_json", "pushed_at"}
-    if not required.issubset(_columns_of(conn, "sentinel_events")):
-        return
-    conn.execute(
-        "INSERT OR IGNORE INTO job_events "
-        "(trade_date, scope, ts_code, event_key, payload_json, pushed_at) "
-        "SELECT trade_date, sentinel, ts_code, event_key, payload_json, pushed_at "
-        "FROM sentinel_events WHERE sentinel='auction'"
-    )
-
-
-def _rebuild_table_without_retired_columns(
-    conn: sqlite3.Connection,
-    *,
-    table: str,
-    columns: tuple[str, ...],
-    create_sql: str,
-) -> None:
-    """用显式列白名单重建仍在使用的表，彻底移除退役列。"""
-    if not _table_exists(conn, table):
-        return
-    existing = _columns_of(conn, table)
-    if existing == set(columns):
-        return
-    replacement = f"{table}__v250_current"
-    conn.execute(f"DROP TABLE IF EXISTS {replacement}")
-    conn.execute(create_sql.replace(f"CREATE TABLE {table}", f"CREATE TABLE {replacement}"))
-    copied = [column for column in columns if column in existing]
-    if copied:
-        column_list = ", ".join(copied)
-        conn.execute(
-            f"INSERT INTO {replacement} ({column_list}) SELECT {column_list} FROM {table}"
-        )
-    conn.execute(f"DROP TABLE {table}")
-    conn.execute(f"ALTER TABLE {replacement} RENAME TO {table}")
-
-
-def _remove_retired_columns(conn: sqlite3.Connection) -> None:
-    _rebuild_table_without_retired_columns(
-        conn,
-        table="app_settings",
-        columns=_APP_SETTINGS_COLUMNS,
-        create_sql=(
-            "CREATE TABLE app_settings ("
-            "id INTEGER PRIMARY KEY CHECK (id = 1), tavily_api_key TEXT, "
-            "review_col_map TEXT NOT NULL DEFAULT '{}', updated_at TEXT, "
-            "llm_default_provider TEXT, llm_task_routes TEXT NOT NULL DEFAULT '{}', "
-            "push_kinds TEXT)"
-        ),
-    )
-    _rebuild_table_without_retired_columns(
-        conn,
-        table="reviews",
-        columns=_REVIEW_COLUMNS,
-        create_sql=(
-            "CREATE TABLE reviews (week TEXT PRIMARY KEY, generated_at TEXT NOT NULL, "
-            "result_json TEXT NOT NULL DEFAULT '{}', material TEXT, updated_at TEXT)"
-        ),
-    )
 
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
@@ -606,12 +508,9 @@ def readonly_tables(
 
 
 def init_schema(db_path: Optional[Path] = None) -> None:
-    """受控写入口：建立现行表，剥离退役列，并物理删除退役表。"""
+    """受控写入口：仅建立当前 K9 schema。"""
     with connection(db_path) as conn:
         conn.executescript(_SCHEMA)
-        _remove_retired_columns(conn)
-        _migrate_active_job_events(conn)
-        _drop_retired_tables(conn)
 
 
 __all__ = [

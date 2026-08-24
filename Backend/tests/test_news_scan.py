@@ -60,6 +60,14 @@ class TestSystemPromptWiring:
         assert "示例甲" in stub.captured_messages[1].content
         assert "600001.SH" in stub.captured_messages[1].content
 
+    def test_user_message_names_all_four_categories_including_reduction(self):
+        stub = _StubProvider(LLMResult(ok=True, content="正文\n结论:未发现", provider="custom", model="test-model"))
+        scan_news_for_code("600001.SH", "示例甲", provider=stub)
+        user_message = stub.captured_messages[1].content
+        assert "三类" not in user_message
+        assert "四类" in user_message
+        assert "减持" in user_message
+
 
 class TestPromptContextWiring:
     """A4(2026-08-04):消息面链路补上日期锚 / 时效纪律 / 显式检索词 —— 接线**照

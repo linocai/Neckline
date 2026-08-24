@@ -424,8 +424,18 @@ def parse_workbook(
     result = ParseResult()
     idx = name_index if name_index is not None else build_name_index(db_path)
 
+    if len(wb.worksheets) > 20:
+        raise ValueError("工作簿 sheet 数超过 20，无法安全解析")
+    consumed_rows = 0
+    consumed_cells = 0
     for ws in wb.worksheets:
         rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        consumed_rows += len(rows)
+        consumed_cells += sum(len(row) for row in rows)
+        if consumed_rows > 200_000:
+            raise ValueError("工作簿总行数超过 200,000，无法安全解析")
+        if consumed_cells > 2_000_000:
+            raise ValueError("工作簿总单元格超过 2,000,000，无法安全解析")
         if not rows:
             result.sheet_formats[ws.title] = "skipped:empty"
             continue

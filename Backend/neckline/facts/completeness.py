@@ -34,9 +34,8 @@ from typing import List, Optional, Tuple
 
 import polars as pl
 
-from neckline.calendar import is_trading_day
 from neckline.data.market_data import day_file_path
-from neckline.db import connection, init_schema
+from neckline.db import readonly_tables
 
 logger = logging.getLogger(__name__)
 
@@ -108,13 +107,24 @@ def _partition_probe(
     return path, rows, mtime
 
 
-def _meta_count(table: str, db_path: Optional[Path]) -> int:
+def _meta_count(table: str, db_path: Optional[Path]) -> Optional[int]:
     where = " WHERE is_current=1" if table == "sw_industry_member" else ""
-    with connection(db_path) as conn:
-        try:
-            return int(conn.execute(f"SELECT COUNT(*) FROM {table}{where}").fetchone()[0])
-        except Exception:  # noqa: BLE001  表不存在 → 0(init_schema 已先跑,理论到不了)
-            return 0
+    with readonly_tables(table, db_path=db_path) as conn:
+        if conn is None:
+            return None
+        return int(conn.execute(f"SELECT COUNT(*) FROM {table}{where}").fetchone()[0])
+
+
+def _calendar_open(trade_date: date, db_path: Optional[Path]) -> Optional[bool]:
+    """只认已落库的官方日历；缺表/缺日期绝不退化为工作日猜测。"""
+    with readonly_tables("trade_cal", db_path=db_path) as conn:
+        if conn is None:
+            return None
+        row = conn.execute(
+            "SELECT is_open FROM trade_cal WHERE exchange='SSE' AND cal_date=?",
+            (trade_date.strftime("%Y%m%d"),),
+        ).fetchone()
+    return None if row is None else bool(row[0])
 
 
 def check(
@@ -125,12 +135,14 @@ def check(
 ) -> Completeness:
     """逐项检查当日必备输入,返回缺口清单 + 取数证据。**不抛异常**:任何一项不满足
     都变成一条 `Gap`,由调用方决定「今天没跑成」怎么说。"""
-    init_schema(db_path)
     gaps: List[Gap] = []
     sources: List[SourceRecord] = []
 
-    if not is_trading_day(trade_date):
-        gaps.append(Gap("trade_cal", f"{trade_date} 不是交易日(或交易日历未覆盖该日期)"))
+    calendar_open = _calendar_open(trade_date, db_path)
+    if calendar_open is None:
+        gaps.append(Gap("trade_cal", f"{trade_date} 不在已落库的官方交易日历中"))
+    elif not calendar_open:
+        gaps.append(Gap("trade_cal", f"{trade_date} 不是交易日"))
 
     for table in DENSE_TABLES:
         path, rows, mtime = _partition_probe(table, trade_date, parquet_dir)
@@ -149,7 +161,9 @@ def check(
     for table in REQUIRED_META_TABLES:
         n = _meta_count(table, db_path)
         sources.append(SourceRecord(table, None, n, None))
-        if n == 0:
+        if n is None:
+            gaps.append(Gap(table, "元数据表不存在(数据库未迁移)"))
+        elif n == 0:
             gaps.append(Gap(table, "元数据表为空(判据输入缺失)"))
 
     return Completeness(trade_date=trade_date, gaps=tuple(gaps), sources=tuple(sources))

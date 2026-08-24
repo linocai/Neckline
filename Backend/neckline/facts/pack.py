@@ -43,7 +43,7 @@ from neckline.data.board import Board, classify
 from neckline.data.limit_derived import is_st_name
 from neckline.data.market_data import day_file_path, load_namechange, load_stock_basic
 from neckline.data.sw_industry import load_l2_map
-from neckline.db import connection, init_schema
+from neckline.db import readonly_tables
 from neckline.facts import completeness as completeness_mod
 from neckline.facts import industry as industry_mod
 from neckline.facts import limitmap as limitmap_mod
@@ -253,8 +253,12 @@ def _sw_frame(db_path: Optional[Path]) -> pl.DataFrame:
 
     ⚠ §5.3.5 的已知语义差:回填包用的是**今天的**申万归属快照,不是那天的。
     写在明处,⛔ 别写「自动检测行业变更并回改历史」的机灵代码;要重置就整段重跑。"""
-    init_schema(db_path)
-    with connection(db_path) as conn:
+    with readonly_tables("sw_industry_member", db_path=db_path) as conn:
+        if conn is None:
+            return pl.DataFrame(schema={
+                "ts_code": pl.String, "sw_l1_code": pl.String, "sw_l1_name": pl.String,
+                "sw_l2_code": pl.String, "sw_l2_name": pl.String, "sw_l3_code": pl.String,
+            })
         rows = conn.execute(
             "SELECT ts_code, l1_code, l1_name, l2_code, l2_name, l3_code "
             "FROM sw_industry_member WHERE is_current=1"

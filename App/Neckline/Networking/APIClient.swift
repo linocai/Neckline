@@ -1,11 +1,11 @@
 //
 //  APIClient.swift
-//  Neckline — 后端 REST 客户端(FastAPI)。**V2.5.0 S12 契约换血**。
+//  Neckline — 后端 REST 客户端(FastAPI)。
 //
 //  端点契约见 `neckline/api/schemas.py` + `neckline/api/app.py`(逐字段对齐,⛔ 别猜)。
 //  🔴 **机器判据 = `Backend/tests/test_contract_crosscheck.py`**:
 //  「**客户端调用面 ⊆ 服务端路由面**」用 `==` 断言(不是 `<=`)——
-//  往这里加一条打不到的调用会当场红。⛔ 别把已删端点接回来。
+//  往这里加一条打不到的调用会当场红。
 //
 //    GET  /api/v1/health                             → 免鉴权,{status, version}
 //
@@ -44,11 +44,10 @@ import Foundation
 
 enum APIError: Error, LocalizedError, Equatable {
     case unauthorized
-    /// 404 通用「未找到」。🔴 **V2.5.0 起它是 404 的唯一 fallback**,
+    /// 404 通用「未找到」。
     /// 并且**带上服务端那句 detail 原文**(「20260430 没有报告」/「600001.SH 不在清单里」)。
-    /// ⛔ 别再用一个具体业务错误当 404 的 fallback:上一版那个 fallback 是
-    /// 「该持仓已清或不存在」,持仓整块下线之后,任何一条 K9 的 404 都会显示成那句
-    /// 驴唇不对马嘴的话(v1.4 `watchlist` 与 V2 `card_not_ready` 已经踩过两次)。
+    /// ⛔ 别再用一个具体业务错误当 404 的 fallback：不同资源的未找到必须共用
+    /// 这条中性提示，避免把用户带到错误的业务语义。
     case notFound(String)
     // —— 设置屏的六个 reason(**服务端本版 reason 面就这六条**,
     //    唯一源见 `tests/test_contract_crosscheck.py::SERVER_REASONS`)——
@@ -67,16 +66,16 @@ enum APIError: Error, LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unauthorized:     return "鉴权失败(检查 API Token)"
-        case .notFound(let m):  return m.isEmpty ? "服务端没有这条记录" : m
+        case .notFound:         return "服务端没有这条记录"
         case .alreadyExists:    return "同名 Provider 已存在(请改用「编辑」)"
         case .invalidTask:      return "路由表里有未知的任务名"
         case .invalidProvider:  return "只能选择已启用且 key 已配置的 Provider"
         case .invalidTavilyKey: return "Tavily API key 不能为空"
         case .invalidPushKinds: return "推送开关清单不完整或含未登记的通知类型"
-        case .validation(let m): return "字段校验失败:\(m)"
-        case .server(let c, let m): return "服务端错误 \(c):\(m)"
-        case .networkUnavailable(let m): return "网络暂不可用:\(m)"
-        case .transport(let m): return "网络错误:\(m)"
+        case .validation:       return "提交内容不符合要求，请检查后重试"
+        case .server:           return "服务暂时无法处理，请稍后再试"
+        case .networkUnavailable: return "网络暂不可用，请检查网络或服务地址"
+        case .transport:        return "连接异常，请检查服务地址后重试"
         case .noToken:          return "未配置 API Token · 去设置填入"
         }
     }
@@ -410,7 +409,7 @@ actor APIClient {
 
     /// 由 base + path(可含 "?query")构造 URL。**禁止 `appendingPathComponent`** ——
     /// 它把整个 path(含 "?date=...")当单个路径组件、"?" 编码成 "%3F",带 query 的端点
-    /// 真后端恒 404 且被静默吞(LinoN v1.3.0 致命坑)。
+    /// 真后端恒 404 且被静默吞会造成错误的离线假象。
     static func makeURL(base: URL, path: String) -> URL? {
         URL(string: path, relativeTo: base)?.absoluteURL
     }

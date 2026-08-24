@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 import math
 import time
 from dataclasses import dataclass, field
@@ -32,7 +33,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from neckline.llm.base import ChatMessage, LLMProvider
+from neckline.llm.base import ChatMessage, LLMProvider, LLMResult
 from neckline.llm.json_block import split_narrative_and_json
 from neckline.llm.prompt_context import TIMELINESS_RULES, date_anchor_line
 from neckline.playbook import skeleton as skeleton_mod
@@ -48,6 +49,9 @@ from neckline.playbook.model import (
 )
 
 logger = logging.getLogger(__name__)
+
+# P2-A：预案填值的互不依赖逐票调用固定三并发。
+PROVIDER_CONCURRENCY = 3
 
 PLAYBOOK_FILL_SYSTEM_PROMPT = """你是「颈线」系统的预案填值员。系统每天盘后给出一份候选清单,每只票要冻结一份
 「明天怎么走算成立、怎么走算放弃」的预案 —— 你的工作是**填数**。
@@ -88,6 +92,29 @@ class FillResult:
     narrative: str = ""
     filled_by: str = ""
     values: Mapping[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _FillWork:
+    """并发 worker 只回传调用和纯组装结果；SQLite 写由主线程串行做。"""
+
+    result: FillResult
+    provider_result: Optional[LLMResult] = None
+    outcome: Optional[str] = None
+    duration_ms: Optional[int] = None
+    failure_reason: Optional[str] = None
+
+
+def _record_usage(work: _FillWork, *, trade_date: date, report_date: Optional[date],
+                  pack_id: Optional[str], db_path: Optional[Path]) -> None:
+    try:
+        from neckline.llm.usage import record
+        record(task="playbook", result=work.provider_result, trade_date=trade_date,
+               report_date=report_date, pack_id=pack_id, outcome=work.outcome,
+               duration_ms=work.duration_ms, failure_reason=work.failure_reason,
+               db_path=db_path)
+    except Exception:
+        logger.error("[playbook] %s 的用量审计写入失败", work.result.ts_code, exc_info=True)
 
 
 def _is_number(v: Any) -> bool:
@@ -174,19 +201,17 @@ def _material(item: PlaybookInput) -> str:
     return "\n".join(lines)
 
 
-def fill_one(
+def _fill_one(
     item: PlaybookInput, *, trade_date: date, provider: Optional[LLMProvider],
     version: int = 1, transport: Optional[Any] = None, report_date: Optional[date] = None,
     pack_id: Optional[str] = None,
     db_path: Optional[Path] = None,
-) -> FillResult:
+) -> _FillWork:
     """填一只票。`provider=None` → 直接失败,**零网络调用**、⛔ 不编一份预案。"""
     if provider is None:
-        from neckline.llm.usage import record
-        record(task="playbook", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="skipped",
-               failure_reason="未配置可用的 LLM provider", db_path=db_path)
-        return FillResult(ts_code=item.ts_code, ok=False,
-                          reason="未配置可用的 LLM provider")
+        return _FillWork(FillResult(ts_code=item.ts_code, ok=False,
+                                    reason="未配置可用的 LLM provider"),
+                         outcome="skipped", failure_reason="未配置可用的 LLM provider")
     messages = [
         ChatMessage(role="system", content=PLAYBOOK_FILL_SYSTEM_PROMPT),
         ChatMessage(role="user", content=_material(item)),
@@ -196,31 +221,45 @@ def fill_one(
         result = provider.chat(messages, enable_search=False, transport=transport)
     except Exception as e:  # noqa: BLE001 —— 一只票炸了只缺它自己那一份
         logger.warning("[playbook] %s 填值调用异常", item.ts_code, exc_info=True)
-        from neckline.llm.usage import record
-        record(task="playbook", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="failed",
-               duration_ms=int((time.monotonic()-started)*1000), failure_reason="调用异常", db_path=db_path)
-        return FillResult(ts_code=item.ts_code, ok=False, reason=f"调用异常:{e}")
-    from neckline.llm.usage import record
-    record(task="playbook", result=result, trade_date=trade_date, report_date=report_date, pack_id=pack_id,
-           duration_ms=int((time.monotonic()-started)*1000), db_path=db_path)
+        return _FillWork(FillResult(ts_code=item.ts_code, ok=False, reason=f"调用异常:{e}"),
+                         outcome="failed", duration_ms=int((time.monotonic()-started)*1000),
+                         failure_reason="调用异常")
+    duration_ms = int((time.monotonic()-started)*1000)
     if not result.ok:
-        return FillResult(ts_code=item.ts_code, ok=False,
-                          reason=f"调用未成功:{result.reason}")
+        return _FillWork(FillResult(ts_code=item.ts_code, ok=False,
+                                    reason=f"调用未成功:{result.reason}"),
+                         provider_result=result, duration_ms=duration_ms)
     narrative, block = split_narrative_and_json(result.content or "")
     filled_by = f"{result.provider}/{result.model}"
     values, why = validate_fill(item.primary_pattern, block)
     if why:
-        return FillResult(ts_code=item.ts_code, ok=False, reason=why,
-                          narrative=narrative, filled_by=filled_by)
+        return _FillWork(FillResult(ts_code=item.ts_code, ok=False, reason=why,
+                                    narrative=narrative, filled_by=filled_by),
+                         provider_result=result, duration_ms=duration_ms)
     try:
         pb = assemble(item, values, trade_date=trade_date, version=version,
                       filled_by=filled_by)
     except PlaybookInvalid as e:
         # 价位次序 / 闭合枚举没过 —— **当场拒绝冻结**(§5.6.3)。
-        return FillResult(ts_code=item.ts_code, ok=False, reason=str(e),
-                          narrative=narrative, filled_by=filled_by, values=values)
-    return FillResult(ts_code=item.ts_code, ok=True, playbook=pb, narrative=narrative,
-                      filled_by=filled_by, values=values)
+        return _FillWork(FillResult(ts_code=item.ts_code, ok=False, reason=str(e),
+                                    narrative=narrative, filled_by=filled_by, values=values),
+                         provider_result=result, duration_ms=duration_ms)
+    return _FillWork(FillResult(ts_code=item.ts_code, ok=True, playbook=pb, narrative=narrative,
+                                filled_by=filled_by, values=values),
+                     provider_result=result, duration_ms=duration_ms)
+
+
+def fill_one(
+    item: PlaybookInput, *, trade_date: date, provider: Optional[LLMProvider], version: int = 1,
+    transport: Optional[Any] = None, report_date: Optional[date] = None,
+    pack_id: Optional[str] = None, db_path: Optional[Path] = None,
+) -> FillResult:
+    """单票公开入口；默认在调用者线程追加一次用量审计。"""
+    work = _fill_one(item, trade_date=trade_date, provider=provider, version=version,
+                     transport=transport, report_date=report_date, pack_id=pack_id, db_path=db_path)
+    _record_usage(work, trade_date=trade_date, report_date=report_date,
+                  pack_id=pack_id, db_path=db_path)
+    return work.result
 
 
 def build_inputs(
@@ -275,6 +314,7 @@ def fill_for_listing(
     frozen = 0
     failed: List[str] = []
     skipped = 0
+    pending: List[PlaybookInput] = []
     for item in items:
         if item.ts_code in existing:
             skipped += 1
@@ -284,15 +324,37 @@ def fill_for_listing(
             logger.warning("[playbook] %s 当日收盘价缺失,不填预案(⛔ 不编一份)",
                            item.ts_code)
             continue
-        res = fill_one(item, trade_date=trade_date, provider=provider,
-                       version=pb_store.next_version(trade_date, item.ts_code,
-                                                     db_path=db_path),
-                       transport=transport, report_date=report_date, pack_id=pack_id, db_path=db_path)
+        pending.append(item)
+
+    # 版本必须在主线程预分配：worker 只允许外部推理和纯计算，不能碰 schema / SQLite。
+    from neckline.db import init_schema
+    init_schema(db_path)
+    versions = {item.ts_code: pb_store.next_version(trade_date, item.ts_code, db_path=db_path)
+                for item in pending}
+
+    def one(item: PlaybookInput) -> tuple[PlaybookInput, _FillWork]:
+        return item, _fill_one(
+            item, trade_date=trade_date, provider=provider,
+            version=versions[item.ts_code],
+            transport=transport, report_date=report_date, pack_id=pack_id, db_path=db_path,
+        )
+
+    with ThreadPoolExecutor(max_workers=PROVIDER_CONCURRENCY, thread_name_prefix="nk-playbook") as pool:
+        results = list(pool.map(one, pending))
+    for item, work in results:
+        _record_usage(work, trade_date=trade_date, report_date=report_date,
+                      pack_id=pack_id, db_path=db_path)
+        res = work.result
         if not res.ok or res.playbook is None:
             failed.append(item.ts_code)
             logger.warning("[playbook] %s 填值失败:%s", item.ts_code, res.reason)
             continue
-        pb_store.save(res.playbook, db_path=db_path)
+        try:
+            pb_store.save(res.playbook, db_path=db_path)
+        except Exception as exc:  # 一只票的审计/落库故障不能掀翻其余票。
+            failed.append(item.ts_code)
+            logger.error("[playbook] %s 冻结写入失败", item.ts_code, exc_info=True)
+            continue
         frozen += 1
     logger.info("[playbook] %s 冻结 %d 份预案(跳过已有 %d,失败 %d)",
                 trade_date, frozen, skipped, len(failed))

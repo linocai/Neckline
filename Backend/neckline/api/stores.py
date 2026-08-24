@@ -37,7 +37,7 @@ def upsert_device(token: str, platform: str = "ios", db_path: Optional[Path] = N
 
 
 def list_device_tokens(db_path: Optional[Path] = None) -> List[str]:
-    """全部已注册 device token(16:00 报告 / 退潮刹车推送时遍历)。"""
+    """全部已注册 device token。"""
     try:
         with readonly_connection(db_path) as conn:
             if not conn.execute(
@@ -50,6 +50,13 @@ def list_device_tokens(db_path: Optional[Path] = None) -> List[str]:
     return [r[0] for r in rows]
 
 
+def delete_device(token: str, db_path: Optional[Path] = None) -> bool:
+    """只供 APNs 明确永久失效响应调用；删除是幂等的。"""
+    with connection(db_path) as conn:
+        cur = conn.execute("DELETE FROM devices WHERE token=?", (token,))
+        return cur.rowcount > 0
+
+
 __all__ = [
-    "upsert_device", "list_device_tokens",
+    "upsert_device", "list_device_tokens", "delete_device",
 ]

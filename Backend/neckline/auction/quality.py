@@ -1,16 +1,13 @@
-"""竞价行情的**七项校验**与**有界双源核验**(V2.4.0 P2.1 / P2.2,K8.md §二十)。
+"""竞价行情的**七项校验**与**有界双源核验**。
 
 🔴 **V2.5.0 S8:自 `git show eac2823:Backend/neckline/auction/quality.py`(601 行)
-取回,⛔ 未凭空重写**。改动只有三处,逐条如实登记(PROJECT_PLAN §14 S8):
-    ① 常量来源从已删除的 `auction/__init__.py`(K8 版)与 `sentinel/capture.py`
-       换成本包新的 `auction/__init__.py`(K8 的 verdict / clamp 语义 **一个都没取回**);
-    ② 四类结论性冲突里,需要 D0 **K8 卡**的两类(失效位 / 预案区间)合并成
-       **需要 D0 K9 冻结预案**的一类 `rejection_disagree`
+保留已验证的七项校验、零容差和来源降级行为；结论性冲突统一以 D0 冻结预案
+`rejection_disagree` 表示。
        —— 判的是「两源代入同一份预案,**放弃**分支的结论一不一致」;
     ③ 竞价涨跌幅的算式改调 `playbook/model.py::gap_percent_points`(全包唯一源),
        ⛔ 不在本模块留第二份公式。
 七项校验本身、零容差裁定、`degraded` 那一档的理由、`_is_cross_verified` 的判别式
-**一字未动** —— 那些是「这条读数能不能用」的判据,与 K8 / K9 之争无关。
+这些都是判断读数能否使用的安全判据。
 
 本模块回答的问题只有一个:
 
@@ -48,7 +45,7 @@
     「竞价时间戳先执行零容差:源时间与本机存在任何偏差即降级为中性。
       若实盘出现误判,再由我确认容差秒数,**施工 Agent 不得自行设定**。」
 
-⚠ 落点是 `src_time > captured_at`(K8 原文「源时间**不晚于**本地抓取时间」)——
+⚠ 落点是 `src_time > captured_at`：
 **源时间早于抓取时刻是正常的**,⛔ 别把它也判成偏差。
 ⚠ 上产后第一周每早记 `src_time − captured_at` 的分布;出现误判**拿数据去问用户要秒数**,
 ⛔ build 不许自己定 1s / 3s / 5s。
@@ -110,8 +107,7 @@ def _as_market_naive(dt: datetime) -> datetime:
     return dt.astimezone(CN_TZ).replace(tzinfo=None)
 
 #: 集合竞价结果的**最早可接受源时间** = 9:25(交易所制度给的撮合时刻,⛔ 不是本项目
-#: 发明的数)。🔴 **单一源在 `auction/__init__.py`** —— K8 时代它在
-#: `sentinel/capture.AUCTION_CAPTURE_START`,`sentinel/` 整包已在 S1 物理删除;
+#: 发明的数）。单一源在 `auction/__init__.py`。
 #: ⛔ 不在本模块再写一份 `time(9, 25)`(那就是第二份事实源)。
 AUCTION_RESULT_TIME_START: time = _AUCTION_RESULT_TIME_START
 
@@ -198,7 +194,7 @@ class QuoteCheck:
     """**一源**对**一只代码**的读数 + 它的七项校验结果。
 
     🔴 `price` / `pre_close` / `open` / `volume` / `amount` 是**原始读数留痕**
-    (K8 §二十:「两个来源的原始读数全部留存」)—— ⛔ 不许只存胜出的那一个。
+    两个来源的原始读数都留存，⛔ 不许只存胜出的那一个。
     """
 
     ts_code: str
@@ -242,7 +238,7 @@ def validate_quote(
     trade_date: date,
     captured_at: datetime,
 ) -> Optional[QuoteCheck]:
-    """**七项校验**(K8 §二十 逐字)。`quote is None`(这一源没拉到)→ `None`。
+    """**七项校验**。`quote is None`(这一源没拉到)→ `None`。
 
     ⚠ 「没拉到」与「拉到了但不合格」是两件事:前者返回 `None`(调用方按"这一源缺席"
     处理),后者返回一个 `status != fresh` 的 `QuoteCheck` —— ⛔ 不许折平。
@@ -341,7 +337,7 @@ def validate_quote(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 结论性冲突(三类,🔴 零新百分比阈值 —— K8 §二十:「冲突判定不新设百分比阈值」)
+# 结论性冲突（三类；不新设百分比阈值）
 # ══════════════════════════════════════════════════════════════════════════
 
 def _gap(q: Quote) -> Optional[float]:
@@ -355,7 +351,7 @@ def _gap(q: Quote) -> Optional[float]:
 
 
 def detect_identity_conflict(primary: Optional[Quote], backup: Optional[Quote]) -> bool:
-    """③ **证券代码 / 前收盘 / 交易日不一致**(K8 §二十 逐字)。
+    """③ **证券代码 / 前收盘 / 交易日不一致**。
 
     这一类与另外三类不同:它说的不是「两源对同一件事看法不同」,而是
     **「这两条读数根本不是同一只票 / 同一天的」** —— 出现它时,其余三类的比较
@@ -384,8 +380,7 @@ def detect_conflict(
 
     次序写死:③ 身份 → ② 放弃分支 → ① 方向。只报**第一个**命中的。
 
-    🔴 **V2.5.0 S8**:K8 时代这里有两个需要 D0 **卡**的钩子(`invalidation_of` 失效位 /
-    `plan_entered_of` 预案区间)。K9 的 D0 冻结件只有一份**预案**,两类因此合并成
+    D0 冻结件只有一份**预案**，两类条件合并成
     `rejection_of` —— 「两源分别代入同一份预案,**放弃**分支的结论一不一致」。
     ⚠ ⛔ **不比「成立」分支**:9:26 那一拍根本判不出成立(裁定 10),
     拿一个两边都是 `UNKNOWN` 的分支去比,只会得到一个恒等的假安心。
@@ -453,7 +448,7 @@ class QuoteQuality:
     freshness: str                              # fresh | insufficient | conflict
     chosen_role: Optional[str] = None           # primary | backup | None(两源都没读数)
     chosen_source: Optional[str] = None         # sina | tencent | None
-    #: 主源不可用、改用备源 —— K8 §二十「记录来源降级」。⛔ 不许静默换源。
+    #: 主源不可用、改用备源必须记录来源降级。⛔ 不许静默换源。
     source_degraded: bool = False
     conflict: Optional[str] = None              # `CONFLICT_*`
     checks: Tuple[QuoteCheck, ...] = ()
@@ -529,7 +524,7 @@ def resolve_dual(
     captured_at: datetime,
     rejection_of: Optional[Callable[[Quote], Optional[bool]]] = None,
 ) -> Tuple[Optional[Quote], QuoteQuality]:
-    """双源归一 → `(选用的读数, 这一格的完整账)`(K8 §二十「主备源」四条逐字):
+    """双源归一 → `(选用的读数, 这一格的完整账)`：
 
       · 主源新鲜                → 用主源;
       · 主源过期 / 无效 + 备源新鲜 → **用备源** + `source_degraded=True`(记来源降级);
@@ -559,7 +554,7 @@ def resolve_dual(
         freshness = QF_CONFLICT if conflict else QF_FRESH
     elif cb is not None and cb.ok:
         chosen, role = backup, QUOTE_ROLE_BACKUP
-        degraded = True                 # 🔴 来源降级:必须记下来(K8 §二十)
+        degraded = True                 # 🔴 来源降级必须记下来
         freshness = QF_CONFLICT if conflict else QF_FRESH
     elif cp is not None and cp.usable:
         # 可以用、但七项里有非致命项没过(目前只有"源还没发开盘价")→ 读数照出、

@@ -1,5 +1,9 @@
 # Neckline
 
+当前生产版本为 V2.5.1 Build 12；V2.5.2 Build 13 正在施工，尚未部署或发版。运行链路仍是
+K9。交易日数据在 16:05 更新，报告仅在周一至周四及周日 19:00 生成；周日读取前一周五
+盘面并纳入周末消息，周五和节假日不生成报告。
+
 A 股生产应用：SwiftUI 客户端 + FastAPI 服务。离线研究、回测和参数标定在
 `/Users/linotsai/Lino/whynotme`；生产仓只消费经用户确认的 K9 参数包。
 
@@ -85,6 +89,17 @@ Key 只写入服务端，API 和客户端只返回是否已配置。
 新库只建立 28 张现行表。由 V2.4.2 升级时会保留仍有用的设置、Provider、Tavily、设备、
 周复盘和有效早晨任务记录，再物理删除退役表与退役列。正式迁移前必须做数据库备份、校验值
 和 `PRAGMA integrity_check`；旧代码回滚时必须同时恢复迁移前数据库。
+
+### 异机备份与恢复
+
+Build 13 的备份只接受通用 S3 兼容对象存储：每天 02:30 执行 `neckline-backup.timer`，每次
+发布前也必须在目标机手动执行一次 `scripts/backup_snapshot.py`。它用用户 Mac 持有私钥对应的
+公开密钥加密 SQLite 在线快照与冻结事实包；服务端只保留公钥和对象存储上传凭据。若 S3、公开密钥、
+保留策略或独立恢复验证器未显式配置，命令会失败，绝不退回本机“假备份”。
+
+恢复验证器必须在与生产隔离、且私钥不在服务端的环境中运行；恢复端使用
+`scripts/restore_backup.py --manifest … --private-key … --destination … --bucket …`，并自动验密文、
+明文和 SQLite `PRAGMA integrity_check`。保留策略为 30 份日备份和 12 份月备份；备份对象不进 Git。
 
 ## App
 

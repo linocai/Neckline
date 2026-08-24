@@ -40,18 +40,15 @@ def _sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
-def _seed_packs(env, days, *, versioned: bool):
+def _seed_packs(env, days):
     """铺几天事实包 parquet + 对应的 `fact_packs` 清单行。
 
-    🔴 **`content_fingerprint` 必须是文件真实的 sha256**(⛔ 不是占位串):
-    `facts.store.resolve_pack_path` 对**遗留布局**的回落要拿它逐字对拍 ——
-    夹具里塞一个假指纹,测的就不再是生产那条路径了(R1-B1 之后布局变成
-    `fact_pack/version=<v>/year=YYYY/`,遗留布局的回落是唯一还要过指纹的那一条)。
+    `content_fingerprint` 必须是文件真实的 sha256，夹具只写现役版本化布局。
     """
     from neckline.facts.pack import PACK_VERSION
 
     base = env.parquet_dir / "fact_pack"
-    root = (base / f"version={PACK_VERSION}" / "year=2026") if versioned else (base / "year=2026")
+    root = base / f"version={PACK_VERSION}" / "year=2026"
     root.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(env.db_path))
     try:
@@ -72,13 +69,9 @@ def _seed_packs(env, days, *, versioned: bool):
 
 @pytest.fixture
 def snapshot_env(isolated_env):
-    """临时库 + 临时 parquet 根,铺三天事实包(**遗留布局**)与对应的清单行。
-
-    ⚠ 遗留布局是 R1-B1 之前冻的包在生产上的真实形状,导出必须还认得它。
-    带版本的新布局另有 `TestVersionedLayout`。
-    ⛔ 全程不碰工作库 / 工作 parquet(AGENTS.md 测试纪律)。"""
+    """临时库 + 临时 parquet 根，只铺现役版本化事实包。"""
     days = ["20260102", "20260105", "20260106"]
-    _seed_packs(isolated_env, days, versioned=False)
+    _seed_packs(isolated_env, days)
     return isolated_env, days
 
 
@@ -92,7 +85,7 @@ class TestByteForByte:
                                     parquet_dir=env.parquet_dir, db_path=env.db_path)
         assert frag["fileCount"] == 3
         for entry in frag["files"]:
-            src = env.parquet_dir / "fact_pack" / "year=2026" / f"{entry['date']}.parquet"
+            src = env.parquet_dir / "fact_pack" / "version=fp-2" / "year=2026" / f"{entry['date']}.parquet"
             dst = out / entry["path"]
             assert dst.read_bytes() == src.read_bytes()
             assert entry["sha256"] == _sha(src) == _sha(dst)
@@ -103,7 +96,7 @@ class TestByteForByte:
         out = tmp_path / "snap"
         EX.export_fact_packs(out, "20260101", "20260131",
                              parquet_dir=env.parquet_dir, db_path=env.db_path)
-        assert (out / "fact_pack" / "year=2026" / "20260105.parquet").is_file()
+        assert (out / "fact_pack" / "version=fp-2" / "year=2026" / "20260105.parquet").is_file()
 
     def test_layout_matches_the_production_day_file_path(self, snapshot_env, tmp_path):
         """⛔ 不许在导出脚本里另拼一套路径:拿 `market_data.day_file_path` 对拍。"""
@@ -114,7 +107,7 @@ class TestByteForByte:
         frag = EX.export_fact_packs(out, "20260101", "20260131",
                                     parquet_dir=env.parquet_dir, db_path=env.db_path)
         for entry in frag["files"]:
-            expected = day_file_path("fact_pack", entry["date"], parquet_dir=out)
+            expected = day_file_path("fact_pack", entry["date"], parquet_dir=out, version="fp-2")
             assert (out / entry["path"]) == expected
 
 
@@ -128,7 +121,7 @@ class TestRangeSelection:
     def test_missing_dates_are_reported_not_silently_dropped(self, snapshot_env, tmp_path):
         """🔴 标定方拿到 2 天而不是 3 天,与拿到 3 天是两件事。⛔ 不静默少给。"""
         env, days = snapshot_env
-        (env.parquet_dir / "fact_pack" / "year=2026" / "20260105.parquet").unlink()
+        (env.parquet_dir / "fact_pack" / "version=fp-2" / "year=2026" / "20260105.parquet").unlink()
         frag = EX.export_fact_packs(tmp_path / "s", "20260101", "20260131",
                                     parquet_dir=env.parquet_dir, db_path=env.db_path)
         assert frag["missingDates"] == ["20260105"]
@@ -137,7 +130,8 @@ class TestRangeSelection:
     def test_orphan_parquet_without_a_manifest_row_is_reported(self, snapshot_env, tmp_path):
         """拷到了、清单里却没有 —— 同样要说出口(⛔ 不静默带走一份来路不明的包)。"""
         env, _ = snapshot_env
-        (env.parquet_dir / "fact_pack" / "year=2026" / "20260107.parquet").write_bytes(b"x")
+        orphan = env.parquet_dir / "fact_pack" / "version=fp-2" / "year=2026" / "20260107.parquet"
+        orphan.write_bytes(b"x")
         frag = EX.export_fact_packs(tmp_path / "s", "20260101", "20260131",
                                     parquet_dir=env.parquet_dir, db_path=env.db_path)
         assert frag["orphanDates"] == ["20260107"]
@@ -237,7 +231,7 @@ class TestVersionedLayout:
     @pytest.fixture
     def versioned_env(self, isolated_env):
         days = ["20260102", "20260105"]
-        _seed_packs(isolated_env, days, versioned=True)
+        _seed_packs(isolated_env, days)
         return isolated_env, days
 
     def test_the_current_layout_is_found_at_all(self, versioned_env, tmp_path):
@@ -266,23 +260,3 @@ class TestVersionedLayout:
                    / "year=2026" / f"{entry['date']}.parquet")
             assert (out / entry["path"]).read_bytes() == src.read_bytes()
             assert entry["sha256"] == _sha(src)
-
-    def test_a_legacy_file_whose_bytes_do_not_match_the_manifest_is_a_gap(
-            self, versioned_env, tmp_path):
-        """⛔ **不许「文件在就用」**:遗留路径是「一天一个坑位」的旧布局,同一天若有过
-        第二版,那个文件属于谁在路径上看不出来。指纹对不上 = 那一天算**缺口**,
-        ⛔ 不拿一份对不上账的字节去标定。"""
-        from neckline.facts.pack import PACK_VERSION
-
-        env, _ = versioned_env
-        # 造一个"看起来像那天"的遗留文件,字节与清单指纹**不同**;
-        # 并把带版本的那份挪走,逼求解走回落分支。
-        (env.parquet_dir / "fact_pack" / f"version={PACK_VERSION}" / "year=2026"
-         / "20260105.parquet").unlink()
-        legacy_dir = env.parquet_dir / "fact_pack" / "year=2026"
-        legacy_dir.mkdir(parents=True, exist_ok=True)
-        (legacy_dir / "20260105.parquet").write_bytes(b"another version entirely")
-        frag = EX.export_fact_packs(tmp_path / "s", "20260101", "20260131",
-                                    parquet_dir=env.parquet_dir, db_path=env.db_path)
-        assert frag["missingDates"] == ["20260105"]
-        assert "20260105" not in [f["date"] for f in frag["files"]]

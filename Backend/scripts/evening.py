@@ -44,7 +44,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neckline.calendar import is_trading_day, prev_trading_day  # noqa: E402
+from neckline.calendar import is_trading_day, official_is_trading_day, prev_trading_day  # noqa: E402
 from neckline.config import ensure_data_dirs, settings  # noqa: E402
 from neckline.db import readonly_connection  # noqa: E402
 from neckline.report.evening import (  # noqa: E402
@@ -160,7 +160,7 @@ def main() -> int:
     elif args.scheduled:
         scheduled_today = _today()
         trade_date = _scheduled_trade_date(scheduled_today)
-        if not is_trading_day(trade_date):
+        if official_is_trading_day(trade_date) is not True:
             logger.info("定时槽对应 %s,非交易日;安全跳过,不回退重跑旧报告。", trade_date)
             return 0
     else:
@@ -176,8 +176,8 @@ def main() -> int:
     except ValueError:
         logger.error("报告日期格式错误,必须是 YYYYMMDD。")
         return 2
-    if not is_trading_day(trade_date):
-        logger.error("%s 不是交易日,无报告可生成。", trade_date)
+    if official_is_trading_day(trade_date) is not True:
+        logger.error("%s 不是已落库官方交易日,无报告可生成。", trade_date)
         return 1
 
     segments = [s.strip() for s in args.segments.split(",") if s.strip()]

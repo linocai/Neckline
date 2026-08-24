@@ -1,14 +1,9 @@
 //
 //  StaticTradingCalendar.swift
-//  Neckline — 客户端交易日历(日期解析 + 展示;搬自 LinoN,§五 阶段4C 复用清单)
+//  Neckline — 客户端交易日历（日期解析 + 展示）。
 //
-//  与 LinoN 版本的区别:Neckline 的持仓审计不做「买入日=D1 / D4 强平」这类客户端
-//  持仓天数规则(那是 LinoN 特有的产品设计;Neckline 止损/止盈/时间退出参数全在
-//  服务端策略大脑 `strategy_versions`,客户端不重算、不派生持仓交易日计数)。
-//  本文件只保留日期解析 + 交易日判断两个通用能力,供 UI 展示("非交易日"提示等)。
-//
-//  日期口径:Neckline 后端字面用 'YYYYMMDD'(报告 tradeDate / 持仓 buyDate 均此格式,
-//  见 `neckline/sentinel/positions.py`);本类同时兼容 'YYYY-MM-DD' 便于未来扩展。
+//  本文件只保留日期解析与交易日判断两个通用能力，供 UI 展示非交易日提示等。
+//  日期口径采用后端字面 'YYYYMMDD'；本类同时兼容 'YYYY-MM-DD'。
 //
 
 import Foundation
@@ -80,7 +75,7 @@ final class StaticTradingCalendar {
         return displayFmt.string(from: d)
     }
 
-    /// `Date` → 'YYYYMMDD'(后端字面口径,v1.4-①-A 补录持仓日期选择器用)。
+    /// `Date` → 'YYYYMMDD'（后端字面口径）。
     func compactString(_ date: Date) -> String { compactFmt.string(from: date) }
 
     func isTradingDay(_ date: Date) -> Bool {

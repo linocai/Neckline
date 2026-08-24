@@ -246,7 +246,7 @@ def ts_suspend_d_all(trade_date: str) -> TushareResult:
     自 20260723 起连续在榜 —— 即该票是**真停牌**、不是数据源缺口(§七 P0-2 诊断结论)。
 
     字段:`ts_code`、`trade_date`、`suspend_timing`(盘中停牌时段,全天停牌为 None)、
-    `suspend_type`。本项目只用「当日是否在停牌名单里」这一位信息,给持仓 `priceStale.reason`
+    `suspend_type`。本项目只用「当日是否在停牌名单里」这一位信息，给数据质量归因
     定标签(`suspended` vs `data_gap`)。拉不到 → 调用方降级成 `unknown`,**不崩、也不假装
     知道**(§3.8「没有」与「没看」必须能分开)。
     """

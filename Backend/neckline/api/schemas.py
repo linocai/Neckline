@@ -170,10 +170,6 @@ NoteLabelLiteral = Literal[
 # (`roundTrips` / `closedRoundTrips` / `stats` / `forcedReview`,camelCase,该函数
 # 本身就是 API 响应与 `reviews.result_json` 落库共用的唯一形状源)——同透传惯例
 # (schemas.py 顶部约定),不在 API 层重复声明一套嵌套 pydantic 模型镜像领域字段。
-# ⚠ **V2.5.0 S1 起 `planChecks` / `disciplineViolations` / `stopDiscipline` /
-# `charterSegments` 等八个键已不再产出**(K8 章程判据整块退役)。`reviews` 表里
-# V2.4.x 及更早的**历史行**仍带着它们(写入当时冻住的快照),客户端按
-# `decodeIfPresent` 读即可;⛔ 不回填、不改写历史行(裁定 6)。
 
 class WeeklyReviewOut(BaseModel):
     week: str
@@ -229,18 +225,12 @@ class ReviewOverviewOut(BaseModel):
     weekEnd: str = ""
     weekKey: str = ""                       # ISO 周键(`YYYY-Www`),对账段按它取
     reconcile: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
-    # V2.5.0 S11:结论存档段(架构 §六 第 3 件事)。同对账段的三态读法 ——
     # `available=true` + `detail.found=false` = 「这周还没写结论」(⛔ 不是「没取到」)。
     conclusions: ReviewSegmentOut = Field(default_factory=ReviewSegmentOut)
-    # 🔴 V2.5.0 S1:`preference` / `capability`(`profile/` 整包退役)与
-    # `selectionClock` / `tradeClock` / `iterationSuggestions`(双时钟复盘退役)
-    # 五段**已删除** —— 它们的数据源已随 K8 一起下线,留着只会让客户端每次都拿到
-    # 一段 `available=false` 的空壳,把"这个功能没了"伪装成"这次没取到"。
-    # 复盘板块的目标形态见 PROJECT_PLAN §5.9 / §5.11,S11 收口。
 
 
 class ReviewBinderyOut(BaseModel):
-    """行情材料装订(V2.5.0 S11,架构 §六 第 2 件事)。
+    """行情材料装订。
 
     🔴 **零 LLM、零写库**:这一层只取数与排版(架构 §六 逐字「这一层无 LLM 调用」)。
     `binding` 原样透传 `review/bindery.py::WeekBinding.to_dict()`(同 `result` 透传

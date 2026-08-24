@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -28,11 +29,12 @@ logger = logging.getLogger("init_calendar")
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--start", default="20150101", help="起始日 YYYYMMDD(默认留 2020 前缓冲)")
-    parser.add_argument("--end", default="20271231", help="截止日 YYYYMMDD(默认留未来缓冲)")
+    parser.add_argument("--start", default="20150101", help="起始日 YYYYMMDD")
+    parser.add_argument("--end", default=None, help="截止日 YYYYMMDD；缺省=下一自然年年末")
     parser.add_argument("--exchange", default="SSE")
     args = parser.parse_args()
 
+    end = args.end or f"{date.today().year + 1}1231"
     if not settings.tushare_token:
         logger.error("TUSHARE_TOKEN 缺失(.env),无法拉 trade_cal。")
         return 1
@@ -40,8 +42,8 @@ def main() -> int:
     ensure_data_dirs()
     init_schema()
 
-    logger.info("拉取 trade_cal %s ~ %s(exchange=%s)…", args.start, args.end, args.exchange)
-    res = ts_trade_cal(args.start, args.end, exchange=args.exchange)
+    logger.info("拉取 trade_cal %s ~ %s(exchange=%s)…", args.start, end, args.exchange)
+    res = ts_trade_cal(args.start, end, exchange=args.exchange)
     if not res.ok or res.data is None:
         logger.error("trade_cal 拉取失败:%s", res.reason)
         return 1
@@ -60,7 +62,7 @@ def main() -> int:
             "INSERT OR REPLACE INTO trade_cal (exchange, cal_date, is_open, pretrade_date) VALUES (?,?,?,?)",
             rows,
         )
-    logger.info("trade_cal 落库完成:%d 行(%s ~ %s)", len(rows), args.start, args.end)
+    logger.info("trade_cal 落库完成:%d 行(%s ~ %s)", len(rows), args.start, end)
 
     open_days = int(df["is_open"].sum())
     logger.info("其中交易日(is_open=1):%d 天", open_days)

@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from dataclasses import replace
 from datetime import date
 from typing import Any, Dict, List, Optional
@@ -195,6 +197,45 @@ class TestNewsExclusion:
                              provider=object(), scan_fn=_scan)
         assert vs[0].state is news_mod.NewsState.UNVERIFIED
         assert vs[1].state is news_mod.NewsState.CLEAN
+
+    def test_screen_is_three_wide_ordered_and_audited_once_per_ticket(self, monkeypatch, tmp_path):
+        """P2：联网 worker 固定三并发；异常隔离，审计仍在主线程一票一次。"""
+        running = 0
+        peak = 0
+        calls: List[str] = []
+        lock = threading.Lock()
+        recorded: List[str] = []
+
+        def _scan(ts_code, name, *, provider, record_usage=True, **_kwargs):
+            nonlocal running, peak
+            assert record_usage is False
+            with lock:
+                calls.append(ts_code)
+                running += 1
+                peak = max(peak, running)
+            try:
+                time.sleep(0.02)
+                if ts_code == "600003.SH":
+                    raise RuntimeError("one ticket only")
+                return NewsScanResult(
+                    ts_code=ts_code, provider="p", model="m", hits=[],
+                    usage_result=LLMResult(ok=True, provider="p", model="m",
+                                           tavily_credits=1), usage_duration_ms=20)
+            finally:
+                with lock:
+                    running -= 1
+
+        monkeypatch.setattr(news_mod, "scan_news_for_code", _scan)
+        monkeypatch.setattr("neckline.llm.usage.record",
+                            lambda **kw: recorded.append(kw["result"].provider if kw.get("result") else kw["outcome"]))
+        items = [(f"60000{i}.SH", str(i)) for i in range(1, 7)]
+        verdicts = news_mod.screen(items, provider=object(), db_path=tmp_path / "audit.db")
+
+        assert [v.ts_code for v in verdicts] == [code for code, _ in items]
+        assert verdicts[2].state is news_mod.NewsState.UNVERIFIED
+        assert sorted(calls) == [code for code, _ in items]
+        assert 1 < peak <= 3
+        assert len(recorded) == len(items)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -731,3 +772,62 @@ class TestAggregate:
         material = prov.calls[0][1].content
         for banned in ("排名", "第 1 名", "rank", "score", "seat", "形态", "通道"):
             assert banned not in material, f"材料里泄漏了 `{banned}`"
+
+    def test_parallel_aggregate_keeps_audit_writes_on_main_thread(self, monkeypatch, tmp_path):
+        calls: List[str] = []
+        monkeypatch.setattr("neckline.llm.usage.record",
+                            lambda **_kw: calls.append(threading.current_thread().name))
+        items = [self._input(), replace(self._input(), ts_code="600002.SH")]
+        notes = explain_aggregate.aggregate(
+            items, provider=FakeProvider([_explain_content(), _explain_content()]),
+            trade_date=date(2024, 4, 29), db_path=tmp_path / "audit.db")
+        assert [n.ts_code for n in notes] == [i.ts_code for i in items]
+        assert calls == ["MainThread", "MainThread"]
+
+    def test_audit_write_failure_does_not_discard_parallel_aggregate_results(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("neckline.llm.usage.record",
+                            lambda **_kw: (_ for _ in ()).throw(RuntimeError("locked")))
+        notes = explain_aggregate.aggregate(
+            [self._input()], provider=FakeProvider([_explain_content()]),
+            trade_date=date(2024, 4, 29), db_path=tmp_path / "audit.db")
+        assert len(notes) == 1 and notes[0].llm_ok
+
+
+class TestParallelPlaybookPersistence:
+    def test_versions_audit_and_saves_stay_on_main_thread(self, monkeypatch, tmp_path):
+        item_a = _pb_input()
+        item_b = replace(item_a, ts_code="600002.SH")
+        threads: List[str] = []
+        saved: List[str] = []
+        monkeypatch.setattr(playbook_fill, "build_inputs", lambda *_a, **_kw: [item_a, item_b])
+        monkeypatch.setattr(pb_store, "load_latest", lambda *_a, **_kw: {})
+        monkeypatch.setattr(pb_store, "next_version",
+                            lambda *_a, **_kw: threads.append(threading.current_thread().name) or 1)
+        monkeypatch.setattr(pb_store, "save",
+                            lambda pb, **_kw: saved.append(pb.ts_code) or pb.version)
+        monkeypatch.setattr("neckline.llm.usage.record",
+                            lambda **_kw: threads.append(threading.current_thread().name))
+        stats = playbook_fill.fill_for_listing(
+            date(2024, 4, 29),
+            [{"ts_code": item_a.ts_code}, {"ts_code": item_b.ts_code}],
+            provider=FakeProvider([_fill_content("p1"), _fill_content("p1")]),
+            db_path=tmp_path / "fill.db")
+        assert stats["frozen"] == 2 and sorted(saved) == [item_a.ts_code, item_b.ts_code]
+        assert threads == ["MainThread", "MainThread", "MainThread", "MainThread"]
+
+    def test_audit_write_failure_does_not_prevent_other_playbooks_from_freezing(self, monkeypatch, tmp_path):
+        item_a = _pb_input()
+        item_b = replace(item_a, ts_code="600002.SH")
+        saved: List[str] = []
+        monkeypatch.setattr(playbook_fill, "build_inputs", lambda *_a, **_kw: [item_a, item_b])
+        monkeypatch.setattr(pb_store, "load_latest", lambda *_a, **_kw: {})
+        monkeypatch.setattr(pb_store, "next_version", lambda *_a, **_kw: 1)
+        monkeypatch.setattr(pb_store, "save", lambda pb, **_kw: saved.append(pb.ts_code) or pb.version)
+        monkeypatch.setattr("neckline.llm.usage.record",
+                            lambda **_kw: (_ for _ in ()).throw(RuntimeError("locked")))
+        stats = playbook_fill.fill_for_listing(
+            date(2024, 4, 29),
+            [{"ts_code": item_a.ts_code}, {"ts_code": item_b.ts_code}],
+            provider=FakeProvider([_fill_content("p1"), _fill_content("p1")]),
+            db_path=tmp_path / "fill.db")
+        assert stats["frozen"] == 2 and sorted(saved) == [item_a.ts_code, item_b.ts_code]

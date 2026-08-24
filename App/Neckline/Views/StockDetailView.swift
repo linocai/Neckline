@@ -1,6 +1,6 @@
 //
 //  StockDetailView.swift
-//  Neckline — 🔴 **个股详情**(选股板块;取代已删的 `BasketCardView` 与 `InfoCardView`)。
+//  Neckline — 个股详情（选股板块）。
 //
 //  §5.11:个股详情 = **解释层资料 + 日K 评价 + 完整预案 + 预案修改入口**。
 //
@@ -224,7 +224,7 @@ struct StockDetailView: View {
             NKCard {
                 VStack(alignment: .leading, spacing: 8) {
                     NKSectionHeader(title: "预案版本历史",
-                                    trailing: "每次修改都会保留旧版本")
+                                    trailing: "每次修改都会保留历史版本")
                     ForEach(d.playbookVersions, id: \.version) { pb in
                         HStack(spacing: 8) {
                             NKChip(text: "v\(pb.version)",
@@ -263,7 +263,7 @@ struct PlaybookEditorSheet: View {
                 Text("这只票的形态没有可改的数值位。")
                     .font(NKFont.body).foregroundStyle(NK.textSecondary)
             } else {
-                Text("你可以调整数值；保存后会保留旧版本，方便回看。")
+                Text("你可以调整数值；保存后会保留历史版本，方便回看。")
                     .font(NKFont.callout).foregroundStyle(NK.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 ForEach(slots) { slot in

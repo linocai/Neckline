@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Neckline encrypted backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 Asia/Shanghai
+Persistent=true
+Unit=neckline-backup.service
+
+[Install]
+WantedBy=timers.target

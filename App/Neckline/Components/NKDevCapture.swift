@@ -6,7 +6,7 @@
 //  用户装的包**一行都编不进去**。⛔ 别把它挪出 DEBUG,也别在正常路径上调用它:
 //  两个钩子都要显式环境变量才动,缺环境变量时行为与没有这个文件**逐字节相同**。
 //
-//  **为什么需要它**(V2.3.1 §〇b 的兜底,2026-08-10 施工中实打出来的):
+//  **为什么需要它**：
 //  立项时实测通过的 `screencapture -x -o -l<windowid>` 路线**当天就失效了** ——
 //  同一台机器、同一个会话,先成功截了四张,之后对**任何** App 的窗口都返回
 //  `could not create image from window`(拿 Xcode 的窗口对照测过,不是本 App 的问题)。
@@ -59,7 +59,7 @@ enum NKDevCapture {
         let old = window.frame
         var origin = NSPoint(x: old.origin.x, y: old.origin.y + old.height - h)
         // 🔴 **要的高度大于当前窗口时,新原点会落到屏幕下方之外** —— `setFrame` 会把它
-        // 约束回屏内并**把高度截掉**,于是"截图基准漂了"这件事又回来了(V2.3.1 批 5
+        // 约束回屏内并**把高度截掉**，会让截图基准漂移。
         // 实打:要 1200×1340 拍到的还是 1200×860)。故:先把窗口贴到可视区顶端。
         if let visible = (window.screen ?? NSScreen.main)?.visibleFrame {
             origin.y = min(origin.y, visible.maxY - h)
@@ -89,7 +89,7 @@ enum NKDevCapture {
     /// **不是** `contentView` —— 红绿灯挂在 `NSTitlebarContainerView` 上,它是 themeFrame 的
     /// 子视图、与 contentView 平级;只截 contentView 就把要验的那三颗按钮漏了。
     ///
-    /// 🔴 **V2.3.1 批 5:弹层(`.sheet`)必须合成进来**。macOS 的 sheet 是**另一个
+    /// 🔴 弹层(`.sheet`)必须合成进来。macOS 的 sheet 是**另一个
     /// `NSWindow`**(`window.attachedSheet`),挂在主窗口上但不在它的视图树里 ——
     /// 只渲主窗口拍出来是**一片灰**(主窗被 sheet 压暗了,而 sheet 本身不在图里),
     /// 比"没有截图"更误导。故:主窗口 → 位图,再把 sheet 的位图按屏幕坐标差

@@ -12,6 +12,15 @@ import XCTest
 @MainActor
 final class AppModelTests: XCTestCase {
 
+    func testUserFacingTransportErrorsNeverExposeSystemEnglish() {
+        XCTAssertEqual(APIError.networkUnavailable("Could not connect to the server.").errorDescription,
+                       "网络暂不可用，请检查网络或服务地址")
+        XCTAssertEqual(APIError.server(500, "traceback markdown").errorDescription,
+                       "服务暂时无法处理，请稍后再试")
+        XCTAssertEqual(APIError.validation("pydantic detail").errorDescription,
+                       "提交内容不符合要求，请检查后重试")
+    }
+
     // MARK: - 离线报告快照
 
     func testOnlyExplicitTransportUnavailabilityMayUseOfflineReportSnapshot() {

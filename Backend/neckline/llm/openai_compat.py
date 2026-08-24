@@ -352,7 +352,7 @@ class OpenAICompatProvider(LLMProvider):
 
         **中途断掉不拿半截当成品**:流到一半抛异常 → 异常原样上抛给 `_post` 的重试
         循环(整次重来),⛔ 绝不把已累积的半截内容当结果返回 —— 半截 JSON 解出来
-        可能正好是个"看着合法"的残缺篮子,那比干净地失败危险得多。"""
+        可能正好是个“看着合法”的残缺结果，那比干净地失败危险得多。"""
         with client.stream("POST", self.api_url, json=payload, headers=self._headers()) as resp:
             if resp.status_code != 200:
                 resp.read()

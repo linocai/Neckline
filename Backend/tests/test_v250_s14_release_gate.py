@@ -1,4 +1,4 @@
-"""V2.5.0 发布前的现行门禁，不保留 K8 迁移时代的兼容性断言。"""
+"""现行发布元数据和策略参数门禁。"""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ PRODUCTION_PARAMS_SHA256 = "d926cb048c011796d4a1a8df3555f11849332dd89daef5d8d170
 
 def test_release_version_and_build_are_aligned():
     project = (APP / "Neckline.xcodeproj" / "project.pbxproj").read_text(encoding="utf-8")
-    assert VERSION == "v2.5.1"
-    assert set(re.findall(r"MARKETING_VERSION = ([^;]+);", project)) == {"2.5.1"}
-    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"12"}
+    assert VERSION == "v2.5.2"
+    assert set(re.findall(r"MARKETING_VERSION = ([^;]+);", project)) == {"2.5.2"}
+    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"13"}
 
 
 def test_production_parameter_pack_is_the_user_approved_whynotme_artifact(tmp_path):

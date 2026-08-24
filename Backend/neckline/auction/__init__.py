@@ -17,18 +17,15 @@ K9 §6.3 四个成立条件**全部含有「前 30 分钟」这一合取项**,9:
 或 `decided_stage='auction'` 的「放弃」终值(§5.8.2)。
 
 🔴 **零 LLM**(架构 §四:「纯条件求值」)。本包 ⛔ 一行不许 import
-`neckline.llm` / `neckline.search`(守门 G7)。K8 时代的 `auction/llm.py`(489 行)
-与 `auction/mech.py`(1651 行,Z1/Y1/C1 三道夹逼闸)**已整体退役,⛔ 不许取回**
-—— 它们的输入是 T1/T2 篮子,而 K9 的输入是**清单 + D0 冻结预案**。
+`neckline.llm` / `neckline.search`（守门 G7）；输入为**清单 + D0 冻结预案**。
 
-🔴 **窗口纪律照 K8 原件逐条保住**(自 `git show eac2823:.../auction/pipeline.py`
-取回再改,PROJECT_PLAN §14 S1 登记 ②):
+🔴 **窗口纪律**：
     · 交易日门 + 窗口左闭右开;
     · **当日防重**(`neckline/dedup.py`,市场级 key);
     · **窗口外一律零落库**;
     · 🔴 **⛔ 事后不许补跑** —— 补跑会拿 9:30 之后的价格冒充 9:26 那一刻的判断,
       拿 10:30 的价格冒充 10:00 那一刻。⚠ 唯一例外是**显式注入 `now`** 的
-      CLI / 回放 / 单测(同 K8 原件的既有体例)。
+      CLI / 回放 / 单测。
 
 **模块分工**(⛔ 不许合并):
     · `quality.py`   逐条行情的七项校验 + 双源核验(**纯函数**,零 IO / 零 DB / 零 LLM)
@@ -57,13 +54,12 @@ SETTLE_WINDOW_START: time = time(10, 0)
 SETTLE_WINDOW_END: time = time(10, 5)
 
 #: 集合竞价撮合时刻 = **9:25**,即竞价结果的**最早可接受源时间**。
-#: ⚠ K8 时代这个常量的单一源是 `sentinel/capture.AUCTION_CAPTURE_START`,
-#: 而 `sentinel/` 整包已在 S1 物理删除 → 本包自己持有它。它是**交易所制度**给的
+#: 这是交易所制度给出的最早可接受源时间，
 #: 时刻(集合竞价 9:15–9:25,9:25 撮合),⛔ 不是待标定参数、⛔ 不许改成别的数。
 AUCTION_RESULT_TIME_START: time = time(9, 25)
 
 # ══════════════════════════════════════════════════════════════════════════
-# 逐条行情的**七项校验**结果(K8.md §二十 逐字;V2.5.0 原样保留)
+# 逐条行情的七项校验结果
 # ══════════════════════════════════════════════════════════════════════════
 #
 # 🔴 **⛔ 不得发明「5 分钟新鲜度」之类的新阈值**:时间判据只用**交易日**与
@@ -111,7 +107,7 @@ CONFLICT_IDENTITY_MISMATCH = "identity_mismatch"
 #: 两源对涨跌**方向**看法相反。
 CONFLICT_DIRECTION_OPPOSITE = "direction_opposite"
 #: 🔴 V2.5.0 新增:两源代入**同一份 D0 冻结预案**得出的「放弃」结论不一致
-#: (K8 时代的 `invalidation_disagree` 换成 K9 语义:比的是**预案分支**,不是止损线)。
+#: 比较的是同一份预案分支的条件求值。
 CONFLICT_REJECTION_DISAGREE = "rejection_disagree"
 CONFLICT_CODES: Tuple[str, ...] = (
     CONFLICT_IDENTITY_MISMATCH, CONFLICT_DIRECTION_OPPOSITE, CONFLICT_REJECTION_DISAGREE,

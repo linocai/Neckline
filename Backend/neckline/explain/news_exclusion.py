@@ -28,13 +28,15 @@ from __future__ import annotations
 
 import logging
 import inspect
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from datetime import date
 from pathlib import Path
 
-from neckline.llm.base import LLMProvider
+from neckline.llm.base import LLMProvider, LLMResult
 from neckline.llm.news_scan import (
     ALL_CATEGORIES,
     CATEGORY_BLOWUP,
@@ -46,6 +48,9 @@ from neckline.llm.news_scan import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 外部搜索固定三并发；不是策略参数，调用方不得扩大。
+PROVIDER_CONCURRENCY = 3
 
 
 class NewsState(str, Enum):
@@ -161,12 +166,20 @@ def screen(
     ⛔ 不掀翻整条链(那会让整天的清单卡在解释层)。
     """
     fn = scan_fn or scan_news_for_code
-    out: List[NewsVerdict] = []
-    for ts_code, name in items:
+    # 默认扫描器会带回真实 provider/Tavily 用量；把 record 放到主线程，避免
+    # SQLite 锁竞争反过来影响其他标的的联网检索。自定义测试 stub 没有该契约，
+    # 不替它猜测调用/用量。
+    audit_default_scan = fn is scan_news_for_code
+
+    def one(item: Tuple[str, Optional[str]]) -> Tuple[NewsVerdict, Optional[NewsScanResult], Optional[str], int]:
+        ts_code, name = item
+        started = time.monotonic()
         try:
             kwargs: Dict[str, Any] = {"provider": provider, "transport": transport,
                                       "trade_date": trade_date, "report_date": report_date,
                                       "pack_id": pack_id, "db_path": db_path}
+            if audit_default_scan:
+                kwargs["record_usage"] = False
             # 既有测试会 monkeypatch 模块级扫描函数；按签名过滤新增的运行时参数，
             # 既保留正式调用的计量关联，也不会要求旧 stub 改签名。
             try:
@@ -178,10 +191,38 @@ def screen(
             scan = fn(ts_code, name or "", **kwargs)
         except Exception as e:  # noqa: BLE001
             logger.warning("[explain] %s 消息面扫描异常,按未核实处理", ts_code, exc_info=True)
-            out.append(NewsVerdict(ts_code=ts_code, state=NewsState.UNVERIFIED,
-                                   reason=f"扫描异常:{e}"))
+            return (NewsVerdict(ts_code=ts_code, state=NewsState.UNVERIFIED,
+                                reason=f"扫描异常:{e}"), None, "调用异常",
+                    int((time.monotonic() - started) * 1000))
+        return _from_scan(ts_code, scan), scan, None, int((time.monotonic() - started) * 1000)
+
+    with ThreadPoolExecutor(max_workers=PROVIDER_CONCURRENCY,
+                            thread_name_prefix="nk-news") as pool:
+        work = list(pool.map(one, items))
+
+    out: List[NewsVerdict] = []
+    for verdict, scan, error, duration_ms in work:
+        out.append(verdict)
+        if not audit_default_scan:
             continue
-        out.append(_from_scan(ts_code, scan))
+        try:
+            from neckline.llm.usage import record
+            if error is not None:
+                record(task="news_scan", trade_date=trade_date, report_date=report_date,
+                       pack_id=pack_id, outcome="failed", searched=True,
+                       duration_ms=duration_ms, failure_reason=error, db_path=db_path)
+            elif scan is not None and scan.usage_result is not None:
+                result = scan.usage_result
+                record(task="news_scan", result=result, trade_date=trade_date,
+                       report_date=report_date, pack_id=pack_id, searched=True,
+                       tavily_credits=result.tavily_credits,
+                       duration_ms=scan.usage_duration_ms or duration_ms, db_path=db_path)
+            else:
+                record(task="news_scan", trade_date=trade_date, report_date=report_date,
+                       pack_id=pack_id, outcome="skipped", failure_reason="未配置可用的 LLM provider",
+                       duration_ms=duration_ms, db_path=db_path)
+        except Exception:  # 审计失败不能吞掉已得到的逐票结论。
+            logger.error("[explain] %s 的消息面用量审计写入失败", verdict.ts_code, exc_info=True)
     return out
 
 
@@ -192,5 +233,5 @@ def summarize(verdicts: Sequence[NewsVerdict]) -> Dict[str, int]:
 
 __all__ = [
     "NewsState", "NewsCategory", "CATEGORY_LABEL", "NewsVerdict",
-    "screen", "summarize",
+    "PROVIDER_CONCURRENCY", "screen", "summarize",
 ]

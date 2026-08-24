@@ -361,12 +361,12 @@ class TestEveningChain:
         assert res.bundle is not None
         assert any("人造故障" in n for n in res.notes)
 
-    def test_the_facts_segment_never_refreezes_an_existing_pack(self, market):
-        """§5.3.2 纪律 3:同 `(trade_date, pack_version)` ⛔ 不许覆盖。"""
+    def test_the_facts_segment_only_verifies_an_existing_ready_pack(self, market):
+        """P1-A:19:00 只核验 16:05 产物，绝不现场重建或覆盖。"""
         env, day = market
         res = _chain(env, day, segments=["facts"])
         assert res.status["facts"] == evening_mod.STATUS_OK
-        assert res.stats["facts"]["frozen"] == "already"
+        assert res.stats["facts"]["frozen"] == "verified"
 
     def test_the_coverage_wiring_lives_in_the_orchestrator(self, market, tmp_path):
         """🔴 尺子不许 import 被量的东西:接线住编排器,数据走 `k9_disposition`。"""

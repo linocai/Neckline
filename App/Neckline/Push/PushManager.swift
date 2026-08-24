@@ -8,19 +8,13 @@
 //
 //  ⚠ **业务分支一律读 payload 里的 `kind`,⛔ 不按 category 分支** ——
 //  **category 只决定「怎么响」(系统层呈现分组),`kind` 决定「响不响」与「点开去哪」。**
-//  按 category 分支会**连坐**:同一组里躺着好几件完全不同的事(正是 V1 拆
-//  `HOLDINGALERT` 被逼出来的教训)。
+//  同一 category 可以包含不同业务通知，因此不能拿它代替业务分支。
 //
 //  ⚠ **未知 `kind` 必须优雅降级**:服务端日后加 kind 时,旧 App 收到不认识的 `kind`
 //  应当**照常显示标题正文**(系统本就会显示;这里只是不做路由、不静默吞),
-//  ⛔ **不许静默丢弃**(v1.5「Swift 未知 `status` 静默消失」的同类坑)。
+//  ⛔ **不许静默丢弃**。
 //
-//  🔴 **V2.5.0 修复组 F-C:路由表刻意住在 `#if os(iOS)` 之外**(见下)。
-//  本文件原先整份包在 `#if os(iOS)` 里,于是路由表引用着裁定 11 已删的 `AppTab.baskets`
-//  / `.positions` **半年编不过而 macOS 全绿** —— `-destination 'platform=macOS'`
-//  一行都不编译它。纯数据的路由映射不需要 UIKit,把它挪到分叉外面,
-//  **macOS 那条构建线就能替 iOS 把这类漂移当场逮住**。
-//  ⛔ 别再把它挪回 `#if` 里面(下面的 delegate 才是真正 iOS 专属的部分)。
+//  纯数据路由映射不依赖 UIKit，放在条件编译外以保证双端构建共同覆盖。
 //
 
 import Foundation
@@ -36,18 +30,15 @@ struct NKPushRoute: Equatable {
     let selectionMode: SelectionViewMode?
 }
 
-/// 纯路由函数(**零 UIKit 依赖,双端都编译** —— 见文件头那条修复说明)。
+/// 纯路由函数（零 UIKit 依赖，双端都编译）。
 ///
 /// **按 `kind` 分发,⛔ 不按 category** —— 三级 category 只决定系统层怎么响。
 /// kind 串的唯一源是服务端 `neckline/notify_kinds.py`;这里**只做「去哪个视图」的
 /// 展示层映射**,⛔ 不硬编一份"有哪些 kind"的清单去过滤(未登记的 kind 走
 /// `default` → `nil` = 不跳转,通知照常展示)。
 ///
-/// 🔴 **只登记当前真的还会发出来的那两条**(V2.5.0 服务端唯一两个 push 调用点:
-/// `scripts/evening.py` 的 `push_report_ready` 与 `api/app.py::_morning_loop` 的
-/// `push_checklist_summary`)。裁定 7 整块退役的盘中哨兵那 11 个 kind、以及
-/// V2.4.0 退役的 `retreat`,**一律走 `default` → 不跳转**:把一条只可能来自
-/// "换版前遗留在通知中心的旧通知"路由到任一现役板块,只会让人以为那个能力还在。
+/// 🔴 **只登记服务端当前会发出的两类通知**：晚间报告与次日核对表。
+/// 其余 kind 一律走 `default` → 不跳转，避免把未知通知错误带到某个页面。
 /// ⚠ 服务端接线与这张表的对拍守门在
 /// `Backend/tests/test_contract_crosscheck.py`(第七组)。
 func nkPushRoute(forKind kind: String) -> NKPushRoute? {
@@ -56,13 +47,10 @@ func nkPushRoute(forKind kind: String) -> NKPushRoute? {
     case "report_ready":
         return NKPushRoute(tab: .selection, selectionMode: .listing)
     // 9:26—9:29 竞价核对表汇总 → 选股 · **次日核对表**。
-    // ⚠ kind 串仍是 `precall`:服务端**刻意复用** `KIND_PRECALL`(2026-08-11 用户拍板,
-    // 见 `notify_kinds.py` 与 `api/notify.py::push_checklist_summary`),语义已从
-    // K8 的「盘前校准汇总」换成 K9 的「竞价核对表」。⛔ 别照名字把它路由回任何
-    // 「校准 / 持仓」类落点 —— 那正是本次修复前那半年的错。
+    // ⚠ kind 串由服务端 `KIND_PRECALL` 定义，语义是次日核对表。
     case "precall":
         return NKPushRoute(tab: .selection, selectionMode: .checklist)
-    // 未知 / 已退役 kind:**不跳转**,但通知已照常显示(优雅降级,⛔ 不静默丢弃)。
+    // 未知 kind 不跳转，但通知照常显示（优雅降级，⛔ 不静默丢弃）。
     default:
         return nil
     }

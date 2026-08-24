@@ -1,0 +1,14 @@
+[Unit]
+Description=Neckline data prerequisite recovery only (never reports or APNs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+ExecStart=/opt/neckline/.venv/bin/python scripts/recover_data_prerequisites.py
+TimeoutStartSec=infinity
+MemoryMax=900M

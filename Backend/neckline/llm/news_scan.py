@@ -1,14 +1,11 @@
 """消息面扫描 LLM 调用(plan §五 v1.3-③-C4;**V2.5.0 S9 扩到四类**)。
 
-🔴 **V2.5.0 S9:加了第四类「减持」** —— K9 §二 末段 与 架构 §3.3 逐字写的是
-**「爆雷、减持、立案、监管」四类**在解释层查出并剔除。K8 时代「减持」走
-`ts_stk_holdertrade` 结构化接口、不占本模块;而 K9 的消息面排除是**一次问全四类**
+🔴 消息面排除一次问全四类：「爆雷、减持、立案、监管」。
 的整体判断(⛔ 不许一半走结构化接口、一半走 LLM —— 那样「查过了没有」与
 「这一半根本没查」会混成同一句话)。⚠ `ts_stk_holdertrade` 本身**没有删**,
 将来若要用它做交叉核对是另一件事。
 
-持仓 / 自选票的「立案 / 暴雷 / 监管 / 减持」四类消息扫描 —— TuShare 无结构化接口
-覆盖前三类(数据源侦察结论见 K8 时代 `report.news_alerts` 模块头)。
+候选标的的「立案 / 暴雷 / 监管 / 减持」四类消息扫描。
 
 **一次调用问四类**(不是四次调用):控成本、控时长 —— K9 的清单最多 20 只,
 若每类各发一次调用会是 80 次,一次问四类降到最多 20 次。
@@ -20,11 +17,11 @@
 调用不能沿用短读超时」教训,本模块不新设超时,原样吃基类值)。
 
 **结尾结构化标签设计(§2.7 边界,类比 `judge.py` 模块头同一先例)**:自由叙述后,
-每个**触发**的类别各占一行「结论-类别:一句话摘要」,三类都未触发只写一行
+每个**触发**的类别各占一行「结论-类别:一句话摘要」,四类都未触发只写一行
 "结论:未发现"——这不是"技术面/资金面/消息面"式固定分栏卡片(§2.7 明禁的三轴
 卡),叙述主体仍是自由文字,结尾只是**轻量机器可读收尾**(同 `judge.py` 的
-"结论:通过|否决"单行标签,本场景天然有 3 个独立布尔而非 1 个,故收尾扩到最多
-3 行,不是每次都出现的固定表格)。
+"结论:通过|否决"单行标签,本场景天然有 4 个独立布尔而非 1 个,故收尾扩到最多
+4 行,不是每次都出现的固定表格)。
 
 **日期锚 + 时效纪律 + 显式检索词(2026-08-04 补,A4)**:本模块**联网**
 (`enable_search=True`),却曾是全仓唯一一条没挂 `llm/prompt_context.py` 的
@@ -54,7 +51,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
 
-from neckline.llm.base import ChatMessage, LLMProvider, SearchHit
+from neckline.llm.base import ChatMessage, LLMProvider, LLMResult, SearchHit
 from neckline.llm.prompt_context import (
     TIMELINESS_RULES,
     date_anchor_line,
@@ -121,6 +118,9 @@ class NewsScanResult:
     degrade_reason: str = ""
     narrative: str = ""
     search_hits: List[SearchHit] = field(default_factory=list)
+    # 仅供批量编排器把审计写回主线程；不会出现在 API/报告 DTO。
+    usage_result: Optional[LLMResult] = field(default=None, repr=False)
+    usage_duration_ms: Optional[int] = field(default=None, repr=False)
 
 
 _HIT_RE = re.compile(r"结论-(立案|暴雷|监管|减持)[:：]\s*(.+)")
@@ -156,24 +156,32 @@ def scan_news_for_code(
     report_date: Optional[date] = None,
     pack_id: Optional[str] = None,
     db_path: Optional[Path] = None,
+    record_usage: bool = True,
 ) -> NewsScanResult:
-    """扫一只标的的「立案/暴雷/监管/减持」四类；无 Provider 时诚实降级。"""
+    """扫一只标的的「立案/暴雷/监管/减持」四类；无 Provider 时诚实降级。
+
+    ``record_usage=False`` 只供批量编排器使用：它让并发 worker 保持为外部
+    调用与纯解析，随后由主线程统一写用量账。公开的单票入口仍默认审计一次。
+    """
     if provider is None:
-        from neckline.llm.usage import record
-        record(task="news_scan", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="skipped",
-               failure_reason="未配置可用的 LLM provider", db_path=db_path)
-        return NewsScanResult(
+        scan = NewsScanResult(
             ts_code=ts_code, provider="none", model="", degraded=True,
             degrade_reason="未配置可用的 LLM Provider 或默认模型",
             narrative="LLM 未激活,本标的消息面(立案/暴雷/监管/减持)未扫描,不代表确认无消息。",
         )
+        if record_usage:
+            from neckline.llm.usage import record
+            record(task="news_scan", trade_date=trade_date, report_date=report_date,
+                   pack_id=pack_id, outcome="skipped", failure_reason="未配置可用的 LLM provider",
+                   db_path=db_path)
+        return scan
 
     messages = [
         ChatMessage(role="system", content=NEWS_SCAN_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n".join([
             # 第一行永远是当前日期锚(单一实现 `llm/prompt_context.py`,模块头 A4 节)。
             date_anchor_line(),
-            f"股票:{name}({ts_code})。请排查该股票近期是否有上述三类消息。",
+            f"股票:{name}({ts_code})。请排查该股票近期是否有上述四类消息（立案、暴雷、监管、减持）。",
         ])),
     ]
     started = time.monotonic()
@@ -183,20 +191,25 @@ def scan_news_for_code(
             search_query=news_search_query(ts_code, name),
         )
     except Exception:
-        from neckline.llm.usage import record
-        record(task="news_scan", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="failed",
-               searched=True, duration_ms=int((time.monotonic() - started) * 1000),
-               failure_reason="调用异常", db_path=db_path)
+        if record_usage:
+            from neckline.llm.usage import record
+            record(task="news_scan", trade_date=trade_date, report_date=report_date,
+                   pack_id=pack_id, outcome="failed", searched=True,
+                   duration_ms=int((time.monotonic() - started) * 1000),
+                   failure_reason="调用异常", db_path=db_path)
         raise
-    from neckline.llm.usage import record
-    record(task="news_scan", result=result, trade_date=trade_date, report_date=report_date, pack_id=pack_id,
-           searched=True, tavily_credits=result.tavily_credits,
-           duration_ms=int((time.monotonic() - started) * 1000), db_path=db_path)
+    if record_usage:
+        from neckline.llm.usage import record
+        record(task="news_scan", result=result, trade_date=trade_date, report_date=report_date,
+               pack_id=pack_id, searched=True, tavily_credits=result.tavily_credits,
+               duration_ms=int((time.monotonic() - started) * 1000), db_path=db_path)
+    duration_ms = int((time.monotonic() - started) * 1000)
     if not result.ok:
         return NewsScanResult(
             ts_code=ts_code, provider=provider.name, model=getattr(provider, "model", ""),
             degraded=True, degrade_reason=result.reason,
             narrative=f"LLM 调用未成功({result.reason}),本标的消息面未扫描,不代表确认无消息。",
+            usage_result=result, usage_duration_ms=duration_ms,
         )
 
     hits = _parse_hits(result.content)
@@ -205,10 +218,12 @@ def scan_news_for_code(
             ts_code=ts_code, provider=result.provider, model=result.model,
             degraded=True, degrade_reason="模型未按格式给出结论标签",
             narrative=result.content, search_hits=result.search_hits,
+            usage_result=result, usage_duration_ms=duration_ms,
         )
     return NewsScanResult(
         ts_code=ts_code, provider=result.provider, model=result.model,
         hits=hits, degraded=False, narrative=result.content, search_hits=result.search_hits,
+        usage_result=result, usage_duration_ms=duration_ms,
     )
 
 

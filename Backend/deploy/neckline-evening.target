@@ -11,7 +11,6 @@
 #   systemctl stop neckline-evening.timer
 #   cp deploy/neckline-evening.target /etc/systemd/system/
 #   cp deploy/neckline-{facts,strategy,report}.service /etc/systemd/system/
-#   rm -f /etc/systemd/system/neckline-scan.service /etc/systemd/system/neckline-basket.service
 #   systemctl daemon-reload
 #   systemctl stop neckline-evening.target
 #   systemctl start neckline-evening.timer

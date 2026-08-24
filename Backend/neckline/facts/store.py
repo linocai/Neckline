@@ -20,9 +20,6 @@
    同一天允许两版行;路径里**没有**版本时两版共用一个坑位,于是「发新版本」这条
    被指定为正路的路径,恰恰是唯一能把旧版本数据抹掉的那条 —— 旧清单行连同它的
    `content_fingerprint` 原样留着,指向的却已经是新版本的字节。
-   ⚠ 修复之前落盘的包在**遗留布局**(`fact_pack/year=YYYY/…`)里:读侧
-   `resolve_pack_path` 拿指纹核对后仍读得到,写侧 `_relocate_legacy_day` 在下次冻结
-   同一天时把它归位。⛔ 不再往遗留位置写任何东西。
 4. **只读** —— `load_pack()` 返回 `@dataclass(frozen=True)` 的 `FactPack`;
    `rows` 是**每次调用现读 parquet** 的属性,调用方拿到的永远是自己的副本,改不脏别人。
 
@@ -117,41 +114,6 @@ def pack_file_path(
     return day_file_path(PARQUET_TABLE, trade_date, parquet_dir, version=pack_version)
 
 
-def legacy_pack_file_path(trade_date: date, parquet_dir: Optional[Path] = None) -> Path:
-    """V2.5.0 早期布局(**路径里没有版本**):`fact_pack/year=YYYY/YYYYMMDD.parquet`。
-
-    ⚠ **只读兼容**:R1-B1 修复之前冻结的包(生产 / 开发机上已有的 fp-2)落在这里。
-    ⛔ 不再往这个位置写任何东西 —— 写入一律走 `pack_file_path`。
-    """
-    return day_file_path(PARQUET_TABLE, trade_date, parquet_dir)
-
-
-def resolve_pack_path(
-    trade_date: date,
-    pack_version: str,
-    fingerprint: str,
-    parquet_dir: Optional[Path] = None,
-) -> Path:
-    """这份清单行**真正**指向哪个文件。
-
-    ① 带版本的路径在 → 就是它;
-    ② 否则遗留路径在**且它的 sha256 逐字等于本行的 `content_fingerprint`** → 是它;
-    ③ 都不是 → 返回带版本的路径(让「文件不在」的报错指向当前布局)。
-
-    🔴 第 ② 步的 sha256 **不是可省的礼貌检查**:遗留路径是「一天一个坑位」的旧布局,
-    同一天若已经存在过第二版,那个文件属于谁在路径上看不出来。拿指纹核一次,
-    「读回来的行属于这条清单」就从**约定**变成了**判据** —— 这正是 R1-B1 那条
-    「记账物在说谎」要根除的东西。⛔ 不许把这一步改成「文件在就用」。
-    """
-    versioned = pack_file_path(trade_date, pack_version, parquet_dir)
-    if versioned.exists():
-        return versioned
-    legacy = legacy_pack_file_path(trade_date, parquet_dir)
-    if legacy.exists() and _sha256(legacy) == fingerprint:
-        return legacy
-    return versioned
-
-
 @dataclass(frozen=True)
 class FactPack:
     """一份**已冻结**的事实包(只读)。
@@ -173,9 +135,8 @@ class FactPack:
 
     @property
     def path(self) -> Path:
-        """本包的 parquet 落在哪(⚠ 遗留布局的回落**要过指纹**,见 `resolve_pack_path`)。"""
-        return resolve_pack_path(
-            self.trade_date, self.pack_version, self.content_fingerprint, self._parquet_dir)
+        """本包的 parquet 只允许落在版本化路径。"""
+        return pack_file_path(self.trade_date, self.pack_version, self._parquet_dir)
 
     @property
     def rows(self) -> pl.DataFrame:
@@ -198,48 +159,6 @@ class FactPack:
 # ══════════════════════════════════════════════════════════════════════════
 # 写(唯一入口)
 # ══════════════════════════════════════════════════════════════════════════
-
-def _relocate_legacy_day(trade_date: date, root: Path, db_path: Optional[Path]) -> None:
-    """把这一天还躺在**遗留布局**里的 parquet 挪进它自己那一版的路径下。
-
-    R1-B1 修复之前冻结的包路径里没有版本。要给同一天冻**第二版**之前,必须先弄清楚
-    那个文件属于谁并把它归位 —— 否则新版本一落地,旧版本的清单行就又开始说谎了
-    (那正是本次要根除的东西)。
-
-    归属由**清单**判定,⛔ 不猜:
-      · 该日 0 条清单行 → 它是上次进程死在中间留下的**孤儿**,原样留着(下面会被
-        新文件顶掉或就地不管),⛔ 不动;
-      · 该日恰好 1 条清单行且指纹对得上 → 归它,`os.replace` 到带版本的路径;
-      · 指纹对不上,或该日已有 ≥2 条清单行 → **当场停手**。这份数据已经处于
-        「谁是谁说不清」的状态,⛔ 不许再往上叠一版把水搅得更浑 —— 让操作者来判。
-    """
-    legacy = legacy_pack_file_path(trade_date, root)
-    if not legacy.exists():
-        return
-    with connection(db_path) as conn:
-        rows = conn.execute(
-            "SELECT pack_version, content_fingerprint FROM fact_packs WHERE trade_date=?",
-            (_d(trade_date),),
-        ).fetchall()
-    if not rows:
-        logger.warning(
-            "[fact_pack] %s 的遗留布局文件没有对应清单行(%s)—— 当孤儿留着,⛔ 不猜它属于哪一版",
-            trade_date, legacy)
-        return
-    digest = _sha256(legacy)
-    owners = [r[0] for r in rows if r[1] == digest]
-    if len(owners) != 1:
-        raise PackAlreadyFrozen(
-            f"{trade_date} 的遗留布局 parquet({legacy})对不上唯一一条清单行:"
-            f"该日清单有 {len(rows)} 条({[r[0] for r in rows]}),指纹能对上的有 {len(owners)} 条。"
-            f"⛔ 在弄清这个文件属于哪一版之前不许再冻新版本 —— 先人工核对再手工归位")
-    target = pack_file_path(trade_date, owners[0], root)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(legacy, target)
-    logger.info(
-        "[fact_pack] %s 的遗留布局 parquet 已归位到 %s(属于 %s,指纹 %s…)",
-        trade_date, target, owners[0], digest[:12])
-
 
 def _put_in_place(
     tmp_path: Path, final_path: Path, trade_date: date, version: str, *, orphan_there: bool
@@ -307,9 +226,6 @@ def freeze_pack(
             f"⛔ 冻结不可覆盖。口径变了请发新 pack_version")
 
     root = parquet_dir or settings.parquet_dir
-    # —— 先把这一天可能还留在**遗留布局**里的那份归位,再动手写新版本 ——————
-    _relocate_legacy_day(pack.trade_date, root, db_path)
-
     final_path = pack_file_path(pack.trade_date, pack.pack_version, root)
     # 查完清单那一刻坑位上就有东西 = 孤儿(清单里这一版没有行)。⚠ 必须在写暂存
     # **之前**取这个读数:落地时才看,就分不清「孤儿」和「另一个进程刚写的」。
@@ -412,7 +328,7 @@ def load_pack(
 
     ⛔ **读函数不执行 DDL**(§7.1 政策 / R3-🔴-2):库还没迁移过(`fact_packs` 不存在)
     与「那天没冻结」在这里是同一个结果 —— `PackNotFrozen`。⛔ 不许顺手 `init_schema`
-    把一个 v2.4.2 老库迁移掉:迁移只属于启动、显式写命令、RC 迁移流程。
+    迁移只属于启动、显式写命令或确认的发布流程。
     """
     with readonly_tables("fact_packs", db_path=db_path) as conn:
         row = None if conn is None else conn.execute(
@@ -491,11 +407,10 @@ def load_pack_range(
             f"区间 {start}~{end} 含 {span} 个交易日,超过 MAX_LOOKBACK_PACKS={MAX_LOOKBACK_PACKS}"
             f"(工程容量上限,§3.2)")
 
-    # ⚠ 连 `content_fingerprint` 一起取:遗留布局的回落要拿它核对(`resolve_pack_path`)。
     with readonly_tables("fact_packs", db_path=db_path) as conn:
         days = [] if conn is None else [
-            (r[0], r[1]) for r in conn.execute(
-                "SELECT trade_date, content_fingerprint FROM fact_packs WHERE pack_version=? "
+            r[0] for r in conn.execute(
+                "SELECT trade_date FROM fact_packs WHERE pack_version=? "
                 "AND trade_date>=? AND trade_date<=? ORDER BY trade_date",
                 (pack_version, _d(start), _d(end)),
             ).fetchall()
@@ -513,9 +428,9 @@ def load_pack_range(
         picked = ["trade_date", *picked]
 
     frames: List[pl.DataFrame] = []
-    for day_s, fingerprint in days:
+    for day_s in days:
         d = datetime.strptime(day_s, "%Y%m%d").date()
-        p = resolve_pack_path(d, pack_version, fingerprint, parquet_dir)
+        p = pack_file_path(d, pack_version, parquet_dir)
         if not p.exists():           # 已被保留策略裁剪:清单在、数据不在
             logger.warning("[fact_pack] %s 的 parquet 已裁剪,区间读跳过该日(%s)", d, p)
             continue
@@ -564,15 +479,12 @@ def trim_parquet(
     rows = list_packs(db_path=db_path)
     frozen_days = sorted({datetime.strptime(r[0], "%Y%m%d").date() for r in rows})
     doomed = set(frozen_days[:-keep] if len(frozen_days) > keep else [])
-    # ⚠ 一天可能有多版(§5.3.2 第 3 条),裁剪要把**每一版**都收掉;遗留布局那一份
-    # 也一并收 —— 否则「250 天之外的数据已经不在」这句话在旧文件上不成立。
+    # 一天可能有多版(§5.3.2 第 3 条)，每一版都独立裁剪。
     targets: Dict[date, List[Path]] = {}
     for day_s, version, _origin, _n in rows:
         d = datetime.strptime(day_s, "%Y%m%d").date()
         if d in doomed:
             targets.setdefault(d, []).append(pack_file_path(d, version, parquet_dir))
-    for d in doomed:
-        targets.setdefault(d, []).append(legacy_pack_file_path(d, parquet_dir))
     removed: List[date] = []
     for d in sorted(targets):
         alive = [p for p in targets[d] if p.exists()]
@@ -600,8 +512,6 @@ __all__ = [
     "PackNotFrozen",
     "FactPack",
     "pack_file_path",
-    "legacy_pack_file_path",
-    "resolve_pack_path",
     "freeze_pack",
     "load_pack",
     "latest_pack",

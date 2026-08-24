@@ -5,7 +5,7 @@
     · 读 `neckline.config.settings`(而非 LinoN 的 pydantic settings),字段前缀 `apns_*`。
     · `.p8` 是**账号级密钥**(Key ID Q963AP3VY8 / Team HX73DFL88G),直接复用给新 Bundle
       ID `top.linotsai.neckline`——`apns-topic` 换成新 Bundle ID 即可(§3.6)。
-    · category 简化:报告 / 退潮刹车都是信息类推送(§2.4),不带 LinoN 的硬线动作按钮。
+    · category 只保留当前信息类推送，不带动作按钮。
 
 token-based JWT:.p8 私钥 + KeyID(kid)+ TeamID(iss);header alg=ES256;
 payload {iss, iat};Authorization: bearer <jwt>;apns-topic = BundleID。
@@ -44,11 +44,6 @@ GATEWAY_PROD = "https://api.push.apple.com"
 # 只做本地别名(`push/` 是最底层的传输件,不该反向 import 上层;别名保证两处永远
 # 是同一个串,`tests/test_notify_kinds.py` 有对拍断言)。
 #
-# ⚠ V1 的六个 category 常量(`REPORT`/`RETREAT`/`PRECALL`/`D5EXIT`/`CIRCUIT`/
-# `HOLDINGALERT`)**已随本块删除**——D2=A 路已拍板(新机新子域、老 App 打老机),
-# V2 契约一次性换血、不留过渡键;客户端那一侧的 category 注册在 ⑮ 一并换。
-# (两个常量的 import 见上方 import 区,此处不重复定义。)
-
 # JWT 刷新窗口:Apple 接受 20–60min,留余量 ~50min 重签。
 _JWT_TTL_SEC = 50 * 60
 

@@ -1,13 +1,12 @@
 //
 //  SettingsView.swift
-//  Neckline — 设置(D8 四板块之一,V2-⑮ 换血):
+//  Neckline — 设置：
 //    后端地址 + API token · **Provider 注册表增删改**(自填制)· **任务路由表** ·
 //    **按 `kind` 的推送开关(动态渲染 + 按 level 分组)** · 连接自检 · iOS 推送重注册 ·
 //    App / 服务端双版本行。
 //
-//  ⚠ **V2-② Provider 自填制**:供应商品牌二值枚举已退役 —— 任意 OpenAI 兼容端点
-//  可配。**`apiKey` 只写不回显**(服务端只回 `keySet` 布尔),删除走二次确认。
-//  ⚠ **V2-⑪ 推送开关按 `kind` 配**:权威在服务端 `notify_kinds.py`,客户端
+//  任意 OpenAI 兼容端点均可配置。`apiKey` 只写不回显（服务端只回 `keySet` 布尔），
+//  删除走二次确认。推送开关按 `kind` 配置，权威在服务端 `notify_kinds.py`；客户端
 //  **⛔ 不硬编 kind 清单** —— 服务端发什么就渲染什么,新增 kind 时客户端**不改代码
 //  就能显示出来**;未识别的 `level` 也照常成一组显示,⛔ 不静默丢弃。
 //
@@ -94,9 +93,7 @@ struct SettingsView: View {
 
     // MARK: - macOS 列表栏(原型 1577–1616)
     //
-    // 🔴 **原型的四行没有图标**(1582–1607 每一行只有「标题 + 右端读数」两段 + 次行说明)。
-    // V2.3.0 给每行挂了一枚 SF Symbol —— 376pt 栏里那枚图标把标题往里推 24pt,
-    // 与同栏其它板块(选股 / 成绩 / 复盘的列表行都无图标)也不是一套语言。
+    // 设置行保持标题、读数和说明三层信息，避免无效装饰压缩文字空间。
 
     #if os(macOS)
     private var groupListColumn: some View {
@@ -284,8 +281,10 @@ struct SettingsView: View {
                         .foregroundStyle(NK.textPrimary.opacity(0.75))
                     NKTextFieldBox(placeholder: "留空则用环境默认",
                                    text: $config.baseURLOverride, mono: true)
-                    // 🔴 原型 1637 行这句是琥珀的 —— 它是**排障口诀**(CLAUDE.md 登记:
-                    // 「换包后连不上/一片空白」先来这里看有没有手填过老基址)。
+                    if let error = config.connectionConfigurationError {
+                        Text(error).font(NKFont.caption).foregroundStyle(NK.amber)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     NKInlineNote(text: "⚠ 这里会优先于环境选择；无法连接时可先检查是否留有旧地址。",
                                  tone: .warn)
                 }
@@ -297,9 +296,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     NKGroupLabel(text: "访问码")
                     HStack(spacing: 10) {
-                        // 🔴 **只写不回显的是 Provider 的 key,不是这个 token** ——
-                        // token 是用户自己填进本机 UserDefaults 的,给个眼睛按钮让他核对
-                        // 是对的(原型 1645 行画的就是这枚眼睛)。
+                        // 访问码保存在本机 Keychain；输入框默认遮挡，仅在用户主动点按时显示。
                         Group {
                             if tokenRevealed {
                                 NKTextFieldBox(placeholder: "粘贴 API Token",
@@ -345,8 +342,7 @@ struct SettingsView: View {
                         selfCheckResult
                         Spacer(minLength: 0)
                     }
-                    // ⚠ 第二探针在 V2.5.0 S1 已从 `/positions`(随持仓板块退役删除)换成
-                    // `/settings` —— 这四句文案当时忘了跟着改,对用户描述了一条会 404 的路由。
+                    // 第二探针走 `/settings`，以验证需要鉴权的只读业务路由。
                     NKInlineNote(text: "会检查服务是否可连接，以及访问码是否有效。")
                 }
             }
@@ -621,8 +617,7 @@ struct SettingsView: View {
             NKFieldSeparator()
             versionRow("服务端版本", model.serverVersion ?? "未知(未连通)")
             NKFieldSeparator()
-            // 🔴 **V2.5.0 S12 换成 K9 的两个版本号**(K8 的「纪律章程 / 选股包」已随
-            // 那条链退役)。⛔ 不在客户端硬编,也⛔ 不在没取到时留白 ——
+            // 版本信息由服务端下发；客户端不硬编，也不以空白掩盖缺失。
             // 空白读作"没有",而事实分两种:「本次没有报告」与「参数未配置」。后者
             // 只有报告自己把它列为失败原因时才成立,不能拿 `selectionLoaded` 猜。
             versionRow("参数包版本", paramsPackageVersionText)
@@ -1033,9 +1028,7 @@ struct SettingsView: View {
             return
         }
         do {
-            // 🔴 V2.5.0 S1:自检的第二条从 `/positions`(已随持仓板块退役删除)换成
-            // `/settings` —— 它是**鉴权后**的只读端点,能同时验通「token 对不对」与
-            // 「服务端答不答」。⛔ 不许退化成只打 `/health`:那条免鉴权,验不了 token。
+            // 第二探针是鉴权后的只读端点，用来验证 token 与业务路由均可用。
             let snapshot = try await client.fetchSettings()
             check = .ok("服务与访问配置正常（\(snapshot.push.kinds.count) 项推送开关）")
         } catch APIError.unauthorized, APIError.noToken {

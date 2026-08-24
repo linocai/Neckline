@@ -57,6 +57,22 @@ def test_upload_requires_auth(client):
                        files={"files": ("t.xlsx", _sample())}).status_code == 401
 
 
+def test_upload_rejects_more_than_five_files_before_parsing(client, AUTH, review_env):
+    files = [("files", (f"{i}.xlsx", b"x")) for i in range(6)]
+    response = client.post("/api/v1/review/upload", headers=AUTH, files=files)
+    assert response.status_code == 413
+    assert "最多上传 5" in response.json()["detail"]
+
+
+def test_upload_rejects_single_file_over_ten_megabytes_before_parsing(client, AUTH, review_env):
+    response = client.post(
+        "/api/v1/review/upload", headers=AUTH,
+        files={"files": ("large.xlsx", b"x" * (10 * 1024 * 1024 + 1))},
+    )
+    assert response.status_code == 413
+    assert "10 MB" in response.json()["detail"]
+
+
 def test_upload_and_read_round_trip(client, AUTH, review_env):
     week = _upload(client, AUTH)
     body = client.get(f"/api/v1/review?week={week}", headers=AUTH).json()

@@ -40,7 +40,7 @@ _VALID_TABLES = {
     "limit_derived",
     "top_list",
     # v1.4-①-B(§七 P0-2):当日停牌名单(TuShare `suspend_d`,600 元档实测可用)。用于把
-    # 「持仓票当日无 EOD 行」区分成 `suspended`(真停牌)vs `data_gap`(数据源缺口)——
+    # 将“当日无 EOD 行”区分成 `suspended`（真停牌）与 `data_gap`（数据源缺口）——
     # 「没有」与「没看」必须能分开(§3.8),不许一律标 unknown 糊过去。
     "suspend_d",
     # V2-①(plan §五 V2-①,§3.10-A):盘中存拍两张事实表——「只增不改的高频事实」,
@@ -438,7 +438,7 @@ def load_stock_basic(db_path: Optional[Path] = None) -> pl.DataFrame:
 
 def resolve_stock_names(codes: Sequence[str], db_path: Optional[Path] = None) -> Dict[str, str]:
     """`ts_code -> name`(`stock_basic` 当前名称)。**「按代码查中文名」的唯一实现**——
-    `api.app._resolve_names`(看板/持仓展示)、`selection.aggregate`(喂 LLM 的材料 +
+    `api.app._resolve_names`（展示层）、`selection.aggregate`（喂 LLM 的材料 +
     联网搜索查询词)等多处都走这里,不各自写一份 `load_stock_basic` + filter。
 
     查不到 / 任何异常 → 该 code 不出现在返回 dict 里(调用方自行兜底回 code),

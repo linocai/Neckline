@@ -1,6 +1,6 @@
 //
 //  ReviewModels.swift
-//  Neckline — **复盘板块**的 DTO(V2.5.0 S12 重做,架构 §六 / PROJECT_PLAN §5.9)。
+//  Neckline — 复盘板块的 DTO。
 //
 //  复盘板块只做四件事(⛔ 不多做):
 //    **交割单上传 → 解析结果 → 装订材料 → 结论存档**,外加走这条线的**我的成绩**。
@@ -10,16 +10,7 @@
 //  对齐后端 `POST /api/v1/review/upload` · `GET /review?week=` · `GET /review/bindery?week=`
 //  · `POST|GET /review/conclusions` · `GET /review/overview`。
 //
-//  🔴 **V2.5.0 S12 删掉六族**(端点或产出它们的判据已随 K8 整链下线,⛔ 别接回来):
-//    · `ReviewPlanCheck` / `StopDisciplineKind` / `ReviewStopDisciplineEntry` /
-//      `ReviewCharterSegment` / `ReviewCharterSwitch` —— K8 章程判据整块退役(§5.9);
-//    · `IterationSuggestion` 四分类 —— K8 §十七 的产物;
-//    · `ReviewHandoff` —— `/review/handoff` 已删;
-//    · `MarketRegime*` —— `/market-regime` 已删;
-//    · `SelectionClock` / `TradeClock*` —— 双时钟复盘整块退役;
-//    · `ReviewObservation` —— 观察项登记册仍在服务端,但内容是 K8 语义的策略问题
-//      (涨停簇 lift / 门槛制),K9 之下形状未定义 → **本版界面不呈现**
-//      (PROJECT_PLAN §13.1-B8 已登记,等用户裁定)。
+//  本文件只维护当前复盘 API 的 DTO；未定义的数据不在客户端渲染占位。
 //
 //  🔴 **为什么整族手写 `init(from:)` + `decodeIfPresent`**:这些端点回的不是"服务端每次
 //  重拼的视图",而是**已经落盘冻住的产物原文**(`reviews.result_json` /
@@ -126,10 +117,7 @@ struct ReviewWeeklyStats: Codable, Equatable {
 
 /// 一周的解析结果(服务端 `weekly_review_dict()` 是唯一形状源)。
 ///
-/// ⚠ **V2.5.0 起服务端不再产出 K8 章程那八个键**(`planChecks` / `disciplineViolations` /
-/// `stopDiscipline` / `charterSegments` / …)。`reviews` 表里 V2.4.x 及更早的**历史行**
-/// 仍带着它们(写入当时冻住的快照)—— 这里**不声明**那些键,读老行时它们被自然忽略,
-/// ⛔ 不回填、不改写历史行(裁定 6)。
+/// 历史行中未定义字段不参与当前 DTO 的解码与渲染。
 struct ReviewWeeklyResult: Codable, Equatable {
     var week: String = ""
     var weekStart: String = ""
@@ -440,7 +428,7 @@ struct ReviewSegment: Codable, Equatable {
 /// 🔴 **本端点一律不 404**(空态走各段 `available=false`)→ 客户端**不需要**为它加任何
 /// `mapReason` case。
 ///
-/// 服务端只保留 `reconcile` 与 `conclusions` 两段；K8 校准与观察登记已下架。
+/// 服务端只保留 `reconcile` 与 `conclusions` 两段。
 struct ReviewOverview: Codable, Equatable {
     var weekStart: String = ""
     var weekEnd: String = ""

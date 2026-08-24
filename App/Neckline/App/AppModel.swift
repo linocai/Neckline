@@ -1,16 +1,11 @@
 //
 //  AppModel.swift
-//  Neckline — 应用状态(@Observable)。**V2.5.0 S12 换血**。
+//  Neckline — 应用状态(@Observable)。
 //
 //  🔴 **信息架构 = 三板块 选股 / 成绩 / 复盘 + 设置沉底**(**裁定 11**,⛔ 施工时不得重开)。
-//  「持仓」板块整块下线(S1 已删 View / Model / 路由),成绩线升为板块。
 //  设置**在产品语义上不算板块** —— 它只是个入口,排最后、齿轮图标。
 //
-//  ⚠ **`AppTab.baskets` 已更名 `selection`**(V2.5.0 S12)。原先那条「rawValue 一个都
-//  不许改」的纪律,理由是**外部截图脚本按 rawValue 传参**;那些脚本(20 个 K8 驱动脚本)
-//  已在 S1 随 K8 整链删除,现在 `NECKLINE_INITIAL_TAB` 的消费方**只剩本工程自己**。
-//  留着 `baskets` 反而是坑:「篮子」是已退役的 K8 概念,下一个人 grep 它会以为还在。
-//  ⛔ 新的 rawValue 从此**又是契约**了(本工程的 QA 钩子按它传参),别再随手改。
+//  `NECKLINE_INITIAL_TAB` 由本工程消费；当前 rawValue 是 QA 启动契约，不可随意改动。
 //
 
 import Foundation

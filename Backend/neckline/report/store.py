@@ -122,8 +122,8 @@ def load_k9_report(
 ) -> Optional[Dict[str, Any]]:
     """查某交易日的报告。`None` = 那天没生成过(完全正常的场景)。
 
-    ⚠ **只读**(`readonly_tables`,R3-🔴-2):`k9_reports` 还没建的 v2.4.2 老库
-    读出来就是 `None` —— ⛔ 读一次不许把库迁移掉。复审实测的就是这个入口:
+    ⚠ **只读**(`readonly_tables`):`k9_reports` 还没建时读出来就是 `None`，
+    读一次不许把库迁移掉。
     老库 59 表,调一次本函数 → 75 表。"""
     with readonly_tables(*_K9_PROBE, db_path=db_path) as conn:
         if conn is None:

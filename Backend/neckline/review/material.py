@@ -1,10 +1,6 @@
 """复盘材料生成(纯确定性文案,⛔ 零 LLM —— 架构 §六明令这一层无 LLM 调用)。
 
-🔴 **V2.5.0 S1 大幅缩编**:原先本模块把 `WeeklyReview` 的**七个判据字段**
-(`charter_switches` / `plan_checks` / `stop_discipline` / `discipline_violations` /
-`charter_notes` / `plan_warnings` / `strategy_version`)渲染成「计划外买入」「止损纪律
-警示」「章程执行违纪清单」等段落。K8 章程判据整块退役(PROJECT_PLAN §5.9)后,
-这些字段已从 `WeeklyReview` 上删除,对应段落一并删除。
+不支持的判据字段不渲染为“计划外”或“违纪”结论。
 
 ⛔ **不留"本周未发现违纪"这类兜底句** —— 判据都不判了还说"没发现",是把
 「这项已经不查了」讲成「你这周很干净」。K9 §六 给这一层的职责是**解析 / 装订 / 存档**;

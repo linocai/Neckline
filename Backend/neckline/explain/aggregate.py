@@ -9,7 +9,7 @@
 (见 `input.py`)。⛔ 本包零 import `neckline.k9`(守门 G5)。
 
 🔴 **一只票一次调用**:清单最多 20 只。⚠ 刻意**不**把 20 只塞进同一个 prompt ——
-那正是 K8 时代 §七 P0-40/P0-44 反复翻车的「大上下文 + 长结构化生成」形状;
+大上下文加长结构化生成会放大单次失败面；
 而且一次批量调用失败会让**整天**的资料全缺,逐只调用则只缺那一只(逐只的保险丝)。
 
 🔴 **消息面证据由调用方喂进来**(`news` 参数),⛔ 本模块不自己联网:
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import date
 from pathlib import Path
@@ -32,11 +33,14 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from neckline.explain.input import ExplainInput
 from neckline.explain.news_exclusion import NewsVerdict
-from neckline.llm.base import ChatMessage, LLMProvider
+from neckline.llm.base import ChatMessage, LLMProvider, LLMResult
 from neckline.llm.json_block import split_narrative_and_json
 from neckline.llm.prompt_context import TIMELINESS_RULES, date_anchor_line
 
 logger = logging.getLogger(__name__)
+
+# P2-A：独立逐票解释固定三并发；不读取策略参数，也不允许调用方偷偷扩大并发。
+PROVIDER_CONCURRENCY = 3
 
 EXPLAIN_SYSTEM_PROMPT = """你是「颈线」系统的盘后资料员。系统每天盘后交出一份 10-20 只的候选清单,你的任务是
 把其中一只票讲成用户读得懂的东西,供他自己判断。
@@ -139,7 +143,32 @@ def _degraded(ts_code: str, reason: str) -> ExplainNote:
         kline_comment="日K 评价未取得", llm_ok=False, reason=reason)
 
 
-def aggregate_one(
+@dataclass(frozen=True)
+class _AggregateWork:
+    """worker 的返回值：只有调用结果与纯解析，审计由主线程处理。"""
+
+    note: ExplainNote
+    result: Optional[LLMResult] = None
+    outcome: Optional[str] = None
+    duration_ms: Optional[int] = None
+    failure_reason: Optional[str] = None
+
+
+def _record_usage(work: _AggregateWork, *, trade_date: Optional[date],
+                  report_date: Optional[date], pack_id: Optional[str],
+                  db_path: Optional[Path]) -> None:
+    """附加审计必须不影响已经完成的单票资料。"""
+    try:
+        from neckline.llm.usage import record
+        record(task="explain", result=work.result, trade_date=trade_date,
+               report_date=report_date, pack_id=pack_id, outcome=work.outcome,
+               duration_ms=work.duration_ms, failure_reason=work.failure_reason,
+               db_path=db_path)
+    except Exception:
+        logger.error("[explain] %s 的用量审计写入失败", work.note.ts_code, exc_info=True)
+
+
+def _aggregate_one(
     item: ExplainInput,
     *,
     provider: Optional[LLMProvider],
@@ -149,17 +178,15 @@ def aggregate_one(
     report_date: Optional[date] = None,
     pack_id: Optional[str] = None,
     db_path: Optional[Path] = None,
-) -> ExplainNote:
+) -> _AggregateWork:
     """聚合一只票的资料。`provider=None` → 直接降级,**零网络调用**。
 
     🔴 **空成功一律判失败**(§12 坑 13 / LRN-20260816-002):模型返回了、但五个键
     没给全 → `llm_ok=False`,⛔ 不留一份「有结构、没内容」的记录冒充跑通了。
     """
     if provider is None:
-        from neckline.llm.usage import record
-        record(task="explain", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="skipped",
-               failure_reason="未配置可用的 LLM provider", db_path=db_path)
-        return _degraded(item.ts_code, "未配置可用的 LLM provider")
+        return _AggregateWork(_degraded(item.ts_code, "未配置可用的 LLM provider"),
+                              outcome="skipped", failure_reason="未配置可用的 LLM provider")
     messages = [
         ChatMessage(role="system", content=EXPLAIN_SYSTEM_PROMPT),
         ChatMessage(role="user", content=_material(item, news)),
@@ -169,38 +196,50 @@ def aggregate_one(
         result = provider.chat(messages, enable_search=False, transport=transport)
     except Exception as e:  # noqa: BLE001 —— 一只票炸了只缺它自己那一段
         logger.warning("[explain] %s 资料聚合调用异常", item.ts_code, exc_info=True)
-        from neckline.llm.usage import record
-        record(task="explain", trade_date=trade_date, report_date=report_date, pack_id=pack_id, outcome="failed",
-               duration_ms=int((time.monotonic()-started)*1000), failure_reason="调用异常", db_path=db_path)
-        return _degraded(item.ts_code, f"调用异常:{e}")
-    from neckline.llm.usage import record
-    record(task="explain", result=result, trade_date=trade_date, report_date=report_date, pack_id=pack_id,
-           duration_ms=int((time.monotonic()-started)*1000), db_path=db_path)
+        return _AggregateWork(_degraded(item.ts_code, f"调用异常:{e}"), outcome="failed",
+                              duration_ms=int((time.monotonic()-started)*1000),
+                              failure_reason="调用异常")
+    duration_ms = int((time.monotonic()-started)*1000)
     if not result.ok:
-        return _degraded(item.ts_code, f"调用未成功:{result.reason}")
+        return _AggregateWork(_degraded(item.ts_code, f"调用未成功:{result.reason}"),
+                              result=result, duration_ms=duration_ms)
     narrative, block = split_narrative_and_json(result.content or "")
     if not isinstance(block, dict):
         note = _degraded(item.ts_code, "模型未给出结构化收尾")
-        return ExplainNote(ts_code=note.ts_code, profile=note.profile,
-                           kline_comment=note.kline_comment, narrative=narrative,
-                           llm_ok=False, filled_by=f"{result.provider}/{result.model}",
-                           reason=note.reason)
+        return _AggregateWork(ExplainNote(ts_code=note.ts_code, profile=note.profile,
+                                          kline_comment=note.kline_comment, narrative=narrative,
+                                          llm_ok=False, filled_by=f"{result.provider}/{result.model}",
+                                          reason=note.reason), result=result, duration_ms=duration_ms)
     missing = [k for k in _REQUIRED_KEYS
                if not isinstance(block.get(k), str) or not block[k].strip()]
     if missing:
         # ⛔ 空成功一律判失败(见 docstring)。
         note = _degraded(item.ts_code, f"结构化收尾缺键:{missing}")
-        return ExplainNote(ts_code=note.ts_code, profile=note.profile,
-                           kline_comment=note.kline_comment, narrative=narrative,
-                           llm_ok=False, filled_by=f"{result.provider}/{result.model}",
-                           reason=note.reason)
-    return ExplainNote(
+        return _AggregateWork(ExplainNote(ts_code=note.ts_code, profile=note.profile,
+                                          kline_comment=note.kline_comment, narrative=narrative,
+                                          llm_ok=False, filled_by=f"{result.provider}/{result.model}",
+                                          reason=note.reason), result=result, duration_ms=duration_ms)
+    return _AggregateWork(ExplainNote(
         ts_code=item.ts_code,
         profile={k: str(block[k]).strip() for k in _PROFILE_KEYS},
-        kline_comment=str(block["klineComment"]).strip(),
-        narrative=narrative, llm_ok=True,
-        filled_by=f"{result.provider}/{result.model}",
-    )
+        kline_comment=str(block["klineComment"]).strip(), narrative=narrative,
+        llm_ok=True, filled_by=f"{result.provider}/{result.model}",
+    ), result=result, duration_ms=duration_ms)
+
+
+def aggregate_one(
+    item: ExplainInput, *, provider: Optional[LLMProvider], news: Optional[NewsVerdict] = None,
+    transport: Optional[Any] = None, trade_date: Optional[date] = None,
+    report_date: Optional[date] = None, pack_id: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> ExplainNote:
+    """单票公开入口；默认在调用者线程写一次附加审计。"""
+    work = _aggregate_one(item, provider=provider, news=news, transport=transport,
+                          trade_date=trade_date, report_date=report_date,
+                          pack_id=pack_id, db_path=db_path)
+    _record_usage(work, trade_date=trade_date, report_date=report_date,
+                  pack_id=pack_id, db_path=db_path)
+    return work.note
 
 
 def aggregate(
@@ -214,13 +253,19 @@ def aggregate(
     pack_id: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> List[ExplainNote]:
-    """逐只聚合(**按传入顺序**,调用方保证是 `ts_code` 升序)。"""
+    """逐只聚合，最多三并发，返回顺序严格等于输入顺序。"""
     news = dict(news_by_code or {})
-    return [
-        aggregate_one(it, provider=provider, news=news.get(it.ts_code), transport=transport,
-                      trade_date=trade_date, report_date=report_date, pack_id=pack_id, db_path=db_path)
-        for it in items
-    ]
+    def one(item: ExplainInput) -> _AggregateWork:
+        return _aggregate_one(
+            item, provider=provider, news=news.get(item.ts_code), transport=transport,
+            trade_date=trade_date, report_date=report_date, pack_id=pack_id, db_path=db_path,
+        )
+    with ThreadPoolExecutor(max_workers=PROVIDER_CONCURRENCY, thread_name_prefix="nk-explain") as pool:
+        work = list(pool.map(one, items))
+    for item in work:
+        _record_usage(item, trade_date=trade_date, report_date=report_date,
+                      pack_id=pack_id, db_path=db_path)
+    return [item.note for item in work]
 
 
 __all__ = [

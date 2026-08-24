@@ -1,6 +1,6 @@
 //
 //  K9Models.swift
-//  Neckline — **选股板块**的 DTO(V2.5.0 S12;取代已删的 `BasketModels.swift`)。
+//  Neckline — 选股板块 DTO。
 //
 //  对齐后端 `GET /api/v1/selection/latest` · `/selection/{tradeDate}` ·
 //  `/selection/{tradeDate}/stock/{tsCode}` · `POST .../playbook`

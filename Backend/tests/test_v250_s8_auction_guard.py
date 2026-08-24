@@ -224,9 +224,8 @@ def test_the_settle_tick_helper_never_pushes():
     assert "notify." not in body
 
 
-def test_no_new_systemd_unit_was_added():
-    """🔴 §9.3:本版**零新增 systemd unit**。两拍都跑在既有常驻 `neckline.service` 里
-    —— 多一个 unit 就多一条双触发路径,而「今天跑没跑过」应当是查台账、不是现场推理。"""
+def test_deploy_units_are_limited_to_the_current_data_report_recovery_and_backup_chain():
+    """早晨两拍仍不单列 unit；恢复仅补数据前置，备份不生成报告。"""
     deploy = _ROOT / "deploy"
     units = sorted(p.name for p in deploy.glob("*.service")) + \
         sorted(p.name for p in deploy.glob("*.timer")) + \
@@ -236,6 +235,8 @@ def test_no_new_systemd_unit_was_added():
         "neckline-daily.service", "neckline-daily.timer",
         "neckline-facts.service", "neckline-strategy.service", "neckline-report.service",
         "neckline-evening.target", "neckline-evening.timer",
+        "neckline-recovery.service", "neckline-recovery.timer",
+        "neckline-backup.service", "neckline-backup.timer",
     }, units
     blob = "\n".join((deploy / u).read_text(encoding="utf-8") for u in units)
     for banned in ("checklist", "settle", "auction"):

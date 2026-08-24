@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover only missing Neckline EOD prerequisites
+
+[Timer]
+# 这是普通、幂等的数据缺口扫描；错过本次就等下一次扫描，绝非 missed-slot 补跑。
+OnCalendar=*-*-* 16:25 Asia/Shanghai
+Persistent=false
+Unit=neckline-recovery.service
+
+[Install]
+WantedBy=timers.target

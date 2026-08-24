@@ -1,6 +1,6 @@
 //
 //  ScoreboardModels.swift
-//  Neckline — **成绩板块**的 DTO(V2.5.0 S12 新增,裁定 11:成绩线升为板块)。
+//  Neckline — 成绩板块的 DTO。
 //
 //  对齐后端 `GET /api/v1/scoreboard/listing?window=`,
 //  `GET /api/v1/scoreboard/coverage?window=` 与

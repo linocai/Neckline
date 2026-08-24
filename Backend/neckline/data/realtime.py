@@ -1,27 +1,7 @@
-"""实时行情源(V2.5.0 S1:自 `sentinel/quotes.py` 原样搬入 `data/`)。
+"""实时行情源：新浪主源、腾讯备源。
 
-搬家理由(PROJECT_PLAN 裁定 7):盘中哨兵整块退役,但这块是承重墙 —— `Quote` /
-`DualQuote` / `to_symbol` 被 `auction/`(竞价冻结抓取与报价校验)与
-`review/parse.py`(交割单代码归一)消费,它本来就是**数据层**的东西,不是哨兵的。
-
-⚠ `to_symbol` 的**后缀优先不可退化**(§12 坑 7):前缀启发式对指数会静默拿错标的
-(`000001.SH` 上证综指会被判成 `sz000001` 平安银行)。单测已随文件一起搬到
-`tests/test_data_realtime.py`,⛔ 不许简化。
-
-以下为原模块头,内容未改 ——
-盘中实时源(plan 阶段 3 §2.4/§3.7,新浪主 / 腾讯备)。继承 LinoN 已踩平的坑
-(`/Users/linotsai/Lino/LinoN/backend/app/data/realtime.py`,权威见 LinoN CLAUDE.md
-「数据源坑」节),重写点:
-
-    · 用 `httpx` + 可注入 `transport`(而非 LinoN 的 `requests`),与本项目
-      `neckline.llm.openai_compat` 已确立的「MockTransport 传统」一致,免联网单测。
-    · `Quote` 不再自带 limit_up/limit_down——LinoN 版本内嵌了一个简化的 ±10%/±5%
-      规则,漏了 20%(科创/创业板)、30%(北交所)。Neckline 已有权威的板块涨跌幅
-      规则(`neckline.data.limit_derived`,§2.4「复用 limit_derived 的幅度规则算
-      当日涨跌停价」),涨跌停价的计算挪到那边的 `compute_intraday_limit_prices`,
-      调用方(retreat.py/holding.py)按需另算,`Quote` 只装「源里直接给的」市场数据。
-    · `to_symbol` 补上北交所(bj 前缀),复用 `neckline.data.board.classify_by_code`
-      的 BSE 正则(单一源,不再抄一份 8/4/920 前缀判断)。
+`Quote` 只保存源直接给出的行情字段；涨跌停价由专门的数据规则模块计算。
+`to_symbol` 以交易所后缀为准，避免指数代码被前缀启发式误判。
 
 字段单位(归一目标,§3.7 铁律,两源口径不同务必对齐):
     · 新浪:逗号分隔,GBK;volume 单位=股(÷100→手),amount 单位=元(原样);
@@ -31,7 +11,7 @@
       (×1e4→元);bid/ask 块「价先量后」(与新浪相反,易写反)。
     · 归一后 `Quote.volume` 单位=手、`Quote.amount` 单位=元——与
       `neckline.data.tushare_client` 的 EOD `daily.vol`(手)/`daily.amount`(千元,
-      注意不同)是两套不同量纲,不要混用,VWAP 计算见 `intraday.py`。
+      注意不同)是两套不同量纲,不要混用。
 
 源全挂 → 该票不在返回结果里(跳过),批量调用整体不崩;单批请求过大时按
 `_CHUNK_SIZE` 拆分多次请求(sina/tencent 均未官方文档化单请求代码数上限,保守
@@ -334,12 +314,12 @@ def get_quote(code: str, transport: Optional[Any] = None) -> Optional[Quote]:
     return get_quotes([code], transport=transport).get(code)
 
 
-# —— 🔴 V2.4.0 P2.2:有界**双源核验**(K8 §二十「主备源」)——————————————————————
+# —— 有界双源核验 ————————————————————————————————————————————————
 
 @dataclass(frozen=True)
 class DualQuote:
     """同一只代码的**两源原始读数**。🔴 **两个都留痕,⛔ 不许只存胜出的那一个**
-    (K8 §二十 逐字:「两个来源的原始读数全部留存」)。
+    （两个来源的原始读数都必须留存）。
 
     `primary` = 新浪(主源)· `backup` = 腾讯(备源);拉不到 / 解不出 → `None`。
     ⚠ **本类不做任何"谁赢"的判定**:七项校验与冲突判定住 `neckline/auction/quality.py`
@@ -362,7 +342,7 @@ def get_quotes_dual(
     """🔴 **双源批量并行**:新浪一次批量 + 腾讯一次批量,返回**两源逐票原始读数**。
 
     与 `get_quotes()` 的区别只有一个:那个是「主源失败**才**降备源」(省一次请求),
-    这个是「**两源都拉**」—— 因为 K8 §二十 要求对 T1/T2 成员及实际使用的关键基准
+    这个是「**两源都拉**」—— 对实际使用的关键基准
     做**有界双源核验**,而核验需要两个可以互相打架的读数。
 
     🔴 **⛔ 不允许逐票网络请求**(9:26 那一刻的限流面必须可控):仍走既有
@@ -374,7 +354,7 @@ def get_quotes_dual(
 
     ⚠ **有界在调用面,不在本函数**:本函数老老实实拉 `codes` 全部,"哪些码值得双源"
     由调用方(`auction/collect.py`)决定 —— ⛔ 这里**不设「取前 N 个」的截断**
-    (那需要一个 K8 没给的数,§五 P2.2 明写)。
+    （截断应由调用方显式决定）。
 
     任一源全挂 / 单票解析失败 → 那一侧为 `None`,整体不崩(实时源不可靠是常态)。
     """

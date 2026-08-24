@@ -1,6 +1,6 @@
 //
 //  NKFormKit.swift
-//  Neckline — **弹层壳 + 分组字段卡**(V2.3.1 批 5 新增)。
+//  Neckline — 弹层壳 + 分组字段卡。
 //
 //  🔴 **为什么单起一个文件、而不是继续用 `Form`**:四个弹层与设置四屏在原型里
 //  (`Neckline 弹层.dc.html` 全文 + `Neckline macOS.dc.html` 1577–1887)是**同一套形状**
@@ -9,7 +9,7 @@
 //  全由系统定),逐项对不到原型的 inline style。⛔ 不是"嫌 `Form` 不好看",是它
 //  的这些值**改不了**。
 //
-//  ⚠ **V2.3.1 批 7 起 iOS 也在用**(补录开仓那一屏,`Neckline iOS.dc.html` 645–733):
+//  ⚠ iOS 也复用这组组件：
 //  本文件从来没有 `#if os(macOS)` 守卫,组件本身双端都能编。**尚未切过来的 iOS 弹层**
 //  (补录清仓 / 补充说明 / 新建提醒)仍在 `Form`,原型没画那三屏 —— 见批 7 对照表登记。
 //
@@ -21,12 +21,12 @@ import SwiftUI
 /// 🔴 **服务端的人读文案里是带 `**加粗**` 的**(`custom_alerts.py::QUOTE_DELAY_DISCLOSURE`
 /// 原文:「行情来自免费实时源(新浪 / 腾讯),`**有延迟**`且非逐笔…」),而
 /// `Text(String)` **不解析 Markdown** —— 直接插进去,星号会原样印在界面上
-/// (V2.3.1 批 5 实拍在**七项确认卡第 ⑥ 行**逮到,§五 〇d 第 7 条的服务端版本)。
+/// （服务端状态必须与可编辑内容清晰区分）。
 ///
 /// 把服务端字符串包成 `LocalizedStringKey` 才走 Markdown 解析。
 /// ⚠ **只用在"服务端确实在写 Markdown"的那几处**(确认卡七项);⛔ 别无差别套到
 /// 所有服务端字符串上 —— 那会让任何含 `*` / `[` 的正常文本被当成标记吃掉。
-// ⚠ **`nkServerMarkdown` 已并入 `SharedUI.swift::nkMarkdown(_:)`**(V2.3.1 合并期):
+// ⚠ 服务端 Markdown 统一由 `SharedUI.swift::nkMarkdown(_:)` 渲染：
 // 批 4 与批 5 在两个 worktree 里**各自**为「服务端文案带 Markdown」加了一个函数,
 // 名字不同、用途相同。统一保留 `nkMarkdown`(返 `AttributedString`),理由:
 //   · `LocalizedStringKey(runtimeString)` 会把整串**当成本地化 key** 去查表,

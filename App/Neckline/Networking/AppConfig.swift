@@ -11,13 +11,14 @@
 //
 //  ⚠️ API_TOKEN 绝不硬编码进提交源码：
 //   解析优先级 ——
-//    1. UserDefaults("NK_API_TOKEN")  ← App 内设置屏填入,或预置 plist
+//    1. Keychain（唯一持久化位置）
 //    2. 构建期环境变量 NK_API_TOKEN(scheme 注入,本地开发用)
 //    3. gitignored 本地配置 LocalSecrets.plist(若打进 bundle)
 //   都缺则 token 为空 —— 业务端点会收 401,设置屏提示用户填。
 //
 
 import Foundation
+import Security
 
 enum NKEnvironment: String, CaseIterable, Identifiable {
     case dev      // 本地 uvicorn :8002
@@ -48,7 +49,17 @@ enum NKEnvironment: String, CaseIterable, Identifiable {
     }
 }
 
-/// 运行期可配置的后端连接。持久化到 UserDefaults;token 不入源码。
+protocol APIAccessTokenStore {
+    func load() -> String?
+    @discardableResult func save(_ token: String) -> Bool
+}
+
+struct KeychainAPIAccessTokenStore: APIAccessTokenStore {
+    func load() -> String? { TokenKeychain.load() }
+    func save(_ token: String) -> Bool { TokenKeychain.save(token) }
+}
+
+/// 运行期可配置的后端连接。Token 只进 Keychain，绝不持久化到 UserDefaults。
 @MainActor
 final class AppConfig: ObservableObject {
     static let envKey = "NK_ENVIRONMENT"
@@ -58,6 +69,7 @@ final class AppConfig: ObservableObject {
     /// 持久化后端(生产 = `.standard`;单测注入隔离 suite 保证 hermetic,不吃模拟器
     /// 里前几次会话残留的 `NK_ENVIRONMENT`)。
     private let defaults: UserDefaults
+    private let tokenStore: any APIAccessTokenStore
 
     @Published var environment: NKEnvironment {
         didSet { defaults.set(environment.rawValue, forKey: Self.envKey) }
@@ -67,11 +79,17 @@ final class AppConfig: ObservableObject {
         didSet { defaults.set(baseURLOverride, forKey: Self.baseOverrideKey) }
     }
     @Published var apiToken: String {
-        didSet { defaults.set(apiToken, forKey: Self.tokenKey) }
+        didSet {
+            if tokenStore.save(apiToken) {
+                defaults.removeObject(forKey: Self.tokenKey)
+            }
+        }
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard,
+         tokenStore: any APIAccessTokenStore = KeychainAPIAccessTokenStore()) {
         self.defaults = defaults
+        self.tokenStore = tokenStore
         // 默认后端 = prod(https://nk.linotsai.top,V2-⑰ 割接后的新机)。无持久化选择时用 prod;
         // dev(本地 uvicorn 8002)仍可在设置屏「环境」picker 或手填 baseURLOverride 切换,配置
         // 能力不变。⚠ 老 App 存过的 `NK_ENVIRONMENT="prod"` 在这里会被读成 **新** prod = nk,
@@ -79,9 +97,14 @@ final class AppConfig: ObservableObject {
         self.environment = NKEnvironment(rawValue: defaults.string(forKey: Self.envKey) ?? "") ?? .prod
         self.baseURLOverride = defaults.string(forKey: Self.baseOverrideKey) ?? ""
 
-        // token 解析:UserDefaults → 环境变量 → 本地 plist
-        if let t = defaults.string(forKey: Self.tokenKey), !t.isEmpty {
+        // 一次性迁移旧 UserDefaults；Keychain 成功落入后才删除旧值。
+        if let t = tokenStore.load(), !t.isEmpty {
             self.apiToken = t
+        } else if let legacy = defaults.string(forKey: Self.tokenKey), !legacy.isEmpty {
+            self.apiToken = legacy
+            if tokenStore.save(legacy) {
+                defaults.removeObject(forKey: Self.tokenKey)
+            }
         } else if let env = ProcessInfo.processInfo.environment["NK_API_TOKEN"], !env.isEmpty {
             self.apiToken = env
         } else if let plistToken = Self.tokenFromLocalPlist() {
@@ -93,11 +116,29 @@ final class AppConfig: ObservableObject {
 
     var resolvedBaseURL: URL {
         let trimmed = baseURLOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, let u = URL(string: trimmed) { return u }
+        if !trimmed.isEmpty, let u = URL(string: trimmed), isAllowedOverride(u) { return u }
+        if !trimmed.isEmpty { return URL(string: "https://configuration.invalid")! }
         return environment.baseURL
     }
 
+    var connectionConfigurationError: String? {
+        let trimmed = baseURLOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let url = URL(string: trimmed) else { return "服务地址格式不正确" }
+        return isAllowedOverride(url) ? nil : "远端服务必须使用 HTTPS；本地开发仅允许 Debug 的 127.0.0.1/localhost"
+    }
+
     var hasToken: Bool { !apiToken.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    private func isAllowedOverride(_ url: URL) -> Bool {
+        if url.scheme?.lowercased() == "https" { return true }
+        #if DEBUG
+        let host = url.host?.lowercased()
+        return url.scheme?.lowercased() == "http" && (host == "127.0.0.1" || host == "localhost")
+        #else
+        return false
+        #endif
+    }
 
     /// gitignored 本地配置:Bundle 内 LocalSecrets.plist 的 NK_API_TOKEN 键。
     private static func tokenFromLocalPlist() -> String? {
@@ -106,5 +147,44 @@ final class AppConfig: ObservableObject {
               let token = dict["NK_API_TOKEN"] as? String,
               !token.isEmpty else { return nil }
         return token
+    }
+}
+
+private enum TokenKeychain {
+    private static let service = "top.linotsai.neckline"
+    private static let account = "api-token"
+
+    static func load() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              let token = String(data: data, encoding: .utf8) else { return nil }
+        return token
+    }
+
+    @discardableResult
+    static func save(_ token: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        if token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return SecItemDelete(query as CFDictionary) == errSecSuccess || load() == nil
+        }
+        let attributes: [String: Any] = [kSecValueData as String: Data(token.utf8)]
+        let update = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if update == errSecSuccess { return true }
+        if update != errSecItemNotFound { return false }
+        var add = query
+        add[kSecValueData as String] = Data(token.utf8)
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 }

@@ -164,6 +164,30 @@ def is_trading_day(d: DateLike) -> bool:
     return _static_is_trading_day(dt)
 
 
+def official_is_trading_day(d: DateLike) -> Optional[bool]:
+    """只接受已落库的交易所日历，缺覆盖返回 ``None``，绝不工作日猜测。
+
+    定时生产作业必须用这条接口；``is_trading_day`` 保留给历史只读展示等旧调用方，
+    不能把它的静态/工作日回退带进会产生报告或付费调用的路径。
+    """
+    dt = _to_date(d)
+    path = settings.db_path
+    if not path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT is_open FROM trade_cal WHERE exchange='SSE' AND cal_date=?",
+                (dt.strftime("%Y%m%d"),),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return None if row is None else bool(row[0])
+
+
 def next_trading_day(d: DateLike) -> date:
     """严格在 d 之后的下一个交易日(不含 d 自身)。"""
     dt = _to_date(d)
@@ -260,6 +284,7 @@ def verify_against_static() -> dict:
 
 __all__ = [
     "is_trading_day",
+    "official_is_trading_day",
     "next_trading_day",
     "prev_trading_day",
     "trading_days_between",

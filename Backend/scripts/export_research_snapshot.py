@@ -10,12 +10,8 @@
    (源文件相对 parquet 根的路径是什么,目的地就是什么),附**逐日 sha256** 的 manifest。
 
    🔴 **要拷哪几个文件由清单说了算,⛔ 不 glob**(R1-B1 之后布局变成
-   `fact_pack/version=<v>/year=YYYY/YYYYMMDD.parquet`,而遗留包还躺在
-   `fact_pack/year=YYYY/` 下)。本脚本逐日走 `facts.store.load_pack(...).path`
-   —— 它内部是 `resolve_pack_path`:带版本的路径在就用它,回落到遗留路径时
-   **要过 `content_fingerprint` 的 sha256 对拍**。⛔ 不许改回「文件在就用」:
-   遗留路径是「一天一个坑位」的旧布局,同一天若有过第二版,那个文件属于谁
-   在路径上根本看不出来 —— 拿一份对不上账的字节去标定,比少给两天糟得多。
+   `fact_pack/version=<v>/year=YYYY/YYYYMMDD.parquet`)。本脚本逐日走
+   `facts.store.load_pack(...).path`，不接受旧布局回退。
 
 🔴 **为什么必须逐字节相同**(§5.13 逐字):标定要跑在与生产**完全一样**的事实包上,
 否则「联合通过率」这个数没有意义 —— 一边算出来的门槛拿到另一边就不是同一件事。
@@ -131,9 +127,7 @@ def _day_files(
     `fact_pack/version=<v>/year=YYYY/…` 之后,原来那句
     `table_root / f"year={y}" glob("*.parquet")` **一个文件都扫不到**,
     区间内每一天都会被报进 `missingDates` —— 响亮,但完全是假的。
-    ⚠ 路径**只从 `facts.store` 取**(它自己的 docstring 就写着「⛔ 不在这里另拼
-    一套路径」):`FactPack.path` = `resolve_pack_path`,遗留布局的回落要过
-    `content_fingerprint` 的 sha256 对拍。
+    ⚠ 路径**只从 `facts.store` 取**，不在此处重拼一套路径。
 
     ⚠ 清单里有、文件不在的日子**不在返回值里** —— 那是真缺口,由调用方报进
     `missingDates`(⛔ 不静默少给)。
@@ -167,9 +161,6 @@ def _manifest_days(
 def _disk_files(parquet_dir: Path, start: str, end: str) -> Dict[str, List[Path]]:
     """磁盘上 `[start, end]` 内的 `fact_pack` 日分区文件:`{YYYYMMDD: [路径…]}`。
 
-    ⚠ **两种布局都扫**:R1-B1 之后是 `fact_pack/version=<v>/year=YYYY/`,
-    遗留包还躺在 `fact_pack/year=YYYY/` 下。⛔ 只扫一种 = 对另一种全盲
-    (那正是这次修的病:只扫遗留布局,新布局下一个文件都找不到)。
     **只扫区间覆盖到的年份**(同 `market_data._scan_table` 的纪律:全 glob 要打开
     1500+ 个 footer,§12 坑 1)。
 
@@ -180,8 +171,7 @@ def _disk_files(parquet_dir: Path, start: str, end: str) -> Dict[str, List[Path]
     if not table_root.is_dir():
         return out
     for y in range(int(start[:4]), int(end[:4]) + 1):
-        year_dirs = [table_root / f"year={y}"]
-        year_dirs += sorted(table_root.glob(f"version=*/year={y}"))
+        year_dirs = sorted(table_root.glob(f"version=*/year={y}"))
         for year_dir in year_dirs:
             if not year_dir.is_dir():
                 continue
@@ -214,7 +204,7 @@ def export_fact_packs(
     copied: List[Dict[str, object]] = []
     for day, src in files:
         # ⚠ **源布局原样搬过去**(⛔ 不在这里重拼一次路径):`version=<v>/year=YYYY/`
-        # 与遗留的 `year=YYYY/` 都照抄,whynotme 侧用与生产完全相同的约定读。
+        # 版本化布局原样照抄，whynotme 侧用同一约定读取。
         rel = src.relative_to(parquet_dir)
         dst = destination_root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -257,7 +247,7 @@ def export_fact_packs(
         "fileCount": len(copied),
         "files": copied,
         # 清单里有、parquet 却拷不到 —— **真缺口**(多半是滚动裁剪已经删了那几天,
-        # 也可能是遗留布局的文件对不上 `content_fingerprint`)。⛔ 不静默少给。
+        # ⛔ 不静默少给。
         "missingDates": sorted(frozen - have),
         # 拷到了、清单里却没有 —— 孤儿文件,同样要说出口(⛔ 不静默带走)。
         "orphanDates": sorted(orphan_days),

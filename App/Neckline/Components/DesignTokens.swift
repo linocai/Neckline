@@ -30,7 +30,7 @@ extension Color {
 enum NK {
     // 语义色
     static let up      = Color(hex: 0x0FA968)   // 涨 / 满额 / 盈利 / 过
-    static let down    = Color(hex: 0xE5443B)   // 跌 / 破线 / 退潮刹车 / 休息 / 否决
+    static let down    = Color(hex: 0xE5443B)   // 跌 / 破线 / 休息 / 否决
     static let amber   = Color(hex: 0xE8910A)   // 半额 / 警示 / 待办 / 降级
     static let accent  = Color(hex: 0x0B6BCB)   // 交互蓝 / 主按钮 / 选中
 
@@ -42,21 +42,9 @@ enum NK {
 
     // 背景
     static let cardBg     = Color.white
-    /// **macOS 画布**。⚠ V2.3 由 `#FBFBFD` 改深一档 `#F6F6F8`:原值与白卡几乎无差,
-    /// 卡片浮不起来(规范 §02「两处要注意」)。浮起靠 **白卡 + hairline 描边**,
-    /// ⛔ **不加阴影** —— 阴影不参与动画是全局三禁之一,而且桌面密度下也不需要。
-    ///
-    /// ⚠ **这是三栏布局里「详情栏」那一栏的底色**(macOS 原型 247 行),
-    /// 列表栏另有 `listBg`(下)—— ⛔ 别把两栏又调成同一个值。
+    /// macOS 详情区画布；白卡与细描边负责层次，不使用阴影。
     static let pageBg     = Color(hex: 0xF6F6F8)
-    /// **macOS 列表栏底色**(V2.3.1 新增,全版**唯一**新增色令牌)。
-    ///
-    /// 🔴 **加它的理由**:原型两栏底色是**分开的** —— 列表栏 `#FCFCFD`(macOS 原型 81 行)
-    /// 比详情栏 `#F6F6F8`(247 行)亮一档,靠这一档明暗差 + `.5px` 竖分隔把「选什么」
-    /// 与「看什么」分成两个面。V2.3.0 两栏都吃 `pageBg`,**糊成一片**,列表栏里的白色
-    /// 选中行反而比底色还暗一点点,选中态几乎看不出来。
-    /// ⚠ V2.3 立的「色令牌一个没加、一个没改」在 V2.3.1 §② 收窄为:**只为这一处加一枚**,
-    /// ⛔ 其余色差(卡描边 `.12` vs 令牌 `.10` 等)一律就近对齐既有令牌,不再新增。
+    /// macOS 列表栏底色，与详情栏保持一档明暗差。
     static let listBg     = Color(hex: 0xFCFCFD)
     /// iOS 画布**沿用不变**(手机上原本就分得开)。
     static let pageBgIOS  = Color(hex: 0xF3F4F7)
@@ -67,14 +55,12 @@ enum NK {
 
     /// **品牌渐变**(App 图标 / `NKLogo` / 字标)。
     ///
-    /// ⚠ **V2.3 起 = `alertGrad` 同一条红橙**(用户选定)。**已知代价、用户拍板接受**:
-    /// 它同时还是「退潮刹车 / 高危提醒」的既有语义色,故那两条红橙横幅的**独占性会弱
-    /// 一点**。⛔ 别为了"消歧"把品牌色改回蓝绿 —— 那是被推翻的选择。
+    /// 品牌渐变与高风险提醒使用相同红橙色带。
     static let brand = LinearGradient(
         colors: [Color(hex: 0xE5443B), Color(hex: 0xE8910A)],
         startPoint: .topLeading, endPoint: .bottomTrailing
     )
-    /// 退潮刹车 / 高危提醒渐变(= 品牌色同一条,见上)。
+    /// 高风险提醒渐变（与品牌色同一条）。
     static let alertGrad = LinearGradient(
         colors: [Color(hex: 0xE5443B), Color(hex: 0xE8910A)],
         startPoint: .topLeading, endPoint: .bottomTrailing
@@ -93,8 +79,7 @@ enum NKRadius {
         #endif
     }()
     /// 卡内子块(嵌套在数据卡里的分组:关卡片 / 读数块 / 参考件块)。
-    /// ⚠ **六关宫格的格子也是这一档**(原型 `border-radius:9px`,macOS 原型 291 行)——
-    /// ⛔ 不是 `badge`(那是 4,§〇d 结转第 4 条点名过这处)。
+    /// 卡内子块圆角。
     static let inner: CGFloat  = 9
     /// 按钮 / 折叠区。
     static let control: CGFloat = 8
@@ -105,11 +90,7 @@ enum NKRadius {
     /// ⚠ **⛔ 不是 `badge`(4)**:它只有 9px 字 + `padding:1px 4px`,4 的圆角在这个尺寸上
     /// 已经把方角吃掉一半(§〇d 结转第 4 条:批 0 把 `badge` 由 5 收到 4 时**没有**覆盖它)。
     static let hardTag: CGFloat = 3
-    /// 方徽标(全 App 徽标 = `NKChip` / 六关格子 / Tier 角标)。
-    /// ⚠ V2.3 起徽标**默认不再是胶囊**,胶囊只留给仍然语义为"标签"的那几处。
-    /// ⚠ **V2.3.1 由 5 收到 4**:规范 §04 给的是区间「徽标(方)**4–5**」,而六份原型里
-    /// 每一枚徽标的 inline style 都是 `border-radius:4px`(macOS 原型 253–258 / 367–376 …)
-    /// —— 按 §五 〇a「对不上时以原型为准」取下沿。
+    /// 方形徽标圆角；胶囊只用于标签。
     static let badge: CGFloat  = 4
     static let hero: CGFloat   = 20
     static let field: CGFloat  = 12
@@ -121,7 +102,7 @@ enum NKRadius {
 // MARK: - Spacing(规范 §04;**分层密度** = 用户裁定「概览宽松、明细紧凑」)
 //
 // 🔴 **两档不是配色偏好,是信息层级**:列表栏 / 概览卡走**宽松档**(`pagePad` /
-// `cardPad` / `cardGap`);成员读数、六关格子、键值行走**紧凑档**(`denseRow` 行高
+// `cardPad` / `cardGap`);成员读数和键值行走**紧凑档**(`denseRow` 行高
 // ≤ 22、`denseGap`)。⛔ 别为了"统一"把明细也放宽 —— 明细放宽 = 一屏看不完 = 又要滚。
 
 enum NKSpace {
@@ -168,17 +149,17 @@ enum NKSpace {
     static let rowGap: CGFloat = 2
     /// 紧凑档:明细行之间。
     static let denseGap: CGFloat = 4
-    /// 紧凑档行高上界(成员读数 / 六关格子 / 键值行)。
+    /// 紧凑档行高上界（成员读数 / 键值行）。
     static let denseRowHeight: CGFloat = 22
 
-    /// ⚠ **旧名保留**(V2.3 前 455 处调用点的迁移期兼容;新代码用上面的语义名)。
+    /// 兼容名称；新代码使用上面的语义名称。
     static let gap: CGFloat = 12
 }
 
 // MARK: - Typography(规范 §03:**八档 + 两档数字档**)
 //
 // 🔴 **视图里 ⛔ 不再写裸 `.system(size:)`** —— 一律走本枚举。字阶散着写就会一路
-// 漂回十七个字号(V2.3 之前的实况:22 个字号档、455 个调用点)。
+// 字号统一由本枚举提供，避免视图层漂移。
 //
 // 🔴 **9.5px 那一档整个删掉**:原来大量披露文案挂在 9.5,既看不清也压不住信息量。
 // 折叠(`NKDisclosure`)之后它们统一走 `caption` 11 —— **折叠本身已经完成了降级,
@@ -195,11 +176,11 @@ enum NKFont {
     static let metric     = Font.system(size: 20, weight: .semibold).monospacedDigit()
 
     // —— 八档文本档 ——
-    /// 26 / 700。页面大标题(篮子名 / 个股名在详情栏顶部)。
+    /// 26 / 700。页面大标题。
     static let title1   = Font.system(size: 26, weight: .bold)
-    /// 22 / 700。板块标题(「选股」「持仓」「复盘」)。
+    /// 22 / 700。板块标题。
     static let title2   = Font.system(size: 22, weight: .bold)
-    /// 17 / 600。段标题(「③ 今日篮子 2」「④ 成员 4」)。
+    /// 17 / 600。段标题。
     static let title3   = Font.system(size: 17, weight: .semibold)
     /// 15 / 600。卡标题 / 小节名(「情绪与市场语境」「纪律位置」)。
     static let headline = Font.system(size: 15, weight: .semibold)
@@ -209,7 +190,7 @@ enum NKFont {
     static let callout  = Font.system(size: 12)
     /// 11 / 400。披露文案 / 脚注 / 「参考、非指令」那一族。
     static let caption  = Font.system(size: 11)
-    /// 10.5 / 700 / tracking +.5。全大写小标签(「六关判定」「EOD 硬数据」)。
+    /// 10.5 / 700 / tracking +.5。全大写小标签。
     /// ⚠ tracking 不能烘进 `Font`,调用点须补 `.tracking(NKFont.labelTracking)`;
     /// 用 `.nkLabel()` 修饰符一次给全(见下)。
     static let label    = Font.system(size: 10.5, weight: .bold)
@@ -241,13 +222,4 @@ extension View {
 //   锁屏通知:                      .regularMaterial(深色壁纸上)
 
 
-// MARK: - ⚠ V2.5.0 S12:`NKCopy` 整段删除
-//
-// 它只装过一句话 —— V2.4.0 P0 那条「盘中请自行结合分时判断;系统保留 D0 预案,
-// 不作盘中证伪或全局刹车」。它的落点是**今日篮子页面**,而那一页已随 K8 整链下线;
-// 更要紧的是那句话在解释「盘中证伪」与「全局刹车」两个机制,而 **K9 之下根本没有
-// 这两件东西** —— 留着是在为一个不存在的机制辩护。
-//
-// 🔴 **K9 的等价物由服务端下发**:核对表的那一行脚注(`auction/checklist.py::
-// CHECKLIST_FOOTNOTE`,「成立由 10:00 结算,9:30–10:00 由我自己判定。」)。
-// ⛔ 客户端不另写一句 —— 一屏两个说法正是这条纪律要防的。
+// 核对表脚注由服务端下发，客户端不维护第二份说明。

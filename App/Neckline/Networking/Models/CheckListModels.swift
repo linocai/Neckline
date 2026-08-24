@@ -1,6 +1,6 @@
 //
 //  CheckListModels.swift
-//  Neckline — **次日核对表**的 DTO(V2.5.0 S12;取代已删的 `AuctionModels.swift`)。
+//  Neckline — 次日核对表 DTO。
 //
 //  对齐后端 `GET /api/v1/checklist/{tradeDate}`
 //  (`neckline/auction/checklist.py::Checklist.to_dict`,逐字段对齐,⛔ 别猜)。

@@ -19,8 +19,7 @@ def _now() -> str:
 
 
 def save_weekly_review(review: WeeklyReview, material: Optional[str] = None, db_path: Optional[Path] = None) -> None:
-    """幂等覆盖(`INSERT OR REPLACE`)——同一周重新上传交割单会覆盖旧对账结果,
-    不留重复行。退役的 K8 ``strategy_version`` 列已从现行表物理删除。"""
+    """幂等覆盖(`INSERT OR REPLACE`)——同一周重新上传交割单会覆盖旧对账结果。"""
     init_schema(db_path)
     now = _now()
     payload = json.dumps(weekly_review_dict(review), ensure_ascii=False)

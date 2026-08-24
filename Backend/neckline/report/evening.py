@@ -155,24 +155,23 @@ def _fuse(res: EveningChainResult, seg: str, fn) -> None:
 def _run_facts(
     trade_date: date, *, db_path: Optional[Path], parquet_dir: Optional[Path]
 ) -> Tuple[str, Dict[str, Any]]:
-    """事实包构建 + 冻结。**已冻结过 → 幂等跳过**(⛔ 不覆盖,§5.3.2 纪律 3)。"""
-    from neckline.facts import pack as fact_pack
-    from neckline.facts import store as fact_store
+    """19:00 只核验 16:05 成果，绝不在晚间现场重建/冻结事实包。"""
+    from neckline.facts import readiness
 
-    try:
-        existing = fact_store.load_pack(
-            trade_date, parquet_dir=parquet_dir, db_path=db_path)
-        return STATUS_OK, {"packId": existing.pack_id, "frozen": "already"}
-    except fact_store.PackNotFrozen:
-        pass
+    result = readiness.preflight(trade_date, parquet_dir=parquet_dir, db_path=db_path)
+    if not result.ready:
+        logger.error("[evening] %s 数据未就绪，阻断付费链路:%s", trade_date, result.gaps)
+        return STATUS_EMPTY, {"reason": "readiness_failed", "gaps": list(result.gaps)}
+    return STATUS_OK, {"packId": result.pack_id, "frozen": "verified"}
 
-    built = fact_pack.build(trade_date, parquet_dir=parquet_dir, db_path=db_path)
-    if isinstance(built, fact_pack.IncompletePack):
-        # 数据未到齐 → **不冻结**;报告会因此走 `not_run` 并逐条列出缺口。
-        logger.error("[evening] %s 事实包数据未到齐,不冻结:%s", trade_date, built.missing)
-        return STATUS_EMPTY, {"missing": list(built.missing)}
-    frozen = fact_store.freeze_pack(built, parquet_dir=parquet_dir, db_path=db_path)
-    return STATUS_OK, {"packId": frozen.pack_id, "rows": frozen.row_count}
+
+def _readiness_gaps(
+    trade_date: date, *, db_path: Optional[Path], parquet_dir: Optional[Path]
+) -> List[str]:
+    from neckline.facts import readiness
+
+    result = readiness.preflight(trade_date, parquet_dir=parquet_dir, db_path=db_path)
+    return [] if result.ready else list(result.gaps)
 
 
 def _run_k9(
@@ -183,6 +182,10 @@ def _run_k9(
     """策略层。⛔ **无默认参数路径**:没传 = 参数未配置 = 报告「今天没跑成」。"""
     from neckline.k9 import params as k9_params
     from neckline.k9 import run as k9_run
+
+    gaps = _readiness_gaps(trade_date, db_path=db_path, parquet_dir=parquet_dir)
+    if gaps:
+        return STATUS_EMPTY, {"reason": "readiness_failed", "gaps": gaps}
 
     if k9_params_path is None:
         logger.error(
@@ -218,6 +221,9 @@ def _run_direction(
     from neckline.llm.factory import get_provider
     from neckline.llm.router import TASK_MARKET_DIRECTION
 
+    gaps = _readiness_gaps(trade_date, db_path=db_path, parquet_dir=parquet_dir)
+    if gaps:
+        return STATUS_EMPTY, {"reason": "readiness_failed", "gaps": gaps}
     try:
         pack = fact_store.load_pack(trade_date, parquet_dir=parquet_dir, db_path=db_path)
     except PackNotFrozen:
@@ -262,6 +268,9 @@ def _run_explain(
           → 直到恢复原目标数量或 reserve 用尽
           → 定稿
     """
+    gaps = _readiness_gaps(trade_date, db_path=db_path, parquet_dir=parquet_dir)
+    if gaps:
+        return STATUS_EMPTY, {"reason": "readiness_failed", "gaps": gaps}
     from neckline.explain import aggregate as explain_aggregate
     from neckline.explain import input as explain_input
     from neckline.explain import news_exclusion as news_mod
@@ -417,6 +426,9 @@ def _run_playbook(
 
     ⚠ 读的是 `k9_listing_entries`(**已定稿**的那一份)—— 预案必须跟着定稿走,
     否则会给一只已经被消息面剔除的票冻一份明早要核对的预案。"""
+    gaps = _readiness_gaps(trade_date, db_path=db_path, parquet_dir=parquet_dir)
+    if gaps:
+        return STATUS_EMPTY, {"reason": "readiness_failed", "gaps": gaps}
     from neckline.k9 import store as k9_store
     from neckline.llm.factory import get_provider
     from neckline.llm.router import TASK_PLAYBOOK
@@ -457,6 +469,8 @@ def _upstream_gaps(res: EveningChainResult) -> List[str]:
         gaps.insert(0, "参数未配置(晚间链未拿到 --k9-params;⛔ 本系统无默认参数)")
     elif reason == "params_invalid" and not gaps:
         gaps.insert(0, "参数包无效")
+    elif reason == "readiness_failed" and not gaps:
+        gaps.insert(0, "当日数据未就绪")
     return gaps
 
 

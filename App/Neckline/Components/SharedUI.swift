@@ -24,7 +24,7 @@ extension NKAxisTone {
 struct NKCard<Content: View>: View {
     /// 给了值 = **上下左右都用它**(旧调用点 `NKCard(padding: 12)` 语义逐字节不变);
     /// 不给 = 走令牌的**上下 / 左右两档**(原型每张数据卡都是 `padding:16px 18px`,
-    /// macOS 原型 264 行起 —— 两个数刻意不等,V2.3.0 统一成一个 16 是这次要收的差)。
+    /// 两个方向的间距刻意不同。
     var padding: CGFloat? = nil
     @ViewBuilder var content: Content
 
@@ -124,11 +124,11 @@ struct NKNoteBlock: View {
     }
 }
 
-/// 🔴 **服务端文案里的 `**加粗**` / 反引号 → 真的加粗 / 等宽**(V2.3.1 批 4 新增)。
+/// 服务端文案里的 `**加粗**` / 反引号 → 真的加粗 / 等宽。
 ///
 /// **`Text(String)` 不解析 Markdown,只有 `Text("字面量")` 解析**(§五 〇d 第 7 条)——
 /// 而服务端有大量文案本来就是按 markdown 写的(周度校准 `disclaimer`、四分类
-/// `suggestion`、安慰剂 `note`、校准段 `unavailableReason` …),V2.3.1 批 4 实拍
+/// `suggestion`、安慰剂 `note`、校准段 `unavailableReason` …），
 /// 逮到「对照口径:两臂都\*\*不设最高追价上限\*\*」这类**星号原样上屏**。
 ///
 /// ⚠ **只做渲染,⛔ 不改一个字**:解析失败(markdown 语法坏了)→ 原样返回纯文本,
@@ -202,7 +202,7 @@ struct NKChip: View {
     var filled: Bool = false
 
     var body: some View {
-        // 🔴 **空文案 → 整枚不画**(V2.3 截图核对时逮到):`depthLabel` 这类展示层换算在
+        // 空文案时整枚不画；展示层换算在
         // 服务端没给该字段时会返回空串,原来会渲染成**一枚没有字的灰色胶囊** —— 它既不是
         // 「没有」也不是「没看」,只是一团噪声,而且看起来像界面坏了。
         // ⚠ 这**不是**在藏信息:真要说「这一项没取到」得用一句话说出口(本项目一贯做法),
@@ -210,7 +210,7 @@ struct NKChip: View {
         if text.isEmpty {
             EmptyView()
         } else {
-            // 🔴 **V2.3.1:去胶囊**(§② 钉子 2,本版覆盖面最广的一处系统性偏差)。
+            // 徽标不使用胶囊形状。
             // 规范 §04 写死「徽标(**方**)4–5 · 原来全是胶囊」,而六份原型里每一枚徽标
             // 的 inline style 都是 `border-radius:4px; font-size:10.5px; font-weight:600;
             // padding:2px 6px`(macOS 原型 40 / 253–258 / 367–376 行)。
@@ -227,13 +227,6 @@ struct NKChip: View {
         }
     }
 }
-
-// ⚠ **`VerdictBadge` 已随问询台整链退役删除**(V2.1-①):它是问询台描述性标注
-// (`InquiryVerdict`)专用的徽标,唯一消费方 `InquiryView.swift` 已物理删除,依赖的
-// `InquiryVerdict` 类型也已从 `Models.swift` 删除,徽标随之陪葬(不是遗漏)。
-
-// ⚠ **`LLMJudgmentBadge` 已随候选族 DTO 整族退役**(V2-⑮):`ReportOut.candidates` 键
-// 已删,LLM 的产出改由**篮子卡**承载(叙述 / 剧本 / 三个参考件),每处带下面这条标注。
 
 /// **「参考、非指令」标注**(§2.8 红线:参考件每处出现都要带)。
 ///
@@ -286,7 +279,7 @@ struct NKJSONTable: View {
     }
 }
 
-// MARK: - iOS 刷新胶囊(V2.3.1 批 7)
+// MARK: - iOS 刷新胶囊
 
 #if os(iOS)
 /// **蓝底刷新胶囊**(iOS 原型 90–93 / 316–319 行:`padding:6px 12px; radius:999;
@@ -299,9 +292,7 @@ struct NKRefreshPill: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        // 🔴 V2.4.0 P3.6:`refresh(for: model.view)` 按**当前 Tab** 分派——这枚胶囊
-        // 分别嵌在选股 / 持仓两页各自的 iOS 工具栏里,`model.view` 此刻必然等于
-        // 该页所属的 Tab,天然按板块分派、无需按调用点传参。
+        // 按当前页面刷新，避免无关页面重复请求。
         Button { Task { await model.refresh(for: model.view) } } label: {
             HStack(spacing: 5) {
                 if model.isLoadingCurrentTab {
@@ -328,23 +319,9 @@ struct NKRefreshPill: View {
 }
 #endif
 
-// ⛔ **V2.4.0 P0:`RetreatBrakeBanner` 与 `RetreatBrakeBar` 两个组件已整体删除。**
-//
-// P0.1 表那两行:「全 App 顶部退潮红条 = 删」+「作废当日计划 / 停止开新仓的交易
-// 动作语义 = 删」。
-// ⚠ 两者原本就一死一活:`RetreatBrakeBar`(通栏条)挂在 `RootView` 壳上,
-// `RetreatBrakeBanner` **早已零调用点**(两份逐字相同的文案并存,本身就是漂移风险)。
-// 🔴 ⛔ 不许换个名字("风险条"/"观察条"/"提示条")把壳层横幅接回来 —— 那正是
-// 审计规格 P0.7 末段点名的第二种假完成。今日篮子页面唯一保留的那条静态小提示
-// 见 `NKCopy.intradaySelfObserve`(`DesignTokens.swift`),**低强调、无状态、不可点击**。
-
-
-
 // MARK: - 列表行外壳(选中态 = 白底 + accent 描边;⛔ 靠选中态分隔,不靠留白)
 //
-// ⚠ **V2.5.0 S12 从 `BasketDailyView.swift` 搬到这里**:它本来就是四个板块的列表栏
-// 共用的壳,却住在选股页里 —— 那一页随 K8 退役被删,设置屏当场编译不过。
-// ⛔ 别再把共用件放回某一页里。
+// 共用列表栏放在共享组件中，不属于任何单一页面。
 
 struct NKListRow<Content: View>: View {
     let selected: Bool
@@ -413,7 +390,7 @@ struct NKEmptyState: View {
 
 // MARK: - 品牌 Logo(颈线折线的极简抽象,与 App 图标同源)
 //
-// ⚠ **V2.3 起底色 = `NK.brand`(已改红橙)+ 折线换成图标那一条**(规范 §07)。
+// 底色使用 `NK.brand` 红橙渐变。
 // 🔴 **图标按尺寸分三档、不是同一张图缩放**;`NKLogo` 只用得到最小那两档:
 //   · `size > 20` —— 实线颈线 + 两侧颈线点(对应图标 128 档的意思);
 //   · `size <= 20` —— **简化版**:只留四拐点的粗折线(对应图标 64 及以下档)。
@@ -476,10 +453,10 @@ enum NKFmt {
         formatter.dateFormat = "yyyy年M月d日 HH:mm"
         return formatter.string(from: value)
     }
-    /// 🔴 **千分位分组器**(V2.3.1 补批 1 漏网的全局钉子)。
+    /// 千分位分组器。
     ///
     /// 原型全篇金额都是分组的(`¥48,600` / `+¥1,444` / `¥120,000`,macOS 原型 800/778/804 行),
-    /// 而 V2.3.0/V2.3.1 落地一路是 `String(format:"%.2f")` → `¥77080.00`。**四位数以上不分组,
+    /// **四位数以上不分组，
     /// 读数时要一位一位数** —— 这是四个板块共 27 个调用点同时中招的一处系统性偏差。
     ///
     /// ⚠ **locale 钉死 `en_US_POSIX`**:分组符必须是逗号且**与用户系统区域无关** ——
@@ -536,7 +513,7 @@ enum NKFmt {
     }
     /// **带符号金额 · 保留分**(龙虎榜净额那一族:信息卡原型 185 行
     /// `净额 +¥142,300,000.00` —— 那一屏的原型自己就带两位小数)。
-    /// ⚠ 与 `signedAmount` 的区别**只在小数位**,别混用:持仓侧一律 `signedAmount`。
+    /// ⚠ 与 `signedAmount` 的区别**只在小数位**；交易金额一律用 `signedAmount`。
     static func signedMoney(_ v: Double) -> String {
         // 同 `signedAmount`:符号在 `¥` 外面(⛔ 直接喂负数会得到 `¥-142,300,000.00`)。
         let sign = v > 0 ? "+" : (v < 0 ? "-" : "")
@@ -580,7 +557,7 @@ enum NKQA {
     static let expandDisclosures: Bool =
         ProcessInfo.processInfo.environment["NECKLINE_EXPAND_DISCLOSURES"] == "1"
     /// `NECKLINE_INITIAL_SETTINGS_GROUP=backend|llm|push|version` → 设置板块列表栏
-    /// **初始选中**那一组(V2.3.1 批 5)。⛔ 同上:只给 `@State` 当初值。
+    /// **初始选中**那一组；只给 `@State` 当初值。
     static let initialSettingsGroup: NKSettingsGroup? =
         ProcessInfo.processInfo.environment["NECKLINE_INITIAL_SETTINGS_GROUP"]
             .flatMap(NKSettingsGroup.init(rawValue:))
@@ -588,9 +565,7 @@ enum NKQA {
     // 它们要等报告拉回来才有东西可切 / 可开,故消费点在
     // `AppModel.applyQAHooksAfterRefresh()` —— 本枚举里的钩子都是**同步可读的初值**,
     // ⛔ 别把异步那一族搬进来。
-    // ⚠ V2.5.0 S12:`NECKLINE_INITIAL_RECEIPT` / `..._POSITIONS_PANE` / `..._POSITION_ID`
-    // 三个钩子**已删** —— 它们指向的「昨日回执」「盘中动态」「持仓详情」都已随 K8 与
-    // 持仓板块下线(裁定 11)。⛔ 别留一个指向不存在的地方的钩子。
+    // 仅保留当前页面可消费的启动钩子。
 
     /// `NECKLINE_INITIAL_PROVIDER_FORM=1` → 设置 · Provider 屏开**编辑 Provider** 弹层
     /// (取列表首个 Provider)。⚠ 它要等 `loadSettings()` 拿回注册表才有东西可编,

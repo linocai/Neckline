@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from neckline import notify_kinds
-from neckline.api.stores import list_device_tokens
+from neckline.api.stores import delete_device, list_device_tokens
 from neckline.notify_kinds import KIND_PRECALL, KIND_REPORT_READY
 from neckline.push import apns
 from neckline.settings_store import push_kind_enabled
@@ -17,6 +17,11 @@ from neckline.settings_store import push_kind_enabled
 logger = logging.getLogger(__name__)
 _OPEN_APP_NOW = "点开 APP 核对。"
 _OPEN_APP_LATER = "有空点开 APP 看详情。"
+_PERMANENT_DEVICE_REASONS = {"BadDeviceToken", "Unregistered", "DeviceTokenNotForTopic"}
+
+
+def _permanently_invalid(result: apns.PushResult) -> bool:
+    return result.status == 410 or result.reason in _PERMANENT_DEVICE_REASONS
 
 
 @dataclass
@@ -46,7 +51,13 @@ def _fanout(title: str, body: str, *, category: str, custom: Optional[dict],
             out.sent += 1
         else:
             out.failed += 1
-            logger.warning("APNs 推送失败(status=%s reason=%s)", result.status, result.reason)
+            if _permanently_invalid(result):
+                delete_device(token, db_path=db_path)
+                logger.warning("APNs 设备已永久失效，已移除(token 尾4=%s status=%s reason=%s)",
+                               token[-4:] if token else "", result.status, result.reason)
+            else:
+                logger.warning("APNs 推送失败(token 尾4=%s status=%s reason=%s)",
+                               token[-4:] if token else "", result.status, result.reason)
     return out
 
 

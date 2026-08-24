@@ -1,21 +1,11 @@
-"""FastAPI 应用主体(plan 4A + 4B.3 单 unit 内哨兵 asyncio 任务)。
-
-绑 127.0.0.1:8002(nginx 反代,与 LinoN 8001 共存)。`/api/v1/health` 免鉴权;其余端点
-过 `require_token`。startup:fail-fast 校验 `API_TOKEN`(len>=16)+ `init_schema` + 起
-哨兵后台轮询任务(§3.6「哨兵折进 FastAPI 单 unit 的 lifespan asyncio 任务」,不另起进程)。
-shutdown:置位 stop_event,优雅停轮询。
-
-**同码不重写**:报告 / 看板 / 持仓的领域逻辑全部复用现有模块,端点只做「装配 +
-出入参映射 + 鉴权」。
-
-**测试注入**：`ENABLE_MORNING_TASKS`（关早晨两拍）、`_DB_PATH_OVERRIDE`
-(隔离库)、`_PARQUET_DIR_OVERRIDE` / `_DATA_DIR_OVERRIDE`(隔离产物目录)。
-"""
+"""FastAPI 应用主体：鉴权、输入输出映射、启动初始化与早晨两拍编排。"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import zipfile
+from io import BytesIO
 import math
 import os
 from contextlib import asynccontextmanager
@@ -78,68 +68,31 @@ from neckline.settings_store import (
 
 logger = logging.getLogger(__name__)
 
-# 系统版本规约(2026-07-22 用户定):v主.次.修 三段式,与策略版本(K 字头)双线解耦。
-# v1.1 = SOP 补洞大版本;第三段 = 其后的快修(v1.1.1 = 退潮哨兵双级制重构)。
-# v1.3(2026-07-26 用户拍板合并发布):v1.2(0/A/A2/B/G/E)+ v1.3(①②③④⑤⑥)一次上云,
-# 对外版号直接跳 v1.3(跳过 v1.2 对外版号,见 PROJECT_PLAN §五 v1.3-⑦-A)。
-# v1.3.1(2026-07-27 快修):独立审计缺陷修复(纪律章程 + 金额判定 9 条,🔴-1「D5 判一次
-# 定格」为首)+ 行业闸判据 板内占比 → lift(富集度)。**未激活任何章程行**(is_active 仍 K1)。
-# v1.3.3(2026-07-27 快修,用户拍板):**拆墙**——章程 v1.3.3 把 `forbid_high_elasticity`
-# True→False(创业板/科创板不再被纪律层禁买,周复盘/问询台/自选体检/回测四处口径统一);
-# 问询台**审判员 → 自由分析师**(硬栏杆与二值裁决退役、软护栏只留 prompt 层、海选池
-# 自动写入退役改一键加自选);`positions`/`decision_log`/`inquiry_pool` 写入通道补
-# `ts_code` 归一(生产真洞:裸 6 位入库致 EOD 持仓管线 join 不上)。
-# v1.3.4(2026-07-27 快修,用户拍板):**问询台联网搜索实际搜错了东西**——① 供应商推导的
-# 检索词紧跟最后一条 user 消息,而问询台最后一条是用户的代词提问(「这只票…」),身份
-# 信息在更早的材料消息里救不回来 → 搜回泛泛板块新闻,模型退回训练数据作答;② `det.name`
-# 自建库起声明了、`build_llm_context` 一直在读,**却从没赋过值**,材料首行恒「名称:未知」,
-# 中文名这个最值钱的检索词被白扔。修法 = `provider.chat()` 加**可选** `search_query`
-# (不传时 payload 逐字节不变,护栏单测锁死)+ 问询台补中文名并显式传检索词。
-# 同批加「联网搜索命中 0 条」的埋点与用户侧露出(报告脚注 / 问询 evidence / 消息面扫描
-# 状态),因为搜索静默返 0 条时模型照样写得出像样的分析——见 `llm.base.search_coverage_line`。
-# 搜索工具字段的布尔值按既有协议使用字符串；不要在 API 层擅自改写。
-# `"True"`、`count` 发 `"5"` **不是 bug**,真 key A/B 实证接口会正确解析成 bool/int。
-# v1.3.5(2026-07-28 快修,用户拍板):**2026-07-27 的 16:35 报告当场崩掉、当日无报告**
-# —— `moneyflow_dc` 分区 schema 分裂(2020-2023 的 897 个 0 行空文件落成 String,
-# 2023-09-11..2026-07-20 的 688 个真数据是 Float64)→ v1.3 新增的候选情报管线首次对该表
-# 做全表 `scan_parquet` → SchemaError → 整个 `build_report` 崩。两半修法:
-# ① **数据**:历史脏分区已在生产修缮为 Float64，
-#    零损失对拍全过);② **代码**:`_align_to_table_schema` 的对齐目标从「既有分区的**第一个
-#    文件**」改为 `market_data.TABLE_FLOAT_COLS` 的**显式 canonical 声明**——旧口径的致命
-#    假设是「第一个分区一定是对的」,而 moneyflow_dc 的首个分区恰恰是脏的,于是 2026-07-21
-#    起每天的真数据都被"对齐"成 String,越修越坏;③ 候选管线内部对**可选情报输入**
-#    (板块资金流)的调用补保险丝——排序少一维可以,掀翻整份报告不行。
-# ⚠ 别再走的死路:2026-07-21 那次"向既有分区看齐"的修法对 daily_basic 有效、对
-# moneyflow_dc **无效且有害**,因为它的基准本身就是脏的。判据是「基准可信吗」,不是「有没有对齐」。
-# 📌 **一次失败部署的留痕(2026-07-29,已结案勿再重演)**:本版号 **07-29 上午首次尝试上云
-# 时被回滚过** —— 当时 `compute_industry_strength` 对 `daily` 扫全历史 784 万行,生产
-# (2 vCPU/1.6G)700M cap OOM-kill、1400M cap 600s 跑不完,16:35 报告主链与 info-card /
-# 问询台三处全中招(§七 P0-23)。**该阻塞已由第 ⑩ 块修复**(行业强度预计算落表
-# `industry_strength_daily`,在线路径只读表、不再全表现算),当日傍晚重新完整上云。
-# 教训已入项目 CLAUDE.md:**「本地实测廉价」不是生产结论,新增全表 `scan_parquet` 路径
-# 上云前必须在生产机上单独计时 + 量峰值。**
-#
-# v1.4.0:`-p1` 半版状态结束——① 之后的 ②~⑧ 全部就位
-# (② 行业强度单一源 / ③ 正选漏斗三级排序键 / ④ 信息卡与考卷同构 / ⑤ exec_hint + 决策
-# 日志第⑨项追价上限 / ⑥ 判定精度〔逐笔章程 · 自选隔日轮扫 · 定格日标注〕/ ⑦ 挂单追踪
-# 与问询记录落库 / ⑧ 双端客户端跟进)。历史提示:`-p1` 曾是「云上是个半版」的标记,
-# 只上第 ① 块 P0 地基,因 `002036.SZ` 停牌票假警报有硬时限(0729 09:26 误推 D5 离场)。
-# v1.4.1(热修,§七 **P1-26** 结案):**信息卡端点在生产要 18~20 秒,客户端 12s 默认超时
-# → 用户实际体验是「信息卡总是加载失败」**,且失败诱发反复重试、把常驻服务顶到内存节流线
-# (实测 `memory.events high=10703`、`MemoryCurrent≈MemoryHigh=440M`),越试越慢。
-# **根因不是行业强度**(那一维 ⑩ 之后已是读表 5ms),是**取数层全 glob**:分区布局是
-# `year=YYYY/YYYYMMDD.parquet` 共 1592 个文件,而 `_scan_table` 不论请求哪一天都把 1592 个
-# parquet footer 全打开;信息卡一次请求里 `compute_sentiment`(5 次全市场横截面)+ 单票
-# 420 日面板(daily/adj_factor)+ 大盘指数线 = **8 次全 glob**。
-# **修法**:取数层按 `year=` 裁剪(`market_data._scan_table(years=)`,由 `get_market_slice` /
-# `get_stock_history` / `scan_table_range` 传入区间覆盖的年份;`market_state_labels` 的起点
-# 由写死 2019 改为按 MA 窗口回看)——**纯 I/O 优化,结果逐位不变**(等价单测锁死),
-# 依据是「`year=YYYY` 目录里结构上只可能有该年的行」。客户端同步把该请求超时给到 60s
-# (照问询台惯例)。**⚠ 顺带收窄了脏分区的传染半径**:单日/区间读不再打开无关年份,
-# 故 v1.3.5 那条「历史脏分区不会自愈」现在只对**跨到脏那年**的读成立(守门单测已改写记录)。
-# API 与两个客户端工程的版本号必须同批变更；守门测试负责校验三处一致。
-# 本地修改不代表生产已部署，只有生产 `/api/v1/health` 返回本值才算后端到位。
-VERSION = "v2.5.1"
+# P2-C：复盘上传是用户输入边界，不依赖 Content-Length（它只是优化，不能作判据）。
+REVIEW_UPLOAD_MAX_FILES = 5
+REVIEW_UPLOAD_MAX_SINGLE_BYTES = 10 * 1024 * 1024
+REVIEW_UPLOAD_MAX_TOTAL_BYTES = 20 * 1024 * 1024
+REVIEW_UPLOAD_MAX_UNZIPPED_BYTES = 100 * 1024 * 1024
+
+
+def _read_review_upload(upload: UploadFile, *, total_before: int) -> bytes:
+    """有上限地读取单文件，并在解析前拒绝 zip bomb。"""
+    data = upload.file.read(REVIEW_UPLOAD_MAX_SINGLE_BYTES + 1)
+    if len(data) > REVIEW_UPLOAD_MAX_SINGLE_BYTES:
+        raise HTTPException(status_code=413, detail="单个文件不能超过 10 MB")
+    if total_before + len(data) > REVIEW_UPLOAD_MAX_TOTAL_BYTES:
+        raise HTTPException(status_code=413, detail="本次上传总计不能超过 20 MB")
+    try:
+        with zipfile.ZipFile(BytesIO(data)) as workbook:
+            if sum(info.file_size for info in workbook.infolist()) > REVIEW_UPLOAD_MAX_UNZIPPED_BYTES:
+                raise HTTPException(status_code=413, detail="工作簿解压后不能超过 100 MB")
+    except zipfile.BadZipFile:
+        # 非 xlsx 仍交由既有逐文件解析告知用户；它不是配额问题。
+        pass
+    return data
+
+# 版本必须与客户端工程同步；部署是否生效以生产 health 响应为准。
+VERSION = "v2.5.2"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -185,7 +138,7 @@ def _is_tight_poll(now: datetime) -> bool:
 async def _morning_loop(stop_event: asyncio.Event) -> None:
     """9:26 核对与 10:00 结算的早晨轮询。
 
-    系统不持续观察盘中价格，也不跟踪持仓。两拍各自独立 ``try/except``：
+    系统不持续观察盘中价格，也不跟踪个人交易。两拍各自独立 ``try/except``：
     | 拍 | 窗口 | 推送 | 产物 |
     |---|---|---|---|
     | 竞价核对表 | 9:26–9:29 | 有(APNs) | `已触发放弃 / 待开盘后观察` 两段,⛔ 无「成立」 |
@@ -335,9 +288,7 @@ def get_settings() -> SettingsOut:
     )
 
 
-# —— V2-② LLM Provider 注册表(自填制,plan §3.10-B)—— `PUT /settings/llm`
-# 已删(D2=A 路已拍板,老 App 打老机不会撞到新服务端,不做 legacy 兼容层,见
-# plan §五 V2-②「契约变更」/⑭-D)。————————————————————————————————————
+# —— LLM Provider 注册表 —————————————————————————————————————————————
 
 def _provider_out(rec) -> ProviderOut:
     return ProviderOut(
@@ -503,15 +454,22 @@ def review_upload(files: List[UploadFile] = File(...)) -> ReviewUploadOut:
     from neckline.review.reconcile import run_weekly_review, weekly_review_dict
     from neckline.review.store import save_weekly_review
 
+    if not files:
+        raise HTTPException(status_code=422, detail="请至少选择一个 xlsx 文件")
+    if len(files) > REVIEW_UPLOAD_MAX_FILES:
+        raise HTTPException(status_code=413, detail="一次最多上传 5 个文件")
+
     app_settings = get_app_settings(db_path=_db())
     col_map = app_settings.review_col_map or None
 
     all_trades = []
     parse_warnings: List[str] = []
     sheet_formats: Dict[str, str] = {}
+    total_bytes = 0
     for f in files:
         filename = f.filename or "未命名文件"
-        content = f.file.read()   # 同步端点,走底层文件对象(免 await,与全项目其它端点风格一致)
+        content = _read_review_upload(f, total_before=total_bytes)
+        total_bytes += len(content)
         try:
             result = parse_workbook(content, filename, col_map=col_map, db_path=_db())
         except ValueError as e:
@@ -524,10 +482,7 @@ def review_upload(files: List[UploadFile] = File(...)) -> ReviewUploadOut:
 
     reviews, data_warnings = run_weekly_review(all_trades, db_path=_db())
 
-    # ⚠ **V2.2-⑤-B:原 `circuit.auto_unlock_for_reviews(...)` 接线已删**(裁定 #8 —— 强制
-    # 复盘解锁是被删的三件机制之一,没有锁自然也没有解锁)。
-    # ⚠ **§2.1 第 4 条「单周亏损 ≥ 总仓 2% → 强制复盘」一字不动、⛔ 别连坐删**:它不是熔断,
-    # 判据仍是 `reconcile.FORCED_REVIEW_LOSS_FRAC`,周复盘照常判(下面 `review.forced_review`)。
+    # 单周亏损达到固定阈值时，周复盘仍会如实标记强制复盘。
 
     weeks_out: List[WeeklyReviewOut] = []
     for review in reviews:
@@ -570,7 +525,7 @@ def review_by_week(week: str = "") -> ReviewGetOut:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# V2.5.0 S11 · 交割单分析台(架构 §六,PROJECT_PLAN §5.9)
+# 交割单分析台
 # ══════════════════════════════════════════════════════════════════════════
 #
 # 🔴 **这一层无 LLM 调用**(架构 §六 逐字)。系统只做三件事:解析(`/review/upload`)、
@@ -653,8 +608,7 @@ def _review_from_archive(week: str, result: Dict[str, Any]):
 
     🔴 **装订读的是存档那一份,⛔ 不重新解析交割单**:交割单文件不在服务端留存
     (上传即解析即丢),而且「同一周装订两次得到不同材料」本身就是错的。
-    ⚠ 历史行可能带着 V2.4.x 的多余键(`planChecks` / `disciplineViolations` …),
-    这里**只挑要的**,多余键一律忽略(⛔ 不因为老行多几个键就炸)。
+    ⚠ 归档行可能带有本页不使用的键，这里只读取装订所需字段。
     ⚠ **`buyDate` 解不出的行整条跳过并 WARNING**:买入日是窗口的锚,没有它这一笔
     根本不知道该铺哪一段行情。⛔ 不拿今天或周一顶上去(那会画出一段与成交无关的图,
     而看图的人不会知道)—— 跳过是**少一笔**,顶上去是**错一笔**。
@@ -733,32 +687,6 @@ def get_review_conclusions(week: str = "", q: str = "", limit: int = 20) -> Revi
     return ReviewConclusionsOut(ok=True, matches=[c.to_dict() for c in hits])
 
 
-# —— V2.2-② 行情状态层:只读端点 ————————————————————————————————————————
-
-
-# —— V2.3.3-⑤ D1 集合竞价确认层(`GET /auction[?date=]`,K8.md §二十)———————————
-#
-# **两个全新 reason,客户端 `mapReason` 必须各加一个 case**(⛔ 别指望 fallback:
-# 404 的 fallback 是 `.notHolding`「持仓已清」,那句话与竞价报告毫无关系):
-#   · `auction_not_ready`(**404**)—— 当日 `auction_reports` **无行** = 竞价层没跑过
-#     / 还没到 9:26。文案方向「今天的竞价报告还没生成」。
-#   · `auction_corrupt` (**500**)—— **有行但读不出**(json 列解不出 / 内容键全缺)。
-#     文案方向「竞价报告数据损坏,需要排查」。
-#     ⛔ **两者必须分开**(B1 定案原文):混成一类 = 客户端永远重试、永远显示"还没生成",
-#     而那份报告是**冻结件**(`INSERT OR IGNORE` 永不覆盖)→ 坏了就是永久坏的
-#     = 静默永久失败。
-#
-# 🔴 **「有行但 `baskets_covered=0`」是 200,不是 404**(〇b-6,§七 P0-39 同款病):
-# 「竞价层没跑」与「跑过了、D0 当天就没有 T1/T2 篮子」是两种相反的成因,
-# ⛔ 不许混成一句「今天没有竞价报告」。后者走 200 + `basketsUnavailableReason` 说出口。
-#
-# 🔴 **为什么这里 404 而 `/market-regime` 一律 200**:`market_regime_daily` 是**日更
-# 只读表的区间查询**(缺行 = 那天没批算);竞价报告是**冻结件点查**,与 `basket_cards`
-# 同族 → 照 B1。**这是刻意的不同,⛔ 别"统一"。**
-#
-# ⛔ **零现算、零写库**:本端点只 SELECT(常驻服务与盘中哨兵同进程,P0-23)。
-
-
 # —— 复盘板块：聚合只读 ————————————————————————————————————————————————
 
 def _week_anchor(week: str) -> date_cls:
@@ -798,7 +726,7 @@ def _reconcile_segment(week_key: str) -> ReviewSegmentOut:
 
 
 def _conclusions_segment(week_key: str) -> ReviewSegmentOut:
-    """结论存档段(V2.5.0 S11,架构 §六 第 3 件事)。
+    """结论存档段。
 
     🔴 同对账段的三态读法:**`available=true` + `detail.found=false` 才是「这周还没写
     结论」**(⛔ 不是 `available=false`)—— 结论只能由用户写,系统查过表确实没有那一行。
@@ -827,8 +755,8 @@ def _conclusions_segment(week_key: str) -> ReviewSegmentOut:
 def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
     """复盘板块「累计」页的聚合读:对账与结论存档两段。
 
-    `week` = 该周任意一天 `YYYYMMDD`(缺省本周);`asOf` 保留兼容位(画像段已随
-    `profile/` 在 S1 退役,⛔ 不再有消费方)。
+    `week` = 该周任意一天 `YYYYMMDD`（缺省本周）；`asOf` 是保留的请求参数，
+    当前不参与聚合结果。
 
     两段各自独立说"有 / 没有 / 没取到"。任一段异常只降级本段。
 
@@ -865,7 +793,7 @@ def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# V2.5.0 S4 · 覆盖率成绩线(PROJECT_PLAN §5.12 / §5.8.1)
+# 覆盖率成绩线
 # ══════════════════════════════════════════════════════════════════════════
 
 #: `window` 的上限:一次最多回看多少个已算出的交易日。⚠ 这是**接口分页上限**,
@@ -945,7 +873,7 @@ def get_scoreboard_listing(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# V2.5.0 S7 · 选股(报告三态 + 当日清单,PROJECT_PLAN §5.12 / §5.10)
+# 选股：报告三态与当日清单
 # ══════════════════════════════════════════════════════════════════════════
 #
 # 🔴 **三态必须原样透传**(裁定 5):`state ∈ {has_list, empty, not_run}`。
@@ -1192,7 +1120,7 @@ def _explain_api(note: Optional[dict]) -> Optional[dict]:
     }
 
 
-# —— V2.5.0 S9/S10:个股详情与预案修改入口 ————————————————————————————————
+# —— 个股详情与预案修改入口 ————————————————————————————————————————————
 
 
 @app.get(f"{API_PREFIX}/selection/{{trade_date}}/stock/{{ts_code}}",
@@ -1323,7 +1251,7 @@ def post_stock_playbook(trade_date: str, ts_code: str, body: dict) -> dict:
             "playbook": pb.to_dict()}
 
 
-# —— V2.5.0 S8:次日核对表与 D1 结算 ————————————————————————————————————————
+# —— 次日核对表与 D1 结算 ———————————————————————————————————————————————
 
 
 @app.get(f"{API_PREFIX}/checklist/{{trade_date}}", dependencies=[Depends(require_token)])

@@ -54,36 +54,3 @@ def test_double_record_is_idempotent(isolated_env):
             ("20260720", "settle_tick"),
         ).fetchone()[0]
     assert count == 1
-
-
-def test_upgrade_keeps_only_active_auction_records(tmp_path):
-    import sqlite3
-
-    from neckline.db import init_schema
-
-    db = tmp_path / "old.db"
-    with sqlite3.connect(db) as conn:
-        conn.executescript("""
-            CREATE TABLE sentinel_events (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              trade_date TEXT NOT NULL, sentinel TEXT NOT NULL,
-              ts_code TEXT NOT NULL DEFAULT '', event_key TEXT NOT NULL,
-              payload_json TEXT NOT NULL DEFAULT '{}', pushed_at TEXT NOT NULL,
-              UNIQUE(trade_date, sentinel, ts_code, event_key)
-            );
-            INSERT INTO sentinel_events
-              (trade_date,sentinel,ts_code,event_key,payload_json,pushed_at)
-            VALUES
-              ('20260720','auction','','checklist_tick','{}','now'),
-              ('20260720','retreat','','brake','{}','now');
-        """)
-    init_schema(db)
-    with sqlite3.connect(db) as conn:
-        rows = conn.execute(
-            "SELECT scope,event_key FROM job_events ORDER BY event_key"
-        ).fetchall()
-        old_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sentinel_events'"
-        ).fetchone()
-    assert rows == [("auction", "checklist_tick")]
-    assert old_table is None

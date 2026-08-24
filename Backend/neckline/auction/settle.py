@@ -21,7 +21,7 @@
        三分支判定结果」;
     2. K9 §八 把三分支定义在「**D1 竞价 + 开盘 30 分钟**」这个窗口上;
     3. 架构 §四 那句「不**持续**观察 9:30 以后的价格」管的是**推送盘中提醒**与
-       **跟踪持仓** —— 一次性结算读数不落在该禁令内。架构 §四 已补明文例外(S0 落地)。
+       **持续跟踪个人交易** —— 一次性结算读数不落在该禁令内。
 
 ⚠ **读数从哪来**:`data/realtime.py` 的 `Quote` 自带当日 high/low,10:00 时的
 high/low **即前 30 分钟极值(含 9:25 竞价成交)**。竞价那半(`auction_price` /
@@ -195,7 +195,7 @@ def run_settle_tick(
             playbooks[code] = pb
             newer = latest.get(code)
             if newer is not None and newer.version != version:
-                # 🔴 有人在 9:26 之后又写了一版 —— **说出来**,⛔ 不静默按旧版跑过去。
+                # 9:26 后的版本变化必须明确记录，不能静默使用不同版本。
                 res.notes.append(
                     f"{code}:预案在 9:26 之后被改写(账上 v{version} → 现有 "
                     f"v{newer.version});本拍仍代入 D0 冻结的 v{version}")

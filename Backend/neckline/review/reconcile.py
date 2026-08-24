@@ -2,13 +2,8 @@
 单周统计 + 强制复盘线判定,按 ISO 周(`YYYY-Www`)分桶输出 `WeeklyReview`。
 
 🔴 **本模块只出事实,不出判据**(架构 §六 / PROJECT_PLAN §5.9)。
-K8 时代的「对账三查」——单笔仓位上限 / 并发持仓数与敞口 / 四条禁买过滤 / 同票割肉
-冷却 / 时间退出 / 止损纪律 / 计划台账核对 / 章程分段——**已在 S1 整块删除**:
-它们全部绑在持仓台账与「大脑章程」(`strategy/brain.py`)上,两者随 K8 一起下线。
-K9 §六 给这一层的职责只有**解析 / 装订 / 存档**,好坏结论由用户带着材料去聊天框得出。
-
-⛔ **不许把那些判据以任何形式请回来,也不许留恒空的壳**:空的「本周违纪」会被读成
-「这周很干净」,而真相是「这一项已经不判了」。要看装订材料走 `review/bindery.py`。
+本层只做**解析 / 装订 / 存档**；好坏结论由用户带着材料在聊天框得出。
+不支持的判据不保留恒空壳，避免被误读为“本周很干净”。
 
 **留下的三样,以及它们各自的口径**:
 
@@ -53,10 +48,6 @@ logger = logging.getLogger(__name__)
 
 _EPS = 1e-9
 
-# 🔴 V2.5.0 S11:`STOP_TOLERANCE_PP` 与 `PRICE_MATCH_TOLERANCE` 两个常量**已删除** ——
-# 它们只服务于 S1 删掉的止损纪律判定与计划台账核对,留着一个没人读的容差带,
-# 下一个人只会以为「这里还在判止损」。⛔ 不留死常量当纪念碑。
-
 # §2.1 第4条:单周实现亏损 ≥ 总仓 2% → 当晚强制复盘(章程已拍板的固定政策值,
 # 不在 §6 P1-P10 回测参数清单内,故不进 strategy_versions,是本模块的字面常量,
 # 与 `momentum.py::week_halving_threshold`(5%,已否决的次周减半线)同口径不同阈值)。
@@ -80,11 +71,6 @@ def trade_instant(trade_date: date, trade_time: Optional[time] = None) -> dateti
     """
     return datetime.combine(trade_date, trade_time or MARKET_CLOSE_TIME, tzinfo=CN_TZ)
 
-
-# 🔴 V2.5.0 S11:`day_close_instant()` **已删除**。它只是 `trade_instant(d, None)` 的
-# 别名,唯一用途是给 S1 删掉的日粒度章程判据(并发持仓数 / 敞口 / 冷却)当锚。
-# ⛔ 不留没有调用方的别名 —— 它的 docstring 里那句「归属哪版章程」会让下一个人以为
-# 这里还在判章程。
 
 
 # ======================================================================
@@ -294,14 +280,7 @@ def week_range(week_key: str) -> Tuple[date, date]:
 
 @dataclass
 class WeeklyReview:
-    """一周的对账结果(V2.5.0 S1 起**只装事实,不装判据**)。
-
-    🔴 K8 章程判据整块退役(PROJECT_PLAN §5.9):`plan_checks` / `discipline_violations` /
-    `stop_discipline` / `charter_segments` / `charter_switches` / `charter_notes` /
-    `plan_warnings` 七个字段**已删除** —— 它们全部绑在持仓台账与「大脑章程」上,两者
-    都已随 K8 下线。K9 §六 只要**解析 / 装订 / 存档**三件事,不要纪律判定。
-    ⛔ 不许把这些字段留成恒空的壳:恒空会被读成"本周没问题",而真相是"这项已经不判了"。
-    """
+    """一周的对账结果，只装事实，不装判据。"""
 
     week: str
     week_start: date
@@ -319,13 +298,7 @@ def run_weekly_review(
 ) -> Tuple[List[WeeklyReview], List[str]]:
     """顶层入口:FIFO 闭合 → 按 ISO 周分桶 → 每周出 `WeeklyStats` 与强制复盘线判定。
 
-    🔴 **V2.5.0 S1:K8 的「对账三查」整块退役**(PROJECT_PLAN §5.9)——单笔上限 / 并发
-    与敞口 / 禁买过滤 / 冷却 / 时间退出 / 止损纪律 / 计划台账核对 / 章程分段,连同它们
-    依赖的 `strategy.brain`(大脑章程)与持仓台账一起下线。K9 §六 给这一层的职责只有
-    **解析、装订、存档**三件,判断由用户在聊天框里做。
-
-    ⛔ 不要在这里"留一个恒空的违纪清单":空清单会被读成「本周没问题」,而事实是
-    「这一项已经不判了」——两者必须分得开(§五 〇c 诚实披露体例)。
+    本层只做**解析、装订、存档**，判断由用户在聊天框里做；不支持的判据不保留空清单。
 
     `total_capital` 显式注入(默认 None → `neckline.config.settings.total_capital`),
     只用于 §2.1 第 4 条「单周实现亏损 ≥ 总仓 2%」这条**纯统计**的强制复盘线,
@@ -427,13 +400,7 @@ def weekly_review_dict(review: WeeklyReview) -> dict:
     """`WeeklyReview` → JSON 安全字典(camelCase,直接就是 API 响应的形状,也是
     `reviews.result_json` 落库的形状——两处共用同一份,不重复定义契约)。
 
-    🔴 **V2.5.0 S1**:`strategyVersion` / `charterSegments` / `charterSwitches` /
-    `planWarnings` / `charterNotes` / `planChecks` / `disciplineViolations` /
-    `stopDiscipline` 八个键**已删除** —— 产出它们的 K8 章程判据整块退役
-    (PROJECT_PLAN §5.9)。⛔ 不留恒空键:空的「本周违纪」会被读成"这周很干净",
-    而事实是"这一项系统已经不判了"。
-    ⚠ `reviews` 表里 V2.4.x 及更早的历史行仍带着这些键(B 类冻结快照,写入当时冻住),
-    读回时按 `decodeIfPresent` 处理即可,⛔ 不回填、不改写历史行(裁定 6)。
+    仅输出当前复盘契约定义的字段；未定义字段不以恒空键伪装成结论。
     """
     return {
         "week": review.week,
