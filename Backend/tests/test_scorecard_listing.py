@@ -86,7 +86,12 @@ def test_d0_to_d2_followup_and_five_metrics(tmp_path, monkeypatch):
         pending = conn.execute(
             "SELECT COUNT(*) FROM k9_predictions WHERE path_state='pending'"
         ).fetchone()[0]
+        provenance = conn.execute(
+            "SELECT DISTINCT strategy_version,label_contract_version,"
+            "params_package_version,pack_id,pack_version FROM k9_predictions"
+        ).fetchall()
     assert pending == 2
+    assert provenance == [("K9-v2", "d2-v1", "fixture", "pack", "fp-3")]
     assert listing.active_queue_count(d0, db_path=db) == 2
     assert listing.refresh_day(d0, as_of=d2, db_path=db)
     score = listing.load_scorecard(window=20, db_path=db)

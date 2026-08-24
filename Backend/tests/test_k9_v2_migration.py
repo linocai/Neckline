@@ -145,6 +145,10 @@ def test_apply_archives_exact_runs_and_starts_k9_v2_empty(tmp_path: Path):
     )
 
     assert result["status"] == "applied"
+    assert result["activeState"]["predictionProvenanceColumns"] == [
+        "label_contract_version", "pack_id", "pack_version",
+        "params_package_version", "strategy_version",
+    ]
     assert result["rawMarketSnapshots"] == "untouched"
     assert set(_k9_counts(db)) == MIGRATION.CURRENT_K9_TABLES
     assert all(count == 0 for count in _k9_counts(db).values())
@@ -207,4 +211,3 @@ def test_dry_run_and_wrong_identity_never_mutate(tmp_path: Path):
         )
     assert not archive.exists()
     assert _k9_counts(db)["k9_runs"] == 2
-

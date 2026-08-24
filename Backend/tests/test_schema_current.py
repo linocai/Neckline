@@ -35,3 +35,14 @@ def test_init_schema_is_idempotent(tmp_path):
     first = _tables(db)
     init_schema(db)
     assert _tables(db) == first == ACTIVE_TABLES
+
+
+def test_predictions_freeze_full_strategy_provenance(tmp_path):
+    db = tmp_path / "provenance.db"
+    init_schema(db)
+    with sqlite3.connect(db) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(k9_predictions)")}
+    assert {
+        "strategy_version", "label_contract_version", "params_package_version",
+        "pack_id", "pack_version",
+    } <= columns

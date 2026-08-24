@@ -61,6 +61,10 @@ CURRENT_K9_TABLES = {
     "k9_reports",
     "k9_runs",
 }
+PREDICTION_PROVENANCE_COLUMNS = {
+    "strategy_version", "label_contract_version", "params_package_version",
+    "pack_id", "pack_version",
+}
 PROTECTED_TABLES = (
     "app_settings",
     "backfill_log",
@@ -358,6 +362,11 @@ def _verify_empty_current_state(db_path: Path) -> dict[str, Any]:
         if k9_tables != CURRENT_K9_TABLES:
             raise RuntimeError(
                 f"current K9 table set mismatch: {sorted(k9_tables)}")
+        prediction_columns = set(_columns(conn, "k9_predictions"))
+        missing_provenance = sorted(PREDICTION_PROVENANCE_COLUMNS - prediction_columns)
+        if missing_provenance:
+            raise RuntimeError(
+                f"k9_predictions provenance columns are missing: {missing_provenance}")
         counts = {
             table: int(conn.execute(
                 f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
@@ -365,7 +374,11 @@ def _verify_empty_current_state(db_path: Path) -> dict[str, Any]:
         }
         if any(counts.values()):
             raise RuntimeError(f"K9-v2 active state is not empty: {counts}")
-        return {"k9TableCounts": counts, "protected": _protected_fingerprints(conn)}
+        return {
+            "k9TableCounts": counts,
+            "predictionProvenanceColumns": sorted(PREDICTION_PROVENANCE_COLUMNS),
+            "protected": _protected_fingerprints(conn),
+        }
 
 
 def inspect(

@@ -100,7 +100,8 @@ def open_day(
             return 0
         rows = conn.execute(
             "SELECT l.ts_code,l.name,l.sw_l2_code,l.sw_l2_name,l.primary_pattern,"
-            "r.label_contract_version FROM k9_listing_entries l JOIN k9_runs r "
+            "r.label_contract_version,r.params_package_version,r.pack_id,r.pack_version "
+            "FROM k9_listing_entries l JOIN k9_runs r "
             "ON r.run_id=l.run_id WHERE l.trade_date=? AND l.strategy=? "
             "AND l.strategy_version=? ORDER BY l.rank,l.ts_code",
             (_d(d0), strategy, strategy_version),
@@ -115,11 +116,12 @@ def open_day(
     computed = _now()
     records = [(
         _d(d0), _d(d1), _d(d2), str(code), strategy, strategy_version, label,
-        COHORT_FINAL, pattern, name, l2, l2_name,
+        params_version, pack_id, pack_version, COHORT_FINAL, pattern, name, l2, l2_name,
         _finite(d0_rows.get(str(code), {}).get("close")),
         None, None, None, None, None, "pending", None, None, None, None, None,
         0, None, computed, None, None,
-    ) for code, name, l2, l2_name, pattern, label in rows]
+    ) for code, name, l2, l2_name, pattern, label, params_version, pack_id, pack_version
+        in rows]
     if len(records) > 20:
         raise ValueError(f"K9-v2 D0 正式清单 {len(records)} 条，超过单批 20 条上限")
     init_schema(db_path)
@@ -131,11 +133,12 @@ def open_day(
         )
         conn.executemany(
             f"INSERT INTO {TABLE} (d0_date,d1_date,d2_date,ts_code,strategy,strategy_version,"
-            "label_contract_version,cohort,primary_pattern,name,sw_l2_code,sw_l2_name,"
+            "label_contract_version,params_package_version,pack_id,pack_version,cohort,"
+            "primary_pattern,name,sw_l2_code,sw_l2_name,"
             "d0_close,d2_close,max_high_d1_d2,min_low_d1_d2,touch_up,close_win,path_state,"
             "stock_d2_return,industry_d2_return,industry_excess,max_drawdown,d1_verdict,"
             "evaluable,unavailable_reason,computed_at,d1_reference_price,d1_touch_up) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             records,
         )
     return len(records)
@@ -207,7 +210,8 @@ def refresh_day(
             (_d(d0), strategy, strategy_version),
         ).fetchall()
         run = conn.execute(
-            "SELECT label_contract_version,scoring_contract_json FROM k9_runs "
+            "SELECT label_contract_version,params_package_version,pack_id,pack_version,"
+            "scoring_contract_json FROM k9_runs "
             "WHERE trade_date=? AND strategy=? AND strategy_version=?",
             (_d(d0), strategy, strategy_version),
         ).fetchone()
@@ -239,7 +243,7 @@ def refresh_day(
             readings = {}
         d1_references[str(code)] = _finite(readings.get("last_valid_trade_at_10_00"))
 
-    contract = json.loads(run[1])
+    contract = json.loads(run[4])
     threshold_u = float(contract["touchThresholdU"])
     risk_l = float(contract["riskLineL"])
     d1_reference_kind = str(contract["d1Reference"])
@@ -316,7 +320,8 @@ def refresh_day(
             ))
         reason = None if evaluable else "D0/D1/D2 行情不完整"
         return (
-            _d(d0), _d(d1), _d(d2), code, strategy, strategy_version, run[0], cohort,
+            _d(d0), _d(d1), _d(d2), code, strategy, strategy_version,
+            run[0], run[1], run[2], run[3], cohort,
             pattern, name, l2, l2_name, d0_close, d2_close, max_high, min_low, touch,
             None if stock_ret is None else int(stock_ret > 0), path, stock_ret, industry_ret,
             excess, drawdown, verdicts.get(code), int(evaluable), reason, computed,
@@ -329,8 +334,9 @@ def refresh_day(
     for code, (name, l2, l2_name, pattern) in final_meta.items():
         baseline_ret = industry.get(str(l2)) if baseline_kind == "industryMedian" and l2 else market
         records.append((
-            _d(d0), _d(d1), _d(d2), code, strategy, strategy_version, run[0],
-            COHORT_BASELINE, pattern, name, l2, l2_name, None, None, None, None, None,
+            _d(d0), _d(d1), _d(d2), code, strategy, strategy_version,
+            run[0], run[1], run[2], run[3], COHORT_BASELINE,
+            pattern, name, l2, l2_name, None, None, None, None, None,
             None if baseline_ret is None else int(baseline_ret > 0), "baseline",
             baseline_ret, None, None, None, verdicts.get(code),
             int(baseline_ret is not None),
@@ -345,11 +351,12 @@ def refresh_day(
         )
         conn.executemany(
             f"INSERT INTO {TABLE} (d0_date,d1_date,d2_date,ts_code,strategy,strategy_version,"
-            "label_contract_version,cohort,primary_pattern,name,sw_l2_code,sw_l2_name,"
+            "label_contract_version,params_package_version,pack_id,pack_version,cohort,"
+            "primary_pattern,name,sw_l2_code,sw_l2_name,"
             "d0_close,d2_close,max_high_d1_d2,min_low_d1_d2,touch_up,close_win,path_state,"
             "stock_d2_return,industry_d2_return,industry_excess,max_drawdown,d1_verdict,"
             "evaluable,unavailable_reason,computed_at,d1_reference_price,d1_touch_up) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             records,
         )
     return True

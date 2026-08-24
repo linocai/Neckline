@@ -384,3 +384,60 @@ Use `min_drawdown_from_window_high_pct` consistently and update scorecard fixtur
 - **Notes**: Updated the stale P2 field, moved the D1 fixture to the frozen 10:00 reference, and made the P3 synthetic market satisfy both formal daily-heat components. Focused K9-v2 and scorecard regression now reports 12 passed.
 
 ---
+
+## [ERR-20260824-014] prediction provenance release gate
+
+**Logged**: 2026-08-24T23:52:00+08:00
+**Priority**: critical
+**Status**: in_progress
+**Area**: backend
+
+### Summary
+The closed-production release audit found that K9-v2 prediction rows froze the strategy and label versions but omitted the parameter-package and fact-pack identities required by the settled plan.
+
+### Error
+`sqlite3.OperationalError: no such column: params_package_version`
+
+### Context
+- The API and all timers were still stopped; the incomplete Day 1 state was never exposed.
+- `k9_runs` and `k9_reports` had the correct `K9-v2 / k9-params-20260824-v2-r1 / fp-3` identity, but `k9_predictions` could not prove the same lineage row by row.
+- The first migration test checked empty table names/counts but not the prediction provenance columns.
+
+### Suggested Fix
+Store `params_package_version`, `pack_id`, and `pack_version` on every prediction cohort row; make the production cutover verify those columns; add schema, open-day, settlement, and migration regressions; restore the closed production state before replaying the fixed cutover.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/neckline/db.py, Backend/neckline/scorecard/listing.py, Backend/scripts/migrate_k9_v2.py, Backend/tests/test_scorecard_listing.py, Backend/tests/test_schema_current.py, Backend/tests/test_k9_v2_migration.py
+
+---
+
+## [ERR-20260824-015] combined patch stale test context
+
+**Logged**: 2026-08-24T23:53:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+A combined provenance patch used the wrong migration-test module alias in its expected context and was rejected atomically.
+
+### Error
+`apply_patch verification failed: Failed to find expected lines in Backend/tests/test_k9_v2_migration.py: result = migration.apply(`
+
+### Context
+- The test imports the script as `MIGRATION`, not `migration`.
+- Patch verification failed before any file changed.
+
+### Suggested Fix
+Inspect the narrow target range first and apply the implementation and test changes in separate exact hunks.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/tests/test_k9_v2_migration.py
+
+### Resolution
+- **Resolved**: 2026-08-24T23:54:00+08:00
+- **Notes**: Reapplied as two exact patches; focused provenance and migration tests pass (8 passed).
+
+---
