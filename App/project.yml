@@ -10,7 +10,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "2.5.2"
-    CURRENT_PROJECT_VERSION: "13"
+    CURRENT_PROJECT_VERSION: "14"
     DEVELOPMENT_TEAM: HX73DFL88G
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: minimal
@@ -52,11 +52,12 @@ targets:
         INFOPLIST_FILE: Neckline/Resources/Info.plist
         # iOS 会把通知标题栏使用的主 App 图标缓存到系统界面。**每发一版换一次
         # asset-set 名称**,避免覆盖安装后通知栏继续命中旧缓存;图稿本身不变。
-        # V2.4.2 Build 4 起用 `AppIconV242`,V2.5.0 Build 10 改名 `AppIconV250`。
+        # V2.4.2 Build 4 起用 `AppIconV242`,V2.5.0 Build 10 改名 `AppIconV250`,
+        # V2.5.2 Build 14 改名 `AppIconV252B14`。
         # ⚠ 改名要同步四处:本行 / `Assets.xcassets/<名>.appiconset` 目录名 /
-        # 守门常量 `Backend/tests/test_v240_p4_release.py::_EXPECTED_PRIMARY_ICON` /
+        # 守门常量 `Backend/tests/test_v250_s12_app_guard.py::_EXPECTED_PRIMARY_ICON` /
         # `xcodegen generate` 重生成的 pbxproj(⛔ 不许只手改 pbxproj)。
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV250
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconV252B14
         ENABLE_PREVIEWS: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

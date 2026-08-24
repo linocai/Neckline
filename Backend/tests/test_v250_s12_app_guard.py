@@ -5,7 +5,7 @@
 | A · 退役零残留 | 持仓 / 篮子 / 六关 / Tier / 双时钟 / 情报 / 盘中看板 在 `App/` 下零命中(**代码行**,注释留痕不算) |
 | B · 三板块 IA | `AppTab` 恰好 `选股 / 成绩 / 复盘 + 设置`;⛔ 240px 玻璃侧栏没被加回来 |
 | C · 视图与模型清单 | §5.11 逐条:该删的文件不在、该有的文件在 |
-| D · 图标改名 | `AppIconV250` 四处同步并锁定旧名零残留 |
+| D · 图标改名 | 当前主图标四处同步并锁定旧名零残留 |
 
 🔴 **为什么"注释留痕不算"**:一条纪律总要写出它禁止的那个词才解释得清
 (「⛔ 不许把持仓加回来」)。把说明算进命中会逼着后来者删注释去凑绿 ——
@@ -30,7 +30,7 @@ from tests.client_sources import CLIENT, CLIENT_ROOT, strip_comments
 _ASSET_CATALOG = CLIENT / "Resources" / "Assets.xcassets"
 _PROJECT_YML = CLIENT_ROOT / "project.yml"
 _PBXPROJ = CLIENT_ROOT / "Neckline.xcodeproj" / "project.pbxproj"
-_EXPECTED_PRIMARY_ICON = "AppIconV250"
+_EXPECTED_PRIMARY_ICON = "AppIconV252B14"
 
 
 def _code_lines() -> Dict[Path, List[Tuple[int, str]]]:
@@ -234,15 +234,16 @@ def test_the_old_icon_name_is_gone_from_every_one_of_the_four_places():
     改名要同步**四处**:`project.yml` / asset 目录名 / 守门常量 / 重生成的 pbxproj。
     本文件同时锁当前值与「旧名零残留」，不依赖任何退役版本的测试。
     """
-    old = "AppIconV242"
-    assert _EXPECTED_PRIMARY_ICON != old, "V2.5.0 必须换一个新的 asset-set 名"
-    assert not (_ASSET_CATALOG / f"{old}.appiconset").exists(), "旧 asset 目录还在"
-    assert old not in _PROJECT_YML.read_text(encoding="utf-8").split("# ", 1)[0] or True
+    old_names = ("AppIconV242", "AppIconV250")
+    assert _EXPECTED_PRIMARY_ICON not in old_names, "当前发布必须换一个新的 asset-set 名"
+    for old in old_names:
+        assert not (_ASSET_CATALOG / f"{old}.appiconset").exists(), "旧 asset 目录还在"
     # 逐处扫**代码 / 配置**(注释里作为改名沿革留痕是允许的,见模块头)。
     yml = _PROJECT_YML.read_text(encoding="utf-8")
     yml_code = "\n".join(ln for ln in yml.splitlines() if not ln.lstrip().startswith("#"))
-    assert old not in yml_code, f"`project.yml` 的配置行里还有 {old}"
-    assert old not in _PBXPROJ.read_text(encoding="utf-8"), f"pbxproj 里还有 {old}"
+    for old in old_names:
+        assert old not in yml_code, f"`project.yml` 的配置行里还有 {old}"
+        assert old not in _PBXPROJ.read_text(encoding="utf-8"), f"pbxproj 里还有 {old}"
     # 图稿本身不变:新目录里那几张 png 一张不少。
     icon_set = _ASSET_CATALOG / f"{_EXPECTED_PRIMARY_ICON}.appiconset"
     pngs = sorted(p.name for p in icon_set.glob("*.png"))

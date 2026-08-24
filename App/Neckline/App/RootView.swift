@@ -55,7 +55,7 @@ struct RootView: View {
         .overlay(alignment: .bottom) { toastOverlay.padding(.bottom, 90) }
         // 只加载**当前 Tab**(默认 `.selection`,QA 钩子可覆盖 ——
         // `NecklineApp.init()` 里 `m.view = tab` 早于本 `.task` 执行)。
-        .task { model.bind(config: config); await model.ensureLoaded(model.view) }
+        .task { await bootstrap() }
         // 切 Tab 首次到达时才拉那个 Tab 的数据;已加载过的 Tab 再切回来不重打请求。
         .onChange(of: model.view) { _, tab in Task { await model.ensureLoaded(tab) } }
     }
@@ -76,7 +76,7 @@ struct RootView: View {
         .ignoresSafeArea(.container, edges: .top)
         .background(NK.pageBg)
         .overlay(alignment: .bottom) { toastOverlay.padding(.bottom, 24) }
-        .task { model.bind(config: config); await model.ensureLoaded(model.view) }
+        .task { await bootstrap() }
         .onChange(of: model.view) { _, tab in Task { await model.ensureLoaded(tab) } }
     }
 
@@ -90,6 +90,13 @@ struct RootView: View {
         }
     }
     #endif
+
+    private func bootstrap() async {
+        model.bind(config: config)
+        await model.ensureLoaded(model.view)
+        await model.refreshSettlementOnActivation()
+        model.startSettlementAutoRefresh()
+    }
 
     @ViewBuilder
     private var toastOverlay: some View {

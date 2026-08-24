@@ -157,6 +157,53 @@ struct Toast: Identifiable, Equatable {
     var isError: Bool = false
 }
 
+/// 10:00 结算刷新只是一条客户端读策略：不生成报告、不触发推送，也不改服务端状态。
+/// 时间统一按上海时区，避免设备时区变化后错过 A 股结算窗口。
+enum SettlementRefreshPolicy {
+    static let pollingStartSecond = 9 * 3600 + 59 * 60 + 55
+    static let pollingEndSecond = 10 * 3600 + 6 * 60
+    static let pollInterval: TimeInterval = 10
+    static let maximumIdleSleep: TimeInterval = 3600
+
+    static var clockCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return calendar
+    }
+
+    static func secondOfDay(_ date: Date, calendar: Calendar = clockCalendar) -> Int {
+        let parts = calendar.dateComponents([.hour, .minute, .second], from: date)
+        return (parts.hour ?? 0) * 3600 + (parts.minute ?? 0) * 60 + (parts.second ?? 0)
+    }
+
+    static func isPollingWindow(_ date: Date, calendar: Calendar = clockCalendar) -> Bool {
+        let second = secondOfDay(date, calendar: calendar)
+        return second >= pollingStartSecond && second < pollingEndSecond
+    }
+
+    static func mayCatchUpAfterActivation(_ date: Date,
+                                          calendar: Calendar = clockCalendar) -> Bool {
+        secondOfDay(date, calendar: calendar) >= 10 * 3600
+    }
+
+    static func isComplete(_ snapshot: K9VerdictsSnapshot, today: String) -> Bool {
+        snapshot.tradeDate == today && !snapshot.verdicts.isEmpty && snapshot.undecidedCount == 0
+    }
+
+    /// 窗口内十秒一查；窗口外直接睡到下一窗口附近，最长一小时醒一次校准系统时钟。
+    static func nextWakeDelay(_ date: Date, calendar: Calendar = clockCalendar) -> TimeInterval {
+        if isPollingWindow(date, calendar: calendar) { return pollInterval }
+        let second = secondOfDay(date, calendar: calendar)
+        let untilStart: Int
+        if second < pollingStartSecond {
+            untilStart = pollingStartSecond - second
+        } else {
+            untilStart = 24 * 3600 - second + pollingStartSecond
+        }
+        return min(max(TimeInterval(untilStart), 1), maximumIdleSleep)
+    }
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -261,6 +308,9 @@ final class AppModel {
     let calendar = StaticTradingCalendar.shared
     private var clientProvider: () -> APIClient?
     private var snapshotStoreProvider: () -> ReportSnapshotStore? = { nil }
+    @ObservationIgnored private var settlementRefreshTask: Task<Void, Never>? = nil
+    @ObservationIgnored private var settlementRefreshInFlight = false
+    @ObservationIgnored private var settlementCompletedDate: String? = nil
     #if os(iOS)
     weak var pushManager: PushManager? = nil
     #endif
@@ -285,6 +335,7 @@ final class AppModel {
         ReportSnapshotStore.clearAll()
         selectionOffline = false
         selectionCachedAt = nil
+        settlementCompletedDate = nil
     }
 
     // MARK: - 派生(纯逻辑,单测覆盖)
@@ -322,6 +373,59 @@ final class AppModel {
         case .scoreboard: await refreshScoreboard()
         case .review: await refreshReview()
         case .settings: await refreshSettings()
+        }
+    }
+
+    /// 双端共用的 10:00 结算刷新循环。窗口外不打网络请求；多窗口重复启动也是幂等的。
+    func startSettlementAutoRefresh() {
+        guard settlementRefreshTask == nil else { return }
+        settlementRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let now = Date()
+                await self.pollSettlementIfNeeded(now: now)
+                let delay = SettlementRefreshPolicy.nextWakeDelay(now)
+                try? await Task.sleep(for: .seconds(delay))
+            }
+        }
+    }
+
+    /// iOS 从后台回来、macOS 窗口重新活跃或 App 在 10:00 后首次启动时补查一次。
+    func refreshSettlementOnActivation(now: Date = Date()) async {
+        guard calendar.isTradingDay(now),
+              SettlementRefreshPolicy.mayCatchUpAfterActivation(now) else { return }
+        let today = calendar.compactString(now)
+        guard settlementCompletedDate != today else { return }
+        await fetchSettlementUpdate(today: today)
+    }
+
+    private func pollSettlementIfNeeded(now: Date) async {
+        guard calendar.isTradingDay(now), SettlementRefreshPolicy.isPollingWindow(now) else { return }
+        let today = calendar.compactString(now)
+        guard settlementCompletedDate != today else { return }
+        _ = await fetchSettlementUpdate(today: today)
+    }
+
+    /// 每轮只查轻量 verdict 端点；全部定案后补一次清单成绩并停止当天轮询。
+    @discardableResult
+    private func fetchSettlementUpdate(today: String) async -> Bool {
+        guard !settlementRefreshInFlight, let client = clientProvider() else { return false }
+        settlementRefreshInFlight = true
+        defer { settlementRefreshInFlight = false }
+        do {
+            let snapshot = try await client.fetchVerdicts(tradeDate: today)
+            verdicts = snapshot
+            lastRefreshedAt = Date()
+            if SettlementRefreshPolicy.isComplete(snapshot, today: today) {
+                settlementCompletedDate = today
+                if let updated = try? await client.fetchListingScorecard() {
+                    listingScorecard = updated
+                }
+            }
+            return true
+        } catch {
+            // 自动刷新失败不覆盖现有数据、也不弹错误；窗口内下一轮仍会重试。
+            return false
         }
     }
 
@@ -436,7 +540,14 @@ final class AppModel {
             handleLoadFailure(e, context: "清单成绩")
         }
         // 终值端点**恒 200**(那天没有就是空数组)→ 走到失败分支只可能是网络 / 鉴权。
-        if case .success(let s) = v { verdicts = s } else { verdicts = .empty }
+        if case .success(let s) = v {
+            verdicts = s
+            if SettlementRefreshPolicy.isComplete(s, today: today) {
+                settlementCompletedDate = today
+            }
+        } else {
+            verdicts = .empty
+        }
         coverageLoading = false
         scoreboardLoading = false
         if loadError == nil { lastRefreshedAt = Date() }

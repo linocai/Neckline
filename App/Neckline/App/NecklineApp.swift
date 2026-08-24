@@ -14,9 +14,9 @@ import SwiftUI
 struct NecklineApp: App {
     @StateObject private var config = AppConfig()
     @State private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
 
     #if os(iOS)
-    @Environment(\.scenePhase) private var scenePhase
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     #endif
 
@@ -42,6 +42,11 @@ struct NecklineApp: App {
             RootView(model: model, config: config)
                 .environmentObject(config)
                 .frame(minWidth: 1080, minHeight: 640)
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active {
+                        Task { await model.refreshSettlementOnActivation() }
+                    }
+                }
         }
         // 隐藏系统标题栏，避免它与自建工具栏重叠；拖动与红绿灯对齐由工具栏组件处理。
         .windowStyle(.hiddenTitleBar)
@@ -53,7 +58,10 @@ struct NecklineApp: App {
                 .environmentObject(config)
                 .onAppear { wire() }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { appDelegate.clearBadge() }
+                    if phase == .active {
+                        appDelegate.clearBadge()
+                        Task { await model.refreshSettlementOnActivation() }
+                    }
                 }
         }
         #endif

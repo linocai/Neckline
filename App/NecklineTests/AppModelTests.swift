@@ -136,6 +136,52 @@ final class AppModelTests: XCTestCase {
         XCTAssertNotNil(model.checklistMissing, "404 → 有 why = 那天没跑过那一拍")
     }
 
+    // MARK: - 10:00 结算自动刷新
+
+    func testSettlementPollingWindowUsesShanghaiClockAndExactBoundaries() {
+        let calendar = SettlementRefreshPolicy.clockCalendar
+        func at(_ hour: Int, _ minute: Int, _ second: Int) -> Date {
+            calendar.date(from: DateComponents(year: 2026, month: 8, day: 24,
+                                               hour: hour, minute: minute, second: second))!
+        }
+        XCTAssertFalse(SettlementRefreshPolicy.isPollingWindow(at(9, 59, 54)))
+        XCTAssertTrue(SettlementRefreshPolicy.isPollingWindow(at(9, 59, 55)))
+        XCTAssertTrue(SettlementRefreshPolicy.isPollingWindow(at(10, 5, 59)))
+        XCTAssertFalse(SettlementRefreshPolicy.isPollingWindow(at(10, 6, 0)))
+        XCTAssertFalse(SettlementRefreshPolicy.mayCatchUpAfterActivation(at(9, 59, 59)))
+        XCTAssertTrue(SettlementRefreshPolicy.mayCatchUpAfterActivation(at(10, 0, 0)))
+    }
+
+    func testSettlementPollingStopsOnlyAfterARealTodaySnapshotIsFullyDecided() {
+        let today = "20260824"
+        XCTAssertFalse(SettlementRefreshPolicy.isComplete(.empty, today: today),
+                       "空数组可能是结算尚未落库，不能当成完成")
+        let pending = K9VerdictsSnapshot(
+            tradeDate: today,
+            verdicts: [K9VerdictRow(tsCode: "600000.SH")]
+        )
+        XCTAssertFalse(SettlementRefreshPolicy.isComplete(pending, today: today))
+        let final = K9VerdictsSnapshot(
+            tradeDate: today,
+            verdicts: [K9VerdictRow(tsCode: "600000.SH", verdict: .confirmed,
+                                    decidedStage: "open30")]
+        )
+        XCTAssertTrue(SettlementRefreshPolicy.isComplete(final, today: today))
+        XCTAssertFalse(SettlementRefreshPolicy.isComplete(final, today: "20260825"),
+                       "昨天的终值不能阻止今天继续查询")
+    }
+
+    func testSettlementLoopSleepsWithoutNetworkOutsideWindow() {
+        let calendar = SettlementRefreshPolicy.clockCalendar
+        let inside = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24,
+                                                         hour: 10, minute: 0))!
+        let morning = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24,
+                                                          hour: 9, minute: 0))!
+        XCTAssertEqual(SettlementRefreshPolicy.nextWakeDelay(inside), 10)
+        XCTAssertEqual(SettlementRefreshPolicy.nextWakeDelay(morning), 3595)
+        XCTAssertLessThanOrEqual(SettlementRefreshPolicy.nextWakeDelay(morning), 3600)
+    }
+
     // MARK: - 结论草稿(append-only 的客户端半边)
 
     func testConclusionFormSplitsTagsOnBothCommaKindsAndSpaces() {

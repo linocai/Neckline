@@ -20,7 +20,7 @@ def test_release_version_and_build_are_aligned():
     project = (APP / "Neckline.xcodeproj" / "project.pbxproj").read_text(encoding="utf-8")
     assert VERSION == "v2.5.2"
     assert set(re.findall(r"MARKETING_VERSION = ([^;]+);", project)) == {"2.5.2"}
-    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"13"}
+    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"14"}
 
 
 def test_production_parameter_pack_is_the_user_approved_whynotme_artifact(tmp_path):

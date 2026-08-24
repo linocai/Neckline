@@ -1,7 +1,7 @@
-# Neckline · V2.5.2 Build 13 控制面
+# Neckline · V2.5.2 Build 14 控制面
 
-> 当前生产：V2.5.2 · Build 13
-> 现行引擎：K9 ｜当前阶段：生产部署、macOS 换包与发布验证完成；进入 3–5 个交易日观察
+> 当前生产：V2.5.2 · Build 14
+> 现行引擎：K9 ｜当前阶段：10:00 双端同步快修、macOS 换包与发布验证完成
 > 更新：2026-08-24 ｜分支：`main` ｜`archive/` 保持空（仅 `.gitkeep`）
 
 本文件是唯一现行计划。Git 负责历史；不建立版本日记、平行计划或归档施工记录。
@@ -12,7 +12,8 @@
 
 - 不改 K9 机械策略、四通道、名额、六项已裁定策略契约或参数包；不跑正式报告。
 - 不恢复 K8、篮子、持仓、旧校准、旧通知，不重做复盘业务；研究和回测仍只在 `whynotme`。
-- 本轮已按用户授权完成部署、发版、macOS 换包、提交和推送；iOS 归档由用户自行安装。
+- Build 14 只修客户端结算同步：不改后端、策略、报告、通知或生产数据，不重跑报告。
+- 本轮已完成双端归档、macOS 换包与验证；iOS 归档由用户自行安装。
 
 ## 2. 已裁定且不得重开
 
@@ -39,6 +40,8 @@
 - 现役源文件已清除退役产品考古词，并由 source guard 防止 K8、六关、篮子、退潮及已删 UI 名称回归。
 - 第三轮 Review 的消息面提示词遗漏已修复：实际 user message 明确四类（立案、暴雷、监管、减持），并由回归测试锁定。
 - 全量后端 pytest 为 `1365 passed, 21 warnings`；API 与复盘冒烟均通过；macOS 与 iOS 的三条构建及两端真实测试均通过。
+- Build 14 在上海时间 09:59:55–10:06:00 每 10 秒只读结算终值，拿到当日非空且全部定案的快照后停止；10:00 后启动或回到前台会补查，未完整则下次激活仍可重试。
+- 结算自动刷新不生成报告、不发通知、不写服务端；交易日与时区边界已有单测，双端五道 App 门禁重跑全绿。
 - S3 备份脚本在被调用但缺少 S3、公开密钥、保留开关或隔离恢复验证器时仍 fail-closed；该能力本次不配置、不调用、不启用 timer，也不作为发布门禁。
 - 第四轮独立复审已核验：恢复命令不触发报告/APNs，备份对象与密钥边界、legacy 删除、客户端 Keychain/HTTPS 与离线边界均通过；若未来选择 S3，首次配置与异机恢复演练是启用 timer 的前置条件。
 
@@ -136,10 +139,11 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination "platform=i
 
 - Plan → Build → Review → Builder 修复 → 第四轮独立复审全部完成；第四轮独立复审无 P0/P1/P2，上一轮 news scan 四类 P2 已关闭。
 - Backend 全量测试：1365 passed、21 warnings；本版发布门禁通过。
-- 源码已提交并推送 `main`：`5e299a6`（`release: prepare v2.5.2 build 13`）与
-  `0bbabb4`（`fix: make S3 backup opt-in`）。macOS / iOS
-  Release 签名归档已生成并校验为 `2.5.2 (13)`；交付目录为
-  `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b13-20260824/`。
+- Build 14 源码归入 `main`；macOS / iOS Release 签名归档均校验为
+  `2.5.2 (14)`，交付目录为
+  `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b14-20260824/`。两个压缩交付物 SHA-256 分别为
+  `927c66858a20d2483f849c156101e13ab8ef846812428e7c81998d14920d71c8` 和
+  `1b5353079d4aa1b9736256e7abff98d5222dfa45658dd36a5c947e0db74ba763`。
 - 用户已裁定 S3 异机备份改为可选且本次不用；生产 `neckline-backup.timer` 为
   disabled / inactive。服务器本地一致性回滚包位于
   `/opt/neckline-release-backups/v2.5.2-b13-pre-20260824-093620/`，数据库完整、28 张表；
@@ -150,7 +154,7 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination "platform=i
 - 宁波云公开健康检查为 `v2.5.2`，服务 active、`NRestarts=0`；28 张表及逐表行数发布前后
   完全一致。日更、晚间、数据恢复 timer 正常，可选备份 timer 未启用；发布未运行正式报告，
   既有 `20260823` 报告仍可读取。
-- macOS 已换装并启动 `2.5.2 (13)`，签名有效、归档与安装后可执行文件逐字节一致，Keychain
-  Token 存在且 App HTTPS 请求返回 200。旧 Build 12 备份位于
-  `/Users/linotsai/Lino/app_backups/Neckline-v2.5.1-b12-pre-v2.5.2-b13-20260824-094038/`；
-  iOS `2.5.2 (13)` 签名归档已交付但未安装。
+- macOS 已换装并启动 `2.5.2 (14)`，签名有效、归档与安装后可执行文件逐字节一致，
+  App HTTPS 请求返回 200。旧 Build 13 备份位于
+  `/Users/linotsai/Lino/app_backups/Neckline-v2.5.2-b13-pre-v2.5.2-b14-20260824-103155/`；
+  iOS `2.5.2 (14)` 签名归档已交付但未安装。
