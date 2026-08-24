@@ -182,6 +182,50 @@ final class AppModelTests: XCTestCase {
         XCTAssertLessThanOrEqual(SettlementRefreshPolicy.nextWakeDelay(morning), 3600)
     }
 
+    func testCompletedSettlementMustBelongToTheCurrentDay() {
+        let model = AppModel()
+        let calendar = SettlementRefreshPolicy.clockCalendar
+        let today = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24,
+                                                         hour: 10, minute: 1))!
+        model.verdicts = K9VerdictsSnapshot(
+            tradeDate: "20260824",
+            verdicts: [K9VerdictRow(tsCode: "600000.SH", verdict: .confirmed,
+                                    decidedStage: "open30")]
+        )
+        XCTAssertTrue(model.hasCompletedSettlement(at: today))
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today)!
+        XCTAssertFalse(model.hasCompletedSettlement(at: tomorrow),
+                       "昨天的终值不能让今天显示“10:00 已完成”")
+    }
+
+    #if os(macOS)
+    func testMacSettlementEntryLandsOnTheVerdictSection() {
+        let model = AppModel()
+        model.openSettlementResults()
+        XCTAssertEqual(model.view, .scoreboard)
+        XCTAssertEqual(model.scoreboardSection, .verdicts)
+    }
+
+    func testMacOnlyReplacesTheDefaultScoreboardSectionWhenSettlementCompletes() {
+        let model = AppModel()
+        let calendar = SettlementRefreshPolicy.clockCalendar
+        let today = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24,
+                                                         hour: 10, minute: 1))!
+        model.verdicts = K9VerdictsSnapshot(
+            tradeDate: "20260824",
+            verdicts: [K9VerdictRow(tsCode: "600000.SH", verdict: .observed,
+                                    decidedStage: "open30")]
+        )
+        model.revealSettlementIfAvailable(at: today)
+        XCTAssertEqual(model.scoreboardSection, .verdicts)
+
+        model.scoreboardSection = .coverage
+        model.revealSettlementIfAvailable(at: today)
+        XCTAssertEqual(model.scoreboardSection, .coverage,
+                       "用户已主动看覆盖率时不抢页面")
+    }
+    #endif
+
     // MARK: - 结论草稿(append-only 的客户端半边)
 
     func testConclusionFormSplitsTagsOnBothCommaKindsAndSpaces() {

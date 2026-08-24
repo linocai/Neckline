@@ -21,9 +21,6 @@ import SwiftUI
 
 struct ScoreboardView: View {
     @Bindable var model: AppModel
-    #if os(macOS)
-    @State private var section: ScoreboardSection = .listing
-    #endif
 
     var body: some View {
         #if os(iOS)
@@ -48,7 +45,10 @@ struct ScoreboardView: View {
         } detail: {
             detailColumn
         }
-        .task { await model.ensureLoaded(.scoreboard) }
+        .task {
+            await model.ensureLoaded(.scoreboard)
+            model.revealSettlementIfAvailable()
+        }
         #endif
     }
 
@@ -248,14 +248,16 @@ struct ScoreboardView: View {
             .padding(.horizontal, NKSpace.listHeaderExtraH).padding(.bottom, 12)
 
             ForEach(ScoreboardSection.allCases) { s in
-                NKListRow(selected: section == s) { section = s } content: {
+                NKListRow(selected: model.scoreboardSection == s) {
+                    model.scoreboardSection = s
+                } content: {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
                             Image(systemName: s.systemImage).font(.system(size: 11))
-                                .foregroundStyle(section == s ? NK.accent : NK.textTertiary)
+                                .foregroundStyle(model.scoreboardSection == s ? NK.accent : NK.textTertiary)
                                 .frame(width: 16)
                             Text(s.title).font(NKFont.body)
-                                .fontWeight(section == s ? .semibold : .regular)
+                                .fontWeight(model.scoreboardSection == s ? .semibold : .regular)
                                 .foregroundStyle(NK.textPrimary)
                         }
                         // 🔴 **「这一块答什么」** —— 三块的域各不相同,一行字把它们分开。
@@ -271,7 +273,7 @@ struct ScoreboardView: View {
     @ViewBuilder
     private var detailColumn: some View {
         VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-            switch section {
+            switch model.scoreboardSection {
             case .listing: listingScorecardCard
             case .verdicts: verdictsCard
             case .coverage:

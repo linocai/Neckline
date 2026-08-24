@@ -27,6 +27,34 @@ For each scheduled server-side transition, define its authoritative timezone and
 
 ---
 
+## [LRN-20260824-003] correction
+
+**Logged**: 2026-08-24T10:44:00+08:00
+**Priority**: critical
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+A synchronized model is not a fixed cross-platform UI until the same user-visible path is verified on both clients.
+
+### Details
+Build 14 fetched the 10:00 verdict snapshot on macOS, and model tests plus HTTP 200 responses passed. The macOS scoreboard nevertheless defaulted to its hidden listing-score subsection while iOS rendered all scoreboard cards in one scroll. The user's actual selection/checklist screen also had no visible signal that settlement had completed. The release was therefore technically synchronized but still functionally stale from the Mac user's point of view.
+
+### Suggested Action
+For cross-platform refresh fixes, verify the exact screen and interaction the user follows on every platform. A release gate must cover data arrival, navigation/default selection, and visible content; do not infer UI success from endpoint success or hidden model state.
+
+### Metadata
+- Source: user_feedback
+- Related Files: App/Neckline/Views/ScoreboardView.swift, App/Neckline/Views/CheckListView.swift, App/Neckline/App/AppModel.swift
+- Tags: macOS, iOS, refresh, navigation, visible-state
+- See Also: LRN-20260824-001, LRN-20260824-002
+
+### Resolution
+- **Resolved**: 2026-08-24T10:56:00+08:00
+- **Notes**: V2.5.2 Build 15 adds the visible macOS settlement banner and direct verdict navigation, defaults a completed scoreboard to verdicts without stealing an actively selected coverage page, and was verified in the installed `/Applications/Neckline.app` by following the exact user path to the 2026-08-24 counts (11 confirmed, 3 rejected, 6 observed, 0 undecided).
+
+---
+
 ## [LRN-20260824-002] correction
 
 **Logged**: 2026-08-24T10:39:00+08:00

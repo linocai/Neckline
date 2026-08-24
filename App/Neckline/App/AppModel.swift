@@ -260,6 +260,10 @@ final class AppModel {
     /// 10:00 结算拍的三分支终值(成立率的**明细**)。
     var verdicts: K9VerdictsSnapshot = .empty
     var scoreboardLoading = false
+    #if os(macOS)
+    /// macOS 成绩板的当前子页。放在模型里，让选股页的结算完成入口能精确落到终值。
+    var scoreboardSection: ScoreboardSection = .listing
+    #endif
 
     // ══════════════════════════════════════════════════════════════════════
     // 复盘
@@ -355,6 +359,26 @@ final class AppModel {
     /// 但它们**不是同一件事** —— 判断「要不要画列表」用这个,判断「说什么话」看 `state`。
     var hasListing: Bool { selection.state == .hasList && !selection.stocks.isEmpty }
 
+    /// 当日 10:00 结算是否已经真正完整。空数组和尚未定案都不算完成。
+    func hasCompletedSettlement(at now: Date = Date()) -> Bool {
+        SettlementRefreshPolicy.isComplete(verdicts, today: calendar.compactString(now))
+    }
+
+    #if os(macOS)
+    /// 从次日核对表落到终值的唯一导航入口；不在 9:26 快照里混入 10:00 结果。
+    func openSettlementResults() {
+        scoreboardSection = .verdicts
+        view = .scoreboard
+    }
+
+    /// 只把 macOS 成绩页的默认“清单成绩”切到已完成的终值；
+    /// 用户已经主动选了覆盖率时不抢页面。
+    func revealSettlementIfAvailable(at now: Date = Date()) {
+        guard scoreboardSection == .listing, hasCompletedSettlement(at: now) else { return }
+        scoreboardSection = .verdicts
+    }
+    #endif
+
     // MARK: - 刷新(板块级)
 
     private var loadedBoards: Set<AppTab> = []
@@ -421,6 +445,9 @@ final class AppModel {
                 if let updated = try? await client.fetchListingScorecard() {
                     listingScorecard = updated
                 }
+                #if os(macOS)
+                if view == .scoreboard { revealSettlementIfAvailable() }
+                #endif
             }
             return true
         } catch {
@@ -475,6 +502,9 @@ final class AppModel {
         // 🔴 **核对表核的是 D1** —— 它按**今天**取,而报告的 `tradeDate` 是 D0。
         // 两者刻意用不同的日期:昨晚的清单 + 今早的核对,本来就是两天的事。
         await loadChecklist(tradeDate: calendar.compactString(Date()))
+        // 用户在选股页手动点刷新时，10:00 后也要补查终值；
+        // 不然工具栏显示“已刷新”，结算入口却仍无法出现。
+        await refreshSettlementOnActivation()
         if loadError == nil { lastRefreshedAt = Date() }
         applyQAHooksAfterRefresh()
     }
@@ -544,6 +574,9 @@ final class AppModel {
             verdicts = s
             if SettlementRefreshPolicy.isComplete(s, today: today) {
                 settlementCompletedDate = today
+                #if os(macOS)
+                revealSettlementIfAvailable()
+                #endif
             }
         } else {
             verdicts = .empty

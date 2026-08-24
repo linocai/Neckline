@@ -38,6 +38,9 @@ struct CheckListView: View {
                 ProgressView().frame(maxWidth: .infinity).padding(.vertical, 40)
             } else if let list = model.checklist {
                 header(list)
+                #if os(macOS)
+                if model.hasCompletedSettlement() { settlementReadyCard }
+                #endif
                 segments(list)
                 gaps(list)
                 footnote(list)
@@ -53,6 +56,27 @@ struct CheckListView: View {
             }
         }
     }
+
+    #if os(macOS)
+    private var settlementReadyCard: some View {
+        NKCard {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(NK.up)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("10:00 结算已完成")
+                        .font(NKFont.headline).foregroundStyle(NK.textPrimary)
+                    Text("这里保留 9:26 的早间快照；成立、放弃和观察的最终结果已更新到成绩里。")
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                }
+                Spacer(minLength: 8)
+                Button("查看三分支终值") { model.openSettlementResults() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+    #endif
 
     private func header(_ list: Checklist) -> some View {
         NKCard {

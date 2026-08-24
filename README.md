@@ -1,6 +1,6 @@
 # Neckline
 
-当前生产客户端为 V2.5.2 Build 14，已于 2026-08-24 完成 macOS 快修换包；
+当前生产客户端为 V2.5.2 Build 15，已于 2026-08-24 完成 macOS 可见结算快修换包；
 宁波云服务端仍为 V2.5.2，本次没有后端变更。
 S3 异机备份是默认不启用的可选能力。运行链路仍是 K9。
 交易日数据在 16:05 更新，报告仅在周一至周四及周日 19:00 生成；周日读取前一周五
@@ -11,10 +11,10 @@ A 股生产应用：SwiftUI 客户端 + FastAPI 服务。离线研究、回测�
 
 ## 当前状态
 
-- 当前生产客户端：**V2.5.2 · Build 14**；服务端版本：**V2.5.2**。
-- macOS 已换装 V2.5.2 Build 14；iOS 签名归档已生成，交由用户自行安装。
-- 双端交付物位于 `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b14-20260824/`。
-- Build 14 使 macOS 与 iOS 在交易日 10:00–10:05 自动同步三分支终值；10:00 后首次启动或回到前台会补查。
+- 当前生产客户端：**V2.5.2 · Build 15**；服务端版本：**V2.5.2**。
+- macOS 已换装 V2.5.2 Build 15；iOS 签名归档已生成，交由用户自行安装。
+- 双端交付物位于 `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b15-20260824/`。
+- Build 15 在既有 10:00 自动同步上补齐 macOS 可见路径：核对表明确提示结算已完成，可直达“三分支终值”；成绩页默认展示当日已完成终值。
 - 现行引擎：事实包 → 四通道机械召回 → 排序与名额 → 解释 → 预案 → 次日两拍 → 成绩。
 - 退役运行时代码、表、路由、设置和数据已删除；历史追溯使用 Git。
 - 当前进入上产观察期；具体裁定、发布记录和待观察事项见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
@@ -125,14 +125,16 @@ App 的业务板块是“选股 / 成绩 / 复盘”，设置单独入口；系�
 ## 当前生产
 
 V2.5.2 服务端于 2026-08-24 部署到宁波云 `114.66.0.38:/opt/neckline`；
-Build 14 是只更换客户端的 10:00 同步快修。生产数据库保持
+Build 15 是只更换客户端的 10:00 结算可见性快修。生产数据库保持
 28 张现行表，`PRAGMA integrity_check=ok`，发布前后逐表行数完全一致；公开
 `/api/v1/health` 返回 `v2.5.2`，API 服务运行且重启次数为 0。日更、晚间与数据恢复 timer
 均 enabled / active；可选的 `neckline-backup.timer` 为 disabled / inactive。
 
-本次快修没有手动重跑报告，App 仍读取既有 `20260823` 报告。服务器回滚包仍位于
-`/opt/neckline-release-backups/v2.5.2-b13-pre-20260824-093620/`；换包前的 macOS Build 13 位于
-`/Users/linotsai/Lino/app_backups/Neckline-v2.5.2-b13-pre-v2.5.2-b14-20260824-103155/`。
-当前 iOS 签名归档位于 `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b14-20260824/`，由用户自行安装。
+本次快修没有手动重跑报告，也没有改写服务端数据。真实 macOS 界面已验证：核对表显示
+“10:00 结算已完成”，点击后进入 2026-08-24 三分支终值并显示成立 11、放弃 3、观察 6、
+未定案 0。服务器回滚包仍位于
+`/opt/neckline-release-backups/v2.5.2-b13-pre-20260824-093620/`；换包前的 macOS Build 14 位于
+`/Users/linotsai/Lino/app_backups/Neckline-v2.5.2-b14-pre-v2.5.2-b15-20260824-105332/`。
+当前 iOS 签名归档位于 `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b15-20260824/`，由用户自行安装。
 
 完整发布事实与回滚边界以 [PROJECT_PLAN.md](PROJECT_PLAN.md) 为准。
