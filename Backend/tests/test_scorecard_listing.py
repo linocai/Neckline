@@ -93,6 +93,11 @@ def test_d0_to_d2_followup_and_five_metrics(tmp_path, monkeypatch):
     assert pending == 2
     assert provenance == [("K9-v2", "d2-v1", "fixture", "pack", "fp-3")]
     assert listing.active_queue_count(d0, db_path=db) == 2
+    pending_score = listing.load_scorecard(window=20, db_path=db)
+    assert pending_score["settledDays"] == 0
+    assert pending_score["listingCount"] == 0
+    assert pending_score["latestD0Date"] is None
+    assert pending_score["rows"] == []
     assert listing.refresh_day(d0, as_of=d2, db_path=db)
     score = listing.load_scorecard(window=20, db_path=db)
     assert score["strategyVersion"] == "K9-v2"

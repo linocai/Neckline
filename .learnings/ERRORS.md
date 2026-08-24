@@ -441,3 +441,30 @@ Inspect the narrow target range first and apply the implementation and test chan
 - **Notes**: Reapplied as two exact patches; focused provenance and migration tests pass (8 passed).
 
 ---
+
+## [ERR-20260825-001] pending Day 1 counted as settled score day
+
+**Logged**: 2026-08-25T00:52:00+08:00
+**Priority**: critical
+**Status**: in_progress
+**Area**: backend
+
+### Summary
+The closed-production API audit found that `load_scorecard()` selected every prediction date, so a fully pending Day 1 appeared as one settled batch even though every metric denominator was zero.
+
+### Error
+`settledDays=1` while all 20 final-cohort rows had `path_state='pending'` and `evaluable=0`.
+
+### Context
+- The API and timers were still stopped, so the misleading display was never exposed.
+- The active observation queue was correctly 20 and all score numerators/denominators were empty.
+- Existing tests checked the post-D2 settled state but not the Day 1 pre-settlement display contract.
+
+### Suggested Fix
+Select scorecard dates only from final-cohort rows whose `path_state` is no longer `pending`; keep `activeQueueCount` as the separate observation-queue measure; regress `settledDays=0`, `latestD0Date=null`, and empty score rows before D2.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/neckline/scorecard/listing.py, Backend/tests/test_scorecard_listing.py, App/Neckline/Views/ScoreboardView.swift
+
+---

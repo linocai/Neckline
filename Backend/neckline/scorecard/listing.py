@@ -425,7 +425,8 @@ def load_scorecard(
     with readonly_tables(f"{TABLE}.strategy_version", db_path=db_path) as conn:
         dates = [] if conn is None else [r[0] for r in conn.execute(
             f"SELECT DISTINCT d0_date FROM {TABLE} WHERE strategy=? AND strategy_version=? "
-            "ORDER BY d0_date DESC LIMIT ?", (strategy, strategy_version, int(window)),
+            "AND cohort=? AND path_state<>'pending' ORDER BY d0_date DESC LIMIT ?",
+            (strategy, strategy_version, COHORT_FINAL, int(window)),
         ).fetchall()]
         if not dates or conn is None:
             rows: Sequence[tuple] = ()
