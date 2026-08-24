@@ -1,7 +1,7 @@
 # Neckline
 
-当前生产版本为 V2.5.1 Build 12；V2.5.2 Build 13 已完成源码推送和双端签名归档，正在
-执行生产发布。S3 异机备份是默认不启用的可选能力，不再阻塞发布。运行链路仍是 K9。
+当前生产版本为 V2.5.2 Build 13，已于 2026-08-24 部署到宁波云并完成 macOS 换包。
+S3 异机备份是默认不启用的可选能力。运行链路仍是 K9。
 交易日数据在 16:05 更新，报告仅在周一至周四及周日 19:00 生成；周日读取前一周五
 盘面并纳入周末消息，周五和节假日不生成报告。
 
@@ -10,10 +10,9 @@ A 股生产应用：SwiftUI 客户端 + FastAPI 服务。离线研究、回测�
 
 ## 当前状态
 
-- 当前生产版本：**V2.5.1 · Build 12**，已于 2026-08-23 部署到宁波云。
-- macOS 已换装 V2.5.1 Build 12；iOS 签名归档已生成，交由用户自行安装。
-- V2.5.2 Build 13 源码提交为 `5e299a6`；双端归档位于
-  `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b13-20260824/`，尚未换包。
+- 当前生产版本：**V2.5.2 · Build 13**，已于 2026-08-24 部署到宁波云。
+- macOS 已换装 V2.5.2 Build 13；iOS 签名归档已生成，交由用户自行安装。
+- 双端交付物位于 `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b13-20260824/`。
 - 现行引擎：事实包 → 四通道机械召回 → 排序与名额 → 解释 → 预案 → 次日两拍 → 成绩。
 - 退役运行时代码、表、路由、设置和数据已删除；历史追溯使用 Git。
 - 当前进入上产观察期；具体裁定、发布记录和待观察事项见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
@@ -34,6 +33,7 @@ README.md       操作入口
 | 时刻 | 工作 |
 |---|---|
 | 16:05（周一至周五） | 行情数据更新；休市日安全跳过 |
+| 16:25（每日） | 幂等扫描并补齐最多 60 个交易日的数据前置；不生成报告、不发通知 |
 | 19:00（周一至周四） | facts → 方向背景 → K9 → explain → playbook → report；休市日安全跳过 |
 | 19:00（周日） | 使用前一个周五的盘面并纳入周末消息；该周五休市则安全跳过 |
 | 9:26–9:29（D1） | 核对“已触发放弃 / 待开盘后观察”并推送 |
@@ -122,13 +122,14 @@ App 的业务板块是“选股 / 成绩 / 复盘”，设置单独入口；系�
 
 ## 当前生产
 
-V2.5.1 Build 12 于 2026-08-23 部署到宁波云 `114.66.0.38:/opt/neckline`。生产数据库保持
-28 张现行表，`PRAGMA integrity_check=ok`；公开 `/api/v1/health` 返回 `v2.5.1`，API
-服务运行且重启次数为 0。旧 `scan/basket` 单元已下架，晚间链现为
-`facts → strategy → report`。发布没有手动重跑报告，首份正式报告仍由周日 19:00 排程触发。
+V2.5.2 Build 13 于 2026-08-24 部署到宁波云 `114.66.0.38:/opt/neckline`。生产数据库保持
+28 张现行表，`PRAGMA integrity_check=ok`，发布前后逐表行数完全一致；公开
+`/api/v1/health` 返回 `v2.5.2`，API 服务运行且重启次数为 0。日更、晚间与数据恢复 timer
+均 enabled / active；可选的 `neckline-backup.timer` 为 disabled / inactive。
 
-当前服务器回滚包位于
-`/opt/neckline-release-backups/v2.5.1-b12-pre-20260823-165715/`。当前 iOS 签名归档位于
-`/Users/linotsai/Lino/releases/Neckline/v2.5.1-b12-20260823/`，由用户自行安装。
+本次发布没有手动重跑报告，App 仍读取既有 `20260823` 报告。服务器回滚包位于
+`/opt/neckline-release-backups/v2.5.2-b13-pre-20260824-093620/`；换包前的 macOS Build 12
+位于 `/Users/linotsai/Lino/app_backups/Neckline-v2.5.1-b12-pre-v2.5.2-b13-20260824-094038/`。
+当前 iOS 签名归档位于 `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b13-20260824/`，由用户自行安装。
 
 完整发布事实与回滚边界以 [PROJECT_PLAN.md](PROJECT_PLAN.md) 为准。

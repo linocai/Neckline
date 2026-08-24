@@ -1,7 +1,7 @@
 # Neckline · V2.5.2 Build 13 控制面
 
-> 当前生产：V2.5.1 · Build 12 ｜目标版本：V2.5.2 · Build 13
-> 现行引擎：K9 ｜当前阶段：源码与双端归档已就绪；S3 备份改为可选且本次不启用，继续生产发布
+> 当前生产：V2.5.2 · Build 13
+> 现行引擎：K9 ｜当前阶段：生产部署、macOS 换包与发布验证完成；进入 3–5 个交易日观察
 > 更新：2026-08-24 ｜分支：`main` ｜`archive/` 保持空（仅 `.gitkeep`）
 
 本文件是唯一现行计划。Git 负责历史；不建立版本日记、平行计划或归档施工记录。
@@ -12,7 +12,7 @@
 
 - 不改 K9 机械策略、四通道、名额、六项已裁定策略契约或参数包；不跑正式报告。
 - 不恢复 K8、篮子、持仓、旧校准、旧通知，不重做复盘业务；研究和回测仍只在 `whynotme`。
-- 本轮停在部署前门禁；部署、发版、换包、提交和推送均须用户另行授权。
+- 本轮已按用户授权完成部署、发版、macOS 换包、提交和推送；iOS 归档由用户自行安装。
 
 ## 2. 已裁定且不得重开
 
@@ -34,11 +34,11 @@
 
 ## 3. Build 证据与待审风险
 
-- 已完成生产只读审计：28 张现行应用表、无退役表，60 个事实包均在 `version=fp-2` 布局；未做任何生产写入。
+- 发布前完成生产只读审计：28 张现行应用表、无退役表，60 个事实包均在 `version=fp-2` 布局；发布后逐表行数与一致性复核均通过。
 - 两轮 Review 修复均完成：daily/evening timer 禁止 missed-slot 追跑；恢复改为普通周期的最近 60 个交易日数据扫描；news/explain/playbook 的并发 worker 只做调用和纯计算，用量、版本和保存均回主线程串行。备份恢复器在任何 I/O 前完整校验 manifest，隔离恢复、全量校验后才原子落位。
 - 现役源文件已清除退役产品考古词，并由 source guard 防止 K8、六关、篮子、退潮及已删 UI 名称回归。
 - 第三轮 Review 的消息面提示词遗漏已修复：实际 user message 明确四类（立案、暴雷、监管、减持），并由回归测试锁定。
-- 全量后端 pytest 为 `1364 passed, 21 warnings`；API 与复盘冒烟均通过；macOS 与 iOS 的三条构建及两端真实测试均通过。
+- 全量后端 pytest 为 `1365 passed, 21 warnings`；API 与复盘冒烟均通过；macOS 与 iOS 的三条构建及两端真实测试均通过。
 - S3 备份脚本在被调用但缺少 S3、公开密钥、保留开关或隔离恢复验证器时仍 fail-closed；该能力本次不配置、不调用、不启用 timer，也不作为发布门禁。
 - 第四轮独立复审已核验：恢复命令不触发报告/APNs，备份对象与密钥边界、legacy 删除、客户端 Keychain/HTTPS 与离线边界均通过；若未来选择 S3，首次配置与异机恢复演练是启用 timer 的前置条件。
 
@@ -106,8 +106,8 @@
 
 - **APNs**（`api/{notify,stores}.py`、`push/apns.py`、tests）：仅确认永久失效的 APNs 响应才原子删除 token；
   传输、鉴权、限流和未知失败只计失败不删除。验收覆盖 410/明确设备失效及全部瞬态反例，日志只留尾号。
-- **版本/文档**（`Backend/pyproject.toml`、README、PROJECT_PLAN）：元数据升至 2.5.2，README 同时清楚区分
-  “Build 12 当前生产”与“Build 13 待发布”；不虚报部署、备份或验收已完成。
+- **版本/文档**（`Backend/pyproject.toml`、README、PROJECT_PLAN）：元数据升至 2.5.2；发布前区分
+  “Build 12 当前生产”与“Build 13 待发布”，发布后以真实验证结果收口为 Build 13 当前生产。
 - **考古注释**（现役 `Backend/neckline`、`scripts`、`deploy`、`App/Neckline`）：删除 K8、旧版本号、旧章节号、
   已删组件和迁移故事；保留当前用户契约、安全理由与必要运维说明。验收为 source scan + 全量门禁；不改业务语义。
 
@@ -135,10 +135,22 @@ xcodebuild -project Neckline.xcodeproj -scheme Neckline -destination "platform=i
 ## 9. 最终验证与当前下一步
 
 - Plan → Build → Review → Builder 修复 → 第四轮独立复审全部完成；第四轮独立复审无 P0/P1/P2，上一轮 news scan 四类 P2 已关闭。
-- Backend 全量测试：1364 passed、21 warnings；本版部署前门禁通过。
-- 源码已提交并推送 `main`：`5e299a6`（`release: prepare v2.5.2 build 13`）。macOS / iOS
+- Backend 全量测试：1365 passed、21 warnings；本版发布门禁通过。
+- 源码已提交并推送 `main`：`5e299a6`（`release: prepare v2.5.2 build 13`）与
+  `0bbabb4`（`fix: make S3 backup opt-in`）。macOS / iOS
   Release 签名归档已生成并校验为 `2.5.2 (13)`；交付目录为
   `/Users/linotsai/Lino/releases/Neckline/v2.5.2-b13-20260824/`。
-- 生产仍为 V2.5.1 Build 12，macOS 仍未换包，也未触发正式报告。用户已裁定 S3 异机备份
-  改为可选且本次不用；`neckline-backup.timer` 保持 disabled。发布以服务器本地一致性回滚包为门禁，
-  随后继续后端部署、必要 timer 启用、生产验证和换包。
+- 用户已裁定 S3 异机备份改为可选且本次不用；生产 `neckline-backup.timer` 为
+  disabled / inactive。服务器本地一致性回滚包位于
+  `/opt/neckline-release-backups/v2.5.2-b13-pre-20260824-093620/`，数据库完整、28 张表；
+  `source.tgz`、`systemd.tgz`、`neckline.db` 校验值分别为
+  `e6f31f44e7919b947359cbb3766c8998572f7856ccab624fd9a3e1de49489d4e`、
+  `235597bd0a6c51bd230d49ca5adff470255d1c7ee9d248f6ec7854177f6450df`、
+  `ce8338b30a99565b9f709c2422a95b09868cee4a514cded0ba5cb70eef448456`。
+- 宁波云公开健康检查为 `v2.5.2`，服务 active、`NRestarts=0`；28 张表及逐表行数发布前后
+  完全一致。日更、晚间、数据恢复 timer 正常，可选备份 timer 未启用；发布未运行正式报告，
+  既有 `20260823` 报告仍可读取。
+- macOS 已换装并启动 `2.5.2 (13)`，签名有效、归档与安装后可执行文件逐字节一致，Keychain
+  Token 存在且 App HTTPS 请求返回 200。旧 Build 12 备份位于
+  `/Users/linotsai/Lino/app_backups/Neckline-v2.5.1-b12-pre-v2.5.2-b13-20260824-094038/`；
+  iOS `2.5.2 (13)` 签名归档已交付但未安装。
