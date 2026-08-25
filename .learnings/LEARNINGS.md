@@ -31,7 +31,7 @@ For each scheduled server-side transition, define its authoritative timezone and
 
 **Logged**: 2026-08-25T09:24:00+08:00
 **Priority**: high
-**Status**: in_progress
+**Status**: resolved
 **Area**: frontend
 
 ### Summary
@@ -49,6 +49,11 @@ Display the report's explicit strategy identity (`K9-v2`) beside an explicitly n
 - Tags: version-namespace, playbook, K9-v2, macOS, iOS, release-gate
 - See Also: LRN-20260824-003
 - Promoted: AGENTS.md
+
+### Resolution
+- **Resolved**: 2026-08-25T09:36:00+08:00
+- **Commit/Tag**: `bad45b6` / `v2.6.0-b18`
+- **Notes**: Build 17 fixed the detail card, but exact-path UI verification exposed the same ambiguous label in the checklist. Build 18 now uses one shared revision label across checklist, detail, and history, and the installed UI was verified on all affected paths.
 
 ---
 

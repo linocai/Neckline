@@ -1,10 +1,10 @@
 # Neckline
 
-V2.6.0 Build 16 / K9-v2 已于 2026-08-25 完成一条龙发布。正式参数原包为
+V2.6.0 / K9-v2 已于 2026-08-25 完成一条龙发布；当前客户端为 Build 18。正式参数原包为
 `k9-params-20260824-v2-r1`，SHA-256 为
 `718bf7876d69936937edfdc7432bbea88ec1cd3e6e6107501acd325b7f1098df`；加载器仍无任何策略默认值。
 
-宁波云服务端与本机 macOS 客户端均为 V2.6.0 Build 16。最新完整交易日 2026-08-24 已作为
+宁波云服务端为 V2.6.0，本机 macOS 客户端为 V2.6.0 Build 18。最新完整交易日 2026-08-24 已作为
 K9-v2 Day 1 生成首份正式清单；当前只有观察队列，没有已结算成绩。S3 异机备份仍是默认不启用的
 可选能力，日常运行链路只保留 K9-v2。
 交易日数据在 16:05 更新，报告仅在周一至周四及周日 19:00 生成；周日读取前一周五
@@ -15,9 +15,9 @@ A 股生产应用：SwiftUI 客户端 + FastAPI 服务。离线研究、回测�
 
 ## 当前状态
 
-- 当前生产：**V2.6.0 Build 16 / K9-v2 / fp-3 / d2-v1**；最终后端标签为 `v2.6.0-b16-r3`。
-- macOS 已换装 Build 16 并通过真实界面核验；iOS 签名 IPA 已生成，交由用户自行安装。
-- 双端交付物位于 `/Users/linotsai/Lino/releases/Neckline/v2.6.0-b16-20260824/`。
+- 当前生产：**V2.6.0 Build 18 客户端 / K9-v2 / fp-3 / d2-v1**；最终后端标签为 `v2.6.0-b16-r3`，最终客户端标签为 `v2.6.0-b18`。
+- macOS 已换装 Build 18 并通过真实界面核验；策略身份显示为 `K9-v2`，预案修订号明确显示为“预案第 N 版”。iOS 签名 IPA 已生成，交由用户自行安装。
+- 双端交付物位于 `/Users/linotsai/Lino/releases/Neckline/v2.6.0-b18-20260825/`。
 - V2.6.0 链路：fp-3 → 有效活跃度 → P1/P2/P3/P4 → 排序与名额 → 解释 → D1 预案两拍 → D2 五指标。
 - 两次近期 K9-v1 结果只在迁移归档中保留为 `invalidated / superseded_by_k9-v2`，不会进入 K9-v2 的候选、观察、结算或成绩分母；K9-v1 与 `k9-params-20260822-r1` 的正式历史保留。
 - 退役运行时代码、表、路由、设置和数据已删除；历史追溯使用 Git。
@@ -153,11 +153,12 @@ API 服务运行且重启次数为 0，日更、晚间与数据恢复 timer 均 
 解释与作战卡均完成；20 只中 19 只联网核验为干净，`601919.SH 中远海控` 因模型未按格式给出结论
 标签而明确显示“未核验”，没有被伪装成已通过，也不改变机械名单。
 
-macOS `/Applications/Neckline.app` 已换装 V2.6.0 Build 16；为连续读取原有 Keychain 令牌，本机副本
+macOS `/Applications/Neckline.app` 已换装 V2.6.0 Build 18；为连续读取原有 Keychain 令牌，本机副本
 沿用原 Apple Development 身份签名，交付目录中的 macOS 分发包仍保留 Developer ID 签名。
-真实界面已验证清单 20 只，以及“观察队列 20/60、已结算 0 批、指标尚不可得”的空成绩基线。
+真实界面已验证清单 20 只、“观察队列 20/60、已结算 0 批、指标尚不可得”的空成绩基线，
+以及次日核对表与个股次日预案均显示 `K9-v2 · 预案第 1 版`。
 换包前客户端备份位于
-`/Users/linotsai/Lino/app_backups/Neckline-v2.5.2-b15-pre-v2.6.0-b16-20260825-005900/`；
-iOS IPA 位于 `/Users/linotsai/Lino/releases/Neckline/v2.6.0-b16-20260824/`，由用户自行安装。
+`/Users/linotsai/Lino/app_backups/Neckline-v2.6.0-b17-pre-v2.6.0-b18-20260825-093600/`；
+iOS IPA 位于 `/Users/linotsai/Lino/releases/Neckline/v2.6.0-b18-20260825/`，由用户自行安装。
 
 完整发布事实与回滚边界以 [PROJECT_PLAN.md](PROJECT_PLAN.md) 为准。
