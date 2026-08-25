@@ -300,11 +300,14 @@ struct Playbook: Codable, Equatable {
     var isUserEdited: Bool { source == "user" }
     /// `version` 是这一只股票的 append-only 预案修订序号，不是 K9 策略版本。
     /// 产品界面必须把命名空间说清楚，避免 `v1` 被误读成 K9-v1。
-    var revisionLabel: String { "预案第 \(version) 版" }
+    var revisionLabel: String { nkPlaybookRevisionLabel(version) }
     func branch(named name: String) -> PlaybookBranch? { branches.first { $0.name == name } }
     var confirmBranch: PlaybookBranch? { branch(named: "成立") }
     var rejectBranch: PlaybookBranch? { branch(named: "放弃") }
 }
+
+/// 预案版本是逐只 append-only 修订序号；任何策略相关界面都不得退回裸 `vN`。
+func nkPlaybookRevisionLabel(_ version: Int) -> String { "预案第 \(version) 版" }
 
 // MARK: - 清单上的一只票(`/selection/*` 响应的 `stocks[]`)
 

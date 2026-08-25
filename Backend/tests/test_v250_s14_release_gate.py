@@ -19,7 +19,7 @@ def test_release_version_and_build_are_aligned():
     project = (APP / "Neckline.xcodeproj" / "project.pbxproj").read_text(encoding="utf-8")
     assert VERSION == "v2.6.0"
     assert set(re.findall(r"MARKETING_VERSION = ([^;]+);", project)) == {"2.6.0"}
-    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"17"}
+    assert set(re.findall(r"CURRENT_PROJECT_VERSION = ([^;]+);", project)) == {"18"}
 
 
 def test_production_parameter_pack_is_the_exact_approved_original():

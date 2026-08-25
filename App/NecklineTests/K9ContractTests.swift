@@ -109,6 +109,9 @@ final class K9ContractTests: XCTestCase {
                        "没有冻结预案的票要逐只说出来:明早核对不了它们")
         // ⚠ 读不到的量(`open_price: null`)**不进读数表** —— ⛔ 不补 0。
         let row = try XCTUnwrap(list.segment(.rejected)?.rows.first)
+        XCTAssertEqual(row.playbookRevisionLabel, "预案第 1 版")
+        XCTAssertFalse(row.playbookRevisionLabel.hasPrefix("v"),
+                       "次日核对表同样不能把预案修订号写成裸 vN")
         XCTAssertEqual(row.readingRows.count, 2, "9:29 读不到开盘价,那一项不该出现在表里")
         XCTAssertFalse(row.readingRows.contains { $0.label == nkMetricRefLabel("open_price") })
     }

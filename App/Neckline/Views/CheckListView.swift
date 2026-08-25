@@ -115,7 +115,10 @@ struct CheckListView: View {
                         .font(NKFont.body).foregroundStyle(NK.textSecondary)
                         .padding(.horizontal, 2)
                 } else {
-                    ForEach(seg.rows) { row in ChecklistRowView(row: row) }
+                    ForEach(seg.rows) { row in
+                        ChecklistRowView(row: row,
+                                         strategyVersion: model.selection.strategyVersion)
+                    }
                 }
             }
         }
@@ -180,6 +183,7 @@ struct CheckListView: View {
 
 struct ChecklistRowView: View {
     let row: ChecklistRow
+    let strategyVersion: String
     @State private var expanded = NKQA.expandDisclosures
 
     var body: some View {
@@ -195,7 +199,11 @@ struct ChecklistRowView: View {
                            tone: row.verdict?.tone ?? .neutral, filled: row.verdict == .rejected)
                 }
                 HStack(spacing: 8) {
-                    Text("预案 v\(row.playbookVersion)")
+                    if !strategyVersion.isEmpty {
+                        Text(strategyVersion)
+                            .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                    }
+                    Text(row.playbookRevisionLabel)
                         .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
                     if row.quoteState.isEmpty {
                         // ⛔ 「没抓到价」不许静默 —— 它意味着这一只这一拍根本没判过。

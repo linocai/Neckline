@@ -70,6 +70,7 @@ struct ChecklistRow: Codable, Equatable, Identifiable {
 
     var id: String { tsCode }
     var displayName: String { (name?.isEmpty == false) ? name! : tsCode }
+    var playbookRevisionLabel: String { nkPlaybookRevisionLabel(playbookVersion) }
 
     enum CodingKeys: String, CodingKey {
         case tsCode, name, pattern, verdict, segment, playbookVersion
