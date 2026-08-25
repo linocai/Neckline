@@ -28,6 +28,7 @@
 - Any production deployment or database mutation requires explicit verification of the target and a rollback path.
 - Read helpers must not execute DDL. `init_schema()` is a controlled write entry point: API startup, an explicit write command, or a release-migration step against a confirmed, backed-up target. A GET is never a migration trigger.
 - The strategy layer has **no default values**. If the parameter pack is missing or invalid, the report says "今天没跑成 · 参数未配置" and no listing is produced. Never introduce a fallback, a sample value, or a "just for now" number — a default that ships is a strategy change nobody was told about.
+- Never show a bare `vN` on strategy-bearing UI where system, strategy, contract, and append-only revision versions coexist. Name the namespace explicitly (for example `K9-v2` and `预案第 1 版`), and verify those labels on the exact detail/history screen before release.
 - Rulings recorded in `PROJECT_PLAN.md` are settled. Do not reopen them mid-build. Anything genuinely undecided
   must be recorded as 事实 / 选项 / 影响面 / 倾向 — and 倾向 is not a decision.
 

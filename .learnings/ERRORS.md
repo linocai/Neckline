@@ -29,6 +29,36 @@ Use a task-specific name such as `search_rc` for captured exit codes.
 
 ---
 
+## [ERR-20260825-006] Build 17 release guards retained Build 16 assumptions
+
+**Logged**: 2026-08-25T09:26:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: tests
+
+### Summary
+The first full backend gate for the Build 17 client patch found the retired Build 16 icon set still present and a release test still freezing build number 16.
+
+### Error
+`2 failed, 1130 passed`: multiple `.appiconset` directories and expected build `16` versus actual `17`.
+
+### Context
+- The failures occurred locally before commit, signing, installation, or deployment.
+- The new icon configuration itself was already consistently generated as `AppIconV260B17`.
+
+### Suggested Fix
+Delete the retired Build 16 icon set from the live asset catalog, add it to the explicit old-name guard, and advance the release-version assertion to Build 17.
+
+### Metadata
+- Reproducible: yes
+- Related Files: App/Neckline/Resources/Assets.xcassets, Backend/tests/test_v250_s12_app_guard.py, Backend/tests/test_v250_s14_release_gate.py
+
+### Resolution
+- **Resolved**: 2026-08-25T09:27:00+08:00
+- **Notes**: Retired the Build 16 asset set, promoted it into the old-name guard, advanced the release assertion to Build 17, and regenerated the Xcode project. The full backend gate then passed with 1132 tests.
+
+---
+
 ## [ERR-20260824-013] release inspection used root-relative paths from Backend
 
 **Logged**: 2026-08-24T23:12:00+08:00

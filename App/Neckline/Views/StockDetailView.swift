@@ -174,7 +174,10 @@ struct StockDetailView: View {
                 }
                 if let pb = d.playbook {
                     HStack(spacing: 8) {
-                        NKChip(text: "v\(pb.version)", tone: .info)
+                        if !model.selection.strategyVersion.isEmpty {
+                            NKChip(text: model.selection.strategyVersion, tone: .info)
+                        }
+                        NKChip(text: pb.revisionLabel, tone: .neutral)
                         NKChip(text: pb.isUserEdited ? "我改过" : "预案层填的",
                                tone: pb.isUserEdited ? .good : .neutral)
                         if !pb.filledAt.isEmpty {
@@ -227,7 +230,7 @@ struct StockDetailView: View {
                                     trailing: "每次修改都会保留历史版本")
                     ForEach(d.playbookVersions, id: \.version) { pb in
                         HStack(spacing: 8) {
-                            NKChip(text: "v\(pb.version)",
+                            NKChip(text: pb.revisionLabel,
                                    tone: pb.version == d.playbook?.version ? .info : .neutral)
                             Text(pb.isUserEdited ? "我改的" : "预案层填的")
                                 .font(NKFont.caption).foregroundStyle(NK.textSecondary)

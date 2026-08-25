@@ -30,7 +30,7 @@ from tests.client_sources import CLIENT, CLIENT_ROOT, strip_comments
 _ASSET_CATALOG = CLIENT / "Resources" / "Assets.xcassets"
 _PROJECT_YML = CLIENT_ROOT / "project.yml"
 _PBXPROJ = CLIENT_ROOT / "Neckline.xcodeproj" / "project.pbxproj"
-_EXPECTED_PRIMARY_ICON = "AppIconV260B16"
+_EXPECTED_PRIMARY_ICON = "AppIconV260B17"
 
 
 def _code_lines() -> Dict[Path, List[Tuple[int, str]]]:
@@ -234,7 +234,8 @@ def test_the_old_icon_name_is_gone_from_every_one_of_the_four_places():
     改名要同步**四处**:`project.yml` / asset 目录名 / 守门常量 / 重生成的 pbxproj。
     本文件同时锁当前值与「旧名零残留」，不依赖任何退役版本的测试。
     """
-    old_names = ("AppIconV242", "AppIconV250", "AppIconV252B14", "AppIconV252B15")
+    old_names = ("AppIconV242", "AppIconV250", "AppIconV252B14", "AppIconV252B15",
+                 "AppIconV260B16")
     assert _EXPECTED_PRIMARY_ICON not in old_names, "当前发布必须换一个新的 asset-set 名"
     for old in old_names:
         assert not (_ASSET_CATALOG / f"{old}.appiconset").exists(), "旧 asset 目录还在"

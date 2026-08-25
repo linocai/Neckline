@@ -27,6 +27,31 @@ For each scheduled server-side transition, define its authoritative timezone and
 
 ---
 
+## [LRN-20260825-004] correction
+
+**Logged**: 2026-08-25T09:24:00+08:00
+**Priority**: high
+**Status**: in_progress
+**Area**: frontend
+
+### Summary
+Do not display a bare `v1` for an append-only playbook revision on a K9-v2 screen.
+
+### Details
+The K9-v2 stock-detail page correctly loaded the new Day 1 playbook, but the card rendered only `v1`. That value is the first append-only revision of this stock's playbook, not the K9 strategy version. Because the interface did not name either namespace, the user reasonably read it as a stale K9-v1 version and the release appeared mixed.
+
+### Suggested Action
+Display the report's explicit strategy identity (`K9-v2`) beside an explicitly named revision (`预案第 1 版`), use the same wording in version history, and add a contract test that prevents a bare `vN` label. Release QA must follow the exact user path into the stock detail card rather than stopping at the listing and score pages.
+
+### Metadata
+- Source: user_feedback
+- Related Files: App/Neckline/Views/StockDetailView.swift, App/Neckline/Networking/Models/K9Models.swift, App/NecklineTests/K9ContractTests.swift
+- Tags: version-namespace, playbook, K9-v2, macOS, iOS, release-gate
+- See Also: LRN-20260824-003
+- Promoted: AGENTS.md
+
+---
+
 ## [LRN-20260824-003] correction
 
 **Logged**: 2026-08-24T10:44:00+08:00

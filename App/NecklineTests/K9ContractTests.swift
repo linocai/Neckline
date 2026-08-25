@@ -226,6 +226,10 @@ final class K9ContractTests: XCTestCase {
         // 🔴 append-only:v1 的数**一个字没改**。
         XCTAssertEqual(detail.playbookVersions[0].levels.firstResistance, 19.0, accuracy: 1e-9)
         XCTAssertEqual(detail.playbookVersions[0].source, "llm")
+        XCTAssertEqual(detail.playbookVersions[0].revisionLabel, "预案第 1 版")
+        XCTAssertEqual(detail.playbook?.revisionLabel, "预案第 2 版")
+        XCTAssertFalse(detail.playbookVersions[0].revisionLabel.hasPrefix("v"),
+                       "裸 vN 会被误读成 K9 策略版本")
         XCTAssertTrue(detail.playbook?.isUserEdited ?? false)
         // 🔴 要填哪几个数由**服务端下发**(⛔ 客户端不硬编一份键表)。
         XCTAssertEqual(detail.playbookSlots.map(\.key), ["firstResistance", "first30FloorPrice"])
