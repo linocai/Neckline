@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from datetime import date
+import io
 
 import polars as pl
 import pytest
@@ -204,7 +205,8 @@ class TestFreezeIsNotOverwritable:
         v2 = _freeze(env, _build(env))
 
         _seed_day(env, closes={"600001.SH": 99.0})
-        v3 = _freeze(env, dataclasses.replace(_build(env), pack_version="fp-4"))
+        # fp-4 已经是独立合同，不能用 fp-3 行直接改名伪造；这里仅验证通用版本路径隔离。
+        v3 = _freeze(env, dataclasses.replace(_build(env), pack_version="fp-99"))
 
         def close_of(p):
             return p.rows.filter(pl.col("ts_code") == "600001.SH")["close"].to_list()
@@ -216,7 +218,7 @@ class TestFreezeIsNotOverwritable:
             D0, pack_version=fact_pack.PACK_VERSION,
             parquet_dir=env.parquet_dir, db_path=env.db_path)
         again3 = fact_store.load_pack(
-            D0, pack_version="fp-4", parquet_dir=env.parquet_dir, db_path=env.db_path)
+            D0, pack_version="fp-99", parquet_dir=env.parquet_dir, db_path=env.db_path)
 
         assert again2.path != again3.path, "两版必须各占一个坑位"
         assert close_of(again2) == [10.0], "旧版本读回来的必须还是旧版本的数据"
@@ -633,6 +635,65 @@ _SOME_COLS = ["ts_code", "close"]
 
 
 class TestLoadPackRange:
+    def test_range_requires_every_official_trading_day_manifest(self, isolated_env):
+        env = isolated_env
+        days = [date(2026, 8, 17), date(2026, 8, 18), date(2026, 8, 19)]
+        _seed_meta(env); insert_trade_cal(env, days)
+        for day in (days[0], days[2]):
+            _seed_day(env, day=day); _freeze(env, _build(env, day))
+        with pytest.raises(fact_store.FactPackIntegrityError, match="missing=.*20260818"):
+            fact_store.load_pack_range(days[0], days[2], as_of=days[2], columns=_SOME_COLS,
+                                       parquet_dir=env.parquet_dir, db_path=env.db_path)
+        _seed_day(env, day=days[1]); _freeze(env, _build(env, days[1]))
+        complete = fact_store.load_pack_range(days[0], days[2], as_of=days[2], columns=_SOME_COLS,
+                                              parquet_dir=env.parquet_dir, db_path=env.db_path)
+        assert complete.height == 3 * len(UNIVERSE)
+
+    def test_verified_rows_parse_the_same_bytes_that_were_hashed(self, isolated_env, monkeypatch):
+        env = isolated_env; _seed_meta(env); _seed_day(env); frozen = _freeze(env, _build(env))
+        original = pl.read_parquet
+        def replace_after_buffer(source, *args, **kwargs):
+            assert isinstance(source, io.BytesIO)
+            frozen.path.write_bytes(b"replaced-after-hash")
+            return original(source, *args, **kwargs)
+        monkeypatch.setattr(pl, "read_parquet", replace_after_buffer)
+        assert frozen.rows.height == len(UNIVERSE)
+
+    def test_rows_and_range_reject_same_count_tampering_or_truncation(self, isolated_env):
+        env = isolated_env
+        _seed_meta(env)
+        for d in (D0, D1):
+            _seed_day(env, day=d)
+            _freeze(env, _build(env, d))
+        first = fact_store.load_pack(D0, parquet_dir=env.parquet_dir, db_path=env.db_path)
+        changed = pl.read_parquet(first.path).with_columns((pl.col("close") + 0.01).alias("close"))
+        changed.write_parquet(first.path)
+        with pytest.raises(fact_store.FactPackIntegrityError, match="SHA-256"):
+            _ = first.rows
+        with pytest.raises(fact_store.FactPackIntegrityError, match="SHA-256"):
+            fact_store.load_pack_range(D0, D1, as_of=D1, columns=_SOME_COLS,
+                                       parquet_dir=env.parquet_dir, db_path=env.db_path)
+
+    def test_range_rejects_manifest_file_missing_or_row_count_truncated(self, isolated_env):
+        env = isolated_env
+        _seed_meta(env)
+        for d in (D0, D1):
+            _seed_day(env, day=d)
+            _freeze(env, _build(env, d))
+        first = fact_store.load_pack(D0, parquet_dir=env.parquet_dir, db_path=env.db_path)
+        first.path.unlink()
+        with pytest.raises(FileNotFoundError, match="冻结清单不可消费"):
+            fact_store.load_pack_range(D0, D1, as_of=D1, columns=_SOME_COLS,
+                                       parquet_dir=env.parquet_dir, db_path=env.db_path)
+        # Restore the first partition from a separately frozen intact copy, then
+        # keep its bytes internally valid while truncating rows: row_count gate
+        # must still reject it.
+        _seed_day(env, day=D0)
+        replacement = _build(env, D0).rows.head(1)
+        replacement.write_parquet(first.path)
+        with pytest.raises(fact_store.FactPackIntegrityError, match="SHA-256|行数"):
+            _ = fact_store.load_pack(D0, parquet_dir=env.parquet_dir, db_path=env.db_path).rows
+
     def test_reading_past_as_of_is_refused(self, isolated_env):
         env = isolated_env
         with pytest.raises(ValueError, match="截止到当日"):

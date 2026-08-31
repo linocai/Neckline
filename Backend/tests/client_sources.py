@@ -46,8 +46,8 @@ APP_MODEL = CLIENT / "App" / "AppModel.swift"
 _SENTINELS: Dict[str, str] = {
     "SharedModels.swift": "enum NKJSON",
     "K9Models.swift": "struct SelectionSnapshot",
-    "CheckListModels.swift": "enum ChecklistVerdict",
-    "ScoreboardModels.swift": "struct CoverageSnapshot",
+    "CheckListModels.swift": "struct Checklist",
+    "ScoreboardModels.swift": "struct ScoreboardPackageDetail",
     "ReviewModels.swift": "struct ReviewBindery",
 }
 

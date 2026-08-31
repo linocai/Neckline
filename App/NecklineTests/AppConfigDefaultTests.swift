@@ -66,6 +66,7 @@ final class AppConfigDefaultTests: XCTestCase {
         let config = AppConfig(defaults: freshDefaults(), tokenStore: MemoryTokenStore())
         config.baseURLOverride = "https://research.example.test:9000"
         XCTAssertEqual(config.resolvedBaseURL.absoluteString, "https://research.example.test:9000")
+        XCTAssertEqual(config.effectiveServiceLabel, "临时 · research.example.test:9000")
         XCTAssertNil(config.connectionConfigurationError)
     }
 

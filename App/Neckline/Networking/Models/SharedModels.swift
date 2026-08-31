@@ -92,6 +92,123 @@ enum NKJSON: Codable, Equatable {
             return s
         }
     }
+
+    var prettyText: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(self),
+              let string = String(data: data, encoding: .utf8) else { return displayText }
+        return string
+    }
+}
+
+struct K9DirectionTheme: Equatable, Identifiable {
+    let name: String
+    let reason: String
+    var id: String { "\(name)\u{1F}\(reason)" }
+}
+
+struct K9DirectionPresentation: Equatable {
+    let state: String
+    let summary: String
+    let themes: [K9DirectionTheme]
+    let failureReason: String
+}
+
+struct K9ReadableField: Equatable, Identifiable {
+    let path: String
+    let label: String
+    let value: String
+    var id: String { path }
+}
+
+enum K9Presentation {
+    static func direction(_ value: NKJSON) -> K9DirectionPresentation {
+        let object = value.objectValue ?? [:]
+        let themes = (object["themes"]?.arrayValue ?? []).compactMap { item -> K9DirectionTheme? in
+            guard let theme = item.objectValue,
+                  let name = theme["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let reason = theme["reason"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty, !reason.isEmpty else { return nil }
+            return K9DirectionTheme(name: name, reason: reason)
+        }
+        return K9DirectionPresentation(
+            state: object["state"]?.stringValue ?? "",
+            summary: object["summary"]?.stringValue ?? "",
+            themes: themes,
+            failureReason: object["failureReason"]?.stringValue ?? ""
+        )
+    }
+
+    static func readableFields(_ value: NKJSON) -> [K9ReadableField] {
+        flatten(value, path: "")
+    }
+
+    private static func flatten(_ value: NKJSON, path: String) -> [K9ReadableField] {
+        if let object = value.objectValue {
+            return orderedKeys(object).flatMap { key -> [K9ReadableField] in
+                let childPath = path.isEmpty ? key : "\(path).\(key)"
+                let child = object[key]!
+                if child.objectValue != nil || child.arrayValue != nil {
+                    return flatten(child, path: childPath)
+                }
+                return [K9ReadableField(path: childPath, label: label(for: childPath),
+                                        value: valueText(child, key: key))]
+            }
+        }
+        if let array = value.arrayValue {
+            return array.enumerated().flatMap { index, child in
+                flatten(child, path: "\(path)[\(index + 1)]")
+            }
+        }
+        return [K9ReadableField(path: path, label: label(for: path),
+                                value: valueText(value, key: path))]
+    }
+
+    private static func label(for path: String) -> String {
+        let key = path.split(separator: ".").last.map(String.init) ?? path
+        let labels = [
+            "holdAbove": "守住价",
+            "minimumMemberCoverage": "最低成员覆盖",
+            "medianReturnAtOrAbove": "行业中位涨幅至少",
+            "breadthAtOrAbove": "上涨成员占比至少",
+            "relativeBenchmarkReturnAtOrAbove": "相对基准涨幅至少",
+            "failBelowMedianReturn": "行业中位涨幅低于即失效",
+            "failBelowBreadth": "上涨成员占比低于即失效",
+            "failBelowRelativeBenchmarkReturn": "相对基准涨幅低于即失效",
+            "relativeIndustryReturnAtOrAbove": "个股相对行业涨幅至少",
+            "required": "成立要求",
+            "reject": "放弃条件",
+        ]
+        let base = labels[key] ?? key
+        if path.hasPrefix("industry.") { return "行业 · \(base)" }
+        if path.hasPrefix("stock.") { return "个股 · \(base)" }
+        return base
+    }
+
+    private static func orderedKeys(_ object: [String: NKJSON]) -> [String] {
+        let order = [
+            "holdAbove", "industry", "stock", "minimumMemberCoverage",
+            "medianReturnAtOrAbove", "breadthAtOrAbove", "relativeBenchmarkReturnAtOrAbove",
+            "relativeIndustryReturnAtOrAbove", "failBelowMedianReturn", "failBelowBreadth",
+            "failBelowRelativeBenchmarkReturn", "required", "reject",
+        ]
+        let ranks = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
+        return object.keys.sorted {
+            let lhs = ranks[$0] ?? Int.max
+            let rhs = ranks[$1] ?? Int.max
+            return lhs == rhs ? $0 < $1 : lhs < rhs
+        }
+    }
+
+    private static func valueText(_ value: NKJSON, key: String) -> String {
+        guard let number = value.doubleValue else { return value.displayText }
+        let lower = key.lowercased()
+        if lower.contains("return") || lower.contains("coverage") || lower.contains("breadth") {
+            return String(format: "%.1f%%", number * 100)
+        }
+        return String(format: "%.2f", number)
+    }
 }
 
 // MARK: - 展示层枚举换算(服务端只存英文码,中文一律在客户端换算)

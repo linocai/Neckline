@@ -11,7 +11,8 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments k9,explain,playbook --k9-params /opt/neckline/config/k9-params.json
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments k9 --k9-params-env K9_PARAMS_PATH
 # 晚间链没有累计时间截断；单次网络调用仍使用自身超时与重试。
 TimeoutStartSec=infinity
 # 宁波云 20 只正式参数包全链实测峰值 245 MiB；768M 留出约 3.1 倍余量。

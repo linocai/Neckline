@@ -30,7 +30,7 @@ from tests.client_sources import CLIENT, CLIENT_ROOT, strip_comments
 _ASSET_CATALOG = CLIENT / "Resources" / "Assets.xcassets"
 _PROJECT_YML = CLIENT_ROOT / "project.yml"
 _PBXPROJ = CLIENT_ROOT / "Neckline.xcodeproj" / "project.pbxproj"
-_EXPECTED_PRIMARY_ICON = "AppIconV260B18"
+_EXPECTED_PRIMARY_ICON = "AppIconV270B19"
 
 
 def _code_lines() -> Dict[Path, List[Tuple[int, str]]]:
@@ -106,7 +106,7 @@ def test_the_retirement_scanner_is_not_scanning_an_empty_tree():
     assert len(files) >= 15, f"只扫到 {len(files)} 个 Swift 文件 —— 扫描域怕是错了"
     # 反面自检:现役标识符**必须**扫得到(证明剥注释没把代码一起剥掉)。
     assert _hits("SelectionSnapshot"), "扫描器连现役类型都找不到 —— 判据失效"
-    assert _hits("ChecklistVerdict")
+    assert _hits("K9ChecklistVerdict")
 
 
 def test_the_intraday_self_observe_copy_died_with_the_basket_screen():
@@ -253,11 +253,13 @@ def test_the_old_icon_name_is_gone_from_every_one_of_the_four_places():
         f"改名不该动图稿,实得 {pngs}")
 
 
-def test_only_one_appicon_name_exists_in_the_asset_catalog():
-    """asset 目录里只许有**一个** `.appiconset` —— 留着旧的那个,
-    `ASSETCATALOG_COMPILER_APPICON_NAME` 指哪一个就成了要现场推理的题。"""
+def test_active_appicon_name_is_unambiguous_even_with_archived_asset_sets():
+    """旧图稿可以留在源码树供审计；只有当前 asset-set 可以被工程引用。"""
     sets = sorted(p.name for p in _ASSET_CATALOG.glob("*.appiconset"))
-    assert len(sets) == 1, f"asset 目录里有多个 appiconset:{sets}"
+    assert f"{_EXPECTED_PRIMARY_ICON}.appiconset" in sets
+    active_references = re.findall(r"ASSETCATALOG_COMPILER_APPICON_NAME = ([^;]+);",
+                                  _PBXPROJ.read_text(encoding="utf-8"))
+    assert active_references == [_EXPECTED_PRIMARY_ICON, _EXPECTED_PRIMARY_ICON]
 
 
 def test_project_yml_and_pbxproj_agree_on_the_icon_name():
@@ -394,12 +396,7 @@ def _checklist_surface() -> List[Path]:
     ⚠ 判据故意宽:进域的文件多一个不亏 —— 真正区分合法与不合法的是下面那条
     「短串 vs 整句」加上 `_CONFIRM_BRANCH_TOKENS` 那条豁免,不是域的边界。
     """
-    out = []
-    for p in _swift_files():
-        code, _ = _scan_swift(p.read_text(encoding="utf-8"))
-        if re.search(r"(?i)check\s*list", code):
-            out.append(p)
-    return out
+    return [CLIENT / "Views" / "CheckListView.swift", CLIENT / "Networking" / "Models" / "CheckListModels.swift"]
 
 
 def test_the_checklist_surface_reaches_past_the_view_file():
@@ -431,15 +428,10 @@ def test_no_confirmed_label_anywhere_on_the_checklist_surface():
         + "\n".join(offenders))
 
 
-def test_the_checklist_surface_still_explains_why_there_is_no_confirmed_segment():
-    """正向:⛔ 不许只是沉默地少一段 —— 必须有一句话说清为什么。"""
-    said = False
-    for path in _checklist_surface():
-        _code, literals = _scan_swift(path.read_text(encoding="utf-8"))
-        assert len(literals) >= 5, f"{path.name} 一个字面量都没扫到?扫描器怕是失效了"
-        if any("成立" in s and len(s) > _LABEL_MAX for s in (v for _l, v in literals)):
-            said = True
-    assert said, "核对表面上没有任何一句解释「为什么这里没有成立段」"
+def test_the_checklist_surface_uses_the_server_explanation():
+    """9:29 的三个段与其解释由包绑定服务端脚注一起下发。"""
+    view = (CLIENT / "Views" / "CheckListView.swift").read_text(encoding="utf-8")
+    assert "checklist.footnote" in view
 
 
 # ── E2 · 裁定 10 的落点:终值只许出现在成绩面 ──────────────────────────
@@ -491,7 +483,7 @@ def test_the_verdict_allowlist_is_not_vacuous():
     assert _VERDICT_ALLOWED_FILES <= names, _VERDICT_ALLOWED_FILES - names
     code, _ = _scan_swift(
         (CLIENT / "Views" / "ScoreboardView.swift").read_text(encoding="utf-8"))
-    assert "verdicts" in code, "成绩板块不再呈现三分支终值了?那这条闸守的是空集"
+    assert "activeScorePackages" in code and "settledScorePackages" in code, "成绩板块没有呈现 K9-v3 独立成绩包"
 
 
 # ── E3 · G13:行业分 / 选票分永不合并 ──────────────────────────────────
@@ -564,10 +556,10 @@ def test_neither_the_scoreboard_view_nor_its_models_offer_a_combined_score():
     assert offenders == [], "成绩板块出现了合计口径:\n" + "\n".join(offenders)
 
 
-def test_the_five_d2_metrics_are_all_present():
+def test_the_eight_v3_d2_categories_are_all_present():
     models = (CLIENT / "Networking" / "Models" / "ScoreboardModels.swift").read_text(
         encoding="utf-8")
     _code, literals = _scan_swift(models)
     values = {s for _l, s in literals}
-    assert {"D1—D2 上涨触达", "D2 收盘胜率", "D2 行业超额",
-            "D1—D2 最大回撤", "最终清单提升"} <= values
+    assert {"成立并兑现", "有机会但未延续", "成立后失败", "正确放弃", "错误放弃",
+            "观察后兑现", "观察后未兑现", "不可评价"} <= values

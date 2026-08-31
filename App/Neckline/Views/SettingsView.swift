@@ -150,7 +150,7 @@ struct SettingsView: View {
     private func groupCaption(_ g: NKSettingsGroup) -> String {
         switch g {
         case .backend:
-            return "\(config.environment.label) · \(config.hasToken ? "访问码已填" : "访问码未填")"
+            return "\(config.effectiveServiceLabel) · \(config.hasToken ? "访问码已填" : "访问码未填")"
         case .llm:
             return "模型与联网资料状态"
         case .push:
@@ -201,9 +201,9 @@ struct SettingsView: View {
         detailTitle("连接与账号", "这里仅确认状态；更换服务地址、访问码或排查连接，请到“高级与诊断”。")
         NKFieldCard {
             NKFieldRow(v: 14, h: 18) {
-                NKFieldLabel(text: "当前环境")
+                NKFieldLabel(text: "当前服务")
                 Spacer(minLength: 8)
-                Text(config.environment.label).font(NKFont.callout).foregroundStyle(NK.textPrimary)
+                Text(config.effectiveServiceLabel).font(NKFont.callout).foregroundStyle(NK.textPrimary)
             }
             NKFieldSeparator()
             NKFieldRow(v: 14, h: 18) {
@@ -509,12 +509,15 @@ struct SettingsView: View {
             } else {
                 ForEach(model.usageSummary.days) { day in
                     NKFieldSeparator()
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(NKFmt.reportDate(day.date)).font(NKFont.callout).foregroundStyle(NK.textPrimary)
-                        ForEach(day.tasks) { task in
-                            Text("\(usageTaskLabel(task.task))：\(task.calls) 次 · Token \(task.totalTokens.map(String.init) ?? "未回传") · 搜索额度 \(task.tavilyCredits.map(String.init) ?? "—")")
-                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                    NKFieldRow(v: 10, h: 18, alignment: .top) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(NKFmt.reportDate(day.date)).font(NKFont.callout).foregroundStyle(NK.textPrimary)
+                            ForEach(day.tasks) { task in
+                                Text("\(usageTaskLabel(task.task))：\(task.calls) 次 · Token \(task.totalTokens.map(String.init) ?? "未回传") · 搜索额度 \(task.tavilyCredits.map(String.init) ?? "—")")
+                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                            }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
@@ -705,6 +708,7 @@ struct SettingsView: View {
             footerSection
         }
         .formStyle(.grouped)
+        .contentMargins(.bottom, 96, for: .scrollContent)
         .task {
             await model.loadSettings()
             await model.loadServerVersion()
@@ -1009,11 +1013,7 @@ struct SettingsView: View {
     /// 两者都源自同一个 `MARKETING_VERSION`(守门单测锁三处恒等),故去掉服务端 "v"
     /// 前缀后直接字符串比较即可。服务端版本未知时**不提示** —— 沉默,不是"已确认一致"。
     private var versionMismatchNote: String? {
-        guard let server = model.serverVersion else { return nil }
-        let serverBare = server.hasPrefix("v") ? String(server.dropFirst()) : server
-        let appShort = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
-        guard serverBare != appShort else { return nil }
-        return "服务端已是 v\(serverBare),当前 App 为 \(appShort),请换包"
+        NKVersionCompatibility.message(serverVersion: model.serverVersion)
     }
 
     // MARK: - 自检逻辑

@@ -51,23 +51,19 @@ assert d['state']=='not_run'
 print(d['headline'])
 "
 
-echo "6) 两条成绩线空态"
-curl -fsS "${AUTH[@]}" "$BASE/scoreboard/coverage?window=5" | "$PY" -c "
-import json,sys
-assert json.load(sys.stdin)['days']==[]
-"
-curl -fsS "${AUTH[@]}" "$BASE/scoreboard/listing?window=5" | "$PY" -c "
+echo "6) K9-v3 成绩包空态"
+curl -fsS "${AUTH[@]}" "$BASE/scoreboard/packages?state=active" | "$PY" -c "
 import json,sys
 d=json.load(sys.stdin)
-assert d['listingCount']==0 and d['settledDays']==0
+assert d['strategyVersion']=='K9-v3' and d['packages']==[]
+"
+curl -fsS "${AUTH[@]}" "$BASE/scoreboard/packages?state=settled" | "$PY" -c "
+import json,sys
+assert json.load(sys.stdin)['packages']==[]
 "
 
-echo "7) 次日核对未运行与结算空态"
-test "$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "$BASE/checklist/20240430")" = "404"
-curl -fsS "${AUTH[@]}" "$BASE/scoreboard/verdicts/20240430" | "$PY" -c "
-import json,sys
-assert json.load(sys.stdin)['verdicts']==[]
-"
+echo "7) 次日核对只接受成绩包 ID"
+test "$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "$BASE/checklists/no-such-package")" = "404"
 
 echo "8) 复盘现行两段"
 curl -fsS "${AUTH[@]}" "$BASE/review/overview?week=20240430" | "$PY" -c "

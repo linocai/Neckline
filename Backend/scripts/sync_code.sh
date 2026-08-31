@@ -10,7 +10,7 @@
 #   · 收尾权限修复必须跳过 data/；脚本末尾会只读核对生产数据库属主。
 #
 # 用法:
-#   NECKLINE_DEPLOY_HOST=114.66.0.38 bash scripts/sync_code.sh
+#   NECKLINE_DEPLOY_HOST=114.66.2.205 bash scripts/sync_code.sh
 #   DRY_RUN=1 bash scripts/sync_code.sh    # 预演,不实传;属主自检随之跳过(dry-run 未
 #                                           # 触碰远端,检查无意义,见脚本内注释)
 #   NECKLINE_DEPLOY_HOST=... NECKLINE_DEPLOY_USER=... NECKLINE_DEPLOY_PATH=... bash scripts/sync_code.sh

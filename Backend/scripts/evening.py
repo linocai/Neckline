@@ -15,7 +15,7 @@
     python scripts/evening.py 20260724                # 指定交易日
     python scripts/evening.py --segments facts,k9     # 只跑其中几段(三个 oneshot 的接缝)
     python scripts/evening.py --k9-params config/k9-params.v1.json
-    python scripts/evening.py --no-save               # 不落 `k9_reports`(调试)
+    python scripts/evening.py --no-save               # 不落成绩包报告投影(调试)
     python scripts/evening.py --notify                # 落库后触发 APNs
     python scripts/evening.py --scheduled             # 仅给 systemd:工作日=当天,周日=前一周五
 
@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sqlite3
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -46,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from neckline.calendar import is_trading_day, official_is_trading_day, prev_trading_day  # noqa: E402
 from neckline.config import ensure_data_dirs, settings  # noqa: E402
-from neckline.db import readonly_connection  # noqa: E402
+from neckline.db import init_schema, readonly_connection  # noqa: E402
 from neckline.report.evening import (  # noqa: E402
     CHAIN_SEGMENTS,
     STATUS_FAILED,
@@ -69,9 +70,10 @@ def _reports_dir(db_path: Path | None) -> Path:
     return settings.data_dir / "reports"
 
 
-def _default_trade_date() -> date:
+def _default_trade_date(*, db_path: Path | None = None) -> date:
     today = date.today()
-    return today if is_trading_day(today) else prev_trading_day(today)
+    calendar_db = db_path if db_path is not None else settings.db_path
+    return today if is_trading_day(today, db_path=calendar_db) else prev_trading_day(today, db_path=calendar_db)
 
 
 def _today() -> date:
@@ -139,7 +141,9 @@ def main() -> int:
         "--k9-params", default=None,
         help="K9 参数包 JSON 路径(⛔ 无默认路径:不传 = 参数未配置 = 报告「今天没跑成」)",
     )
-    parser.add_argument("--no-save", action="store_true", help="不落 k9_reports 表/不写 md")
+    parser.add_argument("--k9-params-env", default="K9_PARAMS_PATH",
+                        help="显式参数路径环境变量名；空值即参数未配置，不自动发现文件")
+    parser.add_argument("--no-save", action="store_true", help="不落 k9_package_reports 表/不写 md")
     parser.add_argument("--notify", action="store_true",
                         help="落库后触发 APNs 报告推送(受 kind=report_ready 开关)")
     parser.add_argument(
@@ -151,6 +155,8 @@ def main() -> int:
     args = parser.parse_args()
 
     ensure_data_dirs()
+    db_path = Path(args.db) if args.db else None
+    parquet_dir = Path(args.parquet_dir) if args.parquet_dir else None
     if (args.trade_date or args.report_date) and args.scheduled:
         logger.error("显式交易日与 --scheduled 不能同时使用。")
         return 2
@@ -160,11 +166,15 @@ def main() -> int:
     elif args.scheduled:
         scheduled_today = _today()
         trade_date = _scheduled_trade_date(scheduled_today)
-        if official_is_trading_day(trade_date) is not True:
+        if official_is_trading_day(trade_date, db_path=db_path) is not True:
             logger.info("定时槽对应 %s,非交易日;安全跳过,不回退重跑旧报告。", trade_date)
             return 0
     else:
-        trade_date = _default_trade_date()
+        try:
+            trade_date = _default_trade_date(db_path=db_path)
+        except RuntimeError as exc:
+            logger.error("交易日历未就绪:%s", exc)
+            return 1
     try:
         report_date = (
             scheduled_today
@@ -176,7 +186,7 @@ def main() -> int:
     except ValueError:
         logger.error("报告日期格式错误,必须是 YYYYMMDD。")
         return 2
-    if official_is_trading_day(trade_date) is not True:
+    if official_is_trading_day(trade_date, db_path=db_path) is not True:
         logger.error("%s 不是已落库官方交易日,无报告可生成。", trade_date)
         return 1
 
@@ -186,8 +196,6 @@ def main() -> int:
         logger.error("未知段名 %s;可用:%s", unknown, list(CHAIN_SEGMENTS))
         return 2
 
-    db_path = Path(args.db) if args.db else None
-    parquet_dir = Path(args.parquet_dir) if args.parquet_dir else None
     if (
         args.scheduled
         and scheduled_today is not None
@@ -199,10 +207,16 @@ def main() -> int:
         )
         return 0
 
-    k9_params_path = Path(args.k9_params) if args.k9_params else None
+    # This CLI is an explicit write entry point.  The target calendar was
+    # already checked above from the same DB; read endpoints never migrate.
+    init_schema(db_path)
+
+    explicit_path = args.k9_params or os.environ.get(args.k9_params_env, "").strip()
+    k9_params_path = Path(explicit_path) if explicit_path else None
     if k9_params_path is not None and not k9_params_path.exists():
-        logger.error("参数包路径不存在:%s", k9_params_path)
-        return 2
+        # An absent approved artifact is a reportable safe state, not a systemd
+        # invocation error.  v3_params.load will record the precise gap.
+        logger.warning("参数包路径不存在，将生成“参数未配置”报告:%s", k9_params_path)
 
     logger.info(
         "晚间链 报告日=%s 行情截止=%s:段 %s(params=%s,save=%s)",
@@ -227,7 +241,7 @@ def main() -> int:
         reports_dir.mkdir(parents=True, exist_ok=True)
         out_path = reports_dir / f"{report_date.strftime('%Y%m%d')}.md"
         out_path.write_text(res.bundle.markdown, encoding="utf-8")
-        logger.info("报告已写入 %s,并已落库 SQLite `k9_reports` 表。", out_path)
+        logger.info("报告已写入 %s,并已落库 SQLite `k9_package_reports` 表。", out_path)
         if args.notify:
             _notify(res.bundle, db_path=db_path)
 
@@ -254,6 +268,9 @@ def _notify(bundle, *, db_path: Path | None = None) -> None:
         from neckline.api.notify import push_report_ready
 
         state = bundle.state.value
+        if state == "not_run":
+            logger.info("报告为未运行状态，禁止 APNs 推送。")
+            return
         if state not in _PUSH_STATE:
             raise AssertionError(f"报告三态里冒出了 {state!r} —— 推送文案是全映射")
         outcome = push_report_ready(

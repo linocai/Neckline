@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import backfill  # noqa: E402  (同目录 scripts/backfill.py)
 
-from neckline.calendar import official_is_trading_day, reset_cache  # noqa: E402
+from neckline.calendar import CN_TZ, official_is_trading_day, reset_cache  # noqa: E402
 from neckline.config import ensure_data_dirs, settings  # noqa: E402
 from neckline.db import init_schema  # noqa: E402
 
@@ -40,31 +40,25 @@ logger = logging.getLogger("daily_update")
 LIMIT_DERIVED_TRAILING_DAYS = 15  # 尾部重算窗口(交易日),覆盖连板计数跨批次边界
 
 
-def update_sw_industry() -> None:
+def update_sw_industry(target: date) -> bool:
     """V2.5.0 S2:申万 2021 版行业分类日更(`sw_industry_classify` / `sw_industry_member`)。
 
-    🔴 **判据输入,不是增强项**:K9 全文的「相对强度」以申万**二级**行业当日成员涨跌幅
-    中位数为基准(裁定 2),第三层排序的「行业热度分」也读它。故与 `update_suspend_list`
-    同样**尽力而为不改退出码**,但**日志级别用 ERROR**
-    (同已退役的 `update_industry_strength` 旧例的理由)。
-
-    ⚠ **两张表是「当前归属快照」,与 `target` 无关** —— 接口只给当前归属,故本函数
-    不接受交易日参数;补跑历史日时它照样把表刷成今天的。这一点与事实包回填的语义差
-    是同一件事(PROJECT_PLAN §5.3.5:回填包用的是**今天的**申万归属快照),
-    ⛔ 别写「按 target 回改历史归属」的机灵代码。
+    fp-4 只能消费目标交易日的不可变成员快照。因此日更刷新失败或未能写入
+    ``target`` 快照时，必须让主任务失败；不能用当前归属替代历史回填，也不能把
+    ``fetched_at`` 伪装为有效交易日。
     """
     from neckline.data import sw_industry
 
-    stats = sw_industry.refresh()
+    stats = sw_industry.refresh(target_date=target)
     if not stats.ok:
         logger.error(
-            "[sw_industry] 申万分类日更未通过(已吞,不阻断主增量)——**判据输入缺失**,"
-            "今日相对强度与行业热度分将算不出。原因:%s。补算:"
-            "python -c \"from neckline.data import sw_industry; print(sw_industry.refresh())\"",
+            "[sw_industry] 申万分类日更未通过，拒绝生成目标日 fp-4。原因:%s。补算:"
+            "python -c \"from datetime import date; from neckline.data import sw_industry; print(sw_industry.refresh(target_date=date.today()))\"",
             stats.reason,
         )
-        return
+        return False
     logger.info("[sw_industry] %s", stats.summary())
+    return True
 
 
 def build_and_freeze_fact_pack(target: date) -> None:
@@ -77,10 +71,10 @@ def build_and_freeze_fact_pack(target: date) -> None:
     **已冻结过就跳过**(`PackAlreadyFrozen`):冻结不可覆盖(§5.3.2 纪律 3),补跑同一天
     是幂等的 no-op,不是错误。口径真变了走新 `pack_version`。
 
-    与 `update_sw_industry` 同一姿势:**尽力而为不改退出码,但日志用 ERROR** ——
-    它是整条 K9 链的输入,不是增强项。
+    目标日 SW2021 成员快照是 fp-4 的硬输入；日更已在调用本函数前完成该闸门。
     """
-    from neckline.facts import pack as fact_pack
+    from neckline.facts import v4 as fact_pack
+    from neckline.facts.pack import IncompletePack
     from neckline.facts import store as fact_store
 
     try:
@@ -88,7 +82,7 @@ def build_and_freeze_fact_pack(target: date) -> None:
     except Exception:  # noqa: BLE001
         logger.error("[fact_pack] %s 构建异常(已吞,不阻断主增量)", target, exc_info=True)
         return
-    if isinstance(built, fact_pack.IncompletePack):
+    if isinstance(built, IncompletePack):
         logger.error(
             "[fact_pack] %s **数据未到齐,不冻结**(报告将出「今天没跑成」)。缺口:%s。"
             "补齐后重跑:python scripts/daily_update.py %s",
@@ -114,68 +108,13 @@ def verify_readiness(target: date) -> bool:
     """日更的最终判据：19:00 消费前必须通过只读就绪检查。"""
     from neckline.facts import readiness
 
-    result = readiness.preflight(target)
+    result = readiness.preflight(target, pack_version="fp-4")
     if result.ready:
         logger.info("[readiness] %s 已就绪，冻结包=%s", target, result.pack_id)
         return True
     logger.error("[readiness] %s 未就绪，晚间链将只产出 not_run：%s", target, "；".join(result.gaps))
     return False
 
-
-def refresh_coverage(target: date) -> None:
-    """V2.5.0 S4:覆盖率成绩线(PROJECT_PLAN §5.8.1)。
-
-    🔴 **它是尺子**:以涨停为口径,⛔ 不读任何待标定参数,参数标定完成之前就能跑。
-    必须排在事实包冻结**之后**(它读那份冻结包)。
-
-    ⚠ **S7 起 `listing` / `dispositions` 真的接上了**(S4 登记的那条「清单开始产出
-    的次日自动接上」):`report/evening.py::coverage_inputs` 把 **D−1** 的 K9 清单与
-    全市场 disposition 翻成覆盖率层的 DTO。两者仍可能是 `None`(上线首日 / 昨天没跑
-    成),那时 `coverage_all` 照旧落 **NULL**(⛔ 不是 0)。
-
-    🔴 **接线为什么在编排器里**:守门单测断言 `scorecard/**` 零 import `neckline.k9`
-    —— 尺子不许读被量的东西。策略侧信息只经 `k9_disposition` / `k9_listing_entries`
-    这条**数据**通道进来。⛔ 别把 `coverage_inputs` 搬进 `scorecard/`。
-
-    ⚠ **Plan 没写覆盖率挂在哪条链上**(§9.3 的晚间段序是 facts→k9→explain→playbook
-    →report,没有 scorecard 段)。本片挂在 16:05 日更、紧随事实包冻结之后 ——
-    它只读当日那一份冻结包,是秒级动作,不值得为它新增一个段。已登记进 §14。
-
-    尽力而为**不改退出码**;它是成绩线不是判据输入,失败打 WARNING。
-    """
-    from neckline.report.evening import coverage_inputs
-    from neckline.scorecard import coverage as coverage_mod
-
-    try:
-        listing, dispositions = coverage_inputs(target)
-        day = coverage_mod.refresh_day(
-            target, listing=listing, dispositions=dispositions)
-    except Exception:  # noqa: BLE001
-        logger.warning("[coverage] %s 覆盖率刷新异常(已吞,不阻断主增量)", target, exc_info=True)
-        return
-    if day is None:
-        logger.info("[coverage] %s 无冻结事实包,本日无覆盖率(⛔ 不编一行 0)", target)
-        return
-    logger.info(
-        "[coverage] %s 涨停 %d 只;昨日清单命中率 %s",
-        target, day.limit_up_count,
-        "NULL(昨天没有清单)" if day.coverage_all is None else f"{day.coverage_all:.1%}",
-    )
-
-
-def refresh_listing_scorecards(target: date) -> None:
-    """当日事实包到位后补齐所有已走完 D2 的 K9-v2 清单成绩。"""
-    from neckline.scorecard import listing
-
-    try:
-        opened = listing.open_due(target)
-        count = listing.refresh_due(target)
-    except Exception:  # noqa: BLE001
-        logger.warning("[listing_scorecard] %s 刷新异常(已吞,不阻断行情日更)",
-                       target, exc_info=True)
-        return
-    logger.info("[listing_scorecard] 截至 %s 已恢复 %d 条预测、刷新 %d 个清单日",
-                target, opened, count)
 
 
 def update_suspend_list(target: date) -> None:
@@ -201,10 +140,7 @@ def update_suspend_list(target: date) -> None:
 
 
 def update_top_list(target: date) -> None:
-    """尽力获取当日龙虎榜并落日分区；失败由 fp-3 冻结为 unavailable。
-
-    龙虎榜只给 K9-v2 P3 做附加证据，缺失不能阻断事实包，更不能被解释为未上榜。
-    """
+    """尽力获取龙虎榜原始事实；它不参与 K9-v3 的参数未配置安全态。"""
     from neckline.data.top_list import load_top_list
 
     try:
@@ -213,9 +149,9 @@ def update_top_list(target: date) -> None:
         if day_file_exists("top_list", target):
             logger.info("[top_list] %s 已查，%d 行", target, frame.height)
         else:
-            logger.warning("[top_list] %s 数据不可用；fp-3 将明确记录 unavailable", target)
+            logger.warning("[top_list] %s 数据不可用；fp-4 将明确记录 unavailable", target)
     except Exception:  # noqa: BLE001
-        logger.warning("[top_list] %s 获取异常；fp-3 将明确记录 unavailable", target,
+        logger.warning("[top_list] %s 获取异常；fp-4 将明确记录 unavailable", target,
                        exc_info=True)
 
 
@@ -228,7 +164,8 @@ def main() -> int:
     init_schema()
     reset_cache()
 
-    target = datetime.strptime(sys.argv[1], "%Y%m%d").date() if len(sys.argv) > 1 else date.today()
+    target = (datetime.strptime(sys.argv[1], "%Y%m%d").date()
+              if len(sys.argv) > 1 else datetime.now(CN_TZ).date())
 
     calendar_open = official_is_trading_day(target)
     if calendar_open is None:
@@ -259,17 +196,15 @@ def main() -> int:
     update_suspend_list(target)
     update_top_list(target)
     # V2.5.0 S2:申万二级分类日更(**判据输入**,失败打 ERROR;见函数 docstring)。
-    update_sw_industry()
+    if not update_sw_industry(target):
+        logger.error("[sw_industry] 目标日快照未就绪，拒绝构建 fp-4。")
+        return 1
     # V2.5.0 S3:事实包构建 + 冻结(架构第一层)。必须排在 `update_sw_industry` **之后**
     # (申万归属是中位数的输入)与全部行情落盘之后(完整性判定要看当日分区)。
     build_and_freeze_fact_pack(target)
     if not verify_readiness(target):
         # 16:05 进程必须让 systemd 看见失败；不得把半套数据伪装成成功更新。
         return 1
-    # V2.5.0 S4:覆盖率成绩线(尺子)。必须排在事实包冻结**之后** —— 它读那份冻结包。
-    refresh_coverage(target)
-    refresh_listing_scorecards(target)
-
     logger.info("增量更新完成:%s", target)
     return 0
 

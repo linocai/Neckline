@@ -27,6 +27,33 @@ For each scheduled server-side transition, define its authoritative timezone and
 
 ---
 
+## [LRN-20260831-001] correction
+
+**Logged**: 2026-08-31T11:39:00+08:00
+**Priority**: critical
+**Status**: resolved
+**Area**: infra
+
+### Summary
+Read `/Users/linotsai/Lino/NB_info.md` before every NB cloud operation; the old `114.66.0.38` target is retired.
+
+### Details
+The release-readiness audit followed stale repository examples and repeatedly tried SSH against `114.66.0.38`. The authoritative NB record had already documented the provider IP change to `114.66.2.205`, the new ED25519 fingerprint, and successful `deploy` authentication. The public business domain staying unchanged did not imply the host IP stayed unchanged.
+
+### Suggested Action
+Treat `NB_info.md` as the first source for NB identity, IP, fingerprint, network topology, and current recovery notes. Verify its recorded fingerprint before adding a new known-host entry, then update any stale project-local examples immediately.
+
+### Metadata
+- Source: user_feedback
+- Related Files: /Users/linotsai/Lino/NB_info.md, Backend/scripts/sync_code.sh, Backend/scripts/sync_data.sh, App/Neckline/Networking/AppConfig.swift, README.md, PROJECT_PLAN.md
+- Tags: NB, SSH, source-authority, deployment
+
+### Resolution
+- **Resolved**: 2026-08-31T11:39:00+08:00
+- **Notes**: Verified the new host fingerprint, added the exact ED25519 key, logged in as `deploy`, and replaced active Neckline references to the retired IP.
+
+---
+
 ## [LRN-20260825-004] correction
 
 **Logged**: 2026-08-25T09:24:00+08:00

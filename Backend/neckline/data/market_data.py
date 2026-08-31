@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -156,7 +157,7 @@ TABLE_FLOAT_COLS: Dict[str, Tuple[str, ...]] = {
     # PROJECT_PLAN §五 V2-① 「parquet 两表」)。volume/amount 口径同 `daily` 既有惯例
     # (手 / 元);cum_volume/cum_amount 是当日累计量,同样声明 Float64(与本项目其它
     # "计数类"列——如 `daily.vol`——统一走 CANONICAL_FLOAT 的既有口径一致,不特殊化)。
-    "intraday_ticks": ("price", "volume", "amount", "cum_volume", "cum_amount"),
+    "intraday_ticks": ("price", "volume", "amount", "cum_volume", "cum_amount", "volume_delta", "amount_delta"),
     "auction_snapshots": ("auction_price", "auction_volume", "auction_amount", "pre_close", "gap_pct"),
     # V2.5.0 S3(§12 坑 2:新 parquet 表必须显式声明数值列)。事实包 40 列里的 25 个
     # 浮点列全部在此。**刻意不声明**的是本项目自算的非浮点列 —— `is_st` /
@@ -248,7 +249,17 @@ def write_table_day(table: str, trade_date: DateLike, df: pl.DataFrame, parquet_
     path = day_file_path(table, trade_date, parquet_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     df = _align_to_table_schema(table, df, parquet_dir)
-    df.write_parquet(path)
+    # A completed parquet is evidence. Never let a crash expose a partial
+    # replacement: write and fsync in the same directory, then atomically swap.
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        df.write_parquet(tmp)
+        with tmp.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
     return path
 
 

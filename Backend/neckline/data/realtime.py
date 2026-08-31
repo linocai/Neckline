@@ -66,6 +66,9 @@ class Quote:
     source: str             # "sina" | "tencent"
     bid: List[float] = field(default_factory=list)   # bid1..5 价
     ask: List[float] = field(default_factory=list)   # ask1..5 价
+    # ``price`` is safe for display and may equal pre_close when a feed emits
+    # zero.  Settlement must use only this field plus cumulative evidence.
+    traded_price: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -90,6 +93,13 @@ def to_symbol(code: str) -> str:
     if c.startswith(("sh", "sz", "bj")):
         return c
     raw = code.strip().upper()
+    # 新浪/腾讯的股票行情端点 does not speak the Shenwan industry-index
+    # namespace.  Falling through to the BSE digit heuristic turns e.g.
+    # 801080.SI into ``bj801080`` — a different security, silently.  P4 must
+    # aggregate its frozen constituent equities instead; reject this namespace
+    # at the adapter boundary so a future caller cannot revive that path.
+    if raw.endswith(".SI"):
+        raise ValueError(f"新浪/腾讯股票行情不支持申万行业代码:{raw}")
     digits = re.sub(r"\D", "", c)
     if not digits:
         return c
@@ -168,6 +178,7 @@ def _parse_sina(symbol: str, body: str) -> Optional[Quote]:
         source="sina",
         bid=bid,
         ask=ask,
+        traded_price=(price if price > 0 and (volume_shares > 0 or amount_yuan > 0) else None),
     )
 
 
@@ -226,6 +237,7 @@ def _parse_tencent(symbol: str, body: str) -> Optional[Quote]:
         source="tencent",
         bid=bid,
         ask=ask,
+        traded_price=(price if price > 0 and (volume_lots > 0 or amount_wan > 0) else None),
     )
 
 

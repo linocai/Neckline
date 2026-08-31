@@ -22,7 +22,7 @@ import Security
 
 enum NKEnvironment: String, CaseIterable, Identifiable {
     case dev      // 本地 uvicorn :8002
-    case prod     // nk.linotsai.top(V2 新机 114.66.0.38,NPM 反代 → 8002)
+    case prod     // nk.linotsai.top(NB 现行入口 114.66.2.205,NPM 反代 → 8002)
     var id: String { rawValue }
 
     var baseURL: URL {
@@ -46,6 +46,43 @@ enum NKEnvironment: String, CaseIterable, Identifiable {
         case .dev:  return "Dev"
         case .prod: return "Prod"
         }
+    }
+}
+
+enum NKVersionCompatibility {
+    static func message(serverVersion: String?, appVersion: String? = nil) -> String? {
+        guard let serverVersion else { return nil }
+        let server = normalized(serverVersion)
+        let app = normalized(appVersion ?? (
+            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+        ))
+        guard !server.isEmpty, !app.isEmpty, server != app else { return nil }
+        guard let order = compare(server, app) else {
+            return "服务端为 v\(server)，当前 App 为 \(app)；版本不一致，请核对发布套件。"
+        }
+        // `2.7` 与 `2.7.0` 是同一个语义版本，不应仅因书写位数不同而阻断使用。
+        if order == 0 { return nil }
+        if order < 0 {
+            return "服务端仍是 v\(server)，当前 App 为 \(app)；请先部署服务端。"
+        }
+        return "服务端已是 v\(server)，当前 App 为 \(app)；请更新 App。"
+    }
+
+    private static func normalized(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.lowercased().hasPrefix("v") ? String(trimmed.dropFirst()) : trimmed
+    }
+
+    private static func compare(_ lhs: String, _ rhs: String) -> Int? {
+        let left = lhs.split(separator: ".").map(String.init)
+        let right = rhs.split(separator: ".").map(String.init)
+        guard left.allSatisfy({ Int($0) != nil }), right.allSatisfy({ Int($0) != nil }) else { return nil }
+        for index in 0..<max(left.count, right.count) {
+            let l = index < left.count ? Int(left[index])! : 0
+            let r = index < right.count ? Int(right[index])! : 0
+            if l != r { return l < r ? -1 : 1 }
+        }
+        return 0
     }
 }
 
@@ -126,6 +163,16 @@ final class AppConfig: ObservableObject {
         guard !trimmed.isEmpty else { return nil }
         guard let url = URL(string: trimmed) else { return "服务地址格式不正确" }
         return isAllowedOverride(url) ? nil : "远端服务必须使用 HTTPS；本地开发仅允许 Debug 的 127.0.0.1/localhost"
+    }
+
+    var effectiveServiceLabel: String {
+        let trimmed = baseURLOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return environment.label }
+        guard connectionConfigurationError == nil else { return "临时地址无效" }
+        let address = resolvedBaseURL.host.map { host in
+            resolvedBaseURL.port.map { "\(host):\($0)" } ?? host
+        } ?? resolvedBaseURL.absoluteString
+        return "临时 · \(address)"
     }
 
     var hasToken: Bool { !apiToken.trimmingCharacters(in: .whitespaces).isEmpty }

@@ -15,13 +15,26 @@ import XCTest
 
 final class URLGateTests: XCTestCase {
 
+    func testVersionMismatchMessagePointsAtTheOlderSide() {
+        XCTAssertEqual(
+            NKVersionCompatibility.message(serverVersion: "2.6.0", appVersion: "2.7.0"),
+            "服务端仍是 v2.6.0，当前 App 为 2.7.0；请先部署服务端。"
+        )
+        XCTAssertEqual(
+            NKVersionCompatibility.message(serverVersion: "v2.8.0", appVersion: "2.7.0"),
+            "服务端已是 v2.8.0，当前 App 为 2.7.0；请更新 App。"
+        )
+        XCTAssertNil(NKVersionCompatibility.message(serverVersion: "v2.7.0", appVersion: "2.7.0"))
+        XCTAssertNil(NKVersionCompatibility.message(serverVersion: "2.7", appVersion: "2.7.0"))
+    }
+
     func testMakeURLPreservesQueryString() {
         let base = URL(string: "http://127.0.0.1:8002")!
 
-        let coverage = APIClient.makeURL(base: base, path: "/api/v1/scoreboard/coverage?window=5")
-        XCTAssertEqual(coverage?.absoluteString,
-                       "http://127.0.0.1:8002/api/v1/scoreboard/coverage?window=5")
-        XCTAssertFalse(coverage?.absoluteString.contains("%3F") ?? true, "? 不能被编码成 %3F")
+        let packages = APIClient.makeURL(base: base, path: "/api/v1/scoreboard/packages?state=active")
+        XCTAssertEqual(packages?.absoluteString,
+                       "http://127.0.0.1:8002/api/v1/scoreboard/packages?state=active")
+        XCTAssertFalse(packages?.absoluteString.contains("%3F") ?? true, "? 不能被编码成 %3F")
 
         let review = APIClient.makeURL(base: base, path: "/api/v1/review?week=2026-W34")
         XCTAssertEqual(review?.absoluteString, "http://127.0.0.1:8002/api/v1/review?week=2026-W34")
@@ -39,20 +52,20 @@ final class URLGateTests: XCTestCase {
 
         // 多段路径参数端点(个股详情 / 预案)不含 query,同样必须原样保留
         let stock = APIClient.makeURL(base: base,
-                                      path: "/api/v1/selection/20260820/stock/600001.SH")
+                                      path: "/api/v1/scoreboard/packages/k9-v3-20260820-demo")
         XCTAssertEqual(stock?.absoluteString,
-                       "http://127.0.0.1:8002/api/v1/selection/20260820/stock/600001.SH")
+                       "http://127.0.0.1:8002/api/v1/scoreboard/packages/k9-v3-20260820-demo")
         let playbook = APIClient.makeURL(
-            base: base, path: "/api/v1/selection/20260820/stock/600001.SH/playbook")
+            base: base, path: "/api/v1/checklists/k9-v3-20260820-demo")
         XCTAssertEqual(playbook?.absoluteString,
-                       "http://127.0.0.1:8002/api/v1/selection/20260820/stock/600001.SH/playbook")
+                       "http://127.0.0.1:8002/api/v1/checklists/k9-v3-20260820-demo")
     }
 
     /// 反面对照:`appendingPathComponent` 在带 query 的 path 上会编码 "?"(留证据,
     /// 防止未来有人"优化"把 `makeURL` 改回这个写法)。
     func testAppendingPathComponentWouldHaveEncodedQuestionMark() {
         let base = URL(string: "http://127.0.0.1:8002")!
-        let bad = base.appendingPathComponent("/api/v1/scoreboard/coverage?window=5")
+        let bad = base.appendingPathComponent("/api/v1/scoreboard/packages?state=active")
         XCTAssertTrue(bad.absoluteString.contains("%3F"),
                       "此断言本身就是坑的证据:appendingPathComponent 会编码 ?,故 APIClient 一律禁用它")
     }

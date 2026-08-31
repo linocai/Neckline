@@ -8,7 +8,7 @@
 | **同期大盘**(上证综指) | `index_daily`,代码取 `data/panel.SSE_INDEX` | `benchmark_missing` |
 | **同期所属申万二级**行业中位数 | `facts/industry.load_series`(事实层,裁定 2/3) | `industry_unmapped` / `industry_series_missing` |
 | **当时那几天的报告快照** | `report/store.load_k9_report_index` | `reports_missing` |
-| **当时那几天的预案快照** | `playbook/store.load_latest_range` + `k9/store.load_listing_membership` | `playbooks_missing` |
+| **当时那几天的预案快照** | K9-v3 冻结成绩包候选 | `playbooks_missing` |
 
 🔴 **本层零 LLM**(架构 §六 逐字:「这一层无 LLM 调用」)。装订只做取数与排版,
 好坏结论由用户带着材料去聊天框里得出。守门单测断言 `review/**` 零 import
@@ -36,8 +36,7 @@ K9 §九 也没有。两个都写死在本模块一处,且 `bind_week(pre_sessio
 归属,S2 登记 ④)。这与事实包回填的语义差是同一件事(§5.3.5),写在明处:
 `RoundTripBinding.industry_source == 'current_snapshot'`,报告文案也照直说。
 ⛔ 别写「按成交日回改历史归属」的机灵代码。
-⚠ 与 `k9_listing_entries` 的**冻结**绑定刻意不同:那一列是清单成绩要拆「行业分 /
-选票分」的依据,必须冻;交割单是事后回看,当时的清单里未必有这只票,没有可冻的东西。
+⚠ K9-v3 候选及其预案随成绩包冻结；交割单只把它们作为事后回看材料，绝不写回策略账。
 """
 
 from __future__ import annotations
@@ -304,9 +303,8 @@ def bind_week(
     from neckline.data import market_data as md
     from neckline.data import sw_industry
     from neckline.facts import industry as facts_industry
-    from neckline.k9 import store as k9_store
-    from neckline.playbook import store as playbook_store
     from neckline.report import store as report_store
+    from neckline.scorecard import packages as package_store
 
     gaps: List[str] = []
     trips: List[RoundTrip] = list(review.round_trips)
@@ -382,10 +380,26 @@ def bind_week(
     series = facts_industry.load_series(
         [v[0] for v in l2_of.values()], start, end, db_path=db_path)
 
-    # —— 一次区间查询:报告索引 / 预案 / 清单 ————————————————————————————
+    # —— 一次区间查询:报告索引 / K9-v3 不可变包 ————————————————————————
     report_index = report_store.load_k9_report_index(start, end, db_path=db_path)
-    playbooks = playbook_store.load_latest_range(start, end, codes, db_path=db_path)
-    membership = k9_store.load_listing_membership(start, end, codes, db_path=db_path)
+    membership: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    playbooks: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for summary in package_store.list_packages(state="active", db_path=db_path) + package_store.list_packages(state="settled", db_path=db_path):
+        selected = str(summary["selection_date"])
+        if not (_d(start) <= selected <= _d(end)):
+            continue
+        package = package_store.load_package(str(summary["batch_id"]), db_path=db_path)
+        if package is None:
+            continue
+        for candidate in package["candidates"]:
+            code = candidate["tsCode"]
+            if code not in codes:
+                continue
+            membership[(selected, code)] = {
+                "batch_id": summary["batch_id"], "channels": candidate["channels"],
+                "channel_ranks": candidate["channelRanks"],
+            }
+            playbooks[(selected, code)] = candidate["playbook"]
     if not report_index:
         gaps.append("reports_missing:本窗口一份 K9 报告都没有(v2.5.0 上线前的日子属正常)")
 
@@ -428,7 +442,7 @@ def bind_week(
                 continue          # 那天系统什么都没留下,不铺一行空壳
             snaps.append(DaySnapshot(
                 trade_date=day, report=rep, listing=lst,
-                playbook=pb.to_dict() if pb is not None else None,
+                playbook=pb,
             ))
         if not any(s.playbook for s in snaps):
             rt_gaps.append(

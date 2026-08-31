@@ -93,9 +93,9 @@ struct RootView: View {
 
     private func bootstrap() async {
         model.bind(config: config)
+        async let version: Void = model.loadServerVersion()
         await model.ensureLoaded(model.view)
-        await model.refreshSettlementOnActivation()
-        model.startSettlementAutoRefresh()
+        await version
     }
 
     @ViewBuilder

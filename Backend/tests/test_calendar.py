@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +39,26 @@ def test_official_calendar_never_falls_back_to_a_weekday_guess(isolated_env):
     insert_trade_cal(isolated_env, [date(2024, 1, 2)])
     assert official_is_trading_day(date(2024, 1, 2)) is True
     assert official_is_trading_day(date(2024, 1, 3)) is False
+
+
+def test_explicit_target_calendar_never_reads_the_default_database(tmp_path, isolated_env):
+    """A --db run must use its own official calendar, not the process cache."""
+    import sqlite3
+    from neckline.calendar import (official_is_trading_day, next_trading_day,
+                                   trading_days_between)
+    from neckline.db import init_schema
+
+    insert_trade_cal(isolated_env, [date(2026, 8, 20), date(2026, 8, 21)])
+    target = Path(tmp_path / "target.db")
+    init_schema(target)
+    with sqlite3.connect(target) as conn:
+        for day, open_ in (("20260820", 0), ("20260821", 1), ("20260822", 0), ("20260823", 0), ("20260824", 1)):
+            conn.execute("INSERT INTO trade_cal(exchange,cal_date,is_open,pretrade_date) VALUES ('SSE',?,?, '')", (day, open_))
+    assert official_is_trading_day(date(2026, 8, 20), db_path=target) is False
+    assert trading_days_between(date(2026, 8, 20), date(2026, 8, 24), db_path=target) == [date(2026, 8, 21), date(2026, 8, 24)]
+    assert next_trading_day(date(2026, 8, 20), db_path=target) == date(2026, 8, 21)
+    with pytest.raises(RuntimeError, match="未完整覆盖"):
+        trading_days_between(date(2026, 8, 19), date(2026, 8, 24), db_path=target)
 
 
 def test_is_trading_day_false_for_gap_and_weekend(isolated_env):

@@ -25,6 +25,7 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
+Environment=TZ=Asia/Shanghai
 ExecStart=/opt/neckline/.venv/bin/uvicorn neckline.api.app:app --host 0.0.0.0 --port 8002
 Restart=on-failure
 RestartSec=5

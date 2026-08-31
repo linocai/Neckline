@@ -30,7 +30,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple
 
 import polars as pl
 
@@ -66,9 +66,13 @@ class SourceRecord:
     path: Optional[str]
     rows: Optional[int]
     mtime: Optional[str]
+    metadata: Optional[Mapping[str, Any]] = None
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "path": self.path, "rows": self.rows, "mtime": self.mtime}
+        value = {"name": self.name, "path": self.path, "rows": self.rows, "mtime": self.mtime}
+        if self.metadata is not None:
+            value["metadata"] = dict(self.metadata)
+        return value
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,7 @@ def check(
     *,
     parquet_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
+    require_current_sw: bool = True,
 ) -> Completeness:
     """逐项检查当日必备输入,返回缺口清单 + 取数证据。**不抛异常**:任何一项不满足
     都变成一条 `Gap`,由调用方决定「今天没跑成」怎么说。"""
@@ -158,7 +163,9 @@ def check(
         if rows is None:
             gaps.append(Gap(table, f"当日分区不存在或读不出({path})"))
 
-    for table in REQUIRED_META_TABLES:
+    required_meta = REQUIRED_META_TABLES if require_current_sw else tuple(
+        table for table in REQUIRED_META_TABLES if table != "sw_industry_member")
+    for table in required_meta:
         n = _meta_count(table, db_path)
         sources.append(SourceRecord(table, None, n, None))
         if n is None:

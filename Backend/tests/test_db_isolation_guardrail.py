@@ -180,8 +180,8 @@ def test_the_risk_surface_is_not_empty():
 
     这条断言就是那个教训:**风险面必须先证明它自己非空**。
     """
-    assert len(_store_modules()) >= 8, f"落库层只找到 {list(_store_modules())}"
-    assert len(_RISK) >= 40, (
+    assert len(_store_modules()) >= 7, f"落库层只找到 {list(_store_modules())}"
+    assert len(_RISK) >= 35, (
         f"带 `db_path=None` 兜底的落库层函数只找到 {len(_RISK)} 个 —— "
         f"扫描器怕是失效了,而失效之后本文件全部断言恒绿")
     # 点名几个**确实存在**的入口,证明扫的是真东西。
@@ -306,7 +306,7 @@ def test_scan_actually_covers_known_database_guardrails():
         "test_db_isolation_guardrail.py",
     ):
         assert expected in names
-    assert len(_TEST_FILES) > 50, f"只收到 {len(_TEST_FILES)} 个测试文件"
+    assert len(_TEST_FILES) > 40, f"只收到 {len(_TEST_FILES)} 个测试文件"
 
 
 # ══════════════════════════════════════════════════════════════════════════

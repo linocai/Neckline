@@ -159,51 +159,6 @@ struct Toast: Identifiable, Equatable {
 
 /// 10:00 结算刷新只是一条客户端读策略：不生成报告、不触发推送，也不改服务端状态。
 /// 时间统一按上海时区，避免设备时区变化后错过 A 股结算窗口。
-enum SettlementRefreshPolicy {
-    static let pollingStartSecond = 9 * 3600 + 59 * 60 + 55
-    static let pollingEndSecond = 10 * 3600 + 6 * 60
-    static let pollInterval: TimeInterval = 10
-    static let maximumIdleSleep: TimeInterval = 3600
-
-    static var clockCalendar: Calendar {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        return calendar
-    }
-
-    static func secondOfDay(_ date: Date, calendar: Calendar = clockCalendar) -> Int {
-        let parts = calendar.dateComponents([.hour, .minute, .second], from: date)
-        return (parts.hour ?? 0) * 3600 + (parts.minute ?? 0) * 60 + (parts.second ?? 0)
-    }
-
-    static func isPollingWindow(_ date: Date, calendar: Calendar = clockCalendar) -> Bool {
-        let second = secondOfDay(date, calendar: calendar)
-        return second >= pollingStartSecond && second < pollingEndSecond
-    }
-
-    static func mayCatchUpAfterActivation(_ date: Date,
-                                          calendar: Calendar = clockCalendar) -> Bool {
-        secondOfDay(date, calendar: calendar) >= 10 * 3600
-    }
-
-    static func isComplete(_ snapshot: K9VerdictsSnapshot, today: String) -> Bool {
-        snapshot.tradeDate == today && !snapshot.verdicts.isEmpty && snapshot.undecidedCount == 0
-    }
-
-    /// 窗口内十秒一查；窗口外直接睡到下一窗口附近，最长一小时醒一次校准系统时钟。
-    static func nextWakeDelay(_ date: Date, calendar: Calendar = clockCalendar) -> TimeInterval {
-        if isPollingWindow(date, calendar: calendar) { return pollInterval }
-        let second = secondOfDay(date, calendar: calendar)
-        let untilStart: Int
-        if second < pollingStartSecond {
-            untilStart = pollingStartSecond - second
-        } else {
-            untilStart = 24 * 3600 - second + pollingStartSecond
-        }
-        return min(max(TimeInterval(untilStart), 1), maximumIdleSleep)
-    }
-}
-
 @MainActor
 @Observable
 final class AppModel {
@@ -235,15 +190,11 @@ final class AppModel {
     var checklistMissing: String? = nil
     var checklistLoading = false
 
-    /// 个股详情(点开某一只才拉,⛔ 不进常规刷新)。
-    var stockDetail: K9StockDetail? = nil
-    var stockDetailCode: String? = nil
-    var stockDetailLoading = false
-    var stockDetailError: String? = nil
-    /// 预案修改草稿:`slot.key → 用户填的数`(空串 = 还没填,⛔ 不预填 0)。
-    var playbookDraft: [String: String] = [:]
-    var playbookSubmitting = false
-    var showPlaybookEditor = false
+    /// K9-v3 个股与预案只从不可变成绩包读取。
+    var selectedScorePackage: ScoreboardPackageDetail? = nil
+    var selectedScorePackageID: String? = nil
+    var selectedScorePackageLoading = false
+    var selectedScorePackageError: String? = nil
 
     /// **本机上一次成功刷新的时刻**。⚠ 这是**客户端**的钟,回答「我上次去问是什么时候」
     /// —— ⛔ **不是** `selection.generatedAt`(那是服务端出报告的时刻,两者可以差好几个
@@ -254,16 +205,9 @@ final class AppModel {
     // 成绩
     // ══════════════════════════════════════════════════════════════════════
 
-    var coverage: CoverageSnapshot = .empty
-    var coverageLoading = false
-    var listingScorecard: ListingScorecardSnapshot = .empty
-    /// 10:00 结算拍的三分支终值(成立率的**明细**)。
-    var verdicts: K9VerdictsSnapshot = .empty
+    var activeScorePackages: [ScoreboardPackage] = []
+    var settledScorePackages: [ScoreboardPackage] = []
     var scoreboardLoading = false
-    #if os(macOS)
-    /// macOS 成绩板的当前子页。放在模型里，让选股页的结算完成入口能精确落到终值。
-    var scoreboardSection: ScoreboardSection = .listing
-    #endif
 
     // ══════════════════════════════════════════════════════════════════════
     // 复盘
@@ -312,9 +256,6 @@ final class AppModel {
     let calendar = StaticTradingCalendar.shared
     private var clientProvider: () -> APIClient?
     private var snapshotStoreProvider: () -> ReportSnapshotStore? = { nil }
-    @ObservationIgnored private var settlementRefreshTask: Task<Void, Never>? = nil
-    @ObservationIgnored private var settlementRefreshInFlight = false
-    @ObservationIgnored private var settlementCompletedDate: String? = nil
     #if os(iOS)
     weak var pushManager: PushManager? = nil
     #endif
@@ -339,7 +280,6 @@ final class AppModel {
         ReportSnapshotStore.clearAll()
         selectionOffline = false
         selectionCachedAt = nil
-        settlementCompletedDate = nil
     }
 
     // MARK: - 派生(纯逻辑,单测覆盖)
@@ -358,26 +298,6 @@ final class AppModel {
     /// 三态是否**有清单**。⚠ `empty`(今天没有)与 `notRun`(今天没跑成)都返 false,
     /// 但它们**不是同一件事** —— 判断「要不要画列表」用这个,判断「说什么话」看 `state`。
     var hasListing: Bool { selection.state == .hasList && !selection.stocks.isEmpty }
-
-    /// 当日 10:00 结算是否已经真正完整。空数组和尚未定案都不算完成。
-    func hasCompletedSettlement(at now: Date = Date()) -> Bool {
-        SettlementRefreshPolicy.isComplete(verdicts, today: calendar.compactString(now))
-    }
-
-    #if os(macOS)
-    /// 从次日核对表落到终值的唯一导航入口；不在 9:26 快照里混入 10:00 结果。
-    func openSettlementResults() {
-        scoreboardSection = .verdicts
-        view = .scoreboard
-    }
-
-    /// 只把 macOS 成绩页的默认“清单成绩”切到已完成的终值；
-    /// 用户已经主动选了覆盖率时不抢页面。
-    func revealSettlementIfAvailable(at now: Date = Date()) {
-        guard scoreboardSection == .listing, hasCompletedSettlement(at: now) else { return }
-        scoreboardSection = .verdicts
-    }
-    #endif
 
     // MARK: - 刷新(板块级)
 
@@ -400,66 +320,10 @@ final class AppModel {
         }
     }
 
-    /// 双端共用的 10:00 结算刷新循环。窗口外不打网络请求；多窗口重复启动也是幂等的。
-    func startSettlementAutoRefresh() {
-        guard settlementRefreshTask == nil else { return }
-        settlementRefreshTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                let now = Date()
-                await self.pollSettlementIfNeeded(now: now)
-                let delay = SettlementRefreshPolicy.nextWakeDelay(now)
-                try? await Task.sleep(for: .seconds(delay))
-            }
-        }
-    }
-
-    /// iOS 从后台回来、macOS 窗口重新活跃或 App 在 10:00 后首次启动时补查一次。
-    func refreshSettlementOnActivation(now: Date = Date()) async {
-        guard calendar.isTradingDay(now),
-              SettlementRefreshPolicy.mayCatchUpAfterActivation(now) else { return }
-        let today = calendar.compactString(now)
-        guard settlementCompletedDate != today else { return }
-        await fetchSettlementUpdate(today: today)
-    }
-
-    private func pollSettlementIfNeeded(now: Date) async {
-        guard calendar.isTradingDay(now), SettlementRefreshPolicy.isPollingWindow(now) else { return }
-        let today = calendar.compactString(now)
-        guard settlementCompletedDate != today else { return }
-        _ = await fetchSettlementUpdate(today: today)
-    }
-
-    /// 每轮只查轻量 verdict 端点；全部定案后补一次清单成绩并停止当天轮询。
-    @discardableResult
-    private func fetchSettlementUpdate(today: String) async -> Bool {
-        guard !settlementRefreshInFlight, let client = clientProvider() else { return false }
-        settlementRefreshInFlight = true
-        defer { settlementRefreshInFlight = false }
-        do {
-            let snapshot = try await client.fetchVerdicts(tradeDate: today)
-            verdicts = snapshot
-            lastRefreshedAt = Date()
-            if SettlementRefreshPolicy.isComplete(snapshot, today: today) {
-                settlementCompletedDate = today
-                if let updated = try? await client.fetchListingScorecard() {
-                    listingScorecard = updated
-                }
-                #if os(macOS)
-                if view == .scoreboard { revealSettlementIfAvailable() }
-                #endif
-            }
-            return true
-        } catch {
-            // 自动刷新失败不覆盖现有数据、也不弹错误；窗口内下一轮仍会重试。
-            return false
-        }
-    }
-
     var isLoadingCurrentTab: Bool {
         switch view {
         case .selection: return selectionLoading || checklistLoading
-        case .scoreboard: return coverageLoading || scoreboardLoading
+        case .scoreboard: return scoreboardLoading || selectedScorePackageLoading
         case .review: return reviewOverviewLoading || reviewUploading
         case .settings: return settingsLoading
         }
@@ -467,12 +331,16 @@ final class AppModel {
 
     /// 选股板块:报告 + 次日核对表(两路并发)。
     func refreshSelection() async {
-        guard let client = clientProvider() else {
-            loadError = "未配置后端连接"
-            return
-        }
+        // 两条读取路径都必须在本轮刷新中收口；否则 `not_run` 这类没有成绩包的
+        // 正常报告会把核对表空态永远留在 ProgressView。
         selectionLoading = true
         checklistLoading = true
+        guard let client = clientProvider() else {
+            loadError = "未配置后端连接"
+            selectionLoading = false
+            checklistLoading = false
+            return
+        }
         loadError = nil
         let snapshot = await fetchResult { try await client.fetchSelectionLatest() }
         switch snapshot {
@@ -501,10 +369,13 @@ final class AppModel {
         selectionLoading = false
         // 🔴 **核对表核的是 D1** —— 它按**今天**取,而报告的 `tradeDate` 是 D0。
         // 两者刻意用不同的日期:昨晚的清单 + 今早的核对,本来就是两天的事。
-        await loadChecklist(tradeDate: calendar.compactString(Date()))
-        // 用户在选股页手动点刷新时，10:00 后也要补查终值；
-        // 不然工具栏显示“已刷新”，结算入口却仍无法出现。
-        await refreshSettlementOnActivation()
+        if let batchId = selection.structured.objectValue?["batchIds"]?.arrayValue?.first?.stringValue {
+            await loadChecklist(batchId: batchId)
+        } else {
+            checklist = nil
+            checklistMissing = "当前报告没有可核对的 K9-v3 成绩包"
+            checklistLoading = false
+        }
         if loadError == nil { lastRefreshedAt = Date() }
         applyQAHooksAfterRefresh()
     }
@@ -522,66 +393,42 @@ final class AppModel {
 
     /// 次日核对表。**404 是常态**(一天里只有 9:26 之后才有,且要 D0 真出过清单)——
     /// ⛔ 不弹错、⛔ 不画一张空表,如实说「那天没跑过那一拍」。
-    func loadChecklist(tradeDate: String) async {
-        guard let client = clientProvider() else { return }
+    func loadChecklist(batchId: String) async {
+        guard let client = clientProvider() else {
+            checklistLoading = false
+            return
+        }
         checklistLoading = true
         defer { checklistLoading = false }
         do {
-            checklist = try await client.fetchChecklist(tradeDate: tradeDate)
+            checklist = try await client.fetchChecklist(batchId: batchId)
             checklistMissing = nil
         } catch let e as APIError where e.isNotFound {
             checklist = nil
-            checklistMissing = e.errorDescription ?? "\(tradeDate) 没有竞价核对表"
+            checklistMissing = e.errorDescription ?? "该成绩包尚无次日核对表"
         } catch {
             checklist = nil
             checklistMissing = nil   // ⛔ 网络没通 ≠ 那天没跑过,两者不许合并
         }
     }
 
-    /// 成绩板块:清单五指标 + 覆盖率 + 10:00 结算终值。
-    ///
-    /// ⚠ 三分支终值按**报告的交易日**取:那批票是 D0 的清单,结算发生在 D1 早上,
-    /// 而 `k9_d1_verdicts` 的 `trade_date` 记的就是 D1。这里用「今天」去问,
-    /// 拿不到就是拿不到(界面如实说),⛔ 不去猜一个日期。
+    /// 成绩板块只读 K9-v3 的独立包历史；不把不同包聚合成总分。
     func refreshScoreboard() async {
         guard let client = clientProvider() else {
             loadError = "未配置后端连接"
             return
         }
-        coverageLoading = true
         scoreboardLoading = true
         loadError = nil
-        let today = calendar.compactString(Date())
-        async let coverageTask: Result<CoverageSnapshot, Error> =
-            fetchResult { try await client.fetchCoverage() }
-        async let listingTask: Result<ListingScorecardSnapshot, Error> =
-            fetchResult { try await client.fetchListingScorecard() }
-        async let verdictsTask: Result<K9VerdictsSnapshot, Error> =
-            fetchResult { try await client.fetchVerdicts(tradeDate: today) }
-        let (c, l, v) = await (coverageTask, listingTask, verdictsTask)
-        switch c {
-        case .success(let s): coverage = s
-        case .failure(let e): handleLoadFailure(e, context: "覆盖率")
-        }
-        switch l {
-        case .success(let s): listingScorecard = s
-        case .failure(let e):
-            listingScorecard = .empty
-            handleLoadFailure(e, context: "清单成绩")
-        }
-        // 终值端点**恒 200**(那天没有就是空数组)→ 走到失败分支只可能是网络 / 鉴权。
-        if case .success(let s) = v {
-            verdicts = s
-            if SettlementRefreshPolicy.isComplete(s, today: today) {
-                settlementCompletedDate = today
-                #if os(macOS)
-                revealSettlementIfAvailable()
-                #endif
-            }
-        } else {
-            verdicts = .empty
-        }
-        coverageLoading = false
+        async let activePackagesTask: Result<ScoreboardPackagesResponse, Error> =
+            fetchResult { try await client.fetchScoreboardPackages(state: "active") }
+        async let settledPackagesTask: Result<ScoreboardPackagesResponse, Error> =
+            fetchResult { try await client.fetchScoreboardPackages(state: "settled") }
+        let (activePackages, settledPackages) = await (activePackagesTask, settledPackagesTask)
+        if case .success(let response) = activePackages { activeScorePackages = response.packages }
+        else if case .failure(let error) = activePackages { handleLoadFailure(error, context: "进行中成绩包") }
+        if case .success(let response) = settledPackages { settledScorePackages = response.packages }
+        else if case .failure(let error) = settledPackages { handleLoadFailure(error, context: "已结算历史") }
         scoreboardLoading = false
         if loadError == nil { lastRefreshedAt = Date() }
     }
@@ -605,11 +452,6 @@ final class AppModel {
            let mode = SelectionViewMode(rawValue: raw) {
             selectionMode = mode
         }
-        // 打开某一只票的详情。⛔ 不在清单里就不开(开一个空详情等于把"没有"演成"有")。
-        if let code = env["NECKLINE_INITIAL_STOCK_CODE"], !code.isEmpty,
-           stockDetailCode == nil, selection.stocks.contains(where: { $0.tsCode == code }) {
-            openStockDetail(code: code)
-        }
         if let raw = env["NECKLINE_INITIAL_REVIEW_PAGE"], let page = ReviewPage(rawValue: raw) {
             reviewPage = page
         }
@@ -619,98 +461,44 @@ final class AppModel {
         }
     }
 
-    // MARK: - 个股详情 + 预案修改(点开才拉,⛔ 不进常规刷新)
+    // MARK: - 不可变成绩包详情
 
-    func openStockDetail(code: String) {
-        stockDetail = nil
-        stockDetailError = nil
-        stockDetailCode = code
-        playbookDraft = [:]
-        showPlaybookEditor = false
-        Task { await loadStockDetail() }
+    func openScorePackage(batchId: String) {
+        selectedScorePackageID = batchId
+        selectedScorePackage = nil
+        selectedScorePackageError = nil
+        Task { await loadScorePackage(batchId: batchId) }
     }
 
-    func dismissStockDetail() {
-        stockDetailCode = nil
-        stockDetail = nil
-        stockDetailError = nil
-        stockDetailLoading = false
-        playbookDraft = [:]
-        showPlaybookEditor = false
+    func dismissScorePackage() {
+        selectedScorePackageID = nil
+        selectedScorePackage = nil
+        selectedScorePackageError = nil
     }
 
-    func loadStockDetail() async {
-        guard let code = stockDetailCode, let client = clientProvider() else { return }
-        let day = selection.tradeDate
-        guard !day.isEmpty else {
-            stockDetailError = "还没拿到报告的交易日,无法查这只票的详情"
-            return
-        }
-        stockDetailLoading = true
-        defer { stockDetailLoading = false }
+    func loadScorePackage(batchId: String) async {
+        guard let client = clientProvider() else { return }
+        selectedScorePackageLoading = true
+        defer { selectedScorePackageLoading = false }
         do {
-            stockDetail = try await client.fetchStockDetail(tradeDate: day, code: code)
-        } catch let e as APIError {
-            stockDetailError = e.errorDescription ?? "个股详情加载失败"
+            selectedScorePackage = try await client.fetchScoreboardPackage(batchId: batchId)
+        } catch let error as APIError {
+            selectedScorePackageError = error.errorDescription ?? "成绩包详情加载失败"
         } catch {
-            stockDetailError = error.localizedDescription
+            selectedScorePackageError = error.localizedDescription
         }
     }
 
-    /// 打开预案修改入口。**草稿从当前预案预填**(用户改的是「方括号里的数」,
-    /// 不是从零填一遍)—— 但只预填**服务端下发的槽位**里能对上的那几个:
-    /// 三个价位客户端读得出,形态槽位的当前值藏在条件里,⛔ 不去反推(反推错一个
-    /// 就等于替用户改了一个他没动过的数)。
-    func beginPlaybookEdit() {
-        guard let detail = stockDetail else { return }
-        var draft: [String: String] = [:]
-        if let pb = detail.playbook {
-            draft["firstResistance"] = NKFmt.slotValue(pb.levels.firstResistance)
-            draft["secondResistance"] = NKFmt.slotValue(pb.levels.secondResistance)
-            draft["invalidation"] = NKFmt.slotValue(pb.levels.invalidation)
-        }
-        playbookDraft = draft
-        showPlaybookEditor = true
-    }
-
-    /// 提交预案修改。🔴 **append-only**:服务端只新增一个版本,原冻结版本一个字不改。
-    /// ⚠ 键集**必须给全**服务端下发的槽位(缺一个 / 多一个 / 不是数字 → 422),
-    /// 服务端 422 的 detail 会把该形态要的键逐个列出来 —— 原样端给用户。
-    func submitPlaybookEdit() async {
-        guard let detail = stockDetail, let client = clientProvider() else {
-            showToast("未配置后端连接", isError: true); return
-        }
-        let slots = detail.playbookSlots
-        guard !slots.isEmpty else {
-            showToast("这只票的形态没有可改的数值位", isError: true); return
-        }
-        var values: [String: Double] = [:]
-        var missing: [String] = []
-        for slot in slots {
-            let raw = (playbookDraft[slot.key] ?? "").trimmingCharacters(in: .whitespaces)
-            if let v = Double(raw) {
-                values[slot.key] = v
-            } else {
-                missing.append(slot.label)
-            }
-        }
-        guard missing.isEmpty else {
-            // ⛔ 不替用户补一个 0 发出去 —— 那会把一个他没填的数冻进预案。
-            showToast("这几项还没填成数字:\(missing.joined(separator: "、"))", isError: true)
-            return
-        }
-        playbookSubmitting = true
-        defer { playbookSubmitting = false }
+    /// K9-v3 only appends a user revision. The server rejects a post-9:26
+    /// change and validates it against the frozen mechanical skeleton.
+    func appendPlaybookRevision(batchId: String, tsCode: String, playbook: NKJSON) async -> String? {
+        guard let client = clientProvider() else { return "未配置后端连接" }
         do {
-            _ = try await client.saveStockPlaybook(tradeDate: detail.tradeDate,
-                                                   code: detail.tsCode, values: values)
-            showPlaybookEditor = false
-            await loadStockDetail()
-            showToast("预案已存为新版本(原版本一个字未改)")
-        } catch let e as APIError {
-            showToast(e.errorDescription ?? "保存失败", isError: true)
+            try await client.appendK9V3PlaybookRevision(batchId: batchId, tsCode: tsCode, playbook: playbook)
+            await loadScorePackage(batchId: batchId)
+            return nil
         } catch {
-            showToast("保存失败:\(error.localizedDescription)", isError: true)
+            return error.localizedDescription
         }
     }
 

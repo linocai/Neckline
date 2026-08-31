@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neckline-runtime"
-version = "2.6.0"
+version = "2.7.0"
 description = "Neckline production service runtime"
 requires-python = ">=3.11"
 

@@ -75,37 +75,21 @@ final class IntegrationSmokeTests: XCTestCase {
     /// ⛔ 这条测试不许把 404 判成失败 —— 那正是「合法空态」。
     func testChecklistRealRequestTreats404AsALegitimateEmptyState() async throws {
         try await skipUnlessDevServerReachable()
-        let today = StaticTradingCalendar.shared.compactString(Date())
-        do {
-            let list = try await makeClient().fetchChecklist(tradeDate: today)
-            // 🔴 跑过了 → **恰好两段**,⛔ 没有「成立」。
-            XCTAssertEqual(list.segments.count, 2)
-            XCTAssertFalse(list.footnote.isEmpty)
-            for seg in list.segments {
-                XCTAssertNotEqual(seg.displayLabel, "已触发成立")
-                XCTAssertFalse(seg.displayLabel.contains("成立"))
-            }
-        } catch let e as APIError where e.isNotFound {
-            // 那天没跑过那一拍 —— 合法。
-        }
+        let packages = try await makeClient().fetchScoreboardPackages(state: "active")
+        guard let batch = packages.packages.first else { return }
+        let list = try await makeClient().fetchChecklist(batchId: batch.batchId)
+        XCTAssertEqual(list.segments.count, 3)
+        XCTAssertTrue(list.segments.contains { $0.verdict == .unbuyable })
     }
 
-    /// 成绩:覆盖率恒 200(空库 = 空数组);终值端点恒 200(那天没有 = 空数组)。
+    /// 成绩包列表恒 200；空库返回两个空数组，不回退旧滚动成绩。
     func testScoreboardRealRequest() async throws {
         try await skipUnlessDevServerReachable()
         let client = makeClient()
-        let coverage = try await client.fetchCoverage(window: 5)
-        XCTAssertGreaterThan(coverage.window, 0)
-        for d in coverage.days {
-            // 🔴 NULL 不是 0:覆盖率两个口径都可能是 null,⛔ 客户端不许当 0。
-            if d.coverageAll == nil { XCTAssertNil(d.coveredCount) }
-        }
-        let today = StaticTradingCalendar.shared.compactString(Date())
-        let verdicts = try await client.fetchVerdicts(tradeDate: today)
-        XCTAssertEqual(verdicts.tradeDate, today)
-        for v in verdicts.verdicts where v.isUndecided {
-            XCTAssertNil(v.decidedStage, "「还没定案」两列必须都是 null")
-        }
+        let active = try await client.fetchScoreboardPackages(state: "active")
+        XCTAssertTrue(active.packages.allSatisfy { $0.strategyVersion == "K9-v3" })
+        let settled = try await client.fetchScoreboardPackages(state: "settled")
+        XCTAssertTrue(settled.packages.allSatisfy { $0.strategyVersion == "K9-v3" })
     }
 
     /// 复盘聚合读:**恒 200**,空态走各段自己的 `available`。

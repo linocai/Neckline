@@ -140,3 +140,34 @@ def test_only_permanently_invalid_apns_tokens_are_removed(api_env, apns_configur
 
     notify.push_report_ready("2026-08-16", db_path=api_env.db_path, transport=transport)
     assert list_device_tokens(db_path=api_env.db_path) == ["transient"]
+
+
+def test_partial_retry_targets_only_the_failed_device(api_env, apns_configured):
+    from neckline.dedup import device_delivery_key
+
+    upsert_device("accepted", db_path=api_env.db_path)
+    upsert_device("retry", db_path=api_env.db_path)
+    calls: list[str] = []
+
+    def first_transport(url, headers, body):
+        token = url.rsplit("/", 1)[-1]
+        calls.append(token)
+        if token == "retry":
+            return apns.PushResult(ok=False, status=503, reason="ServiceUnavailable")
+        assert len(headers["apns-collapse-id"]) == 64
+        return apns.PushResult(ok=True, status=200, reason="ok")
+
+    first = notify.push_checklist_summary(
+        {"rejected": 0, "pendingOpen": 1}, db_path=api_env.db_path,
+        transport=first_transport, delivery_id="20260821:auction:checklist_tick",
+    )
+    assert first.sent == 1 and first.failed == 1 and not first.delivery_complete
+    assert first.delivered_device_keys == (device_delivery_key("accepted"),)
+
+    second = notify.push_checklist_summary(
+        {"rejected": 0, "pendingOpen": 1}, db_path=api_env.db_path,
+        transport=first_transport, skip_device_keys=first.delivered_device_keys,
+        delivery_id="20260821:auction:checklist_tick",
+    )
+    assert second.sent == 0 and second.failed == 1
+    assert calls.count("accepted") == 1 and calls.count("retry") == 2

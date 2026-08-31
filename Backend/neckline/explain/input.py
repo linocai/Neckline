@@ -21,7 +21,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import polars as pl
 
-from neckline.playbook.model import Bar
+from neckline.explain.types import Bar
 
 logger = logging.getLogger(__name__)
 

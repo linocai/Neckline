@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 #:
 #: · `fp-1`(S3 首版):S 类停牌**一律**排除出行业中位数并计为异常。
 #: · `fp-2`:只剔全天停牌；盘中临时停牌照常计入行业中位数。
-#: · `fp-3`(K9-v2):加入龙虎榜来源状态与命中事实。`unavailable` 与
+#: · `fp-3`:加入龙虎榜来源状态与命中事实。`unavailable` 与
 #:   `available + hit=false` 分开，避免把“没拿到数据”当成“确认未上榜”。
 PACK_VERSION = "fp-3"
 
@@ -77,7 +77,7 @@ PACK_COLUMNS: Tuple[str, ...] = (
     # —— 当日衍生 ——
     "ret_1d", "amp_1d", "limit_up_price", "limit_down_price",
     "is_limit_up", "is_limit_down", "is_limit_open", "consec_limit_up_days",
-    # —— 可选事件源（K9-v2 P3 附加证据）——
+    # —— 可选事件源（历史事实附加证据）——
     "top_list_state", "top_list_hit",
     # —— daily_basic ——
     "turnover_rate", "turnover_rate_f", "volume_ratio", "circ_mv", "total_mv", "free_share",
@@ -307,9 +307,21 @@ def build(
     *,
     parquet_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
+    _sw_override: Optional[pl.DataFrame] = None,
+    _l2_override: Optional[Dict[str, Tuple[str, str]]] = None,
 ) -> Pack:
-    """装配当日事实包。数据未到齐 → `IncompletePack(missing=[逐条])`。"""
-    comp = completeness_mod.check(trade_date, parquet_dir=parquet_dir, db_path=db_path)
+    """装配当日事实包。数据未到齐 → `IncompletePack(missing=[逐条])`。
+
+    ``_sw_override`` / ``_l2_override`` are the fp-4-only as-of membership
+    injection seam.  They deliberately bypass current ``sw_industry_member``;
+    callers must supply both from an immutable dated snapshot.
+    """
+    if (_sw_override is None) != (_l2_override is None):
+        raise ValueError("fp-4 行业覆盖必须同时提供 SW frame 与 L2 映射")
+    comp = completeness_mod.check(
+        trade_date, parquet_dir=parquet_dir, db_path=db_path,
+        require_current_sw=_sw_override is None,
+    )
     if not comp.ok:
         logger.warning("[fact_pack] %s 数据未到齐,不冻结:%s", trade_date, comp.missing())
         return IncompletePack(
@@ -356,7 +368,7 @@ def build(
                            exc_info=True)
 
     meta = _meta_frame(db_path, trade_date)
-    sw = _sw_frame(db_path)
+    sw = _sw_frame(db_path) if _sw_override is None else _sw_override
     suspend_records = _suspend_records(trade_date, parquet_dir)
     #: 裁定 12:`S`(全天停牌)/ `I`(盘中临时停牌)/ `R`(复牌)三类在这里就分开,
     #: 下游一律只认这一列。
@@ -399,7 +411,7 @@ def build(
     # —— 申万二级中位数(裁定 2)+ 停牌断言(§5.3.4,裁定 12 收窄)————————————
     # 🔴 裁定 12:**只把全天停牌剔出中位数**。盘中临时停牌(`I`)当天正常交易、
     # 有完整涨跌幅,照常参与 —— ⛔ 不许把它并回 `halted`。
-    l2_of = load_l2_map(db_path)
+    l2_of = load_l2_map(db_path) if _l2_override is None else _l2_override
     halted = {c for c, k in suspend_of.items() if k == SUSPEND_HALTED}
     intraday_in_daily = sorted(
         c for c in df["ts_code"].to_list() if suspend_of.get(c) == SUSPEND_INTRADAY

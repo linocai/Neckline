@@ -1,4 +1,4 @@
-"""K9 报告落库(V2.5.0 S7,PROJECT_PLAN §5.10)。
+"""K9-v3 报告投影的落库与读取。
 
 🔴 **双日期契约⛔ 不许退化**(LRN-20260816-001,§12 坑 9):
 `report_date` 管标题 / 推送 / 可见身份;`trade_date` 管 EOD 读数 / 清单 / 预案 /
@@ -14,11 +14,11 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from neckline.db import connection, init_schema, readonly_tables
+from neckline.db import connection, readonly_tables
 
 logger = logging.getLogger(__name__)
 
-K9_TABLE = "k9_reports"
+K9_TABLE = "k9_package_reports"
 
 
 def _d(d: date) -> str:
@@ -30,7 +30,7 @@ def _now() -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# k9_reports —— 唯一写入口
+# k9_package_reports —— 唯一写入口
 # ══════════════════════════════════════════════════════════════════════════
 
 def save_k9_report(
@@ -48,48 +48,43 @@ def save_k9_report(
     pack_id: Optional[str],
     pack_version: Optional[str],
     listing_size: Optional[int],
-    strict_count: Optional[int],
-    relaxed_count: Optional[int],
     db_path: Optional[Path] = None,
 ) -> None:
-    """落一份报告(同 `trade_date` 幂等重写)。
+    """保存同一运行日的报告投影。
 
     ⚠ **`listing_size=None` 与 `0` 不可互换**:`None` = 「今天没跑成」(清单根本
     没算出来),`0` = 「今天没有」(跑通了、结果为空、可以被信任)。裁定 5。
     ⚠ 两个日期都是**必填关键字** —— 双日期契约⛔ 不许靠默认值去猜(§12 坑 9)。
     """
-    init_schema(db_path)
     with connection(db_path) as conn:
         conn.execute(
             f"INSERT INTO {K9_TABLE} "
             "(trade_date, report_date, state, headline, gaps_json, markdown, "
-            " structured_json, strategy, strategy_version, params_package_version, pack_id, pack_version, "
-            " listing_size, strict_count, relaxed_count, generated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(trade_date) DO UPDATE SET "
+            " structured_json, strategy_version, params_package_version, pack_id, pack_version, "
+            " listing_size, generated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(trade_date,report_date,strategy_version) DO UPDATE SET "
             "report_date=excluded.report_date, state=excluded.state, "
             "headline=excluded.headline, gaps_json=excluded.gaps_json, "
             "markdown=excluded.markdown, structured_json=excluded.structured_json, "
-            "strategy=excluded.strategy, "
             "strategy_version=excluded.strategy_version, "
             "params_package_version=excluded.params_package_version, "
             "pack_id=excluded.pack_id, pack_version=excluded.pack_version, "
-            "listing_size=excluded.listing_size, strict_count=excluded.strict_count, "
-            "relaxed_count=excluded.relaxed_count, generated_at=excluded.generated_at",
+            "listing_size=excluded.listing_size, generated_at=excluded.generated_at "
+            f"WHERE NOT ({K9_TABLE}.state IN ('has_list','empty') AND excluded.state='not_run')",
             (
                 _d(trade_date), _d(report_date), state, headline,
                 json.dumps(list(gaps), ensure_ascii=False), markdown,
                 json.dumps(structured, ensure_ascii=False, sort_keys=True),
-                strategy, strategy_version, params_package_version, pack_id, pack_version,
-                listing_size, strict_count, relaxed_count, _now(),
+                strategy_version, params_package_version, pack_id, pack_version,
+                listing_size, _now(),
             ),
         )
 
 
 _K9_COLUMNS = (
     "trade_date, report_date, state, headline, gaps_json, markdown, structured_json, "
-    "strategy, strategy_version, params_package_version, pack_id, pack_version, listing_size, "
-    "strict_count, relaxed_count, generated_at"
+    "strategy_version, params_package_version, pack_id, pack_version, listing_size, generated_at"
 )
 
 
@@ -108,15 +103,13 @@ def _k9_row(row) -> Dict[str, Any]:
         "gaps": json.loads(row[4]),
         "markdown": row[5],
         "structured": json.loads(row[6]),
-        "strategy": row[7],
-        "strategy_version": row[8],
-        "params_package_version": row[9],
-        "pack_id": row[10],
-        "pack_version": row[11],
-        "listing_size": row[12],
-        "strict_count": row[13],
-        "relaxed_count": row[14],
-        "generated_at": row[15],
+        "strategy": "K9",
+        "strategy_version": row[7],
+        "params_package_version": row[8],
+        "pack_id": row[9],
+        "pack_version": row[10],
+        "listing_size": row[11],
+        "generated_at": row[12],
     }
 
 
@@ -125,14 +118,14 @@ def load_k9_report(
 ) -> Optional[Dict[str, Any]]:
     """查某交易日的报告。`None` = 那天没生成过(完全正常的场景)。
 
-    ⚠ **只读**(`readonly_tables`):`k9_reports` 还没建时读出来就是 `None`，
+    ⚠ **只读**(`readonly_tables`):`k9_package_reports` 还没建时读出来就是 `None`，
     读一次不许把库迁移掉。
     老库 59 表,调一次本函数 → 75 表。"""
     with readonly_tables(*_K9_PROBE, db_path=db_path) as conn:
         if conn is None:
             return None
         row = conn.execute(
-            f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} WHERE trade_date=? AND strategy_version='K9-v2'",
+            f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} WHERE trade_date=? AND strategy_version='K9-v3'",
             (_d(trade_date),),
         ).fetchone()
     return None if row is None else _k9_row(row)
@@ -160,7 +153,7 @@ def load_k9_report_index(
         rows = conn.execute(
             f"SELECT trade_date, report_date, state, headline, listing_size, "
             f"params_package_version, pack_version, generated_at, strategy_version FROM {K9_TABLE} "
-            f"WHERE trade_date>=? AND trade_date<=? AND strategy_version='K9-v2' ORDER BY trade_date",
+            f"WHERE trade_date>=? AND trade_date<=? AND strategy_version='K9-v3' ORDER BY trade_date",
             (_d(start), _d(end)),
         ).fetchall()
     return {
@@ -179,7 +172,7 @@ def latest_k9_report(*, db_path: Optional[Path] = None) -> Optional[Dict[str, An
         if conn is None:
             return None
         row = conn.execute(
-            f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} WHERE strategy_version='K9-v2' "
+            f"SELECT {_K9_COLUMNS} FROM {K9_TABLE} WHERE strategy_version='K9-v3' "
             "ORDER BY trade_date DESC LIMIT 1"
         ).fetchone()
     return None if row is None else _k9_row(row)

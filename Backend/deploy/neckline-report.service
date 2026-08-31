@@ -11,7 +11,8 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments report --notify
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/neckline/.venv/bin/python scripts/evening.py --scheduled --segments report --notify --k9-params-env K9_PARAMS_PATH
 TimeoutStartSec=2400
 # B5 宁波云 20 只清单报告装配实测约 49 MiB；512M 覆盖通知与生产波动余量。
 MemoryMax=512M

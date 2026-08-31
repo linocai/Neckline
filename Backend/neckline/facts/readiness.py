@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from neckline.db import readonly_tables
+from neckline.calendar import official_is_trading_day
 from neckline.facts import completeness
 from neckline.facts import store
 
@@ -32,20 +33,53 @@ def preflight(
     *,
     parquet_dir: Optional[Path] = None,
     db_path: Optional[Path] = None,
+    pack_version: Optional[str] = None,
 ) -> Readiness:
     """验证当日 K9 的所有机械输入，整个函数严格只读、零 DDL。"""
-    gaps = list(completeness.check(
-        trade_date, parquet_dir=parquet_dir, db_path=db_path).missing())
+    gaps: list[str] = []
+    if pack_version == "fp-4" and official_is_trading_day(trade_date, db_path=db_path) is not True:
+        gaps.append("trade_cal:目标交易日不是已落库官方开市日")
+    gaps.extend(completeness.check(
+        trade_date, parquet_dir=parquet_dir, db_path=db_path,
+        require_current_sw=pack_version != "fp-4").missing())
     pack_id: Optional[str] = None
     try:
-        pack = store.load_pack(trade_date, parquet_dir=parquet_dir, db_path=db_path)
+        kwargs = {} if pack_version is None else {"pack_version": pack_version}
+        pack = store.load_pack(trade_date, parquet_dir=parquet_dir, db_path=db_path, **kwargs)
         rows = pack.rows
         if rows.height != pack.row_count:
             gaps.append(
                 f"冻结事实包:行数不一致(清单 {pack.row_count}，parquet {rows.height})")
         else:
             pack_id = pack.pack_id
-    except (store.PackNotFrozen, FileNotFoundError, OSError, ValueError) as exc:
+            if pack_version == "fp-4":
+                from neckline.facts.v4 import missing_columns
+                missing = missing_columns(rows.columns)
+                if missing:
+                    gaps.append(f"fp-4字段缺失:{','.join(missing)}")
+                membership = next((item for item in pack.sources
+                                   if item.get("name") == "sw_industry_member_snapshots"), None)
+                market_source = ((pack.market.get("fp4") or {}).get("swMembershipSource")
+                                 if isinstance(pack.market, dict) else None)
+                if not isinstance(membership, dict) or not isinstance(membership.get("metadata"), dict):
+                    gaps.append("fp-4缺少冻结 SW2021 成员来源记录")
+                elif market_source != membership["metadata"]:
+                    gaps.append("fp-4 SW2021 成员来源与 market_json 不一致")
+                else:
+                    source = membership["metadata"]
+                    with readonly_tables("sw_industry_snapshot_manifests", db_path=db_path) as conn:
+                        live = None if conn is None else conn.execute(
+                            "SELECT content_sha256,row_count,source_id,source_generated_at,source_fetched_at,raw_file_sha256,imported_at FROM sw_industry_snapshot_manifests WHERE trade_date=?",
+                            (trade_date.strftime("%Y%m%d"),),
+                        ).fetchone()
+                    expected = None if live is None else {
+                        "contentSha256": live[0], "rowCount": live[1], "sourceId": live[2],
+                        "sourceGeneratedAt": live[3], "sourceFetchedAt": live[4],
+                        "rawFileSha256": live[5], "importedAt": live[6],
+                    }
+                    if expected != source:
+                        gaps.append("fp-4 SW2021 成员来源快照或内容哈希不可验证")
+    except (store.PackNotFrozen, store.FactPackIntegrityError, FileNotFoundError, OSError, ValueError) as exc:
         gaps.append(f"冻结事实包不可用:{exc}")
 
     # 冻结时应同时写入 L2 每日派生事实；只检查存在性，不自行补算。

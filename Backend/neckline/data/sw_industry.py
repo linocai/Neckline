@@ -39,8 +39,11 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -50,6 +53,7 @@ from neckline.data.tushare_client import (
     ts_index_classify,
     ts_index_member_all,
 )
+from neckline.calendar import CN_TZ
 from neckline.db import connection, init_schema, readonly_tables
 
 logger = logging.getLogger(__name__)
@@ -66,6 +70,10 @@ BAIJIU_L2_NAME = "白酒Ⅱ"
 _MAX_PAGES = 10
 
 _LEVELS = ("L1", "L2", "L3")
+_SNAPSHOT_FIELDS = ("ts_code", "name", "l1_code", "l1_name", "l2_code", "l2_name", "l3_code", "l3_name")
+_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,127}$")
+_OFFSET_ISO_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})$")
 
 
 @dataclass(frozen=True)
@@ -259,10 +267,60 @@ def _member_tuples(
     return out, dropped
 
 
+def _snapshot_content_hash(trade_date: str, members: Sequence[tuple]) -> str:
+    """Hash the normalized complete membership, never retrieval order."""
+    payload = {"tradeDate": trade_date, "members": [list(row) for row in sorted(members)]}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _existing_snapshot_manifest(conn, trade_date: str) -> Optional[str]:
+    row = conn.execute("SELECT content_sha256 FROM sw_industry_snapshot_manifests WHERE trade_date=?", (trade_date,)).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _parse_source_timestamp(value: str, field: str) -> datetime:
+    """Accept only ISO-8601 instants with an explicit UTC offset or ``Z``."""
+    if not _OFFSET_ISO_RE.fullmatch(value):
+        raise ValueError(f"source.{field} 必须是带时区偏移或 Z 的 ISO-8601 时间")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError as exc:
+        raise ValueError(f"source.{field} 不是合法 ISO-8601 时间") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"source.{field} 必须有明确时区")
+    return parsed
+
+
+def _write_snapshot_manifest(conn, *, trade_date: str, members: Sequence[tuple], source_id: str,
+                             source_generated_at: str, source_fetched_at: str,
+                             raw_file_sha256: Optional[str], imported_at: str) -> bool:
+    """Insert a date's immutable complete snapshot; exact duplicates are no-ops."""
+    content_sha256 = _snapshot_content_hash(trade_date, members)
+    existing = _existing_snapshot_manifest(conn, trade_date)
+    has_rows = conn.execute("SELECT 1 FROM sw_industry_member_snapshots WHERE trade_date=? LIMIT 1", (trade_date,)).fetchone()
+    if existing is not None:
+        if existing != content_sha256:
+            raise ValueError(f"{trade_date} 已有不同内容的历史 SW2021 快照，禁止静默覆盖")
+        return False
+    if has_rows is not None:
+        raise ValueError(f"{trade_date} 已有无来源清单的 SW2021 快照，拒绝覆盖")
+    conn.executemany(
+        "INSERT INTO sw_industry_member_snapshots(trade_date,ts_code,name,l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,source_fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [(trade_date, *row, source_fetched_at) for row in sorted(members)],
+    )
+    conn.execute(
+        "INSERT INTO sw_industry_snapshot_manifests(trade_date,content_sha256,source_id,source_generated_at,source_fetched_at,raw_file_sha256,row_count,imported_at) VALUES (?,?,?,?,?,?,?,?)",
+        (trade_date, content_sha256, source_id, source_generated_at, source_fetched_at,
+         raw_file_sha256, len(members), imported_at),
+    )
+    return True
+
+
 def save_snapshot(
     classify_rows: Sequence[Dict[str, Any]],
     member_rows: Sequence[Dict[str, Any]],
-    db_path: Optional[Path] = None,
+    db_path: Optional[Path] = None, target_date: Optional[date] = None,
 ) -> tuple:
     """把两张表整体换成这一份快照(一个短事务内 DELETE + INSERT)。
 
@@ -289,7 +347,112 @@ def save_snapshot(
             "INSERT INTO sw_industry_member "
             "(ts_code, name, l1_code, l1_name, l2_code, l2_name, l3_code, l3_name, "
             " in_date, out_date, is_current, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", mt)
+        if target_date is not None:
+            target = target_date.strftime("%Y%m%d")
+            _write_snapshot_manifest(
+                conn, trade_date=target, members=[tuple(row[:8]) for row in mt],
+                source_id="tushare-sw2021-current", source_generated_at=now,
+                source_fetched_at=now, raw_file_sha256=None, imported_at=now,
+            )
     return len(ct), len(mt), dropped
+
+
+def import_historical_snapshots(path: Path, *, db_path: Optional[Path] = None) -> dict[str, Any]:
+    """Controlled writer for complete, independently obtained historical SW2021 snapshots.
+
+    The JSON file is deliberately self-describing and contains no diffs::
+
+      {"source":{"id":"vendor-run", "generatedAt":"...+08:00", "fetchedAt":"...+08:00"},
+       "snapshots":[{"tradeDate":"20260828", "complete":true,
+         "expectedMemberCount":5897, "members":[
+         {"trade_date":"20260828", "ts_code":"...", "name":"...",
+          "l1_code":"...", "l1_name":"...", "l2_code":"...", "l2_name":"...",
+          "l3_code":"...", "l3_name":"..."}]}]}
+
+    Every listed day is explicitly declared complete and provides the expected
+    member count; the normalized unique rows must equal that declaration before
+    it is written at most once.  This function never consults current
+    membership or fetched_at to infer a historical effective date.
+    """
+    raw = Path(path).read_bytes()
+    raw_sha256 = hashlib.sha256(raw).hexdigest()
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"历史 SW 快照不是合法 UTF-8 JSON: {exc}") from exc
+    if not isinstance(document, dict) or set(document) != {"source", "snapshots"}:
+        raise ValueError("历史 SW 快照必须只含 source 与 snapshots")
+    source, snapshots = document["source"], document["snapshots"]
+    if not isinstance(source, dict) or set(source) != {"id", "generatedAt", "fetchedAt"}:
+        raise ValueError("source 必须含 id/generatedAt/fetchedAt")
+    source_id, generated_at, fetched_at = (source.get("id"), source.get("generatedAt"), source.get("fetchedAt"))
+    if (not isinstance(source_id, str) or not isinstance(generated_at, str)
+            or not isinstance(fetched_at, str) or not source_id or not generated_at
+            or not fetched_at or not isinstance(snapshots, list) or not snapshots):
+        raise ValueError("历史 SW 快照来源或逐日完整清单为空")
+    if not _SOURCE_ID_RE.fullmatch(source_id):
+        raise ValueError("source.id 必须是 1–128 位、无空白或控制字符的来源标识")
+    generated_at_value = _parse_source_timestamp(generated_at, "generatedAt")
+    fetched_at_value = _parse_source_timestamp(fetched_at, "fetchedAt")
+    if generated_at_value > fetched_at_value:
+        raise ValueError("source.generatedAt 不得晚于 source.fetchedAt")
+    normalized: dict[str, list[tuple]] = {}
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict) or set(snapshot) != {"tradeDate", "complete", "expectedMemberCount", "members"}:
+            raise ValueError("每个 snapshot 必须含 tradeDate/complete/expectedMemberCount/members")
+        trade_date = _s(snapshot.get("tradeDate"))
+        try:
+            datetime.strptime(trade_date, "%Y%m%d")
+        except ValueError as exc:
+            raise ValueError(f"无效 tradeDate:{trade_date}") from exc
+        expected_member_count = snapshot.get("expectedMemberCount")
+        if snapshot.get("complete") is not True:
+            raise ValueError(f"{trade_date} 必须显式声明 complete=true")
+        if isinstance(expected_member_count, bool) or not isinstance(expected_member_count, int) or expected_member_count <= 0:
+            raise ValueError(f"{trade_date} expectedMemberCount 必须为正整数")
+        if trade_date in normalized or not isinstance(snapshot["members"], list) or not snapshot["members"]:
+            raise ValueError(f"{trade_date} 重复或空快照")
+        members: list[tuple] = []
+        seen: set[str] = set()
+        for member in snapshot["members"]:
+            if not isinstance(member, dict) or set(member) != {"trade_date", *_SNAPSHOT_FIELDS}:
+                raise ValueError(f"{trade_date} 成员字段不完整或含未知键")
+            if _s(member.get("trade_date")) != trade_date:
+                raise ValueError(f"{trade_date} 成员 trade_date 不一致")
+            row = tuple(_s(member.get(field)) for field in _SNAPSHOT_FIELDS)
+            if any(not value for value in row):
+                raise ValueError(f"{trade_date} 成员身份字段不能为空")
+            if row[0] in seen:
+                raise ValueError(f"{trade_date} 同票重复或一票多归属:{row[0]}")
+            seen.add(row[0]); members.append(row)
+        if len(members) != expected_member_count:
+            raise ValueError(
+                f"{trade_date} 成员数与 expectedMemberCount 不一致({len(members)}/{expected_member_count})")
+        normalized[trade_date] = members
+    init_schema(db_path)
+    imported_at = _now()
+    with connection(db_path) as conn:
+        existing_import = conn.execute("SELECT raw_file_sha256 FROM sw_industry_snapshot_imports WHERE raw_file_sha256=?", (raw_sha256,)).fetchone()
+        if existing_import is not None:
+            return {"idempotent": True, "rawFileSha256": raw_sha256, "dates": sorted(normalized), "rowCount": sum(map(len, normalized.values()))}
+        for trade_date in sorted(normalized):
+            calendar = conn.execute("SELECT is_open FROM trade_cal WHERE cal_date=? ORDER BY exchange LIMIT 1", (trade_date,)).fetchone()
+            if calendar is None or int(calendar[0]) != 1:
+                raise ValueError(f"{trade_date} 不是已验证交易日，拒绝导入")
+        inserted = 0
+        for trade_date, members in sorted(normalized.items()):
+            inserted += int(_write_snapshot_manifest(
+                conn, trade_date=trade_date, members=members, source_id=source_id,
+                source_generated_at=generated_at, source_fetched_at=fetched_at,
+                raw_file_sha256=raw_sha256, imported_at=imported_at,
+            ))
+        conn.execute(
+            "INSERT INTO sw_industry_snapshot_imports(raw_file_sha256,source_id,source_generated_at,source_fetched_at,row_count,start_trade_date,end_trade_date,imported_at) VALUES (?,?,?,?,?,?,?,?)",
+            (raw_sha256, source_id, generated_at, fetched_at, sum(map(len, normalized.values())),
+             min(normalized), max(normalized), imported_at),
+        )
+    return {"idempotent": False, "rawFileSha256": raw_sha256, "dates": sorted(normalized),
+            "rowCount": sum(map(len, normalized.values())), "insertedDates": inserted}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -379,9 +542,16 @@ def refresh(
     db_path: Optional[Path] = None,
     classify_fetcher: Callable[..., TushareResult] = ts_index_classify,
     member_fetcher: Callable[..., TushareResult] = ts_index_member_all,
+    target_date: Optional[date] = None,
 ) -> SwRefreshStats:
     """全量重拉 + 落库 + 自检。**绝不抛异常**(同 `TushareResult` 的既有姿势):
     失败一律 `ok=False` + 可读 `reason`,由调用方决定日志级别与退出码。"""
+    # TuShare's member endpoint is a current snapshot and carries no effective
+    # trade date.  It is therefore reliable only for today's scheduled refresh;
+    # writing it under a historical target would fabricate an as-of relation.
+    if target_date is not None and target_date != datetime.now(CN_TZ).date():
+        return SwRefreshStats(ok=False, reason=(
+            f"历史 {target_date} 缺少可验证的当日 SW2021 成员源；拒绝用当前快照回填"))
     cres = fetch_classify(classify_fetcher)
     if not cres.ok:
         return SwRefreshStats(ok=False, reason=cres.reason)
@@ -393,11 +563,19 @@ def refresh(
     member_rows, pages = mres.data
 
     try:
-        n_cls, n_mem, dropped = save_snapshot(classify_rows, member_rows, db_path=db_path)
+        n_cls, n_mem, dropped = save_snapshot(classify_rows, member_rows, db_path=db_path, target_date=target_date)
     except Exception as e:  # noqa: BLE001  落库失败同样转 reason,不掀翻调用方
         return SwRefreshStats(ok=False, reason=f"落库失败:{e}")
 
     problems = verify(db_path)
+    if target_date is not None:
+        with readonly_tables("sw_industry_member_snapshots", db_path=db_path) as conn:
+            count = 0 if conn is None else int(conn.execute(
+                "SELECT COUNT(*) FROM sw_industry_member_snapshots WHERE trade_date=?",
+                (target_date.strftime("%Y%m%d"),),
+            ).fetchone()[0])
+        if count != n_mem:
+            problems = [*problems, f"目标日 {target_date} 成员快照不可验证({count}/{n_mem})"]
     # 🔴 丢行进 `problems`(复审 L6):§4.4 实测覆盖率 100%,丢掉哪怕一只都是数据事故。
     # `save_snapshot` 只拒绝**空**快照,拦不住「少了 200 只」这种半残快照 ——
     # 而半残快照会让下游一批票查无行业归属、相对强度算不出来。
@@ -426,6 +604,7 @@ __all__ = [
     "fetch_classify",
     "fetch_members",
     "save_snapshot",
+    "import_historical_snapshots",
     "load_l2_map",
     "level_counts",
     "member_count",

@@ -111,6 +111,21 @@ def test_send_push_sandbox_gateway(tmp_path, ec_key_pem, monkeypatch):
     priv, _ = ec_key_pem
     monkeypatch.setattr(apns, "settings", _apns_settings(tmp_path, priv, apns_use_sandbox=True))
     apns.reset_jwt_cache()
+
+
+def test_send_push_sets_stable_collapse_header(tmp_path, ec_key_pem, monkeypatch):
+    priv, _ = ec_key_pem
+    monkeypatch.setattr(apns, "settings", _apns_settings(tmp_path, priv))
+    apns.reset_jwt_cache()
+    captured = {}
+
+    def fake_transport(url, headers, body):
+        captured.update(headers)
+        return apns.PushResult(ok=True, status=200, reason="ok")
+
+    apns.send_push("t", "a", "b", collapse_id="same-event", transport=fake_transport)
+    assert captured["apns-collapse-id"] == "same-event"
+    apns.reset_jwt_cache()
     captured = {}
 
     def fake_transport(url, headers, body):

@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
@@ -57,6 +58,14 @@ from neckline.facts.pack import (
 
 logger = logging.getLogger(__name__)
 
+
+def columns_for_pack_version(pack_version: str) -> Tuple[str, ...]:
+    """返回已发布事实合同的列，不能拿 fp-3 清单读取 fp-4。"""
+    if pack_version == "fp-4":
+        from neckline.facts.v4 import PACK_COLUMNS as v4_columns
+        return v4_columns
+    return PACK_COLUMNS
+
 #: parquet 表名(`data/parquet/fact_pack/year=YYYY/YYYYMMDD.parquet`)。
 PARQUET_TABLE = "fact_pack"
 
@@ -82,6 +91,10 @@ class PackNotFrozen(LookupError):
     """该交易日没有冻结过的事实包 —— 「今天没跑成」,⛔ 不是「今天没有」。"""
 
 
+class FactPackIntegrityError(RuntimeError):
+    """冻结清单与其 parquet 载荷不一致，任何消费方都必须 fail-closed。"""
+
+
 def _d(d: date) -> str:
     return d.strftime("%Y%m%d")
 
@@ -96,6 +109,36 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _read_verified_rows(path: Path, *, trade_date: date, pack_version: str,
+                        fingerprint: str, row_count: int) -> pl.DataFrame:
+    """Read only the exact bytes pinned by a frozen ``fact_packs`` ledger row."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{trade_date} 的 {pack_version} parquet 缺失({path})，冻结清单不可消费")
+    # Read once: hashing a path and reopening it for parquet parsing has a
+    # replace-between-operations race.  The verified digest and decoded frame
+    # must originate from exactly the same immutable byte buffer.
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise FileNotFoundError(
+            f"{trade_date} 的 {pack_version} parquet 无法读取({path}): {exc}") from exc
+    actual_fingerprint = hashlib.sha256(payload).hexdigest()
+    if actual_fingerprint != fingerprint:
+        raise FactPackIntegrityError(
+            f"{trade_date} 的 {pack_version} parquet SHA-256 与冻结清单不一致"
+            f"(expected={fingerprint}, actual={actual_fingerprint})")
+    try:
+        rows = pl.read_parquet(io.BytesIO(payload))
+    except Exception as exc:  # noqa: BLE001
+        raise FactPackIntegrityError(f"{trade_date} 的 {pack_version} parquet 不可读取:{exc}") from exc
+    if rows.height != row_count:
+        raise FactPackIntegrityError(
+            f"{trade_date} 的 {pack_version} parquet 行数与冻结清单不一致"
+            f"(expected={row_count}, actual={rows.height})")
+    return rows
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -142,16 +185,14 @@ class FactPack:
     def rows(self) -> pl.DataFrame:
         """现读 parquet。文件已被保留策略裁剪 → `FileNotFoundError`(清单行仍在,
         ⛔ 不返回空表冒充「那天没数据」)。"""
-        p = self.path
-        if not p.exists():
-            raise FileNotFoundError(
-                f"{self.trade_date} 的事实包 parquet 已不在({p}) —— "
-                f"清单行仍在(pack_id={self.pack_id}),数据本身已被保留策略裁剪")
-        return pl.read_parquet(p)
+        return _read_verified_rows(
+            self.path, trade_date=self.trade_date, pack_version=self.pack_version,
+            fingerprint=self.content_fingerprint, row_count=self.row_count,
+        )
 
     def field(self, name: str) -> pl.Series:
         """按列取数。列名不在 `PACK_COLUMNS` 里直接抛(⛔ 不静默返回空列)。"""
-        if name not in PACK_COLUMNS:
+        if name not in columns_for_pack_version(self.pack_version):
             raise KeyError(f"{name!r} 不是事实包的列;可用列见 facts.pack.PACK_COLUMNS")
         return self.rows[name]
 
@@ -210,6 +251,11 @@ def freeze_pack(
             f"数据未到齐时的正确动作是报告「今天没跑成」并逐条列出缺口,⛔ 不是冻一份残包")
     if origin not in (ORIGIN_LIVE, ORIGIN_BACKFILL):
         raise ValueError(f"origin 只能是 {ORIGIN_LIVE!r} / {ORIGIN_BACKFILL!r},收到 {origin!r}")
+    expected_columns = columns_for_pack_version(pack.pack_version)
+    absent = [c for c in expected_columns if c not in pack.rows.columns]
+    if absent:
+        raise ValueError(
+            f"{pack.pack_version} 不能用旧事实行伪造，缺少字段:{','.join(absent)}")
 
     init_schema(db_path)
     day_s = _d(pack.trade_date)
@@ -240,7 +286,8 @@ def freeze_pack(
     staging.mkdir(parents=True, exist_ok=True)
     try:
         tmp_path = write_table_day(
-            PARQUET_TABLE, pack.trade_date, pack.rows.select(list(PACK_COLUMNS)),
+            PARQUET_TABLE, pack.trade_date,
+            pack.rows.select(list(columns_for_pack_version(pack.pack_version))),
             parquet_dir=staging,
         )
         with tmp_path.open("rb") as fh:
@@ -393,50 +440,59 @@ def load_pack_range(
        缺省行为,等于把那条红线设成默认路径。要全部列就**显式**传
        `columns=facts.pack.PACK_COLUMNS` —— 让它是一次自觉行为。
 
-    缺哪天就少哪天的行(⛔ 不抛 ——「那天没冻结」是可被读出来的事实,由调用方对着
-    `fact_packs` 自己数)。
+    每个清单内分区都在拼接前复核 SHA-256 与行数；缺文件、篡改、截断都直接抛，
+    ⛔ 不许悄悄跳过后返回残缺历史窗口。
     """
     if end > as_of:
         raise ValueError(
             f"读取范围截止到当日(策略契约第三条):end={end} > as_of={as_of}")
     if start > end:
         raise ValueError(f"start({start}) > end({end})")
-    span = len(trading_days_between(start, end))
+    calendar_db = db_path if db_path is not None else settings.db_path
+    span = len(trading_days_between(start, end, db_path=calendar_db))
     if span > MAX_LOOKBACK_PACKS:
         raise ValueError(
             f"区间 {start}~{end} 含 {span} 个交易日,超过 MAX_LOOKBACK_PACKS={MAX_LOOKBACK_PACKS}"
             f"(工程容量上限,§3.2)")
+    expected_days = [_d(day) for day in trading_days_between(start, end, db_path=calendar_db)]
 
     with readonly_tables("fact_packs", db_path=db_path) as conn:
-        days = [] if conn is None else [
-            r[0] for r in conn.execute(
-                "SELECT trade_date FROM fact_packs WHERE pack_version=? "
+        manifests = [] if conn is None else conn.execute(
+                "SELECT trade_date,content_fingerprint,row_count FROM fact_packs WHERE pack_version=? "
                 "AND trade_date>=? AND trade_date<=? ORDER BY trade_date",
                 (pack_version, _d(start), _d(end)),
             ).fetchall()
-        ]
-    if not days:
+    actual_days = [str(row[0]) for row in manifests]
+    if actual_days != expected_days:
+        missing = sorted(set(expected_days) - set(actual_days))
+        extra = sorted(set(actual_days) - set(expected_days))
+        raise FactPackIntegrityError(
+            f"{pack_version} 冻结事实窗口日期不完整或含闭市日"
+            f"(missing={missing or '-'}, extra={extra or '-'})")
+    if not manifests:
         return pl.DataFrame()
 
     picked = list(columns)
     if not picked:
         raise ValueError("columns 不能为空 —— 列投影是必填的(见 docstring 的实测内存账)")
-    unknown = [c for c in picked if c not in PACK_COLUMNS]
+    contract_columns = columns_for_pack_version(pack_version)
+    unknown = [c for c in picked if c not in contract_columns]
     if unknown:
         raise KeyError(f"{unknown} 不是事实包的列;可用列见 facts.pack.PACK_COLUMNS")
     if "trade_date" not in picked:
         picked = ["trade_date", *picked]
 
     frames: List[pl.DataFrame] = []
-    for day_s in days:
+    for day_s, fingerprint, expected_count in manifests:
         d = datetime.strptime(day_s, "%Y%m%d").date()
         p = pack_file_path(d, pack_version, parquet_dir)
-        if not p.exists():           # 已被保留策略裁剪:清单在、数据不在
-            logger.warning("[fact_pack] %s 的 parquet 已裁剪,区间读跳过该日(%s)", d, p)
-            continue
-        frames.append(pl.read_parquet(p, columns=picked))
-    if not frames:
-        return pl.DataFrame()
+        rows = _read_verified_rows(p, trade_date=d, pack_version=pack_version,
+                                   fingerprint=str(fingerprint), row_count=int(expected_count))
+        absent = [column for column in picked if column not in rows.columns]
+        if absent:
+            raise FactPackIntegrityError(
+                f"{d} 的 {pack_version} parquet 缺少请求列:{','.join(absent)}")
+        frames.append(rows.select(picked))
     return pl.concat(frames, how="vertical_relaxed").sort(["trade_date", "ts_code"])
 
 
@@ -510,6 +566,7 @@ __all__ = [
     "STATE_FROZEN",
     "PackAlreadyFrozen",
     "PackNotFrozen",
+    "FactPackIntegrityError",
     "FactPack",
     "pack_file_path",
     "freeze_pack",

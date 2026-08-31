@@ -7,7 +7,7 @@
 # (六年历史)恒在 Mac 一次性跑,ECS 不做全量 backfill(§3.6)。
 #
 # 用法:
-#   NECKLINE_DEPLOY_HOST=114.66.0.38 bash scripts/sync_data.sh
+#   NECKLINE_DEPLOY_HOST=114.66.2.205 bash scripts/sync_data.sh
 #   DRY_RUN=1 bash scripts/sync_data.sh
 set -euo pipefail
 

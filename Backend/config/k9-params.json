@@ -1,255 +1,152 @@
 {
-  "schemaVersion": "k9-params-v2",
-  "packageVersion": "k9-params-20260824-v2-r1",
-  "strategyVersion": "K9-v2",
-  "factPackVersion": "fp-3",
+  "schemaVersion": "k9-params-v3",
+  "packageVersion": "k9-params-20260831-v3-r1",
+  "strategyVersion": "K9-v3",
+  "factPackVersion": "fp-4",
+  "labelContractVersion": "d2-v2",
   "status": "approved",
-  "validationMode": "live_forward",
-  "parameterizedBy": "whynotme/K9-v2-20260824",
-  "parameterizedAt": "2026-08-24T21:30:17+08:00",
+  "parameterizedBy": "Codex (whynotme)",
+  "parameterizedAt": "2026-08-31T11:05:21+08:00",
   "approvedBy": "Lino",
-  "approvedAt": "2026-08-24T21:30:17+08:00",
-  "approvalNote": "User approved direct live deployment and forward validation. Historical probes are supporting evidence, not a substitute for live K9-v2 observation.",
+  "approvedAt": "2026-08-31T11:05:21+08:00",
+  "approvalNote": "Lino 批准 K9-v3 r1；按 Neckline 现有 k9-params-v3 接口收口，作为首轮实战前向验证参数包。",
   "boundary": {
-    "newListingDays": 30,
-    "spikeFadeRetPct": 5.0,
-    "spikeFadeGapPct": 3.0,
+    "newListingTradingDays": 40,
     "activity": {
-      "typicalAmountWindowDays": 60,
-      "participationWindowDays": 60,
+      "windowDays": 60,
       "minimumValidDays": 40,
-      "typicalAmountStatistic": "median",
-      "participationStatistic": "turnover_rate_median",
-      "weights": {
-        "typicalAmountPercentile": 0.6,
-        "participationDensityPercentile": 0.4
-      },
-      "strict": {
-        "excludeBottomPct": 0.5
-      },
-      "relaxed": {
-        "excludeBottomPct": 0.45
-      },
-      "missingComponentPolicy": "parameters_not_configured"
-    }
-  },
-  "industry": {
-    "classification": "SW2021_L2",
-    "minMembers": 5,
+      "amountWeight": 0.6,
+      "participationWeight": 0.4,
+      "excludeBottomPct": 0.5
+    },
+    "d0Liquidity": {
+      "minimumAmountCny": 100000000,
+      "freeFloatMarketValueRatio": 0.005
+    },
     "excludedL2Codes": [
       "801125.SI"
-    ],
-    "heatAbsentPolicy": "renormalize",
-    "historicalMembershipPolicy": "freeze_by_trade_date"
-  },
-  "volume": {
-    "maDays": 20,
-    "excludeCurrentDayFromMean": true
+    ]
   },
   "channels": {
-    "p1": {
-      "name": "first_volume_launch",
-      "strict": {
-        "minVolMultiple": 1.5,
-        "minRetPct": 1.5,
-        "minIndustryExcessPct": 0.3,
-        "minCloseLocation": 0.7,
-        "breakoutWindowDays": 20,
-        "maxDistanceBelowPriorHighPct": 0.0,
-        "confirmationMode": "close_location_or_breakout",
-        "hotIdentityExclusion": {
-          "lookbackDays": 20,
-          "dailyHeatTopPct": 0.15,
-          "minHotDays": 6,
-          "recentWindowDays": 5,
-          "minRecentHotDays": 1
-        }
-      },
-      "relaxed": {
-        "minVolMultiple": 1.3,
-        "minRetPct": 0.8,
-        "minIndustryExcessPct": 0.0,
-        "minCloseLocation": 0.6,
-        "breakoutWindowDays": 20,
-        "maxDistanceBelowPriorHighPct": 1.0,
-        "confirmationMode": "close_location_or_breakout",
-        "hotIdentityExclusion": {
-          "lookbackDays": 20,
-          "dailyHeatTopPct": 0.2,
-          "minHotDays": 5,
-          "recentWindowDays": 5,
-          "minRecentHotDays": 1
-        }
-      }
-    },
     "p2": {
-      "name": "idiosyncratic_oversold_rebound",
-      "strict": {
+      "enabled": true,
+      "recall": {
         "windowDays": 7,
-        "minCumulativeDropPct": 10.0,
-        "minDrawdownFromWindowHighPct": 12.0,
-        "absoluteOversoldMode": "cumulative_drop_or_drawdown",
-        "minIndustryUnderperformancePct": 5.0,
-        "minVolMultiple": 1.0,
-        "excludeOneLineLimitDown": true,
-        "supportMode": "close_location_or_daily_return",
-        "minCloseLocation": 0.65,
-        "minDailyRetPct": 0.0
+        "volumeBaselineDays": 20,
+        "minCumulativeDropPct": 0.1,
+        "minDrawdownPct": 0.12,
+        "minIndustryUnderperformancePct": 0.05,
+        "minVolumeMultiple": 1.0,
+        "supportCloseLocationPct": 0.65,
+        "supportDailyReturnPct": 0.0
       },
-      "relaxed": {
-        "windowDays": 7,
-        "minCumulativeDropPct": 8.0,
-        "minDrawdownFromWindowHighPct": 10.0,
-        "absoluteOversoldMode": "cumulative_drop_or_drawdown",
-        "minIndustryUnderperformancePct": 4.0,
-        "minVolMultiple": 0.8,
-        "excludeOneLineLimitDown": true,
-        "supportMode": "close_location_or_daily_return",
-        "minCloseLocation": 0.55,
-        "minDailyRetPct": -0.5
+      "ranking": {
+        "oversoldDepthWeight": 0.15,
+        "industryUnderperformanceWeight": 0.2,
+        "lowRecoveryWeight": 0.35,
+        "declineDecelerationWeight": 0.2,
+        "turnoverWeight": 0.1
       }
     },
     "p3": {
-      "name": "hot_high_conflict",
-      "dailyHeat": {
-        "weights": {
-          "amountPercentile": 0.6,
-          "turnoverRatePercentile": 0.4
-        },
-        "missingComponentPolicy": "parameters_not_configured"
-      },
-      "strict": {
-        "hotLookbackDays": 20,
-        "dailyHeatTopPct": 0.1,
+      "enabled": true,
+      "identity": {
+        "windowDays": 20,
+        "eventWindowDays": 5,
+        "volumeBaselineDays": 20,
         "minHotDays": 6,
-        "currentHeatTopPct": 0.1,
-        "conflictLookbackDays": 5,
-        "minAbsoluteMoveAsLimitRatio": 0.5,
-        "minAmplitudeAsLimitRatio": 0.7,
-        "minHugeVolMultiple": 2.0,
-        "conflictMode": "move_or_amplitude_or_volume"
+        "topPct": 0.1,
+        "largeMoveLimitWidthPct": 0.5,
+        "largeMoveAmplitudePct": 0.7,
+        "largeMoveVolumeMultiple": 2.0,
+        "hotness": {
+          "amountWeight": 0.6,
+          "turnoverWeight": 0.4
+        }
       },
-      "relaxed": {
-        "hotLookbackDays": 20,
-        "dailyHeatTopPct": 0.15,
-        "minHotDays": 5,
-        "currentHeatTopPct": 0.15,
-        "conflictLookbackDays": 5,
-        "minAbsoluteMoveAsLimitRatio": 0.4,
-        "minAmplitudeAsLimitRatio": 0.6,
-        "minHugeVolMultiple": 1.8,
-        "conflictMode": "move_or_amplitude_or_volume"
+      "opportunity": {
+        "requireDirectionResolved": false,
+        "maxOverextendedPct": 0.15,
+        "minRelativeLeadership": 0.005,
+        "minCapitalRetention": 0.0,
+        "minStructureIntegrity": 0.6
       },
-      "bonuses": {
-        "bonusCap": 0.15,
-        "recentLimitUp": 0.05,
-        "recentLimitDownHeat": 0.02,
-        "dragonTigerList": 0.05,
-        "controlledAnomaly": 0.03,
-        "reversalOrSecondWave": 0.05,
-        "recentLimitDownRiskLevelIncrement": 1,
-        "missingOptionalEvidencePolicy": "no_bonus_no_penalty"
+      "ranking": {
+        "directionWeight": 0.15,
+        "notOverextendedWeight": 0.1,
+        "relativeLeadershipWeight": 0.3,
+        "capitalRetentionWeight": 0.25,
+        "structureIntegrityWeight": 0.2,
+        "recentLimitDownRiskDeduction": 0.1
       }
     },
     "p4": {
-      "name": "money_leads_price",
-      "strict": {
-        "dailyInflowRankPct": 0.05,
-        "cumDays": 5,
-        "cumInflowRankPct": 0.05,
-        "lagRankGap": 0.3
+      "enabled": true,
+      "benchmark": {
+        "indexCode": "000001.SH"
       },
-      "relaxed": {
-        "dailyInflowRankPct": 0.1,
-        "cumDays": 5,
-        "cumInflowRankPct": 0.1,
-        "lagRankGap": 0.2
+      "industry": {
+        "windowDays": 7,
+        "minMembers": 8,
+        "minBreadthPct": 0.55,
+        "minOversoldRelativePct": 0.03,
+        "minRepairPct": 0.005,
+        "maxIndustries": 3,
+        "perIndustryStockCap": 2
+      },
+      "stock": {
+        "minRelativeStrength": 0.005,
+        "minCoreScore": 0.6,
+        "minLiquidityScore": 0.6
+      },
+      "ranking": {
+        "relativeStrengthWeight": 0.45,
+        "coreWeight": 0.35,
+        "liquidityWeight": 0.2
+      },
+      "playbookBounds": {
+        "minimumMemberCoverageMin": 0.8,
+        "minimumMemberCoverageMax": 1.0,
+        "medianReturnMin": -0.015,
+        "medianReturnMax": 0.003,
+        "breadthMin": 0.35,
+        "breadthMax": 0.55,
+        "relativeBenchmarkReturnMin": -0.01,
+        "relativeBenchmarkReturnMax": 0.003,
+        "relativeIndustryReturnMin": 0.0,
+        "relativeIndustryReturnMax": 0.01
       }
     }
   },
-  "ranking": {
-    "weights": {
-      "industryHeat": 0.45,
-      "patternStrength": 0.4,
-      "relay": 0.15
+  "quotas": {
+    "p2": 5,
+    "p3": 8,
+    "p4": 6
+  },
+  "settlement": {
+    "d1": {
+      "enhancedReturnPct": 0.015,
+      "enhancedCloseLocationPct": 0.6,
+      "weakenedReturnPct": -0.015
     },
-    "patternSubWeights": {
-      "p1": {
-        "volMultiple": 0.15,
-        "amountRank": 0.15,
-        "closeLocation": 0.2,
-        "breakout": 0.2,
-        "industryRelativeStrength": 0.2,
-        "upsideRoom": 0.1
-      },
-      "p2": {
-        "absoluteOversoldDepth": 0.15,
-        "industryUnderperformance": 0.2,
-        "lowRecovery": 0.35,
-        "declineDeceleration": 0.2,
-        "effectiveTurnover": 0.1
-      },
-      "p3": {
-        "hotPersistence": 0.25,
-        "maxAmplitude": 0.2,
-        "maxAbsoluteMove": 0.15,
-        "hugeTurnover": 0.15,
-        "conflictRecency": 0.15,
-        "directionAndIndustryRelativeStrength": 0.1
-      },
-      "p4": {
-        "dailyInflowRank": 0.35,
-        "cumulativeInflowRank": 0.4,
-        "lagRankGap": 0.25,
-        "volumeRatioRank": 0.0
-      }
-    },
-    "relayLookbackDays": 10,
-    "relaySource": "shortlisted",
-    "relayScoring": "binary",
-    "sameDayMultiChannelBonus": 0.0,
-    "percentileScope": "within_channel_per_trade_date"
-  },
-  "quota": {
-    "min": 10,
-    "max": 20,
-    "floorPerChannel": 1,
-    "overStrictConsecutiveDays": 3
-  },
-  "evaluation": {
-    "horizonTradingDays": 2,
-    "selectorReference": "d0_close",
-    "touchThresholdPct": 3.0,
-    "riskThresholdPct": -4.0,
-    "d1ConfirmationReference": "last_valid_trade_at_10_00",
-    "touchRequiresTradablePath": true,
-    "sameDayDualTouchWithoutIntradaySequence": "path_unknown",
-    "forceSettleAtD2": true,
-    "runnerExtensionScore": false
-  },
-  "explain": {
-    "maxBackfillRounds": 2
+    "d2": {
+      "opportunityReturnPct": 0.03,
+      "continuationReturnPct": 0.01,
+      "riskReturnPct": -0.04
+    }
   },
   "evidence": {
-    "snapshot": "neckline-k9-calibration-20260724.snapshot.db",
-    "snapshotSha256": "0e3317ec3dbf84d601e3cde6199b5565e0b820a5627a04c3a8b46a8f0197ee03",
-    "factRange": {
-      "from": "2023-08-01",
-      "to": "2026-07-24",
-      "tradingDays": 722,
-      "rows": 3888109
+    "approvalMode": "live_forward",
+    "contractAlignment": "Neckline current k9-params-v3 supported fields only",
+    "systemContract": "K9-v3 / fp-4 / d2-v2",
+    "historicalPassRate": {
+      "status": "not_run",
+      "reason": "No isolated as-of fp-4 snapshot is currently available; legacy fp-3/K9-v2 results are not comparable to K9-v3."
     },
-    "probeRange": {
-      "trainFrom": "2024-01-02",
-      "trainTo": "2025-12-31",
-      "forwardProbeFrom": "2026-01-05",
-      "forwardProbeTo": "2026-07-24"
-    },
-    "knownLimitations": [
-      "Historical activity probe had typical amount but not turnover-rate or free-float participation density; the approved production implementation must provide the declared participation component.",
-      "Historical dragon-tiger-list and controlled-anomaly evidence was unavailable; those bonuses are approved for live forward validation with no-bonus/no-penalty missing-data behavior.",
-      "Historical industry membership uses the disclosed snapshot mapping limitation.",
-      "K9-v2 is intentionally approved for live forward validation; future changes require a new immutable package version."
+    "requiredBeforeProductionDay1": [
+      "Neckline loader validation",
+      "isolated fp-4 replay",
+      "fp-4 current-day readiness"
     ]
   }
 }

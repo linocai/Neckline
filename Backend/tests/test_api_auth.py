@@ -14,7 +14,7 @@ PROTECTED_GET = [
     "/api/v1/settings/llm-routes",
     "/api/v1/review",
     "/api/v1/review/overview",
-    "/api/v1/scoreboard/listing",
+    "/api/v1/scoreboard/packages?state=active",
 ]
 
 

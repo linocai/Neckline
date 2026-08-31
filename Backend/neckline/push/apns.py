@@ -166,6 +166,7 @@ def send_push(
     category: str = CATEGORY_DIGEST,
     thread_id: Optional[str] = None,
     custom: Optional[Dict[str, Any]] = None,
+    collapse_id: Optional[str] = None,
     transport: Optional[Transport] = None,
     jwt_token: Optional[str] = None,
 ) -> PushResult:
@@ -185,6 +186,11 @@ def send_push(
         "apns-priority": "10",
         "content-type": "application/json",
     }
+    if collapse_id:
+        encoded = collapse_id.encode("ascii", errors="strict")
+        if len(encoded) > 64:
+            raise ValueError("APNs collapse_id 不能超过 64 个 ASCII 字节")
+        headers["apns-collapse-id"] = collapse_id
     url = f"{_gateway()}/3/device/{device_token}"
     return transport(url, headers, body_bytes)
 

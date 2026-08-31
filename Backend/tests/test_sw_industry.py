@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import json
+from datetime import date
 
 import pytest
 
@@ -196,6 +198,117 @@ class TestPersistence:
         sw.refresh(db_path=db, classify_fetcher=_fake_classify(),
                    member_fetcher=_fake_members(total=80))
         assert sw.member_count(db) == 80, "全量快照替换,⛔ 不累加"
+
+    def test_historical_target_is_rejected_before_current_members_can_be_written_as_asof(self, db):
+        calls = []
+        def classify(*args, **kwargs):
+            calls.append("classify")
+            return TushareResult.success([])
+        stats = sw.refresh(db_path=db, target_date=date(2020, 1, 2),
+                           classify_fetcher=classify, member_fetcher=_fake_members(total=1))
+        assert stats.ok is False and "拒绝用当前快照回填" in stats.reason
+        assert calls == []
+
+    def test_historical_complete_snapshot_import_is_idempotent_and_refuses_overwrite(self, db, tmp_path):
+        init = __import__("neckline.db", fromlist=["init_schema"]).init_schema
+        init(db)
+        with sqlite3.connect(db) as conn:
+            conn.execute("INSERT INTO trade_cal(exchange,cal_date,is_open) VALUES ('SSE','20260820',1)")
+        members = []
+        for code in ("600000.SH", "600001.SH"):
+            members.append({"trade_date": "20260820", "ts_code": code, "name": code,
+                            "l1_code": "801", "l1_name": "L1", "l2_code": "801080.SI", "l2_name": "半导体",
+                            "l3_code": "80108001.SI", "l3_name": "L3"})
+        document = {"source": {"id": "vendor-historical-sw2021", "generatedAt": "2026-08-21T00:00:00+08:00", "fetchedAt": "2026-08-21T01:00:00+08:00"},
+                    "snapshots": [{"tradeDate": "20260820", "complete": True,
+                                   "expectedMemberCount": len(members), "members": members}]}
+        path = tmp_path / "history.json"; path.write_text(json.dumps(document), encoding="utf-8")
+        first = sw.import_historical_snapshots(path, db_path=db)
+        assert first["insertedDates"] == 1 and first["rowCount"] == 2
+        with sqlite3.connect(db) as conn:
+            assert conn.execute(
+                "SELECT row_count FROM sw_industry_snapshot_manifests WHERE trade_date='20260820'").fetchone()[0] == 2
+        assert sw.import_historical_snapshots(path, db_path=db)["idempotent"] is True
+        document["snapshots"][0]["members"][0]["l2_name"] = "已变更"
+        changed = tmp_path / "changed.json"; changed.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(ValueError, match="禁止静默覆盖"):
+            sw.import_historical_snapshots(changed, db_path=db)
+
+    def test_historical_snapshot_import_rejects_nontrading_empty_duplicate_and_incomplete_rows(self, db, tmp_path):
+        __import__("neckline.db", fromlist=["init_schema"]).init_schema(db)
+        base = {"trade_date": "20260820", "ts_code": "600000.SH", "name": "x", "l1_code": "801", "l1_name": "L1",
+                "l2_code": "801080.SI", "l2_name": "L2", "l3_code": "80108001.SI", "l3_name": "L3"}
+        source = {"id": "vendor-run", "generatedAt": "2026-08-21T00:00:00Z", "fetchedAt": "2026-08-21T01:00:00Z"}
+        def document(snapshot):
+            return {"source": source, "snapshots": [snapshot]}
+        def snapshot(**overrides):
+            value = {"tradeDate": "20260820", "complete": True, "expectedMemberCount": 1, "members": [base]}
+            value.update(overrides)
+            return value
+        cases = [
+            document(snapshot()),  # no trade_cal entry
+            document(snapshot(members=[])),
+            document(snapshot(expectedMemberCount=2, members=[base, base])),
+            document(snapshot(members=[{k: v for k, v in base.items() if k != "l3_name"}])),
+        ]
+        for index, document in enumerate(cases):
+            path = tmp_path / f"invalid-{index}.json"; path.write_text(json.dumps(document), encoding="utf-8")
+            with pytest.raises(ValueError):
+                sw.import_historical_snapshots(path, db_path=db)
+
+    def test_historical_snapshot_import_requires_source_claimed_complete_count_and_offset_times(self, db, tmp_path):
+        __import__("neckline.db", fromlist=["init_schema"]).init_schema(db)
+        with sqlite3.connect(db) as conn:
+            conn.execute("INSERT INTO trade_cal(exchange,cal_date,is_open) VALUES ('SSE','20260820',1)")
+        member = {"trade_date": "20260820", "ts_code": "600000.SH", "name": "x", "l1_code": "801", "l1_name": "L1",
+                  "l2_code": "801080.SI", "l2_name": "L2", "l3_code": "80108001.SI", "l3_name": "L3"}
+        base = {
+            "source": {"id": "vendor-run", "generatedAt": "2026-08-21T00:00:00+08:00", "fetchedAt": "2026-08-21T01:00:00+08:00"},
+            "snapshots": [{"tradeDate": "20260820", "complete": True, "expectedMemberCount": 1, "members": [member]}],
+        }
+        truncated_members = [{**member, "ts_code": f"6000{i:02d}.SH", "name": f"x-{i}"} for i in range(10)]
+        cases = [
+            {"snapshots": [{"tradeDate": "20260820", "complete": True, "expectedMemberCount": 5000, "members": truncated_members}]},
+            {"snapshots": [{"tradeDate": "20260820", "complete": False, "expectedMemberCount": 1, "members": [member]}]},
+            {"snapshots": [{"tradeDate": "20260820", "complete": True, "members": [member]}]},
+            {"source": {"id": "vendor-run", "generatedAt": "2026-08-21T00:00:00", "fetchedAt": "2026-08-21T01:00:00+08:00"}},
+            {"source": {"id": "vendor-run", "generatedAt": "not-a-time", "fetchedAt": "2026-08-21T01:00:00+08:00"}},
+            {"source": {"id": "vendor-run", "generatedAt": "2026-08-21T02:00:00+08:00", "fetchedAt": "2026-08-21T01:00:00+08:00"}},
+            {"source": {"id": "vendor run", "generatedAt": "2026-08-21T00:00:00+08:00", "fetchedAt": "2026-08-21T01:00:00+08:00"}},
+        ]
+        for index, override in enumerate(cases):
+            candidate = json.loads(json.dumps(base))
+            candidate.update(override)
+            path = tmp_path / f"contract-invalid-{index}.json"
+            path.write_text(json.dumps(candidate), encoding="utf-8")
+            with pytest.raises(ValueError):
+                sw.import_historical_snapshots(path, db_path=db)
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sw_industry_member_snapshots").fetchone()[0] == 0
+
+    def test_historical_snapshot_import_rolls_back_all_dates_on_immutable_collision(self, db, tmp_path):
+        __import__("neckline.db", fromlist=["init_schema"]).init_schema(db)
+        with sqlite3.connect(db) as conn:
+            conn.executemany("INSERT INTO trade_cal(exchange,cal_date,is_open) VALUES ('SSE',?,1)",
+                             [("20260820",), ("20260821",)])
+        source = {"id": "vendor-run", "generatedAt": "2026-08-22T00:00:00Z", "fetchedAt": "2026-08-22T01:00:00Z"}
+        def member(day, code, name):
+            return {"trade_date": day, "ts_code": code, "name": name, "l1_code": "801", "l1_name": "L1",
+                    "l2_code": "801080.SI", "l2_name": "L2", "l3_code": "80108001.SI", "l3_name": "L3"}
+        def snapshot(day, entries):
+            return {"tradeDate": day, "complete": True, "expectedMemberCount": len(entries), "members": entries}
+        existing = {"source": source, "snapshots": [snapshot("20260821", [member("20260821", "600001.SH", "old")])]}
+        existing_path = tmp_path / "existing.json"; existing_path.write_text(json.dumps(existing), encoding="utf-8")
+        sw.import_historical_snapshots(existing_path, db_path=db)
+        collision = {"source": source, "snapshots": [
+            snapshot("20260820", [member("20260820", "600000.SH", "new")]),
+            snapshot("20260821", [member("20260821", "600001.SH", "changed")]),
+        ]}
+        collision_path = tmp_path / "collision.json"; collision_path.write_text(json.dumps(collision), encoding="utf-8")
+        with pytest.raises(ValueError, match="禁止静默覆盖"):
+            sw.import_historical_snapshots(collision_path, db_path=db)
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sw_industry_member_snapshots WHERE trade_date='20260820'").fetchone()[0] == 0
 
     def test_empty_snapshot_is_refused(self, db):
         """⛔ 空覆盖会把「今天没拉到」变成「这些票查无行业」。"""

@@ -48,7 +48,7 @@ from neckline.api.schemas import (
 )
 from neckline.api.stores import upsert_device
 from neckline.calendar import CN_TZ, is_trading_day, trading_days_between
-from neckline.config import ensure_data_dirs
+from neckline.config import ensure_data_dirs, settings
 from neckline.llm.factory import get_provider
 from neckline import notify_kinds
 from neckline import dedup
@@ -92,7 +92,8 @@ def _read_review_upload(upload: UploadFile, *, total_before: int) -> bytes:
     return data
 
 # 版本必须与客户端工程同步；部署是否生效以生产 health 响应为准。
-VERSION = "v2.6.0"
+VERSION = "v2.7.0"
+RELEASE_SET = "v2.7.0-b19"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
@@ -117,6 +118,7 @@ _MORNING_IDLE_POLL_SEC = 300
 #: 也可以一次落在 9:58、下一次落在 10:05:30(**整窗错过**)——「今天跑没跑过」
 #: 于是变成一道看运气的题。收紧到 30 秒后,两个窗口各自至少被探到 6 次。
 _MORNING_TIGHT_POLL_SEC = 30
+_INTRADAY_CAPTURE_POLL_SEC = 30
 
 #: 收紧区间(**各自比窗口早开一点**,给「起 tick → 读清单 → 读预案」留出余量)。
 #: ⚠ 判据的单一源仍在两个 tick 自己那里(`is_auction_window` / `is_settle_window`)——
@@ -142,7 +144,7 @@ async def _morning_loop(stop_event: asyncio.Event) -> None:
     | 拍 | 窗口 | 推送 | 产物 |
     |---|---|---|---|
     | 竞价核对表 | 9:26–9:29 | 有(APNs) | `已触发放弃 / 待开盘后观察` 两段,⛔ 无「成立」 |
-    | 结算拍(裁定 10) | 10:00–10:05 | **无** | 三分支终值 → `k9_d1_verdicts` |
+    | 结算拍(裁定 10) | 10:00–10:05 | **无** | 四分支结果追加至成绩包 |
 
     🔴 ⛔ **不新增 systemd unit** —— 两拍都跑在既有常驻 `neckline.service` 里
     (PROJECT_PLAN §9.3)。多一个 unit 就多一条双跑路径,而「当日只跑一次」记在
@@ -154,7 +156,9 @@ async def _morning_loop(stop_event: asyncio.Event) -> None:
     """
     logger.info("早晨轮询已挂载(S8:9:26 竞价核对表 + 10:00 结算拍,零新增 unit)")
     while not stop_event.is_set():
-        now = datetime.now()
+        # Scheduling semantics are A-share exchange time, never host-local
+        # time (NB cloud/container timezone is only defence in depth).
+        now = datetime.now(CN_TZ)
         # 🔴 两拍**各自独立** `try/except`(§5.7.3):一拍炸了不影响另一拍。
         # 🔴 **两拍都丢进线程池**(R2-09):它们内部做 HTTP + SQLite,是**同步阻塞**。
         # 单源最坏 `2 × (3+5) = 16 s`(`data/realtime.py` 的 connect=3s / read=5s /
@@ -183,45 +187,91 @@ async def _morning_loop(stop_event: asyncio.Event) -> None:
             pass
 
 
+async def _intraday_capture_loop(stop_event: asyncio.Event) -> None:
+    """Freeze real provider snapshots for due K9-v3 packages and their benchmark.
+
+    This runs in the same single-process service as the D1 two-patch loop;
+    deploy/neckline.service must not add uvicorn workers or a second recorder
+    unit, otherwise a source point can be duplicated by separate processes.
+    """
+    from neckline.auction.recorder import is_capture_window, record_snapshot
+
+    logger.info("盘中分时采样已挂载（K9-v3 候选及冻结基准）")
+    while not stop_event.is_set():
+        now = datetime.now(CN_TZ)
+        if is_capture_window(now, db_path=_db() or settings.db_path):
+            try:
+                result = await asyncio.to_thread(
+                    lambda: record_snapshot(now, db_path=_db() or settings.db_path, parquet_dir=_PARQUET_DIR_OVERRIDE)
+                )
+                if result.ran:
+                    logger.debug("[intraday] captured=%s unavailable=%s", result.captured, result.unavailable)
+            except Exception:  # noqa: BLE001 -- a recorder outage must not kill API or morning settlement
+                logger.warning("[intraday] 分时采样异常，已由审计/结算如实标不可评价", exc_info=True)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=_INTRADAY_CAPTURE_POLL_SEC)
+        except asyncio.TimeoutError:
+            pass
+
+
 def _morning_checklist_tick(now: datetime) -> None:
     """9:26—9:29 那一拍:跑核对表 → 落库 → **判门槛** → 推一条 APNs。
 
     ⚠ 窗口外 / 当日已跑 → `run_checklist_tick` 内部**零落库**直接返回,
     本函数只是把它调起来;⛔ 这里不复判窗口(判据的单一源在 `pipeline.py`)。"""
     from neckline.auction import pipeline as auction_pipeline
+    from neckline.auction.readings import collect_auction_readings
+    from neckline.dedup import (
+        already_pushed, delivered_device_keys, record_device_delivered, record_pushed,
+    )
 
-    res = auction_pipeline.run_checklist_tick(now, db_path=_db(),
-                                              parquet_dir=_PARQUET_DIR_OVERRIDE)
+    target_db = _db() or settings.db_path
+    if not auction_pipeline.is_auction_window(now, db_path=target_db):
+        return
+    readings = collect_auction_readings(now.date(), db_path=target_db, parquet_dir=_PARQUET_DIR_OVERRIDE)
+    res = auction_pipeline.run_checklist_tick(now, db_path=target_db,
+                                              parquet_dir=_PARQUET_DIR_OVERRIDE, readings=readings)
     if res.skipped_reason:
-        # B21:可信空清单保持静默；只有前一交易日报告明确 `not_run` 才提醒一次。
-        if res.skipped_reason == auction_pipeline.SKIP_NO_LISTING and res.d0_date is not None:
-            from neckline.report import store as report_store
-
-            report = report_store.load_k9_report(res.d0_date, db_path=_db())
-            event = "previous_report_not_run"
-            if (report is not None and report.get("state") == "not_run"
-                    and not dedup.already_pushed(now.date(), "auction", "", event,
-                                                db_path=_db())):
-                notify.push_previous_report_not_run(res.d0_date.strftime("%Y%m%d"), db_path=_db())
-                dedup.record_pushed(now.date(), "auction", "", event,
-                                    payload={"d0Date": res.d0_date.strftime("%Y%m%d")},
-                                    db_path=_db())
         logger.debug("[morning] 竞价核对表跳过:%s", res.skipped_reason)
         return
     # 推送门槛的单一源是 `ChecklistRunResult.should_push`,⛔ 不在这里另判一次。
-    if res.should_push:
-        notify.push_checklist_summary(res.counts, db_path=_db())
+    if res.should_push and not already_pushed(now.date(), auction_pipeline.AUCTION_SCOPE, "",
+                                               auction_pipeline.EVENT_CHECKLIST, db_path=target_db):
+        delivered = delivered_device_keys(
+            now.date(), auction_pipeline.AUCTION_SCOPE, "", auction_pipeline.EVENT_CHECKLIST,
+            db_path=target_db,
+        )
+        delivery_id = (
+            f"{now.date():%Y%m%d}:{auction_pipeline.AUCTION_SCOPE}:"
+            f"{auction_pipeline.EVENT_CHECKLIST}"
+        )
+        outcome = notify.push_checklist_summary(
+            res.counts, db_path=target_db, skip_device_keys=delivered, delivery_id=delivery_id,
+        )
+        for device_key in outcome.delivered_device_keys:
+            record_device_delivered(
+                now.date(), auction_pipeline.AUCTION_SCOPE, "", auction_pipeline.EVENT_CHECKLIST,
+                device_key, db_path=target_db,
+            )
+        # Aggregate completion is written only after every current target is
+        # terminal.  Transient failures leave the event open, while successful
+        # devices are skipped on the next 30-second replay.
+        if outcome.delivery_complete:
+            record_pushed(now.date(), auction_pipeline.AUCTION_SCOPE, "", auction_pipeline.EVENT_CHECKLIST,
+                          payload=res.counts, db_path=target_db)
 
 
 def _morning_settle_tick(now: datetime) -> None:
-    """10:00—10:05 那一拍:一次性结算快照 → 三分支终值。
-
-    🔴 **零推送、不进 App 首屏**(裁定 10)。本函数**一行 `notify` 都没有** ——
-    结算拍的产物只从 `GET /scoreboard/verdicts/{date}` 出去。"""
+    """10:00—10:05 追加同一 K9-v3 成绩包的 D1 开盘阶段，零推送。"""
     from neckline.auction import settle as auction_settle
+    from neckline.auction.readings import collect_open_readings
 
-    res = auction_settle.run_settle_tick(now, db_path=_db(),
-                                         parquet_dir=_PARQUET_DIR_OVERRIDE)
+    target_db = _db() or settings.db_path
+    if not auction_settle.is_settle_window(now, db_path=target_db):
+        return
+    readings = collect_open_readings(now.date(), db_path=target_db, parquet_dir=_PARQUET_DIR_OVERRIDE)
+    res = auction_settle.run_settle_tick(now, db_path=target_db,
+                                         parquet_dir=_PARQUET_DIR_OVERRIDE, readings=readings)
     if res.skipped_reason:
         logger.debug("[morning] 结算拍跳过:%s", res.skipped_reason)
 
@@ -235,8 +285,10 @@ async def lifespan(app: FastAPI):
     init_schema(_db())
     app.state._stop_event = asyncio.Event()
     app.state._morning_task = None
+    app.state._intraday_task = None
     if ENABLE_MORNING_TASKS:
         app.state._morning_task = asyncio.create_task(_morning_loop(app.state._stop_event))
+        app.state._intraday_task = asyncio.create_task(_intraday_capture_loop(app.state._stop_event))
     yield
     # —— shutdown ——
     app.state._stop_event.set()
@@ -246,6 +298,12 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(task, timeout=5.0)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             task.cancel()
+    intraday_task = app.state._intraday_task
+    if intraday_task is not None:
+        try:
+            await asyncio.wait_for(intraday_task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            intraday_task.cancel()
 
 
 app = FastAPI(title="Neckline", version=VERSION, lifespan=lifespan)
@@ -255,7 +313,7 @@ app = FastAPI(title="Neckline", version=VERSION, lifespan=lifespan)
 
 @app.get(f"{API_PREFIX}/health")
 def health() -> dict:
-    return {"status": "ok", "version": VERSION}
+    return {"status": "ok", "version": VERSION, "releaseSet": RELEASE_SET}
 
 
 # —— 4A.5 设置 + 设备注册 ——————————————————————————————————————————————
@@ -792,83 +850,75 @@ def get_review_overview(week: str = "", asOf: str = "") -> ReviewOverviewOut:
     return out
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# 覆盖率成绩线
-# ══════════════════════════════════════════════════════════════════════════
-
-#: `window` 的上限:一次最多回看多少个已算出的交易日。⚠ 这是**接口分页上限**,
-#: 与 §8 的待标定参数无关(同 `MAX_LOOKBACK_PACKS` 那类工程容量上限的性质)。
-_COVERAGE_WINDOW_MAX = 250
-_COVERAGE_WINDOW_DEFAULT = 20
+# K9-v3 成绩包接口。包是历史主实体，路由不再按“今天”猜测某一批记录。
+@app.get(f"{API_PREFIX}/scoreboard/packages", dependencies=[Depends(require_token)])
+def get_scoreboard_packages(state: str = Query(..., pattern="^(active|settled)$")) -> dict:
+    from neckline.scorecard import packages
+    return {"strategyVersion": "K9-v3", "state": state,
+            "packages": [_package_summary(item) for item in packages.list_packages(state=state, db_path=_db())]}
 
 
-@app.get(f"{API_PREFIX}/scoreboard/coverage", dependencies=[Depends(require_token)])
-def get_scoreboard_coverage(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
-    """覆盖率 + 漏检归因(架构 §5.2)。
-
-    🔴 **这条线不读参数包**:`coverageAll` 以涨停为口径,涨停是硬事实。
-    参数标定完成之前它就是那把尺子(§5.8.1)。
-
-    ⚠ **NULL 不是 0**,响应里原样保留:
-        · `coverageAll = null` —— 昨天还没有清单(上线首日 / 参数未配置的日子);
-        · `coverageInPool = null` —— 没有 D−1 的全市场 disposition(边界参数缺失)。
-    客户端**必须**把 null 渲染成「尚不可得」而不是 0%。
-    """
-    from neckline.scorecard import store as scorecard_store
-
-    n = max(1, min(int(window or _COVERAGE_WINDOW_DEFAULT), _COVERAGE_WINDOW_MAX))
-    days = scorecard_store.load_coverage_days(limit=n, db_path=_db())
-    latest_misses = []
-    if days:
-        newest = datetime.strptime(days[0]["trade_date"], "%Y%m%d").date()
-        latest_misses = scorecard_store.load_misses(newest, db_path=_db())
-    return {
-        "window": n,
-        "days": [
-            {
-                "tradeDate": d["trade_date"],
-                "packVersion": d["pack_version"],
-                "limitUpCount": d["limit_up_count"],
-                "limitDownCount": d["limit_down_count"],
-                "zabanCount": d["zaban_count"],
-                "zabanRate": d["zaban_rate"],
-                "maxConsecDays": d["max_consec_days"],
-                "clusterCount": d["cluster_count"],
-                "listingTradeDate": d["listing_trade_date"],
-                "listingSize": d["listing_size"],
-                "coveredCount": d["covered_count"],
-                "coverageAll": d["coverage_all"],
-                "inPoolDenominator": d["in_pool_denominator"],
-                "coveredInPool": d["covered_in_pool"],
-                "coverageInPool": d["coverage_in_pool"],
-                "census": d["census_json"],
-            }
-            for d in days
-        ],
-        "latestMisses": [
-            {
-                "tradeDate": m["trade_date"], "tsCode": m["ts_code"], "name": m["name"],
-                "board": m["board"], "l2Code": m["sw_l2_code"], "l2Name": m["sw_l2_name"],
-                "consecLimitUpDays": m["consec_limit_up_days"],
-                "reason": m["reason"], "detail": m["detail"],
-            }
-            for m in latest_misses
-        ],
-        "missReasonCounts": scorecard_store.miss_reason_counts(db_path=_db()),
-    }
+@app.get(f"{API_PREFIX}/scoreboard/packages/{{batch_id}}", dependencies=[Depends(require_token)])
+def get_scoreboard_package(batch_id: str) -> dict:
+    from neckline.scorecard import packages
+    result = packages.load_package(batch_id, db_path=_db())
+    if result is None:
+        raise HTTPException(status_code=404, detail="成绩包不存在或数据库尚未迁移")
+    return _package_detail(result)
 
 
-@app.get(f"{API_PREFIX}/scoreboard/listing", dependencies=[Depends(require_token)])
-def get_scoreboard_listing(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
-    """最近若干个已经走完 D2 的 K9-v2 正式清单日五指标。
+@app.post(f"{API_PREFIX}/scoreboard/packages/{{batch_id}}/playbooks/{{ts_code}}", dependencies=[Depends(require_token)])
+def append_k9_v3_playbook_revision(batch_id: str, ts_code: str, body: dict[str, Any]) -> dict:
+    """Append, never overwrite, a user-confirmed K9-v3 pre-plan revision."""
+    from neckline.k9 import v3_playbook
+    from neckline.scorecard import packages
+    package = packages.load_package(batch_id, db_path=_db())
+    candidate = next((x for x in (package or {}).get("candidates", []) if x["tsCode"] == ts_code), None)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="成绩包候选不存在")
+    original = candidate.get("frozenD0Playbook") or candidate.get("playbook") or {}
+    skeleton = original.get("mechanicalSkeleton") if isinstance(original, Mapping) else None
+    if not isinstance(skeleton, Mapping):
+        raise HTTPException(status_code=409, detail="预案机械骨架缺失，不能安全修改")
+    try:
+        validated = v3_playbook.validate_output({"candidates": [{"tsCode": ts_code, **body}]}, {ts_code: skeleton}, source="user")
+        revision = packages.append_user_playbook_revision(
+            batch_id=batch_id, ts_code=ts_code, playbook=validated[ts_code],
+            provenance={"source": "user", "api": "k9-v3-playbook-revision-v1"}, db_path=_db(),
+            now=datetime.now(CN_TZ))
+    except (v3_playbook.PlaybookUnavailable, packages.PackageConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    latest = packages.load_package(batch_id, db_path=_db())
+    item = next(x for x in latest["candidates"] if x["tsCode"] == ts_code)
+    return {"batchId": batch_id, "tsCode": ts_code, "revision": revision,
+            "playbook": item["playbook"], "history": item["playbookHistory"]}
 
-    主成绩覆盖全部正式清单，并同时返回全清单与 P1–P4 切片；10:00 三分支只进入
-    D1 辅助观察，不改变 D2 主成绩分母。
-    """
-    from neckline.scorecard import listing
 
-    n = max(1, min(int(window or _COVERAGE_WINDOW_DEFAULT), _COVERAGE_WINDOW_MAX))
-    return listing.load_scorecard(window=n, db_path=_db())
+@app.get(f"{API_PREFIX}/checklists/{{batch_id}}", dependencies=[Depends(require_token)])
+def get_batch_checklist(batch_id: str) -> dict:
+    """只读取一份 K9-v3 包的 9:29 核对；三组永远同时出现。"""
+    from neckline.auction import store as auction_store
+    result = auction_store.load_checklist(batch_id, db_path=_db())
+    if result is None:
+        raise HTTPException(status_code=404, detail="成绩包不存在或数据库尚未迁移")
+    return result
+
+
+def _package_summary(item: Mapping[str, Any]) -> dict:
+    return {"batchId": item["batch_id"], "selectionDate": item["selection_date"],
+            "signalTradeDate": item["signal_trade_date"], "d1TradeDate": item["d1_trade_date"],
+            "d2TradeDate": item["d2_trade_date"], "revision": item["revision"], "state": item["state"],
+            "coverageState": item["coverage_state"], "strategyVersion": item["strategy_version"],
+            "paramsPackageVersion": item["params_package_version"], "packVersion": item["pack_version"],
+            "labelContractVersion": item["label_contract_version"], "candidateCount": item["candidate_count"],
+            "createdAt": item["created_at"]}
+
+
+def _package_detail(item: Mapping[str, Any]) -> dict:
+    result = _package_summary({**item, "candidate_count": len(item["candidates"])})
+    result["frozenContract"] = item["frozen_contract"]
+    result["candidates"] = item["candidates"]
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -886,84 +936,30 @@ def get_scoreboard_listing(window: int = _COVERAGE_WINDOW_DEFAULT) -> dict:
 # ⚠ 个股详情(`/selection/{date}/stock/{code}`)要解释层资料 + 预案,归 S9 / S10。
 
 
-def _selection_stocks(trade_date: str) -> list:
-    """清单上每只票的**摘要**:形态标注 / 上方机械空间 / 三个价位 / 三分支预案摘要。
-
-    🔴 **为什么在这里装而不是塞进 `k9_reports.structured_json`**:那份 JSON 是随报告
-    **冻结**的产物(S7),它的键序与内容要逐字节可复现;而这四样东西分别住在
-    `k9_listing_entries` / `k9_channel_hits` / `k9_playbooks` / `k9_explain_notes`
-    四张表里,其中预案是 **append-only 版本化**的(用户改一次就多一版)——
-    把它冻进报告快照,用户改完预案报告就与库里对不上了。故本段**每次请求现装**,
-    ⛔ 不动任何冻结件。
-
-    🔴 **为什么不让客户端逐只去问** `/selection/{date}/stock/{code}`:清单一天 10–20 只,
-    首屏就是 20 次请求。这里四次批量查询取全(⛔ 无按票循环)。
-
-    ⚠ **每一样缺席都各自如实标**(§5.10 / S9-S10 的三态纪律):
-      · `upsideRoomMechPct = null` —— 这只票只被 p2 / p4 召回,**本形态不看这一项**
-        (K9 §3.3 / §3.5 的强度性里没有它),⛔ 不是「上方没有空间」;
-      · `playbook = null` —— 那天没给这一只冻预案 → **明早核对不了它**;
-      · `newsState = null` —— 解释层没跑过这一只(⛔ 与 `"unverified"`「查过没查成」
-        不是一回事,两者都⛔ 不许显示成「无异常」)。
-    """
-    from neckline.explain import store as explain_store
-    from neckline.k9 import store as k9_store
-    from neckline.playbook import store as pb_store
-
-    day = _parse_day(trade_date)
-    listing = k9_store.load_listing(day, db_path=_db())
-    if not listing:
-        return []
-    codes = [e["ts_code"] for e in listing]
-    room = k9_store.load_upside_room_mech(day, codes=codes, db_path=_db())
-    playbooks = pb_store.load_latest(day, codes=codes, db_path=_db())
-    notes = explain_store.load_notes(day, codes=codes, db_path=_db())
-    closes: Dict[str, float] = {}
-    try:
-        from neckline.facts import store as fact_store
-        frame = fact_store.load_pack(day, db_path=_db()).rows
-        if "ts_code" in frame.columns and "close" in frame.columns:
-            closes = {str(r["ts_code"]): float(r["close"])
-                      for r in frame.select(["ts_code", "close"]).iter_rows(named=True)
-                      if r["close"] is not None}
-    except Exception:
-        # 历史报告的事实包可能已按保留规则裁剪；报告仍然可读。
-        closes = {}
+def _selection_stocks(batch_ids: Sequence[object]) -> list:
+    """Read immutable K9-v3 package candidates referenced by a report."""
+    # The report holds only package ids; package candidates are immutable and are
+    # the sole source for current selection details.
+    from neckline.scorecard import packages
     out = []
-    for e in listing:
-        code = e["ts_code"]
-        note = notes.get(code)
-        pb = playbooks.get(code)
-        profile = note.get("profile", {}) if note else {}
-        one_line = str(profile.get("company") or profile.get("position") or "").strip()
-        out.append({
-            "tsCode": code,
-            "name": e["name"],
-            "swL2Code": e["sw_l2_code"],
-            "swL2Name": e["sw_l2_name"],
-            "patterns": e["patterns"],
-            "primaryPattern": e["primary_pattern"],
-            "tier": e["tier"],
-            "seatKind": e["seat_kind"],
-            "rank": e["rank"],
-            "referenceClose": closes.get(code),
-            "oneLineProfile": one_line or None,
-            # 裁定 1:**上方机械空间**(机械、排序用)⛔ 永不与预案的第一压力位互顶。
-            "upsideRoomMechPct": room.get(code),
-            "playbook": None if pb is None else pb.to_dict(),
-            "newsState": None if note is None else note["news_state"],
-            "newsCategory": None if note is None else note["news_category"],
-            "klineComment": None if note is None else note["kline_comment"],
-            "explainOk": None if note is None else bool(note["llm_ok"]),
-            "evidence": e.get("evidence", {}),
-            "risks": e.get("risks", []),
-        })
+    for batch_id in batch_ids:
+        package = packages.load_package(str(batch_id), db_path=_db())
+        if package is None:
+            continue
+        for item in package["candidates"]:
+            channels = list(item.get("channels", []))
+            out.append({"tsCode": item["tsCode"], "name": item.get("name"),
+                        "swL2Code": item.get("swL2Code"), "swL2Name": item.get("swL2Name"),
+                        "patterns": channels, "primaryPattern": channels[0] if channels else "",
+                        "channelRanks": item.get("channelRanks", {}),
+                        "playbook": item.get("playbook"), "baseline": item.get("baseline"),
+                        "thresholds": item.get("thresholds"), "batchId": batch_id})
     return out
 
 
 def _selection_payload(row: dict) -> dict:
-    stocks = _selection_stocks(row["trade_date"])
     structured = row["structured"]
+    stocks = _selection_stocks(structured.get("batchIds", []) if isinstance(structured, dict) else [])
     payload = {
         "reportDate": row["report_date"],
         "tradeDate": row["trade_date"],
@@ -976,14 +972,13 @@ def _selection_payload(row: dict) -> dict:
         "packId": row["pack_id"],
         "packVersion": row["pack_version"],
         "listingSize": row["listing_size"],
-        "strictCount": row["strict_count"],
-        "relaxedCount": row["relaxed_count"],
         "generatedAt": row["generated_at"],
         "markdown": row["markdown"],
         "structured": structured,
         "direction": structured.get("direction") if isinstance(structured, dict) else None,
         "market": structured.get("market") if isinstance(structured, dict) else None,
         "coverage": structured.get("coverage") if isinstance(structured, dict) else None,
+        "batchIds": structured.get("batchIds", []) if isinstance(structured, dict) else [],
         # §5.11 今日清单要的逐只摘要(**现装,不进冻结件**,见 `_selection_stocks`)。
         "stocks": stocks,
     }
@@ -1035,12 +1030,16 @@ def _selection_copy_text(payload: Mapping[str, Any]) -> str:
         lines.append(f"{stock.get('name') or stock.get('tsCode')}（{stock.get('tsCode')}）")
         if stock.get("oneLineProfile"):
             lines.append(str(stock["oneLineProfile"]))
-        close = stock.get("referenceClose")
+        baseline = stock.get("baseline") or {}
+        close = baseline.get("close")
         lines.append("收盘价（截至行情日）：" + (f"{float(close):.2f}" if close is not None else "资料暂未保存"))
-        levels = (stock.get("playbook") or {}).get("levels") or {}
-        if levels:
+        playbook = stock.get("playbook") or {}
+        level_keys = ("invalidation", "firstResistance", "secondResistance")
+        if all(playbook.get(key) is not None for key in level_keys):
             lines.append("失效价 {0}；第一压力位 {1}；第二压力位 {2}".format(
-                levels.get("invalidation", "—"), levels.get("firstResistance", "—"), levels.get("secondResistance", "—")))
+                playbook["invalidation"], playbook["firstResistance"], playbook["secondResistance"]))
+            revision = playbook.get("revision")
+            lines.append(f"预案第 {revision} 版" if revision is not None else "预案修订号未保存。")
         else:
             lines.append("明日预案：资料暂未生成。")
     lines += ["", "以上为研究材料，不构成交易指令。"]
@@ -1105,229 +1104,4 @@ def _today() -> date_cls:
     return datetime.now(CN_TZ).date()
 
 
-def _explain_api(note: Optional[dict]) -> Optional[dict]:
-    """在线解释 DTO 使用 API 统一的 camelCase；数据库内部键保持 snake_case。"""
-    if note is None:
-        return None
-    return {
-        "tsCode": note.get("ts_code"),
-        "profile": note.get("profile", {}),
-        "klineComment": note.get("kline_comment"),
-        "newsState": note.get("news_state"),
-        "newsCategory": note.get("news_category"),
-        "news": note.get("news", {}),
-        "llmOk": bool(note.get("llm_ok")),
-        "filledBy": note.get("filled_by"),
-        "createdAt": note.get("created_at"),
-    }
-
-
-# —— 个股详情与预案修改入口 ————————————————————————————————————————————
-
-
-@app.get(f"{API_PREFIX}/selection/{{trade_date}}/stock/{{ts_code}}",
-         dependencies=[Depends(require_token)])
-def get_selection_stock(trade_date: str, ts_code: str) -> dict:
-    """个股详情 = **解释层资料 + 日K 评价 + 完整预案(全部版本)**。
-
-    ⚠ 三段各自可能缺席,**各自如实标**:
-      · `explain=null`  那天解释层没跑过 / 这一只没跑成;
-      · `playbook=null` 那天没给这一只冻预案 → **明早核对不了它**;
-      · `newsState`     三态(clean / excluded / **unverified**)——
-        `unverified` 是「没查成」,⛔ 客户端不许把它显示成「无异常」。
-    """
-    from neckline.explain import store as explain_store
-    from neckline.k9 import store as k9_store
-    from neckline.playbook import skeleton as skeleton_mod
-    from neckline.playbook import store as pb_store
-
-    day = _parse_day(trade_date)
-    listing = {r["ts_code"]: r for r in k9_store.load_listing(day, db_path=_db())}
-    entry = listing.get(ts_code)
-    if entry is None:
-        raise HTTPException(status_code=404,
-                            detail=f"{ts_code} 不在 {trade_date} 的清单里")
-    notes = explain_store.load_notes(day, codes=[ts_code], db_path=_db())
-    versions = pb_store.load_versions(day, ts_code, db_path=_db())
-    # 🔴 **改预案要填哪几个数由服务端说**(唯一源 = `playbook/skeleton.py`,同
-    # `PushKindOut.label` 的先例)。客户端硬编一份键表 = 第二份事实源,必然漂 ——
-    # 而漂的后果是用户改完点提交拿一个英文 422,界面上却一路是绿的。
-    # ⚠ 槽位**只有数值**(`kind ∈ {price, percent}`),⛔ 没有「理由」「评价」这类键
-    # (架构 §四 第 4 条:预案层知道形态,但不做好坏评价)。
-    # ⚠ 形态骨架**不可改** —— 这里给的是「方括号里那几个数」,不是「哪个量跟谁比」。
-    try:
-        slots = [
-            {"key": s.key, "kind": s.kind, "label": s.label, "hint": s.hint}
-            for s in skeleton_mod.all_slots(str(entry["primary_pattern"]))
-        ]
-    except Exception:  # noqa: BLE001  没登记骨架的形态 → 界面不给改,⛔ 不猜一组键
-        slots = []
-    return {
-        "tradeDate": trade_date,
-        "tsCode": ts_code,
-        "entry": {
-            "name": entry["name"], "patterns": entry["patterns"],
-            "primaryPattern": entry["primary_pattern"], "tier": entry["tier"],
-            "seatKind": entry["seat_kind"], "rank": entry["rank"],
-            "swL2Code": entry["sw_l2_code"], "swL2Name": entry["sw_l2_name"],
-        },
-        "explain": _explain_api(notes.get(ts_code)),
-        "playbook": versions[-1].to_dict() if versions else None,
-        "playbookVersions": [p.to_dict() for p in versions],
-        "playbookSlots": slots,
-    }
-
-
-@app.post(f"{API_PREFIX}/selection/{{trade_date}}/stock/{{ts_code}}/playbook",
-          dependencies=[Depends(require_token)])
-def post_stock_playbook(trade_date: str, ts_code: str, body: dict) -> dict:
-    """**用户修改预案**(K9 §6.4「最终确认由我盘后逐只过目,可修改」)。
-
-    🔴 **append-only**:本端点**只新增一个版本**,原冻结版本一个字不改
-    (`k9_playbooks` 的主键含 `version`,应用层也没有 `UPDATE` 那条 SQL)。
-
-    **契约**:请求体只收**数值**,键集 = `playbook/skeleton.py::required_keys(pattern)`
-    (由该票的 `primary_pattern` 决定,响应 404/422 里会逐个列出来)。
-    多一个键、少一个键、或者哪个值不是数字 → **422**,⛔ 不是「忽略多余的」
-    —— 忽略等于默许往预案里塞自由文本评价(§5.2 边界④ 第 2 条)。
-
-    ⚠ 形态骨架**不可改**:用户能改的是方括号里的数,不是「哪个量跟谁比」
-    (骨架是机械的,K9 §6.4 分工表)。
-
-    🔴 **冻结闸:D1 一开始就不许再改这一天的预案**(R2-03,落实 K9 §六「D0 **冻结**」
-    与 K9 §6.4「最终确认由我**盘后**逐只过目」)。窗口 = 从 D0 收盘到 **D1 零点**
-    (D0 是周五就含整个周末),`today >= next_trading_day(D0)` → **409**。
-
-    为什么必须挡住:裁定 10 说「三分支判定的唯一权威是 10:00 结算拍」——
-    复审实测过一条把这句话的分母整个抽掉的路径:9:27 判待观察 → **9:45 改一版**把
-    成立门槛压到脚下 → 10:01 结算吐 `confirmed`,而账上 `playbook_version` 还记着
-    v1。权威那一拍代入了一份**在看过竞价之后**才写下的条件,且事后查不出来。
-    ⚠ 这不是「不许改预案」,是「不许**在看过今天的盘之后**改**今天要核对的那一份**」
-    —— 明天的清单明天照常可以改。
-    ⛔ 返回明确原因,**不是静默忽略**:静默忽略会让用户以为自己改成功了。
-    """
-    from neckline.calendar import next_trading_day
-    from neckline.k9 import store as k9_store
-    from neckline.playbook import fill as playbook_fill
-    from neckline.playbook import model as pb_model
-    from neckline.playbook import skeleton as skeleton_mod
-    from neckline.playbook import store as pb_store
-
-    day = _parse_day(trade_date)
-    d1 = next_trading_day(day)
-    today = _today()
-    if today >= d1:
-        raise HTTPException(
-            status_code=409,
-            detail=(f"{trade_date} 的预案已在 D0 冻结,⛔ 不能再改:它要核对的那一天"
-                    f"({d1:%Y-%m-%d})已经开始了(今天 {today:%Y-%m-%d})。"
-                    "K9 §六 的窗口是「盘后逐只过目」—— 从 D0 收盘到 D1 零点;"
-                    "过了这条线再改,10:00 结算拍代入的就会是一份在看过竞价之后"
-                    "才写下的条件。要改请改**今天**这一天的清单。"))
-    listing = {r["ts_code"]: r for r in k9_store.load_listing(day, db_path=_db())}
-    entry = listing.get(ts_code)
-    if entry is None:
-        raise HTTPException(status_code=404,
-                            detail=f"{ts_code} 不在 {trade_date} 的清单里")
-    pattern = str(entry["primary_pattern"])
-    values, why = playbook_fill.validate_fill(pattern, body)
-    if why:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{why};本形态({pattern})要的数值键:"
-                   f"{list(skeleton_mod.required_keys(pattern))}")
-    item = pb_model.PlaybookInput(
-        ts_code=ts_code, name=entry["name"],
-        patterns=tuple(entry["patterns"]), primary_pattern=pattern,
-        sw_l2_name=entry["sw_l2_name"], close=0.0,
-        prev_close=None, high=None, low=None,
-    )
-    version = pb_store.next_version(day, ts_code, db_path=_db())
-    try:
-        pb = playbook_fill.assemble(item, values, trade_date=day, version=version,
-                                    filled_by="user", source=pb_model.SOURCE_USER)
-    except pb_model.PlaybookInvalid as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    pb_store.save(pb, db_path=_db())
-    return {"tradeDate": trade_date, "tsCode": ts_code, "version": version,
-            "playbook": pb.to_dict()}
-
-
-# —— 次日核对表与 D1 结算 ———————————————————————————————————————————————
-
-
-@app.get(f"{API_PREFIX}/checklist/{{trade_date}}", dependencies=[Depends(require_token)])
-def get_checklist(trade_date: str) -> dict:
-    """**9:29 竞价核对表**:`已触发放弃 / 待开盘后观察` 两段。
-
-    🔴 **响应体里没有「成立」这个取值**(裁定 10 / 守门 G20)——
-    `segments` 逐段来自 `ChecklistVerdict` 这个**二值枚举**,类型上就没有第三段。
-    `footnote` 恒带一句「成立由 10:00 结算,9:30–10:00 由我自己判定」。
-
-    404 = **那天没跑过那一拍**(⛔ 不是「跑了、表是空的」——那会返回一张两段皆空的表)。
-
-    🔴 **404 的两种原因必须分开说**(R2-11):「D0 本来就没有清单,今天没有要核对的
-    东西」是**可信的空**;「那一拍没跑成」是**系统没工作**。从前两者共用一句
-    「没有竞价核对表」—— 用户无法分辨,而这正是本项目在别处一贯坚持的三态纪律。
-    ⚠ 这里**只把话说清**:是否要在「昨天没有清单」的早晨推一条,是产品决定
-    (现行「不推」写在 `auction/pipeline.py::should_push` 的 docstring 里,
-    是一次自觉选择)—— 已登记 PROJECT_PLAN §13.1 等用户裁定,⛔ 施工侧不自选。
-    """
-    from neckline.auction import store as auction_store
-    from neckline.calendar import prev_trading_day
-    from neckline.k9 import store as k9_store
-
-    day = _parse_day(trade_date)
-    out = auction_store.load_checklist(day, db_path=_db())
-    if out is None:
-        d0 = prev_trading_day(day)
-        visible_day = f"{day.year}年{day.month}月{day.day}日"
-        visible_d0 = f"{d0.year}年{d0.month}月{d0.day}日"
-        if not k9_store.load_listing_codes(d0, db_path=_db()):
-            raise HTTPException(
-                status_code=404,
-                detail=(f"{visible_day}没有竞价核对表：{visible_d0}没有清单，"
-                        "今天没有要核对的东西。这是“没有”，不是“没跑成”。"))
-        raise HTTPException(
-            status_code=404,
-            detail=(f"{visible_day}没有竞价核对表：{visible_d0}有清单，"
-                    "但今天的竞价核对没有跑成，请检查服务状态。"))
-    return out
-
-
-@app.get(f"{API_PREFIX}/scoreboard/verdicts/{{trade_date}}",
-         dependencies=[Depends(require_token)])
-def get_verdicts(trade_date: str) -> dict:
-    """**10:00 结算拍的三分支终值**(含 `decidedStage`)。
-
-    🔴 **挂在 `scoreboard` 下而不是 `checklist` 下**(裁定 10):这样「它属于成绩线、
-    不属于早盘首屏」在**路由上**就看得出来。
-
-    ⚠ `verdict` / `decidedStage` 为 `null` = **今天还没定案**(9:29 判了待观察、
-    10:00 那一拍还没跑或没跑成),⛔ 不是「观察」——「观察」是 10:00 真看过之后的
-    结论,它带着 `decidedStage='open30'`。
-    """
-    from neckline.auction import store as auction_store
-
-    day = _parse_day(trade_date)
-    rows = auction_store.load_verdicts(day, db_path=_db())
-    return {
-        "tradeDate": trade_date,
-        "verdicts": [
-            {
-                "tsCode": r["ts_code"], "d0Date": r["d0_date"], "pattern": r["pattern"],
-                "playbookVersion": r["playbook_version"],
-                "auctionVerdict": r["auction_verdict"],
-                "verdict": r["verdict"], "decidedStage": r["decided_stage"],
-                "auctionReadings": r["auction_readings"],
-                "open30Readings": r["open30_readings"],
-                "branches": r["open30_branches"] or (
-                    [r["auction_branch"]] if r["auction_branch"] else []),
-                "settledAt": r["settled_at"],
-            }
-            for r in rows
-        ],
-    }
-
-
-__all__ = ["app", "VERSION", "API_PREFIX"]
+__all__ = ["app", "VERSION", "RELEASE_SET", "API_PREFIX"]

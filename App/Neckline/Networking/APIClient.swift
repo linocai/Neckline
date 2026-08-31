@@ -12,15 +12,13 @@
 //    —— 选股(S7 / S9 / S10)——
 //    GET  /api/v1/selection/latest                   → 三态 + 双日期 + 清单 + 逐只摘要
 //    GET  /api/v1/selection/{tradeDate}              → 同上,按**交易日**查历史
-//    GET  /api/v1/selection/{tradeDate}/stock/{code} → 解释层资料 + 日K评价 + 全部预案版本
-//    POST /api/v1/selection/{tradeDate}/stock/{code}/playbook → 用户改预案(append-only)
+//    GET  /api/v1/scoreboard/packages/{batchId} → 不可变候选、预案与 D1/D2 追加状态
 //
 //    —— 次日核对(S8)——
-//    GET  /api/v1/checklist/{tradeDate}              → **两段**;404 = 那天没跑过那一拍
+//    GET  /api/v1/checklists/{batchId}               → 包绑定的三段次日核对
 //
-//    —— 成绩(S4 / S8)——
-//    GET  /api/v1/scoreboard/coverage?window=        → 覆盖率 + 漏检归因
-//    GET  /api/v1/scoreboard/verdicts/{tradeDate}    → 10:00 结算拍的三分支终值
+//    —— 成绩——
+//    GET  /api/v1/scoreboard/packages?state=active|settled → 包历史
 //
 //    —— 复盘(S11)——
 //    POST /api/v1/review/upload                      → 交割单上传(multipart)
@@ -193,33 +191,14 @@ actor APIClient {
         return try JSONDecoder().decode(SelectionSnapshot.self, from: data)
     }
 
-    /// 个股详情。**⚠ 走 LLM 产物但只读库**,不重;404 = 这只票不在那天的清单里。
-    func fetchStockDetail(tradeDate: String, code: String) async throws -> K9StockDetail {
-        let data = try await get("/api/v1/selection/\(tradeDate)/stock/\(code)", timeout: 30)
-        return try JSONDecoder().decode(K9StockDetail.self, from: data)
-    }
-
-    /// **用户修改预案**(K9 §6.4「最终确认由我盘后逐只过目,可修改」)。
-    ///
-    /// 🔴 **append-only**:服务端只新增一个版本,原冻结版本一个字不改。
-    /// 🔴 **请求体只收数值**,键集 = 服务端下发的 `playbookSlots` 的 `key` 全集 ——
-    /// 多一个键 / 少一个键 / 值不是数字 → **422**(服务端⛔ 不做「忽略多余的」)。
-    /// 422 的 detail 里服务端会把该形态要的键逐个列出来,界面**原样**说出口。
-    func saveStockPlaybook(tradeDate: String, code: String,
-                           values: [String: Double]) async throws -> PlaybookSaveResult {
-        let data = try await post("/api/v1/selection/\(tradeDate)/stock/\(code)/playbook",
-                                  body: values)
-        return try JSONDecoder().decode(PlaybookSaveResult.self, from: data)
-    }
-
     // ══════════════════════════════════════════════════════════════════════
     // 次日核对(⛔ 响应体里没有「成立」这个取值,裁定 10)
     // ══════════════════════════════════════════════════════════════════════
 
     /// 9:29 竞价核对表。**404 = 那天没跑过那一拍**(合法空态:还没到 9:26,
     /// 或那天根本没有清单)—— ⛔ 别弹成错误,也 ⛔ 别画一张空表。
-    func fetchChecklist(tradeDate: String) async throws -> Checklist {
-        let data = try await get("/api/v1/checklist/\(tradeDate)")
+    func fetchChecklist(batchId: String) async throws -> Checklist {
+        let data = try await get("/api/v1/checklists/\(batchId)")
         return try JSONDecoder().decode(Checklist.self, from: data)
     }
 
@@ -227,25 +206,18 @@ actor APIClient {
     // 成绩
     // ══════════════════════════════════════════════════════════════════════
 
-    /// 覆盖率 + 漏检归因。**这条线不读任何待标定参数**,上线首日就出数。
-    /// ⚠ 响应里的 `coverageAll` / `coverageInPool` 可能是 **null** —— ⛔ 不许当 0。
-    func fetchCoverage(window: Int? = nil) async throws -> CoverageSnapshot {
-        let path = "/api/v1/scoreboard/coverage" + (window.map { "?window=\($0)" } ?? "")
-        let data = try await get(path, timeout: 30)
-        return try JSONDecoder().decode(CoverageSnapshot.self, from: data)
+    func fetchScoreboardPackages(state: String) async throws -> ScoreboardPackagesResponse {
+        let data = try await get("/api/v1/scoreboard/packages?state=\(state)")
+        return try JSONDecoder().decode(ScoreboardPackagesResponse.self, from: data)
     }
 
-    /// 已经走完 D2 的 K9-v2 清单五指标，同时包含全清单与 P1–P4 切片。
-    func fetchListingScorecard(window: Int? = nil) async throws -> ListingScorecardSnapshot {
-        let path = "/api/v1/scoreboard/listing" + (window.map { "?window=\($0)" } ?? "")
-        let data = try await get(path, timeout: 30)
-        return try JSONDecoder().decode(ListingScorecardSnapshot.self, from: data)
+    func fetchScoreboardPackage(batchId: String) async throws -> ScoreboardPackageDetail {
+        let data = try await get("/api/v1/scoreboard/packages/\(batchId)")
+        return try JSONDecoder().decode(ScoreboardPackageDetail.self, from: data)
     }
 
-    /// **10:00 结算拍的三分支终值**(裁定 10)。⚠ 一律 200(那天没有就是空数组)。
-    func fetchVerdicts(tradeDate: String) async throws -> K9VerdictsSnapshot {
-        let data = try await get("/api/v1/scoreboard/verdicts/\(tradeDate)")
-        return try JSONDecoder().decode(K9VerdictsSnapshot.self, from: data)
+    func appendK9V3PlaybookRevision(batchId: String, tsCode: String, playbook: NKJSON) async throws {
+        _ = try await post("/api/v1/scoreboard/packages/\(batchId)/playbooks/\(tsCode)", body: playbook)
     }
 
     func fetchUsageSummary(days: Int = 5) async throws -> UsageSummary {

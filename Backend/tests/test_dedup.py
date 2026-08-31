@@ -6,7 +6,9 @@ from datetime import date
 
 import pytest
 
-from neckline.dedup import already_pushed, record_pushed
+from neckline.dedup import (
+    already_pushed, delivered_device_keys, device_delivery_key, record_device_delivered, record_pushed,
+)
 
 pytestmark = pytest.mark.usefixtures("isolated_env")
 
@@ -54,3 +56,13 @@ def test_double_record_is_idempotent(isolated_env):
             ("20260720", "settle_tick"),
         ).fetchone()[0]
     assert count == 1
+
+
+def test_device_delivery_ledger_is_hashed_and_idempotent(isolated_env):
+    key = device_delivery_key("secret-device-token")
+    assert key != "secret-device-token" and len(key) == 64
+    record_device_delivered(D, "auction", "", "checklist_tick", key, db_path=isolated_env.db_path)
+    record_device_delivered(D, "auction", "", "checklist_tick", key, db_path=isolated_env.db_path)
+    assert delivered_device_keys(
+        D, "auction", "", "checklist_tick", db_path=isolated_env.db_path
+    ) == {key}

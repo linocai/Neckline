@@ -67,7 +67,7 @@ def _fake_chain(captured):
 def test_sunday_slot_passes_sunday_report_date_but_friday_trade_date(tmp_path, monkeypatch):
     captured = {}
     monkeypatch.setattr(evening_script, "_today", lambda: date(2026, 8, 16))
-    monkeypatch.setattr(evening_script, "official_is_trading_day", lambda value: True)
+    monkeypatch.setattr(evening_script, "official_is_trading_day", lambda value, **_kwargs: True)
     monkeypatch.setattr(evening_script, "ensure_data_dirs", lambda: None)
     monkeypatch.setattr(evening_script, "_report_generated_on_local_day",
                         lambda *a, **k: False)
@@ -82,7 +82,7 @@ def test_sunday_slot_passes_sunday_report_date_but_friday_trade_date(tmp_path, m
 
 def test_manual_backfill_can_name_the_publication_date_explicitly(tmp_path, monkeypatch):
     captured = {}
-    monkeypatch.setattr(evening_script, "official_is_trading_day", lambda value: True)
+    monkeypatch.setattr(evening_script, "official_is_trading_day", lambda value, **_kwargs: True)
     monkeypatch.setattr(evening_script, "ensure_data_dirs", lambda: None)
     monkeypatch.setattr(evening_script, "run_evening_chain", _fake_chain(captured))
     monkeypatch.setattr(sys, "argv", [
@@ -105,7 +105,7 @@ def test_scheduled_holiday_is_clean_noop_and_never_falls_back(
 ):
     """周一至周四的节假日，以及周日前一个周五休市，都必须整链跳过。"""
     monkeypatch.setattr(evening_script, "_today", lambda: scheduled_day)
-    monkeypatch.setattr(evening_script, "official_is_trading_day", lambda value: False)
+    monkeypatch.setattr(evening_script, "official_is_trading_day", lambda value, **_kwargs: False)
     monkeypatch.setattr(evening_script, "ensure_data_dirs", lambda: None)
     monkeypatch.setattr(
         evening_script,
@@ -141,7 +141,7 @@ def test_sunday_slot_skips_when_friday_report_was_already_generated_that_day(
     )
 
     monkeypatch.setattr(evening_script, "_today", lambda: date(2026, 8, 16))
-    monkeypatch.setattr(evening_script, "is_trading_day", lambda value: True)
+    monkeypatch.setattr(evening_script, "official_is_trading_day", lambda value, **_kwargs: True)
     monkeypatch.setattr(evening_script, "ensure_data_dirs", lambda: None)
     monkeypatch.setattr(
         evening_script,
@@ -205,12 +205,14 @@ def test_the_three_oneshots_cover_the_new_segment_order_exactly_once():
     assert covered == list(evening_script.CHAIN_SEGMENTS), covered
 
 
-def test_the_strategy_unit_passes_a_parameter_package_explicitly():
-    """⛔ **无默认参数路径**(裁定 5):跑策略层的那个单元必须显式传 `--k9-params`。"""
-    unit = (BACKEND_ROOT / "deploy" / "neckline-strategy.service").read_text(encoding="utf-8")
-    exec_start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
-    assert "--k9-params " in exec_start
-    assert "direction-pipeline" not in exec_start, "K8 时代的方向流水线配置已退役"
+def test_strategy_and_report_units_use_the_same_explicit_parameter_environment_contract():
+    """No path is baked into a unit; both entrypoints name the sole env contract."""
+    for filename in ("neckline-strategy.service", "neckline-report.service"):
+        unit = (BACKEND_ROOT / "deploy" / filename).read_text(encoding="utf-8")
+        exec_start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+        assert "--k9-params-env K9_PARAMS_PATH" in exec_start
+        assert "/config/" not in exec_start and ".json" not in exec_start
+        assert "direction-pipeline" not in exec_start
 
 
 def test_retired_k8_evening_unit_names_and_config_are_absent():

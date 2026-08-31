@@ -45,6 +45,7 @@ struct ReviewView: View {
                 }
                 .padding(NKSpace.pagePad)
             }
+            .contentMargins(.bottom, 96, for: .scrollContent)
             .background(NK.pageBgIOS)
             .navigationTitle(AppTab.review.title)
             .toolbar { ToolbarItem(placement: .primaryAction) { NKRefreshPill(model: model) } }

@@ -25,6 +25,7 @@ import logging
 import sqlite3
 from bisect import bisect_left, bisect_right
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import List, Optional, Set, Union
 
 from neckline.calendar.static_holidays import STATIC_CLOSED, STATIC_YEARS
@@ -153,25 +154,65 @@ def _static_is_trading_day(dt: date) -> bool:
     return True
 
 
+def _target_calendar(db_path: Optional[Path]) -> tuple[dict[date, bool], date, date]:
+    """Read one explicit target database without touching the process cache.
+
+    An isolated invocation must never accidentally answer from the configured
+    working database (or a weekday approximation).  Its calendar is an input
+    to the run identity, so a missing row is a hard error rather than a guess.
+    """
+    path = Path(db_path) if db_path is not None else settings.db_path
+    if not path.exists():
+        raise RuntimeError(f"交易日历目标库不存在:{path}")
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT cal_date,is_open FROM trade_cal WHERE exchange='SSE' ORDER BY cal_date"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"交易日历目标库不可读:{exc}") from exc
+    if not rows:
+        raise RuntimeError("交易日历目标库没有 SSE 官方日历")
+    values = {datetime.strptime(str(day), "%Y%m%d").date(): bool(open_) for day, open_ in rows}
+    return values, min(values), max(values)
+
+
+def _require_target_coverage(values: dict[date, bool], start: date, end: date) -> None:
+    cur = start
+    while cur <= end:
+        if cur not in values:
+            raise RuntimeError(f"交易日历目标库缺少日期:{_iso(cur)}")
+        cur += timedelta(days=1)
+
+
 # —— 对外接口(plan 0.3 契约)——————————————————————————————————————
 
-def is_trading_day(d: DateLike) -> bool:
+def is_trading_day(d: DateLike, *, db_path: Optional[Path] = None) -> bool:
     """是否交易日。DB 覆盖范围内查 DB,否则退化静态表 + 工作日近似。"""
     dt = _to_date(d)
+    if db_path is not None:
+        values, lower, upper = _target_calendar(db_path)
+        if not (lower <= dt <= upper):
+            raise RuntimeError(f"交易日历目标库未覆盖日期:{_iso(dt)}")
+        _require_target_coverage(values, dt, dt)
+        return values[dt]
     _load_cache()
     if _in_db_coverage(dt):
         return dt in _cache.trading_set
     return _static_is_trading_day(dt)
 
 
-def official_is_trading_day(d: DateLike) -> Optional[bool]:
+def official_is_trading_day(d: DateLike, *, db_path: Optional[Path] = None) -> Optional[bool]:
     """只接受已落库的交易所日历，缺覆盖返回 ``None``，绝不工作日猜测。
 
     定时生产作业必须用这条接口；``is_trading_day`` 保留给历史只读展示等旧调用方，
     不能把它的静态/工作日回退带进会产生报告或付费调用的路径。
     """
     dt = _to_date(d)
-    path = settings.db_path
+    path = Path(db_path) if db_path is not None else settings.db_path
     if not path.exists():
         return None
     try:
@@ -188,9 +229,20 @@ def official_is_trading_day(d: DateLike) -> Optional[bool]:
     return None if row is None else bool(row[0])
 
 
-def next_trading_day(d: DateLike) -> date:
+def next_trading_day(d: DateLike, *, db_path: Optional[Path] = None) -> date:
     """严格在 d 之后的下一个交易日(不含 d 自身)。"""
     dt = _to_date(d)
+    if db_path is not None:
+        values, _lower, upper = _target_calendar(db_path)
+        if dt >= upper:
+            raise RuntimeError(f"交易日历目标库未覆盖下一个交易日:{_iso(dt)}")
+        cur = dt + timedelta(days=1)
+        while cur <= upper:
+            _require_target_coverage(values, cur, cur)
+            if values[cur]:
+                return cur
+            cur += timedelta(days=1)
+        raise RuntimeError(f"交易日历目标库未找到下一个交易日:{_iso(dt)}")
     _load_cache()
     if _in_db_coverage(dt) and dt < _cache.coverage_max:
         idx = bisect_right(_cache.trading_days, dt)
@@ -204,9 +256,20 @@ def next_trading_day(d: DateLike) -> date:
     raise RuntimeError(f"next_trading_day: 40 天内未找到交易日,起点 {_iso(dt)}")
 
 
-def prev_trading_day(d: DateLike) -> date:
+def prev_trading_day(d: DateLike, *, db_path: Optional[Path] = None) -> date:
     """严格在 d 之前的上一个交易日(不含 d 自身)。"""
     dt = _to_date(d)
+    if db_path is not None:
+        values, lower, _upper = _target_calendar(db_path)
+        if dt <= lower:
+            raise RuntimeError(f"交易日历目标库未覆盖上一个交易日:{_iso(dt)}")
+        cur = dt - timedelta(days=1)
+        while cur >= lower:
+            _require_target_coverage(values, cur, cur)
+            if values[cur]:
+                return cur
+            cur -= timedelta(days=1)
+        raise RuntimeError(f"交易日历目标库未找到上一个交易日:{_iso(dt)}")
     _load_cache()
     if _in_db_coverage(dt) and dt > _cache.coverage_min:
         idx = bisect_left(_cache.trading_days, dt)
@@ -220,7 +283,7 @@ def prev_trading_day(d: DateLike) -> date:
     raise RuntimeError(f"prev_trading_day: 40 天内未找到交易日,起点 {_iso(dt)}")
 
 
-def trading_days_between(start: DateLike, end: DateLike) -> List[date]:
+def trading_days_between(start: DateLike, end: DateLike, *, db_path: Optional[Path] = None) -> List[date]:
     """闭区间 [start, end] 内全部交易日,升序。start > end 返回空列表。
 
     用途例:新股上市第 N 个交易日 = ``len(trading_days_between(list_date, trade_date))``
@@ -229,6 +292,12 @@ def trading_days_between(start: DateLike, end: DateLike) -> List[date]:
     sd, ed = _to_date(start), _to_date(end)
     if sd > ed:
         return []
+    if db_path is not None:
+        values, lower, upper = _target_calendar(db_path)
+        if not (lower <= sd <= ed <= upper):
+            raise RuntimeError(f"交易日历目标库未完整覆盖区间:{_iso(sd)}~{_iso(ed)}")
+        _require_target_coverage(values, sd, ed)
+        return [day for day in sorted(values) if sd <= day <= ed and values[day]]
     _load_cache()
     if _in_db_coverage(sd) and _in_db_coverage(ed):
         lo = bisect_left(_cache.trading_days, sd)
@@ -243,9 +312,9 @@ def trading_days_between(start: DateLike, end: DateLike) -> List[date]:
     return out
 
 
-def trading_window(d: DateLike):
+def trading_window(d: DateLike, *, db_path: Optional[Path] = None):
     """两段交易时段;非交易日返回 None。[(09:30,11:30),(13:00,15:00)]。"""
-    if not is_trading_day(d):
+    if not is_trading_day(d, db_path=db_path):
         return None
     return [_AM, _PM]
 

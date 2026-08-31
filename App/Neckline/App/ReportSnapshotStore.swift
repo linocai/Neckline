@@ -19,7 +19,7 @@ struct ReportSnapshotStore {
         namespace = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
         let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.temporaryDirectory
-        root = support.appendingPathComponent("Neckline/Reports/\(namespace)", isDirectory: true)
+        root = support.appendingPathComponent("Neckline/Reports/v270-k9v3/\(namespace)", isDirectory: true)
     }
 
     /// 切换服务或账号时删除派生快照，避免旧环境在新的身份下留下可读入口。
@@ -31,8 +31,8 @@ struct ReportSnapshotStore {
     }
 
     func save(_ snapshot: SelectionSnapshot) throws {
-        guard snapshot.state != nil, snapshot.strategyVersion == "K9-v2",
-              snapshot.packVersion == "fp-3" else { return }
+        guard snapshot.state != nil, snapshot.strategyVersion == "K9-v3",
+              snapshot.packVersion == "fp-4" else { return }
         let manager = FileManager.default
         try manager.createDirectory(at: root, withIntermediateDirectories: true)
         let filename = (snapshot.tradeDate.isEmpty ? "latest" : snapshot.tradeDate) + ".json"
@@ -59,8 +59,8 @@ struct ReportSnapshotStore {
         for file in candidates {
             if let data = try? Data(contentsOf: file),
                let snapshot = try? JSONDecoder().decode(SelectionSnapshot.self, from: data),
-               snapshot.state != nil, snapshot.strategyVersion == "K9-v2",
-               snapshot.packVersion == "fp-3" {
+               snapshot.state != nil, snapshot.strategyVersion == "K9-v3",
+               snapshot.packVersion == "fp-4" {
                 let savedAt = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 return CachedSnapshot(snapshot: snapshot, savedAt: savedAt)
             }

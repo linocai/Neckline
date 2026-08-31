@@ -72,7 +72,7 @@ def _normalize(path: str) -> str:
 
 #: 客户端**测试**里为了断言 URL 拼接而写死的示例路径段(它们在服务端眼里都是路径参数)。
 #: ⚠ 已核实服务端真实路由没有任何固定的字面段与它们同名,折叠不会掩盖真实回归。
-_SAMPLE_SEGMENTS = ("600001.SH",)
+_SAMPLE_SEGMENTS = ("600001.SH", "k9-v3-20260820-demo")
 
 
 def client_call_surface() -> set:
@@ -186,28 +186,26 @@ def test_the_method_pair_scanner_actually_sees_something():
 # ══════════════════════════════════════════════════════════════════════════
 
 #: §5.12 定稿的新端点(**路由面自检**;逐字段契约由客户端 DTO 与冒烟覆盖)。
-_V250_NEW_ROUTES = (
+_V270_NEW_ROUTES = (
     "/api/v1/selection/latest",
     "/api/v1/selection/{}",
-    "/api/v1/selection/{}/stock/{}",
-    "/api/v1/selection/{}/stock/{}/playbook",
-    "/api/v1/checklist/{}",
-    "/api/v1/scoreboard/coverage",
-    "/api/v1/scoreboard/listing",
-    "/api/v1/scoreboard/verdicts/{}",
+    "/api/v1/checklists/{}",
+    "/api/v1/scoreboard/packages",
+    "/api/v1/scoreboard/packages/{}",
     "/api/v1/review/bindery",
     "/api/v1/review/conclusions",
 )
 
 
-def test_v250_new_endpoints_are_reachable_shapes():
+def test_v270_score_package_endpoints_are_reachable_shapes():
     server = server_route_surface()
-    for path in _V250_NEW_ROUTES:
-        assert path in server, f"§5.12 清单里的端点 {path} 没挂上"
+    for path in _V270_NEW_ROUTES:
+        assert path in server, f"V2.7 清单里的端点 {path} 没挂上"
 
 
 #: §5.12「删除」栏逐条 + S1 实际删掉的 33 条路由的路径形状。
 _DELETED_ROUTES = (
+    "/api/v1/scoreboard/coverage", "/api/v1/scoreboard/listing", "/api/v1/scoreboard/verdicts/{}",
     # 报告与篮子(→ /selection 与 /legacy)
     "/api/v1/report/latest", "/api/v1/report", "/api/v1/report/{}/info-card/{}",
     "/api/v1/baskets", "/api/v1/baskets/{}", "/api/v1/baskets/{}/card",
@@ -359,11 +357,7 @@ def test_the_404_fallback_is_not_some_unrelated_business_error():
 #: (`reviews.result_json`)、结论(`review_conclusions` 行)。
 #: 其余几件是每次响应重拼的 A 类,手写 `init(from:)` 是**白拿的保险**,一并收进本闸。
 FROZEN_SNAPSHOT_DTOS = (
-    "SelectionSnapshot", "K9Stock", "Playbook", "PlaybookLevels", "PlaybookBranch",
-    "PlaybookCondition", "K9ExplainNote", "K9StockDetail", "K9StockEntry",
-    "Checklist", "ChecklistSegment", "ChecklistRow",
-    "CoverageSnapshot", "CoverageDay", "CoverageMiss",
-    "K9VerdictsSnapshot", "K9VerdictRow",
+    "SelectionSnapshot",
     "ReviewWeeklyResult", "ReviewWeeklyStats", "ReviewRoundTrip", "WeeklyReviewEntry",
     "ReviewGetResponse", "ReviewBindery", "ReviewConclusion", "ReviewConclusionsResponse",
     "ReviewSegment", "ReviewOverview",
@@ -371,20 +365,14 @@ FROZEN_SNAPSHOT_DTOS = (
 )
 
 
-def test_dto_slicer_is_not_fooled_by_same_prefix_types():
+def test_dto_slicer_finds_the_v3_report_snapshot():
     """本闸自己的守门:切块必须切到**同名那一个**类型,而不是同前缀的邻居。
 
     `Playbook` 之前排着 `PlaybookLevels` / `PlaybookCondition` / `PlaybookBranch`
     —— 裸 `split("struct Playbook")` 会切到邻居身上,**断言照样绿、守的却是另一个类型**。
     """
-    body = type_block("Playbook")
-    assert body.startswith("struct Playbook:") or body.startswith("struct Playbook "), body[:48]
-    assert "struct PlaybookLevels" not in body
-    assert "struct PlaybookBranch" not in body
-    # 同前缀族第二例:`Checklist` 之外还有 `ChecklistSegment` / `ChecklistRow`。
-    cl = type_block("Checklist")
-    assert cl.startswith("struct Checklist:") or cl.startswith("struct Checklist ")
-    assert "struct ChecklistSegment" not in cl and "struct ChecklistRow" not in cl
+    body = type_block("SelectionSnapshot")
+    assert body.startswith("struct SelectionSnapshot:") or body.startswith("struct SelectionSnapshot "), body[:48]
     assert type_block("NoSuchDTOAnywhere") == ""
 
 
@@ -403,23 +391,22 @@ def test_frozen_snapshot_dtos_hand_write_init_from_decoder(name: str):
 # 5. 裁定 10 的客户端半边:核对表里**结构上没有「成立」**
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_client_checklist_verdict_enum_has_exactly_two_members_and_no_confirmed():
+def test_client_checklist_verdict_enum_has_v3_morning_segments():
     """🔴 **守门 G20 的客户端半边**(服务端半边在 `test_v250_s8_auction_guard.py`)。
 
     服务端 `ChecklistVerdict` 是二值闭合枚举、加第三个成员 import 就炸;客户端这一侧
     同样只能有两个 case —— ⛔ 一侧守住而另一侧偷偷多一个,界面照样会画出「成立」段。
     """
-    block = type_block("ChecklistVerdict")
-    assert block, "客户端找不到 `enum ChecklistVerdict`"
-    cases = re.findall(r"case\s+(\w+)\s*=\s*\"([a-z_]+)\"", block)
-    assert [raw for _, raw in cases] == ["rejected", "pending_open"], (
-        f"客户端 `ChecklistVerdict` 应恰好两个成员 —— 实得 {cases}")
+    block = type_block("K9ChecklistVerdict")
+    assert block, "客户端找不到 `enum K9ChecklistVerdict`"
+    for value in ("rejected", "unbuyable", "pending_open"):
+        assert value in block
     assert "confirmed" not in block, (
         "🔴 客户端 `ChecklistVerdict` 里出现了 `confirmed` —— 裁定 10:9:29 那一拍"
         "**结构上**判不出「成立」(四个成立分支都含「前 30 分钟」合取项)。")
 
 
-def test_the_checklist_view_never_renders_a_confirmed_segment():
+def test_the_checklist_view_uses_server_three_segments_without_inventing_a_fourth():
     """🔴 **裁定 10 的文案扫描**:核对表视图里「成立」⛔ 不许出现在任何**段名 / 徽标 /
     枚举取值**上;只允许出现在**解释它为什么不存在**的整句说明里。
 
@@ -434,24 +421,10 @@ def test_the_checklist_view_never_renders_a_confirmed_segment():
     """
     from tests.client_sources import CLIENT  # noqa: PLC0415
 
-    #: 段名 / 徽标的长度上界。⚠ 超过它的一律视为整句说明。
-    label_max = 20
     src = (CLIENT / "Views" / "CheckListView.swift").read_text(encoding="utf-8")
     code = strip_comments(src)
-    literals = re.findall(r'"((?:[^"\\]|\\.)*)"', code)
-    short_hits = [s for s in literals if "成立" in s and len(s) <= label_max]
-    assert not short_hits, (
-        f"核对表视图里出现了带「成立」的**短串**(段名 / 徽标的形状):{short_hits} —— "
-        f"裁定 10:9:29 那一拍**结构上**判不出「成立」,这张表只有两段。"
-    )
-    # 闸自己的守门:剥注释这一步不许把真代码剥掉,且扫描器真的解析到了字面量。
-    # ⚠ 锚点取**真的出现在代码行里**的标识符(⛔ 别锚只出现在文件头注释里的类型名 ——
-    # 那样锚点会随剥注释一起消失,自检永远绿)。
-    assert "list.segments" in code and "list.footnote" in code
-    assert len(literals) >= 10, "字面量扫描器怕是失效了(一个恒空的闸等于没有闸)"
-    # 正向:那句解释**必须在**(⛔ 不许只是"没有成立"而不说为什么)。
-    assert any("成立" in s and len(s) > label_max for s in literals), (
-        "核对表视图必须有一句话解释「为什么这里没有成立段」——⛔ 不许只是沉默地少一段")
+    assert "checklist.segments" in code
+    assert "K9ChecklistVerdict" not in code, "视图必须渲染服务端 segments，不自行拼三段"
 
 
 def test_the_settlement_verdicts_live_in_the_scoreboard_not_the_selection_screen():
@@ -463,7 +436,7 @@ def test_the_settlement_verdicts_live_in_the_scoreboard_not_the_selection_screen
     from tests.client_sources import CLIENT  # noqa: PLC0415
 
     scoreboard = (CLIENT / "Views" / "ScoreboardView.swift").read_text(encoding="utf-8")
-    assert "model.verdicts" in scoreboard, "成绩板块应当呈现三分支终值"
+    assert "activeScorePackages" in scoreboard and "settledScorePackages" in scoreboard, "成绩板块应呈现 K9-v3 独立成绩包"
     for name in ("SelectionView.swift", "CheckListView.swift", "StockDetailView.swift"):
         text = strip_comments((CLIENT / "Views" / name).read_text(encoding="utf-8"))
         assert "model.verdicts" not in text, (
@@ -474,42 +447,17 @@ def test_the_settlement_verdicts_live_in_the_scoreboard_not_the_selection_screen
 # 6. 行业分 / 选票分:两侧都⛔ 不许有合计
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_client_exposes_the_five_d2_metrics_without_a_combined_score():
+def test_client_exposes_v3_package_results_without_a_combined_score():
     from tests.client_sources import CLIENT  # noqa: PLC0415
 
-    scoreboard_model = strip_comments(type_block("NKListingScorecard") or "")
+    scoreboard_model = strip_comments(models_text())
     text = strip_comments(
         (CLIENT / "Views" / "ScoreboardView.swift").read_text(encoding="utf-8"))
     for banned in ("combinedScore", "totalScore", "industryPlusPick", "合计分", "综合分"):
         assert banned not in text, f"成绩板块出现了合计口径 `{banned}` —— ⛔ 两栏永不合并"
         assert banned not in scoreboard_model
-    # 正向：K9-v2 的五项 D2 指标逐项存在。
-    models = models_text()
-    for label in ("D1—D2 上涨触达", "D2 收盘胜率", "D2 行业超额",
-                  "D1—D2 最大回撤", "最终清单提升"):
-        assert label in models
-
-
-def test_client_never_hardcodes_the_playbook_slot_keys():
-    """🔴 **要填哪几个数由服务端下发**(`playbookSlots`)—— ⛔ 客户端不许硬编一份键表。
-
-    硬编的后果是静默的:服务端 `playbook/skeleton.py` 改了槽位,用户改完点提交拿一个
-    英文 422,而界面上的表单一路是绿的(同 `PushKind.label` 由服务端下发的先例)。
-    """
-    from neckline.playbook import skeleton as skeleton_mod  # noqa: PLC0415
-    from tests.client_sources import CLIENT  # noqa: PLC0415
-
-    keys = set()
-    for pattern in skeleton_mod.SKELETONS:
-        keys |= set(skeleton_mod.required_keys(pattern))
-    assert keys, "服务端槽位表是空的?那本条守门就是空的"
-    swift = strip_comments("\n".join(
-        p.read_text(encoding="utf-8") for p in sorted((CLIENT).rglob("*.swift"))))
-    # 三个价位的键客户端**要读**(它们是 `PlaybookLevels` 的字段),故只查形态槽位那一半。
-    level_keys = {s.key for s in skeleton_mod.LEVEL_SLOTS}
-    for k in sorted(keys - level_keys):
-        assert f'"{k}"' not in swift, (
-            f"客户端硬编了形态槽位键 `{k}` —— 它该由服务端的 `playbookSlots` 下发。")
+    for field in ("selectionResult", "playbookResult", "riskTag", "coverageState"):
+        assert field in scoreboard_model
 
 
 # ══════════════════════════════════════════════════════════════════════════

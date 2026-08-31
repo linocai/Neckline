@@ -58,7 +58,7 @@ logger = logging.getLogger("backfill")
 # 拿全区间,不是按日)。
 DAY_TABLES = ["daily", "daily_basic", "adj_factor", "moneyflow_dc"]
 
-# 追踪的指数(§2.6 母战法市场过滤器 P1 用上证;其余供后续板块/情绪面参考)。
+# 历史行情补齐所需的市场指数；K9-v3 只把经批准的基准写入 fp-4 参数谱系。
 INDEX_CODES = {
     "000001.SH": "上证指数",
     "399001.SZ": "深证成指",
@@ -292,6 +292,49 @@ def run_limit_derived(start: date, end: date) -> int:
     return n
 
 
+def freeze_fp4(days: List[date], *, db_path: Path | None = None,
+               parquet_dir: Path | None = None) -> dict[str, int]:
+    """Explicitly build/freeze fp-4 after raw backfill.
+
+    It is opt-in because a raw-history repair is not authorised to create
+    strategy facts by itself.  Once requested, every day is built with the
+    fp-4 contract; incomplete days remain visible for a later repair rather
+    than borrowing fp-3 or a neighbouring day.
+    """
+    from neckline.facts import store as fact_store
+    from neckline.facts import v4
+    from neckline.facts.pack import IncompletePack
+
+    stats = {"frozen": 0, "skipped": 0, "incomplete": 0, "failed": 0, "missing": 0, "missingDates": []}
+    covered: set[date] = set()
+    for target in days:
+        try:
+            built = v4.build(target, db_path=db_path, parquet_dir=parquet_dir)
+            if isinstance(built, IncompletePack):
+                stats["incomplete"] += 1
+                logger.warning("[fp-4] %s incomplete: %s", target, built.describe())
+                continue
+            fact_store.freeze_pack(built, origin=fact_store.ORIGIN_BACKFILL,
+                                   db_path=db_path, parquet_dir=parquet_dir)
+            stats["frozen"] += 1; covered.add(target)
+        except fact_store.PackAlreadyFrozen:
+            try:
+                fact_store.load_pack(target, pack_version=v4.PACK_VERSION,
+                                     db_path=db_path, parquet_dir=parquet_dir)
+            except Exception:
+                stats["failed"] += 1
+                logger.exception("[fp-4] %s 已冻结记录不可读取", target)
+            else:
+                stats["skipped"] += 1; covered.add(target)
+        except Exception:
+            stats["failed"] += 1
+            logger.exception("[fp-4] %s freeze failed", target)
+    missing_dates = sorted(set(days) - covered)
+    stats["missing"] = len(missing_dates)
+    stats["missingDates"] = [day.strftime("%Y%m%d") for day in missing_dates]
+    return stats
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--start", default="20200101")
@@ -300,6 +343,9 @@ def main() -> int:
     parser.add_argument("--skip-limit-derived", action="store_true", help="跳过 0.4b 衍生表计算")
     parser.add_argument("--only", choices=["metadata", "daily_tables", "index", "limit_derived"], default=None)
     parser.add_argument("--force", action="store_true", help="忽略已存在文件,强制重拉(默认断点续跑跳过已存在)")
+    parser.add_argument("--freeze-fp4", action="store_true", help="原始数据完成后显式构建并冻结 fp-4；不借用 fp-3")
+    parser.add_argument("--db", default=None, help="目标 SQLite（--freeze-fp4 的日历/清单同库）")
+    parser.add_argument("--parquet-dir", default=None, help="目标 parquet 根目录（--freeze-fp4）")
     args = parser.parse_args()
 
     if not settings.tushare_token:
@@ -307,14 +353,18 @@ def main() -> int:
         return 1
 
     ensure_data_dirs()
-    init_schema()
+    db_path = Path(args.db) if args.db else None
+    parquet_dir = Path(args.parquet_dir) if args.parquet_dir else None
+    init_schema(db_path)
 
     start_d = datetime.strptime(args.start, "%Y%m%d").date()
     end_d = datetime.strptime(args.end, "%Y%m%d").date()
 
     reset_cache()
-    if not is_trading_day(start_d) and not _calendar_loaded():
-        logger.error("交易日历未落库,先跑:python scripts/init_calendar.py")
+    try:
+        days = trading_days_between(start_d, end_d, db_path=db_path if db_path is not None else settings.db_path)
+    except RuntimeError as exc:
+        logger.error("交易日历未落库或未完整覆盖目标库:%s", exc)
         return 1
 
     t_start = time.time()
@@ -322,7 +372,6 @@ def main() -> int:
     if args.only in (None, "metadata") and not args.skip_metadata:
         bootstrap_metadata()
 
-    days = trading_days_between(start_d, end_d)
     logger.info("回填区间 %s ~ %s,共 %d 个交易日", start_d, end_d, len(days))
 
     if args.only in (None, "daily_tables"):
@@ -339,6 +388,14 @@ def main() -> int:
 
     if args.only in (None, "limit_derived") and not args.skip_limit_derived:
         run_limit_derived(start_d, end_d)
+
+    if args.freeze_fp4:
+        fp4 = freeze_fp4(days, db_path=db_path, parquet_dir=parquet_dir)
+        logger.info("[fp-4] frozen=%d skipped=%d incomplete=%d failed=%d missing=%d",
+                    fp4["frozen"], fp4["skipped"], fp4["incomplete"], fp4["failed"], fp4["missing"])
+        if fp4["incomplete"] or fp4["failed"] or fp4["missing"]:
+            logger.error("[fp-4] 请求区间未完整覆盖：incomplete=%d failed=%d missing=%s", fp4["incomplete"], fp4["failed"], ",".join(fp4["missingDates"]))
+            return 1
 
     logger.info("全部完成,总耗时 %.0fs", time.time() - t_start)
     return 0

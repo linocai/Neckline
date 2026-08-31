@@ -103,7 +103,6 @@ class TestTimelinessRulesAreInEveryPrompt:
     @pytest.mark.parametrize("prompt_ref", [
         "neckline.llm.news_scan:NEWS_SCAN_SYSTEM_PROMPT",
         "neckline.explain.aggregate:EXPLAIN_SYSTEM_PROMPT",
-        "neckline.playbook.fill:PLAYBOOK_FILL_SYSTEM_PROMPT",
     ])
     def test_prompt_embeds_the_shared_rules_verbatim(self, prompt_ref):
         import importlib

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Collection, Dict, Optional
 
 from neckline import notify_kinds
 from neckline.api.stores import delete_device, list_device_tokens
@@ -31,24 +32,39 @@ class NotifyOutcome:
     skipped_reason: str = ""
     kind: str = ""
     level: str = ""
+    delivered_device_keys: tuple[str, ...] = ()
+    delivery_complete: bool = False
 
 
 def _fanout(title: str, body: str, *, category: str, custom: Optional[dict],
-            db_path: Optional[Path], transport: Optional[Any]) -> NotifyOutcome:
+            db_path: Optional[Path], transport: Optional[Any],
+            skip_device_keys: Collection[str] = (),
+            collapse_id: Optional[str] = None) -> NotifyOutcome:
+    from neckline.dedup import device_delivery_key
+
     tokens = list_device_tokens(db_path=db_path)
     if not tokens:
-        return NotifyOutcome(skipped_reason="no_devices")
+        return NotifyOutcome(skipped_reason="no_devices", delivery_complete=True)
+    skipped = set(skip_device_keys)
+    pending = [(token, device_delivery_key(token)) for token in tokens
+               if device_delivery_key(token) not in skipped]
+    if not pending:
+        return NotifyOutcome(skipped_reason="all_devices_delivered", delivery_complete=True)
     out = NotifyOutcome()
-    for token in tokens:
+    delivered: list[str] = []
+    transient_failure = False
+    for token, device_key in pending:
         try:
             result = apns.send_push(token, title, body, category=category,
-                                    custom=custom, transport=transport)
+                                    custom=custom, collapse_id=collapse_id, transport=transport)
         except Exception as exc:  # noqa: BLE001
             logger.warning("APNs 推送异常(token 尾4=%s):%s", token[-4:] if token else "", exc)
             out.failed += 1
+            transient_failure = True
             continue
         if result.ok:
             out.sent += 1
+            delivered.append(device_key)
         else:
             out.failed += 1
             if _permanently_invalid(result):
@@ -56,25 +72,37 @@ def _fanout(title: str, body: str, *, category: str, custom: Optional[dict],
                 logger.warning("APNs 设备已永久失效，已移除(token 尾4=%s status=%s reason=%s)",
                                token[-4:] if token else "", result.status, result.reason)
             else:
+                transient_failure = True
                 logger.warning("APNs 推送失败(token 尾4=%s status=%s reason=%s)",
                                token[-4:] if token else "", result.status, result.reason)
+    out.delivered_device_keys = tuple(delivered)
+    out.delivery_complete = not transient_failure
     return out
 
 
 def push_event(kind: str, title: str, body: str, *,
                custom_extra: Optional[Dict[str, Any]] = None,
                db_path: Optional[Path] = None,
-               transport: Optional[Any] = None) -> NotifyOutcome:
+               transport: Optional[Any] = None,
+               skip_device_keys: Collection[str] = (),
+               delivery_id: Optional[str] = None) -> NotifyOutcome:
     level = notify_kinds.level_of(kind)
     if not push_kind_enabled(kind, db_path=db_path):
-        return NotifyOutcome(skipped_reason=f"kind_off:{kind}", kind=kind, level=level)
+        return NotifyOutcome(skipped_reason=f"kind_off:{kind}", kind=kind, level=level,
+                             delivery_complete=True)
     if not apns.settings.has_apns_config:
         return NotifyOutcome(skipped_reason="no_apns_config", kind=kind, level=level)
     custom: Dict[str, Any] = {"kind": kind, "level": level}
     if custom_extra:
         custom.update(custom_extra)
+    # Apple uses the same stable collapse id on every replay.  Together with
+    # the per-device ledger this covers both normal partial retry and the
+    # unavoidable process-crash window after APNs accepted a payload but
+    # before SQLite could persist that success.
+    collapse_id = hashlib.sha256(delivery_id.encode("utf-8")).hexdigest() if delivery_id else None
     out = _fanout(title, body, category=notify_kinds.category_of(kind), custom=custom,
-                  db_path=db_path, transport=transport)
+                  db_path=db_path, transport=transport, skip_device_keys=skip_device_keys,
+                  collapse_id=collapse_id)
     out.kind = kind
     out.level = level
     return out
@@ -117,7 +145,9 @@ def push_report_ready(report_date_disp: str, *, data_date_disp: Optional[str] = 
 
 
 def push_checklist_summary(counts: dict, *, db_path: Optional[Path] = None,
-                           transport: Optional[Any] = None) -> NotifyOutcome:
+                           transport: Optional[Any] = None,
+                           skip_device_keys: Collection[str] = (),
+                           delivery_id: Optional[str] = None) -> NotifyOutcome:
     from neckline.auction.checklist import CHECKLIST_FOOTNOTE
 
     rejected = int(counts.get("rejected", 0))
@@ -133,7 +163,8 @@ def push_checklist_summary(counts: dict, *, db_path: Optional[Path] = None,
     if quality and quality != "ok":
         body += f"(本次数据质量:{quality})"
     return push_event(KIND_PRECALL, "竞价核对表", body + CHECKLIST_FOOTNOTE,
-                      db_path=db_path, transport=transport)
+                      db_path=db_path, transport=transport,
+                      skip_device_keys=skip_device_keys, delivery_id=delivery_id)
 
 
 def push_previous_report_not_run(trade_date: str, *, db_path: Optional[Path] = None,

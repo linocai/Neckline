@@ -68,6 +68,22 @@ CREATE TABLE IF NOT EXISTS job_events (
 );
 CREATE INDEX IF NOT EXISTS idx_job_events_trade_date ON job_events(trade_date);
 
+-- A checklist notification can fan out to several devices.  The aggregate
+-- job marker is written only after every currently valid device is terminal;
+-- successful devices are remembered here so a transient failure on one
+-- device never makes the next poll resend to all of the others.
+CREATE TABLE IF NOT EXISTS job_event_deliveries (
+  trade_date TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  ts_code TEXT NOT NULL DEFAULT '',
+  event_key TEXT NOT NULL,
+  device_key TEXT NOT NULL,
+  delivered_at TEXT NOT NULL,
+  PRIMARY KEY(trade_date, scope, ts_code, event_key, device_key)
+);
+CREATE INDEX IF NOT EXISTS idx_job_event_deliveries_trade_date
+  ON job_event_deliveries(trade_date);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   tavily_api_key TEXT,
@@ -146,6 +162,41 @@ CREATE TABLE IF NOT EXISTS sw_industry_member (
 );
 CREATE INDEX IF NOT EXISTS idx_sw_member_l2 ON sw_industry_member(l2_code);
 CREATE INDEX IF NOT EXISTS idx_sw_member_current ON sw_industry_member(is_current);
+-- Immutable retrieval snapshots.  K9-v3 fp-4 may only read an explicit
+-- target-date snapshot; fetched_at/current membership never backfills history.
+CREATE TABLE IF NOT EXISTS sw_industry_member_snapshots (
+  trade_date TEXT NOT NULL,
+  ts_code TEXT NOT NULL,
+  name TEXT,
+  l1_code TEXT NOT NULL, l1_name TEXT NOT NULL,
+  l2_code TEXT NOT NULL, l2_name TEXT NOT NULL,
+  l3_code TEXT NOT NULL, l3_name TEXT NOT NULL,
+  source_fetched_at TEXT NOT NULL,
+  PRIMARY KEY(trade_date, ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_sw_member_snapshot_date_l2 ON sw_industry_member_snapshots(trade_date,l2_code);
+-- One immutable manifest per effective trade date.  Snapshot rows alone never
+-- claim a historical provenance: fp-4 requires this ledger as well.
+CREATE TABLE IF NOT EXISTS sw_industry_snapshot_manifests (
+  trade_date TEXT PRIMARY KEY,
+  content_sha256 TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  source_generated_at TEXT NOT NULL,
+  source_fetched_at TEXT NOT NULL,
+  raw_file_sha256 TEXT,
+  row_count INTEGER NOT NULL,
+  imported_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sw_industry_snapshot_imports (
+  raw_file_sha256 TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL,
+  source_generated_at TEXT NOT NULL,
+  source_fetched_at TEXT NOT NULL,
+  row_count INTEGER NOT NULL,
+  start_trade_date TEXT NOT NULL,
+  end_trade_date TEXT NOT NULL,
+  imported_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS sw_industry_daily (
   trade_date TEXT NOT NULL,
@@ -216,252 +267,186 @@ CREATE TABLE IF NOT EXISTS llm_usage_events (
 CREATE INDEX IF NOT EXISTS idx_llm_usage_events_date_task
   ON llm_usage_events(trade_date, task);
 
-CREATE TABLE IF NOT EXISTS k9_coverage_daily (
-  trade_date TEXT PRIMARY KEY,
+-- K9-v3：成绩包是主实体。既有旧表只由显式迁移工具处理。
+CREATE TABLE IF NOT EXISTS k9_selection_batches (
+  batch_id TEXT PRIMARY KEY,
+  selection_date TEXT NOT NULL,
+  signal_trade_date TEXT NOT NULL,
+  d1_trade_date TEXT NOT NULL,
+  d2_trade_date TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('d0','d1','settled')),
+  coverage_state TEXT NOT NULL DEFAULT 'pending' CHECK(coverage_state IN ('pending','complete','partial','unavailable')),
+  strategy_version TEXT NOT NULL CHECK(strategy_version='K9-v3'),
+  params_package_version TEXT NOT NULL,
+  params_sha256 TEXT NOT NULL,
   pack_id TEXT NOT NULL,
-  pack_version TEXT NOT NULL,
-  limit_up_count INTEGER NOT NULL,
-  limit_down_count INTEGER NOT NULL,
-  zaban_count INTEGER NOT NULL,
-  zaban_rate REAL,
-  max_consec_days INTEGER,
-  cluster_count INTEGER NOT NULL,
-  listing_trade_date TEXT,
-  listing_size INTEGER,
-  covered_count INTEGER,
-  coverage_all REAL,
-  in_pool_denominator INTEGER,
-  covered_in_pool INTEGER,
-  coverage_in_pool REAL,
-  census_json TEXT NOT NULL,
-  computed_at TEXT NOT NULL
+  pack_version TEXT NOT NULL CHECK(pack_version='fp-4'),
+  label_contract_version TEXT NOT NULL CHECK(label_contract_version='d2-v2'),
+  frozen_contract_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(selection_date, revision, strategy_version)
 );
+CREATE INDEX IF NOT EXISTS idx_k9_v3_batches_state ON k9_selection_batches(state, selection_date DESC);
 
-CREATE TABLE IF NOT EXISTS k9_coverage_misses (
-  trade_date TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS k9_selection_candidates (
+  batch_id TEXT NOT NULL REFERENCES k9_selection_batches(batch_id) ON DELETE RESTRICT,
   ts_code TEXT NOT NULL,
   name TEXT,
   sw_l2_code TEXT,
   sw_l2_name TEXT,
-  board TEXT,
-  consec_limit_up_days INTEGER,
-  reason TEXT NOT NULL,
-  detail TEXT,
-  computed_at TEXT NOT NULL,
-  PRIMARY KEY (trade_date, ts_code)
-);
-CREATE INDEX IF NOT EXISTS idx_k9_coverage_misses_reason
-  ON k9_coverage_misses(trade_date, reason);
-
-CREATE TABLE IF NOT EXISTS k9_runs (
-  run_id TEXT NOT NULL,
-  trade_date TEXT NOT NULL,
-  strategy TEXT NOT NULL,
-  strategy_version TEXT NOT NULL,
-  label_contract_version TEXT NOT NULL,
-  params_package_version TEXT NOT NULL,
-  pack_id TEXT NOT NULL,
-  pack_version TEXT NOT NULL,
-  tier_used TEXT NOT NULL,
-  strict_candidates INTEGER NOT NULL,
-  relaxed_candidates INTEGER NOT NULL,
-  seated_count INTEGER NOT NULL,
-  capacity_short INTEGER NOT NULL,
-  over_strict INTEGER NOT NULL,
-  relaxed_streak INTEGER NOT NULL,
-  channel_counts_json TEXT NOT NULL,
-  boundary_counts_json TEXT NOT NULL,
-  absent_patterns_json TEXT NOT NULL,
-  dropped_heat_absent_json TEXT NOT NULL,
-  listing_finalized_by TEXT NOT NULL,
-  scoring_contract_json TEXT NOT NULL,
+  channels_json TEXT NOT NULL,
+  channel_ranks_json TEXT NOT NULL,
+  frozen_playbook_json TEXT NOT NULL,
+  baseline_json TEXT NOT NULL,
+  thresholds_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  PRIMARY KEY (trade_date, strategy, strategy_version)
+  PRIMARY KEY(batch_id, ts_code)
 );
-CREATE INDEX IF NOT EXISTS idx_k9_runs_run_id ON k9_runs(run_id);
 
-CREATE TABLE IF NOT EXISTS k9_channel_hits (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id TEXT NOT NULL,
-  trade_date TEXT NOT NULL,
-  strategy_version TEXT NOT NULL,
+-- K9-v3 pre-plan revisions are append-only.  The candidate row keeps the
+-- original D0 revision; current display may point at a later user revision
+-- until the 9:26 checklist freezes one for D1.
+CREATE TABLE IF NOT EXISTS k9_playbook_revisions (
+  batch_id TEXT NOT NULL REFERENCES k9_selection_batches(batch_id) ON DELETE RESTRICT,
   ts_code TEXT NOT NULL,
-  pattern TEXT NOT NULL,
-  tier TEXT NOT NULL,
-  seated INTEGER NOT NULL,
-  strength_json TEXT NOT NULL,
-  evidence_json TEXT NOT NULL,
-  risks_json TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  source TEXT NOT NULL CHECK(source IN ('llm','user')),
+  mechanical_json TEXT NOT NULL,
+  provenance_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  confirmed_at TEXT,
+  frozen_at TEXT,
+  PRIMARY KEY (batch_id, ts_code, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_k9_v3_playbook_revisions
+  ON k9_playbook_revisions(batch_id, ts_code, revision DESC);
+-- 9:26 is an independent, immutable D1 boundary.  It is deliberately not
+-- inferred from a checklist row: a failed checklist write must not leave a
+-- half-frozen package, and a missed timer must not reopen edits after 09:26.
+CREATE TABLE IF NOT EXISTS k9_playbook_freezes (
+  batch_id TEXT NOT NULL REFERENCES k9_selection_batches(batch_id) ON DELETE RESTRICT,
+  ts_code TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  frozen_at TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK(reason='d1_0926'),
+  playbook_sha256 TEXT NOT NULL,
+  PRIMARY KEY(batch_id, ts_code),
+  FOREIGN KEY(batch_id, ts_code, revision) REFERENCES k9_playbook_revisions(batch_id, ts_code, revision) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_k9_v3_candidates_code ON k9_selection_candidates(ts_code, batch_id);
+
+CREATE TABLE IF NOT EXISTS k9_selection_d1 (
+  batch_id TEXT NOT NULL REFERENCES k9_selection_batches(batch_id) ON DELETE RESTRICT,
+  ts_code TEXT NOT NULL,
+  checklist_verdict TEXT NOT NULL CHECK(checklist_verdict IN ('rejected','unbuyable','pending_open')),
+  open_verdict TEXT CHECK(open_verdict IN ('confirmed','rejected','observed','unbuyable','unavailable')),
+  reference_price REAL,
+  close_state TEXT CHECK(close_state IN ('enhanced','held','weakened','unavailable')),
+  raw_json TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  PRIMARY KEY(batch_id, ts_code),
+  FOREIGN KEY(batch_id, ts_code) REFERENCES k9_selection_candidates(batch_id, ts_code) ON DELETE RESTRICT
+);
+
+-- 10:00 分支与 D1 收盘评价是两个时间点的不可变追加记录，不能互相覆盖。
+CREATE TABLE IF NOT EXISTS k9_selection_d1_close (
+  batch_id TEXT NOT NULL REFERENCES k9_selection_batches(batch_id) ON DELETE RESTRICT,
+  ts_code TEXT NOT NULL,
+  close_state TEXT NOT NULL CHECK(close_state IN ('enhanced','held','weakened','unavailable')),
+  raw_json TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  PRIMARY KEY(batch_id, ts_code),
+  FOREIGN KEY(batch_id, ts_code) REFERENCES k9_selection_candidates(batch_id, ts_code) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS k9_selection_d2 (
+  batch_id TEXT NOT NULL REFERENCES k9_selection_batches(batch_id) ON DELETE RESTRICT,
+  ts_code TEXT NOT NULL,
+  selection_result TEXT NOT NULL CHECK(selection_result IN ('success_realized','opportunity_not_continued','confirmed_failed','correct_reject','false_reject','observed_realized','observed_not_realized','unavailable')),
+  playbook_result TEXT,
+  risk_tag TEXT,
+  raw_json TEXT NOT NULL,
+  settled_at TEXT NOT NULL,
+  PRIMARY KEY(batch_id, ts_code),
+  FOREIGN KEY(batch_id, ts_code) REFERENCES k9_selection_candidates(batch_id, ts_code) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS k9_package_checklists (
+  batch_id TEXT PRIMARY KEY REFERENCES k9_selection_batches(batch_id) ON DELETE RESTRICT,
+  trade_date TEXT NOT NULL,
+  checklist_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_k9_channel_hits_day
-  ON k9_channel_hits(trade_date, pattern);
-CREATE INDEX IF NOT EXISTS idx_k9_channel_hits_code
-  ON k9_channel_hits(ts_code, trade_date);
 
-CREATE TABLE IF NOT EXISTS k9_listing_entries (
+-- 报告是成绩包的只读投影，使用独立 V3 报告表。
+CREATE TABLE IF NOT EXISTS k9_package_reports (
   trade_date TEXT NOT NULL,
-  ts_code TEXT NOT NULL,
-  run_id TEXT NOT NULL,
-  strategy TEXT NOT NULL,
-  strategy_version TEXT NOT NULL,
-  name TEXT,
-  sw_l2_code TEXT,
-  sw_l2_name TEXT,
-  patterns_json TEXT NOT NULL,
-  primary_pattern TEXT NOT NULL,
-  tier TEXT NOT NULL,
-  seat_kind TEXT,
-  rank INTEGER NOT NULL,
-  score REAL NOT NULL,
-  industry_heat_score REAL,
-  pattern_strength_score REAL NOT NULL,
-  relay_score REAL NOT NULL,
-  evidence_json TEXT NOT NULL,
-  risks_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (trade_date, ts_code, strategy_version)
-);
-CREATE INDEX IF NOT EXISTS idx_k9_listing_day
-  ON k9_listing_entries(trade_date, strategy);
-
-CREATE TABLE IF NOT EXISTS k9_reports (
-  trade_date TEXT PRIMARY KEY,
   report_date TEXT NOT NULL,
-  state TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('has_list','empty','not_run')),
   headline TEXT NOT NULL,
   gaps_json TEXT NOT NULL,
   markdown TEXT NOT NULL,
   structured_json TEXT NOT NULL,
-  strategy TEXT NOT NULL,
-  strategy_version TEXT NOT NULL,
+  strategy_version TEXT NOT NULL CHECK(strategy_version='K9-v3'),
   params_package_version TEXT,
   pack_id TEXT,
-  pack_version TEXT,
+  pack_version TEXT CHECK(pack_version IS NULL OR pack_version='fp-4'),
   listing_size INTEGER,
-  strict_count INTEGER,
-  relaxed_count INTEGER,
-  generated_at TEXT NOT NULL
+  generated_at TEXT NOT NULL,
+  PRIMARY KEY(trade_date, report_date, strategy_version)
 );
-CREATE INDEX IF NOT EXISTS idx_k9_reports_report_date ON k9_reports(report_date);
+CREATE INDEX IF NOT EXISTS idx_k9_package_reports_trade_date
+  ON k9_package_reports(trade_date DESC, report_date DESC);
 
-CREATE TABLE IF NOT EXISTS k9_playbooks (
-  trade_date TEXT NOT NULL,
-  ts_code TEXT NOT NULL,
-  version INTEGER NOT NULL,
-  source TEXT NOT NULL,
-  pattern TEXT NOT NULL,
-  first_resistance REAL NOT NULL,
-  second_resistance REAL NOT NULL,
-  invalidation REAL NOT NULL,
-  branches_json TEXT NOT NULL,
-  filled_by TEXT NOT NULL,
-  filled_at TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (trade_date, ts_code, version)
-);
-CREATE INDEX IF NOT EXISTS idx_k9_playbooks_day ON k9_playbooks(trade_date);
-
-CREATE TABLE IF NOT EXISTS k9_explain_notes (
-  trade_date TEXT NOT NULL,
-  ts_code TEXT NOT NULL,
-  profile_json TEXT NOT NULL,
-  kline_comment TEXT NOT NULL,
-  news_state TEXT NOT NULL,
-  news_category TEXT,
-  news_json TEXT NOT NULL,
-  llm_ok INTEGER NOT NULL,
-  filled_by TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (trade_date, ts_code)
-);
-
-CREATE TABLE IF NOT EXISTS k9_explain_audit (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  trade_date TEXT NOT NULL,
-  seq INTEGER NOT NULL,
-  round_no INTEGER NOT NULL,
-  action TEXT NOT NULL,
-  ts_code TEXT NOT NULL,
-  reason TEXT NOT NULL,
+-- D0 运行身份不能由“今天查不到包”猜测。只有成功冻结的空包才是 empty；
+-- 参数、事实、预案或策略失败均如实保留为 not_run/failed。
+CREATE TABLE IF NOT EXISTS k9_d0_run_markers (
+  selection_date TEXT PRIMARY KEY,
+  signal_trade_date TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('has_list','empty','not_run','failed')),
+  batch_id TEXT,
+  reason TEXT,
   created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_k9_explain_audit_day
-  ON k9_explain_audit(trade_date, seq);
+CREATE INDEX IF NOT EXISTS idx_k9_d0_run_markers_signal_date
+  ON k9_d0_run_markers(signal_trade_date DESC);
 
-CREATE TABLE IF NOT EXISTS k9_checklists (
+-- Durable cross-process truth for the evening lifecycle.  The report unit
+-- must never guess success from package rows or systemd ordering alone.
+CREATE TABLE IF NOT EXISTS k9_lifecycle_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  selection_date TEXT NOT NULL,
+  signal_trade_date TEXT NOT NULL,
+  strategy_version TEXT NOT NULL CHECK(strategy_version='K9-v3'),
+  run_identity TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('running','ok','failed')),
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  UNIQUE(selection_date, signal_trade_date, strategy_version, run_identity)
+);
+CREATE TABLE IF NOT EXISTS k9_lifecycle_stages (
+  attempt_id TEXT NOT NULL REFERENCES k9_lifecycle_attempts(attempt_id) ON DELETE RESTRICT,
+  stage TEXT NOT NULL CHECK(stage IN ('d2','d1','d0')),
+  status TEXT NOT NULL CHECK(status IN ('running','ok','failed')),
+  detail TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(attempt_id, stage)
+);
+
+-- 盘中采样的来源/缺失审计。Parquet 保存真实行情点；本表保存每次尝试，
+-- 让“没有分时”可区分为来源缺失而不是事后猜测。
+CREATE TABLE IF NOT EXISTS k9_intraday_capture_audit (
   trade_date TEXT NOT NULL,
-  strategy TEXT NOT NULL,
-  d0_date TEXT NOT NULL,
   captured_at TEXT NOT NULL,
-  data_quality TEXT NOT NULL,
-  rejected_count INTEGER NOT NULL,
-  pending_count INTEGER NOT NULL,
-  checklist_json TEXT NOT NULL,
-  notes_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (trade_date, strategy)
-);
-
-CREATE TABLE IF NOT EXISTS k9_d1_verdicts (
-  trade_date TEXT NOT NULL,
   ts_code TEXT NOT NULL,
-  strategy TEXT NOT NULL,
-  d0_date TEXT NOT NULL,
-  pattern TEXT NOT NULL,
-  playbook_version INTEGER NOT NULL,
-  auction_verdict TEXT,
-  auction_readings_json TEXT,
-  auction_branch_json TEXT,
-  auction_at TEXT,
-  verdict TEXT,
-  decided_stage TEXT,
-  open30_readings_json TEXT,
-  open30_branches_json TEXT,
-  settled_at TEXT,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (trade_date, ts_code, strategy)
+  source TEXT,
+  status TEXT NOT NULL CHECK(status IN ('captured','unavailable','write_failed')),
+  reason TEXT,
+  PRIMARY KEY(trade_date,captured_at,ts_code)
 );
-CREATE INDEX IF NOT EXISTS idx_k9_d1_verdicts_stage
-  ON k9_d1_verdicts(trade_date, decided_stage);
-
-CREATE TABLE IF NOT EXISTS k9_predictions (
-  d0_date TEXT NOT NULL,
-  d1_date TEXT NOT NULL,
-  d2_date TEXT NOT NULL,
-  ts_code TEXT NOT NULL,
-  strategy TEXT NOT NULL,
-  strategy_version TEXT NOT NULL,
-  label_contract_version TEXT NOT NULL,
-  params_package_version TEXT NOT NULL,
-  pack_id TEXT NOT NULL,
-  pack_version TEXT NOT NULL,
-  cohort TEXT NOT NULL,
-  primary_pattern TEXT,
-  name TEXT,
-  sw_l2_code TEXT,
-  sw_l2_name TEXT,
-  d0_close REAL,
-  d2_close REAL,
-  max_high_d1_d2 REAL,
-  min_low_d1_d2 REAL,
-  touch_up INTEGER,
-  close_win INTEGER,
-  path_state TEXT,
-  stock_d2_return REAL,
-  industry_d2_return REAL,
-  industry_excess REAL,
-  max_drawdown REAL,
-  d1_verdict TEXT,
-  evaluable INTEGER NOT NULL,
-  unavailable_reason TEXT,
-  computed_at TEXT NOT NULL,
-  d1_reference_price REAL,
-  d1_touch_up INTEGER,
-  PRIMARY KEY (d0_date, ts_code, strategy_version, cohort)
-);
-CREATE INDEX IF NOT EXISTS idx_k9_predictions_d2
-  ON k9_predictions(d2_date, strategy, strategy_version);
+CREATE INDEX IF NOT EXISTS idx_k9_intraday_capture_audit_date
+  ON k9_intraday_capture_audit(trade_date, ts_code);
 """
 
 
@@ -530,10 +515,58 @@ def readonly_tables(
         yield None
 
 
+def _migrate_v270_d1_unavailable(conn: sqlite3.Connection) -> None:
+    """Upgrade only the pre-release V2.7 D1 CHECK under the controlled write path."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='k9_selection_d1'"
+    ).fetchone()
+    if row is None or "'confirmed','rejected','observed','unbuyable','unavailable'" in str(row[0] or ""):
+        return
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute("ALTER TABLE k9_selection_d1 RENAME TO _k9_selection_d1_pre270")
+        conn.execute("""CREATE TABLE k9_selection_d1 (
+          batch_id TEXT NOT NULL REFERENCES k9_selection_batches(batch_id) ON DELETE RESTRICT,
+          ts_code TEXT NOT NULL,
+          checklist_verdict TEXT NOT NULL CHECK(checklist_verdict IN ('rejected','unbuyable','pending_open')),
+          open_verdict TEXT CHECK(open_verdict IN ('confirmed','rejected','observed','unbuyable','unavailable')),
+          reference_price REAL,
+          close_state TEXT CHECK(close_state IN ('enhanced','held','weakened','unavailable')),
+          raw_json TEXT NOT NULL,
+          captured_at TEXT NOT NULL,
+          PRIMARY KEY(batch_id, ts_code),
+          FOREIGN KEY(batch_id, ts_code) REFERENCES k9_selection_candidates(batch_id, ts_code) ON DELETE RESTRICT
+        )""")
+        conn.execute("""INSERT INTO k9_selection_d1
+          (batch_id,ts_code,checklist_verdict,open_verdict,reference_price,close_state,raw_json,captured_at)
+          SELECT batch_id,ts_code,checklist_verdict,open_verdict,reference_price,close_state,raw_json,captured_at
+          FROM _k9_selection_d1_pre270""")
+        conn.execute("DROP TABLE _k9_selection_d1_pre270")
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _migrate_v270_capture_audit(conn: sqlite3.Connection) -> None:
+    """Controlled pre-release widening: failed writes must not masquerade captured."""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='k9_intraday_capture_audit'").fetchone()
+    if row is None or "'write_failed'" in str(row[0] or ""):
+        return
+    conn.execute("ALTER TABLE k9_intraday_capture_audit RENAME TO _k9_intraday_capture_audit_pre270")
+    conn.execute("""CREATE TABLE k9_intraday_capture_audit (
+      trade_date TEXT NOT NULL, captured_at TEXT NOT NULL, ts_code TEXT NOT NULL, source TEXT,
+      status TEXT NOT NULL CHECK(status IN ('captured','unavailable','write_failed')), reason TEXT,
+      PRIMARY KEY(trade_date,captured_at,ts_code))""")
+    conn.execute("INSERT INTO k9_intraday_capture_audit SELECT trade_date,captured_at,ts_code,source,status,reason FROM _k9_intraday_capture_audit_pre270")
+    conn.execute("DROP TABLE _k9_intraday_capture_audit_pre270")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_k9_intraday_capture_audit_date ON k9_intraday_capture_audit(trade_date, ts_code)")
+
+
 def init_schema(db_path: Optional[Path] = None) -> None:
     """受控写入口：仅建立当前 K9 schema。"""
     with connection(db_path) as conn:
         conn.executescript(_SCHEMA)
+        _migrate_v270_d1_unavailable(conn)
+        _migrate_v270_capture_audit(conn)
 
 
 __all__ = [

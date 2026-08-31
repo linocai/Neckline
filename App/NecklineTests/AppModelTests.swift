@@ -6,8 +6,40 @@
 //  那条链已整体退役,用例随之删除 —— ⛔ 这不是放宽:被测的东西早就不存在了。
 //
 
+import Foundation
 import XCTest
 @testable import Neckline
+
+private class SelectionStubURLProtocol: URLProtocol {
+    class var statusCode: Int { 200 }
+    class var body: Data { Data() }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: Self.statusCode, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class NoBatchSelectionURLProtocol: SelectionStubURLProtocol {
+    override class var body: Data {
+        Data(#"{"state":"not_run","headline":"今天没跑成 · 参数未配置","gaps":["参数未配置"]}"#.utf8)
+    }
+}
+
+private final class FailedSelectionURLProtocol: SelectionStubURLProtocol {
+    override class var statusCode: Int { 500 }
+    override class var body: Data { Data(#"{"detail":"failed"}"#.utf8) }
+}
 
 @MainActor
 final class AppModelTests: XCTestCase {
@@ -114,7 +146,7 @@ final class AppModelTests: XCTestCase {
 
         model.selection = SelectionSnapshot(state: .hasList, headline: "今天有这些 · 1 只",
                                             listingSize: 1,
-                                            stocks: [K9Stock(tsCode: "600000.SH", rank: 1)])
+                                            stocks: [K9Stock(tsCode: "600000.SH")])
         XCTAssertTrue(model.hasListing)
     }
 
@@ -136,95 +168,41 @@ final class AppModelTests: XCTestCase {
         XCTAssertNotNil(model.checklistMissing, "404 → 有 why = 那天没跑过那一拍")
     }
 
-    // MARK: - 10:00 结算自动刷新
+    func testRefreshSelectionWithoutBatchAlwaysFinishesChecklistLoading() async {
+        let model = AppModel(clientProvider: { self.makeSelectionClient(NoBatchSelectionURLProtocol.self) })
 
-    func testSettlementPollingWindowUsesShanghaiClockAndExactBoundaries() {
-        let calendar = SettlementRefreshPolicy.clockCalendar
-        func at(_ hour: Int, _ minute: Int, _ second: Int) -> Date {
-            calendar.date(from: DateComponents(year: 2026, month: 8, day: 24,
-                                               hour: hour, minute: minute, second: second))!
-        }
-        XCTAssertFalse(SettlementRefreshPolicy.isPollingWindow(at(9, 59, 54)))
-        XCTAssertTrue(SettlementRefreshPolicy.isPollingWindow(at(9, 59, 55)))
-        XCTAssertTrue(SettlementRefreshPolicy.isPollingWindow(at(10, 5, 59)))
-        XCTAssertFalse(SettlementRefreshPolicy.isPollingWindow(at(10, 6, 0)))
-        XCTAssertFalse(SettlementRefreshPolicy.mayCatchUpAfterActivation(at(9, 59, 59)))
-        XCTAssertTrue(SettlementRefreshPolicy.mayCatchUpAfterActivation(at(10, 0, 0)))
+        await model.refreshSelection()
+
+        XCTAssertFalse(model.selectionLoading)
+        XCTAssertFalse(model.checklistLoading)
+        XCTAssertEqual(model.selection.state, .notRun)
+        XCTAssertEqual(model.checklistMissing, "当前报告没有可核对的 K9-v3 成绩包")
     }
 
-    func testSettlementPollingStopsOnlyAfterARealTodaySnapshotIsFullyDecided() {
-        let today = "20260824"
-        XCTAssertFalse(SettlementRefreshPolicy.isComplete(.empty, today: today),
-                       "空数组可能是结算尚未落库，不能当成完成")
-        let pending = K9VerdictsSnapshot(
-            tradeDate: today,
-            verdicts: [K9VerdictRow(tsCode: "600000.SH")]
-        )
-        XCTAssertFalse(SettlementRefreshPolicy.isComplete(pending, today: today))
-        let final = K9VerdictsSnapshot(
-            tradeDate: today,
-            verdicts: [K9VerdictRow(tsCode: "600000.SH", verdict: .confirmed,
-                                    decidedStage: "open30")]
-        )
-        XCTAssertTrue(SettlementRefreshPolicy.isComplete(final, today: today))
-        XCTAssertFalse(SettlementRefreshPolicy.isComplete(final, today: "20260825"),
-                       "昨天的终值不能阻止今天继续查询")
-    }
-
-    func testSettlementLoopSleepsWithoutNetworkOutsideWindow() {
-        let calendar = SettlementRefreshPolicy.clockCalendar
-        let inside = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24,
-                                                         hour: 10, minute: 0))!
-        let morning = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24,
-                                                          hour: 9, minute: 0))!
-        XCTAssertEqual(SettlementRefreshPolicy.nextWakeDelay(inside), 10)
-        XCTAssertEqual(SettlementRefreshPolicy.nextWakeDelay(morning), 3595)
-        XCTAssertLessThanOrEqual(SettlementRefreshPolicy.nextWakeDelay(morning), 3600)
-    }
-
-    func testCompletedSettlementMustBelongToTheCurrentDay() {
+    func testRefreshSelectionWithoutClientAlwaysFinishesChecklistLoading() async {
         let model = AppModel()
-        let calendar = SettlementRefreshPolicy.clockCalendar
-        let today = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24,
-                                                         hour: 10, minute: 1))!
-        model.verdicts = K9VerdictsSnapshot(
-            tradeDate: "20260824",
-            verdicts: [K9VerdictRow(tsCode: "600000.SH", verdict: .confirmed,
-                                    decidedStage: "open30")]
-        )
-        XCTAssertTrue(model.hasCompletedSettlement(at: today))
-        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today)!
-        XCTAssertFalse(model.hasCompletedSettlement(at: tomorrow),
-                       "昨天的终值不能让今天显示“10:00 已完成”")
+        await model.refreshSelection()
+
+        XCTAssertFalse(model.selectionLoading)
+        XCTAssertFalse(model.checklistLoading)
+        XCTAssertEqual(model.loadError, "未配置后端连接")
     }
 
-    #if os(macOS)
-    func testMacSettlementEntryLandsOnTheVerdictSection() {
-        let model = AppModel()
-        model.openSettlementResults()
-        XCTAssertEqual(model.view, .scoreboard)
-        XCTAssertEqual(model.scoreboardSection, .verdicts)
+    func testRefreshSelectionFailureAlwaysFinishesChecklistLoading() async {
+        let model = AppModel(clientProvider: { self.makeSelectionClient(FailedSelectionURLProtocol.self) })
+        await model.refreshSelection()
+
+        XCTAssertFalse(model.selectionLoading)
+        XCTAssertFalse(model.checklistLoading)
+        XCTAssertEqual(model.loadError, "服务暂时无法处理，请稍后再试")
     }
 
-    func testMacOnlyReplacesTheDefaultScoreboardSectionWhenSettlementCompletes() {
-        let model = AppModel()
-        let calendar = SettlementRefreshPolicy.clockCalendar
-        let today = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24,
-                                                         hour: 10, minute: 1))!
-        model.verdicts = K9VerdictsSnapshot(
-            tradeDate: "20260824",
-            verdicts: [K9VerdictRow(tsCode: "600000.SH", verdict: .observed,
-                                    decidedStage: "open30")]
-        )
-        model.revealSettlementIfAvailable(at: today)
-        XCTAssertEqual(model.scoreboardSection, .verdicts)
-
-        model.scoreboardSection = .coverage
-        model.revealSettlementIfAvailable(at: today)
-        XCTAssertEqual(model.scoreboardSection, .coverage,
-                       "用户已主动看覆盖率时不抢页面")
+    private func makeSelectionClient(_ protocolClass: URLProtocol.Type) -> APIClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [protocolClass]
+        return APIClient(baseURL: URL(string: "https://neckline.test")!, token: "test-token",
+                         session: URLSession(configuration: configuration))
     }
-    #endif
 
     // MARK: - 结论草稿(append-only 的客户端半边)
 
