@@ -9,7 +9,7 @@ not manufacture a mechanical/sample plan as a fallback.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Mapping, Sequence
 
 from neckline.llm.base import ChatMessage
@@ -205,10 +205,7 @@ def validate_output(raw: object, skeleton: Mapping[str, Mapping[str, Any]], *, s
     return output
 
 
-def generate(hits: Sequence[Any], *, db_path=None, provider=None) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    skeleton = mechanical_skeleton(hits)
-    if not skeleton:
-        return {}, {"source": "llm", "outcome": "empty"}
+def _generate_subset(skeleton: Mapping[str, Mapping[str, Any]], *, db_path=None, provider=None):
     client = provider or get_provider(TASK_PLAYBOOK, db_path=db_path)
     if client is None:
         raise PlaybookUnavailable("playbook LLM 未配置")
@@ -218,8 +215,47 @@ def generate(hits: Sequence[Any], *, db_path=None, provider=None) -> tuple[dict[
         raise PlaybookUnavailable(f"playbook LLM 失败：{result.reason}")
     _narrative, parsed = split_narrative_and_json(result.content)
     playbooks = validate_output(parsed, skeleton, source="llm")
-    return playbooks, {"source": "llm", "provider": result.provider, "model": result.model,
-                       "promptVersion": "k9-v3-playbook-v1", "output": parsed}
+    return playbooks, {"provider": result.provider, "model": result.model, "output": parsed}
+
+
+def generate(hits: Sequence[Any], *, db_path=None, provider=None) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    skeleton = mechanical_skeleton(hits)
+    if not skeleton:
+        return {}, {"source": "llm", "outcome": "empty"}
+    items = list(skeleton.items())
+    results: dict[str, dict[str, Any]] = {}
+    evidence: dict[str, dict[str, Any]] = {}
+
+    # A provider supplied by tests/callers may carry mutable state; keep that
+    # explicit seam sequential.  Production creates one stateless provider per
+    # stock and runs a bounded pool.  The final package remains all-or-nothing.
+    if provider is not None or len(items) == 1:
+        for code, shape in items:
+            plans, meta = _generate_subset({code: shape}, db_path=db_path, provider=provider)
+            results.update(plans); evidence[code] = meta
+    else:
+        with ThreadPoolExecutor(max_workers=min(6, len(items)), thread_name_prefix="k9-playbook") as pool:
+            futures = {
+                pool.submit(_generate_subset, {code: shape}, db_path=db_path): code
+                for code, shape in items
+            }
+            for future in as_completed(futures):
+                code = futures[future]
+                try:
+                    plans, meta = future.result()
+                except Exception as exc:  # noqa: BLE001 - normalize one-stock failure
+                    raise PlaybookUnavailable(f"{code} 逐票预案失败：{exc}") from exc
+                results.update(plans); evidence[code] = meta
+    ordered = {code: results[code] for code, _shape in items}
+    providers = sorted({str(meta.get("provider")) for meta in evidence.values()})
+    models = sorted({str(meta.get("model")) for meta in evidence.values()})
+    return ordered, {
+        "source": "llm", "provider": providers[0] if len(providers) == 1 else providers,
+        "model": models[0] if len(models) == 1 else models,
+        "promptVersion": "k9-v3-playbook-v2-per-stock",
+        "generationMode": "per_stock_atomic", "stockCount": len(items),
+        "outputs": {code: evidence[code]["output"] for code, _shape in items},
+    }
 
 
 __all__ = ["PlaybookUnavailable", "mechanical_skeleton", "validate_output", "generate"]

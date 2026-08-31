@@ -275,6 +275,27 @@ def test_playbook_prompt_distinguishes_frozen_input_from_required_output():
     assert "不要回显 frozenCandidates" in prompt
 
 
+def test_production_playbooks_generate_per_stock_but_return_one_atomic_mapping(monkeypatch):
+    from neckline.k9 import v3_playbook
+    hits = [
+        v3_run.V3Hit(
+            f"60000{i}.SH", str(i), "801080.SI", "半导体", "p2", i, 1.0,
+            {"close": 10.0, "limit_up_price": 11.0}, {"x": 1})
+        for i in range(1, 8)
+    ]
+    subset_sizes = []
+    def fake_generate(subset, **_kwargs):
+        subset_sizes.append(len(subset))
+        code = next(iter(subset))
+        return {code: {"tsCode": code}}, {"provider": "fake", "model": "fake", "output": {"candidates": [code]}}
+    monkeypatch.setattr(v3_playbook, "_generate_subset", fake_generate)
+    plans, provenance = v3_playbook.generate(hits)
+    assert list(plans) == [hit.ts_code for hit in hits]
+    assert subset_sizes == [1] * 7
+    assert provenance["generationMode"] == "per_stock_atomic"
+    assert provenance["stockCount"] == 7
+
+
 def test_successful_empty_selection_is_an_immutable_empty_package(tmp_path):
     db = tmp_path / "db.sqlite"; init_schema(db)
     params = v3_params.V3Params("r1", "sha", _approved())
