@@ -1,8 +1,8 @@
 # Neckline · V2.7.0 Build 19 / K9-v3
 
-> 当前生产程序仍为 V2.6.0 Build 18，后端标签 `v2.6.0-b16-r3`、客户端标签 `v2.6.0-b18`；K9-v2 已退役，不再作为发布、等待、迁移或历史成绩处理对象。
+> 当前生产程序为 V2.7.0 Build 19，后端、macOS/iOS 客户端与不可变标签统一为 `v2.7.0-b19`；K9-v2 已退役，不再作为发布、等待、迁移或历史成绩处理对象。
 >
-> 本轮状态：**本地候选已完成并接入参数，尚未发布**。前端（macOS/iOS）和 Python 后端作为同一个发布集合升级到 V2.7.0 Build 19；K9-v3 参数原件已接入，隔离 fp-4 重放不再是发布门禁，仍待生产发布和 Day 1 授权。
+> 本轮状态：**V2.7.0 Build 19 已完成一条龙发布**。NB 云后端与 macOS 正式安装均已切换，iOS 同版安装包已签名交付，K9-v3 参数原件在生产按同一 SHA 显式加载。发布完成时 2026-08-31 尚未收盘，候选与成绩队列保持全新空态；首个 Day 1 由 19:00 正式晚间链读取当日完整冻结事实生成，不以半日行情手工抢跑。
 >
 > 方向输入（只读，不导入生产）：`/Users/linotsai/Lino/whynotme/K9.md`（SHA-256 `ba6d915e355c66166ba7e0b4c4546d88be6c66acfabc2db4afa09aff5a27728f`）与 `Neckline新架构_20260818.md`（`c665ba562d03e6af7ff00cc2b41905a6b6e569d6311bcb08803e999e04c3841e`），均在 2026-08-30 读取；若施工前源文档变更，先更新本计划的合同与指纹。
 
@@ -122,4 +122,5 @@ K9-v3 的工程形状已经确定：P1 完全暂停；P2 保留超跌反弹但�
 - [x] 参数接入：获批原件 `k9-params-20260831-v3-r1` 已从研究侧按原字节写入 `Backend/config/k9-params.json`，源/目标 SHA-256 均为 `feb24c8199b061b31e33fa9b47603e3d9cc27d76eaa0aff064f1b451d01b41a2`；严格加载器、41 项 K9-v3 定向测试、Backend `832 passed` 与 API 冒烟全部通过，未触碰业务数据库、未生成报告。
 - [x] NB SSH 入口恢复：`NB_info.md` 记录的现行 IP `114.66.2.205` 与 ED25519 指纹 `SHA256:iB1q/KoqSAhV5OpQyJPX3u8P/0fwk3P4YkJ6lmTnz0A` 已逐位核对，既有 Mac mini 公钥以 `deploy` 登录成功；过期入口已从 Neckline 现行运维说明中移除。
 - [x] 发布前视觉复核修复：iOS 选股页已恢复“今日清单 / 次日核对表”常驻切换器，交易时段默认落在核对表后仍可双向切换；macOS“研究服务”最近 5 日用量已改为卡内通栏左对齐。最新模拟器与 macOS 实际界面复核通过，macOS build、iOS Simulator build、iOS build-for-testing 与 `git diff --check` 全部通过。
-- [ ] P5 生产收口：尚未进行 NB 云部署、签名归档、安装或 Day 1。K9-v2 与隔离 fp-4 重放均不再是发布门禁。**下一动作：确认现行 NB 目标与可恢复备份，随后进入一条龙发布。**
+- [x] P5 生产收口：提交 `52653e1` 与不可变标签 `v2.7.0-b19` 已推送；NB 云先建立并校验 `/opt/neckline/data/backups/v2.7.0-b19-pre-20260831-120844`，随后停写、同步、显式设置 `K9_PARAMS_PATH`、受控建表并恢复服务与三个正式 timer。旧 28 张表行数全部不变，迁移后数据库 `integrity_check=ok`，公网 health 为 `v2.7.0 / v2.7.0-b19`，服务 0 次重启。macOS Developer ID 双架构分发包与 Apple Development 本机安装包均严格验签，`/Applications/Neckline.app` 已运行 `2.7.0 (19)`，旧 App 备份在 `/Users/linotsai/Lino/app_backups/Neckline-v2.6.0-build18-pre-v270-20260831-121500.app`；iOS arm64 包已签名交付。K9-v3 当前候选、进行中和已结算队列均为空，19:00 晚间链是首个 Day 1 的唯一正式入口；readiness 不完整时不得生成包或推送。**下一动作：19:00 后核对首次生命周期 attempt、报告状态与 Day 1 包谱系。**
+- [x] 发布制品：GitHub Release `v2.7.0-b19` 已附 macOS ZIP（SHA-256 `0a4567bbc4fe30213acab897dfc38204c46cf1366c972e7aa14b12d0eabf2c9d`）、iOS App ZIP（`74299c507d0628f4c3ef04990216a85cfb2188935ba5cab6890b1c379198b504`）与 iOS IPA（`cc1be9369f20f8db9fdaa240bf477eae60a91fbd0b3afe7a675c572ea206c948`）。

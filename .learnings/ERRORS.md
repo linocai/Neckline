@@ -1,5 +1,187 @@
 # Project errors
 
+## [ERR-20260831-017] Empty selection response does not carry strategyVersion
+
+**Logged**: 2026-08-31T12:18:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+A production API assertion assumed every V3 response included `strategyVersion`, but the empty selection DTO intentionally contains only report-state fields.
+
+### Error
+`KeyError: 'strategyVersion'`
+
+### Context
+- The authenticated API was healthy and returned the expected empty state.
+- The failed assertion was read-only and did not change production.
+
+### Suggested Fix
+Inspect current response keys before release assertions and verify strategy identity on the package endpoints that formally carry that field.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/neckline/api/app.py
+- See Also: ERR-20260825-004, ERR-20260831-013
+
+### Resolution
+- **Resolved**: 2026-08-31T12:19:00+08:00
+- **Notes**: Verified `selection/latest` as an empty `not_run` report and separately verified both active and settled package DTOs as empty `K9-v3` queues.
+
+---
+
+## [ERR-20260831-016] Computer Use bundle identifier matched archived Neckline copies
+
+**Logged**: 2026-08-31T12:16:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+The macOS live-launch check targeted the bundle identifier, which was ambiguous because release archives and backups retain the same identifier.
+
+### Error
+`Ambiguous app identifier 'top.linotsai.neckline'`
+
+### Context
+- The formal installed target was `/Applications/Neckline.app`.
+- No UI action occurred during the failed lookup.
+
+### Suggested Fix
+Target the absolute installed application path for Neckline release UI checks.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+### Resolution
+- **Resolved**: 2026-08-31T12:16:00+08:00
+- **Notes**: Retried with `/Applications/Neckline.app`; the real Build 19 window and K9-v3 empty queue were visible and responsive.
+
+---
+
+## [ERR-20260831-015] Pipefail treated early signature parsing as install failure
+
+**Logged**: 2026-08-31T12:14:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+An `awk` parser exited after the first codesign authority line while `pipefail` was active, causing the successful local install to be classified as failed and rolled back.
+
+### Error
+`codesign | awk` returned a non-zero pipeline status after the consumer closed early.
+
+### Context
+- The rollback trap restored and relaunched V2.6.0 Build 18 exactly as intended.
+- No half-installed application remained.
+
+### Suggested Fix
+Capture the complete `codesign` output first and parse it without early pipeline termination.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+### Resolution
+- **Resolved**: 2026-08-31T12:15:00+08:00
+- **Notes**: Re-ran the recoverable replacement with full-output parsing; Build 19 installed, strictly verified, and launched.
+
+---
+
+## [ERR-20260831-014] Release install repeated JavaScript interpolation hazard
+
+**Logged**: 2026-08-31T12:13:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+The macOS replacement command repeated the `${...}` interpolation mistake already seen in the cloud backup command.
+
+### Error
+`ReferenceError: old_version is not defined`
+
+### Context
+- JavaScript rejected the command before the shell ran.
+- The existing application was not quit, moved, or modified.
+
+### Suggested Fix
+Avoid braced shell variables inside JavaScript template literals; use unbraced shell variables or ordinary JavaScript strings.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+- See Also: ERR-20260831-012
+
+### Resolution
+- **Resolved**: 2026-08-31T12:14:00+08:00
+- **Notes**: Removed braced shell interpolation from the command before retrying.
+
+---
+
+## [ERR-20260831-013] Release validation guessed nonexistent K9-v3 table names
+
+**Logged**: 2026-08-31T12:11:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+A post-deployment read-only check used hand-written generic table names instead of the names declared by the current database schema.
+
+### Error
+`missing: [k9_batch_items, k9_batches, k9_intraday_readings, k9_score_package_items, k9_score_packages]`
+
+### Context
+- The production database had already passed `integrity_check` and the service was healthy.
+- The failed step was read-only and did not alter service or database state.
+
+### Suggested Fix
+Derive release assertions from `neckline/db.py` or another authoritative contract rather than inventing plausible storage names.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/neckline/db.py
+
+### Resolution
+- **Resolved**: 2026-08-31T12:12:00+08:00
+- **Notes**: Re-ran the validation against all 13 K9-v3 table names declared in the current schema; every table was present and database integrity remained `ok`.
+
+---
+
+## [ERR-20260831-012] JavaScript template interpolation consumed remote shell variables
+
+**Logged**: 2026-08-31T12:08:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+A remote backup script embedded in a JavaScript template literal exposed a shell `${...}` expression to JavaScript interpolation before the command could run.
+
+### Error
+`ReferenceError: release_stamp is not defined`
+
+### Context
+- The command was being assembled for the pre-deployment NB Cloud backup.
+- Evaluation failed locally before the shell command ran, so production state was unchanged.
+
+### Suggested Fix
+Pass multiline shell commands to the execution tool through ordinary JavaScript strings or explicitly escape every `${...}` intended for the remote shell.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+### Resolution
+- **Resolved**: 2026-08-31T12:09:00+08:00
+- **Notes**: Rebuilt the command with a raw JavaScript string so all remote shell variables remain intact.
+
+---
+
 ## [ERR-20260824-004] zsh verification variable
 
 **Logged**: 2026-08-24T21:12:00+08:00

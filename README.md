@@ -5,10 +5,10 @@ Neckline 是 A 股生产应用：SwiftUI macOS/iOS 客户端与 FastAPI 后端�
 
 ## 当前状态
 
-- 生产仍是 **V2.6.0 Build 18 / K9-v2 / fp-3 / d2-v1**。V2.6 正式历史与原始行情快照均未被本轮施工改写。
-- 本地候选是 **V2.7.0 Build 19 / K9-v3 / fp-4 / d2-v2**，发布集合标识为 `v2.7.0-b19`。尚未部署、签名、归档或安装。
-- V2.7 本地候选已接入获批参数包 `k9-params-20260831-v3-r1`，正式原件为 `Backend/config/k9-params.json`，SHA-256 为 `feb24c8199b061b31e33fa9b47603e3d9cc27d76eaa0aff064f1b451d01b41a2`。加载器仍保持无默认安全态：文件缺失、无效或谱系错配时不得生成候选、预案、成绩包或通知。
-- K9-v2 已退役，不再参与任何发布判断、等待、迁移或历史成绩处理。生产部署与 K9-v3 Day 1 尚未完成；唯一控制面见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
+- 生产现行为 **V2.7.0 Build 19 / K9-v3 / fp-4 / d2-v2**，发布集合与不可变标签均为 `v2.7.0-b19`。后端已在 NB 云上线，macOS 正式安装包为 `2.7.0 (19)`，iOS 同版安装包已签名交付。
+- 生产显式加载获批参数包 `k9-params-20260831-v3-r1`，正式原件为 `Backend/config/k9-params.json`，SHA-256 为 `feb24c8199b061b31e33fa9b47603e3d9cc27d76eaa0aff064f1b451d01b41a2`。文件缺失、无效或谱系错配时仍不得生成候选、预案、成绩包或通知。
+- K9-v3 从空的候选、观察与成绩队列开始。2026-08-31 发布完成时当日交易尚未收盘，因此没有用半日数据手工生成 Day 1；首个正式 Day 1 由已恢复的 19:00 晚间链读取当日完整冻结事实后生成，readiness 不完整则按合同 fail-closed。
+- macOS/iOS 分发包及校验材料发布在 [GitHub Release `v2.7.0-b19`](https://github.com/linocai/Neckline/releases/tag/v2.7.0-b19)；唯一施工与运行控制面见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
 
 ## 日常 V3 流程
 
