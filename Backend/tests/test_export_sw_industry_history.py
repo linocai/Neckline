@@ -32,13 +32,13 @@ def _row(code: str, l2: str, in_date: str, out_date: str, state: str) -> dict:
     }
 
 
-def test_interval_history_switches_on_out_date_and_matches_current_snapshot():
+def test_interval_history_keeps_out_date_and_switches_on_following_trade_day():
     days = [date(2026, 8, 28), date(2026, 8, 31)]
     current = [
         _row("600001.SH", "new", "20260831", "", "Y"),
         _row("600002.SH", "steady", "20200101", "", "Y"),
     ]
-    former = [_row("600001.SH", "old", "20200101", "20260831", "N")]
+    former = [_row("600001.SH", "old", "20200101", "20260828", "N")]
     document = EX.build_document(days, current, former, source_time="2026-08-31T12:00:00+00:00")
     first, final = document["snapshots"]
     assert {row["ts_code"]: row["l2_code"] for row in first["members"]} == {

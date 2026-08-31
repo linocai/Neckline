@@ -9,8 +9,9 @@ official trading-day range, and writes the exact JSON contract accepted by
 
 The end date must be today so the final reconstructed snapshot can be checked
 byte-for-byte at the normalized identity level against the independent current
-membership response.  ``out_date`` is treated as the first excluded date, so
-membership intervals are ``[in_date, out_date)``.
+membership response.  TuShare's ``out_date`` is the last included membership
+date; a replacement begins on the following trading day.  Intervals are
+therefore ``[in_date, out_date]``.
 """
 from __future__ import annotations
 
@@ -91,7 +92,7 @@ def _normalize(rows: Iterable[dict[str, Any]], state: str) -> list[dict[str, Any
             raise ValueError(f"申万历史归属身份字段不完整:{identity}")
         in_day = _day_token(raw.get("in_date"), "in_date", required=True)
         out_day = _day_token(raw.get("out_date"), "out_date", required=False)
-        if out_day is not None and in_day is not None and out_day <= in_day:
+        if out_day is not None and in_day is not None and out_day < in_day:
             raise ValueError(f"{identity[0]} 的归属区间倒置:{in_day}~{out_day}")
         if state == "Y" and out_day is not None:
             raise ValueError(f"当前归属 {identity[0]} 不应含 out_date:{out_day}")
@@ -133,7 +134,7 @@ def build_document(days: Sequence[date], current_rows: Iterable[dict[str, Any]],
     for trade_day in ordered:
         selected: dict[str, dict[str, Any]] = {}
         for row in intervals:
-            if row["in_day"] <= trade_day and (row["out_day"] is None or trade_day < row["out_day"]):
+            if row["in_day"] <= trade_day and (row["out_day"] is None or trade_day <= row["out_day"]):
                 code = str(row["ts_code"])
                 if code in selected:
                     raise ValueError(f"{trade_day:%Y%m%d} 同票存在重叠申万归属:{code}")
