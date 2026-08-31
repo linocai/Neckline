@@ -4,7 +4,7 @@
 
 **Logged**: 2026-08-31T21:20:00+08:00
 **Priority**: critical
-**Status**: pending
+**Status**: resolved
 **Area**: data
 
 ### Summary
@@ -21,6 +21,10 @@
 - Related Files: Backend/neckline/k9/v3_run.py, Backend/neckline/facts/v4.py, Backend/neckline/facts/readiness.py, Backend/neckline/facts/completeness.py, Backend/neckline/data/tushare_client.py
 - Tags: K9-v3, fp-4, amount-unit, free-share, readiness, false-empty
 - See Also: ERR-20260831-023, ERR-20260831-024
+
+### Resolution
+- **Resolved**: 2026-08-31T22:45:00+08:00
+- **Notes**: Build 20–27 added explicit kCNY→CNY conversion, hard-boundary population checks, append-only fp-4 correction revisions and an atomic corrected report path. Production revision 2 produced 11 formal candidates with the expected P2/P3 split; the old false-empty package remains immutable audit evidence.
 
 ---
 
@@ -100,7 +104,7 @@ Before asking the user to source or mutate data, restate the business question i
 
 ### Resolution
 - **Resolved**: 2026-08-31T20:30:36+08:00
-- **Notes**: Reclassified the failure as an implementation defect, removed the exact lifetime count, and proved the 40-day rule from recent frozen history. Production then froze 60 fp-4 days and generated the trusted empty 2026-08-31 report.
+- **Notes**: Reclassified the failure as an implementation defect, removed the exact lifetime count, and proved the 40-day rule from recent frozen history. A later independent audit found amount-unit and field-population defects in the first empty package; those were corrected separately, and production revision 2 ultimately generated the formal 11-stock report.
 
 ---
 

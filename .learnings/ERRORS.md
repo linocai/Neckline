@@ -1,5 +1,37 @@
 # Project errors
 
+## [ERR-20260831-031] Nested playbook output contract repeatedly omitted required objects
+
+**Logged**: 2026-08-31T22:32:39+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+The model returned valid JSON but repeatedly omitted whole nested price objects for individual candidates, so the atomic 11-stock correction correctly refused to save.
+
+### Resolution
+- **Resolved**: 2026-08-31T22:39:42+08:00
+- **Notes**: Build 27 changed only the model wire contract to one flat, single-stock JSON object and enabled JSON response mode. Every supplied value still passes the existing candidate/channel/price/P4 relationship validator before conversion to the unchanged API DTO. Production completed all 11 playbooks atomically; one stock needed a single bounded correction attempt.
+
+---
+
+## [ERR-20260831-030] Post-report SQLite backup command spun without writing output
+
+**Logged**: 2026-08-31T22:44:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: release
+
+### Summary
+With the service and timers stopped, `sqlite3 .backup` consumed one CPU core for several minutes while the destination remained zero bytes.
+
+### Resolution
+- **Resolved**: 2026-08-31T22:44:52+08:00
+- **Notes**: Interrupted only the stalled backup process, preserved its zero-byte destination as `neckline.db.failed-empty`, confirmed the source WAL was zero and no writer existed, then made a byte copy under the same stop-the-world boundary. The 107,307,008-byte copy passed `integrity_check=ok` and SHA-256 verification before service restoration.
+
+---
+
 ## [ERR-20260831-029] Failed correction re-published the old empty report
 
 **Logged**: 2026-08-31T21:40:00+08:00
@@ -118,7 +150,7 @@ Inspect `sqlite_master` and the deployment contract before composing production 
 
 **Logged**: 2026-08-31T21:20:00+08:00
 **Priority**: critical
-**Status**: pending
+**Status**: resolved
 **Area**: data
 
 ### Summary
@@ -140,13 +172,17 @@ Make fp-4 construction/readiness reject missing, non-finite, non-positive, or ma
 - Related Files: Backend/neckline/facts/v4.py, Backend/neckline/facts/readiness.py, Backend/neckline/facts/completeness.py
 - See Also: LRN-20260831-007
 
+### Resolution
+- **Resolved**: 2026-08-31T21:38:47+08:00
+- **Notes**: Build 20 rejects incomplete hard-boundary population, refreshed the late `daily_basic` partition to 5545/5545 valid rows, and froze the corrected facts only through append-only fp-4 revision 2. The original pack remains unchanged.
+
 ---
 
 ## [ERR-20260831-023] K9-v3 compared thousand-CNY turnover with CNY thresholds
 
 **Logged**: 2026-08-31T21:20:00+08:00
 **Priority**: critical
-**Status**: pending
+**Status**: resolved
 **Area**: backend
 
 ### Summary
@@ -166,6 +202,10 @@ Normalize the boundary's absolute turnover value to CNY exactly once and expose/
 - Reproducible: yes
 - Related Files: Backend/neckline/k9/v3_run.py, Backend/neckline/data/tushare_client.py, Backend/tests/test_k9_v3_facts_and_params.py
 - See Also: LRN-20260831-007
+
+### Resolution
+- **Resolved**: 2026-08-31T22:39:42+08:00
+- **Notes**: Build 20 converts the frozen TuShare kCNY amount to CNY exactly once at the hard boundary and adds production-scale regression coverage. Formal correction revision 2 generated P2=4, P3=7, P4=0, 11 unique candidates.
 
 ---
 
@@ -260,7 +300,7 @@ Keep `list_date` as the frozen source fact and compare it with the oldest of the
 
 ### Resolution
 - **Resolved**: 2026-08-31T20:30:36+08:00
-- **Notes**: Deployed the bounded proof in `v2.7.0-b19-hf2`, froze 60 complete fp-4 days, and reran the failed D0/report stages. D2, D1, and D0 are all `ok`; the report is a trusted empty result rather than `not_run`.
+- **Notes**: Deployed the bounded proof in `v2.7.0-b19-hf2` and froze 60 complete fp-4 days. A later audit correctly rejected that first empty result for separate amount-unit and hard-boundary population defects; Build 20–27 corrected those independently, and production revision 2 generated the formal 11-stock report.
 
 ---
 
