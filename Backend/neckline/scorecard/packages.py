@@ -329,6 +329,7 @@ def load_selection_run(selection_date: date, *, db_path: Optional[Path] = None) 
 
 def record_selection_run(*, selection_date: date, signal_trade_date: date, state: str,
                          batch_id: Optional[str] = None, reason: Optional[str] = None,
+                         correction_revision: Optional[int] = None,
                          db_path: Optional[Path] = None) -> None:
     """Persist the D0 result once; an idempotent replay must be byte-identical."""
     if state not in {"has_list", "empty", "not_run", "failed"}:
@@ -341,6 +342,30 @@ def record_selection_run(*, selection_date: date, signal_trade_date: date, state
         expected = (_d(signal_trade_date), state, batch_id, reason)
         if old is not None:
             if old == expected:
+                return
+            if correction_revision is not None:
+                if correction_revision < 2 or state not in {"has_list", "empty"} or not batch_id:
+                    raise PackageConflict("显式修订只能把成功 D0 推进到 revision >= 2")
+                if old[1] not in {"has_list", "empty"} or not old[2]:
+                    raise PackageConflict("原 D0 不是已冻结的成功包，不能走成功包修订入口")
+                old_batch = conn.execute(
+                    "SELECT revision FROM k9_selection_batches WHERE batch_id=?", (old[2],)
+                ).fetchone()
+                new_batch = conn.execute(
+                    "SELECT selection_date,signal_trade_date,revision FROM k9_selection_batches WHERE batch_id=?",
+                    (batch_id,),
+                ).fetchone()
+                if old_batch is None or new_batch is None:
+                    raise PackageConflict("D0 修订的新旧成绩包不完整")
+                if (new_batch[0], new_batch[1], int(new_batch[2])) != (
+                    _d(selection_date), _d(signal_trade_date), correction_revision
+                ) or correction_revision <= int(old_batch[0]):
+                    raise PackageConflict("D0 修订日期或 revision 谱系不连续")
+                conn.execute(
+                    "UPDATE k9_d0_run_markers SET signal_trade_date=?,state=?,batch_id=?,reason=?,created_at=? "
+                    "WHERE selection_date=?",
+                    (*expected, _now(), _d(selection_date)),
+                )
                 return
             # Before a package exists, a missing parameter/fact can be repaired
             # and retried on the same public selection date.  Once a successful

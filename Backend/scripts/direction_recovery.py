@@ -14,9 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from neckline.db import readonly_tables  # noqa: E402
 from neckline.facts import direction_llm, direction_store  # noqa: E402
-from neckline.facts.store import load_pack  # noqa: E402
+from neckline.facts.store import load_pack_by_id  # noqa: E402
 from neckline.llm.factory import get_provider  # noqa: E402
 from neckline.llm.router import TASK_MARKET_DIRECTION  # noqa: E402
 
@@ -38,18 +37,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _load_claimed_pack(pack_id: str, *, db_path: Path, parquet_dir: Path | None):
-    with readonly_tables("fact_packs", db_path=db_path) as conn:
-        row = None if conn is None else conn.execute(
-            "SELECT trade_date, pack_version FROM fact_packs WHERE pack_id=?", (pack_id,)
-        ).fetchone()
-    if row is None:
-        raise LookupError(f"找不到事实包 {pack_id}")
-    trade_date = datetime.strptime(str(row[0]), "%Y%m%d").date()
-    pack = load_pack(
-        trade_date, pack_version=str(row[1]), parquet_dir=parquet_dir, db_path=db_path)
-    if pack.pack_id != pack_id:
-        raise RuntimeError(f"事实包身份不一致：期望 {pack_id}，实际 {pack.pack_id}")
-    return pack
+    return load_pack_by_id(pack_id, parquet_dir=parquet_dir, db_path=db_path)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -36,6 +36,7 @@ class EveningChainResult:
 def run_evening_chain(trade_date: date, *, report_date: Optional[date] = None,
                       segments: Sequence[str] = CHAIN_SEGMENTS,
                       k9_params_path: Optional[Path] = None,
+                      correction_revision: Optional[int] = None,
                       db_path: Optional[Path] = None,
                       parquet_dir: Optional[Path] = None, save: bool = True) -> EveningChainResult:
     from neckline.report import pipeline, store
@@ -57,7 +58,8 @@ def run_evening_chain(trade_date: date, *, report_date: Optional[date] = None,
         result.status[SEG_DIRECTION] = STATUS_SKIPPED
     if SEG_K9 in segments:
         result.status[SEG_K9], result.stats[SEG_K9] = _run_k9_lifecycle(
-            trade_date, report_date=report_date, k9_params_path=k9_params_path, db_path=db_path, parquet_dir=parquet_dir)
+            trade_date, report_date=report_date, k9_params_path=k9_params_path,
+            correction_revision=correction_revision, db_path=db_path, parquet_dir=parquet_dir)
     if SEG_REPORT in segments:
         gaps = list(result.stats.get(SEG_K9, {}).get("gaps", []))
         bundle = pipeline.build_report(trade_date, report_date=report_date,
@@ -78,15 +80,20 @@ def run_evening_chain(trade_date: date, *, report_date: Optional[date] = None,
     return result
 
 def _create_d0(trade_date: date, *, report_date: date, k9_params_path: Optional[Path], db_path: Optional[Path],
-               parquet_dir: Optional[Path]) -> tuple[str, dict[str, Any]]:
+               parquet_dir: Optional[Path], correction_revision: Optional[int] = None) -> tuple[str, dict[str, Any]]:
     from neckline.calendar import next_trading_day
     from neckline.config import settings
     from neckline.facts import readiness, store as fact_store
     from neckline.k9 import v3_params, v3_run
     from neckline.scorecard import packages
     def record(state: str, reason: str, batch_id: Optional[str] = None) -> tuple[str, dict[str, Any]]:
-        packages.record_selection_run(selection_date=report_date, signal_trade_date=trade_date,
-                                      state=state, batch_id=batch_id, reason=reason, db_path=db_path)
+        # A failed correction is lifecycle evidence, but it must not replace a
+        # previously trusted successful D0 marker with not_run/failed.
+        if correction_revision is None or state in {"has_list", "empty"}:
+            packages.record_selection_run(
+                selection_date=report_date, signal_trade_date=trade_date,
+                state=state, batch_id=batch_id, reason=reason,
+                correction_revision=correction_revision, db_path=db_path)
         outcome = STATUS_OK if state in {"has_list", "empty"} else (STATUS_FAILED if state == "failed" else STATUS_EMPTY)
         return outcome, {
             "reason": reason, "batchId": batch_id, "gaps": [] if state in {"has_list", "empty"} else [reason],
@@ -115,7 +122,8 @@ def _create_d0(trade_date: date, *, report_date: date, k9_params_path: Optional[
         return record("not_run", f"交易日历未就绪:{exc}")
     # selection_date is the public report date.  On a Sunday report this is not
     # the Friday fact date; keeping both values is part of the immutable ID.
-    batch_id = f"k9-v3-{report_date:%Y%m%d}-{pack.pack_id}"
+    revision = correction_revision or 1
+    batch_id = f"k9-v3-{report_date:%Y%m%d}-r{revision}-{pack.pack_id}"
     # K9-v3 pre-plans are not a parameter-ratio transformer.  The mechanical
     # engine has now frozen the candidate/channel shape; a routed LLM may only
     # fill typed price levels and explanations for that shape.
@@ -128,7 +136,8 @@ def _create_d0(trade_date: date, *, report_date: date, k9_params_path: Optional[
         v3_run.create_package(batch_id=batch_id, selection_date=report_date,
                               signal_trade_date=trade_date, d1_trade_date=d1, d2_trade_date=d2,
                               params=params, pack_id=pack.pack_id, hits=hits, playbooks=playbooks,
-                              playbook_provenance=provenance, parquet_dir=parquet_dir, db_path=db_path)
+                              playbook_provenance=provenance, revision=revision,
+                              parquet_dir=parquet_dir, db_path=db_path)
     except Exception as exc:
         return record("failed", f"成绩包创建失败：{exc}")
     candidate_count = len({h.ts_code for h in hits})
@@ -136,14 +145,19 @@ def _create_d0(trade_date: date, *, report_date: date, k9_params_path: Optional[
 
 
 def _run_k9_lifecycle(trade_date: date, *, report_date: date, k9_params_path: Optional[Path], db_path: Optional[Path],
-                      parquet_dir: Optional[Path]) -> tuple[str, dict[str, Any]]:
+                      parquet_dir: Optional[Path], correction_revision: Optional[int] = None) -> tuple[str, dict[str, Any]]:
     """Independently advance D2 → D1 → D0; an earlier failure cannot erase a due package."""
     from neckline.auction.eod import settle_d1_close_for_due, settle_d2_for_due
     from neckline.scorecard.lifecycle import run_nightly, begin_attempt, record_attempt, attempt_is_ok
 
     d0_result: dict[str, tuple[str, dict[str, Any]]] = {}
+    run_identity = (
+        f"correction:r{correction_revision}:{report_date:%Y%m%d}:{trade_date:%Y%m%d}"
+        if correction_revision is not None
+        else f"nightly:{report_date:%Y%m%d}:{trade_date:%Y%m%d}"
+    )
     attempt_id = begin_attempt(selection_date=report_date, signal_trade_date=trade_date,
-                               run_identity=f"nightly:{report_date:%Y%m%d}:{trade_date:%Y%m%d}", db_path=db_path)
+                               run_identity=run_identity, db_path=db_path)
     if attempt_is_ok(attempt_id, db_path=db_path):
         # The same durable run identity already created a trusted D0 marker and
         # package.  Do not re-enter D0 with a different parameter availability.
@@ -164,7 +178,8 @@ def _run_k9_lifecycle(trade_date: date, *, report_date: date, k9_params_path: Op
         d2_readings = {}; d2_collection_error = exc
     def create_d0() -> None:
         d0_result["value"] = _create_d0(trade_date, report_date=report_date, k9_params_path=k9_params_path,
-                                          db_path=db_path, parquet_dir=parquet_dir)
+                                          db_path=db_path, parquet_dir=parquet_dir,
+                                          correction_revision=correction_revision)
         _raise_if_not_ok(d0_result["value"])
     outcomes = run_nightly(
         settle_d2=lambda: (_raise_collection_error(d2_collection_error) if d2_collection_error else settle_d2_for_due(trade_date=trade_date, readings=d2_readings, db_path=db_path)),

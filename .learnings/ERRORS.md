@@ -1,5 +1,151 @@
 # Project errors
 
+## [ERR-20260831-026] Unquoted backticks executed inside a diagnostic search command
+
+**Logged**: 2026-08-31T21:20:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+A double-quoted search pattern contained Markdown backticks, so zsh attempted to execute the enclosed word.
+
+### Error
+`zsh: command not found: empty`
+
+### Context
+- The command was a local read-only text search; no files or production state were changed.
+- The preceding `git diff --check`, diff stat, and status checks completed successfully.
+
+### Suggested Fix
+Use a single-quoted shell argument or remove Markdown backticks from search patterns. Never place backticks inside a double-quoted command string.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+### Resolution
+- **Resolved**: 2026-08-31T21:20:00+08:00
+- **Notes**: Re-ran the consistency check with a safely quoted pattern.
+
+---
+
+## [ERR-20260831-025] Production inspection assumed Git metadata and a non-existent table
+
+**Logged**: 2026-08-31T21:20:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+The first read-only production inspection tried `git rev-parse` in an rsync deployment and queried a guessed `k9_selection_runs` table.
+
+### Error
+The deployment correctly had no `.git`, and SQLite returned `no such table: k9_selection_runs`.
+
+### Context
+- The failures were read-only and changed no production state.
+- The actual marker table is `k9_d0_run_markers`; the deployed release identity is verified through health/release records rather than Git metadata on the host.
+
+### Suggested Fix
+Inspect `sqlite_master` and the deployment contract before composing production queries. Do not assume an rsync target retains repository metadata.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/scripts/sync_code.sh, Backend/neckline/db.py
+
+### Resolution
+- **Resolved**: 2026-08-31T21:20:00+08:00
+- **Notes**: Switched to schema discovery and queried the actual append-only marker/lifecycle tables.
+
+---
+
+## [ERR-20260831-024] fp-4 readiness accepted an all-null hard-boundary field
+
+**Logged**: 2026-08-31T21:20:00+08:00
+**Priority**: critical
+**Status**: pending
+**Area**: data
+
+### Summary
+The 2026-08-31 fp-4 froze successfully even though every `free_share` and derived `free_float_mv` value was null.
+
+### Error
+The raw `daily_basic` partition had 5545 rows but `free_share_nonnull=0`; the frozen fp-4 therefore had `free_float_mv_nonnull=0`. Readiness still returned ready because it validated file existence, non-zero row count, required column names, hashes, and SW lineage, but not required-field population.
+
+### Context
+- `free_float_mv` is a mandatory input to the single K9-v3 boundary, not optional display data.
+- A later read-only TuShare request for the same trade date returned non-null `free_share` for all 5545 rows, showing that the earlier partition was incomplete rather than an honest market-wide null fact.
+- The incorrect frozen package must remain immutable for audit; it must not be silently overwritten.
+
+### Suggested Fix
+Make fp-4 construction/readiness reject missing, non-finite, non-positive, or materially incomplete hard-boundary inputs. Schedule bounded retries for late-publishing `daily_basic` fields and produce `not_run` if they never become complete before the formal chain.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/neckline/facts/v4.py, Backend/neckline/facts/readiness.py, Backend/neckline/facts/completeness.py
+- See Also: LRN-20260831-007
+
+---
+
+## [ERR-20260831-023] K9-v3 compared thousand-CNY turnover with CNY thresholds
+
+**Logged**: 2026-08-31T21:20:00+08:00
+**Priority**: critical
+**Status**: pending
+**Area**: backend
+
+### Summary
+The common K9-v3 boundary treated TuShare `daily.amount` as CNY even though the frozen value is in thousand CNY.
+
+### Error
+After the non-monetary boundary gates, 2133 stocks remained; `amount >= 100000000` reduced that set to 0. The frozen market-wide maximum was `20,934,657.506` thousand CNY, but the code compared that raw number directly with a 100,000,000 CNY threshold and with CNY-denominated `free_float_mv`.
+
+### Context
+- The local TuShare adapter explicitly documents `daily.amount` as thousand CNY, and TuShare's official daily contract confirms the same unit.
+- The fixture used `amount=2_000_000` without asserting a unit conversion, so tests proved filter mechanics but not production-unit correctness.
+
+### Suggested Fix
+Normalize the boundary's absolute turnover value to CNY exactly once and expose/assert the unit contract in fp-4. Add production-scale tests that fail if a market-wide valid day is annihilated by a unit mismatch.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/neckline/k9/v3_run.py, Backend/neckline/data/tushare_client.py, Backend/tests/test_k9_v3_facts_and_params.py
+- See Also: LRN-20260831-007
+
+---
+
+## [ERR-20260831-022] CoreDevice could not read the iOS report snapshot container
+
+**Logged**: 2026-08-31T20:57:43+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+A read-only attempt to inspect `Caeieo`'s saved report snapshot failed because CoreDevice could not list the app container and then could not mount the developer disk image.
+
+### Error
+The first file-list request returned CoreDevice `ActionError 3`; the retry against the container root returned mount/connection errors `12040 / 1011`.
+
+### Context
+- No device, App, production service, database, or report data was changed.
+- Production access logs had already proved that the phone successfully fetched the report endpoint multiple times, so local-container inspection was not required to isolate the visibility defect.
+
+### Suggested Fix
+Do not repeatedly retry a flaky CoreDevice container probe when server traffic and source inspection already answer the diagnostic question. If a future acceptance test requires local snapshot proof, first establish a stable wired developer-disk connection or expose a non-secret in-app diagnostic marker.
+
+### Metadata
+- Reproducible: device/OS-dependent
+- Related Files: App/Neckline/App/ReportSnapshotStore.swift
+- See Also: ERR-20260831-018, LRN-20260831-006
+
+### Resolution
+- **Resolved**: 2026-08-31T20:57:43+08:00
+- **Notes**: Stopped the failing CoreDevice path and completed the diagnosis from production request evidence plus the exact iOS rendering path.
+
+---
+
 ## [ERR-20260831-021] SW historical exit date was interpreted as exclusive
 
 **Logged**: 2026-08-31T20:25:40+08:00

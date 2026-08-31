@@ -84,7 +84,13 @@ def _boundary(history: pl.DataFrame, cfg: Mapping[str, Any]) -> pl.DataFrame:
         (pl.col("_median_amount").rank("average") / pl.len()).alias("_amount_pct"),
         (pl.col("_median_participation").rank("average") / pl.len()).alias("_participation_pct"),
     ).with_columns((pl.col("_amount_pct") * float(act["amountWeight"]) + pl.col("_participation_pct") * float(act["participationWeight"])).alias("_activity_pct"))
-    today = history.filter(pl.col("trade_date") == history["trade_date"].max()).join(metrics, on="ts_code", how="left")
+    today = (
+        history.filter(pl.col("trade_date") == history["trade_date"].max())
+        .join(metrics, on="ts_code", how="left")
+        # TuShare daily.amount is published in kCNY; K9 parameter thresholds
+        # and free_float_mv are CNY.  Convert once at the hard-boundary seam.
+        .with_columns((pl.col("amount") * pl.lit(1_000.0)).alias("_amount_cny"))
+    )
     return today.filter(
         ~pl.col("board").is_in(["STAR", "BSE"])
         & ~pl.col("is_st").fill_null(True) & ~pl.col("delist_risk").fill_null(True)
@@ -93,8 +99,8 @@ def _boundary(history: pl.DataFrame, cfg: Mapping[str, Any]) -> pl.DataFrame:
         & (pl.col("suspend_flag") != "S") & pl.col("sw_l2_code").is_not_null()
         & ~pl.col("sw_l2_code").is_in(list(cfg["excludedL2Codes"]))
         & pl.col("_activity_pct").is_not_null() & (pl.col("_activity_pct") >= float(act["excludeBottomPct"]))
-        & (pl.col("amount") >= float(liq["minimumAmountCny"]))
-        & pl.col("free_float_mv").is_not_null() & (pl.col("amount") >= pl.col("free_float_mv") * float(liq["freeFloatMarketValueRatio"]))
+        & (pl.col("_amount_cny") >= float(liq["minimumAmountCny"]))
+        & pl.col("free_float_mv").is_not_null() & (pl.col("_amount_cny") >= pl.col("free_float_mv") * float(liq["freeFloatMarketValueRatio"]))
         & ~pl.col("is_limit_up").fill_null(True) & ~pl.col("is_limit_down").fill_null(True)
     )
 
@@ -322,7 +328,7 @@ def _p4_industry_evidence(*, signal_trade_date: date, pack_id: str, hits: Sequen
             "benchmark": {"indexCode": benchmark["indexCode"].strip()}, "industries": industries}
 
 
-def create_package(*, batch_id: str, selection_date: date, signal_trade_date: date, d1_trade_date: date, d2_trade_date: date, params: V3Params, pack_id: str, hits: Sequence[V3Hit], playbooks: Optional[Mapping[str,Mapping[str,Any]]] = None, playbook_provenance: Optional[Mapping[str, Any]] = None, parquet_dir: Optional[Path] = None, db_path: Optional[Path] = None) -> None:
+def create_package(*, batch_id: str, selection_date: date, signal_trade_date: date, d1_trade_date: date, d2_trade_date: date, params: V3Params, pack_id: str, hits: Sequence[V3Hit], playbooks: Optional[Mapping[str,Mapping[str,Any]]] = None, playbook_provenance: Optional[Mapping[str, Any]] = None, revision: int = 1, parquet_dir: Optional[Path] = None, db_path: Optional[Path] = None) -> None:
     """Create immutable D0 only after every selected code has a real frozen playbook."""
     grouped: dict[str,list[V3Hit]]={}
     for hit in hits: grouped.setdefault(hit.ts_code,[]).append(hit)
@@ -338,7 +344,7 @@ def create_package(*, batch_id: str, selection_date: date, signal_trade_date: da
                 "parameters":params.raw}
     if p4_evidence:
         contract["p4IndustryEvidence"] = p4_evidence
-    packages.create_batch(batch_id=batch_id,selection_date=selection_date,signal_trade_date=signal_trade_date,d1_trade_date=d1_trade_date,d2_trade_date=d2_trade_date,revision=1,params_package_version=params.package_version,params_sha256=params.source_sha256,pack_id=pack_id,frozen_contract=contract,candidates=candidates,playbook_provenance=playbook_provenance,db_path=db_path)
+    packages.create_batch(batch_id=batch_id,selection_date=selection_date,signal_trade_date=signal_trade_date,d1_trade_date=d1_trade_date,d2_trade_date=d2_trade_date,revision=revision,params_package_version=params.package_version,params_sha256=params.source_sha256,pack_id=pack_id,frozen_contract=contract,candidates=candidates,playbook_provenance=playbook_provenance,db_path=db_path)
 
 
 __all__=["V3Hit","PackUnavailable","PackageCreationError","compute","create_package"]

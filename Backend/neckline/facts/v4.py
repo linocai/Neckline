@@ -39,6 +39,28 @@ def columns_for(version: str) -> tuple[str, ...]:
     return PACK_COLUMNS
 
 
+def hard_boundary_gaps(rows: pl.DataFrame) -> tuple[str, ...]:
+    """Validate population and units for fields used by K9's hard boundary."""
+    missing = missing_columns(rows.columns)
+    if missing:
+        return (f"fp-4字段缺失:{','.join(missing)}",)
+    checks = {
+        "amount(kCNY)": pl.col("amount").cast(pl.Float64, strict=False).is_finite()
+        & (pl.col("amount").cast(pl.Float64, strict=False) > 0),
+        "turnover_rate": pl.col("turnover_rate").cast(pl.Float64, strict=False).is_finite()
+        & (pl.col("turnover_rate").cast(pl.Float64, strict=False) >= 0),
+        "free_float_mv(CNY)": pl.col("free_float_mv").cast(pl.Float64, strict=False).is_finite()
+        & (pl.col("free_float_mv").cast(pl.Float64, strict=False) > 0),
+        "free_float_mv_unit": pl.col("free_float_mv_unit") == "CNY",
+    }
+    gaps: list[str] = []
+    for name, valid in checks.items():
+        invalid = int(rows.select((~valid.fill_null(False)).sum()).item())
+        if invalid:
+            gaps.append(f"fp-4硬边界字段 {name} 有 {invalid}/{rows.height} 行缺失或无效")
+    return tuple(gaps)
+
+
 def _as_of_members(trade_date: date, db_path: Optional[Path]) -> tuple[dict[str, tuple[str, str, str, str, str]], Optional[dict[str, Any]], list[str]]:
     """读取目标日不可变 SW2021 成员快照；绝不回退到当前成员表。"""
     with readonly_tables("sw_industry_member_snapshots", "sw_industry_snapshot_manifests", db_path=db_path) as conn:
@@ -137,6 +159,10 @@ def build(trade_date: date, *, parquet_dir: Optional[Path] = None, db_path: Opti
         if col not in rows.columns:
             rows = rows.with_columns(pl.lit(None).alias(col))
     rows = rows.select(list(PACK_COLUMNS)).sort("ts_code")
+    boundary_gaps = hard_boundary_gaps(rows)
+    if boundary_gaps:
+        return fp3.IncompletePack(
+            trade_date=trade_date, pack_version=PACK_VERSION, missing=boundary_gaps)
     # Unlike daily equity rows, this sidecar retains members with no daily bar
     # (halted/missing quotes).  It is frozen inside market_json, therefore the
     # fact-pack fingerprint changes if even one as-of constituent changes.
@@ -151,7 +177,7 @@ def build(trade_date: date, *, parquet_dir: Optional[Path] = None, db_path: Opti
         item["memberCount"] = len(codes)
         item["memberHashSha256"] = hashlib.sha256("\n".join(codes).encode("utf-8")).hexdigest()
     market = dict(base.market)
-    market["fp4"] = {"freeFloatMarketValueUnit": "CNY", "swMembership": "as_of_date", "benchmarkSource": "indices",
+    market["fp4"] = {"dailyAmountUnit": "kCNY", "freeFloatMarketValueUnit": "CNY", "swMembership": "as_of_date", "benchmarkSource": "indices",
                      "industryMembers": member_snapshot, "swMembershipSource": membership_source}
     return fp3.CompletePack(trade_date=trade_date, pack_version=PACK_VERSION, rows=rows,
                             industry_rows=base.industry_rows, market=market,
@@ -162,4 +188,4 @@ def build(trade_date: date, *, parquet_dir: Optional[Path] = None, db_path: Opti
                             suspend_anomaly_count=base.suspend_anomaly_count)
 
 
-__all__ = ["PACK_VERSION", "PACK_COLUMNS", "REQUIRED_COLUMNS", "missing_columns", "columns_for", "build"]
+__all__ = ["PACK_VERSION", "PACK_COLUMNS", "REQUIRED_COLUMNS", "missing_columns", "columns_for", "hard_boundary_gaps", "build"]

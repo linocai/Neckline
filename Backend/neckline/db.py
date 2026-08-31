@@ -228,6 +228,29 @@ CREATE INDEX IF NOT EXISTS idx_fact_packs_date ON fact_packs(trade_date);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_packs_date_version
   ON fact_packs(trade_date, pack_version);
 
+-- An explicitly authorized correction never rewrites the original frozen
+-- fact pack.  Public consumers still see the same fp-4 contract while the
+-- internal revision and supersession chain preserve both byte identities.
+CREATE TABLE IF NOT EXISTS fact_pack_revisions (
+  pack_id TEXT PRIMARY KEY,
+  trade_date TEXT NOT NULL,
+  pack_version TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision >= 2),
+  supersedes_pack_id TEXT NOT NULL,
+  correction_reason TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  state TEXT NOT NULL,
+  content_fingerprint TEXT NOT NULL,
+  row_count INTEGER NOT NULL,
+  sources_json TEXT NOT NULL,
+  market_json TEXT NOT NULL,
+  suspend_anomaly_count INTEGER NOT NULL,
+  frozen_at TEXT NOT NULL,
+  UNIQUE(trade_date, pack_version, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_pack_revisions_date
+  ON fact_pack_revisions(trade_date, pack_version, revision DESC);
+
 -- 方向解读是冻结事实包的旁路，不参与 K9 策略。
 CREATE TABLE IF NOT EXISTS fact_direction_briefings (
   pack_id TEXT PRIMARY KEY,

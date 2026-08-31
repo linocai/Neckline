@@ -78,6 +78,68 @@ def test_fp4_does_not_require_lifetime_calendar_for_old_listings(isolated_env):
     assert set(built.rows["list_date"].to_list()) == {date(1990, 12, 19)}
 
 
+def test_fp4_rejects_all_null_free_share_before_freeze(isolated_env):
+    _seed_v4(isolated_env)
+    write_daily_fixture(isolated_env, "daily_basic", DAY, [
+        {"ts_code": code, "turnover_rate": 2.0, "turnover_rate_f": 2.0,
+         "volume_ratio": 1.0, "circ_mv": 1.0, "total_mv": 1.0, "free_share": None}
+        for code in ("600001.SH", "600002.SH")
+    ])
+    built = v4.build(DAY, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    assert isinstance(built, fp3.IncompletePack)
+    assert any("free_float_mv(CNY) 有 2/2 行" in gap for gap in built.missing)
+
+
+def test_fp4_correction_is_append_only_and_latest_reads_revision_two(isolated_env):
+    _seed_v4(isolated_env)
+    built = v4.build(DAY, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    original = store.freeze_pack(
+        built, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    original_bytes = original.path.read_bytes()
+    corrected_build = dataclasses.replace(
+        built, rows=built.rows.with_columns((pl.col("amount") + 1.0).alias("amount")))
+    corrected = store.freeze_correction(
+        corrected_build, expected_superseded_pack_id=original.pack_id,
+        correction_reason="unit population repair",
+        parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    latest = store.load_pack(
+        DAY, pack_version="fp-4", parquet_dir=isolated_env.parquet_dir,
+        db_path=isolated_env.db_path)
+    assert latest.pack_id == corrected.pack_id and latest.revision == 2
+    assert latest.supersedes_pack_id == original.pack_id
+    exact_original = store.load_pack_by_id(
+        original.pack_id, parquet_dir=isolated_env.parquet_dir,
+        db_path=isolated_env.db_path)
+    assert exact_original.revision == 1 and exact_original.pack_id == original.pack_id
+    assert original.path.read_bytes() == original_bytes
+    assert corrected.path != original.path
+    ranged = store.load_pack_range(
+        DAY, DAY, as_of=DAY, columns=("trade_date", "ts_code", "amount"),
+        pack_version="fp-4", parquet_dir=isolated_env.parquet_dir,
+        db_path=isolated_env.db_path)
+    assert ranged["amount"].to_list() == corrected_build.rows["amount"].to_list()
+
+
+def test_k9_boundary_converts_daily_amount_from_kcny_to_cny():
+    history = pl.DataFrame([{
+        "trade_date": DAY, "ts_code": "600001.SH", "board": "MAIN", "is_st": False,
+        "delist_risk": False, "list_date": date(2020, 1, 1), "close": 10.0,
+        "valid_quote": True, "suspend_flag": "none", "sw_l2_code": "801080.SI",
+        "amount": 200_000.0, "turnover_rate": 2.0, "free_float_mv": 20_000_000_000.0,
+        "is_limit_up": False, "is_limit_down": False,
+    }])
+    cfg = {
+        "newListingTradingDays": 1,
+        "activity": {"windowDays": 1, "minimumValidDays": 1, "amountWeight": 0.6,
+                     "participationWeight": 0.4, "excludeBottomPct": 0.0},
+        "d0Liquidity": {"minimumAmountCny": 100_000_000.0,
+                        "freeFloatMarketValueRatio": 0.005},
+        "excludedL2Codes": [],
+    }
+    pool = v3_run._boundary(history, cfg)
+    assert pool["ts_code"].to_list() == ["600001.SH"]
+
+
 def test_listing_age_uses_only_the_approved_number_of_frozen_days():
     days = [date(2026, 6, 1) + timedelta(days=i) for i in range(60)]
     history = pl.DataFrame({"trade_date": days})
@@ -182,6 +244,26 @@ def test_successful_empty_selection_is_an_immutable_empty_package(tmp_path):
     item = packages.load_package("empty", db_path=db)
     assert item is not None and item["candidates"] == [] and item["state"] == "settled"
     assert item["coverage_state"] == "complete"
+
+
+def test_explicit_d0_revision_advances_marker_without_overwriting_old_batch(tmp_path):
+    db = tmp_path / "db.sqlite"; init_schema(db)
+    params = v3_params.V3Params("r1", "sha", _approved())
+    for batch_id, revision in (("old", 1), ("corrected", 2)):
+        v3_run.create_package(
+            batch_id=batch_id, selection_date=DAY, signal_trade_date=DAY,
+            d1_trade_date=DAY, d2_trade_date=DAY, params=params,
+            pack_id=f"fp-{revision}", hits=[], revision=revision, db_path=db)
+    packages.record_selection_run(
+        selection_date=DAY, signal_trade_date=DAY, state="empty",
+        batch_id="old", reason="", db_path=db)
+    packages.record_selection_run(
+        selection_date=DAY, signal_trade_date=DAY, state="empty",
+        batch_id="corrected", reason="", correction_revision=2, db_path=db)
+    marker = packages.load_selection_run(DAY, db_path=db)
+    assert marker["batch_id"] == "corrected"
+    assert packages.load_package("old", db_path=db)["revision"] == 1
+    assert packages.load_package("corrected", db_path=db)["revision"] == 2
 
 
 def test_p2_p3_p4_each_rank_only_their_own_candidates(monkeypatch):

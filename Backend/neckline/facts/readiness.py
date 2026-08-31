@@ -53,10 +53,17 @@ def preflight(
         else:
             pack_id = pack.pack_id
             if pack_version == "fp-4":
-                from neckline.facts.v4 import missing_columns
+                from neckline.facts.v4 import hard_boundary_gaps, missing_columns
                 missing = missing_columns(rows.columns)
                 if missing:
                     gaps.append(f"fp-4字段缺失:{','.join(missing)}")
+                else:
+                    gaps.extend(hard_boundary_gaps(rows))
+                fp4_market = pack.market.get("fp4") if isinstance(pack.market, dict) else None
+                if not isinstance(fp4_market, dict) or fp4_market.get("dailyAmountUnit") != "kCNY":
+                    gaps.append("fp-4 amount 单位合同缺失或不是 kCNY")
+                if not isinstance(fp4_market, dict) or fp4_market.get("freeFloatMarketValueUnit") != "CNY":
+                    gaps.append("fp-4 自由流通市值单位合同缺失或不是 CNY")
                 membership = next((item for item in pack.sources
                                    if item.get("name") == "sw_industry_member_snapshots"), None)
                 market_source = ((pack.market.get("fp4") or {}).get("swMembershipSource")

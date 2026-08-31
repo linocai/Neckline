@@ -171,7 +171,10 @@ def _disk_files(parquet_dir: Path, start: str, end: str) -> Dict[str, List[Path]
     if not table_root.is_dir():
         return out
     for y in range(int(start[:4]), int(end[:4]) + 1):
-        year_dirs = sorted(table_root.glob(f"version=*/year={y}"))
+        year_dirs = sorted({
+            *table_root.glob(f"version=*/year={y}"),
+            *table_root.glob(f"version=*/revision=*/year={y}"),
+        })
         for year_dir in year_dirs:
             if not year_dir.is_dir():
                 continue

@@ -41,7 +41,7 @@ V3_TABLES = frozenset({
     "k9_package_reports", "k9_d0_run_markers", "k9_lifecycle_attempts", "k9_lifecycle_stages", "k9_intraday_capture_audit",
 })
 PROTECTED_TABLES = frozenset({
-    "app_settings", "backfill_log", "devices", "fact_packs", "fact_direction_briefings",
+    "app_settings", "backfill_log", "devices", "fact_packs", "fact_pack_revisions", "fact_direction_briefings",
     "job_events", "llm_providers", "llm_usage_events", "namechange", "reviews",
     "review_conclusions", "stock_basic", "sw_industry_classify", "sw_industry_daily",
     "sw_industry_member", "sw_industry_member_snapshots", "sw_industry_snapshot_imports", "sw_industry_snapshot_manifests", "trade_cal",
@@ -50,7 +50,7 @@ PROTECTED_TABLES = frozenset({
 # only protected absences a genuine V2.6 database may acquire during cutover.
 NEW_V270_PROTECTED_TABLES = frozenset({
     "sw_industry_member_snapshots", "sw_industry_snapshot_imports",
-    "sw_industry_snapshot_manifests",
+    "sw_industry_snapshot_manifests", "fact_pack_revisions",
 })
 
 

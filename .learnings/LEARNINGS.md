@@ -1,5 +1,52 @@
 # Project learnings
 
+## [LRN-20260831-007] correction
+
+**Logged**: 2026-08-31T21:20:00+08:00
+**Priority**: critical
+**Status**: pending
+**Area**: data
+
+### Summary
+全市场经过共同硬边界后变成 0 时，不能直接把空包解释成“今天没有机会”；必须先证明边界输入的单位和关键字段覆盖率有效。
+
+### Details
+2026-08-31 首个 K9-v3 包被生产标记为 `empty`，但逐层审计发现 5545 行当日 fp-4 在通道召回前就被共同边界全部清空。`daily.amount` 继承 TuShare 的“千元”单位，代码却直接与参数 `minimumAmountCny=100000000` 和 CNY 口径的 `free_float_mv` 比较；同时当日 `daily_basic.free_share` 5545 行全空，导致 `free_float_mv` 全空，而 readiness 只看列名、行数和文件哈希，仍判定 ready。只读内存对拍把成交额换算为元，并使用同源稍后已完整返回的当日 `free_share` 后，共同池为 1754 只，P2 命中 4、P3 命中 7、P4 命中 0，共 11 只不同代码。这些数字只能证明原空包错误，不能替代正式冻结报告。
+
+### Suggested Action
+在任何 `empty` 报告发布前持久化并验收“当日事实行数 → 共同边界逐闸计数 → 各通道召回数 → 配额/去重后数”。绝对金额统一到显式单位后再比较；fp-4 readiness 必须检查 K9 硬边界所需字段的非空、有限、正值和覆盖率。关键字段不完整时正确结果是 `not_run`，不是 `empty`。修复后只能通过新的追加版本和可审计重放生成纠正版，不能覆盖既有冻结事实或把诊断候选冒充正式候选。
+
+### Metadata
+- Source: user_feedback
+- Related Files: Backend/neckline/k9/v3_run.py, Backend/neckline/facts/v4.py, Backend/neckline/facts/readiness.py, Backend/neckline/facts/completeness.py, Backend/neckline/data/tushare_client.py
+- Tags: K9-v3, fp-4, amount-unit, free-share, readiness, false-empty
+- See Also: ERR-20260831-023, ERR-20260831-024
+
+---
+
+## [LRN-20260831-006] correction
+
+**Logged**: 2026-08-31T20:57:43+08:00
+**Priority**: critical
+**Status**: pending
+**Area**: frontend
+
+### Summary
+API 200、APNs 发送成功和客户端成功解码都不能证明用户在手机上看见了报告。
+
+### Details
+首个 K9-v3 报告已在生产生成，`Caeieo` 也多次成功请求 `GET /api/v1/selection/latest`，但 Build 19 的选股页并不渲染服务端报告正文。它只把响应投影为状态卡、候选卡和方向卡；当时服务端把本次标记为 `empty`，没有候选和方向，因此手机只剩一张很轻的“今天没有 / 本次清单 0只”状态卡。如果用户停在“次日核对表”，这张卡也完全不在当前视图。App 恢复前台时又没有强制刷新，进一步放大了“服务端有、手机看不见”的差距。后续 LRN-20260831-007 已证明该 `empty` 本身也是错误结果，但不改变这里记录的独立客户端可见性缺陷。
+
+### Suggested Action
+把“真实手机的确切页面可见”列为报告交付门禁，分别验收 `empty`、`has_list` 和 `not_run`。iOS 应明确展示报告结果和空清单说明，并在恢复前台时刷新；晚间报告推送点击后还要落到“选股 → 今日清单”。在完成这些可见性验收前，不再把接口、缓存或推送成功表述为手机交付完成。
+
+### Metadata
+- Source: user_feedback
+- Related Files: App/Neckline/Views/SelectionView.swift, App/Neckline/App/RootView.swift, App/Neckline/App/AppModel.swift, App/Neckline/Push/PushManager.swift
+- Tags: iOS, report, empty-state, foreground-refresh, visible-delivery
+
+---
+
 ## [LRN-20260831-005] best_practice
 
 **Logged**: 2026-08-31T20:29:15+08:00

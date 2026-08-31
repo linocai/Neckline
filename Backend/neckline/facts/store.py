@@ -146,7 +146,8 @@ def _read_verified_rows(path: Path, *, trade_date: date, pack_version: str,
 # ══════════════════════════════════════════════════════════════════════════
 
 def pack_file_path(
-    trade_date: date, pack_version: str, parquet_dir: Optional[Path] = None
+    trade_date: date, pack_version: str, parquet_dir: Optional[Path] = None,
+    *, revision: int = 1,
 ) -> Path:
     """当前布局:`fact_pack/version=<v>/year=YYYY/YYYYMMDD.parquet`。
 
@@ -154,7 +155,12 @@ def pack_file_path(
     路径里没有版本时,同一天的第二版会把第一版的数据原地抹掉,而第一版的清单行
     (连同它的 `content_fingerprint`)还在 —— 那就是一条会说谎的审计记录。
     """
-    return day_file_path(PARQUET_TABLE, trade_date, parquet_dir, version=pack_version)
+    if revision < 1:
+        raise ValueError("revision 必须 >= 1")
+    path = day_file_path(PARQUET_TABLE, trade_date, parquet_dir, version=pack_version)
+    if revision == 1:
+        return path
+    return path.parent.parent / f"revision={revision}" / path.parent.name / path.name
 
 
 @dataclass(frozen=True)
@@ -174,12 +180,16 @@ class FactPack:
     market: Dict[str, object]
     suspend_anomaly_count: int
     frozen_at: str
+    revision: int = 1
+    supersedes_pack_id: Optional[str] = None
+    correction_reason: Optional[str] = None
     _parquet_dir: Optional[Path] = field(default=None, repr=False, compare=False)
 
     @property
     def path(self) -> Path:
         """本包的 parquet 只允许落在版本化路径。"""
-        return pack_file_path(self.trade_date, self.pack_version, self._parquet_dir)
+        return pack_file_path(
+            self.trade_date, self.pack_version, self._parquet_dir, revision=self.revision)
 
     @property
     def rows(self) -> pl.DataFrame:
@@ -338,6 +348,107 @@ def freeze_pack(
     )
 
 
+def freeze_correction(
+    pack: CompletePack,
+    *,
+    expected_superseded_pack_id: str,
+    correction_reason: str,
+    origin: str = ORIGIN_LIVE,
+    parquet_dir: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+) -> FactPack:
+    """Append an explicitly authorized correction without rewriting revision 1.
+
+    This is deliberately separate from :func:`freeze_pack`: scheduled jobs
+    cannot discover or invoke a correction implicitly.  The caller must pin
+    the exact pack being superseded and provide an audit reason.
+    """
+    if not isinstance(pack, CompletePack):
+        raise TypeError("freeze_correction() 只接受 CompletePack")
+    reason = correction_reason.strip()
+    if not reason:
+        raise ValueError("correction_reason 不能为空")
+    if origin not in (ORIGIN_LIVE, ORIGIN_BACKFILL):
+        raise ValueError(f"未知 origin:{origin}")
+    absent = [c for c in columns_for_pack_version(pack.pack_version) if c not in pack.rows.columns]
+    if absent:
+        raise ValueError(f"{pack.pack_version} 修订缺少字段:{','.join(absent)}")
+
+    init_schema(db_path)
+    current = load_pack(
+        pack.trade_date, pack_version=pack.pack_version,
+        parquet_dir=parquet_dir, db_path=db_path,
+    )
+    if current.pack_id != expected_superseded_pack_id:
+        raise PackAlreadyFrozen(
+            f"修订基线已变化(expected={expected_superseded_pack_id}, actual={current.pack_id})")
+    revision = current.revision + 1
+    root = parquet_dir or settings.parquet_dir
+    final_path = pack_file_path(
+        pack.trade_date, pack.pack_version, root, revision=revision)
+    orphan_there = final_path.exists()
+    staging_root = table_dir(PARQUET_TABLE, root) / ".staging"
+    staging = staging_root / uuid.uuid4().hex
+    staging.mkdir(parents=True, exist_ok=True)
+    try:
+        tmp_path = write_table_day(
+            PARQUET_TABLE, pack.trade_date,
+            pack.rows.select(list(columns_for_pack_version(pack.pack_version))),
+            parquet_dir=staging,
+        )
+        with tmp_path.open("rb") as fh:
+            os.fsync(fh.fileno())
+        fingerprint = _sha256(tmp_path)
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        _put_in_place(
+            tmp_path, final_path, pack.trade_date,
+            f"{pack.pack_version}/revision={revision}", orphan_there=orphan_there)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            staging_root.rmdir()
+        except OSError:
+            pass
+
+    pack_id = uuid.uuid4().hex
+    day_s = _d(pack.trade_date)
+    sources_json = json.dumps(
+        [s.to_dict() for s in pack.sources], ensure_ascii=False, sort_keys=True)
+    market_json = json.dumps(pack.market, ensure_ascii=False, sort_keys=True)
+    frozen_at = _now()
+    try:
+        with connection(db_path) as conn:
+            latest = _latest_by_day(_manifest_rows(
+                conn, pack_version=pack.pack_version,
+                start_day=day_s, end_day=day_s,
+            ))
+            if not latest or latest[0][0] != expected_superseded_pack_id:
+                raise PackAlreadyFrozen("写入修订前事实包基线已被其他进程推进")
+            conn.execute(
+                "INSERT INTO fact_pack_revisions ("
+                "pack_id,trade_date,pack_version,revision,supersedes_pack_id,correction_reason,"
+                "origin,state,content_fingerprint,row_count,sources_json,market_json,"
+                "suspend_anomaly_count,frozen_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (pack_id, day_s, pack.pack_version, revision, current.pack_id, reason,
+                 origin, STATE_FROZEN, fingerprint, pack.row_count, sources_json,
+                 market_json, pack.suspend_anomaly_count, frozen_at),
+            )
+    except sqlite3.IntegrityError as exc:
+        raise PackAlreadyFrozen(
+            f"{pack.trade_date} 的 {pack.pack_version} revision={revision} 已存在:{exc}") from exc
+
+    logger.warning(
+        "[fact_pack] 追加修订 %s(%s revision=%d):supersedes=%s,reason=%s",
+        pack.trade_date, pack.pack_version, revision, current.pack_id, reason,
+    )
+    return _row_to_pack(
+        (pack_id, day_s, pack.pack_version, origin, fingerprint, pack.row_count,
+         sources_json, market_json, pack.suspend_anomaly_count, frozen_at,
+         revision, current.pack_id, reason),
+        root if parquet_dir is not None else None,
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 读(只读)
 # ══════════════════════════════════════════════════════════════════════════
@@ -346,6 +457,8 @@ _SELECT_COLUMNS = (
     "pack_id, trade_date, pack_version, origin, content_fingerprint, row_count, "
     "sources_json, market_json, suspend_anomaly_count, frozen_at"
 )
+_BASE_SELECT_COLUMNS = _SELECT_COLUMNS + ", 1 AS revision, NULL AS supersedes_pack_id, NULL AS correction_reason"
+_REVISION_SELECT_COLUMNS = _SELECT_COLUMNS + ", revision, supersedes_pack_id, correction_reason"
 
 
 def _row_to_pack(row: Sequence, parquet_dir: Optional[Path]) -> FactPack:
@@ -360,8 +473,53 @@ def _row_to_pack(row: Sequence, parquet_dir: Optional[Path]) -> FactPack:
         market=json.loads(row[7]),
         suspend_anomaly_count=int(row[8]),
         frozen_at=row[9],
+        revision=int(row[10]) if len(row) > 10 else 1,
+        supersedes_pack_id=row[11] if len(row) > 11 else None,
+        correction_reason=row[12] if len(row) > 12 else None,
         _parquet_dir=parquet_dir,
     )
+
+
+def _has_revision_table(conn: sqlite3.Connection) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fact_pack_revisions'"
+    ).fetchone() is not None
+
+
+def _manifest_rows(
+    conn: sqlite3.Connection,
+    *,
+    pack_version: str,
+    start_day: Optional[str] = None,
+    end_day: Optional[str] = None,
+) -> list[Sequence]:
+    clauses = ["pack_version=?"]
+    args: list[object] = [pack_version]
+    if start_day is not None:
+        clauses.append("trade_date>=?")
+        args.append(start_day)
+    if end_day is not None:
+        clauses.append("trade_date<=?")
+        args.append(end_day)
+    where = " AND ".join(clauses)
+    rows = list(conn.execute(
+        f"SELECT {_BASE_SELECT_COLUMNS} FROM fact_packs WHERE {where}", tuple(args)
+    ).fetchall())
+    if _has_revision_table(conn):
+        rows.extend(conn.execute(
+            f"SELECT {_REVISION_SELECT_COLUMNS} FROM fact_pack_revisions WHERE {where}",
+            tuple(args),
+        ).fetchall())
+    return rows
+
+
+def _latest_by_day(rows: Sequence[Sequence]) -> list[Sequence]:
+    latest: dict[str, Sequence] = {}
+    for row in rows:
+        day = str(row[1])
+        if day not in latest or int(row[10]) > int(latest[day][10]):
+            latest[day] = row
+    return [latest[day] for day in sorted(latest)]
 
 
 def load_pack(
@@ -378,12 +536,35 @@ def load_pack(
     迁移只属于启动、显式写命令或确认的发布流程。
     """
     with readonly_tables("fact_packs", db_path=db_path) as conn:
-        row = None if conn is None else conn.execute(
-            f"SELECT {_SELECT_COLUMNS} FROM fact_packs WHERE trade_date=? AND pack_version=?",
-            (_d(trade_date), pack_version),
-        ).fetchone()
+        rows = [] if conn is None else _manifest_rows(
+            conn, pack_version=pack_version,
+            start_day=_d(trade_date), end_day=_d(trade_date),
+        )
+        latest = _latest_by_day(rows)
+        row = latest[0] if latest else None
     if row is None:
         raise PackNotFrozen(f"{trade_date} 没有 {pack_version} 的冻结事实包")
+    return _row_to_pack(row, parquet_dir)
+
+
+def load_pack_by_id(
+    pack_id: str,
+    *,
+    parquet_dir: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+) -> FactPack:
+    """Read one exact immutable revision by id; never substitute the latest."""
+    with readonly_tables("fact_packs", db_path=db_path) as conn:
+        row = None if conn is None else conn.execute(
+            f"SELECT {_BASE_SELECT_COLUMNS} FROM fact_packs WHERE pack_id=?", (pack_id,)
+        ).fetchone()
+        if row is None and conn is not None and _has_revision_table(conn):
+            row = conn.execute(
+                f"SELECT {_REVISION_SELECT_COLUMNS} FROM fact_pack_revisions WHERE pack_id=?",
+                (pack_id,),
+            ).fetchone()
+    if row is None:
+        raise PackNotFrozen(f"找不到事实包 {pack_id}")
     return _row_to_pack(row, parquet_dir)
 
 
@@ -400,14 +581,13 @@ def latest_pack(
     今天没跑成不会动昨天那份 —— `fact_packs` 是 `INSERT` only,昨天那行谁都改不了。
 
     ⛔ 读函数不执行 DDL(§7.1):库未迁移 → `None`,与「一份都没冻过」同一个结果。"""
-    sql = f"SELECT {_SELECT_COLUMNS} FROM fact_packs WHERE pack_version=?"
-    args: List = [pack_version]
-    if on_or_before is not None:
-        sql += " AND trade_date<=?"
-        args.append(_d(on_or_before))
-    sql += " ORDER BY trade_date DESC LIMIT 1"
     with readonly_tables("fact_packs", db_path=db_path) as conn:
-        row = None if conn is None else conn.execute(sql, tuple(args)).fetchone()
+        rows = [] if conn is None else _manifest_rows(
+            conn, pack_version=pack_version,
+            end_day=_d(on_or_before) if on_or_before is not None else None,
+        )
+        latest = _latest_by_day(rows)
+        row = latest[-1] if latest else None
     return None if row is None else _row_to_pack(row, parquet_dir)
 
 
@@ -457,12 +637,10 @@ def load_pack_range(
     expected_days = [_d(day) for day in trading_days_between(start, end, db_path=calendar_db)]
 
     with readonly_tables("fact_packs", db_path=db_path) as conn:
-        manifests = [] if conn is None else conn.execute(
-                "SELECT trade_date,content_fingerprint,row_count FROM fact_packs WHERE pack_version=? "
-                "AND trade_date>=? AND trade_date<=? ORDER BY trade_date",
-                (pack_version, _d(start), _d(end)),
-            ).fetchall()
-    actual_days = [str(row[0]) for row in manifests]
+        rows = [] if conn is None else _manifest_rows(
+            conn, pack_version=pack_version, start_day=_d(start), end_day=_d(end))
+        manifests = _latest_by_day(rows)
+    actual_days = [str(row[1]) for row in manifests]
     if actual_days != expected_days:
         missing = sorted(set(expected_days) - set(actual_days))
         extra = sorted(set(actual_days) - set(expected_days))
@@ -483,9 +661,11 @@ def load_pack_range(
         picked = ["trade_date", *picked]
 
     frames: List[pl.DataFrame] = []
-    for day_s, fingerprint, expected_count in manifests:
+    for manifest in manifests:
+        day_s, fingerprint, expected_count = manifest[1], manifest[4], manifest[5]
+        revision = int(manifest[10])
         d = datetime.strptime(day_s, "%Y%m%d").date()
-        p = pack_file_path(d, pack_version, parquet_dir)
+        p = pack_file_path(d, pack_version, parquet_dir, revision=revision)
         rows = _read_verified_rows(p, trade_date=d, pack_version=pack_version,
                                    fingerprint=str(fingerprint), row_count=int(expected_count))
         absent = [column for column in picked if column not in rows.columns]
@@ -502,16 +682,21 @@ def list_packs(
     """清单速览 `[(trade_date, pack_version, origin, row_count)]`,升序。
 
     ⛔ 读函数不执行 DDL(§7.1):库未迁移 → 空列表。"""
-    sql = "SELECT trade_date, pack_version, origin, row_count FROM fact_packs"
-    args: Tuple = ()
-    if pack_version is not None:
-        sql += " WHERE pack_version=?"
-        args = (pack_version,)
-    sql += " ORDER BY trade_date"
     with readonly_tables("fact_packs", db_path=db_path) as conn:
         if conn is None:
             return []
-        return [(r[0], r[1], r[2], int(r[3])) for r in conn.execute(sql, args).fetchall()]
+        versions = [pack_version] if pack_version is not None else [
+            str(row[0]) for row in conn.execute(
+                "SELECT DISTINCT pack_version FROM fact_packs "
+                + ("UNION SELECT DISTINCT pack_version FROM fact_pack_revisions"
+                   if _has_revision_table(conn) else "")
+            ).fetchall()
+        ]
+        result: list[Tuple[str, str, str, int]] = []
+        for version in versions:
+            for row in _latest_by_day(_manifest_rows(conn, pack_version=version)):
+                result.append((str(row[1]), str(row[2]), str(row[3]), int(row[5])))
+        return sorted(result, key=lambda item: (item[0], item[1]))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -537,10 +722,21 @@ def trim_parquet(
     doomed = set(frozen_days[:-keep] if len(frozen_days) > keep else [])
     # 一天可能有多版(§5.3.2 第 3 条)，每一版都独立裁剪。
     targets: Dict[date, List[Path]] = {}
-    for day_s, version, _origin, _n in rows:
-        d = datetime.strptime(day_s, "%Y%m%d").date()
+    with readonly_tables("fact_packs", db_path=db_path) as conn:
+        manifests: list[Sequence] = []
+        if conn is not None:
+            versions = [str(row[0]) for row in conn.execute(
+                "SELECT DISTINCT pack_version FROM fact_packs "
+                + ("UNION SELECT DISTINCT pack_version FROM fact_pack_revisions"
+                   if _has_revision_table(conn) else "")
+            ).fetchall()]
+            for version in versions:
+                manifests.extend(_manifest_rows(conn, pack_version=version))
+    for manifest in manifests:
+        d = datetime.strptime(str(manifest[1]), "%Y%m%d").date()
         if d in doomed:
-            targets.setdefault(d, []).append(pack_file_path(d, version, parquet_dir))
+            targets.setdefault(d, []).append(pack_file_path(
+                d, str(manifest[2]), parquet_dir, revision=int(manifest[10])))
     removed: List[date] = []
     for d in sorted(targets):
         alive = [p for p in targets[d] if p.exists()]
@@ -570,7 +766,9 @@ __all__ = [
     "FactPack",
     "pack_file_path",
     "freeze_pack",
+    "freeze_correction",
     "load_pack",
+    "load_pack_by_id",
     "latest_pack",
     "load_pack_range",
     "list_packs",

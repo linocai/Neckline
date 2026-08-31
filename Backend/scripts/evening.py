@@ -147,12 +147,21 @@ def main() -> int:
     parser.add_argument("--notify", action="store_true",
                         help="落库后触发 APNs 报告推送(受 kind=report_ready 开关)")
     parser.add_argument(
+        "--correction-revision", type=int, default=None,
+        help="显式追加已冻结成功包的修订；仅人工纠错，必须 >= 2",
+    )
+    parser.add_argument(
         "--scheduled", action="store_true",
         help="仅给 systemd:周一至周四绑定当天,周日绑定前一周五;休市则成功跳过",
     )
     parser.add_argument("--db", default=None, help="隔离库路径(冒烟用;缺省=真实库)")
     parser.add_argument("--parquet-dir", default=None, help="隔离 parquet 目录(冒烟用)")
     args = parser.parse_args()
+
+    if args.correction_revision is not None:
+        if args.correction_revision < 2 or args.scheduled or not args.trade_date:
+            logger.error("--correction-revision 必须 >= 2，且只能配合显式 trade_date 人工运行。")
+            return 2
 
     ensure_data_dirs()
     db_path = Path(args.db) if args.db else None
@@ -225,6 +234,7 @@ def main() -> int:
         res = run_evening_chain(
             trade_date, report_date=report_date, segments=segments,
             k9_params_path=k9_params_path, db_path=db_path, parquet_dir=parquet_dir,
+            correction_revision=args.correction_revision,
             save=not args.no_save,
         )
     except RuntimeError as e:

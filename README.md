@@ -5,7 +5,7 @@ Neckline 是 A 股生产应用：SwiftUI macOS/iOS 客户端与 FastAPI 后端�
 
 ## 当前状态
 
-- 生产现行为 **V2.7.0 Build 19 / K9-v3 / fp-4 / d2-v2**。macOS/iOS 发布集合为 `v2.7.0-b19`；NB 云后端在同一 API 合同上运行不可变热修复 `v2.7.0-b19-hf2`。macOS 正式安装包为 `2.7.0 (19)`，iOS 同版安装包已签名交付。
+- 生产现行为 **V2.7.0 / K9-v3 / fp-4 / d2-v2**。macOS/iOS 客户端仍为 `2.7.0 (19)` 与发布集合 `v2.7.0-b19`；NB 云后端在同一 API 合同上运行 `v2.7.0-b20`。Build 20 是后端数据正确性修复，不要求客户端重新安装。
 - 生产显式加载获批参数包 `k9-params-20260831-v3-r1`，正式原件为 `Backend/config/k9-params.json`，SHA-256 为 `feb24c8199b061b31e33fa9b47603e3d9cc27d76eaa0aff064f1b451d01b41a2`。文件缺失、无效或谱系错配时仍不得生成候选、预案、成绩包或通知。
 - K9-v3 从空队列开始，未用半日数据抢跑。2026-08-31 首个正式晚间链在修复过度日历依赖并补齐 60 个可靠 fp-4 后完成：D2→D1→D0 全部成功，机械结果为可信空清单，首批成绩包和报告状态均为 `empty`。
 - macOS/iOS 分发包及校验材料发布在 [GitHub Release `v2.7.0-b19`](https://github.com/linocai/Neckline/releases/tag/v2.7.0-b19)；唯一施工与运行控制面见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
