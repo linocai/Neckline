@@ -41,6 +41,21 @@ def _window(frame: pl.DataFrame, days: int) -> pl.DataFrame:
     return frame.filter(pl.col("trade_date").is_in(_dates(frame, days)))
 
 
+def _listing_cutoff(history: pl.DataFrame, required_days: int) -> object:
+    """Return the oldest frozen day needed to prove listing-age eligibility.
+
+    K9 only asks whether a stock has reached the approved threshold.  It does
+    not need an exact lifetime trading-day count, and must never turn that
+    bounded question into a dependency on decades of exchange calendars.
+    """
+    days = sorted(history["trade_date"].drop_nulls().unique().to_list())
+    if required_days <= 0 or len(days) < required_days:
+        raise PackUnavailable(
+            f"{PACK_VERSION} 上市历史证明不足：需要 {required_days} 个冻结交易日，只有 {len(days)}"
+        )
+    return days[-required_days]
+
+
 def _require_facts(trade_date: date, *, parquet_dir: Optional[Path], db_path: Optional[Path], minimum_days: int) -> tuple[object, pl.DataFrame]:
     pack = fact_store.load_pack(trade_date, pack_version=PACK_VERSION, parquet_dir=parquet_dir, db_path=db_path)
     absent = missing_columns(pack.rows.columns)
@@ -58,6 +73,7 @@ def _require_facts(trade_date: date, *, parquet_dir: Optional[Path], db_path: Op
 def _boundary(history: pl.DataFrame, cfg: Mapping[str, Any]) -> pl.DataFrame:
     """单一硬边界；任何不可证实的输入都直接拒绝。"""
     act, liq = cfg["activity"], cfg["d0Liquidity"]
+    listing_cutoff = _listing_cutoff(history, int(cfg["newListingTradingDays"]))
     h = _window(history, int(act["windowDays"]))
     metrics = h.group_by("ts_code").agg(
         pl.col("amount").median().alias("_median_amount"),
@@ -72,7 +88,7 @@ def _boundary(history: pl.DataFrame, cfg: Mapping[str, Any]) -> pl.DataFrame:
     return today.filter(
         ~pl.col("board").is_in(["STAR", "BSE"])
         & ~pl.col("is_st").fill_null(True) & ~pl.col("delist_risk").fill_null(True)
-        & (pl.col("listing_trade_days") >= int(cfg["newListingTradingDays"]))
+        & pl.col("list_date").is_not_null() & (pl.col("list_date") <= pl.lit(listing_cutoff))
         & (pl.col("close") > 0) & (pl.col("close") <= 100) & pl.col("valid_quote").fill_null(False)
         & (pl.col("suspend_flag") != "S") & pl.col("sw_l2_code").is_not_null()
         & ~pl.col("sw_l2_code").is_in(list(cfg["excludedL2Codes"]))
@@ -232,7 +248,10 @@ def compute(trade_date: date, *, selection_date: date, params: V3Params,
     # however, is required only for the always-on shared boundary and channels
     # that this approved package explicitly enables; a parked P3/P4 must not
     # turn an otherwise runnable P2 package into a false not_run.
-    windows = [int(params.raw["boundary"]["activity"]["windowDays"])]
+    windows = [
+        int(params.raw["boundary"]["activity"]["windowDays"]),
+        int(params.raw["boundary"]["newListingTradingDays"]),
+    ]
     if params.channels["p2"]["enabled"]:
         windows.append(max(int(p2_recall["windowDays"]), int(p2_recall["volumeBaselineDays"]) + 1))
     if params.channels["p3"]["enabled"]:

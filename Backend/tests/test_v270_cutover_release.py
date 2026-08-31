@@ -158,12 +158,12 @@ def test_v3_read_paths_do_not_create_schema_on_legacy_or_missing_database(tmp_pa
     assert not absent.exists() and not absent.parent.exists()
 
 
-def test_release_identity_routes_and_build19_icon_are_one_set():
+def test_release_identity_routes_and_build19_compatibility():
     project_yml = (ROOT / "App" / "project.yml").read_text(encoding="utf-8")
     pbxproj = (ROOT / "App" / "Neckline.xcodeproj" / "project.pbxproj").read_text(encoding="utf-8")
     pyproject = (ROOT / "Backend" / "pyproject.toml").read_text(encoding="utf-8")
     icon = ROOT / "App" / "Neckline" / "Resources" / "Assets.xcassets" / "AppIconV270B19.appiconset"
-    assert VERSION == "v2.7.0" and RELEASE_SET == "v2.7.0-b19"
+    assert VERSION == "v2.7.0" and RELEASE_SET == "v2.7.0-b19-hf1"
     assert 'version = "2.7.0"' in pyproject and 'MARKETING_VERSION: "2.7.0"' in project_yml
     assert 'CURRENT_PROJECT_VERSION: "19"' in project_yml and "AppIconV270B19" in project_yml
     assert "MARKETING_VERSION = 2.7.0;" in pbxproj and "CURRENT_PROJECT_VERSION = 19;" in pbxproj

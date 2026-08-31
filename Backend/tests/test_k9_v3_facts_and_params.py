@@ -53,7 +53,7 @@ def test_fp4_freezes_its_own_fields_and_explicit_free_float_unit(isolated_env):
     row = built.rows.filter(pl.col("ts_code") == "600001.SH").row(0, named=True)
     assert row["free_float_mv"] == 100_000 * 10_000 * 10.0
     assert row["free_float_mv_unit"] == "CNY"
-    assert row["listing_trade_days"] == 1  # fixture calendar contains exactly this official open day
+    assert "listing_trade_days" not in built.rows.columns
     frozen = store.freeze_pack(built, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
     again = store.load_pack(DAY, pack_version="fp-4", parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
     assert frozen.content_fingerprint == again.content_fingerprint
@@ -66,6 +66,24 @@ def test_fp4_freezes_its_own_fields_and_explicit_free_float_unit(isolated_env):
     with sqlite3.connect(isolated_env.db_path) as conn:
         conn.execute("UPDATE sw_industry_snapshot_manifests SET content_sha256='tampered' WHERE trade_date=?", (DAY.strftime("%Y%m%d"),))
     assert "内容哈希不可验证" in "；".join(readiness.preflight(DAY, pack_version="fp-4", parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path).gaps)
+
+
+def test_fp4_does_not_require_lifetime_calendar_for_old_listings(isolated_env):
+    _seed_v4(isolated_env)
+    import sqlite3
+    with sqlite3.connect(isolated_env.db_path) as conn:
+        conn.execute("UPDATE stock_basic SET list_date='19901219'")
+    built = v4.build(DAY, parquet_dir=isolated_env.parquet_dir, db_path=isolated_env.db_path)
+    assert isinstance(built, fp3.CompletePack)
+    assert set(built.rows["list_date"].to_list()) == {date(1990, 12, 19)}
+
+
+def test_listing_age_uses_only_the_approved_number_of_frozen_days():
+    days = [date(2026, 6, 1) + timedelta(days=i) for i in range(60)]
+    history = pl.DataFrame({"trade_date": days})
+    assert v3_run._listing_cutoff(history, 40) == days[-40]
+    with pytest.raises(v3_run.PackUnavailable, match="上市历史证明不足"):
+        v3_run._listing_cutoff(history, 61)
 
 
 def test_fp4_rejects_a_renamed_fp3_pack(isolated_env):

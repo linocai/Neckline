@@ -352,8 +352,9 @@ def ts_index_classify(level: str = "", src: str = "SW2021") -> TushareResult:
     return _call("index_classify", **kwargs)
 
 
-def ts_index_member_all(limit: int = SW_MEMBER_PAGE_LIMIT, offset: int = 0) -> TushareResult:
-    """申万成分**当前**归属全量(`index_member_all`),**一页**。
+def ts_index_member_all(limit: int = SW_MEMBER_PAGE_LIMIT, offset: int = 0,
+                        is_new: str = "Y") -> TushareResult:
+    """申万成分归属(`index_member_all`)的一页。
 
     🔴 **调用方必须循环 offset 翻页**(§12 坑 5):单次上限 `SW_MEMBER_PAGE_LIMIT`
     = 3000 行,而全市场约 5897 只 → **2 页才拿得全**。接口在超限时不报错、只少给,
@@ -364,11 +365,12 @@ def ts_index_member_all(limit: int = SW_MEMBER_PAGE_LIMIT, offset: int = 0) -> T
     `name` `in_date` `out_date` `is_new`。`out_date` 为空 = 当前有效(§4.4);
     每只票恰好一个 L1/L2/L3。
 
-    ⚠ 本接口只给**当前**归属。要历史(带 in_date/out_date、同票可多段)得走
-    `index_member(index_code=...)` 逐个 L1 拉 31 次 —— 生产不需要(成绩线在写入时
-    冻结绑定),属 Backlog(§13)。
+    `is_new='Y'` 是当前归属；`is_new='N'` 是已退出的历史归属。历史回放必须把
+    两类带 `in_date/out_date` 的区间合并后逐日展开并校验，不能把当前归属复制到过去。
     """
-    return _call("index_member_all", limit=limit, offset=offset)
+    if is_new not in {"Y", "N"}:
+        return TushareResult.fail("index_member_all.is_new 必须为 Y 或 N")
+    return _call("index_member_all", limit=limit, offset=offset, is_new=is_new)
 
 
 __all__ = [

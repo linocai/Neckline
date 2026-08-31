@@ -14,8 +14,6 @@ from typing import Any, Iterable, Optional
 
 import polars as pl
 
-from neckline.calendar import trading_days_between
-from neckline.config import settings
 from neckline.data.market_data import load_stock_basic
 from neckline.db import readonly_tables
 from neckline.facts import industry
@@ -25,7 +23,7 @@ from neckline.facts import completeness
 PACK_VERSION = "fp-4"
 V4_COLUMNS = (
     "delist_date", "delist_risk", "valid_quote", "free_float_mv",
-    "free_float_mv_unit", "listing_trade_days", "sw_l2_member_count",
+    "free_float_mv_unit", "sw_l2_member_count",
 )
 PACK_COLUMNS = (*fp3.PACK_COLUMNS, *V4_COLUMNS)
 REQUIRED_COLUMNS = frozenset(PACK_COLUMNS)
@@ -100,17 +98,6 @@ def _stock_meta(trade_date: date, db_path: Optional[Path]) -> tuple[pl.DataFrame
     ), []
 
 
-def _listing_days(rows: pl.DataFrame, trade_date: date, *, db_path: Optional[Path]) -> pl.DataFrame:
-    values: dict[date, int] = {}
-    for listed in rows["list_date"].drop_nulls().unique().to_list():
-        calendar_db = db_path if db_path is not None else settings.db_path
-        values[listed] = len(trading_days_between(listed, trade_date, db_path=calendar_db))
-    return rows.with_columns(
-        pl.col("list_date").replace_strict(values, default=None, return_dtype=pl.Int64)
-        .alias("listing_trade_days")
-    )
-
-
 def build(trade_date: date, *, parquet_dir: Optional[Path] = None, db_path: Optional[Path] = None) -> fp3.Pack:
     """构建新的 fp-4；绝不修改已经冻结的 fp-3。"""
     members, membership_source, member_gaps = _as_of_members(trade_date, db_path)
@@ -133,7 +120,6 @@ def build(trade_date: date, *, parquet_dir: Optional[Path] = None, db_path: Opti
     if not isinstance(base, fp3.CompletePack):
         return fp3.IncompletePack(trade_date=trade_date, pack_version=PACK_VERSION, missing=base.missing)
     rows = base.rows.join(meta, on="ts_code", how="left")
-    rows = _listing_days(rows, trade_date, db_path=db_path)
     finite_quote = (
         pl.col("open").is_not_null() & pl.col("high").is_not_null() & pl.col("low").is_not_null()
         & pl.col("close").is_not_null() & pl.col("pre_close").is_not_null()

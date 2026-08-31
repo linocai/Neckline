@@ -145,7 +145,7 @@ def test_lifecycle_begin_is_atomic_under_two_connection_race(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM k9_lifecycle_stages WHERE attempt_id=?", (ids[0],)).fetchone()[0] == 3
 
 
-def test_minimum_history_ignores_disabled_channel_windows(monkeypatch):
+def test_minimum_history_includes_global_listing_proof_but_ignores_disabled_channels(monkeypatch):
     raw = _approved()
     raw["boundary"]["activity"]["windowDays"] = 10
     raw["channels"]["p2"]["recall"]["volumeBaselineDays"] = 20
@@ -157,11 +157,11 @@ def test_minimum_history_ignores_disabled_channel_windows(monkeypatch):
     monkeypatch.setattr(v3_run.packages, "recent_locked_codes", lambda **_kwargs: set())
     monkeypatch.setattr(v3_run, "_p2", lambda *_args, **_kwargs: [])
     v3_run.compute(DAY, selection_date=DAY, params=params)
-    assert requested == [21]
+    assert requested == [40]
     raw["channels"]["p3"]["enabled"] = True
     monkeypatch.setattr(v3_run, "_p3", lambda *_args, **_kwargs: [])
     v3_run.compute(DAY, selection_date=DAY, params=params)
-    assert requested == [21, 90]
+    assert requested == [40, 90]
 
 
 def test_report_only_calls_empty_when_marker_and_empty_package_agree(tmp_path):

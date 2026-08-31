@@ -1,5 +1,89 @@
 # Project learnings
 
+## [LRN-20260831-004] correction
+
+**Logged**: 2026-08-31T20:07:26+08:00
+**Priority**: critical
+**Status**: resolved
+**Area**: backend
+
+### Summary
+Do not turn a bounded new-listing eligibility check into a requirement for the exchange's full historical calendar.
+
+### Details
+K9-v3 only needs to prove that a stock has traded for at least the approved `newListingTradingDays` threshold, currently 40. The fp-4 implementation instead computed an exact lifetime trading-day count for every listed stock. That caused a 1990 listing to require calendar coverage back to 1990 even though the existing 2015–2026 calendar already proves the stock is far older than 40 trading days. Treating the resulting failure as a business-data requirement was incorrect; it is an over-strict implementation boundary.
+
+### Suggested Action
+Use the explicit strategy threshold and recent official calendar to prove eligibility. For listings older than the calendar coverage boundary, record or evaluate a conservative lower-bound/eligibility fact rather than demanding an exact lifetime count or silently fabricating one. Preserve fail-closed behavior only when the threshold cannot actually be proved.
+
+Before asking the user to source or mutate data, restate the business question in its smallest sufficient form and challenge any dependency whose scale is wildly disproportionate to that question. A technical exception is evidence about an implementation path, not proof of a business requirement.
+
+### Metadata
+- Source: user_feedback
+- Related Files: Backend/neckline/facts/v4.py, Backend/neckline/k9/v3_run.py, Backend/config/k9-params.json
+- Tags: K9-v3, fp-4, trading-calendar, listing-age, fail-closed
+
+### Resolution
+- **Resolved**: 2026-08-31T20:07:26+08:00
+- **Notes**: Reclassified the production failure as an implementation defect, not a requirement to source three decades of strategy data. No production data or report was rerun.
+
+---
+
+## [LRN-20260831-003] correction
+
+**Logged**: 2026-08-31T19:48:20+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: infra
+
+### Summary
+An automation suggestion card is not proof that a scheduled follow-up was created or executed.
+
+### Details
+The 19:30 Neckline verification did not run automatically because the retry used suggested-create mode. The assistant later found no matching persisted automation and had to perform the production read-only audit manually after the user asked for the missing report.
+
+### Suggested Action
+For every promised follow-up, verify the persisted automation record and its active schedule. Report a suggestion as a suggestion, never as a scheduled execution.
+
+### Metadata
+- Source: user_feedback
+- Related Files: none
+- Tags: automation, follow-up, verification, reliability
+- See Also: ERR-20260831-019
+
+### Resolution
+- **Resolved**: 2026-08-31T19:48:20+08:00
+- **Notes**: Corrected the record, completed the missed production audit manually, and will distinguish proposed tasks from persisted active tasks.
+
+---
+
+## [LRN-20260831-002] correction
+
+**Logged**: 2026-08-31T12:30:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+Do not equate adding an iOS device to Neckline with registering a new Apple development device.
+
+### Details
+The user identified the target as `Caeieo`, which was already paired, already included in the Build 19 provisioning profile, and already had Neckline 2.7.0 (19) installed. The remaining access check is the app's Keychain API token and automatic APNs backend registration, not UDID enrollment or app re-signing.
+
+### Suggested Action
+Before proposing signing work, inspect the local device list, compare the target UDID with the embedded provisioning profile, and query the installed app version. Present Apple signing, Neckline API access, and APNs device registration as three separate states.
+
+### Metadata
+- Source: user_feedback
+- Related Files: App/Neckline/Networking/AppConfig.swift, App/Neckline/Push/PushManager.swift
+- Tags: iOS, provisioning, device-access, keychain, APNs
+
+### Resolution
+- **Resolved**: 2026-08-31T12:31:00+08:00
+- **Notes**: Verified `Caeieo` is included in the current three-device profile and already runs Build 19; then bootstrapped the production credential into iOS Keychain over Wi-Fi, restored the official app, and confirmed its production device registration without changing signing or enrollment.
+
+---
+
 ## [LRN-20260824-001] best_practice
 
 **Logged**: 2026-08-24T10:35:00+08:00

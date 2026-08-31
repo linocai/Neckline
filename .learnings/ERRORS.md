@@ -1,5 +1,97 @@
 # Project errors
 
+## [ERR-20260831-020] K9-v3 D0 demanded a lifetime trading calendar for a 40-day rule
+
+**Logged**: 2026-08-31T20:30:00+08:00
+**Priority**: critical
+**Status**: in_progress
+**Area**: backend
+
+### Summary
+The first production K9-v3 D0 failed because fp-4 tried to compute every stock's exact lifetime trading-day count, even though the approved boundary only asks whether a listing is at least 40 trading days old.
+
+### Error
+`交易日历目标库未完整覆盖区间:1990-12-19~2026-08-31`
+
+### Context
+- The production calendar already covers 2015-01-01 through 2026-12-31, which is more than sufficient to prove the 40-day threshold for old listings.
+- Interpreting the exception as a need to source a 1990–2014 calendar confused an implementation dependency with a strategy requirement.
+- The correct first response was to reduce the proof to the minimum sufficient frozen history, not ask for decades of irrelevant data.
+
+### Suggested Fix
+Keep `list_date` as the frozen source fact and compare it with the oldest of the approved number of recent fp-4 trading days. Fail closed only when those recent frozen days are genuinely unavailable.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/neckline/facts/v4.py, Backend/neckline/k9/v3_run.py
+- See Also: LRN-20260831-004
+
+### Resolution
+- **Resolved**: pending production verification
+- **Notes**: The bounded implementation and regression tests are complete; production replay and report verification remain.
+
+---
+
+## [ERR-20260831-019] Anchored heartbeat rejected in immediate-create mode
+
+**Logged**: 2026-08-31T13:34:22+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+Creating a one-time heartbeat with a timezone-qualified `DTSTART` was rejected when the automation used immediate-create mode.
+
+### Error
+The automation API reported that immediate creates cannot include `DTSTART` because local wall-clock times may be converted to UTC.
+
+### Context
+- The intended follow-up was anchored to 2026-08-31 19:30 Asia/Shanghai.
+- No production service, database, queue, or timer was touched.
+
+### Suggested Fix
+When a follow-up must actually run, do not treat suggested-create mode as execution. After creating or proposing an automation, verify that a matching automation record exists before promising that follow-up will occur.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+### Resolution
+- **Resolved**: 2026-08-31T19:48:20+08:00
+- **Notes**: The suggested-create retry only rendered a suggestion card and did not create an automation. This was discovered when no matching automation record existed at 19:43. The production verification was then completed manually; future follow-ups must verify persisted automation state.
+
+---
+
+## [ERR-20260831-018] CoreDevice preference-copy assumptions failed during iOS access bootstrap
+
+**Logged**: 2026-08-31T13:29:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+Trying to prove the iOS bootstrap through the app Preferences container was unreliable because the expected plist was not exposed at the assumed CoreDevice path.
+
+### Error
+CoreDevice copy returned error 7000 for the guessed Preferences plist path, and a copied Preferences directory contained no readable plist.
+
+### Context
+- The failures were read-only and did not alter device or production state.
+- App installation, signing, and wireless launch were already healthy.
+
+### Suggested Fix
+For a one-time credential bootstrap, have the temporary app write a non-secret source marker into its own temporary container, copy that exact file back, then relaunch without environment injection and require the marker to report `keychain`.
+
+### Metadata
+- Reproducible: device/OS-dependent
+- Related Files: App/Neckline/Networking/AppConfig.swift
+
+### Resolution
+- **Resolved**: 2026-08-31T13:28:00+08:00
+- **Notes**: The marker reported `keychain` both after the injected launch and after a launch with no injected credential. The official Build 19 was then restored and independently updated its production iOS device registration.
+
+---
+
 ## [ERR-20260831-017] Empty selection response does not carry strategyVersion
 
 **Logged**: 2026-08-31T12:18:00+08:00

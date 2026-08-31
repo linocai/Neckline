@@ -29,7 +29,7 @@ export RELEASE_VERSION RELEASE_BUILD ICON_NAME
 perl -0pi -e 's/^(\s*MARKETING_VERSION:\s*)"[0-9]+\.[0-9]+\.[0-9]+"/${1}"$ENV{RELEASE_VERSION}"/mg' "$PROJECT_YML"
 perl -0pi -e 's/^(\s*CURRENT_PROJECT_VERSION:\s*)"?[0-9]+"?/${1}"$ENV{RELEASE_BUILD}"/mg' "$PROJECT_YML"
 perl -0pi -e 's/^VERSION = "v[0-9]+\.[0-9]+\.[0-9]+"/VERSION = "v$ENV{RELEASE_VERSION}"/m' "$BACKEND_APP"
-perl -0pi -e 's/^RELEASE_SET = "v[0-9]+\.[0-9]+\.[0-9]+-b[1-9][0-9]*"/RELEASE_SET = "v$ENV{RELEASE_VERSION}-b$ENV{RELEASE_BUILD}"/m' "$BACKEND_APP"
+perl -0pi -e 's/^RELEASE_SET = "v[0-9]+\.[0-9]+\.[0-9]+-b[1-9][0-9]*(?:-[A-Za-z0-9.]+)?"/RELEASE_SET = "v$ENV{RELEASE_VERSION}-b$ENV{RELEASE_BUILD}"/m' "$BACKEND_APP"
 perl -0pi -e 's/^(version = ")[0-9]+\.[0-9]+\.[0-9]+"/${1}$ENV{RELEASE_VERSION}"/m' "$BACKEND_PYPROJECT"
 perl -0pi -e 's/^(\s*ASSETCATALOG_COMPILER_APPICON_NAME:\s*)\S+/${1}$ENV{ICON_NAME}/m' "$PROJECT_YML"
 
