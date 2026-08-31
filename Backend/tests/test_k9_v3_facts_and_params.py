@@ -271,7 +271,7 @@ def test_playbook_prompt_distinguishes_frozen_input_from_required_output():
         {"close": 10.0, "limit_up_price": 11.0}, {"x": 1})
     prompt = v3_playbook._prompt(v3_playbook.mechanical_skeleton([hit]))
     assert '"frozenCandidates"' in prompt
-    assert '"requiredOutputShape"' in prompt
+    assert '"requiredOutputShape"' not in prompt
     assert "不要回显 frozenCandidates" in prompt
 
 

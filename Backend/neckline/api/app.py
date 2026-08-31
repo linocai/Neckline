@@ -94,7 +94,7 @@ def _read_review_upload(upload: UploadFile, *, total_before: int) -> bytes:
 # API 版本必须与客户端工程同步；后端热修复用 release set 后缀单独标识。
 # 部署是否生效以生产 health 响应为准。
 VERSION = "v2.7.0"
-RELEASE_SET = "v2.7.0-b22"
+RELEASE_SET = "v2.7.0-b23"
 API_PREFIX = "/api/v1"
 
 # —— 测试注入开关(生产恒 True / 恒默认)——————————————————————————————————
