@@ -205,6 +205,7 @@ class OpenAICompatProvider(LLMProvider):
         *,
         enable_search: bool = True,
         search_query: Optional[str] = None,
+        response_format: Optional[Dict[str, Any]] = None,
         transport: Optional[Any] = None,
     ) -> LLMResult:
         if not self.api_key:
@@ -225,6 +226,8 @@ class OpenAICompatProvider(LLMProvider):
             payload: Dict[str, Any] = {
                 "model": self.model, "messages": wire_messages, "stream": bool(self.use_streaming),
             }
+            if response_format is not None:
+                payload["response_format"] = dict(response_format)
             if tools:
                 payload["tools"] = tools
             body, err = self._post(payload, transport)

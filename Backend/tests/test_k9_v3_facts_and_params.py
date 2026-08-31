@@ -270,9 +270,10 @@ def test_playbook_prompt_distinguishes_frozen_input_from_required_output():
         "600001.SH", "a", "801080.SI", "半导体", "p2", 1, 1.0,
         {"close": 10.0, "limit_up_price": 11.0}, {"x": 1})
     prompt = v3_playbook._prompt(v3_playbook.mechanical_skeleton([hit]))
-    assert '"frozenCandidates"' in prompt
+    assert '"frozenCandidate"' in prompt
     assert '"requiredOutputShape"' not in prompt
-    assert "不要回显 frozenCandidates" in prompt
+    assert "不要回显 frozenCandidate" in prompt
+    assert "不要输出 candidates 包装" in prompt
 
 
 def test_production_playbooks_generate_per_stock_but_return_one_atomic_mapping(monkeypatch):
@@ -315,15 +316,29 @@ def test_one_stock_playbook_retries_only_format_errors_with_precise_feedback():
     class FakeProvider:
         calls = 0
         feedback = ""
-        def chat(self, messages, **_kwargs):
+        response_format = None
+        def chat(self, messages, **kwargs):
             self.calls += 1
             self.feedback = messages[-1].content or ""
-            content = '{"candidates":[{"tsCode":"600001.SH"}]}' if self.calls == 1 else json.dumps(valid, ensure_ascii=False)
+            self.response_format = kwargs.get("response_format")
+            item = valid["candidates"][0]
+            flat = {
+                "tsCode": item["tsCode"], "invalidation": item["invalidation"],
+                "firstResistance": item["firstResistance"], "secondResistance": item["secondResistance"],
+                "rejectBelow": item["openVerdict"]["rejectBelow"],
+                "confirmMinimum": item["openVerdict"]["confirmRange"]["minimum"],
+                "confirmMaximum": item["openVerdict"]["confirmRange"]["maximum"],
+                "overextendedAtOrAbove": item["openVerdict"]["overextendedAtOrAbove"],
+                "unbuyableAtOrAbove": item["openVerdict"]["unbuyableAtOrAbove"],
+                "conditions": item["conditions"], "rationale": item["rationale"],
+            }
+            content = '{"tsCode":"600001.SH"}' if self.calls == 1 else json.dumps(flat, ensure_ascii=False)
             return LLMResult(ok=True, content=content, provider="fake", model="fake")
     provider = FakeProvider()
     plans, meta = v3_playbook._generate_subset(skeleton, provider=provider)
     assert plans["600001.SH"]["invalidation"] == 9.0
-    assert provider.calls == 2 and "缺少开盘判定" in provider.feedback
+    assert provider.calls == 2 and "通道条件与冻结件不一致" in provider.feedback
+    assert provider.response_format == {"type": "json_object"}
     assert meta["formatAttempts"] == 2
 
 

@@ -87,6 +87,7 @@ class LLMProvider(ABC):
         *,
         enable_search: bool = True,
         search_query: Optional[str] = None,
+        response_format: Optional[Dict[str, Any]] = None,
         transport: Optional[Any] = None,
     ) -> LLMResult:
         """`search_query`(v1.3.4 新增,可选):**显式指定联网搜索的检索词**。

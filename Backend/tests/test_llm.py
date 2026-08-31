@@ -595,6 +595,16 @@ class TestOpenAICompatSharedDegradation:
 
 
 class TestOpenAICompatHappyPathAndSearch:
+    def test_json_response_format_is_opt_in_and_reaches_wire(self):
+        seen = {}
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_openai_success_body('{"ok":true}'))
+        result = _provider(api_key="sk-xxx").chat(
+            [ChatMessage(role="user", content="json")], enable_search=False,
+            response_format={"type": "json_object"}, transport=httpx.MockTransport(handler))
+        assert result.ok and seen["response_format"] == {"type": "json_object"}
+
     def test_successful_chat_sends_expected_payload(self):
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)

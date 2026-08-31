@@ -101,24 +101,55 @@ def mechanical_skeleton(hits: Sequence[Any]) -> dict[str, dict[str, Any]]:
 
 
 def _prompt(skeleton: Mapping[str, Mapping[str, Any]]) -> str:
+    if len(skeleton) != 1:
+        raise ValueError("逐票预案提示只能包含一只候选")
+    shape = next(iter(skeleton.values()))
     return (
-        "你是 Neckline K9-v3 次日预案填写器。只能为下列冻结候选填写具体价位和解释；"
+        "你是 Neckline K9-v3 次日预案填写器。只能为下列一只冻结候选填写具体价位和解释；"
         "不得新增/删除候选、通道、排名、额度或改变任何机械条件。"
-        "每只必须返回 openVerdict.rejectBelow、confirmRange.minimum/maximum、"
+        "只返回一个扁平 JSON 对象，必须直接包含 tsCode、rejectBelow、confirmMinimum、confirmMaximum、"
         "unbuyableAtOrAbove、overextendedAtOrAbove、invalidation、firstResistance、secondResistance、"
-        "conditions（逐通道；p4 必须有 industry 与 stock 条件）和 rationale。"
+        "conditions（键必须与冻结 channels 完全一致；p2/p3 填 holdAbove；p4 填 industry 与 stock）和 rationale。"
         "unbuyableAtOrAbove 必须等于冻结 baseline.limit_up_price；所有价格必须为正，"
         "且 invalidation <= rejectBelow <= confirm minimum <= confirm maximum <= overextended <= limit，"
         "firstResistance <= secondResistance。conditions.p2/p3 需要 holdAbove；"
         "conditions.p4 必须填写 industry.minimumMemberCoverage、medianReturnAtOrAbove、breadthAtOrAbove、"
         "relativeBenchmarkReturnAtOrAbove、failBelowMedianReturn、failBelowBreadth、failBelowRelativeBenchmarkReturn，"
         "以及 stock.holdAbove、relativeIndustryReturnAtOrAbove。"
-        "只输出一个 {\"candidates\":[...]} JSON 对象，不要回显 frozenCandidates，"
+        "不要输出 candidates 包装，不要回显 frozenCandidate，"
         "所有价格和比例必须是 JSON number，禁止字符串、占位词、null，"
         "不要输出分析过程、字段说明或第二个 JSON。\n"
-        + json.dumps({"frozenCandidates": list(skeleton.values())},
+        + json.dumps({"frozenCandidate": shape},
                      ensure_ascii=False, sort_keys=True)
     )
+
+
+def _canonical_output(raw: object) -> object:
+    """Convert the exact one-stock flat wire contract to the frozen DTO.
+
+    The model still owns every value.  This seam only restores the established
+    nested API shape after validating that the flat response supplied all
+    fields; it never calculates or fills a missing strategy value.
+    """
+    if not isinstance(raw, Mapping):
+        return raw
+    return {"candidates": [{
+        "tsCode": raw.get("tsCode"),
+        "invalidation": raw.get("invalidation"),
+        "firstResistance": raw.get("firstResistance"),
+        "secondResistance": raw.get("secondResistance"),
+        "openVerdict": {
+            "rejectBelow": raw.get("rejectBelow"),
+            "confirmRange": {
+                "minimum": raw.get("confirmMinimum"),
+                "maximum": raw.get("confirmMaximum"),
+            },
+            "unbuyableAtOrAbove": raw.get("unbuyableAtOrAbove"),
+            "overextendedAtOrAbove": raw.get("overextendedAtOrAbove"),
+        },
+        "conditions": raw.get("conditions"),
+        "rationale": raw.get("rationale"),
+    }]}
 
 
 def validate_output(raw: object, skeleton: Mapping[str, Mapping[str, Any]], *, source: str) -> dict[str, dict[str, Any]]:
@@ -213,10 +244,15 @@ def _generate_subset(skeleton: Mapping[str, Mapping[str, Any]], *, db_path=None,
                 ChatMessage(role="user", content=_prompt(skeleton))]
     last_error: PlaybookUnavailable | None = None
     for attempt in range(1, 4):
-        result = client.chat(messages, enable_search=False)
+        result = client.chat(
+            messages,
+            enable_search=False,
+            response_format={"type": "json_object"},
+        )
         if not result.ok:
             raise PlaybookUnavailable(f"playbook LLM 失败：{result.reason}")
-        _narrative, parsed = split_narrative_and_json(result.content)
+        _narrative, flat = split_narrative_and_json(result.content)
+        parsed = _canonical_output(flat)
         try:
             playbooks = validate_output(parsed, skeleton, source="llm")
         except PlaybookUnavailable as exc:
@@ -228,14 +264,14 @@ def _generate_subset(skeleton: Mapping[str, Mapping[str, Any]], *, db_path=None,
                 ChatMessage(
                     role="user",
                     content=(f"上次输出未通过严格校验：{exc}。只修正这一个错误及其连带关系，"
-                             "重新输出完整的单个 candidates JSON；所有数值字段必须是 JSON number，"
+                             "重新输出完整的单个扁平 JSON 对象；所有数值字段必须是 JSON number，"
                              "不得解释、不得省略、不得返回占位词。"),
                 ),
             ])
             continue
         return playbooks, {
             "provider": result.provider, "model": result.model,
-            "output": parsed, "formatAttempts": attempt,
+            "output": parsed, "wireOutput": flat, "formatAttempts": attempt,
         }
     assert last_error is not None
     raise last_error
@@ -275,7 +311,7 @@ def generate(hits: Sequence[Any], *, db_path=None, provider=None) -> tuple[dict[
     return ordered, {
         "source": "llm", "provider": providers[0] if len(providers) == 1 else providers,
         "model": models[0] if len(models) == 1 else models,
-        "promptVersion": "k9-v3-playbook-v2-per-stock",
+        "promptVersion": "k9-v3-playbook-v3-flat-json",
         "generationMode": "per_stock_atomic", "stockCount": len(items),
         "formatAttempts": {code: int(evidence[code].get("formatAttempts", 1)) for code, _shape in items},
         "outputs": {code: evidence[code]["output"] for code, _shape in items},
