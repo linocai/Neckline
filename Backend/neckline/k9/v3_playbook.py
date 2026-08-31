@@ -209,13 +209,36 @@ def _generate_subset(skeleton: Mapping[str, Mapping[str, Any]], *, db_path=None,
     client = provider or get_provider(TASK_PLAYBOOK, db_path=db_path)
     if client is None:
         raise PlaybookUnavailable("playbook LLM 未配置")
-    result = client.chat([ChatMessage(role="system", content="严格返回可验证 JSON，不联网。"),
-                          ChatMessage(role="user", content=_prompt(skeleton))], enable_search=False)
-    if not result.ok:
-        raise PlaybookUnavailable(f"playbook LLM 失败：{result.reason}")
-    _narrative, parsed = split_narrative_and_json(result.content)
-    playbooks = validate_output(parsed, skeleton, source="llm")
-    return playbooks, {"provider": result.provider, "model": result.model, "output": parsed}
+    messages = [ChatMessage(role="system", content="严格返回可验证 JSON，不联网。"),
+                ChatMessage(role="user", content=_prompt(skeleton))]
+    last_error: PlaybookUnavailable | None = None
+    for attempt in range(1, 4):
+        result = client.chat(messages, enable_search=False)
+        if not result.ok:
+            raise PlaybookUnavailable(f"playbook LLM 失败：{result.reason}")
+        _narrative, parsed = split_narrative_and_json(result.content)
+        try:
+            playbooks = validate_output(parsed, skeleton, source="llm")
+        except PlaybookUnavailable as exc:
+            last_error = exc
+            if attempt == 3:
+                break
+            messages.extend([
+                ChatMessage(role="assistant", content=result.content),
+                ChatMessage(
+                    role="user",
+                    content=(f"上次输出未通过严格校验：{exc}。只修正这一个错误及其连带关系，"
+                             "重新输出完整的单个 candidates JSON；所有数值字段必须是 JSON number，"
+                             "不得解释、不得省略、不得返回占位词。"),
+                ),
+            ])
+            continue
+        return playbooks, {
+            "provider": result.provider, "model": result.model,
+            "output": parsed, "formatAttempts": attempt,
+        }
+    assert last_error is not None
+    raise last_error
 
 
 def generate(hits: Sequence[Any], *, db_path=None, provider=None) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
@@ -254,6 +277,7 @@ def generate(hits: Sequence[Any], *, db_path=None, provider=None) -> tuple[dict[
         "model": models[0] if len(models) == 1 else models,
         "promptVersion": "k9-v3-playbook-v2-per-stock",
         "generationMode": "per_stock_atomic", "stockCount": len(items),
+        "formatAttempts": {code: int(evidence[code].get("formatAttempts", 1)) for code, _shape in items},
         "outputs": {code: evidence[code]["output"] for code, _shape in items},
     }
 

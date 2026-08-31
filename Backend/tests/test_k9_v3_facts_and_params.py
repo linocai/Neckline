@@ -296,6 +296,37 @@ def test_production_playbooks_generate_per_stock_but_return_one_atomic_mapping(m
     assert provenance["stockCount"] == 7
 
 
+def test_one_stock_playbook_retries_only_format_errors_with_precise_feedback():
+    import json
+    from neckline.k9 import v3_playbook
+    from neckline.llm.base import LLMResult
+    hit = v3_run.V3Hit(
+        "600001.SH", "a", "801080.SI", "半导体", "p2", 1, 1.0,
+        {"close": 10.0, "limit_up_price": 11.0}, {"x": 1})
+    skeleton = v3_playbook.mechanical_skeleton([hit])
+    valid = {"candidates": [{
+        "tsCode": "600001.SH", "invalidation": 9.0,
+        "firstResistance": 10.4, "secondResistance": 10.8,
+        "openVerdict": {"rejectBelow": 9.2,
+                        "confirmRange": {"minimum": 9.5, "maximum": 10.0},
+                        "overextendedAtOrAbove": 10.5, "unbuyableAtOrAbove": 11.0},
+        "conditions": {"p2": {"holdAbove": 9.4}}, "rationale": "完整预案。",
+    }]}
+    class FakeProvider:
+        calls = 0
+        feedback = ""
+        def chat(self, messages, **_kwargs):
+            self.calls += 1
+            self.feedback = messages[-1].content or ""
+            content = '{"candidates":[{"tsCode":"600001.SH"}]}' if self.calls == 1 else json.dumps(valid, ensure_ascii=False)
+            return LLMResult(ok=True, content=content, provider="fake", model="fake")
+    provider = FakeProvider()
+    plans, meta = v3_playbook._generate_subset(skeleton, provider=provider)
+    assert plans["600001.SH"]["invalidation"] == 9.0
+    assert provider.calls == 2 and "缺少开盘判定" in provider.feedback
+    assert meta["formatAttempts"] == 2
+
+
 def test_successful_empty_selection_is_an_immutable_empty_package(tmp_path):
     db = tmp_path / "db.sqlite"; init_schema(db)
     params = v3_params.V3Params("r1", "sha", _approved())
