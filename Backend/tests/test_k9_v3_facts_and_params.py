@@ -264,6 +264,17 @@ def test_llm_typed_playbook_contract_freezes_nonempty_day1(tmp_path):
     assert item["playbook"]["firstResistance"] == 10.5
 
 
+def test_playbook_prompt_distinguishes_frozen_input_from_required_output():
+    from neckline.k9 import v3_playbook
+    hit = v3_run.V3Hit(
+        "600001.SH", "a", "801080.SI", "半导体", "p2", 1, 1.0,
+        {"close": 10.0, "limit_up_price": 11.0}, {"x": 1})
+    prompt = v3_playbook._prompt(v3_playbook.mechanical_skeleton([hit]))
+    assert '"frozenCandidates"' in prompt
+    assert '"requiredOutputShape"' in prompt
+    assert "不要回显 frozenCandidates" in prompt
+
+
 def test_successful_empty_selection_is_an_immutable_empty_package(tmp_path):
     db = tmp_path / "db.sqlite"; init_schema(db)
     params = v3_params.V3Params("r1", "sha", _approved())

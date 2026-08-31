@@ -101,6 +101,25 @@ def mechanical_skeleton(hits: Sequence[Any]) -> dict[str, dict[str, Any]]:
 
 
 def _prompt(skeleton: Mapping[str, Mapping[str, Any]]) -> str:
+    output_shape = {
+        "candidates": [{
+            "tsCode": "逐字复制一只 frozenCandidates.tsCode",
+            "invalidation": "正数价格",
+            "firstResistance": "正数价格",
+            "secondResistance": "正数价格",
+            "openVerdict": {
+                "rejectBelow": "正数价格",
+                "confirmRange": {"minimum": "正数价格", "maximum": "正数价格"},
+                "overextendedAtOrAbove": "正数价格",
+                "unbuyableAtOrAbove": "逐字使用该票 baseline.limit_up_price",
+            },
+            "conditions": {
+                "p2或p3": {"holdAbove": "正数价格"},
+                "p4": {"industry": "按下述字段完整填写", "stock": "按下述字段完整填写"},
+            },
+            "rationale": "非空解释",
+        }],
+    }
     return (
         "你是 Neckline K9-v3 次日预案填写器。只能为下列冻结候选填写具体价位和解释；"
         "不得新增/删除候选、通道、排名、额度或改变任何机械条件。"
@@ -112,8 +131,14 @@ def _prompt(skeleton: Mapping[str, Mapping[str, Any]]) -> str:
         "firstResistance <= secondResistance。conditions.p2/p3 需要 holdAbove；"
         "conditions.p4 必须填写 industry.minimumMemberCoverage、medianReturnAtOrAbove、breadthAtOrAbove、"
         "relativeBenchmarkReturnAtOrAbove、failBelowMedianReturn、failBelowBreadth、failBelowRelativeBenchmarkReturn，"
-        "以及 stock.holdAbove、relativeIndustryReturnAtOrAbove。只输出 JSON 对象：{\"candidates\":[...]}。\n"
-        + json.dumps({"candidates": list(skeleton.values())}, ensure_ascii=False, sort_keys=True)
+        "以及 stock.holdAbove、relativeIndustryReturnAtOrAbove。"
+        "只输出 requiredOutputShape 对应的 JSON 对象，不要回显 frozenCandidates，"
+        "不要输出分析过程或第二个 JSON。\n"
+        + json.dumps(
+            {"requiredOutputShape": output_shape,
+             "frozenCandidates": list(skeleton.values())},
+            ensure_ascii=False, sort_keys=True,
+        )
     )
 
 
