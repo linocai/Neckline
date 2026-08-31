@@ -140,6 +140,33 @@ def test_k9_boundary_converts_daily_amount_from_kcny_to_cny():
     assert pool["ts_code"].to_list() == ["600001.SH"]
 
 
+def test_d1_price_limit_is_derived_for_every_candidate_from_frozen_d0_close():
+    hit = v3_run.V3Hit(
+        "300710.SZ", "万隆光电", "801080.SI", "半导体", "p2", 1, 1.0,
+        {"close": 31.21, "board": "GEM", "is_st": False,
+         "limit_up_price": None, "limit_down_price": None}, {},
+    )
+    bound = v3_run.bind_d1_price_limits([hit], d1_trade_date=date(2026, 9, 1))[0]
+    assert bound.baseline["limit_up_price"] == 37.45
+    assert bound.baseline["limit_down_price"] == 24.97
+    assert bound.baseline["price_limit_trade_date"] == "2026-09-01"
+
+
+def test_failed_correction_never_saves_or_pushes_old_report(monkeypatch):
+    from neckline.report import evening
+    monkeypatch.setattr(
+        evening, "_run_k9_lifecycle",
+        lambda *_args, **_kwargs: (evening.STATUS_EMPTY, {"gaps": ["playbook missing"]}),
+    )
+    result = evening.run_evening_chain(
+        DAY, report_date=DAY, segments=(evening.SEG_K9, evening.SEG_REPORT),
+        correction_revision=2, save=True,
+    )
+    assert result.bundle is None
+    assert result.status[evening.SEG_REPORT] == evening.STATUS_FAILED
+    assert result.stats[evening.SEG_REPORT]["state"] == "not_saved"
+
+
 def test_listing_age_uses_only_the_approved_number_of_frozen_days():
     days = [date(2026, 6, 1) + timedelta(days=i) for i in range(60)]
     history = pl.DataFrame({"trade_date": days})

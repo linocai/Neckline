@@ -1,5 +1,59 @@
 # Project errors
 
+## [ERR-20260831-029] Failed correction re-published the old empty report
+
+**Logged**: 2026-08-31T21:40:00+08:00
+**Priority**: critical
+**Status**: resolved
+**Area**: backend
+
+### Summary
+The first revision-2 attempt correctly refused to create a package when D1 price-band evidence was absent, but the report segment then projected and pushed the old revision-1 empty marker again.
+
+### Suggested Fix
+In explicit correction mode, do not save a report or notify unless the correction D0 is successfully created. A failed correction is lifecycle evidence only and must leave the prior projection untouched.
+
+### Resolution
+- **Resolved**: 2026-08-31T21:44:00+08:00
+- **Notes**: Build 21 returns a failed report segment with no bundle, no save, and no notification whenever correction D0 is not successful; regression coverage was added.
+
+---
+
+## [ERR-20260831-028] Sparse D0 limit table could not supply every D1 playbook band
+
+**Logged**: 2026-08-31T21:39:00+08:00
+**Priority**: critical
+**Status**: resolved
+**Area**: backend
+
+### Summary
+Ten of eleven formal candidates had null `limit_up_price` because `limit_derived` intentionally stores only stocks that hit or opened a price band on D0, while every next-session playbook requires a D1 band.
+
+### Suggested Fix
+Derive every candidate's D1 price band from the frozen D0 close, board and ST identity using the shared exchange-rule function; do not treat a sparse event table as a complete price-band table.
+
+### Resolution
+- **Resolved**: 2026-08-31T21:44:00+08:00
+- **Notes**: Build 21 binds D1 up/down limits for every candidate and freezes the target D1 trade date in the baseline.
+
+---
+
+## [ERR-20260831-027] Production verification ran outside the application directory
+
+**Logged**: 2026-08-31T21:38:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: release
+
+### Summary
+The first post-sync compile/schema verification invoked the virtualenv from the deploy user's home directory, so `neckline` was not importable.
+
+### Resolution
+- **Resolved**: 2026-08-31T21:38:00+08:00
+- **Notes**: The import failed before schema initialization. The command was rerun from `/opt/neckline`; the new table was the only schema delta and all old table row counts remained unchanged.
+
+---
+
 ## [ERR-20260831-026] Unquoted backticks executed inside a diagnostic search command
 
 **Logged**: 2026-08-31T21:20:00+08:00

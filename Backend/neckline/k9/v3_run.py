@@ -1,7 +1,7 @@
 """K9-v3 deterministic engine: P2/P3/P4 only, no tiers, floors or cross-channel score."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -110,10 +110,42 @@ def _rank(frame: pl.DataFrame, channel: str, score: pl.Expr, quota: int, locked:
     ranked = frame.filter(~pl.col("ts_code").is_in(sorted(locked))).with_columns(score.alias("_score")).filter(pl.col("_score").is_finite()).sort(["_score","ts_code"], descending=[True,False]).head(quota)
     result: list[V3Hit] = []
     for i,row in enumerate(ranked.iter_rows(named=True),1):
-        baseline = {k: row.get(k) for k in ("trade_date","close","pre_close","limit_up_price","limit_down_price","free_float_mv","ret_1d","sw_l2_median_ret","rel_strength_1d")}
+        baseline = {k: row.get(k) for k in ("trade_date","close","pre_close","limit_up_price","limit_down_price","free_float_mv","ret_1d","sw_l2_median_ret","rel_strength_1d","board","is_st")}
         baseline = {k:(v.isoformat() if hasattr(v,"isoformat") else v) for k,v in baseline.items()}
         result.append(V3Hit(str(row["ts_code"]),row.get("name"),row.get("sw_l2_code"),row.get("sw_l2_name"),channel,i,float(row["_score"]),baseline,dict(thresholds)))
     return result
+
+
+def bind_d1_price_limits(hits: Sequence[V3Hit], *, d1_trade_date: date) -> list[V3Hit]:
+    """Bind the next-session price bands used by the D1 open playbook.
+
+    ``limit_derived`` is intentionally sparse and only stores stocks that hit
+    a band on D0.  A D1 playbook needs the band for every candidate, derived
+    from D0's frozen close and identity facts.  The shared scalar rule is the
+    same one used by intraday capture; K9's >=40-session boundary means no
+    candidate can still be inside a new-listing exemption window.
+    """
+    from neckline.data.board import Board
+    from neckline.data.limit_derived import compute_intraday_limit_prices
+
+    output: list[V3Hit] = []
+    for hit in hits:
+        baseline = dict(hit.baseline)
+        try:
+            close = float(baseline["close"])
+            board = Board(str(baseline["board"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PackageCreationError(
+                f"D1 涨跌停价缺少冻结身份:{hit.ts_code}") from exc
+        up, down = compute_intraday_limit_prices(
+            close, board, bool(baseline.get("is_st")), d1_trade_date)
+        if up is None or down is None:
+            raise PackageCreationError(f"D1 涨跌停价不可计算:{hit.ts_code}")
+        baseline["limit_up_price"] = up
+        baseline["limit_down_price"] = down
+        baseline["price_limit_trade_date"] = d1_trade_date.isoformat()
+        output.append(replace(hit, baseline=baseline))
+    return output
 
 
 def _p2(history: pl.DataFrame, pool: pl.DataFrame, cfg: Mapping[str, Any], quota: int, locked: set[str]) -> list[V3Hit]:
@@ -347,4 +379,4 @@ def create_package(*, batch_id: str, selection_date: date, signal_trade_date: da
     packages.create_batch(batch_id=batch_id,selection_date=selection_date,signal_trade_date=signal_trade_date,d1_trade_date=d1_trade_date,d2_trade_date=d2_trade_date,revision=revision,params_package_version=params.package_version,params_sha256=params.source_sha256,pack_id=pack_id,frozen_contract=contract,candidates=candidates,playbook_provenance=playbook_provenance,db_path=db_path)
 
 
-__all__=["V3Hit","PackUnavailable","PackageCreationError","compute","create_package"]
+__all__=["V3Hit","PackUnavailable","PackageCreationError","compute","bind_d1_price_limits","create_package"]

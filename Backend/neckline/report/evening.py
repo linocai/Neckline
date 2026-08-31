@@ -61,6 +61,13 @@ def run_evening_chain(trade_date: date, *, report_date: Optional[date] = None,
             trade_date, report_date=report_date, k9_params_path=k9_params_path,
             correction_revision=correction_revision, db_path=db_path, parquet_dir=parquet_dir)
     if SEG_REPORT in segments:
+        if correction_revision is not None and result.status.get(SEG_K9) != STATUS_OK:
+            result.status[SEG_REPORT] = STATUS_FAILED
+            result.stats[SEG_REPORT] = {
+                "state": "not_saved",
+                "reason": "correction_d0_not_created",
+            }
+            return result
         gaps = list(result.stats.get(SEG_K9, {}).get("gaps", []))
         bundle = pipeline.build_report(trade_date, report_date=report_date,
                                        params_path=k9_params_path, db_path=db_path,
@@ -122,6 +129,10 @@ def _create_d0(trade_date: date, *, report_date: date, k9_params_path: Optional[
         return record("not_run", f"交易日历未就绪:{exc}")
     # selection_date is the public report date.  On a Sunday report this is not
     # the Friday fact date; keeping both values is part of the immutable ID.
+    try:
+        hits = v3_run.bind_d1_price_limits(hits, d1_trade_date=d1)
+    except v3_run.PackageCreationError as exc:
+        return record("not_run", f"D1 价格边界未就绪：{exc}")
     revision = correction_revision or 1
     batch_id = f"k9-v3-{report_date:%Y%m%d}-r{revision}-{pack.pack_id}"
     # K9-v3 pre-plans are not a parameter-ratio transformer.  The mechanical
