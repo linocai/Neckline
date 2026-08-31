@@ -327,6 +327,14 @@ def test_one_stock_playbook_retries_only_format_errors_with_precise_feedback():
     assert meta["formatAttempts"] == 2
 
 
+def test_playbook_price_fields_require_json_numbers_not_numeric_strings():
+    from neckline.k9 import v3_playbook
+    with pytest.raises(v3_playbook.PlaybookUnavailable, match="字符串.*JSON number"):
+        v3_playbook._number("9.50", "candidate.invalidation")
+    with pytest.raises(v3_playbook.PlaybookUnavailable, match="缺失.*JSON number"):
+        v3_playbook._number(None, "candidate.invalidation")
+
+
 def test_successful_empty_selection_is_an_immutable_empty_package(tmp_path):
     db = tmp_path / "db.sqlite"; init_schema(db)
     params = v3_params.V3Params("r1", "sha", _approved())

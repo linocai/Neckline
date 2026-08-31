@@ -24,12 +24,12 @@ class PlaybookUnavailable(RuntimeError):
 
 
 def _number(value: object, name: str) -> float:
-    if isinstance(value, bool):
-        raise PlaybookUnavailable(f"{name} 必须为价格数值")
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as exc:
-        raise PlaybookUnavailable(f"{name} 必须为价格数值") from exc
+    if value is None:
+        raise PlaybookUnavailable(f"{name} 缺失；必须新增并直接填写 JSON number")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        kind = "字符串（不能带单位或说明文字）" if isinstance(value, str) else type(value).__name__
+        raise PlaybookUnavailable(f"{name} 当前是{kind}；字段本身必须直接填写 JSON number")
+    result = float(value)
     if result <= 0:
         raise PlaybookUnavailable(f"{name} 必须大于 0")
     return result
