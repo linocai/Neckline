@@ -1,10 +1,42 @@
 # Project errors
 
+## [ERR-20260831-021] SW historical exit date was interpreted as exclusive
+
+**Logged**: 2026-08-31T20:25:40+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+The first historical SW snapshot exporter treated `out_date` as the first excluded day. Production dry-run evidence showed 73 missing memberships on a mass reclassification boundary, proving that the field is the last included day.
+
+### Error
+The 2026-06-30 fp-4 dry-run reported 73 stocks without SW membership; 68 former rows had `out_date=20260630` and the same 68 codes began replacement rows on 2026-07-01.
+
+### Context
+- The final reconstructed 2026-08-31 snapshot still matched the current snapshot, so an end-state equality check alone could not validate historical boundary semantics.
+- No fp-4 was frozen and no report was generated from the rejected export.
+- The production database was restored byte-for-byte from the verified pre-write backup before the corrected file was imported.
+
+### Suggested Fix
+Test adjacent dates around real interval transitions and inspect discontinuities before freezing any reconstructed temporal data. Treat TuShare SW membership as `[in_date, out_date]` and reject same-day overlapping assignments.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/scripts/export_sw_industry_history.py, Backend/tests/test_export_sw_industry_history.py
+- See Also: LRN-20260831-005
+
+### Resolution
+- **Resolved**: 2026-08-31T20:29:15+08:00
+- **Notes**: Corrected the interval contract, regenerated and independently imported the 60-day artifact, restored production before re-import, and completed a second 60-day dry-run with zero incomplete or failed days.
+
+---
+
 ## [ERR-20260831-020] K9-v3 D0 demanded a lifetime trading calendar for a 40-day rule
 
-**Logged**: 2026-08-31T20:30:00+08:00
+**Logged**: 2026-08-31T20:07:26+08:00
 **Priority**: critical
-**Status**: in_progress
+**Status**: resolved
 **Area**: backend
 
 ### Summary
@@ -27,8 +59,8 @@ Keep `list_date` as the frozen source fact and compare it with the oldest of the
 - See Also: LRN-20260831-004
 
 ### Resolution
-- **Resolved**: pending production verification
-- **Notes**: The bounded implementation and regression tests are complete; production replay and report verification remain.
+- **Resolved**: 2026-08-31T20:30:36+08:00
+- **Notes**: Deployed the bounded proof in `v2.7.0-b19-hf2`, froze 60 complete fp-4 days, and reran the failed D0/report stages. D2, D1, and D0 are all `ok`; the report is a trusted empty result rather than `not_run`.
 
 ---
 

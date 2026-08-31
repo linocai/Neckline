@@ -1,5 +1,33 @@
 # Project learnings
 
+## [LRN-20260831-005] best_practice
+
+**Logged**: 2026-08-31T20:29:15+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+End-state equality does not validate the boundary semantics of reconstructed temporal history.
+
+### Details
+The first SW history export matched the independent current snapshot on its final day but still interpreted `out_date` incorrectly. A 60-day fp-4 dry-run exposed the defect as a one-day spike from 5 to 73 missing memberships on 2026-06-30. Raw intervals then proved that 68 old assignments ended on June 30 and their replacements began July 1, so the exit date is the final included date.
+
+### Suggested Action
+Before freezing reconstructed interval data, validate at least one real transition with adjacent dates, compare discontinuity counts, and require a no-overlap contract. Keep the pre-write database backup until the full temporal dry-run passes, not merely until the import succeeds.
+
+### Metadata
+- Source: production_validation
+- Related Files: Backend/scripts/export_sw_industry_history.py, Backend/tests/test_export_sw_industry_history.py
+- Tags: temporal-data, interval-boundary, SW2021, preflight, rollback
+- See Also: ERR-20260831-021
+
+### Resolution
+- **Resolved**: 2026-08-31T20:29:15+08:00
+- **Notes**: The corrected inclusive interval artifact passed an isolated import and a production 60-day fp-4 dry-run before any fact pack was frozen.
+
+---
+
 ## [LRN-20260831-004] correction
 
 **Logged**: 2026-08-31T20:07:26+08:00
@@ -24,8 +52,8 @@ Before asking the user to source or mutate data, restate the business question i
 - Tags: K9-v3, fp-4, trading-calendar, listing-age, fail-closed
 
 ### Resolution
-- **Resolved**: 2026-08-31T20:07:26+08:00
-- **Notes**: Reclassified the production failure as an implementation defect, not a requirement to source three decades of strategy data. No production data or report was rerun.
+- **Resolved**: 2026-08-31T20:30:36+08:00
+- **Notes**: Reclassified the failure as an implementation defect, removed the exact lifetime count, and proved the 40-day rule from recent frozen history. Production then froze 60 fp-4 days and generated the trusted empty 2026-08-31 report.
 
 ---
 

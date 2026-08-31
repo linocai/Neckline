@@ -1,14 +1,14 @@
 # Neckline · V2.7.0 Build 19 / K9-v3
 
-> 当前生产程序为 V2.7.0 Build 19，后端、macOS/iOS 客户端与不可变标签统一为 `v2.7.0-b19`；K9-v2 已退役，不再作为发布、等待、迁移或历史成绩处理对象。
+> 当前生产程序为 V2.7.0 Build 19；macOS/iOS 客户端与分发集合为 `v2.7.0-b19`，NB 云后端在同一 API 合同上运行不可变热修复 `v2.7.0-b19-hf2`。K9-v2 已退役，不再作为发布、等待、迁移或历史成绩处理对象。
 >
-> 本轮状态：**V2.7.0 Build 19 已完成一条龙发布**。NB 云后端与 macOS 正式安装均已切换，iOS 同版安装包已签名交付，K9-v3 参数原件在生产按同一 SHA 显式加载。发布完成时 2026-08-31 尚未收盘，候选与成绩队列保持全新空态；首个 Day 1 由 19:00 正式晚间链读取当日完整冻结事实生成，不以半日行情手工抢跑。
+> 本轮状态：**V2.7.0 Build 19 已完成发布与首个 K9-v3 晚间链**。19:00 首跑因 fp-4 错把 40 日上市门槛实现成精确上市生涯计数而 `not_run`；热修复删除该过度依赖，以最近 40 个冻结交易日证明阈值，并用经边界对拍的历史申万区间回放补齐 60 个 fp-4。受控重跑后 D2、D1、D0 全部成功，首批成绩包与报告是可信 `empty`，不是失败空态。
 >
 > 方向输入（只读，不导入生产）：`/Users/linotsai/Lino/whynotme/K9.md`（SHA-256 `ba6d915e355c66166ba7e0b4c4546d88be6c66acfabc2db4afa09aff5a27728f`）与 `Neckline新架构_20260818.md`（`c665ba562d03e6af7ff00cc2b41905a6b6e569d6311bcb08803e999e04c3841e`），均在 2026-08-30 读取；若施工前源文档变更，先更新本计划的合同与指纹。
 
 ## 1. 目标与不可变边界
 
-- 交付 `V2.7.0 Build 19 / K9-v3` 的后端、macOS 与 iOS 同版本集合；服务端发布身份为 `v2.7.0-b19`，客户端显示 `2.7.0 (19)`。本轮预留并冻结 `fp-4`、`k9-params-v3`、`d2-v2` 的工程契约命名和校验命名空间，不代表任何策略或结算数值已经批准。
+- 交付 `V2.7.0 Build 19 / K9-v3` 的后端、macOS 与 iOS 同 API/DTO 合同；客户端显示 `2.7.0 (19)`，分发集合为 `v2.7.0-b19`，后端热修复身份为 `v2.7.0-b19-hf2`。本轮预留并冻结 `fp-4`、`k9-params-v3`、`d2-v2` 的工程契约命名和校验命名空间，不代表任何策略或结算数值已经批准。
 - K9-v3 参数包 `k9-params-20260831-v3-r1` 已由用户批准并按原字节接入 `Backend/config/k9-params.json`（SHA-256 `feb24c8199b061b31e33fa9b47603e3d9cc27d76eaa0aff064f1b451d01b41a2`）。加载器只接受完整、不可变的 `k9-params-v3`；缺失、错误、旧包或混合包统一显示“**今天没跑成 · 参数未配置**”，不生成正式候选、预案、成绩包或推送。
 - Neckline 只消费已批准的 JSON 参数原件，绝不导入、执行或读取 `whynotme`；测试夹具必须隔离，不能被生产路径发现。
 - K8 与 K9-v2 均已退役；不恢复它们的运行时代码、路由、缓存、界面或成绩链，也不把其在途状态、迁移或历史处置列为 V2.7 发布门禁。
@@ -22,7 +22,7 @@
 
 | 身份 | V2.7.0 的固定值 / 行为 |
 |---|---|
-| 系统与 API | `2.7.0`；服务端与两端 App 只接受同一 API/DTO 合同 |
+| 系统与 API | `2.7.0`；生产后端 release set `v2.7.0-b19-hf2`；服务端与两端 App 使用同一 API/DTO 合同 |
 | 客户端构建 | macOS/iOS 均为 `2.7.0 (19)`；发布标签 `v2.7.0-b19` |
 | 策略与事实 | `K9-v3`、预留冻结事实契约 `fp-4`；不得原地改变 fp-3 语义 |
 | 参数与结算 | 预留 `k9-params-v3`、`d2-v2` 命名空间；参数到位时全部阈值、权重、额度、启用通道、P4 基准和 D1/D2 数值必须显式必填 |
@@ -122,6 +122,7 @@ K9-v3 的工程形状已经确定：P1 完全暂停；P2 保留超跌反弹但�
 - [x] 参数接入：获批原件 `k9-params-20260831-v3-r1` 已从研究侧按原字节写入 `Backend/config/k9-params.json`，源/目标 SHA-256 均为 `feb24c8199b061b31e33fa9b47603e3d9cc27d76eaa0aff064f1b451d01b41a2`；严格加载器、41 项 K9-v3 定向测试、Backend `832 passed` 与 API 冒烟全部通过，未触碰业务数据库、未生成报告。
 - [x] NB SSH 入口恢复：`NB_info.md` 记录的现行 IP `114.66.2.205` 与 ED25519 指纹 `SHA256:iB1q/KoqSAhV5OpQyJPX3u8P/0fwk3P4YkJ6lmTnz0A` 已逐位核对，既有 Mac mini 公钥以 `deploy` 登录成功；过期入口已从 Neckline 现行运维说明中移除。
 - [x] 发布前视觉复核修复：iOS 选股页已恢复“今日清单 / 次日核对表”常驻切换器，交易时段默认落在核对表后仍可双向切换；macOS“研究服务”最近 5 日用量已改为卡内通栏左对齐。最新模拟器与 macOS 实际界面复核通过，macOS build、iOS Simulator build、iOS build-for-testing 与 `git diff --check` 全部通过。
-- [x] P5 生产收口：提交 `52653e1` 与不可变标签 `v2.7.0-b19` 已推送；NB 云先建立并校验 `/opt/neckline/data/backups/v2.7.0-b19-pre-20260831-120844`，随后停写、同步、显式设置 `K9_PARAMS_PATH`、受控建表并恢复服务与三个正式 timer。旧 28 张表行数全部不变，迁移后数据库 `integrity_check=ok`，公网 health 为 `v2.7.0 / v2.7.0-b19`，服务 0 次重启。macOS Developer ID 双架构分发包与 Apple Development 本机安装包均严格验签，`/Applications/Neckline.app` 已运行 `2.7.0 (19)`，旧 App 备份在 `/Users/linotsai/Lino/app_backups/Neckline-v2.6.0-build18-pre-v270-20260831-121500.app`；iOS arm64 包已签名交付。K9-v3 当前候选、进行中和已结算队列均为空，19:00 晚间链是首个 Day 1 的唯一正式入口；readiness 不完整时不得生成包或推送。**下一动作：19:00 后核对首次生命周期 attempt、报告状态与 Day 1 包谱系。**
+- [x] P5 生产收口：提交 `52653e1` 与不可变标签 `v2.7.0-b19` 已推送；NB 云先建立并校验 `/opt/neckline/data/backups/v2.7.0-b19-pre-20260831-120844`，随后停写、同步、显式设置 `K9_PARAMS_PATH`、受控建表并恢复服务与三个正式 timer。旧 28 张表行数全部不变，迁移后数据库 `integrity_check=ok`，公网 health 为 `v2.7.0 / v2.7.0-b19`，服务 0 次重启。macOS Developer ID 双架构分发包与 Apple Development 本机安装包均严格验签，`/Applications/Neckline.app` 已运行 `2.7.0 (19)`，旧 App 备份在 `/Users/linotsai/Lino/app_backups/Neckline-v2.6.0-build18-pre-v270-20260831-121500.app`；iOS arm64 包已签名交付。K9-v3 首个 Day 1 只允许由 19:00 正式晚间链读取完整冻结事实生成；readiness 不完整时不得生成包或推送。
 - [x] 发布制品：GitHub Release `v2.7.0-b19` 已附 macOS ZIP（SHA-256 `0a4567bbc4fe30213acab897dfc38204c46cf1366c972e7aa14b12d0eabf2c9d`）、iOS App ZIP（`74299c507d0628f4c3ef04990216a85cfb2188935ba5cab6890b1c379198b504`）与 iOS IPA（`cc1be9369f20f8db9fdaa240bf477eae60a91fbd0b3afe7a675c572ea206c948`）。
 - [x] 新 iOS 设备接入：已确认 `Caeieo` 早已配对、在 Build 19 描述文件内且已安装 `2.7.0 (19)`；本次无需新增 UDID 或重新签名。通过同一 Wi-Fi 使用隔离临时引导版把既有生产凭据写入 iOS Keychain，再以无注入启动证明凭据来源为 `keychain`，随后覆盖回官方 Build 19。官方包启动后生产 `devices` 记录于 2026-08-31 13:28 CST 更新为 iOS，公网健康为 `v2.7.0 / v2.7.0-b19`；未卸载 App、未暴露凭据，临时工作树与构建目录均已删除。
+- [x] 首个 K9-v3 Day 1 收口：19:00 首跑的 D2/D1 成功、D0 因精确上市生涯日历依赖失败，报告为 `not_run`。提交 `dcf3f31` 删除精确 lifetime 计数，改用获批 `newListingTradingDays=40` 个最近冻结日证明上市门槛；提交 `7c275ec` 依据原始连续换档事实确认申万 `out_date` 为最后有效日，修正历史区间为闭区间，并保留错误版本的不可变标签 `v2.7.0-b19-hf1`、以 `v2.7.0-b19-hf2` 上产。生产停写前备份为 `/opt/neckline/data/backups/v2.7.0-b19-hf1-pre-20260831-202337`；经 SHA `7efbd0f20577badef91163863e98a51a21e1637dad635124d9227021e7054e35` 的 60 日申万文件导入后，332,152 行/60 日快照与 60 个 fp-4 均完整，预演和正式冻结都是 `incomplete=0 / failed=0`。受控重跑 `k9,report` 后同一 lifecycle attempt 的 D2→D1→D0 全部 `ok`；首包谱系为 `K9-v3 / fp-4 / k9-params-20260831-v3-r1 / d2-v2`、参数 SHA 不变，候选/预案均为 0，报告为可信 `empty`（“今天没有”），APNs `sent=2 / failed=0`。运行后备份为 `/opt/neckline/data/backups/v2.7.0-b19-hf2-post-20260831-203257`，数据库 `integrity_check=ok`，公网 health 为 `v2.7.0 / v2.7.0-b19-hf2`，主服务 0 次重启，三个 timer active。
