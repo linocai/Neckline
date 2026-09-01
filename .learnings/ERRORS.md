@@ -1,5 +1,90 @@
 # Project errors
 
+## [ERR-20260901-004] One cross-file documentation patch assumed NB_info had not changed
+
+**Logged**: 2026-09-01T21:58:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+A single patch covering repository documents and the shared NB operations document failed because another project had already updated Fiscal facts in `NB_info.md`.
+
+### Resolution
+- **Resolved**: 2026-09-01T22:00:00+08:00
+- **Notes**: The failed patch was atomic and changed nothing. Split the edits by file, re-read the shared document, and updated only the Neckline clauses while preserving the concurrent Fiscal update.
+
+---
+
+## [ERR-20260901-003] Read-only SW diagnostic assumed a trade_date column on the current-member table
+
+**Logged**: 2026-09-01T21:35:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+A read-only production query addressed `sw_industry_member` as a dated snapshot table and failed because that current-member table has no `trade_date` column.
+
+### Resolution
+- **Resolved**: 2026-09-01T21:36:00+08:00
+- **Notes**: No production state changed. Switched to the actual readiness API and dated snapshot/derived tables instead of guessing the schema.
+- **See Also**: ERR-20260831-025
+
+---
+
+## [ERR-20260901-002] Recovery checked the retired default fact-pack version and stopped before today
+
+**Logged**: 2026-09-01T21:34:00+08:00
+**Priority**: critical
+**Status**: pending
+**Area**: backend
+
+### Summary
+The 16:25 prerequisite recovery called `readiness.preflight(day)` without `pack_version="fp-4"`. It therefore treated every K9-v3-only day as missing fp-3, retried 2026-08-31 first, failed the historical SW snapshot guard, and never reached the genuinely incomplete 2026-09-01 day.
+
+### Error
+`2026-08-31 default=False: 没有 fp-3；fp4=True: 7abb63783f164689a6eb1b12a3159394`
+
+### Suggested Fix
+Bind recovery discovery and post-update verification explicitly to `fp-4`. Process recent/current gaps before older gaps or continue past an independently unrecoverable historical day so one stale false gap cannot block today's retry. Add a test proving a ready fp-4 day is not selected merely because fp-3 is absent.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/scripts/recover_data_prerequisites.py, Backend/neckline/facts/readiness.py
+- See Also: ERR-20260831-020, ERR-20260831-024
+
+---
+
+## [ERR-20260901-001] The 16:05 daily_basic partition was incomplete and had no effective current-day retry
+
+**Logged**: 2026-09-01T21:33:00+08:00
+**Priority**: critical
+**Status**: pending
+**Area**: data
+
+### Summary
+At 16:05 TuShare returned 5546 daily_basic rows but all 5546 `free_share` and `turnover_rate_f` values were null. fp-4 correctly failed closed, but the scheduled recovery defect prevented a later current-day refresh before the 19:00 report.
+
+### Context
+- The raw 16:05 partition still has 0/5546 valid `free_share` and 0/5546 valid `turnover_rate_f`.
+- A read-only live source check at 21:35 returned 5546/5546 valid values for both fields.
+- The visible `sw_industry_daily` gap is downstream: no complete fp-4 was built, so the industry daily rows were never written.
+
+### Suggested Fix
+After the first incomplete `daily_basic` response, run bounded current-day retries that revalidate hard-boundary population before 19:00. Keep `not_run` when the source remains incomplete; never freeze null values or reuse yesterday's facts.
+
+### Metadata
+- Reproducible: yes
+- Related Files: Backend/scripts/daily_update.py, Backend/scripts/recover_data_prerequisites.py, Backend/neckline/facts/v4.py
+- See Also: ERR-20260831-024, LRN-20260831-007
+
+### Operational Recovery
+- **Recovered**: 2026-09-01T21:50:00+08:00
+- **Notes**: A read-only source check first confirmed 5546/5546 valid values. Under a stop-the-world boundary with verified pre/post backups, the official daily update rebuilt and froze fp-4 pack `b3f1cb8a96124ca98ae7b9a2c90ec415`; the official evening chain then completed D2→D1→D0, published a four-stock report, and delivered APNs to 2/2 devices. This resolves today's report only; the scheduled retry defect remains pending in ERR-20260901-002.
+
+---
+
 ## [ERR-20260831-031] Nested playbook output contract repeatedly omitted required objects
 
 **Logged**: 2026-08-31T22:32:39+08:00
