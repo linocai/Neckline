@@ -18,6 +18,7 @@ WARNING,绝不让主增量(daily/basic/adj/moneyflow)失败,也绝不改变退�
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from datetime import date, datetime
@@ -32,12 +33,67 @@ import backfill  # noqa: E402  (同目录 scripts/backfill.py)
 
 from neckline.calendar import CN_TZ, official_is_trading_day, reset_cache  # noqa: E402
 from neckline.config import ensure_data_dirs, settings  # noqa: E402
-from neckline.db import init_schema  # noqa: E402
+from neckline.data.eod_validation import daily_basic_gaps  # noqa: E402
+from neckline.data.market_data import day_file_exists, day_file_path  # noqa: E402
+from neckline.db import init_schema, readonly_tables  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("daily_update")
 
 LIMIT_DERIVED_TRAILING_DAYS = 15  # 尾部重算窗口(交易日),覆盖连板计数跨批次边界
+
+
+def _read_day_partition(table: str, target: date) -> pl.DataFrame | None:
+    path = day_file_path(table, target)
+    if not path.exists():
+        return None
+    try:
+        return pl.read_parquet(path)
+    except Exception:  # noqa: BLE001
+        logger.warning("[%s] %s 现役分区不可读,将重新拉取", table, target, exc_info=True)
+        return None
+
+
+def validate_daily_basic_payload(target: date, frame: pl.DataFrame) -> tuple[str, ...]:
+    """Validate a response before it can replace the active daily_basic file."""
+    daily = _read_day_partition("daily", target)
+    if daily is None or daily.is_empty() or "ts_code" not in daily.columns:
+        return ("daily_basic 无法对账:当日 daily 尚未就绪",)
+    expected_codes = daily["ts_code"].drop_nulls().cast(pl.String).to_list()
+    return daily_basic_gaps(target, frame, expected_daily_codes=expected_codes)
+
+
+def _partition_needs_retry(table: str, target: date) -> bool:
+    frame = _read_day_partition(table, target)
+    if frame is None or frame.is_empty():
+        return True
+    if table == "daily_basic":
+        return bool(validate_daily_basic_payload(target, frame))
+    return False
+
+
+def _day_tables_for_run(target: date, *, retry_incomplete: bool) -> list[str]:
+    if not retry_incomplete:
+        return list(backfill.DAY_TABLES)
+    return [table for table in backfill.DAY_TABLES if _partition_needs_retry(table, target)]
+
+
+def _has_recorded_sw_snapshot(target: date) -> bool:
+    """Avoid refetching the current-only SW source when today's snapshot exists."""
+    with readonly_tables(
+        "sw_industry_member_snapshots",
+        "sw_industry_snapshot_manifests",
+    ) as conn:
+        if conn is None:
+            return False
+        row = conn.execute(
+            "SELECT m.row_count,COUNT(s.ts_code) "
+            "FROM sw_industry_snapshot_manifests m "
+            "LEFT JOIN sw_industry_member_snapshots s ON s.trade_date=m.trade_date "
+            "WHERE m.trade_date=? GROUP BY m.row_count",
+            (target.strftime("%Y%m%d"),),
+        ).fetchone()
+    return row is not None and int(row[0]) > 0 and int(row[0]) == int(row[1])
 
 
 def update_sw_industry(target: date) -> bool:
@@ -155,7 +211,15 @@ def update_top_list(target: date) -> None:
                        exc_info=True)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("trade_date", nargs="?", default=None, help="YYYYMMDD；缺省为今天")
+    parser.add_argument(
+        "--retry-incomplete",
+        action="store_true",
+        help="只重拉当日缺失/语义不完整的分区；供受控定时 recovery 使用",
+    )
+    args = parser.parse_args(argv)
     if not settings.tushare_token:
         logger.error("TUSHARE_TOKEN 缺失(.env),无法拉取。")
         return 1
@@ -164,8 +228,11 @@ def main() -> int:
     init_schema()
     reset_cache()
 
-    target = (datetime.strptime(sys.argv[1], "%Y%m%d").date()
-              if len(sys.argv) > 1 else datetime.now(CN_TZ).date())
+    target = (
+        datetime.strptime(args.trade_date, "%Y%m%d").date()
+        if args.trade_date
+        else datetime.now(CN_TZ).date()
+    )
 
     calendar_open = official_is_trading_day(target)
     if calendar_open is None:
@@ -177,33 +244,49 @@ def main() -> int:
 
     logger.info("增量更新交易日:%s", target)
 
-    backfill.bootstrap_metadata()
+    if not args.retry_incomplete:
+        backfill.bootstrap_metadata()
 
-    stats = backfill.backfill_day_tables([target], backfill.DAY_TABLES, force=True)
+    day_tables = _day_tables_for_run(target, retry_incomplete=args.retry_incomplete)
+    stats = backfill.backfill_day_tables(
+        [target],
+        day_tables,
+        force=True,
+        payload_validators={"daily_basic": validate_daily_basic_payload},
+    )
     for table, s in stats.items():
         logger.info("[%s] 新拉 %d 天(%d 行)、失败 %d 天", table, s["fetched"], s["rows"], s["failed"])
 
-    backfill.backfill_index_daily(target, target)
+    index_needs_retry = _partition_needs_retry("index_daily", target)
+    if not args.retry_incomplete or index_needs_retry:
+        backfill.backfill_index_daily(target, target)
 
     from neckline.calendar import trading_days_between
 
     all_days = trading_days_between(date(target.year - 1, 1, 1), target)
     window_start = all_days[-LIMIT_DERIVED_TRAILING_DAYS] if len(all_days) >= LIMIT_DERIVED_TRAILING_DAYS else all_days[0]
-    backfill.run_limit_derived(window_start, target)
+    daily_refetched = "daily" in day_tables
+    if not args.retry_incomplete or daily_refetched or not day_file_exists("limit_derived", target):
+        backfill.run_limit_derived(window_start, target)
 
     # v1.4-①-B 增强项(尽力而为,失败不改退出码;放在主增量之后,免得它们的失败
     # 影响 EOD 主链路的落盘时序)。
-    update_suspend_list(target)
-    update_top_list(target)
+    if not args.retry_incomplete or not day_file_exists("suspend_d", target):
+        update_suspend_list(target)
+    if not args.retry_incomplete or not day_file_exists("top_list", target):
+        update_top_list(target)
     # V2.5.0 S2:申万二级分类日更(**判据输入**,失败打 ERROR;见函数 docstring)。
-    if not update_sw_industry(target):
+    sw_ready_for_build = args.retry_incomplete and _has_recorded_sw_snapshot(target)
+    if sw_ready_for_build:
+        logger.info("[sw_industry] %s 已有不可变成员快照,重试不重复请求当前源", target)
+    elif not update_sw_industry(target):
         logger.error("[sw_industry] 目标日快照未就绪，拒绝构建 fp-4。")
         return 1
     # V2.5.0 S3:事实包构建 + 冻结(架构第一层)。必须排在 `update_sw_industry` **之后**
     # (申万归属是中位数的输入)与全部行情落盘之后(完整性判定要看当日分区)。
     build_and_freeze_fact_pack(target)
     if not verify_readiness(target):
-        # 16:05 进程必须让 systemd 看见失败；不得把半套数据伪装成成功更新。
+        # 首拉/重试进程必须让 systemd 看见失败；不得把半套数据伪装成成功更新。
         return 1
     logger.info("增量更新完成:%s", target)
     return 0

@@ -3,7 +3,7 @@
 
 **段序定死**(改顺序前先读 `neckline/report/evening.py` 模块头):
 
-    16:05 拉数(`scripts/daily_update.py`,**不在本脚本内**)
+    17:10 首拉并由 recovery 有界补数(`scripts/daily_update.py`,**不在本脚本内**)
       → facts → direction → k9 → explain → playbook → report
 
 **每段各自包保险丝**:任一段异常只记 WARNING、在报告里如实标该段缺席,链继续往下走。
@@ -23,7 +23,8 @@
 `report_date` 管**标题 / 推送 / 可见身份**;`trade_date` 管 **EOD 读数 / 清单 / 预案 /
 审计键**。周日 19:00 那一槽:`report_date=周日`、`trade_date=紧邻上一周五`;
 **该周五休市则安全跳过**(⛔ 不回退到周四重发一份旧报告);
-**同日已生成则整链跳过**(⛔ 不重复推送)。
+**同日已有可信清单/可信空清单则整链跳过**；`not_run` 允许后续槽位升级
+(⛔ 不重复可信结果或 APNs)。
 这三条各有一条回归守门,见 `tests/test_weekend_report_schedule.py`。
 
 ⛔ **无默认参数包路径**(裁定 5):没传 `--k9-params` 就是「参数未配置」,报告首行会是
@@ -97,11 +98,12 @@ def _report_generated_on_local_day(
     local_day: date,
     db_path: Path | None = None,
 ) -> bool:
-    """Read-only idempotency guard for a scheduled slot.
+    """Read-only idempotency guard for a *trusted* scheduled result.
 
     A manual Sunday backfill may already have regenerated Friday's report.  In
     that case the 19:00 slot must not repeat the expensive chain or APNs.  The
-    guard checks only the frozen report timestamp and never initializes schema.
+    guard never treats ``not_run`` as completion: a later timer slot must be
+    allowed to upgrade it after delayed facts become ready.
     """
     try:
         with readonly_connection(db_path) as conn:
@@ -110,15 +112,15 @@ def _report_generated_on_local_day(
             ).fetchone() is None:
                 return False
             row = conn.execute(
-                f"SELECT generated_at FROM {K9_TABLE} WHERE trade_date=?",
+                f"SELECT state,generated_at FROM {K9_TABLE} WHERE trade_date=?",
                 (trade_date.strftime("%Y%m%d"),),
             ).fetchone()
     except (OSError, sqlite3.Error):
         return False
-    if row is None or not row[0]:
+    if row is None or row[0] not in {"has_list", "empty"} or not row[1]:
         return False
     try:
-        generated = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+        generated = datetime.fromisoformat(str(row[1]).replace("Z", "+00:00"))
     except ValueError:
         return False
     if generated.tzinfo is None:

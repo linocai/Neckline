@@ -1,4 +1,4 @@
-# 交易日 16:05 盘后增量：拉取全市场 daily/basic/adj/moneyflow，刷新停复牌与申万分类，
+# 交易日 17:10 盘后增量：拉取全市场 daily/basic/adj/moneyflow，刷新停复牌与申万分类，
 # 写入 Parquet，并重算尾部涨跌停衍生窗口。
 
 [Unit]

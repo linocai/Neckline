@@ -17,7 +17,7 @@
 | 1 | 周日槽绑定**紧邻的上一个周五**,周一至周四槽绑定当天 |
 | 2 | 周日槽传下去的是 `report_date=周日` / `trade_date=周五`(**两个日期都要**) |
 | 3 | 该周五休市 → **安全跳过**,⛔ 不回退到周四重发一份旧报告 |
-| 4 | 同日已生成 → **整链跳过**,⛔ 零重复 APNs |
+| 4 | 同日已有可信结果 → **整链跳过**；`not_run` 可重试，⛔ 重复 APNs |
 """
 
 from __future__ import annotations
@@ -127,10 +127,10 @@ def test_sunday_slot_skips_when_friday_report_was_already_generated_that_day(
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             f"CREATE TABLE {evening_script.K9_TABLE} "
-            "(trade_date TEXT PRIMARY KEY, generated_at TEXT NOT NULL)")
+            "(trade_date TEXT PRIMARY KEY, state TEXT NOT NULL, generated_at TEXT NOT NULL)")
         conn.execute(
-            f"INSERT INTO {evening_script.K9_TABLE} VALUES (?, ?)",
-            ("20260814", "2026-08-16T10:30:00+00:00"),
+            f"INSERT INTO {evening_script.K9_TABLE} VALUES (?, ?, ?)",
+            ("20260814", "has_list", "2026-08-16T10:30:00+00:00"),
         )
 
     assert evening_script._report_generated_on_local_day(
@@ -158,6 +158,21 @@ def test_a_report_row_that_was_never_generated_does_not_block_the_slot(tmp_path)
         date(2026, 8, 14), date(2026, 8, 16), tmp_path / "missing.db")
 
 
+def test_not_run_report_does_not_block_a_later_scheduled_retry(tmp_path):
+    db_path = tmp_path / "retry.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            f"CREATE TABLE {evening_script.K9_TABLE} "
+            "(trade_date TEXT PRIMARY KEY, state TEXT NOT NULL, generated_at TEXT NOT NULL)")
+        conn.execute(
+            f"INSERT INTO {evening_script.K9_TABLE} VALUES (?, ?, ?)",
+            ("20260814", "not_run", "2026-08-16T11:00:00+00:00"),
+        )
+    assert not evening_script._report_generated_on_local_day(
+        date(2026, 8, 14), date(2026, 8, 16), db_path,
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 排程与三个 oneshot 单元共享同一份契约
 # ══════════════════════════════════════════════════════════════════════════
@@ -167,7 +182,17 @@ def test_timer_and_all_three_services_share_the_scheduled_date_contract():
     calendars = [line for line in timer.splitlines() if line.startswith("OnCalendar=")]
     assert calendars == [
         "OnCalendar=Mon-Thu 19:00 Asia/Shanghai",
+        "OnCalendar=Mon-Thu 19:30 Asia/Shanghai",
+        "OnCalendar=Mon-Thu 20:00 Asia/Shanghai",
+        "OnCalendar=Mon-Thu 20:30 Asia/Shanghai",
+        "OnCalendar=Mon-Thu 21:00 Asia/Shanghai",
+        "OnCalendar=Mon-Thu 21:30 Asia/Shanghai",
         "OnCalendar=Sun 19:00 Asia/Shanghai",
+        "OnCalendar=Sun 19:30 Asia/Shanghai",
+        "OnCalendar=Sun 20:00 Asia/Shanghai",
+        "OnCalendar=Sun 20:30 Asia/Shanghai",
+        "OnCalendar=Sun 21:00 Asia/Shanghai",
+        "OnCalendar=Sun 21:30 Asia/Shanghai",
     ]
 
     service_names = ("neckline-facts.service", "neckline-strategy.service",
@@ -186,9 +211,11 @@ def test_missed_sunday_slot_cannot_be_replayed_on_monday():
     assert "Persistent=false" in evening
     assert "Persistent=false" in daily
     assert "Persistent=false" in recovery
-    assert "OnCalendar=*-*-* 16:25 Asia/Shanghai" in recovery
+    assert "OnCalendar=Mon-Fri 17:30 Asia/Shanghai" in recovery
+    assert "OnCalendar=Mon-Fri 21:20 Asia/Shanghai" in recovery
+    assert "OnCalendar=Mon-Fri 17:10 Asia/Shanghai" in daily
     recovery_service = (BACKEND_ROOT / "deploy" / "neckline-recovery.service").read_text(encoding="utf-8")
-    assert "recover_data_prerequisites.py" in recovery_service
+    assert "recover_data_prerequisites.py --scheduled" in recovery_service
     assert "evening.py" not in recovery_service
 
 

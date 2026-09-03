@@ -23,7 +23,7 @@ import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import List
+from typing import Callable, List, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -189,8 +189,17 @@ def bootstrap_metadata() -> None:
     logger.info("元数据落库完成:stock_basic=%d, namechange=%d", len(stock_basic_df), len(nc_df))
 
 
-def backfill_day_tables(days: List[date], tables: List[str], force: bool) -> dict:
-    """day-major 循环:每个交易日依次拉 4 张全市场表,写 Parquet。返回统计 dict。"""
+PayloadValidator = Callable[[date, pl.DataFrame], Sequence[str]]
+
+
+def backfill_day_tables(
+    days: List[date],
+    tables: List[str],
+    force: bool,
+    *,
+    payload_validators: Mapping[str, PayloadValidator] | None = None,
+) -> dict:
+    """day-major 拉取日表；可在替换现役分区前执行语义验收。"""
     stats = {t: {"fetched": 0, "skipped": 0, "failed": 0, "rows": 0} for t in tables}
     fetch_fns = {
         "daily": ts_daily_all,
@@ -212,6 +221,16 @@ def backfill_day_tables(days: List[date], tables: List[str], force: bool) -> dic
                 continue
             pdf = res.data
             pldf = _pdf_to_pl(pdf)
+            validator = (payload_validators or {}).get(table)
+            gaps = tuple(validator(d, pldf)) if validator is not None else ()
+            if gaps:
+                stats[table]["failed"] += 1
+                logger.error(
+                    "%s %s 返回内容尚未就绪:%s(不替换现役分区,等待定时重试)",
+                    table, td_str, "；".join(gaps),
+                )
+                _log_audit(table, d, "invalid", len(pldf))
+                continue
             write_table_day(table, d, pldf)
             stats[table]["fetched"] += 1
             stats[table]["rows"] += len(pldf)

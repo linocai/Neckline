@@ -1,13 +1,14 @@
-# Neckline 盘后数据增量定时。16:05 Asia/Shanghai。
+# Neckline 盘后数据增量定时。17:10 Asia/Shanghai。
 # 交易日门控在 daily_update.py 内(非交易日自退)。
 [Unit]
-Description=Run Neckline daily data update at 16:05 on weekdays
+Description=Run Neckline daily data update after the provider publication window
 
-# 16:05:A 股 15:00 收盘、TuShare 核心 EOD(daily/basic/adj)~15:35 后稳定,给缓冲;
+# TuShare 把 daily_basic 的更新时间声明为交易日 15:00–17:00；17:10 首拉避开
+# 发布窗口内部的半成品响应。后续缺口由 recovery 的有界槽位重试。
 # 排在 report(19:00)之前——report 依赖当日数据先落 Parquet(见 neckline-evening.timer 说明)。
 [Timer]
-OnCalendar=Mon-Fri 16:05 Asia/Shanghai
-# 错过的 16:05 绝不按开机时刻补跑；恢复扫描由独立普通 timer 处理。
+OnCalendar=Mon-Fri 17:10 Asia/Shanghai
+# 错过的首拉绝不按开机时刻补跑；恢复扫描由独立普通 timer 处理。
 Persistent=false
 
 [Install]

@@ -2,8 +2,26 @@
 Description=Recover only missing Neckline EOD prerequisites
 
 [Timer]
-# 这是普通、幂等的数据缺口扫描；错过本次就等下一次扫描，绝非 missed-slot 补跑。
-OnCalendar=*-*-* 16:25 Asia/Shanghai
+# 只检查当天 fp-4，且只重拉不完整分区。19:00 后继续有限重试，给晚间链的
+# 后续槽位自动升级 not_run；21:20 是当日最后一次数据恢复尝试。
+OnCalendar=Mon-Fri 17:30 Asia/Shanghai
+OnCalendar=Mon-Fri 18:00 Asia/Shanghai
+OnCalendar=Mon-Fri 18:30 Asia/Shanghai
+OnCalendar=Mon-Fri 18:50 Asia/Shanghai
+OnCalendar=Mon-Fri 19:20 Asia/Shanghai
+OnCalendar=Mon-Fri 19:50 Asia/Shanghai
+OnCalendar=Mon-Fri 20:20 Asia/Shanghai
+OnCalendar=Mon-Fri 20:50 Asia/Shanghai
+OnCalendar=Mon-Fri 21:20 Asia/Shanghai
+OnCalendar=Sun 17:30 Asia/Shanghai
+OnCalendar=Sun 18:00 Asia/Shanghai
+OnCalendar=Sun 18:30 Asia/Shanghai
+OnCalendar=Sun 18:50 Asia/Shanghai
+OnCalendar=Sun 19:20 Asia/Shanghai
+OnCalendar=Sun 19:50 Asia/Shanghai
+OnCalendar=Sun 20:20 Asia/Shanghai
+OnCalendar=Sun 20:50 Asia/Shanghai
+OnCalendar=Sun 21:20 Asia/Shanghai
 Persistent=false
 Unit=neckline-recovery.service
 

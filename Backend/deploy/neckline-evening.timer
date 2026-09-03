@@ -2,10 +2,9 @@
 # 由它串起 facts → strategy → report 三段。
 #
 # **时刻表**(总窗口按 ⑯-C 新机实测排,改点前先看那份计时表):
-#   16:05  neckline-daily.timer    拉当日 EOD → Parquet + 申万分类快照
-#   Mon-Thu 19:00 本 timer          当日 seg1 批算 → seg2 LLM → seg3 复盘+报告+APNs
-#   Sun 19:00 本 timer              明确绑定前一周五,纳入周末消息后再跑同一条链
-#   行情增量仍在交易日 16:05 启动；晚间链统一 19:00 启动，避免读到半份数据。
+#   17:10  neckline-daily.timer    在供应商发布窗口后拉当日 EOD
+#   17:30–21:20 recovery.timer     只补当天不完整分区并冻结 fp-4
+#   19:00–21:30 本 timer           半小时有界重试晚间链；正式成功后后续槽位幂等跳过
 #
 # 三个 service 都带 `--scheduled`:Mon-Thu 绑定当天,Sunday 只绑定前一周五。若该日休市,
 # 脚本成功跳过,绝不回退到更早交易日重复生成旧报告；若同一交易日的报告已在当天人工
@@ -22,12 +21,22 @@
 # 安装见 neckline-evening.target 头部。
 
 [Unit]
-Description=Run Neckline evening chain Mon-Thu and Sunday at 19:00
+Description=Run and bounded-retry the Neckline evening chain
 
 [Timer]
 OnCalendar=Mon-Thu 19:00 Asia/Shanghai
+OnCalendar=Mon-Thu 19:30 Asia/Shanghai
+OnCalendar=Mon-Thu 20:00 Asia/Shanghai
+OnCalendar=Mon-Thu 20:30 Asia/Shanghai
+OnCalendar=Mon-Thu 21:00 Asia/Shanghai
+OnCalendar=Mon-Thu 21:30 Asia/Shanghai
 OnCalendar=Sun 19:00 Asia/Shanghai
-# 报告 / APNs 只能由真实 19:00 槽触发，绝不让 systemd missed-slot 追跑。
+OnCalendar=Sun 19:30 Asia/Shanghai
+OnCalendar=Sun 20:00 Asia/Shanghai
+OnCalendar=Sun 20:30 Asia/Shanghai
+OnCalendar=Sun 21:00 Asia/Shanghai
+OnCalendar=Sun 21:30 Asia/Shanghai
+# 报告 / APNs 只能由上列真实定时槽触发，绝不让 systemd missed-slot 追跑。
 Persistent=false
 Unit=neckline-evening.target
 

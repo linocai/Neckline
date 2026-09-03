@@ -9,6 +9,7 @@ User=neckline
 Group=neckline
 WorkingDirectory=/opt/neckline
 EnvironmentFile=/opt/neckline/.env
-ExecStart=/opt/neckline/.venv/bin/python scripts/recover_data_prerequisites.py
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/neckline/.venv/bin/python scripts/recover_data_prerequisites.py --scheduled
 TimeoutStartSec=infinity
 MemoryMax=900M

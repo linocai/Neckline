@@ -43,6 +43,15 @@ def test_same_trade_date_rerun_replaces_in_place(tmp_path):
     assert row["state"] == "has_list" and row["listing_size"] == 3
 
 
+def test_late_retry_upgrades_not_run_to_a_trusted_report(tmp_path):
+    db = tmp_path / "late-retry.db"
+    day = date(2026, 8, 21)
+    _save(db, day, day, "not_run", None)
+    _save(db, day, day, "has_list", 3)
+    row = store.load_k9_report(day, db_path=db)
+    assert row["state"] == "has_list" and row["listing_size"] == 3
+
+
 def test_not_run_retry_cannot_downgrade_a_trusted_report(tmp_path):
     db = tmp_path / "preserve.db"
     day = date(2026, 8, 21)
