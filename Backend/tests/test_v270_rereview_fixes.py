@@ -10,7 +10,7 @@ import polars as pl
 import pytest
 
 from neckline.auction import recorder, settle
-from neckline.data.market_data import get_market_slice
+from neckline.data.market_data import day_file_path, get_market_slice
 from neckline.data.realtime import Quote
 from neckline.db import init_schema
 from neckline.k9 import v3_params
@@ -215,6 +215,31 @@ def test_recorder_freezes_real_provider_snapshot_and_audits_missing_source(tmp_p
     # The package-wide benchmark is a D1/D2 settlement input for every channel,
     # even when P4 recall is disabled.
     assert statuses == {"000001.SH": "unavailable", "000001.SZ": "captured"}
+
+
+def test_recorder_first_snapshot_does_not_scan_incompatible_historical_partitions(tmp_path, monkeypatch):
+    db, parquet = tmp_path / "ticks.db", tmp_path / "parquet"; init_schema(db); _batch(db)
+    # Reproduce production history: old files in the same year disagree on a
+    # legacy column. They are irrelevant to the target day's first baseline.
+    first_old = day_file_path("intraday_ticks", date(2026, 8, 19), parquet)
+    second_old = day_file_path("intraday_ticks", date(2026, 8, 20), parquet)
+    first_old.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"trade_date": [date(2026, 8, 19)], "legacy": [1]}).write_parquet(first_old)
+    pl.DataFrame({"trade_date": [date(2026, 8, 20)], "legacy": ["old"]}).write_parquet(second_old)
+
+    monkeypatch.setattr(recorder, "is_capture_window", lambda value, **_kwargs: True)
+    quote = Quote("000001.SZ", "示例", 10.0, 9.8, 9.9, 10.1, 9.7, 100.0, 1000.0,
+                  "2026-08-21 09:26:00", "sina", traded_price=10.0)
+    monkeypatch.setattr(recorder, "get_quotes", lambda codes: {"000001.SZ": quote})
+
+    result = recorder.record_snapshot(datetime(2026, 8, 21, 9, 26), db_path=db, parquet_dir=parquet)
+
+    assert result.ran and day_file_path("intraday_ticks", date(2026, 8, 21), parquet).exists()
+    with sqlite3.connect(db) as conn:
+        reasons = {row[0] for row in conn.execute(
+            "SELECT reason FROM k9_intraday_capture_audit WHERE trade_date='20260821'"
+        )}
+    assert "existing_partition_unreadable" not in reasons
 
 
 def test_p2_only_package_records_the_frozen_benchmark_for_d2(tmp_path):

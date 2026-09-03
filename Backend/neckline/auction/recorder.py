@@ -16,7 +16,7 @@ from typing import Mapping, Optional
 import polars as pl
 
 from neckline.calendar import CN_TZ, is_trading_day
-from neckline.data.market_data import get_market_slice, write_table_day
+from neckline.data.market_data import day_file_path, write_table_day
 from neckline.data.realtime import get_quotes
 from neckline.db import connection
 from neckline.scorecard import packages
@@ -100,9 +100,13 @@ def record_snapshot(now: datetime, *, db_path: Optional[Path] = None,
     captured_at = local_now.isoformat(timespec="seconds")
     status_by_code: dict[str, tuple[str, str | None]] = {}
     try:
-        # An unreadable existing partition is evidence-risk, not permission to
-        # replace it with an empty frame and silently destroy ticks.
-        old = get_market_slice(local_now.date(), table="intraday_ticks", parquet_dir=parquet_dir)
+        # One day is one immutable path.  Reading through ``get_market_slice``
+        # would scan every intraday partition in the year before filtering;
+        # one historical schema mismatch could then prevent a brand-new day
+        # from creating its first baseline.  Absence is normal; only an
+        # existing target-day file that cannot be read is evidence-risk.
+        path = day_file_path("intraday_ticks", local_now.date(), parquet_dir)
+        old = pl.read_parquet(path) if path.exists() else pl.DataFrame()
     except Exception:
         status_by_code = {code: ("write_failed", "existing_partition_unreadable") for code in codes}
         _audit(trade_date=local_now.date(), captured_at=captured_at, codes=codes, quotes=quotes,
