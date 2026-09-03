@@ -1,16 +1,16 @@
-# Neckline · V2.7.0 Backend Build 27 / K9-v3
+# Neckline · V2.7.0 Backend Build 29 / K9-v3
 
-> macOS/iOS 客户端与分发集合仍为 V2.7.0 Build 19 / `v2.7.0-b19`；NB 云后端在同一 API 合同上推进到 `v2.7.0-b27`，客户端无需重新安装。K9-v2 已退役，不再作为发布、等待、迁移或历史成绩处理对象。
+> macOS/iOS 客户端与分发集合仍为 V2.7.0 Build 19 / `v2.7.0-b19`；NB 云后端在同一 API 合同上推进到 `v2.7.0-b29`，客户端无需重新安装。K9-v2 已退役，不再作为发布、等待、迁移或历史成绩处理对象。
 >
-> 本轮状态：**V2.7.0 客户端 Build 19 与后端 Build 27 正常运行；首个 K9-v3 纠正版报告已完成**。19:00 原始 revision 1 空包已确认错误并永久保留作审计。后端修复了 40 日规则的过度日历依赖、TuShare `daily.amount` 千元→CNY 边界换算、`free_share/free_float_mv` 完整性门禁及逐票预案输出合同；生产追加 fp-4 revision 2 和成绩包 revision 2，正式结果为 P2=4、P3=7、P4=0，共 11 只不同代码，报告 `has_list`，APNs 2/2 成功。
+> 本轮状态：**V2.7.0 客户端 Build 19 与后端 Build 29 正常运行；首个 K9-v3 纠正版报告已完成**。19:00 原始 revision 1 空包已确认错误并永久保留作审计。后端修复了 40 日规则的过度日历依赖、TuShare `daily.amount` 千元→CNY 边界换算、`free_share/free_float_mv` 完整性门禁、逐票预案输出合同、盘后数据晚到恢复和盘中证据首次建档；生产追加 fp-4 revision 2 和成绩包 revision 2，正式结果为 P2=4、P3=7、P4=0，共 11 只不同代码，报告 `has_list`，APNs 2/2 成功。
 >
-> 2026-09-01 日更首次读取到 5546 行但 `daily_basic.free_share/turnover_rate_f` 全为空，fp-4 正确拒绝，19:00 报告因此为 `not_run`。21:35 同源数据已恢复为 5546/5546 完整；在生产备份、停写和完整性门禁下以正式日更及晚间链补跑后，fp-4 pack `b3f1cb8a96124ca98ae7b9a2c90ec415` 与成绩包 `k9-v3-20260901-r1-b3f1cb8a96124ca98ae7b9a2c90ec415` 已完成 D2→D1→D0，报告 `has_list / 4`，P2=1、P3=3、P4=0，APNs 2/2 成功。定时 recovery 误用默认 fp-3 且被旧日缺口提前阻断的问题仍待后端修复。
+> 2026-09-01 与 09-02 的 16:05 日更均收到“行数完整但 `daily_basic.free_share/turnover_rate_f` 全为空”的发布中间态，fp-4 正确拒绝。Build 28 已从根上处理：首拉移到 17:10、写盘前做目标日/代码覆盖和关键字段语义校验、只补不完整分区、recovery 全链显式绑定 fp-4 且只检查报告目标日、19:00 后继续有界恢复/报告重试，`not_run` 不再封死后续成功槽位。Build 29 另修复盘中采样首次建档被同年旧分区 schema 拖垮的问题；2026-09-03 11:01 生产已现场验证第二拍 5/5 为 `captured`。当日 17:10/19:00 的首次完整自动链仍待收盘后观察，不得提前抢跑。
 >
 > 方向输入（只读，不导入生产）：`/Users/linotsai/Lino/whynotme/K9.md`（SHA-256 `ba6d915e355c66166ba7e0b4c4546d88be6c66acfabc2db4afa09aff5a27728f`）与 `Neckline新架构_20260818.md`（`c665ba562d03e6af7ff00cc2b41905a6b6e569d6311bcb08803e999e04c3841e`），均在 2026-08-30 读取；若施工前源文档变更，先更新本计划的合同与指纹。
 
 ## 1. 目标与不可变边界
 
-- 交付 `V2.7.0 / K9-v3` 的后端、macOS 与 iOS 同 API/DTO 合同；客户端显示 `2.7.0 (19)`，分发集合为 `v2.7.0-b19`，后端数据正确性修复身份为 `v2.7.0-b27`。本轮冻结 `fp-4`、`k9-params-v3`、`d2-v2` 的工程契约命名和校验命名空间。
+- 交付 `V2.7.0 / K9-v3` 的后端、macOS 与 iOS 同 API/DTO 合同；客户端显示 `2.7.0 (19)`，分发集合为 `v2.7.0-b19`，后端数据正确性修复身份为 `v2.7.0-b29`。本轮冻结 `fp-4`、`k9-params-v3`、`d2-v2` 的工程契约命名和校验命名空间。
 - K9-v3 参数包 `k9-params-20260831-v3-r1` 已由用户批准并按原字节接入 `Backend/config/k9-params.json`（SHA-256 `feb24c8199b061b31e33fa9b47603e3d9cc27d76eaa0aff064f1b451d01b41a2`）。加载器只接受完整、不可变的 `k9-params-v3`；缺失、错误、旧包或混合包统一显示“**今天没跑成 · 参数未配置**”，不生成正式候选、预案、成绩包或推送。
 - Neckline 只消费已批准的 JSON 参数原件，绝不导入、执行或读取 `whynotme`；测试夹具必须隔离，不能被生产路径发现。
 - K8 与 K9-v2 均已退役；不恢复它们的运行时代码、路由、缓存、界面或成绩链，也不把其在途状态、迁移或历史处置列为 V2.7 发布门禁。
@@ -24,7 +24,7 @@
 
 | 身份 | V2.7.0 的固定值 / 行为 |
 |---|---|
-| 系统与 API | `2.7.0`；生产后端 release set `v2.7.0-b27`；服务端与两端 App 使用同一 API/DTO 合同 |
+| 系统与 API | `2.7.0`；生产后端 release set `v2.7.0-b29`；服务端与两端 App 使用同一 API/DTO 合同 |
 | 客户端构建 | macOS/iOS 均为 `2.7.0 (19)`；发布标签 `v2.7.0-b19` |
 | 策略与事实 | `K9-v3`、预留冻结事实契约 `fp-4`；不得原地改变 fp-3 语义 |
 | 参数与结算 | 预留 `k9-params-v3`、`d2-v2` 命名空间；参数到位时全部阈值、权重、额度、启用通道、P4 基准和 D1/D2 数值必须显式必填 |
@@ -129,5 +129,6 @@ K9-v3 的工程形状已经确定：P1 完全暂停；P2 保留超跌反弹但�
 - [x] 新 iOS 设备接入：已确认 `Caeieo` 早已配对、在 Build 19 描述文件内且已安装 `2.7.0 (19)`；本次无需新增 UDID 或重新签名。通过同一 Wi-Fi 使用隔离临时引导版把既有生产凭据写入 iOS Keychain，再以无注入启动证明凭据来源为 `keychain`，随后覆盖回官方 Build 19。官方包启动后生产 `devices` 记录于 2026-08-31 13:28 CST 更新为 iOS，公网健康为 `v2.7.0 / v2.7.0-b19`；未卸载 App、未暴露凭据，临时工作树与构建目录均已删除。
 - [x] 首个 K9-v3 Day 1 纠错：原 revision 1 空包保留不改；Build 20–27 依次完成金额单位、关键字段 readiness、追加事实修订、显式纠错生命周期、D1 涨跌停边界、失败纠错禁投影、逐票原子预案和扁平 JSON 合同。生产追加 fp-4 revision 2（pack `7abb63783f164689a6eb1b12a3159394`，5545 行，supersedes `83d2bb796d9849249fa9684deb28de90`）与成绩包 revision 2（`k9-v3-20260831-r2-7abb63783f164689a6eb1b12a3159394`）；D2→D1→D0 全部 `ok`，11 只预案第 1 版完整写入，正式报告 `has_list / 11`，P2=4、P3=7、P4=0，APNs `sent=2 / failed=0`。报告、批次与公网 API 谱系均为 `K9-v3 / fp-4 / k9-params-20260831-v3-r1 / d2-v2`，参数 SHA 与批准原件一致。后端 `849 passed`，提交 `cee77ad` 与不可变标签 `v2.7.0-b27` 已推送；生产数据库及停服后副本 `integrity_check=ok`，服务与三个 timer active + enabled，公网 health 为 `v2.7.0 / v2.7.0-b27`。
 - [x] 2026-09-01 正式报告补跑：16:05 TuShare `daily_basic` 的 5546 行关键字段全空，fp-4 正确 fail-closed，19:00 报告为 `not_run`；21:35 只读检查确认同源关键字段已恢复 5546/5546 完整。生产建立并验证补跑前备份，停服务及三个 timer，以正式 `daily_update.py` 重建并冻结 fp-4 pack `b3f1cb8a96124ca98ae7b9a2c90ec415`（5546 行、131 个 L2 行业），再以正式 `evening.py` 完成 D2→D1→D0。成绩包 `k9-v3-20260901-r1-b3f1cb8a96124ca98ae7b9a2c90ec415` 为 P2=1、P3=3、P4=0，共 4 只且均有预案第 1 版；报告 `has_list / 4`，APNs `sent=2 / failed=0`，谱系与参数 SHA 均正确。补跑后备份 `v2.7.0-b27-post-20260901-report-retry-20260901-215100` 的 DB SHA-256 为 `58728d3949fbcff295cd6c7fee8c3de217219bad9c3a5faf09401c79a0de30d9`，`integrity_check=ok`；服务和三个 timer 已恢复 active + enabled，主服务 `NRestarts=0`、`ExecMainStatus=0`，公网 `selection/latest` 已验证四只代码。
-- [ ] recovery 定时恢复缺陷：`recover_data_prerequisites.py` 的发现和复核调用未显式绑定 `pack_version="fp-4"`，默认检查已退役的 fp-3；它把已经具备 fp-4 的 2026-08-31 误判为缺口，随后因历史 SW 快照保护而停止，未到达真正缺失的 2026-09-01。后端下一构建须全链显式绑定 fp-4，并证明一个不可恢复旧日不能阻塞当前日有限重试；修复前若数据源再次晚到，正式结果仍应先保持 `not_run`，经只读确认恢复后方可受控补跑。
+- [x] Build 28 盘后晚到恢复：`daily_basic` 在写盘前必须通过目标日期、同日 `daily` 代码覆盖、`free_share/turnover_rate/turnover_rate_f` 有限值与取值域校验；不完整响应不替换现役分区。日更首拉为 17:10，recovery 在 17:30–21:20 只检查当天（周日检查上周五）并显式绑定 fp-4、只重拉不完整分区；晚间链在 19:00–21:30 有界重试，`not_run` 可升级而正常 `has_list/empty` 幂等跳过。2026-09-03 生产以 `--through 20260901` 验证“补齐 0 个交易日，未生成报告或 APNs”。提交 `17bd0ed`、标签 `v2.7.0-b28` 已推送。
+- [x] Build 29 盘中首次建档：采样器只读取目标日唯一分区；目标日文件不存在是正常首样本基线，只有该文件存在但不可读才记 `existing_partition_unreadable`。生产 2026-09-03 11:00:30 首拍写入 5 条基线，11:01:01 第二拍 5/5 `captured`，分区增至 10 行。后端 `863 passed`、接口冒烟、公网 health、数据库完整性均通过；提交 `2157b97`、标签 `v2.7.0-b29` 已推送。
 - [ ] iOS 报告可见性：公网 `selection/latest` 现已返回最新 `has_list / 4`，Build 19 的“选股 → 今日清单”可渲染这 4 张候选卡，但它仍不渲染服务端报告正文；停在“次日核对表”时看不到今日清单，恢复前台也不会强制刷新。下一次 App 热修复须明确呈现 `empty / has_list / not_run` 三态、恢复前台刷新，并以真实 iPhone 的确切页面完成可见性验收；Swift 修改必须重跑三条 `xcodebuild` 门禁。

@@ -5,10 +5,10 @@ Neckline 是 A 股生产应用：SwiftUI macOS/iOS 客户端与 FastAPI 后端�
 
 ## 当前状态
 
-- 生产现行为 **V2.7.0 / K9-v3 / fp-4 / d2-v2**。macOS/iOS 客户端仍为 `2.7.0 (19)` 与发布集合 `v2.7.0-b19`；NB 云后端在同一 API 合同上运行 `v2.7.0-b27`。Build 20–27 是后端数据正确性修复，不要求客户端重新安装。
+- 生产现行为 **V2.7.0 / K9-v3 / fp-4 / d2-v2**。macOS/iOS 客户端仍为 `2.7.0 (19)` 与发布集合 `v2.7.0-b19`；NB 云后端在同一 API 合同上运行 `v2.7.0-b29`。Build 20–29 是后端数据正确性修复，不要求客户端重新安装。
 - 生产显式加载获批参数包 `k9-params-20260831-v3-r1`，正式原件为 `Backend/config/k9-params.json`，SHA-256 为 `feb24c8199b061b31e33fa9b47603e3d9cc27d76eaa0aff064f1b451d01b41a2`。文件缺失、无效或谱系错配时仍不得生成候选、预案、成绩包或通知。
 - K9-v3 从空队列开始，未用半日数据抢跑。2026-08-31 首个正式晚间链暴露并修复了过度日历依赖、成交额单位和 `daily_basic` 关键字段完整性缺陷；原 revision 1 空包永久保留作审计。纠正版 fp-4 revision 2 与成绩包 revision 2 已完成 D2→D1→D0，正式报告为 `has_list`：P2 4 只、P3 7 只、P4 0 只，共 11 只不同代码。
-- 2026-09-01 的 16:05 日更因 TuShare 当时返回的 `daily_basic.free_share/turnover_rate_f` 全为空而正确 fail-closed；21:35 数据源恢复完整后，生产在备份、停写和完整性门禁下用正式日更与晚间链补跑成功。fp-4 pack 为 `b3f1cb8a96124ca98ae7b9a2c90ec415`，报告 `has_list`：P2 1 只、P3 3 只、P4 0 只，共 4 只，APNs 2/2 成功。recovery 脚本误查 fp-3 并被旧日缺口阻断的问题仍待后端修复。
+- 2026-09-01 与 09-02 的 16:05 日更都收到行数完整、关键字段全空的 `daily_basic` 发布中间态。Build 28 将首拉移到 17:10，在写盘前校验字段和同日代码覆盖，并以只补缺口的 fp-4 recovery 和 19:00 后有界报告槽自动恢复；不完整响应保持 `not_run`，不会污染现役分区，也不会封死下一次重试。Build 29 修复盘中证据首日建档读取同年全部旧分区的问题，生产已验证首拍建基线、第二拍 5/5 `captured`。9 月 3 日首次完整自动链将在收盘后按 17:10 / 17:30 / 19:00 时序接受生产观察，不得提前抢跑。
 - macOS/iOS 分发包及校验材料发布在 [GitHub Release `v2.7.0-b19`](https://github.com/linocai/Neckline/releases/tag/v2.7.0-b19)；唯一施工与运行控制面见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
 
 ## 日常 V3 流程

@@ -1,5 +1,102 @@
 # Project errors
 
+## [ERR-20260903-006] Direct GitHub route timed out during release push
+
+**Logged**: 2026-09-03T11:02:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+The Mac's direct GitHub route resolved to `198.18.18.153` and timed out, while Neckline public HTTPS and NB SSH remained healthy.
+
+### Resolution
+- **Resolved**: 2026-09-03T11:01:00+08:00
+- **Notes**: Verified the outage was path-specific, then used the already-authorized NB host as an SSH jump without copying credentials. `main`, `v2.7.0-b28`, and `v2.7.0-b29` were pushed and verified remotely.
+
+---
+
+## [ERR-20260903-005] Nested shell quoting corrupted two read-only SQL diagnostics
+
+**Logged**: 2026-09-03T10:58:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+Two remote Python diagnostics were embedded inside nested single-quoted shell commands; local zsh expanded `COUNT(*)` / `SELECT *` instead of passing the program verbatim.
+
+### Resolution
+- **Resolved**: 2026-09-03T10:59:00+08:00
+- **Notes**: No production state changed. Reissued the diagnostics through a quoted `bash -s` heredoc and completed exact logical database comparison.
+
+---
+
+## [ERR-20260903-004] Read-only fact-pack diagnostic assumed a revision column
+
+**Logged**: 2026-09-03T10:20:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+A read-only production query assumed `fact_packs.revision`, which is not part of the live table schema.
+
+### Resolution
+- **Resolved**: 2026-09-03T10:21:00+08:00
+- **Notes**: The query failed before returning data and made no mutation. Inspected `PRAGMA table_info` and repeated the check using actual columns.
+
+---
+
+## [ERR-20260903-003] Intraday first baseline was blocked by unrelated historical schemas
+
+**Logged**: 2026-09-03T10:58:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+The recorder scanned every intraday partition in the target year before filtering to today, so historical schema drift made an absent target-day file look unreadable and prevented first-baseline creation.
+
+### Resolution
+- **Resolved**: 2026-09-03T11:01:00+08:00
+- **Commit/Tag**: `2157b97` / `v2.7.0-b29`
+- **Notes**: The recorder now reads only the exact target-day path. Production moved from repeated `existing_partition_unreadable` audits to a five-row baseline and then 5/5 captured increments.
+
+---
+
+## [ERR-20260903-002] Updated timer calendars fired immediately on first enable
+
+**Logged**: 2026-09-03T10:55:00+08:00
+**Priority**: critical
+**Status**: resolved
+**Area**: release
+
+### Summary
+After Build 28 installed new OnCalendar sets, the first timer start immediately activated daily, recovery, and evening from retained prior trigger state despite `Persistent=false`.
+
+### Resolution
+- **Resolved**: 2026-09-03T10:57:00+08:00
+- **Notes**: Stopped the jobs, archived the contaminated database/report/partitions, restored the verified pre-deploy database, removed only the premature 2026-09-03 files, and confirmed all targets inactive with next triggers 17:10 / 17:30 / 19:00. No premature fp-4, candidate package, APNs, or lasting report remained.
+
+---
+
+## [ERR-20260903-001] Release script named a nonexistent evening service
+
+**Logged**: 2026-09-03T10:54:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: release
+
+### Summary
+The first Build 28 deployment tried to reset `neckline-evening.service`, but production uses `neckline-evening.target`; the command failed and triggered the designed automatic rollback.
+
+### Resolution
+- **Resolved**: 2026-09-03T10:54:00+08:00
+- **Notes**: Verified b27 health, exact old files, database integrity and active timers after rollback, then redeployed using only installed unit identities.
+
+---
+
 ## [ERR-20260901-004] One cross-file documentation patch assumed NB_info had not changed
 
 **Logged**: 2026-09-01T21:58:00+08:00
@@ -37,7 +134,7 @@ A read-only production query addressed `sw_industry_member` as a dated snapshot 
 
 **Logged**: 2026-09-01T21:34:00+08:00
 **Priority**: critical
-**Status**: pending
+**Status**: resolved
 **Area**: backend
 
 ### Summary
@@ -54,13 +151,18 @@ Bind recovery discovery and post-update verification explicitly to `fp-4`. Proce
 - Related Files: Backend/scripts/recover_data_prerequisites.py, Backend/neckline/facts/readiness.py
 - See Also: ERR-20260831-020, ERR-20260831-024
 
+### Resolution
+- **Resolved**: 2026-09-03T10:54:00+08:00
+- **Commit/Tag**: `17bd0ed` / `v2.7.0-b28`
+- **Notes**: Recovery discovery and post-update verification now bind fp-4 explicitly, scheduled runs inspect only the report target day, historical scans require an explicit start, and retries call the selective incomplete-partition mode. A production check of 2026-09-01 selected zero missing days and generated no report or APNs.
+
 ---
 
 ## [ERR-20260901-001] The 16:05 daily_basic partition was incomplete and had no effective current-day retry
 
 **Logged**: 2026-09-01T21:33:00+08:00
 **Priority**: critical
-**Status**: pending
+**Status**: resolved
 **Area**: data
 
 ### Summary
@@ -81,7 +183,12 @@ After the first incomplete `daily_basic` response, run bounded current-day retri
 
 ### Operational Recovery
 - **Recovered**: 2026-09-01T21:50:00+08:00
-- **Notes**: A read-only source check first confirmed 5546/5546 valid values. Under a stop-the-world boundary with verified pre/post backups, the official daily update rebuilt and froze fp-4 pack `b3f1cb8a96124ca98ae7b9a2c90ec415`; the official evening chain then completed D2→D1→D0, published a four-stock report, and delivered APNs to 2/2 devices. This resolves today's report only; the scheduled retry defect remains pending in ERR-20260901-002.
+- **Notes**: A read-only source check first confirmed 5546/5546 valid values. Under a stop-the-world boundary with verified pre/post backups, the official daily update rebuilt and froze fp-4 pack `b3f1cb8a96124ca98ae7b9a2c90ec415`; the official evening chain then completed D2→D1→D0, published a four-stock report, and delivered APNs to 2/2 devices. That operation recovered the day; the scheduled retry defect was subsequently resolved by Build 28 as recorded below.
+
+### Root Resolution
+- **Resolved**: 2026-09-03T10:54:00+08:00
+- **Commit/Tag**: `17bd0ed` / `v2.7.0-b28`
+- **Notes**: The same defect recurred on 2026-09-02 with 5547/5547 invalid `free_float_mv` at 16:05 and 5547/5547 valid source fields later. Build 28 moved first pull to 17:10, rejects semantically incomplete responses before replacement, selectively retries missing partitions through 21:20, and allows a provisional `not_run` to be upgraded by later report slots through 21:30.
 
 ---
 

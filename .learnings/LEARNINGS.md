@@ -1,5 +1,73 @@
 # Project learnings
 
+## [LRN-20260903-003] best_practice
+
+**Logged**: 2026-09-03T11:02:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: release
+
+### Summary
+Changing an active systemd timer's calendar requires a first-start migration check, not just calendar syntax validation.
+
+### Details
+Build 28 changed daily/recovery/evening schedules and passed `systemd-analyze calendar` and unit verification. After deployment, starting the updated timers still immediately fired one old/missed slot from retained runtime state, which created a premature 2026-09-03 failure report and partial operational data. `Persistent=false` did not make that transition safe by itself.
+
+### Suggested Action
+Before enabling a changed production timer, stop its target, inspect the old last-trigger state, install and reload the unit, then start it while watching both `LastTriggerUSec` and the target service. If the schedule identity changed, treat the first start as a migration and keep a stop-the-world data backup until no immediate target activation is observed.
+
+### Resolution
+- **Resolved**: 2026-09-03T10:57:00+08:00
+- **Notes**: The premature run was stopped, its database and files were archived, production was restored byte-logically from the verified pre-deploy backup, and the timers now wait for 17:10 / 17:30 / 19:00 without active targets.
+
+---
+
+## [LRN-20260903-002] best_practice
+
+**Logged**: 2026-09-03T11:02:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: data
+
+### Summary
+When storage is one file per day, a single-day writer must read the exact target file rather than scan a whole year before filtering.
+
+### Details
+The intraday recorder used the general yearly scan helper to load today's prior ticks. Historical intraday partitions with incompatible legacy schemas made that scan fail even though today's file did not yet exist, so the normal first snapshot was mislabeled `existing_partition_unreadable` every 30 seconds.
+
+### Suggested Action
+For append-to-one-day flows, distinguish target file absent, target file readable, and target file present-but-unreadable at the path boundary. Unrelated historical partitions must not decide whether a new day may establish its first baseline.
+
+### Resolution
+- **Resolved**: 2026-09-03T11:01:00+08:00
+- **Commit/Tag**: `2157b97` / `v2.7.0-b29`
+- **Notes**: Production created five baseline rows at 11:00:30 and captured five valid increments at 11:01:01.
+
+---
+
+## [LRN-20260903-001] best_practice
+
+**Logged**: 2026-09-03T11:02:00+08:00
+**Priority**: critical
+**Status**: resolved
+**Area**: data
+
+### Summary
+A provider publication window is not a fixed-time completeness guarantee; validate the response before replacing evidence and retry the consumer's actual target day.
+
+### Details
+On both 2026-09-01 and 09-02, the 16:05 `daily_basic` response had the expected row count but zero valid `free_share` and `turnover_rate_f` values. The same endpoint was complete later. The old writer accepted any successful DataFrame, the recovery checked retired fp-3 and old history before today, and the first `not_run` report blocked later automatic report attempts.
+
+### Suggested Action
+Schedule the first pull after the provider's stated window, validate target date, code coverage, null/finite/range semantics in memory before atomic replacement, retry only incomplete partitions, bind readiness to the live fact-pack version, and let a provisional `not_run` upgrade to a trusted result within a bounded window. Never force a report while readiness remains incomplete.
+
+### Resolution
+- **Resolved**: 2026-09-03T10:54:00+08:00
+- **Commit/Tag**: `17bd0ed` / `v2.7.0-b28`
+- **Notes**: Production recovery recognized the known-good 2026-09-01 fp-4 day and performed zero writes or notifications; the first live 17:10/19:00 cycle remains an explicit observation item.
+
+---
+
 ## [LRN-20260831-007] correction
 
 **Logged**: 2026-08-31T21:20:00+08:00
