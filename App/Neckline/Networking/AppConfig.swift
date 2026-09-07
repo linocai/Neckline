@@ -14,6 +14,8 @@
 //    1. Keychain（唯一持久化位置）
 //    2. 构建期环境变量 NK_API_TOKEN(scheme 注入,本地开发用)
 //    3. gitignored 本地配置 LocalSecrets.plist(若打进 bundle)
+//   Debug 的 `NK_DISABLE_PERSISTENT_CREDENTIALS=1` 是隔离 QA 专用开关：
+//   完全跳过 Keychain 和本地配置，只读取进程中的 NK_API_TOKEN。
 //   都缺则 token 为空 —— 业务端点会收 401,设置屏提示用户填。
 //
 
@@ -107,6 +109,7 @@ final class AppConfig: ObservableObject {
     /// 里前几次会话残留的 `NK_ENVIRONMENT`)。
     private let defaults: UserDefaults
     private let tokenStore: any APIAccessTokenStore
+    private let persistentCredentialsEnabled: Bool
 
     @Published var environment: NKEnvironment {
         didSet { defaults.set(environment.rawValue, forKey: Self.envKey) }
@@ -117,6 +120,7 @@ final class AppConfig: ObservableObject {
     }
     @Published var apiToken: String {
         didSet {
+            guard persistentCredentialsEnabled else { return }
             if tokenStore.save(apiToken) {
                 defaults.removeObject(forKey: Self.tokenKey)
             }
@@ -124,9 +128,11 @@ final class AppConfig: ObservableObject {
     }
 
     init(defaults: UserDefaults = .standard,
-         tokenStore: any APIAccessTokenStore = KeychainAPIAccessTokenStore()) {
+         tokenStore: any APIAccessTokenStore = KeychainAPIAccessTokenStore(),
+         loadPersistentCredentials: Bool = true) {
         self.defaults = defaults
         self.tokenStore = tokenStore
+        self.persistentCredentialsEnabled = loadPersistentCredentials && !Self.persistentCredentialsDisabledForQA
         // 默认后端 = prod(https://nk.linotsai.top,V2-⑰ 割接后的新机)。无持久化选择时用 prod;
         // dev(本地 uvicorn 8002)仍可在设置屏「环境」picker 或手填 baseURLOverride 切换,配置
         // 能力不变。⚠ 老 App 存过的 `NK_ENVIRONMENT="prod"` 在这里会被读成 **新** prod = nk,
@@ -135,7 +141,9 @@ final class AppConfig: ObservableObject {
         self.baseURLOverride = defaults.string(forKey: Self.baseOverrideKey) ?? ""
 
         // 一次性迁移旧 UserDefaults；Keychain 成功落入后才删除旧值。
-        if let t = tokenStore.load(), !t.isEmpty {
+        if !persistentCredentialsEnabled {
+            self.apiToken = ProcessInfo.processInfo.environment["NK_API_TOKEN"] ?? ""
+        } else if let t = tokenStore.load(), !t.isEmpty {
             self.apiToken = t
         } else if let legacy = defaults.string(forKey: Self.tokenKey), !legacy.isEmpty {
             self.apiToken = legacy
@@ -176,6 +184,14 @@ final class AppConfig: ObservableObject {
     }
 
     var hasToken: Bool { !apiToken.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    private static var persistentCredentialsDisabledForQA: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["NK_DISABLE_PERSISTENT_CREDENTIALS"] == "1"
+        #else
+        false
+        #endif
+    }
 
     private func isAllowedOverride(_ url: URL) -> Bool {
         if url.scheme?.lowercased() == "https" { return true }

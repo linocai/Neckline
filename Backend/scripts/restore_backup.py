@@ -66,7 +66,7 @@ def _relative_artifact_name(value: Any) -> PurePosixPath:
         raise RuntimeError("manifest artifact name 非规范")
     if value == "sqlite/neckline.db":
         return name
-    if (len(parts) >= 2 and parts[0] == "fact-pack" and parts[-1].endswith(".parquet")):
+    if (len(parts) >= 2 and parts[0] == "parquet" and parts[-1].endswith(".parquet")):
         return name
     raise RuntimeError("manifest artifact 不在允许恢复范围")
 
@@ -109,7 +109,7 @@ def validate_manifest(manifest: Any, destination: Path) -> tuple[ValidatedArtifa
             ciphertext_bytes=_size(entry.get("ciphertextBytes"), "ciphertextBytes"),
             wrapped_key=wrapped_key.lower(),
         ))
-    if "sqlite/neckline.db" not in seen or not any(item.name.startswith("fact-pack/") for item in validated):
+    if "sqlite/neckline.db" not in seen or not any(item.name.startswith("parquet/") for item in validated):
         raise RuntimeError("manifest 缺少必需恢复产物")
     return tuple(validated)
 

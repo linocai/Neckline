@@ -48,13 +48,13 @@ def make_config(tmp_path: Path) -> tuple[object, Path]:
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE proof (id INTEGER PRIMARY KEY, body TEXT)")
         conn.execute("INSERT INTO proof(body) VALUES ('sealed')")
-    facts = tmp_path / "fact_pack" / "version=fp-2" / "year=2026"
-    facts.mkdir(parents=True)
-    (facts / "part.parquet").write_bytes(b"frozen-facts")
+    parquet = tmp_path / "parquet" / "daily" / "year=2026"
+    parquet.mkdir(parents=True)
+    (parquet / "part.parquet").write_bytes(b"market-data")
     private, public = write_key_pair(tmp_path)
     return backup.BackupConfig(
         db_path=db_path,
-        fact_pack_root=tmp_path / "fact_pack",
+        parquet_root=tmp_path / "parquet",
         recipient_public_key=public,
         s3_bucket="test-only",
         s3_prefix="neckline-test",
@@ -74,7 +74,7 @@ def test_backup_encrypts_remote_verifies_and_restores_in_isolation(tmp_path: Pat
     restore_script.restore(manifest_path, private_key, destination, store)
     with sqlite3.connect(destination / "sqlite/neckline.db") as conn:
         assert conn.execute("SELECT body FROM proof").fetchone()[0] == "sealed"
-    assert (destination / "fact-pack/version=fp-2/year=2026/part.parquet").read_bytes() == b"frozen-facts"
+    assert (destination / "parquet/daily/year=2026/part.parquet").read_bytes() == b"market-data"
 
 
 def test_backup_deduplicates_payload_but_keeps_recoverable_wrapped_key(tmp_path: Path):
@@ -138,7 +138,7 @@ def test_restore_rejects_duplicate_target_and_non_whitelisted_artifact_before_io
     second = tmp_path / "second"
     second.mkdir()
     manifest, private_key, store = _manifest_for_restore_validation(second)
-    manifest["artifacts"][1]["name"] = "fact-pack/notes.txt"
+    manifest["artifacts"][1]["name"] = "parquet/notes.txt"
     _assert_invalid_manifest_has_no_restore_output(second, manifest, private_key, store)
 
 
@@ -172,7 +172,7 @@ def test_retention_keeps_30_daily_and_12_monthly_manifests(tmp_path: Path):
 
 
 def test_missing_backup_configuration_fails_closed(monkeypatch: pytest.MonkeyPatch):
-    for key in ("BACKUP_DB_PATH", "BACKUP_FACT_PACK_ROOT", "BACKUP_RECIPIENT_PUBLIC_KEY_PATH",
+    for key in ("BACKUP_DB_PATH", "BACKUP_PARQUET_ROOT", "BACKUP_RECIPIENT_PUBLIC_KEY_PATH",
                 "BACKUP_S3_BUCKET", "BACKUP_S3_PREFIX", "BACKUP_RESTORE_VERIFY_COMMAND",
                 "BACKUP_ENABLE_RETENTION"):
         monkeypatch.delenv(key, raising=False)
@@ -184,15 +184,13 @@ def test_s3_backup_is_opt_in_and_not_a_runtime_or_release_dependency():
     root = SCRIPTS.parent.parent
     deploy = root / "Backend" / "deploy"
     standard_units = (
-        "neckline.service", "neckline-daily.service", "neckline-daily.timer",
-        "neckline-evening.target", "neckline-evening.timer",
-        "neckline-recovery.service", "neckline-recovery.timer",
+        "neckline.service", "neckline-k10-worker.service", "neckline-k10-evening.service",
+        "neckline-k10-evening.timer", "neckline-k10-morning.service", "neckline-k10-morning.timer",
     )
     standard_runtime = "\n".join(
         (deploy / name).read_text(encoding="utf-8") for name in standard_units
     )
     assert "neckline-backup" not in standard_runtime
-    assert "默认不启用" in (root / "README.md").read_text(encoding="utf-8")
     assert "未完成对象存储配置和恢复演练时不得 enable" in (
         deploy / "neckline-backup.timer"
     ).read_text(encoding="utf-8")

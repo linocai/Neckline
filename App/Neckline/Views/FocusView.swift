@@ -1,0 +1,480 @@
+import SwiftUI
+import Foundation
+
+struct FocusView: View {
+    @Bindable var model: AppModel
+    @State private var scope: FocusScope = .current
+    @State private var selectedWindowID: String?
+
+    private var currentWindows: [K10CompanyWindow] {
+        orderedWindows.filter { model.selection(for: $0)?.state == "kept" }
+    }
+
+    private var historicalWindows: [K10CompanyWindow] {
+        orderedWindows.filter { window in
+            guard let detail = model.selection(for: window) else { return false }
+            return detail.state != "kept" && (detail.observationId != nil || !detail.analyses.isEmpty)
+        }
+    }
+
+    private var orderedWindows: [K10CompanyWindow] {
+        model.companyWindows.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private var displayedWindows: [K10CompanyWindow] {
+        scope == .current ? currentWindows : historicalWindows
+    }
+
+    private var selectedWindow: K10CompanyWindow? {
+        if let selectedWindowID, let window = displayedWindows.first(where: { $0.id == selectedWindowID }) {
+            return window
+        }
+        return displayedWindows.first
+    }
+
+    var body: some View {
+        Group {
+            #if os(macOS)
+            desktopLayout
+            #else
+            phoneLayout
+            #endif
+        }
+        .background(NK.pageBg)
+        .navigationTitle("关注")
+        .onAppear(perform: alignSelection)
+        .onChange(of: model.selectedWindow?.id) { _, _ in alignSelection() }
+        .onChange(of: scope) { _, _ in selectFirstVisibleWindow() }
+    }
+
+    #if os(macOS)
+    private var desktopLayout: some View {
+        HStack(spacing: 0) {
+            desktopSidebar.frame(width: 300)
+            Divider().overlay(NK.hairline)
+            desktopDetail.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var desktopSidebar: some View {
+            VStack(alignment: .leading, spacing: NKSpace.blockGap) {
+                V3PageHeader(title: "关注", subtitle: "留下的公司在这里完成正反阅读；取消关注后的资料保留在历史。")
+                FocusScopePicker(scope: $scope, currentCount: currentWindows.count, historyCount: historicalWindows.count)
+                ScrollView {
+                    LazyVStack(spacing: NKSpace.rowGap) {
+                        if displayedWindows.isEmpty {
+                            V3EmptyState(icon: "bookmark", title: emptyTitle, message: emptyMessage)
+                        } else {
+                            ForEach(displayedWindows) { window in
+                                FocusSidebarRow(
+                                    window: window,
+                                    detail: model.selection(for: window),
+                                    selected: selectedWindowID == window.id,
+                                    action: {
+                                        selectedWindowID = window.id
+                                        model.selectedWindow = window
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    .padding(.bottom, NKSpace.pagePadBottom)
+                }
+            }
+            .padding(.horizontal, NKSpace.listPadH + NKSpace.listHeaderExtraH)
+            .padding(.top, NKSpace.listPadTop)
+            .background(NK.listBg)
+    }
+
+    @ViewBuilder private var desktopDetail: some View {
+            if let window = selectedWindow, let detail = model.selection(for: window) {
+                ScrollView {
+                    FocusReadingPane(window: window, detail: detail, model: model)
+                        .padding(.horizontal, NKSpace.pagePad)
+                        .padding(.top, NKSpace.pagePad)
+                        .padding(.bottom, NKSpace.pagePadBottom)
+                }
+            } else {
+                V3EmptyState(icon: "doc.text.magnifyingglass", title: emptyTitle, message: emptyMessage)
+            }
+    }
+    #endif
+
+    #if !os(macOS)
+    private var phoneLayout: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+                V3PageHeader(title: "关注", subtitle: "正方与反方各一轮，资料截止和版本始终可追溯。")
+                FocusScopePicker(scope: $scope, currentCount: currentWindows.count, historyCount: historicalWindows.count)
+
+                if displayedWindows.isEmpty {
+                    V3EmptyState(icon: "bookmark", title: emptyTitle, message: emptyMessage)
+                } else {
+                    LazyVStack(spacing: NKSpace.blockGap) {
+                        ForEach(displayedWindows) { window in
+                            FocusMobileCard(window: window, detail: model.selection(for: window), model: model)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, NKSpace.pagePad)
+            .padding(.top, NKSpace.pagePad)
+            .padding(.bottom, NKSpace.pagePadBottom)
+        }
+    }
+    #endif
+
+    private var emptyTitle: String {
+        scope == .current ? "当前没有留下的公司" : "没有可回看的关注资料"
+    }
+
+    private var emptyMessage: String {
+        scope == .current
+            ? "在机会页留下公司后，系统会用固定资料截止时间完成正方、反方分析。"
+            : "只有曾留下且已有观察或分析资料的公司会出现在这里；未处理和明确略过不会混入历史。"
+    }
+
+    private func alignSelection() {
+        if let requested = model.selectedWindow,
+           currentWindows.contains(where: { $0.id == requested.id }) {
+            scope = .current
+            selectedWindowID = requested.id
+        } else if let requested = model.selectedWindow,
+                  historicalWindows.contains(where: { $0.id == requested.id }) {
+            scope = .history
+            selectedWindowID = requested.id
+        } else {
+            selectFirstVisibleWindow()
+        }
+    }
+
+    private func selectFirstVisibleWindow() {
+        selectedWindowID = displayedWindows.first?.id
+    }
+}
+
+private enum FocusScope: String, CaseIterable, Identifiable {
+    case current
+    case history
+
+    var id: String { rawValue }
+}
+
+private struct FocusScopePicker: View {
+    @Binding var scope: FocusScope
+    let currentCount: Int
+    let historyCount: Int
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(FocusScope.allCases) { item in
+                Button { scope = item } label: {
+                    Text(item == .current ? "当前关注 \(currentCount)" : "历史资料 \(historyCount)")
+                        .font(NKFont.callout.weight(.medium))
+                        .foregroundStyle(scope == item ? NK.accent : NK.textSecondary)
+                        .frame(maxWidth: .infinity, minHeight: 34)
+                        .background(scope == item ? Color.white : .clear, in: RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(scope == item ? NK.hairline : .clear, lineWidth: 1))
+                }.buttonStyle(.plain)
+            }
+        }.padding(3).background(NK.fieldBg, in: RoundedRectangle(cornerRadius: 10))
+            .accessibilityLabel("关注范围")
+    }
+}
+
+private struct FocusSidebarRow: View {
+    let window: K10CompanyWindow
+    let detail: K10SelectionDetail?
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                V3CompanyMark(code: window.companyCode, size: 34)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(window.companyName ?? window.companyCode).font(NKFont.headline)
+                        Spacer(minLength: 4)
+                        V3Pill(text: detail?.state ?? "unhandled")
+                    }
+                    Text(analysisProgressLabel(detail))
+                        .font(NKFont.caption)
+                        .foregroundStyle(NK.textSecondary)
+                    Text("D1 \(k10DisplayTime(window.d1TradeDate)) · D2 \(k10DisplayTime(window.d2TradeDate))")
+                        .font(NKFont.caption)
+                        .foregroundStyle(NK.textTertiary)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? NK.accent.opacity(0.09) : NK.cardBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+            .overlay(RoundedRectangle(cornerRadius: NKRadius.inner).stroke(selected ? NK.accent.opacity(0.55) : NK.hairline, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct FocusMobileCard: View {
+    let window: K10CompanyWindow
+    let detail: K10SelectionDetail?
+    @Bindable var model: AppModel
+
+    var body: some View {
+        V3Card {
+            VStack(alignment: .leading, spacing: NKSpace.blockGap) {
+                HStack(alignment: .top, spacing: 12) {
+                    V3CompanyMark(code: window.companyCode)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(window.companyName ?? window.companyCode).font(NKFont.title3)
+                        Text(window.companyCode)
+                            .font(NKFont.caption)
+                            .foregroundStyle(NK.textSecondary)
+                    }
+                    Spacer()
+                    V3Pill(text: detail?.state ?? "unhandled")
+                }
+                Text("D1 \(k10DisplayTime(window.d1TradeDate)) · D2 \(k10DisplayTime(window.d2TradeDate))")
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                AnalysisProgress(detail: detail)
+                Button("阅读正反观点") { model.selectedWindow = window }
+                    .buttonStyle(V3SecondaryButtonStyle())
+            }
+        }
+    }
+}
+
+struct FocusReadingPane: View {
+    let window: K10CompanyWindow
+    let detail: K10SelectionDetail
+    @Bindable var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+            V3PageHeader(
+                title: window.companyName ?? window.companyCode,
+                subtitle: "\(window.companyCode) · 固定窗口 D1 \(k10DisplayTime(window.d1TradeDate)) · D2 \(k10DisplayTime(window.d2TradeDate))"
+            )
+            V3Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        V3Pill(text: detail.state)
+                        Spacer()
+                        Text("K10-v1.4 · 资料截止随分析记录固定")
+                            .font(NKFont.caption)
+                            .foregroundStyle(NK.textSecondary)
+                    }
+                    AnalysisProgress(detail: detail)
+                    if let job = detail.latestJob {
+                        HStack(spacing: 8) {
+                            Text("任务 \(k10StatusText(job.status)) · 第 \(job.attemptCount) 次")
+                            Text("截止 \(k10DisplayTime(job.inputCutoffAt))")
+                        }
+                        .font(NKFont.caption)
+                        .foregroundStyle(NK.textSecondary)
+                        if ["failed", "not_configured"].contains(job.status) {
+                            Button("重试分析") { Task { await model.retryAnalysis(for: detail) } }
+                                .buttonStyle(V3SecondaryButtonStyle())
+                        }
+                    }
+                }
+            }
+
+            V3SectionTitle(title: "正反阅读", icon: "arrow.left.arrow.right")
+            AnalysisPair(analyses: detail.analyses, model: model)
+
+            if !window.opportunities.isEmpty {
+                V3SectionTitle(title: "更新与资料", icon: "doc.text.magnifyingglass")
+                V3Card {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("晨间风险、资料更新和撤回均在机会详情中保留，不会改写本次正反的资料截止。")
+                            .font(NKFont.callout)
+                            .foregroundStyle(NK.textSecondary)
+                        ForEach(window.opportunities) { opportunity in
+                            HStack(alignment: .top, spacing: 8) {
+                                V3Pill(text: opportunity.lifecycle)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(opportunity.catalystStage).font(NKFont.callout)
+                                    Text("\(k10PublicationMarkerText(opportunity.sourceMarker))首发 \(k10DisplayTime(opportunity.availableAt))")
+                                        .font(NKFont.caption)
+                                        .foregroundStyle(NK.textSecondary)
+                                }
+                                Spacer()
+                                Button("查看") { Task { await model.open(opportunity) } }
+                                    .buttonStyle(V3SecondaryButtonStyle())
+                                    .frame(width: 70)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if detail.state == "kept" {
+                Button("取消关注") { Task { await model.act("withdraw", window: window) } }
+                    .buttonStyle(V3SecondaryButtonStyle())
+            }
+        }
+    }
+}
+
+private struct AnalysisPair: View {
+    let analyses: [K10Analysis]
+    @Bindable var model: AppModel
+
+    private var pro: K10Analysis? { latest(role: "pro") }
+    private var con: K10Analysis? { latest(role: "con") }
+
+    var body: some View {
+        #if os(macOS)
+        HStack(alignment: .top, spacing: NKSpace.blockGap) {
+            analysisColumn(role: "pro", analysis: pro).frame(maxWidth: .infinity, alignment: .topLeading)
+            analysisColumn(role: "con", analysis: con).frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        #else
+        VStack(alignment: .leading, spacing: NKSpace.blockGap) {
+            analysisColumn(role: "pro", analysis: pro)
+            analysisColumn(role: "con", analysis: con)
+        }
+        #endif
+    }
+
+    @ViewBuilder private func analysisColumn(role: String, analysis: K10Analysis?) -> some View {
+        if let analysis {
+            AnalysisBlock(analysis: analysis, model: model)
+        } else {
+            AnalysisWaitingCard(role: role)
+        }
+    }
+
+    private func latest(role: String) -> K10Analysis? {
+        analyses.filter { $0.role == role }.sorted { $0.revision > $1.revision }.first
+    }
+}
+
+struct AnalysisBlock: View {
+    let analysis: K10Analysis
+    @Bindable var model: AppModel
+    @State private var expanded = false
+    @State private var document: K10DocumentPage?
+
+    private var isPro: Bool { analysis.role == "pro" }
+    private var tone: Color { isPro ? NK.up : NK.down }
+    private var title: String { isPro ? "正方观点" : "反方质疑" }
+    private var preview: String { firstMeaningfulSection(analysis.fullText ?? analysis.error ?? "尚未返回全文。") }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NKSpace.blockGap) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: isPro ? "checkmark.seal" : "exclamationmark.shield")
+                    .foregroundStyle(tone)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(NKFont.title3).foregroundStyle(tone)
+                    Text("分析第 \(analysis.revision) 版")
+                        .font(NKFont.caption)
+                        .foregroundStyle(NK.textSecondary)
+                }
+                Spacer()
+                V3Pill(text: analysis.status)
+            }
+
+            Text("资料截至 \(k10DisplayTime(analysis.inputCutoffAt)) · \(analysis.model ?? "模型未记录")")
+                .font(NKFont.caption)
+                .foregroundStyle(NK.textSecondary)
+
+            if analysis.fullText != nil {
+                Text(expanded ? "完整观点" : "正文节选").font(NKFont.headline)
+                K10MarkdownText(markdown: expanded ? (analysis.fullText ?? "") : preview, sourceRefs: analysis.sourceRefs) { source in
+                    Task { document = await model.openDocument(source) }
+                }
+                Button(expanded ? "收起全文" : "阅读全文") { expanded.toggle() }
+                    .buttonStyle(V3SecondaryButtonStyle())
+            } else {
+                Text(analysis.error ?? "模型尚未返回全文。")
+                    .font(NKFont.body)
+                    .foregroundStyle(analysis.status == "failed" ? NK.down : NK.textSecondary)
+            }
+
+            if expanded, !analysis.sourceRefs.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("冻结资料（\(analysis.sourceRefs.count)）").font(NKFont.headline)
+                    ForEach(analysis.sourceRefs) { SourceReferenceLine(source: $0, model: model) }
+                }
+            }
+        }
+        .padding(NKSpace.cardPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tone.opacity(0.055), in: RoundedRectangle(cornerRadius: NKRadius.card))
+        .overlay(RoundedRectangle(cornerRadius: NKRadius.card).stroke(tone.opacity(0.23), lineWidth: 0.7))
+        .sheet(item: $document) { SourceDocumentSheet(document: $0, model: model) }
+    }
+
+    private func firstMeaningfulSection(_ text: String) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        let chosen = lines.prefix(4).joined(separator: "\n")
+        let content = chosen.isEmpty ? text : chosen
+        guard content.count > 210 else { return content }
+        let prefix = String(content.prefix(210))
+        if let end = prefix.lastIndex(where: { "。；".contains($0) }), prefix.distance(from: prefix.startIndex, to: end) > 60 {
+            return String(prefix[...end]) + "…"
+        }
+        if let partialReference = prefix.range(of: "doc_", options: .backwards),
+           !prefix[partialReference.lowerBound...].contains(where: { $0.isWhitespace }) {
+            return String(prefix[..<partialReference.lowerBound]) + "…"
+        }
+        return prefix + "…"
+    }
+}
+
+private struct AnalysisWaitingCard: View {
+    let role: String
+
+    var body: some View {
+        let isPro = role == "pro"
+        let tone = isPro ? NK.up : NK.down
+        VStack(alignment: .leading, spacing: 8) {
+            Text(isPro ? "正方观点" : "反方质疑").font(NKFont.title3).foregroundStyle(tone)
+            Text(isPro ? "正方尚未开始；系统不会伪造结论。" : "反方会读取固定正方全文后才开始。")
+                .font(NKFont.callout)
+                .foregroundStyle(NK.textSecondary)
+        }
+        .padding(NKSpace.cardPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tone.opacity(0.05), in: RoundedRectangle(cornerRadius: NKRadius.card))
+        .overlay(RoundedRectangle(cornerRadius: NKRadius.card).stroke(tone.opacity(0.22), lineWidth: 0.7))
+    }
+}
+
+private struct AnalysisProgress: View {
+    let detail: K10SelectionDetail?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            progressItem(title: "正方", status: latestStatus(role: "pro"), tone: NK.up)
+            Image(systemName: "arrow.right").font(NKFont.caption).foregroundStyle(NK.accent)
+            progressItem(title: "反方", status: latestStatus(role: "con"), tone: NK.down)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func progressItem(title: String, status: String?, tone: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: status == "completed" ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(status == "completed" ? tone : NK.textTertiary)
+            Text("\(title)\(status.map { " · \(k10StatusText($0))" } ?? " · 等待")")
+                .font(NKFont.caption)
+                .foregroundStyle(status == "failed" ? NK.down : NK.textSecondary)
+        }
+    }
+
+    private func latestStatus(role: String) -> String? {
+        detail?.analyses.filter { $0.role == role }.sorted { $0.revision > $1.revision }.first?.status
+    }
+}
+
+private func analysisProgressLabel(_ detail: K10SelectionDetail?) -> String {
+    let analyses = detail?.analyses ?? []
+    let pro = analyses.filter { $0.role == "pro" }.sorted { $0.revision > $1.revision }.first?.status
+    let con = analyses.filter { $0.role == "con" }.sorted { $0.revision > $1.revision }.first?.status
+    return "正方\(pro.map { " \(k10StatusText($0))" } ?? " 等待") → 反方\(con.map { " \(k10StatusText($0))" } ?? " 等待")"
+}

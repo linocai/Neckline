@@ -1,0 +1,11 @@
+[Unit]
+Description=Enqueue Neckline K10 morning scan
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+EnvironmentFile=/etc/neckline/k10.env
+ExecStart=/bin/sh -c 'exec "$K10_PYTHON" -m neckline.k10.cli enqueue --db "$K10_DB_PATH" --kind morning --trading-day "$(TZ=Asia/Shanghai /bin/date +%%F)" --config-id "$K10_CONFIG_ID" --config-revision "$K10_CONFIG_REVISION"'

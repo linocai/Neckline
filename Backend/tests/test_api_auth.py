@@ -6,15 +6,10 @@ import dataclasses
 
 import pytest
 
-# 🔴 V2.5.0 S1:`/report*` `/board` `/positions*` 已随 K8 退役删除(PROJECT_PLAN §5.12),
-# 覆盖面换成仍在的只读端点顶上 —— ⛔ 不许因为删端点就让 401 覆盖面变窄。
 PROTECTED_GET = [
-    "/api/v1/settings",
-    "/api/v1/settings/providers",
-    "/api/v1/settings/llm-routes",
-    "/api/v1/review",
-    "/api/v1/review/overview",
-    "/api/v1/scoreboard/packages?state=active",
+    "/api/v1/settings", "/api/v1/settings/providers",
+    "/api/v1/k10/scans/latest?window=evening", "/api/v1/k10/publications",
+    "/api/v1/k10/company-windows", "/api/v1/k10/results",
 ]
 
 
@@ -32,20 +27,17 @@ def test_protected_get_requires_token(client, path):
 
 def test_protected_post_requires_token(client):
     assert client.post("/api/v1/devices", json={"token": "x"}).status_code == 401
-    # V2-②:Provider 注册表端点(自填制,plan §3.10-B)
     assert client.post("/api/v1/settings/providers", json={"name": "x"}).status_code == 401
-    # V2.5.0 S1:`/positions` `/decisions` 已删除;上传端点顶上(multipart,无 body 也 401)。
-    assert client.post("/api/v1/review/upload").status_code == 401
+    assert client.post("/api/v1/k10/company-windows/window-1/selection").status_code == 401
 
 
 def test_protected_put_requires_token(client):
     assert client.put("/api/v1/settings/push", json={"report": True, "retreatBrake": True}).status_code == 401
     assert client.put("/api/v1/settings/providers/custom", json={}).status_code == 401
-    assert client.put("/api/v1/settings/llm-routes", json={}).status_code == 401
+    assert client.post("/api/v1/k10/jobs/job-1/retry", json={}).status_code == 401
 
 
 def test_protected_delete_requires_token(client):
-    # V2.5.0 S1:`/alerts/{id}` 已随自定义提醒退役删除;剩下两条 DELETE 都在 settings 下。
     assert client.delete("/api/v1/settings/providers/custom").status_code == 401
     assert client.delete("/api/v1/settings/tavily").status_code == 401
 
@@ -55,7 +47,6 @@ def test_valid_token_passes(client, AUTH):
 
 
 def test_bearer_compare_is_exact(client, AUTH):
-    # 前缀匹配但非全等 → 401(hmac.compare_digest 全等比对,防前缀/时序旁路)
     tok = AUTH["Authorization"].split(" ", 1)[1]
     assert client.get("/api/v1/settings", headers={"Authorization": f"Bearer {tok}x"}).status_code == 401
     assert client.get("/api/v1/settings", headers={"Authorization": tok}).status_code == 401  # 缺 "Bearer "

@@ -1,176 +1,35 @@
-"""4A.5 设置端点 + settings_store 单测(plan 4A 验收:settings DB 存取,key 不回传明文)。
-V2-② 起 LLM 部分改为 Provider 注册表自填制(plan §五 V2-②/§3.10-B),取代 V1 的
-`PUT /settings/llm` 单供应商枚举——本文件的 Provider 相关用例已随之改写,其余
-(push/intel-boards/设备注册)不变。**🔴 高危区:LLM key 服务端存取。**"""
-
-from __future__ import annotations
-
+"""Settings security, notification preferences and device registration."""
 import json
-
 import pytest
-
 from neckline import notify_kinds, settings_store
-from neckline.llm.factory import get_provider
-from neckline.llm.router import TASK_EXPLAIN, TASK_NEWS_SCAN
 
 
-# —— 端点 ————————————————————————————————————————————————————————————
-
-def test_settings_default(client, AUTH):
-    r = client.get("/api/v1/settings", headers=AUTH)
-    assert r.status_code == 200
-    body = r.json()
-    assert body["providers"] == []
-    assert body["routes"] == {}
-    assert body["tavily"] == {"keySet": False}
-    # V2-⑪:push 从「六个具名布尔」换成「按 kind 的开关清单」(三级 × N kind,D5)。
-    kinds = body["push"]["kinds"]
-    assert [k["kind"] for k in kinds] == list(notify_kinds.ALL_KINDS)
-    assert all(k["enabled"] is True for k in kinds)          # 全部默认开
-    assert {k["level"] for k in kinds} <= set(notify_kinds.LEVELS)
-    assert all(k["label"] for k in kinds)                    # 人读名服务端给,双端不各抄一份
-
-
-def test_create_provider_key_not_leaked_and_runtime_effective(client, AUTH, api_env):
-    r = client.post("/api/v1/settings/providers", headers=AUTH, json={
-        "name": "custom", "baseUrl": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        "model": "test-model", "apiKey": "sk-secret-abc", "hasWebSearch": True, "searchEngine": "search_pro",
-    })
-    assert r.status_code == 201
-    created = r.json()
-    assert created["name"] == "custom" and created["keySet"] is True
-    assert "sk-secret" not in json.dumps(created)
-
-    body = client.get("/api/v1/settings", headers=AUTH).json()
-    assert body["providers"] == [
-        {"name": "custom", "model": "test-model", "hasWebSearch": True, "keySet": True, "enabled": True}
-    ]
-    assert "sk-secret" not in json.dumps(body)
-    assert "sk-secret" not in client.get("/api/v1/settings/providers", headers=AUTH).text
-
-    # 默认模型可在运行时直接保存；历史 `hasWebSearch` 字段不再决定路由。
-    assert client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
-        "routes": {}, "defaultProvider": "custom",
-    }).status_code == 200
-    p = get_provider(db_path=api_env.db_path)
-    assert p is not None and p.name == "custom" and p.model == "test-model"
-    assert get_provider(TASK_NEWS_SCAN, db_path=api_env.db_path) is None
-
-
-def test_create_provider_duplicate_name_409(client, AUTH):
-    body = {"name": "custom", "baseUrl": "https://x", "model": "m"}
-    assert client.post("/api/v1/settings/providers", headers=AUTH, json=body).status_code == 201
-    r = client.post("/api/v1/settings/providers", headers=AUTH, json=body)
-    assert r.status_code == 409 and r.json()["detail"]["reason"] == "already_exists"
-
-
-def test_create_provider_missing_required_field_422(client, AUTH):
-    # schema 要求 name/baseUrl/model 均非空(min_length=1)
-    assert client.post("/api/v1/settings/providers", headers=AUTH, json={"name": "", "baseUrl": "x", "model": "m"}).status_code == 422
-
-
-def test_update_provider_partial_only_touches_named_fields(client, AUTH, api_env):
-    client.post("/api/v1/settings/providers", headers=AUTH, json={
-        "name": "deepseek", "baseUrl": "https://api.deepseek.com/chat/completions",
-        "model": "deepseek-chat", "apiKey": "k1", "hasWebSearch": False,
-    })
-    r = client.put("/api/v1/settings/providers/deepseek", headers=AUTH, json={"model": "deepseek-reasoner"})
-    assert r.status_code == 200
-    got = r.json()
-    assert got["model"] == "deepseek-reasoner"
-    assert got["baseUrl"] == "https://api.deepseek.com/chat/completions"  # 未传的字段不变
-    assert got["keySet"] is True  # 没碰 apiKey,key 仍在
-
-    assert client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
-        "routes": {"explain": "deepseek"}, "defaultProvider": "deepseek",
-    }).status_code == 200
-
-    # 显式传空串清空 apiKey(视为清除,同既有 `_clean()` 纪律)
-    r2 = client.put("/api/v1/settings/providers/deepseek", headers=AUTH, json={"apiKey": ""})
-    assert r2.status_code == 200 and r2.json()["keySet"] is False
-    # 失去 key 的 Provider 与默认值/任务路由在同一事务失效。
-    assert client.get("/api/v1/settings/llm-routes", headers=AUTH).json() == {
-        "routes": {}, "defaultProvider": None,
-    }
-
-    # 无 key 的 Provider 不能被保存为默认模型，前后端不会制造“选了但实际不可用”。
-    invalid = client.put("/api/v1/settings/llm-routes", headers=AUTH,
-                         json={"routes": {}, "defaultProvider": "deepseek"})
-    assert invalid.status_code == 422 and invalid.json()["detail"]["reason"] == "invalid_provider"
-    assert get_provider(db_path=api_env.db_path) is None
-
-
-def test_disabling_provider_atomically_clears_default_and_routes(client, AUTH):
-    assert client.post("/api/v1/settings/providers", headers=AUTH, json={
-        "name": "deepseek", "baseUrl": "https://api.deepseek.com/chat/completions",
-        "model": "deepseek-chat", "apiKey": "k1",
-    }).status_code == 201
-    assert client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
-        "routes": {"explain": "deepseek"}, "defaultProvider": "deepseek",
-    }).status_code == 200
-    assert client.put("/api/v1/settings/providers/deepseek", headers=AUTH,
-                      json={"enabled": False}).status_code == 200
-    assert client.get("/api/v1/settings/llm-routes", headers=AUTH).json() == {
-        "routes": {}, "defaultProvider": None,
-    }
+def test_provider_credentials_roundtrip_without_echo_and_drive_v4_pro(client, AUTH, api_env):
+    from pathlib import Path
+    from neckline.k10.providers import resolve_deepseek_v4_pro
+    configuration = json.loads((Path(__file__).parents[1] / "neckline/config/k10-v1.4.json").read_text())
+    connection = {"name": "deepseek", "baseUrl": "https://api.deepseek.com",
+                  "model": "deepseek-v4-pro", "apiKey": "synthetic-write-only-key"}
+    response = client.post("/api/v1/settings/providers", headers=AUTH, json=connection)
+    assert response.status_code == 201
+    assert response.json()["keySet"] is True
+    assert connection["apiKey"] not in response.text
+    assert client.post("/api/v1/settings/providers", headers=AUTH, json=connection).status_code == 409
+    listed = client.get("/api/v1/settings/providers", headers=AUTH)
+    assert connection["apiKey"] not in listed.text
+    assert resolve_deepseek_v4_pro(configuration=configuration, task="analysis", db_path=api_env.db_path).state == "configured"
+    # A partial update does not clear a previously supplied key.
+    assert client.put("/api/v1/settings/providers/deepseek", headers=AUTH, json={"notes": "synthetic"}).status_code == 200
+    assert settings_store.get_provider_record("deepseek", db_path=api_env.db_path).api_key == connection["apiKey"]
+    assert client.put("/api/v1/settings/providers/deepseek", headers=AUTH, json={"enabled": False}).status_code == 200
+    assert resolve_deepseek_v4_pro(configuration=configuration, task="analysis", db_path=api_env.db_path).state == "not_configured"
+    assert client.delete("/api/v1/settings/providers/deepseek", headers=AUTH).status_code == 200
+    assert client.delete("/api/v1/settings/providers/deepseek", headers=AUTH).status_code == 404
 
 
 def test_update_provider_not_found_404(client, AUTH):
     r = client.put("/api/v1/settings/providers/ghost", headers=AUTH, json={"model": "x"})
     assert r.status_code == 404 and r.json()["detail"]["reason"] == "not_found"
-
-
-def test_delete_provider(client, AUTH):
-    client.post("/api/v1/settings/providers", headers=AUTH, json={
-        "name": "temp", "baseUrl": "https://x", "model": "m", "apiKey": "k",
-    })
-    client.put("/api/v1/settings/llm-routes", headers=AUTH, json={
-        "routes": {"explain": "temp"}, "defaultProvider": "temp",
-    })
-    assert client.delete("/api/v1/settings/providers/temp", headers=AUTH).status_code == 200
-    assert client.delete("/api/v1/settings/providers/temp", headers=AUTH).status_code == 404
-    assert client.get("/api/v1/settings/providers", headers=AUTH).json()["items"] == []
-    assert client.get("/api/v1/settings/llm-routes", headers=AUTH).json() == {
-        "routes": {}, "defaultProvider": None,
-    }
-
-
-def test_llm_routes_roundtrip_and_default_fallback(client, AUTH, api_env):
-    client.post("/api/v1/settings/providers", headers=AUTH, json={
-        "name": "deepseek", "baseUrl": "https://api.deepseek.com/chat/completions",
-        "model": "deepseek-chat", "apiKey": "k1",
-    })
-    r = client.put("/api/v1/settings/llm-routes", headers=AUTH,
-                    json={"routes": {"explain": "deepseek"}, "defaultProvider": "deepseek"})
-    assert r.status_code == 200
-    assert r.json() == {"routes": {"explain": "deepseek"}, "defaultProvider": "deepseek"}
-    assert client.get("/api/v1/settings/llm-routes", headers=AUTH).json() == r.json()
-
-    p = get_provider(TASK_EXPLAIN, db_path=api_env.db_path)
-    assert p is not None and p.name == "deepseek"
-    # 未在 routes 里的其它任务缺路由回退 defaultProvider(同一个 deepseek)
-    p2 = get_provider("some_future_task", db_path=api_env.db_path)
-    assert p2 is not None and p2.name == "deepseek"
-
-
-def test_llm_routes_unknown_task_422(client, AUTH):
-    r = client.put("/api/v1/settings/llm-routes", headers=AUTH,
-                    json={"routes": {"not_a_real_task": "x"}, "defaultProvider": None})
-    assert r.status_code == 422 and r.json()["detail"]["reason"] == "invalid_task"
-
-
-def test_llm_routes_unknown_disabled_or_keyless_provider_422(client, AUTH):
-    for name, payload in (
-        ("missing", None),
-        ("keyless", {"name": "keyless", "baseUrl": "https://x", "model": "m"}),
-        ("disabled", {"name": "disabled", "baseUrl": "https://x", "model": "m",
-                      "apiKey": "k", "enabled": False}),
-    ):
-        if payload is not None:
-            assert client.post("/api/v1/settings/providers", headers=AUTH, json=payload).status_code == 201
-        r = client.put("/api/v1/settings/llm-routes", headers=AUTH,
-                       json={"routes": {}, "defaultProvider": name})
-        assert r.status_code == 422 and r.json()["detail"]["reason"] == "invalid_provider"
 
 
 def test_tavily_key_write_only_roundtrip_and_clear(client, AUTH, api_env):
@@ -195,18 +54,18 @@ def test_tavily_whitespace_key_rejected(client, AUTH):
 def test_put_push_toggles(client, AUTH):
     """两类通知各自有独立开关。"""
     kinds = {k: True for k in notify_kinds.ALL_KINDS}
-    kinds[notify_kinds.KIND_REPORT_READY] = False
+    kinds[notify_kinds.ALL_KINDS[0]] = False
     r = client.put("/api/v1/settings/push", headers=AUTH, json={"kinds": kinds})
     assert r.status_code == 200
     got = {k["kind"]: k["enabled"] for k in client.get("/api/v1/settings", headers=AUTH).json()["push"]["kinds"]}
-    assert got[notify_kinds.KIND_REPORT_READY] is False
-    assert got[notify_kinds.KIND_PRECALL] is True
+    assert got[notify_kinds.ALL_KINDS[0]] is False
+    assert got[notify_kinds.ALL_KINDS[1]] is True
 
 
 def test_put_push_missing_kind_422(client, AUTH):
     """必须给全每一个 kind(承 V1「六字段必填、防漏传静默重置」的同一条纪律),
     缺 kind → 422 而非静默补默认。"""
-    kinds = {notify_kinds.KIND_REPORT_READY: True}
+    kinds = {notify_kinds.ALL_KINDS[0]: True}
     r = client.put("/api/v1/settings/push", headers=AUTH, json={"kinds": kinds})
     assert r.status_code == 422
     assert r.json()["detail"]["reason"] == "invalid_push_kinds"
@@ -221,19 +80,6 @@ def test_put_push_unknown_kind_422(client, AUTH):
     assert r.json()["detail"]["reason"] == "invalid_push_kinds"
 
 
-def test_put_llm_routes_does_not_reset_push(client, AUTH):
-    """`set_llm_routes` 只碰 llm_task_routes/llm_default_provider 两列,不连带重置
-    push 开关(各 setter 只 UPDATE 自己的列,同 `_ensure_row` 两步式纪律)。"""
-    all_off = {k: False for k in notify_kinds.ALL_KINDS}
-    client.put("/api/v1/settings/push", headers=AUTH, json={"kinds": all_off})
-    client.post("/api/v1/settings/providers", headers=AUTH, json={
-        "name": "x", "baseUrl": "https://x", "model": "m", "apiKey": "k",
-    })
-    client.put("/api/v1/settings/llm-routes", headers=AUTH, json={"routes": {}, "defaultProvider": "x"})
-    got = {k["kind"]: k["enabled"] for k in client.get("/api/v1/settings", headers=AUTH).json()["push"]["kinds"]}
-    assert got == all_off
-
-
 def test_register_device(client, AUTH, api_env):
     from neckline.api.stores import list_device_tokens
 
@@ -241,20 +87,6 @@ def test_register_device(client, AUTH, api_env):
     client.post("/api/v1/devices", headers=AUTH, json={"token": "devtok1", "platform": "ios"})  # 幂等
     client.post("/api/v1/devices", headers=AUTH, json={"token": "devtok2"})
     assert set(list_device_tokens(db_path=api_env.db_path)) == {"devtok1", "devtok2"}
-
-
-# —— settings_store 直接单测(Provider 注册表存取语义 / 降级,V2-②)—————————————
-
-def test_empty_key_treated_as_unset(api_env):
-    db = api_env.db_path
-    settings_store.create_provider("custom", "https://x", "test-model", api_key="realkey", db_path=db)
-    settings_store.set_llm_routes({}, "custom", db_path=db)  # 立"custom"为默认 provider,便于下面用 get_provider() 观测
-    assert settings_store.get_provider_record("custom", db_path=db).api_key == "realkey"
-    assert get_provider(db_path=db) is not None
-    # 填空 key → 视为清除(降级),不留一个空 key 去乱调
-    settings_store.update_provider("custom", api_key="   ", db_path=db)
-    assert settings_store.get_provider_record("custom", db_path=db).api_key is None
-    assert get_provider(db_path=db) is None
 
 
 def test_create_provider_rejects_duplicate_name(api_env):
@@ -270,15 +102,6 @@ def test_update_provider_missing_name_returns_none(api_env):
 
 def test_delete_provider_missing_name_returns_false(api_env):
     assert settings_store.delete_provider("ghost", db_path=api_env.db_path) is False
-
-
-def test_set_llm_routes_rejects_unknown_task(api_env):
-    with pytest.raises(ValueError):
-        settings_store.set_llm_routes({"not_a_real_task": "x"}, None, db_path=api_env.db_path)
-
-
-def test_get_llm_routes_default_empty(api_env):
-    assert settings_store.get_llm_routes(db_path=api_env.db_path) == ({}, None)
 
 
 def test_key_never_logged(api_env, caplog):

@@ -1,25 +1,14 @@
-"""Tavily-only external research adapter for DeepSeek and other pure LLMs.
-
-The key is read from ``app_settings.tavily_api_key`` by the factory and is never
-returned, logged, or embedded in an LLM prompt.  Search and reasoning stay two
-separate billable operations: Tavily returns evidence; the wrapped LLM receives
-that evidence with its own native search explicitly disabled.
-"""
+"""Query-based Tavily evidence transport; K10 separately archives and reasons over hits."""
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import time
-from dataclasses import dataclass, field
-from typing import Any, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from neckline.llm.base import ChatMessage, LLMProvider, LLMResult, SearchHit
-# Repository-wide LLM call-site guard: grounding still belongs to the shared
-# prompt-context discipline even though external retrieval is a separate API.
-import neckline.llm.prompt_context as _prompt_context  # noqa: F401
+from neckline.llm.base import SearchHit
 
 logger = logging.getLogger(__name__)
 
@@ -57,44 +46,26 @@ class TavilySearchResponse:
         }
 
 
-_DATE_PATTERNS = (
-    re.compile(r"\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b"),
-    re.compile(r"(20\d{2})年(\d{1,2})月(\d{1,2})日"),
-)
-
-
 def _published_date(item: dict) -> str:
-    explicit = item.get("published_date", item.get("publishedDate", item.get("date")))
-    if explicit:
-        raw = str(explicit).strip()
-        for pattern in _DATE_PATTERNS:
-            match = pattern.search(raw)
-            if match:
-                y, m, d = (int(part) for part in match.groups())
-                return f"{y:04d}-{m:02d}-{d:02d}"
-        return raw[:32]
-    haystack = f"{item.get('title', '')} {item.get('content', '')}"
-    for pattern in _DATE_PATTERNS:
-        match = pattern.search(haystack)
-        if match:
-            y, m, d = (int(part) for part in match.groups())
-            return f"{y:04d}-{m:02d}-{d:02d}"
-    return ""
+    # Dates mentioned in a title/body can describe earlier events. Only a source's
+    # publication field is eligible for K10's fixed-time boundary checks.
+    explicit = item.get("published_date", item.get("publishedDate"))
+    return str(explicit).strip()[:64] if explicit else ""
 
 
 class TavilySearchClient:
     """Small synchronous client using Tavily's documented Bearer endpoint.
 
-    The free-account test path intentionally uses Basic search, one credit per
-    request, five results, no Tavily-generated answer, and no raw full-page
-    body.  This avoids paying a second answer model and keeps evidence injected
-    into DeepSeek bounded while the real Chinese A-share recall is evaluated.
+    Basic general search keeps Chinese issuer announcements in scope; the finance
+    and news verticals did not reliably retrieve those pages in the live probe.
+    Five results, no generated answer and no raw full-page body keep evidence bounded.
+    Publication time must be separately verified when absent from the search response.
     """
 
     provider = "tavily"
     search_depth = "basic"
     max_results = 5
-    topic = "finance"
+    topic = "general"
     request_timeout = 30.0
     max_attempts = 3
 
@@ -146,11 +117,9 @@ class TavilySearchClient:
                         break
                     raw_usage = body.get("usage")
                     credits = raw_usage.get("credits") if isinstance(raw_usage, dict) else None
-                    if isinstance(credits, bool) or not isinstance(credits, int) or credits < 0:
-                        return TavilySearchResponse(
-                            False, clean_query, reason="tavily_usage_unavailable",
-                            wall_ms=max(0, int((time.monotonic() - started_all) * 1000)),
-                        )
+                    usage_available = isinstance(credits, int) and not isinstance(credits, bool) and credits >= 0
+                    if not usage_available:
+                        credits = None
                     hits: List[SearchHit] = []
                     for raw in body.get("results") or []:
                         if not isinstance(raw, dict):
@@ -173,7 +142,8 @@ class TavilySearchClient:
                     except (TypeError, ValueError):
                         response_time = None
                     return TavilySearchResponse(
-                        True, clean_query, hits=tuple(hits), credits=credits,
+                        usage_available, clean_query, hits=tuple(hits), credits=credits,
+                        reason="ok" if usage_available else "tavily_usage_unavailable",
                         response_time=response_time,
                         request_id=str(body.get("request_id") or "") or None,
                         wall_ms=max(0, int((time.monotonic() - started_all) * 1000)),
@@ -191,61 +161,4 @@ class TavilySearchClient:
         )
 
 
-def _grounding_message(response: TavilySearchResponse) -> ChatMessage:
-    sources = [
-        {
-            "title": hit.title,
-            "url": hit.link,
-            "publishedDate": hit.publish_date or None,
-            "content": hit.content,
-        }
-        for hit in response.hits
-    ]
-    return ChatMessage(role="user", content=(
-        "Tavily 已完成本次联网检索。下面 JSON 是唯一允许使用的联网证据；"
-        "没有命中或字段缺失时必须明确说不知道，不得用训练记忆补写新闻。\n"
-        + json.dumps({"query": response.query, "sources": sources}, ensure_ascii=False)
-    ))
-
-
-class TavilyGroundedProvider(LLMProvider):
-    """Wrap a pure reasoning provider with Tavily evidence for legacy search tasks."""
-
-    def __init__(self, inner: LLMProvider, search_client: TavilySearchClient) -> None:
-        self.inner = inner
-        self.search_client = search_client
-        self.name = inner.name
-        self.model = getattr(inner, "model", getattr(inner, "default_model", ""))
-
-    def chat(
-        self,
-        messages: List[ChatMessage],
-        *,
-        enable_search: bool = True,
-        search_query: Optional[str] = None,
-        transport: Optional[Any] = None,
-    ) -> LLMResult:
-        if not enable_search:
-            return self.inner.chat(messages, enable_search=False, transport=transport)
-        query = (search_query or "").strip()
-        if not query:
-            query = next((str(m.content or "") for m in reversed(messages) if m.role == "user"), "")[:400]
-        searched = self.search_client.search(query, transport=transport)
-        if not searched.ok:
-            return LLMResult(ok=False, reason=searched.reason, provider=self.name, model=self.model,
-                             tavily_credits=searched.credits)
-        result = self.inner.chat(messages + [_grounding_message(searched)], enable_search=False, transport=transport)
-        result.tavily_credits = searched.credits
-        if not result.ok:
-            return result
-        result.search_hits = list(searched.hits)
-        result.search_engine = "tavily_basic"
-        return result
-
-
-__all__ = [
-    "TAVILY_SEARCH_URL",
-    "TavilySearchResponse",
-    "TavilySearchClient",
-    "TavilyGroundedProvider",
-]
+__all__ = ["TAVILY_SEARCH_URL", "TavilySearchResponse", "TavilySearchClient"]

@@ -1,41 +1,12 @@
-"""共享测试夹具。核心目标:测试与真实 `data/`(项目实际 Parquet/SQLite)完全隔离
-——每个测试拿一份 tmp_path 下的干净 DB/Parquet 目录,不依赖、也不污染真实数据。
-
-Settings 是 frozen dataclass,不能 `setattr` 单个字段;换库路径按 LinoN 教训用
-"替身对象 + monkeypatch 模块级 settings 名字"(每个 `from neckline.config import
-settings` 的模块各自 patch 一遍,因为各模块持有各自的本地绑定)。
-
-**§七 P4-48 全局兜底重定向(V2.2-① 结案,治类不治例)**:见文件最上方那段
-`os.environ["DB_PATH"]` 注入 —— 它必须发生在本文件(乃至整个 pytest 进程)第一次
-import `neckline.config` **之前**,所以不住在夹具里、直接写在 import 区之前。
-"""
-
+"""Synthetic fixtures: no working database, market files, .env or live credentials."""
 from __future__ import annotations
 
-# ══════════════════════════════════════════════════════════════════════════
-# §七 P4-48(测试隔离写库残留,V2.2-① 结案):**全局兜底重定向,治类不治例**。
-# 病根:全量 pytest 里任何经 `db_path=None` 兜底的调用(`neckline/db.py` 的
-# `db_path or settings.db_path`)都会**静默写真实开发库** `data/neckline.db`
-# ——A8 批次修过一轮调用点,后续版本新增测试又带回(逐例修是打地鼠)。
-# 修法:`neckline.config._load_settings()` 本来就支持 `DB_PATH` 环境变量覆盖
-# (冒烟/隔离测试的既有后门)——在**任何 neckline 模块被 import 之前**把它指到
-# 一次性临时目录,则所有 `db_path=None` 兜底从此天然落在废弃桶里,新测试怎么漏
-# 传都污染不到真实开发库。真需要真库数据的护栏用例走 `real_db_readonly_copy`
-# (它按 `neckline.config.DB_PATH` **常量**找真库,不受本环境变量影响,已核)。
-# ⚠ 若外部已显式设了 DB_PATH(如 A8 探针法手动重定向),尊重外部值不再覆盖。
-# 机器判据:`tests/test_db_isolation_guardrail.py` 的 P4-48 段(重定向失效即红)。
-# ══════════════════════════════════════════════════════════════════════════
 import os as _os
-import os.path as _ospath
-import sys as _sys
 import tempfile as _tempfile
+from pathlib import Path as _Path
 
-if "DB_PATH" not in _os.environ:
-    _os.environ["DB_PATH"] = _ospath.join(
-        _tempfile.mkdtemp(prefix="neckline-tests-dbredirect-"), "neckline.db"
-    )
-if "neckline.config" in _sys.modules:   # 万一有插件抢先 import 过,best-effort 刷新
-    _sys.modules["neckline.config"].reload_settings()
+_os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+_os.environ["DB_PATH"] = str(_Path(_tempfile.mkdtemp(prefix="neckline-tests-")) / "isolated.sqlite")
 
 from datetime import date, timedelta
 from pathlib import Path
@@ -82,53 +53,6 @@ def isolated_env(fake_settings: Settings, monkeypatch: pytest.MonkeyPatch):
     tc_mod.reset_cache()
 
 
-@pytest.fixture(scope="session")
-def real_db_readonly_copy(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """§七 P4-25(v1.5-④-A4):给「刻意读真实开发库 K1 现役行」的护栏用例
-    (`test_k3_oversold_guardrail.py`/`test_k2_mainline_guardrail.py`/
-    `test_v13_exit_6y_baseline.py`)提供一份**一次性副本**的 `db_path`。
-
-    **为什么需要这个夹具**:这几个用例的意图是校验"当前真实 K1 config 在合成盘上
-    的选股结果没被新增字段污染",数据必须来自真库(不能拿 `isolated_env` 临时
-    库顶替——那样测不出"大脑真的没被后续研究改动"这件事)。但 `brain.active_config()`
-    裸调用(不传 `db_path`)会命中 `neckline/db.py` 自己的模块级 `settings.db_path`
-    ——项目 CLAUDE.md「测试隔离」条早已记载:`isolated_env`/`api_env` 只重写
-    `market_data`/`trading_calendar`/`tushare_client` 三处 `settings` 绑定,
-    **不含 `neckline.db`**——于是每次调用触发的 `init_schema()`(`active_config`→
-    `get_active`→...的连锁,`_migrate_columns` 幂等 `ALTER TABLE`)会把新表/新列
-    的幂等迁移顺手写进开发者的真实工作库(§七 P4-25 原始发现,2026-07-29 已实测
-    复现:`llm_judgments.search_engine` 这一列就是这样在本机被提前建出来的)。
-
-    本夹具用 `sqlite3` 官方 backup API(WAL 模式下比 `shutil.copy2` 更可靠,同项目
-    生产 `.backup` 既有姿势,见 CLAUDE.md「生产实战定案」节)把真库拷一份**会话级
-    临时副本**;调用方对副本传 `db_path=`——校验的仍是真库当时的 K1 行,但
-    `init_schema` 的任何副作用只落在这份用完即扔的副本上,不碰真实
-    `data/neckline.db`。**session 级作用域**:一次会话内多个用例共享同一份副本
-    (副本本身只读、不会被测试写坏,复制一次即可,不必每个用例重拷)。
-
-    真库不存在(全新 clone / CI 环境无 `data/`)→ `pytest.skip` 并给出清晰原因,
-    不伪造一个假的 K1 行去凑测试通过。"""
-    import sqlite3
-
-    from neckline.config import DB_PATH
-
-    if not DB_PATH.exists():
-        pytest.skip(f"真实开发库不存在({DB_PATH}),此护栏用例需要真库现役 K1 行,本环境无法运行。")
-    dest = tmp_path_factory.mktemp("real_db_copy") / "neckline_readonly_copy.db"
-    # ``mode=ro`` alone may still participate in SQLite's WAL shared-memory
-    # coordination and update the working database's ``-shm`` sidecar.  The
-    # fixture only copies frozen facts, so immutable is both accurate and
-    # necessary to keep even test reads from touching operational state.
-    src_conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro&immutable=1", uri=True)
-    try:
-        dest_conn = sqlite3.connect(str(dest))
-        try:
-            src_conn.backup(dest_conn)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-    return dest
 
 
 def insert_trade_cal(
@@ -370,18 +294,16 @@ def api_env(api_settings: Settings, monkeypatch: "pytest.MonkeyPatch"):
     import neckline.push.apns as apns_mod
     from neckline.db import init_schema
 
-    for mod in (deps_mod, apns_mod, tc_mod, md_mod, ts_mod):
+    for mod in (app_mod, deps_mod, apns_mod, tc_mod, md_mod, ts_mod):
         monkeypatch.setattr(mod, "settings", api_settings)
     api_settings.data_dir.mkdir(parents=True, exist_ok=True)
     api_settings.parquet_dir.mkdir(parents=True, exist_ok=True)
     init_schema(db_path=api_settings.db_path)
+    from neckline.k10.schema import initialize_schema
+    initialize_schema(api_settings.db_path)
     tc_mod.reset_cache()
 
-    monkeypatch.setattr(app_mod, "ENABLE_MORNING_TASKS", False)
     monkeypatch.setattr(app_mod, "_DB_PATH_OVERRIDE", api_settings.db_path)
-    monkeypatch.setattr(app_mod, "_PARQUET_DIR_OVERRIDE", api_settings.parquet_dir)
-    # 复盘上传材料也必须留在隔离目录，不能读到真实项目数据。
-    monkeypatch.setattr(app_mod, "_DATA_DIR_OVERRIDE", api_settings.data_dir)
     yield api_settings
     tc_mod.reset_cache()
 
@@ -426,34 +348,11 @@ def source_code_only(path: Path) -> str:
     return _ast.unparse(tree)
 
 
-def markdown_modulo_generated_at(bundle) -> str:
-    """把报告 markdown 里的 `generated_at` 审计戳换成占位符,供「同一天重跑两次
-    逐字节一致」这类**可复现性**断言使用(唯一实现,⛔ 别在各测试里各抄一份)。
-
-    🔴 **这不是"把断言放宽",是在修一个写错了的前提**:`render.py` 报告头第一行
-    就印着 `*生成时间(UTC):{generated_at} · …*`(自阶段2.5 起一直如此),而
-    `pipeline.build_report` 里 `generated_at = datetime.now(timezone.utc)
-    .isoformat(timespec="seconds")` 是**秒精度墙钟**。两次背靠背 `build_report`
-    只要跨过一个整秒边界,裸比全文就红 —— 失败概率 ≈ 两次调用的间隔 ÷ 1 秒,于是
-    **孤立跑几乎不红、全量跑(机器忙、间隔被拉长)间歇红**。这正是它当初能被写下
-    并活到今天的原因:每次复查都"跑一遍绿了"。
-
-    归一化**按 bundle 自己那一串 `generated_at` 逐字替换**,⛔ 不按正则去猜那一行
-    —— 除这个戳以外的任何不确定性(排序不稳、hash 盐、别的时间派生值)照样会让
-    断言红,断言强度一分没降。
-    """
-    stamp = bundle.generated_at
-    assert stamp and stamp in bundle.markdown, (
-        "报告头不再包含 `generated_at` 审计戳 —— 本归一化已成空操作,"
-        "「重跑逐字节一致」的断言会退化成裸比全文。请同步修正本函数与调用方,"
-        f"⛔ 别直接删掉调用(generated_at={stamp!r})。"
-    )
-    return bundle.markdown.replace(stamp, "<GENERATED_AT>")
 
 
 def insert_sw_members(settings: Settings, rows: List[dict]) -> None:
     """写 `sw_industry_member`(V2.5.0 S3):申万二级归属是**判据输入** —— 事实包的
-    `sw_l2_code` / 行业中位数 / 相对强度全靠它,K9 第一层的白酒排除也按 `l2_code` 走。
+    `sw_l2_code` 是行业归属的稳定事实；K10 的白酒硬排按 `l2_code` 走。
 
     每行至少给 `ts_code` 与 `l2_code`;`l1_*` / `l3_*` 缺省从 `l2_*` 派生(测试里
     只有二级是判据,一级 / 三级只是随包冻结的追溯字段)。⛔ 不经任何联网 fetcher。"""

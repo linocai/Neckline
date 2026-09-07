@@ -1,0 +1,256 @@
+"""K10 notification outbox: explicit migration, idempotency, and recovery."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from neckline.k10 import store
+from neckline.k10.notifications import (
+    DeliveryResult,
+    NotificationSchemaUnavailable,
+    dispatch_task_notifications,
+    enqueue_task_notification,
+    get_notification,
+    initialize_notifications_schema,
+)
+from neckline.k10.schema import initialize_schema, read_connection
+
+
+NOW = datetime(2026, 9, 6, 13, 0, tzinfo=timezone.utc)
+
+
+def test_worker_maintenance_recovers_missing_terminal_hook_and_uses_device_preferences(tmp_path, monkeypatch):
+    from neckline.api.stores import upsert_device
+    from neckline.k10 import notification_runtime
+    from neckline.push.apns import PushResult
+    db = _db(tmp_path)
+    _finish_task(db)
+    upsert_device("synthetic-device", db_path=db)
+    calls = []
+
+    def fake_send(*args, **kwargs):
+        calls.append((args, kwargs))
+        return PushResult(ok=True, status=200, reason="ok")
+
+    monkeypatch.setattr(notification_runtime, "send_push", fake_send)
+    maintain = notification_runtime.create_notification_maintenance(db_path=db, worker_id="fixture-worker")
+    maintain()
+    maintain()
+    assert len(calls) == 1
+    assert calls[0][1]["custom"]["observationId"] == "observation-1"
+    assert "untrusted" not in calls[0][1]["custom"]
+
+
+def test_disabled_notification_never_calls_apns(tmp_path, monkeypatch):
+    from neckline.api.stores import upsert_device
+    from neckline.k10 import notification_runtime
+    from neckline.settings_store import set_push_kinds
+    from neckline.notify_kinds import ALL_KINDS
+    db = _db(tmp_path)
+    _finish_task(db)
+    upsert_device("synthetic-device", db_path=db)
+    set_push_kinds({kind: False for kind in ALL_KINDS}, db_path=db)
+    calls = []
+    monkeypatch.setattr(notification_runtime, "send_push", lambda *args, **kwargs: calls.append(True))
+    notification_runtime.create_notification_maintenance(db_path=db, worker_id="fixture-worker")()
+    assert calls == []
+
+
+def test_morning_child_task_does_not_flood_notifications(tmp_path):
+    from neckline.k10.notification_runtime import reconcile_terminal_notifications
+    db = _db(tmp_path)
+    _finish_task(db, kind="morning_review")
+    assert reconcile_terminal_notifications(db_path=db, now=NOW) == 0
+
+
+def _stamp(value: datetime = NOW) -> str:
+    return value.isoformat(timespec="seconds")
+
+
+def _db(tmp_path: Path) -> Path:
+    db_path = tmp_path / "k10-notifications.sqlite3"
+    initialize_schema(db_path)
+    initialize_notifications_schema(db_path, applied_at=NOW)
+    return db_path
+
+
+def _finish_task(
+    db_path: Path, *, task_id: str = "task-1", kind: str = "analysis", status: str = "completed",
+    stage: str = "done", payload: dict[str, object] | None = None, error_text: str | None = None,
+) -> int:
+    store.enqueue_task(
+        task_id=task_id,
+        kind=kind,
+        idempotency_key=f"enqueue-{task_id}",
+        input_version="K10-v1.3",
+        input_cutoff_at=_stamp(),
+        payload=payload or {
+            "observationId": "observation-1",
+            "companyCandidateId": "candidate-1",
+            "scanId": "scan-1",
+            "untrusted": "not-a-deep-link",
+        },
+        budget={"maxAttempts": 2},
+        created_at=_stamp(),
+        db_path=db_path,
+    )
+    task = store.claim_tasks(
+        worker_id="task-worker", now=NOW, lease_for=timedelta(minutes=5), limit=1, db_path=db_path,
+    )[0]
+    store.finish_task(
+        task_id=task.task_id,
+        worker_id="task-worker",
+        status=status,
+        stage=stage,
+        checkpoint={},
+        error_text=error_text,
+        finished_at=NOW + timedelta(minutes=1),
+        db_path=db_path,
+    )
+    return task.attempt_count
+
+
+def test_terminal_hook_is_idempotent_and_payload_is_whitelisted(tmp_path: Path):
+    db_path = _db(tmp_path)
+    _finish_task(db_path)
+
+    first = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW)
+    duplicate = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW + timedelta(minutes=1))
+
+    assert first.notification_id == duplicate.notification_id
+    assert first.kind == "k10_analysis"
+    assert first.task_attempt_count == 1
+    assert first.deep_link == {
+        "observationId": "observation-1",
+        "companyCandidateId": "candidate-1",
+        "scanId": "scan-1",
+    }
+
+    sent: list[tuple[str, str]] = []
+
+    def sender(**kwargs):
+        sent.append((kwargs["token"], kwargs["collapse_id"]))
+        return DeliveryResult(ok=True)
+
+    assert dispatch_task_notifications(
+        db_path=db_path, list_device_tokens=lambda: ("device-a", "device-a"), delete_device=lambda _: False,
+        sender=sender, worker_id="push-worker", now=NOW + timedelta(minutes=2),
+    ) == 1
+    assert sent == [("device-a", first.notification_id)]
+    assert get_notification(notification_id=first.notification_id, db_path=db_path).status == "sent"
+
+
+def test_failure_after_retry_creates_a_new_attempt_notification(tmp_path: Path):
+    db_path = _db(tmp_path)
+    first_attempt = _finish_task(db_path, status="failed", stage="execution", error_text="Bearer private-value")
+    first = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW)
+    assert first_attempt == first.task_attempt_count == 1
+    assert "private-value" not in first.body
+    assert "任何交易操作" in first.body
+
+    store.retry_task(
+        task_id="task-1", expected_attempt_count=first_attempt, retried_at=_stamp(NOW + timedelta(minutes=2)), db_path=db_path,
+    )
+    task = store.claim_tasks(
+        worker_id="task-worker", now=NOW + timedelta(minutes=3), lease_for=timedelta(minutes=5), limit=1, db_path=db_path,
+    )[0]
+    assert task.attempt_count == 2
+    store.finish_task(
+        task_id=task.task_id, worker_id="task-worker", status="failed", stage="execution", checkpoint={},
+        error_text="another private failure", finished_at=NOW + timedelta(minutes=4), db_path=db_path,
+    )
+    second = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW + timedelta(minutes=4))
+
+    assert second.notification_id != first.notification_id
+    assert second.task_attempt_count == 2
+    assert second.kind == "k10_failure"
+
+
+def test_transient_delivery_retries_and_invalid_token_is_removed(tmp_path: Path):
+    db_path = _db(tmp_path)
+    _finish_task(db_path)
+    notification = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW)
+    calls: list[str] = []
+    deleted: list[str] = []
+    devices = ["active", "retired"]
+
+    def flaky_sender(**kwargs):
+        calls.append(kwargs["token"])
+        if len(calls) == 1:
+            return DeliveryResult(ok=False, reason="temporary outage")
+        if kwargs["token"] == "retired":
+            return DeliveryResult(ok=False, permanent_invalid=True, reason="Unregistered")
+        return DeliveryResult(ok=True)
+
+    def delete_device(token: str) -> bool:
+        deleted.append(token)
+        devices.remove(token)
+        return True
+
+    common = dict(
+        db_path=db_path, list_device_tokens=lambda: tuple(devices), delete_device=delete_device,
+        sender=flaky_sender, worker_id="push-worker",
+    )
+    assert dispatch_task_notifications(**common, now=NOW + timedelta(minutes=2)) == 1
+    assert get_notification(notification_id=notification.notification_id, db_path=db_path).status == "queued"
+    assert dispatch_task_notifications(**common, now=NOW + timedelta(minutes=3)) == 1
+    assert calls == ["active", "retired", "active"]
+    assert deleted == ["retired"]
+    assert get_notification(notification_id=notification.notification_id, db_path=db_path).status == "sent"
+
+
+def test_no_devices_marks_the_logical_notification_sent(tmp_path: Path):
+    db_path = _db(tmp_path)
+    _finish_task(db_path, kind="scan", payload={"windowKind": "morning", "scanId": "scan-1"})
+    notification = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW)
+
+    assert dispatch_task_notifications(
+        db_path=db_path, list_device_tokens=lambda: (), delete_device=lambda _: False,
+        sender=lambda **_: pytest.fail("no device means no APNs call"), worker_id="push-worker", now=NOW + timedelta(minutes=2),
+    ) == 1
+    assert notification.kind == "k10_morning"
+    assert get_notification(notification_id=notification.notification_id, db_path=db_path).status == "sent"
+
+
+def test_crash_recovery_reuses_stable_collapse_id(tmp_path: Path):
+    db_path = _db(tmp_path)
+    _finish_task(db_path)
+    notification = enqueue_task_notification(task_id="task-1", db_path=db_path, created_at=NOW)
+    collapse_ids: list[str] = []
+
+    def crashed_sender(**kwargs):
+        collapse_ids.append(kwargs["collapse_id"])
+        raise SystemExit("simulated process crash")
+
+    with pytest.raises(SystemExit):
+        dispatch_task_notifications(
+            db_path=db_path, list_device_tokens=lambda: ("device-a",), delete_device=lambda _: False,
+            sender=crashed_sender, worker_id="push-worker", now=NOW + timedelta(minutes=2), lease_for=timedelta(seconds=5),
+        )
+
+    def recovered_sender(**kwargs):
+        collapse_ids.append(kwargs["collapse_id"])
+        return DeliveryResult(ok=True)
+
+    assert dispatch_task_notifications(
+        db_path=db_path, list_device_tokens=lambda: ("device-a",), delete_device=lambda _: False,
+        sender=recovered_sender, worker_id="recovery-worker", now=NOW + timedelta(minutes=3), lease_for=timedelta(seconds=5),
+    ) == 1
+    assert collapse_ids == [notification.notification_id, notification.notification_id]
+    assert get_notification(notification_id=notification.notification_id, db_path=db_path).status == "sent"
+
+
+def test_read_does_not_create_notification_schema(tmp_path: Path):
+    db_path = tmp_path / "base-k10.sqlite3"
+    initialize_schema(db_path)
+
+    with pytest.raises(NotificationSchemaUnavailable):
+        get_notification(notification_id="missing", db_path=db_path)
+
+    with read_connection(db_path) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='k10_task_notifications'"
+        ).fetchone() is None

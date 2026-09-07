@@ -1,21 +1,11 @@
-# Neckline 主服务 systemd unit(plan 4B.3)。单 unit = FastAPI(0.0.0.0:8002)+ 早晨
-# 轮询 asyncio 后台任务(折进 lifespan,不另起进程,照搬 LinoN 单 unit 省内存)。
+# Neckline V3 API service.  K10 scans, analysis, market collection and
+# notifications are separate durable worker/timer units; this process serves
+# FastAPI only.
 #
-# 本服务承载早晨两拍；不拆分额外 unit，避免同日重复执行。
-#
-# ⚠ 2026-08-04(⑯-G NPM 反代前置):host 由 127.0.0.1 改 0.0.0.0 ——
-# npm_default bridge(172.18.0.0/16)里的 nginx-proxy-manager 容器够不着
-# 127.0.0.1,需绑 0.0.0.0 才能被反代到。外网暴露面**不靠绑定地址收口**,
-# 靠 UFW『`ufw allow from 172.18.0.0/16 to any port 8002 proto tcp`』把源限制在
-# 该 bridge 子网,默认 incoming deny 仍在,外网直打 8002 仍被拒。
-#
-# 安装(手动,rsync 不装 unit;改动后须 daemon-reload):
-#   sudo cp /opt/neckline/deploy/neckline.service /etc/systemd/system/neckline.service
-#   sudo systemctl daemon-reload && sudo systemctl enable --now neckline
-#
-# ⚠ 与 LinoN(8001)共存:绝不 stop/改 linon.service;接班切换是 4E 的事。
+# Keep :8002 bound for the existing reverse-proxy bridge.  Firewall policy
+# restricts direct access to that bridge; the binding alone is not the boundary.
 [Unit]
-Description=Neckline A-share short-term trading system (FastAPI :8002 + morning loop)
+Description=Neckline V3 K10 API (FastAPI :8002)
 After=network-online.target
 Wants=network-online.target
 
@@ -29,9 +19,8 @@ Environment=TZ=Asia/Shanghai
 ExecStart=/opt/neckline/.venv/bin/uvicorn neckline.api.app:app --host 0.0.0.0 --port 8002
 Restart=on-failure
 RestartSec=5
-# —— 内存护栏(hz 仅 1.6G + 2G swap,与 lf/linon/fiscal/pg 共存)——
-# MemoryHigh 软节流(超过则回收压力,不杀进程);MemoryMax 硬上限(超则 OOM-kill 本服务,
-# 绝不波及邻居)。数值按 4B.1 实测常驻基线 + 一拍哨兵峰值 + 安全余量设定(见 PROJECT_PLAN 4B)。
+# Preserve the established API memory guardrails.  Worker/model workload belongs
+# to neckline-k10-worker.service, not this process.
 MemoryHigh=420M
 MemoryMax=600M
 

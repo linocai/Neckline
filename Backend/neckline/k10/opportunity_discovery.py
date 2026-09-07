@@ -1,0 +1,64 @@
+"""Validate the model's pre-publication K10-v1.4 opportunity classification.
+
+Evidence revisions and repeated scans do not create a fresh observation window.  The
+classification is frozen with the discovery draft, before any outcome is available.
+"""
+from __future__ import annotations
+
+from typing import Any, Mapping, Sequence
+
+
+NEW_KINDS = frozenset({"initial", "material_stage", "independent"})
+UPDATE_KINDS = frozenset({"continuation", "needs_review", "invalidated"})
+
+
+def validate_comparison(comparison: Mapping[str, Any]) -> None:
+    if comparison.get("role") not in {"primary", "alternative", "tied"}:
+        raise ValueError("公司比较必须明确主推、备选或并列")
+    for key in ("priorityReason", "gap", "rankChangeConditions", "twoDayReason"):
+        if not isinstance(comparison.get(key), str) or not comparison[key].strip():
+            raise ValueError(f"公司比较缺少 {key}")
+
+
+def validate_classification(
+    raw: Mapping[str, Any], *, canonical_key: str, stage_key: str,
+    company_code: str, previous: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    if not isinstance(raw, Mapping) or raw.get("kind") not in NEW_KINDS | UPDATE_KINDS | {"background"}:
+        raise ValueError("机会分类必须在推荐前明确")
+    result = {key: raw.get(key) for key in (
+        "kind", "relatedOpportunityId", "reason", "newFacts", "changedJudgment", "twoDayReason"
+    )}
+    kind = result["kind"]
+    if not isinstance(result.get("reason"), str) or not result["reason"].strip():
+        raise ValueError("机会分类缺少判断依据")
+    related_id = result.get("relatedOpportunityId")
+    related = next((old for old in previous if old.get("opportunityId") == related_id), None)
+    if related_id is not None and (related is None or related.get("companyCode") != company_code):
+        raise ValueError("机会分类引用了未知或不同公司的旧机会")
+    # A first-seen item can be genuinely unresolved: retain its event and evidence as pending
+    # work without inventing a predecessor or publishing a formal opportunity.  All other
+    # update/stage meanings describe an existing opportunity and therefore require one.
+    if kind in {"continuation", "invalidated", "material_stage"} and related is None:
+        raise ValueError("延续、反证与实质新阶段必须关联原机会")
+    if kind in NEW_KINDS:
+        for key in ("newFacts", "twoDayReason"):
+            if not isinstance(result.get(key), str) or not result[key].strip():
+                raise ValueError(f"新机会缺少发布时的 {key}")
+    if kind == "material_stage" and (
+        not isinstance(result.get("changedJudgment"), str) or not result["changedJudgment"].strip()
+    ):
+        raise ValueError("新阶段未说明实质改变的关键判断")
+    # The source event's identity is separate from its append-only evidence revision.
+    # A substantive stage has a stable key; repeating it can never restart a window.
+    semantic_key = f"{canonical_key}\x1f{company_code}\x1f{stage_key}" if kind == "material_stage" else f"{canonical_key}\x1f{company_code}"
+    exact = next((old for old in previous if old.get("opportunityKey") == semantic_key), None)
+    same_event = [old for old in previous if old.get("companyCode") == company_code
+                  and old.get("canonicalKey") == canonical_key]
+    if kind == "initial" and same_event and exact is None:
+        raise ValueError("已有事件不能再次分类为首次机会")
+    if kind in NEW_KINDS and exact is not None:
+        result.update(kind="continuation", relatedOpportunityId=exact["opportunityId"],
+                      reason="相同催化/阶段已推荐；本次证据追加到原机会。" + result["reason"])
+    result["opportunityKey"] = semantic_key
+    return result

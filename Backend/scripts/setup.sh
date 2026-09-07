@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Neckline 后端一键安装。幂等:建 venv、装钉死依赖、建 SQLite schema。
+# Neckline 后端一键安装。幂等:建 venv、装钉死依赖；不触碰数据库。
 # pip 默认走阿里云镜像；可用 PIP_INDEX_URL 覆盖。
 #
 # 用法(在 /opt/neckline 或任意目录均可,脚本自定位到仓库根):
@@ -42,17 +42,7 @@ else
   echo "==> .env 已存在,保留不动"
 fi
 
-# 4) 建 SQLite schema(幂等)
-# ⚠ ECS 部署:.env 为 600 neckline:neckline,且 neckline.db 应由服务用户(neckline)拥有并可写。
-# 若当前是 deploy(非 neckline)且 neckline 用户存在 → 用 `sudo -u neckline` 建库(库归 neckline,
-# 服务才写得动 WAL);否则(本地开发)直接建。服务 lifespan 启动也会 init_schema(幂等兜底)。
-echo "==> 初始化 SQLite schema"
-if [ "$(id -un)" != "neckline" ] && id neckline >/dev/null 2>&1; then
-  echo "  (以 neckline 用户建库,保证服务可写)"
-  sudo -u neckline "${VENV_DIR}/bin/python" -c "from neckline.db import init_schema; init_schema(); print('DB schema ready (owner=neckline)')"
-else
-  python -c "from neckline.db import init_schema; init_schema(); print('DB schema ready')"
-fi
-
+# 4) 数据库迁移必须由运维明确执行，安装脚本不会创建或迁移任何库。
 echo "==> setup 完成。激活:source ${VENV_DIR}/bin/activate"
-echo "==> 冒烟:bash scripts/smoke_api.sh"
+echo "==> 新库须显式初始化 common + K10 + notifications schema；已有库须走经过备份校验的 k10 migration。"
+echo "==> 示例(确认目标路径后执行): DB_PATH=/path/to/neckline.db ${VENV_DIR}/bin/python -c 'from pathlib import Path; import os; from neckline.db import init_schema; from neckline.k10.schema import initialize_schema; from neckline.k10.notifications import initialize_notifications_schema; p=Path(os.environ[\"DB_PATH\"]); init_schema(p); initialize_schema(p); initialize_notifications_schema(p)'"

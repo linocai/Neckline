@@ -70,7 +70,7 @@ def module_parts(path: Path) -> List[str]:
     确定包边界的方式一致,⛔ 不写死 `Backend/` 这种路径常量(写死了,哪天目录一挪
     扫描器就静默解析错,而它不会报错)。
 
-    · `neckline/k9/ranking.py`      → `['neckline', 'k9', 'ranking']`
+    · `neckline/k10/pipeline.py`    → `['neckline', 'k10', 'pipeline']`
     · `neckline/search/__init__.py` → `['neckline', 'search']`(包自己)
     · `scripts/evening.py`          → `['evening']`(`scripts/` 不是包)
     """

@@ -1,0 +1,17 @@
+{
+  "configVersion": "k10-v1.4",
+  "universe": "chinext",
+  "excludeBaijiu": true,
+  "hardExclusions": {"approved": true, "board": "chinext", "priceLimit": "none", "st": "exclude", "swL2Exclusions": ["801125.SI"]},
+  "sourceAdapters": [{"key": "tushare-major-news"}],
+  "modelRoutes": {"discovery": "deepseek-v4-pro", "analysis": "deepseek-v4-pro", "morning": "deepseek-v4-pro"},
+  "taskPolicies": {
+    "discovery": {"maxAttempts": 3, "maxSourceRequests": 128, "maxVerificationRequests": 128, "costLimit": null, "timeoutSeconds": 90, "modelMaxAttempts": 3},
+    "analysis": {"maxAttempts": 3, "costLimit": null, "timeoutSeconds": 90, "modelMaxAttempts": 3},
+    "morning": {"maxAttempts": 3, "costLimit": null, "timeoutSeconds": 90, "modelMaxAttempts": 3},
+    "evaluation": {"maxAttempts": 3, "costLimit": null, "timeoutSeconds": 90, "modelMaxAttempts": 3}
+  },
+  "evaluationPolicy": {"version": "k10-evaluation-v1.4", "selectionFreeze": "d1_open_0930", "window": "d1_d2", "primaryMetric": "close_limit_up_any_d1_d2"},
+  "marketCollection": {"retryIntervalSeconds": 300, "retryUntilMinutesAfterClose": 120},
+  "evidenceMetadata": {"allowedHttpsHosts": ["finance.sina.com.cn", "news.cnstock.com", "www.cnstock.com", "www.stcn.com", "www.cs.com.cn", "data.eastmoney.com", "www.cninfo.com.cn", "static.cninfo.com.cn"], "maxRequests": 16, "timeoutSeconds": 12, "maxBytes": 262144}
+}

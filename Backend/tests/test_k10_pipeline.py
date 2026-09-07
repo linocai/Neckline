@@ -1,0 +1,708 @@
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+import json
+import threading
+import pytest
+
+from neckline.k10 import store
+from neckline.k10.discovery import CandidateComparison, CompanyMappingDraft, DiscoveryDocument, EvidenceRef, EventDraft, Verification
+from neckline.k10.pipeline import DeepSeekDiscoveryModel, PipelineError, _run_morning_reviews, execute_scan
+from neckline.k10.schema import initialize_schema as _initialize_schema
+from neckline.k10.sources import SourceCoverage, SourceDocumentInput, SourceFetchResult
+from neckline.k10.universe import CompanyMetadata
+from neckline.k10.verification import VerificationEvidenceBundle
+from neckline.k10.windows import SHANGHAI
+from neckline.llm.base import LLMProvider, LLMResult
+from neckline.k10.types import Task
+from neckline.k10.worker import TaskContext
+
+
+DAY = date(2026, 9, 7)
+CUTOFF = datetime(2026, 9, 7, 21, tzinfo=SHANGHAI)
+CREATED = datetime(2026, 9, 7, 21, 5, tzinfo=SHANGHAI)
+
+
+def initialize_schema(path):
+    import sqlite3
+    result = _initialize_schema(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS trade_cal(exchange TEXT, cal_date TEXT, is_open INTEGER)")
+        if not conn.execute("SELECT 1 FROM trade_cal LIMIT 1").fetchone():
+            conn.executemany("INSERT INTO trade_cal VALUES('SSE', ?, ?)",
+                [("20260904",1),("20260905",0),("20260906",0),("20260907",1),("20260908",1),
+                 ("20260909",1),("20260910",1),("20260911",1),("20260912",0),("20260913",0),("20260914",1)])
+    return result
+
+
+@pytest.fixture(autouse=True)
+def fixed_test_clock(monkeypatch):
+    monkeypatch.setattr("neckline.k10.pipeline._now", lambda: CREATED)
+
+
+def _configuration():
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).parents[1] / "neckline/config/k10-v1.4.json").read_text())
+
+
+
+class _Adapter:
+    coverage = SourceCoverage("fixture-source", "market-wide", "fixture", "bounded", "publishedAt",
+                              "publishedAt", True)
+
+    def __init__(self):
+        self.request = None
+
+    def fetch_incremental(self, request):
+        self.request = request
+        published = request.window.start_at + timedelta(minutes=1)
+        return SourceFetchResult(
+            documents=(SourceDocumentInput("fixture-1", None, "公司的原始公告文本", None, published, "exact",
+                                           published + timedelta(minutes=1), "fixture-v1", {"title": "公告"}),),
+            next_cursor="next-1", success_watermark=request.window.cutoff_at, pages_fetched=1,
+            pages_expected=1, exhausted=True,
+        )
+
+
+class _Model:
+    def __init__(self):
+        self.usage_records = [{"operation": "fixture", "totalTokens": 7}]
+
+    def understand(self, *, document: DiscoveryDocument):
+        return (EventDraft("event-fixture", "announcement", "confirmed", "公告", "disclosure",
+                           {"document": document.document_id}, (document.evidence_ref,)),)
+
+    def verify(self, event):
+        return Verification("verified", "已核验", event.source_refs)
+
+    def map_companies(self, *, event, verification):
+        return (CompanyMappingDraft("300001.SZ", "supply", event.source_refs, {"basis": "公告"}, "fixture"),)
+
+    def compare(self, *, event, verification, mapping, peers):
+        return CandidateComparison("具体比较", {"role": "primary", "priorityReason": "公司证据", "gap": "比较关系差异", "rankChangeConditions": "新披露", "twoDayReason": "新披露进入两日观察"}, mapping.relation_evidence)
+
+    def classify_opportunity(self, *, event, verification, mapping, comparison, previous):
+        exact = next((old for old in previous if old.get("canonicalKey") == event.canonical_key), None)
+        return {"kind": "continuation" if exact else "initial", "relatedOpportunityId": exact["opportunityId"] if exact else None,
+                "reason": "与已有事实比较", "newFacts": "本轮公司披露", "changedJudgment": None,
+                "twoDayReason": "新披露进入两日观察"}
+
+    def prioritize(self, *, candidates):
+        return tuple(dict.fromkeys((item.event.canonical_key, item.mapping.company_code) for item in candidates))
+
+
+class _Metadata:
+    def lookup(self, *, company_code, as_of):
+        return CompanyMetadata(company_code, "chinext", False, "801080.SI", as_of)
+
+
+def _watermark(path: Path):
+    store.create_scan(scan_id="previous", window_kind="evening", cutoff_at="2026-09-04T21:00:00+08:00",
+                      config_id=None, config_revision=None, status="completed", coverage={},
+                      created_at="2026-09-04T21:01:00+08:00", completed_at="2026-09-04T21:01:00+08:00", db_path=path)
+    store.append_source_watermark(watermark_id="previous-watermark", source_key="fixture-source", cursor_value="old-cursor",
+                                  success_cutoff_at="2026-09-04T21:00:00+08:00", fetched_at="2026-09-04T21:01:00+08:00",
+                                  scan_id="previous", created_at="2026-09-04T21:01:00+08:00", db_path=path)
+
+
+def _frozen_config(path: Path) -> int:
+    return store.append_run_config(config_id="fixture", payload=_configuration(), created_at=CREATED.isoformat(), db_path=path)
+
+
+def _scan_id_for(path: Path, identity: str) -> str:
+    # The production identity is opaque; recover the single fixture scan by its stable
+    # frozen task identity rather than duplicating the pipeline hash contract here.
+    scans = [item for item in store.list_scans(window_kind="evening", db_path=path) if item["scanId"] != "previous"]
+    assert len(scans) == 1
+    return scans[0]["scanId"]
+
+
+def test_evening_scan_uses_prior_source_watermark_and_persists_fake_end_to_end(tmp_path):
+    path = tmp_path / "pipeline.sqlite"
+    initialize_schema(path)
+    assert _frozen_config(path) == 1
+    _watermark(path)
+    adapter = _Adapter()
+
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED,
+                          config_id="fixture", config_revision=1)
+
+    assert result.status == "completed"
+    assert result.checkpoint["candidateCount"] == 1
+    assert adapter.request.window.start_at == datetime(2026, 9, 4, 21, tzinfo=SHANGHAI)
+    assert adapter.request.previous_cursor == "old-cursor"
+    assert len(store.list_candidates(scan_id=result.checkpoint["scanId"], state="offered", db_path=path)) == 1
+    assert store.get_scan(scan_id=result.checkpoint["scanId"], db_path=path)["status"] == "completed"
+    assert datetime.fromisoformat(store.latest_source_watermark(source_key="fixture-source", db_path=path)["successCutoffAt"]) == CUTOFF.astimezone(timezone.utc)
+
+    replay = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
+                          config_id="fixture", config_revision=1, scan_identity="fixed-task")
+    # A different identity is a distinct manually requested scan; the task identity itself is stable.
+    fixed = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                         adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED + timedelta(minutes=2),
+                         config_id="fixture", config_revision=1, scan_identity="replay-task")
+    again = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                         adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED + timedelta(minutes=3),
+                         config_id="fixture", config_revision=1, scan_identity="replay-task")
+    assert replay.status == "completed"
+    assert fixed.status == "completed" and again.stage == "scan_replayed"
+
+
+def test_evening_scan_without_explicit_bootstrap_never_calls_source(tmp_path):
+    path = tmp_path / "missing-watermark.sqlite"
+    initialize_schema(path)
+    adapter = _Adapter()
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED)
+    assert result.status == "not_configured"
+    assert result.stage == "source_bootstrap"
+    assert adapter.request is None
+
+
+def test_evening_explicit_bootstrap_is_a_fetch_start_not_a_fake_success_watermark(tmp_path):
+    path = tmp_path / "bootstrap.sqlite"
+    initialize_schema(path)
+    adapter = _Adapter()
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED,
+                          bootstrap_cutoff="2026-09-01T21:00:00+08:00")
+    assert result.status == "completed"
+    assert adapter.request.source_success_watermark == datetime(2026, 9, 1, 21, tzinfo=SHANGHAI)
+    assert store.latest_source_watermark(source_key="fixture-source", db_path=path)["successCutoffAt"] != "2026-09-01T21:00:00+08:00"
+
+
+def test_existing_success_watermark_takes_precedence_over_bootstrap(tmp_path):
+    path = tmp_path / "watermark-wins.sqlite"
+    initialize_schema(path)
+    _watermark(path)
+    adapter = _Adapter()
+
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED,
+                          bootstrap_cutoff="2026-09-01T21:00:00+08:00")
+
+    assert result.status == "completed"
+    assert adapter.request.source_success_watermark == datetime(2026, 9, 4, 21, tzinfo=SHANGHAI)
+    assert adapter.request.window.start_at == datetime(2026, 9, 4, 21, tzinfo=SHANGHAI)
+
+
+def test_failed_frozen_scan_reopens_without_changing_its_identity(tmp_path):
+    path = tmp_path / "recover.sqlite"
+    initialize_schema(path); _watermark(path)
+    class FailsThenWorks(_Model):
+        def __init__(self): super().__init__(); self.failed = False
+        def understand(self, *, document):
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("synthetic")
+            return super().understand(document=document)
+    model = FailsThenWorks()
+    import pytest
+    with pytest.raises(RuntimeError):
+        execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path, adapter=_Adapter(),
+                     model=model, metadata=_Metadata(), created_at=CREATED, scan_identity="recover-task")
+    scan_id = next(item["scanId"] for item in store.list_scans(window_kind="evening", db_path=path) if item["scanId"].startswith("scan_"))
+    assert store.get_scan(scan_id=scan_id, db_path=path)["status"] == "failed"
+    recovered = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path, adapter=_Adapter(),
+                             model=model, metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1), scan_identity="recover-task")
+    assert recovered.status == "completed" and recovered.checkpoint["scanId"] == scan_id
+
+
+def test_recovery_reuses_frozen_window_and_snapshot_after_source_watermark_advances(tmp_path):
+    path = tmp_path / "frozen-window.sqlite"
+    initialize_schema(path); _watermark(path)
+
+    class FailsOnce(_Model):
+        def __init__(self): super().__init__(); self.calls = 0
+        def understand(self, *, document):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("synthetic crash after ingestion")
+            return super().understand(document=document)
+
+    adapter, model = _Adapter(), FailsOnce()
+    import pytest
+    with pytest.raises(RuntimeError):
+        execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                     adapter=adapter, model=model, metadata=_Metadata(), created_at=CREATED, scan_identity="frozen")
+    scan_id = _scan_id_for(path, "frozen")
+    failed = store.get_scan(scan_id=scan_id, db_path=path)
+    assert failed["coverage"]["inputSnapshotFrozen"] is True
+    assert failed["coverage"]["inputDocumentRefs"]
+    assert datetime.fromisoformat(store.latest_source_watermark(source_key="fixture-source", db_path=path)["successCutoffAt"]) == CUTOFF.astimezone(timezone.utc)
+
+    recovered = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                             adapter=adapter, model=model, metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
+                             scan_identity="frozen")
+    assert recovered.status == "completed"
+    assert adapter.request.window.start_at == datetime(2026, 9, 4, 21, tzinfo=SHANGHAI)
+    assert adapter.request.previous_cursor == "old-cursor"
+
+
+def test_recovery_publishes_frozen_model_draft_without_second_model_run(tmp_path, monkeypatch):
+    path = tmp_path / "frozen-draft.sqlite"
+    initialize_schema(path); _watermark(path)
+    model = _Model()
+    import neckline.k10.pipeline as pipeline
+    original = pipeline.persist_discovery
+    calls = {"persist": 0}
+    def interrupted(*args, **kwargs):
+        calls["persist"] += 1
+        if calls["persist"] == 1:
+            raise RuntimeError("synthetic process interruption")
+        return original(*args, **kwargs)
+    monkeypatch.setattr(pipeline, "persist_discovery", interrupted)
+    import pytest
+    with pytest.raises(RuntimeError):
+        execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                     adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED, scan_identity="draft")
+    scan_id = _scan_id_for(path, "draft")
+    assert "discoveryDraft" in store.get_scan(scan_id=scan_id, db_path=path)["coverage"]
+    calls_before = len(model.usage_records)
+    completed = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                             adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
+                             scan_identity="draft")
+    assert completed.status == "completed"
+    assert len(model.usage_records) == calls_before
+    assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=path)) == 1
+
+
+def test_source_failure_does_not_freeze_empty_input_before_successful_retry(tmp_path):
+    path = tmp_path / "source-retry.sqlite"
+    initialize_schema(path); _watermark(path)
+    class FailsSourceOnce(_Adapter):
+        def __init__(self): super().__init__(); self.failed = False
+        def fetch_incremental(self, request):
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("synthetic source outage")
+            return super().fetch_incremental(request)
+    adapter = FailsSourceOnce()
+    first = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                         adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED, scan_identity="source-retry")
+    assert first.status == "failed"
+    scan_id = _scan_id_for(path, "source-retry")
+    assert store.get_scan(scan_id=scan_id, db_path=path)["coverage"]["inputSnapshotFrozen"] is False
+    second = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
+                          scan_identity="source-retry")
+    assert second.status == "completed"
+    assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=path)) == 1
+
+
+def test_crash_after_candidate_write_replays_same_event_revision_and_candidate(tmp_path, monkeypatch):
+    path = tmp_path / "candidate-replay.sqlite"
+    initialize_schema(path); _watermark(path)
+    original = store.create_candidate
+    calls = {"count": 0}
+    def after_write(**kwargs):
+        original(**kwargs)
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("synthetic crash after candidate write")
+    monkeypatch.setattr(store, "create_candidate", after_write)
+    import pytest
+    with pytest.raises(RuntimeError):
+        execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                     adapter=_Adapter(), model=_Model(), metadata=_Metadata(), created_at=CREATED, scan_identity="candidate-replay")
+    scan_id = _scan_id_for(path, "candidate-replay")
+    event_id = store.list_candidates(scan_id=scan_id, state="offered", db_path=path)[0]["eventId"]
+    assert store.latest_event_revision(event_id=event_id, db_path=path).revision == 1
+    completed = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                             adapter=_Adapter(), model=_Model(), metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
+                             scan_identity="candidate-replay")
+    assert completed.status == "completed"
+    assert store.latest_event_revision(event_id=event_id, db_path=path).revision == 1
+    assert len(store.list_candidates(scan_id=scan_id, state="offered", db_path=path)) == 1
+
+
+def test_persisted_morning_match_retries_failed_child_on_parent_replay(tmp_path, monkeypatch):
+    path = tmp_path / "morning-child-retry.sqlite"
+    initialize_schema(path)
+    _frozen_config(path)
+    store.create_scan(scan_id="old", window_kind="evening", cutoff_at=CUTOFF.isoformat(), config_id="fixture", config_revision=1,
+                      status="completed", coverage={}, created_at=CREATED.isoformat(), completed_at=CREATED.isoformat(), db_path=path)
+    event = store.append_event_revision(event_id="event-child", stable_key="child", headline="公告", event_kind="fixture", facts={},
+                                        source_refs=[], supersedes_revision=None, created_at=CREATED.isoformat(), db_path=path)
+    store.create_candidate(candidate_id="candidate-child", scan_id="old", event_id=event.event_id, event_revision=event.revision,
+                           company_code="300001.SZ", comparison={}, evidence=[], created_at=CREATED.isoformat(), db_path=path)
+    parent = TaskContext(Task("parent", "morning_scan", "running", 1, "parent-worker", None, {}),
+                         {"maxAttempts": 3}, {}, "fixture@1", CUTOFF.isoformat(), path, threading.Event())
+    configuration = {"taskPolicies": {"morning": {"maxAttempts": 3, "costLimit": None}}}
+    matches = [{"candidateId": "candidate-child", "eventId": "event-child", "morningEvidenceRefs": []}]
+    import neckline.k10.pipeline as pipeline
+    def finish(status):
+        def runner(*, db_path, worker_id, lease_for, handlers, task_id, clock):
+            now = CREATED.astimezone(timezone.utc)
+            task = store.claim_task_by_id(task_id=task_id, worker_id=worker_id, now=now, lease_for=timedelta(minutes=10), db_path=db_path)
+            assert task is not None
+            store.finish_task(task_id=task_id, worker_id=worker_id, status=status, stage="fixture", checkpoint={}, error_text=None,
+                              finished_at=now, db_path=db_path)
+            return store.get_task(task_id=task_id, db_path=db_path)
+        return runner
+    monkeypatch.setattr(pipeline, "run_once", finish("failed"))
+    first, ids = _run_morning_reviews(parent=parent, matches=matches, configuration=configuration,
+                                      config_id="fixture", config_revision=1, source_status="complete", now=CREATED)
+    assert first == "partial" and store.get_task(task_id=ids[0], db_path=path).status == "failed"
+    monkeypatch.setattr(pipeline, "run_once", finish("completed"))
+    second, replay_ids = _run_morning_reviews(parent=parent, matches=matches, configuration=configuration,
+                                               config_id="fixture", config_revision=1, source_status="complete", now=CREATED)
+    assert second == "completed" and replay_ids == ids
+    assert store.get_task(task_id=ids[0], db_path=path).status == "completed"
+
+
+def test_morning_data_is_retained_without_auto_candidate_replacement(tmp_path):
+    path = tmp_path / "morning.sqlite"
+    initialize_schema(path)
+    adapter = _Adapter()
+    morning = datetime(2026, 9, 7, 9, tzinfo=SHANGHAI)
+    result = execute_scan(kind="morning", cutoff_at=morning, configuration=_configuration(), db_path=path,
+                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED)
+    assert result.status == "completed"
+    assert result.stage == "discovery_completed"
+    assert result.checkpoint["candidateCount"] == 1
+    assert result.checkpoint["deferredCount"] == 0
+    assert adapter.request.window.start_at == datetime(2026, 9, 4, 21, tzinfo=SHANGHAI)
+
+
+class _Provider(LLMProvider):
+    def __init__(self, *, wrap_compare: bool = False):
+        self.calls = []
+        outputs = (
+            '{"events":[{"canonicalKey":"event","stageKey":"stage","eventState":"confirmed","headline":"公告","eventKind":"disclosure","facts":{},"sourceRefs":[{"documentId":"doc","revision":1}]}]}',
+            '{"state":"verified","summary":"核验","sourceRefs":[{"documentId":"tavily-doc","revision":1}]}',
+            '{"mappings":[{"companyCode":"300001.SZ","affectedStage":"supply","relationEvidence":[{"documentId":"tavily-doc","revision":1}],"inference":{},"uncertainty":"公开资料"}]}',
+            '{"summary":"比较","differences":{},"sourceRefs":[{"documentId":"tavily-doc","revision":1}]}',
+        )
+        if wrap_compare:
+            outputs = (*outputs[:3], json.dumps({"output": json.loads(outputs[3])}))
+        self._outputs = iter(outputs)
+
+    def chat(self, messages, *, enable_search=True, search_query=None, response_format=None, transport=None):
+        self.calls.append((messages, enable_search, response_format))
+        return LLMResult(ok=True, content=next(self._outputs), provider="fixture", model="deepseek-v4-pro",
+                         prompt_tokens=3, completion_tokens=4, total_tokens=7, usage_unavailable=False)
+
+
+def test_deepseek_discovery_model_uses_structured_json_and_preserves_usage():
+    provider = _Provider()
+    model = DeepSeekDiscoveryModel(provider)
+    model.set_scan_cutoff(CUTOFF)
+    document = DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "不可信资料", None, {})
+    event = model.understand(document=document)[0]
+    independent = DiscoveryDocument("tavily-doc", 1, (CUTOFF - timedelta(hours=1)).isoformat(),
+                                    CUTOFF.isoformat(), "独立核验的原文", None, {"provider": "tavily"})
+    model.set_verification_documents(event=event, documents=(independent,))
+    verification = model.verify(event)
+    mapping = model.map_companies(event=event, verification=verification)[0]
+    comparison = model.compare(event=event, verification=verification, mapping=mapping, peers=(mapping,))
+
+    assert comparison.summary == "比较"
+    assert verification.state == "verified"
+    assert all(search is False and output == {"type": "json_object"} for _, search, output in provider.calls)
+    assert "不可信证据数据" in provider.calls[0][0][0].content
+    def payload(call):
+        content = call[0][1].content
+        return json.loads(content.split("<untrusted-k10-evidence>\n", 1)[1].split("\n</untrusted-k10-evidence>", 1)[0])
+    understand_input, mapping_input, comparison_input = payload(provider.calls[0]), payload(provider.calls[2]), payload(provider.calls[3])
+    assert understand_input["publicationContext"] == {
+        "publishedAt": CUTOFF.isoformat(), "fetchedAt": CUTOFF.isoformat(), "scanCutoffAt": CUTOFF.isoformat(),
+    }
+    assert understand_input["factsConvention"] == {"currentFacts": {}, "background": {}}
+    assert "历史融资轮次" in provider.calls[0][0][1].content
+    assert {item["documentId"] for item in mapping_input["evidence"]} == {"doc", "tavily-doc"}
+    assert any(item["text"] == "独立核验的原文" for item in comparison_input["evidence"])
+    assert mapping_input["verification"]["sourceRefs"] == [{"documentId": "tavily-doc", "revision": 1}]
+    assert "document_id" not in provider.calls[2][0][1].content
+    assert model.usage_records[-1]["totalTokens"] == 7
+
+
+def test_deepseek_cannot_self_verify_or_cite_unfrozen_evidence():
+    class Provider(LLMProvider):
+        def __init__(self, evidence_ref):
+            self.evidence_ref = evidence_ref
+
+        def chat(self, messages, **kwargs):
+            output = ('{"events":[{"canonicalKey":"event","stageKey":"stage","eventState":"confirmed",'
+                      '"headline":"公告","eventKind":"disclosure","facts":{},'
+                      '"sourceRefs":[{"documentId":"doc","revision":1}]}]}')
+            if "重点核验" in messages[1].content:
+                output = json.dumps({"state": "verified", "summary": "模型结论", "sourceRefs": [self.evidence_ref]})
+            return LLMResult(ok=True, content=output, provider="fixture", model="deepseek-v4-pro",
+                             prompt_tokens=1, completion_tokens=1, total_tokens=2, usage_unavailable=False)
+
+    source_only = DeepSeekDiscoveryModel(Provider({"documentId": "doc", "revision": 1}))
+    event = source_only.understand(document=DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "原文", None, {}))[0]
+    assert source_only.verify(event).state == "needs_review"
+
+    unfrozen = DeepSeekDiscoveryModel(Provider({"documentId": "invented", "revision": 9}))
+    event = unfrozen.understand(document=DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "原文", None, {}))[0]
+    with pytest.raises(PipelineError, match="未输入的冻结资料"):
+        unfrozen.verify(event)
+
+
+@pytest.mark.parametrize("state,refs", [("verified", None), ("contradicted", [])])
+def test_deepseek_missing_verification_refs_is_a_reviewable_gap(state, refs):
+    class Provider(LLMProvider):
+        def chat(self, messages, **kwargs):
+            if "重点核验" in messages[1].content:
+                body = {"state": state, "summary": "模型声称已核验"}
+                if refs is not None:
+                    body["sourceRefs"] = refs
+                content = json.dumps(body)
+            else:
+                content = ('{"events":[{"canonicalKey":"event","stageKey":"stage","eventState":"confirmed",'
+                           '"headline":"公告","eventKind":"disclosure","facts":{},'
+                           '"sourceRefs":[{"documentId":"doc","revision":1}]}]}')
+            return LLMResult(ok=True, content=content, provider="fixture", model="deepseek-v4-pro",
+                             prompt_tokens=1, completion_tokens=1, total_tokens=2, usage_unavailable=False)
+
+    model = DeepSeekDiscoveryModel(Provider())
+    event = model.understand(document=DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "原文", None, {}))[0]
+    verification = model.verify(event)
+    assert verification.state == "needs_review"
+    assert verification.evidence_refs == ()
+    assert "缺少可追溯核验依据" in verification.summary
+
+
+def test_deepseek_compare_accepts_only_the_actual_sole_output_wrapper():
+    provider = _Provider(wrap_compare=True)
+    model = DeepSeekDiscoveryModel(provider)
+    document = DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "原文", None, {})
+    event = model.understand(document=document)[0]
+    evidence = DiscoveryDocument("tavily-doc", 1, (CUTOFF - timedelta(hours=1)).isoformat(),
+                                 CUTOFF.isoformat(), "独立原文", None, {})
+    model.set_verification_documents(event=event, documents=(evidence,))
+    verification = model.verify(event)
+    mapping = model.map_companies(event=event, verification=verification)[0]
+    assert model.compare(event=event, verification=verification, mapping=mapping, peers=(mapping,)).summary == "比较"
+
+
+def test_deepseek_mapping_discards_hk_counterparty_but_rejects_unknown_code_formats():
+    class Provider(LLMProvider):
+        def __init__(self, code):
+            self.code = code
+            self.calls = []
+
+        def chat(self, messages, **kwargs):
+            self.calls.append(messages)
+            if "只提取本篇" in messages[1].content:
+                content = ('{"events":[{"canonicalKey":"event","stageKey":"stage","eventState":"confirmed",'
+                           '"headline":"公告","eventKind":"disclosure","facts":{},'
+                           '"sourceRefs":[{"documentId":"doc","revision":1}]}]}')
+            else:
+                rows = [
+                    {"companyCode": "300207.SZ", "affectedStage": "supply", "relationEvidence": [{"documentId": "doc", "revision": 1}], "inference": {}, "uncertainty": "公告"},
+                    {"companyCode": self.code, "affectedStage": "counterparty", "relationEvidence": [{"documentId": "doc", "revision": 1}], "inference": {}, "uncertainty": "公告"},
+                ]
+                content = json.dumps({"mappings": rows})
+            return LLMResult(ok=True, content=content, provider="fixture", model="deepseek-v4-pro",
+                             prompt_tokens=1, completion_tokens=1, total_tokens=2, usage_unavailable=False)
+
+    document = DiscoveryDocument("doc", 1, CUTOFF.isoformat(), CUTOFF.isoformat(), "原文", None, {})
+    model = DeepSeekDiscoveryModel(Provider("02015.HK"))
+    event = model.understand(document=document)[0]
+    mappings = model.map_companies(event=event, verification=Verification("needs_review", "待核", event.source_refs))
+    assert [mapping.company_code for mapping in mappings] == ["300207.SZ"]
+    assert "港/美股" in model.provider.calls[1][1].content
+
+    malformed = DeepSeekDiscoveryModel(Provider("L2015.HK"))
+    event = malformed.understand(document=document)[0]
+    with pytest.raises(PipelineError, match="TuShare ts_code"):
+        malformed.map_companies(event=event, verification=Verification("needs_review", "待核", event.source_refs))
+
+
+def test_execute_scan_uses_injected_verification_gateway(tmp_path):
+    path = tmp_path / "injected-verification.sqlite"
+    initialize_schema(path)
+    _watermark(path)
+
+    class Gateway:
+        def __init__(self):
+            self.calls = []
+
+        def fetch(self, *, event, retrieved_at, cutoff_at, cutoff_inclusive=False):
+            self.calls.append((event, retrieved_at, cutoff_at, cutoff_inclusive))
+            evidence = DiscoveryDocument("tavily-doc", 1, (cutoff_at - timedelta(minutes=1)).isoformat(),
+                                         retrieved_at.isoformat(), "独立资料", None, {"provider": "fixture"})
+            return VerificationEvidenceBundle("available", (evidence,), (evidence,), {"provider": "fixture", "state": "available"})
+
+    gateway = Gateway()
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=_Adapter(), model=_Model(), metadata=_Metadata(), created_at=CREATED,
+                          verification_gateway=gateway)
+    assert result.status == "completed"
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0][2] == CUTOFF
+    assert gateway.calls[0][3] is False
+
+
+def test_scan_continues_from_missing_verification_refs_to_other_verified_comparisons(tmp_path):
+    path = tmp_path / "verification-gap-does-not-stop-scan.sqlite"
+    initialize_schema(path)
+    _watermark(path)
+
+    class Adapter(_Adapter):
+        def fetch_incremental(self, request):
+            self.request = request
+            published = request.window.start_at + timedelta(minutes=1)
+            return SourceFetchResult(
+                documents=(
+                    SourceDocumentInput("fixture-1", None, "第一条公告", None, published, "exact", published, "fixture", {}),
+                    SourceDocumentInput("fixture-2", None, "第二条公告", None, published, "exact", published, "fixture", {}),
+                ), next_cursor=None, success_watermark=request.window.cutoff_at,
+                pages_fetched=1, pages_expected=1, exhausted=True,
+            )
+
+    class Model(_Model):
+        def __init__(self):
+            super().__init__()
+            self.verification_states = []
+
+        def understand(self, *, document):
+            key = "first" if document.original_text == "第一条公告" else "second"
+            return (EventDraft(key, "stage", "confirmed", key, "disclosure",
+                               {"document": document.document_id}, (document.evidence_ref,)),)
+
+        def verify(self, event):
+            if event.canonical_key == "first":
+                return Verification("needs_review", "缺引用", ())
+            return Verification("verified", "独立资料", (EvidenceRef("tavily-second", 1),))
+
+        def map_companies(self, *, event, verification):
+            self.verification_states.append(verification.state)
+            code = "300001.SZ" if event.canonical_key == "first" else "300002.SZ"
+            refs = event.source_refs if event.canonical_key == "first" else verification.evidence_refs
+            return (CompanyMappingDraft(code, "supply", refs, {"basis": "公告"}, "fixture"),)
+
+    class Gateway:
+        def fetch(self, *, event, retrieved_at, cutoff_at, cutoff_inclusive=False):
+            evidence = DiscoveryDocument(f"tavily-{event.canonical_key}", 1, (cutoff_at - timedelta(minutes=1)).isoformat(),
+                                         retrieved_at.isoformat(), "独立核验原文", None, {})
+            return VerificationEvidenceBundle("available", (evidence,), (evidence,), {"state": "available"})
+
+    model = Model()
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=Adapter(), model=model, metadata=_Metadata(), created_at=CREATED,
+                          verification_gateway=Gateway())
+    assert result.status == "completed"
+    assert result.checkpoint["candidateCount"] == 2
+    assert sorted(model.verification_states) == ["needs_review", "verified"]
+
+
+def test_default_gateway_receives_only_explicit_metadata_resolver(tmp_path, monkeypatch):
+    import neckline.k10.pipeline as pipeline
+    path = tmp_path / "default-resolver.sqlite"
+    initialize_schema(path)
+    _watermark(path)
+    built = []
+
+    class Gateway:
+        def __init__(self, *, db_path, request_limit, metadata_resolver):
+            built.append((db_path, request_limit, metadata_resolver))
+
+        def fetch(self, *, event, retrieved_at, cutoff_at, cutoff_inclusive=False):
+            return VerificationEvidenceBundle("pending", (), (), {"state": "pending", "reason": "fixture"})
+
+    monkeypatch.setattr(pipeline, "TavilyEvidenceGateway", Gateway)
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=_Adapter(), model=_Model(), metadata=_Metadata(), created_at=CREATED)
+    assert result.status == "completed"
+    assert len(built) == 1
+    resolver = built[0][2]
+    assert resolver is not None
+    assert resolver._max_requests == 16
+    assert resolver._timeout == 12.0
+    assert resolver._max_bytes == 262144
+    assert "www.cninfo.com.cn" in resolver._hosts
+
+
+def test_invalid_explicit_metadata_configuration_stops_before_source_fetch(tmp_path):
+    path = tmp_path / "bad-metadata-config.sqlite"
+    initialize_schema(path)
+    _watermark(path)
+    configuration = _configuration()
+    configuration["evidenceMetadata"] = {"allowedHttpsHosts": [], "maxRequests": 0, "timeoutSeconds": 0, "maxBytes": 0}
+    adapter = _Adapter()
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=configuration, db_path=path,
+                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED)
+    assert result.status == "not_configured"
+    assert result.stage == "configuration"
+    assert "evidenceMetadata" in result.error
+    assert adapter.request is None
+
+
+def test_nonfinite_metadata_timeout_is_not_a_valid_engineering_limit(tmp_path):
+    path = tmp_path / "nonfinite-metadata-timeout.sqlite"
+    initialize_schema(path)
+    _watermark(path)
+    configuration = _configuration()
+    configuration["evidenceMetadata"] = {**configuration["evidenceMetadata"], "timeoutSeconds": float("nan")}
+    adapter = _Adapter()
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=configuration, db_path=path,
+                          adapter=adapter, model=_Model(), metadata=_Metadata(), created_at=CREATED)
+    assert result.status == "not_configured"
+    assert "evidenceMetadata" in result.error
+    assert adapter.request is None
+
+
+def test_retry_keeps_the_original_opportunity_history_used_for_classification(tmp_path, monkeypatch):
+    import neckline.k10.pipeline as pipeline
+    path = tmp_path / "history-snapshot.sqlite"
+    initialize_schema(path)
+    _watermark(path)
+
+    class Interrupted(_Model):
+        def __init__(self):
+            super().__init__()
+            self.histories = []
+            self.calls = 0
+
+        def set_previous_opportunities(self, previous):
+            self.histories.append(list(previous))
+
+        def understand(self, *, document):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("interrupted before complete model draft")
+            return super().understand(document=document)
+
+    model = Interrupted()
+    with pytest.raises(RuntimeError):
+        execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                     adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED,
+                     scan_identity="history-frozen")
+    first = next(row for row in store.list_scans(window_kind="evening", db_path=path) if row["scanId"] != "previous")
+    assert first["coverage"]["inputOpportunitySnapshot"] == []
+    monkeypatch.setattr(pipeline, "_existing_opportunity_context", lambda **_: pytest.fail("retry must not read later history"))
+    result = execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                          adapter=_Adapter(), model=model, metadata=_Metadata(), created_at=CREATED + timedelta(minutes=1),
+                          scan_identity="history-frozen")
+    assert result.status == "completed"
+    assert model.histories == [[], []]
+    recovered = store.get_scan(scan_id=first["scanId"], db_path=path)
+    assert recovered["coverage"]["inputVisibleAt"] == first["coverage"]["inputVisibleAt"]
+
+
+def test_morning_review_universe_excludes_unpublished_and_expired_candidates(tmp_path):
+    from neckline.k10.pipeline import _active_published_candidates, _existing_opportunity_context
+    path = tmp_path / "active-formal.sqlite"
+    initialize_schema(path)
+    _watermark(path)
+    execute_scan(kind="evening", cutoff_at=CUTOFF, configuration=_configuration(), db_path=path,
+                 adapter=_Adapter(), model=_Model(), metadata=_Metadata(), created_at=CREATED)
+    published = store.list_candidates(scan_id=None, state=None, db_path=path)[0]
+    store.create_candidate(candidate_id="draft-never-published", scan_id=published["scanId"],
+                           event_id=published["eventId"], event_revision=published["eventRevision"],
+                           company_code="300002.SZ", comparison={}, evidence=[],
+                           created_at=CREATED.isoformat(), db_path=path)
+    history = _existing_opportunity_context(db_path=path)
+    active = _active_published_candidates(opportunities=history, as_of=CREATED, db_path=path)
+    assert [row["candidateId"] for row in active] == [published["candidateId"]]
+    expired = _active_published_candidates(opportunities=history,
+        as_of=datetime(2026, 9, 9, 15, tzinfo=SHANGHAI), db_path=path)
+    assert expired == []

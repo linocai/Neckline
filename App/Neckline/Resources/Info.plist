@@ -6,6 +6,8 @@
 	<string>Neckline</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>K10SyntheticUI</key>
+	<string>$(K10_SYNTHETIC_UI)</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>

@@ -10,13 +10,8 @@ from typing import Any, Dict, List, Optional
 import httpx
 import pytest
 
-from neckline import settings_store
-from neckline.db import init_schema
 from neckline.llm.base import ChatMessage
-from neckline.llm.factory import get_provider
 from neckline.llm.openai_compat import OpenAICompatProvider
-from neckline.llm.router import TASK_EXPLAIN, TASK_NEWS_SCAN
-from neckline.search.tavily import TavilyGroundedProvider
 
 
 def _openai_success_body(content: str, model: str = "test-model") -> Dict[str, Any]:
@@ -79,136 +74,6 @@ def test_chat_marks_missing_provider_usage_unavailable():
     assert result.usage_unavailable is True
     assert result.total_tokens is None
 
-
-class TestFactory:
-    """V2-②(plan §五 V2-②/§3.10-B):`_PROVIDERS` 枚举退役,`get_provider()` 改为
-    纯 DB 驱动(`llm_providers` 表自填制 + `app_settings.llm_task_routes`/
-    `llm_default_provider` 路由)。原先基于 `.env`/`Settings(llm_provider=...)`
-    的用例整批改写——V2 起不存在"单 provider 的 .env 兜底"这个概念,`settings_obj`
-    参数只为兼容既有调用方签名保留,不驱动任何解析逻辑(见 `factory.py` 模块头)。
-    """
-
-    def _db(self, tmp_path):
-        db_path = tmp_path / "n.db"
-        init_schema(db_path)
-        return db_path
-
-    def test_no_provider_configured_returns_none(self, tmp_path):
-        assert get_provider(db_path=self._db(tmp_path)) is None
-
-    def test_route_to_nonexistent_provider_name_returns_none(self, tmp_path):
-        """写侧拒绝幽灵 Provider，避免默认模型看似保存、实际不可点击。"""
-        db = self._db(tmp_path)
-        with pytest.raises(LookupError):
-            settings_store.set_llm_routes({"explain": "ghost"}, None, db_path=db)
-
-    def test_default_provider_without_key_returns_none(self, tmp_path):
-        db = self._db(tmp_path)
-        settings_store.create_provider("custom", "https://x", "test-model", db_path=db)  # 未填 key
-        with pytest.raises(LookupError):
-            settings_store.set_llm_routes({}, "custom", db_path=db)
-
-    def test_disabled_provider_returns_none_even_with_key(self, tmp_path):
-        db = self._db(tmp_path)
-        settings_store.create_provider(
-            "custom", "https://x", "test-model", api_key="sk-xxx", enabled=False, db_path=db,
-        )
-        with pytest.raises(LookupError):
-            settings_store.set_llm_routes({}, "custom", db_path=db)
-
-    def test_explicit_route_builds_generic_openai_compat_provider(self, tmp_path):
-        """任意自填名称与兼容端点都应构造成裸 ``OpenAICompatProvider``。"""
-        db = self._db(tmp_path)
-        settings_store.create_provider(
-            "my-custom", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "test-model",
-            api_key="sk-xxx", has_web_search=True, search_engine="search_pro", db_path=db,
-        )
-        settings_store.set_llm_routes({"explain": "my-custom"}, None, db_path=db)
-        p = get_provider(TASK_EXPLAIN, db_path=db)
-        assert type(p) is OpenAICompatProvider
-        assert p.name == "my-custom" and p.model == "test-model"
-        assert p.has_web_search is False and p.search_engine is None
-
-    def test_search_task_uses_default_llm_wrapped_by_tavily(self, tmp_path):
-        """默认模型负责读证据和推理，联网证据统一由 Tavily 独立取得。"""
-        db = self._db(tmp_path)
-        settings_store.create_provider("deepseek", "https://api.deepseek.com/x", "deepseek-chat",
-                                        api_key="k1", db_path=db)
-        settings_store.create_provider("custom", "https://open.bigmodel.cn/x", "test-model", api_key="k2",
-                                        has_web_search=True, search_engine="search_pro", db_path=db)
-        settings_store.set_llm_routes({}, "deepseek", db_path=db)
-        settings_store.set_tavily_api_key("tvly-test", db_path=db)
-        p = get_provider(TASK_NEWS_SCAN, db_path=db)
-        assert isinstance(p, TavilyGroundedProvider)
-        assert p.name == "deepseek"
-        assert p.inner.has_web_search is False and p.inner.search_engine is None
-
-    def test_non_search_task_without_route_falls_back_to_default_provider(self, tmp_path):
-        db = self._db(tmp_path)
-        settings_store.create_provider("deepseek", "https://api.deepseek.com/x", "deepseek-chat",
-                                        api_key="k1", db_path=db)
-        settings_store.set_llm_routes({}, "deepseek", db_path=db)
-        p = get_provider(TASK_EXPLAIN, db_path=db)
-        assert p is not None and p.name == "deepseek"
-
-    def _provider_for(self, tmp_path, task):
-        db = self._db(tmp_path)
-        settings_store.create_provider("custom", "https://open.bigmodel.cn/x", "test-model", api_key="k",
-                                        has_web_search=True, search_engine="search_pro", db_path=db)
-        settings_store.set_llm_routes({}, "custom", db_path=db)
-        if task == "news_scan":
-            settings_store.set_tavily_api_key("tvly-test", db_path=db)
-        provider = get_provider(task, db_path=db)
-        return provider.inner if isinstance(provider, TavilyGroundedProvider) else provider
-
-    @pytest.mark.parametrize("task", ["news_scan", "explain", "playbook", None])
-    def test_current_tasks_are_small_non_streaming_calls(self, tmp_path, task):
-        p = self._provider_for(tmp_path, task)
-        assert p.use_streaming is False
-        assert p.read_timeout == 90.0
-
-    def test_directly_constructed_providers_are_untouched(self):
-        """直接构造的通用 Provider 默认不流式，显式覆盖仍生效。"""
-        p = OpenAICompatProvider(api_key="k")
-        assert p.read_timeout == 90.0 and p.use_streaming is False
-        assert OpenAICompatProvider(api_key="k", read_timeout=240).read_timeout == 240.0
-        assert OpenAICompatProvider(api_key="k", use_streaming=True).use_streaming is True
-
-    def test_the_number_actually_reaches_the_wire(self, tmp_path, monkeypatch):
-        """⚠ 光断言属性不够 —— 要证明它**真的进了 httpx 的 timeout**。`_post` 里
-        `httpx.Timeout(self.read_timeout, connect=...)` 是唯一构造点,这里把
-        `httpx.Client` 换成探针,捕获实际传下去的 timeout。"""
-        seen: List[Any] = []
-
-        class _Probe:
-            def __init__(self, **kw):
-                seen.append(kw.get("timeout"))
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def post(self, *a, **k):
-                raise RuntimeError("探针不发真请求")
-
-            def stream(self, *a, **k):
-                raise RuntimeError("探针不发真请求")
-
-        monkeypatch.setattr(httpx, "Client", _Probe)
-        p = self._provider_for(tmp_path, "explain")
-        p.max_attempts = 1
-        body, reason = p._post({"x": 1, "stream": True}, None)
-        assert body is None and reason == "调用异常 RuntimeError"
-        assert seen and seen[0].read == 90.0 and seen[0].connect == 6.0
-
-    def test_fresh_isolated_db_has_no_configured_provider(self, tmp_path):
-        """替代 V1"真实 `.env` 现状必解析为 None"的断言:V2 起没有 `.env` 单
-        provider 兜底这个概念,`get_provider()` 完全由 DB 驱动——一份全新/空库
-        天然等价于旧断言想验证的"当前无可用 LLM"现状(§2.0/§3.8「全链路必须在
-        无 key 下优雅降级跑通」)。"""
-        assert get_provider(db_path=self._db(tmp_path)) is None
 
 
 class TestStreamingAssembly:
@@ -310,19 +175,6 @@ class TestStreamingAssembly:
         assert seen["stream"] is False
         assert seen["tools"][0]["type"] == "web_search"      # 搜索声明原样发出
         assert set(seen) == {"model", "messages", "stream", "tools"}
-
-    def test_search_tasks_wrap_non_streaming_llm_without_vendor_tools(self, tmp_path):
-        """检索类由 Tavily 包装，内部 LLM 非流式且不带厂商私有搜索工具。"""
-        db = tmp_path / "n.db"
-        init_schema(db)
-        settings_store.create_provider("custom", "https://x/chat/completions", "test-model", api_key="k",
-                                        has_web_search=True, search_engine="search_pro", db_path=db)
-        settings_store.set_llm_routes({}, "custom", db_path=db)
-        settings_store.set_tavily_api_key("tvly-test", db_path=db)
-        provider = get_provider(TASK_NEWS_SCAN, db_path=db)
-        assert isinstance(provider, TavilyGroundedProvider)
-        assert provider.inner.use_streaming is False
-        assert provider.inner.has_web_search is False
 
     # —— chunk 间隔超时:本次修复的**判据本身** ——————————————————————————
     def test_chunk_gap_timeout_retries_then_degrades_without_partial_content(self):

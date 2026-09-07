@@ -54,8 +54,8 @@ _PKG = _ROOT / "neckline"
 def _store_modules() -> Dict[str, Path]:
     """落库层的模块全名 → 文件。
 
-    ⚠ 用**文件名规则**而不是写死清单:S17 新加一个 `scorecard/listing_store.py`
-    也会自动进来。上一版守门的死因就是清单会过期,而过期之后它仍然是绿的。
+    ⚠ 用**文件名规则**而不是写死清单:新增 K10 store 也会自动进来。上一版守门的
+    死因就是清单会过期,而过期之后它仍然是绿的。
     """
     out: Dict[str, Path] = {}
     for path in sorted(_PKG.rglob("*.py")):
@@ -139,8 +139,8 @@ def _store_bindings(path: Path, tree: ast.AST) -> Tuple[Set[str], Set[str]]:
 def implicit_db_calls(path: Path) -> List[Tuple[int, str]]:
     """这个文件里「调了落库层函数、却没说用哪个库」的 `(行号, 函数名)`。
 
-    ⚠ `f(**payload)` 这种展开算**通过** —— 静态上证不出它漏了(`test_report_store.py`
-    的 `_save()` 就是把 `db_path=db` 装在 payload 里传进去的,那是合法写法)。
+    ⚠ `f(**payload)` 这种展开算**通过** —— 静态上证不出它漏了；调用方可能把
+    `db_path` 装在 payload 里传进去，那是合法写法。
     这是这条判据已知的残余口子,写在这里免得下一个人以为它滴水不漏。
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -180,12 +180,12 @@ def test_the_risk_surface_is_not_empty():
 
     这条断言就是那个教训:**风险面必须先证明它自己非空**。
     """
-    assert len(_store_modules()) >= 7, f"落库层只找到 {list(_store_modules())}"
-    assert len(_RISK) >= 35, (
+    assert len(_store_modules()) >= 2, f"落库层只找到 {list(_store_modules())}"
+    assert len(_RISK) >= 10, (
         f"带 `db_path=None` 兜底的落库层函数只找到 {len(_RISK)} 个 —— "
         f"扫描器怕是失效了,而失效之后本文件全部断言恒绿")
     # 点名几个**确实存在**的入口,证明扫的是真东西。
-    for expected in ("load_k9_report", "save_k9_report", "load_pack", "get_app_settings"):
+    for expected in ("get_app_settings", "list_providers", "get_push_kinds"):
         assert expected in _RISK, f"风险面里没有 `{expected}` —— 扫描规则漂了"
 
 
@@ -193,19 +193,17 @@ def test_the_implicit_db_detector_actually_detects(tmp_path: Path):
     """诱饵自检:一个应当被拦下的写法,判据必须真的看得见。"""
     bait = tmp_path / "test_bait.py"
     bait.write_text(
-        "from neckline.report import store as report_store\n"
-        "from datetime import date\n"
+        "from neckline import settings_store\n"
         "def test_x():\n"
-        "    report_store.load_k9_report(date(2026, 8, 20))\n",
+        "    settings_store.get_app_settings()\n",
         encoding="utf-8")
-    assert implicit_db_calls(bait) == [(4, "load_k9_report")]
+    assert implicit_db_calls(bait) == [(3, "get_app_settings")]
 
     ok = tmp_path / "test_ok.py"
     ok.write_text(
-        "from neckline.report import store as report_store\n"
-        "from datetime import date\n"
+        "from neckline import settings_store\n"
         "def test_x(tmp_path):\n"
-        "    report_store.load_k9_report(date(2026, 8, 20), db_path=tmp_path / 'n.db')\n",
+        "    settings_store.get_app_settings(db_path=tmp_path / 'n.db')\n",
         encoding="utf-8")
     assert implicit_db_calls(ok) == []
 
@@ -221,42 +219,39 @@ def test_the_detector_is_not_blind_to_relative_imports(tmp_path: Path):
 
     从前 `_store_bindings` 写的是 `isinstance(node, ast.ImportFrom) and node.module`
     —— `from . import store` 的 `node.module` 是 `None`,`from .store import
-    load_k9_report` 的 `node.module` 是 `'store'`(不是绝对名),两种都绑不上,
+    get_app_settings` 的 `node.module` 是 `'settings_store'`(不是绝对名),两种都绑不上,
     于是那个文件里的漏传**一条都扫不出来**,而守门照绿。
     ⚠ 诱饵必须放在**真包**里(`guard_scan.resolve_relative` 靠 `__init__.py`
     认包边界),拿一个裸文件当诱饵会测到另一条路径 —— 那种自检比没有更糟。
     """
-    root = tmp_path / "neckline" / "report"
+    root = tmp_path / "neckline"
     root.mkdir(parents=True)
     (tmp_path / "neckline" / "__init__.py").write_text("", encoding="utf-8")
     (root / "__init__.py").write_text("", encoding="utf-8")
 
     mod_form = root / "test_bait_mod.py"
     mod_form.write_text(
-        "from datetime import date\n"
-        "from . import store\n"
+        "from . import settings_store\n"
         "def test_x():\n"
-        "    store.load_k9_report(date(2026, 8, 20))\n",
+        "    settings_store.get_app_settings()\n",
         encoding="utf-8")
-    assert implicit_db_calls(mod_form) == [(4, "load_k9_report")], \
+    assert implicit_db_calls(mod_form) == [(3, "get_app_settings")], \
         "`from . import store` 绕过了判据 —— 扫描器对相对 import 又瞎了"
 
     func_form = root / "test_bait_func.py"
     func_form.write_text(
-        "from datetime import date\n"
-        "from .store import load_k9_report\n"
+        "from .settings_store import get_app_settings\n"
         "def test_x():\n"
-        "    load_k9_report(date(2026, 8, 20))\n",
+        "    get_app_settings()\n",
         encoding="utf-8")
-    assert implicit_db_calls(func_form) == [(4, "load_k9_report")], \
+    assert implicit_db_calls(func_form) == [(3, "get_app_settings")], \
         "`from .store import f` 绕过了判据"
 
     ok = root / "test_bait_ok.py"
     ok.write_text(
-        "from datetime import date\n"
-        "from . import store\n"
+        "from . import settings_store\n"
         "def test_x(tmp_path):\n"
-        "    store.load_k9_report(date(2026, 8, 20), db_path=tmp_path / 'n.db')\n",
+        "    settings_store.get_app_settings(db_path=tmp_path / 'n.db')\n",
         encoding="utf-8")
     assert implicit_db_calls(ok) == [], "显式给了库却被判红 —— 假阳性会逼人放宽守门"
 
@@ -296,17 +291,15 @@ def test_whitelist_is_currently_empty():
 def test_scan_actually_covers_known_database_guardrails():
     """防止 glob 模式失效导致本守门形同虚设。"""
     names = {p.name for p in _TEST_FILES}
-    # 🔴 V2.5.0 S1:原来点名的 `test_brain.py` / `test_activate_pack_script.py` 随
-    # `strategy/` 与 `selection/` 整包退役而删除;换几个**仍在且真的会开库**的文件顶上
-    # —— 这条守门要证明的是「glob 没瞎」,不是「那两个文件还在」。
+    # 这条守门证明的是 glob 仍能覆盖当前会开库的测试。
     for expected in (
-        "test_review_reconcile.py",
-            "test_schema_current.py",
-        "test_report_store.py",
+        "test_k10_store.py",
+        "test_k10_notifications.py",
+        "test_schema_current.py",
         "test_db_isolation_guardrail.py",
     ):
         assert expected in names
-    assert len(_TEST_FILES) > 40, f"只收到 {len(_TEST_FILES)} 个测试文件"
+    assert len(_TEST_FILES) > 25, f"只收到 {len(_TEST_FILES)} 个测试文件"
 
 
 # ══════════════════════════════════════════════════════════════════════════

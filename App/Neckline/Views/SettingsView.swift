@@ -1,45 +1,49 @@
-//
-//  SettingsView.swift
-//  Neckline — 设置：
-//    后端地址 + API token · **Provider 注册表增删改**(自填制)· **任务路由表** ·
-//    **按 `kind` 的推送开关(动态渲染 + 按 level 分组)** · 连接自检 · iOS 推送重注册 ·
-//    App / 服务端双版本行。
-//
-//  任意 OpenAI 兼容端点均可配置。`apiKey` 只写不回显（服务端只回 `keySet` 布尔），
-//  删除走二次确认。推送开关按 `kind` 配置，权威在服务端 `notify_kinds.py`；客户端
-//  **⛔ 不硬编 kind 清单** —— 服务端发什么就渲染什么,新增 kind 时客户端**不改代码
-//  就能显示出来**;未识别的 `level` 也照常成一组显示,⛔ 不静默丢弃。
-//
-
+import Foundation
 import SwiftUI
 
-private enum SelfCheckState: Equatable {
-    case idle, running
-    case ok(String)
-    case tokenError
-    case networkError(String)
-}
+struct ScanCoverageSummary: View {
+    let scans: [K10Scan]
 
-/// macOS 设置默认只放日常确认项；改连接、密钥与模型路由统一沉入高级区。
-enum NKSettingsGroup: String, CaseIterable, Identifiable {
-    case backend, llm, push, version, advanced
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .backend: return "连接与账号"
-        case .llm: return "研究服务"
-        case .push: return "锁屏推送"
-        case .version: return "版本"
-        case .advanced: return "高级与诊断"
-        }
-    }
-    var systemImage: String {
-        switch self {
-        case .backend: return "network"
-        case .llm: return "brain"
-        case .push: return "bell.badge"
-        case .version: return "info.circle"
-        case .advanced: return "wrench.and.screwdriver"
+    var body: some View {
+        Group {
+            if !scans.isEmpty {
+                VStack(alignment: .leading, spacing: NKSpace.blockGap) {
+                    V3SectionTitle(title: "来源范围与完整性", icon: "doc.text.magnifyingglass")
+                    ForEach(scans) { scan in
+                        V3Card {
+                            VStack(alignment: .leading, spacing: 9) {
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(scan.window == "evening" ? "晚间扫描" : "晨间扫描").font(NKFont.headline)
+                                        Text("截止 \(k10DisplayTime(scan.cutoffAt)) · \(k10StatusText(scan.coverageStatus))")
+                                            .font(NKFont.caption)
+                                            .foregroundStyle(NK.textSecondary)
+                                    }
+                                    Spacer()
+                                    V3Pill(text: scan.status)
+                                }
+                                ForEach(scan.sourceCoverage) { source in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(k10SourceText(source.sourceKey)).font(NKFont.callout.weight(.semibold))
+                                        if let scope = source.scope { Text(scope).font(NKFont.caption).foregroundStyle(NK.textSecondary) }
+                                        if let watermark = source.successWatermark { Text("成功水位 \(k10DisplayTime(watermark))").font(NKFont.caption).foregroundStyle(NK.textSecondary) }
+                                        if !source.displayGaps.isEmpty {
+                                            Text(source.displayGaps.joined(separator: "、")).font(NKFont.caption).foregroundStyle(NK.amber)
+                                        }
+                                    }
+                                    .padding(9)
+                                    .background(NK.fieldBg, in: RoundedRectangle(cornerRadius: NKRadius.inner))
+                                }
+                                if !scan.coverageGaps.isEmpty {
+                                    Label(scan.coverageGaps.joined(separator: "、"), systemImage: "exclamationmark.triangle.fill")
+                                        .font(NKFont.caption)
+                                        .foregroundStyle(NK.amber)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -47,1175 +51,460 @@ enum NKSettingsGroup: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @Bindable var model: AppModel
     @ObservedObject var config: AppConfig
-
-    @State private var tokenRevealed = false
-    @State private var check: SelfCheckState = .idle
-    @State private var deletingProvider: String? = nil
-    /// macOS 四组导航态(纯本地,不进 `AppModel` —— 它不跨板块)。
-    /// ⚠ 初值吃 QA 钩子 `NECKLINE_INITIAL_SETTINGS_GROUP`(⛔ 只给 `@State` 当初值,
-    /// 不夺走用户的点击 —— 同 `NECKLINE_INITIAL_RECEIPT` 先例)。
-    @State private var group: NKSettingsGroup = NKQA.initialSettingsGroup ?? .backend
+    @State private var providerName = "k10-deepseek"
+    @State private var providerKey = ""
+    @State private var providerEnabled = true
+    @State private var tavilyKey = ""
+    @State private var showConnectionEditor = false
+    @State private var showModelEditor = false
+    @State private var showSourceEditor = false
 
     var body: some View {
-        #if os(iOS)
-        NavigationStack { form.navigationTitle("设置").navigationBarTitleDisplayMode(.inline) }
-            .sheet(isPresented: $model.showProviderForm) { ProviderFormSheet(model: model) }
-        #else
-        NKSplitLayout {
-            groupListColumn
-        } detail: {
-            groupDetail
-        }
-        .task {
-            await model.loadSettings()
-            await model.loadServerVersion()
-            // QA 钩子:注册表拿回来之后才谈得上"编辑第一个"(⛔ `init()` 里够不着)。
-            if NKQA.initialProviderForm, let p = model.providers.first, !model.showProviderForm {
-                model.beginEditProvider(p)
-            }
-        }
-        .sheet(isPresented: $model.showProviderForm) {
-            // 原型弹层宽 440(`Neckline 弹层.dc.html` 29 行 `width:440px`)。
-            ProviderFormSheet(model: model).frame(width: 440, height: 730)
-        }
-        .alert("删除 Provider", isPresented: Binding(get: { deletingProvider != nil },
-                                                     set: { if !$0 { deletingProvider = nil } })) {
-            Button("取消", role: .cancel) { deletingProvider = nil }
-            Button("删除", role: .destructive) {
-                if let n = deletingProvider { Task { await model.deleteProvider(name: n) } }
-                deletingProvider = nil
-            }
-        } message: {
-            Text("将删除「\(deletingProvider ?? "")」及其已保存的 key。系统会同时清除指向它的默认模型和任务路由。")
-        }
-        #endif
-    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+                V3PageHeader(title: "设置", subtitle: "查看连接、资料覆盖、任务状态与个人提醒。密钥不会在页面回显。")
 
-    // MARK: - macOS 列表栏(原型 1577–1616)
-    //
-    // 设置行保持标题、读数和说明三层信息，避免无效装饰压缩文字空间。
-
-    #if os(macOS)
-    private var groupListColumn: some View {
-        VStack(alignment: .leading, spacing: NKSpace.rowGap) {
-            // 标题区 `padding:18px 16px 12px`(1578 行);栏本身给的是行那一套(横 10),
-            // 故这里再补 `listHeaderExtraH` 凑到 16(同批 2 三个板块的做法)。
-            Text("设置").font(NKFont.title2).foregroundStyle(NK.textPrimary)
-                .tracking(-0.3)
-                .padding(.horizontal, NKSpace.listHeaderExtraH)
-                .padding(.bottom, 12)
-            ForEach(NKSettingsGroup.allCases) { g in
-                NKListRow(selected: group == g) { group = g } content: {
-                    VStack(alignment: .leading, spacing: 3) {   // 原型 margin-top:3
-                        HStack(spacing: 8) {                    // 原型 gap:8
-                            Text(g.title).font(NKFont.body).fontWeight(.semibold)
-                                .foregroundStyle(NK.textPrimary)
-                            Spacer(minLength: 6)
-                            groupTrailing(g)
+                V3SectionTitle(title: "连接与版本", icon: "link")
+                V3Card {
+                    VStack(spacing: 0) {
+                        SettingsEntry(icon: "server.rack", title: "后端连接", detail: connectionDetail, badge: connectionBadge) {
+                            showConnectionEditor = true
                         }
-                        Text(groupCaption(g)).font(NKFont.caption)
-                            .foregroundStyle(NK.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        SettingsDivider()
+                        SettingsRowContent(icon: "number.square", title: "Neckline 3.0.0", detail: "Build 30 · K10-v1.4", badge: nil, showsChevron: false)
                     }
                 }
-            }
-        }
-    }
 
-    /// 行右端的读数(原型 1586 / 1594 / 1602 / 1610 行各一种)。
-    @ViewBuilder
-    private func groupTrailing(_ g: NKSettingsGroup) -> some View {
-        switch g {
-        case .backend:
-            // 原型是一颗 6px 绿点。⚠ 它说的是**这一组配齐了没有**(地址 + token),
-            // ⛔ 不是"连得上" —— 连通性要点「连接自检」才知道,次行那句话说的也正是配置。
-            Circle().fill(config.hasToken ? NK.up : NK.amber).frame(width: 6, height: 6)
-        case .llm:
-            Text("\(model.providers.count)").font(NKFont.caption.monospacedDigit())
-                .foregroundStyle(NK.textTertiary)
-        case .push:
-            Text("\(enabledPushCount) / \(model.pushKindsDraft.count) 开")
-                .font(NKFont.caption.monospacedDigit()).foregroundStyle(NK.textTertiary)
-        case .version:
-            Text(appShortVersion).font(NKFont.caption.monospacedDigit())
-                .foregroundStyle(NK.textTertiary)
-        case .advanced:
-            Text("桌面端").font(NKFont.caption)
-                .foregroundStyle(NK.textTertiary)
-        }
-    }
-
-    private var enabledPushCount: Int { model.pushKindsDraft.filter { $0.enabled }.count }
-
-    private func groupCaption(_ g: NKSettingsGroup) -> String {
-        switch g {
-        case .backend:
-            return "\(config.effectiveServiceLabel) · \(config.hasToken ? "访问码已填" : "访问码未填")"
-        case .llm:
-            return "模型与联网资料状态"
-        case .push:
-            return "按通知类型配,不按呈现分组配"
-        case .version:
-            return "App 与服务端双版本行"
-        case .advanced:
-            return "服务地址、密钥、模型与诊断"
-        }
-    }
-
-    // MARK: - macOS 详情栏(原型 1618–1745;⛔ 不再用 `Form(.grouped)`)
-    //
-    // 🔴 `Form(.grouped)` 的圆角 / 页边距 / 分隔线 / 段标题字号**全由系统定、改不了**,
-    // 逐项对不到原型的 inline style —— 故这四屏改用 `NKFormKit` 的 `NKFieldCard`。
-    // ⚠ iOS 侧仍走下面的 `form`(批 7 才做 iOS 逐屏比对),⛔ 别顺手一起切。
-
-    @ViewBuilder
-    private var groupDetail: some View {
-        VStack(alignment: .leading, spacing: NKSpace.cardGap) {
-            switch group {
-            case .backend: connDetail
-            case .llm: providersDetail
-            case .push: pushDetail
-            case .version: versionDetail
-            case .advanced: advancedDetail
-            }
-        }
-    }
-
-    /// 详情栏大标题(原型 1621 行 `26px/700; letter-spacing:-.4px`)+ 可选副标题。
-    @ViewBuilder
-    private func detailTitle(_ title: String, _ subtitle: LocalizedStringKey? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(NKFont.title1).foregroundStyle(NK.textPrimary).tracking(-0.4)
-            if let s = subtitle {
-                Text(s).font(NKFont.callout).lineSpacing(4)
-                    .foregroundStyle(NK.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    // —— 默认设置：只显示状态与日常开关 ————————————————————————————————
-
-    @ViewBuilder
-    private var connDetail: some View {
-        detailTitle("连接与账号", "这里仅确认状态；更换服务地址、访问码或排查连接，请到“高级与诊断”。")
-        NKFieldCard {
-            NKFieldRow(v: 14, h: 18) {
-                NKFieldLabel(text: "当前服务")
-                Spacer(minLength: 8)
-                Text(config.effectiveServiceLabel).font(NKFont.callout).foregroundStyle(NK.textPrimary)
-            }
-            NKFieldSeparator()
-            NKFieldRow(v: 14, h: 18) {
-                NKFieldLabel(text: "访问配置")
-                Spacer(minLength: 8)
-                NKChip(text: config.hasToken ? "已配置" : "未配置",
-                       tone: config.hasToken ? .good : .warn)
-            }
-            NKFieldSeparator()
-            NKFieldRow(v: 14, h: 18) {
-                NKFieldLabel(text: "服务状态")
-                Spacer(minLength: 8)
-                Text(model.serverVersion == nil ? "尚未确认" : "可读取版本信息")
-                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var providersDetail: some View {
-        detailTitle("研究服务", "确认模型与联网资料的可用状态；具体配置只在“高级与诊断”。")
-        NKFieldCard {
-            NKFieldRow(v: 14, h: 18) {
-                NKFieldLabel(text: "联网资料")
-                Spacer(minLength: 8)
-                NKChip(text: model.settings.tavily.keySet ? "已配置" : "未配置",
-                       tone: model.settings.tavily.keySet ? .good : .warn)
-            }
-            NKFieldSeparator()
-            NKFieldRow(v: 14, h: 18) {
-                NKFieldLabel(text: "可用模型")
-                Spacer(minLength: 8)
-                Text("\(eligibleProviders.count) 个").font(NKFont.callout.monospacedDigit())
-                    .foregroundStyle(NK.textPrimary)
-            }
-        }
-        usageDetail
-    }
-
-    @ViewBuilder
-    private var advancedDetail: some View {
-        detailTitle("高级与诊断", "仅在更换服务、访问凭据、模型路由或排查问题时使用。")
-        advancedConnectionDetail
-        advancedProvidersDetail
-    }
-
-    // —— 高级：后端连接与鉴权 ————————————————————————————————————————
-
-    @ViewBuilder
-    private var advancedConnectionDetail: some View {
-        NKGroupLabel(text: "连接与访问凭据")
-
-        NKFieldCard {
-            NKFieldRow(v: 14, h: 18, alignment: .top) {
-                VStack(alignment: .leading, spacing: 9) {   // 原型 margin-bottom:9
-                    NKGroupLabel(text: "环境")
-                    NKSegmented(options: NKEnvironment.allCases.map { ($0, $0.shortLabel) },
-                                selection: $config.environment)
-                    NKInlineNote(text: "可选择本机或云端服务；切换后即时生效。",
-                                 tone: .neutral)
-                }
-            }
-            NKFieldSeparator()
-            NKFieldRow(v: 14, h: 18) {
-                NKFieldLabel(text: "当前服务地址")
-                Text(config.resolvedBaseURL.absoluteString)
-                    .font(NKFont.callout.monospaced()).foregroundStyle(NK.textPrimary)
-                    .lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 0)
-            }
-            NKFieldSeparator()
-            NKFieldRow(v: 14, h: 18, alignment: .top) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("临时服务地址（可选）").font(NKFont.body)
-                        .foregroundStyle(NK.textPrimary.opacity(0.75))
-                    NKTextFieldBox(placeholder: "留空则用环境默认",
-                                   text: $config.baseURLOverride, mono: true)
-                    if let error = config.connectionConfigurationError {
-                        Text(error).font(NKFont.caption).foregroundStyle(NK.amber)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    NKInlineNote(text: "⚠ 这里会优先于环境选择；无法连接时可先检查是否留有旧地址。",
-                                 tone: .warn)
-                }
-            }
-        }
-
-        NKFieldCard {
-            NKFieldRow(v: 16, h: 18, alignment: .top) {
-                VStack(alignment: .leading, spacing: 10) {
-                    NKGroupLabel(text: "访问码")
-                    HStack(spacing: 10) {
-                        // 访问码保存在本机 Keychain；输入框默认遮挡，仅在用户主动点按时显示。
-                        Group {
-                            if tokenRevealed {
-                                NKTextFieldBox(placeholder: "粘贴 API Token",
-                                               text: $config.apiToken, mono: true)
-                            } else {
-                                NKTextFieldBox(placeholder: "粘贴 API Token",
-                                               text: $config.apiToken, mono: true, secure: true)
-                            }
+                V3SectionTitle(title: "资讯与模型", icon: "sparkles")
+                V3Card {
+                    VStack(spacing: 0) {
+                        SettingsEntry(icon: "newspaper", title: "资讯来源", detail: sourceDetail, badge: nil) {
+                            showSourceEditor = true
                         }
-                        Button { tokenRevealed.toggle() } label: {
-                            Image(systemName: tokenRevealed ? "eye.slash" : "eye")
-                                .font(.system(size: 13))
-                                .foregroundStyle(NK.textSecondary)
-                                .frame(width: 30, height: 30)
-                                .contentShape(Rectangle())
+                        SettingsDivider()
+                        SettingsEntry(icon: "cpu", title: "模型配置", detail: providerDetail, badge: nil) {
+                            showModelEditor = true
+                        }
+                        SettingsDivider()
+                        NavigationLink {
+                            SettingsCoverageScreen(scans: model.scanSummaries)
+                        } label: {
+                            SettingsRowContent(icon: "checklist", title: "来源覆盖与缺口", detail: coverageDetail, badge: nil)
                         }
                         .buttonStyle(.plain)
                     }
-                    HStack(spacing: 7) {
-                        Image(systemName: config.hasToken
-                              ? "checkmark.circle" : "exclamationmark.triangle")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(config.hasToken ? NK.up : NK.amber)
-                        Text(config.hasToken ? "已填入" : "未填入")
-                            .font(NKFont.callout).fontWeight(.semibold)
-                            .foregroundStyle(config.hasToken ? NK.up : NK.amber)
-                        Spacer(minLength: 8)
-                        Text("仅保存在当前设备，不会上传到报告或同步到其他设备。")
-                            .font(NKFont.caption).foregroundStyle(NK.textTertiary)
+                }
+
+                V3SectionTitle(title: "运行状态", icon: "clock")
+                V3Card {
+                    VStack(spacing: 0) {
+                        SettingsStatusRow(title: "晚间扫描", scan: model.scanSummaries.first { $0.window == "evening" })
+                        SettingsDivider()
+                        SettingsStatusRow(title: "晨间扫描", scan: model.scanSummaries.first { $0.window == "morning" })
+                        SettingsDivider()
+                        SettingsConfigurationRows(configuration: model.configuration)
                     }
                 }
-            }
-        }
 
-        NKFieldCard {
-            NKFieldRow(v: 16, h: 18, alignment: .top) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 12) {
-                        NKOutlineButton(title: "连接自检", systemImage: "wifi",
-                                        busy: check == .running) {
-                            Task { await runSelfCheck() }
+                #if os(iOS)
+                V3SectionTitle(title: "通知", icon: "bell")
+                V3Card {
+                    Button {
+                        Task { await model.enableNotifications() }
+                    } label: {
+                        SettingsRowContent(icon: "bell.badge", title: "允许并注册 K10 通知", detail: "通知只跳转到机会、公司窗口或发布批次。", badge: nil)
+                    }
+                    .buttonStyle(.plain)
+                }
+                #endif
+
+                V3SectionTitle(title: "阅读与提醒", icon: "bookmark")
+                V3Card {
+                    VStack(spacing: 0) {
+                        NavigationLink { DisciplineView() } label: {
+                            SettingsRowContent(icon: "list.bullet.rectangle", title: "个人纪律十条", detail: "仅供个人阅读，不会产生交易操作。", badge: nil)
                         }
-                        selfCheckResult
-                        Spacer(minLength: 0)
+                        .buttonStyle(.plain)
+                        SettingsDivider()
+                        SettingsUsageRow(usage: model.usage)
                     }
-                    // 第二探针走 `/settings`，以验证需要鉴权的只读业务路由。
-                    NKInlineNote(text: "会检查服务是否可连接，以及访问码是否有效。")
                 }
             }
+            .padding(.horizontal, NKSpace.pagePad)
+            .padding(.top, NKSpace.pagePad)
+            .padding(.bottom, NKSpace.pagePadBottom)
+        }
+        .background(NK.pageBg)
+        .navigationTitle("设置")
+        .task { await model.refreshAdminSettings() }
+        .sheet(isPresented: $showConnectionEditor) { ConnectionEditor(config: config, model: model) }
+        .sheet(isPresented: $showModelEditor) { ModelEditor(model: model, providerName: $providerName, providerKey: $providerKey, providerEnabled: $providerEnabled) }
+        .sheet(isPresented: $showSourceEditor) { SourceEditor(model: model, tavilyKey: $tavilyKey) }
+    }
+
+    private var connectionName: String { config.baseURLOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? config.environment.shortLabel : "自定义服务" }
+
+    private var connectionDetail: String {
+        if let error = config.connectionConfigurationError { return error }
+        switch model.state {
+        case .ready:
+            return "\(connectionName) · 当前服务响应正常"
+        case .loading:
+            return "\(connectionName) · 正在检查服务"
+        case .offline(let message), .unavailable(let message), .failed(let message):
+            return message
+        case .idle:
+            return config.hasToken ? "\(connectionName) · API Token 已配置，尚未验证连接" : "尚未配置 API Token"
         }
     }
 
-    @ViewBuilder
-    private var selfCheckResult: some View {
-        switch check {
-        case .idle, .running:
-            EmptyView()
-        case .ok(let desc):
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle").font(.system(size: 13, weight: .semibold))
-                Text(desc).font(NKFont.callout)
+    private var connectionBadge: String {
+        switch model.state {
+        case .ready: return "已连接"
+        case .loading: return "检查中"
+        case .offline: return "离线"
+        case .unavailable: return "不可用"
+        case .failed: return "失败"
+        case .idle: return config.hasToken ? "已配置" : "待配置"
+        }
+    }
+    private var sourceDetail: String { model.tavilyKeySet ? "Tavily 定向核验已配置；覆盖和缺口按扫描显示。" : "Tavily 密钥未配置；不会把来源不足当作空结果。" }
+    private var providerDetail: String {
+        let active = model.providers.filter(\.enabled)
+        return active.isEmpty ? "尚未读取或未启用连接" : "\(active.count) 个启用连接 · K10 固定 DeepSeek V4 Pro"
+    }
+    private var coverageDetail: String { model.scanSummaries.isEmpty ? "尚无扫描回执" : "查看来源范围、成功水位与缺口" }
+}
+
+private struct SettingsCoverageScreen: View {
+    let scans: [K10Scan]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+                V3PageHeader(title: "来源覆盖", subtitle: "覆盖、权限与失败状态如实显示。")
+                if scans.isEmpty {
+                    V3EmptyState(icon: "doc.text.magnifyingglass", title: "尚无扫描回执", message: "扫描执行后会在这里显示来源范围与缺口。")
+                } else {
+                    ScanCoverageSummary(scans: scans)
+                }
             }
-            .foregroundStyle(NK.up)
-        case .tokenError:
-            HStack(spacing: 6) {
-                Image(systemName: "xmark.circle").font(.system(size: 13, weight: .semibold))
-                Text("访问码无效或已失效，请重新确认。").font(NKFont.callout)
+            .padding(NKSpace.pagePad)
+        }
+        .background(NK.pageBg)
+        .navigationTitle("来源覆盖")
+        #if os(iOS)
+        .toolbar(.visible, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+}
+
+private struct SettingsEntry: View {
+    let icon: String
+    let title: String
+    let detail: String
+    let badge: String?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            SettingsRowContent(icon: icon, title: title, detail: detail, badge: badge)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SettingsRowContent: View {
+    let icon: String
+    let title: String
+    let detail: String
+    let badge: String?
+    var showsChevron = true
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.headline)
+                .foregroundStyle(NK.accent)
+                .frame(width: 30, height: 30)
+                .background(NK.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: NKRadius.inner))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(NKFont.headline).foregroundStyle(NK.textPrimary)
+                Text(detail).font(NKFont.caption).foregroundStyle(NK.textSecondary).multilineTextAlignment(.leading)
             }
-            .foregroundStyle(NK.down)
-        case .networkError(let m):
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle").font(.system(size: 13, weight: .semibold))
-                Text(m).font(NKFont.callout)
+            Spacer(minLength: 8)
+            if let badge { V3Pill(text: badge) }
+            if showsChevron {
+                Image(systemName: "chevron.right").font(NKFont.caption.weight(.semibold)).foregroundStyle(NK.textTertiary)
             }
-            .foregroundStyle(NK.amber)
+        }
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct SettingsDivider: View {
+    var body: some View { Divider().overlay(NK.hairline).padding(.leading, 42) }
+}
+
+private struct SettingsStatusRow: View {
+    let title: String
+    let scan: K10Scan?
+
+    var body: some View {
+        HStack {
+            Image(systemName: title == "晚间扫描" ? "moon.stars" : "sun.max")
+                .foregroundStyle(NK.accent).frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(NKFont.callout.weight(.semibold))
+                Text(scan.map { "截止 \(k10DisplayTime($0.cutoffAt))" } ?? "尚无回执")
+                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+            }
+            Spacer()
+            if let scan { V3Pill(text: scan.status) }
+        }
+        .padding(.vertical, 10)
+    }
+}
+
+private struct SettingsConfigurationRows: View {
+    let configuration: K10Configuration?
+
+    var body: some View {
+        Group {
+            if let configuration {
+                ForEach(configuration.scopes) { scope in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "slider.horizontal.3").foregroundStyle(NK.accent).frame(width: 24)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(scopeTitle(scope.scope)).font(NKFont.callout.weight(.semibold))
+                            if !scope.missing.isEmpty { Text("缺少：\(scope.missing.joined(separator: "、"))").font(NKFont.caption).foregroundStyle(NK.amber) }
+                            if !scope.errors.isEmpty { Text(scope.errors.joined(separator: "、")).font(NKFont.caption).foregroundStyle(NK.amber) }
+                        }
+                        Spacer()
+                        V3Pill(text: scope.state)
+                    }
+                    .padding(.vertical, 8)
+                }
+            } else {
+                HStack {
+                    Image(systemName: "slider.horizontal.3").foregroundStyle(NK.accent).frame(width: 24)
+                    Text("尚未读取 K10 配置状态").font(NKFont.callout).foregroundStyle(NK.textSecondary)
+                    Spacer()
+                }
+                .padding(.vertical, 10)
+            }
         }
     }
 
-    // —— 高级：LLM Provider 与任务路由 —————————————————————————————
+    private func scopeTitle(_ scope: String) -> String {
+        ["candidate": "候选发布", "analysis": "正反分析", "evaluation": "两日评价"][scope] ?? scope
+    }
+}
 
-    @ViewBuilder
-    private var advancedProvidersDetail: some View {
-        NKGroupLabel(text: "模型、联网资料与任务路由")
+private struct SettingsUsageRow: View {
+    let usage: K10UsageSummary?
 
-        NKFieldCard {
-            NKFieldRow(v: 14, h: 18) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Tavily 联网搜索").font(NKFont.headline).foregroundStyle(NK.textPrimary)
-                    Text("免费账号先用 Basic 搜索；检索次数与 LLM Token 分开记账。")
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "gauge.with.dots.needle.50percent").foregroundStyle(NK.accent).frame(width: 30, height: 30)
+                .background(NK.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: NKRadius.inner))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("实际用量").font(NKFont.headline)
+                if let totals = usage?.totals {
+                    Text("调用 \(totals.calls) 次 · 失败 \(totals.failed) 次 · Tokens \(totals.totalTokens.map(String.init) ?? "未知")")
+                        .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                } else {
+                    Text("暂未取得用量；费用不在客户端估算。")
                         .font(NKFont.caption).foregroundStyle(NK.textSecondary)
                 }
-                Spacer(minLength: 8)
-                NKChip(text: model.settings.tavily.keySet ? "key 已配" : "key 未配",
-                       tone: model.settings.tavily.keySet ? .good : .warn)
             }
-            NKFieldSeparator()
-            NKFieldRow(v: 12, h: 18) {
-                NKTextFieldBox(placeholder: model.settings.tavily.keySet
-                               ? "填入新 key（留空 = 不改）" : "Tavily API key",
-                               text: $model.tavilyKeyDraft, mono: true,
-                               secure: true, bordered: false)
-                Button("保存") { Task { await model.saveTavilyKey() } }
-                    .buttonStyle(.plain).foregroundStyle(NK.accent)
-                    .font(NKFont.callout).fontWeight(.semibold)
-                    .disabled(model.tavilyKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if model.settings.tavily.keySet {
-                    Button("清除") { Task { await model.clearTavilyKey() } }
-                        .buttonStyle(.plain).foregroundStyle(NK.down)
-                        .font(NKFont.callout).fontWeight(.semibold)
-                }
-            }
-            NKFieldSeparator()
-            NKFieldRow(v: 10, h: 18) {
-                NKInlineNote(text: "密钥保存后不会再次显示。")
-            }
+            Spacer()
         }
-
-        if model.providers.isEmpty {
-            NKFieldCard {
-                NKFieldRow(v: 16, h: 18) {
-                    Text("还没有配置任何 Provider —— LLM 相关能力(解释层资料 / 日K 评价 / 预案填值)会走优雅降级,不崩。")
-                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        ForEach(model.providers) { p in
-            NKFieldCard {
-                NKFieldRow(v: 16, h: 18, alignment: .top) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack(spacing: 8) {
-                            Text(p.name).font(NKFont.headline).foregroundStyle(NK.textPrimary)
-                            if !p.enabled { NKChip(text: "已停用") }
-                            Spacer(minLength: 6)
-                            // 🔴 **只回布尔,绝不回明文**(V2-② 硬纪律)。
-                            NKChip(text: p.keySet ? "key 已配" : "key 未配",
-                                   tone: p.keySet ? .good : .warn)
-                        }
-                        Text("\(p.model) · \(p.baseUrl)")
-                            .font(NKFont.caption.monospaced()).foregroundStyle(NK.textTertiary)
-                            .lineLimit(1).truncationMode(.middle)
-                            .padding(.top, 6)
-                        if let n = p.notes, !n.isEmpty {
-                            Text(n).font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                                .padding(.top, 4)
-                        }
-                        // 原型 1683 行:`margin-top:12; padding-top:12; border-top:.5px`
-                        Rectangle().fill(NK.hairline).frame(height: 0.5).padding(.top, 12)
-                        HStack(spacing: 14) {
-                            Button("编辑") { model.beginEditProvider(p) }
-                                .buttonStyle(.plain).foregroundStyle(NK.accent)
-                                .font(NKFont.callout).fontWeight(.semibold)
-                            Spacer(minLength: 8)
-                            Button("删除") { deletingProvider = p.name }
-                                .buttonStyle(.plain).foregroundStyle(NK.down)
-                                .font(NKFont.callout).fontWeight(.semibold)
-                        }
-                        .padding(.top, 12)
-                    }
-                }
-            }
-        }
-        NKDashedButton(title: "新增 Provider", systemImage: "plus") { model.beginCreateProvider() }
-
-        NKFieldCard {
-            NKFieldRow(v: 14, h: 18) { NKGroupLabel(text: "任务路由") }
-            ForEach(model.llmRoutes.routes.keys.sorted(), id: \.self) { task in
-                NKFieldSeparator()
-                NKFieldRow(v: 10, h: 18) {
-                    // 任务名是**服务端登记的机器标识符**(`market_direction` / `explain`),
-                    // 等宽展示 = 说明"这是机器名",⛔ 不在客户端造一套中文任务名。
-                    Text(task).font(NKFont.callout.monospaced()).foregroundStyle(NK.textPrimary)
-                    Spacer(minLength: 8)
-                    NKInlineMenu(options: [("", "(不指定)")] + eligibleProviders.map { ($0.name, $0.name) },
-                                 selection: routeBinding(task))
-                }
-            }
-            NKFieldSeparator()
-            NKFieldRow(v: 10, h: 18) {
-                Text("默认 Provider").font(NKFont.body)
-                    .foregroundStyle(NK.textPrimary.opacity(0.75))
-                Spacer(minLength: 8)
-                NKInlineMenu(options: [("", "未设置")] + eligibleProviders.map { ($0.name, $0.name) },
-                             selection: defaultProviderBinding)
-            }
-            NKFieldSeparator()
-            NKFieldRow(v: 12, h: 18) {
-                NKInlineNote(text: "只有“已启用 + key 已配”的 Provider 可选；路由未命中时回退默认模型。")
-                Spacer(minLength: 8)
-                Button("保存") {
-                    Task {
-                        await model.saveRoutes(model.llmRoutes.routes,
-                                               defaultProvider: model.llmRoutes.defaultProvider)
-                    }
-                }
-                .buttonStyle(.plain).foregroundStyle(NK.accent)
-                .font(NKFont.callout).fontWeight(.semibold)
-            }
-        }
-
+        .padding(.vertical, 10)
     }
+}
 
-    @ViewBuilder
-    private var usageDetail: some View {
-        NKFieldCard {
-            NKFieldRow(v: 14, h: 18) { NKGroupLabel(text: "最近 5 日用量") }
-            if model.usageSummary.days.isEmpty {
-                Text("暂时还没有可用的用量记录。")
-                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-            } else {
-                ForEach(model.usageSummary.days) { day in
-                    NKFieldSeparator()
-                    NKFieldRow(v: 10, h: 18, alignment: .top) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(NKFmt.reportDate(day.date)).font(NKFont.callout).foregroundStyle(NK.textPrimary)
-                            ForEach(day.tasks) { task in
-                                Text("\(usageTaskLabel(task.task))：\(task.calls) 次 · Token \(task.totalTokens.map(String.init) ?? "未回传") · 搜索额度 \(task.tavilyCredits.map(String.init) ?? "—")")
-                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+private struct ConnectionEditor: View {
+    @ObservedObject var config: AppConfig
+    @Bindable var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+                    V3PageHeader(title: "后端连接", subtitle: "修改后需主动检查并刷新 K10 数据。")
+                    V3Card {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("环境").font(NKFont.headline)
+                            Picker("环境", selection: $config.environment) {
+                                ForEach(NKEnvironment.allCases) { Text($0.shortLabel).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            TextField("自定义服务地址", text: $config.baseURLOverride)
+                                .textFieldStyle(.roundedBorder)
+                            SecureField("API Token", text: $config.apiToken)
+                                .textFieldStyle(.roundedBorder)
+                            if let error = config.connectionConfigurationError {
+                                Text(error).font(NKFont.caption).foregroundStyle(NK.down)
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                }
-            }
-        }
-    }
-
-    // —— ③ 锁屏推送(原型 1707–1732)——————————————————————————————————
-
-    @ViewBuilder
-    private var pushDetail: some View {
-        detailTitle("锁屏推送",
-                    "开关按通知类型分别设置；关闭一种通知不会影响其他通知。")
-
-        if model.pushKindsDraft.isEmpty {
-            NKFieldCard {
-                NKFieldRow(v: 16, h: 18) {
-                    Text("尚未取到通知类型清单(服务端 notify_kinds 是唯一源;客户端不硬编)。")
-                        .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        } else {
-            NKFieldCard {
-                // ⛔ **不硬编 kind 清单**:服务端发什么就渲染什么;未识别的 level 也自成一组。
-                ForEach(Array(orderedPushGroups.enumerated()),
-                        id: \.element.level) { idx, grp in
-                    if idx > 0 { NKFieldSeparator() }
-                    // 分组头:`padding:12px 18px 8px` + 按级着色的淡底(原型 1712 / 1717 / 1727)。
-                    NKFieldRow(v: 10, h: 18, background: pushLevelTint(grp.level)) {
-                        Text(nkPushLevelLabel(grp.level)).nkLabel()
-                            .foregroundStyle(pushLevelColor(grp.level))
-                    }
-                    ForEach(grp.kinds) { k in
-                        NKFieldSeparator()
-                        NKFieldRow(v: 11, h: 18) {
-                            Text(k.label).font(NKFont.body).foregroundStyle(
-                                pushEnabled(k.kind) ? NK.textPrimary : NK.textSecondary)
-                            Spacer(minLength: 8)
-                            NKSwitch(isOn: Binding(
-                                get: { pushEnabled(k.kind) },
-                                set: { model.setPushKind(k.kind, enabled: $0) }
-                            ))
+                    Button("检查并刷新 K10") {
+                        Task {
+                            model.bind(config: config)
+                            await model.refresh()
+                            await model.refreshAdminSettings()
+                            dismiss()
                         }
                     }
+                    .buttonStyle(V3PrimaryButtonStyle())
                 }
+                .padding(NKSpace.pagePad)
             }
-            HStack(spacing: 12) {
-                NKInlineNote(text: "清单由服务端 notify_kinds 下发 —— 新增类型时这里会自动出现,客户端不硬编。")
-                Spacer(minLength: 8)
-                NKOutlineButton(title: "保存推送设置") { Task { await model.savePushSettings() } }
-            }
-        }
-    }
-
-    private func pushEnabled(_ kind: String) -> Bool {
-        model.pushKindsDraft.first(where: { $0.kind == kind })?.enabled ?? true
-    }
-
-    /// 三组的**呈现顺序 = 由重到轻**(原型 1712 紧急 → 1717 提示 → 1727 日常)。
-    ///
-    /// ⚠ 这是**展示层排序**,`PushSettings.groupedByLevel`(服务端出现顺序)原样不动 ——
-    /// 那个顺序是双端共用的模型层语义,⛔ 不为一屏的版式去改它。
-    /// **未识别的 level 排在三档之后、组间保持服务端相对顺序**(⛔ 不丢弃、也不假装它是某一级)。
-    private var orderedPushGroups: [(level: String, kinds: [PushKind])] {
-        let rank: [String: Int] = ["immediate": 0, "important": 1, "digest": 2]
-        return PushSettings(kinds: model.pushKindsDraft).groupedByLevel
-            .enumerated()
-            .sorted { a, b in
-                let ra = rank[a.element.level] ?? 3, rb = rank[b.element.level] ?? 3
-                return ra == rb ? a.offset < b.offset : ra < rb
-            }
-            .map { $0.element }
-    }
-
-    /// 三级各自的着色(原型 1712 红 / 1717 琥珀 / 1727 灰)。
-    /// ⚠ **未识别的 level 走灰档**(服务端将来加第四级时不会变成一片白),⛔ 不丢弃该组。
-    private func pushLevelColor(_ level: String) -> Color {
-        switch level {
-        case "immediate": return NK.down
-        case "important": return NK.amber
-        default: return NK.textSecondary
-        }
-    }
-
-    private func pushLevelTint(_ level: String) -> Color {
-        switch level {
-        case "immediate": return NK.down.opacity(0.05)
-        case "important": return NK.amber.opacity(0.05)
-        default: return NK.textTertiary.opacity(0.06)
-        }
-    }
-
-    // —— ④ 版本(原型 1733–1745)——————————————————————————————————————
-
-    @ViewBuilder
-    private var versionDetail: some View {
-        detailTitle("版本")
-        NKFieldCard {
-            versionRow("App 版本", appVersion)
-            NKFieldSeparator()
-            versionRow("服务端版本", model.serverVersion ?? "未知(未连通)")
-            NKFieldSeparator()
-            // 版本信息由服务端下发；客户端不硬编，也不以空白掩盖缺失。
-            // 空白读作"没有",而事实分两种:「本次没有报告」与「参数未配置」。后者
-            // 只有报告自己把它列为失败原因时才成立,不能拿 `selectionLoaded` 猜。
-            versionRow("参数包版本", paramsPackageVersionText)
-            NKFieldSeparator()
-            versionRow("事实包版本", model.selection.packVersion?.isEmpty == false
-                       ? (model.selection.packVersion ?? "") : "未取得(本次没有报告)")
-        }
-        if let note = versionMismatchNote {
-            NKInlineNote(text: LocalizedStringKey(note), tone: .warn)
-        }
-        NKNoteBlock(text: "服务端版本未知时这里沉默 —— 沉默不是「已确认一致」。两者不一致只提示、不拦功能。")
-    }
-
-    private func versionRow(_ title: String, _ value: String) -> some View {
-        NKFieldRow(v: 13, h: 18) {
-            Text(title).font(NKFont.body).foregroundStyle(NK.textPrimary.opacity(0.75))
-            Spacer(minLength: 8)
-            Text(value).font(NKFont.callout.monospacedDigit()).fontWeight(.semibold)
-                .foregroundStyle(NK.textPrimary)
-        }
-    }
-
-    private var paramsPackageVersionText: String {
-        if let value = model.selection.paramsPackageVersion, !value.isEmpty { return value }
-        if model.selection.parameterPackWasMissing { return "参数未配置（本次报告未跑成）" }
-        return "未取得（本次没有报告）"
-    }
-    #endif
-
-    private var appShortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
-    }
-
-    private func usageTaskLabel(_ task: String) -> String {
-        switch task {
-        case "market_direction": return "市场方向"
-        case "news_scan": return "消息核实"
-        case "explain": return "个股资料"
-        case "playbook": return "次日预案"
-        default: return "其他任务"
-        }
-    }
-
-    /// 双端共用(macOS 路由行 / iOS `routesSection` 都靠它)。
-    private func routeBinding(_ task: String) -> Binding<String> {
-        Binding(
-            get: {
-                let current = model.llmRoutes.routes[task] ?? ""
-                return eligibleProviderNames.contains(current) ? current : ""
-            },
-            set: {
-                if $0.isEmpty { model.llmRoutes.routes.removeValue(forKey: task) }
-                else { model.llmRoutes.routes[task] = $0 }
-            }
-        )
-    }
-
-    private var eligibleProviders: [Provider] {
-        model.providers.filter { $0.enabled && $0.keySet }
-    }
-
-    private var eligibleProviderNames: Set<String> {
-        Set(eligibleProviders.map(\.name))
-    }
-
-    private var defaultProviderBinding: Binding<String> {
-        Binding(
-            get: {
-                guard let current = model.llmRoutes.defaultProvider,
-                      eligibleProviderNames.contains(current) else { return "" }
-                return current
-            },
-            set: { model.llmRoutes.defaultProvider = $0.isEmpty ? nil : $0 }
-        )
-    }
-
-    // MARK: - iOS：只保留安全状态、日常通知与桌面端指引
-
-    #if os(iOS)
-    private var form: some View {
-        Form {
-            iosStatusSection
-            desktopOnlyNote
-            pushSection
-            footerSection
-        }
-        .formStyle(.grouped)
-        .contentMargins(.bottom, 96, for: .scrollContent)
-        .task {
-            await model.loadSettings()
-            await model.loadServerVersion()
-        }
-    }
-
-    // MARK: - 桌面场景说明(iOS)
-
-    #if os(iOS)
-    /// 🔴 **说出口,不留白**:手机上看不到 Provider 注册表 / 任务路由 / 交割单上传,
-    /// 是**刻意的**(配置动作留桌面)—— 不说,用户只会以为这版少了功能或者坏了。
-    private var desktopOnlyNote: some View {
-        Section {
-            Label("研究服务与高级配置请在 Mac 上管理", systemImage: "desktopcomputer")
-                .font(NKFont.body).foregroundStyle(NK.textSecondary)
-        } footer: {
-            Text("模型、联网资料和服务地址等高级配置请在 Mac 上完成；手机保留日常阅读与通知设置。")
-        }
-    }
-
-    private var iosStatusSection: some View {
-        Section {
-            LabeledContent("访问配置") {
-                Label(config.hasToken ? "已配置" : "未配置",
-                      systemImage: config.hasToken ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .font(NKFont.body).fontWeight(.semibold)
-                    .foregroundStyle(config.hasToken ? NK.up : NK.amber)
-            }
-            LabeledContent("联网资料") {
-                Text(model.settings.tavily.keySet ? "已配置" : "未配置")
-                    .font(NKFont.body).foregroundStyle(NK.textSecondary)
-            }
-            LabeledContent("可用模型", value: "\(eligibleProviders.count) 个")
-        } header: {
-            Text("安全状态")
-        } footer: {
-            Text("手机不会显示服务地址、访问码、模型密钥或诊断入口。")
-        }
-    }
-    #endif
-
-    // MARK: - 后端连接
-
-    private var envSection: some View {
-        Section {
-            Picker("环境", selection: $config.environment) {
-                ForEach(NKEnvironment.allCases) { env in Text(env.label).tag(env) }
-            }
-            LabeledContent("当前服务") {
-                Text(config.resolvedBaseURL.absoluteString)
-                    .font(NKFont.body.monospaced())
-                    .foregroundStyle(NK.textSecondary)
-                    .lineLimit(1).truncationMode(.middle)
-            }
-        } header: {
-            Text("连接")
-        } footer: {
-            Text("选择本机或云端服务；切换后即时生效。服务地址可在 Mac 的高级设置中管理。")
-        }
-    }
-
-    private var tokenSection: some View {
-        Section {
-            HStack(spacing: 8) {
-                Group {
-                    if tokenRevealed {
-                        TextField("粘贴 API Token", text: $config.apiToken)
-                    } else {
-                        SecureField("粘贴 API Token", text: $config.apiToken)
-                    }
-                }
-                .font(NKFont.body.monospaced())
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                #endif
-                Button { tokenRevealed.toggle() } label: {
-                    Image(systemName: tokenRevealed ? "eye.slash" : "eye").foregroundStyle(NK.textSecondary)
-                }
-                .buttonStyle(.plain)
-            }
-            LabeledContent("当前状态") {
-                Label(config.hasToken ? "已填入" : "未填入",
-                      systemImage: config.hasToken ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .font(NKFont.body).fontWeight(.semibold)
-                    .foregroundStyle(config.hasToken ? NK.up : NK.amber)
-            }
-        } header: {
-            Text("访问码")
-        } footer: {
-            Text("访问码仅保存在当前设备。")
-        }
-    }
-
-    private var overrideSection: some View {
-        Section {
-            TextField("留空则用环境默认", text: $config.baseURLOverride)
-                .font(NKFont.body.monospaced())
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                #endif
-        } header: {
-            Text("baseURL 覆盖(可选)")
-        } footer: {
-            Text("临时连别的地址时填,例如 http://192.168.x.x:8002。空则按上方环境。")
-        }
-    }
-
-    private var selfCheckSection: some View {
-        Section {
-            Button {
-                Task { await runSelfCheck() }
-            } label: {
-                HStack {
-                    if check == .running {
-                        ProgressView().controlSize(.small)
-                        Text("自检中…")
-                    } else {
-                        Image(systemName: "wifi")
-                        Text("连接自检")
-                    }
-                }
-            }
-            .disabled(check == .running)
-
-            switch check {
-            case .idle, .running:
-                EmptyView()
-            case .ok(let desc):
-                Label(desc, systemImage: "checkmark.circle.fill").font(NKFont.body).foregroundStyle(NK.up)
-            case .tokenError:
-                Label("访问码无效或已失效，请重新确认。", systemImage: "xmark.circle.fill")
-                    .font(NKFont.body).foregroundStyle(NK.down)
-            case .networkError(let m):
-                Label(m, systemImage: "exclamationmark.triangle.fill").font(NKFont.body).foregroundStyle(NK.amber)
-            }
-        } header: {
-            Text("连接自检")
-        } footer: {
-            Text("会检查服务是否可连接，以及访问码是否有效。")
-        }
-    }
-
-    // MARK: - V2-② Provider 注册表(自填制;🔴 key 只写不回显)
-
-    private var providersSection: some View {
-        Section {
-            if model.providers.isEmpty {
-                Text("还没有配置任何 Provider —— LLM 相关能力(解释层资料 / 日K 评价 / 预案填值)会走优雅降级,不崩。")
-                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-            }
-            ForEach(model.providers) { p in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(p.name).font(NKFont.body).fontWeight(.semibold)
-                            .foregroundStyle(NK.textPrimary)
-                        if !p.enabled { NKChip(text: "已停用") }
-                        Spacer()
-                        // **只回布尔,绝不回明文**。
-                        NKChip(text: p.keySet ? "key 已配" : "key 未配",
-                               tone: p.keySet ? .good : .warn)
-                    }
-                    Text("\(p.model) · \(p.baseUrl)")
-                        .font(NKFont.monoKey).foregroundStyle(NK.textTertiary)
-                        .lineLimit(1).truncationMode(.middle)
-                    if let n = p.notes, !n.isEmpty {
-                        Text(n).font(NKFont.caption).foregroundStyle(NK.textSecondary)
-                    }
-                    HStack(spacing: 14) {
-                        Button("编辑") { model.beginEditProvider(p) }
-                            .buttonStyle(.plain).foregroundStyle(NK.accent)
-                            .font(NKFont.callout).fontWeight(.semibold)
-                        Spacer()
-                        Button("删除") { deletingProvider = p.name }
-                            .buttonStyle(.plain).foregroundStyle(NK.down)
-                            .font(NKFont.callout).fontWeight(.semibold)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            Button { model.beginCreateProvider() } label: {
-                Label("新增 Provider", systemImage: "plus.circle.fill")
-            }
-        } header: {
-            Text("LLM Provider 注册表(自填制)")
-        } footer: {
-            Text("任意 OpenAI 兼容端点均可配。key 只发一次、服务端从不回显明文；联网检索统一由桌面端设置里的 Tavily 提供。")
-        }
-    }
-
-    // MARK: - 任务路由表
-
-    private var routesSection: some View {
-        Section {
-            if model.llmRoutes.routes.isEmpty {
-                Text("暂无任务路由(全部任务走默认 Provider)。")
-                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-            }
-            ForEach(model.llmRoutes.routes.keys.sorted(), id: \.self) { task in
-                Picker(task, selection: routeBinding(task)) {
-                    Text("(不指定)").tag("")
-                    ForEach(eligibleProviders) { p in Text(p.name).tag(p.name) }
-                }
-            }
-            Picker("默认 Provider", selection: defaultProviderBinding) {
-                Text("未设置").tag("")
-                ForEach(eligibleProviders) { p in Text(p.name).tag(p.name) }
-            }
-            Button("保存任务路由") {
-                Task {
-                    await model.saveRoutes(model.llmRoutes.routes,
-                                           defaultProvider: model.llmRoutes.defaultProvider)
-                }
-            }
-        } header: {
-            Text("任务路由")
-        } footer: {
-            Text("哪个任务用哪个 Provider（全量覆盖式保存）。未登记的任务名无法保存。")
-        }
-    }
-
-    // MARK: - V2-⑪ 推送开关(**按 kind 动态渲染 + 按 level 分组**)
-
-    private var pushSection: some View {
-        Section {
-            if model.pushKindsDraft.isEmpty {
-                Text("尚未取到通知类型清单(服务端 `notify_kinds` 是唯一源;客户端不硬编)。")
-                    .font(NKFont.callout).foregroundStyle(NK.textSecondary)
-            }
-            // ⛔ **不硬编 kind 清单**:服务端发什么就渲染什么;未识别的 level 也自成一组。
-            ForEach(PushSettings(kinds: model.pushKindsDraft).groupedByLevel, id: \.level) { group in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(nkPushLevelLabel(group.level))
-                        .font(NKFont.caption).fontWeight(.bold).foregroundStyle(NK.textTertiary)
-                    ForEach(group.kinds) { k in
-                        Toggle(k.label, isOn: Binding(
-                            get: { model.pushKindsDraft.first(where: { $0.kind == k.kind })?.enabled ?? true },
-                            set: { model.setPushKind(k.kind, enabled: $0) }
-                        ))
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            Button("保存推送设置") { Task { await model.savePushSettings() } }
-                .disabled(model.pushKindsDraft.isEmpty)
-        } header: {
-            Text("锁屏推送(按通知类型)")
-        } footer: {
-            Text("开关按通知类型分别设置；关闭一种通知不会影响其他通知。")
-        }
-    }
-
-    #if os(iOS)
-    @ViewBuilder
-    private var devicePushSection: some View {
-        Section {
-            LabeledContent("Device Token") {
-                Text(model.pushManager?.lastDeviceToken ?? "未注册")
-                    .font(NKFont.body.monospaced())
-                    .foregroundStyle(model.pushManager?.lastDeviceToken == nil ? NK.textTertiary : NK.textSecondary)
-                    .lineLimit(1).truncationMode(.middle)
-                    .textSelection(.enabled)
-            }
-            if let err = model.pushManager?.registerError {
-                LabeledContent("注册错误") {
-                    Text(err).font(NKFont.callout).foregroundStyle(NK.down).multilineTextAlignment(.trailing)
-                }
-            }
-            Button {
-                Task { await model.pushManager?.requestAuthorizationAndRegister() }
-            } label: {
-                Label("重新注册推送", systemImage: "bell.badge")
-            }
-        } header: {
-            Text("设备注册")
-        } footer: {
-            Text("切换环境后点此,把 device token 重新注册到该环境的库。模拟器拿不到真 token。")
-        }
-    }
-    #endif
-
-    /// A2 版本号治理:诚实展示「App 版本 + 服务端版本」双版本;不一致时**只提示、不拦功能**。
-    private var footerSection: some View {
-        Section {
-            LabeledContent("App 版本", value: appVersion)
-            LabeledContent("服务端版本", value: model.serverVersion ?? "未知(未连通)")
-            if let note = versionMismatchNote {
-                Text(note).font(NKFont.caption).foregroundStyle(NK.amber)
-            }
-        }
-    }
-    #endif
-
-    private var appVersion: String {
-        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
-        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
-        return "\(v) (\(b))"
-    }
-
-    /// 两者都源自同一个 `MARKETING_VERSION`(守门单测锁三处恒等),故去掉服务端 "v"
-    /// 前缀后直接字符串比较即可。服务端版本未知时**不提示** —— 沉默,不是"已确认一致"。
-    private var versionMismatchNote: String? {
-        NKVersionCompatibility.message(serverVersion: model.serverVersion)
-    }
-
-    // MARK: - 自检逻辑
-
-    private func runSelfCheck() async {
-        check = .running
-        let client = APIClient(baseURL: config.resolvedBaseURL, token: config.apiToken)
-        let health = try? await client.health()
-        if let v = health?.version { model.serverVersion = v }
-        guard health?.ok == true else {
-            check = .networkError("服务暂不可达，请检查环境或网络。")
-            return
-        }
-        do {
-            // 第二探针是鉴权后的只读端点，用来验证 token 与业务路由均可用。
-            let snapshot = try await client.fetchSettings()
-            check = .ok("服务与访问配置正常（\(snapshot.push.kinds.count) 项推送开关）")
-        } catch APIError.unauthorized, APIError.noToken {
-            check = .tokenError
-        } catch let e as APIError {
-            check = .networkError(e.errorDescription ?? "请求失败")
-        } catch {
-            check = .networkError(error.localizedDescription)
+            .background(NK.pageBg)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
         }
     }
 }
 
-// MARK: - Provider 增 / 改表单(🔴 key 只写不回显)
-
-struct ProviderFormSheet: View {
+private struct ModelEditor: View {
     @Bindable var model: AppModel
+    @Binding var providerName: String
+    @Binding var providerKey: String
+    @Binding var providerEnabled: Bool
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        #if os(macOS)
-        macBody
-        #else
-        iosBody
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+                    V3PageHeader(title: "模型配置", subtitle: "K10-v1.4 固定使用 DeepSeek V4 Pro；密钥只写入服务器。")
+                    V3Card {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if model.providers.isEmpty {
+                                Text("尚未读取已保存的连接。保存时不会回显密钥。")
+                                    .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                            } else {
+                                ForEach(model.providers) { provider in
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(provider.name).font(NKFont.callout.weight(.semibold))
+                                            Text("\(provider.enabled ? "启用" : "停用") · \(provider.keySet ? "密钥已配置" : "未配置密钥")")
+                                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                                        }
+                                        Spacer()
+                                        V3Pill(text: provider.enabled ? "available" : "not_configured")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    V3Card {
+                        VStack(alignment: .leading, spacing: 12) {
+                            TextField("连接名称", text: $providerName).textFieldStyle(.roundedBorder)
+                            SecureField("新的 API Key（留空不改现有）", text: $providerKey).textFieldStyle(.roundedBorder)
+                            Toggle("启用该连接", isOn: $providerEnabled).font(NKFont.callout)
+                            Button("保存 DeepSeek 连接") {
+                                Task {
+                                    await model.saveDeepSeekConnection(name: providerName, apiKey: providerKey, enabled: providerEnabled)
+                                    providerKey = ""
+                                    dismiss()
+                                }
+                            }
+                            .buttonStyle(V3PrimaryButtonStyle())
+                        }
+                    }
+                }
+                .padding(NKSpace.pagePad)
+            }
+            .background(NK.pageBg)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+        }
+    }
+}
+
+private struct SourceEditor: View {
+    @Bindable var model: AppModel
+    @Binding var tavilyKey: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+                    V3PageHeader(title: "资讯来源", subtitle: "来源权限、覆盖与失败都会如实显示，不会被当作空结果。")
+                    V3Card {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("Tavily 定向核验").font(NKFont.headline)
+                                Spacer()
+                                V3Pill(text: model.tavilyKeySet ? "available" : "not_configured")
+                            }
+                            Text(model.tavilyKeySet ? "密钥已配置，页面不会回显。" : "尚未配置密钥。")
+                                .font(NKFont.caption).foregroundStyle(NK.textSecondary)
+                            SecureField("新的 Tavily Key", text: $tavilyKey).textFieldStyle(.roundedBorder)
+                            HStack(spacing: 10) {
+                                Button("写入密钥") {
+                                    Task {
+                                        await model.setTavilyKey(tavilyKey)
+                                        tavilyKey = ""
+                                        dismiss()
+                                    }
+                                }
+                                .buttonStyle(V3PrimaryButtonStyle())
+                                Button("清除密钥", role: .destructive) {
+                                    Task { await model.clearTavilyKey() }
+                                }
+                                .buttonStyle(V3SecondaryButtonStyle())
+                            }
+                        }
+                    }
+                }
+                .padding(NKSpace.pagePad)
+            }
+            .background(NK.pageBg)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+        }
+    }
+}
+
+struct DisciplineView: View {
+    private let rules = [
+        "因何买入，就因何持有；理由失效，不找借口。",
+        "消息再好，也要接受市场反馈；走势不符，重新审视。",
+        "买前功课不足，不靠买后补仓、做 T 和硬扛来挽救。",
+        "曾经的龙头没有永久资格，过去的成功不能机械照搬。",
+        "亏后不急着翻本，赢后不放宽标准。",
+        "卖出旧票与买入新票，分别判断；空出的仓位不必急着填满。",
+        "没有合适机会就等，不能因为怕踏空而降低标准。",
+        "先定价格边界，再决定下单；不能为了追进去而临时抬高上限。",
+        "仓位服从可承受风险；买了几只同题材，不等于分散了风险。",
+        "没有时间完成判断、没有条件执行预案，就不勉强交易。"
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: NKSpace.cardGap) {
+                V3PageHeader(title: "个人纪律十条", subtitle: "仅供个人阅读，不会写入 K10 选股、选择或两日评价。")
+                ForEach(Array(rules.enumerated()), id: \.offset) { index, rule in
+                    V3Card {
+                        HStack(alignment: .top, spacing: 12) {
+                            Text("\(index + 1)").font(NKFont.metric).foregroundStyle(NK.accent).frame(width: 30, alignment: .leading)
+                            Text(rule).font(NKFont.body).foregroundStyle(NK.textPrimary)
+                        }
+                    }
+                }
+            }
+            .padding(NKSpace.pagePad)
+        }
+        .background(NK.pageBg)
+        .navigationTitle("个人纪律十条")
+        #if os(iOS)
+        .toolbar(.visible, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.inline)
         #endif
     }
-
-    // MARK: - macOS(原型 `Neckline 弹层.dc.html` 188–235:第四个弹层)
-
-    #if os(macOS)
-    /// 🔴 **界面上永远只看得到「已配 / 未配」这个布尔**(V2-② 既有硬纪律):
-    /// 服务端只回 `keySet`,⛔ 不回明文、⛔ 也不回掩码位数(位数本身也是信息)。
-    private var keySet: Bool {
-        guard let n = model.providerForm.editingName else { return false }
-        return model.providers.first(where: { $0.name == n })?.keySet ?? false
-    }
-
-    private var macBody: some View {
-        NKSheetShell(
-            title: model.providerForm.isEditing ? "编辑 Provider" : "新增 Provider",
-            primaryTitle: "保存",
-            primaryDisabled: !model.providerForm.isValid,
-            onCancel: {
-                model.providerForm = ProviderForm()   // 安全态:key 草稿立即丢弃
-                model.showProviderForm = false
-            },
-            onPrimary: { Task { await model.submitProviderForm() } }
-        ) {
-            // —— 端点 ——
-            VStack(alignment: .leading, spacing: 8) {
-                NKGroupLabel(text: "端点")
-                NKFieldCard {
-                    NKFieldRow(v: 12, h: 15) {
-                        NKFieldLabel(text: "名称", width: 76)
-                        if model.providerForm.isEditing {
-                            Text(model.providerForm.name).font(NKFont.body)
-                                .foregroundStyle(NK.textSecondary)
-                            Spacer(minLength: 8)
-                            Text("创建后不可改").font(NKFont.caption).foregroundStyle(NK.textTertiary)
-                        } else {
-                            NKTextFieldBox(placeholder: "唯一名,如 deepseek",
-                                           text: $model.providerForm.name, bordered: false)
-                        }
-                    }
-                    NKFieldSeparator()
-                    NKFieldRow(v: 12, h: 15, alignment: .top) {
-                        NKFieldLabel(text: "Base URL", width: 76)
-                        NKTextFieldBox(placeholder: "https://api.example.com/v1/chat/completions",
-                                       text: $model.providerForm.baseUrl, mono: true, bordered: false)
-                    }
-                    NKFieldSeparator()
-                    NKFieldRow(v: 12, h: 15) {
-                        NKFieldLabel(text: "模型名", width: 76)
-                        NKTextFieldBox(placeholder: "如 deepseek-chat",
-                                       text: $model.providerForm.model, mono: true, bordered: false)
-                    }
-                }
-                // 原型 205 行:这条踩过的坑从 footer 里提出来贴到字段下方并着琥珀色。
-                NKInlineNote(text: "⚠ Base URL 需要填写完整端点（包含 /chat/completions）；地址不完整会导致连接失败。",
-                             tone: .warn)
-            }
-
-            // —— 凭据 ——
-            VStack(alignment: .leading, spacing: 8) {
-                NKGroupLabel(text: "凭据")
-                NKFieldCard {
-                    NKFieldRow(v: 12, h: 15) {
-                        NKTextFieldBox(placeholder: model.providerForm.isEditing
-                                       ? "填入新 key(留空 = 不改)" : "API key",
-                                       text: $model.providerForm.apiKey,
-                                       mono: true, secure: true, bordered: false)
-                        if model.providerForm.isEditing {
-                            NKChip(text: keySet ? "key 已配" : "key 未配",
-                                   tone: keySet ? .good : .warn)
-                        }
-                    }
-                }
-                NKInlineNote(text: "key 只发一次，服务端不会回显明文。界面上只显示「已配 / 未配」。")
-            }
-
-            // —— 能力 ——
-            VStack(alignment: .leading, spacing: 8) {
-                NKGroupLabel(text: "能力")
-                NKFieldCard {
-                    NKFieldRow(v: 12, h: 15) {
-                        Text("启用").font(NKFont.body).foregroundStyle(NK.textPrimary)
-                        Spacer(minLength: 8)
-                        NKSwitch(isOn: $model.providerForm.enabled, width: 42, height: 25)
-                    }
-                    NKFieldSeparator()
-                    NKFieldRow(v: 12, h: 15, alignment: .top) {
-                        NKFieldLabel(text: "备注", width: 76)
-                        NKTextFieldBox(placeholder: "可选", text: $model.providerForm.notes,
-                                       bordered: false)
-                    }
-                }
-            }
-
-            NKTintedNote(text: "Provider 只负责推理。联网检索统一由 Tavily 完成，不再向模型端点发送厂商私有搜索工具协议。",
-                         tone: .info)
-        }
-    }
-    #endif
-
-    #if os(iOS)
-    private var iosBody: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("名称(唯一,创建后不可改)", text: $model.providerForm.name)
-                        .disabled(model.providerForm.isEditing)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        #endif
-                    TextField("Base URL,如 https://api.example.com/v1",
-                              text: $model.providerForm.baseUrl)
-                        .font(NKFont.body.monospaced())
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        #endif
-                    TextField("模型名", text: $model.providerForm.model)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        #endif
-                } header: {
-                    Text("端点")
-                }
-
-                Section {
-                    SecureField(model.providerForm.isEditing ? "填入新 key(留空 = 不改)" : "API key",
-                                text: $model.providerForm.apiKey)
-                        .font(NKFont.body.monospaced())
-                } header: {
-                    Text("凭据")
-                } footer: {
-                    Text("key 只发一次，之后不会回显。编辑时留空表示保持原值不变。")
-                }
-
-                Section {
-                    Toggle("启用", isOn: $model.providerForm.enabled)
-                    TextField("备注(可选)", text: $model.providerForm.notes)
-                } header: {
-                    Text("能力")
-                } footer: {
-                    Text("Provider 只负责推理；联网检索统一由 macOS 设置里的 Tavily 提供。")
-                }
-            }
-            .formStyle(.grouped)
-            .navigationTitle(model.providerForm.isEditing ? "编辑 Provider" : "新增 Provider")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
-                        model.providerForm = ProviderForm()   // 安全态:key 草稿立即丢弃
-                        model.showProviderForm = false
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { Task { await model.submitProviderForm() } }
-                        .disabled(!model.providerForm.isValid)
-                }
-            }
-        }
-    }
-    #endif
 }

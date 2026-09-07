@@ -1,7 +1,7 @@
 """Semantic validation for same-day EOD payloads before they become evidence.
 
-An API call can succeed while a provider is still publishing the fields needed
-by K9.  These checks run on the in-memory response, before the active parquet
+An API call can succeed while a provider is still publishing fields needed by
+the shared market-data readers. These checks run on the in-memory response, before the active parquet
 partition is replaced, so an incomplete response is retryable rather than a
 false successful update.
 """

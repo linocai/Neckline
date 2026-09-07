@@ -3,13 +3,8 @@
 (默认今天,可传参指定其它交易日)+ 尾部窗口重算 limit_derived(连板计数跨批次
 边界需要窗口,见 backfill.run_limit_derived 的 30 自然日缓冲说明)。
 
-**当日停牌名单**(`suspend_d`,v1.4-①-C)—— 事实层判「全天停牌 vs 盘中临时停牌」的
-输入(裁定 12),见 `neckline/facts/pack.py::_suspend_flag_of`。**尽力而为**:失败只记
-WARNING,绝不让主增量(daily/basic/adj/moneyflow)失败,也绝不改变退出码。
-
-旧同花顺概念链已经退役并物理删除；日更只维护现行 K9 所需数据。
-
-当前配额消耗:`suspend_d` 1 次/日、申万分类 3 + 2 次/日(S2)。
+日更维护 K10 的日频行情、停牌、申万成员快照和涨跌停派生数据。数据源失败时不以旧数据
+冒充成功；运行方可通过 `--retry-incomplete` 补拉不完整分区。
 
 用法:
     python scripts/daily_update.py                # 今天(若非交易日则报错退出)
@@ -97,80 +92,19 @@ def _has_recorded_sw_snapshot(target: date) -> bool:
 
 
 def update_sw_industry(target: date) -> bool:
-    """V2.5.0 S2:申万 2021 版行业分类日更(`sw_industry_classify` / `sw_industry_member`)。
-
-    fp-4 只能消费目标交易日的不可变成员快照。因此日更刷新失败或未能写入
-    ``target`` 快照时，必须让主任务失败；不能用当前归属替代历史回填，也不能把
-    ``fetched_at`` 伪装为有效交易日。
-    """
+    """Refresh the immutable SW2021 membership snapshot used by K10."""
     from neckline.data import sw_industry
 
     stats = sw_industry.refresh(target_date=target)
     if not stats.ok:
         logger.error(
-            "[sw_industry] 申万分类日更未通过，拒绝生成目标日 fp-4。原因:%s。补算:"
+            "[sw_industry] 申万分类日更未通过，K10 行情身份资料不完整。原因:%s。补算:"
             "python -c \"from datetime import date; from neckline.data import sw_industry; print(sw_industry.refresh(target_date=date.today()))\"",
             stats.reason,
         )
         return False
     logger.info("[sw_industry] %s", stats.summary())
     return True
-
-
-def build_and_freeze_fact_pack(target: date) -> None:
-    """V2.5.0 S3:当日事实包构建 + 冻结(PROJECT_PLAN §5.3)。
-
-    🔴 **数据未到齐 → 不冻结**(架构 §3.5):`build()` 返回 `IncompletePack` 时本函数
-    **什么都不写**,只把缺口逐条打进日志 —— 报告层据此出「今天没跑成 · <缺口逐条>」。
-    ⛔ 不冻一份残包、⛔ 不用昨天的数据顶今天的位。
-
-    **已冻结过就跳过**(`PackAlreadyFrozen`):冻结不可覆盖(§5.3.2 纪律 3),补跑同一天
-    是幂等的 no-op,不是错误。口径真变了走新 `pack_version`。
-
-    目标日 SW2021 成员快照是 fp-4 的硬输入；日更已在调用本函数前完成该闸门。
-    """
-    from neckline.facts import v4 as fact_pack
-    from neckline.facts.pack import IncompletePack
-    from neckline.facts import store as fact_store
-
-    try:
-        built = fact_pack.build(target)
-    except Exception:  # noqa: BLE001
-        logger.error("[fact_pack] %s 构建异常(已吞,不阻断主增量)", target, exc_info=True)
-        return
-    if isinstance(built, IncompletePack):
-        logger.error(
-            "[fact_pack] %s **数据未到齐,不冻结**(报告将出「今天没跑成」)。缺口:%s。"
-            "补齐后重跑:python scripts/daily_update.py %s",
-            target, built.describe(), target.strftime("%Y%m%d"),
-        )
-        return
-    try:
-        frozen = fact_store.freeze_pack(built, origin=fact_store.ORIGIN_LIVE)
-    except fact_store.PackAlreadyFrozen as e:
-        logger.info("[fact_pack] %s 已冻结过,跳过(幂等):%s", target, e)
-        return
-    except Exception:  # noqa: BLE001
-        logger.error("[fact_pack] %s 冻结异常(已吞,不阻断主增量)", target, exc_info=True)
-        return
-    logger.info(
-        "[fact_pack] %s 已冻结:%d 行、%d 个二级行业、停牌异常 %d、sha256=%s…",
-        target, frozen.row_count, len(built.industry_rows),
-        frozen.suspend_anomaly_count, frozen.content_fingerprint[:12],
-    )
-
-
-def verify_readiness(target: date) -> bool:
-    """日更的最终判据：19:00 消费前必须通过只读就绪检查。"""
-    from neckline.facts import readiness
-
-    result = readiness.preflight(target, pack_version="fp-4")
-    if result.ready:
-        logger.info("[readiness] %s 已就绪，冻结包=%s", target, result.pack_id)
-        return True
-    logger.error("[readiness] %s 未就绪，晚间链将只产出 not_run：%s", target, "；".join(result.gaps))
-    return False
-
 
 
 def update_suspend_list(target: date) -> None:
@@ -196,7 +130,7 @@ def update_suspend_list(target: date) -> None:
 
 
 def update_top_list(target: date) -> None:
-    """尽力获取龙虎榜原始事实；它不参与 K9-v3 的参数未配置安全态。"""
+    """Best-effort 龙虎榜 market-data refresh for K10 context."""
     from neckline.data.top_list import load_top_list
 
     try:
@@ -205,9 +139,9 @@ def update_top_list(target: date) -> None:
         if day_file_exists("top_list", target):
             logger.info("[top_list] %s 已查，%d 行", target, frame.height)
         else:
-            logger.warning("[top_list] %s 数据不可用；fp-4 将明确记录 unavailable", target)
+            logger.warning("[top_list] %s 数据不可用", target)
     except Exception:  # noqa: BLE001
-        logger.warning("[top_list] %s 获取异常；fp-4 将明确记录 unavailable", target,
+        logger.warning("[top_list] %s 获取异常", target,
                        exc_info=True)
 
 
@@ -220,26 +154,25 @@ def main(argv: list[str] | None = None) -> int:
         help="只重拉当日缺失/语义不完整的分区；供受控定时 recovery 使用",
     )
     args = parser.parse_args(argv)
-    if not settings.tushare_token:
-        logger.error("TUSHARE_TOKEN 缺失(.env),无法拉取。")
-        return 1
-
-    ensure_data_dirs()
-    init_schema()
-    reset_cache()
-
     target = (
         datetime.strptime(args.trade_date, "%Y%m%d").date()
         if args.trade_date
         else datetime.now(CN_TZ).date()
     )
 
+    ensure_data_dirs()
+    init_schema()
+    reset_cache()
+
     calendar_open = official_is_trading_day(target)
     if calendar_open is None:
         logger.error("%s 不在已落库的官方交易日历中；拒绝用工作日近似更新。先跑 scripts/init_calendar.py。", target)
         return 1
     if not calendar_open:
-        logger.error("%s 不是交易日,无需更新。", target)
+        logger.info("%s 不是交易日；K10 行情日更 no-op。", target)
+        return 0
+    if not settings.tushare_token:
+        logger.error("TUSHARE_TOKEN 缺失(.env),无法拉取。")
         return 1
 
     logger.info("增量更新交易日:%s", target)
@@ -256,6 +189,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     for table, s in stats.items():
         logger.info("[%s] 新拉 %d 天(%d 行)、失败 %d 天", table, s["fetched"], s["rows"], s["failed"])
+    failed_tables = [table for table, item in stats.items() if item["failed"]]
+    if failed_tables:
+        logger.error("行情分区未完整更新:%s；保留现有分区，交由两个有界 retry 槽补拉。", ",".join(failed_tables))
+        return 1
 
     index_needs_retry = _partition_needs_retry("index_daily", target)
     if not args.retry_incomplete or index_needs_retry:
@@ -280,13 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     if sw_ready_for_build:
         logger.info("[sw_industry] %s 已有不可变成员快照,重试不重复请求当前源", target)
     elif not update_sw_industry(target):
-        logger.error("[sw_industry] 目标日快照未就绪，拒绝构建 fp-4。")
-        return 1
-    # V2.5.0 S3:事实包构建 + 冻结(架构第一层)。必须排在 `update_sw_industry` **之后**
-    # (申万归属是中位数的输入)与全部行情落盘之后(完整性判定要看当日分区)。
-    build_and_freeze_fact_pack(target)
-    if not verify_readiness(target):
-        # 首拉/重试进程必须让 systemd 看见失败；不得把半套数据伪装成成功更新。
+        logger.error("[sw_industry] 目标日快照未就绪，拒绝完成 K10 行情日更。")
         return 1
     logger.info("增量更新完成:%s", target)
     return 0

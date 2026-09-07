@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "k10-api-v2",
+  "companyWindowId": "window-1", "companyCode": "300001.SZ", "companyName": null, "firstBatchId": "batch-1",
+  "d0TradeDate": "2026-09-04", "d1TradeDate": "2026-09-07", "d2TradeDate": "2026-09-08",
+  "d1SelectionAt": "2026-09-07T09:30:00+08:00", "d2CloseAt": "2026-09-08T15:00:00+08:00",
+  "sampleClass": "primary", "overlapsWindowId": null, "selection": null,
+  "opportunities": [{"schemaVersion":"k10-api-v2","opportunityId":"opp-1","opportunityKey":"company-1-catalyst-1","companyCode":"300001.SZ","companyName":null,"eventId":"event-1","eventRevision":1,"catalystStage":"initial","relatedOpportunityId":null,"companyWindowId":"window-1","firstBatchId":"batch-1","availableAt":"2026-09-06T12:00:00+00:00","d0TradeDate":"2026-09-04","d1TradeDate":"2026-09-07","d2TradeDate":"2026-09-08","sampleClass":"primary","overlapsWindowId":null,"lifecycle":"published","createdAt":"2026-09-06T12:00:00+00:00"}],
+  "samples": [{"sampleId":"sample-1","batchId":"batch-1","companyWindowId":"window-1","opportunityId":"opp-1","companyCandidateId":"cand-1","companyCode":"300001.SZ","companyName":null,"eventId":"event-1","eventRevision":1,"category":"primary","sourceMarker":"evening","comparison":{"summary":"比较","rationale":"依据","rank":1},"evidence":[],"rank":1,"createdAt":"2026-09-06T12:00:00+00:00"}],
+  "createdAt":"2026-09-06T12:00:00+00:00"
+}

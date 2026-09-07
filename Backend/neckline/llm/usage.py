@@ -1,4 +1,4 @@
-"""V2.5.1 的去敏 LLM 用量账。
+"""K10 的去敏 LLM 用量账。
 
 这个模块只保存厂商实际回传的用量和 Tavily credits；不估算 Token，不保存 prompt、
 密钥、请求头、请求 ID 或搜索原文。写入只由批处理调用点触发，所有读路径零 DDL。
@@ -14,7 +14,7 @@ from neckline.db import connection, readonly_tables
 from neckline.llm.base import LLMResult
 
 
-TASKS = ("market_direction", "news_scan", "explain", "playbook")
+TASKS = ("discovery", "analysis", "price", "morning")
 
 
 def _day(value: Optional[date]) -> Optional[str]:

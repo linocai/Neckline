@@ -1,5 +1,5 @@
-"""External web-search services. LLM providers never own these credentials."""
+"""Neutral query-based evidence retrieval transports for K10 tasks."""
 
-from .tavily import TavilySearchClient, TavilySearchResponse, TavilyGroundedProvider
+from .tavily import TavilySearchClient
 
-__all__ = ["TavilySearchClient", "TavilySearchResponse", "TavilyGroundedProvider"]
+__all__ = ["TavilySearchClient"]

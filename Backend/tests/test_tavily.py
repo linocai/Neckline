@@ -4,8 +4,7 @@ import json
 
 import httpx
 
-from neckline.llm.base import ChatMessage, LLMProvider, LLMResult
-from neckline.search.tavily import TavilyGroundedProvider, TavilySearchClient
+from neckline.search.tavily import TavilySearchClient
 
 
 def test_basic_search_uses_documented_shape_and_records_credits_without_leaking_key(caplog):
@@ -26,12 +25,12 @@ def test_basic_search_uses_documented_shape_and_records_credits_without_leaking_
     result = TavilySearchClient(secret, transport=httpx.MockTransport(handler)).search("A股 公司公告")
 
     assert result.ok is True and result.credits == 1 and result.request_id == "req-1"
-    assert result.hits[0].publish_date == "2026-08-14"
+    assert result.hits[0].publish_date == ""  # A date in the title does not prove publication.
     assert result.hits[0].media == "example.test"
     assert seen["authorization"] == f"Bearer {secret}"
     assert seen["body"] == {
         "query": "A股 公司公告", "search_depth": "basic", "max_results": 5,
-        "topic": "finance", "include_answer": False, "include_raw_content": False,
+        "topic": "general", "include_answer": False, "include_raw_content": False,
         "include_images": False, "auto_parameters": False, "include_usage": True,
     }
     assert secret not in caplog.text
@@ -64,40 +63,11 @@ def test_retryable_status_retries_but_auth_failure_does_not():
     assert attempts["auth"] == 1
 
 
-class _Reasoner(LLMProvider):
-    name = "deepseek"
-    model = "deepseek-chat"
-
-    def __init__(self):
-        self.calls = []
-
-    def chat(self, messages, *, enable_search=True, search_query=None, transport=None):
-        self.calls.append((messages, enable_search, search_query, transport))
-        return LLMResult(
-            ok=True, content="基于证据完成", provider=self.name, model=self.model,
-            prompt_tokens=10, completion_tokens=5, total_tokens=15,
-            raw_usage={"responses": [{"total_tokens": 15}]}, usage_unavailable=False,
-        )
-
-
-def test_grounded_provider_searches_first_then_calls_reasoner_without_native_search():
-    search_transport = httpx.MockTransport(lambda _request: httpx.Response(200, json={
-        "results": [{
-            "title": "交易所公告", "url": "https://example.test/notice",
-            "content": "已确认公告", "published_date": "2026-08-14",
-        }],
-        "usage": {"credits": 1}, "request_id": "req-ground",
-    }))
-    inner = _Reasoner()
-    provider = TavilyGroundedProvider(inner, TavilySearchClient("tvly-test", transport=search_transport))
-    result = provider.chat(
-        [ChatMessage(role="user", content="研究这家公司")],
-        enable_search=True, search_query="公司名 交易所公告",
-    )
-
-    assert result.ok is True and result.search_engine == "tavily_basic"
-    assert len(result.search_hits) == 1
-    messages, enable_search, _query, _transport = inner.calls[0]
-    assert enable_search is False
-    assert "Tavily 已完成本次联网检索" in messages[-1].content
-    assert "已确认公告" in messages[-1].content
+def test_missing_credits_preserves_hits_and_explicit_publication_time():
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, json={
+        "results": [{"title":"报道", "url":"https://example.test/source", "content":"有效摘录",
+                     "published_date":"2026-09-06T20:59:59+08:00"}]}))
+    result = TavilySearchClient("fixture-key", transport=transport).search("query")
+    assert result.ok is False and result.credits is None
+    assert result.hits[0].content == "有效摘录"
+    assert result.hits[0].publish_date == "2026-09-06T20:59:59+08:00"

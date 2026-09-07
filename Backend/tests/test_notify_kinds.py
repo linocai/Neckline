@@ -1,19 +1,15 @@
-"""现行通知契约：只允许盘后报告与次日竞价核对。"""
+"""K10 notification kind contract shared by settings, outbox, and APNs."""
 
 from __future__ import annotations
-
-import ast
-import inspect
 
 import pytest
 
 from neckline import notify_kinds as nk
-from neckline.api import notify
 from neckline.push import apns
 
 
-def test_whitelist_is_exactly_the_two_live_kinds():
-    assert nk.ALL_KINDS == ("report_ready", "precall")
+def test_whitelist_is_exactly_the_four_k10_kinds():
+    assert nk.ALL_KINDS == ("k10_evening", "k10_morning", "k10_analysis", "k10_failure")
     assert set(nk.LEVEL_OF_KIND) == set(nk.ALL_KINDS)
     assert set(nk.KIND_LABEL) == set(nk.ALL_KINDS)
 
@@ -25,32 +21,17 @@ def test_levels_and_categories_are_exactly_two():
     }
     assert apns.CATEGORY_IMPORTANT is nk.CATEGORY_IMPORTANT
     assert apns.CATEGORY_DIGEST is nk.CATEGORY_DIGEST
-    assert not hasattr(apns, "CATEGORY_IMMEDIATE")
-
-
-def test_live_kind_assignment():
-    assert nk.level_of(nk.KIND_REPORT_READY) == nk.LEVEL_DIGEST
-    assert nk.level_of(nk.KIND_PRECALL) == nk.LEVEL_IMPORTANT
-
-
-def test_unregistered_kind_raises_not_defaults():
-    with pytest.raises(ValueError):
-        nk.level_of("retreat")
-    with pytest.raises(ValueError):
-        nk.category_of("")
-
-
-def test_kinds_of_level_partitions_all_kinds():
+def test_k10_kind_assignment_and_partition():
+    assert nk.level_of(nk.KIND_K10_EVENING) == nk.LEVEL_DIGEST
+    assert nk.level_of(nk.KIND_K10_MORNING) == nk.LEVEL_IMPORTANT
+    assert nk.level_of(nk.KIND_K10_ANALYSIS) == nk.LEVEL_DIGEST
+    assert nk.level_of(nk.KIND_K10_FAILURE) == nk.LEVEL_IMPORTANT
     seen = [kind for level in nk.LEVELS for kind in nk.kinds_of_level(level)]
     assert sorted(seen) == sorted(nk.ALL_KINDS)
 
 
-def test_notify_has_no_second_fanout_path():
-    tree = ast.parse(inspect.getsource(notify))
-    callers = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if any(isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-                   and sub.func.id == "_fanout" for sub in ast.walk(node)):
-                callers.add(node.name)
-    assert callers == {"push_event"}
+def test_unregistered_kind_raises_not_defaults():
+    with pytest.raises(ValueError):
+        nk.level_of("retired-kind")
+    with pytest.raises(ValueError):
+        nk.category_of("")

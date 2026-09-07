@@ -93,18 +93,15 @@ def _actual_usage(raw_responses: List[Dict[str, Any]]) -> Dict[str, Any]:
 class OpenAICompatProvider(LLMProvider):
     api_url: str = ""
     connect_timeout: float = 6.0
-    # 带联网搜索的审判/问询单次生成常要 30-60s+(2026-07-21 生产实测:25s 下 10 只
-    # 审判 5 只 ReadTimeout)。短读超时+重试是治「连接卡死」的,不能把正常长生成也杀掉,
-    # 故放宽到 90s;卡死场景仍由 max_attempts 全新连接重试兜住。
+    # 通用协议实例的读超时；K10 工厂必须以显式运行配置覆盖。
+    # httpx 限制连续等待下一段数据的时间，不是整次调用的墙钟上限。
     read_timeout: float = 90.0
     max_attempts: int = 3
     max_tool_rounds: int = 4
     # 裸实例默认不带搜索能力；生产工厂始终关闭它并改由 Tavily 联网。
     has_web_search: bool = False
     search_engine: Optional[str] = None
-    # §七 P0-44:是否走 SSE 流式(`stream: true`)。**默认 False = 既有行为逐字节
-    # 不变**;唯一打开它的地方是 `factory.get_provider(task)`,判据唯一实现在
-    # 工厂当前全部关闭流式；保留此开关只服务底层协议能力与单测。
+    # K10 工厂关闭 SSE 流式；此开关保留为通用协议能力。
     use_streaming: bool = False
     # 通用搜索协议的防御性检索词上限；不影响 messages 中的完整问题。
     max_search_query_chars = 78
@@ -124,17 +121,11 @@ class OpenAICompatProvider(LLMProvider):
         """`name`/`api_url`/`has_web_search`/`search_engine`/`read_timeout`/
         `use_streaming` 均为可选覆盖；生产工厂从数据库 provider 行传入。
 
-        `read_timeout`(§七 P0-40 定,P0-44 起语义**按是否流式分两种**,⚠ 别把
-        两种读串了):
-          · **非流式**(默认):它是「整段响应必须在这么久之内回完」的墙钟上限 ——
-            90.0 有实测背书(v1.3.4:25s 下 10 只审判 5 只 ReadTimeout)。
-          · **流式**(`use_streaming=True`):httpx 的 read 超时天然作用在**每次
-            socket 读**上,于是它变成「**chunk 与 chunk 之间**最多能静默这么久」
-            —— 吐字只要不断,整段生成多长都合法。
-        两种语义下唯一来源都是 `llm/router.py::read_timeout_for_task()`
-        (**⛔ 别在别处再写一份数字**);`None` 时保持类属性 90.0。
-
-        `use_streaming`(§七 P0-44):见类属性注释。"""
+        `read_timeout` 是 httpx 每次等待数据的读超时，非流式和 SSE 均不构成
+        整次调用的墙钟上限。非流式供应商也可能发送空白保活，让生成持续超过该值。
+        K10 的 timeout 与 max_attempts 只从显式 taskPolicies 传入；裸实例保留
+        通用协议属性。`use_streaming` 决定响应解析方式，不改变上述超时含义。
+        """
         self.api_key = api_key
         self.model = model or self.default_model
         if name is not None:
@@ -221,7 +212,7 @@ class OpenAICompatProvider(LLMProvider):
         raw_responses: List[Dict[str, Any]] = []
 
         for _round in range(self.max_tool_rounds):
-            # `use_streaming=False`(默认)时这里恒 `False`,payload 与 P0-44 之前
+            # `use_streaming=False` 时保持非流式 payload，
             # 逐字节相同 —— 检索类/所有直接 new 出来的 provider 的 wire 格式未变。
             payload: Dict[str, Any] = {
                 "model": self.model, "messages": wire_messages, "stream": bool(self.use_streaming),
@@ -331,7 +322,7 @@ class OpenAICompatProvider(LLMProvider):
         return outcome
 
     def _attempt_post(self, client: Any, payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        """非流式单次尝试。行为与 P0-44 之前完全一致(见 `_post` docstring)。"""
+        """等待完整的非流式 JSON 响应；读超时由 `_post` 的 httpx 客户端执行。"""
         resp = client.post(self.api_url, json=payload, headers=self._headers())
         business_code = _upstream_business_code(resp) if resp.status_code != 200 else None
         if resp.status_code == 429 and business_code in _RETRYABLE_UPSTREAM_CODES:
@@ -345,17 +336,10 @@ class OpenAICompatProvider(LLMProvider):
             return None, f"响应解析异常: {e}"
 
     def _attempt_stream(self, client: Any, payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        """流式(SSE)单次尝试 —— §七 P0-44。
+        """累积完整 SSE 响应；中断时抛给重试层，绝不返回半截 JSON。
 
-        **为什么流式治得了 P0-40 治不了的那一半**:非流式下 `read_timeout` 是「整段
-        生成必须在这么久之内回完」,那是一个**必须提前猜准的固定数字** —— 2026-08-05
-        中午实测 173s、当晚 240s 三连超时,证明晚高峰吞吐下这个数字赌不赢。流式下
-        httpx 的 read 超时作用在每次 socket 读上 = **chunk 间隔**,于是判据从「生成
-        总共多久」换成「**还在不在吐字**」;后者与吞吐无关,不需要猜。
-
-        **中途断掉不拿半截当成品**:流到一半抛异常 → 异常原样上抛给 `_post` 的重试
-        循环(整次重来),⛔ 绝不把已累积的半截内容当结果返回 —— 半截 JSON 解出来
-        可能正好是个“看着合法”的残缺结果，那比干净地失败危险得多。"""
+        读超时限制数据块间隔。只有收到明确完成标记后才能将累积内容作为结果。
+        """
         with client.stream("POST", self.api_url, json=payload, headers=self._headers()) as resp:
             if resp.status_code != 200:
                 resp.read()

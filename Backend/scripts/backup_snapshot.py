@@ -124,7 +124,7 @@ class FilesystemObjectStore:
 @dataclass(frozen=True)
 class BackupConfig:
     db_path: Path
-    fact_pack_root: Path
+    parquet_root: Path
     recipient_public_key: Path
     s3_bucket: str
     s3_prefix: str
@@ -134,7 +134,7 @@ class BackupConfig:
     @classmethod
     def from_environment(cls) -> "BackupConfig":
         required = (
-            "BACKUP_DB_PATH", "BACKUP_FACT_PACK_ROOT", "BACKUP_RECIPIENT_PUBLIC_KEY_PATH",
+            "BACKUP_DB_PATH", "BACKUP_PARQUET_ROOT", "BACKUP_RECIPIENT_PUBLIC_KEY_PATH",
             "BACKUP_S3_BUCKET", "BACKUP_S3_PREFIX", "BACKUP_RESTORE_VERIFY_COMMAND",
         )
         missing = [name for name in required if not os.environ.get(name, "").strip()]
@@ -144,7 +144,7 @@ class BackupConfig:
             raise BackupConfigurationError("BACKUP_ENABLE_RETENTION 必须明确设为 1")
         return cls(
             db_path=Path(os.environ["BACKUP_DB_PATH"]),
-            fact_pack_root=Path(os.environ["BACKUP_FACT_PACK_ROOT"]),
+            parquet_root=Path(os.environ["BACKUP_PARQUET_ROOT"]),
             recipient_public_key=Path(os.environ["BACKUP_RECIPIENT_PUBLIC_KEY_PATH"]),
             s3_bucket=os.environ["BACKUP_S3_BUCKET"],
             s3_prefix=os.environ["BACKUP_S3_PREFIX"].strip("/"),
@@ -254,13 +254,13 @@ def decrypt_file(source: Path, destination: Path, private_key_path: Path, wrappe
 def _artifact_sources(config: BackupConfig, staging: Path) -> list[tuple[str, Path]]:
     sqlite_copy = staging / "neckline.db"
     snapshot_sqlite(config.db_path, sqlite_copy)
-    if not config.fact_pack_root.is_dir():
-        raise BackupConfigurationError(f"事实包目录不存在：{config.fact_pack_root}")
+    if not config.parquet_root.is_dir():
+        raise BackupConfigurationError(f"行情 parquet 目录不存在：{config.parquet_root}")
     artifacts = [("sqlite/neckline.db", sqlite_copy)]
-    for source in sorted(config.fact_pack_root.rglob("*.parquet")):
-        artifacts.append((f"fact-pack/{source.relative_to(config.fact_pack_root).as_posix()}", source))
+    for source in sorted(config.parquet_root.rglob("*.parquet")):
+        artifacts.append((f"parquet/{source.relative_to(config.parquet_root).as_posix()}", source))
     if len(artifacts) == 1:
-        raise BackupConfigurationError("事实包目录为空，拒绝生成不完整备份")
+        raise BackupConfigurationError("行情 parquet 目录为空，拒绝生成不完整备份")
     return artifacts
 
 

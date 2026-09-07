@@ -1,0 +1,10 @@
+[Unit]
+Description=Schedule Neckline K10 morning enqueue at Beijing 09:00
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Asia/Shanghai
+Persistent=false
+Unit=neckline-k10-morning.service
+
+[Install]
+WantedBy=timers.target

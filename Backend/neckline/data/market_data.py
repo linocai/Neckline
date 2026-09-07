@@ -44,24 +44,8 @@ _VALID_TABLES = {
     # 将“当日无 EOD 行”区分成 `suspended`（真停牌）与 `data_gap`（数据源缺口）——
     # 「没有」与「没看」必须能分开(§3.8),不许一律标 unknown 糊过去。
     "suspend_d",
-    # V2-①(plan §五 V2-①,§3.10-A):盘中存拍两张事实表——「只增不改的高频事实」,
-    # 走 `write_table_day` 铁律按日分区,不进 SQLite(SQLite 装不下 关注池 200 只 ×
-    # 240 分钟/日的量级)。落盘时机按既有裁定为「内存累计 + 15:05 收盘后一次性落盘」,
-    # 写入逻辑留给 V2-⑧;本块只声明表名与数值列 canonical dtype。
     "intraday_ticks",
     "auction_snapshots",
-    # V2.5.0 S3(§5.3.1):**当日事实包大表**,一行一只票、~40 列。走 parquet 而非
-    # SQLite 的理由(§3.2):5500 行/天 × 250 天会把 2vCPU/1.6G 的机器拖垮。
-    # 🔴 唯一写入口是 `facts/store.py::freeze_pack()`(AST 守门断言全仓只有那一处
-    # 调 `write_table_day("fact_pack", ...)`)。
-    "fact_pack",
-    # V2.5.0 S6(§5.4.8):**全市场逐票处置**(覆盖率归因的原料),一行一只票。
-    # ⚠ 本表**不经 `write_table_day` 写入** —— 写入方是 `k9/store.py`,而 `k9/**`
-    # ⛔ 不许 import 本模块(守门 G3:策略层取数唯一来源是事实包)。那边自带一张
-    # **显式 schema** 每次照造(比「向既有分区看齐」更强,§12 坑 2)。在这里登记表名
-    # 的意义是:**读侧**(导出快照 / 裁剪脚本 / 覆盖率)仍走同一套路径与 dtype 约定,
-    # 布局只有一个真相。守门单测拿 `day_file_path` 与那边的路径拼法逐字对拍。
-    "k9_disposition",
 }
 
 
@@ -89,19 +73,7 @@ def day_file_path(
     *,
     version: Optional[str] = None,
 ) -> Path:
-    """`<root>/<table>[/version=<v>]/year=YYYY/YYYYMMDD.parquet`。
-
-    🔴 **`version` 是给「同一天可以有多版」的表用的**(目前只有 `fact_pack`,
-    §5.3.2 第 3 条:「口径变了就发新 `pack_version`」)。⚠ 不给 `version` 时布局
-    与历史逐字相同 —— 上游各表(`daily` / `daily_basic` / …)一天只有一版,⛔ 不要
-    给它们加版本目录。
-
-    **为什么非加不可**(2026-08-21 复审 R1-B1 实测):`fact_packs` 有
-    `UNIQUE(trade_date, pack_version)`,同一天允许两版清单行,而路径里没有版本时
-    两版共用一个坑位 —— 先冻 fp-2 再冻 fp-3,fp-2 的清单行连同它的
-    `content_fingerprint` 原样留着,指向的却已经是 fp-3 的数据。清单是审计物,
-    ⛔ 不能允许它说谎。
-    """
+    """`<root>/<table>[/version=<v>]/year=YYYY/YYYYMMDD.parquet`。"""
     dt = _to_date(trade_date)
     base = table_dir(table, parquet_dir)
     if version:
@@ -153,33 +125,8 @@ TABLE_FLOAT_COLS: Dict[str, Tuple[str, ...]] = {
     # **一个数值列都没有** → 空元组。空元组 ≠ 未声明:未声明会退回「向既有分区看齐」的
     # 旧行为并打 WARNING(脏基准风险),显式声明空元组才是「这张表确实没有数值列」。
     "suspend_d": (),
-    # V2-①(plan §五 V2-①,§3.10-A):盘中存拍两张事实表的数值列声明(表结构见
-    # PROJECT_PLAN §五 V2-① 「parquet 两表」)。volume/amount 口径同 `daily` 既有惯例
-    # (手 / 元);cum_volume/cum_amount 是当日累计量,同样声明 Float64(与本项目其它
-    # "计数类"列——如 `daily.vol`——统一走 CANONICAL_FLOAT 的既有口径一致,不特殊化)。
     "intraday_ticks": ("price", "volume", "amount", "cum_volume", "cum_amount", "volume_delta", "amount_delta"),
     "auction_snapshots": ("auction_price", "auction_volume", "auction_amount", "pre_close", "gap_pct"),
-    # V2.5.0 S3(§12 坑 2:新 parquet 表必须显式声明数值列)。事实包 40 列里的 25 个
-    # 浮点列全部在此。**刻意不声明**的是本项目自算的非浮点列 —— `is_st` /
-    # `is_limit_up` / `is_limit_down` / `is_limit_open` 是 Boolean、
-    # `consec_limit_up_days` 是 Int64、`list_date` 是 Date,它们不经 TuShare 直接落盘,
-    # 无类型漂移风险(同 `limit_derived` 既有惯例)。
-    "fact_pack": (
-        # 价量(原始未复权)
-        "open", "high", "low", "close", "pre_close", "pct_chg", "vol", "amount", "adj_factor",
-        # 当日衍生
-        "ret_1d", "amp_1d", "limit_up_price", "limit_down_price",
-        # daily_basic
-        "turnover_rate", "turnover_rate_f", "volume_ratio", "circ_mv", "total_mv", "free_share",
-        # 资金流
-        "net_amount", "net_amount_rate", "buy_elg_amount", "buy_lg_amount",
-        # 行业相对(裁定 2:基准是申万二级成员中位数,⛔ 不是行业指数涨跌幅)
-        "sw_l2_median_ret", "rel_strength_1d",
-    ),
-    # V2.5.0 S6:`k9_disposition` 唯一的浮点列是 `score`(其余是 String / Int64)。
-    # ⚠ 写入方是 `k9/store.py::_DISPOSITION_SCHEMA`(它⛔ 不能 import 本模块,G3);
-    # 这里的声明服务读侧与 §12 坑 2 的体例,守门单测断言两边**逐列一致**。
-    "k9_disposition": ("score",),
 }
 
 

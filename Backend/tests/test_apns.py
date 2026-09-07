@@ -81,10 +81,10 @@ def test_get_jwt_missing_p8_file(tmp_path, ec_key_pem, monkeypatch):
 
 def test_build_payload():
     p = apns.build_payload("标题", "正文", category=apns.CATEGORY_IMPORTANT,
-                           custom={"kind": "precall"})
+                           custom={"kind": "k10_morning"})
     assert p["aps"]["alert"] == {"title": "标题", "body": "正文"}
     assert p["aps"]["category"] == "NKIMPORTANT"
-    assert p["kind"] == "precall"
+    assert p["kind"] == "k10_morning"
 
 
 def test_send_push_success_injected_transport(tmp_path, ec_key_pem, monkeypatch):

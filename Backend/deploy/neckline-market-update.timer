@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the first Neckline K10 market refresh after daily market data settles
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 18:30:00 Asia/Shanghai
+Persistent=true
+Unit=neckline-market-update.service
+
+[Install]
+WantedBy=timers.target

@@ -386,7 +386,7 @@ class TestVerify:
         assert sw.verify(db) == []
 
     def test_missing_baijiu_code_is_a_problem(self, db):
-        """白酒Ⅱ **代码**不在表里 = K9 第一层第 2 条排除项排不掉 → 真问题。"""
+        """白酒Ⅱ代码不在表里会让 K10 白酒硬排失效，必须报问题。"""
         cls = [r for r in _classify_rows("L2", 5) if r["index_code"] != sw.BAIJIU_L2_CODE]
         sw.save_snapshot(cls, _member_rows(0, 5), db_path=db)
         problems = sw.verify(db)

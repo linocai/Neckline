@@ -1,0 +1,11 @@
+[Unit]
+Description=Bounded K10 market retry slots before the evening scan
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 19:30:00 Asia/Shanghai
+OnCalendar=Mon..Fri *-*-* 20:30:00 Asia/Shanghai
+Persistent=true
+Unit=neckline-market-retry.service
+
+[Install]
+WantedBy=timers.target

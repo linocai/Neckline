@@ -1,0 +1,13 @@
+[Unit]
+Description=Neckline K10 first market metadata and parquet refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+EnvironmentFile=/etc/neckline/k10.env
+ExecStart=/bin/sh -c 'export DB_PATH="$K10_DB_PATH" PARQUET_DIR="$K10_PARQUET_DIR"; exec "$K10_PYTHON" scripts/daily_update.py'

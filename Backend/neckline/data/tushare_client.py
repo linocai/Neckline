@@ -216,6 +216,16 @@ def ts_namechange(code: str) -> TushareResult:
     )
 
 
+def ts_stk_limit(code: str, trade_date: str) -> TushareResult:
+    """One stock's exchange-published daily up/down limits.
+
+    K10's D1/D2 observation uses this endpoint as the authoritative limit
+    source.  Callers must retain an unavailable result as a data gap; they
+    must not derive a board percentage when this source is absent.
+    """
+    return _call("stk_limit", ts_code=to_ts_code(code), trade_date=trade_date)
+
+
 # —— 全市场批量接口(阶段 0 backfill 主力;不带 ts_code,按 trade_date 一次全市场)——
 
 def ts_daily_all(trade_date: str) -> TushareResult:
@@ -275,21 +285,6 @@ def ts_stock_basic(list_status: str) -> TushareResult:
         list_status=list_status,
         fields="ts_code,symbol,name,industry,market,list_date,delist_date,list_status",
     )
-
-
-def ts_stk_holdertrade(start: str, end: str) -> TushareResult:
-    """股东增减持(全市场,按公告日区间;plan §五 v1.3-③-C4「消息面扫描」减持类的
-    结构化数据源)。**2026-07-26 真实 token 活体探活确认**:所需 2000 积分,在本项目
-    600 元档(6000 积分)覆盖范围内可直接调用(**非**「单独权限」——与 `anns_d` 不同,
-    见 `neckline.report.news_alerts` 模块头的完整侦察结论)。
-
-    字段:`ann_date`(公告日 'YYYYMMDD')、`ts_code`、`holder_name`、`holder_type`
-    (G高管/P个人/C公司)、`in_de`(IN增持/DE减持,消息面扫描只取 DE)、`change_vol`
-    (变动股数)、`change_ratio`(占总股本比例 %)、`after_share`/`after_ratio`
-    (变动后持股数/占比,可能为空)、`avg_price`(成交均价,可能为空)、`total_share`。
-    单次最大 3000 行(官方文档);本项目按数日窗口调用,实测量级约 40-60 行/日,
-    远低于该上限,不分页。"""
-    return _call("stk_holdertrade", start_date=start, end_date=end)
 
 
 def ts_top_list(trade_date: str) -> TushareResult:

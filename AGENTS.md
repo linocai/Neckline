@@ -5,7 +5,8 @@
 - Neckline is the production A-share application: Swift clients plus the Python service.
 - Strategy research, backtests, evaluation, calibration, and experiment history belong in `/Users/linotsai/Lino/whynotme`.
 - Production code must never import `whynotme`. The research laboratory may depend on stable Neckline runtime contracts in one direction only.
-- The live engine is **K9** (facts → four recall channels → mechanical ranking → quota → explain → playbook → next-morning check → scorecards). The K8 chain (driver seeds, directions, baskets, six gates, tiers, cards) is **retired and deleted**. Do not preserve dead runtime code, tables, routes, settings, data files, compatibility shims, or UI placeholders merely for historical traceability; Git history is the archive. Do not reintroduce K8 concepts from old comments or archived documents.
+- The worktree targets **K10-v1.4 / Neckline 3.0.0 Build 30**. Production remains V2.7/K9 until a separately authorized cutover. K9 and the earlier K8 chains are retired from this worktree; do not reintroduce their runtime code, tables, routes, settings, compatibility shims, or UI placeholders. The explicit offline V3 migration owns the legacy deletion boundary; Git history is the archive.
+- K10-v1.4 is a pure stock selector. Complete trade plans, buy/sell price confirmation, holding/exit policy and profit settlement are retired, not pending prerequisites. Track every formally published candidate over its fixed D1/D2 window. The approved publication, selection, overlap and evaluation rules live in `PROJECT_PLAN.md`; never infer a new opportunity from a refreshed card or reset its window after a user action.
 
 ## Repository map
 
@@ -25,10 +26,12 @@
 - When the user retires a product capability, deletion is the default: remove its producers, consumers, routes, settings, tests, stored artifacts, and compatibility mappings once the migration boundary is verified. Retention requires an explicit user ruling; do not invent a preservation requirement.
 - Treat `Backend/data/`, `.env`, credentials, production databases, and market-data artifacts as local or operational state. Never commit them.
 - Tests must use temporary databases or explicit read-only snapshots. Never let a test fall back to the working database.
+- Native QA must reuse `/tmp/neckline-v3-qa/macos` and `/tmp/neckline-v3-qa/ios`, with at most one running QA instance per platform. Close the previous instance before relaunching and remove superseded QA bundles/build copies after verification; preserve the installed production client. Isolated QA must set `NK_DISABLE_PERSISTENT_CREDENTIALS=1` and use only temporary process credentials.
+- Native visual acceptance must compare actual populated and empty screens with the approved images in `archive/Neckline_V3_界面参考/`. Adopt their white cards, blue accents, restrained typography and deliberate navigation; successful rendering is not visual acceptance. K10-v1.4 product logic takes precedence over retired functions depicted in the references; pixel matching is not required.
 - Any production deployment or database mutation requires explicit verification of the target and a rollback path.
 - Read helpers must not execute DDL. `init_schema()` is a controlled write entry point: API startup, an explicit write command, or a release-migration step against a confirmed, backed-up target. A GET is never a migration trigger.
 - The strategy layer has **no default values**. If the parameter pack is missing or invalid, the report says "今天没跑成 · 参数未配置" and no listing is produced. Never introduce a fallback, a sample value, or a "just for now" number — a default that ships is a strategy change nobody was told about.
-- Never show a bare `vN` on strategy-bearing UI where system, strategy, contract, and append-only revision versions coexist. Name the namespace explicitly (for example `K9-v2` and `预案第 1 版`), and verify those labels on the exact detail/history screen before release.
+- Never show a bare `vN` on strategy-bearing UI where system, strategy, contract, and append-only revision versions coexist. Name the namespace explicitly (for example `K10-v1.4` and `分析第 1 版`), and verify those labels on the exact detail/history screen before release.
 - Rulings recorded in `PROJECT_PLAN.md` are settled. Do not reopen them mid-build. Anything genuinely undecided
   must be recorded as 事实 / 选项 / 影响面 / 倾向 — and 倾向 is not a decision.
 

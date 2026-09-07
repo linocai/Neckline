@@ -1,0 +1,18 @@
+[Unit]
+Description=Neckline K10 durable worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=neckline
+Group=neckline
+WorkingDirectory=/opt/neckline
+EnvironmentFile=/opt/neckline/.env
+EnvironmentFile=/etc/neckline/k10.env
+ExecStart=/bin/sh -c 'exec "$K10_PYTHON" -m neckline.k10.cli worker --db "$K10_DB_PATH" --parquet-dir "$K10_PARQUET_DIR" --worker-id "$K10_WORKER_ID" --tushare-token-env TUSHARE_TOKEN'
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+{
+  "companyWindowId":"window-1", "opportunityIds":["opp-1"], "companyCode":"300001.SZ", "sampleClass":"overlap", "selection":{"state":"unhandled","frozenAt":"2026-09-07T09:30:00+08:00","actionIds":[]}, "state":"incomplete", "revision":1, "updatedAt":"2026-09-08T15:00:00+08:00",
+  "d1":{"tradeDate":"2026-09-07","availability":"available","closeLimitUp":false,"touchedLimitUp":false,"open":10,"high":10.5,"low":9.8,"close":10.1,"preClose":10,"limitUpPrice":12,"sourceRefs":[],"obtainedAt":"2026-09-07T16:00:00+08:00"},
+  "d2":{"tradeDate":"2026-09-08","availability":"data_gap","closeLimitUp":null,"touchedLimitUp":null,"open":null,"high":null,"low":null,"close":null,"preClose":null,"limitUpPrice":null,"sourceRefs":[],"obtainedAt":null},
+  "primaryEligible":false,"closeLimitHitAny":null,"firstTouchDay":null,"d1OpenGap":0.0,"gaps":["data_gap"],"factRefs":[]
+}
