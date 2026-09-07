@@ -1,7 +1,8 @@
 # Neckline
 
-Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。当前工作区开发目标为
-**3.0.0 / 双端 Build 30 / K10-v1.4**。生产仍为 V2.7/K9，尚未切换；本地构建通过不代表已发布。
+Neckline 是 A 股生产应用，包含 SwiftUI macOS/iOS 客户端与 FastAPI 后端。2026-09-07 已发布
+**3.0.0 / 双端 Build 30 / K10-v1.4**，后端发布集合为 `v3.0.0-b30-hf1`。K9 已退出活动生产。
+[下载安装包与校验值](https://github.com/linocai/Neckline/releases/tag/v3.0.0-b30-hf1)；Mac 已换装，iOS development IPA 由用户自行安装。
 
 唯一工程状态见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，产品与视觉方向见
 [Neckline V3 前瞻设计](archive/Neckline_V3_前瞻设计.md)。策略研究位于相邻 `whynotme` 工程；
@@ -47,7 +48,8 @@ Tavily 返回 5 条结果、用量 1 积分，剩余额度未查询。Tavily 只
 Tavily 核验资料及 11 项行情引用；反方实际请求中的正方全文与存储哈希一致。
 Tavily 使用 general 查询，并只凭来源字段或原文明确发布时间判断 cutoff；迟到或日期未知资料不冒充已核证据。
 这不是全市场覆盖或策略有效性验证，整晚规模的覆盖、耗时和真实推送仍待检查。模型/搜索密钥由 App 设置写入服务器，读取接口不回显。
-首轮扫描需显式指定补取起点，不能伪造已成功水位。
+首轮扫描定于 **2026-09-07 21:00 CST**，首轮晨扫为 **2026-09-08 09:00 CST**。
+首轮补取起点显式设为 2026-09-04 21:00；成功来源水位建立后优先使用真实水位，部署没有提前入队。
 
 API 使用 `/api/v1/k10/`，通用连接/推送设置仍在 `/api/v1/settings`，设备注册为 `/api/v1/devices`。
 API 启动只验证鉴权和既有 schema；GET 不迁移、不启动模型。重任务由独立 K10 worker 执行，timer 只入队。
@@ -76,12 +78,30 @@ Debug 参数 `-K10SyntheticUI` 使用独立演示数据和空凭据，不联网�
 macOS 的 `NK_QA_RENDER_PATH` 只离屏渲染本 App 的 SwiftUI 视图，不能代替真实窗口的点击/滚动验证。
 构建、测试运行和实际页面验证是不同检查，当前完成情况记在 PROJECT_PLAN。
 
-## 切换与恢复
+## 生产运行与恢复
 
-本轮没有发布授权，不运行生产迁移、停旧服务或替换已安装客户端。发布时先依据相邻目录的 `../NB_info.md` 核验目标，
-备份服务、数据库、配置、定时器和客户端；停止全部写入并完成 SQLite 检查点后，才能运行显式离线入口
-`python -m neckline.k10.migration`。命令要求目标确认、独立备份名和停写声明，校验备份哈希、完整性和新 schema
-后才替换数据库；恢复必须匹配备份哈希，并同时恢复同一版本服务/配置/客户端。
+生产沿用既有部署目标与 `/opt/neckline`，由 `neckline.service` 提供 API，`neckline-k10-worker.service`
+执行后台任务。K10 晚/晨 timer 分别为 21:00 / 09:00；行情更新 18:30，19:30 / 20:30 有界重试。
+`/etc/neckline/k10.env` 显式绑定 `k10-v1.4-production` 修订 1。连接、模型密钥及设备保留，NPM/UFW 未改。
+K9 的 daily/evening/recovery/facts/report/strategy 单元、旧表、运行模块与活动资料均已退出；无双写或兼容页面。
 
-迁移仅保留通用市场元数据、连接/设备与 K10 数据，删除旧策略及个人复盘数据；不做旧数据兼容展示。
-已有生产备份不能被覆盖。异机加密备份为可选能力，不能代替本次切换的可恢复备份。
+当前后端源码 `0f2c0b25da1838b4bcfa249c18a79711e96d49eb`，双端源码 `8dc4c60a7db678bcc1d0bb5e3c5f8465aba0e588`。
+`v3.0.0-b30-hf1` 修复后台 worker 工厂接线，初始 `v3.0.0-b30` 标签未移动。537 项后端测试、Swift 三项构建、
+双端签名及迁移/恢复演练通过；用户跳过真机与真实 Mac 窗口交互验收。完整晚扫与真实通知仍需实际运行观察。
+
+已核验的回滚目录为 `/opt/neckline/data/backups/v3.0.0-b30-pre-cutover-20260907`。
+其中 `runtime.tar.gz` 含旧源码、依赖和配置；`units/` 与 `unit-states.json` 记录旧服务；
+`retired-data.tar.gz` 保存已从活动目录移除的 K9 资料；`neckline-k9.db` 为迁移前库，
+SHA256 为 `9cc808637336eb6fd52d109aca8a1be4f7e56badae93d0c974f3de96665e141b`。
+`neckline-v3-post.db` 是迁移后已核验副本，完整哈希和发布 manifest 留在该目录的 `backup-receipt.json`。
+不得下载或公开含凭据的备份。
+
+如必须回滚，先核验目标与备份哈希，停止 API、K10 worker、全部新 timer 及其运行中的 service，
+为回滚前现场另建备份并完成 SQLite 检查点。仍使用 V3 代码运行显式入口
+`python -m neckline.k10.migration restore`，传入 `--db`、相同绝对路径的 `--confirmed-target`、
+上述 `--backup`、`--backup-sha256` 和 `--writers-stopped`；随后一并恢复旧源码/依赖/配置、
+旧活动资料与原单元状态，清除新运行文件后重载服务。不能仅恢复数据库却继续启动 V3。
+重新核验旧版 health、完整性、外键、鉴权和定时器；Mac 同步恢复
+`/Users/linotsai/Lino/app_backups/Neckline-v2.7.0-build19-pre-v3-20260907.app`。
+当前后端包、wheel 与部署 manifest 已保存至 `/opt/neckline/releases/v3.0.0-b30-hf1/`；
+含凭据的临时迁移演练副本已清除，正式回滚备份保留。已有备份与不可变标签不能覆盖。
