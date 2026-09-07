@@ -5,7 +5,7 @@
 - Neckline is the production A-share application: Swift clients plus the Python service.
 - Strategy research, backtests, evaluation, calibration, and experiment history belong in `/Users/linotsai/Lino/whynotme`.
 - Production code must never import `whynotme`. The research laboratory may depend on stable Neckline runtime contracts in one direction only.
-- Production runs **K10-v1.4 / Neckline 3.0.0 Build 31**, backend release set **v3.0.0-b31**, since 2026-09-07. K9 and the earlier K8 chains are retired from active production and this worktree; do not reintroduce their runtime code, tables, routes, settings, compatibility shims, or UI placeholders. The explicit offline V3 migration owns the legacy deletion boundary; Git history is the archive.
+- Production runs **K10-v1.4 / Neckline 3.0.1 Build 32**, backend release set **v3.0.1-b32**, since 2026-09-07. K9 and the earlier K8 chains are retired from active production and this worktree; do not reintroduce their runtime code, tables, routes, settings, compatibility shims, or UI placeholders. The explicit offline V3 migration owns the legacy deletion boundary; Git history is the archive.
 - K10-v1.4 is a pure stock selector. Complete trade plans, buy/sell price confirmation, holding/exit policy and profit settlement are retired, not pending prerequisites. Track every formally published candidate over its fixed D1/D2 window. The approved publication, selection, overlap and evaluation rules live in `PROJECT_PLAN.md`; never infer a new opportunity from a refreshed card or reset its window after a user action.
 
 ## Repository map
