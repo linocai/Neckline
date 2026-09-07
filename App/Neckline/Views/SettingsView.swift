@@ -59,6 +59,14 @@ struct SettingsView: View {
     @State private var showModelEditor = false
     @State private var showSourceEditor = false
 
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
+    }
+
+    private var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: NKSpace.cardGap) {
@@ -71,7 +79,7 @@ struct SettingsView: View {
                             showConnectionEditor = true
                         }
                         SettingsDivider()
-                        SettingsRowContent(icon: "number.square", title: "Neckline 3.0.0", detail: "Build 30 · K10-v1.4", badge: nil, showsChevron: false)
+                        SettingsRowContent(icon: "number.square", title: "Neckline \(appVersion)", detail: "Build \(appBuild) · K10-v1.4", badge: nil, showsChevron: false)
                     }
                 }
 
