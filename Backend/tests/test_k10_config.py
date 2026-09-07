@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from neckline import config as runtime_config
 from neckline.k10.config import validate_run_config
 
 
@@ -50,3 +51,18 @@ def test_model_tasks_require_explicit_timeout_and_model_retry_policy():
     assert not validate_run_config(payload,scope="discovery").ready
     payload=_base(); del payload["taskPolicies"]["analysis"]["timeoutSeconds"]
     assert not validate_run_config(payload,scope="analysis").ready
+
+
+def test_environment_config_binding_is_explicit_and_rejects_illegal_revision(monkeypatch):
+    monkeypatch.setenv("K10_CONFIG_ID", "k10-production")
+    monkeypatch.setenv("K10_CONFIG_REVISION", "2")
+    configured = runtime_config._load_settings()
+    assert configured.k10_config_id == "k10-production"
+    assert configured.k10_config_revision == 2
+    assert configured.k10_config_binding_error is None
+
+    monkeypatch.setenv("K10_CONFIG_REVISION", "02")
+    invalid = runtime_config._load_settings()
+    assert invalid.k10_config_id == "k10-production"
+    assert invalid.k10_config_revision is None
+    assert invalid.k10_config_binding_error == "K10_CONFIG_REVISION 必须是正整数"

@@ -68,6 +68,7 @@ from .k10_schemas import (
 
 DbPathProvider = Callable[[], Path]
 TokenDependency = Callable[..., None]
+CurrentConfigBindingProvider = Callable[[], tuple[str | None, int | None, str | None]]
 
 
 def _now() -> str:
@@ -735,7 +736,8 @@ def _result_groups(records: list[CompanyWindowEvaluationOut], *, path: Path) -> 
 
 
 def create_router(db_path_provider: DbPathProvider, require_token_dependency: TokenDependency,
-                  parquet_dir_provider: Callable[[], Path]) -> APIRouter:
+                  parquet_dir_provider: Callable[[], Path],
+                  current_config_binding_provider: CurrentConfigBindingProvider | None = None) -> APIRouter:
     router = APIRouter(prefix="/api/v1/k10", tags=["k10"], dependencies=[Depends(require_token_dependency)])
 
     def db_path() -> Path:
@@ -754,6 +756,27 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
         if not isinstance(path, Path):
             raise RuntimeError("K10 API parquet_dir provider 必须返回 pathlib.Path")
         return path
+
+    def current_config_binding() -> tuple[str | None, int | None, str | None]:
+        """Return only the explicitly deployed current K10 config revision.
+
+        This deliberately has no scan or database fallback: scans carry frozen
+        historical configuration, while Settings needs the runtime binding used
+        by the timer units before the first scan exists.
+        """
+        if current_config_binding_provider is None:
+            return None, None, "未绑定 K10_CONFIG_ID/K10_CONFIG_REVISION"
+        try:
+            config_id, revision, binding_error = current_config_binding_provider()
+        except Exception:
+            return None, None, "当前 K10 配置绑定不可读取"
+        if binding_error:
+            return None, None, str(binding_error)
+        if not isinstance(config_id, str) or not config_id.strip():
+            return None, None, "未绑定 K10_CONFIG_ID"
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            return None, None, "未绑定有效的 K10_CONFIG_REVISION"
+        return config_id.strip(), revision, None
 
     @router.get("/scans/latest", response_model=ScanOut)
     def latest_scan(window: str = Query(..., pattern="^(evening|morning)$")) -> ScanOut:
@@ -977,11 +1000,21 @@ def create_router(db_path_provider: DbPathProvider, require_token_dependency: To
 
     @router.get("/configuration", response_model=ConfigurationOut)
     def configuration() -> ConfigurationOut:
-        scans = store.list_scans(window_kind=None, db_path=db_path()); latest = scans[0] if scans else None
-        config = store.read_run_config(config_id=str(latest["configId"]), revision=int(latest["configRevision"]), db_path=db_path()) if latest and latest.get("configId") and latest.get("configRevision") is not None else None
+        path = db_path()
+        config_id, revision, binding_error = current_config_binding()
+        config = (store.read_run_config(config_id=config_id, revision=revision, db_path=path)
+                  if config_id is not None and revision is not None and binding_error is None else None)
+        if config is None and binding_error is None:
+            binding_error = "K10_CONFIG_ID/K10_CONFIG_REVISION 指向的配置修订不存在"
         scopes = []
         for scope in ("candidate", "analysis", "evaluation"):
-            result = validate_run_config(config["payload"] if config else None, scope=scope)
+            if binding_error is not None:
+                missing = (["K10_CONFIG_ID", "K10_CONFIG_REVISION"]
+                           if config_id is None or revision is None else [])
+                scopes.append(ConfigurationScopeOut(scope=scope, state="not_configured", missing=missing,
+                                                    errors=[binding_error]))
+                continue
+            result = validate_run_config(config["payload"], scope=scope)
             scopes.append(ConfigurationScopeOut(scope=scope, state="configured" if result.ready else "not_configured", missing=list(result.missing), errors=list(result.errors)))
         return ConfigurationOut(configId=config["configId"] if config else None, configRevision=config["revision"] if config else None, scopes=scopes)
 

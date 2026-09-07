@@ -370,3 +370,27 @@ Every macOS package replacement must verify all of: the installed bundle version
 - **Notes**: Verified the live process and Dock both target `/Applications/Neckline.app`, the bundle is `2.5.2 (14)`, and brought that running app to the foreground; future release handoffs must include this evidence.
 
 ---
+
+## [LRN-20260907-001] correction
+
+**Logged**: 2026-09-07T10:59:28+08:00
+**Priority**: high
+**Status**: in_progress
+**Area**: config
+
+### Summary
+A configuration readiness page must read the explicitly selected runtime configuration before the first job exists.
+
+### Details
+Build 30's settings endpoint returned HTTP 200 but inferred its configuration from the newest scan. Production already had a valid explicit configuration binding and no scans because its first run was scheduled for the evening. The page consequently reported every scope unconfigured. The release check accepted the transport response and treated the known empty-scan result as harmless without verifying the visible state against the actual runtime binding.
+
+### Suggested Action
+Keep runtime readiness independent from job history. Test a configured installation with zero scans, absent or invalid bindings, multiple stored configurations, and historical scans using another revision. Verify readiness values, not only HTTP status; GET must not write or enqueue work. Never repair readiness by choosing an arbitrary latest configuration or changing strategy defaults.
+
+### Metadata
+- Source: user_feedback
+- Related Files: Backend/neckline/api/k10.py, Backend/neckline/config/__init__.py, Backend/deploy/neckline.service
+- Tags: release, first-run, configuration, visible-state, read-only
+- See Also: LRN-20260824-003
+
+---

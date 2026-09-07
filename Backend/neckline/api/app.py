@@ -24,7 +24,7 @@ from neckline.settings_store import (
 )
 
 VERSION = "v3.0.0"
-RELEASE_SET = "v3.0.0-b30-hf1"
+RELEASE_SET = "v3.0.0-b31"
 API_PREFIX = "/api/v1"
 _DB_PATH_OVERRIDE: Optional[Path] = None
 
@@ -45,7 +45,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Neckline", version=VERSION, lifespan=lifespan)
 app.include_router(create_k10_router(db_path_provider=_db, require_token_dependency=require_token,
-                                     parquet_dir_provider=lambda: settings.parquet_dir))
+                                     parquet_dir_provider=lambda: settings.parquet_dir,
+                                     current_config_binding_provider=lambda: (
+                                         settings.k10_config_id,
+                                         settings.k10_config_revision,
+                                         settings.k10_config_binding_error,
+                                     )))
 
 
 @app.get(f"{API_PREFIX}/health")

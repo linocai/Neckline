@@ -51,6 +51,12 @@ class Settings:
     data_dir: Path = DATA_DIR
     parquet_dir: Path = PARQUET_DIR
     db_path: Path = DB_PATH
+    # 当前 K10 运行包由 API 和 timer 共同从环境显式绑定。它不是策略默认值：
+    # 缺失、格式非法或目标修订不存在都由只读 API 如实报告未配置。追加在既有
+    # 字段之后，以保持旧 Settings 的位置参数兼容性。
+    k10_config_id: Optional[str] = None
+    k10_config_revision: Optional[int] = None
+    k10_config_binding_error: Optional[str] = None
 
     @property
     def has_api_token(self) -> bool:
@@ -76,15 +82,33 @@ def _load_settings() -> Settings:
             return default
         return v in ("1", "true", "yes", "on")
 
+    def _positive_int(v: Optional[str], *, name: str) -> tuple[Optional[int], Optional[str]]:
+        raw = _clean(v)
+        if raw is None:
+            return None, None
+        try:
+            parsed = int(raw)
+        except ValueError:
+            return None, f"{name} 必须是正整数"
+        if parsed < 1 or str(parsed) != raw:
+            return None, f"{name} 必须是正整数"
+        return parsed, None
+
     # DB_PATH 可选覆盖(默认 data/neckline.db)。ECS 部署默认路径即 /opt/neckline/data/
     # neckline.db(相对项目根,无需设);冒烟/隔离测试可设 DB_PATH 指向临时库,不碰生产台账。
     db_override = _clean(os.environ.get("DB_PATH"))
     db_path = Path(db_override) if db_override else DB_PATH
     parquet_override = _clean(os.environ.get("PARQUET_DIR"))
     parquet_dir = Path(parquet_override) if parquet_override else PARQUET_DIR
+    k10_config_revision, k10_config_binding_error = _positive_int(
+        os.environ.get("K10_CONFIG_REVISION"), name="K10_CONFIG_REVISION"
+    )
 
     return Settings(
         tushare_token=_clean(os.environ.get("TUSHARE_TOKEN")),
+        k10_config_id=_clean(os.environ.get("K10_CONFIG_ID")),
+        k10_config_revision=k10_config_revision,
+        k10_config_binding_error=k10_config_binding_error,
         db_path=db_path,
         parquet_dir=parquet_dir,
         api_token=_clean(os.environ.get("API_TOKEN")),
